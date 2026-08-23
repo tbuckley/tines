@@ -207,9 +207,9 @@
 			</div>
 			{#each states as row, i (row.key)}
 				<div class="space-y-2 rounded-lg border p-3" transition:slide={{ duration: dur() }}>
-					<div class="flex items-center gap-2">
-						<Input bind:value={states[i].name} placeholder="State name" class="flex-1" aria-label="State name" />
-						<Select bind:value={states[i].category} class="w-40" aria-label="Category">
+					<div class="flex flex-wrap items-center gap-2">
+						<Input bind:value={states[i].name} placeholder="State name" class="min-w-36 flex-1" aria-label="State name" />
+						<Select bind:value={states[i].category} class="w-40 max-sm:w-36" aria-label="Category">
 							{#each STATE_CATEGORIES as cat (cat)}
 								<option value={cat}>{CATEGORY_LABELS[cat]}</option>
 							{/each}
@@ -233,11 +233,11 @@
 						<div class="space-y-1.5">
 							{#each transitions.filter((t) => t.from === row.key) as transition (transition.key)}
 								{@const ti = transitions.findIndex((t) => t.key === transition.key)}
-								<div class="flex items-center gap-2" transition:slide={{ duration: dur() }}>
+								<div class="flex flex-wrap items-center gap-2" transition:slide={{ duration: dur() }}>
 									<Input
 										bind:value={transitions[ti].name}
 										placeholder="Action name, e.g. approve"
-										class="h-8 flex-1 text-xs"
+										class="h-8 min-w-28 flex-1 text-xs"
 										aria-label="Action name"
 									/>
 									<span class="text-muted-foreground text-xs">→</span>

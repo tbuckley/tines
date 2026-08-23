@@ -27,16 +27,25 @@
 					class="hover:bg-accent/50 flex items-center gap-3 px-4 py-3 transition-colors"
 				>
 					<span class="text-muted-foreground w-12 shrink-0 font-mono text-xs">#{issue.number}</span>
-					<span
-						class="min-w-0 flex-1 truncate text-sm font-medium"
-						style:view-transition-name="issue-title-{issue.id}"
-					>
-						{issue.title}
+					<span class="min-w-0 flex-1 text-sm font-medium">
+						<!-- Inner inline-block: the transition snapshot hugs the text
+						     instead of the full-width cell, so the shared-element
+						     morph to the detail heading keeps its proportions. -->
+						<span
+							class="inline-block max-w-full truncate align-middle"
+							style:view-transition-name="issue-title-{issue.id}"
+							style:view-transition-class="vt-fit"
+						>
+							{issue.title}
+						</span>
 					</span>
 					{#if showProject}
 						<span class="text-muted-foreground hidden shrink-0 text-xs sm:inline">{issue.project_name}</span>
 					{/if}
-					<span style:view-transition-name="issue-state-{issue.id}">
+					<span
+						style:view-transition-name="issue-state-{issue.id}"
+						style:view-transition-class="vt-fit"
+					>
 						<StateBadge state={issue.state} />
 					</span>
 					<span class="text-muted-foreground hidden w-20 shrink-0 text-right text-xs md:inline" title={new Date(issue.last_activity_at).toLocaleString()}>

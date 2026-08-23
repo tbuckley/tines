@@ -164,11 +164,27 @@ export interface CreateIssueRequest {
 	description?: string;
 	/** Defaults to the project's default workflow, else the standard workflow. */
 	workflow_id?: string;
+	/**
+	 * Starting state, by id or name within the chosen workflow. Defaults to
+	 * the workflow's initial state.
+	 */
+	state?: string;
 }
 
 export interface UpdateIssueRequest {
 	title?: string;
 	description?: string;
+	/**
+	 * Force-set the state, by id or name — bypasses the workflow's
+	 * transitions (records a forced move). Resolved within `workflow_id`'s
+	 * workflow when that is also being changed, else the current one.
+	 */
+	state?: string;
+	/**
+	 * Move the issue onto another workflow. Unless `state` picks one, the
+	 * issue lands on the new workflow's initial state.
+	 */
+	workflow_id?: string;
 }
 
 /** Names the transition to take: exactly one of the two fields. */

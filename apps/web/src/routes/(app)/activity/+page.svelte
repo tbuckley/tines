@@ -68,7 +68,7 @@
 <div class="mb-6 flex flex-wrap items-center gap-3">
 	<h1 class="mr-auto text-2xl font-semibold tracking-tight">Activity</h1>
 	<Select
-		class="w-40"
+		class="w-40 max-sm:min-w-36 max-sm:flex-1"
 		value={data.filters.project}
 		onchange={(e) => setFilter('project', e.currentTarget.value)}
 		aria-label="Filter by project"
@@ -79,7 +79,7 @@
 		{/each}
 	</Select>
 	<Select
-		class="w-48"
+		class="w-48 max-sm:min-w-36 max-sm:flex-1"
 		value={data.filters.type}
 		onchange={(e) => setFilter('type', e.currentTarget.value)}
 		aria-label="Filter by event type"

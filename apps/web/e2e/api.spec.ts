@@ -324,6 +324,77 @@ test.describe('cross-user isolation', () => {
 	});
 });
 
+test.describe.serial('direct state placement and workflow moves', () => {
+	const projectName = `direct-${runId}`;
+	let projectId: string;
+	let issueId: string;
+
+	test('an issue can start in any state of its workflow', async ({ request }) => {
+		const api = apiClient(request, ALICE.apiKey);
+		projectId = (await body<Project>(await api.post('/api/v1/projects', { name: projectName }))).id;
+
+		const unknown = await api.post(`/api/v1/projects/${projectId}/issues`, {
+			title: 'Bad start',
+			state: 'Nowhere'
+		});
+		expect(unknown.status()).toBe(422);
+		expect((await body<ErrorBody>(unknown)).error.code).toBe('unknown_state');
+
+		const res = await api.post(`/api/v1/projects/${projectId}/issues`, {
+			title: 'Starts in review',
+			state: 'Human Review'
+		});
+		expect(res.status()).toBe(201);
+		const issue = await body<IssueDetail>(res);
+		expect(issue.state.name).toBe('Human Review');
+		issueId = issue.id;
+	});
+
+	test('PATCH state force-sets the state and records a forced move', async ({ request }) => {
+		const api = apiClient(request, ALICE.apiKey);
+		const res = await api.patch(`/api/v1/issues/${issueId}`, { state: 'Closed' });
+		expect(res.ok()).toBe(true);
+		expect((await body<IssueDetail>(res)).state.name).toBe('Closed');
+
+		const events = await body<ListResponse<TinesEvent>>(
+			await api.get(`/api/v1/events?issue=${issueId}`)
+		);
+		const forced = events.items.find((e) => e.type === 'issue.transitioned');
+		expect(forced?.payload.forced).toBe(true);
+		expect(forced?.payload.from_state_name).toBe('Human Review');
+		expect(forced?.payload.to_state_name).toBe('Closed');
+	});
+
+	test('PATCH workflow_id moves the issue onto another workflow', async ({ request }) => {
+		const api = apiClient(request, ALICE.apiKey);
+		const custom = await body<WorkflowResponse>(
+			await api.post('/api/v1/workflows', {
+				name: `direct-wf-${runId}`,
+				initial_state: 'Todo',
+				states: [
+					{ name: 'Todo', category: 'backlog' },
+					{ name: 'Done', category: 'done' }
+				],
+				transitions: [{ name: 'finish', from: 'Todo', to: 'Done' }]
+			})
+		);
+
+		// Without a state, the issue lands on the new workflow's initial state.
+		const moved = await body<IssueDetail>(
+			await api.patch(`/api/v1/issues/${issueId}`, { workflow_id: custom.id })
+		);
+		expect(moved.workflow.id).toBe(custom.id);
+		expect(moved.state.name).toBe('Todo');
+
+		// With one, it lands exactly where asked.
+		const movedBack = await body<IssueDetail>(
+			await api.patch(`/api/v1/issues/${issueId}`, { workflow_id: 'wf_standard', state: 'Closed' })
+		);
+		expect(movedBack.workflow.id).toBe('wf_standard');
+		expect(movedBack.state.name).toBe('Closed');
+	});
+});
+
 test.describe('input validation', () => {
 	test('non-string fields are rejected, not stored', async ({ request }) => {
 		const api = apiClient(request, ALICE.apiKey);

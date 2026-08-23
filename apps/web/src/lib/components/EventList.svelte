@@ -105,6 +105,11 @@
 							{#if ev.type === 'issue.created'}
 								<span class="text-muted-foreground">— {ev.payload.title}</span>
 							{/if}
+							{#if ev.type === 'issue.updated' && ev.payload.workflow_to_name}
+								<span class="text-muted-foreground">
+									from “{ev.payload.workflow_from_name}” to “{ev.payload.workflow_to_name}”
+								</span>
+							{/if}
 						{:else if objectName(ev)}
 							<span class="font-medium">“{objectName(ev)}”</span>
 						{/if}
@@ -112,6 +117,8 @@
 							{#if ev.payload.action}
 								<span class="text-muted-foreground">via</span>
 								<span class="font-medium">“{ev.payload.action}”</span>
+							{:else if ev.payload.forced}
+								<span class="text-muted-foreground">directly</span>
 							{/if}
 							<span class="ml-1 inline-flex items-center gap-1.5 align-middle">
 								<StateBadge
