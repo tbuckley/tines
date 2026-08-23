@@ -18,6 +18,7 @@ import {
 	type ActorContext
 } from './core';
 import { eventInsert } from './events';
+import { assertWorkflowNotScheduled } from './schedules';
 
 interface ResolvedState {
 	id: string;
@@ -489,6 +490,8 @@ export async function deleteWorkflow(
 			{ issue_count: wf.issue_count }
 		);
 	}
+	// Extends the phase-one editing rules: schedules bind to a workflow.
+	await assertWorkflowNotScheduled(db, wf.id, wf.name);
 	await runAtomic(env, [
 		db
 			.updateTable('project')

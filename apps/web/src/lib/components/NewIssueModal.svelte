@@ -1,21 +1,28 @@
 <script lang="ts">
 	import type { Project, WorkflowResponse } from '@tines/shared';
 	import { ApiError } from '@tines/shared';
+	import IconChevronRight from '@tabler/icons-svelte/icons/chevron-right';
+	import IconRepeat from '@tabler/icons-svelte/icons/repeat';
+	import { slide } from 'svelte/transition';
 	import { goto, invalidateAll } from '$app/navigation';
 	import { api } from '$lib/api';
 	import Modal from '$lib/components/Modal.svelte';
+	import RepeatFields from '$lib/components/RepeatFields.svelte';
 	import WorkflowGraph from '$lib/components/WorkflowGraph.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { Select } from '$lib/components/ui/select/index.js';
 	import { Textarea } from '$lib/components/ui/textarea/index.js';
+	import { prefersReducedMotion } from '$lib/format';
+	import { defaultRepeatState, repeatSummary, repeatToScheduleInput } from '$lib/schedule-form';
 
 	let {
 		open = $bindable(false),
 		projects,
 		workflows,
 		project = null,
-		defaultProjectId = null
+		defaultProjectId = null,
+		repeatOpen = $bindable(false)
 	}: {
 		open?: boolean;
 		projects: Project[];
@@ -24,15 +31,23 @@
 		project?: Project | null;
 		/** Preselects the picker, e.g. from an active project filter. */
 		defaultProjectId?: string | null;
+		/** Starts with the Repeat section expanded (the schedules "add" affordance). */
+		repeatOpen?: boolean;
 	} = $props();
+
+	const dur = () => (prefersReducedMotion() ? 0 : 150);
 
 	let projectId = $state('');
 	let title = $state('');
 	let description = $state('');
 	let workflowId = $state('');
 	let stateId = $state('');
+	let repeat = $state(defaultRepeatState());
 	let creating = $state(false);
 	let errorMessage = $state<string | null>(null);
+
+	const repeatValid = $derived(repeatSummary(repeat).ok);
+	const hasRepeat = $derived(repeat.kind !== 'never');
 
 	const selectedProject = $derived(project ?? projects.find((p) => p.id === projectId) ?? null);
 	const defaultWorkflowId = $derived(
@@ -47,6 +62,8 @@
 			description = '';
 			errorMessage = null;
 			projectId = project?.id ?? defaultProjectId ?? projects[0]?.id ?? '';
+			repeat = defaultRepeatState();
+			repeatOpen = false;
 		}
 	});
 	// The workflow follows the picked project's default…
@@ -68,7 +85,8 @@
 				title,
 				description: description || undefined,
 				workflow_id: workflowId || undefined,
-				state: stateId || undefined
+				state: stateId || undefined,
+				schedule: repeatToScheduleInput(repeat) ?? undefined
 			});
 			open = false;
 			await invalidateAll();
@@ -128,13 +146,41 @@
 				<WorkflowGraph workflow={pickedWorkflow} currentStateId={stateId || null} compact />
 			</div>
 		{/if}
+		<div class="rounded-md border">
+			<button
+				type="button"
+				class="hover:bg-accent/50 flex w-full items-center gap-2 px-3 py-2 text-sm font-medium transition-colors"
+				aria-expanded={repeatOpen}
+				onclick={() => (repeatOpen = !repeatOpen)}
+			>
+				<IconChevronRight
+					size={16}
+					class="text-muted-foreground transition-transform {repeatOpen ? 'rotate-90' : ''}"
+				/>
+				<IconRepeat size={16} class="text-muted-foreground" />
+				Repeat
+				{#if hasRepeat && !repeatOpen}
+					<span class="text-muted-foreground ml-auto truncate text-xs font-normal">
+						{repeatSummary(repeat).text}
+					</span>
+				{/if}
+			</button>
+			{#if repeatOpen}
+				<div class="border-t px-3 py-3" transition:slide={{ duration: dur() }}>
+					<RepeatFields state={repeat} idPrefix="issue-repeat" />
+				</div>
+			{/if}
+		</div>
 		{#if errorMessage}
 			<p class="text-destructive text-sm">{errorMessage}</p>
 		{/if}
 		<div class="flex justify-end gap-2">
 			<Button type="button" variant="ghost" onclick={() => (open = false)}>Cancel</Button>
-			<Button type="submit" disabled={creating || !title.trim() || !selectedProject}>
-				{creating ? 'Creating…' : 'Create issue'}
+			<Button
+				type="submit"
+				disabled={creating || !title.trim() || !selectedProject || (hasRepeat && !repeatValid)}
+			>
+				{creating ? 'Creating…' : hasRepeat ? 'Create issue + schedule' : 'Create issue'}
 			</Button>
 		</div>
 	</form>

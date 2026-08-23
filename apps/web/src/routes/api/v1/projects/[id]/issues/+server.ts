@@ -18,6 +18,7 @@ export const GET: RequestHandler = api(async (event) => {
 			projectId: event.params.id,
 			state: params.get('state') ?? undefined,
 			category: params.get('category') ?? undefined,
+			schedule: params.get('schedule') ?? undefined,
 			hideDone: ['1', 'true'].includes(params.get('hide_done') ?? '')
 		},
 		page

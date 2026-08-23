@@ -16,8 +16,11 @@ fi
 pnpm exec wrangler d1 migrations apply tines --local --persist-to .wrangler-e2e
 node e2e/seed.mjs
 
+# --test-scheduled exposes GET /__scheduled?cron=… so the e2e suite can fire
+# the scheduled-task sweep deterministically.
 exec pnpm exec wrangler dev \
 	--port "$PORT" \
 	--persist-to .wrangler-e2e \
+	--test-scheduled \
 	--var "BETTER_AUTH_SECRET:tines-e2e-secret" \
 	--var "BETTER_AUTH_URL:http://127.0.0.1:$PORT"

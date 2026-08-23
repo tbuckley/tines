@@ -1,5 +1,7 @@
 /** Wire types for the Tines phase-one API (`/api/v1/*`). All snake_case. */
 
+import type { SchedulePreset } from './schedule.js';
+
 export type StateCategory = 'backlog' | 'active' | 'awaiting_human' | 'done';
 
 export const STATE_CATEGORIES: readonly StateCategory[] = [
@@ -138,6 +140,9 @@ export interface Issue {
 	description: string;
 	workflow_id: string;
 	state: WorkflowState;
+	/** Set when the issue was created by a scheduled task (null once the schedule is deleted). */
+	scheduled_task_id: string | null;
+	scheduled_task_name: string | null;
 	created_at: number;
 	updated_at: number;
 	/** Timestamp of the most recent event touching this issue. */
@@ -169,6 +174,82 @@ export interface CreateIssueRequest {
 	 * the workflow's initial state.
 	 */
 	state?: string;
+	/**
+	 * Optional recurrence: creates the first issue immediately (title and
+	 * description double as the templates, placeholders rendered) plus a
+	 * scheduled task that takes over from there.
+	 */
+	schedule?: CreateScheduleInput;
+}
+
+/** The recurrence part of a create-issue request. */
+export interface CreateScheduleInput {
+	/** Unique within the project; defaults to the title template. */
+	name?: string;
+	/** Exactly one of preset or cron. */
+	preset?: SchedulePreset;
+	cron?: string;
+	/** IANA timezone; defaults to UTC (clients send the creator's). */
+	timezone?: string;
+	/** Only create a new instance when all previous instances are closed. */
+	require_all_closed?: boolean;
+}
+
+/** Create-issue response; `schedule` present when a recurrence was set. */
+export interface CreateIssueResponse extends IssueDetail {
+	schedule?: Schedule;
+}
+
+// ---------------------------------------------------------------------------
+// Scheduled tasks
+
+export interface Schedule {
+	id: string;
+	project_id: string;
+	project_name: string;
+	/** Unique within the project; schedules are addressed as `<project>/<name>`. */
+	name: string;
+	title_template: string;
+	description_template: string;
+	workflow_id: string;
+	workflow_name: string;
+	/** The compiled cron expression evaluation reads (always populated). */
+	cron: string;
+	/** The preset the cron was compiled from; null = raw cron. */
+	preset: SchedulePreset | null;
+	timezone: string;
+	require_all_closed: boolean;
+	enabled: boolean;
+	next_run_at: number;
+	last_run_at: number | null;
+	/** Issues created by this schedule, including the initial one. */
+	run_count: number;
+	/** Linked issues currently in a non-done state (drives the gate). */
+	open_instances: number;
+	created_at: number;
+	updated_at: number;
+}
+
+/**
+ * Recurrence edits replace what they include: sending `preset` recompiles
+ * the cron from it; sending `cron` switches the schedule to raw-cron form.
+ */
+export interface UpdateScheduleRequest {
+	name?: string;
+	title_template?: string;
+	description_template?: string;
+	preset?: SchedulePreset;
+	cron?: string;
+	timezone?: string;
+	require_all_closed?: boolean;
+	/** Pause with `{ enabled: false }`; resuming recomputes the next occurrence. */
+	enabled?: boolean;
+}
+
+export interface ScheduleFilters {
+	/** Project id or name. */
+	project?: string;
+	enabled?: boolean;
 }
 
 export interface UpdateIssueRequest {
@@ -199,6 +280,8 @@ export interface IssueFilters {
 	state?: string;
 	category?: StateCategory;
 	workflow?: string;
+	/** Schedule id: only issues created by that scheduled task. */
+	schedule?: string;
 	/** Exclude issues whose state is categorized `done`. */
 	hide_done?: boolean;
 }
@@ -234,6 +317,10 @@ export type EventType =
 	| 'workflow.deleted'
 	| 'api_key.created'
 	| 'api_key.revoked'
+	| 'scheduled_task.created'
+	| 'scheduled_task.updated'
+	| 'scheduled_task.deleted'
+	| 'scheduled_task.skipped'
 	// Open-ended by design: later phases add types without migration.
 	| (string & {});
 

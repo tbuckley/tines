@@ -3,7 +3,14 @@
 	"name": "tines-web",
 	"compatibility_date": "2025-08-01",
 	"compatibility_flags": ["nodejs_compat"],
-	"main": ".svelte-kit/cloudflare/_worker.js",
+	// Custom entry wrapping the SvelteKit-generated worker: same fetch, plus a
+	// scheduled() handler for the scheduled-task sweep (worker/index.ts).
+	"main": "worker/index.ts",
+	// Cron Trigger driving the scheduled-task sweep. Locally, `wrangler dev
+	// --test-scheduled` exposes GET /__scheduled to fire it on demand.
+	"triggers": {
+		"crons": ["*/5 * * * *"]
+	},
 	"assets": {
 		"binding": "ASSETS",
 		"directory": ".svelte-kit/cloudflare"
