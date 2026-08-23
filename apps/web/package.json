@@ -30,6 +30,7 @@
     "wrangler": "^4.125.0"
   },
   "dependencies": {
+    "@tabler/icons-svelte": "^3.46.0",
     "@tines/shared": "workspace:*",
     "better-auth": "^1.7.1",
     "clsx": "^2.1.1",
