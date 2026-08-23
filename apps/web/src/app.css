@@ -282,8 +282,8 @@
 @media (width < 40rem) {
 	html[data-tab-slide]::view-transition-old(page),
 	html[data-tab-slide]::view-transition-new(page) {
-		animation-duration: 240ms;
-		animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+		animation-duration: 300ms;
+		animation-timing-function: cubic-bezier(0.32, 0.72, 0, 1);
 		animation-fill-mode: both;
 	}
 	html[data-tab-slide='forward']::view-transition-old(page) {
@@ -300,30 +300,39 @@
 	}
 }
 
-/* Shared-axis slide: a short glide plus fade, not a full-screen push. */
+/* Full-width push: the old screen exits one side as the new one enters
+   from the other, carousel-style, so the sideways travel is unmistakable. */
 @keyframes vt-page-out-left {
 	to {
-		transform: translateX(-2.5rem);
-		opacity: 0;
+		transform: translateX(-100%);
 	}
 }
 @keyframes vt-page-in-right {
 	from {
-		transform: translateX(2.5rem);
-		opacity: 0;
+		transform: translateX(100%);
 	}
 }
 @keyframes vt-page-out-right {
 	to {
-		transform: translateX(2.5rem);
-		opacity: 0;
+		transform: translateX(100%);
 	}
 }
 @keyframes vt-page-in-left {
 	from {
-		transform: translateX(-2.5rem);
-		opacity: 0;
+		transform: translateX(-100%);
 	}
+}
+
+/*
+ * Shared-element names (issue titles and state badges morphing between the
+ * list and detail pages) only pair up within the Issues tab. During a
+ * cross-tab slide they'd become lone groups that fade in place while the
+ * page moves; drop their names so they're captured inside the `page`
+ * snapshot and travel with it. !important is needed to beat the inline
+ * per-issue names.
+ */
+html[data-tab-slide] .vt-shared {
+	view-transition-name: none !important;
 }
 
 @media (prefers-reduced-motion: reduce) {

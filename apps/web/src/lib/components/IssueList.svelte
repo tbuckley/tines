@@ -32,7 +32,7 @@
 						     instead of the full-width cell, so the shared-element
 						     morph to the detail heading keeps its proportions. -->
 						<span
-							class="inline-block max-w-full truncate align-middle"
+							class="vt-shared inline-block max-w-full truncate align-middle"
 							style:view-transition-name="issue-title-{issue.id}"
 							style:view-transition-class="vt-fit"
 						>
@@ -43,6 +43,7 @@
 						<span class="text-muted-foreground hidden shrink-0 text-xs sm:inline">{issue.project_name}</span>
 					{/if}
 					<span
+						class="vt-shared"
 						style:view-transition-name="issue-state-{issue.id}"
 						style:view-transition-class="vt-fit"
 					>
