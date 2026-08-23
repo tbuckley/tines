@@ -31,11 +31,23 @@ jobs:
 
       - run: pnpm test
 
-      # Uploads a new version WITHOUT deploying it: production traffic on
-      # tines.tbuckley.com is untouched, and the version gets a preview URL
-      # on workers.dev (requires "preview_urls": true in wrangler.jsonc).
-      # Note: previews run against the production D1 database, and any
-      # migrations added in the PR are NOT applied until it merges.
+      # Previews use the "preview" wrangler environment: a separate worker
+      # (tines-web-preview) bound to its own D1 database (tines-preview), so
+      # nothing here can touch production data. All previews share that one
+      # database; applying this PR's migrations to it lets schema-changing PRs
+      # be exercised end to end. If PRs with conflicting migrations leave it
+      # in a bad state, the database is disposable — see "PR preview URLs" in
+      # the README for the reset procedure.
+      - name: Apply D1 migrations to the preview database
+        working-directory: apps/web
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: pnpm exec wrangler d1 migrations apply tines-preview --remote --env preview
+
+      # Uploads a new version WITHOUT deploying it: nothing is promoted, and
+      # the version gets a preview URL on workers.dev (requires
+      # "preview_urls": true in the preview environment).
       - name: Upload preview version
         id: upload
         working-directory: apps/web
@@ -43,7 +55,7 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
-          pnpm exec wrangler versions upload \
+          pnpm exec wrangler versions upload --env preview \
             --message "PR #${{ github.event.pull_request.number }} (${{ github.event.pull_request.head.sha }})" \
             | tee upload.log
           url=$(grep -oE 'https://[A-Za-z0-9.-]+\.workers\.dev' upload.log | head -n1)
@@ -65,7 +77,7 @@ jobs:
               marker,
               `**Preview:** ${process.env.PREVIEW_URL}`,
               '',
-              `Deployed from ${process.env.HEAD_SHA}. Production traffic is unaffected.`,
+              `Deployed from ${process.env.HEAD_SHA}. Runs against the shared preview database; production is unaffected.`,
             ].join('\n');
             const { owner, repo } = context.repo;
             const issue_number = context.issue.number;

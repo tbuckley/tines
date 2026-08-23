@@ -51,5 +51,33 @@
 		// Sender for magic-link emails. Must be an address on a domain onboarded to
 		// Email Service (Cloudflare dash → Compute → Email Service → Email Sending).
 		"EMAIL_FROM": "tines-noreply@tbuckley.com"
+	},
+	"env": {
+		// PR previews (.github/workflows/preview.yml): a separate worker
+		// ("tines-web-preview") with its own D1 database, so previews never touch
+		// production data and PR migrations can be tried out safely. The preview
+		// DB is disposable — see "PR preview URLs" in the README to reset it.
+		// Non-inheritable keys (d1_databases, send_email, vars) must be restated here.
+		"preview": {
+			"workers_dev": false,
+			"preview_urls": true,
+			"d1_databases": [
+				{
+					"binding": "DB",
+					"database_name": "tines-preview",
+					// Replace with the real id from `wrangler d1 create tines-preview`.
+					"database_id": "00000000-0000-0000-0000-000000000000",
+					"migrations_dir": "migrations"
+				}
+			],
+			"send_email": [{ "name": "EMAIL" }],
+			"vars": {
+				// BETTER_AUTH_URL is deliberately unset: preview URLs differ per
+				// version, so auth derives its base URL from the request origin
+				// (see src/lib/server/auth.ts). Magic-link sign-in works on
+				// previews; Google OAuth does not (no wildcard redirect URIs).
+				"EMAIL_FROM": "tines-noreply@tbuckley.com"
+			}
+		}
 	}
 }

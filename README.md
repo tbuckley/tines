@@ -123,21 +123,41 @@ files are skipped and a no-op run is safe.
 ### PR preview URLs
 
 `.github/workflows/preview.yml` runs on every pull request (from branches in
-this repo): it builds, runs unit tests, then uploads the worker with
-`wrangler versions upload` — production traffic is untouched, and the new
-version gets a preview URL like
-`https://<version-prefix>-tines-web.<subdomain>.workers.dev`, which the
-workflow posts (and keeps updated) as a PR comment. It uses the same two
+this repo): it builds, runs unit tests, applies the PR's migrations to the
+preview database, then uploads the worker with `wrangler versions upload
+--env preview`. Nothing is promoted to live traffic; the version gets a
+preview URL like
+`https://<version-prefix>-tines-web-preview.<subdomain>.workers.dev`, which
+the workflow posts (and keeps updated) as a PR comment. It uses the same two
 Actions secrets as the deploy workflow.
 
-Preview caveats:
+Previews use the `preview` wrangler environment (`env.preview` in
+`apps/web/wrangler.jsonc`): a separate worker (`tines-web-preview`) bound to
+its own D1 database (`tines-preview`), fully isolated from production data.
+Magic-link sign-in works on previews — `BETTER_AUTH_URL` is unset there, so
+auth derives its base URL from the request origin (preview URLs differ per
+version). Google OAuth does not work on previews (Google doesn't allow
+wildcard redirect URIs).
 
-- Previews share the **production** D1 database and secrets, and migrations
-  added in the PR are not applied until it merges — schema-changing PRs may
-  not fully work in preview.
-- `BETTER_AUTH_URL` points at production, so sign-in flows redirect to
-  tines.tbuckley.com and session cookies don't apply to the preview host;
-  previews are best for reviewing signed-out UI and API behavior.
+One-time preview setup:
+
+```sh
+cd apps/web
+pnpm wrangler d1 create tines-preview     # paste the database_id into env.preview in wrangler.jsonc
+pnpm wrangler secret put BETTER_AUTH_SECRET --env preview
+pnpm run build && pnpm wrangler deploy --env preview   # creates the preview worker once
+```
+
+All PRs share the one preview database, and each PR applies its own pending
+migrations to it. If PRs with conflicting migrations leave it in a bad state,
+throw it away and start over — it holds nothing precious:
+
+```sh
+pnpm wrangler d1 delete tines-preview
+pnpm wrangler d1 create tines-preview     # paste the new database_id into env.preview
+```
+
+The next preview run re-applies all migrations from scratch.
 
 ## Scripts
 
