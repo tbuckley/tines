@@ -20,7 +20,7 @@ Explicitly out of scope, even where the data model anticipates them:
 - **Collaboration**: no teams, no sharing, no workflow publishing. Everything belongs to a single user.
 - **Project hierarchy**: projects are a single flat layer per user. (Trees come later — the schema must not preclude adding `parent_id`.)
 - **Issue metadata**: no assignee, labels, priority, or due dates.
-- **Visual workflow canvas**: workflow editing is form-based; the diagram is read-only.
+- **Drag-and-drop workflow editing**: workflows always render as a visual graph, but the graph is not an editing surface — creating and editing happens through a form. Manual node positioning and edge-drawing come later, if ever.
 
 ## Concepts
 
@@ -167,8 +167,10 @@ All commands support `--json` for agent consumption. `issues show --json` includ
 SvelteKit + shadcn-svelte, behind sign-in:
 
 - **Projects**: list + create; project page lists its issues grouped/filterable by state, with a new-issue form.
-- **Issue detail**: title, rendered Markdown description (editable), state with allowed-transition buttons, comment thread, and this issue's slice of the activity log — with actors shown throughout.
-- **Workflows**: library list (standard workflow marked read-only) and a **form-based editor** — add/rename/remove states, pick the initial state, and per-state pickers for allowed target states — alongside a read-only diagram of the FSM. Editing-rule violations surface inline.
+- **Issue detail**: title, rendered Markdown description (editable), state with allowed-transition buttons plus a compact graph of the issue's workflow with the current state highlighted, comment thread, and this issue's slice of the activity log — with actors shown throughout.
+- **Workflows**: library list (standard workflow marked read-only), each workflow page pairing two views of the same FSM:
+  - A **graph view** — the primary way a workflow is *read*. States are nodes (initial state and dead-end states visually distinguished), transitions are directed edges, laid out automatically client-side (no stored positions, no manual arranging). Shown wherever a workflow appears: the workflow detail page, the editor, and as a compact preview when picking a workflow at issue creation.
+  - A **form-based editor** — the way a workflow is *written*: add/rename/remove states, pick the initial state, per-state pickers for allowed target states. The graph re-renders live as the form changes, so the user sees the machine they're building. Editing-rule violations surface inline.
 - **Activity**: global feed of the user's events, filterable by project/type.
 - **Settings → API keys**: create (secret shown once), list with last-used, revoke.
 
