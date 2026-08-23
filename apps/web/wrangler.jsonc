@@ -31,7 +31,7 @@
 			"database_name": "tines",
 			// Replace with the real id from `wrangler d1 create tines` before deploying.
 			// The placeholder is fine for local dev (`pnpm dev` / `wrangler dev`).
-			"database_id": "00000000-0000-0000-0000-000000000000",
+			"database_id": "31b914cb-888f-4c21-a480-63acb1ceadf2",
 			"migrations_dir": "migrations"
 		}
 	],
@@ -66,7 +66,7 @@
 					"binding": "DB",
 					"database_name": "tines-preview",
 					// Replace with the real id from `wrangler d1 create tines-preview`.
-					"database_id": "00000000-0000-0000-0000-000000000000",
+					"database_id": "05920f93-1fea-47e1-8c29-ccbac72bb40c",
 					"migrations_dir": "migrations"
 				}
 			],
