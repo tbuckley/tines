@@ -1,0 +1,16 @@
+import { json } from '@sveltejs/kit';
+import type { UpdateIssueRequest } from '@tines/shared';
+import { api, apiContext, readJson } from '$lib/server/api/core';
+import { getIssueDetail, updateIssue } from '$lib/server/api/issues';
+import type { RequestHandler } from './$types';
+
+export const GET: RequestHandler = api(async (event) => {
+	const { db, actor } = await apiContext(event);
+	return json(await getIssueDetail(db, actor.userId, { id: event.params.id }));
+});
+
+export const PATCH: RequestHandler = api(async (event) => {
+	const { db, env, actor } = await apiContext(event);
+	const body = await readJson<UpdateIssueRequest>(event);
+	return json(await updateIssue(db, env, actor, event.params.id, body));
+});

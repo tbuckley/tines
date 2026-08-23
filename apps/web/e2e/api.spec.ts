@@ -1,0 +1,339 @@
+import type { IssueDetail, ListResponse, Project, TinesEvent, WorkflowResponse } from '@tines/shared';
+import { expect, test } from '@playwright/test';
+import { ALICE, BOB } from './constants.mjs';
+import { apiClient, body, runId } from './helpers';
+
+type ErrorBody = { error: { code: string; message: string; details?: Record<string, unknown> } };
+
+test.describe('auth', () => {
+	test('rejects requests without a key', async ({ request }) => {
+		const res = await request.get('/api/v1/projects');
+		expect(res.status()).toBe(401);
+	});
+
+	test('rejects an invalid key', async ({ request }) => {
+		const res = await apiClient(request, 'tines_not_a_real_key').get('/api/v1/projects');
+		expect(res.status()).toBe(401);
+		expect((await body<ErrorBody>(res)).error.code).toBe('unauthorized');
+	});
+
+	test('accepts a seeded key', async ({ request }) => {
+		const res = await apiClient(request, ALICE.apiKey).get('/api/v1/projects');
+		expect(res.ok()).toBe(true);
+	});
+
+	test('refuses API-key management over bearer auth', async ({ request }) => {
+		const res = await apiClient(request, ALICE.apiKey).post('/api/v1/api-keys', { name: 'nope' });
+		expect(res.status()).toBe(403);
+		expect((await body<ErrorBody>(res)).error.code).toBe('session_required');
+	});
+});
+
+test.describe.serial('core issue loop', () => {
+	const projectName = `loop-${runId}`;
+	let projectId: string;
+	let issueId: string;
+	let submitTransitionId: string;
+
+	test('creates a project, rejecting duplicate names', async ({ request }) => {
+		const api = apiClient(request, ALICE.apiKey);
+		const created = await api.post('/api/v1/projects', { name: projectName });
+		expect(created.status()).toBe(201);
+		projectId = (await body<Project>(created)).id;
+
+		const dup = await api.post('/api/v1/projects', { name: projectName });
+		expect(dup.status()).toBe(422);
+		expect((await body<ErrorBody>(dup)).error.code).toBe('duplicate_project_name');
+	});
+
+	test('creates issues with sequential numbers in the standard workflow', async ({ request }) => {
+		const api = apiClient(request, ALICE.apiKey);
+		const first = await api.post(`/api/v1/projects/${projectId}/issues`, {
+			title: 'First issue',
+			description: 'Some **markdown**.'
+		});
+		expect(first.status()).toBe(201);
+		const issue = await body<IssueDetail>(first);
+		expect(issue.number).toBe(1);
+		expect(issue.state.name).toBe('Open');
+		expect(issue.workflow.is_system).toBe(true);
+		expect(issue.allowed_transitions.map((t) => t.name).sort()).toEqual([
+			'Abandon',
+			'Submit for review'
+		]);
+		issueId = issue.id;
+		submitTransitionId = issue.allowed_transitions.find(
+			(t) => t.name === 'Submit for review'
+		)!.transition_id;
+
+		const second = await api.post(`/api/v1/projects/${projectId}/issues`, { title: 'Second issue' });
+		expect((await body<IssueDetail>(second)).number).toBe(2);
+	});
+
+	test('rejects a transition that is not allowed, naming the legal moves', async ({ request }) => {
+		const api = apiClient(request, ALICE.apiKey);
+		const res = await api.post(`/api/v1/issues/${issueId}/transition`, { action: 'Approve' });
+		expect(res.status()).toBe(422);
+		const err = (await body<ErrorBody>(res)).error;
+		expect(err.code).toBe('invalid_transition');
+		const allowed = err.details?.allowed_transitions as { name: string }[];
+		expect(allowed.map((t) => t.name).sort()).toEqual(['Abandon', 'Submit for review']);
+	});
+
+	test('takes a named transition', async ({ request }) => {
+		const api = apiClient(request, ALICE.apiKey);
+		// Action names match case-insensitively.
+		const res = await api.post(`/api/v1/issues/${issueId}/transition`, {
+			action: 'submit for review'
+		});
+		expect(res.ok()).toBe(true);
+		expect((await body<IssueDetail>(res)).state.name).toBe('Human Review');
+	});
+
+	test('rejects replaying a transition from a state the issue left', async ({ request }) => {
+		const api = apiClient(request, ALICE.apiKey);
+		const res = await api.post(`/api/v1/issues/${issueId}/transition`, {
+			transition_id: submitTransitionId
+		});
+		expect(res.status()).toBe(422);
+		expect((await body<ErrorBody>(res)).error.code).toBe('invalid_transition');
+	});
+
+	test('comments are attributed to the API key', async ({ request }) => {
+		const api = apiClient(request, ALICE.apiKey);
+		const res = await api.post(`/api/v1/issues/${issueId}/comments`, { body: 'Looks good.' });
+		expect(res.status()).toBe(201);
+		const comment = await body<{ actor: { user_name: string; api_key_name: string } }>(res);
+		expect(comment.actor.user_name).toBe(ALICE.name);
+		expect(comment.actor.api_key_name).toBe(ALICE.apiKeyName);
+	});
+
+	test('done issues drop out of the filtered list', async ({ request }) => {
+		const api = apiClient(request, ALICE.apiKey);
+		const approve = await api.post(`/api/v1/issues/${issueId}/transition`, { action: 'Approve' });
+		expect(approve.ok()).toBe(true);
+		expect((await body<IssueDetail>(approve)).state.category).toBe('done');
+
+		const hidden = await api.get(`/api/v1/issues?project=${projectId}&hide_done=1`);
+		const hiddenIds = (await body<ListResponse<IssueDetail>>(hidden)).items.map((i) => i.id);
+		expect(hiddenIds).not.toContain(issueId);
+
+		const all = await api.get(`/api/v1/issues?project=${projectId}`);
+		const allIds = (await body<ListResponse<IssueDetail>>(all)).items.map((i) => i.id);
+		expect(allIds).toContain(issueId);
+	});
+
+	test('every step landed on the event stream', async ({ request }) => {
+		const api = apiClient(request, ALICE.apiKey);
+		const res = await api.get(`/api/v1/events?issue=${issueId}`);
+		const events = (await body<ListResponse<TinesEvent>>(res)).items;
+		const types = events.map((e) => e.type);
+		expect(types).toContain('issue.created');
+		expect(types).toContain('issue.commented');
+		expect(types.filter((t) => t === 'issue.transitioned')).toHaveLength(2);
+		const transition = events.find((e) => e.type === 'issue.transitioned' && e.payload.action === 'Approve');
+		expect(transition?.payload).toMatchObject({
+			from_state_name: 'Human Review',
+			to_state_name: 'Closed'
+		});
+	});
+
+	test('concurrent transitions cannot both win', async ({ request }) => {
+		const api = apiClient(request, ALICE.apiKey);
+		const created = await api.post(`/api/v1/projects/${projectId}/issues`, { title: 'Race me' });
+		const raceId = (await body<IssueDetail>(created)).id;
+
+		const [a, b] = await Promise.all([
+			api.post(`/api/v1/issues/${raceId}/transition`, { action: 'Submit for review' }),
+			api.post(`/api/v1/issues/${raceId}/transition`, { action: 'Abandon' })
+		]);
+		const statuses = [a.status(), b.status()].sort();
+		expect(statuses[0]).toBe(200);
+		// The loser hits the compare-and-swap (409) or re-validation (422).
+		expect([409, 422]).toContain(statuses[1]);
+
+		// Exactly one transition event was recorded for the winner.
+		const events = await body<ListResponse<TinesEvent>>(await api.get(`/api/v1/events?issue=${raceId}`));
+		expect(events.items.filter((e) => e.type === 'issue.transitioned')).toHaveLength(1);
+	});
+});
+
+test.describe.serial('workflow editing rules', () => {
+	const wfName = `flow-${runId}`;
+	let workflowId: string;
+	let projectId: string;
+	let issueId: string;
+	let stateIds: Record<string, string>;
+
+	test('the standard workflow is read-only', async ({ request }) => {
+		const api = apiClient(request, ALICE.apiKey);
+		const list = await body<ListResponse<WorkflowResponse>>(await api.get('/api/v1/workflows'));
+		const standard = list.items.find((w) => w.is_system)!;
+		expect(standard).toBeTruthy();
+
+		const patch = await api.patch(`/api/v1/workflows/${standard.id}`, { name: 'Hacked' });
+		expect(patch.status()).toBe(403);
+		const del = await api.delete(`/api/v1/workflows/${standard.id}`);
+		expect(del.status()).toBe(403);
+	});
+
+	test('creates a custom workflow and flags dead ends', async ({ request }) => {
+		const api = apiClient(request, ALICE.apiKey);
+		const res = await api.post('/api/v1/workflows', {
+			name: wfName,
+			initial_state: 'Todo',
+			states: [
+				{ name: 'Todo', category: 'backlog' },
+				{ name: 'Doing', category: 'active' },
+				{ name: 'Done', category: 'done' }
+			],
+			transitions: [
+				{ name: 'start', from: 'Todo', to: 'Doing' },
+				{ name: 'finish', from: 'Doing', to: 'Done' }
+			]
+		});
+		expect(res.status()).toBe(201);
+		const wf = await body<WorkflowResponse>(res);
+		workflowId = wf.id;
+		stateIds = Object.fromEntries(wf.states.map((s) => [s.name, s.id]));
+		expect(wf.warnings ?? []).toEqual([]);
+
+		// Removing Doing's exit leaves it stranded — allowed, but warned about.
+		const updated = await api.patch(`/api/v1/workflows/${workflowId}`, {
+			transitions: [{ name: 'start', from: stateIds.Todo, to: stateIds.Doing }]
+		});
+		expect(updated.ok()).toBe(true);
+		const warned = await body<WorkflowResponse>(updated);
+		expect(warned.warnings?.join(' ')).toContain('Doing');
+
+		// Restore the finish transition for the tests below.
+		const restored = await api.patch(`/api/v1/workflows/${workflowId}`, {
+			transitions: [
+				{ name: 'start', from: stateIds.Todo, to: stateIds.Doing },
+				{ name: 'finish', from: stateIds.Doing, to: stateIds.Done }
+			]
+		});
+		expect(restored.ok()).toBe(true);
+	});
+
+	test('cannot delete an occupied state or the initial state', async ({ request }) => {
+		const api = apiClient(request, ALICE.apiKey);
+		projectId = (
+			await body<Project>(await api.post('/api/v1/projects', { name: `flow-prj-${runId}` }))
+		).id;
+		issueId = (
+			await body<IssueDetail>(
+				await api.post(`/api/v1/projects/${projectId}/issues`, {
+					title: 'On the custom flow',
+					workflow_id: workflowId
+				})
+			)
+		).id;
+
+		// The issue sits in Todo: removing Todo (redesignating the initial) is
+		// rejected because the state is occupied.
+		const occupied = await api.patch(`/api/v1/workflows/${workflowId}`, {
+			initial_state: stateIds.Doing,
+			states: [
+				{ id: stateIds.Doing, name: 'Doing', category: 'active' },
+				{ id: stateIds.Done, name: 'Done', category: 'done' }
+			],
+			transitions: [{ name: 'finish', from: stateIds.Doing, to: stateIds.Done }]
+		});
+		expect(occupied.status()).toBe(422);
+		expect((await body<ErrorBody>(occupied)).error.code).toBe('state_in_use');
+
+		// Dropping the initial state without designating a replacement gets the
+		// spec-mandated guidance.
+		const noInitial = await api.patch(`/api/v1/workflows/${workflowId}`, {
+			states: [
+				{ id: stateIds.Doing, name: 'Doing', category: 'active' },
+				{ id: stateIds.Done, name: 'Done', category: 'done' }
+			],
+			transitions: [{ name: 'finish', from: stateIds.Doing, to: stateIds.Done }]
+		});
+		expect(noInitial.status()).toBe(422);
+		expect((await body<ErrorBody>(noInitial)).error.code).toBe('initial_state_removed');
+	});
+
+	test('cannot delete a workflow that issues reference', async ({ request }) => {
+		const api = apiClient(request, ALICE.apiKey);
+		const res = await api.delete(`/api/v1/workflows/${workflowId}`);
+		expect(res.status()).toBe(422);
+		expect((await body<ErrorBody>(res)).error.code).toBe('workflow_in_use');
+	});
+
+	test('renaming states keeps issue references intact', async ({ request }) => {
+		const api = apiClient(request, ALICE.apiKey);
+		const renamed = await api.patch(`/api/v1/workflows/${workflowId}`, {
+			states: [
+				{ id: stateIds.Todo, name: 'Backlog', category: 'backlog' },
+				{ id: stateIds.Doing, name: 'Doing', category: 'active' },
+				{ id: stateIds.Done, name: 'Done', category: 'done' }
+			]
+		});
+		expect(renamed.ok()).toBe(true);
+		const issue = await body<IssueDetail>(await api.get(`/api/v1/issues/${issueId}`));
+		expect(issue.state.id).toBe(stateIds.Todo);
+		expect(issue.state.name).toBe('Backlog');
+	});
+});
+
+test.describe('cross-user isolation', () => {
+	test("bob cannot see alice's data, and shared workflow counts are scoped", async ({ request }) => {
+		const alice = apiClient(request, ALICE.apiKey);
+		const bob = apiClient(request, BOB.apiKey);
+
+		const project = await body<Project>(
+			await alice.post('/api/v1/projects', { name: `iso-${runId}` })
+		);
+		const issue = await body<IssueDetail>(
+			await alice.post(`/api/v1/projects/${project.id}/issues`, { title: 'Private to alice' })
+		);
+
+		expect((await bob.get(`/api/v1/projects/${project.id}`)).status()).toBe(404);
+		expect((await bob.get(`/api/v1/issues/${issue.id}`)).status()).toBe(404);
+		expect((await bob.post(`/api/v1/issues/${issue.id}/comments`, { body: 'hi' })).status()).toBe(404);
+
+		const bobIssues = await body<ListResponse<IssueDetail>>(await bob.get('/api/v1/issues'));
+		expect(bobIssues.items.map((i) => i.id)).not.toContain(issue.id);
+
+		// Alice has issues on the shared standard workflow; bob's view of its
+		// issue_count must not include them.
+		const bobWorkflows = await body<ListResponse<WorkflowResponse>>(
+			await bob.get('/api/v1/workflows')
+		);
+		const standard = bobWorkflows.items.find((w) => w.is_system)!;
+		expect(standard.issue_count).toBe(0);
+
+		// Bob can't route his issues onto alice's workflow either.
+		const aliceWorkflows = await body<ListResponse<WorkflowResponse>>(
+			await alice.get('/api/v1/workflows')
+		);
+		const custom = aliceWorkflows.items.find((w) => !w.is_system);
+		if (custom) {
+			const bobProject = await body<Project>(
+				await bob.post('/api/v1/projects', { name: `iso-bob-${runId}` })
+			);
+			const res = await bob.post(`/api/v1/projects/${bobProject.id}/issues`, {
+				title: 'Steal a workflow',
+				workflow_id: custom.id
+			});
+			expect(res.status()).toBe(422);
+		}
+	});
+});
+
+test.describe('input validation', () => {
+	test('non-string fields are rejected, not stored', async ({ request }) => {
+		const api = apiClient(request, ALICE.apiKey);
+		const badDescription = await api.post('/api/v1/projects', {
+			name: `valid-${runId}`,
+			description: 42
+		});
+		expect(badDescription.status()).toBe(422);
+
+		const badTitle = await api.post('/api/v1/projects', { name: '' });
+		expect(badTitle.status()).toBe(422);
+	});
+});

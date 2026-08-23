@@ -1,0 +1,30 @@
+import { json } from '@sveltejs/kit';
+import type { Issue, ListResponse } from '@tines/shared';
+import { api, apiContext, encodeCursor, readPage } from '$lib/server/api/core';
+import { listIssues } from '$lib/server/api/issues';
+import type { RequestHandler } from './$types';
+
+/** Global issue list across projects. */
+export const GET: RequestHandler = api(async (event) => {
+	const { db, actor } = await apiContext(event);
+	const page = readPage(event);
+	const params = event.url.searchParams;
+	const { items, hasMore } = await listIssues(
+		db,
+		actor.userId,
+		{
+			project: params.get('project') ?? undefined,
+			state: params.get('state') ?? undefined,
+			category: params.get('category') ?? undefined,
+			workflow: params.get('workflow') ?? undefined,
+			hideDone: ['1', 'true'].includes(params.get('hide_done') ?? '')
+		},
+		page
+	);
+	const last = items[items.length - 1];
+	const body: ListResponse<Issue> = {
+		items,
+		next_cursor: hasMore && last ? encodeCursor(last.created_at, last.id) : null
+	};
+	return json(body);
+});
