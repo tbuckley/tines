@@ -21,9 +21,20 @@
 			"migrations_dir": "migrations"
 		}
 	],
+	"send_email": [
+		{
+			// Cloudflare Email Service binding for magic-link sign-in emails.
+			// Under `wrangler dev` sends are simulated (logged locally, nothing
+			// delivered); add `"remote": true` here to send real emails from dev.
+			"name": "EMAIL"
+		}
+	],
 	"vars": {
 		// Public, non-secret vars. Secrets (BETTER_AUTH_SECRET, GOOGLE_CLIENT_ID,
 		// GOOGLE_CLIENT_SECRET) go in `.dev.vars` locally and `wrangler secret put` in prod.
-		"BETTER_AUTH_URL": "http://localhost:5173"
+		"BETTER_AUTH_URL": "http://localhost:5173",
+		// Sender for magic-link emails. Must be an address on a domain onboarded to
+		// Email Service (Cloudflare dash → Compute → Email Service → Email Sending).
+		"EMAIL_FROM": "tines-noreply@tbuckley.com"
 	}
 }
