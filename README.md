@@ -76,8 +76,8 @@ pnpm dlx shadcn-svelte@latest add card
 
 ## Deploying to Cloudflare
 
-Production is served at <https://tines.tbuckley.com> via a Workers custom
-domain (`routes` in `apps/web/wrangler.jsonc`); the tbuckley.com zone must be
+Production is served at <https://tines.tbuckley.dev> via a Workers custom
+domain (`routes` in `apps/web/wrangler.jsonc`); the tbuckley.dev zone must be
 on the same Cloudflare account, and the first deploy creates the DNS record
 and certificate automatically. `workers_dev` is off, so the workers.dev
 subdomain serves no production traffic — it's only used for per-version
@@ -111,7 +111,7 @@ variables → Actions):
 - `CLOUDFLARE_API_TOKEN` — create at <https://dash.cloudflare.com/profile/api-tokens>
   with permissions **Account → Workers Scripts → Edit**, **Account → D1 → Edit**,
   and (for the custom domain) **Zone → Workers Routes → Edit** and
-  **Zone → DNS → Edit** scoped to tbuckley.com. Starting from the
+  **Zone → DNS → Edit** scoped to tbuckley.dev. Starting from the
   "Edit Cloudflare Workers" token template and adding D1 covers all of these.
 
 Migrations run before the new worker version goes live, so keep them

@@ -13,14 +13,14 @@
 	},
 	"routes": [
 		{
-			// Production custom domain. Requires the tbuckley.com zone on this
+			// Production custom domain. Requires the tbuckley.dev zone on this
 			// Cloudflare account; `wrangler deploy` creates the DNS record and cert.
-			"pattern": "tines.tbuckley.com",
+			"pattern": "tines.tbuckley.dev",
 			"custom_domain": true
 		}
 	],
 	// No production traffic on tines-web.<subdomain>.workers.dev —
-	// production is served only at tines.tbuckley.com...
+	// production is served only at tines.tbuckley.dev...
 	"workers_dev": false,
 	// ...but keep per-version preview URLs on workers.dev
 	// (used by the PR preview workflow, .github/workflows/preview.yml).
@@ -47,10 +47,10 @@
 		// Public, non-secret vars. Secrets (BETTER_AUTH_SECRET, GOOGLE_CLIENT_ID,
 		// GOOGLE_CLIENT_SECRET) go in `.dev.vars` locally and `wrangler secret put` in prod.
 		// Local dev overrides this via .dev.vars (BETTER_AUTH_URL=http://localhost:5173).
-		"BETTER_AUTH_URL": "https://tines.tbuckley.com",
+		"BETTER_AUTH_URL": "https://tines.tbuckley.dev",
 		// Sender for magic-link emails. Must be an address on a domain onboarded to
 		// Email Service (Cloudflare dash → Compute → Email Service → Email Sending).
-		"EMAIL_FROM": "tines-noreply@tbuckley.com"
+		"EMAIL_FROM": "tines-noreply@tbuckley.dev"
 	},
 	"env": {
 		// PR previews (.github/workflows/preview.yml): a separate worker
@@ -76,7 +76,7 @@
 				// version, so auth derives its base URL from the request origin
 				// (see src/lib/server/auth.ts). Magic-link sign-in works on
 				// previews; Google OAuth does not (no wildcard redirect URIs).
-				"EMAIL_FROM": "tines-noreply@tbuckley.com"
+				"EMAIL_FROM": "tines-noreply@tbuckley.dev"
 			}
 		}
 	}
