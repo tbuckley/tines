@@ -272,9 +272,65 @@
 	width: auto;
 }
 
+/*
+ * Directional tab slides on phones (below Tailwind's `sm`, where the bottom
+ * tab bar is shown). The layout stamps data-tab-slide on <html> when a
+ * navigation crosses top-level tabs; the `page` group is <main>, so the
+ * chrome stays put while the content glides toward the chosen tab. Desktop
+ * never matches this query and keeps the plain crossfade.
+ */
+@media (width < 40rem) {
+	html[data-tab-slide]::view-transition-old(page),
+	html[data-tab-slide]::view-transition-new(page) {
+		animation-duration: 240ms;
+		animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+		animation-fill-mode: both;
+	}
+	html[data-tab-slide='forward']::view-transition-old(page) {
+		animation-name: vt-page-out-left;
+	}
+	html[data-tab-slide='forward']::view-transition-new(page) {
+		animation-name: vt-page-in-right;
+	}
+	html[data-tab-slide='back']::view-transition-old(page) {
+		animation-name: vt-page-out-right;
+	}
+	html[data-tab-slide='back']::view-transition-new(page) {
+		animation-name: vt-page-in-left;
+	}
+}
+
+/* Shared-axis slide: a short glide plus fade, not a full-screen push. */
+@keyframes vt-page-out-left {
+	to {
+		transform: translateX(-2.5rem);
+		opacity: 0;
+	}
+}
+@keyframes vt-page-in-right {
+	from {
+		transform: translateX(2.5rem);
+		opacity: 0;
+	}
+}
+@keyframes vt-page-out-right {
+	to {
+		transform: translateX(2.5rem);
+		opacity: 0;
+	}
+}
+@keyframes vt-page-in-left {
+	from {
+		transform: translateX(-2.5rem);
+		opacity: 0;
+	}
+}
+
 @media (prefers-reduced-motion: reduce) {
 	::view-transition-old(root),
-	::view-transition-new(root) {
+	::view-transition-new(root),
+	::view-transition-old(page),
+	::view-transition-new(page) {
 		animation: none !important;
 	}
 }

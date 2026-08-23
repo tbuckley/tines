@@ -33,13 +33,31 @@
 	// Shared-element page transitions (View Transitions API where available).
 	onNavigate((navigation) => {
 		if (!document.startViewTransition || prefersReducedMotion()) return;
+
+		// When moving between top-level tabs, record the direction so the
+		// phone-width CSS in app.css can slide the page toward it. Desktop
+		// ignores the attribute and keeps the crossfade.
+		const from = tabIndex(navigation.from?.url.pathname);
+		const to = tabIndex(navigation.to?.url.pathname);
+		if (from !== -1 && to !== -1 && from !== to) {
+			document.documentElement.dataset.tabSlide = to > from ? 'forward' : 'back';
+		}
+
 		return new Promise((resolve) => {
-			document.startViewTransition(async () => {
+			const transition = document.startViewTransition(async () => {
 				resolve();
 				await navigation.complete;
 			});
+			transition.finished.finally(() => {
+				delete document.documentElement.dataset.tabSlide;
+			});
 		});
 	});
+
+	function tabIndex(pathname: string | undefined) {
+		if (!pathname) return -1;
+		return tabs.findIndex((tab) => pathname.startsWith(tab.href));
+	}
 
 	const initials = $derived(
 		data.user.name
@@ -133,7 +151,11 @@
 		</div>
 	</header>
 
-	<main class="mx-auto w-full max-w-6xl flex-1 px-4 py-8 pb-24 sm:pb-8">
+	<!-- Named group so tab slides move the page content but not the chrome. -->
+	<main
+		class="mx-auto w-full max-w-6xl flex-1 px-4 py-8 pb-24 sm:pb-8"
+		style:view-transition-name="page"
+	>
 		{@render children()}
 	</main>
 
