@@ -76,6 +76,13 @@ pnpm dlx shadcn-svelte@latest add card
 
 ## Deploying to Cloudflare
 
+Production is served at <https://tines.tbuckley.com> via a Workers custom
+domain (`routes` in `apps/web/wrangler.jsonc`); the tbuckley.com zone must be
+on the same Cloudflare account, and the first deploy creates the DNS record
+and certificate automatically. `workers_dev` is off, so the workers.dev
+subdomain serves no production traffic — it's only used for per-version
+preview URLs (below).
+
 One-time setup (needs `wrangler login` or a `CLOUDFLARE_API_TOKEN` in the environment):
 
 ```sh
@@ -85,8 +92,8 @@ pnpm db:migrate:remote
 pnpm wrangler secret put BETTER_AUTH_SECRET
 pnpm wrangler secret put GOOGLE_CLIENT_ID
 pnpm wrangler secret put GOOGLE_CLIENT_SECRET
-# update BETTER_AUTH_URL and EMAIL_FROM in wrangler.jsonc "vars" for production
-# (see "Magic-link sign-in" above for onboarding your sending domain)
+# confirm EMAIL_FROM in wrangler.jsonc "vars" is on a domain onboarded to
+# Email Service (see "Magic-link sign-in" above)
 pnpm deploy
 ```
 
@@ -102,13 +109,35 @@ variables → Actions):
 - `CLOUDFLARE_ACCOUNT_ID` — from the Cloudflare dashboard (Workers & Pages →
   right sidebar), or `pnpm wrangler whoami`.
 - `CLOUDFLARE_API_TOKEN` — create at <https://dash.cloudflare.com/profile/api-tokens>
-  with permissions **Account → Workers Scripts → Edit** and **Account → D1 → Edit**.
+  with permissions **Account → Workers Scripts → Edit**, **Account → D1 → Edit**,
+  and (for the custom domain) **Zone → Workers Routes → Edit** and
+  **Zone → DNS → Edit** scoped to tbuckley.com. Starting from the
+  "Edit Cloudflare Workers" token template and adding D1 covers all of these.
 
 Migrations run before the new worker version goes live, so keep them
 backwards-compatible with the previously deployed code (add columns/tables
 freely; do renames and drops in two releases, expand/contract style).
 D1 tracks applied migrations in a `d1_migrations` table, so already-applied
 files are skipped and a no-op run is safe.
+
+### PR preview URLs
+
+`.github/workflows/preview.yml` runs on every pull request (from branches in
+this repo): it builds, runs unit tests, then uploads the worker with
+`wrangler versions upload` — production traffic is untouched, and the new
+version gets a preview URL like
+`https://<version-prefix>-tines-web.<subdomain>.workers.dev`, which the
+workflow posts (and keeps updated) as a PR comment. It uses the same two
+Actions secrets as the deploy workflow.
+
+Preview caveats:
+
+- Previews share the **production** D1 database and secrets, and migrations
+  added in the PR are not applied until it merges — schema-changing PRs may
+  not fully work in preview.
+- `BETTER_AUTH_URL` points at production, so sign-in flows redirect to
+  tines.tbuckley.com and session cookies don't apply to the preview host;
+  previews are best for reviewing signed-out UI and API behavior.
 
 ## Scripts
 
