@@ -20,6 +20,7 @@ Explicitly out of scope, even where the data model anticipates them:
 - **Collaboration**: no teams, no sharing, no workflow publishing. Everything belongs to a single user.
 - **Project hierarchy**: projects are a single flat layer per user. (Trees come later — the schema must not preclude adding `parent_id`.)
 - **Issue metadata**: no assignee, labels, priority, or due dates.
+- **Issue deletion/archival**: moving an issue to a `done` state is the only way to finish it; deleting issues (and the audit questions it raises) is deferred.
 - **Drag-and-drop workflow editing**: workflows always render as a visual graph, but the graph is not an editing surface — creating and editing happens through a form. Manual node positioning and edge-drawing come later, if ever.
 
 ## Concepts
@@ -38,19 +39,30 @@ A finite state machine owned by a user and stored in their **workflow library**,
 
 A workflow is:
 
-- A set of **states**, each with a stable id and a name (unique within the workflow).
+- A set of **states**, each with a stable id, a name (unique within the workflow), and a **category**.
 - Exactly one **initial state**, where newly created issues land.
 - A set of **transitions**: directed `(from state → to state)` pairs. Only listed transitions are allowed; there are no implicit transitions.
 
-Validation on create/update: at least one state; exactly one initial state; state names unique; transitions reference states in the same workflow; no duplicate transitions; self-transitions rejected.
+**State categories.** State names are free-form, so categories are how Tines understands what a state *means* across arbitrary workflows:
+
+| Category | Meaning |
+| --- | --- |
+| `backlog` | Not yet ready to be worked. |
+| `active` | Ready to be taken on, or being worked. |
+| `awaiting_human` | Blocked on human feedback. |
+| `done` | Finished — no further work expected. |
+
+Categories drive default filtering (the Issues tab hides `done` by default), color-coding in lists and the graph view, and — in phase two — the supervisor's behavior (agents pick up `active` work and never touch `awaiting_human`). The initial state must be `backlog` or `active`.
+
+Validation on create/update: at least one state; exactly one initial state, categorized `backlog` or `active`; state names unique; every state categorized; transitions reference states in the same workflow; no duplicate transitions; self-transitions rejected.
 
 **The standard workflow.** Tines ships one built-in, read-only system workflow available to every user:
 
-| State | Meaning |
-| --- | --- |
-| **Open** (initial) | Ready to be taken on, or currently being worked. |
-| **Human Review** | Work is done and awaiting a human's judgment. |
-| **Closed** | Finished or abandoned. |
+| State | Category | Meaning |
+| --- | --- | --- |
+| **Open** (initial) | `active` | Ready to be taken on, or currently being worked. |
+| **Human Review** | `awaiting_human` | Work is done and awaiting a human's judgment. |
+| **Closed** | `done` | Finished or abandoned. |
 
 Transitions: `Open → Human Review`, `Human Review → Open` (sent back for more work), `Human Review → Closed`, `Open → Closed` (abandon). The standard workflow cannot be edited or deleted; users copy it into their library if they want a variant.
 
@@ -109,7 +121,8 @@ New tables alongside the existing Better Auth tables. All ids are opaque strings
 project             id, user_id, name, description, default_workflow_id?, created_at, updated_at
 workflow            id, user_id?,  name, description, initial_state_id, created_at, updated_at
                     -- user_id NULL = system workflow (the standard workflow, seeded by migration)
-workflow_state      id, workflow_id, name, position, created_at
+workflow_state      id, workflow_id, name, category, position, created_at
+                    -- category: 'backlog' | 'active' | 'awaiting_human' | 'done'
 workflow_transition id, workflow_id, from_state_id, to_state_id   (unique on the triple)
 issue               id, project_id, number, title, description, workflow_id, state_id,
                     created_at, updated_at                        (unique on project_id+number)
@@ -136,14 +149,19 @@ JSON over HTTP under `/api/v1/*`, served by the SvelteKit app; shared request/re
 | `GET/PATCH/DELETE /api/v1/projects/:id` | Read / update (name, description, default workflow) / delete (only when issue-less) |
 | `GET/POST /api/v1/workflows` | List library (incl. standard) / create |
 | `GET/PATCH/DELETE /api/v1/workflows/:id` | Read (with states + transitions) / update per editing rules / delete when unreferenced |
-| `GET/POST /api/v1/projects/:id/issues` | List (filter by state) / create |
+| `GET /api/v1/issues` | Global list across projects; filters: `project`, `state`, `category`, `workflow` |
+| `GET/POST /api/v1/projects/:id/issues` | List (filter by state/category) / create |
 | `GET/PATCH /api/v1/issues/:id` | Read (incl. workflow, state, comments) / update title & description |
 | `POST /api/v1/issues/:id/transition` | `{ to_state_id }`; 422 with the allowed transitions when invalid |
 | `GET/POST /api/v1/issues/:id/comments` | List / add comment |
 | `GET /api/v1/events` | Global feed, newest first; filters: `issue`, `project`, `type`; cursor pagination |
 | `GET/POST /api/v1/api-keys`, `DELETE /api/v1/api-keys/:id` | Manage keys (create/revoke require a browser session, not a key) |
 
+All list endpoints use the same cursor-pagination convention (`?cursor=…&limit=…`, response carries `next_cursor`), newest first for issues and events.
+
 Validation failures (workflow editing rules, illegal transitions) return structured errors naming what was violated and, where applicable, what *is* allowed — agents should be able to recover from a 422 without human help.
+
+Markdown (descriptions, comments) is stored raw and sanitized at render time in the web UI — agents post arbitrary Markdown, so rendering must be XSS-safe.
 
 ## CLI
 
@@ -152,7 +170,8 @@ Validation failures (workflow editing rules, illegal transitions) return structu
 ```
 tines projects list | create <name>
 tines workflows list | show <id-or-name>
-tines issues list <project> [--state <name>]
+tines issues list [--project <name>] [--state <name>] [--category <cat>] [--all]
+                                          # hides done issues unless --all
 tines issues create <project> --title <t> [--description <md>] [--workflow <id-or-name>]
 tines issues show <project>/<number>
 tines issues move <project>/<number> <state-name>
@@ -164,15 +183,35 @@ All commands support `--json` for agent consumption. `issues show --json` includ
 
 ## Web UI
 
-SvelteKit + shadcn-svelte, behind sign-in:
+SvelteKit + shadcn-svelte, behind sign-in.
 
-- **Projects**: list + create; project page lists its issues grouped/filterable by state, with a new-issue form.
+### Structure
+
+A persistent top nav with four tabs — **Issues, Workflows, Projects, Activity** — each a list view with a corresponding detail page. Settings (API keys, account) live under the avatar menu, not in the tabs.
+
+- **Issues** (`/issues`): the default landing tab — a global list across all projects, hiding `done` issues by default. Filter by project, state, and category; rows show number, title, project, state (color-coded by category), and last activity. → detail at `/issues/:project/:number`.
+- **Workflows** (`/workflows`): the library, standard workflow marked read-only. → detail at `/workflows/:id`.
+- **Projects** (`/projects`): list + create. → detail at `/projects/:id`: the project's issues (same list component as the Issues tab, pre-filtered), a new-issue form, and project settings (name, description, default workflow).
+- **Activity** (`/activity`): the global event feed, newest first, filterable by project and type — the "log of work" made visible. Each event links to its issue/project.
+- **Settings → API keys** (avatar menu): create (secret shown once), list with last-used, revoke.
+
+### Key pages
+
 - **Issue detail**: title, rendered Markdown description (editable), state with allowed-transition buttons plus a compact graph of the issue's workflow with the current state highlighted, comment thread, and this issue's slice of the activity log — with actors shown throughout.
-- **Workflows**: library list (standard workflow marked read-only), each workflow page pairing two views of the same FSM:
-  - A **graph view** — the primary way a workflow is *read*. States are nodes (initial state and dead-end states visually distinguished), transitions are directed edges, laid out automatically client-side (no stored positions, no manual arranging). Shown wherever a workflow appears: the workflow detail page, the editor, and as a compact preview when picking a workflow at issue creation.
-  - A **form-based editor** — the way a workflow is *written*: add/rename/remove states, pick the initial state, per-state pickers for allowed target states. The graph re-renders live as the form changes, so the user sees the machine they're building. Editing-rule violations surface inline.
-- **Activity**: global feed of the user's events, filterable by project/type.
-- **Settings → API keys**: create (secret shown once), list with last-used, revoke.
+- **Workflow detail/editor**: two views of the same FSM, side by side:
+  - A **graph view** — the primary way a workflow is *read*. States are nodes (color-coded by category; initial and dead-end states visually distinguished), transitions are directed edges, laid out automatically client-side (no stored positions, no manual arranging). Shown wherever a workflow appears: the detail page, the editor, and as a compact preview when picking a workflow at issue creation.
+  - A **form-based editor** — the way a workflow is *written*: add/rename/remove states, set each state's category, pick the initial state, per-state pickers for allowed target states. The graph re-renders live as the form changes, so the user sees the machine they're building. Editing-rule violations surface inline.
+
+### Look and feel
+
+Modern and calm, with **meaningful animation** — motion always communicates a change, never decorates:
+
+- Transitioning an issue animates the state change where it happens: the highlight moves along the transition edge in the workflow graph, and the row/badge morphs to the new state in lists.
+- List ↔ detail navigation uses shared-element/view transitions (Svelte 5 transitions / the View Transitions API) so the item you clicked visibly becomes the page you land on.
+- New activity events and comments enter with a subtle slide/fade; reordered or refiltered lists animate with FLIP rather than snapping.
+- Micro-interactions (buttons, dialogs, popovers) use the shadcn-svelte defaults; durations stay short (~150–250ms) and consistent.
+- All motion respects `prefers-reduced-motion`, falling back to instant changes.
+- Loading is skeleton-first, not spinner-first; optimistic UI for comments and transitions with rollback on API rejection.
 
 ## Acceptance criteria
 
@@ -182,8 +221,9 @@ Phase one is done when this loop works end-to-end:
 2. Create a workflow in the library via the form editor; set it as the project's default.
 3. `TINES_API_KEY=… tines issues create …` — the issue starts in the workflow's initial state.
 4. An agent (any process holding the key) lists issues, comments, and `tines issues move`s an issue through a legal transition; an illegal move is rejected with the allowed transitions.
-5. The web UI shows the comment and transition attributed to *my-agent*; the global activity feed and the issue's filtered log both show the trail.
-6. Deleting an in-use workflow state via UI or API is rejected with a clear error.
+5. The web UI shows the comment and transition attributed to *my-agent*; the global activity feed and the issue's filtered log both show the trail; the state change animates in the issue's workflow graph.
+6. Once the issue reaches a `done` state, it disappears from the default Issues tab view (and reappears with the done filter on).
+7. Deleting an in-use workflow state via UI or API is rejected with a clear error.
 
 ## Open questions
 
