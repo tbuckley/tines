@@ -8,8 +8,10 @@
 	"main": "worker/index.ts",
 	// Cron Trigger driving the scheduled-task sweep. Locally, `wrangler dev
 	// --test-scheduled` exposes GET /__scheduled to fire it on demand.
+	// Occurrences fire at the first sweep at or after their nominal time, so
+	// creation timestamps can lag a schedule by up to this interval.
 	"triggers": {
-		"crons": ["*/5 * * * *"]
+		"crons": ["*/30 * * * *"]
 	},
 	"assets": {
 		"binding": "ASSETS",

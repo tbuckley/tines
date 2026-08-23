@@ -123,7 +123,7 @@ Notes:
 
 A **Cloudflare Cron Trigger** sweeps for due schedules:
 
-- `wrangler.jsonc` gains `triggers: { crons: ["*/5 * * * *"] }`. The worker entry becomes a small custom module that re-exports the SvelteKit-generated worker's `fetch` and adds a `scheduled()` handler (the adapter's `_worker.js` alone has no scheduled hook). The handler calls sweep logic living in `lib/server/` with the same D1 binding.
+- `wrangler.jsonc` gains `triggers: { crons: ["*/30 * * * *"] }`. The worker entry becomes a small custom module that re-exports the SvelteKit-generated worker's `fetch` and adds a `scheduled()` handler (the adapter's `_worker.js` alone has no scheduled hook). The handler calls sweep logic living in `lib/server/` with the same D1 binding.
 - **Sweep**: select schedules where `enabled = 1 AND next_run_at <= now`, then per schedule, in one transaction: re-check due-ness, run the gate check, create the issue (or emit `scheduled_task.skipped`), update `last_run_at`/`run_count`, and advance `next_run_at` to the next future occurrence. Advancing `next_run_at` transactionally is what makes overlapping sweeps harmless — a second sweep no longer sees the schedule as due. One schedule failing must not abort the rest of the sweep.
 - **Effective resolution**: an occurrence fires at the first sweep at or after its nominal time, so creation timestamps lag the schedule by up to the sweep interval. With the sub-hourly guardrail this is negligible.
 - **Local dev / e2e**: `wrangler dev --test-scheduled` exposes `GET /__scheduled?cron=…` to fire the handler on demand; the e2e suite uses this to test the sweep deterministically (no clock-dependent waits — seed schedules with `next_run_at` in the past and trigger a sweep).
@@ -205,7 +205,7 @@ A "Scheduled tasks" section on the project detail page (hidden when the project 
 - **Recurrence form**: presets + raw cron, each schedule carrying an IANA timezone defaulting to the creator's — "daily at 9am" means local 9am. Presets compile to cron; only cron is evaluated.
 - **Gate semantics**: with `require_all_closed`, a blocked occurrence is **skipped**, not deferred or queued — recorded via `scheduled_task.skipped`, and any linked issue in a non-`done` state blocks (not just the latest).
 - **Placeholders**: fixed mustache-style set (`{{date}}`, `{{time}}`, `{{datetime}}`, `{{schedule_name}}`, `{{count}}`), fixed formats, rendered in the schedule's timezone; unknown tokens pass through untouched.
-- **Execution**: Cloudflare Cron Trigger every 5 minutes with a custom worker entry wrapping the SvelteKit handler; no lazy on-request fallback (dev and e2e use `--test-scheduled`). Concurrency handled by transactionally advancing `next_run_at`.
+- **Execution**: Cloudflare Cron Trigger every 30 minutes with a custom worker entry wrapping the SvelteKit handler; no lazy on-request fallback (dev and e2e use `--test-scheduled`). Concurrency handled by transactionally advancing `next_run_at`.
 - **Linkage**: nullable `scheduled_task_id` FK on `issue`, `SET NULL` on schedule deletion; event payloads preserve the schedule's identity for history.
 - **Lifecycle**: pause/resume via an `enabled` flag plus a run-now action (gate-respecting, `next_run_at` untouched), alongside deletion.
 - **Creation flow**: setting a recurrence during issue creation creates the first issue immediately *and* the schedule — the form's fields double as the templates.
