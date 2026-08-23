@@ -201,7 +201,7 @@
 					     whose width includes the edit affordance) so the morph from
 					     the list row scales cleanly. -->
 					<span
-						class="min-w-0"
+						class="vt-shared min-w-0"
 						style:view-transition-name="issue-title-{data.issue.id}"
 						style:view-transition-class="vt-fit"
 					>
@@ -221,6 +221,7 @@
 			{/if}
 		</div>
 		<span
+			class="vt-shared"
 			style:view-transition-name="issue-state-{data.issue.id}"
 			style:view-transition-class="vt-fit"
 		>

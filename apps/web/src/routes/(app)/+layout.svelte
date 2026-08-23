@@ -7,7 +7,7 @@
 	import IconLogout from '@tabler/icons-svelte/icons/logout';
 	import IconSitemap from '@tabler/icons-svelte/icons/sitemap';
 	import { goto, invalidateAll, onNavigate } from '$app/navigation';
-	import { page } from '$app/state';
+	import { navigating, page } from '$app/state';
 	import { authClient } from '$lib/auth-client';
 	import { prefersReducedMotion } from '$lib/format';
 	import { fade } from 'svelte/transition';
@@ -33,13 +33,36 @@
 	// Shared-element page transitions (View Transitions API where available).
 	onNavigate((navigation) => {
 		if (!document.startViewTransition || prefersReducedMotion()) return;
+
+		// When moving between top-level tabs, record the direction so the
+		// phone-width CSS in app.css can slide the page toward it. Desktop
+		// ignores the attribute and keeps the crossfade.
+		const from = tabIndex(navigation.from?.url.pathname);
+		const to = tabIndex(navigation.to?.url.pathname);
+		if (from !== -1 && to !== -1 && from !== to) {
+			document.documentElement.dataset.tabSlide = to > from ? 'forward' : 'back';
+		}
+
 		return new Promise((resolve) => {
-			document.startViewTransition(async () => {
+			const transition = document.startViewTransition(async () => {
 				resolve();
 				await navigation.complete;
 			});
+			transition.finished.finally(() => {
+				delete document.documentElement.dataset.tabSlide;
+			});
 		});
 	});
+
+	function tabIndex(pathname: string | undefined) {
+		if (!pathname) return -1;
+		return tabs.findIndex((tab) => pathname.startsWith(tab.href));
+	}
+
+	// The bottom bar highlights the destination tab the moment navigation
+	// starts, so a tap is acknowledged even while the next page's data is
+	// still loading; the pending tab pulses until the switch lands.
+	const mobileTabPath = $derived(navigating.to?.url.pathname ?? page.url.pathname);
 
 	const initials = $derived(
 		data.user.name
@@ -133,7 +156,11 @@
 		</div>
 	</header>
 
-	<main class="mx-auto w-full max-w-6xl flex-1 px-4 py-8 pb-24 sm:pb-8">
+	<!-- Named group so tab slides move the page content but not the chrome. -->
+	<main
+		class="mx-auto w-full max-w-6xl flex-1 px-4 py-8 pb-24 sm:pb-8"
+		style:view-transition-name="page"
+	>
 		{@render children()}
 	</main>
 
@@ -145,15 +172,18 @@
 	>
 		<div class="grid h-16 grid-cols-4">
 			{#each tabs as tab (tab.href)}
-				{@const active = page.url.pathname.startsWith(tab.href)}
+				{@const active = mobileTabPath.startsWith(tab.href)}
+				{@const pending = active && !page.url.pathname.startsWith(tab.href)}
 				<a
 					href={tab.href}
-					class="flex flex-col items-center justify-center gap-1 text-[0.6875rem] font-medium transition-colors {active
+					class="flex flex-col items-center justify-center gap-1 text-[0.6875rem] font-medium transition active:scale-90 {active
 						? 'text-foreground'
 						: 'text-muted-foreground'}"
 					aria-current={active ? 'page' : undefined}
 				>
-					<tab.icon size={20} stroke={active ? 2 : 1.5} />
+					<span class={pending ? 'motion-safe:animate-pulse' : ''}>
+						<tab.icon size={20} stroke={active ? 2 : 1.5} />
+					</span>
 					{tab.label}
 				</a>
 			{/each}

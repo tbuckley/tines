@@ -272,9 +272,74 @@
 	width: auto;
 }
 
+/*
+ * Directional tab slides on phones (below Tailwind's `sm`, where the bottom
+ * tab bar is shown). The layout stamps data-tab-slide on <html> when a
+ * navigation crosses top-level tabs; the `page` group is <main>, so the
+ * chrome stays put while the content glides toward the chosen tab. Desktop
+ * never matches this query and keeps the plain crossfade.
+ */
+@media (width < 40rem) {
+	html[data-tab-slide]::view-transition-old(page),
+	html[data-tab-slide]::view-transition-new(page) {
+		animation-duration: 300ms;
+		animation-timing-function: cubic-bezier(0.32, 0.72, 0, 1);
+		animation-fill-mode: both;
+	}
+	html[data-tab-slide='forward']::view-transition-old(page) {
+		animation-name: vt-page-out-left;
+	}
+	html[data-tab-slide='forward']::view-transition-new(page) {
+		animation-name: vt-page-in-right;
+	}
+	html[data-tab-slide='back']::view-transition-old(page) {
+		animation-name: vt-page-out-right;
+	}
+	html[data-tab-slide='back']::view-transition-new(page) {
+		animation-name: vt-page-in-left;
+	}
+}
+
+/* Full-width push: the old screen exits one side as the new one enters
+   from the other, carousel-style, so the sideways travel is unmistakable. */
+@keyframes vt-page-out-left {
+	to {
+		transform: translateX(-100%);
+	}
+}
+@keyframes vt-page-in-right {
+	from {
+		transform: translateX(100%);
+	}
+}
+@keyframes vt-page-out-right {
+	to {
+		transform: translateX(100%);
+	}
+}
+@keyframes vt-page-in-left {
+	from {
+		transform: translateX(-100%);
+	}
+}
+
+/*
+ * Shared-element names (issue titles and state badges morphing between the
+ * list and detail pages) only pair up within the Issues tab. During a
+ * cross-tab slide they'd become lone groups that fade in place while the
+ * page moves; drop their names so they're captured inside the `page`
+ * snapshot and travel with it. !important is needed to beat the inline
+ * per-issue names.
+ */
+html[data-tab-slide] .vt-shared {
+	view-transition-name: none !important;
+}
+
 @media (prefers-reduced-motion: reduce) {
 	::view-transition-old(root),
-	::view-transition-new(root) {
+	::view-transition-new(root),
+	::view-transition-old(page),
+	::view-transition-new(page) {
 		animation: none !important;
 	}
 }
