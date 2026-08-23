@@ -76,6 +76,15 @@ pnpm dlx shadcn-svelte@latest add card
 
 ## Deploying to Cloudflare
 
+Production is served at <https://tines.tbuckley.com> via a Workers custom
+domain (`routes` in `apps/web/wrangler.jsonc`); the tbuckley.com zone must be
+on the same Cloudflare account, and the first deploy creates the DNS record
+and certificate automatically. `workers_dev` is off, so the workers.dev
+subdomain serves no production traffic — it's only used for per-version
+preview URLs (below).
+
+One-time setup (needs `wrangler login` or a `CLOUDFLARE_API_TOKEN` in the environment):
+
 ```sh
 cd apps/web
 pnpm wrangler d1 create tines             # then paste the database_id into wrangler.jsonc
@@ -83,10 +92,72 @@ pnpm db:migrate:remote
 pnpm wrangler secret put BETTER_AUTH_SECRET
 pnpm wrangler secret put GOOGLE_CLIENT_ID
 pnpm wrangler secret put GOOGLE_CLIENT_SECRET
-# update BETTER_AUTH_URL and EMAIL_FROM in wrangler.jsonc "vars" for production
-# (see "Magic-link sign-in" above for onboarding your sending domain)
+# confirm EMAIL_FROM in wrangler.jsonc "vars" is on a domain onboarded to
+# Email Service (see "Magic-link sign-in" above)
 pnpm deploy
 ```
+
+### Automatic deploys
+
+`.github/workflows/deploy.yml` deploys on every push to `main` (and via manual
+dispatch): it builds, runs unit tests, applies pending D1 migrations with
+`wrangler d1 migrations apply tines --remote`, then runs `wrangler deploy`.
+
+To enable it, add two GitHub Actions secrets (repo → Settings → Secrets and
+variables → Actions):
+
+- `CLOUDFLARE_ACCOUNT_ID` — from the Cloudflare dashboard (Workers & Pages →
+  right sidebar), or `pnpm wrangler whoami`.
+- `CLOUDFLARE_API_TOKEN` — create at <https://dash.cloudflare.com/profile/api-tokens>
+  with permissions **Account → Workers Scripts → Edit**, **Account → D1 → Edit**,
+  and (for the custom domain) **Zone → Workers Routes → Edit** and
+  **Zone → DNS → Edit** scoped to tbuckley.com. Starting from the
+  "Edit Cloudflare Workers" token template and adding D1 covers all of these.
+
+Migrations run before the new worker version goes live, so keep them
+backwards-compatible with the previously deployed code (add columns/tables
+freely; do renames and drops in two releases, expand/contract style).
+D1 tracks applied migrations in a `d1_migrations` table, so already-applied
+files are skipped and a no-op run is safe.
+
+### PR preview URLs
+
+`.github/workflows/preview.yml` runs on every pull request (from branches in
+this repo): it builds, runs unit tests, applies the PR's migrations to the
+preview database, then uploads the worker with `wrangler versions upload
+--env preview`. Nothing is promoted to live traffic; the version gets a
+preview URL like
+`https://<version-prefix>-tines-web-preview.<subdomain>.workers.dev`, which
+the workflow posts (and keeps updated) as a PR comment. It uses the same two
+Actions secrets as the deploy workflow.
+
+Previews use the `preview` wrangler environment (`env.preview` in
+`apps/web/wrangler.jsonc`): a separate worker (`tines-web-preview`) bound to
+its own D1 database (`tines-preview`), fully isolated from production data.
+Magic-link sign-in works on previews — `BETTER_AUTH_URL` is unset there, so
+auth derives its base URL from the request origin (preview URLs differ per
+version). Google OAuth does not work on previews (Google doesn't allow
+wildcard redirect URIs).
+
+One-time preview setup:
+
+```sh
+cd apps/web
+pnpm wrangler d1 create tines-preview     # paste the database_id into env.preview in wrangler.jsonc
+pnpm wrangler secret put BETTER_AUTH_SECRET --env preview
+pnpm run build && pnpm wrangler deploy --env preview   # creates the preview worker once
+```
+
+All PRs share the one preview database, and each PR applies its own pending
+migrations to it. If PRs with conflicting migrations leave it in a bad state,
+throw it away and start over — it holds nothing precious:
+
+```sh
+pnpm wrangler d1 delete tines-preview
+pnpm wrangler d1 create tines-preview     # paste the new database_id into env.preview
+```
+
+The next preview run re-applies all migrations from scratch.
 
 ## Scripts
 

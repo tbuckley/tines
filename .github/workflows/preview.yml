@@ -1,0 +1,92 @@
+name: Preview
+
+on:
+  pull_request:
+
+concurrency:
+  group: preview-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    # Fork PRs don't get repo secrets, so the upload would fail anyway.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4 # version comes from "packageManager" in package.json
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm build
+
+      - run: pnpm test
+
+      # Previews use the "preview" wrangler environment: a separate worker
+      # (tines-web-preview) bound to its own D1 database (tines-preview), so
+      # nothing here can touch production data. All previews share that one
+      # database; applying this PR's migrations to it lets schema-changing PRs
+      # be exercised end to end. If PRs with conflicting migrations leave it
+      # in a bad state, the database is disposable — see "PR preview URLs" in
+      # the README for the reset procedure.
+      - name: Apply D1 migrations to the preview database
+        working-directory: apps/web
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: pnpm exec wrangler d1 migrations apply tines-preview --remote --env preview
+
+      # Uploads a new version WITHOUT deploying it: nothing is promoted, and
+      # the version gets a preview URL on workers.dev (requires
+      # "preview_urls": true in the preview environment).
+      - name: Upload preview version
+        id: upload
+        working-directory: apps/web
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          pnpm exec wrangler versions upload --env preview \
+            --message "PR #${{ github.event.pull_request.number }} (${{ github.event.pull_request.head.sha }})" \
+            | tee upload.log
+          url=$(grep -oE 'https://[A-Za-z0-9.-]+\.workers\.dev' upload.log | head -n1)
+          if [ -z "$url" ]; then
+            echo "Could not find a preview URL in wrangler output" >&2
+            exit 1
+          fi
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+
+      - name: Comment preview URL on the PR
+        uses: actions/github-script@v7
+        env:
+          PREVIEW_URL: ${{ steps.upload.outputs.url }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        with:
+          script: |
+            const marker = '<!-- tines-preview-url -->';
+            const body = [
+              marker,
+              `**Preview:** ${process.env.PREVIEW_URL}`,
+              '',
+              `Deployed from ${process.env.HEAD_SHA}. Runs against the shared preview database; production is unaffected.`,
+            ].join('\n');
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner, repo, issue_number, per_page: 100,
+            });
+            const existing = comments.find((c) => c.body && c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            }

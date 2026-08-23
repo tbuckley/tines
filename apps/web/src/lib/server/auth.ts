@@ -28,13 +28,17 @@ async function sendMagicLinkEmail(env: Env, email: string, url: string) {
 
 let auth: ReturnType<typeof createAuth> | undefined;
 
-function createAuth(env: Env) {
+function createAuth(env: Env, requestOrigin: string) {
 	return betterAuth({
 		database: {
 			dialect: new D1Dialect({ database: env.DB }),
 			type: 'sqlite'
 		},
-		baseURL: env.BETTER_AUTH_URL,
+		// Production and local dev pin BETTER_AUTH_URL. The preview environment
+		// (wrangler.jsonc env.preview) leaves it unset because each uploaded
+		// version gets a different workers.dev preview URL, so the base URL is
+		// derived from the request origin there instead.
+		baseURL: env.BETTER_AUTH_URL || requestOrigin,
 		secret: env.BETTER_AUTH_SECRET,
 		socialProviders:
 			env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET
@@ -62,8 +66,11 @@ function createAuth(env: Env) {
 /**
  * Better Auth instance, memoized per isolate. Bindings on `env` are stable for
  * the lifetime of a Worker isolate (and of the dev server), so this is safe.
+ * Memoizing the request origin is safe too: an isolate only ever serves one
+ * hostname (the custom domain in production, a single per-version preview URL
+ * on workers.dev, localhost in dev).
  */
-export function getAuth(env: Env) {
-	auth ??= createAuth(env);
+export function getAuth(env: Env, requestOrigin: string) {
+	auth ??= createAuth(env, requestOrigin);
 	return auth;
 }
