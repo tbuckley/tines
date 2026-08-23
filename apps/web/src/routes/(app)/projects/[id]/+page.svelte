@@ -1,0 +1,240 @@
+<script lang="ts">
+	import { ApiError } from '@tines/shared';
+	import IconChevronLeft from '@tabler/icons-svelte/icons/chevron-left';
+	import IconPlus from '@tabler/icons-svelte/icons/plus';
+	import IconSettings from '@tabler/icons-svelte/icons/settings';
+	import { slide } from 'svelte/transition';
+	import { goto, invalidateAll } from '$app/navigation';
+	import { page } from '$app/state';
+	import { api } from '$lib/api';
+	import IssueList from '$lib/components/IssueList.svelte';
+	import Modal from '$lib/components/Modal.svelte';
+	import WorkflowGraph from '$lib/components/WorkflowGraph.svelte';
+	import { Button } from '$lib/components/ui/button/index.js';
+	import { Input } from '$lib/components/ui/input/index.js';
+	import { Select } from '$lib/components/ui/select/index.js';
+	import { Textarea } from '$lib/components/ui/textarea/index.js';
+	import { prefersReducedMotion } from '$lib/format';
+
+	let { data } = $props();
+
+	const dur = () => (prefersReducedMotion() ? 0 : 180);
+
+	let errorMessage = $state<string | null>(null);
+	function showError(e: unknown) {
+		errorMessage = e instanceof ApiError ? e.message : 'Something went wrong — try again.';
+		setTimeout(() => (errorMessage = null), 6000);
+	}
+
+	// --- new issue --------------------------------------------------------------
+
+	let newIssueOpen = $state(false);
+	let issueTitle = $state('');
+	let issueDescription = $state('');
+	let issueWorkflowId = $state('');
+	let creatingIssue = $state(false);
+
+	// Default workflow: project default, else the standard workflow.
+	const defaultWorkflowId = $derived(
+		data.project.default_workflow_id ?? data.workflows.find((w) => w.is_system)?.id ?? ''
+	);
+	$effect(() => {
+		if (!newIssueOpen) issueWorkflowId = defaultWorkflowId;
+	});
+	const pickedWorkflow = $derived(data.workflows.find((w) => w.id === issueWorkflowId));
+
+	async function createIssue(e: SubmitEvent) {
+		e.preventDefault();
+		if (creatingIssue) return;
+		creatingIssue = true;
+		try {
+			const issue = await api.createIssue(data.project.id, {
+				title: issueTitle,
+				description: issueDescription || undefined,
+				workflow_id: issueWorkflowId || undefined
+			});
+			newIssueOpen = false;
+			issueTitle = '';
+			issueDescription = '';
+			await invalidateAll();
+			await goto(`/issues/${encodeURIComponent(issue.project_name)}/${issue.number}`);
+		} catch (err) {
+			showError(err);
+		} finally {
+			creatingIssue = false;
+		}
+	}
+
+	// --- settings ----------------------------------------------------------------
+
+	let settingsOpen = $state(false);
+	// Seeded once, resynced by the $effect below when server data refreshes.
+	// svelte-ignore state_referenced_locally
+	let settingsName = $state(data.project.name);
+	// svelte-ignore state_referenced_locally
+	let settingsDescription = $state(data.project.description);
+	// svelte-ignore state_referenced_locally
+	let settingsDefaultWorkflow = $state(data.project.default_workflow_id ?? '');
+	let savingSettings = $state(false);
+	$effect(() => {
+		settingsName = data.project.name;
+		settingsDescription = data.project.description;
+		settingsDefaultWorkflow = data.project.default_workflow_id ?? '';
+	});
+
+	async function saveSettings(e: SubmitEvent) {
+		e.preventDefault();
+		savingSettings = true;
+		try {
+			await api.updateProject(data.project.id, {
+				name: settingsName,
+				description: settingsDescription,
+				default_workflow_id: settingsDefaultWorkflow || null
+			});
+			settingsOpen = false;
+			await invalidateAll();
+		} catch (err) {
+			showError(err);
+		} finally {
+			savingSettings = false;
+		}
+	}
+
+	async function deleteProject() {
+		if (!confirm(`Delete project "${data.project.name}"? This cannot be undone.`)) return;
+		try {
+			await api.deleteProject(data.project.id);
+			await goto('/projects');
+			await invalidateAll();
+		} catch (err) {
+			showError(err);
+		}
+	}
+
+	function setShowDone(on: boolean) {
+		const params = new URLSearchParams(page.url.searchParams);
+		if (on) params.set('done', '1');
+		else params.delete('done');
+		goto(`/projects/${data.project.id}?${params}`, { keepFocus: true, noScroll: true });
+	}
+</script>
+
+<svelte:head><title>{data.project.name} · Tines</title></svelte:head>
+
+<a
+	href="/projects"
+	class="text-muted-foreground hover:text-foreground mb-3 inline-flex items-center gap-1 text-sm"
+>
+	<IconChevronLeft size={16} /> Projects
+</a>
+
+<div class="mb-6 flex flex-wrap items-start justify-between gap-4">
+	<div class="min-w-0">
+		<h1 class="text-2xl font-semibold tracking-tight">{data.project.name}</h1>
+		{#if data.project.description}
+			<p class="text-muted-foreground mt-1 max-w-xl text-sm">{data.project.description}</p>
+		{/if}
+	</div>
+	<div class="flex gap-2">
+		<Button variant="outline" onclick={() => (settingsOpen = true)}>
+			<IconSettings size={16} /> Settings
+		</Button>
+		<Button onclick={() => (newIssueOpen = true)}>
+			<IconPlus size={16} /> New issue
+		</Button>
+	</div>
+</div>
+
+{#if errorMessage}
+	<div
+		class="border-destructive/40 bg-destructive/10 text-destructive mb-4 rounded-md border px-4 py-2.5 text-sm"
+		transition:slide={{ duration: dur() }}
+	>
+		{errorMessage}
+	</div>
+{/if}
+
+<div class="mb-3 flex items-center justify-between">
+	<h2 class="text-sm font-semibold">Issues</h2>
+	<label class="text-muted-foreground flex items-center gap-2 text-sm">
+		<input type="checkbox" checked={data.showDone} onchange={(e) => setShowDone(e.currentTarget.checked)} />
+		Show done
+	</label>
+</div>
+
+<IssueList issues={data.issues} showProject={false} emptyMessage="No issues in this project yet." />
+
+<!-- new issue -->
+<Modal bind:open={newIssueOpen} title="New issue in {data.project.name}">
+	<form onsubmit={createIssue} class="space-y-4">
+		<div class="space-y-1.5">
+			<label class="text-sm font-medium" for="issue-title">Title</label>
+			<Input id="issue-title" bind:value={issueTitle} placeholder="What needs doing?" required />
+		</div>
+		<div class="space-y-1.5">
+			<label class="text-sm font-medium" for="issue-description">Description (Markdown)</label>
+			<Textarea id="issue-description" bind:value={issueDescription} rows={4} />
+		</div>
+		<div class="space-y-1.5">
+			<label class="text-sm font-medium" for="issue-workflow">Workflow</label>
+			<Select id="issue-workflow" bind:value={issueWorkflowId}>
+				{#each data.workflows as workflow (workflow.id)}
+					<option value={workflow.id}>
+						{workflow.name}{workflow.is_system ? ' (standard)' : ''}{workflow.id === defaultWorkflowId ? ' — default' : ''}
+					</option>
+				{/each}
+			</Select>
+			{#if pickedWorkflow}
+				<div class="bg-muted/40 mt-2 rounded-md border p-2">
+					<WorkflowGraph workflow={pickedWorkflow} compact />
+				</div>
+			{/if}
+		</div>
+		<div class="flex justify-end gap-2">
+			<Button type="button" variant="ghost" onclick={() => (newIssueOpen = false)}>Cancel</Button>
+			<Button type="submit" disabled={creatingIssue || !issueTitle.trim()}>
+				{creatingIssue ? 'Creating…' : 'Create issue'}
+			</Button>
+		</div>
+	</form>
+</Modal>
+
+<!-- settings -->
+<Modal bind:open={settingsOpen} title="Project settings">
+	<form onsubmit={saveSettings} class="space-y-4">
+		<div class="space-y-1.5">
+			<label class="text-sm font-medium" for="settings-name">Name</label>
+			<Input id="settings-name" bind:value={settingsName} required />
+		</div>
+		<div class="space-y-1.5">
+			<label class="text-sm font-medium" for="settings-description">Description</label>
+			<Textarea id="settings-description" bind:value={settingsDescription} rows={3} />
+		</div>
+		<div class="space-y-1.5">
+			<label class="text-sm font-medium" for="settings-workflow">Default workflow</label>
+			<Select id="settings-workflow" bind:value={settingsDefaultWorkflow}>
+				<option value="">Standard (built-in)</option>
+				{#each data.workflows.filter((w) => !w.is_system) as workflow (workflow.id)}
+					<option value={workflow.id}>{workflow.name}</option>
+				{/each}
+			</Select>
+		</div>
+		<div class="flex items-center justify-between gap-2 pt-2">
+			<Button
+				type="button"
+				variant="destructive"
+				disabled={data.project.issue_count > 0}
+				title={data.project.issue_count > 0 ? 'Projects with issues cannot be deleted' : undefined}
+				onclick={deleteProject}
+			>
+				Delete project
+			</Button>
+			<div class="flex gap-2">
+				<Button type="button" variant="ghost" onclick={() => (settingsOpen = false)}>Cancel</Button>
+				<Button type="submit" disabled={savingSettings || !settingsName.trim()}>
+					{savingSettings ? 'Saving…' : 'Save'}
+				</Button>
+			</div>
+		</div>
+	</form>
+</Modal>

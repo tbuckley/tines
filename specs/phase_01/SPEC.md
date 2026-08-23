@@ -225,8 +225,11 @@ Phase one is done when this loop works end-to-end:
 6. Once the issue reaches a `done` state, it disappears from the default Issues tab view (and reappears with the done filter on).
 7. Deleting an in-use workflow state via UI or API is rejected with a clear error.
 
-## Open questions
+## Resolved questions
 
-- Naming of the standard workflow's initial state: **Open** is the working choice (implies "ready to be taken on / being worked" without a separate backlog state); alternatives: `Ready`, `Active`.
-- Whether `workflow.updated` events should record a diff of the change in the payload, or just "it changed."
-- Whether issue *description* edits belong in the comment thread as a visible event only, or should also keep revisions (phase one: event only, no revision history).
+Formerly open, now decided:
+
+- **Standard workflow initial state**: named **Open** — implies "ready to be taken on / being worked" without a separate backlog state.
+- **`workflow.updated` payload**: a **summary diff** — a compact record of what changed (rename, states added/removed by name, transition count deltas, initial-state change), computed at update time. Workflows stay mutable (live-referenced, no versioning), so the event payload is the change record.
+- **Issue description edits**: event only (`issue.updated`), no revision history in phase one.
+- **Graph rendering**: the workflow graph view is a hand-rolled Svelte SVG component with a simple layered auto-layout computed client-side — no graph library dependency. Sufficient for phase-one FSM sizes and gives full control over category color-coding and the transition animation.

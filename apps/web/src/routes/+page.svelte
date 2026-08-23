@@ -1,36 +1,23 @@
 <script lang="ts">
-	import { invalidateAll } from '$app/navigation';
+	import IconArrowsSplit2 from '@tabler/icons-svelte/icons/arrows-split-2';
 	import { authClient } from '$lib/auth-client';
 	import { Button } from '$lib/components/ui/button/index.js';
 
-	let { data } = $props();
-
 	async function signIn() {
-		await authClient.signIn.social({ provider: 'google', callbackURL: '/' });
-	}
-
-	async function signOut() {
-		await authClient.signOut();
-		await invalidateAll();
+		await authClient.signIn.social({ provider: 'google', callbackURL: '/issues' });
 	}
 </script>
 
-<main class="flex min-h-screen flex-col items-center justify-center gap-6 p-8">
-	<h1 class="text-4xl font-bold tracking-tight">Hello, world 👋</h1>
-
-	{#if data.user}
-		<p class="text-muted-foreground">
-			Signed in as <span class="text-foreground font-medium">{data.user.name}</span>
-			({data.user.email})
+<main class="flex min-h-screen flex-col items-center justify-center gap-8 p-8">
+	<div class="flex flex-col items-center gap-3 text-center">
+		<div class="bg-primary text-primary-foreground flex size-12 items-center justify-center rounded-xl">
+			<IconArrowsSplit2 size={26} stroke={1.75} />
+		</div>
+		<h1 class="text-4xl font-bold tracking-tight">Tines</h1>
+		<p class="text-muted-foreground max-w-md text-balance">
+			An issue tracker for humans and their agents — work moves through workflows, and every
+			action is on the record.
 		</p>
-		<Button variant="outline" onclick={signOut}>Sign out</Button>
-	{:else}
-		<p class="text-muted-foreground">You are not signed in.</p>
-		<Button onclick={signIn}>Sign in with Google</Button>
-	{/if}
-
-	<p class="text-muted-foreground text-sm">
-		Server time from <code class="bg-muted rounded px-1.5 py-0.5">/api/time</code>:
-		<span class="text-foreground font-mono">{data.time.time}</span>
-	</p>
+	</div>
+	<Button size="lg" onclick={signIn}>Sign in with Google</Button>
 </main>

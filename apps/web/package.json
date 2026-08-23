@@ -36,6 +36,8 @@
     "clsx": "^2.1.1",
     "kysely": "^0.29.5",
     "kysely-d1": "^0.4.0",
+    "micromark": "^4.0.2",
+    "micromark-extension-gfm": "^3.0.0",
     "tailwind-merge": "^3.6.0",
     "tailwind-variants": "^3.3.1"
   }
