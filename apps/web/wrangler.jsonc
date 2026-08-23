@@ -35,6 +35,6 @@
 		"BETTER_AUTH_URL": "http://localhost:5173",
 		// Sender for magic-link emails. Must be an address on a domain onboarded to
 		// Email Service (Cloudflare dash → Compute → Email Service → Email Sending).
-		"EMAIL_FROM": "login@example.com"
+		"EMAIL_FROM": "tines-noreply@tbuckley.com"
 	}
 }
