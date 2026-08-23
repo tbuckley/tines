@@ -20,6 +20,18 @@
 	function onkeydown(e: KeyboardEvent) {
 		if (e.key === 'Escape' && open) close();
 	}
+
+	// Renders into <body>: the layout's <main> carries a view-transition-name,
+	// which makes it a stacking context, so no z-index inside it can paint above
+	// the app's sticky header / bottom tab bar (z-40 siblings of <main>).
+	function portal(node: HTMLElement) {
+		document.body.appendChild(node);
+		return {
+			destroy() {
+				node.remove();
+			}
+		};
+	}
 </script>
 
 <svelte:window {onkeydown} />
@@ -27,12 +39,16 @@
 {#if open}
 	<div
 		class="fixed inset-0 z-50 bg-black/50"
+		use:portal
 		transition:fade={{ duration: dur() }}
 		onclick={close}
 		aria-hidden="true"
 	></div>
+	<!-- Anchored near the top on phones so the on-screen keyboard doesn't cover
+	     the dialog's fields; centered on larger screens. -->
 	<div
-		class="bg-background fixed top-1/2 left-1/2 z-50 max-h-[calc(100dvh-2rem)] w-[calc(100vw-2rem)] max-w-md -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-xl border p-6 shadow-lg"
+		class="bg-background fixed top-4 left-1/2 z-50 max-h-[calc(100dvh-2rem)] w-[calc(100vw-2rem)] max-w-md -translate-x-1/2 overflow-y-auto rounded-xl border p-6 shadow-lg sm:top-1/2 sm:-translate-y-1/2"
+		use:portal
 		transition:scale={{ duration: dur(), start: 0.96 }}
 		role="dialog"
 		aria-modal="true"
