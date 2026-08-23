@@ -76,6 +76,8 @@ pnpm dlx shadcn-svelte@latest add card
 
 ## Deploying to Cloudflare
 
+One-time setup (needs `wrangler login` or a `CLOUDFLARE_API_TOKEN` in the environment):
+
 ```sh
 cd apps/web
 pnpm wrangler d1 create tines             # then paste the database_id into wrangler.jsonc
@@ -87,6 +89,26 @@ pnpm wrangler secret put GOOGLE_CLIENT_SECRET
 # (see "Magic-link sign-in" above for onboarding your sending domain)
 pnpm deploy
 ```
+
+### Automatic deploys
+
+`.github/workflows/deploy.yml` deploys on every push to `main` (and via manual
+dispatch): it builds, runs unit tests, applies pending D1 migrations with
+`wrangler d1 migrations apply tines --remote`, then runs `wrangler deploy`.
+
+To enable it, add two GitHub Actions secrets (repo → Settings → Secrets and
+variables → Actions):
+
+- `CLOUDFLARE_ACCOUNT_ID` — from the Cloudflare dashboard (Workers & Pages →
+  right sidebar), or `pnpm wrangler whoami`.
+- `CLOUDFLARE_API_TOKEN` — create at <https://dash.cloudflare.com/profile/api-tokens>
+  with permissions **Account → Workers Scripts → Edit** and **Account → D1 → Edit**.
+
+Migrations run before the new worker version goes live, so keep them
+backwards-compatible with the previously deployed code (add columns/tables
+freely; do renames and drops in two releases, expand/contract style).
+D1 tracks applied migrations in a `d1_migrations` table, so already-applied
+files are skipped and a no-op run is safe.
 
 ## Scripts
 
