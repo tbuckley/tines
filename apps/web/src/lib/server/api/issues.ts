@@ -1,10 +1,12 @@
 import type {
+	AllowedTransition,
 	Comment,
 	CreateCommentRequest,
 	CreateIssueRequest,
 	Issue,
 	IssueDetail,
 	StateCategory,
+	TransitionIssueRequest,
 	UpdateIssueRequest,
 	WorkflowResponse
 } from '@tines/shared';
@@ -126,11 +128,17 @@ export async function listIssues(
 // ---------------------------------------------------------------------------
 // Detail
 
-export function allowedTransitions(workflow: WorkflowResponse, fromStateId: string) {
-	const targets = new Set(
-		workflow.transitions.filter((t) => t.from_state_id === fromStateId).map((t) => t.to_state_id)
-	);
-	return workflow.states.filter((s) => targets.has(s.id));
+export function allowedTransitions(
+	workflow: WorkflowResponse,
+	fromStateId: string
+): AllowedTransition[] {
+	const stateById = new Map(workflow.states.map((s) => [s.id, s]));
+	return workflow.transitions
+		.filter((t) => t.from_state_id === fromStateId)
+		.flatMap((t) => {
+			const toState = stateById.get(t.to_state_id);
+			return toState ? [{ transition_id: t.id, name: t.name, to_state: toState }] : [];
+		});
 }
 
 async function loadComments(db: Kysely<Database>, issueId: string): Promise<Comment[]> {
@@ -274,21 +282,34 @@ export async function transitionIssue(
 	env: Env,
 	actor: ActorContext,
 	id: string,
-	toStateId: string
+	body: TransitionIssueRequest
 ): Promise<IssueDetail> {
 	const current = await getIssueDetail(db, actor.userId, { id });
-	requireString(toStateId, 'to_state_id');
+
+	const action = body.action?.trim();
+	const transitionId = body.transition_id?.trim();
+	if ((action ? 1 : 0) + (transitionId ? 1 : 0) !== 1) {
+		throw new ApiFail(
+			422,
+			'invalid_field',
+			'Pass exactly one of "action" (the transition name) or "transition_id"'
+		);
+	}
 
 	const allowed = current.allowed_transitions;
-	const target = allowed.find((s) => s.id === toStateId);
+	const target = transitionId
+		? allowed.find((t) => t.transition_id === transitionId)
+		: allowed.find((t) => t.name.toLowerCase() === action!.toLowerCase());
 	if (!target) {
-		const toState = current.workflow.states.find((s) => s.id === toStateId);
+		const what = transitionId ? `Transition "${transitionId}"` : `Action "${action}"`;
 		throw new ApiFail(
 			422,
 			'invalid_transition',
-			toState
-				? `"${current.state.name}" → "${toState.name}" is not a transition in workflow "${current.workflow.name}"`
-				: `State "${toStateId}" is not part of workflow "${current.workflow.name}"`,
+			`${what} is not available from state "${current.state.name}" in workflow "${current.workflow.name}"${
+				allowed.length
+					? `; allowed: ${allowed.map((t) => `"${t.name}" (→ ${t.to_state.name})`).join(', ')}`
+					: '; this state is terminal'
+			}`,
 			{
 				current_state: current.state,
 				allowed_transitions: allowed
@@ -299,7 +320,7 @@ export async function transitionIssue(
 	await runAtomic(env, [
 		db
 			.updateTable('issue')
-			.set({ state_id: target.id, updated_at: Date.now() })
+			.set({ state_id: target.to_state.id, updated_at: Date.now() })
 			.where('id', '=', id)
 			.compile(),
 		eventInsert(db, actor, {
@@ -307,10 +328,12 @@ export async function transitionIssue(
 			issueId: id,
 			projectId: current.project_id,
 			payload: {
+				transition_id: target.transition_id,
+				action: target.name,
 				from_state_id: current.state.id,
 				from_state_name: current.state.name,
-				to_state_id: target.id,
-				to_state_name: target.name
+				to_state_id: target.to_state.id,
+				to_state_name: target.to_state.name
 			}
 		})
 	]);

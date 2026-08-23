@@ -56,6 +56,8 @@ export interface WorkflowState {
 
 export interface WorkflowTransition {
 	id: string;
+	/** The action this transition represents, e.g. "approve", "send back". */
+	name: string;
 	from_state_id: string;
 	to_state_id: string;
 }
@@ -86,11 +88,13 @@ export interface WorkflowStateInput {
 }
 
 /**
- * A transition in a create/update request. `from`/`to` reference states in
- * the same request by existing state id or by state name (names are unique
- * within a workflow, so either is unambiguous).
+ * A transition in a create/update request. `name` is the action it
+ * represents (required, unique per source state). `from`/`to` reference
+ * states in the same request by existing state id or by state name (names
+ * are unique within a workflow, so either is unambiguous).
  */
 export interface WorkflowTransitionInput {
+	name: string;
 	from: string;
 	to: string;
 }
@@ -140,11 +144,19 @@ export interface Issue {
 	last_activity_at: number;
 }
 
+/** A legal move out of an issue's current state. */
+export interface AllowedTransition {
+	transition_id: string;
+	/** The action name, e.g. "approve". */
+	name: string;
+	to_state: WorkflowState;
+}
+
 export interface IssueDetail extends Issue {
 	workflow: Workflow;
 	comments: Comment[];
-	/** States legally reachable from the current state. */
-	allowed_transitions: WorkflowState[];
+	/** The named transitions legally available from the current state. */
+	allowed_transitions: AllowedTransition[];
 }
 
 export interface CreateIssueRequest {
@@ -159,8 +171,11 @@ export interface UpdateIssueRequest {
 	description?: string;
 }
 
+/** Names the transition to take: exactly one of the two fields. */
 export interface TransitionIssueRequest {
-	to_state_id: string;
+	/** Action name, matched case-insensitively among the allowed transitions. */
+	action?: string;
+	transition_id?: string;
 }
 
 export interface IssueFilters {

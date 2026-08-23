@@ -109,6 +109,10 @@
 							<span class="font-medium">“{objectName(ev)}”</span>
 						{/if}
 						{#if ev.type === 'issue.transitioned'}
+							{#if ev.payload.action}
+								<span class="text-muted-foreground">via</span>
+								<span class="font-medium">“{ev.payload.action}”</span>
+							{/if}
 							<span class="ml-1 inline-flex items-center gap-1.5 align-middle">
 								<StateBadge
 									state={{ name: String(ev.payload.from_state_name ?? '?'), category: 'backlog' }}

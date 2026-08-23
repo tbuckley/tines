@@ -8,6 +8,8 @@
 		category: StateCategory;
 	}
 	interface GraphTransition {
+		/** Action name, rendered as an edge label (elided when compact). */
+		name?: string;
 		from_state_id: string;
 		to_state_id: string;
 	}
@@ -49,6 +51,9 @@
 		to: string;
 		d: string;
 		backward: boolean;
+		label: string | null;
+		lx: number;
+		ly: number;
 	}
 
 	const layout = $derived.by(() => {
@@ -61,7 +66,10 @@
 		const H = compact ? 26 : 34;
 		const charW = compact ? 6.3 : 7.3;
 		const font = compact ? 10.5 : 12.5;
-		const gapX = compact ? 34 : 60;
+		// Full mode renders action names on the edges: the column gap must
+		// fit the longest label so it doesn't run into neighboring nodes.
+		const maxLabel = compact ? 0 : Math.max(0, ...transitions.map((t) => t.name?.length ?? 0));
+		const gapX = compact ? 34 : Math.max(60, maxLabel * 5.2 + 20);
 		const gapY = compact ? 14 : 22;
 
 		const out = new Map<string, string[]>();
@@ -135,6 +143,7 @@
 			const b = nodeById.get(t.to_state_id);
 			if (!a || !b) continue;
 			const key = `${t.from_state_id}→${t.to_state_id}`;
+			const label = !compact && t.name ? t.name : null;
 			if (rank.get(a.id)! < rank.get(b.id)!) {
 				// Forward: right edge of source to left edge of target.
 				const x1 = a.x + a.w;
@@ -147,7 +156,11 @@
 					from: a.id,
 					to: b.id,
 					d: `M ${x1} ${y1} C ${x1 + bend} ${y1}, ${x2 - bend} ${y2}, ${x2} ${y2}`,
-					backward: false
+					backward: false,
+					label,
+					// Curve midpoint (cubic at t=0.5), nudged above the line.
+					lx: (x1 + x2) / 2,
+					ly: (y1 + y2) / 2 - 6
 				});
 			} else {
 				// Backward / same-rank: route beneath the graph.
@@ -162,7 +175,10 @@
 					from: a.id,
 					to: b.id,
 					d: `M ${x1} ${y1} C ${x1} ${depth}, ${x2} ${depth}, ${x2} ${y2 + 4}`,
-					backward: true
+					backward: true,
+					label,
+					lx: (x1 + x2) / 2,
+					ly: (y1 + 6 * depth + y2 + 4) / 8 - 5
 				});
 			}
 		}
@@ -251,6 +267,18 @@
 				stroke-dasharray={edge.backward ? '4 3' : undefined}
 				marker-end="url(#{active ? `arrow-active-${uid}` : `arrow-${uid}`})"
 			/>
+			{#if edge.label}
+				<text
+					x={edge.lx}
+					y={edge.ly}
+					text-anchor="middle"
+					font-size="9.5"
+					class="fill-muted-foreground"
+					style="paint-order: stroke; stroke: var(--background); stroke-width: 3px; stroke-linejoin: round"
+				>
+					{edge.label}
+				</text>
+			{/if}
 		{/each}
 
 		<!-- nodes -->

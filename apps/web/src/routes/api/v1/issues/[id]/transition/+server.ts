@@ -7,5 +7,5 @@ import type { RequestHandler } from './$types';
 export const POST: RequestHandler = api(async (event) => {
 	const { db, env, actor } = await apiContext(event);
 	const body = await readJson<TransitionIssueRequest>(event);
-	return json(await transitionIssue(db, env, actor, event.params.id, body.to_state_id));
+	return json(await transitionIssue(db, env, actor, event.params.id, body));
 });

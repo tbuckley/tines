@@ -37,12 +37,16 @@ CREATE TABLE `workflow_state` (
 );
 CREATE INDEX `workflow_state_workflow_id_idx` ON `workflow_state` (`workflow_id`);
 
+-- name: the action this transition represents ("approve", "send back"),
+-- unique among transitions leaving the same state.
 CREATE TABLE `workflow_transition` (
 	`id` TEXT NOT NULL PRIMARY KEY,
 	`workflow_id` TEXT NOT NULL REFERENCES `workflow` (`id`) ON DELETE CASCADE,
+	`name` TEXT NOT NULL,
 	`from_state_id` TEXT NOT NULL REFERENCES `workflow_state` (`id`),
 	`to_state_id` TEXT NOT NULL REFERENCES `workflow_state` (`id`),
-	UNIQUE (`workflow_id`, `from_state_id`, `to_state_id`)
+	UNIQUE (`workflow_id`, `from_state_id`, `to_state_id`),
+	UNIQUE (`workflow_id`, `from_state_id`, `name`)
 );
 CREATE INDEX `workflow_transition_workflow_id_idx` ON `workflow_transition` (`workflow_id`);
 
@@ -117,9 +121,9 @@ VALUES
 	('wfs_std_review', 'wf_standard', 'Human Review', 'awaiting_human', 1, CAST(strftime('%s', 'now') AS INTEGER) * 1000),
 	('wfs_std_closed', 'wf_standard', 'Closed', 'done', 2, CAST(strftime('%s', 'now') AS INTEGER) * 1000);
 
-INSERT INTO `workflow_transition` (`id`, `workflow_id`, `from_state_id`, `to_state_id`)
+INSERT INTO `workflow_transition` (`id`, `workflow_id`, `name`, `from_state_id`, `to_state_id`)
 VALUES
-	('wft_std_open_review', 'wf_standard', 'wfs_std_open', 'wfs_std_review'),
-	('wft_std_review_open', 'wf_standard', 'wfs_std_review', 'wfs_std_open'),
-	('wft_std_review_closed', 'wf_standard', 'wfs_std_review', 'wfs_std_closed'),
-	('wft_std_open_closed', 'wf_standard', 'wfs_std_open', 'wfs_std_closed');
+	('wft_std_open_review', 'wf_standard', 'Submit for review', 'wfs_std_open', 'wfs_std_review'),
+	('wft_std_review_open', 'wf_standard', 'Send back', 'wfs_std_review', 'wfs_std_open'),
+	('wft_std_review_closed', 'wf_standard', 'Approve', 'wfs_std_review', 'wfs_std_closed'),
+	('wft_std_open_closed', 'wf_standard', 'Abandon', 'wfs_std_open', 'wfs_std_closed');

@@ -40,11 +40,14 @@ function reportError(err: unknown): never {
 		let message = `${err.message} (${err.code})`;
 		const allowed = err.details?.allowed_transitions;
 		if (Array.isArray(allowed)) {
-			const names = allowed.map((s) => (s as { name: string }).name);
+			const actions = allowed.map((t) => {
+				const at = t as { name: string; to_state?: { name: string } };
+				return at.to_state ? `"${at.name}" → ${at.to_state.name}` : `"${at.name}"`;
+			});
 			message +=
-				names.length > 0
-					? `\nallowed transitions: ${names.join(', ')}`
-					: '\nallowed transitions: none (terminal state)';
+				actions.length > 0
+					? `\nallowed actions: ${actions.join(', ')}`
+					: '\nallowed actions: none (terminal state)';
 		}
 		die(message);
 	}
@@ -124,8 +127,8 @@ function printIssueDetail(issue: IssueDetail): void {
 	if (issue.description) {
 		console.log(`\n${issue.description}`);
 	}
-	const allowed = issue.allowed_transitions.map((s) => s.name);
-	console.log(`\nallowed transitions: ${allowed.length ? allowed.join(', ') : 'none (terminal state)'}`);
+	const allowed = issue.allowed_transitions.map((t) => `"${t.name}" → ${t.to_state.name}`);
+	console.log(`\nallowed actions: ${allowed.length ? allowed.join(', ') : 'none (terminal state)'}`);
 	if (issue.comments.length > 0) {
 		console.log(`\ncomments (${issue.comments.length}):`);
 		for (const c of issue.comments) {
@@ -144,7 +147,7 @@ function eventSummary(ev: TinesEvent): string {
 		case 'issue.updated':
 			return `updated ${issue} (${(p.changed as string[])?.join(', ')})`;
 		case 'issue.transitioned':
-			return `moved ${issue}: ${p.from_state_name} → ${p.to_state_name}`;
+			return `${p.action ? `"${p.action}" on` : 'moved'} ${issue}: ${p.from_state_name} → ${p.to_state_name}`;
 		case 'issue.commented':
 			return `commented on ${issue}`;
 		case 'project.created':
@@ -245,7 +248,9 @@ withCommon(
 	);
 	console.log('\ntransitions:');
 	for (const t of wf.transitions) {
-		console.log(`  ${byId.get(t.from_state_id)?.name} → ${byId.get(t.to_state_id)?.name}`);
+		console.log(
+			`  "${t.name}": ${byId.get(t.from_state_id)?.name} → ${byId.get(t.to_state_id)?.name}`
+		);
 	}
 	for (const w of wf.warnings ?? []) console.log(`\nwarning: ${w}`);
 });
@@ -333,21 +338,17 @@ withCommon(
 });
 
 withCommon(
-	issues.command('move <ref> <state>').description('Move an issue to a state (by state name)')
-).action(async (ref: string, stateName: string, opts: CommonOpts) => {
+	issues
+		.command('move <ref> <action>')
+		.description('Take a transition on an issue by its action name (e.g. "approve")')
+).action(async (ref: string, action: string, opts: CommonOpts) => {
 	const api = client(opts);
 	const issue = await resolveIssue(api, ref);
-	const target =
-		issue.workflow.states.find((s) => s.name === stateName) ??
-		issue.workflow.states.find((s) => s.id === stateName);
-	if (!target) {
-		die(
-			`workflow "${issue.workflow.name}" has no state "${stateName}" (states: ${issue.workflow.states.map((s) => s.name).join(', ')})`
-		);
-	}
-	const moved = await api.transitionIssue(issue.id, { to_state_id: target.id });
+	const moved = await api.transitionIssue(issue.id, { action });
 	if (opts.json) return printJson(moved);
-	console.log(`${moved.project_name}/#${moved.number}: ${issue.state.name} → ${moved.state.name}`);
+	console.log(
+		`${moved.project_name}/#${moved.number}: ${issue.state.name} → ${moved.state.name} ("${action}")`
+	);
 });
 
 withCommon(

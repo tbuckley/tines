@@ -44,6 +44,14 @@
 	let name = $state(workflow?.name ?? '');
 	// svelte-ignore state_referenced_locally
 	let description = $state(workflow?.description ?? '');
+	interface RowTransition {
+		key: string;
+		/** The action name, e.g. "approve". */
+		name: string;
+		from: string;
+		to: string;
+	}
+
 	// svelte-ignore state_referenced_locally
 	let states = $state<RowState[]>(
 		workflow
@@ -54,10 +62,15 @@
 				]
 	);
 	// svelte-ignore state_referenced_locally
-	let transitions = $state<{ from: string; to: string }[]>(
+	let transitions = $state<RowTransition[]>(
 		workflow
-			? workflow.transitions.map((t) => ({ from: t.from_state_id, to: t.to_state_id }))
-			: [{ from: states[0].key, to: states[1].key }]
+			? workflow.transitions.map((t) => ({
+					key: t.id,
+					name: t.name,
+					from: t.from_state_id,
+					to: t.to_state_id
+				}))
+			: [{ key: freshKey(), name: 'Complete', from: states[0].key, to: states[1].key }]
 	);
 	// svelte-ignore state_referenced_locally
 	let initialKey = $state(workflow?.initial_state_id ?? states[0].key);
@@ -80,15 +93,20 @@
 		}
 	}
 
-	function hasTransition(from: string, to: string): boolean {
-		return transitions.some((t) => t.from === from && t.to === to);
+	function addTransition(fromKey: string) {
+		const target = states.find(
+			(s) => s.key !== fromKey && !transitions.some((t) => t.from === fromKey && t.to === s.key)
+		);
+		if (!target) return;
+		transitions = [...transitions, { key: freshKey(), name: '', from: fromKey, to: target.key }];
 	}
 
-	function toggleTransition(from: string, to: string) {
-		transitions = hasTransition(from, to)
-			? transitions.filter((t) => !(t.from === from && t.to === to))
-			: [...transitions, { from, to }];
+	function removeTransition(key: string) {
+		transitions = transitions.filter((t) => t.key !== key);
 	}
+
+	const stateName = (key: string) =>
+		states.find((s) => s.key === key)?.name.trim() || 'unnamed';
 
 	// Live graph preview: row keys stand in for state ids.
 	const preview = $derived({
@@ -97,7 +115,11 @@
 			name: s.name.trim() || 'unnamed',
 			category: s.category
 		})),
-		transitions: transitions.map((t) => ({ from_state_id: t.from, to_state_id: t.to })),
+		transitions: transitions.map((t) => ({
+			name: t.name.trim() || undefined,
+			from_state_id: t.from,
+			to_state_id: t.to
+		})),
 		initial_state_id: initialKey
 	});
 
@@ -113,6 +135,15 @@
 		if (!initial) list.push('Pick an initial state.');
 		else if (initial.category !== 'backlog' && initial.category !== 'active') {
 			list.push('The initial state must be categorized “backlog” or “active”.');
+		}
+		if (transitions.some((t) => !t.name.trim())) list.push('Every action needs a name.');
+		const actionKeys = transitions.map((t) => `${t.from}:${t.name.trim().toLowerCase()}`);
+		if (new Set(actionKeys).size !== actionKeys.length) {
+			list.push('Action names must be unique within a state.');
+		}
+		const pairs = transitions.map((t) => `${t.from}→${t.to}`);
+		if (new Set(pairs).size !== pairs.length) {
+			list.push('Only one action can lead from a state to the same target.');
 		}
 		return list;
 	});
@@ -143,7 +174,7 @@
 					name: s.name.trim(),
 					category: s.category
 				})),
-				transitions: transitions.map((t) => ({ from: ref(t.from), to: ref(t.to) }))
+				transitions: transitions.map((t) => ({ name: t.name.trim(), from: ref(t.from), to: ref(t.to) }))
 			});
 		} catch (err) {
 			errorMessage = err instanceof ApiError ? err.message : 'Failed to save the workflow.';
@@ -199,20 +230,46 @@
 						</Button>
 					</div>
 					{#if states.length > 1}
-						<div class="flex flex-wrap items-center gap-1.5 text-xs">
-							<span class="text-muted-foreground">can move to:</span>
-							{#each states.filter((s) => s.key !== row.key) as target (target.key)}
-								<button
-									type="button"
-									class="rounded-full border px-2.5 py-1 transition-colors {hasTransition(row.key, target.key)
-										? 'border-primary/50 bg-primary/10 text-primary font-medium'
-										: 'text-muted-foreground hover:border-ring/60'}"
-									onclick={() => toggleTransition(row.key, target.key)}
-									aria-pressed={hasTransition(row.key, target.key)}
-								>
-									{target.name.trim() || 'unnamed'}
-								</button>
+						<div class="space-y-1.5">
+							{#each transitions.filter((t) => t.from === row.key) as transition (transition.key)}
+								{@const ti = transitions.findIndex((t) => t.key === transition.key)}
+								<div class="flex items-center gap-2" transition:slide={{ duration: dur() }}>
+									<Input
+										bind:value={transitions[ti].name}
+										placeholder="Action name, e.g. approve"
+										class="h-8 flex-1 text-xs"
+										aria-label="Action name"
+									/>
+									<span class="text-muted-foreground text-xs">→</span>
+									<Select bind:value={transitions[ti].to} class="h-8 w-36 text-xs" aria-label="Target state">
+										{#each states.filter((s) => s.key !== row.key) as target (target.key)}
+											<option value={target.key}>{target.name.trim() || 'unnamed'}</option>
+										{/each}
+									</Select>
+									<Button
+										type="button"
+										size="icon"
+										variant="ghost"
+										class="text-muted-foreground hover:text-destructive size-7 shrink-0"
+										onclick={() => removeTransition(transition.key)}
+										aria-label={`Remove action from ${stateName(row.key)}`}
+									>
+										<IconTrash size={13} />
+									</Button>
+								</div>
 							{/each}
+							<Button
+								type="button"
+								size="sm"
+								variant="ghost"
+								class="text-muted-foreground h-7 px-2 text-xs"
+								disabled={states.filter(
+									(s) => s.key !== row.key && !transitions.some((t) => t.from === row.key && t.to === s.key)
+								).length === 0}
+								onclick={() => addTransition(row.key)}
+							>
+								<IconPlus size={12} /> Add action
+							</Button>
 						</div>
 					{/if}
 				</div>

@@ -31,6 +31,7 @@
 				initial_state: nameOf(wf.initial_state_id),
 				states: wf.states.map((s) => ({ name: s.name, category: s.category })),
 				transitions: wf.transitions.map((t) => ({
+					name: t.name,
 					from: nameOf(t.from_state_id),
 					to: nameOf(t.to_state_id)
 				}))
@@ -77,7 +78,7 @@
 			<p class="text-muted-foreground mt-1 max-w-xl text-sm">{data.workflow.description}</p>
 		{/if}
 		<p class="text-muted-foreground mt-1 text-xs">
-			{data.workflow.issue_count} issue{data.workflow.issue_count === 1 ? '' : 's'} use this workflow
+			{data.workflow.issue_count} issue{data.workflow.issue_count === 1 ? ' uses' : 's use'} this workflow
 		</p>
 	</div>
 	<div class="flex gap-2">

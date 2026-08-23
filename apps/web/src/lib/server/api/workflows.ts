@@ -22,7 +22,7 @@ interface ResolvedState {
 
 interface ResolvedDef {
 	states: ResolvedState[];
-	transitions: { id: string; from_state_id: string; to_state_id: string }[];
+	transitions: { id: string; name: string; from_state_id: string; to_state_id: string }[];
 	initialStateId: string;
 }
 
@@ -97,27 +97,40 @@ function resolveDef(
 	}
 
 	const transitions: ResolvedDef['transitions'] = [];
-	const seen = new Set<string>();
+	const seenPairs = new Set<string>();
+	const seenActions = new Set<string>();
 	for (const [i, t] of (transitionsInput ?? []).entries()) {
+		const name = requireString(t.name, `transitions[${i}].name`, { max: 100 }).trim();
 		const from = resolveRef(requireString(t.from, `transitions[${i}].from`), `transitions[${i}]`);
 		const to = resolveRef(requireString(t.to, `transitions[${i}].to`), `transitions[${i}]`);
 		if (from.id === to.id) {
 			throw new ApiFail(
 				422,
 				'self_transition',
-				`Transition ${i} loops "${from.name}" onto itself; self-transitions are not allowed`
+				`Transition "${name}" loops "${from.name}" onto itself; self-transitions are not allowed`
 			);
 		}
-		const key = `${from.id}→${to.id}`;
-		if (seen.has(key)) {
+		const pairKey = `${from.id}→${to.id}`;
+		if (seenPairs.has(pairKey)) {
 			throw new ApiFail(
 				422,
 				'duplicate_transition',
 				`Transition "${from.name}" → "${to.name}" is listed more than once`
 			);
 		}
-		seen.add(key);
-		transitions.push({ id: newId('wft'), from_state_id: from.id, to_state_id: to.id });
+		// Action names must be unambiguous within a source state ("reject"
+		// out of two different states is fine).
+		const actionKey = `${from.id}:${name.toLowerCase()}`;
+		if (seenActions.has(actionKey)) {
+			throw new ApiFail(
+				422,
+				'duplicate_action',
+				`State "${from.name}" has more than one transition named "${name}"`
+			);
+		}
+		seenPairs.add(pairKey);
+		seenActions.add(actionKey);
+		transitions.push({ id: newId('wft'), name, from_state_id: from.id, to_state_id: to.id });
 	}
 
 	return { states, transitions, initialStateId: initial.id };
@@ -187,6 +200,7 @@ export async function loadWorkflows(
 			})),
 			transitions: wfTransitions.map((t) => ({
 				id: t.id,
+				name: t.name,
 				from_state_id: t.from_state_id,
 				to_state_id: t.to_state_id
 			})),
@@ -254,7 +268,13 @@ export async function createWorkflow(
 		...def.transitions.map((t) =>
 			db
 				.insertInto('workflow_transition')
-				.values({ id: t.id, workflow_id: id, from_state_id: t.from_state_id, to_state_id: t.to_state_id })
+				.values({
+					id: t.id,
+					workflow_id: id,
+					name: t.name,
+					from_state_id: t.from_state_id,
+					to_state_id: t.to_state_id
+				})
 				.compile()
 		),
 		eventInsert(db, actor, { type: 'workflow.created', payload: { workflow_id: id, name } })
@@ -286,7 +306,7 @@ export async function updateWorkflow(
 		body.states ?? current.states.map((s) => ({ id: s.id, name: s.name, category: s.category }));
 	const transitionsInput: WorkflowTransitionInput[] =
 		body.transitions ??
-		current.transitions.map((t) => ({ from: t.from_state_id, to: t.to_state_id }));
+		current.transitions.map((t) => ({ name: t.name, from: t.from_state_id, to: t.to_state_id }));
 	const initialRef = body.initial_state ?? current.initial_state_id;
 
 	let def: ResolvedDef;
@@ -346,10 +366,15 @@ export async function updateWorkflow(
 	const categoriesChanged = def.states
 		.filter((s) => !s.isNew && currentById.get(s.id) && currentById.get(s.id)!.category !== s.category)
 		.map((s) => ({ state: s.name, from: currentById.get(s.id)!.category, to: s.category }));
-	const oldPairs = new Set(current.transitions.map((t) => `${t.from_state_id}→${t.to_state_id}`));
-	const newPairs = new Set(def.transitions.map((t) => `${t.from_state_id}→${t.to_state_id}`));
-	const transitionsAdded = [...newPairs].filter((p) => !oldPairs.has(p)).length;
-	const transitionsRemoved = [...oldPairs].filter((p) => !newPairs.has(p)).length;
+	// Transitions are identified by their (from, to) pair; a kept pair whose
+	// action name changed counts as a rename.
+	const oldByPair = new Map(current.transitions.map((t) => [`${t.from_state_id}→${t.to_state_id}`, t]));
+	const newByPair = new Map(def.transitions.map((t) => [`${t.from_state_id}→${t.to_state_id}`, t]));
+	const transitionsAdded = [...newByPair.keys()].filter((p) => !oldByPair.has(p)).length;
+	const transitionsRemoved = [...oldByPair.keys()].filter((p) => !newByPair.has(p)).length;
+	const transitionsRenamed = [...newByPair.entries()]
+		.filter(([pair, t]) => oldByPair.has(pair) && oldByPair.get(pair)!.name !== t.name)
+		.map(([pair, t]) => ({ from: oldByPair.get(pair)!.name, to: t.name }));
 
 	const payload: Record<string, unknown> = { workflow_id: id, name };
 	if (name !== current.name) payload.renamed = { from: current.name, to: name };
@@ -360,6 +385,7 @@ export async function updateWorkflow(
 	if (categoriesChanged.length) payload.categories_changed = categoriesChanged;
 	if (transitionsAdded) payload.transitions_added = transitionsAdded;
 	if (transitionsRemoved) payload.transitions_removed = transitionsRemoved;
+	if (transitionsRenamed.length) payload.transitions_renamed = transitionsRenamed;
 	if (def.initialStateId !== current.initial_state_id) {
 		payload.initial_changed = {
 			from: currentById.get(current.initial_state_id)?.name,
@@ -405,7 +431,13 @@ export async function updateWorkflow(
 		queries.push(
 			db
 				.insertInto('workflow_transition')
-				.values({ id: t.id, workflow_id: id, from_state_id: t.from_state_id, to_state_id: t.to_state_id })
+				.values({
+					id: t.id,
+					workflow_id: id,
+					name: t.name,
+					from_state_id: t.from_state_id,
+					to_state_id: t.to_state_id
+				})
 				.compile()
 		);
 	}

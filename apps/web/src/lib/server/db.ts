@@ -35,6 +35,8 @@ export interface WorkflowStateTable {
 export interface WorkflowTransitionTable {
 	id: string;
 	workflow_id: string;
+	/** The action this transition represents ("approve", "send back"). */
+	name: string;
 	from_state_id: string;
 	to_state_id: string;
 }

@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { Comment, WorkflowState } from '@tines/shared';
+	import type { AllowedTransition, Comment } from '@tines/shared';
 	import { ApiError } from '@tines/shared';
 	import IconArrowRight from '@tabler/icons-svelte/icons/arrow-right';
 	import IconChevronLeft from '@tabler/icons-svelte/icons/chevron-left';
@@ -38,23 +38,24 @@
 	}
 
 	// Allowed transitions follow the (possibly optimistic) current state.
-	const allowed = $derived.by(() => {
-		const targets = new Set(
-			data.issue.workflow.transitions
-				.filter((t) => t.from_state_id === currentState.id)
-				.map((t) => t.to_state_id)
-		);
-		return data.issue.workflow.states.filter((s) => targets.has(s.id));
+	const allowed = $derived.by((): AllowedTransition[] => {
+		const stateById = new Map(data.issue.workflow.states.map((s) => [s.id, s]));
+		return data.issue.workflow.transitions
+			.filter((t) => t.from_state_id === currentState.id)
+			.flatMap((t) => {
+				const toState = stateById.get(t.to_state_id);
+				return toState ? [{ transition_id: t.id, name: t.name, to_state: toState }] : [];
+			});
 	});
 
 	let transitioning = $state(false);
-	async function move(to: WorkflowState) {
+	async function move(transition: AllowedTransition) {
 		if (transitioning) return;
 		const prev = currentState;
-		currentState = to; // optimistic: badge + graph animate immediately
+		currentState = transition.to_state; // optimistic: badge + graph animate immediately
 		transitioning = true;
 		try {
-			await api.transitionIssue(data.issue.id, { to_state_id: to.id });
+			await api.transitionIssue(data.issue.id, { transition_id: transition.transition_id });
 			await invalidateAll();
 		} catch (e) {
 			currentState = prev;
@@ -264,15 +265,19 @@
 			</div>
 			{#if allowed.length > 0}
 				<div class="flex flex-wrap gap-2">
-					{#each allowed as target (target.id)}
+					{#each allowed as transition (transition.transition_id)}
 						<Button
 							size="sm"
 							variant="outline"
 							disabled={transitioning}
-							onclick={() => move(target)}
+							onclick={() => move(transition)}
+							title={`Move to ${transition.to_state.name}`}
 						>
-							<IconArrowRight size={14} />
-							{target.name}
+							{transition.name}
+							<span class="text-muted-foreground inline-flex items-center gap-1 text-xs font-normal">
+								<IconArrowRight size={12} />
+								{transition.to_state.name}
+							</span>
 						</Button>
 					{/each}
 				</div>
