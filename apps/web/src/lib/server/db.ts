@@ -115,11 +115,29 @@ export function getDb(env: Env): Kysely<Database> {
 
 const ID_ALPHABET = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
 
+/**
+ * Uniform random string over the 62-char alphabet. Rejection sampling: bytes
+ * ≥ 248 (the largest multiple of 62 below 256) are discarded so no character
+ * is more likely than another — a plain `byte % 62` would bias toward the
+ * first 8 characters.
+ */
+export function randomString(length: number): string {
+	const limit = 256 - (256 % ID_ALPHABET.length);
+	let out = '';
+	while (out.length < length) {
+		const bytes = new Uint8Array(length - out.length + 8);
+		crypto.getRandomValues(bytes);
+		for (const b of bytes) {
+			if (b < limit) {
+				out += ID_ALPHABET[b % ID_ALPHABET.length];
+				if (out.length === length) break;
+			}
+		}
+	}
+	return out;
+}
+
 /** Opaque id with a type prefix, e.g. `iss_h2K9x…` (16 random chars). */
 export function newId(prefix: string): string {
-	const bytes = new Uint8Array(16);
-	crypto.getRandomValues(bytes);
-	let out = '';
-	for (const b of bytes) out += ID_ALPHABET[b % ID_ALPHABET.length];
-	return `${prefix}_${out}`;
+	return `${prefix}_${randomString(16)}`;
 }

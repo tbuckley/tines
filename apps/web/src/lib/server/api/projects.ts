@@ -1,7 +1,14 @@
 import type { CreateProjectRequest, Project, UpdateProjectRequest } from '@tines/shared';
 import type { Kysely } from 'kysely';
 import { newId, type Database } from '$lib/server/db';
-import { ApiFail, notFound, requireString, runAtomic, type ActorContext } from './core';
+import {
+	ApiFail,
+	notFound,
+	optionalString,
+	requireString,
+	runAtomic,
+	type ActorContext
+} from './core';
 import { eventInsert } from './events';
 
 function projectQuery(db: Kysely<Database>, userId: string) {
@@ -48,17 +55,45 @@ export async function getProject(
 }
 
 /** The referenced workflow must be the user's own or the system workflow. */
-async function assertWorkflowAccessible(db: Kysely<Database>, userId: string, workflowId: string) {
+async function assertWorkflowAccessible(db: Kysely<Database>, userId: string, workflowId: unknown) {
+	const id = requireString(workflowId, 'default_workflow_id', { max: 100 });
 	const wf = await db
 		.selectFrom('workflow')
 		.select('id')
-		.where('id', '=', workflowId)
+		.where('id', '=', id)
 		.where((eb) => eb.or([eb('user_id', '=', userId), eb('user_id', 'is', null)]))
 		.executeTakeFirst();
 	if (!wf) {
-		throw new ApiFail(422, 'unknown_workflow', `Workflow "${workflowId}" does not exist`, {
+		throw new ApiFail(422, 'unknown_workflow', `Workflow "${id}" does not exist`, {
 			field: 'default_workflow_id'
 		});
+	}
+}
+
+/**
+ * Project names address projects in URLs and the CLI, so they are unique per
+ * user (a unique index backs this against races).
+ */
+async function assertNameAvailable(
+	db: Kysely<Database>,
+	userId: string,
+	name: string,
+	excludeId?: string
+) {
+	let q = db
+		.selectFrom('project')
+		.select('id')
+		.where('user_id', '=', userId)
+		.where('name', '=', name);
+	if (excludeId) q = q.where('id', '!=', excludeId);
+	const existing = await q.executeTakeFirst();
+	if (existing) {
+		throw new ApiFail(
+			422,
+			'duplicate_project_name',
+			`A project named "${name}" already exists; project names must be unique`,
+			{ field: 'name', existing_project_id: existing.id }
+		);
 	}
 }
 
@@ -69,7 +104,9 @@ export async function createProject(
 	body: CreateProjectRequest
 ): Promise<Project> {
 	const name = requireString(body.name, 'name', { max: 200 }).trim();
-	if (body.default_workflow_id) {
+	const description = optionalString(body.description, 'description', { max: 10_000 }) ?? '';
+	await assertNameAvailable(db, actor.userId, name);
+	if (body.default_workflow_id != null) {
 		await assertWorkflowAccessible(db, actor.userId, body.default_workflow_id);
 	}
 	const now = Date.now();
@@ -81,7 +118,7 @@ export async function createProject(
 				id,
 				user_id: actor.userId,
 				name,
-				description: body.description ?? '',
+				description,
 				default_workflow_id: body.default_workflow_id ?? null,
 				created_at: now,
 				updated_at: now
@@ -101,10 +138,16 @@ export async function updateProject(
 ): Promise<Project> {
 	const current = await getProject(db, actor.userId, id);
 	const name = body.name !== undefined ? requireString(body.name, 'name', { max: 200 }).trim() : current.name;
-	const description = body.description ?? current.description;
+	const description =
+		body.description !== undefined
+			? (optionalString(body.description, 'description', { max: 10_000 }) ?? '')
+			: current.description;
 	const defaultWorkflowId =
 		body.default_workflow_id !== undefined ? body.default_workflow_id : current.default_workflow_id;
-	if (defaultWorkflowId) {
+	if (name !== current.name) {
+		await assertNameAvailable(db, actor.userId, name, id);
+	}
+	if (defaultWorkflowId != null && defaultWorkflowId !== current.default_workflow_id) {
 		await assertWorkflowAccessible(db, actor.userId, defaultWorkflowId);
 	}
 

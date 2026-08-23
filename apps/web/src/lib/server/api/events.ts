@@ -1,5 +1,5 @@
 import type { Actor, TinesEvent } from '@tines/shared';
-import type { CompiledQuery, Kysely } from 'kysely';
+import { sql, type CompiledQuery, type Kysely } from 'kysely';
 import { newId, type Database } from '$lib/server/db';
 import type { ActorContext } from './core';
 
@@ -11,28 +11,46 @@ export interface EventInput {
 }
 
 /**
+ * When set, the event is only inserted if the issue row matches — used to
+ * tie an event to a guarded (compare-and-swap) write in the same batch, so
+ * a write that lost a race doesn't still record its event.
+ */
+export interface EventGuard {
+	issueId: string;
+	stateId: string;
+	updatedAt: number;
+}
+
+/**
  * Compiled `event` insert, to be committed in the same D1 batch as the
  * mutation it describes.
  */
 export function eventInsert(
 	db: Kysely<Database>,
 	actor: ActorContext,
-	input: EventInput
+	input: EventInput,
+	guard?: EventGuard
 ): CompiledQuery {
-	return db
-		.insertInto('event')
-		.values({
-			id: newId('evt'),
-			user_id: actor.userId,
-			type: input.type,
-			actor_user_id: actor.userId,
-			actor_api_key_id: actor.apiKeyId,
-			issue_id: input.issueId ?? null,
-			project_id: input.projectId ?? null,
-			payload: JSON.stringify(input.payload ?? {}),
-			created_at: Date.now()
-		})
-		.compile();
+	const values = {
+		id: newId('evt'),
+		user_id: actor.userId,
+		type: input.type,
+		actor_user_id: actor.userId,
+		actor_api_key_id: actor.apiKeyId,
+		issue_id: input.issueId ?? null,
+		project_id: input.projectId ?? null,
+		payload: JSON.stringify(input.payload ?? {}),
+		created_at: Date.now()
+	};
+	if (!guard) return db.insertInto('event').values(values).compile();
+	return sql`
+		INSERT INTO event (id, user_id, type, actor_user_id, actor_api_key_id, issue_id, project_id, payload, created_at)
+		SELECT ${values.id}, ${values.user_id}, ${values.type}, ${values.actor_user_id}, ${values.actor_api_key_id},
+			${values.issue_id}, ${values.project_id}, ${values.payload}, ${values.created_at}
+		WHERE EXISTS (
+			SELECT 1 FROM issue
+			WHERE id = ${guard.issueId} AND state_id = ${guard.stateId} AND updated_at = ${guard.updatedAt}
+		)`.compile(db);
 }
 
 export function actorOf(row: {

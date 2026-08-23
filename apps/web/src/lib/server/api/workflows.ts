@@ -9,7 +9,14 @@ import {
 } from '@tines/shared';
 import type { CompiledQuery, Kysely } from 'kysely';
 import { newId, type Database, type WorkflowStateTable } from '$lib/server/db';
-import { ApiFail, notFound, requireString, runAtomic, type ActorContext } from './core';
+import {
+	ApiFail,
+	notFound,
+	optionalString,
+	requireString,
+	runAtomic,
+	type ActorContext
+} from './core';
 import { eventInsert } from './events';
 
 interface ResolvedState {
@@ -32,7 +39,7 @@ interface ResolvedDef {
  * state categorized backlog/active, transitions between known states, no
  * self-transitions, no duplicates.
  */
-function resolveDef(
+export function resolveDef(
 	statesInput: WorkflowStateInput[],
 	transitionsInput: WorkflowTransitionInput[],
 	initialRef: string,
@@ -137,7 +144,7 @@ function resolveDef(
 }
 
 /** Non-fatal advisories: a non-done state with no way out is probably a bug. */
-function deadEndWarnings(def: {
+export function deadEndWarnings(def: {
 	states: Pick<ResolvedState, 'id' | 'name' | 'category'>[];
 	transitions: { from_state_id: string }[];
 }): string[] {
@@ -161,7 +168,11 @@ export async function loadWorkflows(
 		.select((eb) =>
 			eb
 				.selectFrom('issue')
+				// Scope through project ownership: for the shared system
+				// workflow this must count only the requesting user's issues.
+				.innerJoin('project', 'project.id', 'issue.project_id')
 				.whereRef('issue.workflow_id', '=', 'workflow.id')
+				.where('project.user_id', '=', userId)
 				.select((eb2) => eb2.fn.countAll<number>().as('n'))
 				.as('issue_count')
 		)
@@ -235,6 +246,7 @@ export async function createWorkflow(
 	body: CreateWorkflowRequest
 ): Promise<WorkflowResponse> {
 	const name = requireString(body.name, 'name', { max: 200 }).trim();
+	const description = optionalString(body.description, 'description', { max: 10_000 }) ?? '';
 	const def = resolveDef(body.states, body.transitions ?? [], body.initial_state, []);
 
 	const now = Date.now();
@@ -246,7 +258,7 @@ export async function createWorkflow(
 				id,
 				user_id: actor.userId,
 				name,
-				description: body.description ?? '',
+				description,
 				initial_state_id: def.initialStateId,
 				created_at: now,
 				updated_at: now
@@ -300,7 +312,10 @@ export async function updateWorkflow(
 	}
 
 	const name = body.name !== undefined ? requireString(body.name, 'name', { max: 200 }).trim() : current.name;
-	const description = body.description ?? current.description;
+	const description =
+		body.description !== undefined
+			? (optionalString(body.description, 'description', { max: 10_000 }) ?? '')
+			: current.description;
 
 	const statesInput: WorkflowStateInput[] =
 		body.states ?? current.states.map((s) => ({ id: s.id, name: s.name, category: s.category }));
@@ -332,6 +347,9 @@ export async function updateWorkflow(
 	}
 
 	// Editing rule: a state cannot be deleted while any issue sits in it.
+	// This read-then-write check is racy on its own, but the FK from
+	// issue.state_id is the backstop: an issue moving into a removed state
+	// between this check and the batch makes the whole batch fail.
 	const keptIds = new Set(def.states.map((s) => s.id));
 	const removedStates = current.states.filter((s) => !keptIds.has(s.id));
 	if (removedStates.length > 0) {

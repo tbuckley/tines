@@ -103,7 +103,17 @@ export async function listIssues(
 		q = q.where((eb) =>
 			eb.or([
 				eb('issue.workflow_id', '=', w),
-				eb('issue.workflow_id', 'in', eb.selectFrom('workflow').select('id').where('name', '=', w))
+				eb(
+					'issue.workflow_id',
+					'in',
+					eb
+						.selectFrom('workflow')
+						.select('id')
+						.where('name', '=', w)
+						// Only the user's own workflows (or the system one) can
+						// match by name — never another user's.
+						.where((eb2) => eb2.or([eb2('user_id', '=', userId), eb2('user_id', 'is', null)]))
+				)
 			])
 		);
 	}
@@ -317,26 +327,45 @@ export async function transitionIssue(
 		);
 	}
 
-	await runAtomic(env, [
+	// Compare-and-swap: the update only applies while the issue is still in
+	// the state the transition was validated against, and the event insert is
+	// guarded on that same write landing — a lost race records nothing.
+	const now = Date.now();
+	const results = await runAtomic(env, [
 		db
 			.updateTable('issue')
-			.set({ state_id: target.to_state.id, updated_at: Date.now() })
+			.set({ state_id: target.to_state.id, updated_at: now })
 			.where('id', '=', id)
+			.where('state_id', '=', current.state.id)
 			.compile(),
-		eventInsert(db, actor, {
-			type: 'issue.transitioned',
-			issueId: id,
-			projectId: current.project_id,
-			payload: {
-				transition_id: target.transition_id,
-				action: target.name,
-				from_state_id: current.state.id,
-				from_state_name: current.state.name,
-				to_state_id: target.to_state.id,
-				to_state_name: target.to_state.name
-			}
-		})
+		eventInsert(
+			db,
+			actor,
+			{
+				type: 'issue.transitioned',
+				issueId: id,
+				projectId: current.project_id,
+				payload: {
+					transition_id: target.transition_id,
+					action: target.name,
+					from_state_id: current.state.id,
+					from_state_name: current.state.name,
+					to_state_id: target.to_state.id,
+					to_state_name: target.to_state.name
+				}
+			},
+			{ issueId: id, stateId: target.to_state.id, updatedAt: now }
+		)
 	]);
+	if ((results[0]?.meta.changes ?? 0) === 0) {
+		const fresh = await getIssueDetail(db, actor.userId, { id });
+		throw new ApiFail(
+			409,
+			'conflict',
+			`The issue moved to state "${fresh.state.name}" while this transition was in flight; re-check the allowed transitions`,
+			{ current_state: fresh.state, allowed_transitions: fresh.allowed_transitions }
+		);
+	}
 	return getIssueDetail(db, actor.userId, { id });
 }
 

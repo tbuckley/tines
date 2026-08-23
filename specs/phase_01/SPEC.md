@@ -31,7 +31,7 @@ An authenticated account (Better Auth, Google sign-in — already in place). Eve
 
 ### Project
 
-A named container for issues. Flat list per user. A project may set a **default workflow** used to pre-select the workflow when creating issues in it.
+A named container for issues. Flat list per user. Project **names are unique per user** — they address projects in web URLs and CLI refs (`<project>/<number>`), so a duplicate name is rejected with a 422. A project may set a **default workflow** used to pre-select the workflow when creating issues in it.
 
 ### Workflow
 
@@ -119,6 +119,7 @@ New tables alongside the existing Better Auth tables. All ids are opaque strings
 
 ```
 project             id, user_id, name, description, default_workflow_id?, created_at, updated_at
+                    -- unique on (user_id, name): names address projects in URLs and CLI refs
 workflow            id, user_id?,  name, description, initial_state_id, created_at, updated_at
                     -- user_id NULL = system workflow (the standard workflow, seeded by migration)
 workflow_state      id, workflow_id, name, category, position, created_at

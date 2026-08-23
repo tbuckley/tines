@@ -1,17 +1,11 @@
 import type { ApiKey, ApiKeyCreated } from '@tines/shared';
 import type { Kysely } from 'kysely';
-import { newId, type Database } from '$lib/server/db';
+import { newId, randomString, type Database } from '$lib/server/db';
 import { ApiFail, notFound, requireString, runAtomic, sha256Hex, type ActorContext } from './core';
 import { eventInsert } from './events';
 
-const SECRET_ALPHABET = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
-
 function generateSecret(): string {
-	const bytes = new Uint8Array(40);
-	crypto.getRandomValues(bytes);
-	let out = '';
-	for (const b of bytes) out += SECRET_ALPHABET[b % SECRET_ALPHABET.length];
-	return `tines_${out}`;
+	return `tines_${randomString(40)}`;
 }
 
 function serialize(row: {

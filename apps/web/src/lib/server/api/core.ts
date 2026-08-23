@@ -1,3 +1,4 @@
+import type { D1Result } from '@cloudflare/workers-types';
 import type { ApiErrorBody } from '@tines/shared';
 import { json, type RequestEvent } from '@sveltejs/kit';
 import type { CompiledQuery } from 'kysely';
@@ -34,6 +35,14 @@ export function api<E extends RequestEvent>(
 			return await handler(event);
 		} catch (e) {
 			if (e instanceof ApiFail) return errorResponse(e);
+			// Unique-index violations are the DB backstop behind app-level
+			// duplicate checks; a concurrent write can slip past the check and
+			// land here. Surface it as a conflict, not a server error.
+			if (e instanceof Error && e.message.includes('UNIQUE constraint failed')) {
+				return errorResponse(
+					new ApiFail(409, 'conflict', 'A concurrent write created a conflicting record; retry')
+				);
+			}
 			console.error('API error:', e);
 			return errorResponse(new ApiFail(500, 'internal', 'Internal error'));
 		}
@@ -210,9 +219,13 @@ export function pageResult<T extends { created_at: number; id: string }>(
 // runs statements in one implicit transaction, so mutations and the events
 // that describe them are committed together.
 
-export async function runAtomic(env: Env, queries: CompiledQuery[]): Promise<void> {
-	if (queries.length === 0) return;
-	await env.DB.batch(
+/**
+ * Returns one result per statement so callers can check `meta.changes` on
+ * guarded writes (e.g. the transition compare-and-swap).
+ */
+export async function runAtomic(env: Env, queries: CompiledQuery[]): Promise<D1Result[]> {
+	if (queries.length === 0) return [];
+	return env.DB.batch(
 		queries.map((q) => env.DB.prepare(q.sql).bind(...(q.parameters as unknown[])))
 	);
 }

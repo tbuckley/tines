@@ -7,6 +7,8 @@ pnpm monorepo (Node >= 20). `apps/web` is a SvelteKit (Svelte 5) app deployed to
 - `pnpm dev` — run the web app
 - `pnpm build` — build all packages
 - `pnpm check` — typecheck/svelte-check all packages
+- `pnpm test` — vitest unit tests
+- `pnpm test:e2e` — Playwright e2e suite (boots the built worker under `wrangler dev` with a seeded local D1; see `apps/web/e2e/`)
 
 ## Icons
 
