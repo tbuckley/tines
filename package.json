@@ -1,0 +1,23 @@
+{
+	"name": "tines",
+	"private": true,
+	"version": "0.0.1",
+	"type": "module",
+	"scripts": {
+		"dev": "pnpm --filter @tines/web dev",
+		"build": "pnpm -r build",
+		"check": "pnpm -r check",
+		"cli": "pnpm --filter @tines/cli start"
+	},
+	"packageManager": "pnpm@10.33.0",
+	"engines": {
+		"node": ">=20"
+	},
+	"pnpm": {
+		"onlyBuiltDependencies": [
+			"esbuild",
+			"workerd",
+			"sharp"
+		]
+	}
+}
