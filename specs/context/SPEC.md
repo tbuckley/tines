@@ -115,12 +115,15 @@ The issue block is generated (not a context item), formatted as:
 **<actor>** (<timestamp, ISO 8601>):
 <comment markdown, verbatim>
 
-*(chronological; "No comments yet." when empty)*
+*(chronological; "No comments yet." when empty. The section ends with:
+Add a comment: `tines issues comment <project>/<number> "<markdown>"`)*
 
 ### Available transitions
 
-- **<action name>** → <target state name> (<category>)
+- **<action name>** → <target state name> (<category>): `tines issues move <project>/<number> "<action name>"`
 ```
+
+Each transition carries its runnable CLI command (action name quoted, so multi-word actions like "send back" paste correctly), and the comments section header notes `tines issues comment <project>/<number> "<markdown>"` as the way to add one — so an agent holding only this prompt and a `TINES_API_KEY` knows its legal moves *and* how to make them.
 
 Assembly order is context first, issue block last — the same specific-things-last logic as the layer ordering: the agent reads how to work, then what the work is, with the task nearest the end of the prompt. The issue block is purely factual; any instructions (what "being in Review" means, how to report back) belong in context items — state-scoped prompts are the natural home for stage instructions. Tines injects no directive text of its own; that is supervisor-phase territory.
 
@@ -280,7 +283,7 @@ Done when this loop works end-to-end:
 6. All creates/edits/deletes appear in the activity feed with correct actor attribution, including via API key; an issue-scoped item's events also appear in its project's filtered feed.
 7. Deleting the *Review* state (via workflow PATCH) without `force_delete_context` is rejected with a 422 naming the attached items; retrying with the flag succeeds, reports the swept items, and emits a `context.deleted` event per item. The same posture holds for project and workflow deletion.
 8. The Context tab lists every item with accurate scope chips; `GET /api/v1/context?project=Tines` returns the project's items including `project ∧ state` and `issue ∧ project` ones, and `exact=true` narrows to project-only.
-9. `tines issues prompt tines/1` prints the stitched context followed by the issue block — title, description, current state, every comment with its actor, and the allowed transitions with their target states; the same text appears in the issue page's launch-prompt dialog and copies to the clipboard. Adding a comment or transitioning the issue changes the next read accordingly.
+9. `tines issues prompt tines/1` prints the stitched context followed by the issue block — title, description, current state, every comment with its actor, and the allowed transitions each with its runnable `tines issues move` command (multi-word actions quoted); the same text appears in the issue page's launch-prompt dialog and copies to the clipboard. Adding a comment or transitioning the issue changes the next read accordingly, and pasting a transition's command from the prompt performs that transition.
 
 ## Resolved questions
 
@@ -302,4 +305,4 @@ From the spec review:
 - **Dedup key**: item name, uniformly for skills and repos; repo URLs are never compared or normalized.
 - **Unknown kinds**: strict 422s now; open-endedness is a schema-design property, not API leniency.
 - **Uniqueness enforcement**: API layer only; the scope index is non-unique.
-- **Launch prompt**: context items are context; the issue itself (title, description, state, comments, transitions) is appended as a generated issue block to form the full prompt an agent would run with. Exposed as `GET /api/v1/issues/:id/prompt`, `tines issues prompt`, and a copyable dialog on the issue page — kept out of the effective-context preview, which stays context-only.
+- **Launch prompt**: context items are context; the issue itself (title, description, state, comments, transitions) is appended as a generated issue block to form the full prompt an agent would run with. Exposed as `GET /api/v1/issues/:id/prompt`, `tines issues prompt`, and a copyable dialog on the issue page — kept out of the effective-context preview, which stays context-only. The issue block includes the runnable CLI commands for each available transition and for commenting, so the prompt alone tells an agent how to act, not just what its options are.
