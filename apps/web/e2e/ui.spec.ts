@@ -51,6 +51,33 @@ test('a signed-in visit to / lands on the issues list', async ({ page }) => {
 	await expect(page.getByRole('link', { name: new RegExp(issueTitle) })).toBeVisible();
 });
 
+test('an issue can be created from the issues list, picking project and starting state', async ({ page }) => {
+	await page.goto('/issues');
+	const dialog = page.getByRole('dialog', { name: 'New issue' });
+	await clickUntil(page.getByRole('button', { name: /New issue/ }), async () => {
+		await expect(dialog).toBeVisible({ timeout: 2_000 });
+	});
+	await dialog.getByLabel('Project', { exact: true }).selectOption({ label: projectName });
+	await dialog.getByLabel('Title').fill(`From the list ${runId}`);
+	await dialog.getByLabel('Starting state').selectOption({ label: 'Human Review' });
+	await dialog.getByRole('button', { name: 'Create issue' }).click();
+
+	// Lands on the new issue's detail page, already in the chosen state.
+	await expect(page).toHaveURL(new RegExp(`/issues/${projectName}/\\d+$`));
+	await expect(page.getByRole('heading', { name: `From the list ${runId}` })).toBeVisible();
+	await expect(stateBadge(page)).toHaveText(/Human Review/);
+});
+
+test('the mobile layout swaps the header tabs for a bottom bar', async ({ page }) => {
+	await page.setViewportSize({ width: 390, height: 844 });
+	await page.goto('/issues');
+	const bottomNav = page.getByRole('navigation', { name: 'Primary' });
+	await expect(bottomNav).toBeVisible();
+	await expect(bottomNav.getByRole('link', { name: 'Workflows' })).toBeVisible();
+	// The desktop tab strip is hidden at this width.
+	await expect(page.locator('header').getByRole('link', { name: 'Workflows' })).toBeHidden();
+});
+
 test('issue detail renders markdown, transitions, and comments', async ({ page }) => {
 	await page.goto(`/issues/${encodeURIComponent(projectName)}/${issue.number}`);
 

@@ -13,6 +13,7 @@
 	import WorkflowGraph from '$lib/components/WorkflowGraph.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
+	import { Select } from '$lib/components/ui/select/index.js';
 	import { Textarea } from '$lib/components/ui/textarea/index.js';
 	import { actorLabel, prefersReducedMotion, relativeTime } from '$lib/format';
 
@@ -62,6 +63,48 @@
 			showError(e);
 		} finally {
 			transitioning = false;
+		}
+	}
+
+	// --- fallback: set any state, or move to another workflow -------------------
+
+	let overrideWorkflowId = $state('');
+	let overrideStateId = $state('');
+	$effect(() => {
+		overrideWorkflowId = data.issue.workflow.id;
+	});
+	const overrideWorkflow = $derived(
+		data.workflows.find((w) => w.id === overrideWorkflowId) ?? data.issue.workflow
+	);
+	// Staying on the current workflow starts from the current state; a new
+	// workflow starts from its initial state.
+	$effect(() => {
+		overrideStateId =
+			overrideWorkflowId === data.issue.workflow.id
+				? currentState.id
+				: overrideWorkflow.initial_state_id;
+	});
+
+	const overrideDirty = $derived(
+		overrideWorkflowId !== data.issue.workflow.id || overrideStateId !== currentState.id
+	);
+	let applyingOverride = $state(false);
+	async function applyOverride(e: SubmitEvent) {
+		e.preventDefault();
+		if (applyingOverride || !overrideDirty) return;
+		applyingOverride = true;
+		try {
+			await api.updateIssue(data.issue.id, {
+				...(overrideWorkflowId !== data.issue.workflow.id
+					? { workflow_id: overrideWorkflowId }
+					: {}),
+				state: overrideStateId
+			});
+			await invalidateAll();
+		} catch (err) {
+			showError(err);
+		} finally {
+			applyingOverride = false;
 		}
 	}
 
@@ -153,11 +196,17 @@
 					<Button type="button" size="sm" variant="ghost" onclick={() => (editingTitle = false)}>Cancel</Button>
 				</form>
 			{:else}
-				<h1
-					class="group mt-1 flex items-center gap-2 text-2xl font-semibold tracking-tight"
-					style:view-transition-name="issue-title-{data.issue.id}"
-				>
-					{data.issue.title}
+				<h1 class="group mt-1 flex items-center gap-2 text-2xl font-semibold tracking-tight">
+					<!-- The transition name sits on a text-hugging span (not the h1,
+					     whose width includes the edit affordance) so the morph from
+					     the list row scales cleanly. -->
+					<span
+						class="min-w-0"
+						style:view-transition-name="issue-title-{data.issue.id}"
+						style:view-transition-class="vt-fit"
+					>
+						{data.issue.title}
+					</span>
 					<button
 						class="text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100"
 						onclick={() => {
@@ -171,7 +220,10 @@
 				</h1>
 			{/if}
 		</div>
-		<span style:view-transition-name="issue-state-{data.issue.id}">
+		<span
+			style:view-transition-name="issue-state-{data.issue.id}"
+			style:view-transition-class="vt-fit"
+		>
 			<StateBadge state={currentState} class="text-sm" />
 		</span>
 	</div>
@@ -290,6 +342,41 @@
 				Workflow:
 				<a href="/workflows/{data.issue.workflow.id}" class="hover:underline">{data.issue.workflow.name}</a>
 			</p>
+
+			<!-- escape hatch: jump to any state, or move onto another workflow -->
+			<details class="mt-4 border-t pt-3">
+				<summary class="text-muted-foreground hover:text-foreground cursor-pointer text-xs select-none">
+					Move directly…
+				</summary>
+				<form onsubmit={applyOverride} class="mt-3 space-y-3">
+					<div class="space-y-1">
+						<label class="text-muted-foreground text-xs font-medium" for="override-workflow">Workflow</label>
+						<Select id="override-workflow" bind:value={overrideWorkflowId} class="h-8 text-xs">
+							{#each data.workflows as workflow (workflow.id)}
+								<option value={workflow.id}>
+									{workflow.name}{workflow.is_system ? ' (standard)' : ''}
+								</option>
+							{/each}
+						</Select>
+					</div>
+					<div class="space-y-1">
+						<label class="text-muted-foreground text-xs font-medium" for="override-state">State</label>
+						<Select id="override-state" bind:value={overrideStateId} class="h-8 text-xs">
+							{#each overrideWorkflow.states as state (state.id)}
+								<option value={state.id}>
+									{state.name}{overrideWorkflowId === data.issue.workflow.id && state.id === currentState.id ? ' — current' : ''}
+								</option>
+							{/each}
+						</Select>
+					</div>
+					<div class="flex items-center gap-2">
+						<Button type="submit" size="sm" variant="outline" disabled={!overrideDirty || applyingOverride}>
+							{applyingOverride ? 'Moving…' : 'Move'}
+						</Button>
+						<p class="text-muted-foreground text-xs">Bypasses the workflow's transitions.</p>
+					</div>
+				</form>
+			</details>
 		</section>
 
 		<!-- this issue's slice of the activity log -->

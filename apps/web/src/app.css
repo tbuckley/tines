@@ -260,6 +260,18 @@
 	animation-duration: 180ms;
 }
 
+/*
+ * Shared elements whose size differs between pages (issue titles morphing
+ * between the list row and the detail heading): scale the snapshots with the
+ * group's height instead of stretching them to its width, so text keeps its
+ * proportions mid-flight rather than briefly rendering at banner size.
+ */
+::view-transition-old(*.vt-fit),
+::view-transition-new(*.vt-fit) {
+	height: 100%;
+	width: auto;
+}
+
 @media (prefers-reduced-motion: reduce) {
 	::view-transition-old(root),
 	::view-transition-new(root) {

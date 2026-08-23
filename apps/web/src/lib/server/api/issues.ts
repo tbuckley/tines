@@ -8,9 +8,10 @@ import type {
 	StateCategory,
 	TransitionIssueRequest,
 	UpdateIssueRequest,
-	WorkflowResponse
+	WorkflowResponse,
+	WorkflowState
 } from '@tines/shared';
-import { sql, type Kysely } from 'kysely';
+import { sql, type CompiledQuery, type Kysely } from 'kysely';
 import { newId, type Database } from '$lib/server/db';
 import {
 	ApiFail,
@@ -151,6 +152,24 @@ export function allowedTransitions(
 		});
 }
 
+/** Resolves a state reference (id or name) within a workflow, or 422s. */
+export function resolveStateRef(
+	workflow: WorkflowResponse,
+	ref: string,
+	field = 'state'
+): WorkflowState {
+	const state = workflow.states.find((s) => s.id === ref) ?? workflow.states.find((s) => s.name === ref);
+	if (!state) {
+		throw new ApiFail(
+			422,
+			'unknown_state',
+			`Workflow "${workflow.name}" has no state "${ref}"`,
+			{ field, known_states: workflow.states.map((s) => ({ id: s.id, name: s.name })) }
+		);
+	}
+	return state;
+}
+
 async function loadComments(db: Kysely<Database>, issueId: string): Promise<Comment[]> {
 	const rows = await db
 		.selectFrom('comment')
@@ -224,6 +243,9 @@ export async function createIssue(
 			field: 'workflow_id'
 		});
 	});
+	const initialState = body.state
+		? resolveStateRef(workflow, requireString(body.state, 'state', { max: 100 }).trim())
+		: resolveStateRef(workflow, workflow.initial_state_id);
 
 	const now = Date.now();
 	const id = newId('iss');
@@ -239,7 +261,7 @@ export async function createIssue(
 				title,
 				description,
 				workflow_id: workflow.id,
-				state_id: workflow.initial_state_id,
+				state_id: initialState.id,
 				created_at: now,
 				updated_at: now
 			})
@@ -248,7 +270,7 @@ export async function createIssue(
 			type: 'issue.created',
 			issueId: id,
 			projectId,
-			payload: { title, workflow_id: workflow.id }
+			payload: { title, workflow_id: workflow.id, state_id: initialState.id, state_name: initialState.name }
 		})
 	]);
 	return getIssueDetail(db, actor.userId, { id });
@@ -266,24 +288,93 @@ export async function updateIssue(
 	const description =
 		body.description !== undefined ? (optionalString(body.description, 'description') ?? '') : current.description;
 
+	// Workflow move and forced state set: the escape hatch beside
+	// transitionIssue's guarded moves.
+	let workflow = current.workflow;
+	if (body.workflow_id !== undefined) {
+		const ref = requireString(body.workflow_id, 'workflow_id', { max: 100 }).trim();
+		if (ref !== current.workflow.id) {
+			workflow = await loadWorkflow(db, actor.userId, ref).catch(() => {
+				throw new ApiFail(422, 'unknown_workflow', `Workflow "${ref}" does not exist`, {
+					field: 'workflow_id'
+				});
+			});
+		}
+	}
+	const workflowChanged = workflow.id !== current.workflow.id;
+	let nextState = current.state;
+	if (body.state !== undefined) {
+		nextState = resolveStateRef(workflow, requireString(body.state, 'state', { max: 100 }).trim());
+	} else if (workflowChanged) {
+		nextState = resolveStateRef(workflow, workflow.initial_state_id);
+	}
+	const stateChanged = nextState.id !== current.state.id;
+
 	const changed: string[] = [];
 	if (title !== current.title) changed.push('title');
 	if (description !== current.description) changed.push('description');
-	if (changed.length === 0) return current;
+	if (workflowChanged) changed.push('workflow');
+	if (changed.length === 0 && !stateChanged) return current;
 
-	await runAtomic(env, [
-		db
-			.updateTable('issue')
-			.set({ title, description, updated_at: Date.now() })
-			.where('id', '=', id)
-			.compile(),
-		eventInsert(db, actor, {
-			type: 'issue.updated',
-			issueId: id,
-			projectId: current.project_id,
-			payload: { changed, title }
-		})
-	]);
+	// Compare-and-swap on the state whenever it (or the workflow) moves, so a
+	// concurrent transition can't be silently overwritten; the events are
+	// guarded on the same write landing.
+	const now = Date.now();
+	const guarded = stateChanged || workflowChanged;
+	let update = db
+		.updateTable('issue')
+		.set({ title, description, workflow_id: workflow.id, state_id: nextState.id, updated_at: now })
+		.where('id', '=', id);
+	if (guarded) update = update.where('state_id', '=', current.state.id);
+	const guard = guarded ? { issueId: id, stateId: nextState.id, updatedAt: now } : undefined;
+
+	const queries: CompiledQuery[] = [update.compile()];
+	if (changed.length > 0) {
+		const payload: Record<string, unknown> = { changed, title };
+		if (workflowChanged) {
+			payload.workflow_from_id = current.workflow.id;
+			payload.workflow_from_name = current.workflow.name;
+			payload.workflow_to_id = workflow.id;
+			payload.workflow_to_name = workflow.name;
+			payload.from_state_name = current.state.name;
+			payload.to_state_name = nextState.name;
+		}
+		queries.push(
+			eventInsert(db, actor, { type: 'issue.updated', issueId: id, projectId: current.project_id, payload }, guard)
+		);
+	}
+	if (stateChanged && !workflowChanged) {
+		queries.push(
+			eventInsert(
+				db,
+				actor,
+				{
+					type: 'issue.transitioned',
+					issueId: id,
+					projectId: current.project_id,
+					payload: {
+						forced: true,
+						from_state_id: current.state.id,
+						from_state_name: current.state.name,
+						to_state_id: nextState.id,
+						to_state_name: nextState.name
+					}
+				},
+				guard
+			)
+		);
+	}
+
+	const results = await runAtomic(env, queries);
+	if (guarded && (results[0]?.meta.changes ?? 0) === 0) {
+		const fresh = await getIssueDetail(db, actor.userId, { id });
+		throw new ApiFail(
+			409,
+			'conflict',
+			`The issue moved to state "${fresh.state.name}" while this update was in flight; re-check and retry`,
+			{ current_state: fresh.state, allowed_transitions: fresh.allowed_transitions }
+		);
+	}
 	return getIssueDetail(db, actor.userId, { id });
 }
 

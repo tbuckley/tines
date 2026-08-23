@@ -1,6 +1,7 @@
 import type { WorkflowResponse } from '@tines/shared';
 import { describe, expect, it } from 'vitest';
-import { allowedTransitions } from './issues';
+import { ApiFail } from './core';
+import { allowedTransitions, resolveStateRef } from './issues';
 
 const workflow: WorkflowResponse = {
 	id: 'wf_1',
@@ -40,5 +41,31 @@ describe('allowedTransitions', () => {
 
 	it('returns an empty list for terminal states', () => {
 		expect(allowedTransitions(workflow, 's_closed')).toEqual([]);
+	});
+});
+
+describe('resolveStateRef', () => {
+	it('resolves by id', () => {
+		expect(resolveStateRef(workflow, 's_review').name).toBe('Review');
+	});
+
+	it('resolves by name', () => {
+		expect(resolveStateRef(workflow, 'Review').id).toBe('s_review');
+	});
+
+	it('throws a 422 listing the known states for an unknown reference', () => {
+		let caught: unknown;
+		try {
+			resolveStateRef(workflow, 'Nope');
+		} catch (e) {
+			caught = e;
+		}
+		expect(caught).toBeInstanceOf(ApiFail);
+		const fail = caught as ApiFail;
+		expect(fail.status).toBe(422);
+		expect(fail.code).toBe('unknown_state');
+		expect(fail.details?.known_states).toEqual(
+			workflow.states.map((s) => ({ id: s.id, name: s.name }))
+		);
 	});
 });

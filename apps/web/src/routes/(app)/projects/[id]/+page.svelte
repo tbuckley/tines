@@ -9,7 +9,7 @@
 	import { api } from '$lib/api';
 	import IssueList from '$lib/components/IssueList.svelte';
 	import Modal from '$lib/components/Modal.svelte';
-	import WorkflowGraph from '$lib/components/WorkflowGraph.svelte';
+	import NewIssueModal from '$lib/components/NewIssueModal.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { Select } from '$lib/components/ui/select/index.js';
@@ -26,44 +26,7 @@
 		setTimeout(() => (errorMessage = null), 6000);
 	}
 
-	// --- new issue --------------------------------------------------------------
-
 	let newIssueOpen = $state(false);
-	let issueTitle = $state('');
-	let issueDescription = $state('');
-	let issueWorkflowId = $state('');
-	let creatingIssue = $state(false);
-
-	// Default workflow: project default, else the standard workflow.
-	const defaultWorkflowId = $derived(
-		data.project.default_workflow_id ?? data.workflows.find((w) => w.is_system)?.id ?? ''
-	);
-	$effect(() => {
-		if (!newIssueOpen) issueWorkflowId = defaultWorkflowId;
-	});
-	const pickedWorkflow = $derived(data.workflows.find((w) => w.id === issueWorkflowId));
-
-	async function createIssue(e: SubmitEvent) {
-		e.preventDefault();
-		if (creatingIssue) return;
-		creatingIssue = true;
-		try {
-			const issue = await api.createIssue(data.project.id, {
-				title: issueTitle,
-				description: issueDescription || undefined,
-				workflow_id: issueWorkflowId || undefined
-			});
-			newIssueOpen = false;
-			issueTitle = '';
-			issueDescription = '';
-			await invalidateAll();
-			await goto(`/issues/${encodeURIComponent(issue.project_name)}/${issue.number}`);
-		} catch (err) {
-			showError(err);
-		} finally {
-			creatingIssue = false;
-		}
-	}
 
 	// --- settings ----------------------------------------------------------------
 
@@ -165,39 +128,12 @@
 <IssueList issues={data.issues} showProject={false} emptyMessage="No issues in this project yet." />
 
 <!-- new issue -->
-<Modal bind:open={newIssueOpen} title="New issue in {data.project.name}">
-	<form onsubmit={createIssue} class="space-y-4">
-		<div class="space-y-1.5">
-			<label class="text-sm font-medium" for="issue-title">Title</label>
-			<Input id="issue-title" bind:value={issueTitle} placeholder="What needs doing?" required />
-		</div>
-		<div class="space-y-1.5">
-			<label class="text-sm font-medium" for="issue-description">Description (Markdown)</label>
-			<Textarea id="issue-description" bind:value={issueDescription} rows={4} />
-		</div>
-		<div class="space-y-1.5">
-			<label class="text-sm font-medium" for="issue-workflow">Workflow</label>
-			<Select id="issue-workflow" bind:value={issueWorkflowId}>
-				{#each data.workflows as workflow (workflow.id)}
-					<option value={workflow.id}>
-						{workflow.name}{workflow.is_system ? ' (standard)' : ''}{workflow.id === defaultWorkflowId ? ' — default' : ''}
-					</option>
-				{/each}
-			</Select>
-			{#if pickedWorkflow}
-				<div class="bg-muted/40 mt-2 rounded-md border p-2">
-					<WorkflowGraph workflow={pickedWorkflow} compact />
-				</div>
-			{/if}
-		</div>
-		<div class="flex justify-end gap-2">
-			<Button type="button" variant="ghost" onclick={() => (newIssueOpen = false)}>Cancel</Button>
-			<Button type="submit" disabled={creatingIssue || !issueTitle.trim()}>
-				{creatingIssue ? 'Creating…' : 'Create issue'}
-			</Button>
-		</div>
-	</form>
-</Modal>
+<NewIssueModal
+	bind:open={newIssueOpen}
+	projects={[data.project]}
+	workflows={data.workflows}
+	project={data.project}
+/>
 
 <!-- settings -->
 <Modal bind:open={settingsOpen} title="Project settings">

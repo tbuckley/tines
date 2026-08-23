@@ -1,7 +1,11 @@
 <script lang="ts">
+	import IconActivity from '@tabler/icons-svelte/icons/activity';
 	import IconArrowsSplit2 from '@tabler/icons-svelte/icons/arrows-split-2';
+	import IconFolder from '@tabler/icons-svelte/icons/folder';
 	import IconKey from '@tabler/icons-svelte/icons/key';
+	import IconListDetails from '@tabler/icons-svelte/icons/list-details';
 	import IconLogout from '@tabler/icons-svelte/icons/logout';
+	import IconSitemap from '@tabler/icons-svelte/icons/sitemap';
 	import { goto, invalidateAll, onNavigate } from '$app/navigation';
 	import { page } from '$app/state';
 	import { authClient } from '$lib/auth-client';
@@ -11,10 +15,10 @@
 	let { data, children } = $props();
 
 	const tabs = [
-		{ href: '/issues', label: 'Issues' },
-		{ href: '/workflows', label: 'Workflows' },
-		{ href: '/projects', label: 'Projects' },
-		{ href: '/activity', label: 'Activity' }
+		{ href: '/issues', label: 'Issues', icon: IconListDetails },
+		{ href: '/workflows', label: 'Workflows', icon: IconSitemap },
+		{ href: '/projects', label: 'Projects', icon: IconFolder },
+		{ href: '/activity', label: 'Activity', icon: IconActivity }
 	];
 
 	let menuOpen = $state(false);
@@ -58,7 +62,8 @@
 				</span>
 				Tines
 			</a>
-			<nav class="flex h-full items-center gap-1">
+			<!-- On phones the tabs live in the bottom bar instead. -->
+			<nav class="hidden h-full items-center gap-1 sm:flex">
 				{#each tabs as tab (tab.href)}
 					{@const active = page.url.pathname.startsWith(tab.href)}
 					<a
@@ -128,7 +133,30 @@
 		</div>
 	</header>
 
-	<main class="mx-auto w-full max-w-6xl flex-1 px-4 py-8">
+	<main class="mx-auto w-full max-w-6xl flex-1 px-4 py-8 pb-24 sm:pb-8">
 		{@render children()}
 	</main>
+
+	<!-- mobile bottom tab bar -->
+	<nav
+		class="bg-background/95 fixed inset-x-0 bottom-0 z-40 border-t backdrop-blur sm:hidden"
+		style="padding-bottom: env(safe-area-inset-bottom)"
+		aria-label="Primary"
+	>
+		<div class="grid h-16 grid-cols-4">
+			{#each tabs as tab (tab.href)}
+				{@const active = page.url.pathname.startsWith(tab.href)}
+				<a
+					href={tab.href}
+					class="flex flex-col items-center justify-center gap-1 text-[0.6875rem] font-medium transition-colors {active
+						? 'text-foreground'
+						: 'text-muted-foreground'}"
+					aria-current={active ? 'page' : undefined}
+				>
+					<tab.icon size={20} stroke={active ? 2 : 1.5} />
+					{tab.label}
+				</a>
+			{/each}
+		</div>
+	</nav>
 </div>

@@ -1,17 +1,27 @@
 <script lang="ts">
+	import IconPlus from '@tabler/icons-svelte/icons/plus';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import IssueList from '$lib/components/IssueList.svelte';
+	import NewIssueModal from '$lib/components/NewIssueModal.svelte';
+	import { Button } from '$lib/components/ui/button/index.js';
 	import { Select } from '$lib/components/ui/select/index.js';
 	import { CATEGORY_LABELS } from '$lib/format';
 	import { STATE_CATEGORIES } from '@tines/shared';
 
 	let { data } = $props();
 
+	let newIssueOpen = $state(false);
+
 	// Distinct state names across the library, for the state filter.
 	const stateNames = $derived([
 		...new Set(data.workflows.flatMap((w) => w.states.map((s) => s.name)))
 	]);
+
+	// The project filter holds a name; the modal preselects by id.
+	const filteredProjectId = $derived(
+		data.projects.find((p) => p.name === data.filters.project)?.id ?? null
+	);
 
 	function setFilter(key: string, value: string) {
 		const params = new URLSearchParams(page.url.searchParams);
@@ -23,10 +33,16 @@
 
 <svelte:head><title>Issues · Tines</title></svelte:head>
 
+<div class="mb-6 flex items-center justify-between gap-3">
+	<h1 class="text-2xl font-semibold tracking-tight">Issues</h1>
+	<Button onclick={() => (newIssueOpen = true)} disabled={data.projects.length === 0}>
+		<IconPlus size={16} /> New issue
+	</Button>
+</div>
+
 <div class="mb-6 flex flex-wrap items-center gap-3">
-	<h1 class="mr-auto text-2xl font-semibold tracking-tight">Issues</h1>
 	<Select
-		class="w-40"
+		class="w-40 max-sm:min-w-36 max-sm:flex-1"
 		value={data.filters.project ?? ''}
 		onchange={(e) => setFilter('project', e.currentTarget.value)}
 		aria-label="Filter by project"
@@ -37,7 +53,7 @@
 		{/each}
 	</Select>
 	<Select
-		class="w-40"
+		class="w-40 max-sm:min-w-36 max-sm:flex-1"
 		value={data.filters.state ?? ''}
 		onchange={(e) => setFilter('state', e.currentTarget.value)}
 		aria-label="Filter by state"
@@ -48,7 +64,7 @@
 		{/each}
 	</Select>
 	<Select
-		class="w-44"
+		class="w-44 max-sm:min-w-36 max-sm:flex-1"
 		value={data.filters.category ?? ''}
 		onchange={(e) => setFilter('category', e.currentTarget.value)}
 		aria-label="Filter by category"
@@ -67,6 +83,13 @@
 		Show done
 	</label>
 </div>
+
+<NewIssueModal
+	bind:open={newIssueOpen}
+	projects={data.projects}
+	workflows={data.workflows}
+	defaultProjectId={filteredProjectId}
+/>
 
 <IssueList
 	issues={data.issues}

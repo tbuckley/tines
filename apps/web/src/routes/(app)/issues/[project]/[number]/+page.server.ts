@@ -1,6 +1,7 @@
 import { error } from '@sveltejs/kit';
 import { eventQuery, serializeEvent } from '$lib/server/api/events';
 import { getIssueDetail } from '$lib/server/api/issues';
+import { loadWorkflows } from '$lib/server/api/workflows';
 import { getDb } from '$lib/server/db';
 import type { PageServerLoad } from './$types';
 
@@ -25,12 +26,15 @@ export const load: PageServerLoad = async ({ locals, platform, params }) => {
 		error(404, 'Not found');
 	});
 
-	const eventRows = await eventQuery(db, userId)
-		.where('event.issue_id', '=', issue.id)
-		.orderBy('event.created_at desc')
-		.orderBy('event.id desc')
-		.limit(100)
-		.execute();
+	const [eventRows, workflows] = await Promise.all([
+		eventQuery(db, userId)
+			.where('event.issue_id', '=', issue.id)
+			.orderBy('event.created_at desc')
+			.orderBy('event.id desc')
+			.limit(100)
+			.execute(),
+		loadWorkflows(db, userId)
+	]);
 
-	return { issue, events: eventRows.map(serializeEvent) };
+	return { issue, events: eventRows.map(serializeEvent), workflows };
 };
