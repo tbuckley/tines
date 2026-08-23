@@ -1,0 +1,20 @@
+node_modules/
+
+# SvelteKit / Vite
+.svelte-kit/
+build/
+dist/
+vite.config.ts.timestamp-*
+
+# Cloudflare
+.wrangler/
+.dev.vars
+
+# Env
+.env
+.env.*
+!.env.example
+
+# Misc
+.DS_Store
+*.log

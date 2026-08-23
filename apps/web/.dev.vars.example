@@ -1,0 +1,8 @@
+# Copy to .dev.vars (gitignored) for local development.
+BETTER_AUTH_SECRET=dev-secret-change-me
+BETTER_AUTH_URL=http://localhost:5173
+
+# From https://console.cloud.google.com/apis/credentials — OAuth 2.0 Client ID.
+# Authorized redirect URI: http://localhost:5173/api/auth/callback/google
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=
