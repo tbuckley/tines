@@ -95,6 +95,37 @@ Within a layer, items order by `position`, then `created_at`, then `id` (timesta
 
 The effective context is computed on read — nothing is materialized or snapshotted. Because state is a dimension, **an issue's effective context changes as it transitions**; that is a feature (review context appears in review), and the issue page makes the dependence visible. A future supervisor must read the effective context **after** taking the transition it acts on (or snapshot at launch — a supervisor-phase concern); this spec deliberately does not freeze context at any point.
 
+### Launch prompt for an issue
+
+Context items are just context — background an agent works *within*. For an agent to actually take on an issue it also needs the issue itself. The **launch prompt** is the full text an agent would be started with: the stitched context followed by a generated **issue block** containing the issue's title, description, current state, comments, and available transitions.
+
+The issue block is generated (not a context item), formatted as:
+
+```markdown
+## Issue: <project>/<number> — <title>
+
+<description markdown, verbatim>
+
+### Current state
+
+<state name> (<category>), in workflow "<workflow name>".
+
+### Comments
+
+**<actor>** (<timestamp, ISO 8601>):
+<comment markdown, verbatim>
+
+*(chronological; "No comments yet." when empty)*
+
+### Available transitions
+
+- **<action name>** → <target state name> (<category>)
+```
+
+Assembly order is context first, issue block last — the same specific-things-last logic as the layer ordering: the agent reads how to work, then what the work is, with the task nearest the end of the prompt. The issue block is purely factual; any instructions (what "being in Review" means, how to report back) belong in context items — state-scoped prompts are the natural home for stage instructions. Tines injects no directive text of its own; that is supervisor-phase territory.
+
+The launch prompt is a read-time formatting of data that already exists, so it stays perfectly in sync with the issue and emits no events. Launching agents with it is explicitly out of scope — for now the user copies it from the UI, or an agent reads it via the CLI.
+
 ### Events
 
 New event types in the global stream, emitted transactionally like all others:
@@ -145,6 +176,7 @@ Under `/api/v1/*` with the existing auth and conventions (cursor pagination, str
 | `POST /api/v1/context` | Create an item: kind, name, scope, payload (prompt body / skill files / repo fields) in one request. |
 | `GET/PATCH/DELETE /api/v1/context/:id` | Read (skills include files) / update / delete. |
 | `GET /api/v1/issues/:id/context` | **Effective context** — see response shape below. |
+| `GET /api/v1/issues/:id/prompt` | **Launch prompt** — `{ "text": "…" }`, the stitched context plus the generated issue block. A pure formatter over the context response and the issue read; consumers needing structure use those endpoints. |
 
 **List filter semantics — "scope includes".** `project=X` matches every item whose scope includes project X (project-only, `project ∧ state`, `issue ∧ project`, …); likewise `state=` and `issue=`. Multiple dimension filters AND together. Adding **`exact=true`** restricts to items whose scope sets *only* the given dimensions — the editor's "items scoped exactly here" views. There is no separate `scoped_to` parameter.
 
@@ -184,6 +216,7 @@ tines context create --kind repo   --name <n> [scope flags] --url <u> [--branch 
 tines context edit <id> [same flags] [--unset project|state|issue] [--remove-file <path>]
 tines context delete <id>
 tines issues context <project>/<number> [--json] [--out <dir>] [--force]
+tines issues prompt <project>/<number> [--json]
 ```
 
 Conventions:
@@ -193,7 +226,9 @@ Conventions:
 - `--file <path>=@<local>` maps a workspace path to a local file's content; content always comes from a file (no inline form). Workspace paths cannot contain `=` (enforced server-side too), so the first `=` is the separator.
 - `edit` uses the same flags as `create` plus `--unset` to drop a scope dimension and `--remove-file` to drop a skill file; supplying `--file` for an existing path replaces that file.
 
-`tines issues context` is the consumption stub: it prints the stitched prompt (or the full response structure with `--json`), and `--out <dir>` writes the bundle to disk — `prompt.md` (the stitched text, headings included), `skills/<name>/<files…>`, and `repos.json` (the response's `repos` array verbatim: name, url, branch, resolved dir). `--out` refuses a non-empty directory unless `--force` is passed, and refuses entirely while the response reports `conflicts`. This is exactly the shape a launcher script or future supervisor would seed into a workspace. Nothing else consumes context yet.
+`tines issues context` is the consumption stub: it prints the stitched prompt (or the full response structure with `--json`), and `--out <dir>` writes the bundle to disk — `prompt.md` (the stitched text, headings included), `skills/<name>/<files…>`, and `repos.json` (the response's `repos` array verbatim: name, url, branch, resolved dir). `--out` refuses a non-empty directory unless `--force` is passed, and refuses entirely while the response reports `conflicts`. This is exactly the shape a launcher script or future supervisor would seed into a workspace.
+
+`tines issues prompt` prints the launch prompt — context plus issue block — so a human can pipe or paste it, and an agent pointed at the CLI can read its own brief. Nothing else consumes context yet.
 
 ## Web UI
 
@@ -207,7 +242,8 @@ Which scopes appear where: each element's page lists items whose scope **include
 
 - **Issue detail** gains a **Context** panel with two parts:
   - **This issue's context**: items whose scope includes this issue (all four issue-anchored scope shapes), with inline create/edit — the quick path for "give this issue a note/skill/repo".
-  - **Effective context** (collapsed by default): the assembled bundle — the stitched prompt rendered with a subtle source badge per part, the skill list, the repo list, overridden items struck-through with what beat them, and a warning for checkout-dir conflicts. A caption notes the current state, since transitioning changes the set; when the issue transitions, the panel updates with the same animation language as the rest of the page (entering/leaving items slide/fade, respecting `prefers-reduced-motion`).
+  - **Effective context** (collapsed by default): the assembled bundle — the stitched prompt rendered with a subtle source badge per part, the skill list, the repo list, overridden items struck-through with what beat them, and a warning for checkout-dir conflicts. A caption notes the current state, since transitioning changes the set; when the issue transitions, the panel updates with the same animation language as the rest of the page (entering/leaving items slide/fade, respecting `prefers-reduced-motion`). The panel shows **context only** — the issue block is not previewed here, since the rest of the page *is* the issue.
+  - A **View launch prompt** action on the panel opens the full prompt (context + issue block) in a dialog: rendered and raw views, with a copy-to-clipboard button — the manual path for launching an agent by hand until the supervisor exists.
 - **Project detail** gains a **Context** section: project-only items first, then `project ∧ state` items grouped under their state names (issue-anchored items excluded per the rule above). Inline create defaults the scope to this project, with an optional "only in state…" refinement.
 - **Workflow detail** shows, per state, a small context indicator (count badge on the state's row/node); selecting a state reveals its non-issue-anchored items — `state`-only and `project ∧ state` (labeled with their project). Inline create defaults to that state. This is also where state removal warns about attached context and offers the forced delete with the item list.
 
@@ -244,6 +280,7 @@ Done when this loop works end-to-end:
 6. All creates/edits/deletes appear in the activity feed with correct actor attribution, including via API key; an issue-scoped item's events also appear in its project's filtered feed.
 7. Deleting the *Review* state (via workflow PATCH) without `force_delete_context` is rejected with a 422 naming the attached items; retrying with the flag succeeds, reports the swept items, and emits a `context.deleted` event per item. The same posture holds for project and workflow deletion.
 8. The Context tab lists every item with accurate scope chips; `GET /api/v1/context?project=Tines` returns the project's items including `project ∧ state` and `issue ∧ project` ones, and `exact=true` narrows to project-only.
+9. `tines issues prompt tines/1` prints the stitched context followed by the issue block — title, description, current state, every comment with its actor, and the allowed transitions with their target states; the same text appears in the issue page's launch-prompt dialog and copies to the clipboard. Adding a comment or transitioning the issue changes the next read accordingly.
 
 ## Resolved questions
 
@@ -265,3 +302,4 @@ From the spec review:
 - **Dedup key**: item name, uniformly for skills and repos; repo URLs are never compared or normalized.
 - **Unknown kinds**: strict 422s now; open-endedness is a schema-design property, not API leniency.
 - **Uniqueness enforcement**: API layer only; the scope index is non-unique.
+- **Launch prompt**: context items are context; the issue itself (title, description, state, comments, transitions) is appended as a generated issue block to form the full prompt an agent would run with. Exposed as `GET /api/v1/issues/:id/prompt`, `tines issues prompt`, and a copyable dialog on the issue page — kept out of the effective-context preview, which stays context-only.
