@@ -12,13 +12,17 @@ import { formatDateTime } from '$lib/format';
 
 /** The state behind the Repeat form (New Issue modal + schedule edit modal). */
 export interface RepeatFormState {
-	kind: 'never' | 'daily' | 'weekly' | 'monthly' | 'cron';
-	/** "HH:MM", 24-hour (presets). */
+	kind: 'never' | 'hourly' | 'daily' | 'weekly' | 'monthly' | 'cron';
+	/** "HH:MM", 24-hour (daily/weekly/monthly). */
 	time: string;
 	/** 0 (Sunday) – 6 (Saturday); weekly. */
 	weekday: number;
 	/** 1–31; monthly. */
 	dayOfMonth: number;
+	/** 1–23; hourly ("every N hours"). */
+	everyHours: number;
+	/** 0–59, minute past the hour; hourly. */
+	minute: number;
 	/** Raw 5-field expression; custom cron. */
 	cron: string;
 	timezone: string;
@@ -39,6 +43,8 @@ export function defaultRepeatState(): RepeatFormState {
 		time: '09:00',
 		weekday: 1,
 		dayOfMonth: 1,
+		everyHours: 1,
+		minute: 0,
 		cron: '0 9 * * 1',
 		timezone: browserTimezone(),
 		requireAllClosed: false
@@ -53,12 +59,15 @@ export function repeatToScheduleInput(state: RepeatFormState): CreateScheduleInp
 		case 'cron':
 			return { cron: state.cron, timezone: state.timezone, require_all_closed: state.requireAllClosed };
 		default: {
-			const preset: SchedulePreset = {
-				kind: state.kind,
-				time: state.time,
-				...(state.kind === 'weekly' ? { weekday: state.weekday } : {}),
-				...(state.kind === 'monthly' ? { day_of_month: state.dayOfMonth } : {})
-			};
+			const preset: SchedulePreset =
+				state.kind === 'hourly'
+					? { kind: 'hourly', every_hours: state.everyHours, minute: state.minute }
+					: {
+							kind: state.kind,
+							time: state.time,
+							...(state.kind === 'weekly' ? { weekday: state.weekday } : {}),
+							...(state.kind === 'monthly' ? { day_of_month: state.dayOfMonth } : {})
+						};
 			return { preset, timezone: state.timezone, require_all_closed: state.requireAllClosed };
 		}
 	}
@@ -75,9 +84,11 @@ export function repeatFromSchedule(schedule: Schedule): RepeatFormState {
 		return base;
 	}
 	base.kind = schedule.preset.kind;
-	base.time = schedule.preset.time;
+	if (schedule.preset.time !== undefined) base.time = schedule.preset.time;
 	if (schedule.preset.weekday !== undefined) base.weekday = schedule.preset.weekday;
 	if (schedule.preset.day_of_month !== undefined) base.dayOfMonth = schedule.preset.day_of_month;
+	if (schedule.preset.every_hours !== undefined) base.everyHours = schedule.preset.every_hours;
+	if (schedule.preset.minute !== undefined) base.minute = schedule.preset.minute;
 	return base;
 }
 

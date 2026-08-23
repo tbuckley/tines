@@ -282,7 +282,25 @@ function buildRecurrence(opts: RecurrenceOpts): Pick<CreateScheduleInput, 'prese
 	}
 	if (opts.cron !== undefined) return { cron: opts.cron };
 	if (!hasPresetFlags) return undefined;
-	if (opts.every === undefined) die('--at/--on set a preset time; add --every <daily|weekly|monthly>');
+	if (opts.every === undefined) {
+		die('--at/--on set a preset time; add --every <hourly|Nh|daily|weekly|monthly>');
+	}
+	const hourly = opts.every === 'hourly' ? 1 : opts.every.match(/^(\d+)h$/)?.[1];
+	if (hourly !== undefined) {
+		if (opts.on !== undefined) die('an hourly recurrence does not take --on');
+		const every = typeof hourly === 'number' ? hourly : Number.parseInt(hourly, 10);
+		if (every < 1 || every > 23) die(`--every <N>h needs N between 1 and 23, got "${opts.every}"`);
+		// For hourly, --at is the minute past the hour (":15" or "15").
+		let minute = 0;
+		if (opts.at !== undefined) {
+			const m = opts.at.match(/^:?(\d{1,2})$/);
+			if (!m || Number.parseInt(m[1], 10) > 59) {
+				die(`with an hourly recurrence, --at is the minute past the hour (0-59 or :MM), got "${opts.at}"`);
+			}
+			minute = Number.parseInt(m[1], 10);
+		}
+		return { preset: { kind: 'hourly', every_hours: every, minute } };
+	}
 	const time = opts.at ?? '09:00';
 	switch (opts.every) {
 		case 'daily': {
@@ -302,7 +320,7 @@ function buildRecurrence(opts: RecurrenceOpts): Pick<CreateScheduleInput, 'prese
 			return { preset: { kind: 'monthly', time, day_of_month: day } };
 		}
 		default:
-			die(`--every must be daily, weekly, or monthly, got "${opts.every}"`);
+			die(`--every must be hourly, <N>h, daily, weekly, or monthly, got "${opts.every}"`);
 	}
 }
 
@@ -651,8 +669,8 @@ withCommon(
 		.option('-d, --description <markdown>', 'issue description (Markdown)')
 		.option('-w, --workflow <id-or-name>', 'workflow (defaults to project default, else standard)')
 		.option('-s, --state <name>', "starting state (defaults to the workflow's initial state)")
-		.option('--every <preset>', 'repeat daily, weekly, or monthly')
-		.option('--at <HH:MM>', 'preset time of day (24-hour; defaults to 09:00)')
+		.option('--every <preset>', 'repeat hourly (or every N hours: "6h"), daily, weekly, or monthly')
+		.option('--at <when>', 'preset time of day HH:MM (default 09:00); for hourly, the minute past the hour :MM (default :00)')
 		.option('--on <when>', 'weekday (weekly) or day of month (monthly)')
 		.option('--cron <expr>', '5-field cron expression (alternative to --every/--at/--on)')
 		.option('--tz <iana>', 'schedule timezone (defaults to the system timezone)')
@@ -862,8 +880,8 @@ withCommon(
 		.description('Edit a schedule: templates, recurrence, timezone, gate, or name')
 		.option('-t, --title <template>', 'set the title template')
 		.option('-d, --description <markdown>', 'set the description template (Markdown)')
-		.option('--every <preset>', 'repeat daily, weekly, or monthly')
-		.option('--at <HH:MM>', 'preset time of day (24-hour; defaults to 09:00)')
+		.option('--every <preset>', 'repeat hourly (or every N hours: "6h"), daily, weekly, or monthly')
+		.option('--at <when>', 'preset time of day HH:MM (default 09:00); for hourly, the minute past the hour :MM (default :00)')
 		.option('--on <when>', 'weekday (weekly) or day of month (monthly)')
 		.option('--cron <expr>', '5-field cron expression (alternative to --every/--at/--on)')
 		.option('--tz <iana>', 'set the schedule timezone')

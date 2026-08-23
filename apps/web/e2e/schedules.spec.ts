@@ -272,6 +272,33 @@ test.describe('schedule validation', () => {
 		expect((await body<ErrorBody>(neither)).error.code).toBe('invalid_recurrence');
 	});
 
+	test('accepts an hourly preset, compiling it to every-N-hours cron', async ({ request }) => {
+		const res = await create(
+			request,
+			{ preset: { kind: 'hourly', every_hours: 6, minute: 30 }, timezone: 'UTC' },
+			'Hourly check {{count}}'
+		);
+		expect(res.status()).toBe(201);
+		const created = await body<CreateIssueResponse>(res);
+		expect(created.schedule!.cron).toBe('30 */6 * * *');
+		expect(created.schedule!.preset).toEqual({ kind: 'hourly', every_hours: 6, minute: 30 });
+		// Next occurrence: within 6 hours, on a */6 hour boundary at :30 UTC.
+		const next = new Date(created.schedule!.next_run_at);
+		expect(created.schedule!.next_run_at - Date.now()).toBeLessThanOrEqual(6 * 3600_000);
+		expect(next.getUTCHours() % 6).toBe(0);
+		expect(next.getUTCMinutes()).toBe(30);
+	});
+
+	test('rejects an hourly preset with an out-of-range interval', async ({ request }) => {
+		for (const every_hours of [0, 24]) {
+			const res = await create(request, { preset: { kind: 'hourly', every_hours } });
+			expect(res.status()).toBe(422);
+			const err = (await body<ErrorBody>(res)).error;
+			expect(err.code).toBe('invalid_recurrence');
+			expect(err.message).toContain('every_hours');
+		}
+	});
+
 	test('rejects a duplicate schedule name within the project', async ({ request }) => {
 		const first = await create(request, { preset: { kind: 'daily', time: '09:00' } }, 'Same name');
 		expect(first.status()).toBe(201);

@@ -64,12 +64,15 @@ export function resolveRecurrence(input: { preset?: unknown; cron?: unknown }): 
 			const cron = compilePreset(preset);
 			validateScheduleCron(cron);
 			// Store only the round-trippable fields, not whatever else came in.
-			const clean: SchedulePreset = {
-				kind: preset.kind,
-				time: preset.time,
-				...(preset.kind === 'weekly' ? { weekday: preset.weekday } : {}),
-				...(preset.kind === 'monthly' ? { day_of_month: preset.day_of_month } : {})
-			};
+			const clean: SchedulePreset =
+				preset.kind === 'hourly'
+					? { kind: 'hourly', every_hours: preset.every_hours, minute: preset.minute ?? 0 }
+					: {
+							kind: preset.kind,
+							time: preset.time,
+							...(preset.kind === 'weekly' ? { weekday: preset.weekday } : {}),
+							...(preset.kind === 'monthly' ? { day_of_month: preset.day_of_month } : {})
+						};
 			return { cron, presetJson: JSON.stringify(clean), preset: clean };
 		} catch (e) {
 			inputFail(e, 'invalid_recurrence');

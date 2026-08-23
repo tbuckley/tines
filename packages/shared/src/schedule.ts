@@ -115,16 +115,20 @@ export function validateScheduleCron(expr: string): ParsedCron {
 // ---------------------------------------------------------------------------
 // Presets
 
-export type PresetKind = 'daily' | 'weekly' | 'monthly';
+export type PresetKind = 'hourly' | 'daily' | 'weekly' | 'monthly';
 
 export interface SchedulePreset {
 	kind: PresetKind;
-	/** Time of day as "HH:MM" (24-hour). */
-	time: string;
+	/** Time of day as "HH:MM" (24-hour); required for daily/weekly/monthly. */
+	time?: string;
 	/** 0 (Sunday) – 6 (Saturday); required for weekly. */
 	weekday?: number;
 	/** 1–31; required for monthly. */
 	day_of_month?: number;
+	/** 1–23; required for hourly ("every N hours"). */
+	every_hours?: number;
+	/** 0–59, minute past the hour for hourly; defaults to 0. */
+	minute?: number;
 }
 
 export const WEEKDAY_NAMES = [
@@ -149,6 +153,19 @@ function parseTimeOfDay(time: unknown): { hour: number; minute: number } {
 
 /** Compiles a preset to the cron expression evaluation reads. */
 export function compilePreset(preset: SchedulePreset): string {
+	if (preset.kind === 'hourly') {
+		const every = preset.every_hours;
+		if (typeof every !== 'number' || !Number.isInteger(every) || every < 1 || every > 23) {
+			throw new ScheduleInputError('Hourly preset needs an every_hours between 1 and 23');
+		}
+		const minute = preset.minute ?? 0;
+		if (typeof minute !== 'number' || !Number.isInteger(minute) || minute < 0 || minute > 59) {
+			throw new ScheduleInputError('Hourly preset minute must be between 0 and 59');
+		}
+		// Cron semantics: */N restarts from hour 0 each day, so an N that
+		// doesn't divide 24 has a shorter last interval before midnight.
+		return every === 1 ? `${minute} * * * *` : `${minute} */${every} * * *`;
+	}
 	const { hour, minute } = parseTimeOfDay(preset.time);
 	switch (preset.kind) {
 		case 'daily':
@@ -169,7 +186,7 @@ export function compilePreset(preset: SchedulePreset): string {
 		}
 		default:
 			throw new ScheduleInputError(
-				`Unknown preset kind "${String((preset as { kind?: unknown }).kind)}"; expected daily, weekly, or monthly`
+				`Unknown preset kind "${String((preset as { kind?: unknown }).kind)}"; expected hourly, daily, weekly, or monthly`
 			);
 	}
 }
@@ -178,6 +195,11 @@ export function compilePreset(preset: SchedulePreset): string {
 export function describeRecurrence(preset: SchedulePreset | null, cron: string): string {
 	if (preset) {
 		switch (preset.kind) {
+			case 'hourly': {
+				const every = preset.every_hours ?? 1;
+				const at = preset.minute ? ` at :${String(preset.minute).padStart(2, '0')}` : '';
+				return every === 1 ? `Every hour${at}` : `Every ${every} hours${at}`;
+			}
 			case 'daily':
 				return `Every day at ${preset.time}`;
 			case 'weekly':

@@ -28,13 +28,31 @@
 				{#if showNever}
 					<option value="never">Never</option>
 				{/if}
+				<option value="hourly">Hourly</option>
 				<option value="daily">Daily</option>
 				<option value="weekly">Weekly</option>
 				<option value="monthly">Monthly</option>
 				<option value="cron">Custom cron</option>
 			</Select>
 		</div>
-		{#if state.kind === 'weekly'}
+		{#if state.kind === 'hourly'}
+			<div class="space-y-1.5">
+				<label class="text-sm font-medium" for="{idPrefix}-every-hours">Every</label>
+				<Select id="{idPrefix}-every-hours" bind:value={state.everyHours}>
+					{#each Array.from({ length: 23 }, (_, i) => i + 1) as n (n)}
+						<option value={n}>{n === 1 ? '1 hour' : `${n} hours`}</option>
+					{/each}
+				</Select>
+			</div>
+			<div class="space-y-1.5">
+				<label class="text-sm font-medium" for="{idPrefix}-minute">At minute</label>
+				<Select id="{idPrefix}-minute" bind:value={state.minute}>
+					{#each Array.from({ length: 60 }, (_, i) => i) as m (m)}
+						<option value={m}>:{String(m).padStart(2, '0')}</option>
+					{/each}
+				</Select>
+			</div>
+		{:else if state.kind === 'weekly'}
 			<div class="space-y-1.5">
 				<label class="text-sm font-medium" for="{idPrefix}-weekday">On</label>
 				<Select id="{idPrefix}-weekday" bind:value={state.weekday}>

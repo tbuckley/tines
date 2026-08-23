@@ -54,10 +54,20 @@ describe('compilePreset', () => {
 		expect(compilePreset({ kind: 'monthly', time: '23:05', day_of_month: 15 })).toBe('5 23 15 * *');
 	});
 
+	it('compiles hourly presets to cron', () => {
+		expect(compilePreset({ kind: 'hourly', every_hours: 1 })).toBe('0 * * * *');
+		expect(compilePreset({ kind: 'hourly', every_hours: 1, minute: 15 })).toBe('15 * * * *');
+		expect(compilePreset({ kind: 'hourly', every_hours: 6, minute: 30 })).toBe('30 */6 * * *');
+	});
+
 	it('rejects malformed inputs', () => {
 		expect(() => compilePreset({ kind: 'daily', time: '25:00' })).toThrow(ScheduleInputError);
 		expect(() => compilePreset({ kind: 'weekly', time: '09:00' })).toThrow(/weekday/);
 		expect(() => compilePreset({ kind: 'monthly', time: '09:00', day_of_month: 32 })).toThrow(/day_of_month/);
+		expect(() => compilePreset({ kind: 'hourly' })).toThrow(/every_hours/);
+		expect(() => compilePreset({ kind: 'hourly', every_hours: 0 })).toThrow(/every_hours/);
+		expect(() => compilePreset({ kind: 'hourly', every_hours: 24 })).toThrow(/every_hours/);
+		expect(() => compilePreset({ kind: 'hourly', every_hours: 2, minute: 60 })).toThrow(/minute/);
 		expect(() => compilePreset({ kind: 'yearly', time: '09:00' } as never)).toThrow(/Unknown preset kind/);
 	});
 });
@@ -135,6 +145,19 @@ describe('nextOccurrence', () => {
 		);
 	});
 
+	it('steps every-N-hours schedules on cron boundaries (restarting at midnight)', () => {
+		// 30 */6 * * * fires at 00:30, 06:30, 12:30, 18:30.
+		expect(nextOccurrenceFromCron('30 */6 * * *', 'UTC', utc('2026-08-23T07:00:00Z'))).toBe(
+			utc('2026-08-23T12:30:00Z')
+		);
+		expect(nextOccurrenceFromCron('30 */6 * * *', 'UTC', utc('2026-08-23T18:30:00Z'))).toBe(
+			utc('2026-08-24T00:30:00Z')
+		);
+		expect(nextOccurrenceFromCron('15 * * * *', 'UTC', utc('2026-08-23T07:20:00Z'))).toBe(
+			utc('2026-08-23T08:15:00Z')
+		);
+	});
+
 	it('rejects impossible dates', () => {
 		expect(() => nextOccurrenceFromCron('0 9 30 2 *', 'UTC', utc('2026-01-01T00:00:00Z'))).toThrow(
 			/never fires/
@@ -167,6 +190,13 @@ describe('describeRecurrence', () => {
 	it('describes presets and raw cron', () => {
 		expect(describeRecurrence({ kind: 'weekly', time: '09:00', weekday: 1 }, '0 9 * * 1')).toBe(
 			'Every Monday at 09:00'
+		);
+		expect(describeRecurrence({ kind: 'hourly', every_hours: 1 }, '0 * * * *')).toBe('Every hour');
+		expect(describeRecurrence({ kind: 'hourly', every_hours: 1, minute: 5 }, '5 * * * *')).toBe(
+			'Every hour at :05'
+		);
+		expect(describeRecurrence({ kind: 'hourly', every_hours: 6, minute: 30 }, '30 */6 * * *')).toBe(
+			'Every 6 hours at :30'
 		);
 		expect(describeRecurrence(null, '0 9 * * 1')).toBe('Cron “0 9 * * 1”');
 	});
