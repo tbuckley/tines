@@ -12,7 +12,7 @@ This is a pnpm workspace:
 
 | Package | Path | What it is |
 | --- | --- | --- |
-| `@tines/web` | `apps/web` | SvelteKit (Svelte 5) app deployed to Cloudflare Workers. Serves the UI and the API (`/api/*`). Uses D1 for the database, [Better Auth](https://better-auth.com) for Google sign-in, and [shadcn-svelte](https://shadcn-svelte.com) for UI components. |
+| `@tines/web` | `apps/web` | SvelteKit (Svelte 5) app deployed to Cloudflare Workers. Serves the UI and the API (`/api/*`). Uses D1 for the database, [Better Auth](https://better-auth.com) for sign-in (Google OAuth and email magic links via [Cloudflare Email Service](https://developers.cloudflare.com/email-service/)), and [shadcn-svelte](https://shadcn-svelte.com) for UI components. |
 | `@tines/cli` | `packages/cli` | The `tines` CLI. Talks to the same API as the web app. |
 | `@tines/shared` | `packages/shared` | Shared API types and client, used by both the web app and the CLI. |
 
@@ -53,6 +53,18 @@ The CLI reads the API base URL from `--url` or the `TINES_API_URL` env var (defa
 
 Better Auth is mounted at `/api/auth/*` (see `apps/web/src/hooks.server.ts`); its D1 schema lives in `apps/web/migrations/`.
 
+## Magic-link sign-in
+
+Email sign-in links are sent with [Cloudflare Email Service](https://developers.cloudflare.com/email-service/) (beta, requires the Workers Paid plan) through the `EMAIL` send binding in `apps/web/wrangler.jsonc`.
+
+Local dev needs no setup: `wrangler dev` simulates the binding, logging each email (including the sign-in link) to the dev server console instead of delivering it.
+
+To send real emails in production:
+
+1. Onboard a domain you manage with Cloudflare DNS: dash → **Compute → Email Service → Email Sending → Onboard Domain**. Cloudflare adds the SPF/DKIM/DMARC and bounce DNS records automatically.
+2. Set `EMAIL_FROM` in `wrangler.jsonc` `"vars"` to an address on that domain (e.g. `login@yourdomain.com`) — the mailbox doesn't need to exist.
+3. Deploy. To send real emails from `wrangler dev` too, add `"remote": true` to the `EMAIL` binding.
+
 ## Adding UI components
 
 shadcn-svelte is configured in `apps/web` (`components.json`, Tailwind v4 theme in `src/app.css`):
@@ -71,7 +83,8 @@ pnpm db:migrate:remote
 pnpm wrangler secret put BETTER_AUTH_SECRET
 pnpm wrangler secret put GOOGLE_CLIENT_ID
 pnpm wrangler secret put GOOGLE_CLIENT_SECRET
-# update BETTER_AUTH_URL in wrangler.jsonc "vars" to your production URL
+# update BETTER_AUTH_URL and EMAIL_FROM in wrangler.jsonc "vars" for production
+# (see "Magic-link sign-in" above for onboarding your sending domain)
 pnpm deploy
 ```
 

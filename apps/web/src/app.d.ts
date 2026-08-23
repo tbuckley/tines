@@ -4,7 +4,8 @@ import type {
 	CacheStorage,
 	D1Database,
 	ExecutionContext,
-	IncomingRequestCfProperties
+	IncomingRequestCfProperties,
+	SendEmail
 } from '@cloudflare/workers-types';
 import type { getAuth } from '$lib/server/auth';
 
@@ -12,6 +13,8 @@ declare global {
 	/** Bindings and vars available on `platform.env` (see wrangler.jsonc). */
 	interface Env {
 		DB: D1Database;
+		EMAIL?: SendEmail;
+		EMAIL_FROM?: string;
 		BETTER_AUTH_URL?: string;
 		BETTER_AUTH_SECRET?: string;
 		GOOGLE_CLIENT_ID?: string;
