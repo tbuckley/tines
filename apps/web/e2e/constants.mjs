@@ -21,6 +21,23 @@ export const ALICE = {
 	sessionToken: 'e2e-session-alice'
 };
 
+/**
+ * Seeded scheduled-task fixtures (Alice's): the sweep can only be tested
+ * deterministically with `next_run_at` already in the past, which the API
+ * never produces — so seed.mjs writes these rows directly.
+ */
+export const SCHED = {
+	projectId: 'prj_e2e_sched',
+	projectName: 'sched-seed',
+	/** No gate; due at seed time. */
+	plainId: 'sch_e2e_plain',
+	plainName: 'Daily report',
+	/** Gated (require_all_closed) with one seeded open instance; due at seed time. */
+	gatedId: 'sch_e2e_gated',
+	gatedName: 'Gated triage',
+	gatedIssueId: 'iss_e2e_gated_1'
+};
+
 export const BOB = {
 	id: 'usr_e2e_bob',
 	name: 'Bob E2E',

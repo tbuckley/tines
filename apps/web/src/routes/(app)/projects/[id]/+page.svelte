@@ -10,6 +10,7 @@
 	import IssueList from '$lib/components/IssueList.svelte';
 	import Modal from '$lib/components/Modal.svelte';
 	import NewIssueModal from '$lib/components/NewIssueModal.svelte';
+	import ScheduleList from '$lib/components/ScheduleList.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { Select } from '$lib/components/ui/select/index.js';
@@ -27,6 +28,12 @@
 	}
 
 	let newIssueOpen = $state(false);
+	let newIssueRepeatOpen = $state(false);
+
+	function openNewSchedule() {
+		newIssueRepeatOpen = true;
+		newIssueOpen = true;
+	}
 
 	// --- settings ----------------------------------------------------------------
 
@@ -117,6 +124,22 @@
 	</div>
 {/if}
 
+{#if data.schedules.length > 0}
+	<div class="mb-8">
+		<div class="mb-3 flex items-center justify-between">
+			<h2 class="text-sm font-semibold">Scheduled tasks</h2>
+			<Button size="sm" variant="ghost" onclick={openNewSchedule} aria-label="Add scheduled task">
+				<IconPlus size={14} /> Add
+			</Button>
+		</div>
+		<ScheduleList
+			schedules={data.schedules}
+			highlightId={page.url.searchParams.get('schedule')}
+			onerror={showError}
+		/>
+	</div>
+{/if}
+
 <div class="mb-3 flex items-center justify-between">
 	<h2 class="text-sm font-semibold">Issues</h2>
 	<label class="text-muted-foreground flex items-center gap-2 text-sm">
@@ -130,6 +153,7 @@
 <!-- new issue -->
 <NewIssueModal
 	bind:open={newIssueOpen}
+	bind:repeatOpen={newIssueRepeatOpen}
 	projects={[data.project]}
 	workflows={data.workflows}
 	project={data.project}

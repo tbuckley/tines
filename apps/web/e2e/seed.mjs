@@ -11,7 +11,7 @@ import { createHash } from 'node:crypto';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ALICE, BOB } from './constants.mjs';
+import { ALICE, BOB, SCHED } from './constants.mjs';
 
 const sha256Hex = (s) => createHash('sha256').update(s).digest('hex');
 
@@ -30,6 +30,29 @@ for (const user of [ALICE, BOB]) {
 		 VALUES ('key_${user.id}', '${user.id}', '${user.apiKeyName}', '${sha256Hex(user.apiKey)}', '${user.apiKey.slice(0, 14)}', ${nowMs});`
 	);
 }
+
+// Scheduled-task fixtures for the sweep specs: a project of Alice's with two
+// due schedules (next_run_at in the past — unreachable through the API, which
+// always computes a future occurrence) and one open instance blocking the
+// gated one. The sweep is fired on demand via wrangler's --test-scheduled.
+const due = nowMs - 60_000;
+statements.push(
+	`INSERT INTO project (id, user_id, name, description, created_at, updated_at)
+	 VALUES ('${SCHED.projectId}', '${ALICE.id}', '${SCHED.projectName}', '', ${nowMs}, ${nowMs});`,
+	`INSERT INTO scheduled_task (id, project_id, name, title_template, description_template, workflow_id,
+	   cron, preset, timezone, require_all_closed, enabled, next_run_at, run_count, created_at, updated_at)
+	 VALUES ('${SCHED.plainId}', '${SCHED.projectId}', '${SCHED.plainName}',
+	   'Daily report {{date}} #{{count}}', 'Report for {{schedule_name}} at {{datetime}}', 'wf_standard',
+	   '0 9 * * *', '{"kind":"daily","time":"09:00"}', 'UTC', 0, 1, ${due}, 0, ${nowMs}, ${nowMs});`,
+	`INSERT INTO scheduled_task (id, project_id, name, title_template, description_template, workflow_id,
+	   cron, preset, timezone, require_all_closed, enabled, next_run_at, run_count, created_at, updated_at)
+	 VALUES ('${SCHED.gatedId}', '${SCHED.projectId}', '${SCHED.gatedName}',
+	   'Gated triage {{count}}', '', 'wf_standard',
+	   '0 9 * * *', '{"kind":"daily","time":"09:00"}', 'UTC', 1, 1, ${due}, 1, ${nowMs}, ${nowMs});`,
+	`INSERT INTO issue (id, project_id, number, title, description, workflow_id, state_id, scheduled_task_id, created_at, updated_at)
+	 VALUES ('${SCHED.gatedIssueId}', '${SCHED.projectId}', 1, 'Gated triage 1', '', 'wf_standard', 'wfs_std_open',
+	   '${SCHED.gatedId}', ${nowMs}, ${nowMs});`
+);
 
 const sqlFile = join(mkdtempSync(join(tmpdir(), 'tines-e2e-')), 'seed.sql');
 writeFileSync(sqlFile, statements.join('\n'));

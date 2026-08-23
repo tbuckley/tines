@@ -6,6 +6,7 @@ import type {
 	CreateApiKeyRequest,
 	CreateCommentRequest,
 	CreateIssueRequest,
+	CreateIssueResponse,
 	CreateProjectRequest,
 	CreateWorkflowRequest,
 	EventFilters,
@@ -15,11 +16,14 @@ import type {
 	ListResponse,
 	PageParams,
 	Project,
+	Schedule,
+	ScheduleFilters,
 	StateCategory,
 	TinesEvent,
 	TransitionIssueRequest,
 	UpdateIssueRequest,
 	UpdateProjectRequest,
+	UpdateScheduleRequest,
 	UpdateWorkflowRequest,
 	WorkflowResponse
 } from './types.js';
@@ -125,7 +129,7 @@ export function createApiClient(options: ApiClientOptions) {
 			filters: { state?: string; category?: StateCategory; hide_done?: boolean } & PageParams = {}
 		) => get<ListResponse<Issue>>(`/api/v1/projects/${projectId}/issues${query(filters)}`),
 		createIssue: (projectId: string, body: CreateIssueRequest) =>
-			request<IssueDetail>('POST', `/api/v1/projects/${projectId}/issues`, body),
+			request<CreateIssueResponse>('POST', `/api/v1/projects/${projectId}/issues`, body),
 		getIssue: (id: string) => get<IssueDetail>(`/api/v1/issues/${id}`),
 		getIssueByNumber: (projectId: string, number: number) =>
 			get<IssueDetail>(`/api/v1/projects/${projectId}/issues/${number}`),
@@ -139,6 +143,18 @@ export function createApiClient(options: ApiClientOptions) {
 			get<ListResponse<Comment>>(`/api/v1/issues/${issueId}/comments${query(page)}`),
 		createComment: (issueId: string, body: CreateCommentRequest) =>
 			request<Comment>('POST', `/api/v1/issues/${issueId}/comments`, body),
+
+		// Scheduled tasks
+		listSchedules: (filters: ScheduleFilters & PageParams = {}) =>
+			get<ListResponse<Schedule>>(`/api/v1/schedules${query(filters)}`),
+		listProjectSchedules: (projectId: string, page: PageParams = {}) =>
+			get<ListResponse<Schedule>>(`/api/v1/projects/${projectId}/schedules${query(page)}`),
+		getSchedule: (id: string) => get<Schedule>(`/api/v1/schedules/${id}`),
+		updateSchedule: (id: string, body: UpdateScheduleRequest) =>
+			request<Schedule>('PATCH', `/api/v1/schedules/${id}`, body),
+		deleteSchedule: (id: string) => request<void>('DELETE', `/api/v1/schedules/${id}`),
+		/** Run now: creates an instance immediately (gate-respecting; 422 when blocked). */
+		runSchedule: (id: string) => request<IssueDetail>('POST', `/api/v1/schedules/${id}/run`),
 
 		// Events
 		listEvents: (filters: EventFilters & PageParams = {}) =>

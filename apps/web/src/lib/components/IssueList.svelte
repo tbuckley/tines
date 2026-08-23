@@ -1,7 +1,9 @@
 <script lang="ts">
 	import type { Issue } from '@tines/shared';
+	import IconRepeat from '@tabler/icons-svelte/icons/repeat';
 	import { flip } from 'svelte/animate';
 	import { fade } from 'svelte/transition';
+	import { goto } from '$app/navigation';
 	import StateBadge from '$lib/components/StateBadge.svelte';
 	import { prefersReducedMotion, relativeTime } from '$lib/format';
 
@@ -38,6 +40,23 @@
 						>
 							{issue.title}
 						</span>
+						{#if issue.scheduled_task_id}
+							<!-- Nested anchors are invalid inside the row link, so the
+							     badge navigates via a button. -->
+							<button
+								type="button"
+								class="text-muted-foreground hover:text-foreground ml-1.5 inline-flex align-middle"
+								title="From schedule “{issue.scheduled_task_name}”"
+								aria-label="From schedule {issue.scheduled_task_name}"
+								onclick={(e) => {
+									e.preventDefault();
+									e.stopPropagation();
+									goto(`/projects/${issue.project_id}?schedule=${issue.scheduled_task_id}`);
+								}}
+							>
+								<IconRepeat size={14} stroke={1.75} />
+							</button>
+						{/if}
 					</span>
 					{#if showProject}
 						<span class="text-muted-foreground hidden shrink-0 text-xs sm:inline">{issue.project_name}</span>

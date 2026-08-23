@@ -10,6 +10,7 @@ import {
 	type ActorContext
 } from './core';
 import { eventInsert } from './events';
+import { projectScheduleDeletions } from './schedules';
 
 function projectQuery(db: Kysely<Database>, userId: string) {
 	return db
@@ -187,6 +188,8 @@ export async function deleteProject(
 		);
 	}
 	await runAtomic(env, [
+		// The project is issue-less by now, but its schedules go with it.
+		...(await projectScheduleDeletions(db, actor, id)),
 		db.deleteFrom('project').where('id', '=', id).compile(),
 		// project_id stays null-able on the event so the feed keeps history
 		// for deleted projects; record the name in the payload.

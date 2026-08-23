@@ -1,16 +1,23 @@
 import { readFileSync } from 'node:fs';
+import { createInterface } from 'node:readline/promises';
 import {
 	ApiError,
 	createApiClient,
+	describeRecurrence,
+	WEEKDAY_NAMES,
 	type ApiClient,
+	type CreateScheduleInput,
 	type CreateWorkflowRequest,
 	type IssueDetail,
 	type ListResponse,
 	type Project,
+	type Schedule,
+	type SchedulePreset,
 	type StateCategory,
 	type TinesEvent,
 	type UpdateIssueRequest,
 	type UpdateProjectRequest,
+	type UpdateScheduleRequest,
 	type UpdateWorkflowRequest,
 	type WorkflowResponse
 } from '@tines/shared';
@@ -207,6 +214,27 @@ async function resolveWorkflow(api: ApiClient, ref: string): Promise<WorkflowRes
 	die(`no workflow "${ref}" (have: ${items.map((w) => `${w.name} [${w.id}]`).join(', ')})`);
 }
 
+function parseScheduleRef(ref: string): { project: string; name: string } {
+	const sep = ref.indexOf('/');
+	if (sep < 1 || sep === ref.length - 1) {
+		die(`schedule reference must look like <project>/<name>, got "${ref}"`);
+	}
+	return { project: ref.slice(0, sep), name: ref.slice(sep + 1) };
+}
+
+async function resolveSchedule(api: ApiClient, ref: string): Promise<Schedule> {
+	const { project, name } = parseScheduleRef(ref);
+	const proj = await resolveProject(api, project);
+	const { items } = await api.listProjectSchedules(proj.id, { limit: 100 });
+	const found = items.find((s) => s.name === name) ?? items.find((s) => s.id === name);
+	if (!found) {
+		die(
+			`no schedule "${name}" in project "${proj.name}" (have: ${items.map((s) => s.name).join(', ') || 'none'})`
+		);
+	}
+	return found;
+}
+
 function parseIssueRef(ref: string): { project: string; number: number } {
 	const match = ref.match(/^(.+)\/(\d+)$/);
 	if (!match) die(`issue reference must look like <project>/<number>, got "${ref}"`);
@@ -217,6 +245,87 @@ async function resolveIssue(api: ApiClient, ref: string): Promise<IssueDetail> {
 	const { project, number } = parseIssueRef(ref);
 	const proj = await resolveProject(api, project);
 	return api.getIssueByNumber(proj.id, number);
+}
+
+// ---------------------------------------------------------------------------
+// Recurrence flags (--every/--at/--on build a preset; --cron is the raw form)
+
+interface RecurrenceOpts {
+	every?: string;
+	at?: string;
+	on?: string;
+	cron?: string;
+	tz?: string;
+}
+
+const systemTimezone = () => Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+function parseWeekday(value: string): number {
+	const trimmed = value.trim().toLowerCase();
+	if (/^\d+$/.test(trimmed)) {
+		const n = Number.parseInt(trimmed, 10);
+		if (n <= 7) return n % 7; // 0 and 7 both mean Sunday, as in cron
+		die(`--on weekday must be 0-7 or a name, got "${value}"`);
+	}
+	if (trimmed.length >= 3) {
+		const idx = WEEKDAY_NAMES.findIndex((w) => w.toLowerCase().startsWith(trimmed));
+		if (idx !== -1) return idx;
+	}
+	die(`unknown weekday "${value}" (use e.g. monday, tue, or 0-6 with 0 = Sunday)`);
+}
+
+/** The preset/cron half of a schedule input, or undefined when no flags given. */
+function buildRecurrence(opts: RecurrenceOpts): Pick<CreateScheduleInput, 'preset' | 'cron'> | undefined {
+	const hasPresetFlags = opts.every !== undefined || opts.at !== undefined || opts.on !== undefined;
+	if (opts.cron !== undefined && hasPresetFlags) {
+		die('pass --cron or --every/--at/--on, not both');
+	}
+	if (opts.cron !== undefined) return { cron: opts.cron };
+	if (!hasPresetFlags) return undefined;
+	if (opts.every === undefined) {
+		die('--at/--on set a preset time; add --every <hourly|Nh|daily|weekly|monthly>');
+	}
+	const hourly = opts.every === 'hourly' ? 1 : opts.every.match(/^(\d+)h$/)?.[1];
+	if (hourly !== undefined) {
+		if (opts.on !== undefined) die('an hourly recurrence does not take --on');
+		const every = typeof hourly === 'number' ? hourly : Number.parseInt(hourly, 10);
+		if (every < 1 || every > 23) die(`--every <N>h needs N between 1 and 23, got "${opts.every}"`);
+		// For hourly, --at is the minute past the hour (":15" or "15").
+		let minute = 0;
+		if (opts.at !== undefined) {
+			const m = opts.at.match(/^:?(\d{1,2})$/);
+			if (!m || Number.parseInt(m[1], 10) > 59) {
+				die(`with an hourly recurrence, --at is the minute past the hour (0-59 or :MM), got "${opts.at}"`);
+			}
+			minute = Number.parseInt(m[1], 10);
+		}
+		return { preset: { kind: 'hourly', every_hours: every, minute } };
+	}
+	const time = opts.at ?? '09:00';
+	switch (opts.every) {
+		case 'daily': {
+			if (opts.on !== undefined) die('--every daily does not take --on');
+			return { preset: { kind: 'daily', time } };
+		}
+		case 'weekly': {
+			if (opts.on === undefined) die('--every weekly needs --on <weekday>');
+			return { preset: { kind: 'weekly', time, weekday: parseWeekday(opts.on) } };
+		}
+		case 'monthly': {
+			if (opts.on === undefined) die('--every monthly needs --on <day-of-month>');
+			const day = Number.parseInt(opts.on, 10);
+			if (!/^\d+$/.test(opts.on.trim()) || day < 1 || day > 31) {
+				die(`--on day-of-month must be 1-31, got "${opts.on}"`);
+			}
+			return { preset: { kind: 'monthly', time, day_of_month: day } };
+		}
+		default:
+			die(`--every must be hourly, <N>h, daily, weekly, or monthly, got "${opts.every}"`);
+	}
+}
+
+function recurrenceLabel(schedule: Schedule): string {
+	return `${describeRecurrence(schedule.preset, schedule.cron)}, ${schedule.timezone}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -268,7 +377,7 @@ function eventSummary(ev: TinesEvent): string {
 	const issue = ev.issue_ref ? `${ev.issue_ref.project_name}/#${ev.issue_ref.number}` : null;
 	switch (ev.type) {
 		case 'issue.created':
-			return `created ${issue}: ${p.title}`;
+			return `created ${issue}: ${p.title}${p.scheduled_task_name ? ` (via schedule "${p.scheduled_task_name}")` : ''}`;
 		case 'issue.updated':
 			return `updated ${issue} (${(p.changed as string[])?.join(', ')})`;
 		case 'issue.transitioned':
@@ -287,6 +396,14 @@ function eventSummary(ev: TinesEvent): string {
 			return `created API key "${p.name}"`;
 		case 'api_key.revoked':
 			return `revoked API key "${p.name}"`;
+		case 'scheduled_task.created':
+		case 'scheduled_task.updated':
+		case 'scheduled_task.deleted':
+			return `${ev.type.split('.')[1]} schedule "${p.name}"`;
+		case 'scheduled_task.skipped': {
+			const blocking = Array.isArray(p.blocking) ? p.blocking.length : 0;
+			return `skipped schedule "${p.name}" (${blocking} open instance${blocking === 1 ? '' : 's'})`;
+		}
 		default:
 			return ev.type;
 	}
@@ -547,29 +664,62 @@ withList(
 withCommon(
 	issues
 		.command('create <project>')
-		.description('Create an issue in a project')
-		.requiredOption('-t, --title <title>', 'issue title')
+		.description('Create an issue in a project, optionally with a recurrence (a scheduled task)')
+		.requiredOption('-t, --title <title>', 'issue title (doubles as the title template with a recurrence)')
 		.option('-d, --description <markdown>', 'issue description (Markdown)')
 		.option('-w, --workflow <id-or-name>', 'workflow (defaults to project default, else standard)')
 		.option('-s, --state <name>', "starting state (defaults to the workflow's initial state)")
+		.option('--every <preset>', 'repeat hourly (or every N hours: "6h"), daily, weekly, or monthly')
+		.option('--at <when>', 'preset time of day HH:MM (default 09:00); for hourly, the minute past the hour :MM (default :00)')
+		.option('--on <when>', 'weekday (weekly) or day of month (monthly)')
+		.option('--cron <expr>', '5-field cron expression (alternative to --every/--at/--on)')
+		.option('--tz <iana>', 'schedule timezone (defaults to the system timezone)')
+		.option('--if-closed', 'only create a new instance when all previous instances are closed')
+		.option('--schedule-name <name>', 'schedule name, unique per project (defaults to the title)')
 ).action(
 	async (
 		projectRef: string,
-		opts: CommonOpts & { title: string; description?: string; workflow?: string; state?: string }
+		opts: CommonOpts &
+			RecurrenceOpts & {
+				title: string;
+				description?: string;
+				workflow?: string;
+				state?: string;
+				ifClosed?: boolean;
+				scheduleName?: string;
+			}
 	) => {
 		const api = client(opts);
 		const project = await resolveProject(api, projectRef);
 		const workflowId = opts.workflow ? (await resolveWorkflow(api, opts.workflow)).id : undefined;
+		const recurrence = buildRecurrence(opts);
+		if (!recurrence && (opts.ifClosed !== undefined || opts.scheduleName !== undefined)) {
+			die('--if-closed/--schedule-name need a recurrence: add --every … or --cron "<expr>"');
+		}
+		const schedule: CreateScheduleInput | undefined = recurrence
+			? {
+					...recurrence,
+					name: opts.scheduleName,
+					timezone: opts.tz ?? systemTimezone(),
+					require_all_closed: opts.ifClosed ?? false
+				}
+			: undefined;
 		const issue = await api.createIssue(project.id, {
 			title: opts.title,
 			description: opts.description,
 			workflow_id: workflowId,
-			state: opts.state
+			state: opts.state,
+			schedule
 		});
 		if (opts.json) return printJson(issue);
 		console.log(
 			`created ${issue.project_name}/#${issue.number} "${issue.title}" in state "${issue.state.name}"`
 		);
+		if (issue.schedule) {
+			console.log(
+				`created schedule "${issue.project_name}/${issue.schedule.name}": ${recurrenceLabel(issue.schedule)} — next run ${timestamp(issue.schedule.next_run_at)}`
+			);
+		}
 	}
 );
 
@@ -644,6 +794,183 @@ withCommon(
 	const comment = await api.createComment(issue.id, { body: markdown });
 	if (opts.json) return printJson(comment);
 	console.log(`commented on ${issue.project_name}/#${issue.number} as ${actorLabel(comment.actor)}`);
+});
+
+// --- schedules ---------------------------------------------------------------
+
+const schedules = program
+	.command('schedules')
+	.description('Manage scheduled tasks (addressed as <project>/<name>)');
+
+function scheduleRef(s: Schedule): string {
+	return `${s.project_name}/${s.name}`;
+}
+
+function printScheduleDetail(s: Schedule): void {
+	console.log(`${scheduleRef(s)}  [${s.id}]${s.enabled ? '' : '  (paused)'}`);
+	console.log(`${recurrenceLabel(s)} (cron "${s.cron}")`);
+	console.log(
+		`gate: ${s.require_all_closed ? 'only create when previous instances are closed' : 'off'}  workflow: ${s.workflow_name}`
+	);
+	console.log(
+		`next run: ${s.enabled ? timestamp(s.next_run_at) : '(paused)'}  last run: ${s.last_run_at ? timestamp(s.last_run_at) : 'never'}  runs: ${s.run_count}  open instances: ${s.open_instances}`
+	);
+	console.log(`\ntitle template: ${s.title_template}`);
+	if (s.description_template) {
+		console.log('description template:');
+		for (const line of s.description_template.split('\n')) console.log(`  ${line}`);
+	}
+}
+
+withList(
+	schedules
+		.command('list')
+		.description('List scheduled tasks (hides paused schedules unless --all)')
+		.option('-p, --project <name>', 'filter by project name or id')
+		.option('-a, --all', 'include paused schedules')
+).action(async (opts: ListOpts & { project?: string; all?: boolean }) => {
+	const res = await client(opts).listSchedules({
+		project: opts.project,
+		enabled: opts.all ? undefined : true,
+		limit: opts.limit,
+		cursor: opts.cursor
+	});
+	printList(res, opts, (items) => {
+		if (items.length === 0) return console.log('no schedules');
+		table([
+			['NAME', 'RECURRENCE', 'NEXT RUN', 'LAST RUN', 'OPEN', ''],
+			...items.map((s) => [
+				scheduleRef(s),
+				recurrenceLabel(s),
+				s.enabled ? timestamp(s.next_run_at) : '—',
+				s.last_run_at ? timestamp(s.last_run_at) : 'never',
+				String(s.open_instances),
+				s.enabled ? '' : '(paused)'
+			])
+		]);
+	});
+});
+
+withCommon(
+	schedules
+		.command('show <ref>')
+		.description('Show a schedule (<project>/<name>): config, next/last run, recent instances')
+).action(async (ref: string, opts: CommonOpts) => {
+	const api = client(opts);
+	const schedule = await resolveSchedule(api, ref);
+	if (opts.json) return printJson(schedule);
+	printScheduleDetail(schedule);
+	const { items } = await api.listIssues({ schedule: schedule.id, limit: 10 });
+	if (items.length > 0) {
+		console.log(`\nrecent instances:`);
+		table(
+			items.map((i) => [
+				`  ${i.project_name}/${i.number}`,
+				i.title,
+				i.state.name,
+				timestamp(i.created_at)
+			])
+		);
+	}
+});
+
+withCommon(
+	schedules
+		.command('edit <ref>')
+		.description('Edit a schedule: templates, recurrence, timezone, gate, or name')
+		.option('-t, --title <template>', 'set the title template')
+		.option('-d, --description <markdown>', 'set the description template (Markdown)')
+		.option('--every <preset>', 'repeat hourly (or every N hours: "6h"), daily, weekly, or monthly')
+		.option('--at <when>', 'preset time of day HH:MM (default 09:00); for hourly, the minute past the hour :MM (default :00)')
+		.option('--on <when>', 'weekday (weekly) or day of month (monthly)')
+		.option('--cron <expr>', '5-field cron expression (alternative to --every/--at/--on)')
+		.option('--tz <iana>', 'set the schedule timezone')
+		.option('--if-closed', 'only create a new instance when all previous instances are closed')
+		.option('--no-if-closed', 'clear the only-when-closed gate')
+		.option('--name <new-name>', 'rename the schedule')
+).action(
+	async (
+		ref: string,
+		opts: CommonOpts &
+			RecurrenceOpts & { title?: string; description?: string; ifClosed?: boolean; name?: string }
+	) => {
+		const api = client(opts);
+		const schedule = await resolveSchedule(api, ref);
+		const body: UpdateScheduleRequest = {};
+		if (opts.title !== undefined) body.title_template = opts.title;
+		if (opts.description !== undefined) body.description_template = opts.description;
+		const recurrence = buildRecurrence(opts);
+		if (recurrence?.preset) body.preset = recurrence.preset as SchedulePreset;
+		if (recurrence?.cron !== undefined) body.cron = recurrence.cron;
+		if (opts.tz !== undefined) body.timezone = opts.tz;
+		if (opts.ifClosed !== undefined) body.require_all_closed = opts.ifClosed;
+		if (opts.name !== undefined) body.name = opts.name;
+		if (Object.keys(body).length === 0) {
+			die(
+				'nothing to update: pass --title, --description, --every/--at/--on, --cron, --tz, --[no-]if-closed, and/or --name'
+			);
+		}
+		const updated = await api.updateSchedule(schedule.id, body);
+		if (opts.json) return printJson(updated);
+		console.log(`updated schedule "${scheduleRef(updated)}"\n`);
+		printScheduleDetail(updated);
+	}
+);
+
+withCommon(schedules.command('pause <ref>').description('Pause a schedule (keeps config and history)')).action(
+	async (ref: string, opts: CommonOpts) => {
+		const api = client(opts);
+		const schedule = await resolveSchedule(api, ref);
+		const updated = await api.updateSchedule(schedule.id, { enabled: false });
+		if (opts.json) return printJson(updated);
+		console.log(`paused schedule "${scheduleRef(updated)}"`);
+	}
+);
+
+withCommon(
+	schedules
+		.command('resume <ref>')
+		.description('Resume a paused schedule (recomputes the next occurrence from now)')
+).action(async (ref: string, opts: CommonOpts) => {
+	const api = client(opts);
+	const schedule = await resolveSchedule(api, ref);
+	const updated = await api.updateSchedule(schedule.id, { enabled: true });
+	if (opts.json) return printJson(updated);
+	console.log(`resumed schedule "${scheduleRef(updated)}" — next run ${timestamp(updated.next_run_at)}`);
+});
+
+withCommon(
+	schedules
+		.command('run <ref>')
+		.description('Create an instance now (respects the only-when-closed gate)')
+).action(async (ref: string, opts: CommonOpts) => {
+	const api = client(opts);
+	const schedule = await resolveSchedule(api, ref);
+	const issue = await api.runSchedule(schedule.id);
+	if (opts.json) return printJson(issue);
+	console.log(
+		`created ${issue.project_name}/#${issue.number} "${issue.title}" in state "${issue.state.name}"`
+	);
+});
+
+withCommon(
+	schedules
+		.command('delete <ref>')
+		.description('Delete a schedule (existing issues are kept)')
+		.option('-y, --yes', 'skip the confirmation prompt')
+).action(async (ref: string, opts: CommonOpts & { yes?: boolean }) => {
+	const api = client(opts);
+	const schedule = await resolveSchedule(api, ref);
+	if (!opts.yes) {
+		const rl = createInterface({ input: process.stdin, output: process.stdout });
+		const answer = await rl.question(
+			`Delete schedule "${scheduleRef(schedule)}"? Its ${schedule.run_count} existing issue${schedule.run_count === 1 ? '' : 's'} will be kept. [y/N] `
+		);
+		rl.close();
+		if (!/^y(es)?$/i.test(answer.trim())) die('aborted');
+	}
+	await api.deleteSchedule(schedule.id);
+	console.log(`deleted schedule "${scheduleRef(schedule)}" (issues kept)`);
 });
 
 // --- events ------------------------------------------------------------------

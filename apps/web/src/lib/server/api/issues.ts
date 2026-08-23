@@ -1,15 +1,18 @@
-import type {
-	AllowedTransition,
-	Comment,
-	CreateCommentRequest,
-	CreateIssueRequest,
-	Issue,
-	IssueDetail,
-	StateCategory,
-	TransitionIssueRequest,
-	UpdateIssueRequest,
-	WorkflowResponse,
-	WorkflowState
+import {
+	renderTemplate,
+	templateVars,
+	type AllowedTransition,
+	type Comment,
+	type CreateCommentRequest,
+	type CreateIssueRequest,
+	type CreateIssueResponse,
+	type Issue,
+	type IssueDetail,
+	type StateCategory,
+	type TransitionIssueRequest,
+	type UpdateIssueRequest,
+	type WorkflowResponse,
+	type WorkflowState
 } from '@tines/shared';
 import { sql, type CompiledQuery, type Kysely } from 'kysely';
 import { newId, type Database } from '$lib/server/db';
@@ -23,6 +26,7 @@ import {
 	type Page
 } from './core';
 import { actorOf, eventInsert } from './events';
+import { getSchedule, prepareSchedule } from './schedules';
 import { loadWorkflow } from './workflows';
 
 export function issueQuery(db: Kysely<Database>, userId: string) {
@@ -30,12 +34,14 @@ export function issueQuery(db: Kysely<Database>, userId: string) {
 		.selectFrom('issue')
 		.innerJoin('project', 'project.id', 'issue.project_id')
 		.innerJoin('workflow_state as state', 'state.id', 'issue.state_id')
+		.leftJoin('scheduled_task', 'scheduled_task.id', 'issue.scheduled_task_id')
 		.selectAll('issue')
 		.select([
 			'project.name as project_name',
 			'state.name as state_name',
 			'state.category as state_category',
-			'state.position as state_position'
+			'state.position as state_position',
+			'scheduled_task.name as scheduled_task_name'
 		])
 		.select((eb) =>
 			eb
@@ -64,6 +70,8 @@ export function serializeIssue(row: IssueRow): Issue {
 			category: row.state_category,
 			position: row.state_position
 		},
+		scheduled_task_id: row.scheduled_task_id,
+		scheduled_task_name: row.scheduled_task_name,
 		created_at: row.created_at,
 		updated_at: row.updated_at,
 		last_activity_at: Number(row.last_event_at ?? row.created_at)
@@ -75,6 +83,8 @@ export interface IssueListFilters {
 	state?: string;
 	category?: string;
 	workflow?: string;
+	/** Schedule id: only issues created by that scheduled task. */
+	schedule?: string;
 	hideDone?: boolean;
 	/** Restrict to one project id (the nested per-project route). */
 	projectId?: string;
@@ -118,6 +128,7 @@ export async function listIssues(
 			])
 		);
 	}
+	if (filters.schedule) q = q.where('issue.scheduled_task_id', '=', filters.schedule);
 	if (filters.hideDone) q = q.where('state.category', '!=', 'done');
 	if (page.cursor) {
 		const { createdAt, id } = page.cursor;
@@ -225,7 +236,7 @@ export async function createIssue(
 	actor: ActorContext,
 	projectId: string,
 	body: CreateIssueRequest
-): Promise<IssueDetail> {
+): Promise<CreateIssueResponse> {
 	const project = await db
 		.selectFrom('project')
 		.selectAll()
@@ -249,7 +260,43 @@ export async function createIssue(
 
 	const now = Date.now();
 	const id = newId('iss');
-	await runAtomic(env, [
+
+	// With a recurrence, the title/description double as the schedule's
+	// templates: the first issue is created immediately (placeholders
+	// rendered) and the schedule takes over from there.
+	const schedule = body.schedule ? await prepareSchedule(db, projectId, body.schedule, title, now) : null;
+	const vars = schedule ? templateVars(schedule.name, 1, schedule.timezone, now) : null;
+	const issueTitle = vars ? renderTemplate(title, vars) : title;
+	const issueDescription = vars ? renderTemplate(description, vars) : description;
+
+	const queries: CompiledQuery[] = [];
+	if (schedule) {
+		queries.push(
+			db
+				.insertInto('scheduled_task')
+				.values({
+					id: schedule.id,
+					project_id: projectId,
+					name: schedule.name,
+					title_template: title,
+					description_template: description,
+					workflow_id: workflow.id,
+					cron: schedule.recurrence.cron,
+					preset: schedule.recurrence.presetJson,
+					timezone: schedule.timezone,
+					require_all_closed: schedule.requireAllClosed ? 1 : 0,
+					enabled: 1,
+					next_run_at: schedule.nextRunAt,
+					last_run_at: now,
+					// The initial issue counts as the first run.
+					run_count: 1,
+					created_at: now,
+					updated_at: now
+				})
+				.compile()
+		);
+	}
+	queries.push(
 		// MAX(number)+1 inside a single statement (and the batch's implicit
 		// transaction) keeps per-project numbering race-free on D1.
 		db
@@ -258,10 +305,11 @@ export async function createIssue(
 				id,
 				project_id: projectId,
 				number: sql<number>`(SELECT COALESCE(MAX(number), 0) + 1 FROM issue WHERE project_id = ${projectId})`,
-				title,
-				description,
+				title: issueTitle,
+				description: issueDescription,
 				workflow_id: workflow.id,
 				state_id: initialState.id,
+				scheduled_task_id: schedule?.id ?? null,
 				created_at: now,
 				updated_at: now
 			})
@@ -270,10 +318,35 @@ export async function createIssue(
 			type: 'issue.created',
 			issueId: id,
 			projectId,
-			payload: { title, workflow_id: workflow.id, state_id: initialState.id, state_name: initialState.name }
+			payload: {
+				title: issueTitle,
+				workflow_id: workflow.id,
+				state_id: initialState.id,
+				state_name: initialState.name,
+				...(schedule ? { scheduled_task_id: schedule.id, scheduled_task_name: schedule.name } : {})
+			}
 		})
-	]);
-	return getIssueDetail(db, actor.userId, { id });
+	);
+	if (schedule) {
+		queries.push(
+			eventInsert(db, actor, {
+				type: 'scheduled_task.created',
+				projectId,
+				payload: {
+					schedule_id: schedule.id,
+					name: schedule.name,
+					cron: schedule.recurrence.cron,
+					timezone: schedule.timezone,
+					require_all_closed: schedule.requireAllClosed
+				}
+			})
+		);
+	}
+	await runAtomic(env, queries);
+
+	const issue = await getIssueDetail(db, actor.userId, { id });
+	if (!schedule) return issue;
+	return { ...issue, schedule: await getSchedule(db, actor.userId, schedule.id) };
 }
 
 export async function updateIssue(

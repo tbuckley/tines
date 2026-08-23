@@ -6,6 +6,8 @@
 	import IconKey from '@tabler/icons-svelte/icons/key';
 	import IconMessage from '@tabler/icons-svelte/icons/message';
 	import IconPencil from '@tabler/icons-svelte/icons/pencil';
+	import IconPlayerSkipForward from '@tabler/icons-svelte/icons/player-skip-forward';
+	import IconRepeat from '@tabler/icons-svelte/icons/repeat';
 	import IconSitemap from '@tabler/icons-svelte/icons/sitemap';
 	import IconTrash from '@tabler/icons-svelte/icons/trash';
 	import { fade, slide } from 'svelte/transition';
@@ -23,6 +25,8 @@
 	function icon(type: string) {
 		if (type === 'issue.transitioned') return IconArrowRight;
 		if (type === 'issue.commented') return IconMessage;
+		if (type === 'scheduled_task.skipped') return IconPlayerSkipForward;
+		if (type.startsWith('scheduled_task.')) return IconRepeat;
 		if (type.endsWith('.created')) return IconCirclePlus;
 		if (type.endsWith('.deleted') || type.endsWith('.revoked')) return IconTrash;
 		if (type.startsWith('project.')) return IconFolder;
@@ -58,9 +62,29 @@
 				return 'created API key';
 			case 'api_key.revoked':
 				return 'revoked API key';
+			case 'scheduled_task.created':
+				return 'created schedule';
+			case 'scheduled_task.updated':
+				return 'updated schedule';
+			case 'scheduled_task.deleted':
+				return 'deleted schedule';
+			case 'scheduled_task.skipped':
+				return 'skipped an occurrence of schedule';
 			default:
 				return ev.type;
 		}
+	}
+
+	/**
+	 * Sweep-created issues carry the schedule in the payload and no API key:
+	 * shown as "Alice via schedule “Daily triage”", parallel to API-key
+	 * attribution. Run-now instances (`manual: true`) keep the normal actor.
+	 */
+	function displayActor(ev: TinesEvent): string {
+		if (ev.type === 'issue.created' && ev.payload.scheduled_task_name && !ev.payload.manual) {
+			return `${ev.actor.user_name} via schedule “${ev.payload.scheduled_task_name}”`;
+		}
+		return actorLabel(ev.actor);
 	}
 
 	/** Display object of the event: an issue link, or a payload name. */
@@ -89,7 +113,7 @@
 				</span>
 				<div class="min-w-0 flex-1">
 					<p class="leading-snug">
-						<span class="font-medium">{actorLabel(ev.actor)}</span>
+						<span class="font-medium">{displayActor(ev)}</span>
 						<span class="text-muted-foreground"> {verb(ev)} </span>
 						{#if ev.issue_ref}
 							{#if showIssueLinks}

@@ -1,0 +1,16 @@
+{
+	// Config for @sveltejs/adapter-cloudflare ONLY (see vite.config.ts) — not
+	// used by wrangler itself. The adapter writes its generated worker to
+	// whatever `main` its config names; keeping that at the default location
+	// here lets the real wrangler.jsonc point `main` at worker/index.ts, the
+	// custom entry that wraps the generated worker with a scheduled() handler.
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "tines-web",
+	"compatibility_date": "2025-08-01",
+	"compatibility_flags": ["nodejs_compat"],
+	"main": ".svelte-kit/cloudflare/_worker.js",
+	"assets": {
+		"binding": "ASSETS",
+		"directory": ".svelte-kit/cloudflare"
+	}
+}

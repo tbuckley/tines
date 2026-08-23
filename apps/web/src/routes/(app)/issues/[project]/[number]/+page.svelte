@@ -4,6 +4,7 @@
 	import IconArrowRight from '@tabler/icons-svelte/icons/arrow-right';
 	import IconChevronLeft from '@tabler/icons-svelte/icons/chevron-left';
 	import IconPencil from '@tabler/icons-svelte/icons/pencil';
+	import IconRepeat from '@tabler/icons-svelte/icons/repeat';
 	import { fade, slide } from 'svelte/transition';
 	import { invalidateAll } from '$app/navigation';
 	import { api } from '$lib/api';
@@ -188,6 +189,16 @@
 			<p class="text-muted-foreground text-sm">
 				<a href="/projects/{data.issue.project_id}" class="hover:underline">{data.issue.project_name}</a>
 				<span class="font-mono">#{data.issue.number}</span>
+				{#if data.issue.scheduled_task_id}
+					<a
+						href="/projects/{data.issue.project_id}?schedule={data.issue.scheduled_task_id}"
+						class="bg-muted text-muted-foreground hover:text-foreground ml-1 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs align-middle"
+						title="Created by schedule “{data.issue.scheduled_task_name}”"
+					>
+						<IconRepeat size={12} stroke={1.75} />
+						{data.issue.scheduled_task_name}
+					</a>
+				{/if}
 			</p>
 			{#if editingTitle}
 				<form onsubmit={saveTitle} class="mt-1 flex items-center gap-2">

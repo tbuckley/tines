@@ -6,7 +6,7 @@ Creating one is part of the normal issue-creation flow: set an optional recurren
 
 ## Goals
 
-- Recurring issue creation on simple presets (daily / weekly / monthly) or a cron expression, evaluated in a per-schedule timezone.
+- Recurring issue creation on simple presets (hourly / daily / weekly / monthly) or a cron expression, evaluated in a per-schedule timezone.
 - An optional gate: only create a new instance when all previous instances from the same schedule are closed.
 - Placeholders in the title and description templates (`{{date}}`, `{{time}}`, …) rendered at creation time.
 - Full lifecycle management — list, edit, pause/resume, run now, delete — in both the web UI and the CLI.
@@ -42,10 +42,13 @@ Users express recurrence as either a **preset** or a **cron expression**; both a
 
 | Preset | Inputs | Compiles to |
 | --- | --- | --- |
+| Hourly | every N hours (1–23) + minute past the hour | `M */N * * *` (`M * * * *` for N=1) |
 | Daily | time of day | `M H * * *` |
 | Weekly | weekday + time of day | `M H * * D` |
 | Monthly | day of month + time of day | `M H DOM * *` |
 | Custom | raw 5-field cron | as given |
+
+The hourly preset follows cron `*/N` semantics: the cycle restarts from hour 0 each day, so an N that doesn't divide 24 has a shorter final interval before midnight. N=1 (every hour) sits exactly at the flood guardrail and is allowed.
 
 - Cron is the standard 5-field form (minute, hour, day-of-month, month, day-of-week) supporting `*`, numbers, ranges, lists, and steps. Expressions whose minimum interval is under one hour are rejected with a 422.
 - Every schedule stores an **IANA timezone**, defaulting to the creator's (browser timezone in the web UI, system timezone in the CLI). The cron expression is evaluated in that timezone, so "daily at 9:00" means local 9:00 across DST changes. Spring-forward gaps: a nonexistent local time fires at the next valid instant; fall-back ambiguity: the occurrence fires once, at the first instant. Monthly day-31 in a short month follows cron semantics: that month is skipped.
@@ -111,7 +114,7 @@ issue           + scheduled_task_id?   -- ON DELETE SET NULL
 
 Notes:
 
-- `preset` is the round-trippable form for the UI (`{ kind: 'daily'|'weekly'|'monthly', time, weekday?, day_of_month? }`); NULL means raw cron. `cron` is always populated (presets compile to it) and is the only thing evaluation reads.
+- `preset` is the round-trippable form for the UI (`{ kind: 'hourly'|'daily'|'weekly'|'monthly', time?, weekday?, day_of_month?, every_hours?, minute? }`); NULL means raw cron. `cron` is always populated (presets compile to it) and is the only thing evaluation reads.
 - `require_all_closed` and `enabled` are 0/1 integers; timestamps are ms-since-epoch as elsewhere.
 - `run_count` increments in the same transaction as each linked issue creation; `{{count}}` renders `run_count + 1` for the issue being created.
 - Deleting a project deletes its schedules (project deletion already requires the project to be issue-less; schedules go with it, emitting `scheduled_task.deleted`).
@@ -120,7 +123,7 @@ Notes:
 
 A **Cloudflare Cron Trigger** sweeps for due schedules:
 
-- `wrangler.jsonc` gains `triggers: { crons: ["*/5 * * * *"] }`. The worker entry becomes a small custom module that re-exports the SvelteKit-generated worker's `fetch` and adds a `scheduled()` handler (the adapter's `_worker.js` alone has no scheduled hook). The handler calls sweep logic living in `lib/server/` with the same D1 binding.
+- `wrangler.jsonc` gains `triggers: { crons: ["*/30 * * * *"] }`. The worker entry becomes a small custom module that re-exports the SvelteKit-generated worker's `fetch` and adds a `scheduled()` handler (the adapter's `_worker.js` alone has no scheduled hook). The handler calls sweep logic living in `lib/server/` with the same D1 binding.
 - **Sweep**: select schedules where `enabled = 1 AND next_run_at <= now`, then per schedule, in one transaction: re-check due-ness, run the gate check, create the issue (or emit `scheduled_task.skipped`), update `last_run_at`/`run_count`, and advance `next_run_at` to the next future occurrence. Advancing `next_run_at` transactionally is what makes overlapping sweeps harmless — a second sweep no longer sees the schedule as due. One schedule failing must not abort the rest of the sweep.
 - **Effective resolution**: an occurrence fires at the first sweep at or after its nominal time, so creation timestamps lag the schedule by up to the sweep interval. With the sub-hourly guardrail this is negligible.
 - **Local dev / e2e**: `wrangler dev --test-scheduled` exposes `GET /__scheduled?cron=…` to fire the handler on demand; the e2e suite uses this to test the sweep deterministically (no clock-dependent waits — seed schedules with `next_run_at` in the past and trigger a sweep).
@@ -146,7 +149,7 @@ Recurrence flags on `issues create`, plus a `schedules` command group. Schedules
 
 ```
 tines issues create <project> -t <t> [-d <md>] [-w <wf>]
-    [--every <daily|weekly|monthly>] [--at <HH:MM>] [--on <weekday|day-of-month>]
+    [--every <hourly|Nh|daily|weekly|monthly>] [--at <HH:MM|:MM>] [--on <weekday|day-of-month>]
     [--cron "<expr>"] [--tz <iana>] [--if-closed] [--schedule-name <name>]
         # --every/--at/--on build a preset; --cron is the raw alternative (mutually exclusive)
         # --if-closed sets require_all_closed; --tz defaults to the system timezone
@@ -202,7 +205,7 @@ A "Scheduled tasks" section on the project detail page (hidden when the project 
 - **Recurrence form**: presets + raw cron, each schedule carrying an IANA timezone defaulting to the creator's — "daily at 9am" means local 9am. Presets compile to cron; only cron is evaluated.
 - **Gate semantics**: with `require_all_closed`, a blocked occurrence is **skipped**, not deferred or queued — recorded via `scheduled_task.skipped`, and any linked issue in a non-`done` state blocks (not just the latest).
 - **Placeholders**: fixed mustache-style set (`{{date}}`, `{{time}}`, `{{datetime}}`, `{{schedule_name}}`, `{{count}}`), fixed formats, rendered in the schedule's timezone; unknown tokens pass through untouched.
-- **Execution**: Cloudflare Cron Trigger every 5 minutes with a custom worker entry wrapping the SvelteKit handler; no lazy on-request fallback (dev and e2e use `--test-scheduled`). Concurrency handled by transactionally advancing `next_run_at`.
+- **Execution**: Cloudflare Cron Trigger every 30 minutes with a custom worker entry wrapping the SvelteKit handler; no lazy on-request fallback (dev and e2e use `--test-scheduled`). Concurrency handled by transactionally advancing `next_run_at`.
 - **Linkage**: nullable `scheduled_task_id` FK on `issue`, `SET NULL` on schedule deletion; event payloads preserve the schedule's identity for history.
 - **Lifecycle**: pause/resume via an `enabled` flag plus a run-now action (gate-respecting, `next_run_at` untouched), alongside deletion.
 - **Creation flow**: setting a recurrence during issue creation creates the first issue immediately *and* the schedule — the form's fields double as the templates.

@@ -49,6 +49,30 @@ export interface IssueTable {
 	description: string;
 	workflow_id: string;
 	state_id: string;
+	/** Set when the issue was created by a scheduled task; NULL after the schedule is deleted. */
+	scheduled_task_id: string | null;
+	created_at: number;
+	updated_at: number;
+}
+
+export interface ScheduledTaskTable {
+	id: string;
+	project_id: string;
+	name: string;
+	title_template: string;
+	description_template: string;
+	workflow_id: string;
+	/** Always populated (presets compile to it); the only thing the sweep evaluates. */
+	cron: string;
+	/** JSON preset for UI round-tripping; NULL = raw cron. */
+	preset: string | null;
+	/** IANA timezone the cron expression is evaluated in. */
+	timezone: string;
+	require_all_closed: number;
+	enabled: number;
+	next_run_at: number;
+	last_run_at: number | null;
+	run_count: number;
 	created_at: number;
 	updated_at: number;
 }
@@ -99,6 +123,7 @@ export interface Database {
 	workflow_state: WorkflowStateTable;
 	workflow_transition: WorkflowTransitionTable;
 	issue: IssueTable;
+	scheduled_task: ScheduledTaskTable;
 	comment: CommentTable;
 	event: EventTable;
 	api_key: ApiKeyTable;

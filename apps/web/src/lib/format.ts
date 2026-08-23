@@ -12,6 +12,19 @@ export function relativeTime(ms: number, now = Date.now()): string {
 	return new Date(ms).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
+/** Future counterpart of relativeTime: "in 5m", "in 3h", "in 2d". */
+export function untilTime(ms: number, now = Date.now()): string {
+	const diff = ms - now;
+	if (diff < 60_000) return 'in <1m';
+	const minutes = Math.round(diff / 60_000);
+	if (minutes < 60) return `in ${minutes}m`;
+	const hours = Math.round(minutes / 60);
+	if (hours < 24) return `in ${hours}h`;
+	const days = Math.round(hours / 24);
+	if (days < 30) return `in ${days}d`;
+	return new Date(ms).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
 export function formatDateTime(ms: number): string {
 	return new Date(ms).toLocaleString(undefined, {
 		month: 'short',
