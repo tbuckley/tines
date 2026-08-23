@@ -59,6 +59,10 @@
 		// DB is disposable — see "PR preview URLs" in the README to reset it.
 		// Non-inheritable keys (d1_databases, send_email, vars) must be restated here.
 		"preview": {
+			// Must NOT inherit the top-level `routes`: without this, deploying
+			// this environment reassigns the tines.tbuckley.com custom domain
+			// away from the production Worker.
+			"routes": [],
 			"workers_dev": false,
 			"preview_urls": true,
 			"d1_databases": [
