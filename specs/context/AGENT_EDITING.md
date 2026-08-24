@@ -97,6 +97,17 @@ this project. Agents append freely and correct freely — the blast radius is
 one project-stage, and the journal is precisely the consolidation target
 the parent spec's journal example anticipated.
 
+**Journal heading.** In the stitched prompt, the journal's part renders
+under `## Journal (<scope label>)` — e.g.
+`## Journal (project Tines · state Implementing)` — instead of the generic
+`## Context: <scope label>`. The rule keys on the same predicate as the
+command family (prompt named `journal` at exactly `project ∧ state`), so
+the agent sees "Journal" directly above the entries it maintains and the
+prompt-final section can reference it by name. This is display-only: the
+canonical scope label is unchanged everywhere else (UI chips, events,
+`parts[].scope.label`, proposal references), and a non-journal prompt in
+the same layer keeps the ordinary heading.
+
 **Broader tiers are propose-only for agents.** Project-, state-, and
 global-scoped context governs work the proposing agent cannot see, so
 changes route through review (below) instead of direct writes.
@@ -205,8 +216,8 @@ layer):
 ```markdown
 ### Journal
 
-Your journal for this project and stage is the "## Context: project Tines
-· state Implementing" section above (currently v7).
+Your journal for this project and stage is the "Journal" section above
+(currently v7).
 
 - Append a lesson: `tines journal append Tines/1 "- <date>: <lesson>"`
 - Fix or prune entries: `tines journal show Tines/1 --json`, revise, then
@@ -303,7 +314,7 @@ House conventions: pnpm monorepo, Node >= 20. Use tabs. Run `pnpm check`
 and `pnpm test` before declaring anything done. Write terse commit
 messages; prefer small PRs.
 
-## Context: project Tines · state Implementing
+## Journal (project Tines · state Implementing)
 
 - 2026-08-18: `pnpm db:migrate:local` must run before the e2e suite; a
   missing migration surfaces as a cryptic D1_ERROR, not a clear failure.
@@ -345,8 +356,8 @@ Add a comment: `tines issues comment Tines/12 "<markdown>"`
 
 ### Journal
 
-Your journal for this project and stage is the "## Context: project Tines
-· state Implementing" section above (currently v7).
+Your journal for this project and stage is the "Journal" section above
+(currently v7).
 
 - Append a lesson: `tines journal append Tines/12 "- <date>: <lesson>"`
 - Fix or prune entries: `tines journal show Tines/12 --json`, revise, then
@@ -440,7 +451,9 @@ unchanged.
    and scope label only.
 4. Pasting the append command from the prompt adds a journal entry —
    creating the journal if absent — and the next prompt read shows the
-   entry, the stitched layer, and the bumped version.
+   entry under its `## Journal (<scope label>)` heading and the bumped
+   version; a non-journal prompt in the same layer keeps the ordinary
+   `## Context:` heading.
 5. Two concurrent appends both land. A rewrite with a stale
    `--expect-version` fails with a 409 naming the current version; after
    re-reading, the corrected body saves and drops the stale entry.
