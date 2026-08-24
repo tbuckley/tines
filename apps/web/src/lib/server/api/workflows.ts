@@ -1,5 +1,6 @@
 import {
 	STATE_CATEGORIES,
+	STATE_PROMPT_NAME,
 	type CreateWorkflowRequest,
 	type DeletedContextItem,
 	type StateCategory,
@@ -10,7 +11,7 @@ import {
 } from '@tines/shared';
 import type { CompiledQuery, Kysely } from 'kysely';
 import { newId, type Database, type WorkflowStateTable } from '$lib/server/db';
-import { findAttachedContext, sweepAttachedContext } from './context';
+import { findAttachedContext, seedPromptQueries, sweepAttachedContext } from './context';
 import {
 	ApiFail,
 	notFound,
@@ -28,6 +29,8 @@ interface ResolvedState {
 	category: StateCategory;
 	position: number;
 	isNew: boolean;
+	/** Initial stage instructions (new states only): seeds a state-scoped prompt item. */
+	prompt?: string;
 }
 
 interface ResolvedDef {
@@ -72,12 +75,24 @@ export function resolveDef(
 		if (input.id !== undefined && !existingById.has(input.id)) {
 			throw new ApiFail(422, 'unknown_state', `State id "${input.id}" is not part of this workflow`);
 		}
+		// `prompt` seeds a state-scoped "instructions" item — new states only;
+		// existing stage instructions are edited through the context surfaces.
+		const prompt = optionalString(input.prompt, `states[${i}].prompt`, { max: 100_000 })?.trim() || undefined;
+		if (prompt !== undefined && input.id !== undefined) {
+			throw new ApiFail(
+				422,
+				'prompt_on_existing_state',
+				`State "${name}" already exists; its instructions are edited as context items, not re-sent through workflow updates`,
+				{ state_id: input.id }
+			);
+		}
 		const state: ResolvedState = {
 			id: input.id ?? newId('wfs'),
 			name,
 			category: input.category,
 			position: i,
-			isNew: input.id === undefined
+			isNew: input.id === undefined,
+			prompt
 		};
 		if (byId.has(state.id)) {
 			throw new ApiFail(422, 'duplicate_state', `State id "${state.id}" is listed more than once`);
@@ -292,6 +307,19 @@ export async function createWorkflow(
 				})
 				.compile()
 		),
+		// Initial stage instructions ride along in the same transaction.
+		...def.states
+			.filter((s) => s.prompt !== undefined)
+			.flatMap(
+				(s) =>
+					seedPromptQueries(db, actor, {
+						name: STATE_PROMPT_NAME,
+						body: s.prompt!,
+						workflowStateId: s.id,
+						label: `state ${s.name}`,
+						now
+					}).queries
+			),
 		eventInsert(db, actor, { type: 'workflow.created', payload: { workflow_id: id, name } })
 	];
 	await runAtomic(env, queries);
@@ -478,6 +506,20 @@ export async function updateWorkflow(
 				})
 				.compile()
 		);
+	}
+	// Initial stage instructions for newly added states.
+	for (const s of def.states) {
+		if (s.isNew && s.prompt !== undefined) {
+			queries.push(
+				...seedPromptQueries(db, actor, {
+					name: STATE_PROMPT_NAME,
+					body: s.prompt,
+					workflowStateId: s.id,
+					label: `state ${s.name}`,
+					now
+				}).queries
+			);
+		}
 	}
 	queries.push(
 		db

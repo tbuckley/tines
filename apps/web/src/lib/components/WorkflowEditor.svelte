@@ -21,6 +21,9 @@
 		id?: string;
 		name: string;
 		category: StateCategory;
+		/** Initial stage instructions (new states only) — seeds a context prompt. */
+		prompt?: string;
+		promptOpen?: boolean;
 	}
 
 	let {
@@ -172,7 +175,10 @@
 				states: states.map((s) => ({
 					...(s.id ? { id: s.id } : {}),
 					name: s.name.trim(),
-					category: s.category
+					category: s.category,
+					// New states only: existing stage instructions are edited as
+					// context items, not through workflow updates.
+					...(!s.id && s.prompt?.trim() ? { prompt: s.prompt.trim() } : {})
 				})),
 				transitions: transitions.map((t) => ({ name: t.name.trim(), from: ref(t.from), to: ref(t.to) }))
 			});
@@ -229,6 +235,33 @@
 							<IconTrash size={15} />
 						</Button>
 					</div>
+					{#if !row.id}
+						<!-- creation nudge: seed the state's instructions while it's being made -->
+						{#if row.promptOpen}
+							<div class="space-y-1" transition:slide={{ duration: dur() }}>
+								<label class="text-muted-foreground text-xs font-medium" for="state-prompt-{row.key}">
+									Stage instructions — what “being in {row.name.trim() || 'this state'}” means for an agent
+								</label>
+								<Textarea
+									id="state-prompt-{row.key}"
+									bind:value={states[i].prompt}
+									rows={3}
+									class="text-xs"
+									placeholder="Saved as a state-scoped context prompt named “instructions”…"
+								/>
+							</div>
+						{:else}
+							<Button
+								type="button"
+								size="sm"
+								variant="ghost"
+								class="text-muted-foreground h-7 px-2 text-xs"
+								onclick={() => (states[i].promptOpen = true)}
+							>
+								<IconPlus size={12} /> Add stage instructions
+							</Button>
+						{/if}
+					{/if}
 					{#if states.length > 1}
 						<div class="space-y-1.5">
 							{#each transitions.filter((t) => t.from === row.key) as transition (transition.key)}

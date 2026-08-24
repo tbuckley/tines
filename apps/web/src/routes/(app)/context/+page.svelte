@@ -1,9 +1,17 @@
 <script lang="ts">
 	import type { ContextItem } from '@tines/shared';
+	import {
+		AGENT_GUIDELINES_BODY,
+		AGENT_GUIDELINES_DESCRIPTION,
+		AGENT_GUIDELINES_NAME,
+		ApiError
+	} from '@tines/shared';
 	import IconPlus from '@tabler/icons-svelte/icons/plus';
 	import IconSearch from '@tabler/icons-svelte/icons/search';
+	import IconSparkles from '@tabler/icons-svelte/icons/sparkles';
 	import { goto, invalidateAll } from '$app/navigation';
 	import { page } from '$app/state';
+	import { api } from '$lib/api';
 	import ContextItemEditor from '$lib/components/ContextItemEditor.svelte';
 	import ContextItemList from '$lib/components/ContextItemList.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
@@ -22,6 +30,27 @@
 	function openEdit(item: ContextItem) {
 		editing = item;
 		editorOpen = true;
+	}
+
+	let seeding = $state(false);
+	let seedError = $state<string | null>(null);
+	async function seedGuidelines() {
+		if (seeding) return;
+		seeding = true;
+		seedError = null;
+		try {
+			await api.createContextItem({
+				kind: 'prompt',
+				name: AGENT_GUIDELINES_NAME,
+				description: AGENT_GUIDELINES_DESCRIPTION,
+				body: AGENT_GUIDELINES_BODY
+			});
+			await invalidateAll();
+		} catch (err) {
+			seedError = err instanceof ApiError ? err.message : 'Failed to add the starter guidance.';
+		} finally {
+			seeding = false;
+		}
 	}
 
 	// Filters live in the URL so the tab is shareable/bookmarkable.
@@ -83,6 +112,24 @@
 		{/each}
 	</Select>
 </div>
+
+{#if !data.hasAgentGuidelines}
+	<div class="border-primary/30 bg-primary/5 mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border px-4 py-3">
+		<div class="text-sm">
+			<p class="font-medium">Add the starter agent guidance</p>
+			<p class="text-muted-foreground text-xs">
+				A global prompt that opens every launch prompt: teaches agents when to comment, attach
+				artifacts, journal, or file a context change request. Yours to edit after seeding.
+			</p>
+			{#if seedError}
+				<p class="text-destructive mt-1 text-xs">{seedError}</p>
+			{/if}
+		</div>
+		<Button size="sm" variant="outline" onclick={seedGuidelines} disabled={seeding}>
+			<IconSparkles size={14} /> {seeding ? 'Adding…' : 'Add guidance'}
+		</Button>
+	</div>
+{/if}
 
 <ContextItemList
 	items={data.items}

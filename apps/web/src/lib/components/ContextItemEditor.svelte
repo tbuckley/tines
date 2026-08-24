@@ -132,7 +132,7 @@
 	});
 
 	const derivedDir = $derived(repoUrl.trim() ? repoDirFromUrl(repoUrl.trim()) : '');
-	const scopeEmpty = $derived(!projectId && !stateId && !issueId);
+	const isGlobal = $derived(!projectId && !stateId && !issueId);
 
 	async function save(e: SubmitEvent) {
 		e.preventDefault();
@@ -146,7 +146,10 @@
 					description,
 					project_id: projectId || null,
 					workflow_state_id: stateId || null,
-					issue_id: issueId || null
+					issue_id: issueId || null,
+					// Surface concurrent edits (e.g. an agent's append) instead of
+					// silently overwriting them.
+					expected_version: item.version
 				};
 				if (kind === 'prompt') request.body = body;
 				if (kind === 'skill') request.files = files.map(({ path, content }): ContextFile => ({ path, content }));
@@ -323,7 +326,10 @@
 		<fieldset class="space-y-2 rounded-md border p-3">
 			<legend class="px-1 text-sm font-medium">Scope</legend>
 			<p class="text-muted-foreground text-xs">
-				Applies where <em>all</em> chosen dimensions match. Pick at least one.
+				Applies where <em>all</em> chosen dimensions match.
+				{#if isGlobal}
+					<span class="text-foreground font-medium">None chosen — global: applies to every launch prompt.</span>
+				{/if}
 			</p>
 			{#if !issueId}
 				<div class="space-y-1">
@@ -377,7 +383,7 @@
 			{/if}
 			<div class="flex gap-2">
 				<Button type="button" variant="ghost" onclick={() => (open = false)}>Cancel</Button>
-				<Button type="submit" disabled={saving || !name.trim() || scopeEmpty}>
+				<Button type="submit" disabled={saving || !name.trim()}>
 					{saving ? 'Saving…' : item ? 'Save' : 'Create'}
 				</Button>
 			</div>

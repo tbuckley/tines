@@ -4,9 +4,10 @@ import type {
 	Project,
 	UpdateProjectRequest
 } from '@tines/shared';
+import { PROJECT_PROMPT_NAME } from '@tines/shared';
 import type { Kysely } from 'kysely';
 import { newId, type Database } from '$lib/server/db';
-import { findAttachedContext, sweepAttachedContext } from './context';
+import { findAttachedContext, seedPromptQueries, sweepAttachedContext } from './context';
 import {
 	ApiFail,
 	notFound,
@@ -118,6 +119,20 @@ export async function createProject(
 	}
 	const now = Date.now();
 	const id = newId('prj');
+	// Optional initial prompt: the project and its "conventions" item land
+	// in one transaction. The project is brand new, so the name can't collide.
+	const initialPrompt = optionalString(body.initial_prompt, 'initial_prompt', {
+		max: 100_000
+	})?.trim();
+	const seed = initialPrompt
+		? seedPromptQueries(db, actor, {
+				name: PROJECT_PROMPT_NAME,
+				body: initialPrompt,
+				projectId: id,
+				label: `project ${name}`,
+				now
+			})
+		: null;
 	await runAtomic(env, [
 		db
 			.insertInto('project')
@@ -131,7 +146,8 @@ export async function createProject(
 				updated_at: now
 			})
 			.compile(),
-		eventInsert(db, actor, { type: 'project.created', projectId: id, payload: { name } })
+		eventInsert(db, actor, { type: 'project.created', projectId: id, payload: { name } }),
+		...(seed?.queries ?? [])
 	]);
 	return getProject(db, actor.userId, id);
 }

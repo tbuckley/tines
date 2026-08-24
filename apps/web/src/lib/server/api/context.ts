@@ -1,10 +1,15 @@
 import {
+	AGENT_GUIDELINES_BODY,
+	AGENT_GUIDELINES_DESCRIPTION,
+	AGENT_GUIDELINES_NAME,
 	CONTEXT_KINDS,
+	JOURNAL_NAME,
 	PROMPT_MAX_BYTES,
 	repoDirFromUrl,
 	SKILL_MAX_FILES,
 	SKILL_MAX_TOTAL_BYTES,
 	SKILL_NAME_PATTERN,
+	type AppendContextRequest,
 	type ContextFile,
 	type ContextItem,
 	type ContextKind,
@@ -21,7 +26,7 @@ import {
 	type RepoDirConflict,
 	type UpdateContextItemRequest
 } from '@tines/shared';
-import type { CompiledQuery, Kysely } from 'kysely';
+import { sql, type CompiledQuery, type Kysely } from 'kysely';
 import { newId, type Database } from '$lib/server/db';
 import {
 	ApiFail,
@@ -192,7 +197,10 @@ export interface ResolvedScope extends ScopeIds {
 	issueProjectId: string | null;
 }
 
-/** Canonical display label: set dimensions in project · state · issue order. */
+/**
+ * Canonical display label: set dimensions in project · state · issue order;
+ * the empty scope is "global".
+ */
 export function scopeLabel(scope: {
 	projectName?: string | null;
 	stateName?: string | null;
@@ -205,7 +213,7 @@ export function scopeLabel(scope: {
 	if (scope.issueProjectName && scope.issueNumber !== null && scope.issueNumber !== undefined) {
 		parts.push(`issue ${scope.issueProjectName}/${scope.issueNumber}`);
 	}
-	return parts.join(' · ');
+	return parts.length > 0 ? parts.join(' · ') : 'global';
 }
 
 function toContextScope(scope: ResolvedScope): ContextScope {
@@ -227,22 +235,15 @@ function toContextScope(scope: ResolvedScope): ContextScope {
 
 /**
  * Validates a scope: every referenced element exists and belongs to the user
- * (states may come from the system standard workflow), at least one dimension
- * is set, and the set dimensions cohere (issue in project; state in the
- * issue's bound workflow).
+ * (states may come from the system standard workflow), and the set dimensions
+ * cohere (issue in project; state in the issue's bound workflow). An empty
+ * scope is valid — the item is global and matches every issue.
  */
 async function resolveScope(
 	db: Kysely<Database>,
 	userId: string,
 	ids: ScopeIds
 ): Promise<ResolvedScope> {
-	if (!ids.projectId && !ids.workflowStateId && !ids.issueId) {
-		throw new ApiFail(
-			422,
-			'scope_required',
-			'A context item needs at least one scope dimension: project_id, workflow_state_id, or issue_id'
-		);
-	}
 	const scope: ResolvedScope = {
 		projectId: ids.projectId,
 		workflowStateId: ids.workflowStateId,
@@ -393,6 +394,7 @@ function serializeItem(row: ItemRow, files?: ContextFile[]): ContextItem {
 		description: row.description,
 		scope: toContextScope(rowScope(row)),
 		position: row.position,
+		version: row.version,
 		created_at: row.created_at,
 		updated_at: row.updated_at
 	};
@@ -663,6 +665,7 @@ export async function createContextItem(
 				repo_branch: repoBranch,
 				repo_dir: repoDir,
 				position,
+				version: 1,
 				created_at: now,
 				updated_at: now
 			})
@@ -690,18 +693,54 @@ export async function createContextItem(
 	return getContextItem(db, actor.userId, id);
 }
 
+/**
+ * Compiled guarded event insert: only lands if the item reached the given
+ * version — ties an event to a compare-and-swap write in the same batch.
+ */
+function guardedContextEvent(
+	db: Kysely<Database>,
+	actor: ActorContext,
+	input: { type: string; issueId: string | null; projectId: string | null; payload: Record<string, unknown> },
+	itemId: string,
+	versionAfter: number
+): CompiledQuery {
+	return sql`
+		INSERT INTO event (id, user_id, type, actor_user_id, actor_api_key_id, issue_id, project_id, payload, created_at)
+		SELECT ${newId('evt')}, ${actor.userId}, ${input.type}, ${actor.userId}, ${actor.apiKeyId},
+			${input.issueId}, ${input.projectId}, ${JSON.stringify(input.payload)}, ${Date.now()}
+		WHERE EXISTS (
+			SELECT 1 FROM context_item WHERE id = ${itemId} AND version = ${versionAfter}
+		)`.compile(db);
+}
+
+/** 409 carrying the current item so the caller can rebase and retry. */
+function versionConflict(row: ItemRow): ApiFail {
+	return new ApiFail(
+		409,
+		'version_conflict',
+		`The item changed to version ${row.version} while this write was in flight; re-read and retry`,
+		{ current: serializeItem(row) }
+	);
+}
+
 export async function updateContextItem(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
 	id: string,
-	body: UpdateContextItemRequest & { kind?: unknown }
+	body: UpdateContextItemRequest & { kind?: unknown },
+	/** Internal: lost-race retry count for last-write-wins updates. */
+	attempt = 0
 ): Promise<ContextItem> {
 	const row = await contextItemQuery(db, actor.userId)
 		.where('context_item.id', '=', id)
 		.executeTakeFirst();
 	if (!row) throw notFound();
 	const kind = row.kind as ContextKind;
+
+	if (body.expected_version !== undefined && body.expected_version !== row.version) {
+		throw versionConflict(row);
+	}
 
 	if (body.kind !== undefined && body.kind !== kind) {
 		throw new ApiFail(422, 'kind_immutable', 'A context item\'s kind cannot be changed after creation', {
@@ -808,28 +847,16 @@ export async function updateContextItem(
 			if (added.length) payload.files_added = added;
 			if (removed.length) payload.files_removed = removed;
 			if (modified.length) payload.files_modified = modified;
-			// Declarative replace: the item is small by construction.
-			queries.push(db.deleteFrom('context_item_file').where('context_item_id', '=', id).compile());
-			for (const f of files) {
-				queries.push(
-					db
-						.insertInto('context_item_file')
-						.values({
-							id: newId('ctf'),
-							context_item_id: id,
-							path: f.path,
-							content: f.content,
-							created_at: now,
-							updated_at: now
-						})
-						.compile()
-				);
-			}
 		}
 	}
 
 	if (changed.length === 0 && !filesChanged) return serializeItem(row, files);
 
+	// Every write is a compare-and-swap on the version we read, so a
+	// concurrent append or edit can never be half-overwritten: the guarded
+	// update goes first, and the file replacement plus the event only land
+	// if it did (they check for the bumped version).
+	const newVersion = row.version + 1;
 	queries.push(
 		db
 			.updateTable('context_item')
@@ -844,13 +871,47 @@ export async function updateContextItem(
 				repo_branch: repoBranch,
 				repo_dir: repoDir,
 				position,
+				version: newVersion,
 				updated_at: now
 			})
 			.where('id', '=', id)
-			.compile(),
-		eventInsert(db, actor, { type: 'context.updated', ...eventRefs(scope), payload })
+			.where('version', '=', row.version)
+			.compile()
 	);
-	await runAtomic(env, queries);
+	if (filesChanged && files !== undefined) {
+		// Declarative replace: the item is small by construction.
+		queries.push(
+			sql`DELETE FROM context_item_file WHERE context_item_id = ${id}
+				AND EXISTS (SELECT 1 FROM context_item WHERE id = ${id} AND version = ${newVersion})`.compile(db)
+		);
+		for (const f of files) {
+			queries.push(
+				sql`INSERT INTO context_item_file (id, context_item_id, path, content, created_at, updated_at)
+					SELECT ${newId('ctf')}, ${id}, ${f.path}, ${f.content}, ${now}, ${now}
+					WHERE EXISTS (SELECT 1 FROM context_item WHERE id = ${id} AND version = ${newVersion})`.compile(db)
+			);
+		}
+	}
+	queries.push(
+		guardedContextEvent(
+			db,
+			actor,
+			{ type: 'context.updated', ...eventRefs(scope), payload },
+			id,
+			newVersion
+		)
+	);
+	const results = await runAtomic(env, queries);
+	if ((results[0]?.meta.changes ?? 0) === 0) {
+		const fresh = await contextItemQuery(db, actor.userId)
+			.where('context_item.id', '=', id)
+			.executeTakeFirst();
+		if (!fresh) throw notFound();
+		// An explicit expectation surfaces the conflict; otherwise this is
+		// last-write-wins, so re-apply the merge-patch onto the fresh row.
+		if (body.expected_version !== undefined || attempt >= 3) throw versionConflict(fresh);
+		return updateContextItem(db, env, actor, id, body, attempt + 1);
+	}
 	return getContextItem(db, actor.userId, id);
 }
 
@@ -876,15 +937,109 @@ export async function deleteContextItem(
 	]);
 }
 
+/**
+ * Atomic append to a prompt item's body: the new text lands after exactly
+ * one blank line. Every attempt is a compare-and-swap on the version it
+ * read, retried on a lost race, so two concurrent appends both land and an
+ * append never clobbers (or is clobbered by) a concurrent rewrite.
+ */
+export async function appendContextItem(
+	db: Kysely<Database>,
+	env: Env,
+	actor: ActorContext,
+	id: string,
+	body: AppendContextRequest
+): Promise<ContextItem> {
+	const text = requireString(body.text, 'text', { max: PROMPT_MAX_BYTES }).trim();
+	for (let attempt = 0; ; attempt++) {
+		const row = await contextItemQuery(db, actor.userId)
+			.where('context_item.id', '=', id)
+			.executeTakeFirst();
+		if (!row) throw notFound();
+		if (row.kind !== 'prompt') {
+			throw new ApiFail(422, 'not_a_prompt', `Only prompt items can be appended to (this is a ${row.kind})`, {
+				kind: row.kind
+			});
+		}
+		if (body.expected_version !== undefined && body.expected_version !== row.version) {
+			throw versionConflict(row);
+		}
+		const current = (row.body ?? '').trimEnd();
+		const nextBody = current ? `${current}\n\n${text}` : text;
+		validatePromptBody(nextBody);
+
+		const scope = rowScope(row);
+		const newVersion = row.version + 1;
+		const now = Date.now();
+		const results = await runAtomic(env, [
+			db
+				.updateTable('context_item')
+				.set({ body: nextBody, version: newVersion, updated_at: now })
+				.where('id', '=', id)
+				.where('version', '=', row.version)
+				.compile(),
+			guardedContextEvent(
+				db,
+				actor,
+				{
+					type: 'context.updated',
+					...eventRefs(scope),
+					payload: {
+						context_id: id,
+						kind: row.kind,
+						name: row.name,
+						changed: ['body'],
+						appended: true,
+						scope: scopeEventPayload(scope)
+					}
+				},
+				id,
+				newVersion
+			)
+		]);
+		if ((results[0]?.meta.changes ?? 0) > 0) return getContextItem(db, actor.userId, id);
+		// Lost the race: with an explicit expectation that's a conflict;
+		// otherwise re-read and re-append onto the fresh body.
+		if (body.expected_version !== undefined || attempt >= 4) {
+			const fresh = await contextItemQuery(db, actor.userId)
+				.where('context_item.id', '=', id)
+				.executeTakeFirst();
+			if (!fresh) throw notFound();
+			throw versionConflict(fresh);
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Effective context
 
 /**
+ * The journal convention: the prompt item named `journal` scoped to exactly
+ * project ∧ state — the item the `tines journal` commands target, rendered
+ * under a `## Journal (<scope label>)` heading in the stitched prompt.
+ */
+export function isJournal(row: {
+	kind: string;
+	name: string;
+	project_id: string | null;
+	workflow_state_id: string | null;
+	issue_id: string | null;
+}): boolean {
+	return (
+		row.kind === 'prompt' &&
+		row.name === JOURNAL_NAME &&
+		row.project_id !== null &&
+		row.workflow_state_id !== null &&
+		row.issue_id === null
+	);
+}
+
+/**
  * Layer rank of an exact scope. Treating (issue, state, project) as bits of
- * a binary number yields exactly the spec's seven-layer order: project (1),
- * state (2), project ∧ state (3), issue (4), issue ∧ project (5),
- * issue ∧ state (6), issue ∧ project ∧ state (7) — any issue-anchored scope
- * outranks any non-issue-anchored one. Broad layers stitch first.
+ * a binary number yields exactly the spec's seven-layer order — global (0),
+ * project (1), state (2), project ∧ state (3), issue (4), issue ∧ project
+ * (5), issue ∧ state (6), issue ∧ project ∧ state (7) — any issue-anchored
+ * scope outranks any non-issue-anchored one. Broad layers stitch first.
  */
 export function layerRank(scope: {
 	projectId?: string | null;
@@ -897,18 +1052,21 @@ export function layerRank(scope: {
 export interface StitchPart {
 	label: string;
 	body: string;
+	/** Journal parts render under `## Journal (<label>)` (display-only). */
+	isJournal?: boolean;
 }
 
 /**
  * Stitches prompt parts (already in layer order) into one Markdown document:
- * each trimmed body under a `## Context: <scope label>` heading, everything
- * separated by exactly one blank line.
+ * each trimmed body under a `## Context: <scope label>` heading (the journal
+ * under `## Journal (<scope label>)`), separated by exactly one blank line.
  */
 export function stitchPrompt(parts: StitchPart[]): string {
 	return parts
 		.flatMap((p) => {
 			const body = p.body.trim();
-			return [`## Context: ${p.label}`, ...(body ? [body] : [])];
+			const heading = p.isJournal ? `## Journal (${p.label})` : `## Context: ${p.label}`;
+			return [heading, ...(body ? [body] : [])];
 		})
 		.join('\n\n');
 }
@@ -995,9 +1153,13 @@ export async function effectiveContextForIssue(
 		item_id: r.id,
 		name: r.name,
 		scope: toContextScope(rowScope(r)),
-		body: r.body ?? ''
+		body: r.body ?? '',
+		version: r.version,
+		is_journal: isJournal(r)
 	}));
-	const text = stitchPrompt(parts.map((p) => ({ label: p.scope.label, body: p.body })));
+	const text = stitchPrompt(
+		parts.map((p) => ({ label: p.scope.label, body: p.body, isJournal: p.is_journal }))
+	);
 
 	const skillDedupe = dedupeByName(rows.filter((r) => r.kind === 'skill'));
 	const repoDedupe = dedupeByName(rows.filter((r) => r.kind === 'repo'));
@@ -1007,7 +1169,8 @@ export async function effectiveContextForIssue(
 		item_id: r.id,
 		name: r.name,
 		scope: toContextScope(rowScope(r)),
-		files: fileMap.get(r.id) ?? []
+		files: fileMap.get(r.id) ?? [],
+		version: r.version
 	}));
 
 	const repos: EffectiveRepo[] = repoDedupe.winners.map((r) => ({
@@ -1016,7 +1179,8 @@ export async function effectiveContextForIssue(
 		scope: toContextScope(rowScope(r)),
 		url: r.repo_url ?? '',
 		branch: r.repo_branch,
-		dir: r.repo_dir ?? repoDirFromUrl(r.repo_url ?? '')
+		dir: r.repo_dir ?? repoDirFromUrl(r.repo_url ?? ''),
+		version: r.version
 	}));
 
 	// Post-dedupe checkout-directory collisions are kept but flagged.
@@ -1070,9 +1234,11 @@ export async function contextSummaryForIssue(
 
 /**
  * The generated issue block: purely factual, with runnable CLI commands for
- * commenting and each available transition. Format is part of the spec.
+ * commenting, each available transition, and the journal — the one item the
+ * prompt hands a write affordance for. No item ids appear anywhere; the
+ * journal is addressed by the issue ref. Format is part of the spec.
  */
-export function issueBlock(issue: IssueDetail): string {
+export function issueBlock(issue: IssueDetail, context: EffectiveContext): string {
 	const ref = `${issue.project_name}/${issue.number}`;
 	const lines: string[] = [`## Issue: ${ref} — ${issue.title}`, ''];
 	if (issue.description.trim()) {
@@ -1110,13 +1276,58 @@ export function issueBlock(issue: IssueDetail): string {
 			);
 		}
 	}
+
+	// The journal affordance sits prompt-final, where recency favors it.
+	lines.push('', '### Journal', '');
+	const journal = context.prompt.parts.find((p) => p.is_journal);
+	if (journal) {
+		lines.push(
+			'Your journal for this project and stage is the "Journal" section above',
+			`(currently v${journal.version}).`,
+			'',
+			`- Append a lesson: \`tines journal append ${ref} "- <date>: <lesson>"\``,
+			`- Fix or prune entries: \`tines journal show ${ref} --json\`, revise, then`,
+			`  \`tines journal rewrite ${ref} --body @file --expect-version ${journal.version}\``
+		);
+	} else {
+		lines.push(
+			`No journal exists yet for project ${issue.project_name} · state ${issue.state.name}. Start one:`,
+			`\`tines journal append ${ref} "- <date>: <lesson>"\``
+		);
+	}
+
+	// Factual footnotes: this issue's effective artifacts (with the fetch
+	// command — the agent's own attachments are fair game), then the other
+	// prompt items by name and scope label only, whose sole affordance is
+	// the proposal convention.
+	const artifacts = [
+		...context.skills.map(
+			(s) => `skill "${s.name}" (${s.files.length} file${s.files.length === 1 ? '' : 's'})`
+		),
+		...context.repos.map((r) => `repo "${r.name}"${r.branch ? ` (branch ${r.branch})` : ''}`)
+	];
+	if (artifacts.length > 0) {
+		lines.push(
+			'',
+			`Attached to this issue: ${artifacts.join(', ')}. Fetch them: \`tines issues context ${ref} --out <dir>\``
+		);
+	}
+	const shared = context.prompt.parts.filter((p) => !p.is_journal && p.scope.issue_id === null);
+	if (shared.length > 0) {
+		lines.push(
+			'',
+			`Also in effect: ${shared.map((p) => `prompt "${p.name}" (${p.scope.label})`).join(', ')}. These are`,
+			'shared — to change one, file an issue titled `Context change: <scope label>`.'
+		);
+	}
 	return lines.join('\n').trimEnd();
 }
 
 /** Context first, the issue block last — the task sits nearest the end. */
-export function buildLaunchPrompt(contextText: string, issue: IssueDetail): string {
-	const context = contextText.trim();
-	return context ? `${context}\n\n${issueBlock(issue)}` : issueBlock(issue);
+export function buildLaunchPrompt(context: EffectiveContext, issue: IssueDetail): string {
+	const text = context.prompt.text.trim();
+	const block = issueBlock(issue, context);
+	return text ? `${text}\n\n${block}` : block;
 }
 
 // ---------------------------------------------------------------------------
@@ -1193,4 +1404,99 @@ export function sweepAttachedContext(
 		})
 	]);
 	return { queries, deleted: items.map(toDeleted) };
+}
+
+// ---------------------------------------------------------------------------
+// Seeding: creation-time prompts and the starter agent guidance
+
+/**
+ * Statements creating a prompt item plus its context.created event, for
+ * riding along in a creation batch (project / workflow-state creation).
+ * The anchor is brand new, so the exact scope is empty by construction and
+ * the conventional name cannot collide.
+ */
+export function seedPromptQueries(
+	db: Kysely<Database>,
+	actor: ActorContext,
+	opts: {
+		name: string;
+		body: string;
+		projectId?: string;
+		workflowStateId?: string;
+		/** Canonical scope label at creation time, for the event payload. */
+		label: string;
+		now: number;
+	}
+): { id: string; queries: CompiledQuery[] } {
+	validatePromptBody(opts.body);
+	const id = newId('ctx');
+	const projectId = opts.projectId ?? null;
+	const workflowStateId = opts.workflowStateId ?? null;
+	return {
+		id,
+		queries: [
+			db
+				.insertInto('context_item')
+				.values({
+					id,
+					user_id: actor.userId,
+					kind: 'prompt',
+					name: opts.name,
+					description: '',
+					project_id: projectId,
+					workflow_state_id: workflowStateId,
+					issue_id: null,
+					body: opts.body,
+					repo_url: null,
+					repo_branch: null,
+					repo_dir: null,
+					position: 0,
+					version: 1,
+					created_at: opts.now,
+					updated_at: opts.now
+				})
+				.compile(),
+			eventInsert(db, actor, {
+				type: 'context.created',
+				projectId,
+				payload: {
+					context_id: id,
+					kind: 'prompt',
+					name: opts.name,
+					scope: {
+						project_id: projectId,
+						workflow_state_id: workflowStateId,
+						issue_id: null,
+						label: opts.label
+					}
+				}
+			})
+		]
+	};
+}
+
+/** Seeds the global agent-guidelines prompt once; a no-op if it exists. */
+export async function ensureAgentGuidelines(
+	db: Kysely<Database>,
+	env: Env,
+	actor: ActorContext
+): Promise<'created' | 'exists'> {
+	const existing = await db
+		.selectFrom('context_item')
+		.select('id')
+		.where('user_id', '=', actor.userId)
+		.where('kind', '=', 'prompt')
+		.where('name', '=', AGENT_GUIDELINES_NAME)
+		.where('project_id', 'is', null)
+		.where('workflow_state_id', 'is', null)
+		.where('issue_id', 'is', null)
+		.executeTakeFirst();
+	if (existing) return 'exists';
+	await createContextItem(db, env, actor, {
+		kind: 'prompt',
+		name: AGENT_GUIDELINES_NAME,
+		description: AGENT_GUIDELINES_DESCRIPTION,
+		body: AGENT_GUIDELINES_BODY
+	});
+	return 'created';
 }

@@ -38,6 +38,11 @@ export interface CreateProjectRequest {
 	name: string;
 	description?: string;
 	default_workflow_id?: string | null;
+	/**
+	 * When present, also creates a project-scoped prompt item named
+	 * "conventions" with this Markdown body, in the same transaction.
+	 */
+	initial_prompt?: string;
 }
 
 export interface UpdateProjectRequest {
@@ -87,6 +92,13 @@ export interface WorkflowStateInput {
 	id?: string;
 	name: string;
 	category: StateCategory;
+	/**
+	 * New states only (422 on existing states): also creates a state-scoped
+	 * prompt item named "instructions" with this Markdown body, in the same
+	 * transaction. Existing stage instructions are edited through the
+	 * context surfaces, not re-sent through workflow updates.
+	 */
+	prompt?: string;
 }
 
 /**
@@ -321,10 +333,35 @@ export const SKILL_MAX_TOTAL_BYTES = 100 * 1024;
 /** Skill names double as workspace directory names. */
 export const SKILL_NAME_PATTERN = /^[a-z0-9-]+$/;
 
+/** The conventional item names created by the built-in flows. */
+export const AGENT_GUIDELINES_NAME = 'agent-guidelines';
+export const JOURNAL_NAME = 'journal';
+export const PROJECT_PROMPT_NAME = 'conventions';
+export const STATE_PROMPT_NAME = 'instructions';
+
+/**
+ * The canonical starter text for the global `agent-guidelines` item. Seeded
+ * once (signup, `tines context init`, or the Context-tab affordance) and
+ * never overwritten — after seeding the text is entirely the user's.
+ */
+export const AGENT_GUIDELINES_BODY = `You are an agent working on a Tines issue over its HTTP API / CLI. Beyond doing the work, leave the workspace smarter than you found it. Four places to write, chosen by who should inherit what you learned:
+
+- **Issue comments** — all prose about this issue: progress, findings, dead ends, questions, and instructions for whoever picks it up next. \`tines issues comment <project>/<number> "<markdown>"\`
+- **Issue context (artifacts)** — things this issue needs *attached*, not said: a skill, a repo/branch pin, or an override of a broader item (reuse its name): \`tines context create --kind <k> --name <n> --issue <project>/<number> …\`. Never notes — notes are comments.
+- **Your journal** — shared notes for anyone doing this stage of work in this project. Append a dated bullet whenever you learn something they would want: commands that actually work, gotchas, where things live (see "Journal" at the end of this prompt for the exact commands). If an entry is wrong or stale, rewrite the journal to fix it — do not append a correction on top. Keep it short; prune when you touch it.
+- **Context change requests** — never edit shared context (project-, state-, or global-scoped items) directly. Propose instead: file an issue in the project you are working in, titled \`Context change: <scope label>\`, naming the item (kind, name, scope) with the full proposed text in the description. A human reviews and applies it.
+
+When in doubt: comment. If the lesson outlives this issue, journal it. Only file a context change when a shared rule is wrong or missing.`;
+
+/** Description on the seeded agent-guidelines item. */
+export const AGENT_GUIDELINES_DESCRIPTION =
+	'How agents should use comments, artifacts, the journal, and context change requests';
+
 /**
  * An item's scope: the intersection (AND) of its set dimensions, with the
  * referents denormalized for display and `label` in the canonical format
- * ("project Tines · state Review", issues as `<project>/<number>`).
+ * ("project Tines · state Review", issues as `<project>/<number>`). No
+ * dimensions set = global (label "global"), matching every issue.
  */
 export interface ContextScope {
 	project_id: string | null;
@@ -362,6 +399,8 @@ export interface ContextItem {
 	repo_dir?: string | null;
 	/** Ordering within the same exact scope tuple. */
 	position: number;
+	/** Monotonic write counter for optimistic concurrency (not history). */
+	version: number;
 	created_at: number;
 	updated_at: number;
 }
@@ -370,7 +409,7 @@ export interface CreateContextItemRequest {
 	kind: ContextKind;
 	name: string;
 	description?: string;
-	/** Scope: at least one dimension must be set. */
+	/** Scope: no dimensions set = global (applies to every issue). */
 	project_id?: string | null;
 	workflow_state_id?: string | null;
 	issue_id?: string | null;
@@ -401,6 +440,18 @@ export interface UpdateContextItemRequest {
 	repo_url?: string;
 	repo_branch?: string | null;
 	repo_dir?: string | null;
+	/**
+	 * Compare-and-swap: reject with a 409 (carrying the current item) when
+	 * the item's version no longer matches. Omit for last-write-wins.
+	 */
+	expected_version?: number;
+}
+
+/** `POST /api/v1/context/:id/append` — prompt items only. */
+export interface AppendContextRequest {
+	/** Appended to the body, separated by exactly one blank line. */
+	text: string;
+	expected_version?: number;
 }
 
 /**
@@ -427,6 +478,9 @@ export interface EffectivePromptPart {
 	name: string;
 	scope: ContextScope;
 	body: string;
+	version: number;
+	/** True for the journal item (renders under `## Journal (<scope>)`). */
+	is_journal: boolean;
 }
 
 export interface EffectiveSkill {
@@ -434,6 +488,7 @@ export interface EffectiveSkill {
 	name: string;
 	scope: ContextScope;
 	files: ContextFile[];
+	version: number;
 }
 
 export interface EffectiveRepo {
@@ -444,6 +499,7 @@ export interface EffectiveRepo {
 	branch?: string | null;
 	/** Always resolved (falls back to the URL's basename minus `.git`). */
 	dir: string;
+	version: number;
 }
 
 /** A name-collision loser: a more specific item of the same kind+name won. */

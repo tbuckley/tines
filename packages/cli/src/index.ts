@@ -2,9 +2,13 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { dirname, join } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import {
+	AGENT_GUIDELINES_BODY,
+	AGENT_GUIDELINES_DESCRIPTION,
+	AGENT_GUIDELINES_NAME,
 	ApiError,
 	createApiClient,
 	describeRecurrence,
+	JOURNAL_NAME,
 	repoDirFromUrl,
 	WEEKDAY_NAMES,
 	type ApiClient,
@@ -176,6 +180,25 @@ function readJsonBody(
 	return undefined;
 }
 
+/**
+ * The creation nudge for workflow states: every NEW state (no "id") should
+ * carry a "prompt" key — its initial stage instructions — unless the caller
+ * declines with --no-prompts.
+ */
+function assertNewStatesHavePrompts(states: unknown, prompts: boolean | undefined): void {
+	if (prompts === false || !Array.isArray(states)) return;
+	const missing = states
+		.filter((s): s is Record<string, unknown> => typeof s === 'object' && s !== null)
+		.filter((s) => s.id === undefined && !String(s.prompt ?? '').trim())
+		.map((s) => (typeof s.name === 'string' ? s.name : '?'));
+	if (missing.length > 0) {
+		die(
+			`new state${missing.length === 1 ? '' : 's'} ${missing.map((n) => `"${n}"`).join(', ')} ${missing.length === 1 ? 'has' : 'have'} no initial prompt — issues sitting in a state inherit its context\n` +
+				'  add "prompt": "<markdown>" to each new state in the JSON (its stage instructions), or pass --no-prompts to skip'
+		);
+	}
+}
+
 const WORKFLOW_JSON_HELP = `
 The JSON body may be passed inline, via --file <path>, --file - (stdin), or
 piped on stdin. Shape:
@@ -185,9 +208,9 @@ piped on stdin. Shape:
     "description": "Two-step review",
     "initial_state": "Draft",
     "states": [
-      { "name": "Draft", "category": "active" },
-      { "name": "In review", "category": "awaiting_human" },
-      { "name": "Done", "category": "done" }
+      { "name": "Draft", "category": "active", "prompt": "Drafting means…" },
+      { "name": "In review", "category": "awaiting_human", "prompt": "Review checklist…" },
+      { "name": "Done", "category": "done", "prompt": "…" }
     ],
     "transitions": [
       { "name": "submit", "from": "Draft", "to": "In review" },
@@ -199,6 +222,9 @@ piped on stdin. Shape:
 Categories: backlog, active, awaiting_human, done. On edit, a state with an
 "id" updates that existing state; states/transitions arrays replace the
 existing sets wholesale when present.
+
+Each NEW state should carry a "prompt" — its initial stage instructions,
+created as a state-scoped context item — or pass --no-prompts to skip.
 `;
 
 // ---------------------------------------------------------------------------
@@ -359,7 +385,7 @@ function contextItemSummary(item: ContextItem): string {
 }
 
 function printContextItem(item: ContextItem): void {
-	console.log(`${item.kind} "${item.name}"  [${item.id}]`);
+	console.log(`${item.kind} "${item.name}"  [${item.id}]  v${item.version}`);
 	if (item.description) console.log(item.description);
 	console.log(`scope: ${item.scope.label}`);
 	console.log(`updated: ${timestamp(item.updated_at)}  created: ${timestamp(item.created_at)}`);
@@ -551,7 +577,10 @@ function eventSummary(ev: TinesEvent): string {
 // Program
 
 const program = new Command();
-program.name('tines').description('CLI for Tines').version('0.0.1');
+// Positional options let markdown-taking commands (comment, journal append)
+// accept bodies that start with "-" — e.g. the dated bullets the launch
+// prompt teaches — via passThroughOptions().
+program.name('tines').description('CLI for Tines').version('0.0.1').enablePositionalOptions();
 
 withCommon(program.command('time').description('Fetch the current time from the Tines API')).action(
 	async (opts: CommonOpts) => {
@@ -579,11 +608,25 @@ withList(projects.command('list').description('List projects')).action(async (op
 withCommon(
 	projects
 		.command('create <name>')
-		.description('Create a project')
+		.description('Create a project (with its initial context prompt)')
 		.option('-d, --description <text>', 'project description')
 		.option('-w, --default-workflow <id-or-name>', 'default workflow for new issues')
+		.option('--prompt <md>', 'initial conventions prompt, stitched into every issue\'s agent prompt: inline Markdown or @file')
+		.option('--no-prompt', 'create without an initial prompt')
 ).action(
-	async (name: string, opts: CommonOpts & { description?: string; defaultWorkflow?: string }) => {
+	async (
+		name: string,
+		opts: CommonOpts & { description?: string; defaultWorkflow?: string; prompt?: string | boolean }
+	) => {
+		// Every issue in a project inherits its context, so the CLI insists on
+		// an explicit choice; the UI's optional textarea is nudge enough there.
+		if (opts.prompt === undefined || opts.prompt === true) {
+			die(
+				'every issue in a project inherits its context — give the project an initial prompt:\n' +
+					'  --prompt "<markdown>"   house conventions, inline or @file\n' +
+					'  --no-prompt             create without one (add later: tines context create -k prompt -n conventions -p <name> --body …)'
+			);
+		}
 		const api = client(opts);
 		const workflowId = opts.defaultWorkflow
 			? (await resolveWorkflow(api, opts.defaultWorkflow)).id
@@ -591,10 +634,13 @@ withCommon(
 		const project = await api.createProject({
 			name,
 			description: opts.description,
-			default_workflow_id: workflowId
+			default_workflow_id: workflowId,
+			initial_prompt: typeof opts.prompt === 'string' ? readBodyValue(opts.prompt) : undefined
 		});
 		if (opts.json) return printJson(project);
-		console.log(`created project "${project.name}" (${project.id})`);
+		console.log(
+			`created project "${project.name}" (${project.id})${typeof opts.prompt === 'string' ? ' with its "conventions" prompt' : ''}`
+		);
 	}
 );
 
@@ -692,10 +738,11 @@ withCommon(
 withCommon(
 	workflows
 		.command('create [json]')
-		.description('Create a workflow from a JSON definition')
+		.description('Create a workflow from a JSON definition (states carry initial "prompt" instructions)')
 		.option('-f, --file <path>', 'read the JSON definition from a file ("-" for stdin)')
+		.option('--no-prompts', 'allow states without initial "prompt" instructions')
 		.addHelpText('after', WORKFLOW_JSON_HELP)
-).action(async (inline: string | undefined, opts: CommonOpts & { file?: string }) => {
+).action(async (inline: string | undefined, opts: CommonOpts & { file?: string; prompts?: boolean }) => {
 	const body = readJsonBody(inline, opts.file);
 	if (!body) {
 		die(
@@ -703,6 +750,7 @@ withCommon(
 				`\nsee \`tines workflows create --help\` for the expected shape`
 		);
 	}
+	assertNewStatesHavePrompts(body.states, opts.prompts);
 	const wf = await client(opts).createWorkflow(body as unknown as CreateWorkflowRequest);
 	if (opts.json) return printJson(wf);
 	console.log(`created workflow "${wf.name}" (${wf.id})\n`);
@@ -717,16 +765,24 @@ withCommon(
 		.option('-n, --name <name>', 'rename the workflow')
 		.option('-d, --description <text>', 'set the description')
 		.option('--initial-state <id-or-name>', 'set the initial state')
+		.option('--no-prompts', 'allow new states without initial "prompt" instructions')
 		.addHelpText('after', WORKFLOW_JSON_HELP)
 ).action(
 	async (
 		ref: string,
 		inline: string | undefined,
-		opts: CommonOpts & { file?: string; name?: string; description?: string; initialState?: string }
+		opts: CommonOpts & {
+			file?: string;
+			name?: string;
+			description?: string;
+			initialState?: string;
+			prompts?: boolean;
+		}
 	) => {
 		const api = client(opts);
 		const wf = await resolveWorkflow(api, ref);
 		const body = (readJsonBody(inline, opts.file) ?? {}) as UpdateWorkflowRequest;
+		assertNewStatesHavePrompts(body.states, opts.prompts);
 		if (opts.name !== undefined) body.name = opts.name;
 		if (opts.description !== undefined) body.description = opts.description;
 		if (opts.initialState !== undefined) body.initial_state = opts.initialState;
@@ -925,7 +981,11 @@ withCommon(
 });
 
 withCommon(
-	issues.command('comment <ref> <markdown>').description('Comment on an issue (Markdown body)')
+	issues
+		.command('comment <ref> <markdown>')
+		.description('Comment on an issue (Markdown body)')
+		// A body may start with "-"; options go before the arguments.
+		.passThroughOptions()
 ).action(async (ref: string, markdown: string, opts: CommonOpts) => {
 	const api = client(opts);
 	const issue = await resolveIssue(api, ref);
@@ -1132,6 +1192,9 @@ withCommon(
 			.option('--branch <branch>', 'repo: branch (empty string clears it)')
 			.option('--dir <dir>', 'repo: checkout directory (empty string restores the URL default)')
 			.option('--unset <dimension>', 'drop a scope dimension: project, state, or issue (repeatable)', collect, [])
+			.option('--expect-version <n>', 'fail (409) unless the item is still at this version', (v) =>
+				Number.parseInt(v, 10)
+			)
 	),
 	// --url is the repo pointer here; the API base comes from TINES_API_URL.
 	{ baseUrlFlag: false }
@@ -1149,11 +1212,13 @@ withCommon(
 				branch?: string;
 				dir?: string;
 				unset: string[];
+				expectVersion?: number;
 			}
 	) => {
 		// opts.url is the repo pointer on this command, not the API base.
 		const api = client({ apiKey: opts.apiKey, json: opts.json });
 		const body: UpdateContextItemRequest = {};
+		if (opts.expectVersion !== undefined) body.expected_version = opts.expectVersion;
 		if (opts.name !== undefined) body.name = opts.name;
 		if (opts.description !== undefined) body.description = opts.description;
 		const scope = await resolveScopeFlags(api, opts);
@@ -1202,6 +1267,137 @@ withCommon(context.command('delete <id>').description('Delete a context item')).
 		console.log(`deleted ${item.kind} "${item.name}" (${item.id}) — scope: ${item.scope.label}`);
 	}
 );
+
+withCommon(
+	context
+		.command('init')
+		.description('Seed the global "agent-guidelines" prompt (a no-op if it already exists)')
+).action(async (opts: CommonOpts) => {
+	const api = client(opts);
+	// Global items only: exact=true with no dimension filters.
+	const { items } = await api.listContext({ kind: 'prompt', exact: true, limit: 100 });
+	const existing = items.find((i) => i.name === AGENT_GUIDELINES_NAME);
+	if (existing) {
+		if (opts.json) return printJson(existing);
+		return console.log(
+			`"${AGENT_GUIDELINES_NAME}" already exists (${existing.id}, v${existing.version}) — left untouched`
+		);
+	}
+	const created = await api.createContextItem({
+		kind: 'prompt',
+		name: AGENT_GUIDELINES_NAME,
+		description: AGENT_GUIDELINES_DESCRIPTION,
+		body: AGENT_GUIDELINES_BODY
+	});
+	if (opts.json) return printJson(created);
+	console.log(
+		`seeded global "${AGENT_GUIDELINES_NAME}" (${created.id}) — it now opens every launch prompt; edit it freely`
+	);
+});
+
+// --- journal -----------------------------------------------------------------
+// The id-free path to the one item agents maintain routinely: the prompt
+// named "journal" at exactly the issue's project ∧ current state.
+
+const journal = program
+	.command('journal')
+	.description("An issue's stage journal: shared notes for its project + current state");
+
+async function resolveJournal(
+	api: ApiClient,
+	ref: string
+): Promise<{ issue: IssueDetail; item: ContextItem | null }> {
+	const issue = await resolveIssue(api, ref);
+	const { items } = await api.listContext({
+		kind: 'prompt',
+		project: issue.project_id,
+		state: issue.state.id,
+		exact: true,
+		limit: 100
+	});
+	return { issue, item: items.find((i) => i.name === JOURNAL_NAME) ?? null };
+}
+
+withCommon(
+	journal.command('show <ref>').description("Print the journal for the issue's project and current state")
+).action(async (ref: string, opts: CommonOpts) => {
+	const api = client(opts);
+	const { issue, item } = await resolveJournal(api, ref);
+	if (!item) {
+		die(
+			`no journal exists yet for project ${issue.project_name} · state ${issue.state.name}\nstart one: tines journal append ${issue.project_name}/${issue.number} "- <date>: <lesson>"`
+		);
+	}
+	const full = await api.getContextItem(item.id);
+	if (opts.json) return printJson(full);
+	console.log(`journal for project ${issue.project_name} · state ${issue.state.name}  (v${full.version})`);
+	console.log('');
+	console.log(full.body ?? '');
+});
+
+withCommon(
+	journal
+		.command('append <ref> <markdown>')
+		.description('Append a lesson (creates the journal on first use)')
+		// Lessons are dated bullets starting with "-"; options go before the
+		// arguments, exactly as the launch prompt's copy-pasteable command has it.
+		.passThroughOptions()
+).action(async (ref: string, markdown: string, opts: CommonOpts) => {
+	const api = client(opts);
+	const { issue, item } = await resolveJournal(api, ref);
+	const scopeLabel = `project ${issue.project_name} · state ${issue.state.name}`;
+	if (item) {
+		const updated = await api.appendContextItem(item.id, { text: markdown });
+		if (opts.json) return printJson(updated);
+		return console.log(`appended to the ${scopeLabel} journal (now v${updated.version})`);
+	}
+	try {
+		const created = await api.createContextItem({
+			kind: 'prompt',
+			name: JOURNAL_NAME,
+			project_id: issue.project_id,
+			workflow_state_id: issue.state.id,
+			body: markdown.trim()
+		});
+		if (opts.json) return printJson(created);
+		console.log(`started the ${scopeLabel} journal (${created.id})`);
+	} catch (err) {
+		// Create race: someone else started the journal between the lookup
+		// and the insert — append to theirs instead.
+		if (!(err instanceof ApiError) || err.code !== 'duplicate_context_name') throw err;
+		const { item: fresh } = await resolveJournal(api, ref);
+		if (!fresh) throw err;
+		const updated = await api.appendContextItem(fresh.id, { text: markdown });
+		if (opts.json) return printJson(updated);
+		console.log(`appended to the ${scopeLabel} journal (now v${updated.version})`);
+	}
+});
+
+withCommon(
+	journal
+		.command('rewrite <ref>')
+		.description('Replace the journal body (to fix or prune entries) — version-checked')
+		.requiredOption('--body <md>', 'the full new body: inline Markdown or @file')
+		.requiredOption('--expect-version <n>', 'the version being replaced (from the prompt or journal show)', (v) =>
+			Number.parseInt(v, 10)
+		)
+).action(async (ref: string, opts: CommonOpts & { body: string; expectVersion: number }) => {
+	const api = client(opts);
+	const { issue, item } = await resolveJournal(api, ref);
+	if (!item) {
+		die(
+			`no journal exists yet for project ${issue.project_name} · state ${issue.state.name}; nothing to rewrite`
+		);
+	}
+	const updated = await api.updateContextItem(item.id, {
+		body: readBodyValue(opts.body),
+		expected_version: opts.expectVersion
+	});
+	if (opts.json) return printJson(updated);
+	console.log(
+		`rewrote the project ${issue.project_name} · state ${issue.state.name} journal (now v${updated.version})`
+	);
+});
 
 // --- schedules ---------------------------------------------------------------
 

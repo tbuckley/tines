@@ -3,6 +3,7 @@
 	import IconFolder from '@tabler/icons-svelte/icons/folder';
 	import IconListDetails from '@tabler/icons-svelte/icons/list-details';
 	import IconSitemap from '@tabler/icons-svelte/icons/sitemap';
+	import IconWorld from '@tabler/icons-svelte/icons/world';
 
 	/**
 	 * Compact chips for a scope, in the canonical project · state · issue
@@ -15,6 +16,11 @@
 </script>
 
 <span class="inline-flex flex-wrap items-center gap-1">
+	{#if !scope.project_id && !scope.workflow_state_id && !scope.issue_id}
+		<span class={chipClass} title="Global — applies to every launch prompt">
+			<IconWorld size={12} stroke={1.75} /> global
+		</span>
+	{/if}
 	{#if scope.project_id}
 		{#if link}
 			<a href="/projects/{scope.project_id}" class="{chipClass} hover:text-foreground" title="project {scope.project_name}">

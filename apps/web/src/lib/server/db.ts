@@ -84,7 +84,7 @@ export interface ContextItemTable {
 	kind: string;
 	name: string;
 	description: string;
-	/** Scope: nullable dimensions with AND semantics; ≥1 set (CHECK). */
+	/** Scope: nullable dimensions with AND semantics; all NULL = global. */
 	project_id: string | null;
 	workflow_state_id: string | null;
 	issue_id: string | null;
@@ -96,6 +96,8 @@ export interface ContextItemTable {
 	repo_dir: string | null;
 	/** Ordering within the same exact scope tuple. */
 	position: number;
+	/** Monotonic write counter — a CAS token, not history. */
+	version: number;
 	created_at: number;
 	updated_at: number;
 }

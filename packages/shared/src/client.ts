@@ -2,6 +2,7 @@ import type {
 	ApiErrorBody,
 	ApiKey,
 	ApiKeyCreated,
+	AppendContextRequest,
 	Comment,
 	ContextItem,
 	ContextListFilters,
@@ -175,6 +176,9 @@ export function createApiClient(options: ApiClientOptions) {
 		updateContextItem: (id: string, body: UpdateContextItemRequest) =>
 			request<ContextItem>('PATCH', `/api/v1/context/${id}`, body),
 		deleteContextItem: (id: string) => request<void>('DELETE', `/api/v1/context/${id}`),
+		/** Atomic append to a prompt item's body (blank-line separated). */
+		appendContextItem: (id: string, body: AppendContextRequest) =>
+			request<ContextItem>('POST', `/api/v1/context/${id}/append`, body),
 		/** Effective context for an issue: the assembled bundle. */
 		getIssueContext: (issueId: string) =>
 			get<EffectiveContext>(`/api/v1/issues/${issueId}/context`),

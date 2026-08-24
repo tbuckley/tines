@@ -15,6 +15,6 @@ export const GET: RequestHandler = api(async (event) => {
 		getIssueDetail(db, actor.userId, { id: event.params.id }),
 		effectiveContextForIssue(db, actor.userId, event.params.id)
 	]);
-	const body: LaunchPromptResponse = { text: buildLaunchPrompt(context.prompt.text, issue) };
+	const body: LaunchPromptResponse = { text: buildLaunchPrompt(context, issue) };
 	return json(body);
 });

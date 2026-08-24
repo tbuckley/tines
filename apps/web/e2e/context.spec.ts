@@ -121,9 +121,13 @@ test.describe.serial('context attachments', () => {
 				)
 			).error.code
 		).toBe('kind_payload_mismatch');
-		expect((await body<ErrorBody>(await api.post('/api/v1/context', { kind: 'prompt', name: 'x', body: 'b' }))).error.code).toBe(
-			'scope_required'
-		);
+		// An empty scope is not an error: it is global (AGENT_EDITING.md).
+		// Created and removed here so it doesn't color other suites' prompts.
+		const globalRes = await api.post('/api/v1/context', { kind: 'prompt', name: `g-${runId}`, body: 'b' });
+		expect(globalRes.status()).toBe(201);
+		const globalItem = await body<ContextItem>(globalRes);
+		expect(globalItem.scope.label).toBe('global');
+		await api.delete(`/api/v1/context/${globalItem.id}`);
 		expect(
 			(
 				await body<ErrorBody>(
@@ -156,8 +160,9 @@ test.describe.serial('context attachments', () => {
 		const api = apiClient(request, ALICE.apiKey);
 		let ctx = await body<EffectiveContext>(await api.get(`/api/v1/issues/${issueId}/context`));
 		expect(ctx.prompt.parts.map((p) => p.name)).toEqual(['house-conventions', 'journal']);
+		// The journal-named item takes the special display heading.
 		expect(ctx.prompt.text).toBe(
-			`## Context: project ${projectName}\n\nHouse rules.\n\n## Context: project ${projectName} · state Implementing\n\nJournal note.`
+			`## Context: project ${projectName}\n\nHouse rules.\n\n## Journal (project ${projectName} · state Implementing)\n\nJournal note.`
 		);
 		expect(ctx.skills).toEqual([]);
 
@@ -301,5 +306,163 @@ test.describe.serial('context attachments', () => {
 			await api.get(`/api/v1/events?project=${projectId}&type=context.created`)
 		);
 		expect(events.items.some((e) => e.payload.name === 'src' && e.issue_id === issueId)).toBe(true);
+	});
+});
+
+/**
+ * Agent-maintained context (specs/context/AGENT_EDITING.md): global scope,
+ * creation-time prompts, the journal (append, CAS, special heading), and
+ * the id-free launch prompt.
+ */
+test.describe.serial('agent-maintained context', () => {
+	const projectName = `agent-${runId}`;
+	let projectId: string;
+	let workflow: WorkflowResponse;
+	let issueId: string;
+	let issueRef: string;
+	let globalId: string;
+	let journalId: string;
+
+	test('workflow states seed their instructions; existing states reject prompt', async ({
+		request
+	}) => {
+		const api = apiClient(request, ALICE.apiKey);
+		workflow = await body<WorkflowResponse>(
+			await api.post('/api/v1/workflows', {
+				name: `agent-flow-${runId}`,
+				initial_state: 'Working',
+				states: [
+					{ name: 'Working', category: 'active', prompt: 'Working means shipping.' },
+					{ name: 'Done', category: 'done' }
+				],
+				transitions: [{ name: 'finish', from: 'Working', to: 'Done' }]
+			})
+		);
+		const workingId = workflow.states.find((s) => s.name === 'Working')!.id;
+		const items = await body<ListResponse<ContextItem>>(
+			await api.get(`/api/v1/context?state=${workingId}&exact=true`)
+		);
+		expect(items.items.map((i) => i.name)).toEqual(['instructions']);
+		expect(items.items[0].scope.label).toBe('state Working');
+
+		// prompt on an existing state is rejected — context surfaces own edits.
+		const rejected = await api.patch(`/api/v1/workflows/${workflow.id}`, {
+			states: workflow.states.map((s) => ({ id: s.id, name: s.name, category: s.category, prompt: 'nope' }))
+		});
+		expect(rejected.status()).toBe(422);
+		expect((await body<ErrorBody>(rejected)).error.code).toBe('prompt_on_existing_state');
+	});
+
+	test('project creation seeds its conventions atomically', async ({ request }) => {
+		const api = apiClient(request, ALICE.apiKey);
+		const project = await body<Project>(
+			await api.post('/api/v1/projects', {
+				name: projectName,
+				default_workflow_id: workflow.id,
+				initial_prompt: 'House rules for agents.'
+			})
+		);
+		projectId = project.id;
+		const items = await body<ListResponse<ContextItem>>(
+			await api.get(`/api/v1/context?project=${projectId}&exact=true`)
+		);
+		expect(items.items.map((i) => i.name)).toEqual(['conventions']);
+
+		const issue = await body<IssueDetail>(
+			await api.post(`/api/v1/projects/${projectId}/issues`, { title: 'Agent target' })
+		);
+		issueId = issue.id;
+		issueRef = `${projectName}/${issue.number}`;
+	});
+
+	test('a global item stitches first, under "## Context: global"', async ({ request }) => {
+		const api = apiClient(request, ALICE.apiKey);
+		const created = await api.post('/api/v1/context', {
+			kind: 'prompt',
+			name: `guidance-${runId}`,
+			body: 'Global guidance.'
+		});
+		expect(created.status()).toBe(201);
+		const item = await body<ContextItem>(created);
+		globalId = item.id;
+		expect(item.scope.label).toBe('global');
+		expect(item.version).toBe(1);
+
+		const ctx = await body<EffectiveContext>(await api.get(`/api/v1/issues/${issueId}/context`));
+		expect(ctx.prompt.parts[0].name).toBe(`guidance-${runId}`);
+		expect(ctx.prompt.text.startsWith('## Context: global\n\nGlobal guidance.')).toBe(true);
+	});
+
+	test('the journal appends atomically, CAS-rewrites, and renders as "## Journal"', async ({
+		request
+	}) => {
+		const api = apiClient(request, ALICE.apiKey);
+		const workingId = workflow.states.find((s) => s.name === 'Working')!.id;
+		const journal = await body<ContextItem>(
+			await api.post('/api/v1/context', {
+				kind: 'prompt',
+				name: 'journal',
+				project_id: projectId,
+				workflow_state_id: workingId,
+				body: '- day 1: first lesson'
+			})
+		);
+		journalId = journal.id;
+
+		// Append: blank-line separated, version bumped, appended event flag.
+		const appended = await body<ContextItem>(
+			await api.post(`/api/v1/context/${journalId}/append`, { text: '- day 2: second lesson' })
+		);
+		expect(appended.version).toBe(2);
+		expect(appended.body).toBe('- day 1: first lesson\n\n- day 2: second lesson');
+
+		// Stale CAS → 409 carrying the current item; fresh CAS lands.
+		const stale = await api.patch(`/api/v1/context/${journalId}`, {
+			body: '- rewritten',
+			expected_version: 1
+		});
+		expect(stale.status()).toBe(409);
+		const conflict = (await body<ErrorBody>(stale)).error;
+		expect(conflict.code).toBe('version_conflict');
+		expect((conflict.details?.current as ContextItem).version).toBe(2);
+		const rewritten = await body<ContextItem>(
+			await api.patch(`/api/v1/context/${journalId}`, { body: '- rewritten', expected_version: 2 })
+		);
+		expect(rewritten.version).toBe(3);
+
+		// Appending to a non-prompt is refused.
+		const skill = await body<ContextItem>(
+			await api.post('/api/v1/context', {
+				kind: 'skill',
+				name: `sk-${runId}`,
+				issue_id: issueId,
+				files: [{ path: 'SKILL.md', content: 'x' }]
+			})
+		);
+		expect((await api.post(`/api/v1/context/${skill.id}/append`, { text: 'x' })).status()).toBe(422);
+
+		const ctx = await body<EffectiveContext>(await api.get(`/api/v1/issues/${issueId}/context`));
+		expect(ctx.prompt.text).toContain(
+			`## Journal (project ${projectName} · state Working)\n\n- rewritten`
+		);
+		const part = ctx.prompt.parts.find((p) => p.is_journal)!;
+		expect(part.version).toBe(3);
+	});
+
+	test('the launch prompt is id-free with the journal as its one write affordance', async ({
+		request
+	}) => {
+		const api = apiClient(request, ALICE.apiKey);
+		const prompt = await body<LaunchPromptResponse>(await api.get(`/api/v1/issues/${issueId}/prompt`));
+		expect(prompt.text).not.toContain('ctx_');
+		expect(prompt.text).toContain('### Journal');
+		expect(prompt.text).toContain(`\`tines journal append ${issueRef} "- <date>: <lesson>"\``);
+		expect(prompt.text).toContain(`--expect-version 3`);
+		expect(prompt.text).toContain(`Attached to this issue: skill "sk-${runId}" (1 file)`);
+		expect(prompt.text).toContain(`Also in effect: prompt "guidance-${runId}" (global)`);
+		expect(prompt.text).toContain('file an issue titled `Context change: <scope label>`');
+
+		// Keep later suites clean: the global item affects every launch prompt.
+		await api.delete(`/api/v1/context/${globalId}`);
 	});
 });
