@@ -10,16 +10,19 @@ rules everyone else runs under.
 The design reuses what already exists rather than adding machinery: the
 approval workflow for broad edits **is** the issue system; the instructions
 that teach agents all of this **are** a context item; and the only new write
-primitives are an append and a compare-and-swap.
+primitives are an append and a compare-and-swap. Its central bias is
+**affordance asymmetry**: the launch prompt hands the agent a ready-made
+handle for its journal and for nothing else — the right path is the easy
+path, and every broader edit requires deliberate extra steps.
 
 ## Goals
 
 - A **global scope** — the empty scope — whose items stitch into *every*
   launch prompt, first. This is where per-workspace agent guidance lives.
-- Make the launch prompt self-sufficient for context maintenance: an agent
-  holding only the prompt and a `TINES_API_KEY` knows which items apply,
-  their ids and versions, and the commands to read, append to, and rewrite
-  them — the same way it already knows how to comment and transition.
+- Make the launch prompt self-sufficient for the writes an agent *should*
+  make: journal appends and corrections are copy-pasteable from the prompt,
+  addressed by the issue reference the agent already holds — no item ids
+  appear in the prompt at all.
 - Safe concurrent writing: an atomic **append** for the common case (a new
   journal entry) and version-checked **rewrite** for corrections and
   consolidation.
@@ -37,16 +40,19 @@ primitives are an append and a compare-and-swap.
 - **Entry-level journal structure**: a journal stays one Markdown prompt
   body. Entries are dated bullets by convention, not rows; correcting one
   is a body rewrite, not an entry mutation.
-- **Enforcement of the tier etiquette**: API keys can still write any of
-  the user's items. The broad-edit rule is convention plus review plus the
-  event audit trail — per-key write scopes and hard ACLs are supervisor-
-  phase work, as is auto-applying an approved proposal.
+- **Full enforcement of the tier etiquette**: API keys can still write any
+  of the user's items through the generic context endpoints — the prompt
+  simply never volunteers the handles, and broad-tier changes are routed
+  to proposals by guidance. Per-key write scopes and hard ACLs are
+  supervisor-phase work, as is auto-applying an approved proposal. (A
+  lighter session-based guardrail is an open question below.)
 - **Issue types as a schema feature**: proposal issues are recognized by
   convention (title prefix), not a `type` column. A structured, machine-
   applyable proposal payload is deferred until a curator agent exists to
   consume it.
-- **Auto-creating journals**: nothing materializes journal items; agents
-  (or humans) create them with the ordinary create call when first needed.
+- **A per-item `agent_editable` flag**: humans marking arbitrary items as
+  agent-maintained generalizes the journal, but there is no second use
+  case yet; the named-journal convention carries this phase.
 
 ## Concepts
 
@@ -81,7 +87,9 @@ every future launch prompt for that issue, chronologically and attributed;
 splitting "progress" from "instructions" was a distinction without a
 difference. Issue-scoped context items are therefore **artifact slots**:
 things attached rather than said — a skill the issue needs, a repo/branch
-pin, or a same-name override of a broader item. Not notes.
+pin, or a same-name override of a broader item. Not notes. Attachment is
+name-addressed (`tines context create … --issue <ref>`), so it needs no
+ids either.
 
 The **journal** is, by convention, the prompt item named `journal` scoped
 to `project ∧ state`: lessons that help anyone doing this stage of work in
@@ -124,23 +132,52 @@ The 32 KB body cap applies to the result. Bumps `version` and `updated_at`
 and emits `context.updated` with `appended: true` in the payload alongside
 the usual summary. Returns the updated item.
 
-Correcting or pruning an entry is not a special operation: read the body
-(it is in the agent's own launch prompt, or `GET /api/v1/context/:id`),
+Correcting or pruning an entry is not a special operation: read the body,
 revise it, and PATCH the full body with `expected_version`. The same
 motion serves consolidation, which the guidance encourages: rewrite, don't
 only append.
+
+### The journal command family: no ids in the prompt
+
+Agents address their journal by the one reference they already hold — the
+issue — never by item id:
+
+```
+tines journal show    <project>/<number> [--json]
+tines journal append  <project>/<number> <markdown>
+tines journal rewrite <project>/<number> --body <md|@file> --expect-version <n>
+```
+
+The CLI resolves the issue's project and **current** state and targets the
+prompt item named `journal` at exactly that scope (`project ∧ state`).
+`append` finds-or-creates it: if absent, the item is created with the text
+as its first body (on a create race, the loser retries as an append).
+`show` prints the body and version; `rewrite` is the version-checked
+whole-body replace. Following the *current* state is deliberate — after a
+transition, appends land in the new stage's journal, which is where
+lessons about that stage belong.
+
+These are CLI sugar over the generic endpoints (exact-scope list + create
+/ append / PATCH); JSON-only agents do the same dance. No new journal
+resource is added to the API.
+
+The asymmetry is the point: the journal is reachable in one id-free,
+copy-pasteable command, while directly editing any broader item requires
+deliberately going through `tines context list` to discover an id the
+prompt never volunteered. Proposals (below) need no ids either — they
+reference items by kind, name, and scope label.
 
 ### Context update proposals
 
 To change project-, state-, or global-scoped context, an agent files an
 ordinary issue — **in the project it is working in** — titled
 `Context change: <scope label>`, whose description names the target item
-(or proposes a new one: kind, name, scope) and contains the **full proposed
-text**, not a delta. The human reviews it like any issue: discuss in
-comments, apply the change through the normal context editor or CLI, and
-close the issue; or close it rejected. Everything rides on existing rails —
-comments for discussion, `awaiting_human` states for the review gate,
-events for the audit trail.
+(kind, name, scope; or proposes a new one) and contains the **full
+proposed text**, not a delta. The human reviews it like any issue: discuss
+in comments, apply the change through the normal context editor or CLI,
+and close the issue; or close it rejected. Everything rides on existing
+rails — comments for discussion, `awaiting_human` states for the review
+gate, events for the audit trail.
 
 Deliberate choices:
 
@@ -156,29 +193,45 @@ Deliberate choices:
   whatever workflow proposals use is the natural place to instruct the
   future curator agent how to judge them.
 
-### Launch prompt: the `### Context items` section
+### Launch prompt: the `### Journal` section
 
-The generated issue block stays purely factual, and gains one section,
-after `### Available transitions`:
+The generated issue block stays purely factual, and gains two things after
+`### Available transitions` — a prominent journal section and a names-only
+footnote for everything else. No item ids appear anywhere in the prompt.
+
+With a journal present (its body already stitched above as a context
+layer):
 
 ```markdown
-### Context items
+### Journal
 
-- prompt "agent-guidelines" [global] — id ctx_aaa, v4
-- prompt "house-conventions" [project Tines] — id ctx_bbb, v1
-- prompt "journal" [project Tines · state Implementing] — id ctx_ccc, v7
-- skill "review-checklist" [state Review] — id ctx_ddd, v2
-- repo "tines-src" [issue Tines/1] — id ctx_eee, v1
+Your journal for this project and stage is the "## Context: project Tines
+· state Implementing" section above (currently v7).
 
-Read: `tines context show <id> --json` · Append (prompts):
-`tines context append <id> "<markdown>"` · Rewrite:
-`tines context edit <id> --body @<file> --expect-version <v>` · Attach to
-this issue: `tines context create --kind <k> --name <n> --issue Tines/1 …`
+- Append a lesson: `tines journal append Tines/1 "- <date>: <lesson>"`
+- Fix or prune entries: `tines journal show Tines/1 --json`, revise, then
+  `tines journal rewrite Tines/1 --body @file --expect-version 7`
 ```
 
-One line per **effective** item (post-dedupe, layer order), with its scope
-label, id, and version — the id/version handshake that append and CAS need
-— plus the command forms. Which tier to use when is *not* stated here;
+Without one:
+
+```markdown
+### Journal
+
+No journal exists yet for project Tines · state Implementing. Start one:
+`tines journal append Tines/1 "- <date>: <lesson>"`
+```
+
+Then the footnote (only when other items are in effect):
+
+```markdown
+Also in effect: prompt "agent-guidelines" (global), prompt
+"house-conventions" (project Tines). These are shared — to change one,
+file an issue titled `Context change: <scope label>`.
+```
+
+The section ends the prompt-final issue block, so the journal affordance
+sits where recency favors it. Which tier to use *when* is not stated here;
 that is guidance, and guidance is a context item (below). Like the rest of
 the issue block, this is read-time formatting: no events, always current.
 
@@ -204,28 +257,23 @@ to write, chosen by who should inherit what you learned:
   `tines issues comment <project>/<number> "<markdown>"`
 - **Issue context (artifacts)** — things this issue needs *attached*, not
   said: a skill, a repo/branch pin, or an override of a broader item
-  (reuse its name). Never notes — notes are comments.
-- **The journal** — the prompt item named "journal" scoped to your project
-  and current state (see "Context items" below). Append a dated bullet
-  whenever you learn something useful to anyone doing this stage of work
-  in this project: commands that actually work, gotchas, where things
-  live. If an entry is wrong or stale, rewrite the body to fix it — do not
-  append a correction on top. Keep it short; prune when you touch it. If
-  no journal exists yet, create one:
-  `tines context create --kind prompt --name journal --project <p> --state <workflow>/<state> --body "- <date>: <lesson>"`
-- **Context change requests** — never edit project-, state-, or global-
-  scoped context directly. Propose instead: file an issue in the project
-  you are working in, titled `Context change: <scope label>`, with the
-  target item and the full proposed text in the description. A human
-  reviews and applies it.
+  (reuse its name): `tines context create --kind <k> --name <n> --issue
+  <project>/<number> …`. Never notes — notes are comments.
+- **Your journal** — shared notes for anyone doing this stage of work in
+  this project. Append a dated bullet whenever you learn something they
+  would want: commands that actually work, gotchas, where things live
+  (see "Journal" at the end of this prompt for the exact commands). If an
+  entry is wrong or stale, rewrite the journal to fix it — do not append
+  a correction on top. Keep it short; prune when you touch it.
+- **Context change requests** — never edit shared context (project-,
+  state-, or global-scoped items) directly. Propose instead: file an
+  issue in the project you are working in, titled
+  `Context change: <scope label>`, naming the item (kind, name, scope)
+  with the full proposed text in the description. A human reviews and
+  applies it.
 
-Mechanics: the "Context items" section at the end of this prompt lists
-every applicable item with its id and version. Append with
-`tines context append <id> "- <date>: <lesson>"`. To correct or
-consolidate, fetch the body (`tines context show <id> --json`), revise,
-then `tines context edit <id> --body @file --expect-version <v>` — a
-version-conflict error means someone else wrote in between: re-read and
-retry.
+When in doubt: comment. If the lesson outlives this issue, journal it.
+Only file a context change when a shared rule is wrong or missing.
 ```
 
 ### Example launch prompt
@@ -267,22 +315,25 @@ Add a comment: `tines issues comment Tines/1 "<markdown>"`
 
 - **submit** → Review (awaiting_human): `tines issues move Tines/1 "submit"`
 
-### Context items
+### Journal
 
-- prompt "agent-guidelines" [global] — id ctx_aaa, v4
-- prompt "house-conventions" [project Tines] — id ctx_bbb, v1
-- prompt "journal" [project Tines · state Implementing] — id ctx_ccc, v7
+Your journal for this project and stage is the "## Context: project Tines
+· state Implementing" section above (currently v7).
 
-Read: `tines context show <id> --json` · Append (prompts):
-`tines context append <id> "<markdown>"` · Rewrite:
-`tines context edit <id> --body @<file> --expect-version <v>` · Attach to
-this issue: `tines context create --kind <k> --name <n> --issue Tines/1 …`
+- Append a lesson: `tines journal append Tines/1 "- <date>: <lesson>"`
+- Fix or prune entries: `tines journal show Tines/1 --json`, revise, then
+  `tines journal rewrite Tines/1 --body @file --expect-version 7`
+
+Also in effect: prompt "agent-guidelines" (global), prompt
+"house-conventions" (project Tines). These are shared — to change one,
+file an issue titled `Context change: <scope label>`.
 ```
 
-The guidance explains *when*; the context-items section supplies the *how*
-(ids, versions, commands); comments and transitions were already covered.
-An agent holding only this text can journal, correct the journal, attach
-artifacts, and file a `Context change:` proposal.
+The guidance explains *when*; the Journal section supplies the *how* for
+the one write the agent should make routinely — and nothing in the prompt
+hands it a handle for anything broader. An agent holding only this text
+can journal, correct the journal, attach artifacts, and file a
+`Context change:` proposal.
 
 ## Data model changes
 
@@ -303,12 +354,14 @@ change.
 | `PATCH /api/v1/context/:id` | Accepts `expected_version`; 409 with the current item on mismatch. Unsetting the last scope dimension now yields a global item instead of a 422. |
 | `POST /api/v1/context/:id/append` | New. `{ text, expected_version? }`; prompts only; atomic; cap-checked; returns the updated item. |
 | everywhere items serialize | `version` included (list rows, detail, effective-context entries). |
-| `GET /api/v1/issues/:id/prompt` | Issue block gains the `### Context items` section. |
+| `GET /api/v1/issues/:id/prompt` | Issue block gains the `### Journal` section and the names-only shared-context footnote. |
 
 ## CLI
 
 ```
-tines context append <id> <markdown>
+tines journal show    <project>/<number> [--json]
+tines journal append  <project>/<number> <markdown>
+tines journal rewrite <project>/<number> --body <md|@file> --expect-version <n>
 tines context edit <id> … --expect-version <n>
 tines context create …                       # scope flags now optional → global
 tines context init                           # seed agent-guidelines if absent
@@ -326,6 +379,18 @@ unchanged.
 - Conflict handling: the editor sends `expected_version` from the item it
   loaded and surfaces the 409 as "changed since you opened it — reload".
 
+## Open questions
+
+- **Session-only broad writes?** The actor model already distinguishes
+  browser sessions from API keys. An optional guardrail: API-key writes to
+  project-, state-, or global-scoped items are refused (403 pointing at
+  the proposal convention) unless the request passes an explicit
+  `allow_broad: true` (CLI `--broad`). Humans in the UI are unaffected;
+  scripted human workflows keep an escape hatch; agents hit a signposted
+  wall instead of a convention. Cost: friction for legitimate CLI
+  automation. Not yet decided — the prompt-affordance asymmetry may be
+  bias enough.
+
 ## Acceptance criteria
 
 1. Create a global prompt; it stitches first in every issue's launch
@@ -333,18 +398,24 @@ unchanged.
 2. `tines context init` (and the Context-tab affordance) seeds
    `agent-guidelines` once; running it again is a no-op; the seeded item
    is editable and deletable like any other.
-3. `tines issues prompt` lists every effective item with scope label, id,
-   and version in `### Context items`; pasting the append command from the
-   prompt adds a journal entry, and the next prompt read shows both the
-   new entry and the bumped version.
-4. Two concurrent appends both land. A rewrite with a stale
+3. The launch prompt contains no item ids. Its `### Journal` section
+   carries the append/show/rewrite commands addressed by the issue ref
+   (with the create-on-first-append variant when no journal exists), and
+   the shared-context footnote lists other effective items by kind, name,
+   and scope label only.
+4. Pasting the append command from the prompt adds a journal entry —
+   creating the journal if absent — and the next prompt read shows the
+   entry, the stitched layer, and the bumped version.
+5. Two concurrent appends both land. A rewrite with a stale
    `--expect-version` fails with a 409 naming the current version; after
    re-reading, the corrected body saves and drops the stale entry.
-5. An agent holding only the launch prompt and an API key can: comment,
+6. After the issue transitions, `tines journal append` writes the *new*
+   state's journal.
+7. An agent holding only the launch prompt and an API key can: comment,
    attach an issue-scoped artifact, append to the journal, correct the
    journal, and file a `Context change: <scope label>` issue — and the
    guidance text it was launched with told it which of those to do when.
-6. All of the above appear in the activity feed with actor attribution;
+8. All of the above appear in the activity feed with actor attribution;
    append events carry `appended: true`.
 
 ## Resolved questions
@@ -357,10 +428,18 @@ unchanged.
 - **Correcting journal entries**: whole-body rewrite with
   `expected_version` — no entry-level structure; consolidation and
   correction are the same motion.
+- **Biasing agents toward the journal**: affordance asymmetry, not
+  permissions. Item ids were removed from the launch prompt entirely
+  (an earlier draft listed every effective item's id and commands, which
+  made editing shared context exactly as easy as journaling); the journal
+  is addressed by issue ref via `tines journal`, sits in its own
+  prompt-final section, and is the only item the prompt hands a write
+  command for. Shared items appear by name only, with the proposal
+  convention as their sole affordance.
 - **Broad edits**: propose-only via convention (`Context change:` issues
   in the agent's current project), enforced by guidance and review rather
   than permissions; per-key scopes, structured payloads, and auto-apply
   wait for the curator/supervisor phase.
 - **Where the encouragement lives**: in context itself — a seeded, fully
   user-owned global item — never in Tines-injected directive text; the
-  issue block stays purely factual and only gains the mechanics section.
+  issue block stays purely factual and only gains the mechanics sections.
