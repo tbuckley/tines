@@ -255,6 +255,47 @@ sits where recency favors it. Which tier to use *when* is not stated here;
 that is guidance, and guidance is a context item (below). Like the rest of
 the issue block, this is read-time formatting: no events, always current.
 
+### Seeding context at creation time
+
+The best moment to write a project's conventions or a state's instructions
+is the moment the project or state is created — so the creation surfaces
+nudge for an initial prompt. The nudge lives in the **clients**; the API
+stays neutral (agents and scripts create projects too, and a required
+field would only harvest empty strings). The API's role is atomicity:
+
+- `CreateProjectRequest` gains optional **`initial_prompt`** (Markdown).
+  When present, the create also inserts a project-scoped prompt item named
+  **`conventions`** in the same transaction, emitting both `project.created`
+  and `context.created`.
+- `WorkflowStateInput` gains optional **`prompt`** (Markdown), valid only
+  on **new** states (no `id`). Each such state gets a state-scoped prompt
+  item named **`instructions`** in the same batch as the state itself.
+  `prompt` on an existing state is a 422 — stage instructions are edited
+  through the context surfaces, not re-sent through workflow updates.
+
+Both default names are convention, not magic: the created items are
+ordinary — renameable, deletable, and (`journal` aside) carrying no
+special rendering. Because the project or state is newly created, its
+exact scope is empty by construction, so the default names cannot collide.
+
+**CLI — hard nudge.** `tines projects create <name>` fails unless exactly
+one of `--prompt <md|@file>` or `--no-prompt` is given; the error teaches
+("every issue in a project inherits its context — pass --prompt, or
+--no-prompt to create without one; add context later with `tines context
+create -k prompt -p <name> …`"). In workflow definitions, each state
+object accepts an optional `"prompt"` key; `workflows create` and
+`workflows edit` fail when any *new* state lacks one, naming the
+promptless states, unless `--no-prompts` is passed. `--no-prompt(s)`
+follows the CLI's existing `--no-*` convention.
+
+**Web UI — soft nudge.** The new-project modal gains an optional "House
+conventions" textarea ("stitched into the prompt of every agent working
+in this project"); the workflow editor gains a collapsed "＋ Add stage
+instructions" textarea on each new state row. No hard requirement in the
+UI — the empty field is a visible, conscious choice there, whereas CLI
+creations are scripted and agent-driven, where forgetting is systematic
+and a flag is cheap. That asymmetry is deliberate.
+
 ### Starter guidance: the seeded `agent-guidelines` item
 
 The etiquette itself ships as a global **prompt** item named
@@ -397,6 +438,8 @@ change.
 | Change | Detail |
 | --- | --- |
 | `POST /api/v1/context` | Scope may be empty (global). |
+| `POST /api/v1/projects` | Optional `initial_prompt` → project + its `conventions` prompt item, atomically. |
+| `POST/PATCH /api/v1/workflows*` | Optional `prompt` per **new** state → the state + its `instructions` prompt item, atomically; 422 on existing states. |
 | `PATCH /api/v1/context/:id` | Accepts `expected_version`; 409 with the current item on mismatch. Unsetting the last scope dimension now yields a global item instead of a 422. |
 | `POST /api/v1/context/:id/append` | New. `{ text, expected_version? }`; prompts only; atomic; cap-checked; returns the updated item. |
 | everywhere items serialize | `version` included (list rows, detail, effective-context entries). |
@@ -411,6 +454,8 @@ tines journal rewrite <project>/<number> --body <md|@file> --expect-version <n>
 tines context edit <id> … --expect-version <n>
 tines context create …                       # scope flags now optional → global
 tines context init                           # seed agent-guidelines if absent
+tines projects create <name> --prompt <md|@file> | --no-prompt
+tines workflows create/edit …                # states carry "prompt"; --no-prompts to decline
 ```
 
 `context list` renders global items with scope `global`; everything else is
@@ -422,6 +467,10 @@ unchanged.
   to every launch prompt"; `global` chips in lists and the Context tab.
 - Context tab: "Add starter agent guidance" affordance when no global
   `agent-guidelines` exists.
+- New-project modal: optional "House conventions" textarea (feeds
+  `initial_prompt`); workflow editor: collapsed "＋ Add stage
+  instructions" textarea on each new state row (feeds the state's
+  `prompt`).
 - Conflict handling: the editor sends `expected_version` from the item it
   loaded and surfaces the 409 as "changed since you opened it — reload".
 
@@ -465,6 +514,14 @@ unchanged.
    guidance text it was launched with told it which of those to do when.
 8. All of the above appear in the activity feed with actor attribution;
    append events carry `appended: true`.
+9. `tines projects create` without `--prompt` or `--no-prompt` fails with
+   the teaching error; with `--prompt` the project and its `conventions`
+   item land atomically and both events appear. A workflow create whose
+   JSON gives a new state a `prompt` yields that state's `instructions`
+   item; adding a promptless state without `--no-prompts` fails naming
+   the state; `prompt` on an existing state is a 422. The new-project
+   textarea and the editor's stage-instructions field produce the same
+   items.
 
 ## Resolved questions
 
@@ -491,3 +548,10 @@ unchanged.
 - **Where the encouragement lives**: in context itself — a seeded, fully
   user-owned global item — never in Tines-injected directive text; the
   issue block stays purely factual and only gains the mechanics sections.
+- **Initial prompts at creation**: the nudge is client-level (CLI errors
+  unless `--prompt`/`--no-prompt`; UI offers optional textareas — the
+  asymmetry is deliberate: scripted creations forget systematically,
+  humans facing an empty field don't), while the API stays optional and
+  only contributes atomicity via `initial_prompt` / per-new-state
+  `prompt` pass-through fields. Default names `conventions` (project) and
+  `instructions` (state) are plain conventions with no special behavior.
