@@ -1,6 +1,12 @@
-import type { CreateProjectRequest, Project, UpdateProjectRequest } from '@tines/shared';
+import type {
+	CreateProjectRequest,
+	DeletedContextItem,
+	Project,
+	UpdateProjectRequest
+} from '@tines/shared';
 import type { Kysely } from 'kysely';
 import { newId, type Database } from '$lib/server/db';
+import { findAttachedContext, sweepAttachedContext } from './context';
 import {
 	ApiFail,
 	notFound,
@@ -176,8 +182,9 @@ export async function deleteProject(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
-	id: string
-): Promise<void> {
+	id: string,
+	{ forceDeleteContext = false } = {}
+): Promise<DeletedContextItem[]> {
 	const project = await getProject(db, actor.userId, id);
 	if (project.issue_count > 0) {
 		throw new ApiFail(
@@ -187,7 +194,20 @@ export async function deleteProject(
 			{ issue_count: project.issue_count }
 		);
 	}
+	// Context scoped to the project rejects deletion unless forced. The
+	// project is issue-less by now, so no issue-scoped items can reference it.
+	const attached = await findAttachedContext(db, actor.userId, { projectId: id });
+	const sweep = sweepAttachedContext(
+		db,
+		actor,
+		attached,
+		forceDeleteContext,
+		`delete project "${project.name}"`
+	);
 	await runAtomic(env, [
+		// Context events insert while the project row still exists; its
+		// deletion then nulls their project reference (ON DELETE SET NULL).
+		...sweep.queries,
 		// The project is issue-less by now, but its schedules go with it.
 		...(await projectScheduleDeletions(db, actor, id)),
 		db.deleteFrom('project').where('id', '=', id).compile(),
@@ -195,4 +215,5 @@ export async function deleteProject(
 		// for deleted projects; record the name in the payload.
 		eventInsert(db, actor, { type: 'project.deleted', payload: { project_id: id, name: project.name } })
 	]);
+	return sweep.deleted;
 }

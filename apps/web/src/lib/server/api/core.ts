@@ -57,6 +57,17 @@ export async function readJson<T>(event: RequestEvent): Promise<T> {
 	}
 }
 
+/** Like readJson, but an absent/empty body is fine (e.g. DELETE options). */
+export async function readOptionalJson<T extends object>(event: RequestEvent): Promise<Partial<T>> {
+	const text = await event.request.text();
+	if (text.trim() === '') return {};
+	try {
+		return JSON.parse(text) as Partial<T>;
+	} catch {
+		throw new ApiFail(400, 'invalid_json', 'Request body must be valid JSON');
+	}
+}
+
 export function requireString(value: unknown, field: string, { max = 10_000 } = {}): string {
 	if (typeof value !== 'string' || value.trim() === '') {
 		throw new ApiFail(422, 'invalid_field', `"${field}" must be a non-empty string`, { field });

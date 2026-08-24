@@ -1,11 +1,17 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import {
 	ApiError,
 	createApiClient,
 	describeRecurrence,
+	repoDirFromUrl,
 	WEEKDAY_NAMES,
 	type ApiClient,
+	type ContextFile,
+	type ContextItem,
+	type ContextKind,
+	type CreateContextItemRequest,
 	type CreateScheduleInput,
 	type CreateWorkflowRequest,
 	type IssueDetail,
@@ -15,18 +21,21 @@ import {
 	type SchedulePreset,
 	type StateCategory,
 	type TinesEvent,
+	type UpdateContextItemRequest,
 	type UpdateIssueRequest,
 	type UpdateProjectRequest,
 	type UpdateScheduleRequest,
 	type UpdateWorkflowRequest,
-	type WorkflowResponse
+	type WorkflowResponse,
+	type WorkflowState
 } from '@tines/shared';
 import { Command } from 'commander';
 
 const DEFAULT_URL = process.env.TINES_API_URL ?? 'http://localhost:5173';
 
 interface CommonOpts {
-	url: string;
+	/** Absent on commands where --url means something else; falls back to TINES_API_URL. */
+	url?: string;
 	apiKey?: string;
 	json?: boolean;
 }
@@ -36,10 +45,17 @@ interface ListOpts extends CommonOpts {
 	cursor?: string;
 }
 
-/** Adds the options shared by every command (after the subcommand name). */
-function withCommon(cmd: Command): Command {
+/**
+ * Adds the options shared by every command (after the subcommand name).
+ * `baseUrlFlag: false` skips `-u, --url` for commands where `--url` means
+ * something else (`context create/edit` repo pointers); TINES_API_URL still
+ * applies there.
+ */
+function withCommon(cmd: Command, { baseUrlFlag = true } = {}): Command {
+	if (baseUrlFlag) {
+		cmd.option('-u, --url <url>', 'base URL of the Tines API (or set TINES_API_URL)', DEFAULT_URL);
+	}
 	return cmd
-		.option('-u, --url <url>', 'base URL of the Tines API (or set TINES_API_URL)', DEFAULT_URL)
 		.option('--api-key <key>', 'API key (or set TINES_API_KEY)', process.env.TINES_API_KEY)
 		.option('--json', 'output the raw JSON response');
 }
@@ -54,7 +70,7 @@ function withList(cmd: Command): Command {
 }
 
 function client(opts: CommonOpts): ApiClient {
-	return createApiClient({ baseUrl: opts.url, apiKey: opts.apiKey });
+	return createApiClient({ baseUrl: opts.url ?? DEFAULT_URL, apiKey: opts.apiKey });
 }
 
 function die(message: string): never {
@@ -247,6 +263,121 @@ async function resolveIssue(api: ApiClient, ref: string): Promise<IssueDetail> {
 	return api.getIssueByNumber(proj.id, number);
 }
 
+/**
+ * Resolves `--state <workflow>/<state>` (state names are only unique per
+ * workflow, so the qualified form is required everywhere).
+ */
+async function resolveStateFlag(
+	api: ApiClient,
+	ref: string
+): Promise<{ workflow: WorkflowResponse; state: WorkflowState }> {
+	const sep = ref.indexOf('/');
+	if (sep < 1 || sep === ref.length - 1) {
+		die(`--state must look like <workflow>/<state>, got "${ref}"`);
+	}
+	const workflow = await resolveWorkflow(api, ref.slice(0, sep));
+	const stateRef = ref.slice(sep + 1);
+	const state =
+		workflow.states.find((s) => s.name === stateRef) ?? workflow.states.find((s) => s.id === stateRef);
+	if (!state) {
+		die(
+			`workflow "${workflow.name}" has no state "${stateRef}" (have: ${workflow.states.map((s) => s.name).join(', ')})`
+		);
+	}
+	return { workflow, state };
+}
+
+// ---------------------------------------------------------------------------
+// Context items
+
+interface ScopeFlagOpts {
+	project?: string;
+	state?: string;
+	issue?: string;
+}
+
+/** Resolves the scope flags (names → ids). Only set flags are returned. */
+async function resolveScopeFlags(
+	api: ApiClient,
+	opts: ScopeFlagOpts
+): Promise<Pick<CreateContextItemRequest, 'project_id' | 'workflow_state_id' | 'issue_id'>> {
+	const scope: Pick<CreateContextItemRequest, 'project_id' | 'workflow_state_id' | 'issue_id'> = {};
+	if (opts.project !== undefined) scope.project_id = (await resolveProject(api, opts.project)).id;
+	if (opts.state !== undefined) scope.workflow_state_id = (await resolveStateFlag(api, opts.state)).state.id;
+	if (opts.issue !== undefined) scope.issue_id = (await resolveIssue(api, opts.issue)).id;
+	return scope;
+}
+
+/** `--body` takes inline Markdown or `@file`; a literal `@…` escapes as `@@…`. */
+function readBodyValue(value: string): string {
+	if (value.startsWith('@@')) return value.slice(1);
+	if (value.startsWith('@')) {
+		const file = value.slice(1);
+		try {
+			return readFileSync(file, 'utf8');
+		} catch (err) {
+			die(`cannot read ${file}: ${err instanceof Error ? err.message : String(err)}`);
+		}
+	}
+	return value;
+}
+
+/**
+ * `--file <path>=@<local>`: maps a workspace path to a local file's content.
+ * Workspace paths cannot contain `=`, so the first `=` is the separator;
+ * content always comes from a file (no inline form).
+ */
+function parseFileSpec(spec: string): ContextFile {
+	const sep = spec.indexOf('=');
+	if (sep < 1 || sep === spec.length - 1) {
+		die(`--file must look like <path>=@<local-file>, got "${spec}"`);
+	}
+	const path = spec.slice(0, sep);
+	const source = spec.slice(sep + 1);
+	if (!source.startsWith('@')) {
+		die(`skill file content always comes from a local file: --file ${path}=@<local-file>`);
+	}
+	const file = source.slice(1);
+	try {
+		return { path, content: readFileSync(file, 'utf8') };
+	} catch (err) {
+		die(`cannot read ${file}: ${err instanceof Error ? err.message : String(err)}`);
+	}
+}
+
+const collect = (value: string, previous: string[]) => [...previous, value];
+
+function contextItemSummary(item: ContextItem): string {
+	switch (item.kind) {
+		case 'prompt':
+			return `${Buffer.byteLength(item.body ?? '', 'utf8')} bytes`;
+		case 'skill':
+			return `${item.file_count ?? item.files?.length ?? 0} file${(item.file_count ?? item.files?.length ?? 0) === 1 ? '' : 's'}`;
+		case 'repo':
+			return `${item.repo_url}${item.repo_branch ? `#${item.repo_branch}` : ''}`;
+	}
+}
+
+function printContextItem(item: ContextItem): void {
+	console.log(`${item.kind} "${item.name}"  [${item.id}]`);
+	if (item.description) console.log(item.description);
+	console.log(`scope: ${item.scope.label}`);
+	console.log(`updated: ${timestamp(item.updated_at)}  created: ${timestamp(item.created_at)}`);
+	if (item.kind === 'prompt') {
+		console.log(`\n${item.body}`);
+	} else if (item.kind === 'skill') {
+		console.log(`\nfiles (seeded at skills/${item.name}/):`);
+		for (const f of item.files ?? []) {
+			console.log(`  ${f.path}  (${Buffer.byteLength(f.content, 'utf8')} bytes)`);
+		}
+		if ((item.files ?? []).length === 0) console.log('  (none)');
+	} else {
+		console.log(`\nurl: ${item.repo_url}`);
+		if (item.repo_branch) console.log(`branch: ${item.repo_branch}`);
+		console.log(`dir: ${item.repo_dir ?? `${repoDirFromUrl(item.repo_url ?? '')} (derived from the URL)`}`);
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Recurrence flags (--every/--at/--on build a preset; --cron is the raw form)
 
@@ -400,6 +531,13 @@ function eventSummary(ev: TinesEvent): string {
 		case 'scheduled_task.updated':
 		case 'scheduled_task.deleted':
 			return `${ev.type.split('.')[1]} schedule "${p.name}"`;
+		case 'context.created':
+		case 'context.updated':
+		case 'context.deleted': {
+			const scope = p.scope as { label?: string } | undefined;
+			const verb = ev.type.split('.')[1];
+			return `${verb} ${p.kind} "${p.name}"${scope?.label ? ` [${scope.label}]` : ''}`;
+		}
 		case 'scheduled_task.skipped': {
 			const blocking = Array.isArray(p.blocking) ? p.blocking.length : 0;
 			return `skipped schedule "${p.name}" (${blocking} open instance${blocking === 1 ? '' : 's'})`;
@@ -795,6 +933,275 @@ withCommon(
 	if (opts.json) return printJson(comment);
 	console.log(`commented on ${issue.project_name}/#${issue.number} as ${actorLabel(comment.actor)}`);
 });
+
+withCommon(
+	issues
+		.command('context <ref>')
+		.description("Print an issue's effective context (the assembled bundle for its current state)")
+		.option('--out <dir>', 'write the bundle to a directory: prompt.md, skills/<name>/…, repos.json')
+		.option('--force', 'allow --out into a non-empty directory')
+).action(async (ref: string, opts: CommonOpts & { out?: string; force?: boolean }) => {
+	const api = client(opts);
+	const issue = await resolveIssue(api, ref);
+	const context = await api.getIssueContext(issue.id);
+	if (opts.json && !opts.out) return printJson(context);
+	if (opts.out === undefined) {
+		if (context.prompt.text) console.log(context.prompt.text);
+		if (context.skills.length > 0) {
+			console.log(`\nskills: ${context.skills.map((s) => s.name).join(', ')}`);
+		}
+		for (const repo of context.repos) {
+			console.log(`repo: ${repo.name} ${repo.url}${repo.branch ? `#${repo.branch}` : ''} → ${repo.dir}/`);
+		}
+		for (const o of context.overridden) {
+			console.log(`overridden: ${o.kind} "${o.name}" [${o.scope.label}] (overridden by ${o.overridden_by})`);
+		}
+		for (const c of context.conflicts) {
+			console.log(`conflict: repos ${c.item_ids.join(', ')} all resolve to checkout dir "${c.dir}"`);
+		}
+		return;
+	}
+	// --out: the workspace-seeding shape. Conflicting checkout dirs make the
+	// bundle ambiguous, so refuse entirely while any are reported.
+	if (context.conflicts.length > 0) {
+		die(
+			`refusing to write: checkout-directory conflict${context.conflicts.length === 1 ? '' : 's'} among the effective repos (${context.conflicts
+				.map((c) => `"${c.dir}": ${c.item_ids.join(', ')}`)
+				.join('; ')}); rename or re-dir the items first`
+		);
+	}
+	if (existsSync(opts.out) && readdirSync(opts.out).length > 0 && !opts.force) {
+		die(`refusing to write into non-empty directory ${opts.out} (pass --force to override)`);
+	}
+	mkdirSync(opts.out, { recursive: true });
+	writeFileSync(join(opts.out, 'prompt.md'), context.prompt.text ? `${context.prompt.text}\n` : '');
+	for (const skill of context.skills) {
+		for (const file of skill.files) {
+			const target = join(opts.out, 'skills', skill.name, file.path);
+			mkdirSync(dirname(target), { recursive: true });
+			writeFileSync(target, file.content);
+		}
+	}
+	writeFileSync(join(opts.out, 'repos.json'), `${JSON.stringify(context.repos, null, 2)}\n`);
+	console.log(
+		`wrote ${opts.out}/prompt.md, ${context.skills.length} skill${context.skills.length === 1 ? '' : 's'}, repos.json (${context.repos.length} repo${context.repos.length === 1 ? '' : 's'})`
+	);
+});
+
+withCommon(
+	issues
+		.command('prompt <ref>')
+		.description('Print the launch prompt: the stitched context followed by the issue block')
+).action(async (ref: string, opts: CommonOpts) => {
+	const api = client(opts);
+	const issue = await resolveIssue(api, ref);
+	const prompt = await api.getIssuePrompt(issue.id);
+	if (opts.json) return printJson(prompt);
+	console.log(prompt.text);
+});
+
+// --- context -----------------------------------------------------------------
+
+const context = program
+	.command('context')
+	.description('Manage context items (prompts, skills, repo pointers) scoped to projects, states, and issues');
+
+const SCOPE_FLAGS_HELP = `
+Scope flags (combinable — an item applies where ALL of its set dimensions match):
+  --project <name>              only for issues in this project
+  --state <workflow>/<state>    only for issues currently in this state
+  --issue <project>/<number>    only for this issue
+`;
+
+function withScopeFlags(cmd: Command): Command {
+	return cmd
+		.option('-p, --project <name>', 'scope: project name or id')
+		.option('-s, --state <workflow/state>', 'scope: workflow-qualified state')
+		.option('-i, --issue <ref>', 'scope: issue (<project>/<number>)')
+		.addHelpText('after', SCOPE_FLAGS_HELP);
+}
+
+withList(
+	withScopeFlags(
+		context
+			.command('list')
+			.description('List context items (scope filters match every item whose scope includes the element)')
+			.option('-k, --kind <kind>', 'filter by kind: prompt, skill, or repo')
+			.option('--exact', 'only items whose scope sets exactly the given dimensions')
+			.option('-q, --search <text>', 'search names and descriptions')
+	)
+).action(async (opts: ListOpts & ScopeFlagOpts & { kind?: ContextKind; exact?: boolean; search?: string }) => {
+	const api = client(opts);
+	const scope = await resolveScopeFlags(api, opts);
+	const res = await api.listContext({
+		kind: opts.kind,
+		project: scope.project_id ?? undefined,
+		state: scope.workflow_state_id ?? undefined,
+		issue: scope.issue_id ?? undefined,
+		q: opts.search,
+		exact: opts.exact ? true : undefined,
+		limit: opts.limit,
+		cursor: opts.cursor
+	});
+	printList(res, opts, (items) => {
+		if (items.length === 0) return console.log('no context items');
+		table([
+			['KIND', 'NAME', 'SCOPE', 'PAYLOAD', 'UPDATED', 'ID'],
+			...items.map((i) => [
+				i.kind,
+				i.name,
+				i.scope.label,
+				contextItemSummary(i),
+				timestamp(i.updated_at),
+				i.id
+			])
+		]);
+	});
+});
+
+withCommon(context.command('show <id>').description('Show a context item (skills include their files)')).action(
+	async (id: string, opts: CommonOpts) => {
+		const item = await client(opts).getContextItem(id);
+		if (opts.json) return printJson(item);
+		printContextItem(item);
+	}
+);
+
+withCommon(
+	withScopeFlags(
+		context
+			.command('create')
+			.description('Create a context item scoped to a project, state, and/or issue')
+			.requiredOption('-k, --kind <kind>', 'prompt, skill, or repo')
+			.requiredOption('-n, --name <name>', 'item name (slug-like for skills; the dedup/override key)')
+			.option('-d, --description <text>', 'one-liner shown in lists')
+			.option('--body <md>', 'prompt body: inline Markdown or @file (escape a literal @ as @@)')
+			.option('--file <path>=@<local>', 'skill file: workspace path = local file (repeatable)', collect, [])
+			.option('--url <url>', 'repo: clone URL')
+			.option('--branch <branch>', 'repo: branch to check out')
+			.option('--dir <dir>', "repo: checkout directory (defaults to the URL's basename)")
+	),
+	// --url is the repo pointer here; the API base comes from TINES_API_URL.
+	{ baseUrlFlag: false }
+).action(
+	async (
+		opts: CommonOpts &
+			ScopeFlagOpts & {
+				kind: string;
+				name: string;
+				description?: string;
+				body?: string;
+				file: string[];
+				url?: string;
+				branch?: string;
+				dir?: string;
+			}
+	) => {
+		// opts.url is the repo pointer on this command, not the API base.
+		const api = client({ apiKey: opts.apiKey, json: opts.json });
+		const scope = await resolveScopeFlags(api, opts);
+		const body: CreateContextItemRequest = {
+			kind: opts.kind as ContextKind,
+			name: opts.name,
+			description: opts.description,
+			...scope
+		};
+		if (opts.body !== undefined) body.body = readBodyValue(opts.body);
+		if (opts.file.length > 0) body.files = opts.file.map(parseFileSpec);
+		if (opts.kind === 'skill' && body.files === undefined) body.files = [];
+		if (opts.url !== undefined) body.repo_url = opts.url;
+		if (opts.branch !== undefined) body.repo_branch = opts.branch;
+		if (opts.dir !== undefined) body.repo_dir = opts.dir;
+		const item = await api.createContextItem(body);
+		if (opts.json) return printJson(item);
+		console.log(`created ${item.kind} "${item.name}" (${item.id}) — scope: ${item.scope.label}`);
+	}
+);
+
+withCommon(
+	withScopeFlags(
+		context
+			.command('edit <id>')
+			.description('Edit a context item: payload, name, description, or scope')
+			.option('-n, --name <name>', 'rename the item')
+			.option('-d, --description <text>', 'set the description')
+			.option('--body <md>', 'prompt body: inline Markdown or @file (escape a literal @ as @@)')
+			.option('--file <path>=@<local>', 'add or replace a skill file (repeatable)', collect, [])
+			.option('--remove-file <path>', 'remove a skill file (repeatable)', collect, [])
+			.option('--url <url>', 'repo: clone URL')
+			.option('--branch <branch>', 'repo: branch (empty string clears it)')
+			.option('--dir <dir>', 'repo: checkout directory (empty string restores the URL default)')
+			.option('--unset <dimension>', 'drop a scope dimension: project, state, or issue (repeatable)', collect, [])
+	),
+	// --url is the repo pointer here; the API base comes from TINES_API_URL.
+	{ baseUrlFlag: false }
+).action(
+	async (
+		id: string,
+		opts: CommonOpts &
+			ScopeFlagOpts & {
+				name?: string;
+				description?: string;
+				body?: string;
+				file: string[];
+				removeFile: string[];
+				url?: string;
+				branch?: string;
+				dir?: string;
+				unset: string[];
+			}
+	) => {
+		// opts.url is the repo pointer on this command, not the API base.
+		const api = client({ apiKey: opts.apiKey, json: opts.json });
+		const body: UpdateContextItemRequest = {};
+		if (opts.name !== undefined) body.name = opts.name;
+		if (opts.description !== undefined) body.description = opts.description;
+		const scope = await resolveScopeFlags(api, opts);
+		Object.assign(body, scope);
+		for (const dim of opts.unset) {
+			if (dim === 'project') body.project_id = null;
+			else if (dim === 'state') body.workflow_state_id = null;
+			else if (dim === 'issue') body.issue_id = null;
+			else die(`--unset takes project, state, or issue, got "${dim}"`);
+		}
+		if (opts.body !== undefined) body.body = readBodyValue(opts.body);
+		if (opts.file.length > 0 || opts.removeFile.length > 0) {
+			// Skill files PATCH declaratively: fetch, apply the edits, send the
+			// full list. --file replaces an existing path or adds a new one.
+			const current = await api.getContextItem(id);
+			if (current.kind !== 'skill') die(`--file/--remove-file only apply to skills (this is a ${current.kind})`);
+			const files = new Map((current.files ?? []).map((f) => [f.path, f.content]));
+			for (const path of opts.removeFile) {
+				if (!files.delete(path)) {
+					die(`no file "${path}" in skill "${current.name}" (have: ${[...files.keys()].join(', ') || 'none'})`);
+				}
+			}
+			for (const spec of opts.file) {
+				const f = parseFileSpec(spec);
+				files.set(f.path, f.content);
+			}
+			body.files = [...files.entries()].map(([path, content]) => ({ path, content }));
+		}
+		if (opts.url !== undefined) body.repo_url = opts.url;
+		if (opts.branch !== undefined) body.repo_branch = opts.branch === '' ? null : opts.branch;
+		if (opts.dir !== undefined) body.repo_dir = opts.dir === '' ? null : opts.dir;
+		if (Object.keys(body).length === 0) {
+			die('nothing to update: pass payload flags, --name/--description, scope flags, and/or --unset');
+		}
+		const item = await api.updateContextItem(id, body);
+		if (opts.json) return printJson(item);
+		console.log(`updated ${item.kind} "${item.name}" (${item.id}) — scope: ${item.scope.label}`);
+	}
+);
+
+withCommon(context.command('delete <id>').description('Delete a context item')).action(
+	async (id: string, opts: CommonOpts) => {
+		const api = client(opts);
+		const item = await api.getContextItem(id);
+		await api.deleteContextItem(id);
+		console.log(`deleted ${item.kind} "${item.name}" (${item.id}) — scope: ${item.scope.label}`);
+	}
+);
 
 // --- schedules ---------------------------------------------------------------
 

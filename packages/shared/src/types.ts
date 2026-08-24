@@ -121,11 +121,29 @@ export interface UpdateWorkflowRequest {
 	initial_state?: string;
 	states?: WorkflowStateInput[];
 	transitions?: WorkflowTransitionInput[];
+	/**
+	 * Removing states with attached context items is rejected by default;
+	 * with this flag the removal proceeds and those items are deleted
+	 * (all-or-nothing, one `context.deleted` event each).
+	 */
+	force_delete_context?: boolean;
 }
 
 export interface WorkflowResponse extends Workflow {
 	/** Non-fatal advisories, e.g. a non-done state left with no way out. */
 	warnings?: string[];
+	/** Context items swept by a forced state removal in this update. */
+	deleted_context?: DeletedContextItem[];
+}
+
+/** Body accepted by project/workflow DELETE; see force_delete_context above. */
+export interface DeleteAnchorRequest {
+	force_delete_context?: boolean;
+}
+
+/** DELETE response when a forced delete swept context items (else 204). */
+export interface DeleteAnchorResponse {
+	deleted_context: DeletedContextItem[];
 }
 
 // ---------------------------------------------------------------------------
@@ -162,6 +180,8 @@ export interface IssueDetail extends Issue {
 	comments: Comment[];
 	/** The named transitions legally available from the current state. */
 	allowed_transitions: AllowedTransition[];
+	/** Per-kind counts of the currently effective context, post-dedupe. */
+	context_summary: ContextSummary;
 }
 
 export interface CreateIssueRequest {
@@ -287,6 +307,205 @@ export interface IssueFilters {
 }
 
 // ---------------------------------------------------------------------------
+// Context items
+
+export type ContextKind = 'prompt' | 'skill' | 'repo';
+
+export const CONTEXT_KINDS: readonly ContextKind[] = ['prompt', 'skill', 'repo'];
+
+/** Byte caps (UTF-8), enforced at the API layer with structured 422s. */
+export const PROMPT_MAX_BYTES = 32 * 1024;
+export const SKILL_MAX_FILES = 20;
+export const SKILL_MAX_TOTAL_BYTES = 100 * 1024;
+
+/** Skill names double as workspace directory names. */
+export const SKILL_NAME_PATTERN = /^[a-z0-9-]+$/;
+
+/**
+ * An item's scope: the intersection (AND) of its set dimensions, with the
+ * referents denormalized for display and `label` in the canonical format
+ * ("project Tines · state Review", issues as `<project>/<number>`).
+ */
+export interface ContextScope {
+	project_id: string | null;
+	project_name: string | null;
+	workflow_state_id: string | null;
+	workflow_state_name: string | null;
+	/** The state's workflow, for qualified display ("Standard / Review"). */
+	workflow_id: string | null;
+	workflow_name: string | null;
+	issue_id: string | null;
+	issue_ref: { project_name: string; number: number } | null;
+	label: string;
+}
+
+export interface ContextFile {
+	/** Workspace-relative path (forward slashes, no `..`, no leading `/`, no `=`). */
+	path: string;
+	content: string;
+}
+
+export interface ContextItem {
+	id: string;
+	kind: ContextKind;
+	name: string;
+	description: string;
+	scope: ContextScope;
+	/** Prompt payload: the Markdown body. */
+	body?: string;
+	/** Skill payload: present on detail reads; lists carry `file_count` only. */
+	files?: ContextFile[];
+	file_count?: number;
+	/** Repo payload. `repo_dir` is as stored; null = derived from the URL. */
+	repo_url?: string;
+	repo_branch?: string | null;
+	repo_dir?: string | null;
+	/** Ordering within the same exact scope tuple. */
+	position: number;
+	created_at: number;
+	updated_at: number;
+}
+
+export interface CreateContextItemRequest {
+	kind: ContextKind;
+	name: string;
+	description?: string;
+	/** Scope: at least one dimension must be set. */
+	project_id?: string | null;
+	workflow_state_id?: string | null;
+	issue_id?: string | null;
+	/** prompt */
+	body?: string;
+	/** skill */
+	files?: ContextFile[];
+	/** repo */
+	repo_url?: string;
+	repo_branch?: string | null;
+	repo_dir?: string | null;
+}
+
+/**
+ * Merge-patch: omitted fields are unchanged; explicit null unsets a nullable
+ * field (scope dimensions subject to the ≥1-dimension rule). `kind` is
+ * immutable. Skill `files` replace the file set wholesale.
+ */
+export interface UpdateContextItemRequest {
+	name?: string;
+	description?: string;
+	project_id?: string | null;
+	workflow_state_id?: string | null;
+	issue_id?: string | null;
+	position?: number;
+	body?: string;
+	files?: ContextFile[];
+	repo_url?: string;
+	repo_branch?: string | null;
+	repo_dir?: string | null;
+}
+
+/**
+ * List filters use "scope includes" semantics: `project=X` matches every
+ * item whose scope includes project X; dimension filters AND together.
+ * `exact=true` restricts to items whose scope sets only the given dimensions.
+ */
+export interface ContextListFilters {
+	kind?: ContextKind;
+	/** Project id or name. */
+	project?: string;
+	/** Workflow state id. */
+	state?: string;
+	/** Issue id. */
+	issue?: string;
+	/** Name/description search. */
+	q?: string;
+	exact?: boolean;
+}
+
+/** One stitched-prompt part, in layer order. */
+export interface EffectivePromptPart {
+	item_id: string;
+	name: string;
+	scope: ContextScope;
+	body: string;
+}
+
+export interface EffectiveSkill {
+	item_id: string;
+	name: string;
+	scope: ContextScope;
+	files: ContextFile[];
+}
+
+export interface EffectiveRepo {
+	item_id: string;
+	name: string;
+	scope: ContextScope;
+	url: string;
+	branch?: string | null;
+	/** Always resolved (falls back to the URL's basename minus `.git`). */
+	dir: string;
+}
+
+/** A name-collision loser: a more specific item of the same kind+name won. */
+export interface OverriddenContextItem {
+	item_id: string;
+	kind: ContextKind;
+	name: string;
+	scope: ContextScope;
+	overridden_by: string;
+}
+
+export interface RepoDirConflict {
+	kind: 'repo_dir';
+	dir: string;
+	item_ids: string[];
+}
+
+/** `GET /api/v1/issues/:id/context` — the assembled bundle for an issue. */
+export interface EffectiveContext {
+	prompt: {
+		/** The stitched prompt, `## Context: <scope>` headings included. */
+		text: string;
+		parts: EffectivePromptPart[];
+	};
+	skills: EffectiveSkill[];
+	repos: EffectiveRepo[];
+	overridden: OverriddenContextItem[];
+	conflicts: RepoDirConflict[];
+}
+
+/** Per-kind counts of the currently effective context, post-dedupe. */
+export interface ContextSummary {
+	prompts: number;
+	skills: number;
+	repos: number;
+}
+
+/** `GET /api/v1/issues/:id/prompt` — stitched context plus the issue block. */
+export interface LaunchPromptResponse {
+	text: string;
+}
+
+/** A context item swept by a forced delete, as reported in the response. */
+export interface DeletedContextItem {
+	id: string;
+	kind: ContextKind;
+	name: string;
+	scope_label: string;
+}
+
+/**
+ * Default checkout directory for a repo context item: the URL's basename
+ * with any trailing `.git` stripped. Handles scp-style remotes too.
+ */
+export function repoDirFromUrl(url: string): string {
+	const stripped = url.replace(/[?#].*$/, '').replace(/\/+$/, '');
+	const lastSlash = Math.max(stripped.lastIndexOf('/'), stripped.lastIndexOf(':'));
+	const base = stripped.slice(lastSlash + 1).replace(/\.git$/, '');
+	return base || 'repo';
+}
+
+// ---------------------------------------------------------------------------
 // Comments
 
 export interface Comment {
@@ -321,6 +540,9 @@ export type EventType =
 	| 'scheduled_task.updated'
 	| 'scheduled_task.deleted'
 	| 'scheduled_task.skipped'
+	| 'context.created'
+	| 'context.updated'
+	| 'context.deleted'
 	// Open-ended by design: later phases add types without migration.
 	| (string & {});
 

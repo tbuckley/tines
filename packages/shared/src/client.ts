@@ -3,13 +3,20 @@ import type {
 	ApiKey,
 	ApiKeyCreated,
 	Comment,
+	ContextItem,
+	ContextListFilters,
 	CreateApiKeyRequest,
 	CreateCommentRequest,
+	CreateContextItemRequest,
 	CreateIssueRequest,
 	CreateIssueResponse,
 	CreateProjectRequest,
 	CreateWorkflowRequest,
+	DeleteAnchorRequest,
+	DeleteAnchorResponse,
+	EffectiveContext,
 	EventFilters,
+	LaunchPromptResponse,
 	Issue,
 	IssueDetail,
 	IssueFilters,
@@ -21,6 +28,7 @@ import type {
 	StateCategory,
 	TinesEvent,
 	TransitionIssueRequest,
+	UpdateContextItemRequest,
 	UpdateIssueRequest,
 	UpdateProjectRequest,
 	UpdateScheduleRequest,
@@ -109,7 +117,8 @@ export function createApiClient(options: ApiClientOptions) {
 		getProject: (id: string) => get<Project>(`/api/v1/projects/${id}`),
 		updateProject: (id: string, body: UpdateProjectRequest) =>
 			request<Project>('PATCH', `/api/v1/projects/${id}`, body),
-		deleteProject: (id: string) => request<void>('DELETE', `/api/v1/projects/${id}`),
+		deleteProject: (id: string, body?: DeleteAnchorRequest) =>
+			request<DeleteAnchorResponse | void>('DELETE', `/api/v1/projects/${id}`, body),
 
 		// Workflows
 		listWorkflows: (page: PageParams = {}) =>
@@ -119,7 +128,8 @@ export function createApiClient(options: ApiClientOptions) {
 		getWorkflow: (id: string) => get<WorkflowResponse>(`/api/v1/workflows/${id}`),
 		updateWorkflow: (id: string, body: UpdateWorkflowRequest) =>
 			request<WorkflowResponse>('PATCH', `/api/v1/workflows/${id}`, body),
-		deleteWorkflow: (id: string) => request<void>('DELETE', `/api/v1/workflows/${id}`),
+		deleteWorkflow: (id: string, body?: DeleteAnchorRequest) =>
+			request<DeleteAnchorResponse | void>('DELETE', `/api/v1/workflows/${id}`, body),
 
 		// Issues
 		listIssues: (filters: IssueFilters & PageParams = {}) =>
@@ -155,6 +165,22 @@ export function createApiClient(options: ApiClientOptions) {
 		deleteSchedule: (id: string) => request<void>('DELETE', `/api/v1/schedules/${id}`),
 		/** Run now: creates an instance immediately (gate-respecting; 422 when blocked). */
 		runSchedule: (id: string) => request<IssueDetail>('POST', `/api/v1/schedules/${id}/run`),
+
+		// Context items
+		listContext: (filters: ContextListFilters & PageParams = {}) =>
+			get<ListResponse<ContextItem>>(`/api/v1/context${query(filters)}`),
+		createContextItem: (body: CreateContextItemRequest) =>
+			request<ContextItem>('POST', '/api/v1/context', body),
+		getContextItem: (id: string) => get<ContextItem>(`/api/v1/context/${id}`),
+		updateContextItem: (id: string, body: UpdateContextItemRequest) =>
+			request<ContextItem>('PATCH', `/api/v1/context/${id}`, body),
+		deleteContextItem: (id: string) => request<void>('DELETE', `/api/v1/context/${id}`),
+		/** Effective context for an issue: the assembled bundle. */
+		getIssueContext: (issueId: string) =>
+			get<EffectiveContext>(`/api/v1/issues/${issueId}/context`),
+		/** Launch prompt: stitched context plus the generated issue block. */
+		getIssuePrompt: (issueId: string) =>
+			get<LaunchPromptResponse>(`/api/v1/issues/${issueId}/prompt`),
 
 		// Events
 		listEvents: (filters: EventFilters & PageParams = {}) =>

@@ -1,6 +1,7 @@
 import {
 	STATE_CATEGORIES,
 	type CreateWorkflowRequest,
+	type DeletedContextItem,
 	type StateCategory,
 	type UpdateWorkflowRequest,
 	type WorkflowResponse,
@@ -9,6 +10,7 @@ import {
 } from '@tines/shared';
 import type { CompiledQuery, Kysely } from 'kysely';
 import { newId, type Database, type WorkflowStateTable } from '$lib/server/db';
+import { findAttachedContext, sweepAttachedContext } from './context';
 import {
 	ApiFail,
 	notFound,
@@ -375,6 +377,20 @@ export async function updateWorkflow(
 		}
 	}
 
+	// Removing a state with attached context is rejected unless forced; a
+	// forced removal sweeps the items (all-or-nothing, even when one PATCH
+	// removes multiple states) with a context.deleted event per item.
+	const attachedContext = await findAttachedContext(db, actor.userId, {
+		stateIds: removedStates.map((s) => s.id)
+	});
+	const contextSweep = sweepAttachedContext(
+		db,
+		actor,
+		attachedContext,
+		body.force_delete_context === true,
+		`remove state${removedStates.length === 1 ? ` "${removedStates[0].name}"` : 's'} from workflow "${current.name}"`
+	);
+
 	// Summary diff for the workflow.updated event payload.
 	const currentById = new Map(current.states.map((s) => [s.id, s]));
 	const statesAdded = def.states.filter((s) => s.isNew).map((s) => s.name);
@@ -414,8 +430,11 @@ export async function updateWorkflow(
 
 	const now = Date.now();
 	const queries: CompiledQuery[] = [];
-	// Old transitions go first: they hold foreign keys onto states about to
-	// be deleted. Transition ids are not referenced elsewhere, so the set is
+	// Swept context goes first: those items hold foreign keys onto states
+	// about to be deleted.
+	queries.push(...contextSweep.queries);
+	// Old transitions next: they hold foreign keys onto states about to be
+	// deleted. Transition ids are not referenced elsewhere, so the set is
 	// replaced wholesale.
 	queries.push(db.deleteFrom('workflow_transition').where('workflow_id', '=', id).compile());
 	for (const s of removedStates) {
@@ -469,15 +488,18 @@ export async function updateWorkflow(
 		eventInsert(db, actor, { type: 'workflow.updated', payload })
 	);
 	await runAtomic(env, queries);
-	return loadWorkflow(db, actor.userId, id);
+	const updated = await loadWorkflow(db, actor.userId, id);
+	if (contextSweep.deleted.length > 0) updated.deleted_context = contextSweep.deleted;
+	return updated;
 }
 
 export async function deleteWorkflow(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
-	id: string
-): Promise<void> {
+	id: string,
+	{ forceDeleteContext = false } = {}
+): Promise<DeletedContextItem[]> {
 	const wf = await loadWorkflow(db, actor.userId, id);
 	if (wf.is_system) {
 		throw new ApiFail(403, 'workflow_read_only', 'The standard workflow cannot be deleted');
@@ -492,7 +514,20 @@ export async function deleteWorkflow(
 	}
 	// Extends the phase-one editing rules: schedules bind to a workflow.
 	await assertWorkflowNotScheduled(db, wf.id, wf.name);
+	// Context scoped to any of the workflow's states rejects deletion unless
+	// forced (same posture as project deletion and state removal).
+	const attached = await findAttachedContext(db, actor.userId, {
+		stateIds: wf.states.map((s) => s.id)
+	});
+	const sweep = sweepAttachedContext(
+		db,
+		actor,
+		attached,
+		forceDeleteContext,
+		`delete workflow "${wf.name}"`
+	);
 	await runAtomic(env, [
+		...sweep.queries,
 		db
 			.updateTable('project')
 			.set({ default_workflow_id: null })
@@ -503,4 +538,5 @@ export async function deleteWorkflow(
 		db.deleteFrom('workflow').where('id', '=', id).compile(),
 		eventInsert(db, actor, { type: 'workflow.deleted', payload: { workflow_id: id, name: wf.name } })
 	]);
+	return sweep.deleted;
 }

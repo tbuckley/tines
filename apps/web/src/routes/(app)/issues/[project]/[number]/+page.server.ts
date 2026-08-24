@@ -1,6 +1,8 @@
 import { error } from '@sveltejs/kit';
+import { effectiveContextForIssue, listContextItems } from '$lib/server/api/context';
 import { eventQuery, serializeEvent } from '$lib/server/api/events';
 import { getIssueDetail } from '$lib/server/api/issues';
+import { listProjects } from '$lib/server/api/projects';
 import { loadWorkflows } from '$lib/server/api/workflows';
 import { getDb } from '$lib/server/db';
 import type { PageServerLoad } from './$types';
@@ -26,15 +28,26 @@ export const load: PageServerLoad = async ({ locals, platform, params }) => {
 		error(404, 'Not found');
 	});
 
-	const [eventRows, workflows] = await Promise.all([
+	const [eventRows, workflows, projects, contextItems, effectiveContext] = await Promise.all([
 		eventQuery(db, userId)
 			.where('event.issue_id', '=', issue.id)
 			.orderBy('event.created_at desc')
 			.orderBy('event.id desc')
 			.limit(100)
 			.execute(),
-		loadWorkflows(db, userId)
+		loadWorkflows(db, userId),
+		listProjects(db, userId),
+		// Items whose scope includes this issue (all issue-anchored shapes).
+		listContextItems(db, userId, { issue: issue.id }, { cursor: null, limit: 100 }),
+		effectiveContextForIssue(db, userId, issue.id)
 	]);
 
-	return { issue, events: eventRows.map(serializeEvent), workflows };
+	return {
+		issue,
+		events: eventRows.map(serializeEvent),
+		workflows,
+		projects,
+		contextItems: contextItems.items,
+		effectiveContext
+	};
 };
