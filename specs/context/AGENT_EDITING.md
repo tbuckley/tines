@@ -222,13 +222,22 @@ No journal exists yet for project Tines · state Implementing. Start one:
 `tines journal append Tines/1 "- <date>: <lesson>"`
 ```
 
-Then the footnote (only when other items are in effect):
+Then two factual footnote lines, each present only when non-empty:
 
 ```markdown
+Attached to this issue: skill "csv-tools" (2 files), repo "tines-src"
+(branch csv-export). Fetch them: `tines issues context Tines/12 --out <dir>`
+
 Also in effect: prompt "agent-guidelines" (global), prompt
 "house-conventions" (project Tines). These are shared — to change one,
 file an issue titled `Context change: <scope label>`.
 ```
+
+The first line names this issue's effective artifacts (skills and repos,
+post-dedupe) with the existing bundle-fetch command — the agent's own
+attachments are fair game, so they get their command. The second lists the
+other effective prompt items by kind, name, and scope label only; its sole
+affordance is the proposal convention.
 
 The section ends the prompt-final issue block, so the journal affordance
 sits where recency favors it. Which tier to use *when* is not stated here;
@@ -278,8 +287,9 @@ Only file a context change when a shared rule is wrong or missing.
 
 ### Example launch prompt
 
-For `Tines/1` sitting in *Implementing*, with the starter guidance, a house
-prompt, and a journal in place, `tines issues prompt Tines/1` yields:
+For `Tines/12` sitting in *Implementing*, with the starter guidance, a
+house prompt, a journal, an issue-scoped constraint prompt, and two issue
+artifacts in place, `tines issues prompt Tines/12` yields:
 
 ```markdown
 ## Context: global
@@ -289,17 +299,30 @@ You are an agent working on a Tines issue over its HTTP API / CLI. …
 
 ## Context: project Tines
 
-Use tabs. Write terse commit messages. Prefer small PRs.
+House conventions: pnpm monorepo, Node >= 20. Use tabs. Run `pnpm check`
+and `pnpm test` before declaring anything done. Write terse commit
+messages; prefer small PRs.
 
 ## Context: project Tines · state Implementing
 
-- 2026-08-20: `pnpm db:migrate:local` must run before the e2e suite.
-- 2026-08-22: the D1 batch API is the only transaction primitive; see
-  runAtomic in core.ts.
+- 2026-08-18: `pnpm db:migrate:local` must run before the e2e suite; a
+  missing migration surfaces as a cryptic D1_ERROR, not a clear failure.
+- 2026-08-20: the D1 batch API is the only transaction primitive — build
+  multi-statement writes as CompiledQuery lists for `runAtomic`.
+- 2026-08-22: svelte-check flags unused `$derived` — delete, don't
+  underscore-prefix.
 
-## Issue: Tines/1 — Ship context attachments
+## Context: issue Tines/12
 
-Implement the context spec end to end.
+Constraints from product: the export must stream — never buffer the full
+result set in the worker. Column set is exactly the list view's columns;
+no custom column picker in v1.
+
+## Issue: Tines/12 — Add CSV export to the issues list
+
+Add a CSV export to the issues list: a download button in the web UI and
+`--csv` on `tines issues list`, both backed by one endpoint that honors
+the existing list filters.
 
 ### Current state
 
@@ -307,33 +330,45 @@ Implementing (active), in workflow "Feature".
 
 ### Comments
 
-No comments yet.
+**Tom** (2026-08-23T18:04:11.000Z):
+Scoped this down for v1 — see the constraints attached to this issue.
 
-Add a comment: `tines issues comment Tines/1 "<markdown>"`
+**Tom via supervisor-key** (2026-08-24T09:15:42.000Z):
+Endpoint skeleton is up and the filter flags pass through. Streaming is
+still TODO; the naive version buffers. Handing off.
+
+Add a comment: `tines issues comment Tines/12 "<markdown>"`
 
 ### Available transitions
 
-- **submit** → Review (awaiting_human): `tines issues move Tines/1 "submit"`
+- **submit** → Review (awaiting_human): `tines issues move Tines/12 "submit"`
 
 ### Journal
 
 Your journal for this project and stage is the "## Context: project Tines
 · state Implementing" section above (currently v7).
 
-- Append a lesson: `tines journal append Tines/1 "- <date>: <lesson>"`
-- Fix or prune entries: `tines journal show Tines/1 --json`, revise, then
-  `tines journal rewrite Tines/1 --body @file --expect-version 7`
+- Append a lesson: `tines journal append Tines/12 "- <date>: <lesson>"`
+- Fix or prune entries: `tines journal show Tines/12 --json`, revise, then
+  `tines journal rewrite Tines/12 --body @file --expect-version 7`
+
+Attached to this issue: skill "csv-tools" (2 files), repo "tines-src"
+(branch csv-export). Fetch them: `tines issues context Tines/12 --out <dir>`
 
 Also in effect: prompt "agent-guidelines" (global), prompt
 "house-conventions" (project Tines). These are shared — to change one,
 file an issue titled `Context change: <scope label>`.
 ```
 
-The guidance explains *when*; the Journal section supplies the *how* for
-the one write the agent should make routinely — and nothing in the prompt
-hands it a handle for anything broader. An agent holding only this text
-can journal, correct the journal, attach artifacts, and file a
-`Context change:` proposal.
+Reading top to bottom: layers in rank order (global 0 → project 1 →
+project ∧ state 3 → issue 4), each a refinement of the last, the task
+nearest the end. The issue-scoped prompt shows that tier's job under the
+etiquette — a durable, human-attached constraint, while the handoff
+chatter stays in comments. The guidance explains *when*; the Journal
+section supplies the *how* for the one write the agent should make
+routinely — and nothing in the prompt hands it a handle for anything
+broader. An agent holding only this text can journal, correct the
+journal, attach artifacts, and file a `Context change:` proposal.
 
 ## Data model changes
 
