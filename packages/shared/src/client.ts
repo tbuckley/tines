@@ -1,4 +1,5 @@
 import type {
+	AddIssueLinkRequest,
 	ApiErrorBody,
 	ApiKey,
 	ApiKeyCreated,
@@ -21,6 +22,7 @@ import type {
 	Issue,
 	IssueDetail,
 	IssueFilters,
+	IssueLink,
 	ListResponse,
 	PageParams,
 	Project,
@@ -137,7 +139,12 @@ export function createApiClient(options: ApiClientOptions) {
 			get<ListResponse<Issue>>(`/api/v1/issues${query(filters)}`),
 		listProjectIssues: (
 			projectId: string,
-			filters: { state?: string; category?: StateCategory; hide_done?: boolean } & PageParams = {}
+			filters: {
+				state?: string;
+				category?: StateCategory;
+				hide_done?: boolean;
+				ready?: boolean;
+			} & PageParams = {}
 		) => get<ListResponse<Issue>>(`/api/v1/projects/${projectId}/issues${query(filters)}`),
 		createIssue: (projectId: string, body: CreateIssueRequest) =>
 			request<CreateIssueResponse>('POST', `/api/v1/projects/${projectId}/issues`, body),
@@ -148,6 +155,12 @@ export function createApiClient(options: ApiClientOptions) {
 			request<IssueDetail>('PATCH', `/api/v1/issues/${id}`, body),
 		transitionIssue: (id: string, body: TransitionIssueRequest) =>
 			request<IssueDetail>('POST', `/api/v1/issues/${id}/transition`, body),
+
+		// Issue links (dependencies & duplicates)
+		addIssueLink: (issueId: string, body: AddIssueLinkRequest) =>
+			request<IssueLink>('POST', `/api/v1/issues/${issueId}/links`, body),
+		removeIssueLink: (issueId: string, linkId: string) =>
+			request<void>('DELETE', `/api/v1/issues/${issueId}/links/${linkId}`),
 
 		// Comments
 		listComments: (issueId: string, page: PageParams = {}) =>

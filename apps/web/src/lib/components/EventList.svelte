@@ -1,7 +1,9 @@
 <script lang="ts">
 	import type { TinesEvent } from '@tines/shared';
 	import IconArrowRight from '@tabler/icons-svelte/icons/arrow-right';
+	import IconBan from '@tabler/icons-svelte/icons/ban';
 	import IconCirclePlus from '@tabler/icons-svelte/icons/circle-plus';
+	import IconCopy from '@tabler/icons-svelte/icons/copy';
 	import IconFolder from '@tabler/icons-svelte/icons/folder';
 	import IconKey from '@tabler/icons-svelte/icons/key';
 	import IconMessage from '@tabler/icons-svelte/icons/message';
@@ -22,7 +24,10 @@
 
 	const dur = () => (prefersReducedMotion() ? 0 : 200);
 
-	function icon(type: string) {
+	function icon(ev: TinesEvent) {
+		const type = ev.type;
+		// The two link concepts keep their own icons everywhere they appear.
+		if (isLinkEvent(ev)) return ev.payload.kind === 'duplicate_of' ? IconCopy : IconBan;
 		if (type === 'issue.transitioned') return IconArrowRight;
 		if (type === 'issue.commented') return IconMessage;
 		if (type === 'scheduled_task.skipped') return IconPlayerSkipForward;
@@ -97,6 +102,27 @@
 		return actorLabel(ev.actor);
 	}
 
+	function isLinkEvent(ev: TinesEvent): boolean {
+		return ev.type === 'issue.link_added' || ev.type === 'issue.link_removed';
+	}
+
+	/**
+	 * Link events read as sentences from the owning issue's perspective:
+	 * "marked this as blocking demo/14". The only shape that puts the other
+	 * issue first is "marked web/9 as a duplicate of this" (role `target`).
+	 */
+	function linkPhrasing(ev: TinesEvent): { lead: string; middle: string; otherFirst: boolean } {
+		const lead = ev.type === 'issue.link_added' ? 'marked' : 'unmarked';
+		if (ev.payload.kind === 'duplicate_of') {
+			return { lead, middle: 'as a duplicate of', otherFirst: ev.payload.role === 'target' };
+		}
+		return {
+			lead,
+			middle: ev.payload.role === 'target' ? 'as blocked by' : 'as blocking',
+			otherFirst: false
+		};
+	}
+
 	/** Display object of the event: an issue link, or a payload name. */
 	function objectName(ev: TinesEvent): string | null {
 		if (ev.issue_ref) return null; // rendered as a link instead
@@ -105,6 +131,30 @@
 	}
 </script>
 
+<!-- The issue the event row belongs to: a link on the global feed, "this
+     issue" on an issue's own feed. -->
+{#snippet selfRef(ev: TinesEvent)}
+	{#if ev.issue_ref && showIssueLinks}
+		<a
+			href="/issues/{encodeURIComponent(ev.issue_ref.project_name)}/{ev.issue_ref.number}"
+			class="font-medium hover:underline"
+		>
+			{ev.issue_ref.project_name}/#{ev.issue_ref.number}
+		</a>
+	{:else}
+		<span class="font-medium">this issue</span>
+	{/if}
+{/snippet}
+
+{#snippet otherRef(ev: TinesEvent)}
+	<a
+		href="/issues/{encodeURIComponent(String(ev.payload.other_project_name))}/{ev.payload.other_number}"
+		class="font-medium hover:underline"
+	>
+		{ev.payload.other_project_name}/#{ev.payload.other_number}
+	</a>
+{/snippet}
+
 {#if events.length === 0}
 	<div class="text-muted-foreground rounded-lg border border-dashed p-10 text-center text-sm">
 		{emptyMessage}
@@ -112,7 +162,7 @@
 {:else}
 	<ul class="space-y-1">
 		{#each events as ev (ev.id)}
-			{@const Icon = icon(ev.type)}
+			{@const Icon = icon(ev)}
 			<li
 				class="flex items-start gap-3 rounded-md px-2 py-2.5 text-sm"
 				in:slide={{ duration: dur() }}
@@ -124,48 +174,65 @@
 				<div class="min-w-0 flex-1">
 					<p class="leading-snug">
 						<span class="font-medium">{displayActor(ev)}</span>
-						<span class="text-muted-foreground"> {verb(ev)} </span>
-						{#if ev.issue_ref}
-							{#if showIssueLinks}
-								<a
-									href="/issues/{encodeURIComponent(ev.issue_ref.project_name)}/{ev.issue_ref.number}"
-									class="font-medium hover:underline"
-								>
-									{ev.issue_ref.project_name}/#{ev.issue_ref.number}
-								</a>
+						{#if isLinkEvent(ev)}
+							{@const phrasing = linkPhrasing(ev)}
+							<span class="text-muted-foreground"> {phrasing.lead} </span>
+							{#if phrasing.otherFirst}
+								{@render otherRef(ev)}
+								<span class="text-muted-foreground"> {phrasing.middle} </span>
+								{@render selfRef(ev)}
 							{:else}
-								<span class="font-medium">this issue</span>
+								{@render selfRef(ev)}
+								<span class="text-muted-foreground"> {phrasing.middle} </span>
+								{@render otherRef(ev)}
+								{#if ev.payload.other_title}
+									<span class="text-muted-foreground">— {ev.payload.other_title}</span>
+								{/if}
 							{/if}
-							{#if ev.type === 'issue.created'}
-								<span class="text-muted-foreground">— {ev.payload.title}</span>
+						{:else}
+							<span class="text-muted-foreground"> {verb(ev)} </span>
+							{#if ev.issue_ref}
+								{#if showIssueLinks}
+									<a
+										href="/issues/{encodeURIComponent(ev.issue_ref.project_name)}/{ev.issue_ref.number}"
+										class="font-medium hover:underline"
+									>
+										{ev.issue_ref.project_name}/#{ev.issue_ref.number}
+									</a>
+								{:else}
+									<span class="font-medium">this issue</span>
+								{/if}
+								{#if ev.type === 'issue.created'}
+									<span class="text-muted-foreground">— {ev.payload.title}</span>
+								{/if}
+								{#if ev.type === 'issue.updated' && ev.payload.workflow_to_name}
+									<span class="text-muted-foreground">
+										from “{ev.payload.workflow_from_name}” to “{ev.payload.workflow_to_name}”
+									</span>
+								{/if}
+							{:else if objectName(ev)}
+								<span class="font-medium">“{objectName(ev)}”</span>
 							{/if}
-							{#if ev.type === 'issue.updated' && ev.payload.workflow_to_name}
-								<span class="text-muted-foreground">
-									from “{ev.payload.workflow_from_name}” to “{ev.payload.workflow_to_name}”
+							{#if ev.type === 'issue.transitioned'}
+								{#if ev.payload.action}
+									<span class="text-muted-foreground">via</span>
+									<span class="font-medium">“{ev.payload.action}”</span>
+								{:else if ev.payload.forced}
+									<span class="text-muted-foreground">directly</span>
+								{/if}
+								<span class="ml-1 inline-flex items-center gap-1.5 align-middle">
+									<StateBadge
+										state={{ name: String(ev.payload.from_state_name ?? '?'), category: 'backlog' }}
+										showDot={false}
+										class="opacity-70"
+									/>
+									<IconArrowRight size={12} class="text-muted-foreground inline" />
+									<StateBadge
+										state={{ name: String(ev.payload.to_state_name ?? '?'), category: 'active' }}
+										showDot={false}
+									/>
 								</span>
 							{/if}
-						{:else if objectName(ev)}
-							<span class="font-medium">“{objectName(ev)}”</span>
-						{/if}
-						{#if ev.type === 'issue.transitioned'}
-							{#if ev.payload.action}
-								<span class="text-muted-foreground">via</span>
-								<span class="font-medium">“{ev.payload.action}”</span>
-							{:else if ev.payload.forced}
-								<span class="text-muted-foreground">directly</span>
-							{/if}
-							<span class="ml-1 inline-flex items-center gap-1.5 align-middle">
-								<StateBadge
-									state={{ name: String(ev.payload.from_state_name ?? '?'), category: 'backlog' }}
-									showDot={false}
-									class="opacity-70"
-								/>
-								<IconArrowRight size={12} class="text-muted-foreground inline" />
-								<StateBadge
-									state={{ name: String(ev.payload.to_state_name ?? '?'), category: 'active' }}
-									showDot={false}
-								/>
-							</span>
 						{/if}
 					</p>
 				</div>

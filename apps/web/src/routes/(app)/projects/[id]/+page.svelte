@@ -140,10 +140,10 @@
 		}
 	}
 
-	function setShowDone(on: boolean) {
+	function setFilter(key: string, on: boolean) {
 		const params = new URLSearchParams(page.url.searchParams);
-		if (on) params.set('done', '1');
-		else params.delete('done');
+		if (on) params.set(key, '1');
+		else params.delete(key);
 		goto(`/projects/${data.project.id}?${params}`, { keepFocus: true, noScroll: true });
 	}
 </script>
@@ -230,13 +230,38 @@
 
 <div class="mb-3 flex items-center justify-between">
 	<h2 class="text-sm font-semibold">Issues</h2>
-	<label class="text-muted-foreground flex items-center gap-2 text-sm">
-		<input type="checkbox" checked={data.showDone} onchange={(e) => setShowDone(e.currentTarget.checked)} />
-		Show done
-	</label>
+	<div class="flex items-center gap-4">
+		<!-- Ready implies not-done, so "Show done" parks while it is on. -->
+		<label
+			class="text-muted-foreground flex items-center gap-2 text-sm {data.ready ? 'opacity-50' : ''}"
+			title={data.ready ? 'Ready issues are never done' : undefined}
+		>
+			<input
+				type="checkbox"
+				checked={data.showDone && !data.ready}
+				disabled={data.ready}
+				onchange={(e) => setFilter('done', e.currentTarget.checked)}
+			/>
+			Show done
+		</label>
+		<label class="text-muted-foreground flex items-center gap-2 text-sm">
+			<input
+				type="checkbox"
+				checked={data.ready}
+				onchange={(e) => setFilter('ready', e.currentTarget.checked)}
+			/>
+			Ready only
+		</label>
+	</div>
 </div>
 
-<IssueList issues={data.issues} showProject={false} emptyMessage="No issues in this project yet." />
+<IssueList
+	issues={data.issues}
+	showProject={false}
+	emptyMessage={data.ready
+		? 'No ready issues in this project.'
+		: 'No issues in this project yet.'}
+/>
 
 <!-- new issue -->
 <NewIssueModal

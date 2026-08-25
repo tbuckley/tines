@@ -161,6 +161,13 @@ export interface DeleteAnchorResponse {
 // ---------------------------------------------------------------------------
 // Issues
 
+/** A denormalized reference to an issue, for display without another fetch. */
+export interface IssueRef {
+	project_name: string;
+	number: number;
+	title: string;
+}
+
 export interface Issue {
 	id: string;
 	project_id: string;
@@ -169,7 +176,17 @@ export interface Issue {
 	title: string;
 	description: string;
 	workflow_id: string;
+	/** The issue's own state (dormant while the issue is a duplicate). */
 	state: WorkflowState;
+	/**
+	 * The state everything displays and filters on: the issue's own state,
+	 * unless it is a duplicate — then the duplicate chain terminus's state.
+	 */
+	effective_state: WorkflowState;
+	/** The direct canonical issue when this one is marked a duplicate. */
+	duplicate_of: IssueRef | null;
+	/** Blockers whose effective state is not yet done. Empty = unblocked. */
+	open_blockers: IssueRef[];
 	/** Set when the issue was created by a scheduled task (null once the schedule is deleted). */
 	scheduled_task_id: string | null;
 	scheduled_task_name: string | null;
@@ -177,6 +194,51 @@ export interface Issue {
 	updated_at: number;
 	/** Timestamp of the most recent event touching this issue. */
 	last_activity_at: number;
+}
+
+// ---------------------------------------------------------------------------
+// Issue links (dependencies & duplicates)
+
+export type IssueLinkKind = 'blocks' | 'duplicate_of';
+
+/** A directed link between two issues. `blocks`: source blocks target; `duplicate_of`: source duplicates target. */
+export interface IssueLink {
+	id: string;
+	kind: IssueLinkKind;
+	source_issue_id: string;
+	target_issue_id: string;
+	created_at: number;
+}
+
+/** One end of a link, pre-joined for display. */
+export interface LinkedIssue {
+	link_id: string;
+	issue_id: string;
+	project_name: string;
+	number: number;
+	title: string;
+	effective_state: WorkflowState;
+}
+
+export interface IssueLinks {
+	/** Issues blocking this one. */
+	blocked_by: LinkedIssue[];
+	/** Issues this one blocks. */
+	blocks: LinkedIssue[];
+	/** The direct canonical issue (not the chain terminus) when this is a duplicate. */
+	duplicate_of: LinkedIssue | null;
+	/** Issues marked as duplicates of this one. */
+	duplicated_by: LinkedIssue[];
+}
+
+/**
+ * `blocks`: this issue blocks `issue_id`. `blocked_by`: `issue_id` blocks
+ * this issue (sugar — stored as a `blocks` edge in the other direction).
+ * `duplicate_of`: this issue is a duplicate of `issue_id`.
+ */
+export interface AddIssueLinkRequest {
+	kind: IssueLinkKind | 'blocked_by';
+	issue_id: string;
 }
 
 /** A legal move out of an issue's current state. */
@@ -192,6 +254,7 @@ export interface IssueDetail extends Issue {
 	comments: Comment[];
 	/** The named transitions legally available from the current state. */
 	allowed_transitions: AllowedTransition[];
+	links: IssueLinks;
 	/** Per-kind counts of the currently effective context, post-dedupe. */
 	context_summary: ContextSummary;
 }
@@ -316,6 +379,8 @@ export interface IssueFilters {
 	schedule?: string;
 	/** Exclude issues whose state is categorized `done`. */
 	hide_done?: boolean;
+	/** Only issues that are not done, not duplicates, and have all blockers effectively done. */
+	ready?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -590,6 +655,8 @@ export type EventType =
 	| 'issue.updated'
 	| 'issue.transitioned'
 	| 'issue.commented'
+	| 'issue.link_added'
+	| 'issue.link_removed'
 	| 'project.created'
 	| 'project.updated'
 	| 'project.deleted'

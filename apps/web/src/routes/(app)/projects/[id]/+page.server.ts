@@ -16,9 +16,16 @@ export const load: PageServerLoad = async ({ locals, platform, params, url }) =>
 		error(e instanceof ApiFail ? e.status : 500, 'Not found');
 	});
 	const showDone = url.searchParams.get('done') === '1';
+	// Ready already implies not-done; the "show done" param just parks while it is on.
+	const ready = url.searchParams.get('ready') === '1';
 	const [{ items: issues }, workflows, { items: schedules }, { items: contextItems }] =
 		await Promise.all([
-			listIssues(db, userId, { projectId: project.id, hideDone: !showDone }, { cursor: null, limit: 100 }),
+			listIssues(
+				db,
+				userId,
+				{ projectId: project.id, hideDone: !showDone, ready },
+				{ cursor: null, limit: 100 }
+			),
 			loadWorkflows(db, userId),
 			listSchedules(db, userId, { projectId: project.id }, { cursor: null, limit: 100 }),
 			listContextItems(db, userId, { project: project.id }, { cursor: null, limit: 100 })
@@ -31,6 +38,7 @@ export const load: PageServerLoad = async ({ locals, platform, params, url }) =>
 		// Issue-anchored items appear only on their issue's page (and the
 		// Context tab) — they are that issue's business.
 		contextItems: contextItems.filter((i) => i.scope.issue_id === null),
-		showDone
+		showDone,
+		ready
 	};
 };

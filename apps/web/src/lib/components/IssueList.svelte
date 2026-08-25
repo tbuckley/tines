@@ -1,5 +1,7 @@
 <script lang="ts">
-	import type { Issue } from '@tines/shared';
+	import type { Issue, IssueRef } from '@tines/shared';
+	import IconBan from '@tabler/icons-svelte/icons/ban';
+	import IconCopy from '@tabler/icons-svelte/icons/copy';
 	import IconRepeat from '@tabler/icons-svelte/icons/repeat';
 	import { flip } from 'svelte/animate';
 	import { fade } from 'svelte/transition';
@@ -14,6 +16,12 @@
 	}: { issues: Issue[]; showProject?: boolean; emptyMessage?: string } = $props();
 
 	const dur = () => (prefersReducedMotion() ? 0 : 220);
+
+	const refLabel = (ref: IssueRef) => `${ref.project_name}/${ref.number} — ${ref.title}`;
+
+	/** "Blocked by demo/3 — Fix schema review; web/5 — Login broken". */
+	const blockedTooltip = (blockers: IssueRef[]) =>
+		`Blocked by ${blockers.map(refLabel).join('; ')}`;
 </script>
 
 {#if issues.length === 0}
@@ -26,7 +34,9 @@
 			<li animate:flip={{ duration: dur() }} in:fade={{ duration: dur() }}>
 				<a
 					href="/issues/{encodeURIComponent(issue.project_name)}/{issue.number}"
-					class="hover:bg-accent/50 flex items-center gap-3 px-4 py-3 transition-colors"
+					class="hover:bg-accent/50 flex items-center gap-3 px-4 py-3 transition-[opacity,background-color] duration-200 {issue.duplicate_of
+						? 'opacity-60'
+						: ''}"
 				>
 					<span class="text-muted-foreground w-12 shrink-0 font-mono text-xs">#{issue.number}</span>
 					<span class="min-w-0 flex-1 text-sm font-medium">
@@ -57,6 +67,28 @@
 								<IconRepeat size={14} stroke={1.75} />
 							</button>
 						{/if}
+						<!-- Link markers are informational (title tooltip), never nested
+						     links: the row itself already navigates. -->
+						{#if issue.open_blockers.length > 0}
+							<span
+								class="ml-1.5 inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 align-middle text-[0.6875rem] leading-none font-medium text-amber-700 dark:text-amber-400"
+								title={blockedTooltip(issue.open_blockers)}
+								transition:fade={{ duration: dur() }}
+							>
+								<IconBan size={12} stroke={1.75} />
+								{issue.open_blockers.length}
+							</span>
+						{/if}
+						{#if issue.duplicate_of}
+							<span
+								class="bg-muted text-muted-foreground ml-1.5 inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 align-middle text-[0.6875rem] leading-none font-medium"
+								title="Duplicate of {refLabel(issue.duplicate_of)}"
+								transition:fade={{ duration: dur() }}
+							>
+								<IconCopy size={12} stroke={1.75} />
+								dup
+							</span>
+						{/if}
 					</span>
 					{#if showProject}
 						<span class="text-muted-foreground hidden shrink-0 text-xs sm:inline">{issue.project_name}</span>
@@ -66,7 +98,9 @@
 						style:view-transition-name="issue-state-{issue.id}"
 						style:view-transition-class="vt-fit"
 					>
-						<StateBadge state={issue.state} />
+						<!-- Effective state: a duplicate displays its canonical issue's
+						     state, so lists and the detail header always agree. -->
+						<StateBadge state={issue.effective_state} />
 					</span>
 					<span class="text-muted-foreground hidden w-20 shrink-0 text-right text-xs md:inline" title={new Date(issue.last_activity_at).toLocaleString()}>
 						{relativeTime(issue.last_activity_at)}

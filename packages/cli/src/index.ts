@@ -19,6 +19,8 @@ import {
 	type CreateScheduleInput,
 	type CreateWorkflowRequest,
 	type IssueDetail,
+	type IssueLinks,
+	type LinkedIssue,
 	type ListResponse,
 	type Project,
 	type Schedule,
@@ -488,12 +490,54 @@ function recurrenceLabel(schedule: Schedule): string {
 // ---------------------------------------------------------------------------
 // Output helpers
 
+function issueRef(ref: { project_name: string; number: number }): string {
+	return `${ref.project_name}/${ref.number}`;
+}
+
+/** One table row per linked issue: ref, title, effective state, optional note. */
+function linkRows(entries: LinkedIssue[], note: (e: LinkedIssue) => string = () => ''): string[][] {
+	return entries.map((e) => [
+		`  ${issueRef(e)}`,
+		e.title,
+		`${e.effective_state.name} (${e.effective_state.category})`,
+		note(e)
+	]);
+}
+
+/** The link sections of `issues show`; empty groups are omitted entirely. */
+function printIssueLinks(links: IssueLinks): void {
+	if (links.blocked_by.length > 0) {
+		console.log('\nblocked by:');
+		// Open blockers are exactly why the issue isn't ready, so call them out.
+		table(linkRows(links.blocked_by, (e) => (e.effective_state.category === 'done' ? '' : '(open)')));
+	}
+	if (links.blocks.length > 0) {
+		console.log('\nblocks:');
+		table(linkRows(links.blocks));
+	}
+	if (links.duplicate_of) {
+		console.log('\nduplicate of:');
+		table(linkRows([links.duplicate_of], () => '(the state shown above follows it)'));
+	}
+	if (links.duplicated_by.length > 0) {
+		console.log('\nduplicates:');
+		table(linkRows(links.duplicated_by));
+	}
+}
+
 function printIssueDetail(issue: IssueDetail): void {
 	console.log(`${issue.project_name}/#${issue.number}  ${issue.title}`);
+	// The state line carries the effective state; on a duplicate that is the
+	// canonical issue's, and the issue's own (dormant) state moves below it.
+	const dup = issue.duplicate_of;
 	console.log(
-		`state: ${issue.state.name} (${issue.state.category})  workflow: ${issue.workflow.name}  updated: ${timestamp(issue.updated_at)}`
+		`state: ${issue.effective_state.name} (${issue.effective_state.category})${dup ? ` (via ${issueRef(dup)} — duplicate)` : ''}  workflow: ${issue.workflow.name}  updated: ${timestamp(issue.updated_at)}`
 	);
+	if (dup) {
+		console.log(`own state: ${issue.state.name} (${issue.state.category}) — dormant while this is a duplicate`);
+	}
 	console.log(`id: ${issue.id}`);
+	printIssueLinks(issue.links);
 	if (issue.description) {
 		console.log(`\n${issue.description}`);
 	}
@@ -820,6 +864,7 @@ withList(
 		.option('-c, --category <cat>', 'filter by state category')
 		.option('-w, --workflow <id-or-name>', 'filter by workflow')
 		.option('-a, --all', 'include issues in done states')
+		.option('--ready', 'only issues that are actionable now (not done, not a duplicate, no open blockers)')
 ).action(
 	async (
 		opts: ListOpts & {
@@ -828,6 +873,7 @@ withList(
 			category?: StateCategory;
 			workflow?: string;
 			all?: boolean;
+			ready?: boolean;
 		}
 	) => {
 		const res = await client(opts).listIssues({
@@ -836,19 +882,25 @@ withList(
 			category: opts.category,
 			workflow: opts.workflow,
 			hide_done: !opts.all,
+			ready: opts.ready,
 			limit: opts.limit,
 			cursor: opts.cursor
 		});
 		printList(res, opts, (items) => {
-			if (items.length === 0) return console.log('no issues');
+			if (items.length === 0) return console.log(opts.ready ? 'no ready issues' : 'no issues');
 			table([
-				['REF', 'TITLE', 'STATE', 'CATEGORY', 'LAST ACTIVITY'],
+				['REF', 'TITLE', 'STATE', 'CATEGORY', 'LAST ACTIVITY', ''],
 				...items.map((i) => [
 					`${i.project_name}/${i.number}`,
 					i.title,
-					i.state.name,
-					i.state.category,
-					timestamp(i.last_activity_at)
+					// Duplicates display their canonical issue's state, so lists
+					// (and the filters above) go by the effective state.
+					i.effective_state.name,
+					i.effective_state.category,
+					timestamp(i.last_activity_at),
+					[i.open_blockers.length > 0 ? 'blocked' : '', i.duplicate_of ? 'dup' : '']
+						.filter(Boolean)
+						.join(' ')
 				])
 			]);
 		});
@@ -994,6 +1046,61 @@ withCommon(
 	console.log(`commented on ${issue.project_name}/#${issue.number} as ${actorLabel(comment.actor)}`);
 });
 
+// Links read as sentences: `block A B` means "A blocks B", `duplicate A B`
+// means "A is a duplicate of B". Link ids never surface — the un- commands
+// look the removal up on the issue's own detail.
+
+withCommon(
+	issues
+		.command('block <blocker> <blocked>')
+		.description('Record that <blocker> blocks <blocked> (advisory: transitions stay allowed)')
+).action(async (blockerRef: string, blockedRef: string, opts: CommonOpts) => {
+	const api = client(opts);
+	const blocker = await resolveIssue(api, blockerRef);
+	const blocked = await resolveIssue(api, blockedRef);
+	const link = await api.addIssueLink(blocked.id, { kind: 'blocked_by', issue_id: blocker.id });
+	if (opts.json) return printJson(link);
+	console.log(
+		`${blocker.project_name}/#${blocker.number} now blocks ${blocked.project_name}/#${blocked.number} "${blocked.title}"`
+	);
+});
+
+withCommon(
+	issues.command('unblock <blocker> <blocked>').description('Remove the link making <blocker> block <blocked>')
+).action(async (blockerRef: string, blockedRef: string, opts: CommonOpts) => {
+	const api = client(opts);
+	const blocker = await resolveIssue(api, blockerRef);
+	const blocked = await resolveIssue(api, blockedRef);
+	const link = blocked.links.blocked_by.find((l) => l.issue_id === blocker.id);
+	if (!link) {
+		die(
+			`${blocked.project_name}/#${blocked.number} is not blocked by ${blocker.project_name}/#${blocker.number}` +
+				` (blocked by: ${blocked.links.blocked_by.map(issueRef).join(', ') || 'nothing'})`
+		);
+	}
+	await api.removeIssueLink(blocked.id, link.link_id);
+	if (opts.json) return printJson({ removed: link });
+	console.log(
+		`${blocker.project_name}/#${blocker.number} no longer blocks ${blocked.project_name}/#${blocked.number}`
+	);
+});
+
+withCommon(
+	issues
+		.command('duplicate <ref> <canonical>')
+		.alias('dupe')
+		.description('Mark <ref> as a duplicate of <canonical> (its state then follows <canonical>)')
+).action(async (ref: string, canonicalRef: string, opts: CommonOpts) => {
+	const api = client(opts);
+	const issue = await resolveIssue(api, ref);
+	const canonical = await resolveIssue(api, canonicalRef);
+	const link = await api.addIssueLink(issue.id, { kind: 'duplicate_of', issue_id: canonical.id });
+	if (opts.json) return printJson(link);
+	console.log(
+		`${issue.project_name}/#${issue.number} is now a duplicate of ${canonical.project_name}/#${canonical.number} "${canonical.title}" — showing its state (${canonical.effective_state.name})`
+	);
+});
+
 withCommon(
 	issues
 		.command('context <ref>')
@@ -1045,6 +1152,23 @@ withCommon(
 	writeFileSync(join(opts.out, 'repos.json'), `${JSON.stringify(context.repos, null, 2)}\n`);
 	console.log(
 		`wrote ${opts.out}/prompt.md, ${context.skills.length} skill${context.skills.length === 1 ? '' : 's'}, repos.json (${context.repos.length} repo${context.repos.length === 1 ? '' : 's'})`
+	);
+});
+
+withCommon(
+	issues
+		.command('unduplicate <ref>')
+		.alias('undupe')
+		.description('Unmark a duplicate (its own state was never changed, so it simply reappears)')
+).action(async (ref: string, opts: CommonOpts) => {
+	const api = client(opts);
+	const issue = await resolveIssue(api, ref);
+	const link = issue.links.duplicate_of;
+	if (!link) die(`${issue.project_name}/#${issue.number} is not marked as a duplicate`);
+	await api.removeIssueLink(issue.id, link.link_id);
+	if (opts.json) return printJson({ removed: link });
+	console.log(
+		`${issue.project_name}/#${issue.number} is no longer a duplicate of ${issueRef(link)} — state ${issue.state.name} (${issue.state.category})`
 	);
 });
 
