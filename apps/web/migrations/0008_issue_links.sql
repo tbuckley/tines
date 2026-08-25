@@ -6,8 +6,12 @@
 --   duplicate_of: source is a duplicate of target (target is canonical)
 -- Cycle prevention runs in the API across both kinds; the partial unique
 -- index enforces at most one canonical issue per duplicate.
+--
+-- IF NOT EXISTS throughout: this migration first shipped as
+-- 0005_issue_links.sql (identical content) and was applied to the shared
+-- preview database under that name before being renumbered.
 
-CREATE TABLE `issue_link` (
+CREATE TABLE IF NOT EXISTS `issue_link` (
 	`id` TEXT NOT NULL PRIMARY KEY,
 	`source_issue_id` TEXT NOT NULL REFERENCES `issue` (`id`) ON DELETE CASCADE,
 	`target_issue_id` TEXT NOT NULL REFERENCES `issue` (`id`) ON DELETE CASCADE,
@@ -16,7 +20,7 @@ CREATE TABLE `issue_link` (
 	CHECK (`source_issue_id` != `target_issue_id`),
 	UNIQUE (`source_issue_id`, `target_issue_id`, `kind`)
 );
-CREATE INDEX `issue_link_target_idx` ON `issue_link` (`target_issue_id`);
+CREATE INDEX IF NOT EXISTS `issue_link_target_idx` ON `issue_link` (`target_issue_id`);
 -- The UNIQUE triple above already indexes source-led lookups.
-CREATE UNIQUE INDEX `issue_link_one_duplicate_idx` ON `issue_link` (`source_issue_id`)
+CREATE UNIQUE INDEX IF NOT EXISTS `issue_link_one_duplicate_idx` ON `issue_link` (`source_issue_id`)
 	WHERE `kind` = 'duplicate_of';
