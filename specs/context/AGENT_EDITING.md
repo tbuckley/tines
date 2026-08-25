@@ -474,17 +474,18 @@ unchanged.
 - Conflict handling: the editor sends `expected_version` from the item it
   loaded and surfaces the 409 as "changed since you opened it — reload".
 
-## Open questions
+## Future improvements
 
-- **Session-only broad writes?** The actor model already distinguishes
-  browser sessions from API keys. An optional guardrail: API-key writes to
-  project-, state-, or global-scoped items are refused (403 pointing at
-  the proposal convention) unless the request passes an explicit
-  `allow_broad: true` (CLI `--broad`). Humans in the UI are unaffected;
-  scripted human workflows keep an escape hatch; agents hit a signposted
-  wall instead of a convention. Cost: friction for legitimate CLI
-  automation. Not yet decided — the prompt-affordance asymmetry may be
-  bias enough.
+- **Session-only broad writes** — decided: **deferred**. The actor model
+  already distinguishes browser sessions from API keys, so an optional
+  guardrail is cheap when wanted: API-key writes to project-, state-, or
+  global-scoped items refused (403 pointing at the proposal convention)
+  unless the request passes an explicit `allow_broad: true` (CLI
+  `--broad`). For now the bet is that the affordance asymmetry is bias
+  enough — the launch prompt never hands agents a handle to shared items,
+  only the proposal path. The `context.updated` event feed (with
+  actor-via-key attribution) is the tripwire: if agents are observed
+  editing shared tiers directly despite the guidance, add the guardrail.
 
 ## Acceptance criteria
 
