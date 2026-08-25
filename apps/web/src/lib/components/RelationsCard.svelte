@@ -237,9 +237,12 @@
 							<span class="shrink-0 font-mono text-xs">{item.project_name}/#{item.number}</span>
 							<span class="text-muted-foreground truncate text-xs">{item.title}</span>
 						</a>
+						<!-- Visible by default; the hover-reveal only applies where a
+						     hover actually exists (mouse/trackpad) — touch screens keep
+						     the control on screen. -->
 						<button
 							type="button"
-							class="text-muted-foreground hover:text-foreground shrink-0 rounded p-1 opacity-0 transition-opacity group-hover/row:opacity-100 focus-visible:opacity-100"
+							class="text-muted-foreground hover:text-foreground shrink-0 rounded p-1.5 transition-opacity focus-visible:opacity-100 pointer-fine:opacity-0 pointer-fine:group-hover/row:opacity-100"
 							title="Remove link"
 							aria-label="Remove link to {item.project_name}/#{item.number}"
 							onclick={() => removeLink(item)}
@@ -307,6 +310,7 @@
 					aria-label="Issue to link"
 					autocomplete="off"
 					onfocus={() => (listOpen = true)}
+					onblur={() => (listOpen = false)}
 					onkeydown={onKeydown}
 				/>
 				{#if listOpen && suggestions.length > 0}
@@ -323,6 +327,7 @@
 										: ''} {suggestion.effective_state.category === 'done' ? 'opacity-55' : ''}"
 									disabled={submitting}
 									onmouseenter={() => (highlight = i)}
+									onpointerdown={(e) => e.preventDefault()}
 									onclick={() => add(suggestion)}
 								>
 									<span
@@ -371,7 +376,8 @@
 					{/if}
 				</p>
 			{/if}
-			<p class="text-muted-foreground text-[0.6875rem]">
+			<!-- Keyboard hints mean nothing to a touch screen. -->
+			<p class="text-muted-foreground hidden text-[0.6875rem] pointer-fine:block">
 				↑↓ to choose, Enter to link, Esc to close.
 			</p>
 		</div>

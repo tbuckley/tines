@@ -275,7 +275,7 @@
 				</h1>
 			{/if}
 		</div>
-		<div class="flex shrink-0 items-center gap-2">
+		<div class="flex flex-wrap items-center justify-end gap-2">
 			{#if duplicateOf}
 				<span
 					class="bg-muted text-muted-foreground inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium"
