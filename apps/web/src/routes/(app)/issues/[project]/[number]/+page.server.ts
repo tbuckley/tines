@@ -39,7 +39,9 @@ export const load: PageServerLoad = async ({ locals, platform, params }) => {
 		listProjects(db, userId),
 		// Items whose scope includes this issue (all issue-anchored shapes).
 		listContextItems(db, userId, { issue: issue.id }, { cursor: null, limit: 100 }),
-		effectiveContextForIssue(db, userId, issue.id)
+		// Display-only bundle: the panel shows skill file counts, never their
+		// contents, which can run to 100KB per skill on every page load.
+		effectiveContextForIssue(db, userId, issue.id, { skillFiles: false })
 	]);
 
 	return {

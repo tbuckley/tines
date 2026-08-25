@@ -49,23 +49,37 @@ export function api<E extends RequestEvent>(
 	};
 }
 
+/** Valid JSON that isn't an object ("null", "[]", "42") would otherwise
+ * pass the parse and crash on the first field access — a 500 for what is
+ * malformed client input. Every endpoint takes an object payload. */
+function requireJsonObject(value: unknown): Record<string, unknown> {
+	if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+		throw new ApiFail(400, 'invalid_json', 'Request body must be a JSON object');
+	}
+	return value as Record<string, unknown>;
+}
+
 export async function readJson<T>(event: RequestEvent): Promise<T> {
+	let parsed: unknown;
 	try {
-		return (await event.request.json()) as T;
+		parsed = await event.request.json();
 	} catch {
 		throw new ApiFail(400, 'invalid_json', 'Request body must be valid JSON');
 	}
+	return requireJsonObject(parsed) as T;
 }
 
 /** Like readJson, but an absent/empty body is fine (e.g. DELETE options). */
 export async function readOptionalJson<T extends object>(event: RequestEvent): Promise<Partial<T>> {
 	const text = await event.request.text();
 	if (text.trim() === '') return {};
+	let parsed: unknown;
 	try {
-		return JSON.parse(text) as Partial<T>;
+		parsed = JSON.parse(text);
 	} catch {
 		throw new ApiFail(400, 'invalid_json', 'Request body must be valid JSON');
 	}
+	return requireJsonObject(parsed) as Partial<T>;
 }
 
 export function requireString(value: unknown, field: string, { max = 10_000 } = {}): string {

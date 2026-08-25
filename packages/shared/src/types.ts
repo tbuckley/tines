@@ -487,7 +487,9 @@ export interface EffectiveSkill {
 	item_id: string;
 	name: string;
 	scope: ContextScope;
+	/** Empty when the bundle was assembled without file contents. */
 	files: ContextFile[];
+	file_count: number;
 	version: number;
 }
 
@@ -552,13 +554,17 @@ export interface DeletedContextItem {
 
 /**
  * Default checkout directory for a repo context item: the URL's basename
- * with any trailing `.git` stripped. Handles scp-style remotes too.
+ * with any trailing `.git` stripped. Handles scp-style remotes too. The
+ * result must satisfy the workspace path rules an explicit repo_dir is held
+ * to (no "."/".." segments, no "\" or "="), so a URL that derives an unsafe
+ * basename falls back to "repo" instead of escaping the workspace.
  */
 export function repoDirFromUrl(url: string): string {
 	const stripped = url.replace(/[?#].*$/, '').replace(/\/+$/, '');
 	const lastSlash = Math.max(stripped.lastIndexOf('/'), stripped.lastIndexOf(':'));
 	const base = stripped.slice(lastSlash + 1).replace(/\.git$/, '');
-	return base || 'repo';
+	if (!base || base === '.' || base === '..' || base.includes('\\') || base.includes('=')) return 'repo';
+	return base;
 }
 
 // ---------------------------------------------------------------------------

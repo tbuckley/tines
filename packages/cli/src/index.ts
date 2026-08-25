@@ -1235,6 +1235,10 @@ withCommon(
 			// full list. --file replaces an existing path or adds a new one.
 			const current = await api.getContextItem(id);
 			if (current.kind !== 'skill') die(`--file/--remove-file only apply to skills (this is a ${current.kind})`);
+			// The full-list PATCH is built from the files just read, so pin the
+			// write to that read: a concurrent file edit becomes a 409 instead
+			// of being silently replaced by this stale list.
+			if (body.expected_version === undefined) body.expected_version = current.version;
 			const files = new Map((current.files ?? []).map((f) => [f.path, f.content]));
 			for (const path of opts.removeFile) {
 				if (!files.delete(path)) {

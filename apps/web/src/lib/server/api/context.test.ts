@@ -114,6 +114,16 @@ describe('repoDirFromUrl', () => {
 		expect(repoDirFromUrl('https://github.com/acme/web/')).toBe('web');
 		expect(repoDirFromUrl('git@github.com:acme/tools.git')).toBe('tools');
 	});
+
+	it('falls back to "repo" when the basename would break the workspace path rules', () => {
+		// An explicit repo_dir goes through validateWorkspacePath; the derived
+		// dir must be held to the same rules or it escapes the workspace.
+		expect(repoDirFromUrl('https://example.com/x/..')).toBe('repo');
+		expect(repoDirFromUrl('https://example.com/x/.')).toBe('repo');
+		expect(repoDirFromUrl('https://example.com/a\\b')).toBe('repo');
+		expect(repoDirFromUrl('https://example.com/a=b')).toBe('repo');
+		expect(repoDirFromUrl('')).toBe('repo');
+	});
 });
 
 const issue: IssueDetail = {
@@ -229,6 +239,7 @@ const richContext: EffectiveContext = {
 			name: 'review-checklist',
 			scope: { ...emptyScope, workflow_state_id: 's_review', workflow_state_name: 'Review', label: 'state Review' },
 			files: [{ path: 'SKILL.md', content: 'x' }],
+			file_count: 1,
 			version: 2
 		}
 	],

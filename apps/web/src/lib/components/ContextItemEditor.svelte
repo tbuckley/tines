@@ -66,6 +66,9 @@
 	}
 	let nextFileKey = 0;
 	let files = $state<FileRow[]>([]);
+	// False while an opened skill's files are still being fetched (or the
+	// fetch failed): saving then would PATCH an empty list and delete them.
+	let filesReady = $state(true);
 	let repoUrl = $state('');
 	let repoBranch = $state('');
 	let repoDir = $state('');
@@ -87,13 +90,25 @@
 			body = item?.body ?? '';
 			files = (item?.files ?? []).map((f) => ({ key: nextFileKey++, path: f.path, content: f.content }));
 			// List rows carry only a file count; fetch the files for editing.
+			// Until they arrive, saving is blocked — a PATCH built from the
+			// placeholder empty list would delete every file in the skill.
+			filesReady = true;
+			boundIssue = null;
+			boundIssueRequested = '';
 			if (item && item.kind === 'skill' && item.files === undefined) {
+				filesReady = false;
+				const itemId = item.id;
 				api
-					.getContextItem(item.id)
+					.getContextItem(itemId)
 					.then((full) => {
+						if (!open || item?.id !== itemId) return;
 						files = (full.files ?? []).map((f) => ({ key: nextFileKey++, path: f.path, content: f.content }));
+						filesReady = true;
 					})
-					.catch(() => {});
+					.catch(() => {
+						if (!open || item?.id !== itemId) return;
+						errorMessage = 'Couldn’t load this skill’s files — close the dialog and reopen to retry.';
+					});
 			}
 			repoUrl = item?.repo_url ?? '';
 			repoBranch = item?.repo_branch ?? '';
@@ -104,18 +119,49 @@
 
 	// --- scope coherence, enforced live -------------------------------------
 
-	// Issues for the issue selector, constrained to the chosen project.
+	// Issues for the issue selector, constrained to the chosen project. Only
+	// the latest request may land: switching projects fires overlapping
+	// fetches whose responses can resolve out of order.
 	let issues = $state<Issue[]>([]);
+	let issuesRequest = 0;
 	$effect(() => {
 		if (!open) return;
 		const project = projectId;
+		const token = ++issuesRequest;
 		api
 			.listIssues({ project: project || undefined, limit: 100 })
-			.then((res) => (issues = res.items))
-			.catch(() => (issues = []));
+			.then((res) => {
+				if (token === issuesRequest) issues = res.items;
+			})
+			.catch(() => {
+				if (token === issuesRequest) issues = [];
+			});
 	});
 
-	const selectedIssue = $derived(issues.find((i) => i.id === issueId));
+	// The list is capped at 100 issues, so an item's bound issue may not be in
+	// it — without this fetch the select would render blank, hiding the item's
+	// real scope from whoever is editing it.
+	let boundIssue = $state<Issue | null>(null);
+	let boundIssueRequested = '';
+	$effect(() => {
+		const id = issueId;
+		if (!id || issues.some((i) => i.id === id) || boundIssueRequested === id) return;
+		boundIssueRequested = id;
+		api
+			.getIssue(id)
+			.then((full) => {
+				if (issueId === id) boundIssue = full;
+			})
+			.catch(() => {});
+	});
+
+	const selectedIssue = $derived(
+		issues.find((i) => i.id === issueId) ?? (boundIssue?.id === issueId ? boundIssue : undefined)
+	);
+	/** The fetched list, with the bound issue prepended when it isn't in it. */
+	const issueOptions = $derived(
+		selectedIssue && !issues.some((i) => i.id === selectedIssue.id) ? [selectedIssue, ...issues] : issues
+	);
 
 	// Picking an issue constrains the state list to its bound workflow.
 	const stateWorkflows = $derived(
@@ -137,6 +183,9 @@
 	async function save(e: SubmitEvent) {
 		e.preventDefault();
 		if (saving) return;
+		// Backstop behind the disabled button: never send a file list that was
+		// never actually loaded.
+		if (kind === 'skill' && !filesReady) return;
 		saving = true;
 		errorMessage = null;
 		try {
@@ -359,7 +408,7 @@
 				<label class="text-muted-foreground text-xs font-medium" for="ctx-scope-issue">Only for issue</label>
 				<Select id="ctx-scope-issue" bind:value={issueId} class="h-8 text-xs">
 					<option value="">Any issue</option>
-					{#each issues as issue (issue.id)}
+					{#each issueOptions as issue (issue.id)}
 						<option value={issue.id}>{issue.project_name}/{issue.number} — {issue.title}</option>
 					{/each}
 				</Select>
@@ -383,8 +432,8 @@
 			{/if}
 			<div class="flex gap-2">
 				<Button type="button" variant="ghost" onclick={() => (open = false)}>Cancel</Button>
-				<Button type="submit" disabled={saving || !name.trim()}>
-					{saving ? 'Saving…' : item ? 'Save' : 'Create'}
+				<Button type="submit" disabled={saving || !name.trim() || (kind === 'skill' && !filesReady)}>
+					{saving ? 'Saving…' : kind === 'skill' && !filesReady ? 'Loading files…' : item ? 'Save' : 'Create'}
 				</Button>
 			</div>
 		</div>

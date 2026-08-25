@@ -46,7 +46,7 @@
 							<span class="text-muted-foreground"><ContextKindIcon kind="skill" size={14} /></span>
 							<span class="font-mono text-xs">skills/{skill.name}/</span>
 							<span class="text-muted-foreground text-xs">
-								{skill.files.length} file{skill.files.length === 1 ? '' : 's'}
+								{skill.file_count} file{skill.file_count === 1 ? '' : 's'}
 							</span>
 							<span class="bg-muted text-muted-foreground rounded-full px-2 py-0.5 text-xs">{skill.scope.label}</span>
 						</li>

@@ -26,6 +26,7 @@ import {
 	type RepoDirConflict,
 	type UpdateContextItemRequest
 } from '@tines/shared';
+import type { D1Result } from '@cloudflare/workers-types';
 import { sql, type CompiledQuery, type Kysely } from 'kysely';
 import { newId, type Database } from '$lib/server/db';
 import {
@@ -543,6 +544,33 @@ export async function listContextItemsForStates(
 // ---------------------------------------------------------------------------
 // Mutations
 
+/**
+ * Runs a context write batch, mapping a violation of the name-per-exact-scope
+ * unique index (migration 0007) to the same `duplicate_context_name` code the
+ * app-level check uses. The check-then-insert in assertNameAvailable is not
+ * atomic, so a concurrent create/rename can slip past it and land here — and
+ * callers (e.g. the CLI's journal create-race recovery) key off that code.
+ */
+async function runContextWrite(env: Env, queries: CompiledQuery[]): Promise<D1Result[]> {
+	try {
+		return await runAtomic(env, queries);
+	} catch (e) {
+		if (
+			e instanceof Error &&
+			e.message.includes('UNIQUE constraint failed') &&
+			e.message.includes('context_item_name_scope_uq')
+		) {
+			throw new ApiFail(
+				409,
+				'duplicate_context_name',
+				'A concurrent write created an item with this kind, name, and exact scope; re-read and retry',
+				{ field: 'name' }
+			);
+		}
+		throw e;
+	}
+}
+
 async function assertNameAvailable(
 	db: Kysely<Database>,
 	userId: string,
@@ -689,7 +717,7 @@ export async function createContextItem(
 			payload: { context_id: id, kind, name, scope: scopeEventPayload(scope) }
 		})
 	];
-	await runAtomic(env, queries);
+	await runContextWrite(env, queries);
 	return getContextItem(db, actor.userId, id);
 }
 
@@ -901,7 +929,7 @@ export async function updateContextItem(
 			newVersion
 		)
 	);
-	const results = await runAtomic(env, queries);
+	const results = await runContextWrite(env, queries);
 	if ((results[0]?.meta.changes ?? 0) === 0) {
 		const fresh = await contextItemQuery(db, actor.userId)
 			.where('context_item.id', '=', id)
@@ -1139,11 +1167,17 @@ async function issueMatchTarget(
 	return { projectId: issue.project_id, stateId: issue.state_id, issueId: issue.id };
 }
 
-/** The assembled bundle for an issue, computed on read. */
+/**
+ * The assembled bundle for an issue, computed on read. Pass
+ * `skillFiles: false` for a display-only bundle (skill file contents can be
+ * large; `file_count` is populated either way) — the launch-prompt and
+ * bundle-fetch paths need the contents, list/preview surfaces do not.
+ */
 export async function effectiveContextForIssue(
 	db: Kysely<Database>,
 	userId: string,
-	issueId: string
+	issueId: string,
+	{ skillFiles = true }: { skillFiles?: boolean } = {}
 ): Promise<EffectiveContext> {
 	const target = await issueMatchTarget(db, userId, issueId);
 	const rows = sortMatched(await matchingItemsQuery(db, userId, target).execute());
@@ -1164,12 +1198,15 @@ export async function effectiveContextForIssue(
 	const skillDedupe = dedupeByName(rows.filter((r) => r.kind === 'skill'));
 	const repoDedupe = dedupeByName(rows.filter((r) => r.kind === 'repo'));
 
-	const fileMap = await loadFiles(db, skillDedupe.winners.map((r) => r.id));
+	const fileMap = skillFiles
+		? await loadFiles(db, skillDedupe.winners.map((r) => r.id))
+		: new Map<string, ContextFile[]>();
 	const skills: EffectiveSkill[] = skillDedupe.winners.map((r) => ({
 		item_id: r.id,
 		name: r.name,
 		scope: toContextScope(rowScope(r)),
 		files: fileMap.get(r.id) ?? [],
+		file_count: Number(r.file_count ?? 0),
 		version: r.version
 	}));
 
@@ -1302,7 +1339,7 @@ export function issueBlock(issue: IssueDetail, context: EffectiveContext): strin
 	// the proposal convention.
 	const artifacts = [
 		...context.skills.map(
-			(s) => `skill "${s.name}" (${s.files.length} file${s.files.length === 1 ? '' : 's'})`
+			(s) => `skill "${s.name}" (${s.file_count} file${s.file_count === 1 ? '' : 's'})`
 		),
 		...context.repos.map((r) => `repo "${r.name}"${r.branch ? ` (branch ${r.branch})` : ''}`)
 	];
