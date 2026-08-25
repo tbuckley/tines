@@ -11,6 +11,7 @@
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { Select } from '$lib/components/ui/select/index.js';
 	import { categoryVar, prefersReducedMotion } from '$lib/format';
+	import { isTempLink, TEMP_LINK_PREFIX, type PendingAdd } from '$lib/link-overlay';
 
 	/** One hop of a rejected cycle; refs are absent only for a vanished issue. */
 	type PathStep = { issue_id: string; project_name?: string; number?: number; title?: string };
@@ -18,12 +19,17 @@
 
 	let {
 		issueId,
-		links = $bindable(),
+		links,
+		adds = $bindable(),
+		removals = $bindable(),
 		onerror
 	}: {
 		issueId: string;
-		/** Bindable: removals apply optimistically here before the server confirms. */
+		/** The merged view (server truth + overlay), owned by the page. */
 		links: IssueLinks;
+		/** Overlay of in-flight operations, bound to the page so every reload re-merges them. */
+		adds: PendingAdd[];
+		removals: string[];
 		/** Page-level error banner, for failures the inline form can't own. */
 		onerror: (e: unknown) => void;
 	} = $props();
@@ -43,28 +49,21 @@
 	// --- removal ---------------------------------------------------------------
 
 	async function removeLink(item: LinkedIssue) {
-		const prev = {
-			blocked_by: links.blocked_by,
-			blocks: links.blocks,
-			duplicate_of: links.duplicate_of,
-			duplicated_by: links.duplicated_by
-		};
-		// Optimistic: the row slides out immediately, no confirm — links are
-		// cheap to re-add and the removal lands in both activity feeds.
-		const without = (list: LinkedIssue[]) => list.filter((l) => l.link_id !== item.link_id);
-		links.blocked_by = without(links.blocked_by);
-		links.blocks = without(links.blocks);
-		links.duplicated_by = without(links.duplicated_by);
-		if (links.duplicate_of?.link_id === item.link_id) links.duplicate_of = null;
+		// Optimistic: the removal joins the overlay so the row hides in the
+		// merged view immediately (and stays hidden through reloads triggered
+		// by other in-flight operations), no confirm — links are cheap to
+		// re-add and the removal lands in both activity feeds.
+		removals = [...removals, item.link_id];
 		try {
 			await api.removeIssueLink(issueId, item.link_id);
 			await invalidateAll();
+			// An add of this same row may still be reconciling; drop it too, so
+			// clearing the removal can't briefly resurrect the deleted row.
+			adds = adds.filter((a) => a.entry.link_id !== item.link_id);
 		} catch (e) {
-			links.blocked_by = prev.blocked_by;
-			links.blocks = prev.blocks;
-			links.duplicate_of = prev.duplicate_of;
-			links.duplicated_by = prev.duplicated_by;
 			onerror(e);
+		} finally {
+			removals = removals.filter((id) => id !== item.link_id);
 		}
 	}
 
@@ -77,6 +76,8 @@
 	let listOpen = $state(false);
 	let highlight = $state(0);
 	let formError = $state<FormError | null>(null);
+	/** Monotonic per-card counter making each add operation's temp id unique. */
+	let addSeq = 0;
 
 	// The picker's pool: fetched once, when the form first opens. Single-user
 	// volumes make client-side filtering fine; a server-side `q` is the
@@ -184,60 +185,46 @@
 		return { message: e.message };
 	}
 
-	/** Rows shown before the server confirmed them: dimmed, not yet removable. */
-	let pendingLinkIds = $state(new Set<string>());
-	const isPending = (item: LinkedIssue) => pendingLinkIds.has(item.link_id);
-
-	/**
-	 * Replace (or with `to: null`, drop) the row with link_id `from` in a
-	 * group. Tolerates a reload having already reconciled the row away: a
-	 * patch never duplicates an issue the server truth already lists, and a
-	 * rollback of a vanished row is a no-op.
-	 */
-	function setLink(
-		group: 'blocked_by' | 'blocks' | 'duplicate_of',
-		from: string,
-		to: LinkedIssue | null
-	) {
-		if (group === 'duplicate_of') {
-			if (links.duplicate_of?.link_id === from) links.duplicate_of = to;
-			else if (to && links.duplicate_of === null) links.duplicate_of = to;
-			return;
-		}
-		const rest = links[group].filter((l) => l.link_id !== from);
-		links[group] = to && !rest.some((l) => l.issue_id === to.issue_id) ? [...rest, to] : rest;
-	}
-
 	async function add(target: Issue) {
 		formError = null;
 		// Optimistic, like pending comments: the row appears dimmed immediately
 		// (which also drops the issue from the suggestions, so a second tap
-		// can't double-add), and the server's verdict patches or removes it.
+		// can't double-add). It lives in the overlay until its own reload has
+		// delivered the server row, so reloads from other in-flight operations
+		// can't wipe it in the meantime.
 		const requestKind = kind;
-		const group = requestKind === 'duplicate_of' ? 'duplicate_of' : requestKind;
-		const tempId = `pending-${target.id}`;
-		const entry: LinkedIssue = {
-			link_id: tempId,
-			issue_id: target.id,
-			project_name: target.project_name,
-			number: target.number,
-			title: target.title,
-			effective_state: target.effective_state
-		};
-		pendingLinkIds = new Set([...pendingLinkIds, tempId]);
-		setLink(group, tempId, entry);
+		// The temp id doubles as this operation's handle ($state deep-proxies
+		// array elements, so identity comparisons on the pushed object won't
+		// match — the id is the stable key). Unique per op, so re-adding an
+		// issue right after removing it can't cross wires.
+		let opLinkId = `${TEMP_LINK_PREFIX}${target.id}-${++addSeq}`;
+		adds = [
+			...adds,
+			{
+				group: requestKind === 'duplicate_of' ? 'duplicate_of' : requestKind,
+				entry: {
+					link_id: opLinkId,
+					issue_id: target.id,
+					project_name: target.project_name,
+					number: target.number,
+					title: target.title,
+					effective_state: target.effective_state
+				}
+			}
+		];
 		queryText = '';
 		highlight = 0;
 		inputEl?.focus();
 		try {
 			const created = await api.addIssueLink(issueId, { kind: requestKind, issue_id: target.id });
-			// Swap in the real link id before the reload lands, so the row is
-			// removable right away; the reload then reconciles everything else
-			// (badges, readiness, effective states, activity).
-			setLink(group, tempId, { ...entry, link_id: created.id });
+			// Swap in the real link id (through the reactive array) before the
+			// reload lands, so the row is removable right away; the reload then
+			// reconciles everything else (badges, readiness, activity).
+			const stored = adds.find((a) => a.entry.link_id === opLinkId);
+			if (stored) stored.entry.link_id = created.id;
+			opLinkId = created.id;
 			await invalidateAll();
 		} catch (e) {
-			setLink(group, tempId, null);
 			// Rejections belong under the form, not in the page banner: the form
 			// stays open so the user can correct course.
 			if (e instanceof ApiError && (e.status === 422 || e.status === 409)) {
@@ -246,7 +233,10 @@
 				onerror(e);
 			}
 		} finally {
-			pendingLinkIds = new Set([...pendingLinkIds].filter((id) => id !== tempId));
+			// The reload (or the failure) has settled this operation; the server
+			// truth now carries the row, or the row is gone — either way the
+			// overlay entry has served its purpose.
+			adds = adds.filter((a) => a.entry.link_id !== opLinkId);
 		}
 	}
 
@@ -263,9 +253,12 @@
 				{label}
 			</p>
 			<ul>
-				{#each items as item (item.link_id)}
+				<!-- Keyed by issue (unique within a group), not link id: a pending
+				     row's id swaps temp → real on confirmation, and that must not
+				     remount the row. -->
+				{#each items as item (item.issue_id)}
 					<li
-						class="group/row flex items-center gap-1 {isPending(item) ? 'opacity-60' : ''}"
+						class="group/row flex items-center gap-1 {isTempLink(item.link_id) ? 'opacity-60' : ''}"
 						animate:flip={{ duration: dur() }}
 						transition:slide={{ duration: dur() }}
 					>
@@ -292,7 +285,7 @@
 							class="text-muted-foreground hover:text-foreground shrink-0 rounded p-1.5 transition-opacity focus-visible:opacity-100 pointer-fine:opacity-0 pointer-fine:group-hover/row:opacity-100"
 							title="Remove link"
 							aria-label="Remove link to {item.project_name}/#{item.number}"
-							disabled={isPending(item)}
+							disabled={isTempLink(item.link_id)}
 							onclick={() => removeLink(item)}
 						>
 							<IconX size={14} stroke={1.75} />

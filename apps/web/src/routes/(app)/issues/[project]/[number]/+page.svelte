@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { AllowedTransition, Comment, ContextItem, IssueLinks } from '@tines/shared';
+	import type { AllowedTransition, Comment, ContextItem } from '@tines/shared';
 	import { ApiError } from '@tines/shared';
 	import IconArrowRight from '@tabler/icons-svelte/icons/arrow-right';
 	import IconBan from '@tabler/icons-svelte/icons/ban';
@@ -26,6 +26,7 @@
 	import { Select } from '$lib/components/ui/select/index.js';
 	import { Textarea } from '$lib/components/ui/textarea/index.js';
 	import { actorLabel, prefersReducedMotion, relativeTime } from '$lib/format';
+	import { mergeLinks, type PendingAdd } from '$lib/link-overlay';
 
 	let { data } = $props();
 
@@ -37,13 +38,20 @@
 	let currentState = $state(data.issue.state);
 	// svelte-ignore state_referenced_locally
 	let comments = $state<(Comment & { pending?: boolean })[]>([...data.issue.comments]);
-	// svelte-ignore state_referenced_locally
-	let links = $state<IssueLinks>({ ...data.issue.links });
 	$effect(() => {
 		currentState = data.issue.state;
 		comments = [...data.issue.comments];
-		links = { ...data.issue.links };
 	});
+
+	// Links render as server truth + an overlay of in-flight operations —
+	// never a blind local copy. A blind copy resynced on every reload wiped
+	// pending adds (add #2 vanished when add #1's reload landed) and
+	// resurrected pending removals (the server still had row #2 when remove
+	// #1's reload landed). The overlay entries outlive other operations'
+	// reloads; each is cleared only once its own reload has settled.
+	let linkAdds = $state<PendingAdd[]>([]);
+	let linkRemovals = $state<string[]>([]);
+	const links = $derived(mergeLinks(data.issue.links, linkAdds, linkRemovals));
 
 	let errorMessage = $state<string | null>(null);
 	function showError(e: unknown) {
@@ -68,17 +76,19 @@
 	async function removeDuplicate() {
 		const prev = links.duplicate_of;
 		if (!prev || removingDuplicate) return;
-		// Optimistic: the banner slides away and the badge morphs back to this
-		// issue's own state — which never changed while the link existed.
-		links.duplicate_of = null;
+		// Optimistic via the overlay: the banner slides away and the badge
+		// morphs back to this issue's own state — which never changed while
+		// the link existed.
+		linkRemovals = [...linkRemovals, prev.link_id];
 		removingDuplicate = true;
 		try {
 			await api.removeIssueLink(data.issue.id, prev.link_id);
 			await invalidateAll();
+			linkAdds = linkAdds.filter((a) => a.entry.link_id !== prev.link_id);
 		} catch (e) {
-			links.duplicate_of = prev;
 			showError(e);
 		} finally {
+			linkRemovals = linkRemovals.filter((id) => id !== prev.link_id);
 			removingDuplicate = false;
 		}
 	}
@@ -593,7 +603,13 @@
 		</section>
 
 		<!-- dependencies & duplicates -->
-		<RelationsCard issueId={data.issue.id} bind:links onerror={showError} />
+		<RelationsCard
+			issueId={data.issue.id}
+			{links}
+			bind:adds={linkAdds}
+			bind:removals={linkRemovals}
+			onerror={showError}
+		/>
 
 		<!-- this issue's slice of the activity log -->
 		<section>
