@@ -139,22 +139,62 @@ Duplicates   demo/11  Login broken on mobile
 
 ## Web UI
 
+Follows the phase-one look and feel throughout: shadcn-svelte primitives, Tabler icons (deep imports), meaningful motion only (slide/fade at ~180–220ms, FLIP in lists, `prefers-reduced-motion` respected), optimistic updates with rollback on API rejection, and the existing error-banner pattern on the detail page. Two icons carry the feature everywhere they appear: **`IconBan`** for blocked, **`IconCopy`** for duplicates — used consistently in list rows, badges, banners, and activity events so the two concepts stay visually distinct.
+
+### Issue rows (everywhere `IssueList` renders — Issues tab, project pages)
+
+- The `StateBadge` shows the **effective** state, keeping its shared-element view-transition to the detail page. For a duplicate this is the canonical issue's state — a row's badge can therefore show a state name from another workflow; the category color makes it read correctly regardless.
+- **Blocked marker**: an issue with ≥ 1 effectively-open blocker gets a small amber chip after the title — `IconBan` plus the open-blocker count (e.g. `⃠ 2`) — styled like the existing schedule repeat chip. Its tooltip lists the open blockers by ref and title ("Blocked by demo/3 — Fix schema review; web/5 — …"). The chip is informational, not a nested link (the row already navigates); it disappears — with the row's usual transition, no snap — once the last blocker effectively closes.
+- **Duplicate marker**: a duplicate gets a muted `IconCopy` chip labeled `dup`, tooltip "Duplicate of demo/3 — *Login button dead*". Duplicate rows render slightly muted overall (like paused schedule rows) to signal "this is not where the work is".
+- Both markers derive from the `blocked` / `duplicate` fields the list API now returns — no extra requests.
+
+### Issues tab — Ready filter
+
+- A **Ready only** checkbox in the filter bar, next to "Show done", wired to the `ready` URL param (round-trips like every other filter) and composing with project/state/category.
+- Ready implies not-done, so while it's checked the "Show done" checkbox is unchecked and disabled (tooltip: "Ready issues are never done"). Unchecking Ready restores it.
+- The empty state reads "No ready issues match these filters." so it's obvious the readiness constraint (not the query) may be what emptied the list.
+- The project detail page reuses `IssueList`, so markers appear there automatically; its issue section gains the same Ready checkbox alongside its existing controls.
+
+### Issue detail — header
+
+- The header badge shows the **effective** state (it is the target of the list's shared-element morph, so list and detail always agree).
+- On a duplicate, a `dup` tag sits on the badge and a one-line banner renders directly under the header row, `IconCopy` first:
+  > *Duplicate of **demo/3** — Login button dead. This issue's state follows it.*  … [Not a duplicate?]
+  The ref links to the canonical issue; **Not a duplicate?** removes the `duplicate_of` link in place (optimistic — the banner slides away, the badge morphs back to the issue's own state, rollback on failure). For a chain, the banner names the *direct* canonical issue but the badge shows the *terminus* state; hovering the badge tooltips the resolution ("via demo/3 → web/1").
+- On a blocked issue, an amber `IconBan` chip ("Blocked · 2") sits beside the badge; clicking it scrolls to the Relations section. No banner — blocking is advisory and shouldn't shout.
+
 ### Issue detail — Relations section
 
-A "Relations" section on the issue detail page (hidden when empty, with an "add" affordance):
+A new card in the sidebar, between **State** and **Activity** (the same `rounded-lg border p-4` section styling). Always rendered — its header row is `Relations` plus a ghost **+ Add** button; with no links the body is just a hint line ("Link issues that block this one, or mark it a duplicate.").
 
-- Four groups mirroring `links`: **Blocked by**, **Blocks**, **Duplicate of**, **Duplicated by** — each row shows the issue ref, title, and effective-state badge, links to that issue, and has a remove (×) control.
-- Adding: a small picker — kind select (*blocks* / *blocked by* / *duplicate of*) plus an issue selector searching the user's issues by `project/number` and title. Cycle and second-duplicate rejections surface inline from the 422.
-- On a duplicate: the state badge shows the **effective** state with a "duplicate" tag, a banner links to the canonical issue, and transition controls are de-emphasized (present, since links are advisory, but visually secondary).
+- **Readiness line**: when the issue has blockers, the first line summarizes: green-dot "Ready — all blockers closed" or amber-dot "Not ready — 2 of 3 blockers open". This is the UI's one-glance answer to "why isn't this ready?".
+- **Four groups**, in this order, each with a small uppercase label and hidden when empty: **Blocked by**, **Blocks**, **Duplicate of**, **Duplicated by**. Group order puts "what's stopping this" first.
+- **Rows** are compact (the sidebar is 22rem): category-colored state dot (tooltip: effective state name), mono `project/#number` ref, truncated title. The whole row links to that issue. Effectively-open entries under *Blocked by* render at full strength; effectively-done ones dim — so open blockers pop. A hover-revealed **×** on the right removes the link: optimistic (row slides out per the motion rules), rollback + error banner on failure, no confirm dialog — links are cheap to re-add and the removal is recorded in both activity feeds anyway.
+- **Adding**: **+ Add** reveals an inline two-control form (slide transition): a kind `Select` — *Blocked by* / *Blocks* / *Duplicate of* (the API's `blocked_by` sugar means the UI never exposes edge orientation) — and an issue picker. The picker is a combobox over the user's issues (fetched via the existing list API and filtered client-side by ref and title substring — fine at single-user volumes); each option shows ref, truncated title, and state dot; already-linked issues and the issue itself are omitted. Enter or click adds immediately; the new row slides into its group.
+- **Inline rejections**: a 422 renders under the form, not in the page banner. A cycle shows the path as linked refs ("would create a cycle: demo/7 → demo/3 → demo/7"); a second `duplicate_of` shows "Already a duplicate of demo/3 — remove that link first" with the ref linked. The form stays open with input preserved so the user can correct course.
+- **Duplicate of** rows additionally note the resolved state when a chain is involved ("→ showing web/1's state").
 
-### Issue lists
+### Issue detail — State section on a duplicate
 
-- Rows render the effective state; blocked issues get a small "blocked" badge, duplicates a "dup" badge.
-- A **Ready** filter toggle alongside the existing filters, wired to `ready=true`; it composes with project/state/category filters and the URL params round-trip like the rest.
+Links are advisory, so nothing is hidden — but the section stops pretending to be the source of truth:
 
-### Activity feed
+- A muted note at the top: "*This issue is a duplicate — its displayed state follows demo/3.*" (ref linked).
+- The workflow graph still highlights the issue's **own** (dormant) state, and transition buttons still work against it — moving a duplicate is allowed, it just doesn't change what lists display while the link exists. The section renders slightly muted (same treatment as duplicate list rows) to make that hierarchy visible.
+- Removing the duplicate link restores full emphasis with a fade — and since the state never changed, the graph and buttons are already correct.
 
-`issue.link_added` / `issue.link_removed` events render on both issues' feeds as human sentences ("marked as blocking demo/14 — *Ship the migration*"), with the other issue linked.
+### Activity feeds
+
+`issue.link_added` / `issue.link_removed` render on **both** issues' feeds (and the global Activity tab) as human sentences from the owning issue's perspective, with the other issue's ref linked and the kind's icon shown — actor attribution as everywhere else:
+
+- "**alice** marked this as blocking **demo/14** — *Ship the migration*"
+- "**my-agent** marked this as blocked by **web/5**"
+- "**alice** marked this as a duplicate of **demo/3**" / "…unmarked…"
+
+State-change passthrough is virtual, so closing a canonical issue emits no events on its duplicates — the feed records link changes and real transitions only.
+
+### Out of scope for the UI pass
+
+No links at creation time (the New Issue modal is untouched — link after creating), no dependency graph visualization, no drag-to-link. All are natural follow-ups once the Relations card exists.
 
 ## Acceptance criteria
 
