@@ -15,10 +15,17 @@ export const load: PageServerLoad = async ({ locals, platform, params, url }) =>
 		error(e instanceof ApiFail ? e.status : 500, 'Not found');
 	});
 	const showDone = url.searchParams.get('done') === '1';
+	// Ready already implies not-done; the "show done" param just parks while it is on.
+	const ready = url.searchParams.get('ready') === '1';
 	const [{ items: issues }, workflows, { items: schedules }] = await Promise.all([
-		listIssues(db, userId, { projectId: project.id, hideDone: !showDone }, { cursor: null, limit: 100 }),
+		listIssues(
+			db,
+			userId,
+			{ projectId: project.id, hideDone: !showDone, ready },
+			{ cursor: null, limit: 100 }
+		),
 		loadWorkflows(db, userId),
 		listSchedules(db, userId, { projectId: project.id }, { cursor: null, limit: 100 })
 	]);
-	return { project, issues, workflows, schedules, showDone };
+	return { project, issues, workflows, schedules, showDone, ready };
 };

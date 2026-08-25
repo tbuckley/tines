@@ -74,13 +74,29 @@
 			<option value={cat}>{CATEGORY_LABELS[cat]}</option>
 		{/each}
 	</Select>
-	<label class="text-muted-foreground flex items-center gap-2 text-sm">
+	<!-- Ready implies not-done, so "Show done" parks (unchecked and disabled)
+	     while Ready is on; its URL param survives, so unchecking restores it. -->
+	<label
+		class="text-muted-foreground flex items-center gap-2 text-sm {data.filters.ready
+			? 'opacity-50'
+			: ''}"
+		title={data.filters.ready ? 'Ready issues are never done' : undefined}
+	>
 		<input
 			type="checkbox"
-			checked={data.filters.showDone}
+			checked={data.filters.showDone && !data.filters.ready}
+			disabled={data.filters.ready}
 			onchange={(e) => setFilter('done', e.currentTarget.checked ? '1' : '')}
 		/>
 		Show done
+	</label>
+	<label class="text-muted-foreground flex items-center gap-2 text-sm">
+		<input
+			type="checkbox"
+			checked={data.filters.ready}
+			onchange={(e) => setFilter('ready', e.currentTarget.checked ? '1' : '')}
+		/>
+		Ready only
 	</label>
 </div>
 
@@ -95,5 +111,7 @@
 	issues={data.issues}
 	emptyMessage={data.projects.length === 0
 		? 'No issues yet — create a project first, then add issues to it.'
-		: 'No issues match these filters.'}
+		: data.filters.ready
+			? 'No ready issues match these filters.'
+			: 'No issues match these filters.'}
 />

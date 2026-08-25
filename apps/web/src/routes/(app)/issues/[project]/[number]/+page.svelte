@@ -1,8 +1,10 @@
 <script lang="ts">
-	import type { AllowedTransition, Comment } from '@tines/shared';
+	import type { AllowedTransition, Comment, IssueLinks } from '@tines/shared';
 	import { ApiError } from '@tines/shared';
 	import IconArrowRight from '@tabler/icons-svelte/icons/arrow-right';
+	import IconBan from '@tabler/icons-svelte/icons/ban';
 	import IconChevronLeft from '@tabler/icons-svelte/icons/chevron-left';
+	import IconCopy from '@tabler/icons-svelte/icons/copy';
 	import IconPencil from '@tabler/icons-svelte/icons/pencil';
 	import IconRepeat from '@tabler/icons-svelte/icons/repeat';
 	import { fade, slide } from 'svelte/transition';
@@ -10,6 +12,7 @@
 	import { api } from '$lib/api';
 	import EventList from '$lib/components/EventList.svelte';
 	import Markdown from '$lib/components/Markdown.svelte';
+	import RelationsCard from '$lib/components/RelationsCard.svelte';
 	import StateBadge from '$lib/components/StateBadge.svelte';
 	import WorkflowGraph from '$lib/components/WorkflowGraph.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
@@ -28,15 +31,56 @@
 	let currentState = $state(data.issue.state);
 	// svelte-ignore state_referenced_locally
 	let comments = $state<(Comment & { pending?: boolean })[]>([...data.issue.comments]);
+	// svelte-ignore state_referenced_locally
+	let links = $state<IssueLinks>({ ...data.issue.links });
 	$effect(() => {
 		currentState = data.issue.state;
 		comments = [...data.issue.comments];
+		links = { ...data.issue.links };
 	});
 
 	let errorMessage = $state<string | null>(null);
 	function showError(e: unknown) {
 		errorMessage = e instanceof ApiError ? e.message : 'Something went wrong — try again.';
 		setTimeout(() => (errorMessage = null), 6000);
+	}
+
+	// --- links ------------------------------------------------------------------
+
+	const duplicateOf = $derived(links.duplicate_of);
+	/**
+	 * The badge shows the effective state: a duplicate's is its chain
+	 * terminus's, so list and detail agree; otherwise it is the issue's own
+	 * (optimistically updated) state.
+	 */
+	const headerState = $derived(duplicateOf ? data.issue.effective_state : currentState);
+	const openBlockers = $derived(
+		links.blocked_by.filter((l) => l.effective_state.category !== 'done')
+	);
+
+	let removingDuplicate = $state(false);
+	async function removeDuplicate() {
+		const prev = links.duplicate_of;
+		if (!prev || removingDuplicate) return;
+		// Optimistic: the banner slides away and the badge morphs back to this
+		// issue's own state — which never changed while the link existed.
+		links.duplicate_of = null;
+		removingDuplicate = true;
+		try {
+			await api.removeIssueLink(data.issue.id, prev.link_id);
+			await invalidateAll();
+		} catch (e) {
+			links.duplicate_of = prev;
+			showError(e);
+		} finally {
+			removingDuplicate = false;
+		}
+	}
+
+	function scrollToRelations() {
+		document
+			.getElementById('relations')
+			?.scrollIntoView({ behavior: prefersReducedMotion() ? 'auto' : 'smooth', block: 'center' });
 	}
 
 	// Allowed transitions follow the (possibly optimistic) current state.
@@ -231,15 +275,70 @@
 				</h1>
 			{/if}
 		</div>
-		<span
-			class="vt-shared"
-			style:view-transition-name="issue-state-{data.issue.id}"
-			style:view-transition-class="vt-fit"
-		>
-			<StateBadge state={currentState} class="text-sm" />
-		</span>
+		<div class="flex shrink-0 items-center gap-2">
+			{#if duplicateOf}
+				<span
+					class="bg-muted text-muted-foreground inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium"
+					title="Duplicate of {duplicateOf.project_name}/#{duplicateOf.number} — the badge shows its state ({headerState.name})"
+					transition:fade={{ duration: dur() }}
+				>
+					<IconCopy size={12} stroke={1.75} />
+					dup
+				</span>
+			{/if}
+			<span
+				class="vt-shared"
+				style:view-transition-name="issue-state-{data.issue.id}"
+				style:view-transition-class="vt-fit"
+			>
+				<StateBadge state={headerState} class="text-sm" />
+			</span>
+			{#if openBlockers.length > 0}
+				<!-- Advisory, so no banner — a chip that jumps to the detail. -->
+				<button
+					type="button"
+					class="inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-xs font-medium text-amber-700 dark:text-amber-400"
+					title="Blocked by {openBlockers
+						.map((b) => `${b.project_name}/${b.number} — ${b.title}`)
+						.join('; ')}"
+					onclick={scrollToRelations}
+					transition:fade={{ duration: dur() }}
+				>
+					<IconBan size={14} stroke={1.75} />
+					Blocked · {openBlockers.length}
+				</button>
+			{/if}
+		</div>
 	</div>
 </div>
+
+{#if duplicateOf}
+	<div
+		class="bg-muted/50 text-muted-foreground mb-4 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md border px-4 py-2.5 text-sm"
+		transition:slide={{ duration: dur() }}
+	>
+		<IconCopy size={16} stroke={1.75} class="shrink-0" />
+		<p class="min-w-0">
+			Duplicate of
+			<a
+				href="/issues/{encodeURIComponent(duplicateOf.project_name)}/{duplicateOf.number}"
+				class="text-foreground font-medium hover:underline"
+			>
+				{duplicateOf.project_name}/#{duplicateOf.number}
+			</a>
+			— {duplicateOf.title}. This issue's state follows it.
+		</p>
+		<Button
+			size="sm"
+			variant="ghost"
+			class="ml-auto"
+			disabled={removingDuplicate}
+			onclick={removeDuplicate}
+		>
+			Not a duplicate?
+		</Button>
+	</div>
+{/if}
 
 {#if errorMessage}
 	<div
@@ -322,8 +421,24 @@
 
 	<aside class="space-y-8">
 		<!-- state & transitions -->
-		<section class="rounded-lg border p-4">
+		<!-- On a duplicate the section stops pretending to be the source of
+		     truth (muted), but the graph and buttons still act on this issue's
+		     own, dormant state — moving a duplicate is allowed. -->
+		<section
+			class="rounded-lg border p-4 transition-opacity duration-200 {duplicateOf
+				? 'opacity-70'
+				: ''}"
+		>
 			<h2 class="mb-3 text-sm font-semibold">State</h2>
+			{#if duplicateOf}
+				<p class="text-muted-foreground mb-3 text-xs italic" transition:slide={{ duration: dur() }}>
+					This issue is a duplicate — its displayed state follows
+					<a
+						href="/issues/{encodeURIComponent(duplicateOf.project_name)}/{duplicateOf.number}"
+						class="hover:underline">{duplicateOf.project_name}/#{duplicateOf.number}</a
+					>.
+				</p>
+			{/if}
 			<div class="mb-4">
 				<WorkflowGraph workflow={data.issue.workflow} currentStateId={currentState.id} compact />
 			</div>
@@ -390,6 +505,9 @@
 				</form>
 			</details>
 		</section>
+
+		<!-- dependencies & duplicates -->
+		<RelationsCard issueId={data.issue.id} bind:links onerror={showError} />
 
 		<!-- this issue's slice of the activity log -->
 		<section>
