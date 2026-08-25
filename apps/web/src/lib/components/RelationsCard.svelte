@@ -112,6 +112,12 @@
 		if (adding && inputEl) inputEl.focus();
 	});
 
+	// Adding a duplicate while the form stays open disables that kind; don't
+	// leave the select parked on a disabled option.
+	$effect(() => {
+		if (kind === 'duplicate_of' && links.duplicate_of) kind = 'blocked_by';
+	});
+
 	const linkedIds = $derived(
 		new Set([
 			...links.blocked_by.map((l) => l.issue_id),
@@ -294,10 +300,16 @@
 
 	{#if adding}
 		<div class="mt-3 space-y-2 border-t pt-3" transition:slide={{ duration: dur() }}>
+			<!-- An issue has at most one canonical issue, so the option greys out
+			     (with the reason) instead of letting the server reject it later. -->
 			<Select bind:value={kind} class="h-8 text-xs" aria-label="Link kind">
 				<option value="blocked_by">Blocked by</option>
 				<option value="blocks">Blocks</option>
-				<option value="duplicate_of">Duplicate of</option>
+				<option value="duplicate_of" disabled={links.duplicate_of !== null}>
+					Duplicate of{links.duplicate_of
+						? ` (already ${links.duplicate_of.project_name}/#${links.duplicate_of.number})`
+						: ''}
+				</option>
 			</Select>
 			<div class="relative">
 				<Input
