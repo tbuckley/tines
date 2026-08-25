@@ -1,6 +1,8 @@
 import {
 	STATE_CATEGORIES,
+	STATE_PROMPT_NAME,
 	type CreateWorkflowRequest,
+	type DeletedContextItem,
 	type StateCategory,
 	type UpdateWorkflowRequest,
 	type WorkflowResponse,
@@ -9,6 +11,7 @@ import {
 } from '@tines/shared';
 import type { CompiledQuery, Kysely } from 'kysely';
 import { newId, type Database, type WorkflowStateTable } from '$lib/server/db';
+import { findAttachedContext, seedPromptQueries, sweepAttachedContext } from './context';
 import {
 	ApiFail,
 	notFound,
@@ -26,6 +29,8 @@ interface ResolvedState {
 	category: StateCategory;
 	position: number;
 	isNew: boolean;
+	/** Initial stage instructions (new states only): seeds a state-scoped prompt item. */
+	prompt?: string;
 }
 
 interface ResolvedDef {
@@ -70,12 +75,24 @@ export function resolveDef(
 		if (input.id !== undefined && !existingById.has(input.id)) {
 			throw new ApiFail(422, 'unknown_state', `State id "${input.id}" is not part of this workflow`);
 		}
+		// `prompt` seeds a state-scoped "instructions" item — new states only;
+		// existing stage instructions are edited through the context surfaces.
+		const prompt = optionalString(input.prompt, `states[${i}].prompt`, { max: 100_000 })?.trim() || undefined;
+		if (prompt !== undefined && input.id !== undefined) {
+			throw new ApiFail(
+				422,
+				'prompt_on_existing_state',
+				`State "${name}" already exists; its instructions are edited as context items, not re-sent through workflow updates`,
+				{ state_id: input.id }
+			);
+		}
 		const state: ResolvedState = {
 			id: input.id ?? newId('wfs'),
 			name,
 			category: input.category,
 			position: i,
-			isNew: input.id === undefined
+			isNew: input.id === undefined,
+			prompt
 		};
 		if (byId.has(state.id)) {
 			throw new ApiFail(422, 'duplicate_state', `State id "${state.id}" is listed more than once`);
@@ -290,6 +307,19 @@ export async function createWorkflow(
 				})
 				.compile()
 		),
+		// Initial stage instructions ride along in the same transaction.
+		...def.states
+			.filter((s) => s.prompt !== undefined)
+			.flatMap(
+				(s) =>
+					seedPromptQueries(db, actor, {
+						name: STATE_PROMPT_NAME,
+						body: s.prompt!,
+						workflowStateId: s.id,
+						label: `state ${s.name}`,
+						now
+					}).queries
+			),
 		eventInsert(db, actor, { type: 'workflow.created', payload: { workflow_id: id, name } })
 	];
 	await runAtomic(env, queries);
@@ -375,6 +405,20 @@ export async function updateWorkflow(
 		}
 	}
 
+	// Removing a state with attached context is rejected unless forced; a
+	// forced removal sweeps the items (all-or-nothing, even when one PATCH
+	// removes multiple states) with a context.deleted event per item.
+	const attachedContext = await findAttachedContext(db, actor.userId, {
+		stateIds: removedStates.map((s) => s.id)
+	});
+	const contextSweep = sweepAttachedContext(
+		db,
+		actor,
+		attachedContext,
+		body.force_delete_context === true,
+		`remove state${removedStates.length === 1 ? ` "${removedStates[0].name}"` : 's'} from workflow "${current.name}"`
+	);
+
 	// Summary diff for the workflow.updated event payload.
 	const currentById = new Map(current.states.map((s) => [s.id, s]));
 	const statesAdded = def.states.filter((s) => s.isNew).map((s) => s.name);
@@ -414,8 +458,11 @@ export async function updateWorkflow(
 
 	const now = Date.now();
 	const queries: CompiledQuery[] = [];
-	// Old transitions go first: they hold foreign keys onto states about to
-	// be deleted. Transition ids are not referenced elsewhere, so the set is
+	// Swept context goes first: those items hold foreign keys onto states
+	// about to be deleted.
+	queries.push(...contextSweep.queries);
+	// Old transitions next: they hold foreign keys onto states about to be
+	// deleted. Transition ids are not referenced elsewhere, so the set is
 	// replaced wholesale.
 	queries.push(db.deleteFrom('workflow_transition').where('workflow_id', '=', id).compile());
 	for (const s of removedStates) {
@@ -460,6 +507,20 @@ export async function updateWorkflow(
 				.compile()
 		);
 	}
+	// Initial stage instructions for newly added states.
+	for (const s of def.states) {
+		if (s.isNew && s.prompt !== undefined) {
+			queries.push(
+				...seedPromptQueries(db, actor, {
+					name: STATE_PROMPT_NAME,
+					body: s.prompt,
+					workflowStateId: s.id,
+					label: `state ${s.name}`,
+					now
+				}).queries
+			);
+		}
+	}
 	queries.push(
 		db
 			.updateTable('workflow')
@@ -469,15 +530,18 @@ export async function updateWorkflow(
 		eventInsert(db, actor, { type: 'workflow.updated', payload })
 	);
 	await runAtomic(env, queries);
-	return loadWorkflow(db, actor.userId, id);
+	const updated = await loadWorkflow(db, actor.userId, id);
+	if (contextSweep.deleted.length > 0) updated.deleted_context = contextSweep.deleted;
+	return updated;
 }
 
 export async function deleteWorkflow(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
-	id: string
-): Promise<void> {
+	id: string,
+	{ forceDeleteContext = false } = {}
+): Promise<DeletedContextItem[]> {
 	const wf = await loadWorkflow(db, actor.userId, id);
 	if (wf.is_system) {
 		throw new ApiFail(403, 'workflow_read_only', 'The standard workflow cannot be deleted');
@@ -492,7 +556,20 @@ export async function deleteWorkflow(
 	}
 	// Extends the phase-one editing rules: schedules bind to a workflow.
 	await assertWorkflowNotScheduled(db, wf.id, wf.name);
+	// Context scoped to any of the workflow's states rejects deletion unless
+	// forced (same posture as project deletion and state removal).
+	const attached = await findAttachedContext(db, actor.userId, {
+		stateIds: wf.states.map((s) => s.id)
+	});
+	const sweep = sweepAttachedContext(
+		db,
+		actor,
+		attached,
+		forceDeleteContext,
+		`delete workflow "${wf.name}"`
+	);
 	await runAtomic(env, [
+		...sweep.queries,
 		db
 			.updateTable('project')
 			.set({ default_workflow_id: null })
@@ -503,4 +580,5 @@ export async function deleteWorkflow(
 		db.deleteFrom('workflow').where('id', '=', id).compile(),
 		eventInsert(db, actor, { type: 'workflow.deleted', payload: { workflow_id: id, name: wf.name } })
 	]);
+	return sweep.deleted;
 }

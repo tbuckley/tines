@@ -3,6 +3,8 @@ import { betterAuth } from 'better-auth';
 import { magicLink } from 'better-auth/plugins';
 import { sveltekitCookies } from 'better-auth/svelte-kit';
 import { D1Dialect } from 'kysely-d1';
+import { ensureAgentGuidelines } from '$lib/server/api/context';
+import { getDb } from '$lib/server/db';
 
 /** Minutes until a magic link expires; also quoted in the email body. */
 const MAGIC_LINK_EXPIRY_MINUTES = 10;
@@ -40,6 +42,28 @@ function createAuth(env: Env, requestOrigin: string) {
 		// request origin there instead.
 		baseURL: env.BETTER_AUTH_URL || requestOrigin,
 		secret: env.BETTER_AUTH_SECRET,
+		databaseHooks: {
+			user: {
+				create: {
+					// Seed the global agent-guidelines context item for new users
+					// (specs/context/AGENT_EDITING.md). Best-effort: a seeding
+					// failure must never fail the signup itself.
+					after: async (user) => {
+						try {
+							await ensureAgentGuidelines(getDb(env), env, {
+								userId: user.id,
+								userName: user.name,
+								apiKeyId: null,
+								apiKeyName: null,
+								viaSession: true
+							});
+						} catch (e) {
+							console.error('agent-guidelines seeding failed:', e);
+						}
+					}
+				}
+			}
+		},
 		socialProviders:
 			env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET
 				? {

@@ -1,4 +1,5 @@
 import { error } from '@sveltejs/kit';
+import { listContextItems } from '$lib/server/api/context';
 import { ApiFail } from '$lib/server/api/core';
 import { listIssues } from '$lib/server/api/issues';
 import { getProject } from '$lib/server/api/projects';
@@ -17,15 +18,27 @@ export const load: PageServerLoad = async ({ locals, platform, params, url }) =>
 	const showDone = url.searchParams.get('done') === '1';
 	// Ready already implies not-done; the "show done" param just parks while it is on.
 	const ready = url.searchParams.get('ready') === '1';
-	const [{ items: issues }, workflows, { items: schedules }] = await Promise.all([
-		listIssues(
-			db,
-			userId,
-			{ projectId: project.id, hideDone: !showDone, ready },
-			{ cursor: null, limit: 100 }
-		),
-		loadWorkflows(db, userId),
-		listSchedules(db, userId, { projectId: project.id }, { cursor: null, limit: 100 })
-	]);
-	return { project, issues, workflows, schedules, showDone, ready };
+	const [{ items: issues }, workflows, { items: schedules }, { items: contextItems }] =
+		await Promise.all([
+			listIssues(
+				db,
+				userId,
+				{ projectId: project.id, hideDone: !showDone, ready },
+				{ cursor: null, limit: 100 }
+			),
+			loadWorkflows(db, userId),
+			listSchedules(db, userId, { projectId: project.id }, { cursor: null, limit: 100 }),
+			listContextItems(db, userId, { project: project.id }, { cursor: null, limit: 100 })
+		]);
+	return {
+		project,
+		issues,
+		workflows,
+		schedules,
+		// Issue-anchored items appear only on their issue's page (and the
+		// Context tab) — they are that issue's business.
+		contextItems: contextItems.filter((i) => i.scope.issue_id === null),
+		showDone,
+		ready
+	};
 };

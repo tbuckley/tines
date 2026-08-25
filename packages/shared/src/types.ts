@@ -38,6 +38,11 @@ export interface CreateProjectRequest {
 	name: string;
 	description?: string;
 	default_workflow_id?: string | null;
+	/**
+	 * When present, also creates a project-scoped prompt item named
+	 * "conventions" with this Markdown body, in the same transaction.
+	 */
+	initial_prompt?: string;
 }
 
 export interface UpdateProjectRequest {
@@ -87,6 +92,13 @@ export interface WorkflowStateInput {
 	id?: string;
 	name: string;
 	category: StateCategory;
+	/**
+	 * New states only (422 on existing states): also creates a state-scoped
+	 * prompt item named "instructions" with this Markdown body, in the same
+	 * transaction. Existing stage instructions are edited through the
+	 * context surfaces, not re-sent through workflow updates.
+	 */
+	prompt?: string;
 }
 
 /**
@@ -121,11 +133,29 @@ export interface UpdateWorkflowRequest {
 	initial_state?: string;
 	states?: WorkflowStateInput[];
 	transitions?: WorkflowTransitionInput[];
+	/**
+	 * Removing states with attached context items is rejected by default;
+	 * with this flag the removal proceeds and those items are deleted
+	 * (all-or-nothing, one `context.deleted` event each).
+	 */
+	force_delete_context?: boolean;
 }
 
 export interface WorkflowResponse extends Workflow {
 	/** Non-fatal advisories, e.g. a non-done state left with no way out. */
 	warnings?: string[];
+	/** Context items swept by a forced state removal in this update. */
+	deleted_context?: DeletedContextItem[];
+}
+
+/** Body accepted by project/workflow DELETE; see force_delete_context above. */
+export interface DeleteAnchorRequest {
+	force_delete_context?: boolean;
+}
+
+/** DELETE response when a forced delete swept context items (else 204). */
+export interface DeleteAnchorResponse {
+	deleted_context: DeletedContextItem[];
 }
 
 // ---------------------------------------------------------------------------
@@ -225,6 +255,8 @@ export interface IssueDetail extends Issue {
 	/** The named transitions legally available from the current state. */
 	allowed_transitions: AllowedTransition[];
 	links: IssueLinks;
+	/** Per-kind counts of the currently effective context, post-dedupe. */
+	context_summary: ContextSummary;
 }
 
 export interface CreateIssueRequest {
@@ -352,6 +384,255 @@ export interface IssueFilters {
 }
 
 // ---------------------------------------------------------------------------
+// Context items
+
+export type ContextKind = 'prompt' | 'skill' | 'repo';
+
+export const CONTEXT_KINDS: readonly ContextKind[] = ['prompt', 'skill', 'repo'];
+
+/** Byte caps (UTF-8), enforced at the API layer with structured 422s. */
+export const PROMPT_MAX_BYTES = 32 * 1024;
+export const SKILL_MAX_FILES = 20;
+export const SKILL_MAX_TOTAL_BYTES = 100 * 1024;
+
+/** Skill names double as workspace directory names. */
+export const SKILL_NAME_PATTERN = /^[a-z0-9-]+$/;
+
+/** The conventional item names created by the built-in flows. */
+export const AGENT_GUIDELINES_NAME = 'agent-guidelines';
+export const JOURNAL_NAME = 'journal';
+export const PROJECT_PROMPT_NAME = 'conventions';
+export const STATE_PROMPT_NAME = 'instructions';
+
+/**
+ * The canonical starter text for the global `agent-guidelines` item. Seeded
+ * once (signup, `tines context init`, or the Context-tab affordance) and
+ * never overwritten — after seeding the text is entirely the user's.
+ */
+export const AGENT_GUIDELINES_BODY = `You are an agent working on a Tines issue over its HTTP API / CLI. Beyond doing the work, leave the workspace smarter than you found it. Four places to write, chosen by who should inherit what you learned:
+
+- **Issue comments** — all prose about this issue: progress, findings, dead ends, questions, and instructions for whoever picks it up next. \`tines issues comment <project>/<number> "<markdown>"\`
+- **Issue context (artifacts)** — things this issue needs *attached*, not said: a skill, a repo/branch pin, or an override of a broader item (reuse its name): \`tines context create --kind <k> --name <n> --issue <project>/<number> …\`. Never notes — notes are comments.
+- **Your journal** — shared notes for anyone doing this stage of work in this project. Append a dated bullet whenever you learn something they would want: commands that actually work, gotchas, where things live (see "Journal" at the end of this prompt for the exact commands). If an entry is wrong or stale, rewrite the journal to fix it — do not append a correction on top. Keep it short; prune when you touch it.
+- **Context change requests** — never edit shared context (project-, state-, or global-scoped items) directly. Propose instead: file an issue in the project you are working in, titled \`Context change: <scope label>\`, naming the item (kind, name, scope) with the full proposed text in the description. A human reviews and applies it.
+
+When in doubt: comment. If the lesson outlives this issue, journal it. Only file a context change when a shared rule is wrong or missing.`;
+
+/** Description on the seeded agent-guidelines item. */
+export const AGENT_GUIDELINES_DESCRIPTION =
+	'How agents should use comments, artifacts, the journal, and context change requests';
+
+/**
+ * An item's scope: the intersection (AND) of its set dimensions, with the
+ * referents denormalized for display and `label` in the canonical format
+ * ("project Tines · state Review", issues as `<project>/<number>`). No
+ * dimensions set = global (label "global"), matching every issue.
+ */
+export interface ContextScope {
+	project_id: string | null;
+	project_name: string | null;
+	workflow_state_id: string | null;
+	workflow_state_name: string | null;
+	/** The state's workflow, for qualified display ("Standard / Review"). */
+	workflow_id: string | null;
+	workflow_name: string | null;
+	issue_id: string | null;
+	issue_ref: { project_name: string; number: number } | null;
+	label: string;
+}
+
+export interface ContextFile {
+	/** Workspace-relative path (forward slashes, no `..`, no leading `/`, no `=`). */
+	path: string;
+	content: string;
+}
+
+export interface ContextItem {
+	id: string;
+	kind: ContextKind;
+	name: string;
+	description: string;
+	scope: ContextScope;
+	/** Prompt payload: the Markdown body. */
+	body?: string;
+	/** Skill payload: present on detail reads; lists carry `file_count` only. */
+	files?: ContextFile[];
+	file_count?: number;
+	/** Repo payload. `repo_dir` is as stored; null = derived from the URL. */
+	repo_url?: string;
+	repo_branch?: string | null;
+	repo_dir?: string | null;
+	/** Ordering within the same exact scope tuple. */
+	position: number;
+	/** Monotonic write counter for optimistic concurrency (not history). */
+	version: number;
+	created_at: number;
+	updated_at: number;
+}
+
+export interface CreateContextItemRequest {
+	kind: ContextKind;
+	name: string;
+	description?: string;
+	/** Scope: no dimensions set = global (applies to every issue). */
+	project_id?: string | null;
+	workflow_state_id?: string | null;
+	issue_id?: string | null;
+	/** prompt */
+	body?: string;
+	/** skill */
+	files?: ContextFile[];
+	/** repo */
+	repo_url?: string;
+	repo_branch?: string | null;
+	repo_dir?: string | null;
+}
+
+/**
+ * Merge-patch: omitted fields are unchanged; explicit null unsets a nullable
+ * field (scope dimensions subject to the ≥1-dimension rule). `kind` is
+ * immutable. Skill `files` replace the file set wholesale.
+ */
+export interface UpdateContextItemRequest {
+	name?: string;
+	description?: string;
+	project_id?: string | null;
+	workflow_state_id?: string | null;
+	issue_id?: string | null;
+	position?: number;
+	body?: string;
+	files?: ContextFile[];
+	repo_url?: string;
+	repo_branch?: string | null;
+	repo_dir?: string | null;
+	/**
+	 * Compare-and-swap: reject with a 409 (carrying the current item) when
+	 * the item's version no longer matches. Omit for last-write-wins.
+	 */
+	expected_version?: number;
+}
+
+/** `POST /api/v1/context/:id/append` — prompt items only. */
+export interface AppendContextRequest {
+	/** Appended to the body, separated by exactly one blank line. */
+	text: string;
+	expected_version?: number;
+}
+
+/**
+ * List filters use "scope includes" semantics: `project=X` matches every
+ * item whose scope includes project X; dimension filters AND together.
+ * `exact=true` restricts to items whose scope sets only the given dimensions.
+ */
+export interface ContextListFilters {
+	kind?: ContextKind;
+	/** Project id or name. */
+	project?: string;
+	/** Workflow state id. */
+	state?: string;
+	/** Issue id. */
+	issue?: string;
+	/** Name/description search. */
+	q?: string;
+	exact?: boolean;
+}
+
+/** One stitched-prompt part, in layer order. */
+export interface EffectivePromptPart {
+	item_id: string;
+	name: string;
+	scope: ContextScope;
+	body: string;
+	version: number;
+	/** True for the journal item (renders under `## Journal (<scope>)`). */
+	is_journal: boolean;
+}
+
+export interface EffectiveSkill {
+	item_id: string;
+	name: string;
+	scope: ContextScope;
+	/** Empty when the bundle was assembled without file contents. */
+	files: ContextFile[];
+	file_count: number;
+	version: number;
+}
+
+export interface EffectiveRepo {
+	item_id: string;
+	name: string;
+	scope: ContextScope;
+	url: string;
+	branch?: string | null;
+	/** Always resolved (falls back to the URL's basename minus `.git`). */
+	dir: string;
+	version: number;
+}
+
+/** A name-collision loser: a more specific item of the same kind+name won. */
+export interface OverriddenContextItem {
+	item_id: string;
+	kind: ContextKind;
+	name: string;
+	scope: ContextScope;
+	overridden_by: string;
+}
+
+export interface RepoDirConflict {
+	kind: 'repo_dir';
+	dir: string;
+	item_ids: string[];
+}
+
+/** `GET /api/v1/issues/:id/context` — the assembled bundle for an issue. */
+export interface EffectiveContext {
+	prompt: {
+		/** The stitched prompt, `## Context: <scope>` headings included. */
+		text: string;
+		parts: EffectivePromptPart[];
+	};
+	skills: EffectiveSkill[];
+	repos: EffectiveRepo[];
+	overridden: OverriddenContextItem[];
+	conflicts: RepoDirConflict[];
+}
+
+/** Per-kind counts of the currently effective context, post-dedupe. */
+export interface ContextSummary {
+	prompts: number;
+	skills: number;
+	repos: number;
+}
+
+/** `GET /api/v1/issues/:id/prompt` — stitched context plus the issue block. */
+export interface LaunchPromptResponse {
+	text: string;
+}
+
+/** A context item swept by a forced delete, as reported in the response. */
+export interface DeletedContextItem {
+	id: string;
+	kind: ContextKind;
+	name: string;
+	scope_label: string;
+}
+
+/**
+ * Default checkout directory for a repo context item: the URL's basename
+ * with any trailing `.git` stripped. Handles scp-style remotes too. The
+ * result must satisfy the workspace path rules an explicit repo_dir is held
+ * to (no "."/".." segments, no "\" or "="), so a URL that derives an unsafe
+ * basename falls back to "repo" instead of escaping the workspace.
+ */
+export function repoDirFromUrl(url: string): string {
+	const stripped = url.replace(/[?#].*$/, '').replace(/\/+$/, '');
+	const lastSlash = Math.max(stripped.lastIndexOf('/'), stripped.lastIndexOf(':'));
+	const base = stripped.slice(lastSlash + 1).replace(/\.git$/, '');
+	if (!base || base === '.' || base === '..' || base.includes('\\') || base.includes('=')) return 'repo';
+	return base;
+}
+
+// ---------------------------------------------------------------------------
 // Comments
 
 export interface Comment {
@@ -388,6 +669,9 @@ export type EventType =
 	| 'scheduled_task.updated'
 	| 'scheduled_task.deleted'
 	| 'scheduled_task.skipped'
+	| 'context.created'
+	| 'context.updated'
+	| 'context.deleted'
 	// Open-ended by design: later phases add types without migration.
 	| (string & {});
 
