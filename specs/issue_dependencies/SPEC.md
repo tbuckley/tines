@@ -67,7 +67,7 @@ The UI renders these as "marked as blocking demo/14", "marked as a duplicate of 
 
 ## Data model (D1 / Kysely)
 
-One new table, in a new numbered migration (`0005_issue_links.sql`), plus a matching `IssueLinkTable` interface registered in `db.ts` (`lnk_` id prefix via `newId`):
+One new table, in a new numbered migration (`0008_issue_links.sql`), plus a matching `IssueLinkTable` interface registered in `db.ts` (`lnk_` id prefix via `newId`):
 
 ```
 issue_link  id, source_issue_id, target_issue_id, kind, created_at
@@ -95,7 +95,7 @@ Same conventions as phase one: `/api/v1/*`, session or bearer key, user-scoped (
 | `POST /api/v1/issues/:id/links` | Add a link. Body: `{ kind: 'blocks' \| 'blocked_by' \| 'duplicate_of', issue_id }`. `blocked_by` is sugar: it creates a `blocks` edge in the other direction so callers never have to reason about orientation. Returns the created link |
 | `DELETE /api/v1/issues/:id/links/:linkId` | Remove a link (either endpoint's id works as `:id`) |
 | `GET /api/v1/issues/:id` | `IssueDetail` gains a `links` object (below) and `effective_state` |
-| `GET /api/v1/issues` (+ project-scoped list) | New filter `ready=true`; rows gain `effective_state`, `blocked` (open-blocker count > 0), and `duplicate` (has a `duplicate_of` edge) so lists can badge without extra requests |
+| `GET /api/v1/issues` (+ project-scoped list) | New filter `ready=true`; rows gain `effective_state`, `open_blockers` (refs of effectively-open blockers: `{ project_name, number, title }`), and `duplicate_of` (ref of the direct canonical issue, or null) so lists can badge — and tooltip the blockers by name — without extra requests |
 
 `IssueDetail.links`, everything pre-joined for display (each entry: `{ link_id, issue_id, project_name, number, title, effective_state }`):
 
@@ -135,7 +135,7 @@ Duplicate of web/3    Login button dead        done     (state shown above is we
 Duplicates   demo/11  Login broken on mobile
 ```
 
-`issues list` marks blocked rows and duplicates in the table (a `blocked`/`dup` marker column) and `--json` carries `effective_state`, `blocked`, and `duplicate` per row. All new commands support `--json`.
+`issues list` marks blocked rows and duplicates in the table (a `blocked`/`dup` marker column) and `--json` carries `effective_state`, `open_blockers`, and `duplicate_of` per row. All new commands support `--json`.
 
 ## Web UI
 
@@ -146,7 +146,7 @@ Follows the phase-one look and feel throughout: shadcn-svelte primitives, Tabler
 - The `StateBadge` shows the **effective** state, keeping its shared-element view-transition to the detail page. For a duplicate this is the canonical issue's state — a row's badge can therefore show a state name from another workflow; the category color makes it read correctly regardless.
 - **Blocked marker**: an issue with ≥ 1 effectively-open blocker gets a small amber chip after the title — `IconBan` plus the open-blocker count (e.g. `⃠ 2`) — styled like the existing schedule repeat chip. Its tooltip lists the open blockers by ref and title ("Blocked by demo/3 — Fix schema review; web/5 — …"). The chip is informational, not a nested link (the row already navigates); it disappears — with the row's usual transition, no snap — once the last blocker effectively closes.
 - **Duplicate marker**: a duplicate gets a muted `IconCopy` chip labeled `dup`, tooltip "Duplicate of demo/3 — *Login button dead*". Duplicate rows render slightly muted overall (like paused schedule rows) to signal "this is not where the work is".
-- Both markers derive from the `blocked` / `duplicate` fields the list API now returns — no extra requests.
+- Both markers derive from the `open_blockers` / `duplicate_of` fields the list API now returns — no extra requests.
 
 ### Issues tab — Ready filter
 
