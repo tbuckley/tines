@@ -82,9 +82,9 @@
 			"send_email": [{ "name": "EMAIL" }],
 			"vars": {
 				// BETTER_AUTH_URL is deliberately unset: preview URLs differ per
-				// version, so auth derives its base URL from the request origin
-				// (see src/lib/server/auth.ts). Magic-link sign-in works on
-				// previews; Google OAuth does not (no wildcard redirect URIs).
+				// PR (stable per-PR aliases), so auth derives its base URL from the
+				// request origin (see src/lib/server/auth.ts). Magic-link sign-in
+				// works on previews; Google OAuth does not (no wildcard redirect URIs).
 				"EMAIL_FROM": "tines-noreply@tbuckley.dev"
 			}
 		}

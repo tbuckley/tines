@@ -47,20 +47,24 @@ jobs:
 
       # Uploads a new version WITHOUT deploying it: nothing is promoted, and
       # the version gets a preview URL on workers.dev (requires
-      # "preview_urls": true in the preview environment).
+      # "preview_urls": true in the preview environment). --preview-alias
+      # points a stable per-PR alias URL (pr-<number>-tines-web-preview...)
+      # at the new version, so the URL stays the same across pushes to the PR.
       - name: Upload preview version
         id: upload
         working-directory: apps/web
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          PREVIEW_ALIAS: pr-${{ github.event.pull_request.number }}
         run: |
           pnpm exec wrangler versions upload --env preview \
+            --preview-alias "$PREVIEW_ALIAS" \
             --message "PR #${{ github.event.pull_request.number }} (${{ github.event.pull_request.head.sha }})" \
             | tee upload.log
-          url=$(grep -oE 'https://[A-Za-z0-9.-]+\.workers\.dev' upload.log | head -n1)
+          url=$(grep -oE "https://${PREVIEW_ALIAS}-[A-Za-z0-9.-]+\.workers\.dev" upload.log | head -n1)
           if [ -z "$url" ]; then
-            echo "Could not find a preview URL in wrangler output" >&2
+            echo "Could not find the aliased preview URL in wrangler output" >&2
             exit 1
           fi
           echo "url=$url" >> "$GITHUB_OUTPUT"
@@ -77,7 +81,7 @@ jobs:
               marker,
               `**Preview:** ${process.env.PREVIEW_URL}`,
               '',
-              `Deployed from ${process.env.HEAD_SHA}. Runs against the shared preview database; production is unaffected.`,
+              `This URL is stable for the PR and always serves its latest push (currently ${process.env.HEAD_SHA}). Runs against the shared preview database; production is unaffected.`,
             ].join('\n');
             const { owner, repo } = context.repo;
             const issue_number = context.issue.number;

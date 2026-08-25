@@ -125,10 +125,11 @@ files are skipped and a no-op run is safe.
 `.github/workflows/preview.yml` runs on every pull request (from branches in
 this repo): it builds, runs unit tests, applies the PR's migrations to the
 preview database, then uploads the worker with `wrangler versions upload
---env preview`. Nothing is promoted to live traffic; the version gets a
-preview URL like
-`https://<version-prefix>-tines-web-preview.<subdomain>.workers.dev`, which
-the workflow posts (and keeps updated) as a PR comment. It uses the same two
+--env preview --preview-alias pr-<number>`. Nothing is promoted to live
+traffic; the upload gets a stable per-PR alias URL like
+`https://pr-<number>-tines-web-preview.<subdomain>.workers.dev` — the same
+URL for every push to the PR, always serving the latest upload — which the
+workflow posts (and keeps updated) as a PR comment. It uses the same two
 Actions secrets as the deploy workflow.
 
 Previews use the `preview` wrangler environment (`env.preview` in
@@ -136,7 +137,7 @@ Previews use the `preview` wrangler environment (`env.preview` in
 its own D1 database (`tines-preview`), fully isolated from production data.
 Magic-link sign-in works on previews — `BETTER_AUTH_URL` is unset there, so
 auth derives its base URL from the request origin (preview URLs differ per
-version). Google OAuth does not work on previews (Google doesn't allow
+PR). Google OAuth does not work on previews (Google doesn't allow
 wildcard redirect URIs).
 
 One-time preview setup:
