@@ -76,7 +76,6 @@
 	let inputEl = $state<HTMLInputElement | null>(null);
 	let listOpen = $state(false);
 	let highlight = $state(0);
-	let submitting = $state(false);
 	let formError = $state<FormError | null>(null);
 
 	// The picker's pool: fetched once, when the form first opens. Single-user
@@ -185,27 +184,69 @@
 		return { message: e.message };
 	}
 
+	/** Rows shown before the server confirmed them: dimmed, not yet removable. */
+	let pendingLinkIds = $state(new Set<string>());
+	const isPending = (item: LinkedIssue) => pendingLinkIds.has(item.link_id);
+
+	/**
+	 * Replace (or with `to: null`, drop) the row with link_id `from` in a
+	 * group. Tolerates a reload having already reconciled the row away: a
+	 * patch never duplicates an issue the server truth already lists, and a
+	 * rollback of a vanished row is a no-op.
+	 */
+	function setLink(
+		group: 'blocked_by' | 'blocks' | 'duplicate_of',
+		from: string,
+		to: LinkedIssue | null
+	) {
+		if (group === 'duplicate_of') {
+			if (links.duplicate_of?.link_id === from) links.duplicate_of = to;
+			else if (to && links.duplicate_of === null) links.duplicate_of = to;
+			return;
+		}
+		const rest = links[group].filter((l) => l.link_id !== from);
+		links[group] = to && !rest.some((l) => l.issue_id === to.issue_id) ? [...rest, to] : rest;
+	}
+
 	async function add(target: Issue) {
-		if (submitting) return;
-		submitting = true;
 		formError = null;
+		// Optimistic, like pending comments: the row appears dimmed immediately
+		// (which also drops the issue from the suggestions, so a second tap
+		// can't double-add), and the server's verdict patches or removes it.
+		const requestKind = kind;
+		const group = requestKind === 'duplicate_of' ? 'duplicate_of' : requestKind;
+		const tempId = `pending-${target.id}`;
+		const entry: LinkedIssue = {
+			link_id: tempId,
+			issue_id: target.id,
+			project_name: target.project_name,
+			number: target.number,
+			title: target.title,
+			effective_state: target.effective_state
+		};
+		pendingLinkIds = new Set([...pendingLinkIds, tempId]);
+		setLink(group, tempId, entry);
+		queryText = '';
+		highlight = 0;
+		inputEl?.focus();
 		try {
-			await api.addIssueLink(issueId, { kind, issue_id: target.id });
-			queryText = '';
-			highlight = 0;
-			// The refreshed links slide the new row into its group.
+			const created = await api.addIssueLink(issueId, { kind: requestKind, issue_id: target.id });
+			// Swap in the real link id before the reload lands, so the row is
+			// removable right away; the reload then reconciles everything else
+			// (badges, readiness, effective states, activity).
+			setLink(group, tempId, { ...entry, link_id: created.id });
 			await invalidateAll();
-			inputEl?.focus();
 		} catch (e) {
+			setLink(group, tempId, null);
 			// Rejections belong under the form, not in the page banner: the form
-			// stays open with the input preserved so the user can correct course.
+			// stays open so the user can correct course.
 			if (e instanceof ApiError && (e.status === 422 || e.status === 409)) {
 				formError = describeError(e);
 			} else {
 				onerror(e);
 			}
 		} finally {
-			submitting = false;
+			pendingLinkIds = new Set([...pendingLinkIds].filter((id) => id !== tempId));
 		}
 	}
 
@@ -224,7 +265,7 @@
 			<ul>
 				{#each items as item (item.link_id)}
 					<li
-						class="group/row flex items-center gap-1"
+						class="group/row flex items-center gap-1 {isPending(item) ? 'opacity-60' : ''}"
 						animate:flip={{ duration: dur() }}
 						transition:slide={{ duration: dur() }}
 					>
@@ -251,6 +292,7 @@
 							class="text-muted-foreground hover:text-foreground shrink-0 rounded p-1.5 transition-opacity focus-visible:opacity-100 pointer-fine:opacity-0 pointer-fine:group-hover/row:opacity-100"
 							title="Remove link"
 							aria-label="Remove link to {item.project_name}/#{item.number}"
+							disabled={isPending(item)}
 							onclick={() => removeLink(item)}
 						>
 							<IconX size={14} stroke={1.75} />
@@ -337,7 +379,6 @@
 									highlight
 										? 'bg-accent'
 										: ''} {suggestion.effective_state.category === 'done' ? 'opacity-55' : ''}"
-									disabled={submitting}
 									onmouseenter={() => (highlight = i)}
 									onpointerdown={(e) => e.preventDefault()}
 									onclick={() => add(suggestion)}
