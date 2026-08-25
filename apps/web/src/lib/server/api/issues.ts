@@ -8,6 +8,9 @@ import {
 	type CreateIssueResponse,
 	type Issue,
 	type IssueDetail,
+	type IssueLinks,
+	type IssueRef,
+	type LinkedIssue,
 	type StateCategory,
 	type TransitionIssueRequest,
 	type UpdateIssueRequest,
@@ -29,28 +32,114 @@ import { actorOf, eventInsert } from './events';
 import { getSchedule, prepareSchedule } from './schedules';
 import { loadWorkflow } from './workflows';
 
+/**
+ * SQL for the effective category of the blocker on a `blocks` edge into
+ * `issue.id` — its own state's category unless it is a duplicate, then the
+ * chain terminus's (via the `effective` CTE). Used both to list open
+ * blockers and to filter for readiness.
+ */
+const openBlockerFrom = sql`
+	FROM issue_link bl
+	JOIN issue bi ON bi.id = bl.source_issue_id
+	JOIN project bp ON bp.id = bi.project_id
+	LEFT JOIN effective be ON be.issue_id = bi.id
+	LEFT JOIN issue bei ON bei.id = be.effective_issue_id
+	JOIN workflow_state bs ON bs.id = COALESCE(bei.state_id, bi.state_id)
+	WHERE bl.target_issue_id = issue.id AND bl.kind = 'blocks' AND bs.category != 'done'`;
+
 export function issueQuery(db: Kysely<Database>, userId: string) {
-	return db
-		.selectFrom('issue')
-		.innerJoin('project', 'project.id', 'issue.project_id')
-		.innerJoin('workflow_state as state', 'state.id', 'issue.state_id')
-		.leftJoin('scheduled_task', 'scheduled_task.id', 'issue.scheduled_task_id')
-		.selectAll('issue')
-		.select([
-			'project.name as project_name',
-			'state.name as state_name',
-			'state.category as state_category',
-			'state.position as state_position',
-			'scheduled_task.name as scheduled_task_name'
-		])
-		.select((eb) =>
-			eb
-				.selectFrom('event')
-				.whereRef('event.issue_id', '=', 'issue.id')
-				.select((eb2) => eb2.fn.max('event.created_at').as('m'))
-				.as('last_event_at')
-		)
-		.where('project.user_id', '=', userId);
+	return (
+		db
+			// Every hop along every duplicate chain. Cycles are rejected at write
+			// time; the depth cap makes a racing cycle degrade to "resolution
+			// stops" instead of unbounded recursion.
+			.withRecursive('dup_chain', (cte) =>
+				cte
+					.selectFrom('issue_link')
+					.where('issue_link.kind', '=', 'duplicate_of')
+					.select([
+						'issue_link.source_issue_id as issue_id',
+						'issue_link.target_issue_id as next_id',
+						sql<number>`1`.as('depth')
+					])
+					.unionAll(
+						cte
+							.selectFrom('dup_chain')
+							.innerJoin('issue_link', (join) =>
+								join
+									.onRef('issue_link.source_issue_id', '=', 'dup_chain.next_id')
+									.on('issue_link.kind', '=', 'duplicate_of')
+							)
+							.where('dup_chain.depth', '<', 32)
+							.select([
+								'dup_chain.issue_id as issue_id',
+								'issue_link.target_issue_id as next_id',
+								sql<number>`dup_chain.depth + 1`.as('depth')
+							])
+					)
+			)
+			// The chain terminus per duplicate: the hop whose target has no
+			// further duplicate edge. One outgoing edge per issue + no cycles
+			// ⇒ at most one row per issue_id.
+			.with('effective', (cte) =>
+				cte
+					.selectFrom('dup_chain')
+					.select(['dup_chain.issue_id', 'dup_chain.next_id as effective_issue_id'])
+					.where(({ not, exists, selectFrom }) =>
+						not(
+							exists(
+								selectFrom('issue_link')
+									.select('issue_link.id')
+									.whereRef('issue_link.source_issue_id', '=', 'dup_chain.next_id')
+									.where('issue_link.kind', '=', 'duplicate_of')
+							)
+						)
+					)
+			)
+			.selectFrom('issue')
+			.innerJoin('project', 'project.id', 'issue.project_id')
+			.innerJoin('workflow_state as state', 'state.id', 'issue.state_id')
+			.leftJoin('effective', 'effective.issue_id', 'issue.id')
+			.leftJoin('issue as eff_issue', 'eff_issue.id', 'effective.effective_issue_id')
+			.leftJoin('workflow_state as eff_state', 'eff_state.id', 'eff_issue.state_id')
+			.leftJoin('scheduled_task', 'scheduled_task.id', 'issue.scheduled_task_id')
+			.selectAll('issue')
+			.select([
+				'project.name as project_name',
+				'state.name as state_name',
+				'state.category as state_category',
+				'state.position as state_position',
+				'scheduled_task.name as scheduled_task_name'
+			])
+			.select([
+				sql<string>`COALESCE(eff_state.id, state.id)`.as('eff_state_id'),
+				sql<string>`COALESCE(eff_state.name, state.name)`.as('eff_state_name'),
+				sql<StateCategory>`COALESCE(eff_state.category, state.category)`.as('eff_state_category'),
+				sql<number>`COALESCE(eff_state.position, state.position)`.as('eff_state_position'),
+				sql<string | null>`(
+					SELECT json_object('project_name', dp.name, 'number', di.number, 'title', di.title)
+					FROM issue_link dl
+					JOIN issue di ON di.id = dl.target_issue_id
+					JOIN project dp ON dp.id = di.project_id
+					WHERE dl.source_issue_id = issue.id AND dl.kind = 'duplicate_of'
+				)`.as('duplicate_of_json'),
+				sql<string | null>`(
+					SELECT json_group_array(json_object('project_name', b.pn, 'number', b.num, 'title', b.t))
+					FROM (
+						SELECT bp.name AS pn, bi.number AS num, bi.title AS t ${openBlockerFrom}
+						ORDER BY bi.created_at, bi.id
+					) AS b
+				)`.as('open_blockers_json')
+			])
+			.select((eb) =>
+				eb
+					.selectFrom('event')
+					.whereRef('event.issue_id', '=', 'issue.id')
+					.select((eb2) => eb2.fn.max('event.created_at').as('m'))
+					.as('last_event_at')
+			)
+			.where('project.user_id', '=', userId)
+	);
 }
 
 type IssueRow = Awaited<ReturnType<ReturnType<typeof issueQuery>['execute']>>[number];
@@ -70,6 +159,14 @@ export function serializeIssue(row: IssueRow): Issue {
 			category: row.state_category,
 			position: row.state_position
 		},
+		effective_state: {
+			id: row.eff_state_id,
+			name: row.eff_state_name,
+			category: row.eff_state_category,
+			position: row.eff_state_position
+		},
+		duplicate_of: row.duplicate_of_json ? (JSON.parse(row.duplicate_of_json) as IssueRef) : null,
+		open_blockers: row.open_blockers_json ? (JSON.parse(row.open_blockers_json) as IssueRef[]) : [],
 		scheduled_task_id: row.scheduled_task_id,
 		scheduled_task_name: row.scheduled_task_name,
 		created_at: row.created_at,
@@ -86,6 +183,8 @@ export interface IssueListFilters {
 	/** Schedule id: only issues created by that scheduled task. */
 	schedule?: string;
 	hideDone?: boolean;
+	/** Only not-done, non-duplicate issues whose blockers are all effectively done. */
+	ready?: boolean;
 	/** Restrict to one project id (the nested per-project route). */
 	projectId?: string;
 }
@@ -102,12 +201,18 @@ export async function listIssues(
 		const p = filters.project;
 		q = q.where((eb) => eb.or([eb('project.id', '=', p), eb('project.name', '=', p)]));
 	}
+	// State-shaped filters match the effective state, so duplicates follow
+	// their canonical issue through every list (virtual passthrough).
 	if (filters.state) {
 		const s = filters.state;
-		q = q.where((eb) => eb.or([eb('state.id', '=', s), eb('state.name', '=', s)]));
+		q = q.where(
+			sql<boolean>`(COALESCE(eff_state.id, state.id) = ${s} OR COALESCE(eff_state.name, state.name) = ${s})`
+		);
 	}
 	if (filters.category) {
-		q = q.where('state.category', '=', filters.category as StateCategory);
+		q = q.where(
+			sql<boolean>`COALESCE(eff_state.category, state.category) = ${filters.category as StateCategory}`
+		);
 	}
 	if (filters.workflow) {
 		const w = filters.workflow;
@@ -129,7 +234,19 @@ export async function listIssues(
 		);
 	}
 	if (filters.schedule) q = q.where('issue.scheduled_task_id', '=', filters.schedule);
-	if (filters.hideDone) q = q.where('state.category', '!=', 'done');
+	if (filters.hideDone) {
+		q = q.where(sql<boolean>`COALESCE(eff_state.category, state.category) != 'done'`);
+	}
+	if (filters.ready) {
+		// Ready = effectively not done, not itself a duplicate, and no blocker
+		// still effectively open. Readiness is the default; links only take it away.
+		q = q
+			.where(sql<boolean>`COALESCE(eff_state.category, state.category) != 'done'`)
+			.where(
+				sql<boolean>`NOT EXISTS (SELECT 1 FROM issue_link dl WHERE dl.source_issue_id = issue.id AND dl.kind = 'duplicate_of')`
+			)
+			.where(sql<boolean>`NOT EXISTS (SELECT 1 ${openBlockerFrom})`);
+	}
 	if (page.cursor) {
 		const { createdAt, id } = page.cursor;
 		q = q.where((eb) =>
@@ -201,6 +318,59 @@ async function loadComments(db: Kysely<Database>, issueId: string): Promise<Comm
 	}));
 }
 
+/**
+ * All four link groups for an issue, pre-joined for display. Link rows are
+ * not user-scoped here (links only ever connect one user's issues, and the
+ * linked-issue lookup below is scoped), sorted oldest link first.
+ */
+export async function loadIssueLinks(
+	db: Kysely<Database>,
+	userId: string,
+	issueId: string
+): Promise<IssueLinks> {
+	const rows = await db
+		.selectFrom('issue_link')
+		.selectAll()
+		.where((eb) =>
+			eb.or([eb('source_issue_id', '=', issueId), eb('target_issue_id', '=', issueId)])
+		)
+		.orderBy('created_at asc')
+		.orderBy('id asc')
+		.execute();
+
+	const otherIds = [
+		...new Set(rows.map((l) => (l.source_issue_id === issueId ? l.target_issue_id : l.source_issue_id)))
+	];
+	const others =
+		otherIds.length === 0
+			? []
+			: await issueQuery(db, userId).where('issue.id', 'in', otherIds).execute();
+	const byId = new Map(others.map((r) => [r.id, serializeIssue(r)]));
+
+	const links: IssueLinks = { blocked_by: [], blocks: [], duplicate_of: null, duplicated_by: [] };
+	for (const row of rows) {
+		const otherId = row.source_issue_id === issueId ? row.target_issue_id : row.source_issue_id;
+		const other = byId.get(otherId);
+		if (!other) continue;
+		const linked: LinkedIssue = {
+			link_id: row.id,
+			issue_id: other.id,
+			project_name: other.project_name,
+			number: other.number,
+			title: other.title,
+			effective_state: other.effective_state
+		};
+		if (row.kind === 'blocks') {
+			if (row.source_issue_id === issueId) links.blocks.push(linked);
+			else links.blocked_by.push(linked);
+		} else {
+			if (row.source_issue_id === issueId) links.duplicate_of = linked;
+			else links.duplicated_by.push(linked);
+		}
+	}
+	return links;
+}
+
 export async function getIssueDetail(
 	db: Kysely<Database>,
 	userId: string,
@@ -215,15 +385,17 @@ export async function getIssueDetail(
 	if (!row) throw notFound();
 
 	const issue = serializeIssue(row);
-	const [workflow, comments] = await Promise.all([
+	const [workflow, comments, links] = await Promise.all([
 		loadWorkflow(db, userId, issue.workflow_id),
-		loadComments(db, issue.id)
+		loadComments(db, issue.id),
+		loadIssueLinks(db, userId, issue.id)
 	]);
 	return {
 		...issue,
 		workflow,
 		comments,
-		allowed_transitions: allowedTransitions(workflow, issue.state.id)
+		allowed_transitions: allowedTransitions(workflow, issue.state.id),
+		links
 	};
 }
 

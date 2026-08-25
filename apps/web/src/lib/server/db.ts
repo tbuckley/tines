@@ -77,6 +77,15 @@ export interface ScheduledTaskTable {
 	updated_at: number;
 }
 
+export interface IssueLinkTable {
+	id: string;
+	/** `blocks`: source blocks target. `duplicate_of`: source duplicates target (the canonical issue). */
+	source_issue_id: string;
+	target_issue_id: string;
+	kind: 'blocks' | 'duplicate_of';
+	created_at: number;
+}
+
 export interface CommentTable {
 	id: string;
 	issue_id: string;
@@ -123,6 +132,7 @@ export interface Database {
 	workflow_state: WorkflowStateTable;
 	workflow_transition: WorkflowTransitionTable;
 	issue: IssueTable;
+	issue_link: IssueLinkTable;
 	scheduled_task: ScheduledTaskTable;
 	comment: CommentTable;
 	event: EventTable;
