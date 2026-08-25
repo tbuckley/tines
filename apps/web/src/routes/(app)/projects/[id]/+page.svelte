@@ -1,4 +1,5 @@
 <script lang="ts">
+	import type { ContextItem } from '@tines/shared';
 	import { ApiError } from '@tines/shared';
 	import IconChevronLeft from '@tabler/icons-svelte/icons/chevron-left';
 	import IconPlus from '@tabler/icons-svelte/icons/plus';
@@ -7,6 +8,8 @@
 	import { goto, invalidateAll } from '$app/navigation';
 	import { page } from '$app/state';
 	import { api } from '$lib/api';
+	import ContextItemEditor from '$lib/components/ContextItemEditor.svelte';
+	import ContextItemList from '$lib/components/ContextItemList.svelte';
 	import IssueList from '$lib/components/IssueList.svelte';
 	import Modal from '$lib/components/Modal.svelte';
 	import NewIssueModal from '$lib/components/NewIssueModal.svelte';
@@ -34,6 +37,38 @@
 		newIssueRepeatOpen = true;
 		newIssueOpen = true;
 	}
+
+	// --- context -----------------------------------------------------------------
+
+	let contextEditorOpen = $state(false);
+	let editingContextItem = $state<ContextItem | null>(null);
+
+	function openContextCreate() {
+		editingContextItem = null;
+		contextEditorOpen = true;
+	}
+	function openContextEdit(item: ContextItem) {
+		editingContextItem = item;
+		contextEditorOpen = true;
+	}
+
+	// Project-only items first, then project ∧ state grouped under their
+	// state names (issue-anchored items are excluded server-side).
+	const projectOnlyItems = $derived(data.contextItems.filter((i) => !i.scope.workflow_state_id));
+	const stateGroups = $derived.by(() => {
+		const groups = new Map<string, { label: string; items: ContextItem[] }>();
+		for (const item of data.contextItems) {
+			if (!item.scope.workflow_state_id) continue;
+			const key = item.scope.workflow_state_id;
+			const group = groups.get(key) ?? {
+				label: `${item.scope.workflow_name} / ${item.scope.workflow_state_name}`,
+				items: []
+			};
+			group.items.push(item);
+			groups.set(key, group);
+		}
+		return [...groups.values()];
+	});
 
 	// --- settings ----------------------------------------------------------------
 
@@ -77,6 +112,30 @@
 			await goto('/projects');
 			await invalidateAll();
 		} catch (err) {
+			// Context scoped to the project blocks deletion; list what a forced
+			// delete would sweep and offer it.
+			if (err instanceof ApiError && err.code === 'context_attached') {
+				const items = (err.details?.context_items ?? []) as {
+					kind: string;
+					name: string;
+					scope_label: string;
+				}[];
+				const listing = items.map((i) => `  · ${i.kind} “${i.name}” (${i.scope_label})`).join('\n');
+				if (
+					confirm(
+						`Deleting "${data.project.name}" also deletes ${items.length} context item${items.length === 1 ? '' : 's'}:\n\n${listing}\n\nDelete them too?`
+					)
+				) {
+					try {
+						await api.deleteProject(data.project.id, { force_delete_context: true });
+						await goto('/projects');
+						await invalidateAll();
+					} catch (err2) {
+						showError(err2);
+					}
+				}
+				return;
+			}
 			showError(err);
 		}
 	}
@@ -140,6 +199,35 @@
 	</div>
 {/if}
 
+<div class="mb-8">
+	<div class="mb-3 flex items-center justify-between">
+		<h2 class="text-sm font-semibold">Context</h2>
+		<Button size="sm" variant="ghost" onclick={openContextCreate} aria-label="Add context">
+			<IconPlus size={14} /> Add
+		</Button>
+	</div>
+	{#if data.contextItems.length === 0}
+		<div class="text-muted-foreground rounded-lg border border-dashed p-6 text-center text-sm">
+			No context for this project yet — attach conventions, skills, or repos that every issue here
+			should carry.
+		</div>
+	{:else}
+		<div class="space-y-4">
+			{#if projectOnlyItems.length > 0}
+				<ContextItemList items={projectOnlyItems} showScope={false} onselect={openContextEdit} />
+			{/if}
+			{#each stateGroups as group (group.label)}
+				<div>
+					<h3 class="text-muted-foreground mb-1.5 text-xs font-semibold">
+						Only in state <span class="text-foreground">{group.label}</span>
+					</h3>
+					<ContextItemList items={group.items} showScope={false} onselect={openContextEdit} />
+				</div>
+			{/each}
+		</div>
+	{/if}
+</div>
+
 <div class="mb-3 flex items-center justify-between">
 	<h2 class="text-sm font-semibold">Issues</h2>
 	<label class="text-muted-foreground flex items-center gap-2 text-sm">
@@ -157,6 +245,16 @@
 	projects={[data.project]}
 	workflows={data.workflows}
 	project={data.project}
+/>
+
+<!-- context editor: create defaults the scope to this project -->
+<ContextItemEditor
+	bind:open={contextEditorOpen}
+	item={editingContextItem}
+	defaults={{ project_id: data.project.id }}
+	projects={[data.project]}
+	workflows={data.workflows}
+	onsaved={invalidateAll}
 />
 
 <!-- settings -->

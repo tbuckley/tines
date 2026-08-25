@@ -25,6 +25,7 @@ import {
 	type ActorContext,
 	type Page
 } from './core';
+import { contextSummaryForIssue } from './context';
 import { actorOf, eventInsert } from './events';
 import { getSchedule, prepareSchedule } from './schedules';
 import { loadWorkflow } from './workflows';
@@ -215,15 +216,21 @@ export async function getIssueDetail(
 	if (!row) throw notFound();
 
 	const issue = serializeIssue(row);
-	const [workflow, comments] = await Promise.all([
+	const [workflow, comments, contextSummary] = await Promise.all([
 		loadWorkflow(db, userId, issue.workflow_id),
-		loadComments(db, issue.id)
+		loadComments(db, issue.id),
+		contextSummaryForIssue(db, userId, {
+			projectId: issue.project_id,
+			stateId: issue.state.id,
+			issueId: issue.id
+		})
 	]);
 	return {
 		...issue,
 		workflow,
 		comments,
-		allowed_transitions: allowedTransitions(workflow, issue.state.id)
+		allowed_transitions: allowedTransitions(workflow, issue.state.id),
+		context_summary: contextSummary
 	};
 }
 

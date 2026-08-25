@@ -14,6 +14,7 @@
 	let createOpen = $state(false);
 	let name = $state('');
 	let description = $state('');
+	let initialPrompt = $state('');
 	let creating = $state(false);
 	let createError = $state<string | null>(null);
 
@@ -23,10 +24,15 @@
 		creating = true;
 		createError = null;
 		try {
-			const project = await api.createProject({ name, description });
+			const project = await api.createProject({
+				name,
+				description,
+				initial_prompt: initialPrompt.trim() || undefined
+			});
 			createOpen = false;
 			name = '';
 			description = '';
+			initialPrompt = '';
 			await invalidateAll();
 			await goto(`/projects/${project.id}`);
 		} catch (err) {
@@ -85,6 +91,20 @@
 		<div class="space-y-1.5">
 			<label class="text-sm font-medium" for="project-description">Description</label>
 			<Textarea id="project-description" bind:value={description} rows={3} placeholder="What is this project about?" />
+		</div>
+		<div class="space-y-1.5">
+			<label class="text-sm font-medium" for="project-prompt">
+				House conventions <span class="text-muted-foreground font-normal">(optional)</span>
+			</label>
+			<Textarea
+				id="project-prompt"
+				bind:value={initialPrompt}
+				rows={4}
+				placeholder="Stitched into the prompt of every agent working in this project — style rules, commands that must pass, where things live…"
+			/>
+			<p class="text-muted-foreground text-xs">
+				Saved as a project-scoped context prompt named “conventions”; editable any time.
+			</p>
 		</div>
 		{#if createError}
 			<p class="text-destructive text-sm">{createError}</p>

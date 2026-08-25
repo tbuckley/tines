@@ -1,11 +1,16 @@
 <script lang="ts">
+	import type { ContextItem, UpdateWorkflowRequest } from '@tines/shared';
 	import { ApiError } from '@tines/shared';
+	import IconBooks from '@tabler/icons-svelte/icons/books';
 	import IconChevronLeft from '@tabler/icons-svelte/icons/chevron-left';
 	import IconCopy from '@tabler/icons-svelte/icons/copy';
 	import IconLock from '@tabler/icons-svelte/icons/lock';
+	import IconPlus from '@tabler/icons-svelte/icons/plus';
 	import { slide } from 'svelte/transition';
 	import { goto, invalidateAll } from '$app/navigation';
 	import { api } from '$lib/api';
+	import ContextItemEditor from '$lib/components/ContextItemEditor.svelte';
+	import ContextItemList from '$lib/components/ContextItemList.svelte';
 	import StateBadge from '$lib/components/StateBadge.svelte';
 	import WorkflowEditor from '$lib/components/WorkflowEditor.svelte';
 	import WorkflowGraph from '$lib/components/WorkflowGraph.svelte';
@@ -18,6 +23,58 @@
 	function showError(e: unknown) {
 		errorMessage = e instanceof ApiError ? e.message : 'Something went wrong — try again.';
 		setTimeout(() => (errorMessage = null), 6000);
+	}
+
+	// --- context -----------------------------------------------------------------
+
+	const itemsByState = $derived.by(() => {
+		const map = new Map<string, ContextItem[]>();
+		for (const item of data.contextItems) {
+			const key = item.scope.workflow_state_id!;
+			map.set(key, [...(map.get(key) ?? []), item]);
+		}
+		return map;
+	});
+
+	let selectedStateId = $state<string | null>(null);
+	let contextEditorOpen = $state(false);
+	let editingContextItem = $state<ContextItem | null>(null);
+
+	function openContextCreate(stateId: string) {
+		selectedStateId = stateId;
+		editingContextItem = null;
+		contextEditorOpen = true;
+	}
+	function openContextEdit(item: ContextItem) {
+		editingContextItem = item;
+		contextEditorOpen = true;
+	}
+
+	/**
+	 * When a save (state removal) or delete is blocked by attached context,
+	 * list what a forced delete would sweep and ask before retrying.
+	 */
+	function confirmContextSweep(err: unknown): boolean {
+		if (!(err instanceof ApiError) || err.code !== 'context_attached') return false;
+		const items = (err.details?.context_items ?? []) as {
+			kind: string;
+			name: string;
+			scope_label: string;
+		}[];
+		const listing = items.map((i) => `  · ${i.kind} “${i.name}” (${i.scope_label})`).join('\n');
+		return confirm(
+			`This also deletes ${items.length} attached context item${items.length === 1 ? '' : 's'}:\n\n${listing}\n\nDelete them too?`
+		);
+	}
+
+	async function saveWorkflow(request: UpdateWorkflowRequest) {
+		try {
+			await api.updateWorkflow(data.workflow.id, request);
+		} catch (err) {
+			if (!confirmContextSweep(err)) throw err;
+			await api.updateWorkflow(data.workflow.id, { ...request, force_delete_context: true });
+		}
+		await invalidateAll();
 	}
 
 	/** Duplicate the workflow into the user's library (states by name). */
@@ -46,7 +103,12 @@
 	async function deleteWorkflow() {
 		if (!confirm(`Delete workflow "${data.workflow.name}"?`)) return;
 		try {
-			await api.deleteWorkflow(data.workflow.id);
+			try {
+				await api.deleteWorkflow(data.workflow.id);
+			} catch (err) {
+				if (!confirmContextSweep(err)) throw err;
+				await api.deleteWorkflow(data.workflow.id, { force_delete_context: true });
+			}
 			await goto('/workflows');
 			await invalidateAll();
 		} catch (err) {
@@ -140,15 +202,64 @@
 	</div>
 {:else}
 	{#key data.workflow.updated_at}
-		<WorkflowEditor
-			workflow={data.workflow}
-			onsave={async (request) => {
-				await api.updateWorkflow(data.workflow.id, request);
-				await invalidateAll();
-			}}
-		/>
+		<WorkflowEditor workflow={data.workflow} onsave={saveWorkflow} />
 	{/key}
 {/if}
+
+<!-- per-state context: what agents carry while an issue sits in each state -->
+<div class="mt-8">
+	<h2 class="mb-1 flex items-center gap-1.5 text-sm font-semibold">
+		<IconBooks size={16} stroke={1.75} /> Context by state
+	</h2>
+	<p class="text-muted-foreground mb-3 text-xs">
+		Items scoped to a state apply to any issue sitting in it. Removing a state warns about its
+		attached context.
+	</p>
+	<div class="rounded-lg border">
+		{#each data.workflow.states as state (state.id)}
+			{@const items = itemsByState.get(state.id) ?? []}
+			{@const open = selectedStateId === state.id}
+			<div class="border-b last:border-0">
+				<button
+					type="button"
+					class="hover:bg-muted/50 flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm"
+					onclick={() => (selectedStateId = open ? null : state.id)}
+					aria-expanded={open}
+				>
+					<StateBadge {state} />
+					{#if items.length > 0}
+						<span class="bg-primary/10 text-primary rounded-full px-2 py-0.5 text-xs font-medium">
+							{items.length} item{items.length === 1 ? '' : 's'}
+						</span>
+					{:else}
+						<span class="text-muted-foreground text-xs">no context</span>
+					{/if}
+				</button>
+				{#if open}
+					<div class="space-y-2 px-3 pb-3" transition:slide={{ duration: prefersReducedMotion() ? 0 : 180 }}>
+						<ContextItemList
+							items={items}
+							onselect={openContextEdit}
+							emptyMessage="Nothing scoped to this state yet."
+						/>
+						<Button size="sm" variant="ghost" onclick={() => openContextCreate(state.id)}>
+							<IconPlus size={14} /> Add context for this state
+						</Button>
+					</div>
+				{/if}
+			</div>
+		{/each}
+	</div>
+</div>
+
+<ContextItemEditor
+	bind:open={contextEditorOpen}
+	item={editingContextItem}
+	defaults={selectedStateId ? { workflow_state_id: selectedStateId } : {}}
+	projects={data.projects}
+	workflows={data.workflows}
+	onsaved={invalidateAll}
+/>
 
 {#each data.workflow.warnings ?? [] as warning (warning)}
 	<p class="mt-6 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">

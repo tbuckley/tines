@@ -70,6 +70,16 @@
 				return 'deleted schedule';
 			case 'scheduled_task.skipped':
 				return 'skipped an occurrence of schedule';
+			case 'context.created':
+			case 'context.updated':
+			case 'context.deleted': {
+				const action = ev.type.split('.')[1];
+				// With an issue link following, name the item here; otherwise
+				// objectName() renders the payload name after the verb.
+				return ev.issue_ref
+					? `${action} ${p.kind} “${p.name}” on`
+					: `${action} ${p.kind}`;
+			}
 			default:
 				return ev.type;
 		}

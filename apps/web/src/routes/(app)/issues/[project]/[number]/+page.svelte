@@ -1,14 +1,20 @@
 <script lang="ts">
-	import type { AllowedTransition, Comment } from '@tines/shared';
+	import type { AllowedTransition, Comment, ContextItem } from '@tines/shared';
 	import { ApiError } from '@tines/shared';
 	import IconArrowRight from '@tabler/icons-svelte/icons/arrow-right';
 	import IconChevronLeft from '@tabler/icons-svelte/icons/chevron-left';
 	import IconPencil from '@tabler/icons-svelte/icons/pencil';
+	import IconPlus from '@tabler/icons-svelte/icons/plus';
 	import IconRepeat from '@tabler/icons-svelte/icons/repeat';
+	import IconRocket from '@tabler/icons-svelte/icons/rocket';
 	import { fade, slide } from 'svelte/transition';
 	import { invalidateAll } from '$app/navigation';
 	import { api } from '$lib/api';
+	import ContextItemEditor from '$lib/components/ContextItemEditor.svelte';
+	import ContextItemList from '$lib/components/ContextItemList.svelte';
+	import EffectiveContextView from '$lib/components/EffectiveContextView.svelte';
 	import EventList from '$lib/components/EventList.svelte';
+	import LaunchPromptDialog from '$lib/components/LaunchPromptDialog.svelte';
 	import Markdown from '$lib/components/Markdown.svelte';
 	import StateBadge from '$lib/components/StateBadge.svelte';
 	import WorkflowGraph from '$lib/components/WorkflowGraph.svelte';
@@ -158,6 +164,27 @@
 		}
 	}
 
+	// --- context ----------------------------------------------------------------
+
+	let contextEditorOpen = $state(false);
+	let editingContextItem = $state<ContextItem | null>(null);
+	let promptDialogOpen = $state(false);
+
+	function openContextCreate() {
+		editingContextItem = null;
+		contextEditorOpen = true;
+	}
+	function openContextEdit(item: ContextItem) {
+		editingContextItem = item;
+		contextEditorOpen = true;
+	}
+
+	const contextTotal = $derived(
+		data.issue.context_summary.prompts +
+			data.issue.context_summary.skills +
+			data.issue.context_summary.repos
+	);
+
 	let editingDescription = $state(false);
 	let descriptionDraft = $state('');
 	let savingDescription = $state(false);
@@ -250,6 +277,17 @@
 	</div>
 {/if}
 
+<ContextItemEditor
+	bind:open={contextEditorOpen}
+	item={editingContextItem}
+	defaults={{ issue_id: data.issue.id }}
+	projects={data.projects}
+	workflows={data.workflows}
+	onsaved={invalidateAll}
+/>
+
+<LaunchPromptDialog bind:open={promptDialogOpen} issueId={data.issue.id} />
+
 <div class="grid gap-8 lg:grid-cols-[minmax(0,1fr)_22rem]">
 	<div class="min-w-0 space-y-8">
 		<!-- description -->
@@ -285,6 +323,54 @@
 				{:else}
 					<p class="text-muted-foreground text-sm italic">No description.</p>
 				{/if}
+			</div>
+		</section>
+
+		<!-- context -->
+		<section class="rounded-lg border">
+			<header class="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-2.5">
+				<h2 class="text-sm font-semibold">
+					Context
+					{#if contextTotal > 0}
+						<span class="text-muted-foreground font-normal">
+							({data.issue.context_summary.prompts} prompt{data.issue.context_summary.prompts === 1 ? '' : 's'},
+							{data.issue.context_summary.skills} skill{data.issue.context_summary.skills === 1 ? '' : 's'},
+							{data.issue.context_summary.repos} repo{data.issue.context_summary.repos === 1 ? '' : 's'})
+						</span>
+					{/if}
+				</h2>
+				<div class="flex gap-2">
+					<Button size="sm" variant="outline" onclick={() => (promptDialogOpen = true)}>
+						<IconRocket size={14} /> View launch prompt
+					</Button>
+					<Button size="sm" variant="ghost" onclick={openContextCreate}>
+						<IconPlus size={14} /> Add
+					</Button>
+				</div>
+			</header>
+			<div class="space-y-4 p-4">
+				<div>
+					<h3 class="text-muted-foreground mb-2 text-xs font-semibold tracking-wide uppercase">
+						This issue's context
+					</h3>
+					<ContextItemList
+						items={data.contextItems}
+						onselect={openContextEdit}
+						emptyMessage="Nothing attached to this issue yet — add a note, skill, or repo."
+					/>
+				</div>
+				<details class="group border-t pt-3">
+					<summary class="text-muted-foreground hover:text-foreground cursor-pointer text-sm select-none">
+						Effective context
+						<span class="text-xs">
+							— everything that applies while in
+							<span class="font-medium">{currentState.name}</span> (changes as the issue transitions)
+						</span>
+					</summary>
+					<div class="mt-3">
+						<EffectiveContextView context={data.effectiveContext} />
+					</div>
+				</details>
 			</div>
 		</section>
 

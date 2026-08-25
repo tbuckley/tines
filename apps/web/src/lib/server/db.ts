@@ -77,6 +77,41 @@ export interface ScheduledTaskTable {
 	updated_at: number;
 }
 
+export interface ContextItemTable {
+	id: string;
+	user_id: string;
+	/** 'prompt' | 'skill' | 'repo'; open-ended by schema design. */
+	kind: string;
+	name: string;
+	description: string;
+	/** Scope: nullable dimensions with AND semantics; all NULL = global. */
+	project_id: string | null;
+	workflow_state_id: string | null;
+	issue_id: string | null;
+	/** Prompt payload: Markdown body. */
+	body: string | null;
+	/** Repo payload: pointer fields (dir defaults at read time). */
+	repo_url: string | null;
+	repo_branch: string | null;
+	repo_dir: string | null;
+	/** Ordering within the same exact scope tuple. */
+	position: number;
+	/** Monotonic write counter — a CAS token, not history. */
+	version: number;
+	created_at: number;
+	updated_at: number;
+}
+
+export interface ContextItemFileTable {
+	id: string;
+	context_item_id: string;
+	/** Workspace-relative path; unique per item. */
+	path: string;
+	content: string;
+	created_at: number;
+	updated_at: number;
+}
+
 export interface CommentTable {
 	id: string;
 	issue_id: string;
@@ -124,6 +159,8 @@ export interface Database {
 	workflow_transition: WorkflowTransitionTable;
 	issue: IssueTable;
 	scheduled_task: ScheduledTaskTable;
+	context_item: ContextItemTable;
+	context_item_file: ContextItemFileTable;
 	comment: CommentTable;
 	event: EventTable;
 	api_key: ApiKeyTable;

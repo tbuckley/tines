@@ -1,6 +1,7 @@
 <script lang="ts">
 	import IconActivity from '@tabler/icons-svelte/icons/activity';
 	import IconArrowsSplit2 from '@tabler/icons-svelte/icons/arrows-split-2';
+	import IconBooks from '@tabler/icons-svelte/icons/books';
 	import IconFolder from '@tabler/icons-svelte/icons/folder';
 	import IconKey from '@tabler/icons-svelte/icons/key';
 	import IconListDetails from '@tabler/icons-svelte/icons/list-details';
@@ -18,6 +19,7 @@
 		{ href: '/issues', label: 'Issues', icon: IconListDetails },
 		{ href: '/workflows', label: 'Workflows', icon: IconSitemap },
 		{ href: '/projects', label: 'Projects', icon: IconFolder },
+		{ href: '/context', label: 'Context', icon: IconBooks },
 		{ href: '/activity', label: 'Activity', icon: IconActivity }
 	];
 
@@ -170,7 +172,7 @@
 		style="padding-bottom: env(safe-area-inset-bottom)"
 		aria-label="Primary"
 	>
-		<div class="grid h-16 grid-cols-4">
+		<div class="grid h-16 grid-cols-5">
 			{#each tabs as tab (tab.href)}
 				{@const active = mobileTabPath.startsWith(tab.href)}
 				{@const pending = active && !page.url.pathname.startsWith(tab.href)}

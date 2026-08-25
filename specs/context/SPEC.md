@@ -1,5 +1,9 @@
 # Tines — Context Attachments Spec
 
+> Extended by [AGENT_EDITING.md](./AGENT_EDITING.md): global (empty) scope,
+> agent-maintained journals (append + version CAS), and the reviewed
+> proposal path for broad context edits.
+
 Issues tell an agent *what* to do; context tells it *how*. This spec adds **context items** — prompts, skills, and repo pointers — that attach to issues, workflow states, and projects, and merge into a single **effective context** for any issue. The effective context is the bundle an agent would be launched with: a stitched prompt, skill directories to seed into its workspace, and repositories to check out.
 
 **This spec covers creating, scoping, viewing, and assembling context — not delivering it to agents.** Agent consumption (the supervisor seeding workspaces, launching with the stitched prompt) comes with the supervisor phase. The only consumption surfaces here are the API, a read-only CLI command, and the web UI.
