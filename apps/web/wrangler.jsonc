@@ -6,12 +6,14 @@
 	// Custom entry wrapping the SvelteKit-generated worker: same fetch, plus a
 	// scheduled() handler for the scheduled-task sweep (worker/index.ts).
 	"main": "worker/index.ts",
-	// Cron Trigger driving the scheduled-task sweep. Locally, `wrangler dev
-	// --test-scheduled` exposes GET /__scheduled to fire it on demand.
-	// Occurrences fire at the first sweep at or after their nominal time, so
-	// creation timestamps can lag a schedule by up to this interval.
+	// Cron Trigger driving the scheduled-task and supervisor sweeps. Locally,
+	// `wrangler dev --test-scheduled` exposes GET /__scheduled to fire it on
+	// demand. Occurrences fire at the first sweep at or after their nominal
+	// time, so creation timestamps can lag a schedule by up to this interval.
+	// (The schedules sweep is next_run_at-gated, so the supervisor's faster
+	// cadence is harmless to it.)
 	"triggers": {
-		"crons": ["*/30 * * * *"]
+		"crons": ["*/5 * * * *"]
 	},
 	"assets": {
 		"binding": "ASSETS",

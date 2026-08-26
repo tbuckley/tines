@@ -135,7 +135,17 @@ export function issueQuery(db: Kysely<Database>, userId: string) {
 						SELECT bp.name AS pn, bi.number AS num, bi.title AS t ${openBlockerFrom}
 						ORDER BY bi.created_at, bi.id
 					) AS b
-				)`.as('open_blockers_json')
+				)`.as('open_blockers_json'),
+				// The run currently holding the issue's exclusive claim (at most
+				// one exists; LIMIT 1 guards against a racing double-claim).
+				sql<string | null>`(
+					SELECT json_object('run_id', ar.id, 'runner_name', arr.name, 'status', ar.status)
+					FROM agent_run ar
+					JOIN runner arr ON arr.id = ar.runner_id
+					WHERE ar.issue_id = issue.id AND ar.status IN ('assigned', 'launching', 'running')
+					ORDER BY ar.created_at DESC
+					LIMIT 1
+				)`.as('active_run_json')
 			])
 			.select((eb) =>
 				eb
@@ -180,6 +190,9 @@ export function serializeIssue(row: IssueRow): Issue {
 		pinned_tier: row.pinned_tier as ModelTier | null,
 		attempt_count: row.attempt_count,
 		needs_attention: row.needs_attention === 1,
+		active_run: row.active_run_json
+			? (JSON.parse(row.active_run_json) as Issue['active_run'])
+			: null,
 		created_at: row.created_at,
 		updated_at: row.updated_at,
 		last_activity_at: Number(row.last_event_at ?? row.created_at)
@@ -664,7 +677,10 @@ export async function updateIssue(
 			state_id: nextState.id,
 			pinned_runner_id: pinnedRunnerId,
 			pinned_tier: pinnedTier,
-			updated_at: now
+			updated_at: now,
+			// Any non-run-key state move is a "manual" transition: it un-parks
+			// the issue and restarts the attempt budget.
+			...(stateChanged && !actor.agentRunId ? { needs_attention: 0, attempt_count: 0 } : {})
 		})
 		.where('id', '=', id);
 	if (guarded) update = update.where('state_id', '=', current.state.id);
@@ -772,7 +788,13 @@ export async function transitionIssue(
 	const results = await runAtomic(env, [
 		db
 			.updateTable('issue')
-			.set({ state_id: target.to_state.id, updated_at: now })
+			.set({
+				state_id: target.to_state.id,
+				updated_at: now,
+				// A non-run-key transition is the spec's definition of "manual":
+				// it un-parks the issue and resets the attempt count.
+				...(actor.agentRunId ? {} : { needs_attention: 0, attempt_count: 0 })
+			})
 			.where('id', '=', id)
 			.where('state_id', '=', current.state.id)
 			.compile(),
@@ -804,6 +826,36 @@ export async function transitionIssue(
 			{ current_state: fresh.state, allowed_transitions: fresh.allowed_transitions }
 		);
 	}
+	return getIssueDetail(db, actor.userId, { id });
+}
+
+/**
+ * Un-park: clears `needs_attention` and resets the attempt count, so the
+ * issue re-enters the pool on the next pass. Idempotent — resuming an
+ * unparked, strike-free issue records nothing. The route is run-key-fenced
+ * (control plane): an agent must not be able to un-park its own issue.
+ */
+export async function resumeIssue(
+	db: Kysely<Database>,
+	env: Env,
+	actor: ActorContext,
+	id: string
+): Promise<IssueDetail> {
+	const current = await getIssueDetail(db, actor.userId, { id });
+	if (!current.needs_attention && current.attempt_count === 0) return current;
+	await runAtomic(env, [
+		db
+			.updateTable('issue')
+			.set({ needs_attention: 0, attempt_count: 0, updated_at: Date.now() })
+			.where('id', '=', id)
+			.compile(),
+		eventInsert(db, actor, {
+			type: 'issue.resumed',
+			issueId: id,
+			projectId: current.project_id,
+			payload: { was_parked: current.needs_attention, attempt_count_was: current.attempt_count }
+		})
+	]);
 	return getIssueDetail(db, actor.userId, { id });
 }
 

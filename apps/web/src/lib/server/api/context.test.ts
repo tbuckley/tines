@@ -146,6 +146,7 @@ const issue: IssueDetail = {
 	pinned_tier: null,
 	attempt_count: 0,
 	needs_attention: false,
+	active_run: null,
 	created_at: 0,
 	updated_at: 0,
 	last_activity_at: 0,

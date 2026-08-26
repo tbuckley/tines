@@ -1,5 +1,7 @@
 import type {
 	AddIssueLinkRequest,
+	AgentRun,
+	AgentRunDetail,
 	ApiErrorBody,
 	ApiKey,
 	ApiKeyCreated,
@@ -19,6 +21,7 @@ import type {
 	DeleteAnchorRequest,
 	DeleteAnchorResponse,
 	DeleteRunnerRequest,
+	DispatchExplainer,
 	EffectiveContext,
 	EventFilters,
 	LaunchPromptResponse,
@@ -31,6 +34,7 @@ import type {
 	Project,
 	RoutingRule,
 	RoutingRuleWithWarnings,
+	RunFilters,
 	Runner,
 	Schedule,
 	ScheduleFilters,
@@ -165,6 +169,10 @@ export function createApiClient(options: ApiClientOptions) {
 			request<IssueDetail>('PATCH', `/api/v1/issues/${id}`, body),
 		transitionIssue: (id: string, body: TransitionIssueRequest) =>
 			request<IssueDetail>('POST', `/api/v1/issues/${id}/transition`, body),
+		/** Un-park: clears needs_attention, resets the attempt count. */
+		resumeIssue: (id: string) => request<IssueDetail>('POST', `/api/v1/issues/${id}/resume`),
+		/** The dispatch explainer: "why isn't this running?". */
+		getIssueDispatch: (id: string) => get<DispatchExplainer>(`/api/v1/issues/${id}/dispatch`),
 
 		// Issue links (dependencies & duplicates)
 		addIssueLink: (issueId: string, body: AddIssueLinkRequest) =>
@@ -222,6 +230,12 @@ export function createApiClient(options: ApiClientOptions) {
 		/** Reject-by-default: 422 names referencing rules/pins unless `force`. */
 		deleteRunner: (id: string, body?: DeleteRunnerRequest) =>
 			request<void>('DELETE', `/api/v1/runners/${id}`, body),
+
+		// Agent runs
+		listRuns: (filters: RunFilters & PageParams = {}) =>
+			get<ListResponse<AgentRun>>(`/api/v1/runs${query(filters)}`),
+		getRun: (id: string) => get<AgentRunDetail>(`/api/v1/runs/${id}`),
+		cancelRun: (id: string) => request<AgentRunDetail>('POST', `/api/v1/runs/${id}/cancel`),
 
 		// Routing rules (one per exact scope; responses carry shadow hints)
 		listRoutingRules: () => get<ListResponse<RoutingRule>>('/api/v1/routing-rules'),

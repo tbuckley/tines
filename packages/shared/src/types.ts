@@ -227,6 +227,8 @@ export interface Issue {
 	attempt_count: number;
 	/** Parked after striking out; cleared by resume or a manual transition. */
 	needs_attention: boolean;
+	/** The run currently holding this issue's exclusive claim, if any. */
+	active_run: { run_id: string; runner_name: string; status: RunStatus } | null;
 	created_at: number;
 	updated_at: number;
 	/** Timestamp of the most recent event touching this issue. */
@@ -718,6 +720,18 @@ export const ACTIVE_RUN_STATUSES: readonly RunStatus[] = ['assigned', 'launching
 /** Local-runner liveness: online = last poll within this window. */
 export const RUNNER_ONLINE_WINDOW_MS = 2 * 60 * 1000;
 
+/** A local runner unseen this long has its running runs failed by the sweep. */
+export const RUNNER_OFFLINE_FAIL_MS = 5 * 60 * 1000;
+
+/**
+ * An `assigned` run unacknowledged, or a `launching` run with no recorded
+ * provider session, for this long fails at launch (never a strike).
+ */
+export const LAUNCH_STALL_MS = 5 * 60 * 1000;
+
+/** Run-key expiry slack beyond `max_run_minutes`. */
+export const RUN_KEY_SLACK_MS = 10 * 60 * 1000;
+
 /** At most `limit` runs in launching/running across everything. */
 export interface GlobalCapQuota {
 	type: 'global_cap';
@@ -869,6 +883,119 @@ export interface UpdateRoutingRuleRequest {
 }
 
 // ---------------------------------------------------------------------------
+// Agent runs
+
+/** Per-run usage record; fields land as providers report them. */
+export interface AgentRunUsage {
+	input_tokens?: number;
+	output_tokens?: number;
+	cache_read_tokens?: number;
+	cache_write_tokens?: number;
+	cost_usd?: number;
+	cost_source?: 'provider' | 'priced' | 'none';
+}
+
+/** One attempt at one issue by one runner. */
+export interface AgentRun {
+	id: string;
+	issue_id: string;
+	/** Denormalized for display; null when the issue is gone. */
+	issue_ref: IssueRef | null;
+	runner_id: string;
+	runner_name: string;
+	status: RunStatus;
+	tier: ModelTier;
+	/** Resolved at launch; null when the harness cannot vary its model. */
+	model: string | null;
+	usage: AgentRunUsage | null;
+	state_id_at_start: string;
+	state_at_start_name: string | null;
+	state_id_at_end: string | null;
+	state_at_end_name: string | null;
+	provider_session_id: string | null;
+	provider_url: string | null;
+	error: string | null;
+	created_at: number;
+	started_at: number | null;
+	ended_at: number | null;
+}
+
+/** Detail read: adds the captured log tail. */
+export interface AgentRunDetail extends AgentRun {
+	log: string;
+	/** Bytes truncated from the head of the log when it hit the cap. */
+	log_bytes_dropped: number;
+}
+
+export interface RunFilters {
+	/** Issue id. */
+	issue?: string;
+	/** Runner id. */
+	runner?: string;
+	/** Only runs holding a claim (assigned/launching/running). */
+	active?: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Dispatch explainer
+
+/** One eligibility check, pass or fail, with a human-readable detail. */
+export interface DispatchCheck {
+	name:
+		| 'automation_enabled'
+		| 'state_active'
+		| 'ready'
+		| 'no_active_run'
+		| 'not_parked'
+		| 'routed';
+	ok: boolean;
+	detail: string;
+}
+
+export type DispatchTargetVerdict =
+	| 'ok'
+	| 'paused'
+	| 'offline'
+	| 'at_capacity'
+	| 'backing_off'
+	| 'quota_exhausted';
+
+/** One rule/pin target's verdict, in preference order. */
+export interface DispatchTarget {
+	runner_id: string;
+	runner_name: string;
+	/** The tier the entry resolves to and the model it would launch. */
+	tier: ModelTier;
+	model: string | null;
+	verdict: DispatchTargetVerdict;
+	detail: string;
+}
+
+/** `GET /api/v1/issues/:id/dispatch` — "why isn't this running?". */
+export interface DispatchExplainer {
+	/** All checks pass (rule/pin match included) — dispatchable. */
+	eligible: boolean;
+	checks: DispatchCheck[];
+	/** The pin, when set (replaces rule matching entirely). */
+	pin: { runner_id: string; runner_name: string | null; tier: ModelTier | null } | null;
+	/** The winning rule; null when pinned or nothing matches. */
+	matched_rule: { rule_id: string; scope_label: string } | null;
+	/** Per-target verdicts, in preference order. */
+	targets: DispatchTarget[];
+	parked: boolean;
+	attempt_count: number;
+	attempt_limit: number;
+	active_run: AgentRun | null;
+	/**
+	 * Eligible-but-waiting only: how many eligible, routed issues are ahead in
+	 * the oldest-`updated_at`-first queue.
+	 */
+	queue_position: number | null;
+	/** The one-line human verdict the UI and CLI render. */
+	verdict: string;
+}
+
+// ---------------------------------------------------------------------------
 // Comments
 
 export interface Comment {
@@ -911,10 +1038,15 @@ export type EventType =
 	| 'runner.registered'
 	| 'runner.updated'
 	| 'runner.removed'
+	| 'runner.errored'
 	| 'routing_rule.created'
 	| 'routing_rule.updated'
 	| 'routing_rule.deleted'
 	| 'settings.updated'
+	| 'agent_run.started'
+	| 'agent_run.ended'
+	| 'issue.parked'
+	| 'issue.resumed'
 	// Open-ended by design: later phases add types without migration.
 	| (string & {});
 

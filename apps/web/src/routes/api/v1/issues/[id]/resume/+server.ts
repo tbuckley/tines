@@ -1,12 +1,16 @@
-import { api, apiContext, notFound } from '$lib/server/api/core';
+import { json } from '@sveltejs/kit';
+import { api, apiContext } from '$lib/server/api/core';
+import { resumeIssue } from '$lib/server/api/issues';
+import { queueDispatchPass } from '$lib/server/supervisor/engine';
 import type { RequestHandler } from './$types';
 
 /**
- * Resume (un-park) arrives with the dispatch engine. The route exists now
- * only so the control-plane fence holds on this path: run keys get their 403
- * from auth; everyone else gets a 404 until the endpoint is implemented.
+ * Un-park an issue. Run keys never reach this handler: the path is on the
+ * control-plane fence (403 from auth) — an agent must not un-park itself.
  */
 export const POST: RequestHandler = api(async (event) => {
-	await apiContext(event);
-	throw notFound();
+	const { db, env, actor } = await apiContext(event);
+	const issue = await resumeIssue(db, env, actor, event.params.id);
+	queueDispatchPass(event.platform, actor.userId);
+	return json(issue);
 });
