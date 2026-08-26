@@ -1,6 +1,6 @@
 <script lang="ts">
-	import type { ModelTier, RoutingRule, RoutingTarget, Runner, ShadowWarning } from '@tines/shared';
-	import { ApiError, MODEL_TIERS } from '@tines/shared';
+	import type { AgentRun, ModelTier, RoutingRule, RoutingTarget, Runner, ShadowWarning } from '@tines/shared';
+	import { ACTIVE_RUN_STATUSES, ApiError, MODEL_TIERS } from '@tines/shared';
 	import IconAlertTriangle from '@tabler/icons-svelte/icons/alert-triangle';
 	import IconArrowDown from '@tabler/icons-svelte/icons/arrow-down';
 	import IconArrowRight from '@tabler/icons-svelte/icons/arrow-right';
@@ -126,6 +126,62 @@
 				}
 				return;
 			}
+			showError(err);
+		}
+	}
+
+	// --- runs --------------------------------------------------------------------
+
+	let showAllRuns = $state(false);
+	const activeRuns = $derived(
+		data.runs.filter((r) => (ACTIVE_RUN_STATUSES as readonly string[]).includes(r.status))
+	);
+	const visibleRuns = $derived(showAllRuns ? data.runs : activeRuns);
+
+	/** Utilization against the active policy — same math the CLI status shows. */
+	const utilization = $derived.by(() => {
+		const quota = data.settings.quota;
+		if (quota.type === 'global_cap') {
+			return `${activeRuns.length}/${quota.limit} global slot${quota.limit === 1 ? '' : 's'} in use`;
+		}
+		const stateNames = new Map(
+			data.workflows.flatMap((w) => w.states.map((s) => [s.id, s.name] as const))
+		);
+		const counts = new Map<string, number>();
+		for (const run of activeRuns) {
+			counts.set(run.state_id_at_start, (counts.get(run.state_id_at_start) ?? 0) + 1);
+		}
+		for (const stateId of Object.keys(quota.overrides)) {
+			if (!counts.has(stateId)) counts.set(stateId, 0);
+		}
+		if (counts.size === 0) return `no active runs (roster default ${quota.default_limit} per state)`;
+		return [...counts.entries()]
+			.map(
+				([stateId, n]) =>
+					`${stateNames.get(stateId) ?? stateId} ${n}/${quota.overrides[stateId] ?? quota.default_limit}`
+			)
+			.join(' · ');
+	});
+
+	function runStatusClass(status: string): string {
+		if (status === 'running' || status === 'launching') return 'text-emerald-600 dark:text-emerald-400';
+		if (status === 'assigned') return 'text-sky-600 dark:text-sky-400';
+		if (status === 'completed') return 'text-muted-foreground';
+		return 'text-amber-700 dark:text-amber-400';
+	}
+
+	function runDuration(run: AgentRun): string {
+		if (!run.started_at) return '—';
+		const seconds = Math.max(0, Math.round(((run.ended_at ?? Date.now()) - run.started_at) / 1000));
+		return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m`;
+	}
+
+	async function cancelRun(run: AgentRun) {
+		if (!confirm(`Cancel this run on ${run.runner_name}? Unless the agent already moved the issue, this counts as a strike.`)) return;
+		try {
+			await api.cancelRun(run.id);
+			await invalidateAll();
+		} catch (err) {
 			showError(err);
 		}
 	}
@@ -344,6 +400,69 @@
 				</div>
 			{/each}
 		</div>
+	{/if}
+</div>
+
+<!-- Runs -->
+<div class="mb-10">
+	<div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+		<h2 class="text-sm font-semibold">
+			Runs
+			<span class="text-muted-foreground font-normal">— {utilization}</span>
+		</h2>
+		<label class="text-muted-foreground flex items-center gap-2 text-xs">
+			<input type="checkbox" bind:checked={showAllRuns} class="accent-primary" />
+			Show ended runs
+		</label>
+	</div>
+	{#if visibleRuns.length === 0}
+		<div class="text-muted-foreground rounded-lg border border-dashed p-8 text-center text-sm">
+			{showAllRuns
+				? 'No runs yet — they appear here as soon as the supervisor dispatches an eligible issue.'
+				: 'No active runs.'}
+		</div>
+	{:else}
+		<ul class="divide-y rounded-lg border">
+			{#each visibleRuns as run (run.id)}
+				<li
+					class="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2.5 text-sm"
+					transition:slide={{ duration: dur() }}
+				>
+					{#if (ACTIVE_RUN_STATUSES as readonly string[]).includes(run.status)}
+						<span class="size-1.5 shrink-0 animate-pulse rounded-full bg-emerald-500"></span>
+					{/if}
+					{#if run.issue_ref}
+						<a
+							href="/issues/{encodeURIComponent(run.issue_ref.project_name)}/{run.issue_ref.number}"
+							class="font-medium hover:underline"
+						>
+							{run.issue_ref.project_name}/#{run.issue_ref.number}
+						</a>
+					{/if}
+					<span class="text-muted-foreground">{run.runner_name}</span>
+					<span class="text-muted-foreground text-xs">
+						{run.tier}{run.model ? ` · ${run.model}` : ''}
+					</span>
+					<span class="text-xs font-medium {runStatusClass(run.status)}">
+						{run.status.replaceAll('_', ' ')}
+					</span>
+					<span class="text-muted-foreground text-xs">{runDuration(run)}</span>
+					{#if run.error}
+						<span class="max-w-64 truncate text-xs text-amber-700 dark:text-amber-400" title={run.error}>
+							{run.error}
+						</span>
+					{/if}
+					<span class="text-muted-foreground ml-auto text-xs" title={new Date(run.created_at).toLocaleString()}>
+						{relativeTime(run.created_at)}
+					</span>
+					{#if (ACTIVE_RUN_STATUSES as readonly string[]).includes(run.status)}
+						<Button size="sm" variant="ghost" class="text-destructive h-7" onclick={() => cancelRun(run)}>
+							Cancel
+						</Button>
+					{/if}
+				</li>
+			{/each}
+		</ul>
 	{/if}
 </div>
 

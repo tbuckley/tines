@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { AllowedTransition, Comment, ContextItem } from '@tines/shared';
 	import { ApiError } from '@tines/shared';
+	import IconAlertTriangle from '@tabler/icons-svelte/icons/alert-triangle';
 	import IconArrowRight from '@tabler/icons-svelte/icons/arrow-right';
 	import IconBan from '@tabler/icons-svelte/icons/ban';
 	import IconChevronLeft from '@tabler/icons-svelte/icons/chevron-left';
@@ -12,6 +13,7 @@
 	import { fade, slide } from 'svelte/transition';
 	import { invalidateAll } from '$app/navigation';
 	import { api } from '$lib/api';
+	import AgentActivityCard from '$lib/components/AgentActivityCard.svelte';
 	import ContextItemEditor from '$lib/components/ContextItemEditor.svelte';
 	import ContextItemList from '$lib/components/ContextItemList.svelte';
 	import EffectiveContextView from '$lib/components/EffectiveContextView.svelte';
@@ -166,6 +168,22 @@
 			showError(err);
 		} finally {
 			applyingOverride = false;
+		}
+	}
+
+	// --- parked / resume --------------------------------------------------------
+
+	let resuming = $state(false);
+	async function resume() {
+		if (resuming) return;
+		resuming = true;
+		try {
+			await api.resumeIssue(data.issue.id);
+			await invalidateAll();
+		} catch (e) {
+			showError(e);
+		} finally {
+			resuming = false;
 		}
 	}
 
@@ -373,6 +391,24 @@
 			onclick={removeDuplicate}
 		>
 			Not a duplicate?
+		</Button>
+	</div>
+{/if}
+
+{#if data.issue.needs_attention}
+	<!-- parked banner: above the fold, cleared by Resume or any manual move -->
+	<div
+		class="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-500/40 bg-amber-500/10 px-4 py-2.5 text-sm text-amber-800 dark:text-amber-300"
+		transition:slide={{ duration: dur() }}
+	>
+		<span class="flex items-center gap-2">
+			<IconAlertTriangle size={16} stroke={1.75} class="shrink-0" />
+			Agents struck out {data.issue.attempt_count}
+			time{data.issue.attempt_count === 1 ? '' : 's'} here — the last run ended without moving the
+			issue. It won't be dispatched again until you act.
+		</span>
+		<Button size="sm" disabled={resuming} onclick={resume}>
+			{resuming ? 'Resuming…' : 'Resume'}
 		</Button>
 	</div>
 {/if}
@@ -601,6 +637,15 @@
 				</form>
 			</details>
 		</section>
+
+		<!-- the supervisor's view of this issue -->
+		<AgentActivityCard
+			issue={data.issue}
+			dispatch={data.dispatch}
+			runs={data.issueRuns}
+			runners={data.runners}
+			onerror={showError}
+		/>
 
 		<!-- dependencies & duplicates -->
 		<RelationsCard
