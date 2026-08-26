@@ -1,0 +1,761 @@
+<script lang="ts">
+	import type { ModelTier, RoutingRule, RoutingTarget, Runner, ShadowWarning } from '@tines/shared';
+	import { ApiError, MODEL_TIERS } from '@tines/shared';
+	import IconAlertTriangle from '@tabler/icons-svelte/icons/alert-triangle';
+	import IconArrowDown from '@tabler/icons-svelte/icons/arrow-down';
+	import IconArrowRight from '@tabler/icons-svelte/icons/arrow-right';
+	import IconArrowUp from '@tabler/icons-svelte/icons/arrow-up';
+	import IconCloud from '@tabler/icons-svelte/icons/cloud';
+	import IconDeviceLaptop from '@tabler/icons-svelte/icons/device-laptop';
+	import IconPlus from '@tabler/icons-svelte/icons/plus';
+	import IconRobot from '@tabler/icons-svelte/icons/robot';
+	import IconTrash from '@tabler/icons-svelte/icons/trash';
+	import IconX from '@tabler/icons-svelte/icons/x';
+	import { slide } from 'svelte/transition';
+	import { invalidateAll } from '$app/navigation';
+	import { api } from '$lib/api';
+	import ContextScopeChips from '$lib/components/ContextScopeChips.svelte';
+	import Modal from '$lib/components/Modal.svelte';
+	import StateBadge from '$lib/components/StateBadge.svelte';
+	import { Button } from '$lib/components/ui/button/index.js';
+	import { Input } from '$lib/components/ui/input/index.js';
+	import { Select } from '$lib/components/ui/select/index.js';
+	import { prefersReducedMotion, relativeTime } from '$lib/format';
+
+	let { data } = $props();
+
+	const dur = () => (prefersReducedMotion() ? 0 : 180);
+
+	let errorMessage = $state<string | null>(null);
+	function showError(e: unknown) {
+		errorMessage = e instanceof ApiError ? e.message : 'Something went wrong — try again.';
+		setTimeout(() => (errorMessage = null), 8000);
+	}
+
+	// --- kill switch -------------------------------------------------------------
+
+	let togglingEnabled = $state(false);
+	async function setEnabled(on: boolean) {
+		if (togglingEnabled) return;
+		togglingEnabled = true;
+		try {
+			await api.updateSupervisorSettings({ enabled: on });
+			await invalidateAll();
+		} catch (err) {
+			showError(err);
+		} finally {
+			togglingEnabled = false;
+		}
+	}
+
+	// --- runners -----------------------------------------------------------------
+
+	function runnerStatusLabel(runner: Runner): string {
+		if (runner.status === 'paused') return 'paused';
+		return runner.online ? 'online' : 'offline';
+	}
+
+	function statusDotClass(runner: Runner): string {
+		if (runner.status === 'paused') return 'bg-amber-500';
+		return runner.online ? 'bg-emerald-500' : 'bg-muted-foreground/40';
+	}
+
+	let addRunnerOpen = $state(false);
+	let runnerName = $state('');
+	let runnerHarness = $state('claude_code');
+	let runnerCommand = $state('');
+	let runnerMaxConcurrent = $state(1);
+	let runnerMaxMinutes = $state(30);
+	let runnerTier = $state<ModelTier>('balanced');
+	let creatingRunner = $state(false);
+
+	async function createRunner(e: SubmitEvent) {
+		e.preventDefault();
+		if (creatingRunner) return;
+		creatingRunner = true;
+		try {
+			await api.createRunner({
+				type: 'local',
+				name: runnerName.trim(),
+				max_concurrent: runnerMaxConcurrent,
+				max_run_minutes: runnerMaxMinutes,
+				default_tier: runnerTier,
+				config: runnerHarness === 'custom' ? { harness: runnerHarness, command: runnerCommand } : { harness: runnerHarness }
+			});
+			addRunnerOpen = false;
+			runnerName = '';
+			runnerCommand = '';
+			await invalidateAll();
+		} catch (err) {
+			showError(err);
+		} finally {
+			creatingRunner = false;
+		}
+	}
+
+	async function setRunnerStatus(runner: Runner, status: 'active' | 'paused') {
+		try {
+			await api.updateRunner(runner.id, { status });
+			await invalidateAll();
+		} catch (err) {
+			showError(err);
+		}
+	}
+
+	async function removeRunner(runner: Runner) {
+		if (
+			!confirm(
+				`Remove runner "${runner.name}"? Its run history goes with it. (Pausing keeps identity, rules, and history warm instead.)`
+			)
+		)
+			return;
+		try {
+			await api.deleteRunner(runner.id);
+			await invalidateAll();
+		} catch (err) {
+			// Reject-by-default: the 422 names referencing rules and pins; offer
+			// the force cascade (emptied rules are kept, flagged "no targets").
+			if (err instanceof ApiError && err.code === 'runner_referenced') {
+				if (confirm(`${err.message}\n\nStrip these references and remove the runner?`)) {
+					try {
+						await api.deleteRunner(runner.id, { force: true });
+						await invalidateAll();
+					} catch (err2) {
+						showError(err2);
+					}
+				}
+				return;
+			}
+			showError(err);
+		}
+	}
+
+	// --- routing rules -----------------------------------------------------------
+
+	let ruleModalOpen = $state(false);
+	let editingRule = $state<RoutingRule | null>(null);
+	let ruleProjectId = $state('');
+	let ruleStateId = $state('');
+	let ruleTargets = $state<{ runner_id: string; tier: '' | ModelTier }[]>([]);
+	let savingRule = $state(false);
+	let ruleWarnings = $state<ShadowWarning[]>([]);
+
+	function openRuleCreate() {
+		editingRule = null;
+		ruleProjectId = '';
+		ruleStateId = '';
+		ruleTargets = data.runners.length > 0 ? [{ runner_id: data.runners[0].id, tier: '' }] : [];
+		ruleModalOpen = true;
+	}
+
+	function openRuleEdit(rule: RoutingRule) {
+		editingRule = rule;
+		ruleProjectId = rule.scope.project_id ?? '';
+		ruleStateId = rule.scope.workflow_state_id ?? '';
+		ruleTargets = rule.targets.map((t) => ({ runner_id: t.runner_id, tier: t.tier ?? '' }));
+		ruleModalOpen = true;
+	}
+
+	function moveTarget(index: number, delta: number) {
+		const next = [...ruleTargets];
+		const [entry] = next.splice(index, 1);
+		next.splice(index + delta, 0, entry);
+		ruleTargets = next;
+	}
+
+	async function saveRule(e: SubmitEvent) {
+		e.preventDefault();
+		if (savingRule) return;
+		savingRule = true;
+		try {
+			const targets: RoutingTarget[] = ruleTargets.map((t) =>
+				t.tier ? { runner_id: t.runner_id, tier: t.tier } : { runner_id: t.runner_id }
+			);
+			const scope = { project_id: ruleProjectId || null, workflow_state_id: ruleStateId || null };
+			const saved = editingRule
+				? await api.updateRoutingRule(editingRule.id, { ...scope, targets })
+				: await api.createRoutingRule({ ...scope, targets });
+			// Shadow hints surface at authoring time, right where the rule was saved.
+			ruleWarnings = saved.warnings;
+			ruleModalOpen = false;
+			await invalidateAll();
+		} catch (err) {
+			showError(err);
+		} finally {
+			savingRule = false;
+		}
+	}
+
+	async function deleteRule(rule: RoutingRule) {
+		if (!confirm(`Delete the ${rule.scope.label} routing rule? Issues it matched stop dispatching.`)) return;
+		try {
+			await api.deleteRoutingRule(rule.id);
+			ruleWarnings = [];
+			await invalidateAll();
+		} catch (err) {
+			showError(err);
+		}
+	}
+
+	// --- automation settings -----------------------------------------------------
+
+	let quotaType = $state<'global_cap' | 'state_roster'>('global_cap');
+	let globalLimit = $state(3);
+	let rosterDefault = $state(1);
+	/** Per-state inputs as strings; '' = inherit the default. */
+	let rosterOverrides = $state<Record<string, string>>({});
+	let attemptLimit = $state(3);
+	let savingSettings = $state(false);
+
+	$effect(() => {
+		const quota = data.settings.quota;
+		quotaType = quota.type;
+		if (quota.type === 'global_cap') {
+			globalLimit = quota.limit;
+			rosterDefault = 1;
+			rosterOverrides = {};
+		} else {
+			globalLimit = 3;
+			rosterDefault = quota.default_limit;
+			rosterOverrides = Object.fromEntries(
+				Object.entries(quota.overrides).map(([id, n]) => [id, String(n)])
+			);
+		}
+		attemptLimit = data.settings.attempt_limit;
+	});
+
+	async function saveSettings(e: SubmitEvent) {
+		e.preventDefault();
+		if (savingSettings) return;
+		savingSettings = true;
+		try {
+			const quota =
+				quotaType === 'global_cap'
+					? { type: 'global_cap' as const, limit: globalLimit }
+					: {
+							type: 'state_roster' as const,
+							default_limit: rosterDefault,
+							overrides: Object.fromEntries(
+								Object.entries(rosterOverrides)
+									.filter(([, v]) => v.trim() !== '')
+									.map(([id, v]) => [id, Number.parseInt(v, 10)])
+							)
+						};
+			await api.updateSupervisorSettings({ quota, attempt_limit: attemptLimit });
+			await invalidateAll();
+		} catch (err) {
+			showError(err);
+		} finally {
+			savingSettings = false;
+		}
+	}
+</script>
+
+<svelte:head><title>Agents · Tines</title></svelte:head>
+
+<div class="mb-6 flex flex-wrap items-start justify-between gap-4">
+	<div>
+		<h1 class="text-2xl font-semibold tracking-tight">Agents</h1>
+		<p class="text-muted-foreground mt-1 max-w-2xl text-sm">
+			Runners execute eligible issues; routing rules decide which runner takes what; the automation
+			settings bound how much runs at once.
+		</p>
+	</div>
+</div>
+
+{#if errorMessage}
+	<div
+		class="border-destructive/40 bg-destructive/10 text-destructive mb-4 rounded-md border px-4 py-2.5 text-sm"
+		transition:slide={{ duration: dur() }}
+	>
+		{errorMessage}
+	</div>
+{/if}
+
+<!-- kill-switch off-state banner: persistent while automation is disabled -->
+{#if !data.settings.enabled}
+	<div
+		class="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-800 dark:text-amber-300"
+	>
+		<span class="flex items-center gap-2">
+			<IconAlertTriangle size={16} stroke={1.75} />
+			Automation is off — nothing dispatches until you turn it on.
+		</span>
+		<Button size="sm" onclick={() => setEnabled(true)} disabled={togglingEnabled}>Turn on</Button>
+	</div>
+{/if}
+
+<!-- Runners -->
+<div class="mb-10">
+	<div class="mb-3 flex items-center justify-between">
+		<h2 class="text-sm font-semibold">Runners</h2>
+		<Button size="sm" variant="ghost" onclick={() => (addRunnerOpen = true)}>
+			<IconPlus size={14} /> Add runner
+		</Button>
+	</div>
+	{#if data.runners.length === 0}
+		<div class="text-muted-foreground rounded-lg border border-dashed p-8 text-center text-sm">
+			No runners yet. Add a local runner for this machine — managed (Claude / Gemini) runners arrive
+			in a later milestone.
+		</div>
+	{:else}
+		<div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+			{#each data.runners as runner (runner.id)}
+				<div class="rounded-lg border p-4">
+					<div class="mb-2 flex items-center gap-2">
+						<span class="bg-muted text-muted-foreground flex size-8 items-center justify-center rounded-md">
+							{#if runner.type === 'local'}
+								<IconDeviceLaptop size={18} stroke={1.75} />
+							{:else}
+								<IconCloud size={18} stroke={1.75} />
+							{/if}
+						</span>
+						<div class="min-w-0">
+							<p class="truncate text-sm font-medium">{runner.name}</p>
+							<p class="text-muted-foreground flex items-center gap-1.5 text-xs">
+								<span class="size-1.5 rounded-full {statusDotClass(runner)}"></span>
+								{runnerStatusLabel(runner)}
+								{#if runner.last_seen_at}
+									· seen {relativeTime(runner.last_seen_at)}
+								{/if}
+							</p>
+						</div>
+					</div>
+					<p class="text-muted-foreground mb-3 text-xs">
+						{runner.active_runs}/{runner.max_concurrent} runs · {runner.max_run_minutes}m timeout ·
+						default tier {runner.default_tier}
+						{#if runner.launch_failures > 0}
+							<span class="text-amber-600 dark:text-amber-400">· {runner.launch_failures} launch failures</span>
+						{/if}
+					</p>
+					<div class="flex gap-2">
+						{#if runner.status === 'paused'}
+							<Button size="sm" variant="outline" onclick={() => setRunnerStatus(runner, 'active')}>Resume</Button>
+						{:else}
+							<Button size="sm" variant="outline" onclick={() => setRunnerStatus(runner, 'paused')}>Pause</Button>
+						{/if}
+						<Button size="sm" variant="ghost" class="text-destructive" onclick={() => removeRunner(runner)}>
+							<IconTrash size={14} /> Remove
+						</Button>
+					</div>
+				</div>
+			{/each}
+		</div>
+	{/if}
+</div>
+
+<!-- Routing -->
+<div class="mb-10">
+	<div class="mb-3 flex items-center justify-between">
+		<h2 class="text-sm font-semibold">Routing</h2>
+		<Button size="sm" variant="ghost" onclick={openRuleCreate} disabled={data.runners.length === 0}>
+			<IconPlus size={14} /> Add rule
+		</Button>
+	</div>
+	{#if data.runners.length > 0 && data.rules.length === 0}
+		<div class="mb-3 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-300">
+			You have a runner but no routing rules — nothing will dispatch. Add a global rule to route
+			everything.
+		</div>
+	{/if}
+	{#if ruleWarnings.length > 0}
+		<div
+			class="mb-3 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-300"
+			transition:slide={{ duration: dur() }}
+		>
+			<div class="flex items-start justify-between gap-2">
+				<ul class="space-y-0.5">
+					{#each ruleWarnings as warning (warning.rule_id + warning.message)}
+						<li>{warning.message}</li>
+					{/each}
+				</ul>
+				<button type="button" class="shrink-0" aria-label="Dismiss" onclick={() => (ruleWarnings = [])}>
+					<IconX size={14} />
+				</button>
+			</div>
+		</div>
+	{/if}
+	{#if data.rules.length === 0}
+		<div class="text-muted-foreground rounded-lg border border-dashed p-8 text-center text-sm">
+			No routing rules. A rule is an ordered runner preference list at a scope — the most specific
+			matching rule wins (project ∧ state, then project, then state, then global).
+		</div>
+	{:else}
+		<ul class="divide-y rounded-lg border">
+			{#each data.rules as rule (rule.id)}
+				<li class="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3 text-sm">
+					<ContextScopeChips scope={rule.scope} />
+					{#if rule.targets.length === 0}
+						<span
+							class="rounded-full bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-400"
+							title="A forced runner removal emptied this rule; add targets or delete it"
+						>
+							no targets
+						</span>
+					{:else}
+						<span class="flex flex-wrap items-center gap-1">
+							{#each rule.targets as target, i (target.runner_id + (target.tier ?? '') + i)}
+								{#if i > 0}
+									<IconArrowRight size={12} class="text-muted-foreground" />
+								{/if}
+								<span
+									class="bg-muted rounded-full px-2 py-0.5 text-xs {target.runner_status === 'paused' ? 'opacity-60' : ''}"
+									title={target.runner_status === 'paused' ? 'paused' : undefined}
+								>
+									{target.runner_name}{target.tier ? `:${target.tier}` : ''}
+								</span>
+							{/each}
+						</span>
+					{/if}
+					<span class="ml-auto flex gap-1">
+						<Button size="sm" variant="ghost" onclick={() => openRuleEdit(rule)}>Edit</Button>
+						<Button size="sm" variant="ghost" class="text-destructive" onclick={() => deleteRule(rule)}>
+							Delete
+						</Button>
+					</span>
+				</li>
+			{/each}
+		</ul>
+	{/if}
+</div>
+
+<!-- Automation settings -->
+<div class="mb-10 max-w-2xl">
+	<h2 class="mb-3 text-sm font-semibold">Automation settings</h2>
+	<div class="space-y-6 rounded-lg border p-5">
+		<!-- the kill switch, prominent -->
+		<div class="flex items-center justify-between gap-4">
+			<div>
+				<p class="flex items-center gap-1.5 text-sm font-medium">
+					<IconRobot size={16} stroke={1.75} /> Automation
+				</p>
+				<p class="text-muted-foreground mt-0.5 text-xs">
+					The kill switch: while off, no issue is dispatched to any runner.
+				</p>
+			</div>
+			<button
+				type="button"
+				role="switch"
+				aria-checked={data.settings.enabled}
+				aria-label="Automation kill switch"
+				disabled={togglingEnabled}
+				onclick={() => setEnabled(!data.settings.enabled)}
+				class="relative h-6 w-11 shrink-0 rounded-full transition-colors {data.settings.enabled
+					? 'bg-emerald-500'
+					: 'bg-muted-foreground/30'}"
+			>
+				<span
+					class="bg-background absolute top-0.5 left-0.5 size-5 rounded-full shadow transition-transform {data.settings.enabled
+						? 'translate-x-5'
+						: ''}"
+				></span>
+			</button>
+		</div>
+
+		<form onsubmit={saveSettings} class="space-y-5">
+			<div class="space-y-2">
+				<p class="text-sm font-medium">Quota policy</p>
+				<!-- segmented control -->
+				<div class="bg-muted inline-flex rounded-md p-0.5 text-sm">
+					<button
+						type="button"
+						class="rounded px-3 py-1 {quotaType === 'global_cap' ? 'bg-background shadow-xs font-medium' : 'text-muted-foreground'}"
+						onclick={() => (quotaType = 'global_cap')}
+					>
+						Global cap
+					</button>
+					<button
+						type="button"
+						class="rounded px-3 py-1 {quotaType === 'state_roster' ? 'bg-background shadow-xs font-medium' : 'text-muted-foreground'}"
+						onclick={() => (quotaType = 'state_roster')}
+					>
+						Per-state roster
+					</button>
+				</div>
+				{#if quotaType === 'global_cap'}
+					<div class="flex items-center gap-2" transition:slide={{ duration: dur() }}>
+						<label class="text-muted-foreground text-sm" for="global-limit">At most</label>
+						<Input
+							id="global-limit"
+							type="number"
+							min="1"
+							max="100"
+							class="w-20"
+							value={globalLimit}
+							oninput={(e) => (globalLimit = Number.parseInt(e.currentTarget.value, 10) || 1)}
+						/>
+						<span class="text-muted-foreground text-sm">concurrent runs across everything</span>
+					</div>
+				{:else}
+					<div class="space-y-3" transition:slide={{ duration: dur() }}>
+						<div class="flex items-center gap-2">
+							<label class="text-muted-foreground text-sm" for="roster-default">Default</label>
+							<Input
+								id="roster-default"
+								type="number"
+								min="0"
+								max="100"
+								class="w-20"
+								value={rosterDefault}
+								oninput={(e) => (rosterDefault = Number.parseInt(e.currentTarget.value, 10) || 0)}
+							/>
+							<span class="text-muted-foreground text-sm">concurrent runs per state</span>
+						</div>
+						<p class="text-muted-foreground text-xs">
+							Counted by the state a run started in. Leave a state blank to inherit the default; 0
+							means no agents work that stage.
+						</p>
+						<!-- every state, grouped by workflow, inherited default shown -->
+						<div class="max-h-72 space-y-3 overflow-y-auto rounded-md border p-3">
+							{#each data.workflows as workflow (workflow.id)}
+								<div>
+									<p class="text-muted-foreground mb-1.5 text-xs font-semibold">{workflow.name}</p>
+									<div class="space-y-1.5">
+										{#each workflow.states as state (state.id)}
+											<div class="flex items-center justify-between gap-2">
+												<StateBadge {state} />
+												<span class="flex items-center gap-2">
+													{#if (rosterOverrides[state.id] ?? '') === ''}
+														<span class="text-muted-foreground text-xs">inherits {rosterDefault}</span>
+													{/if}
+													<Input
+														type="number"
+														min="0"
+														max="100"
+														class="w-20"
+														placeholder={String(rosterDefault)}
+														aria-label={`Limit for ${workflow.name} / ${state.name}`}
+														value={rosterOverrides[state.id] ?? ''}
+														oninput={(e) =>
+															(rosterOverrides = { ...rosterOverrides, [state.id]: e.currentTarget.value })}
+													/>
+												</span>
+											</div>
+										{/each}
+									</div>
+								</div>
+							{/each}
+						</div>
+					</div>
+				{/if}
+			</div>
+
+			<div class="space-y-1.5">
+				<label class="text-sm font-medium" for="attempt-limit">Attempt limit</label>
+				<div class="flex items-center gap-2">
+					<Input
+						id="attempt-limit"
+						type="number"
+						min="1"
+						max="100"
+						class="w-20"
+						value={attemptLimit}
+						oninput={(e) => (attemptLimit = Number.parseInt(e.currentTarget.value, 10) || 1)}
+					/>
+					<span class="text-muted-foreground text-sm">
+						strikes (runs that end without moving the issue) before it parks for a human
+					</span>
+				</div>
+			</div>
+
+			<div class="flex justify-end">
+				<Button type="submit" disabled={savingSettings}>
+					{savingSettings ? 'Saving…' : 'Save settings'}
+				</Button>
+			</div>
+		</form>
+	</div>
+</div>
+
+<!-- add runner -->
+<Modal bind:open={addRunnerOpen} title="Add local runner">
+	<form onsubmit={createRunner} class="space-y-4">
+		<div class="space-y-1.5">
+			<label class="text-sm font-medium" for="runner-name">Name</label>
+			<Input id="runner-name" bind:value={runnerName} placeholder="e.g. laptop-m4" required />
+			<p class="text-muted-foreground text-xs">
+				Unique — routing rules and the CLI address runners by name.
+			</p>
+		</div>
+		<div class="space-y-1.5">
+			<label class="text-sm font-medium" for="runner-harness">Harness</label>
+			<Select id="runner-harness" bind:value={runnerHarness}>
+				<option value="claude_code">Claude Code</option>
+				<option value="codex">codex</option>
+				<option value="custom">Custom command</option>
+			</Select>
+		</div>
+		{#if runnerHarness === 'custom'}
+			<div class="space-y-1.5" transition:slide={{ duration: dur() }}>
+				<label class="text-sm font-medium" for="runner-command">Command template</label>
+				<Input
+					id="runner-command"
+					bind:value={runnerCommand}
+					placeholder={'my-agent {prompt_file} --workspace {workspace}'}
+					required
+				/>
+				<p class="text-muted-foreground text-xs">
+					Placeholders: {'{prompt_file}'}, {'{workspace}'}, {'{model}'}.
+				</p>
+			</div>
+		{/if}
+		<div class="grid grid-cols-2 gap-3">
+			<div class="space-y-1.5">
+				<label class="text-sm font-medium" for="runner-cap">Max concurrent</label>
+				<Input
+					id="runner-cap"
+					type="number"
+					min="1"
+					max="100"
+					value={runnerMaxConcurrent}
+					oninput={(e) => (runnerMaxConcurrent = Number.parseInt(e.currentTarget.value, 10) || 1)}
+				/>
+			</div>
+			<div class="space-y-1.5">
+				<label class="text-sm font-medium" for="runner-minutes">Run timeout (min)</label>
+				<Input
+					id="runner-minutes"
+					type="number"
+					min="1"
+					max="1440"
+					value={runnerMaxMinutes}
+					oninput={(e) => (runnerMaxMinutes = Number.parseInt(e.currentTarget.value, 10) || 30)}
+				/>
+			</div>
+		</div>
+		<div class="space-y-1.5">
+			<label class="text-sm font-medium" for="runner-tier">Default tier</label>
+			<Select id="runner-tier" bind:value={runnerTier}>
+				{#each MODEL_TIERS as tier (tier)}
+					<option value={tier}>{tier}</option>
+				{/each}
+			</Select>
+		</div>
+		<p class="text-muted-foreground text-xs">
+			The daemon (<code class="bg-muted rounded px-1 py-0.5">tines runner daemon</code>) will connect
+			this runner in a later milestone; for now the row exists for routing and testing.
+		</p>
+		<div class="flex justify-end gap-2">
+			<Button type="button" variant="ghost" onclick={() => (addRunnerOpen = false)}>Cancel</Button>
+			<Button type="submit" disabled={creatingRunner || !runnerName.trim()}>
+				{creatingRunner ? 'Adding…' : 'Add runner'}
+			</Button>
+		</div>
+	</form>
+</Modal>
+
+<!-- rule editor -->
+<Modal bind:open={ruleModalOpen} title={editingRule ? 'Edit routing rule' : 'New routing rule'}>
+	<form onsubmit={saveRule} class="space-y-4">
+		<div class="grid grid-cols-2 gap-3">
+			<div class="space-y-1.5">
+				<label class="text-sm font-medium" for="rule-project">Project</label>
+				<Select id="rule-project" bind:value={ruleProjectId}>
+					<option value="">Any project</option>
+					{#each data.projects as project (project.id)}
+						<option value={project.id}>{project.name}</option>
+					{/each}
+				</Select>
+			</div>
+			<div class="space-y-1.5">
+				<label class="text-sm font-medium" for="rule-state">State</label>
+				<Select id="rule-state" bind:value={ruleStateId}>
+					<option value="">Any state</option>
+					{#each data.workflows as workflow (workflow.id)}
+						<optgroup label={workflow.name}>
+							{#each workflow.states as state (state.id)}
+								<option value={state.id}>{state.name}</option>
+							{/each}
+						</optgroup>
+					{/each}
+				</Select>
+			</div>
+		</div>
+		<p class="text-muted-foreground text-xs">
+			Both empty = a global rule. The most specific matching rule wins: project ∧ state, then
+			project, then state, then global — no fallback across rules.
+		</p>
+
+		<div class="space-y-1.5">
+			<p class="text-sm font-medium">Targets (preference order)</p>
+			{#each ruleTargets as target, i (i)}
+				<div class="flex items-center gap-1.5">
+					<span class="text-muted-foreground w-4 text-right text-xs">{i + 1}.</span>
+					<Select
+						class="flex-1"
+						aria-label={`Target ${i + 1} runner`}
+						value={target.runner_id}
+						onchange={(e) => (ruleTargets[i] = { ...ruleTargets[i], runner_id: e.currentTarget.value })}
+					>
+						{#each data.runners as runner (runner.id)}
+							<option value={runner.id}>{runner.name}{runner.status === 'paused' ? ' (paused)' : ''}</option>
+						{/each}
+					</Select>
+					<Select
+						class="w-32"
+						aria-label={`Target ${i + 1} tier`}
+						value={target.tier}
+						onchange={(e) => (ruleTargets[i] = { ...ruleTargets[i], tier: e.currentTarget.value as '' | ModelTier })}
+					>
+						<option value="">default tier</option>
+						{#each MODEL_TIERS as tier (tier)}
+							<option value={tier}>{tier}</option>
+						{/each}
+					</Select>
+					<Button
+						size="icon"
+						variant="ghost"
+						type="button"
+						class="size-8"
+						disabled={i === 0}
+						aria-label="Move up"
+						onclick={() => moveTarget(i, -1)}
+					>
+						<IconArrowUp size={14} />
+					</Button>
+					<Button
+						size="icon"
+						variant="ghost"
+						type="button"
+						class="size-8"
+						disabled={i === ruleTargets.length - 1}
+						aria-label="Move down"
+						onclick={() => moveTarget(i, 1)}
+					>
+						<IconArrowDown size={14} />
+					</Button>
+					<Button
+						size="icon"
+						variant="ghost"
+						type="button"
+						class="text-destructive size-8"
+						aria-label="Remove target"
+						onclick={() => (ruleTargets = ruleTargets.filter((_, j) => j !== i))}
+					>
+						<IconX size={14} />
+					</Button>
+				</div>
+			{/each}
+			<Button
+				size="sm"
+				variant="ghost"
+				type="button"
+				disabled={data.runners.length === 0}
+				onclick={() => (ruleTargets = [...ruleTargets, { runner_id: data.runners[0].id, tier: '' }])}
+			>
+				<IconPlus size={14} /> Add target
+			</Button>
+			<p class="text-muted-foreground text-xs">
+				The first target that is online, unpaused, and under its caps takes the issue; if the list
+				is exhausted, the issue waits.
+			</p>
+		</div>
+
+		<div class="flex justify-end gap-2">
+			<Button type="button" variant="ghost" onclick={() => (ruleModalOpen = false)}>Cancel</Button>
+			<Button type="submit" disabled={savingRule || ruleTargets.length === 0}>
+				{savingRule ? 'Saving…' : editingRule ? 'Save rule' : 'Create rule'}
+			</Button>
+		</div>
+	</form>
+</Modal>

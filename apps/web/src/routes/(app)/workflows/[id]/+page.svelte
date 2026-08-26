@@ -9,6 +9,7 @@
 	import { slide } from 'svelte/transition';
 	import { goto, invalidateAll } from '$app/navigation';
 	import { api } from '$lib/api';
+	import AgentRoutingCard from '$lib/components/AgentRoutingCard.svelte';
 	import ContextItemEditor from '$lib/components/ContextItemEditor.svelte';
 	import ContextItemList from '$lib/components/ContextItemList.svelte';
 	import StateBadge from '$lib/components/StateBadge.svelte';
@@ -250,6 +251,13 @@
 			</div>
 		{/each}
 	</div>
+</div>
+
+<div class="mt-8">
+	<AgentRoutingCard
+		rules={data.routingRules}
+		emptyMessage="No routing rules are scoped to this workflow's states — project and global rules still apply."
+	/>
 </div>
 
 <ContextItemEditor
