@@ -520,6 +520,8 @@ The steady-state loop once setup is done — the flow that happens dozens of tim
 
 ## Spec deltas from this review
 
+> **Folded in.** As of this commit, all deltas below — and the flows' recorded Decisions and clarifications — have been folded into [SPEC.md](./SPEC.md), which is again the single authoritative document. This section stays as the review record.
+
 Changes and clarifications this review makes relative to SPEC.md, to be reflected when the spec is next revised:
 
 1. **Routing specificity swaps project above state** (flow 7): `project ∧ state` > `project` > `state` > global — a deliberate divergence from the context system's layer ordering, justified because routing is winner-take-all and ownership/security boundaries are project-shaped, while context ordering merely sequences a merge in which every layer still applies.
