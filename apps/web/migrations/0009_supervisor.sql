@@ -50,9 +50,21 @@ CREATE TABLE `agent_run` (
 	`ended_at` INTEGER
 );
 CREATE INDEX `agent_run_issue_idx` ON `agent_run` (`issue_id`, `created_at`);
--- Quota counts and the claim guards only ever aggregate over active runs.
-CREATE INDEX `agent_run_active_idx`
-	ON `agent_run` (`user_id`, `runner_id`, `state_id_at_start`)
+-- Partial indexes over active runs, one per aggregate the dispatch pass
+-- issues (each query filters by exactly these columns plus the status set):
+--   * the exclusive-claim guard / "no active run for this issue" check;
+CREATE INDEX `agent_run_active_issue_idx`
+	ON `agent_run` (`issue_id`)
+	WHERE `status` IN ('assigned', 'launching', 'running');
+--   * the per-runner max_concurrent count (also the runner-card/API
+--     active_runs subquery and the delete guard);
+CREATE INDEX `agent_run_active_runner_idx`
+	ON `agent_run` (`runner_id`)
+	WHERE `status` IN ('assigned', 'launching', 'running');
+--   * the quota-policy counts: global_cap by user, state_roster by
+--     (user, state_id_at_start) — the roster count reads the prefix too.
+CREATE INDEX `agent_run_active_user_state_idx`
+	ON `agent_run` (`user_id`, `state_id_at_start`)
 	WHERE `status` IN ('assigned', 'launching', 'running');
 -- The day-window budget tally (a later milestone) scans by user and time.
 CREATE INDEX `agent_run_user_time_idx` ON `agent_run` (`user_id`, `created_at`);
