@@ -135,7 +135,6 @@ function timestamp(ms: number): string {
 	return new Date(ms).toISOString().replace('T', ' ').slice(0, 19);
 }
 
-
 // ---------------------------------------------------------------------------
 // JSON body input (inline argument, --file <path>, --file -, or piped stdin)
 

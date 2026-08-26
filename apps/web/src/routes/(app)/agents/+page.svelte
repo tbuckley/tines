@@ -141,6 +141,8 @@
 	let ruleWarnings = $state<ShadowWarning[]>([]);
 
 	function openRuleCreate() {
+		// Shadow hints belong to the last save; opening an editor stales them.
+		ruleWarnings = [];
 		editingRule = null;
 		ruleProjectId = '';
 		ruleStateId = '';
@@ -149,6 +151,7 @@
 	}
 
 	function openRuleEdit(rule: RoutingRule) {
+		ruleWarnings = [];
 		editingRule = rule;
 		ruleProjectId = rule.scope.project_id ?? '';
 		ruleStateId = rule.scope.workflow_state_id ?? '';
