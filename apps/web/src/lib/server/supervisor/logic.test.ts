@@ -1,0 +1,179 @@
+import { describe, expect, it } from 'vitest';
+import {
+	launchBackoffMs,
+	matchRule,
+	quotaHasRoom,
+	resolveTier,
+	targetVerdict,
+	type ActiveCounts,
+	type VerdictRunner
+} from './logic';
+
+const NOW = 1_723_000_000_000;
+
+describe('matchRule', () => {
+	const rules = [
+		{ id: 'global', project_id: null, workflow_state_id: null, targets: [] },
+		{ id: 'state', project_id: null, workflow_state_id: 's1', targets: [] },
+		{ id: 'project', project_id: 'p1', workflow_state_id: null, targets: [] },
+		{ id: 'both', project_id: 'p1', workflow_state_id: 's1', targets: [] }
+	];
+
+	it('picks the most specific match: project ∧ state > project > state > global', () => {
+		expect(matchRule({ project_id: 'p1', state_id: 's1' }, rules)?.id).toBe('both');
+		expect(matchRule({ project_id: 'p1', state_id: 's2' }, rules)?.id).toBe('project');
+		expect(matchRule({ project_id: 'p2', state_id: 's1' }, rules)?.id).toBe('state');
+		expect(matchRule({ project_id: 'p2', state_id: 's2' }, rules)?.id).toBe('global');
+	});
+
+	it('project beats state (routing is ownership-shaped, unlike context ordering)', () => {
+		const projectVsState = rules.filter((r) => r.id === 'state' || r.id === 'project');
+		expect(matchRule({ project_id: 'p1', state_id: 's1' }, projectVsState)?.id).toBe('project');
+	});
+
+	it('returns null when nothing matches', () => {
+		const scoped = rules.filter((r) => r.id !== 'global');
+		expect(matchRule({ project_id: 'p9', state_id: 's9' }, scoped)).toBeNull();
+	});
+});
+
+describe('resolveTier', () => {
+	const local = (config: object, extras: object = {}) => ({
+		type: 'local',
+		default_tier: 'balanced',
+		tiers: null,
+		config: JSON.stringify(config),
+		...extras
+	});
+
+	it('falls back to the runner default tier, itself defaulting to balanced', () => {
+		const runner = local({ harness: 'claude_code' }, { default_tier: 'cheapest' });
+		expect(resolveTier(runner, null).tier).toBe('cheapest');
+		expect(resolveTier(local({ harness: 'claude_code' }, { default_tier: '' }), null).tier).toBe('balanced');
+	});
+
+	it('an explicit tier wins over the default', () => {
+		const runner = local({ harness: 'claude_code' }, { default_tier: 'cheapest' });
+		expect(resolveTier(runner, 'smartest').tier).toBe('smartest');
+	});
+
+	it('resolves via the built-in table per type and harness', () => {
+		const cc = resolveTier(local({ harness: 'claude_code' }), 'smartest');
+		expect(cc.model).toMatch(/^claude-/);
+		const managed = resolveTier(
+			{ type: 'gemini_managed', default_tier: 'balanced', tiers: null, config: '{}' },
+			'cheapest'
+		);
+		expect(managed.model).toMatch(/^gemini-/);
+	});
+
+	it('a custom harness has no model dimension: any tier, model unknown', () => {
+		const resolved = resolveTier(local({ harness: 'custom', command: 'run {prompt_file}' }), 'smartest');
+		expect(resolved).toEqual({ tier: 'smartest', model: null });
+	});
+
+	it('per-runner overrides freeze a tier to an exact model; unlisted tiers keep the built-ins', () => {
+		const runner = {
+			type: 'local',
+			default_tier: 'balanced',
+			tiers: JSON.stringify({ smartest: { model: 'my-exact-model' } }),
+			config: JSON.stringify({ harness: 'claude_code' })
+		};
+		expect(resolveTier(runner, 'smartest').model).toBe('my-exact-model');
+		expect(resolveTier(runner, 'balanced').model).toMatch(/^claude-/);
+	});
+
+	it('unreadable JSON columns degrade to the built-ins, never crash', () => {
+		const runner = { type: 'local', default_tier: 'balanced', tiers: '{oops', config: '{broken' };
+		// Broken config falls back to the claude_code harness's table.
+		expect(resolveTier(runner, 'balanced').model).toMatch(/^claude-/);
+	});
+});
+
+describe('launchBackoffMs', () => {
+	it('doubles per consecutive failure, capped at one hour', () => {
+		expect(launchBackoffMs(0)).toBe(0);
+		expect(launchBackoffMs(1)).toBe(60_000);
+		expect(launchBackoffMs(2)).toBe(120_000);
+		expect(launchBackoffMs(3)).toBe(240_000);
+		expect(launchBackoffMs(20)).toBe(60 * 60 * 1000);
+	});
+});
+
+describe('targetVerdict', () => {
+	const runner = (over: Partial<VerdictRunner> = {}): VerdictRunner => ({
+		id: 'rnr_1',
+		type: 'local',
+		status: 'active',
+		max_concurrent: 2,
+		last_seen_at: NOW,
+		backoff_until: null,
+		...over
+	});
+	const counts = (over: Partial<ActiveCounts> = {}): ActiveCounts => ({
+		total: 0,
+		byRunner: new Map(),
+		byStartState: new Map(),
+		...over
+	});
+	const globalCap = { type: 'global_cap' as const, limit: 3 };
+
+	it('ok when unpaused, online, under caps, quota has room', () => {
+		expect(targetVerdict(runner(), counts(), globalCap, 's1', NOW).verdict).toBe('ok');
+	});
+
+	it('paused wins over everything else', () => {
+		expect(targetVerdict(runner({ status: 'paused' }), counts(), globalCap, 's1', NOW).verdict).toBe('paused');
+	});
+
+	it('a local runner unseen for over 2 minutes is offline; managed runners never are', () => {
+		expect(
+			targetVerdict(runner({ last_seen_at: NOW - 3 * 60_000 }), counts(), globalCap, 's1', NOW).verdict
+		).toBe('offline');
+		expect(targetVerdict(runner({ last_seen_at: null }), counts(), globalCap, 's1', NOW).verdict).toBe('offline');
+		expect(
+			targetVerdict(
+				runner({ type: 'claude_managed', last_seen_at: null }),
+				counts(),
+				globalCap,
+				's1',
+				NOW
+			).verdict
+		).toBe('ok');
+	});
+
+	it('backing off until the backoff expires', () => {
+		expect(
+			targetVerdict(runner({ backoff_until: NOW + 1 }), counts(), globalCap, 's1', NOW).verdict
+		).toBe('backing_off');
+		expect(
+			targetVerdict(runner({ backoff_until: NOW }), counts(), globalCap, 's1', NOW).verdict
+		).toBe('ok');
+	});
+
+	it('at max_concurrent', () => {
+		const c = counts({ byRunner: new Map([['rnr_1', 2]]), total: 2 });
+		expect(targetVerdict(runner(), c, globalCap, 's1', NOW).verdict).toBe('at_capacity');
+	});
+
+	it('global cap exhaustion', () => {
+		const c = counts({ total: 3 });
+		expect(targetVerdict(runner(), c, globalCap, 's1', NOW).verdict).toBe('quota_exhausted');
+	});
+
+	it('roster counts per start state with overrides over the default', () => {
+		const roster = { type: 'state_roster' as const, default_limit: 1, overrides: { s2: 2 } };
+		const c = counts({ total: 2, byStartState: new Map([['s1', 1], ['s2', 1]]) });
+		expect(targetVerdict(runner(), c, roster, 's1', NOW).verdict).toBe('quota_exhausted');
+		expect(targetVerdict(runner(), c, roster, 's2', NOW).verdict).toBe('ok');
+	});
+});
+
+describe('quotaHasRoom', () => {
+	it('a roster limit of zero means no agents work that stage', () => {
+		const roster = { type: 'state_roster' as const, default_limit: 1, overrides: { s1: 0 } };
+		const counts: ActiveCounts = { total: 0, byRunner: new Map(), byStartState: new Map() };
+		expect(quotaHasRoom(roster, counts, 's1')).toBe(false);
+		expect(quotaHasRoom(roster, counts, 's2')).toBe(true);
+	});
+});

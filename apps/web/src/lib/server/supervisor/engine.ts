@@ -361,7 +361,7 @@ async function launchClaimedRun(
 			model: ctx.model,
 			runKey: secret
 		});
-		const startedAt = Date.now();
+		const startedAt = ctx.now;
 		// Guard the event on the flip landing: a run canceled mid-launch must
 		// not record a start. (Its provider session becomes an orphan for
 		// launch reconciliation; nothing to do here.)
@@ -414,7 +414,7 @@ async function launchClaimedRun(
 			runId: ctx.runId,
 			runner,
 			error: message,
-			now: Date.now()
+			now: ctx.now
 		});
 		return false;
 	}
@@ -487,11 +487,11 @@ export interface DispatchPassResult {
  * verdicts are selection only — the guarded INSERT is the authority.
  */
 export async function runDispatchPass(
+	db: Kysely<Database>,
 	env: Env,
 	userId: string,
 	opts: DispatchPassOptions = {}
 ): Promise<DispatchPassResult> {
-	const db = getDb(env);
 	const adapters = opts.adapters ?? defaultAdapters;
 	const now = opts.now ?? Date.now();
 	const result: DispatchPassResult = { claimed: 0, launched: 0 };
@@ -582,7 +582,7 @@ export function queueDispatchPass(
 	userId: string
 ): void {
 	if (!platform) return;
-	const pass = runDispatchPass(platform.env, userId).catch((e) => {
+	const pass = runDispatchPass(getDb(platform.env), platform.env, userId).catch((e) => {
 		console.error('opportunistic dispatch pass failed:', e);
 	});
 	platform.ctx?.waitUntil?.(pass);
@@ -621,11 +621,11 @@ interface EndableRun {
  * flip, so a racing sweep and cancel cannot double-strike.
  */
 export async function endRun(
+	db: Kysely<Database>,
 	env: Env,
 	run: EndableRun,
 	input: { status: 'completed' | 'failed' | 'timed_out' | 'canceled'; error?: string | null; now?: number }
 ): Promise<EndRunOutcome> {
-	const db = getDb(env);
 	const now = input.now ?? Date.now();
 	const started = run.started_at !== null;
 
@@ -771,12 +771,12 @@ export type CancelRunResult = { kind: 'not_found' } | { kind: 'already_ended' } 
  * a never-started `assigned` run cancels free of judgment).
  */
 export async function cancelRun(
+	db: Kysely<Database>,
 	env: Env,
 	userId: string,
 	runId: string,
 	adapters: AdapterRegistry = defaultAdapters
 ): Promise<CancelRunResult> {
-	const db = getDb(env);
 	const run = await loadEndableRun(db, userId, runId);
 	if (!run) return { kind: 'not_found' };
 	if (!(ACTIVE as string[]).includes(run.status)) return { kind: 'already_ended' };
@@ -804,7 +804,7 @@ export async function cancelRun(
 			console.error(`adapter cancel for run ${run.id} failed:`, e);
 		}
 	}
-	const outcome = await endRun(env, run, { status: 'canceled' });
+	const outcome = await endRun(db, env, run, { status: 'canceled' });
 	return outcome.ended ? { kind: 'canceled' } : { kind: 'already_ended' };
 }
 
@@ -812,11 +812,11 @@ export async function cancelRun(
 // The sweep: the reliability guarantee behind the opportunistic passes
 
 export async function sweepSupervisor(
+	db: Kysely<Database>,
 	env: Env,
 	now: number = Date.now(),
 	adapters: AdapterRegistry = defaultAdapters
 ): Promise<void> {
-	const db = getDb(env);
 
 	// Timeout enforcement: running runs past their runner's max_run_minutes.
 	const overdue = await db
@@ -845,7 +845,7 @@ export async function sweepSupervisor(
 					})
 					.catch((e) => console.error(`adapter cancel for run ${run.id} failed:`, e));
 			}
-			await endRun(env, run, {
+			await endRun(db, env, run, {
 				status: 'timed_out',
 				error: `run exceeded max_run_minutes (${row.max_run_minutes})`,
 				now
@@ -874,7 +874,7 @@ export async function sweepSupervisor(
 		try {
 			const run = await loadEndableRun(db, row.user_id, row.id);
 			if (!run || run.status !== 'running') continue;
-			await endRun(env, run, { status: 'failed', error: 'runner offline', now });
+			await endRun(db, env, run, { status: 'failed', error: 'runner offline', now });
 		} catch (e) {
 			console.error(`supervisor sweep: failing offline run ${row.id} failed:`, e);
 		}
@@ -938,7 +938,7 @@ export async function sweepSupervisor(
 		.execute();
 	for (const row of enabled) {
 		try {
-			await runDispatchPass(env, row.user_id, { now, adapters });
+			await runDispatchPass(db, env, row.user_id, { now, adapters });
 		} catch (e) {
 			console.error(`supervisor sweep: dispatch pass for ${row.user_id} failed:`, e);
 		}

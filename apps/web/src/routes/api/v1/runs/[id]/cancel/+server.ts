@@ -6,7 +6,7 @@ import type { RequestHandler } from './$types';
 
 export const POST: RequestHandler = api(async (event) => {
 	const { db, env, actor } = await apiContext(event);
-	const result = await cancelRun(env, actor.userId, event.params.id);
+	const result = await cancelRun(db, env, actor.userId, event.params.id);
 	assertCancelable(result.kind);
 	// A run end frees capacity: the freed slot can dispatch in seconds.
 	queueDispatchPass(event.platform, actor.userId);
