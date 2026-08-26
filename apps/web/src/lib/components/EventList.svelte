@@ -10,6 +10,7 @@
 	import IconPencil from '@tabler/icons-svelte/icons/pencil';
 	import IconPlayerSkipForward from '@tabler/icons-svelte/icons/player-skip-forward';
 	import IconRepeat from '@tabler/icons-svelte/icons/repeat';
+	import IconRobot from '@tabler/icons-svelte/icons/robot';
 	import IconSitemap from '@tabler/icons-svelte/icons/sitemap';
 	import IconTrash from '@tabler/icons-svelte/icons/trash';
 	import { fade, slide } from 'svelte/transition';
@@ -32,6 +33,8 @@
 		if (type === 'issue.commented') return IconMessage;
 		if (type === 'scheduled_task.skipped') return IconPlayerSkipForward;
 		if (type.startsWith('scheduled_task.')) return IconRepeat;
+		if (type.startsWith('runner.') || type.startsWith('routing_rule.') || type === 'settings.updated')
+			return IconRobot;
 		if (type.endsWith('.created')) return IconCirclePlus;
 		if (type.endsWith('.deleted') || type.endsWith('.revoked')) return IconTrash;
 		if (type.startsWith('project.')) return IconFolder;
@@ -75,6 +78,20 @@
 				return 'deleted schedule';
 			case 'scheduled_task.skipped':
 				return 'skipped an occurrence of schedule';
+			case 'runner.registered':
+				return 'registered runner';
+			case 'runner.updated':
+				return 'updated runner';
+			case 'runner.removed':
+				return 'removed runner';
+			case 'routing_rule.created':
+				return `created the ${p.scope_label} routing rule`;
+			case 'routing_rule.updated':
+				return `updated the ${p.scope_label} routing rule`;
+			case 'routing_rule.deleted':
+				return `deleted the ${p.scope_label} routing rule`;
+			case 'settings.updated':
+				return `updated supervisor settings (${(p.changed as string[])?.join(', ') || 'no changes'})`;
 			case 'context.created':
 			case 'context.updated':
 			case 'context.deleted': {

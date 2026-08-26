@@ -402,6 +402,10 @@ export async function updateRoutingRule(
 			? validateTargets(body.targets, runnersById)
 			: (JSON.parse(row.targets) as RoutingTarget[]);
 
+	if (!scopeChanged && JSON.stringify(targets) === row.targets) {
+		return { ...serializeRule(row, runnersById), warnings: shadowWarnings({ ...scope, id }, rules) };
+	}
+
 	await runAtomic(env, [
 		db
 			.updateTable('routing_rule')

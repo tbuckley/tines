@@ -615,6 +615,16 @@ function eventSummary(ev: TinesEvent): string {
 			const blocking = Array.isArray(p.blocking) ? p.blocking.length : 0;
 			return `skipped schedule "${p.name}" (${blocking} open instance${blocking === 1 ? '' : 's'})`;
 		}
+		case 'runner.registered':
+		case 'runner.updated':
+		case 'runner.removed':
+			return `${ev.type.split('.')[1]} runner "${p.name}"`;
+		case 'routing_rule.created':
+		case 'routing_rule.updated':
+		case 'routing_rule.deleted':
+			return `${ev.type.split('.')[1]} the ${p.scope_label} routing rule`;
+		case 'settings.updated':
+			return `updated supervisor settings (${(p.changed as string[])?.join(', ') || 'no changes'})`;
 		default:
 			return ev.type;
 	}
