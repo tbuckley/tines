@@ -11,7 +11,7 @@ import {
 	type RoutingTarget,
 	type UpdateRunnerRequest
 } from '@tines/shared';
-import type { CompiledQuery, Kysely } from 'kysely';
+import { sql, type CompiledQuery, type Kysely } from 'kysely';
 import { newId, type Database } from '$lib/server/db';
 import { ApiFail, notFound, requireString, runAtomic, type ActorContext } from './core';
 import { eventInsert } from './events';
@@ -486,6 +486,28 @@ export async function deleteRunner(
 		}))
 	}, force);
 
+	// The active-run guard above is a read before the batch (TOCTOU): a run
+	// can go active between the check and the writes, and an unguarded batch
+	// would then silently delete a runner with live work. Every statement in
+	// the batch therefore re-checks "no active run" inside itself, so a race
+	// makes the whole batch a no-op instead — detected below via the runner
+	// delete's rows-affected.
+	const noActiveRuns = sql<boolean>`NOT EXISTS (
+		SELECT 1 FROM agent_run
+		WHERE runner_id = ${id} AND status IN (${sql.join([...ACTIVE_RUN_STATUSES])})
+	)`;
+	const guardedEvent = (input: {
+		type: string;
+		issueId?: string | null;
+		projectId?: string | null;
+		payload: Record<string, unknown>;
+	}): CompiledQuery =>
+		sql`
+			INSERT INTO event (id, user_id, type, actor_user_id, actor_api_key_id, issue_id, project_id, payload, created_at)
+			SELECT ${newId('evt')}, ${actor.userId}, ${input.type}, ${actor.userId}, ${actor.apiKeyId ?? null},
+				${input.issueId ?? null}, ${input.projectId ?? null}, ${JSON.stringify(input.payload)}, ${Date.now()}
+			WHERE ${noActiveRuns}`.compile(db);
+
 	const now = Date.now();
 	const queries: CompiledQuery[] = [];
 	for (const update of plan.ruleUpdates) {
@@ -494,8 +516,9 @@ export async function deleteRunner(
 				.updateTable('routing_rule')
 				.set({ targets: JSON.stringify(update.targets), updated_at: now })
 				.where('id', '=', update.id)
+				.where(noActiveRuns)
 				.compile(),
-			eventInsert(db, actor, {
+			guardedEvent({
 				type: 'routing_rule.updated',
 				payload: {
 					rule_id: update.id,
@@ -514,8 +537,9 @@ export async function deleteRunner(
 				.updateTable('issue')
 				.set({ pinned_runner_id: null, pinned_tier: null, updated_at: now })
 				.where('id', '=', pin.issue_id)
+				.where(noActiveRuns)
 				.compile(),
-			eventInsert(db, actor, {
+			guardedEvent({
 				type: 'issue.updated',
 				issueId: pin.issue_id,
 				projectId: pin.project_id,
@@ -536,6 +560,7 @@ export async function deleteRunner(
 			.updateTable('issue')
 			.set({ pinned_runner_id: null, pinned_tier: null })
 			.where('pinned_runner_id', '=', id)
+			.where(noActiveRuns)
 			.compile(),
 		// Ended runs go with their runner (pause keeps history; delete does
 		// not); their run keys lose the provenance link but stay on record.
@@ -543,10 +568,14 @@ export async function deleteRunner(
 			.updateTable('api_key')
 			.set({ agent_run_id: null })
 			.where('agent_run_id', 'in', db.selectFrom('agent_run').select('id').where('runner_id', '=', id))
+			.where(noActiveRuns)
 			.compile(),
-		db.deleteFrom('agent_run').where('runner_id', '=', id).compile(),
-		db.deleteFrom('runner').where('id', '=', id).compile(),
-		eventInsert(db, actor, {
+		db.deleteFrom('agent_run').where('runner_id', '=', id).where(noActiveRuns).compile(),
+		// By this point a passing guard has emptied agent_run for the runner,
+		// so this delete's own guard only bites when the batch no-oped — and
+		// then it also spares the FK from the still-referencing ended runs.
+		db.deleteFrom('runner').where('id', '=', id).where(noActiveRuns).compile(),
+		guardedEvent({
 			type: 'runner.removed',
 			payload: {
 				runner_id: id,
@@ -556,5 +585,21 @@ export async function deleteRunner(
 			}
 		})
 	);
-	await runAtomic(env, queries);
+	const results = await runAtomic(env, queries);
+	// The runner delete is the second-to-last statement.
+	if ((results[results.length - 2]?.meta.changes ?? 0) === 0) {
+		const survivor = await db
+			.selectFrom('runner')
+			.select('id')
+			.where('id', '=', id)
+			.executeTakeFirst();
+		// No survivor = a concurrent delete already removed it; that's done.
+		if (survivor) {
+			throw new ApiFail(
+				422,
+				'runner_busy',
+				`Cannot remove runner "${runner.name}": a run went active while removing it. Cancel it (or let it finish) and retry.`
+			);
+		}
+	}
 }

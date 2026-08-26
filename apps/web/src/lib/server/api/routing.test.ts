@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { ApiFail } from './core';
+import { api, ApiFail, runAtomic } from './core';
+import { createTestDb } from './test-db';
 import {
 	findScopeCollision,
 	ruleScopesOverlap,
@@ -175,5 +176,45 @@ describe('validateTargets', () => {
 				runners
 			)
 		).toHaveLength(2);
+	});
+});
+
+describe('scope-collision unique-index backstop', () => {
+	it('maps the racing insert that slipped past the app-level check to a 409', async () => {
+		const t = createTestDb();
+		const now = 1_723_000_000_000;
+		t.sqlite.exec(`
+			INSERT INTO user (id, name, email, emailVerified, createdAt, updatedAt)
+				VALUES ('u1', 'alice', 'a@example.com', 1, ${now}, ${now});
+			INSERT INTO runner (id, user_id, type, name, config, created_at, updated_at)
+				VALUES ('rnr_1', 'u1', 'local', 'laptop-m4', '{}', ${now}, ${now});
+		`);
+		const globalRule = (id: string) =>
+			t.db
+				.insertInto('routing_rule')
+				.values({
+					id,
+					user_id: 'u1',
+					project_id: null,
+					workflow_state_id: null,
+					targets: '[{"runner_id":"rnr_1"}]',
+					created_at: now,
+					updated_at: now
+				})
+				.compile();
+
+		// Both creates passed assertNoScopeCollision (neither saw the other);
+		// the loser's insert must die on routing_rule_scope_uq and surface as
+		// the api() wrapper's structured 409, not a 500.
+		await runAtomic(t.env, [globalRule('rul_winner')]);
+		const loser = api(async () => {
+			await runAtomic(t.env, [globalRule('rul_loser')]);
+			return new Response('created');
+		});
+		const res = await loser({} as never);
+		expect(res.status).toBe(409);
+		const body = (await res.json()) as { error: { code: string } };
+		expect(body.error.code).toBe('conflict');
+		expect(t.all(`SELECT id FROM routing_rule`).map((r) => r.id)).toEqual(['rul_winner']);
 	});
 });
