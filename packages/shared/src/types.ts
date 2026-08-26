@@ -33,6 +33,21 @@ export interface Actor {
 	run?: ActorRun | null;
 }
 
+/**
+ * Canonical actor rendering everywhere actions are attributed: "alice",
+ * "alice via laptop-key", or — for run keys — "alice via laptop-m4 · run on
+ * demo/12".
+ */
+export function actorLabel(actor: Actor): string {
+	if (actor.run) {
+		const ref = actor.run.issue_ref
+			? `run on ${actor.run.issue_ref.project_name}/${actor.run.issue_ref.number}`
+			: `run ${actor.run.run_id}`;
+		return `${actor.user_name} via ${actor.run.runner_name} · ${ref}`;
+	}
+	return actor.api_key_name ? `${actor.user_name} via ${actor.api_key_name}` : actor.user_name;
+}
+
 // ---------------------------------------------------------------------------
 // Projects
 

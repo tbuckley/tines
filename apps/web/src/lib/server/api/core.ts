@@ -117,6 +117,51 @@ export interface ActorContext {
 	apiKeyId: string | null;
 	apiKeyName: string | null;
 	viaSession: boolean;
+	/** Set when the key is a run key (bound to an agent run). */
+	agentRunId?: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Run keys: api_key rows with agent_run_id set. They carry issue-action
+// authority but are fenced off the control plane — an agent must not be able
+// to raise its own budget, un-park itself, re-route work, or touch
+// credentials. Ordinary named keys keep their full authority.
+
+const CONTROL_PLANE_PATTERNS = [
+	/^\/api\/v1\/runners(\/|$)/,
+	/^\/api\/v1\/routing-rules(\/|$)/,
+	/^\/api\/v1\/supervisor\/settings(\/|$)/,
+	/^\/api\/v1\/issues\/[^/]+\/resume$/,
+	/^\/api\/v1\/api-keys(\/|$)/
+];
+
+/** True for paths a run key must never reach (all methods). */
+export function isControlPlanePath(pathname: string): boolean {
+	return CONTROL_PLANE_PATTERNS.some((p) => p.test(pathname));
+}
+
+/**
+ * Gate applied to every key-authenticated request: expired run keys are dead
+ * (401), and live run keys get 403s on the control plane, pointing at the
+ * proposal convention instead.
+ */
+export function assertRunKeyAllowed(
+	key: { agentRunId: string | null; expiresAt: number | null },
+	pathname: string,
+	now = Date.now()
+): void {
+	if (key.expiresAt !== null && key.expiresAt <= now) {
+		throw new ApiFail(401, 'run_key_expired', 'This run key has expired; the run it belonged to is over');
+	}
+	if (key.agentRunId !== null && isControlPlanePath(pathname)) {
+		throw new ApiFail(
+			403,
+			'run_key_forbidden',
+			'Run keys cannot modify runners, routing rules, supervisor settings, parked issues, or API keys. ' +
+				'Propose the change instead: file an issue titled "Context change: <scope label>" describing ' +
+				'what should change and why; a human reviews and applies it.'
+		);
+	}
 }
 
 async function sha256Hex(input: string): Promise<string> {
@@ -146,13 +191,24 @@ export async function requireActor(event: RequestEvent): Promise<ActorContext> {
 	const row = await db
 		.selectFrom('api_key')
 		.innerJoin('user', 'user.id', 'api_key.user_id')
-		.select(['api_key.id', 'api_key.user_id', 'api_key.name', 'user.name as user_name'])
+		.select([
+			'api_key.id',
+			'api_key.user_id',
+			'api_key.name',
+			'api_key.agent_run_id',
+			'api_key.expires_at',
+			'user.name as user_name'
+		])
 		.where('api_key.key_hash', '=', hash)
 		.where('api_key.revoked_at', 'is', null)
 		.executeTakeFirst();
 	if (!row) {
 		throw new ApiFail(401, 'unauthorized', 'Invalid or revoked API key');
 	}
+	assertRunKeyAllowed(
+		{ agentRunId: row.agent_run_id, expiresAt: row.expires_at },
+		event.url.pathname
+	);
 
 	const touch = db
 		.updateTable('api_key')
@@ -167,7 +223,8 @@ export async function requireActor(event: RequestEvent): Promise<ActorContext> {
 		userName: row.user_name,
 		apiKeyId: row.id,
 		apiKeyName: row.name,
-		viaSession: false
+		viaSession: false,
+		agentRunId: row.agent_run_id
 	};
 }
 

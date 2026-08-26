@@ -1,5 +1,3 @@
-import type { Actor } from '@tines/shared';
-
 export function relativeTime(ms: number, now = Date.now()): string {
 	const diff = now - ms;
 	if (diff < 60_000) return 'just now';
@@ -35,10 +33,8 @@ export function formatDateTime(ms: number): string {
 	});
 }
 
-/** "tbuckley" or "tbuckley via laptop-claude". */
-export function actorLabel(actor: Actor): string {
-	return actor.api_key_name ? `${actor.user_name} via ${actor.api_key_name}` : actor.user_name;
-}
+// Canonical "alice via …" attribution rendering (run-key aware).
+export { actorLabel } from '@tines/shared';
 
 export const CATEGORY_LABELS: Record<string, string> = {
 	backlog: 'Backlog',

@@ -13,9 +13,12 @@ import type {
 	CreateIssueRequest,
 	CreateIssueResponse,
 	CreateProjectRequest,
+	CreateRoutingRuleRequest,
+	CreateRunnerRequest,
 	CreateWorkflowRequest,
 	DeleteAnchorRequest,
 	DeleteAnchorResponse,
+	DeleteRunnerRequest,
 	EffectiveContext,
 	EventFilters,
 	LaunchPromptResponse,
@@ -26,15 +29,22 @@ import type {
 	ListResponse,
 	PageParams,
 	Project,
+	RoutingRule,
+	RoutingRuleWithWarnings,
+	Runner,
 	Schedule,
 	ScheduleFilters,
 	StateCategory,
+	SupervisorSettings,
 	TinesEvent,
 	TransitionIssueRequest,
 	UpdateContextItemRequest,
 	UpdateIssueRequest,
 	UpdateProjectRequest,
+	UpdateRoutingRuleRequest,
+	UpdateRunnerRequest,
 	UpdateScheduleRequest,
+	UpdateSupervisorSettingsRequest,
 	UpdateWorkflowRequest,
 	WorkflowResponse
 } from './types.js';
@@ -202,6 +212,29 @@ export function createApiClient(options: ApiClientOptions) {
 		// Events
 		listEvents: (filters: EventFilters & PageParams = {}) =>
 			get<ListResponse<TinesEvent>>(`/api/v1/events${query(filters)}`),
+
+		// Runners
+		listRunners: () => get<ListResponse<Runner>>('/api/v1/runners'),
+		createRunner: (body: CreateRunnerRequest) => request<Runner>('POST', '/api/v1/runners', body),
+		getRunner: (id: string) => get<Runner>(`/api/v1/runners/${id}`),
+		updateRunner: (id: string, body: UpdateRunnerRequest) =>
+			request<Runner>('PATCH', `/api/v1/runners/${id}`, body),
+		/** Reject-by-default: 422 names referencing rules/pins unless `force`. */
+		deleteRunner: (id: string, body?: DeleteRunnerRequest) =>
+			request<void>('DELETE', `/api/v1/runners/${id}`, body),
+
+		// Routing rules (one per exact scope; responses carry shadow hints)
+		listRoutingRules: () => get<ListResponse<RoutingRule>>('/api/v1/routing-rules'),
+		createRoutingRule: (body: CreateRoutingRuleRequest) =>
+			request<RoutingRuleWithWarnings>('POST', '/api/v1/routing-rules', body),
+		updateRoutingRule: (id: string, body: UpdateRoutingRuleRequest) =>
+			request<RoutingRuleWithWarnings>('PATCH', `/api/v1/routing-rules/${id}`, body),
+		deleteRoutingRule: (id: string) => request<void>('DELETE', `/api/v1/routing-rules/${id}`),
+
+		// Supervisor settings
+		getSupervisorSettings: () => get<SupervisorSettings>('/api/v1/supervisor/settings'),
+		updateSupervisorSettings: (body: UpdateSupervisorSettingsRequest) =>
+			request<SupervisorSettings>('PUT', '/api/v1/supervisor/settings', body),
 
 		// API keys (create/revoke require a browser session, not a key)
 		listApiKeys: () => get<ListResponse<ApiKey>>('/api/v1/api-keys'),

@@ -1,6 +1,13 @@
 import type { RequestEvent } from '@sveltejs/kit';
 import { describe, expect, it } from 'vitest';
-import { ApiFail, encodeCursor, pageResult, readPage } from './core';
+import {
+	ApiFail,
+	assertRunKeyAllowed,
+	encodeCursor,
+	isControlPlanePath,
+	pageResult,
+	readPage
+} from './core';
 
 /** readPage only touches `url.searchParams`. */
 function eventWithUrl(query: string): RequestEvent {
@@ -64,5 +71,86 @@ describe('pageResult', () => {
 
 	it('handles an empty page', () => {
 		expect(pageResult([], 10)).toEqual({ items: [], next_cursor: null });
+	});
+});
+
+describe('isControlPlanePath', () => {
+	it.each([
+		'/api/v1/runners',
+		'/api/v1/runners/rnr_1',
+		'/api/v1/runners/rnr_1/rotate-token',
+		'/api/v1/routing-rules',
+		'/api/v1/routing-rules/rul_1',
+		'/api/v1/supervisor/settings',
+		'/api/v1/issues/iss_1/resume',
+		'/api/v1/api-keys',
+		'/api/v1/api-keys/key_1'
+	])('fences %s', (path) => {
+		expect(isControlPlanePath(path)).toBe(true);
+	});
+
+	it.each([
+		'/api/v1/issues',
+		'/api/v1/issues/iss_1',
+		'/api/v1/issues/iss_1/comments',
+		'/api/v1/issues/iss_1/transition',
+		'/api/v1/issues/iss_1/prompt',
+		'/api/v1/context',
+		'/api/v1/events',
+		'/api/v1/projects/prj_1/issues',
+		// Similar-looking but distinct segments stay open.
+		'/api/v1/runnersandmore',
+		'/api/v1/issues/resume'
+	])('leaves %s open', (path) => {
+		expect(isControlPlanePath(path)).toBe(false);
+	});
+});
+
+describe('assertRunKeyAllowed', () => {
+	const now = 1_723_000_000_000;
+	const runKey = { agentRunId: 'arun_1', expiresAt: now + 60_000 };
+
+	it('lets a live run key act on issue endpoints', () => {
+		expect(() => assertRunKeyAllowed(runKey, '/api/v1/issues/iss_1/comments', now)).not.toThrow();
+	});
+
+	it('403s a run key on every control-plane surface, naming the proposal convention', () => {
+		for (const path of [
+			'/api/v1/runners',
+			'/api/v1/routing-rules/rul_1',
+			'/api/v1/supervisor/settings',
+			'/api/v1/issues/iss_1/resume',
+			'/api/v1/api-keys'
+		]) {
+			try {
+				assertRunKeyAllowed(runKey, path, now);
+				throw new Error(`expected a 403 for ${path}`);
+			} catch (e) {
+				expect(e).toBeInstanceOf(ApiFail);
+				expect((e as ApiFail).status).toBe(403);
+				expect((e as ApiFail).code).toBe('run_key_forbidden');
+				expect((e as ApiFail).message).toContain('Context change:');
+			}
+		}
+	});
+
+	it('401s an expired run key everywhere, before the fence', () => {
+		const expired = { agentRunId: 'arun_1', expiresAt: now - 1 };
+		for (const path of ['/api/v1/issues/iss_1/comments', '/api/v1/supervisor/settings']) {
+			try {
+				assertRunKeyAllowed(expired, path, now);
+				throw new Error('expected a 401');
+			} catch (e) {
+				expect(e).toBeInstanceOf(ApiFail);
+				expect((e as ApiFail).status).toBe(401);
+				expect((e as ApiFail).code).toBe('run_key_expired');
+			}
+		}
+	});
+
+	it('never fences ordinary named keys (no agent_run_id, no expiry)', () => {
+		const named = { agentRunId: null, expiresAt: null };
+		expect(() => assertRunKeyAllowed(named, '/api/v1/supervisor/settings', now)).not.toThrow();
+		expect(() => assertRunKeyAllowed(named, '/api/v1/runners', now)).not.toThrow();
 	});
 });

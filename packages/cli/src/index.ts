@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { dirname, join } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import {
+	actorLabel,
 	AGENT_GUIDELINES_BODY,
 	AGENT_GUIDELINES_DESCRIPTION,
 	AGENT_GUIDELINES_NAME,
@@ -129,9 +130,6 @@ function timestamp(ms: number): string {
 	return new Date(ms).toISOString().replace('T', ' ').slice(0, 19);
 }
 
-function actorLabel(actor: { user_name: string; api_key_name: string | null }): string {
-	return actor.api_key_name ? `${actor.user_name} via ${actor.api_key_name}` : actor.user_name;
-}
 
 // ---------------------------------------------------------------------------
 // JSON body input (inline argument, --file <path>, --file -, or piped stdin)

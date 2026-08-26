@@ -1,3 +1,4 @@
+import { actorLabel } from '@tines/shared';
 import { describe, expect, it } from 'vitest';
 import { actorOf, serializeEvent } from './events';
 
@@ -12,6 +13,10 @@ const baseRow = {
 	actor_user_name: 'alice',
 	actor_api_key_id: null,
 	actor_api_key_name: null,
+	actor_run_id: null,
+	actor_runner_name: null,
+	actor_run_project_name: null,
+	actor_run_issue_number: null,
 	issue_number: 7,
 	issue_title: 'Fix it',
 	project_name: 'api'
@@ -60,5 +65,52 @@ describe('actorOf', () => {
 			actor_api_key_name: 'stale'
 		});
 		expect(actor.api_key_name).toBeNull();
+	});
+
+	it('resolves run keys through the run to the runner and its issue', () => {
+		const actor = actorOf({
+			actor_user_id: 'usr_1',
+			actor_user_name: 'alice',
+			actor_api_key_id: 'key_1',
+			actor_api_key_name: 'run key',
+			actor_run_id: 'arun_1',
+			actor_runner_name: 'laptop-m4',
+			actor_run_project_name: 'demo',
+			actor_run_issue_number: 12
+		});
+		expect(actor.run).toEqual({
+			run_id: 'arun_1',
+			runner_name: 'laptop-m4',
+			issue_ref: { project_name: 'demo', number: 12 }
+		});
+		expect(actorLabel(actor)).toBe('alice via laptop-m4 · run on demo/12');
+	});
+
+	it('falls back to the run id when the run’s issue is gone', () => {
+		const actor = actorOf({
+			actor_user_id: 'usr_1',
+			actor_user_name: 'alice',
+			actor_api_key_id: 'key_1',
+			actor_api_key_name: 'run key',
+			actor_run_id: 'arun_1',
+			actor_runner_name: 'laptop-m4',
+			actor_run_project_name: null,
+			actor_run_issue_number: null
+		});
+		expect(actor.run?.issue_ref).toBeNull();
+		expect(actorLabel(actor)).toBe('alice via laptop-m4 · run arun_1');
+	});
+
+	it('leaves ordinary key actors without run provenance', () => {
+		const actor = actorOf({
+			actor_user_id: 'usr_1',
+			actor_user_name: 'alice',
+			actor_api_key_id: 'key_1',
+			actor_api_key_name: 'laptop-claude',
+			actor_run_id: null,
+			actor_runner_name: null
+		});
+		expect(actor.run).toBeUndefined();
+		expect(actorLabel(actor)).toBe('alice via laptop-claude');
 	});
 });
