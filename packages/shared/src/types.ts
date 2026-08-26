@@ -11,6 +11,17 @@ export const STATE_CATEGORIES: readonly StateCategory[] = [
 	'done'
 ];
 
+/**
+ * A run-key actor's provenance: resolved through the run to the runner, for
+ * "via <runner> · run on <issue>" rendering.
+ */
+export interface ActorRun {
+	run_id: string;
+	runner_name: string;
+	/** The issue the run is working; null if it has been deleted. */
+	issue_ref: { project_name: string; number: number } | null;
+}
+
 /** Who performed an action: always a user, optionally via a named API key. */
 export interface Actor {
 	user_id: string;
@@ -18,6 +29,8 @@ export interface Actor {
 	/** NULL when the user acted directly (browser session). */
 	api_key_id: string | null;
 	api_key_name: string | null;
+	/** Set when the key is a run key: attribution goes to the runner + run. */
+	run?: ActorRun | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -190,6 +203,15 @@ export interface Issue {
 	/** Set when the issue was created by a scheduled task (null once the schedule is deleted). */
 	scheduled_task_id: string | null;
 	scheduled_task_name: string | null;
+	/** Pin: replaces routing-rule matching entirely for this issue. */
+	pinned_runner_id: string | null;
+	pinned_runner_name: string | null;
+	/** Tier for the pinned runner; null = the runner's default tier. */
+	pinned_tier: ModelTier | null;
+	/** Strikes toward the attempt limit; reset when a run advances the issue. */
+	attempt_count: number;
+	/** Parked after striking out; cleared by resume or a manual transition. */
+	needs_attention: boolean;
 	created_at: number;
 	updated_at: number;
 	/** Timestamp of the most recent event touching this issue. */
@@ -361,6 +383,13 @@ export interface UpdateIssueRequest {
 	 * issue lands on the new workflow's initial state.
 	 */
 	workflow_id?: string;
+	/**
+	 * Pin the issue to one runner (replaces routing-rule matching entirely;
+	 * eligibility still applies). Explicit null unpins.
+	 */
+	pinned_runner_id?: string | null;
+	/** Tier for the pin; null = the pinned runner's default tier. */
+	pinned_tier?: ModelTier | null;
 }
 
 /** Names the transition to take: exactly one of the two fields. */
@@ -633,6 +662,198 @@ export function repoDirFromUrl(url: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Supervisor: runners, routing rules, settings
+
+export type RunnerType = 'claude_managed' | 'gemini_managed' | 'local';
+
+export const RUNNER_TYPES: readonly RunnerType[] = ['claude_managed', 'gemini_managed', 'local'];
+
+export type RunnerStatus = 'active' | 'paused';
+
+/**
+ * The routing vocabulary for how hard to think. A closed set: adding a tier
+ * is a code change, so routing rules can rely on it staying small.
+ */
+export type ModelTier = 'smartest' | 'balanced' | 'cheapest';
+
+export const MODEL_TIERS: readonly ModelTier[] = ['smartest', 'balanced', 'cheapest'];
+
+export type RunStatus =
+	| 'assigned'
+	| 'launching'
+	| 'running'
+	| 'completed'
+	| 'failed'
+	| 'timed_out'
+	| 'canceled';
+
+export const RUN_STATUSES: readonly RunStatus[] = [
+	'assigned',
+	'launching',
+	'running',
+	'completed',
+	'failed',
+	'timed_out',
+	'canceled'
+];
+
+/** Statuses that hold the issue's exclusive claim (and count toward caps). */
+export const ACTIVE_RUN_STATUSES: readonly RunStatus[] = ['assigned', 'launching', 'running'];
+
+/** Local-runner liveness: online = last poll within this window. */
+export const RUNNER_ONLINE_WINDOW_MS = 2 * 60 * 1000;
+
+/** At most `limit` runs in launching/running across everything. */
+export interface GlobalCapQuota {
+	type: 'global_cap';
+	limit: number;
+}
+
+/**
+ * At most N concurrent runs per workflow state — counted by the state a run
+ * started in (`state_id_at_start`) — with a fallback default and per-state
+ * overrides keyed by state id.
+ */
+export interface StateRosterQuota {
+	type: 'state_roster';
+	default_limit: number;
+	overrides: Record<string, number>;
+}
+
+/** One user-chosen policy governs the total picture; new types are additive. */
+export type QuotaPolicy = GlobalCapQuota | StateRosterQuota;
+
+export interface SupervisorSettings {
+	/** The kill switch: nothing dispatches while off. Off for new users. */
+	enabled: boolean;
+	quota: QuotaPolicy;
+	/** Strikes before an issue parks (`needs_attention`). */
+	attempt_limit: number;
+	/** Null until the settings row has been written at least once. */
+	updated_at: number | null;
+}
+
+/** PUT is a merge: omitted fields keep their current values. */
+export interface UpdateSupervisorSettingsRequest {
+	enabled?: boolean;
+	quota?: QuotaPolicy;
+	attempt_limit?: number;
+}
+
+/** A registered executor. Secrets are never serialized. */
+export interface Runner {
+	id: string;
+	type: RunnerType;
+	/** Unique per user — routing rules and the CLI address runners by name. */
+	name: string;
+	status: RunnerStatus;
+	/** The runner's own concurrency cap; always enforced. */
+	max_concurrent: number;
+	max_run_minutes: number;
+	default_tier: ModelTier;
+	/** Non-secret config (harness, hostname…). */
+	config: Record<string, unknown>;
+	/**
+	 * Managed runners are always online; a local runner is online while its
+	 * daemon has polled within the last 2 minutes.
+	 */
+	online: boolean;
+	last_seen_at: number | null;
+	launch_failures: number;
+	backoff_until: number | null;
+	/** Runs currently holding a claim on this runner (assigned/launching/running). */
+	active_runs: number;
+	created_at: number;
+	updated_at: number;
+}
+
+export interface CreateRunnerRequest {
+	/** Only 'local' can be created over the API for now (managed types come with credential handling). */
+	type: RunnerType;
+	name: string;
+	max_concurrent?: number;
+	max_run_minutes?: number;
+	default_tier?: ModelTier;
+	/** Local runners: { harness?: 'claude_code' | 'codex' | 'custom', … }. */
+	config?: Record<string, unknown>;
+}
+
+export interface UpdateRunnerRequest {
+	name?: string;
+	/** Pause with 'paused'; resume with 'active'. */
+	status?: RunnerStatus;
+	max_concurrent?: number;
+	max_run_minutes?: number;
+	default_tier?: ModelTier;
+	config?: Record<string, unknown>;
+}
+
+/**
+ * DELETE body. Removal is refused (422 naming them) while the runner has
+ * active runs or is referenced by any routing-rule target or issue pin;
+ * `force` strips rule targets and clears pins instead (active runs always
+ * block). A rule the cascade empties is flagged, not deleted.
+ */
+export interface DeleteRunnerRequest {
+	force?: boolean;
+}
+
+/** One entry of a rule's ordered preference list, as stored/sent. */
+export interface RoutingTarget {
+	runner_id: string;
+	/** Null/absent = the runner's default tier. */
+	tier?: ModelTier | null;
+}
+
+/** A target with its runner denormalized for display. */
+export interface RoutingRuleTarget {
+	runner_id: string;
+	runner_name: string;
+	runner_status: RunnerStatus;
+	tier: ModelTier | null;
+}
+
+/**
+ * A routing rule: at most one per exact scope (project ∧ state, project,
+ * state, or global). The most specific matching rule wins outright —
+ * `project ∧ state` > `project` > `state` > global — with no fallback
+ * across rules. `scope.issue_id` is always null (pins cover per-issue).
+ */
+export interface RoutingRule {
+	id: string;
+	scope: ContextScope;
+	/** Ordered preference list. Empty = flagged "no targets" (a force-delete cascade emptied it). */
+	targets: RoutingRuleTarget[];
+	created_at: number;
+	updated_at: number;
+}
+
+/** An authoring-time note that another rule shadows (or is shadowed by) this one. */
+export interface ShadowWarning {
+	rule_id: string;
+	scope_label: string;
+	message: string;
+}
+
+/** Create/update responses carry shadow hints so the interaction surfaces when the rule is written. */
+export interface RoutingRuleWithWarnings extends RoutingRule {
+	warnings: ShadowWarning[];
+}
+
+export interface CreateRoutingRuleRequest {
+	project_id?: string | null;
+	workflow_state_id?: string | null;
+	targets: RoutingTarget[];
+}
+
+export interface UpdateRoutingRuleRequest {
+	/** Scope is merge-patched: omitted = unchanged, explicit null = unset. */
+	project_id?: string | null;
+	workflow_state_id?: string | null;
+	targets?: RoutingTarget[];
+}
+
+// ---------------------------------------------------------------------------
 // Comments
 
 export interface Comment {
@@ -672,6 +893,13 @@ export type EventType =
 	| 'context.created'
 	| 'context.updated'
 	| 'context.deleted'
+	| 'runner.registered'
+	| 'runner.updated'
+	| 'runner.removed'
+	| 'routing_rule.created'
+	| 'routing_rule.updated'
+	| 'routing_rule.deleted'
+	| 'settings.updated'
 	// Open-ended by design: later phases add types without migration.
 	| (string & {});
 
