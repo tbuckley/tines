@@ -13,6 +13,7 @@ import {
 	MODEL_TIERS,
 	repoDirFromUrl,
 	WEEKDAY_NAMES,
+	type AgentRun,
 	type ApiClient,
 	type ContextFile,
 	type ContextItem,
@@ -20,6 +21,7 @@ import {
 	type CreateContextItemRequest,
 	type CreateScheduleInput,
 	type CreateWorkflowRequest,
+	type DispatchExplainer,
 	type IssueDetail,
 	type IssueLinks,
 	type LinkedIssue,
@@ -618,6 +620,16 @@ function eventSummary(ev: TinesEvent): string {
 		case 'runner.updated':
 		case 'runner.removed':
 			return `${ev.type.split('.')[1]} runner "${p.name}"`;
+		case 'runner.errored':
+			return `runner "${p.runner_name}" failed to launch (${p.consecutive_failures} consecutive): ${p.error}`;
+		case 'agent_run.started':
+			return `run started on ${issue} via ${p.runner_name} (${p.tier}${p.model ? ` → ${p.model}` : ''})`;
+		case 'agent_run.ended':
+			return `run ${p.status} on ${issue} via ${p.runner_name}${p.outcome ? ` — ${p.outcome}` : ''}`;
+		case 'issue.parked':
+			return `parked ${issue} after ${p.attempt_count} strikes — needs attention`;
+		case 'issue.resumed':
+			return `resumed ${issue} (attempt count reset)`;
 		case 'routing_rule.created':
 		case 'routing_rule.updated':
 		case 'routing_rule.deleted':
@@ -1224,6 +1236,71 @@ withCommon(
 		`pinned ${updated.project_name}/#${updated.number} to ${runner.name}${tier ? ` (tier ${tier})` : ''} — only this runner will take it`
 	);
 });
+
+withCommon(
+	issues
+		.command('dispatch <ref>')
+		.description('Explain why an issue is (not) dispatching: eligibility, routing, per-runner verdicts')
+).action(async (ref: string, opts: CommonOpts) => {
+	const api = client(opts);
+	const issue = await resolveIssue(api, ref);
+	const ex = await api.getIssueDispatch(issue.id);
+	if (opts.json) return printJson(ex);
+	printExplainer(issue, ex);
+});
+
+withCommon(
+	issues
+		.command('resume <ref>')
+		.description('Un-park an issue: clear needs-attention and reset the attempt count')
+).action(async (ref: string, opts: CommonOpts) => {
+	const api = client(opts);
+	const issue = await resolveIssue(api, ref);
+	const updated = await api.resumeIssue(issue.id);
+	if (opts.json) return printJson(updated);
+	console.log(
+		issue.needs_attention || issue.attempt_count > 0
+			? `resumed ${updated.project_name}/#${updated.number} — attempt count reset, back in the pool`
+			: `${updated.project_name}/#${updated.number} was not parked — nothing to do`
+	);
+});
+
+function printExplainer(issue: IssueDetail, ex: DispatchExplainer): void {
+	console.log(`${issue.project_name}/#${issue.number}  ${issue.title}`);
+	console.log(`\n${ex.verdict}\n`);
+	table(ex.checks.map((c) => [`  ${c.ok ? 'ok' : 'FAIL'}`, c.name.replaceAll('_', ' '), c.detail]));
+	if (ex.pin) {
+		console.log(
+			`\npinned to ${ex.pin.runner_name ?? ex.pin.runner_id}${ex.pin.tier ? `:${ex.pin.tier}` : ''} (replaces rule matching)`
+		);
+	} else if (ex.matched_rule) {
+		console.log(`\nmatched rule: ${ex.matched_rule.scope_label}`);
+	}
+	if (ex.targets.length > 0) {
+		console.log('targets (preference order):');
+		table(
+			ex.targets.map((t) => [
+				`  ${t.runner_name}`,
+				`${t.tier} → ${t.model ?? '(model n/a)'}`,
+				t.verdict === 'ok' ? 'available' : t.verdict.replaceAll('_', ' '),
+				t.verdict === 'ok' ? '' : t.detail
+			])
+		);
+	}
+	if (ex.queue_position !== null && ex.queue_position > 0) {
+		console.log(`queue: ${ex.queue_position} eligible issue${ex.queue_position === 1 ? '' : 's'} ahead of this one`);
+	}
+	if (ex.active_run) {
+		console.log(
+			`active run: ${ex.active_run.id} on ${ex.active_run.runner_name} (${ex.active_run.status})`
+		);
+	}
+	if (ex.parked) {
+		console.log(
+			`parked after ${ex.attempt_count}/${ex.attempt_limit} strikes — \`tines issues resume\` (or any manual transition) revives it`
+		);
+	}
+}
 
 // --- context -----------------------------------------------------------------
 
@@ -1844,6 +1921,95 @@ withCommon(
 	console.log(`removed runner "${runner.name}"${opts.force ? ' (references stripped)' : ''}`);
 });
 
+// --- runs --------------------------------------------------------------------
+
+const runsCmd = program.command('runs').description('Agent runs: attempts at issues by runners');
+
+function runDuration(run: AgentRun): string {
+	if (!run.started_at) return '—';
+	const end = run.ended_at ?? Date.now();
+	const seconds = Math.max(0, Math.round((end - run.started_at) / 1000));
+	if (seconds < 60) return `${seconds}s`;
+	return `${Math.floor(seconds / 60)}m${String(seconds % 60).padStart(2, '0')}s`;
+}
+
+function runRow(run: AgentRun): string[] {
+	return [
+		run.id,
+		run.issue_ref ? issueRef(run.issue_ref) : run.issue_id,
+		run.runner_name,
+		`${run.tier}${run.model ? ` (${run.model})` : ''}`,
+		run.status,
+		runDuration(run),
+		timestamp(run.created_at)
+	];
+}
+
+withList(
+	runsCmd
+		.command('list')
+		.description('List runs, newest first')
+		.option('-i, --issue <ref>', 'filter to one issue (<project>/<number>)')
+		.option('-r, --runner <name>', 'filter by runner name')
+		.option('--active', 'only runs holding a claim (assigned/launching/running)')
+).action(async (opts: ListOpts & { issue?: string; runner?: string; active?: boolean }) => {
+	const api = client(opts);
+	const issueId = opts.issue ? (await resolveIssue(api, opts.issue)).id : undefined;
+	const runnerId = opts.runner ? (await resolveRunner(api, opts.runner)).id : undefined;
+	const res = await api.listRuns({
+		issue: issueId,
+		runner: runnerId,
+		active: opts.active ? true : undefined,
+		limit: opts.limit,
+		cursor: opts.cursor
+	});
+	printList(res, opts, (items) => {
+		if (items.length === 0) return console.log(opts.active ? 'no active runs' : 'no runs');
+		table([['ID', 'ISSUE', 'RUNNER', 'TIER', 'STATUS', 'DURATION', 'CREATED'], ...items.map(runRow)]);
+	});
+});
+
+withCommon(
+	runsCmd
+		.command('show <id>')
+		.description('Show a run; --logs prints the captured log tail')
+		.option('--logs', 'print the log tail')
+).action(async (id: string, opts: CommonOpts & { logs?: boolean }) => {
+	const api = client(opts);
+	const run = await api.getRun(id);
+	if (opts.json) return printJson(run);
+	console.log(`${run.id}  ${run.status}  on ${run.runner_name}`);
+	if (run.issue_ref) console.log(`issue: ${issueRef(run.issue_ref)} — ${run.issue_ref.title}`);
+	console.log(`tier: ${run.tier}  model: ${run.model ?? '(n/a)'}`);
+	console.log(
+		`states: ${run.state_at_start_name ?? run.state_id_at_start} → ${run.state_at_end_name ?? run.state_id_at_end ?? '…'}`
+	);
+	console.log(
+		`created: ${timestamp(run.created_at)}  started: ${run.started_at ? timestamp(run.started_at) : '—'}  ended: ${run.ended_at ? timestamp(run.ended_at) : '—'}  duration: ${runDuration(run)}`
+	);
+	if (run.provider_session_id) console.log(`provider session: ${run.provider_session_id}`);
+	if (run.provider_url) console.log(`provider console: ${run.provider_url}`);
+	if (run.error) console.log(`error: ${run.error}`);
+	if (opts.logs) {
+		console.log('');
+		if (run.log_bytes_dropped > 0) {
+			console.log(`[${Math.round(run.log_bytes_dropped / 1024)} KB truncated from the head]`);
+		}
+		console.log(run.log || '(no log output captured)');
+	}
+});
+
+withCommon(
+	runsCmd.command('cancel <id>').description('Cancel a run (judged like any other end: usually a strike)')
+).action(async (id: string, opts: CommonOpts) => {
+	const api = client(opts);
+	const run = await api.cancelRun(id);
+	if (opts.json) return printJson(run);
+	console.log(
+		`canceled ${run.id}${run.issue_ref ? ` on ${issueRef(run.issue_ref)}` : ''} (was on ${run.runner_name})`
+	);
+});
+
 // --- routing -----------------------------------------------------------------
 
 const routing = program
@@ -1950,21 +2116,56 @@ function quotaLabel(quota: QuotaPolicy, stateName?: (id: string) => string): str
 	return `state roster: default ${quota.default_limit} per state${overrides.length > 0 ? `, overrides: ${overrides.join(', ')}` : ''}`;
 }
 
-withCommon(supervisor.command('status').description('One-screen overview: kill switch, quota, runners')).action(
+/**
+ * Utilization against the active policy, from the active runs: "2/3 global
+ * slots in use", or the roster's per-start-state tally.
+ */
+function utilizationLine(
+	quota: QuotaPolicy,
+	activeRuns: Pick<AgentRun, 'state_id_at_start' | 'state_at_start_name'>[],
+	stateName: (id: string) => string = (id) => id
+): string {
+	if (quota.type === 'global_cap') {
+		return `${activeRuns.length}/${quota.limit} global slot${quota.limit === 1 ? '' : 's'} in use`;
+	}
+	const counts = new Map<string, { name: string; n: number }>();
+	for (const run of activeRuns) {
+		const entry = counts.get(run.state_id_at_start) ?? {
+			name: run.state_at_start_name ?? stateName(run.state_id_at_start),
+			n: 0
+		};
+		entry.n += 1;
+		counts.set(run.state_id_at_start, entry);
+	}
+	// States with an override always show; others only while occupied.
+	for (const stateId of Object.keys(quota.overrides)) {
+		if (!counts.has(stateId)) counts.set(stateId, { name: stateName(stateId), n: 0 });
+	}
+	if (counts.size === 0) return `no active runs (roster default ${quota.default_limit} per state)`;
+	return [...counts.entries()]
+		.map(([stateId, { name, n }]) => `${name} ${n}/${quota.overrides[stateId] ?? quota.default_limit}`)
+		.join(' · ');
+}
+
+withCommon(supervisor.command('status').description('One-screen overview: kill switch, quota, utilization, runners')).action(
 	async (opts: CommonOpts) => {
 		const api = client(opts);
-		const [settings, runnersRes, workflows] = await Promise.all([
+		const [settings, runnersRes, workflows, activeRuns] = await Promise.all([
 			api.getSupervisorSettings(),
 			api.listRunners(),
-			api.listWorkflows({ limit: 100 })
+			api.listWorkflows({ limit: 100 }),
+			api.listRuns({ active: true, limit: 100 })
 		]);
-		if (opts.json) return printJson({ settings, runners: runnersRes.items });
+		if (opts.json) {
+			return printJson({ settings, runners: runnersRes.items, active_runs: activeRuns.items });
+		}
 		const stateNames = new Map<string, string>();
 		for (const wf of workflows.items) {
 			for (const s of wf.states) stateNames.set(s.id, `${wf.name}/${s.name}`);
 		}
 		console.log(`automation: ${settings.enabled ? 'ON' : 'OFF (kill switch — nothing dispatches)'}`);
 		console.log(quotaLabel(settings.quota, (id) => stateNames.get(id) ?? id));
+		console.log(`utilization: ${utilizationLine(settings.quota, activeRuns.items, (id) => stateNames.get(id) ?? id)}`);
 		console.log(`attempt limit: ${settings.attempt_limit} strikes, then the issue parks`);
 		if (runnersRes.items.length === 0) {
 			console.log('runners: none');
