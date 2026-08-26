@@ -16,6 +16,9 @@ type ErrorBody = { error: { code: string; message: string; details?: Record<stri
 
 /** Today's ISO date in UTC — the seeded schedules render {{date}} in UTC. */
 const todayUtc = () => new Date().toISOString().slice(0, 10);
+/** Today (YYYY-MM-DD) in a schedule's timezone — {{date}} renders in it. */
+const todayIn = (timeZone: string) =>
+	new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
 
 const fireSweep = async (request: import('@playwright/test').APIRequestContext) => {
 	// wrangler dev --test-scheduled exposes the scheduled() handler here.
@@ -114,7 +117,9 @@ test.describe.serial('schedule lifecycle over the API', () => {
 		expect(res.status()).toBe(201);
 		const created = await body<CreateIssueResponse>(res);
 		firstIssue = created;
-		expect(created.title).toBe(`Weekly report ${todayUtc()}`);
+		// {{date}} renders in the schedule's timezone (Europe/London here),
+		// which differs from UTC around midnight.
+		expect(created.title).toBe(`Weekly report ${todayIn('Europe/London')}`);
 		expect(created.description).toBe('Instance 1 of Weekly report {{date}}');
 		expect(created.schedule).toBeDefined();
 		scheduleId = created.schedule!.id;
@@ -152,7 +157,7 @@ test.describe.serial('schedule lifecycle over the API', () => {
 		const res = await api.post(`/api/v1/schedules/${scheduleId}/run`);
 		expect(res.status()).toBe(201);
 		const instance = await body<IssueDetail>(res);
-		expect(instance.title).toBe(`Weekly report ${todayUtc()}`);
+		expect(instance.title).toBe(`Weekly report ${todayIn('Europe/London')}`);
 		expect(instance.description).toBe('Instance 2 of Weekly report {{date}}');
 		expect(instance.scheduled_task_id).toBe(scheduleId);
 

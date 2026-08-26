@@ -100,8 +100,9 @@ test('issue detail renders markdown, transitions, and comments', async ({ page }
 	});
 	await expect(page.getByText(ALICE.name).first()).toBeVisible();
 
-	// The transition shows up in the issue's activity slice.
-	await expect(page.getByRole('heading', { name: 'Activity' })).toBeVisible();
+	// The transition shows up in the issue's activity slice. (`exact`: the
+	// page now also has an "Agent activity" heading.)
+	await expect(page.getByRole('heading', { name: 'Activity', exact: true })).toBeVisible();
 	await expect(page.getByText(/moved this issue/).first()).toBeVisible();
 });
 
