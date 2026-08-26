@@ -141,6 +141,20 @@ export function isControlPlanePath(pathname: string): boolean {
 }
 
 /**
+ * The fence's 403, shared by the path fence and field-level guards (pins on
+ * PATCH /issues/:id live on an otherwise run-key-legal route).
+ */
+export function runKeyForbidden(): ApiFail {
+	return new ApiFail(
+		403,
+		'run_key_forbidden',
+		'Run keys cannot modify runners, routing rules, supervisor settings, parked issues, issue pins, or API keys. ' +
+			'Propose the change instead: file an issue titled "Context change: <scope label>" describing ' +
+			'what should change and why; a human reviews and applies it.'
+	);
+}
+
+/**
  * Gate applied to every key-authenticated request: expired run keys are dead
  * (401), and live run keys get 403s on the control plane, pointing at the
  * proposal convention instead.
@@ -154,13 +168,7 @@ export function assertRunKeyAllowed(
 		throw new ApiFail(401, 'run_key_expired', 'This run key has expired; the run it belonged to is over');
 	}
 	if (key.agentRunId !== null && isControlPlanePath(pathname)) {
-		throw new ApiFail(
-			403,
-			'run_key_forbidden',
-			'Run keys cannot modify runners, routing rules, supervisor settings, parked issues, or API keys. ' +
-				'Propose the change instead: file an issue titled "Context change: <scope label>" describing ' +
-				'what should change and why; a human reviews and applies it.'
-		);
+		throw runKeyForbidden();
 	}
 }
 

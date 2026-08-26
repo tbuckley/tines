@@ -26,6 +26,7 @@ import {
 	optionalString,
 	requireString,
 	runAtomic,
+	runKeyForbidden,
 	type ActorContext,
 	type Page
 } from './core';
@@ -553,6 +554,21 @@ export async function createIssue(
 	return { ...issue, schedule: await getSchedule(db, actor.userId, schedule.id) };
 }
 
+/**
+ * A pin replaces routing-rule matching entirely, so it is re-route-work
+ * power: control plane, even though it rides on a route run keys otherwise
+ * legitimately PATCH. A field-level guard rather than a path fence — run
+ * keys keep title/description/state authority here.
+ */
+export function assertPinFieldsAllowed(
+	actor: Pick<ActorContext, 'agentRunId'>,
+	body: Pick<UpdateIssueRequest, 'pinned_runner_id' | 'pinned_tier'>
+): void {
+	if (!actor.agentRunId) return;
+	if (body.pinned_runner_id === undefined && body.pinned_tier === undefined) return;
+	throw runKeyForbidden();
+}
+
 export async function updateIssue(
 	db: Kysely<Database>,
 	env: Env,
@@ -560,6 +576,7 @@ export async function updateIssue(
 	id: string,
 	body: UpdateIssueRequest
 ): Promise<IssueDetail> {
+	assertPinFieldsAllowed(actor, body);
 	const current = await getIssueDetail(db, actor.userId, { id });
 	const title = body.title !== undefined ? requireString(body.title, 'title', { max: 500 }).trim() : current.title;
 	const description =
