@@ -529,6 +529,14 @@ export async function deleteRunner(
 		);
 	}
 	queries.push(
+		// Blanket pin clear: a pin created between the read above and this
+		// batch would otherwise break the runner delete's foreign key. The
+		// per-pin statements before it carry the events; this is the backstop.
+		db
+			.updateTable('issue')
+			.set({ pinned_runner_id: null, pinned_tier: null })
+			.where('pinned_runner_id', '=', id)
+			.compile(),
 		// Ended runs go with their runner (pause keeps history; delete does
 		// not); their run keys lose the provenance link but stay on record.
 		db
