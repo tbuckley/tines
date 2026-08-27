@@ -93,6 +93,8 @@ export interface DaemonStateEntry {
 	workspace: string;
 	/** The run key's display prefix — identification, never the secret. */
 	key_fingerprint: string;
+	/** When the harness was spawned — the orphan kill's PID-reuse check. */
+	started_at?: number;
 }
 
 export function daemonStatePath(dir: string, runnerId: string): string {
@@ -114,4 +116,29 @@ export function loadDaemonState(path: string): DaemonStateEntry[] {
 
 export function saveDaemonState(path: string, runs: DaemonStateEntry[]): void {
 	writeJsonFile(path, { runs });
+}
+
+/**
+ * The process's start time in ms since the epoch, where the platform makes
+ * that cheap (Linux: /proc/<pid>/stat field 22 in clock ticks since boot,
+ * plus /proc/stat's btime; the tick rate is assumed 100 Hz — the value on
+ * every mainstream Linux). Null anywhere it cannot be read (macOS, a
+ * vanished pid) — callers fall back to liveness alone.
+ */
+export function processStartTimeMs(pid: number): number | null {
+	try {
+		const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+		// Field 2 (comm) may contain spaces/parens; fields after the closing
+		// paren are whitespace-separated, with starttime at index 19 there.
+		const afterComm = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+		const startTicks = Number(afterComm[19]);
+		const btimeLine = readFileSync('/proc/stat', 'utf8')
+			.split('\n')
+			.find((line) => line.startsWith('btime '));
+		const btime = Number(btimeLine?.slice('btime '.length));
+		if (!Number.isFinite(startTicks) || !Number.isFinite(btime)) return null;
+		return btime * 1000 + (startTicks / 100) * 1000;
+	} catch {
+		return null;
+	}
 }

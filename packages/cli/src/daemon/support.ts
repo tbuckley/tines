@@ -41,11 +41,11 @@ export interface HarnessInvocation {
 }
 
 /**
- * The argv to launch a harness with (cwd = the workspace). The built-in
- * harnesses get the prompt as an argument — the `claude -p "$(cat
- * prompt.md)"` pattern without the shell round trip — and the model via
- * their model flag; a custom template runs under `sh -c` with the
- * placeholders expanded.
+ * The argv to launch a harness with (cwd = the workspace). `claude_code`
+ * reads the prompt from prompt.md via stdin redirection — never argv, whose
+ * ARG_MAX would truncate a large stitched prompt — with the model via
+ * `--model`; codex gets the prompt as its exec argument; a custom template
+ * runs under `sh -c` with the placeholders expanded.
  */
 export function buildHarnessInvocation(
 	spec: { harness: HarnessKind; command?: string },
@@ -54,8 +54,11 @@ export function buildHarnessInvocation(
 	switch (spec.harness) {
 		case 'claude_code':
 			return {
-				file: 'claude',
-				args: ['-p', input.prompt, ...(input.model ? ['--model', input.model] : [])]
+				file: 'sh',
+				args: [
+					'-c',
+					`claude -p${input.model ? ` --model ${shellQuote(input.model)}` : ''} < ${shellQuote(input.promptFile)}`
+				]
 			};
 		case 'codex':
 			return {
@@ -66,6 +69,111 @@ export function buildHarnessInvocation(
 			if (!spec.command) throw new Error('the custom harness needs a --command template');
 			return { file: 'sh', args: ['-c', expandCommandTemplate(spec.command, input)] };
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The run table: live-run bookkeeping with the settle/cleanup state machine
+// factored out of the daemon loop so it is unit-testable (support.test.ts).
+
+export interface ManagedRun {
+	runId: string;
+	workspace: string;
+	/** Set once the harness spawned. */
+	pid?: number;
+	/** Supervisor-settled (poll `cancels`): kill, never finish-report. */
+	canceled: boolean;
+	/** The daemon's own timeout fired; colors the finish report. */
+	timedOut: boolean;
+	/** A finish/cancel path owns this run's end; everyone else stands down. */
+	settled: boolean;
+	/** Drains pending log chunks before a finish report. */
+	flush?: () => Promise<void>;
+}
+
+export interface RunTableEffects<T extends ManagedRun> {
+	/** Report the finish to the supervisor; rejections are the caller-side log. */
+	finish(run: T, status: 'completed' | 'failed', error?: string): Promise<void>;
+	/** Tear down the run's local traces: workspace, timers (idempotent). */
+	release(run: T): void;
+	/** Persist the run → pid state file (membership or pid changed). */
+	persist(): void;
+	log(message: string): void;
+}
+
+export class RunTable<T extends ManagedRun> {
+	private readonly runs = new Map<string, T>();
+
+	constructor(private readonly effects: RunTableEffects<T>) {}
+
+	get size(): number {
+		return this.runs.size;
+	}
+
+	ids(): string[] {
+		return [...this.runs.keys()];
+	}
+
+	values(): T[] {
+		return [...this.runs.values()];
+	}
+
+	has(runId: string): boolean {
+		return this.runs.has(runId);
+	}
+
+	track(run: T): void {
+		this.runs.set(run.runId, run);
+		this.effects.persist();
+	}
+
+	/** Call after setting a run's pid so the state file reflects it. */
+	persist(): void {
+		this.effects.persist();
+	}
+
+	/** Removes the run and releases its local traces. Safe to call twice. */
+	cleanup(run: T): void {
+		this.runs.delete(run.runId);
+		this.effects.persist();
+		this.effects.release(run);
+	}
+
+	/**
+	 * Ends a run: flush logs, finish-report, clean up. On a run someone
+	 * already settled (a poll-cancel racing a clone failure or spawn error)
+	 * this still cleans up — the slot, workspace, and state entry must never
+	 * outlive the run — but reports nothing.
+	 */
+	async finishAndCleanup(run: T, status: 'completed' | 'failed', error?: string): Promise<void> {
+		if (run.settled) return this.cleanup(run);
+		run.settled = true;
+		await run.flush?.();
+		try {
+			await this.effects.finish(run, status, error);
+			this.effects.log(`run ${run.runId} finished: ${status}${error ? ` (${error})` : ''}`);
+		} catch (err) {
+			// A settled run (canceled/timed out/swept server-side) is fine; the
+			// supervisor's word stands.
+			this.effects.log(
+				`finish report for run ${run.runId} not accepted: ${err instanceof Error ? err.message : String(err)}`
+			);
+		}
+		this.cleanup(run);
+	}
+
+	/**
+	 * Marks a supervisor-settled run (`cancels`): kill, do NOT finish-report.
+	 * Returns the run for the caller to kill when it was live; null when
+	 * unknown or already settled. A run with no pid yet (still materializing)
+	 * is cleaned up by the launch path's next settled check.
+	 */
+	markCanceled(runId: string): T | null {
+		const run = this.runs.get(runId);
+		if (!run || run.settled) return null;
+		run.canceled = true;
+		run.settled = true;
+		return run;
 	}
 }
 

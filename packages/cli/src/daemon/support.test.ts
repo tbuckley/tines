@@ -3,7 +3,9 @@ import {
 	buildHarnessInvocation,
 	expandCommandTemplate,
 	LogBatcher,
-	shellQuote
+	RunTable,
+	shellQuote,
+	type ManagedRun
 } from './support.js';
 
 const input = {
@@ -39,14 +41,14 @@ describe('expandCommandTemplate', () => {
 });
 
 describe('buildHarnessInvocation', () => {
-	it('claude_code: claude -p <prompt> --model <model>', () => {
+	it('claude_code reads the prompt from prompt.md via stdin — never argv (ARG_MAX)', () => {
 		expect(buildHarnessInvocation({ harness: 'claude_code' }, input)).toEqual({
-			file: 'claude',
-			args: ['-p', 'Do the thing', '--model', 'claude-sonnet-5']
+			file: 'sh',
+			args: ['-c', `claude -p --model 'claude-sonnet-5' < '/tmp/ws/run 1/prompt.md'`]
 		});
 		expect(buildHarnessInvocation({ harness: 'claude_code' }, { ...input, model: null }).args).toEqual([
-			'-p',
-			'Do the thing'
+			'-c',
+			`claude -p < '/tmp/ws/run 1/prompt.md'`
 		]);
 	});
 
@@ -119,5 +121,108 @@ describe('LogBatcher', () => {
 		const batcher = new LogBatcher(async (chunk) => void sent.push(chunk));
 		await batcher.flush();
 		expect(sent).toEqual([]);
+	});
+});
+
+describe('RunTable', () => {
+	interface TestRun extends ManagedRun {
+		flushed?: number;
+	}
+
+	function harness() {
+		const finishes: { runId: string; status: string; error?: string }[] = [];
+		const released: string[] = [];
+		const logs: string[] = [];
+		let persists = 0;
+		let failFinish: string | null = null;
+		const table = new RunTable<TestRun>({
+			finish: async (run, status, error) => {
+				if (failFinish) throw new Error(failFinish);
+				finishes.push({ runId: run.runId, status, error });
+			},
+			release: (run) => released.push(run.runId),
+			persist: () => (persists += 1),
+			log: (m) => logs.push(m)
+		});
+		const run = (runId: string): TestRun => ({
+			runId,
+			workspace: `/ws/${runId}`,
+			canceled: false,
+			timedOut: false,
+			settled: false
+		});
+		return {
+			table,
+			run,
+			finishes,
+			released,
+			logs,
+			setFailFinish: (m: string) => (failFinish = m),
+			persistCount: () => persists
+		};
+	}
+
+	it('a normal finish flushes, reports once, and cleans up', async () => {
+		const h = harness();
+		const run = h.run('arun_1');
+		let flushes = 0;
+		run.flush = async () => void (flushes += 1);
+		h.table.track(run);
+		await h.table.finishAndCleanup(run, 'completed');
+		expect(flushes).toBe(1);
+		expect(h.finishes).toEqual([{ runId: 'arun_1', status: 'completed', error: undefined }]);
+		expect(h.released).toEqual(['arun_1']);
+		expect(h.table.ids()).toEqual([]);
+		// A second call (a racing exit handler) reports nothing more.
+		await h.table.finishAndCleanup(run, 'failed', 'late');
+		expect(h.finishes).toHaveLength(1);
+	});
+
+	it('cancel during materialization: the later failure path still cleans up, without a report', async () => {
+		const h = harness();
+		const run = h.run('arun_1');
+		h.table.track(run);
+		// The poll's cancels settled it while the workspace was materializing
+		// (no pid yet) …
+		expect(h.table.markCanceled('arun_1')).toBe(run);
+		expect(run.settled).toBe(true);
+		// … and the clone-failure (or spawn-error) branch then hits
+		// finishAndCleanup: the slot, workspace, and state entry are released,
+		// and nothing is finish-reported over the supervisor's settlement.
+		await h.table.finishAndCleanup(run, 'failed', 'git clone failed');
+		expect(h.finishes).toEqual([]);
+		expect(h.released).toEqual(['arun_1']);
+		expect(h.table.size).toBe(0);
+	});
+
+	it('markCanceled ignores unknown and already-settled runs', async () => {
+		const h = harness();
+		const run = h.run('arun_1');
+		h.table.track(run);
+		expect(h.table.markCanceled('arun_other')).toBeNull();
+		h.table.markCanceled('arun_1');
+		expect(h.table.markCanceled('arun_1')).toBeNull();
+	});
+
+	it('a rejected finish report still cleans up (the supervisor settled it first)', async () => {
+		const h = harness();
+		const run = h.run('arun_1');
+		h.table.track(run);
+		h.setFailFinish('run_already_ended');
+		await h.table.finishAndCleanup(run, 'failed', 'harness exited with code 1');
+		expect(h.released).toEqual(['arun_1']);
+		expect(h.table.size).toBe(0);
+		expect(h.logs.some((m) => m.includes('not accepted'))).toBe(true);
+	});
+
+	it('cleanup is idempotent and persists membership changes', () => {
+		const h = harness();
+		const run = h.run('arun_1');
+		h.table.track(run);
+		const after = h.persistCount();
+		h.table.cleanup(run);
+		h.table.cleanup(run);
+		expect(h.persistCount()).toBe(after + 2);
+		expect(h.released).toEqual(['arun_1', 'arun_1']); // release itself is idempotent (rm -rf force)
 	});
 });

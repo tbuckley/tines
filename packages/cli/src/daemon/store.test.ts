@@ -8,6 +8,7 @@ import {
 	daemonStatePath,
 	loadDaemonState,
 	loadRunnerCredentials,
+	processStartTimeMs,
 	saveDaemonState,
 	saveRunnerCredentials
 } from './store.js';
@@ -63,6 +64,19 @@ describe('runner credentials', () => {
 	});
 });
 
+describe('processStartTimeMs', () => {
+	it('returns a plausible start time for the current process on Linux, null for a bogus pid', () => {
+		const own = processStartTimeMs(process.pid);
+		if (process.platform === 'linux') {
+			expect(own).not.toBeNull();
+			// Started some time before now, and after 2020.
+			expect(own!).toBeLessThanOrEqual(Date.now() + 1000);
+			expect(own!).toBeGreaterThan(Date.UTC(2020, 0, 1));
+		}
+		expect(processStartTimeMs(2 ** 30)).toBeNull();
+	});
+});
+
 describe('daemon state file', () => {
 	it('round-trips entries and tolerates a missing or corrupt file', () => {
 		const dir = tempDir();
@@ -75,6 +89,16 @@ describe('daemon state file', () => {
 		expect(loadDaemonState(path)).toEqual(entries);
 		writeFileSync(path, '{broken');
 		expect(loadDaemonState(path)).toEqual([]);
+	});
+
+	it('round-trips started_at for the orphan kill PID-reuse check', () => {
+		const dir = tempDir();
+		const path = daemonStatePath(dir, 'rnr_1');
+		const entries = [
+			{ run_id: 'arun_1', pid: 1, workspace: '/w', key_fingerprint: 'f', started_at: 1234 }
+		];
+		saveDaemonState(path, entries);
+		expect(loadDaemonState(path)[0].started_at).toBe(1234);
 	});
 
 	it('filters malformed entries', () => {

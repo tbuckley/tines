@@ -6,7 +6,9 @@
  * its environment, streams output as log chunks, kills on cancel/timeout,
  * reports finishes, and cleans up — surviving its own crashes via the state
  * file (orphan kill on restart) and the supervisor's `owned_runs`/offline
- * reconciliation (SPEC.md "Local runner protocol").
+ * reconciliation (SPEC.md "Local runner protocol"). Run bookkeeping (the
+ * settle/cleanup state machine) lives in support.ts's RunTable so it is
+ * unit-testable.
  */
 import { spawn, type ChildProcess } from 'node:child_process';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
@@ -18,12 +20,19 @@ import {
 	daemonStatePath,
 	loadDaemonState,
 	loadRunnerCredentials,
+	processStartTimeMs,
 	saveDaemonState,
 	saveRunnerCredentials,
 	type DaemonStateEntry,
 	type RunnerCredentials
 } from './store.js';
-import { buildHarnessInvocation, LogBatcher, type HarnessKind } from './support.js';
+import {
+	buildHarnessInvocation,
+	LogBatcher,
+	RunTable,
+	type HarnessKind,
+	type ManagedRun
+} from './support.js';
 
 export interface DaemonOptions {
 	url: string;
@@ -37,18 +46,12 @@ export interface DaemonOptions {
 	configDir: string;
 }
 
-interface ActiveRun {
-	runId: string;
-	workspace: string;
+interface ActiveRun extends ManagedRun {
 	child?: ChildProcess;
-	/** Set by the poll's `cancels` (and shutdown): kill, do NOT finish-report. */
-	canceled: boolean;
-	/** The daemon's own timeout fired; colors the finish report. */
-	timedOut: boolean;
-	settled: boolean;
 	batcher: LogBatcher;
 	timeout?: ReturnType<typeof setTimeout>;
 	keyFingerprint: string;
+	spawnedAt?: number;
 }
 
 const log = (message: string) =>
@@ -108,25 +111,53 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 
 	const client = createApiClient({ baseUrl: opts.url, apiKey: creds.token });
 	const statePath = daemonStatePath(opts.configDir, creds.runner_id);
-	const active = new Map<string, ActiveRun>();
 	let shuttingDown = false;
 
-	const persistState = () => {
-		const entries: DaemonStateEntry[] = [...active.values()]
-			.filter((run) => run.child?.pid !== undefined)
-			.map((run) => ({
-				run_id: run.runId,
-				pid: run.child!.pid!,
-				workspace: run.workspace,
-				key_fingerprint: run.keyFingerprint
-			}));
-		saveDaemonState(statePath, entries);
-	};
+	const table: RunTable<ActiveRun> = new RunTable<ActiveRun>({
+		finish: async (run, status, error) => {
+			await client.finishRun(run.runId, { status, ...(error ? { error } : {}) });
+		},
+		release: (run) => {
+			if (run.timeout) clearTimeout(run.timeout);
+			rmSync(run.workspace, { recursive: true, force: true });
+		},
+		persist: () => {
+			const entries: DaemonStateEntry[] = table
+				.values()
+				.filter((run) => run.child?.pid !== undefined)
+				.map((run) => ({
+					run_id: run.runId,
+					pid: run.child!.pid!,
+					workspace: run.workspace,
+					key_fingerprint: run.keyFingerprint,
+					started_at: run.spawnedAt
+				}));
+			saveDaemonState(statePath, entries);
+		},
+		log
+	});
 
 	// -- orphan cleanup: a crashed daemon must not leave a zombie harness -----
 	for (const orphan of loadDaemonState(statePath)) {
-		log(`killing orphaned harness from a previous life: run ${orphan.run_id} (pid ${orphan.pid})`);
-		killTree(orphan.pid, 'SIGKILL');
+		// Kill only a pid that is (a) still alive and (b), where the platform
+		// lets us check cheaply, actually started around when we spawned it —
+		// a recycled pid must not take out an innocent process. The residual
+		// window (non-Linux platforms, or reuse faster than the clock slack)
+		// is accepted: the state file is fresh in practice, and pid reuse
+		// within it is vanishingly rare.
+		if (pidAlive(orphan.pid)) {
+			const processStart = processStartTimeMs(orphan.pid);
+			const reused =
+				processStart !== null &&
+				orphan.started_at !== undefined &&
+				processStart > orphan.started_at + 60_000;
+			if (reused) {
+				log(`state-file pid ${orphan.pid} (run ${orphan.run_id}) was recycled; not killing it`);
+			} else {
+				log(`killing orphaned harness from a previous life: run ${orphan.run_id} (pid ${orphan.pid})`);
+				killTree(orphan.pid, 'SIGKILL');
+			}
+		}
 		try {
 			await client.finishRun(orphan.run_id, {
 				status: 'failed',
@@ -139,53 +170,24 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 	}
 	saveDaemonState(statePath, []);
 
-	const cleanup = (run: ActiveRun) => {
-		if (run.timeout) clearTimeout(run.timeout);
-		active.delete(run.runId);
-		persistState();
-		rmSync(run.workspace, { recursive: true, force: true });
-	};
-
-	const finishAndCleanup = async (
-		run: ActiveRun,
-		status: 'completed' | 'failed',
-		error?: string
-	) => {
-		if (run.settled) return;
-		run.settled = true;
-		await run.batcher.flush();
-		try {
-			await client.finishRun(run.runId, { status, ...(error ? { error } : {}) });
-			log(`run ${run.runId} finished: ${status}${error ? ` (${error})` : ''}`);
-		} catch (err) {
-			// A settled run (canceled/timed out/swept server-side) is fine; the
-			// supervisor's word stands.
-			log(`finish report for run ${run.runId} not accepted: ${message(err)}`);
-		}
-		cleanup(run);
-	};
-
 	const killWithoutFinish = (runId: string) => {
-		const run = active.get(runId);
-		if (!run || run.settled) return;
+		const run = table.markCanceled(runId);
+		if (!run) return;
 		log(`supervisor canceled run ${runId}; killing without finish-reporting`);
-		run.canceled = true;
-		run.settled = true;
 		if (run.child?.pid) {
-			killTree(run.child.pid, 'SIGTERM');
 			const pid = run.child.pid;
+			killTree(pid, 'SIGTERM');
 			setTimeout(() => killTree(pid, 'SIGKILL'), 5000).unref?.();
 			// The exit handler does the cleanup once the process dies.
-		} else {
-			// Still materializing (no process yet): the launch path checks
-			// `canceled` between steps and cleans up.
 		}
+		// No process yet (still materializing): the launch path's settled
+		// checks clean up.
 	};
 
 	// -- launching one assignment ---------------------------------------------
 	const launch = async (assignment: RunnerAssignment) => {
 		const runId = assignment.run.id;
-		if (active.has(runId)) return;
+		if (table.has(runId)) return;
 		const workspace = join(opts.configDir, 'workspaces', runId);
 		const run: ActiveRun = {
 			runId,
@@ -198,7 +200,8 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 				onError: (err) => log(`log append for run ${runId} failed: ${message(err)}`)
 			})
 		};
-		active.set(runId, run);
+		run.flush = () => run.batcher.flush();
+		table.track(run);
 		log(`run ${runId} assigned (issue ${assignment.run.issue_ref ? `${assignment.run.issue_ref.project_name}/${assignment.run.issue_ref.number}` : assignment.run.issue_id}); materializing workspace`);
 
 		try {
@@ -220,15 +223,15 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 
 			// Clone the effective repos with the device's own git credentials.
 			for (const repo of assignment.bundle.repos) {
-				if (run.canceled) return cleanup(run);
+				if (run.settled) return table.cleanup(run);
 				const args = ['clone', ...(repo.branch ? ['--branch', repo.branch] : []), repo.url, repo.dir];
 				run.batcher.append(`$ git ${args.join(' ')}\n`);
 				const result = await runGit(args, workspace, run.batcher);
 				if (result !== 0) {
-					return finishAndCleanup(run, 'failed', `git clone failed for ${repo.url} (exit ${result})`);
+					return table.finishAndCleanup(run, 'failed', `git clone failed for ${repo.url} (exit ${result})`);
 				}
 			}
-			if (run.canceled) return cleanup(run);
+			if (run.settled) return table.cleanup(run);
 
 			const invocation = buildHarnessInvocation(
 				{ harness: opts.harness, command: opts.command },
@@ -246,7 +249,8 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 				detached: true
 			});
 			run.child = child;
-			persistState();
+			run.spawnedAt = Date.now();
+			table.persist();
 			log(`run ${runId}: launched ${invocation.file} (pid ${child.pid})`);
 
 			child.stdout?.on('data', (data: Buffer) => run.batcher.append(data.toString('utf8')));
@@ -262,20 +266,21 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 				assignment.timeout_minutes * 60_000
 			);
 			child.on('error', (err) => {
-				void finishAndCleanup(run, 'failed', `failed to launch harness: ${message(err)}`);
+				void table.finishAndCleanup(run, 'failed', `failed to launch harness: ${message(err)}`);
 			});
 			child.on('exit', (code, signal) => {
-				if (run.canceled) return cleanup(run);
+				// A supervisor-canceled run is already settled: finishAndCleanup
+				// degrades to cleanup-only, reporting nothing.
 				if (run.timedOut) {
-					void finishAndCleanup(
+					void table.finishAndCleanup(
 						run,
 						'failed',
 						`run exceeded the ${assignment.timeout_minutes}m timeout; harness killed`
 					);
 				} else if (code === 0) {
-					void finishAndCleanup(run, 'completed');
+					void table.finishAndCleanup(run, 'completed');
 				} else {
-					void finishAndCleanup(
+					void table.finishAndCleanup(
 						run,
 						'failed',
 						signal ? `harness killed by ${signal}` : `harness exited with code ${code}`
@@ -283,8 +288,7 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 				}
 			});
 		} catch (err) {
-			if (run.canceled) return cleanup(run);
-			void finishAndCleanup(run, 'failed', `workspace setup failed: ${message(err)}`);
+			void table.finishAndCleanup(run, 'failed', `workspace setup failed: ${message(err)}`);
 		}
 	};
 
@@ -294,9 +298,9 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 		shuttingDown = true;
 		log('shutting down; failing in-flight runs');
 		await Promise.all(
-			[...active.values()].map(async (run) => {
+			table.values().map(async (run) => {
 				if (run.child?.pid) killTree(run.child.pid, 'SIGTERM');
-				await finishAndCleanup(run, 'failed', 'daemon shut down');
+				await table.finishAndCleanup(run, 'failed', 'daemon shut down');
 			})
 		);
 		process.exit(0);
@@ -311,11 +315,19 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 	let failures = 0;
 	while (!shuttingDown) {
 		try {
-			const res = await client.pollRunner(creds.runner_id, { owned_runs: [...active.keys()] });
+			const res = await client.pollRunner(creds.runner_id, { owned_runs: table.ids() });
 			failures = 0;
 			for (const runId of res.cancels) killWithoutFinish(runId);
 			for (const assignment of res.assignments) {
-				if (active.size >= opts.maxConcurrent) break;
+				// The server's guarded flip is the authority on capacity: a
+				// delivered run already holds its claim and key, so dropping it
+				// here would strand it as a mislabeled launch failure. Launch
+				// anyway and flag the divergence.
+				if (table.size >= opts.maxConcurrent) {
+					log(
+						`warning: supervisor delivered ${assignment.run.id} beyond --max-concurrent ${opts.maxConcurrent}; launching anyway (the server cap governs)`
+					);
+				}
 				void launch(assignment);
 			}
 		} catch (err) {
@@ -323,7 +335,7 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 				// The token was rotated (or the runner removed): exit with clear
 				// instructions rather than spinning. Any in-flight harnesses are
 				// killed — their runs are failed by the supervisor's offline rule.
-				for (const run of active.values()) {
+				for (const run of table.values()) {
 					if (run.child?.pid) killTree(run.child.pid, 'SIGKILL');
 					rmSync(run.workspace, { recursive: true, force: true });
 				}
