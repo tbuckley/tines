@@ -13,7 +13,7 @@ This is a pnpm workspace:
 | Package | Path | What it is |
 | --- | --- | --- |
 | `@tines/web` | `apps/web` | SvelteKit (Svelte 5) app deployed to Cloudflare Workers. Serves the UI and the API (`/api/*`). Uses D1 for the database, [Better Auth](https://better-auth.com) for sign-in (Google OAuth and email magic links via [Cloudflare Email Service](https://developers.cloudflare.com/email-service/)), and [shadcn-svelte](https://shadcn-svelte.com) for UI components. |
-| `@tines/cli` | `packages/cli` | The `tines` CLI. Talks to the same API as the web app. |
+| `tines` | `packages/cli` | The `tines` CLI, published to npm as [`tines`](https://www.npmjs.com/package/tines). Talks to the same API as the web app. |
 | `@tines/shared` | `packages/shared` | Shared API types and client, used by both the web app and the CLI. |
 
 ## Getting started
@@ -77,32 +77,27 @@ If you're actively hacking on the CLI, run `pnpm link --global` from `packages/c
 
 ## Publishing the CLI to npm
 
-Publishing lets anyone — including coding agents — install the CLI without cloning this repo. The package is already publish-ready: the tarball ships only `dist` (see `files` in `packages/cli/package.json`), `prepublishOnly` rebuilds before every publish, and since `@tines/shared` is bundled at build time the only runtime dependency is `commander`.
+Publishing lets anyone — including coding agents — install the CLI without cloning this repo. The package publishes as the bare name **`tines`** (unclaimed on npm as of August 2026; the first publish claims it). It's publish-ready: the tarball ships only `dist` (see `files` in `packages/cli/package.json`), `prepublishOnly` rebuilds before every publish, and since `@tines/shared` is bundled at build time the only runtime dependency is `commander`.
 
-One-time prep in `packages/cli/package.json`:
-
-1. Pick a package name you own on npm. The `@tines` scope (and possibly the bare name `tines`) may already be taken — check with `npm view <name>`; a name scoped to your npm username (e.g. `@tbuckley/tines-cli`) always works. The installed command is named by the `bin` field, so it stays `tines` no matter what the package is called.
-2. Delete `"private": true` (it's there to prevent accidental publishes).
-
-Then, for each release:
+For each release:
 
 ```sh
 cd packages/cli
 npm login                                 # once per machine
-npm version patch                         # or minor / major
-pnpm publish --access public
+npm version patch                         # or minor / major — npm rejects re-publishing an existing version
+pnpm publish
 ```
 
-`--access public` is required on the first publish of a scoped package (scoped packages default to private, which needs a paid plan).
+Publish from a clean checkout of `main` (pnpm's git checks enforce this; `--no-git-checks` overrides in a pinch). If the first publish is rejected with a 403 despite the name being free, npm's name rules are blocking a too-similar name — fall back to a scoped name like `@tbuckley/tines` (add `--access public`, which scoped first publishes require); the installed command is named by the `bin` field, so it stays `tines` regardless of the package name.
 
 Once published, anyone can install or run it:
 
 ```sh
-npm install -g @tbuckley/tines-cli        # installs the `tines` command globally
-npx -y @tbuckley/tines-cli time           # one-shot, no install — handy for agents
+npm install -g tines                      # installs the `tines` command globally
+npx -y tines time                         # one-shot, no install — handy for agents
 ```
 
-The `npx -y` form is the most agent-friendly: it needs no global install, PATH changes, or prior setup — just Node 20+. To automate releases, add a GitHub Actions workflow that runs `pnpm publish --access public` on version tags with an npm [granular access token](https://docs.npmjs.com/about-access-tokens) stored as an `NPM_TOKEN` repo secret.
+The `npx -y` form is the most agent-friendly: it needs no global install, PATH changes, or prior setup — just Node 20+. To automate releases, add a GitHub Actions workflow that runs `pnpm publish` on version tags with an npm [granular access token](https://docs.npmjs.com/about-access-tokens) stored as an `NPM_TOKEN` repo secret.
 
 ## Google sign-in
 
