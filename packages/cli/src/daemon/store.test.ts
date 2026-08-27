@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -59,6 +59,7 @@ describe('runner credentials', () => {
 		const dir = tempDir();
 		saveRunnerCredentials(dir, 'http://x', 'a', { runner_id: 'rnr_a', token: 'secret' });
 		expect(readFileSync(join(dir, 'runners.json'), 'utf8')).toContain('secret');
+		expect(statSync(join(dir, 'runners.json')).mode & 0o777).toBe(0o600);
 	});
 });
 
