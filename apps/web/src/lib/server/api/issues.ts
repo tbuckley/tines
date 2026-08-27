@@ -11,6 +11,7 @@ import {
 	type IssueLinks,
 	type IssueRef,
 	type LinkedIssue,
+	type ModelTier,
 	type StateCategory,
 	type TransitionIssueRequest,
 	type UpdateIssueRequest,
@@ -25,11 +26,13 @@ import {
 	optionalString,
 	requireString,
 	runAtomic,
+	runKeyForbidden,
 	type ActorContext,
 	type Page
 } from './core';
 import { contextSummaryForIssue } from './context';
 import { actorOf, eventInsert } from './events';
+import { requireTier } from './runners';
 import { getSchedule, prepareSchedule } from './schedules';
 import { loadWorkflow } from './workflows';
 
@@ -104,13 +107,15 @@ export function issueQuery(db: Kysely<Database>, userId: string) {
 			.leftJoin('issue as eff_issue', 'eff_issue.id', 'effective.effective_issue_id')
 			.leftJoin('workflow_state as eff_state', 'eff_state.id', 'eff_issue.state_id')
 			.leftJoin('scheduled_task', 'scheduled_task.id', 'issue.scheduled_task_id')
+			.leftJoin('runner as pin_runner', 'pin_runner.id', 'issue.pinned_runner_id')
 			.selectAll('issue')
 			.select([
 				'project.name as project_name',
 				'state.name as state_name',
 				'state.category as state_category',
 				'state.position as state_position',
-				'scheduled_task.name as scheduled_task_name'
+				'scheduled_task.name as scheduled_task_name',
+				'pin_runner.name as pinned_runner_name'
 			])
 			.select([
 				sql<string>`COALESCE(eff_state.id, state.id)`.as('eff_state_id'),
@@ -130,7 +135,17 @@ export function issueQuery(db: Kysely<Database>, userId: string) {
 						SELECT bp.name AS pn, bi.number AS num, bi.title AS t ${openBlockerFrom}
 						ORDER BY bi.created_at, bi.id
 					) AS b
-				)`.as('open_blockers_json')
+				)`.as('open_blockers_json'),
+				// The run currently holding the issue's exclusive claim (at most
+				// one exists; LIMIT 1 guards against a racing double-claim).
+				sql<string | null>`(
+					SELECT json_object('run_id', ar.id, 'runner_name', arr.name, 'status', ar.status)
+					FROM agent_run ar
+					JOIN runner arr ON arr.id = ar.runner_id
+					WHERE ar.issue_id = issue.id AND ar.status IN ('assigned', 'launching', 'running')
+					ORDER BY ar.created_at DESC
+					LIMIT 1
+				)`.as('active_run_json')
 			])
 			.select((eb) =>
 				eb
@@ -170,6 +185,14 @@ export function serializeIssue(row: IssueRow): Issue {
 		open_blockers: row.open_blockers_json ? (JSON.parse(row.open_blockers_json) as IssueRef[]) : [],
 		scheduled_task_id: row.scheduled_task_id,
 		scheduled_task_name: row.scheduled_task_name,
+		pinned_runner_id: row.pinned_runner_id,
+		pinned_runner_name: row.pinned_runner_name,
+		pinned_tier: row.pinned_tier as ModelTier | null,
+		attempt_count: row.attempt_count,
+		needs_attention: row.needs_attention === 1,
+		active_run: row.active_run_json
+			? (JSON.parse(row.active_run_json) as Issue['active_run'])
+			: null,
 		created_at: row.created_at,
 		updated_at: row.updated_at,
 		last_activity_at: Number(row.last_event_at ?? row.created_at)
@@ -304,8 +327,20 @@ async function loadComments(db: Kysely<Database>, issueId: string): Promise<Comm
 		.selectFrom('comment')
 		.innerJoin('user as actor_user', 'actor_user.id', 'comment.actor_user_id')
 		.leftJoin('api_key', 'api_key.id', 'comment.actor_api_key_id')
+		// Run-key attribution (see eventQuery for the rendering these feed).
+		.leftJoin('agent_run as actor_run', 'actor_run.id', 'api_key.agent_run_id')
+		.leftJoin('runner as actor_runner', 'actor_runner.id', 'actor_run.runner_id')
+		.leftJoin('issue as actor_run_issue', 'actor_run_issue.id', 'actor_run.issue_id')
+		.leftJoin('project as actor_run_project', 'actor_run_project.id', 'actor_run_issue.project_id')
 		.selectAll('comment')
-		.select(['actor_user.name as actor_user_name', 'api_key.name as actor_api_key_name'])
+		.select([
+			'actor_user.name as actor_user_name',
+			'api_key.name as actor_api_key_name',
+			'actor_run.id as actor_run_id',
+			'actor_runner.name as actor_runner_name',
+			'actor_run_project.name as actor_run_project_name',
+			'actor_run_issue.number as actor_run_issue_number'
+		])
 		.where('comment.issue_id', '=', issueId)
 		.orderBy('comment.created_at asc')
 		.orderBy('comment.id asc')
@@ -489,6 +524,10 @@ export async function createIssue(
 				workflow_id: workflow.id,
 				state_id: initialState.id,
 				scheduled_task_id: schedule?.id ?? null,
+				pinned_runner_id: null,
+				pinned_tier: null,
+				attempt_count: 0,
+				needs_attention: 0,
 				created_at: now,
 				updated_at: now
 			})
@@ -528,6 +567,21 @@ export async function createIssue(
 	return { ...issue, schedule: await getSchedule(db, actor.userId, schedule.id) };
 }
 
+/**
+ * A pin replaces routing-rule matching entirely, so it is re-route-work
+ * power: control plane, even though it rides on a route run keys otherwise
+ * legitimately PATCH. A field-level guard rather than a path fence — run
+ * keys keep title/description/state authority here.
+ */
+export function assertPinFieldsAllowed(
+	actor: Pick<ActorContext, 'agentRunId'>,
+	body: Pick<UpdateIssueRequest, 'pinned_runner_id' | 'pinned_tier'>
+): void {
+	if (!actor.agentRunId) return;
+	if (body.pinned_runner_id === undefined && body.pinned_tier === undefined) return;
+	throw runKeyForbidden();
+}
+
 export async function updateIssue(
 	db: Kysely<Database>,
 	env: Env,
@@ -535,6 +589,7 @@ export async function updateIssue(
 	id: string,
 	body: UpdateIssueRequest
 ): Promise<IssueDetail> {
+	assertPinFieldsAllowed(actor, body);
 	const current = await getIssueDetail(db, actor.userId, { id });
 	const title = body.title !== undefined ? requireString(body.title, 'title', { max: 500 }).trim() : current.title;
 	const description =
@@ -562,10 +617,50 @@ export async function updateIssue(
 	}
 	const stateChanged = nextState.id !== current.state.id;
 
+	// Pin merge-patch: omitted = unchanged, explicit null = unpin. The tier
+	// belongs to the pin, so unpinning clears it and it cannot be set alone.
+	let pinnedRunnerId = current.pinned_runner_id;
+	let pinnedRunnerName = current.pinned_runner_name;
+	if (body.pinned_runner_id !== undefined) {
+		if (body.pinned_runner_id === null) {
+			pinnedRunnerId = null;
+			pinnedRunnerName = null;
+		} else {
+			const ref = requireString(body.pinned_runner_id, 'pinned_runner_id', { max: 100 });
+			const runner = await db
+				.selectFrom('runner')
+				.select(['id', 'name'])
+				.where('id', '=', ref)
+				.where('user_id', '=', actor.userId)
+				.executeTakeFirst();
+			if (!runner) {
+				throw new ApiFail(422, 'unknown_runner', `Runner "${ref}" does not exist`, {
+					field: 'pinned_runner_id'
+				});
+			}
+			pinnedRunnerId = runner.id;
+			pinnedRunnerName = runner.name;
+		}
+	}
+	let pinnedTier = current.pinned_tier;
+	if (body.pinned_tier !== undefined) {
+		pinnedTier = body.pinned_tier === null ? null : requireTier(body.pinned_tier, 'pinned_tier');
+	}
+	if (pinnedRunnerId === null) {
+		if (pinnedTier !== null && body.pinned_tier !== undefined) {
+			throw new ApiFail(422, 'invalid_field', '"pinned_tier" needs a pinned runner', {
+				field: 'pinned_tier'
+			});
+		}
+		pinnedTier = null;
+	}
+	const pinChanged = pinnedRunnerId !== current.pinned_runner_id || pinnedTier !== current.pinned_tier;
+
 	const changed: string[] = [];
 	if (title !== current.title) changed.push('title');
 	if (description !== current.description) changed.push('description');
 	if (workflowChanged) changed.push('workflow');
+	if (pinChanged) changed.push('pin');
 	if (changed.length === 0 && !stateChanged) return current;
 
 	// Compare-and-swap on the state whenever it (or the workflow) moves, so a
@@ -575,7 +670,18 @@ export async function updateIssue(
 	const guarded = stateChanged || workflowChanged;
 	let update = db
 		.updateTable('issue')
-		.set({ title, description, workflow_id: workflow.id, state_id: nextState.id, updated_at: now })
+		.set({
+			title,
+			description,
+			workflow_id: workflow.id,
+			state_id: nextState.id,
+			pinned_runner_id: pinnedRunnerId,
+			pinned_tier: pinnedTier,
+			updated_at: now,
+			// Any non-run-key state move is a "manual" transition: it un-parks
+			// the issue and restarts the attempt budget.
+			...(stateChanged && !actor.agentRunId ? { needs_attention: 0, attempt_count: 0 } : {})
+		})
 		.where('id', '=', id);
 	if (guarded) update = update.where('state_id', '=', current.state.id);
 	const guard = guarded ? { issueId: id, stateId: nextState.id, updatedAt: now } : undefined;
@@ -583,6 +689,11 @@ export async function updateIssue(
 	const queries: CompiledQuery[] = [update.compile()];
 	if (changed.length > 0) {
 		const payload: Record<string, unknown> = { changed, title };
+		if (pinChanged) {
+			payload.pinned_runner_id = pinnedRunnerId;
+			payload.pinned_runner_name = pinnedRunnerName;
+			payload.pinned_tier = pinnedTier;
+		}
 		if (workflowChanged) {
 			payload.workflow_from_id = current.workflow.id;
 			payload.workflow_from_name = current.workflow.name;
@@ -677,7 +788,13 @@ export async function transitionIssue(
 	const results = await runAtomic(env, [
 		db
 			.updateTable('issue')
-			.set({ state_id: target.to_state.id, updated_at: now })
+			.set({
+				state_id: target.to_state.id,
+				updated_at: now,
+				// A non-run-key transition is the spec's definition of "manual":
+				// it un-parks the issue and resets the attempt count.
+				...(actor.agentRunId ? {} : { needs_attention: 0, attempt_count: 0 })
+			})
 			.where('id', '=', id)
 			.where('state_id', '=', current.state.id)
 			.compile(),
@@ -709,6 +826,36 @@ export async function transitionIssue(
 			{ current_state: fresh.state, allowed_transitions: fresh.allowed_transitions }
 		);
 	}
+	return getIssueDetail(db, actor.userId, { id });
+}
+
+/**
+ * Un-park: clears `needs_attention` and resets the attempt count, so the
+ * issue re-enters the pool on the next pass. Idempotent — resuming an
+ * unparked, strike-free issue records nothing. The route is run-key-fenced
+ * (control plane): an agent must not be able to un-park its own issue.
+ */
+export async function resumeIssue(
+	db: Kysely<Database>,
+	env: Env,
+	actor: ActorContext,
+	id: string
+): Promise<IssueDetail> {
+	const current = await getIssueDetail(db, actor.userId, { id });
+	if (!current.needs_attention && current.attempt_count === 0) return current;
+	await runAtomic(env, [
+		db
+			.updateTable('issue')
+			.set({ needs_attention: 0, attempt_count: 0, updated_at: Date.now() })
+			.where('id', '=', id)
+			.compile(),
+		eventInsert(db, actor, {
+			type: 'issue.resumed',
+			issueId: id,
+			projectId: current.project_id,
+			payload: { was_parked: current.needs_attention, attempt_count_was: current.attempt_count }
+		})
+	]);
 	return getIssueDetail(db, actor.userId, { id });
 }
 

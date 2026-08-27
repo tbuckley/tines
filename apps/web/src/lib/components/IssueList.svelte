@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { Issue, IssueRef } from '@tines/shared';
+	import IconAlertTriangle from '@tabler/icons-svelte/icons/alert-triangle';
 	import IconBan from '@tabler/icons-svelte/icons/ban';
 	import IconCopy from '@tabler/icons-svelte/icons/copy';
 	import IconRepeat from '@tabler/icons-svelte/icons/repeat';
@@ -87,6 +88,28 @@
 							>
 								<IconCopy size={12} stroke={1.75} />
 								dup
+							</span>
+						{/if}
+						<!-- The supervisor's two markers: "given up, needs you" and
+						     "being worked right now" must never look alike. -->
+						{#if issue.needs_attention}
+							<span
+								class="ml-1.5 inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-1.5 py-0.5 align-middle text-[0.6875rem] leading-none font-medium text-amber-700 dark:text-amber-400"
+								title="Parked — agents struck out {issue.attempt_count} time{issue.attempt_count === 1 ? '' : 's'}; needs attention"
+								transition:fade={{ duration: dur() }}
+							>
+								<IconAlertTriangle size={12} stroke={1.75} />
+								parked
+							</span>
+						{/if}
+						{#if issue.active_run}
+							<span
+								class="ml-1.5 inline-flex items-center gap-1 rounded-full border border-emerald-500/40 bg-emerald-500/10 px-1.5 py-0.5 align-middle text-[0.6875rem] leading-none font-medium text-emerald-700 dark:text-emerald-400"
+								title="{issue.active_run.runner_name} is on it ({issue.active_run.status})"
+								transition:fade={{ duration: dur() }}
+							>
+								<span class="size-1.5 animate-pulse rounded-full bg-emerald-500"></span>
+								{issue.active_run.runner_name}
 							</span>
 						{/if}
 					</span>

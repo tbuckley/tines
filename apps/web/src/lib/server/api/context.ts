@@ -1,4 +1,5 @@
 import {
+	actorLabel,
 	AGENT_GUIDELINES_BODY,
 	AGENT_GUIDELINES_DESCRIPTION,
 	AGENT_GUIDELINES_NAME,
@@ -1293,9 +1294,7 @@ export function issueBlock(issue: IssueDetail, context: EffectiveContext): strin
 		lines.push('No comments yet.', '');
 	} else {
 		for (const comment of issue.comments) {
-			const actor = comment.actor.api_key_name
-				? `${comment.actor.user_name} via ${comment.actor.api_key_name}`
-				: comment.actor.user_name;
+			const actor = actorLabel(comment.actor);
 			lines.push(
 				`**${actor}** (${new Date(comment.created_at).toISOString()}):`,
 				comment.body.trim(),

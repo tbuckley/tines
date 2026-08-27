@@ -30,6 +30,7 @@ export function apiClient(request: APIRequestContext, apiKey: string) {
 	return {
 		get: (path: string) => request.get(path, { headers }),
 		post: (path: string, data?: unknown) => request.post(path, { headers, data }),
+		put: (path: string, data?: unknown) => request.put(path, { headers, data }),
 		patch: (path: string, data?: unknown) => request.patch(path, { headers, data }),
 		delete: (path: string) => request.delete(path, { headers })
 	};

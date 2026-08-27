@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { AllowedTransition, Comment, ContextItem } from '@tines/shared';
 	import { ApiError } from '@tines/shared';
+	import IconAlertTriangle from '@tabler/icons-svelte/icons/alert-triangle';
 	import IconArrowRight from '@tabler/icons-svelte/icons/arrow-right';
 	import IconBan from '@tabler/icons-svelte/icons/ban';
 	import IconChevronLeft from '@tabler/icons-svelte/icons/chevron-left';
@@ -12,12 +13,14 @@
 	import { fade, slide } from 'svelte/transition';
 	import { invalidateAll } from '$app/navigation';
 	import { api } from '$lib/api';
+	import AgentActivityCard from '$lib/components/AgentActivityCard.svelte';
 	import ContextItemEditor from '$lib/components/ContextItemEditor.svelte';
 	import ContextItemList from '$lib/components/ContextItemList.svelte';
 	import EffectiveContextView from '$lib/components/EffectiveContextView.svelte';
 	import EventList from '$lib/components/EventList.svelte';
 	import LaunchPromptDialog from '$lib/components/LaunchPromptDialog.svelte';
 	import Markdown from '$lib/components/Markdown.svelte';
+	import Modal from '$lib/components/Modal.svelte';
 	import RelationsCard from '$lib/components/RelationsCard.svelte';
 	import StateBadge from '$lib/components/StateBadge.svelte';
 	import WorkflowGraph from '$lib/components/WorkflowGraph.svelte';
@@ -110,14 +113,29 @@
 			});
 	});
 
+	// The transition dialog: an optional comment posted atomically with the
+	// move — comment first, so a sub-second dispatch triggered by the
+	// transition already reads it in the launch prompt (SPEC.md "Transition
+	// dialogs prompt for an optional comment").
+	let pendingTransition = $state<AllowedTransition | null>(null);
+	let transitionComment = $state('');
 	let transitioning = $state(false);
-	async function move(transition: AllowedTransition) {
+
+	function requestMove(transition: AllowedTransition) {
+		transitionComment = '';
+		pendingTransition = transition;
+	}
+
+	async function move(transition: AllowedTransition, comment: string) {
 		if (transitioning) return;
 		const prev = currentState;
-		currentState = transition.to_state; // optimistic: badge + graph animate immediately
 		transitioning = true;
 		try {
+			// Comment BEFORE the transition: re-dispatch can never race past it.
+			if (comment) await api.createComment(data.issue.id, { body: comment });
+			currentState = transition.to_state; // optimistic: badge + graph animate immediately
 			await api.transitionIssue(data.issue.id, { transition_id: transition.transition_id });
+			pendingTransition = null;
 			await invalidateAll();
 		} catch (e) {
 			currentState = prev;
@@ -166,6 +184,22 @@
 			showError(err);
 		} finally {
 			applyingOverride = false;
+		}
+	}
+
+	// --- parked / resume --------------------------------------------------------
+
+	let resuming = $state(false);
+	async function resume() {
+		if (resuming) return;
+		resuming = true;
+		try {
+			await api.resumeIssue(data.issue.id);
+			await invalidateAll();
+		} catch (e) {
+			showError(e);
+		} finally {
+			resuming = false;
 		}
 	}
 
@@ -377,6 +411,24 @@
 	</div>
 {/if}
 
+{#if data.issue.needs_attention}
+	<!-- parked banner: above the fold, cleared by Resume or any manual move -->
+	<div
+		class="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-500/40 bg-amber-500/10 px-4 py-2.5 text-sm text-amber-800 dark:text-amber-300"
+		transition:slide={{ duration: dur() }}
+	>
+		<span class="flex items-center gap-2">
+			<IconAlertTriangle size={16} stroke={1.75} class="shrink-0" />
+			Agents struck out {data.issue.attempt_count}
+			time{data.issue.attempt_count === 1 ? '' : 's'} here — the last run ended without moving the
+			issue. It won't be dispatched again until you act.
+		</span>
+		<Button size="sm" disabled={resuming} onclick={resume}>
+			{resuming ? 'Resuming…' : 'Resume'}
+		</Button>
+	</div>
+{/if}
+
 {#if errorMessage}
 	<div
 		class="border-destructive/40 bg-destructive/10 text-destructive mb-4 rounded-md border px-4 py-2.5 text-sm"
@@ -545,7 +597,7 @@
 							size="sm"
 							variant="outline"
 							disabled={transitioning}
-							onclick={() => move(transition)}
+							onclick={() => requestMove(transition)}
 							title={`Move to ${transition.to_state.name}`}
 						>
 							{transition.name}
@@ -602,6 +654,15 @@
 			</details>
 		</section>
 
+		<!-- the supervisor's view of this issue -->
+		<AgentActivityCard
+			issue={data.issue}
+			dispatch={data.dispatch}
+			runs={data.issueRuns}
+			runners={data.runners}
+			onerror={showError}
+		/>
+
 		<!-- dependencies & duplicates -->
 		<RelationsCard
 			issueId={data.issue.id}
@@ -618,3 +679,47 @@
 		</section>
 	</aside>
 </div>
+
+<!-- transition dialog: optional comment posted atomically with the move -->
+{#if pendingTransition}
+	{@const transition = pendingTransition}
+	<Modal
+		open={true}
+		onclose={() => (pendingTransition = null)}
+		title={`${transition.name} → ${transition.to_state.name}`}
+	>
+		<form
+			class="space-y-3"
+			onsubmit={(e) => {
+				e.preventDefault();
+				void move(transition, transitionComment.trim());
+			}}
+		>
+			<p class="text-sm">
+				Move this issue to <span class="font-medium">{transition.to_state.name}</span>
+				({transition.to_state.category.replaceAll('_', ' ')})?
+			</p>
+			<div class="space-y-1.5">
+				<label class="text-sm font-medium" for="transition-comment">Comment (optional)</label>
+				<Textarea
+					id="transition-comment"
+					bind:value={transitionComment}
+					rows={3}
+					placeholder="Feedback, context, or instructions for whoever picks this up…"
+				/>
+				<p class="text-muted-foreground text-xs">
+					Posted with the transition — if this move hands the issue to an agent, its very next
+					run's prompt already contains it.
+				</p>
+			</div>
+			<div class="flex justify-end gap-2">
+				<Button type="button" variant="ghost" onclick={() => (pendingTransition = null)}>
+					Cancel
+				</Button>
+				<Button type="submit" disabled={transitioning}>
+					{transitioning ? 'Moving…' : transition.name}
+				</Button>
+			</div>
+		</form>
+	</Modal>
+{/if}

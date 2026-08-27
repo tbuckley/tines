@@ -1,0 +1,131 @@
+import {
+	ACTIVE_RUN_STATUSES,
+	type AgentRun,
+	type AgentRunDetail,
+	type AgentRunUsage,
+	type ModelTier,
+	type RunStatus
+} from '@tines/shared';
+import type { Kysely } from 'kysely';
+import type { Database } from '$lib/server/db';
+import { ApiFail, notFound, type Page } from './core';
+
+export function runQuery(db: Kysely<Database>, userId: string) {
+	return (
+		db
+			.selectFrom('agent_run')
+			.innerJoin('runner', 'runner.id', 'agent_run.runner_id')
+			.innerJoin('issue', 'issue.id', 'agent_run.issue_id')
+			.innerJoin('project', 'project.id', 'issue.project_id')
+			// State names survive workflow edits loosely: left joins, ids kept.
+			.leftJoin('workflow_state as start_state', 'start_state.id', 'agent_run.state_id_at_start')
+			.leftJoin('workflow_state as end_state', 'end_state.id', 'agent_run.state_id_at_end')
+			.selectAll('agent_run')
+			.select([
+				'runner.name as runner_name',
+				'issue.number as issue_number',
+				'issue.title as issue_title',
+				'project.name as project_name',
+				'start_state.name as start_state_name',
+				'end_state.name as end_state_name'
+			])
+			.where('agent_run.user_id', '=', userId)
+	);
+}
+
+type RunRow = Awaited<ReturnType<ReturnType<typeof runQuery>['execute']>>[number];
+
+function parseUsage(raw: string | null): AgentRunUsage | null {
+	if (!raw) return null;
+	try {
+		return JSON.parse(raw) as AgentRunUsage;
+	} catch {
+		return null;
+	}
+}
+
+export function serializeRun(row: RunRow): AgentRun {
+	return {
+		id: row.id,
+		issue_id: row.issue_id,
+		issue_ref: {
+			project_name: row.project_name,
+			number: row.issue_number,
+			title: row.issue_title
+		},
+		runner_id: row.runner_id,
+		runner_name: row.runner_name,
+		status: row.status as RunStatus,
+		tier: row.tier as ModelTier,
+		model: row.model,
+		usage: parseUsage(row.usage),
+		state_id_at_start: row.state_id_at_start,
+		state_at_start_name: row.start_state_name,
+		state_id_at_end: row.state_id_at_end,
+		state_at_end_name: row.end_state_name,
+		provider_session_id: row.provider_session_id,
+		provider_url: row.provider_url,
+		error: row.error,
+		created_at: row.created_at,
+		started_at: row.started_at,
+		ended_at: row.ended_at
+	};
+}
+
+function serializeRunDetail(row: RunRow): AgentRunDetail {
+	return { ...serializeRun(row), log: row.log, log_bytes_dropped: row.log_bytes_dropped };
+}
+
+export interface RunListFilters {
+	/** Issue id. */
+	issue?: string;
+	/** Runner id. */
+	runner?: string;
+	/** Only runs holding a claim (assigned/launching/running). */
+	active?: boolean;
+}
+
+export async function listRuns(
+	db: Kysely<Database>,
+	userId: string,
+	filters: RunListFilters,
+	page: Page
+): Promise<{ items: AgentRun[]; hasMore: boolean }> {
+	let q = runQuery(db, userId);
+	if (filters.issue) q = q.where('agent_run.issue_id', '=', filters.issue);
+	if (filters.runner) q = q.where('agent_run.runner_id', '=', filters.runner);
+	if (filters.active) q = q.where('agent_run.status', 'in', [...ACTIVE_RUN_STATUSES]);
+	if (page.cursor) {
+		const { createdAt, id } = page.cursor;
+		q = q.where((eb) =>
+			eb.or([
+				eb('agent_run.created_at', '<', createdAt),
+				eb.and([eb('agent_run.created_at', '=', createdAt), eb('agent_run.id', '<', id)])
+			])
+		);
+	}
+	const rows = await q
+		.orderBy('agent_run.created_at desc')
+		.orderBy('agent_run.id desc')
+		.limit(page.limit + 1)
+		.execute();
+	return { items: rows.slice(0, page.limit).map(serializeRun), hasMore: rows.length > page.limit };
+}
+
+export async function getRun(
+	db: Kysely<Database>,
+	userId: string,
+	id: string
+): Promise<AgentRunDetail> {
+	const row = await runQuery(db, userId).where('agent_run.id', '=', id).executeTakeFirst();
+	if (!row) throw notFound();
+	return serializeRunDetail(row);
+}
+
+/** Maps the engine's cancel result onto API semantics. */
+export function assertCancelable(kind: 'not_found' | 'already_ended' | 'canceled'): void {
+	if (kind === 'not_found') throw notFound();
+	if (kind === 'already_ended') {
+		throw new ApiFail(422, 'run_already_ended', 'This run has already ended; nothing to cancel');
+	}
+}

@@ -1,6 +1,15 @@
 import type {
 	AddIssueLinkRequest,
+	AgentRun,
+	AgentRunDetail,
 	ApiErrorBody,
+	AppendRunLogRequest,
+	AppendRunLogResponse,
+	FinishRunRequest,
+	RegisterRunnerRequest,
+	RunnerPollRequest,
+	RunnerPollResponse,
+	RunnerTokenResponse,
 	ApiKey,
 	ApiKeyCreated,
 	AppendContextRequest,
@@ -13,9 +22,13 @@ import type {
 	CreateIssueRequest,
 	CreateIssueResponse,
 	CreateProjectRequest,
+	CreateRoutingRuleRequest,
+	CreateRunnerRequest,
 	CreateWorkflowRequest,
 	DeleteAnchorRequest,
 	DeleteAnchorResponse,
+	DeleteRunnerRequest,
+	DispatchExplainer,
 	EffectiveContext,
 	EventFilters,
 	LaunchPromptResponse,
@@ -26,15 +39,24 @@ import type {
 	ListResponse,
 	PageParams,
 	Project,
+	RoutingRule,
+	RoutingRuleWithWarnings,
+	RunFilters,
+	Runner,
 	Schedule,
 	ScheduleFilters,
 	StateCategory,
+	SupervisorSettings,
+	SupervisorSettingsResponse,
 	TinesEvent,
 	TransitionIssueRequest,
 	UpdateContextItemRequest,
 	UpdateIssueRequest,
 	UpdateProjectRequest,
+	UpdateRoutingRuleRequest,
+	UpdateRunnerRequest,
 	UpdateScheduleRequest,
+	UpdateSupervisorSettingsRequest,
 	UpdateWorkflowRequest,
 	WorkflowResponse
 } from './types.js';
@@ -155,6 +177,10 @@ export function createApiClient(options: ApiClientOptions) {
 			request<IssueDetail>('PATCH', `/api/v1/issues/${id}`, body),
 		transitionIssue: (id: string, body: TransitionIssueRequest) =>
 			request<IssueDetail>('POST', `/api/v1/issues/${id}/transition`, body),
+		/** Un-park: clears needs_attention, resets the attempt count. */
+		resumeIssue: (id: string) => request<IssueDetail>('POST', `/api/v1/issues/${id}/resume`),
+		/** The dispatch explainer: "why isn't this running?". */
+		getIssueDispatch: (id: string) => get<DispatchExplainer>(`/api/v1/issues/${id}/dispatch`),
 
 		// Issue links (dependencies & duplicates)
 		addIssueLink: (issueId: string, body: AddIssueLinkRequest) =>
@@ -202,6 +228,50 @@ export function createApiClient(options: ApiClientOptions) {
 		// Events
 		listEvents: (filters: EventFilters & PageParams = {}) =>
 			get<ListResponse<TinesEvent>>(`/api/v1/events${query(filters)}`),
+
+		// Runners
+		listRunners: () => get<ListResponse<Runner>>('/api/v1/runners'),
+		createRunner: (body: CreateRunnerRequest) => request<Runner>('POST', '/api/v1/runners', body),
+		getRunner: (id: string) => get<Runner>(`/api/v1/runners/${id}`),
+		updateRunner: (id: string, body: UpdateRunnerRequest) =>
+			request<Runner>('PATCH', `/api/v1/runners/${id}`, body),
+		/** Reject-by-default: 422 names referencing rules/pins unless `force`. */
+		deleteRunner: (id: string, body?: DeleteRunnerRequest) =>
+			request<void>('DELETE', `/api/v1/runners/${id}`, body),
+		/** Create/reconnect a local runner; the response's token is shown once. */
+		registerRunner: (body: RegisterRunnerRequest) =>
+			request<RunnerTokenResponse>('POST', '/api/v1/runners/register', body),
+		/** Invalidate the runner token and mint a fresh one (shown once). */
+		rotateRunnerToken: (id: string) =>
+			request<RunnerTokenResponse>('POST', `/api/v1/runners/${id}/rotate-token`),
+
+		// Local runner protocol (runner-token auth: construct the client with
+		// the runner token as `apiKey`)
+		pollRunner: (id: string, body: RunnerPollRequest) =>
+			request<RunnerPollResponse>('POST', `/api/v1/runners/${id}/poll`, body),
+		appendRunLog: (runId: string, body: AppendRunLogRequest) =>
+			request<AppendRunLogResponse>('POST', `/api/v1/runs/${runId}/logs`, body),
+		finishRun: (runId: string, body: FinishRunRequest) =>
+			request<AgentRun>('POST', `/api/v1/runs/${runId}/finish`, body),
+
+		// Agent runs
+		listRuns: (filters: RunFilters & PageParams = {}) =>
+			get<ListResponse<AgentRun>>(`/api/v1/runs${query(filters)}`),
+		getRun: (id: string) => get<AgentRunDetail>(`/api/v1/runs/${id}`),
+		cancelRun: (id: string) => request<AgentRunDetail>('POST', `/api/v1/runs/${id}/cancel`),
+
+		// Routing rules (one per exact scope; responses carry shadow hints)
+		listRoutingRules: () => get<ListResponse<RoutingRule>>('/api/v1/routing-rules'),
+		createRoutingRule: (body: CreateRoutingRuleRequest) =>
+			request<RoutingRuleWithWarnings>('POST', '/api/v1/routing-rules', body),
+		updateRoutingRule: (id: string, body: UpdateRoutingRuleRequest) =>
+			request<RoutingRuleWithWarnings>('PATCH', `/api/v1/routing-rules/${id}`, body),
+		deleteRoutingRule: (id: string) => request<void>('DELETE', `/api/v1/routing-rules/${id}`),
+
+		// Supervisor settings
+		getSupervisorSettings: () => get<SupervisorSettings>('/api/v1/supervisor/settings'),
+		updateSupervisorSettings: (body: UpdateSupervisorSettingsRequest) =>
+			request<SupervisorSettingsResponse>('PUT', '/api/v1/supervisor/settings', body),
 
 		// API keys (create/revoke require a browser session, not a key)
 		listApiKeys: () => get<ListResponse<ApiKey>>('/api/v1/api-keys'),

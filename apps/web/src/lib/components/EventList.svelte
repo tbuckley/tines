@@ -6,10 +6,13 @@
 	import IconCopy from '@tabler/icons-svelte/icons/copy';
 	import IconFolder from '@tabler/icons-svelte/icons/folder';
 	import IconKey from '@tabler/icons-svelte/icons/key';
+	import IconAlertTriangle from '@tabler/icons-svelte/icons/alert-triangle';
 	import IconMessage from '@tabler/icons-svelte/icons/message';
 	import IconPencil from '@tabler/icons-svelte/icons/pencil';
+	import IconPlayerPlay from '@tabler/icons-svelte/icons/player-play';
 	import IconPlayerSkipForward from '@tabler/icons-svelte/icons/player-skip-forward';
 	import IconRepeat from '@tabler/icons-svelte/icons/repeat';
+	import IconRobot from '@tabler/icons-svelte/icons/robot';
 	import IconSitemap from '@tabler/icons-svelte/icons/sitemap';
 	import IconTrash from '@tabler/icons-svelte/icons/trash';
 	import { fade, slide } from 'svelte/transition';
@@ -32,6 +35,15 @@
 		if (type === 'issue.commented') return IconMessage;
 		if (type === 'scheduled_task.skipped') return IconPlayerSkipForward;
 		if (type.startsWith('scheduled_task.')) return IconRepeat;
+		if (type === 'issue.parked' || type === 'runner.errored') return IconAlertTriangle;
+		if (type === 'issue.resumed') return IconPlayerPlay;
+		if (
+			type.startsWith('runner.') ||
+			type.startsWith('routing_rule.') ||
+			type.startsWith('agent_run.') ||
+			type === 'settings.updated'
+		)
+			return IconRobot;
 		if (type.endsWith('.created')) return IconCirclePlus;
 		if (type.endsWith('.deleted') || type.endsWith('.revoked')) return IconTrash;
 		if (type.startsWith('project.')) return IconFolder;
@@ -75,6 +87,30 @@
 				return 'deleted schedule';
 			case 'scheduled_task.skipped':
 				return 'skipped an occurrence of schedule';
+			case 'runner.registered':
+				return 'registered runner';
+			case 'runner.updated':
+				return 'updated runner';
+			case 'runner.removed':
+				return 'removed runner';
+			case 'runner.errored':
+				return `saw runner “${p.runner_name}” fail to launch (${p.consecutive_failures} consecutive): ${p.error}`;
+			case 'agent_run.started':
+				return `started a ${p.tier} run via “${p.runner_name}” on`;
+			case 'agent_run.ended':
+				return `run ${String(p.status).replaceAll('_', ' ')}${p.outcome ? ` — ${p.outcome}` : ''} via “${p.runner_name}” on`;
+			case 'issue.parked':
+				return `parked`;
+			case 'issue.resumed':
+				return 'resumed';
+			case 'routing_rule.created':
+				return `created the ${p.scope_label} routing rule`;
+			case 'routing_rule.updated':
+				return `updated the ${p.scope_label} routing rule`;
+			case 'routing_rule.deleted':
+				return `deleted the ${p.scope_label} routing rule`;
+			case 'settings.updated':
+				return `updated supervisor settings (${(p.changed as string[])?.join(', ') || 'no changes'})`;
 			case 'context.created':
 			case 'context.updated':
 			case 'context.deleted': {
@@ -208,6 +244,11 @@
 								{#if ev.type === 'issue.updated' && ev.payload.workflow_to_name}
 									<span class="text-muted-foreground">
 										from “{ev.payload.workflow_from_name}” to “{ev.payload.workflow_to_name}”
+									</span>
+								{/if}
+								{#if ev.type === 'issue.parked'}
+									<span class="text-muted-foreground">
+										after {ev.payload.attempt_count} strikes — needs attention
 									</span>
 								{/if}
 							{:else if objectName(ev)}

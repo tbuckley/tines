@@ -8,6 +8,7 @@
 	import { goto, invalidateAll } from '$app/navigation';
 	import { page } from '$app/state';
 	import { api } from '$lib/api';
+	import AgentRoutingCard from '$lib/components/AgentRoutingCard.svelte';
 	import ContextItemEditor from '$lib/components/ContextItemEditor.svelte';
 	import ContextItemList from '$lib/components/ContextItemList.svelte';
 	import IssueList from '$lib/components/IssueList.svelte';
@@ -227,6 +228,11 @@
 		</div>
 	{/if}
 </div>
+
+<AgentRoutingCard
+	rules={data.routingRules}
+	emptyMessage="No routing rule covers this project — its issues will not dispatch to agents."
+/>
 
 <div class="mb-3 flex items-center justify-between">
 	<h2 class="text-sm font-semibold">Issues</h2>

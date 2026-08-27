@@ -51,6 +51,13 @@ export interface IssueTable {
 	state_id: string;
 	/** Set when the issue was created by a scheduled task; NULL after the schedule is deleted. */
 	scheduled_task_id: string | null;
+	/** Pin: replaces routing-rule matching entirely for this issue. */
+	pinned_runner_id: string | null;
+	pinned_tier: string | null;
+	/** Strikes toward the attempt limit; reset when a run advances the issue. */
+	attempt_count: number;
+	/** 0/1: parked after striking out; cleared by resume or a manual transition. */
+	needs_attention: number;
 	created_at: number;
 	updated_at: number;
 }
@@ -149,9 +156,96 @@ export interface ApiKeyTable {
 	name: string;
 	key_hash: string;
 	key_prefix: string;
+	/** Set on run keys: the run this key is bound to. NULL for ordinary keys. */
+	agent_run_id: string | null;
+	/** Run keys only: the key is dead past this time even if never revoked. */
+	expires_at: number | null;
 	created_at: number;
 	last_used_at: number | null;
 	revoked_at: number | null;
+}
+
+export interface RunnerTable {
+	id: string;
+	user_id: string;
+	/** 'claude_managed' | 'gemini_managed' | 'local'. */
+	type: string;
+	name: string;
+	/** 'active' | 'paused'. */
+	status: string;
+	max_concurrent: number;
+	max_run_minutes: number;
+	default_tier: string;
+	/** JSON per-tier model overrides; NULL = built-ins only. */
+	tiers: string | null;
+	/** JSON budget; NULL = none. */
+	budget: string | null;
+	/** JSON non-secret config (harness, hostname, agent ids…). */
+	config: string;
+	/** Encrypted provider API key (managed types); never serialized. */
+	secret_enc: string | null;
+	/** Hashed daemon token (local type); never serialized. */
+	runner_token_hash: string | null;
+	last_seen_at: number | null;
+	launch_failures: number;
+	backoff_until: number | null;
+	created_at: number;
+	updated_at: number;
+}
+
+export interface AgentRunTable {
+	id: string;
+	user_id: string;
+	issue_id: string;
+	runner_id: string;
+	/** 'assigned' | 'launching' | 'running' | 'completed' | 'failed' | 'timed_out' | 'canceled'. */
+	status: string;
+	tier: string;
+	/** Resolved at launch; NULL when the harness cannot vary its model. */
+	model: string | null;
+	/** JSON usage record. */
+	usage: string | null;
+	state_id_at_start: string;
+	state_id_at_end: string | null;
+	provider_session_id: string | null;
+	provider_url: string | null;
+	api_key_id: string | null;
+	/** Append-only tail, head-truncated at the cap. */
+	log: string;
+	log_bytes_dropped: number;
+	error: string | null;
+	created_at: number;
+	started_at: number | null;
+	ended_at: number | null;
+}
+
+export interface RoutingRuleTable {
+	id: string;
+	user_id: string;
+	/** Scope: nullable dimensions with AND semantics; both NULL = global. */
+	project_id: string | null;
+	workflow_state_id: string | null;
+	/** JSON ordered target list: [ { runner_id, tier? } ]. */
+	targets: string;
+	created_at: number;
+	updated_at: number;
+}
+
+export interface SupervisorSettingsTable {
+	user_id: string;
+	/** 0/1: the kill switch. Off (0) by default for new users. */
+	enabled: number;
+	/** JSON typed quota policy. */
+	quota: string;
+	attempt_limit: number;
+	/** JSON global budget; unused until the money milestone. */
+	budget: string | null;
+	/** JSON pricing overrides; unused until the money milestone. */
+	pricing: string | null;
+	/** Encrypted GitHub PAT; unused until the managed-runner milestone. */
+	github_pat_enc: string | null;
+	github_pat_hint: string | null;
+	updated_at: number;
 }
 
 /** Better Auth's user table — only the columns we read. */
@@ -174,14 +268,27 @@ export interface Database {
 	comment: CommentTable;
 	event: EventTable;
 	api_key: ApiKeyTable;
+	runner: RunnerTable;
+	agent_run: AgentRunTable;
+	routing_rule: RoutingRuleTable;
+	supervisor_settings: SupervisorSettingsTable;
 	user: UserTable;
 }
 
-let db: Kysely<Database> | undefined;
+const dbs = new WeakMap<object, Kysely<Database>>();
 
-/** Kysely over D1, memoized per isolate (bindings are isolate-stable). */
+/**
+ * Kysely over D1, memoized per binding. In production one isolate sees one
+ * binding, so this is the old per-isolate singleton; keying on the binding
+ * (rather than a module global) additionally keeps separate `Env`s — e.g.
+ * per-test fakes — from sharing one connection.
+ */
 export function getDb(env: Env): Kysely<Database> {
-	db ??= new Kysely<Database>({ dialect: new D1Dialect({ database: env.DB }) });
+	let db = dbs.get(env.DB);
+	if (!db) {
+		db = new Kysely<Database>({ dialect: new D1Dialect({ database: env.DB }) });
+		dbs.set(env.DB, db);
+	}
 	return db;
 }
 

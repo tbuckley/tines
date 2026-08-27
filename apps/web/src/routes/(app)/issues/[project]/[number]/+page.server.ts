@@ -3,7 +3,10 @@ import { effectiveContextForIssue, listContextItems } from '$lib/server/api/cont
 import { eventQuery, serializeEvent } from '$lib/server/api/events';
 import { getIssueDetail } from '$lib/server/api/issues';
 import { listProjects } from '$lib/server/api/projects';
+import { listRunners } from '$lib/server/api/runners';
+import { listRuns } from '$lib/server/api/runs';
 import { loadWorkflows } from '$lib/server/api/workflows';
+import { explainDispatch } from '$lib/server/supervisor/explain';
 import { getDb } from '$lib/server/db';
 import type { PageServerLoad } from './$types';
 
@@ -28,7 +31,7 @@ export const load: PageServerLoad = async ({ locals, platform, params }) => {
 		error(404, 'Not found');
 	});
 
-	const [eventRows, workflows, projects, contextItems, effectiveContext] = await Promise.all([
+	const [eventRows, workflows, projects, contextItems, effectiveContext, dispatch, issueRuns, runners] = await Promise.all([
 		eventQuery(db, userId)
 			.where('event.issue_id', '=', issue.id)
 			.orderBy('event.created_at desc')
@@ -41,7 +44,10 @@ export const load: PageServerLoad = async ({ locals, platform, params }) => {
 		listContextItems(db, userId, { issue: issue.id }, { cursor: null, limit: 100 }),
 		// Display-only bundle: the panel shows skill file counts, never their
 		// contents, which can run to 100KB per skill on every page load.
-		effectiveContextForIssue(db, userId, issue.id, { skillFiles: false })
+		effectiveContextForIssue(db, userId, issue.id, { skillFiles: false }),
+		explainDispatch(db, userId, issue.id),
+		listRuns(db, userId, { issue: issue.id }, { cursor: null, limit: 20 }),
+		listRunners(db, userId)
 	]);
 
 	return {
@@ -50,6 +56,9 @@ export const load: PageServerLoad = async ({ locals, platform, params }) => {
 		workflows,
 		projects,
 		contextItems: contextItems.items,
-		effectiveContext
+		effectiveContext,
+		dispatch,
+		issueRuns: issueRuns.items,
+		runners
 	};
 };

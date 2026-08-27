@@ -1,7 +1,7 @@
 import type { WorkflowResponse } from '@tines/shared';
 import { describe, expect, it } from 'vitest';
 import { ApiFail } from './core';
-import { allowedTransitions, resolveStateRef } from './issues';
+import { allowedTransitions, assertPinFieldsAllowed, resolveStateRef } from './issues';
 
 const workflow: WorkflowResponse = {
 	id: 'wf_1',
@@ -67,5 +67,39 @@ describe('resolveStateRef', () => {
 		expect(fail.details?.known_states).toEqual(
 			workflow.states.map((s) => ({ id: s.id, name: s.name }))
 		);
+	});
+});
+
+describe('assertPinFieldsAllowed', () => {
+	const runKey = { agentRunId: 'arun_1' };
+	const namedKey = { agentRunId: null };
+	const session = {};
+
+	it('403s a run key setting a pin, pointing at the proposal convention', () => {
+		try {
+			assertPinFieldsAllowed(runKey, { pinned_runner_id: 'rnr_1' });
+			throw new Error('expected a 403');
+		} catch (e) {
+			expect(e).toBeInstanceOf(ApiFail);
+			expect((e as ApiFail).status).toBe(403);
+			expect((e as ApiFail).code).toBe('run_key_forbidden');
+			expect((e as ApiFail).message).toContain('Context change:');
+		}
+	});
+
+	it('403s a run key clearing a pin or touching only the tier', () => {
+		expect(() => assertPinFieldsAllowed(runKey, { pinned_runner_id: null })).toThrowError(ApiFail);
+		expect(() => assertPinFieldsAllowed(runKey, { pinned_tier: 'cheapest' })).toThrowError(ApiFail);
+		expect(() => assertPinFieldsAllowed(runKey, { pinned_tier: null })).toThrowError(ApiFail);
+	});
+
+	it('lets a run key patch non-pin fields', () => {
+		expect(() => assertPinFieldsAllowed(runKey, {})).not.toThrow();
+	});
+
+	it('leaves named keys and sessions unfenced', () => {
+		expect(() => assertPinFieldsAllowed(namedKey, { pinned_runner_id: 'rnr_1' })).not.toThrow();
+		expect(() => assertPinFieldsAllowed(namedKey, { pinned_runner_id: null })).not.toThrow();
+		expect(() => assertPinFieldsAllowed(session, { pinned_runner_id: 'rnr_1', pinned_tier: 'smartest' })).not.toThrow();
 	});
 });

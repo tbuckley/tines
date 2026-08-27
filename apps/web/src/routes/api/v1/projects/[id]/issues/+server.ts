@@ -3,6 +3,7 @@ import type { CreateIssueRequest, Issue, ListResponse } from '@tines/shared';
 import { api, apiContext, encodeCursor, readJson, readPage } from '$lib/server/api/core';
 import { createIssue, listIssues } from '$lib/server/api/issues';
 import { getProject } from '$lib/server/api/projects';
+import { queueDispatchPass } from '$lib/server/supervisor/engine';
 import type { RequestHandler } from './$types';
 
 export const GET: RequestHandler = api(async (event) => {
@@ -36,5 +37,7 @@ export const POST: RequestHandler = api(async (event) => {
 	const { db, env, actor } = await apiContext(event);
 	const body = await readJson<CreateIssueRequest>(event);
 	const issue = await createIssue(db, env, actor, event.params.id, body);
+	// An issue born into an active state may dispatch immediately.
+	queueDispatchPass(event.platform, actor.userId);
 	return json(issue, { status: 201 });
 });

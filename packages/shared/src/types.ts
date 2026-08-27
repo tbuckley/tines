@@ -11,6 +11,17 @@ export const STATE_CATEGORIES: readonly StateCategory[] = [
 	'done'
 ];
 
+/**
+ * A run-key actor's provenance: resolved through the run to the runner, for
+ * "via <runner> · run on <issue>" rendering.
+ */
+export interface ActorRun {
+	run_id: string;
+	runner_name: string;
+	/** The issue the run is working; null if it has been deleted. */
+	issue_ref: { project_name: string; number: number } | null;
+}
+
 /** Who performed an action: always a user, optionally via a named API key. */
 export interface Actor {
 	user_id: string;
@@ -18,6 +29,23 @@ export interface Actor {
 	/** NULL when the user acted directly (browser session). */
 	api_key_id: string | null;
 	api_key_name: string | null;
+	/** Set when the key is a run key: attribution goes to the runner + run. */
+	run?: ActorRun | null;
+}
+
+/**
+ * Canonical actor rendering everywhere actions are attributed: "alice",
+ * "alice via laptop-key", or — for run keys — "alice via laptop-m4 · run on
+ * demo/12".
+ */
+export function actorLabel(actor: Actor): string {
+	if (actor.run) {
+		const ref = actor.run.issue_ref
+			? `run on ${actor.run.issue_ref.project_name}/${actor.run.issue_ref.number}`
+			: `run ${actor.run.run_id}`;
+		return `${actor.user_name} via ${actor.run.runner_name} · ${ref}`;
+	}
+	return actor.api_key_name ? `${actor.user_name} via ${actor.api_key_name}` : actor.user_name;
 }
 
 // ---------------------------------------------------------------------------
@@ -190,6 +218,17 @@ export interface Issue {
 	/** Set when the issue was created by a scheduled task (null once the schedule is deleted). */
 	scheduled_task_id: string | null;
 	scheduled_task_name: string | null;
+	/** Pin: replaces routing-rule matching entirely for this issue. */
+	pinned_runner_id: string | null;
+	pinned_runner_name: string | null;
+	/** Tier for the pinned runner; null = the runner's default tier. */
+	pinned_tier: ModelTier | null;
+	/** Strikes toward the attempt limit; reset when a run advances the issue. */
+	attempt_count: number;
+	/** Parked after striking out; cleared by resume or a manual transition. */
+	needs_attention: boolean;
+	/** The run currently holding this issue's exclusive claim, if any. */
+	active_run: { run_id: string; runner_name: string; status: RunStatus } | null;
 	created_at: number;
 	updated_at: number;
 	/** Timestamp of the most recent event touching this issue. */
@@ -361,6 +400,13 @@ export interface UpdateIssueRequest {
 	 * issue lands on the new workflow's initial state.
 	 */
 	workflow_id?: string;
+	/**
+	 * Pin the issue to one runner (replaces routing-rule matching entirely;
+	 * eligibility still applies). Explicit null unpins.
+	 */
+	pinned_runner_id?: string | null;
+	/** Tier for the pin; null = the pinned runner's default tier. */
+	pinned_tier?: ModelTier | null;
 }
 
 /** Names the transition to take: exactly one of the two fields. */
@@ -633,6 +679,458 @@ export function repoDirFromUrl(url: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Supervisor: runners, routing rules, settings
+
+export type RunnerType = 'claude_managed' | 'gemini_managed' | 'local';
+
+export const RUNNER_TYPES: readonly RunnerType[] = ['claude_managed', 'gemini_managed', 'local'];
+
+export type RunnerStatus = 'active' | 'paused';
+
+/**
+ * The routing vocabulary for how hard to think. A closed set: adding a tier
+ * is a code change, so routing rules can rely on it staying small.
+ */
+export type ModelTier = 'smartest' | 'balanced' | 'cheapest';
+
+export const MODEL_TIERS: readonly ModelTier[] = ['smartest', 'balanced', 'cheapest'];
+
+export type RunStatus =
+	| 'assigned'
+	| 'launching'
+	| 'running'
+	| 'completed'
+	| 'failed'
+	| 'timed_out'
+	| 'canceled';
+
+export const RUN_STATUSES: readonly RunStatus[] = [
+	'assigned',
+	'launching',
+	'running',
+	'completed',
+	'failed',
+	'timed_out',
+	'canceled'
+];
+
+/** Statuses that hold the issue's exclusive claim (and count toward caps). */
+export const ACTIVE_RUN_STATUSES: readonly RunStatus[] = ['assigned', 'launching', 'running'];
+
+/** Local-runner liveness: online = last poll within this window. */
+export const RUNNER_ONLINE_WINDOW_MS = 2 * 60 * 1000;
+
+/** A local runner unseen this long has its running runs failed by the sweep. */
+export const RUNNER_OFFLINE_FAIL_MS = 5 * 60 * 1000;
+
+/**
+ * An `assigned` run unacknowledged, or a `launching` run with no recorded
+ * provider session, for this long fails at launch (never a strike).
+ */
+export const LAUNCH_STALL_MS = 5 * 60 * 1000;
+
+/** Run-key expiry slack beyond `max_run_minutes`. */
+export const RUN_KEY_SLACK_MS = 10 * 60 * 1000;
+
+/** Run log tail cap; older output is truncated from the head. */
+export const RUN_LOG_MAX_BYTES = 256 * 1024;
+
+/** At most `limit` runs in launching/running across everything. */
+export interface GlobalCapQuota {
+	type: 'global_cap';
+	limit: number;
+}
+
+/**
+ * At most N concurrent runs per workflow state — counted by the state a run
+ * started in (`state_id_at_start`) — with a fallback default and per-state
+ * overrides keyed by state id.
+ */
+export interface StateRosterQuota {
+	type: 'state_roster';
+	default_limit: number;
+	overrides: Record<string, number>;
+}
+
+/** One user-chosen policy governs the total picture; new types are additive. */
+export type QuotaPolicy = GlobalCapQuota | StateRosterQuota;
+
+export interface SupervisorSettings {
+	/** The kill switch: nothing dispatches while off. Off for new users. */
+	enabled: boolean;
+	quota: QuotaPolicy;
+	/** Strikes before an issue parks (`needs_attention`). */
+	attempt_limit: number;
+	/** Null until the settings row has been written at least once. */
+	updated_at: number | null;
+}
+
+/** PUT is a merge: omitted fields keep their current values. */
+export interface UpdateSupervisorSettingsRequest {
+	enabled?: boolean;
+	quota?: QuotaPolicy;
+	attempt_limit?: number;
+	/**
+	 * Only with `enabled: false`: also cancel the in-flight (launching/running)
+	 * runs, as plain individual cancels — strikes and all. Not-yet-acknowledged
+	 * `assigned` runs are always canceled by the switch turning off.
+	 */
+	cancel_in_flight?: boolean;
+}
+
+/** `PUT /supervisor/settings` response; `canceled_runs` reports the switch-off sweep. */
+export interface SupervisorSettingsResponse extends SupervisorSettings {
+	/** Runs canceled by this write (kill switch off / bulk cancel), when any. */
+	canceled_runs?: number;
+}
+
+/** A registered executor. Secrets are never serialized. */
+export interface Runner {
+	id: string;
+	type: RunnerType;
+	/** Unique per user — routing rules and the CLI address runners by name. */
+	name: string;
+	status: RunnerStatus;
+	/** The runner's own concurrency cap; always enforced. */
+	max_concurrent: number;
+	max_run_minutes: number;
+	default_tier: ModelTier;
+	/** Non-secret config (harness, hostname…). */
+	config: Record<string, unknown>;
+	/**
+	 * Managed runners are always online; a local runner is online while its
+	 * daemon has polled within the last 2 minutes.
+	 */
+	online: boolean;
+	last_seen_at: number | null;
+	launch_failures: number;
+	backoff_until: number | null;
+	/** Runs currently holding a claim on this runner (assigned/launching/running). */
+	active_runs: number;
+	created_at: number;
+	updated_at: number;
+}
+
+export interface CreateRunnerRequest {
+	/** Only 'local' can be created over the API for now (managed types come with credential handling). */
+	type: RunnerType;
+	name: string;
+	max_concurrent?: number;
+	max_run_minutes?: number;
+	default_tier?: ModelTier;
+	/** Local runners: { harness?: 'claude_code' | 'codex' | 'custom', … }. */
+	config?: Record<string, unknown>;
+}
+
+export interface UpdateRunnerRequest {
+	name?: string;
+	/** Pause with 'paused'; resume with 'active'. */
+	status?: RunnerStatus;
+	max_concurrent?: number;
+	max_run_minutes?: number;
+	default_tier?: ModelTier;
+	config?: Record<string, unknown>;
+}
+
+/**
+ * DELETE body. Removal is refused (422 naming them) while the runner has
+ * active runs or is referenced by any routing-rule target or issue pin;
+ * `force` strips rule targets and clears pins instead (active runs always
+ * block). A rule the cascade empties is flagged, not deleted.
+ */
+export interface DeleteRunnerRequest {
+	force?: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Local runner protocol (SPEC.md "Local runner protocol")
+
+/**
+ * `POST /api/v1/runners/register` — user API key auth. Creates a local
+ * runner, or reconnects an existing one by name (re-minting its token, the
+ * daemon-lost-its-config path). The response's token is shown exactly once.
+ */
+export interface RegisterRunnerRequest {
+	name: string;
+	harness?: 'claude_code' | 'codex' | 'custom';
+	/** Custom harness only: the command template. */
+	command?: string;
+	max_concurrent?: number;
+	max_run_minutes?: number;
+	default_tier?: ModelTier;
+	/** Device display info, shown on the runner card. */
+	hostname?: string;
+	platform?: string;
+}
+
+/** Register and rotate-token both hand the token over exactly once. */
+export interface RunnerTokenResponse {
+	runner: Runner;
+	/** The plaintext runner token; only its hash is stored. */
+	runner_token: string;
+}
+
+/** `POST /api/v1/runners/:id/poll` — runner-token auth. */
+export interface RunnerPollRequest {
+	/** Run ids the daemon is actually executing right now. */
+	owned_runs: string[];
+}
+
+/** One delivered assignment: everything the daemon needs to launch. */
+export interface RunnerAssignment {
+	run: AgentRun;
+	/** Supervisor preamble + stitched context + issue block, assembled at delivery. */
+	prompt: string;
+	/**
+	 * The effective-context bundle (the `tines issues context --json` shape);
+	 * the daemon writes it out in the `--out` workspace layout.
+	 */
+	bundle: EffectiveContext;
+	/** The ephemeral run key — the harness's TINES_API_KEY. Never logged. */
+	run_key: string;
+	/** Minutes until the daemon must kill the harness. */
+	timeout_minutes: number;
+}
+
+export interface RunnerPollResponse {
+	assignments: RunnerAssignment[];
+	/**
+	 * Run ids to kill WITHOUT finish-reporting: the supervisor has already
+	 * settled these (cancel, timeout, the offline sweep).
+	 */
+	cancels: string[];
+}
+
+/** `POST /api/v1/runs/:id/logs` — runner-token auth; appended to the tail. */
+export interface AppendRunLogRequest {
+	chunk: string;
+}
+
+export interface AppendRunLogResponse {
+	/** Post-append status (the first append flips `launching` → `running`). */
+	status: RunStatus;
+	log_bytes_dropped: number;
+}
+
+/** `POST /api/v1/runs/:id/finish` — runner-token auth. */
+export interface FinishRunRequest {
+	status: 'completed' | 'failed';
+	error?: string;
+	/** Whatever the harness reported (Claude Code JSON output, etc.). */
+	usage?: AgentRunUsage;
+}
+
+/** One entry of a rule's ordered preference list, as stored/sent. */
+export interface RoutingTarget {
+	runner_id: string;
+	/** Null/absent = the runner's default tier. */
+	tier?: ModelTier | null;
+}
+
+/** A target with its runner denormalized for display. */
+export interface RoutingRuleTarget {
+	runner_id: string;
+	runner_name: string;
+	runner_status: RunnerStatus;
+	tier: ModelTier | null;
+}
+
+/**
+ * A routing rule: at most one per exact scope (project ∧ state, project,
+ * state, or global). The most specific matching rule wins outright —
+ * `project ∧ state` > `project` > `state` > global — with no fallback
+ * across rules. `scope.issue_id` is always null (pins cover per-issue).
+ */
+export interface RoutingRule {
+	id: string;
+	scope: ContextScope;
+	/** Ordered preference list. Empty = flagged "no targets" (a force-delete cascade emptied it). */
+	targets: RoutingRuleTarget[];
+	created_at: number;
+	updated_at: number;
+}
+
+/** An authoring-time note that another rule shadows (or is shadowed by) this one. */
+export interface ShadowWarning {
+	rule_id: string;
+	scope_label: string;
+	message: string;
+}
+
+/** Create/update responses carry shadow hints so the interaction surfaces when the rule is written. */
+export interface RoutingRuleWithWarnings extends RoutingRule {
+	warnings: ShadowWarning[];
+}
+
+export interface CreateRoutingRuleRequest {
+	project_id?: string | null;
+	workflow_state_id?: string | null;
+	targets: RoutingTarget[];
+}
+
+export interface UpdateRoutingRuleRequest {
+	/** Scope is merge-patched: omitted = unchanged, explicit null = unset. */
+	project_id?: string | null;
+	workflow_state_id?: string | null;
+	targets?: RoutingTarget[];
+}
+
+// ---------------------------------------------------------------------------
+// Agent runs
+
+/** Per-run usage record; fields land as providers report them. */
+export interface AgentRunUsage {
+	input_tokens?: number;
+	output_tokens?: number;
+	cache_read_tokens?: number;
+	cache_write_tokens?: number;
+	cost_usd?: number;
+	cost_source?: 'provider' | 'priced' | 'none';
+}
+
+/** One attempt at one issue by one runner. */
+export interface AgentRun {
+	id: string;
+	issue_id: string;
+	/** Denormalized for display; null when the issue is gone. */
+	issue_ref: IssueRef | null;
+	runner_id: string;
+	runner_name: string;
+	status: RunStatus;
+	tier: ModelTier;
+	/** Resolved at launch; null when the harness cannot vary its model. */
+	model: string | null;
+	usage: AgentRunUsage | null;
+	state_id_at_start: string;
+	state_at_start_name: string | null;
+	state_id_at_end: string | null;
+	state_at_end_name: string | null;
+	provider_session_id: string | null;
+	provider_url: string | null;
+	error: string | null;
+	created_at: number;
+	started_at: number | null;
+	ended_at: number | null;
+}
+
+/** Detail read: adds the captured log tail. */
+export interface AgentRunDetail extends AgentRun {
+	log: string;
+	/** Bytes truncated from the head of the log when it hit the cap. */
+	log_bytes_dropped: number;
+}
+
+export interface RunFilters {
+	/** Issue id. */
+	issue?: string;
+	/** Runner id. */
+	runner?: string;
+	/** Only runs holding a claim (assigned/launching/running). */
+	active?: boolean;
+}
+
+/** Compact duration for run rows: "42s", "12m"; "—" before launch. */
+export function runDurationLabel(
+	run: Pick<AgentRun, 'started_at' | 'ended_at'>,
+	now: number = Date.now()
+): string {
+	if (!run.started_at) return '—';
+	const seconds = Math.max(0, Math.round(((run.ended_at ?? now) - run.started_at) / 1000));
+	return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m`;
+}
+
+/**
+ * Utilization against the active quota policy, from the active runs — the
+ * Agents tab's Runs header and `tines supervisor status` render this
+ * identically. Roster states with an override always show; others only
+ * while occupied.
+ */
+export function utilizationLabel(
+	quota: QuotaPolicy,
+	activeRuns: Pick<AgentRun, 'state_id_at_start' | 'state_at_start_name'>[],
+	stateName: (id: string) => string = (id) => id
+): string {
+	if (quota.type === 'global_cap') {
+		return `${activeRuns.length}/${quota.limit} global slot${quota.limit === 1 ? '' : 's'} in use`;
+	}
+	const counts = new Map<string, { name: string; n: number }>();
+	for (const run of activeRuns) {
+		const entry = counts.get(run.state_id_at_start) ?? {
+			name: run.state_at_start_name ?? stateName(run.state_id_at_start),
+			n: 0
+		};
+		entry.n += 1;
+		counts.set(run.state_id_at_start, entry);
+	}
+	for (const stateId of Object.keys(quota.overrides)) {
+		if (!counts.has(stateId)) counts.set(stateId, { name: stateName(stateId), n: 0 });
+	}
+	if (counts.size === 0) return `no active runs (roster default ${quota.default_limit} per state)`;
+	return [...counts.entries()]
+		.map(([stateId, { name, n }]) => `${name} ${n}/${quota.overrides[stateId] ?? quota.default_limit}`)
+		.join(' · ');
+}
+
+// ---------------------------------------------------------------------------
+// Dispatch explainer
+
+/** One eligibility check, pass or fail, with a human-readable detail. */
+export interface DispatchCheck {
+	name:
+		| 'automation_enabled'
+		| 'state_active'
+		| 'ready'
+		| 'no_active_run'
+		| 'not_parked'
+		| 'routed';
+	ok: boolean;
+	detail: string;
+}
+
+export type DispatchTargetVerdict =
+	| 'ok'
+	| 'paused'
+	| 'offline'
+	| 'at_capacity'
+	| 'backing_off'
+	| 'quota_exhausted';
+
+/** One rule/pin target's verdict, in preference order. */
+export interface DispatchTarget {
+	runner_id: string;
+	runner_name: string;
+	/** The tier the entry resolves to and the model it would launch. */
+	tier: ModelTier;
+	model: string | null;
+	verdict: DispatchTargetVerdict;
+	detail: string;
+}
+
+/** `GET /api/v1/issues/:id/dispatch` — "why isn't this running?". */
+export interface DispatchExplainer {
+	/** All checks pass (rule/pin match included) — dispatchable. */
+	eligible: boolean;
+	checks: DispatchCheck[];
+	/** The pin, when set (replaces rule matching entirely). */
+	pin: { runner_id: string; runner_name: string | null; tier: ModelTier | null } | null;
+	/** The winning rule; null when pinned or nothing matches. */
+	matched_rule: { rule_id: string; scope_label: string } | null;
+	/** Per-target verdicts, in preference order. */
+	targets: DispatchTarget[];
+	parked: boolean;
+	attempt_count: number;
+	attempt_limit: number;
+	active_run: AgentRun | null;
+	/**
+	 * Eligible-but-waiting only: how many eligible, routed issues are ahead in
+	 * the oldest-`updated_at`-first queue.
+	 */
+	queue_position: number | null;
+	/** The one-line human verdict the UI and CLI render. */
+	verdict: string;
+}
+
+// ---------------------------------------------------------------------------
 // Comments
 
 export interface Comment {
@@ -672,6 +1170,18 @@ export type EventType =
 	| 'context.created'
 	| 'context.updated'
 	| 'context.deleted'
+	| 'runner.registered'
+	| 'runner.updated'
+	| 'runner.removed'
+	| 'runner.errored'
+	| 'routing_rule.created'
+	| 'routing_rule.updated'
+	| 'routing_rule.deleted'
+	| 'settings.updated'
+	| 'agent_run.started'
+	| 'agent_run.ended'
+	| 'issue.parked'
+	| 'issue.resumed'
 	// Open-ended by design: later phases add types without migration.
 	| (string & {});
 
