@@ -99,7 +99,7 @@ Two layers, deliberately different in kind:
 
 | Policy | Config | Semantics |
 | --- | --- | --- |
-| `global_cap` (default) | `{ "type": "global_cap", "limit": 3 }` | At most `limit` runs in `launching`/`running` across everything. |
+| `global_cap` (default) | `{ "type": "global_cap", "limit": 3 }` | At most `limit` runs in `assigned`/`launching`/`running` across everything (the issue's exclusive claim is held from assignment, so `assigned` runs occupy slots too). |
 | `state_roster` | `{ "type": "state_roster", "default_limit": 1, "overrides": { "<state_id>": 3, … } }` | At most N concurrent runs per workflow state (counted by the issue's state at dispatch), with a fallback default and per-state overrides — a roster of "how many agents may work this stage at once". |
 
 The roster's counting key is the run's **`state_id_at_start`** — a run whose agent has already moved the issue onward still occupies its starting state's slot until it ends. Strictly the roster bounds "runs started from this state," which approximates "agents working this stage"; the approximation is deliberate (the runner *is* still busy) and the counting query never joins the issue's live state.
