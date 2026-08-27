@@ -41,9 +41,47 @@
 	let currentState = $state(data.issue.state);
 	// svelte-ignore state_referenced_locally
 	let comments = $state<(Comment & { pending?: boolean })[]>([...data.issue.comments]);
+	// svelte-ignore state_referenced_locally
+	let latestEventId = $state<string | null>(data.events[0]?.id ?? null);
 	$effect(() => {
 		currentState = data.issue.state;
 		comments = [...data.issue.comments];
+		latestEventId = data.events[0]?.id ?? null;
+	});
+
+	// --- live updates ------------------------------------------------------------
+	// Other agents/users can post comments, transition, or edit this issue while
+	// it's open here. Every mutation path below already calls invalidateAll() to
+	// fully resync; polling the events feed just supplies the missing trigger for
+	// when someone *else* changes something.
+	let polling = $state(false);
+	async function checkForUpdates() {
+		if (polling) return;
+		try {
+			const latest = await api.listEvents({ issue: data.issue.id, limit: 1 });
+			const newestId = latest.items[0]?.id ?? null;
+			if (newestId !== latestEventId) {
+				polling = true;
+				await invalidateAll();
+			}
+		} catch {
+			// Silent — a missed poll tick just waits for the next one, or the
+			// visibility-change backstop below.
+		} finally {
+			polling = false;
+		}
+	}
+	$effect(() => {
+		function tick() {
+			if (document.visibilityState === 'visible') void checkForUpdates();
+		}
+		tick(); // catch up immediately, including right after a backgrounded tab refocuses
+		const timer = setInterval(tick, 5000);
+		document.addEventListener('visibilitychange', tick);
+		return () => {
+			clearInterval(timer);
+			document.removeEventListener('visibilitychange', tick);
+		};
 	});
 
 	// Links render as server truth + an overlay of in-flight operations —
