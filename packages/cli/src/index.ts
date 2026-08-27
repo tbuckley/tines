@@ -1,6 +1,10 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { hostname } from 'node:os';
 import { dirname, join } from 'node:path';
 import { createInterface } from 'node:readline/promises';
+import { runDaemon } from './daemon/daemon.js';
+import { defaultConfigDir, hasRunnerCredentials, saveRunnerCredentials } from './daemon/store.js';
+import { HARNESS_KINDS, type HarnessKind } from './daemon/support.js';
 import {
 	actorLabel,
 	AGENT_GUIDELINES_BODY,
@@ -1922,6 +1926,81 @@ withCommon(
 	await api.deleteRunner(runner.id, opts.force ? { force: true } : undefined);
 	console.log(`removed runner "${runner.name}"${opts.force ? ' (references stripped)' : ''}`);
 });
+
+withCommon(
+	runners
+		.command('rotate-token <name>')
+		.description("Invalidate a local runner's token and mint a fresh one (shown once)")
+).action(async (ref: string, opts: CommonOpts) => {
+	const api = client(opts);
+	const runner = await resolveRunner(api, ref);
+	const rotated = await api.rotateRunnerToken(runner.id);
+	if (opts.json) return printJson(rotated);
+	const url = opts.url ?? DEFAULT_URL;
+	console.log(`rotated the token for runner "${rotated.runner.name}" — the old token is dead.`);
+	console.log(`new token (shown once): ${rotated.runner_token}`);
+	if (hasRunnerCredentials(defaultConfigDir(), url, rotated.runner.name)) {
+		// This machine runs the daemon: adopt the new token in place so a
+		// restart just works.
+		saveRunnerCredentials(defaultConfigDir(), url, rotated.runner.name, {
+			runner_id: rotated.runner.id,
+			token: rotated.runner_token
+		});
+		console.log(`stored it for the daemon on this machine (${defaultConfigDir()}); restart the daemon to adopt it.`);
+	} else {
+		console.log('drop it into the daemon machine\'s config — its next poll gets a 401 until it adopts the new token.');
+	}
+});
+
+// --- runner daemon -----------------------------------------------------------
+
+const runnerCmd = program.command('runner').description('The local runner daemon');
+
+withCommon(
+	runnerCmd
+		.command('daemon')
+		.description('Run the local runner daemon: register/reconnect, poll for assigned runs, execute them')
+		.option('--name <name>', 'runner name, unique per user (default: this hostname)')
+		.option('--harness <harness>', 'claude-code | codex | custom', 'claude-code')
+		.option('--command <template>', 'custom harness command template ({prompt_file}, {workspace}, {model})')
+		.option('--max-concurrent <n>', 'maximum simultaneous runs', (v) => Number.parseInt(v, 10), 1)
+		.option('--poll-interval <seconds>', 'seconds between polls', (v) => Number.parseInt(v, 10), 15)
+).action(
+	async (
+		opts: CommonOpts & {
+			name?: string;
+			harness: string;
+			command?: string;
+			maxConcurrent: number;
+			pollInterval: number;
+		}
+	) => {
+		const harness = opts.harness.replaceAll('-', '_') as HarnessKind;
+		if (!HARNESS_KINDS.includes(harness)) {
+			die(`--harness must be claude-code, codex, or custom, got "${opts.harness}"`);
+		}
+		if (harness === 'custom' && !opts.command) {
+			die('the custom harness needs --command "<template>" ({prompt_file}, {workspace}, {model})');
+		}
+		if (harness !== 'custom' && opts.command) die('--command only applies to --harness custom');
+		if (!Number.isInteger(opts.maxConcurrent) || opts.maxConcurrent < 1) {
+			die('--max-concurrent must be a positive integer');
+		}
+		if (!Number.isInteger(opts.pollInterval) || opts.pollInterval < 1) {
+			die('--poll-interval must be a positive number of seconds');
+		}
+		await runDaemon({
+			url: (opts.url ?? DEFAULT_URL).replace(/\/+$/, ''),
+			apiKey: opts.apiKey,
+			name: opts.name ?? hostname(),
+			harness,
+			command: opts.command,
+			maxConcurrent: opts.maxConcurrent,
+			pollIntervalMs: opts.pollInterval * 1000,
+			configDir: defaultConfigDir()
+		});
+	}
+);
 
 // --- runs --------------------------------------------------------------------
 
