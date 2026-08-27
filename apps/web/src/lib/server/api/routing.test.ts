@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { api, ApiFail, runAtomic } from './core';
+import { api, ApiFail, runAtomic, type ActorContext } from './core';
 import { createTestDb } from './test-db';
 import {
+	createRoutingRule,
 	findScopeCollision,
 	ruleScopesOverlap,
 	ruleSpecificity,
@@ -176,6 +177,55 @@ describe('validateTargets', () => {
 				runners
 			)
 		).toHaveLength(2);
+	});
+});
+
+describe('rule scope state category', () => {
+	const actor: ActorContext = {
+		userId: 'u1',
+		userName: 'alice',
+		apiKeyId: null,
+		apiKeyName: null,
+		viaSession: true
+	};
+
+	function seed() {
+		const t = createTestDb();
+		const now = 1_723_000_000_000;
+		t.sqlite.exec(`
+			INSERT INTO user (id, name, email, emailVerified, createdAt, updatedAt)
+				VALUES ('u1', 'alice', 'a@example.com', 1, ${now}, ${now});
+			INSERT INTO runner (id, user_id, type, name, config, created_at, updated_at)
+				VALUES ('rnr_1', 'u1', 'local', 'laptop-m4', '{}', ${now}, ${now});
+			INSERT INTO workflow_state (id, workflow_id, name, category, position, created_at)
+				VALUES ('wfs_std_icebox', 'wf_standard', 'Icebox', 'backlog', 3, ${now});
+		`);
+		return t;
+	}
+
+	it('rejects scoping to backlog, awaiting-human, and done states — agents never pick those up', async () => {
+		const t = seed();
+		// The seeded standard workflow: Human Review (awaiting_human), Closed
+		// (done), plus the backlog state added above.
+		for (const stateId of ['wfs_std_review', 'wfs_std_closed', 'wfs_std_icebox']) {
+			await expect(
+				createRoutingRule(t.db, t.env, actor, {
+					workflow_state_id: stateId,
+					targets: [{ runner_id: 'rnr_1' }]
+				})
+			).rejects.toMatchObject({ status: 422, code: 'state_not_dispatchable' });
+		}
+		expect(t.all(`SELECT id FROM routing_rule`)).toEqual([]);
+	});
+
+	it('accepts an active-category state', async () => {
+		const t = seed();
+		const rule = await createRoutingRule(t.db, t.env, actor, {
+			workflow_state_id: 'wfs_std_open',
+			targets: [{ runner_id: 'rnr_1' }]
+		});
+		expect(rule.scope.workflow_state_id).toBe('wfs_std_open');
+		expect(rule.scope.label).toBe('state Open');
 	});
 });
 
