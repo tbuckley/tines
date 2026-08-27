@@ -1,22 +1,32 @@
 {
-	"name": "@tines/cli",
-	"private": true,
+	"name": "tines",
 	"version": "0.0.1",
+	"description": "CLI for Tines, an orchestration layer for AI agents",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/tbuckley/tines.git",
+		"directory": "packages/cli"
+	},
+	"license": "UNLICENSED",
 	"type": "module",
 	"bin": {
 		"tines": "./dist/index.js"
 	},
+	"files": [
+		"dist"
+	],
 	"scripts": {
 		"build": "esbuild src/index.ts --bundle --platform=node --target=node20 --format=esm --external:commander --banner:js=\"#!/usr/bin/env node\" --outfile=dist/index.js",
 		"start": "tsx src/index.ts",
 		"check": "tsc --noEmit",
-		"test": "vitest run"
+		"test": "vitest run",
+		"prepublishOnly": "pnpm run build"
 	},
 	"dependencies": {
-		"@tines/shared": "workspace:*",
 		"commander": "^15.0.0"
 	},
 	"devDependencies": {
+		"@tines/shared": "workspace:*",
 		"@types/node": "^26.2.0",
 		"esbuild": "^0.28.2",
 		"tsx": "^4.23.12",

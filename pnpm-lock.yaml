@@ -86,13 +86,13 @@ importers:
 
   packages/cli:
     dependencies:
-      '@tines/shared':
-        specifier: workspace:*
-        version: link:../shared
       commander:
         specifier: ^15.0.0
         version: 15.0.0
     devDependencies:
+      '@tines/shared':
+        specifier: workspace:*
+        version: link:../shared
       '@types/node':
         specifier: ^26.2.0
         version: 26.2.0

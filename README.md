@@ -13,7 +13,7 @@ This is a pnpm workspace:
 | Package | Path | What it is |
 | --- | --- | --- |
 | `@tines/web` | `apps/web` | SvelteKit (Svelte 5) app deployed to Cloudflare Workers. Serves the UI and the API (`/api/*`). Uses D1 for the database, [Better Auth](https://better-auth.com) for sign-in (Google OAuth and email magic links via [Cloudflare Email Service](https://developers.cloudflare.com/email-service/)), and [shadcn-svelte](https://shadcn-svelte.com) for UI components. |
-| `@tines/cli` | `packages/cli` | The `tines` CLI. Talks to the same API as the web app. |
+| `tines` | `packages/cli` | The `tines` CLI, published to npm as [`tines`](https://www.npmjs.com/package/tines). Talks to the same API as the web app. |
 | `@tines/shared` | `packages/shared` | Shared API types and client, used by both the web app and the CLI. |
 
 ## Getting started
@@ -44,6 +44,60 @@ node packages/cli/dist/index.js time --url http://localhost:5173
 ```
 
 The CLI reads the API base URL from `--url` or the `TINES_API_URL` env var (default `http://localhost:5173`).
+
+## Installing the CLI globally (from GitHub)
+
+Installing straight from the repo URL (`npm install -g github:tbuckley/tines`) does **not** work — the repo is a pnpm workspace and the CLI lives in `packages/cli` — so install from a local clone instead. The build bundles `@tines/shared` into `dist/index.js`, so the package folder is installable on its own:
+
+```sh
+git clone https://github.com/tbuckley/tines.git
+cd tines
+corepack enable                           # if pnpm isn't set up yet
+pnpm install
+pnpm build
+npm install -g ./packages/cli
+```
+
+That puts `tines` on your PATH:
+
+```sh
+tines --help
+tines time --url https://tines.tbuckley.dev
+```
+
+To make it target your deployment by default, set the env var in your shell profile (otherwise it talks to `http://localhost:5173`):
+
+```sh
+export TINES_API_URL=https://tines.tbuckley.dev
+```
+
+To upgrade later: `git pull`, `pnpm install`, `pnpm build`, then re-run `npm install -g ./packages/cli`.
+
+If you're actively hacking on the CLI, run `pnpm link --global` from `packages/cli` instead of `npm install -g` (requires a one-time `pnpm setup`). The global `tines` then symlinks into your clone, so every `pnpm build` is picked up without reinstalling.
+
+## Publishing the CLI to npm
+
+Publishing lets anyone — including coding agents — install the CLI without cloning this repo. The package publishes as the bare name **`tines`** (unclaimed on npm as of August 2026; the first publish claims it). It's publish-ready: the tarball ships only `dist` (see `files` in `packages/cli/package.json`), `prepublishOnly` rebuilds before every publish, and since `@tines/shared` is bundled at build time the only runtime dependency is `commander`.
+
+For each release:
+
+```sh
+cd packages/cli
+npm login                                 # once per machine
+npm version patch                         # or minor / major — npm rejects re-publishing an existing version
+pnpm publish
+```
+
+Publish from a clean checkout of `main` (pnpm's git checks enforce this; `--no-git-checks` overrides in a pinch). If the first publish is rejected with a 403 despite the name being free, npm's name rules are blocking a too-similar name — fall back to a scoped name like `@tbuckley/tines` (add `--access public`, which scoped first publishes require); the installed command is named by the `bin` field, so it stays `tines` regardless of the package name.
+
+Once published, anyone can install or run it:
+
+```sh
+npm install -g tines                      # installs the `tines` command globally
+npx -y tines time                         # one-shot, no install — handy for agents
+```
+
+The `npx -y` form is the most agent-friendly: it needs no global install, PATH changes, or prior setup — just Node 20+. To automate releases, add a GitHub Actions workflow that runs `pnpm publish` on version tags with an npm [granular access token](https://docs.npmjs.com/about-access-tokens) stored as an `NPM_TOKEN` repo secret.
 
 ## Google sign-in
 
