@@ -51,7 +51,7 @@ function validateRunnerName(value: unknown): string {
 	return name;
 }
 
-function validateBoundedInt(value: unknown, field: string, min: number, max: number): number {
+export function validateBoundedInt(value: unknown, field: string, min: number, max: number): number {
 	if (typeof value !== 'number' || !Number.isInteger(value) || value < min || value > max) {
 		throw new ApiFail(422, 'invalid_field', `"${field}" must be an integer between ${min} and ${max}`, {
 			field

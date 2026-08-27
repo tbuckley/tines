@@ -192,6 +192,62 @@ describe('pollRunner', () => {
 		expect(again.cameOnline).toBe(false);
 	});
 
+	it("adopts the daemon's max_concurrent: row updated, event recorded, capRaised on an increase", async () => {
+		const t = world();
+		const id = addRunner(t, { maxConcurrent: 1 });
+		const raised = await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, id),
+			{ owned_runs: [], max_concurrent: 3 },
+			NOW + 1
+		);
+		expect(raised.capRaised).toBe(true);
+		expect(runnerById(t, id).max_concurrent).toBe(3);
+		const updates = eventsOfType(t, 'runner.updated');
+		expect(updates).toHaveLength(1);
+		expect(updates[0].payload.changed).toEqual(['max_concurrent']);
+
+		// Same value: no event, no new capacity.
+		const same = await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, id),
+			{ owned_runs: [], max_concurrent: 3 },
+			NOW + 2
+		);
+		expect(same.capRaised).toBe(false);
+		expect(eventsOfType(t, 'runner.updated')).toHaveLength(1);
+
+		// Lowering updates the row but frees no capacity; omitting it keeps the cap.
+		const lowered = await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, id),
+			{ owned_runs: [], max_concurrent: 2 },
+			NOW + 3
+		);
+		expect(lowered.capRaised).toBe(false);
+		expect(runnerById(t, id).max_concurrent).toBe(2);
+		await pollRunner(t.db, t.env, await runnerRow(t, id), { owned_runs: [] }, NOW + 4);
+		expect(runnerById(t, id).max_concurrent).toBe(2);
+	});
+
+	it('rejects an out-of-bounds max_concurrent', async () => {
+		const t = world();
+		const id = addRunner(t);
+		await expectFail(
+			async () =>
+				pollRunner(t.db, t.env, await runnerRow(t, id), { owned_runs: [], max_concurrent: 0 }, NOW + 1),
+			'invalid_field'
+		);
+		await expectFail(
+			async () =>
+				pollRunner(t.db, t.env, await runnerRow(t, id), { owned_runs: [], max_concurrent: 101 }, NOW + 1),
+			'invalid_field'
+		);
+	});
+
 	it('delivers an assigned run exactly once: prompt, bundle, run key, launching flip', async () => {
 		const t = world();
 		const runnerId = addRunner(t, { name: 'laptop-m4' });

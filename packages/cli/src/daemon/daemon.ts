@@ -315,7 +315,13 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 	let failures = 0;
 	while (!shuttingDown) {
 		try {
-			const res = await client.pollRunner(creds.runner_id, { owned_runs: table.ids() });
+			// `max_concurrent` rides along so the server cap tracks the flag —
+			// a restart with a new --max-concurrent takes effect without
+			// re-registering.
+			const res = await client.pollRunner(creds.runner_id, {
+				owned_runs: table.ids(),
+				max_concurrent: opts.maxConcurrent
+			});
 			failures = 0;
 			for (const runId of res.cancels) killWithoutFinish(runId);
 			for (const assignment of res.assignments) {

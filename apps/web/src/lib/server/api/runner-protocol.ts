@@ -28,12 +28,14 @@ import {
 	endRun,
 	loadEndableRun,
 	markRunRunning,
-	mintRunKeyAndFlip
+	mintRunKeyAndFlip,
+	supervisorEvent
 } from '$lib/server/supervisor/engine';
 import { buildSupervisorPreamble } from '$lib/server/supervisor/preamble';
 import { buildLaunchPrompt, effectiveContextForIssue } from './context';
 import { ApiFail, notFound, optionalString, runAtomic } from './core';
 import { getIssueDetail } from './issues';
+import { validateBoundedInt } from './runners';
 import { runQuery, serializeRun } from './runs';
 
 const ACTIVE = [...ACTIVE_RUN_STATUSES];
@@ -103,6 +105,8 @@ export interface PollOutcome {
 	response: RunnerPollResponse;
 	/** True when this poll brought an offline runner back — queue a dispatch pass. */
 	cameOnline: boolean;
+	/** True when this poll raised the runner's cap — new capacity, same dispatch pass. */
+	capRaised: boolean;
 }
 
 function validateOwnedRuns(body: RunnerPollRequest): string[] {
@@ -117,8 +121,10 @@ function validateOwnedRuns(body: RunnerPollRequest): string[] {
 }
 
 /**
- * One poll: bump `last_seen_at`, fail this runner's `running` runs the
- * daemon no longer owns, compute the `cancels` list (owned runs the
+ * One poll: bump `last_seen_at`, adopt the daemon's `max_concurrent` (the
+ * flag is authoritative for the daemon's own cap, so a restart with a new
+ * value takes effect without re-registering), fail this runner's `running`
+ * runs the daemon no longer owns, compute the `cancels` list (owned runs the
  * supervisor already settled — kill, don't finish-report), and deliver
  * `assigned` runs one-shot via the guarded `assigned → launching` flip, with
  * launch materials (preamble + prompt + bundle) and the run key minted at
@@ -132,11 +138,37 @@ export async function pollRunner(
 	now: number = Date.now()
 ): Promise<PollOutcome> {
 	const owned = new Set(validateOwnedRuns(body));
+	const cap =
+		body.max_concurrent === undefined
+			? runner.max_concurrent
+			: validateBoundedInt(body.max_concurrent, 'max_concurrent', 1, 100);
+	const capChanged = cap !== runner.max_concurrent;
+	const capRaised = cap > runner.max_concurrent;
 	const cameOnline =
 		runner.last_seen_at === null || now - runner.last_seen_at > RUNNER_ONLINE_WINDOW_MS;
 	await runAtomic(env, [
-		db.updateTable('runner').set({ last_seen_at: now }).where('id', '=', runner.id).compile()
+		db
+			.updateTable('runner')
+			.set({ last_seen_at: now, ...(capChanged ? { max_concurrent: cap, updated_at: now } : {}) })
+			.where('id', '=', runner.id)
+			.compile(),
+		// The same runner.updated event a UI edit records, so the change shows
+		// up in history (attributed to the owning user; polls carry no actor).
+		...(capChanged
+			? [
+					supervisorEvent(
+						db,
+						runner.user_id,
+						{
+							type: 'runner.updated',
+							payload: { runner_id: runner.id, name: runner.name, changed: ['max_concurrent'] }
+						},
+						now
+					)
+				]
+			: [])
 	]);
+	runner.max_concurrent = cap;
 
 	const active = await db
 		.selectFrom('agent_run')
@@ -180,7 +212,7 @@ export async function pollRunner(
 		}
 	}
 
-	return { response: { assignments, cancels }, cameOnline };
+	return { response: { assignments, cancels }, cameOnline, capRaised };
 }
 
 /**
