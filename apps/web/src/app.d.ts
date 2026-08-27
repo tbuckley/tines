@@ -19,6 +19,13 @@ declare global {
 		BETTER_AUTH_SECRET?: string;
 		GOOGLE_CLIENT_ID?: string;
 		GOOGLE_CLIENT_SECRET?: string;
+		/** Encrypts stored provider secrets (AES-GCM); see lib/server/crypto.ts. */
+		SECRET_ENCRYPTION_KEY?: string;
+		/**
+		 * Public base URL managed runs use to reach the API (self-seeding
+		 * prompts, the agent's TINES_API_URL). Falls back to BETTER_AUTH_URL.
+		 */
+		TINES_PUBLIC_URL?: string;
 	}
 
 	namespace App {

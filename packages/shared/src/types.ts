@@ -751,6 +751,63 @@ export const RUN_KEY_SLACK_MS = 10 * 60 * 1000;
 /** Run log tail cap; older output is truncated from the head. */
 export const RUN_LOG_MAX_BYTES = 256 * 1024;
 
+/**
+ * Managed runners are created with this per-run cost cap (editable,
+ * removable) so the budget-overshoot bound is real out of the box.
+ */
+export const DEFAULT_MANAGED_RUN_COST_USD = 5;
+
+/**
+ * A per-tier model override: an exact model id plus optional settings.
+ * Unlisted tiers fall back to the built-ins (and silently improve as those
+ * move); an overridden tier stays frozen until touched.
+ */
+export interface RunnerTierOverride {
+	model: string;
+	/** Provider-specific reasoning effort (Claude managed agents). */
+	effort?: string;
+}
+
+export type RunnerTierOverrides = Partial<Record<ModelTier, RunnerTierOverride>>;
+
+/**
+ * Per-runner money limits. The per-run caps ship with the managed runners
+ * (mapped to provider-native ceilings — Claude's session budget); the daily
+ * limits are stored now but enforced by the daily-budget milestone.
+ */
+export interface RunnerBudget {
+	daily_usd?: number;
+	daily_tokens?: number;
+	/** Hard per-attempt dollar ceiling (platform-enforced for Claude). */
+	max_run_cost_usd?: number;
+	/** Hard per-attempt token ceiling (input + output; cache reads excluded). */
+	max_run_tokens?: number;
+}
+
+/**
+ * Known predecessors of each current built-in tier model, newest first —
+ * the stale-override marker's data: an override pointing at a predecessor
+ * of its tier's current built-in is stale (informational only, never
+ * auto-migrated).
+ */
+export const MODEL_PREDECESSORS: Record<string, readonly string[]> = {
+	'claude-opus-5': ['claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6', 'claude-opus-4-5', 'claude-opus-4-1'],
+	'claude-sonnet-5': ['claude-sonnet-4-6', 'claude-sonnet-4-5', 'claude-3-7-sonnet-latest'],
+	'claude-haiku-4-5': ['claude-3-5-haiku-latest'],
+	'gemini-2.5-pro': ['gemini-1.5-pro'],
+	'gemini-2.5-flash': ['gemini-2.0-flash', 'gemini-1.5-flash'],
+	'gemini-2.5-flash-lite': ['gemini-2.0-flash-lite', 'gemini-1.5-flash-8b']
+};
+
+/** True when a tier override points at a model older than its tier's current built-in. */
+export function isStaleTierOverride(
+	builtinModel: string | null | undefined,
+	overrideModel: string | null | undefined
+): boolean {
+	if (!builtinModel || !overrideModel || builtinModel === overrideModel) return false;
+	return (MODEL_PREDECESSORS[builtinModel] ?? []).includes(overrideModel);
+}
+
 /** At most `limit` runs in launching/running across everything. */
 export interface GlobalCapQuota {
 	type: 'global_cap';
@@ -777,6 +834,11 @@ export interface SupervisorSettings {
 	quota: QuotaPolicy;
 	/** Strikes before an issue parks (`needs_attention`). */
 	attempt_limit: number;
+	/**
+	 * Display hint for the stored GitHub PAT ("github_pat_…cdef"); null when
+	 * none is stored. The PAT itself is write-only — never returned.
+	 */
+	github_pat_hint: string | null;
 	/** Null until the settings row has been written at least once. */
 	updated_at: number | null;
 }
@@ -792,6 +854,13 @@ export interface UpdateSupervisorSettingsRequest {
 	 * `assigned` runs are always canceled by the switch turning off.
 	 */
 	cancel_in_flight?: boolean;
+	/**
+	 * Replace the stored GitHub PAT (fine-grained, scoped to exactly the
+	 * repos context items point at — that scope is the blast radius of a
+	 * compromised run). Write-only: reads return only `github_pat_hint`.
+	 * `null` clears it.
+	 */
+	github_pat?: string | null;
 }
 
 /** `PUT /supervisor/settings` response; `canceled_runs` reports the switch-off sweep. */
@@ -811,6 +880,18 @@ export interface Runner {
 	max_concurrent: number;
 	max_run_minutes: number;
 	default_tier: ModelTier;
+	/** Per-tier model overrides; null = all built-ins. */
+	tiers: RunnerTierOverrides | null;
+	/**
+	 * The built-in tier→model table for this runner's type (and harness), so
+	 * clients can render resolution and the stale-override marker without
+	 * duplicating the table. Null = tiers don't apply (custom harness).
+	 */
+	tier_models: Record<ModelTier, string> | null;
+	/** Per-runner money limits; null = none. */
+	budget: RunnerBudget | null;
+	/** Managed types: whether a provider API key is stored (write-only). */
+	has_api_key: boolean;
 	/** Non-secret config (harness, hostname…). */
 	config: Record<string, unknown>;
 	/**
@@ -828,12 +909,23 @@ export interface Runner {
 }
 
 export interface CreateRunnerRequest {
-	/** Only 'local' can be created over the API for now (managed types come with credential handling). */
+	/** 'local' or 'claude_managed' ('gemini_managed' arrives in a later milestone). */
 	type: RunnerType;
 	name: string;
+	/**
+	 * Managed types: the provider API key, required at create. Validated with
+	 * a ping before anything is stored; write-only (encrypted) after.
+	 */
+	api_key?: string;
 	max_concurrent?: number;
 	max_run_minutes?: number;
 	default_tier?: ModelTier;
+	tiers?: RunnerTierOverrides;
+	/**
+	 * Managed runners default to `{ max_run_cost_usd: 5 }` when omitted; send
+	 * `{}` to create one uncapped (the setup flow shows and edits this).
+	 */
+	budget?: RunnerBudget;
 	/** Local runners: { harness?: 'claude_code' | 'codex' | 'custom', … }. */
 	config?: Record<string, unknown>;
 }
@@ -842,9 +934,15 @@ export interface UpdateRunnerRequest {
 	name?: string;
 	/** Pause with 'paused'; resume with 'active'. */
 	status?: RunnerStatus;
+	/** Managed types: replace the provider API key (ping-validated first). */
+	api_key?: string;
 	max_concurrent?: number;
 	max_run_minutes?: number;
 	default_tier?: ModelTier;
+	/** Replaces the override map wholesale; null clears all overrides. */
+	tiers?: RunnerTierOverrides | null;
+	/** Replaces the budget wholesale; null clears it. */
+	budget?: RunnerBudget | null;
 	config?: Record<string, unknown>;
 }
 

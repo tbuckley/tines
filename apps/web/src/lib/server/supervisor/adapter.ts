@@ -1,12 +1,13 @@
 /**
  * The per-runner-type adapter interface. Provider calls live behind it so
  * the dispatch engine (and its tests) never touch a provider API: the engine
- * works purely against this interface, with the managed adapters arriving in
- * later milestones and a fake for unit tests (see fake-adapter.ts).
+ * works purely against this interface, with a fake for unit tests (see
+ * fake-adapter.ts) and the Claude managed adapter in claude-adapter.ts.
  *
  * Worker-imported (via the engine): relative/package imports only, no `$lib`.
  */
-import type { ModelTier } from '@tines/shared';
+import type { AgentRunUsage, ModelTier } from '@tines/shared';
+import { createClaudeAdapter } from './claude-adapter';
 
 /** What launch() gets: everything identifying the run and its delivery. */
 export interface AdapterLaunchInput {
@@ -25,13 +26,17 @@ export interface AdapterLaunchInput {
 export interface AdapterLaunchResult {
 	provider_session_id?: string | null;
 	provider_url?: string | null;
+	/** Serialized provider bookkeeping to store on the run (`provider_meta`). */
+	provider_meta?: string | null;
 }
 
-/** A run as the adapter sees it for poll/cancel. */
+/** A run as the adapter sees it for poll/cancel/GC. */
 export interface AdapterRunRef {
 	id: string;
 	runner_id: string;
 	provider_session_id: string | null;
+	/** The stored provider bookkeeping (adapter-owned JSON), when any. */
+	provider_meta?: string | null;
 }
 
 export interface AdapterPollResult {
@@ -39,8 +44,11 @@ export interface AdapterPollResult {
 	status?: 'completed' | 'failed' | 'canceled';
 	/** New log content to append since the last poll. */
 	logChunk?: string;
-	usage?: Record<string, unknown>;
+	/** Cumulative usage snapshot (replaces the stored record). */
+	usage?: AgentRunUsage;
 	error?: string | null;
+	/** Updated provider bookkeeping to store back (poll cursor etc.). */
+	provider_meta?: string | null;
 }
 
 export interface RunnerAdapter {
@@ -57,12 +65,22 @@ export interface RunnerAdapter {
 	 * pass retries the next target — never a strike on the issue.
 	 */
 	launch(input: AdapterLaunchInput): Promise<AdapterLaunchResult>;
-	/** Reconcile provider-side status/logs/usage (sweep-driven; later milestones). */
+	/**
+	 * Reconcile provider-side status/logs/usage for one active run. Called by
+	 * the sweep; the engine applies the result (log append, usage write,
+	 * terminal end judgment). Throwing skips this run until the next sweep.
+	 */
 	poll?(run: AdapterRunRef): Promise<AdapterPollResult>;
 	/** Best-effort kill of the provider session / harness process. */
 	cancel(run: AdapterRunRef): Promise<void>;
-	/** One-time credential setup at runner creation (managed types). */
-	setupCredentials?(runner: { id: string; config: string }): Promise<void>;
+	/**
+	 * Per-runner sweep housekeeping (managed types): garbage-collect provider
+	 * resources of ended runs (per-run vault credentials, un-archived
+	 * sessions) and cancel orphaned provider sessions tagged with unknown or
+	 * ended run ids (launch reconciliation). Best-effort; errors are logged
+	 * and retried next sweep.
+	 */
+	sweepRunner?(runner: { id: string; user_id: string }, now: number): Promise<void>;
 }
 
 /**
@@ -80,11 +98,14 @@ export const localAdapter: RunnerAdapter = {
 export type AdapterRegistry = Record<string, RunnerAdapter>;
 
 /**
- * The production registry. Managed types are absent until their milestones
- * land — a rule targeting one simply cannot exist yet (runner creation
- * rejects managed types), so lookups never miss in practice; the engine
- * still guards against an unknown type by skipping the target.
+ * The production registry for an environment. Built per call site (the
+ * managed adapters need `env` for the DB and the encryption-key binding);
+ * the result is cheap — adapters hold no connections. Gemini is absent
+ * until its milestone lands; the engine skips unknown types.
  */
-export const defaultAdapters: AdapterRegistry = {
-	local: localAdapter
-};
+export function buildAdapters(env: Env): AdapterRegistry {
+	return {
+		local: localAdapter,
+		claude_managed: createClaudeAdapter(env)
+	};
+}

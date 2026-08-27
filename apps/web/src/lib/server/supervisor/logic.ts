@@ -7,6 +7,7 @@
  * everything it imports must stick to relative/package imports: no `$lib`.
  */
 import {
+	RUN_LOG_MAX_BYTES,
 	RUNNER_ONLINE_WINDOW_MS,
 	type DispatchTargetVerdict,
 	type ModelTier,
@@ -90,6 +91,22 @@ export interface TierResolvable {
 	config: string;
 }
 
+/**
+ * The built-in tier→model table applying to a runner (type- and, for local
+ * runners, harness-aware). Null = the runner cannot vary its model (custom
+ * harness) and tiers don't apply. Serialized as `Runner.tier_models` so the
+ * tier editor and the stale-override marker never duplicate the table.
+ */
+export function builtinTierModels(
+	runner: Pick<TierResolvable, 'type' | 'config'>
+): Record<ModelTier, string> | null {
+	if (runner.type === 'local') {
+		const harness = parseJson<{ harness?: string }>(runner.config)?.harness ?? 'claude_code';
+		return LOCAL_HARNESS_TIER_MODELS[harness] ?? null;
+	}
+	return BUILTIN_TIER_MODELS[runner.type] ?? null;
+}
+
 export interface ResolvedTier {
 	tier: ModelTier;
 	/** Null when the runner cannot vary its model (custom harness). */
@@ -119,13 +136,34 @@ export function resolveTier(runner: TierResolvable, requested: ModelTier | null)
 		const model = typeof override === 'string' ? override : override.model;
 		if (model) return { tier, model };
 	}
-	const builtins =
-		runner.type === 'local'
-			? LOCAL_HARNESS_TIER_MODELS[
-					(parseJson<{ harness?: string }>(runner.config)?.harness ?? 'claude_code') as string
-				]
-			: BUILTIN_TIER_MODELS[runner.type];
+	const builtins = builtinTierModels(runner);
 	return { tier, model: builtins?.[tier] ?? null };
+}
+
+// ---------------------------------------------------------------------------
+// Log tails: 256 KB, truncated from the head
+
+/**
+ * Appends a chunk to a log tail capped at `RUN_LOG_MAX_BYTES` (UTF-8),
+ * truncating from the head. Byte math is done here in JS because SQLite's
+ * `length()` counts characters. Shared by the daemon protocol's log append
+ * and the sweep's managed-run polling (both must agree on the cap).
+ */
+export function appendLogTail(
+	log: string,
+	dropped: number,
+	chunk: string
+): { log: string; dropped: number } {
+	const combined = log + chunk;
+	const bytes = new TextEncoder().encode(combined);
+	if (bytes.length <= RUN_LOG_MAX_BYTES) return { log: combined, dropped };
+	const kept = bytes.slice(bytes.length - RUN_LOG_MAX_BYTES);
+	// A multi-byte character split at the boundary decodes to U+FFFD at the
+	// head of the tail — cosmetic, and cheaper than re-scanning boundaries.
+	return {
+		log: new TextDecoder().decode(kept),
+		dropped: dropped + (bytes.length - RUN_LOG_MAX_BYTES)
+	};
 }
 
 // ---------------------------------------------------------------------------

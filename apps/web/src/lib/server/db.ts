@@ -212,6 +212,11 @@ export interface AgentRunTable {
 	provider_session_id: string | null;
 	provider_url: string | null;
 	api_key_id: string | null;
+	/**
+	 * JSON provider bookkeeping owned by the run's adapter (per-run vault id,
+	 * event-poll cursor, GC marker); never serialized into API responses.
+	 */
+	provider_meta: string | null;
 	/** Append-only tail, head-truncated at the cap. */
 	log: string;
 	log_bytes_dropped: number;
@@ -244,8 +249,9 @@ export interface SupervisorSettingsTable {
 	budget: string | null;
 	/** JSON pricing overrides; unused until the money milestone. */
 	pricing: string | null;
-	/** Encrypted GitHub PAT; unused until the managed-runner milestone. */
+	/** Encrypted GitHub PAT (AES-GCM; see crypto.ts). Write-only over the API. */
 	github_pat_enc: string | null;
+	/** Display hint for the stored PAT ("github_pat_…cdef"); never the value. */
 	github_pat_hint: string | null;
 	updated_at: number;
 }

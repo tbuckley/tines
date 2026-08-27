@@ -1,5 +1,6 @@
 import {
 	ACTIVE_RUN_STATUSES,
+	DEFAULT_MANAGED_RUN_COST_USD,
 	MODEL_TIERS,
 	RUNNER_ONLINE_WINDOW_MS,
 	RUNNER_TYPES,
@@ -7,18 +8,31 @@ import {
 	type ModelTier,
 	type RegisterRunnerRequest,
 	type Runner,
+	type RunnerBudget,
 	type RunnerStatus,
+	type RunnerTierOverrides,
 	type RunnerTokenResponse,
 	type RunnerType,
 	type RoutingTarget,
 	type UpdateRunnerRequest
 } from '@tines/shared';
 import { sql, type CompiledQuery, type Kysely } from 'kysely';
-import { sha256Hex } from '$lib/server/crypto';
+import { encryptSecret, sha256Hex } from '$lib/server/crypto';
 import { newId, randomString, type Database } from '$lib/server/db';
+import { pingAnthropicKey } from '$lib/server/supervisor/claude-adapter';
 import { cancelAssignedRuns } from '$lib/server/supervisor/engine';
+import { builtinTierModels } from '$lib/server/supervisor/logic';
 import { ApiFail, notFound, optionalString, requireString, runAtomic, type ActorContext } from './core';
 import { eventInsert } from './events';
+
+/**
+ * Provider-key ping, injectable for tests (the default reaches the live
+ * Anthropic API). Returns null when the key works, else the failure text.
+ */
+export type ProviderKeyPing = (type: RunnerType, apiKey: string) => Promise<string | null>;
+
+const defaultPing: ProviderKeyPing = (type, apiKey) =>
+	type === 'claude_managed' ? pingAnthropicKey(apiKey) : Promise.resolve('unsupported runner type');
 
 // ---------------------------------------------------------------------------
 // Validation
@@ -112,6 +126,120 @@ function validateLocalConfig(value: unknown): Record<string, unknown> {
 	return out;
 }
 
+/**
+ * Per-tier model overrides: `{ "<tier>": { "model": …, "effort"?: … } }`.
+ * A tier may also be a bare model-id string (the CLI's `--set tier=model`
+ * sugar normalizes to the object form). Returns null for "no overrides".
+ */
+export function validateTierOverrides(value: unknown): RunnerTierOverrides | null {
+	if (value === undefined || value === null) return null;
+	if (typeof value !== 'object' || Array.isArray(value)) {
+		throw new ApiFail(422, 'invalid_field', '"tiers" must map tiers to model overrides', {
+			field: 'tiers'
+		});
+	}
+	const out: RunnerTierOverrides = {};
+	for (const [tier, override] of Object.entries(value as Record<string, unknown>)) {
+		requireTier(tier, 'tiers');
+		const raw = typeof override === 'string' ? { model: override } : override;
+		if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+			throw new ApiFail(422, 'invalid_field', `"tiers.${tier}" must be a model id or { model, effort? }`, {
+				field: `tiers.${tier}`
+			});
+		}
+		const rec = raw as Record<string, unknown>;
+		const unknown = Object.keys(rec).filter((k) => !['model', 'effort'].includes(k));
+		if (unknown.length > 0) {
+			throw new ApiFail(
+				422,
+				'invalid_field',
+				`Unknown tier-override key${unknown.length === 1 ? '' : 's'} ${unknown.map((k) => `"${k}"`).join(', ')}; a tier override takes: model, effort`,
+				{ field: `tiers.${tier}`, rejected_fields: unknown }
+			);
+		}
+		const model = requireString(rec.model, `tiers.${tier}.model`, { max: 200 });
+		const effort = optionalString(rec.effort, `tiers.${tier}.effort`, { max: 50 });
+		const efforts = ['low', 'medium', 'high', 'xhigh', 'max'];
+		if (effort !== undefined && !efforts.includes(effort)) {
+			throw new ApiFail(
+				422,
+				'invalid_field',
+				`"tiers.${tier}.effort" must be one of: ${efforts.join(', ')}`,
+				{ field: `tiers.${tier}.effort` }
+			);
+		}
+		out[tier as ModelTier] = { model, ...(effort !== undefined ? { effort } : {}) };
+	}
+	return Object.keys(out).length > 0 ? out : null;
+}
+
+const BUDGET_FIELDS = ['daily_usd', 'daily_tokens', 'max_run_cost_usd', 'max_run_tokens'] as const;
+
+/**
+ * Per-runner money limits. The per-run caps are enforced now (Claude's
+ * session budget; the token cap at poll time); the daily fields are stored
+ * for the budgets milestone. Returns null for "no limits".
+ */
+export function validateRunnerBudget(value: unknown): RunnerBudget | null {
+	if (value === undefined || value === null) return null;
+	if (typeof value !== 'object' || Array.isArray(value)) {
+		throw new ApiFail(422, 'invalid_field', '"budget" must be an object', { field: 'budget' });
+	}
+	const raw = value as Record<string, unknown>;
+	const unknown = Object.keys(raw).filter((k) => !(BUDGET_FIELDS as readonly string[]).includes(k));
+	if (unknown.length > 0) {
+		throw new ApiFail(
+			422,
+			'invalid_field',
+			`Unknown budget field${unknown.length === 1 ? '' : 's'} ${unknown.map((k) => `"${k}"`).join(', ')}; a runner budget takes: ${BUDGET_FIELDS.join(', ')}`,
+			{ field: 'budget', rejected_fields: unknown }
+		);
+	}
+	const out: RunnerBudget = {};
+	for (const field of BUDGET_FIELDS) {
+		const v = raw[field];
+		if (v === undefined) continue;
+		const wholeTokens = field === 'daily_tokens' || field === 'max_run_tokens';
+		if (
+			typeof v !== 'number' ||
+			!Number.isFinite(v) ||
+			v <= 0 ||
+			(wholeTokens && !Number.isInteger(v))
+		) {
+			throw new ApiFail(
+				422,
+				'invalid_field',
+				`"budget.${field}" must be a positive ${wholeTokens ? 'integer' : 'number'}`,
+				{ field: `budget.${field}` }
+			);
+		}
+		out[field] = v;
+	}
+	return Object.keys(out).length > 0 ? out : null;
+}
+
+/** Managed types: validate the pasted provider key with a ping, then encrypt. */
+async function validatedProviderKey(
+	env: Env,
+	type: RunnerType,
+	value: unknown,
+	ping: ProviderKeyPing
+): Promise<string> {
+	const apiKey = requireString(value, 'api_key', { max: 500 });
+	const failure = await ping(type, apiKey);
+	if (failure) {
+		throw new ApiFail(422, 'invalid_api_key', failure, { field: 'api_key' });
+	}
+	if (!env.SECRET_ENCRYPTION_KEY) {
+		throw new ApiFail(
+			500,
+			'no_encryption_key',
+			'SECRET_ENCRYPTION_KEY is not configured; managed runner credentials cannot be stored'
+		);
+	}
+	return encryptSecret(apiKey, env.SECRET_ENCRYPTION_KEY);
+}
+
 // ---------------------------------------------------------------------------
 // Loading
 
@@ -148,6 +276,18 @@ function serializeRunner(row: RunnerRow, now = Date.now()): Runner {
 	} catch {
 		// An unreadable config column renders as empty rather than 500ing.
 	}
+	let tiers: RunnerTierOverrides | null = null;
+	try {
+		tiers = row.tiers ? (JSON.parse(row.tiers) as RunnerTierOverrides) : null;
+	} catch {
+		// Unreadable overrides render as "all built-ins".
+	}
+	let budget: RunnerBudget | null = null;
+	try {
+		budget = row.budget ? (JSON.parse(row.budget) as RunnerBudget) : null;
+	} catch {
+		// An unreadable budget renders as "no limits" (and enforces nothing).
+	}
 	return {
 		id: row.id,
 		type: row.type as RunnerType,
@@ -156,6 +296,10 @@ function serializeRunner(row: RunnerRow, now = Date.now()): Runner {
 		max_concurrent: row.max_concurrent,
 		max_run_minutes: row.max_run_minutes,
 		default_tier: row.default_tier as ModelTier,
+		tiers,
+		tier_models: builtinTierModels(row),
+		budget,
+		has_api_key: row.secret_enc !== null,
 		config,
 		online: runnerOnline(row, now),
 		last_seen_at: row.last_seen_at,
@@ -205,7 +349,8 @@ export async function createRunner(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
-	body: CreateRunnerRequest
+	body: CreateRunnerRequest,
+	ping: ProviderKeyPing = defaultPing
 ): Promise<Runner> {
 	if (typeof body.type !== 'string' || !(RUNNER_TYPES as readonly string[]).includes(body.type)) {
 		throw new ApiFail(
@@ -215,27 +360,67 @@ export async function createRunner(
 			{ field: 'type', allowed_types: [...RUNNER_TYPES] }
 		);
 	}
-	// Managed types need provider-credential handling (encryption, ping
-	// validation), which arrives in a later milestone.
-	if (body.type !== 'local') {
+	// Gemini's credential handling (per-launch passing, egress transforms)
+	// arrives with its milestone.
+	if (body.type === 'gemini_managed') {
 		throw new ApiFail(
 			422,
 			'managed_runner_unavailable',
-			`"${body.type}" runners are configured with a provider API key, which is not supported yet; only "local" runners can be created for now`,
+			'"gemini_managed" runners arrive in a later milestone; "local" and "claude_managed" runners can be created today',
 			{ field: 'type' }
 		);
 	}
+	const managed = body.type !== 'local';
 
 	const name = validateRunnerName(body.name);
 	await assertRunnerNameAvailable(db, actor.userId, name);
 	const maxConcurrent =
-		body.max_concurrent === undefined ? 1 : validateBoundedInt(body.max_concurrent, 'max_concurrent', 1, 100);
+		body.max_concurrent === undefined
+			? managed
+				? 3
+				: 1
+			: validateBoundedInt(body.max_concurrent, 'max_concurrent', 1, 100);
 	const maxRunMinutes =
 		body.max_run_minutes === undefined
 			? 30
 			: validateBoundedInt(body.max_run_minutes, 'max_run_minutes', 1, 24 * 60);
 	const defaultTier = body.default_tier === undefined ? 'balanced' : requireTier(body.default_tier, 'default_tier');
-	const config = validateLocalConfig(body.config);
+	const tiers = validateTierOverrides(body.tiers);
+
+	let config: Record<string, unknown>;
+	let secretEnc: string | null = null;
+	let budget: RunnerBudget | null;
+	if (managed) {
+		// A managed runner's config is Tines-managed (provisioned agent ids,
+		// the environment id) — it is not user input.
+		if (body.config !== undefined && Object.keys(body.config).length > 0) {
+			throw new ApiFail(
+				422,
+				'invalid_field',
+				'Managed runners have no user-editable "config"; the key goes in "api_key" and limits in "budget"',
+				{ field: 'config' }
+			);
+		}
+		config = {};
+		if (body.api_key === undefined) {
+			throw new ApiFail(422, 'invalid_field', `A ${body.type} runner needs an "api_key"`, {
+				field: 'api_key'
+			});
+		}
+		secretEnc = await validatedProviderKey(env, body.type, body.api_key, ping);
+		// The $5 default per-run cap keeps real dollars bounded out of the box;
+		// an explicit budget (including `{}` = uncapped) replaces it wholesale.
+		budget =
+			body.budget === undefined
+				? { max_run_cost_usd: DEFAULT_MANAGED_RUN_COST_USD }
+				: validateRunnerBudget(body.budget);
+	} else {
+		if (body.api_key !== undefined) {
+			throw new ApiFail(422, 'invalid_field', 'Local runners take no "api_key"', { field: 'api_key' });
+		}
+		config = validateLocalConfig(body.config);
+		budget = body.budget === undefined ? null : validateRunnerBudget(body.budget);
+	}
 
 	const now = Date.now();
 	// 'rnr' leaves the `run_` prefix free for agent_run ids.
@@ -252,10 +437,10 @@ export async function createRunner(
 				max_concurrent: maxConcurrent,
 				max_run_minutes: maxRunMinutes,
 				default_tier: defaultTier,
-				tiers: null,
-				budget: null,
+				tiers: tiers ? JSON.stringify(tiers) : null,
+				budget: budget ? JSON.stringify(budget) : null,
 				config: JSON.stringify(config),
-				secret_enc: null,
+				secret_enc: secretEnc,
 				runner_token_hash: null,
 				last_seen_at: null,
 				launch_failures: 0,
@@ -264,6 +449,7 @@ export async function createRunner(
 				updated_at: now
 			})
 			.compile(),
+		// The key itself is elided by construction — only its presence is on record.
 		eventInsert(db, actor, {
 			type: 'runner.registered',
 			payload: { runner_id: id, name, runner_type: body.type }
@@ -277,7 +463,8 @@ export async function updateRunner(
 	env: Env,
 	actor: ActorContext,
 	id: string,
-	body: UpdateRunnerRequest
+	body: UpdateRunnerRequest,
+	ping: ProviderKeyPing = defaultPing
 ): Promise<Runner> {
 	const row = await runnerQuery(db, actor.userId).where('runner.id', '=', id).executeTakeFirst();
 	if (!row) throw notFound();
@@ -289,6 +476,9 @@ export async function updateRunner(
 		max_concurrent: number;
 		max_run_minutes: number;
 		default_tier: string;
+		tiers: string | null;
+		budget: string | null;
+		secret_enc: string;
 		config: string;
 	}> = {};
 
@@ -329,6 +519,32 @@ export async function updateRunner(
 			patch.default_tier = tier;
 			changed.push('default_tier');
 		}
+	}
+	if (body.tiers !== undefined) {
+		const tiers = validateTierOverrides(body.tiers);
+		const serialized = tiers ? JSON.stringify(tiers) : null;
+		if (serialized !== row.tiers) {
+			patch.tiers = serialized;
+			changed.push('tiers');
+		}
+	}
+	if (body.budget !== undefined) {
+		const budget = validateRunnerBudget(body.budget);
+		const serialized = budget ? JSON.stringify(budget) : null;
+		if (serialized !== row.budget) {
+			patch.budget = serialized;
+			changed.push('budget');
+		}
+	}
+	if (body.api_key !== undefined) {
+		if (row.type === 'local') {
+			throw new ApiFail(422, 'invalid_field', 'Local runners take no "api_key"', { field: 'api_key' });
+		}
+		// Replace-key: ping-validated before anything changes, so a bad paste
+		// leaves the working key in place. In-flight sessions are unaffected;
+		// the next launch uses the new key (USER_FLOWS.md flow 16).
+		patch.secret_enc = await validatedProviderKey(env, row.type as RunnerType, body.api_key, ping);
+		changed.push('api_key');
 	}
 	if (body.config !== undefined) {
 		if (row.type !== 'local') {

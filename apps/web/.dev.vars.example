@@ -6,3 +6,8 @@ BETTER_AUTH_URL=http://localhost:5173
 # Authorized redirect URI: http://localhost:5173/api/auth/callback/google
 GOOGLE_CLIENT_ID=
 GOOGLE_CLIENT_SECRET=
+
+# Encrypts stored provider secrets (Anthropic/Gemini API keys, the GitHub
+# PAT) at rest. Any long random string; `openssl rand -hex 32` works.
+# Production: `wrangler secret put SECRET_ENCRYPTION_KEY`.
+SECRET_ENCRYPTION_KEY=dev-encryption-key-change-me

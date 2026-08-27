@@ -6,9 +6,10 @@ import {
 	type UpdateSupervisorSettingsRequest
 } from '@tines/shared';
 import type { Kysely } from 'kysely';
+import { encryptSecret, secretHint } from '$lib/server/crypto';
 import type { Database } from '$lib/server/db';
 import { cancelAssignedRuns, cancelRun } from '$lib/server/supervisor/engine';
-import { ApiFail, runAtomic, type ActorContext } from './core';
+import { ApiFail, requireString, runAtomic, type ActorContext } from './core';
 import { eventInsert } from './events';
 
 // ---------------------------------------------------------------------------
@@ -125,7 +126,13 @@ export async function getSupervisorSettings(
 	if (!row) {
 		// No row yet: the defaults, with the kill switch off — arming
 		// automation is its own explicit act for a new user.
-		return { enabled: false, quota: DEFAULT_QUOTA, attempt_limit: DEFAULT_ATTEMPT_LIMIT, updated_at: null };
+		return {
+			enabled: false,
+			quota: DEFAULT_QUOTA,
+			attempt_limit: DEFAULT_ATTEMPT_LIMIT,
+			github_pat_hint: null,
+			updated_at: null
+		};
 	}
 	let quota = DEFAULT_QUOTA;
 	try {
@@ -137,6 +144,8 @@ export async function getSupervisorSettings(
 		enabled: row.enabled === 1,
 		quota,
 		attempt_limit: row.attempt_limit,
+		// The PAT is write-only: only its display hint is ever read back.
+		github_pat_hint: row.github_pat_hint,
 		updated_at: row.updated_at
 	};
 }
@@ -177,10 +186,33 @@ export async function updateSupervisorSettings(
 	const attemptLimit =
 		body.attempt_limit !== undefined ? validateAttemptLimit(body.attempt_limit) : current.attempt_limit;
 
+	// The GitHub PAT: write-only — validated for shape, encrypted, and only
+	// a display hint stored beside it. `null` clears; undefined keeps.
+	let patEnc: string | null | undefined;
+	let patHint: string | null | undefined;
+	if (body.github_pat !== undefined) {
+		if (body.github_pat === null) {
+			patEnc = null;
+			patHint = null;
+		} else {
+			const pat = requireString(body.github_pat, 'github_pat', { max: 500 });
+			if (!env.SECRET_ENCRYPTION_KEY) {
+				throw new ApiFail(
+					500,
+					'no_encryption_key',
+					'SECRET_ENCRYPTION_KEY is not configured; the GitHub PAT cannot be stored'
+				);
+			}
+			patEnc = await encryptSecret(pat, env.SECRET_ENCRYPTION_KEY);
+			patHint = secretHint(pat);
+		}
+	}
+
 	const changed: string[] = [];
 	if (enabled !== current.enabled) changed.push('enabled');
 	if (JSON.stringify(quota) !== JSON.stringify(current.quota)) changed.push('quota');
 	if (attemptLimit !== current.attempt_limit) changed.push('attempt_limit');
+	if (patEnc !== undefined) changed.push('github_pat');
 
 	const now = Date.now();
 	if (changed.length > 0 || current.updated_at === null) {
@@ -196,8 +228,8 @@ export async function updateSupervisorSettings(
 					attempt_limit: attemptLimit,
 					budget: null,
 					pricing: null,
-					github_pat_enc: null,
-					github_pat_hint: null,
+					github_pat_enc: patEnc ?? null,
+					github_pat_hint: patHint ?? null,
 					updated_at: now
 				})
 				.onConflict((oc) =>
@@ -205,12 +237,15 @@ export async function updateSupervisorSettings(
 						enabled: enabled ? 1 : 0,
 						quota: JSON.stringify(quota),
 						attempt_limit: attemptLimit,
+						// The PAT columns only move when this write replaces/clears them.
+						...(patEnc !== undefined ? { github_pat_enc: patEnc, github_pat_hint: patHint ?? null } : {}),
 						updated_at: now
 					})
 				)
 				.compile(),
-			// Secrets (the PAT, once it exists) are elided from this payload by
-			// construction: only the three plain fields are ever reported.
+			// Secrets (the PAT included) are elided from this payload by
+			// construction: the *fact* of a rotation is in the feed via
+			// `changed`, the value never is.
 			eventInsert(db, actor, {
 				type: 'settings.updated',
 				payload: {
