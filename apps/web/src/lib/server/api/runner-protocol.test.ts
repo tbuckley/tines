@@ -98,6 +98,41 @@ describe('registerRunner', () => {
 		expect((await authenticateRunnerToken(t.db, second.runner_token))?.id).toBe(first.runner.id);
 	});
 
+	it('reconnect updates only the fields the daemon sent — server-side edits survive', async () => {
+		const t = world();
+		const first = await registerRunner(t.db, t.env, actor, { name: 'laptop-m4', max_concurrent: 2 });
+		// The user tuned these in the UI; the daemon never sends them.
+		await updateRunner(t.db, t.env, actor, first.runner.id, {
+			max_run_minutes: 90,
+			default_tier: 'smartest'
+		});
+		const second = await registerRunner(t.db, t.env, actor, {
+			name: 'laptop-m4',
+			max_concurrent: 3,
+			hostname: 'mbp.local'
+		});
+		expect(second.runner.max_concurrent).toBe(3); // sent: updated
+		expect(second.runner.max_run_minutes).toBe(90); // not sent: kept
+		expect(second.runner.default_tier).toBe('smartest'); // not sent: kept
+		expect(second.runner.config.hostname).toBe('mbp.local');
+	});
+
+	it('reconnect away from the custom harness drops the stored command template', async () => {
+		const t = world();
+		const first = await registerRunner(t.db, t.env, actor, {
+			name: 'laptop-m4',
+			harness: 'custom',
+			command: 'run {prompt_file}'
+		});
+		expect(first.runner.config.command).toBe('run {prompt_file}');
+		const second = await registerRunner(t.db, t.env, actor, {
+			name: 'laptop-m4',
+			harness: 'claude_code'
+		});
+		expect(second.runner.config).toMatchObject({ harness: 'claude_code' });
+		expect(second.runner.config.command).toBeUndefined();
+	});
+
 	it('rejects a custom harness without a command, and unknown-tier registrations', async () => {
 		const t = world();
 		await expectFail(

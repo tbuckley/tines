@@ -392,6 +392,85 @@ export async function registerRunner(
 	body: RegisterRunnerRequest
 ): Promise<RunnerTokenResponse> {
 	const name = validateRunnerName(body.name);
+	const token = generateRunnerToken();
+	const tokenHash = await sha256Hex(token);
+	const now = Date.now();
+
+	const existing = await db
+		.selectFrom('runner')
+		.select(['id', 'type', 'config'])
+		.where('user_id', '=', actor.userId)
+		.where('name', '=', name)
+		.executeTakeFirst();
+	if (existing && existing.type !== 'local') {
+		throw new ApiFail(
+			422,
+			'duplicate_runner_name',
+			`A ${existing.type} runner named "${name}" already exists; pick another --name for the daemon`,
+			{ field: 'name', existing_runner_id: existing.id }
+		);
+	}
+
+	if (existing) {
+		// Reconnect: the row, history, and rule references are untouched, and
+		// only fields the daemon actually sent are updated — server-side edits
+		// (max_run_minutes, default_tier…) survive a daemon restart. Config is
+		// overlaid the same way; a harness change away from `custom` drops a
+		// now-meaningless stored command template.
+		let existingConfig: Record<string, unknown> = {};
+		try {
+			existingConfig = JSON.parse(existing.config) as Record<string, unknown>;
+		} catch {
+			// An unreadable config column starts over from the request.
+		}
+		if (body.harness !== undefined && body.harness !== 'custom' && body.command === undefined) {
+			delete existingConfig.command;
+		}
+		const config = validateLocalConfig({
+			...existingConfig,
+			...(body.harness !== undefined ? { harness: body.harness } : {}),
+			...(body.command !== undefined ? { command: body.command } : {}),
+			...(body.hostname !== undefined ? { hostname: body.hostname } : {}),
+			...(body.platform !== undefined ? { platform: body.platform } : {})
+		});
+		const changed = ['runner_token', 'config'];
+		const patch: Partial<{
+			max_concurrent: number;
+			max_run_minutes: number;
+			default_tier: string;
+		}> = {};
+		if (body.max_concurrent !== undefined) {
+			patch.max_concurrent = validateBoundedInt(body.max_concurrent, 'max_concurrent', 1, 100);
+			changed.push('max_concurrent');
+		}
+		if (body.max_run_minutes !== undefined) {
+			patch.max_run_minutes = validateBoundedInt(body.max_run_minutes, 'max_run_minutes', 1, 24 * 60);
+			changed.push('max_run_minutes');
+		}
+		if (body.default_tier !== undefined) {
+			patch.default_tier = requireTier(body.default_tier, 'default_tier');
+			changed.push('default_tier');
+		}
+		await runAtomic(env, [
+			db
+				.updateTable('runner')
+				.set({
+					...patch,
+					config: JSON.stringify(config),
+					runner_token_hash: tokenHash,
+					last_seen_at: now,
+					updated_at: now
+				})
+				.where('id', '=', existing.id)
+				.compile(),
+			eventInsert(db, actor, {
+				type: 'runner.updated',
+				payload: { runner_id: existing.id, name, changed, reconnected: true }
+			})
+		]);
+		return { runner: await getRunner(db, actor.userId, existing.id), runner_token: token };
+	}
+
 	const config = validateLocalConfig({
 		...(body.harness !== undefined ? { harness: body.harness } : {}),
 		...(body.command !== undefined ? { command: body.command } : {}),
@@ -406,50 +485,6 @@ export async function registerRunner(
 			: validateBoundedInt(body.max_run_minutes, 'max_run_minutes', 1, 24 * 60);
 	const defaultTier =
 		body.default_tier === undefined ? 'balanced' : requireTier(body.default_tier, 'default_tier');
-
-	const token = generateRunnerToken();
-	const tokenHash = await sha256Hex(token);
-	const now = Date.now();
-
-	const existing = await db
-		.selectFrom('runner')
-		.select(['id', 'type'])
-		.where('user_id', '=', actor.userId)
-		.where('name', '=', name)
-		.executeTakeFirst();
-	if (existing && existing.type !== 'local') {
-		throw new ApiFail(
-			422,
-			'duplicate_runner_name',
-			`A ${existing.type} runner named "${name}" already exists; pick another --name for the daemon`,
-			{ field: 'name', existing_runner_id: existing.id }
-		);
-	}
-
-	if (existing) {
-		// Reconnect: the row, history, and rule references are untouched; only
-		// the token (and the device-reported config) change.
-		await runAtomic(env, [
-			db
-				.updateTable('runner')
-				.set({
-					config: JSON.stringify(config),
-					max_concurrent: maxConcurrent,
-					max_run_minutes: maxRunMinutes,
-					default_tier: defaultTier,
-					runner_token_hash: tokenHash,
-					last_seen_at: now,
-					updated_at: now
-				})
-				.where('id', '=', existing.id)
-				.compile(),
-			eventInsert(db, actor, {
-				type: 'runner.updated',
-				payload: { runner_id: existing.id, name, changed: ['runner_token', 'config'], reconnected: true }
-			})
-		]);
-		return { runner: await getRunner(db, actor.userId, existing.id), runner_token: token };
-	}
 
 	const id = newId('rnr');
 	await runAtomic(env, [
