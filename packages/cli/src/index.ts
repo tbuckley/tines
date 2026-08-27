@@ -93,6 +93,21 @@ function client(opts: CommonOpts): ApiClient {
 	return createApiClient({ baseUrl: opts.url ?? DEFAULT_URL, apiKey: opts.apiKey });
 }
 
+/**
+ * Guards markdown-body commands (comment, journal append) against the
+ * --help footgun: passThroughOptions() makes commander swallow a trailing
+ * --help/-h as the literal <markdown> value instead of parsing it as an
+ * option, so it must be checked for manually before mutating anything.
+ * Returns true (and prints help) if the guard fired; callers should return.
+ */
+function helpGuard(command: Command, markdown: string): boolean {
+	if (markdown === '--help' || markdown === '-h') {
+		command.help();
+		return true;
+	}
+	return false;
+}
+
 function die(message: string): never {
 	console.error(`error: ${message}`);
 	process.exit(1);
@@ -1068,7 +1083,8 @@ withCommon(
 		.description('Comment on an issue (Markdown body)')
 		// A body may start with "-"; options go before the arguments.
 		.passThroughOptions()
-).action(async (ref: string, markdown: string, opts: CommonOpts) => {
+).action(async (ref: string, markdown: string, opts: CommonOpts, command: Command) => {
+	if (helpGuard(command, markdown)) return;
 	const api = client(opts);
 	const issue = await resolveIssue(api, ref);
 	const comment = await api.createComment(issue.id, { body: markdown });
@@ -1594,7 +1610,8 @@ withCommon(
 		// Lessons are dated bullets starting with "-"; options go before the
 		// arguments, exactly as the launch prompt's copy-pasteable command has it.
 		.passThroughOptions()
-).action(async (ref: string, markdown: string, opts: CommonOpts) => {
+).action(async (ref: string, markdown: string, opts: CommonOpts, command: Command) => {
+	if (helpGuard(command, markdown)) return;
 	const api = client(opts);
 	const { issue, item } = await resolveJournal(api, ref);
 	const scopeLabel = `project ${issue.project_name} · state ${issue.state.name}`;
