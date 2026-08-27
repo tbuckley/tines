@@ -23,7 +23,7 @@ import type {
 } from '@tines/shared';
 import { expect, test, type APIRequestContext } from '@playwright/test';
 import { ALICE, BASE_URL } from './constants.mjs';
-import { apiClient, body, runId } from './helpers';
+import { apiClient, body, runId, signIn } from './helpers';
 
 const CLI_DIR = fileURLToPath(new URL('../../../packages/cli', import.meta.url));
 const TSX = join(CLI_DIR, 'node_modules', '.bin', 'tsx');
@@ -274,6 +274,35 @@ esac
 		expect(detail.log).toContain('harness start mode=work');
 		expect(detail.log).toContain('harness done');
 		expect(detail.log_bytes_dropped).toBe(0);
+	});
+
+	test('the Agents tab shows the runner online, the log viewer, and the bootstrap wizard', async ({
+		context,
+		page
+	}) => {
+		await signIn(context, ALICE.sessionToken);
+		await page.goto('/agents');
+
+		// The daemon-registered runner card, online, with the rotate action.
+		const card = page.locator('div.rounded-lg', { hasText: RUNNER_NAME }).first();
+		await expect(card.getByText('online')).toBeVisible();
+		await expect(card.getByRole('button', { name: 'Rotate token' })).toBeVisible();
+
+		// The completed run's row expands to the captured log tail.
+		await page.getByLabel('Show ended runs').check();
+		const row = page.locator('li', { hasText: RUNNER_NAME }).filter({ hasText: 'completed' }).first();
+		await row.getByRole('button', { name: 'Logs', exact: true }).click();
+		await expect(page.getByTestId('run-log').first()).toContainText('harness start mode=work');
+
+		// The add-runner wizard is the copy-pasteable daemon bootstrap.
+		await page.getByRole('button', { name: 'Add runner' }).click();
+		await page.getByLabel('Name').fill('laptop-e2e');
+		const dialog = page.getByRole('dialog', { name: 'Add local runner' });
+		await expect(dialog).toContainText('tines runner daemon');
+		await expect(dialog).toContainText('--name laptop-e2e');
+		await expect(dialog).toContainText('registers');
+		await expect(dialog).toContainText('launchd/systemd');
+		await dialog.getByRole('button', { name: 'Done' }).click();
 	});
 
 	test('a do-nothing harness strikes the issue three times and parks it', async ({ request }) => {

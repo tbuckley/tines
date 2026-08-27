@@ -117,6 +117,7 @@
 	// --- rotate-token: invalidate in place, show the new token exactly once ------
 
 	let rotatedToken = $state<{ runnerName: string; token: string } | null>(null);
+	let tokenModalOpen = $state(false);
 	let rotatingRunnerId = $state<string | null>(null);
 
 	async function rotateToken(runner: Runner) {
@@ -130,6 +131,7 @@
 		try {
 			const rotated = await api.rotateRunnerToken(runner.id);
 			rotatedToken = { runnerName: rotated.runner.name, token: rotated.runner_token };
+			tokenModalOpen = true;
 			await invalidateAll();
 		} catch (err) {
 			showError(err);
@@ -813,11 +815,7 @@
 </Modal>
 
 <!-- rotated token: shown exactly once -->
-<Modal
-	open={rotatedToken !== null}
-	onclose={() => (rotatedToken = null)}
-	title="New runner token"
->
+<Modal bind:open={tokenModalOpen} onclose={() => (rotatedToken = null)} title="New runner token">
 	{#if rotatedToken}
 		<div class="space-y-3">
 			<p class="text-sm">
@@ -832,7 +830,15 @@
 				The runner's id, history, and rule references are unchanged.
 			</p>
 			<div class="flex justify-end">
-				<Button variant="outline" onclick={() => (rotatedToken = null)}>Done</Button>
+				<Button
+					variant="outline"
+					onclick={() => {
+						tokenModalOpen = false;
+						rotatedToken = null;
+					}}
+				>
+					Done
+				</Button>
 			</div>
 		</div>
 	{/if}
