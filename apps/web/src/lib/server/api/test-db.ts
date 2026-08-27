@@ -84,6 +84,17 @@ function dialectFor(sqlite: DatabaseSync): Dialect {
 interface BoundStatement {
 	sqlText: string;
 	params: unknown[];
+	/**
+	 * The slice of D1's statement API kysely-d1 calls, so `getDb(env)` works
+	 * over this fake too — route handlers can then run against the harness
+	 * end to end.
+	 */
+	all(): Promise<{
+		results: unknown[];
+		success: true;
+		error?: undefined;
+		meta: { changes: number; last_row_id: null };
+	}>;
 }
 
 export interface TestDb {
@@ -106,7 +117,18 @@ export function createTestDb(): TestDb {
 	const env = {
 		DB: {
 			prepare: (sqlText: string) => ({
-				bind: (...params: unknown[]): BoundStatement => ({ sqlText, params })
+				bind: (...params: unknown[]): BoundStatement => ({
+					sqlText,
+					params,
+					all: async () => {
+						const result = runStatement(sqlite, sqlText, params);
+						return {
+							results: result.rows,
+							success: true as const,
+							meta: { changes: Number(result.numAffectedRows ?? 0), last_row_id: null }
+						};
+					}
+				})
 			}),
 			batch: async (statements: BoundStatement[]) => {
 				sqlite.exec('BEGIN');

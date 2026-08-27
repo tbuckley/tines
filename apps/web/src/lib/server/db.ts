@@ -275,11 +275,20 @@ export interface Database {
 	user: UserTable;
 }
 
-let db: Kysely<Database> | undefined;
+const dbs = new WeakMap<object, Kysely<Database>>();
 
-/** Kysely over D1, memoized per isolate (bindings are isolate-stable). */
+/**
+ * Kysely over D1, memoized per binding. In production one isolate sees one
+ * binding, so this is the old per-isolate singleton; keying on the binding
+ * (rather than a module global) additionally keeps separate `Env`s — e.g.
+ * per-test fakes — from sharing one connection.
+ */
 export function getDb(env: Env): Kysely<Database> {
-	db ??= new Kysely<Database>({ dialect: new D1Dialect({ database: env.DB }) });
+	let db = dbs.get(env.DB);
+	if (!db) {
+		db = new Kysely<Database>({ dialect: new D1Dialect({ database: env.DB }) });
+		dbs.set(env.DB, db);
+	}
 	return db;
 }
 

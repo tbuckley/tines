@@ -23,5 +23,8 @@ export const DELETE: RequestHandler = api(async (event) => {
 	const { db, env, actor } = await apiContext(event);
 	const body = await readOptionalJson<DeleteRunnerRequest>(event);
 	await deleteRunner(db, env, actor, event.params.id, body.force === true);
+	// A forced removal clears pins, so those issues fall back to routing
+	// rules and may dispatch elsewhere.
+	queueDispatchPass(event.platform, actor.userId);
 	return new Response(null, { status: 204 });
 });

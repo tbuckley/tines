@@ -17,5 +17,8 @@ export const PATCH: RequestHandler = api(async (event) => {
 export const DELETE: RequestHandler = api(async (event) => {
 	const { db, env, actor } = await apiContext(event);
 	await deleteRoutingRule(db, env, actor, event.params.id);
+	// Deleting a specific rule can un-shadow a broader one whose targets
+	// have capacity.
+	queueDispatchPass(event.platform, actor.userId);
 	return new Response(null, { status: 204 });
 });
