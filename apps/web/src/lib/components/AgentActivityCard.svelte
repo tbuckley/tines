@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { AgentRun, DispatchExplainer, IssueDetail, ModelTier, Runner } from '@tines/shared';
-	import { MODEL_TIERS } from '@tines/shared';
+	import { MODEL_TIERS, runDurationLabel } from '@tines/shared';
 	import IconAlertTriangle from '@tabler/icons-svelte/icons/alert-triangle';
 	import IconCheck from '@tabler/icons-svelte/icons/check';
 	import IconPin from '@tabler/icons-svelte/icons/pin';
@@ -11,7 +11,7 @@
 	import { api } from '$lib/api';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Select } from '$lib/components/ui/select/index.js';
-	import { prefersReducedMotion, relativeTime } from '$lib/format';
+	import { prefersReducedMotion, relativeTime, runStatusClass } from '$lib/format';
 
 	let {
 		issue,
@@ -30,19 +30,6 @@
 	const dur = () => (prefersReducedMotion() ? 0 : 180);
 
 	const ACTIVE_STATUSES = ['assigned', 'launching', 'running'];
-
-	function runStatusClass(status: string): string {
-		if (status === 'running' || status === 'launching') return 'text-emerald-600 dark:text-emerald-400';
-		if (status === 'assigned') return 'text-sky-600 dark:text-sky-400';
-		if (status === 'completed') return 'text-muted-foreground';
-		return 'text-amber-700 dark:text-amber-400';
-	}
-
-	function runDuration(run: AgentRun): string {
-		if (!run.started_at) return '';
-		const seconds = Math.max(0, Math.round(((run.ended_at ?? Date.now()) - run.started_at) / 1000));
-		return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m`;
-	}
 
 	// --- pin control ------------------------------------------------------------
 
@@ -201,8 +188,8 @@
 							<span class="font-medium">{run.runner_name}</span>
 							<span class="text-muted-foreground">{run.tier}{run.model ? ` · ${run.model}` : ''}</span>
 							<span class={runStatusClass(run.status)}>{run.status.replaceAll('_', ' ')}</span>
-							{#if runDuration(run)}
-								<span class="text-muted-foreground">· {runDuration(run)}</span>
+							{#if run.started_at}
+								<span class="text-muted-foreground">· {runDurationLabel(run)}</span>
 							{/if}
 							<span class="text-muted-foreground ml-auto" title={new Date(run.created_at).toLocaleString()}>
 								{relativeTime(run.created_at)}

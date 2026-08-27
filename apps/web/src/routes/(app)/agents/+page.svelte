@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { AgentRun, ModelTier, RoutingRule, RoutingTarget, Runner, ShadowWarning } from '@tines/shared';
-	import { ACTIVE_RUN_STATUSES, ApiError, MODEL_TIERS } from '@tines/shared';
+	import { ACTIVE_RUN_STATUSES, ApiError, MODEL_TIERS, runDurationLabel, utilizationLabel } from '@tines/shared';
 	import IconAlertTriangle from '@tabler/icons-svelte/icons/alert-triangle';
 	import IconArrowDown from '@tabler/icons-svelte/icons/arrow-down';
 	import IconArrowRight from '@tabler/icons-svelte/icons/arrow-right';
@@ -20,7 +20,7 @@
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { Select } from '$lib/components/ui/select/index.js';
-	import { prefersReducedMotion, relativeTime } from '$lib/format';
+	import { prefersReducedMotion, relativeTime, runStatusClass } from '$lib/format';
 
 	let { data } = $props();
 
@@ -140,41 +140,11 @@
 
 	/** Utilization against the active policy — same math the CLI status shows. */
 	const utilization = $derived.by(() => {
-		const quota = data.settings.quota;
-		if (quota.type === 'global_cap') {
-			return `${activeRuns.length}/${quota.limit} global slot${quota.limit === 1 ? '' : 's'} in use`;
-		}
 		const stateNames = new Map(
 			data.workflows.flatMap((w) => w.states.map((s) => [s.id, s.name] as const))
 		);
-		const counts = new Map<string, number>();
-		for (const run of activeRuns) {
-			counts.set(run.state_id_at_start, (counts.get(run.state_id_at_start) ?? 0) + 1);
-		}
-		for (const stateId of Object.keys(quota.overrides)) {
-			if (!counts.has(stateId)) counts.set(stateId, 0);
-		}
-		if (counts.size === 0) return `no active runs (roster default ${quota.default_limit} per state)`;
-		return [...counts.entries()]
-			.map(
-				([stateId, n]) =>
-					`${stateNames.get(stateId) ?? stateId} ${n}/${quota.overrides[stateId] ?? quota.default_limit}`
-			)
-			.join(' · ');
+		return utilizationLabel(data.settings.quota, activeRuns, (id) => stateNames.get(id) ?? id);
 	});
-
-	function runStatusClass(status: string): string {
-		if (status === 'running' || status === 'launching') return 'text-emerald-600 dark:text-emerald-400';
-		if (status === 'assigned') return 'text-sky-600 dark:text-sky-400';
-		if (status === 'completed') return 'text-muted-foreground';
-		return 'text-amber-700 dark:text-amber-400';
-	}
-
-	function runDuration(run: AgentRun): string {
-		if (!run.started_at) return '—';
-		const seconds = Math.max(0, Math.round(((run.ended_at ?? Date.now()) - run.started_at) / 1000));
-		return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m`;
-	}
 
 	async function cancelRun(run: AgentRun) {
 		if (!confirm(`Cancel this run on ${run.runner_name}? Unless the agent already moved the issue, this counts as a strike.`)) return;
@@ -446,7 +416,7 @@
 					<span class="text-xs font-medium {runStatusClass(run.status)}">
 						{run.status.replaceAll('_', ' ')}
 					</span>
-					<span class="text-muted-foreground text-xs">{runDuration(run)}</span>
+					<span class="text-muted-foreground text-xs">{runDurationLabel(run)}</span>
 					{#if run.error}
 						<span class="max-w-64 truncate text-xs text-amber-700 dark:text-amber-400" title={run.error}>
 							{run.error}

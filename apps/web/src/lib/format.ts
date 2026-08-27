@@ -53,3 +53,11 @@ export function prefersReducedMotion(): boolean {
 		typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches
 	);
 }
+
+/** Text color for a run status, shared by every run row rendering. */
+export function runStatusClass(status: string): string {
+	if (status === 'running' || status === 'launching') return 'text-emerald-600 dark:text-emerald-400';
+	if (status === 'assigned') return 'text-sky-600 dark:text-sky-400';
+	if (status === 'completed') return 'text-muted-foreground';
+	return 'text-amber-700 dark:text-amber-400';
+}

@@ -936,6 +936,48 @@ export interface RunFilters {
 	active?: boolean;
 }
 
+/** Compact duration for run rows: "42s", "12m"; "—" before launch. */
+export function runDurationLabel(
+	run: Pick<AgentRun, 'started_at' | 'ended_at'>,
+	now: number = Date.now()
+): string {
+	if (!run.started_at) return '—';
+	const seconds = Math.max(0, Math.round(((run.ended_at ?? now) - run.started_at) / 1000));
+	return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m`;
+}
+
+/**
+ * Utilization against the active quota policy, from the active runs — the
+ * Agents tab's Runs header and `tines supervisor status` render this
+ * identically. Roster states with an override always show; others only
+ * while occupied.
+ */
+export function utilizationLabel(
+	quota: QuotaPolicy,
+	activeRuns: Pick<AgentRun, 'state_id_at_start' | 'state_at_start_name'>[],
+	stateName: (id: string) => string = (id) => id
+): string {
+	if (quota.type === 'global_cap') {
+		return `${activeRuns.length}/${quota.limit} global slot${quota.limit === 1 ? '' : 's'} in use`;
+	}
+	const counts = new Map<string, { name: string; n: number }>();
+	for (const run of activeRuns) {
+		const entry = counts.get(run.state_id_at_start) ?? {
+			name: run.state_at_start_name ?? stateName(run.state_id_at_start),
+			n: 0
+		};
+		entry.n += 1;
+		counts.set(run.state_id_at_start, entry);
+	}
+	for (const stateId of Object.keys(quota.overrides)) {
+		if (!counts.has(stateId)) counts.set(stateId, { name: stateName(stateId), n: 0 });
+	}
+	if (counts.size === 0) return `no active runs (roster default ${quota.default_limit} per state)`;
+	return [...counts.entries()]
+		.map(([stateId, { name, n }]) => `${name} ${n}/${quota.overrides[stateId] ?? quota.default_limit}`)
+		.join(' · ');
+}
+
 // ---------------------------------------------------------------------------
 // Dispatch explainer
 

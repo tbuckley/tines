@@ -12,6 +12,8 @@ import {
 	JOURNAL_NAME,
 	MODEL_TIERS,
 	repoDirFromUrl,
+	runDurationLabel,
+	utilizationLabel,
 	WEEKDAY_NAMES,
 	type AgentRun,
 	type ApiClient,
@@ -1925,14 +1927,6 @@ withCommon(
 
 const runsCmd = program.command('runs').description('Agent runs: attempts at issues by runners');
 
-function runDuration(run: AgentRun): string {
-	if (!run.started_at) return '—';
-	const end = run.ended_at ?? Date.now();
-	const seconds = Math.max(0, Math.round((end - run.started_at) / 1000));
-	if (seconds < 60) return `${seconds}s`;
-	return `${Math.floor(seconds / 60)}m${String(seconds % 60).padStart(2, '0')}s`;
-}
-
 function runRow(run: AgentRun): string[] {
 	return [
 		run.id,
@@ -1940,7 +1934,7 @@ function runRow(run: AgentRun): string[] {
 		run.runner_name,
 		`${run.tier}${run.model ? ` (${run.model})` : ''}`,
 		run.status,
-		runDuration(run),
+		runDurationLabel(run),
 		timestamp(run.created_at)
 	];
 }
@@ -1985,7 +1979,7 @@ withCommon(
 		`states: ${run.state_at_start_name ?? run.state_id_at_start} → ${run.state_at_end_name ?? run.state_id_at_end ?? '…'}`
 	);
 	console.log(
-		`created: ${timestamp(run.created_at)}  started: ${run.started_at ? timestamp(run.started_at) : '—'}  ended: ${run.ended_at ? timestamp(run.ended_at) : '—'}  duration: ${runDuration(run)}`
+		`created: ${timestamp(run.created_at)}  started: ${run.started_at ? timestamp(run.started_at) : '—'}  ended: ${run.ended_at ? timestamp(run.ended_at) : '—'}  duration: ${runDurationLabel(run)}`
 	);
 	if (run.provider_session_id) console.log(`provider session: ${run.provider_session_id}`);
 	if (run.provider_url) console.log(`provider console: ${run.provider_url}`);
@@ -2116,37 +2110,6 @@ function quotaLabel(quota: QuotaPolicy, stateName?: (id: string) => string): str
 	return `state roster: default ${quota.default_limit} per state${overrides.length > 0 ? `, overrides: ${overrides.join(', ')}` : ''}`;
 }
 
-/**
- * Utilization against the active policy, from the active runs: "2/3 global
- * slots in use", or the roster's per-start-state tally.
- */
-function utilizationLine(
-	quota: QuotaPolicy,
-	activeRuns: Pick<AgentRun, 'state_id_at_start' | 'state_at_start_name'>[],
-	stateName: (id: string) => string = (id) => id
-): string {
-	if (quota.type === 'global_cap') {
-		return `${activeRuns.length}/${quota.limit} global slot${quota.limit === 1 ? '' : 's'} in use`;
-	}
-	const counts = new Map<string, { name: string; n: number }>();
-	for (const run of activeRuns) {
-		const entry = counts.get(run.state_id_at_start) ?? {
-			name: run.state_at_start_name ?? stateName(run.state_id_at_start),
-			n: 0
-		};
-		entry.n += 1;
-		counts.set(run.state_id_at_start, entry);
-	}
-	// States with an override always show; others only while occupied.
-	for (const stateId of Object.keys(quota.overrides)) {
-		if (!counts.has(stateId)) counts.set(stateId, { name: stateName(stateId), n: 0 });
-	}
-	if (counts.size === 0) return `no active runs (roster default ${quota.default_limit} per state)`;
-	return [...counts.entries()]
-		.map(([stateId, { name, n }]) => `${name} ${n}/${quota.overrides[stateId] ?? quota.default_limit}`)
-		.join(' · ');
-}
-
 withCommon(supervisor.command('status').description('One-screen overview: kill switch, quota, utilization, runners')).action(
 	async (opts: CommonOpts) => {
 		const api = client(opts);
@@ -2165,7 +2128,7 @@ withCommon(supervisor.command('status').description('One-screen overview: kill s
 		}
 		console.log(`automation: ${settings.enabled ? 'ON' : 'OFF (kill switch — nothing dispatches)'}`);
 		console.log(quotaLabel(settings.quota, (id) => stateNames.get(id) ?? id));
-		console.log(`utilization: ${utilizationLine(settings.quota, activeRuns.items, (id) => stateNames.get(id) ?? id)}`);
+		console.log(`utilization: ${utilizationLabel(settings.quota, activeRuns.items, (id) => stateNames.get(id) ?? id)}`);
 		console.log(`attempt limit: ${settings.attempt_limit} strikes, then the issue parks`);
 		if (runnersRes.items.length === 0) {
 			console.log('runners: none');
