@@ -10,6 +10,7 @@ import {
 	AGENT_GUIDELINES_BODY,
 	AGENT_GUIDELINES_DESCRIPTION,
 	AGENT_GUIDELINES_NAME,
+	ApiConnectionError,
 	ApiError,
 	createApiClient,
 	describeRecurrence,
@@ -99,6 +100,11 @@ function die(message: string): never {
 }
 
 function reportError(err: unknown): never {
+	if (err instanceof ApiConnectionError) {
+		die(
+			`${err.message}\nis the Tines server reachable at that address? pass -u/--url or set TINES_API_URL to your server's base URL`
+		);
+	}
 	if (err instanceof ApiError) {
 		let message = `${err.message} (${err.code})`;
 		const allowed = err.details?.allowed_transitions;

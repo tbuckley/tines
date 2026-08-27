@@ -77,6 +77,34 @@ export interface ApiClientOptions {
 	fetch?: typeof globalThis.fetch;
 }
 
+/**
+ * Unwraps the layers Node's fetch puts around network failures: a
+ * TypeError("fetch failed") whose `cause` is the real error, itself
+ * sometimes an AggregateError (e.g. one ECONNREFUSED per resolved address).
+ */
+function describeCause(err: unknown): string {
+	if (err instanceof AggregateError && err.errors.length > 0) return describeCause(err.errors[0]);
+	if (err instanceof Error) {
+		if (err.cause !== undefined && (err.message === 'fetch failed' || err.message === '')) {
+			return describeCause(err.cause);
+		}
+		return err.message || err.name;
+	}
+	return String(err);
+}
+
+/** Thrown when the server can't be reached at all (refused, DNS, TLS…). */
+export class ApiConnectionError extends Error {
+	/** The full URL the request was sent to. */
+	url: string;
+
+	constructor(url: string, cause: unknown) {
+		super(`request to ${url} failed: ${describeCause(cause)}`, { cause });
+		this.name = 'ApiConnectionError';
+		this.url = url;
+	}
+}
+
 /** Thrown for non-2xx responses; carries the structured error body. */
 export class ApiError extends Error {
 	status: number;
@@ -110,11 +138,17 @@ export function createApiClient(options: ApiClientOptions) {
 		if (options.apiKey) headers.authorization = `Bearer ${options.apiKey}`;
 		if (body !== undefined) headers['content-type'] = 'application/json';
 
-		const res = await fetchFn(`${base}${path}`, {
-			method,
-			headers,
-			body: body === undefined ? undefined : JSON.stringify(body)
-		});
+		const url = `${base}${path}`;
+		let res: Response;
+		try {
+			res = await fetchFn(url, {
+				method,
+				headers,
+				body: body === undefined ? undefined : JSON.stringify(body)
+			});
+		} catch (err) {
+			throw new ApiConnectionError(url, err);
+		}
 
 		if (!res.ok) {
 			let parsed: ApiErrorBody['error'] | null = null;
