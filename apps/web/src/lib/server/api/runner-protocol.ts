@@ -335,6 +335,9 @@ export async function appendRunLog(
 			.updateTable('agent_run')
 			.set({ log: appended.log, log_bytes_dropped: appended.dropped })
 			.where('id', '=', runId)
+			// A chunk racing a cancel/sweep must not extend a settled run's
+			// tail: the active check above was a read, this is the guard.
+			.where('status', 'in', ACTIVE)
 			.compile()
 	]);
 	return {

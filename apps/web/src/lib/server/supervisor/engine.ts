@@ -918,20 +918,24 @@ export async function markRunRunning(
 	},
 	now: number
 ): Promise<boolean> {
+	// Event payload lookups happen before the batch (wasted only on a lost
+	// CAS); the event itself is guarded on the flip landing in the same
+	// batch, so flip and started-event commit together — the same shape as
+	// launchClaimedRun's startedGuard.
+	const [runner, issue] = await Promise.all([
+		db.selectFrom('runner').select('name').where('id', '=', run.runner_id).executeTakeFirst(),
+		db.selectFrom('issue').select('project_id').where('id', '=', run.issue_id).executeTakeFirst()
+	]);
+	const flipGuard = sql<boolean>`EXISTS (
+		SELECT 1 FROM agent_run WHERE id = ${run.id} AND status = 'running' AND started_at = ${now}
+	)`;
 	const [flip] = await runBatch(env, [
 		db
 			.updateTable('agent_run')
 			.set({ status: 'running', started_at: now })
 			.where('id', '=', run.id)
 			.where('status', '=', 'launching')
-			.compile()
-	]);
-	if ((flip?.meta.changes ?? 0) === 0) return false;
-	const [runner, issue] = await Promise.all([
-		db.selectFrom('runner').select('name').where('id', '=', run.runner_id).executeTakeFirst(),
-		db.selectFrom('issue').select('project_id').where('id', '=', run.issue_id).executeTakeFirst()
-	]);
-	await runBatch(env, [
+			.compile(),
 		supervisorEvent(
 			db,
 			run.user_id,
@@ -947,10 +951,11 @@ export async function markRunRunning(
 					model: run.model
 				}
 			},
-			now
+			now,
+			flipGuard
 		)
 	]);
-	return true;
+	return (flip?.meta.changes ?? 0) === 1;
 }
 
 // ---------------------------------------------------------------------------
@@ -994,13 +999,17 @@ export async function sweepSupervisor(
 		}
 	}
 
-	// A local runner offline >5 minutes must not hold claims: its running
-	// runs fail now (error `runner offline`, keys revoked by endRun).
+	// A local runner offline >5 minutes must not hold claims: its running —
+	// and delivered-but-not-yet-running (`launching`) — runs fail now (error
+	// `runner offline`, keys revoked by endRun). `launching` is included
+	// because a delivered local run only leaves that status at the daemon's
+	// first log flush: with the daemon dead, no other arm would reap it (the
+	// launch-stall arm below deliberately skips poll-mode runs).
 	const orphaned = await db
 		.selectFrom('agent_run')
 		.innerJoin('runner', 'runner.id', 'agent_run.runner_id')
-		.select(['agent_run.id', 'agent_run.user_id'])
-		.where('agent_run.status', '=', 'running')
+		.select(['agent_run.id', 'agent_run.user_id', 'agent_run.status'])
+		.where('agent_run.status', 'in', ['launching', 'running'])
 		.where('runner.type', '=', 'local')
 		.where((eb) =>
 			eb.or([
@@ -1012,7 +1021,7 @@ export async function sweepSupervisor(
 	for (const row of orphaned) {
 		try {
 			const run = await loadEndableRun(db, row.user_id, row.id);
-			if (!run || run.status !== 'running') continue;
+			if (!run || (run.status !== 'running' && run.status !== 'launching')) continue;
 			await endRun(db, env, run, { status: 'failed', error: 'runner offline', now });
 		} catch (e) {
 			console.error(`supervisor sweep: failing offline run ${row.id} failed:`, e);
@@ -1041,6 +1050,12 @@ export async function sweepSupervisor(
 				.where('id', '=', run.runner_id)
 				.executeTakeFirst();
 			if (!runner) continue;
+			// The `launching` arm is provider reconciliation only. A poll-mode
+			// (local) run never records a session and leaves `launching` at the
+			// daemon's first log flush — a quiet harness five minutes into a
+			// delivered run is healthy, not stalled. Its liveness is covered by
+			// `owned_runs`, the offline rule, and the `assigned` arm above.
+			if (run.status === 'launching' && adapters[runner.type]?.launchMode === 'poll') continue;
 			await failLaunch(db, env, {
 				userId: run.user_id,
 				runId: run.id,

@@ -827,7 +827,7 @@ describe('the sweep', () => {
 		expect(eventsOfType(t, 'runner.errored')).toHaveLength(1);
 	});
 
-	it('fails launching runs with no recorded session after five minutes', async () => {
+	it('fails immediate-mode launching runs with no recorded session after five minutes', async () => {
 		const t = world();
 		const runner = addRunner(t);
 		addRule(t, { targets: [{ runner_id: runner }] });
@@ -836,11 +836,59 @@ describe('the sweep', () => {
 		const runId = runs(t)[0].id as string;
 		// Simulate a worker evicted between the flip and the session write.
 		t.sqlite.prepare(`UPDATE agent_run SET status = 'launching' WHERE id = ?`).run(runId);
+		// Keep the runner "seen" so the local offline rule stays out of the way.
+		t.sqlite
+			.prepare('UPDATE runner SET last_seen_at = ? WHERE id = ?')
+			.run(NOW + 6 * 60_000 - 10_000, runner);
+		setSettings(t, { enabled: false });
+
+		// With an immediate-mode adapter this is provider-launch limbo.
+		await sweepSupervisor(t.db, t.env, NOW + 6 * 60_000, { local: createFakeAdapter() });
+		expect(runById(t, runId)!.status).toBe('failed');
+		expect(runById(t, runId)!.error).toContain('no provider session');
+	});
+
+	it('a quiet poll-mode launching run with a live daemon survives the launch-stall sweep', async () => {
+		const t = world();
+		const runner = addRunner(t);
+		addRule(t, { targets: [{ runner_id: runner }] });
+		addIssue(t);
+		await pass(t, localAdapter);
+		const runId = runs(t)[0].id as string;
+		// Delivered to the daemon (assigned → launching), which is quietly
+		// cloning / running a harness that has emitted nothing yet: never a
+		// session id, and `running` only arrives at the first log flush.
+		t.sqlite.prepare(`UPDATE agent_run SET status = 'launching' WHERE id = ?`).run(runId);
+		// The daemon is alive and polling.
+		t.sqlite
+			.prepare('UPDATE runner SET last_seen_at = ? WHERE id = ?')
+			.run(NOW + 6 * 60_000 - 10_000, runner);
+		setSettings(t, { enabled: false });
+
+		// Default adapters: local is poll-mode, so the run is left alone —
+		// its liveness is owned_runs, the offline rule, and the timeout.
+		await sweepSupervisor(t.db, t.env, NOW + 6 * 60_000);
+		expect(runById(t, runId)!.status).toBe('launching');
+		expect(runnerById(t, runner).launch_failures).toBe(0);
+	});
+
+	it('a launching local run whose daemon went offline is failed by the offline rule', async () => {
+		const t = world();
+		const runner = addRunner(t);
+		addRule(t, { targets: [{ runner_id: runner }] });
+		const issue = addIssue(t);
+		await pass(t, localAdapter);
+		const runId = runs(t)[0].id as string;
+		t.sqlite.prepare(`UPDATE agent_run SET status = 'launching' WHERE id = ?`).run(runId);
+		// Daemon dead since delivery: nothing else would ever reap this run.
 		setSettings(t, { enabled: false });
 
 		await sweepSupervisor(t.db, t.env, NOW + 6 * 60_000);
-		expect(runById(t, runId)!.status).toBe('failed');
-		expect(runById(t, runId)!.error).toContain('no provider session');
+		const run = runById(t, runId)!;
+		expect(run.status).toBe('failed');
+		expect(run.error).toBe('runner offline');
+		// Never started: ended without judgment, so no strike on the issue.
+		expect(issueById(t, issue).attempt_count).toBe(0);
 	});
 
 	it('revokes expired run keys even when the run end was never detected', async () => {
