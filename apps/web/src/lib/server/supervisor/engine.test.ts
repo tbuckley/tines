@@ -1,14 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import type { ActorContext } from '../api/core';
-import { resumeIssue, transitionIssue } from '../api/issues';
+import { listIssues, resumeIssue, transitionIssue } from '../api/issues';
 import { createTestDb, type TestDb } from '../api/test-db';
 import { localAdapter } from './adapter';
 import {
 	cancelRun,
 	claimRun,
 	endRun,
+	launchClaimedRun,
 	loadEligibleIssues,
 	loadEndableRun,
+	loadEngineRunners,
 	runDispatchPass,
 	sweepSupervisor
 } from './engine';
@@ -136,6 +138,49 @@ describe('eligibility', () => {
 		const result = await pass(t);
 		expect(result.claimed).toBe(1);
 		expect(runs(t)[0].issue_id).toBe('iss_stale');
+	});
+});
+
+describe('readiness equivalence with the issues API', () => {
+	// The engine's raw eligibility CTE and issues.ts's Kysely-built readiness
+	// are two renderings of one rule; this matrix pins them together for the
+	// shapes most likely to diverge (dup-of-dup resolution, link cycles).
+	it('loadEligibleIssues membership matches serialized readiness across the fixture matrix', async () => {
+		const t = world();
+		const plain = addIssue(t); // eligible baseline
+		const blocked = addIssue(t);
+		const openBlocker = addIssue(t, { state: REVIEW });
+		// Blocker cycle (race-created; write-time checks normally reject it):
+		// both effectively open, so both block each other — and neither query
+		// may loop forever resolving it.
+		const cycleA = addIssue(t);
+		const cycleB = addIssue(t);
+		// Dup-of-dup: the blocker's chain terminates on a done issue, so it
+		// does not block; the duplicates themselves are never dispatchable.
+		const dupBlocked = addIssue(t);
+		const dupBlocker = addIssue(t);
+		const dupMiddle = addIssue(t);
+		const dupDone = addIssue(t, { state: CLOSED });
+		t.sqlite.exec(`
+			INSERT INTO issue_link (id, source_issue_id, target_issue_id, kind, created_at) VALUES
+				('l_b', '${openBlocker}', '${blocked}', 'blocks', ${NOW}),
+				('l_c1', '${cycleA}', '${cycleB}', 'blocks', ${NOW}),
+				('l_c2', '${cycleB}', '${cycleA}', 'blocks', ${NOW}),
+				('l_db', '${dupBlocker}', '${dupBlocked}', 'blocks', ${NOW}),
+				('l_d1', '${dupBlocker}', '${dupMiddle}', 'duplicate_of', ${NOW}),
+				('l_d2', '${dupMiddle}', '${dupDone}', 'duplicate_of', ${NOW});
+		`);
+
+		const eligible = new Set((await loadEligibleIssues(t.db, USER)).map((c) => c.id));
+		expect(eligible).toEqual(new Set([plain, dupBlocked]));
+
+		// Equivalence: eligible ⇔ ready (per the issues API) ∧ effective
+		// category active — no runs or parking in this fixture.
+		const ready = await listIssues(t.db, USER, { ready: true }, { cursor: null, limit: 100 });
+		const expected = new Set(
+			ready.items.filter((i) => i.effective_state.category === 'active').map((i) => i.id)
+		);
+		expect(eligible).toEqual(expected);
 	});
 });
 
@@ -446,6 +491,49 @@ describe('launch failures', () => {
 		expect(r.backoff_until).toBeNull();
 	});
 
+	it('a cancel landing between claim and launch revokes the late key and never launches', async () => {
+		const t = world();
+		const fake = createFakeAdapter();
+		const runnerId = addRunner(t);
+		const issue = addIssue(t);
+		await claimRun(t.db, t.env, {
+			runId: 'arun_race',
+			userId: USER,
+			issueId: issue,
+			stateId: OPEN,
+			runnerId,
+			maxConcurrent: 1,
+			tier: 'balanced',
+			model: null,
+			quota: { type: 'global_cap', limit: 10 },
+			now: NOW
+		});
+		// The cancel wins the race before the assigned→launching flip.
+		expect((await cancelRun(t.db, t.env, USER, 'arun_race')).kind).toBe('canceled');
+
+		const runner = (await loadEngineRunners(t.db, USER)).get(runnerId)!;
+		const outcome = await launchClaimedRun(t.db, t.env, fake, {
+			userId: USER,
+			runId: 'arun_race',
+			issueId: issue,
+			projectId: PROJECT,
+			runner,
+			tier: 'balanced',
+			model: null,
+			now: NOW
+		});
+		expect(outcome).toBe('lost');
+		// No provider session, no started event, no runner backoff…
+		expect(fake.launches).toHaveLength(0);
+		expect(eventsOfType(t, 'agent_run.started')).toHaveLength(0);
+		expect(runnerById(t, runnerId).launch_failures).toBe(0);
+		// …and the key minted after the cancel's revocation sweep is dead too.
+		const key = keyForRun(t, 'arun_race');
+		expect(key).toBeDefined();
+		expect(key!.revoked_at).not.toBeNull();
+		expect(runById(t, 'arun_race')!.status).toBe('canceled');
+	});
+
 	it('consecutive failures double the backoff', async () => {
 		const t = world();
 		const fake = createFakeAdapter();
@@ -564,6 +652,37 @@ describe('end judgment', () => {
 		expect((await endRun(t.db, t.env, run!, { status: 'canceled', now: NOW + 2000 })).ended).toBe(false);
 		expect(issueById(t, issue).attempt_count).toBe(1);
 		expect(eventsOfType(t, 'agent_run.ended')).toHaveLength(1);
+	});
+
+	it('two ends with identical status and clock still apply exactly once', async () => {
+		// Two sweeps derive the same `now` from controller.scheduledTime, so
+		// the losing end may match the winner on (status, ended_at) exactly —
+		// the flip-first CAS, not the guard values, must decide ownership.
+		const t = world();
+		const { issue, runId } = await runningRun(t);
+		const run = await loadEndableRun(t.db, USER, runId);
+		const first = await endRun(t.db, t.env, run!, { status: 'timed_out', now: NOW + 1000 });
+		const second = await endRun(t.db, t.env, run!, { status: 'timed_out', now: NOW + 1000 });
+		expect(first.ended).toBe(true);
+		expect(second).toEqual({ ended: false, outcome: null, parked: false });
+		expect(issueById(t, issue).attempt_count).toBe(1);
+		expect(eventsOfType(t, 'agent_run.ended')).toHaveLength(1);
+		expect(eventsOfType(t, 'issue.parked')).toHaveLength(0);
+	});
+
+	it('a manual attempt-count reset racing the end is never overwritten with a stale count', async () => {
+		const t = world();
+		setSettings(t, { attemptLimit: 3 });
+		const { issue, runId } = await runningRun(t, { attemptCount: 2 });
+		const run = await loadEndableRun(t.db, USER, runId);
+		// A human resets the budget while the end is in flight: the strike must
+		// land as 0+1, not the stale 2+1 (which would have parked the issue).
+		t.sqlite.prepare('UPDATE issue SET attempt_count = 0 WHERE id = ?').run(issue);
+		const outcome = await endRun(t.db, t.env, run!, { status: 'completed', now: NOW + 1000 });
+		expect(outcome.parked).toBe(false);
+		expect(issueById(t, issue).attempt_count).toBe(1);
+		expect(issueById(t, issue).needs_attention).toBe(0);
+		expect(eventsOfType(t, 'issue.parked')).toHaveLength(0);
 	});
 
 	it('canceling a never-started (assigned) run is free: no judgment, no strike', async () => {

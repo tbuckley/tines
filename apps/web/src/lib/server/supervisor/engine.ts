@@ -18,6 +18,7 @@ import {
 } from '@tines/shared';
 import type { D1Result } from '@cloudflare/workers-types';
 import { sql, type CompiledQuery, type Kysely, type RawBuilder } from 'kysely';
+import { sha256Hex } from '../crypto';
 import { getDb, newId, randomString, type Database } from '../db';
 import { defaultAdapters, type AdapterRegistry, type RunnerAdapter } from './adapter';
 import {
@@ -42,11 +43,6 @@ export interface DispatchPassOptions {
 async function runBatch(env: Env, queries: CompiledQuery[]): Promise<D1Result[]> {
 	if (queries.length === 0) return [];
 	return env.DB.batch(queries.map((q) => env.DB.prepare(q.sql).bind(...(q.parameters as unknown[]))));
-}
-
-async function sha256Hex(input: string): Promise<string> {
-	const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(input));
-	return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
 /**
@@ -299,12 +295,20 @@ export async function claimRun(
 // Launching (immediate-mode adapters; local runs wait for poll delivery)
 
 /**
+ * 'launched': the run reached `running`. 'launch_failed': the adapter threw
+ * (backoff applied; the pass tries the next target). 'lost': the run was
+ * ended (canceled, swept) between the claim and the launching flip — the
+ * pass stands down on this issue.
+ */
+type LaunchOutcome = 'launched' | 'launch_failed' | 'lost';
+
+/**
  * Mints the run key, flips the claim to `launching`, calls the adapter, and
  * records the outcome. A thrown launch is a launch failure — error on the
  * run, exponential backoff and a `runner.errored` event on the *runner*,
- * never a strike on the issue. Returns whether the run reached `running`.
+ * never a strike on the issue.
  */
-async function launchClaimedRun(
+export async function launchClaimedRun(
 	db: Kysely<Database>,
 	env: Env,
 	adapter: RunnerAdapter,
@@ -318,11 +322,11 @@ async function launchClaimedRun(
 		model: string | null;
 		now: number;
 	}
-): Promise<boolean> {
+): Promise<LaunchOutcome> {
 	const { runner } = ctx;
 	const secret = `tines_${randomString(40)}`;
 	const keyId = newId('key');
-	await runBatch(env, [
+	const [, flip] = await runBatch(env, [
 		db
 			.insertInto('api_key')
 			.values({
@@ -345,6 +349,15 @@ async function launchClaimedRun(
 			.where('status', '=', 'assigned')
 			.compile()
 	]);
+	if ((flip?.meta.changes ?? 0) === 0) {
+		// The run was ended (canceled or swept) between the claim and this
+		// flip. The key minted alongside it post-dates endRun's revocation
+		// sweep, so it must die here — and no provider session is created.
+		await runBatch(env, [
+			db.updateTable('api_key').set({ revoked_at: ctx.now }).where('id', '=', keyId).compile()
+		]);
+		return 'lost';
+	}
 
 	try {
 		const launched = await adapter.launch({
@@ -406,7 +419,7 @@ async function launchClaimedRun(
 				startedGuard
 			)
 		]);
-		return true;
+		return 'launched';
 	} catch (e) {
 		const message = e instanceof Error ? e.message : String(e);
 		await failLaunch(db, env, {
@@ -416,7 +429,7 @@ async function launchClaimedRun(
 			error: message,
 			now: ctx.now
 		});
-		return false;
+		return 'launch_failed';
 	}
 }
 
@@ -554,17 +567,21 @@ export async function runDispatchPass(
 				model: resolved.model,
 				now
 			});
-			if (launched) {
+			if (launched === 'launched') {
 				result.launched += 1;
 				break;
 			}
-			// Launch failure: the claim is released (run failed), so undo the
-			// counts and try the next runner in the preference list — the issue
-			// didn't fail, the pipe did.
+			// Either way the claim is released (the run is terminal): undo the
+			// counts this pass tracked for it.
 			result.claimed -= 1;
 			counts.total -= 1;
 			counts.byRunner.set(runner.id, (counts.byRunner.get(runner.id) ?? 0) - 1);
 			counts.byStartState.set(issue.state_id, (counts.byStartState.get(issue.state_id) ?? 0) - 1);
+			// Someone ended the run mid-launch (cancel, sweep): their call —
+			// leave the issue alone this pass.
+			if (launched === 'lost') break;
+			// Launch failure: try the next runner in the preference list — the
+			// issue didn't fail, the pipe did.
 			runner.launch_failures += 1;
 			runner.backoff_until = now + launchBackoffMs(runner.launch_failures);
 		}
@@ -608,6 +625,7 @@ interface EndableRun {
 	api_key_id: string | null;
 	started_at: number | null;
 	state_id_at_start: string;
+	provider_session_id: string | null;
 	usage: string | null;
 }
 
@@ -617,8 +635,13 @@ interface EndableRun {
  * no — completed, failed, timed out, or canceled alike — a strike, parking
  * the issue at the attempt limit. Runs that never reached `running` (a
  * canceled `assigned` run, e.g.) are not judged: nothing happened yet.
- * All writes land in one batch, guarded on this caller winning the status
- * flip, so a racing sweep and cancel cannot double-strike.
+ *
+ * The status flip runs first, alone, as the CAS: whoever lands it owns the
+ * end, and a losing caller (concurrent sweep vs. cancel — possibly with an
+ * identical clock) returns before writing anything else. The dependent
+ * writes keep the flip guard as belt-and-braces, and the strike increments
+ * `attempt_count` inside the statement so a manual reset racing this end is
+ * never overwritten with a stale count.
  */
 export async function endRun(
 	db: Kysely<Database>,
@@ -643,6 +666,15 @@ export async function endRun(
 		advanced = transition !== undefined;
 	}
 
+	// The CAS: own the end before any dependent write.
+	const [flip] = await runBatch(env, [
+		sql`
+			UPDATE agent_run SET status = ${input.status}, error = ${input.error ?? null}, ended_at = ${now},
+				state_id_at_end = (SELECT state_id FROM issue WHERE id = ${run.issue_id})
+			WHERE id = ${run.id} AND status IN (${sql.join(ACTIVE)})`.compile(db)
+	]);
+	if ((flip?.meta.changes ?? 0) === 0) return { ended: false, outcome: null, parked: false };
+
 	const [issue, settings, runner] = await Promise.all([
 		db
 			.selectFrom('issue')
@@ -652,21 +684,12 @@ export async function endRun(
 		loadDispatchSettings(db, run.user_id),
 		db.selectFrom('runner').select('name').where('id', '=', run.runner_id).executeTakeFirst()
 	]);
-
 	const strike = started && !advanced;
-	const newAttempts = !started ? null : advanced ? 0 : (issue?.attempt_count ?? 0) + 1;
-	const parks = strike && newAttempts !== null && newAttempts >= settings.attemptLimit;
 
-	// Everything after the flip is guarded on the flip having landed with our
-	// exact ended_at, so a concurrent end (sweep vs. cancel) applies once.
 	const flipGuard = sql<boolean>`EXISTS (
 		SELECT 1 FROM agent_run WHERE id = ${run.id} AND status = ${input.status} AND ended_at = ${now}
 	)`;
 	const queries: CompiledQuery[] = [
-		sql`
-			UPDATE agent_run SET status = ${input.status}, error = ${input.error ?? null}, ended_at = ${now},
-				state_id_at_end = (SELECT state_id FROM issue WHERE id = ${run.issue_id})
-			WHERE id = ${run.id} AND status IN (${sql.join(ACTIVE)})`.compile(db),
 		// The run key dies with the run.
 		db
 			.updateTable('api_key')
@@ -676,14 +699,22 @@ export async function endRun(
 			.where(flipGuard)
 			.compile()
 	];
-	if (newAttempts !== null && issue) {
+	if (started && issue) {
 		queries.push(
-			db
-				.updateTable('issue')
-				.set({ attempt_count: newAttempts, needs_attention: parks ? 1 : issue.needs_attention })
-				.where('id', '=', issue.id)
-				.where(flipGuard)
-				.compile()
+			advanced
+				? db
+						.updateTable('issue')
+						.set({ attempt_count: 0 })
+						.where('id', '=', issue.id)
+						.where(flipGuard)
+						.compile()
+				: // In-statement increment and park predicate: correct even if a
+					// manual reset lands between the read above and this write.
+					sql`
+						UPDATE issue SET
+							attempt_count = attempt_count + 1,
+							needs_attention = CASE WHEN attempt_count + 1 >= ${settings.attemptLimit} THEN 1 ELSE needs_attention END
+						WHERE id = ${issue.id} AND ${flipGuard}`.compile(db)
 		);
 	}
 	queries.push(
@@ -710,7 +741,9 @@ export async function endRun(
 			flipGuard
 		)
 	);
-	if (parks && issue) {
+	// The parked event fires iff the increment above actually parked the
+	// issue — evaluated in-statement, after the update, in the same batch.
+	if (strike && issue) {
 		queries.push(
 			supervisorEvent(
 				db,
@@ -721,21 +754,25 @@ export async function endRun(
 					projectId: issue.project_id,
 					payload: {
 						run_id: run.id,
-						attempt_count: newAttempts,
+						attempt_count: issue.attempt_count + 1,
 						attempt_limit: settings.attemptLimit
 					}
 				},
 				now,
-				flipGuard
+				sql<boolean>`${flipGuard} AND EXISTS (
+					SELECT 1 FROM issue WHERE id = ${issue.id}
+						AND needs_attention = 1 AND attempt_count >= ${settings.attemptLimit}
+				)`
 			)
 		);
 	}
 	const results = await runBatch(env, queries);
-	const ended = (results[0]?.meta.changes ?? 0) === 1;
+	// Whether the park landed is the last statement's rows-affected.
+	const parked = strike && issue !== undefined && (results[results.length - 1]?.meta.changes ?? 0) === 1;
 	return {
-		ended,
-		outcome: ended && started ? (advanced ? 'advanced' : 'stalled') : null,
-		parked: ended && parks
+		ended: true,
+		outcome: started ? (advanced ? 'advanced' : 'stalled') : null,
+		parked
 	};
 }
 
@@ -756,6 +793,7 @@ export async function loadEndableRun(
 			'api_key_id',
 			'started_at',
 			'state_id_at_start',
+			'provider_session_id',
 			'usage'
 		])
 		.where('id', '=', runId)
@@ -788,16 +826,11 @@ export async function cancelRun(
 		.executeTakeFirst();
 	const adapter = runner ? adapters[runner.type] : undefined;
 	if (adapter) {
-		const session = await db
-			.selectFrom('agent_run')
-			.select('provider_session_id')
-			.where('id', '=', run.id)
-			.executeTakeFirst();
 		try {
 			await adapter.cancel({
 				id: run.id,
 				runner_id: run.runner_id,
-				provider_session_id: session?.provider_session_id ?? null
+				provider_session_id: run.provider_session_id
 			});
 		} catch (e) {
 			// Best-effort: a dead session is what we wanted anyway.
@@ -817,7 +850,6 @@ export async function sweepSupervisor(
 	now: number = Date.now(),
 	adapters: AdapterRegistry = defaultAdapters
 ): Promise<void> {
-
 	// Timeout enforcement: running runs past their runner's max_run_minutes.
 	const overdue = await db
 		.selectFrom('agent_run')
@@ -832,16 +864,11 @@ export async function sweepSupervisor(
 			if (!run || run.status !== 'running') continue;
 			const adapter = adapters[row.type];
 			if (adapter) {
-				const session = await db
-					.selectFrom('agent_run')
-					.select('provider_session_id')
-					.where('id', '=', run.id)
-					.executeTakeFirst();
 				await adapter
 					.cancel({
 						id: run.id,
 						runner_id: run.runner_id,
-						provider_session_id: session?.provider_session_id ?? null
+						provider_session_id: run.provider_session_id
 					})
 					.catch((e) => console.error(`adapter cancel for run ${run.id} failed:`, e));
 			}

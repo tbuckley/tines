@@ -2,6 +2,7 @@ import type { D1Result } from '@cloudflare/workers-types';
 import type { ApiErrorBody } from '@tines/shared';
 import { json, type RequestEvent } from '@sveltejs/kit';
 import type { CompiledQuery } from 'kysely';
+import { sha256Hex } from '$lib/server/crypto';
 import { getDb } from '$lib/server/db';
 
 /** Thrown by handlers/services; converted to a structured error response. */
@@ -170,11 +171,6 @@ export function assertRunKeyAllowed(
 	if (key.agentRunId !== null && isControlPlanePath(pathname)) {
 		throw runKeyForbidden();
 	}
-}
-
-async function sha256Hex(input: string): Promise<string> {
-	const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(input));
-	return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
 export async function requireActor(event: RequestEvent): Promise<ActorContext> {
