@@ -14,9 +14,10 @@ export const POST: RequestHandler = api(async (event) => {
 	// The token is the credential; the path must name the same runner.
 	if (runner.id !== event.params.id) throw notFound();
 	const body = await readJson<RunnerPollRequest>(event);
-	const { response, cameOnline } = await pollRunner(db, env, runner, body);
-	// A poll bringing an offline runner back is capacity coming online:
-	// queue the opportunistic pass so its next poll finds work waiting.
-	if (cameOnline) queueDispatchPass({ env, ctx: event.platform?.ctx }, runner.user_id);
+	const { response, cameOnline, capRaised } = await pollRunner(db, env, runner, body);
+	// A poll bringing an offline runner back — or raising its cap — is
+	// capacity coming online: queue the opportunistic pass so its next poll
+	// finds work waiting.
+	if (cameOnline || capRaised) queueDispatchPass({ env, ctx: event.platform?.ctx }, runner.user_id);
 	return json(response);
 });

@@ -1983,8 +1983,8 @@ withCommon(
 			die('the custom harness needs --command "<template>" ({prompt_file}, {workspace}, {model})');
 		}
 		if (harness !== 'custom' && opts.command) die('--command only applies to --harness custom');
-		if (!Number.isInteger(opts.maxConcurrent) || opts.maxConcurrent < 1) {
-			die('--max-concurrent must be a positive integer');
+		if (!Number.isInteger(opts.maxConcurrent) || opts.maxConcurrent < 1 || opts.maxConcurrent > 100) {
+			die('--max-concurrent must be an integer between 1 and 100');
 		}
 		if (!Number.isInteger(opts.pollInterval) || opts.pollInterval < 1) {
 			die('--poll-interval must be a positive number of seconds');

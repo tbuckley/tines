@@ -49,8 +49,10 @@ async function runBatch(env: Env, queries: CompiledQuery[]): Promise<D1Result[]>
  * Supervisor-initiated event: attributed to the owning user with no API key
  * (the schedules-sweep pattern); the run is identified in the payload. An
  * optional guard ties the insert to another statement in the same batch.
+ * Also used by the runner protocol for daemon-initiated changes (no
+ * ActorContext exists there either).
  */
-function supervisorEvent(
+export function supervisorEvent(
 	db: Kysely<Database>,
 	userId: string,
 	input: { type: string; issueId?: string | null; projectId?: string | null; payload: Record<string, unknown> },

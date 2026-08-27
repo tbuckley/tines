@@ -874,6 +874,12 @@ export interface RunnerTokenResponse {
 export interface RunnerPollRequest {
 	/** Run ids the daemon is actually executing right now. */
 	owned_runs: string[];
+	/**
+	 * The daemon's `--max-concurrent`. When present the server adopts it as
+	 * the runner's cap, so restarting the daemon with a new flag value takes
+	 * effect without re-registering.
+	 */
+	max_concurrent?: number;
 }
 
 /** One delivered assignment: everything the daemon needs to launch. */

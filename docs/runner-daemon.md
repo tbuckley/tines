@@ -24,7 +24,7 @@ Flags:
 | `--name` | Runner name (unique per user; routing rules address it) | the hostname |
 | `--harness` | `claude-code`, `codex`, or `custom` | `claude-code` |
 | `--command` | Custom harness command template; placeholders `{prompt_file}`, `{workspace}`, `{model}` | — |
-| `--max-concurrent` | Simultaneous runs on this machine | 1 |
+| `--max-concurrent` | Simultaneous runs on this machine (1–100); sent on every poll, so a restart with a new value updates the server-side cap | 1 |
 | `--poll-interval` | Seconds between polls | 15 |
 
 Each run's workspace (under the config dir) contains `prompt.md` (supervisor preamble +
