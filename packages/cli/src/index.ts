@@ -14,6 +14,7 @@ import {
 	ApiError,
 	createApiClient,
 	describeRecurrence,
+	isStaleTierOverride,
 	JOURNAL_NAME,
 	MODEL_TIERS,
 	repoDirFromUrl,
@@ -44,6 +45,7 @@ import {
 	type TinesEvent,
 	type UpdateContextItemRequest,
 	type UpdateIssueRequest,
+	type UpdateRunnerRequest,
 	type UpdateProjectRequest,
 	type UpdateScheduleRequest,
 	type UpdateWorkflowRequest,
@@ -1932,6 +1934,156 @@ withCommon(runners.command('show <name>').description('Show a runner')).action(
 		}
 		const harness = runner.config.harness;
 		if (typeof harness === 'string') console.log(`harness: ${harness}`);
+		if (runner.type !== 'local') {
+			console.log(`api key: ${runner.has_api_key ? 'set (write-only)' : 'missing'}`);
+		}
+		if (runner.budget) {
+			const b = runner.budget;
+			const parts: string[] = [];
+			if (b.max_run_cost_usd !== undefined) parts.push(`$${b.max_run_cost_usd}/run`);
+			if (b.max_run_tokens !== undefined) parts.push(`${b.max_run_tokens.toLocaleString()} tok/run`);
+			if (b.daily_usd !== undefined) parts.push(`$${b.daily_usd}/day`);
+			if (b.daily_tokens !== undefined) parts.push(`${b.daily_tokens.toLocaleString()} tok/day`);
+			if (parts.length > 0) console.log(`budget: ${parts.join('  ')}`);
+		}
+		printTierTable(runner);
+	}
+);
+
+/** The tier mapping, shared by `runners show` and `runners tiers`. */
+function printTierTable(runner: Runner): void {
+	if (!runner.tier_models && !runner.tiers) {
+		console.log("tiers: don't apply to this runner (fixed configuration)");
+		return;
+	}
+	console.log('tiers:');
+	for (const tier of MODEL_TIERS) {
+		const override = runner.tiers?.[tier];
+		const builtin = runner.tier_models?.[tier] ?? null;
+		const model = override?.model ?? builtin ?? '(unknown)';
+		const source = override ? 'override' : 'built-in';
+		const stale = isStaleTierOverride(builtin, override?.model);
+		const marks = [
+			tier === runner.default_tier ? 'default' : null,
+			override?.effort ? `effort ${override.effort}` : null,
+			stale ? `stale — built-in is now ${builtin}` : null
+		].filter(Boolean);
+		console.log(`  ${tier}: ${model}  [${source}]${marks.length > 0 ? `  (${marks.join(', ')})` : ''}`);
+	}
+}
+
+withCommon(
+	runners
+		.command('tiers <name>')
+		.description("Show or edit a runner's tier→model mapping")
+		.option('--default <tier>', 'set the default tier (used by targets without an explicit tier)')
+		.option('--set <tier=model...>', 'override a tier with an exact model id (repeatable)')
+		.option('--unset <tier...>', 'drop an override, falling back to the built-in (repeatable)')
+).action(
+	async (
+		ref: string,
+		opts: CommonOpts & { default?: string; set?: string[]; unset?: string[] }
+	) => {
+		const api = client(opts);
+		const runner = await resolveRunner(api, ref);
+		const patch: UpdateRunnerRequest = {};
+		if (opts.default !== undefined) {
+			if (!(MODEL_TIERS as readonly string[]).includes(opts.default)) {
+				die(`unknown tier "${opts.default}" (tiers: ${MODEL_TIERS.join(', ')})`);
+			}
+			patch.default_tier = opts.default as ModelTier;
+		}
+		if (opts.set?.length || opts.unset?.length) {
+			const tiers: Record<string, { model: string; effort?: string } | undefined> = {
+				...(runner.tiers ?? {})
+			};
+			for (const entry of opts.set ?? []) {
+				const eq = entry.indexOf('=');
+				if (eq === -1) die(`--set takes <tier>=<model-id>, got "${entry}"`);
+				const tier = entry.slice(0, eq);
+				const model = entry.slice(eq + 1);
+				if (!(MODEL_TIERS as readonly string[]).includes(tier)) {
+					die(`unknown tier "${tier}" (tiers: ${MODEL_TIERS.join(', ')})`);
+				}
+				if (!model) die(`--set ${tier}= needs a model id`);
+				tiers[tier] = { ...tiers[tier], model };
+			}
+			for (const tier of opts.unset ?? []) {
+				if (!(MODEL_TIERS as readonly string[]).includes(tier)) {
+					die(`unknown tier "${tier}" (tiers: ${MODEL_TIERS.join(', ')})`);
+				}
+				delete tiers[tier];
+			}
+			patch.tiers = Object.keys(tiers).length > 0 ? (tiers as UpdateRunnerRequest['tiers']) : null;
+		}
+		const updated =
+			Object.keys(patch).length > 0 ? await api.updateRunner(runner.id, patch) : runner;
+		if (opts.json) return printJson(updated);
+		console.log(`${updated.name}  (${updated.type})  default tier: ${updated.default_tier}`);
+		printTierTable(updated);
+		if (Object.keys(patch).length > 0) {
+			console.log('changes apply at the next launch; running work is untouched.');
+		}
+	}
+);
+
+withCommon(
+	runners
+		.command('budget <name>')
+		.description("Set or clear a runner's money limits (per-run caps enforce now; daily limits arrive with the budgets milestone)")
+		.option('--max-run-usd <n>', 'hard per-run cost cap (platform-enforced on Claude runners)')
+		.option('--max-run-tokens <n>', 'hard per-run token cap (input + output)')
+		.option('--daily-usd <n>', 'daily USD limit (stored now, enforced by the budgets milestone)')
+		.option('--daily-tokens <n>', 'daily token limit (stored now, enforced by the budgets milestone)')
+		.option('--clear', 'remove all limits')
+).action(
+	async (
+		ref: string,
+		opts: CommonOpts & {
+			maxRunUsd?: string;
+			maxRunTokens?: string;
+			dailyUsd?: string;
+			dailyTokens?: string;
+			clear?: boolean;
+		}
+	) => {
+		const api = client(opts);
+		const runner = await resolveRunner(api, ref);
+		const flags = [opts.maxRunUsd, opts.maxRunTokens, opts.dailyUsd, opts.dailyTokens].some(
+			(v) => v !== undefined
+		);
+		if (opts.clear && flags) die('--clear cannot be combined with limit flags');
+		let updated = runner;
+		if (opts.clear) {
+			updated = await api.updateRunner(runner.id, { budget: null });
+		} else if (flags) {
+			const num = (value: string, flag: string): number => {
+				const n = Number(value);
+				if (!Number.isFinite(n) || n <= 0) die(`${flag} must be a positive number, got "${value}"`);
+				return n;
+			};
+			updated = await api.updateRunner(runner.id, {
+				budget: {
+					...(runner.budget ?? {}),
+					...(opts.maxRunUsd !== undefined ? { max_run_cost_usd: num(opts.maxRunUsd, '--max-run-usd') } : {}),
+					...(opts.maxRunTokens !== undefined
+						? { max_run_tokens: num(opts.maxRunTokens, '--max-run-tokens') }
+						: {}),
+					...(opts.dailyUsd !== undefined ? { daily_usd: num(opts.dailyUsd, '--daily-usd') } : {}),
+					...(opts.dailyTokens !== undefined ? { daily_tokens: num(opts.dailyTokens, '--daily-tokens') } : {})
+				}
+			});
+		}
+		if (opts.json) return printJson(updated);
+		const b = updated.budget;
+		if (!b) return console.log(`no limits on "${updated.name}"`);
+		console.log(`limits on "${updated.name}":`);
+		if (b.max_run_cost_usd !== undefined) console.log(`  $${b.max_run_cost_usd} per run`);
+		if (b.max_run_tokens !== undefined) console.log(`  ${b.max_run_tokens.toLocaleString()} tokens per run`);
+		if (b.daily_usd !== undefined) console.log(`  $${b.daily_usd} per day (enforced by the budgets milestone)`);
+		if (b.daily_tokens !== undefined) {
+			console.log(`  ${b.daily_tokens.toLocaleString()} tokens per day (enforced by the budgets milestone)`);
+		}
 	}
 );
 
@@ -2046,6 +2198,16 @@ withCommon(
 
 const runsCmd = program.command('runs').description('Agent runs: attempts at issues by runners');
 
+/** Run cost for a row: dollars where known, tokens where only they are, honest markers otherwise. */
+function runCostLabel(run: AgentRun): string {
+	const usage = run.usage;
+	if (!usage) return '—';
+	if (usage.cost_usd !== undefined) return `$${usage.cost_usd.toFixed(2)}`;
+	if (usage.cost_source === 'none') return 'unreported';
+	const tokens = (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0);
+	return tokens > 0 ? `${tokens.toLocaleString()} tok` : '—';
+}
+
 function runRow(run: AgentRun): string[] {
 	return [
 		run.id,
@@ -2054,6 +2216,7 @@ function runRow(run: AgentRun): string[] {
 		`${run.tier}${run.model ? ` (${run.model})` : ''}`,
 		run.status,
 		runDurationLabel(run),
+		runCostLabel(run),
 		timestamp(run.created_at)
 	];
 }
@@ -2078,7 +2241,7 @@ withList(
 	});
 	printList(res, opts, (items) => {
 		if (items.length === 0) return console.log(opts.active ? 'no active runs' : 'no runs');
-		table([['ID', 'ISSUE', 'RUNNER', 'TIER', 'STATUS', 'DURATION', 'CREATED'], ...items.map(runRow)]);
+		table([['ID', 'ISSUE', 'RUNNER', 'TIER', 'STATUS', 'DURATION', 'COST', 'CREATED'], ...items.map(runRow)]);
 	});
 });
 
@@ -2100,6 +2263,16 @@ withCommon(
 	console.log(
 		`created: ${timestamp(run.created_at)}  started: ${run.started_at ? timestamp(run.started_at) : '—'}  ended: ${run.ended_at ? timestamp(run.ended_at) : '—'}  duration: ${runDurationLabel(run)}`
 	);
+	if (run.usage) {
+		const u = run.usage;
+		const parts: string[] = [];
+		if (u.input_tokens !== undefined || u.output_tokens !== undefined) {
+			parts.push(`${(u.input_tokens ?? 0).toLocaleString()} in / ${(u.output_tokens ?? 0).toLocaleString()} out tokens`);
+		}
+		if (u.cost_usd !== undefined) parts.push(`$${u.cost_usd.toFixed(2)}`);
+		if (u.cost_source) parts.push(`(${u.cost_source === 'provider' ? 'provider-reported' : u.cost_source})`);
+		if (parts.length > 0) console.log(`usage: ${parts.join('  ')}`);
+	}
 	if (run.provider_session_id) console.log(`provider session: ${run.provider_session_id}`);
 	if (run.provider_url) console.log(`provider console: ${run.provider_url}`);
 	if (run.error) console.log(`error: ${run.error}`);

@@ -294,10 +294,11 @@ esac
 		await row.getByRole('button', { name: 'Logs', exact: true }).click();
 		await expect(page.getByTestId('run-log').first()).toContainText('harness start mode=work');
 
-		// The add-runner wizard is the copy-pasteable daemon bootstrap.
+		// The add-runner wizard: the local path is the copy-pasteable daemon
+		// bootstrap (the Claude managed path creates the runner server-side).
 		await page.getByRole('button', { name: 'Add runner' }).click();
-		await page.getByLabel('Name').fill('laptop-e2e');
-		const dialog = page.getByRole('dialog', { name: 'Add local runner' });
+		const dialog = page.getByRole('dialog', { name: 'Add runner' });
+		await dialog.getByLabel('Name').fill('laptop-e2e');
 		await expect(dialog).toContainText('tines runner daemon');
 		await expect(dialog).toContainText('--name laptop-e2e');
 		await expect(dialog).toContainText('registers');

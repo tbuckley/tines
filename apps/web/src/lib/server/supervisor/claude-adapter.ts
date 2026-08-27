@@ -542,6 +542,33 @@ export function createClaudeAdapter(env: Env, opts: ClaudeAdapterOptions = {}): 
 			}
 		}
 
+		// Vault fallback sweep, by name: a run canceled between vault creation
+		// and the running-flip never records `provider_meta`, so the GC above
+		// cannot see its vault. Per-run vaults are named `tines-run-<id>`,
+		// which makes them findable regardless — delete any whose run is
+		// unknown or ended.
+		try {
+			const vaults = await ctx.client.beta.vaults.list({ limit: 100 });
+			for (const vault of vaults.data) {
+				const runId = vault.display_name?.startsWith('tines-run-')
+					? vault.display_name.slice('tines-run-'.length)
+					: null;
+				if (!runId) continue; // not ours — never touch foreign vaults
+				const run = await db
+					.selectFrom('agent_run')
+					.select(['id', 'status', 'created_at'])
+					.where('id', '=', runId)
+					.executeTakeFirst();
+				if (run && ['assigned', 'launching', 'running'].includes(run.status)) continue;
+				// A vault whose run row is missing entirely could be an in-flight
+				// launch racing this sweep (vault created, claim row… no — the
+				// claim precedes the vault). Missing = deleted runner history.
+				await ctx.client.beta.vaults.delete(vault.id).catch(() => {});
+			}
+		} catch (e) {
+			console.error(`claude sweep: vault reconciliation for runner ${runner.id} failed:`, e);
+		}
+
 		// Launch reconciliation, provider side: live sessions tagged with a run
 		// id that is unknown or already ended are orphans (a crash between
 		// session create and the DB write) — cancel them. Freshly created
