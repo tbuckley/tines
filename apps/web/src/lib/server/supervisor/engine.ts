@@ -678,13 +678,16 @@ export async function endRun(
 
 	let advanced = false;
 	if (started && run.api_key_id) {
+		// Authorship by the run's key IS "during the run": the key is minted at
+		// delivery and dies with the run, so no time bound is needed — and one
+		// would misjudge local runs, where `started_at` lands at the first log
+		// flush, possibly *after* an eager agent's transition.
 		const transition = await db
 			.selectFrom('event')
 			.select('id')
 			.where('type', '=', 'issue.transitioned')
 			.where('actor_api_key_id', '=', run.api_key_id)
 			.where('issue_id', '=', run.issue_id)
-			.where('created_at', '>=', run.started_at!)
 			.limit(1)
 			.executeTakeFirst();
 		advanced = transition !== undefined;
