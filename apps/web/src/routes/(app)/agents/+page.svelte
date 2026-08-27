@@ -6,7 +6,9 @@
 	import IconArrowRight from '@tabler/icons-svelte/icons/arrow-right';
 	import IconArrowUp from '@tabler/icons-svelte/icons/arrow-up';
 	import IconCloud from '@tabler/icons-svelte/icons/cloud';
+	import IconCopy from '@tabler/icons-svelte/icons/copy';
 	import IconDeviceLaptop from '@tabler/icons-svelte/icons/device-laptop';
+	import IconKey from '@tabler/icons-svelte/icons/key';
 	import IconPlus from '@tabler/icons-svelte/icons/plus';
 	import IconRobot from '@tabler/icons-svelte/icons/robot';
 	import IconTrash from '@tabler/icons-svelte/icons/trash';
@@ -16,6 +18,7 @@
 	import { api } from '$lib/api';
 	import ContextScopeChips from '$lib/components/ContextScopeChips.svelte';
 	import Modal from '$lib/components/Modal.svelte';
+	import RunLogViewer from '$lib/components/RunLogViewer.svelte';
 	import StateBadge from '$lib/components/StateBadge.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
@@ -35,17 +38,33 @@
 	// --- kill switch -------------------------------------------------------------
 
 	let togglingEnabled = $state(false);
-	async function setEnabled(on: boolean) {
+	let disableConfirmOpen = $state(false);
+	/** Runs the switch alone would leave finishing (assigned ones cancel free). */
+	const inFlightRuns = $derived(
+		data.runs.filter((r) => r.status === 'launching' || r.status === 'running')
+	);
+
+	async function setEnabled(on: boolean, cancelInFlight = false) {
 		if (togglingEnabled) return;
 		togglingEnabled = true;
 		try {
-			await api.updateSupervisorSettings({ enabled: on });
+			await api.updateSupervisorSettings({
+				enabled: on,
+				...(cancelInFlight ? { cancel_in_flight: true } : {})
+			});
+			disableConfirmOpen = false;
 			await invalidateAll();
 		} catch (err) {
 			showError(err);
 		} finally {
 			togglingEnabled = false;
 		}
+	}
+
+	/** Turning off is usually a panic action: offer the bulk cancel when work is in flight. */
+	function requestDisable() {
+		if (inFlightRuns.length > 0) disableConfirmOpen = true;
+		else void setEnabled(false);
 	}
 
 	// --- runners -----------------------------------------------------------------
@@ -60,36 +79,62 @@
 		return runner.online ? 'bg-emerald-500' : 'bg-muted-foreground/40';
 	}
 
+	// The add-runner wizard shows the bootstrap command — the daemon registers
+	// itself on first start, so nothing is created here.
 	let addRunnerOpen = $state(false);
 	let runnerName = $state('');
-	let runnerHarness = $state('claude_code');
+	let runnerHarness = $state('claude-code');
 	let runnerCommand = $state('');
 	let runnerMaxConcurrent = $state(1);
-	let runnerMaxMinutes = $state(30);
-	let runnerTier = $state<ModelTier>('balanced');
-	let creatingRunner = $state(false);
+	let commandCopied = $state(false);
 
-	async function createRunner(e: SubmitEvent) {
-		e.preventDefault();
-		if (creatingRunner) return;
-		creatingRunner = true;
+	const bootstrapCommand = $derived.by(() => {
+		const origin = typeof location !== 'undefined' ? location.origin : '<tines-url>';
+		const parts = [
+			'TINES_API_KEY=<your-api-key>',
+			'tines runner daemon',
+			`--url ${origin}`,
+			`--name ${runnerName.trim() || '<name>'}`,
+			`--harness ${runnerHarness}`
+		];
+		if (runnerHarness === 'custom') {
+			parts.push(`--command '${(runnerCommand || '<template>').replaceAll("'", `'\\''`)}'`);
+		}
+		if (runnerMaxConcurrent !== 1) parts.push(`--max-concurrent ${runnerMaxConcurrent}`);
+		return parts.join(' \\\n  ');
+	});
+
+	async function copyBootstrapCommand() {
 		try {
-			await api.createRunner({
-				type: 'local',
-				name: runnerName.trim(),
-				max_concurrent: runnerMaxConcurrent,
-				max_run_minutes: runnerMaxMinutes,
-				default_tier: runnerTier,
-				config: runnerHarness === 'custom' ? { harness: runnerHarness, command: runnerCommand } : { harness: runnerHarness }
-			});
-			addRunnerOpen = false;
-			runnerName = '';
-			runnerCommand = '';
+			await navigator.clipboard.writeText(bootstrapCommand);
+			commandCopied = true;
+			setTimeout(() => (commandCopied = false), 2000);
+		} catch {
+			// Clipboard unavailable (permissions): the text stays selectable.
+		}
+	}
+
+	// --- rotate-token: invalidate in place, show the new token exactly once ------
+
+	let rotatedToken = $state<{ runnerName: string; token: string } | null>(null);
+	let rotatingRunnerId = $state<string | null>(null);
+
+	async function rotateToken(runner: Runner) {
+		if (
+			!confirm(
+				`Rotate the token for "${runner.name}"? The old token dies now — the daemon's next poll gets a 401 until it adopts the new one.`
+			)
+		)
+			return;
+		rotatingRunnerId = runner.id;
+		try {
+			const rotated = await api.rotateRunnerToken(runner.id);
+			rotatedToken = { runnerName: rotated.runner.name, token: rotated.runner_token };
 			await invalidateAll();
 		} catch (err) {
 			showError(err);
 		} finally {
-			creatingRunner = false;
+			rotatingRunnerId = null;
 		}
 	}
 
@@ -145,6 +190,9 @@
 		);
 		return utilizationLabel(data.settings.quota, activeRuns, (id) => stateNames.get(id) ?? id);
 	});
+
+	/** Run rows expanded to their log-tail viewer. */
+	let expandedLogs = $state<Record<string, boolean>>({});
 
 	async function cancelRun(run: AgentRun) {
 		if (!confirm(`Cancel this run on ${run.runner_name}? Unless the agent already moved the issue, this counts as a strike.`)) return;
@@ -357,11 +405,22 @@
 							<span class="text-amber-600 dark:text-amber-400">· {runner.launch_failures} launch failures</span>
 						{/if}
 					</p>
-					<div class="flex gap-2">
+					<div class="flex flex-wrap gap-2">
 						{#if runner.status === 'paused'}
 							<Button size="sm" variant="outline" onclick={() => setRunnerStatus(runner, 'active')}>Resume</Button>
 						{:else}
 							<Button size="sm" variant="outline" onclick={() => setRunnerStatus(runner, 'paused')}>Pause</Button>
+						{/if}
+						{#if runner.type === 'local'}
+							<Button
+								size="sm"
+								variant="ghost"
+								disabled={rotatingRunnerId === runner.id}
+								title="Invalidate the runner token and mint a fresh one (shown once)"
+								onclick={() => rotateToken(runner)}
+							>
+								<IconKey size={14} /> Rotate token
+							</Button>
 						{/if}
 						<Button size="sm" variant="ghost" class="text-destructive" onclick={() => removeRunner(runner)}>
 							<IconTrash size={14} /> Remove
@@ -425,10 +484,24 @@
 					<span class="text-muted-foreground ml-auto text-xs" title={new Date(run.created_at).toLocaleString()}>
 						{relativeTime(run.created_at)}
 					</span>
+					<Button
+						size="sm"
+						variant="ghost"
+						class="h-7"
+						aria-expanded={expandedLogs[run.id] === true}
+						onclick={() => (expandedLogs = { ...expandedLogs, [run.id]: !expandedLogs[run.id] })}
+					>
+						{expandedLogs[run.id] ? 'Hide logs' : 'Logs'}
+					</Button>
 					{#if (ACTIVE_RUN_STATUSES as readonly string[]).includes(run.status)}
 						<Button size="sm" variant="ghost" class="text-destructive h-7" onclick={() => cancelRun(run)}>
 							Cancel
 						</Button>
+					{/if}
+					{#if expandedLogs[run.id]}
+						<div class="w-full" transition:slide={{ duration: dur() }}>
+							<RunLogViewer runId={run.id} />
+						</div>
 					{/if}
 				</li>
 			{/each}
@@ -531,7 +604,7 @@
 				aria-checked={data.settings.enabled}
 				aria-label="Automation kill switch"
 				disabled={togglingEnabled}
-				onclick={() => setEnabled(!data.settings.enabled)}
+				onclick={() => (data.settings.enabled ? requestDisable() : setEnabled(true))}
 				class="relative h-6 w-11 shrink-0 rounded-full transition-colors {data.settings.enabled
 					? 'bg-emerald-500'
 					: 'bg-muted-foreground/30'}"
@@ -659,23 +732,25 @@
 	</div>
 </div>
 
-<!-- add runner -->
+<!-- add runner: the copy-pasteable daemon bootstrap (the daemon registers itself) -->
 <Modal bind:open={addRunnerOpen} title="Add local runner">
-	<form onsubmit={createRunner} class="space-y-4">
-		<div class="space-y-1.5">
-			<label class="text-sm font-medium" for="runner-name">Name</label>
-			<Input id="runner-name" bind:value={runnerName} placeholder="e.g. laptop-m4" required />
-			<p class="text-muted-foreground text-xs">
-				Unique — routing rules and the CLI address runners by name.
-			</p>
-		</div>
-		<div class="space-y-1.5">
-			<label class="text-sm font-medium" for="runner-harness">Harness</label>
-			<Select id="runner-harness" bind:value={runnerHarness}>
-				<option value="claude_code">Claude Code</option>
-				<option value="codex">codex</option>
-				<option value="custom">Custom command</option>
-			</Select>
+	<div class="space-y-4">
+		<div class="grid grid-cols-2 gap-3">
+			<div class="space-y-1.5">
+				<label class="text-sm font-medium" for="runner-name">Name</label>
+				<Input id="runner-name" bind:value={runnerName} placeholder="e.g. laptop-m4" />
+				<p class="text-muted-foreground text-xs">
+					Unique — routing rules and the CLI address runners by name. Defaults to the hostname.
+				</p>
+			</div>
+			<div class="space-y-1.5">
+				<label class="text-sm font-medium" for="runner-harness">Harness</label>
+				<Select id="runner-harness" bind:value={runnerHarness}>
+					<option value="claude-code">Claude Code</option>
+					<option value="codex">codex</option>
+					<option value="custom">Custom command</option>
+				</Select>
+			</div>
 		</div>
 		{#if runnerHarness === 'custom'}
 			<div class="space-y-1.5" transition:slide={{ duration: dur() }}>
@@ -684,56 +759,113 @@
 					id="runner-command"
 					bind:value={runnerCommand}
 					placeholder={'my-agent {prompt_file} --workspace {workspace}'}
-					required
 				/>
 				<p class="text-muted-foreground text-xs">
 					Placeholders: {'{prompt_file}'}, {'{workspace}'}, {'{model}'}.
 				</p>
 			</div>
 		{/if}
-		<div class="grid grid-cols-2 gap-3">
-			<div class="space-y-1.5">
-				<label class="text-sm font-medium" for="runner-cap">Max concurrent</label>
-				<Input
-					id="runner-cap"
-					type="number"
-					min="1"
-					max="100"
-					value={runnerMaxConcurrent}
-					oninput={(e) => (runnerMaxConcurrent = Number.parseInt(e.currentTarget.value, 10) || 1)}
-				/>
-			</div>
-			<div class="space-y-1.5">
-				<label class="text-sm font-medium" for="runner-minutes">Run timeout (min)</label>
-				<Input
-					id="runner-minutes"
-					type="number"
-					min="1"
-					max="1440"
-					value={runnerMaxMinutes}
-					oninput={(e) => (runnerMaxMinutes = Number.parseInt(e.currentTarget.value, 10) || 30)}
-				/>
-			</div>
-		</div>
 		<div class="space-y-1.5">
-			<label class="text-sm font-medium" for="runner-tier">Default tier</label>
-			<Select id="runner-tier" bind:value={runnerTier}>
-				{#each MODEL_TIERS as tier (tier)}
-					<option value={tier}>{tier}</option>
-				{/each}
-			</Select>
+			<label class="text-sm font-medium" for="runner-cap">Max concurrent runs</label>
+			<Input
+				id="runner-cap"
+				type="number"
+				min="1"
+				max="100"
+				class="w-24"
+				value={runnerMaxConcurrent}
+				oninput={(e) => (runnerMaxConcurrent = Number.parseInt(e.currentTarget.value, 10) || 1)}
+			/>
 		</div>
+
+		<div class="space-y-1.5">
+			<p class="text-sm font-medium">Run this on the machine</p>
+			<div class="relative">
+				<pre class="bg-muted overflow-x-auto rounded-md border p-3 pr-10 font-mono text-xs">{bootstrapCommand}</pre>
+				<Button
+					size="icon"
+					variant="ghost"
+					class="absolute top-1.5 right-1.5 size-7"
+					aria-label="Copy the bootstrap command"
+					onclick={copyBootstrapCommand}
+				>
+					<IconCopy size={14} />
+				</Button>
+				{#if commandCopied}
+					<span class="text-muted-foreground absolute -bottom-5 right-0 text-xs">copied</span>
+				{/if}
+			</div>
+			<p class="text-muted-foreground pt-1 text-xs">
+				The first start <span class="font-medium">registers</span> the runner with your API key and
+				stores its own long-lived runner token on the machine; it appears here, online, within
+				seconds. Later starts reconnect with the stored token — the API key is only needed once.
+			</p>
+			<p class="text-muted-foreground text-xs">
+				Keep it running: the runner is infrastructure — put the daemon under launchd/systemd so it
+				survives logouts and reboots (service snippets in
+				<code class="bg-muted rounded px-1 py-0.5">docs/runner-daemon.md</code>).
+			</p>
+		</div>
+		<div class="flex justify-end">
+			<Button variant="outline" onclick={() => (addRunnerOpen = false)}>Done</Button>
+		</div>
+	</div>
+</Modal>
+
+<!-- rotated token: shown exactly once -->
+<Modal
+	open={rotatedToken !== null}
+	onclose={() => (rotatedToken = null)}
+	title="New runner token"
+>
+	{#if rotatedToken}
+		<div class="space-y-3">
+			<p class="text-sm">
+				The token for <span class="font-medium">{rotatedToken.runnerName}</span> was rotated. This is
+				the only time the new token is shown — the old one is already dead.
+			</p>
+			<pre class="bg-muted overflow-x-auto rounded-md border p-3 font-mono text-xs select-all">{rotatedToken.token}</pre>
+			<p class="text-muted-foreground text-xs">
+				The daemon's next poll gets a 401 until it adopts this token: run
+				<code class="bg-muted rounded px-1 py-0.5">tines runners rotate-token</code> on the daemon
+				machine to store it automatically, or update the entry in its config directory and restart.
+				The runner's id, history, and rule references are unchanged.
+			</p>
+			<div class="flex justify-end">
+				<Button variant="outline" onclick={() => (rotatedToken = null)}>Done</Button>
+			</div>
+		</div>
+	{/if}
+</Modal>
+
+<!-- kill-switch off: offer the bulk cancel of in-flight runs -->
+<Modal bind:open={disableConfirmOpen} title="Turn automation off?">
+	<div class="space-y-3">
+		<p class="text-sm">
+			Nothing new will dispatch, and not-yet-started assignments are canceled. But
+			<span class="font-medium">
+				{inFlightRuns.length} run{inFlightRuns.length === 1 ? ' is' : 's are'} still running
+			</span>
+			— cancel {inFlightRuns.length === 1 ? 'it' : 'them'} too?
+		</p>
 		<p class="text-muted-foreground text-xs">
-			The daemon (<code class="bg-muted rounded px-1 py-0.5">tines runner daemon</code>) will connect
-			this runner in a later milestone; for now the row exists for routing and testing.
+			Canceling counts as an ordinary cancel per run — a run that hasn't moved its issue takes a
+			strike. Left alone, running work finishes normally.
 		</p>
 		<div class="flex justify-end gap-2">
-			<Button type="button" variant="ghost" onclick={() => (addRunnerOpen = false)}>Cancel</Button>
-			<Button type="submit" disabled={creatingRunner || !runnerName.trim()}>
-				{creatingRunner ? 'Adding…' : 'Add runner'}
+			<Button variant="ghost" onclick={() => (disableConfirmOpen = false)}>Keep running</Button>
+			<Button variant="outline" disabled={togglingEnabled} onclick={() => setEnabled(false)}>
+				Turn off only
+			</Button>
+			<Button
+				variant="destructive"
+				disabled={togglingEnabled}
+				onclick={() => setEnabled(false, true)}
+			>
+				Turn off and cancel {inFlightRuns.length} run{inFlightRuns.length === 1 ? '' : 's'}
 			</Button>
 		</div>
-	</form>
+	</div>
 </Modal>
 
 <!-- rule editor -->

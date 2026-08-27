@@ -9,6 +9,7 @@
 	import { slide } from 'svelte/transition';
 	import { invalidateAll } from '$app/navigation';
 	import { api } from '$lib/api';
+	import RunLogViewer from '$lib/components/RunLogViewer.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Select } from '$lib/components/ui/select/index.js';
 	import { prefersReducedMotion, relativeTime, runStatusClass } from '$lib/format';
@@ -44,6 +45,9 @@
 	const pinDirty = $derived(
 		pinRunnerId !== (issue.pinned_runner_id ?? '') || pinTier !== (issue.pinned_tier ?? '')
 	);
+
+	/** Runs expanded to their log-tail viewer. */
+	let expandedLogs = $state<Record<string, boolean>>({});
 	let savingPin = $state(false);
 	async function savePin() {
 		if (savingPin) return;
@@ -194,12 +198,25 @@
 							<span class="text-muted-foreground ml-auto" title={new Date(run.created_at).toLocaleString()}>
 								{relativeTime(run.created_at)}
 							</span>
+							<button
+								type="button"
+								class="text-muted-foreground hover:text-foreground underline-offset-2 hover:underline"
+								aria-expanded={expandedLogs[run.id] === true}
+								onclick={() => (expandedLogs = { ...expandedLogs, [run.id]: !expandedLogs[run.id] })}
+							>
+								{expandedLogs[run.id] ? 'hide logs' : 'logs'}
+							</button>
 						</div>
 						{#if run.error}
 							<p class="text-muted-foreground mt-0.5 flex items-start gap-1">
 								<IconAlertTriangle size={12} class="mt-px shrink-0 text-amber-600 dark:text-amber-400" />
 								{run.error}
 							</p>
+						{/if}
+						{#if expandedLogs[run.id]}
+							<div transition:slide={{ duration: dur() }}>
+								<RunLogViewer runId={run.id} />
+							</div>
 						{/if}
 					</li>
 				{/each}
