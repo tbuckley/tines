@@ -5,15 +5,19 @@ import {
 	RUNNER_TYPES,
 	type CreateRunnerRequest,
 	type ModelTier,
+	type RegisterRunnerRequest,
 	type Runner,
 	type RunnerStatus,
+	type RunnerTokenResponse,
 	type RunnerType,
 	type RoutingTarget,
 	type UpdateRunnerRequest
 } from '@tines/shared';
 import { sql, type CompiledQuery, type Kysely } from 'kysely';
-import { newId, type Database } from '$lib/server/db';
-import { ApiFail, notFound, requireString, runAtomic, type ActorContext } from './core';
+import { sha256Hex } from '$lib/server/crypto';
+import { newId, randomString, type Database } from '$lib/server/db';
+import { cancelAssignedRuns } from '$lib/server/supervisor/engine';
+import { ApiFail, notFound, optionalString, requireString, runAtomic, type ActorContext } from './core';
 import { eventInsert } from './events';
 
 // ---------------------------------------------------------------------------
@@ -68,12 +72,13 @@ function validateLocalConfig(value: unknown): Record<string, unknown> {
 		throw new ApiFail(422, 'invalid_field', '"config" must be an object', { field: 'config' });
 	}
 	const config = value as Record<string, unknown>;
-	const unknown = Object.keys(config).filter((k) => !['harness', 'command'].includes(k));
+	const allowed = ['harness', 'command', 'hostname', 'platform'];
+	const unknown = Object.keys(config).filter((k) => !allowed.includes(k));
 	if (unknown.length > 0) {
 		throw new ApiFail(
 			422,
 			'invalid_field',
-			`Unknown config key${unknown.length === 1 ? '' : 's'} ${unknown.map((k) => `"${k}"`).join(', ')}; a local runner's config takes: harness, command`,
+			`Unknown config key${unknown.length === 1 ? '' : 's'} ${unknown.map((k) => `"${k}"`).join(', ')}; a local runner's config takes: ${allowed.join(', ')}`,
 			{ field: 'config', rejected_fields: unknown }
 		);
 	}
@@ -99,6 +104,11 @@ function validateLocalConfig(value: unknown): Record<string, unknown> {
 			field: 'config'
 		});
 	}
+	// Device display info, reported by the daemon at registration.
+	const hostname = optionalString(config.hostname, 'config.hostname', { max: 200 });
+	if (hostname !== undefined) out.hostname = hostname;
+	const platform = optionalString(config.platform, 'config.platform', { max: 200 });
+	if (platform !== undefined) out.platform = platform;
 	return out;
 }
 
@@ -349,7 +359,167 @@ export async function updateRunner(
 			}
 		})
 	]);
+	// Pausing stops new assignments immediately AND cancels the runner's
+	// not-yet-acknowledged `assigned` runs — nothing is running yet, so the
+	// cancel is free and the issues return to the pool. `launching`/`running`
+	// runs finish (SPEC.md "Pausing a runner").
+	if (patch.status === 'paused') {
+		await cancelAssignedRuns(db, env, { userId: actor.userId, runnerId: id }, 'runner paused');
+	}
 	return getRunner(db, actor.userId, id);
+}
+
+// ---------------------------------------------------------------------------
+// Runner tokens: registration (create/reconnect) and rotation
+
+function generateRunnerToken(): string {
+	// Distinct prefix from API keys: a runner token is a different credential
+	// kind, valid only on the protocol endpoints.
+	return `tines_rt_${randomString(40)}`;
+}
+
+/**
+ * `POST /api/v1/runners/register` (user API key or session auth): the
+ * daemon's first start creates the runner; a later start that lost its
+ * stored token reconnects by name — same row, history, and rule references,
+ * with a freshly minted token replacing the old one (which is invalidated,
+ * exactly like rotate-token).
+ */
+export async function registerRunner(
+	db: Kysely<Database>,
+	env: Env,
+	actor: ActorContext,
+	body: RegisterRunnerRequest
+): Promise<RunnerTokenResponse> {
+	const name = validateRunnerName(body.name);
+	const config = validateLocalConfig({
+		...(body.harness !== undefined ? { harness: body.harness } : {}),
+		...(body.command !== undefined ? { command: body.command } : {}),
+		...(body.hostname !== undefined ? { hostname: body.hostname } : {}),
+		...(body.platform !== undefined ? { platform: body.platform } : {})
+	});
+	const maxConcurrent =
+		body.max_concurrent === undefined ? 1 : validateBoundedInt(body.max_concurrent, 'max_concurrent', 1, 100);
+	const maxRunMinutes =
+		body.max_run_minutes === undefined
+			? 30
+			: validateBoundedInt(body.max_run_minutes, 'max_run_minutes', 1, 24 * 60);
+	const defaultTier =
+		body.default_tier === undefined ? 'balanced' : requireTier(body.default_tier, 'default_tier');
+
+	const token = generateRunnerToken();
+	const tokenHash = await sha256Hex(token);
+	const now = Date.now();
+
+	const existing = await db
+		.selectFrom('runner')
+		.select(['id', 'type'])
+		.where('user_id', '=', actor.userId)
+		.where('name', '=', name)
+		.executeTakeFirst();
+	if (existing && existing.type !== 'local') {
+		throw new ApiFail(
+			422,
+			'duplicate_runner_name',
+			`A ${existing.type} runner named "${name}" already exists; pick another --name for the daemon`,
+			{ field: 'name', existing_runner_id: existing.id }
+		);
+	}
+
+	if (existing) {
+		// Reconnect: the row, history, and rule references are untouched; only
+		// the token (and the device-reported config) change.
+		await runAtomic(env, [
+			db
+				.updateTable('runner')
+				.set({
+					config: JSON.stringify(config),
+					max_concurrent: maxConcurrent,
+					max_run_minutes: maxRunMinutes,
+					default_tier: defaultTier,
+					runner_token_hash: tokenHash,
+					last_seen_at: now,
+					updated_at: now
+				})
+				.where('id', '=', existing.id)
+				.compile(),
+			eventInsert(db, actor, {
+				type: 'runner.updated',
+				payload: { runner_id: existing.id, name, changed: ['runner_token', 'config'], reconnected: true }
+			})
+		]);
+		return { runner: await getRunner(db, actor.userId, existing.id), runner_token: token };
+	}
+
+	const id = newId('rnr');
+	await runAtomic(env, [
+		db
+			.insertInto('runner')
+			.values({
+				id,
+				user_id: actor.userId,
+				type: 'local',
+				name,
+				status: 'active',
+				max_concurrent: maxConcurrent,
+				max_run_minutes: maxRunMinutes,
+				default_tier: defaultTier,
+				tiers: null,
+				budget: null,
+				config: JSON.stringify(config),
+				secret_enc: null,
+				runner_token_hash: tokenHash,
+				last_seen_at: now,
+				launch_failures: 0,
+				backoff_until: null,
+				created_at: now,
+				updated_at: now
+			})
+			.compile(),
+		eventInsert(db, actor, {
+			type: 'runner.registered',
+			payload: { runner_id: id, name, runner_type: 'local' }
+		})
+	]);
+	return { runner: await getRunner(db, actor.userId, id), runner_token: token };
+}
+
+/**
+ * `POST /api/v1/runners/:id/rotate-token` (user auth — run keys are fenced
+ * off `/runners*`, and runner tokens cannot call outside the protocol):
+ * invalidates the old token in place and returns the new one exactly once.
+ * The runner row, history, and rule references are untouched — the daemon's
+ * next poll 401s until the user drops the new token into its config.
+ */
+export async function rotateRunnerToken(
+	db: Kysely<Database>,
+	env: Env,
+	actor: ActorContext,
+	id: string
+): Promise<RunnerTokenResponse> {
+	const runner = await db
+		.selectFrom('runner')
+		.select(['id', 'name', 'type'])
+		.where('id', '=', id)
+		.where('user_id', '=', actor.userId)
+		.executeTakeFirst();
+	if (!runner) throw notFound();
+	if (runner.type !== 'local') {
+		throw new ApiFail(422, 'invalid_runner_type', 'Only local runners carry a runner token to rotate');
+	}
+	const token = generateRunnerToken();
+	await runAtomic(env, [
+		db
+			.updateTable('runner')
+			.set({ runner_token_hash: await sha256Hex(token), updated_at: Date.now() })
+			.where('id', '=', id)
+			.compile(),
+		eventInsert(db, actor, {
+			type: 'runner.updated',
+			payload: { runner_id: id, name: runner.name, changed: ['runner_token'] }
+		})
+	]);
+	return { runner: await getRunner(db, actor.userId, id), runner_token: token };
 }
 
 // ---------------------------------------------------------------------------

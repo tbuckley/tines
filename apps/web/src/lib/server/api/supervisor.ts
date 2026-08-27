@@ -1,10 +1,13 @@
-import type {
-	QuotaPolicy,
-	SupervisorSettings,
-	UpdateSupervisorSettingsRequest
+import {
+	ACTIVE_RUN_STATUSES,
+	type QuotaPolicy,
+	type SupervisorSettings,
+	type SupervisorSettingsResponse,
+	type UpdateSupervisorSettingsRequest
 } from '@tines/shared';
 import type { Kysely } from 'kysely';
 import type { Database } from '$lib/server/db';
+import { cancelAssignedRuns, cancelRun } from '$lib/server/supervisor/engine';
 import { ApiFail, runAtomic, type ActorContext } from './core';
 import { eventInsert } from './events';
 
@@ -143,7 +146,7 @@ export async function updateSupervisorSettings(
 	env: Env,
 	actor: ActorContext,
 	body: UpdateSupervisorSettingsRequest
-): Promise<SupervisorSettings> {
+): Promise<SupervisorSettingsResponse> {
 	const current = await getSupervisorSettings(db, actor.userId);
 
 	let enabled = current.enabled;
@@ -152,6 +155,19 @@ export async function updateSupervisorSettings(
 			throw new ApiFail(422, 'invalid_field', '"enabled" must be a boolean', { field: 'enabled' });
 		}
 		enabled = body.enabled;
+	}
+	if (body.cancel_in_flight !== undefined && typeof body.cancel_in_flight !== 'boolean') {
+		throw new ApiFail(422, 'invalid_field', '"cancel_in_flight" must be a boolean', {
+			field: 'cancel_in_flight'
+		});
+	}
+	if (body.cancel_in_flight === true && enabled) {
+		throw new ApiFail(
+			422,
+			'invalid_field',
+			'"cancel_in_flight" only applies when disabling automation (send it with "enabled": false)',
+			{ field: 'cancel_in_flight' }
+		);
 	}
 	let quota = current.quota;
 	if (body.quota !== undefined) {
@@ -165,45 +181,79 @@ export async function updateSupervisorSettings(
 	if (enabled !== current.enabled) changed.push('enabled');
 	if (JSON.stringify(quota) !== JSON.stringify(current.quota)) changed.push('quota');
 	if (attemptLimit !== current.attempt_limit) changed.push('attempt_limit');
-	if (changed.length === 0 && current.updated_at !== null) return current;
 
 	const now = Date.now();
-	await runAtomic(env, [
-		// Upsert: the row is created lazily on first write, so new users keep
-		// the pure defaults (and the off kill switch) without a signup hook.
-		db
-			.insertInto('supervisor_settings')
-			.values({
-				user_id: actor.userId,
-				enabled: enabled ? 1 : 0,
-				quota: JSON.stringify(quota),
-				attempt_limit: attemptLimit,
-				budget: null,
-				pricing: null,
-				github_pat_enc: null,
-				github_pat_hint: null,
-				updated_at: now
-			})
-			.onConflict((oc) =>
-				oc.column('user_id').doUpdateSet({
+	if (changed.length > 0 || current.updated_at === null) {
+		await runAtomic(env, [
+			// Upsert: the row is created lazily on first write, so new users keep
+			// the pure defaults (and the off kill switch) without a signup hook.
+			db
+				.insertInto('supervisor_settings')
+				.values({
+					user_id: actor.userId,
 					enabled: enabled ? 1 : 0,
 					quota: JSON.stringify(quota),
 					attempt_limit: attemptLimit,
+					budget: null,
+					pricing: null,
+					github_pat_enc: null,
+					github_pat_hint: null,
 					updated_at: now
 				})
-			)
-			.compile(),
-		// Secrets (the PAT, once it exists) are elided from this payload by
-		// construction: only the three plain fields are ever reported.
-		eventInsert(db, actor, {
-			type: 'settings.updated',
-			payload: {
-				changed,
-				enabled,
-				quota,
-				attempt_limit: attemptLimit
-			}
-		})
-	]);
-	return getSupervisorSettings(db, actor.userId);
+				.onConflict((oc) =>
+					oc.column('user_id').doUpdateSet({
+						enabled: enabled ? 1 : 0,
+						quota: JSON.stringify(quota),
+						attempt_limit: attemptLimit,
+						updated_at: now
+					})
+				)
+				.compile(),
+			// Secrets (the PAT, once it exists) are elided from this payload by
+			// construction: only the three plain fields are ever reported.
+			eventInsert(db, actor, {
+				type: 'settings.updated',
+				payload: {
+					changed,
+					enabled,
+					quota,
+					attempt_limit: attemptLimit
+				}
+			})
+		]);
+	}
+
+	// The kill switch turning off behaves like pausing every runner at once:
+	// not-yet-acknowledged `assigned` runs are canceled fleet-wide (free —
+	// nothing is running yet), while `launching`/`running` runs finish…
+	let canceledRuns = 0;
+	const switchedOff = current.enabled && !enabled;
+	if (switchedOff) {
+		canceledRuns += await cancelAssignedRuns(
+			db,
+			env,
+			{ userId: actor.userId },
+			'automation disabled',
+			now
+		);
+	}
+	// …unless the disable confirmation's bulk-cancel option was taken: plain
+	// individual cancels of the in-flight runs, strikes and all — no new
+	// semantics (SPEC.md "Pausing a runner").
+	if (body.cancel_in_flight === true && !enabled) {
+		const inFlight = await db
+			.selectFrom('agent_run')
+			.select('id')
+			.where('user_id', '=', actor.userId)
+			.where('status', 'in', [...ACTIVE_RUN_STATUSES])
+			.execute();
+		for (const run of inFlight) {
+			const result = await cancelRun(db, env, actor.userId, run.id);
+			if (result.kind === 'canceled') canceledRuns += 1;
+		}
+	}
+
+	const settings: SupervisorSettingsResponse = await getSupervisorSettings(db, actor.userId);
+	if (canceledRuns > 0) settings.canceled_runs = canceledRuns;
+	return settings;
 }

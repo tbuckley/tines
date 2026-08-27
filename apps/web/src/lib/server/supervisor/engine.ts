@@ -303,6 +303,56 @@ export async function claimRun(
 type LaunchOutcome = 'launched' | 'launch_failed' | 'lost';
 
 /**
+ * The one-shot delivery flip: mints the run key and flips the claim
+ * `assigned → launching` in one guarded batch. Null = the run was ended (or
+ * already delivered) between the claim and this flip — the key minted
+ * alongside is revoked here, and the caller stands down. Shared by
+ * immediate-mode launches (below) and poll-delivery (the runner protocol),
+ * so a run is delivered exactly once even across racing polls.
+ */
+export async function mintRunKeyAndFlip(
+	db: Kysely<Database>,
+	env: Env,
+	input: { runId: string; userId: string; maxRunMinutes: number; now: number }
+): Promise<{ keyId: string; secret: string } | null> {
+	const secret = `tines_${randomString(40)}`;
+	const keyId = newId('key');
+	const [, flip] = await runBatch(env, [
+		db
+			.insertInto('api_key')
+			.values({
+				id: keyId,
+				user_id: input.userId,
+				name: `run ${input.runId}`,
+				key_hash: await sha256Hex(secret),
+				key_prefix: secret.slice(0, 14),
+				agent_run_id: input.runId,
+				expires_at: input.now + input.maxRunMinutes * 60_000 + RUN_KEY_SLACK_MS,
+				created_at: input.now,
+				last_used_at: null,
+				revoked_at: null
+			})
+			.compile(),
+		db
+			.updateTable('agent_run')
+			.set({ status: 'launching', api_key_id: keyId })
+			.where('id', '=', input.runId)
+			.where('status', '=', 'assigned')
+			.compile()
+	]);
+	if ((flip?.meta.changes ?? 0) === 0) {
+		// The run was ended (canceled or swept) between the claim and this
+		// flip. The key minted alongside it post-dates endRun's revocation
+		// sweep, so it must die here — and no provider session is created.
+		await runBatch(env, [
+			db.updateTable('api_key').set({ revoked_at: input.now }).where('id', '=', keyId).compile()
+		]);
+		return null;
+	}
+	return { keyId, secret };
+}
+
+/**
  * Mints the run key, flips the claim to `launching`, calls the adapter, and
  * records the outcome. A thrown launch is a launch failure — error on the
  * run, exponential backoff and a `runner.errored` event on the *runner*,
@@ -324,40 +374,14 @@ export async function launchClaimedRun(
 	}
 ): Promise<LaunchOutcome> {
 	const { runner } = ctx;
-	const secret = `tines_${randomString(40)}`;
-	const keyId = newId('key');
-	const [, flip] = await runBatch(env, [
-		db
-			.insertInto('api_key')
-			.values({
-				id: keyId,
-				user_id: ctx.userId,
-				name: `run ${ctx.runId}`,
-				key_hash: await sha256Hex(secret),
-				key_prefix: secret.slice(0, 14),
-				agent_run_id: ctx.runId,
-				expires_at: ctx.now + runner.max_run_minutes * 60_000 + RUN_KEY_SLACK_MS,
-				created_at: ctx.now,
-				last_used_at: null,
-				revoked_at: null
-			})
-			.compile(),
-		db
-			.updateTable('agent_run')
-			.set({ status: 'launching', api_key_id: keyId })
-			.where('id', '=', ctx.runId)
-			.where('status', '=', 'assigned')
-			.compile()
-	]);
-	if ((flip?.meta.changes ?? 0) === 0) {
-		// The run was ended (canceled or swept) between the claim and this
-		// flip. The key minted alongside it post-dates endRun's revocation
-		// sweep, so it must die here — and no provider session is created.
-		await runBatch(env, [
-			db.updateTable('api_key').set({ revoked_at: ctx.now }).where('id', '=', keyId).compile()
-		]);
-		return 'lost';
-	}
+	const minted = await mintRunKeyAndFlip(db, env, {
+		runId: ctx.runId,
+		userId: ctx.userId,
+		maxRunMinutes: runner.max_run_minutes,
+		now: ctx.now
+	});
+	if (!minted) return 'lost';
+	const { secret } = minted;
 
 	try {
 		const launched = await adapter.launch({
@@ -839,6 +863,91 @@ export async function cancelRun(
 	}
 	const outcome = await endRun(db, env, run, { status: 'canceled' });
 	return outcome.ended ? { kind: 'canceled' } : { kind: 'already_ended' };
+}
+
+/**
+ * Cancels not-yet-acknowledged `assigned` runs — free cancels: nothing is
+ * running yet, so no judgment applies and the issues return to the pool.
+ * Runner pause cancels its own; the kill switch turning off cancels
+ * fleet-wide (SPEC.md "Pausing a runner").
+ */
+export async function cancelAssignedRuns(
+	db: Kysely<Database>,
+	env: Env,
+	scope: { userId: string; runnerId?: string },
+	reason: string,
+	now: number = Date.now()
+): Promise<number> {
+	let q = db
+		.selectFrom('agent_run')
+		.select('id')
+		.where('user_id', '=', scope.userId)
+		.where('status', '=', 'assigned');
+	if (scope.runnerId) q = q.where('runner_id', '=', scope.runnerId);
+	const rows = await q.execute();
+	let canceled = 0;
+	for (const row of rows) {
+		const run = await loadEndableRun(db, scope.userId, row.id);
+		// Delivered (or settled) in the meantime: no longer a free cancel.
+		if (!run || run.status !== 'assigned') continue;
+		const outcome = await endRun(db, env, run, { status: 'canceled', error: reason, now });
+		if (outcome.ended) canceled += 1;
+	}
+	return canceled;
+}
+
+/**
+ * Flips a delivered run `launching → running` — the daemon's first log
+ * append, or a finish arriving before any output — recording `started_at`
+ * and the `agent_run.started` event. False = the run was not in `launching`
+ * (already running, or settled); losing the CAS writes nothing.
+ */
+export async function markRunRunning(
+	db: Kysely<Database>,
+	env: Env,
+	run: {
+		id: string;
+		user_id: string;
+		issue_id: string;
+		runner_id: string;
+		tier: string;
+		model: string | null;
+	},
+	now: number
+): Promise<boolean> {
+	const [flip] = await runBatch(env, [
+		db
+			.updateTable('agent_run')
+			.set({ status: 'running', started_at: now })
+			.where('id', '=', run.id)
+			.where('status', '=', 'launching')
+			.compile()
+	]);
+	if ((flip?.meta.changes ?? 0) === 0) return false;
+	const [runner, issue] = await Promise.all([
+		db.selectFrom('runner').select('name').where('id', '=', run.runner_id).executeTakeFirst(),
+		db.selectFrom('issue').select('project_id').where('id', '=', run.issue_id).executeTakeFirst()
+	]);
+	await runBatch(env, [
+		supervisorEvent(
+			db,
+			run.user_id,
+			{
+				type: 'agent_run.started',
+				issueId: run.issue_id,
+				projectId: issue?.project_id ?? null,
+				payload: {
+					run_id: run.id,
+					runner_id: run.runner_id,
+					runner_name: runner?.name ?? 'removed runner',
+					tier: run.tier,
+					model: run.model
+				}
+			},
+			now
+		)
+	]);
+	return true;
 }
 
 // ---------------------------------------------------------------------------

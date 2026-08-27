@@ -3,6 +3,13 @@ import type {
 	AgentRun,
 	AgentRunDetail,
 	ApiErrorBody,
+	AppendRunLogRequest,
+	AppendRunLogResponse,
+	FinishRunRequest,
+	RegisterRunnerRequest,
+	RunnerPollRequest,
+	RunnerPollResponse,
+	RunnerTokenResponse,
 	ApiKey,
 	ApiKeyCreated,
 	AppendContextRequest,
@@ -40,6 +47,7 @@ import type {
 	ScheduleFilters,
 	StateCategory,
 	SupervisorSettings,
+	SupervisorSettingsResponse,
 	TinesEvent,
 	TransitionIssueRequest,
 	UpdateContextItemRequest,
@@ -230,6 +238,21 @@ export function createApiClient(options: ApiClientOptions) {
 		/** Reject-by-default: 422 names referencing rules/pins unless `force`. */
 		deleteRunner: (id: string, body?: DeleteRunnerRequest) =>
 			request<void>('DELETE', `/api/v1/runners/${id}`, body),
+		/** Create/reconnect a local runner; the response's token is shown once. */
+		registerRunner: (body: RegisterRunnerRequest) =>
+			request<RunnerTokenResponse>('POST', '/api/v1/runners/register', body),
+		/** Invalidate the runner token and mint a fresh one (shown once). */
+		rotateRunnerToken: (id: string) =>
+			request<RunnerTokenResponse>('POST', `/api/v1/runners/${id}/rotate-token`),
+
+		// Local runner protocol (runner-token auth: construct the client with
+		// the runner token as `apiKey`)
+		pollRunner: (id: string, body: RunnerPollRequest) =>
+			request<RunnerPollResponse>('POST', `/api/v1/runners/${id}/poll`, body),
+		appendRunLog: (runId: string, body: AppendRunLogRequest) =>
+			request<AppendRunLogResponse>('POST', `/api/v1/runs/${runId}/logs`, body),
+		finishRun: (runId: string, body: FinishRunRequest) =>
+			request<AgentRun>('POST', `/api/v1/runs/${runId}/finish`, body),
 
 		// Agent runs
 		listRuns: (filters: RunFilters & PageParams = {}) =>
@@ -248,7 +271,7 @@ export function createApiClient(options: ApiClientOptions) {
 		// Supervisor settings
 		getSupervisorSettings: () => get<SupervisorSettings>('/api/v1/supervisor/settings'),
 		updateSupervisorSettings: (body: UpdateSupervisorSettingsRequest) =>
-			request<SupervisorSettings>('PUT', '/api/v1/supervisor/settings', body),
+			request<SupervisorSettingsResponse>('PUT', '/api/v1/supervisor/settings', body),
 
 		// API keys (create/revoke require a browser session, not a key)
 		listApiKeys: () => get<ListResponse<ApiKey>>('/api/v1/api-keys'),

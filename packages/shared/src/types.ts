@@ -732,6 +732,9 @@ export const LAUNCH_STALL_MS = 5 * 60 * 1000;
 /** Run-key expiry slack beyond `max_run_minutes`. */
 export const RUN_KEY_SLACK_MS = 10 * 60 * 1000;
 
+/** Run log tail cap; older output is truncated from the head. */
+export const RUN_LOG_MAX_BYTES = 256 * 1024;
+
 /** At most `limit` runs in launching/running across everything. */
 export interface GlobalCapQuota {
 	type: 'global_cap';
@@ -767,6 +770,18 @@ export interface UpdateSupervisorSettingsRequest {
 	enabled?: boolean;
 	quota?: QuotaPolicy;
 	attempt_limit?: number;
+	/**
+	 * Only with `enabled: false`: also cancel the in-flight (launching/running)
+	 * runs, as plain individual cancels — strikes and all. Not-yet-acknowledged
+	 * `assigned` runs are always canceled by the switch turning off.
+	 */
+	cancel_in_flight?: boolean;
+}
+
+/** `PUT /supervisor/settings` response; `canceled_runs` reports the switch-off sweep. */
+export interface SupervisorSettingsResponse extends SupervisorSettings {
+	/** Runs canceled by this write (kill switch off / bulk cancel), when any. */
+	canceled_runs?: number;
 }
 
 /** A registered executor. Secrets are never serialized. */
@@ -825,6 +840,84 @@ export interface UpdateRunnerRequest {
  */
 export interface DeleteRunnerRequest {
 	force?: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Local runner protocol (SPEC.md "Local runner protocol")
+
+/**
+ * `POST /api/v1/runners/register` — user API key auth. Creates a local
+ * runner, or reconnects an existing one by name (re-minting its token, the
+ * daemon-lost-its-config path). The response's token is shown exactly once.
+ */
+export interface RegisterRunnerRequest {
+	name: string;
+	harness?: 'claude_code' | 'codex' | 'custom';
+	/** Custom harness only: the command template. */
+	command?: string;
+	max_concurrent?: number;
+	max_run_minutes?: number;
+	default_tier?: ModelTier;
+	/** Device display info, shown on the runner card. */
+	hostname?: string;
+	platform?: string;
+}
+
+/** Register and rotate-token both hand the token over exactly once. */
+export interface RunnerTokenResponse {
+	runner: Runner;
+	/** The plaintext runner token; only its hash is stored. */
+	runner_token: string;
+}
+
+/** `POST /api/v1/runners/:id/poll` — runner-token auth. */
+export interface RunnerPollRequest {
+	/** Run ids the daemon is actually executing right now. */
+	owned_runs: string[];
+}
+
+/** One delivered assignment: everything the daemon needs to launch. */
+export interface RunnerAssignment {
+	run: AgentRun;
+	/** Supervisor preamble + stitched context + issue block, assembled at delivery. */
+	prompt: string;
+	/**
+	 * The effective-context bundle (the `tines issues context --json` shape);
+	 * the daemon writes it out in the `--out` workspace layout.
+	 */
+	bundle: EffectiveContext;
+	/** The ephemeral run key — the harness's TINES_API_KEY. Never logged. */
+	run_key: string;
+	/** Minutes until the daemon must kill the harness. */
+	timeout_minutes: number;
+}
+
+export interface RunnerPollResponse {
+	assignments: RunnerAssignment[];
+	/**
+	 * Run ids to kill WITHOUT finish-reporting: the supervisor has already
+	 * settled these (cancel, timeout, the offline sweep).
+	 */
+	cancels: string[];
+}
+
+/** `POST /api/v1/runs/:id/logs` — runner-token auth; appended to the tail. */
+export interface AppendRunLogRequest {
+	chunk: string;
+}
+
+export interface AppendRunLogResponse {
+	/** Post-append status (the first append flips `launching` → `running`). */
+	status: RunStatus;
+	log_bytes_dropped: number;
+}
+
+/** `POST /api/v1/runs/:id/finish` — runner-token auth. */
+export interface FinishRunRequest {
+	status: 'completed' | 'failed';
+	error?: string;
+	/** Whatever the harness reported (Claude Code JSON output, etc.). */
+	usage?: AgentRunUsage;
 }
 
 /** One entry of a rule's ordered preference list, as stored/sent. */

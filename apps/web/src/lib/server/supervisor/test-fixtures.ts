@@ -158,6 +158,51 @@ export function addTwoStageWorkflow(t: TestDb): void {
 	`);
 }
 
+let runSeq = 0;
+
+/** A raw agent_run row, for protocol/lifecycle scenarios that start mid-flight. */
+export function addRun(
+	t: TestDb,
+	opts: {
+		id?: string;
+		issueId: string;
+		runnerId: string;
+		status?: string;
+		tier?: ModelTier;
+		model?: string | null;
+		stateAtStart?: string;
+		apiKeyId?: string | null;
+		createdAt?: number;
+		startedAt?: number | null;
+		log?: string;
+		logBytesDropped?: number;
+	}
+): string {
+	const id = opts.id ?? `arun_${++runSeq}`;
+	t.sqlite
+		.prepare(
+			`INSERT INTO agent_run (id, user_id, issue_id, runner_id, status, tier, model,
+				state_id_at_start, api_key_id, log, log_bytes_dropped, created_at, started_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		)
+		.run(
+			id,
+			USER,
+			opts.issueId,
+			opts.runnerId,
+			opts.status ?? 'assigned',
+			opts.tier ?? 'balanced',
+			opts.model === undefined ? 'claude-sonnet-5' : opts.model,
+			opts.stateAtStart ?? OPEN,
+			opts.apiKeyId ?? null,
+			opts.log ?? '',
+			opts.logBytesDropped ?? 0,
+			opts.createdAt ?? NOW,
+			opts.startedAt ?? null
+		);
+	return id;
+}
+
 /** A raw issue.transitioned event, for end-judgment scenarios. */
 export function addTransitionEvent(
 	t: TestDb,
