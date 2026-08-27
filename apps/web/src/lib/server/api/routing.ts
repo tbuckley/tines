@@ -277,7 +277,7 @@ async function resolveRuleScope(
 		const state = await db
 			.selectFrom('workflow_state')
 			.innerJoin('workflow', 'workflow.id', 'workflow_state.workflow_id')
-			.select('workflow_state.name')
+			.select(['workflow_state.name', 'workflow_state.category'])
 			.where('workflow_state.id', '=', ids.workflowStateId)
 			.where((eb) => eb.or([eb('workflow.user_id', '=', userId), eb('workflow.user_id', 'is', null)]))
 			.executeTakeFirst();
@@ -285,6 +285,16 @@ async function resolveRuleScope(
 			throw new ApiFail(422, 'unknown_state', `Workflow state "${ids.workflowStateId}" does not exist`, {
 				field: 'workflow_state_id'
 			});
+		}
+		// The supervisor only dispatches issues whose state category is
+		// `active`, so a rule scoped to any other state can never match.
+		if (state.category !== 'active') {
+			throw new ApiFail(
+				422,
+				'state_not_dispatchable',
+				`State "${state.name}" is categorized ${state.category.replaceAll('_', ' ')} — agents only pick up issues in active states, so a rule scoped to it would never match anything. Leave the state unset to cover every active state`,
+				{ field: 'workflow_state_id', state_category: state.category }
+			);
 		}
 		stateName = state.name;
 	}

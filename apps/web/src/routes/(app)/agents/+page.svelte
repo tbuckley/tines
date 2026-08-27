@@ -207,6 +207,26 @@
 	let savingRule = $state(false);
 	let ruleWarnings = $state<ShadowWarning[]>([]);
 
+	/**
+	 * The supervisor only dispatches issues in active-category states, so only
+	 * those are valid rule scopes — a rule on a backlog/human-review/done
+	 * state could never match (the server rejects them too).
+	 */
+	const routableWorkflows = $derived(
+		data.workflows
+			.map((w) => ({ ...w, states: w.states.filter((s) => s.category === 'active') }))
+			.filter((w) => w.states.length > 0)
+	);
+	/** A pre-validation rule's scoped state that is no longer (or never was) routable. */
+	const staleRuleState = $derived.by(() => {
+		if (!ruleStateId) return null;
+		const state = data.workflows.flatMap((w) => w.states).find((s) => s.id === ruleStateId);
+		return state && state.category !== 'active' ? state : null;
+	});
+	const activeStateIds = $derived(
+		new Set(routableWorkflows.flatMap((w) => w.states.map((s) => s.id)))
+	);
+
 	function openRuleCreate() {
 		// Shadow hints belong to the last save; opening an editor stales them.
 		ruleWarnings = [];
@@ -543,6 +563,14 @@
 			{#each data.rules as rule (rule.id)}
 				<li class="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3 text-sm">
 					<ContextScopeChips scope={rule.scope} />
+					{#if rule.scope.workflow_state_id && !activeStateIds.has(rule.scope.workflow_state_id)}
+						<span
+							class="rounded-full bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-400"
+							title="This state is no longer categorized active; agents only pick up issues in active states, so this rule never matches"
+						>
+							never dispatches
+						</span>
+					{/if}
 					{#if rule.targets.length === 0}
 						<span
 							class="rounded-full bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-400"
@@ -921,8 +949,11 @@
 			<div class="space-y-1.5">
 				<label class="text-sm font-medium" for="rule-state">State</label>
 				<Select id="rule-state" bind:value={ruleStateId}>
-					<option value="">Any state</option>
-					{#each data.workflows as workflow (workflow.id)}
+					<option value="">Any active state</option>
+					{#if staleRuleState}
+						<option value={staleRuleState.id}>{staleRuleState.name} (never dispatches)</option>
+					{/if}
+					{#each routableWorkflows as workflow (workflow.id)}
 						<optgroup label={workflow.name}>
 							{#each workflow.states as state (state.id)}
 								<option value={state.id}>{state.name}</option>
@@ -932,9 +963,17 @@
 				</Select>
 			</div>
 		</div>
+		{#if staleRuleState}
+			<p class="text-xs text-amber-700 dark:text-amber-400">
+				This rule is scoped to {staleRuleState.name}, which is no longer an active state — it never
+				matches anything. Pick an active state (or "Any active state") to save.
+			</p>
+		{/if}
 		<p class="text-muted-foreground text-xs">
 			Both empty = a global rule. The most specific matching rule wins: project ∧ state, then
-			project, then state, then global — no fallback across rules.
+			project, then state, then global — no fallback across rules. Agents only pick up issues in
+			active states — backlog, human-review, and done issues never dispatch — so a global rule is
+			already a default for all agent work.
 		</p>
 
 		<div class="space-y-1.5">
@@ -1014,7 +1053,7 @@
 
 		<div class="flex justify-end gap-2">
 			<Button type="button" variant="ghost" onclick={() => (ruleModalOpen = false)}>Cancel</Button>
-			<Button type="submit" disabled={savingRule || ruleTargets.length === 0}>
+			<Button type="submit" disabled={savingRule || ruleTargets.length === 0 || staleRuleState !== null}>
 				{savingRule ? 'Saving…' : editingRule ? 'Save rule' : 'Create rule'}
 			</Button>
 		</div>
