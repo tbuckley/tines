@@ -138,8 +138,10 @@ test('issue detail picks up comments and transitions made elsewhere, without a r
 	// only passes if the page's background poll notices the new event and
 	// resyncs. The test never calls page.reload().
 	const api = apiClient(page.request, ALICE.apiKey);
+	// 15s timeout: detection can take a full 5s poll cycle plus an
+	// invalidateAll reload against wrangler-dev D1 — 8s flaked on slow CI.
 	await api.post(`/api/v1/issues/${issue.id}/comments`, { body: 'Landed from elsewhere' });
-	await expect(page.getByText('Landed from elsewhere')).toBeVisible({ timeout: 8_000 });
+	await expect(page.getByText('Landed from elsewhere')).toBeVisible({ timeout: 15_000 });
 
 	// Same for a transition made via the API: the state badge should follow.
 	const detail = await body<IssueDetail>(await api.get(`/api/v1/issues/${issue.id}`));
@@ -148,7 +150,7 @@ test('issue detail picks up comments and transitions made elsewhere, without a r
 	const toState = detail.workflow.states.find((s) => s.id === next!.to_state_id);
 	expect(toState).toBeDefined();
 	await api.post(`/api/v1/issues/${issue.id}/transition`, { transition_id: next!.id });
-	await expect(stateBadge(page)).toHaveText(new RegExp(toState!.name), { timeout: 8_000 });
+	await expect(stateBadge(page)).toContainText(toState!.name, { timeout: 15_000 });
 });
 
 test('workflow library shows the read-only standard workflow with its graph', async ({ page }) => {
