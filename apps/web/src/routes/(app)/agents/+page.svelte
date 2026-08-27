@@ -36,6 +36,7 @@
 	import CancelRunDialog from '$lib/components/CancelRunDialog.svelte';
 	import ContextScopeChips from '$lib/components/ContextScopeChips.svelte';
 	import Modal from '$lib/components/Modal.svelte';
+	import PatInstructions from '$lib/components/PatInstructions.svelte';
 	import RunLogViewer from '$lib/components/RunLogViewer.svelte';
 	import StateBadge from '$lib/components/StateBadge.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
@@ -1028,6 +1029,7 @@
 				never enters an agent's sandbox, but every run wields its full authority, so that repo set is
 				the blast radius of a compromised run.
 			</p>
+			<PatInstructions repoUrls={data.contextRepoUrls} />
 		</form>
 	</div>
 </div>
@@ -1172,6 +1174,7 @@
 								repo set is the blast radius of a compromised run. Stored once in supervisor
 								settings, shared by all managed runners.
 							</p>
+							<PatInstructions repoUrls={data.contextRepoUrls} />
 						</div>
 					{/if}
 					<div class="flex justify-end gap-2">
