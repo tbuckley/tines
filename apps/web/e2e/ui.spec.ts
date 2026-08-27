@@ -86,12 +86,34 @@ test('issue detail renders markdown, transitions, and comments', async ({ page }
 	await expect(page.locator('.markdown strong').first()).toHaveText('bold');
 
 	// The state badge starts on the initial state with named actions offered.
+	// A transition opens the dialog offering an optional comment, posted
+	// atomically (before) with the move.
 	await expect(stateBadge(page)).toHaveText(/Open/);
-	await clickUntil(page.getByRole('button', { name: /Submit for review/ }), async () => {
-		await expect(stateBadge(page)).toHaveText(/Human Review/, { timeout: 2_000 });
+	const transitionDialog = page.getByRole('dialog', { name: /Submit for review/ });
+	await clickUntil(page.getByRole('button', { name: /Submit for review/ }).first(), async () => {
+		await expect(transitionDialog).toBeVisible({ timeout: 2_000 });
 	});
-	// The allowed actions follow the new state.
+	await transitionDialog.getByLabel(/Comment/).fill('Handing off with feedback');
+	await transitionDialog.getByRole('button', { name: 'Submit for review', exact: true }).click();
+	await expect(stateBadge(page)).toHaveText(/Human Review/);
+	// The allowed actions follow the new state, and the dialog's comment is
+	// on the thread.
 	await expect(page.getByRole('button', { name: /Approve/ })).toBeVisible();
+	await expect(page.getByText('Handing off with feedback')).toBeVisible();
+
+	// Ordering: the comment was posted before the transition, so a dispatch
+	// triggered by the move already reads it.
+	const api = apiClient(page.request, ALICE.apiKey);
+	const comments = await body<{ items: { body: string; created_at: number }[] }>(
+		await api.get(`/api/v1/issues/${issue.id}/comments`)
+	);
+	const posted = comments.items.find((c) => c.body === 'Handing off with feedback');
+	expect(posted).toBeDefined();
+	const events = await body<{ items: { created_at: number }[] }>(
+		await api.get(`/api/v1/events?issue=${issue.id}&type=issue.transitioned`)
+	);
+	expect(events.items.length).toBeGreaterThanOrEqual(1);
+	expect(posted!.created_at).toBeLessThanOrEqual(Math.max(...events.items.map((e) => e.created_at)));
 
 	// Comment round-trip.
 	await page.getByPlaceholder(/Leave a comment/).fill('From the browser');

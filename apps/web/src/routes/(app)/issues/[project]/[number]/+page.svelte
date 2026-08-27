@@ -20,6 +20,7 @@
 	import EventList from '$lib/components/EventList.svelte';
 	import LaunchPromptDialog from '$lib/components/LaunchPromptDialog.svelte';
 	import Markdown from '$lib/components/Markdown.svelte';
+	import Modal from '$lib/components/Modal.svelte';
 	import RelationsCard from '$lib/components/RelationsCard.svelte';
 	import StateBadge from '$lib/components/StateBadge.svelte';
 	import WorkflowGraph from '$lib/components/WorkflowGraph.svelte';
@@ -112,14 +113,29 @@
 			});
 	});
 
+	// The transition dialog: an optional comment posted atomically with the
+	// move — comment first, so a sub-second dispatch triggered by the
+	// transition already reads it in the launch prompt (SPEC.md "Transition
+	// dialogs prompt for an optional comment").
+	let pendingTransition = $state<AllowedTransition | null>(null);
+	let transitionComment = $state('');
 	let transitioning = $state(false);
-	async function move(transition: AllowedTransition) {
+
+	function requestMove(transition: AllowedTransition) {
+		transitionComment = '';
+		pendingTransition = transition;
+	}
+
+	async function move(transition: AllowedTransition, comment: string) {
 		if (transitioning) return;
 		const prev = currentState;
-		currentState = transition.to_state; // optimistic: badge + graph animate immediately
 		transitioning = true;
 		try {
+			// Comment BEFORE the transition: re-dispatch can never race past it.
+			if (comment) await api.createComment(data.issue.id, { body: comment });
+			currentState = transition.to_state; // optimistic: badge + graph animate immediately
 			await api.transitionIssue(data.issue.id, { transition_id: transition.transition_id });
+			pendingTransition = null;
 			await invalidateAll();
 		} catch (e) {
 			currentState = prev;
@@ -581,7 +597,7 @@
 							size="sm"
 							variant="outline"
 							disabled={transitioning}
-							onclick={() => move(transition)}
+							onclick={() => requestMove(transition)}
 							title={`Move to ${transition.to_state.name}`}
 						>
 							{transition.name}
@@ -663,3 +679,47 @@
 		</section>
 	</aside>
 </div>
+
+<!-- transition dialog: optional comment posted atomically with the move -->
+{#if pendingTransition}
+	{@const transition = pendingTransition}
+	<Modal
+		open={true}
+		onclose={() => (pendingTransition = null)}
+		title={`${transition.name} → ${transition.to_state.name}`}
+	>
+		<form
+			class="space-y-3"
+			onsubmit={(e) => {
+				e.preventDefault();
+				void move(transition, transitionComment.trim());
+			}}
+		>
+			<p class="text-sm">
+				Move this issue to <span class="font-medium">{transition.to_state.name}</span>
+				({transition.to_state.category.replaceAll('_', ' ')})?
+			</p>
+			<div class="space-y-1.5">
+				<label class="text-sm font-medium" for="transition-comment">Comment (optional)</label>
+				<Textarea
+					id="transition-comment"
+					bind:value={transitionComment}
+					rows={3}
+					placeholder="Feedback, context, or instructions for whoever picks this up…"
+				/>
+				<p class="text-muted-foreground text-xs">
+					Posted with the transition — if this move hands the issue to an agent, its very next
+					run's prompt already contains it.
+				</p>
+			</div>
+			<div class="flex justify-end gap-2">
+				<Button type="button" variant="ghost" onclick={() => (pendingTransition = null)}>
+					Cancel
+				</Button>
+				<Button type="submit" disabled={transitioning}>
+					{transitioning ? 'Moving…' : transition.name}
+				</Button>
+			</div>
+		</form>
+	</Modal>
+{/if}

@@ -346,7 +346,11 @@ esac
 		);
 	});
 
-	test('cancel mid-run kills the harness process without a finish report', async ({ request }) => {
+	test('cancel mid-run (via the dialog, comment first) kills the harness process without a finish report', async ({
+		request,
+		context,
+		page
+	}) => {
 		test.setTimeout(60_000);
 		const api = apiClient(request, ALICE.apiKey);
 		rmSync(sideFile('sleep-pid'), { force: true });
@@ -365,8 +369,22 @@ esac
 		);
 		expect(pid).toBeGreaterThan(0);
 
-		const cancel = await api.post(`/api/v1/runs/${running.id}/cancel`);
-		expect(cancel.ok()).toBe(true);
+		// The UI cancel dialog: strike note (this run hasn't moved the issue)
+		// plus an optional comment posted BEFORE the cancellation.
+		await signIn(context, ALICE.sessionToken);
+		await page.goto('/agents');
+		// Run rows show the issue ref (project/#number), not the title.
+		const row = page
+			.locator('li')
+			.filter({ hasText: `${PROJECT_NAME}/#${issue.number}` })
+			.filter({ hasText: 'running' })
+			.first();
+		await row.getByRole('button', { name: 'Cancel', exact: true }).click();
+		const dialog = page.getByRole('dialog', { name: 'Cancel this run?' });
+		await expect(dialog).toContainText('counts as a strike');
+		await dialog.getByLabel(/Comment/).fill('Canceled from the dialog — try smaller steps');
+		await dialog.getByRole('button', { name: 'Cancel run' }).click();
+		await expect(dialog).toBeHidden();
 
 		// The next poll's `cancels` list makes the daemon kill the process…
 		await waitFor(
@@ -384,6 +402,13 @@ esac
 		await new Promise((r) => setTimeout(r, 2500));
 		const after = (await issueRuns(request, issue.id)).find((r) => r.id === running.id);
 		expect(after?.status).toBe('canceled');
+		// The dialog's comment was posted before the cancellation landed.
+		const comments = await body<{ items: { body: string; created_at: number }[] }>(
+			await api.get(`/api/v1/issues/${issue.id}/comments`)
+		);
+		const posted = comments.items.find((c) => c.body.startsWith('Canceled from the dialog'));
+		expect(posted).toBeDefined();
+		expect(posted!.created_at).toBeLessThanOrEqual(after!.ended_at!);
 		// The workspace was cleaned up.
 		await waitFor(
 			async () => !existsSync(join(configDir, 'workspaces', running.id)),

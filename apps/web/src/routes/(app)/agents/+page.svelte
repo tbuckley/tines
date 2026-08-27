@@ -16,6 +16,7 @@
 	import { slide } from 'svelte/transition';
 	import { invalidateAll } from '$app/navigation';
 	import { api } from '$lib/api';
+	import CancelRunDialog from '$lib/components/CancelRunDialog.svelte';
 	import ContextScopeChips from '$lib/components/ContextScopeChips.svelte';
 	import Modal from '$lib/components/Modal.svelte';
 	import RunLogViewer from '$lib/components/RunLogViewer.svelte';
@@ -118,18 +119,15 @@
 
 	let rotatedToken = $state<{ runnerName: string; token: string } | null>(null);
 	let tokenModalOpen = $state(false);
+	/** The runner awaiting rotate confirmation. */
+	let rotateTarget = $state<Runner | null>(null);
 	let rotatingRunnerId = $state<string | null>(null);
 
 	async function rotateToken(runner: Runner) {
-		if (
-			!confirm(
-				`Rotate the token for "${runner.name}"? The old token dies now — the daemon's next poll gets a 401 until it adopts the new one.`
-			)
-		)
-			return;
 		rotatingRunnerId = runner.id;
 		try {
 			const rotated = await api.rotateRunnerToken(runner.id);
+			rotateTarget = null;
 			rotatedToken = { runnerName: rotated.runner.name, token: rotated.runner_token };
 			tokenModalOpen = true;
 			await invalidateAll();
@@ -196,15 +194,8 @@
 	/** Run rows expanded to their log-tail viewer. */
 	let expandedLogs = $state<Record<string, boolean>>({});
 
-	async function cancelRun(run: AgentRun) {
-		if (!confirm(`Cancel this run on ${run.runner_name}? Unless the agent already moved the issue, this counts as a strike.`)) return;
-		try {
-			await api.cancelRun(run.id);
-			await invalidateAll();
-		} catch (err) {
-			showError(err);
-		}
-	}
+	/** The run awaiting the cancel dialog (strike note + optional comment). */
+	let cancelTarget = $state<AgentRun | null>(null);
 
 	// --- routing rules -----------------------------------------------------------
 
@@ -419,7 +410,7 @@
 								variant="ghost"
 								disabled={rotatingRunnerId === runner.id}
 								title="Invalidate the runner token and mint a fresh one (shown once)"
-								onclick={() => rotateToken(runner)}
+								onclick={() => (rotateTarget = runner)}
 							>
 								<IconKey size={14} /> Rotate token
 							</Button>
@@ -496,7 +487,7 @@
 						{expandedLogs[run.id] ? 'Hide logs' : 'Logs'}
 					</Button>
 					{#if (ACTIVE_RUN_STATUSES as readonly string[]).includes(run.status)}
-						<Button size="sm" variant="ghost" class="text-destructive h-7" onclick={() => cancelRun(run)}>
+						<Button size="sm" variant="ghost" class="text-destructive h-7" onclick={() => (cancelTarget = run)}>
 							Cancel
 						</Button>
 					{/if}
@@ -813,6 +804,46 @@
 		</div>
 	</div>
 </Modal>
+
+<!-- cancel a run: strike note + optional comment posted before the cancel -->
+{#if cancelTarget}
+	<CancelRunDialog
+		run={cancelTarget}
+		attemptLimit={data.settings.attempt_limit}
+		onclose={() => (cancelTarget = null)}
+		ondone={async () => {
+			cancelTarget = null;
+			await invalidateAll();
+		}}
+		onerror={(e) => {
+			cancelTarget = null;
+			showError(e);
+		}}
+	/>
+{/if}
+
+<!-- rotate token: confirmation before invalidating the old one -->
+{#if rotateTarget}
+	<Modal open={true} onclose={() => (rotateTarget = null)} title="Rotate runner token?">
+		<div class="space-y-3">
+			<p class="text-sm">
+				Rotate the token for <span class="font-medium">{rotateTarget.name}</span>? The old token
+				dies immediately — the daemon's next poll gets a 401 until it adopts the new one. The
+				runner's id, history, and rule references are unchanged.
+			</p>
+			<div class="flex justify-end gap-2">
+				<Button variant="ghost" onclick={() => (rotateTarget = null)}>Keep current token</Button>
+				<Button
+					variant="outline"
+					disabled={rotatingRunnerId !== null}
+					onclick={() => rotateTarget && rotateToken(rotateTarget)}
+				>
+					{rotatingRunnerId ? 'Rotating…' : 'Rotate token'}
+				</Button>
+			</div>
+		</div>
+	</Modal>
+{/if}
 
 <!-- rotated token: shown exactly once -->
 <Modal bind:open={tokenModalOpen} onclose={() => (rotatedToken = null)} title="New runner token">
