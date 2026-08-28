@@ -80,6 +80,25 @@ function requireEncryptionKey(env: Env): string {
 	return env.SECRET_ENCRYPTION_KEY;
 }
 
+/**
+ * Canonicalizes a repo context item's URL to the one form the Managed
+ * Agents API accepts for `github_repository` resources:
+ * `https://github.com/{owner}/{repo}` — no `.git` suffix, no trailing
+ * slash. Accepts the shapes `git clone` tolerates (https with `.git`,
+ * `git@github.com:owner/repo.git`, `ssh://git@github.com/owner/repo`).
+ * Null = not a GitHub repository URL; the launch fails with a clear error
+ * rather than the provider's 400.
+ */
+export function canonicalGitHubRepoUrl(url: string): string | null {
+	const match = url
+		.trim()
+		.match(
+			/^(?:(?:https?|ssh):\/\/(?:[^@/]+@)?|git@)?(?:www\.)?github\.com[/:]([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?\/?$/
+		);
+	if (!match) return null;
+	return `https://github.com/${match[1]}/${match[2]}`;
+}
+
 /** The public base URL managed runs use to reach the Tines API. */
 export function tinesApiBaseUrl(env: Env): string {
 	const base = env.TINES_PUBLIC_URL ?? env.BETTER_AUTH_URL;
@@ -316,6 +335,18 @@ export function createClaudeAdapter(env: Env, opts: ClaudeAdapterOptions = {}): 
 				'No GitHub PAT is stored in supervisor settings, so this managed run cannot clone its repositories — add one on the Agents tab'
 			);
 		}
+		// The provider accepts exactly https://github.com/{owner}/{repo} —
+		// canonicalize the clone-tolerant forms context items may carry, and
+		// name the offending item when the URL is not a GitHub repo at all.
+		const repos = context.repos.map((repo) => {
+			const canonical = canonicalGitHubRepoUrl(repo.url);
+			if (!canonical) {
+				throw new Error(
+					`repo context item "${repo.name}" points at ${repo.url}, which is not a github.com repository URL; Claude managed runs can only mount GitHub repos`
+				);
+			}
+			return { ...repo, url: canonical };
+		});
 
 		const environmentId = await ensureEnvironment(ctx);
 		const agentId = await ensureTierAgent(ctx, input.tier, input.model, effort);
@@ -329,7 +360,7 @@ export function createClaudeAdapter(env: Env, opts: ClaudeAdapterOptions = {}): 
 			issueRef,
 			timeoutMinutes: input.runner.max_run_minutes,
 			apiUrl: base,
-			repoDirs: context.repos.map((r) => r.dir)
+			repoDirs: repos.map((r) => r.dir)
 		});
 
 		const budget = parseJson<RunnerBudget>(ctx.row.budget);
@@ -349,7 +380,7 @@ export function createClaudeAdapter(env: Env, opts: ClaudeAdapterOptions = {}): 
 				...(capCents !== undefined
 					? { budget: { type: 'limit', max_list_cost: { amount: String(capCents), currency: 'USD' } } }
 					: {}),
-				resources: context.repos.map((repo) => ({
+				resources: repos.map((repo) => ({
 					type: 'github_repository' as const,
 					url: repo.url,
 					authorization_token: pat as string,

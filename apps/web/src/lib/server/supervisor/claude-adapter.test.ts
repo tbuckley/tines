@@ -7,7 +7,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { encryptSecret } from '../crypto';
 import { createTestDb, type TestDb } from '../api/test-db';
-import { createClaudeAdapter } from './claude-adapter';
+import { canonicalGitHubRepoUrl, createClaudeAdapter } from './claude-adapter';
 import { addIssue, addRun, addRunner, NOW, seedBase, USER } from './test-fixtures';
 
 const ENC_KEY = 'test-encryption-key';
@@ -131,6 +131,40 @@ function launchInput(runnerId: string) {
 	};
 }
 
+describe('canonicalGitHubRepoUrl', () => {
+	it('normalizes the clone-tolerant forms to https://github.com/{owner}/{repo}', () => {
+		for (const url of [
+			'https://github.com/o/web',
+			'https://github.com/o/web.git',
+			'https://github.com/o/web/',
+			'http://github.com/o/web.git',
+			'https://www.github.com/o/web',
+			'git@github.com:o/web.git',
+			'git@github.com:o/web',
+			'ssh://git@github.com/o/web.git'
+		]) {
+			expect(canonicalGitHubRepoUrl(url), url).toBe('https://github.com/o/web');
+		}
+	});
+
+	it('preserves dots in repo names without eating them as .git', () => {
+		expect(canonicalGitHubRepoUrl('https://github.com/o/web.js')).toBe('https://github.com/o/web.js');
+		expect(canonicalGitHubRepoUrl('https://github.com/o/web.js.git')).toBe('https://github.com/o/web.js');
+	});
+
+	it('rejects non-GitHub and non-repo URLs', () => {
+		for (const url of [
+			'https://gitlab.com/o/web',
+			'https://github.com/o',
+			'https://github.com/o/web/tree/main',
+			'https://example.com/github.com/o/web',
+			'not a url'
+		]) {
+			expect(canonicalGitHubRepoUrl(url), url).toBeNull();
+		}
+	});
+});
+
 describe('claude adapter launch', () => {
 	let t: TestDb;
 	let runnerId: string;
@@ -240,6 +274,41 @@ describe('claude adapter launch', () => {
 			(t.all('SELECT config FROM runner WHERE id = ?', runnerId)[0] as { config: string }).config
 		) as { agents: Record<string, { model: string }> };
 		expect(config.agents.balanced.model).toBe('claude-sonnet-5');
+	});
+
+	it('mounts a .git-suffixed context URL in canonical form', async () => {
+		const net = fakeNetwork({
+			'GET /api/v1/issues/iss_1/context': () => ({
+				prompt: { text: '', parts: [] },
+				skills: [],
+				repos: [{ item_id: 'ctx_1', name: 'web', scope: {}, url: 'git@github.com:o/web.git', branch: null, dir: 'web', version: 1 }],
+				overridden: [],
+				conflicts: []
+			})
+		});
+		const adapter = createClaudeAdapter(t.env, { fetch: net.fetch });
+		await adapter.launch(launchInput(runnerId));
+		const [sessionCreate] = net.of('POST /v1/sessions');
+		expect((sessionCreate.body as { resources: { url: string }[] }).resources[0].url).toBe(
+			'https://github.com/o/web'
+		);
+	});
+
+	it('fails clearly on a non-GitHub repo URL instead of forwarding the provider 400', async () => {
+		const net = fakeNetwork({
+			'GET /api/v1/issues/iss_1/context': () => ({
+				prompt: { text: '', parts: [] },
+				skills: [],
+				repos: [{ item_id: 'ctx_1', name: 'internal', scope: {}, url: 'https://git.corp.example/o/web', branch: null, dir: 'web', version: 1 }],
+				overridden: [],
+				conflicts: []
+			})
+		});
+		const adapter = createClaudeAdapter(t.env, { fetch: net.fetch });
+		await expect(adapter.launch(launchInput(runnerId))).rejects.toThrow(
+			/"internal".*not a github\.com repository/
+		);
+		expect(net.of('POST /v1/sessions')).toHaveLength(0);
 	});
 
 	it('fails the launch, clearly, when repos exist but no PAT is stored', async () => {
