@@ -409,3 +409,27 @@ export function renderTemplate(template: string, vars: TemplateVars): string {
 		Object.prototype.hasOwnProperty.call(vars, key) ? vars[key as keyof TemplateVars] : token
 	);
 }
+
+/** A placeholder offered in the UI, without its braces. */
+export interface TemplatePlaceholder {
+	key: keyof TemplateVars;
+	/** What it renders to, phrased for a form hint. */
+	description: string;
+}
+
+/**
+ * Keyed by `TemplateVars` so a new placeholder cannot be added to the renderer
+ * without also describing it here — the UI hint and the engine stay in step.
+ */
+const PLACEHOLDER_DESCRIPTIONS: Record<keyof TemplateVars, string> = {
+	date: 'run date, e.g. 2026-08-23',
+	time: 'run time, e.g. 09:30',
+	datetime: 'date and time together',
+	schedule_name: "the schedule's name",
+	count: 'how many instances it has created, starting at 1'
+};
+
+/** The placeholders `renderTemplate` substitutes, in the order the UI lists them. */
+export const TEMPLATE_PLACEHOLDERS: readonly TemplatePlaceholder[] = (
+	Object.keys(PLACEHOLDER_DESCRIPTIONS) as (keyof TemplateVars)[]
+).map((key) => ({ key, description: PLACEHOLDER_DESCRIPTIONS[key] }));

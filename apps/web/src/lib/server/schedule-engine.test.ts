@@ -5,6 +5,7 @@ import {
 	parseCron,
 	renderTemplate,
 	ScheduleInputError,
+	TEMPLATE_PLACEHOLDERS,
 	templateVars,
 	validateScheduleCron,
 	validateTimezone
@@ -178,6 +179,16 @@ describe('templates', () => {
 		expect(renderTemplate('{{schedule_name}} {{ date }} #{{count}}', vars)).toBe(
 			'Daily triage 2026-08-23 #14'
 		);
+	});
+
+	it('advertises exactly the placeholders the renderer substitutes', () => {
+		const vars = templateVars('Daily triage', 14, 'Asia/Tokyo', utc('2026-08-23T00:30:00Z'));
+		expect(TEMPLATE_PLACEHOLDERS.map((p) => p.key)).toEqual(Object.keys(vars));
+		// Every advertised placeholder renders — none survives as a literal token.
+		for (const { key, description } of TEMPLATE_PLACEHOLDERS) {
+			expect(renderTemplate(`{{${key}}}`, vars)).toBe(vars[key]);
+			expect(description).not.toBe('');
+		}
 	});
 
 	it('leaves unknown or malformed tokens as-is', () => {
