@@ -441,6 +441,8 @@ export interface IssueFilters {
 	hide_done?: boolean;
 	/** Only issues that are not done, not duplicates, and have all blockers effectively done. */
 	ready?: boolean;
+	/** Title/description substring search. */
+	q?: string;
 }
 
 // ---------------------------------------------------------------------------

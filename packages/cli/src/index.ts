@@ -913,6 +913,7 @@ withList(
 		.option('-w, --workflow <id-or-name>', 'filter by workflow')
 		.option('-a, --all', 'include issues in done states')
 		.option('--ready', 'only issues that are actionable now (not done, not a duplicate, no open blockers)')
+		.option('-q, --search <text>', 'search titles and descriptions')
 ).action(
 	async (
 		opts: ListOpts & {
@@ -922,6 +923,7 @@ withList(
 			workflow?: string;
 			all?: boolean;
 			ready?: boolean;
+			search?: string;
 		}
 	) => {
 		const res = await client(opts).listIssues({
@@ -931,6 +933,7 @@ withList(
 			workflow: opts.workflow,
 			hide_done: !opts.all,
 			ready: opts.ready,
+			q: opts.search,
 			limit: opts.limit,
 			cursor: opts.cursor
 		});

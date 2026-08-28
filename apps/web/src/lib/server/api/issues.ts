@@ -211,6 +211,8 @@ export interface IssueListFilters {
 	ready?: boolean;
 	/** Restrict to one project id (the nested per-project route). */
 	projectId?: string;
+	/** Title/description substring search. */
+	q?: string;
 }
 
 export async function listIssues(
@@ -270,6 +272,12 @@ export async function listIssues(
 				sql<boolean>`NOT EXISTS (SELECT 1 FROM issue_link dl WHERE dl.source_issue_id = issue.id AND dl.kind = 'duplicate_of')`
 			)
 			.where(sql<boolean>`NOT EXISTS (SELECT 1 ${openBlockerFrom})`);
+	}
+	if (filters.q) {
+		// Plain substring search; % and _ act as wildcards, which is harmless
+		// (and occasionally useful) for a search box.
+		const like = `%${filters.q}%`;
+		q = q.where((eb) => eb.or([eb('issue.title', 'like', like), eb('issue.description', 'like', like)]));
 	}
 	if (page.cursor) {
 		const { createdAt, id } = page.cursor;

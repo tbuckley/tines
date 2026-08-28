@@ -166,6 +166,7 @@ export function createApiClient(options: ApiClientOptions) {
 				category?: StateCategory;
 				hide_done?: boolean;
 				ready?: boolean;
+				q?: string;
 			} & PageParams = {}
 		) => get<ListResponse<Issue>>(`/api/v1/projects/${projectId}/issues${query(filters)}`),
 		createIssue: (projectId: string, body: CreateIssueRequest) =>

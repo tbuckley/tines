@@ -68,6 +68,31 @@ test('an issue can be created from the issues list, picking project and starting
 	await expect(stateBadge(page)).toHaveText(/Human Review/);
 });
 
+test('the issues list search box round-trips through the q URL param', async ({ page }) => {
+	await page.goto('/issues');
+	const box = page.getByLabel('Search issues');
+
+	// The submit is a Svelte listener, so retry across the hydration window.
+	const searchFor = (term: string, expected: RegExp) =>
+		expect(async () => {
+			await box.fill(term);
+			await box.press('Enter');
+			await expect(page).toHaveURL(expected, { timeout: 2_000 });
+		}).toPass({ timeout: 15_000 });
+
+	await searchFor(issueTitle, new RegExp(`q=UI(%20|\\+)smoke(%20|\\+)${runId}`));
+	await expect(page.getByRole('link', { name: new RegExp(issueTitle) })).toBeVisible();
+
+	// A term nothing matches empties the list, and the box keeps the term.
+	await searchFor(`no-such-issue-${runId}`, new RegExp(`q=no-such-issue-${runId}`));
+	await expect(page.getByRole('link', { name: new RegExp(issueTitle) })).toBeHidden();
+	await expect(box).toHaveValue(`no-such-issue-${runId}`);
+
+	// Clearing it drops the param and brings the issue back.
+	await searchFor('', /\/issues\?*$/);
+	await expect(page.getByRole('link', { name: new RegExp(issueTitle) })).toBeVisible();
+});
+
 test('the mobile layout swaps the header tabs for a bottom bar', async ({ page }) => {
 	await page.setViewportSize({ width: 390, height: 844 });
 	await page.goto('/issues');

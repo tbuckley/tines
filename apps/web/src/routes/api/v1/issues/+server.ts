@@ -19,7 +19,8 @@ export const GET: RequestHandler = api(async (event) => {
 			workflow: params.get('workflow') ?? undefined,
 			schedule: params.get('schedule') ?? undefined,
 			hideDone: ['1', 'true'].includes(params.get('hide_done') ?? ''),
-			ready: ['1', 'true'].includes(params.get('ready') ?? '')
+			ready: ['1', 'true'].includes(params.get('ready') ?? ''),
+			q: params.get('q') ?? undefined
 		},
 		page
 	);
