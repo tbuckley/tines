@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { Schedule, UpdateScheduleRequest } from '@tines/shared';
+	import type { Schedule, UpdateScheduleRequest, WorkflowResponse } from '@tines/shared';
 	import { ApiError, describeRecurrence } from '@tines/shared';
 	import IconPencil from '@tabler/icons-svelte/icons/pencil';
 	import IconPlayerPlay from '@tabler/icons-svelte/icons/player-play';
@@ -11,16 +11,19 @@
 	import RepeatFields from '$lib/components/RepeatFields.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
+	import { Select } from '$lib/components/ui/select/index.js';
 	import { Textarea } from '$lib/components/ui/textarea/index.js';
 	import { prefersReducedMotion, relativeTime, untilTime } from '$lib/format';
 	import { defaultRepeatState, repeatFromSchedule, repeatSummary, repeatToScheduleInput } from '$lib/schedule-form';
 
 	let {
 		schedules,
+		workflows,
 		highlightId = null,
 		onerror
 	}: {
 		schedules: Schedule[];
+		workflows: WorkflowResponse[];
 		/** Row to highlight (?schedule= deep links from issue badges). */
 		highlightId?: string | null;
 		onerror: (e: unknown) => void;
@@ -67,18 +70,32 @@
 	let editName = $state('');
 	let editTitle = $state('');
 	let editDescription = $state('');
+	let editWorkflowId = $state('');
+	let editStateId = $state('');
 	let editRepeat = $state(defaultRepeatState());
 	let saving = $state(false);
 	let editError = $state<string | null>(null);
+
+	const editWorkflow = $derived(workflows.find((w) => w.id === editWorkflowId));
 
 	function openEdit(s: Schedule) {
 		editing = s;
 		editName = s.name;
 		editTitle = s.title_template;
 		editDescription = s.description_template;
+		editWorkflowId = s.workflow_id;
+		// null state = follow the workflow's initial state.
+		editStateId =
+			s.state_id ?? workflows.find((w) => w.id === s.workflow_id)?.initial_state_id ?? '';
 		editRepeat = repeatFromSchedule(s);
 		editError = null;
 		editOpen = true;
+	}
+
+	// Switching workflows lands on the new workflow's initial state (the old
+	// state belongs to the old workflow).
+	function onEditWorkflowChange() {
+		editStateId = editWorkflow?.initial_state_id ?? '';
 	}
 
 	const editValid = $derived(repeatSummary(editRepeat).ok);
@@ -94,6 +111,9 @@
 				name: editName,
 				title_template: editTitle,
 				description_template: editDescription,
+				workflow_id: editWorkflowId,
+				// The server stores the initial state as null ("follow the workflow").
+				state: editStateId || null,
 				timezone: recurrence.timezone,
 				require_all_closed: recurrence.require_all_closed,
 				...(recurrence.preset ? { preset: recurrence.preset } : { cron: recurrence.cron })
@@ -124,6 +144,7 @@
 					{#if s.require_all_closed}
 						· only when closed
 					{/if}
+					· {s.workflow_name}{s.state_name ? ` / ${s.state_name}` : ''}
 				</p>
 			</div>
 			<div class="text-muted-foreground hidden shrink-0 text-right text-xs sm:block">
@@ -206,6 +227,26 @@
 		<div class="space-y-1.5">
 			<label class="text-sm font-medium" for="schedule-description">Description template (Markdown)</label>
 			<Textarea id="schedule-description" bind:value={editDescription} rows={4} />
+		</div>
+		<div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+			<div class="space-y-1.5">
+				<label class="text-sm font-medium" for="schedule-workflow">Workflow</label>
+				<Select id="schedule-workflow" bind:value={editWorkflowId} onchange={onEditWorkflowChange}>
+					{#each workflows as workflow (workflow.id)}
+						<option value={workflow.id}>{workflow.name}{workflow.is_system ? ' (standard)' : ''}</option>
+					{/each}
+				</Select>
+			</div>
+			<div class="space-y-1.5">
+				<label class="text-sm font-medium" for="schedule-state">Starting state</label>
+				<Select id="schedule-state" bind:value={editStateId}>
+					{#each editWorkflow?.states ?? [] as state (state.id)}
+						<option value={state.id}>
+							{state.name}{state.id === editWorkflow?.initial_state_id ? ' — default' : ''}
+						</option>
+					{/each}
+				</Select>
+			</div>
 		</div>
 		<RepeatFields state={editRepeat} showNever={false} idPrefix="schedule-repeat" />
 		{#if editError}

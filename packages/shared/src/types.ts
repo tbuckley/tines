@@ -347,6 +347,12 @@ export interface Schedule {
 	description_template: string;
 	workflow_id: string;
 	workflow_name: string;
+	/**
+	 * Start state for created instances; null = the workflow's initial state
+	 * (the schedule follows the workflow if its initial state changes).
+	 */
+	state_id: string | null;
+	state_name: string | null;
 	/** The compiled cron expression evaluation reads (always populated). */
 	cron: string;
 	/** The preset the cron was compiled from; null = raw cron. */
@@ -372,6 +378,14 @@ export interface UpdateScheduleRequest {
 	name?: string;
 	title_template?: string;
 	description_template?: string;
+	/** Move future instances onto another workflow. Unless `state` picks one, they start in its initial state. */
+	workflow_id?: string;
+	/**
+	 * Start state for future instances, by id or name within the schedule's
+	 * (possibly just-changed) workflow. Explicit null — or the workflow's
+	 * initial state — resets to "follow the workflow's initial state".
+	 */
+	state?: string | null;
 	preset?: SchedulePreset;
 	cron?: string;
 	timezone?: string;

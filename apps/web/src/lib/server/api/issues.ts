@@ -483,6 +483,11 @@ export async function createIssue(
 	const issueTitle = vars ? renderTemplate(title, vars) : title;
 	const issueDescription = vars ? renderTemplate(description, vars) : description;
 
+	// A non-initial starting state pins the schedule too: future instances
+	// start where the first issue does. NULL keeps following the workflow's
+	// initial state.
+	const scheduleStateId = initialState.id === workflow.initial_state_id ? null : initialState.id;
+
 	const queries: CompiledQuery[] = [];
 	if (schedule) {
 		queries.push(
@@ -495,6 +500,7 @@ export async function createIssue(
 					title_template: title,
 					description_template: description,
 					workflow_id: workflow.id,
+					state_id: scheduleStateId,
 					cron: schedule.recurrence.cron,
 					preset: schedule.recurrence.presetJson,
 					timezone: schedule.timezone,
@@ -555,7 +561,8 @@ export async function createIssue(
 					name: schedule.name,
 					cron: schedule.recurrence.cron,
 					timezone: schedule.timezone,
-					require_all_closed: schedule.requireAllClosed
+					require_all_closed: schedule.requireAllClosed,
+					...(scheduleStateId ? { start_state: initialState.name } : {})
 				}
 			})
 		);

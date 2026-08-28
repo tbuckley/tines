@@ -1685,7 +1685,7 @@ function printScheduleDetail(s: Schedule): void {
 	console.log(`${scheduleRef(s)}  [${s.id}]${s.enabled ? '' : '  (paused)'}`);
 	console.log(`${recurrenceLabel(s)} (cron "${s.cron}")`);
 	console.log(
-		`gate: ${s.require_all_closed ? 'only create when previous instances are closed' : 'off'}  workflow: ${s.workflow_name}`
+		`gate: ${s.require_all_closed ? 'only create when previous instances are closed' : 'off'}  workflow: ${s.workflow_name}  start state: ${s.state_name ?? '(initial)'}`
 	);
 	console.log(
 		`next run: ${s.enabled ? timestamp(s.next_run_at) : '(paused)'}  last run: ${s.last_run_at ? timestamp(s.last_run_at) : 'never'}  runs: ${s.run_count}  open instances: ${s.open_instances}`
@@ -1752,9 +1752,17 @@ withCommon(
 withCommon(
 	schedules
 		.command('edit <ref>')
-		.description('Edit a schedule: templates, recurrence, timezone, gate, or name')
+		.description('Edit a schedule: templates, workflow, start state, recurrence, timezone, gate, or name')
 		.option('-t, --title <template>', 'set the title template')
 		.option('-d, --description <markdown>', 'set the description template (Markdown)')
+		.option(
+			'-w, --workflow <id-or-name>',
+			'move future instances onto another workflow (resets the start state to its initial state unless --state is also given)'
+		)
+		.option(
+			'-s, --state <id-or-name>',
+			"start state for future instances (the workflow's initial state = the default)"
+		)
 		.option('--every <preset>', 'repeat hourly (or every N hours: "6h"), daily, weekly, or monthly')
 		.option('--at <when>', 'preset time of day HH:MM (default 09:00); for hourly, the minute past the hour :MM (default :00)')
 		.option('--on <when>', 'weekday (weekly) or day of month (monthly)')
@@ -1767,13 +1775,22 @@ withCommon(
 	async (
 		ref: string,
 		opts: CommonOpts &
-			RecurrenceOpts & { title?: string; description?: string; ifClosed?: boolean; name?: string }
+			RecurrenceOpts & {
+				title?: string;
+				description?: string;
+				workflow?: string;
+				state?: string;
+				ifClosed?: boolean;
+				name?: string;
+			}
 	) => {
 		const api = client(opts);
 		const schedule = await resolveSchedule(api, ref);
 		const body: UpdateScheduleRequest = {};
 		if (opts.title !== undefined) body.title_template = opts.title;
 		if (opts.description !== undefined) body.description_template = opts.description;
+		if (opts.workflow !== undefined) body.workflow_id = (await resolveWorkflow(api, opts.workflow)).id;
+		if (opts.state !== undefined) body.state = opts.state;
 		const recurrence = buildRecurrence(opts);
 		if (recurrence?.preset) body.preset = recurrence.preset as SchedulePreset;
 		if (recurrence?.cron !== undefined) body.cron = recurrence.cron;
@@ -1782,7 +1799,7 @@ withCommon(
 		if (opts.name !== undefined) body.name = opts.name;
 		if (Object.keys(body).length === 0) {
 			die(
-				'nothing to update: pass --title, --description, --every/--at/--on, --cron, --tz, --[no-]if-closed, and/or --name'
+				'nothing to update: pass --title, --description, --workflow, --state, --every/--at/--on, --cron, --tz, --[no-]if-closed, and/or --name'
 			);
 		}
 		const updated = await api.updateSchedule(schedule.id, body);

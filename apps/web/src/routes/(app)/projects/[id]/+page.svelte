@@ -194,6 +194,7 @@
 		</div>
 		<ScheduleList
 			schedules={data.schedules}
+			workflows={data.workflows}
 			highlightId={page.url.searchParams.get('schedule')}
 			onerror={showError}
 		/>

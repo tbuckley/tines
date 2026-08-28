@@ -30,7 +30,7 @@ A per-project entity owned (like everything else) by the project's user. It has:
 
 - **Name**: required, unique within its project — schedules are addressed as `<project>/<name>` in the CLI. The UI defaults it to the title template.
 - **Templates**: a title template (plain text) and description template (Markdown), both supporting placeholders (below).
-- **Workflow binding**: chosen at schedule creation exactly like issue creation (project default, else standard workflow). Each created issue is bound to this workflow and starts in its initial state. A workflow cannot be deleted while a schedule references it (extends the phase-one editing rules).
+- **Workflow binding**: chosen at schedule creation exactly like issue creation (project default, else standard workflow), and editable afterwards. Each created issue is bound to this workflow and starts in the schedule's **start state** — by default the workflow's initial state (stored as NULL, so the schedule follows the workflow if its initial state changes), or a specific state pinned at creation (a non-initial starting state on the first issue pins the schedule too) or by editing the schedule. Changing the workflow resets the start state to the new workflow's initial state unless the same edit picks one. A workflow cannot be deleted while a schedule references it, and a state cannot be deleted while a schedule starts instances in it (extends the phase-one editing rules).
 - **Recurrence**: a preset or raw cron expression, plus an IANA timezone (below).
 - **Gate** (`require_all_closed`): when set, an occurrence only creates an issue if every previous instance from this schedule is in a `done`-category state.
 - **Enabled flag**: paused schedules keep their configuration and history but never fire.
@@ -106,6 +106,7 @@ One new table and one new column, in a new numbered migration:
 
 ```
 scheduled_task  id, project_id, name, title_template, description_template, workflow_id,
+                state_id?,   -- start state; NULL = the workflow's initial state (ON DELETE SET NULL)
                 cron, preset(JSON)?, timezone, require_all_closed, enabled,
                 next_run_at, last_run_at?, run_count, created_at, updated_at
                 -- unique on (project_id, name); index on (enabled, next_run_at) for the sweep
@@ -137,7 +138,7 @@ Same conventions as phase one: `/api/v1/*`, session or bearer key, user-scoped (
 | `POST /api/v1/projects/:id/issues` | Extended: optional `schedule` object (`name?`, `preset` or `cron`, `timezone?`, `require_all_closed?`) — creates the first issue immediately (templates rendered, linked to the schedule) *and* the schedule; response includes both |
 | `GET /api/v1/schedules` | Global list across projects; filters: `project`, `enabled` |
 | `GET /api/v1/projects/:id/schedules` | List a project's schedules |
-| `GET/PATCH/DELETE /api/v1/schedules/:id` | Read (incl. next/last run, run count, open-instance count) / update any field incl. `enabled` (pause = `{ enabled: false }`) / delete |
+| `GET/PATCH/DELETE /api/v1/schedules/:id` | Read (incl. next/last run, run count, open-instance count) / update any field incl. `workflow_id`, `state` (id or name; null or the initial state = follow the workflow), and `enabled` (pause = `{ enabled: false }`) / delete |
 | `POST /api/v1/schedules/:id/run` | Run now: create an instance immediately. Respects the gate — blocked returns a 422 naming the open instances. Does **not** change `next_run_at`; works on paused schedules |
 | `GET /api/v1/issues` (+ project-scoped list) | New filter: `schedule=<id>` for "issues from this schedule" |
 
@@ -158,6 +159,7 @@ tines issues create <project> -t <t> [-d <md>] [-w <wf>]
 tines schedules list [--project <name>] [--all]      # hides paused unless --all
 tines schedules show <project>/<name>                # config, next/last run, recent instances
 tines schedules edit <project>/<name> [--title <t>] [--description <md>]
+    [--workflow <wf>] [--state <state>]
     [--every …] [--at …] [--on …] [--cron …] [--tz …]
     [--if-closed | --no-if-closed] [--name <new-name>]
 tines schedules pause | resume <project>/<name>
