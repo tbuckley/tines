@@ -393,8 +393,13 @@ test.describe('schedules in the web UI', () => {
 			await expect(dialog).toBeVisible({ timeout: 2_000 });
 		});
 		await dialog.getByRole('button', { name: 'Repeat' }).click();
+		// Placeholders are only meaningful once there is a recurrence to render them.
+		await expect(dialog.getByText('{{date}}', { exact: true })).toBeHidden();
 		await page.locator('#issue-repeat-kind').selectOption('weekly');
 		await expect(page.getByText(/Every \w+ at \d{2}:\d{2},.*— next:/)).toBeVisible();
+		for (const token of ['{{date}}', '{{time}}', '{{datetime}}', '{{schedule_name}}', '{{count}}']) {
+			await expect(dialog.getByText(token, { exact: true })).toBeVisible();
+		}
 		await expect(page.getByRole('button', { name: 'Create issue + schedule' })).toBeVisible();
 
 		await context.close();

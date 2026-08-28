@@ -3,6 +3,7 @@
 	import { repeatSummary, timezoneOptions, type RepeatFormState } from '$lib/schedule-form';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { Select } from '$lib/components/ui/select/index.js';
+	import TemplatePlaceholders from '$lib/components/TemplatePlaceholders.svelte';
 
 	let {
 		state,
@@ -107,5 +108,6 @@
 		<p class="text-sm {summary.ok ? 'text-muted-foreground' : 'text-destructive'}">
 			{summary.text}
 		</p>
+		<TemplatePlaceholders class="border-t pt-3" />
 	{/if}
 </div>

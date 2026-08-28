@@ -206,9 +206,6 @@
 		<div class="space-y-1.5">
 			<label class="text-sm font-medium" for="schedule-description">Description template (Markdown)</label>
 			<Textarea id="schedule-description" bind:value={editDescription} rows={4} />
-			<p class="text-muted-foreground text-xs">
-				Placeholders: {'{{date}}'}, {'{{time}}'}, {'{{datetime}}'}, {'{{schedule_name}}'}, {'{{count}}'}
-			</p>
 		</div>
 		<RepeatFields state={editRepeat} showNever={false} idPrefix="schedule-repeat" />
 		{#if editError}
