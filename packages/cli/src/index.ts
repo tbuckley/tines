@@ -51,11 +51,12 @@ import {
 } from '@tines/shared';
 import { Command } from 'commander';
 
-const DEFAULT_URL = process.env.TINES_API_URL ?? 'http://localhost:5173';
+const DEFAULT_URL = 'http://localhost:5173';
 
 interface CommonOpts {
 	/** Absent on commands where --url means something else; falls back to TINES_API_URL. */
 	url?: string;
+	/** Absent unless --api-key was passed; falls back to TINES_API_KEY. */
 	apiKey?: string;
 	json?: boolean;
 }
@@ -73,10 +74,13 @@ interface ListOpts extends CommonOpts {
  */
 function withCommon(cmd: Command, { baseUrlFlag = true } = {}): Command {
 	if (baseUrlFlag) {
-		cmd.option('-u, --url <url>', 'base URL of the Tines API (or set TINES_API_URL)', DEFAULT_URL);
+		cmd.option(
+			'-u, --url <url>',
+			`base URL of the Tines API (or set TINES_API_URL; default ${DEFAULT_URL})`
+		);
 	}
 	return cmd
-		.option('--api-key <key>', 'API key (or set TINES_API_KEY)', process.env.TINES_API_KEY)
+		.option('--api-key <key>', 'API key (or set TINES_API_KEY)')
 		.option('--json', 'output the raw JSON response');
 }
 
@@ -89,8 +93,21 @@ function withList(cmd: Command): Command {
 	);
 }
 
+/**
+ * The env vars are read here rather than declared as commander defaults: an
+ * option's default value is rendered into its help text, so defaulting
+ * --api-key to TINES_API_KEY printed the caller's live key on every --help.
+ */
+function resolveUrl(opts: CommonOpts): string {
+	return opts.url ?? process.env.TINES_API_URL ?? DEFAULT_URL;
+}
+
+function resolveApiKey(opts: CommonOpts): string | undefined {
+	return opts.apiKey ?? process.env.TINES_API_KEY;
+}
+
 function client(opts: CommonOpts): ApiClient {
-	return createApiClient({ baseUrl: opts.url ?? DEFAULT_URL, apiKey: opts.apiKey });
+	return createApiClient({ baseUrl: resolveUrl(opts), apiKey: resolveApiKey(opts) });
 }
 
 function die(message: string): never {
@@ -1936,7 +1953,7 @@ withCommon(
 	const runner = await resolveRunner(api, ref);
 	const rotated = await api.rotateRunnerToken(runner.id);
 	if (opts.json) return printJson(rotated);
-	const url = opts.url ?? DEFAULT_URL;
+	const url = resolveUrl(opts);
 	console.log(`rotated the token for runner "${rotated.runner.name}" — the old token is dead.`);
 	console.log(`new token (shown once): ${rotated.runner_token}`);
 	if (hasRunnerCredentials(defaultConfigDir(), url, rotated.runner.name)) {
@@ -1990,8 +2007,8 @@ withCommon(
 			die('--poll-interval must be a positive number of seconds');
 		}
 		await runDaemon({
-			url: (opts.url ?? DEFAULT_URL).replace(/\/+$/, ''),
-			apiKey: opts.apiKey,
+			url: resolveUrl(opts).replace(/\/+$/, ''),
+			apiKey: resolveApiKey(opts),
 			name: opts.name ?? hostname(),
 			harness,
 			command: opts.command,
