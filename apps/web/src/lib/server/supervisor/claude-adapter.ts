@@ -176,11 +176,27 @@ export function createClaudeAdapter(env: Env, opts: ClaudeAdapterOptions = {}): 
 			.execute();
 	}
 
-	/** GET against our own API with the run key (self-seeding's own mechanism). */
+	/**
+	 * GET against our own API with the run key (self-seeding's own
+	 * mechanism). Prefers the SELF service binding — it invokes this worker's
+	 * fetch handler in-process, which is the only way to reach ourselves in
+	 * production: a worker on a custom domain cannot `fetch()` its own
+	 * hostname (Cloudflare routes that to the nonexistent origin → 522). A
+	 * thrown SELF call falls back to plain fetch for dev setups where the
+	 * binding doesn't resolve; HTTP error statuses are real API answers and
+	 * propagate.
+	 */
 	async function apiGet<T>(base: string, path: string, runKey: string): Promise<T> {
-		const res = await fetchFn(`${base}${path}`, {
-			headers: { authorization: `Bearer ${runKey}` }
-		});
+		const url = `${base}${path}`;
+		const init = { headers: { authorization: `Bearer ${runKey}` } };
+		let res: Response;
+		if (opts.fetch) {
+			res = await opts.fetch(url, init);
+		} else if (env.SELF) {
+			res = await env.SELF.fetch(url, init).catch(() => fetchFn(url, init)) as Response;
+		} else {
+			res = await fetchFn(url, init);
+		}
 		if (!res.ok) throw new Error(`launch materials fetch failed: GET ${path} → ${res.status}`);
 		return res.json() as Promise<T>;
 	}
