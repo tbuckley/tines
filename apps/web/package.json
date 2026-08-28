@@ -34,6 +34,7 @@
     "wrangler": "^4.125.0"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "0.121.0",
     "@tabler/icons-svelte": "^3.46.0",
     "@tines/shared": "workspace:*",
     "better-auth": "^1.7.1",

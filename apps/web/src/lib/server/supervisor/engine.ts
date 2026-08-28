@@ -14,14 +14,16 @@ import {
 	RUNNER_OFFLINE_FAIL_MS,
 	type ModelTier,
 	type QuotaPolicy,
-	type RoutingTarget
+	type RoutingTarget,
+	type RunnerBudget
 } from '@tines/shared';
 import type { D1Result } from '@cloudflare/workers-types';
 import { sql, type CompiledQuery, type Kysely, type RawBuilder } from 'kysely';
 import { sha256Hex } from '../crypto';
 import { getDb, newId, randomString, type Database } from '../db';
-import { defaultAdapters, type AdapterRegistry, type RunnerAdapter } from './adapter';
+import { buildAdapters, type AdapterRegistry, type RunnerAdapter } from './adapter';
 import {
+	appendLogTail,
 	launchBackoffMs,
 	matchRule,
 	resolveTier,
@@ -414,7 +416,8 @@ export async function launchClaimedRun(
 					status: 'running',
 					started_at: startedAt,
 					provider_session_id: launched.provider_session_id ?? null,
-					provider_url: launched.provider_url ?? null
+					provider_url: launched.provider_url ?? null,
+					provider_meta: launched.provider_meta ?? null
 				})
 				.where('id', '=', ctx.runId)
 				.where('status', '=', 'launching')
@@ -531,7 +534,7 @@ export async function runDispatchPass(
 	userId: string,
 	opts: DispatchPassOptions = {}
 ): Promise<DispatchPassResult> {
-	const adapters = opts.adapters ?? defaultAdapters;
+	const adapters = opts.adapters ?? buildAdapters(env);
 	const now = opts.now ?? Date.now();
 	const result: DispatchPassResult = { claimed: 0, launched: 0 };
 
@@ -842,8 +845,9 @@ export async function cancelRun(
 	env: Env,
 	userId: string,
 	runId: string,
-	adapters: AdapterRegistry = defaultAdapters
+	adapters?: AdapterRegistry
 ): Promise<CancelRunResult> {
+	adapters ??= buildAdapters(env);
 	const run = await loadEndableRun(db, userId, runId);
 	if (!run) return { kind: 'not_found' };
 	if (!(ACTIVE as string[]).includes(run.status)) return { kind: 'already_ended' };
@@ -961,14 +965,121 @@ export async function markRunRunning(
 }
 
 // ---------------------------------------------------------------------------
+// Managed-run polling (sweep-driven; SPEC.md "Monitoring")
+
+/**
+ * Polls every running run whose adapter reconciles provider-side: appends
+ * the rendered event summary to the log tail, replaces the usage snapshot,
+ * advances the adapter's poll cursor, enforces the per-run token cap (the
+ * one per-run ceiling Claude sessions cannot enforce natively), and runs the
+ * ordinary end judgment when the provider reports the session ended. A
+ * throwing poll skips that run until the next sweep.
+ */
+export async function pollManagedRuns(
+	db: Kysely<Database>,
+	env: Env,
+	now: number,
+	adapters: AdapterRegistry
+): Promise<void> {
+	const rows = await db
+		.selectFrom('agent_run')
+		.innerJoin('runner', 'runner.id', 'agent_run.runner_id')
+		.select(['agent_run.id', 'agent_run.user_id', 'runner.type', 'runner.budget'])
+		.where('agent_run.status', '=', 'running')
+		.execute();
+	for (const row of rows) {
+		const adapter = adapters[row.type];
+		if (!adapter?.poll) continue;
+		try {
+			const run = await db
+				.selectFrom('agent_run')
+				.selectAll()
+				.where('id', '=', row.id)
+				.executeTakeFirst();
+			if (!run || run.status !== 'running') continue;
+			const polled = await adapter.poll({
+				id: run.id,
+				runner_id: run.runner_id,
+				provider_session_id: run.provider_session_id,
+				provider_meta: run.provider_meta
+			});
+
+			const patch: Partial<Database['agent_run']> = {};
+			if (polled.logChunk) {
+				const appended = appendLogTail(run.log, run.log_bytes_dropped, polled.logChunk);
+				patch.log = appended.log;
+				patch.log_bytes_dropped = appended.dropped;
+			}
+			if (polled.usage) patch.usage = JSON.stringify(polled.usage);
+			if (polled.provider_meta !== undefined) patch.provider_meta = polled.provider_meta;
+			if (Object.keys(patch).length > 0) {
+				await runBatch(env, [
+					db
+						.updateTable('agent_run')
+						.set(patch)
+						.where('id', '=', run.id)
+						// A poll racing a cancel/sweep must not extend a settled run.
+						.where('status', 'in', ACTIVE)
+						.compile()
+				]);
+			}
+
+			let terminal: { status: 'completed' | 'failed' | 'timed_out' | 'canceled'; error: string | null } | null =
+				polled.status ? { status: polled.status, error: polled.error ?? null } : null;
+			if (!terminal && polled.usage) {
+				// The token cap has no provider-native ceiling on Claude; enforce
+				// it at poll time (input + output — cache reads excluded).
+				let budget: RunnerBudget | null = null;
+				try {
+					budget = row.budget ? (JSON.parse(row.budget) as RunnerBudget) : null;
+				} catch {
+					// An unreadable budget column enforces nothing.
+				}
+				const tokens = (polled.usage.input_tokens ?? 0) + (polled.usage.output_tokens ?? 0);
+				if (budget?.max_run_tokens !== undefined && tokens > budget.max_run_tokens) {
+					await adapter
+						.cancel({
+							id: run.id,
+							runner_id: run.runner_id,
+							provider_session_id: run.provider_session_id,
+							provider_meta: run.provider_meta
+						})
+						.catch((e) => console.error(`adapter cancel for run ${run.id} failed:`, e));
+					terminal = {
+						status: 'failed',
+						error: `run exceeded max_run_tokens (${budget.max_run_tokens})`
+					};
+				}
+			}
+			if (terminal) {
+				const endable = await loadEndableRun(db, row.user_id, run.id);
+				if (endable && (ACTIVE as string[]).includes(endable.status)) {
+					await endRun(db, env, endable, { status: terminal.status, error: terminal.error, now });
+				}
+			}
+		} catch (e) {
+			console.error(`supervisor sweep: polling run ${row.id} failed:`, e);
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
 // The sweep: the reliability guarantee behind the opportunistic passes
 
 export async function sweepSupervisor(
 	db: Kysely<Database>,
 	env: Env,
 	now: number = Date.now(),
-	adapters: AdapterRegistry = defaultAdapters
+	adapters?: AdapterRegistry
 ): Promise<void> {
+	adapters ??= buildAdapters(env);
+
+	// Managed-run polling: reconcile provider-side status, usage, and the
+	// rendered event summary for every running run whose adapter polls. Runs
+	// the provider reports ended get the ordinary end judgment; per-run token
+	// caps (no provider-native ceiling on Claude sessions) are enforced here.
+	await pollManagedRuns(db, env, now, adapters);
+
 	// Timeout enforcement: running runs past their runner's max_run_minutes.
 	const overdue = await db
 		.selectFrom('agent_run')
@@ -1083,6 +1194,21 @@ export async function sweepSupervisor(
 			.where('expires_at', '<=', now)
 			.compile()
 	]);
+
+	// Per-runner provider housekeeping (managed types): garbage-collect ended
+	// runs' vault credentials and sessions, and cancel orphaned sessions
+	// tagged with unknown/ended run ids (launch reconciliation's provider
+	// half). Best-effort; failures retry next sweep.
+	const sweepable = await db.selectFrom('runner').select(['id', 'user_id', 'type']).execute();
+	for (const runner of sweepable) {
+		const adapter = adapters[runner.type];
+		if (!adapter?.sweepRunner) continue;
+		try {
+			await adapter.sweepRunner({ id: runner.id, user_id: runner.user_id }, now);
+		} catch (e) {
+			console.error(`supervisor sweep: provider housekeeping for runner ${runner.id} failed:`, e);
+		}
+	}
 
 	// The dispatch pass itself — for every user with automation armed. This
 	// is also what retries launch-failure backoff: an expired backoff_until

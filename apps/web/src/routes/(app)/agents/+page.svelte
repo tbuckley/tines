@@ -1,6 +1,23 @@
 <script lang="ts">
-	import type { AgentRun, ModelTier, RoutingRule, RoutingTarget, Runner, ShadowWarning } from '@tines/shared';
-	import { ACTIVE_RUN_STATUSES, ApiError, MODEL_TIERS, runDurationLabel, utilizationLabel } from '@tines/shared';
+	import type {
+		AgentRun,
+		ModelTier,
+		RoutingRule,
+		RoutingTarget,
+		Runner,
+		RunnerBudget,
+		RunnerTierOverrides,
+		ShadowWarning
+	} from '@tines/shared';
+	import {
+		ACTIVE_RUN_STATUSES,
+		ApiError,
+		DEFAULT_MANAGED_RUN_COST_USD,
+		isStaleTierOverride,
+		MODEL_TIERS,
+		runDurationLabel,
+		utilizationLabel
+	} from '@tines/shared';
 	import IconAlertTriangle from '@tabler/icons-svelte/icons/alert-triangle';
 	import IconArrowDown from '@tabler/icons-svelte/icons/arrow-down';
 	import IconArrowRight from '@tabler/icons-svelte/icons/arrow-right';
@@ -19,6 +36,7 @@
 	import CancelRunDialog from '$lib/components/CancelRunDialog.svelte';
 	import ContextScopeChips from '$lib/components/ContextScopeChips.svelte';
 	import Modal from '$lib/components/Modal.svelte';
+	import PatInstructions from '$lib/components/PatInstructions.svelte';
 	import RunLogViewer from '$lib/components/RunLogViewer.svelte';
 	import StateBadge from '$lib/components/StateBadge.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
@@ -80,14 +98,172 @@
 		return runner.online ? 'bg-emerald-500' : 'bg-muted-foreground/40';
 	}
 
-	// The add-runner wizard shows the bootstrap command — the daemon registers
-	// itself on first start, so nothing is created here.
+	// The add-runner wizard. The local path shows the bootstrap command (the
+	// daemon registers itself; nothing is created here); the Claude managed
+	// path creates the runner with a ping-validated key, inlining the add-PAT
+	// step when none is stored, and ends with a skippable add-to-routing step.
 	let addRunnerOpen = $state(false);
+	let addRunnerType = $state<'local' | 'claude_managed'>('local');
 	let runnerName = $state('');
 	let runnerHarness = $state('claude-code');
 	let runnerCommand = $state('');
 	let runnerMaxConcurrent = $state(1);
 	let commandCopied = $state(false);
+
+	// Claude managed form state (flow 3).
+	let claudeApiKey = $state('');
+	let claudeMaxConcurrent = $state(3);
+	let claudeMaxMinutes = $state(30);
+	let claudeDefaultTier = $state<ModelTier>('balanced');
+	let claudeCapEnabled = $state(true);
+	let claudeCapUsd = $state(DEFAULT_MANAGED_RUN_COST_USD);
+	let claudePat = $state('');
+	let creatingClaude = $state(false);
+	/** Set after a successful create: the wizard's final, skippable routing step. */
+	let createdRunner = $state<Runner | null>(null);
+	let addingToRouting = $state(false);
+
+	function resetAddRunner() {
+		addRunnerOpen = false;
+		createdRunner = null;
+		claudeApiKey = '';
+		claudePat = '';
+		runnerName = '';
+	}
+
+	async function createClaudeRunner(e: SubmitEvent) {
+		e.preventDefault();
+		if (creatingClaude) return;
+		creatingClaude = true;
+		try {
+			// The inlined add-PAT step: stored in supervisor settings (shared
+			// across managed runners), written before the runner so the first
+			// dispatched run can already clone.
+			if (claudePat.trim() !== '') {
+				await api.updateSupervisorSettings({ github_pat: claudePat.trim() });
+			}
+			createdRunner = await api.createRunner({
+				type: 'claude_managed',
+				name: runnerName.trim(),
+				api_key: claudeApiKey.trim(),
+				max_concurrent: claudeMaxConcurrent,
+				max_run_minutes: claudeMaxMinutes,
+				default_tier: claudeDefaultTier,
+				// An explicit budget replaces the $5 default wholesale; {} = uncapped.
+				budget: claudeCapEnabled ? { max_run_cost_usd: claudeCapUsd } : {}
+			});
+			claudeApiKey = '';
+			claudePat = '';
+			await invalidateAll();
+		} catch (err) {
+			showError(err);
+		} finally {
+			creatingClaude = false;
+		}
+	}
+
+	/** The skippable final step: append the new runner to the global rule as a fallback. */
+	async function addCreatedToRouting() {
+		if (!createdRunner || addingToRouting) return;
+		addingToRouting = true;
+		try {
+			const globalRule = data.rules.find(
+				(r) => r.scope.project_id === null && r.scope.workflow_state_id === null
+			);
+			if (globalRule) {
+				if (!globalRule.targets.some((t) => t.runner_id === createdRunner?.id)) {
+					await api.updateRoutingRule(globalRule.id, {
+						targets: [
+							...globalRule.targets.map((t) => ({ runner_id: t.runner_id, ...(t.tier ? { tier: t.tier } : {}) })),
+							{ runner_id: createdRunner.id }
+						]
+					});
+				}
+			} else {
+				await api.createRoutingRule({
+					project_id: null,
+					workflow_state_id: null,
+					targets: [{ runner_id: createdRunner.id }]
+				});
+			}
+			resetAddRunner();
+			await invalidateAll();
+		} catch (err) {
+			showError(err);
+		} finally {
+			addingToRouting = false;
+		}
+	}
+
+	// --- runner edit: caps, budget, tier overrides, replace-key ------------------
+
+	let editTarget = $state<Runner | null>(null);
+	let editMaxConcurrent = $state(1);
+	let editMaxMinutes = $state(30);
+	let editDefaultTier = $state<ModelTier>('balanced');
+	/** Per-tier override inputs: '' = built-in. */
+	let editTierModels = $state<Record<string, string>>({});
+	let editTierEfforts = $state<Record<string, string>>({});
+	let editCapUsd = $state('');
+	let editCapTokens = $state('');
+	let editApiKey = $state('');
+	let savingEdit = $state(false);
+
+	function openRunnerEdit(runner: Runner) {
+		editTarget = runner;
+		editMaxConcurrent = runner.max_concurrent;
+		editMaxMinutes = runner.max_run_minutes;
+		editDefaultTier = runner.default_tier;
+		editTierModels = Object.fromEntries(
+			MODEL_TIERS.map((tier) => [tier, runner.tiers?.[tier]?.model ?? ''])
+		);
+		editTierEfforts = Object.fromEntries(
+			MODEL_TIERS.map((tier) => [tier, runner.tiers?.[tier]?.effort ?? ''])
+		);
+		editCapUsd = runner.budget?.max_run_cost_usd !== undefined ? String(runner.budget.max_run_cost_usd) : '';
+		editCapTokens = runner.budget?.max_run_tokens !== undefined ? String(runner.budget.max_run_tokens) : '';
+		editApiKey = '';
+	}
+
+	async function saveRunnerEdit(e: SubmitEvent) {
+		e.preventDefault();
+		if (!editTarget || savingEdit) return;
+		savingEdit = true;
+		try {
+			const tiers: RunnerTierOverrides = {};
+			for (const tier of MODEL_TIERS) {
+				const model = editTierModels[tier]?.trim();
+				if (!model) continue;
+				const effort = editTierEfforts[tier]?.trim();
+				tiers[tier] = { model, ...(effort ? { effort } : {}) };
+			}
+			const budget: RunnerBudget = {
+				...(editTarget.budget?.daily_usd !== undefined ? { daily_usd: editTarget.budget.daily_usd } : {}),
+				...(editTarget.budget?.daily_tokens !== undefined
+					? { daily_tokens: editTarget.budget.daily_tokens }
+					: {}),
+				...(editCapUsd.trim() !== '' ? { max_run_cost_usd: Number(editCapUsd) } : {}),
+				...(editCapTokens.trim() !== '' ? { max_run_tokens: Number.parseInt(editCapTokens, 10) } : {})
+			};
+			await api.updateRunner(editTarget.id, {
+				max_concurrent: editMaxConcurrent,
+				max_run_minutes: editMaxMinutes,
+				default_tier: editDefaultTier,
+				tiers: Object.keys(tiers).length > 0 ? tiers : null,
+				budget: Object.keys(budget).length > 0 ? budget : null,
+				...(editApiKey.trim() !== '' ? { api_key: editApiKey.trim() } : {})
+			});
+			editTarget = null;
+			await invalidateAll();
+		} catch (err) {
+			showError(err);
+		} finally {
+			savingEdit = false;
+		}
+	}
+
+	/** Tiers apply unless the runner has a fixed configuration (custom harness). */
+	const editTiersApply = $derived(editTarget !== null && editTarget.tier_models !== null);
 
 	const bootstrapCommand = $derived.by(() => {
 		const origin = typeof location !== 'undefined' ? location.origin : '<tines-url>';
@@ -197,6 +373,16 @@
 	/** The run awaiting the cancel dialog (strike note + optional comment). */
 	let cancelTarget = $state<AgentRun | null>(null);
 
+	/** Run cost: dollars where known, tokens where only they are, honest markers otherwise. */
+	function runCostLabel(run: AgentRun): string | null {
+		const usage = run.usage;
+		if (!usage) return null;
+		if (usage.cost_usd !== undefined) return `$${usage.cost_usd.toFixed(2)}`;
+		if (usage.cost_source === 'none') return 'unreported';
+		const tokens = (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0);
+		return tokens > 0 ? `${tokens.toLocaleString()} tok` : null;
+	}
+
 	// --- routing rules -----------------------------------------------------------
 
 	let ruleModalOpen = $state(false);
@@ -297,6 +483,38 @@
 	let attemptLimit = $state(3);
 	let savingSettings = $state(false);
 
+	// The GitHub PAT: write-only (only the fingerprint hint comes back).
+	let patInput = $state('');
+	let savingPat = $state(false);
+	/** Transient static revoke guidance after a replace (flow 16). */
+	let patReplacedNote = $state<string | null>(null);
+
+	async function savePat(e: SubmitEvent) {
+		e.preventDefault();
+		if (savingPat || patInput.trim() === '') return;
+		savingPat = true;
+		const replacing = data.settings.github_pat_hint !== null;
+		try {
+			await api.updateSupervisorSettings({ github_pat: patInput.trim() });
+			patInput = '';
+			if (replacing) {
+				// In-flight runs launched with the old credential are bounded by
+				// the largest managed-runner timeout — no live tracking needed.
+				const maxMinutes = Math.max(
+					0,
+					...data.runners.filter((r) => r.type !== 'local').map((r) => r.max_run_minutes)
+				);
+				patReplacedNote = `Replaced. Safe to revoke the old token in ${maxMinutes || 30} minutes — any in-flight run launched with it is done by then.`;
+				setTimeout(() => (patReplacedNote = null), 30_000);
+			}
+			await invalidateAll();
+		} catch (err) {
+			showError(err);
+		} finally {
+			savingPat = false;
+		}
+	}
+
 	$effect(() => {
 		const quota = data.settings.quota;
 		quotaType = quota.type;
@@ -385,8 +603,8 @@
 	</div>
 	{#if data.runners.length === 0}
 		<div class="text-muted-foreground rounded-lg border border-dashed p-8 text-center text-sm">
-			No runners yet. Add a local runner for this machine — managed (Claude / Gemini) runners arrive
-			in a later milestone.
+			No runners yet. Add a local runner for this machine, or a Claude managed runner that works
+			issues in the cloud (Gemini arrives in a later milestone).
 		</div>
 	{:else}
 		<div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -414,6 +632,9 @@
 					<p class="text-muted-foreground mb-3 text-xs">
 						{runner.active_runs}/{runner.max_concurrent} runs · {runner.max_run_minutes}m timeout ·
 						default tier {runner.default_tier}
+						{#if runner.budget?.max_run_cost_usd !== undefined}
+							· ${runner.budget.max_run_cost_usd}/run
+						{/if}
 						{#if runner.launch_failures > 0}
 							<span class="text-amber-600 dark:text-amber-400">· {runner.launch_failures} launch failures</span>
 						{/if}
@@ -424,6 +645,7 @@
 						{:else}
 							<Button size="sm" variant="outline" onclick={() => setRunnerStatus(runner, 'paused')}>Pause</Button>
 						{/if}
+						<Button size="sm" variant="ghost" onclick={() => openRunnerEdit(runner)}>Edit</Button>
 						{#if runner.type === 'local'}
 							<Button
 								size="sm"
@@ -489,6 +711,26 @@
 						{run.status.replaceAll('_', ' ')}
 					</span>
 					<span class="text-muted-foreground text-xs">{runDurationLabel(run)}</span>
+					{#if runCostLabel(run)}
+						<span class="text-muted-foreground text-xs">{runCostLabel(run)}</span>
+					{/if}
+					{#if run.provider_session_id && run.status === 'running'}
+						<!-- staleness honesty: managed logs/cost advance only at sweep cadence -->
+						<span class="text-muted-foreground/70 text-xs" title="Managed runs are polled by the sweep — logs and cost can lag by up to ~5 minutes; a quiet log means “not polled yet”, not “agent stuck”.">
+							updates every ~5m
+						</span>
+					{/if}
+					{#if run.provider_url}
+						<a
+							href={run.provider_url}
+							target="_blank"
+							rel="noreferrer"
+							class="text-muted-foreground text-xs underline-offset-2 hover:underline"
+							title="Open the provider console (full transcript)"
+						>
+							console ↗
+						</a>
+					{/if}
 					{#if run.error}
 						<span class="max-w-64 truncate text-xs text-amber-700 dark:text-amber-400" title={run.error}>
 							{run.error}
@@ -750,88 +992,428 @@
 				</Button>
 			</div>
 		</form>
+
+		<!-- GitHub PAT: one credential shared across managed runners, write-only -->
+		<form onsubmit={savePat} class="space-y-1.5 border-t pt-5">
+			<p class="text-sm font-medium">GitHub access</p>
+			{#if data.settings.github_pat_hint}
+				<p class="text-muted-foreground text-xs">
+					A personal access token is stored ({data.settings.github_pat_hint}) — write-only; paste a
+					new one to replace it.
+				</p>
+			{:else}
+				<p class="text-muted-foreground text-xs">
+					No token stored. Managed runners clone repositories with this token; without one, their
+					runs fail at clone time.
+				</p>
+			{/if}
+			<div class="flex items-center gap-2">
+				<Input
+					type="password"
+					class="flex-1"
+					placeholder={data.settings.github_pat_hint ? 'Paste a new fine-grained PAT' : 'github_pat_…'}
+					aria-label="GitHub personal access token"
+					bind:value={patInput}
+				/>
+				<Button type="submit" variant="outline" disabled={savingPat || patInput.trim() === ''}>
+					{savingPat ? 'Saving…' : data.settings.github_pat_hint ? 'Replace' : 'Save token'}
+				</Button>
+			</div>
+			{#if patReplacedNote}
+				<p class="text-xs text-emerald-700 dark:text-emerald-400" transition:slide={{ duration: dur() }}>
+					{patReplacedNote}
+				</p>
+			{/if}
+			<p class="text-muted-foreground text-xs">
+				Use a fine-grained token scoped to exactly the repos your context items point at — the token
+				never enters an agent's sandbox, but every run wields its full authority, so that repo set is
+				the blast radius of a compromised run.
+			</p>
+			<PatInstructions repoUrls={data.contextRepoUrls} />
+		</form>
 	</div>
 </div>
 
-<!-- add runner: the copy-pasteable daemon bootstrap (the daemon registers itself) -->
-<Modal bind:open={addRunnerOpen} title="Add local runner">
-	<div class="space-y-4">
-		<div class="grid grid-cols-2 gap-3">
-			<div class="space-y-1.5">
-				<label class="text-sm font-medium" for="runner-name">Name</label>
-				<Input id="runner-name" bind:value={runnerName} placeholder="e.g. laptop-m4" />
-				<p class="text-muted-foreground text-xs">
-					Unique — routing rules and the CLI address runners by name. Defaults to the hostname.
-				</p>
-			</div>
-			<div class="space-y-1.5">
-				<label class="text-sm font-medium" for="runner-harness">Harness</label>
-				<Select id="runner-harness" bind:value={runnerHarness}>
-					<option value="claude-code">Claude Code</option>
-					<option value="codex">codex</option>
-					<option value="custom">Custom command</option>
-				</Select>
-			</div>
-		</div>
-		{#if runnerHarness === 'custom'}
-			<div class="space-y-1.5" transition:slide={{ duration: dur() }}>
-				<label class="text-sm font-medium" for="runner-command">Command template</label>
-				<Input
-					id="runner-command"
-					bind:value={runnerCommand}
-					placeholder={'my-agent {prompt_file} --workspace {workspace}'}
-				/>
-				<p class="text-muted-foreground text-xs">
-					Placeholders: {'{prompt_file}'}, {'{workspace}'}, {'{model}'}.
-				</p>
-			</div>
-		{/if}
-		<div class="space-y-1.5">
-			<label class="text-sm font-medium" for="runner-cap">Max concurrent runs</label>
-			<Input
-				id="runner-cap"
-				type="number"
-				min="1"
-				max="100"
-				class="w-24"
-				value={runnerMaxConcurrent}
-				oninput={(e) => (runnerMaxConcurrent = Number.parseInt(e.currentTarget.value, 10) || 1)}
-			/>
-		</div>
-
-		<div class="space-y-1.5">
-			<p class="text-sm font-medium">Run this on the machine</p>
-			<div class="relative">
-				<pre class="bg-muted overflow-x-auto rounded-md border p-3 pr-10 font-mono text-xs">{bootstrapCommand}</pre>
-				<Button
-					size="icon"
-					variant="ghost"
-					class="absolute top-1.5 right-1.5 size-7"
-					aria-label="Copy the bootstrap command"
-					onclick={copyBootstrapCommand}
-				>
-					<IconCopy size={14} />
-				</Button>
-				{#if commandCopied}
-					<span class="text-muted-foreground absolute -bottom-5 right-0 text-xs">copied</span>
-				{/if}
-			</div>
-			<p class="text-muted-foreground pt-1 text-xs">
-				The first start <span class="font-medium">registers</span> the runner with your API key and
-				stores its own long-lived runner token on the machine; it appears here, online, within
-				seconds. Later starts reconnect with the stored token — the API key is only needed once.
+<!-- add runner: local shows the daemon bootstrap (the daemon registers itself);
+     Claude managed creates the runner here with a ping-validated key -->
+<Modal bind:open={addRunnerOpen} title="Add runner" onclose={resetAddRunner}>
+	{#if createdRunner}
+		<!-- final, skippable step: add the new runner to routing (flow 3) -->
+		<div class="space-y-4">
+			<p class="text-sm">
+				Runner <span class="font-medium">{createdRunner.name}</span> is ready — managed runners are
+				always online. It won't take work until a routing rule (or an issue pin) targets it.
 			</p>
 			<p class="text-muted-foreground text-xs">
-				Keep it running: the runner is infrastructure — put the daemon under launchd/systemd so it
-				survives logouts and reboots (service snippets in
-				<code class="bg-muted rounded px-1 py-0.5">docs/runner-daemon.md</code>).
+				{#if data.rules.some((r) => r.scope.project_id === null && r.scope.workflow_state_id === null)}
+					Add it to your global rule as a fallback target?
+				{:else}
+					Create a global rule routing everything to it?
+				{/if}
 			</p>
+			<div class="flex justify-end gap-2">
+				<Button variant="ghost" onclick={resetAddRunner}>Skip for now</Button>
+				<Button variant="outline" disabled={addingToRouting} onclick={addCreatedToRouting}>
+					{addingToRouting ? 'Adding…' : 'Add to routing'}
+				</Button>
+			</div>
 		</div>
-		<div class="flex justify-end">
-			<Button variant="outline" onclick={() => (addRunnerOpen = false)}>Done</Button>
+	{:else}
+		<div class="space-y-4">
+			<div class="bg-muted inline-flex rounded-md p-0.5 text-sm">
+				<button
+					type="button"
+					class="rounded px-3 py-1 {addRunnerType === 'local' ? 'bg-background shadow-xs font-medium' : 'text-muted-foreground'}"
+					onclick={() => (addRunnerType = 'local')}
+				>
+					Local
+				</button>
+				<button
+					type="button"
+					class="rounded px-3 py-1 {addRunnerType === 'claude_managed' ? 'bg-background shadow-xs font-medium' : 'text-muted-foreground'}"
+					onclick={() => (addRunnerType = 'claude_managed')}
+				>
+					Claude (managed)
+				</button>
+			</div>
+
+			{#if addRunnerType === 'claude_managed'}
+				<form onsubmit={createClaudeRunner} class="space-y-4">
+					<div class="grid grid-cols-2 gap-3">
+						<div class="space-y-1.5">
+							<label class="text-sm font-medium" for="claude-name">Name</label>
+							<Input id="claude-name" bind:value={runnerName} placeholder="e.g. claude-cloud" required />
+						</div>
+						<div class="space-y-1.5">
+							<label class="text-sm font-medium" for="claude-tier">Default tier</label>
+							<Select id="claude-tier" bind:value={claudeDefaultTier}>
+								{#each MODEL_TIERS as tier (tier)}
+									<option value={tier}>{tier}</option>
+								{/each}
+							</Select>
+						</div>
+					</div>
+					<div class="space-y-1.5">
+						<label class="text-sm font-medium" for="claude-key">Anthropic API key</label>
+						<Input
+							id="claude-key"
+							type="password"
+							bind:value={claudeApiKey}
+							placeholder="sk-ant-…"
+							required
+						/>
+						<p class="text-muted-foreground text-xs">
+							Validated with a ping before anything is created; encrypted at rest and write-only
+							after — the edit view only shows that a key is set.
+						</p>
+					</div>
+					<div class="grid grid-cols-2 gap-3">
+						<div class="space-y-1.5">
+							<label class="text-sm font-medium" for="claude-cap">Max concurrent runs</label>
+							<Input
+								id="claude-cap"
+								type="number"
+								min="1"
+								max="100"
+								value={claudeMaxConcurrent}
+								oninput={(e) => (claudeMaxConcurrent = Number.parseInt(e.currentTarget.value, 10) || 1)}
+							/>
+						</div>
+						<div class="space-y-1.5">
+							<label class="text-sm font-medium" for="claude-minutes">Run timeout (minutes)</label>
+							<Input
+								id="claude-minutes"
+								type="number"
+								min="1"
+								max="1440"
+								value={claudeMaxMinutes}
+								oninput={(e) => (claudeMaxMinutes = Number.parseInt(e.currentTarget.value, 10) || 30)}
+							/>
+						</div>
+					</div>
+					<div class="space-y-1.5">
+						<label class="flex items-center gap-2 text-sm font-medium">
+							<input type="checkbox" bind:checked={claudeCapEnabled} class="accent-primary" />
+							Per-run cost cap
+						</label>
+						{#if claudeCapEnabled}
+							<div class="flex items-center gap-2" transition:slide={{ duration: dur() }}>
+								<span class="text-muted-foreground text-sm">$</span>
+								<Input
+									type="number"
+									min="0.01"
+									step="0.01"
+									class="w-24"
+									aria-label="Per-run cost cap in dollars"
+									value={claudeCapUsd}
+									oninput={(e) => (claudeCapUsd = Number(e.currentTarget.value) || DEFAULT_MANAGED_RUN_COST_USD)}
+								/>
+								<span class="text-muted-foreground text-xs">
+									per run, enforced by the platform — the session pauses at the cap and the run ends.
+								</span>
+							</div>
+						{:else}
+							<p class="text-xs text-amber-700 dark:text-amber-400" transition:slide={{ duration: dur() }}>
+								Uncapped: a run is bounded only by its timeout × burn rate.
+							</p>
+						{/if}
+					</div>
+					{#if !data.settings.github_pat_hint}
+						<div class="space-y-1.5 rounded-md border border-amber-500/40 bg-amber-500/10 p-3">
+							<label class="text-sm font-medium" for="claude-pat">GitHub access (needed to clone)</label>
+							<Input
+								id="claude-pat"
+								type="password"
+								bind:value={claudePat}
+								placeholder="github_pat_…"
+							/>
+							<p class="text-muted-foreground text-xs">
+								No PAT is stored yet — without one, this runner's first run fails at clone time. Use
+								a fine-grained token scoped to exactly the repos your context items point at: the
+								token never enters the sandbox, but every run wields its full authority, so that
+								repo set is the blast radius of a compromised run. Stored once in supervisor
+								settings, shared by all managed runners.
+							</p>
+							<PatInstructions repoUrls={data.contextRepoUrls} />
+						</div>
+					{/if}
+					<div class="flex justify-end gap-2">
+						<Button type="button" variant="ghost" onclick={resetAddRunner}>Cancel</Button>
+						<Button type="submit" disabled={creatingClaude || !runnerName.trim() || !claudeApiKey.trim()}>
+							{creatingClaude ? 'Validating key…' : 'Create runner'}
+						</Button>
+					</div>
+				</form>
+			{:else}
+				<div class="space-y-4">
+					<div class="grid grid-cols-2 gap-3">
+						<div class="space-y-1.5">
+							<label class="text-sm font-medium" for="runner-name">Name</label>
+							<Input id="runner-name" bind:value={runnerName} placeholder="e.g. laptop-m4" />
+							<p class="text-muted-foreground text-xs">
+								Unique — routing rules and the CLI address runners by name. Defaults to the hostname.
+							</p>
+						</div>
+						<div class="space-y-1.5">
+							<label class="text-sm font-medium" for="runner-harness">Harness</label>
+							<Select id="runner-harness" bind:value={runnerHarness}>
+								<option value="claude-code">Claude Code</option>
+								<option value="codex">codex</option>
+								<option value="custom">Custom command</option>
+							</Select>
+						</div>
+					</div>
+					{#if runnerHarness === 'custom'}
+						<div class="space-y-1.5" transition:slide={{ duration: dur() }}>
+							<label class="text-sm font-medium" for="runner-command">Command template</label>
+							<Input
+								id="runner-command"
+								bind:value={runnerCommand}
+								placeholder={'my-agent {prompt_file} --workspace {workspace}'}
+							/>
+							<p class="text-muted-foreground text-xs">
+								Placeholders: {'{prompt_file}'}, {'{workspace}'}, {'{model}'}.
+							</p>
+						</div>
+					{/if}
+					<div class="space-y-1.5">
+						<label class="text-sm font-medium" for="runner-cap">Max concurrent runs</label>
+						<Input
+							id="runner-cap"
+							type="number"
+							min="1"
+							max="100"
+							class="w-24"
+							value={runnerMaxConcurrent}
+							oninput={(e) => (runnerMaxConcurrent = Number.parseInt(e.currentTarget.value, 10) || 1)}
+						/>
+					</div>
+			
+					<div class="space-y-1.5">
+						<p class="text-sm font-medium">Run this on the machine</p>
+						<div class="relative">
+							<pre class="bg-muted overflow-x-auto rounded-md border p-3 pr-10 font-mono text-xs">{bootstrapCommand}</pre>
+							<Button
+								size="icon"
+								variant="ghost"
+								class="absolute top-1.5 right-1.5 size-7"
+								aria-label="Copy the bootstrap command"
+								onclick={copyBootstrapCommand}
+							>
+								<IconCopy size={14} />
+							</Button>
+							{#if commandCopied}
+								<span class="text-muted-foreground absolute -bottom-5 right-0 text-xs">copied</span>
+							{/if}
+						</div>
+						<p class="text-muted-foreground pt-1 text-xs">
+							The first start <span class="font-medium">registers</span> the runner with your API key and
+							stores its own long-lived runner token on the machine; it appears here, online, within
+							seconds. Later starts reconnect with the stored token — the API key is only needed once.
+						</p>
+						<p class="text-muted-foreground text-xs">
+							Keep it running: the runner is infrastructure — put the daemon under launchd/systemd so it
+							survives logouts and reboots (service snippets in
+							<code class="bg-muted rounded px-1 py-0.5">docs/runner-daemon.md</code>).
+						</p>
+					</div>
+					<div class="flex justify-end">
+						<Button variant="outline" onclick={resetAddRunner}>Done</Button>
+					</div>
+				</div>
+			{/if}
 		</div>
-	</div>
+	{/if}
 </Modal>
+
+<!-- runner edit: caps, budget, tier overrides, replace-key -->
+{#if editTarget}
+	<Modal open={true} onclose={() => (editTarget = null)} title="Edit runner">
+		<form onsubmit={saveRunnerEdit} class="space-y-4">
+			<p class="text-sm">
+				<span class="font-medium">{editTarget.name}</span>
+				<span class="text-muted-foreground">({editTarget.type})</span>
+			</p>
+			<div class="grid grid-cols-3 gap-3">
+				<div class="space-y-1.5">
+					<label class="text-sm font-medium" for="edit-concurrent">Max concurrent</label>
+					<Input
+						id="edit-concurrent"
+						type="number"
+						min="1"
+						max="100"
+						value={editMaxConcurrent}
+						oninput={(e) => (editMaxConcurrent = Number.parseInt(e.currentTarget.value, 10) || 1)}
+					/>
+				</div>
+				<div class="space-y-1.5">
+					<label class="text-sm font-medium" for="edit-minutes">Timeout (min)</label>
+					<Input
+						id="edit-minutes"
+						type="number"
+						min="1"
+						max="1440"
+						value={editMaxMinutes}
+						oninput={(e) => (editMaxMinutes = Number.parseInt(e.currentTarget.value, 10) || 30)}
+					/>
+				</div>
+				<div class="space-y-1.5">
+					<label class="text-sm font-medium" for="edit-default-tier">Default tier</label>
+					<Select id="edit-default-tier" bind:value={editDefaultTier} disabled={!editTiersApply}>
+						{#each MODEL_TIERS as tier (tier)}
+							<option value={tier}>{tier}</option>
+						{/each}
+					</Select>
+				</div>
+			</div>
+
+			<div class="space-y-1.5">
+				<p class="text-sm font-medium">Tiers</p>
+				{#if !editTiersApply}
+					<p class="text-muted-foreground text-xs">
+						Tiers don't apply to this runner — its custom harness runs a fixed configuration, so it
+						satisfies any tier with it (runs record the requested tier with the model unknown).
+					</p>
+				{:else}
+					<p class="text-muted-foreground text-xs">
+						Leave a tier blank to use the built-in (it silently improves as models ship); an
+						override stays frozen until touched.
+					</p>
+					{#each MODEL_TIERS as tier (tier)}
+						{@const builtin = editTarget.tier_models?.[tier] ?? null}
+						{@const stale = isStaleTierOverride(builtin, editTierModels[tier]?.trim() || null)}
+						<div class="flex items-center gap-2">
+							<span class="text-muted-foreground w-20 text-right text-xs">{tier}</span>
+							<Input
+								class="flex-1"
+								placeholder={builtin ? `${builtin} (built-in)` : 'model id'}
+								aria-label={`Model override for ${tier}`}
+								value={editTierModels[tier] ?? ''}
+								oninput={(e) => (editTierModels = { ...editTierModels, [tier]: e.currentTarget.value })}
+							/>
+							{#if editTarget.type === 'claude_managed'}
+								<Select
+									class="w-28"
+									aria-label={`Effort for ${tier}`}
+									value={editTierEfforts[tier] ?? ''}
+									disabled={(editTierModels[tier] ?? '').trim() === ''}
+									onchange={(e) => (editTierEfforts = { ...editTierEfforts, [tier]: e.currentTarget.value })}
+								>
+									<option value="">effort —</option>
+									{#each ['low', 'medium', 'high', 'xhigh', 'max'] as effort (effort)}
+										<option value={effort}>{effort}</option>
+									{/each}
+								</Select>
+							{/if}
+						</div>
+						{#if stale}
+							<p class="text-muted-foreground pl-22 text-xs">
+								<span class="text-amber-700 dark:text-amber-400">stale override</span> — the built-in
+								for {tier} is now {builtin}
+							</p>
+						{/if}
+					{/each}
+				{/if}
+			</div>
+
+			<div class="space-y-1.5">
+				<p class="text-sm font-medium">Per-run caps</p>
+				<div class="flex flex-wrap items-center gap-2">
+					<span class="text-muted-foreground text-sm">$</span>
+					<Input
+						type="number"
+						min="0.01"
+						step="0.01"
+						class="w-24"
+						placeholder="none"
+						aria-label="Per-run cost cap in dollars"
+						value={editCapUsd}
+						oninput={(e) => (editCapUsd = e.currentTarget.value)}
+					/>
+					<span class="text-muted-foreground text-xs">per run ·</span>
+					<Input
+						type="number"
+						min="1"
+						class="w-32"
+						placeholder="none"
+						aria-label="Per-run token cap"
+						value={editCapTokens}
+						oninput={(e) => (editCapTokens = e.currentTarget.value)}
+					/>
+					<span class="text-muted-foreground text-xs">tokens per run</span>
+				</div>
+				{#if editTarget.type !== 'local' && editCapUsd.trim() === ''}
+					<p class="text-xs text-amber-700 dark:text-amber-400">
+						No cost cap: a run is bounded only by its timeout × burn rate.
+					</p>
+				{/if}
+			</div>
+
+			{#if editTarget.type !== 'local'}
+				<div class="space-y-1.5">
+					<label class="text-sm font-medium" for="edit-api-key">Provider API key</label>
+					<Input
+						id="edit-api-key"
+						type="password"
+						bind:value={editApiKey}
+						placeholder={editTarget.has_api_key ? 'A key is set — paste a new one to replace it' : 'sk-ant-…'}
+					/>
+					<p class="text-muted-foreground text-xs">
+						Write-only. A replacement is ping-validated first — a bad paste leaves the working key
+						in place. In-flight sessions are unaffected; the next launch uses the new key.
+					</p>
+				</div>
+			{/if}
+
+			<div class="flex justify-end gap-2">
+				<Button type="button" variant="ghost" onclick={() => (editTarget = null)}>Cancel</Button>
+				<Button type="submit" disabled={savingEdit}>
+					{savingEdit ? 'Saving…' : 'Save runner'}
+				</Button>
+			</div>
+		</form>
+	</Modal>
+{/if}
 
 <!-- cancel a run: strike note + optional comment posted before the cancel -->
 {#if cancelTarget}

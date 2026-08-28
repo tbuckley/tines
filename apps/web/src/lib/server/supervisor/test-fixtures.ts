@@ -93,8 +93,11 @@ export function addRunner(
 		maxConcurrent?: number;
 		maxRunMinutes?: number;
 		defaultTier?: ModelTier;
-		tiers?: Record<string, { model: string } | string>;
+		tiers?: Record<string, { model: string; effort?: string } | string>;
+		budget?: Record<string, number>;
 		harness?: string;
+		config?: Record<string, unknown>;
+		secretEnc?: string;
 		lastSeen?: number | null;
 		launchFailures?: number;
 		backoffUntil?: number | null;
@@ -104,8 +107,8 @@ export function addRunner(
 	t.sqlite
 		.prepare(
 			`INSERT INTO runner (id, user_id, type, name, status, max_concurrent, max_run_minutes,
-				default_tier, tiers, config, last_seen_at, launch_failures, backoff_until, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+				default_tier, tiers, budget, config, secret_enc, last_seen_at, launch_failures, backoff_until, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 		)
 		.run(
 			id,
@@ -117,7 +120,9 @@ export function addRunner(
 			opts.maxRunMinutes ?? 30,
 			opts.defaultTier ?? 'balanced',
 			opts.tiers ? JSON.stringify(opts.tiers) : null,
-			JSON.stringify({ harness: opts.harness ?? 'claude_code' }),
+			opts.budget ? JSON.stringify(opts.budget) : null,
+			JSON.stringify(opts.config ?? { harness: opts.harness ?? 'claude_code' }),
+			opts.secretEnc ?? null,
 			opts.lastSeen === undefined ? NOW : opts.lastSeen,
 			opts.launchFailures ?? 0,
 			opts.backoffUntil ?? null,
@@ -175,6 +180,8 @@ export function addRun(
 		model?: string | null;
 		stateAtStart?: string;
 		apiKeyId?: string | null;
+		providerSessionId?: string | null;
+		providerMeta?: string | null;
 		createdAt?: number;
 		startedAt?: number | null;
 		log?: string;
@@ -185,8 +192,8 @@ export function addRun(
 	t.sqlite
 		.prepare(
 			`INSERT INTO agent_run (id, user_id, issue_id, runner_id, status, tier, model,
-				state_id_at_start, api_key_id, log, log_bytes_dropped, created_at, started_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+				state_id_at_start, api_key_id, provider_session_id, provider_meta, log, log_bytes_dropped, created_at, started_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 		)
 		.run(
 			id,
@@ -198,6 +205,8 @@ export function addRun(
 			opts.model === undefined ? 'claude-sonnet-5' : opts.model,
 			opts.stateAtStart ?? OPEN,
 			opts.apiKeyId ?? null,
+			opts.providerSessionId ?? null,
+			opts.providerMeta ?? null,
 			opts.log ?? '',
 			opts.logBytesDropped ?? 0,
 			opts.createdAt ?? NOW,

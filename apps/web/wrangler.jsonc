@@ -56,7 +56,9 @@
 	],
 	"vars": {
 		// Public, non-secret vars. Secrets (BETTER_AUTH_SECRET, GOOGLE_CLIENT_ID,
-		// GOOGLE_CLIENT_SECRET) go in `.dev.vars` locally and `wrangler secret put` in prod.
+		// GOOGLE_CLIENT_SECRET, SECRET_ENCRYPTION_KEY — the at-rest encryption
+		// key for stored provider credentials) go in `.dev.vars` locally and
+		// `wrangler secret put` in prod.
 		// Local dev overrides this via .dev.vars (BETTER_AUTH_URL=http://localhost:5173).
 		"BETTER_AUTH_URL": "https://tines.tbuckley.dev",
 		// Sender for magic-link emails. Must be an address on a domain onboarded to

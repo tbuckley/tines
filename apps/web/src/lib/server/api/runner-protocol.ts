@@ -10,7 +10,6 @@
  */
 import {
 	ACTIVE_RUN_STATUSES,
-	RUN_LOG_MAX_BYTES,
 	RUNNER_ONLINE_WINDOW_MS,
 	type AgentRun,
 	type AgentRunUsage,
@@ -31,6 +30,7 @@ import {
 	mintRunKeyAndFlip,
 	supervisorEvent
 } from '$lib/server/supervisor/engine';
+import { appendLogTail } from '$lib/server/supervisor/logic';
 import { buildSupervisorPreamble } from '$lib/server/supervisor/preamble';
 import { buildLaunchPrompt, effectiveContextForIssue } from './context';
 import { ApiFail, notFound, optionalString, runAtomic } from './core';
@@ -292,29 +292,10 @@ async function deliverAssignedRun(
 }
 
 // ---------------------------------------------------------------------------
-// Log append: 256 KB tail, truncated from the head
+// Log append: 256 KB tail, truncated from the head (appendLogTail lives in
+// supervisor/logic.ts so the sweep's managed-run polling shares it)
 
-/**
- * Appends a chunk to a log tail capped at `RUN_LOG_MAX_BYTES` (UTF-8),
- * truncating from the head. Exported for tests; byte math is done here in JS
- * because SQLite's `length()` counts characters.
- */
-export function appendLogTail(
-	log: string,
-	dropped: number,
-	chunk: string
-): { log: string; dropped: number } {
-	const combined = log + chunk;
-	const bytes = new TextEncoder().encode(combined);
-	if (bytes.length <= RUN_LOG_MAX_BYTES) return { log: combined, dropped };
-	const kept = bytes.slice(bytes.length - RUN_LOG_MAX_BYTES);
-	// A multi-byte character split at the boundary decodes to U+FFFD at the
-	// head of the tail — cosmetic, and cheaper than re-scanning boundaries.
-	return {
-		log: new TextDecoder().decode(kept),
-		dropped: dropped + (bytes.length - RUN_LOG_MAX_BYTES)
-	};
-}
+export { appendLogTail };
 
 /** Loads a run for the protocol, scoped to the authenticated runner (404 across runners). */
 async function loadRunnerRun(
