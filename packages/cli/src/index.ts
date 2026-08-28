@@ -5,6 +5,7 @@ import { createInterface } from 'node:readline/promises';
 import { runDaemon } from './daemon/daemon.js';
 import { defaultConfigDir, hasRunnerCredentials, saveRunnerCredentials } from './daemon/store.js';
 import { HARNESS_KINDS, type HarnessKind } from './daemon/support.js';
+import { helpGuard } from './help-guard.js';
 import {
 	actorLabel,
 	AGENT_GUIDELINES_BODY,
@@ -1085,7 +1086,8 @@ withCommon(
 		.description('Comment on an issue (Markdown body)')
 		// A body may start with "-"; options go before the arguments.
 		.passThroughOptions()
-).action(async (ref: string, markdown: string, opts: CommonOpts) => {
+).action(async (ref: string, markdown: string, opts: CommonOpts, command: Command) => {
+	if (helpGuard(command, markdown)) return;
 	const api = client(opts);
 	const issue = await resolveIssue(api, ref);
 	const comment = await api.createComment(issue.id, { body: markdown });
@@ -1611,7 +1613,8 @@ withCommon(
 		// Lessons are dated bullets starting with "-"; options go before the
 		// arguments, exactly as the launch prompt's copy-pasteable command has it.
 		.passThroughOptions()
-).action(async (ref: string, markdown: string, opts: CommonOpts) => {
+).action(async (ref: string, markdown: string, opts: CommonOpts, command: Command) => {
+	if (helpGuard(command, markdown)) return;
 	const api = client(opts);
 	const { issue, item } = await resolveJournal(api, ref);
 	const scopeLabel = `project ${issue.project_name} · state ${issue.state.name}`;
