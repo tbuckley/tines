@@ -52,20 +52,23 @@ export function addIssue(
 		pinnedTier?: ModelTier;
 		attemptCount?: number;
 		needsAttention?: boolean;
+		title?: string;
+		description?: string;
 	} = {}
 ): string {
 	const id = opts.id ?? `iss_${++issueSeq}`;
 	t.sqlite
 		.prepare(
-			`INSERT INTO issue (id, project_id, number, title, workflow_id, state_id,
+			`INSERT INTO issue (id, project_id, number, title, description, workflow_id, state_id,
 				pinned_runner_id, pinned_tier, attempt_count, needs_attention, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 		)
 		.run(
 			id,
 			opts.project ?? PROJECT,
 			++issueSeq,
-			`Issue ${id}`,
+			opts.title ?? `Issue ${id}`,
+			opts.description ?? '',
 			opts.workflow ?? 'wf_standard',
 			opts.state ?? OPEN,
 			opts.pinnedRunner ?? null,

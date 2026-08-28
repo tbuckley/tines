@@ -1,10 +1,12 @@
 <script lang="ts">
 	import IconPlus from '@tabler/icons-svelte/icons/plus';
+	import IconSearch from '@tabler/icons-svelte/icons/search';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import IssueList from '$lib/components/IssueList.svelte';
 	import NewIssueModal from '$lib/components/NewIssueModal.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
+	import { Input } from '$lib/components/ui/input/index.js';
 	import { Select } from '$lib/components/ui/select/index.js';
 	import { CATEGORY_LABELS } from '$lib/format';
 	import { STATE_CATEGORIES } from '@tines/shared';
@@ -12,6 +14,10 @@
 	let { data } = $props();
 
 	let newIssueOpen = $state(false);
+
+	// Submit-to-search, like the context page: the URL is the source of truth.
+	// svelte-ignore state_referenced_locally
+	let search = $state(data.filters.q ?? '');
 
 	// Distinct state names across the library, for the state filter.
 	const stateNames = $derived([
@@ -41,6 +47,17 @@
 </div>
 
 <div class="mb-6 flex flex-wrap items-center gap-3">
+	<div class="relative">
+		<IconSearch size={14} class="text-muted-foreground absolute top-1/2 left-2.5 -translate-y-1/2" />
+		<form
+			onsubmit={(e) => {
+				e.preventDefault();
+				setFilter('q', search.trim());
+			}}
+		>
+			<Input bind:value={search} placeholder="Search issues…" class="h-9 w-56 pl-8" aria-label="Search issues" />
+		</form>
+	</div>
 	<Select
 		class="w-40 max-sm:min-w-36 max-sm:flex-1"
 		value={data.filters.project ?? ''}

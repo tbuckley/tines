@@ -29,6 +29,62 @@ test.describe('auth', () => {
 	});
 });
 
+test.describe.serial('issue search', () => {
+	// `q` is a substring match over title + description, and the global and
+	// per-project routes must agree on it.
+	const projectName = `search-${runId}`;
+	let projectId: string;
+	const titles = [`[idea] pagination ${runId}`, `Plain ${runId}`, `Other ${runId}`];
+
+	test('seeds a project whose issues match on title, on description, or not at all', async ({
+		request
+	}) => {
+		const api = apiClient(request, ALICE.apiKey);
+		projectId = (await body<Project>(await api.post('/api/v1/projects', { name: projectName }))).id;
+		for (const [i, title] of titles.entries()) {
+			const res = await api.post(`/api/v1/projects/${projectId}/issues`, {
+				title,
+				description: i === 1 ? 'mentions pagination' : ''
+			});
+			expect(res.status()).toBe(201);
+		}
+	});
+
+	const listBoth = async (
+		api: ReturnType<typeof apiClient>,
+		q: string
+	): Promise<[string[], string[]]> => {
+		const global = await body<ListResponse<IssueDetail>>(
+			await api.get(`/api/v1/issues?project=${projectId}&q=${encodeURIComponent(q)}`)
+		);
+		const scoped = await body<ListResponse<IssueDetail>>(
+			await api.get(`/api/v1/projects/${projectId}/issues?q=${encodeURIComponent(q)}`)
+		);
+		return [global.items.map((i) => i.title).sort(), scoped.items.map((i) => i.title).sort()];
+	};
+
+	test('matches titles and descriptions, on both routes', async ({ request }) => {
+		const api = apiClient(request, ALICE.apiKey);
+		const [global, scoped] = await listBoth(api, 'pagination');
+		expect(global).toEqual([titles[0], titles[1]].sort());
+		expect(scoped).toEqual(global);
+	});
+
+	test('treats brackets literally and ignores ASCII case', async ({ request }) => {
+		const api = apiClient(request, ALICE.apiKey);
+		const [brackets, scopedBrackets] = await listBoth(api, '[idea]');
+		expect(brackets).toEqual([titles[0]]);
+		expect(scopedBrackets).toEqual(brackets);
+		const [upper] = await listBoth(api, 'IDEA');
+		expect(upper).toEqual(brackets);
+	});
+
+	test('returns nothing for a term no issue carries', async ({ request }) => {
+		const api = apiClient(request, ALICE.apiKey);
+		expect(await listBoth(api, `nothing-${runId}`)).toEqual([[], []]);
+	});
+});
+
 test.describe.serial('core issue loop', () => {
 	const projectName = `loop-${runId}`;
 	let projectId: string;

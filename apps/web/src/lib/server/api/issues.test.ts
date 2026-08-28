@@ -1,7 +1,9 @@
 import type { WorkflowResponse } from '@tines/shared';
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
+import { CLOSED, PROJECT, USER, addIssue, seedBase } from '../supervisor/test-fixtures';
 import { ApiFail } from './core';
-import { allowedTransitions, assertPinFieldsAllowed, resolveStateRef } from './issues';
+import { allowedTransitions, assertPinFieldsAllowed, listIssues, resolveStateRef } from './issues';
+import { createTestDb, type TestDb } from './test-db';
 
 const workflow: WorkflowResponse = {
 	id: 'wf_1',
@@ -101,5 +103,66 @@ describe('assertPinFieldsAllowed', () => {
 		expect(() => assertPinFieldsAllowed(namedKey, { pinned_runner_id: 'rnr_1' })).not.toThrow();
 		expect(() => assertPinFieldsAllowed(namedKey, { pinned_runner_id: null })).not.toThrow();
 		expect(() => assertPinFieldsAllowed(session, { pinned_runner_id: 'rnr_1', pinned_tier: 'smartest' })).not.toThrow();
+	});
+});
+
+describe('listIssues search', () => {
+	const PROJECT2 = 'prj_2';
+	let t: TestDb;
+	let ids: Record<string, string>;
+
+	/** Titles/descriptions chosen so each case isolates one matching column. */
+	beforeEach(() => {
+		t = createTestDb();
+		seedBase(t);
+		t.sqlite.exec(
+			`INSERT INTO project (id, user_id, name, created_at, updated_at)
+				VALUES ('${PROJECT2}', '${USER}', 'other', 0, 0)`
+		);
+		ids = {
+			byTitle: addIssue(t, { title: '[idea] pagination' }),
+			byDescription: addIssue(t, { title: 'Plain', description: 'mentions pagination' }),
+			neither: addIssue(t, { title: 'Other' }),
+			done: addIssue(t, { title: '[idea] done', state: CLOSED }),
+			elsewhere: addIssue(t, { title: '[idea] elsewhere', project: PROJECT2 })
+		};
+	});
+
+	const search = async (filters: Parameters<typeof listIssues>[2], limit = 50) =>
+		listIssues(t.db, USER, filters, { cursor: null, limit });
+
+	it('matches on title and on description', async () => {
+		const { items } = await search({ q: 'pagination' });
+		expect(items.map((i) => i.id).sort()).toEqual([ids.byTitle, ids.byDescription].sort());
+	});
+
+	it('treats brackets literally — SQLite LIKE has no character classes', async () => {
+		const { items } = await search({ q: '[idea]' });
+		expect(items.map((i) => i.id).sort()).toEqual([ids.byTitle, ids.done, ids.elsewhere].sort());
+	});
+
+	it('is case-insensitive for ASCII', async () => {
+		const { items } = await search({ q: 'IDEA' });
+		expect(items.map((i) => i.id).sort()).toEqual([ids.byTitle, ids.done, ids.elsewhere].sort());
+	});
+
+	it('returns nothing when no issue matches', async () => {
+		expect((await search({ q: 'zzz' })).items).toEqual([]);
+	});
+
+	it('composes with project and hide_done', async () => {
+		const { items } = await search({ q: '[idea]', project: PROJECT, hideDone: true });
+		expect(items.map((i) => i.id)).toEqual([ids.byTitle]);
+	});
+
+	it('filters before paginating, so hasMore reflects the matches only', async () => {
+		expect(await search({ q: 'pagination' }, 1)).toMatchObject({ hasMore: true });
+		expect(await search({ q: '[idea]', project: PROJECT, hideDone: true }, 1)).toMatchObject({
+			hasMore: false
+		});
+	});
+
+	it('returns every issue when q is absent', async () => {
+		expect((await search({})).items).toHaveLength(5);
 	});
 });
