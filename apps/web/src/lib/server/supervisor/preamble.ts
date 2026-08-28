@@ -54,7 +54,7 @@ const VARIANTS: Record<
 			`leaves the sandbox). The Tines API base URL is \`${input.apiUrl ?? ''}\` — export it as`,
 			'`TINES_API_URL` before using the CLI. The key is revoked the moment this run ends.',
 			'',
-			'Bootstrap the CLI first: `npm i -g @tines/cli`, then `tines` commands work as documented',
+			'Bootstrap the CLI first: `npm i -g tines`, then `tines` commands work as documented',
 			'in the issue block below. If the install is blocked, every CLI command is a thin wrapper',
 			`over \`${input.apiUrl ?? ''}/api/v1\` — \`curl\` with \`Authorization: Bearer $TINES_API_KEY\``,
 			'is the fallback.'
