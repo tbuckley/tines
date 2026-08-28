@@ -51,7 +51,7 @@ describe('createRunner (claude_managed)', () => {
 		expect(runner.online).toBe(true);
 		expect(runner.has_api_key).toBe(true);
 		expect(runner.budget).toEqual({ max_run_cost_usd: 5 });
-		expect(runner.tier_models).toMatchObject({ smartest: 'claude-opus-5' });
+		expect(runner.tier_models).toMatchObject({ smartest: 'claude-fable-5' });
 		// Encrypted at rest — never the plaintext, and never serialized.
 		const row = t.all('SELECT secret_enc FROM runner')[0] as { secret_enc: string };
 		expect(row.secret_enc).not.toContain('sk-ant-key');
