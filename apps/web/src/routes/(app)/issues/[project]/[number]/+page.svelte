@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { AllowedTransition, Comment, ContextItem } from '@tines/shared';
+	import type { AllowedTransition, Comment, ContextItem, WorkflowState } from '@tines/shared';
 	import { ApiError } from '@tines/shared';
 	import IconAlertTriangle from '@tabler/icons-svelte/icons/alert-triangle';
 	import IconArrowRight from '@tabler/icons-svelte/icons/arrow-right';
@@ -10,6 +10,7 @@
 	import IconPlus from '@tabler/icons-svelte/icons/plus';
 	import IconRepeat from '@tabler/icons-svelte/icons/repeat';
 	import IconRocket from '@tabler/icons-svelte/icons/rocket';
+	import { untrack } from 'svelte';
 	import { fade, slide } from 'svelte/transition';
 	import { invalidateAll } from '$app/navigation';
 	import { api } from '$lib/api';
@@ -35,15 +36,64 @@
 
 	const dur = () => (prefersReducedMotion() ? 0 : 180);
 
-	// Local mirrors for optimistic updates; resynced whenever the server
-	// data refreshes (invalidateAll after each successful mutation).
-	// svelte-ignore state_referenced_locally
-	let currentState = $state(data.issue.state);
-	// svelte-ignore state_referenced_locally
-	let comments = $state<(Comment & { pending?: boolean })[]>([...data.issue.comments]);
+	// Everything optimistic on this page renders as server truth + an overlay
+	// of in-flight work, never a blind local copy resynced by effect. With the
+	// live-updates poll below, invalidateAll() can land at ANY moment — not
+	// just at the quiet point after the viewer's own mutation — and a blind
+	// copy would snap back to stale data mid-mutation. Each overlay entry is
+	// cleared only once its own mutation's reload has settled (or it failed).
+
+	// The state badge/graph/buttons follow the in-flight transition, if any.
+	let pendingState = $state<WorkflowState | null>(null);
+	const currentState = $derived(pendingState ?? data.issue.state);
+
+	// Comments: server list + in-flight posts. A confirmed overlay entry is
+	// hidden as soon as any reload delivers the server copy, so a poll resync
+	// racing the post's own invalidateAll can't duplicate it.
+	let pendingComments = $state<(Comment & { pending?: boolean })[]>([]);
+	const comments = $derived.by((): (Comment & { pending?: boolean })[] => {
+		const confirmed = new Set(data.issue.comments.map((c) => c.id));
+		return [...data.issue.comments, ...pendingComments.filter((c) => !confirmed.has(c.id))];
+	});
+
+	const latestEventId = $derived(data.events[0]?.id ?? null);
+
+	// --- live updates ------------------------------------------------------------
+	// Other agents/users can post comments, transition, or edit this issue while
+	// it's open here. Every mutation path below already calls invalidateAll() to
+	// fully resync; polling the events feed just supplies the missing trigger for
+	// when someone *else* changes something.
+	// Plain (non-reactive) guard, set before the fetch so an overlapping tick
+	// (slow request + interval, or interval + refocus) can't double-resync.
+	let syncing = false;
+	async function checkForUpdates() {
+		if (syncing) return;
+		syncing = true;
+		try {
+			const latest = await api.listEvents({ issue: data.issue.id, limit: 1 });
+			const newestId = latest.items[0]?.id ?? null;
+			if (newestId !== latestEventId) await invalidateAll();
+		} catch {
+			// Silent — a missed poll tick just waits for the next one, or the
+			// visibility-change backstop below.
+		} finally {
+			syncing = false;
+		}
+	}
 	$effect(() => {
-		currentState = data.issue.state;
-		comments = [...data.issue.comments];
+		function tick() {
+			if (document.visibilityState === 'visible') void checkForUpdates();
+		}
+		// untrack: checkForUpdates reads reactive state synchronously
+		// (data.issue.id); tracked, every resync would tear down and rebuild
+		// the interval and immediately re-fetch the feed it just loaded.
+		untrack(tick); // catch up immediately, including right after a backgrounded tab refocuses
+		const timer = setInterval(tick, 5000);
+		document.addEventListener('visibilitychange', tick);
+		return () => {
+			clearInterval(timer);
+			document.removeEventListener('visibilitychange', tick);
+		};
 	});
 
 	// Links render as server truth + an overlay of in-flight operations —
@@ -128,41 +178,50 @@
 
 	async function move(transition: AllowedTransition, comment: string) {
 		if (transitioning) return;
-		const prev = currentState;
 		transitioning = true;
 		try {
 			// Comment BEFORE the transition: re-dispatch can never race past it.
 			if (comment) await api.createComment(data.issue.id, { body: comment });
-			currentState = transition.to_state; // optimistic: badge + graph animate immediately
+			pendingState = transition.to_state; // optimistic: badge + graph animate immediately
 			await api.transitionIssue(data.issue.id, { transition_id: transition.transition_id });
 			pendingTransition = null;
 			await invalidateAll();
 		} catch (e) {
-			currentState = prev;
 			showError(e);
 		} finally {
+			// Success: the reload has settled, so server truth already carries
+			// the new state. Failure: dropping the overlay is the revert.
+			pendingState = null;
 			transitioning = false;
 		}
 	}
 
 	// --- fallback: set any state, or move to another workflow -------------------
 
-	let overrideWorkflowId = $state('');
-	let overrideStateId = $state('');
-	$effect(() => {
-		overrideWorkflowId = data.issue.workflow.id;
-	});
+	// The form's values are the user's explicit picks overlaid on derived
+	// defaults — never effect-reset from `data`, which would wipe a
+	// half-filled form whenever the background poll resyncs. A pick that no
+	// longer resolves (its workflow/state vanished in a resync) falls back to
+	// the default rather than pointing the form at nothing.
+	let overrideWorkflowPick = $state<string | null>(null);
+	let overrideStatePick = $state<string | null>(null);
+	const overrideWorkflowId = $derived(
+		overrideWorkflowPick && data.workflows.some((w) => w.id === overrideWorkflowPick)
+			? overrideWorkflowPick
+			: data.issue.workflow.id
+	);
 	const overrideWorkflow = $derived(
 		data.workflows.find((w) => w.id === overrideWorkflowId) ?? data.issue.workflow
 	);
 	// Staying on the current workflow starts from the current state; a new
 	// workflow starts from its initial state.
-	$effect(() => {
-		overrideStateId =
-			overrideWorkflowId === data.issue.workflow.id
+	const overrideStateId = $derived(
+		overrideStatePick && overrideWorkflow.states.some((s) => s.id === overrideStatePick)
+			? overrideStatePick
+			: overrideWorkflowId === data.issue.workflow.id
 				? currentState.id
-				: overrideWorkflow.initial_state_id;
-	});
+				: overrideWorkflow.initial_state_id
+	);
 
 	const overrideDirty = $derived(
 		overrideWorkflowId !== data.issue.workflow.id || overrideStateId !== currentState.id
@@ -180,6 +239,10 @@
 				state: overrideStateId
 			});
 			await invalidateAll();
+			// Applied and reloaded — the defaults now describe the new
+			// position, so the picks have served their purpose.
+			overrideWorkflowPick = null;
+			overrideStatePick = null;
 		} catch (err) {
 			showError(err);
 		} finally {
@@ -221,13 +284,16 @@
 			created_at: Date.now(),
 			pending: true
 		};
-		comments = [...comments, temp];
+		pendingComments = [...pendingComments, temp];
 		try {
 			const created = await api.createComment(data.issue.id, { body });
-			comments = comments.map((c) => (c.id === temp.id ? created : c));
+			// Swap in the confirmed comment under its real id; the overlay's
+			// dedupe hides it the moment any reload delivers the server copy.
+			pendingComments = pendingComments.map((c) => (c.id === temp.id ? created : c));
 			await invalidateAll();
+			pendingComments = pendingComments.filter((c) => c.id !== created.id);
 		} catch (err) {
-			comments = comments.filter((c) => c.id !== temp.id);
+			pendingComments = pendingComments.filter((c) => c.id !== temp.id);
 			draft = body; // give the text back
 			showError(err);
 		} finally {
@@ -626,7 +692,17 @@
 				<form onsubmit={applyOverride} class="mt-3 space-y-3">
 					<div class="space-y-1">
 						<label class="text-muted-foreground text-xs font-medium" for="override-workflow">Workflow</label>
-						<Select id="override-workflow" bind:value={overrideWorkflowId} class="h-8 text-xs">
+						<Select
+							id="override-workflow"
+							bind:value={
+								() => overrideWorkflowId,
+								(v) => {
+									overrideWorkflowPick = v;
+									overrideStatePick = null; // a new workflow restarts the state default
+								}
+							}
+							class="h-8 text-xs"
+						>
 							{#each data.workflows as workflow (workflow.id)}
 								<option value={workflow.id}>
 									{workflow.name}{workflow.is_system ? ' (standard)' : ''}
@@ -636,7 +712,11 @@
 					</div>
 					<div class="space-y-1">
 						<label class="text-muted-foreground text-xs font-medium" for="override-state">State</label>
-						<Select id="override-state" bind:value={overrideStateId} class="h-8 text-xs">
+						<Select
+							id="override-state"
+							bind:value={() => overrideStateId, (v) => (overrideStatePick = v)}
+							class="h-8 text-xs"
+						>
 							{#each overrideWorkflow.states as state (state.id)}
 								<option value={state.id}>
 									{state.name}{overrideWorkflowId === data.issue.workflow.id && state.id === currentState.id ? ' — current' : ''}
