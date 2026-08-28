@@ -22,6 +22,14 @@
 	"observability": {
 		"enabled": true
 	},
+	// Page loads run many sequential D1 queries; Smart Placement lets Cloudflare
+	// move the Worker next to the D1 primary so those round trips are local,
+	// leaving one long client↔worker hop instead of one per query. (Heuristic:
+	// Cloudflare applies it only once it observes a benefit. Inherited by
+	// env.preview — placement is an inheritable key.)
+	"placement": {
+		"mode": "smart"
+	},
 	"routes": [
 		{
 			// Production custom domain. Requires the tbuckley.dev zone on this

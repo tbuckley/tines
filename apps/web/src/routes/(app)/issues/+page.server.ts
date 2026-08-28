@@ -1,6 +1,4 @@
 import { listIssues } from '$lib/server/api/issues';
-import { listProjects } from '$lib/server/api/projects';
-import { loadWorkflows } from '$lib/server/api/workflows';
 import { getDb } from '$lib/server/db';
 import type { PageServerLoad } from './$types';
 
@@ -17,25 +15,22 @@ export const load: PageServerLoad = async ({ locals, platform, url }) => {
 		q: url.searchParams.get('q') ?? undefined
 	};
 
-	const [{ items: issues }, projects, workflows] = await Promise.all([
-		listIssues(
-			db,
-			userId,
-			{
-				project: filters.project,
-				state: filters.state,
-				category: filters.category,
-				// Ready already implies not-done, so the "show done" state is
-				// simply parked in the URL while it is on.
-				hideDone: !filters.showDone && !filters.category && !filters.state,
-				ready: filters.ready,
-				q: filters.q
-			},
-			{ cursor: null, limit: 100 }
-		),
-		listProjects(db, userId),
-		loadWorkflows(db, userId)
-	]);
+	// projects/workflows come from the (app) layout load.
+	const { items: issues } = await listIssues(
+		db,
+		userId,
+		{
+			project: filters.project,
+			state: filters.state,
+			category: filters.category,
+			// Ready already implies not-done, so the "show done" state is
+			// simply parked in the URL while it is on.
+			hideDone: !filters.showDone && !filters.category && !filters.state,
+			ready: filters.ready,
+			q: filters.q
+		},
+		{ cursor: null, limit: 100 }
+	);
 
-	return { issues, projects, workflows, filters };
+	return { issues, filters };
 };

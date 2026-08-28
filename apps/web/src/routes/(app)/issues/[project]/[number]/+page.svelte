@@ -9,6 +9,7 @@
 	import IconPencil from '@tabler/icons-svelte/icons/pencil';
 	import IconPlus from '@tabler/icons-svelte/icons/plus';
 	import IconRepeat from '@tabler/icons-svelte/icons/repeat';
+	import IconRobot from '@tabler/icons-svelte/icons/robot';
 	import IconRocket from '@tabler/icons-svelte/icons/rocket';
 	import { untrack } from 'svelte';
 	import { fade, slide } from 'svelte/transition';
@@ -28,11 +29,45 @@
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { Select } from '$lib/components/ui/select/index.js';
+	import { Skeleton } from '$lib/components/ui/skeleton/index.js';
 	import { Textarea } from '$lib/components/ui/textarea/index.js';
 	import { actorLabel, prefersReducedMotion, relativeTime } from '$lib/format';
 	import { mergeLinks, type PendingAdd } from '$lib/link-overlay';
+	import { deferred } from '$lib/deferred.svelte';
 
 	let { data } = $props();
+
+	// Deferred sidebar panels (see +page.server.ts): the page renders on
+	// issue + events; these fetch client-side after hydration, refetch on
+	// every invalidateAll() resync (new `data` re-triggers them), and keep
+	// their last value while a refresh is in flight.
+	const contextItems = deferred(
+		() => api.listContext({ issue: data.issue.id, limit: 100 }).then((p) => p.items),
+		[],
+		() => data.issue.id
+	);
+	const effectiveContext = deferred(
+		() => api.getIssueContext(data.issue.id, { skill_files: false }),
+		null,
+		() => data.issue.id
+	);
+	// The agent panel's three inputs land together so the card renders whole.
+	const agent = deferred(
+		() => {
+			const issueId = data.issue.id;
+			return Promise.all([
+				api.getIssueDispatch(issueId),
+				api.listRuns({ issue: issueId, limit: 20 }),
+				api.listRunners()
+			]).then(([dispatch, runs, runners]) => ({
+				dispatch,
+				runs: runs.items,
+				runners: runners.items
+			}));
+		},
+		null,
+		() => data.issue.id
+	);
 
 	const dur = () => (prefersReducedMotion() ? 0 : 180);
 
@@ -580,11 +615,15 @@
 					<h3 class="text-muted-foreground mb-2 text-xs font-semibold tracking-wide uppercase">
 						This issue's context
 					</h3>
-					<ContextItemList
-						items={data.contextItems}
-						onselect={openContextEdit}
-						emptyMessage="Nothing attached to this issue yet — add a note, skill, or repo."
-					/>
+					{#if contextItems.loading}
+						<Skeleton class="h-14 w-full" />
+					{:else}
+						<ContextItemList
+							items={contextItems.current}
+							onselect={openContextEdit}
+							emptyMessage="Nothing attached to this issue yet — add a note, skill, or repo."
+						/>
+					{/if}
 				</div>
 				<details class="group border-t pt-3">
 					<summary class="text-muted-foreground hover:text-foreground cursor-pointer text-sm select-none">
@@ -595,7 +634,11 @@
 						</span>
 					</summary>
 					<div class="mt-3">
-						<EffectiveContextView context={data.effectiveContext} />
+						{#if effectiveContext.current}
+							<EffectiveContextView context={effectiveContext.current} />
+						{:else}
+							<Skeleton class="h-24 w-full" />
+						{/if}
 					</div>
 				</details>
 			</div>
@@ -735,13 +778,26 @@
 		</section>
 
 		<!-- the supervisor's view of this issue -->
-		<AgentActivityCard
-			issue={data.issue}
-			dispatch={data.dispatch}
-			runs={data.issueRuns}
-			runners={data.runners}
-			onerror={showError}
-		/>
+		{#if agent.current}
+			<AgentActivityCard
+				issue={data.issue}
+				dispatch={agent.current.dispatch}
+				runs={agent.current.runs}
+				runners={agent.current.runners}
+				onerror={showError}
+			/>
+		{:else}
+			<section class="rounded-lg border p-4">
+				<h2 class="mb-3 flex items-center gap-1.5 text-sm font-semibold">
+					<IconRobot size={16} stroke={1.75} /> Agent activity
+				</h2>
+				<div class="space-y-2">
+					<Skeleton class="h-4 w-3/4" />
+					<Skeleton class="h-4 w-1/2" />
+					<Skeleton class="h-16 w-full" />
+				</div>
+			</section>
+		{/if}
 
 		<!-- dependencies & duplicates -->
 		<RelationsCard

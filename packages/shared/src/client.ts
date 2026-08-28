@@ -219,9 +219,13 @@ export function createApiClient(options: ApiClientOptions) {
 		/** Atomic append to a prompt item's body (blank-line separated). */
 		appendContextItem: (id: string, body: AppendContextRequest) =>
 			request<ContextItem>('POST', `/api/v1/context/${id}/append`, body),
-		/** Effective context for an issue: the assembled bundle. */
-		getIssueContext: (issueId: string) =>
-			get<EffectiveContext>(`/api/v1/issues/${issueId}/context`),
+		/**
+		 * Effective context for an issue: the assembled bundle. Pass
+		 * `skill_files: false` for a display-only bundle without skill file
+		 * contents (which can be large); `file_count` is populated either way.
+		 */
+		getIssueContext: (issueId: string, opts: { skill_files?: boolean } = {}) =>
+			get<EffectiveContext>(`/api/v1/issues/${issueId}/context${query(opts)}`),
 		/** Launch prompt: stitched context plus the generated issue block. */
 		getIssuePrompt: (issueId: string) =>
 			get<LaunchPromptResponse>(`/api/v1/issues/${issueId}/prompt`),

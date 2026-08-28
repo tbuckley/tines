@@ -42,6 +42,15 @@ function createAuth(env: Env, requestOrigin: string) {
 		// request origin there instead.
 		baseURL: env.BETTER_AUTH_URL || requestOrigin,
 		secret: env.BETTER_AUTH_SECRET,
+		session: {
+			// Serve getSession() from a short-lived signed cookie instead of a D1
+			// lookup on every request. Trade-off: a revoked session stays usable
+			// for up to maxAge on clients that still hold the cookie.
+			cookieCache: {
+				enabled: true,
+				maxAge: 5 * 60
+			}
+		},
 		databaseHooks: {
 			user: {
 				create: {

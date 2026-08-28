@@ -18,10 +18,48 @@
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { Select } from '$lib/components/ui/select/index.js';
+	import { Skeleton } from '$lib/components/ui/skeleton/index.js';
 	import { Textarea } from '$lib/components/ui/textarea/index.js';
 	import { prefersReducedMotion } from '$lib/format';
+	import { deferred } from '$lib/deferred.svelte';
 
 	let { data } = $props();
+
+	// Deferred panels (see +page.server.ts): the page renders on project +
+	// issues; these fetch client-side after hydration, refetch on every
+	// invalidateAll() resync (new `data` re-triggers them), and keep their
+	// last value while a refresh is in flight.
+	const schedules = deferred(
+		() => api.listProjectSchedules(data.project.id, { limit: 100 }).then((p) => p.items),
+		[],
+		() => data.project.id
+	);
+	// Issue-anchored items appear only on their issue's page (and the Context
+	// tab) — they are that issue's business.
+	const contextItems = deferred(
+		() =>
+			api
+				.listContext({ project: data.project.id, limit: 100 })
+				.then((p) => p.items.filter((i) => i.scope.issue_id === null)),
+		[],
+		() => data.project.id
+	);
+	// The inline agent-routing rows: this project's own rules, or — when it
+	// has none — the global rule its issues would fall back to.
+	const routingRules = deferred(
+		() => {
+			const projectId = data.project.id;
+			return api.listRoutingRules().then(({ items }) => {
+				const projectRules = items.filter((r) => r.scope.project_id === projectId);
+				const fallbackRules = items.filter(
+					(r) => r.scope.project_id === null && r.scope.workflow_state_id === null
+				);
+				return projectRules.length > 0 ? projectRules : fallbackRules;
+			});
+		},
+		null,
+		() => data.project.id
+	);
 
 	const dur = () => (prefersReducedMotion() ? 0 : 180);
 
@@ -55,10 +93,10 @@
 
 	// Project-only items first, then project ∧ state grouped under their
 	// state names (issue-anchored items are excluded server-side).
-	const projectOnlyItems = $derived(data.contextItems.filter((i) => !i.scope.workflow_state_id));
+	const projectOnlyItems = $derived(contextItems.current.filter((i) => !i.scope.workflow_state_id));
 	const stateGroups = $derived.by(() => {
 		const groups = new Map<string, { label: string; items: ContextItem[] }>();
-		for (const item of data.contextItems) {
+		for (const item of contextItems.current) {
 			if (!item.scope.workflow_state_id) continue;
 			const key = item.scope.workflow_state_id;
 			const group = groups.get(key) ?? {
@@ -184,7 +222,7 @@
 	</div>
 {/if}
 
-{#if data.schedules.length > 0}
+{#if schedules.current.length > 0}
 	<div class="mb-8">
 		<div class="mb-3 flex items-center justify-between">
 			<h2 class="text-sm font-semibold">Scheduled tasks</h2>
@@ -193,7 +231,7 @@
 			</Button>
 		</div>
 		<ScheduleList
-			schedules={data.schedules}
+			schedules={schedules.current}
 			workflows={data.workflows}
 			highlightId={page.url.searchParams.get('schedule')}
 			onerror={showError}
@@ -208,7 +246,9 @@
 			<IconPlus size={14} /> Add
 		</Button>
 	</div>
-	{#if data.contextItems.length === 0}
+	{#if contextItems.loading}
+		<Skeleton class="h-16 w-full" />
+	{:else if contextItems.current.length === 0}
 		<div class="text-muted-foreground rounded-lg border border-dashed p-6 text-center text-sm">
 			No context for this project yet — attach conventions, skills, or repos that every issue here
 			should carry.
@@ -230,10 +270,16 @@
 	{/if}
 </div>
 
-<AgentRoutingCard
-	rules={data.routingRules}
-	emptyMessage="No routing rule covers this project — its issues will not dispatch to agents."
-/>
+{#if routingRules.current}
+	<AgentRoutingCard
+		rules={routingRules.current}
+		emptyMessage="No routing rule covers this project — its issues will not dispatch to agents."
+	/>
+{:else}
+	<div class="mb-8">
+		<Skeleton class="h-16 w-full" />
+	</div>
+{/if}
 
 <div class="mb-3 flex items-center justify-between">
 	<h2 class="text-sm font-semibold">Issues</h2>

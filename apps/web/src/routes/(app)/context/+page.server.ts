@@ -1,7 +1,5 @@
 import { AGENT_GUIDELINES_NAME, CONTEXT_KINDS } from '@tines/shared';
 import { listContextItems } from '$lib/server/api/context';
-import { listProjects } from '$lib/server/api/projects';
-import { loadWorkflows } from '$lib/server/api/workflows';
 import { getDb } from '$lib/server/db';
 import type { PageServerLoad } from './$types';
 
@@ -17,17 +15,14 @@ export const load: PageServerLoad = async ({ locals, platform, url }) => {
 		project: url.searchParams.get('project') ?? undefined,
 		q: url.searchParams.get('q') ?? undefined
 	};
-	const [{ items }, projects, workflows, guidelines] = await Promise.all([
+	// projects/workflows come from the (app) layout load.
+	const [{ items }, guidelines] = await Promise.all([
 		listContextItems(db, userId, filters, { cursor: null, limit: 100 }),
-		listProjects(db, userId),
-		loadWorkflows(db, userId),
 		// Offer the starter guidance until a global item by that name exists.
 		listContextItems(db, userId, { kind: 'prompt', exact: true }, { cursor: null, limit: 100 })
 	]);
 	return {
 		items,
-		projects,
-		workflows,
 		filters,
 		hasAgentGuidelines: guidelines.items.some((i) => i.name === AGENT_GUIDELINES_NAME)
 	};

@@ -1,6 +1,5 @@
 import { encodeCursor } from '$lib/server/api/core';
 import { eventQuery, serializeEvent } from '$lib/server/api/events';
-import { listProjects } from '$lib/server/api/projects';
 import { getDb } from '$lib/server/db';
 import type { PageServerLoad } from './$types';
 
@@ -19,21 +18,18 @@ export const load: PageServerLoad = async ({ locals, platform, url }) => {
 	}
 	if (type) q = q.where('event.type', '=', type);
 
-	const [rows, projects] = await Promise.all([
-		q
-			.orderBy('event.created_at desc')
-			.orderBy('event.id desc')
-			.limit(PAGE_SIZE + 1)
-			.execute(),
-		listProjects(db, userId)
-	]);
+	// projects come from the (app) layout load.
+	const rows = await q
+		.orderBy('event.created_at desc')
+		.orderBy('event.id desc')
+		.limit(PAGE_SIZE + 1)
+		.execute();
 
 	const events = rows.slice(0, PAGE_SIZE).map(serializeEvent);
 	const last = events[events.length - 1];
 	return {
 		events,
 		nextCursor: rows.length > PAGE_SIZE && last ? encodeCursor(last.created_at, last.id) : null,
-		projects,
 		filters: { project: project ?? '', type: type ?? '' }
 	};
 };
