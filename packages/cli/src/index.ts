@@ -5,6 +5,7 @@ import { createInterface } from 'node:readline/promises';
 import { runDaemon } from './daemon/daemon.js';
 import { defaultConfigDir, hasRunnerCredentials, saveRunnerCredentials } from './daemon/store.js';
 import { HARNESS_KINDS, type HarnessKind } from './daemon/support.js';
+import { helpGuard } from './help-guard.js';
 import {
 	actorLabel,
 	AGENT_GUIDELINES_BODY,
@@ -91,21 +92,6 @@ function withList(cmd: Command): Command {
 
 function client(opts: CommonOpts): ApiClient {
 	return createApiClient({ baseUrl: opts.url ?? DEFAULT_URL, apiKey: opts.apiKey });
-}
-
-/**
- * Guards markdown-body commands (comment, journal append) against the
- * --help footgun: passThroughOptions() makes commander swallow a trailing
- * --help/-h as the literal <markdown> value instead of parsing it as an
- * option, so it must be checked for manually before mutating anything.
- * Returns true (and prints help) if the guard fired; callers should return.
- */
-function helpGuard(command: Command, markdown: string): boolean {
-	if (markdown === '--help' || markdown === '-h') {
-		command.help();
-		return true;
-	}
-	return false;
 }
 
 function die(message: string): never {
