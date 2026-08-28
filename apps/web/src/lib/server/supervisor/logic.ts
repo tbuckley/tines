@@ -57,9 +57,9 @@ export function matchRule<T extends MatchableRule>(
  */
 const BUILTIN_TIER_MODELS: Record<string, Record<ModelTier, string> | null> = {
 	claude_managed: {
-		smartest: 'claude-opus-5',
-		balanced: 'claude-sonnet-5',
-		cheapest: 'claude-haiku-4-5'
+		smartest: 'claude-fable-5',
+		balanced: 'claude-opus-5',
+		cheapest: 'claude-sonnet-5'
 	},
 	// Provider ids below are re-verified against live docs at the start of
 	// their milestones (M2 Claude, M4 Gemini) per the plan's risk flag.
