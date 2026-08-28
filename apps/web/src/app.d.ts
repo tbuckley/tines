@@ -4,6 +4,7 @@ import type {
 	CacheStorage,
 	D1Database,
 	ExecutionContext,
+	Fetcher,
 	IncomingRequestCfProperties,
 	SendEmail
 } from '@cloudflare/workers-types';
@@ -21,6 +22,12 @@ declare global {
 		GOOGLE_CLIENT_SECRET?: string;
 		/** Encrypts stored provider secrets (AES-GCM); see lib/server/crypto.ts. */
 		SECRET_ENCRYPTION_KEY?: string;
+		/**
+		 * Self-referencing service binding (wrangler.jsonc `services`): lets
+		 * the supervisor call its own API in-process — a worker on a custom
+		 * domain cannot `fetch()` its own hostname (522, no origin behind it).
+		 */
+		SELF?: Fetcher;
 		/**
 		 * Public base URL managed runs use to reach the API (self-seeding
 		 * prompts, the agent's TINES_API_URL). Falls back to BETTER_AUTH_URL.

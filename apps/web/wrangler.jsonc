@@ -46,6 +46,12 @@
 			"migrations_dir": "migrations"
 		}
 	],
+	// Self-referencing service binding: the supervisor fetches launch
+	// materials from its own API (see supervisor/claude-adapter.ts), and a
+	// worker on a custom domain cannot `fetch()` its own hostname — Cloudflare
+	// routes that to the (nonexistent) origin and 522s. env.SELF invokes the
+	// worker's fetch handler directly instead.
+	"services": [{ "binding": "SELF", "service": "tines-web" }],
 	"send_email": [
 		{
 			// Cloudflare Email Service binding for magic-link sign-in emails.
@@ -84,6 +90,7 @@
 				}
 			],
 			"send_email": [{ "name": "EMAIL" }],
+			"services": [{ "binding": "SELF", "service": "tines-web-preview" }],
 			"vars": {
 				// BETTER_AUTH_URL is deliberately unset: preview URLs differ per
 				// PR (stable per-PR aliases), so auth derives its base URL from the
