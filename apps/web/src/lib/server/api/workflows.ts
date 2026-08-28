@@ -21,7 +21,7 @@ import {
 	type ActorContext
 } from './core';
 import { eventInsert } from './events';
-import { assertWorkflowNotScheduled } from './schedules';
+import { assertStatesNotScheduled, assertWorkflowNotScheduled } from './schedules';
 
 interface ResolvedState {
 	id: string;
@@ -404,6 +404,10 @@ export async function updateWorkflow(
 			);
 		}
 	}
+
+	// Same rule for schedules: a state a scheduled task starts instances in
+	// cannot be deleted (the FK's SET NULL is only the race backstop).
+	await assertStatesNotScheduled(db, removedStates.map((s) => s.id));
 
 	// Removing a state with attached context is rejected unless forced; a
 	// forced removal sweeps the items (all-or-nothing, even when one PATCH

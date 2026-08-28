@@ -25,8 +25,9 @@ export interface ScheduleExecRow {
 	run_count: number;
 	/** The owning user (project owner): issues and events are attributed to them. */
 	user_id: string;
-	initial_state_id: string;
-	initial_state_name: string;
+	/** The state instances start in: the schedule's pinned state, else the workflow's initial state. */
+	start_state_id: string;
+	start_state_name: string;
 }
 
 export function scheduleExecQuery(db: Kysely<Database>) {
@@ -34,7 +35,11 @@ export function scheduleExecQuery(db: Kysely<Database>) {
 		.selectFrom('scheduled_task')
 		.innerJoin('project', 'project.id', 'scheduled_task.project_id')
 		.innerJoin('workflow', 'workflow.id', 'scheduled_task.workflow_id')
-		.innerJoin('workflow_state as initial_state', 'initial_state.id', 'workflow.initial_state_id')
+		.innerJoin('workflow_state as start_state', (join) =>
+			join.on((eb) =>
+				eb('start_state.id', '=', eb.fn.coalesce('scheduled_task.state_id', 'workflow.initial_state_id'))
+			)
+		)
 		.select([
 			'scheduled_task.id',
 			'scheduled_task.project_id',
@@ -48,8 +53,8 @@ export function scheduleExecQuery(db: Kysely<Database>) {
 			'scheduled_task.next_run_at',
 			'scheduled_task.run_count',
 			'project.user_id as user_id',
-			'workflow.initial_state_id as initial_state_id',
-			'initial_state.name as initial_state_name'
+			'start_state.id as start_state_id',
+			'start_state.name as start_state_name'
 		]);
 }
 
@@ -98,15 +103,15 @@ export function instanceInserts(
 		INSERT INTO issue (id, project_id, number, title, description, workflow_id, state_id, scheduled_task_id, created_at, updated_at)
 		SELECT ${issueId}, ${schedule.project_id},
 			(SELECT COALESCE(MAX(number), 0) + 1 FROM issue WHERE project_id = ${schedule.project_id}),
-			${title}, ${description}, ${schedule.workflow_id}, ${schedule.initial_state_id},
+			${title}, ${description}, ${schedule.workflow_id}, ${schedule.start_state_id},
 			${schedule.id}, ${now}, ${now}
 		WHERE ${guard}`.compile(db);
 
 	const payload: Record<string, unknown> = {
 		title,
 		workflow_id: schedule.workflow_id,
-		state_id: schedule.initial_state_id,
-		state_name: schedule.initial_state_name,
+		state_id: schedule.start_state_id,
+		state_name: schedule.start_state_name,
 		scheduled_task_id: schedule.id,
 		scheduled_task_name: schedule.name,
 		...(manual ? { manual: true } : {})

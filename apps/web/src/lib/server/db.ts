@@ -69,6 +69,8 @@ export interface ScheduledTaskTable {
 	title_template: string;
 	description_template: string;
 	workflow_id: string;
+	/** Start state for created instances; NULL = the workflow's initial state. */
+	state_id: string | null;
 	/** Always populated (presets compile to it); the only thing the sweep evaluates. */
 	cron: string;
 	/** JSON preset for UI round-tripping; NULL = raw cron. */

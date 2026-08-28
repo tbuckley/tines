@@ -96,6 +96,62 @@ export function resolveTimezone(tz: unknown): string {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Workflow / start-state resolution
+//
+// schedules.ts cannot import workflows.ts or issues.ts (both import from
+// here), so the workflow lookup and state resolution live here in the small
+// form the schedule needs.
+
+interface ScheduleWorkflow {
+	id: string;
+	name: string;
+	initial_state_id: string;
+	states: { id: string; name: string }[];
+}
+
+/** The workflow (user's library or system) with its states, or a 422. */
+async function loadScheduleWorkflow(
+	db: Kysely<Database>,
+	userId: string,
+	workflowId: string
+): Promise<ScheduleWorkflow> {
+	const wf = await db
+		.selectFrom('workflow')
+		.select(['id', 'name', 'initial_state_id'])
+		.where('id', '=', workflowId)
+		.where((eb) => eb.or([eb('user_id', '=', userId), eb('user_id', 'is', null)]))
+		.executeTakeFirst();
+	if (!wf) {
+		throw new ApiFail(422, 'unknown_workflow', `Workflow "${workflowId}" does not exist`, {
+			field: 'workflow_id'
+		});
+	}
+	const states = await db
+		.selectFrom('workflow_state')
+		.select(['id', 'name'])
+		.where('workflow_id', '=', workflowId)
+		.orderBy('position asc')
+		.execute();
+	return { ...wf, states };
+}
+
+/**
+ * Resolves a start-state reference (id or name) within the workflow. The
+ * workflow's initial state normalizes to null — "follow the workflow's
+ * initial state" — so the schedule tracks the workflow if that changes.
+ */
+function resolveStartState(workflow: ScheduleWorkflow, ref: string): string | null {
+	const state = workflow.states.find((s) => s.id === ref) ?? workflow.states.find((s) => s.name === ref);
+	if (!state) {
+		throw new ApiFail(422, 'unknown_state', `Workflow "${workflow.name}" has no state "${ref}"`, {
+			field: 'state',
+			known_states: workflow.states.map((s) => ({ id: s.id, name: s.name }))
+		});
+	}
+	return state.id === workflow.initial_state_id ? null : state.id;
+}
+
 async function assertScheduleNameAvailable(
 	db: Kysely<Database>,
 	projectId: string,
@@ -127,8 +183,13 @@ export function scheduleQuery(db: Kysely<Database>, userId: string) {
 		.selectFrom('scheduled_task')
 		.innerJoin('project', 'project.id', 'scheduled_task.project_id')
 		.innerJoin('workflow', 'workflow.id', 'scheduled_task.workflow_id')
+		.leftJoin('workflow_state as start_state', 'start_state.id', 'scheduled_task.state_id')
 		.selectAll('scheduled_task')
-		.select(['project.name as project_name', 'workflow.name as workflow_name'])
+		.select([
+			'project.name as project_name',
+			'workflow.name as workflow_name',
+			'start_state.name as state_name'
+		])
 		.select((eb) =>
 			eb
 				.selectFrom('issue')
@@ -161,6 +222,8 @@ export function serializeSchedule(row: ScheduleRow): Schedule {
 		description_template: row.description_template,
 		workflow_id: row.workflow_id,
 		workflow_name: row.workflow_name,
+		state_id: row.state_id,
+		state_name: row.state_name,
 		cron: row.cron,
 		preset,
 		timezone: row.timezone,
@@ -304,6 +367,31 @@ export async function updateSchedule(
 			? (optionalString(body.description_template, 'description_template') ?? '')
 			: current.description_template;
 
+	// Workflow / start state: changing the workflow resets a pinned state
+	// (it belongs to the old workflow) unless the same request picks one.
+	let workflowId = current.workflow_id;
+	let workflowName = current.workflow_name;
+	let stateId = current.state_id;
+	let stateName = current.state_name;
+	if (body.workflow_id !== undefined || body.state !== undefined) {
+		const targetWorkflowId =
+			body.workflow_id !== undefined
+				? requireString(body.workflow_id, 'workflow_id', { max: 100 }).trim()
+				: current.workflow_id;
+		const workflow = await loadScheduleWorkflow(db, actor.userId, targetWorkflowId);
+		workflowId = workflow.id;
+		workflowName = workflow.name;
+		if (body.state !== undefined) {
+			stateId =
+				body.state === null
+					? null
+					: resolveStartState(workflow, requireString(body.state, 'state', { max: 100 }).trim());
+		} else if (workflowId !== current.workflow_id) {
+			stateId = null;
+		}
+		stateName = stateId ? (workflow.states.find((s) => s.id === stateId)?.name ?? null) : null;
+	}
+
 	const recurrenceEdited = body.preset !== undefined || body.cron !== undefined;
 	const recurrence: ResolvedRecurrence = recurrenceEdited
 		? resolveRecurrence(body)
@@ -344,6 +432,13 @@ export async function updateSchedule(
 		};
 	}
 	if (timezone !== current.timezone) payload.timezone = { from: current.timezone, to: timezone };
+	if (workflowId !== current.workflow_id) {
+		payload.workflow = { from: current.workflow_name, to: workflowName };
+	}
+	if (stateId !== current.state_id) {
+		// null = the workflow's initial state.
+		payload.start_state = { from: current.state_name, to: stateName };
+	}
 	if (requireAllClosed !== current.require_all_closed) {
 		payload.require_all_closed = { from: current.require_all_closed, to: requireAllClosed };
 	}
@@ -359,6 +454,8 @@ export async function updateSchedule(
 				name,
 				title_template: titleTemplate,
 				description_template: descriptionTemplate,
+				workflow_id: workflowId,
+				state_id: stateId,
 				cron: recurrence.cron,
 				preset: recurrence.presetJson,
 				timezone,
@@ -456,6 +553,35 @@ export async function assertWorkflowNotScheduled(
 				.map((s) => `"${s.name}"`)
 				.join(', ')})`,
 			{ schedules: schedules.map((s) => ({ id: s.id, name: s.name })) }
+		);
+	}
+}
+
+/** A state cannot be deleted while a schedule starts its instances in it. */
+export async function assertStatesNotScheduled(
+	db: Kysely<Database>,
+	stateIds: string[]
+): Promise<void> {
+	if (stateIds.length === 0) return;
+	const schedules = await db
+		.selectFrom('scheduled_task')
+		.innerJoin('workflow_state as state', 'state.id', 'scheduled_task.state_id')
+		.select(['scheduled_task.id', 'scheduled_task.name', 'state.id as state_id', 'state.name as state_name'])
+		.where('scheduled_task.state_id', 'in', stateIds)
+		.execute();
+	if (schedules.length > 0) {
+		throw new ApiFail(
+			422,
+			'state_in_use',
+			`Cannot delete ${[...new Set(schedules.map((s) => `state "${s.state_name}"`))].join(', ')}: ${schedules.length === 1 ? `scheduled task "${schedules[0].name}" starts` : 'scheduled tasks start'} instances there; change the schedule${schedules.length === 1 ? "'s" : "s'"} start state first`,
+			{
+				schedules: schedules.map((s) => ({
+					id: s.id,
+					name: s.name,
+					state_id: s.state_id,
+					state_name: s.state_name
+				}))
+			}
 		);
 	}
 }
