@@ -51,7 +51,7 @@ export function matchRule<T extends MatchableRule>(
 
 /**
  * The built-in tier→model table, maintained in code and updated as providers
- * ship models. Local runners resolve per harness: `claude_code` mirrors the
+ * ship models. Local runners resolve per harness: `claude_code` runs its own
  * Claude trio (passed via --model), `codex` runs its fixed family, and a
  * custom harness has no model dimension at all.
  */
@@ -71,7 +71,11 @@ const BUILTIN_TIER_MODELS: Record<string, Record<ModelTier, string> | null> = {
 };
 
 const LOCAL_HARNESS_TIER_MODELS: Record<string, Record<ModelTier, string> | null> = {
-	claude_code: BUILTIN_TIER_MODELS.claude_managed,
+	claude_code: {
+		smartest: 'claude-fable-5',
+		balanced: 'claude-opus-5',
+		cheapest: 'claude-sonnet-5'
+	},
 	codex: {
 		smartest: 'gpt-5-codex',
 		balanced: 'gpt-5-codex',
