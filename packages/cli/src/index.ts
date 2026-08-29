@@ -718,11 +718,28 @@ function eventSummary(ev: TinesEvent): string {
 // ---------------------------------------------------------------------------
 // Program
 
+/**
+ * The published version, read from the package manifest rather than hardcoded.
+ * CI stamps the patch number into that manifest at publish time (see
+ * .github/workflows/publish-cli.yml), so a literal here would always lie —
+ * and `tines --version` is how you tell an installed CLI apart from the repo.
+ * `../package.json` resolves for both layouts: src/index.ts under tsx, and
+ * dist/index.js in the published tarball.
+ */
+function cliVersion(): string {
+	try {
+		const manifest = new URL('../package.json', import.meta.url);
+		return JSON.parse(readFileSync(manifest, 'utf8')).version ?? '0.0.0-unknown';
+	} catch {
+		return '0.0.0-unknown';
+	}
+}
+
 const program = new Command();
 // Positional options let markdown-taking commands (comment, journal append)
 // accept bodies that start with "-" — e.g. the dated bullets the launch
 // prompt teaches — via passThroughOptions().
-program.name('tines').description('CLI for Tines').version('0.0.1').enablePositionalOptions();
+program.name('tines').description('CLI for Tines').version(cliVersion()).enablePositionalOptions();
 
 withCommon(program.command('time').description('Fetch the current time from the Tines API')).action(
 	async (opts: CommonOpts) => {

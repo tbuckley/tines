@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
@@ -44,5 +45,15 @@ describe('help output', () => {
 		const { stdout } = await help(['issues', 'comment', '--help'], { TINES_API_KEY: SECRET });
 		expect(stdout).toContain('TINES_API_KEY');
 		expect(stdout).toContain('TINES_API_URL');
+	}, 60_000);
+
+	// Regression: --version used to be a hardcoded literal, so it kept
+	// reporting 0.0.1 no matter what was published. CI stamps the real number
+	// into the manifest at publish time, so the manifest is the only honest
+	// source (Tines/42).
+	it('reports the version from the package manifest', async () => {
+		const manifest = JSON.parse(readFileSync(join(here, '..', 'package.json'), 'utf8'));
+		const { stdout } = await help(['--version'], {});
+		expect(stdout.trim()).toBe(manifest.version);
 	}, 60_000);
 });
