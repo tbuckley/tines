@@ -311,6 +311,11 @@ export interface IssueDetail extends Issue {
 	links: IssueLinks;
 	/** Per-kind counts of the currently effective context, post-dedupe. */
 	context_summary: ContextSummary;
+	/**
+	 * The issue's artifacts, only when the caller asked for them (the issue page
+	 * does, so it does not fetch the same list twice). Absent from API reads.
+	 */
+	artifacts?: Artifact[];
 }
 
 export interface CreateIssueRequest {

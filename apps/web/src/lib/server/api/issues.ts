@@ -36,7 +36,7 @@ import { contextSummaryForIssue } from './context';
 import { actorOf, eventInsert } from './events';
 import { requireTier } from './runners';
 import { getSchedule, prepareSchedule } from './schedules';
-import { loadWorkflow } from './workflows';
+import { loadWorkflow, loadWorkflows } from './workflows';
 
 /**
  * SQL for the effective category of the blocker on a `blocks` edge into
@@ -420,30 +420,80 @@ export async function loadIssueLinks(
 	return links;
 }
 
+/**
+ * How to find an issue. `projectName` is the URL shape: it is resolved in the
+ * *same* statement as the issue row rather than in a lookup wave of its own.
+ * (Names are unique per user; the ordering is belt-and-braces.)
+ */
+export type IssueLookup =
+	| { id: string }
+	| { projectId: string; number: number }
+	| { projectName: string; number: number };
+
+/** The issue row alone: one statement, no fan-out. */
+export async function loadIssue(
+	db: Kysely<Database>,
+	userId: string,
+	ref: IssueLookup
+): Promise<Issue> {
+	let q = issueQuery(db, userId);
+	if ('id' in ref) q = q.where('issue.id', '=', ref.id);
+	else if ('projectId' in ref)
+		q = q.where('issue.project_id', '=', ref.projectId).where('issue.number', '=', ref.number);
+	else
+		q = q
+			.where('project.name', '=', ref.projectName)
+			.where('issue.number', '=', ref.number)
+			.orderBy('project.created_at desc');
+	const row = await q.executeTakeFirst();
+	if (!row) throw notFound();
+	return serializeIssue(row);
+}
+
+export interface IssueDetailOptions {
+	/**
+	 * Every workflow the user can see, when the caller already has (or is
+	 * already fetching) them — saves the two-statement `loadWorkflow`. A promise
+	 * is fine and preferred: it is awaited alongside comments/links/context, so
+	 * an in-flight `loadWorkflows` costs no extra round-trip wave.
+	 */
+	workflows?: WorkflowResponse[] | Promise<WorkflowResponse[]>;
+	/**
+	 * Include the issue's artifacts on the result. Off by default so API
+	 * responses keep their current shape; the issue page needs them for its
+	 * artifacts panel and would otherwise fetch them a second time.
+	 */
+	artifacts?: boolean;
+}
+
 export async function getIssueDetail(
 	db: Kysely<Database>,
 	userId: string,
-	ref: { id: string } | { projectId: string; number: number }
+	ref: IssueLookup | Issue,
+	opts: IssueDetailOptions = {}
 ): Promise<IssueDetail> {
-	let q = issueQuery(db, userId);
-	q =
-		'id' in ref
-			? q.where('issue.id', '=', ref.id)
-			: q.where('issue.project_id', '=', ref.projectId).where('issue.number', '=', ref.number);
-	const row = await q.executeTakeFirst();
-	if (!row) throw notFound();
+	// An already-loaded issue can be passed straight in (the page resolves the
+	// row first so everything below it starts in one wave).
+	const issue = 'workflow_id' in ref ? ref : await loadIssue(db, userId, ref);
 
-	const issue = serializeIssue(row);
-	const [workflow, comments, links, contextSummary] = await Promise.all([
-		loadWorkflow(db, userId, issue.workflow_id),
+	// Artifacts are needed unconditionally when the caller asked for them, and
+	// otherwise only if some outgoing transition declares requirements — which
+	// we cannot know until the workflow lands. Fetching them in this wave when
+	// asked keeps the requirement pre-flight off the critical path entirely.
+	const [workflows, comments, links, contextSummary, preloadedArtifacts] = await Promise.all([
+		opts.workflows ?? loadWorkflows(db, userId, issue.workflow_id),
 		loadComments(db, issue.id),
 		loadIssueLinks(db, userId, issue.id),
 		contextSummaryForIssue(db, userId, {
 			projectId: issue.project_id,
 			stateId: issue.state.id,
 			issueId: issue.id
-		})
+		}),
+		opts.artifacts ? listArtifacts(db, userId, issue.id) : null
 	]);
+
+	const workflow = workflows.find((w) => w.id === issue.workflow_id);
+	if (!workflow) throw notFound();
 
 	// Pre-flight requirement visibility: each allowed transition's declared
 	// requirements with live status. The artifact load only happens when some
@@ -451,7 +501,7 @@ export async function getIssueDetail(
 	const transitionById = new Map(workflow.transitions.map((t) => [t.id, t]));
 	let allowed = allowedTransitions(workflow, issue.state.id);
 	if (allowed.some((t) => (transitionById.get(t.transition_id)?.requires ?? []).length > 0)) {
-		const artifacts = await listArtifacts(db, userId, issue.id);
+		const artifacts = preloadedArtifacts ?? (await listArtifacts(db, userId, issue.id));
 		allowed = allowed.map((t) => {
 			const requires = transitionById.get(t.transition_id)?.requires;
 			return requires?.length ? { ...t, requires: checkRequirements(requires, artifacts) } : t;
@@ -464,7 +514,8 @@ export async function getIssueDetail(
 		comments,
 		allowed_transitions: allowed,
 		links,
-		context_summary: contextSummary
+		context_summary: contextSummary,
+		...(preloadedArtifacts ? { artifacts: preloadedArtifacts } : {})
 	};
 }
 

@@ -1,8 +1,7 @@
 import { error } from '@sveltejs/kit';
-import { listArtifacts } from '$lib/server/api/artifacts';
 import { effectiveContextForIssue, listContextItems } from '$lib/server/api/context';
 import { eventQuery, serializeEvent } from '$lib/server/api/events';
-import { getIssueDetail } from '$lib/server/api/issues';
+import { getIssueDetail, loadIssue } from '$lib/server/api/issues';
 import { listProjects } from '$lib/server/api/projects';
 import { listRunners } from '$lib/server/api/runners';
 import { listRuns } from '$lib/server/api/runs';
@@ -11,58 +10,84 @@ import { explainDispatch } from '$lib/server/supervisor/explain';
 import { getDb } from '$lib/server/db';
 import type { PageServerLoad } from './$types';
 
-export const load: PageServerLoad = async ({ locals, platform, params }) => {
+/**
+ * Two D1 waves, not seven (Tines/32). Everything except the issue row itself
+ * keys off `issue.id`, so the row is resolved alone and then the whole rest of
+ * the page fans out at once. Nothing here may be fetched twice: workflows are
+ * loaded once and handed to `getIssueDetail`, artifacts once (it returns them),
+ * and the issue row once (`explainDispatch` takes it rather than re-reading).
+ *
+ * Only the first wave is awaited. The panels below the fold stream in as
+ * promises, so the View Transition in `(app)/+layout.svelte` — which waits on
+ * `navigation.complete` — commits as soon as the header and comments can
+ * paint. Keep the awaited set small: anything moved out of `deferred` puts
+ * itself back on the navigation critical path.
+ */
+export const load: PageServerLoad = async ({ locals, platform, params, depends }) => {
 	const db = getDb(platform!.env);
 	const userId = locals.user!.id;
+
+	// Mutations and the live poll refresh this page alone (see +page.svelte);
+	// invalidateAll() would also re-run the layout for no reason.
+	depends('app:issue');
 
 	const number = Number.parseInt(params.number, 10);
 	if (!Number.isFinite(number)) error(404, 'Not found');
 
-	// URLs address projects by name; resolve to the newest match.
-	const project = await db
-		.selectFrom('project')
-		.select(['id'])
-		.where('user_id', '=', userId)
-		.where('name', '=', params.project)
-		.orderBy('created_at desc')
-		.executeTakeFirst();
-	if (!project) error(404, 'Not found');
+	// Wave 1: the issue row (URLs address projects by name, joined here so the
+	// project resolve is not a round trip of its own) alongside the two lists
+	// that do not depend on it.
+	const workflowsPromise = loadWorkflows(db, userId);
+	const projectsPromise = listProjects(db, userId);
+	// A rejected promise that nothing awaits until wave 2 would be an unhandled
+	// rejection if the issue lookup throws first.
+	workflowsPromise.catch(() => {});
+	projectsPromise.catch(() => {});
 
-	const issue = await getIssueDetail(db, userId, { projectId: project.id, number }).catch(() => {
+	const issue = await loadIssue(db, userId, { projectName: params.project, number }).catch(() => {
 		error(404, 'Not found');
 	});
 
-	const [eventRows, workflows, projects, contextItems, effectiveContext, dispatch, issueRuns, runners, artifacts] = await Promise.all([
-		eventQuery(db, userId)
-			.where('event.issue_id', '=', issue.id)
-			.orderBy('event.created_at desc')
-			.orderBy('event.id desc')
-			.limit(100)
-			.execute(),
-		loadWorkflows(db, userId),
-		listProjects(db, userId),
-		// Items whose scope includes this issue (all issue-anchored shapes).
-		listContextItems(db, userId, { issue: issue.id }, { cursor: null, limit: 100 }),
-		// Display-only bundle: the panel shows skill file counts, never their
-		// contents, which can run to 100KB per skill on every page load.
-		effectiveContextForIssue(db, userId, issue.id, { skillFiles: false }),
-		explainDispatch(db, userId, issue.id),
-		listRuns(db, userId, { issue: issue.id }, { cursor: null, limit: 20 }),
-		listRunners(db, userId),
-		listArtifacts(db, userId, issue.id)
+	// Wave 2: everything else, in parallel.
+	const detailPromise = getIssueDetail(db, userId, issue, {
+		workflows: workflowsPromise,
+		artifacts: true
+	});
+	const eventsPromise = eventQuery(db, userId)
+		.where('event.issue_id', '=', issue.id)
+		.orderBy('event.created_at desc')
+		.orderBy('event.id desc')
+		.limit(100)
+		.execute()
+		.then((rows) => rows.map(serializeEvent));
+
+	const [detail, events, projects] = await Promise.all([
+		detailPromise,
+		eventsPromise,
+		projectsPromise
 	]);
 
 	return {
-		issue,
-		events: eventRows.map(serializeEvent),
-		workflows,
+		issue: detail,
+		events,
+		workflows: await workflowsPromise,
 		projects,
-		// Artifacts have their own panel; the context list shows the rest.
-		contextItems: contextItems.items.filter((i) => i.kind !== 'artifact'),
-		effectiveContext,
-		dispatch,
-		issueRuns: issueRuns.items,
-		runners,
-		artifacts
+		artifacts: detail.artifacts ?? [],
+		// Streamed: the sidebar panels. Each renders a skeleton until it lands.
+		deferred: {
+			// Items whose scope includes this issue (all issue-anchored shapes).
+			// Artifacts have their own panel; the context list shows the rest.
+			contextItems: listContextItems(db, userId, { issue: issue.id }, { cursor: null, limit: 100 }).then(
+				(page) => page.items.filter((i) => i.kind !== 'artifact')
+			),
+			// Display-only bundle: the panel shows skill file counts, never their
+			// contents, which can run to 100KB per skill on every page load.
+			effectiveContext: effectiveContextForIssue(db, userId, issue.id, { skillFiles: false }),
+			dispatch: explainDispatch(db, userId, issue.id, Date.now(), issue),
+			issueRuns: listRuns(db, userId, { issue: issue.id }, { cursor: null, limit: 20 }).then(
+				(page) => page.items
+			),
+			runners: listRunners(db, userId)
+		}
 	};
 };

@@ -24,6 +24,7 @@ const SERIALIZE = process.env.NAVPERF_SERIALIZE === '1';
 // a file the runner prints afterwards (see the `perf:nav` script).
 const OUT = process.env.NAVPERF_OUT ?? '/tmp/navperf.txt';
 const report = (s: string) => appendFileSync(OUT, s + '\n');
+const depends = () => {};
 
 function instrument(t: TestDb) {
 	const sqls: string[] = [];
@@ -111,7 +112,7 @@ describe(`navigation cost probe (${SERIALIZE ? 'serialized baseline' : 'as shipp
 	it('issues list', async () => {
 		const { load } = await import('../../../routes/(app)/issues/+page.server');
 		const r = await measure('/issues', (env) =>
-			(load as any)({ locals: { user }, platform: { env }, url: new URL('http://x/issues') })
+			(load as any)({ locals: { user }, platform: { env }, depends, url: new URL('http://x/issues') })
 		);
 		expect(r.queries).toBeGreaterThan(0);
 	});
@@ -125,12 +126,20 @@ describe(`navigation cost probe (${SERIALIZE ? 'serialized baseline' : 'as shipp
 		const result = await (load as any)({
 			locals: { user },
 			platform: { env },
+			depends,
 			params: { project: 'demo', number: String(number) },
 			url: new URL(`http://x/issues/demo/${number}`)
 		});
+		// What blocks first paint: `load` has resolved, so SvelteKit can render
+		// and the View Transition can commit. The streamed panels are still in
+		// flight at this point.
 		const elapsed = performance.now() - started;
+		const awaitedQueries = sqls.length;
+		const { deferred, ...eager } = result as Record<string, unknown>;
+		const settled = await Promise.all(Object.values(deferred as Record<string, Promise<unknown>>));
+		const fullElapsed = performance.now() - started;
 		report(
-			`\n/issues/[project]/[number]\n  queries: ${sqls.length}\n  sequential waves (critical path): ~${(elapsed / LATENCY_MS).toFixed(1)}\n  modelled time @${LATENCY_MS}ms/query: ${elapsed.toFixed(0)}ms\n  peak concurrent queries: ${conc.max}\n  serialized payload: ${JSON.stringify(result).length} bytes`
+			`\n/issues/[project]/[number]\n  queries: ${awaitedQueries} blocking, ${sqls.length} total\n  sequential waves (critical path): ~${(elapsed / LATENCY_MS).toFixed(1)} to first paint, ~${(fullElapsed / LATENCY_MS).toFixed(1)} to fully settled\n  modelled time @${LATENCY_MS}ms/query: ${elapsed.toFixed(0)}ms to first paint, ${fullElapsed.toFixed(0)}ms settled\n  peak concurrent queries: ${conc.max}\n  serialized payload: ${JSON.stringify(eager).length} bytes blocking, ${JSON.stringify({ ...eager, deferred: settled }).length} bytes total`
 		);
 		const counts = new Map<string, number>();
 		for (const s of sqls) counts.set(s, (counts.get(s) ?? 0) + 1);
@@ -142,27 +151,27 @@ describe(`navigation cost probe (${SERIALIZE ? 'serialized baseline' : 'as shipp
 
 	it('projects', async () => {
 		const { load } = await import('../../../routes/(app)/projects/+page.server');
-		await measure('/projects', (env) => (load as any)({ locals: { user }, platform: { env } }));
+		await measure('/projects', (env) => (load as any)({ locals: { user }, platform: { env }, depends }));
 	});
 
 	it('activity', async () => {
 		const { load } = await import('../../../routes/(app)/activity/+page.server');
 		await measure('/activity', (env) =>
-			(load as any)({ locals: { user }, platform: { env }, url: new URL('http://x/activity') })
+			(load as any)({ locals: { user }, platform: { env }, depends, url: new URL('http://x/activity') })
 		);
 	});
 
 	it('agents', async () => {
 		const { load } = await import('../../../routes/(app)/agents/+page.server');
 		await measure('/agents', (env) =>
-			(load as any)({ locals: { user }, platform: { env }, url: new URL('http://x/agents') })
+			(load as any)({ locals: { user }, platform: { env }, depends, url: new URL('http://x/agents') })
 		);
 	});
 
 	it('context', async () => {
 		const { load } = await import('../../../routes/(app)/context/+page.server');
 		await measure('/context', (env) =>
-			(load as any)({ locals: { user }, platform: { env }, url: new URL('http://x/context') })
+			(load as any)({ locals: { user }, platform: { env }, depends, url: new URL('http://x/context') })
 		);
 	});
 });

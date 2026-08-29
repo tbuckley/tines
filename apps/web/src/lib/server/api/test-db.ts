@@ -46,8 +46,12 @@ function runStatement<R>(
 }
 
 class NodeSqliteConnection implements DatabaseConnection {
-	constructor(private readonly sqlite: DatabaseSync) {}
+	constructor(
+		private readonly sqlite: DatabaseSync,
+		private readonly log: string[]
+	) {}
 	executeQuery<R>(compiled: CompiledQuery): Promise<QueryResult<R>> {
+		this.log.push(compiled.sql);
 		return Promise.resolve(runStatement<R>(this.sqlite, compiled.sql, compiled.parameters));
 	}
 	// eslint-disable-next-line require-yield
@@ -56,8 +60,8 @@ class NodeSqliteConnection implements DatabaseConnection {
 	}
 }
 
-function dialectFor(sqlite: DatabaseSync): Dialect {
-	const connection = new NodeSqliteConnection(sqlite);
+function dialectFor(sqlite: DatabaseSync, log: string[]): Dialect {
+	const connection = new NodeSqliteConnection(sqlite, log);
 	const driver: Driver = {
 		init: async () => {},
 		acquireConnection: async () => connection,
@@ -103,10 +107,17 @@ export interface TestDb {
 	sqlite: DatabaseSync;
 	/** Convenience raw read for assertions. */
 	all: (sqlText: string, ...params: unknown[]) => Record<string, unknown>[];
+	/**
+	 * Start recording SQL. The returned getter yields every statement issued
+	 * since the call — for asserting that a shortcut really skipped a query
+	 * rather than just returning the same answer.
+	 */
+	spyOnQueries: () => () => string[];
 }
 
 export function createTestDb(): TestDb {
 	const sqlite = new DatabaseSync(':memory:');
+	const log: string[] = [];
 	// D1 enforces foreign keys; the tests must too (batch-order bugs show up
 	// as FK failures).
 	sqlite.exec('PRAGMA foreign_keys = ON');
@@ -121,6 +132,7 @@ export function createTestDb(): TestDb {
 					sqlText,
 					params,
 					all: async () => {
+						log.push(sqlText);
 						const result = runStatement(sqlite, sqlText, params);
 						return {
 							results: result.rows,
@@ -152,10 +164,14 @@ export function createTestDb(): TestDb {
 	} as unknown as Env;
 
 	return {
-		db: new Kysely<Database>({ dialect: dialectFor(sqlite) }),
+		db: new Kysely<Database>({ dialect: dialectFor(sqlite, log) }),
 		env,
 		sqlite,
 		all: (sqlText, ...params) =>
-			sqlite.prepare(sqlText).all(...(params as SqlParam[])) as Record<string, unknown>[]
+			sqlite.prepare(sqlText).all(...(params as SqlParam[])) as Record<string, unknown>[],
+		spyOnQueries: () => {
+			const from = log.length;
+			return () => log.slice(from);
+		}
 	};
 }
