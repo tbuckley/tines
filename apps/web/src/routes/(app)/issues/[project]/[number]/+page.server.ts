@@ -1,4 +1,5 @@
 import { error } from '@sveltejs/kit';
+import { truncate } from '$lib/format';
 import { listArtifacts } from '$lib/server/api/artifacts';
 import { effectiveContextForIssue, listContextItems } from '$lib/server/api/context';
 import { eventQuery, serializeEvent } from '$lib/server/api/events';
@@ -15,8 +16,10 @@ export const load: PageServerLoad = async ({ locals, platform, params }) => {
 	const db = getDb(platform!.env);
 	const userId = locals.user!.id;
 
+	// Issue numbers are 1-based; "abc" and "-1" are addresses, not issues.
 	const number = Number.parseInt(params.number, 10);
-	if (!Number.isFinite(number)) error(404, 'Not found');
+	if (!Number.isInteger(number) || number < 1)
+		error(404, `“${truncate(params.number)}” is not an issue number.`);
 
 	// URLs address projects by name; resolve to the newest match.
 	const project = await db
@@ -26,10 +29,10 @@ export const load: PageServerLoad = async ({ locals, platform, params }) => {
 		.where('name', '=', params.project)
 		.orderBy('created_at desc')
 		.executeTakeFirst();
-	if (!project) error(404, 'Not found');
+	if (!project) error(404, `You have no project named “${truncate(params.project)}”.`);
 
 	const issue = await getIssueDetail(db, userId, { projectId: project.id, number }).catch(() => {
-		error(404, 'Not found');
+		error(404, `Issue #${number} does not exist in “${truncate(params.project)}”.`);
 	});
 
 	const [eventRows, workflows, projects, contextItems, effectiveContext, dispatch, issueRuns, runners, artifacts] = await Promise.all([
