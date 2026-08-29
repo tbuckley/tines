@@ -44,6 +44,13 @@ import {
 } from './core';
 import { artifactTypeOf } from './artifacts';
 import { eventInsert } from './events';
+import {
+	resolveScope,
+	scopeLabel,
+	toContextScope,
+	type ResolvedScope,
+	type ScopeIds
+} from './scope';
 
 // ---------------------------------------------------------------------------
 // Validation
@@ -183,166 +190,6 @@ function rejectForeignPayload(kind: ContextKind, body: Record<string, unknown>) 
 			{ kind, rejected_fields: foreign, allowed_fields: [...KIND_FIELDS[kind]] }
 		);
 	}
-}
-
-// ---------------------------------------------------------------------------
-// Scope: resolution, coherence, labels
-
-export interface ScopeIds {
-	projectId: string | null;
-	workflowStateId: string | null;
-	issueId: string | null;
-}
-
-/** Denormalized referents of a (validated) scope, for labels and events. */
-export interface ResolvedScope extends ScopeIds {
-	projectName: string | null;
-	stateName: string | null;
-	workflowId: string | null;
-	workflowName: string | null;
-	issueNumber: number | null;
-	issueProjectName: string | null;
-	/** The issue's project — used for event references. */
-	issueProjectId: string | null;
-}
-
-/**
- * Canonical display label: set dimensions in project · state · issue order;
- * the empty scope is "global".
- */
-export function scopeLabel(scope: {
-	projectName?: string | null;
-	stateName?: string | null;
-	issueProjectName?: string | null;
-	issueNumber?: number | null;
-}): string {
-	const parts: string[] = [];
-	if (scope.projectName) parts.push(`project ${scope.projectName}`);
-	if (scope.stateName) parts.push(`state ${scope.stateName}`);
-	if (scope.issueProjectName && scope.issueNumber !== null && scope.issueNumber !== undefined) {
-		parts.push(`issue ${scope.issueProjectName}/${scope.issueNumber}`);
-	}
-	return parts.length > 0 ? parts.join(' · ') : 'global';
-}
-
-function toContextScope(scope: ResolvedScope): ContextScope {
-	return {
-		project_id: scope.projectId,
-		project_name: scope.projectName,
-		workflow_state_id: scope.workflowStateId,
-		workflow_state_name: scope.stateName,
-		workflow_id: scope.workflowId,
-		workflow_name: scope.workflowName,
-		issue_id: scope.issueId,
-		issue_ref:
-			scope.issueId && scope.issueProjectName && scope.issueNumber !== null
-				? { project_name: scope.issueProjectName, number: scope.issueNumber }
-				: null,
-		label: scopeLabel(scope)
-	};
-}
-
-/**
- * Validates a scope: every referenced element exists and belongs to the user
- * (states may come from the system standard workflow), and the set dimensions
- * cohere (issue in project; state in the issue's bound workflow). An empty
- * scope is valid — the item is global and matches every issue.
- */
-async function resolveScope(
-	db: Kysely<Database>,
-	userId: string,
-	ids: ScopeIds
-): Promise<ResolvedScope> {
-	const scope: ResolvedScope = {
-		projectId: ids.projectId,
-		workflowStateId: ids.workflowStateId,
-		issueId: ids.issueId,
-		projectName: null,
-		stateName: null,
-		workflowId: null,
-		workflowName: null,
-		issueNumber: null,
-		issueProjectName: null,
-		issueProjectId: null
-	};
-
-	if (ids.projectId) {
-		const project = await db
-			.selectFrom('project')
-			.select(['id', 'name'])
-			.where('id', '=', ids.projectId)
-			.where('user_id', '=', userId)
-			.executeTakeFirst();
-		if (!project) {
-			throw new ApiFail(422, 'unknown_project', `Project "${ids.projectId}" does not exist`, {
-				field: 'project_id'
-			});
-		}
-		scope.projectName = project.name;
-	}
-
-	if (ids.workflowStateId) {
-		const state = await db
-			.selectFrom('workflow_state')
-			.innerJoin('workflow', 'workflow.id', 'workflow_state.workflow_id')
-			.select([
-				'workflow_state.id',
-				'workflow_state.name',
-				'workflow.id as workflow_id',
-				'workflow.name as workflow_name'
-			])
-			.where('workflow_state.id', '=', ids.workflowStateId)
-			.where((eb) => eb.or([eb('workflow.user_id', '=', userId), eb('workflow.user_id', 'is', null)]))
-			.executeTakeFirst();
-		if (!state) {
-			throw new ApiFail(
-				422,
-				'unknown_state',
-				`Workflow state "${ids.workflowStateId}" does not exist`,
-				{ field: 'workflow_state_id' }
-			);
-		}
-		scope.stateName = state.name;
-		scope.workflowId = state.workflow_id;
-		scope.workflowName = state.workflow_name;
-	}
-
-	if (ids.issueId) {
-		const issue = await db
-			.selectFrom('issue')
-			.innerJoin('project', 'project.id', 'issue.project_id')
-			.select(['issue.id', 'issue.number', 'issue.project_id', 'issue.workflow_id', 'project.name as project_name'])
-			.where('issue.id', '=', ids.issueId)
-			.where('project.user_id', '=', userId)
-			.executeTakeFirst();
-		if (!issue) {
-			throw new ApiFail(422, 'unknown_issue', `Issue "${ids.issueId}" does not exist`, {
-				field: 'issue_id'
-			});
-		}
-		scope.issueNumber = issue.number;
-		scope.issueProjectName = issue.project_name;
-		scope.issueProjectId = issue.project_id;
-
-		if (ids.projectId && issue.project_id !== ids.projectId) {
-			throw new ApiFail(
-				422,
-				'scope_incoherent',
-				`Issue ${issue.project_name}/${issue.number} does not belong to project "${scope.projectName}"`,
-				{ issue_project_id: issue.project_id, project_id: ids.projectId }
-			);
-		}
-		if (ids.workflowStateId && scope.workflowId !== issue.workflow_id) {
-			throw new ApiFail(
-				422,
-				'scope_incoherent',
-				`State "${scope.stateName}" belongs to workflow "${scope.workflowName}", not the workflow bound to issue ${issue.project_name}/${issue.number}`,
-				{ state_workflow_id: scope.workflowId, issue_workflow_id: issue.workflow_id }
-			);
-		}
-	}
-
-	return scope;
 }
 
 // ---------------------------------------------------------------------------

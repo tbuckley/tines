@@ -12,6 +12,7 @@ import { newId, type Database } from '$lib/server/db';
 import { ApiFail, notFound, runAtomic, type ActorContext } from './core';
 import { eventInsert } from './events';
 import { requireTier } from './runners';
+import { resolveScope, scopeLabel, toContextScope, type ResolvedScope } from './scope';
 
 // ---------------------------------------------------------------------------
 // Scope: two nullable dimensions (no issue — pins cover that), AND semantics
@@ -170,21 +171,24 @@ function ruleQuery(db: Kysely<Database>, userId: string) {
 
 type RuleRow = Awaited<ReturnType<ReturnType<typeof ruleQuery>['execute']>>[number];
 
-function rowScope(row: RuleRow): ContextScope {
-	const parts: string[] = [];
-	if (row.scope_project_name) parts.push(`project ${row.scope_project_name}`);
-	if (row.scope_state_name) parts.push(`state ${row.scope_state_name}`);
+/** A rule row as a resolved scope — the issue dimension is always unset. */
+function rowResolvedScope(row: RuleRow): ResolvedScope {
 	return {
-		project_id: row.project_id,
-		project_name: row.scope_project_name,
-		workflow_state_id: row.workflow_state_id,
-		workflow_state_name: row.scope_state_name,
-		workflow_id: row.scope_workflow_id,
-		workflow_name: row.scope_workflow_name,
-		issue_id: null,
-		issue_ref: null,
-		label: parts.length > 0 ? parts.join(' · ') : 'global'
+		projectId: row.project_id,
+		workflowStateId: row.workflow_state_id,
+		issueId: null,
+		projectName: row.scope_project_name,
+		stateName: row.scope_state_name,
+		workflowId: row.scope_workflow_id,
+		workflowName: row.scope_workflow_name,
+		issueNumber: null,
+		issueProjectName: null,
+		issueProjectId: null
 	};
+}
+
+function rowScope(row: RuleRow): ContextScope {
+	return toContextScope(rowResolvedScope(row));
 }
 
 async function loadRunnersById(
@@ -251,59 +255,6 @@ export async function getRoutingRule(
 // ---------------------------------------------------------------------------
 // Mutations
 
-/** Validates scope references (project/state exist and are the user's). */
-async function resolveRuleScope(
-	db: Kysely<Database>,
-	userId: string,
-	ids: RuleScopeIds
-): Promise<{ projectName: string | null; stateName: string | null; label: string }> {
-	let projectName: string | null = null;
-	let stateName: string | null = null;
-	if (ids.projectId) {
-		const project = await db
-			.selectFrom('project')
-			.select('name')
-			.where('id', '=', ids.projectId)
-			.where('user_id', '=', userId)
-			.executeTakeFirst();
-		if (!project) {
-			throw new ApiFail(422, 'unknown_project', `Project "${ids.projectId}" does not exist`, {
-				field: 'project_id'
-			});
-		}
-		projectName = project.name;
-	}
-	if (ids.workflowStateId) {
-		const state = await db
-			.selectFrom('workflow_state')
-			.innerJoin('workflow', 'workflow.id', 'workflow_state.workflow_id')
-			.select(['workflow_state.name', 'workflow_state.category'])
-			.where('workflow_state.id', '=', ids.workflowStateId)
-			.where((eb) => eb.or([eb('workflow.user_id', '=', userId), eb('workflow.user_id', 'is', null)]))
-			.executeTakeFirst();
-		if (!state) {
-			throw new ApiFail(422, 'unknown_state', `Workflow state "${ids.workflowStateId}" does not exist`, {
-				field: 'workflow_state_id'
-			});
-		}
-		// The supervisor only dispatches issues whose state category is
-		// `active`, so a rule scoped to any other state can never match.
-		if (state.category !== 'active') {
-			throw new ApiFail(
-				422,
-				'state_not_dispatchable',
-				`State "${state.name}" is categorized ${state.category.replaceAll('_', ' ')} — agents only pick up issues in active states, so a rule scoped to it would never match anything. Leave the state unset to cover every active state`,
-				{ field: 'workflow_state_id', state_category: state.category }
-			);
-		}
-		stateName = state.name;
-	}
-	const parts: string[] = [];
-	if (projectName) parts.push(`project ${projectName}`);
-	if (stateName) parts.push(`state ${stateName}`);
-	return { projectName, stateName, label: parts.length > 0 ? parts.join(' · ') : 'global' };
-}
-
 async function loadRulesForShadowing(
 	db: Kysely<Database>,
 	userId: string
@@ -344,7 +295,9 @@ export async function createRoutingRule(
 		projectId: body.project_id ?? null,
 		workflowStateId: body.workflow_state_id ?? null
 	};
-	const { label } = await resolveRuleScope(db, actor.userId, scope);
+	const label = scopeLabel(
+		await resolveScope(db, actor.userId, scope, { issue: false, requireActiveState: true })
+	);
 	const rules = await loadRulesForShadowing(db, actor.userId);
 	assertNoScopeCollision(scope, label, rules);
 	const runnersById = await loadRunnersById(db, actor.userId);
@@ -402,7 +355,9 @@ export async function updateRoutingRule(
 	};
 	const scopeChanged =
 		scope.projectId !== row.project_id || scope.workflowStateId !== row.workflow_state_id;
-	const { label } = await resolveRuleScope(db, actor.userId, scope);
+	const label = scopeLabel(
+		await resolveScope(db, actor.userId, scope, { issue: false, requireActiveState: true })
+	);
 	const rules = await loadRulesForShadowing(db, actor.userId);
 	if (scopeChanged) assertNoScopeCollision(scope, label, rules, id);
 
