@@ -48,6 +48,11 @@ export function categoryVar(category: string): string {
 	return `var(--cat-${category}, var(--cat-backlog))`;
 }
 
+/** CSS custom-property reference for a label palette key. */
+export function labelColorVar(color: string): string {
+	return `var(--label-${color}, var(--label-slate))`;
+}
+
 export function prefersReducedMotion(): boolean {
 	return (
 		typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches

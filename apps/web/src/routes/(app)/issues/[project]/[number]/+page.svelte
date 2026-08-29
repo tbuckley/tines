@@ -21,6 +21,8 @@
 	import ContextItemList from '$lib/components/ContextItemList.svelte';
 	import EffectiveContextView from '$lib/components/EffectiveContextView.svelte';
 	import EventList from '$lib/components/EventList.svelte';
+	import LabelChip from '$lib/components/LabelChip.svelte';
+	import LabelsCard from '$lib/components/LabelsCard.svelte';
 	import LaunchPromptDialog from '$lib/components/LaunchPromptDialog.svelte';
 	import Markdown from '$lib/components/Markdown.svelte';
 	import Modal from '$lib/components/Modal.svelte';
@@ -429,6 +431,15 @@
 					</button>
 				</h1>
 			{/if}
+			{#if data.issue.labels.length > 0}
+				<!-- Read-only here; editing lives in the aside card, on the same
+				     `issue.labels` truth. -->
+				<div class="mt-2 flex flex-wrap gap-1.5">
+					{#each data.issue.labels as label (label.id)}
+						<LabelChip {label} size="sm" />
+					{/each}
+				</div>
+			{/if}
 		</div>
 		<div class="flex flex-wrap items-center justify-end gap-2">
 			{#if duplicateOf}
@@ -808,6 +819,13 @@
 			dispatch={data.dispatch}
 			runs={data.issueRuns}
 			runners={data.runners}
+			onerror={showError}
+		/>
+
+		<LabelsCard
+			issueId={data.issue.id}
+			labels={data.issue.labels}
+			library={data.labelLibrary}
 			onerror={showError}
 		/>
 

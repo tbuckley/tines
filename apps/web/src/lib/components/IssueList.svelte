@@ -7,6 +7,7 @@
 	import { flip } from 'svelte/animate';
 	import { fade } from 'svelte/transition';
 	import { goto } from '$app/navigation';
+	import LabelChip from '$lib/components/LabelChip.svelte';
 	import StateBadge from '$lib/components/StateBadge.svelte';
 	import { prefersReducedMotion, relativeTime } from '$lib/format';
 
@@ -19,6 +20,9 @@
 	const dur = () => (prefersReducedMotion() ? 0 : 220);
 
 	const refLabel = (ref: IssueRef) => `${ref.project_name}/${ref.number} — ${ref.title}`;
+
+	/** Rows stay one line: three chips, then "+N" carrying the rest as a tooltip. */
+	const MAX_CHIPS = 3;
 
 	/** "Blocked by demo/3 — Fix schema review; web/5 — Login broken". */
 	const blockedTooltip = (blockers: IssueRef[]) =>
@@ -67,6 +71,20 @@
 							>
 								<IconRepeat size={14} stroke={1.75} />
 							</button>
+						{/if}
+						{#each issue.labels.slice(0, MAX_CHIPS) as label (label.id)}
+							<LabelChip {label} size="sm" class="ml-1.5 align-middle" />
+						{/each}
+						{#if issue.labels.length > MAX_CHIPS}
+							<span
+								class="text-muted-foreground ml-1.5 align-middle text-[0.6875rem] font-medium"
+								title={issue.labels
+									.slice(MAX_CHIPS)
+									.map((l) => l.name)
+									.join(', ')}
+							>
+								+{issue.labels.length - MAX_CHIPS}
+							</span>
 						{/if}
 						<!-- Link markers are informational (title tooltip), never nested
 						     links: the row itself already navigates. -->

@@ -3,6 +3,7 @@ import { listArtifacts } from '$lib/server/api/artifacts';
 import { effectiveContextForIssue, listContextItems } from '$lib/server/api/context';
 import { eventQuery, serializeEvent } from '$lib/server/api/events';
 import { getIssueDetail } from '$lib/server/api/issues';
+import { listLabels } from '$lib/server/api/labels';
 import { listProjects } from '$lib/server/api/projects';
 import { listRunners } from '$lib/server/api/runners';
 import { listRuns } from '$lib/server/api/runs';
@@ -32,7 +33,7 @@ export const load: PageServerLoad = async ({ locals, platform, params }) => {
 		error(404, 'Not found');
 	});
 
-	const [eventRows, workflows, projects, contextItems, effectiveContext, dispatch, issueRuns, runners, artifacts] = await Promise.all([
+	const [eventRows, workflows, projects, contextItems, effectiveContext, dispatch, issueRuns, runners, artifacts, labelLibrary] = await Promise.all([
 		eventQuery(db, userId)
 			.where('event.issue_id', '=', issue.id)
 			.orderBy('event.created_at desc')
@@ -49,7 +50,9 @@ export const load: PageServerLoad = async ({ locals, platform, params }) => {
 		explainDispatch(db, userId, issue.id),
 		listRuns(db, userId, { issue: issue.id }, { cursor: null, limit: 20 }),
 		listRunners(db, userId),
-		listArtifacts(db, userId, issue.id)
+		listArtifacts(db, userId, issue.id),
+		// The whole vocabulary, for the labels picker.
+		listLabels(db, userId)
 	]);
 
 	return {
@@ -63,6 +66,7 @@ export const load: PageServerLoad = async ({ locals, platform, params }) => {
 		dispatch,
 		issueRuns: issueRuns.items,
 		runners,
-		artifacts
+		artifacts,
+		labelLibrary
 	};
 };

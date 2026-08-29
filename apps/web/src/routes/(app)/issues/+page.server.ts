@@ -1,5 +1,6 @@
 import { listIssues } from '$lib/server/api/issues';
 import { listProjects } from '$lib/server/api/projects';
+import { listLabels } from '$lib/server/api/labels';
 import { loadWorkflows } from '$lib/server/api/workflows';
 import { getDb } from '$lib/server/db';
 import type { PageServerLoad } from './$types';
@@ -14,10 +15,12 @@ export const load: PageServerLoad = async ({ locals, platform, url }) => {
 		category: url.searchParams.get('category') ?? undefined,
 		showDone: url.searchParams.get('done') === '1',
 		ready: url.searchParams.get('ready') === '1',
-		q: url.searchParams.get('q') ?? undefined
+		q: url.searchParams.get('q') ?? undefined,
+		// Repeatable: ?label=a&label=b narrows to issues carrying both.
+		labels: url.searchParams.getAll('label')
 	};
 
-	const [{ items: issues }, projects, workflows] = await Promise.all([
+	const [{ items: issues }, projects, workflows, labels] = await Promise.all([
 		listIssues(
 			db,
 			userId,
@@ -29,13 +32,15 @@ export const load: PageServerLoad = async ({ locals, platform, url }) => {
 				// simply parked in the URL while it is on.
 				hideDone: !filters.showDone && !filters.category && !filters.state,
 				ready: filters.ready,
-				q: filters.q
+				q: filters.q,
+				labels: filters.labels
 			},
 			{ cursor: null, limit: 100 }
 		),
 		listProjects(db, userId),
-		loadWorkflows(db, userId)
+		loadWorkflows(db, userId),
+		listLabels(db, userId)
 	]);
 
-	return { issues, projects, workflows, filters };
+	return { issues, projects, workflows, labels, filters };
 };
