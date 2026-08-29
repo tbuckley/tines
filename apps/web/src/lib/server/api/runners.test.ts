@@ -178,7 +178,14 @@ describe('deleteRunner (db batch)', () => {
 		const t = createTestDb();
 		seedRemovalFixture(t);
 		await expect(deleteRunner(t.db, t.env, actor, 'rnr_1', false)).rejects.toMatchObject({
-			code: 'runner_referenced'
+			code: 'runner_referenced',
+			// The referenced rules are named with the canonical scope label.
+			details: {
+				rules: [
+					{ rule_id: 'rul_1', label: 'global' },
+					{ rule_id: 'rul_2', label: 'project demo' }
+				]
+			}
 		});
 		expect(t.all(`SELECT id FROM runner`)).toHaveLength(2);
 		expect(t.all(`SELECT pinned_runner_id FROM issue WHERE id = 'iss_1'`)).toEqual([

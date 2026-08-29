@@ -12,7 +12,7 @@ import { newId, type Database } from '$lib/server/db';
 import { ApiFail, notFound, runAtomic, type ActorContext } from './core';
 import { eventInsert } from './events';
 import { requireTier } from './runners';
-import { resolveScope, scopeLabel, toContextScope, type ResolvedScope } from './scope';
+import { resolveScope, scopeLabel, toContextScope } from './scope';
 
 // ---------------------------------------------------------------------------
 // Scope: two nullable dimensions (no issue — pins cover that), AND semantics
@@ -171,9 +171,9 @@ function ruleQuery(db: Kysely<Database>, userId: string) {
 
 type RuleRow = Awaited<ReturnType<ReturnType<typeof ruleQuery>['execute']>>[number];
 
-/** A rule row as a resolved scope — the issue dimension is always unset. */
-function rowResolvedScope(row: RuleRow): ResolvedScope {
-	return {
+/** A rule row on the wire — a rule scope never has the issue dimension. */
+function rowScope(row: RuleRow): ContextScope {
+	return toContextScope({
 		projectId: row.project_id,
 		workflowStateId: row.workflow_state_id,
 		issueId: null,
@@ -184,11 +184,7 @@ function rowResolvedScope(row: RuleRow): ResolvedScope {
 		issueNumber: null,
 		issueProjectName: null,
 		issueProjectId: null
-	};
-}
-
-function rowScope(row: RuleRow): ContextScope {
-	return toContextScope(rowResolvedScope(row));
+	});
 }
 
 async function loadRunnersById(

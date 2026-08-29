@@ -217,17 +217,22 @@ describe('resolveScope', () => {
 		).rejects.toMatchObject({ status: 422, code: 'scope_incoherent' });
 	});
 
-	it('leaves the issue dimension unresolved when the caller has none', async () => {
+	it('drops the issue dimension for callers that do not have one', async () => {
 		const t = seed();
-		// Routing rules pass `{ issue: false }`; a rule scope has no issue id.
+		// Routing rules pass `{ issue: false }`; a rule scope has no issue id,
+		// and one that slipped in must not reach the label or the wire shape.
 		const scope = await resolveScope(
 			t.db,
 			'u1',
-			{ projectId: 'prj_alice', workflowStateId: null },
+			{ projectId: 'prj_alice', workflowStateId: null, issueId: 'iss_1' },
 			{ issue: false, requireActiveState: true }
 		);
 		expect(scope).toMatchObject({ issueId: null, issueNumber: null, issueProjectName: null });
 		expect(scopeLabel(scope)).toBe('project acme');
+		// …and an issue id it never looked up is not validated either.
+		await expect(
+			resolveScope(t.db, 'u1', { ...empty, issueId: 'iss_nope' }, { issue: false })
+		).resolves.toMatchObject({ issueId: null });
 	});
 
 	it('throws ApiFail, so the api() wrapper renders a structured 422', async () => {
