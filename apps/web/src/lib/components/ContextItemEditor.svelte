@@ -14,6 +14,7 @@
 	import IconTrash from '@tabler/icons-svelte/icons/trash';
 	import { api } from '$lib/api';
 	import ContextKindIcon from '$lib/components/ContextKindIcon.svelte';
+	import { confirmDialog } from '$lib/components/dialogs.svelte';
 	import Markdown from '$lib/components/Markdown.svelte';
 	import Modal from '$lib/components/Modal.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
@@ -243,7 +244,13 @@
 	}
 
 	async function deleteItem() {
-		if (!item || !confirm(`Delete ${item.kind} "${item.name}"?`)) return;
+		if (!item) return;
+		const ok = await confirmDialog({
+			title: `Delete ${item.kind} “${item.name}”?`,
+			confirmLabel: 'Delete',
+			destructive: true
+		});
+		if (!ok || !item) return;
 		saving = true;
 		try {
 			await api.deleteContextItem(item.id);

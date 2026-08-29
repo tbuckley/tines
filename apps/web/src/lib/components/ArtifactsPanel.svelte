@@ -15,6 +15,7 @@
 	import { slide } from 'svelte/transition';
 	import { api } from '$lib/api';
 	import ArtifactViewerDialog from '$lib/components/ArtifactViewerDialog.svelte';
+	import { confirmDialog } from '$lib/components/dialogs.svelte';
 	import Modal from '$lib/components/Modal.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
@@ -119,9 +120,14 @@
 	}
 
 	async function remove(a: Artifact) {
-		if (busy || !confirm(`Delete artifact "${a.name}" and all ${a.version_count} version${a.version_count === 1 ? '' : 's'}?`)) {
-			return;
-		}
+		if (busy) return;
+		const ok = await confirmDialog({
+			title: `Delete artifact "${a.name}"?`,
+			body: `All ${a.version_count} version${a.version_count === 1 ? '' : 's'} of it will be deleted.`,
+			confirmLabel: 'Delete artifact',
+			destructive: true
+		});
+		if (!ok || busy) return;
 		busy = true;
 		try {
 			await api.deleteArtifact(issueId, a.name);

@@ -11,6 +11,7 @@
 	import AgentRoutingCard from '$lib/components/AgentRoutingCard.svelte';
 	import ContextItemEditor from '$lib/components/ContextItemEditor.svelte';
 	import ContextItemList from '$lib/components/ContextItemList.svelte';
+	import { confirmDialog } from '$lib/components/dialogs.svelte';
 	import IssueList from '$lib/components/IssueList.svelte';
 	import Modal from '$lib/components/Modal.svelte';
 	import NewIssueModal from '$lib/components/NewIssueModal.svelte';
@@ -107,7 +108,13 @@
 	}
 
 	async function deleteProject() {
-		if (!confirm(`Delete project "${data.project.name}"? This cannot be undone.`)) return;
+		const ok = await confirmDialog({
+			title: `Delete project "${data.project.name}"?`,
+			body: 'This cannot be undone.',
+			confirmLabel: 'Delete project',
+			destructive: true
+		});
+		if (!ok) return;
 		try {
 			await api.deleteProject(data.project.id);
 			await goto('/projects');
@@ -121,12 +128,14 @@
 					name: string;
 					scope_label: string;
 				}[];
-				const listing = items.map((i) => `  · ${i.kind} “${i.name}” (${i.scope_label})`).join('\n');
-				if (
-					confirm(
-						`Deleting "${data.project.name}" also deletes ${items.length} context item${items.length === 1 ? '' : 's'}:\n\n${listing}\n\nDelete them too?`
-					)
-				) {
+				const sweep = await confirmDialog({
+					title: 'Delete attached context too?',
+					body: `Deleting "${data.project.name}" also deletes ${items.length} context item${items.length === 1 ? '' : 's'}:`,
+					items: items.map((i) => `${i.kind} “${i.name}” (${i.scope_label})`),
+					confirmLabel: 'Delete them',
+					destructive: true
+				});
+				if (sweep) {
 					try {
 						await api.deleteProject(data.project.id, { force_delete_context: true });
 						await goto('/projects');
