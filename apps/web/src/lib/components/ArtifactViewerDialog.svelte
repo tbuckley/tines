@@ -285,17 +285,17 @@
 			<img
 				src={contentUrl({ path: preview.path, inline: true })}
 				alt={preview.path ?? selectedName}
-				class="max-h-[65vh] w-auto rounded-md border"
+				class="max-h-[70dvh] w-auto rounded-md border"
 			/>
 		{:else if preview.kind === 'pdf'}
 			<!-- the sandboxed inline URL is what makes PDF preview possible -->
 			<iframe
 				src={contentUrl({ path: preview.path, inline: true })}
 				title={preview.path ?? selectedName}
-				class="h-[65vh] w-full rounded-md border"
+				class="h-[70dvh] w-full rounded-md border"
 			></iframe>
 		{:else if preview.kind === 'markdown'}
-			<div class="max-h-[65vh] overflow-y-auto rounded-md border p-4">
+			<div class="rounded-md border p-4">
 				{#if textKey && textCache[textKey] !== undefined}
 					<Markdown source={textCache[textKey]} class="text-sm" />
 				{:else}
@@ -304,7 +304,7 @@
 			</div>
 		{:else if preview.kind === 'text'}
 			{#if textKey && textCache[textKey] !== undefined}
-				<pre class="max-h-[65vh] overflow-auto rounded-md border p-4 text-xs">{textCache[textKey]}</pre>
+				<pre class="overflow-x-auto rounded-md border p-4 text-xs">{textCache[textKey]}</pre>
 			{:else}
 				<p class="text-muted-foreground text-xs">Loading…</p>
 			{/if}
