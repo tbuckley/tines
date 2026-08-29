@@ -3,6 +3,7 @@
 	import favicon from '$lib/assets/favicon.svg';
 	import { theme } from '$lib/theme.svelte';
 	import { onMount } from 'svelte';
+	import DialogHost from '$lib/components/DialogHost.svelte';
 
 	let { children } = $props();
 
@@ -15,3 +16,4 @@
 </svelte:head>
 
 {@render children()}
+<DialogHost />

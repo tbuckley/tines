@@ -7,6 +7,7 @@
 	import { fade, slide } from 'svelte/transition';
 	import { invalidateAll } from '$app/navigation';
 	import { api } from '$lib/api';
+	import { confirmDialog } from '$lib/components/dialogs.svelte';
 	import Modal from '$lib/components/Modal.svelte';
 	import RepeatFields from '$lib/components/RepeatFields.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
@@ -52,14 +53,14 @@
 
 	const runNow = (s: Schedule) => mutate(s.id, () => api.runSchedule(s.id));
 
-	function remove(s: Schedule) {
-		if (
-			!confirm(
-				`Delete schedule "${s.name}"? Issues it already created are kept; only the schedule goes away.`
-			)
-		) {
-			return;
-		}
+	async function remove(s: Schedule) {
+		const ok = await confirmDialog({
+			title: `Delete schedule "${s.name}"?`,
+			body: 'Issues it already created are kept; only the schedule goes away.',
+			confirmLabel: 'Delete schedule',
+			destructive: true
+		});
+		if (!ok) return;
 		void mutate(s.id, () => api.deleteSchedule(s.id));
 	}
 

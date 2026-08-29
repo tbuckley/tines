@@ -6,6 +6,7 @@
 	import IconKey from '@tabler/icons-svelte/icons/key';
 	import { invalidateAll } from '$app/navigation';
 	import { api } from '$lib/api';
+	import { alertDialog, confirmDialog } from '$lib/components/dialogs.svelte';
 	import Modal from '$lib/components/Modal.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
@@ -51,12 +52,21 @@
 	}
 
 	async function revoke(id: string, keyName: string) {
-		if (!confirm(`Revoke API key "${keyName}"? Anything using it will immediately lose access.`)) return;
+		const ok = await confirmDialog({
+			title: `Revoke API key "${keyName}"?`,
+			body: 'Anything using it will immediately lose access.',
+			confirmLabel: 'Revoke key',
+			destructive: true
+		});
+		if (!ok) return;
 		try {
 			await api.revokeApiKey(id);
 			await invalidateAll();
 		} catch (err) {
-			alert(err instanceof ApiError ? err.message : 'Failed to revoke the key.');
+			await alertDialog({
+				title: 'Revoke failed',
+				body: err instanceof ApiError ? err.message : 'Failed to revoke the key.'
+			});
 		}
 	}
 </script>

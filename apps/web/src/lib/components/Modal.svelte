@@ -50,6 +50,9 @@
 		onclose?.();
 	}
 
+	// `defaultPrevented` skips Escape presses an AlertDialog stacked on top of
+	// this modal already handled (bits-ui prevents default but lets the event
+	// bubble on to window).
 	function onkeydown(e: KeyboardEvent) {
 		if (e.key === 'Escape' && open && !e.defaultPrevented) close();
 	}
