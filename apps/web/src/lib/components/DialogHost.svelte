@@ -4,20 +4,28 @@
 
 	let current = $state<DialogRequest | null>(null);
 	let open = $state(false);
-	let confirmed = false;
+	let settled = false;
 
 	$effect(() => {
 		if (!open && !current && pendingDialogs.queue.length > 0) {
 			current = pendingDialogs.queue.shift()!;
-			confirmed = false;
+			settled = false;
 			open = true;
 		}
 	});
 
-	// Every way out (confirm, cancel, Escape, overlay click) lands here; only a
-	// confirm-button click sets `confirmed` first.
+	// bits-ui's Action button does not close the dialog on its own, so the
+	// confirm path settles explicitly; dismissals (Cancel, Escape, overlay
+	// click) land in onOpenChange and settle as false.
+	function settle(confirmed: boolean) {
+		if (!current || settled) return;
+		settled = true;
+		current.resolve(confirmed);
+		open = false;
+	}
+
 	function onOpenChange(next: boolean) {
-		if (!next && current) current.resolve(confirmed);
+		if (!next) settle(false);
 	}
 
 	// Keep the dialog mounted until the close animation finishes, then let the
@@ -49,7 +57,7 @@
 				{/if}
 				<AlertDialog.Action
 					variant={current.destructive ? 'destructive' : 'default'}
-					onclick={() => (confirmed = true)}
+					onclick={() => settle(true)}
 				>
 					{current.confirmLabel ?? (current.kind === 'alert' ? 'OK' : 'Confirm')}
 				</AlertDialog.Action>
