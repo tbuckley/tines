@@ -42,6 +42,59 @@
 	// also re-run the (app) layout and every other load for no reason.
 	const refresh = () => invalidate('app:issue');
 
+	// --- streamed panels ---------------------------------------------------------
+	// Every refresh — each mutation, and every poll tick that spots someone
+	// else's event — replaces data.deferred with FRESH pending promises.
+	// Rendering them with {#await} would collapse the panels back to skeletons
+	// on each resync, so each panel instead tracks the latest value across
+	// promise replacements: pending only before the first value ever arrives,
+	// the previous value kept on screen while a newer promise is in flight, and
+	// a rejection surfacing as an error only when there is no value to keep
+	// (afterwards the stale value stands and the next poll tick retries).
+	// The kept value belongs to ONE issue: this component is reused when
+	// navigating between issues, so a key change resets the panel to pending
+	// rather than showing the previous issue's data.
+	type PanelState<T> = { status: 'pending' } | { status: 'loaded'; value: T } | { status: 'failed' };
+	function streamed<T>(promise: () => Promise<T>, key: () => unknown) {
+		let current = $state<PanelState<T>>({ status: 'pending' });
+		let lastKey: unknown;
+		$effect(() => {
+			// Reading the promise here makes the effect re-run when a refresh
+			// swaps data.deferred; the flag parks the superseded promise so an
+			// out-of-order settlement can't overwrite a newer one.
+			const k = key();
+			if (k !== lastKey) {
+				lastKey = k;
+				current = { status: 'pending' };
+			}
+			let superseded = false;
+			promise().then(
+				(value) => {
+					if (!superseded) current = { status: 'loaded', value };
+				},
+				() => {
+					if (!superseded && current.status !== 'loaded') current = { status: 'failed' };
+				}
+			);
+			return () => {
+				superseded = true;
+			};
+		});
+		return {
+			get current() {
+				return current;
+			}
+		};
+	}
+
+	const issueKey = () => data.issue.id;
+	const contextItemsPanel = streamed(() => data.deferred.contextItems, issueKey);
+	const effectiveContextPanel = streamed(() => data.deferred.effectiveContext, issueKey);
+	const agentActivityPanel = streamed(
+		() => Promise.all([data.deferred.dispatch, data.deferred.issueRuns, data.deferred.runners]),
+		issueKey
+	);
+
 	const dur = () => (prefersReducedMotion() ? 0 : 180);
 
 	// Everything optimistic on this page renders as server truth + an overlay
@@ -617,17 +670,17 @@
 					<h3 class="text-muted-foreground mb-2 text-xs font-semibold tracking-wide uppercase">
 						This issue's context
 					</h3>
-					{#await data.deferred.contextItems}
+					{#if contextItemsPanel.current.status === 'pending'}
 						<Skeleton class="h-16 w-full" />
-					{:then items}
+					{:else if contextItemsPanel.current.status === 'loaded'}
 						<ContextItemList
-							{items}
+							items={contextItemsPanel.current.value}
 							onselect={openContextEdit}
 							emptyMessage="Nothing attached to this issue yet — add a note, skill, or repo."
 						/>
-					{:catch}
+					{:else}
 						{@render loadFailed("this issue's context")}
-					{/await}
+					{/if}
 				</div>
 				<details class="group border-t pt-3">
 					<summary class="text-muted-foreground hover:text-foreground cursor-pointer text-sm select-none">
@@ -638,13 +691,13 @@
 						</span>
 					</summary>
 					<div class="mt-3">
-						{#await data.deferred.effectiveContext}
+						{#if effectiveContextPanel.current.status === 'pending'}
 							<Skeleton class="h-24 w-full" />
-						{:then context}
-							<EffectiveContextView {context} />
-						{:catch}
+						{:else if effectiveContextPanel.current.status === 'loaded'}
+							<EffectiveContextView context={effectiveContextPanel.current.value} />
+						{:else}
 							{@render loadFailed('the effective context')}
-						{/await}
+						{/if}
 					</div>
 				</details>
 			</div>
@@ -834,13 +887,14 @@
 		</section>
 
 		<!-- the supervisor's view of this issue -->
-		{#await Promise.all([data.deferred.dispatch, data.deferred.issueRuns, data.deferred.runners])}
+		{#if agentActivityPanel.current.status === 'pending'}
 			<Skeleton class="h-40 w-full" />
-		{:then [dispatch, runs, runners]}
+		{:else if agentActivityPanel.current.status === 'loaded'}
+			{@const [dispatch, runs, runners] = agentActivityPanel.current.value}
 			<AgentActivityCard issue={data.issue} {dispatch} {runs} {runners} onerror={showError} />
-		{:catch}
+		{:else}
 			{@render loadFailed('agent activity')}
-		{/await}
+		{/if}
 
 		<!-- dependencies & duplicates -->
 		<RelationsCard

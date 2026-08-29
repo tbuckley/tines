@@ -67,13 +67,19 @@ export const load: PageServerLoad = async ({ locals, platform, params, depends }
 		projectsPromise
 	]);
 
+	// The artifacts ride along on the detail (fetched in the same wave); expose
+	// them under exactly one name so nothing can read a stale second copy.
+	const { artifacts, ...issueDetail } = detail;
+
 	return {
-		issue: detail,
+		issue: issueDetail,
 		events,
 		workflows: await workflowsPromise,
 		projects,
-		artifacts: detail.artifacts ?? [],
-		// Streamed: the sidebar panels. Each renders a skeleton until it lands.
+		artifacts: artifacts ?? [],
+		// Streamed: the sidebar panels. Each renders a skeleton until its first
+		// value lands; on refreshes the page keeps the previous value on screen
+		// while the replacement promise is in flight (streamed() in +page.svelte).
 		deferred: {
 			// Items whose scope includes this issue (all issue-anchored shapes).
 			// Artifacts have their own panel; the context list shows the rest.

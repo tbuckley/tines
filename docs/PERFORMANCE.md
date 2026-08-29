@@ -54,8 +54,12 @@ anything it streams is not. The issue page is the worked example:
   folded into it), then fans everything else out behind it.
 - It awaits only what the header, comments and activity feed need.
 - The sidebar panels — issue context, effective context, agent activity — are
-  returned as promises under `data.deferred` and rendered inside `{#await}`
-  with a `Skeleton` and a retry on failure.
+  returned as promises under `data.deferred`. They render a `Skeleton` (with a
+  retry on failure) only until their first value arrives: refreshes replace
+  the deferred promises wholesale, so the page tracks the latest value per
+  panel (`streamed()` in `+page.svelte`) and keeps the previous one on screen
+  while a replacement is in flight, instead of `{#await}` collapsing the
+  panel back to a skeleton on every resync.
 
 Result (`pnpm perf:nav`): 21 statements, ~3.4 waves to first paint, ~5.5 to
 fully settled — from 26 statements and 29.1 waves before Tines/32.
