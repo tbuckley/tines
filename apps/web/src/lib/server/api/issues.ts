@@ -805,6 +805,7 @@ function unmetRequirements(
 	const ref = `${issue.project_name}/${issue.number}`;
 	const attachFlag: Record<string, string> = {
 		file: '--file <path>',
+		folder: '--folder <dir>',
 		text: '--text <markdown|@file>',
 		link: '--url <url>',
 		pr: '--pr <owner/repo#N>'

@@ -1335,6 +1335,8 @@ function artifactSummary(a: Artifact): string {
 	switch (a.artifact_type) {
 		case 'file':
 			return `${cv.filename} (${cv.content_type}, ${cv.size_bytes} bytes)`;
+		case 'folder':
+			return `${cv.file_count} file${cv.file_count === 1 ? '' : 's'} (${cv.size_bytes} bytes total)`;
 		case 'text':
 			return `${cv.filename} (${cv.content_type})`;
 		case 'link':
@@ -1342,6 +1344,24 @@ function artifactSummary(a: Artifact): string {
 		case 'pr':
 			return `${prRefLabel(cv)} — ${cv.pr_repo_url}/pull/${cv.pr_number}`;
 	}
+}
+
+/** All regular files under a directory, workspace-relative with `/` separators. */
+function walkFolder(dir: string): { path: string; contentType: string; bytes: Buffer }[] {
+	const files: { path: string; contentType: string; bytes: Buffer }[] = [];
+	const walk = (abs: string, rel: string) => {
+		for (const entry of readdirSync(abs, { withFileTypes: true })) {
+			const nextAbs = join(abs, entry.name);
+			const nextRel = rel ? `${rel}/${entry.name}` : entry.name;
+			if (entry.isDirectory()) walk(nextAbs, nextRel);
+			else if (entry.isFile()) {
+				files.push({ path: nextRel, contentType: sniffContentType(entry.name), bytes: readFileSync(nextAbs) });
+			}
+			// Symlinks and specials are skipped: a snapshot carries plain files.
+		}
+	};
+	walk(dir, '');
+	return files;
 }
 
 withCommon(artifactsCmd.command('list <ref>').description('List the artifacts attached to an issue')).action(
@@ -1386,9 +1406,16 @@ withCommon(
 			actorLabel(v.actor),
 			v.reaffirmed_from !== null
 				? `reaffirmed v${v.reaffirmed_from}`
-				: (v.filename ?? v.url ?? (v.pr_repo_url ? prRefLabel(v) : ''))
+				: v.file_count !== null
+					? `${v.file_count} file${v.file_count === 1 ? '' : 's'}`
+					: (v.filename ?? v.url ?? (v.pr_repo_url ? prRefLabel(v) : ''))
 		])
 	);
+	const files = artifact.current_version.files;
+	if (files && files.length > 0) {
+		console.log(`\nfiles (v${artifact.current_version.version}):`);
+		table(files.map((f) => [`  ${f.path}`, f.content_type, `${f.size_bytes} bytes`]));
+	}
 });
 
 withCommon(
@@ -1396,6 +1423,10 @@ withCommon(
 		.command('attach <ref> <name>')
 		.description('Attach content to a named artifact slot (creates it, or appends the next version)')
 		.option('-f, --file <path>', 'upload a file (MIME sniffed from the extension)')
+		.option(
+			'--folder <dir>',
+			'snapshot a directory tree as one version (collect locally, attach once; MIME per file sniffed)'
+		)
 		.option('-t, --text <md|@file>', 'inline text document: inline Markdown or @file')
 		.option('--url <url>', 'link: the URL to attach')
 		.option('--pr <spec>', 'PR reference: owner/repo#N or a GitHub PR URL')
@@ -1411,6 +1442,7 @@ withCommon(
 		name: string,
 		opts: CommonOpts & {
 			file?: string;
+			folder?: string;
 			text?: string;
 			url?: string;
 			pr?: string;
@@ -1421,13 +1453,26 @@ withCommon(
 		}
 	) => {
 		const api = client({ apiKey: opts.apiKey, json: opts.json });
-		const sources = [opts.file, opts.text, opts.url, opts.pr].filter((v) => v !== undefined);
+		const sources = [opts.file, opts.folder, opts.text, opts.url, opts.pr].filter((v) => v !== undefined);
 		if (sources.length !== 1) {
-			die('pass exactly one content source: --file <path>, --text <md|@file>, --url <url>, or --pr <spec>');
+			die(
+				'pass exactly one content source: --file <path>, --folder <dir>, --text <md|@file>, --url <url>, or --pr <spec>'
+			);
 		}
 		const issue = await resolveIssue(api, ref);
 		let artifact: Artifact;
-		if (opts.file !== undefined) {
+		if (opts.folder !== undefined) {
+			if (!existsSync(opts.folder) || !statSync(opts.folder).isDirectory()) {
+				die(`--folder needs a directory, got "${opts.folder}"`);
+			}
+			const files = walkFolder(opts.folder);
+			if (files.length === 0) die(`${opts.folder} contains no files to snapshot`);
+			artifact = await api.uploadArtifactFolder(issue.id, name, files);
+			// The folder endpoint has no description slot; set it alongside.
+			if (opts.description !== undefined) {
+				artifact = await api.putArtifact(issue.id, name, { description: opts.description });
+			}
+		} else if (opts.file !== undefined) {
 			let bytes: Buffer;
 			try {
 				bytes = readFileSync(opts.file);
@@ -1515,6 +1560,30 @@ withCommon(
 				artifact.artifact_type === 'link' ? version.url : `${version.pr_repo_url}/pull/${version.pr_number}`;
 			if (opts.json) return printJson({ url });
 			return console.log(url);
+		}
+		if (artifact.artifact_type === 'folder') {
+			// A folder writes its whole tree; a single stdout stream can't.
+			if (opts.out === undefined) {
+				die(`artifact "${name}" is a folder — pass --out <dir> to write its tree`);
+			}
+			if (existsSync(opts.out) && !statSync(opts.out).isDirectory()) {
+				die(`--out for a folder must be a directory, and "${opts.out}" is a file`);
+			}
+			const files = version.files ?? [];
+			let total = 0;
+			for (const file of files) {
+				const content = await api.getArtifactContent(issue.id, name, {
+					version: opts.version,
+					path: file.path
+				});
+				const target = join(opts.out, file.path);
+				mkdirSync(dirname(target), { recursive: true });
+				writeFileSync(target, Buffer.from(content.bytes));
+				total += content.bytes.byteLength;
+			}
+			return console.log(
+				`wrote ${files.length} file${files.length === 1 ? '' : 's'} (${total} bytes) from "${name}" v${version.version} into ${opts.out}/`
+			);
 		}
 		const content = await api.getArtifactContent(issue.id, name, { version: opts.version });
 		const bytes = Buffer.from(content.bytes);

@@ -11,6 +11,8 @@
  */
 import {
 	ARTIFACT_FILE_MAX_BYTES,
+	ARTIFACT_FOLDER_MAX_BYTES,
+	ARTIFACT_FOLDER_MAX_FILES,
 	ARTIFACT_MAX_VERSIONS,
 	ARTIFACT_NAME_PATTERN,
 	ARTIFACT_TEXT_MAX_BYTES,
@@ -24,10 +26,12 @@ import {
 	type ArtifactRequirementStatus,
 	type ArtifactType,
 	type ArtifactVersion,
+	type ArtifactVersionFile,
 	type UpsertArtifactRequest
 } from '@tines/shared';
 import type { CompiledQuery, Kysely } from 'kysely';
 import {
+	artifactFileKey,
 	artifactKey,
 	artifactKeyPrefix,
 	getArtifactStore
@@ -72,6 +76,7 @@ function requireArtifactType(value: unknown): ArtifactType {
  */
 const TYPE_FIELDS: Record<ArtifactType, readonly string[]> = {
 	file: [],
+	folder: [],
 	text: ['content', 'filename', 'content_type'],
 	link: ['url', 'title'],
 	pr: ['pr_url', 'pr_repo_url', 'pr_number']
@@ -113,6 +118,25 @@ function validateFilename(value: string, field = 'filename'): string {
 		);
 	}
 	return name;
+}
+
+/**
+ * Folder entry paths: the workspace-path rules (forward slashes, no dot
+ * segments, no `\` or `=`), plus no `"` — multipart filenames can't carry
+ * quotes reliably across implementations.
+ */
+function validateFolderPath(value: string): string {
+	const path = value.trim();
+	const fail = (why: string) =>
+		new ApiFail(422, 'invalid_path', `folder file path: ${why} (got "${path}")`, { path });
+	if (path.length === 0 || path.length > 500) throw fail('must be non-empty and at most 500 chars');
+	if (path.includes('\\')) throw fail('use forward slashes');
+	if (path.startsWith('/')) throw fail('paths must be relative (no leading "/")');
+	if (path.includes('=') || path.includes('"')) throw fail(`paths cannot contain "=" or '"'`);
+	const segments = path.split('/');
+	if (segments.some((s) => s === '')) throw fail('paths cannot have empty segments or trailing slashes');
+	if (segments.some((s) => s === '.' || s === '..')) throw fail('paths cannot contain "." or ".." segments');
+	return path;
 }
 
 function validateContentType(value: string, field = 'content_type'): string {
@@ -207,12 +231,18 @@ export function artifactTypeOf(config: string | null): ArtifactType {
 	return 'file';
 }
 
-function serializeVersion(row: VersionRow): ArtifactVersion {
-	return {
+type FileRow = Database['artifact_version_file'];
+
+/** Folder-version files keyed by version row id (empty for other types). */
+type FilesByVersion = Map<string, FileRow[]>;
+
+function serializeVersion(row: VersionRow, files: FileRow[] | undefined): ArtifactVersion {
+	const version: ArtifactVersion = {
 		version: row.version,
 		filename: row.filename,
 		content_type: row.content_type,
 		size_bytes: row.size_bytes === null ? null : Number(row.size_bytes),
+		file_count: files ? files.length : null,
 		url: row.url,
 		title: row.title,
 		pr_repo_url: row.pr_repo_url,
@@ -221,11 +251,26 @@ function serializeVersion(row: VersionRow): ArtifactVersion {
 		actor: actorOf({ ...row, actor_user_id: row.actor_user_id ?? '' }),
 		created_at: row.created_at
 	};
+	if (files) {
+		version.files = files.map(
+			(f): ArtifactVersionFile => ({
+				path: f.path,
+				content_type: f.content_type,
+				size_bytes: Number(f.size_bytes)
+			})
+		);
+	}
+	return version;
 }
 
-function serializeArtifact(item: ItemRow, versions: VersionRow[], issue: IssueRef): Artifact {
+function serializeArtifact(
+	item: ItemRow,
+	versions: VersionRow[],
+	filesByVersion: FilesByVersion,
+	issue: IssueRef
+): Artifact {
 	const current = versions[versions.length - 1];
-	const serialized = serializeVersion(current);
+	const serialized = serializeVersion(current, filesByVersion.get(current.id));
 	return {
 		id: item.id,
 		name: item.name,
@@ -240,29 +285,52 @@ function serializeArtifact(item: ItemRow, versions: VersionRow[], issue: IssueRe
 	};
 }
 
-async function loadVersions(db: Kysely<Database>, itemIds: string[]): Promise<Map<string, VersionRow[]>> {
-	const map = new Map<string, VersionRow[]>();
-	if (itemIds.length === 0) return map;
+async function loadVersions(
+	db: Kysely<Database>,
+	itemIds: string[]
+): Promise<{ byItem: Map<string, VersionRow[]>; filesByVersion: FilesByVersion }> {
+	const byItem = new Map<string, VersionRow[]>();
+	const filesByVersion: FilesByVersion = new Map();
+	if (itemIds.length === 0) return { byItem, filesByVersion };
 	const rows = await versionQuery(db)
 		.where('artifact_version.context_item_id', 'in', itemIds)
 		.orderBy('artifact_version.version asc')
 		.execute();
 	for (const row of rows) {
-		const list = map.get(row.context_item_id) ?? [];
+		const list = byItem.get(row.context_item_id) ?? [];
 		list.push(row);
-		map.set(row.context_item_id, list);
+		byItem.set(row.context_item_id, list);
 	}
-	return map;
+	if (rows.length > 0) {
+		const fileRows = await db
+			.selectFrom('artifact_version_file')
+			.selectAll()
+			.where('artifact_version_id', 'in', rows.map((r) => r.id))
+			.orderBy('path asc')
+			.execute();
+		for (const file of fileRows) {
+			const list = filesByVersion.get(file.artifact_version_id) ?? [];
+			list.push(file);
+			filesByVersion.set(file.artifact_version_id, list);
+		}
+	}
+	return { byItem, filesByVersion };
 }
 
 /** Every artifact on an issue, current-version summarized, `fresh` computed. */
 export async function listArtifacts(db: Kysely<Database>, userId: string, issueId: string): Promise<Artifact[]> {
 	const issue = await requireIssue(db, userId, issueId);
 	const items = await itemQuery(db, userId, issue.id).orderBy('created_at asc').orderBy('id asc').execute();
-	const versions = await loadVersions(db, items.map((i) => i.id));
+	const { byItem, filesByVersion } = await loadVersions(db, items.map((i) => i.id));
 	return items
-		.filter((i) => (versions.get(i.id) ?? []).length > 0)
-		.map((i) => serializeArtifact(i, versions.get(i.id)!, issue));
+		.filter((i) => (byItem.get(i.id) ?? []).length > 0)
+		.map((i) => serializeArtifact(i, byItem.get(i.id)!, filesByVersion, issue));
+}
+
+interface LoadedArtifact {
+	item: ItemRow;
+	versions: VersionRow[];
+	filesByVersion: FilesByVersion;
 }
 
 async function requireArtifact(
@@ -270,12 +338,13 @@ async function requireArtifact(
 	userId: string,
 	issue: IssueRef,
 	name: string
-): Promise<{ item: ItemRow; versions: VersionRow[] }> {
+): Promise<LoadedArtifact> {
 	const item = await itemQuery(db, userId, issue.id).where('name', '=', name).executeTakeFirst();
 	if (!item) throw notFound();
-	const versions = (await loadVersions(db, [item.id])).get(item.id) ?? [];
+	const { byItem, filesByVersion } = await loadVersions(db, [item.id]);
+	const versions = byItem.get(item.id) ?? [];
 	if (versions.length === 0) throw notFound();
-	return { item, versions };
+	return { item, versions, filesByVersion };
 }
 
 export async function getArtifactDetail(
@@ -285,8 +354,11 @@ export async function getArtifactDetail(
 	name: string
 ): Promise<ArtifactDetail> {
 	const issue = await requireIssue(db, userId, issueId);
-	const { item, versions } = await requireArtifact(db, userId, issue, name);
-	return { ...serializeArtifact(item, versions, issue), versions: versions.map(serializeVersion) };
+	const { item, versions, filesByVersion } = await requireArtifact(db, userId, issue, name);
+	return {
+		...serializeArtifact(item, versions, filesByVersion, issue),
+		versions: versions.map((v) => serializeVersion(v, filesByVersion.get(v.id)))
+	};
 }
 
 // ---------------------------------------------------------------------------
@@ -454,10 +526,34 @@ function assertVersionCap(versionCount: number, name: string): void {
 	}
 }
 
+/** A folder entry to write with a version (id/keys already assigned). */
+interface NewFileRow {
+	id: string;
+	path: string;
+	content_type: string;
+	size_bytes: number;
+	r2_key: string;
+}
+
+function fileRowInserts(
+	db: Kysely<Database>,
+	versionId: string,
+	fileRows: NewFileRow[]
+): CompiledQuery[] {
+	return fileRows.map((f) =>
+		db
+			.insertInto('artifact_version_file')
+			.values({ ...f, artifact_version_id: versionId })
+			.compile()
+	);
+}
+
 interface AppendInput {
 	item: ItemRow;
 	versions: VersionRow[];
 	payload: VersionPayload;
+	/** Folder versions: the snapshot's entries. */
+	fileRows?: NewFileRow[];
 	description?: string;
 	reaffirmedFrom?: number;
 }
@@ -487,6 +583,7 @@ function appendVersionQueries(
 		if (input.payload.filename) eventPayload.filename = input.payload.filename;
 		if (input.payload.size_bytes !== null) eventPayload.size_bytes = input.payload.size_bytes;
 	}
+	if (input.fileRows) eventPayload.file_count = input.fileRows.length;
 	const queries: CompiledQuery[] = [
 		db
 			.insertInto('artifact_version')
@@ -501,6 +598,7 @@ function appendVersionQueries(
 				created_at: now
 			})
 			.compile(),
+		...fileRowInserts(db, versionId, input.fileRows ?? []),
 		db
 			.updateTable('context_item')
 			.set({
@@ -524,7 +622,13 @@ function createArtifactQueries(
 	db: Kysely<Database>,
 	actor: ActorContext,
 	issue: IssueRef,
-	input: { name: string; type: ArtifactType; description: string; payload: VersionPayload },
+	input: {
+		name: string;
+		type: ArtifactType;
+		description: string;
+		payload: VersionPayload;
+		fileRows?: NewFileRow[];
+	},
 	itemId: string,
 	versionId: string,
 	now: number
@@ -565,6 +669,7 @@ function createArtifactQueries(
 				created_at: now
 			})
 			.compile(),
+		...fileRowInserts(db, versionId, input.fileRows ?? []),
 		eventInsert(db, actor, {
 			type: 'context.created',
 			issueId: issue.id,
@@ -577,6 +682,7 @@ function createArtifactQueries(
 				version: 1,
 				...(input.payload.filename ? { filename: input.payload.filename } : {}),
 				...(input.payload.size_bytes !== null ? { size_bytes: input.payload.size_bytes } : {}),
+				...(input.fileRows ? { file_count: input.fileRows.length } : {}),
 				scope: scopeEventPayload(issue)
 			}
 		})
@@ -588,11 +694,12 @@ async function loadCurrent(
 	userId: string,
 	issue: IssueRef,
 	name: string
-): Promise<{ item: ItemRow; versions: VersionRow[] } | null> {
+): Promise<LoadedArtifact | null> {
 	const item = await itemQuery(db, userId, issue.id).where('name', '=', name).executeTakeFirst();
 	if (!item) return null;
-	const versions = (await loadVersions(db, [item.id])).get(item.id) ?? [];
-	return versions.length > 0 ? { item, versions } : null;
+	const { byItem, filesByVersion } = await loadVersions(db, [item.id]);
+	const versions = byItem.get(item.id) ?? [];
+	return versions.length > 0 ? { item, versions, filesByVersion } : null;
 }
 
 function typeMismatch(name: string, existing: ArtifactType, requested: ArtifactType): ApiFail {
@@ -630,6 +737,14 @@ export async function upsertArtifact(
 				422,
 				'use_file_endpoint',
 				`File artifacts are created by uploading bytes: PUT …/artifacts/${name}/file?filename=… with the file as the request body`,
+				{ field: 'type' }
+			);
+		}
+		if (type === 'folder') {
+			throw new ApiFail(
+				422,
+				'use_folder_endpoint',
+				`Folder artifacts are created by uploading a snapshot: PUT …/artifacts/${name}/folder with one multipart part per file`,
 				{ field: 'type' }
 			);
 		}
@@ -696,6 +811,14 @@ export async function upsertArtifact(
 			422,
 			'use_file_endpoint',
 			`Artifact "${name}" is a file; attach a new version by uploading bytes: PUT …/artifacts/${name}/file?filename=…`,
+			{ existing_type: type }
+		);
+	}
+	if (type === 'folder') {
+		throw new ApiFail(
+			422,
+			'use_folder_endpoint',
+			`Artifact "${name}" is a folder; attach a new snapshot: PUT …/artifacts/${name}/folder with one multipart part per file`,
 			{ existing_type: type }
 		);
 	}
@@ -767,9 +890,122 @@ export async function uploadArtifactFile(
 	return getArtifact(db, actor.userId, issue, name);
 }
 
+export interface FolderUploadFile {
+	path: string;
+	contentType: string;
+	bytes: Uint8Array;
+}
+
+/**
+ * The multipart snapshot upload (`PUT …/artifacts/:name/folder`): every file
+ * of the new version in one request — a folder version is always born whole
+ * (the agent collects locally and attaches once; see the spec's Non-goals).
+ * Same object-then-batch write order as file uploads, pluralized.
+ */
+export async function uploadArtifactFolder(
+	db: Kysely<Database>,
+	env: Env,
+	actor: ActorContext,
+	issueId: string,
+	rawName: string,
+	files: FolderUploadFile[]
+): Promise<Artifact> {
+	const issue = await requireIssue(db, actor.userId, issueId);
+	const name = validateArtifactName(rawName);
+	if (files.length === 0) {
+		throw new ApiFail(422, 'invalid_field', 'A folder snapshot needs at least one file part', {
+			field: 'files'
+		});
+	}
+	if (files.length > ARTIFACT_FOLDER_MAX_FILES) {
+		throw new ApiFail(
+			422,
+			'artifact_too_large',
+			`A folder version can hold at most ${ARTIFACT_FOLDER_MAX_FILES} files (got ${files.length})`,
+			{ max_files: ARTIFACT_FOLDER_MAX_FILES, file_count: files.length }
+		);
+	}
+	const seen = new Set<string>();
+	let totalBytes = 0;
+	const entries = files.map((f) => {
+		const path = validateFolderPath(f.path);
+		if (seen.has(path)) {
+			throw new ApiFail(422, 'duplicate_path', `Folder file path "${path}" is listed more than once`, {
+				path
+			});
+		}
+		seen.add(path);
+		if (f.bytes.byteLength > ARTIFACT_FILE_MAX_BYTES) {
+			throw new ApiFail(
+				422,
+				'artifact_too_large',
+				`Folder file "${path}" is ${f.bytes.byteLength} bytes; each file can be at most ${ARTIFACT_FILE_MAX_BYTES}`,
+				{ path, max_bytes: ARTIFACT_FILE_MAX_BYTES, size_bytes: f.bytes.byteLength }
+			);
+		}
+		totalBytes += f.bytes.byteLength;
+		return { path, contentType: validateContentType(f.contentType), bytes: f.bytes };
+	});
+	if (totalBytes > ARTIFACT_FOLDER_MAX_BYTES) {
+		throw new ApiFail(
+			422,
+			'artifact_too_large',
+			`A folder version can total at most ${ARTIFACT_FOLDER_MAX_BYTES} bytes (got ${totalBytes})`,
+			{ max_bytes: ARTIFACT_FOLDER_MAX_BYTES, size_bytes: totalBytes }
+		);
+	}
+
+	const existing = await loadCurrent(db, actor.userId, issue, name);
+	if (existing && artifactTypeOf(existing.item.config) !== 'folder') {
+		throw typeMismatch(name, artifactTypeOf(existing.item.config), 'folder');
+	}
+	if (existing) assertVersionCap(existing.versions.length, name);
+
+	const itemId = existing?.item.id ?? newId('ctx');
+	const versionId = newId('av');
+	const now = Date.now();
+	const fileRows: NewFileRow[] = entries.map((entry) => {
+		const fileId = newId('avf');
+		return {
+			id: fileId,
+			path: entry.path,
+			content_type: entry.contentType,
+			size_bytes: entry.bytes.byteLength,
+			r2_key: artifactFileKey(actor.userId, itemId, versionId, fileId)
+		};
+	});
+	// Objects first, then the batch: a failure partway leaves invisible
+	// orphans, never a version row referencing missing objects.
+	const store = getArtifactStore(env);
+	for (const [i, row] of fileRows.entries()) {
+		await store.put(row.r2_key, entries[i].bytes);
+	}
+	const payload: VersionPayload = { ...emptyPayload, size_bytes: totalBytes };
+	const queries = existing
+		? appendVersionQueries(
+				db,
+				actor,
+				issue,
+				{ item: existing.item, versions: existing.versions, payload, fileRows },
+				versionId,
+				now
+			).queries
+		: createArtifactQueries(
+				db,
+				actor,
+				issue,
+				{ name, type: 'folder', description: '', payload, fileRows },
+				itemId,
+				versionId,
+				now
+			);
+	await runAtomic(env, queries);
+	return getArtifact(db, actor.userId, issue, name);
+}
+
 /**
  * Reaffirm: "this artifact still stands" — appends a version reusing the
- * current version's payload (same R2 object; no bytes move) with a fresh
+ * current version's payload (same R2 object(s); no bytes move) with a fresh
  * timestamp and the calling actor.
  */
 export async function reaffirmArtifact(
@@ -780,7 +1016,7 @@ export async function reaffirmArtifact(
 	name: string
 ): Promise<Artifact> {
 	const issue = await requireIssue(db, actor.userId, issueId);
-	const { item, versions } = await requireArtifact(db, actor.userId, issue, name);
+	const { item, versions, filesByVersion } = await requireArtifact(db, actor.userId, issue, name);
 	const current = versions[versions.length - 1];
 	const payload: VersionPayload = {
 		filename: current.filename,
@@ -793,11 +1029,28 @@ export async function reaffirmArtifact(
 		pr_repo_url: current.pr_repo_url,
 		pr_number: current.pr_number === null ? null : Number(current.pr_number)
 	};
+	// Folder reaffirms copy the file rows, referencing the same objects
+	// (safe: deletion is whole-artifact only, a prefix delete on the item).
+	const fileRows = (filesByVersion.get(current.id) ?? []).map(
+		(f): NewFileRow => ({
+			id: newId('avf'),
+			path: f.path,
+			content_type: f.content_type,
+			size_bytes: Number(f.size_bytes),
+			r2_key: f.r2_key
+		})
+	);
 	const { queries } = appendVersionQueries(
 		db,
 		actor,
 		issue,
-		{ item, versions, payload, reaffirmedFrom: current.version },
+		{
+			item,
+			versions,
+			payload,
+			...(fileRows.length > 0 ? { fileRows } : {}),
+			reaffirmedFrom: current.version
+		},
 		newId('av'),
 		Date.now()
 	);
@@ -806,8 +1059,8 @@ export async function reaffirmArtifact(
 }
 
 async function getArtifact(db: Kysely<Database>, userId: string, issue: IssueRef, name: string): Promise<Artifact> {
-	const { item, versions } = await requireArtifact(db, userId, issue, name);
-	return serializeArtifact(item, versions, issue);
+	const { item, versions, filesByVersion } = await requireArtifact(db, userId, issue, name);
+	return serializeArtifact(item, versions, filesByVersion, issue);
 }
 
 export async function deleteArtifact(
@@ -820,6 +1073,14 @@ export async function deleteArtifact(
 	const issue = await requireIssue(db, actor.userId, issueId);
 	const { item } = await requireArtifact(db, actor.userId, issue, name);
 	await runAtomic(env, [
+		db
+			.deleteFrom('artifact_version_file')
+			.where(
+				'artifact_version_id',
+				'in',
+				db.selectFrom('artifact_version').select('id').where('context_item_id', '=', item.id)
+			)
+			.compile(),
 		db.deleteFrom('artifact_version').where('context_item_id', '=', item.id).compile(),
 		db.deleteFrom('context_item').where('id', '=', item.id).compile(),
 		eventInsert(db, actor, {
@@ -862,10 +1123,10 @@ export async function artifactContentResponse(
 	userId: string,
 	issueId: string,
 	name: string,
-	opts: { version?: number; inline?: boolean } = {}
+	opts: { version?: number; inline?: boolean; path?: string } = {}
 ): Promise<Response> {
 	const issue = await requireIssue(db, userId, issueId);
-	const { item, versions } = await requireArtifact(db, userId, issue, name);
+	const { item, versions, filesByVersion } = await requireArtifact(db, userId, issue, name);
 	const type = artifactTypeOf(item.config);
 	const row =
 		opts.version === undefined ? versions[versions.length - 1] : versions.find((v) => v.version === opts.version);
@@ -880,16 +1141,41 @@ export async function artifactContentResponse(
 	}
 
 	let bytes: Uint8Array;
-	if (type === 'text') {
+	let contentType: string;
+	let filename: string;
+	if (type === 'folder') {
+		// Folder versions are addressed per file; without a path the 422
+		// lists the version's paths so an agent self-corrects in one round.
+		const files = filesByVersion.get(row.id) ?? [];
+		if (opts.path === undefined) {
+			throw new ApiFail(
+				422,
+				'folder_path_required',
+				`Artifact "${name}" is a folder — pick a file with ?path=… (v${row.version} has ${files.length}: ${files
+					.slice(0, 20)
+					.map((f) => f.path)
+					.join(', ')}${files.length > 20 ? ', …' : ''})`,
+				{ artifact_type: type, version: row.version, paths: files.map((f) => f.path) }
+			);
+		}
+		const file = files.find((f) => f.path === opts.path);
+		if (!file) throw notFound();
+		const object = await getArtifactStore(env).get(file.r2_key);
+		if (!object) throw notFound();
+		bytes = object;
+		contentType = file.content_type;
+		filename = sanitizeFilename(file.path.split('/').pop() ?? null, name);
+	} else if (type === 'text') {
 		bytes = new TextEncoder().encode(row.content ?? '');
+		contentType = row.content_type ?? 'application/octet-stream';
+		filename = sanitizeFilename(row.filename, name);
 	} else {
 		const object = row.r2_key ? await getArtifactStore(env).get(row.r2_key) : null;
 		if (!object) throw notFound();
 		bytes = object;
+		contentType = row.content_type ?? 'application/octet-stream';
+		filename = sanitizeFilename(row.filename, name);
 	}
-
-	const contentType = row.content_type ?? 'application/octet-stream';
-	const filename = sanitizeFilename(row.filename, name);
 	const inline = opts.inline === true && INLINE_ALLOWLIST.some((p) => contentType.startsWith(p));
 	const headers: Record<string, string> = {
 		'content-type': contentType,

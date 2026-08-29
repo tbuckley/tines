@@ -139,7 +139,7 @@ export function createApiClient(options: ApiClientOptions) {
 	async function raw(
 		method: string,
 		path: string,
-		opts: { body?: string | Uint8Array | ArrayBuffer; headers?: Record<string, string> } = {}
+		opts: { body?: string | Uint8Array | ArrayBuffer | FormData; headers?: Record<string, string> } = {}
 	): Promise<Response> {
 		const headers: Record<string, string> = { ...(opts.headers ?? {}) };
 		if (options.apiKey) headers.authorization = `Bearer ${options.apiKey}`;
@@ -285,12 +285,35 @@ export function createApiClient(options: ApiClientOptions) {
 			);
 			return (await res.json()) as Artifact;
 		},
+		/**
+		 * Multipart snapshot upload for `folder`: every file of the new version
+		 * in one request (path as the part filename, MIME as the part type).
+		 */
+		uploadArtifactFolder: async (
+			issueId: string,
+			name: string,
+			files: { path: string; contentType: string; bytes: Uint8Array | ArrayBuffer }[]
+		) => {
+			const form = new FormData();
+			for (const file of files) {
+				form.append('file', new Blob([file.bytes as ArrayBuffer], { type: file.contentType }), file.path);
+			}
+			const res = await raw('PUT', artifactPath(issueId, name, '/folder'), { body: form });
+			return (await res.json()) as Artifact;
+		},
 		/** Bless the current content as fresh: appends a reaffirming version. */
 		reaffirmArtifact: (issueId: string, name: string) =>
 			request<Artifact>('POST', artifactPath(issueId, name, '/reaffirm')),
-		/** Bytes of a version (default: current). link/pr have no content (422). */
-		getArtifactContent: async (issueId: string, name: string, opts: { version?: number } = {}) => {
-			const query = opts.version !== undefined ? `?version=${opts.version}` : '';
+		/** Bytes of a version (default: current; `path` selects a folder entry). */
+		getArtifactContent: async (
+			issueId: string,
+			name: string,
+			opts: { version?: number; path?: string } = {}
+		) => {
+			const params = new URLSearchParams();
+			if (opts.version !== undefined) params.set('version', String(opts.version));
+			if (opts.path !== undefined) params.set('path', opts.path);
+			const query = params.toString() ? `?${params.toString()}` : '';
 			const res = await raw('GET', artifactPath(issueId, name, `/content${query}`));
 			const disposition = res.headers.get('content-disposition') ?? '';
 			const filenameMatch = disposition.match(/filename="((?:[^"\\]|\\.)*)"/);

@@ -15,6 +15,7 @@ export const GET: RequestHandler = api(async (event) => {
 	}
 	return artifactContentResponse(db, env, actor.userId, event.params.id, event.params.name, {
 		version,
-		inline: ['1', 'true'].includes(event.url.searchParams.get('inline') ?? '')
+		inline: ['1', 'true'].includes(event.url.searchParams.get('inline') ?? ''),
+		path: event.url.searchParams.get('path') ?? undefined
 	});
 });

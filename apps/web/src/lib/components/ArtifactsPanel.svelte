@@ -1,24 +1,23 @@
 <script lang="ts">
-	import type { AllowedTransition, Artifact, ArtifactType, ArtifactVersion } from '@tines/shared';
+	import type { AllowedTransition, Artifact, ArtifactType } from '@tines/shared';
 	import { ApiError, ARTIFACT_NAME_PATTERN, parsePrSpec } from '@tines/shared';
 	import IconCheck from '@tabler/icons-svelte/icons/check';
-	import IconDownload from '@tabler/icons-svelte/icons/download';
 	import IconExternalLink from '@tabler/icons-svelte/icons/external-link';
+	import IconEye from '@tabler/icons-svelte/icons/eye';
 	import IconFile from '@tabler/icons-svelte/icons/file';
 	import IconFileText from '@tabler/icons-svelte/icons/file-text';
+	import IconFolder from '@tabler/icons-svelte/icons/folder';
 	import IconGitPullRequest from '@tabler/icons-svelte/icons/git-pull-request';
-	import IconHistory from '@tabler/icons-svelte/icons/history';
 	import IconLink from '@tabler/icons-svelte/icons/link';
 	import IconPlus from '@tabler/icons-svelte/icons/plus';
 	import IconRefresh from '@tabler/icons-svelte/icons/refresh';
 	import IconTrash from '@tabler/icons-svelte/icons/trash';
 	import { slide } from 'svelte/transition';
 	import { api } from '$lib/api';
-	import Markdown from '$lib/components/Markdown.svelte';
+	import ArtifactViewerDialog from '$lib/components/ArtifactViewerDialog.svelte';
 	import Modal from '$lib/components/Modal.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
-	import { Select } from '$lib/components/ui/select/index.js';
 	import { Textarea } from '$lib/components/ui/textarea/index.js';
 	import { actorLabel, prefersReducedMotion, relativeTime } from '$lib/format';
 
@@ -41,6 +40,7 @@
 
 	const typeIcons = {
 		file: IconFile,
+		folder: IconFolder,
 		text: IconFileText,
 		link: IconLink,
 		pr: IconGitPullRequest
@@ -52,67 +52,52 @@
 		new Set(allowedTransitions.flatMap((t) => (t.requires ?? []).map((r) => r.artifact)))
 	);
 
-	const contentUrl = (name: string, opts: { version?: number; inline?: boolean } = {}) => {
-		const params = new URLSearchParams();
-		if (opts.version !== undefined) params.set('version', String(opts.version));
-		if (opts.inline) params.set('inline', '1');
-		const q = params.toString();
-		return `/api/v1/issues/${issueId}/artifacts/${encodeURIComponent(name)}/content${q ? `?${q}` : ''}`;
+	const contentUrl = (name: string, opts: { path?: string } = {}) => {
+		const params = new URLSearchParams({ inline: '1' });
+		if (opts.path !== undefined) params.set('path', opts.path);
+		return `/api/v1/issues/${issueId}/artifacts/${encodeURIComponent(name)}/content?${params.toString()}`;
 	};
 
-	const prUrl = (v: Pick<ArtifactVersion, 'pr_repo_url' | 'pr_number'>) =>
-		`${v.pr_repo_url}/pull/${v.pr_number}`;
-	const prRef = (v: Pick<ArtifactVersion, 'pr_repo_url' | 'pr_number'>) =>
-		`${(v.pr_repo_url ?? '').replace(/^https:\/\/github\.com\//, '')}#${v.pr_number}`;
+	const prUrl = (a: Artifact) => `${a.current_version.pr_repo_url}/pull/${a.current_version.pr_number}`;
+	const prRef = (a: Artifact) =>
+		`${(a.current_version.pr_repo_url ?? '').replace(/^https:\/\/github\.com\//, '')}#${a.current_version.pr_number}`;
 
-	// --- previews ---------------------------------------------------------------
-
-	let openPreview = $state<string | null>(null);
-	/** Fetched text contents per artifact id (Markdown/plain-text previews). */
-	let textPreviews = $state<Record<string, string>>({});
-
-	function previewKind(a: Artifact): 'image' | 'markdown' | 'text' | 'download' {
-		const ct = a.current_version.content_type ?? '';
-		if (ct.startsWith('image/')) return 'image';
-		if (ct === 'text/markdown') return 'markdown';
-		if (ct.startsWith('text/')) return 'text';
-		return 'download';
+	/** Rows stay one line tall; the one inline survivor is the image
+	 * thumbnail — the genuinely glanceable case. */
+	function thumbnails(a: Artifact): { path?: string }[] {
+		if (a.artifact_type === 'file' && (a.current_version.content_type ?? '').startsWith('image/')) {
+			return [{}];
+		}
+		if (a.artifact_type === 'folder') {
+			return (a.current_version.files ?? [])
+				.filter((f) => f.content_type.startsWith('image/'))
+				.slice(0, 3)
+				.map((f) => ({ path: f.path }));
+		}
+		return [];
 	}
 
-	async function togglePreview(a: Artifact) {
-		if (openPreview === a.id) {
-			openPreview = null;
-			return;
-		}
-		openPreview = a.id;
-		const kind = previewKind(a);
-		if ((kind === 'markdown' || kind === 'text') && textPreviews[a.id] === undefined) {
-			try {
-				const content = await api.getArtifactContent(issueId, a.name);
-				textPreviews = { ...textPreviews, [a.id]: new TextDecoder().decode(content.bytes) };
-			} catch (e) {
-				onerror(e);
-			}
+	function summaryLabel(a: Artifact): string | null {
+		const cv = a.current_version;
+		switch (a.artifact_type) {
+			case 'file':
+			case 'text':
+				return cv.filename;
+			case 'folder':
+				return `${cv.file_count} file${cv.file_count === 1 ? '' : 's'}`;
+			default:
+				return null;
 		}
 	}
 
-	// --- history ----------------------------------------------------------------
+	// --- viewer -----------------------------------------------------------------
 
-	let openHistory = $state<string | null>(null);
-	let histories = $state<Record<string, ArtifactVersion[]>>({});
+	let viewerOpen = $state(false);
+	let viewerName = $state<string | null>(null);
 
-	async function toggleHistory(a: Artifact) {
-		if (openHistory === a.id) {
-			openHistory = null;
-			return;
-		}
-		openHistory = a.id;
-		try {
-			const detail = await api.getArtifact(issueId, a.name);
-			histories = { ...histories, [a.id]: [...detail.versions].reverse() };
-		} catch (e) {
-			onerror(e);
-		}
+	function openViewer(a: Artifact) {
+		viewerName = a.name;
+		viewerOpen = true;
 	}
 
 	// --- mutations ----------------------------------------------------------------
@@ -124,7 +109,6 @@
 		busy = true;
 		try {
 			await api.reaffirmArtifact(issueId, a.name);
-			histories = {};
 			await onchanged();
 		} catch (e) {
 			onerror(e);
@@ -157,6 +141,7 @@
 	let attachType = $state<ArtifactType>('file');
 	let attachDescription = $state('');
 	let attachFile = $state<File | null>(null);
+	let attachFolderFiles = $state<File[]>([]);
 	let attachText = $state('');
 	let attachUrl = $state('');
 	let attachTitle = $state('');
@@ -171,6 +156,7 @@
 		attachType = existing?.artifact_type ?? 'file';
 		attachDescription = existing?.description ?? '';
 		attachFile = null;
+		attachFolderFiles = [];
 		attachText = '';
 		attachUrl = existing?.artifact_type === 'link' ? (existing.current_version.url ?? '') : '';
 		attachTitle = '';
@@ -184,6 +170,8 @@
 		switch (attachType) {
 			case 'file':
 				return attachFile !== null;
+			case 'folder':
+				return attachFolderFiles.length > 0;
 			case 'text':
 				return attachText.trim().length > 0;
 			case 'link':
@@ -192,6 +180,19 @@
 				return parsePrSpec(attachPr) !== null;
 		}
 	});
+
+	/**
+	 * Snapshot paths from a directory pick: webkitRelativePath includes the
+	 * picked folder itself as the first segment — strip it when every file
+	 * shares it, so paths are folder-relative. Plain multi-file drops carry
+	 * no relative path and land flat under their names.
+	 */
+	function folderEntryPath(file: File): string {
+		const rel = file.webkitRelativePath;
+		if (!rel) return file.name;
+		const cut = rel.indexOf('/');
+		return cut > 0 ? rel.slice(cut + 1) : rel;
+	}
 
 	async function submitAttach(e: SubmitEvent) {
 		e.preventDefault();
@@ -206,6 +207,18 @@
 					filename: file.name,
 					contentType: file.type || 'application/octet-stream'
 				});
+				if (description !== undefined) {
+					await api.putArtifact(issueId, attachName, { description });
+				}
+			} else if (attachType === 'folder') {
+				const files = await Promise.all(
+					attachFolderFiles.map(async (file) => ({
+						path: folderEntryPath(file),
+						contentType: file.type || 'application/octet-stream',
+						bytes: await file.arrayBuffer()
+					}))
+				);
+				await api.uploadArtifactFolder(issueId, attachName, files);
 				if (description !== undefined) {
 					await api.putArtifact(issueId, attachName, { description });
 				}
@@ -228,8 +241,6 @@
 				});
 			}
 			attachOpen = false;
-			histories = {};
-			textPreviews = {};
 			await onchanged();
 		} catch (err) {
 			attachError = err instanceof ApiError ? err.message : 'Something went wrong — try again.';
@@ -254,8 +265,8 @@
 	<div class="p-4">
 		{#if artifacts.length === 0}
 			<p class="text-muted-foreground rounded-lg border border-dashed p-6 text-center text-sm">
-				No artifacts attached — attach the work products this issue produces (documents, screenshots,
-				links, PRs). Workflow transitions can require them.
+				No artifacts attached — attach the work products this issue produces (documents, screenshot
+				folders, links, PRs). Workflow transitions can require them.
 			</p>
 		{:else}
 			<ul class="divide-y rounded-lg border">
@@ -263,188 +274,129 @@
 					{@const TypeIcon = typeIcons[artifact.artifact_type]}
 					{@const stale = !artifact.fresh && requiredSlots.has(artifact.name)}
 					{@const cv = artifact.current_version}
-					<li class="px-3 py-2.5" transition:slide={{ duration: dur() }}>
-						<div class="flex items-center gap-3">
-							<span class="text-muted-foreground shrink-0" title={artifact.artifact_type}>
-								<TypeIcon size={16} stroke={1.75} />
-							</span>
-							<div class="min-w-0 flex-1">
-								<div class="flex flex-wrap items-center gap-2 text-sm">
-									<span class="font-medium">{artifact.name}</span>
-									{#if stale}
-										<span
-											class="rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[11px] font-medium text-amber-700 dark:text-amber-400"
-											title="The current version predates this state — a transition requiring this artifact is blocked until a new version is attached or it is reaffirmed"
-										>
-											stale
-										</span>
-									{/if}
-									{#if artifact.artifact_type === 'link'}
-										<a
-											href={cv.url}
-											target="_blank"
-											rel="noreferrer noopener"
-											class="text-muted-foreground hover:text-foreground inline-flex min-w-0 items-center gap-1 truncate text-xs"
-										>
-											<IconExternalLink size={12} />
-											{cv.title ?? cv.url}
-										</a>
-									{:else if artifact.artifact_type === 'pr'}
-										<a
-											href={prUrl(cv)}
-											target="_blank"
-											rel="noreferrer noopener"
-											class="text-muted-foreground hover:text-foreground inline-flex items-center gap-1 text-xs"
-										>
-											<IconExternalLink size={12} />
-											{prRef(cv)}
-										</a>
-									{:else}
-										<button
-											type="button"
-											class="text-muted-foreground hover:text-foreground truncate text-xs hover:underline"
-											onclick={() => togglePreview(artifact)}
-										>
-											{cv.filename}
-										</button>
-									{/if}
-								</div>
-								{#if artifact.description}
-									<p class="text-muted-foreground truncate text-xs">{artifact.description}</p>
-								{/if}
-								<p class="text-muted-foreground text-xs">
-									v{cv.version}
-									{#if cv.reaffirmed_from !== null}
-										(reaffirmed v{cv.reaffirmed_from})
-									{/if}
-									· {actorLabel(cv.actor)} ·
-									<span title={new Date(cv.created_at).toLocaleString()}>{relativeTime(cv.created_at)}</span>
-								</p>
-							</div>
-							<div class="flex shrink-0 items-center gap-1">
-								{#if stale}
-									<Button
-										size="sm"
-										variant="outline"
-										disabled={busy}
-										onclick={() => reaffirm(artifact)}
-										title="This still stands — bless the current content as fresh"
-									>
-										<IconCheck size={14} /> Reaffirm
-									</Button>
-								{/if}
-								<Button
-									size="icon"
-									variant="ghost"
-									class="text-muted-foreground size-8"
-									onclick={() => openAttach(artifact)}
-									aria-label={`Attach a new version of ${artifact.name}`}
-									title="Attach a new version"
-								>
-									<IconRefresh size={15} />
-								</Button>
-								<Button
-									size="icon"
-									variant="ghost"
-									class="text-muted-foreground size-8"
-									onclick={() => toggleHistory(artifact)}
-									aria-label={`Version history of ${artifact.name}`}
-									title="Version history"
-								>
-									<IconHistory size={15} />
-								</Button>
-								<Button
-									size="icon"
-									variant="ghost"
-									class="text-muted-foreground hover:text-destructive size-8"
-									disabled={busy}
-									onclick={() => remove(artifact)}
-									aria-label={`Delete ${artifact.name}`}
-									title="Delete (all versions)"
-								>
-									<IconTrash size={15} />
-								</Button>
-							</div>
-						</div>
-
-						{#if openPreview === artifact.id && (artifact.artifact_type === 'file' || artifact.artifact_type === 'text')}
-							<div class="mt-2 rounded-md border p-3" transition:slide={{ duration: dur() }}>
-								{#if previewKind(artifact) === 'image'}
+					{@const thumbs = thumbnails(artifact)}
+					<li class="flex items-center gap-3 px-3 py-2.5" transition:slide={{ duration: dur() }}>
+						<span class="text-muted-foreground shrink-0" title={artifact.artifact_type}>
+							<TypeIcon size={16} stroke={1.75} />
+						</span>
+						{#if thumbs.length > 0}
+							<button
+								type="button"
+								class="flex shrink-0 gap-1"
+								onclick={() => openViewer(artifact)}
+								aria-label={`View ${artifact.name}`}
+							>
+								{#each thumbs as thumb (thumb.path ?? '')}
 									<img
-										src={contentUrl(artifact.name, { inline: true })}
-										alt={cv.filename ?? artifact.name}
-										class="max-h-96 rounded"
+										src={contentUrl(artifact.name, { path: thumb.path })}
+										alt={thumb.path ?? artifact.name}
+										loading="lazy"
+										class="h-10 w-10 rounded border object-cover"
 									/>
-								{:else if previewKind(artifact) === 'markdown'}
-									{#if textPreviews[artifact.id] !== undefined}
-										<Markdown source={textPreviews[artifact.id]} class="text-sm" />
-									{:else}
-										<p class="text-muted-foreground text-xs">Loading…</p>
-									{/if}
-								{:else if previewKind(artifact) === 'text'}
-									{#if textPreviews[artifact.id] !== undefined}
-										<pre class="max-h-96 overflow-auto text-xs">{textPreviews[artifact.id]}</pre>
-									{:else}
-										<p class="text-muted-foreground text-xs">Loading…</p>
-									{/if}
-								{:else}
+								{/each}
+							</button>
+						{/if}
+						<div class="min-w-0 flex-1">
+							<div class="flex flex-wrap items-center gap-2 text-sm">
+								<button type="button" class="font-medium hover:underline" onclick={() => openViewer(artifact)}>
+									{artifact.name}
+								</button>
+								{#if stale}
+									<span
+										class="rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[11px] font-medium text-amber-700 dark:text-amber-400"
+										title="The current version predates this state — a transition requiring this artifact is blocked until a new version is attached or it is reaffirmed"
+									>
+										stale
+									</span>
+								{/if}
+								{#if artifact.artifact_type === 'link'}
 									<a
-										href={contentUrl(artifact.name)}
+										href={cv.url}
+										target="_blank"
+										rel="noreferrer noopener"
+										class="text-muted-foreground hover:text-foreground inline-flex min-w-0 items-center gap-1 truncate text-xs"
+									>
+										<IconExternalLink size={12} />
+										{cv.title ?? cv.url}
+									</a>
+								{:else if artifact.artifact_type === 'pr'}
+									<a
+										href={prUrl(artifact)}
+										target="_blank"
+										rel="noreferrer noopener"
 										class="text-muted-foreground hover:text-foreground inline-flex items-center gap-1 text-xs"
 									>
-										<IconDownload size={13} />
-										Download {cv.filename} ({cv.content_type})
+										<IconExternalLink size={12} />
+										{prRef(artifact)}
 									</a>
+								{:else if summaryLabel(artifact)}
+									<span class="text-muted-foreground truncate text-xs">{summaryLabel(artifact)}</span>
 								{/if}
 							</div>
-						{/if}
-
-						{#if openHistory === artifact.id}
-							<div class="mt-2 rounded-md border" transition:slide={{ duration: dur() }}>
-								{#if histories[artifact.id]}
-									<ul class="divide-y">
-										{#each histories[artifact.id] as v (v.version)}
-											<li class="text-muted-foreground flex items-center gap-2 px-3 py-1.5 text-xs">
-												<span class="text-foreground font-medium">v{v.version}</span>
-												{#if v.reaffirmed_from !== null}
-													<span>reaffirmed v{v.reaffirmed_from}</span>
-												{/if}
-												<span class="min-w-0 truncate">{actorLabel(v.actor)}</span>
-												<span title={new Date(v.created_at).toLocaleString()}>{relativeTime(v.created_at)}</span>
-												<span class="ml-auto flex items-center gap-2">
-													{#if artifact.artifact_type === 'file' || artifact.artifact_type === 'text'}
-														<a
-															href={contentUrl(artifact.name, { version: v.version })}
-															class="hover:text-foreground inline-flex items-center gap-1"
-															title={`Download v${v.version}`}
-														>
-															<IconDownload size={12} />
-															{v.filename}
-														</a>
-													{:else if artifact.artifact_type === 'link'}
-														<a href={v.url} target="_blank" rel="noreferrer noopener" class="hover:text-foreground truncate">
-															{v.url}
-														</a>
-													{:else}
-														<a href={prUrl(v)} target="_blank" rel="noreferrer noopener" class="hover:text-foreground">
-															{prRef(v)}
-														</a>
-													{/if}
-												</span>
-											</li>
-										{/each}
-									</ul>
-								{:else}
-									<p class="text-muted-foreground px-3 py-2 text-xs">Loading…</p>
+							{#if artifact.description}
+								<p class="text-muted-foreground truncate text-xs">{artifact.description}</p>
+							{/if}
+							<p class="text-muted-foreground text-xs">
+								v{cv.version}
+								{#if cv.reaffirmed_from !== null}
+									(reaffirmed v{cv.reaffirmed_from})
 								{/if}
-							</div>
-						{/if}
+								· {actorLabel(cv.actor)} ·
+								<span title={new Date(cv.created_at).toLocaleString()}>{relativeTime(cv.created_at)}</span>
+							</p>
+						</div>
+						<div class="flex shrink-0 items-center gap-1">
+							{#if stale}
+								<Button
+									size="sm"
+									variant="outline"
+									disabled={busy}
+									onclick={() => reaffirm(artifact)}
+									title="This still stands — bless the current content as fresh"
+								>
+									<IconCheck size={14} /> Reaffirm
+								</Button>
+							{/if}
+							<Button
+								size="icon"
+								variant="ghost"
+								class="text-muted-foreground size-8"
+								onclick={() => openViewer(artifact)}
+								aria-label={`View ${artifact.name} (content and version history)`}
+								title="View content and history"
+							>
+								<IconEye size={15} />
+							</Button>
+							<Button
+								size="icon"
+								variant="ghost"
+								class="text-muted-foreground size-8"
+								onclick={() => openAttach(artifact)}
+								aria-label={`Attach a new version of ${artifact.name}`}
+								title="Attach a new version"
+							>
+								<IconRefresh size={15} />
+							</Button>
+							<Button
+								size="icon"
+								variant="ghost"
+								class="text-muted-foreground hover:text-destructive size-8"
+								disabled={busy}
+								onclick={() => remove(artifact)}
+								aria-label={`Delete ${artifact.name}`}
+								title="Delete (all versions)"
+							>
+								<IconTrash size={15} />
+							</Button>
+						</div>
 					</li>
 				{/each}
 			</ul>
 		{/if}
 	</div>
 </section>
+
+<ArtifactViewerDialog {issueId} {artifacts} bind:open={viewerOpen} bind:selectedName={viewerName} />
 
 <Modal
 	open={attachOpen}
@@ -464,7 +416,7 @@
 			<div class="space-y-1.5">
 				<span class="text-sm font-medium">Type</span>
 				<div class="flex flex-wrap gap-1.5">
-					{#each ['file', 'text', 'link', 'pr'] as const as t (t)}
+					{#each ['file', 'folder', 'text', 'link', 'pr'] as const as t (t)}
 						{@const TypeIcon = typeIcons[t]}
 						<label
 							class="flex cursor-pointer items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-sm {attachType === t
@@ -510,6 +462,47 @@
 						type="file"
 						class="sr-only"
 						onchange={(e) => (attachFile = e.currentTarget.files?.[0] ?? null)}
+					/>
+				</label>
+			</div>
+		{:else if attachType === 'folder'}
+			<div
+				class="rounded-md border border-dashed p-4 text-center text-sm {dragOver ? 'bg-muted/50' : ''}"
+				role="group"
+				aria-label="Folder drop zone"
+				ondragover={(e) => {
+					e.preventDefault();
+					dragOver = true;
+				}}
+				ondragleave={() => (dragOver = false)}
+				ondrop={(e) => {
+					e.preventDefault();
+					dragOver = false;
+					const dropped = [...(e.dataTransfer?.files ?? [])];
+					if (dropped.length > 0) attachFolderFiles = dropped;
+				}}
+			>
+				{#if attachFolderFiles.length > 0}
+					<p class="font-medium">
+						{attachFolderFiles.length} file{attachFolderFiles.length === 1 ? '' : 's'} ·
+						{attachFolderFiles.reduce((n, f) => n + f.size, 0).toLocaleString()} bytes
+					</p>
+					<p class="text-muted-foreground max-h-24 overflow-y-auto text-xs">
+						{attachFolderFiles.map(folderEntryPath).join(', ')}
+					</p>
+				{:else}
+					<p class="text-muted-foreground">
+						Drop files here (uploaded as one whole snapshot — the new version), or
+					</p>
+				{/if}
+				<label class="mt-2 inline-block cursor-pointer text-sm underline">
+					{attachFolderFiles.length > 0 ? 'pick a different folder' : 'pick a folder'}
+					<input
+						type="file"
+						class="sr-only"
+						webkitdirectory
+						multiple
+						onchange={(e) => (attachFolderFiles = [...(e.currentTarget.files ?? [])])}
 					/>
 				</label>
 			</div>

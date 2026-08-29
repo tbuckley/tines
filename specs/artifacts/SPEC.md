@@ -22,7 +22,9 @@ exist (in the launch prompt's issue block) and fetch content on demand.
 ## Goals
 
 - Attach typed artifacts to issues: uploaded **files** (including images),
-  inline **text** documents, **links**, and **PR** references.
+  inline **text** documents, **links**, **PR** references, and **folders** —
+  multi-file trees uploaded as one snapshot (a set of screenshots, a rendered
+  report with its assets).
 - Keep an immutable **version history** per artifact — attaching "a new design
   doc" is a new version of the same named artifact, and the pre-redesign
   version remains inspectable.
@@ -41,9 +43,15 @@ exist (in the launch prompt's issue block) and fetch content on demand.
 
 ## Non-goals
 
-- **Folder / multi-file artifacts**: deferred. A bundle need is N file
-  artifacts or one zip for now; a `folder` type can be added later as one more
-  artifact type (the type set is open-ended the same way context kinds are).
+- **Incremental folder writes**: a folder version is always uploaded whole
+  (one snapshot per version). Per-file add/replace endpoints that derive a
+  new version from the current set were considered and rejected — they
+  reintroduce a mutable in-between state, and "adding one file blesses the
+  stale rest" muddies freshness. Agents collect locally and attach once.
+- **Server-side archive handling**: no zip upload/explode; the folder upload
+  is one multipart request with the files as parts.
+- **Server-side thumbnailing**: image previews load the original bytes
+  (lazily); screenshots are small enough. Revisit if originals outgrow it.
 - **PR status integration**: a `pr` artifact stores the reference only. No
   fetching of open/merged/CI state (that would use the stored GitHub PAT and
   can layer on later); no gate on "PR is merged".
@@ -74,10 +82,11 @@ Context tab listing without new machinery. Constraints specific to the kind:
   because the name is the requirement-matching key and appears in CLI
   commands. Unique per issue among artifacts (the existing
   name-per-kind-per-exact-scope rule).
-- **Artifact type**: `file`, `text`, `link`, or `pr` — stored in the item's
-  JSON `config` column (this kind introduces the `config` column the context
-  spec reserved). The type is immutable after creation, like `kind` itself:
-  a slot named `design-doc` doesn't change species between versions.
+- **Artifact type**: `file`, `text`, `link`, `pr`, or `folder` — stored in
+  the item's JSON `config` column (this kind introduces the `config` column
+  the context spec reserved). The type is immutable after creation, like
+  `kind` itself: a slot named `design-doc` doesn't change species between
+  versions.
 - **Description**: the usual optional one-liner; shown in lists and in the
   launch prompt's artifact listing.
 
@@ -117,6 +126,25 @@ Per-type version payloads:
 - **`pr`** — a repository URL (canonicalized like `github_repository` session
   resources: `https://github.com/{owner}/{repo}`) plus a PR number. The API
   also accepts a full PR URL (`…/pull/123`) and splits it.
+- **`folder`** — a multi-file tree uploaded as **one immutable snapshot**:
+  the version row plus one child row per file (`path`, declared
+  `content_type`, `size_bytes`, R2 key), sharing the version's single
+  `created_at`. Mixed file types and subfolders are supported; paths follow
+  the workspace-path rules (forward slashes, no `.`/`..`, no `\` or `=`;
+  additionally no `"`, which multipart filenames can't carry reliably).
+  Caps: **200 files** and **50 MB total** per version (per-part bytes also
+  bounded by the 25 MB file cap) — the totals keep the buffered multipart
+  parse well inside Worker memory; streaming/presigned uploads are the
+  revisit trigger for raising them. A new snapshot is the only way to change
+  the set — see Non-goals.
+
+  Folders exist for bundle-shaped work products, and for evidence gated by a
+  workflow that is **generic over issues**: a transition can require the
+  conventional slot `screenshots` while each issue's set contains whatever
+  surfaces that feature has. The rule of thumb (agents get it in the attach
+  errors and docs): does a reviewer care how one file evolves across rounds,
+  and is it produced incrementally? Then use sibling `file` artifacts. Is
+  the set consumed whole and produced whole? Folder.
 
 A version-adding write emits `context.updated` with a summary payload
 (`{version, artifact_type, filename?, size_bytes?}`) — no new event types.
@@ -125,7 +153,8 @@ fields) does **not** create a version and does not refresh freshness.
 
 **Reaffirming.** "This artifact still stands" is a first-class action: a
 reaffirm appends a new version that **reuses the previous current version's
-payload** — same content, same R2 object, no bytes move. It is a real version
+payload** — same content, same R2 object(s) (a folder reaffirm copies the
+file rows, referencing the same objects), no bytes move. It is a real version
 row (new `created_at`, the reaffirming actor, `reaffirmed_from` pointing at
 the source version number), so freshness stays one rule, the actor trail
 shows who blessed the content and when, and history reads "v3 — reaffirmed
@@ -142,7 +171,10 @@ suggesting deletion of the artifact if the history is truly disposable).
 
 **An artifact version is *fresh* iff `version.created_at ≥
 issue.state_entered_at`** — the moment the issue last entered its current
-state. Nothing is mutated on transition; staleness is derived. Consequences:
+state. Nothing is mutated on transition; staleness is derived. For folders
+the granularity is the **set**: a version is one snapshot with one
+timestamp, so "fresh" means "this round produced (or reaffirmed) this set"
+— there is no per-file freshness, by construction. Consequences:
 
 - First pass through *design*: attach the doc while in *design* → fresh →
   the gated transition passes.
@@ -190,7 +222,10 @@ per-row identity and are edited wholesale with the workflow definition):
 - `type`, when set, must equal the artifact's type.
 - `content_type`, when set, prefix-matches the **current version's** declared
   content type (`"image/"` matches any image; only meaningful with
-  type `file` or `text` — 422 at definition time otherwise).
+  type `file` or `text` — 422 at definition time otherwise, `folder`
+  included: with mixed-type trees there is no honest all-files/any-file
+  semantics, so a folder requirement asserts the slot and its type only;
+  what belongs inside is prose for the stage instructions).
 - `description` is human/agent-facing: shown in the workflow editor, the
   transition UI, the launch prompt, and the unmet-requirement error.
 
@@ -268,6 +303,8 @@ The issue block gains an **Artifacts** section between *Comments* and
 
 - **design-doc** (file, text/markdown, v3, fresh) — The approved design document
   Fetch: `tines issues artifacts get <project>/<number> design-doc --out .`
+- **screenshots** (folder, 4 files, v2, fresh) — This round's UI evidence
+  Fetch: `tines issues artifacts get <project>/<number> screenshots --out .`
 - **feature-screenshot** (file, image/png, v1, attached before current state)
 - **impl-pr** (pr) — https://github.com/acme/app/pull/123
 
@@ -321,6 +358,13 @@ artifact_version      id            TEXT PK      -- av_…
                       created_at    INTEGER NOT NULL
                       -- index on (context_item_id, version DESC) for current-version reads
 
+artifact_version_file id            TEXT PK      -- avf_…; folder versions only
+                      artifact_version_id TEXT NOT NULL REFERENCES artifact_version(id) ON DELETE CASCADE
+                      path          TEXT NOT NULL -- workspace-relative, UNIQUE(artifact_version_id, path)
+                      content_type  TEXT NOT NULL -- declared MIME
+                      size_bytes    INTEGER NOT NULL
+                      r2_key        TEXT NOT NULL -- opaque, never exposed
+
 workflow_transition   + requirements TEXT        -- JSON array; NULL = none
 
 issue                 + state_entered_at INTEGER -- stamped on every state_id change;
@@ -328,7 +372,8 @@ issue                 + state_entered_at INTEGER -- stamped on every state_id ch
 ```
 
 Migration `0011_issue_artifacts.sql`: three `ALTER TABLE ADD COLUMN`s, one
-`CREATE TABLE`, one backfill `UPDATE` — all plain SQL executable by
+`CREATE TABLE`, one backfill `UPDATE`; `0012_artifact_folders.sql` adds the
+`artifact_version_file` table — all plain SQL executable by
 `node:sqlite`, so the unit-test harness picks it up automatically. Per-type
 payload validation is API-layer (the `KIND_FIELDS`-style trade the context
 system already makes), with a `TYPE_FIELDS` map inside the artifact validator
@@ -342,22 +387,35 @@ The first binary storage in the system:
 - New R2 binding **`ARTIFACTS`** in `wrangler.jsonc` (bucket
   `tines-artifacts`; `tines-artifacts-preview` in the `preview` env — both
   the root and `env.preview` blocks), plus the `Env` field in `app.d.ts`.
-- **Keys**: `art/{user_id}/{context_item_id}/{version_id}` — immutable, one
-  object per uploaded file version, never overwritten (a reaffirming version
-  stores no new object; its row carries the reaffirmed version's key, which
-  is safe because deletion is whole-artifact only — a prefix delete). Keys
-  are internal; every byte in and out is proxied through the Worker (no
-  presigned URLs — they'd need account-level S3 credentials, and the Worker
-  proxy keeps auth in one place).
-- **Write order**: R2 object first, then the D1 batch (item/version rows +
-  event). If D1 fails, the orphaned R2 object is the failure mode — invisible
-  and cheap; a periodic orphan sweep is future work. Never the reverse: no D1
-  row may reference a missing object.
+- **Keys**: `art/{user_id}/{context_item_id}/{version_id}` for `file`
+  versions and `art/{user_id}/{context_item_id}/{version_id}/{file_id}` for
+  folder entries — immutable, one object per uploaded file, never
+  overwritten (a reaffirming version stores no new objects; its rows carry
+  the reaffirmed version's keys, which is safe because deletion is
+  whole-artifact only — a prefix delete on the item covers every version's
+  objects). Keys are internal; every byte in and out is proxied through the
+  Worker (no presigned URLs — they'd need account-level S3 credentials, and
+  the Worker proxy keeps auth in one place).
+- **Write order**: R2 object(s) first, then the D1 batch (item/version/file
+  rows + event). If D1 fails — or a folder upload dies partway through its
+  objects — orphaned R2 objects are the failure mode: invisible and cheap; a
+  periodic orphan sweep is future work. Never the reverse: no D1 row may
+  reference a missing object.
 - **Delete order**: D1 batch first, then best-effort R2 deletes. Same
   invariant.
-- **Uploads** are single-shot raw-body requests (the first non-JSON endpoint):
-  the browser and CLI both send bytes with `Content-Type` and `Content-Length`
-  (required; streamed to R2, ≤ 25 MB enforced before write).
+- **File uploads** are single-shot raw-body requests (the first non-JSON
+  endpoint): the browser and CLI both send bytes with `Content-Type` and
+  `Content-Length` (required; ≤ 25 MB enforced before write). **Folder
+  uploads** are one `multipart/form-data` request (the second): one part per
+  file, the workspace-relative path as the part's filename and the declared
+  MIME as the part's content type — chosen over zip-and-explode (no archive
+  handling in the Worker, per-file objects fall out naturally) and over
+  staged per-file writes (see Non-goals). Field names are ignored; caps are
+  enforced after the parse, before any object is written. Multipart
+  mutations trip SvelteKit's blanket cross-site form check (API clients
+  send no Origin header), so that check is replaced by an equivalent guard
+  in hooks scoped to cookie-carrying requests — the only surface CSRF can
+  actually ride; bearer clients cannot be forged cross-site.
 - **Testing**: server code takes a minimal `ArtifactStore` interface
   (`put/get/delete/deletePrefix`); the Worker passes an R2-backed one, the
   unit-test harness an in-memory map. e2e uses wrangler's local R2 (already
@@ -377,6 +435,11 @@ User-uploaded bytes served from our origin are an XSS surface. Downloads
   regardless of the flag. Markdown previews in the UI render through the
   existing micromark component (which escapes raw HTML), never via inline
   serving.
+- Folder versions are addressed per file: `…/content?path=<workspace path>`,
+  each file under the same header rules (disposition filename = the path's
+  basename). A folder `…/content` request without `path` is a 422
+  (`folder_path_required`) whose details list the version's paths, so an
+  agent self-corrects in one round trip.
 
 ## API
 
@@ -390,8 +453,9 @@ ergonomics; run keys are allowed everywhere here.
 | `GET /api/v1/issues/:id/artifacts/:name` | Detail: the artifact plus its full version list (metadata only, no contents). |
 | `PUT /api/v1/issues/:id/artifacts/:name` | **JSON upsert** for `text` / `link` / `pr`: creates the artifact (body declares `type`) or appends a version to it. Payload fields per type; `description` settable alongside. Type mismatch with an existing artifact → 422 `artifact_type_mismatch`. A body with no payload fields is a metadata-only update (no version). |
 | `PUT /api/v1/issues/:id/artifacts/:name/file?filename=…` | **Raw-body upload** for `file`: bytes in the body, MIME in `Content-Type`, creates or appends. Same upsert/type-mismatch semantics. |
+| `PUT /api/v1/issues/:id/artifacts/:name/folder` | **Multipart snapshot upload** for `folder`: one part per file (path as the part filename, MIME as the part type), creates the artifact or appends the next whole-set version. Same upsert/type-mismatch semantics. |
 | `POST /api/v1/issues/:id/artifacts/:name/reaffirm` | Append a reaffirming version: copies the current version's payload (same R2 object for files) with a fresh timestamp and the calling actor. 404 if the artifact doesn't exist. |
-| `GET /api/v1/issues/:id/artifacts/:name/content` | Bytes of the current version (`?version=N` for history; `?inline=1` per the serving rules). `file` streams from R2, `text` from D1; `link`/`pr` → 422 `no_content` (the reference *is* the payload). |
+| `GET /api/v1/issues/:id/artifacts/:name/content` | Bytes of the current version (`?version=N` for history; `?inline=1` per the serving rules; `?path=…` selects a folder entry — required for folders). `file`/`folder` stream from R2, `text` from D1; `link`/`pr` → 422 `no_content` (the reference *is* the payload). |
 | `DELETE /api/v1/issues/:id/artifacts/:name` | Delete the artifact, all versions, and its R2 objects. |
 
 The upsert PUT is deliberately the whole write surface: "attach a new design
@@ -408,7 +472,13 @@ Workflow API changes: `WorkflowTransitionInput` and `WorkflowTransition` gain
 serialized workflow returns them. Nothing else moves.
 
 New shared constants: `ARTIFACT_TYPES`, `ARTIFACT_FILE_MAX_BYTES = 25 MB`,
-`ARTIFACT_TEXT_MAX_BYTES = 256 KB`, `ARTIFACT_MAX_VERSIONS = 50`.
+`ARTIFACT_TEXT_MAX_BYTES = 256 KB`, `ARTIFACT_MAX_VERSIONS = 50`,
+`ARTIFACT_FOLDER_MAX_FILES = 200`, `ARTIFACT_FOLDER_MAX_BYTES = 50 MB`
+(total per folder version).
+
+Artifact reads carry per-type payload summaries: folder versions report
+`file_count`, and detail reads include the file list (`path`,
+`content_type`, `size_bytes` — metadata only, never contents).
 
 ## CLI
 
@@ -420,12 +490,18 @@ tines issues artifacts attach <ref> <name> --file <path>       # file (MIME snif
 tines issues artifacts attach <ref> <name> --text <md|@file>
 tines issues artifacts attach <ref> <name> --url <u> [--title <t>]
 tines issues artifacts attach <ref> <name> --pr <owner/repo#N | PR URL>
+tines issues artifacts attach <ref> <name> --folder <dir>      # snapshot a directory tree
+                                                               #   as one version (MIME per file
+                                                               #   sniffed from extensions)
 tines issues artifacts reaffirm <ref> <name>                   # bless current content as fresh
-tines issues artifacts get <ref> <name> [--version N] [--out <path>]   # content; link/pr prints the URL
+tines issues artifacts get <ref> <name> [--version N] [--out <path>]   # content; link/pr prints the
+                                                               #   URL; a folder writes its tree
 tines issues artifacts delete <ref> <name>
 ```
 
-`attach` infers the type from the flag used; re-attaching appends a version.
+`attach` infers the type from the flag used; re-attaching appends a version
+(for a folder, the next whole snapshot — the agent collects locally and
+attaches once, e.g. screenshots taken over a run land as one set).
 `tines issues move` already relays structured errors, so a blocked transition
 prints the unmet requirements and the attach command verbatim from the error
 details — the agent loop closes without any new CLI logic. `tines workflows`
@@ -441,15 +517,30 @@ who · when`), and a **stale** badge when the current version predates
 `state_entered_at` *and* some transition out of the current state requires the
 slot (an unrequired old attachment isn't nagged about). Actions: attach new
 version, **reaffirm** (shown prominently on stale rows — the one-click "this
-still stands"), history (expands the version list with per-version download;
-reaffirmations labeled "reaffirmed vN"), delete. Create via an **Attach artifact** button — drag-and-drop / file picker
-for files, small forms for text (Markdown editor, same component as
-descriptions), link, and PR.
+still stands"), delete, and open-in-viewer. Create via an **Attach
+artifact** button — drag-and-drop / file picker for files, a directory
+picker / folder drop for folders, small forms for text (Markdown editor,
+same component as descriptions), link, and PR.
 
-**Previews** expand inline per row: Markdown rendered through
-`Markdown.svelte`, images via `<img>` against the inline content URL, plain
-text in a `<pre>`, PDFs and everything else as a download link; `link`/`pr`
-rows render as outbound anchors (PR shown as `owner/repo#N`).
+Rows stay **one line tall**. The only inline content is a lazy image
+thumbnail (image files, and up to a few image entries of a folder — the
+glanceable case); everything else shows metadata only. `link`/`pr` rows
+render as outbound anchors (PR shown as `owner/repo#N`).
+
+**Viewer dialog.** Content viewing and history live in one dialog, not
+inline — a design doc or screenshot set expanding inside the issue column
+pushed the page around and starved wide content (the reason the original
+inline previews were replaced). Clicking a row (or a thumbnail) opens the
+viewer: an **artifact switcher** (dropdown over the issue's artifacts, so a
+reviewer flips doc → screenshots → PR without reopening), a **version
+picker** (defaulting to current; reaffirmations labeled "reaffirmed vN"),
+a download affordance, and a metadata line (type, content type, size,
+actor, fresh/stale). The body renders by type: Markdown through
+`Markdown.svelte`, images full-size, plain text in a scrollable `<pre>`,
+PDFs in an `<iframe>` against the sandboxed inline URL (the dialog is what
+makes PDF preview possible at all), other files as a download link,
+`link`/`pr` as outbound cards. A folder renders as an image-grid gallery
+when every file is an image, else as a file tree with per-file preview.
 
 ### Transitions
 
@@ -532,6 +623,15 @@ Done when this loop works end-to-end:
 6. Attach `impl-pr` via `--pr acme/app#123`: it lists as `acme/app#123`
    linking to the PR; `…/content` returns `no_content`; a transition requiring
    `impl-pr` of type `pr` passes.
+6b. `tines issues artifacts attach tines/42 screenshots --folder ./shots`
+   uploads a mixed tree (subfolders included) as one v1 snapshot; a generic
+   transition requiring `screenshots` of type `folder` passes on every issue
+   regardless of which files the set contains; each file serves at
+   `…/content?path=…` under the safety headers; `…/content` without `path`
+   is a 422 listing the paths; re-attaching the directory is v2 (whole set);
+   reaffirm appends v3 reusing v2's objects; `get --out` writes the tree;
+   a folder requirement declaring `content_type` is rejected at definition
+   time; per-version caps (200 files / 50 MB) reject with 422s naming them.
 7. A human force-sets the state past an unmet gate (recorded `forced: true`);
    the same PATCH with a run key is a 403 on the `state` field.
 8. `POST /api/v1/context` with `kind: "artifact"` is a 422; the Context tab
@@ -561,7 +661,8 @@ From the design discussion:
   (and thus requirement) definitions remain control-plane-fenced.
 - **Force path**: forced state-set bypasses gates but becomes human-only; run
   keys lose the `state`/`workflow_id` fields on issue PATCH.
-- **Type set v1**: `file`, `text`, `link`, `pr`; folders deferred.
+- **Type set**: `file`, `text`, `link`, `pr` shipped first; `folder` was
+  added once the screenshot use case made the need concrete (below).
 - **Versioning**: immutable per-artifact history, current-by-default UI, kept
   specifically so a redesign's doc can be compared against its predecessor.
 - **Prompt posture**: artifacts are listed (name/type/description + fetch
@@ -595,3 +696,32 @@ From the spec review:
   slot exists or not); the POST-create/PATCH-update convention deviation is
   deliberate and confined to artifacts. No CAS/If-Match guard — versions are
   append-only, so a concurrent attach loses nothing.
+
+From the folders/viewer review:
+
+- **Previews moved to a viewer dialog** (with an artifact switcher and
+  version picker); inline expansion had unbounded Markdown height inside the
+  issue column and could never host PDFs. The one inline survivor is the
+  image thumbnail — the genuinely glanceable case.
+- **Screenshots are a folder, not sibling files** — because workflows are
+  generic over issues: a requirement names one fixed slot (`screenshots`),
+  while each issue's surfaces differ, so per-screen slot names are invisible
+  to the gate. Pattern/prefix requirement matching was rejected (it reopens
+  all-fresh vs any-fresh ambiguity and breaks the one-name-one-slot error
+  story). Sibling `file` artifacts remain right where a single file has
+  standalone identity and per-round history matters.
+- **Snapshot-only versions** — the agent collects locally and uploads the
+  folder in one go. Per-file incremental writes (derive version N+1 from N ±
+  one file) were designed and rejected: they add a write surface, and an
+  increment implicitly blessing the rest of a stale set weakens freshness.
+  A run that dies mid-collection lands nothing, which is correct — the
+  artifact is round-level evidence, and the supervisor retries the run.
+- **Upload shape**: one `multipart/form-data` request, path-as-filename per
+  part — over zip (no archive handling in the Worker, per-file objects and
+  serving fall out) and over staged writes (no mutable draft state).
+- **Folder caps**: 200 files / 50 MB per version — the multipart parse is
+  buffered in Worker memory; streaming or presigned uploads are the trigger
+  for raising them.
+- **No `content_type` on folder requirements** (422 at definition time):
+  mixed-type trees admit no honest all-files/any-file match rule; the gate
+  asserts slot + type, prose says what belongs inside.

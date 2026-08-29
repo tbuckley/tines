@@ -15,7 +15,8 @@ import {
 	listArtifacts,
 	reaffirmArtifact,
 	upsertArtifact,
-	uploadArtifactFile
+	uploadArtifactFile,
+	uploadArtifactFolder
 } from './artifacts';
 import {
 	buildLaunchPrompt,
@@ -129,13 +130,17 @@ describe('issue artifacts', () => {
 				transitions: [{ name: 'go', from: 'A', to: 'B', requires } as never]
 			});
 		await expect(attempt([{ artifact: 'Not A Slug' }])).rejects.toMatchObject({ status: 422 });
-		await expect(attempt([{ artifact: 'x', type: 'folder' }])).rejects.toMatchObject({
+		await expect(attempt([{ artifact: 'x', type: 'zip' }])).rejects.toMatchObject({
 			code: 'unknown_artifact_type'
 		});
-		// content_type is only meaningful with a declared file/text type.
+		// content_type is only meaningful with a declared file/text type —
+		// folder included: mixed trees admit no honest match rule.
 		await expect(attempt([{ artifact: 'x', type: 'pr', content_type: 'text/' }])).rejects.toMatchObject({
 			status: 422
 		});
+		await expect(
+			attempt([{ artifact: 'x', type: 'folder', content_type: 'image/' }])
+		).rejects.toMatchObject({ status: 422 });
 		await expect(attempt([{ artifact: 'x', content_type: 'text/' }])).rejects.toMatchObject({
 			status: 422
 		});
@@ -367,6 +372,164 @@ describe('issue artifacts', () => {
 		await deleteArtifact(t.db, t.env, actor, issue.id, 'feature-screenshot');
 		expect(await getArtifactStore(t.env).get(keys[0] as string)).toBeNull();
 		expect(await listArtifacts(t.db, USER, issue.id)).toEqual([]);
+	});
+
+	// -------------------------------------------------------------------------
+	// Folder artifacts: snapshot uploads, per-path serving, generic gating
+
+	const enc = (s: string) => new TextEncoder().encode(s);
+
+	it('uploads a mixed tree as one snapshot and serves it per path', async () => {
+		const issue = await createIssue(t.db, t.env, actor, PROJECT, { title: 'Shots' });
+		const uploaded = await uploadArtifactFolder(t.db, t.env, actor, issue.id, 'screenshots', [
+			{ path: 'login.png', contentType: 'image/png', bytes: enc('PNG1') },
+			{ path: 'settings/billing.png', contentType: 'image/png', bytes: enc('PNG2') },
+			{ path: 'notes.md', contentType: 'text/markdown', bytes: enc('# notes') }
+		]);
+		expect(uploaded).toMatchObject({
+			artifact_type: 'folder',
+			fresh: true,
+			current_version: { version: 1, file_count: 3, size_bytes: 15 }
+		});
+
+		// Detail carries the file list (metadata only), sorted by path.
+		const detail = await getArtifactDetail(t.db, USER, issue.id, 'screenshots');
+		expect(detail.current_version.files!.map((f) => f.path)).toEqual([
+			'login.png',
+			'notes.md',
+			'settings/billing.png'
+		]);
+
+		// Per-path serving under the safety headers; no path → 422 listing them.
+		const png = await artifactContentResponse(t.db, t.env, USER, issue.id, 'screenshots', {
+			path: 'settings/billing.png',
+			inline: true
+		});
+		expect(await png.text()).toBe('PNG2');
+		expect(png.headers.get('content-type')).toBe('image/png');
+		expect(png.headers.get('content-disposition')).toBe('inline; filename="billing.png"');
+		expect(png.headers.get('content-security-policy')).toBe('sandbox');
+		let noPath: ApiFail | undefined;
+		await artifactContentResponse(t.db, t.env, USER, issue.id, 'screenshots').catch((e) => (noPath = e));
+		expect(noPath).toMatchObject({ code: 'folder_path_required' });
+		expect(noPath!.details!.paths).toEqual(['login.png', 'notes.md', 'settings/billing.png']);
+		await expect(
+			artifactContentResponse(t.db, t.env, USER, issue.id, 'screenshots', { path: 'missing.png' })
+		).rejects.toMatchObject({ status: 404 });
+
+		// A new snapshot replaces the set wholesale (v2); v1 stays fetchable.
+		tick();
+		const v2 = await uploadArtifactFolder(t.db, t.env, actor, issue.id, 'screenshots', [
+			{ path: 'login.png', contentType: 'image/png', bytes: enc('PNG1b') }
+		]);
+		expect(v2.current_version).toMatchObject({ version: 2, file_count: 1 });
+		const old = await artifactContentResponse(t.db, t.env, USER, issue.id, 'screenshots', {
+			version: 1,
+			path: 'notes.md'
+		});
+		expect(await old.text()).toBe('# notes');
+
+		// Reaffirm copies the file rows, reusing the same stored objects.
+		tick();
+		const reaffirmed = await reaffirmArtifact(t.db, t.env, actor, issue.id, 'screenshots');
+		expect(reaffirmed.current_version).toMatchObject({ version: 3, file_count: 1, reaffirmed_from: 2 });
+		const keys = t.all(
+			`SELECT avf.r2_key FROM artifact_version_file avf
+			 JOIN artifact_version av ON av.id = avf.artifact_version_id
+			 WHERE av.version IN (2, 3) ORDER BY av.version`
+		).map((r) => r.r2_key);
+		expect(keys).toHaveLength(2);
+		expect(keys[0]).toBe(keys[1]);
+
+		// The JSON upsert refuses folder payload writes, pointing at the endpoint.
+		await expect(
+			upsertArtifact(t.db, t.env, actor, issue.id, 'screenshots', { content: 'x' })
+		).rejects.toMatchObject({ code: 'use_folder_endpoint' });
+		await expect(
+			upsertArtifact(t.db, t.env, actor, issue.id, 'other', { type: 'folder' })
+		).rejects.toMatchObject({ code: 'use_folder_endpoint' });
+
+		// Delete removes file rows and stored objects.
+		await deleteArtifact(t.db, t.env, actor, issue.id, 'screenshots');
+		expect(t.all('SELECT * FROM artifact_version_file')).toEqual([]);
+		expect(await getArtifactStore(t.env).get(keys[0] as string)).toBeNull();
+	});
+
+	it('validates folder snapshots: paths, duplicates, and caps', async () => {
+		const issue = await createIssue(t.db, t.env, actor, PROJECT, { title: 'Bad folders' });
+		const upload = (files: { path: string; contentType: string; bytes: Uint8Array }[]) =>
+			uploadArtifactFolder(t.db, t.env, actor, issue.id, 'bundle', files);
+		await expect(upload([])).rejects.toMatchObject({ status: 422 });
+		await expect(
+			upload([{ path: '../escape.png', contentType: 'image/png', bytes: enc('x') }])
+		).rejects.toMatchObject({ code: 'invalid_path' });
+		await expect(
+			upload([
+				{ path: 'a.png', contentType: 'image/png', bytes: enc('x') },
+				{ path: 'a.png', contentType: 'image/png', bytes: enc('y') }
+			])
+		).rejects.toMatchObject({ code: 'duplicate_path' });
+		const many = Array.from({ length: 201 }, (_, i) => ({
+			path: `f${i}.txt`,
+			contentType: 'text/plain',
+			bytes: enc('x')
+		}));
+		await expect(upload(many)).rejects.toMatchObject({ code: 'artifact_too_large' });
+
+		// Type immutability holds across the endpoints.
+		await uploadArtifactFile(t.db, t.env, actor, issue.id, 'single', {
+			filename: 'a.png',
+			contentType: 'image/png',
+			bytes: enc('x')
+		});
+		await expect(
+			uploadArtifactFolder(t.db, t.env, actor, issue.id, 'single', [
+				{ path: 'a.png', contentType: 'image/png', bytes: enc('x') }
+			])
+		).rejects.toMatchObject({ code: 'artifact_type_mismatch' });
+	});
+
+	it('satisfies a generic folder requirement regardless of the set contents', async () => {
+		const wf = await createWorkflow(t.db, t.env, actor, {
+			name: 'Generic UI loop',
+			initial_state: 'Build',
+			states: [
+				{ name: 'Build', category: 'active' },
+				{ name: 'Review', category: 'awaiting_human' }
+			],
+			transitions: [
+				{
+					name: 'submit',
+					from: 'Build',
+					to: 'Review',
+					// Generic over all surfaces: the slot is fixed, the contents vary.
+					requires: [{ artifact: 'screenshots', type: 'folder' }]
+				}
+			]
+		});
+		const issue = await createIssue(t.db, t.env, actor, PROJECT, { title: 'Any feature', workflow_id: wf.id });
+		let error: ApiFail | undefined;
+		await transitionIssue(t.db, t.env, actor, issue.id, { action: 'submit' }).catch((e) => (error = e));
+		expect((error!.details!.unmet as Record<string, unknown>[])[0].fix).toContain('--folder <dir>');
+
+		// A sibling `file` artifact does not satisfy the folder-typed slot…
+		tick();
+		await uploadArtifactFile(t.db, t.env, actor, issue.id, 'screenshots-extra', {
+			filename: 'x.png',
+			contentType: 'image/png',
+			bytes: enc('x')
+		});
+		await expect(
+			transitionIssue(t.db, t.env, actor, issue.id, { action: 'submit' })
+		).rejects.toMatchObject({ code: 'transition_requirements_unmet' });
+
+		// …but any folder snapshot under the slot name does.
+		tick();
+		await uploadArtifactFolder(t.db, t.env, actor, issue.id, 'screenshots', [
+			{ path: 'whatever-this-feature-has.png', contentType: 'image/png', bytes: enc('x') }
+		]);
+		const moved = await transitionIssue(t.db, t.env, actor, issue.id, { action: 'submit' });
+		expect(moved.state.name).toBe('Review');
 	});
 
 	// -------------------------------------------------------------------------

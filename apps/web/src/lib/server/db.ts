@@ -161,6 +161,19 @@ export interface ArtifactVersionTable {
 	created_at: number;
 }
 
+/** One file of a folder artifact version (an immutable snapshot entry). */
+export interface ArtifactVersionFileTable {
+	id: string;
+	artifact_version_id: string;
+	/** Workspace-relative path; unique per version. */
+	path: string;
+	/** Declared MIME type. */
+	content_type: string;
+	size_bytes: number;
+	/** Opaque R2 object key; never exposed over the API. */
+	r2_key: string;
+}
+
 export interface ContextItemFileTable {
 	id: string;
 	context_item_id: string;
@@ -315,6 +328,7 @@ export interface Database {
 	context_item: ContextItemTable;
 	context_item_file: ContextItemFileTable;
 	artifact_version: ArtifactVersionTable;
+	artifact_version_file: ArtifactVersionFileTable;
 	comment: CommentTable;
 	event: EventTable;
 	api_key: ApiKeyTable;

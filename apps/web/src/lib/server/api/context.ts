@@ -988,6 +988,14 @@ export async function deleteContextItem(
 	const scope = rowScope(row);
 	await runAtomic(env, [
 		db.deleteFrom('context_item_file').where('context_item_id', '=', id).compile(),
+		db
+			.deleteFrom('artifact_version_file')
+			.where(
+				'artifact_version_id',
+				'in',
+				db.selectFrom('artifact_version').select('id').where('context_item_id', '=', id)
+			)
+			.compile(),
 		db.deleteFrom('artifact_version').where('context_item_id', '=', id).compile(),
 		db.deleteFrom('context_item').where('id', '=', id).compile(),
 		eventInsert(db, actor, {
@@ -1325,8 +1333,16 @@ export async function contextSummaryForIssue(
 function artifactLine(ref: string, artifact: Artifact): string[] {
 	const cv = artifact.current_version;
 	const marks: string[] = [artifact.artifact_type];
-	if (artifact.artifact_type === 'file' || artifact.artifact_type === 'text') {
-		if (cv.content_type) marks.push(cv.content_type);
+	const fetchable =
+		artifact.artifact_type === 'file' ||
+		artifact.artifact_type === 'text' ||
+		artifact.artifact_type === 'folder';
+	if (fetchable) {
+		if (artifact.artifact_type === 'folder') {
+			marks.push(`${cv.file_count ?? 0} file${cv.file_count === 1 ? '' : 's'}`);
+		} else if (cv.content_type) {
+			marks.push(cv.content_type);
+		}
 		marks.push(`v${cv.version}`, artifact.fresh ? 'fresh' : 'attached before current state');
 	}
 	const reference =
@@ -1337,7 +1353,7 @@ function artifactLine(ref: string, artifact: Artifact): string[] {
 				: null;
 	const tail = artifact.description || reference;
 	const lines = [`- **${artifact.name}** (${marks.join(', ')})${tail ? ` — ${tail}` : ''}`];
-	if (artifact.artifact_type === 'file' || artifact.artifact_type === 'text') {
+	if (fetchable) {
 		lines.push(`  Fetch: \`tines issues artifacts get ${ref} ${artifact.name} --out .\``);
 	}
 	return lines;
@@ -1398,7 +1414,7 @@ export function issueBlock(
 		lines.push('');
 	}
 	lines.push(
-		`Attach one: \`tines issues artifacts attach ${ref} <name> --file <path>\` (or --text/--url/--pr)`,
+		`Attach one: \`tines issues artifacts attach ${ref} <name> --file <path>\` (or --text/--url/--pr, or --folder <dir> for a multi-file snapshot)`,
 		'',
 		'### Available transitions',
 		''

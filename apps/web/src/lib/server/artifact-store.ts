@@ -24,6 +24,17 @@ export function artifactKey(userId: string, contextItemId: string, versionId: st
 	return `art/${userId}/${contextItemId}/${versionId}`;
 }
 
+/** One folder-version file object (still under the item prefix, so a
+ * whole-artifact delete sweeps it). */
+export function artifactFileKey(
+	userId: string,
+	contextItemId: string,
+	versionId: string,
+	fileId: string
+): string {
+	return `art/${userId}/${contextItemId}/${versionId}/${fileId}`;
+}
+
 export function artifactKeyPrefix(userId: string, contextItemId: string): string {
 	return `art/${userId}/${contextItemId}/`;
 }

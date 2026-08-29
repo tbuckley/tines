@@ -718,9 +718,9 @@ export function repoDirFromUrl(url: string): string {
 // attachments on issues — context items of kind `artifact`, surfaced through
 // their own endpoints and deliberately excluded from the effective context.
 
-export type ArtifactType = 'file' | 'text' | 'link' | 'pr';
+export type ArtifactType = 'file' | 'text' | 'link' | 'pr' | 'folder';
 
-export const ARTIFACT_TYPES: readonly ArtifactType[] = ['file', 'text', 'link', 'pr'];
+export const ARTIFACT_TYPES: readonly ArtifactType[] = ['file', 'text', 'link', 'pr', 'folder'];
 
 /** Per-file upload cap. */
 export const ARTIFACT_FILE_MAX_BYTES = 25 * 1024 * 1024;
@@ -728,12 +728,25 @@ export const ARTIFACT_FILE_MAX_BYTES = 25 * 1024 * 1024;
 export const ARTIFACT_TEXT_MAX_BYTES = 256 * 1024;
 /** Versions per artifact. */
 export const ARTIFACT_MAX_VERSIONS = 50;
+/** Files per folder version (one immutable snapshot). */
+export const ARTIFACT_FOLDER_MAX_FILES = 200;
+/** Total bytes per folder version — keeps the buffered multipart parse
+ * inside Worker memory; streaming/presigned uploads are the raise trigger. */
+export const ARTIFACT_FOLDER_MAX_BYTES = 50 * 1024 * 1024;
 
 /**
  * Artifact names are the requirement-matching key and appear in CLI
  * commands, so they follow the skill-name rule (slug-like, ≤ 100 chars).
  */
 export const ARTIFACT_NAME_PATTERN = /^[a-z0-9-]+$/;
+
+/** One file of a folder version's snapshot (metadata only, no contents). */
+export interface ArtifactVersionFile {
+	/** Workspace-relative path (subfolders via forward slashes). */
+	path: string;
+	content_type: string;
+	size_bytes: number;
+}
 
 /** One immutable attached version. Contents are fetched via `…/content`. */
 export interface ArtifactVersion {
@@ -742,8 +755,12 @@ export interface ArtifactVersion {
 	filename: string | null;
 	/** file/text: declared MIME type. */
 	content_type: string | null;
-	/** file: uploaded byte count. */
+	/** file: uploaded byte count; folder: the snapshot's total bytes. */
 	size_bytes: number | null;
+	/** folder: number of files in the snapshot. */
+	file_count: number | null;
+	/** folder: the snapshot's file list — present on detail reads. */
+	files?: ArtifactVersionFile[];
 	/** link: the URL. */
 	url: string | null;
 	/** link: optional display title. */

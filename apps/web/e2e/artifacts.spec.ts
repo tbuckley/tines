@@ -13,6 +13,9 @@ interface ArtifactShape {
 		version: number;
 		filename: string | null;
 		content_type: string | null;
+		size_bytes: number | null;
+		file_count: number | null;
+		files?: { path: string; content_type: string; size_bytes: number }[];
 		reaffirmed_from: number | null;
 		pr_repo_url: string | null;
 		pr_number: number | null;
@@ -227,6 +230,70 @@ test.describe.serial('issue artifacts', () => {
 		const artifactItems = listed.items.filter((i) => i.kind === 'artifact');
 		expect(artifactItems.map((i) => i.name).sort()).toEqual(['design-doc', 'feature-screenshot', 'impl-pr']);
 		expect(artifactItems.every((i) => typeof i.artifact_type === 'string')).toBe(true);
+	});
+
+	test('folder snapshots upload whole (multipart) and serve per path', async ({ request }) => {
+		const api = apiClient(request, ALICE.apiKey);
+		const headers = { authorization: `Bearer ${ALICE.apiKey}` };
+		// One multipart part per file: path as the filename, MIME as the type.
+		// Mixed types and a subfolder in one snapshot.
+		const put = await request.put(`/api/v1/issues/${issueId}/artifacts/screenshots/folder`, {
+			headers,
+			multipart: {
+				f0: { name: 'login.png', mimeType: 'image/png', buffer: Buffer.from('PNG1') },
+				f1: { name: 'settings/billing.png', mimeType: 'image/png', buffer: Buffer.from('PNG2') },
+				f2: { name: 'notes.md', mimeType: 'text/markdown', buffer: Buffer.from('# notes') }
+			}
+		});
+		expect(put.ok()).toBe(true);
+		const artifact = await body<ArtifactShape>(put);
+		expect(artifact).toMatchObject({
+			artifact_type: 'folder',
+			fresh: true,
+			current_version: { version: 1, file_count: 3, size_bytes: 15 }
+		});
+
+		// Per-path serving under the safety headers; no path → 422 listing paths.
+		const file = await api.get(
+			`/api/v1/issues/${issueId}/artifacts/screenshots/content?path=${encodeURIComponent('settings/billing.png')}`
+		);
+		expect(await file.text()).toBe('PNG2');
+		expect(file.headers()['x-content-type-options']).toBe('nosniff');
+		expect(file.headers()['content-disposition']).toBe('attachment; filename="billing.png"');
+		const noPath = await api.get(`/api/v1/issues/${issueId}/artifacts/screenshots/content`);
+		expect(noPath.status()).toBe(422);
+		const noPathErr = await body<ErrorBody>(noPath);
+		expect(noPathErr.error.code).toBe('folder_path_required');
+		expect(noPathErr.error.details?.paths).toEqual(['login.png', 'notes.md', 'settings/billing.png']);
+
+		// The JSON upsert refuses folder payload writes, naming the endpoint.
+		const bad = await api.put(`/api/v1/issues/${issueId}/artifacts/screenshots`, { content: 'x' });
+		expect(bad.status()).toBe(422);
+		expect((await body<ErrorBody>(bad)).error.code).toBe('use_folder_endpoint');
+
+		// A new snapshot replaces the set wholesale; v1 stays addressable.
+		const v2 = await request.put(`/api/v1/issues/${issueId}/artifacts/screenshots/folder`, {
+			headers,
+			multipart: { f0: { name: 'login.png', mimeType: 'image/png', buffer: Buffer.from('PNG1b') } }
+		});
+		expect((await body<ArtifactShape>(v2)).current_version).toMatchObject({ version: 2, file_count: 1 });
+		const old = await api.get(
+			`/api/v1/issues/${issueId}/artifacts/screenshots/content?version=1&path=notes.md`
+		);
+		expect(await old.text()).toBe('# notes');
+
+		// Reaffirm copies the set (same objects, fresh timestamp); detail
+		// reads carry the file list per version.
+		const reaffirmed = await body<ArtifactShape>(
+			await api.post(`/api/v1/issues/${issueId}/artifacts/screenshots/reaffirm`)
+		);
+		expect(reaffirmed.current_version).toMatchObject({ version: 3, reaffirmed_from: 2, file_count: 1 });
+		const detail = await body<ArtifactShape>(
+			await api.get(`/api/v1/issues/${issueId}/artifacts/screenshots`)
+		);
+		expect(detail.current_version.files?.map((f) => f.path)).toEqual(['login.png']);
+
+		await api.delete(`/api/v1/issues/${issueId}/artifacts/screenshots`);
 	});
 
 	test('deleting an artifact removes every version', async ({ request }) => {
