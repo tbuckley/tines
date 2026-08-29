@@ -71,3 +71,33 @@ export function renderEvent(event: BetaManagedAgentsSessionEvent): string | null
 			return null;
 	}
 }
+
+/** What one page of session events contributes to the run: log lines, a new
+ *  cursor, and the two session-level facts `poll` decides the outcome from. */
+export interface EventSummary {
+	lines: string[];
+	/** `processed_at` of the newest event seen, or `cursor` when none carried one. */
+	cursor?: string;
+	idleReason?: string;
+	lastError?: string;
+}
+
+/** Folds a page of session events (oldest first) into the poll loop's summary. */
+export function summarizeEvents(
+	events: BetaManagedAgentsSessionEvent[],
+	cursor?: string
+): EventSummary {
+	const lines: string[] = [];
+	let idleReason: string | undefined;
+	let lastError: string | undefined;
+	for (const event of events) {
+		const line = renderEvent(event);
+		if (line) lines.push(line);
+		if ('processed_at' in event && event.processed_at) cursor = event.processed_at;
+		if (event.type === 'session.status_idle') idleReason = event.stop_reason?.type;
+		if (event.type === 'session.error') {
+			lastError = (event.error as { message?: string } | undefined)?.message ?? 'session error';
+		}
+	}
+	return { lines, cursor, idleReason, lastError };
+}

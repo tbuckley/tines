@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { BetaManagedAgentsSessionUsage } from '@anthropic-ai/sdk/resources/beta/sessions/sessions';
 import type { BetaManagedAgentsSessionEvent } from '@anthropic-ai/sdk/resources/beta/sessions/events';
-import { clip, mapUsage, renderEvent, textOf } from './claude-events';
+import { clip, mapUsage, renderEvent, summarizeEvents, textOf } from './claude-events';
 
 /** Provider event shapes are wider than any one branch needs; build them loosely. */
 const ev = (obj: Record<string, unknown>) => obj as unknown as BetaManagedAgentsSessionEvent;
@@ -182,5 +182,50 @@ describe('clip', () => {
 
 	it('appends a single ellipsis past max', () => {
 		expect(clip('abcdef', 5)).toBe('abcde…');
+	});
+});
+
+describe('summarizeEvents', () => {
+	it('is empty for an empty page and keeps the cursor it was given', () => {
+		expect(summarizeEvents([], 'c0')).toEqual({ lines: [], cursor: 'c0', idleReason: undefined, lastError: undefined });
+	});
+
+	it('collects rendered lines and drops the ones renderEvent skips', () => {
+		const { lines } = summarizeEvents([
+			ev({ type: 'session.status_running' }),
+			ev({ type: 'agent.message', content: text('') }),
+			ev({ type: 'agent.message', content: text('hi') })
+		]);
+		expect(lines).toEqual(['[session] running', '[agent] hi']);
+	});
+
+	it('advances the cursor to the newest processed_at and ignores events without one', () => {
+		const out = summarizeEvents(
+			[
+				ev({ type: 'session.status_running', processed_at: 'c1' }),
+				ev({ type: 'agent.message', content: text('hi'), processed_at: 'c2' }),
+				ev({ type: 'session.status_running' })
+			],
+			'c0'
+		);
+		expect(out.cursor).toBe('c2');
+	});
+
+	it('leaves the cursor alone when no event carries processed_at', () => {
+		expect(summarizeEvents([ev({ type: 'session.status_running' })], 'c0').cursor).toBe('c0');
+	});
+
+	it('captures the idle stop reason and the last session error', () => {
+		const out = summarizeEvents([
+			ev({ type: 'session.error', error: { message: 'first' } }),
+			ev({ type: 'session.error', error: { message: 'second' } }),
+			ev({ type: 'session.status_idle', stop_reason: { type: 'budget_reached' } })
+		]);
+		expect(out.idleReason).toBe('budget_reached');
+		expect(out.lastError).toBe('second');
+	});
+
+	it('falls back to a generic message for an error event with none', () => {
+		expect(summarizeEvents([ev({ type: 'session.error' })]).lastError).toBe('session error');
 	});
 });
