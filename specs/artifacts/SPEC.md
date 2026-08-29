@@ -123,6 +123,18 @@ A version-adding write emits `context.updated` with a summary payload
 A metadata-only edit (description via PATCH, or an upsert carrying no payload
 fields) does **not** create a version and does not refresh freshness.
 
+**Reaffirming.** "This artifact still stands" is a first-class action: a
+reaffirm appends a new version that **reuses the previous current version's
+payload** — same content, same R2 object, no bytes move. It is a real version
+row (new `created_at`, the reaffirming actor, `reaffirmed_from` pointing at
+the source version number), so freshness stays one rule, the actor trail
+shows who blessed the content and when, and history reads "v3 — reaffirmed
+v2". It counts against the version cap and emits `context.updated` with
+`{version, reaffirmed_from}`. Reaffirming is deliberately open to run keys:
+an agent could always re-upload identical bytes, so gating reaffirmation
+would only add ceremony — requirements assert freshness, and human blessing
+belongs to `awaiting_human` states.
+
 Versions per artifact are capped at **50** (422 `artifact_version_limit`,
 suggesting deletion of the artifact if the history is truly disposable).
 
@@ -141,9 +153,12 @@ state. Nothing is mutated on transition; staleness is derived. Consequences:
 - Edge, by design: an artifact attached **before** the issue entered the
   gating state (say, during *backlog*) counts stale for a transition out of
   *design*. The gate reads "the current round of design produced/blessed
-  this"; re-attaching the same content as a new version is the explicit
-  blessing. The UI and error payload both show *stale since* timestamps so
-  this is never mysterious.
+  this"; **reaffirming** (one click / one command, see Versions) or attaching
+  a new version is the explicit blessing. The UI and error payload both show
+  *stale since* timestamps so this is never mysterious. A
+  first-entry-grandfathers variant was rejected: it needs entry-history
+  tracking and makes the rule harder to state, while reaffirm makes the
+  strict rule cheap to live with.
 
 `state_entered_at` is a new column on `issue`, stamped `now` by **every** path
 that changes `state_id`: `transitionIssue`, the forced `state` set in
@@ -222,8 +237,8 @@ a 422 in the `invalid_transition` recovery style:
 ```
 
 The message names the fix, and `details` carries everything an agent needs to
-self-correct: attach or re-attach the named artifact, then retry the same
-transition. The check and the CAS are not atomic (an artifact could be deleted
+self-correct: attach the named artifact (`missing`), or attach a new version
+/ reaffirm (`stale`), then retry the same transition. The check and the CAS are not atomic (an artifact could be deleted
 between them); that race window is accepted — the gate is a process guard, not
 a security boundary, and the force path below exists anyway.
 
@@ -301,6 +316,7 @@ artifact_version      id            TEXT PK      -- av_…
                       url           TEXT,        -- link
                       pr_repo_url   TEXT,        -- pr (canonical https://github.com/{o}/{r})
                       pr_number     INTEGER,     -- pr
+                      reaffirmed_from INTEGER,   -- version number this reaffirms, when a reaffirm
                       actor_user_id TEXT, actor_api_key_id TEXT,
                       created_at    INTEGER NOT NULL
                       -- index on (context_item_id, version DESC) for current-version reads
@@ -327,9 +343,12 @@ The first binary storage in the system:
   `tines-artifacts`; `tines-artifacts-preview` in the `preview` env — both
   the root and `env.preview` blocks), plus the `Env` field in `app.d.ts`.
 - **Keys**: `art/{user_id}/{context_item_id}/{version_id}` — immutable, one
-  object per file version, never overwritten. Keys are internal; every byte in
-  and out is proxied through the Worker (no presigned URLs — they'd need
-  account-level S3 credentials, and the Worker proxy keeps auth in one place).
+  object per uploaded file version, never overwritten (a reaffirming version
+  stores no new object; its row carries the reaffirmed version's key, which
+  is safe because deletion is whole-artifact only — a prefix delete). Keys
+  are internal; every byte in and out is proxied through the Worker (no
+  presigned URLs — they'd need account-level S3 credentials, and the Worker
+  proxy keeps auth in one place).
 - **Write order**: R2 object first, then the D1 batch (item/version rows +
   event). If D1 fails, the orphaned R2 object is the failure mode — invisible
   and cheap; a periodic orphan sweep is future work. Never the reverse: no D1
@@ -371,6 +390,7 @@ ergonomics; run keys are allowed everywhere here.
 | `GET /api/v1/issues/:id/artifacts/:name` | Detail: the artifact plus its full version list (metadata only, no contents). |
 | `PUT /api/v1/issues/:id/artifacts/:name` | **JSON upsert** for `text` / `link` / `pr`: creates the artifact (body declares `type`) or appends a version to it. Payload fields per type; `description` settable alongside. Type mismatch with an existing artifact → 422 `artifact_type_mismatch`. A body with no payload fields is a metadata-only update (no version). |
 | `PUT /api/v1/issues/:id/artifacts/:name/file?filename=…` | **Raw-body upload** for `file`: bytes in the body, MIME in `Content-Type`, creates or appends. Same upsert/type-mismatch semantics. |
+| `POST /api/v1/issues/:id/artifacts/:name/reaffirm` | Append a reaffirming version: copies the current version's payload (same R2 object for files) with a fresh timestamp and the calling actor. 404 if the artifact doesn't exist. |
 | `GET /api/v1/issues/:id/artifacts/:name/content` | Bytes of the current version (`?version=N` for history; `?inline=1` per the serving rules). `file` streams from R2, `text` from D1; `link`/`pr` → 422 `no_content` (the reference *is* the payload). |
 | `DELETE /api/v1/issues/:id/artifacts/:name` | Delete the artifact, all versions, and its R2 objects. |
 
@@ -400,6 +420,7 @@ tines issues artifacts attach <ref> <name> --file <path>       # file (MIME snif
 tines issues artifacts attach <ref> <name> --text <md|@file>
 tines issues artifacts attach <ref> <name> --url <u> [--title <t>]
 tines issues artifacts attach <ref> <name> --pr <owner/repo#N | PR URL>
+tines issues artifacts reaffirm <ref> <name>                   # bless current content as fresh
 tines issues artifacts get <ref> <name> [--version N] [--out <path>]   # content; link/pr prints the URL
 tines issues artifacts delete <ref> <name>
 ```
@@ -419,8 +440,9 @@ icon (deep-imported Tabler), name, description, current version (`v3 ·
 who · when`), and a **stale** badge when the current version predates
 `state_entered_at` *and* some transition out of the current state requires the
 slot (an unrequired old attachment isn't nagged about). Actions: attach new
-version, history (expands the version list with per-version download),
-delete. Create via an **Attach artifact** button — drag-and-drop / file picker
+version, **reaffirm** (shown prominently on stale rows — the one-click "this
+still stands"), history (expands the version list with per-version download;
+reaffirmations labeled "reaffirmed vN"), delete. Create via an **Attach artifact** button — drag-and-drop / file picker
 for files, small forms for text (Markdown editor, same component as
 descriptions), link, and PR.
 
@@ -500,6 +522,10 @@ Done when this loop works end-to-end:
    blocked with `status: "stale"` and the prior version's timestamp; attaching
    a new version (v2) unblocks it; both versions remain listed and
    downloadable, and the v1/v2 contents differ as uploaded.
+   Send it back once more: `tines issues artifacts reaffirm tines/42
+   design-doc` (or the UI button) appends v3 labeled "reaffirmed v2" with the
+   affirming actor, serves v2's exact bytes without a new R2 object, and
+   unblocks "approve" again.
 5. Upload a PNG as `feature-screenshot`: it renders inline on the issue page;
    its download URL is attachment-by-default, inline-with-sandbox when
    requested; a 30 MB upload is a 422 naming the cap.
@@ -552,3 +578,20 @@ From the spec review:
   + number), matching every other GitHub touchpoint in the system. A second
   provider later loosens validation additively; the `link` type is the
   escape hatch for non-GitHub review URLs today.
+- **Reaffirm**: marking a stale artifact fresh without re-uploading is a
+  first-class action, modeled as a new version reusing the prior payload —
+  chosen over a separate `affirmed_at` timestamp (second freshness input,
+  weaker audit trail) and over having no reaffirm at all (pointless
+  re-uploads). Open to run keys, since re-uploading identical bytes was
+  always possible.
+- **Strict freshness stands**: no first-entry grandfathering — one rule
+  ("fresh since the issue last entered its current state"), with reaffirm as
+  the cheap remedy for attached-early artifacts.
+- **Requirements storage**: confirmed as a JSON column on
+  `workflow_transition`, not a child table — no per-row identity, edited
+  wholesale with the definition, and nothing needs a which-transitions-
+  require-X SQL query.
+- **Write surface**: confirmed as the upsert `PUT` (single call whether the
+  slot exists or not); the POST-create/PATCH-update convention deviation is
+  deliberate and confined to artifacts. No CAS/If-Match guard — versions are
+  append-only, so a concurrent attach loses nothing.
