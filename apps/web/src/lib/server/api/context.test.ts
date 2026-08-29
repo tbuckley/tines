@@ -178,7 +178,8 @@ const issue: IssueDetail = {
 			to_state: { id: 's_open', name: 'Open', category: 'active', position: 0 }
 		}
 	],
-	context_summary: { prompts: 0, skills: 0, repos: 0 }
+	state_entered_at: 0,
+	context_summary: { prompts: 0, skills: 0, repos: 0, artifacts: 0 }
 };
 
 const emptyScope = {

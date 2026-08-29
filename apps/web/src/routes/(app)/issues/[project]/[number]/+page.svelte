@@ -4,6 +4,7 @@
 	import IconAlertTriangle from '@tabler/icons-svelte/icons/alert-triangle';
 	import IconArrowRight from '@tabler/icons-svelte/icons/arrow-right';
 	import IconBan from '@tabler/icons-svelte/icons/ban';
+	import IconCheck from '@tabler/icons-svelte/icons/check';
 	import IconChevronLeft from '@tabler/icons-svelte/icons/chevron-left';
 	import IconCopy from '@tabler/icons-svelte/icons/copy';
 	import IconPencil from '@tabler/icons-svelte/icons/pencil';
@@ -15,6 +16,7 @@
 	import { invalidateAll } from '$app/navigation';
 	import { api } from '$lib/api';
 	import AgentActivityCard from '$lib/components/AgentActivityCard.svelte';
+	import ArtifactsPanel from '$lib/components/ArtifactsPanel.svelte';
 	import ContextItemEditor from '$lib/components/ContextItemEditor.svelte';
 	import ContextItemList from '$lib/components/ContextItemList.svelte';
 	import EffectiveContextView from '$lib/components/EffectiveContextView.svelte';
@@ -155,13 +157,29 @@
 	// Allowed transitions follow the (possibly optimistic) current state.
 	const allowed = $derived.by((): AllowedTransition[] => {
 		const stateById = new Map(data.issue.workflow.states.map((s) => [s.id, s]));
+		// Live artifact-requirement statuses come from the server read; they
+		// only describe the server's current state, never an optimistic overlay.
+		const serverById = new Map(data.issue.allowed_transitions.map((t) => [t.transition_id, t]));
 		return data.issue.workflow.transitions
 			.filter((t) => t.from_state_id === currentState.id)
 			.flatMap((t) => {
 				const toState = stateById.get(t.to_state_id);
-				return toState ? [{ transition_id: t.id, name: t.name, to_state: toState }] : [];
+				if (!toState) return [];
+				const requires =
+					currentState.id === data.issue.state.id ? serverById.get(t.id)?.requires : undefined;
+				return [
+					{
+						transition_id: t.id,
+						name: t.name,
+						to_state: toState,
+						...(requires ? { requires } : {})
+					}
+				];
 			});
 	});
+
+	const unmetFor = (transition: AllowedTransition) =>
+		(transition.requires ?? []).filter((r) => r.status !== 'satisfied');
 
 	// The transition dialog: an optional comment posted atomically with the
 	// move — comment first, so a sub-second dispatch triggered by the
@@ -601,6 +619,15 @@
 			</div>
 		</section>
 
+		<!-- artifacts: the issue's attached work products -->
+		<ArtifactsPanel
+			issueId={data.issue.id}
+			artifacts={data.artifacts}
+			allowedTransitions={data.issue.allowed_transitions}
+			onchanged={invalidateAll}
+			onerror={showError}
+		/>
+
 		<!-- comments -->
 		<section>
 			<h2 class="mb-3 text-sm font-semibold">
@@ -659,12 +686,15 @@
 			{#if allowed.length > 0}
 				<div class="flex flex-wrap gap-2">
 					{#each allowed as transition (transition.transition_id)}
+						{@const unmet = unmetFor(transition)}
 						<Button
 							size="sm"
 							variant="outline"
-							disabled={transitioning}
+							disabled={transitioning || unmet.length > 0}
 							onclick={() => requestMove(transition)}
-							title={`Move to ${transition.to_state.name}`}
+							title={unmet.length > 0
+								? `Blocked: requires artifact “${unmet[0].artifact}” (${unmet[0].status.replaceAll('_', ' ')})`
+								: `Move to ${transition.to_state.name}`}
 						>
 							{transition.name}
 							<span class="text-muted-foreground inline-flex items-center gap-1 text-xs font-normal">
@@ -674,6 +704,44 @@
 						</Button>
 					{/each}
 				</div>
+				<!-- requirement pre-flight: why a button is disabled, or a subtle check -->
+				{#each allowed.filter((t) => (t.requires ?? []).length > 0) as transition (transition.transition_id)}
+					<ul class="mt-2 space-y-1">
+						{#each transition.requires ?? [] as r (r.artifact)}
+							<li
+								class="flex items-start gap-1.5 text-xs {r.status === 'satisfied'
+									? 'text-muted-foreground'
+									: 'text-amber-700 dark:text-amber-400'}"
+							>
+								{#if r.status === 'satisfied'}
+									<IconCheck size={13} class="mt-0.5 shrink-0" />
+									<span>
+										<span class="font-medium">{transition.name}</span>: artifact
+										<span class="font-mono">{r.artifact}</span> is fresh (v{r.current_version?.version}).
+									</span>
+								{:else}
+									<IconBan size={13} class="mt-0.5 shrink-0" />
+									<span>
+										<span class="font-medium">{transition.name}</span> needs artifact
+										<span class="font-mono">{r.artifact}</span>{r.type ? ` (${[r.type, r.content_type].filter(Boolean).join(', ')})` : ''}
+										—
+										{#if r.status === 'stale'}
+											stale since {new Date(data.issue.state_entered_at).toLocaleString()}; attach a
+											new version or reaffirm it.
+										{:else if r.status === 'missing'}
+											missing; attach it below.
+										{:else}
+											the attached artifact doesn't match.
+										{/if}
+										{#if r.description}
+											<span class="italic">{r.description}</span>
+										{/if}
+									</span>
+								{/if}
+							</li>
+						{/each}
+					</ul>
+				{/each}
 			{:else}
 				<p class="text-muted-foreground text-xs" transition:fade={{ duration: dur() }}>
 					No outgoing transitions — this state is terminal.

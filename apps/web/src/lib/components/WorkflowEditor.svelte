@@ -1,10 +1,12 @@
 <script lang="ts">
 	import type {
+		ArtifactRequirement,
+		ArtifactType,
 		CreateWorkflowRequest,
 		StateCategory,
 		WorkflowResponse
 	} from '@tines/shared';
-	import { ApiError, STATE_CATEGORIES } from '@tines/shared';
+	import { ApiError, ARTIFACT_NAME_PATTERN, ARTIFACT_TYPES, STATE_CATEGORIES } from '@tines/shared';
 	import IconPlus from '@tabler/icons-svelte/icons/plus';
 	import IconTrash from '@tabler/icons-svelte/icons/trash';
 	import { slide } from 'svelte/transition';
@@ -47,12 +49,24 @@
 	let name = $state(workflow?.name ?? '');
 	// svelte-ignore state_referenced_locally
 	let description = $state(workflow?.description ?? '');
+	interface RowRequirement {
+		key: string;
+		/** The artifact slot name a fresh artifact must carry. */
+		artifact: string;
+		/** '' = any type. */
+		type: '' | ArtifactType;
+		contentType: string;
+		description: string;
+	}
+
 	interface RowTransition {
 		key: string;
 		/** The action name, e.g. "approve". */
 		name: string;
 		from: string;
 		to: string;
+		/** Artifact requirements gating this transition. */
+		requires: RowRequirement[];
 	}
 
 	// svelte-ignore state_referenced_locally
@@ -71,9 +85,16 @@
 					key: t.id,
 					name: t.name,
 					from: t.from_state_id,
-					to: t.to_state_id
+					to: t.to_state_id,
+					requires: (t.requires ?? []).map((r) => ({
+						key: freshKey(),
+						artifact: r.artifact,
+						type: r.type ?? '',
+						contentType: r.content_type ?? '',
+						description: r.description ?? ''
+					}))
 				}))
-			: [{ key: freshKey(), name: 'Complete', from: states[0].key, to: states[1].key }]
+			: [{ key: freshKey(), name: 'Complete', from: states[0].key, to: states[1].key, requires: [] }]
 	);
 	// svelte-ignore state_referenced_locally
 	let initialKey = $state(workflow?.initial_state_id ?? states[0].key);
@@ -101,11 +122,26 @@
 			(s) => s.key !== fromKey && !transitions.some((t) => t.from === fromKey && t.to === s.key)
 		);
 		if (!target) return;
-		transitions = [...transitions, { key: freshKey(), name: '', from: fromKey, to: target.key }];
+		transitions = [...transitions, { key: freshKey(), name: '', from: fromKey, to: target.key, requires: [] }];
 	}
 
 	function removeTransition(key: string) {
 		transitions = transitions.filter((t) => t.key !== key);
+	}
+
+	function addRequirement(transitionKey: string) {
+		const ti = transitions.findIndex((t) => t.key === transitionKey);
+		if (ti === -1) return;
+		transitions[ti].requires = [
+			...transitions[ti].requires,
+			{ key: freshKey(), artifact: '', type: '', contentType: '', description: '' }
+		];
+	}
+
+	function removeRequirement(transitionKey: string, key: string) {
+		const ti = transitions.findIndex((t) => t.key === transitionKey);
+		if (ti === -1) return;
+		transitions[ti].requires = transitions[ti].requires.filter((r) => r.key !== key);
 	}
 
 	const stateName = (key: string) =>
@@ -148,6 +184,18 @@
 		if (new Set(pairs).size !== pairs.length) {
 			list.push('Only one action can lead from a state to the same target.');
 		}
+		for (const t of transitions) {
+			const slots = t.requires.map((r) => r.artifact.trim());
+			if (slots.some((s) => !ARTIFACT_NAME_PATTERN.test(s))) {
+				list.push('Requirement artifact names must be slug-like (a-z, 0-9, dashes).');
+			}
+			if (new Set(slots).size !== slots.length) {
+				list.push('An action cannot require the same artifact twice.');
+			}
+			if (t.requires.some((r) => r.contentType.trim() && r.type !== 'file' && r.type !== 'text')) {
+				list.push('A content-type filter needs the requirement type “file” or “text”.');
+			}
+		}
 		return list;
 	});
 
@@ -180,7 +228,22 @@
 					// context items, not through workflow updates.
 					...(!s.id && s.prompt?.trim() ? { prompt: s.prompt.trim() } : {})
 				})),
-				transitions: transitions.map((t) => ({ name: t.name.trim(), from: ref(t.from), to: ref(t.to) }))
+				transitions: transitions.map((t) => ({
+					name: t.name.trim(),
+					from: ref(t.from),
+					to: ref(t.to),
+					...(t.requires.length > 0
+						? {
+								requires: t.requires.map((r): ArtifactRequirement => {
+									const requirement: ArtifactRequirement = { artifact: r.artifact.trim() };
+									if (r.type) requirement.type = r.type;
+									if (r.contentType.trim()) requirement.content_type = r.contentType.trim();
+									if (r.description.trim()) requirement.description = r.description.trim();
+									return requirement;
+								})
+							}
+						: {})
+				}))
 			});
 		} catch (err) {
 			errorMessage = err instanceof ApiError ? err.message : 'Failed to save the workflow.';
@@ -266,29 +329,92 @@
 						<div class="space-y-1.5">
 							{#each transitions.filter((t) => t.from === row.key) as transition (transition.key)}
 								{@const ti = transitions.findIndex((t) => t.key === transition.key)}
-								<div class="flex flex-wrap items-center gap-2" transition:slide={{ duration: dur() }}>
-									<Input
-										bind:value={transitions[ti].name}
-										placeholder="Action name, e.g. approve"
-										class="h-8 min-w-28 flex-1 text-xs"
-										aria-label="Action name"
-									/>
-									<span class="text-muted-foreground text-xs">→</span>
-									<Select bind:value={transitions[ti].to} class="h-8 w-36 text-xs" aria-label="Target state">
-										{#each states.filter((s) => s.key !== row.key) as target (target.key)}
-											<option value={target.key}>{target.name.trim() || 'unnamed'}</option>
+								<div class="space-y-1.5" transition:slide={{ duration: dur() }}>
+									<div class="flex flex-wrap items-center gap-2">
+										<Input
+											bind:value={transitions[ti].name}
+											placeholder="Action name, e.g. approve"
+											class="h-8 min-w-28 flex-1 text-xs"
+											aria-label="Action name"
+										/>
+										<span class="text-muted-foreground text-xs">→</span>
+										<Select bind:value={transitions[ti].to} class="h-8 w-36 text-xs" aria-label="Target state">
+											{#each states.filter((s) => s.key !== row.key) as target (target.key)}
+												<option value={target.key}>{target.name.trim() || 'unnamed'}</option>
+											{/each}
+										</Select>
+										<Button
+											type="button"
+											size="icon"
+											variant="ghost"
+											class="text-muted-foreground hover:text-destructive size-7 shrink-0"
+											onclick={() => removeTransition(transition.key)}
+											aria-label={`Remove action from ${stateName(row.key)}`}
+										>
+											<IconTrash size={13} />
+										</Button>
+									</div>
+									<!-- artifact requirements: the action only passes with a fresh
+									     artifact in the named slot (attached since the issue last
+									     entered this state) -->
+									<div class="ml-4 space-y-1.5">
+										{#each transition.requires as requirement (requirement.key)}
+											{@const ri = transitions[ti].requires.findIndex((r) => r.key === requirement.key)}
+											<div class="flex flex-wrap items-center gap-2" transition:slide={{ duration: dur() }}>
+												<span class="text-muted-foreground shrink-0 text-xs">requires artifact</span>
+												<Input
+													bind:value={transitions[ti].requires[ri].artifact}
+													placeholder="design-doc"
+													class="h-7 w-32 font-mono text-xs"
+													aria-label="Required artifact name"
+												/>
+												<Select
+													bind:value={transitions[ti].requires[ri].type}
+													class="h-7 w-24 text-xs"
+													aria-label="Required artifact type"
+												>
+													<option value="">any type</option>
+													{#each ARTIFACT_TYPES as artifactType (artifactType)}
+														<option value={artifactType}>{artifactType}</option>
+													{/each}
+												</Select>
+												{#if transitions[ti].requires[ri].type === 'file' || transitions[ti].requires[ri].type === 'text'}
+													<Input
+														bind:value={transitions[ti].requires[ri].contentType}
+														placeholder="content type, e.g. image/"
+														class="h-7 w-36 text-xs"
+														aria-label="Required content type prefix"
+													/>
+												{/if}
+												<Input
+													bind:value={transitions[ti].requires[ri].description}
+													placeholder="what this artifact should contain"
+													class="h-7 min-w-28 flex-1 text-xs"
+													aria-label="Requirement description"
+												/>
+												<Button
+													type="button"
+													size="icon"
+													variant="ghost"
+													class="text-muted-foreground hover:text-destructive size-7 shrink-0"
+													onclick={() => removeRequirement(transition.key, requirement.key)}
+													aria-label="Remove requirement"
+												>
+													<IconTrash size={13} />
+												</Button>
+											</div>
 										{/each}
-									</Select>
-									<Button
-										type="button"
-										size="icon"
-										variant="ghost"
-										class="text-muted-foreground hover:text-destructive size-7 shrink-0"
-										onclick={() => removeTransition(transition.key)}
-										aria-label={`Remove action from ${stateName(row.key)}`}
-									>
-										<IconTrash size={13} />
-									</Button>
+										<Button
+											type="button"
+											size="sm"
+											variant="ghost"
+											class="text-muted-foreground h-6 px-2 text-xs"
+											onclick={() => addRequirement(transition.key)}
+											title="Gate this action on a fresh artifact (attached since the issue entered this state)"
+										>
+											<IconPlus size={11} /> Require artifact
+										</Button>
+									</div>
 								</div>
 							{/each}
 							<Button

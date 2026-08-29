@@ -95,6 +95,8 @@ export interface WorkflowTransition {
 	name: string;
 	from_state_id: string;
 	to_state_id: string;
+	/** Artifact requirements gating this transition (absent = none). */
+	requires?: ArtifactRequirement[];
 }
 
 export interface Workflow {
@@ -139,6 +141,8 @@ export interface WorkflowTransitionInput {
 	name: string;
 	from: string;
 	to: string;
+	/** Artifact requirements gating this transition (absent/empty = none). */
+	requires?: ArtifactRequirement[];
 }
 
 export interface CreateWorkflowRequest {
@@ -229,6 +233,11 @@ export interface Issue {
 	needs_attention: boolean;
 	/** The run currently holding this issue's exclusive claim, if any. */
 	active_run: { run_id: string; runner_name: string; status: RunStatus } | null;
+	/**
+	 * When the issue last entered its current state — the timestamp artifact
+	 * freshness is measured against.
+	 */
+	state_entered_at: number;
 	created_at: number;
 	updated_at: number;
 	/** Timestamp of the most recent event touching this issue. */
@@ -286,6 +295,12 @@ export interface AllowedTransition {
 	/** The action name, e.g. "approve". */
 	name: string;
 	to_state: WorkflowState;
+	/**
+	 * The transition's artifact requirements with live status (present only
+	 * when the transition declares any) — pre-flight visibility for the UI
+	 * and the launch prompt.
+	 */
+	requires?: ArtifactRequirementCheck[];
 }
 
 export interface IssueDetail extends Issue {
@@ -448,9 +463,9 @@ export interface IssueFilters {
 // ---------------------------------------------------------------------------
 // Context items
 
-export type ContextKind = 'prompt' | 'skill' | 'repo';
+export type ContextKind = 'prompt' | 'skill' | 'repo' | 'artifact';
 
-export const CONTEXT_KINDS: readonly ContextKind[] = ['prompt', 'skill', 'repo'];
+export const CONTEXT_KINDS: readonly ContextKind[] = ['prompt', 'skill', 'repo', 'artifact'];
 
 /** Byte caps (UTF-8), enforced at the API layer with structured 422s. */
 export const PROMPT_MAX_BYTES = 32 * 1024;
@@ -524,6 +539,8 @@ export interface ContextItem {
 	repo_url?: string;
 	repo_branch?: string | null;
 	repo_dir?: string | null;
+	/** Artifact payload summary (full detail lives on the artifact endpoints). */
+	artifact_type?: ArtifactType;
 	/** Ordering within the same exact scope tuple. */
 	position: number;
 	/** Monotonic write counter for optimistic concurrency (not history). */
@@ -664,6 +681,8 @@ export interface ContextSummary {
 	prompts: number;
 	skills: number;
 	repos: number;
+	/** Artifacts attached to the issue (issue-scoped by construction). */
+	artifacts: number;
 }
 
 /** `GET /api/v1/issues/:id/prompt` — stitched context plus the issue block. */
@@ -692,6 +711,166 @@ export function repoDirFromUrl(url: string): string {
 	const base = stripped.slice(lastSlash + 1).replace(/\.git$/, '');
 	if (!base || base === '.' || base === '..' || base.includes('\\') || base.includes('=')) return 'repo';
 	return base;
+}
+
+// ---------------------------------------------------------------------------
+// Issue artifacts (specs/artifacts/SPEC.md): named, typed, versioned
+// attachments on issues — context items of kind `artifact`, surfaced through
+// their own endpoints and deliberately excluded from the effective context.
+
+export type ArtifactType = 'file' | 'text' | 'link' | 'pr';
+
+export const ARTIFACT_TYPES: readonly ArtifactType[] = ['file', 'text', 'link', 'pr'];
+
+/** Per-file upload cap. */
+export const ARTIFACT_FILE_MAX_BYTES = 25 * 1024 * 1024;
+/** Per-text-document cap (UTF-8). */
+export const ARTIFACT_TEXT_MAX_BYTES = 256 * 1024;
+/** Versions per artifact. */
+export const ARTIFACT_MAX_VERSIONS = 50;
+
+/**
+ * Artifact names are the requirement-matching key and appear in CLI
+ * commands, so they follow the skill-name rule (slug-like, ≤ 100 chars).
+ */
+export const ARTIFACT_NAME_PATTERN = /^[a-z0-9-]+$/;
+
+/** One immutable attached version. Contents are fetched via `…/content`. */
+export interface ArtifactVersion {
+	version: number;
+	/** file/text: display name. */
+	filename: string | null;
+	/** file/text: declared MIME type. */
+	content_type: string | null;
+	/** file: uploaded byte count. */
+	size_bytes: number | null;
+	/** link: the URL. */
+	url: string | null;
+	/** link: optional display title. */
+	title: string | null;
+	/** pr: canonical https://github.com/{owner}/{repo}. */
+	pr_repo_url: string | null;
+	/** pr: the pull request number. */
+	pr_number: number | null;
+	/** The version this one reaffirms, when it is a reaffirmation. */
+	reaffirmed_from: number | null;
+	actor: Actor;
+	created_at: number;
+}
+
+/** An artifact as listed on its issue, with its current version summary. */
+export interface Artifact {
+	/** The underlying context item id. */
+	id: string;
+	name: string;
+	artifact_type: ArtifactType;
+	description: string;
+	issue_id: string;
+	version_count: number;
+	current_version: ArtifactVersion;
+	/** current_version.created_at ≥ the issue's state_entered_at. */
+	fresh: boolean;
+	created_at: number;
+	updated_at: number;
+}
+
+/** Detail read: the artifact plus its full version list (metadata only). */
+export interface ArtifactDetail extends Artifact {
+	versions: ArtifactVersion[];
+}
+
+export interface ArtifactListResponse {
+	items: Artifact[];
+}
+
+/**
+ * `PUT /api/v1/issues/:id/artifacts/:name` — JSON upsert for text/link/pr:
+ * creates the artifact (body declares `type`) or appends a version to it.
+ * A body with no payload fields is a metadata-only update (no new version).
+ * File uploads go through the raw-body `…/:name/file` endpoint instead.
+ */
+export interface UpsertArtifactRequest {
+	/** Required when creating; must match the existing type otherwise. */
+	type?: ArtifactType;
+	description?: string;
+	/** text: the inline document (Markdown by default). */
+	content?: string;
+	/** text: display filename (defaults to `<name>.md`). */
+	filename?: string;
+	/** text: declared MIME (defaults to text/markdown). */
+	content_type?: string;
+	/** link: the URL (http/https only). */
+	url?: string;
+	/** link: optional display title. */
+	title?: string;
+	/** pr: a full PR URL (`https://github.com/{o}/{r}/pull/123`) — or set the split fields. */
+	pr_url?: string;
+	/** pr: canonical repository URL (paired with pr_number). */
+	pr_repo_url?: string;
+	pr_number?: number;
+}
+
+/** A declared requirement on a workflow transition. */
+export interface ArtifactRequirement {
+	/** The slot name a matching artifact must carry (slug). */
+	artifact: string;
+	/** When set, must equal the artifact's type. */
+	type?: ArtifactType;
+	/**
+	 * When set, prefix-matches the current version's declared content type
+	 * ("image/" matches any image). Only meaningful with type file or text.
+	 */
+	content_type?: string;
+	/** Human/agent-facing: shown in editors, the launch prompt, and errors. */
+	description?: string;
+}
+
+export type ArtifactRequirementStatus = 'satisfied' | 'missing' | 'type_mismatch' | 'stale';
+
+/** A requirement with its live status against a specific issue. */
+export interface ArtifactRequirementCheck extends ArtifactRequirement {
+	status: ArtifactRequirementStatus;
+	/** The matching artifact's current version, when one exists. */
+	current_version: { version: number; created_at: number } | null;
+}
+
+/** A pull-request reference parsed from user input. */
+export interface PrRef {
+	/** Canonical https://github.com/{owner}/{repo}. */
+	repo_url: string;
+	number: number;
+}
+
+/**
+ * Canonicalizes a GitHub repository URL to `https://github.com/{owner}/{repo}`
+ * — no `.git` suffix, no trailing slash. Accepts the shapes `git clone`
+ * tolerates (https with `.git`, `git@github.com:owner/repo.git`,
+ * `ssh://git@github.com/owner/repo`). Null = not a GitHub repository URL.
+ */
+export function canonicalGitHubRepoUrl(url: string): string | null {
+	const match = url
+		.trim()
+		.match(
+			/^(?:(?:https?|ssh):\/\/(?:[^@/]+@)?|git@)?(?:www\.)?github\.com[/:]([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?\/?$/
+		);
+	if (!match) return null;
+	return `https://github.com/${match[1]}/${match[2]}`;
+}
+
+/**
+ * Parses a PR reference: `owner/repo#123` or a full GitHub PR URL
+ * (`https://github.com/owner/repo/pull/123`). Null when neither shape fits.
+ */
+export function parsePrSpec(spec: string): PrRef | null {
+	const short = spec.trim().match(/^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#(\d+)$/);
+	if (short) {
+		const repoUrl = canonicalGitHubRepoUrl(`https://github.com/${short[1]}`);
+		return repoUrl ? { repo_url: repoUrl, number: Number.parseInt(short[2], 10) } : null;
+	}
+	const url = spec.trim().match(/^(.*?)\/pull\/(\d+)(?:[/?#].*)?$/);
+	if (!url) return null;
+	const repoUrl = canonicalGitHubRepoUrl(url[1]);
+	return repoUrl ? { repo_url: repoUrl, number: Number.parseInt(url[2], 10) } : null;
 }
 
 // ---------------------------------------------------------------------------

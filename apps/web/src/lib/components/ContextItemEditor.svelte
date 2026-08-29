@@ -48,8 +48,11 @@
 	const KIND_LABELS: Record<ContextKind, string> = {
 		prompt: 'Prompt — Markdown stitched into the agent prompt',
 		skill: 'Skill — text files seeded into the workspace',
-		repo: 'Repo — a repository to check out'
+		repo: 'Repo — a repository to check out',
+		artifact: 'Artifact — a versioned attachment (created from an issue page)'
 	};
+	// Artifacts are created through their own endpoints/panel, never here.
+	const CREATABLE_KINDS = CONTEXT_KINDS.filter((k) => k !== 'artifact');
 
 	let kind = $state<ContextKind>('prompt');
 	let name = $state('');
@@ -256,7 +259,7 @@
 			<div class="space-y-1.5">
 				<span class="text-sm font-medium">Kind</span>
 				<div class="grid gap-1.5">
-					{#each CONTEXT_KINDS as k (k)}
+					{#each CREATABLE_KINDS as k (k)}
 						<label
 							class="flex cursor-pointer items-center gap-2 rounded-md border px-3 py-2 text-sm {kind === k
 								? 'border-primary bg-primary/5'

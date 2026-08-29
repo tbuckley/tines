@@ -46,6 +46,15 @@
 			"migrations_dir": "migrations"
 		}
 	],
+	// Artifact file storage (specs/artifacts/SPEC.md "Storage"): one immutable
+	// object per uploaded file version, keys internal, every byte proxied
+	// through the Worker. `wrangler dev` simulates the bucket locally.
+	"r2_buckets": [
+		{
+			"binding": "ARTIFACTS",
+			"bucket_name": "tines-artifacts"
+		}
+	],
 	// Self-referencing service binding: the supervisor fetches launch
 	// materials from its own API (see supervisor/claude-adapter.ts), and a
 	// worker on a custom domain cannot `fetch()` its own hostname — Cloudflare
@@ -90,6 +99,12 @@
 				}
 			],
 			"send_email": [{ "name": "EMAIL" }],
+			"r2_buckets": [
+				{
+					"binding": "ARTIFACTS",
+					"bucket_name": "tines-artifacts-preview"
+				}
+			],
 			"services": [{ "binding": "SELF", "service": "tines-web-preview" }],
 			"vars": {
 				// BETTER_AUTH_URL is deliberately unset: preview URLs differ per

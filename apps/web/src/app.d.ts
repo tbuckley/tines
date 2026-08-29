@@ -6,6 +6,7 @@ import type {
 	ExecutionContext,
 	Fetcher,
 	IncomingRequestCfProperties,
+	R2Bucket,
 	SendEmail
 } from '@cloudflare/workers-types';
 import type { getAuth } from '$lib/server/auth';
@@ -14,6 +15,8 @@ declare global {
 	/** Bindings and vars available on `platform.env` (see wrangler.jsonc). */
 	interface Env {
 		DB: D1Database;
+		/** Artifact file storage (wrangler.jsonc `r2_buckets`); see lib/server/artifact-store.ts. */
+		ARTIFACTS?: R2Bucket;
 		EMAIL?: SendEmail;
 		EMAIL_FROM?: string;
 		BETTER_AUTH_URL?: string;

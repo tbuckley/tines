@@ -39,6 +39,8 @@ export interface WorkflowTransitionTable {
 	name: string;
 	from_state_id: string;
 	to_state_id: string;
+	/** JSON array of artifact requirements; NULL = none. */
+	requirements: string | null;
 }
 
 export interface IssueTable {
@@ -58,6 +60,12 @@ export interface IssueTable {
 	attempt_count: number;
 	/** 0/1: parked after striking out; cleared by resume or a manual transition. */
 	needs_attention: number;
+	/**
+	 * When the issue last entered its current state; stamped by every path
+	 * that changes state_id. NULL only on rows predating migration 0011's
+	 * backfill in exotic cases — readers fall back to created_at.
+	 */
+	state_entered_at: number | null;
 	created_at: number;
 	updated_at: number;
 }
@@ -112,12 +120,45 @@ export interface ContextItemTable {
 	repo_url: string | null;
 	repo_branch: string | null;
 	repo_dir: string | null;
+	/** JSON kind-specific config; artifacts store {"artifact_type": …}. */
+	config: string | null;
 	/** Ordering within the same exact scope tuple. */
 	position: number;
 	/** Monotonic write counter — a CAS token, not history. */
 	version: number;
 	created_at: number;
 	updated_at: number;
+}
+
+/** One immutable attached version of an artifact context item. */
+export interface ArtifactVersionTable {
+	id: string;
+	context_item_id: string;
+	/** 1..N, unique per artifact. */
+	version: number;
+	/** file/text: display name. */
+	filename: string | null;
+	/** file/text: declared MIME type. */
+	content_type: string | null;
+	/** file: uploaded byte count. */
+	size_bytes: number | null;
+	/** file: opaque R2 object key; never exposed over the API. */
+	r2_key: string | null;
+	/** text: the inline document. */
+	content: string | null;
+	/** link: the URL. */
+	url: string | null;
+	/** link: optional display title. */
+	title: string | null;
+	/** pr: canonical https://github.com/{owner}/{repo}. */
+	pr_repo_url: string | null;
+	/** pr: the pull request number. */
+	pr_number: number | null;
+	/** Version number this version reaffirms, when it is a reaffirmation. */
+	reaffirmed_from: number | null;
+	actor_user_id: string | null;
+	actor_api_key_id: string | null;
+	created_at: number;
 }
 
 export interface ContextItemFileTable {
@@ -273,6 +314,7 @@ export interface Database {
 	scheduled_task: ScheduledTaskTable;
 	context_item: ContextItemTable;
 	context_item_file: ContextItemFileTable;
+	artifact_version: ArtifactVersionTable;
 	comment: CommentTable;
 	event: EventTable;
 	api_key: ApiKeyTable;

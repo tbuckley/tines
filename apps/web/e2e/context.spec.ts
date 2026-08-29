@@ -179,7 +179,7 @@ test.describe.serial('context attachments', () => {
 
 		// context_summary on the issue read is post-dedupe per-kind counts.
 		const issue = await body<IssueDetail>(await api.get(`/api/v1/issues/${issueId}`));
-		expect(issue.context_summary).toEqual({ prompts: 1, skills: 1, repos: 0 });
+		expect(issue.context_summary).toEqual({ prompts: 1, skills: 1, repos: 0, artifacts: 0 });
 	});
 
 	test('more specific items override by name; repo dirs conflict-check', async ({ request }) => {

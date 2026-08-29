@@ -2,6 +2,7 @@ import {
 	renderTemplate,
 	templateVars,
 	type AllowedTransition,
+	type ArtifactRequirementCheck,
 	type Comment,
 	type CreateCommentRequest,
 	type CreateIssueRequest,
@@ -30,6 +31,7 @@ import {
 	type ActorContext,
 	type Page
 } from './core';
+import { checkRequirements, listArtifacts, requirementSpecLabel } from './artifacts';
 import { contextSummaryForIssue } from './context';
 import { actorOf, eventInsert } from './events';
 import { requireTier } from './runners';
@@ -193,6 +195,9 @@ export function serializeIssue(row: IssueRow): Issue {
 		active_run: row.active_run_json
 			? (JSON.parse(row.active_run_json) as Issue['active_run'])
 			: null,
+		// Backfilled with created_at by migration 0011; the fallback covers
+		// rows inserted without the column (e.g. raw test fixtures).
+		state_entered_at: Number(row.state_entered_at ?? row.created_at),
 		created_at: row.created_at,
 		updated_at: row.updated_at,
 		last_activity_at: Number(row.last_event_at ?? row.created_at)
@@ -439,11 +444,25 @@ export async function getIssueDetail(
 			issueId: issue.id
 		})
 	]);
+
+	// Pre-flight requirement visibility: each allowed transition's declared
+	// requirements with live status. The artifact load only happens when some
+	// outgoing transition actually declares requirements (a handful of rows).
+	const transitionById = new Map(workflow.transitions.map((t) => [t.id, t]));
+	let allowed = allowedTransitions(workflow, issue.state.id);
+	if (allowed.some((t) => (transitionById.get(t.transition_id)?.requires ?? []).length > 0)) {
+		const artifacts = await listArtifacts(db, userId, issue.id);
+		allowed = allowed.map((t) => {
+			const requires = transitionById.get(t.transition_id)?.requires;
+			return requires?.length ? { ...t, requires: checkRequirements(requires, artifacts) } : t;
+		});
+	}
+
 	return {
 		...issue,
 		workflow,
 		comments,
-		allowed_transitions: allowedTransitions(workflow, issue.state.id),
+		allowed_transitions: allowed,
 		links,
 		context_summary: contextSummary
 	};
@@ -542,6 +561,7 @@ export async function createIssue(
 				pinned_tier: null,
 				attempt_count: 0,
 				needs_attention: 0,
+				state_entered_at: now,
 				created_at: now,
 				updated_at: now
 			})
@@ -583,17 +603,29 @@ export async function createIssue(
 }
 
 /**
- * A pin replaces routing-rule matching entirely, so it is re-route-work
- * power: control plane, even though it rides on a route run keys otherwise
- * legitimately PATCH. A field-level guard rather than a path fence — run
- * keys keep title/description/state authority here.
+ * Field-level run-key guards on the issue PATCH (the route itself stays
+ * run-key-legal — title/description authority remains):
+ *
+ * - A pin replaces routing-rule matching entirely, so it is re-route-work
+ *   power: control plane.
+ * - The forced `state` set (and the `workflow_id` change that re-seats the
+ *   state) bypasses transition validation, artifact requirements included —
+ *   an agent must not be able to route around its own gate, so the escape
+ *   hatch is human/named-key only.
  */
 export function assertPinFieldsAllowed(
 	actor: Pick<ActorContext, 'agentRunId'>,
-	body: Pick<UpdateIssueRequest, 'pinned_runner_id' | 'pinned_tier'>
+	body: Pick<UpdateIssueRequest, 'pinned_runner_id' | 'pinned_tier' | 'state' | 'workflow_id'>
 ): void {
 	if (!actor.agentRunId) return;
-	if (body.pinned_runner_id === undefined && body.pinned_tier === undefined) return;
+	if (
+		body.pinned_runner_id === undefined &&
+		body.pinned_tier === undefined &&
+		body.state === undefined &&
+		body.workflow_id === undefined
+	) {
+		return;
+	}
 	throw runKeyForbidden();
 }
 
@@ -693,6 +725,10 @@ export async function updateIssue(
 			pinned_runner_id: pinnedRunnerId,
 			pinned_tier: pinnedTier,
 			updated_at: now,
+			// Every path that changes state_id stamps state_entered_at — the
+			// timestamp artifact freshness is measured against. A workflow
+			// change re-seats the state, so it stamps too.
+			...(stateChanged || workflowChanged ? { state_entered_at: now } : {}),
 			// Any non-run-key state move is a "manual" transition: it un-parks
 			// the issue and restarts the attempt budget.
 			...(stateChanged && !actor.agentRunId ? { needs_attention: 0, attempt_count: 0 } : {})
@@ -756,6 +792,44 @@ export async function updateIssue(
 	return getIssueDetail(db, actor.userId, { id });
 }
 
+/**
+ * The structured, self-correcting 422 for a gated transition: the message
+ * names the fix, and each unmet entry carries a runnable `fix` command, so
+ * an agent can attach/reaffirm and retry the same transition without help.
+ */
+function unmetRequirements(
+	issue: IssueDetail,
+	target: AllowedTransition,
+	unmet: ArtifactRequirementCheck[]
+): ApiFail {
+	const ref = `${issue.project_name}/${issue.number}`;
+	const attachFlag: Record<string, string> = {
+		file: '--file <path>',
+		text: '--text <markdown|@file>',
+		link: '--url <url>',
+		pr: '--pr <owner/repo#N>'
+	};
+	const fixFor = (r: ArtifactRequirementCheck): string => {
+		const attach = `tines issues artifacts attach ${ref} ${r.artifact} ${attachFlag[r.type ?? 'file']}`;
+		return r.status === 'stale'
+			? `${attach} — or, if the current content still stands: tines issues artifacts reaffirm ${ref} ${r.artifact}`
+			: attach;
+	};
+	const first = unmet[0];
+	return new ApiFail(
+		422,
+		'transition_requirements_unmet',
+		`Transition "${target.name}" requires a fresh artifact "${first.artifact}"${requirementSpecLabel(first)}${
+			unmet.length > 1 ? ` (and ${unmet.length - 1} more unmet requirement${unmet.length > 2 ? 's' : ''})` : ''
+		}. Attach it (or a new version), then retry the same transition.`,
+		{
+			transition: { name: target.name, to_state: target.to_state.name },
+			state_entered_at: issue.state_entered_at,
+			unmet: unmet.map((r) => ({ ...r, fix: fixFor(r) }))
+		}
+	);
+}
+
 export async function transitionIssue(
 	db: Kysely<Database>,
 	env: Env,
@@ -796,6 +870,15 @@ export async function transitionIssue(
 		);
 	}
 
+	// Requirements are checked after resolving the target transition and
+	// before the compare-and-swap write. The check and the CAS are not
+	// atomic (an artifact could be deleted between them); that race window
+	// is accepted — the gate is a process guard, not a security boundary.
+	const unmet = (target.requires ?? []).filter((r) => r.status !== 'satisfied');
+	if (unmet.length > 0) {
+		throw unmetRequirements(current, target, unmet);
+	}
+
 	// Compare-and-swap: the update only applies while the issue is still in
 	// the state the transition was validated against, and the event insert is
 	// guarded on that same write landing — a lost race records nothing.
@@ -805,6 +888,8 @@ export async function transitionIssue(
 			.updateTable('issue')
 			.set({
 				state_id: target.to_state.id,
+				// Entering a state (re-)starts the artifact-freshness clock.
+				state_entered_at: now,
 				updated_at: now,
 				// A non-run-key transition is the spec's definition of "manual":
 				// it un-parks the issue and resets the attempt count.
