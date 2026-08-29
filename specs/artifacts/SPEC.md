@@ -1,0 +1,550 @@
+# Tines — Issue Artifacts Spec
+
+> Extends the context system ([../context/SPEC.md](../context/SPEC.md)) with a
+> fourth kind, and the workflow system with the first transition gating
+> mechanism.
+
+Context tells an agent *how* to work; artifacts are the **work products
+attached along the way** — a design document, a screenshot of the feature, a
+research note, the pull request that implements it. This spec adds
+**artifacts**: named, typed, versioned attachments on issues, and **transition
+requirements**: workflow transitions that demand a fresh artifact before they
+can be taken. The motivating loop: *design → implementation* requires a
+`design-doc` artifact; bouncing back to *design* makes the old doc stale, so a
+new version must be attached before *implementation* is reachable again.
+
+Artifacts are context items of a new kind, so they inherit the context
+system's identity, naming, events, and listing for free — but they are
+deliberately **not part of the effective context**: nothing is stitched into
+the prompt, nothing is seeded into a workspace. Agents see that artifacts
+exist (in the launch prompt's issue block) and fetch content on demand.
+
+## Goals
+
+- Attach typed artifacts to issues: uploaded **files** (including images),
+  inline **text** documents, **links**, and **PR** references.
+- Keep an immutable **version history** per artifact — attaching "a new design
+  doc" is a new version of the same named artifact, and the pre-redesign
+  version remains inspectable.
+- Declare **requirements on workflow transitions**: "this transition needs a
+  fresh artifact named *X* (optionally of type/content-type *Y*)", enforced at
+  the transition API with a structured, self-correcting error.
+- **Freshness by timestamp**: a requirement is satisfied only by an artifact
+  version created at or after the issue last entered its current state — so
+  re-entering *design* automatically invalidates the old doc with no mutation
+  machinery.
+- Preview common artifact types in the web UI: rendered Markdown, inline
+  images, text; links and PRs as outbound cards.
+- Let agents attach artifacts and satisfy their own gates via the CLI/API —
+  gates assert *the artifact exists and is fresh*, not *a human did it*
+  (human sign-off remains what `awaiting_human` states are for).
+
+## Non-goals
+
+- **Folder / multi-file artifacts**: deferred. A bundle need is N file
+  artifacts or one zip for now; a `folder` type can be added later as one more
+  artifact type (the type set is open-ended the same way context kinds are).
+- **PR status integration**: a `pr` artifact stores the reference only. No
+  fetching of open/merged/CI state (that would use the stored GitHub PAT and
+  can layer on later); no gate on "PR is merged".
+- **Workspace delivery**: artifacts are never seeded into agent workspaces and
+  never inlined into prompts. `tines issues context --out` is unchanged.
+- **Storage quotas and version pruning**: per-file and per-artifact caps ship;
+  a global per-user quota and old-version expiry are future work.
+- **Cross-issue or broader-scoped artifacts**: artifacts are issue-scoped
+  only. Project- or state-scoped attachments have no use case yet and the
+  requirement semantics don't want them.
+- **Deleting individual versions**: history is immutable; delete the whole
+  artifact or nothing (v1).
+
+## Concepts
+
+### Artifact = context item of kind `artifact`
+
+An artifact is a `context_item` with `kind = 'artifact'`, which buys identity,
+per-scope name uniqueness, `position`, timestamps, `context.*` events, and the
+Context tab listing without new machinery. Constraints specific to the kind:
+
+- **Scope**: exactly the issue dimension — `issue_id` set, `project_id` and
+  `workflow_state_id` null (the coherent-but-redundant `issue ∧ project` form
+  is normalized down to issue-only at create time). Any other scope is a 422
+  `artifact_scope_invalid`. This is a validation restriction inside the
+  artifact validator, not a change to scope machinery.
+- **Name**: slug-like (`[a-z0-9-]+`, ≤ 100 chars — the skill-name rule),
+  because the name is the requirement-matching key and appears in CLI
+  commands. Unique per issue among artifacts (the existing
+  name-per-kind-per-exact-scope rule).
+- **Artifact type**: `file`, `text`, `link`, or `pr` — stored in the item's
+  JSON `config` column (this kind introduces the `config` column the context
+  spec reserved). The type is immutable after creation, like `kind` itself:
+  a slot named `design-doc` doesn't change species between versions.
+- **Description**: the usual optional one-liner; shown in lists and in the
+  launch prompt's artifact listing.
+
+Artifacts are **excluded from the effective context**: they contribute nothing
+to the stitched prompt, `skills`, `repos`, dedupe, or `--out`. They surface
+through their own endpoints, the issue page's Artifacts panel, and the launch
+prompt's issue block (below). `context_summary` gains an `artifacts` count so
+the issue read can badge them.
+
+Creation and payload mutation go through dedicated artifact endpoints only —
+`POST /api/v1/context` with `kind: "artifact"` is a 422
+(`use_artifact_endpoints`) because file payloads can't ride a JSON create, and
+one creation path is saner than two. The generic context endpoints still
+**read** artifact items (list/show, payload summarized), still **PATCH**
+name/description (rename re-keys requirement matching, which is the point),
+and still **DELETE** them.
+
+### Versions
+
+Every artifact has ≥ 1 immutable versions, numbered from 1. Attaching content
+to an existing name appends the next version; nothing is overwritten. Each
+version records its payload, who attached it (the standard actor pair:
+user or API key, run keys included), and `created_at` — the timestamp that
+freshness reads.
+
+Per-type version payloads:
+
+- **`file`** — uploaded bytes stored in R2. Metadata in D1: `filename`
+  (display name, validated like workspace paths — no `/` needed though, it's
+  a basename), declared `content_type` (MIME), `size_bytes`, and the R2 key.
+  Cap: **25 MB** per file.
+- **`text`** — inline document stored in D1 (`content`), optional `filename`
+  (defaults to `<name>.md`), `content_type` defaulting to `text/markdown`.
+  Cap: **256 KB**. This is the "agent writes a design doc without touching
+  multipart anything" path.
+- **`link`** — a URL (`http(s)` only), optional `title`.
+- **`pr`** — a repository URL (canonicalized like `github_repository` session
+  resources: `https://github.com/{owner}/{repo}`) plus a PR number. The API
+  also accepts a full PR URL (`…/pull/123`) and splits it.
+
+A version-adding write emits `context.updated` with a summary payload
+(`{version, artifact_type, filename?, size_bytes?}`) — no new event types.
+A metadata-only edit (description via PATCH, or an upsert carrying no payload
+fields) does **not** create a version and does not refresh freshness.
+
+Versions per artifact are capped at **50** (422 `artifact_version_limit`,
+suggesting deletion of the artifact if the history is truly disposable).
+
+### Freshness
+
+**An artifact version is *fresh* iff `version.created_at ≥
+issue.state_entered_at`** — the moment the issue last entered its current
+state. Nothing is mutated on transition; staleness is derived. Consequences:
+
+- First pass through *design*: attach the doc while in *design* → fresh →
+  the gated transition passes.
+- Later, *implementation → design* (send back): `state_entered_at` advances,
+  the old version is now stale, and *design → implementation* is blocked until
+  a new version is attached. Exactly the motivating rule, with zero
+  invalidation machinery.
+- Edge, by design: an artifact attached **before** the issue entered the
+  gating state (say, during *backlog*) counts stale for a transition out of
+  *design*. The gate reads "the current round of design produced/blessed
+  this"; re-attaching the same content as a new version is the explicit
+  blessing. The UI and error payload both show *stale since* timestamps so
+  this is never mysterious.
+
+`state_entered_at` is a new column on `issue`, stamped `now` by **every** path
+that changes `state_id`: `transitionIssue`, the forced `state` set in
+`updateIssue`, and a `workflow_id` change (which re-seats the state). Existing
+rows backfill with `created_at` — deliberately permissive, so pre-existing
+attachments don't all wake up stale. Deriving entry time from
+`issue.transitioned` events was rejected: JSON event mining in queries is
+fragile, and a column stamped at the single write choke points is exact.
+
+### Transition requirements
+
+A workflow transition may declare requirements, stored as a JSON array in a
+new `requirements` column on `workflow_transition` (null/absent = none —
+the sanctioned JSON-column shape; no child table, since requirements have no
+per-row identity and are edited wholesale with the workflow definition):
+
+```jsonc
+[
+  {
+    "artifact": "design-doc",          // required slot name (slug)
+    "type": "file",                    // optional: file | text | link | pr
+    "content_type": "text/markdown",   // optional prefix match, file/text only
+    "description": "The approved design document for this round"
+  }
+]
+```
+
+- `artifact` is the slot name a matching artifact must carry.
+- `type`, when set, must equal the artifact's type.
+- `content_type`, when set, prefix-matches the **current version's** declared
+  content type (`"image/"` matches any image; only meaningful with
+  type `file` or `text` — 422 at definition time otherwise).
+- `description` is human/agent-facing: shown in the workflow editor, the
+  transition UI, the launch prompt, and the unmet-requirement error.
+
+Requirements are part of the workflow definition: declared inline on
+`WorkflowTransitionInput` (`{name, from, to, requires?}`), validated in
+`resolveDef` (slug names, known types, no duplicate slot names per
+transition), and re-created wholesale with the transitions on every
+whole-workflow PATCH — which is why nothing keys on `workflow_transition.id`.
+The system workflow `wf_standard` ships without requirements and remains
+read-only.
+
+**A requirement is satisfied** for issue *I* taking transition *T* iff an
+artifact exists on *I* with the slot name, matching `type` and `content_type`
+where set, whose current version is fresh (per above). Otherwise its status is
+`missing`, `type_mismatch`, or `stale`.
+
+### Enforcement
+
+`transitionIssue` checks requirements **after** resolving the target
+transition and **before** the compare-and-swap write. Any unmet requirement is
+a 422 in the `invalid_transition` recovery style:
+
+```jsonc
+{
+  "error": {
+    "code": "transition_requirements_unmet",
+    "message": "Transition \"approve\" requires a fresh artifact \"design-doc\" (text/markdown).",
+    "details": {
+      "transition": { "name": "approve", "to_state": "Implementation" },
+      "state_entered_at": 1724900000000,
+      "unmet": [
+        {
+          "artifact": "design-doc",
+          "type": "file",
+          "content_type": "text/markdown",
+          "description": "The approved design document for this round",
+          "status": "stale",                       // or "missing" | "type_mismatch"
+          "current_version": { "version": 2, "created_at": 1724800000000 }
+        }
+      ]
+    }
+  }
+}
+```
+
+The message names the fix, and `details` carries everything an agent needs to
+self-correct: attach or re-attach the named artifact, then retry the same
+transition. The check and the CAS are not atomic (an artifact could be deleted
+between them); that race window is accepted — the gate is a process guard, not
+a security boundary, and the force path below exists anyway.
+
+**Pre-flight visibility.** `AllowedTransition` gains a `requires` array — each
+requirement with its live `status` — so the issue page can annotate/disable
+transition buttons before anyone clicks, and the launch prompt can tell an
+agent what a move needs *before* it tries. Computed in `getIssueDetail`
+alongside the existing loads (a handful of rows per issue; cheap).
+
+**The escape hatch stays, humans only.** The forced `state` set on
+`PATCH /api/v1/issues/:id` continues to bypass transition validation,
+requirements included (that is what an escape hatch is for; it already records
+`forced: true`). But **run keys are denied the `state` and `workflow_id`
+fields** (403, the `assertPinFieldsAllowed` field-guard pattern) — an agent
+cannot route around its own gate. Everything else about the run-key fence is
+unchanged: artifact read/write endpoints are *not* control-plane (agents
+attach artifacts as a matter of course), while workflow definitions — where
+requirements live — already are.
+
+### Launch prompt
+
+The issue block gains an **Artifacts** section between *Comments* and
+*Available transitions* — a listing, never contents:
+
+```markdown
+### Artifacts
+
+- **design-doc** (file, text/markdown, v3, fresh) — The approved design document
+  Fetch: `tines issues artifacts get <project>/<number> design-doc --out .`
+- **feature-screenshot** (file, image/png, v1, attached before current state)
+- **impl-pr** (pr) — https://github.com/acme/app/pull/123
+
+*("No artifacts attached." when empty. The section ends with:
+Attach one: `tines issues artifacts attach <project>/<number> <name> --file <path>`)*
+```
+
+And each entry under *Available transitions* appends its requirements with
+live status, so the prompt alone tells an agent both its legal moves and their
+preconditions:
+
+```markdown
+- **approve** → Implementation (active): `tines issues move tines/42 "approve"`
+  Requires: artifact `design-doc` (file, text/markdown) — **stale; attach a new version first**
+```
+
+### Events, lifecycle
+
+- Artifact create / new version / metadata edit / delete emit the existing
+  `context.created` / `context.updated` / `context.deleted` with
+  `kind: "artifact"` — feeds, actor attribution, and issue/project references
+  all come from the context event machinery untouched.
+- Blocked transitions (4xx) emit nothing, like all rejected writes.
+- Lifecycle guards are inherited: artifacts are issue-scoped and issues cannot
+  be deleted in this phase, so `force_delete_context` sweeps never encounter
+  them. When issue deletion arrives, artifact R2 objects join that story.
+- Deleting an artifact deletes its D1 rows in the transactional batch, then
+  best-effort deletes its R2 objects (see Storage). Removing a *requirement*
+  from a workflow touches no artifacts — attachments outlive the gates that
+  once demanded them.
+
+## Data model (D1 / Kysely)
+
+```
+context_item          + config TEXT              -- JSON; artifact: {"artifact_type": "file"}
+                                                 -- (the column reserved by the context spec)
+
+artifact_version      id            TEXT PK      -- av_…
+                      context_item_id TEXT NOT NULL REFERENCES context_item(id) ON DELETE CASCADE
+                      version       INTEGER NOT NULL          -- 1..N, UNIQUE(context_item_id, version)
+                      filename      TEXT,        -- file/text
+                      content_type  TEXT,        -- file/text (declared MIME)
+                      size_bytes    INTEGER,     -- file
+                      r2_key        TEXT,        -- file; opaque, never exposed
+                      content       TEXT,        -- text
+                      url           TEXT,        -- link
+                      pr_repo_url   TEXT,        -- pr (canonical https://github.com/{o}/{r})
+                      pr_number     INTEGER,     -- pr
+                      actor_user_id TEXT, actor_api_key_id TEXT,
+                      created_at    INTEGER NOT NULL
+                      -- index on (context_item_id, version DESC) for current-version reads
+
+workflow_transition   + requirements TEXT        -- JSON array; NULL = none
+
+issue                 + state_entered_at INTEGER -- stamped on every state_id change;
+                                                 -- backfilled with created_at
+```
+
+Migration `0011_issue_artifacts.sql`: three `ALTER TABLE ADD COLUMN`s, one
+`CREATE TABLE`, one backfill `UPDATE` — all plain SQL executable by
+`node:sqlite`, so the unit-test harness picks it up automatically. Per-type
+payload validation is API-layer (the `KIND_FIELDS`-style trade the context
+system already makes), with a `TYPE_FIELDS` map inside the artifact validator
+rejecting foreign payload fields per artifact type
+(`artifact_payload_mismatch`).
+
+## Storage (R2)
+
+The first binary storage in the system:
+
+- New R2 binding **`ARTIFACTS`** in `wrangler.jsonc` (bucket
+  `tines-artifacts`; `tines-artifacts-preview` in the `preview` env — both
+  the root and `env.preview` blocks), plus the `Env` field in `app.d.ts`.
+- **Keys**: `art/{user_id}/{context_item_id}/{version_id}` — immutable, one
+  object per file version, never overwritten. Keys are internal; every byte in
+  and out is proxied through the Worker (no presigned URLs — they'd need
+  account-level S3 credentials, and the Worker proxy keeps auth in one place).
+- **Write order**: R2 object first, then the D1 batch (item/version rows +
+  event). If D1 fails, the orphaned R2 object is the failure mode — invisible
+  and cheap; a periodic orphan sweep is future work. Never the reverse: no D1
+  row may reference a missing object.
+- **Delete order**: D1 batch first, then best-effort R2 deletes. Same
+  invariant.
+- **Uploads** are single-shot raw-body requests (the first non-JSON endpoint):
+  the browser and CLI both send bytes with `Content-Type` and `Content-Length`
+  (required; streamed to R2, ≤ 25 MB enforced before write).
+- **Testing**: server code takes a minimal `ArtifactStore` interface
+  (`put/get/delete/deletePrefix`); the Worker passes an R2-backed one, the
+  unit-test harness an in-memory map. e2e uses wrangler's local R2 (already
+  persisted under `.wrangler-e2e`).
+
+### Serving content safely
+
+User-uploaded bytes served from our origin are an XSS surface. Downloads
+(`…/content`):
+
+- Always `X-Content-Type-Options: nosniff`.
+- Default `Content-Disposition: attachment; filename="…"` (sanitized).
+- `?inline=1` is honored **only** for an allowlist — `image/*`,
+  `application/pdf`, `text/plain`, `text/markdown` — and always adds
+  `Content-Security-Policy: sandbox` so an SVG or HTML-ish payload can't
+  script against the app origin. Everything else stays an attachment
+  regardless of the flag. Markdown previews in the UI render through the
+  existing micromark component (which escapes raw HTML), never via inline
+  serving.
+
+## API
+
+Under `/api/v1/*`, existing conventions (auth, structured 422s, cross-user
+404s). Artifact routes are name-addressed under the issue for agent
+ergonomics; run keys are allowed everywhere here.
+
+| Method & path | Purpose |
+| --- | --- |
+| `GET /api/v1/issues/:id/artifacts` | List: each artifact with type, description, current version summary, version count, `fresh` flag. |
+| `GET /api/v1/issues/:id/artifacts/:name` | Detail: the artifact plus its full version list (metadata only, no contents). |
+| `PUT /api/v1/issues/:id/artifacts/:name` | **JSON upsert** for `text` / `link` / `pr`: creates the artifact (body declares `type`) or appends a version to it. Payload fields per type; `description` settable alongside. Type mismatch with an existing artifact → 422 `artifact_type_mismatch`. A body with no payload fields is a metadata-only update (no version). |
+| `PUT /api/v1/issues/:id/artifacts/:name/file?filename=…` | **Raw-body upload** for `file`: bytes in the body, MIME in `Content-Type`, creates or appends. Same upsert/type-mismatch semantics. |
+| `GET /api/v1/issues/:id/artifacts/:name/content` | Bytes of the current version (`?version=N` for history; `?inline=1` per the serving rules). `file` streams from R2, `text` from D1; `link`/`pr` → 422 `no_content` (the reference *is* the payload). |
+| `DELETE /api/v1/issues/:id/artifacts/:name` | Delete the artifact, all versions, and its R2 objects. |
+
+The upsert PUT is deliberately the whole write surface: "attach a new design
+doc" is the same call whether the slot exists or not, which is exactly the
+shape the re-design loop and agents want. Reads and deletes also work through
+the generic `/api/v1/context` endpoints by item id (payload summarized);
+creation there is rejected as described above.
+
+`GET /api/v1/issues/:id` changes: `context_summary.artifacts` count;
+`allowed_transitions[*].requires` with live per-requirement status.
+
+Workflow API changes: `WorkflowTransitionInput` and `WorkflowTransition` gain
+`requires?: ArtifactRequirement[]`; `resolveDef` validates them; the
+serialized workflow returns them. Nothing else moves.
+
+New shared constants: `ARTIFACT_TYPES`, `ARTIFACT_FILE_MAX_BYTES = 25 MB`,
+`ARTIFACT_TEXT_MAX_BYTES = 256 KB`, `ARTIFACT_MAX_VERSIONS = 50`.
+
+## CLI
+
+```
+tines issues artifacts list <ref>
+tines issues artifacts show <ref> <name>                       # detail + versions
+tines issues artifacts attach <ref> <name> --file <path>       # file (MIME sniffed from
+                                                               #   extension, --content-type to override)
+tines issues artifacts attach <ref> <name> --text <md|@file>
+tines issues artifacts attach <ref> <name> --url <u> [--title <t>]
+tines issues artifacts attach <ref> <name> --pr <owner/repo#N | PR URL>
+tines issues artifacts get <ref> <name> [--version N] [--out <path>]   # content; link/pr prints the URL
+tines issues artifacts delete <ref> <name>
+```
+
+`attach` infers the type from the flag used; re-attaching appends a version.
+`tines issues move` already relays structured errors, so a blocked transition
+prints the unmet requirements and the attach command verbatim from the error
+details — the agent loop closes without any new CLI logic. `tines workflows`
+create/edit accept `requires` inside their transition definitions.
+
+## Web UI
+
+### Issue page — Artifacts panel
+
+A new section between *Context* and *Comments*: one row per artifact — type
+icon (deep-imported Tabler), name, description, current version (`v3 ·
+who · when`), and a **stale** badge when the current version predates
+`state_entered_at` *and* some transition out of the current state requires the
+slot (an unrequired old attachment isn't nagged about). Actions: attach new
+version, history (expands the version list with per-version download),
+delete. Create via an **Attach artifact** button — drag-and-drop / file picker
+for files, small forms for text (Markdown editor, same component as
+descriptions), link, and PR.
+
+**Previews** expand inline per row: Markdown rendered through
+`Markdown.svelte`, images via `<img>` against the inline content URL, plain
+text in a `<pre>`, PDFs and everything else as a download link; `link`/`pr`
+rows render as outbound anchors (PR shown as `owner/repo#N`).
+
+### Transitions
+
+Transition buttons in the *State & transitions* section show their
+requirements: satisfied ones as subtle checks, unmet ones as the reason the
+button is disabled (with `missing` / `stale since <time>` and the requirement
+description). The forced-state escape hatch is unchanged and visually
+separate, as today.
+
+### Workflow editor
+
+Each transition row gains a requirements editor: add/remove rows of
+(artifact slug, optional type select, optional content-type, optional
+description). Validation errors from `resolveDef` render inline.
+
+## Alternatives considered
+
+- **A dedicated `artifact` table instead of a context kind.** Rejected:
+  the context item already provides user scoping, issue attachment, name
+  uniqueness per scope, events with actor attribution, and a listing surface;
+  a parallel table would re-implement all of it. The parts of the context
+  system artifacts *don't* want (effective-context merging, prompt stitching,
+  `--out`) are exactly the parts a kind can opt out of. The version child
+  table is the sanctioned collection shape.
+- **Base64 in D1 / text-only v1** instead of R2. Rejected: screenshots are a
+  headline use case, and D1 blobs bloat the database for strictly worse
+  serving. R2 is greenfield but small: one binding, one proxy endpoint pair,
+  one storage interface.
+- **Requirements on the target state** ("entering Implementation requires…").
+  Rejected: edge-specific gating is the point — "send back to design" and
+  "approve into implementation" must gate differently even when a state has
+  several inbound paths. States can't express that; transitions can.
+- **Requirements in a child table keyed on `workflow_transition.id`.**
+  Rejected: `updateWorkflow` re-creates transition rows with fresh ids on
+  every PATCH, so the rows would be re-keyed constantly for no benefit; a JSON
+  column re-created with its row is simpler and matches how requirements are
+  edited (wholesale, inside the workflow definition).
+- **Explicit stale-marking on transition** (stamp artifacts stale when a state
+  is re-entered). Rejected: it mutates rows on a read-shaped rule, needs
+  un-marking flows, and drifts when workflows change. One timestamp
+  comparison against `state_entered_at` derives the same answer statelessly.
+- **Presigned R2 URLs** for upload/download. Rejected for v1: requires
+  account-level S3 credentials outside the Worker binding model; proxying
+  through the Worker keeps auth, caps, and headers in one place. Revisit if
+  file sizes outgrow Worker limits.
+- **Inlining small text artifacts into the launch prompt.** Rejected: the
+  user-stated contract is that artifacts are *not* auto-included; a listing
+  plus fetch commands keeps prompts bounded and the contract clean.
+- **Freshness keyed to re-entry only** (first entry into a state grandfathers
+  older attachments). Rejected: distinguishing first entry from re-entry
+  re-introduces event mining, and "fresh since the issue last entered its
+  current state" is one rule a human can hold in their head. The
+  attached-during-backlog edge is accepted and surfaced honestly in the UI.
+
+## Acceptance criteria
+
+Done when this loop works end-to-end:
+
+1. Edit a workflow so *design → implementation* (action "approve") requires
+   artifact `design-doc` with `content_type: text/markdown`; the workflow
+   PATCH round-trips `requires` and the editor shows it.
+2. An issue in *design* with no artifacts: the issue page disables "approve"
+   citing the missing `design-doc`; `tines issues move` returns the 422 with
+   `status: "missing"` and the attach command; the launch prompt's transition
+   list shows the requirement.
+3. `tines issues artifacts attach tines/42 design-doc --file design.md` (as a
+   run-key actor) creates the artifact; "approve" now succeeds. The event feed
+   shows the context event attributed to the agent.
+4. Send the issue back to *design*: the artifact shows **stale**, "approve" is
+   blocked with `status: "stale"` and the prior version's timestamp; attaching
+   a new version (v2) unblocks it; both versions remain listed and
+   downloadable, and the v1/v2 contents differ as uploaded.
+5. Upload a PNG as `feature-screenshot`: it renders inline on the issue page;
+   its download URL is attachment-by-default, inline-with-sandbox when
+   requested; a 30 MB upload is a 422 naming the cap.
+6. Attach `impl-pr` via `--pr acme/app#123`: it lists as `acme/app#123`
+   linking to the PR; `…/content` returns `no_content`; a transition requiring
+   `impl-pr` of type `pr` passes.
+7. A human force-sets the state past an unmet gate (recorded `forced: true`);
+   the same PATCH with a run key is a 403 on the `state` field.
+8. `POST /api/v1/context` with `kind: "artifact"` is a 422; the Context tab
+   and `GET /api/v1/context?issue=…` list the artifacts with type icons;
+   deleting one removes its versions and R2 objects.
+9. Artifacts appear in the launch prompt's Artifacts section with fetch
+   commands and never inline their contents; the effective-context response
+   and `tines issues context --out` are byte-identical to before this feature
+   when no artifacts exist, and ignore artifacts when they do.
+10. `pnpm check`, `pnpm test` (in-memory store), and the e2e suite (local R2)
+    pass.
+
+## Resolved questions
+
+From the design discussion:
+
+- **Storage**: R2, not D1 — screenshots are core, and this is the reserved
+  "R2 becomes a kind when binaries are needed" moment from the context spec.
+- **Staleness**: derived by timestamp (`version.created_at ≥
+  issue.state_entered_at`), no mutation on transition, no explicit stale flag.
+- **Requirement matching**: named slot + optional type/content-type — not
+  type-only, not free-form human checkboxes.
+- **Anchor**: requirements live on transitions (declared inline in the
+  workflow definition), not on target states.
+- **Agent access**: run keys get full artifact read/write — agents satisfy
+  their own gates; review gates belong to `awaiting_human` states. Workflow
+  (and thus requirement) definitions remain control-plane-fenced.
+- **Force path**: forced state-set bypasses gates but becomes human-only; run
+  keys lose the `state`/`workflow_id` fields on issue PATCH.
+- **Type set v1**: `file`, `text`, `link`, `pr`; folders deferred.
+- **Versioning**: immutable per-artifact history, current-by-default UI, kept
+  specifically so a redesign's doc can be compared against its predecessor.
+- **Prompt posture**: artifacts are listed (name/type/description + fetch
+  command) in the issue block, contents fetched on demand, never inlined.
+
+## Open questions (for review)
+
+- Is 25 MB / 256 KB / 50 versions the right set of caps?
+- Should the stale badge nag on *every* stale artifact rather than only
+  requirement-relevant ones?
+- Does `pr` need provider-agnostic shape now (GitLab et al.), or is
+  canonical-GitHub-only fine until a second provider exists?
