@@ -35,6 +35,7 @@
 	import { api } from '$lib/api';
 	import CancelRunDialog from '$lib/components/CancelRunDialog.svelte';
 	import ContextScopeChips from '$lib/components/ContextScopeChips.svelte';
+	import { confirmDialog } from '$lib/components/dialogs.svelte';
 	import Modal from '$lib/components/Modal.svelte';
 	import PatInstructions from '$lib/components/PatInstructions.svelte';
 	import RunLogViewer from '$lib/components/RunLogViewer.svelte';
@@ -324,12 +325,13 @@
 	}
 
 	async function removeRunner(runner: Runner) {
-		if (
-			!confirm(
-				`Remove runner "${runner.name}"? Its run history goes with it. (Pausing keeps identity, rules, and history warm instead.)`
-			)
-		)
-			return;
+		const ok = await confirmDialog({
+			title: `Remove runner "${runner.name}"?`,
+			body: 'Its run history goes with it. (Pausing keeps identity, rules, and history warm instead.)',
+			confirmLabel: 'Remove runner',
+			destructive: true
+		});
+		if (!ok) return;
 		try {
 			await api.deleteRunner(runner.id);
 			await invalidateAll();
@@ -337,7 +339,13 @@
 			// Reject-by-default: the 422 names referencing rules and pins; offer
 			// the force cascade (emptied rules are kept, flagged "no targets").
 			if (err instanceof ApiError && err.code === 'runner_referenced') {
-				if (confirm(`${err.message}\n\nStrip these references and remove the runner?`)) {
+				const force = await confirmDialog({
+					title: 'Strip these references and remove the runner?',
+					body: err.message,
+					confirmLabel: 'Strip and remove',
+					destructive: true
+				});
+				if (force) {
 					try {
 						await api.deleteRunner(runner.id, { force: true });
 						await invalidateAll();
@@ -463,7 +471,13 @@
 	}
 
 	async function deleteRule(rule: RoutingRule) {
-		if (!confirm(`Delete the ${rule.scope.label} routing rule? Issues it matched stop dispatching.`)) return;
+		const ok = await confirmDialog({
+			title: `Delete the ${rule.scope.label} routing rule?`,
+			body: 'Issues it matched stop dispatching.',
+			confirmLabel: 'Delete rule',
+			destructive: true
+		});
+		if (!ok) return;
 		try {
 			await api.deleteRoutingRule(rule.id);
 			ruleWarnings = [];

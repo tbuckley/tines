@@ -12,6 +12,7 @@
 	import AgentRoutingCard from '$lib/components/AgentRoutingCard.svelte';
 	import ContextItemEditor from '$lib/components/ContextItemEditor.svelte';
 	import ContextItemList from '$lib/components/ContextItemList.svelte';
+	import { confirmDialog } from '$lib/components/dialogs.svelte';
 	import StateBadge from '$lib/components/StateBadge.svelte';
 	import WorkflowEditor from '$lib/components/WorkflowEditor.svelte';
 	import WorkflowGraph from '$lib/components/WorkflowGraph.svelte';
@@ -55,24 +56,27 @@
 	 * When a save (state removal) or delete is blocked by attached context,
 	 * list what a forced delete would sweep and ask before retrying.
 	 */
-	function confirmContextSweep(err: unknown): boolean {
+	async function confirmContextSweep(err: unknown): Promise<boolean> {
 		if (!(err instanceof ApiError) || err.code !== 'context_attached') return false;
 		const items = (err.details?.context_items ?? []) as {
 			kind: string;
 			name: string;
 			scope_label: string;
 		}[];
-		const listing = items.map((i) => `  · ${i.kind} “${i.name}” (${i.scope_label})`).join('\n');
-		return confirm(
-			`This also deletes ${items.length} attached context item${items.length === 1 ? '' : 's'}:\n\n${listing}\n\nDelete them too?`
-		);
+		return confirmDialog({
+			title: 'Delete attached context too?',
+			body: `This also deletes ${items.length} attached context item${items.length === 1 ? '' : 's'}:`,
+			items: items.map((i) => `${i.kind} “${i.name}” (${i.scope_label})`),
+			confirmLabel: 'Delete them',
+			destructive: true
+		});
 	}
 
 	async function saveWorkflow(request: UpdateWorkflowRequest) {
 		try {
 			await api.updateWorkflow(data.workflow.id, request);
 		} catch (err) {
-			if (!confirmContextSweep(err)) throw err;
+			if (!(await confirmContextSweep(err))) throw err;
 			await api.updateWorkflow(data.workflow.id, { ...request, force_delete_context: true });
 		}
 		await invalidateAll();
@@ -102,12 +106,17 @@
 	}
 
 	async function deleteWorkflow() {
-		if (!confirm(`Delete workflow "${data.workflow.name}"?`)) return;
+		const ok = await confirmDialog({
+			title: `Delete workflow "${data.workflow.name}"?`,
+			confirmLabel: 'Delete workflow',
+			destructive: true
+		});
+		if (!ok) return;
 		try {
 			try {
 				await api.deleteWorkflow(data.workflow.id);
 			} catch (err) {
-				if (!confirmContextSweep(err)) throw err;
+				if (!(await confirmContextSweep(err))) throw err;
 				await api.deleteWorkflow(data.workflow.id, { force_delete_context: true });
 			}
 			await goto('/workflows');
