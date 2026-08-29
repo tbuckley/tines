@@ -16,6 +16,8 @@ This is a pnpm workspace:
 | `tines` | `packages/cli` | The `tines` CLI, published to npm as [`tines`](https://www.npmjs.com/package/tines). Talks to the same API as the web app. |
 | `@tines/shared` | `packages/shared` | Shared API types and client, used by both the web app and the CLI. |
 
+Alongside the packages: `docs/` holds operational guides (e.g. `docs/runner-daemon.md`), and `specs/` holds the design records for each subsystem — historical documents describing intent, not a description of current behaviour.
+
 ## Getting started
 
 Prereqs: Node 20+, pnpm 10 (`corepack enable`).
@@ -36,7 +38,7 @@ With the dev server running, try the CLI:
 
 ```sh
 pnpm cli time                             # dev mode (tsx, no build needed)
-pnpm cli time -- --json
+pnpm cli time --json                      # flags pass straight through; no `--` separator
 
 # or the built binary
 pnpm build
@@ -77,7 +79,7 @@ If you're actively hacking on the CLI, run `pnpm link --global` from `packages/c
 
 ## Publishing the CLI to npm
 
-Publishing lets anyone — including coding agents — install the CLI without cloning this repo. The package publishes as the bare name **`tines`** (unclaimed on npm as of August 2026; the first publish claims it). It's publish-ready: the tarball ships only `dist` (see `files` in `packages/cli/package.json`), `prepublishOnly` rebuilds before every publish, and since `@tines/shared` is bundled at build time the only runtime dependency is `commander`.
+Publishing lets anyone — including coding agents — install the CLI without cloning this repo. The package is published under the bare name **`tines`** (first published August 2026). The tarball ships only `dist` (see `files` in `packages/cli/package.json`), `prepublishOnly` rebuilds before every publish, and since `@tines/shared` is bundled at build time the only runtime dependency is `commander`.
 
 For each release:
 
@@ -88,9 +90,9 @@ npm version patch                         # or minor / major — npm rejects re-
 pnpm publish
 ```
 
-Publish from a clean checkout of `main` (pnpm's git checks enforce this; `--no-git-checks` overrides in a pinch). If the first publish is rejected with a 403 despite the name being free, npm's name rules are blocking a too-similar name — fall back to a scoped name like `@tbuckley/tines` (add `--access public`, which scoped first publishes require); the installed command is named by the `bin` field, so it stays `tines` regardless of the package name.
+Publish from a clean checkout of `main` (pnpm's git checks enforce this; `--no-git-checks` overrides in a pinch). Bumping the version is not optional — npm rejects re-publishing a version that already exists, and `packages/cli/package.json` still carries the version that is currently on the registry.
 
-Once published, anyone can install or run it:
+Anyone can install or run it:
 
 ```sh
 npm install -g tines                      # installs the `tines` command globally
@@ -143,9 +145,11 @@ One-time setup (needs `wrangler login` or a `CLOUDFLARE_API_TOKEN` in the enviro
 cd apps/web
 pnpm wrangler d1 create tines             # then paste the database_id into wrangler.jsonc
 pnpm db:migrate:remote
+pnpm wrangler r2 bucket create tines-artifacts   # the ARTIFACTS binding in wrangler.jsonc
 pnpm wrangler secret put BETTER_AUTH_SECRET
 pnpm wrangler secret put GOOGLE_CLIENT_ID
 pnpm wrangler secret put GOOGLE_CLIENT_SECRET
+pnpm wrangler secret put SECRET_ENCRYPTION_KEY   # `openssl rand -hex 32`
 # confirm EMAIL_FROM in wrangler.jsonc "vars" is on a domain onboarded to
 # Email Service (see "Magic-link sign-in" above)
 pnpm deploy
@@ -199,7 +203,9 @@ One-time preview setup:
 ```sh
 cd apps/web
 pnpm wrangler d1 create tines-preview     # paste the database_id into env.preview in wrangler.jsonc
+pnpm wrangler r2 bucket create tines-artifacts-preview
 pnpm wrangler secret put BETTER_AUTH_SECRET --env preview
+pnpm wrangler secret put SECRET_ENCRYPTION_KEY --env preview
 pnpm run build && pnpm wrangler deploy --env preview   # creates the preview worker once
 ```
 
@@ -221,4 +227,6 @@ From the repo root:
 - `pnpm dev` — run the web app dev server (with local D1 bindings emulated)
 - `pnpm build` — build all packages
 - `pnpm check` — typecheck all packages (svelte-check + tsc)
+- `pnpm test` — vitest unit tests (what CI runs before deploying)
+- `pnpm test:e2e` — Playwright e2e suite (boots the built worker under `wrangler dev` with a seeded local D1; see `apps/web/e2e/`)
 - `pnpm cli <command>` — run the CLI in dev mode
