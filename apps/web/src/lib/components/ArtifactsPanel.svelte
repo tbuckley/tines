@@ -62,8 +62,9 @@
 	const prRef = (a: Artifact) =>
 		`${(a.current_version.pr_repo_url ?? '').replace(/^https:\/\/github\.com\//, '')}#${a.current_version.pr_number}`;
 
-	/** Rows stay one line tall; the one inline survivor is the image
-	 * thumbnail — the genuinely glanceable case. */
+	/** Rows stay compact; the one inline survivor is the image thumbnail — the
+	 * genuinely glanceable case. Only the first shows on a phone, where the
+	 * full strip would leave the text column nothing to live on. */
 	function thumbnails(a: Artifact): { path?: string }[] {
 		if (a.artifact_type === 'file' && (a.current_version.content_type ?? '').startsWith('image/')) {
 			return [{}];
@@ -275,7 +276,15 @@
 					{@const stale = !artifact.fresh && requiredSlots.has(artifact.name)}
 					{@const cv = artifact.current_version}
 					{@const thumbs = thumbnails(artifact)}
-					<li class="flex items-center gap-3 px-3 py-2.5" transition:slide={{ duration: dur() }}>
+					<!-- Wraps rather than crushing the text column: the icon, thumbnails and
+					     actions cannot shrink, so on a phone the text was the only thing left to
+					     give (measured 14px, 0px with a Reaffirm button). `basis-40` makes the
+					     text claim a readable width first, pushing the actions onto their own
+					     right-aligned line instead. -->
+					<li
+						class="flex flex-wrap items-center gap-x-3 gap-y-2 px-3 py-2.5"
+						transition:slide={{ duration: dur() }}
+					>
 						<span class="text-muted-foreground shrink-0" title={artifact.artifact_type}>
 							<TypeIcon size={16} stroke={1.75} />
 						</span>
@@ -286,17 +295,17 @@
 								onclick={() => openViewer(artifact)}
 								aria-label={`View ${artifact.name}`}
 							>
-								{#each thumbs as thumb (thumb.path ?? '')}
+								{#each thumbs as thumb, i (thumb.path ?? '')}
 									<img
 										src={contentUrl(artifact.name, { path: thumb.path })}
 										alt={thumb.path ?? artifact.name}
 										loading="lazy"
-										class="h-10 w-10 rounded border object-cover"
+										class="h-10 w-10 rounded border object-cover {i > 0 ? 'hidden sm:block' : ''}"
 									/>
 								{/each}
 							</button>
 						{/if}
-						<div class="min-w-0 flex-1">
+						<div class="min-w-0 grow basis-40">
 							<div class="flex flex-wrap items-center gap-2 text-sm">
 								<button type="button" class="font-medium hover:underline" onclick={() => openViewer(artifact)}>
 									{artifact.name}
@@ -345,7 +354,7 @@
 								<span title={new Date(cv.created_at).toLocaleString()}>{relativeTime(cv.created_at)}</span>
 							</p>
 						</div>
-						<div class="flex shrink-0 items-center gap-1">
+						<div class="ml-auto flex shrink-0 items-center gap-1">
 							{#if stale}
 								<Button
 									size="sm"
