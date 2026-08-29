@@ -14,9 +14,15 @@ export const PUT: RequestHandler = api(async (event) => {
 	const { db, env, actor } = await apiContext(event);
 	// The multipart parse buffers in memory; a declared length far past the
 	// cap is rejected before reading (multipart overhead gets some slack —
-	// the exact per-file/total caps are enforced after the parse).
-	const declared = Number(event.request.headers.get('content-length'));
-	if (Number.isFinite(declared) && declared > ARTIFACT_FOLDER_MAX_BYTES + 10 * 1024 * 1024) {
+	// the exact per-file/total caps are enforced after the parse). Absence is
+	// checked before Number(): Number(null) is 0, which would let a chunked
+	// no-length upload buffer unbounded before the post-parse caps.
+	const declaredHeader = event.request.headers.get('content-length');
+	const declared = declaredHeader === null ? Number.NaN : Number(declaredHeader);
+	if (!Number.isFinite(declared)) {
+		throw new ApiFail(411, 'length_required', 'Content-Length is required for artifact uploads');
+	}
+	if (declared > ARTIFACT_FOLDER_MAX_BYTES + 10 * 1024 * 1024) {
 		throw new ApiFail(
 			422,
 			'artifact_too_large',

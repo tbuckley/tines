@@ -849,6 +849,8 @@ export interface ArtifactRequirementCheck extends ArtifactRequirement {
 	status: ArtifactRequirementStatus;
 	/** The matching artifact's current version, when one exists. */
 	current_version: { version: number; created_at: number } | null;
+	/** The matching artifact's (immutable) type, when one exists. */
+	current_type: ArtifactType | null;
 }
 
 /** A pull-request reference parsed from user input. */

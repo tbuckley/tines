@@ -285,6 +285,17 @@ function serializeArtifact(
 	};
 }
 
+// D1 caps bound parameters per statement at 100, and each id in an IN list
+// binds one — id lists are queried in chunks and re-assembled. Per-item and
+// per-version ordering survives chunking: every id lands in exactly one chunk.
+const IN_LIST_CHUNK = 90;
+
+function idChunks(ids: string[]): string[][] {
+	const chunks: string[][] = [];
+	for (let i = 0; i < ids.length; i += IN_LIST_CHUNK) chunks.push(ids.slice(i, i + IN_LIST_CHUNK));
+	return chunks;
+}
+
 async function loadVersions(
 	db: Kysely<Database>,
 	itemIds: string[]
@@ -292,22 +303,34 @@ async function loadVersions(
 	const byItem = new Map<string, VersionRow[]>();
 	const filesByVersion: FilesByVersion = new Map();
 	if (itemIds.length === 0) return { byItem, filesByVersion };
-	const rows = await versionQuery(db)
-		.where('artifact_version.context_item_id', 'in', itemIds)
-		.orderBy('artifact_version.version asc')
-		.execute();
+	const rows = (
+		await Promise.all(
+			idChunks(itemIds).map((chunk) =>
+				versionQuery(db)
+					.where('artifact_version.context_item_id', 'in', chunk)
+					.orderBy('artifact_version.version asc')
+					.execute()
+			)
+		)
+	).flat();
 	for (const row of rows) {
 		const list = byItem.get(row.context_item_id) ?? [];
 		list.push(row);
 		byItem.set(row.context_item_id, list);
 	}
 	if (rows.length > 0) {
-		const fileRows = await db
-			.selectFrom('artifact_version_file')
-			.selectAll()
-			.where('artifact_version_id', 'in', rows.map((r) => r.id))
-			.orderBy('path asc')
-			.execute();
+		const fileRows = (
+			await Promise.all(
+				idChunks(rows.map((r) => r.id)).map((chunk) =>
+					db
+						.selectFrom('artifact_version_file')
+						.selectAll()
+						.where('artifact_version_id', 'in', chunk)
+						.orderBy('path asc')
+						.execute()
+				)
+			)
+		).flat();
 		for (const file of fileRows) {
 			const list = filesByVersion.get(file.artifact_version_id) ?? [];
 			list.push(file);
@@ -390,7 +413,8 @@ export function checkRequirements(
 			status,
 			current_version: artifact
 				? { version: artifact.current_version.version, created_at: artifact.current_version.created_at }
-				: null
+				: null,
+			current_type: artifact ? artifact.artifact_type : null
 		};
 	});
 }
@@ -505,6 +529,40 @@ function prPayload(body: UpsertArtifactRequest): VersionPayload {
 
 // ---------------------------------------------------------------------------
 // Writes
+
+const VERSION_RACE_RETRIES = 3;
+
+/** The constraint violation a lost `version = last + 1` race raises. */
+function isUniqueConstraintViolation(err: unknown): boolean {
+	const message = err instanceof Error ? err.message : String(err);
+	return /UNIQUE constraint/i.test(message) || /SQLITE_CONSTRAINT/i.test(message);
+}
+
+/**
+ * Concurrent attaches to the same name race on `version = last + 1`: the
+ * loser's batch hits UNIQUE(context_item_id, version). Re-running the write
+ * re-reads the history and takes the next free slot, so a concurrent attach
+ * loses nothing (per the spec) instead of surfacing a raw constraint 500.
+ * A retried upload re-puts its object under a fresh version id; the failed
+ * attempt's object is an invisible orphan, the already-accepted failure
+ * mode. A race that outlasts the retries becomes a structured 409.
+ */
+async function retryVersionRace<T>(write: () => Promise<T>): Promise<T> {
+	for (let attempt = 0; ; attempt++) {
+		try {
+			return await write();
+		} catch (err) {
+			if (err instanceof ApiFail || !isUniqueConstraintViolation(err)) throw err;
+			if (attempt >= VERSION_RACE_RETRIES) {
+				throw new ApiFail(
+					409,
+					'conflict',
+					'Concurrent writes kept appending to this artifact while this one was in flight; retry'
+				);
+			}
+		}
+	}
+}
 
 function scopeEventPayload(issue: IssueRef) {
 	return {
@@ -716,7 +774,18 @@ function typeMismatch(name: string, existing: ArtifactType, requested: ArtifactT
  * or appends a version to it. A body with no payload fields is a
  * metadata-only update and does not create a version.
  */
-export async function upsertArtifact(
+export function upsertArtifact(
+	db: Kysely<Database>,
+	env: Env,
+	actor: ActorContext,
+	issueId: string,
+	rawName: string,
+	body: UpsertArtifactRequest
+): Promise<Artifact> {
+	return retryVersionRace(() => upsertArtifactOnce(db, env, actor, issueId, rawName, body));
+}
+
+async function upsertArtifactOnce(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
@@ -842,7 +911,18 @@ export async function upsertArtifact(
  * the D1 batch — a failed batch orphans an invisible object, never the
  * reverse (no row may reference a missing object).
  */
-export async function uploadArtifactFile(
+export function uploadArtifactFile(
+	db: Kysely<Database>,
+	env: Env,
+	actor: ActorContext,
+	issueId: string,
+	rawName: string,
+	file: { filename: string; contentType: string; bytes: Uint8Array }
+): Promise<Artifact> {
+	return retryVersionRace(() => uploadArtifactFileOnce(db, env, actor, issueId, rawName, file));
+}
+
+async function uploadArtifactFileOnce(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
@@ -902,7 +982,18 @@ export interface FolderUploadFile {
  * (the agent collects locally and attaches once; see the spec's Non-goals).
  * Same object-then-batch write order as file uploads, pluralized.
  */
-export async function uploadArtifactFolder(
+export function uploadArtifactFolder(
+	db: Kysely<Database>,
+	env: Env,
+	actor: ActorContext,
+	issueId: string,
+	rawName: string,
+	files: FolderUploadFile[]
+): Promise<Artifact> {
+	return retryVersionRace(() => uploadArtifactFolderOnce(db, env, actor, issueId, rawName, files));
+}
+
+async function uploadArtifactFolderOnce(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
@@ -1008,7 +1099,17 @@ export async function uploadArtifactFolder(
  * current version's payload (same R2 object(s); no bytes move) with a fresh
  * timestamp and the calling actor.
  */
-export async function reaffirmArtifact(
+export function reaffirmArtifact(
+	db: Kysely<Database>,
+	env: Env,
+	actor: ActorContext,
+	issueId: string,
+	name: string
+): Promise<Artifact> {
+	return retryVersionRace(() => reaffirmArtifactOnce(db, env, actor, issueId, name));
+}
+
+async function reaffirmArtifactOnce(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,

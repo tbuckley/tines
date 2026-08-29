@@ -196,13 +196,17 @@
 				const request: UpdateContextItemRequest = {
 					name,
 					description,
-					project_id: projectId || null,
-					workflow_state_id: stateId || null,
-					issue_id: issueId || null,
 					// Surface concurrent edits (e.g. an agent's append) instead of
 					// silently overwriting them.
 					expected_version: item.version
 				};
+				// An artifact's scope is structural (exactly its issue) and the
+				// server rejects any change; a merge-patch omitting it is a no-op.
+				if (kind !== 'artifact') {
+					request.project_id = projectId || null;
+					request.workflow_state_id = stateId || null;
+					request.issue_id = issueId || null;
+				}
 				if (kind === 'prompt') request.body = body;
 				if (kind === 'skill') request.files = files.map(({ path, content }): ContextFile => ({ path, content }));
 				if (kind === 'repo') {
@@ -282,7 +286,12 @@
 				required
 				placeholder={kind === 'skill' ? 'slug-like: review-checklist' : 'e.g. house conventions'}
 			/>
-			{#if kind !== 'prompt'}
+			{#if kind === 'artifact'}
+				<p class="text-muted-foreground text-xs">
+					The requirement-matching key (slug-like) — renaming changes which transition requirements
+					this artifact satisfies.
+				</p>
+			{:else if kind !== 'prompt'}
 				<p class="text-muted-foreground text-xs">
 					A more specific item with the same name overrides this one in the effective context.
 				</p>
@@ -357,7 +366,7 @@
 					</div>
 				{/each}
 			</div>
-		{:else}
+		{:else if kind === 'repo'}
 			<div class="space-y-1.5">
 				<label class="text-sm font-medium" for="ctx-url">Repository URL</label>
 				<Input id="ctx-url" bind:value={repoUrl} required placeholder="https://github.com/acme/api.git" />
@@ -372,9 +381,22 @@
 					<Input id="ctx-dir" bind:value={repoDir} placeholder={derivedDir || 'derived from URL'} />
 				</div>
 			</div>
+		{:else}
+			<p class="text-muted-foreground rounded-md border px-3 py-2 text-xs">
+				This artifact's content and version history are managed from the Artifacts panel on its
+				issue page{selectedIssue ? ` (${selectedIssue.project_name}/${selectedIssue.number})` : ''} —
+				here you can rename it or edit its description.
+			</p>
 		{/if}
 
-		<!-- scope -->
+		<!-- scope: an artifact is pinned to exactly its issue, so there is nothing to choose -->
+		{#if kind === 'artifact'}
+			<p class="text-muted-foreground text-xs">
+				Scoped to its issue{selectedIssue
+					? `: ${selectedIssue.project_name}/${selectedIssue.number}`
+					: ''} — an artifact's scope cannot be changed.
+			</p>
+		{:else}
 		<fieldset class="space-y-2 rounded-md border p-3">
 			<legend class="px-1 text-sm font-medium">Scope</legend>
 			<p class="text-muted-foreground text-xs">
@@ -420,6 +442,7 @@
 				{/if}
 			</div>
 		</fieldset>
+		{/if}
 
 		{#if errorMessage}
 			<p class="border-destructive/40 bg-destructive/10 text-destructive rounded-md border px-3 py-2 text-xs">

@@ -27,7 +27,10 @@ export const PUT: RequestHandler = api(async (event) => {
 	}
 	// The declared length gates before any bytes are buffered; the actual
 	// size is re-checked after the read (the store never sees an oversize).
-	const declared = Number(event.request.headers.get('content-length'));
+	// The header must be checked for absence before Number(): Number(null)
+	// is 0, which would wave a chunked no-length upload past both gates.
+	const declaredHeader = event.request.headers.get('content-length');
+	const declared = declaredHeader === null ? Number.NaN : Number(declaredHeader);
 	if (!Number.isFinite(declared)) {
 		throw new ApiFail(411, 'length_required', 'Content-Length is required for artifact uploads');
 	}

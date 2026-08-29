@@ -220,14 +220,82 @@ describe('issue artifacts', () => {
 				current_version: { version: 1, content_type: 'image/png', created_at: 5 } as Artifact['current_version']
 			}
 		];
-		expect(checkRequirements([{ artifact: 'shot', content_type: 'image/' }], artifacts)[0].status).toBe(
-			'satisfied'
-		);
+		expect(checkRequirements([{ artifact: 'shot', content_type: 'image/' }], artifacts)[0]).toMatchObject({
+			status: 'satisfied',
+			current_type: 'file'
+		});
 		expect(checkRequirements([{ artifact: 'shot', type: 'pr' }], artifacts)[0].status).toBe('type_mismatch');
 		expect(
 			checkRequirements([{ artifact: 'shot', content_type: 'text/markdown' }], artifacts)[0].status
 		).toBe('type_mismatch');
-		expect(checkRequirements([{ artifact: 'other' }], artifacts)[0].status).toBe('missing');
+		expect(checkRequirements([{ artifact: 'other' }], artifacts)[0]).toMatchObject({
+			status: 'missing',
+			current_type: null
+		});
+	});
+
+	it('emits fix commands that respect the existing artifact type (which is immutable)', async () => {
+		const wf = await createWorkflow(t.db, t.env, actor, {
+			name: 'Fix commands',
+			initial_state: 'A',
+			states: [
+				{ name: 'A', category: 'active' },
+				{ name: 'B', category: 'active' }
+			],
+			transitions: [
+				{
+					name: 'go',
+					from: 'A',
+					to: 'B',
+					requires: [
+						{ artifact: 'notes' },
+						{ artifact: 'spec', type: 'text' },
+						{ artifact: 'shot', type: 'file', content_type: 'image/' }
+					]
+				}
+			]
+		});
+		const issue = await createIssue(t.db, t.env, actor, PROJECT, { title: 'Fixes', workflow_id: wf.id });
+
+		// notes: attached as text, then made stale by re-entering the state.
+		await upsertArtifact(t.db, t.env, actor, issue.id, 'notes', { type: 'text', content: 'n' });
+		tick();
+		await updateIssue(t.db, t.env, actor, issue.id, { state: 'B' });
+		tick();
+		await updateIssue(t.db, t.env, actor, issue.id, { state: 'A' });
+		// spec: the slot holds a link — the wrong immutable type for the text requirement.
+		tick();
+		await upsertArtifact(t.db, t.env, actor, issue.id, 'spec', { type: 'link', url: 'https://x.test/spec' });
+		// shot: the right type (file), the wrong content type.
+		await uploadArtifactFile(t.db, t.env, actor, issue.id, 'shot', {
+			filename: 'shot.txt',
+			contentType: 'text/plain',
+			bytes: enc('not an image')
+		});
+
+		let error: ApiFail | undefined;
+		await transitionIssue(t.db, t.env, actor, issue.id, { action: 'go' }).catch((e) => (error = e));
+		expect(error).toMatchObject({ status: 422, code: 'transition_requirements_unmet' });
+		const unmet = new Map(
+			(error!.details!.unmet as (Record<string, unknown> & { artifact: string })[]).map((r) => [r.artifact, r])
+		);
+
+		// Stale over an untyped requirement: a new version keeps the slot's own
+		// type (--text, not the file default), or the reaffirm alternative.
+		expect(unmet.get('notes')).toMatchObject({ status: 'stale', current_type: 'text' });
+		expect(unmet.get('notes')!.fix).toContain('attach demo/1 notes --text');
+		expect(unmet.get('notes')!.fix).toContain('reaffirm demo/1 notes');
+
+		// Wrong immutable type: a same-name attach would 422, so the fix
+		// deletes the slot before re-attaching the required type.
+		expect(unmet.get('spec')).toMatchObject({ status: 'type_mismatch', current_type: 'link' });
+		expect(unmet.get('spec')!.fix).toContain('delete demo/1 spec && ');
+		expect(unmet.get('spec')!.fix).toContain('attach demo/1 spec --text');
+
+		// content_type-only miss on the right type: a plain re-attach suffices.
+		expect(unmet.get('shot')).toMatchObject({ status: 'type_mismatch', current_type: 'file' });
+		expect(unmet.get('shot')!.fix).toContain('attach demo/1 shot --file');
+		expect(unmet.get('shot')!.fix).not.toContain('delete');
 	});
 
 	it('counts an artifact attached before the gating state as stale, per the strict rule', async () => {
@@ -530,6 +598,65 @@ describe('issue artifacts', () => {
 		]);
 		const moved = await transitionIssue(t.db, t.env, actor, issue.id, { action: 'submit' });
 		expect(moved.state.name).toBe('Review');
+	});
+
+	// -------------------------------------------------------------------------
+	// Write races and read scale
+
+	it('retries a lost version-slot race instead of surfacing the raw constraint error', async () => {
+		const issue = await createIssue(t.db, t.env, actor, PROJECT, { title: 'Race' });
+		await attachDoc(issue.id, '# v1');
+
+		// Simulate a concurrent attach winning `version = last + 1`: just before
+		// this write's batch lands, a rival row takes version 2, so the batch
+		// hits UNIQUE(context_item_id, version) and the retry re-reads to v3.
+		const itemId = t.all(`SELECT id FROM context_item WHERE name = 'design-doc'`)[0].id as string;
+		const originalBatch = t.env.DB.batch.bind(t.env.DB);
+		let injected = false;
+		(t.env.DB as { batch: typeof originalBatch }).batch = async (statements) => {
+			if (!injected) {
+				injected = true;
+				t.sqlite
+					.prepare(
+						`INSERT INTO artifact_version (id, context_item_id, version, content, created_at)
+						 VALUES ('av_rival', ?, 2, '# rival', ?)`
+					)
+					.run(itemId, Date.now());
+			}
+			return originalBatch(statements);
+		};
+
+		tick();
+		const updated = await attachDoc(issue.id, '# v2');
+		expect(updated.current_version).toMatchObject({ version: 3 });
+		expect(updated.version_count).toBe(3);
+		const detail = await getArtifactDetail(t.db, USER, issue.id, 'design-doc');
+		expect(detail.versions.map((v) => v.version)).toEqual([1, 2, 3]);
+	});
+
+	it('loads artifact lists past the per-query bound-parameter chunk size intact', async () => {
+		const issue = await createIssue(t.db, t.env, actor, PROJECT, { title: 'Many' });
+		// 95 artifacts (> one 90-id chunk), a couple with a second version so
+		// per-item ordering across the reassembled chunks is observable.
+		for (let i = 0; i < 95; i++) {
+			tick(1); // distinct created_at per item — the list orders by it
+			await upsertArtifact(t.db, t.env, actor, issue.id, `slot-${String(i).padStart(2, '0')}`, {
+				type: 'text',
+				content: `v1 of ${i}`
+			});
+		}
+		tick();
+		await upsertArtifact(t.db, t.env, actor, issue.id, 'slot-00', { content: 'v2 of 0' });
+		await upsertArtifact(t.db, t.env, actor, issue.id, 'slot-94', { content: 'v2 of 94' });
+
+		const artifacts = await listArtifacts(t.db, USER, issue.id);
+		expect(artifacts).toHaveLength(95);
+		expect(artifacts.map((a) => a.name)).toEqual(
+			Array.from({ length: 95 }, (_, i) => `slot-${String(i).padStart(2, '0')}`)
+		);
+		expect(artifacts[0].current_version).toMatchObject({ version: 2 });
+		expect(artifacts[94].current_version).toMatchObject({ version: 2 });
+		expect(artifacts[1].current_version).toMatchObject({ version: 1 });
 	});
 
 	// -------------------------------------------------------------------------

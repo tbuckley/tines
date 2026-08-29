@@ -811,10 +811,26 @@ function unmetRequirements(
 		pr: '--pr <owner/repo#N>'
 	};
 	const fixFor = (r: ArtifactRequirementCheck): string => {
-		const attach = `tines issues artifacts attach ${ref} ${r.artifact} ${attachFlag[r.type ?? 'file']}`;
-		return r.status === 'stale'
-			? `${attach} — or, if the current content still stands: tines issues artifacts reaffirm ${ref} ${r.artifact}`
-			: attach;
+		const attach = (type: string) => `tines issues artifacts attach ${ref} ${r.artifact} ${attachFlag[type]}`;
+		if (r.status === 'missing' || r.current_type === null) return attach(r.type ?? 'file');
+		if (r.status === 'stale') {
+			// The slot passed the type checks, so a new version keeps the
+			// artifact's own type — the artifact type is immutable, and an
+			// attach under the requirement's declared type would 422 whenever
+			// the two differ (e.g. an untyped requirement over a text slot).
+			return `${attach(r.current_type)} — or, if the current content still stands: tines issues artifacts reaffirm ${ref} ${r.artifact}`;
+		}
+		// type_mismatch: when the artifact's own type can still satisfy the
+		// requirement (a content_type-only miss on a file/text slot), a new
+		// version under the same name is enough; otherwise the slot holds the
+		// wrong immutable type and must be deleted before re-attaching.
+		const reattachable =
+			r.type === undefined
+				? r.current_type === 'file' || r.current_type === 'text'
+				: r.current_type === r.type;
+		return reattachable
+			? attach(r.current_type)
+			: `tines issues artifacts delete ${ref} ${r.artifact} && ${attach(r.type ?? 'file')}`;
 	};
 	const first = unmet[0];
 	return new ApiFail(

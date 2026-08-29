@@ -99,6 +99,7 @@
 		<option value="prompt">Prompts</option>
 		<option value="skill">Skills</option>
 		<option value="repo">Repos</option>
+		<option value="artifact">Artifacts</option>
 	</Select>
 	<Select
 		value={data.filters.project ?? ''}
