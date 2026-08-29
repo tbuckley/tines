@@ -1,11 +1,13 @@
 import { defaultLabelColor, LABEL_COLORS } from '@tines/shared';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { PROJECT, USER, addIssue, seedBase } from '../supervisor/test-fixtures';
-import { ApiFail, isControlPlanePath, type ActorContext } from './core';
+import { ApiFail, isControlPlanePath, runAtomic, type ActorContext } from './core';
 import { listIssues } from './issues';
 import {
 	addIssueLabels,
 	createLabel,
+	issueLabelInserts,
+	labelInserts,
 	deleteLabel,
 	listLabels,
 	normalizeLabelName,
@@ -54,6 +56,12 @@ describe('normalizeLabelName', () => {
 	it('rejects empty, overlong, control-char, and leading-dash names', () => {
 		for (const bad of ['', '   ', 'x'.repeat(51), 'a\nb', '-negated']) {
 			expect(() => normalizeLabelName(bad)).toThrowError(ApiFail);
+		}
+	});
+
+	it('reports the real cap however long the name is', () => {
+		for (const long of ['x'.repeat(51), 'x'.repeat(5000)]) {
+			expect(() => normalizeLabelName(long)).toThrowError('at most 50 characters');
 		}
 	});
 });
@@ -264,5 +272,59 @@ describe('reading and filtering by label', () => {
 	it('matches by label id too', async () => {
 		const bug = (await listLabels(t.db, USER)).find((l) => l.name === 'bug')!;
 		expect((await search([bug.id])).map((i) => i.id).sort()).toEqual([ids.both, ids.bugOnly].sort());
+	});
+});
+
+/**
+ * Two requests can both miss the resolve for a brand-new name and both mint an
+ * id. Driven through the exported pieces because the interleaving cannot be
+ * produced through a single public call.
+ */
+describe('losing a get-or-create race', () => {
+	it('attaches the winner’s label instead of failing on the unique index', async () => {
+		const issue = addIssue(t, { title: 'a' });
+		// Request A resolves first: "bug" does not exist, so an id is minted.
+		const mine = await resolveOrCreateLabels(t.db, human, ['bug']);
+		// Request B lands in between and creates "bug" with a different id.
+		const winner = await createLabel(t.db, t.env, human, { name: 'bug' });
+		expect(mine.toCreate[0].id).not.toBe(winner.id);
+
+		// Now A's batch runs. Before, its label insert hit `label_user_name_uq`
+		// and surfaced as a 500; now it is ignored and the attach binds by name.
+		await runAtomic(t.env, [
+			...labelInserts(t.db, human, mine.toCreate),
+			...issueLabelInserts(t.db, human, { id: issue, project_id: PROJECT }, mine.labels, 1)
+		]);
+
+		// One label in the library, used once, and the attach points at it.
+		expect((await listLabels(t.db, USER)).map((l) => `${l.name}:${l.issue_count}`)).toEqual([
+			'bug:1'
+		]);
+		const { items } = await listIssues(t.db, USER, { labels: ['bug'] }, { cursor: null, limit: 50 });
+		expect(items.map((i) => i.labels.map((l) => l.id))).toEqual([[winner.id]]);
+	});
+});
+
+describe('label reads are scoped to the owner', () => {
+	/**
+	 * Defence in depth: no write path can attach another user's label, but the
+	 * read SQL should not be the only thing standing on that being true.
+	 */
+	it('ignores a cross-user issue_label row on both the read and the filter', async () => {
+		const issue = addIssue(t, { title: 'a' });
+		await addIssueLabels(t.db, t.env, human, issue, ['bug']);
+		t.sqlite.exec(`
+			INSERT INTO user (id, name, email, emailVerified, createdAt, updatedAt)
+				VALUES ('u2', 'bob', 'b@example.com', 1, 0, 0);
+			INSERT INTO label (id, user_id, name, color, description, created_at, updated_at)
+				VALUES ('lbl_foreign', 'u2', 'secret', 'red', '', 0, 0);
+			INSERT INTO issue_label (issue_id, label_id, created_at)
+				VALUES ('${issue}', 'lbl_foreign', 0);
+		`);
+		const page = { cursor: null, limit: 50 };
+		const all = await listIssues(t.db, USER, {}, page);
+		expect(all.items[0].labels.map((l) => l.name)).toEqual(['bug']);
+		expect((await listIssues(t.db, USER, { labels: ['secret'] }, page)).items).toEqual([]);
+		expect((await listIssues(t.db, USER, { labels: ['lbl_foreign'] }, page)).items).toEqual([]);
 	});
 });

@@ -28,7 +28,7 @@ const isControlChar = (c: string): boolean => {
  * every table and chip that renders the name.
  */
 export function normalizeLabelName(raw: unknown, field = 'name'): string {
-	const name = requireString(raw, field, { max: 200 }).trim();
+	const name = requireString(raw, field).trim();
 	if (name.length === 0) {
 		throw new ApiFail(422, 'invalid_field', `"${field}" must not be empty`, { field });
 	}
@@ -313,17 +313,24 @@ export async function resolveOrCreateLabels(
 	return { labels, toCreate };
 }
 
-/** Compiled inserts for labels created on the fly, for the caller's batch. */
+/**
+ * Compiled inserts for labels created on the fly, for the caller's batch.
+ *
+ * `OR IGNORE` makes get-or-create race-safe: two concurrent applies of the
+ * same new name both miss the resolve and both mint an id, and the loser's
+ * insert would otherwise fail `label_user_name_uq` and surface as a 500.
+ * Ignoring it leaves the winner's row in place — and `issueLabelInserts`
+ * attaches by name, so the loser still ends up pointing at that row.
+ */
 export function labelInserts(
 	db: Kysely<Database>,
 	actor: ActorContext,
 	toCreate: Label[]
 ): CompiledQuery[] {
 	return toCreate.flatMap((l) => [
-		db
-			.insertInto('label')
-			.values({ ...l, user_id: actor.userId })
-			.compile(),
+		sql`INSERT OR IGNORE INTO label (id, user_id, name, color, description, created_at, updated_at)
+			VALUES (${l.id}, ${actor.userId}, ${l.name}, ${l.color}, ${l.description},
+				${l.created_at}, ${l.updated_at})`.compile(db),
 		eventInsert(db, actor, {
 			type: 'label.created',
 			payload: { label_id: l.id, name: l.name, color: l.color }
@@ -340,8 +347,12 @@ export function issueLabelInserts(
 	now: number
 ): CompiledQuery[] {
 	return labels.flatMap((l) => [
+		// By name, not by the id in hand: if this label was created on the fly
+		// and a concurrent request won the insert, the winner's id is the one
+		// that exists. For an already-resolved label the name is its own id.
 		sql`INSERT OR IGNORE INTO issue_label (issue_id, label_id, created_at)
-			VALUES (${issue.id}, ${l.id}, ${now})`.compile(db),
+			SELECT ${issue.id}, id, ${now} FROM label
+			WHERE user_id = ${actor.userId} AND name = ${l.name} COLLATE NOCASE`.compile(db),
 		eventInsert(db, actor, {
 			type: 'issue.labeled',
 			issueId: issue.id,
@@ -405,10 +416,16 @@ export async function addIssueLabels(
 			...issueLabelInserts(db, actor, issue, added, now)
 		]);
 	}
+	const final = await loadIssueLabels(db, issue.id);
+	// Report the chips that actually landed: a label created on the fly may
+	// have lost the insert race to a concurrent request with the same name,
+	// in which case the id in hand was ignored and the winner's is live.
+	const byName = new Map(final.map((l) => [l.name.toLowerCase(), l]));
+	const landed = (l: Label) => byName.get(l.name.toLowerCase()) ?? chip(l);
 	return {
-		labels: await loadIssueLabels(db, issue.id),
-		added: added.map(chip),
-		created: toCreate.filter((c) => added.some((a) => a.id === c.id)).map(chip)
+		labels: final,
+		added: added.map(landed),
+		created: toCreate.filter((c) => added.some((a) => a.id === c.id)).map(landed)
 	};
 }
 

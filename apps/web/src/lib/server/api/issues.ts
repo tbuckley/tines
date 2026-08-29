@@ -148,7 +148,7 @@ export function issueQuery(db: Kysely<Database>, userId: string) {
 						SELECT lb.id, lb.name, lb.color
 						FROM issue_label il
 						JOIN label lb ON lb.id = il.label_id
-						WHERE il.issue_id = issue.id
+						WHERE il.issue_id = issue.id AND lb.user_id = ${userId}
 						ORDER BY lb.name COLLATE NOCASE
 					) AS l
 				)`.as('labels_json'),
@@ -301,7 +301,8 @@ export async function listIssues(
 		q = q.where(
 			sql<boolean>`EXISTS (
 				SELECT 1 FROM issue_label il JOIN label l ON l.id = il.label_id
-				WHERE il.issue_id = issue.id AND (l.id = ${ref} OR l.name = ${ref} COLLATE NOCASE)
+				WHERE il.issue_id = issue.id AND l.user_id = ${userId}
+					AND (l.id = ${ref} OR l.name = ${ref} COLLATE NOCASE)
 			)`
 		);
 	}

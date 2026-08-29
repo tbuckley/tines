@@ -1373,6 +1373,13 @@ function requirementStatusLabel(r: ArtifactRequirementCheck): string {
 	}
 }
 
+/**
+ * How many label names the prompt spells out before falling back to a count.
+ * The vocabulary is an affordance, not a reference: past a few dozen the list
+ * costs more tokens than it saves, and `tines labels list` has the rest.
+ */
+const PROMPT_LABEL_VOCABULARY_MAX = 40;
+
 export function issueBlock(
 	issue: IssueDetail,
 	context: EffectiveContext,
@@ -1398,10 +1405,15 @@ export function issueBlock(
 	if (issue.labels.length > 0) {
 		lines.push(`Labels: ${issue.labels.map((l) => l.name).join(', ')}`, '');
 	}
+	const vocabulary =
+		labelVocabulary.length > PROMPT_LABEL_VOCABULARY_MAX
+			? `${labelVocabulary.slice(0, PROMPT_LABEL_VOCABULARY_MAX).join(', ')}, ` +
+				`+${labelVocabulary.length - PROMPT_LABEL_VOCABULARY_MAX} more (\`tines labels list\`)`
+			: labelVocabulary.join(', ');
 	lines.push(
 		`Label it: \`tines issues label ${ref} <name...>\`` +
 			(labelVocabulary.length > 0
-				? ` (existing labels only: ${labelVocabulary.join(', ')})`
+				? ` (existing labels only: ${vocabulary})`
 				: ' (no labels exist yet — ask a human to add one)'),
 		'',
 		'### Comments',

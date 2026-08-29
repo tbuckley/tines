@@ -335,6 +335,13 @@ describe('buildLaunchPrompt', () => {
 		expect(text).toContain('existing labels only: bug, chore');
 	});
 
+	it('caps the spelled-out vocabulary rather than inlining a whole library', () => {
+		const many = Array.from({ length: 45 }, (_, i) => `label-${i}`);
+		const text = buildLaunchPrompt(emptyContext, issue, [], many);
+		expect(text).toContain('label-39, +5 more (`tines labels list`)');
+		expect(text).not.toContain('label-40');
+	});
+
 	it('omits the label line when the issue has none, and says so when none exist', () => {
 		const text = buildLaunchPrompt(emptyContext, issue, [], []);
 		expect(text).not.toContain('Labels:');
