@@ -83,11 +83,11 @@
 		{:else if text === null}
 			<p class="text-muted-foreground p-4 text-center text-sm">Loading…</p>
 		{:else if view === 'rendered'}
-			<div class="max-h-96 overflow-y-auto rounded-md border p-3 text-sm">
+			<div class="rounded-md border p-3 text-sm">
 				<Markdown source={text} />
 			</div>
 		{:else}
-			<pre class="bg-muted/40 max-h-96 overflow-auto rounded-md border p-3 font-mono text-xs whitespace-pre-wrap">{text}</pre>
+			<pre class="bg-muted/40 overflow-x-auto rounded-md border p-3 font-mono text-xs whitespace-pre-wrap">{text}</pre>
 		{/if}
 	</div>
 </Modal>
