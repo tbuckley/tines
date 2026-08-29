@@ -1,5 +1,5 @@
 import type { IssueDetail, Project } from '@tines/shared';
-import { expect, test, type Locator } from '@playwright/test';
+import { expect, test, type Locator, type Page } from '@playwright/test';
 import { ALICE } from './constants.mjs';
 import { apiClient, body, runId, signIn } from './helpers';
 
@@ -51,6 +51,12 @@ test.beforeAll(async ({ playwright }) => {
 		headers: { authorization: `Bearer ${ALICE.apiKey}` },
 		multipart
 	});
+	// The page behind has to be taller than the phone viewport for the scroll
+	// lock assertions below to mean anything.
+	await api.post(`/api/v1/issues/${issue.id}/comments`, {
+		body: Array.from({ length: 40 }, (_, i) => `Comment paragraph ${i + 1}.`).join('\n\n')
+	});
+
 	await request.dispose();
 });
 
@@ -117,17 +123,68 @@ test('a folder set stays within the viewport and dismissable on a phone', async 
 	await expect(dialog).toBeHidden();
 });
 
+/**
+ * Scroll the page behind the way a user would — a wheel over the backdrop strip
+ * at the screen edge — and report where it ended up. Deliberately not
+ * `window.scrollTo`: `overflow: hidden` still allows programmatic scrolling, so
+ * that would report 400 for a page that no user can move (measured).
+ */
+async function wheelPageBehind(page: Page): Promise<number> {
+	await page.evaluate(() => window.scrollTo(0, 0));
+	await page.mouse.move(5, 400);
+	await page.mouse.wheel(0, 400);
+	await page.waitForTimeout(250);
+	return page.evaluate(() => window.scrollY);
+}
+
+/** The page behind is long enough that a failure to lock is visible. */
+async function expectPageBehindScrolls(page: Page): Promise<void> {
+	await expect(async () => {
+		expect(await wheelPageBehind(page)).toBeGreaterThan(0);
+	}).toPass({ timeout: 10_000 });
+}
+
 test('the page behind does not scroll while the viewer is open', async ({ page }) => {
 	await page.setViewportSize(PHONE);
 	await page.goto(issueUrl());
 
 	const dialog = page.getByRole('dialog', { name: 'Artifact viewer' });
 	await openViewer(page.getByRole('button', { name: /^View long-doc/ }), dialog);
-	expect(await page.evaluate(() => document.body.style.overflow)).toBe('hidden');
+
+	// Behavioural, not `body.style.overflow === 'hidden'`: any lock that works
+	// passes this, and a lock that has been defeated fails it.
+	expect(await wheelPageBehind(page)).toBe(0);
 
 	await dialog.getByRole('button', { name: 'Close' }).click();
 	await expect(dialog).toBeHidden();
-	expect(await page.evaluate(() => document.body.style.overflow)).toBe('');
+	await expectPageBehindScrolls(page);
+});
+
+test('two modals open at once still release the page when both close', async ({ page }) => {
+	await page.setViewportSize(PHONE);
+	await page.goto(issueUrl());
+
+	const viewer = page.getByRole('dialog', { name: 'Artifact viewer' });
+	await openViewer(page.getByRole('button', { name: /^View long-doc/ }), viewer);
+
+	// Focus is moved into the dialog but not trapped, and the background is not
+	// inert (Tines/29), so a keyboard user can still reach a trigger behind the
+	// overlay and stack a second modal on the first. The scroll lock has to be
+	// ref-counted to survive that: per-instance save/restore inverts, and the
+	// last close writes 'hidden' back, leaving the whole app unscrollable.
+	const attach = page.getByRole('button', { name: 'Attach artifact' });
+	await attach.focus();
+	await expect(attach).toBeFocused();
+	await page.keyboard.press('Enter');
+	await expect(page.getByRole('dialog', { name: 'Attach artifact' })).toBeVisible();
+	await expect(page.getByRole('dialog')).toHaveCount(2);
+	expect(await wheelPageBehind(page)).toBe(0);
+
+	// Escape is a `<svelte:window>` handler in every mounted instance, so one
+	// press closes both.
+	await page.keyboard.press('Escape');
+	await expect(page.getByRole('dialog')).toHaveCount(0);
+	await expectPageBehindScrolls(page);
 });
 
 test('Escape closes the viewer and returns focus to the button that opened it', async ({ page }) => {

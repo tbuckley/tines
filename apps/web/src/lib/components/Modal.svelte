@@ -1,3 +1,24 @@
+<script module lang="ts">
+	// The page-behind scroll lock is shared state, so it is ref-counted at module
+	// scope rather than saved and restored per instance: with focus movement but
+	// no trap (Tines/29), a second modal can be opened from behind an open one,
+	// and per-instance save/restore inverts when they close — the last writer
+	// would write 'hidden' and leave <body> locked with no modal on screen.
+	let openModals = 0;
+	let previousBodyOverflow = '';
+
+	function lockBodyScroll() {
+		if (openModals++ === 0) {
+			previousBodyOverflow = document.body.style.overflow;
+			document.body.style.overflow = 'hidden';
+		}
+	}
+
+	function unlockBodyScroll() {
+		if (openModals > 0 && --openModals === 0) document.body.style.overflow = previousBodyOverflow;
+	}
+</script>
+
 <script lang="ts">
 	import { tick, type Snippet } from 'svelte';
 	import { fade, scale } from 'svelte/transition';
@@ -37,16 +58,15 @@
 	// the dialog's scroller doesn't scroll the document instead, and park focus
 	// on the close button so a keyboard user's next Tab starts inside. Cleanup
 	// runs on close *and* on destroy, so navigating away can't leave <body>
-	// locked. Two modals are never open at once here, so save/restore of the
-	// single previous value is enough (no ref counting).
+	// locked, and the ref count makes the order of one modal's cleanup against
+	// another's setup irrelevant.
 	$effect(() => {
 		if (!open) return;
-		const previousOverflow = document.body.style.overflow;
 		const previouslyFocused = document.activeElement as HTMLElement | null;
-		document.body.style.overflow = 'hidden';
+		lockBodyScroll();
 		tick().then(() => closeButton?.focus({ preventScroll: true }));
 		return () => {
-			document.body.style.overflow = previousOverflow;
+			unlockBodyScroll();
 			if (previouslyFocused?.isConnected) previouslyFocused.focus({ preventScroll: true });
 		};
 	});
