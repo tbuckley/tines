@@ -1,4 +1,5 @@
 import { error } from '@sveltejs/kit';
+import { listArtifacts } from '$lib/server/api/artifacts';
 import { effectiveContextForIssue, listContextItems } from '$lib/server/api/context';
 import { eventQuery, serializeEvent } from '$lib/server/api/events';
 import { getIssueDetail } from '$lib/server/api/issues';
@@ -31,7 +32,7 @@ export const load: PageServerLoad = async ({ locals, platform, params }) => {
 		error(404, 'Not found');
 	});
 
-	const [eventRows, workflows, projects, contextItems, effectiveContext, dispatch, issueRuns, runners] = await Promise.all([
+	const [eventRows, workflows, projects, contextItems, effectiveContext, dispatch, issueRuns, runners, artifacts] = await Promise.all([
 		eventQuery(db, userId)
 			.where('event.issue_id', '=', issue.id)
 			.orderBy('event.created_at desc')
@@ -47,7 +48,8 @@ export const load: PageServerLoad = async ({ locals, platform, params }) => {
 		effectiveContextForIssue(db, userId, issue.id, { skillFiles: false }),
 		explainDispatch(db, userId, issue.id),
 		listRuns(db, userId, { issue: issue.id }, { cursor: null, limit: 20 }),
-		listRunners(db, userId)
+		listRunners(db, userId),
+		listArtifacts(db, userId, issue.id)
 	]);
 
 	return {
@@ -55,10 +57,12 @@ export const load: PageServerLoad = async ({ locals, platform, params }) => {
 		events: eventRows.map(serializeEvent),
 		workflows,
 		projects,
-		contextItems: contextItems.items,
+		// Artifacts have their own panel; the context list shows the rest.
+		contextItems: contextItems.items.filter((i) => i.kind !== 'artifact'),
 		effectiveContext,
 		dispatch,
 		issueRuns: issueRuns.items,
-		runners
+		runners,
+		artifacts
 	};
 };

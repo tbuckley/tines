@@ -30,6 +30,7 @@ import {
 	type ModelTier,
 	type RunnerBudget,
 	type RunnerTierOverrides,
+	canonicalGitHubRepoUrl,
 	LAUNCH_STALL_MS
 } from '@tines/shared';
 import type { Kysely } from 'kysely';
@@ -82,22 +83,11 @@ function requireEncryptionKey(env: Env): string {
 
 /**
  * Canonicalizes a repo context item's URL to the one form the Managed
- * Agents API accepts for `github_repository` resources:
- * `https://github.com/{owner}/{repo}` — no `.git` suffix, no trailing
- * slash. Accepts the shapes `git clone` tolerates (https with `.git`,
- * `git@github.com:owner/repo.git`, `ssh://git@github.com/owner/repo`).
- * Null = not a GitHub repository URL; the launch fails with a clear error
- * rather than the provider's 400.
+ * Agents API accepts for `github_repository` resources. The shared
+ * implementation (artifact `pr` references canonicalize identically) is
+ * re-exported so this module stays the adapter-side import site.
  */
-export function canonicalGitHubRepoUrl(url: string): string | null {
-	const match = url
-		.trim()
-		.match(
-			/^(?:(?:https?|ssh):\/\/(?:[^@/]+@)?|git@)?(?:www\.)?github\.com[/:]([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?\/?$/
-		);
-	if (!match) return null;
-	return `https://github.com/${match[1]}/${match[2]}`;
-}
+export { canonicalGitHubRepoUrl } from '@tines/shared';
 
 /** The public base URL managed runs use to reach the Tines API. */
 export function tinesApiBaseUrl(env: Env): string {

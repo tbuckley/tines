@@ -13,6 +13,9 @@ import type {
 	ApiKey,
 	ApiKeyCreated,
 	AppendContextRequest,
+	Artifact,
+	ArtifactDetail,
+	ArtifactListResponse,
 	Comment,
 	ContextItem,
 	ContextListFilters,
@@ -52,6 +55,7 @@ import type {
 	TransitionIssueRequest,
 	UpdateContextItemRequest,
 	UpdateIssueRequest,
+	UpsertArtifactRequest,
 	UpdateProjectRequest,
 	UpdateRoutingRuleRequest,
 	UpdateRunnerRequest,
@@ -130,6 +134,36 @@ export function createApiClient(options: ApiClientOptions) {
 	}
 
 	const get = <T>(path: string) => request<T>('GET', path);
+
+	/** Raw (non-JSON) request; returns the Response after error mapping. */
+	async function raw(
+		method: string,
+		path: string,
+		opts: { body?: string | Uint8Array | ArrayBuffer | FormData; headers?: Record<string, string> } = {}
+	): Promise<Response> {
+		const headers: Record<string, string> = { ...(opts.headers ?? {}) };
+		if (options.apiKey) headers.authorization = `Bearer ${options.apiKey}`;
+		// A Uint8Array view is copied to a plain ArrayBuffer: every fetch
+		// implementation in play accepts that shape without lib-specific types.
+		const body =
+			opts.body instanceof Uint8Array
+				? (opts.body.buffer.slice(opts.body.byteOffset, opts.body.byteOffset + opts.body.byteLength) as ArrayBuffer)
+				: opts.body;
+		const res = await fetchFn(`${base}${path}`, { method, headers, body });
+		if (!res.ok) {
+			let parsed: ApiErrorBody['error'] | null = null;
+			try {
+				parsed = ((await res.json()) as ApiErrorBody).error ?? null;
+			} catch {
+				// Non-JSON error body; fall through to the status-line message.
+			}
+			throw new ApiError(res.status, parsed, `${method} ${path} failed: ${res.status}`);
+		}
+		return res;
+	}
+
+	const artifactPath = (issueId: string, name: string, suffix = '') =>
+		`/api/v1/issues/${issueId}/artifacts/${encodeURIComponent(name)}${suffix}`;
 
 	return {
 		getTime: () => get<TimeResponse>('/api/time'),
@@ -225,6 +259,72 @@ export function createApiClient(options: ApiClientOptions) {
 		/** Launch prompt: stitched context plus the generated issue block. */
 		getIssuePrompt: (issueId: string) =>
 			get<LaunchPromptResponse>(`/api/v1/issues/${issueId}/prompt`),
+
+		// Issue artifacts (name-addressed under the issue)
+		listArtifacts: (issueId: string) =>
+			get<ArtifactListResponse>(`/api/v1/issues/${issueId}/artifacts`),
+		getArtifact: (issueId: string, name: string) =>
+			get<ArtifactDetail>(artifactPath(issueId, name)),
+		/** JSON upsert for text/link/pr: creates the artifact or appends a version. */
+		putArtifact: (issueId: string, name: string, body: UpsertArtifactRequest) =>
+			request<Artifact>('PUT', artifactPath(issueId, name), body),
+		/** Raw-body upload for `file`: creates the artifact or appends a version. */
+		uploadArtifactFile: async (
+			issueId: string,
+			name: string,
+			bytes: Uint8Array | ArrayBuffer,
+			opts: { filename: string; contentType: string }
+		) => {
+			const res = await raw(
+				'PUT',
+				artifactPath(issueId, name, `/file?filename=${encodeURIComponent(opts.filename)}`),
+				{
+					body: bytes,
+					headers: { 'content-type': opts.contentType }
+				}
+			);
+			return (await res.json()) as Artifact;
+		},
+		/**
+		 * Multipart snapshot upload for `folder`: every file of the new version
+		 * in one request (path as the part filename, MIME as the part type).
+		 */
+		uploadArtifactFolder: async (
+			issueId: string,
+			name: string,
+			files: { path: string; contentType: string; bytes: Uint8Array | ArrayBuffer }[]
+		) => {
+			const form = new FormData();
+			for (const file of files) {
+				form.append('file', new Blob([file.bytes as ArrayBuffer], { type: file.contentType }), file.path);
+			}
+			const res = await raw('PUT', artifactPath(issueId, name, '/folder'), { body: form });
+			return (await res.json()) as Artifact;
+		},
+		/** Bless the current content as fresh: appends a reaffirming version. */
+		reaffirmArtifact: (issueId: string, name: string) =>
+			request<Artifact>('POST', artifactPath(issueId, name, '/reaffirm')),
+		/** Bytes of a version (default: current; `path` selects a folder entry). */
+		getArtifactContent: async (
+			issueId: string,
+			name: string,
+			opts: { version?: number; path?: string } = {}
+		) => {
+			const params = new URLSearchParams();
+			if (opts.version !== undefined) params.set('version', String(opts.version));
+			if (opts.path !== undefined) params.set('path', opts.path);
+			const query = params.toString() ? `?${params.toString()}` : '';
+			const res = await raw('GET', artifactPath(issueId, name, `/content${query}`));
+			const disposition = res.headers.get('content-disposition') ?? '';
+			const filenameMatch = disposition.match(/filename="((?:[^"\\]|\\.)*)"/);
+			return {
+				bytes: await res.arrayBuffer(),
+				content_type: res.headers.get('content-type'),
+				filename: filenameMatch ? filenameMatch[1].replaceAll('\\"', '"') : null
+			};
+		},
+		deleteArtifact: (issueId: string, name: string) =>
+			request<void>('DELETE', artifactPath(issueId, name)),
 
 		// Events
 		listEvents: (filters: EventFilters & PageParams = {}) =>

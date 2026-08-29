@@ -21,7 +21,15 @@ export default defineConfig({
 			// generated worker to its config's `main`, and wrangler.jsonc's `main`
 			// is the custom worker/index.ts entry wrapping that output with the
 			// scheduled() handler for the scheduled-task sweep.
-			adapter: adapter({ config: 'wrangler.adapter.jsonc' })
+			adapter: adapter({ config: 'wrangler.adapter.jsonc' }),
+
+			// Kit's blanket origin check 403s every multipart mutation whose
+			// Origin doesn't match — which is every non-browser client (CLI,
+			// agents), since they send no Origin at all. That blocks the
+			// artifact folder-snapshot upload by design-abiding API callers.
+			// hooks.server.ts re-implements the same guard scoped to where
+			// CSRF actually applies: cookie-carrying requests.
+			csrf: { checkOrigin: false }
 		})
 	]
 });

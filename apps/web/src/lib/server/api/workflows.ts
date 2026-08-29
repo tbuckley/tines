@@ -1,6 +1,10 @@
 import {
+	ARTIFACT_NAME_PATTERN,
+	ARTIFACT_TYPES,
 	STATE_CATEGORIES,
 	STATE_PROMPT_NAME,
+	type ArtifactRequirement,
+	type ArtifactType,
 	type CreateWorkflowRequest,
 	type DeletedContextItem,
 	type StateCategory,
@@ -35,8 +39,81 @@ interface ResolvedState {
 
 interface ResolvedDef {
 	states: ResolvedState[];
-	transitions: { id: string; name: string; from_state_id: string; to_state_id: string }[];
+	transitions: {
+		id: string;
+		name: string;
+		from_state_id: string;
+		to_state_id: string;
+		requires?: ArtifactRequirement[];
+	}[];
 	initialStateId: string;
+}
+
+/**
+ * Validates a transition's artifact requirements: slug slot names (unique
+ * per transition), known types, content_type only alongside type file/text.
+ * Returns undefined for absent/empty input (stored as NULL).
+ */
+function resolveRequirements(input: unknown, where: string): ArtifactRequirement[] | undefined {
+	if (input === undefined || input === null) return undefined;
+	if (!Array.isArray(input)) {
+		throw new ApiFail(422, 'invalid_field', `${where}.requires must be an array of requirements`, {
+			field: `${where}.requires`
+		});
+	}
+	if (input.length === 0) return undefined;
+	const seen = new Set<string>();
+	return input.map((raw, j) => {
+		const field = `${where}.requires[${j}]`;
+		const r = (raw ?? {}) as Record<string, unknown>;
+		const artifact = requireString(r.artifact, `${field}.artifact`, { max: 100 }).trim();
+		if (!ARTIFACT_NAME_PATTERN.test(artifact)) {
+			throw new ApiFail(
+				422,
+				'invalid_field',
+				`${field}.artifact must be a slug-like artifact name ([a-z0-9-]+); got "${artifact}"`,
+				{ field: `${field}.artifact` }
+			);
+		}
+		if (seen.has(artifact)) {
+			throw new ApiFail(
+				422,
+				'duplicate_requirement',
+				`${where} requires artifact "${artifact}" more than once`,
+				{ field: `${field}.artifact` }
+			);
+		}
+		seen.add(artifact);
+		const requirement: ArtifactRequirement = { artifact };
+		if (r.type !== undefined) {
+			if (typeof r.type !== 'string' || !(ARTIFACT_TYPES as readonly string[]).includes(r.type)) {
+				throw new ApiFail(
+					422,
+					'unknown_artifact_type',
+					`${field}.type must be one of ${ARTIFACT_TYPES.join(', ')}; got ${JSON.stringify(r.type)}`,
+					{ field: `${field}.type`, allowed_types: [...ARTIFACT_TYPES] }
+				);
+			}
+			requirement.type = r.type as ArtifactType;
+		}
+		if (r.content_type !== undefined) {
+			const contentType = requireString(r.content_type, `${field}.content_type`, { max: 100 }).trim();
+			// A prefix match against declared MIME types is only meaningful for
+			// payloads that carry one.
+			if (requirement.type !== 'file' && requirement.type !== 'text') {
+				throw new ApiFail(
+					422,
+					'invalid_field',
+					`${field}.content_type only applies with type "file" or "text" (content types are declared on file/text payloads)`,
+					{ field: `${field}.content_type` }
+				);
+			}
+			requirement.content_type = contentType;
+		}
+		const description = optionalString(r.description, `${field}.description`, { max: 500 })?.trim();
+		if (description) requirement.description = description;
+		return requirement;
+	});
 }
 
 /**
@@ -155,7 +232,14 @@ export function resolveDef(
 		}
 		seenPairs.add(pairKey);
 		seenActions.add(actionKey);
-		transitions.push({ id: newId('wft'), name, from_state_id: from.id, to_state_id: to.id });
+		const requires = resolveRequirements(t.requires, `transitions[${i}]`);
+		transitions.push({
+			id: newId('wft'),
+			name,
+			from_state_id: from.id,
+			to_state_id: to.id,
+			...(requires ? { requires } : {})
+		});
 	}
 
 	return { states, transitions, initialStateId: initial.id };
@@ -231,7 +315,10 @@ export async function loadWorkflows(
 				id: t.id,
 				name: t.name,
 				from_state_id: t.from_state_id,
-				to_state_id: t.to_state_id
+				to_state_id: t.to_state_id,
+				...(t.requirements
+					? { requires: JSON.parse(t.requirements) as ArtifactRequirement[] }
+					: {})
 			})),
 			issue_count: Number(row.issue_count ?? 0),
 			created_at: row.created_at,
@@ -303,7 +390,8 @@ export async function createWorkflow(
 					workflow_id: id,
 					name: t.name,
 					from_state_id: t.from_state_id,
-					to_state_id: t.to_state_id
+					to_state_id: t.to_state_id,
+					requirements: t.requires ? JSON.stringify(t.requires) : null
 				})
 				.compile()
 		),
@@ -352,7 +440,12 @@ export async function updateWorkflow(
 		body.states ?? current.states.map((s) => ({ id: s.id, name: s.name, category: s.category }));
 	const transitionsInput: WorkflowTransitionInput[] =
 		body.transitions ??
-		current.transitions.map((t) => ({ name: t.name, from: t.from_state_id, to: t.to_state_id }));
+		current.transitions.map((t) => ({
+			name: t.name,
+			from: t.from_state_id,
+			to: t.to_state_id,
+			requires: t.requires
+		}));
 	const initialRef = body.initial_state ?? current.initial_state_id;
 
 	let def: ResolvedDef;
@@ -442,6 +535,10 @@ export async function updateWorkflow(
 	const transitionsRenamed = [...newByPair.entries()]
 		.filter(([pair, t]) => oldByPair.has(pair) && oldByPair.get(pair)!.name !== t.name)
 		.map(([pair, t]) => ({ from: oldByPair.get(pair)!.name, to: t.name }));
+	const requirementsChanged = [...newByPair.entries()].some(([pair, t]) => {
+		const old = oldByPair.get(pair);
+		return old && JSON.stringify(old.requires ?? null) !== JSON.stringify(t.requires ?? null);
+	});
 
 	const payload: Record<string, unknown> = { workflow_id: id, name };
 	if (name !== current.name) payload.renamed = { from: current.name, to: name };
@@ -453,6 +550,7 @@ export async function updateWorkflow(
 	if (transitionsAdded) payload.transitions_added = transitionsAdded;
 	if (transitionsRemoved) payload.transitions_removed = transitionsRemoved;
 	if (transitionsRenamed.length) payload.transitions_renamed = transitionsRenamed;
+	if (requirementsChanged) payload.transition_requirements_changed = true;
 	if (def.initialStateId !== current.initial_state_id) {
 		payload.initial_changed = {
 			from: currentById.get(current.initial_state_id)?.name,
@@ -506,7 +604,8 @@ export async function updateWorkflow(
 					workflow_id: id,
 					name: t.name,
 					from_state_id: t.from_state_id,
-					to_state_id: t.to_state_id
+					to_state_id: t.to_state_id,
+					requirements: t.requires ? JSON.stringify(t.requires) : null
 				})
 				.compile()
 		);

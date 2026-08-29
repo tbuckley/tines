@@ -6,9 +6,17 @@
 	let {
 		open = $bindable(false),
 		title,
+		size = 'md',
 		children,
 		onclose
-	}: { open?: boolean; title: string; children: Snippet; onclose?: () => void } = $props();
+	}: {
+		open?: boolean;
+		title: string;
+		/** 'md' for forms (default); 'xl' for content viewers. */
+		size?: 'md' | 'xl';
+		children: Snippet;
+		onclose?: () => void;
+	} = $props();
 
 	const dur = () => (prefersReducedMotion() ? 0 : 150);
 
@@ -47,7 +55,9 @@
 	<!-- Anchored near the top on phones so the on-screen keyboard doesn't cover
 	     the dialog's fields; centered on larger screens. -->
 	<div
-		class="bg-background fixed top-4 left-1/2 z-50 max-h-[calc(100dvh-2rem)] w-[calc(100vw-2rem)] max-w-md -translate-x-1/2 overflow-y-auto rounded-xl border p-6 shadow-lg sm:top-1/2 sm:-translate-y-1/2"
+		class="bg-background fixed top-4 left-1/2 z-50 max-h-[calc(100dvh-2rem)] w-[calc(100vw-2rem)] {size === 'xl'
+			? 'max-w-4xl'
+			: 'max-w-md'} -translate-x-1/2 overflow-y-auto rounded-xl border p-6 shadow-lg sm:top-1/2 sm:-translate-y-1/2"
 		use:portal
 		transition:scale={{ duration: dur(), start: 0.96 }}
 		role="dialog"

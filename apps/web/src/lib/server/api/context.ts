@@ -11,6 +11,8 @@ import {
 	SKILL_MAX_TOTAL_BYTES,
 	SKILL_NAME_PATTERN,
 	type AppendContextRequest,
+	type Artifact,
+	type ArtifactRequirementCheck,
 	type ContextFile,
 	type ContextItem,
 	type ContextKind,
@@ -29,6 +31,7 @@ import {
 } from '@tines/shared';
 import type { D1Result } from '@cloudflare/workers-types';
 import { sql, type CompiledQuery, type Kysely } from 'kysely';
+import { artifactKeyPrefix, getArtifactStore } from '$lib/server/artifact-store';
 import { newId, type Database } from '$lib/server/db';
 import {
 	ApiFail,
@@ -39,6 +42,7 @@ import {
 	type ActorContext,
 	type Page
 } from './core';
+import { artifactTypeOf } from './artifacts';
 import { eventInsert } from './events';
 
 // ---------------------------------------------------------------------------
@@ -65,11 +69,11 @@ function validateName(kind: ContextKind, value: unknown): string {
 			field: 'name'
 		});
 	}
-	if (kind === 'skill' && !SKILL_NAME_PATTERN.test(name)) {
+	if ((kind === 'skill' || kind === 'artifact') && !SKILL_NAME_PATTERN.test(name)) {
 		throw new ApiFail(
 			422,
 			'invalid_field',
-			`Skill names double as workspace directory names, so they must be slug-like ([a-z0-9-]+); got "${name}"`,
+			`${kind === 'skill' ? 'Skill names double as workspace directory names' : 'Artifact names are the requirement-matching key and appear in CLI commands'}, so they must be slug-like ([a-z0-9-]+); got "${name}"`,
 			{ field: 'name' }
 		);
 	}
@@ -160,7 +164,10 @@ function validatePromptBody(value: unknown): string {
 const KIND_FIELDS: Record<ContextKind, readonly string[]> = {
 	prompt: ['body'],
 	skill: ['files'],
-	repo: ['repo_url', 'repo_branch', 'repo_dir']
+	repo: ['repo_url', 'repo_branch', 'repo_dir'],
+	// Artifact payloads (versions) never ride the generic context endpoints;
+	// they go through the dedicated artifact routes only.
+	artifact: []
 };
 const ALL_PAYLOAD_FIELDS = [...new Set(Object.values(KIND_FIELDS).flat())];
 
@@ -410,6 +417,9 @@ function serializeItem(row: ItemRow, files?: ContextFile[]): ContextItem {
 		item.repo_branch = row.repo_branch;
 		item.repo_dir = row.repo_dir;
 	}
+	// Artifacts: payload summarized — versions/contents live on the
+	// dedicated artifact endpoints.
+	if (kind === 'artifact') item.artifact_type = artifactTypeOf(row.config);
 	return item;
 }
 
@@ -645,6 +655,16 @@ export async function createContextItem(
 	body: CreateContextItemRequest
 ): Promise<ContextItem> {
 	const kind = requireKind(body.kind);
+	// One creation path is saner than two, and file payloads can't ride a
+	// JSON create: artifacts are created via their own endpoints only.
+	if (kind === 'artifact') {
+		throw new ApiFail(
+			422,
+			'use_artifact_endpoints',
+			'Artifacts are created through the artifact endpoints: PUT /api/v1/issues/:id/artifacts/:name (JSON for text/link/pr) or …/:name/file (raw upload)',
+			{ field: 'kind' }
+		);
+	}
 	const name = validateName(kind, body.name);
 	const description = optionalString(body.description, 'description', { max: 1000 }) ?? '';
 	rejectForeignPayload(kind, body as unknown as Record<string, unknown>);
@@ -801,6 +821,17 @@ export async function updateContextItem(
 		targetIds.projectId !== row.project_id ||
 		targetIds.workflowStateId !== row.workflow_state_id ||
 		targetIds.issueId !== row.issue_id;
+	// Artifacts are pinned to exactly their issue: rename and description are
+	// legitimate PATCHes here (a rename re-keys requirement matching, which
+	// is the point), but the scope is structural and immutable.
+	if (kind === 'artifact' && scopeChanged) {
+		throw new ApiFail(
+			422,
+			'artifact_scope_invalid',
+			'An artifact is scoped to exactly its issue; its scope cannot be changed',
+			{ field: 'issue_id' }
+		);
+	}
 	const scope =
 		scopeTouched || scopeChanged ? await resolveScope(db, actor.userId, targetIds) : currentScope;
 
@@ -957,6 +988,15 @@ export async function deleteContextItem(
 	const scope = rowScope(row);
 	await runAtomic(env, [
 		db.deleteFrom('context_item_file').where('context_item_id', '=', id).compile(),
+		db
+			.deleteFrom('artifact_version_file')
+			.where(
+				'artifact_version_id',
+				'in',
+				db.selectFrom('artifact_version').select('id').where('context_item_id', '=', id)
+			)
+			.compile(),
+		db.deleteFrom('artifact_version').where('context_item_id', '=', id).compile(),
 		db.deleteFrom('context_item').where('id', '=', id).compile(),
 		eventInsert(db, actor, {
 			type: 'context.deleted',
@@ -964,6 +1004,13 @@ export async function deleteContextItem(
 			payload: { context_id: id, kind: row.kind, name: row.name, scope: scopeEventPayload(scope) }
 		})
 	]);
+	if (row.kind === 'artifact') {
+		// D1 first, then best-effort R2 — an orphaned object is the accepted
+		// failure mode, never a row referencing a missing object.
+		await getArtifactStore(env)
+			.deletePrefix(artifactKeyPrefix(actor.userId, id))
+			.catch(() => {});
+	}
 }
 
 /**
@@ -1107,7 +1154,11 @@ interface MatchTarget {
 }
 
 function matchingItemsQuery(db: Kysely<Database>, userId: string, target: MatchTarget) {
-	return contextItemQuery(db, userId).where((eb) =>
+	// Artifacts are deliberately not part of the effective context: nothing
+	// is stitched into the prompt, nothing is seeded into a workspace.
+	return contextItemQuery(db, userId)
+		.where('context_item.kind', '!=', 'artifact')
+		.where((eb) =>
 		eb.and([
 			eb.or([eb('context_item.project_id', 'is', null), eb('context_item.project_id', '=', target.projectId)]),
 			eb.or([
@@ -1263,7 +1314,10 @@ export async function contextSummaryForIssue(
 	return {
 		prompts: rows.filter((r) => r.kind === 'prompt').length,
 		skills: new Set(rows.filter((r) => r.kind === 'skill').map((r) => r.name)).size,
-		repos: new Set(rows.filter((r) => r.kind === 'repo').map((r) => r.name)).size
+		repos: new Set(rows.filter((r) => r.kind === 'repo').map((r) => r.name)).size,
+		// Artifacts are issue-scoped by construction, so the matching rows are
+		// exactly this issue's attachments (a badge count, not effective context).
+		artifacts: rows.filter((r) => r.kind === 'artifact').length
 	};
 }
 
@@ -1276,7 +1330,54 @@ export async function contextSummaryForIssue(
  * prompt hands a write affordance for. No item ids appear anywhere; the
  * journal is addressed by the issue ref. Format is part of the spec.
  */
-export function issueBlock(issue: IssueDetail, context: EffectiveContext): string {
+function artifactLine(ref: string, artifact: Artifact): string[] {
+	const cv = artifact.current_version;
+	const marks: string[] = [artifact.artifact_type];
+	const fetchable =
+		artifact.artifact_type === 'file' ||
+		artifact.artifact_type === 'text' ||
+		artifact.artifact_type === 'folder';
+	if (fetchable) {
+		if (artifact.artifact_type === 'folder') {
+			marks.push(`${cv.file_count ?? 0} file${cv.file_count === 1 ? '' : 's'}`);
+		} else if (cv.content_type) {
+			marks.push(cv.content_type);
+		}
+		marks.push(`v${cv.version}`, artifact.fresh ? 'fresh' : 'attached before current state');
+	}
+	const reference =
+		artifact.artifact_type === 'link'
+			? cv.url
+			: artifact.artifact_type === 'pr'
+				? `${cv.pr_repo_url}/pull/${cv.pr_number}`
+				: null;
+	const tail = artifact.description || reference;
+	const lines = [`- **${artifact.name}** (${marks.join(', ')})${tail ? ` — ${tail}` : ''}`];
+	if (fetchable) {
+		lines.push(`  Fetch: \`tines issues artifacts get ${ref} ${artifact.name} --out .\``);
+	}
+	return lines;
+}
+
+/** The status suffix for a transition's requirement line in the prompt. */
+function requirementStatusLabel(r: ArtifactRequirementCheck): string {
+	switch (r.status) {
+		case 'satisfied':
+			return `satisfied (v${r.current_version?.version}, fresh)`;
+		case 'missing':
+			return '**missing; attach it first**';
+		case 'stale':
+			return '**stale; attach a new version (or reaffirm) first**';
+		case 'type_mismatch':
+			return '**type mismatch; the attached artifact does not satisfy it**';
+	}
+}
+
+export function issueBlock(
+	issue: IssueDetail,
+	context: EffectiveContext,
+	issueArtifacts: Artifact[] = []
+): string {
 	const ref = `${issue.project_name}/${issue.number}`;
 	const lines: string[] = [`## Issue: ${ref} — ${issue.title}`, ''];
 	if (issue.description.trim()) {
@@ -1302,7 +1403,22 @@ export function issueBlock(issue: IssueDetail, context: EffectiveContext): strin
 			);
 		}
 	}
-	lines.push(`Add a comment: \`tines issues comment ${ref} "<markdown>"\``, '', '### Available transitions', '');
+	lines.push(`Add a comment: \`tines issues comment ${ref} "<markdown>"\``, '', '### Artifacts', '');
+	// A listing, never contents: agents fetch on demand.
+	if (issueArtifacts.length === 0) {
+		lines.push('No artifacts attached.', '');
+	} else {
+		for (const artifact of issueArtifacts) {
+			lines.push(...artifactLine(ref, artifact));
+		}
+		lines.push('');
+	}
+	lines.push(
+		`Attach one: \`tines issues artifacts attach ${ref} <name> --file <path>\` (or --text/--url/--pr, or --folder <dir> for a multi-file snapshot)`,
+		'',
+		'### Available transitions',
+		''
+	);
 	if (issue.allowed_transitions.length === 0) {
 		lines.push('None — this state is terminal.');
 	} else {
@@ -1310,6 +1426,14 @@ export function issueBlock(issue: IssueDetail, context: EffectiveContext): strin
 			lines.push(
 				`- **${t.name}** → ${t.to_state.name} (${t.to_state.category}): \`tines issues move ${ref} "${t.name}"\``
 			);
+			// Each requirement with live status, so the prompt alone tells the
+			// agent both its legal moves and their preconditions.
+			for (const r of t.requires ?? []) {
+				const spec = [r.type, r.content_type].filter(Boolean).join(', ');
+				lines.push(
+					`  Requires: artifact \`${r.artifact}\`${spec ? ` (${spec})` : ''} — ${requirementStatusLabel(r)}${r.description ? ` — ${r.description}` : ''}`
+				);
+			}
 		}
 	}
 
@@ -1360,9 +1484,13 @@ export function issueBlock(issue: IssueDetail, context: EffectiveContext): strin
 }
 
 /** Context first, the issue block last — the task sits nearest the end. */
-export function buildLaunchPrompt(context: EffectiveContext, issue: IssueDetail): string {
+export function buildLaunchPrompt(
+	context: EffectiveContext,
+	issue: IssueDetail,
+	issueArtifacts: Artifact[] = []
+): string {
 	const text = context.prompt.text.trim();
-	const block = issueBlock(issue, context);
+	const block = issueBlock(issue, context, issueArtifacts);
 	return text ? `${text}\n\n${block}` : block;
 }
 

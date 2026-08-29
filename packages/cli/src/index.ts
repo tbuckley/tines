@@ -1,6 +1,6 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { hostname } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { runDaemon } from './daemon/daemon.js';
 import { defaultConfigDir, hasRunnerCredentials, saveRunnerCredentials } from './daemon/store.js';
@@ -13,6 +13,7 @@ import {
 	AGENT_GUIDELINES_NAME,
 	ApiError,
 	createApiClient,
+	parsePrSpec,
 	describeRecurrence,
 	isStaleTierOverride,
 	JOURNAL_NAME,
@@ -23,6 +24,8 @@ import {
 	WEEKDAY_NAMES,
 	type AgentRun,
 	type ApiClient,
+	type Artifact,
+	type ArtifactVersion,
 	type ContextFile,
 	type ContextItem,
 	type ContextKind,
@@ -131,6 +134,24 @@ function reportError(err: unknown): never {
 				actions.length > 0
 					? `\nallowed actions: ${actions.join(', ')}`
 					: '\nallowed actions: none (terminal state)';
+		}
+		// A gated transition: print each unmet requirement with the runnable
+		// fix command the server includes, so the loop closes without help.
+		const unmet = err.details?.unmet;
+		if (Array.isArray(unmet)) {
+			for (const raw of unmet) {
+				const r = raw as {
+					artifact: string;
+					type?: string;
+					content_type?: string;
+					status?: string;
+					description?: string;
+					fix?: string;
+				};
+				const spec = [r.type, r.content_type].filter(Boolean).join(', ');
+				message += `\nrequires artifact "${r.artifact}"${spec ? ` (${spec})` : ''}: ${r.status ?? 'unmet'}${r.description ? ` — ${r.description}` : ''}`;
+				if (r.fix) message += `\n  fix: ${r.fix}`;
+			}
 		}
 		die(message);
 	}
@@ -257,6 +278,19 @@ existing sets wholesale when present.
 
 Each NEW state should carry a "prompt" — its initial stage instructions,
 created as a state-scoped context item — or pass --no-prompts to skip.
+
+A transition may declare artifact requirements ("requires"): it can then only
+be taken once a FRESH artifact with that name — attached (or reaffirmed)
+since the issue entered its current state — exists on the issue:
+
+  { "name": "approve", "from": "In review", "to": "Done",
+    "requires": [ { "artifact": "design-doc", "type": "file",
+                    "content_type": "text/markdown",
+                    "description": "The approved design for this round" } ] }
+
+"type" (file | text | link | pr) and "content_type" (a prefix match, e.g.
+"image/"; file/text only) are optional narrowing; "artifact" is the slot
+name issues must carry (see: tines issues artifacts --help).
 `;
 
 // ---------------------------------------------------------------------------
@@ -413,6 +447,8 @@ function contextItemSummary(item: ContextItem): string {
 			return `${item.file_count ?? item.files?.length ?? 0} file${(item.file_count ?? item.files?.length ?? 0) === 1 ? '' : 's'}`;
 		case 'repo':
 			return `${item.repo_url}${item.repo_branch ? `#${item.repo_branch}` : ''}`;
+		case 'artifact':
+			return item.artifact_type ?? 'artifact';
 	}
 }
 
@@ -421,7 +457,13 @@ function printContextItem(item: ContextItem): void {
 	if (item.description) console.log(item.description);
 	console.log(`scope: ${item.scope.label}`);
 	console.log(`updated: ${timestamp(item.updated_at)}  created: ${timestamp(item.created_at)}`);
-	if (item.kind === 'prompt') {
+	if (item.kind === 'artifact') {
+		console.log(`\ntype: ${item.artifact_type ?? 'artifact'}`);
+		if (item.scope.issue_ref) {
+			const ref = `${item.scope.issue_ref.project_name}/${item.scope.issue_ref.number}`;
+			console.log(`versions and content: tines issues artifacts show ${ref} ${item.name}`);
+		}
+	} else if (item.kind === 'prompt') {
 		console.log(`\n${item.body}`);
 	} else if (item.kind === 'skill') {
 		console.log(`\nfiles (seeded at skills/${item.name}/):`);
@@ -599,6 +641,12 @@ function printWorkflowDetail(wf: WorkflowResponse): void {
 		console.log(
 			`  "${t.name}": ${byId.get(t.from_state_id)?.name} → ${byId.get(t.to_state_id)?.name}`
 		);
+		for (const r of t.requires ?? []) {
+			const spec = [r.type, r.content_type].filter(Boolean).join(', ');
+			console.log(
+				`    requires artifact "${r.artifact}"${spec ? ` (${spec})` : ''}${r.description ? ` — ${r.description}` : ''}`
+			);
+		}
 	}
 	for (const w of wf.warnings ?? []) console.log(`\nwarning: ${w}`);
 }
@@ -1236,6 +1284,339 @@ withCommon(
 	const prompt = await api.getIssuePrompt(issue.id);
 	if (opts.json) return printJson(prompt);
 	console.log(prompt.text);
+});
+
+// --- issue artifacts ---------------------------------------------------------
+// Work products attached along the way — files, text documents, links, PR
+// references — versioned, and the currency that workflow transition
+// requirements gate on (specs/artifacts/SPEC.md).
+
+const artifactsCmd = issues
+	.command('artifacts')
+	.description('Typed, versioned attachments on an issue — the work products transition requirements gate on');
+
+const MIME_BY_EXT: Record<string, string> = {
+	md: 'text/markdown',
+	markdown: 'text/markdown',
+	txt: 'text/plain',
+	log: 'text/plain',
+	html: 'text/html',
+	htm: 'text/html',
+	css: 'text/css',
+	csv: 'text/csv',
+	js: 'text/javascript',
+	json: 'application/json',
+	pdf: 'application/pdf',
+	png: 'image/png',
+	jpg: 'image/jpeg',
+	jpeg: 'image/jpeg',
+	gif: 'image/gif',
+	webp: 'image/webp',
+	svg: 'image/svg+xml',
+	zip: 'application/zip',
+	gz: 'application/gzip',
+	mp4: 'video/mp4',
+	webm: 'video/webm'
+};
+
+function sniffContentType(path: string): string {
+	const ext = path.match(/\.([A-Za-z0-9]+)$/)?.[1]?.toLowerCase();
+	return (ext && MIME_BY_EXT[ext]) || 'application/octet-stream';
+}
+
+/** `owner/repo#N` for a pr version (falls back to the raw URL parts). */
+function prRefLabel(v: Pick<ArtifactVersion, 'pr_repo_url' | 'pr_number'>): string {
+	const path = (v.pr_repo_url ?? '').replace(/^https:\/\/github\.com\//, '');
+	return `${path}#${v.pr_number}`;
+}
+
+function artifactSummary(a: Artifact): string {
+	const cv = a.current_version;
+	switch (a.artifact_type) {
+		case 'file':
+			return `${cv.filename} (${cv.content_type}, ${cv.size_bytes} bytes)`;
+		case 'folder':
+			return `${cv.file_count} file${cv.file_count === 1 ? '' : 's'} (${cv.size_bytes} bytes total)`;
+		case 'text':
+			return `${cv.filename} (${cv.content_type})`;
+		case 'link':
+			return cv.title ? `${cv.title} — ${cv.url}` : (cv.url ?? '');
+		case 'pr':
+			return `${prRefLabel(cv)} — ${cv.pr_repo_url}/pull/${cv.pr_number}`;
+	}
+}
+
+/** All regular files under a directory, workspace-relative with `/` separators. */
+function walkFolder(dir: string): { path: string; contentType: string; bytes: Buffer }[] {
+	const files: { path: string; contentType: string; bytes: Buffer }[] = [];
+	const walk = (abs: string, rel: string) => {
+		for (const entry of readdirSync(abs, { withFileTypes: true })) {
+			const nextAbs = join(abs, entry.name);
+			const nextRel = rel ? `${rel}/${entry.name}` : entry.name;
+			if (entry.isDirectory()) walk(nextAbs, nextRel);
+			else if (entry.isFile()) {
+				files.push({ path: nextRel, contentType: sniffContentType(entry.name), bytes: readFileSync(nextAbs) });
+			}
+			// Symlinks and specials are skipped: a snapshot carries plain files.
+		}
+	};
+	walk(dir, '');
+	return files;
+}
+
+withCommon(artifactsCmd.command('list <ref>').description('List the artifacts attached to an issue')).action(
+	async (ref: string, opts: CommonOpts) => {
+		const api = client(opts);
+		const issue = await resolveIssue(api, ref);
+		const res = await api.listArtifacts(issue.id);
+		if (opts.json) return printJson(res);
+		if (res.items.length === 0) return console.log('no artifacts attached');
+		table([
+			['NAME', 'TYPE', 'VERSION', 'FRESH', 'SUMMARY', 'ATTACHED'],
+			...res.items.map((a) => [
+				a.name,
+				a.artifact_type,
+				`v${a.current_version.version}`,
+				a.fresh ? 'yes' : 'no',
+				artifactSummary(a),
+				timestamp(a.current_version.created_at)
+			])
+		]);
+	}
+);
+
+withCommon(
+	artifactsCmd.command('show <ref> <name>').description('Show an artifact with its full version history')
+).action(async (ref: string, name: string, opts: CommonOpts) => {
+	const api = client(opts);
+	const issue = await resolveIssue(api, ref);
+	const artifact = await api.getArtifact(issue.id, name);
+	if (opts.json) return printJson(artifact);
+	console.log(`${artifact.artifact_type} artifact "${artifact.name}" on ${issue.project_name}/${issue.number}`);
+	if (artifact.description) console.log(artifact.description);
+	console.log(
+		`current: v${artifact.current_version.version} (${artifact.fresh ? 'fresh' : 'attached before the current state — reaffirm or attach a new version to satisfy gates'})`
+	);
+	console.log(`summary: ${artifactSummary(artifact)}`);
+	console.log('\nversions:');
+	table(
+		artifact.versions.map((v) => [
+			`  v${v.version}`,
+			timestamp(v.created_at),
+			actorLabel(v.actor),
+			v.reaffirmed_from !== null
+				? `reaffirmed v${v.reaffirmed_from}`
+				: v.file_count !== null
+					? `${v.file_count} file${v.file_count === 1 ? '' : 's'}`
+					: (v.filename ?? v.url ?? (v.pr_repo_url ? prRefLabel(v) : ''))
+		])
+	);
+	const files = artifact.current_version.files;
+	if (files && files.length > 0) {
+		console.log(`\nfiles (v${artifact.current_version.version}):`);
+		table(files.map((f) => [`  ${f.path}`, f.content_type, `${f.size_bytes} bytes`]));
+	}
+});
+
+withCommon(
+	artifactsCmd
+		.command('attach <ref> <name>')
+		.description('Attach content to a named artifact slot (creates it, or appends the next version)')
+		.option('-f, --file <path>', 'upload a file (MIME sniffed from the extension)')
+		.option(
+			'--folder <dir>',
+			'snapshot a directory tree as one version (collect locally, attach once; MIME per file sniffed)'
+		)
+		.option('-t, --text <md|@file>', 'inline text document: inline Markdown or @file')
+		.option('--url <url>', 'link: the URL to attach')
+		.option('--pr <spec>', 'PR reference: owner/repo#N or a GitHub PR URL')
+		.option('--content-type <mime>', 'declared MIME type (with --file or --text)')
+		.option('--filename <name>', 'display filename (with --text; defaults to <name>.md)')
+		.option('--title <title>', 'display title (with --url)')
+		.option('-d, --description <text>', 'artifact description, shown in lists and launch prompts'),
+	// --url is the link payload here; the API base comes from TINES_API_URL.
+	{ baseUrlFlag: false }
+).action(
+	async (
+		ref: string,
+		name: string,
+		opts: CommonOpts & {
+			file?: string;
+			folder?: string;
+			text?: string;
+			url?: string;
+			pr?: string;
+			contentType?: string;
+			filename?: string;
+			title?: string;
+			description?: string;
+		}
+	) => {
+		const api = client({ apiKey: opts.apiKey, json: opts.json });
+		const sources = [opts.file, opts.folder, opts.text, opts.url, opts.pr].filter((v) => v !== undefined);
+		if (sources.length !== 1) {
+			die(
+				'pass exactly one content source: --file <path>, --folder <dir>, --text <md|@file>, --url <url>, or --pr <spec>'
+			);
+		}
+		const issue = await resolveIssue(api, ref);
+		let artifact: Artifact;
+		if (opts.folder !== undefined) {
+			if (!existsSync(opts.folder) || !statSync(opts.folder).isDirectory()) {
+				die(`--folder needs a directory, got "${opts.folder}"`);
+			}
+			const files = walkFolder(opts.folder);
+			if (files.length === 0) die(`${opts.folder} contains no files to snapshot`);
+			artifact = await api.uploadArtifactFolder(issue.id, name, files);
+			// The folder endpoint has no description slot; set it alongside.
+			if (opts.description !== undefined) {
+				artifact = await api.putArtifact(issue.id, name, { description: opts.description });
+			}
+		} else if (opts.file !== undefined) {
+			let bytes: Buffer;
+			try {
+				bytes = readFileSync(opts.file);
+			} catch (err) {
+				die(`cannot read ${opts.file}: ${err instanceof Error ? err.message : String(err)}`);
+			}
+			artifact = await api.uploadArtifactFile(issue.id, name, bytes, {
+				filename: opts.filename ?? basename(opts.file),
+				contentType: opts.contentType ?? sniffContentType(opts.file)
+			});
+			// The file endpoint has no description slot; set it alongside.
+			if (opts.description !== undefined) {
+				artifact = await api.putArtifact(issue.id, name, { description: opts.description });
+			}
+		} else if (opts.text !== undefined) {
+			artifact = await api.putArtifact(issue.id, name, {
+				type: 'text',
+				content: readBodyValue(opts.text),
+				...(opts.filename !== undefined ? { filename: opts.filename } : {}),
+				...(opts.contentType !== undefined ? { content_type: opts.contentType } : {}),
+				...(opts.description !== undefined ? { description: opts.description } : {})
+			});
+		} else if (opts.url !== undefined) {
+			artifact = await api.putArtifact(issue.id, name, {
+				type: 'link',
+				url: opts.url,
+				...(opts.title !== undefined ? { title: opts.title } : {}),
+				...(opts.description !== undefined ? { description: opts.description } : {})
+			});
+		} else {
+			const parsed = parsePrSpec(opts.pr!);
+			if (!parsed) {
+				die(`--pr takes owner/repo#N or a GitHub PR URL, got "${opts.pr}"`);
+			}
+			artifact = await api.putArtifact(issue.id, name, {
+				type: 'pr',
+				pr_repo_url: parsed.repo_url,
+				pr_number: parsed.number,
+				...(opts.description !== undefined ? { description: opts.description } : {})
+			});
+		}
+		if (opts.json) return printJson(artifact);
+		console.log(
+			`attached "${artifact.name}" v${artifact.current_version.version} (${artifactSummary(artifact)}) to ${issue.project_name}/${issue.number} — fresh`
+		);
+	}
+);
+
+withCommon(
+	artifactsCmd
+		.command('reaffirm <ref> <name>')
+		.description('Bless the current content as fresh (appends a version reusing the same payload)')
+).action(async (ref: string, name: string, opts: CommonOpts) => {
+	const api = client(opts);
+	const issue = await resolveIssue(api, ref);
+	const artifact = await api.reaffirmArtifact(issue.id, name);
+	if (opts.json) return printJson(artifact);
+	console.log(
+		`reaffirmed "${artifact.name}" on ${issue.project_name}/${issue.number}: v${artifact.current_version.version} reaffirms v${artifact.current_version.reaffirmed_from} — fresh as of now`
+	);
+});
+
+withCommon(
+	artifactsCmd
+		.command('get <ref> <name>')
+		.description('Fetch content (current version by default); a link/pr prints its URL')
+		.option('--version <n>', 'fetch a specific version from the history', (v) => Number.parseInt(v, 10))
+		.option('--out <path>', 'write to this file, or into this directory (keeps the stored filename)')
+).action(
+	async (ref: string, name: string, opts: CommonOpts & { version?: number; out?: string }) => {
+		const api = client(opts);
+		const issue = await resolveIssue(api, ref);
+		const artifact = await api.getArtifact(issue.id, name);
+		const version =
+			opts.version === undefined
+				? artifact.current_version
+				: artifact.versions.find((v) => v.version === opts.version);
+		if (!version) {
+			die(
+				`artifact "${name}" has no version ${opts.version} (history: v1–v${artifact.current_version.version})`
+			);
+		}
+		if (artifact.artifact_type === 'link' || artifact.artifact_type === 'pr') {
+			const url =
+				artifact.artifact_type === 'link' ? version.url : `${version.pr_repo_url}/pull/${version.pr_number}`;
+			if (opts.json) return printJson({ url });
+			return console.log(url);
+		}
+		if (artifact.artifact_type === 'folder') {
+			// A folder writes its whole tree; a single stdout stream can't.
+			if (opts.out === undefined) {
+				die(`artifact "${name}" is a folder — pass --out <dir> to write its tree`);
+			}
+			if (existsSync(opts.out) && !statSync(opts.out).isDirectory()) {
+				die(`--out for a folder must be a directory, and "${opts.out}" is a file`);
+			}
+			const files = version.files ?? [];
+			let total = 0;
+			for (const file of files) {
+				const content = await api.getArtifactContent(issue.id, name, {
+					version: opts.version,
+					path: file.path
+				});
+				const target = join(opts.out, file.path);
+				mkdirSync(dirname(target), { recursive: true });
+				writeFileSync(target, Buffer.from(content.bytes));
+				total += content.bytes.byteLength;
+			}
+			return console.log(
+				`wrote ${files.length} file${files.length === 1 ? '' : 's'} (${total} bytes) from "${name}" v${version.version} into ${opts.out}/`
+			);
+		}
+		const content = await api.getArtifactContent(issue.id, name, { version: opts.version });
+		const bytes = Buffer.from(content.bytes);
+		if (opts.out !== undefined) {
+			let target = opts.out;
+			if (existsSync(target) && statSync(target).isDirectory()) {
+				target = join(target, version.filename ?? name);
+			}
+			writeFileSync(target, bytes);
+			return console.log(`wrote ${target} (${bytes.byteLength} bytes, ${content.content_type})`);
+		}
+		if ((content.content_type ?? '').startsWith('text/')) {
+			process.stdout.write(bytes);
+			return;
+		}
+		const target = version.filename ?? name;
+		writeFileSync(target, bytes);
+		console.log(`wrote ${target} (${bytes.byteLength} bytes, ${content.content_type})`);
+	}
+);
+
+withCommon(
+	artifactsCmd
+		.command('delete <ref> <name>')
+		.description('Delete an artifact — every version and its stored files (history is not recoverable)')
+).action(async (ref: string, name: string, opts: CommonOpts) => {
+	const api = client(opts);
+	const issue = await resolveIssue(api, ref);
+	const artifact = await api.getArtifact(issue.id, name);
+	await api.deleteArtifact(issue.id, name);
+	console.log(
+		`deleted ${artifact.artifact_type} artifact "${name}" from ${issue.project_name}/${issue.number} (${artifact.version_count} version${artifact.version_count === 1 ? '' : 's'})`
+	);
 });
 
 // --- issue pins --------------------------------------------------------------

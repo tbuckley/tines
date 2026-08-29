@@ -32,6 +32,7 @@ import {
 } from '$lib/server/supervisor/engine';
 import { appendLogTail } from '$lib/server/supervisor/logic';
 import { buildSupervisorPreamble } from '$lib/server/supervisor/preamble';
+import { listArtifacts } from './artifacts';
 import { buildLaunchPrompt, effectiveContextForIssue } from './context';
 import { ApiFail, notFound, optionalString, runAtomic } from './core';
 import { getIssueDetail } from './issues';
@@ -271,9 +272,10 @@ async function deliverAssignedRun(
 	});
 	if (!minted) return null;
 
-	const [issue, bundle] = await Promise.all([
+	const [issue, bundle, artifacts] = await Promise.all([
 		getIssueDetail(db, run.user_id, { id: run.issue_id }),
-		effectiveContextForIssue(db, run.user_id, run.issue_id)
+		effectiveContextForIssue(db, run.user_id, run.issue_id),
+		listArtifacts(db, run.user_id, run.issue_id)
 	]);
 	const preamble = buildSupervisorPreamble({
 		variant: 'local',
@@ -284,7 +286,7 @@ async function deliverAssignedRun(
 	});
 	return {
 		run: await serializedRun(db, run.user_id, run.id),
-		prompt: `${preamble}\n\n${buildLaunchPrompt(bundle, issue)}`,
+		prompt: `${preamble}\n\n${buildLaunchPrompt(bundle, issue, artifacts)}`,
 		bundle,
 		run_key: minted.secret,
 		timeout_minutes: runner.max_run_minutes
