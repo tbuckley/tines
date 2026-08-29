@@ -406,7 +406,12 @@
 					<Button type="button" size="sm" variant="ghost" onclick={() => (editingTitle = false)}>Cancel</Button>
 				</form>
 			{:else}
-				<h1 class="group mt-1 flex items-center gap-2 text-2xl font-semibold tracking-tight">
+				<!-- wrap-anywhere: a title is arbitrary user text, and one unbroken
+				     token (a pasted URL is enough) otherwise sets the document width
+				     and drags every card on the page wider than the viewport. -->
+				<h1
+					class="group mt-1 flex items-center gap-2 text-2xl font-semibold tracking-tight wrap-anywhere"
+				>
 					<!-- The transition name sits on a text-hugging span (not the h1,
 					     whose width includes the edit affordance) so the morph from
 					     the list row scales cleanly. -->
@@ -473,7 +478,7 @@
 		transition:slide={{ duration: dur() }}
 	>
 		<IconCopy size={16} stroke={1.75} class="shrink-0" />
-		<p class="min-w-0">
+		<p class="min-w-0 wrap-anywhere">
 			Duplicate of
 			<a
 				href="/issues/{encodeURIComponent(duplicateOf.project_name)}/{duplicateOf.number}"
@@ -660,7 +665,10 @@
 		</section>
 	</div>
 
-	<aside class="space-y-8">
+	<!-- min-w-0, like the main column: a grid item defaults to a min-content
+	     floor, so one nowrap row in here (a truncated linked-issue title) would
+	     otherwise widen the column past the viewport. -->
+	<aside class="min-w-0 space-y-8">
 		<!-- state & transitions -->
 		<!-- On a duplicate the section stops pretending to be the source of
 		     truth (muted), but the graph and buttons still act on this issue's
