@@ -44,11 +44,16 @@ export async function explainDispatch(
 	db: Kysely<Database>,
 	userId: string,
 	issueId: string,
-	now: number = Date.now()
+	now: number = Date.now(),
+	/** The already-loaded issue, when the caller has it — skips the re-fetch. */
+	preloaded?: Issue
 ): Promise<DispatchExplainer | null> {
-	const row = await issueQuery(db, userId).where('issue.id', '=', issueId).executeTakeFirst();
-	if (!row) return null;
-	const issue = serializeIssue(row);
+	let issue = preloaded;
+	if (!issue) {
+		const row = await issueQuery(db, userId).where('issue.id', '=', issueId).executeTakeFirst();
+		if (!row) return null;
+		issue = serializeIssue(row);
+	}
 
 	const [settings, runners, rules, counts, activeRunRow] = await Promise.all([
 		loadDispatchSettings(db, userId),

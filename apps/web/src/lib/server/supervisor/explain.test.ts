@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createTestDb, type TestDb } from '../api/test-db';
 import { runDispatchPass } from './engine';
+import { loadIssue } from '../api/issues';
 import { explainDispatch } from './explain';
 import { createFakeAdapter } from './fake-adapter';
 import {
@@ -158,5 +159,24 @@ describe('explainDispatch', () => {
 
 		const exBusy = (await explainDispatch(t.db, USER, busy, NOW))!;
 		expect(exBusy.queue_position).toBeNull();
+	});
+});
+
+// The issue page already has the issue row (Tines/32); handing it over saves a
+// re-read of the most expensive query on the page.
+describe('explainDispatch with a preloaded issue', () => {
+	it('matches the self-fetching path without re-reading the row', async () => {
+		const t = world();
+		const runner = addRunner(t);
+		addRule(t, { targets: [{ runner_id: runner }] });
+		const id = addIssue(t, { updatedAt: NOW - 1000 });
+
+		const fetched = await explainDispatch(t.db, USER, id, NOW);
+		const issue = await loadIssue(t.db, USER, { id });
+
+		const spy = t.spyOnQueries();
+		const preloaded = await explainDispatch(t.db, USER, id, NOW, issue);
+		expect(preloaded).toEqual(fetched);
+		expect(spy().some((sql) => sql.includes('dup_chain'))).toBe(false);
 	});
 });
