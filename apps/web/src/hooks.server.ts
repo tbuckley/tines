@@ -33,10 +33,23 @@ function crossSiteFormSubmission(event: RequestEvent): boolean {
  * `locals.user` — `requireActor()` takes its bearer branch when the user is
  * null and hashes the key itself. Resolving a cookie session for those
  * requests was pure overhead, so skip it.
+ *
+ * The skip must not change auth outcomes, only cost, so it applies exactly
+ * when the session could not have won anyway:
+ * - The header must carry a key `requireActor()` would actually extract
+ *   (its `/^Bearer\s+(.+)$/` + trim); a malformed or empty Bearer value
+ *   falls through to the session, as it always did.
+ * - The request must carry no cookies: `requireActor()` prefers
+ *   `locals.user` over the key, and skipping the session for a
+ *   cookie-carrying request would silently flip that precedence (401 on a
+ *   bad key, 403 on session-only endpoints despite a good one). Bearer
+ *   clients send no cookies, so the fast path still covers all real
+ *   bearer traffic.
  */
 function usesBearerAuth(event: RequestEvent): boolean {
 	if (!event.url.pathname.startsWith('/api/v1/')) return false;
-	return /^Bearer\s/i.test(event.request.headers.get('authorization') ?? '');
+	if (!/^Bearer\s+\S/i.test(event.request.headers.get('authorization') ?? '')) return false;
+	return !event.request.headers.get('cookie');
 }
 
 export const handle: Handle = async ({ event, resolve }) => {

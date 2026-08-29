@@ -11,7 +11,7 @@
 import { appendFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { ConcurrentD1Dialect } from '$lib/server/db';
-import { createTestDb, type TestDb } from './test-db';
+import { createTestDb, instrumentLatency, type TestDb } from './test-db';
 import { addIssue, addRunner, seedBase, setSettings, USER, PROJECT, OPEN } from '../supervisor/test-fixtures';
 
 const LATENCY_MS = 20;
@@ -26,35 +26,7 @@ const OUT = process.env.NAVPERF_OUT ?? '/tmp/navperf.txt';
 const report = (s: string) => appendFileSync(OUT, s + '\n');
 const depends = () => {};
 
-function instrument(t: TestDb) {
-	const sqls: string[] = [];
-	let inFlight = 0;
-	const conc = { max: 0 };
-	const realPrepare = t.env.DB.prepare.bind(t.env.DB);
-	const DB = {
-		prepare: (sqlText: string) => {
-			const st = realPrepare(sqlText);
-			return {
-				bind: (...params: unknown[]) => {
-					const bound = st.bind(...params);
-					return {
-						...bound,
-						all: async () => {
-							sqls.push(sqlText);
-							inFlight++;
-							if (inFlight > conc.max) conc.max = inFlight;
-							await new Promise((r) => setTimeout(r, LATENCY_MS));
-							inFlight--;
-							return bound.all();
-						}
-					};
-				}
-			};
-		},
-		batch: (t.env.DB as any).batch
-	};
-	return { env: { DB } as unknown as Env, sqls, conc };
-}
+const instrument = (t: TestDb) => instrumentLatency(t, LATENCY_MS);
 
 function seed(t: TestDb) {
 	seedBase(t);

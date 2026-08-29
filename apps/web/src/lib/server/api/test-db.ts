@@ -175,3 +175,39 @@ export function createTestDb(): TestDb {
 		}
 	};
 }
+
+/**
+ * Wrap a TestDb's D1 binding so every statement takes `latencyMs` and the
+ * peak number of concurrently in-flight statements is recorded. Shared by
+ * db.test.ts (asserting that ConcurrentD1Dialect really fans out) and
+ * nav-perf.test.ts (measuring sequential waves) so the D1 stub shape lives
+ * in one place. Statements still run against the same underlying database.
+ */
+export function instrumentLatency(t: TestDb, latencyMs: number) {
+	const sqls: string[] = [];
+	let inFlight = 0;
+	const conc = { max: 0 };
+	const realPrepare = t.env.DB.prepare.bind(t.env.DB);
+	const DB = {
+		prepare: (sqlText: string) => {
+			const st = realPrepare(sqlText);
+			return {
+				bind: (...params: unknown[]) => {
+					const bound = st.bind(...params);
+					return {
+						...bound,
+						all: async () => {
+							sqls.push(sqlText);
+							conc.max = Math.max(conc.max, ++inFlight);
+							await new Promise((r) => setTimeout(r, latencyMs));
+							inFlight--;
+							return bound.all();
+						}
+					};
+				}
+			};
+		},
+		batch: t.env.DB.batch.bind(t.env.DB)
+	};
+	return { env: { DB } as unknown as Env, sqls, conc };
+}
