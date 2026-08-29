@@ -541,10 +541,14 @@ From the design discussion:
 - **Prompt posture**: artifacts are listed (name/type/description + fetch
   command) in the issue block, contents fetched on demand, never inlined.
 
-## Open questions (for review)
+From the spec review:
 
-- Is 25 MB / 256 KB / 50 versions the right set of caps?
-- Should the stale badge nag on *every* stale artifact rather than only
-  requirement-relevant ones?
-- Does `pr` need provider-agnostic shape now (GitLab et al.), or is
-  canonical-GitHub-only fine until a second provider exists?
+- **Caps**: 25 MB per file, 256 KB per text artifact, 50 versions per
+  artifact — generous but bounded, in the existing cap philosophy.
+- **Stale badge**: requirement-relevant only — "stale" means "this will block
+  a move"; incidental attachments (a reference screenshot nobody gates on)
+  are not nagged about.
+- **`pr` shape**: canonical GitHub only (`https://github.com/{owner}/{repo}`
+  + number), matching every other GitHub touchpoint in the system. A second
+  provider later loosens validation additively; the `link` type is the
+  escape hatch for non-GitHub review URLs today.
