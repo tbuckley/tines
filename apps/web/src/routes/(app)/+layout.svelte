@@ -6,6 +6,7 @@
 	import IconKey from '@tabler/icons-svelte/icons/key';
 	import IconListDetails from '@tabler/icons-svelte/icons/list-details';
 	import IconLogout from '@tabler/icons-svelte/icons/logout';
+	import IconPalette from '@tabler/icons-svelte/icons/palette';
 	import IconRobot from '@tabler/icons-svelte/icons/robot';
 	import IconSitemap from '@tabler/icons-svelte/icons/sitemap';
 	import { goto, invalidateAll, onNavigate } from '$app/navigation';
@@ -139,6 +140,14 @@
 							<p class="text-muted-foreground truncate text-xs">{data.user.email}</p>
 						</div>
 						<div class="bg-border my-1 h-px"></div>
+						<a
+							href="/settings/appearance"
+							class="hover:bg-accent hover:text-accent-foreground flex items-center gap-2 rounded-md px-3 py-2 text-sm"
+							role="menuitem"
+							onclick={() => (menuOpen = false)}
+						>
+							<IconPalette size={16} stroke={1.75} /> Appearance
+						</a>
 						<a
 							href="/settings/api-keys"
 							class="hover:bg-accent hover:text-accent-foreground flex items-center gap-2 rounded-md px-3 py-2 text-sm"

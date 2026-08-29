@@ -1,8 +1,13 @@
 <script lang="ts">
 	import '../app.css';
 	import favicon from '$lib/assets/favicon.svg';
+	import { theme } from '$lib/theme.svelte';
+	import { onMount } from 'svelte';
 
 	let { children } = $props();
+
+	// Root layout, not (app), so the landing page follows the theme too.
+	onMount(() => theme.init());
 </script>
 
 <svelte:head>

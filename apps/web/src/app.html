@@ -6,6 +6,20 @@
 		     since iOS 10 it does not block user pinch-zoom, so accessibility is preserved. -->
 		<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
 		<meta name="text-scale" content="scale" />
+		<!-- Theme pre-paint: applies the stored preference before first paint so a
+		     dark-mode reload doesn't flash light. Keep the key and the resolution
+		     rule in sync with src/lib/theme.svelte.ts. -->
+		<script>
+			(function () {
+				try {
+					var p = localStorage.getItem('tines:theme');
+					var dark =
+						p === 'dark' ||
+						(p !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches);
+					if (dark) document.documentElement.classList.add('dark');
+				} catch (e) {}
+			})();
+		</script>
 		%sveltekit.head%
 	</head>
 	<body data-sveltekit-preload-data="hover">
