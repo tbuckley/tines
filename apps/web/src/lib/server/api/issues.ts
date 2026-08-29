@@ -9,6 +9,7 @@ import {
 	type CreateIssueResponse,
 	type Issue,
 	type IssueDetail,
+	type IssueLabel,
 	type IssueLinks,
 	type IssueRef,
 	type LinkedIssue,
@@ -34,6 +35,7 @@ import {
 import { checkRequirements, listArtifacts, requirementSpecLabel } from './artifacts';
 import { contextSummaryForIssue } from './context';
 import { actorOf, eventInsert } from './events';
+import { issueLabelInserts, labelInserts, resolveOrCreateLabels } from './labels';
 import { requireTier } from './runners';
 import { getSchedule, prepareSchedule } from './schedules';
 import { loadWorkflow } from './workflows';
@@ -138,6 +140,18 @@ export function issueQuery(db: Kysely<Database>, userId: string) {
 						ORDER BY bi.created_at, bi.id
 					) AS b
 				)`.as('open_blockers_json'),
+				// SQLite only honours ORDER BY inside json_group_array when the
+				// ordering happens in a subquery, hence the nested SELECT.
+				sql<string | null>`(
+					SELECT json_group_array(json_object('id', l.id, 'name', l.name, 'color', l.color))
+					FROM (
+						SELECT lb.id, lb.name, lb.color
+						FROM issue_label il
+						JOIN label lb ON lb.id = il.label_id
+						WHERE il.issue_id = issue.id
+						ORDER BY lb.name COLLATE NOCASE
+					) AS l
+				)`.as('labels_json'),
 				// The run currently holding the issue's exclusive claim (at most
 				// one exists; LIMIT 1 guards against a racing double-claim).
 				sql<string | null>`(
@@ -185,6 +199,7 @@ export function serializeIssue(row: IssueRow): Issue {
 		},
 		duplicate_of: row.duplicate_of_json ? (JSON.parse(row.duplicate_of_json) as IssueRef) : null,
 		open_blockers: row.open_blockers_json ? (JSON.parse(row.open_blockers_json) as IssueRef[]) : [],
+		labels: row.labels_json ? (JSON.parse(row.labels_json) as IssueLabel[]) : [],
 		scheduled_task_id: row.scheduled_task_id,
 		scheduled_task_name: row.scheduled_task_name,
 		pinned_runner_id: row.pinned_runner_id,
@@ -218,6 +233,8 @@ export interface IssueListFilters {
 	projectId?: string;
 	/** Title/description substring search. */
 	q?: string;
+	/** Label names or ids; every one must be present (AND). */
+	labels?: string[];
 }
 
 export async function listIssues(
@@ -277,6 +294,16 @@ export async function listIssues(
 				sql<boolean>`NOT EXISTS (SELECT 1 FROM issue_link dl WHERE dl.source_issue_id = issue.id AND dl.kind = 'duplicate_of')`
 			)
 			.where(sql<boolean>`NOT EXISTS (SELECT 1 ${openBlockerFrom})`);
+	}
+	// One EXISTS per label, so repeated labels narrow rather than widen. An
+	// unknown label simply matches nothing — reads never 422 on a filter.
+	for (const ref of filters.labels ?? []) {
+		q = q.where(
+			sql<boolean>`EXISTS (
+				SELECT 1 FROM issue_label il JOIN label l ON l.id = il.label_id
+				WHERE il.issue_id = issue.id AND (l.id = ${ref} OR l.name = ${ref} COLLATE NOCASE)
+			)`
+		);
 	}
 	if (filters.q) {
 		// Plain substring search; % and _ act as wildcards, which is harmless
@@ -499,6 +526,12 @@ export async function createIssue(
 		? resolveStateRef(workflow, requireString(body.state, 'state', { max: 100 }).trim())
 		: resolveStateRef(workflow, workflow.initial_state_id);
 
+	// Resolved before anything is inserted, so a run key's unknown label 422s
+	// without leaving a half-created issue behind.
+	const resolvedLabels = body.labels?.length
+		? await resolveOrCreateLabels(db, actor, body.labels)
+		: null;
+
 	const now = Date.now();
 	const id = newId('iss');
 
@@ -593,6 +626,12 @@ export async function createIssue(
 					...(scheduleStateId ? { start_state: initialState.name } : {})
 				}
 			})
+		);
+	}
+	if (resolvedLabels) {
+		queries.push(
+			...labelInserts(db, actor, resolvedLabels.toCreate),
+			...issueLabelInserts(db, actor, { id, project_id: projectId }, resolvedLabels.labels, now)
 		);
 	}
 	await runAtomic(env, queries);

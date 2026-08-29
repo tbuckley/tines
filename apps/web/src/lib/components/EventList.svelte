@@ -63,6 +63,16 @@
 				return 'moved';
 			case 'issue.commented':
 				return 'commented on';
+			case 'issue.labeled':
+				return `labeled ${p.name as string} on`;
+			case 'issue.unlabeled':
+				return `removed label ${p.name as string} from`;
+			case 'label.created':
+				return `created label ${p.name as string}`;
+			case 'label.updated':
+				return `updated label ${p.name as string}`;
+			case 'label.deleted':
+				return `deleted label ${p.name as string}`;
 			case 'project.created':
 				return 'created project';
 			case 'project.updated':

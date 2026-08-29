@@ -1376,7 +1376,9 @@ function requirementStatusLabel(r: ArtifactRequirementCheck): string {
 export function issueBlock(
 	issue: IssueDetail,
 	context: EffectiveContext,
-	issueArtifacts: Artifact[] = []
+	issueArtifacts: Artifact[] = [],
+	/** The user's whole label library, so the agent can classify without a round trip. */
+	labelVocabulary: string[] = []
 ): string {
 	const ref = `${issue.project_name}/${issue.number}`;
 	const lines: string[] = [`## Issue: ${ref} — ${issue.title}`, ''];
@@ -1387,6 +1389,20 @@ export function issueBlock(
 		'### Current state',
 		'',
 		`${issue.state.name} (${issue.state.category}), in workflow "${issue.workflow.name}".`,
+		''
+	);
+	// Labels are classification the agent both reads and writes, so the block
+	// carries the current set and the command, the same as comments and
+	// artifacts. The known vocabulary is spelled out because a run key can
+	// only apply labels that already exist.
+	if (issue.labels.length > 0) {
+		lines.push(`Labels: ${issue.labels.map((l) => l.name).join(', ')}`, '');
+	}
+	lines.push(
+		`Label it: \`tines issues label ${ref} <name...>\`` +
+			(labelVocabulary.length > 0
+				? ` (existing labels only: ${labelVocabulary.join(', ')})`
+				: ' (no labels exist yet — ask a human to add one)'),
 		'',
 		'### Comments',
 		''
@@ -1487,10 +1503,11 @@ export function issueBlock(
 export function buildLaunchPrompt(
 	context: EffectiveContext,
 	issue: IssueDetail,
-	issueArtifacts: Artifact[] = []
+	issueArtifacts: Artifact[] = [],
+	labelVocabulary: string[] = []
 ): string {
 	const text = context.prompt.text.trim();
-	const block = issueBlock(issue, context, issueArtifacts);
+	const block = issueBlock(issue, context, issueArtifacts, labelVocabulary);
 	return text ? `${text}\n\n${block}` : block;
 }
 

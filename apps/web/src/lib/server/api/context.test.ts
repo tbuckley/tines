@@ -133,6 +133,7 @@ const issue: IssueDetail = {
 	number: 42,
 	title: 'Ship the thing',
 	description: 'Do it *well*.',
+	labels: [],
 	workflow_id: 'wf_1',
 	state: { id: 's_review', name: 'Review', category: 'awaiting_human', position: 1 },
 	effective_state: { id: 's_review', name: 'Review', category: 'awaiting_human', position: 1 },
@@ -323,5 +324,20 @@ describe('buildLaunchPrompt', () => {
 
 	it('is just the issue block when no context applies', () => {
 		expect(buildLaunchPrompt(emptyContext, issue).startsWith('## Issue:')).toBe(true);
+	});
+
+	it('carries the label set and advertises the label command with the vocabulary', () => {
+		const labeled = { ...issue, labels: [{ id: 'lbl_1', name: 'bug', color: 'red' as const }] };
+		const text = buildLaunchPrompt(emptyContext, labeled, [], ['bug', 'chore']);
+		expect(text).toContain('Labels: bug');
+		expect(text).toContain('tines issues label Tines/42 <name...>');
+		// Spelled out because a run key can only apply labels that exist.
+		expect(text).toContain('existing labels only: bug, chore');
+	});
+
+	it('omits the label line when the issue has none, and says so when none exist', () => {
+		const text = buildLaunchPrompt(emptyContext, issue, [], []);
+		expect(text).not.toContain('Labels:');
+		expect(text).toContain('no labels exist yet');
 	});
 });

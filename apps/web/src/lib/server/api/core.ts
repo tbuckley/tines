@@ -133,7 +133,11 @@ const CONTROL_PLANE_PATTERNS = [
 	/^\/api\/v1\/routing-rules(\/|$)/,
 	/^\/api\/v1\/supervisor\/settings(\/|$)/,
 	/^\/api\/v1\/issues\/[^/]+\/resume$/,
-	/^\/api\/v1\/api-keys(\/|$)/
+	/^\/api\/v1\/api-keys(\/|$)/,
+	// The label library is vocabulary, not classification: run keys may apply
+	// and remove existing labels (/issues/:id/labels stays open to them) but
+	// cannot mint, rename, or delete the terms themselves.
+	/^\/api\/v1\/labels(\/|$)/
 ];
 
 /** True for paths a run key must never reach (all methods). */
@@ -149,7 +153,7 @@ export function runKeyForbidden(): ApiFail {
 	return new ApiFail(
 		403,
 		'run_key_forbidden',
-		'Run keys cannot modify runners, routing rules, supervisor settings, parked issues, issue pins, or API keys. ' +
+		'Run keys cannot modify runners, routing rules, supervisor settings, parked issues, issue pins, the label library, or API keys. ' +
 			'Propose the change instead: file an issue titled "Context change: <scope label>" describing ' +
 			'what should change and why; a human reviews and applies it.'
 	);

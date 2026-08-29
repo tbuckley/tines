@@ -103,6 +103,23 @@ export interface IssueLinkTable {
 	created_at: number;
 }
 
+export interface LabelTable {
+	id: string;
+	user_id: string;
+	name: string;
+	/** A LABEL_COLORS palette key, not a hex value. */
+	color: string;
+	description: string;
+	created_at: number;
+	updated_at: number;
+}
+
+export interface IssueLabelTable {
+	issue_id: string;
+	label_id: string;
+	created_at: number;
+}
+
 export interface ContextItemTable {
 	id: string;
 	user_id: string;
@@ -324,6 +341,8 @@ export interface Database {
 	workflow_transition: WorkflowTransitionTable;
 	issue: IssueTable;
 	issue_link: IssueLinkTable;
+	label: LabelTable;
+	issue_label: IssueLabelTable;
 	scheduled_task: ScheduledTaskTable;
 	context_item: ContextItemTable;
 	context_item_file: ContextItemFileTable;

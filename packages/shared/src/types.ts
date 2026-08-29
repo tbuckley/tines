@@ -200,6 +200,86 @@ export interface IssueRef {
 	title: string;
 }
 
+/**
+ * Palette keys for label colors. Stored as keys, never hex: the UI maps each
+ * onto a `--label-*` custom property that is defined per theme, so a chip
+ * stays legible in both light and dark mode.
+ */
+export const LABEL_COLORS = [
+	'slate',
+	'red',
+	'orange',
+	'amber',
+	'green',
+	'teal',
+	'blue',
+	'violet',
+	'pink'
+] as const;
+export type LabelColor = (typeof LABEL_COLORS)[number];
+
+/**
+ * Deterministic default color for a new label, so the same name gets the
+ * same chip whether it was created from the CLI, the API, or the UI.
+ * djb2 over the lowercased name.
+ */
+export function defaultLabelColor(name: string): LabelColor {
+	let hash = 5381;
+	const key = name.toLowerCase();
+	for (let i = 0; i < key.length; i++) hash = ((hash << 5) + hash + key.charCodeAt(i)) >>> 0;
+	return LABEL_COLORS[hash % LABEL_COLORS.length];
+}
+
+export interface Label {
+	id: string;
+	name: string;
+	color: LabelColor;
+	description: string;
+	created_at: number;
+	updated_at: number;
+}
+
+/** A label in the library listing, with how many issues carry it. */
+export interface LabelWithUsage extends Label {
+	issue_count: number;
+}
+
+/** The denormalized form that rides along on every issue read. */
+export type IssueLabel = Pick<Label, 'id' | 'name' | 'color'>;
+
+export interface CreateLabelRequest {
+	name: string;
+	/** Defaults to `defaultLabelColor(name)`. */
+	color?: LabelColor;
+	description?: string;
+}
+
+export interface UpdateLabelRequest {
+	name?: string;
+	color?: LabelColor;
+	description?: string;
+}
+
+export interface DeleteLabelResponse {
+	deleted: true;
+	/** How many issues carried the label when it was deleted. */
+	issue_count: number;
+}
+
+export interface AddIssueLabelsRequest {
+	/** Label names or ids. */
+	labels: string[];
+}
+
+export interface AddIssueLabelsResponse {
+	/** The issue's full label set after the add. */
+	labels: IssueLabel[];
+	/** Those newly attached (already-attached names are a no-op). */
+	added: IssueLabel[];
+	/** Those that did not exist and were created by this call. */
+	created: IssueLabel[];
+}
+
 export interface Issue {
 	id: string;
 	project_id: string;
@@ -219,6 +299,8 @@ export interface Issue {
 	duplicate_of: IssueRef | null;
 	/** Blockers whose effective state is not yet done. Empty = unblocked. */
 	open_blockers: IssueRef[];
+	/** Labels attached to the issue, ordered by name (case-insensitive). */
+	labels: IssueLabel[];
 	/** Set when the issue was created by a scheduled task (null once the schedule is deleted). */
 	scheduled_task_id: string | null;
 	scheduled_task_name: string | null;
@@ -329,6 +411,8 @@ export interface CreateIssueRequest {
 	 * scheduled task that takes over from there.
 	 */
 	schedule?: CreateScheduleInput;
+	/** Label names or ids to attach on creation; unknown names are created. */
+	labels?: string[];
 }
 
 /** The recurrence part of a create-issue request. */
@@ -458,6 +542,8 @@ export interface IssueFilters {
 	ready?: boolean;
 	/** Title/description substring search. */
 	q?: string;
+	/** Label names or ids; repeated labels narrow (AND). */
+	label?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -1474,6 +1560,11 @@ export type EventType =
 	| 'issue.commented'
 	| 'issue.link_added'
 	| 'issue.link_removed'
+	| 'issue.labeled'
+	| 'issue.unlabeled'
+	| 'label.created'
+	| 'label.updated'
+	| 'label.deleted'
 	| 'project.created'
 	| 'project.updated'
 	| 'project.deleted'

@@ -1,8 +1,14 @@
 import type {
+	AddIssueLabelsResponse,
 	AddIssueLinkRequest,
 	AgentRun,
 	AgentRunDetail,
 	ApiErrorBody,
+	CreateLabelRequest,
+	DeleteLabelResponse,
+	Label,
+	LabelWithUsage,
+	UpdateLabelRequest,
 	AppendRunLogRequest,
 	AppendRunLogResponse,
 	FinishRunRequest,
@@ -99,7 +105,11 @@ export class ApiError extends Error {
 function query(params: object): string {
 	const search = new URLSearchParams();
 	for (const [key, value] of Object.entries(params) as [string, unknown][]) {
-		if (value !== undefined && value !== '' && value !== null) search.set(key, String(value));
+		if (value === undefined || value === '' || value === null) continue;
+		// Array values repeat the key (`?label=a&label=b`) — the shape the
+		// repeatable filters expect.
+		if (Array.isArray(value)) for (const v of value) search.append(key, String(v));
+		else search.set(key, String(value));
 	}
 	const s = search.toString();
 	return s ? `?${s}` : '';
@@ -193,6 +203,16 @@ export function createApiClient(options: ApiClientOptions) {
 		// Issues
 		listIssues: (filters: IssueFilters & PageParams = {}) =>
 			get<ListResponse<Issue>>(`/api/v1/issues${query(filters)}`),
+		listLabels: () => get<{ items: LabelWithUsage[] }>('/api/v1/labels'),
+		createLabel: (body: CreateLabelRequest) => request<Label>('POST', '/api/v1/labels', body),
+		updateLabel: (labelRef: string, body: UpdateLabelRequest) =>
+			request<Label>('PATCH', `/api/v1/labels/${encodeURIComponent(labelRef)}`, body),
+		deleteLabel: (labelRef: string) =>
+			request<DeleteLabelResponse>('DELETE', `/api/v1/labels/${encodeURIComponent(labelRef)}`),
+		addIssueLabels: (issueId: string, labels: string[]) =>
+			request<AddIssueLabelsResponse>('POST', `/api/v1/issues/${issueId}/labels`, { labels }),
+		removeIssueLabel: (issueId: string, labelRef: string) =>
+			request<void>('DELETE', `/api/v1/issues/${issueId}/labels/${encodeURIComponent(labelRef)}`),
 		listProjectIssues: (
 			projectId: string,
 			filters: {

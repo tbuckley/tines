@@ -4,6 +4,7 @@ import { listArtifacts } from '$lib/server/api/artifacts';
 import { buildLaunchPrompt, effectiveContextForIssue } from '$lib/server/api/context';
 import { api, apiContext } from '$lib/server/api/core';
 import { getIssueDetail } from '$lib/server/api/issues';
+import { listLabels } from '$lib/server/api/labels';
 import type { RequestHandler } from './$types';
 
 /**
@@ -12,11 +13,14 @@ import type { RequestHandler } from './$types';
  */
 export const GET: RequestHandler = api(async (event) => {
 	const { db, actor } = await apiContext(event);
-	const [issue, context, artifacts] = await Promise.all([
+	const [issue, context, artifacts, labels] = await Promise.all([
 		getIssueDetail(db, actor.userId, { id: event.params.id }),
 		effectiveContextForIssue(db, actor.userId, event.params.id),
-		listArtifacts(db, actor.userId, event.params.id)
+		listArtifacts(db, actor.userId, event.params.id),
+		listLabels(db, actor.userId)
 	]);
-	const body: LaunchPromptResponse = { text: buildLaunchPrompt(context, issue, artifacts) };
+	const body: LaunchPromptResponse = {
+		text: buildLaunchPrompt(context, issue, artifacts, labels.map((l) => l.name))
+	};
 	return json(body);
 });

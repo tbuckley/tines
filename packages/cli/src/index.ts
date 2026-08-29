@@ -17,6 +17,7 @@ import {
 	describeRecurrence,
 	isStaleTierOverride,
 	JOURNAL_NAME,
+	LABEL_COLORS,
 	MODEL_TIERS,
 	repoDirFromUrl,
 	runDurationLabel,
@@ -35,6 +36,7 @@ import {
 	type DispatchExplainer,
 	type IssueDetail,
 	type IssueLinks,
+	type LabelColor,
 	type LinkedIssue,
 	type ListResponse,
 	type ModelTier,
@@ -91,6 +93,20 @@ function withCommon(cmd: Command, { baseUrlFlag = true } = {}): Command {
 }
 
 /** Adds the pagination options shared by every list command. */
+/** Validates --color client-side so the error names the whole palette. */
+function parseLabelColor(value: string | undefined): LabelColor | undefined {
+	if (value === undefined) return undefined;
+	if (!(LABEL_COLORS as readonly string[]).includes(value)) {
+		die(`unknown color "${value}" — pick one of: ${LABEL_COLORS.join(', ')}`);
+	}
+	return value as LabelColor;
+}
+
+/** Commander accumulator for a repeatable option (`--label a --label b`). */
+function repeatable(value: string, previous: string[] = []): string[] {
+	return [...previous, value];
+}
+
 function withList(cmd: Command): Command {
 	return withCommon(
 		cmd
@@ -608,6 +624,9 @@ function printIssueDetail(issue: IssueDetail): void {
 	if (dup) {
 		console.log(`own state: ${issue.state.name} (${issue.state.category}) — dormant while this is a duplicate`);
 	}
+	if (issue.labels.length > 0) {
+		console.log(`labels: ${issue.labels.map((l) => l.name).join(', ')}`);
+	}
 	console.log(`id: ${issue.id}`);
 	printIssueLinks(issue.links);
 	if (issue.description) {
@@ -964,6 +983,7 @@ withList(
 		.option('-a, --all', 'include issues in done states')
 		.option('--ready', 'only issues that are actionable now (not done, not a duplicate, no open blockers)')
 		.option('-q, --search <text>', 'search titles and descriptions')
+		.option('-l, --label <name>', 'filter by label; repeat to require all of them', repeatable)
 ).action(
 	async (
 		opts: ListOpts & {
@@ -974,6 +994,7 @@ withList(
 			all?: boolean;
 			ready?: boolean;
 			search?: string;
+			label?: string[];
 		}
 	) => {
 		const res = await client(opts).listIssues({
@@ -984,6 +1005,7 @@ withList(
 			hide_done: !opts.all,
 			ready: opts.ready,
 			q: opts.search,
+			label: opts.label,
 			limit: opts.limit,
 			cursor: opts.cursor
 		});
@@ -999,7 +1021,11 @@ withList(
 					i.effective_state.name,
 					i.effective_state.category,
 					timestamp(i.last_activity_at),
-					[i.open_blockers.length > 0 ? 'blocked' : '', i.duplicate_of ? 'dup' : '']
+					[
+						i.open_blockers.length > 0 ? 'blocked' : '',
+						i.duplicate_of ? 'dup' : '',
+						...i.labels.map((l) => `[${l.name}]`)
+					]
 						.filter(Boolean)
 						.join(' ')
 				])
@@ -1023,6 +1049,7 @@ withCommon(
 		.option('--tz <iana>', 'schedule timezone (defaults to the system timezone)')
 		.option('--if-closed', 'only create a new instance when all previous instances are closed')
 		.option('--schedule-name <name>', 'schedule name, unique per project (defaults to the title)')
+		.option('-l, --label <name>', 'attach a label; repeat for several (created if new)', repeatable)
 ).action(
 	async (
 		projectRef: string,
@@ -1034,6 +1061,7 @@ withCommon(
 				state?: string;
 				ifClosed?: boolean;
 				scheduleName?: string;
+				label?: string[];
 			}
 	) => {
 		const api = client(opts);
@@ -1056,11 +1084,13 @@ withCommon(
 			description: opts.description,
 			workflow_id: workflowId,
 			state: opts.state,
-			schedule
+			schedule,
+			labels: opts.label
 		});
 		if (opts.json) return printJson(issue);
 		console.log(
-			`created ${issue.project_name}/#${issue.number} "${issue.title}" in state "${issue.state.name}"`
+			`created ${issue.project_name}/#${issue.number} "${issue.title}" in state "${issue.state.name}"` +
+				(issue.labels.length > 0 ? ` labeled ${issue.labels.map((l) => l.name).join(', ')}` : '')
 		);
 		if (issue.schedule) {
 			console.log(
@@ -1146,6 +1176,54 @@ withCommon(
 	const comment = await api.createComment(issue.id, { body: markdown });
 	if (opts.json) return printJson(comment);
 	console.log(`commented on ${issue.project_name}/#${issue.number} as ${actorLabel(comment.actor)}`);
+});
+
+// Labels read as sentences too, and label ids never surface: every command
+// takes names.
+
+withCommon(
+	issues
+		.command('label <ref> <name...>')
+		.description('Add labels to an issue (a label that does not exist yet is created)')
+).action(async (ref: string, names: string[], opts: CommonOpts) => {
+	const api = client(opts);
+	const issue = await resolveIssue(api, ref);
+	const res = await api.addIssueLabels(issue.id, names);
+	if (opts.json) return printJson(res);
+	const target = `${issue.project_name}/#${issue.number}`;
+	if (res.added.length === 0) {
+		console.log(`${target} already had ${names.join(', ')} — nothing to do`);
+	} else {
+		console.log(`labeled ${target}: ${res.added.map((l) => l.name).join(', ')}`);
+	}
+	if (res.created.length > 0) {
+		console.log(`created new label${res.created.length > 1 ? 's' : ''} ${res.created.map((l) => l.name).join(', ')}`);
+	}
+});
+
+withCommon(
+	issues.command('unlabel <ref> <name...>').description('Remove labels from an issue')
+).action(async (ref: string, names: string[], opts: CommonOpts) => {
+	const api = client(opts);
+	const issue = await resolveIssue(api, ref);
+	const removed: string[] = [];
+	const missing: string[] = [];
+	// One DELETE per name: a name that was not attached is reported, not
+	// fatal, so `unlabel A x y` still removes y when x was never there.
+	for (const name of names) {
+		try {
+			await api.removeIssueLabel(issue.id, name);
+			removed.push(name);
+		} catch (err) {
+			if (err instanceof ApiError && err.status === 404) missing.push(name);
+			else throw err;
+		}
+	}
+	if (opts.json) return printJson({ removed, missing });
+	const target = `${issue.project_name}/#${issue.number}`;
+	if (removed.length > 0) console.log(`unlabeled ${target}: ${removed.join(', ')}`);
+	if (missing.length > 0) console.log(`not on ${target}: ${missing.join(', ')}`);
+	if (removed.length === 0 && missing.length === 0) console.log('nothing to do');
 });
 
 // Links read as sentences: `block A B` means "A blocks B", `duplicate A B`
@@ -2279,6 +2357,81 @@ function runnerStatusLabel(runner: Runner): string {
 	if (runner.status === 'paused') return 'paused';
 	return runner.online ? 'online' : 'offline';
 }
+
+// The label library. Applying labels is `issues label`; this group is the
+// vocabulary itself, which run keys cannot touch (control-plane fenced).
+const labels = program.command('labels').description('Manage the label library');
+
+withCommon(labels.command('list').description('List labels with how many issues carry each')).action(
+	async (opts: CommonOpts) => {
+		const res = await client(opts).listLabels();
+		if (opts.json) return printJson(res);
+		if (res.items.length === 0) return console.log('no labels');
+		table([
+			['NAME', 'COLOR', 'ISSUES', 'DESCRIPTION'],
+			...res.items.map((l) => [l.name, l.color, String(l.issue_count), l.description])
+		]);
+	}
+);
+
+withCommon(
+	labels
+		.command('create <name>')
+		.description('Create a label')
+		.option('--color <key>', `chip color (${LABEL_COLORS.join(', ')}); defaults to one derived from the name`)
+		.option('-d, --description <text>', 'what the label means')
+).action(async (name: string, opts: CommonOpts & { color?: string; description?: string }) => {
+	const color = parseLabelColor(opts.color);
+	const label = await client(opts).createLabel({ name, color, description: opts.description });
+	if (opts.json) return printJson(label);
+	console.log(`created label "${label.name}" (${label.color})`);
+});
+
+withCommon(
+	labels
+		.command('edit <name>')
+		.description('Rename or restyle a label')
+		.option('--name <new>', 'new name')
+		.option('--color <key>', `chip color (${LABEL_COLORS.join(', ')})`)
+		.option('-d, --description <text>', 'what the label means')
+).action(
+	async (name: string, opts: CommonOpts & { name?: string; color?: string; description?: string }) => {
+		if (opts.name === undefined && opts.color === undefined && opts.description === undefined) {
+			die('nothing to change: pass --name, --color, or --description');
+		}
+		const label = await client(opts).updateLabel(name, {
+			name: opts.name,
+			color: parseLabelColor(opts.color),
+			description: opts.description
+		});
+		if (opts.json) return printJson(label);
+		console.log(`updated label "${label.name}" (${label.color})`);
+	}
+);
+
+withCommon(
+	labels
+		.command('delete <name>')
+		.description('Delete a label and detach it from every issue')
+		.option('-y, --yes', 'skip the confirmation')
+).action(async (name: string, opts: CommonOpts & { yes?: boolean }) => {
+	const api = client(opts);
+	if (!opts.yes) {
+		const existing = (await api.listLabels()).items.find(
+			(l) => l.name.toLowerCase() === name.toLowerCase() || l.id === name
+		);
+		if (!existing) die(`no such label: ${name}`);
+		const rl = createInterface({ input: process.stdin, output: process.stdout });
+		const answer = await rl.question(
+			`Delete label "${existing.name}"? It is on ${existing.issue_count} issue${existing.issue_count === 1 ? '' : 's'}. [y/N] `
+		);
+		rl.close();
+		if (!/^y(es)?$/i.test(answer.trim())) die('aborted');
+	}
+	const res = await api.deleteLabel(name);
+	if (opts.json) return printJson(res);
+	console.log(`deleted label "${name}" (was on ${res.issue_count} issue${res.issue_count === 1 ? '' : 's'})`);
+});
 
 const runners = program.command('runners').description('Manage the runner registry');
 

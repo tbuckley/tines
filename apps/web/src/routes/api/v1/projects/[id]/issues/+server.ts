@@ -22,7 +22,8 @@ export const GET: RequestHandler = api(async (event) => {
 			schedule: params.get('schedule') ?? undefined,
 			hideDone: ['1', 'true'].includes(params.get('hide_done') ?? ''),
 			ready: ['1', 'true'].includes(params.get('ready') ?? ''),
-			q: params.get('q') ?? undefined
+			q: params.get('q') ?? undefined,
+			labels: params.getAll('label')
 		},
 		page
 	);
