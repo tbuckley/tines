@@ -25,6 +25,7 @@ import {
 	type EffectiveRepo,
 	type EffectiveSkill,
 	type IssueDetail,
+	type IssueJournalResponse,
 	type OverriddenContextItem,
 	type RepoDirConflict,
 	type UpdateContextItemRequest
@@ -1219,6 +1220,106 @@ async function issueMatchTarget(
 	return { projectId: issue.project_id, stateId: issue.state_id, issueId: issue.id };
 }
 
+// ---------------------------------------------------------------------------
+// Journal resolution: which journal a caller's `tines journal` commands own
+
+/** The run anchor's verdict: a launch state, or why there isn't one. */
+export interface LaunchStateResolution {
+	/** The state the run was launched in; null when the run anchor does not apply. */
+	stateId: string | null;
+	/** Why a present run key could not anchor (null otherwise). */
+	note: string | null;
+}
+
+/**
+ * The state this actor's run was launched in — the anchor that keeps a lesson
+ * with the stage that learned it after the issue has already moved on.
+ *
+ * Returns `{ stateId: null, note: null }` for callers that are not a run (a
+ * browser session or a named key), and a `note` whenever a run key is present
+ * but cannot anchor: another issue's key, or a launch state a workflow edit
+ * deleted mid-run. Never throws — a lost lesson is worse than a misfiled one.
+ */
+export async function launchStateForRun(
+	db: Kysely<Database>,
+	actor: ActorContext,
+	issueId: string
+): Promise<LaunchStateResolution> {
+	if (!actor.agentRunId) return { stateId: null, note: null };
+	const run = await db
+		.selectFrom('agent_run')
+		.innerJoin('issue', 'issue.id', 'agent_run.issue_id')
+		.innerJoin('project', 'project.id', 'issue.project_id')
+		// State names survive workflow edits loosely: left join, id kept.
+		.leftJoin('workflow_state as start_state', 'start_state.id', 'agent_run.state_id_at_start')
+		.select([
+			'agent_run.issue_id',
+			'issue.number as issue_number',
+			'project.name as project_name',
+			'start_state.id as start_state_id'
+		])
+		.where('agent_run.id', '=', actor.agentRunId)
+		.where('agent_run.user_id', '=', actor.userId)
+		.executeTakeFirst();
+	// The run's key is revoked in the same batch that ends the run, so a live
+	// key implies a live run; a missing row can only be stale data.
+	if (!run) return { stateId: null, note: null };
+	if (run.issue_id !== issueId) {
+		return {
+			stateId: null,
+			note: `this run key belongs to ${run.project_name}/${run.issue_number}; using the requested issue's current state`
+		};
+	}
+	// Run status is deliberately not checked: if the daemon's finish call
+	// races the agent's last append, the launch state is still the answer.
+	if (!run.start_state_id) {
+		return {
+			stateId: null,
+			note: "the state this run was launched in no longer exists; using the issue's current state"
+		};
+	}
+	return { stateId: run.start_state_id, note: null };
+}
+
+/**
+ * The journal a caller's `tines journal` commands target: the prompt named
+ * `journal` at project ∧ state, where the state is the run's launch state for
+ * a run key on this issue and the issue's current state for everyone else.
+ *
+ * The decision lives here rather than in the CLI because the run → launch
+ * state link (`api_key.agent_run_id` → `agent_run.state_id_at_start`) is only
+ * knowable server-side.
+ */
+export async function journalForIssue(
+	db: Kysely<Database>,
+	actor: ActorContext,
+	issueId: string
+): Promise<IssueJournalResponse> {
+	const target = await issueMatchTarget(db, actor.userId, issueId);
+	const launch = await launchStateForRun(db, actor, issueId);
+	const stateId = launch.stateId ?? target.stateId;
+	const scope = toContextScope(
+		await resolveScope(db, actor.userId, {
+			projectId: target.projectId,
+			workflowStateId: stateId,
+			issueId: null
+		})
+	);
+	const row = await contextItemQuery(db, actor.userId)
+		.where('context_item.kind', '=', 'prompt')
+		.where('context_item.name', '=', JOURNAL_NAME)
+		.where('context_item.project_id', '=', target.projectId)
+		.where('context_item.workflow_state_id', '=', stateId)
+		.where('context_item.issue_id', 'is', null)
+		.executeTakeFirst();
+	return {
+		scope,
+		anchor: launch.stateId ? 'run' : 'current',
+		note: launch.note,
+		item: row ? serializeItem(row) : null
+	};
+}
+
 /**
  * The assembled bundle for an issue, computed on read. Pass
  * `skillFiles: false` for a display-only bundle (skill file contents can be
@@ -1444,6 +1545,10 @@ export function issueBlock(
 		lines.push(
 			'Your journal for this project and stage is the "Journal" section above',
 			`(currently v${journal.version}).`,
+			'',
+			// The run key remembers the stage it was launched in, so the old
+			// append-before-you-move ordering trap no longer exists.
+			'Appends land in this stage\'s journal even after you move the issue.',
 			'',
 			`- Append a lesson: \`tines journal append ${ref} "- <date>: <lesson>"\``,
 			`- Fix or prune entries: \`tines journal show ${ref} --json\`, revise, then`,

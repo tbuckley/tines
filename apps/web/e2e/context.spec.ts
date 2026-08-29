@@ -2,6 +2,7 @@ import type {
 	ContextItem,
 	EffectiveContext,
 	IssueDetail,
+	IssueJournalResponse,
 	LaunchPromptResponse,
 	ListResponse,
 	Project,
@@ -449,6 +450,25 @@ test.describe.serial('agent-maintained context', () => {
 		expect(part.version).toBe(3);
 	});
 
+	test('the journal endpoint names the scope a caller owns, and is per-user', async ({
+		request
+	}) => {
+		const api = apiClient(request, ALICE.apiKey);
+		// A PAT is not a run, so it gets the issue's current state. (Run keys
+		// anchor to their launch state — unit-tested, since minting one here
+		// would mean driving the whole runner protocol.)
+		const resolved = await body<IssueJournalResponse>(
+			await api.get(`/api/v1/issues/${issueId}/journal`)
+		);
+		expect(resolved.anchor).toBe('current');
+		expect(resolved.note).toBeNull();
+		expect(resolved.scope.label).toBe(`project ${projectName} · state Working`);
+		expect(resolved.item?.id).toBe(journalId);
+
+		const bob = apiClient(request, BOB.apiKey);
+		expect((await bob.get(`/api/v1/issues/${issueId}/journal`)).status()).toBe(404);
+	});
+
 	test('the launch prompt is id-free with the journal as its one write affordance', async ({
 		request
 	}) => {
@@ -456,6 +476,9 @@ test.describe.serial('agent-maintained context', () => {
 		const prompt = await body<LaunchPromptResponse>(await api.get(`/api/v1/issues/${issueId}/prompt`));
 		expect(prompt.text).not.toContain('ctx_');
 		expect(prompt.text).toContain('### Journal');
+		expect(prompt.text).toContain(
+			"Appends land in this stage's journal even after you move the issue."
+		);
 		expect(prompt.text).toContain(`\`tines journal append ${issueRef} "- <date>: <lesson>"\``);
 		expect(prompt.text).toContain(`--expect-version 3`);
 		expect(prompt.text).toContain(`Attached to this issue: skill "sk-${runId}" (1 file)`);

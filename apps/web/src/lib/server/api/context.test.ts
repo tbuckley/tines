@@ -295,6 +295,10 @@ describe('issueBlock', () => {
 		expect(withJournal).toContain('(currently v7)');
 		expect(withJournal).toContain('`tines journal append Tines/42 "- <date>: <lesson>"`');
 		expect(withJournal).toContain('`tines journal rewrite Tines/42 --body @file --expect-version 7`');
+		// The old append-before-you-move ordering trap, retired by run anchoring.
+		expect(withJournal).toContain(
+			"Appends land in this stage's journal even after you move the issue."
+		);
 		expect(withJournal).not.toContain('ctx_'); // no item ids anywhere
 
 		const without = issueBlock(issue, emptyContext);

@@ -154,23 +154,41 @@ Agents address their journal by the one reference they already hold — the
 issue — never by item id:
 
 ```
-tines journal show    <project>/<number> [--json]
-tines journal append  <project>/<number> <markdown>
-tines journal rewrite <project>/<number> --body <md|@file> --expect-version <n>
+tines journal show    [--state <workflow>/<state>] <project>/<number> [--json]
+tines journal append  [--state <workflow>/<state>] <project>/<number> <markdown>
+tines journal rewrite [--state <workflow>/<state>] <project>/<number> --body <md|@file> --expect-version <n>
 ```
 
-The CLI resolves the issue's project and **current** state and targets the
-prompt item named `journal` at exactly that scope (`project ∧ state`).
-`append` finds-or-creates it: if absent, the item is created with the text
-as its first body (on a create race, the loser retries as an append).
-`show` prints the body and version; `rewrite` is the version-checked
-whole-body replace. Following the *current* state is deliberate — after a
-transition, appends land in the new stage's journal, which is where
-lessons about that stage belong.
+The CLI asks `GET /api/v1/issues/:id/journal` which scope it owns, and
+targets the prompt item named `journal` at exactly that scope
+(`project ∧ state`). `append` finds-or-creates it: if absent, the item is
+created with the text as its first body (on a create race, the loser
+retries as an append). `show` prints the body and version; `rewrite` is
+the version-checked whole-body replace.
 
-These are CLI sugar over the generic endpoints (exact-scope list + create
-/ append / PATCH); JSON-only agents do the same dance. No new journal
-resource is added to the API.
+The scope is the state the caller's **run was launched in**
+(`agent_run.state_id_at_start`, reached from the run key via
+`api_key.agent_run_id`) — not the issue's current state. A run's identity
+is its stage: the lessons it learns belong to the stage that did the work,
+and the launch prompt tells agents to move the issue last, so resolving
+against the current state silently misfiled every lesson appended after a
+transition. Callers that are not a run — a browser session, a named PAT,
+or a run key presented against a different issue — get the issue's current
+state, as does a run whose launch state a workflow edit has since deleted;
+in the latter two cases the response carries a `note` saying so, and the
+CLI prints it to stderr. Resolution never fails on an anchor problem: a
+lost lesson is worse than a misfiled one.
+
+`--state <workflow>/<state>` overrides the resolution entirely — the
+recovery tool for a lesson already filed in the wrong journal, and the way
+a curator reads another stage's journal. Note the argument order: `append`
+is `passThroughOptions()` (so a lesson may itself start with `-`), which
+makes a *trailing* `--state` a hard parse error rather than a silent
+no-op; the flag goes before `<ref>`, and the help text says so.
+
+Apart from that one read endpoint, these are CLI sugar over the generic
+endpoints (exact-scope list + create / append / PATCH); JSON-only agents
+do the same dance. Writes stay on the generic context endpoints.
 
 The asymmetry is the point: the journal is reachable in one id-free,
 copy-pasteable command, while directly editing any broader item requires
@@ -218,6 +236,8 @@ layer):
 
 Your journal for this project and stage is the "Journal" section above
 (currently v7).
+
+Appends land in this stage's journal even after you move the issue.
 
 - Append a lesson: `tines journal append Tines/1 "- <date>: <lesson>"`
 - Fix or prune entries: `tines journal show Tines/1 --json`, revise, then
@@ -400,6 +420,8 @@ Add a comment: `tines issues comment Tines/12 "<markdown>"`
 Your journal for this project and stage is the "Journal" section above
 (currently v7).
 
+Appends land in this stage's journal even after you move the issue.
+
 - Append a lesson: `tines journal append Tines/12 "- <date>: <lesson>"`
 - Fix or prune entries: `tines journal show Tines/12 --json`, revise, then
   `tines journal rewrite Tines/12 --body @file --expect-version 7`
@@ -444,13 +466,14 @@ change.
 | `POST /api/v1/context/:id/append` | New. `{ text, expected_version? }`; prompts only; atomic; cap-checked; returns the updated item. |
 | everywhere items serialize | `version` included (list rows, detail, effective-context entries). |
 | `GET /api/v1/issues/:id/prompt` | Issue block gains the `### Journal` section and the names-only shared-context footnote. |
+| `GET /api/v1/issues/:id/journal` | New. Read-only; resolves which journal the caller owns — `{ scope, anchor: 'run' \| 'current', note, item }`, run-anchored for run keys. |
 
 ## CLI
 
 ```
-tines journal show    <project>/<number> [--json]
-tines journal append  <project>/<number> <markdown>
-tines journal rewrite <project>/<number> --body <md|@file> --expect-version <n>
+tines journal show    [--state <workflow>/<state>] <project>/<number> [--json]
+tines journal append  [--state <workflow>/<state>] <project>/<number> <markdown>
+tines journal rewrite [--state <workflow>/<state>] <project>/<number> --body <md|@file> --expect-version <n>
 tines context edit <id> … --expect-version <n>
 tines context create …                       # scope flags now optional → global
 tines context init                           # seed agent-guidelines if absent
