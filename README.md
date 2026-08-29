@@ -4,7 +4,7 @@ An orchestration layer for AI agents, allowing you to create an ecosystem of age
 
 The core of Tines is an issue tracker, which makes work legible to both humans and agents. It acts as a log of work, actions taken, and hand offs. Issues move between states according to workflows, finite state machines that define the allowed transitions and roles for each state.
 
-Tines acts as a supervisor, assigning tasks to agents across managed services (using your own API keys) as well as local devices (using your own subscriptions).
+Tines acts as a supervisor, assigning tasks to agents across managed services (using your own API keys) as well as local devices (using your own subscriptions). See [Running agents](#running-agents) for how that side works.
 
 ## Repository layout
 
@@ -99,6 +99,104 @@ npx -y tines time                         # one-shot, no install — handy for a
 
 The `npx -y` form is the most agent-friendly: it needs no global install, PATH changes, or prior setup — just Node 20+. To automate releases, add a GitHub Actions workflow that runs `pnpm publish` on version tags with an npm [granular access token](https://docs.npmjs.com/about-access-tokens) stored as an `NPM_TOKEN` repo secret.
 
+## Running agents
+
+Behind the issue tracker sits a supervisor: it decides which issues agents should take on,
+launches them, streams their output back as a run log, and records what each attempt cost.
+Nothing runs until you arm it — the automation kill switch is **off for a new user**, so
+adding a runner or a routing rule is safe on its own.
+
+An issue is eligible for an agent exactly when its state's category is `active` (states in
+`backlog`, `awaiting_human`, and `done` are never touched), it is unblocked, it has no run
+already in flight, and some routing rule matches it. `tines issues dispatch <ref>` explains
+the verdict for any issue, runner by runner.
+
+### Runners
+
+A **runner** is one launch target you own. Two types ship today:
+
+| Type | What it is | Created by |
+| --- | --- | --- |
+| `claude_managed` | Sessions in Anthropic's managed sandbox, billed to your own Anthropic API key. | Adding the key on the **Agents** tab. |
+| `local` | A daemon on one of your own machines driving a harness — Claude Code (`claude -p`), codex (`codex exec`), or a custom command template — on that machine's subscription and git credentials. | The daemon registering itself on first start. |
+
+Local runners are why self-hosting Tines usually means running something on a machine of
+your own:
+
+```sh
+TINES_API_KEY=<your API key> TINES_API_URL=https://your-tines.example \
+  tines runner daemon --name laptop --harness claude-code
+```
+
+The daemon polls for work assigned to it, materializes a per-run workspace (the launch
+prompt, the issue's skills, and clones of its repos), runs the harness there, and reports
+the finish. No inbound connection to the machine is ever needed. **[docs/runner-daemon.md](docs/runner-daemon.md)**
+covers registration, the flags, token rotation, failure behaviour, and launchd/systemd
+units for keeping it running.
+
+Managed runners hold an Anthropic API key encrypted at rest with `SECRET_ENCRYPTION_KEY`
+(a Workers secret — see Deploying below); it is write-only after saving. They clone repos
+through the provider's git proxy using one GitHub PAT stored in supervisor settings, so
+scope that PAT to exactly the repos your context items point at — it is the blast radius of
+any run. Local runners ignore it and use the device's own git credentials.
+
+A `gemini_managed` type exists in the schema but has no adapter yet; the registry in
+`apps/web/src/lib/server/supervisor/adapter.ts` is the source of truth for what can
+actually launch.
+
+### Routing, quotas, and budgets
+
+All of this is edited on the **Agents** tab, and most of it from the CLI too:
+
+- **The kill switch** — `tines supervisor enable` / `tines supervisor disable`, with
+  `tines supervisor status` for a one-screen overview.
+- **Routing rules** decide who takes an issue. A rule is scoped globally, per project, per
+  workflow state, or both (most specific wins, no merging), and its payload is an ordered
+  preference list of `<runner>[:tier]` targets:
+  `tines routing set claude:cheapest laptop --state "Docs Change/Writing"`. An issue no rule
+  matches never dispatches — automation is opt-in. A single issue can override routing with
+  a pin: `tines issues assign <ref> <runner>[:tier]`.
+- **Tiers** — rules say `smartest`, `balanced`, or `cheapest` rather than naming model ids
+  that go stale; per-runner overrides live in `tines runners tiers <name>`.
+- **Quota policy** — one per user: a global concurrency cap
+  (`tines supervisor quota global 3`) or a per-state roster
+  (`tines supervisor quota roster --default 1 --state "Docs Change/Review=3"`). Each
+  runner's own `max_concurrent` always applies on top of it.
+- **Budgets** — `tines runners budget <name>`. The per-run caps enforce today:
+  `--max-run-usd` becomes the platform-enforced session budget on Claude runners,
+  `--max-run-tokens` is checked as the sweep polls usage, and each runner's
+  `max_run_minutes` (default 30) is the universal backstop. `--daily-usd` and
+  `--daily-tokens` are accepted and stored, but daily budgets are **not yet enforced**.
+
+Runs are listed with `tines runs list` (`--active` for the ones holding a claim) and read
+with `tines runs show <id>`. A failed run strikes its issue; after the attempt limit the
+issue is parked with a needs-attention flag until a human runs `tines issues resume <ref>`.
+
+### The sweep and its cadence
+
+Agent dispatch and **scheduled tasks** — recurring issue templates, created with
+`tines issues create <project> --title … --every daily` and managed with `tines schedules`
+— share one clock. One Cloudflare Cron Trigger drives everything time-based —
+`"triggers": { "crons": ["*/5 * * * *"] }` in `apps/web/wrangler.jsonc`. Each firing runs
+`apps/web/worker/index.ts`, which sweeps scheduled tasks first (creating issues whose
+recurrence is due) and then the supervisor (dispatching eligible issues, polling managed
+runs for status and usage, timing out overdue runs, failing runs whose local daemon has
+gone offline) — in that order, so an issue a schedule creates can be dispatched by the same
+firing.
+
+Five minutes is the backstop, not the latency: eligibility-changing writes — a transition,
+an unblock, a daemon poll freeing capacity, a settings edit — queue an opportunistic
+dispatch pass immediately, and the sweep exists to make those passes optional rather than
+load-bearing.
+
+The cadence does have one user-visible consequence. **An occurrence fires at the first
+sweep at or after its nominal time**, so an issue from a schedule set for 09:00 can carry a
+creation timestamp up to five minutes later. Schedules are guardrailed to fire no more
+often than hourly, so the lag stays small relative to the recurrence.
+
+Locally, `wrangler dev --test-scheduled` exposes `GET /__scheduled` to fire a sweep on
+demand instead of waiting for the clock.
+
 ## Google sign-in
 
 1. Create an OAuth 2.0 Client ID at <https://console.cloud.google.com/apis/credentials>.
@@ -146,6 +244,9 @@ pnpm db:migrate:remote
 pnpm wrangler secret put BETTER_AUTH_SECRET
 pnpm wrangler secret put GOOGLE_CLIENT_ID
 pnpm wrangler secret put GOOGLE_CLIENT_SECRET
+pnpm wrangler secret put SECRET_ENCRYPTION_KEY   # `openssl rand -hex 32`; encrypts
+                                                 # stored provider keys and the GitHub
+                                                 # PAT at rest (see "Running agents")
 # confirm EMAIL_FROM in wrangler.jsonc "vars" is on a domain onboarded to
 # Email Service (see "Magic-link sign-in" above)
 pnpm deploy
