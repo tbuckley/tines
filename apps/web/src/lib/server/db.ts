@@ -1,5 +1,5 @@
 import type { StateCategory } from '@tines/shared';
-import { Kysely } from 'kysely';
+import { Kysely, SqliteAdapter } from 'kysely';
 import { D1Dialect } from 'kysely-d1';
 
 export interface ProjectTable {
@@ -339,6 +339,36 @@ export interface Database {
 	user: UserTable;
 }
 
+/**
+ * kysely-d1 reuses Kysely's stock SqliteAdapter, whose
+ * `supportsMultipleConnections = false` makes Kysely wrap every query in a
+ * connection mutex. That is right for a local SQLite file and wrong for D1,
+ * which is a remote binding that accepts concurrent statements: the mutex
+ * silently serialises every `Promise.all` fan-out in our loads (measured:
+ * the issue page ran 26 queries in 26 sequential round trips).
+ *
+ * INVARIANT: nothing under `apps/web/src` may call `db.transaction()`. A
+ * Kysely transaction pins one connection, and with the mutex lifted unrelated
+ * statements would interleave into it. Every multi-statement write goes
+ * through `runAtomic()` -> `env.DB.batch()`, which never touches Kysely's
+ * connection at all. Enforced by a test in db.test.ts.
+ *
+ * Fan-out ceiling: the widest load (the issue page) peaks at ~11 concurrent
+ * statements — far below the Worker subrequest cap — so no throttle is
+ * needed. Re-check that if a load grows a much wider Promise.all.
+ */
+class ConcurrentD1Adapter extends SqliteAdapter {
+	override get supportsMultipleConnections() {
+		return true;
+	}
+}
+
+export class ConcurrentD1Dialect extends D1Dialect {
+	override createAdapter(): SqliteAdapter {
+		return new ConcurrentD1Adapter();
+	}
+}
+
 const dbs = new WeakMap<object, Kysely<Database>>();
 
 /**
@@ -350,7 +380,7 @@ const dbs = new WeakMap<object, Kysely<Database>>();
 export function getDb(env: Env): Kysely<Database> {
 	let db = dbs.get(env.DB);
 	if (!db) {
-		db = new Kysely<Database>({ dialect: new D1Dialect({ database: env.DB }) });
+		db = new Kysely<Database>({ dialect: new ConcurrentD1Dialect({ database: env.DB }) });
 		dbs.set(env.DB, db);
 	}
 	return db;

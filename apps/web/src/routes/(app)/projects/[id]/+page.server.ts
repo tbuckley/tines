@@ -1,4 +1,5 @@
 import { error } from '@sveltejs/kit';
+import { truncate } from '$lib/format';
 import { listContextItems } from '$lib/server/api/context';
 import { ApiFail } from '$lib/server/api/core';
 import { listIssues } from '$lib/server/api/issues';
@@ -14,7 +15,8 @@ export const load: PageServerLoad = async ({ locals, platform, params, url }) =>
 	const userId = locals.user!.id;
 
 	const project = await getProject(db, userId, params.id).catch((e) => {
-		error(e instanceof ApiFail ? e.status : 500, 'Not found');
+		const status = e instanceof ApiFail ? e.status : 500;
+		error(status, status === 404 ? `No project has the ID “${truncate(params.id)}”.` : 'Not found');
 	});
 	const showDone = url.searchParams.get('done') === '1';
 	// Ready already implies not-done; the "show done" param just parks while it is on.

@@ -13,7 +13,7 @@
 	import IconRocket from '@tabler/icons-svelte/icons/rocket';
 	import { untrack } from 'svelte';
 	import { fade, slide } from 'svelte/transition';
-	import { invalidateAll } from '$app/navigation';
+	import { invalidate } from '$app/navigation';
 	import { api } from '$lib/api';
 	import AgentActivityCard from '$lib/components/AgentActivityCard.svelte';
 	import ArtifactsPanel from '$lib/components/ArtifactsPanel.svelte';
@@ -30,17 +30,76 @@
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { Select } from '$lib/components/ui/select/index.js';
+	import { Skeleton } from '$lib/components/ui/skeleton/index.js';
 	import { Textarea } from '$lib/components/ui/textarea/index.js';
 	import { actorLabel, prefersReducedMotion, relativeTime } from '$lib/format';
 	import { mergeLinks, type PendingAdd } from '$lib/link-overlay';
 
 	let { data } = $props();
 
+	// Mutations and the live poll refresh THIS page's load only (it declares
+	// depends('app:issue')), not the whole load graph: a full invalidate would
+	// also re-run the (app) layout and every other load for no reason.
+	const refresh = () => invalidate('app:issue');
+
+	// --- streamed panels ---------------------------------------------------------
+	// Every refresh — each mutation, and every poll tick that spots someone
+	// else's event — replaces data.deferred with FRESH pending promises.
+	// Rendering them with {#await} would collapse the panels back to skeletons
+	// on each resync, so each panel instead tracks the latest value across
+	// promise replacements: pending only before the first value ever arrives,
+	// the previous value kept on screen while a newer promise is in flight, and
+	// a rejection surfacing as an error only when there is no value to keep
+	// (afterwards the stale value stands and the next poll tick retries).
+	// The kept value belongs to ONE issue: this component is reused when
+	// navigating between issues, so a key change resets the panel to pending
+	// rather than showing the previous issue's data.
+	type PanelState<T> = { status: 'pending' } | { status: 'loaded'; value: T } | { status: 'failed' };
+	function streamed<T>(promise: () => Promise<T>, key: () => unknown) {
+		let current = $state<PanelState<T>>({ status: 'pending' });
+		let lastKey: unknown;
+		$effect(() => {
+			// Reading the promise here makes the effect re-run when a refresh
+			// swaps data.deferred; the flag parks the superseded promise so an
+			// out-of-order settlement can't overwrite a newer one.
+			const k = key();
+			if (k !== lastKey) {
+				lastKey = k;
+				current = { status: 'pending' };
+			}
+			let superseded = false;
+			promise().then(
+				(value) => {
+					if (!superseded) current = { status: 'loaded', value };
+				},
+				() => {
+					if (!superseded && current.status !== 'loaded') current = { status: 'failed' };
+				}
+			);
+			return () => {
+				superseded = true;
+			};
+		});
+		return {
+			get current() {
+				return current;
+			}
+		};
+	}
+
+	const issueKey = () => data.issue.id;
+	const contextItemsPanel = streamed(() => data.deferred.contextItems, issueKey);
+	const effectiveContextPanel = streamed(() => data.deferred.effectiveContext, issueKey);
+	const agentActivityPanel = streamed(
+		() => Promise.all([data.deferred.dispatch, data.deferred.issueRuns, data.deferred.runners]),
+		issueKey
+	);
+
 	const dur = () => (prefersReducedMotion() ? 0 : 180);
 
 	// Everything optimistic on this page renders as server truth + an overlay
 	// of in-flight work, never a blind local copy resynced by effect. With the
-	// live-updates poll below, invalidateAll() can land at ANY moment — not
+	// live-updates poll below, a refresh can land at ANY moment — not
 	// just at the quiet point after the viewer's own mutation — and a blind
 	// copy would snap back to stale data mid-mutation. Each overlay entry is
 	// cleared only once its own mutation's reload has settled (or it failed).
@@ -51,7 +110,7 @@
 
 	// Comments: server list + in-flight posts. A confirmed overlay entry is
 	// hidden as soon as any reload delivers the server copy, so a poll resync
-	// racing the post's own invalidateAll can't duplicate it.
+	// racing the post's own refresh can't duplicate it.
 	let pendingComments = $state<(Comment & { pending?: boolean })[]>([]);
 	const comments = $derived.by((): (Comment & { pending?: boolean })[] => {
 		const confirmed = new Set(data.issue.comments.map((c) => c.id));
@@ -62,7 +121,7 @@
 
 	// --- live updates ------------------------------------------------------------
 	// Other agents/users can post comments, transition, or edit this issue while
-	// it's open here. Every mutation path below already calls invalidateAll() to
+	// it's open here. Every mutation path below already calls refresh() to
 	// fully resync; polling the events feed just supplies the missing trigger for
 	// when someone *else* changes something.
 	// Plain (non-reactive) guard, set before the fetch so an overlapping tick
@@ -74,7 +133,7 @@
 		try {
 			const latest = await api.listEvents({ issue: data.issue.id, limit: 1 });
 			const newestId = latest.items[0]?.id ?? null;
-			if (newestId !== latestEventId) await invalidateAll();
+			if (newestId !== latestEventId) await refresh();
 		} catch {
 			// Silent — a missed poll tick just waits for the next one, or the
 			// visibility-change backstop below.
@@ -138,7 +197,7 @@
 		removingDuplicate = true;
 		try {
 			await api.removeIssueLink(data.issue.id, prev.link_id);
-			await invalidateAll();
+			await refresh();
 			linkAdds = linkAdds.filter((a) => a.entry.link_id !== prev.link_id);
 		} catch (e) {
 			showError(e);
@@ -203,7 +262,7 @@
 			pendingState = transition.to_state; // optimistic: badge + graph animate immediately
 			await api.transitionIssue(data.issue.id, { transition_id: transition.transition_id });
 			pendingTransition = null;
-			await invalidateAll();
+			await refresh();
 		} catch (e) {
 			showError(e);
 		} finally {
@@ -256,7 +315,7 @@
 					: {}),
 				state: overrideStateId
 			});
-			await invalidateAll();
+			await refresh();
 			// Applied and reloaded — the defaults now describe the new
 			// position, so the picks have served their purpose.
 			overrideWorkflowPick = null;
@@ -276,7 +335,7 @@
 		resuming = true;
 		try {
 			await api.resumeIssue(data.issue.id);
-			await invalidateAll();
+			await refresh();
 		} catch (e) {
 			showError(e);
 		} finally {
@@ -308,7 +367,7 @@
 			// Swap in the confirmed comment under its real id; the overlay's
 			// dedupe hides it the moment any reload delivers the server copy.
 			pendingComments = pendingComments.map((c) => (c.id === temp.id ? created : c));
-			await invalidateAll();
+			await refresh();
 			pendingComments = pendingComments.filter((c) => c.id !== created.id);
 		} catch (err) {
 			pendingComments = pendingComments.filter((c) => c.id !== temp.id);
@@ -330,7 +389,7 @@
 		if (!title || title === data.issue.title) return;
 		try {
 			await api.updateIssue(data.issue.id, { title });
-			await invalidateAll();
+			await refresh();
 		} catch (err) {
 			showError(err);
 		}
@@ -364,7 +423,7 @@
 		savingDescription = true;
 		try {
 			await api.updateIssue(data.issue.id, { description: descriptionDraft });
-			await invalidateAll();
+			await refresh();
 			editingDescription = false;
 		} catch (err) {
 			showError(err);
@@ -375,6 +434,19 @@
 </script>
 
 <svelte:head><title>{data.issue.project_name}/#{data.issue.number} · {data.issue.title} · Tines</title></svelte:head>
+
+<!--
+	A streamed panel that never arrived. The panels below the fold are sent as
+	promises so the page can paint (and the View Transition commit) on the first
+	D1 wave; a rejection here is a failed panel, not a failed page.
+-->
+{#snippet loadFailed(what: string)}
+	<div class="text-muted-foreground flex items-center gap-2 py-2 text-sm">
+		<IconAlertTriangle size={16} class="text-destructive" />
+		<span>Couldn't load {what}.</span>
+		<Button size="sm" variant="ghost" onclick={refresh}>Retry</Button>
+	</div>
+{/snippet}
 
 <div class="mb-6">
 	<a
@@ -406,7 +478,12 @@
 					<Button type="button" size="sm" variant="ghost" onclick={() => (editingTitle = false)}>Cancel</Button>
 				</form>
 			{:else}
-				<h1 class="group mt-1 flex items-center gap-2 text-2xl font-semibold tracking-tight">
+				<!-- wrap-anywhere: a title is arbitrary user text, and one unbroken
+				     token (a pasted URL is enough) otherwise sets the document width
+				     and drags every card on the page wider than the viewport. -->
+				<h1
+					class="group mt-1 flex items-center gap-2 text-2xl font-semibold tracking-tight wrap-anywhere"
+				>
 					<!-- The transition name sits on a text-hugging span (not the h1,
 					     whose width includes the edit affordance) so the morph from
 					     the list row scales cleanly. -->
@@ -473,7 +550,7 @@
 		transition:slide={{ duration: dur() }}
 	>
 		<IconCopy size={16} stroke={1.75} class="shrink-0" />
-		<p class="min-w-0">
+		<p class="min-w-0 wrap-anywhere">
 			Duplicate of
 			<a
 				href="/issues/{encodeURIComponent(duplicateOf.project_name)}/{duplicateOf.number}"
@@ -528,7 +605,7 @@
 	defaults={{ issue_id: data.issue.id }}
 	projects={data.projects}
 	workflows={data.workflows}
-	onsaved={invalidateAll}
+	onsaved={refresh}
 />
 
 <LaunchPromptDialog bind:open={promptDialogOpen} issueId={data.issue.id} />
@@ -598,11 +675,17 @@
 					<h3 class="text-muted-foreground mb-2 text-xs font-semibold tracking-wide uppercase">
 						This issue's context
 					</h3>
-					<ContextItemList
-						items={data.contextItems}
-						onselect={openContextEdit}
-						emptyMessage="Nothing attached to this issue yet — add a note, skill, or repo."
-					/>
+					{#if contextItemsPanel.current.status === 'pending'}
+						<Skeleton class="h-16 w-full" />
+					{:else if contextItemsPanel.current.status === 'loaded'}
+						<ContextItemList
+							items={contextItemsPanel.current.value}
+							onselect={openContextEdit}
+							emptyMessage="Nothing attached to this issue yet — add a note, skill, or repo."
+						/>
+					{:else}
+						{@render loadFailed("this issue's context")}
+					{/if}
 				</div>
 				<details class="group border-t pt-3">
 					<summary class="text-muted-foreground hover:text-foreground cursor-pointer text-sm select-none">
@@ -613,7 +696,13 @@
 						</span>
 					</summary>
 					<div class="mt-3">
-						<EffectiveContextView context={data.effectiveContext} />
+						{#if effectiveContextPanel.current.status === 'pending'}
+							<Skeleton class="h-24 w-full" />
+						{:else if effectiveContextPanel.current.status === 'loaded'}
+							<EffectiveContextView context={effectiveContextPanel.current.value} />
+						{:else}
+							{@render loadFailed('the effective context')}
+						{/if}
 					</div>
 				</details>
 			</div>
@@ -624,7 +713,7 @@
 			issueId={data.issue.id}
 			artifacts={data.artifacts}
 			allowedTransitions={data.issue.allowed_transitions}
-			onchanged={invalidateAll}
+			onchanged={refresh}
 			onerror={showError}
 		/>
 
@@ -660,7 +749,10 @@
 		</section>
 	</div>
 
-	<aside class="space-y-8">
+	<!-- min-w-0, like the main column: a grid item defaults to a min-content
+	     floor, so one nowrap row in here (a truncated linked-issue title) would
+	     otherwise widen the column past the viewport. -->
+	<aside class="min-w-0 space-y-8">
 		<!-- state & transitions -->
 		<!-- On a duplicate the section stops pretending to be the source of
 		     truth (muted), but the graph and buttons still act on this issue's
@@ -803,13 +895,14 @@
 		</section>
 
 		<!-- the supervisor's view of this issue -->
-		<AgentActivityCard
-			issue={data.issue}
-			dispatch={data.dispatch}
-			runs={data.issueRuns}
-			runners={data.runners}
-			onerror={showError}
-		/>
+		{#if agentActivityPanel.current.status === 'pending'}
+			<Skeleton class="h-40 w-full" />
+		{:else if agentActivityPanel.current.status === 'loaded'}
+			{@const [dispatch, runs, runners] = agentActivityPanel.current.value}
+			<AgentActivityCard issue={data.issue} {dispatch} {runs} {runners} onerror={showError} />
+		{:else}
+			{@render loadFailed('agent activity')}
+		{/if}
 
 		<!-- dependencies & duplicates -->
 		<RelationsCard

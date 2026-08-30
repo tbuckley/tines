@@ -2,9 +2,8 @@ import { getRequestEvent } from '$app/server';
 import { betterAuth } from 'better-auth';
 import { magicLink } from 'better-auth/plugins';
 import { sveltekitCookies } from 'better-auth/svelte-kit';
-import { D1Dialect } from 'kysely-d1';
 import { ensureAgentGuidelines } from '$lib/server/api/context';
-import { getDb } from '$lib/server/db';
+import { ConcurrentD1Dialect, getDb } from '$lib/server/db';
 
 /** Minutes until a magic link expires; also quoted in the email body. */
 const MAGIC_LINK_EXPIRY_MINUTES = 10;
@@ -33,7 +32,9 @@ let auth: ReturnType<typeof createAuth> | undefined;
 function createAuth(env: Env, requestOrigin: string) {
 	return betterAuth({
 		database: {
-			dialect: new D1Dialect({ database: env.DB }),
+			// Concurrent dialect (see db.ts): Better Auth's own session + user lookups
+			// fan out instead of queueing behind Kysely's connection mutex.
+			dialect: new ConcurrentD1Dialect({ database: env.DB }),
 			type: 'sqlite'
 		},
 		// Production and local dev pin BETTER_AUTH_URL. The preview environment
@@ -42,6 +43,17 @@ function createAuth(env: Env, requestOrigin: string) {
 		// request origin there instead.
 		baseURL: env.BETTER_AUTH_URL || requestOrigin,
 		secret: env.BETTER_AUTH_SECRET,
+		session: {
+			// Signed session snapshot in a cookie, so the common case (a
+			// navigation by a signed-in browser) costs zero D1 round trips
+			// instead of the session+user lookup every request paid before.
+			// Trade-off: a session revoked elsewhere stays usable on the device
+			// holding the cookie for up to maxAge. Better Auth clears the cache
+			// cookie on signOut, so the in-app sign-out path is unaffected, and
+			// API-key revocation is a separate path (the bearer branch hashes
+			// the key against D1 on every request).
+			cookieCache: { enabled: true, maxAge: 5 * 60 }
+		},
 		databaseHooks: {
 			user: {
 				create: {

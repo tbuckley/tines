@@ -1,11 +1,17 @@
 import adapter from '@sveltejs/adapter-cloudflare';
 import { sveltekit } from '@sveltejs/kit/vite';
 import tailwindcss from '@tailwindcss/vite';
-import { defineConfig } from 'vitest/config';
+import { configDefaults, defineConfig } from 'vitest/config';
 
 export default defineConfig({
 	test: {
 		include: ['src/**/*.test.ts'],
+		// The navigation-cost probe is a measurement tool, not a gate: it spends
+		// seconds deliberately sleeping. `pnpm perf:nav` sets NAVPERF=1 to opt in.
+		exclude: [
+			...configDefaults.exclude,
+			...(process.env.NAVPERF === '1' ? [] : ['**/nav-perf.test.ts'])
+		],
 		environment: 'node'
 	},
 	plugins: [

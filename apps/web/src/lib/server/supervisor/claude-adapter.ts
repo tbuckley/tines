@@ -17,13 +17,8 @@
  * exactly the authority the launch needs.
  */
 import Anthropic from '@anthropic-ai/sdk';
-import type {
-	BetaManagedAgentsSession,
-	BetaManagedAgentsSessionUsage
-} from '@anthropic-ai/sdk/resources/beta/sessions/sessions';
-import type { BetaManagedAgentsSessionEvent } from '@anthropic-ai/sdk/resources/beta/sessions/events';
+import type { BetaManagedAgentsSession } from '@anthropic-ai/sdk/resources/beta/sessions/sessions';
 import {
-	type AgentRunUsage,
 	type EffectiveContext,
 	type IssueDetail,
 	type LaunchPromptResponse,
@@ -43,6 +38,7 @@ import type {
 	AdapterRunRef,
 	RunnerAdapter
 } from './adapter';
+import { mapUsage, summarizeEvents } from './claude-events';
 import { buildSupervisorPreamble } from './preamble';
 
 // ---------------------------------------------------------------------------
@@ -146,7 +142,32 @@ function parseJson<T>(raw: string | null | undefined): T | null {
 	}
 }
 
-export function createClaudeAdapter(env: Env, opts: ClaudeAdapterOptions = {}): RunnerAdapter {
+// ---------------------------------------------------------------------------
+// Provider context: everything bound to one worker env
+
+/**
+ * Provider/session plumbing bound to one worker env: DB access, key
+ * decryption, the SDK client, self-API GETs and lazy provisioning. Built once
+ * per adapter so the `RunnerAdapter` surface below is just launch/poll/cancel/
+ * sweep wired to a named unit instead of seven anonymous nested functions.
+ */
+interface ProviderContext {
+	db: Kysely<Database>;
+	runnerContext(runnerId: string): Promise<RunnerContext>;
+	/** The stored PAT, decrypted; null when none is configured. */
+	githubPat(userId: string): Promise<string | null>;
+	apiGet<T>(base: string, path: string, runKey: string): Promise<T>;
+	ensureEnvironment(ctx: RunnerContext): Promise<string>;
+	ensureTierAgent(
+		ctx: RunnerContext,
+		tier: ModelTier,
+		model: string,
+		effort: string | undefined
+	): Promise<string>;
+	createRunVault(ctx: RunnerContext, runId: string, runKey: string, apiHost: string): Promise<string>;
+}
+
+function createProviderContext(env: Env, opts: ClaudeAdapterOptions): ProviderContext {
 	const db = getDb(env);
 	const fetchFn = opts.fetch ?? globalThis.fetch.bind(globalThis);
 
@@ -305,8 +326,133 @@ export function createClaudeAdapter(env: Env, opts: ClaudeAdapterOptions = {}): 
 		return vault.id;
 	}
 
+	// `persistConfig` stays private: only the two ensure* functions write config.
+	return {
+		db,
+		runnerContext,
+		githubPat,
+		apiGet,
+		ensureEnvironment,
+		ensureTierAgent,
+		createRunVault
+	};
+}
+
+// ---------------------------------------------------------------------------
+// Sweep housekeeping: GC ended runs' provider resources; cancel orphans
+//
+// Each block below closes over nothing but the DB handle and the runner's SDK
+// client, so they live at module scope and `sweepRunner` is the runner-context
+// guard plus three calls.
+
+async function gcEndedRuns(db: Kysely<Database>, client: Anthropic, runnerId: string): Promise<void> {
+	// GC: ended runs whose per-run vault (and session) still exist. The
+	// vault holds an already-revoked key, but it must not accumulate.
+	const ended = await db
+		.selectFrom('agent_run')
+		.select(['id', 'provider_session_id', 'provider_meta'])
+		.where('runner_id', '=', runnerId)
+		.where('status', 'not in', ['assigned', 'launching', 'running'])
+		.where('provider_meta', 'is not', null)
+		.orderBy('ended_at desc')
+		.limit(25)
+		.execute();
+	for (const run of ended) {
+		const meta = parseJson<ClaudeRunMeta>(run.provider_meta);
+		if (!meta || meta.gc_done) continue;
+		try {
+			if (meta.vault_id) {
+				await client.beta.vaults.delete(meta.vault_id).catch((e) => {
+					if (!(e instanceof Anthropic.APIError && e.status === 404)) throw e;
+				});
+			}
+			if (run.provider_session_id) {
+				await client.beta.sessions.archive(run.provider_session_id).catch(() => {});
+			}
+			await db
+				.updateTable('agent_run')
+				.set({ provider_meta: JSON.stringify({ ...meta, gc_done: true }) })
+				.where('id', '=', run.id)
+				.execute();
+		} catch (e) {
+			console.error(`claude sweep: GC for run ${run.id} failed:`, e);
+		}
+	}
+}
+
+async function reconcileVaults(db: Kysely<Database>, client: Anthropic, runnerId: string): Promise<void> {
+	// Vault fallback sweep, by name: a run canceled between vault creation
+	// and the running-flip never records `provider_meta`, so the GC above
+	// cannot see its vault. Per-run vaults are named `tines-run-<id>`,
+	// which makes them findable regardless — delete any whose run is
+	// unknown or ended.
+	try {
+		const vaults = await client.beta.vaults.list({ limit: 100 });
+		for (const vault of vaults.data) {
+			const runId = vault.display_name?.startsWith('tines-run-')
+				? vault.display_name.slice('tines-run-'.length)
+				: null;
+			if (!runId) continue; // not ours — never touch foreign vaults
+			const run = await db
+				.selectFrom('agent_run')
+				.select(['id', 'status', 'created_at'])
+				.where('id', '=', runId)
+				.executeTakeFirst();
+			if (run && ['assigned', 'launching', 'running'].includes(run.status)) continue;
+			// A vault whose run row is missing entirely could be an in-flight
+			// launch racing this sweep (vault created, claim row… no — the
+			// claim precedes the vault). Missing = deleted runner history.
+			await client.beta.vaults.delete(vault.id).catch(() => {});
+		}
+	} catch (e) {
+		console.error(`claude sweep: vault reconciliation for runner ${runnerId} failed:`, e);
+	}
+}
+
+async function reconcileSessions(
+	db: Kysely<Database>,
+	client: Anthropic,
+	runnerId: string,
+	now: number
+): Promise<void> {
+	// Launch reconciliation, provider side: live sessions tagged with a run
+	// id that is unknown or already ended are orphans (a crash between
+	// session create and the DB write) — cancel them. Freshly created
+	// sessions get the launch-stall grace period before qualifying.
+	try {
+		const page = await client.beta.sessions.list({
+			statuses: ['running', 'idle', 'rescheduling'],
+			limit: 100
+		});
+		for (const session of page.data) {
+			const runId = session.metadata?.tines_run_id;
+			if (!runId) continue; // not ours — never touch foreign sessions
+			if (now - Date.parse(session.created_at) < LAUNCH_STALL_MS) continue;
+			const run = await db
+				.selectFrom('agent_run')
+				.select(['id', 'status'])
+				.where('id', '=', runId)
+				.executeTakeFirst();
+			if (run && ['assigned', 'launching', 'running'].includes(run.status)) continue;
+			await client.beta.sessions.events
+				.send(session.id, { events: [{ type: 'user.interrupt' }] })
+				.catch(() => {});
+			await client.beta.sessions.archive(session.id).catch(() => {});
+		}
+	} catch (e) {
+		console.error(`claude sweep: session reconciliation for runner ${runnerId} failed:`, e);
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The adapter surface
+
+export function createClaudeAdapter(env: Env, opts: ClaudeAdapterOptions = {}): RunnerAdapter {
+	const provider = createProviderContext(env, opts);
+	const db = provider.db;
+
 	async function launch(input: AdapterLaunchInput): Promise<AdapterLaunchResult> {
-		const ctx = await runnerContext(input.runner.id);
+		const ctx = await provider.runnerContext(input.runner.id);
 		const base = tinesApiBaseUrl(env);
 		const apiHost = new URL(base).hostname;
 		if (!input.model) throw new Error('Claude launches need a resolved model for the tier');
@@ -315,11 +461,11 @@ export function createClaudeAdapter(env: Env, opts: ClaudeAdapterOptions = {}): 
 
 		// Launch materials, assembled at launch time over our own API.
 		const [issue, prompt, context] = await Promise.all([
-			apiGet<IssueDetail>(base, `/api/v1/issues/${input.issueId}`, input.runKey),
-			apiGet<LaunchPromptResponse>(base, `/api/v1/issues/${input.issueId}/prompt`, input.runKey),
-			apiGet<EffectiveContext>(base, `/api/v1/issues/${input.issueId}/context`, input.runKey)
+			provider.apiGet<IssueDetail>(base, `/api/v1/issues/${input.issueId}`, input.runKey),
+			provider.apiGet<LaunchPromptResponse>(base, `/api/v1/issues/${input.issueId}/prompt`, input.runKey),
+			provider.apiGet<EffectiveContext>(base, `/api/v1/issues/${input.issueId}/context`, input.runKey)
 		]);
-		const pat = await githubPat(ctx.row.user_id);
+		const pat = await provider.githubPat(ctx.row.user_id);
 		if (context.repos.length > 0 && !pat) {
 			throw new Error(
 				'No GitHub PAT is stored in supervisor settings, so this managed run cannot clone its repositories — add one on the Agents tab'
@@ -338,9 +484,9 @@ export function createClaudeAdapter(env: Env, opts: ClaudeAdapterOptions = {}): 
 			return { ...repo, url: canonical };
 		});
 
-		const environmentId = await ensureEnvironment(ctx);
-		const agentId = await ensureTierAgent(ctx, input.tier, input.model, effort);
-		const vaultId = await createRunVault(ctx, input.runId, input.runKey, apiHost);
+		const environmentId = await provider.ensureEnvironment(ctx);
+		const agentId = await provider.ensureTierAgent(ctx, input.tier, input.model, effort);
+		const vaultId = await provider.createRunVault(ctx, input.runId, input.runKey, apiHost);
 
 		const issueRef = `${issue.project_name}/${issue.number}`;
 		const preamble = buildSupervisorPreamble({
@@ -402,73 +548,9 @@ export function createClaudeAdapter(env: Env, opts: ClaudeAdapterOptions = {}): 
 	// -------------------------------------------------------------------------
 	// Polling: session status + usage + a rendered event summary for the log
 
-	function mapUsage(usage: BetaManagedAgentsSessionUsage | undefined): AgentRunUsage {
-		const cacheWrite =
-			(usage?.cache_creation?.ephemeral_1h_input_tokens ?? 0) +
-			(usage?.cache_creation?.ephemeral_5m_input_tokens ?? 0);
-		const out: AgentRunUsage = {
-			input_tokens: usage?.input_tokens ?? 0,
-			output_tokens: usage?.output_tokens ?? 0,
-			cost_source: 'provider'
-		};
-		if (usage?.cache_read_input_tokens) out.cache_read_tokens = usage.cache_read_input_tokens;
-		if (cacheWrite) out.cache_write_tokens = cacheWrite;
-		// list_cost is cents as an integer string; the ledger stores dollars.
-		if (usage?.list_cost?.amount) out.cost_usd = Number(usage.list_cost.amount) / 100;
-		return out;
-	}
-
-	function textOf(content: Array<{ type: string; text?: string }> | undefined): string {
-		return (content ?? [])
-			.map((block) => ('text' in block && block.text ? block.text : ''))
-			.join('')
-			.trim();
-	}
-
-	function clip(value: string, max: number): string {
-		return value.length > max ? `${value.slice(0, max)}…` : value;
-	}
-
-	/** One session event → zero or one log lines (the sweep-rendered summary). */
-	function renderEvent(event: BetaManagedAgentsSessionEvent): string | null {
-		switch (event.type) {
-			case 'user.message':
-				return `[user] message delivered (${textOf(event.content as never).length} chars)`;
-			case 'agent.message': {
-				const text = textOf(event.content as never);
-				return text ? `[agent] ${clip(text, 2000)}` : null;
-			}
-			case 'agent.tool_use':
-			case 'agent.mcp_tool_use': {
-				const name = 'name' in event ? (event as { name: string }).name : 'tool';
-				const args = 'input' in event ? JSON.stringify((event as { input: unknown }).input) : '';
-				return `[tool] ${name} ${clip(args, 300)}`;
-			}
-			case 'agent.tool_result':
-			case 'agent.mcp_tool_result': {
-				if (!('is_error' in event) || !event.is_error) return null;
-				return `[tool] error: ${clip(textOf(event.content as never), 300)}`;
-			}
-			case 'session.error': {
-				const err = event.error as { message?: string } | undefined;
-				return `[error] ${err?.message ?? 'unknown session error'}`;
-			}
-			case 'session.status_running':
-				return '[session] running';
-			case 'session.status_idle':
-				return `[session] idle (${event.stop_reason?.type ?? 'unknown'})`;
-			case 'session.status_terminated':
-				return '[session] terminated';
-			case 'agent.thread_context_compacted':
-				return '[session] context compacted';
-			default:
-				return null;
-		}
-	}
-
 	async function poll(run: AdapterRunRef): Promise<AdapterPollResult> {
 		if (!run.provider_session_id) return {};
-		const ctx = await runnerContext(run.runner_id);
+		const ctx = await provider.runnerContext(run.runner_id);
 		const meta = parseJson<ClaudeRunMeta>(run.provider_meta ?? null) ?? {};
 
 		const session = await ctx.client.beta.sessions.retrieve(run.provider_session_id);
@@ -478,19 +560,7 @@ export function createClaudeAdapter(env: Env, opts: ClaudeAdapterOptions = {}): 
 			limit: 200
 		});
 
-		const lines: string[] = [];
-		let cursor = meta.events_cursor;
-		let idleReason: string | undefined;
-		let lastError: string | undefined;
-		for (const event of events.data) {
-			const line = renderEvent(event);
-			if (line) lines.push(line);
-			if ('processed_at' in event && event.processed_at) cursor = event.processed_at;
-			if (event.type === 'session.status_idle') idleReason = event.stop_reason?.type;
-			if (event.type === 'session.error') {
-				lastError = (event.error as { message?: string } | undefined)?.message ?? 'session error';
-			}
-		}
+		const { lines, cursor, idleReason, lastError } = summarizeEvents(events.data, meta.events_cursor);
 
 		const result: AdapterPollResult = {
 			usage: mapUsage(session.usage),
@@ -526,7 +596,7 @@ export function createClaudeAdapter(env: Env, opts: ClaudeAdapterOptions = {}): 
 
 	async function cancel(run: AdapterRunRef): Promise<void> {
 		if (!run.provider_session_id) return;
-		const ctx = await runnerContext(run.runner_id);
+		const ctx = await provider.runnerContext(run.runner_id);
 		// Interrupt stops the in-flight turn (ignored if the session is paused
 		// at its budget); archive makes the session read-only either way.
 		await ctx.client.beta.sessions.events
@@ -535,104 +605,16 @@ export function createClaudeAdapter(env: Env, opts: ClaudeAdapterOptions = {}): 
 		await ctx.client.beta.sessions.archive(run.provider_session_id).catch(() => {});
 	}
 
-	// -------------------------------------------------------------------------
-	// Sweep housekeeping: GC ended runs' provider resources; cancel orphans
-
 	async function sweepRunner(runner: { id: string; user_id: string }, now: number): Promise<void> {
 		let ctx: RunnerContext;
 		try {
-			ctx = await runnerContext(runner.id);
+			ctx = await provider.runnerContext(runner.id);
 		} catch {
 			return; // no key stored (or runner gone) — nothing provider-side to do
 		}
-
-		// GC: ended runs whose per-run vault (and session) still exist. The
-		// vault holds an already-revoked key, but it must not accumulate.
-		const ended = await db
-			.selectFrom('agent_run')
-			.select(['id', 'provider_session_id', 'provider_meta'])
-			.where('runner_id', '=', runner.id)
-			.where('status', 'not in', ['assigned', 'launching', 'running'])
-			.where('provider_meta', 'is not', null)
-			.orderBy('ended_at desc')
-			.limit(25)
-			.execute();
-		for (const run of ended) {
-			const meta = parseJson<ClaudeRunMeta>(run.provider_meta);
-			if (!meta || meta.gc_done) continue;
-			try {
-				if (meta.vault_id) {
-					await ctx.client.beta.vaults.delete(meta.vault_id).catch((e) => {
-						if (!(e instanceof Anthropic.APIError && e.status === 404)) throw e;
-					});
-				}
-				if (run.provider_session_id) {
-					await ctx.client.beta.sessions.archive(run.provider_session_id).catch(() => {});
-				}
-				await db
-					.updateTable('agent_run')
-					.set({ provider_meta: JSON.stringify({ ...meta, gc_done: true }) })
-					.where('id', '=', run.id)
-					.execute();
-			} catch (e) {
-				console.error(`claude sweep: GC for run ${run.id} failed:`, e);
-			}
-		}
-
-		// Vault fallback sweep, by name: a run canceled between vault creation
-		// and the running-flip never records `provider_meta`, so the GC above
-		// cannot see its vault. Per-run vaults are named `tines-run-<id>`,
-		// which makes them findable regardless — delete any whose run is
-		// unknown or ended.
-		try {
-			const vaults = await ctx.client.beta.vaults.list({ limit: 100 });
-			for (const vault of vaults.data) {
-				const runId = vault.display_name?.startsWith('tines-run-')
-					? vault.display_name.slice('tines-run-'.length)
-					: null;
-				if (!runId) continue; // not ours — never touch foreign vaults
-				const run = await db
-					.selectFrom('agent_run')
-					.select(['id', 'status', 'created_at'])
-					.where('id', '=', runId)
-					.executeTakeFirst();
-				if (run && ['assigned', 'launching', 'running'].includes(run.status)) continue;
-				// A vault whose run row is missing entirely could be an in-flight
-				// launch racing this sweep (vault created, claim row… no — the
-				// claim precedes the vault). Missing = deleted runner history.
-				await ctx.client.beta.vaults.delete(vault.id).catch(() => {});
-			}
-		} catch (e) {
-			console.error(`claude sweep: vault reconciliation for runner ${runner.id} failed:`, e);
-		}
-
-		// Launch reconciliation, provider side: live sessions tagged with a run
-		// id that is unknown or already ended are orphans (a crash between
-		// session create and the DB write) — cancel them. Freshly created
-		// sessions get the launch-stall grace period before qualifying.
-		try {
-			const page = await ctx.client.beta.sessions.list({
-				statuses: ['running', 'idle', 'rescheduling'],
-				limit: 100
-			});
-			for (const session of page.data) {
-				const runId = session.metadata?.tines_run_id;
-				if (!runId) continue; // not ours — never touch foreign sessions
-				if (now - Date.parse(session.created_at) < LAUNCH_STALL_MS) continue;
-				const run = await db
-					.selectFrom('agent_run')
-					.select(['id', 'status'])
-					.where('id', '=', runId)
-					.executeTakeFirst();
-				if (run && ['assigned', 'launching', 'running'].includes(run.status)) continue;
-				await ctx.client.beta.sessions.events
-					.send(session.id, { events: [{ type: 'user.interrupt' }] })
-					.catch(() => {});
-				await ctx.client.beta.sessions.archive(session.id).catch(() => {});
-			}
-		} catch (e) {
-			console.error(`claude sweep: session reconciliation for runner ${runner.id} failed:`, e);
-		}
+		await gcEndedRuns(db, ctx.client, runner.id);
+		await reconcileVaults(db, ctx.client, runner.id);
+		await reconcileSessions(db, ctx.client, runner.id, now);
 	}
 
 	return { launchMode: 'immediate', launch, poll, cancel, sweepRunner };

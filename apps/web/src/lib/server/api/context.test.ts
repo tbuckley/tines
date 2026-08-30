@@ -5,7 +5,6 @@ import {
 	isJournal,
 	issueBlock,
 	layerRank,
-	scopeLabel,
 	stitchPrompt,
 	validateWorkspacePath
 } from './context';
@@ -30,24 +29,6 @@ describe('layerRank', () => {
 		expect(layerRank({ issueId: 'i' })).toBeGreaterThan(
 			layerRank({ projectId: 'p', workflowStateId: 's' })
 		);
-	});
-});
-
-describe('scopeLabel', () => {
-	it('renders set dimensions in project · state · issue order', () => {
-		expect(
-			scopeLabel({ projectName: 'Tines', stateName: 'Review', issueProjectName: 'Tines', issueNumber: 42 })
-		).toBe('project Tines · state Review · issue Tines/42');
-	});
-
-	it('renders single dimensions without separators', () => {
-		expect(scopeLabel({ projectName: 'Tines' })).toBe('project Tines');
-		expect(scopeLabel({ stateName: 'Review' })).toBe('state Review');
-		expect(scopeLabel({ issueProjectName: 'Tines', issueNumber: 7 })).toBe('issue Tines/7');
-	});
-
-	it('labels the empty scope "global"', () => {
-		expect(scopeLabel({})).toBe('global');
 	});
 });
 
@@ -295,6 +276,10 @@ describe('issueBlock', () => {
 		expect(withJournal).toContain('(currently v7)');
 		expect(withJournal).toContain('`tines journal append Tines/42 "- <date>: <lesson>"`');
 		expect(withJournal).toContain('`tines journal rewrite Tines/42 --body @file --expect-version 7`');
+		// The old append-before-you-move ordering trap, retired by run anchoring.
+		expect(withJournal).toContain(
+			"Appends land in this stage's journal even after you move the issue."
+		);
 		expect(withJournal).not.toContain('ctx_'); // no item ids anywhere
 
 		const without = issueBlock(issue, emptyContext);

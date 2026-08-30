@@ -36,6 +36,13 @@
 	}
 
 	// Shared-element page transitions (View Transitions API where available).
+	//
+	// The old page stays frozen until `navigation.complete`, so this turns
+	// server latency straight into perceived latency: the transition is only as
+	// fast as the slowest thing a page `load` *awaits*. Panels a page streams
+	// (returned as promises under `data.deferred`) are not part of it and land
+	// after the commit — which is why the issue page awaits only its first D1
+	// wave. Keep it that way when adding data to a load.
 	onNavigate((navigation) => {
 		if (!document.startViewTransition || prefersReducedMotion()) return;
 
