@@ -1,4 +1,5 @@
 import { error } from '@sveltejs/kit';
+import { truncate } from '$lib/format';
 import { effectiveContextForIssue, listContextItems } from '$lib/server/api/context';
 import { eventQuery, serializeEvent } from '$lib/server/api/events';
 import { getIssueDetail, loadIssue } from '$lib/server/api/issues';
@@ -31,8 +32,10 @@ export const load: PageServerLoad = async ({ locals, platform, params, depends }
 	// invalidateAll() would also re-run the layout for no reason.
 	depends('app:issue');
 
+	// Issue numbers are 1-based; "abc" and "-1" are addresses, not issues.
 	const number = Number.parseInt(params.number, 10);
-	if (!Number.isFinite(number)) error(404, 'Not found');
+	if (!Number.isInteger(number) || number < 1)
+		error(404, `“${truncate(params.number)}” is not an issue number.`);
 
 	// Wave 1: the issue row (URLs address projects by name, joined here so the
 	// project resolve is not a round trip of its own) alongside the two lists
@@ -44,9 +47,20 @@ export const load: PageServerLoad = async ({ locals, platform, params, depends }
 	workflowsPromise.catch(() => {});
 	projectsPromise.catch(() => {});
 
-	const issue = await loadIssue(db, userId, { projectName: params.project, number }).catch(() => {
-		error(404, 'Not found');
-	});
+	const issue = await loadIssue(db, userId, { projectName: params.project, number }).catch(
+		async () => {
+			// Only the 404 path pays for naming which half of the address was
+			// wrong, and it pays nothing extra: the project list is already in
+			// flight for wave 2.
+			const projects = await projectsPromise.catch(() => []);
+			error(
+				404,
+				projects.some((p) => p.name === params.project)
+					? `Issue #${number} does not exist in “${truncate(params.project)}”.`
+					: `You have no project named “${truncate(params.project)}”.`
+			);
+		}
+	);
 
 	// Wave 2: everything else, in parallel.
 	const detailPromise = getIssueDetail(db, userId, issue, {

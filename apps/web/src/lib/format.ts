@@ -61,3 +61,8 @@ export function runStatusClass(status: string): string {
 	if (status === 'completed') return 'text-muted-foreground';
 	return 'text-amber-700 dark:text-amber-400';
 }
+
+/** Clamps user- or URL-supplied text before it lands in a message. */
+export function truncate(value: string, max = 60): string {
+	return value.length > max ? `${value.slice(0, max - 1)}…` : value;
+}
