@@ -1494,42 +1494,55 @@ export interface CreateCommentRequest {
 // ---------------------------------------------------------------------------
 // Events
 
-export type EventType =
-	| 'issue.created'
-	| 'issue.updated'
-	| 'issue.transitioned'
-	| 'issue.commented'
-	| 'issue.link_added'
-	| 'issue.link_removed'
-	| 'project.created'
-	| 'project.updated'
-	| 'project.deleted'
-	| 'workflow.created'
-	| 'workflow.updated'
-	| 'workflow.deleted'
-	| 'api_key.created'
-	| 'api_key.revoked'
-	| 'scheduled_task.created'
-	| 'scheduled_task.updated'
-	| 'scheduled_task.deleted'
-	| 'scheduled_task.skipped'
-	| 'context.created'
-	| 'context.updated'
-	| 'context.deleted'
-	| 'runner.registered'
-	| 'runner.updated'
-	| 'runner.removed'
-	| 'runner.errored'
-	| 'routing_rule.created'
-	| 'routing_rule.updated'
-	| 'routing_rule.deleted'
-	| 'settings.updated'
-	| 'agent_run.started'
-	| 'agent_run.ended'
-	| 'issue.parked'
-	| 'issue.resumed'
-	// Open-ended by design: later phases add types without migration.
-	| (string & {});
+/**
+ * Every event type this build knows how to render, in emission order.
+ *
+ * The array is the source of truth rather than the union: it gives the
+ * renderer in `events.ts` a closed set to be exhaustive over (a missing
+ * describer is a compile error) and the tests a list to iterate.
+ */
+export const EVENT_TYPES = [
+	'issue.created',
+	'issue.updated',
+	'issue.transitioned',
+	'issue.commented',
+	'issue.link_added',
+	'issue.link_removed',
+	'project.created',
+	'project.updated',
+	'project.deleted',
+	'workflow.created',
+	'workflow.updated',
+	'workflow.deleted',
+	'api_key.created',
+	'api_key.revoked',
+	'scheduled_task.created',
+	'scheduled_task.updated',
+	'scheduled_task.deleted',
+	'scheduled_task.skipped',
+	'context.created',
+	'context.updated',
+	'context.deleted',
+	'runner.registered',
+	'runner.updated',
+	'runner.removed',
+	'runner.errored',
+	'routing_rule.created',
+	'routing_rule.updated',
+	'routing_rule.deleted',
+	'settings.updated',
+	'agent_run.started',
+	'agent_run.ended',
+	'issue.parked',
+	'issue.resumed'
+] as const;
+
+/** An event type this build knows about — closed, so `Record` keys can be checked. */
+export type KnownEventType = (typeof EVENT_TYPES)[number];
+
+// Open-ended by design: later phases add types without migration, and an
+// older client reading a newer server's feed must still accept them.
+export type EventType = KnownEventType | (string & {});
 
 export interface TinesEvent {
 	id: string;
