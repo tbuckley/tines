@@ -9,6 +9,8 @@ import {
 	addRule,
 	addRunner,
 	NOW,
+	OPEN,
+	PROJECT,
 	REVIEW,
 	seedBase,
 	setSettings,
@@ -107,6 +109,15 @@ describe('explainDispatch', () => {
 		expect(ex.targets[0].model).toMatch(/^claude-/);
 		expect(ex.targets[1]).toMatchObject({ verdict: 'offline', tier: 'cheapest' });
 		expect(ex.verdict).toContain('is paused');
+	});
+
+	it('labels a scoped rule with the project and state names', async () => {
+		const t = world();
+		const runner = addRunner(t);
+		addRule(t, { project: PROJECT, state: OPEN, targets: [{ runner_id: runner }] });
+		const issue = addIssue(t);
+		const ex = (await explainDispatch(t.db, USER, issue, NOW))!;
+		expect(ex.matched_rule!.scope_label).toBe('project demo · state Open');
 	});
 
 	it('shows the pin (replacing rules) even when a rule would match', async () => {

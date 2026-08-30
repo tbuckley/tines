@@ -19,26 +19,16 @@ import type { Kysely } from 'kysely';
 import type { Database } from '$lib/server/db';
 import { issueQuery, serializeIssue } from '$lib/server/api/issues';
 import { runQuery, serializeRun } from '$lib/server/api/runs';
+import { scopeLabel } from '$lib/server/api/scope';
 import {
 	loadActiveCounts,
 	loadDispatchSettings,
 	loadEligibleIssues,
 	loadEngineRules,
 	loadEngineRunners,
-	targetsForIssue,
-	type EngineRule
+	targetsForIssue
 } from './engine';
 import { matchRule, resolveTier, targetVerdict } from './logic';
-
-function ruleScopeLabel(
-	rule: EngineRule,
-	names: { project: string | null; state: string | null }
-): string {
-	const parts: string[] = [];
-	if (rule.project_id) parts.push(`project ${names.project ?? rule.project_id}`);
-	if (rule.workflow_state_id) parts.push(`state ${names.state ?? rule.workflow_state_id}`);
-	return parts.length > 0 ? parts.join(' · ') : 'global';
-}
 
 export async function explainDispatch(
 	db: Kysely<Database>,
@@ -95,7 +85,12 @@ export async function explainDispatch(
 		]);
 		matchedRule = {
 			rule_id: rule.id,
-			scope_label: ruleScopeLabel(rule, { project: project?.name ?? null, state: state?.name ?? null })
+			scope_label: scopeLabel({
+				projectId: rule.project_id,
+				projectName: project?.name ?? null,
+				workflowStateId: rule.workflow_state_id,
+				stateName: state?.name ?? null
+			})
 		};
 	}
 

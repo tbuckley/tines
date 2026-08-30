@@ -24,6 +24,7 @@ import { cancelAssignedRuns } from '$lib/server/supervisor/engine';
 import { builtinTierModels } from '$lib/server/supervisor/logic';
 import { ApiFail, notFound, optionalString, requireString, runAtomic, type ActorContext } from './core';
 import { eventInsert } from './events';
+import { scopeLabel } from './scope';
 
 /**
  * Provider-key ping, injectable for tests (the default reaches the live
@@ -841,14 +842,6 @@ export function planRunnerRemoval(
 	};
 }
 
-/** Scope label for a routing rule row (no issue dimension). */
-function ruleLabel(row: { project_name: string | null; state_name: string | null }): string {
-	const parts: string[] = [];
-	if (row.project_name) parts.push(`project ${row.project_name}`);
-	if (row.state_name) parts.push(`state ${row.state_name}`);
-	return parts.length > 0 ? parts.join(' · ') : 'global';
-}
-
 export async function deleteRunner(
 	db: Kysely<Database>,
 	env: Env,
@@ -878,6 +871,8 @@ export async function deleteRunner(
 		.select([
 			'routing_rule.id',
 			'routing_rule.targets',
+			'routing_rule.project_id',
+			'routing_rule.workflow_state_id',
 			'project.name as project_name',
 			'workflow_state.name as state_name'
 		])
@@ -886,7 +881,12 @@ export async function deleteRunner(
 	const rules = ruleRows
 		.map((r) => ({
 			id: r.id,
-			label: ruleLabel(r),
+			label: scopeLabel({
+				projectId: r.project_id,
+				projectName: r.project_name,
+				workflowStateId: r.workflow_state_id,
+				stateName: r.state_name
+			}),
 			targets: JSON.parse(r.targets) as RoutingTarget[]
 		}))
 		.filter((r) => r.targets.some((t) => t.runner_id === id));
