@@ -36,6 +36,9 @@ export function formatDateTime(ms: number): string {
 // Canonical "alice via …" attribution rendering (run-key aware).
 export { actorLabel } from '@tines/shared';
 
+// The one description of what an activity event says, shared with the CLI.
+export { describeEvent, displayActor, eventSummary } from '@tines/shared';
+
 export const CATEGORY_LABELS: Record<string, string> = {
 	backlog: 'Backlog',
 	active: 'Active',
