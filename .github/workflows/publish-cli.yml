@@ -20,9 +20,11 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      # Lets npm authenticate by OIDC if a trusted publisher is configured for
-      # this package (see "Publishing the CLI to npm" in the README). Harmless
-      # when it isn't — the NPM_TOKEN path below is what authenticates today.
+      # Auth is OIDC trusted publishing — no stored npm token anywhere. npmjs
+      # trusts this exact repository + workflow filename (configured under the
+      # package's Settings on npmjs.com; see "Publishing the CLI to npm" in the
+      # README), and pnpm exchanges the GitHub-minted id-token for a short-lived
+      # publish credential. Requires a GitHub-hosted runner.
       id-token: write
     steps:
       # Full history: the patch number is the commit count (see below).
@@ -78,21 +80,11 @@ jobs:
       - run: pnpm test
         if: steps.version.outputs.skip == 'false'
 
-      # Written only when the secret is set, so that deleting NPM_TOKEN after
-      # configuring a trusted publisher falls through to OIDC instead of
-      # authenticating as nobody.
-      - name: Authenticate to npm
-        if: steps.version.outputs.skip == 'false'
-        env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          set -euo pipefail
-          if [ -n "${NPM_TOKEN:-}" ]; then
-            printf '//registry.npmjs.org/:_authToken=%s\n' "$NPM_TOKEN" >> "$HOME/.npmrc"
-          else
-            echo "NPM_TOKEN not set — relying on OIDC trusted publishing"
-          fi
-
+      # No explicit auth step: with no token in the environment, pnpm publish
+      # detects the Actions OIDC context and does the trusted-publishing
+      # exchange itself. If this fails with a 401/403/404, the trusted
+      # publisher on npmjs doesn't match this repo + workflow filename yet —
+      # see the README's one-time setup.
       # --no-git-checks: the manifest is intentionally dirty from the version
       # stamp above. No --provenance: attestations require a public source
       # repository, and tbuckley/tines is private.

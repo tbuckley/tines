@@ -107,10 +107,14 @@ Local builds (`npm install -g ./packages/cli`) report the base version from the 
 
 #### One-time setup
 
-Publishing needs an npm credential in the repo. Either works; the workflow prefers the token when it is present.
+The workflow authenticates by [trusted publishing](https://docs.npmjs.com/trusted-publishers/) (OIDC) — there is no npm token stored anywhere, nothing to rotate, and nothing that can expire and quietly break the publish. On <https://www.npmjs.com/package/tines/access>, add a trusted publisher of type GitHub Actions:
 
-1. **Automation token (what is set up today).** Create a [granular access token](https://docs.npmjs.com/about-access-tokens) on npmjs.com scoped to read/write on the `tines` package, then store it as the `NPM_TOKEN` repository secret (`gh secret set NPM_TOKEN`). Give it a long expiry and diarise the renewal — the publish fails with a 401 the day it lapses.
-2. **Trusted publishing (no stored secret).** On <https://www.npmjs.com/package/tines/access>, add a trusted publisher: organization/user `tbuckley`, repository `tines`, workflow filename `publish-cli.yml`, no environment. The workflow already requests `id-token: write`. Then delete the `NPM_TOKEN` secret so the workflow falls through to OIDC. Note the constraints: it needs npm ≥ 11.5.1 on the runner and GitHub-hosted runners only, and because this repository is private you still get no provenance attestations from it.
+- **Organization or user:** `tbuckley`
+- **Repository:** `tines`
+- **Workflow filename:** `publish-cli.yml`
+- **Environment:** leave blank
+
+That is the whole setup. npmjs then trusts publishes coming from that exact repo + workflow: GitHub mints a short-lived, workflow-scoped OIDC token per run (the workflow requests `id-token: write`), and pnpm — the pinned 10.x does the exchange natively, so no npm CLI upgrade is needed on the runner — swaps it for a one-shot publish credential. Until the publisher is configured, the publish step fails with an auth error; everything before it still passes. Constraints to know about: GitHub-hosted runners only, and because this repository is private you get no provenance attestations (the workflow deliberately omits `--provenance`).
 
 To publish by hand in a pinch: `cd packages/cli && npm login && pnpm publish --no-git-checks` after setting the version yourself. Prefer merging to `main`.
 
