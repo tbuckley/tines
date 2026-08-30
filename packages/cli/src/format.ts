@@ -2,15 +2,15 @@
  * Presentation helpers: pure value -> string, no I/O. Kept separate from the
  * commands so the strings agents read can be pinned by tests.
  *
- * `eventSummary` is deliberately absent — it moves to @tines/shared under
- * Tines/49, since the web renders the same events.
+ * `eventSummary` is deliberately absent — it belongs in @tines/shared under
+ * Tines/49, since the web renders the same events. Until that lands it sits in
+ * commands/misc.ts beside its only caller.
  */
 import type {
 	AgentRun,
 	Artifact,
 	ArtifactVersion,
 	ContextItem,
-	IssueDetail,
 	LinkedIssue,
 	QuotaPolicy,
 	RoutingRule,
