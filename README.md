@@ -114,7 +114,7 @@ The workflow authenticates by [trusted publishing](https://docs.npmjs.com/truste
 - **Workflow filename:** `publish-cli.yml`
 - **Environment:** leave blank
 
-That is the whole setup. npmjs then trusts publishes coming from that exact repo + workflow: GitHub mints a short-lived, workflow-scoped OIDC token per run (the workflow requests `id-token: write`), and pnpm — the pinned 10.x does the exchange natively, so no npm CLI upgrade is needed on the runner — swaps it for a one-shot publish credential. Until the publisher is configured, the publish step fails with an auth error; everything before it still passes. Constraints to know about: GitHub-hosted runners only, and because this repository is private you get no provenance attestations (the workflow deliberately omits `--provenance`).
+That is the whole setup. npmjs then trusts publishes coming from that exact repo + workflow: GitHub mints a short-lived, workflow-scoped OIDC token per run (the workflow requests `id-token: write`), and npm swaps it for a one-shot publish credential. The exchange lives in the npm CLI and needs npm ≥ 11.5.1 — `pnpm publish` delegates the actual publish, auth included, to the npm on PATH, and Node 22's bundled npm 10 fails with `ENEEDAUTH` without ever attempting it — so the workflow upgrades npm on the runner first. Until the publisher is configured, the publish step fails with an auth error; everything before it still passes. Constraints to know about: GitHub-hosted runners only, and because this repository is private you get no provenance attestations (the workflow pins provenance off).
 
 To publish by hand in a pinch: `cd packages/cli && npm login && pnpm publish --no-git-checks` after setting the version yourself. Prefer merging to `main`.
 
