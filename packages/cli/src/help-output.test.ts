@@ -1,5 +1,4 @@
 import { execFile } from 'node:child_process';
-import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
@@ -13,47 +12,21 @@ const entry = join(here, 'index.ts');
 
 const SECRET = 'tines_help-must-never-print-this';
 
-/** Runs the CLI from source; commander exits 0 after printing help. */
-function help(args: string[], env: NodeJS.ProcessEnv) {
-	return run(tsx, [entry, ...args], {
-		env: { ...process.env, ...env },
-		timeout: 60_000
-	});
-}
-
-// Regression: --api-key used to default to process.env.TINES_API_KEY, and
-// commander renders an option's default into its help text, so any --help
-// printed the caller's live key — straight into agent run logs.
-describe('help output', () => {
-	it('never prints the value of TINES_API_KEY', async () => {
-		for (const args of [
-			['--help'],
-			['issues', '--help'],
-			['issues', 'comment', '--help'],
-			['context', 'create', '--help']
-		]) {
-			const { stdout } = await help(args, {
-				TINES_API_KEY: SECRET,
-				TINES_API_URL: 'https://api.example.test'
-			});
-			expect(stdout, args.join(' ')).not.toContain(SECRET);
-			expect(stdout, args.join(' ')).not.toContain('https://api.example.test');
-		}
-	}, 60_000);
-
-	it('still documents the env vars', async () => {
-		const { stdout } = await help(['issues', 'comment', '--help'], { TINES_API_KEY: SECRET });
+/**
+ * The one end-to-end spec left in a subprocess. Everything else that used to
+ * live here is asserted in-process in program.test.ts, across all 84 commands
+ * rather than a hand-picked four. What a subprocess still buys is the real
+ * bin: that src/index.ts wires src/program.ts up correctly, that the secret
+ * never reaches actual stdout, and that --help exits 0.
+ */
+describe('the shipped bin', () => {
+	it('prints help without leaking TINES_API_KEY or TINES_API_URL', async () => {
+		const { stdout } = await run(tsx, [entry, 'issues', 'comment', '--help'], {
+			env: { ...process.env, TINES_API_KEY: SECRET, TINES_API_URL: 'https://api.example.test' },
+			timeout: 60_000
+		});
+		expect(stdout).not.toContain(SECRET);
+		expect(stdout).not.toContain('https://api.example.test');
 		expect(stdout).toContain('TINES_API_KEY');
-		expect(stdout).toContain('TINES_API_URL');
-	}, 60_000);
-
-	// Regression: --version used to be a hardcoded literal, so it kept
-	// reporting 0.0.1 no matter what was published. CI stamps the real number
-	// into the manifest at publish time, so the manifest is the only honest
-	// source (Tines/42).
-	it('reports the version from the package manifest', async () => {
-		const manifest = JSON.parse(readFileSync(join(here, '..', 'package.json'), 'utf8'));
-		const { stdout } = await help(['--version'], {});
-		expect(stdout.trim()).toBe(manifest.version);
 	}, 60_000);
 });
