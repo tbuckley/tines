@@ -92,10 +92,11 @@
 					<!-- Rows quote user text (issue titles, schedule and context names,
 					     runner errors), so an unbroken token has to break here too. -->
 					<p class="leading-snug wrap-anywhere">
-						<span class="font-medium">{displayActor(ev)}</span>
-						{#each describeEvent(ev) as seg}
-							{#if seg.kind === 'text'}
-								<span class="text-muted-foreground"> {seg.text} </span>
+						<!-- Svelte trims whitespace at block boundaries, so the space before
+						     each segment has to be an explicit text node — and it has to sit
+						     flush against the {#if} or the markup's own newline doubles it. -->
+						<span class="font-medium">{displayActor(ev)}</span>{#each describeEvent(ev) as seg}{' '}{#if seg.kind === 'text'}
+								<span class="text-muted-foreground">{seg.text}</span>
 							{:else if seg.kind === 'self-ref'}
 								{@render selfRef(ev)}
 							{:else if seg.kind === 'other-ref'}
