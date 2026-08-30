@@ -208,7 +208,9 @@
 					<Icon size={14} stroke={1.75} />
 				</span>
 				<div class="min-w-0 flex-1">
-					<p class="leading-snug">
+					<!-- Rows quote user text (issue titles, schedule and context names,
+					     runner errors), so an unbroken token has to break here too. -->
+					<p class="leading-snug wrap-anywhere">
 						<span class="font-medium">{displayActor(ev)}</span>
 						{#if isLinkEvent(ev)}
 							{@const phrasing = linkPhrasing(ev)}
