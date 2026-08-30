@@ -29,8 +29,8 @@ export function parseWeekday(value: string): number {
 	throw new CliError(`unknown weekday "${value}" (use e.g. monday, tue, or 0-6 with 0 = Sunday)`);
 }
 
-export /** The preset/cron half of a schedule input, or undefined when no flags given. */
-function buildRecurrence(opts: RecurrenceOpts): Pick<CreateScheduleInput, 'preset' | 'cron'> | undefined {
+/** The preset/cron half of a schedule input, or undefined when no flags given. */
+export function buildRecurrence(opts: RecurrenceOpts): Pick<CreateScheduleInput, 'preset' | 'cron'> | undefined {
 	const hasPresetFlags = opts.every !== undefined || opts.at !== undefined || opts.on !== undefined;
 	if (opts.cron !== undefined && hasPresetFlags) {
 		throw new CliError('pass --cron or --every/--at/--on, not both');

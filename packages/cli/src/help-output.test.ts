@@ -29,4 +29,24 @@ describe('the shipped bin', () => {
 		expect(stdout).not.toContain('https://api.example.test');
 		expect(stdout).toContain('TINES_API_KEY');
 	}, 60_000);
+
+	/**
+	 * The bin's five lines of try/catch are the only thing turning a thrown
+	 * CliError back into the `error: …` line and exit 1 that every parser
+	 * diagnostic now rides on (PR 1 converted them from self-terminating
+	 * die()). Nothing in-process can see that wiring: program.test.ts imports
+	 * program.ts, not the bin.
+	 */
+	it('reports a parse error on stderr and exits 1', async () => {
+		const err = await run(tsx, [entry, 'issues', 'show', 'badref'], {
+			env: { ...process.env, TINES_API_KEY: SECRET, TINES_API_URL: 'https://api.example.test' },
+			timeout: 60_000
+		}).catch((e: Error & { code?: number; stderr?: string }) => e);
+
+		expect(err).toBeInstanceOf(Error);
+		const failure = err as Error & { code?: number; stderr?: string };
+		expect(failure.code).toBe(1);
+		expect(failure.stderr).toContain('error: issue reference must look like');
+		expect(failure.stderr).not.toContain('CliError');
+	}, 60_000);
 });

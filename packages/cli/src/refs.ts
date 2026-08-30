@@ -20,12 +20,12 @@ export function parseJsonObject(raw: string, source: string): Record<string, unk
 	return value as Record<string, unknown>;
 }
 
-export /**
+/**
  * The creation nudge for workflow states: every NEW state (no "id") should
  * carry a "prompt" key — its initial stage instructions — unless the caller
  * declines with --no-prompts.
  */
-function assertNewStatesHavePrompts(states: unknown, prompts: boolean | undefined): void {
+export function assertNewStatesHavePrompts(states: unknown, prompts: boolean | undefined): void {
 	if (prompts === false || !Array.isArray(states)) return;
 	const missing = states
 		.filter((s): s is Record<string, unknown> => typeof s === 'object' && s !== null)
@@ -53,8 +53,8 @@ export function parseIssueRef(ref: string): { project: string; number: number } 
 	return { project: match[1], number: Number.parseInt(match[2], 10) };
 }
 
-export /** `--body` takes inline Markdown or `@file`; a literal `@…` escapes as `@@…`. */
-function readBodyValue(value: string): string {
+/** `--body` takes inline Markdown or `@file`; a literal `@…` escapes as `@@…`. */
+export function readBodyValue(value: string): string {
 	if (value.startsWith('@@')) return value.slice(1);
 	if (value.startsWith('@')) {
 		const file = value.slice(1);
@@ -67,12 +67,12 @@ function readBodyValue(value: string): string {
 	return value;
 }
 
-export /**
+/**
  * `--file <path>=@<local>`: maps a workspace path to a local file's content.
  * Workspace paths cannot contain `=`, so the first `=` is the separator;
  * content always comes from a file (no inline form).
  */
-function parseFileSpec(spec: string): ContextFile {
+export function parseFileSpec(spec: string): ContextFile {
 	const sep = spec.indexOf('=');
 	if (sep < 1 || sep === spec.length - 1) {
 		throw new CliError(`--file must look like <path>=@<local-file>, got "${spec}"`);
@@ -90,8 +90,8 @@ function parseFileSpec(spec: string): ContextFile {
 	}
 }
 
-export /** `<runner>[:tier]` — the last ":" separates an optional tier. */
-function parseTargetSpec(spec: string): { name: string; tier?: ModelTier } {
+/** `<runner>[:tier]` — the last ":" separates an optional tier. */
+export function parseTargetSpec(spec: string): { name: string; tier?: ModelTier } {
 	const sep = spec.lastIndexOf(':');
 	if (sep === -1) return { name: spec };
 	const name = spec.slice(0, sep);

@@ -4,6 +4,7 @@
  * lists them in. `index.ts` is the bin that parses it.
  */
 import { readFileSync } from 'node:fs';
+import { Command } from 'commander';
 import { register as registerContext } from './commands/context.js';
 import { register as registerIssues } from './commands/issues.js';
 import { register as registerJournal } from './commands/journal.js';
@@ -15,7 +16,6 @@ import { register as registerSchedules } from './commands/schedules.js';
 import { register as registerSupervisor } from './commands/supervisor.js';
 import { register as registerWorkflows } from './commands/workflows.js';
 import { reportError } from './common.js';
-import { Command } from 'commander';
 
 /**
  * The published version, read from the package manifest rather than hardcoded.
