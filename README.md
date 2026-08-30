@@ -45,7 +45,9 @@ node packages/cli/dist/index.js time --url http://localhost:5173
 
 The CLI reads the API base URL from `--url` or the `TINES_API_URL` env var (default `http://localhost:5173`).
 
-## Installing the CLI globally (from GitHub)
+## Installing the CLI globally
+
+Normally, install from npm — `npm install -g tines` — which is always current, because every push to `main` publishes a new version (see "Publishing the CLI to npm" below). The rest of this section is for running an unmerged branch.
 
 Installing straight from the repo URL (`npm install -g github:tbuckley/tines`) does **not** work — the repo is a pnpm workspace and the CLI lives in `packages/cli` — so install from a local clone instead. The build bundles `@tines/shared` into `dist/index.js`, so the package folder is installable on its own:
 
@@ -71,24 +73,13 @@ To make it target your deployment by default, set the env var in your shell prof
 export TINES_API_URL=https://tines.tbuckley.dev
 ```
 
-To upgrade later: `git pull`, `pnpm install`, `pnpm build`, then re-run `npm install -g ./packages/cli`.
+To upgrade later: `git pull`, `pnpm install`, `pnpm build`, then re-run `npm install -g ./packages/cli`. To go back to a released build, `npm install -g tines@latest`.
 
 If you're actively hacking on the CLI, run `pnpm link --global` from `packages/cli` instead of `npm install -g` (requires a one-time `pnpm setup`). The global `tines` then symlinks into your clone, so every `pnpm build` is picked up without reinstalling.
 
 ## Publishing the CLI to npm
 
-Publishing lets anyone — including coding agents — install the CLI without cloning this repo. The package publishes as the bare name **`tines`** (unclaimed on npm as of August 2026; the first publish claims it). It's publish-ready: the tarball ships only `dist` (see `files` in `packages/cli/package.json`), `prepublishOnly` rebuilds before every publish, and since `@tines/shared` is bundled at build time the only runtime dependency is `commander`.
-
-For each release:
-
-```sh
-cd packages/cli
-npm login                                 # once per machine
-npm version patch                         # or minor / major — npm rejects re-publishing an existing version
-pnpm publish
-```
-
-Publish from a clean checkout of `main` (pnpm's git checks enforce this; `--no-git-checks` overrides in a pinch). If the first publish is rejected with a 403 despite the name being free, npm's name rules are blocking a too-similar name — fall back to a scoped name like `@tbuckley/tines` (add `--access public`, which scoped first publishes require); the installed command is named by the `bin` field, so it stays `tines` regardless of the package name.
+Publishing lets anyone — including coding agents — install the CLI without cloning this repo. The package publishes as the bare name **`tines`**. The tarball ships only `dist` (see `files` in `packages/cli/package.json`), `prepublishOnly` rebuilds before every publish, and since `@tines/shared` is bundled at build time the only runtime dependency is `commander`.
 
 Once published, anyone can install or run it:
 
@@ -97,7 +88,35 @@ npm install -g tines                      # installs the `tines` command globall
 npx -y tines time                         # one-shot, no install — handy for agents
 ```
 
-The `npx -y` form is the most agent-friendly: it needs no global install, PATH changes, or prior setup — just Node 20+. To automate releases, add a GitHub Actions workflow that runs `pnpm publish` on version tags with an npm [granular access token](https://docs.npmjs.com/about-access-tokens) stored as an `NPM_TOKEN` repo secret.
+The `npx -y` form is the most agent-friendly: it needs no global install, PATH changes, or prior setup — just Node 20+.
+
+### Releases are automatic
+
+**Every push to `main` publishes a new version** (`.github/workflows/publish-cli.yml`). Nothing is tagged, gated on a changelog, or released by hand. That is deliberate: the CLI and the API in `apps/web` deploy from the same commits, and an installed CLI that lags the API is a silent trap — agents follow instructions naming subcommands their binary does not have (Tines/42).
+
+Versions are `<major>.<minor>.<commit-count-on-main>`:
+
+- **`<major>.<minor>`** is whatever `packages/cli/package.json` says. Bump it in a normal PR when you want to start a new line.
+- **The patch** is `git rev-list --count HEAD`, stamped into the manifest by CI just before publishing. It is monotonic and unique per merge, and it needs no bump commit pushed back to `main` — which the `main-protect` ruleset forbids anyway (PR-only, no bypass actors).
+
+So the version committed in `packages/cli/package.json` is a *base*, not the released number, and will not match npm. `tines --version` reads the manifest at runtime, so an installed CLI always reports the version it was actually published as — that is the number to quote when diagnosing drift.
+
+The workflow no-ops if the computed version is already on npm, so re-runs and `workflow_dispatch` are safe. It does not pass `--provenance`: npm attestations require a public source repository and this one is private.
+
+Local builds (`npm install -g ./packages/cli`) report the base version from the manifest, so a `tines --version` far below `npm view tines version` means you are on a local build, not a stale install.
+
+#### One-time setup
+
+The workflow authenticates by [trusted publishing](https://docs.npmjs.com/trusted-publishers/) (OIDC) — there is no npm token stored anywhere, nothing to rotate, and nothing that can expire and quietly break the publish. On <https://www.npmjs.com/package/tines/access>, add a trusted publisher of type GitHub Actions:
+
+- **Organization or user:** `tbuckley`
+- **Repository:** `tines`
+- **Workflow filename:** `publish-cli.yml`
+- **Environment:** leave blank
+
+That is the whole setup. npmjs then trusts publishes coming from that exact repo + workflow: GitHub mints a short-lived, workflow-scoped OIDC token per run (the workflow requests `id-token: write`), and pnpm — the pinned 10.x does the exchange natively, so no npm CLI upgrade is needed on the runner — swaps it for a one-shot publish credential. Until the publisher is configured, the publish step fails with an auth error; everything before it still passes. Constraints to know about: GitHub-hosted runners only, and because this repository is private you get no provenance attestations (the workflow deliberately omits `--provenance`).
+
+To publish by hand in a pinch: `cd packages/cli && npm login && pnpm publish --no-git-checks` after setting the version yourself. Prefer merging to `main`.
 
 ## Google sign-in
 
