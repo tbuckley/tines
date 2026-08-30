@@ -695,6 +695,28 @@ export interface LaunchPromptResponse {
 	text: string;
 }
 
+/**
+ * `GET /api/v1/issues/:id/journal` — which journal this caller's `tines
+ * journal` commands target. Run keys are anchored to the state their run was
+ * launched in, so a lesson lands in the stage that learned it even if the
+ * issue has already moved on.
+ */
+export interface IssueJournalResponse {
+	/** The resolved project ∧ state scope (canonical "project X · state Y" label). */
+	scope: ContextScope;
+	/**
+	 * Why this scope was chosen:
+	 *  - 'run'     — the caller is the run key of a run on this issue; the scope is that run's launch state.
+	 *  - 'current' — the issue's current state (session/PAT callers, another issue's run key, or a run
+	 *                whose launch state no longer exists — see `note`).
+	 */
+	anchor: 'run' | 'current';
+	/** Human-readable reason when the anchor is 'current' *despite* a run key (null otherwise). */
+	note: string | null;
+	/** The journal item at that scope, or null if none exists yet. */
+	item: ContextItem | null;
+}
+
 /** A context item swept by a forced delete, as reported in the response. */
 export interface DeletedContextItem {
 	id: string;

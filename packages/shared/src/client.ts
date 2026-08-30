@@ -38,6 +38,7 @@ import type {
 	Issue,
 	IssueDetail,
 	IssueFilters,
+	IssueJournalResponse,
 	IssueLink,
 	ListResponse,
 	PageParams,
@@ -256,6 +257,12 @@ export function createApiClient(options: ApiClientOptions) {
 		/** Effective context for an issue: the assembled bundle. */
 		getIssueContext: (issueId: string) =>
 			get<EffectiveContext>(`/api/v1/issues/${issueId}/context`),
+		/**
+		 * Which journal this caller's `tines journal` commands target — the
+		 * run's launch state for a run key, the issue's current state otherwise.
+		 */
+		getIssueJournal: (issueId: string) =>
+			get<IssueJournalResponse>(`/api/v1/issues/${issueId}/journal`),
 		/** Launch prompt: stitched context plus the generated issue block. */
 		getIssuePrompt: (issueId: string) =>
 			get<LaunchPromptResponse>(`/api/v1/issues/${issueId}/prompt`),
