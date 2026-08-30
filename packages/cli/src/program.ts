@@ -5,7 +5,10 @@ import { createInterface } from 'node:readline/promises';
 import { runDaemon } from './daemon/daemon.js';
 import { defaultConfigDir, hasRunnerCredentials, saveRunnerCredentials } from './daemon/store.js';
 import { HARNESS_KINDS, type HarnessKind } from './daemon/support.js';
+import { formatTable, artifactSummary, contextItemSummary, issueRef, linkRows, prRefLabel, quotaLabel, recurrenceLabel, ruleTargetsLabel, runRow, runnerStatusLabel, scheduleRef, sniffContentType, timestamp } from './format.js';
 import { helpGuard } from './help-guard.js';
+import { buildRecurrence, type RecurrenceOpts } from './recurrence-flags.js';
+import { assertNewStatesHavePrompts, parseFileSpec, parseIssueRef, parseJsonObject, parseScheduleRef, parseTargetSpec, readBodyValue } from './refs.js';
 import {
 	actorLabel,
 	AGENT_GUIDELINES_BODY,
@@ -175,31 +178,13 @@ function printList<T>(res: ListResponse<T>, opts: ListOpts, render: (items: T[])
 
 function table(rows: string[][]): void {
 	if (rows.length === 0) return;
-	const widths = rows[0].map((_, i) => Math.max(...rows.map((r) => r[i].length)));
-	for (const row of rows) {
-		console.log(row.map((cell, i) => cell.padEnd(widths[i])).join('  ').trimEnd());
-	}
+	console.log(formatTable(rows));
 }
 
-function timestamp(ms: number): string {
-	return new Date(ms).toISOString().replace('T', ' ').slice(0, 19);
-}
 
 // ---------------------------------------------------------------------------
 // JSON body input (inline argument, --file <path>, --file -, or piped stdin)
 
-function parseJsonObject(raw: string, source: string): Record<string, unknown> {
-	let value: unknown;
-	try {
-		value = JSON.parse(raw);
-	} catch (err) {
-		die(`invalid JSON from ${source}: ${err instanceof Error ? err.message : String(err)}`);
-	}
-	if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-		die(`expected a JSON object from ${source}`);
-	}
-	return value as Record<string, unknown>;
-}
 
 /**
  * Reads a JSON request body from, in order of precedence: the inline
@@ -234,24 +219,6 @@ function readJsonBody(
 	return undefined;
 }
 
-/**
- * The creation nudge for workflow states: every NEW state (no "id") should
- * carry a "prompt" key — its initial stage instructions — unless the caller
- * declines with --no-prompts.
- */
-function assertNewStatesHavePrompts(states: unknown, prompts: boolean | undefined): void {
-	if (prompts === false || !Array.isArray(states)) return;
-	const missing = states
-		.filter((s): s is Record<string, unknown> => typeof s === 'object' && s !== null)
-		.filter((s) => s.id === undefined && !String(s.prompt ?? '').trim())
-		.map((s) => (typeof s.name === 'string' ? s.name : '?'));
-	if (missing.length > 0) {
-		die(
-			`new state${missing.length === 1 ? '' : 's'} ${missing.map((n) => `"${n}"`).join(', ')} ${missing.length === 1 ? 'has' : 'have'} no initial prompt — issues sitting in a state inherit its context\n` +
-				'  add "prompt": "<markdown>" to each new state in the JSON (its stage instructions), or pass --no-prompts to skip'
-		);
-	}
-}
 
 const WORKFLOW_JSON_HELP = `
 The JSON body may be passed inline, via --file <path>, --file - (stdin), or
@@ -323,13 +290,6 @@ async function resolveWorkflow(api: ApiClient, ref: string): Promise<WorkflowRes
 	die(`no workflow "${ref}" (have: ${items.map((w) => `${w.name} [${w.id}]`).join(', ')})`);
 }
 
-function parseScheduleRef(ref: string): { project: string; name: string } {
-	const sep = ref.indexOf('/');
-	if (sep < 1 || sep === ref.length - 1) {
-		die(`schedule reference must look like <project>/<name>, got "${ref}"`);
-	}
-	return { project: ref.slice(0, sep), name: ref.slice(sep + 1) };
-}
 
 async function resolveSchedule(api: ApiClient, ref: string): Promise<Schedule> {
 	const { project, name } = parseScheduleRef(ref);
@@ -344,11 +304,6 @@ async function resolveSchedule(api: ApiClient, ref: string): Promise<Schedule> {
 	return found;
 }
 
-function parseIssueRef(ref: string): { project: string; number: number } {
-	const match = ref.match(/^(.+)\/(\d+)$/);
-	if (!match) die(`issue reference must look like <project>/<number>, got "${ref}"`);
-	return { project: match[1], number: Number.parseInt(match[2], 10) };
-}
 
 async function resolveIssue(api: ApiClient, ref: string): Promise<IssueDetail> {
 	const { project, number } = parseIssueRef(ref);
@@ -401,57 +356,10 @@ async function resolveScopeFlags(
 	return scope;
 }
 
-/** `--body` takes inline Markdown or `@file`; a literal `@…` escapes as `@@…`. */
-function readBodyValue(value: string): string {
-	if (value.startsWith('@@')) return value.slice(1);
-	if (value.startsWith('@')) {
-		const file = value.slice(1);
-		try {
-			return readFileSync(file, 'utf8');
-		} catch (err) {
-			die(`cannot read ${file}: ${err instanceof Error ? err.message : String(err)}`);
-		}
-	}
-	return value;
-}
 
-/**
- * `--file <path>=@<local>`: maps a workspace path to a local file's content.
- * Workspace paths cannot contain `=`, so the first `=` is the separator;
- * content always comes from a file (no inline form).
- */
-function parseFileSpec(spec: string): ContextFile {
-	const sep = spec.indexOf('=');
-	if (sep < 1 || sep === spec.length - 1) {
-		die(`--file must look like <path>=@<local-file>, got "${spec}"`);
-	}
-	const path = spec.slice(0, sep);
-	const source = spec.slice(sep + 1);
-	if (!source.startsWith('@')) {
-		die(`skill file content always comes from a local file: --file ${path}=@<local-file>`);
-	}
-	const file = source.slice(1);
-	try {
-		return { path, content: readFileSync(file, 'utf8') };
-	} catch (err) {
-		die(`cannot read ${file}: ${err instanceof Error ? err.message : String(err)}`);
-	}
-}
 
 const collect = (value: string, previous: string[]) => [...previous, value];
 
-function contextItemSummary(item: ContextItem): string {
-	switch (item.kind) {
-		case 'prompt':
-			return `${Buffer.byteLength(item.body ?? '', 'utf8')} bytes`;
-		case 'skill':
-			return `${item.file_count ?? item.files?.length ?? 0} file${(item.file_count ?? item.files?.length ?? 0) === 1 ? '' : 's'}`;
-		case 'repo':
-			return `${item.repo_url}${item.repo_branch ? `#${item.repo_branch}` : ''}`;
-		case 'artifact':
-			return item.artifact_type ?? 'artifact';
-	}
-}
 
 function printContextItem(item: ContextItem): void {
 	console.log(`${item.kind} "${item.name}"  [${item.id}]  v${item.version}`);
@@ -482,100 +390,16 @@ function printContextItem(item: ContextItem): void {
 // ---------------------------------------------------------------------------
 // Recurrence flags (--every/--at/--on build a preset; --cron is the raw form)
 
-interface RecurrenceOpts {
-	every?: string;
-	at?: string;
-	on?: string;
-	cron?: string;
-	tz?: string;
-}
 
 const systemTimezone = () => Intl.DateTimeFormat().resolvedOptions().timeZone;
 
-function parseWeekday(value: string): number {
-	const trimmed = value.trim().toLowerCase();
-	if (/^\d+$/.test(trimmed)) {
-		const n = Number.parseInt(trimmed, 10);
-		if (n <= 7) return n % 7; // 0 and 7 both mean Sunday, as in cron
-		die(`--on weekday must be 0-7 or a name, got "${value}"`);
-	}
-	if (trimmed.length >= 3) {
-		const idx = WEEKDAY_NAMES.findIndex((w) => w.toLowerCase().startsWith(trimmed));
-		if (idx !== -1) return idx;
-	}
-	die(`unknown weekday "${value}" (use e.g. monday, tue, or 0-6 with 0 = Sunday)`);
-}
 
-/** The preset/cron half of a schedule input, or undefined when no flags given. */
-function buildRecurrence(opts: RecurrenceOpts): Pick<CreateScheduleInput, 'preset' | 'cron'> | undefined {
-	const hasPresetFlags = opts.every !== undefined || opts.at !== undefined || opts.on !== undefined;
-	if (opts.cron !== undefined && hasPresetFlags) {
-		die('pass --cron or --every/--at/--on, not both');
-	}
-	if (opts.cron !== undefined) return { cron: opts.cron };
-	if (!hasPresetFlags) return undefined;
-	if (opts.every === undefined) {
-		die('--at/--on set a preset time; add --every <hourly|Nh|daily|weekly|monthly>');
-	}
-	const hourly = opts.every === 'hourly' ? 1 : opts.every.match(/^(\d+)h$/)?.[1];
-	if (hourly !== undefined) {
-		if (opts.on !== undefined) die('an hourly recurrence does not take --on');
-		const every = typeof hourly === 'number' ? hourly : Number.parseInt(hourly, 10);
-		if (every < 1 || every > 23) die(`--every <N>h needs N between 1 and 23, got "${opts.every}"`);
-		// For hourly, --at is the minute past the hour (":15" or "15").
-		let minute = 0;
-		if (opts.at !== undefined) {
-			const m = opts.at.match(/^:?(\d{1,2})$/);
-			if (!m || Number.parseInt(m[1], 10) > 59) {
-				die(`with an hourly recurrence, --at is the minute past the hour (0-59 or :MM), got "${opts.at}"`);
-			}
-			minute = Number.parseInt(m[1], 10);
-		}
-		return { preset: { kind: 'hourly', every_hours: every, minute } };
-	}
-	const time = opts.at ?? '09:00';
-	switch (opts.every) {
-		case 'daily': {
-			if (opts.on !== undefined) die('--every daily does not take --on');
-			return { preset: { kind: 'daily', time } };
-		}
-		case 'weekly': {
-			if (opts.on === undefined) die('--every weekly needs --on <weekday>');
-			return { preset: { kind: 'weekly', time, weekday: parseWeekday(opts.on) } };
-		}
-		case 'monthly': {
-			if (opts.on === undefined) die('--every monthly needs --on <day-of-month>');
-			const day = Number.parseInt(opts.on, 10);
-			if (!/^\d+$/.test(opts.on.trim()) || day < 1 || day > 31) {
-				die(`--on day-of-month must be 1-31, got "${opts.on}"`);
-			}
-			return { preset: { kind: 'monthly', time, day_of_month: day } };
-		}
-		default:
-			die(`--every must be hourly, <N>h, daily, weekly, or monthly, got "${opts.every}"`);
-	}
-}
 
-function recurrenceLabel(schedule: Schedule): string {
-	return `${describeRecurrence(schedule.preset, schedule.cron)}, ${schedule.timezone}`;
-}
 
 // ---------------------------------------------------------------------------
 // Output helpers
 
-function issueRef(ref: { project_name: string; number: number }): string {
-	return `${ref.project_name}/${ref.number}`;
-}
 
-/** One table row per linked issue: ref, title, effective state, optional note. */
-function linkRows(entries: LinkedIssue[], note: (e: LinkedIssue) => string = () => ''): string[][] {
-	return entries.map((e) => [
-		`  ${issueRef(e)}`,
-		e.title,
-		`${e.effective_state.name} (${e.effective_state.category})`,
-		note(e)
-	]);
-}
 
 /** The link sections of `issues show`; empty groups are omitted entirely. */
 function printIssueLinks(links: IssueLinks): void {
@@ -1313,56 +1137,9 @@ const artifactsCmd = issues
 	.command('artifacts')
 	.description('Typed, versioned attachments on an issue — the work products transition requirements gate on');
 
-const MIME_BY_EXT: Record<string, string> = {
-	md: 'text/markdown',
-	markdown: 'text/markdown',
-	txt: 'text/plain',
-	log: 'text/plain',
-	html: 'text/html',
-	htm: 'text/html',
-	css: 'text/css',
-	csv: 'text/csv',
-	js: 'text/javascript',
-	json: 'application/json',
-	pdf: 'application/pdf',
-	png: 'image/png',
-	jpg: 'image/jpeg',
-	jpeg: 'image/jpeg',
-	gif: 'image/gif',
-	webp: 'image/webp',
-	svg: 'image/svg+xml',
-	zip: 'application/zip',
-	gz: 'application/gzip',
-	mp4: 'video/mp4',
-	webm: 'video/webm'
-};
 
-function sniffContentType(path: string): string {
-	const ext = path.match(/\.([A-Za-z0-9]+)$/)?.[1]?.toLowerCase();
-	return (ext && MIME_BY_EXT[ext]) || 'application/octet-stream';
-}
 
-/** `owner/repo#N` for a pr version (falls back to the raw URL parts). */
-function prRefLabel(v: Pick<ArtifactVersion, 'pr_repo_url' | 'pr_number'>): string {
-	const path = (v.pr_repo_url ?? '').replace(/^https:\/\/github\.com\//, '');
-	return `${path}#${v.pr_number}`;
-}
 
-function artifactSummary(a: Artifact): string {
-	const cv = a.current_version;
-	switch (a.artifact_type) {
-		case 'file':
-			return `${cv.filename} (${cv.content_type}, ${cv.size_bytes} bytes)`;
-		case 'folder':
-			return `${cv.file_count} file${cv.file_count === 1 ? '' : 's'} (${cv.size_bytes} bytes total)`;
-		case 'text':
-			return `${cv.filename} (${cv.content_type})`;
-		case 'link':
-			return cv.title ? `${cv.title} — ${cv.url}` : (cv.url ?? '');
-		case 'pr':
-			return `${prRefLabel(cv)} — ${cv.pr_repo_url}/pull/${cv.pr_number}`;
-	}
-}
 
 /** All regular files under a directory, workspace-relative with `/` separators. */
 function walkFolder(dir: string): { path: string; contentType: string; bytes: Buffer }[] {
@@ -2146,9 +1923,6 @@ const schedules = program
 	.command('schedules')
 	.description('Manage scheduled tasks (addressed as <project>/<name>)');
 
-function scheduleRef(s: Schedule): string {
-	return `${s.project_name}/${s.name}`;
-}
 
 function printScheduleDetail(s: Schedule): void {
 	console.log(`${scheduleRef(s)}  [${s.id}]${s.enabled ? '' : '  (paused)'}`);
@@ -2345,23 +2119,7 @@ async function resolveRunner(api: ApiClient, ref: string): Promise<Runner> {
 	return found;
 }
 
-/** `<runner>[:tier]` — the last ":" separates an optional tier. */
-function parseTargetSpec(spec: string): { name: string; tier?: ModelTier } {
-	const sep = spec.lastIndexOf(':');
-	if (sep === -1) return { name: spec };
-	const name = spec.slice(0, sep);
-	const tier = spec.slice(sep + 1);
-	if (!name) die(`target must look like <runner>[:tier], got "${spec}"`);
-	if (!(MODEL_TIERS as readonly string[]).includes(tier)) {
-		die(`unknown tier "${tier}" in "${spec}" (tiers: ${MODEL_TIERS.join(', ')})`);
-	}
-	return { name, tier: tier as ModelTier };
-}
 
-function runnerStatusLabel(runner: Runner): string {
-	if (runner.status === 'paused') return 'paused';
-	return runner.online ? 'online' : 'offline';
-}
 
 const runners = program.command('runners').description('Manage the runner registry');
 
@@ -2662,28 +2420,7 @@ withCommon(
 
 const runsCmd = program.command('runs').description('Agent runs: attempts at issues by runners');
 
-/** Run cost for a row: dollars where known, tokens where only they are, honest markers otherwise. */
-function runCostLabel(run: AgentRun): string {
-	const usage = run.usage;
-	if (!usage) return '—';
-	if (usage.cost_usd !== undefined) return `$${usage.cost_usd.toFixed(2)}`;
-	if (usage.cost_source === 'none') return 'unreported';
-	const tokens = (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0);
-	return tokens > 0 ? `${tokens.toLocaleString()} tok` : '—';
-}
 
-function runRow(run: AgentRun): string[] {
-	return [
-		run.id,
-		run.issue_ref ? issueRef(run.issue_ref) : run.issue_id,
-		run.runner_name,
-		`${run.tier}${run.model ? ` (${run.model})` : ''}`,
-		run.status,
-		runDurationLabel(run),
-		runCostLabel(run),
-		timestamp(run.created_at)
-	];
-}
 
 withList(
 	runsCmd
@@ -2784,12 +2521,6 @@ async function resolveRoutingScope(
 	return { projectId, stateId, label: parts.length > 0 ? parts.join(' · ') : 'global' };
 }
 
-function ruleTargetsLabel(rule: RoutingRule): string {
-	if (rule.targets.length === 0) return '(no targets)';
-	return rule.targets
-		.map((t) => `${t.runner_name}${t.tier ? `:${t.tier}` : ''}${t.runner_status === 'paused' ? ' (paused)' : ''}`)
-		.join(' → ');
-}
 
 withCommon(routing.command('list').description('List routing rules, most specific first')).action(
 	async (opts: CommonOpts) => {
@@ -2857,14 +2588,6 @@ const supervisor = program
 	.command('supervisor')
 	.description('The automation kill switch, quota policy, and attempt limit');
 
-/** Human-readable policy line; state names resolved when workflows are given. */
-function quotaLabel(quota: QuotaPolicy, stateName?: (id: string) => string): string {
-	if (quota.type === 'global_cap') return `global cap: at most ${quota.limit} concurrent runs`;
-	const overrides = Object.entries(quota.overrides).map(
-		([id, limit]) => `${stateName ? stateName(id) : id}=${limit}`
-	);
-	return `state roster: default ${quota.default_limit} per state${overrides.length > 0 ? `, overrides: ${overrides.join(', ')}` : ''}`;
-}
 
 withCommon(supervisor.command('status').description('One-screen overview: kill switch, quota, utilization, runners')).action(
 	async (opts: CommonOpts) => {

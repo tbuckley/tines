@@ -15,6 +15,7 @@
 		DEFAULT_MANAGED_RUN_COST_USD,
 		isStaleTierOverride,
 		MODEL_TIERS,
+		runCostLabel,
 		runDurationLabel,
 		utilizationLabel
 	} from '@tines/shared';
@@ -380,16 +381,6 @@
 
 	/** The run awaiting the cancel dialog (strike note + optional comment). */
 	let cancelTarget = $state<AgentRun | null>(null);
-
-	/** Run cost: dollars where known, tokens where only they are, honest markers otherwise. */
-	function runCostLabel(run: AgentRun): string | null {
-		const usage = run.usage;
-		if (!usage) return null;
-		if (usage.cost_usd !== undefined) return `$${usage.cost_usd.toFixed(2)}`;
-		if (usage.cost_source === 'none') return 'unreported';
-		const tokens = (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0);
-		return tokens > 0 ? `${tokens.toLocaleString()} tok` : null;
-	}
 
 	// --- routing rules -----------------------------------------------------------
 

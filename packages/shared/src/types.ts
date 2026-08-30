@@ -1386,6 +1386,20 @@ export function runDurationLabel(
 }
 
 /**
+ * Run cost: dollars where known, tokens where only they are, honest markers
+ * otherwise; null when there is nothing to say. The CLI's run rows render
+ * `?? '—'`; the Agents tab hides the cell.
+ */
+export function runCostLabel(run: Pick<AgentRun, 'usage'>): string | null {
+	const usage = run.usage;
+	if (!usage) return null;
+	if (usage.cost_usd !== undefined) return `$${usage.cost_usd.toFixed(2)}`;
+	if (usage.cost_source === 'none') return 'unreported';
+	const tokens = (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0);
+	return tokens > 0 ? `${tokens.toLocaleString()} tok` : null;
+}
+
+/**
  * Utilization against the active quota policy, from the active runs — the
  * Agents tab's Runs header and `tines supervisor status` render this
  * identically. Roster states with an override always show; others only
