@@ -54,6 +54,7 @@ import type {
 	SupervisorSettingsResponse,
 	TinesEvent,
 	TransitionIssueRequest,
+	UpdateCommentRequest,
 	UpdateContextItemRequest,
 	UpdateIssueRequest,
 	UpsertArtifactRequest,
@@ -229,6 +230,10 @@ export function createApiClient(options: ApiClientOptions) {
 			get<ListResponse<Comment>>(`/api/v1/issues/${issueId}/comments${query(page)}`),
 		createComment: (issueId: string, body: CreateCommentRequest) =>
 			request<Comment>('POST', `/api/v1/issues/${issueId}/comments`, body),
+		updateComment: (issueId: string, commentId: string, body: UpdateCommentRequest) =>
+			request<Comment>('PATCH', `/api/v1/issues/${issueId}/comments/${commentId}`, body),
+		deleteComment: (issueId: string, commentId: string) =>
+			request<void>('DELETE', `/api/v1/issues/${issueId}/comments/${commentId}`),
 
 		// Scheduled tasks
 		listSchedules: (filters: ScheduleFilters & PageParams = {}) =>

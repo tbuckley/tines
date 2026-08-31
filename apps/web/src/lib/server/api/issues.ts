@@ -15,6 +15,7 @@ import {
 	type ModelTier,
 	type StateCategory,
 	type TransitionIssueRequest,
+	type UpdateCommentRequest,
 	type UpdateIssueRequest,
 	type WorkflowResponse,
 	type WorkflowState
@@ -363,7 +364,8 @@ async function loadComments(db: Kysely<Database>, issueId: string): Promise<Comm
 		issue_id: row.issue_id,
 		body: row.body,
 		actor: actorOf(row),
-		created_at: row.created_at
+		created_at: row.created_at,
+		updated_at: row.updated_at
 	}));
 }
 
@@ -1061,6 +1063,101 @@ export async function createComment(
 	const created = comments.find((c) => c.id === id);
 	if (!created) throw new ApiFail(500, 'internal', 'Comment insert failed');
 	return created;
+}
+
+/**
+ * Who may rewrite the shared record. Sessions and named keys act with full
+ * owner authority over their own workspace — the motivating case is a human
+ * cleaning up an agent's mis-posted comment. A run key is narrower: it may fix
+ * only what it wrote itself, so agents cannot rewrite each other's handoff
+ * notes (the affordance asymmetry of specs/context/AGENT_EDITING.md).
+ */
+export function assertCommentActionAllowed(
+	actor: Pick<ActorContext, 'agentRunId' | 'apiKeyId'>,
+	comment: { actor_api_key_id: string | null }
+): void {
+	if (!actor.agentRunId) return;
+	// The null check guards a state the types allow but auth cannot produce: a
+	// run actor always carries its key, so a session-authored comment (key id
+	// null) must never match by two nulls.
+	if (comment.actor_api_key_id !== null && comment.actor_api_key_id === actor.apiKeyId) return;
+	throw new ApiFail(
+		403,
+		'run_key_forbidden',
+		'Run keys can only edit or delete comments they authored themselves. Other comments are ' +
+			'the shared record — ask a human, or note the correction in a new comment.'
+	);
+}
+
+/** The comment row itself, scoped to an issue the actor can see. */
+async function requireComment(
+	db: Kysely<Database>,
+	actor: ActorContext,
+	issueId: string,
+	commentId: string
+): Promise<{ issue: IssueDetail; row: { id: string; body: string; actor_api_key_id: string | null } }> {
+	const issue = await getIssueDetail(db, actor.userId, { id: issueId });
+	const row = await db
+		.selectFrom('comment')
+		.select(['id', 'body', 'actor_api_key_id'])
+		.where('id', '=', commentId)
+		.where('issue_id', '=', issue.id)
+		.executeTakeFirst();
+	if (!row) throw notFound();
+	assertCommentActionAllowed(actor, row);
+	return { issue, row };
+}
+
+export async function updateComment(
+	db: Kysely<Database>,
+	env: Env,
+	actor: ActorContext,
+	issueId: string,
+	commentId: string,
+	body: UpdateCommentRequest
+): Promise<Comment> {
+	const { issue } = await requireComment(db, actor, issueId, commentId);
+	const text = requireString(body.body, 'body', { max: 100_000 });
+
+	await runAtomic(env, [
+		db
+			.updateTable('comment')
+			.set({ body: text, updated_at: Date.now() })
+			.where('id', '=', commentId)
+			.compile(),
+		// Payload stays content-free: the audit trail records the action, not
+		// the text (events are append-only, and a mis-posted secret is exactly
+		// what an edit is for).
+		eventInsert(db, actor, {
+			type: 'issue.comment_edited',
+			issueId: issue.id,
+			projectId: issue.project_id,
+			payload: { comment_id: commentId, changed: ['body'] }
+		})
+	]);
+	const comments = await loadComments(db, issue.id);
+	const updated = comments.find((c) => c.id === commentId);
+	if (!updated) throw new ApiFail(500, 'internal', 'Comment update failed');
+	return updated;
+}
+
+export async function deleteComment(
+	db: Kysely<Database>,
+	env: Env,
+	actor: ActorContext,
+	issueId: string,
+	commentId: string
+): Promise<void> {
+	const { issue, row } = await requireComment(db, actor, issueId, commentId);
+	await runAtomic(env, [
+		db.deleteFrom('comment').where('id', '=', commentId).compile(),
+		eventInsert(db, actor, {
+			type: 'issue.comment_deleted',
+			issueId: issue.id,
+			projectId: issue.project_id,
+			payload: { comment_id: commentId, body_length: row.body.length }
+		})
+	]);
 }
 
 export { loadComments };

@@ -1352,11 +1352,13 @@ export function issueBlock(
 		}
 	}
 	// A quoted heredoc, not an inline argument: comment bodies are prose full
-	// of backticks, $VARS and apostrophes, and there is no way to delete a
-	// comment that the shell mangled on the way in (Tines/9). The fallback line
-	// is not decoration: a CLI predating that change treats the `-` as the body
-	// itself and posts it, exit 0, so the failure is silent unless the agent has
-	// been told what it looks like.
+	// of backticks, $VARS and apostrophes, and a mangled comment costs a round
+	// trip to repair even now that it can be repaired (Tines/9, Tines/11). The
+	// fallback line is not decoration: a CLI predating that change treats the
+	// `-` as the body itself and posts it, exit 0, so the failure is silent
+	// unless the agent has been told what it looks like. The repair line names
+	// `--json` for ids because an older CLI shows ids nowhere else (a CLI
+	// without the commands at all fails loudly, which is fine).
 	lines.push(
 		'Add a comment (the quoted heredoc keeps backticks, $VARS and quotes literal):',
 		'```',
@@ -1365,6 +1367,7 @@ export function issueBlock(
 		'EOF',
 		'```',
 		`A \`tines\` too old for that form posts a literal \`-\` instead of your body, without failing. If \`tines issues comment --help\` does not mention \`@file\`, use \`tines issues comment ${ref} "<markdown>"\` and mind the shell quoting.`,
+		`Fix your own mis-post rather than leaving it in the thread: \`tines issues comment-edit ${ref} <comment-id> -\` (same body forms) replaces a body, \`tines issues comment-delete ${ref} <comment-id>\` removes it. Ids are echoed when you post and listed by \`tines issues show ${ref} --json\`; you can only edit or delete comments you wrote.`,
 		'',
 		'### Artifacts',
 		''

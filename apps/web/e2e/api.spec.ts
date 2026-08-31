@@ -1,4 +1,11 @@
-import type { IssueDetail, ListResponse, Project, TinesEvent, WorkflowResponse } from '@tines/shared';
+import type {
+	Comment,
+	IssueDetail,
+	ListResponse,
+	Project,
+	TinesEvent,
+	WorkflowResponse
+} from '@tines/shared';
 import { expect, test } from '@playwright/test';
 import { ALICE, BOB } from './constants.mjs';
 import { apiClient, body, runId } from './helpers';
@@ -162,6 +169,42 @@ test.describe.serial('core issue loop', () => {
 		const comment = await body<{ actor: { user_name: string; api_key_name: string } }>(res);
 		expect(comment.actor.user_name).toBe(ALICE.name);
 		expect(comment.actor.api_key_name).toBe(ALICE.apiKeyName);
+	});
+
+	test('a comment can be edited and deleted, and both land on the event stream', async ({
+		request
+	}) => {
+		const api = apiClient(request, ALICE.apiKey);
+		const created = await body<Comment>(
+			await api.post(`/api/v1/issues/${issueId}/comments`, { body: 'teh fix is in' })
+		);
+		expect(created.updated_at).toBeNull();
+
+		const patched = await api.patch(`/api/v1/issues/${issueId}/comments/${created.id}`, {
+			body: 'the fix is in'
+		});
+		expect(patched.status()).toBe(200);
+		const edited = await body<Comment>(patched);
+		expect(edited.body).toBe('the fix is in');
+		expect(edited.updated_at).toBeGreaterThan(0);
+
+		const detail = await body<IssueDetail>(await api.get(`/api/v1/issues/${issueId}`));
+		expect(detail.comments.find((c) => c.id === created.id)?.updated_at).toBe(edited.updated_at);
+
+		const removed = await api.delete(`/api/v1/issues/${issueId}/comments/${created.id}`);
+		expect(removed.status()).toBe(204);
+		const after = await body<IssueDetail>(await api.get(`/api/v1/issues/${issueId}`));
+		expect(after.comments.map((c) => c.id)).not.toContain(created.id);
+
+		const events = (
+			await body<ListResponse<TinesEvent>>(await api.get(`/api/v1/events?issue=${issueId}`))
+		).items;
+		const editEvent = events.find((e) => e.type === 'issue.comment_edited');
+		const deleteEvent = events.find((e) => e.type === 'issue.comment_deleted');
+		expect(editEvent?.payload).toMatchObject({ comment_id: created.id, changed: ['body'] });
+		expect(deleteEvent?.payload).toMatchObject({ comment_id: created.id, body_length: 13 });
+		// The audit trail records the action, never the text.
+		expect(JSON.stringify([editEvent?.payload, deleteEvent?.payload])).not.toContain('fix is in');
 	});
 
 	test('done issues drop out of the filtered list', async ({ request }) => {

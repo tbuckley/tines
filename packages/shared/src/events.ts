@@ -125,6 +125,8 @@ const DESCRIBERS: Record<KnownEventType, Describer> = {
 		return segs;
 	},
 	'issue.commented': () => [text('commented on'), selfRef()],
+	'issue.comment_edited': () => [text('edited a comment on'), selfRef()],
+	'issue.comment_deleted': () => [text('deleted a comment on'), selfRef()],
 	'issue.link_added': linkSegments,
 	'issue.link_removed': linkSegments,
 	'issue.parked': (_ev, p) => [

@@ -15,6 +15,8 @@
 		'issue.updated',
 		'issue.transitioned',
 		'issue.commented',
+		'issue.comment_edited',
+		'issue.comment_deleted',
 		'project.created',
 		'project.updated',
 		'project.deleted',
