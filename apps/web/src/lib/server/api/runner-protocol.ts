@@ -30,6 +30,7 @@ import {
 	mintRunKeyAndFlip,
 	supervisorEvent
 } from '$lib/server/supervisor/engine';
+import { spillEvicted } from '$lib/server/supervisor/run-log';
 import { appendLogTail } from '$lib/server/supervisor/logic';
 import { buildSupervisorPreamble } from '$lib/server/supervisor/preamble';
 import { listArtifacts } from './artifacts';
@@ -327,12 +328,16 @@ export async function appendRunLog(
 	runner: RunnerRow,
 	runId: string,
 	chunk: unknown,
-	now: number = Date.now()
+	now: number = Date.now(),
+	seq?: unknown
 ): Promise<AppendRunLogResponse> {
 	if (typeof chunk !== 'string' || chunk.length > 1_000_000) {
 		throw new ApiFail(422, 'invalid_field', '"chunk" must be a string of at most 1,000,000 characters', {
 			field: 'chunk'
 		});
+	}
+	if (seq !== undefined && (typeof seq !== 'number' || !Number.isInteger(seq) || seq < 1)) {
+		throw new ApiFail(422, 'invalid_field', '"seq" must be a positive integer', { field: 'seq' });
 	}
 	const run = await loadRunnerRun(db, runner, runId);
 	if (run.status === 'assigned') {
@@ -341,23 +346,46 @@ export async function appendRunLog(
 	if (!(ACTIVE as string[]).includes(run.status)) {
 		throw new ApiFail(422, 'run_already_ended', 'This run has already ended; the log is closed');
 	}
+	// Exactly-once: a daemon that retries a chunk whose response it never saw
+	// resends the same seq, and the append is already applied. Ack it as-is
+	// rather than duplicating the bytes into the tail and into R2.
+	if (seq !== undefined && seq <= run.log_seq) {
+		return {
+			status: run.status as AppendRunLogResponse['status'],
+			log_bytes_dropped: run.log_bytes_dropped,
+			log_seq: run.log_seq
+		};
+	}
 	if (run.status === 'launching') {
 		await markRunRunning(db, env, run, now);
 	}
 	const appended = appendLogTail(run.log, run.log_bytes_dropped, chunk);
+	// Bytes the tail evicts go to R2 *before* the D1 update, so D1 never
+	// records dropped bytes that no object holds. The reverse — an object
+	// whose update then loses the status guard — is an orphan the sweep GCs.
+	const spill = appended.evicted ? await spillEvicted(env, run, appended.evicted) : null;
 	await runAtomic(env, [
 		db
 			.updateTable('agent_run')
-			.set({ log: appended.log, log_bytes_dropped: appended.dropped })
+			.set({
+				log: appended.log,
+				log_bytes_dropped: appended.dropped,
+				...(spill ?? {}),
+				...(seq === undefined ? {} : { log_seq: seq })
+			})
 			.where('id', '=', runId)
 			// A chunk racing a cancel/sweep must not extend a settled run's
 			// tail: the active check above was a read, this is the guard.
 			.where('status', 'in', ACTIVE)
+			// …and a concurrent append must not clobber this one's part
+			// bookkeeping: both would claim the same part index.
+			.where('log_part_count', '=', run.log_part_count)
 			.compile()
 	]);
 	return {
 		status: run.status === 'launching' ? 'running' : (run.status as AppendRunLogResponse['status']),
-		log_bytes_dropped: appended.dropped
+		log_bytes_dropped: appended.dropped,
+		log_seq: seq ?? run.log_seq
 	};
 }
 

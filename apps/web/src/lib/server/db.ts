@@ -274,6 +274,18 @@ export interface AgentRunTable {
 	/** Append-only tail, head-truncated at the cap. */
 	log: string;
 	log_bytes_dropped: number;
+	/** Highest client-assigned chunk seq applied (log append idempotency). */
+	log_seq: number;
+	/** Highest `part.{n}` object written to the run-log bucket. */
+	log_part_count: number;
+	/** Parts at or below this index are merged into the `head` object. */
+	log_compacted_through: number;
+	/** 1 once the complete log is written to the `full` object. */
+	log_sealed: number;
+	/** Size of the raw harness stream object; 0 = none uploaded. */
+	log_raw_bytes: number;
+	/** Retention GC deleted this run's R2 objects (the D1 tail survives). */
+	log_objects_deleted_at: number | null;
 	error: string | null;
 	created_at: number;
 	started_at: number | null;

@@ -73,7 +73,17 @@ export function serializeRun(row: RunRow): AgentRun {
 }
 
 function serializeRunDetail(row: RunRow): AgentRunDetail {
-	return { ...serializeRun(row), log: row.log, log_bytes_dropped: row.log_bytes_dropped };
+	return {
+		...serializeRun(row),
+		log: row.log,
+		log_bytes_dropped: row.log_bytes_dropped,
+		// The dropped bytes ARE the spilled bytes, so the complete log's size
+		// is always the sum — no extra column, and no growth in this payload
+		// (the run page polls it every 3 seconds).
+		log_full_bytes: row.log_bytes_dropped + new TextEncoder().encode(row.log).length,
+		log_raw_bytes: row.log_raw_bytes,
+		log_expired: row.log_objects_deleted_at !== null
+	};
 }
 
 export interface RunListFilters {

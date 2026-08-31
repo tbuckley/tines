@@ -53,6 +53,13 @@
 		{
 			"binding": "ARTIFACTS",
 			"bucket_name": "tines-artifacts"
+		},
+		// Full run logs: bytes the 256 KB D1 tail evicts (see
+		// src/lib/server/run-log-store.ts). Separate bucket from ARTIFACTS —
+		// logs are GC'd after 30 days, artifacts are kept.
+		{
+			"binding": "RUN_LOGS",
+			"bucket_name": "tines-run-logs"
 		}
 	],
 	// Self-referencing service binding: the supervisor fetches launch
@@ -103,6 +110,10 @@
 				{
 					"binding": "ARTIFACTS",
 					"bucket_name": "tines-artifacts-preview"
+				},
+				{
+					"binding": "RUN_LOGS",
+					"bucket_name": "tines-run-logs-preview"
 				}
 			],
 			"services": [{ "binding": "SELF", "service": "tines-web-preview" }],
