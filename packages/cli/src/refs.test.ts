@@ -9,8 +9,7 @@ import {
 	parseIssueRef,
 	parseJsonObject,
 	parseScheduleRef,
-	parseTargetSpec,
-	readBodyValue
+	parseTargetSpec
 } from './refs.js';
 
 const dir = mkdtempSync(join(tmpdir(), 'tines-refs-'));
@@ -47,25 +46,6 @@ describe('parseScheduleRef', () => {
 		expect(() => parseScheduleRef(ref)).toThrow(
 			`schedule reference must look like <project>/<name>, got "${ref}"`
 		);
-	});
-});
-
-describe('readBodyValue', () => {
-	it('returns an inline value unchanged', () => {
-		expect(readBodyValue('hello')).toBe('hello');
-	});
-
-	it('reads @<file>', () => {
-		expect(readBodyValue(`@${bodyFile}`)).toBe('- a lesson\n');
-	});
-
-	it('treats @@ as an escaped literal @', () => {
-		expect(readBodyValue('@@notafile')).toBe('@notafile');
-	});
-
-	it('reports an unreadable file by name', () => {
-		const missing = join(dir, 'nope.md');
-		expect(() => readBodyValue(`@${missing}`)).toThrow(new RegExp(`^cannot read ${missing}: `));
 	});
 });
 

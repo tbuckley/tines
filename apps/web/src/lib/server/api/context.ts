@@ -1351,7 +1351,24 @@ export function issueBlock(
 			);
 		}
 	}
-	lines.push(`Add a comment: \`tines issues comment ${ref} "<markdown>"\``, '', '### Artifacts', '');
+	// A quoted heredoc, not an inline argument: comment bodies are prose full
+	// of backticks, $VARS and apostrophes, and there is no way to delete a
+	// comment that the shell mangled on the way in (Tines/9). The fallback line
+	// is not decoration: a CLI predating that change treats the `-` as the body
+	// itself and posts it, exit 0, so the failure is silent unless the agent has
+	// been told what it looks like.
+	lines.push(
+		'Add a comment (the quoted heredoc keeps backticks, $VARS and quotes literal):',
+		'```',
+		`tines issues comment ${ref} - <<'EOF'`,
+		'<markdown>',
+		'EOF',
+		'```',
+		`A \`tines\` too old for that form posts a literal \`-\` instead of your body, without failing. If \`tines issues comment --help\` does not mention \`@file\`, use \`tines issues comment ${ref} "<markdown>"\` and mind the shell quoting.`,
+		'',
+		'### Artifacts',
+		''
+	);
 	// A listing, never contents: agents fetch on demand.
 	if (issueArtifacts.length === 0) {
 		lines.push('No artifacts attached.', '');
@@ -1398,13 +1415,15 @@ export function issueBlock(
 			'Appends land in this stage\'s journal even after you move the issue.',
 			'',
 			`- Append a lesson: \`tines journal append ${ref} "- <date>: <lesson>"\``,
+			'  (or `-` with a quoted heredoc, as for comments, when the body must not be touched by the shell)',
 			`- Fix or prune entries: \`tines journal show ${ref} --json\`, revise, then`,
 			`  \`tines journal rewrite ${ref} --body @file --expect-version ${journal.version}\``
 		);
 	} else {
 		lines.push(
 			`No journal exists yet for project ${issue.project_name} · state ${issue.state.name}. Start one:`,
-			`\`tines journal append ${ref} "- <date>: <lesson>"\``
+			`\`tines journal append ${ref} "- <date>: <lesson>"\``,
+			'(or `-` with a quoted heredoc, as for comments, when the body must not be touched by the shell)'
 		);
 	}
 

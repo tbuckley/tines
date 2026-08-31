@@ -4,6 +4,7 @@
  * this run was launched in — not the issue's current state — so a lesson stays
  * with the stage that learned it even after the issue has moved on.
  */
+import { BODY_VALUE_HELP, readBodyValue } from '../body-value.js';
 import {
 	client,
 	die,
@@ -14,7 +15,7 @@ import {
 	type CommonOpts
 } from '../common.js';
 import { helpGuard } from '../help-guard.js';
-import { readBodyValue } from '../refs.js';
+
 import {
 	ApiError,
 	JOURNAL_NAME,
@@ -129,7 +130,7 @@ export function register(program: Command): void {
 	withCommon(
 		journal
 			.command('append <ref> <markdown>')
-			.description('Append a lesson (creates the journal on first use)')
+			.description(`Append a lesson, creating the journal on first use — ${BODY_VALUE_HELP}`)
 			.option('--state <workflow>/<state>', STATE_FLAG_HELP)
 			// Lessons are dated bullets starting with "-"; options go before the
 			// arguments, exactly as the launch prompt's copy-pasteable command has it.
@@ -137,11 +138,14 @@ export function register(program: Command): void {
 	).action(
 		async (ref: string, markdown: string, opts: CommonOpts & { state?: string }, command: Command) => {
 			if (helpGuard(command, markdown)) return;
+			// Resolved once: stdin is single-consumption and all three paths below
+			// (append, first-use create, create-race recovery) need the same body.
+			const text = readBodyValue(markdown);
 			const api = client(opts);
 			const { scope, note, item } = await resolveJournal(api, ref, opts.state);
 			printNote(note);
 			if (item) {
-				const updated = await api.appendContextItem(item.id, { text: markdown });
+				const updated = await api.appendContextItem(item.id, { text });
 				if (opts.json) return printJson(updated);
 				return console.log(`appended to the ${scope.label} journal (now v${updated.version})`);
 			}
@@ -151,7 +155,7 @@ export function register(program: Command): void {
 					name: JOURNAL_NAME,
 					project_id: scope.project_id ?? undefined,
 					workflow_state_id: scope.workflow_state_id ?? undefined,
-					body: markdown.trim()
+					body: text.trim()
 				});
 				if (opts.json) return printJson(created);
 				console.log(`started the ${scope.label} journal (${created.id})`);
@@ -161,7 +165,7 @@ export function register(program: Command): void {
 				if (!(err instanceof ApiError) || err.code !== 'duplicate_context_name') throw err;
 				const { item: fresh } = await resolveJournal(api, ref, opts.state);
 				if (!fresh) throw err;
-				const updated = await api.appendContextItem(fresh.id, { text: markdown });
+				const updated = await api.appendContextItem(fresh.id, { text });
 				if (opts.json) return printJson(updated);
 				console.log(`appended to the ${scope.label} journal (now v${updated.version})`);
 			}

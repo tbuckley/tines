@@ -1,6 +1,6 @@
 /**
  * NAVIGATION COST PROBE (Tines/32) — a measurement tool, not a behavioural
- * test. Excluded from `pnpm test`; run it with `pnpm perf:nav`.
+ * test. Excluded from `pnpm test`; run it with `pnpm --filter web perf:nav`.
  *
  * Runs the real route `load` functions against the migration-backed in-memory
  * DB, with every D1 statement wrapped in an artificial fixed latency. Because

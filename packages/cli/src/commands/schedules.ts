@@ -1,5 +1,6 @@
 /** `tines schedules` — scheduled tasks, addressed as <project>/<name>. */
 import { createInterface } from 'node:readline/promises';
+import { BODY_VALUE_HELP, readBodyValue } from '../body-value.js';
 import {
 	client,
 	die,
@@ -115,7 +116,10 @@ export function register(program: Command): void {
 			.command('edit <ref>')
 			.description('Edit a schedule: templates, workflow, start state, recurrence, timezone, gate, or name')
 			.option('-t, --title <template>', 'set the title template')
-			.option('-d, --description <markdown>', 'set the description template (Markdown)')
+			.option(
+				'-d, --description <markdown>',
+				`set the description template (Markdown) — ${BODY_VALUE_HELP}`
+			)
 			.option(
 				'-w, --workflow <id-or-name>',
 				'move future instances onto another workflow (resets the start state to its initial state unless --state is also given)'
@@ -145,11 +149,13 @@ export function register(program: Command): void {
 					name?: string;
 				}
 		) => {
+			const descriptionTemplate =
+				opts.description !== undefined ? readBodyValue(opts.description) : undefined;
 			const api = client(opts);
 			const schedule = await resolveSchedule(api, ref);
 			const body: UpdateScheduleRequest = {};
 			if (opts.title !== undefined) body.title_template = opts.title;
-			if (opts.description !== undefined) body.description_template = opts.description;
+			if (descriptionTemplate !== undefined) body.description_template = descriptionTemplate;
 			if (opts.workflow !== undefined) body.workflow_id = (await resolveWorkflow(api, opts.workflow)).id;
 			if (opts.state !== undefined) body.state = opts.state;
 			const recurrence = buildRecurrence(opts);

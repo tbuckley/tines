@@ -10,18 +10,16 @@
 		ShadowWarning
 	} from '@tines/shared';
 	import {
-		ACTIVE_RUN_STATUSES,
+		activeStateIds as deriveActiveStateIds,
 		ApiError,
 		DEFAULT_MANAGED_RUN_COST_USD,
+		isActiveRun,
 		isStaleTierOverride,
 		MODEL_TIERS,
-		runCostLabel,
-		runDurationLabel,
 		utilizationLabel
 	} from '@tines/shared';
 	import IconAlertTriangle from '@tabler/icons-svelte/icons/alert-triangle';
 	import IconArrowDown from '@tabler/icons-svelte/icons/arrow-down';
-	import IconArrowRight from '@tabler/icons-svelte/icons/arrow-right';
 	import IconArrowUp from '@tabler/icons-svelte/icons/arrow-up';
 	import IconCloud from '@tabler/icons-svelte/icons/cloud';
 	import IconCopy from '@tabler/icons-svelte/icons/copy';
@@ -35,16 +33,16 @@
 	import { invalidateAll } from '$app/navigation';
 	import { api } from '$lib/api';
 	import CancelRunDialog from '$lib/components/CancelRunDialog.svelte';
-	import ContextScopeChips from '$lib/components/ContextScopeChips.svelte';
 	import { confirmDialog } from '$lib/components/dialogs.svelte';
 	import Modal from '$lib/components/Modal.svelte';
 	import PatInstructions from '$lib/components/PatInstructions.svelte';
-	import RunLogViewer from '$lib/components/RunLogViewer.svelte';
+	import RoutingRuleRow from '$lib/components/RoutingRuleRow.svelte';
+	import RunRow from '$lib/components/RunRow.svelte';
 	import StateBadge from '$lib/components/StateBadge.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { Select } from '$lib/components/ui/select/index.js';
-	import { prefersReducedMotion, relativeTime, runStatusClass } from '$lib/format';
+	import { prefersReducedMotion, relativeTime } from '$lib/format';
 
 	let { data } = $props();
 
@@ -363,9 +361,7 @@
 	// --- runs --------------------------------------------------------------------
 
 	let showAllRuns = $state(false);
-	const activeRuns = $derived(
-		data.runs.filter((r) => (ACTIVE_RUN_STATUSES as readonly string[]).includes(r.status))
-	);
+	const activeRuns = $derived(data.runs.filter((r) => isActiveRun(r.status)));
 	const visibleRuns = $derived(showAllRuns ? data.runs : activeRuns);
 
 	/** Utilization against the active policy — same math the CLI status shows. */
@@ -375,9 +371,6 @@
 		);
 		return utilizationLabel(data.settings.quota, activeRuns, (id) => stateNames.get(id) ?? id);
 	});
-
-	/** Run rows expanded to their log-tail viewer. */
-	let expandedLogs = $state<Record<string, boolean>>({});
 
 	/** The run awaiting the cancel dialog (strike note + optional comment). */
 	let cancelTarget = $state<AgentRun | null>(null);
@@ -408,9 +401,7 @@
 		const state = data.workflows.flatMap((w) => w.states).find((s) => s.id === ruleStateId);
 		return state && state.category !== 'active' ? state : null;
 	});
-	const activeStateIds = $derived(
-		new Set(routableWorkflows.flatMap((w) => w.states.map((s) => s.id)))
-	);
+	const activeStateIds = $derived(deriveActiveStateIds(data.workflows));
 
 	function openRuleCreate() {
 		// Shadow hints belong to the last save; opening an editor stales them.
@@ -693,77 +684,7 @@
 	{:else}
 		<ul class="divide-y rounded-lg border">
 			{#each visibleRuns as run (run.id)}
-				<li
-					class="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2.5 text-sm"
-					transition:slide={{ duration: dur() }}
-				>
-					{#if (ACTIVE_RUN_STATUSES as readonly string[]).includes(run.status)}
-						<span class="size-1.5 shrink-0 animate-pulse rounded-full bg-emerald-500"></span>
-					{/if}
-					{#if run.issue_ref}
-						<a
-							href="/issues/{encodeURIComponent(run.issue_ref.project_name)}/{run.issue_ref.number}"
-							class="font-medium hover:underline"
-						>
-							{run.issue_ref.project_name}/#{run.issue_ref.number}
-						</a>
-					{/if}
-					<span class="text-muted-foreground">{run.runner_name}</span>
-					<span class="text-muted-foreground text-xs">
-						{run.tier}{run.model ? ` · ${run.model}` : ''}
-					</span>
-					<span class="text-xs font-medium {runStatusClass(run.status)}">
-						{run.status.replaceAll('_', ' ')}
-					</span>
-					<span class="text-muted-foreground text-xs">{runDurationLabel(run)}</span>
-					{#if runCostLabel(run)}
-						<span class="text-muted-foreground text-xs">{runCostLabel(run)}</span>
-					{/if}
-					{#if run.provider_session_id && run.status === 'running'}
-						<!-- staleness honesty: managed logs/cost advance only at sweep cadence -->
-						<span class="text-muted-foreground/70 text-xs" title="Managed runs are polled by the sweep — logs and cost can lag by up to ~5 minutes; a quiet log means “not polled yet”, not “agent stuck”.">
-							updates every ~5m
-						</span>
-					{/if}
-					{#if run.provider_url}
-						<a
-							href={run.provider_url}
-							target="_blank"
-							rel="noreferrer"
-							class="text-muted-foreground text-xs underline-offset-2 hover:underline"
-							title="Open the provider console (full transcript)"
-						>
-							console ↗
-						</a>
-					{/if}
-					{#if run.error}
-						<span class="max-w-64 truncate text-xs text-amber-700 dark:text-amber-400" title={run.error}>
-							{run.error}
-						</span>
-					{/if}
-					<span class="text-muted-foreground ml-auto text-xs" title={new Date(run.created_at).toLocaleString()}>
-						{relativeTime(run.created_at)}
-					</span>
-					<Button
-						size="sm"
-						variant="ghost"
-						class="h-7"
-						aria-expanded={expandedLogs[run.id] === true}
-						onclick={() => (expandedLogs = { ...expandedLogs, [run.id]: !expandedLogs[run.id] })}
-					>
-						{expandedLogs[run.id] ? 'Hide logs' : 'Logs'}
-					</Button>
-					{#if (ACTIVE_RUN_STATUSES as readonly string[]).includes(run.status)}
-						<Button size="sm" variant="ghost" class="text-destructive h-7" onclick={() => (cancelTarget = run)}>
-							Cancel
-						</Button>
-					{/if}
-					{#if expandedLogs[run.id]}
-						<div class="w-full" transition:slide={{ duration: dur() }}>
-							<RunLogViewer runId={run.id} />
-						</div>
-					{/if}
-				</li>
+				<RunRow {run} showIssueRef oncancel={(r) => (cancelTarget = r)} />
 			{/each}
 		</ul>
 	{/if}
@@ -808,45 +729,7 @@
 	{:else}
 		<ul class="divide-y rounded-lg border">
 			{#each data.rules as rule (rule.id)}
-				<li class="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3 text-sm">
-					<ContextScopeChips scope={rule.scope} />
-					{#if rule.scope.workflow_state_id && !activeStateIds.has(rule.scope.workflow_state_id)}
-						<span
-							class="rounded-full bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-400"
-							title="This state is no longer categorized active; agents only pick up issues in active states, so this rule never matches"
-						>
-							never dispatches
-						</span>
-					{/if}
-					{#if rule.targets.length === 0}
-						<span
-							class="rounded-full bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-400"
-							title="A forced runner removal emptied this rule; add targets or delete it"
-						>
-							no targets
-						</span>
-					{:else}
-						<span class="flex flex-wrap items-center gap-1">
-							{#each rule.targets as target, i (target.runner_id + (target.tier ?? '') + i)}
-								{#if i > 0}
-									<IconArrowRight size={12} class="text-muted-foreground" />
-								{/if}
-								<span
-									class="bg-muted rounded-full px-2 py-0.5 text-xs {target.runner_status === 'paused' ? 'opacity-60' : ''}"
-									title={target.runner_status === 'paused' ? 'paused' : undefined}
-								>
-									{target.runner_name}{target.tier ? `:${target.tier}` : ''}
-								</span>
-							{/each}
-						</span>
-					{/if}
-					<span class="ml-auto flex gap-1">
-						<Button size="sm" variant="ghost" onclick={() => openRuleEdit(rule)}>Edit</Button>
-						<Button size="sm" variant="ghost" class="text-destructive" onclick={() => deleteRule(rule)}>
-							Delete
-						</Button>
-					</span>
-				</li>
+				<RoutingRuleRow {rule} {activeStateIds} onedit={openRuleEdit} ondelete={deleteRule} />
 			{/each}
 		</ul>
 	{/if}

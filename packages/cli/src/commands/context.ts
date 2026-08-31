@@ -1,4 +1,5 @@
 /** `tines context` — context items (prompts, skills, repo pointers) and their scopes. */
+import { readBodyValue } from '../body-value.js';
 import {
 	client,
 	collect,
@@ -15,7 +16,7 @@ import {
 	type ListOpts
 } from '../common.js';
 import { contextItemSummary, timestamp } from '../format.js';
-import { parseFileSpec, readBodyValue } from '../refs.js';
+import { parseFileSpec } from '../refs.js';
 import {
 	AGENT_GUIDELINES_BODY,
 	AGENT_GUIDELINES_DESCRIPTION,

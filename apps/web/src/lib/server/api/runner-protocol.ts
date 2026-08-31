@@ -11,6 +11,7 @@
 import {
 	ACTIVE_RUN_STATUSES,
 	RUNNER_ONLINE_WINDOW_MS,
+	RUN_LOG_RAW_MAX_BYTES,
 	type AgentRun,
 	type AgentRunUsage,
 	type AppendRunLogResponse,
@@ -30,6 +31,8 @@ import {
 	mintRunKeyAndFlip,
 	supervisorEvent
 } from '$lib/server/supervisor/engine';
+import { getRunLogStore, runLogRawKey } from '$lib/server/run-log-store';
+import { spillEvicted } from '$lib/server/supervisor/run-log';
 import { appendLogTail } from '$lib/server/supervisor/logic';
 import { buildSupervisorPreamble } from '$lib/server/supervisor/preamble';
 import { listArtifacts } from './artifacts';
@@ -299,6 +302,46 @@ async function deliverAssignedRun(
 
 export { appendLogTail };
 
+/**
+ * `PUT /api/v1/runs/:id/log/raw`: stores the raw harness stream for a run.
+ *
+ * Streamed straight into the bucket rather than buffered — these run to tens
+ * of megabytes and a Worker has no room to hold one. R2 needs the length up
+ * front, so the daemon must send `Content-Length`; the daemon is also the
+ * one that truncates to the cap (keeping the tail), and a body claiming more
+ * than the cap is rejected outright.
+ */
+export async function uploadRawRunLog(
+	db: Kysely<Database>,
+	env: Env,
+	runner: RunnerRow,
+	runId: string,
+	request: Request
+): Promise<{ log_raw_bytes: number }> {
+	const run = await loadRunnerRun(db, runner, runId);
+	if (run.log_objects_deleted_at !== null) {
+		throw new ApiFail(409, 'log_expired', "This run's logs have passed their retention window");
+	}
+	const declared = Number(request.headers.get('content-length'));
+	if (!Number.isInteger(declared) || declared <= 0) {
+		throw new ApiFail(411, 'length_required', 'A Content-Length header is required for a raw log upload');
+	}
+	if (declared > RUN_LOG_RAW_MAX_BYTES) {
+		throw new ApiFail(413, 'log_too_large', `The raw log must be at most ${RUN_LOG_RAW_MAX_BYTES} bytes`);
+	}
+	const body = request.body;
+	if (!body) throw new ApiFail(422, 'invalid_body', 'The request had no body');
+	await getRunLogStore(env).put(
+		runLogRawKey(run.user_id, run.id),
+		body as ReadableStream<Uint8Array>,
+		declared
+	);
+	await runAtomic(env, [
+		db.updateTable('agent_run').set({ log_raw_bytes: declared }).where('id', '=', runId).compile()
+	]);
+	return { log_raw_bytes: declared };
+}
+
 /** Loads a run for the protocol, scoped to the authenticated runner (404 across runners). */
 async function loadRunnerRun(
 	db: Kysely<Database>,
@@ -327,12 +370,16 @@ export async function appendRunLog(
 	runner: RunnerRow,
 	runId: string,
 	chunk: unknown,
-	now: number = Date.now()
+	now: number = Date.now(),
+	seq?: unknown
 ): Promise<AppendRunLogResponse> {
 	if (typeof chunk !== 'string' || chunk.length > 1_000_000) {
 		throw new ApiFail(422, 'invalid_field', '"chunk" must be a string of at most 1,000,000 characters', {
 			field: 'chunk'
 		});
+	}
+	if (seq !== undefined && (typeof seq !== 'number' || !Number.isInteger(seq) || seq < 1)) {
+		throw new ApiFail(422, 'invalid_field', '"seq" must be a positive integer', { field: 'seq' });
 	}
 	const run = await loadRunnerRun(db, runner, runId);
 	if (run.status === 'assigned') {
@@ -341,24 +388,76 @@ export async function appendRunLog(
 	if (!(ACTIVE as string[]).includes(run.status)) {
 		throw new ApiFail(422, 'run_already_ended', 'This run has already ended; the log is closed');
 	}
+	// Exactly-once: a daemon that retries a chunk whose response it never saw
+	// resends the same seq, and the append is already applied. Ack it as-is
+	// rather than duplicating the bytes into the tail and into R2.
+	if (seq !== undefined && seq <= run.log_seq) {
+		return {
+			status: run.status as AppendRunLogResponse['status'],
+			log_bytes_dropped: run.log_bytes_dropped,
+			log_seq: run.log_seq
+		};
+	}
 	if (run.status === 'launching') {
 		await markRunRunning(db, env, run, now);
 	}
-	const appended = appendLogTail(run.log, run.log_bytes_dropped, chunk);
-	await runAtomic(env, [
-		db
-			.updateTable('agent_run')
-			.set({ log: appended.log, log_bytes_dropped: appended.dropped })
-			.where('id', '=', runId)
-			// A chunk racing a cancel/sweep must not extend a settled run's
-			// tail: the active check above was a read, this is the guard.
-			.where('status', 'in', ACTIVE)
-			.compile()
-	]);
-	return {
-		status: run.status === 'launching' ? 'running' : (run.status as AppendRunLogResponse['status']),
-		log_bytes_dropped: appended.dropped
-	};
+	// The update is guarded on `log_part_count`, so it can lose. Acking a
+	// chunk whose write did not land would drop those bytes for good — the
+	// daemon has been told they are safe and never resends — so a lost guard
+	// re-reads and retries once rather than returning.
+	let current = run;
+	for (let attempt = 0; ; attempt++) {
+		const appended = appendLogTail(current.log, current.log_bytes_dropped, chunk);
+		// Bytes the tail evicts go to R2 *before* the D1 update, so D1 never
+		// records dropped bytes that no object holds. The reverse — an object
+		// whose update then loses a guard — is an orphan the sweep GCs.
+		const spill = appended.evicted ? await spillEvicted(env, current, appended.evicted) : null;
+		const results = await runAtomic(env, [
+			db
+				.updateTable('agent_run')
+				.set({
+					log: appended.log,
+					log_bytes_dropped: appended.dropped,
+					...(spill ?? {}),
+					...(seq === undefined ? {} : { log_seq: seq })
+				})
+				.where('id', '=', runId)
+				// A chunk racing a cancel/sweep must not extend a settled run's
+				// tail: the active check above was a read, this is the guard.
+				.where('status', 'in', ACTIVE)
+				// …and a concurrent append must not clobber this one's part
+				// bookkeeping: both would claim the same part index.
+				.where('log_part_count', '=', current.log_part_count)
+				.compile()
+		]);
+		if ((results[0]?.meta.changes ?? 0) > 0) {
+			return {
+				status:
+					current.status === 'launching' ? 'running' : (current.status as AppendRunLogResponse['status']),
+				log_bytes_dropped: appended.dropped,
+				log_seq: seq ?? current.log_seq
+			};
+		}
+		current = await loadRunnerRun(db, runner, runId);
+		if (!(ACTIVE as string[]).includes(current.status)) {
+			throw new ApiFail(422, 'run_already_ended', 'This run has already ended; the log is closed');
+		}
+		// A concurrent append that carried this same seq already applied it.
+		if (seq !== undefined && seq <= current.log_seq) {
+			return {
+				status: current.status as AppendRunLogResponse['status'],
+				log_bytes_dropped: current.log_bytes_dropped,
+				log_seq: current.log_seq
+			};
+		}
+		if (attempt >= 1) {
+			throw new ApiFail(
+				409,
+				'log_append_conflict',
+				'Another append raced this one twice; resend this chunk'
+			);
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------

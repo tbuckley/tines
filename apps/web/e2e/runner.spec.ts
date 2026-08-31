@@ -43,7 +43,7 @@ let daemonExited = false;
 let projectId: string;
 let runnerId: string;
 
-const setMode = (mode: 'work' | 'noop' | 'sleep') => writeFileSync(join(e2eDir, 'mode'), mode);
+const setMode = (mode: 'work' | 'noop' | 'sleep' | 'flood') => writeFileSync(join(e2eDir, 'mode'), mode);
 
 const sideFile = (name: string) => join(e2eDir, name);
 const readSideFile = (name: string) => readFileSync(sideFile(name), 'utf8');
@@ -120,6 +120,17 @@ case "$MODE" in
 		echo $$ > "$E2E_DIR/sleep-pid"
 		sleep 300
 		;;
+	flood)
+		# ~600 KB, well past the 256 KB tail cap, with the first and last
+		# lines marked so a full-log read can prove nothing scrolled off.
+		echo "FLOOD-FIRST-LINE"
+		for i in $(seq 1 6000); do
+			printf 'flood line %05d %s\\n' "$i" "..............................................................................................."
+		done
+		echo "FLOOD-LAST-LINE"
+		REF=$(sed -n 's/^This is run .* for issue \\([^;]*\\);.*/\\1/p' prompt.md | head -n 1)
+		${TSX} ${CLI_ENTRY} issues move "$REF" "Submit for review"
+		;;
 	noop)
 		;;
 esac
@@ -165,7 +176,10 @@ esac
 				'--command',
 				`bash "${harnessPath}"`,
 				'--poll-interval',
-				'1'
+				'1',
+				// CI must not depend on the npm registry (or pay its latency) for
+				// the daemon-managed agent CLI; the script harness never runs `tines`.
+				'--no-cli-refresh'
 			],
 			{
 				cwd: CLI_DIR,
@@ -304,6 +318,112 @@ esac
 		await expect(dialog).toContainText('registers');
 		await expect(dialog).toContainText('launchd/systemd');
 		await dialog.getByRole('button', { name: 'Done' }).click();
+	});
+
+	test('an oversized log keeps every byte: the tail truncates, the full log does not', async ({
+		request
+	}) => {
+		test.setTimeout(120_000);
+		const api = apiClient(request, ALICE.apiKey);
+		setMode('flood');
+		const issue = await createIssue(request, 'Flood the log');
+
+		const run = await waitFor(
+			async () => {
+				const runs = await issueRuns(request, issue.id);
+				return runs.find((r) => r.status === 'completed');
+			},
+			{ timeout: 90_000, interval: 1000, label: 'the flooding run to finish' }
+		);
+		// endRun seals inline, but the sweep is the guarantee — fire it so the
+		// assertions below hold whichever path did the sealing.
+		await fireSweep(request);
+
+		const detail = await body<AgentRunDetail>(await api.get(`/api/v1/runs/${run.id}`));
+		// The tail behaves exactly as it always did: capped, head-truncated.
+		expect(detail.log_bytes_dropped).toBeGreaterThan(0);
+		expect(detail.log).not.toContain('FLOOD-FIRST-LINE');
+		expect(detail.log).toContain('FLOOD-LAST-LINE');
+		expect(detail.log_full_bytes).toBeGreaterThan(new TextEncoder().encode(detail.log).length);
+		expect(detail.log_expired).toBe(false);
+
+		// …and the full log has the bytes the tail dropped, in order.
+		const res = await api.get(`/api/v1/runs/${run.id}/log`);
+		expect(res.status()).toBe(200);
+		const full = await res.text();
+		expect(full).toContain('FLOOD-FIRST-LINE');
+		expect(full).toContain('FLOOD-LAST-LINE');
+		expect(full.indexOf('flood line 00001')).toBeLessThan(full.indexOf('flood line 06000'));
+		expect(full.endsWith(detail.log)).toBe(true);
+		expect(new TextEncoder().encode(full).length).toBe(detail.log_full_bytes);
+
+		setMode('work');
+	});
+
+	/**
+	 * The append protocol's two thin wiring seams, which the unit layer
+	 * cannot reach: the route carrying the daemon's `seq` into the dedup
+	 * check, and the raw-stream upload/read pair. Both are driven with the
+	 * daemon's own runner token against a live run.
+	 */
+	test('a retried log chunk lands once, and the raw stream round-trips', async ({ request }) => {
+		test.setTimeout(60_000);
+		const api = apiClient(request, ALICE.apiKey);
+		rmSync(sideFile('sleep-pid'), { force: true });
+		setMode('sleep');
+		const issue = await createIssue(request, 'Probe the log protocol');
+		const running = await waitFor(
+			async () => (await issueRuns(request, issue.id)).find((r) => r.status === 'running'),
+			{ label: 'the run to start' }
+		);
+
+		const creds = JSON.parse(readFileSync(join(configDir, 'runners.json'), 'utf8')) as Record<
+			string,
+			{ token: string }
+		>;
+		const auth = { authorization: `Bearer ${Object.values(creds)[0].token}` };
+
+		// A daemon that never saw the response to a chunk resends it under the
+		// same seq. The bytes must land exactly once — far enough ahead of the
+		// daemon's own counter that this cannot collide with it.
+		const chunk = 'SEQ-PROBE-LINE\n';
+		const seq = 1_000_000;
+		const first = await request.post(`/api/v1/runs/${running.id}/logs`, { headers: auth, data: { chunk, seq } });
+		expect(first.ok()).toBe(true);
+		const second = await request.post(`/api/v1/runs/${running.id}/logs`, { headers: auth, data: { chunk, seq } });
+		expect(second.ok()).toBe(true);
+		expect((await body<{ log_seq: number }>(second)).log_seq).toBe(seq);
+
+		const detail = await body<AgentRunDetail>(await api.get(`/api/v1/runs/${running.id}`));
+		expect(detail.log.split('SEQ-PROBE-LINE').length - 1).toBe(1);
+
+		// The raw stream. In production the daemon uploads it at settle from
+		// its NDJSON spool; the e2e harness is a shell script with nothing to
+		// spool, so the upload is driven directly — this is the only coverage
+		// the streaming put and the `?raw=1` read get end to end.
+		const raw = '{"type":"system","subtype":"init"}\n{"type":"result","is_error":false}\n';
+		const put = await request.put(`/api/v1/runs/${running.id}/log/raw`, {
+			headers: { ...auth, 'content-type': 'application/x-ndjson' },
+			data: raw
+		});
+		expect(put.ok()).toBe(true);
+		expect((await body<{ log_raw_bytes: number }>(put)).log_raw_bytes).toBe(raw.length);
+
+		const back = await api.get(`/api/v1/runs/${running.id}/log?raw=1`);
+		expect(back.status()).toBe(200);
+		expect(back.headers()['content-type']).toContain('application/x-ndjson');
+		expect(await back.text()).toBe(raw);
+		// A body with no Content-Length has nothing R2 can stream against.
+		const noLength = await request.put(`/api/v1/runs/${running.id}/log/raw`, { headers: auth });
+		expect(noLength.status()).toBe(411);
+
+		const canceled = await api.post(`/api/v1/runs/${running.id}/cancel`);
+		expect(canceled.ok()).toBe(true);
+		await waitFor(
+			async () => (await issueRuns(request, issue.id)).find((r) => r.id === running.id)?.status === 'canceled',
+			{ label: 'the probe run to cancel' }
+		);
+		setMode('work');
 	});
 
 	test('a do-nothing harness strikes the issue three times and parks it', async ({ request }) => {

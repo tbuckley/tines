@@ -1,7 +1,6 @@
 <script lang="ts">
 	import type { AgentRun, DispatchExplainer, IssueDetail, ModelTier, Runner } from '@tines/shared';
-	import { MODEL_TIERS, runDurationLabel } from '@tines/shared';
-	import IconAlertTriangle from '@tabler/icons-svelte/icons/alert-triangle';
+	import { MODEL_TIERS } from '@tines/shared';
 	import IconCheck from '@tabler/icons-svelte/icons/check';
 	import IconPin from '@tabler/icons-svelte/icons/pin';
 	import IconRobot from '@tabler/icons-svelte/icons/robot';
@@ -9,10 +8,10 @@
 	import { slide } from 'svelte/transition';
 	import { invalidateAll } from '$app/navigation';
 	import { api } from '$lib/api';
-	import RunLogViewer from '$lib/components/RunLogViewer.svelte';
+	import RunRow from '$lib/components/RunRow.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Select } from '$lib/components/ui/select/index.js';
-	import { prefersReducedMotion, relativeTime, runStatusClass } from '$lib/format';
+	import { prefersReducedMotion } from '$lib/format';
 
 	let {
 		issue,
@@ -30,8 +29,6 @@
 
 	const dur = () => (prefersReducedMotion() ? 0 : 180);
 
-	const ACTIVE_STATUSES = ['assigned', 'launching', 'running'];
-
 	// --- pin control ------------------------------------------------------------
 
 	// svelte-ignore state_referenced_locally
@@ -46,8 +43,6 @@
 		pinRunnerId !== (issue.pinned_runner_id ?? '') || pinTier !== (issue.pinned_tier ?? '')
 	);
 
-	/** Runs expanded to their log-tail viewer. */
-	let expandedLogs = $state<Record<string, boolean>>({});
 	let savingPin = $state(false);
 	async function savePin() {
 		if (savingPin) return;
@@ -182,43 +177,9 @@
 		{#if runs.length === 0}
 			<p class="text-muted-foreground text-xs italic">No runs yet.</p>
 		{:else}
-			<ul class="space-y-1.5">
+			<ul class="divide-y rounded-lg border">
 				{#each runs as run (run.id)}
-					<li class="text-xs" transition:slide={{ duration: dur() }}>
-						<div class="flex flex-wrap items-center gap-x-1.5">
-							{#if ACTIVE_STATUSES.includes(run.status)}
-								<span class="size-1.5 shrink-0 animate-pulse rounded-full bg-emerald-500"></span>
-							{/if}
-							<span class="font-medium">{run.runner_name}</span>
-							<span class="text-muted-foreground">{run.tier}{run.model ? ` · ${run.model}` : ''}</span>
-							<span class={runStatusClass(run.status)}>{run.status.replaceAll('_', ' ')}</span>
-							{#if run.started_at}
-								<span class="text-muted-foreground">· {runDurationLabel(run)}</span>
-							{/if}
-							<span class="text-muted-foreground ml-auto" title={new Date(run.created_at).toLocaleString()}>
-								{relativeTime(run.created_at)}
-							</span>
-							<button
-								type="button"
-								class="text-muted-foreground hover:text-foreground underline-offset-2 hover:underline"
-								aria-expanded={expandedLogs[run.id] === true}
-								onclick={() => (expandedLogs = { ...expandedLogs, [run.id]: !expandedLogs[run.id] })}
-							>
-								{expandedLogs[run.id] ? 'hide logs' : 'logs'}
-							</button>
-						</div>
-						{#if run.error}
-							<p class="text-muted-foreground mt-0.5 flex items-start gap-1">
-								<IconAlertTriangle size={12} class="mt-px shrink-0 text-amber-600 dark:text-amber-400" />
-								{run.error}
-							</p>
-						{/if}
-						{#if expandedLogs[run.id]}
-							<div transition:slide={{ duration: dur() }}>
-								<RunLogViewer runId={run.id} />
-							</div>
-						{/if}
-					</li>
+					<RunRow {run} />
 				{/each}
 			</ul>
 		{/if}

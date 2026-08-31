@@ -81,7 +81,7 @@ export const handle: Handle = async ({ event, resolve }) => {
 
 	// Server-Timing: per-request server cost, readable in DevTools -> Network
 	// on any deployment. This is the production counterpart to the modelled
-	// `pnpm perf:nav` probe — see docs/PERFORMANCE.md.
+	// `pnpm --filter web perf:nav` probe — see docs/PERFORMANCE.md.
 	try {
 		response.headers.append(
 			'Server-Timing',

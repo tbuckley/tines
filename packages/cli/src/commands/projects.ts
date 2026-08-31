@@ -1,4 +1,5 @@
 /** `tines projects` — the top-level container for issues, workflows, and scope. */
+import { readBodyValue } from '../body-value.js';
 import {
 	client,
 	die,
@@ -13,7 +14,6 @@ import {
 	type ListOpts
 } from '../common.js';
 import { timestamp } from '../format.js';
-import { readBodyValue } from '../refs.js';
 import { type UpdateProjectRequest } from '@tines/shared';
 import type { Command } from 'commander';
 

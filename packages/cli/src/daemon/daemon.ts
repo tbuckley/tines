@@ -11,10 +11,21 @@
  * unit-testable.
  */
 import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import {
+	createWriteStream,
+	mkdirSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	unlinkSync,
+	writeFileSync,
+	type WriteStream
+} from 'node:fs';
 import { hostname, platform, arch } from 'node:os';
 import { dirname, join } from 'node:path';
-import { ApiError, createApiClient, type RunnerAssignment } from '@tines/shared';
+import { ApiError, RUN_LOG_RAW_MAX_BYTES, createApiClient, type RunnerAssignment } from '@tines/shared';
+import { ClaudeStreamRenderer } from './claude-stream';
+import { installAgentCli } from './cli-refresh.js';
 import {
 	clearRunnerCredentials,
 	daemonStatePath,
@@ -27,9 +38,13 @@ import {
 	type RunnerCredentials
 } from './store.js';
 import {
+	AMBIENT_CLI,
 	buildHarnessInvocation,
+	buildSpawnEnv,
+	CliRefresher,
 	LogBatcher,
 	RunTable,
+	type AgentCli,
 	type HarnessKind,
 	type ManagedRun
 } from './support.js';
@@ -44,7 +59,12 @@ export interface DaemonOptions {
 	maxConcurrent: number;
 	pollIntervalMs: number;
 	configDir: string;
+	/** Keep the agent-facing `tines` current from npm (--no-cli-refresh turns it off). */
+	cliRefresh: boolean;
 }
+
+/** How often a launch may re-attempt the CLI refresh (gated on attempt, not success). */
+const CLI_REFRESH_TTL_MS = 10 * 60_000;
 
 interface ActiveRun extends ManagedRun {
 	child?: ChildProcess;
@@ -52,6 +72,59 @@ interface ActiveRun extends ManagedRun {
 	timeout?: ReturnType<typeof setTimeout>;
 	keyFingerprint: string;
 	spawnedAt?: number;
+	/** claude_code: NDJSON → readable lines for the log (claude-stream.ts). */
+	renderer?: ClaudeStreamRenderer;
+	/** claude_code: the unrendered stream, spooled for the raw-log upload. */
+	rawSpool?: WriteStream;
+	/** Where that spool lives — outside the workspace, which release() wipes. */
+	rawSpoolPath?: string;
+	/** Bound uploader for that spool (needs the client, which release lacks). */
+	rawUpload?: (body: Uint8Array) => Promise<unknown>;
+}
+
+/**
+ * Uploads a claude_code run's unrendered NDJSON stream, then deletes the
+ * spool. Best-effort throughout: the rendered log is already durable, and a
+ * failure here costs the raw copy, not the run.
+ */
+async function uploadRawLog(run: {
+	runId: string;
+	rawSpool?: WriteStream;
+	rawSpoolPath?: string;
+	rawUpload?: (body: Uint8Array) => Promise<unknown>;
+}): Promise<void> {
+	const path = run.rawSpoolPath;
+	if (!path || !run.rawUpload) return;
+	run.rawSpoolPath = undefined;
+	try {
+		await new Promise<void>((resolve) => run.rawSpool?.end(resolve) ?? resolve());
+		const size = statSync(path).size;
+		if (size > 0) {
+			// Read whole, not streamed: the server side streams into R2, but
+			// the client holds up to RUN_LOG_RAW_MAX_BYTES here (briefly twice
+			// that on the truncation path's copy). That is the daemon, not a
+			// Worker, and the run has already been finish-reported by now — if
+			// the cap ever grows, stream this and send the length explicitly.
+			let body = readFileSync(path);
+			if (body.byteLength > RUN_LOG_RAW_MAX_BYTES) {
+				// Keep the tail — the end of a stream is where the failure is —
+				// and say so, rather than sending a body the server will reject.
+				const marker = Buffer.from(
+					`{"type":"tines_truncated","dropped_bytes":${body.byteLength - RUN_LOG_RAW_MAX_BYTES}}\n`
+				);
+				body = Buffer.concat([marker, body.subarray(body.byteLength - RUN_LOG_RAW_MAX_BYTES + marker.byteLength)]);
+			}
+			await run.rawUpload(body);
+		}
+	} catch {
+		// Swallowed: see the doc comment.
+	} finally {
+		try {
+			unlinkSync(path);
+		} catch {
+			// Already gone.
+		}
+	}
 }
 
 const log = (message: string) =>
@@ -113,13 +186,40 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 	const statePath = daemonStatePath(opts.configDir, creds.runner_id);
 	let shuttingDown = false;
 
+	// -- the agent-facing CLI -------------------------------------------------
+	// The launch prompt is always current (it deploys on every merge); the
+	// `tines` an agent resolves must be too, or it silently misreads commands
+	// the prompt teaches. The daemon keeps its own copy and injects it into
+	// the harness PATH — the machine's global install is never touched.
+	const refresher = new CliRefresher(() => installAgentCli({ configDir: opts.configDir, log }), {
+		ttlMs: CLI_REFRESH_TTL_MS
+	});
+	const ensureCli = (): Promise<AgentCli> =>
+		opts.cliRefresh ? refresher.ensure() : Promise.resolve(AMBIENT_CLI);
+	const cliLabel = (cli: AgentCli) =>
+		cli.source === 'ambient'
+			? `ambient PATH (${opts.cliRefresh ? 'refresh failed' : 'refresh disabled'})`
+			: `tines ${cli.version ?? 'unknown'} (daemon-managed${cli.source === 'stale' ? ', last-good copy' : ''})`;
+	log(`agent CLI: ${cliLabel(await ensureCli())}`);
+
 	const table: RunTable<ActiveRun> = new RunTable<ActiveRun>({
 		finish: async (run, status, error) => {
 			await client.finishRun(run.runId, { status, ...(error ? { error } : {}) });
 		},
 		release: (run) => {
 			if (run.timeout) clearTimeout(run.timeout);
+			// `finishAndCleanup` already drained (before its flush, so the line
+			// actually ships). This is the backstop for the paths that reach
+			// cleanup without finishing — an already-settled run, a clone
+			// failure — where the renderer must not be left holding a line.
+			// `finish()` is idempotent, so the double call is free.
+			run.renderer?.finish();
 			rmSync(run.workspace, { recursive: true, force: true });
+			// Deliberately after cleanup and not awaited: the raw log is a
+			// forensic extra, and a slow or failed upload must not hold a
+			// concurrency slot. The spool lives outside the workspace, so the
+			// rmSync above did not take it.
+			void uploadRawLog(run);
 		},
 		persist: () => {
 			const entries: DaemonStateEntry[] = table
@@ -196,9 +296,10 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 			timedOut: false,
 			settled: false,
 			keyFingerprint: assignment.run_key.slice(0, 14),
-			batcher: new LogBatcher((chunk) => client.appendRunLog(runId, { chunk }).then(() => {}), {
-				onError: (err) => log(`log append for run ${runId} failed: ${message(err)}`)
-			})
+			batcher: new LogBatcher(
+				(chunk, seq) => client.appendRunLog(runId, { chunk, seq }).then(() => {}),
+				{ onError: (err) => log(`log append for run ${runId} failed: ${message(err)}`) }
+			)
 		};
 		run.flush = () => run.batcher.flush();
 		table.track(run);
@@ -233,6 +334,19 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 			}
 			if (run.settled) return table.cleanup(run);
 
+			// Refreshed after the clones, so a TTL-expired install overlaps
+			// nothing the run is waiting on; the result is recorded in the run's
+			// own log, which is where a confused agent's reader looks first.
+			const cli = await ensureCli();
+			if (run.settled) return table.cleanup(run);
+			run.batcher.append(
+				cli.source === 'fresh'
+					? `tines CLI: ${cli.version ?? 'unknown'} (daemon-managed)\n`
+					: cli.source === 'stale'
+						? `warning: agent CLI refresh failed; using last-good tines ${cli.version ?? 'unknown'} from ${opts.configDir}/cli\n`
+						: `warning: no daemon-managed tines CLI; using whatever \`tines\` is on this machine's PATH\n`
+			);
+
 			const invocation = buildHarnessInvocation(
 				{ harness: opts.harness, command: opts.command },
 				{
@@ -244,7 +358,11 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 			);
 			const child = spawn(invocation.file, invocation.args, {
 				cwd: workspace,
-				env: { ...process.env, TINES_API_KEY: assignment.run_key, TINES_API_URL: opts.url },
+				env: buildSpawnEnv(process.env, {
+					binDir: cli.binDir,
+					apiKey: assignment.run_key,
+					apiUrl: opts.url
+				}),
 				stdio: ['ignore', 'pipe', 'pipe'],
 				detached: true
 			});
@@ -253,7 +371,28 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 			table.persist();
 			log(`run ${runId}: launched ${invocation.file} (pid ${child.pid})`);
 
-			child.stdout?.on('data', (data: Buffer) => run.batcher.append(data.toString('utf8')));
+			if (opts.harness === 'claude_code') {
+				// The harness speaks NDJSON now; the log the user reads is the
+				// rendered form. The stream itself is spooled outside the
+				// workspace (release() wipes that) and uploaded at settle, so
+				// nothing the harness emitted is actually lost.
+				const renderer = new ClaudeStreamRenderer((line) => run.batcher.append(line));
+				run.renderer = renderer;
+				run.drain = () => renderer.finish();
+				const spoolPath = join(opts.configDir, 'rawlogs', `${runId}.ndjson`);
+				mkdirSync(dirname(spoolPath), { recursive: true });
+				run.rawSpoolPath = spoolPath;
+				run.rawSpool = createWriteStream(spoolPath);
+				run.rawUpload = (body) => client.putRunLogRaw(runId, body);
+				child.stdout?.on('data', (data: Buffer) => {
+					run.rawSpool?.write(data);
+					renderer.write(data.toString('utf8'));
+				});
+			} else {
+				child.stdout?.on('data', (data: Buffer) => run.batcher.append(data.toString('utf8')));
+			}
+			// stderr is never stream-json — it is the harness's own diagnostics,
+			// and it goes to the log verbatim for every harness.
 			child.stderr?.on('data', (data: Buffer) => run.batcher.append(data.toString('utf8')));
 			run.timeout = setTimeout(
 				() => {

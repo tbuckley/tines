@@ -1,6 +1,7 @@
 /** `tines issues` — issues, their artifacts, and their links. */
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
+import { BODY_VALUE_HELP, readBodyValue } from '../body-value.js';
 import {
 	client,
 	die,
@@ -27,7 +28,7 @@ import {
 } from '../format.js';
 import { helpGuard } from '../help-guard.js';
 import { buildRecurrence, type RecurrenceOpts } from '../recurrence-flags.js';
-import { parseTargetSpec, readBodyValue } from '../refs.js';
+import { parseTargetSpec } from '../refs.js';
 import {
 	actorLabel,
 	parsePrSpec,
@@ -209,7 +210,7 @@ export function register(program: Command): void {
 			.command('create <project>')
 			.description('Create an issue in a project, optionally with a recurrence (a scheduled task)')
 			.requiredOption('-t, --title <title>', 'issue title (doubles as the title template with a recurrence)')
-			.option('-d, --description <markdown>', 'issue description (Markdown)')
+			.option('-d, --description <markdown>', `issue description (Markdown) — ${BODY_VALUE_HELP}`)
 			.option('-w, --workflow <id-or-name>', 'workflow (defaults to project default, else standard)')
 			.option('-s, --state <name>', "starting state (defaults to the workflow's initial state)")
 			.option('--every <preset>', 'repeat hourly (or every N hours: "6h"), daily, weekly, or monthly')
@@ -232,6 +233,11 @@ export function register(program: Command): void {
 					scheduleName?: string;
 				}
 		) => {
+			// Resolved before any lookup, like the <markdown> positionals: an
+			// unreadable @file should fail without a round trip, and failing locally
+			// is what lets the spawn tests pin this call site (Tines/9).
+			const description =
+				opts.description !== undefined ? readBodyValue(opts.description) : undefined;
 			const api = client(opts);
 			const project = await resolveProject(api, projectRef);
 			const workflowId = opts.workflow ? (await resolveWorkflow(api, opts.workflow)).id : undefined;
@@ -249,7 +255,7 @@ export function register(program: Command): void {
 				: undefined;
 			const issue = await api.createIssue(project.id, {
 				title: opts.title,
-				description: opts.description,
+				description,
 				workflow_id: workflowId,
 				state: opts.state,
 				schedule
@@ -281,7 +287,7 @@ export function register(program: Command): void {
 			.command('edit <ref>')
 			.description('Edit an issue: title, description, workflow, or force-set state')
 			.option('-t, --title <title>', 'set the title')
-			.option('-d, --description <markdown>', 'set the description (Markdown)')
+			.option('-d, --description <markdown>', `set the description (Markdown) — ${BODY_VALUE_HELP}`)
 			.option(
 				'-s, --state <name>',
 				"force-set the state, bypassing the workflow's transitions (records a forced move)"
@@ -292,11 +298,13 @@ export function register(program: Command): void {
 			ref: string,
 			opts: CommonOpts & { title?: string; description?: string; state?: string; workflow?: string }
 		) => {
+			const description =
+				opts.description !== undefined ? readBodyValue(opts.description) : undefined;
 			const api = client(opts);
 			const issue = await resolveIssue(api, ref);
 			const body: UpdateIssueRequest = {};
 			if (opts.title !== undefined) body.title = opts.title;
-			if (opts.description !== undefined) body.description = opts.description;
+			if (description !== undefined) body.description = description;
 			if (opts.state !== undefined) body.state = opts.state;
 			if (opts.workflow !== undefined) body.workflow_id = (await resolveWorkflow(api, opts.workflow)).id;
 			if (Object.keys(body).length === 0) {
@@ -332,14 +340,15 @@ export function register(program: Command): void {
 	withCommon(
 		issues
 			.command('comment <ref> <markdown>')
-			.description('Comment on an issue (Markdown body)')
+			.description(`Comment on an issue — Markdown body: ${BODY_VALUE_HELP}`)
 			// A body may start with "-"; options go before the arguments.
 			.passThroughOptions()
 	).action(async (ref: string, markdown: string, opts: CommonOpts, command: Command) => {
 		if (helpGuard(command, markdown)) return;
+		const body = readBodyValue(markdown);
 		const api = client(opts);
 		const issue = await resolveIssue(api, ref);
-		const comment = await api.createComment(issue.id, { body: markdown });
+		const comment = await api.createComment(issue.id, { body });
 		if (opts.json) return printJson(comment);
 		console.log(`commented on ${issue.project_name}/#${issue.number} as ${actorLabel(comment.actor)}`);
 	});

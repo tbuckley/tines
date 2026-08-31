@@ -53,20 +53,6 @@ export function parseIssueRef(ref: string): { project: string; number: number } 
 	return { project: match[1], number: Number.parseInt(match[2], 10) };
 }
 
-/** `--body` takes inline Markdown or `@file`; a literal `@…` escapes as `@@…`. */
-export function readBodyValue(value: string): string {
-	if (value.startsWith('@@')) return value.slice(1);
-	if (value.startsWith('@')) {
-		const file = value.slice(1);
-		try {
-			return readFileSync(file, 'utf8');
-		} catch (err) {
-			throw new CliError(`cannot read ${file}: ${err instanceof Error ? err.message : String(err)}`);
-		}
-	}
-	return value;
-}
-
 /**
  * `--file <path>=@<local>`: maps a workspace path to a local file's content.
  * Workspace paths cannot contain `=`, so the first `=` is the separator;

@@ -4,6 +4,7 @@
  * unit-testable without a daemon (see support.test.ts). The loop itself
  * lives in daemon.ts.
  */
+import { delimiter } from 'node:path';
 
 export type HarnessKind = 'claude_code' | 'codex' | 'custom';
 
@@ -53,11 +54,16 @@ export function buildHarnessInvocation(
 ): HarnessInvocation {
 	switch (spec.harness) {
 		case 'claude_code':
+			// stream-json (which requires --verbose under -p) is what makes a
+			// local run's log worth keeping: plain `claude -p` prints only the
+			// final assistant message, so the log was the daemon's own setup
+			// lines, silence for the whole run, then one blob. The daemon
+			// renders the stream to readable lines (claude-stream.ts).
 			return {
 				file: 'sh',
 				args: [
 					'-c',
-					`claude -p${input.model ? ` --model ${shellQuote(input.model)}` : ''} < ${shellQuote(input.promptFile)}`
+					`claude -p --output-format stream-json --verbose${input.model ? ` --model ${shellQuote(input.model)}` : ''} < ${shellQuote(input.promptFile)}`
 				]
 			};
 		case 'codex':
@@ -89,6 +95,11 @@ export interface ManagedRun {
 	settled: boolean;
 	/** Drains pending log chunks before a finish report. */
 	flush?: () => Promise<void>;
+	/**
+	 * Turns whatever the harness said after its last newline into a log line,
+	 * so a harness killed mid-line does not lose its final words. Runs before
+	 * `flush`, and is idempotent. */
+	drain?: () => void;
 }
 
 export interface RunTableEffects<T extends ManagedRun> {
@@ -148,6 +159,10 @@ export class RunTable<T extends ManagedRun> {
 	async finishAndCleanup(run: T, status: 'completed' | 'failed', error?: string): Promise<void> {
 		if (run.settled) return this.cleanup(run);
 		run.settled = true;
+		// Before the flush, not after: a line appended afterwards would sit in
+		// the batcher until its timer fired, by which point the run is
+		// finish-reported and the append is rejected.
+		run.drain?.();
 		await run.flush?.();
 		try {
 			await this.effects.finish(run, status, error);
@@ -178,12 +193,22 @@ export class RunTable<T extends ManagedRun> {
 }
 
 export interface LogBatcherOptions {
-	/** Flush as soon as the buffer reaches this many bytes. Default 8 KB. */
+	/**
+	 * Flush as soon as the buffer reaches this many bytes. Default 32 KB —
+	 * every chunk past the tail's cap becomes an object in the run-log
+	 * bucket, and a larger batch means proportionally fewer of them. The
+	 * interval keeps the live tail responsive regardless.
+	 */
 	maxBytes?: number;
 	/** Flush at most this long after the first unflushed byte. Default 2 s. */
 	intervalMs?: number;
-	/** Send failures land here (default: swallowed) — the tail is best-effort. */
+	/** Send failures land here (default: swallowed). */
 	onError?: (err: unknown) => void;
+	/**
+	 * Beyond this many bytes of unsent backlog, the oldest are dropped with a
+	 * marker rather than growing without bound. Default 1 MiB.
+	 */
+	maxPendingBytes?: number;
 }
 
 /**
@@ -191,21 +216,29 @@ export interface LogBatcherOptions {
  * buffer reaches `maxBytes`, or `intervalMs` after output first arrived —
  * so a chatty harness doesn't produce a request per line and a quiet one
  * still streams promptly. Sends are serialized (chunks arrive in order).
+ *
+ * A failed send is retried on the next flush rather than dropped: with the
+ * full log now durable, silently losing a chunk would put a hole in it. Each
+ * chunk carries a monotonic `seq`, so a retry of a send whose response was
+ * lost is recognised server-side and applied exactly once.
  */
 export class LogBatcher {
 	private buffer = '';
 	private timer: ReturnType<typeof setTimeout> | null = null;
 	private sending: Promise<void> = Promise.resolve();
+	private seq = 0;
+	/** Chunks awaiting a successful send, oldest first. */
+	private pending: { chunk: string; seq: number }[] = [];
 
 	constructor(
-		private readonly send: (chunk: string) => Promise<void>,
+		private readonly send: (chunk: string, seq: number) => Promise<void>,
 		private readonly opts: LogBatcherOptions = {}
 	) {}
 
 	append(text: string): void {
 		if (!text) return;
 		this.buffer += text;
-		if (Buffer.byteLength(this.buffer, 'utf8') >= (this.opts.maxBytes ?? 8 * 1024)) {
+		if (Buffer.byteLength(this.buffer, 'utf8') >= (this.opts.maxBytes ?? 32 * 1024)) {
 			void this.flush();
 		} else if (!this.timer) {
 			this.timer = setTimeout(() => void this.flush(), this.opts.intervalMs ?? 2000);
@@ -219,13 +252,128 @@ export class LogBatcher {
 			clearTimeout(this.timer);
 			this.timer = null;
 		}
-		const chunk = this.buffer;
-		this.buffer = '';
-		if (chunk) {
-			this.sending = this.sending
-				.then(() => this.send(chunk))
-				.catch((err) => this.opts.onError?.(err));
+		if (this.buffer) {
+			this.pending.push({ chunk: this.buffer, seq: ++this.seq });
+			this.buffer = '';
+			this.trimPending();
 		}
+		if (this.pending.length === 0) return this.sending;
+		this.sending = this.sending.then(() => this.drain());
 		return this.sending;
 	}
+
+	/**
+	 * Sends queued chunks in order, stopping at the first failure so the
+	 * survivors keep their place — and their seq, which is what lets the
+	 * server recognise a resend of a chunk it already applied.
+	 */
+	private async drain(): Promise<void> {
+		while (this.pending.length > 0) {
+			const next = this.pending[0]!;
+			try {
+				await this.send(next.chunk, next.seq);
+			} catch (err) {
+				this.opts.onError?.(err);
+				return;
+			}
+			this.pending.shift();
+		}
+	}
+
+	/**
+	 * Bounds the retry backlog: a daemon that cannot reach the supervisor for
+	 * a long time must not grow its heap without limit. The oldest chunks go
+	 * first, with a marker so the gap is visible in the log rather than
+	 * silent.
+	 */
+	private trimPending(): void {
+		const cap = this.opts.maxPendingBytes ?? 1024 * 1024;
+		let held = this.pending.reduce((n, p) => n + Buffer.byteLength(p.chunk, 'utf8'), 0);
+		if (held <= cap) return;
+		let lost = 0;
+		while (this.pending.length > 1 && held > cap) {
+			const dropped = this.pending.shift()!;
+			const bytes = Buffer.byteLength(dropped.chunk, 'utf8');
+			held -= bytes;
+			lost += bytes;
+		}
+		const head = this.pending[0]!;
+		head.chunk = `[log] ${lost} bytes lost (supervisor unreachable)\n${head.chunk}`;
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The agent-facing CLI: the daemon keeps a current `tines` in its own prefix
+// and injects it into the harness environment, so the prompt an agent reads
+// and the CLI it runs come from the same release (Tines/71).
+
+/** The daemon-managed agent-facing CLI, as resolved for one spawn. */
+export interface AgentCli {
+	/** Absolute `.bin` dir to prepend to PATH, or null → use the ambient PATH. */
+	binDir: string | null;
+	/** Version of the resolved CLI, when it could be read. */
+	version: string | null;
+	/** How it was resolved: a fresh install, the last-good copy, or no prefix at all. */
+	source: 'fresh' | 'stale' | 'ambient';
+}
+
+/** No daemon-managed CLI: the harness resolves `tines` from the ambient PATH. */
+export const AMBIENT_CLI: AgentCli = { binDir: null, version: null, source: 'ambient' };
+
+/**
+ * TTL-gates and coalesces CLI refreshes: at most one install in flight (two
+ * `npm i` into one prefix racing each other is the failure this prevents),
+ * and at most one attempt per `ttlMs` — gated on *attempt*, not success, so
+ * an offline machine does not pay the install timeout on every launch.
+ * `install` is the I/O effect (cli-refresh.ts); this is the policy around it.
+ */
+export class CliRefresher {
+	private cached: AgentCli = AMBIENT_CLI;
+	private lastAttempt: number | null = null;
+	private inFlight: Promise<AgentCli> | null = null;
+
+	constructor(
+		private readonly install: () => Promise<AgentCli>,
+		private readonly opts: { ttlMs?: number; now?: () => number } = {}
+	) {}
+
+	/** The current CLI, refreshing first when the TTL elapsed. Never rejects. */
+	ensure(): Promise<AgentCli> {
+		if (this.inFlight) return this.inFlight;
+		const now = (this.opts.now ?? Date.now)();
+		if (this.lastAttempt !== null && now - this.lastAttempt < (this.opts.ttlMs ?? 10 * 60_000)) {
+			return Promise.resolve(this.cached);
+		}
+		this.lastAttempt = now;
+		// A throwing install is a bug, not a failure mode — but it must still
+		// never fail a launch, so it degrades to the ambient PATH.
+		this.inFlight = Promise.resolve()
+			.then(() => this.install())
+			.catch(() => AMBIENT_CLI)
+			.then((cli) => {
+				this.cached = cli;
+				this.inFlight = null;
+				return cli;
+			});
+		return this.inFlight;
+	}
+}
+
+/**
+ * The harness spawn environment: the daemon's own environment plus the run's
+ * key and API base, with the managed CLI's bin dir prepended to PATH when
+ * there is one — so `tines` inside the run resolves to the daemon-managed
+ * copy, and everything else on the machine is untouched.
+ */
+export function buildSpawnEnv(
+	base: NodeJS.ProcessEnv,
+	opts: { binDir: string | null; apiKey: string; apiUrl: string }
+): NodeJS.ProcessEnv {
+	const env: NodeJS.ProcessEnv = {
+		...base,
+		TINES_API_KEY: opts.apiKey,
+		TINES_API_URL: opts.apiUrl
+	};
+	if (opts.binDir) env.PATH = base.PATH ? `${opts.binDir}${delimiter}${base.PATH}` : opts.binDir;
+	return env;
 }

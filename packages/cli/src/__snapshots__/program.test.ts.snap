@@ -195,7 +195,7 @@ Commands:
   show [options] <ref>                        Show an issue (<project>/<number>), including allowed transitions
   edit [options] <ref>                        Edit an issue: title, description, workflow, or force-set state
   move [options] <ref> <action>               Take a transition on an issue by its action name (e.g. "approve")
-  comment [options] <ref> <markdown>          Comment on an issue (Markdown body)
+  comment [options] <ref> <markdown>          Comment on an issue — Markdown body: inline text, @file, or "-" to read stdin; escape a literal leading @ as @@
   block [options] <blocker> <blocked>         Record that <blocker> blocks <blocked> (advisory: transitions stay allowed)
   unblock [options] <blocker> <blocked>       Remove the link making <blocker> block <blocked>
   duplicate|dupe [options] <ref> <canonical>  Mark <ref> as a duplicate of <canonical> (its state then follows <canonical>)
@@ -337,7 +337,8 @@ Options:
 ",
   "tines issues comment": "Usage: tines issues comment [options] <ref> <markdown>
 
-Comment on an issue (Markdown body)
+Comment on an issue — Markdown body: inline text, @file, or "-" to read stdin;
+escape a literal leading @ as @@
 
 Options:
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL; default
@@ -367,7 +368,9 @@ Create an issue in a project, optionally with a recurrence (a scheduled task)
 Options:
   -t, --title <title>           issue title (doubles as the title template with
                                 a recurrence)
-  -d, --description <markdown>  issue description (Markdown)
+  -d, --description <markdown>  issue description (Markdown) — inline text,
+                                @file, or "-" to read stdin; escape a literal
+                                leading @ as @@
   -w, --workflow <id-or-name>   workflow (defaults to project default, else
                                 standard)
   -s, --state <name>            starting state (defaults to the workflow's
@@ -421,7 +424,9 @@ Edit an issue: title, description, workflow, or force-set state
 
 Options:
   -t, --title <title>           set the title
-  -d, --description <markdown>  set the description (Markdown)
+  -d, --description <markdown>  set the description (Markdown) — inline text,
+                                @file, or "-" to read stdin; escape a literal
+                                leading @ as @@
   -s, --state <name>            force-set the state, bypassing the workflow's
                                 transitions (records a forced move)
   -w, --workflow <id-or-name>   move the issue onto another workflow
@@ -529,15 +534,18 @@ Options:
 Commands:
   show [options] <ref>               Print the journal for the stage your run
                                      was launched in
-  append [options] <ref> <markdown>  Append a lesson (creates the journal on
-                                     first use)
+  append [options] <ref> <markdown>  Append a lesson, creating the journal on
+                                     first use — inline text, @file, or "-" to
+                                     read stdin; escape a literal leading @ as
+                                     @@
   rewrite [options] <ref>            Replace the journal body (to fix or prune
                                      entries) — version-checked
   help [command]                     display help for command
 ",
   "tines journal append": "Usage: tines journal append [options] <ref> <markdown>
 
-Append a lesson (creates the journal on first use)
+Append a lesson, creating the journal on first use — inline text, @file, or "-"
+to read stdin; escape a literal leading @ as @@
 
 Options:
   --state <workflow>/<state>  target this state's journal instead of your run's
@@ -743,6 +751,8 @@ Options:
                              {workspace}, {model})
   --max-concurrent <n>       maximum simultaneous runs (default: 1)
   --poll-interval <seconds>  seconds between polls (default: 15)
+  --no-cli-refresh           do not install/refresh the agent-facing tines CLI
+                             from npm (harnesses use the ambient PATH)
   -u, --url <url>            base URL of the Tines API (or set TINES_API_URL;
                              default http://localhost:5173)
   --api-key <key>            API key (or set TINES_API_KEY)
@@ -886,7 +896,8 @@ Options:
 
 Commands:
   list [options]         List runs, newest first
-  show [options] <id>    Show a run; --logs prints the captured log tail
+  show [options] <id>    Show a run; --logs prints the captured log tail, --logs
+                         --full the whole log
   cancel [options] <id>  Cancel a run (judged like any other end: usually a
                          strike)
   help [command]         display help for command
@@ -920,10 +931,13 @@ Options:
 ",
   "tines runs show": "Usage: tines runs show [options] <id>
 
-Show a run; --logs prints the captured log tail
+Show a run; --logs prints the captured log tail, --logs --full the whole log
 
 Options:
   --logs           print the log tail
+  --full           with --logs: print the complete log, not the 256 KB tail
+  --raw            with --logs --full: print the unrendered harness stream
+                   instead
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL; default
                    http://localhost:5173)
   --api-key <key>  API key (or set TINES_API_KEY)
@@ -971,7 +985,9 @@ or name
 
 Options:
   -t, --title <template>        set the title template
-  -d, --description <markdown>  set the description template (Markdown)
+  -d, --description <markdown>  set the description template (Markdown) — inline
+                                text, @file, or "-" to read stdin; escape a
+                                literal leading @ as @@
   -w, --workflow <id-or-name>   move future instances onto another workflow
                                 (resets the start state to its initial state
                                 unless --state is also given)

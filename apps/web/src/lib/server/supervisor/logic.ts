@@ -153,16 +153,26 @@ export function appendLogTail(
 	log: string,
 	dropped: number,
 	chunk: string
-): { log: string; dropped: number } {
+): { log: string; dropped: number; evicted: Uint8Array | null } {
 	const combined = log + chunk;
 	const bytes = new TextEncoder().encode(combined);
-	if (bytes.length <= RUN_LOG_MAX_BYTES) return { log: combined, dropped };
-	const kept = bytes.slice(bytes.length - RUN_LOG_MAX_BYTES);
-	// A multi-byte character split at the boundary decodes to U+FFFD at the
-	// head of the tail — cosmetic, and cheaper than re-scanning boundaries.
+	if (bytes.length <= RUN_LOG_MAX_BYTES) return { log: combined, dropped, evicted: null };
+	// The cut advances over any UTF-8 continuation bytes (0b10xxxxxx) so it
+	// lands on a character boundary. Two reasons: the tail no longer opens
+	// with a U+FFFD where a multi-byte character was sliced, and — the one
+	// that matters — the evicted prefix and the tail are each independently
+	// decodable, so `spilled + tail` is byte-for-byte the original log. The
+	// cap is a maximum, so a tail a byte or two under it is fine.
+	let cut = bytes.length - RUN_LOG_MAX_BYTES;
+	while (cut < bytes.length && (bytes[cut]! & 0xc0) === 0x80) cut++;
+	const kept = bytes.slice(cut);
+	// `evicted` is the dropped bytes, handed to the caller so they can be
+	// spilled to R2 rather than lost (supervisor/run-log.ts); raw bytes and
+	// not a string so the caller stores exactly what was removed.
 	return {
 		log: new TextDecoder().decode(kept),
-		dropped: dropped + (bytes.length - RUN_LOG_MAX_BYTES)
+		dropped: dropped + cut,
+		evicted: bytes.slice(0, cut)
 	};
 }
 

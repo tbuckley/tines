@@ -493,7 +493,16 @@ export const STATE_PROMPT_NAME = 'instructions';
  */
 export const AGENT_GUIDELINES_BODY = `You are an agent working on a Tines issue over its HTTP API / CLI. Beyond doing the work, leave the workspace smarter than you found it. Four places to write, chosen by who should inherit what you learned:
 
-- **Issue comments** — all prose about this issue: progress, findings, dead ends, questions, and instructions for whoever picks it up next. \`tines issues comment <project>/<number> "<markdown>"\`
+- **Issue comments** — all prose about this issue: progress, findings, dead ends, questions, and instructions for whoever picks it up next. Pass the body on stdin with a quoted heredoc, so backticks, \$VARS, quotes and apostrophes reach the thread untouched by the shell (a mangled comment cannot be deleted):
+
+  \`\`\`
+  tines issues comment <project>/<number> - <<'EOF'
+  <markdown>
+  EOF
+  \`\`\`
+
+  A \`tines\` too old for that form posts a literal \`-\` instead of your body, without failing. If \`tines issues comment --help\` does not mention \`@file\`, use \`tines issues comment <project>/<number> "<markdown>"\` and mind the shell quoting.
+
 - **Issue context (artifacts)** — things this issue needs *attached*, not said: a skill, a repo/branch pin, or an override of a broader item (reuse its name): \`tines context create --kind <k> --name <n> --issue <project>/<number> …\`. Never notes — notes are comments.
 - **Your journal** — shared notes for anyone doing this stage of work in this project. Append a dated bullet whenever you learn something they would want: commands that actually work, gotchas, where things live (see "Journal" at the end of this prompt for the exact commands). If an entry is wrong or stale, rewrite the journal to fix it — do not append a correction on top. Keep it short; prune when you touch it.
 - **Context change requests** — never edit shared context (project-, state-, or global-scoped items) directly. Propose instead: file an issue in the project you are working in, titled \`Context change: <scope label>\`, naming the item (kind, name, scope) with the full proposed text in the description. A human reviews and applies it.
@@ -973,8 +982,27 @@ export const LAUNCH_STALL_MS = 5 * 60 * 1000;
 /** Run-key expiry slack beyond `max_run_minutes`. */
 export const RUN_KEY_SLACK_MS = 10 * 60 * 1000;
 
-/** Run log tail cap; older output is truncated from the head. */
+/**
+ * Run log tail cap: the D1 `agent_run.log` column keeps at most this many
+ * bytes, truncated from the head. Bytes evicted from the tail are not lost —
+ * they spill to the run-log bucket (see apps/web/src/lib/server/run-log.ts)
+ * and the full log is served by `GET /api/v1/runs/:id/log`.
+ */
 export const RUN_LOG_MAX_BYTES = 256 * 1024;
+
+/**
+ * How long a run's spilled full-log objects survive past the run's end.
+ * The sweep deletes them after this; the D1 tail is kept forever, so run
+ * history reads exactly as it did before full logs existed.
+ */
+export const RUN_LOG_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+
+/**
+ * Cap on the raw harness stream a daemon may upload per run. The daemon
+ * keeps the trailing bytes with a truncation marker; the server rejects
+ * anything larger.
+ */
+export const RUN_LOG_RAW_MAX_BYTES = 64 * 1024 * 1024;
 
 /**
  * Managed runners are created with this per-run cost cap (editable,
@@ -1250,12 +1278,21 @@ export interface RunnerPollResponse {
 /** `POST /api/v1/runs/:id/logs` — runner-token auth; appended to the tail. */
 export interface AppendRunLogRequest {
 	chunk: string;
+	/**
+	 * Per-run, 1-based, monotonic chunk number assigned by the daemon. A
+	 * chunk whose seq the server has already applied is a retry of a send
+	 * whose response was lost, and is ignored — appends are exactly-once.
+	 * Optional: older daemons and the managed-run sweep send none.
+	 */
+	seq?: number;
 }
 
 export interface AppendRunLogResponse {
 	/** Post-append status (the first append flips `launching` → `running`). */
 	status: RunStatus;
 	log_bytes_dropped: number;
+	/** Highest chunk seq the server has applied (0 when the client sends none). */
+	log_seq: number;
 }
 
 /** `POST /api/v1/runs/:id/finish` — runner-token auth. */
@@ -1364,6 +1401,16 @@ export interface AgentRunDetail extends AgentRun {
 	log: string;
 	/** Bytes truncated from the head of the log when it hit the cap. */
 	log_bytes_dropped: number;
+	/**
+	 * Size of the complete log (`log_bytes_dropped` + the tail's byte
+	 * length) — what `GET /api/v1/runs/:id/log` serves. Deliberately a
+	 * number and not the log itself: this payload is polled every 3s.
+	 */
+	log_full_bytes: number;
+	/** Size of the raw harness stream, retrievable with `?raw=1`; 0 = none. */
+	log_raw_bytes: number;
+	/** Set once retention GC removed the full log; only the tail remains. */
+	log_expired: boolean;
 }
 
 export interface RunFilters {
@@ -1385,11 +1432,7 @@ export function runDurationLabel(
 	return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m`;
 }
 
-/**
- * Run cost: dollars where known, tokens where only they are, honest markers
- * otherwise; null when there is nothing to say. The CLI's run rows render
- * `?? '—'`; the Agents tab hides the cell.
- */
+/** Run cost for a row: dollars where known, tokens where only they are, honest markers otherwise. */
 export function runCostLabel(run: Pick<AgentRun, 'usage'>): string | null {
 	const usage = run.usage;
 	if (!usage) return null;
@@ -1397,6 +1440,22 @@ export function runCostLabel(run: Pick<AgentRun, 'usage'>): string | null {
 	if (usage.cost_source === 'none') return 'unreported';
 	const tokens = (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0);
 	return tokens > 0 ? `${tokens.toLocaleString()} tok` : null;
+}
+
+/** Whether a run still holds its issue's exclusive claim (and counts toward caps). */
+export function isActiveRun(status: RunStatus): boolean {
+	return ACTIVE_RUN_STATUSES.includes(status);
+}
+
+/**
+ * Ids of every active-category state across the given workflows — the only
+ * states the supervisor dispatches from, so the only ones a routing rule can
+ * usefully be scoped to.
+ */
+export function activeStateIds(workflows: Pick<Workflow, 'states'>[]): Set<string> {
+	return new Set(
+		workflows.flatMap((w) => w.states.filter((s) => s.category === 'active').map((s) => s.id))
+	);
 }
 
 /**
@@ -1508,42 +1567,55 @@ export interface CreateCommentRequest {
 // ---------------------------------------------------------------------------
 // Events
 
-export type EventType =
-	| 'issue.created'
-	| 'issue.updated'
-	| 'issue.transitioned'
-	| 'issue.commented'
-	| 'issue.link_added'
-	| 'issue.link_removed'
-	| 'project.created'
-	| 'project.updated'
-	| 'project.deleted'
-	| 'workflow.created'
-	| 'workflow.updated'
-	| 'workflow.deleted'
-	| 'api_key.created'
-	| 'api_key.revoked'
-	| 'scheduled_task.created'
-	| 'scheduled_task.updated'
-	| 'scheduled_task.deleted'
-	| 'scheduled_task.skipped'
-	| 'context.created'
-	| 'context.updated'
-	| 'context.deleted'
-	| 'runner.registered'
-	| 'runner.updated'
-	| 'runner.removed'
-	| 'runner.errored'
-	| 'routing_rule.created'
-	| 'routing_rule.updated'
-	| 'routing_rule.deleted'
-	| 'settings.updated'
-	| 'agent_run.started'
-	| 'agent_run.ended'
-	| 'issue.parked'
-	| 'issue.resumed'
-	// Open-ended by design: later phases add types without migration.
-	| (string & {});
+/**
+ * Every event type this build knows how to render, in emission order.
+ *
+ * The array is the source of truth rather than the union: it gives the
+ * renderer in `events.ts` a closed set to be exhaustive over (a missing
+ * describer is a compile error) and the tests a list to iterate.
+ */
+export const EVENT_TYPES = [
+	'issue.created',
+	'issue.updated',
+	'issue.transitioned',
+	'issue.commented',
+	'issue.link_added',
+	'issue.link_removed',
+	'project.created',
+	'project.updated',
+	'project.deleted',
+	'workflow.created',
+	'workflow.updated',
+	'workflow.deleted',
+	'api_key.created',
+	'api_key.revoked',
+	'scheduled_task.created',
+	'scheduled_task.updated',
+	'scheduled_task.deleted',
+	'scheduled_task.skipped',
+	'context.created',
+	'context.updated',
+	'context.deleted',
+	'runner.registered',
+	'runner.updated',
+	'runner.removed',
+	'runner.errored',
+	'routing_rule.created',
+	'routing_rule.updated',
+	'routing_rule.deleted',
+	'settings.updated',
+	'agent_run.started',
+	'agent_run.ended',
+	'issue.parked',
+	'issue.resumed'
+] as const;
+
+/** An event type this build knows about — closed, so `Record` keys can be checked. */
+export type KnownEventType = (typeof EVENT_TYPES)[number];
+
+// Open-ended by design: later phases add types without migration, and an
+// older client reading a newer server's feed must still accept them.
+export type EventType = KnownEventType | (string & {});
 
 export interface TinesEvent {
 	id: string;

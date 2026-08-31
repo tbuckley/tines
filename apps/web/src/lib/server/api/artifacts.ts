@@ -36,7 +36,7 @@ import {
 	artifactKeyPrefix,
 	getArtifactStore
 } from '$lib/server/artifact-store';
-import { newId, type Database } from '$lib/server/db';
+import { idChunks, newId, type Database } from '$lib/server/db';
 import { ApiFail, notFound, optionalString, runAtomic, type ActorContext } from './core';
 import { actorOf, eventInsert } from './events';
 
@@ -285,16 +285,8 @@ function serializeArtifact(
 	};
 }
 
-// D1 caps bound parameters per statement at 100, and each id in an IN list
-// binds one — id lists are queried in chunks and re-assembled. Per-item and
-// per-version ordering survives chunking: every id lands in exactly one chunk.
-const IN_LIST_CHUNK = 90;
-
-function idChunks(ids: string[]): string[][] {
-	const chunks: string[][] = [];
-	for (let i = 0; i < ids.length; i += IN_LIST_CHUNK) chunks.push(ids.slice(i, i + IN_LIST_CHUNK));
-	return chunks;
-}
+// Ordering survives `idChunks`: every id lands in exactly one chunk, and
+// the per-item/per-version sort is re-applied after re-assembly.
 
 async function loadVersions(
 	db: Kysely<Database>,

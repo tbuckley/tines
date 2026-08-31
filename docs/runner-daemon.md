@@ -26,6 +26,7 @@ Flags:
 | `--command` | Custom harness command template; placeholders `{prompt_file}`, `{workspace}`, `{model}` | — |
 | `--max-concurrent` | Simultaneous runs on this machine (1–100); sent on every poll, so a restart with a new value updates the server-side cap | 1 |
 | `--poll-interval` | Seconds between polls | 15 |
+| `--no-cli-refresh` | Skip the managed CLI install; harnesses use whatever `tines` is on the ambient PATH | refresh on |
 
 Each run's workspace (under the config dir) contains `prompt.md` (supervisor preamble +
 stitched context + issue block), `skills/<name>/…`, `repos.json`, and a clone of each listed
@@ -36,6 +37,38 @@ Rotating a token: `tines runners rotate-token <name>` invalidates the old token 
 the new one once. Run it on the daemon machine and the stored token is updated in place —
 just restart the daemon; elsewhere, the daemon exits with a clear 401 message until the new
 token is dropped into its config.
+
+## The agent-facing CLI
+
+Every push to `main` deploys the API **and** publishes a new `tines` to npm, so a launch
+prompt is always current — while a hand-installed CLI on the runner machine is whatever a
+human last put there. That skew is silent in the dangerous direction: a prompt that teaches
+a new *positional* (rather than a flag) is taken verbatim as data by an old CLI, which
+succeeds and does the wrong thing.
+
+So the daemon maintains its own copy. At start, and before each launch if the last attempt
+is more than 10 minutes old, it runs:
+
+```sh
+npm install --prefix ~/.config/tines/cli tines@latest --min-release-age=0 --no-audit --no-fund
+```
+
+and prepends `~/.config/tines/cli/node_modules/.bin` to the harness's `PATH`. Notes:
+
+- **Your global `tines` is never touched.** In particular a `pnpm link --global` dev setup
+  (README, "If you're actively hacking on the CLI") keeps working — that is why this is a
+  private prefix rather than `npm i -g`.
+- `--min-release-age=0` is required, not hygiene. npm's supply-chain delay
+  (`min-release-age` in `~/.npmrc`) refuses versions younger than the configured window,
+  and because CI publishes on every merge the newest `tines` is essentially always inside
+  it — without the override the refresh is a permanent `ENOVERSIONS` no-op. The override
+  is scoped to this one install of a first-party package; your global npm config is
+  unchanged.
+- **Failures never fail a run.** npm missing, registry unreachable, or an install hanging
+  past 60s all degrade to the last-good copy in the prefix, then to the ambient `PATH`.
+  The daemon logs it, and every run's log records which CLI executed it on its first line.
+- To reset, delete `~/.config/tines/cli` (it is rebuilt on the next refresh). To opt out
+  entirely, pass `--no-cli-refresh`.
 
 ## Keep it running
 
@@ -116,3 +149,5 @@ loginctl enable-linger "$USER"   # keep it running while logged out
   also enforces the run timeout locally.
 - **Network errors**: polls retry with backoff; the loop never crashes. A 401 (rotated
   token) exits with instructions instead of spinning.
+- **CLI refresh failure**: never fails a run — the last-good copy is used, or the ambient
+  `PATH`, with a warning in the daemon log and in each affected run's log.

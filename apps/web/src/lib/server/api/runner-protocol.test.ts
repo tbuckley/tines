@@ -370,7 +370,7 @@ describe('pollRunner', () => {
 
 describe('appendLogTail', () => {
 	it('appends under the cap without dropping', () => {
-		expect(appendLogTail('abc', 0, 'def')).toEqual({ log: 'abcdef', dropped: 0 });
+		expect(appendLogTail('abc', 0, 'def')).toEqual({ log: 'abcdef', dropped: 0, evicted: null });
 	});
 
 	it('truncates from the head with byte accounting', () => {
@@ -378,6 +378,8 @@ describe('appendLogTail', () => {
 		const first = appendLogTail(log, 0, 'y'.repeat(30));
 		expect(new TextEncoder().encode(first.log).length).toBe(RUN_LOG_MAX_BYTES);
 		expect(first.dropped).toBe(20);
+		// The evicted bytes come back so the caller can spill them to R2.
+		expect(first.evicted && new TextDecoder().decode(first.evicted)).toBe('x'.repeat(20));
 		expect(first.log.endsWith('y'.repeat(30))).toBe(true);
 		// Accounting accumulates across appends.
 		const second = appendLogTail(first.log, first.dropped, 'z'.repeat(7));
@@ -392,7 +394,7 @@ describe('appendRunLog', () => {
 		const issue = addIssue(t);
 		const runId = addRun(t, { issueId: issue, runnerId, status: 'launching' });
 		const res = await appendRunLog(t.db, t.env, await runnerRow(t, runnerId), runId, 'hello\n', NOW + 5);
-		expect(res).toEqual({ status: 'running', log_bytes_dropped: 0 });
+		expect(res).toEqual({ status: 'running', log_bytes_dropped: 0, log_seq: 0 });
 		const run = runById(t, runId);
 		expect(run?.status).toBe('running');
 		expect(run?.started_at).toBe(NOW + 5);
