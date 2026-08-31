@@ -9,6 +9,7 @@ import type {
 	AgentRun,
 	Artifact,
 	ArtifactVersion,
+	Comment,
 	ContextItem,
 	LinkedIssue,
 	QuotaPolicy,
@@ -16,7 +17,7 @@ import type {
 	Runner,
 	Schedule
 } from '@tines/shared';
-import { describeRecurrence, runCostLabel, runDurationLabel } from '@tines/shared';
+import { actorLabel, describeRecurrence, runCostLabel, runDurationLabel } from '@tines/shared';
 
 export function timestamp(ms: number): string {
 	return new Date(ms).toISOString().replace('T', ' ').slice(0, 19);
@@ -127,6 +128,17 @@ export function quotaLabel(quota: QuotaPolicy, stateName?: (id: string) => strin
 		([id, limit]) => `${stateName ? stateName(id) : id}=${limit}`
 	);
 	return `state roster: default ${quota.default_limit} per state${overrides.length > 0 ? `, overrides: ${overrides.join(', ')}` : ''}`;
+}
+
+/**
+ * One comment as `issues show` prints it: a blank separator, the header line,
+ * then the body indented under it. The id is in the header because
+ * `issues comment-edit`/`comment-delete` take it, and `issues show` is where
+ * an agent with no browser finds it.
+ */
+export function commentLines(comment: Comment): string[] {
+	const header = `  [${timestamp(comment.created_at)}] ${actorLabel(comment.actor)} (${comment.id})${comment.updated_at ? ' (edited)' : ''}:`;
+	return ['', header, ...comment.body.split('\n').map((line) => `  ${line}`)];
 }
 
 export function runRow(run: AgentRun): string[] {

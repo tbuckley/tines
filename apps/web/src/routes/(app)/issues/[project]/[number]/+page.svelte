@@ -387,7 +387,9 @@
 	// their own comments.)
 	let editingCommentId = $state<string | null>(null);
 	let commentDraft = $state('');
-	let commentBusy = $state(false);
+	// Per-comment, not page-global: a save on one comment must not disable the
+	// buttons on every other one.
+	let busyCommentId = $state<string | null>(null);
 
 	function startEditComment(comment: Comment) {
 		editingCommentId = comment.id;
@@ -396,8 +398,8 @@
 
 	async function saveComment(comment: Comment) {
 		const body = commentDraft.trim();
-		if (!body || commentBusy) return;
-		commentBusy = true;
+		if (!body || busyCommentId === comment.id) return;
+		busyCommentId = comment.id;
 		try {
 			await api.updateComment(data.issue.id, comment.id, { body });
 			editingCommentId = null;
@@ -405,20 +407,20 @@
 		} catch (err) {
 			showError(err);
 		} finally {
-			commentBusy = false;
+			busyCommentId = null;
 		}
 	}
 
 	async function deleteComment(comment: Comment) {
-		if (commentBusy) return;
+		if (busyCommentId === comment.id) return;
 		const ok = await confirmDialog({
 			title: 'Delete this comment?',
 			body: 'The comment is removed from the thread; the activity feed keeps a record that it was deleted.',
 			confirmLabel: 'Delete comment',
 			destructive: true
 		});
-		if (!ok || commentBusy) return;
-		commentBusy = true;
+		if (!ok || busyCommentId === comment.id) return;
+		busyCommentId = comment.id;
 		try {
 			await api.deleteComment(data.issue.id, comment.id);
 			if (editingCommentId === comment.id) editingCommentId = null;
@@ -426,7 +428,7 @@
 		} catch (err) {
 			showError(err);
 		} finally {
-			commentBusy = false;
+			busyCommentId = null;
 		}
 	}
 
@@ -798,7 +800,7 @@
 										class="size-6"
 										title="Edit comment"
 										aria-label="Edit comment"
-										disabled={commentBusy}
+										disabled={busyCommentId === comment.id}
 										onclick={() => startEditComment(comment)}
 									>
 										<IconPencil size={14} stroke={1.5} />
@@ -809,7 +811,7 @@
 										class="size-6"
 										title="Delete comment"
 										aria-label="Delete comment"
-										disabled={commentBusy}
+										disabled={busyCommentId === comment.id}
 										onclick={() => deleteComment(comment)}
 									>
 										<IconTrash size={14} stroke={1.5} />
@@ -824,12 +826,12 @@
 									<Button
 										variant="ghost"
 										size="sm"
-										disabled={commentBusy}
+										disabled={busyCommentId === comment.id}
 										onclick={() => (editingCommentId = null)}>Cancel</Button
 									>
 									<Button
 										size="sm"
-										disabled={!commentDraft.trim() || commentBusy}
+										disabled={!commentDraft.trim() || busyCommentId === comment.id}
 										onclick={() => saveComment(comment)}>Save</Button
 									>
 								</div>

@@ -1077,6 +1077,9 @@ export function assertCommentActionAllowed(
 	comment: { actor_api_key_id: string | null }
 ): void {
 	if (!actor.agentRunId) return;
+	// The null check guards a state the types allow but auth cannot produce: a
+	// run actor always carries its key, so a session-authored comment (key id
+	// null) must never match by two nulls.
 	if (comment.actor_api_key_id !== null && comment.actor_api_key_id === actor.apiKeyId) return;
 	throw new ApiFail(
 		403,

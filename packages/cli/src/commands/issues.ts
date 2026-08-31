@@ -19,6 +19,7 @@ import {
 } from '../common.js';
 import {
 	artifactSummary,
+	commentLines,
 	issueRef,
 	linkRows,
 	prRefLabel,
@@ -85,13 +86,10 @@ function printIssueDetail(issue: IssueDetail): void {
 	console.log(`\nallowed actions: ${allowed.length ? allowed.join(', ') : 'none (terminal state)'}`);
 	if (issue.comments.length > 0) {
 		console.log(`\ncomments (${issue.comments.length}):`);
+		// Rendered by commentLines so the id and the (edited) marker — the two
+		// things `comment-edit`/`comment-delete` need — are pinned by a test.
 		for (const c of issue.comments) {
-			// The id is here so `issues comment-edit`/`comment-delete` are usable
-			// without the UI.
-			console.log(
-				`\n  [${timestamp(c.created_at)}] ${actorLabel(c.actor)} (${c.id})${c.updated_at ? ' (edited)' : ''}:`
-			);
-			for (const line of c.body.split('\n')) console.log(`  ${line}`);
+			for (const line of commentLines(c)) console.log(line);
 		}
 	}
 }

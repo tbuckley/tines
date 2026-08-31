@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
 	artifactSummary,
+	commentLines,
 	contextItemSummary,
 	formatTable,
 	issueRef,
@@ -75,6 +76,45 @@ describe('runRow', () => {
 
 	it('renders dollars when the cost is known', () => {
 		expect(runRow({ ...base, usage: { cost_usd: 1.5 } } as never)).toContain('$1.50');
+	});
+});
+
+describe('commentLines', () => {
+	const comment = {
+		id: 'cmt_abc',
+		issue_id: 'iss_1',
+		body: 'first line\nsecond line',
+		actor: { user_id: 'usr_1', user_name: 'alice', api_key_id: null, api_key_name: null },
+		created_at: Date.UTC(2026, 7, 31, 1, 2, 3),
+		updated_at: null
+	};
+
+	// The id is what `issues comment-edit`/`comment-delete` take, so `issues
+	// show` is the only place an agent without a browser can find it.
+	it('carries the comment id in the header, over an indented body', () => {
+		expect(commentLines(comment)).toEqual([
+			'',
+			'  [2026-08-31 01:02:03] alice (cmt_abc):',
+			'  first line',
+			'  second line'
+		]);
+	});
+
+	it('marks an edited comment and leaves an unedited one unmarked', () => {
+		expect(commentLines({ ...comment, updated_at: Date.UTC(2026, 7, 31, 2) })[1]).toBe(
+			'  [2026-08-31 01:02:03] alice (cmt_abc) (edited):'
+		);
+		expect(commentLines(comment)[1]).not.toContain('(edited)');
+	});
+
+	it('attributes a run-key comment to its runner and run', () => {
+		const actor = {
+			...comment.actor,
+			api_key_id: 'key_1',
+			api_key_name: 'run key',
+			run: { run_id: 'arun_1', runner_name: 'macbook', issue_ref: { project_name: 'Tines', number: 11 } }
+		};
+		expect(commentLines({ ...comment, actor })[1]).toContain('alice via macbook · run on Tines/11');
 	});
 });
 
