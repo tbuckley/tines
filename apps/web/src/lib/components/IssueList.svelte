@@ -4,6 +4,7 @@
 	import IconBan from '@tabler/icons-svelte/icons/ban';
 	import IconCopy from '@tabler/icons-svelte/icons/copy';
 	import IconRepeat from '@tabler/icons-svelte/icons/repeat';
+	import IconTag from '@tabler/icons-svelte/icons/tag';
 	import { flip } from 'svelte/animate';
 	import { fade } from 'svelte/transition';
 	import { goto } from '$app/navigation';
@@ -23,18 +24,18 @@
 
 	/**
 	 * A row is one line at every width: the title truncates and everything after
-	 * it holds its size, so labels can never grow a row taller. That makes the
-	 * chip budget width-dependent — one chip on a phone, three from `sm` up.
-	 * Both variants are rendered and CSS picks, so there is no matchMedia and no
-	 * hydration mismatch. The full set always lives on the detail page.
+	 * it holds its size, so labels can never grow a row taller. On a phone there
+	 * is no room for a name beside the title at all, so the labels collapse to a
+	 * count; from `sm` up it is three chips and a "+N". Both variants render and
+	 * CSS picks, so there is no matchMedia and no hydration mismatch. The full
+	 * set always lives on the detail page.
 	 */
-	const MAX_CHIPS_NARROW = 1;
 	const MAX_CHIPS = 3;
 
-	/** "urgent, backend" — what the "+N" is standing in for. */
-	const hiddenTooltip = (labels: IssueLabel[], shown: number) =>
+	/** "urgent, backend" — the names a counter is standing in for. */
+	const names = (labels: IssueLabel[], from = 0) =>
 		labels
-			.slice(shown)
+			.slice(from)
 			.map((l) => l.name)
 			.join(', ');
 
@@ -88,25 +89,24 @@
 								<IconRepeat size={14} stroke={1.75} />
 							</button>
 						{/if}
-						{#each issue.labels.slice(0, MAX_CHIPS) as label, i (label.id)}
-							<LabelChip
-								{label}
-								size="sm"
-								class="max-w-28 shrink-0 truncate {i < MAX_CHIPS_NARROW ? '' : 'hidden sm:inline-flex'}"
-							/>
-						{/each}
-						{#if issue.labels.length > MAX_CHIPS_NARROW}
+						{#if issue.labels.length > 0}
+							<!-- Phone: a name would eat the title, so the labels become a
+							     count that keeps them in the tooltip and off the row. -->
 							<span
-								class="text-muted-foreground shrink-0 text-[0.6875rem] font-medium sm:hidden"
-								title={hiddenTooltip(issue.labels, MAX_CHIPS_NARROW)}
+								class="bg-muted text-muted-foreground inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-[0.6875rem] leading-none font-medium sm:hidden"
+								title="Labels: {names(issue.labels)}"
 							>
-								+{issue.labels.length - MAX_CHIPS_NARROW}
+								<IconTag size={12} stroke={1.75} />
+								{issue.labels.length}
 							</span>
 						{/if}
+						{#each issue.labels.slice(0, MAX_CHIPS) as label (label.id)}
+							<LabelChip {label} size="sm" class="hidden max-w-28 shrink-0 truncate sm:inline-flex" />
+						{/each}
 						{#if issue.labels.length > MAX_CHIPS}
 							<span
 								class="text-muted-foreground hidden shrink-0 text-[0.6875rem] font-medium sm:inline"
-								title={hiddenTooltip(issue.labels, MAX_CHIPS)}
+								title={names(issue.labels, MAX_CHIPS)}
 							>
 								+{issue.labels.length - MAX_CHIPS}
 							</span>

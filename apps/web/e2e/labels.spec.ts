@@ -120,28 +120,34 @@ test.describe.serial('issue labels UI', () => {
 	}) => {
 		const list = `/issues?project=${encodeURIComponent(projectName)}`;
 		const crowdedRow = page.getByRole('link', { name: new RegExp(`Crowded ${runId}`) });
-		const oneLabelRow = page.getByRole('link', { name: new RegExp(`Labelled ${runId}`) });
+		// The unlabelled row is the yardstick: a row with labels must be exactly
+		// as tall as one without, or the chips have wrapped to a second line.
+		const plainRow = page.getByRole('link', { name: new RegExp(`Plain ${runId}`) });
 
 		await page.setViewportSize(PHONE);
 		await page.goto(list);
 		await expect(crowdedRow).toBeVisible();
-		// One chip, four folded into the counter.
-		await expect(crowdedRow.getByText(crowdNames[0], { exact: true })).toBeVisible();
-		await expect(crowdedRow.getByText(crowdNames[1], { exact: true })).toBeHidden();
-		await expect(crowdedRow.getByText('+4', { exact: true })).toBeVisible();
-		// The whole point: five labels cost exactly as much height as one.
+		// No names at this width — just the count, with the names in its tooltip.
+		await expect(crowdedRow.getByText(crowdNames[0], { exact: true })).toBeHidden();
+		const counter = crowdedRow.getByText('5', { exact: true });
+		await expect(counter).toBeVisible();
+		await expect(counter).toHaveAttribute('title', `Labels: ${crowdNames.join(', ')}`);
+		// The whole point: five labels cost no height at all.
 		const crowdedBox = await crowdedRow.boundingBox();
-		const oneLabelBox = await oneLabelRow.boundingBox();
-		expect(Math.abs(crowdedBox!.height - oneLabelBox!.height)).toBeLessThan(1);
-		// A long name is ellipsed rather than allowed to push the row wider.
-		const chipBox = await crowdedRow.getByText(crowdNames[0], { exact: true }).boundingBox();
-		expect(chipBox!.width).toBeLessThan(PHONE.width / 2);
+		const plainBox = await plainRow.boundingBox();
+		expect(Math.abs(crowdedBox!.height - plainBox!.height)).toBeLessThan(1);
 
-		// Wider viewport, wider budget: three chips and "+2".
+		// Wider viewport, wider budget: three chips and "+2", counter gone.
 		await page.setViewportSize(DESKTOP);
+		await expect(counter).toBeHidden();
 		await expect(crowdedRow.getByText(crowdNames[2], { exact: true })).toBeVisible();
 		await expect(crowdedRow.getByText(crowdNames[3], { exact: true })).toBeHidden();
 		await expect(crowdedRow.getByText('+2', { exact: true })).toBeVisible();
+		// A long name is ellipsed rather than allowed to push the title out.
+		const chipBox = await crowdedRow.getByText(crowdNames[0], { exact: true }).boundingBox();
+		expect(chipBox!.width).toBeLessThan(130);
+		const wideBox = await crowdedRow.boundingBox();
+		expect(Math.abs(wideBox!.height - crowdedBox!.height)).toBeLessThan(1);
 
 		// Nothing is lost — the detail page still shows every label.
 		await page.setViewportSize(PHONE);
