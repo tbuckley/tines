@@ -49,11 +49,14 @@ describe('buildHarnessInvocation', () => {
 	it('claude_code reads the prompt from prompt.md via stdin — never argv (ARG_MAX)', () => {
 		expect(buildHarnessInvocation({ harness: 'claude_code' }, input)).toEqual({
 			file: 'sh',
-			args: ['-c', `claude -p --model 'claude-sonnet-5' < '/tmp/ws/run 1/prompt.md'`]
+			args: [
+				'-c',
+				`claude -p --output-format stream-json --verbose --model 'claude-sonnet-5' < '/tmp/ws/run 1/prompt.md'`
+			]
 		});
 		expect(buildHarnessInvocation({ harness: 'claude_code' }, { ...input, model: null }).args).toEqual([
 			'-c',
-			`claude -p < '/tmp/ws/run 1/prompt.md'`
+			`claude -p --output-format stream-json --verbose < '/tmp/ws/run 1/prompt.md'`
 		]);
 	});
 
@@ -101,24 +104,50 @@ describe('LogBatcher', () => {
 		expect(sent).toEqual(['a', 'b']);
 	});
 
-	it('send failures go to onError and do not wedge later sends', async () => {
-		const sent: string[] = [];
+	it('retries a failed chunk on the next flush, keeping its seq and its place', async () => {
+		const sent: { chunk: string; seq: number }[] = [];
 		const errors: unknown[] = [];
+		let fail = true;
+		const batcher = new LogBatcher(
+			async (chunk, seq) => {
+				if (fail) throw new Error('offline');
+				sent.push({ chunk, seq });
+			},
+			{ maxBytes: 1, onError: (e) => errors.push(e) }
+		);
+		batcher.append('a');
+		await batcher.flush();
+		// Every attempt while offline reports; how many depends on flush cadence.
+		expect(errors.length).toBeGreaterThanOrEqual(1);
+		// Dropping 'a' would put a hole in a log that is now durable, so it
+		// waits — and goes out before 'b', under the seq it was first given.
+		fail = false;
+		batcher.append('b');
+		await batcher.flush();
+		expect(sent).toEqual([
+			{ chunk: 'a', seq: 1 },
+			{ chunk: 'b', seq: 2 }
+		]);
+	});
+
+	it('drops the oldest backlog past the pending cap, with a marker', async () => {
+		const sent: string[] = [];
 		let fail = true;
 		const batcher = new LogBatcher(
 			async (chunk) => {
 				if (fail) throw new Error('offline');
 				sent.push(chunk);
 			},
-			{ maxBytes: 1, onError: (e) => errors.push(e) }
+			{ maxBytes: 1, maxPendingBytes: 8 }
 		);
-		batcher.append('a');
-		await batcher.flush();
+		for (const text of ['aaaa', 'bbbb', 'cccc']) {
+			batcher.append(text);
+			await batcher.flush();
+		}
 		fail = false;
-		batcher.append('b');
 		await batcher.flush();
-		expect(errors).toHaveLength(1);
-		expect(sent).toEqual(['b']);
+		expect(sent.join('')).toContain('bytes lost');
+		expect(sent.join('')).toContain('cccc');
 	});
 
 	it('an empty flush resolves without sending', async () => {

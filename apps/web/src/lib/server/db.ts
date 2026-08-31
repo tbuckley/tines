@@ -274,6 +274,18 @@ export interface AgentRunTable {
 	/** Append-only tail, head-truncated at the cap. */
 	log: string;
 	log_bytes_dropped: number;
+	/** Highest client-assigned chunk seq applied (log append idempotency). */
+	log_seq: number;
+	/** Highest `part.{n}` object written to the run-log bucket. */
+	log_part_count: number;
+	/** Parts at or below this index are merged into the `head` object. */
+	log_compacted_through: number;
+	/** 1 once the complete log is written to the `full` object. */
+	log_sealed: number;
+	/** Size of the raw harness stream object; 0 = none uploaded. */
+	log_raw_bytes: number;
+	/** Retention GC deleted this run's R2 objects (the D1 tail survives). */
+	log_objects_deleted_at: number | null;
 	error: string | null;
 	created_at: number;
 	started_at: number | null;
@@ -289,6 +301,17 @@ export interface RoutingRuleTable {
 	/** JSON ordered target list: [ { runner_id, tier? } ]. */
 	targets: string;
 	created_at: number;
+	updated_at: number;
+}
+
+/**
+ * Global, singleton-per-key housekeeping state for sweep passes that cannot
+ * finish in one pass. Currently just the run-log orphan pass's position in
+ * the R2 keyspace (`run_log_gc_after`).
+ */
+export interface SupervisorSweepStateTable {
+	key: string;
+	value: string | null;
 	updated_at: number;
 }
 
@@ -336,6 +359,7 @@ export interface Database {
 	agent_run: AgentRunTable;
 	routing_rule: RoutingRuleTable;
 	supervisor_settings: SupervisorSettingsTable;
+	supervisor_sweep_state: SupervisorSweepStateTable;
 	user: UserTable;
 }
 
@@ -384,6 +408,20 @@ export function getDb(env: Env): Kysely<Database> {
 		dbs.set(env.DB, db);
 	}
 	return db;
+}
+
+/**
+ * D1 caps bound parameters per statement at 100, and each id in an `IN` list
+ * binds one. Anything that builds an `IN` list from a set the caller does not
+ * control the size of — a page of R2 keys, a user's whole artifact list —
+ * queries in chunks of this and re-assembles.
+ */
+export const IN_LIST_CHUNK = 90;
+
+export function idChunks(ids: string[]): string[][] {
+	const chunks: string[][] = [];
+	for (let i = 0; i < ids.length; i += IN_LIST_CHUNK) chunks.push(ids.slice(i, i + IN_LIST_CHUNK));
+	return chunks;
 }
 
 const ID_ALPHABET = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';

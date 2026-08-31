@@ -17,6 +17,8 @@ declare global {
 		DB: D1Database;
 		/** Artifact file storage (wrangler.jsonc `r2_buckets`); see lib/server/artifact-store.ts. */
 		ARTIFACTS?: R2Bucket;
+		/** Full run-log storage (wrangler.jsonc `r2_buckets`); see lib/server/run-log-store.ts. */
+		RUN_LOGS?: R2Bucket;
 		EMAIL?: SendEmail;
 		EMAIL_FROM?: string;
 		BETTER_AUTH_URL?: string;

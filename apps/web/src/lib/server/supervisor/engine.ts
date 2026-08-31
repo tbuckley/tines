@@ -31,6 +31,7 @@ import {
 	type ActiveCounts,
 	type MatchableRule
 } from './logic';
+import { loadSealableRun, sealRunLog, spillEvicted, sweepRunLogs } from './run-log';
 
 const ACTIVE = [...ACTIVE_RUN_STATUSES];
 
@@ -801,6 +802,15 @@ export async function endRun(
 	const results = await runBatch(env, queries);
 	// Whether the park landed is the last statement's rows-affected.
 	const parked = strike && issue !== undefined && (results[results.length - 1]?.meta.changes ?? 0) === 1;
+	// Seal the full log into one object now that the status flip has closed
+	// the tail to further appends. Best-effort by design: a run must never
+	// fail to end because R2 was unavailable — the sweep retries unsealed runs.
+	try {
+		const sealable = await loadSealableRun(db, run.id);
+		if (sealable) await sealRunLog(db, env, sealable);
+	} catch (e) {
+		console.error(`sealing the full log for run ${run.id} failed:`, e);
+	}
 	return {
 		ended: true,
 		outcome: started ? (advanced ? 'advanced' : 'stalled') : null,
@@ -1009,6 +1019,12 @@ export async function pollManagedRuns(
 				const appended = appendLogTail(run.log, run.log_bytes_dropped, polled.logChunk);
 				patch.log = appended.log;
 				patch.log_bytes_dropped = appended.dropped;
+				// Managed runs' rendered event summaries spill and are retained
+				// exactly like a local daemon's stdout: one writer, no seq needed.
+				if (appended.evicted) {
+					const spill = await spillEvicted(env, run, appended.evicted);
+					patch.log_part_count = spill.log_part_count;
+				}
 			}
 			if (polled.usage) patch.usage = JSON.stringify(polled.usage);
 			if (polled.provider_meta !== undefined) patch.provider_meta = polled.provider_meta;
@@ -1182,6 +1198,14 @@ export async function sweepSupervisor(
 		} catch (e) {
 			console.error(`supervisor sweep: failing stalled run ${run.id} failed:`, e);
 		}
+	}
+
+	// Full run logs: compact spilled parts, seal ended runs whose inline seal
+	// did not land, drop objects past retention, and sweep orphans.
+	try {
+		await sweepRunLogs(db, env, now);
+	} catch (e) {
+		console.error('supervisor sweep: run-log housekeeping failed:', e);
 	}
 
 	// Expired run keys die even if their run's end was never detected.

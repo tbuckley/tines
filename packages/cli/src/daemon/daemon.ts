@@ -11,10 +11,20 @@
  * unit-testable.
  */
 import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import {
+	createWriteStream,
+	mkdirSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	unlinkSync,
+	writeFileSync,
+	type WriteStream
+} from 'node:fs';
 import { hostname, platform, arch } from 'node:os';
 import { dirname, join } from 'node:path';
-import { ApiError, createApiClient, type RunnerAssignment } from '@tines/shared';
+import { ApiError, RUN_LOG_RAW_MAX_BYTES, createApiClient, type RunnerAssignment } from '@tines/shared';
+import { ClaudeStreamRenderer } from './claude-stream';
 import { installAgentCli } from './cli-refresh.js';
 import {
 	clearRunnerCredentials,
@@ -62,6 +72,59 @@ interface ActiveRun extends ManagedRun {
 	timeout?: ReturnType<typeof setTimeout>;
 	keyFingerprint: string;
 	spawnedAt?: number;
+	/** claude_code: NDJSON → readable lines for the log (claude-stream.ts). */
+	renderer?: ClaudeStreamRenderer;
+	/** claude_code: the unrendered stream, spooled for the raw-log upload. */
+	rawSpool?: WriteStream;
+	/** Where that spool lives — outside the workspace, which release() wipes. */
+	rawSpoolPath?: string;
+	/** Bound uploader for that spool (needs the client, which release lacks). */
+	rawUpload?: (body: Uint8Array) => Promise<unknown>;
+}
+
+/**
+ * Uploads a claude_code run's unrendered NDJSON stream, then deletes the
+ * spool. Best-effort throughout: the rendered log is already durable, and a
+ * failure here costs the raw copy, not the run.
+ */
+async function uploadRawLog(run: {
+	runId: string;
+	rawSpool?: WriteStream;
+	rawSpoolPath?: string;
+	rawUpload?: (body: Uint8Array) => Promise<unknown>;
+}): Promise<void> {
+	const path = run.rawSpoolPath;
+	if (!path || !run.rawUpload) return;
+	run.rawSpoolPath = undefined;
+	try {
+		await new Promise<void>((resolve) => run.rawSpool?.end(resolve) ?? resolve());
+		const size = statSync(path).size;
+		if (size > 0) {
+			// Read whole, not streamed: the server side streams into R2, but
+			// the client holds up to RUN_LOG_RAW_MAX_BYTES here (briefly twice
+			// that on the truncation path's copy). That is the daemon, not a
+			// Worker, and the run has already been finish-reported by now — if
+			// the cap ever grows, stream this and send the length explicitly.
+			let body = readFileSync(path);
+			if (body.byteLength > RUN_LOG_RAW_MAX_BYTES) {
+				// Keep the tail — the end of a stream is where the failure is —
+				// and say so, rather than sending a body the server will reject.
+				const marker = Buffer.from(
+					`{"type":"tines_truncated","dropped_bytes":${body.byteLength - RUN_LOG_RAW_MAX_BYTES}}\n`
+				);
+				body = Buffer.concat([marker, body.subarray(body.byteLength - RUN_LOG_RAW_MAX_BYTES + marker.byteLength)]);
+			}
+			await run.rawUpload(body);
+		}
+	} catch {
+		// Swallowed: see the doc comment.
+	} finally {
+		try {
+			unlinkSync(path);
+		} catch {
+			// Already gone.
+		}
+	}
 }
 
 const log = (message: string) =>
@@ -145,7 +208,18 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 		},
 		release: (run) => {
 			if (run.timeout) clearTimeout(run.timeout);
+			// `finishAndCleanup` already drained (before its flush, so the line
+			// actually ships). This is the backstop for the paths that reach
+			// cleanup without finishing — an already-settled run, a clone
+			// failure — where the renderer must not be left holding a line.
+			// `finish()` is idempotent, so the double call is free.
+			run.renderer?.finish();
 			rmSync(run.workspace, { recursive: true, force: true });
+			// Deliberately after cleanup and not awaited: the raw log is a
+			// forensic extra, and a slow or failed upload must not hold a
+			// concurrency slot. The spool lives outside the workspace, so the
+			// rmSync above did not take it.
+			void uploadRawLog(run);
 		},
 		persist: () => {
 			const entries: DaemonStateEntry[] = table
@@ -222,9 +296,10 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 			timedOut: false,
 			settled: false,
 			keyFingerprint: assignment.run_key.slice(0, 14),
-			batcher: new LogBatcher((chunk) => client.appendRunLog(runId, { chunk }).then(() => {}), {
-				onError: (err) => log(`log append for run ${runId} failed: ${message(err)}`)
-			})
+			batcher: new LogBatcher(
+				(chunk, seq) => client.appendRunLog(runId, { chunk, seq }).then(() => {}),
+				{ onError: (err) => log(`log append for run ${runId} failed: ${message(err)}`) }
+			)
 		};
 		run.flush = () => run.batcher.flush();
 		table.track(run);
@@ -296,7 +371,28 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 			table.persist();
 			log(`run ${runId}: launched ${invocation.file} (pid ${child.pid})`);
 
-			child.stdout?.on('data', (data: Buffer) => run.batcher.append(data.toString('utf8')));
+			if (opts.harness === 'claude_code') {
+				// The harness speaks NDJSON now; the log the user reads is the
+				// rendered form. The stream itself is spooled outside the
+				// workspace (release() wipes that) and uploaded at settle, so
+				// nothing the harness emitted is actually lost.
+				const renderer = new ClaudeStreamRenderer((line) => run.batcher.append(line));
+				run.renderer = renderer;
+				run.drain = () => renderer.finish();
+				const spoolPath = join(opts.configDir, 'rawlogs', `${runId}.ndjson`);
+				mkdirSync(dirname(spoolPath), { recursive: true });
+				run.rawSpoolPath = spoolPath;
+				run.rawSpool = createWriteStream(spoolPath);
+				run.rawUpload = (body) => client.putRunLogRaw(runId, body);
+				child.stdout?.on('data', (data: Buffer) => {
+					run.rawSpool?.write(data);
+					renderer.write(data.toString('utf8'));
+				});
+			} else {
+				child.stdout?.on('data', (data: Buffer) => run.batcher.append(data.toString('utf8')));
+			}
+			// stderr is never stream-json — it is the harness's own diagnostics,
+			// and it goes to the log verbatim for every harness.
 			child.stderr?.on('data', (data: Buffer) => run.batcher.append(data.toString('utf8')));
 			run.timeout = setTimeout(
 				() => {

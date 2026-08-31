@@ -8,6 +8,8 @@ import {
 } from '@tines/shared';
 import type { Kysely } from 'kysely';
 import type { Database } from '$lib/server/db';
+import { getRunLogStore, runLogRawKey } from '$lib/server/run-log-store';
+import { readRunLog } from '$lib/server/supervisor/run-log';
 import { ApiFail, notFound, type Page } from './core';
 
 export function runQuery(db: Kysely<Database>, userId: string) {
@@ -73,7 +75,17 @@ export function serializeRun(row: RunRow): AgentRun {
 }
 
 function serializeRunDetail(row: RunRow): AgentRunDetail {
-	return { ...serializeRun(row), log: row.log, log_bytes_dropped: row.log_bytes_dropped };
+	return {
+		...serializeRun(row),
+		log: row.log,
+		log_bytes_dropped: row.log_bytes_dropped,
+		// The dropped bytes ARE the spilled bytes, so the complete log's size
+		// is always the sum — no extra column, and no growth in this payload
+		// (the run page polls it every 3 seconds).
+		log_full_bytes: row.log_bytes_dropped + new TextEncoder().encode(row.log).length,
+		log_raw_bytes: row.log_raw_bytes,
+		log_expired: row.log_objects_deleted_at !== null
+	};
 }
 
 export interface RunListFilters {
@@ -120,6 +132,53 @@ export async function getRun(
 	const row = await runQuery(db, userId).where('agent_run.id', '=', id).executeTakeFirst();
 	if (!row) throw notFound();
 	return serializeRunDetail(row);
+}
+
+export type FullRunLogResult =
+	| { kind: 'tail'; text: string }
+	| { kind: 'stream'; body: ReadableStream<Uint8Array>; size: number }
+	| { kind: 'expired' }
+	| { kind: 'not_ready' }
+	| { kind: 'missing_raw' };
+
+/**
+ * The run's complete log for `GET /api/v1/runs/:id/log`: the tail alone for
+ * a run that never overflowed it, the sealed object for an ended run, or a
+ * live assembly of spilled parts plus the current tail while it is still
+ * going. `raw` asks for the unrendered harness stream instead.
+ */
+export async function getFullRunLog(
+	db: Kysely<Database>,
+	env: Env,
+	userId: string,
+	id: string,
+	raw = false
+): Promise<FullRunLogResult> {
+	const run = await db
+		.selectFrom('agent_run')
+		.select([
+			'id',
+			'user_id',
+			'log',
+			'log_bytes_dropped',
+			'log_part_count',
+			'log_compacted_through',
+			'log_sealed',
+			'log_raw_bytes',
+			'log_objects_deleted_at'
+		])
+		.where('id', '=', id)
+		.where('user_id', '=', userId)
+		.executeTakeFirst();
+	if (!run) throw notFound();
+	if (raw) {
+		if (run.log_objects_deleted_at !== null) return { kind: 'expired' };
+		if (run.log_raw_bytes === 0) return { kind: 'missing_raw' };
+		const object = await getRunLogStore(env).getStream(runLogRawKey(run.user_id, run.id));
+		if (!object) return { kind: 'missing_raw' };
+		return { kind: 'stream', body: object.body, size: object.size };
+	}
+	return readRunLog(env, run);
 }
 
 /** Maps the engine's cancel result onto API semantics. */

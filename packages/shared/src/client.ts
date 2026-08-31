@@ -366,6 +366,21 @@ export function createApiClient(options: ApiClientOptions) {
 		listRuns: (filters: RunFilters & PageParams = {}) =>
 			get<ListResponse<AgentRun>>(`/api/v1/runs${query(filters)}`),
 		getRun: (id: string) => get<AgentRunDetail>(`/api/v1/runs/${id}`),
+		/**
+		 * The run's complete log (not the 256 KB tail `getRun` returns) as a
+		 * streamed Response, so a multi-megabyte log never has to be held in
+		 * memory. `raw` asks for the unrendered harness stream instead.
+		 */
+		getRunLogFull: (id: string, opts: { raw?: boolean } = {}) =>
+			raw('GET', `/api/v1/runs/${id}/log${opts.raw ? '?raw=1' : ''}`, {
+				headers: { accept: 'text/plain' }
+			}),
+		/** Daemon-only: uploads the raw harness stream for a settled run. */
+		putRunLogRaw: (id: string, body: Uint8Array) =>
+			raw('PUT', `/api/v1/runs/${id}/log/raw`, {
+				body,
+				headers: { 'content-type': 'application/x-ndjson', 'content-length': String(body.byteLength) }
+			}),
 		cancelRun: (id: string) => request<AgentRunDetail>('POST', `/api/v1/runs/${id}/cancel`),
 
 		// Routing rules (one per exact scope; responses carry shadow hints)

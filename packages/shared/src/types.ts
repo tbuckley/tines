@@ -982,8 +982,27 @@ export const LAUNCH_STALL_MS = 5 * 60 * 1000;
 /** Run-key expiry slack beyond `max_run_minutes`. */
 export const RUN_KEY_SLACK_MS = 10 * 60 * 1000;
 
-/** Run log tail cap; older output is truncated from the head. */
+/**
+ * Run log tail cap: the D1 `agent_run.log` column keeps at most this many
+ * bytes, truncated from the head. Bytes evicted from the tail are not lost —
+ * they spill to the run-log bucket (see apps/web/src/lib/server/run-log.ts)
+ * and the full log is served by `GET /api/v1/runs/:id/log`.
+ */
 export const RUN_LOG_MAX_BYTES = 256 * 1024;
+
+/**
+ * How long a run's spilled full-log objects survive past the run's end.
+ * The sweep deletes them after this; the D1 tail is kept forever, so run
+ * history reads exactly as it did before full logs existed.
+ */
+export const RUN_LOG_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+
+/**
+ * Cap on the raw harness stream a daemon may upload per run. The daemon
+ * keeps the trailing bytes with a truncation marker; the server rejects
+ * anything larger.
+ */
+export const RUN_LOG_RAW_MAX_BYTES = 64 * 1024 * 1024;
 
 /**
  * Managed runners are created with this per-run cost cap (editable,
@@ -1259,12 +1278,21 @@ export interface RunnerPollResponse {
 /** `POST /api/v1/runs/:id/logs` — runner-token auth; appended to the tail. */
 export interface AppendRunLogRequest {
 	chunk: string;
+	/**
+	 * Per-run, 1-based, monotonic chunk number assigned by the daemon. A
+	 * chunk whose seq the server has already applied is a retry of a send
+	 * whose response was lost, and is ignored — appends are exactly-once.
+	 * Optional: older daemons and the managed-run sweep send none.
+	 */
+	seq?: number;
 }
 
 export interface AppendRunLogResponse {
 	/** Post-append status (the first append flips `launching` → `running`). */
 	status: RunStatus;
 	log_bytes_dropped: number;
+	/** Highest chunk seq the server has applied (0 when the client sends none). */
+	log_seq: number;
 }
 
 /** `POST /api/v1/runs/:id/finish` — runner-token auth. */
@@ -1373,6 +1401,16 @@ export interface AgentRunDetail extends AgentRun {
 	log: string;
 	/** Bytes truncated from the head of the log when it hit the cap. */
 	log_bytes_dropped: number;
+	/**
+	 * Size of the complete log (`log_bytes_dropped` + the tail's byte
+	 * length) — what `GET /api/v1/runs/:id/log` serves. Deliberately a
+	 * number and not the log itself: this payload is polled every 3s.
+	 */
+	log_full_bytes: number;
+	/** Size of the raw harness stream, retrievable with `?raw=1`; 0 = none. */
+	log_raw_bytes: number;
+	/** Set once retention GC removed the full log; only the tail remains. */
+	log_expired: boolean;
 }
 
 export interface RunFilters {

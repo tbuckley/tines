@@ -47,7 +47,14 @@
 	{:else if detail}
 		{#if detail.log_bytes_dropped > 0}
 			<p class="text-muted-foreground mb-1 text-xs">
-				{Math.round(detail.log_bytes_dropped / 1024)} KB truncated from the head
+				{Math.round(detail.log_bytes_dropped / 1024)} KB truncated from the head{#if !detail.log_expired}
+					{' '}—{' '}<a
+						class="underline underline-offset-2"
+						href="/api/v1/runs/{detail.id}/log"
+						target="_blank"
+						rel="noopener"
+						data-testid="run-log-full-link">view the full {Math.round(detail.log_full_bytes / 1024)} KB log</a
+					>{:else}{' '}(past its retention window; only the tail remains){/if}
 			</p>
 		{/if}
 		<pre
