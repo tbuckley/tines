@@ -1385,6 +1385,33 @@ export function runDurationLabel(
 	return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m`;
 }
 
+/** Run cost for a row: dollars where known, tokens where only they are, honest markers otherwise. */
+export function runCostLabel(run: Pick<AgentRun, 'usage'>): string | null {
+	const usage = run.usage;
+	if (!usage) return null;
+	if (usage.cost_usd !== undefined) return `$${usage.cost_usd.toFixed(2)}`;
+	if (usage.cost_source === 'none') return 'unreported';
+	const tokens = (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0);
+	return tokens > 0 ? `${tokens.toLocaleString()} tok` : null;
+}
+
+/** Whether a run still holds its issue's exclusive claim (and counts toward caps). */
+export function isActiveRun(status: RunStatus): boolean {
+	return ACTIVE_RUN_STATUSES.includes(status);
+}
+
+/**
+ * Ids of every active-category state across the given workflows — the only
+ * states the supervisor dispatches from, so the only ones a routing rule can
+ * usefully be scoped to.
+ */
+export function activeStateIds(workflows: Pick<Workflow, 'states'>[]): Set<string> {
+	return new Set(
+		workflows.flatMap((w) => w.states.filter((s) => s.category === 'active').map((s) => s.id))
+	);
+}
+
+
 /**
  * Utilization against the active quota policy, from the active runs — the
  * Agents tab's Runs header and `tines supervisor status` render this
