@@ -22,6 +22,7 @@ import {
 	JOURNAL_NAME,
 	MODEL_TIERS,
 	repoDirFromUrl,
+	runCostLabel,
 	runDurationLabel,
 	utilizationLabel,
 	WEEKDAY_NAMES,
@@ -2600,16 +2601,6 @@ withCommon(
 
 const runsCmd = program.command('runs').description('Agent runs: attempts at issues by runners');
 
-/** Run cost for a row: dollars where known, tokens where only they are, honest markers otherwise. */
-function runCostLabel(run: AgentRun): string {
-	const usage = run.usage;
-	if (!usage) return '—';
-	if (usage.cost_usd !== undefined) return `$${usage.cost_usd.toFixed(2)}`;
-	if (usage.cost_source === 'none') return 'unreported';
-	const tokens = (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0);
-	return tokens > 0 ? `${tokens.toLocaleString()} tok` : '—';
-}
-
 function runRow(run: AgentRun): string[] {
 	return [
 		run.id,
@@ -2618,7 +2609,7 @@ function runRow(run: AgentRun): string[] {
 		`${run.tier}${run.model ? ` (${run.model})` : ''}`,
 		run.status,
 		runDurationLabel(run),
-		runCostLabel(run),
+		runCostLabel(run) ?? '—',
 		timestamp(run.created_at)
 	];
 }

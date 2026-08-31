@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { AgentRunDetail } from '@tines/shared';
-	import { ACTIVE_RUN_STATUSES } from '@tines/shared';
+	import { isActiveRun } from '@tines/shared';
 	import { api } from '$lib/api';
 
 	let { runId }: { runId: string } = $props();
@@ -11,9 +11,7 @@
 	/** Auto-follow while running; scrolling up pauses it, back to bottom resumes. */
 	let follow = $state(true);
 
-	const active = $derived(
-		detail === null || (ACTIVE_RUN_STATUSES as readonly string[]).includes(detail.status)
-	);
+	const active = $derived(detail === null || isActiveRun(detail.status));
 
 	async function refresh() {
 		try {
