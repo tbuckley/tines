@@ -93,6 +93,18 @@ describe('listAll', () => {
 		await expect(listAll(fetchPage)).rejects.toThrow(/cursor did not advance past "stuck"/);
 	});
 
+	it('throws when the cursor cycles between pages it has already served', async () => {
+		// The same-cursor-twice guard misses this; without a record of every
+		// cursor followed, an A→B→A server loops forever (the repeated items are
+		// de-duplicated, so the ceiling never fires either).
+		let call = 0;
+		const fetchPage: PageFetcher<Row> = async () => ({
+			items: rows(2),
+			next_cursor: call++ % 2 === 0 ? 'a' : 'b'
+		});
+		await expect(listAll(fetchPage)).rejects.toThrow(/cursor did not advance past "b"/);
+	});
+
 	it('propagates a mid-walk fetch error instead of returning a partial list', async () => {
 		let call = 0;
 		const fetchPage: PageFetcher<Row> = async () => {

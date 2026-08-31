@@ -5,6 +5,7 @@
  */
 import {
 	client,
+	fetchList,
 	printJson,
 	printList,
 	resolveIssue,
@@ -41,13 +42,14 @@ export function registerEvents(program: Command): void {
 	).action(async (opts: ListOpts & { issue?: string; project?: string; type?: string }) => {
 		const api = client(opts);
 		const issueId = opts.issue ? (await resolveIssue(api, opts.issue)).id : undefined;
-		const res = await api.listEvents({
-			issue: issueId,
-			project: opts.project,
-			type: opts.type,
-			limit: opts.limit,
-			cursor: opts.cursor
-		});
+		const res = await fetchList(opts, (page) =>
+			api.listEvents({
+				issue: issueId,
+				project: opts.project,
+				type: opts.type,
+				...page
+			})
+		);
 		printList(res, opts, (items) => {
 			if (items.length === 0) return console.log('no events');
 			table([

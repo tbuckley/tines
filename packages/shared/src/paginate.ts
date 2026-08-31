@@ -42,7 +42,7 @@ export type PageFetcher<T> = (page: PageParams) => Promise<ListResponse<T>>;
  * moves backwards past the cursor.
  *
  * @throws if more than `maxItems` distinct items are seen, or if the server
- * returns a cursor that does not advance (which would loop forever).
+ * returns a cursor it has already handed out (which would loop forever).
  */
 export async function* listPages<T extends { id: string }>(
 	fetchPage: PageFetcher<T>,
@@ -51,6 +51,7 @@ export async function* listPages<T extends { id: string }>(
 	const pageSize = opts.pageSize ?? MAX_PAGE_SIZE;
 	const maxItems = opts.maxItems ?? MAX_ALL_PAGES_ITEMS;
 	const seen = new Set<string>();
+	const seenCursors = new Set<string>();
 	let cursor: string | undefined;
 
 	for (;;) {
@@ -64,9 +65,13 @@ export async function* listPages<T extends { id: string }>(
 		}
 		yield fresh;
 		if (res.next_cursor === null) return;
-		if (res.next_cursor === cursor) {
+		// Any cursor we have already followed — the same one twice running, or a
+		// server alternating between two — would loop forever, and because
+		// repeats are de-duplicated the ceiling above would never fire either.
+		if (seenCursors.has(res.next_cursor)) {
 			throw new Error(`pagination cursor did not advance past "${cursor}" (server bug?)`);
 		}
+		seenCursors.add(res.next_cursor);
 		cursor = res.next_cursor;
 	}
 }

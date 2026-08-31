@@ -10,7 +10,7 @@ import {
 	type CommonOpts
 } from '../common.js';
 import { quotaLabel, runnerStatusLabel } from '../format.js';
-import { utilizationLabel } from '@tines/shared';
+import { listAll, utilizationLabel } from '@tines/shared';
 import type { Command } from 'commander';
 
 export function register(program: Command): void {
@@ -22,14 +22,14 @@ export function register(program: Command): void {
 	withCommon(supervisor.command('status').description('One-screen overview: kill switch, quota, utilization, runners')).action(
 		async (opts: CommonOpts) => {
 			const api = client(opts);
-			const [settings, runnersRes, workflows, activeRuns] = await Promise.all([
+			const [settings, runnersRes, workflows, activeRunItems] = await Promise.all([
 				api.getSupervisorSettings(),
 				api.listRunners(),
-				api.listWorkflows({ limit: 100 }),
-				api.listRuns({ active: true, limit: 100 })
+				api.listWorkflows(),
+				listAll((page) => api.listRuns({ active: true, ...page }))
 			]);
 			if (opts.json) {
-				return printJson({ settings, runners: runnersRes.items, active_runs: activeRuns.items });
+				return printJson({ settings, runners: runnersRes.items, active_runs: activeRunItems });
 			}
 			const stateNames = new Map<string, string>();
 			for (const wf of workflows.items) {
@@ -37,7 +37,7 @@ export function register(program: Command): void {
 			}
 			console.log(`automation: ${settings.enabled ? 'ON' : 'OFF (kill switch — nothing dispatches)'}`);
 			console.log(quotaLabel(settings.quota, (id) => stateNames.get(id) ?? id));
-			console.log(`utilization: ${utilizationLabel(settings.quota, activeRuns.items, (id) => stateNames.get(id) ?? id)}`);
+			console.log(`utilization: ${utilizationLabel(settings.quota, activeRunItems, (id) => stateNames.get(id) ?? id)}`);
 			console.log(`attempt limit: ${settings.attempt_limit} strikes, then the issue parks`);
 			if (runnersRes.items.length === 0) {
 				console.log('runners: none');
@@ -111,7 +111,7 @@ export function register(program: Command): void {
 			quota: { type: 'state_roster', default_limit: opts.default, overrides }
 		});
 		if (opts.json) return printJson(settings);
-		const workflows = await api.listWorkflows({ limit: 100 });
+		const workflows = await api.listWorkflows();
 		const stateNames = new Map<string, string>();
 		for (const wf of workflows.items) {
 			for (const s of wf.states) stateNames.set(s.id, `${wf.name}/${s.name}`);

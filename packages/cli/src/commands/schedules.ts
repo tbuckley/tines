@@ -4,6 +4,7 @@ import { BODY_VALUE_HELP, readBodyValue } from '../body-value.js';
 import {
 	client,
 	die,
+	fetchList,
 	printJson,
 	printList,
 	resolveProject,
@@ -18,6 +19,7 @@ import { recurrenceLabel, scheduleRef, timestamp } from '../format.js';
 import { buildRecurrence, type RecurrenceOpts } from '../recurrence-flags.js';
 import { parseScheduleRef } from '../refs.js';
 import {
+	listAll,
 	type ApiClient,
 	type Schedule,
 	type SchedulePreset,
@@ -28,7 +30,7 @@ import type { Command } from 'commander';
 async function resolveSchedule(api: ApiClient, ref: string): Promise<Schedule> {
 	const { project, name } = parseScheduleRef(ref);
 	const proj = await resolveProject(api, project);
-	const { items } = await api.listProjectSchedules(proj.id, { limit: 100 });
+	const items = await listAll((page) => api.listProjectSchedules(proj.id, page));
 	const found = items.find((s) => s.name === name) ?? items.find((s) => s.id === name);
 	if (!found) {
 		die(
@@ -66,12 +68,14 @@ export function register(program: Command): void {
 			.option('-p, --project <name>', 'filter by project name or id')
 			.option('-a, --all', 'include paused schedules')
 	).action(async (opts: ListOpts & { project?: string; all?: boolean }) => {
-		const res = await client(opts).listSchedules({
-			project: opts.project,
-			enabled: opts.all ? undefined : true,
-			limit: opts.limit,
-			cursor: opts.cursor
-		});
+		const api = client(opts);
+		const res = await fetchList(opts, (page) =>
+			api.listSchedules({
+				project: opts.project,
+				enabled: opts.all ? undefined : true,
+				...page
+			})
+		);
 		printList(res, opts, (items) => {
 			if (items.length === 0) return console.log('no schedules');
 			table([

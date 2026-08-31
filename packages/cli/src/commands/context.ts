@@ -4,6 +4,7 @@ import {
 	client,
 	collect,
 	die,
+	fetchList,
 	printJson,
 	printList,
 	resolveIssue,
@@ -21,6 +22,7 @@ import {
 	AGENT_GUIDELINES_BODY,
 	AGENT_GUIDELINES_DESCRIPTION,
 	AGENT_GUIDELINES_NAME,
+	listAll,
 	repoDirFromUrl,
 	type ApiClient,
 	type ContextItem,
@@ -106,16 +108,17 @@ export function register(program: Command): void {
 	).action(async (opts: ListOpts & ScopeFlagOpts & { kind?: ContextKind; exact?: boolean; search?: string }) => {
 		const api = client(opts);
 		const scope = await resolveScopeFlags(api, opts);
-		const res = await api.listContext({
-			kind: opts.kind,
-			project: scope.project_id ?? undefined,
-			state: scope.workflow_state_id ?? undefined,
-			issue: scope.issue_id ?? undefined,
-			q: opts.search,
-			exact: opts.exact ? true : undefined,
-			limit: opts.limit,
-			cursor: opts.cursor
-		});
+		const res = await fetchList(opts, (page) =>
+			api.listContext({
+				kind: opts.kind,
+				project: scope.project_id ?? undefined,
+				state: scope.workflow_state_id ?? undefined,
+				issue: scope.issue_id ?? undefined,
+				q: opts.search,
+				exact: opts.exact ? true : undefined,
+				...page
+			})
+		);
 		printList(res, opts, (items) => {
 			if (items.length === 0) return console.log('no context items');
 			table([
@@ -292,7 +295,7 @@ export function register(program: Command): void {
 	).action(async (opts: CommonOpts) => {
 		const api = client(opts);
 		// Global items only: exact=true with no dimension filters.
-		const { items } = await api.listContext({ kind: 'prompt', exact: true, limit: 100 });
+		const items = await listAll((page) => api.listContext({ kind: 'prompt', exact: true, ...page }));
 		const existing = items.find((i) => i.name === AGENT_GUIDELINES_NAME);
 		if (existing) {
 			if (opts.json) return printJson(existing);

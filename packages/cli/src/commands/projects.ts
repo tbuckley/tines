@@ -3,6 +3,7 @@ import { readBodyValue } from '../body-value.js';
 import {
 	client,
 	die,
+	fetchList,
 	printJson,
 	printList,
 	resolveProject,
@@ -21,7 +22,8 @@ export function register(program: Command): void {
 	const projects = program.command('projects').description('Manage projects');
 
 	withList(projects.command('list').description('List projects')).action(async (opts: ListOpts) => {
-		const res = await client(opts).listProjects({ limit: opts.limit, cursor: opts.cursor });
+		const api = client(opts);
+		const res = await fetchList(opts, (page) => api.listProjects(page));
 		printList(res, opts, (items) => {
 			if (items.length === 0) return console.log('no projects');
 			table([

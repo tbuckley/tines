@@ -9,15 +9,17 @@ import { parseIssueRef } from './refs.js';
 import {
 	ApiError,
 	createApiClient,
+	listAll,
 	type ApiClient,
 	type IssueDetail,
 	type ListResponse,
+	type PageParams,
 	type Project,
 	type Runner,
 	type WorkflowResponse,
 	type WorkflowState
 } from '@tines/shared';
-import type { Command } from 'commander';
+import { Option, type Command } from 'commander';
 
 export const DEFAULT_URL = 'http://localhost:5173';
 
@@ -32,6 +34,7 @@ export interface CommonOpts {
 export interface ListOpts extends CommonOpts {
 	limit?: number;
 	cursor?: string;
+	allPages?: boolean;
 }
 
 /**
@@ -52,12 +55,25 @@ export function withCommon(cmd: Command, { baseUrlFlag = true } = {}): Command {
 		.option('--json', 'output the raw JSON response');
 }
 
-/** Adds the pagination options shared by every list command. */
+/**
+ * Adds the pagination options shared by every list command. --all-pages walks
+ * the cursor for callers (agents, mostly) that want the whole list and would
+ * otherwise treat the first page as if it were everything; --limit then sets
+ * the page size rather than a total.
+ */
 export function withList(cmd: Command): Command {
 	return withCommon(
 		cmd
-			.option('--limit <n>', 'maximum items to return', (v) => Number.parseInt(v, 10))
+			.option('--limit <n>', 'maximum items to return (page size under --all-pages)', (v) =>
+				Number.parseInt(v, 10)
+			)
 			.option('--cursor <cursor>', 'resume from the next_cursor of a previous page')
+			.addOption(
+				new Option(
+					'--all-pages',
+					'fetch every page, not just the first (slower on large lists)'
+				).conflicts('cursor')
+			)
 	);
 }
 
@@ -131,7 +147,37 @@ export function printJson(value: unknown): void {
 export function printList<T>(res: ListResponse<T>, opts: ListOpts, render: (items: T[]) => void): void {
 	if (opts.json) return printJson(res);
 	render(res.items);
-	if (res.next_cursor) console.log(`\nmore results: rerun with --cursor ${res.next_cursor}`);
+	if (res.next_cursor) {
+		console.log(
+			`\nmore results: rerun with --all-pages, or resume with --cursor ${res.next_cursor}`
+		);
+	}
+}
+
+/**
+ * Fetches what a list command should print: one page, or — under --all-pages —
+ * every page collapsed into the same `{items, next_cursor}` shape so --json
+ * output is indistinguishable from a list that happened to fit in one page.
+ *
+ * Without the flag, a dropped page is announced on stderr under --json (table
+ * mode says the same thing on stdout via printList). --json output has to stay
+ * parseable, and agents read run logs. Passing --cursor is deliberate paging,
+ * so it is not warned about.
+ */
+export async function fetchList<T extends { id: string }>(
+	opts: ListOpts,
+	fetchPage: (page: PageParams) => Promise<ListResponse<T>>
+): Promise<ListResponse<T>> {
+	if (opts.allPages) {
+		return { items: await listAll(fetchPage, { pageSize: opts.limit }), next_cursor: null };
+	}
+	const res = await fetchPage({ limit: opts.limit, cursor: opts.cursor });
+	if (res.next_cursor && opts.json && !opts.cursor) {
+		console.error(
+			'warning: more items exist beyond this page — rerun with --all-pages for all of them'
+		);
+	}
+	return res;
 }
 
 export function table(rows: string[][]): void {
