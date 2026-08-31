@@ -14,7 +14,6 @@ type ErrorBody = { error: { code: string; message: string } };
 
 /** Everything but the per-export timestamp. */
 const comparable = (doc: LibraryDocument) => ({
-	projects: [...doc.projects].sort((a, b) => a.name.localeCompare(b.name)),
 	workflows: [...doc.workflows].sort((a, b) => a.name.localeCompare(b.name)),
 	context: [...doc.context].sort(
 		(a, b) => `${a.kind}${a.name}`.localeCompare(`${b.kind}${b.name}`)
@@ -24,6 +23,7 @@ const comparable = (doc: LibraryDocument) => ({
 test.describe.serial('library export / import', () => {
 	const workflowName = `Portable ${runId}`;
 	const promptName = `portable-${runId}`;
+	const projectName = `portable-project-${runId}`;
 
 	test('Alice exports a self-contained library', async ({ request }) => {
 		const alice = apiClient(request, ALICE.apiKey);
@@ -47,8 +47,16 @@ test.describe.serial('library export / import', () => {
 			]
 		});
 		expect(wf.ok()).toBe(true);
-		const created = await body<{ states: { id: string; name: string }[] }>(wf);
+		const created = await body<{ id: string; states: { id: string; name: string }[] }>(wf);
 		const middle = created.states.find((s) => s.name === 'Middle')!;
+
+		// A project whose default workflow is the one travelling with it: the
+		// pointer is by name in the document and has to be re-resolved there.
+		const project = await alice.post('/api/v1/projects', {
+			name: projectName,
+			default_workflow_id: created.id
+		});
+		expect(project.ok()).toBe(true);
 
 		const item = await alice.post('/api/v1/context', {
 			kind: 'prompt',
@@ -66,6 +74,7 @@ test.describe.serial('library export / import', () => {
 		expect(doc.workflows.map((w) => w.name)).toContain(workflowName);
 		// The system workflow is seeded identically everywhere, so it never travels.
 		expect(doc.workflows.map((w) => w.name)).not.toContain('Standard');
+		expect(doc.projects.find((p) => p.name === projectName)?.default_workflow).toBe(workflowName);
 		const exported = doc.context.find((c) => c.name === promptName)!;
 		expect(exported.scope.state).toEqual({ workflow: workflowName, name: 'Middle' });
 		expect(exported.body).toBe('Instructions that should travel.');
@@ -95,6 +104,11 @@ test.describe.serial('library export / import', () => {
 
 		const rebuilt = await body<LibraryDocument>(await bob.get('/api/v1/export'));
 		expect(comparable(rebuilt)).toEqual(comparable(document));
+		// Projects are compared by the one this suite creates: Bob has a library
+		// of his own, so his export is a superset rather than the same document.
+		expect(rebuilt.projects.find((p) => p.name === projectName)?.default_workflow).toBe(
+			workflowName
+		);
 	});
 
 	test('re-importing the same file creates nothing', async ({ request }) => {
