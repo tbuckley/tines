@@ -50,7 +50,10 @@ test.describe.serial('issue labels UI', () => {
 		for (const name of crowdNames) await api.post('/api/v1/labels', { name, color: 'green' });
 		crowded = await body<IssueDetail>(
 			await api.post(`/api/v1/projects/${project.id}/issues`, {
-				title: `Crowded ${runId}`,
+				// Long on purpose: a short title would fit beside the chips even
+				// without the one-line rule, and the height assertion below would
+				// pass vacuously.
+				title: `Crowded ${runId} — runner daemon drops the log tail when a run is canceled`,
 				labels: crowdNames
 			})
 		);
