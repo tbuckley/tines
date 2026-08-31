@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import {
 	client,
 	die,
+	fetchList,
 	printJson,
 	printList,
 	resolveWorkflow,
@@ -131,7 +132,8 @@ export function register(program: Command): void {
 
 	withList(workflows.command('list').description('List the workflow library')).action(
 		async (opts: ListOpts) => {
-			const res = await client(opts).listWorkflows({ limit: opts.limit, cursor: opts.cursor });
+			const api = client(opts);
+			const res = await fetchList(opts, (page) => api.listWorkflows(page));
 			printList(res, opts, (items) => {
 				if (items.length === 0) return console.log('no workflows');
 				table([

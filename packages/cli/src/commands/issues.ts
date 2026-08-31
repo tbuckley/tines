@@ -5,6 +5,7 @@ import { BODY_VALUE_HELP, readBodyValue } from '../body-value.js';
 import {
 	client,
 	die,
+	fetchList,
 	printJson,
 	printList,
 	resolveIssue,
@@ -175,17 +176,19 @@ export function register(program: Command): void {
 				search?: string;
 			}
 		) => {
-			const res = await client(opts).listIssues({
-				project: opts.project,
-				state: opts.state,
-				category: opts.category,
-				workflow: opts.workflow,
-				hide_done: !opts.all,
-				ready: opts.ready,
-				q: opts.search,
-				limit: opts.limit,
-				cursor: opts.cursor
-			});
+			const api = client(opts);
+			const res = await fetchList(opts, (page) =>
+				api.listIssues({
+					project: opts.project,
+					state: opts.state,
+					category: opts.category,
+					workflow: opts.workflow,
+					hide_done: !opts.all,
+					ready: opts.ready,
+					q: opts.search,
+					...page
+				})
+			);
 			printList(res, opts, (items) => {
 				if (items.length === 0) return console.log(opts.ready ? 'no ready issues' : 'no issues');
 				table([

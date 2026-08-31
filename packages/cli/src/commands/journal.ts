@@ -19,6 +19,7 @@ import { helpGuard } from '../help-guard.js';
 import {
 	ApiError,
 	JOURNAL_NAME,
+	listAll,
 	type ApiClient,
 	type ContextItem,
 	type ContextScope,
@@ -40,13 +41,15 @@ interface ResolvedJournal {
 
 /** The `journal` item at an already-resolved project ∧ state scope. */
 async function journalItemAt(api: ApiClient, scope: ContextScope): Promise<ContextItem | null> {
-	const { items } = await api.listContext({
-		kind: 'prompt',
-		project: scope.project_id ?? undefined,
-		state: scope.workflow_state_id ?? undefined,
-		exact: true,
-		limit: 100
-	});
+	const items = await listAll((page) =>
+		api.listContext({
+			kind: 'prompt',
+			project: scope.project_id ?? undefined,
+			state: scope.workflow_state_id ?? undefined,
+			exact: true,
+			...page
+		})
+	);
 	return items.find((i) => i.name === JOURNAL_NAME) ?? null;
 }
 

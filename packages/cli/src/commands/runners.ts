@@ -3,6 +3,7 @@ import { hostname } from 'node:os';
 import {
 	client,
 	die,
+	fetchList,
 	printJson,
 	printList,
 	resolveApiKey,
@@ -346,13 +347,14 @@ export function register(program: Command): void {
 		const api = client(opts);
 		const issueId = opts.issue ? (await resolveIssue(api, opts.issue)).id : undefined;
 		const runnerId = opts.runner ? (await resolveRunner(api, opts.runner)).id : undefined;
-		const res = await api.listRuns({
-			issue: issueId,
-			runner: runnerId,
-			active: opts.active ? true : undefined,
-			limit: opts.limit,
-			cursor: opts.cursor
-		});
+		const res = await fetchList(opts, (page) =>
+			api.listRuns({
+				issue: issueId,
+				runner: runnerId,
+				active: opts.active ? true : undefined,
+				...page
+			})
+		);
 		printList(res, opts, (items) => {
 			if (items.length === 0) return console.log(opts.active ? 'no active runs' : 'no runs');
 			table([['ID', 'ISSUE', 'RUNNER', 'TIER', 'STATUS', 'DURATION', 'COST', 'CREATED'], ...items.map(runRow)]);

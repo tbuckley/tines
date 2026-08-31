@@ -136,8 +136,11 @@ Options:
   -p, --project <name>          scope: project name or id
   -s, --state <workflow/state>  scope: workflow-qualified state
   -i, --issue <ref>             scope: issue (<project>/<number>)
-  --limit <n>                   maximum items to return
+  --limit <n>                   maximum items to return (page size under
+                                --all-pages)
   --cursor <cursor>             resume from the next_cursor of a previous page
+  --all-pages                   fetch every page, not just the first (slower on
+                                large lists)
   -u, --url <url>               base URL of the Tines API (or set TINES_API_URL;
                                 default http://localhost:5173)
   --api-key <key>               API key (or set TINES_API_KEY)
@@ -174,8 +177,10 @@ Options:
   -i, --issue <ref>     filter to one issue (<project>/<number>)
   -p, --project <name>  filter by project name or id
   -t, --type <type>     filter by event type (e.g. issue.transitioned)
-  --limit <n>           maximum items to return
+  --limit <n>           maximum items to return (page size under --all-pages)
   --cursor <cursor>     resume from the next_cursor of a previous page
+  --all-pages           fetch every page, not just the first (slower on large
+                        lists)
   -u, --url <url>       base URL of the Tines API (or set TINES_API_URL; default
                         http://localhost:5173)
   --api-key <key>       API key (or set TINES_API_KEY)
@@ -474,8 +479,11 @@ Options:
   --ready                      only issues that are actionable now (not done,
                                not a duplicate, no open blockers)
   -q, --search <text>          search titles and descriptions
-  --limit <n>                  maximum items to return
+  --limit <n>                  maximum items to return (page size under
+                               --all-pages)
   --cursor <cursor>            resume from the next_cursor of a previous page
+  --all-pages                  fetch every page, not just the first (slower on
+                               large lists)
   -u, --url <url>              base URL of the Tines API (or set TINES_API_URL;
                                default http://localhost:5173)
   --api-key <key>              API key (or set TINES_API_KEY)
@@ -678,8 +686,10 @@ Options:
 List projects
 
 Options:
-  --limit <n>        maximum items to return
+  --limit <n>        maximum items to return (page size under --all-pages)
   --cursor <cursor>  resume from the next_cursor of a previous page
+  --all-pages        fetch every page, not just the first (slower on large
+                     lists)
   -u, --url <url>    base URL of the Tines API (or set TINES_API_URL; default
                      http://localhost:5173)
   --api-key <key>    API key (or set TINES_API_KEY)
@@ -946,8 +956,10 @@ Options:
   -i, --issue <ref>    filter to one issue (<project>/<number>)
   -r, --runner <name>  filter by runner name
   --active             only runs holding a claim (assigned/launching/running)
-  --limit <n>          maximum items to return
+  --limit <n>          maximum items to return (page size under --all-pages)
   --cursor <cursor>    resume from the next_cursor of a previous page
+  --all-pages          fetch every page, not just the first (slower on large
+                       lists)
   -u, --url <url>      base URL of the Tines API (or set TINES_API_URL; default
                        http://localhost:5173)
   --api-key <key>      API key (or set TINES_API_KEY)
@@ -1044,8 +1056,10 @@ List scheduled tasks (hides paused schedules unless --all)
 Options:
   -p, --project <name>  filter by project name or id
   -a, --all             include paused schedules
-  --limit <n>           maximum items to return
+  --limit <n>           maximum items to return (page size under --all-pages)
   --cursor <cursor>     resume from the next_cursor of a previous page
+  --all-pages           fetch every page, not just the first (slower on large
+                        lists)
   -u, --url <url>       base URL of the Tines API (or set TINES_API_URL; default
                         http://localhost:5173)
   --api-key <key>       API key (or set TINES_API_KEY)
@@ -1261,8 +1275,10 @@ Options:
 List the workflow library
 
 Options:
-  --limit <n>        maximum items to return
+  --limit <n>        maximum items to return (page size under --all-pages)
   --cursor <cursor>  resume from the next_cursor of a previous page
+  --all-pages        fetch every page, not just the first (slower on large
+                     lists)
   -u, --url <url>    base URL of the Tines API (or set TINES_API_URL; default
                      http://localhost:5173)
   --api-key <key>    API key (or set TINES_API_KEY)
