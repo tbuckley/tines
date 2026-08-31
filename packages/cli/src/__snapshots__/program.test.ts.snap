@@ -187,26 +187,28 @@ Options:
 Work with issues
 
 Options:
-  -h, --help                                  display help for command
+  -h, --help                                            display help for command
 
 Commands:
-  list [options]                              List issues across projects (hides done issues unless --all)
-  create [options] <project>                  Create an issue in a project, optionally with a recurrence (a scheduled task)
-  show [options] <ref>                        Show an issue (<project>/<number>), including allowed transitions
-  edit [options] <ref>                        Edit an issue: title, description, workflow, or force-set state
-  move [options] <ref> <action>               Take a transition on an issue by its action name (e.g. "approve")
-  comment [options] <ref> <markdown>          Comment on an issue — Markdown body: inline text, @file, or "-" to read stdin; escape a literal leading @ as @@
-  block [options] <blocker> <blocked>         Record that <blocker> blocks <blocked> (advisory: transitions stay allowed)
-  unblock [options] <blocker> <blocked>       Remove the link making <blocker> block <blocked>
-  duplicate|dupe [options] <ref> <canonical>  Mark <ref> as a duplicate of <canonical> (its state then follows <canonical>)
-  context [options] <ref>                     Print an issue's effective context (the assembled bundle for its current state)
-  unduplicate|undupe [options] <ref>          Unmark a duplicate (its own state was never changed, so it simply reappears)
-  prompt [options] <ref>                      Print the launch prompt: the stitched context followed by the issue block
-  artifacts                                   Typed, versioned attachments on an issue — the work products transition requirements gate on
-  assign [options] <ref> [runner]             Pin an issue to a runner (<runner>[:tier]) — replaces routing rules for it; --clear unpins
-  dispatch [options] <ref>                    Explain why an issue is (not) dispatching: eligibility, routing, per-runner verdicts
-  resume [options] <ref>                      Un-park an issue: clear needs-attention and reset the attempt count
-  help [command]                              display help for command
+  list [options]                                        List issues across projects (hides done issues unless --all)
+  create [options] <project>                            Create an issue in a project, optionally with a recurrence (a scheduled task)
+  show [options] <ref>                                  Show an issue (<project>/<number>), including allowed transitions
+  edit [options] <ref>                                  Edit an issue: title, description, workflow, or force-set state
+  move [options] <ref> <action>                         Take a transition on an issue by its action name (e.g. "approve")
+  comment [options] <ref> <markdown>                    Comment on an issue — Markdown body: inline text, @file, or "-" to read stdin; escape a literal leading @ as @@
+  comment-edit [options] <ref> <comment-id> <markdown>  Replace the body of your own comment — Markdown body: inline text, @file, or "-" to read stdin; escape a literal leading @ as @@
+  comment-delete [options] <ref> <comment-id>           Delete your own comment (the event keeps the record of the deletion)
+  block [options] <blocker> <blocked>                   Record that <blocker> blocks <blocked> (advisory: transitions stay allowed)
+  unblock [options] <blocker> <blocked>                 Remove the link making <blocker> block <blocked>
+  duplicate|dupe [options] <ref> <canonical>            Mark <ref> as a duplicate of <canonical> (its state then follows <canonical>)
+  context [options] <ref>                               Print an issue's effective context (the assembled bundle for its current state)
+  unduplicate|undupe [options] <ref>                    Unmark a duplicate (its own state was never changed, so it simply reappears)
+  prompt [options] <ref>                                Print the launch prompt: the stitched context followed by the issue block
+  artifacts                                             Typed, versioned attachments on an issue — the work products transition requirements gate on
+  assign [options] <ref> [runner]                       Pin an issue to a runner (<runner>[:tier]) — replaces routing rules for it; --clear unpins
+  dispatch [options] <ref>                              Explain why an issue is (not) dispatching: eligibility, routing, per-runner verdicts
+  resume [options] <ref>                                Un-park an issue: clear needs-attention and reset the attempt count
+  help [command]                                        display help for command
 ",
   "tines issues artifacts": "Usage: tines issues artifacts [options] [command]
 
@@ -339,6 +341,29 @@ Options:
 
 Comment on an issue — Markdown body: inline text, @file, or "-" to read stdin;
 escape a literal leading @ as @@
+
+Options:
+  -u, --url <url>  base URL of the Tines API (or set TINES_API_URL; default
+                   http://localhost:5173)
+  --api-key <key>  API key (or set TINES_API_KEY)
+  --json           output the raw JSON response
+  -h, --help       display help for command
+",
+  "tines issues comment-delete": "Usage: tines issues comment-delete [options] <ref> <comment-id>
+
+Delete your own comment (the event keeps the record of the deletion)
+
+Options:
+  -u, --url <url>  base URL of the Tines API (or set TINES_API_URL; default
+                   http://localhost:5173)
+  --api-key <key>  API key (or set TINES_API_KEY)
+  --json           output the raw JSON response
+  -h, --help       display help for command
+",
+  "tines issues comment-edit": "Usage: tines issues comment-edit [options] <ref> <comment-id> <markdown>
+
+Replace the body of your own comment — Markdown body: inline text, @file, or "-"
+to read stdin; escape a literal leading @ as @@
 
 Options:
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL; default
