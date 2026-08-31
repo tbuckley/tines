@@ -14,7 +14,7 @@
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { Select } from '$lib/components/ui/select/index.js';
 	import { Textarea } from '$lib/components/ui/textarea/index.js';
-	import { prefersReducedMotion, relativeTime, untilTime } from '$lib/format';
+	import { nextRunLabel, prefersReducedMotion, relativeTime } from '$lib/format';
 	import { defaultRepeatState, repeatFromSchedule, repeatSummary, repeatToScheduleInput } from '$lib/schedule-form';
 
 	let {
@@ -150,7 +150,7 @@
 			</div>
 			<div class="text-muted-foreground hidden shrink-0 text-right text-xs sm:block">
 				{#if s.enabled}
-					<p title={new Date(s.next_run_at).toLocaleString()}>next {untilTime(s.next_run_at)}</p>
+					<p title={new Date(s.next_run_at).toLocaleString()}>{nextRunLabel(s.next_run_at)}</p>
 				{:else}
 					<p>paused</p>
 				{/if}

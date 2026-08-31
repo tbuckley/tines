@@ -370,6 +370,18 @@ test.describe('schedules in the web UI', () => {
 			page.getByRole('button', { name: `From schedule ${SCHED.gatedName}` })
 		).toBeVisible();
 
+		// The next-run line is phrased against the real next_run_at: a pending
+		// run counts down, a past-due one says so. It must never read as an
+		// imminent countdown while the timestamp is behind us (Tines/55).
+		const api = apiClient(page.request, ALICE.apiKey);
+		const schedule = await body<Schedule>(await api.get(`/api/v1/schedules/${SCHED.plainId}`));
+		const line = page.locator('li', { hasText: SCHED.plainName }).locator('p', { hasText: /overdue|due now|^next in/ });
+		if (schedule.next_run_at >= Date.now()) {
+			await expect(line).toHaveText(/^next in (<1m|\d+[mhd]|\w{3} \d+, \d{4})$/);
+		} else {
+			await expect(line).toHaveText(/^(due now|\d+[mhd] overdue|overdue since .+)$/);
+		}
+
 		await context.close();
 	});
 

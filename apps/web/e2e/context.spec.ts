@@ -260,7 +260,7 @@ test.describe.serial('context attachments', () => {
 		expect(prompt.text).toContain(`## Issue: ${projectName}/1 — Context target`);
 		expect(prompt.text).toContain('### Comments');
 		expect(prompt.text).toContain('A note.');
-		expect(prompt.text).toContain(`Add a comment: \`tines issues comment ${projectName}/1 "<markdown>"\``);
+		expect(prompt.text).toContain(`tines issues comment ${projectName}/1 - <<'EOF'`);
 		expect(prompt.text).toContain(
 			`- **send back** → Implementing (active): \`tines issues move ${projectName}/1 "send back"\``
 		);

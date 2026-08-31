@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSy
 import { hostname } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { createInterface } from 'node:readline/promises';
+import { BODY_VALUE_HELP, readBodyValue } from './body-value.js';
 import { runDaemon } from './daemon/daemon.js';
 import { defaultConfigDir, hasRunnerCredentials, saveRunnerCredentials } from './daemon/store.js';
 import { HARNESS_KINDS, type HarnessKind } from './daemon/support.js';
@@ -15,10 +16,13 @@ import {
 	createApiClient,
 	parsePrSpec,
 	describeRecurrence,
+	displayActor,
+	eventSummary,
 	isStaleTierOverride,
 	JOURNAL_NAME,
 	MODEL_TIERS,
 	repoDirFromUrl,
+	runCostLabel,
 	runDurationLabel,
 	utilizationLabel,
 	WEEKDAY_NAMES,
@@ -401,20 +405,6 @@ async function resolveScopeFlags(
 	return scope;
 }
 
-/** `--body` takes inline Markdown or `@file`; a literal `@…` escapes as `@@…`. */
-function readBodyValue(value: string): string {
-	if (value.startsWith('@@')) return value.slice(1);
-	if (value.startsWith('@')) {
-		const file = value.slice(1);
-		try {
-			return readFileSync(file, 'utf8');
-		} catch (err) {
-			die(`cannot read ${file}: ${err instanceof Error ? err.message : String(err)}`);
-		}
-	}
-	return value;
-}
-
 /**
  * `--file <path>=@<local>`: maps a workspace path to a local file's content.
  * Workspace paths cannot contain `=`, so the first `=` is the separator;
@@ -650,70 +640,6 @@ function printWorkflowDetail(wf: WorkflowResponse): void {
 		}
 	}
 	for (const w of wf.warnings ?? []) console.log(`\nwarning: ${w}`);
-}
-
-function eventSummary(ev: TinesEvent): string {
-	const p = ev.payload as Record<string, unknown>;
-	const issue = ev.issue_ref ? `${ev.issue_ref.project_name}/#${ev.issue_ref.number}` : null;
-	switch (ev.type) {
-		case 'issue.created':
-			return `created ${issue}: ${p.title}${p.scheduled_task_name ? ` (via schedule "${p.scheduled_task_name}")` : ''}`;
-		case 'issue.updated':
-			return `updated ${issue} (${(p.changed as string[])?.join(', ')})`;
-		case 'issue.transitioned':
-			return `${p.action ? `"${p.action}" on` : 'moved'} ${issue}: ${p.from_state_name} → ${p.to_state_name}`;
-		case 'issue.commented':
-			return `commented on ${issue}`;
-		case 'project.created':
-		case 'project.updated':
-		case 'project.deleted':
-			return `${ev.type.split('.')[1]} project "${p.name ?? ev.project_name}"`;
-		case 'workflow.created':
-		case 'workflow.updated':
-		case 'workflow.deleted':
-			return `${ev.type.split('.')[1]} workflow "${p.name}"`;
-		case 'api_key.created':
-			return `created API key "${p.name}"`;
-		case 'api_key.revoked':
-			return `revoked API key "${p.name}"`;
-		case 'scheduled_task.created':
-		case 'scheduled_task.updated':
-		case 'scheduled_task.deleted':
-			return `${ev.type.split('.')[1]} schedule "${p.name}"`;
-		case 'context.created':
-		case 'context.updated':
-		case 'context.deleted': {
-			const scope = p.scope as { label?: string } | undefined;
-			const verb = ev.type.split('.')[1];
-			return `${verb} ${p.kind} "${p.name}"${scope?.label ? ` [${scope.label}]` : ''}`;
-		}
-		case 'scheduled_task.skipped': {
-			const blocking = Array.isArray(p.blocking) ? p.blocking.length : 0;
-			return `skipped schedule "${p.name}" (${blocking} open instance${blocking === 1 ? '' : 's'})`;
-		}
-		case 'runner.registered':
-		case 'runner.updated':
-		case 'runner.removed':
-			return `${ev.type.split('.')[1]} runner "${p.name}"`;
-		case 'runner.errored':
-			return `runner "${p.runner_name}" failed to launch (${p.consecutive_failures} consecutive): ${p.error}`;
-		case 'agent_run.started':
-			return `run started on ${issue} via ${p.runner_name} (${p.tier}${p.model ? ` → ${p.model}` : ''})`;
-		case 'agent_run.ended':
-			return `run ${p.status} on ${issue} via ${p.runner_name}${p.outcome ? ` — ${p.outcome}` : ''}`;
-		case 'issue.parked':
-			return `parked ${issue} after ${p.attempt_count} strikes — needs attention`;
-		case 'issue.resumed':
-			return `resumed ${issue} (attempt count reset)`;
-		case 'routing_rule.created':
-		case 'routing_rule.updated':
-		case 'routing_rule.deleted':
-			return `${ev.type.split('.')[1]} the ${p.scope_label} routing rule`;
-		case 'settings.updated':
-			return `updated supervisor settings (${(p.changed as string[])?.join(', ') || 'no changes'})`;
-		default:
-			return ev.type;
-	}
 }
 
 // ---------------------------------------------------------------------------
@@ -1031,7 +957,7 @@ withCommon(
 		.command('create <project>')
 		.description('Create an issue in a project, optionally with a recurrence (a scheduled task)')
 		.requiredOption('-t, --title <title>', 'issue title (doubles as the title template with a recurrence)')
-		.option('-d, --description <markdown>', 'issue description (Markdown)')
+		.option('-d, --description <markdown>', `issue description (Markdown) — ${BODY_VALUE_HELP}`)
 		.option('-w, --workflow <id-or-name>', 'workflow (defaults to project default, else standard)')
 		.option('-s, --state <name>', "starting state (defaults to the workflow's initial state)")
 		.option('--every <preset>', 'repeat hourly (or every N hours: "6h"), daily, weekly, or monthly')
@@ -1054,6 +980,11 @@ withCommon(
 				scheduleName?: string;
 			}
 	) => {
+		// Resolved before any lookup, like the <markdown> positionals: an
+		// unreadable @file should fail without a round trip, and failing locally
+		// is what lets the spawn tests pin this call site (Tines/9).
+		const description =
+			opts.description !== undefined ? readBodyValue(opts.description) : undefined;
 		const api = client(opts);
 		const project = await resolveProject(api, projectRef);
 		const workflowId = opts.workflow ? (await resolveWorkflow(api, opts.workflow)).id : undefined;
@@ -1071,7 +1002,7 @@ withCommon(
 			: undefined;
 		const issue = await api.createIssue(project.id, {
 			title: opts.title,
-			description: opts.description,
+			description,
 			workflow_id: workflowId,
 			state: opts.state,
 			schedule
@@ -1103,7 +1034,7 @@ withCommon(
 		.command('edit <ref>')
 		.description('Edit an issue: title, description, workflow, or force-set state')
 		.option('-t, --title <title>', 'set the title')
-		.option('-d, --description <markdown>', 'set the description (Markdown)')
+		.option('-d, --description <markdown>', `set the description (Markdown) — ${BODY_VALUE_HELP}`)
 		.option(
 			'-s, --state <name>',
 			"force-set the state, bypassing the workflow's transitions (records a forced move)"
@@ -1114,11 +1045,13 @@ withCommon(
 		ref: string,
 		opts: CommonOpts & { title?: string; description?: string; state?: string; workflow?: string }
 	) => {
+		const description =
+			opts.description !== undefined ? readBodyValue(opts.description) : undefined;
 		const api = client(opts);
 		const issue = await resolveIssue(api, ref);
 		const body: UpdateIssueRequest = {};
 		if (opts.title !== undefined) body.title = opts.title;
-		if (opts.description !== undefined) body.description = opts.description;
+		if (description !== undefined) body.description = description;
 		if (opts.state !== undefined) body.state = opts.state;
 		if (opts.workflow !== undefined) body.workflow_id = (await resolveWorkflow(api, opts.workflow)).id;
 		if (Object.keys(body).length === 0) {
@@ -1154,14 +1087,15 @@ withCommon(
 withCommon(
 	issues
 		.command('comment <ref> <markdown>')
-		.description('Comment on an issue (Markdown body)')
+		.description(`Comment on an issue — Markdown body: ${BODY_VALUE_HELP}`)
 		// A body may start with "-"; options go before the arguments.
 		.passThroughOptions()
 ).action(async (ref: string, markdown: string, opts: CommonOpts, command: Command) => {
 	if (helpGuard(command, markdown)) return;
+	const body = readBodyValue(markdown);
 	const api = client(opts);
 	const issue = await resolveIssue(api, ref);
-	const comment = await api.createComment(issue.id, { body: markdown });
+	const comment = await api.createComment(issue.id, { body });
 	if (opts.json) return printJson(comment);
 	console.log(`commented on ${issue.project_name}/#${issue.number} as ${actorLabel(comment.actor)}`);
 });
@@ -2079,7 +2013,7 @@ withCommon(
 withCommon(
 	journal
 		.command('append <ref> <markdown>')
-		.description('Append a lesson (creates the journal on first use)')
+		.description(`Append a lesson, creating the journal on first use — ${BODY_VALUE_HELP}`)
 		.option('--state <workflow>/<state>', STATE_FLAG_HELP)
 		// Lessons are dated bullets starting with "-"; options go before the
 		// arguments, exactly as the launch prompt's copy-pasteable command has it.
@@ -2087,11 +2021,14 @@ withCommon(
 ).action(
 	async (ref: string, markdown: string, opts: CommonOpts & { state?: string }, command: Command) => {
 		if (helpGuard(command, markdown)) return;
+		// Resolved once: stdin is single-consumption and all three paths below
+		// (append, first-use create, create-race recovery) need the same body.
+		const text = readBodyValue(markdown);
 		const api = client(opts);
 		const { scope, note, item } = await resolveJournal(api, ref, opts.state);
 		printNote(note);
 		if (item) {
-			const updated = await api.appendContextItem(item.id, { text: markdown });
+			const updated = await api.appendContextItem(item.id, { text });
 			if (opts.json) return printJson(updated);
 			return console.log(`appended to the ${scope.label} journal (now v${updated.version})`);
 		}
@@ -2101,7 +2038,7 @@ withCommon(
 				name: JOURNAL_NAME,
 				project_id: scope.project_id ?? undefined,
 				workflow_state_id: scope.workflow_state_id ?? undefined,
-				body: markdown.trim()
+				body: text.trim()
 			});
 			if (opts.json) return printJson(created);
 			console.log(`started the ${scope.label} journal (${created.id})`);
@@ -2111,7 +2048,7 @@ withCommon(
 			if (!(err instanceof ApiError) || err.code !== 'duplicate_context_name') throw err;
 			const { item: fresh } = await resolveJournal(api, ref, opts.state);
 			if (!fresh) throw err;
-			const updated = await api.appendContextItem(fresh.id, { text: markdown });
+			const updated = await api.appendContextItem(fresh.id, { text });
 			if (opts.json) return printJson(updated);
 			console.log(`appended to the ${scope.label} journal (now v${updated.version})`);
 		}
@@ -2223,7 +2160,7 @@ withCommon(
 		.command('edit <ref>')
 		.description('Edit a schedule: templates, workflow, start state, recurrence, timezone, gate, or name')
 		.option('-t, --title <template>', 'set the title template')
-		.option('-d, --description <markdown>', 'set the description template (Markdown)')
+		.option('-d, --description <markdown>', `set the description template (Markdown) — ${BODY_VALUE_HELP}`)
 		.option(
 			'-w, --workflow <id-or-name>',
 			'move future instances onto another workflow (resets the start state to its initial state unless --state is also given)'
@@ -2253,11 +2190,13 @@ withCommon(
 				name?: string;
 			}
 	) => {
+		const descriptionTemplate =
+			opts.description !== undefined ? readBodyValue(opts.description) : undefined;
 		const api = client(opts);
 		const schedule = await resolveSchedule(api, ref);
 		const body: UpdateScheduleRequest = {};
 		if (opts.title !== undefined) body.title_template = opts.title;
-		if (opts.description !== undefined) body.description_template = opts.description;
+		if (descriptionTemplate !== undefined) body.description_template = descriptionTemplate;
 		if (opts.workflow !== undefined) body.workflow_id = (await resolveWorkflow(api, opts.workflow)).id;
 		if (opts.state !== undefined) body.state = opts.state;
 		const recurrence = buildRecurrence(opts);
@@ -2621,6 +2560,10 @@ withCommon(
 		.option('--command <template>', 'custom harness command template ({prompt_file}, {workspace}, {model})')
 		.option('--max-concurrent <n>', 'maximum simultaneous runs', (v) => Number.parseInt(v, 10), 1)
 		.option('--poll-interval <seconds>', 'seconds between polls', (v) => Number.parseInt(v, 10), 15)
+		.option(
+			'--no-cli-refresh',
+			'do not install/refresh the agent-facing tines CLI from npm (harnesses use the ambient PATH)'
+		)
 ).action(
 	async (
 		opts: CommonOpts & {
@@ -2629,6 +2572,7 @@ withCommon(
 			command?: string;
 			maxConcurrent: number;
 			pollInterval: number;
+			cliRefresh: boolean;
 		}
 	) => {
 		const harness = opts.harness.replaceAll('-', '_') as HarnessKind;
@@ -2653,7 +2597,8 @@ withCommon(
 			command: opts.command,
 			maxConcurrent: opts.maxConcurrent,
 			pollIntervalMs: opts.pollInterval * 1000,
-			configDir: defaultConfigDir()
+			configDir: defaultConfigDir(),
+			cliRefresh: opts.cliRefresh
 		});
 	}
 );
@@ -2661,16 +2606,6 @@ withCommon(
 // --- runs --------------------------------------------------------------------
 
 const runsCmd = program.command('runs').description('Agent runs: attempts at issues by runners');
-
-/** Run cost for a row: dollars where known, tokens where only they are, honest markers otherwise. */
-function runCostLabel(run: AgentRun): string {
-	const usage = run.usage;
-	if (!usage) return '—';
-	if (usage.cost_usd !== undefined) return `$${usage.cost_usd.toFixed(2)}`;
-	if (usage.cost_source === 'none') return 'unreported';
-	const tokens = (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0);
-	return tokens > 0 ? `${tokens.toLocaleString()} tok` : '—';
-}
 
 function runRow(run: AgentRun): string[] {
 	return [
@@ -2680,7 +2615,7 @@ function runRow(run: AgentRun): string[] {
 		`${run.tier}${run.model ? ` (${run.model})` : ''}`,
 		run.status,
 		runDurationLabel(run),
-		runCostLabel(run),
+		runCostLabel(run) ?? '—',
 		timestamp(run.created_at)
 	];
 }
@@ -3014,7 +2949,7 @@ withList(
 		if (items.length === 0) return console.log('no events');
 		table([
 			['WHEN', 'ACTOR', 'EVENT'],
-			...items.map((ev) => [timestamp(ev.created_at), actorLabel(ev.actor), eventSummary(ev)])
+			...items.map((ev) => [timestamp(ev.created_at), displayActor(ev), eventSummary(ev)])
 		]);
 	});
 });

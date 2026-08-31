@@ -7,7 +7,8 @@ export default defineConfig({
 	test: {
 		include: ['src/**/*.test.ts'],
 		// The navigation-cost probe is a measurement tool, not a gate: it spends
-		// seconds deliberately sleeping. `pnpm perf:nav` sets NAVPERF=1 to opt in.
+		// seconds deliberately sleeping. `pnpm --filter web perf:nav` sets
+		// NAVPERF=1 to opt in.
 		exclude: [
 			...configDefaults.exclude,
 			...(process.env.NAVPERF === '1' ? [] : ['**/nav-perf.test.ts'])

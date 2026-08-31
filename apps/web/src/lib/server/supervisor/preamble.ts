@@ -33,8 +33,10 @@ const VARIANTS: Record<
 	local: {
 		auth: () => [
 			'The runner daemon has set `TINES_API_KEY` (an ephemeral key minted for this run) and',
-			'`TINES_API_URL` in your environment. The `tines` CLI is installed on this machine and picks',
-			'both up automatically; raw `curl` against `$TINES_API_URL/api/v1` with',
+			'`TINES_API_URL` in your environment, and refreshes the `tines` CLI on your PATH from npm',
+			'at launch — the first lines of this run\'s log record which version you got, and a warning',
+			'there means you may be on an older cached copy. The CLI picks both variables up',
+			'automatically; raw `curl` against `$TINES_API_URL/api/v1` with',
 			'`Authorization: Bearer $TINES_API_KEY` works too. The key is revoked the moment this run',
 			'ends — do not write it anywhere.'
 		],
