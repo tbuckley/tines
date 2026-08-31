@@ -2560,6 +2560,10 @@ withCommon(
 		.option('--command <template>', 'custom harness command template ({prompt_file}, {workspace}, {model})')
 		.option('--max-concurrent <n>', 'maximum simultaneous runs', (v) => Number.parseInt(v, 10), 1)
 		.option('--poll-interval <seconds>', 'seconds between polls', (v) => Number.parseInt(v, 10), 15)
+		.option(
+			'--no-cli-refresh',
+			'do not install/refresh the agent-facing tines CLI from npm (harnesses use the ambient PATH)'
+		)
 ).action(
 	async (
 		opts: CommonOpts & {
@@ -2568,6 +2572,7 @@ withCommon(
 			command?: string;
 			maxConcurrent: number;
 			pollInterval: number;
+			cliRefresh: boolean;
 		}
 	) => {
 		const harness = opts.harness.replaceAll('-', '_') as HarnessKind;
@@ -2592,7 +2597,8 @@ withCommon(
 			command: opts.command,
 			maxConcurrent: opts.maxConcurrent,
 			pollIntervalMs: opts.pollInterval * 1000,
-			configDir: defaultConfigDir()
+			configDir: defaultConfigDir(),
+			cliRefresh: opts.cliRefresh
 		});
 	}
 );

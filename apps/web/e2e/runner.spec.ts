@@ -165,7 +165,10 @@ esac
 				'--command',
 				`bash "${harnessPath}"`,
 				'--poll-interval',
-				'1'
+				'1',
+				// CI must not depend on the npm registry (or pay its latency) for
+				// the daemon-managed agent CLI; the script harness never runs `tines`.
+				'--no-cli-refresh'
 			],
 			{
 				cwd: CLI_DIR,
