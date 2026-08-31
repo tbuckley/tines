@@ -11,6 +11,7 @@
 import {
 	ACTIVE_RUN_STATUSES,
 	RUNNER_ONLINE_WINDOW_MS,
+	RUN_LOG_RAW_MAX_BYTES,
 	type AgentRun,
 	type AgentRunUsage,
 	type AppendRunLogResponse,
@@ -30,6 +31,7 @@ import {
 	mintRunKeyAndFlip,
 	supervisorEvent
 } from '$lib/server/supervisor/engine';
+import { getRunLogStore, runLogRawKey } from '$lib/server/run-log-store';
 import { spillEvicted } from '$lib/server/supervisor/run-log';
 import { appendLogTail } from '$lib/server/supervisor/logic';
 import { buildSupervisorPreamble } from '$lib/server/supervisor/preamble';
@@ -299,6 +301,46 @@ async function deliverAssignedRun(
 // supervisor/logic.ts so the sweep's managed-run polling shares it)
 
 export { appendLogTail };
+
+/**
+ * `PUT /api/v1/runs/:id/log/raw`: stores the raw harness stream for a run.
+ *
+ * Streamed straight into the bucket rather than buffered — these run to tens
+ * of megabytes and a Worker has no room to hold one. R2 needs the length up
+ * front, so the daemon must send `Content-Length`; the daemon is also the
+ * one that truncates to the cap (keeping the tail), and a body claiming more
+ * than the cap is rejected outright.
+ */
+export async function uploadRawRunLog(
+	db: Kysely<Database>,
+	env: Env,
+	runner: RunnerRow,
+	runId: string,
+	request: Request
+): Promise<{ log_raw_bytes: number }> {
+	const run = await loadRunnerRun(db, runner, runId);
+	if (run.log_objects_deleted_at !== null) {
+		throw new ApiFail(409, 'log_expired', "This run's logs have passed their retention window");
+	}
+	const declared = Number(request.headers.get('content-length'));
+	if (!Number.isInteger(declared) || declared <= 0) {
+		throw new ApiFail(411, 'length_required', 'A Content-Length header is required for a raw log upload');
+	}
+	if (declared > RUN_LOG_RAW_MAX_BYTES) {
+		throw new ApiFail(413, 'log_too_large', `The raw log must be at most ${RUN_LOG_RAW_MAX_BYTES} bytes`);
+	}
+	const body = request.body;
+	if (!body) throw new ApiFail(422, 'invalid_body', 'The request had no body');
+	await getRunLogStore(env).put(
+		runLogRawKey(run.user_id, run.id),
+		body as ReadableStream<Uint8Array>,
+		declared
+	);
+	await runAtomic(env, [
+		db.updateTable('agent_run').set({ log_raw_bytes: declared }).where('id', '=', runId).compile()
+	]);
+	return { log_raw_bytes: declared };
+}
 
 /** Loads a run for the protocol, scoped to the authenticated runner (404 across runners). */
 async function loadRunnerRun(

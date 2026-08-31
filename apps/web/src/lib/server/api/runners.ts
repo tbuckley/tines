@@ -18,6 +18,7 @@ import {
 } from '@tines/shared';
 import { sql, type CompiledQuery, type Kysely } from 'kysely';
 import { encryptSecret, sha256Hex } from '$lib/server/crypto';
+import { deleteRunLogObjects } from '$lib/server/supervisor/run-log';
 import { newId, randomString, type Database } from '$lib/server/db';
 import { pingAnthropicKey } from '$lib/server/supervisor/claude-adapter';
 import { cancelAssignedRuns } from '$lib/server/supervisor/engine';
@@ -1006,6 +1007,14 @@ export async function deleteRunner(
 			}
 		})
 	);
+	// R2 deletes cannot join a D1 batch, so the runs' full-log objects are
+	// identified before the batch and dropped after it succeeds. A failure
+	// here just leaves orphans, which the sweep's orphan pass collects.
+	const doomedRuns = await db
+		.selectFrom('agent_run')
+		.select(['id', 'user_id'])
+		.where('runner_id', '=', id)
+		.execute();
 	const results = await runAtomic(env, queries);
 	// The runner delete is the second-to-last statement.
 	if ((results[results.length - 2]?.meta.changes ?? 0) === 0) {
@@ -1022,5 +1031,10 @@ export async function deleteRunner(
 				`Cannot remove runner "${runner.name}": a run went active while removing it. Cancel it (or let it finish) and retry.`
 			);
 		}
+	}
+	for (const run of doomedRuns) {
+		await deleteRunLogObjects(env, run.user_id, run.id).catch((e) =>
+			console.error(`deleting run-log objects for run ${run.id} failed:`, e)
+		);
 	}
 }

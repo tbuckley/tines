@@ -2712,9 +2712,11 @@ withList(
 withCommon(
 	runsCmd
 		.command('show <id>')
-		.description('Show a run; --logs prints the captured log tail')
+		.description('Show a run; --logs prints the captured log tail, --logs --full the whole log')
 		.option('--logs', 'print the log tail')
-).action(async (id: string, opts: CommonOpts & { logs?: boolean }) => {
+		.option('--full', 'with --logs: print the complete log, not the 256 KB tail')
+		.option('--raw', 'with --logs --full: print the unrendered harness stream instead')
+).action(async (id: string, opts: CommonOpts & { logs?: boolean; full?: boolean; raw?: boolean }) => {
 	const api = client(opts);
 	const run = await api.getRun(id);
 	if (opts.json) return printJson(run);
@@ -2742,8 +2744,29 @@ withCommon(
 	if (run.error) console.log(`error: ${run.error}`);
 	if (opts.logs) {
 		console.log('');
+		if (opts.full || opts.raw) {
+			// Streamed to stdout: a full log runs to megabytes, and there is
+			// no reason to hold one in memory to print it.
+			const res = await api.getRunLogFull(id, { raw: opts.raw });
+			const body = res.body;
+			if (!body) return;
+			const reader = body.getReader();
+			const decoder = new TextDecoder();
+			for (;;) {
+				const { done, value } = await reader.read();
+				if (done) break;
+				if (value) process.stdout.write(decoder.decode(value, { stream: true }));
+			}
+			process.stdout.write(decoder.decode());
+			return;
+		}
 		if (run.log_bytes_dropped > 0) {
-			console.log(`[${Math.round(run.log_bytes_dropped / 1024)} KB truncated from the head]`);
+			console.log(
+				`[${Math.round(run.log_bytes_dropped / 1024)} KB truncated from the head — ` +
+					(run.log_expired
+						? 'past its retention window; only this tail remains]'
+						: `run \`tines runs show ${run.id} --logs --full\` for the complete ${Math.round(run.log_full_bytes / 1024)} KB log]`)
+			);
 		}
 		console.log(run.log || '(no log output captured)');
 	}
