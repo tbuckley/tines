@@ -359,6 +359,7 @@
 			body,
 			actor: { user_id: '', user_name: data.user.name, api_key_id: null, api_key_name: null },
 			created_at: Date.now(),
+			updated_at: null,
 			pending: true
 		};
 		pendingComments = [...pendingComments, temp];

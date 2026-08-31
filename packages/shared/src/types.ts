@@ -1558,9 +1558,15 @@ export interface Comment {
 	body: string;
 	actor: Actor;
 	created_at: number;
+	/** Null when the comment has never been edited. */
+	updated_at: number | null;
 }
 
 export interface CreateCommentRequest {
+	body: string;
+}
+
+export interface UpdateCommentRequest {
 	body: string;
 }
 
@@ -1579,6 +1585,8 @@ export const EVENT_TYPES = [
 	'issue.updated',
 	'issue.transitioned',
 	'issue.commented',
+	'issue.comment_edited',
+	'issue.comment_deleted',
 	'issue.link_added',
 	'issue.link_removed',
 	'project.created',

@@ -149,7 +149,8 @@ const issue: IssueDetail = {
 			issue_id: 'iss_1',
 			body: 'Looks close.',
 			actor: { user_id: 'u1', user_name: 'Alice', api_key_id: 'k1', api_key_name: 'laptop' },
-			created_at: 1700000000000
+			created_at: 1700000000000,
+			updated_at: null
 		}
 	],
 	allowed_transitions: [

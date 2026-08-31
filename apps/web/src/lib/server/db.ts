@@ -191,6 +191,8 @@ export interface CommentTable {
 	actor_user_id: string;
 	actor_api_key_id: string | null;
 	created_at: number;
+	/** Null until the comment is edited. */
+	updated_at: number | null;
 }
 
 export interface EventTable {
