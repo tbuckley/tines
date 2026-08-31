@@ -6,6 +6,9 @@ import {
 	buildSpawnEnv,
 	CliRefresher,
 	expandCommandTemplate,
+	formatExitLine,
+	formatLaunchBanner,
+	formatLaunchCommand,
 	LogBatcher,
 	RunTable,
 	shellQuote,
@@ -72,6 +75,100 @@ describe('buildHarnessInvocation', () => {
 			buildHarnessInvocation({ harness: 'custom', command: 'run {prompt_file}' }, input)
 		).toEqual({ file: 'sh', args: ['-c', `run '/tmp/ws/run 1/prompt.md'`] });
 		expect(() => buildHarnessInvocation({ harness: 'custom' }, input)).toThrow(/--command/);
+	});
+});
+
+describe('formatLaunchBanner', () => {
+	const meta = { harness: 'claude_code' as const, timeoutMinutes: 30, cliVersion: '0.0.1' };
+
+	it('claude_code: the sh -c script verbatim, then the metadata line', () => {
+		const invocation = buildHarnessInvocation({ harness: 'claude_code' }, input);
+		expect(formatLaunchBanner(invocation, input, meta)).toBe(
+			`$ claude -p --output-format stream-json --verbose --model 'claude-sonnet-5' < '/tmp/ws/run 1/prompt.md'\n` +
+				`# tines runner: harness=claude_code model=claude-sonnet-5 timeout=30m cli=0.0.1 workspace=/tmp/ws/run 1\n`
+		);
+	});
+
+	it('a harness that cannot vary the model reads model=(fixed)', () => {
+		const fixed = { ...input, model: null };
+		const banner = formatLaunchBanner(buildHarnessInvocation({ harness: 'claude_code' }, fixed), fixed, meta);
+		expect(banner).toContain('model=(fixed)');
+		expect(banner).not.toContain('--model');
+	});
+
+	it('codex: argv shell-quoted, quoting only the words that need it', () => {
+		const invocation = buildHarnessInvocation({ harness: 'codex' }, input);
+		expect(formatLaunchBanner(invocation, input, { ...meta, harness: 'codex' })).toBe(
+			`$ codex exec --model claude-sonnet-5 'Do the thing'\n` +
+				`# tines runner: harness=codex model=claude-sonnet-5 timeout=30m cli=0.0.1 workspace=/tmp/ws/run 1\n`
+		);
+	});
+
+	it("codex: a stitched prompt on argv is elided, not dumped into the log", () => {
+		const prompt = 'x'.repeat(25_000);
+		const big = { ...input, prompt };
+		const line = formatLaunchCommand(buildHarnessInvocation({ harness: 'codex' }, big));
+		expect(line.length).toBeLessThan(400);
+		expect(line).toContain('[+24840 chars]');
+		expect(line.startsWith('codex exec --model claude-sonnet-5 ')).toBe(true);
+	});
+
+	it('custom: the template as expanded, not as written', () => {
+		const invocation = buildHarnessInvocation(
+			{ harness: 'custom', command: 'my-agent --model {model} -w {workspace} < {prompt_file}' },
+			input
+		);
+		expect(formatLaunchBanner(invocation, input, { ...meta, harness: 'custom' })).toBe(
+			`$ my-agent --model 'claude-sonnet-5' -w '/tmp/ws/run 1' < '/tmp/ws/run 1/prompt.md'\n` +
+				`# tines runner: harness=custom model=claude-sonnet-5 timeout=30m cli=0.0.1 workspace=/tmp/ws/run 1\n`
+		);
+	});
+
+	it('never leaks the run key: it rides in the environment, never in argv', () => {
+		const runKey = 'trk_supersecretrunkey';
+		const env = buildSpawnEnv({}, { binDir: null, apiKey: runKey, apiUrl: 'https://tines.test' });
+		expect(env.TINES_API_KEY).toBe(runKey);
+		for (const spec of [
+			{ harness: 'claude_code' as const },
+			{ harness: 'codex' as const },
+			{ harness: 'custom' as const, command: 'my-agent {prompt_file}' }
+		]) {
+			const banner = formatLaunchBanner(buildHarnessInvocation(spec, input), input, {
+				...meta,
+				harness: spec.harness
+			});
+			expect(banner).not.toContain(runKey);
+			expect(banner).not.toContain('TINES_API_KEY');
+		}
+	});
+});
+
+describe('formatExitLine', () => {
+	it('a clean exit reports its code and how long it took', () => {
+		expect(formatExitLine({ code: 0, signal: null, durationMs: 192_000 })).toBe(
+			'# tines runner: exit code=0 after 3m12s\n'
+		);
+		expect(formatExitLine({ code: 2, signal: null, durationMs: 900 })).toBe(
+			'# tines runner: exit code=2 after 0m1s\n'
+		);
+	});
+
+	it('a signalled exit reports the signal instead of a null code', () => {
+		expect(formatExitLine({ code: null, signal: 'SIGKILL', durationMs: 61_000 })).toBe(
+			'# tines runner: exit signal=SIGKILL after 1m1s\n'
+		);
+	});
+
+	it('a timeout kill says so, so the log explains its own truncation', () => {
+		expect(
+			formatExitLine({ code: null, signal: 'SIGTERM', durationMs: 30 * 60_000, timedOut: true })
+		).toBe('# tines runner: exit signal=SIGTERM (timed out) after 30m0s\n');
+	});
+
+	it('neither code nor signal (should not happen) still renders a line', () => {
+		expect(formatExitLine({ code: null, signal: null, durationMs: 0 })).toBe(
+			'# tines runner: exit code=? after 0m0s\n'
+		);
 	});
 });
 
