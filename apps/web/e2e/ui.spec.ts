@@ -178,6 +178,42 @@ test('issue detail picks up comments and transitions made elsewhere, without a r
 	await expect(stateBadge(page)).toContainText(toState!.name, { timeout: 15_000 });
 });
 
+test('a comment can be edited and deleted from the issue page', async ({ page }) => {
+	const api = apiClient(page.request, ALICE.apiKey);
+	const created = await body<{ id: string }>(
+		await api.post(`/api/v1/issues/${issue.id}/comments`, { body: 'Typpo here' })
+	);
+	await page.goto(`/issues/${encodeURIComponent(projectName)}/${issue.number}`);
+	const comment = page.locator('article').filter({ hasText: 'Typpo here' }).first();
+	await expect(comment).toBeVisible();
+
+	await comment.getByRole('button', { name: 'Edit comment' }).click();
+	const draft = comment.getByRole('textbox');
+	await draft.fill('Typo fixed');
+	await comment.getByRole('button', { name: 'Save', exact: true }).click();
+
+	const edited = page.locator('article').filter({ hasText: 'Typo fixed' }).first();
+	await expect(edited).toBeVisible({ timeout: 10_000 });
+	await expect(edited.getByText('(edited)')).toBeVisible();
+	await expect(page.getByText('Typpo here')).toBeHidden();
+
+	// Delete goes through the shared confirm dialog.
+	await edited.getByRole('button', { name: 'Delete comment' }).click();
+	await page.getByRole('button', { name: 'Delete comment', exact: true }).last().click();
+	await expect(page.getByText('Typo fixed')).toHaveCount(0, { timeout: 10_000 });
+
+	// The events survive the comment.
+	const events = await body<{ items: { type: string; payload: Record<string, unknown> }[] }>(
+		await api.get(`/api/v1/events?issue=${issue.id}`)
+	);
+	const types = events.items.map((e) => e.type);
+	expect(types).toContain('issue.comment_edited');
+	expect(types).toContain('issue.comment_deleted');
+	expect(
+		events.items.find((e) => e.type === 'issue.comment_deleted')?.payload.comment_id
+	).toBe(created.id);
+});
+
 test('workflow library shows the read-only standard workflow with its graph', async ({ page }) => {
 	await page.goto('/workflows');
 	const link = page.getByRole('link', { name: /Standard/ }).first();
