@@ -133,7 +133,10 @@ const CONTROL_PLANE_PATTERNS = [
 	/^\/api\/v1\/routing-rules(\/|$)/,
 	/^\/api\/v1\/supervisor\/settings(\/|$)/,
 	/^\/api\/v1\/issues\/[^/]+\/resume$/,
-	/^\/api\/v1\/api-keys(\/|$)/
+	/^\/api\/v1\/api-keys(\/|$)/,
+	// Bulk library writes: an agent must propose context changes, not apply
+	// a whole library over the top of them.
+	/^\/api\/v1\/import(\/|$)/
 ];
 
 /** True for paths a run key must never reach (all methods). */
@@ -149,7 +152,7 @@ export function runKeyForbidden(): ApiFail {
 	return new ApiFail(
 		403,
 		'run_key_forbidden',
-		'Run keys cannot modify runners, routing rules, supervisor settings, parked issues, issue pins, or API keys. ' +
+		'Run keys cannot modify runners, routing rules, supervisor settings, parked issues, issue pins, API keys, or the library import. ' +
 			'Propose the change instead: file an issue titled "Context change: <scope label>" describing ' +
 			'what should change and why; a human reviews and applies it.'
 	);
