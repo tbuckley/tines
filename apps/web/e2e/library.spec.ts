@@ -6,7 +6,7 @@
  * none of its ids.
  */
 import type { ImportLibraryResponse, LibraryDocument } from '@tines/shared';
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 import { ALICE, BOB } from './constants.mjs';
 import { apiClient, body, runId, signIn } from './helpers';
 
@@ -123,6 +123,22 @@ test.describe.serial('library export / import', () => {
 	});
 });
 
+/**
+ * Upload a file and wait for the page to react to it. Retried as a unit
+ * because a `change` event dispatched before hydration finishes is simply
+ * lost — the input is server-rendered, its handler is not.
+ */
+async function upload(page: Page, name: string, data: unknown, settles: () => Promise<void>) {
+	await expect(async () => {
+		await page.getByLabel('Library file').setInputFiles({
+			name,
+			mimeType: 'application/json',
+			buffer: Buffer.from(JSON.stringify(data))
+		});
+		await settles();
+	}).toPass({ timeout: 20_000 });
+}
+
 test.describe('export / import settings page', () => {
 	test('previews an uploaded file before writing anything', async ({ context, page, request }) => {
 		await signIn(context, ALICE.sessionToken);
@@ -134,15 +150,11 @@ test.describe('export / import settings page', () => {
 		await expect(page.getByRole('heading', { name: 'Export / import' })).toBeVisible();
 		await expect(page.getByRole('button', { name: /Download library/ })).toBeVisible();
 
-		await page.getByLabel('Library file').setInputFiles({
-			name: 'library.json',
-			mimeType: 'application/json',
-			buffer: Buffer.from(JSON.stringify(document))
-		});
-
 		// Alice importing her own export collides with everything: all skips.
 		const summary = page.getByTestId('import-summary');
-		await expect(summary).toContainText('Preview of library.json');
+		await upload(page, 'library.json', document, async () => {
+			await expect(summary).toContainText('Preview of library.json', { timeout: 5000 });
+		});
 		await expect(summary).toContainText('Nothing has been written yet');
 		await expect(page.getByTestId('import-row').first()).toBeVisible();
 
@@ -154,11 +166,10 @@ test.describe('export / import settings page', () => {
 	test('rejects a file that is not a library export', async ({ context, page }) => {
 		await signIn(context, ALICE.sessionToken);
 		await page.goto('/settings/export-import');
-		await page.getByLabel('Library file').setInputFiles({
-			name: 'not-a-library.json',
-			mimeType: 'application/json',
-			buffer: Buffer.from(JSON.stringify({ hello: 'world' }))
+		await upload(page, 'not-a-library.json', { hello: 'world' }, async () => {
+			await expect(page.getByTestId('import-error')).toContainText('Not a Tines library export', {
+				timeout: 5000
+			});
 		});
-		await expect(page.getByTestId('import-error')).toContainText('Not a Tines library export');
 	});
 });
