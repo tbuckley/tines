@@ -154,4 +154,9 @@ If a new kind requires edits to any of these, the change is off the rails
 - [ ] Appears in the effective context with dedupe-by-name override
       behavior and in `context_summary`.
 - [ ] `tines issues context --out` writes the agreed bundle form.
+- [ ] Library export/import handles the kind: a serializer in
+      `buildLibraryDocument` and the matching payload mapping in
+      `writeContextEntry` (`apps/web/src/lib/server/api/library.ts`).
+      Without both, items of the new kind silently fail to travel between
+      deployments.
 - [ ] `pnpm check`, `pnpm test`, and the e2e suite pass.
