@@ -43,7 +43,7 @@ let daemonExited = false;
 let projectId: string;
 let runnerId: string;
 
-const setMode = (mode: 'work' | 'noop' | 'sleep') => writeFileSync(join(e2eDir, 'mode'), mode);
+const setMode = (mode: 'work' | 'noop' | 'sleep' | 'flood') => writeFileSync(join(e2eDir, 'mode'), mode);
 
 const sideFile = (name: string) => join(e2eDir, name);
 const readSideFile = (name: string) => readFileSync(sideFile(name), 'utf8');
@@ -119,6 +119,17 @@ case "$MODE" in
 	sleep)
 		echo $$ > "$E2E_DIR/sleep-pid"
 		sleep 300
+		;;
+	flood)
+		# ~600 KB, well past the 256 KB tail cap, with the first and last
+		# lines marked so a full-log read can prove nothing scrolled off.
+		echo "FLOOD-FIRST-LINE"
+		for i in $(seq 1 6000); do
+			printf 'flood line %05d %s\\n' "$i" "..............................................................................................."
+		done
+		echo "FLOOD-LAST-LINE"
+		REF=$(sed -n 's/^This is run .* for issue \\([^;]*\\);.*/\\1/p' prompt.md | head -n 1)
+		${TSX} ${CLI_ENTRY} issues move "$REF" "Submit for review"
 		;;
 	noop)
 		;;
@@ -274,6 +285,46 @@ esac
 		expect(detail.log).toContain('harness start mode=work');
 		expect(detail.log).toContain('harness done');
 		expect(detail.log_bytes_dropped).toBe(0);
+	});
+
+	test('an oversized log keeps every byte: the tail truncates, the full log does not', async ({
+		request
+	}) => {
+		test.setTimeout(120_000);
+		const api = apiClient(request, ALICE.apiKey);
+		setMode('flood');
+		const issue = await createIssue(request, 'Flood the log');
+
+		const run = await waitFor(
+			async () => {
+				const runs = await issueRuns(request, issue.id);
+				return runs.find((r) => r.status === 'completed');
+			},
+			{ timeout: 90_000, interval: 1000, label: 'the flooding run to finish' }
+		);
+		// endRun seals inline, but the sweep is the guarantee — fire it so the
+		// assertions below hold whichever path did the sealing.
+		await fireSweep(request);
+
+		const detail = await body<AgentRunDetail>(await api.get(`/api/v1/runs/${run.id}`));
+		// The tail behaves exactly as it always did: capped, head-truncated.
+		expect(detail.log_bytes_dropped).toBeGreaterThan(0);
+		expect(detail.log).not.toContain('FLOOD-FIRST-LINE');
+		expect(detail.log).toContain('FLOOD-LAST-LINE');
+		expect(detail.log_full_bytes).toBeGreaterThan(new TextEncoder().encode(detail.log).length);
+		expect(detail.log_expired).toBe(false);
+
+		// …and the full log has the bytes the tail dropped, in order.
+		const res = await api.get(`/api/v1/runs/${run.id}/log`);
+		expect(res.status()).toBe(200);
+		const full = await res.text();
+		expect(full).toContain('FLOOD-FIRST-LINE');
+		expect(full).toContain('FLOOD-LAST-LINE');
+		expect(full.indexOf('flood line 00001')).toBeLessThan(full.indexOf('flood line 06000'));
+		expect(full.endsWith(detail.log)).toBe(true);
+		expect(new TextEncoder().encode(full).length).toBe(detail.log_full_bytes);
+
+		setMode('work');
 	});
 
 	test('the Agents tab shows the runner online, the log viewer, and the bootstrap wizard', async ({
