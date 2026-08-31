@@ -6,11 +6,11 @@
  * and the exit line after it, in the run's own log, in order.
  */
 import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { delimiter, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { cliVersion } from '../version.js';
@@ -88,31 +88,53 @@ function stubSupervisor(timeoutMinutes = 30): { server: Server; done: Promise<Ha
 	return { server, done };
 }
 
-/** Boots the daemon against the stub, with one command template to run. */
-function startDaemon(port: number, dir: string, command: string): ChildProcess {
-	return spawn(
-		tsx,
-		[
-			entry,
-			'runner',
-			'daemon',
-			'--url',
-			`http://127.0.0.1:${port}`,
-			'--name',
-			'stub',
-			'--harness',
-			'custom',
-			'--command',
-			command,
-			'--poll-interval',
-			'1',
-			'--no-cli-refresh'
-		],
-		{
-			env: { ...process.env, TINES_API_KEY: 'usr_stub_key', TINES_CONFIG_DIR: dir },
-			stdio: ['ignore', 'pipe', 'pipe']
-		}
+/**
+ * A `claude` for the claude_code harness to find on PATH: one complete
+ * stream-json line, then half of a second one, then a hang — the shape of a
+ * harness killed mid-event, which is what leaves a fragment for `drain`.
+ */
+function fakeClaude(dir: string): string {
+	const bin = join(dir, 'fakebin');
+	mkdirSync(bin, { recursive: true });
+	const event = (text: string) =>
+		JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text }] } });
+	writeFileSync(
+		join(bin, 'claude'),
+		`#!/bin/sh\nprintf '%s\\n' '${event('a whole event')}'\nprintf '%s' '${event('cut off mid-line')}'\nsleep 30\n`,
+		{ mode: 0o755 }
 	);
+	return bin;
+}
+
+/** Boots the daemon against the stub: a custom template, or claude_code. */
+function startDaemon(
+	port: number,
+	dir: string,
+	harness: { command: string } | { fakeClaudeDir: string }
+): ChildProcess {
+	const args = [
+		entry,
+		'runner',
+		'daemon',
+		'--url',
+		`http://127.0.0.1:${port}`,
+		'--name',
+		'stub',
+		'--poll-interval',
+		'1',
+		'--no-cli-refresh'
+	];
+	const env: NodeJS.ProcessEnv = {
+		...process.env,
+		TINES_API_KEY: 'usr_stub_key',
+		TINES_CONFIG_DIR: dir
+	};
+	if ('command' in harness) args.push('--harness', 'custom', '--command', harness.command);
+	else {
+		args.push('--harness', 'claude_code');
+		env.PATH = `${harness.fakeClaudeDir}${delimiter}${process.env.PATH ?? ''}`;
+	}
+	return spawn(tsx, args, { env, stdio: ['ignore', 'pipe', 'pipe'] });
 }
 
 let child: ChildProcess | null = null;
@@ -150,7 +172,7 @@ describe('the run log a local run leaves behind', () => {
 
 		// A placeholder proves the log shows the template as expanded, not as
 		// written — the whole point for a misbehaving --command.
-		child = startDaemon(port, configDir, 'cat {prompt_file}');
+		child = startDaemon(port, configDir, { command: 'cat {prompt_file}' });
 
 		const harvest = await done;
 		const workspace = join(configDir, 'workspaces', RUN_ID);
@@ -179,7 +201,7 @@ describe('the run log a local run leaves behind', () => {
 		const port = (stub.address() as AddressInfo).port;
 		configDir = mkdtempSync(join(tmpdir(), 'tines-daemon-'));
 
-		child = startDaemon(port, configDir, 'sleep 30');
+		child = startDaemon(port, configDir, { command: 'sleep 30' });
 
 		const harvest = await done;
 		const lines = harvest.log.trimEnd().split('\n');
@@ -187,6 +209,30 @@ describe('the run log a local run leaves behind', () => {
 		expect(harvest.finish?.status).toBe('failed');
 		expect(harvest.finish?.error).toMatch(/timeout/);
 		expect(lines[1]).toBe('$ sleep 30');
+		expect(lines.at(-1)).toMatch(/^# tines runner: exit signal=SIGTERM \(timed out\) after \d+m\d+s$/);
+	}, 30_000);
+
+	it('a claude_code harness killed mid-event says its last words first', async () => {
+		const { server: stub, done } = stubSupervisor(0.02);
+		server = stub;
+		await new Promise<void>((r) => stub.listen(0, '127.0.0.1', r));
+		const port = (stub.address() as AddressInfo).port;
+		configDir = mkdtempSync(join(tmpdir(), 'tines-daemon-'));
+
+		child = startDaemon(port, configDir, { fakeClaudeDir: fakeClaude(configDir) });
+
+		const harvest = await done;
+		const lines = harvest.log.trimEnd().split('\n');
+
+		expect(harvest.finish?.status).toBe('failed');
+		expect(lines[1]).toMatch(
+			/^\$ claude -p --output-format stream-json --verbose --model 'claude-sonnet-5' < '.*\/prompt\.md'$/
+		);
+		expect(lines).toContain('[agent] a whole event');
+		// The renderer holds a partial line until its newline; SIGTERM means it
+		// never comes, so the daemon drains it — before the closing line, or
+		// the log would not end with the line that says how the run ended.
+		expect(lines.at(-2)).toBe('[agent] cut off mid-line');
 		expect(lines.at(-1)).toMatch(/^# tines runner: exit signal=SIGTERM \(timed out\) after \d+m\d+s$/);
 	}, 30_000);
 });
