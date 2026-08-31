@@ -106,18 +106,22 @@
 		}
 	}
 
-	/** "3 created, 2 skipped" — the counts worth reading, in a fixed order. */
+	/**
+	 * "3 created, 2 skipped" — the counts worth reading, in a fixed order.
+	 * Each action carries both wordings; the past tense is irregular often
+	 * enough that deriving it from the other is wrong.
+	 */
 	function summary(report: ImportLibraryResponse): string {
-		const labels: [keyof typeof report.counts, string][] = [
-			['create', 'to create'],
-			['overwrite', 'to overwrite'],
-			['skip', 'skipped'],
-			['refuse', 'refused'],
-			['error', 'failed']
+		const labels: [keyof typeof report.counts, string, string][] = [
+			['create', 'to create', 'created'],
+			['overwrite', 'to overwrite', 'overwritten'],
+			['skip', 'to skip', 'skipped'],
+			['refuse', 'to refuse', 'refused'],
+			['error', 'failing', 'failed']
 		];
 		const parts = labels
 			.filter(([k]) => report.counts[k] > 0)
-			.map(([k, label]) => `${report.counts[k]} ${report.applied ? label.replace('to ', '') + 'd' : label}`);
+			.map(([k, pending, past]) => `${report.counts[k]} ${report.applied ? past : pending}`);
 		return parts.length === 0 ? 'nothing to do' : parts.join(', ');
 	}
 

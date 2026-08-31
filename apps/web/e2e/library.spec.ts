@@ -14,6 +14,7 @@ type ErrorBody = { error: { code: string; message: string } };
 
 /** Everything but the per-export timestamp. */
 const comparable = (doc: LibraryDocument) => ({
+	projects: [...doc.projects].sort((a, b) => a.name.localeCompare(b.name)),
 	workflows: [...doc.workflows].sort((a, b) => a.name.localeCompare(b.name)),
 	context: [...doc.context].sort(
 		(a, b) => `${a.kind}${a.name}`.localeCompare(`${b.kind}${b.name}`)
@@ -121,6 +122,16 @@ test.describe.serial('library export / import', () => {
 		expect(err.error.code).toBe('unsupported_format');
 		expect(err.error.message).toMatch(/newer Tines/);
 	});
+
+	test('refuses a body that is valid JSON but not an object', async ({ request }) => {
+		const res = await request.post('/api/v1/import', {
+			headers: { authorization: `Bearer ${ALICE.apiKey}`, 'content-type': 'application/json' },
+			data: 'null'
+		});
+		expect(res.status()).toBe(400);
+		const err = await body<ErrorBody>(res);
+		expect(err.error.code).toBe('invalid_json');
+	});
 });
 
 /**
@@ -160,7 +171,8 @@ test.describe('export / import settings page', () => {
 
 		await page.getByRole('button', { name: 'Import', exact: true }).click();
 		await expect(summary).toContainText('Imported');
-		await expect(summary).toContainText('skipped');
+		// Exact wording, so a mangled past tense ("skippedd") cannot pass here.
+		await expect(summary).toContainText(/\d+ skipped\./);
 	});
 
 	test('rejects a file that is not a library export', async ({ context, page }) => {

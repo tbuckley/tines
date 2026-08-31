@@ -1725,7 +1725,11 @@ export interface LibraryScopeRef {
 export interface LibraryProject {
 	name: string;
 	description?: string;
-	/** Default workflow by name; skipped when that workflow is absent. */
+	/**
+	 * Default workflow by name, restored on import when a workflow of that name
+	 * exists here or arrives in the same document; otherwise skipped, with the
+	 * reason recorded on the project's plan entry.
+	 */
 	default_workflow?: string | null;
 }
 

@@ -296,6 +296,37 @@ describe('planImport', () => {
 		expect(conventions.entry.reason).toMatch(/no project named "Elsewhere"/);
 	});
 
+	it('does not read a scope that is only being created as the global scope', async () => {
+		await seedLibrary();
+		const document = await buildLibraryDocument(t.db, USER);
+		document.projects = [{ name: 'Elsewhere' }];
+		document.context = document.context
+			.filter((c) => c.name === 'conventions')
+			.map((c) => ({ ...c, scope: { project: 'Elsewhere' } }));
+		const target = freshDeployment();
+		// Same kind and name at *global* scope: a different item entirely, and
+		// no reason to hold back the project-scoped one arriving with its project.
+		await createContextItem(target.db, target.env, actor, {
+			kind: 'prompt',
+			name: 'conventions',
+			body: 'Global.'
+		});
+
+		const plan = await planImport(target.db, USER, { document });
+		const conventions = plan.steps.find((s) => s.entry.ref.includes('"conventions"'))!;
+		expect(conventions.entry.action).toBe('create');
+	});
+
+	it('says so when a project names a default workflow that is nowhere to be found', async () => {
+		await seedLibrary();
+		const document = await buildLibraryDocument(t.db, USER);
+		document.projects = [{ name: 'Elsewhere', default_workflow: 'Ghost' }];
+		const plan = await planImport(freshDeployment().db, USER, { document });
+		const project = plan.steps.find((s) => s.entry.section === 'project')!;
+		expect(project.entry.action).toBe('create');
+		expect(project.entry.reason).toMatch(/no workflow named "Ghost"/);
+	});
+
 	it('leaves journals out when the toggle is off', async () => {
 		await seedLibrary();
 		const plan = await planInto(freshDeployment(), { include_journals: false });
@@ -308,6 +339,7 @@ describe('planImport', () => {
 describe('applyImport', () => {
 	/** Everything but the timestamp, which is stamped per export by design. */
 	const comparable = (doc: LibraryDocument) => ({
+		projects: [...doc.projects].sort((a, b) => a.name.localeCompare(b.name)),
 		workflows: doc.workflows,
 		context: [...doc.context].sort((a, b) => a.name.localeCompare(b.name))
 	});
@@ -423,6 +455,45 @@ describe('applyImport', () => {
 			.where('project_id', '=', project!.id)
 			.execute();
 		expect(issues).toEqual([]);
+	});
+
+	it("restores a project's default workflow, which arrives in the same document", async () => {
+		const { wf } = await seedLibrary();
+		await t.db
+			.updateTable('project')
+			.set({ default_workflow_id: wf.id })
+			.where('id', '=', PROJECT)
+			.execute();
+
+		const document = await buildLibraryDocument(t.db, USER);
+		expect(document.projects[0].default_workflow).toBe('Engineering');
+		// Rename so the target genuinely lacks the project (its own seed uses
+		// the same name), keeping the default-workflow reference.
+		document.projects = [{ name: 'Elsewhere', default_workflow: 'Engineering' }];
+		document.context = document.context.map((c) =>
+			c.scope.project ? { ...c, scope: { ...c.scope, project: 'Elsewhere' } } : c
+		);
+
+		const target = freshDeployment();
+		const result = await applyImport(target.db, target.env, actor, { document });
+		expect(result.counts.error).toBe(0);
+
+		const rebuilt = await buildLibraryDocument(target.db, USER);
+		expect(rebuilt.projects.find((p) => p.name === 'Elsewhere')?.default_workflow).toBe(
+			'Engineering'
+		);
+	});
+
+	it('creates the project anyway when its default workflow is absent', async () => {
+		await seedLibrary();
+		const document = await buildLibraryDocument(t.db, USER);
+		document.projects = [{ name: 'Elsewhere', default_workflow: 'Ghost' }];
+		const target = freshDeployment();
+		const result = await applyImport(target.db, target.env, actor, { document });
+		expect(result.counts.error).toBe(0);
+
+		const rebuilt = await buildLibraryDocument(target.db, USER);
+		expect(rebuilt.projects.find((p) => p.name === 'Elsewhere')?.default_workflow).toBeNull();
 	});
 
 	it('reports a failing entry and carries on with the rest', async () => {

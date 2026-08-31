@@ -264,6 +264,10 @@ export async function planImport(
 		for (const s of wf.states) stateIds.set(`${wf.name}${SEP}${s.name}`, s.id);
 	}
 	const workflowNames = new Map(workflowRows.map((wf) => [wf.name, wf]));
+	// A project's default workflow resolves against what exists here plus what
+	// this document brings; a name in `doc.workflows` ends up present either
+	// way (created, or already here under that name).
+	const availableWorkflows = new Set([...workflowNames.keys(), ...doc.workflows.map((wf) => wf.name)]);
 	const existingContext = new Map(
 		contextRows.map((row) => [
 			contextKey(row.kind, row.name, row.project_id, row.workflow_state_id),
@@ -288,7 +292,21 @@ export async function planImport(
 			continue;
 		}
 		projectIds.set(project.name, null);
-		steps.push({ entry: { section: 'project', ref, action: 'create' }, project });
+		const orphanDefault =
+			project.default_workflow != null && !availableWorkflows.has(project.default_workflow);
+		steps.push({
+			entry: {
+				section: 'project',
+				ref,
+				action: 'create',
+				...(orphanDefault
+					? {
+							reason: `no workflow named "${project.default_workflow}" here or in this document, so the project keeps the system default`
+						}
+					: {})
+			},
+			project
+		});
 	}
 
 	for (const workflow of doc.workflows) {
@@ -438,19 +456,39 @@ export async function applyImport(
 	// context entries scoped to it must resolve against.
 	const projectIds = new Map<string, string>();
 	const stateIds = new Map<string, string>();
+	const workflowIds = new Map<string, string>();
 
-	for (const step of plan.steps) {
-		if (step.entry.action !== 'create' && step.entry.action !== 'overwrite') continue;
+	// Workflows before projects (a project's default workflow must exist to be
+	// pointed at), context last (every scope carrier is in place by then). The
+	// report keeps the plan's own order.
+	const runnable = plan.steps.filter(
+		(s) => s.entry.action === 'create' || s.entry.action === 'overwrite'
+	);
+	const ordered = [
+		...runnable.filter((s) => s.workflow),
+		...runnable.filter((s) => s.project),
+		...runnable.filter((s) => s.context)
+	];
+
+	for (const step of ordered) {
 		try {
-			if (step.project) {
+			if (step.workflow) {
+				const created = await createWorkflow(db, env, actor, step.workflow);
+				workflowIds.set(created.name, created.id);
+				for (const s of created.states) stateIds.set(`${created.name}${SEP}${s.name}`, s.id);
+			} else if (step.project) {
+				// Unresolvable defaults are planned with a reason and land as a
+				// project on the system default rather than failing the entry.
+				const defaultWorkflowId = step.project.default_workflow
+					? (workflowIds.get(step.project.default_workflow) ??
+						(await lookupWorkflowId(db, actor.userId, step.project.default_workflow)))
+					: undefined;
 				const created = await createProject(db, env, actor, {
 					name: step.project.name,
-					description: step.project.description ?? ''
+					description: step.project.description ?? '',
+					...(defaultWorkflowId ? { default_workflow_id: defaultWorkflowId } : {})
 				});
 				projectIds.set(created.name, created.id);
-			} else if (step.workflow) {
-				const created = await createWorkflow(db, env, actor, step.workflow);
-				for (const s of created.states) stateIds.set(`${created.name}${SEP}${s.name}`, s.id);
 			} else if (step.context) {
 				await writeContextEntry(db, env, actor, step, projectIds, stateIds);
 			}
@@ -526,6 +564,21 @@ async function writeContextEntry(
 		workflow_state_id: stateId,
 		...payload
 	});
+}
+
+async function lookupWorkflowId(
+	db: Kysely<Database>,
+	userId: string,
+	name: string
+): Promise<string | undefined> {
+	const row = await db
+		.selectFrom('workflow')
+		.select('id')
+		// The system workflow is owned by no user but visible to everyone.
+		.where((eb) => eb.or([eb('user_id', '=', userId), eb('user_id', 'is', null)]))
+		.where('name', '=', name)
+		.executeTakeFirst();
+	return row?.id;
 }
 
 async function lookupStateId(

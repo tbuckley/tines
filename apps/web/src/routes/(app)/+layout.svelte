@@ -2,9 +2,9 @@
 	import IconActivity from '@tabler/icons-svelte/icons/activity';
 	import IconArrowsSplit2 from '@tabler/icons-svelte/icons/arrows-split-2';
 	import IconBooks from '@tabler/icons-svelte/icons/books';
-	import IconFolder from '@tabler/icons-svelte/icons/folder';
 	import IconDatabaseExport from '@tabler/icons-svelte/icons/database-export';
-import IconKey from '@tabler/icons-svelte/icons/key';
+	import IconFolder from '@tabler/icons-svelte/icons/folder';
+	import IconKey from '@tabler/icons-svelte/icons/key';
 	import IconListDetails from '@tabler/icons-svelte/icons/list-details';
 	import IconLogout from '@tabler/icons-svelte/icons/logout';
 	import IconPalette from '@tabler/icons-svelte/icons/palette';

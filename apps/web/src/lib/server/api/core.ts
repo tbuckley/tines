@@ -53,7 +53,7 @@ export function api<E extends RequestEvent>(
 /** Valid JSON that isn't an object ("null", "[]", "42") would otherwise
  * pass the parse and crash on the first field access — a 500 for what is
  * malformed client input. Every endpoint takes an object payload. */
-function requireJsonObject(value: unknown): Record<string, unknown> {
+export function requireJsonObject(value: unknown): Record<string, unknown> {
 	if (typeof value !== 'object' || value === null || Array.isArray(value)) {
 		throw new ApiFail(400, 'invalid_json', 'Request body must be a JSON object');
 	}
