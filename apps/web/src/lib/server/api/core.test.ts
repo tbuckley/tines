@@ -84,7 +84,10 @@ describe('isControlPlanePath', () => {
 		'/api/v1/supervisor/settings',
 		'/api/v1/issues/iss_1/resume',
 		'/api/v1/api-keys',
-		'/api/v1/api-keys/key_1'
+		'/api/v1/api-keys/key_1',
+		// Bulk library writes are a control-plane action: an agent proposes
+		// context changes, it does not apply a whole library.
+		'/api/v1/import'
 	])('fences %s', (path) => {
 		expect(isControlPlanePath(path)).toBe(true);
 	});
@@ -96,6 +99,8 @@ describe('isControlPlanePath', () => {
 		'/api/v1/issues/iss_1/transition',
 		'/api/v1/issues/iss_1/prompt',
 		'/api/v1/context',
+		// Export is a read of what a run key can already list.
+		'/api/v1/export',
 		'/api/v1/events',
 		'/api/v1/projects/prj_1/issues',
 		// Similar-looking but distinct segments stay open.
