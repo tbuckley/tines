@@ -149,7 +149,8 @@ const issue: IssueDetail = {
 			issue_id: 'iss_1',
 			body: 'Looks close.',
 			actor: { user_id: 'u1', user_name: 'Alice', api_key_id: 'k1', api_key_name: 'laptop' },
-			created_at: 1700000000000
+			created_at: 1700000000000,
+			updated_at: null
 		}
 	],
 	allowed_transitions: [
@@ -265,6 +266,10 @@ describe('issueBlock', () => {
 		expect(block).toContain("tines issues comment Tines/42 - <<'EOF'");
 		expect(block).toContain(
 			'A `tines` too old for that form posts a literal `-` instead of your body, without failing. If `tines issues comment --help` does not mention `@file`, use `tines issues comment Tines/42 "<markdown>"` and mind the shell quoting.'
+		);
+		// Repair affordance (Tines/11), one whole line for the same reason.
+		expect(block).toContain(
+			'Fix your own mis-post rather than leaving it in the thread: `tines issues comment-edit Tines/42 <comment-id> -` (same body forms) replaces a body, `tines issues comment-delete Tines/42 <comment-id>` removes it. Ids are echoed when you post and listed by `tines issues show Tines/42 --json`; you can only edit or delete comments you wrote.'
 		);
 		// Multi-word actions are quoted so they paste correctly.
 		expect(block).toContain(

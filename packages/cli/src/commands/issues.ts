@@ -20,6 +20,7 @@ import {
 } from '../common.js';
 import {
 	artifactSummary,
+	commentLines,
 	issueRef,
 	linkRows,
 	prRefLabel,
@@ -86,9 +87,10 @@ function printIssueDetail(issue: IssueDetail): void {
 	console.log(`\nallowed actions: ${allowed.length ? allowed.join(', ') : 'none (terminal state)'}`);
 	if (issue.comments.length > 0) {
 		console.log(`\ncomments (${issue.comments.length}):`);
+		// Rendered by commentLines so the id and the (edited) marker — the two
+		// things `comment-edit`/`comment-delete` need — are pinned by a test.
 		for (const c of issue.comments) {
-			console.log(`\n  [${timestamp(c.created_at)}] ${actorLabel(c.actor)}:`);
-			for (const line of c.body.split('\n')) console.log(`  ${line}`);
+			for (const line of commentLines(c)) console.log(line);
 		}
 	}
 }
@@ -353,7 +355,38 @@ export function register(program: Command): void {
 		const issue = await resolveIssue(api, ref);
 		const comment = await api.createComment(issue.id, { body });
 		if (opts.json) return printJson(comment);
-		console.log(`commented on ${issue.project_name}/#${issue.number} as ${actorLabel(comment.actor)}`);
+		// Echo the id: the comment you just posted is the one you may need to fix.
+		console.log(
+			`commented on ${issue.project_name}/#${issue.number} as ${actorLabel(comment.actor)} (id ${comment.id})`
+		);
+	});
+
+	withCommon(
+		issues
+			.command('comment-edit <ref> <comment-id> <markdown>')
+			.description(`Replace the body of your own comment — Markdown body: ${BODY_VALUE_HELP}`)
+			// A body may start with "-"; options go before the arguments.
+			.passThroughOptions()
+	).action(async (ref: string, commentId: string, markdown: string, opts: CommonOpts, command: Command) => {
+		if (helpGuard(command, markdown)) return;
+		const body = readBodyValue(markdown);
+		const api = client(opts);
+		const issue = await resolveIssue(api, ref);
+		const comment = await api.updateComment(issue.id, commentId, { body });
+		if (opts.json) return printJson(comment);
+		console.log(`edited comment ${comment.id} on ${issue.project_name}/#${issue.number}`);
+	});
+
+	withCommon(
+		issues
+			.command('comment-delete <ref> <comment-id>')
+			.description('Delete your own comment (the event keeps the record of the deletion)')
+	).action(async (ref: string, commentId: string, opts: CommonOpts) => {
+		const api = client(opts);
+		const issue = await resolveIssue(api, ref);
+		await api.deleteComment(issue.id, commentId);
+		if (opts.json) return printJson({ id: commentId, deleted: true });
+		console.log(`deleted comment ${commentId} from ${issue.project_name}/#${issue.number}`);
 	});
 
 	// Links read as sentences: `block A B` means "A blocks B", `duplicate A B`

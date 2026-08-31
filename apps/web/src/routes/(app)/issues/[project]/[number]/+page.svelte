@@ -9,6 +9,7 @@
 	import IconCopy from '@tabler/icons-svelte/icons/copy';
 	import IconPencil from '@tabler/icons-svelte/icons/pencil';
 	import IconPlus from '@tabler/icons-svelte/icons/plus';
+	import IconTrash from '@tabler/icons-svelte/icons/trash';
 	import IconRepeat from '@tabler/icons-svelte/icons/repeat';
 	import IconRocket from '@tabler/icons-svelte/icons/rocket';
 	import { untrack } from 'svelte';
@@ -18,6 +19,7 @@
 	import AgentActivityCard from '$lib/components/AgentActivityCard.svelte';
 	import ArtifactsPanel from '$lib/components/ArtifactsPanel.svelte';
 	import ContextItemEditor from '$lib/components/ContextItemEditor.svelte';
+	import { confirmDialog } from '$lib/components/dialogs.svelte';
 	import ContextItemList from '$lib/components/ContextItemList.svelte';
 	import EffectiveContextView from '$lib/components/EffectiveContextView.svelte';
 	import EventList from '$lib/components/EventList.svelte';
@@ -359,6 +361,7 @@
 			body,
 			actor: { user_id: '', user_name: data.user.name, api_key_id: null, api_key_name: null },
 			created_at: Date.now(),
+			updated_at: null,
 			pending: true
 		};
 		pendingComments = [...pendingComments, temp];
@@ -375,6 +378,57 @@
 			showError(err);
 		} finally {
 			posting = false;
+		}
+	}
+
+	// Edit/delete are offered on every comment: the signed-in viewer owns this
+	// workspace, and the motivating case is a human cleaning up an agent's
+	// mis-post. (Run keys are the narrow ones — the server only lets them touch
+	// their own comments.)
+	let editingCommentId = $state<string | null>(null);
+	let commentDraft = $state('');
+	// Per-comment, not page-global: a save on one comment must not disable the
+	// buttons on every other one.
+	let busyCommentId = $state<string | null>(null);
+
+	function startEditComment(comment: Comment) {
+		editingCommentId = comment.id;
+		commentDraft = comment.body;
+	}
+
+	async function saveComment(comment: Comment) {
+		const body = commentDraft.trim();
+		if (!body || busyCommentId === comment.id) return;
+		busyCommentId = comment.id;
+		try {
+			await api.updateComment(data.issue.id, comment.id, { body });
+			editingCommentId = null;
+			await refresh();
+		} catch (err) {
+			showError(err);
+		} finally {
+			busyCommentId = null;
+		}
+	}
+
+	async function deleteComment(comment: Comment) {
+		if (busyCommentId === comment.id) return;
+		const ok = await confirmDialog({
+			title: 'Delete this comment?',
+			body: 'The comment is removed from the thread; the activity feed keeps a record that it was deleted.',
+			confirmLabel: 'Delete comment',
+			destructive: true
+		});
+		if (!ok || busyCommentId === comment.id) return;
+		busyCommentId = comment.id;
+		try {
+			await api.deleteComment(data.issue.id, comment.id);
+			if (editingCommentId === comment.id) editingCommentId = null;
+			await refresh();
+		} catch (err) {
+			showError(err);
+		} finally {
+			busyCommentId = null;
 		}
 	}
 
@@ -733,9 +787,57 @@
 							<span title={new Date(comment.created_at).toLocaleString()}>
 								{comment.pending ? 'sending…' : relativeTime(comment.created_at)}
 							</span>
+							{#if comment.updated_at}
+								<span class="italic" title={new Date(comment.updated_at).toLocaleString()}>
+									(edited)
+								</span>
+							{/if}
+							{#if !comment.pending}
+								<div class="ml-auto flex items-center gap-1">
+									<Button
+										variant="ghost"
+										size="icon"
+										class="size-6"
+										title="Edit comment"
+										aria-label="Edit comment"
+										disabled={busyCommentId === comment.id}
+										onclick={() => startEditComment(comment)}
+									>
+										<IconPencil size={14} stroke={1.5} />
+									</Button>
+									<Button
+										variant="ghost"
+										size="icon"
+										class="size-6"
+										title="Delete comment"
+										aria-label="Delete comment"
+										disabled={busyCommentId === comment.id}
+										onclick={() => deleteComment(comment)}
+									>
+										<IconTrash size={14} stroke={1.5} />
+									</Button>
+								</div>
+							{/if}
 						</header>
 						<div class="p-4">
-							<Markdown source={comment.body} />
+							{#if editingCommentId === comment.id}
+								<Textarea bind:value={commentDraft} rows={6} />
+								<div class="mt-2 flex justify-end gap-2">
+									<Button
+										variant="ghost"
+										size="sm"
+										disabled={busyCommentId === comment.id}
+										onclick={() => (editingCommentId = null)}>Cancel</Button
+									>
+									<Button
+										size="sm"
+										disabled={!commentDraft.trim() || busyCommentId === comment.id}
+										onclick={() => saveComment(comment)}>Save</Button
+									>
+								</div>
+							{:else}
+								<Markdown source={comment.body} />
+							{/if}
 						</div>
 					</article>
 				{/each}

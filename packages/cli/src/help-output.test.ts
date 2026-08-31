@@ -73,6 +73,8 @@ describe('the shipped bin', () => {
 		for (const args of [
 			['issues', 'comment', 'Tines/1', '--help'],
 			['issues', 'comment', 'Tines/1', '-h'],
+			['issues', 'comment-edit', 'Tines/1', 'cmt_1', '--help'],
+			['issues', 'comment-edit', 'Tines/1', 'cmt_1', '-h'],
 			['journal', 'append', 'Tines/1', '--help']
 		]) {
 			const { stdout } = await cli(args, {
@@ -86,18 +88,19 @@ describe('the shipped bin', () => {
 	}, 60_000);
 
 	// Wiring regression (Tines/9): the helper is unit-tested in body-value.test.ts,
-	// but nothing pinned the five call sites that call it — reverting any of them
+	// but nothing pinned the six call sites that call it — reverting any of them
 	// to the raw value left the suite green. An unreadable @file is the cheap
 	// probe: every site resolves its body before it touches the network, so the
 	// failure is local and needs no HTTP mock. A site that stopped calling
 	// readBodyValue would send the literal "@<path>" to the unreachable URL and
-	// fail with a connection error instead. (Tines/50 moved these five call
+	// fail with a connection error instead. (Tines/50 moved five of these call
 	// sites into commands/{issues,journal,schedules}.ts; this spec is what
 	// proved the move kept every one of them.)
 	it('resolves @file at every Markdown-body call site, before any request', async () => {
 		const missing = join(here, 'no-such-body-file.md');
 		for (const args of [
 			['issues', 'comment', 'Tines/1', `@${missing}`],
+			['issues', 'comment-edit', 'Tines/1', 'cmt_1', `@${missing}`],
 			['journal', 'append', 'Tines/1', `@${missing}`],
 			['issues', 'create', 'Tines', '-t', 'x', '-d', `@${missing}`],
 			['issues', 'edit', 'Tines/1', '-d', `@${missing}`],

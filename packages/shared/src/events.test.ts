@@ -37,6 +37,8 @@ const PAYLOADS: Record<KnownEventType, Record<string, unknown>> = {
 	'issue.updated': { changed: ['title', 'description'] },
 	'issue.transitioned': { action: 'Start work', from_state_name: 'Backlog', to_state_name: 'Design' },
 	'issue.commented': { comment_id: 'cmt_1' },
+	'issue.comment_edited': { comment_id: 'cmt_1', changed: ['body'] },
+	'issue.comment_deleted': { comment_id: 'cmt_1', body_length: 42 },
 	'issue.link_added': {
 		link_id: 'lnk_1',
 		kind: 'blocks',
