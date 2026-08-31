@@ -43,7 +43,7 @@ import {
 	buildHarnessInvocation,
 	buildSpawnEnv,
 	CliRefresher,
-	formatExitLine,
+	exitLineForRun,
 	formatLaunchBanner,
 	LogBatcher,
 	RunTable,
@@ -426,18 +426,17 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 				void table.finishAndCleanup(run, 'failed', `failed to launch harness: ${message(err)}`);
 			});
 			child.on('exit', (code, signal) => {
-				// Only on a run we still own: an already-settled (canceled) run
-				// takes the cleanup-only path below, which never flushes, so the
-				// line would sit in the batcher unsent.
-				if (!run.settled)
-					run.batcher.append(
-						formatExitLine({
-							code,
-							signal,
-							durationMs: Date.now() - (run.spawnedAt ?? Date.now()),
-							timedOut: run.timedOut
-						})
-					);
+				// The harness's last words first — a stream renderer holding a
+				// partial line emits it here (drain is idempotent, and
+				// finishAndCleanup calls it too), so the closing line below is
+				// really the log's last.
+				run.drain?.();
+				const closing = exitLineForRun(run, {
+					code,
+					signal,
+					durationMs: Date.now() - (run.spawnedAt ?? Date.now())
+				});
+				if (closing) run.batcher.append(closing);
 				// A supervisor-canceled run is already settled: finishAndCleanup
 				// degrades to cleanup-only, reporting nothing.
 				if (run.timedOut) {

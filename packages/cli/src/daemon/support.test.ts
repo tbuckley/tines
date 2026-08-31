@@ -5,6 +5,7 @@ import {
 	buildHarnessInvocation,
 	buildSpawnEnv,
 	CliRefresher,
+	exitLineForRun,
 	expandCommandTemplate,
 	formatExitLine,
 	formatLaunchBanner,
@@ -169,6 +170,23 @@ describe('formatExitLine', () => {
 		expect(formatExitLine({ code: null, signal: null, durationMs: 0 })).toBe(
 			'# tines runner: exit code=? after 0m0s\n'
 		);
+	});
+});
+
+describe('exitLineForRun', () => {
+	const exit = { code: null, signal: 'SIGTERM' as const, durationMs: 61_000 };
+
+	it('a run we still own gets its line, timed out or not', () => {
+		expect(exitLineForRun({ settled: false, timedOut: false }, exit)).toBe(
+			'# tines runner: exit signal=SIGTERM after 1m1s\n'
+		);
+		expect(exitLineForRun({ settled: false, timedOut: true }, exit)).toBe(
+			'# tines runner: exit signal=SIGTERM (timed out) after 1m1s\n'
+		);
+	});
+
+	it('a settled run gets none — its batcher never flushes again', () => {
+		expect(exitLineForRun({ settled: true, timedOut: false }, exit)).toBeNull();
 	});
 });
 

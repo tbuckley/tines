@@ -99,7 +99,7 @@ const SAFE_WORD = /^[A-Za-z0-9_@%+=:,./-]+$/;
 function launchWord(word: string): string {
 	if (word.length > LAUNCH_ARG_MAX)
 		return shellQuote(`${word.slice(0, LAUNCH_ARG_MAX)}… [+${word.length - LAUNCH_ARG_MAX} chars]`);
-	return SAFE_WORD.test(word) && word.length > 0 ? word : shellQuote(word);
+	return SAFE_WORD.test(word) ? word : shellQuote(word);
 }
 
 /**
@@ -171,6 +171,20 @@ export function formatExitLine(exit: HarnessExit): string {
 	if (parts.length === 0) parts.push('code=?');
 	if (exit.timedOut) parts.push('(timed out)');
 	return `# tines runner: exit ${parts.join(' ')} after ${formatDuration(exit.durationMs)}\n`;
+}
+
+/**
+ * The closing line for a run whose harness just exited, or null when nobody
+ * would read it: a supervisor-canceled run is already settled, takes
+ * `finishAndCleanup`'s cleanup-only path, and so never flushes its batcher
+ * again — the line would only sit there unsent.
+ */
+export function exitLineForRun(
+	run: Pick<ManagedRun, 'settled' | 'timedOut'>,
+	exit: Omit<HarnessExit, 'timedOut'>
+): string | null {
+	if (run.settled) return null;
+	return formatExitLine({ ...exit, timedOut: run.timedOut });
 }
 
 // ---------------------------------------------------------------------------

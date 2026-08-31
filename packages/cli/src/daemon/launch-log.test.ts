@@ -117,19 +117,35 @@ function startDaemon(port: number, dir: string, command: string): ChildProcess {
 
 let child: ChildProcess | null = null;
 let configDir: string | null = null;
+let server: Server | null = null;
 
-afterEach(() => {
-	child?.kill('SIGKILL');
-	child = null;
-	if (configDir) rmSync(configDir, { recursive: true, force: true });
+afterEach(async () => {
+	// Wait for the daemon to actually be gone before removing its config dir:
+	// kill() only sends the signal, and the daemon spends its last ticks
+	// writing the run-state file and removing the workspace inside that same
+	// directory — a delete racing it fails the test that just passed with
+	// ENOTEMPTY. The retries cover the harness's own leftovers.
+	if (child) {
+		const proc = child;
+		child = null;
+		if (proc.exitCode === null && proc.signalCode === null) {
+			const exited = new Promise<void>((r) => proc.once('exit', () => r()));
+			proc.kill('SIGKILL');
+			await exited;
+		}
+	}
+	server?.close();
+	server = null;
+	if (configDir) rmSync(configDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
 	configDir = null;
 });
 
 describe('the run log a local run leaves behind', () => {
 	it('opens with the launch banner and closes with the exit line', async () => {
-		const { server, done } = stubSupervisor();
-		await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
-		const port = (server.address() as AddressInfo).port;
+		const { server: stub, done } = stubSupervisor();
+		server = stub;
+		await new Promise<void>((r) => stub.listen(0, '127.0.0.1', r));
+		const port = (stub.address() as AddressInfo).port;
 		configDir = mkdtempSync(join(tmpdir(), 'tines-daemon-'));
 
 		// A placeholder proves the log shows the template as expanded, not as
@@ -153,15 +169,14 @@ describe('the run log a local run leaves behind', () => {
 		expect(lines.at(-1)).toMatch(/^# tines runner: exit code=0 after \d+m\d+s$/);
 		// The run key rides in the environment, never in the log.
 		expect(harvest.log).not.toContain(RUN_KEY);
-
-		server.close();
 	}, 30_000);
 
 	it('a harness the daemon times out says so on the way out', async () => {
 		// 1.2s, so the daemon's own timeout fires while `sleep` is still asleep.
-		const { server, done } = stubSupervisor(0.02);
-		await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
-		const port = (server.address() as AddressInfo).port;
+		const { server: stub, done } = stubSupervisor(0.02);
+		server = stub;
+		await new Promise<void>((r) => stub.listen(0, '127.0.0.1', r));
+		const port = (stub.address() as AddressInfo).port;
 		configDir = mkdtempSync(join(tmpdir(), 'tines-daemon-'));
 
 		child = startDaemon(port, configDir, 'sleep 30');
@@ -173,7 +188,5 @@ describe('the run log a local run leaves behind', () => {
 		expect(harvest.finish?.error).toMatch(/timeout/);
 		expect(lines[1]).toBe('$ sleep 30');
 		expect(lines.at(-1)).toMatch(/^# tines runner: exit signal=SIGTERM \(timed out\) after \d+m\d+s$/);
-
-		server.close();
 	}, 30_000);
 });

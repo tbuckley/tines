@@ -86,9 +86,11 @@ written by the daemon and by the harness, in this order:
 
    The first line is exactly what was executed: for `claude_code` and `custom` it is the
    `sh -c` script string, with a custom `--command` template already expanded, so a
-   template that expanded badly is visible rather than inferred. `model=(fixed)` means the
-   harness cannot vary its model. `cli=` is the daemon's own version, not the agent's.
-   The run key is never here — it rides in the harness's environment, never in argv.
+   template that expanded badly is visible rather than inferred (a template containing
+   newlines renders across as many lines — the block is two lines only when the command
+   is one). `model=(fixed)` means the harness cannot vary its model. `cli=` is the
+   daemon's own version, not the agent's. The run key is never here — it rides in the
+   harness's environment, never in argv.
 
 4. The harness's stdout and stderr (for `claude_code`, the rendered stream; `--raw` fetches
    the unrendered NDJSON).
