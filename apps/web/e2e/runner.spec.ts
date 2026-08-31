@@ -287,6 +287,36 @@ esac
 		expect(detail.log_bytes_dropped).toBe(0);
 	});
 
+	test('the Agents tab shows the runner online, the log viewer, and the bootstrap wizard', async ({
+		context,
+		page
+	}) => {
+		await signIn(context, ALICE.sessionToken);
+		await page.goto('/agents');
+
+		// The daemon-registered runner card, online, with the rotate action.
+		const card = page.locator('div.rounded-lg', { hasText: RUNNER_NAME }).first();
+		await expect(card.getByText('online')).toBeVisible();
+		await expect(card.getByRole('button', { name: 'Rotate token' })).toBeVisible();
+
+		// The completed run's row expands to the captured log tail.
+		await page.getByLabel('Show ended runs').check();
+		const row = page.locator('li', { hasText: RUNNER_NAME }).filter({ hasText: 'completed' }).first();
+		await row.getByRole('button', { name: 'Logs', exact: true }).click();
+		await expect(page.getByTestId('run-log').first()).toContainText('harness start mode=work');
+
+		// The add-runner wizard: the local path is the copy-pasteable daemon
+		// bootstrap (the Claude managed path creates the runner server-side).
+		await page.getByRole('button', { name: 'Add runner' }).click();
+		const dialog = page.getByRole('dialog', { name: 'Add runner' });
+		await dialog.getByLabel('Name').fill('laptop-e2e');
+		await expect(dialog).toContainText('tines runner daemon');
+		await expect(dialog).toContainText('--name laptop-e2e');
+		await expect(dialog).toContainText('registers');
+		await expect(dialog).toContainText('launchd/systemd');
+		await dialog.getByRole('button', { name: 'Done' }).click();
+	});
+
 	test('an oversized log keeps every byte: the tail truncates, the full log does not', async ({
 		request
 	}) => {
@@ -325,36 +355,6 @@ esac
 		expect(new TextEncoder().encode(full).length).toBe(detail.log_full_bytes);
 
 		setMode('work');
-	});
-
-	test('the Agents tab shows the runner online, the log viewer, and the bootstrap wizard', async ({
-		context,
-		page
-	}) => {
-		await signIn(context, ALICE.sessionToken);
-		await page.goto('/agents');
-
-		// The daemon-registered runner card, online, with the rotate action.
-		const card = page.locator('div.rounded-lg', { hasText: RUNNER_NAME }).first();
-		await expect(card.getByText('online')).toBeVisible();
-		await expect(card.getByRole('button', { name: 'Rotate token' })).toBeVisible();
-
-		// The completed run's row expands to the captured log tail.
-		await page.getByLabel('Show ended runs').check();
-		const row = page.locator('li', { hasText: RUNNER_NAME }).filter({ hasText: 'completed' }).first();
-		await row.getByRole('button', { name: 'Logs', exact: true }).click();
-		await expect(page.getByTestId('run-log').first()).toContainText('harness start mode=work');
-
-		// The add-runner wizard: the local path is the copy-pasteable daemon
-		// bootstrap (the Claude managed path creates the runner server-side).
-		await page.getByRole('button', { name: 'Add runner' }).click();
-		const dialog = page.getByRole('dialog', { name: 'Add runner' });
-		await dialog.getByLabel('Name').fill('laptop-e2e');
-		await expect(dialog).toContainText('tines runner daemon');
-		await expect(dialog).toContainText('--name laptop-e2e');
-		await expect(dialog).toContainText('registers');
-		await expect(dialog).toContainText('launchd/systemd');
-		await dialog.getByRole('button', { name: 'Done' }).click();
 	});
 
 	test('a do-nothing harness strikes the issue three times and parks it', async ({ request }) => {
