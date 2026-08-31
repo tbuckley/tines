@@ -344,17 +344,23 @@ export async function loadWorkflow(
 // ---------------------------------------------------------------------------
 // Mutations
 
-export async function createWorkflow(
+/**
+ * Compiles every statement that creates a workflow — the workflow row, its
+ * states and transitions, any seeded stage instructions, and the
+ * `workflow.created` event — without running them, so a caller assembling a
+ * larger batch (configuration import) shares one definition of "a workflow".
+ * Returns the new id and its state ids by name, for scope resolution.
+ */
+export function createWorkflowQueries(
 	db: Kysely<Database>,
-	env: Env,
 	actor: ActorContext,
-	body: CreateWorkflowRequest
-): Promise<WorkflowResponse> {
+	body: CreateWorkflowRequest,
+	now: number
+): { id: string; queries: CompiledQuery[]; stateIdByName: Map<string, string> } {
 	const name = requireString(body.name, 'name', { max: 200 }).trim();
 	const description = optionalString(body.description, 'description', { max: 10_000 }) ?? '';
 	const def = resolveDef(body.states, body.transitions ?? [], body.initial_state, []);
 
-	const now = Date.now();
 	const id = newId('wf');
 	const queries: CompiledQuery[] = [
 		db
@@ -410,6 +416,16 @@ export async function createWorkflow(
 			),
 		eventInsert(db, actor, { type: 'workflow.created', payload: { workflow_id: id, name } })
 	];
+	return { id, queries, stateIdByName: new Map(def.states.map((s) => [s.name, s.id])) };
+}
+
+export async function createWorkflow(
+	db: Kysely<Database>,
+	env: Env,
+	actor: ActorContext,
+	body: CreateWorkflowRequest
+): Promise<WorkflowResponse> {
+	const { id, queries } = createWorkflowQueries(db, actor, body, Date.now());
 	await runAtomic(env, queries);
 	return loadWorkflow(db, actor.userId, id);
 }

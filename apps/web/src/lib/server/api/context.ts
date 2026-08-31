@@ -70,7 +70,7 @@ function requireKind(value: unknown): ContextKind {
 	return value as ContextKind;
 }
 
-function validateName(kind: ContextKind, value: unknown): string {
+export function validateName(kind: ContextKind, value: unknown): string {
 	const name = requireString(value, 'name', { max: 100 }).trim();
 	if (name.length === 0 || name.length > 100) {
 		throw new ApiFail(422, 'invalid_field', '"name" must be non-empty and at most 100 characters', {
@@ -102,7 +102,7 @@ export function validateWorkspacePath(path: unknown, field: string): string {
 	return p;
 }
 
-function validateFiles(value: unknown): ContextFile[] {
+export function validateFiles(value: unknown): ContextFile[] {
 	if (!Array.isArray(value)) {
 		throw new ApiFail(422, 'invalid_field', '"files" must be an array of { path, content }', {
 			field: 'files'
@@ -148,7 +148,7 @@ function validateFiles(value: unknown): ContextFile[] {
 	return files;
 }
 
-function validatePromptBody(value: unknown): string {
+export function validatePromptBody(value: unknown): string {
 	if (typeof value !== 'string') {
 		throw new ApiFail(422, 'invalid_field', 'A prompt needs a "body" (Markdown string)', {
 			field: 'body'

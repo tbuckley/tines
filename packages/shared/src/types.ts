@@ -1687,3 +1687,128 @@ export interface ApiErrorBody {
 		details?: Record<string, unknown>;
 	};
 }
+
+// ---------------------------------------------------------------------------
+// Configuration export / import
+
+/**
+ * Major version of the configuration export format. The importer rejects any
+ * other value with a 422 `unsupported_version`; additive fields within a
+ * version are ignored by older importers rather than fatal.
+ */
+export const TINES_EXPORT_VERSION = 1;
+
+/** Upper bound on an uploaded export document (413 above this). */
+export const CONFIG_IMPORT_MAX_BYTES = 20 * 1024 * 1024;
+
+/**
+ * A state reference inside an export, by name rather than id. `system: true`
+ * means the built-in Standard workflow, which is never exported as content:
+ * the importer resolves such refs against the target instance's own system
+ * workflow by state name.
+ */
+export interface ExportedStateRef {
+	workflow: string;
+	state: string;
+	system: boolean;
+}
+
+/** An item's scope, with every referent named instead of id'd. */
+export interface ExportedScope {
+	project: string | null;
+	state: ExportedStateRef | null;
+}
+
+/** A user workflow, shaped so it can be replayed through `CreateWorkflowRequest`. */
+export interface ExportedWorkflow {
+	name: string;
+	description: string;
+	/** State name, never an id. */
+	initial_state: string;
+	states: { name: string; category: StateCategory; position: number }[];
+	transitions: {
+		name: string;
+		/** State names within this same workflow. */
+		from: string;
+		to: string;
+		requires?: ArtifactRequirement[];
+	}[];
+}
+
+/** A project, exported only as a scope anchor — no issues, runs or settings. */
+export interface ExportedProject {
+	name: string;
+	description: string;
+	/** Workflow name, or null when unset or the system workflow. */
+	default_workflow: string | null;
+}
+
+/**
+ * A non-issue-scoped context item. Artifacts are always issue-scoped and so
+ * never appear here, which keeps the document pure D1 text (no R2 payloads).
+ */
+export interface ExportedContextItem {
+	kind: Exclude<ContextKind, 'artifact'>;
+	name: string;
+	description: string;
+	scope: ExportedScope;
+	/** prompt */
+	body?: string;
+	/** skill */
+	files?: ContextFile[];
+	/** repo */
+	repo_url?: string;
+	repo_branch?: string | null;
+	repo_dir?: string | null;
+}
+
+/**
+ * The whole document. Not a backup: it carries configuration (workflows and
+ * shared context) and deliberately omits issues, comments, events, runs,
+ * runners, routing rules, schedules, API keys and supervisor settings.
+ */
+export interface ConfigExport {
+	tines_export: number;
+	exported_at: number;
+	/** Visibility for what the format deliberately drops. */
+	stats: { skipped_issue_scoped: number };
+	workflows: ExportedWorkflow[];
+	projects: ExportedProject[];
+	context_items: ExportedContextItem[];
+}
+
+/**
+ * `skip` leaves every existing match untouched (the idempotency guarantee).
+ * `overwrite` additionally replaces colliding context items — never journals,
+ * never workflows. Nothing is ever deleted for being absent from the file.
+ */
+export type ImportMode = 'skip' | 'overwrite';
+
+export type ImportAction = 'create' | 'update' | 'skip' | 'error';
+
+/** What the importer would do (dry run) or did (apply) with one entry. */
+export interface ImportPlanEntry {
+	type: 'workflow' | 'project' | 'context_item';
+	name: string;
+	/** Canonical scope label for context items, e.g. "project Tines · state Design". */
+	scope_label?: string;
+	action: ImportAction;
+	/** Why it was skipped, or what went wrong. */
+	reason?: string;
+}
+
+export interface ImportPlan {
+	mode: ImportMode;
+	entries: ImportPlanEntry[];
+	counts: { create: number; update: number; skip: number; error: number };
+}
+
+/**
+ * The result of an apply. `plan` is the plan the server actually executed
+ * (re-planned server-side at apply time, never a client-submitted one).
+ */
+export interface ImportApplyResult {
+	plan: ImportPlan;
+	applied: number;
+	failed: ImportPlanEntry[];
+}
