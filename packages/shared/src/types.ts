@@ -493,7 +493,7 @@ export const STATE_PROMPT_NAME = 'instructions';
  */
 export const AGENT_GUIDELINES_BODY = `You are an agent working on a Tines issue over its HTTP API / CLI. Beyond doing the work, leave the workspace smarter than you found it. Four places to write, chosen by who should inherit what you learned:
 
-- **Issue comments** — all prose about this issue: progress, findings, dead ends, questions, and instructions for whoever picks it up next. Pass the body on stdin with a quoted heredoc, so backticks, \$VARS, quotes and apostrophes reach the thread untouched by the shell (a mangled comment cannot be deleted):
+- **Issue comments** — all prose about this issue: progress, findings, dead ends, questions, and instructions for whoever picks it up next. Pass the body on stdin with a quoted heredoc, so backticks, \$VARS, quotes and apostrophes reach the thread untouched by the shell (\`tines issues comment-edit <ref> <comment-id>\` and \`comment-delete\` repair your own mis-posts, but a clean first post is cheaper):
 
   \`\`\`
   tines issues comment <project>/<number> - <<'EOF'
