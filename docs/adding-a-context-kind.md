@@ -98,14 +98,13 @@ Nothing else in the server changes: `requireKind`, scope resolution,
 name-uniqueness, positions, events, and the deletion guards are all
 payload-agnostic.
 
-### CLI — `packages/cli/src/index.ts`
+### CLI — `packages/cli/src/`
 
-- Payload flags on `context create` / `context edit` (watch for flag
-  collisions with the global `-u, --url`; see how the repo kind handles
-  it).
-- A line in `contextItemSummary` (list rendering) and `printContextItem`
-  (show rendering).
-- The `--out` bundle file in `issues context`.
+- `commands/context.ts`: payload flags on `context create` / `context edit`
+  (watch for flag collisions with the global `-u, --url`; see how the repo
+  kind handles it), plus a line in `printContextItem` (show rendering).
+- `format.ts`: a line in `contextItemSummary` (list rendering).
+- `commands/issues.ts`: the `--out` bundle file in `issues context`.
 
 ### Web UI — `apps/web/src/lib/components/`
 
