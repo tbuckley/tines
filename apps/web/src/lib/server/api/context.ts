@@ -1353,7 +1353,10 @@ export function issueBlock(
 	}
 	// A quoted heredoc, not an inline argument: comment bodies are prose full
 	// of backticks, $VARS and apostrophes, and there is no way to delete a
-	// comment that the shell mangled on the way in (Tines/9).
+	// comment that the shell mangled on the way in (Tines/9). The fallback line
+	// is not decoration: a CLI predating that change treats the `-` as the body
+	// itself and posts it, exit 0, so the failure is silent unless the agent has
+	// been told what it looks like.
 	lines.push(
 		'Add a comment (the quoted heredoc keeps backticks, $VARS and quotes literal):',
 		'```',
@@ -1361,6 +1364,7 @@ export function issueBlock(
 		'<markdown>',
 		'EOF',
 		'```',
+		`A \`tines\` too old for that form posts a literal \`-\` instead of your body, without failing. If \`tines issues comment --help\` does not mention \`@file\`, use \`tines issues comment ${ref} "<markdown>"\` and mind the shell quoting.`,
 		'',
 		'### Artifacts',
 		''

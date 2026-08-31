@@ -258,9 +258,14 @@ describe('issueBlock', () => {
 		expect(block).toContain('Review (awaiting_human), in workflow "Two-step".');
 		expect(block).toContain('**Alice via laptop** (2023-11-14T22:13:20.000Z):\nLooks close.');
 		// The comment affordance is a quoted heredoc, so an agent's prose survives
-		// the shell verbatim (Tines/9).
+		// the shell verbatim (Tines/9) — with the fallback spelled out, because a
+		// CLI predating that change posts a bare `-` and exits 0. Asserted as one
+		// whole line: split across two lines.push() entries it renders with a
+		// newline in the middle and reads as a broken sentence.
 		expect(block).toContain("tines issues comment Tines/42 - <<'EOF'");
-		expect(block).not.toContain('tines issues comment Tines/42 "<markdown>"');
+		expect(block).toContain(
+			'A `tines` too old for that form posts a literal `-` instead of your body, without failing. If `tines issues comment --help` does not mention `@file`, use `tines issues comment Tines/42 "<markdown>"` and mind the shell quoting.'
+		);
 		// Multi-word actions are quoted so they paste correctly.
 		expect(block).toContain(
 			'- **send back** → Open (active): `tines issues move Tines/42 "send back"`'

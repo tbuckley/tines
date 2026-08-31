@@ -1041,6 +1041,11 @@ withCommon(
 				scheduleName?: string;
 			}
 	) => {
+		// Resolved before any lookup, like the <markdown> positionals: an
+		// unreadable @file should fail without a round trip, and failing locally
+		// is what lets the spawn tests pin this call site (Tines/9).
+		const description =
+			opts.description !== undefined ? readBodyValue(opts.description) : undefined;
 		const api = client(opts);
 		const project = await resolveProject(api, projectRef);
 		const workflowId = opts.workflow ? (await resolveWorkflow(api, opts.workflow)).id : undefined;
@@ -1058,7 +1063,7 @@ withCommon(
 			: undefined;
 		const issue = await api.createIssue(project.id, {
 			title: opts.title,
-			description: opts.description !== undefined ? readBodyValue(opts.description) : undefined,
+			description,
 			workflow_id: workflowId,
 			state: opts.state,
 			schedule
@@ -1101,11 +1106,13 @@ withCommon(
 		ref: string,
 		opts: CommonOpts & { title?: string; description?: string; state?: string; workflow?: string }
 	) => {
+		const description =
+			opts.description !== undefined ? readBodyValue(opts.description) : undefined;
 		const api = client(opts);
 		const issue = await resolveIssue(api, ref);
 		const body: UpdateIssueRequest = {};
 		if (opts.title !== undefined) body.title = opts.title;
-		if (opts.description !== undefined) body.description = readBodyValue(opts.description);
+		if (description !== undefined) body.description = description;
 		if (opts.state !== undefined) body.state = opts.state;
 		if (opts.workflow !== undefined) body.workflow_id = (await resolveWorkflow(api, opts.workflow)).id;
 		if (Object.keys(body).length === 0) {
@@ -2244,11 +2251,13 @@ withCommon(
 				name?: string;
 			}
 	) => {
+		const descriptionTemplate =
+			opts.description !== undefined ? readBodyValue(opts.description) : undefined;
 		const api = client(opts);
 		const schedule = await resolveSchedule(api, ref);
 		const body: UpdateScheduleRequest = {};
 		if (opts.title !== undefined) body.title_template = opts.title;
-		if (opts.description !== undefined) body.description_template = readBodyValue(opts.description);
+		if (descriptionTemplate !== undefined) body.description_template = descriptionTemplate;
 		if (opts.workflow !== undefined) body.workflow_id = (await resolveWorkflow(api, opts.workflow)).id;
 		if (opts.state !== undefined) body.state = opts.state;
 		const recurrence = buildRecurrence(opts);
