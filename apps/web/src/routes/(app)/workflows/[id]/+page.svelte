@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { ContextItem, UpdateWorkflowRequest } from '@tines/shared';
-	import { ApiError } from '@tines/shared';
+	import { activeStateIds as deriveActiveStateIds, ApiError } from '@tines/shared';
 	import IconBooks from '@tabler/icons-svelte/icons/books';
 	import IconChevronLeft from '@tabler/icons-svelte/icons/chevron-left';
 	import IconCopy from '@tabler/icons-svelte/icons/copy';
@@ -20,6 +20,9 @@
 	import { prefersReducedMotion } from '$lib/format';
 
 	let { data } = $props();
+
+	/** Active-category states, so dead routing rules are flagged as such. */
+	const activeStateIds = $derived(deriveActiveStateIds(data.workflows));
 
 	let errorMessage = $state<string | null>(null);
 	function showError(e: unknown) {
@@ -265,6 +268,7 @@
 <div class="mt-8">
 	<AgentRoutingCard
 		rules={data.routingRules}
+		{activeStateIds}
 		emptyMessage="No routing rules are scoped to this workflow's states — project and global rules still apply."
 	/>
 </div>

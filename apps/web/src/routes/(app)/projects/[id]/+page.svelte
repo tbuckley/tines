@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { ContextItem } from '@tines/shared';
-	import { ApiError } from '@tines/shared';
+	import { activeStateIds as deriveActiveStateIds, ApiError } from '@tines/shared';
 	import IconChevronLeft from '@tabler/icons-svelte/icons/chevron-left';
 	import IconPlus from '@tabler/icons-svelte/icons/plus';
 	import IconSettings from '@tabler/icons-svelte/icons/settings';
@@ -23,6 +23,9 @@
 	import { prefersReducedMotion } from '$lib/format';
 
 	let { data } = $props();
+
+	/** Active-category states, so dead routing rules are flagged as such. */
+	const activeStateIds = $derived(deriveActiveStateIds(data.workflows));
 
 	const dur = () => (prefersReducedMotion() ? 0 : 180);
 
@@ -241,6 +244,7 @@
 
 <AgentRoutingCard
 	rules={data.routingRules}
+	{activeStateIds}
 	emptyMessage="No routing rule covers this project — its issues will not dispatch to agents."
 />
 
