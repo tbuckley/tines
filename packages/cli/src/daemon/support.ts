@@ -10,6 +10,23 @@ export type HarnessKind = 'claude_code' | 'codex' | 'custom';
 
 export const HARNESS_KINDS: readonly HarnessKind[] = ['claude_code', 'codex', 'custom'];
 
+/** `--keep-workspaces`: which settled runs leave their workspace on disk. */
+export type KeepWorkspacesMode = 'never' | 'failed' | 'always';
+
+export const KEEP_WORKSPACES_MODES: readonly KeepWorkspacesMode[] = ['never', 'failed', 'always'];
+
+/** How a run ended, as far as the workspace decision is concerned. */
+export type RunOutcome = 'completed' | 'failed';
+
+/**
+ * Whether a settling run's workspace survives. Pure, so the daemon's flag and
+ * the state machine's decision are the same one function (see keptMarker in
+ * store.ts for what is written into a kept workspace).
+ */
+export function keepWorkspace(mode: KeepWorkspacesMode, outcome: RunOutcome): boolean {
+	return mode === 'always' || (mode === 'failed' && outcome === 'failed');
+}
+
 /** POSIX single-quote escaping: safe interpolation into an `sh -c` string. */
 export function shellQuote(value: string): string {
 	return `'${value.replaceAll("'", `'\\''`)}'`;
@@ -93,6 +110,11 @@ export interface ManagedRun {
 	timedOut: boolean;
 	/** A finish/cancel path owns this run's end; everyone else stands down. */
 	settled: boolean;
+	/**
+	 * Why this run ended, in human words — recorded in a kept workspace's
+	 * marker. Set by whoever settles it; the finish paths use their error text.
+	 */
+	endNote?: string;
 	/** Drains pending log chunks before a finish report. */
 	flush?: () => Promise<void>;
 	/**
@@ -102,11 +124,25 @@ export interface ManagedRun {
 	drain?: () => void;
 }
 
+/** What `release` is being asked to do with a settling run's workspace. */
+export interface RunDisposition {
+	keep: boolean;
+	outcome: RunOutcome;
+}
+
 export interface RunTableEffects<T extends ManagedRun> {
 	/** Report the finish to the supervisor; rejections are the caller-side log. */
 	finish(run: T, status: 'completed' | 'failed', error?: string): Promise<void>;
-	/** Tear down the run's local traces: workspace, timers (idempotent). */
-	release(run: T): void;
+	/**
+	 * Tear down the run's local traces: timers, and the workspace unless the
+	 * disposition says to keep it (idempotent).
+	 */
+	release(run: T, disposition: RunDisposition): void;
+	/**
+	 * Announce a kept workspace in the run's own log. Called between `drain`
+	 * and `flush`, the only window in which an appended line still ships.
+	 */
+	noteKept?(run: T): void;
 	/** Persist the run → pid state file (membership or pid changed). */
 	persist(): void;
 	log(message: string): void;
@@ -115,7 +151,17 @@ export interface RunTableEffects<T extends ManagedRun> {
 export class RunTable<T extends ManagedRun> {
 	private readonly runs = new Map<string, T>();
 
-	constructor(private readonly effects: RunTableEffects<T>) {}
+	/** The daemon's keep decision, as data: `keepWorkspace` bound to its mode. */
+	private readonly keep: (outcome: RunOutcome) => boolean;
+
+	constructor(
+		private readonly effects: RunTableEffects<T>,
+		opts: { keep?: (outcome: RunOutcome) => boolean } = {}
+	) {
+		// Default: today's behaviour, so a caller that passes no decision keeps
+		// nothing.
+		this.keep = opts.keep ?? (() => false);
+	}
 
 	get size(): number {
 		return this.runs.size;
@@ -143,11 +189,19 @@ export class RunTable<T extends ManagedRun> {
 		this.effects.persist();
 	}
 
-	/** Removes the run and releases its local traces. Safe to call twice. */
-	cleanup(run: T): void {
+	/**
+	 * Removes the run and releases its local traces. Safe to call twice.
+	 *
+	 * The outcome defaults to `failed` because every route here that is not an
+	 * explicit completed finish is a failure: a supervisor cancel (which
+	 * reaches cleanup with no status at all), a clone failure on an
+	 * already-settled run, a daemon shutdown. Guessing `failed` also errs the
+	 * safe way — it keeps a directory rather than destroying evidence.
+	 */
+	cleanup(run: T, outcome: RunOutcome = 'failed'): void {
 		this.runs.delete(run.runId);
 		this.effects.persist();
-		this.effects.release(run);
+		this.effects.release(run, { keep: this.keep(outcome), outcome });
 	}
 
 	/**
@@ -159,10 +213,12 @@ export class RunTable<T extends ManagedRun> {
 	async finishAndCleanup(run: T, status: 'completed' | 'failed', error?: string): Promise<void> {
 		if (run.settled) return this.cleanup(run);
 		run.settled = true;
+		run.endNote ??= error;
 		// Before the flush, not after: a line appended afterwards would sit in
 		// the batcher until its timer fired, by which point the run is
 		// finish-reported and the append is rejected.
 		run.drain?.();
+		if (this.keep(status)) this.effects.noteKept?.(run);
 		await run.flush?.();
 		try {
 			await this.effects.finish(run, status, error);
@@ -174,7 +230,7 @@ export class RunTable<T extends ManagedRun> {
 				`finish report for run ${run.runId} not accepted: ${err instanceof Error ? err.message : String(err)}`
 			);
 		}
-		this.cleanup(run);
+		this.cleanup(run, status);
 	}
 
 	/**
