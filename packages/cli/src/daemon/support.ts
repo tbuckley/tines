@@ -4,6 +4,7 @@
  * unit-testable without a daemon (see support.test.ts). The loop itself
  * lives in daemon.ts.
  */
+import { delimiter } from 'node:path';
 
 export type HarnessKind = 'claude_code' | 'codex' | 'custom';
 
@@ -228,4 +229,80 @@ export class LogBatcher {
 		}
 		return this.sending;
 	}
+}
+
+// ---------------------------------------------------------------------------
+// The agent-facing CLI: the daemon keeps a current `tines` in its own prefix
+// and injects it into the harness environment, so the prompt an agent reads
+// and the CLI it runs come from the same release (Tines/71).
+
+/** The daemon-managed agent-facing CLI, as resolved for one spawn. */
+export interface AgentCli {
+	/** Absolute `.bin` dir to prepend to PATH, or null → use the ambient PATH. */
+	binDir: string | null;
+	/** Version of the resolved CLI, when it could be read. */
+	version: string | null;
+	/** How it was resolved: a fresh install, the last-good copy, or no prefix at all. */
+	source: 'fresh' | 'stale' | 'ambient';
+}
+
+/** No daemon-managed CLI: the harness resolves `tines` from the ambient PATH. */
+export const AMBIENT_CLI: AgentCli = { binDir: null, version: null, source: 'ambient' };
+
+/**
+ * TTL-gates and coalesces CLI refreshes: at most one install in flight (two
+ * `npm i` into one prefix racing each other is the failure this prevents),
+ * and at most one attempt per `ttlMs` — gated on *attempt*, not success, so
+ * an offline machine does not pay the install timeout on every launch.
+ * `install` is the I/O effect (cli-refresh.ts); this is the policy around it.
+ */
+export class CliRefresher {
+	private cached: AgentCli = AMBIENT_CLI;
+	private lastAttempt: number | null = null;
+	private inFlight: Promise<AgentCli> | null = null;
+
+	constructor(
+		private readonly install: () => Promise<AgentCli>,
+		private readonly opts: { ttlMs?: number; now?: () => number } = {}
+	) {}
+
+	/** The current CLI, refreshing first when the TTL elapsed. Never rejects. */
+	ensure(): Promise<AgentCli> {
+		if (this.inFlight) return this.inFlight;
+		const now = (this.opts.now ?? Date.now)();
+		if (this.lastAttempt !== null && now - this.lastAttempt < (this.opts.ttlMs ?? 10 * 60_000)) {
+			return Promise.resolve(this.cached);
+		}
+		this.lastAttempt = now;
+		// A throwing install is a bug, not a failure mode — but it must still
+		// never fail a launch, so it degrades to the ambient PATH.
+		this.inFlight = Promise.resolve()
+			.then(() => this.install())
+			.catch(() => AMBIENT_CLI)
+			.then((cli) => {
+				this.cached = cli;
+				this.inFlight = null;
+				return cli;
+			});
+		return this.inFlight;
+	}
+}
+
+/**
+ * The harness spawn environment: the daemon's own environment plus the run's
+ * key and API base, with the managed CLI's bin dir prepended to PATH when
+ * there is one — so `tines` inside the run resolves to the daemon-managed
+ * copy, and everything else on the machine is untouched.
+ */
+export function buildSpawnEnv(
+	base: NodeJS.ProcessEnv,
+	opts: { binDir: string | null; apiKey: string; apiUrl: string }
+): NodeJS.ProcessEnv {
+	const env: NodeJS.ProcessEnv = {
+		...base,
+		TINES_API_KEY: opts.apiKey,
+		TINES_API_URL: opts.apiUrl
+	};
+	if (opts.binDir) env.PATH = base.PATH ? `${opts.binDir}${delimiter}${base.PATH}` : opts.binDir;
+	return env;
 }

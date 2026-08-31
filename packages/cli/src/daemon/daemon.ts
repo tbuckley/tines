@@ -15,6 +15,7 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { hostname, platform, arch } from 'node:os';
 import { dirname, join } from 'node:path';
 import { ApiError, createApiClient, type RunnerAssignment } from '@tines/shared';
+import { installAgentCli } from './cli-refresh.js';
 import {
 	clearRunnerCredentials,
 	daemonStatePath,
@@ -27,9 +28,13 @@ import {
 	type RunnerCredentials
 } from './store.js';
 import {
+	AMBIENT_CLI,
 	buildHarnessInvocation,
+	buildSpawnEnv,
+	CliRefresher,
 	LogBatcher,
 	RunTable,
+	type AgentCli,
 	type HarnessKind,
 	type ManagedRun
 } from './support.js';
@@ -44,7 +49,12 @@ export interface DaemonOptions {
 	maxConcurrent: number;
 	pollIntervalMs: number;
 	configDir: string;
+	/** Keep the agent-facing `tines` current from npm (--no-cli-refresh turns it off). */
+	cliRefresh: boolean;
 }
+
+/** How often a launch may re-attempt the CLI refresh (gated on attempt, not success). */
+const CLI_REFRESH_TTL_MS = 10 * 60_000;
 
 interface ActiveRun extends ManagedRun {
 	child?: ChildProcess;
@@ -112,6 +122,22 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 	const client = createApiClient({ baseUrl: opts.url, apiKey: creds.token });
 	const statePath = daemonStatePath(opts.configDir, creds.runner_id);
 	let shuttingDown = false;
+
+	// -- the agent-facing CLI -------------------------------------------------
+	// The launch prompt is always current (it deploys on every merge); the
+	// `tines` an agent resolves must be too, or it silently misreads commands
+	// the prompt teaches. The daemon keeps its own copy and injects it into
+	// the harness PATH — the machine's global install is never touched.
+	const refresher = new CliRefresher(() => installAgentCli({ configDir: opts.configDir, log }), {
+		ttlMs: CLI_REFRESH_TTL_MS
+	});
+	const ensureCli = (): Promise<AgentCli> =>
+		opts.cliRefresh ? refresher.ensure() : Promise.resolve(AMBIENT_CLI);
+	const cliLabel = (cli: AgentCli) =>
+		cli.source === 'ambient'
+			? `ambient PATH (${opts.cliRefresh ? 'refresh failed' : 'refresh disabled'})`
+			: `tines ${cli.version ?? 'unknown'} (daemon-managed${cli.source === 'stale' ? ', last-good copy' : ''})`;
+	log(`agent CLI: ${cliLabel(await ensureCli())}`);
 
 	const table: RunTable<ActiveRun> = new RunTable<ActiveRun>({
 		finish: async (run, status, error) => {
@@ -233,6 +259,19 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 			}
 			if (run.settled) return table.cleanup(run);
 
+			// Refreshed after the clones, so a TTL-expired install overlaps
+			// nothing the run is waiting on; the result is recorded in the run's
+			// own log, which is where a confused agent's reader looks first.
+			const cli = await ensureCli();
+			if (run.settled) return table.cleanup(run);
+			run.batcher.append(
+				cli.source === 'fresh'
+					? `tines CLI: ${cli.version ?? 'unknown'} (daemon-managed)\n`
+					: cli.source === 'stale'
+						? `warning: agent CLI refresh failed; using last-good tines ${cli.version ?? 'unknown'} from ${opts.configDir}/cli\n`
+						: `warning: no daemon-managed tines CLI; using whatever \`tines\` is on this machine's PATH\n`
+			);
+
 			const invocation = buildHarnessInvocation(
 				{ harness: opts.harness, command: opts.command },
 				{
@@ -244,7 +283,11 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 			);
 			const child = spawn(invocation.file, invocation.args, {
 				cwd: workspace,
-				env: { ...process.env, TINES_API_KEY: assignment.run_key, TINES_API_URL: opts.url },
+				env: buildSpawnEnv(process.env, {
+					binDir: cli.binDir,
+					apiKey: assignment.run_key,
+					apiUrl: opts.url
+				}),
 				stdio: ['ignore', 'pipe', 'pipe'],
 				detached: true
 			});

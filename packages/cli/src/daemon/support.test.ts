@@ -1,10 +1,15 @@
+import { delimiter } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
+	AMBIENT_CLI,
 	buildHarnessInvocation,
+	buildSpawnEnv,
+	CliRefresher,
 	expandCommandTemplate,
 	LogBatcher,
 	RunTable,
 	shellQuote,
+	type AgentCli,
 	type ManagedRun
 } from './support.js';
 
@@ -224,5 +229,101 @@ describe('RunTable', () => {
 		h.table.cleanup(run);
 		expect(h.persistCount()).toBe(after + 2);
 		expect(h.released).toEqual(['arun_1', 'arun_1']); // release itself is idempotent (rm -rf force)
+	});
+});
+
+describe('buildSpawnEnv', () => {
+	const base = { PATH: '/usr/bin:/bin', HOME: '/home/agent' };
+
+	it('prepends the managed CLI bin dir to PATH and sets the run credentials', () => {
+		expect(
+			buildSpawnEnv(base, { binDir: '/cfg/cli/node_modules/.bin', apiKey: 'k', apiUrl: 'https://t' })
+		).toEqual({
+			HOME: '/home/agent',
+			PATH: `/cfg/cli/node_modules/.bin${delimiter}/usr/bin:/bin`,
+			TINES_API_KEY: 'k',
+			TINES_API_URL: 'https://t'
+		});
+	});
+
+	it('leaves PATH untouched when there is no managed CLI', () => {
+		expect(buildSpawnEnv(base, { binDir: null, apiKey: 'k', apiUrl: 'https://t' }).PATH).toBe(
+			'/usr/bin:/bin'
+		);
+	});
+
+	it('tolerates an environment with no PATH at all', () => {
+		expect(
+			buildSpawnEnv({}, { binDir: '/cfg/bin', apiKey: 'k', apiUrl: 'https://t' }).PATH
+		).toBe('/cfg/bin');
+	});
+});
+
+describe('CliRefresher', () => {
+	const fresh = (version: string): AgentCli => ({
+		binDir: '/cfg/cli/node_modules/.bin',
+		version,
+		source: 'fresh'
+	});
+
+	/** A refresher over a counted, manually-resolved install and a fake clock. */
+	function harness(install: (n: number) => Promise<AgentCli>, ttlMs = 1000) {
+		let now = 0;
+		let calls = 0;
+		const refresher = new CliRefresher(() => install(++calls), { ttlMs, now: () => now });
+		return {
+			refresher,
+			get calls() {
+				return calls;
+			},
+			advance: (ms: number) => (now += ms)
+		};
+	}
+
+	it('installs once, then serves the cache until the TTL elapses', async () => {
+		const h = harness((n) => Promise.resolve(fresh(`0.0.${n}`)));
+		expect(await h.refresher.ensure()).toEqual(fresh('0.0.1'));
+		expect(await h.refresher.ensure()).toEqual(fresh('0.0.1'));
+		expect(h.calls).toBe(1);
+
+		h.advance(999);
+		await h.refresher.ensure();
+		expect(h.calls).toBe(1);
+
+		h.advance(1);
+		expect(await h.refresher.ensure()).toEqual(fresh('0.0.2'));
+		expect(h.calls).toBe(2);
+	});
+
+	it('coalesces concurrent launches into one in-flight install', async () => {
+		let release!: (cli: AgentCli) => void;
+		const h = harness(() => new Promise<AgentCli>((resolve) => (release = resolve)));
+		const first = h.refresher.ensure();
+		const second = h.refresher.ensure();
+		await Promise.resolve(); // the install effect starts on a microtask
+		const third = h.refresher.ensure(); // …and this one joins it mid-flight
+		expect(h.calls).toBe(1);
+		release(fresh('0.0.9'));
+		expect(await Promise.all([first, second, third])).toEqual([
+			fresh('0.0.9'),
+			fresh('0.0.9'),
+			fresh('0.0.9')
+		]);
+		expect(h.calls).toBe(1);
+	});
+
+	it('TTL-gates failed attempts too — an offline machine is not retried per launch', async () => {
+		const h = harness(() => Promise.resolve(AMBIENT_CLI));
+		expect(await h.refresher.ensure()).toEqual(AMBIENT_CLI);
+		await h.refresher.ensure();
+		expect(h.calls).toBe(1);
+	});
+
+	it('degrades to the ambient PATH when install throws, rather than failing the launch', async () => {
+		const h = harness(() => Promise.reject(new Error('boom')));
+		await expect(h.refresher.ensure()).resolves.toEqual(AMBIENT_CLI);
+		h.advance(1000);
+		await expect(h.refresher.ensure()).resolves.toEqual(AMBIENT_CLI);
+		expect(h.calls).toBe(2);
 	});
 });

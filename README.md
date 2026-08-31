@@ -79,7 +79,7 @@ If you're actively hacking on the CLI, run `pnpm link --global` from `packages/c
 
 ## Publishing the CLI to npm
 
-Publishing lets anyone — including coding agents — install the CLI without cloning this repo. The package publishes as the bare name **`tines`**. The tarball ships only `dist` (see `files` in `packages/cli/package.json`), `prepublishOnly` rebuilds before every publish, and since `@tines/shared` is bundled at build time the only runtime dependency is `commander`.
+Publishing lets anyone — including coding agents — install the CLI without cloning this repo. The package publishes as the bare name **`tines`**. The tarball ships only `dist` (see `files` in `packages/cli/package.json`), `prepublishOnly` rebuilds before every publish, and the build bundles everything — `@tines/shared` and `commander` alike — so the package has **no runtime dependencies**.
 
 Once published, anyone can install or run it:
 
@@ -149,9 +149,11 @@ TINES_API_KEY=<your API key> TINES_API_URL=https://your-tines.example \
 
 The daemon polls for work assigned to it, materializes a per-run workspace (the launch
 prompt, the issue's skills, and clones of its repos), runs the harness there, and reports
-the finish. No inbound connection to the machine is ever needed. **[docs/runner-daemon.md](docs/runner-daemon.md)**
-covers registration, the flags, token rotation, failure behaviour, and launchd/systemd
-units for keeping it running.
+the finish. It also keeps its own copy of the `tines` CLI current from npm and puts that on
+the harness's PATH, so agents run the CLI that matches the prompt they were given rather
+than whatever was last installed on the machine. **[docs/runner-daemon.md](docs/runner-daemon.md)**
+covers registration, the flags, token rotation, the managed CLI, failure behaviour, and
+launchd/systemd units for keeping it running.
 
 Managed runners hold an Anthropic API key encrypted at rest with `SECRET_ENCRYPTION_KEY`
 (a Workers secret — see Deploying below); it is write-only after saving. They clone repos
