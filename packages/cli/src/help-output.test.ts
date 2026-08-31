@@ -47,6 +47,59 @@ describe('help output', () => {
 		expect(stdout).toContain('TINES_API_URL');
 	}, 60_000);
 
+	// Regression (Tines/5, re-asserted for Tines/9): passThroughOptions() hands
+	// a TRAILING --help to the action as the literal <markdown>, so helpGuard()
+	// is the only thing stopping it from being posted as a comment body. Exit 0
+	// with usage on stdout proves it was not: the API URL below is unreachable,
+	// so any attempt to post exits 1. (helpGuard also runs before the body is
+	// resolved. That ordering is defensive rather than load-bearing — "--help"
+	// and "-h" are neither @file nor exactly "-", so readBodyValue returns them
+	// verbatim — but it keeps the guard ahead of all I/O by construction.)
+	it('prints help for a trailing --help on comment/append instead of posting', async () => {
+		for (const args of [
+			['issues', 'comment', 'Tines/1', '--help'],
+			['issues', 'comment', 'Tines/1', '-h'],
+			['journal', 'append', 'Tines/1', '--help']
+		]) {
+			const { stdout } = await help(args, {
+				TINES_API_KEY: SECRET,
+				// Unreachable: any attempt to talk to the API fails the test.
+				TINES_API_URL: 'http://127.0.0.1:1'
+			});
+			expect(stdout, args.join(' ')).toContain(`Usage: tines ${args[0]} ${args[1]}`);
+			expect(stdout, args.join(' ')).not.toContain(SECRET);
+		}
+	}, 60_000);
+
+	// Wiring regression (Tines/9): the helper is unit-tested in body-value.test.ts,
+	// but nothing pinned the five call sites that call it — reverting any of them
+	// to the raw value left the suite green. An unreadable @file is the cheap
+	// probe: every site resolves its body before it touches the network, so the
+	// failure is local and needs no HTTP mock. A site that stopped calling
+	// readBodyValue would send the literal "@<path>" to the unreachable URL and
+	// fail with a connection error instead.
+	it('resolves @file at every Markdown-body call site, before any request', async () => {
+		const missing = join(here, 'no-such-body-file.md');
+		for (const args of [
+			['issues', 'comment', 'Tines/1', `@${missing}`],
+			['journal', 'append', 'Tines/1', `@${missing}`],
+			['issues', 'create', 'Tines', '-t', 'x', '-d', `@${missing}`],
+			['issues', 'edit', 'Tines/1', '-d', `@${missing}`],
+			['schedules', 'edit', 'Tines/nightly', '-d', `@${missing}`]
+		]) {
+			const label = args.join(' ');
+			const failure = await help(args, {
+				TINES_API_KEY: SECRET,
+				// Unreachable: reaching the API at all is the failure this pins.
+				TINES_API_URL: 'http://127.0.0.1:1'
+			}).catch((err: { code?: number; stderr?: string }) => err);
+			expect(failure, label).toBeInstanceOf(Error);
+			const { code, stderr } = failure as { code?: number; stderr?: string };
+			expect(code, label).toBe(1);
+			expect(stderr ?? '', label).toContain(`cannot read ${missing}`);
+		}
+	}, 60_000);
+
 	// Regression: --version used to be a hardcoded literal, so it kept
 	// reporting 0.0.1 no matter what was published. CI stamps the real number
 	// into the manifest at publish time, so the manifest is the only honest
