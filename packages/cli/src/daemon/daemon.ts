@@ -90,6 +90,11 @@ async function uploadRawLog(run: {
 		await new Promise<void>((resolve) => run.rawSpool?.end(resolve) ?? resolve());
 		const size = statSync(path).size;
 		if (size > 0) {
+			// Read whole, not streamed: the server side streams into R2, but
+			// the client holds up to RUN_LOG_RAW_MAX_BYTES here (briefly twice
+			// that on the truncation path's copy). That is the daemon, not a
+			// Worker, and the run has already been finish-reported by now — if
+			// the cap ever grows, stream this and send the length explicitly.
 			let body = readFileSync(path);
 			if (body.byteLength > RUN_LOG_RAW_MAX_BYTES) {
 				// Keep the tail — the end of a stream is where the failure is —

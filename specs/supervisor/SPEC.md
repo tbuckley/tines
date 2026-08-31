@@ -225,7 +225,8 @@ POST /api/v1/runners/register     user API key auth → { runner, runner_token }
 POST /api/v1/runners/:id/poll     runner-token auth; heartbeat + { owned_runs: [run_id, …] } →
                                   { assignments: [ { run, prompt, bundle, run_key, timeout } ],
                                     cancels: [run_id, …] }
-POST /api/v1/runs/:id/logs        runner-token auth; { chunk } appended
+POST /api/v1/runs/:id/logs        runner-token auth; { chunk, seq? } appended
+PUT  /api/v1/runs/:id/log/raw     runner-token auth; the unrendered harness stream, once at settle
 POST /api/v1/runs/:id/finish      runner-token auth; { status: 'completed'|'failed', error? }
 ```
 
