@@ -94,6 +94,11 @@ export interface ManagedRun {
 	settled: boolean;
 	/** Drains pending log chunks before a finish report. */
 	flush?: () => Promise<void>;
+	/**
+	 * Turns whatever the harness said after its last newline into a log line,
+	 * so a harness killed mid-line does not lose its final words. Runs before
+	 * `flush`, and is idempotent. */
+	drain?: () => void;
 }
 
 export interface RunTableEffects<T extends ManagedRun> {
@@ -153,6 +158,10 @@ export class RunTable<T extends ManagedRun> {
 	async finishAndCleanup(run: T, status: 'completed' | 'failed', error?: string): Promise<void> {
 		if (run.settled) return this.cleanup(run);
 		run.settled = true;
+		// Before the flush, not after: a line appended afterwards would sit in
+		// the batcher until its timer fired, by which point the run is
+		// finish-reported and the append is rejected.
+		run.drain?.();
 		await run.flush?.();
 		try {
 			await this.effects.finish(run, status, error);

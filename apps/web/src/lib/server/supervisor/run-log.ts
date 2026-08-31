@@ -22,7 +22,7 @@
 import { sql, type CompiledQuery, type Kysely } from 'kysely';
 import type { D1Result } from '@cloudflare/workers-types';
 import { RUN_LOG_RETENTION_MS } from '@tines/shared';
-import type { Database } from '$lib/server/db';
+import { idChunks, type Database } from '$lib/server/db';
 import {
 	getRunLogStore,
 	runIdFromLogKey,
@@ -335,16 +335,61 @@ export async function gcExpiredRunLogs(db: Kysely<Database>, env: Env, now: numb
 	return rows.length;
 }
 
+/** Where the orphan pass left off, in `supervisor_sweep_state`. */
+export const RUN_LOG_GC_CURSOR_KEY = 'run_log_gc_after';
+
+async function readSweepState(db: Kysely<Database>, key: string): Promise<string | null> {
+	const row = await db
+		.selectFrom('supervisor_sweep_state')
+		.select('value')
+		.where('key', '=', key)
+		.executeTakeFirst();
+	return row?.value ?? null;
+}
+
+async function writeSweepState(
+	db: Kysely<Database>,
+	env: Env,
+	key: string,
+	value: string | null,
+	now: number
+): Promise<void> {
+	await runBatch(env, [
+		db
+			.insertInto('supervisor_sweep_state')
+			.values({ key, value, updated_at: now })
+			.onConflict((oc) => oc.column('key').doUpdateSet({ value, updated_at: now }))
+			.compile()
+	]);
+}
+
 /**
  * Orphan backstop: one list page per sweep of objects whose run row is gone
  * (deleted with its runner, cascaded with its user, or a spill whose D1
  * update lost its race). Without this those bytes would live forever — the
  * retention pass above is driven by run rows that no longer exist.
+ *
+ * The page has to *rotate*. R2 lists lexicographically, so a pass that always
+ * started at the top would re-inspect the same first page forever, and since
+ * live runs vastly outnumber orphans it would spend every sweep confirming
+ * that live runs are live while orphans deeper in the keyspace were never
+ * looked at. So each pass resumes after the last key the previous one saw and
+ * wraps around at the end. `startAfter` rather than an opaque list cursor:
+ * it stays meaningful across sweeps, and across a deploy.
  */
-export async function gcOrphanedRunLogs(db: Kysely<Database>, env: Env): Promise<number> {
+export async function gcOrphanedRunLogs(
+	db: Kysely<Database>,
+	env: Env,
+	now: number
+): Promise<number> {
 	const store = getRunLogStore(env);
-	const page = await store.list('runlog/');
-	if (page.keys.length === 0) return 0;
+	const after = await readSweepState(db, RUN_LOG_GC_CURSOR_KEY);
+	const page = await store.list('runlog/', { startAfter: after ?? undefined });
+	if (page.keys.length === 0) {
+		// End of the keyspace (or an empty bucket): start over next sweep.
+		if (after !== null) await writeSweepState(db, env, RUN_LOG_GC_CURSOR_KEY, null, now);
+		return 0;
+	}
 	const byRun = new Map<string, string[]>();
 	for (const key of page.keys) {
 		const runId = runIdFromLogKey(key);
@@ -354,14 +399,19 @@ export async function gcOrphanedRunLogs(db: Kysely<Database>, env: Env): Promise
 		else byRun.set(runId, [key]);
 	}
 	const ids = [...byRun.keys()];
-	const live = await db
-		.selectFrom('agent_run')
-		.select('id')
-		.where('id', 'in', ids)
-		.execute();
-	const liveIds = new Set(live.map((r) => r.id));
+	// One page is up to 1,000 keys, so this `IN` list is not something the
+	// caller bounds — it has to be chunked or D1 rejects the statement, and
+	// `sweepRunLogs` would swallow the throw and silently collect nothing.
+	const liveIds = new Set<string>();
+	for (const chunk of idChunks(ids)) {
+		const rows = await db.selectFrom('agent_run').select('id').where('id', 'in', chunk).execute();
+		for (const row of rows) liveIds.add(row.id);
+	}
 	const doomed = ids.filter((id) => !liveIds.has(id)).flatMap((id) => byRun.get(id) ?? []);
 	await store.delete(doomed);
+	// Advance only after the delete lands: a throw above leaves the position
+	// where it was and the next sweep retries this page.
+	await writeSweepState(db, env, RUN_LOG_GC_CURSOR_KEY, page.keys[page.keys.length - 1], now);
 	return doomed.length;
 }
 
@@ -420,7 +470,7 @@ export async function sweepRunLogs(db: Kysely<Database>, env: Env, now: number):
 		console.error('run-log retention pass failed:', e);
 	}
 	try {
-		await gcOrphanedRunLogs(db, env);
+		await gcOrphanedRunLogs(db, env, now);
 	} catch (e) {
 		console.error('run-log orphan pass failed:', e);
 	}

@@ -304,6 +304,17 @@ export interface RoutingRuleTable {
 	updated_at: number;
 }
 
+/**
+ * Global, singleton-per-key housekeeping state for sweep passes that cannot
+ * finish in one pass. Currently just the run-log orphan pass's position in
+ * the R2 keyspace (`run_log_gc_after`).
+ */
+export interface SupervisorSweepStateTable {
+	key: string;
+	value: string | null;
+	updated_at: number;
+}
+
 export interface SupervisorSettingsTable {
 	user_id: string;
 	/** 0/1: the kill switch. Off (0) by default for new users. */
@@ -348,6 +359,7 @@ export interface Database {
 	agent_run: AgentRunTable;
 	routing_rule: RoutingRuleTable;
 	supervisor_settings: SupervisorSettingsTable;
+	supervisor_sweep_state: SupervisorSweepStateTable;
 	user: UserTable;
 }
 
@@ -396,6 +408,20 @@ export function getDb(env: Env): Kysely<Database> {
 		dbs.set(env.DB, db);
 	}
 	return db;
+}
+
+/**
+ * D1 caps bound parameters per statement at 100, and each id in an `IN` list
+ * binds one. Anything that builds an `IN` list from a set the caller does not
+ * control the size of — a page of R2 keys, a user's whole artifact list —
+ * queries in chunks of this and re-assembles.
+ */
+export const IN_LIST_CHUNK = 90;
+
+export function idChunks(ids: string[]): string[][] {
+	const chunks: string[][] = [];
+	for (let i = 0; i < ids.length; i += IN_LIST_CHUNK) chunks.push(ids.slice(i, i + IN_LIST_CHUNK));
+	return chunks;
 }
 
 const ID_ALPHABET = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { RUN_LOG_MAX_BYTES, RUN_LOG_RETENTION_MS } from '@tines/shared';
 import { appendRunLog } from '../api/runner-protocol';
+import { IN_LIST_CHUNK } from '../db';
 import { createTestDb, type TestDb } from '../api/test-db';
 import {
 	getRunLogStore,
@@ -18,6 +19,7 @@ import {
 	gcOrphanedRunLogs,
 	loadSealableRun,
 	readRunLog,
+	RUN_LOG_GC_CURSOR_KEY,
 	sealRunLog,
 	sweepRunLogs
 } from './run-log';
@@ -377,8 +379,101 @@ describe('sweep housekeeping', () => {
 		// update lost its race) leaves objects nothing else would ever reach.
 		await store(t).put(runLogPartKey(USER, 'arun_ghost', 1), new TextEncoder().encode('orphan'));
 
-		expect(await gcOrphanedRunLogs(t.db, t.env)).toBe(1);
+		expect(await gcOrphanedRunLogs(t.db, t.env, NOW)).toBe(1);
 		expect(store(t).count(runLogPrefix(USER, 'arun_ghost'))).toBe(0);
 		expect(store(t).count(runLogPrefix(USER, runId))).toBe(1);
+	});
+
+	/**
+	 * The append's UPDATE is guarded on `log_part_count`, so a concurrent
+	 * append can make it change zero rows. Acking the chunk anyway would lose
+	 * those bytes for good: the daemon is told they are safe and never
+	 * resends. The race is injected here by mutating the row from inside the
+	 * spill, i.e. exactly between the append's read and its write.
+	 */
+	it('re-reads and retries an append whose part-count guard lost', async () => {
+		const t = world();
+		const { runId, runner } = await liveRun(t);
+		await appendRunLog(t.db, t.env, runner, runId, 'x'.repeat(RUN_LOG_MAX_BYTES), NOW);
+
+		const s = store(t);
+		const realPut = s.put.bind(s);
+		let raced = false;
+		s.put = async (key, body, size) => {
+			if (!raced) {
+				raced = true;
+				// A concurrent append landed its own part first.
+				t.sqlite
+					.prepare('UPDATE agent_run SET log_part_count = log_part_count + 1 WHERE id = ?')
+					.run(runId);
+			}
+			return realPut(key, body, size);
+		};
+		const res = await appendRunLog(t.db, t.env, runner, runId, 'y'.repeat(500), NOW);
+		s.put = realPut;
+
+		expect(raced).toBe(true);
+		// The retry's write landed: the tail advanced and the bytes are there.
+		expect(res.log_bytes_dropped).toBeGreaterThan(0);
+		const run = runById(t, runId);
+		expect(run.log_bytes_dropped).toBe(res.log_bytes_dropped);
+		expect((run.log as string).endsWith('y'.repeat(500))).toBe(true);
+	});
+
+	/**
+	 * One R2 list page is up to 1,000 keys, so the liveness check's `IN` list
+	 * is sized by the bucket, not by us. D1 rejects a statement binding more
+	 * than 100 parameters, and `sweepRunLogs` catches and logs the throw — so
+	 * unchunked, the pass would silently collect nothing on any install past
+	 * ~90 runs. The in-memory test D1 does not enforce the bound, so this
+	 * asserts the chunking rather than relying on a crash.
+	 */
+	it('chunks the liveness query so a full page cannot exceed D1 bound parameters', async () => {
+		const t = world();
+		const ghosts = Array.from({ length: 95 }, (_, i) => `arun_ghost${String(i).padStart(3, '0')}`);
+		for (const id of ghosts) {
+			await store(t).put(runLogPartKey(USER, id, 1), new TextEncoder().encode('orphan'));
+		}
+		const seen = t.spyOnQueries();
+		expect(await gcOrphanedRunLogs(t.db, t.env, NOW)).toBe(95);
+		for (const id of ghosts) expect(store(t).count(runLogPrefix(USER, id))).toBe(0);
+
+		const selects = seen().filter((q) => q.includes('from "agent_run"') && q.includes(' in ('));
+		expect(selects.length).toBe(Math.ceil(95 / IN_LIST_CHUNK));
+		for (const q of selects) {
+			expect((q.match(/\?/g) ?? []).length).toBeLessThanOrEqual(IN_LIST_CHUNK);
+		}
+	});
+
+	/**
+	 * R2 lists lexicographically, so a pass that always started at the top
+	 * would re-read the same page forever and never reach orphans deeper in
+	 * the keyspace. Two live runs sit ahead of the ghost here, and the page
+	 * holds one key.
+	 */
+	it('walks the keyspace across sweeps instead of re-reading the first page', async () => {
+		const t = world();
+		const s = store(t);
+		s.pageSize = 1;
+		const { runId, runner } = await liveRun(t);
+		await appendRunLog(t.db, t.env, runner, runId, 'x'.repeat(RUN_LOG_MAX_BYTES), NOW);
+		await appendRunLog(t.db, t.env, runner, runId, 'y'.repeat(500), NOW);
+		// Sorts after the live run's key, so a non-rotating pass never sees it.
+		await s.put(runLogPartKey(USER, 'zzz_ghost', 1), new TextEncoder().encode('orphan'));
+		expect(s.keys('runlog/').length).toBe(2);
+
+		// First pass sees only the live run's part and collects nothing…
+		expect(await gcOrphanedRunLogs(t.db, t.env, NOW)).toBe(0);
+		expect(s.count(runLogPrefix(USER, 'zzz_ghost'))).toBe(1);
+		// …the second resumes after it and reaches the orphan.
+		expect(await gcOrphanedRunLogs(t.db, t.env, NOW)).toBe(1);
+		expect(s.count(runLogPrefix(USER, 'zzz_ghost'))).toBe(0);
+
+		// Past the end the position resets, so the walk wraps around.
+		expect(await gcOrphanedRunLogs(t.db, t.env, NOW)).toBe(0);
+		const cursor = t.sqlite
+			.prepare('SELECT value FROM supervisor_sweep_state WHERE key = ?')
+			.get(RUN_LOG_GC_CURSOR_KEY) as { value: string | null } | undefined;
+		expect(cursor?.value).toBe(null);
 	});
 });

@@ -1010,10 +1010,15 @@ export async function deleteRunner(
 	// R2 deletes cannot join a D1 batch, so the runs' full-log objects are
 	// identified before the batch and dropped after it succeeds. A failure
 	// here just leaves orphans, which the sweep's orphan pass collects.
+	// Only the runs that actually spilled own objects, and the overwhelming
+	// majority never do. Without this filter a runner with a long history
+	// costs one R2 list per run and blows the Worker's subrequest budget —
+	// the same filter the retention pass uses.
 	const doomedRuns = await db
 		.selectFrom('agent_run')
 		.select(['id', 'user_id'])
 		.where('runner_id', '=', id)
+		.where((eb) => eb.or([eb('log_bytes_dropped', '>', 0), eb('log_raw_bytes', '>', 0)]))
 		.execute();
 	const results = await runAtomic(env, queries);
 	// The runner delete is the second-to-last statement.

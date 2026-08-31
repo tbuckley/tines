@@ -177,8 +177,11 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 		},
 		release: (run) => {
 			if (run.timeout) clearTimeout(run.timeout);
-			// Any trailing partial line becomes a log line before the batcher's
-			// final flush, so the last thing the harness said is not swallowed.
+			// `finishAndCleanup` already drained (before its flush, so the line
+			// actually ships). This is the backstop for the paths that reach
+			// cleanup without finishing — an already-settled run, a clone
+			// failure — where the renderer must not be left holding a line.
+			// `finish()` is idempotent, so the double call is free.
 			run.renderer?.finish();
 			rmSync(run.workspace, { recursive: true, force: true });
 			// Deliberately after cleanup and not awaited: the raw log is a
@@ -327,6 +330,7 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 				// nothing the harness emitted is actually lost.
 				const renderer = new ClaudeStreamRenderer((line) => run.batcher.append(line));
 				run.renderer = renderer;
+				run.drain = () => renderer.finish();
 				const spoolPath = join(opts.configDir, 'rawlogs', `${runId}.ndjson`);
 				mkdirSync(dirname(spoolPath), { recursive: true });
 				run.rawSpoolPath = spoolPath;

@@ -37,8 +37,16 @@ export interface RunLogStore {
 	getStream(key: string): Promise<RunLogObject | null>;
 	delete(keys: string[]): Promise<void>;
 	deletePrefix(prefix: string): Promise<void>;
-	/** One page of keys under a prefix (R2 pages at 1,000). */
-	list(prefix: string, cursor?: string): Promise<{ keys: string[]; cursor?: string }>;
+	/**
+	 * One page of keys under a prefix, in lexicographic order (R2 pages at
+	 * 1,000). `cursor` continues a page chain; `startAfter` resumes from a
+	 * remembered key, which is what the orphan sweep walks the keyspace with
+	 * across passes — unlike a cursor it stays meaningful between sweeps.
+	 */
+	list(
+		prefix: string,
+		opts?: { cursor?: string; startAfter?: string }
+	): Promise<{ keys: string[]; cursor?: string }>;
 }
 
 export function runLogPrefix(userId: string, runId: string): string {
@@ -79,15 +87,15 @@ class R2RunLogStore implements RunLogStore {
 		body: ArrayBuffer | Uint8Array | ReadableStream<Uint8Array>,
 		size?: number
 	): Promise<void> {
-		// R2 can only take a stream whose length is known up front — hence the
-		// explicit `size`. Buffered bodies carry their own length.
+		// R2 only accepts a stream whose length it already knows. Every caller
+		// here passes a `Request` body, which carries its own Content-Length,
+		// so `size` is asserted rather than forwarded — there is no
+		// R2PutOptions member to forward a length through. Buffered bodies
+		// carry their own length and need no assertion.
 		if (body instanceof ReadableStream) {
 			if (size === undefined) throw new Error('run-log store: streaming put requires a size');
 			await this.bucket.put(key, body as never, {
-				httpMetadata: { contentType: 'text/plain; charset=utf-8' },
-				sha1: undefined,
-				// R2 needs the declared length to stream without buffering.
-				...({ length: size } as Record<string, unknown>)
+				httpMetadata: { contentType: 'text/plain; charset=utf-8' }
 			});
 			return;
 		}
@@ -114,8 +122,11 @@ class R2RunLogStore implements RunLogStore {
 			cursor = page.truncated ? page.cursor : undefined;
 		} while (cursor);
 	}
-	async list(prefix: string, cursor?: string): Promise<{ keys: string[]; cursor?: string }> {
-		const page = await this.bucket.list({ prefix, cursor });
+	async list(
+		prefix: string,
+		opts?: { cursor?: string; startAfter?: string }
+	): Promise<{ keys: string[]; cursor?: string }> {
+		const page = await this.bucket.list({ prefix, ...opts });
 		return {
 			keys: page.objects.map((o) => o.key),
 			cursor: page.truncated ? page.cursor : undefined
@@ -125,8 +136,20 @@ class R2RunLogStore implements RunLogStore {
 
 export class MemoryRunLogStore implements RunLogStore {
 	private objects = new Map<string, Uint8Array>();
-	async put(key: string, body: ArrayBuffer | Uint8Array | ReadableStream<Uint8Array>): Promise<void> {
+	/**
+	 * R2 pages `list` at 1,000; tests lower this to exercise the orphan
+	 * sweep's walk across pages without seeding a thousand objects.
+	 */
+	pageSize = 1000;
+	async put(
+		key: string,
+		body: ArrayBuffer | Uint8Array | ReadableStream<Uint8Array>,
+		size?: number
+	): Promise<void> {
 		if (body instanceof ReadableStream) {
+			// Mirror R2's requirement, so a caller that forgets the size
+			// fails in tests rather than only in production.
+			if (size === undefined) throw new Error('run-log store: streaming put requires a size');
 			const chunks: Uint8Array[] = [];
 			const reader = body.getReader();
 			for (;;) {
@@ -170,10 +193,19 @@ export class MemoryRunLogStore implements RunLogStore {
 			if (key.startsWith(prefix)) this.objects.delete(key);
 		}
 	}
-	async list(prefix: string, cursor?: string): Promise<{ keys: string[]; cursor?: string }> {
+	async list(
+		prefix: string,
+		opts?: { cursor?: string; startAfter?: string }
+	): Promise<{ keys: string[]; cursor?: string }> {
 		const all = [...this.objects.keys()].filter((k) => k.startsWith(prefix)).sort();
-		const start = cursor ? all.indexOf(cursor) + 1 : 0;
-		return { keys: all.slice(start) };
+		const after = opts?.cursor ?? opts?.startAfter;
+		// Both forms resume after a key; R2's cursor is opaque, but an
+		// in-memory store can just use the key itself for both.
+		const start = after ? all.findIndex((k) => k > after) : 0;
+		const from = start === -1 ? all.length : start;
+		const keys = all.slice(from, from + this.pageSize);
+		const truncated = from + keys.length < all.length;
+		return { keys, cursor: truncated ? keys[keys.length - 1] : undefined };
 	}
 	/** Test hook: how many objects are stored under a prefix. */
 	count(prefix = ''): number {

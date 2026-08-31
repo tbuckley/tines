@@ -401,34 +401,63 @@ export async function appendRunLog(
 	if (run.status === 'launching') {
 		await markRunRunning(db, env, run, now);
 	}
-	const appended = appendLogTail(run.log, run.log_bytes_dropped, chunk);
-	// Bytes the tail evicts go to R2 *before* the D1 update, so D1 never
-	// records dropped bytes that no object holds. The reverse — an object
-	// whose update then loses the status guard — is an orphan the sweep GCs.
-	const spill = appended.evicted ? await spillEvicted(env, run, appended.evicted) : null;
-	await runAtomic(env, [
-		db
-			.updateTable('agent_run')
-			.set({
-				log: appended.log,
+	// The update is guarded on `log_part_count`, so it can lose. Acking a
+	// chunk whose write did not land would drop those bytes for good — the
+	// daemon has been told they are safe and never resends — so a lost guard
+	// re-reads and retries once rather than returning.
+	let current = run;
+	for (let attempt = 0; ; attempt++) {
+		const appended = appendLogTail(current.log, current.log_bytes_dropped, chunk);
+		// Bytes the tail evicts go to R2 *before* the D1 update, so D1 never
+		// records dropped bytes that no object holds. The reverse — an object
+		// whose update then loses a guard — is an orphan the sweep GCs.
+		const spill = appended.evicted ? await spillEvicted(env, current, appended.evicted) : null;
+		const results = await runAtomic(env, [
+			db
+				.updateTable('agent_run')
+				.set({
+					log: appended.log,
+					log_bytes_dropped: appended.dropped,
+					...(spill ?? {}),
+					...(seq === undefined ? {} : { log_seq: seq })
+				})
+				.where('id', '=', runId)
+				// A chunk racing a cancel/sweep must not extend a settled run's
+				// tail: the active check above was a read, this is the guard.
+				.where('status', 'in', ACTIVE)
+				// …and a concurrent append must not clobber this one's part
+				// bookkeeping: both would claim the same part index.
+				.where('log_part_count', '=', current.log_part_count)
+				.compile()
+		]);
+		if ((results[0]?.meta.changes ?? 0) > 0) {
+			return {
+				status:
+					current.status === 'launching' ? 'running' : (current.status as AppendRunLogResponse['status']),
 				log_bytes_dropped: appended.dropped,
-				...(spill ?? {}),
-				...(seq === undefined ? {} : { log_seq: seq })
-			})
-			.where('id', '=', runId)
-			// A chunk racing a cancel/sweep must not extend a settled run's
-			// tail: the active check above was a read, this is the guard.
-			.where('status', 'in', ACTIVE)
-			// …and a concurrent append must not clobber this one's part
-			// bookkeeping: both would claim the same part index.
-			.where('log_part_count', '=', run.log_part_count)
-			.compile()
-	]);
-	return {
-		status: run.status === 'launching' ? 'running' : (run.status as AppendRunLogResponse['status']),
-		log_bytes_dropped: appended.dropped,
-		log_seq: seq ?? run.log_seq
-	};
+				log_seq: seq ?? current.log_seq
+			};
+		}
+		current = await loadRunnerRun(db, runner, runId);
+		if (!(ACTIVE as string[]).includes(current.status)) {
+			throw new ApiFail(422, 'run_already_ended', 'This run has already ended; the log is closed');
+		}
+		// A concurrent append that carried this same seq already applied it.
+		if (seq !== undefined && seq <= current.log_seq) {
+			return {
+				status: current.status as AppendRunLogResponse['status'],
+				log_bytes_dropped: current.log_bytes_dropped,
+				log_seq: current.log_seq
+			};
+		}
+		if (attempt >= 1) {
+			throw new ApiFail(
+				409,
+				'log_append_conflict',
+				'Another append raced this one twice; resend this chunk'
+			);
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------
