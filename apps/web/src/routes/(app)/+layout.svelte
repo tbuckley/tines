@@ -3,7 +3,8 @@
 	import IconArrowsSplit2 from '@tabler/icons-svelte/icons/arrows-split-2';
 	import IconBooks from '@tabler/icons-svelte/icons/books';
 	import IconFolder from '@tabler/icons-svelte/icons/folder';
-	import IconKey from '@tabler/icons-svelte/icons/key';
+	import IconDatabaseExport from '@tabler/icons-svelte/icons/database-export';
+import IconKey from '@tabler/icons-svelte/icons/key';
 	import IconListDetails from '@tabler/icons-svelte/icons/list-details';
 	import IconLogout from '@tabler/icons-svelte/icons/logout';
 	import IconPalette from '@tabler/icons-svelte/icons/palette';
@@ -154,6 +155,14 @@
 							onclick={() => (menuOpen = false)}
 						>
 							<IconPalette size={16} stroke={1.75} /> Appearance
+						</a>
+						<a
+							href="/settings/export-import"
+							class="hover:bg-accent hover:text-accent-foreground flex items-center gap-2 rounded-md px-3 py-2 text-sm"
+							role="menuitem"
+							onclick={() => (menuOpen = false)}
+						>
+							<IconDatabaseExport size={16} stroke={1.75} /> Export / import
 						</a>
 						<a
 							href="/settings/api-keys"
