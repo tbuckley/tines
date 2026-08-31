@@ -357,6 +357,72 @@ esac
 		setMode('work');
 	});
 
+	/**
+	 * The append protocol's two thin wiring seams, which the unit layer
+	 * cannot reach: the route carrying the daemon's `seq` into the dedup
+	 * check, and the raw-stream upload/read pair. Both are driven with the
+	 * daemon's own runner token against a live run.
+	 */
+	test('a retried log chunk lands once, and the raw stream round-trips', async ({ request }) => {
+		test.setTimeout(60_000);
+		const api = apiClient(request, ALICE.apiKey);
+		rmSync(sideFile('sleep-pid'), { force: true });
+		setMode('sleep');
+		const issue = await createIssue(request, 'Probe the log protocol');
+		const running = await waitFor(
+			async () => (await issueRuns(request, issue.id)).find((r) => r.status === 'running'),
+			{ label: 'the run to start' }
+		);
+
+		const creds = JSON.parse(readFileSync(join(configDir, 'runners.json'), 'utf8')) as Record<
+			string,
+			{ token: string }
+		>;
+		const auth = { authorization: `Bearer ${Object.values(creds)[0].token}` };
+
+		// A daemon that never saw the response to a chunk resends it under the
+		// same seq. The bytes must land exactly once — far enough ahead of the
+		// daemon's own counter that this cannot collide with it.
+		const chunk = 'SEQ-PROBE-LINE\n';
+		const seq = 1_000_000;
+		const first = await request.post(`/api/v1/runs/${running.id}/logs`, { headers: auth, data: { chunk, seq } });
+		expect(first.ok()).toBe(true);
+		const second = await request.post(`/api/v1/runs/${running.id}/logs`, { headers: auth, data: { chunk, seq } });
+		expect(second.ok()).toBe(true);
+		expect((await body<{ log_seq: number }>(second)).log_seq).toBe(seq);
+
+		const detail = await body<AgentRunDetail>(await api.get(`/api/v1/runs/${running.id}`));
+		expect(detail.log.split('SEQ-PROBE-LINE').length - 1).toBe(1);
+
+		// The raw stream. In production the daemon uploads it at settle from
+		// its NDJSON spool; the e2e harness is a shell script with nothing to
+		// spool, so the upload is driven directly — this is the only coverage
+		// the streaming put and the `?raw=1` read get end to end.
+		const raw = '{"type":"system","subtype":"init"}\n{"type":"result","is_error":false}\n';
+		const put = await request.put(`/api/v1/runs/${running.id}/log/raw`, {
+			headers: { ...auth, 'content-type': 'application/x-ndjson' },
+			data: raw
+		});
+		expect(put.ok()).toBe(true);
+		expect((await body<{ log_raw_bytes: number }>(put)).log_raw_bytes).toBe(raw.length);
+
+		const back = await api.get(`/api/v1/runs/${running.id}/log?raw=1`);
+		expect(back.status()).toBe(200);
+		expect(back.headers()['content-type']).toContain('application/x-ndjson');
+		expect(await back.text()).toBe(raw);
+		// A body with no Content-Length has nothing R2 can stream against.
+		const noLength = await request.put(`/api/v1/runs/${running.id}/log/raw`, { headers: auth });
+		expect(noLength.status()).toBe(411);
+
+		const canceled = await api.post(`/api/v1/runs/${running.id}/cancel`);
+		expect(canceled.ok()).toBe(true);
+		await waitFor(
+			async () => (await issueRuns(request, issue.id)).find((r) => r.id === running.id)?.status === 'canceled',
+			{ label: 'the probe run to cancel' }
+		);
+		setMode('work');
+	});
+
 	test('a do-nothing harness strikes the issue three times and parks it', async ({ request }) => {
 		test.setTimeout(90_000);
 		const api = apiClient(request, ALICE.apiKey);
