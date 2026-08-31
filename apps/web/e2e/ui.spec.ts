@@ -187,31 +187,40 @@ test('a comment can be edited and deleted from the issue page', async ({ page })
 	const comment = page.locator('article').filter({ hasText: 'Typpo here' }).first();
 	await expect(comment).toBeVisible();
 
-	await comment.getByRole('button', { name: 'Edit comment' }).click();
-	const draft = comment.getByRole('textbox');
-	await draft.fill('Typo fixed');
-	await comment.getByRole('button', { name: 'Save', exact: true }).click();
+	// Editing swaps the rendered body for a textarea, so the article stops
+	// matching on its text: address it by the Save button instead.
+	const editing = page
+		.locator('article')
+		.filter({ has: page.getByRole('button', { name: 'Save', exact: true }) });
+	await clickUntil(comment.getByRole('button', { name: 'Edit comment' }), async () => {
+		await expect(editing).toBeVisible({ timeout: 2_000 });
+	});
+	await editing.getByRole('textbox').fill('Typo fixed');
+	await editing.getByRole('button', { name: 'Save', exact: true }).click();
 
 	const edited = page.locator('article').filter({ hasText: 'Typo fixed' }).first();
 	await expect(edited).toBeVisible({ timeout: 10_000 });
 	await expect(edited.getByText('(edited)')).toBeVisible();
-	await expect(page.getByText('Typpo here')).toBeHidden();
+	await expect(page.getByText('Typpo here')).toHaveCount(0);
 
 	// Delete goes through the shared confirm dialog.
-	await edited.getByRole('button', { name: 'Delete comment' }).click();
-	await page.getByRole('button', { name: 'Delete comment', exact: true }).last().click();
+	const dialog = page.getByRole('alertdialog');
+	await clickUntil(edited.getByRole('button', { name: 'Delete comment' }), async () => {
+		await expect(dialog).toBeVisible({ timeout: 2_000 });
+	});
+	await dialog.getByRole('button', { name: 'Delete comment', exact: true }).click();
 	await expect(page.getByText('Typo fixed')).toHaveCount(0, { timeout: 10_000 });
 
-	// The events survive the comment.
+	// The events outlive the comment.
 	const events = await body<{ items: { type: string; payload: Record<string, unknown> }[] }>(
 		await api.get(`/api/v1/events?issue=${issue.id}`)
 	);
 	const types = events.items.map((e) => e.type);
 	expect(types).toContain('issue.comment_edited');
 	expect(types).toContain('issue.comment_deleted');
-	expect(
-		events.items.find((e) => e.type === 'issue.comment_deleted')?.payload.comment_id
-	).toBe(created.id);
+	expect(events.items.find((e) => e.type === 'issue.comment_deleted')?.payload.comment_id).toBe(
+		created.id
+	);
 });
 
 test('workflow library shows the read-only standard workflow with its graph', async ({ page }) => {
