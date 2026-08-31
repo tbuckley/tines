@@ -3,6 +3,9 @@ import { expect, test } from '@playwright/test';
 import { ALICE } from './constants.mjs';
 import { apiClient, body, runId, signIn } from './helpers';
 
+const PHONE = { width: 390, height: 844 };
+const DESKTOP = { width: 1280, height: 900 };
+
 /**
  * Labels in the browser: the chip on a list row, the editable card on the
  * detail page, the filter bar, and the settings page. The API-level
@@ -12,9 +15,19 @@ test.describe.serial('issue labels UI', () => {
 	const projectName = `labels-${runId}`;
 	const bugName = `bug-${runId}`;
 	const p1Name = `p1-${runId}`;
+	// Five labels on one issue, the first deliberately long: a phone row shows
+	// one chip (ellipsed) plus "+4" and must not grow a second line.
+	const crowdNames = [
+		`c1-a-really-long-label-name-${runId}`,
+		`c2-${runId}`,
+		`c3-${runId}`,
+		`c4-${runId}`,
+		`c5-${runId}`
+	];
 	let project: Project;
 	let labelled: IssueDetail;
 	let plain: IssueDetail;
+	let crowded: IssueDetail;
 	let bug: Label;
 
 	test.beforeAll(async ({ playwright }) => {
@@ -33,6 +46,13 @@ test.describe.serial('issue labels UI', () => {
 		);
 		plain = await body<IssueDetail>(
 			await api.post(`/api/v1/projects/${project.id}/issues`, { title: `Plain ${runId}` })
+		);
+		for (const name of crowdNames) await api.post('/api/v1/labels', { name, color: 'green' });
+		crowded = await body<IssueDetail>(
+			await api.post(`/api/v1/projects/${project.id}/issues`, {
+				title: `Crowded ${runId}`,
+				labels: crowdNames
+			})
 		);
 		await request.dispose();
 	});
@@ -93,5 +113,41 @@ test.describe.serial('issue labels UI', () => {
 		// The rename reaches the chips that render from the same row.
 		await page.goto(`/issues/${encodeURIComponent(projectName)}/${labelled.number}`);
 		await expect(page.getByText(rename).first()).toBeVisible();
+	});
+
+	test('a crowded row stays one line on a phone, with the full set on the detail page', async ({
+		page
+	}) => {
+		const list = `/issues?project=${encodeURIComponent(projectName)}`;
+		const crowdedRow = page.getByRole('link', { name: new RegExp(`Crowded ${runId}`) });
+		const oneLabelRow = page.getByRole('link', { name: new RegExp(`Labelled ${runId}`) });
+
+		await page.setViewportSize(PHONE);
+		await page.goto(list);
+		await expect(crowdedRow).toBeVisible();
+		// One chip, four folded into the counter.
+		await expect(crowdedRow.getByText(crowdNames[0], { exact: true })).toBeVisible();
+		await expect(crowdedRow.getByText(crowdNames[1], { exact: true })).toBeHidden();
+		await expect(crowdedRow.getByText('+4', { exact: true })).toBeVisible();
+		// The whole point: five labels cost exactly as much height as one.
+		const crowdedBox = await crowdedRow.boundingBox();
+		const oneLabelBox = await oneLabelRow.boundingBox();
+		expect(Math.abs(crowdedBox!.height - oneLabelBox!.height)).toBeLessThan(1);
+		// A long name is ellipsed rather than allowed to push the row wider.
+		const chipBox = await crowdedRow.getByText(crowdNames[0], { exact: true }).boundingBox();
+		expect(chipBox!.width).toBeLessThan(PHONE.width / 2);
+
+		// Wider viewport, wider budget: three chips and "+2".
+		await page.setViewportSize(DESKTOP);
+		await expect(crowdedRow.getByText(crowdNames[2], { exact: true })).toBeVisible();
+		await expect(crowdedRow.getByText(crowdNames[3], { exact: true })).toBeHidden();
+		await expect(crowdedRow.getByText('+2', { exact: true })).toBeVisible();
+
+		// Nothing is lost — the detail page still shows every label.
+		await page.setViewportSize(PHONE);
+		await page.goto(`/issues/${encodeURIComponent(projectName)}/${crowded.number}`);
+		for (const name of crowdNames) {
+			await expect(page.getByText(name, { exact: true }).first()).toBeVisible();
+		}
 	});
 });

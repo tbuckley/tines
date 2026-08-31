@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { Issue, IssueRef } from '@tines/shared';
+	import type { Issue, IssueLabel, IssueRef } from '@tines/shared';
 	import IconAlertTriangle from '@tabler/icons-svelte/icons/alert-triangle';
 	import IconBan from '@tabler/icons-svelte/icons/ban';
 	import IconCopy from '@tabler/icons-svelte/icons/copy';
@@ -21,8 +21,22 @@
 
 	const refLabel = (ref: IssueRef) => `${ref.project_name}/${ref.number} — ${ref.title}`;
 
-	/** Rows stay one line: three chips, then "+N" carrying the rest as a tooltip. */
+	/**
+	 * A row is one line at every width: the title truncates and everything after
+	 * it holds its size, so labels can never grow a row taller. That makes the
+	 * chip budget width-dependent — one chip on a phone, three from `sm` up.
+	 * Both variants are rendered and CSS picks, so there is no matchMedia and no
+	 * hydration mismatch. The full set always lives on the detail page.
+	 */
+	const MAX_CHIPS_NARROW = 1;
 	const MAX_CHIPS = 3;
+
+	/** "urgent, backend" — what the "+N" is standing in for. */
+	const hiddenTooltip = (labels: IssueLabel[], shown: number) =>
+		labels
+			.slice(shown)
+			.map((l) => l.name)
+			.join(', ');
 
 	/** "Blocked by demo/3 — Fix schema review; web/5 — Login broken". */
 	const blockedTooltip = (blockers: IssueRef[]) =>
@@ -44,12 +58,14 @@
 						: ''}"
 				>
 					<span class="text-muted-foreground w-12 shrink-0 font-mono text-xs">#{issue.number}</span>
-					<span class="min-w-0 flex-1 text-sm font-medium">
-						<!-- Inner inline-block: the transition snapshot hugs the text
-						     instead of the full-width cell, so the shared-element
-						     morph to the detail heading keeps its proportions. -->
+					<!-- One line, never two: the title is the only thing that shrinks,
+					     every chip after it is `shrink-0`. -->
+					<span class="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden text-sm font-medium">
+						<!-- The transition snapshot hugs the text instead of the
+						     full-width cell, so the shared-element morph to the detail
+						     heading keeps its proportions. -->
 						<span
-							class="vt-shared inline-block max-w-full truncate align-middle"
+							class="vt-shared truncate"
 							style:view-transition-name="issue-title-{issue.id}"
 							style:view-transition-class="vt-fit"
 						>
@@ -60,7 +76,7 @@
 							     badge navigates via a button. -->
 							<button
 								type="button"
-								class="text-muted-foreground hover:text-foreground ml-1.5 inline-flex align-middle"
+								class="text-muted-foreground hover:text-foreground inline-flex shrink-0"
 								title="From schedule “{issue.scheduled_task_name}”"
 								aria-label="From schedule {issue.scheduled_task_name}"
 								onclick={(e) => {
@@ -72,16 +88,25 @@
 								<IconRepeat size={14} stroke={1.75} />
 							</button>
 						{/if}
-						{#each issue.labels.slice(0, MAX_CHIPS) as label (label.id)}
-							<LabelChip {label} size="sm" class="ml-1.5 align-middle" />
+						{#each issue.labels.slice(0, MAX_CHIPS) as label, i (label.id)}
+							<LabelChip
+								{label}
+								size="sm"
+								class="max-w-28 shrink-0 truncate {i < MAX_CHIPS_NARROW ? '' : 'hidden sm:inline-flex'}"
+							/>
 						{/each}
+						{#if issue.labels.length > MAX_CHIPS_NARROW}
+							<span
+								class="text-muted-foreground shrink-0 text-[0.6875rem] font-medium sm:hidden"
+								title={hiddenTooltip(issue.labels, MAX_CHIPS_NARROW)}
+							>
+								+{issue.labels.length - MAX_CHIPS_NARROW}
+							</span>
+						{/if}
 						{#if issue.labels.length > MAX_CHIPS}
 							<span
-								class="text-muted-foreground ml-1.5 align-middle text-[0.6875rem] font-medium"
-								title={issue.labels
-									.slice(MAX_CHIPS)
-									.map((l) => l.name)
-									.join(', ')}
+								class="text-muted-foreground hidden shrink-0 text-[0.6875rem] font-medium sm:inline"
+								title={hiddenTooltip(issue.labels, MAX_CHIPS)}
 							>
 								+{issue.labels.length - MAX_CHIPS}
 							</span>
@@ -90,7 +115,7 @@
 						     links: the row itself already navigates. -->
 						{#if issue.open_blockers.length > 0}
 							<span
-								class="ml-1.5 inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 align-middle text-[0.6875rem] leading-none font-medium text-amber-700 dark:text-amber-400"
+								class="inline-flex shrink-0 items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[0.6875rem] leading-none font-medium text-amber-700 dark:text-amber-400"
 								title={blockedTooltip(issue.open_blockers)}
 								transition:fade={{ duration: dur() }}
 							>
@@ -100,7 +125,7 @@
 						{/if}
 						{#if issue.duplicate_of}
 							<span
-								class="bg-muted text-muted-foreground ml-1.5 inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 align-middle text-[0.6875rem] leading-none font-medium"
+								class="bg-muted text-muted-foreground inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-[0.6875rem] leading-none font-medium"
 								title="Duplicate of {refLabel(issue.duplicate_of)}"
 								transition:fade={{ duration: dur() }}
 							>
@@ -112,7 +137,7 @@
 						     "being worked right now" must never look alike. -->
 						{#if issue.needs_attention}
 							<span
-								class="ml-1.5 inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-1.5 py-0.5 align-middle text-[0.6875rem] leading-none font-medium text-amber-700 dark:text-amber-400"
+								class="inline-flex shrink-0 items-center gap-1 rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[0.6875rem] leading-none font-medium text-amber-700 dark:text-amber-400"
 								title="Parked — agents struck out {issue.attempt_count} time{issue.attempt_count === 1 ? '' : 's'}; needs attention"
 								transition:fade={{ duration: dur() }}
 							>
@@ -122,7 +147,7 @@
 						{/if}
 						{#if issue.active_run}
 							<span
-								class="ml-1.5 inline-flex items-center gap-1 rounded-full border border-emerald-500/40 bg-emerald-500/10 px-1.5 py-0.5 align-middle text-[0.6875rem] leading-none font-medium text-emerald-700 dark:text-emerald-400"
+								class="inline-flex shrink-0 items-center gap-1 rounded-full border border-emerald-500/40 bg-emerald-500/10 px-1.5 py-0.5 text-[0.6875rem] leading-none font-medium text-emerald-700 dark:text-emerald-400"
 								title="{issue.active_run.runner_name} is on it ({issue.active_run.status})"
 								transition:fade={{ duration: dur() }}
 							>

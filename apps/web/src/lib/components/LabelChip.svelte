@@ -25,7 +25,9 @@
 	class="state-badge {size === 'sm' ? 'px-1.5 py-0.5 text-[0.6875rem]' : ''} {className}"
 	style="--cat: {labelColorVar(label.color)}"
 >
-	{label.name}
+	<!-- The name owns the overflow so a `max-w-*` on the chip ellipses the text
+	     instead of clipping the pill mid-letter. -->
+	<span class="truncate">{label.name}</span>
 	{#if onremove}
 		<button
 			type="button"
