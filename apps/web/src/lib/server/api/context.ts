@@ -1351,7 +1351,20 @@ export function issueBlock(
 			);
 		}
 	}
-	lines.push(`Add a comment: \`tines issues comment ${ref} "<markdown>"\``, '', '### Artifacts', '');
+	// A quoted heredoc, not an inline argument: comment bodies are prose full
+	// of backticks, $VARS and apostrophes, and there is no way to delete a
+	// comment that the shell mangled on the way in (Tines/9).
+	lines.push(
+		'Add a comment (the quoted heredoc keeps backticks, $VARS and quotes literal):',
+		'```',
+		`tines issues comment ${ref} - <<'EOF'`,
+		'<markdown>',
+		'EOF',
+		'```',
+		'',
+		'### Artifacts',
+		''
+	);
 	// A listing, never contents: agents fetch on demand.
 	if (issueArtifacts.length === 0) {
 		lines.push('No artifacts attached.', '');
@@ -1398,13 +1411,15 @@ export function issueBlock(
 			'Appends land in this stage\'s journal even after you move the issue.',
 			'',
 			`- Append a lesson: \`tines journal append ${ref} "- <date>: <lesson>"\``,
+			'  (or `-` with a quoted heredoc, as for comments, when the body must not be touched by the shell)',
 			`- Fix or prune entries: \`tines journal show ${ref} --json\`, revise, then`,
 			`  \`tines journal rewrite ${ref} --body @file --expect-version ${journal.version}\``
 		);
 	} else {
 		lines.push(
 			`No journal exists yet for project ${issue.project_name} · state ${issue.state.name}. Start one:`,
-			`\`tines journal append ${ref} "- <date>: <lesson>"\``
+			`\`tines journal append ${ref} "- <date>: <lesson>"\``,
+			'(or `-` with a quoted heredoc, as for comments, when the body must not be touched by the shell)'
 		);
 	}
 

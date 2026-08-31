@@ -257,7 +257,10 @@ describe('issueBlock', () => {
 		expect(block).toContain('Do it *well*.');
 		expect(block).toContain('Review (awaiting_human), in workflow "Two-step".');
 		expect(block).toContain('**Alice via laptop** (2023-11-14T22:13:20.000Z):\nLooks close.');
-		expect(block).toContain('Add a comment: `tines issues comment Tines/42 "<markdown>"`');
+		// The comment affordance is a quoted heredoc, so an agent's prose survives
+		// the shell verbatim (Tines/9).
+		expect(block).toContain("tines issues comment Tines/42 - <<'EOF'");
+		expect(block).not.toContain('tines issues comment Tines/42 "<markdown>"');
 		// Multi-word actions are quoted so they paste correctly.
 		expect(block).toContain(
 			'- **send back** → Open (active): `tines issues move Tines/42 "send back"`'
@@ -275,6 +278,8 @@ describe('issueBlock', () => {
 		expect(withJournal).toContain('### Journal');
 		expect(withJournal).toContain('(currently v7)');
 		expect(withJournal).toContain('`tines journal append Tines/42 "- <date>: <lesson>"`');
+		// ...and the shell-proof alternative for bodies that need it.
+		expect(withJournal).toContain('(or `-` with a quoted heredoc, as for comments,');
 		expect(withJournal).toContain('`tines journal rewrite Tines/42 --body @file --expect-version 7`');
 		// The old append-before-you-move ordering trap, retired by run anchoring.
 		expect(withJournal).toContain(
@@ -284,6 +289,7 @@ describe('issueBlock', () => {
 
 		const without = issueBlock(issue, emptyContext);
 		expect(without).toContain('No journal exists yet for project Tines · state Review. Start one:');
+		expect(without).toContain('(or `-` with a quoted heredoc, as for comments,');
 	});
 
 	it('lists artifacts with the fetch command and shared prompts names-only', () => {

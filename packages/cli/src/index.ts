@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSy
 import { hostname } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { createInterface } from 'node:readline/promises';
+import { BODY_VALUE_HELP, readBodyValue } from './body-value.js';
 import { runDaemon } from './daemon/daemon.js';
 import { defaultConfigDir, hasRunnerCredentials, saveRunnerCredentials } from './daemon/store.js';
 import { HARNESS_KINDS, type HarnessKind } from './daemon/support.js';
@@ -399,20 +400,6 @@ async function resolveScopeFlags(
 	if (opts.state !== undefined) scope.workflow_state_id = (await resolveStateFlag(api, opts.state)).state.id;
 	if (opts.issue !== undefined) scope.issue_id = (await resolveIssue(api, opts.issue)).id;
 	return scope;
-}
-
-/** `--body` takes inline Markdown or `@file`; a literal `@…` escapes as `@@…`. */
-function readBodyValue(value: string): string {
-	if (value.startsWith('@@')) return value.slice(1);
-	if (value.startsWith('@')) {
-		const file = value.slice(1);
-		try {
-			return readFileSync(file, 'utf8');
-		} catch (err) {
-			die(`cannot read ${file}: ${err instanceof Error ? err.message : String(err)}`);
-		}
-	}
-	return value;
 }
 
 /**
@@ -1031,7 +1018,7 @@ withCommon(
 		.command('create <project>')
 		.description('Create an issue in a project, optionally with a recurrence (a scheduled task)')
 		.requiredOption('-t, --title <title>', 'issue title (doubles as the title template with a recurrence)')
-		.option('-d, --description <markdown>', 'issue description (Markdown)')
+		.option('-d, --description <markdown>', `issue description (Markdown) — ${BODY_VALUE_HELP}`)
 		.option('-w, --workflow <id-or-name>', 'workflow (defaults to project default, else standard)')
 		.option('-s, --state <name>', "starting state (defaults to the workflow's initial state)")
 		.option('--every <preset>', 'repeat hourly (or every N hours: "6h"), daily, weekly, or monthly')
@@ -1071,7 +1058,7 @@ withCommon(
 			: undefined;
 		const issue = await api.createIssue(project.id, {
 			title: opts.title,
-			description: opts.description,
+			description: opts.description !== undefined ? readBodyValue(opts.description) : undefined,
 			workflow_id: workflowId,
 			state: opts.state,
 			schedule
@@ -1103,7 +1090,7 @@ withCommon(
 		.command('edit <ref>')
 		.description('Edit an issue: title, description, workflow, or force-set state')
 		.option('-t, --title <title>', 'set the title')
-		.option('-d, --description <markdown>', 'set the description (Markdown)')
+		.option('-d, --description <markdown>', `set the description (Markdown) — ${BODY_VALUE_HELP}`)
 		.option(
 			'-s, --state <name>',
 			"force-set the state, bypassing the workflow's transitions (records a forced move)"
@@ -1118,7 +1105,7 @@ withCommon(
 		const issue = await resolveIssue(api, ref);
 		const body: UpdateIssueRequest = {};
 		if (opts.title !== undefined) body.title = opts.title;
-		if (opts.description !== undefined) body.description = opts.description;
+		if (opts.description !== undefined) body.description = readBodyValue(opts.description);
 		if (opts.state !== undefined) body.state = opts.state;
 		if (opts.workflow !== undefined) body.workflow_id = (await resolveWorkflow(api, opts.workflow)).id;
 		if (Object.keys(body).length === 0) {
@@ -1154,14 +1141,15 @@ withCommon(
 withCommon(
 	issues
 		.command('comment <ref> <markdown>')
-		.description('Comment on an issue (Markdown body)')
+		.description(`Comment on an issue — Markdown body: ${BODY_VALUE_HELP}`)
 		// A body may start with "-"; options go before the arguments.
 		.passThroughOptions()
 ).action(async (ref: string, markdown: string, opts: CommonOpts, command: Command) => {
 	if (helpGuard(command, markdown)) return;
+	const body = readBodyValue(markdown);
 	const api = client(opts);
 	const issue = await resolveIssue(api, ref);
-	const comment = await api.createComment(issue.id, { body: markdown });
+	const comment = await api.createComment(issue.id, { body });
 	if (opts.json) return printJson(comment);
 	console.log(`commented on ${issue.project_name}/#${issue.number} as ${actorLabel(comment.actor)}`);
 });
@@ -2079,7 +2067,7 @@ withCommon(
 withCommon(
 	journal
 		.command('append <ref> <markdown>')
-		.description('Append a lesson (creates the journal on first use)')
+		.description(`Append a lesson, creating the journal on first use — ${BODY_VALUE_HELP}`)
 		.option('--state <workflow>/<state>', STATE_FLAG_HELP)
 		// Lessons are dated bullets starting with "-"; options go before the
 		// arguments, exactly as the launch prompt's copy-pasteable command has it.
@@ -2087,11 +2075,14 @@ withCommon(
 ).action(
 	async (ref: string, markdown: string, opts: CommonOpts & { state?: string }, command: Command) => {
 		if (helpGuard(command, markdown)) return;
+		// Resolved once: stdin is single-consumption and all three paths below
+		// (append, first-use create, create-race recovery) need the same body.
+		const text = readBodyValue(markdown);
 		const api = client(opts);
 		const { scope, note, item } = await resolveJournal(api, ref, opts.state);
 		printNote(note);
 		if (item) {
-			const updated = await api.appendContextItem(item.id, { text: markdown });
+			const updated = await api.appendContextItem(item.id, { text });
 			if (opts.json) return printJson(updated);
 			return console.log(`appended to the ${scope.label} journal (now v${updated.version})`);
 		}
@@ -2101,7 +2092,7 @@ withCommon(
 				name: JOURNAL_NAME,
 				project_id: scope.project_id ?? undefined,
 				workflow_state_id: scope.workflow_state_id ?? undefined,
-				body: markdown.trim()
+				body: text.trim()
 			});
 			if (opts.json) return printJson(created);
 			console.log(`started the ${scope.label} journal (${created.id})`);
@@ -2111,7 +2102,7 @@ withCommon(
 			if (!(err instanceof ApiError) || err.code !== 'duplicate_context_name') throw err;
 			const { item: fresh } = await resolveJournal(api, ref, opts.state);
 			if (!fresh) throw err;
-			const updated = await api.appendContextItem(fresh.id, { text: markdown });
+			const updated = await api.appendContextItem(fresh.id, { text });
 			if (opts.json) return printJson(updated);
 			console.log(`appended to the ${scope.label} journal (now v${updated.version})`);
 		}
@@ -2223,7 +2214,7 @@ withCommon(
 		.command('edit <ref>')
 		.description('Edit a schedule: templates, workflow, start state, recurrence, timezone, gate, or name')
 		.option('-t, --title <template>', 'set the title template')
-		.option('-d, --description <markdown>', 'set the description template (Markdown)')
+		.option('-d, --description <markdown>', `set the description template (Markdown) — ${BODY_VALUE_HELP}`)
 		.option(
 			'-w, --workflow <id-or-name>',
 			'move future instances onto another workflow (resets the start state to its initial state unless --state is also given)'
@@ -2257,7 +2248,7 @@ withCommon(
 		const schedule = await resolveSchedule(api, ref);
 		const body: UpdateScheduleRequest = {};
 		if (opts.title !== undefined) body.title_template = opts.title;
-		if (opts.description !== undefined) body.description_template = opts.description;
+		if (opts.description !== undefined) body.description_template = readBodyValue(opts.description);
 		if (opts.workflow !== undefined) body.workflow_id = (await resolveWorkflow(api, opts.workflow)).id;
 		if (opts.state !== undefined) body.state = opts.state;
 		const recurrence = buildRecurrence(opts);
