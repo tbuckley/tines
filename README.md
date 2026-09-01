@@ -36,16 +36,18 @@ With the dev server running, try the CLI:
 
 ```sh
 pnpm cli time                             # dev mode (tsx, no build needed)
-pnpm cli time -- --json
+pnpm cli time --json                      # not `pnpm cli time -- --json`: pnpm 10
+                                          # forwards the `--` itself, and commander
+                                          # rejects it as a stray argument
 
 # or the built binary
 pnpm build
 node packages/cli/dist/index.js time --url http://localhost:5173
 ```
 
-The CLI reads the API base URL from `--url` or the `TINES_API_URL` env var (default `http://localhost:5173`).
+The CLI reads the API base URL from `--url` or the `TINES_API_URL` env var (default `http://localhost:5173`). Three commands are exceptions, because `--url` is already part of their payload: `issues artifacts attach` (the link to attach) and `context create` / `context edit` (a repo's clone URL). They have no base-URL flag and read `TINES_API_URL` only — and `tines issues artifacts attach <ref> <name> --url <your API>` does not retarget the CLI, it attaches your API URL as a link artifact.
 
-Every `… list` command returns one page. Pass `--all-pages` to follow the cursor and fetch the whole list in one command; without it, `--json` output carries a `next_cursor` and warns on stderr that there is more.
+Most `… list` commands return one page. Pass `--all-pages` to follow the cursor and fetch the whole list in one command; without it, `--json` output carries a `next_cursor` and warns on stderr that there is more. `runners list`, `routing list` and `issues artifacts list` take no pagination flags and never truncate: those collections are small by construction, so the API returns them whole.
 
 ## Installing the CLI globally
 
