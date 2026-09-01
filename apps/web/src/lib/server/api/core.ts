@@ -27,6 +27,35 @@ export function errorResponse(e: ApiFail): Response {
 	return json(body, { status: e.status });
 }
 
+/**
+ * SvelteKit answers a known route with an unsupported verb itself, before any
+ * handler runs: a bare text body ("PUT method not allowed") with no
+ * content-type. A JSON client that reads `(await res.json()).error` on every
+ * non-2xx then dies on a parse error instead of surfacing the reason, so the
+ * hook re-clothes that response in the documented envelope. Kit's `Allow`
+ * header is already correct (RFC 9110 15.5.6) and is carried over.
+ *
+ * Scoped to /api/v1/*: only the JSON API promises the envelope. A 405 a
+ * handler produced itself already carries a JSON content-type and is left
+ * alone.
+ */
+export function jsonifyMethodNotAllowed(
+	pathname: string,
+	method: string,
+	response: Response
+): Response {
+	if (response.status !== 405) return response;
+	if (!pathname.startsWith('/api/v1/')) return response;
+	if ((response.headers.get('content-type') ?? '').includes('application/json')) return response;
+
+	const replacement = errorResponse(
+		new ApiFail(405, 'method_not_allowed', `${method} is not allowed on this resource`)
+	);
+	const allow = response.headers.get('allow');
+	if (allow) replacement.headers.set('allow', allow);
+	return replacement;
+}
+
 /** Wraps a route handler: ApiFail → structured JSON error, else 500. */
 export function api<E extends RequestEvent>(
 	handler: (event: E) => Promise<Response> | Response
