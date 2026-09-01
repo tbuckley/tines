@@ -1,9 +1,15 @@
-# Copy to .dev.vars (gitignored) for local development.
+# Copy to .dev.vars (gitignored) for local development. Nothing below needs
+# filling in to sign in locally: magic-link sign-in works out of the box, and
+# `pnpm dev` prints each sign-in link to its console.
 BETTER_AUTH_SECRET=dev-secret-change-me
-BETTER_AUTH_URL=http://localhost:5173
 
-# From https://console.cloud.google.com/apis/credentials — OAuth 2.0 Client ID.
-# Authorized redirect URI: http://localhost:5173/api/auth/callback/google
+# Left empty on purpose: it overrides the production value in wrangler.jsonc,
+# and an empty value makes auth derive its base URL from the request, so the
+# dev server works on any port. Set it only if you must pin the origin.
+BETTER_AUTH_URL=
+
+# Optional. From https://console.cloud.google.com/apis/credentials — OAuth 2.0
+# Client ID. Authorized redirect URI: http://localhost:5173/api/auth/callback/google
 GOOGLE_CLIENT_ID=
 GOOGLE_CLIENT_SECRET=
 

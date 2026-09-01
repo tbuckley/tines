@@ -25,17 +25,24 @@ pnpm install
 
 # one-time local setup
 cd apps/web
-cp .dev.vars.example .dev.vars           # fill in Google OAuth creds to test sign-in
-pnpm db:migrate:local                     # create the Better Auth tables in local D1
+cp .dev.vars.example .dev.vars           # works as-is; Google OAuth creds are optional
+pnpm db:migrate:local                     # create the tables in local D1
+pnpm db:seed:local                        # a dev user (dev@tines.local) and an API key
 
 # run the app (from the repo root)
 pnpm dev                                  # http://localhost:5173
 ```
 
-With the dev server running, try the CLI:
+To sign in, enter `dev@tines.local` (or any address) on the landing page. Nothing is
+delivered locally: `pnpm dev` prints the magic link to its console — open it. Google
+sign-in also works once the OAuth credentials are in `.dev.vars` (see below).
+
+With the dev server running, try the CLI with the seeded key (the seed prints it):
 
 ```sh
+export TINES_API_KEY=tines_dev0000000000000000000000000000000000000
 pnpm cli time                             # dev mode (tsx, no build needed)
+pnpm cli projects list
 pnpm cli time -- --json
 
 # or the built binary
@@ -236,7 +243,7 @@ Better Auth is mounted at `/api/auth/*` (see `apps/web/src/hooks.server.ts`); it
 
 Email sign-in links are sent with [Cloudflare Email Service](https://developers.cloudflare.com/email-service/) (beta, requires the Workers Paid plan) through the `EMAIL` send binding in `apps/web/wrangler.jsonc`.
 
-Local dev needs no setup: `wrangler dev` simulates the binding, logging each email (including the sign-in link) to the dev server console instead of delivering it.
+Local dev needs no setup: the binding is simulated and nothing is delivered. `pnpm dev` prints each sign-in link to its console; `wrangler dev` (and `pnpm preview`) instead log the message's file paths under `.wrangler/tmp/email/`, and the link is in the `.txt` one.
 
 To send real emails in production:
 

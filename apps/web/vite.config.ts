@@ -4,6 +4,13 @@ import tailwindcss from '@tailwindcss/vite';
 import { configDefaults, defineConfig } from 'vitest/config';
 
 export default defineConfig({
+	server: {
+		// The simulated EMAIL binding writes each message under .wrangler/tmp/,
+		// and D1/R2 state lives under .wrangler/state/: neither is source, and
+		// watching them made every magic-link request trigger a full page
+		// reload — wiping the "Check your email" state as it appeared.
+		watch: { ignored: ['**/.wrangler/**'] }
+	},
 	test: {
 		include: ['src/**/*.test.ts'],
 		// The navigation-cost probe is a measurement tool, not a gate: it spends
