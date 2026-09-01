@@ -82,7 +82,7 @@ export function api<E extends RequestEvent>(
 /** Valid JSON that isn't an object ("null", "[]", "42") would otherwise
  * pass the parse and crash on the first field access — a 500 for what is
  * malformed client input. Every endpoint takes an object payload. */
-function requireJsonObject(value: unknown): Record<string, unknown> {
+export function requireJsonObject(value: unknown): Record<string, unknown> {
 	if (typeof value !== 'object' || value === null || Array.isArray(value)) {
 		throw new ApiFail(400, 'invalid_json', 'Request body must be a JSON object');
 	}
@@ -162,7 +162,10 @@ const CONTROL_PLANE_PATTERNS = [
 	/^\/api\/v1\/routing-rules(\/|$)/,
 	/^\/api\/v1\/supervisor\/settings(\/|$)/,
 	/^\/api\/v1\/issues\/[^/]+\/resume$/,
-	/^\/api\/v1\/api-keys(\/|$)/
+	/^\/api\/v1\/api-keys(\/|$)/,
+	// Bulk library writes: an agent must propose context changes, not apply
+	// a whole library over the top of them.
+	/^\/api\/v1\/import(\/|$)/
 ];
 
 /** True for paths a run key must never reach (all methods). */
@@ -178,7 +181,7 @@ export function runKeyForbidden(): ApiFail {
 	return new ApiFail(
 		403,
 		'run_key_forbidden',
-		'Run keys cannot modify runners, routing rules, supervisor settings, parked issues, issue pins, or API keys. ' +
+		'Run keys cannot modify runners, routing rules, supervisor settings, parked issues, issue pins, API keys, or the library import. ' +
 			'Propose the change instead: file an issue titled "Context change: <scope label>" describing ' +
 			'what should change and why; a human reviews and applies it.'
 	);
