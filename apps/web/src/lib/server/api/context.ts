@@ -1383,7 +1383,7 @@ export function issueBlock(
 		lines.push('');
 	}
 	lines.push(
-		`Attach one: \`tines issues artifacts attach ${ref} <name> --file <path>\` (or --text/--url/--pr, or --folder <dir> for a multi-file snapshot)`,
+		`Attach one: \`tines issues artifacts attach ${ref} <name> --file <path>\` (or --text/--link/--pr, or --folder <dir> for a multi-file snapshot)`,
 		'',
 		'### Available transitions',
 		''

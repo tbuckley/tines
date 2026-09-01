@@ -21,10 +21,10 @@ import {
 } from '@tines/shared';
 import { Option, type Command } from 'commander';
 
-export const DEFAULT_URL = 'http://localhost:5173';
+export const DEFAULT_URL = 'https://tines.tbuckley.dev';
 
 export interface CommonOpts {
-	/** Absent on commands where --url means something else; falls back to TINES_API_URL. */
+	/** Absent unless --url was passed; falls back to TINES_API_URL. */
 	url?: string;
 	/** Absent unless --api-key was passed; falls back to TINES_API_KEY. */
 	apiKey?: string;
@@ -39,18 +39,17 @@ export interface ListOpts extends CommonOpts {
 
 /**
  * Adds the options shared by every command (after the subcommand name).
- * `baseUrlFlag: false` skips `-u, --url` for commands where `--url` means
- * something else (`context create/edit` repo pointers); TINES_API_URL still
- * applies there.
+ * `-u, --url` is the API base URL on every command without exception: a
+ * payload that happens to be a URL gets its own name (`--link`, `--repo-url`),
+ * because a command that quietly reads `--url` as something else turns a
+ * copied-from-the-README invocation into a wrong request (Tines/92).
  */
-export function withCommon(cmd: Command, { baseUrlFlag = true } = {}): Command {
-	if (baseUrlFlag) {
-		cmd.option(
+export function withCommon(cmd: Command): Command {
+	return cmd
+		.option(
 			'-u, --url <url>',
 			`base URL of the Tines API (or set TINES_API_URL; default ${DEFAULT_URL})`
-		);
-	}
-	return cmd
+		)
 		.option('--api-key <key>', 'API key (or set TINES_API_KEY)')
 		.option('--json', 'output the raw JSON response');
 }

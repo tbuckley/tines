@@ -600,14 +600,12 @@ export function register(program: Command): void {
 				'snapshot a directory tree as one version (collect locally, attach once; MIME per file sniffed)'
 			)
 			.option('-t, --text <md|@file>', 'inline text document: inline Markdown or @file')
-			.option('--url <url>', 'link: the URL to attach')
+			.option('--link <url>', 'link: the URL to attach')
 			.option('--pr <spec>', 'PR reference: owner/repo#N or a GitHub PR URL')
 			.option('--content-type <mime>', 'declared MIME type (with --file or --text)')
 			.option('--filename <name>', 'display filename (with --text; defaults to <name>.md)')
-			.option('--title <title>', 'display title (with --url)')
-			.option('-d, --description <text>', 'artifact description, shown in lists and launch prompts'),
-		// --url is the link payload here; the API base comes from TINES_API_URL.
-		{ baseUrlFlag: false }
+			.option('--title <title>', 'display title (with --link)')
+			.option('-d, --description <text>', 'artifact description, shown in lists and launch prompts')
 	).action(
 		async (
 			ref: string,
@@ -616,7 +614,7 @@ export function register(program: Command): void {
 				file?: string;
 				folder?: string;
 				text?: string;
-				url?: string;
+				link?: string;
 				pr?: string;
 				contentType?: string;
 				filename?: string;
@@ -624,11 +622,11 @@ export function register(program: Command): void {
 				description?: string;
 			}
 		) => {
-			const api = client({ apiKey: opts.apiKey, json: opts.json });
-			const sources = [opts.file, opts.folder, opts.text, opts.url, opts.pr].filter((v) => v !== undefined);
+			const api = client(opts);
+			const sources = [opts.file, opts.folder, opts.text, opts.link, opts.pr].filter((v) => v !== undefined);
 			if (sources.length !== 1) {
 				die(
-					'pass exactly one content source: --file <path>, --folder <dir>, --text <md|@file>, --url <url>, or --pr <spec>'
+					'pass exactly one content source: --file <path>, --folder <dir>, --text <md|@file>, --link <url>, or --pr <spec> (a link goes in --link; --url is the API base URL)'
 				);
 			}
 			const issue = await resolveIssue(api, ref);
@@ -667,10 +665,10 @@ export function register(program: Command): void {
 					...(opts.contentType !== undefined ? { content_type: opts.contentType } : {}),
 					...(opts.description !== undefined ? { description: opts.description } : {})
 				});
-			} else if (opts.url !== undefined) {
+			} else if (opts.link !== undefined) {
 				artifact = await api.putArtifact(issue.id, name, {
 					type: 'link',
-					url: opts.url,
+					url: opts.link,
 					...(opts.title !== undefined ? { title: opts.title } : {}),
 					...(opts.description !== undefined ? { description: opts.description } : {})
 				});
