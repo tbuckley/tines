@@ -25,6 +25,7 @@ import {
 import { hostname, platform, arch } from 'node:os';
 import { dirname, join } from 'node:path';
 import { ApiError, RUN_LOG_RAW_MAX_BYTES, createApiClient, type RunnerAssignment } from '@tines/shared';
+import { cliVersion } from '../version.js';
 import { ClaudeStreamRenderer } from './claude-stream';
 import { installAgentCli } from './cli-refresh.js';
 import {
@@ -47,6 +48,8 @@ import {
 	buildHarnessInvocation,
 	buildSpawnEnv,
 	CliRefresher,
+	exitLineForRun,
+	formatLaunchBanner,
 	keepWorkspace,
 	LogBatcher,
 	RunTable,
@@ -78,6 +81,9 @@ export interface DaemonOptions {
 
 /** How often a launch may re-attempt the CLI refresh (gated on attempt, not success). */
 const CLI_REFRESH_TTL_MS = 10 * 60_000;
+
+/** This daemon's own version, stamped into every run's launch banner. */
+const DAEMON_VERSION = cliVersion();
 
 interface ActiveRun extends ManagedRun {
 	child?: ChildProcess;
@@ -433,14 +439,26 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 						: `warning: no daemon-managed tines CLI; using whatever \`tines\` is on this machine's PATH\n`
 			);
 
+			const harnessInput = {
+				workspace,
+				promptFile: join(workspace, 'prompt.md'),
+				prompt: assignment.prompt,
+				model: assignment.run.model
+			};
 			const invocation = buildHarnessInvocation(
 				{ harness: opts.harness, command: opts.command },
-				{
-					workspace,
-					promptFile: join(workspace, 'prompt.md'),
-					prompt: assignment.prompt,
-					model: assignment.run.model
-				}
+				harnessInput
+			);
+			// What we are about to run, in the log itself: a failed run is read
+			// long after the daemon's console scrolled away (or was swallowed by
+			// launchd), and "which model / which timeout / which expanded
+			// --command?" is otherwise unanswerable from the run.
+			run.batcher.append(
+				formatLaunchBanner(invocation, harnessInput, {
+					harness: opts.harness,
+					timeoutMinutes: assignment.timeout_minutes,
+					cliVersion: DAEMON_VERSION
+				})
 			);
 			const child = spawn(invocation.file, invocation.args, {
 				cwd: workspace,
@@ -494,6 +512,17 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 				void table.finishAndCleanup(run, 'failed', `failed to launch harness: ${message(err)}`);
 			});
 			child.on('exit', (code, signal) => {
+				// The harness's last words first — a stream renderer holding a
+				// partial line emits it here (drain is idempotent, and
+				// finishAndCleanup calls it too), so the closing line below is
+				// really the log's last.
+				run.drain?.();
+				const closing = exitLineForRun(run, {
+					code,
+					signal,
+					durationMs: Date.now() - (run.spawnedAt ?? Date.now())
+				});
+				if (closing) run.batcher.append(closing);
 				// A supervisor-canceled run is already settled: finishAndCleanup
 				// degrades to cleanup-only, reporting nothing.
 				if (run.timedOut) {
