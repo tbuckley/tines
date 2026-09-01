@@ -6,6 +6,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 PORT="${E2E_PORT:-8788}"
+# The same secret helpers.ts signs session cookies with; one source of truth.
+AUTH_SECRET=$(node --input-type=module -e "import { AUTH_SECRET } from './e2e/constants.mjs'; console.log(AUTH_SECRET)")
 
 rm -rf .wrangler-e2e
 
@@ -29,5 +31,5 @@ exec pnpm exec wrangler dev \
 	--host "127.0.0.1:$PORT" \
 	--persist-to .wrangler-e2e \
 	--test-scheduled \
-	--var "BETTER_AUTH_SECRET:tines-e2e-secret" \
+	--var "BETTER_AUTH_SECRET:$AUTH_SECRET" \
 	--var "BETTER_AUTH_URL:http://127.0.0.1:$PORT"
