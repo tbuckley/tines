@@ -28,6 +28,10 @@ import type {
 	CreateRoutingRuleRequest,
 	CreateRunnerRequest,
 	CreateWorkflowRequest,
+	ExportLibraryOptions,
+	ImportLibraryRequest,
+	ImportLibraryResponse,
+	LibraryDocument,
 	DeleteAnchorRequest,
 	DeleteAnchorResponse,
 	DeleteRunnerRequest,
@@ -405,7 +409,16 @@ export function createApiClient(options: ApiClientOptions) {
 		listApiKeys: () => get<ListResponse<ApiKey>>('/api/v1/api-keys'),
 		createApiKey: (body: CreateApiKeyRequest) =>
 			request<ApiKeyCreated>('POST', '/api/v1/api-keys', body),
-		revokeApiKey: (id: string) => request<void>('DELETE', `/api/v1/api-keys/${id}`)
+		revokeApiKey: (id: string) => request<void>('DELETE', `/api/v1/api-keys/${id}`),
+
+		// Library export / import (workflows + context; no tracker data, no secrets)
+		exportLibrary: (opts: ExportLibraryOptions = {}) =>
+			get<LibraryDocument>(
+				`/api/v1/export${opts.journals === false ? '?journals=false' : ''}`
+			),
+		/** Plan-then-apply; `dry_run: true` returns the preview the apply follows. */
+		importLibrary: (body: ImportLibraryRequest) =>
+			request<ImportLibraryResponse>('POST', '/api/v1/import', body)
 	};
 }
 
