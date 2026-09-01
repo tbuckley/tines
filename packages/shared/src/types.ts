@@ -745,7 +745,8 @@ export function repoDirFromUrl(url: string): string {
 	const stripped = url.replace(/[?#].*$/, '').replace(/\/+$/, '');
 	const lastSlash = Math.max(stripped.lastIndexOf('/'), stripped.lastIndexOf(':'));
 	const base = stripped.slice(lastSlash + 1).replace(/\.git$/, '');
-	if (!base || base === '.' || base === '..' || base.includes('\\') || base.includes('=')) return 'repo';
+	if (!base || base === '.' || base === '..' || base.includes('\\') || base.includes('='))
+		return 'repo';
 	return base;
 }
 
@@ -946,13 +947,7 @@ export type ModelTier = 'smartest' | 'balanced' | 'cheapest';
 export const MODEL_TIERS: readonly ModelTier[] = ['smartest', 'balanced', 'cheapest'];
 
 export type RunStatus =
-	| 'assigned'
-	| 'launching'
-	| 'running'
-	| 'completed'
-	| 'failed'
-	| 'timed_out'
-	| 'canceled';
+	'assigned' | 'launching' | 'running' | 'completed' | 'failed' | 'timed_out' | 'canceled';
 
 export const RUN_STATUSES: readonly RunStatus[] = [
 	'assigned',
@@ -1045,7 +1040,13 @@ export interface RunnerBudget {
  */
 export const MODEL_PREDECESSORS: Record<string, readonly string[]> = {
 	'claude-fable-5': ['claude-opus-5', 'claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6'],
-	'claude-opus-5': ['claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6', 'claude-opus-4-5', 'claude-opus-4-1'],
+	'claude-opus-5': [
+		'claude-opus-4-8',
+		'claude-opus-4-7',
+		'claude-opus-4-6',
+		'claude-opus-4-5',
+		'claude-opus-4-1'
+	],
 	'claude-sonnet-5': ['claude-sonnet-4-6', 'claude-sonnet-4-5', 'claude-3-7-sonnet-latest'],
 	'claude-haiku-4-5': ['claude-3-5-haiku-latest'],
 	'gemini-2.5-pro': ['gemini-1.5-pro'],
@@ -1486,7 +1487,9 @@ export function utilizationLabel(
 	}
 	if (counts.size === 0) return `no active runs (roster default ${quota.default_limit} per state)`;
 	return [...counts.entries()]
-		.map(([stateId, { name, n }]) => `${name} ${n}/${quota.overrides[stateId] ?? quota.default_limit}`)
+		.map(
+			([stateId, { name, n }]) => `${name} ${n}/${quota.overrides[stateId] ?? quota.default_limit}`
+		)
 		.join(' · ');
 }
 
@@ -1495,24 +1498,13 @@ export function utilizationLabel(
 
 /** One eligibility check, pass or fail, with a human-readable detail. */
 export interface DispatchCheck {
-	name:
-		| 'automation_enabled'
-		| 'state_active'
-		| 'ready'
-		| 'no_active_run'
-		| 'not_parked'
-		| 'routed';
+	name: 'automation_enabled' | 'state_active' | 'ready' | 'no_active_run' | 'not_parked' | 'routed';
 	ok: boolean;
 	detail: string;
 }
 
 export type DispatchTargetVerdict =
-	| 'ok'
-	| 'paused'
-	| 'offline'
-	| 'at_capacity'
-	| 'backing_off'
-	| 'quota_exhausted';
+	'ok' | 'paused' | 'offline' | 'at_capacity' | 'backing_off' | 'quota_exhausted';
 
 /** One rule/pin target's verdict, in preference order. */
 export interface DispatchTarget {

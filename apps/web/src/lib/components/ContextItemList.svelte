@@ -56,10 +56,15 @@
 							{/if}
 						</span>
 						{#if payloadSummary(item)}
-							<span class="text-muted-foreground block truncate text-xs">{payloadSummary(item)}</span>
+							<span class="text-muted-foreground block truncate text-xs"
+								>{payloadSummary(item)}</span
+							>
 						{/if}
 					</span>
-					<span class="text-muted-foreground shrink-0 text-xs" title={new Date(item.updated_at).toLocaleString()}>
+					<span
+						class="text-muted-foreground shrink-0 text-xs"
+						title={new Date(item.updated_at).toLocaleString()}
+					>
 						{relativeTime(item.updated_at)}
 					</span>
 				</button>

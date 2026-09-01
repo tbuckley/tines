@@ -10,7 +10,12 @@ export const GET: RequestHandler = api(async (event) => {
 	// 404 for a project the user doesn't own, before filtering by it.
 	await getProject(db, actor.userId, event.params.id);
 	const page = readPage(event);
-	const { items, hasMore } = await listSchedules(db, actor.userId, { projectId: event.params.id }, page);
+	const { items, hasMore } = await listSchedules(
+		db,
+		actor.userId,
+		{ projectId: event.params.id },
+		page
+	);
 	const last = items[items.length - 1];
 	const body: ListResponse<Schedule> = {
 		items,

@@ -24,7 +24,6 @@ import type { Command } from 'commander';
 // ---------------------------------------------------------------------------
 // JSON body input (inline argument, --file <path>, --file -, or piped stdin)
 
-
 /**
  * Reads a JSON request body from, in order of precedence: the inline
  * argument, --file <path> ("-" for stdin), or piped stdin. Returns undefined
@@ -57,7 +56,6 @@ function readJsonBody(
 	}
 	return undefined;
 }
-
 
 const WORKFLOW_JSON_HELP = `
 The JSON body may be passed inline, via --file <path>, --file - (stdin), or
@@ -151,7 +149,9 @@ export function register(program: Command): void {
 	);
 
 	withCommon(
-		workflows.command('show <id-or-name>').description('Show a workflow with states and transitions')
+		workflows
+			.command('show <id-or-name>')
+			.description('Show a workflow with states and transitions')
 	).action(async (ref: string, opts: CommonOpts) => {
 		const api = client(opts);
 		const wf = await resolveWorkflow(api, ref);
@@ -162,24 +162,28 @@ export function register(program: Command): void {
 	withCommon(
 		workflows
 			.command('create [json]')
-			.description('Create a workflow from a JSON definition (states carry initial "prompt" instructions)')
+			.description(
+				'Create a workflow from a JSON definition (states carry initial "prompt" instructions)'
+			)
 			.option('-f, --file <path>', 'read the JSON definition from a file ("-" for stdin)')
 			.option('--no-prompts', 'allow states without initial "prompt" instructions')
 			.addHelpText('after', WORKFLOW_JSON_HELP)
-	).action(async (inline: string | undefined, opts: CommonOpts & { file?: string; prompts?: boolean }) => {
-		const body = readJsonBody(inline, opts.file);
-		if (!body) {
-			die(
-				'missing workflow JSON: pass it inline, with --file <path>, or pipe it on stdin' +
-					`\nsee \`tines workflows create --help\` for the expected shape`
-			);
+	).action(
+		async (inline: string | undefined, opts: CommonOpts & { file?: string; prompts?: boolean }) => {
+			const body = readJsonBody(inline, opts.file);
+			if (!body) {
+				die(
+					'missing workflow JSON: pass it inline, with --file <path>, or pipe it on stdin' +
+						`\nsee \`tines workflows create --help\` for the expected shape`
+				);
+			}
+			assertNewStatesHavePrompts(body.states, opts.prompts);
+			const wf = await client(opts).createWorkflow(body as unknown as CreateWorkflowRequest);
+			if (opts.json) return printJson(wf);
+			console.log(`created workflow "${wf.name}" (${wf.id})\n`);
+			printWorkflowDetail(wf);
 		}
-		assertNewStatesHavePrompts(body.states, opts.prompts);
-		const wf = await client(opts).createWorkflow(body as unknown as CreateWorkflowRequest);
-		if (opts.json) return printJson(wf);
-		console.log(`created workflow "${wf.name}" (${wf.id})\n`);
-		printWorkflowDetail(wf);
-	});
+	);
 
 	withCommon(
 		workflows

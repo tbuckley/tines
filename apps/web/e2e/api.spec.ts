@@ -129,7 +129,9 @@ test.describe.serial('core issue loop', () => {
 			(t) => t.name === 'Submit for review'
 		)!.transition_id;
 
-		const second = await api.post(`/api/v1/projects/${projectId}/issues`, { title: 'Second issue' });
+		const second = await api.post(`/api/v1/projects/${projectId}/issues`, {
+			title: 'Second issue'
+		});
 		expect((await body<IssueDetail>(second)).number).toBe(2);
 	});
 
@@ -230,7 +232,9 @@ test.describe.serial('core issue loop', () => {
 		expect(types).toContain('issue.created');
 		expect(types).toContain('issue.commented');
 		expect(types.filter((t) => t === 'issue.transitioned')).toHaveLength(2);
-		const transition = events.find((e) => e.type === 'issue.transitioned' && e.payload.action === 'Approve');
+		const transition = events.find(
+			(e) => e.type === 'issue.transitioned' && e.payload.action === 'Approve'
+		);
 		expect(transition?.payload).toMatchObject({
 			from_state_name: 'Human Review',
 			to_state_name: 'Closed'
@@ -252,7 +256,9 @@ test.describe.serial('core issue loop', () => {
 		expect([409, 422]).toContain(statuses[1]);
 
 		// Exactly one transition event was recorded for the winner.
-		const events = await body<ListResponse<TinesEvent>>(await api.get(`/api/v1/events?issue=${raceId}`));
+		const events = await body<ListResponse<TinesEvent>>(
+			await api.get(`/api/v1/events?issue=${raceId}`)
+		);
 		expect(events.items.filter((e) => e.type === 'issue.transitioned')).toHaveLength(1);
 	});
 });
@@ -379,7 +385,9 @@ test.describe.serial('workflow editing rules', () => {
 });
 
 test.describe('cross-user isolation', () => {
-	test("bob cannot see alice's data, and shared workflow counts are scoped", async ({ request }) => {
+	test("bob cannot see alice's data, and shared workflow counts are scoped", async ({
+		request
+	}) => {
 		const alice = apiClient(request, ALICE.apiKey);
 		const bob = apiClient(request, BOB.apiKey);
 
@@ -392,7 +400,9 @@ test.describe('cross-user isolation', () => {
 
 		expect((await bob.get(`/api/v1/projects/${project.id}`)).status()).toBe(404);
 		expect((await bob.get(`/api/v1/issues/${issue.id}`)).status()).toBe(404);
-		expect((await bob.post(`/api/v1/issues/${issue.id}/comments`, { body: 'hi' })).status()).toBe(404);
+		expect((await bob.post(`/api/v1/issues/${issue.id}/comments`, { body: 'hi' })).status()).toBe(
+			404
+		);
 
 		const bobIssues = await body<ListResponse<IssueDetail>>(await bob.get('/api/v1/issues'));
 		expect(bobIssues.items.map((i) => i.id)).not.toContain(issue.id);

@@ -44,7 +44,9 @@ describe('DELETE /api/v1/issues/:id/links/:linkId', () => {
 			params: { id: blocked, linkId: 'lnk_1' },
 			locals: { user: { id: USER, name: 'alice' } },
 			platform: { env: t.env, ctx: { waitUntil: (p: Promise<unknown>) => waits.push(p) } },
-			request: new Request(`http://test/api/v1/issues/${blocked}/links/lnk_1`, { method: 'DELETE' }),
+			request: new Request(`http://test/api/v1/issues/${blocked}/links/lnk_1`, {
+				method: 'DELETE'
+			}),
 			url: new URL(`http://test/api/v1/issues/${blocked}/links/lnk_1`)
 		};
 		const res = await DELETE(event as unknown as Parameters<typeof DELETE>[0]);

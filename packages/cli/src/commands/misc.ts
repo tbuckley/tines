@@ -20,13 +20,13 @@ import { displayActor, eventSummary } from '@tines/shared';
 import type { Command } from 'commander';
 
 export function registerTime(program: Command): void {
-	withCommon(program.command('time').description('Fetch the current time from the Tines API')).action(
-		async (opts: CommonOpts) => {
-			const result = await client(opts).getTime();
-			if (opts.json) printJson(result);
-			else console.log(`Server time: ${result.time} (unix ${result.unix})`);
-		}
-	);
+	withCommon(
+		program.command('time').description('Fetch the current time from the Tines API')
+	).action(async (opts: CommonOpts) => {
+		const result = await client(opts).getTime();
+		if (opts.json) printJson(result);
+		else console.log(`Server time: ${result.time} (unix ${result.unix})`);
+	});
 }
 
 export function registerEvents(program: Command): void {

@@ -19,11 +19,13 @@ import {
 
 describe('formatTable', () => {
 	it('pads columns to the widest cell and trims the trailing one', () => {
-		expect(formatTable([
-			['REF', 'TITLE'],
-			['Proj/1', 'a'],
-			['Proj/100', 'bb']
-		])).toBe('REF       TITLE\nProj/1    a\nProj/100  bb');
+		expect(
+			formatTable([
+				['REF', 'TITLE'],
+				['Proj/1', 'a'],
+				['Proj/100', 'bb']
+			])
+		).toBe('REF       TITLE\nProj/1    a\nProj/100  bb');
 	});
 
 	it('renders nothing for no rows', () => {
@@ -112,7 +114,11 @@ describe('commentLines', () => {
 			...comment.actor,
 			api_key_id: 'key_1',
 			api_key_name: 'run key',
-			run: { run_id: 'arun_1', runner_name: 'macbook', issue_ref: { project_name: 'Tines', number: 11 } }
+			run: {
+				run_id: 'arun_1',
+				runner_name: 'macbook',
+				issue_ref: { project_name: 'Tines', number: 11 }
+			}
 		};
 		expect(commentLines({ ...comment, actor })[1]).toContain('alice via macbook · run on Tines/11');
 	});
@@ -127,7 +133,10 @@ describe('contextItemSummary', () => {
 		// A detail read carries the files themselves; a list read only counts them.
 		[{ kind: 'skill', files: [{}, {}] }, '2 files'],
 		[{ kind: 'skill' }, '0 files'],
-		[{ kind: 'repo', repo_url: 'https://github.com/tbuckley/tines.git' }, 'https://github.com/tbuckley/tines.git'],
+		[
+			{ kind: 'repo', repo_url: 'https://github.com/tbuckley/tines.git' },
+			'https://github.com/tbuckley/tines.git'
+		],
 		[
 			{ kind: 'repo', repo_url: 'https://github.com/tbuckley/tines.git', repo_branch: 'main' },
 			'https://github.com/tbuckley/tines.git#main'
@@ -145,13 +154,23 @@ describe('artifactSummary', () => {
 
 	it.each([
 		[
-			artifact('file', { filename: 'notes.pdf', content_type: 'application/pdf', size_bytes: 1024 }),
+			artifact('file', {
+				filename: 'notes.pdf',
+				content_type: 'application/pdf',
+				size_bytes: 1024
+			}),
 			'notes.pdf (application/pdf, 1024 bytes)'
 		],
 		[artifact('folder', { file_count: 1, size_bytes: 12 }), '1 file (12 bytes total)'],
 		[artifact('folder', { file_count: 4, size_bytes: 900 }), '4 files (900 bytes total)'],
-		[artifact('text', { filename: 'design-doc.md', content_type: 'text/markdown' }), 'design-doc.md (text/markdown)'],
-		[artifact('link', { url: 'https://example.test/a', title: 'The spec' }), 'The spec — https://example.test/a'],
+		[
+			artifact('text', { filename: 'design-doc.md', content_type: 'text/markdown' }),
+			'design-doc.md (text/markdown)'
+		],
+		[
+			artifact('link', { url: 'https://example.test/a', title: 'The spec' }),
+			'The spec — https://example.test/a'
+		],
 		[artifact('link', { url: 'https://example.test/a', title: null }), 'https://example.test/a'],
 		// A link version with neither title nor url renders empty rather than "null".
 		[artifact('link', { url: null, title: null }), ''],
@@ -166,7 +185,9 @@ describe('artifactSummary', () => {
 
 describe('quotaLabel', () => {
 	it('renders a global cap', () => {
-		expect(quotaLabel({ type: 'global_cap', limit: 3 })).toBe('global cap: at most 3 concurrent runs');
+		expect(quotaLabel({ type: 'global_cap', limit: 3 })).toBe(
+			'global cap: at most 3 concurrent runs'
+		);
 	});
 
 	it('renders a roster with no overrides', () => {
@@ -176,15 +197,18 @@ describe('quotaLabel', () => {
 	});
 
 	it('renders overrides by raw state id when no resolver is given', () => {
-		expect(quotaLabel({ type: 'state_roster', default_limit: 2, overrides: { wst_a: 1, wst_b: 4 } })).toBe(
-			'state roster: default 2 per state, overrides: wst_a=1, wst_b=4'
-		);
+		expect(
+			quotaLabel({ type: 'state_roster', default_limit: 2, overrides: { wst_a: 1, wst_b: 4 } })
+		).toBe('state roster: default 2 per state, overrides: wst_a=1, wst_b=4');
 	});
 
 	it('resolves override state names when a resolver is given', () => {
 		const names: Record<string, string> = { wst_a: 'Design' };
 		expect(
-			quotaLabel({ type: 'state_roster', default_limit: 2, overrides: { wst_a: 1, wst_b: 4 } }, (id) => names[id] ?? id)
+			quotaLabel(
+				{ type: 'state_roster', default_limit: 2, overrides: { wst_a: 1, wst_b: 4 } },
+				(id) => names[id] ?? id
+			)
 		).toBe('state roster: default 2 per state, overrides: Design=1, wst_b=4');
 	});
 });
@@ -256,7 +280,11 @@ describe('recurrenceLabel', () => {
 	it.each([
 		[{ kind: 'daily', time: '09:00' }, '0 9 * * *', 'Every day at 09:00, UTC'],
 		// Not "Every month" — describeRecurrence words the monthly preset differently.
-		[{ kind: 'monthly', day_of_month: 3, time: '09:00' }, '0 9 3 * *', 'Monthly on day 3 at 09:00, UTC'],
+		[
+			{ kind: 'monthly', day_of_month: 3, time: '09:00' },
+			'0 9 3 * *',
+			'Monthly on day 3 at 09:00, UTC'
+		],
 		[null, '*/5 * * * *', 'Cron “*/5 * * * *”, UTC']
 	])('renders %#', (preset, cron, expected) => {
 		expect(recurrenceLabel({ preset, cron, timezone: 'UTC' } as never)).toBe(expected);

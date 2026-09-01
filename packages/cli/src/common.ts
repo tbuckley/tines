@@ -172,7 +172,11 @@ export function printJson(value: unknown): void {
  * Prints a page: full `{items, next_cursor}` response under --json, else the
  * rendered table plus a hint when another page exists.
  */
-export function printList<T>(res: ListResponse<T>, opts: ListOpts, render: (items: T[]) => void): void {
+export function printList<T>(
+	res: ListResponse<T>,
+	opts: ListOpts,
+	render: (items: T[]) => void
+): void {
 	if (opts.json) return printJson(res);
 	render(res.items);
 	if (res.next_cursor) {
@@ -263,7 +267,8 @@ export async function resolveStateFlag(
 	const workflow = await resolveWorkflow(api, ref.slice(0, sep));
 	const stateRef = ref.slice(sep + 1);
 	const state =
-		workflow.states.find((s) => s.name === stateRef) ?? workflow.states.find((s) => s.id === stateRef);
+		workflow.states.find((s) => s.name === stateRef) ??
+		workflow.states.find((s) => s.id === stateRef);
 	if (!state) {
 		die(
 			`workflow "${workflow.name}" has no state "${stateRef}" (have: ${workflow.states.map((s) => s.name).join(', ')})`

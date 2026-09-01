@@ -1,7 +1,7 @@
 name: CI
 
-# The gate every pull request gets, secrets or not: typecheck, unit tests,
-# and the Playwright suite. Deploy, Preview, and Publish each run the unit
+# The gate every pull request gets, secrets or not: typecheck, formatting,
+# unit tests, and the Playwright suite. Deploy, Preview, and Publish each run the unit
 # tests as well, but none of them typechecks, and nothing else runs e2e — so
 # without this job an e2e regression only surfaces when someone runs the
 # suite by hand (the magic-link specs stayed red for a week that way).
@@ -33,6 +33,8 @@ jobs:
       - run: pnpm install --frozen-lockfile
 
       - run: pnpm check
+
+      - run: pnpm format:check
 
       - run: pnpm test
 

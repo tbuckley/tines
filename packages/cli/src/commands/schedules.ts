@@ -118,7 +118,9 @@ export function register(program: Command): void {
 	withCommon(
 		schedules
 			.command('edit <ref>')
-			.description('Edit a schedule: templates, workflow, start state, recurrence, timezone, gate, or name')
+			.description(
+				'Edit a schedule: templates, workflow, start state, recurrence, timezone, gate, or name'
+			)
 			.option('-t, --title <template>', 'set the title template')
 			.option(
 				'-d, --description <markdown>',
@@ -132,8 +134,14 @@ export function register(program: Command): void {
 				'-s, --state <id-or-name>',
 				"start state for future instances (the workflow's initial state = the default)"
 			)
-			.option('--every <preset>', 'repeat hourly (or every N hours: "6h"), daily, weekly, or monthly')
-			.option('--at <when>', 'preset time of day HH:MM (default 09:00); for hourly, the minute past the hour :MM (default :00)')
+			.option(
+				'--every <preset>',
+				'repeat hourly (or every N hours: "6h"), daily, weekly, or monthly'
+			)
+			.option(
+				'--at <when>',
+				'preset time of day HH:MM (default 09:00); for hourly, the minute past the hour :MM (default :00)'
+			)
 			.option('--on <when>', 'weekday (weekly) or day of month (monthly)')
 			.option('--cron <expr>', '5-field cron expression (alternative to --every/--at/--on)')
 			.option('--tz <iana>', 'set the schedule timezone')
@@ -160,7 +168,8 @@ export function register(program: Command): void {
 			const body: UpdateScheduleRequest = {};
 			if (opts.title !== undefined) body.title_template = opts.title;
 			if (descriptionTemplate !== undefined) body.description_template = descriptionTemplate;
-			if (opts.workflow !== undefined) body.workflow_id = (await resolveWorkflow(api, opts.workflow)).id;
+			if (opts.workflow !== undefined)
+				body.workflow_id = (await resolveWorkflow(api, opts.workflow)).id;
 			if (opts.state !== undefined) body.state = opts.state;
 			const recurrence = buildRecurrence(opts);
 			if (recurrence?.preset) body.preset = recurrence.preset as SchedulePreset;
@@ -180,15 +189,15 @@ export function register(program: Command): void {
 		}
 	);
 
-	withCommon(schedules.command('pause <ref>').description('Pause a schedule (keeps config and history)')).action(
-		async (ref: string, opts: CommonOpts) => {
-			const api = client(opts);
-			const schedule = await resolveSchedule(api, ref);
-			const updated = await api.updateSchedule(schedule.id, { enabled: false });
-			if (opts.json) return printJson(updated);
-			console.log(`paused schedule "${scheduleRef(updated)}"`);
-		}
-	);
+	withCommon(
+		schedules.command('pause <ref>').description('Pause a schedule (keeps config and history)')
+	).action(async (ref: string, opts: CommonOpts) => {
+		const api = client(opts);
+		const schedule = await resolveSchedule(api, ref);
+		const updated = await api.updateSchedule(schedule.id, { enabled: false });
+		if (opts.json) return printJson(updated);
+		console.log(`paused schedule "${scheduleRef(updated)}"`);
+	});
 
 	withCommon(
 		schedules
@@ -199,7 +208,9 @@ export function register(program: Command): void {
 		const schedule = await resolveSchedule(api, ref);
 		const updated = await api.updateSchedule(schedule.id, { enabled: true });
 		if (opts.json) return printJson(updated);
-		console.log(`resumed schedule "${scheduleRef(updated)}" — next run ${timestamp(updated.next_run_at)}`);
+		console.log(
+			`resumed schedule "${scheduleRef(updated)}" — next run ${timestamp(updated.next_run_at)}`
+		);
 	});
 
 	withCommon(

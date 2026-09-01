@@ -45,7 +45,10 @@ export function issueRef(ref: { project_name: string; number: number }): string 
 }
 
 /** One table row per linked issue: ref, title, effective state, optional note. */
-export function linkRows(entries: LinkedIssue[], note: (e: LinkedIssue) => string = () => ''): string[][] {
+export function linkRows(
+	entries: LinkedIssue[],
+	note: (e: LinkedIssue) => string = () => ''
+): string[][] {
 	return entries.map((e) => [
 		`  ${issueRef(e)}`,
 		e.title,
@@ -117,7 +120,10 @@ export function runnerStatusLabel(runner: Runner): string {
 export function ruleTargetsLabel(rule: RoutingRule): string {
 	if (rule.targets.length === 0) return '(no targets)';
 	return rule.targets
-		.map((t) => `${t.runner_name}${t.tier ? `:${t.tier}` : ''}${t.runner_status === 'paused' ? ' (paused)' : ''}`)
+		.map(
+			(t) =>
+				`${t.runner_name}${t.tier ? `:${t.tier}` : ''}${t.runner_status === 'paused' ? ' (paused)' : ''}`
+		)
 		.join(' → ');
 }
 
@@ -159,6 +165,11 @@ export function formatTable(rows: string[][]): string {
 	if (rows.length === 0) return '';
 	const widths = rows[0].map((_, i) => Math.max(...rows.map((r) => r[i].length)));
 	return rows
-		.map((row) => row.map((cell, i) => cell.padEnd(widths[i])).join('  ').trimEnd())
+		.map((row) =>
+			row
+				.map((cell, i) => cell.padEnd(widths[i]))
+				.join('  ')
+				.trimEnd()
+		)
 		.join('\n');
 }

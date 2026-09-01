@@ -51,7 +51,9 @@ test('a signed-in visit to / lands on the issues list', async ({ page }) => {
 	await expect(page.getByRole('link', { name: new RegExp(issueTitle) })).toBeVisible();
 });
 
-test('an issue can be created from the issues list, picking project and starting state', async ({ page }) => {
+test('an issue can be created from the issues list, picking project and starting state', async ({
+	page
+}) => {
 	await page.goto('/issues');
 	const dialog = page.getByRole('dialog', { name: 'New issue' });
 	await clickUntil(page.getByRole('button', { name: /New issue/ }), async () => {
@@ -138,7 +140,9 @@ test('issue detail renders markdown, transitions, and comments', async ({ page }
 		await api.get(`/api/v1/events?issue=${issue.id}&type=issue.transitioned`)
 	);
 	expect(events.items.length).toBeGreaterThanOrEqual(1);
-	expect(posted!.created_at).toBeLessThanOrEqual(Math.max(...events.items.map((e) => e.created_at)));
+	expect(posted!.created_at).toBeLessThanOrEqual(
+		Math.max(...events.items.map((e) => e.created_at))
+	);
 
 	// Comment round-trip.
 	await page.getByPlaceholder(/Leave a comment/).fill('From the browser');

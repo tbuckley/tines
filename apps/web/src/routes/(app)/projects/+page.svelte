@@ -90,7 +90,12 @@
 		</div>
 		<div class="space-y-1.5">
 			<label class="text-sm font-medium" for="project-description">Description</label>
-			<Textarea id="project-description" bind:value={description} rows={3} placeholder="What is this project about?" />
+			<Textarea
+				id="project-description"
+				bind:value={description}
+				rows={3}
+				placeholder="What is this project about?"
+			/>
 		</div>
 		<div class="space-y-1.5">
 			<label class="text-sm font-medium" for="project-prompt">

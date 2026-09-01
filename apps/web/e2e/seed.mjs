@@ -83,7 +83,18 @@ writeFileSync(sqlFile, statements.join('\n'));
 
 execFileSync(
 	'pnpm',
-	['exec', 'wrangler', 'd1', 'execute', 'tines', '--local', '--persist-to', '.wrangler-e2e', '--file', sqlFile],
+	[
+		'exec',
+		'wrangler',
+		'd1',
+		'execute',
+		'tines',
+		'--local',
+		'--persist-to',
+		'.wrangler-e2e',
+		'--file',
+		sqlFile
+	],
 	{ stdio: 'inherit' }
 );
 console.log('e2e seed complete');

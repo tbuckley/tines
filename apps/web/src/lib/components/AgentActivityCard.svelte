@@ -74,7 +74,9 @@
 
 		<!-- the full explainer -->
 		<details class="group mt-2">
-			<summary class="text-muted-foreground hover:text-foreground cursor-pointer text-xs select-none">
+			<summary
+				class="text-muted-foreground hover:text-foreground cursor-pointer text-xs select-none"
+			>
 				Why?
 			</summary>
 			<div class="mt-2 space-y-2 text-xs" transition:slide={{ duration: dur() }}>
@@ -82,7 +84,10 @@
 					{#each dispatch.checks as check (check.name)}
 						<li class="flex items-start gap-1.5">
 							{#if check.ok}
-								<IconCheck size={14} class="mt-px shrink-0 text-emerald-600 dark:text-emerald-400" />
+								<IconCheck
+									size={14}
+									class="mt-px shrink-0 text-emerald-600 dark:text-emerald-400"
+								/>
 							{:else}
 								<IconX size={14} class="mt-px shrink-0 text-amber-700 dark:text-amber-400" />
 							{/if}
@@ -92,7 +97,9 @@
 				</ul>
 				{#if dispatch.matched_rule}
 					<p class="text-muted-foreground">
-						Matched rule: <span class="text-foreground font-medium">{dispatch.matched_rule.scope_label}</span>
+						Matched rule: <span class="text-foreground font-medium"
+							>{dispatch.matched_rule.scope_label}</span
+						>
 					</p>
 				{/if}
 				{#if dispatch.targets.length > 0}
@@ -144,7 +151,9 @@
 				<Select class="h-8 flex-1 text-xs" bind:value={pinRunnerId} aria-label="Pinned runner">
 					<option value="">No pin — routing rules apply</option>
 					{#each runners as runner (runner.id)}
-						<option value={runner.id}>{runner.name}{runner.status === 'paused' ? ' (paused)' : ''}</option>
+						<option value={runner.id}
+							>{runner.name}{runner.status === 'paused' ? ' (paused)' : ''}</option
+						>
 					{/each}
 				</Select>
 				<Select
@@ -158,12 +167,21 @@
 						<option value={tier}>{tier}</option>
 					{/each}
 				</Select>
-				<Button size="sm" variant="outline" class="h-8" disabled={!pinDirty || savingPin} onclick={savePin}>
+				<Button
+					size="sm"
+					variant="outline"
+					class="h-8"
+					disabled={!pinDirty || savingPin}
+					onclick={savePin}
+				>
 					{savingPin ? '…' : 'Save'}
 				</Button>
 			</div>
 			{#if issue.pinned_runner_id}
-				<p class="mt-1.5 text-xs text-amber-700 dark:text-amber-400" transition:slide={{ duration: dur() }}>
+				<p
+					class="mt-1.5 text-xs text-amber-700 dark:text-amber-400"
+					transition:slide={{ duration: dur() }}
+				>
 					Pinned to {issue.pinned_runner_name}{issue.pinned_tier ? `:${issue.pinned_tier}` : ''} — only
 					this runner will take it.
 				</p>

@@ -39,7 +39,9 @@
 
 		{#if context.skills.length > 0}
 			<div>
-				<h4 class="text-muted-foreground mb-1.5 text-xs font-semibold tracking-wide uppercase">Skills</h4>
+				<h4 class="text-muted-foreground mb-1.5 text-xs font-semibold tracking-wide uppercase">
+					Skills
+				</h4>
 				<ul class="space-y-1">
 					{#each context.skills as skill (skill.item_id)}
 						<li class="flex items-center gap-2 text-sm" transition:slide={{ duration: dur() }}>
@@ -48,7 +50,9 @@
 							<span class="text-muted-foreground text-xs">
 								{skill.file_count} file{skill.file_count === 1 ? '' : 's'}
 							</span>
-							<span class="bg-muted text-muted-foreground rounded-full px-2 py-0.5 text-xs">{skill.scope.label}</span>
+							<span class="bg-muted text-muted-foreground rounded-full px-2 py-0.5 text-xs"
+								>{skill.scope.label}</span
+							>
 						</li>
 					{/each}
 				</ul>
@@ -57,16 +61,23 @@
 
 		{#if context.repos.length > 0}
 			<div>
-				<h4 class="text-muted-foreground mb-1.5 text-xs font-semibold tracking-wide uppercase">Repositories</h4>
+				<h4 class="text-muted-foreground mb-1.5 text-xs font-semibold tracking-wide uppercase">
+					Repositories
+				</h4>
 				<ul class="space-y-1">
 					{#each context.repos as repo (repo.item_id)}
-						<li class="flex flex-wrap items-center gap-2 text-sm" transition:slide={{ duration: dur() }}>
+						<li
+							class="flex flex-wrap items-center gap-2 text-sm"
+							transition:slide={{ duration: dur() }}
+						>
 							<span class="text-muted-foreground"><ContextKindIcon kind="repo" size={14} /></span>
 							<span class="font-medium">{repo.name}</span>
 							<span class="text-muted-foreground truncate font-mono text-xs">
 								{repo.url}{repo.branch ? `#${repo.branch}` : ''} → {repo.dir}/
 							</span>
-							<span class="bg-muted text-muted-foreground rounded-full px-2 py-0.5 text-xs">{repo.scope.label}</span>
+							<span class="bg-muted text-muted-foreground rounded-full px-2 py-0.5 text-xs"
+								>{repo.scope.label}</span
+							>
 						</li>
 					{/each}
 				</ul>
@@ -75,18 +86,27 @@
 
 		{#if context.overridden.length > 0}
 			<div>
-				<h4 class="text-muted-foreground mb-1.5 text-xs font-semibold tracking-wide uppercase">Overridden</h4>
+				<h4 class="text-muted-foreground mb-1.5 text-xs font-semibold tracking-wide uppercase">
+					Overridden
+				</h4>
 				<ul class="space-y-1">
 					{#each context.overridden as o (o.item_id)}
 						{@const winner =
 							o.kind === 'skill'
 								? context.skills.find((s) => s.item_id === o.overridden_by)
 								: context.repos.find((r) => r.item_id === o.overridden_by)}
-						<li class="text-muted-foreground flex flex-wrap items-center gap-2 text-sm" transition:slide={{ duration: dur() }}>
+						<li
+							class="text-muted-foreground flex flex-wrap items-center gap-2 text-sm"
+							transition:slide={{ duration: dur() }}
+						>
 							<ContextKindIcon kind={o.kind} size={14} />
 							<span class="line-through">{o.name}</span>
-							<span class="bg-muted rounded-full px-2 py-0.5 text-xs line-through">{o.scope.label}</span>
-							<span class="text-xs">← overridden by the {winner ? winner.scope.label : 'more specific'} one</span>
+							<span class="bg-muted rounded-full px-2 py-0.5 text-xs line-through"
+								>{o.scope.label}</span
+							>
+							<span class="text-xs"
+								>← overridden by the {winner ? winner.scope.label : 'more specific'} one</span
+							>
 						</li>
 					{/each}
 				</ul>
@@ -94,7 +114,9 @@
 		{/if}
 
 		{#each context.conflicts as conflict (conflict.dir)}
-			<p class="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
+			<p
+				class="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400"
+			>
 				<IconAlertTriangle size={14} class="mt-0.5 shrink-0" />
 				<span>
 					{conflict.item_ids.length} repositories resolve to the same checkout directory

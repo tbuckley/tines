@@ -283,7 +283,9 @@ export async function listIssues(
 		// Plain substring search; % and _ act as wildcards, which is harmless
 		// (and occasionally useful) for a search box.
 		const like = `%${filters.q}%`;
-		q = q.where((eb) => eb.or([eb('issue.title', 'like', like), eb('issue.description', 'like', like)]));
+		q = q.where((eb) =>
+			eb.or([eb('issue.title', 'like', like), eb('issue.description', 'like', like)])
+		);
 	}
 	if (page.cursor) {
 		const { createdAt, id } = page.cursor;
@@ -299,7 +301,10 @@ export async function listIssues(
 		.orderBy('issue.id desc')
 		.limit(page.limit + 1)
 		.execute();
-	return { items: rows.slice(0, page.limit).map(serializeIssue), hasMore: rows.length > page.limit };
+	return {
+		items: rows.slice(0, page.limit).map(serializeIssue),
+		hasMore: rows.length > page.limit
+	};
 }
 
 // ---------------------------------------------------------------------------
@@ -324,14 +329,13 @@ export function resolveStateRef(
 	ref: string,
 	field = 'state'
 ): WorkflowState {
-	const state = workflow.states.find((s) => s.id === ref) ?? workflow.states.find((s) => s.name === ref);
+	const state =
+		workflow.states.find((s) => s.id === ref) ?? workflow.states.find((s) => s.name === ref);
 	if (!state) {
-		throw new ApiFail(
-			422,
-			'unknown_state',
-			`Workflow "${workflow.name}" has no state "${ref}"`,
-			{ field, known_states: workflow.states.map((s) => ({ id: s.id, name: s.name })) }
-		);
+		throw new ApiFail(422, 'unknown_state', `Workflow "${workflow.name}" has no state "${ref}"`, {
+			field,
+			known_states: workflow.states.map((s) => ({ id: s.id, name: s.name }))
+		});
 	}
 	return state;
 }
@@ -390,7 +394,9 @@ export async function loadIssueLinks(
 		.execute();
 
 	const otherIds = [
-		...new Set(rows.map((l) => (l.source_issue_id === issueId ? l.target_issue_id : l.source_issue_id)))
+		...new Set(
+			rows.map((l) => (l.source_issue_id === issueId ? l.target_issue_id : l.source_issue_id))
+		)
 	];
 	const others =
 		otherIds.length === 0
@@ -428,9 +434,7 @@ export async function loadIssueLinks(
  * (Names are unique per user; the ordering is belt-and-braces.)
  */
 export type IssueLookup =
-	| { id: string }
-	| { projectId: string; number: number }
-	| { projectName: string; number: number };
+	{ id: string } | { projectId: string; number: number } | { projectName: string; number: number };
 
 /** The issue row alone: one statement, no fan-out. */
 export async function loadIssue(
@@ -558,7 +562,9 @@ export async function createIssue(
 	// With a recurrence, the title/description double as the schedule's
 	// templates: the first issue is created immediately (placeholders
 	// rendered) and the schedule takes over from there.
-	const schedule = body.schedule ? await prepareSchedule(db, projectId, body.schedule, title, now) : null;
+	const schedule = body.schedule
+		? await prepareSchedule(db, projectId, body.schedule, title, now)
+		: null;
 	const vars = schedule ? templateVars(schedule.name, 1, schedule.timezone, now) : null;
 	const issueTitle = vars ? renderTemplate(title, vars) : title;
 	const issueDescription = vars ? renderTemplate(description, vars) : description;
@@ -691,9 +697,14 @@ export async function updateIssue(
 ): Promise<IssueDetail> {
 	assertPinFieldsAllowed(actor, body);
 	const current = await getIssueDetail(db, actor.userId, { id });
-	const title = body.title !== undefined ? requireString(body.title, 'title', { max: 500 }).trim() : current.title;
+	const title =
+		body.title !== undefined
+			? requireString(body.title, 'title', { max: 500 }).trim()
+			: current.title;
 	const description =
-		body.description !== undefined ? (optionalString(body.description, 'description') ?? '') : current.description;
+		body.description !== undefined
+			? (optionalString(body.description, 'description') ?? '')
+			: current.description;
 
 	// Workflow move and forced state set: the escape hatch beside
 	// transitionIssue's guarded moves.
@@ -754,7 +765,8 @@ export async function updateIssue(
 		}
 		pinnedTier = null;
 	}
-	const pinChanged = pinnedRunnerId !== current.pinned_runner_id || pinnedTier !== current.pinned_tier;
+	const pinChanged =
+		pinnedRunnerId !== current.pinned_runner_id || pinnedTier !== current.pinned_tier;
 
 	const changed: string[] = [];
 	if (title !== current.title) changed.push('title');
@@ -807,7 +819,12 @@ export async function updateIssue(
 			payload.to_state_name = nextState.name;
 		}
 		queries.push(
-			eventInsert(db, actor, { type: 'issue.updated', issueId: id, projectId: current.project_id, payload }, guard)
+			eventInsert(
+				db,
+				actor,
+				{ type: 'issue.updated', issueId: id, projectId: current.project_id, payload },
+				guard
+			)
 		);
 	}
 	if (stateChanged && !workflowChanged) {
@@ -864,7 +881,8 @@ function unmetRequirements(
 		pr: '--pr <owner/repo#N>'
 	};
 	const fixFor = (r: ArtifactRequirementCheck): string => {
-		const attach = (type: string) => `tines issues artifacts attach ${ref} ${r.artifact} ${attachFlag[type]}`;
+		const attach = (type: string) =>
+			`tines issues artifacts attach ${ref} ${r.artifact} ${attachFlag[type]}`;
 		if (r.status === 'missing' || r.current_type === null) return attach(r.type ?? 'file');
 		if (r.status === 'stale') {
 			// The slot passed the type checks, so a new version keeps the
@@ -890,7 +908,9 @@ function unmetRequirements(
 		422,
 		'transition_requirements_unmet',
 		`Transition "${target.name}" requires a fresh artifact "${first.artifact}"${requirementSpecLabel(first)}${
-			unmet.length > 1 ? ` (and ${unmet.length - 1} more unmet requirement${unmet.length > 2 ? 's' : ''})` : ''
+			unmet.length > 1
+				? ` (and ${unmet.length - 1} more unmet requirement${unmet.length > 2 ? 's' : ''})`
+				: ''
 		}. Attach it (or a new version), then retry the same transition.`,
 		{
 			transition: { name: target.name, to_state: target.to_state.name },
@@ -1095,7 +1115,10 @@ async function requireComment(
 	actor: ActorContext,
 	issueId: string,
 	commentId: string
-): Promise<{ issue: IssueDetail; row: { id: string; body: string; actor_api_key_id: string | null } }> {
+): Promise<{
+	issue: IssueDetail;
+	row: { id: string; body: string; actor_api_key_id: string | null };
+}> {
 	const issue = await getIssueDetail(db, actor.userId, { id: issueId });
 	const row = await db
 		.selectFrom('comment')

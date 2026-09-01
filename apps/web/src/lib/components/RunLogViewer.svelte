@@ -53,7 +53,8 @@
 						href="/api/v1/runs/{detail.id}/log"
 						target="_blank"
 						rel="noopener"
-						data-testid="run-log-full-link">view the full {Math.round(detail.log_full_bytes / 1024)} KB log</a
+						data-testid="run-log-full-link"
+						>view the full {Math.round(detail.log_full_bytes / 1024)} KB log</a
 					>{:else}{' '}(past its retention window; only the tail remains){/if}
 			</p>
 		{/if}
@@ -61,7 +62,8 @@
 			bind:this={pre}
 			onscroll={onScroll}
 			class="bg-muted/50 max-h-72 overflow-auto rounded-md border p-3 font-mono text-xs whitespace-pre-wrap"
-			data-testid="run-log">{detail.log || (active ? '(no output yet)' : '(no log output captured)')}</pre>
+			data-testid="run-log">{detail.log ||
+				(active ? '(no output yet)' : '(no log output captured)')}</pre>
 	{:else}
 		<p class="text-muted-foreground text-xs italic">Loading log…</p>
 	{/if}

@@ -97,9 +97,12 @@ export const load: PageServerLoad = async ({ locals, platform, params, depends }
 		deferred: {
 			// Items whose scope includes this issue (all issue-anchored shapes).
 			// Artifacts have their own panel; the context list shows the rest.
-			contextItems: listContextItems(db, userId, { issue: issue.id }, { cursor: null, limit: 100 }).then(
-				(page) => page.items.filter((i) => i.kind !== 'artifact')
-			),
+			contextItems: listContextItems(
+				db,
+				userId,
+				{ issue: issue.id },
+				{ cursor: null, limit: 100 }
+			).then((page) => page.items.filter((i) => i.kind !== 'artifact')),
 			// Display-only bundle: the panel shows skill file counts, never their
 			// contents, which can run to 100KB per skill on every page load.
 			effectiveContext: effectiveContextForIssue(db, userId, issue.id, { skillFiles: false }),

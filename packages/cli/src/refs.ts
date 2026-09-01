@@ -12,7 +12,9 @@ export function parseJsonObject(raw: string, source: string): Record<string, unk
 	try {
 		value = JSON.parse(raw);
 	} catch (err) {
-		throw new CliError(`invalid JSON from ${source}: ${err instanceof Error ? err.message : String(err)}`);
+		throw new CliError(
+			`invalid JSON from ${source}: ${err instanceof Error ? err.message : String(err)}`
+		);
 	}
 	if (typeof value !== 'object' || value === null || Array.isArray(value)) {
 		throw new CliError(`expected a JSON object from ${source}`);
@@ -66,7 +68,9 @@ export function parseFileSpec(spec: string): ContextFile {
 	const path = spec.slice(0, sep);
 	const source = spec.slice(sep + 1);
 	if (!source.startsWith('@')) {
-		throw new CliError(`skill file content always comes from a local file: --file ${path}=@<local-file>`);
+		throw new CliError(
+			`skill file content always comes from a local file: --file ${path}=@<local-file>`
+		);
 	}
 	const file = source.slice(1);
 	try {

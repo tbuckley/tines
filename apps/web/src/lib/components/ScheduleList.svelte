@@ -15,7 +15,12 @@
 	import { Select } from '$lib/components/ui/select/index.js';
 	import { Textarea } from '$lib/components/ui/textarea/index.js';
 	import { nextRunLabel, prefersReducedMotion, relativeTime } from '$lib/format';
-	import { defaultRepeatState, repeatFromSchedule, repeatSummary, repeatToScheduleInput } from '$lib/schedule-form';
+	import {
+		defaultRepeatState,
+		repeatFromSchedule,
+		repeatSummary,
+		repeatToScheduleInput
+	} from '$lib/schedule-form';
 
 	let {
 		schedules,
@@ -223,10 +228,17 @@
 		</div>
 		<div class="space-y-1.5">
 			<label class="text-sm font-medium" for="schedule-title">Title template</label>
-			<Input id="schedule-title" bind:value={editTitle} placeholder="Weekly report {'{{date}}'}" required />
+			<Input
+				id="schedule-title"
+				bind:value={editTitle}
+				placeholder="Weekly report {'{{date}}'}"
+				required
+			/>
 		</div>
 		<div class="space-y-1.5">
-			<label class="text-sm font-medium" for="schedule-description">Description template (Markdown)</label>
+			<label class="text-sm font-medium" for="schedule-description"
+				>Description template (Markdown)</label
+			>
 			<Textarea id="schedule-description" bind:value={editDescription} rows={4} />
 		</div>
 		<div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
@@ -234,7 +246,9 @@
 				<label class="text-sm font-medium" for="schedule-workflow">Workflow</label>
 				<Select id="schedule-workflow" bind:value={editWorkflowId} onchange={onEditWorkflowChange}>
 					{#each workflows as workflow (workflow.id)}
-						<option value={workflow.id}>{workflow.name}{workflow.is_system ? ' (standard)' : ''}</option>
+						<option value={workflow.id}
+							>{workflow.name}{workflow.is_system ? ' (standard)' : ''}</option
+						>
 					{/each}
 				</Select>
 			</div>
@@ -255,7 +269,10 @@
 		{/if}
 		<div class="flex justify-end gap-2">
 			<Button type="button" variant="ghost" onclick={() => (editOpen = false)}>Cancel</Button>
-			<Button type="submit" disabled={saving || !editName.trim() || !editTitle.trim() || !editValid}>
+			<Button
+				type="submit"
+				disabled={saving || !editName.trim() || !editTitle.trim() || !editValid}
+			>
 				{saving ? 'Saving…' : 'Save'}
 			</Button>
 		</div>

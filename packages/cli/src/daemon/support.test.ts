@@ -54,7 +54,9 @@ describe('buildHarnessInvocation', () => {
 				`claude -p --output-format stream-json --verbose --model 'claude-sonnet-5' < '/tmp/ws/run 1/prompt.md'`
 			]
 		});
-		expect(buildHarnessInvocation({ harness: 'claude_code' }, { ...input, model: null }).args).toEqual([
+		expect(
+			buildHarnessInvocation({ harness: 'claude_code' }, { ...input, model: null }).args
+		).toEqual([
 			'-c',
 			`claude -p --output-format stream-json --verbose < '/tmp/ws/run 1/prompt.md'`
 		]);
@@ -266,7 +268,11 @@ describe('buildSpawnEnv', () => {
 
 	it('prepends the managed CLI bin dir to PATH and sets the run credentials', () => {
 		expect(
-			buildSpawnEnv(base, { binDir: '/cfg/cli/node_modules/.bin', apiKey: 'k', apiUrl: 'https://t' })
+			buildSpawnEnv(base, {
+				binDir: '/cfg/cli/node_modules/.bin',
+				apiKey: 'k',
+				apiUrl: 'https://t'
+			})
 		).toEqual({
 			HOME: '/home/agent',
 			PATH: `/cfg/cli/node_modules/.bin${delimiter}/usr/bin:/bin`,
@@ -282,9 +288,9 @@ describe('buildSpawnEnv', () => {
 	});
 
 	it('tolerates an environment with no PATH at all', () => {
-		expect(
-			buildSpawnEnv({}, { binDir: '/cfg/bin', apiKey: 'k', apiUrl: 'https://t' }).PATH
-		).toBe('/cfg/bin');
+		expect(buildSpawnEnv({}, { binDir: '/cfg/bin', apiKey: 'k', apiUrl: 'https://t' }).PATH).toBe(
+			'/cfg/bin'
+		);
 	});
 });
 

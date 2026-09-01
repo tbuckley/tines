@@ -55,7 +55,10 @@ test.describe.serial('context attachments', () => {
 		).id;
 		otherProjectId = (
 			await body<Project>(
-				await api.post('/api/v1/projects', { name: otherProjectName, default_workflow_id: workflow.id })
+				await api.post('/api/v1/projects', {
+					name: otherProjectName,
+					default_workflow_id: workflow.id
+				})
 			)
 		).id;
 		issueId = (
@@ -106,8 +109,11 @@ test.describe.serial('context attachments', () => {
 
 		// Strictness: unknown kind, foreign payload, missing scope, bad paths.
 		expect(
-			(await body<ErrorBody>(await api.post('/api/v1/context', { kind: 'widget', name: 'x', project_id: projectId })))
-				.error.code
+			(
+				await body<ErrorBody>(
+					await api.post('/api/v1/context', { kind: 'widget', name: 'x', project_id: projectId })
+				)
+			).error.code
 		).toBe('unknown_kind');
 		expect(
 			(
@@ -124,7 +130,11 @@ test.describe.serial('context attachments', () => {
 		).toBe('kind_payload_mismatch');
 		// An empty scope is not an error: it is global (AGENT_EDITING.md).
 		// Created and removed here so it doesn't color other suites' prompts.
-		const globalRes = await api.post('/api/v1/context', { kind: 'prompt', name: `g-${runId}`, body: 'b' });
+		const globalRes = await api.post('/api/v1/context', {
+			kind: 'prompt',
+			name: `g-${runId}`,
+			body: 'b'
+		});
 		expect(globalRes.status()).toBe(201);
 		const globalItem = await body<ContextItem>(globalRes);
 		expect(globalItem.scope.label).toBe('global');
@@ -168,7 +178,9 @@ test.describe.serial('context attachments', () => {
 		expect(ctx.skills).toEqual([]);
 
 		// The intersection holds: a different project's issue gets nothing.
-		const other = await body<EffectiveContext>(await api.get(`/api/v1/issues/${otherIssueId}/context`));
+		const other = await body<EffectiveContext>(
+			await api.get(`/api/v1/issues/${otherIssueId}/context`)
+		);
 		expect(other.prompt.parts).toEqual([]);
 
 		// Transition to Review: the journal leaves, the skill appears.
@@ -227,7 +239,9 @@ test.describe.serial('context attachments', () => {
 				repo_url: 'https://github.com/elsewhere/api.git'
 			})
 		);
-		const withConflict = await body<EffectiveContext>(await api.get(`/api/v1/issues/${issueId}/context`));
+		const withConflict = await body<EffectiveContext>(
+			await api.get(`/api/v1/issues/${issueId}/context`)
+		);
 		expect(withConflict.conflicts).toEqual([
 			{ kind: 'repo_dir', dir: 'api', item_ids: expect.arrayContaining([clash.id]) }
 		]);
@@ -255,7 +269,9 @@ test.describe.serial('context attachments', () => {
 	test('builds the launch prompt: context first, issue block last', async ({ request }) => {
 		const api = apiClient(request, ALICE.apiKey);
 		await api.post(`/api/v1/issues/${issueId}/comments`, { body: 'A note.' });
-		const prompt = await body<LaunchPromptResponse>(await api.get(`/api/v1/issues/${issueId}/prompt`));
+		const prompt = await body<LaunchPromptResponse>(
+			await api.get(`/api/v1/issues/${issueId}/prompt`)
+		);
 		expect(prompt.text.startsWith(`## Context: project ${projectName}`)).toBe(true);
 		expect(prompt.text).toContain(`## Issue: ${projectName}/1 — Context target`);
 		expect(prompt.text).toContain('### Comments');
@@ -293,11 +309,11 @@ test.describe.serial('context attachments', () => {
 			expect.objectContaining({ kind: 'skill', name: 'review-checklist' })
 		]);
 
-		const events = await body<ListResponse<TinesEvent>>(await api.get('/api/v1/events?type=context.deleted'));
+		const events = await body<ListResponse<TinesEvent>>(
+			await api.get('/api/v1/events?type=context.deleted')
+		);
 		expect(
-			events.items.some(
-				(e) => e.payload.name === 'review-checklist' && e.payload.forced === true
-			)
+			events.items.some((e) => e.payload.name === 'review-checklist' && e.payload.forced === true)
 		).toBe(true);
 	});
 
@@ -348,7 +364,12 @@ test.describe.serial('agent-maintained context', () => {
 
 		// prompt on an existing state is rejected — context surfaces own edits.
 		const rejected = await api.patch(`/api/v1/workflows/${workflow.id}`, {
-			states: workflow.states.map((s) => ({ id: s.id, name: s.name, category: s.category, prompt: 'nope' }))
+			states: workflow.states.map((s) => ({
+				id: s.id,
+				name: s.name,
+				category: s.category,
+				prompt: 'nope'
+			}))
 		});
 		expect(rejected.status()).toBe(422);
 		expect((await body<ErrorBody>(rejected)).error.code).toBe('prompt_on_existing_state');
@@ -440,7 +461,9 @@ test.describe.serial('agent-maintained context', () => {
 				files: [{ path: 'SKILL.md', content: 'x' }]
 			})
 		);
-		expect((await api.post(`/api/v1/context/${skill.id}/append`, { text: 'x' })).status()).toBe(422);
+		expect((await api.post(`/api/v1/context/${skill.id}/append`, { text: 'x' })).status()).toBe(
+			422
+		);
 
 		const ctx = await body<EffectiveContext>(await api.get(`/api/v1/issues/${issueId}/context`));
 		expect(ctx.prompt.text).toContain(
@@ -473,7 +496,9 @@ test.describe.serial('agent-maintained context', () => {
 		request
 	}) => {
 		const api = apiClient(request, ALICE.apiKey);
-		const prompt = await body<LaunchPromptResponse>(await api.get(`/api/v1/issues/${issueId}/prompt`));
+		const prompt = await body<LaunchPromptResponse>(
+			await api.get(`/api/v1/issues/${issueId}/prompt`)
+		);
 		expect(prompt.text).not.toContain('ctx_');
 		expect(prompt.text).toContain('### Journal');
 		expect(prompt.text).toContain(

@@ -33,7 +33,13 @@ describe('layerRank', () => {
 });
 
 describe('isJournal', () => {
-	const base = { kind: 'prompt', name: 'journal', project_id: 'p', workflow_state_id: 's', issue_id: null };
+	const base = {
+		kind: 'prompt',
+		name: 'journal',
+		project_id: 'p',
+		workflow_state_id: 's',
+		issue_id: null
+	};
 	it('matches only a prompt named journal at exactly project ∧ state', () => {
 		expect(isJournal(base)).toBe(true);
 		expect(isJournal({ ...base, kind: 'skill' })).toBe(false);
@@ -230,7 +236,12 @@ const richContext: EffectiveContext = {
 		{
 			item_id: 'ctx_s',
 			name: 'review-checklist',
-			scope: { ...emptyScope, workflow_state_id: 's_review', workflow_state_name: 'Review', label: 'state Review' },
+			scope: {
+				...emptyScope,
+				workflow_state_id: 's_review',
+				workflow_state_name: 'Review',
+				label: 'state Review'
+			},
 			files: [{ path: 'SKILL.md', content: 'x' }],
 			file_count: 1,
 			version: 2
@@ -240,7 +251,12 @@ const richContext: EffectiveContext = {
 		{
 			item_id: 'ctx_r',
 			name: 'src',
-			scope: { ...emptyScope, issue_id: 'iss_1', issue_ref: { project_name: 'Tines', number: 42 }, label: 'issue Tines/42' },
+			scope: {
+				...emptyScope,
+				issue_id: 'iss_1',
+				issue_ref: { project_name: 'Tines', number: 42 },
+				label: 'issue Tines/42'
+			},
 			url: 'https://github.com/acme/api.git',
 			branch: 'experiment',
 			dir: 'api',
@@ -290,7 +306,9 @@ describe('issueBlock', () => {
 		expect(withJournal).toContain('`tines journal append Tines/42 "- <date>: <lesson>"`');
 		// ...and the shell-proof alternative for bodies that need it.
 		expect(withJournal).toContain('(or `-` with a quoted heredoc, as for comments,');
-		expect(withJournal).toContain('`tines journal rewrite Tines/42 --body @file --expect-version 7`');
+		expect(withJournal).toContain(
+			'`tines journal rewrite Tines/42 --body @file --expect-version 7`'
+		);
 		// The old append-before-you-move ordering trap, retired by run anchoring.
 		expect(withJournal).toContain(
 			"Appends land in this stage's journal even after you move the issue."
@@ -319,7 +337,9 @@ describe('buildLaunchPrompt', () => {
 	it('puts the context first and the issue block last', () => {
 		const text = buildLaunchPrompt(richContext, issue);
 		expect(text.startsWith('## Context: global')).toBe(true);
-		expect(text.indexOf('## Issue:')).toBeGreaterThan(text.indexOf('## Journal (project Tines · state Review)'));
+		expect(text.indexOf('## Issue:')).toBeGreaterThan(
+			text.indexOf('## Journal (project Tines · state Review)')
+		);
 	});
 
 	it('is just the issue block when no context applies', () => {

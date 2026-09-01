@@ -95,7 +95,11 @@ export function requireString(value: unknown, field: string, { max = 10_000 } = 
 	return value;
 }
 
-export function optionalString(value: unknown, field: string, { max = 100_000 } = {}): string | undefined {
+export function optionalString(
+	value: unknown,
+	field: string,
+	{ max = 100_000 } = {}
+): string | undefined {
 	if (value === undefined || value === null) return undefined;
 	if (typeof value !== 'string') {
 		throw new ApiFail(422, 'invalid_field', `"${field}" must be a string`, { field });
@@ -166,7 +170,11 @@ export function assertRunKeyAllowed(
 	now = Date.now()
 ): void {
 	if (key.expiresAt !== null && key.expiresAt <= now) {
-		throw new ApiFail(401, 'run_key_expired', 'This run key has expired; the run it belonged to is over');
+		throw new ApiFail(
+			401,
+			'run_key_expired',
+			'This run key has expired; the run it belonged to is over'
+		);
 	}
 	if (key.agentRunId !== null && isControlPlanePath(pathname)) {
 		throw runKeyForbidden();
@@ -187,7 +195,11 @@ export async function requireActor(event: RequestEvent): Promise<ActorContext> {
 	const header = event.request.headers.get('authorization');
 	const key = header?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim();
 	if (!key || !event.platform) {
-		throw new ApiFail(401, 'unauthorized', 'Sign in or pass an API key as "Authorization: Bearer <key>"');
+		throw new ApiFail(
+			401,
+			'unauthorized',
+			'Sign in or pass an API key as "Authorization: Bearer <key>"'
+		);
 	}
 
 	const db = getDb(event.platform.env);
@@ -236,7 +248,11 @@ export async function requireActor(event: RequestEvent): Promise<ActorContext> {
 export async function requireSessionActor(event: RequestEvent): Promise<ActorContext> {
 	const actor = await requireActor(event);
 	if (!actor.viaSession) {
-		throw new ApiFail(403, 'session_required', 'API keys are managed from the web UI (browser session), not with a key');
+		throw new ApiFail(
+			403,
+			'session_required',
+			'API keys are managed from the web UI (browser session), not with a key'
+		);
 	}
 	return actor;
 }

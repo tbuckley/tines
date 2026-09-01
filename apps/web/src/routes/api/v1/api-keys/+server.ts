@@ -9,7 +9,10 @@ import type { RequestHandler } from './$types';
 
 export const GET: RequestHandler = api(async (event) => {
 	const { db, actor } = await apiContext(event, { sessionOnly: true });
-	const body: ListResponse<ApiKey> = { items: await listApiKeys(db, actor.userId), next_cursor: null };
+	const body: ListResponse<ApiKey> = {
+		items: await listApiKeys(db, actor.userId),
+		next_cursor: null
+	};
 	return json(body);
 });
 

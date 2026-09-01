@@ -1,5 +1,10 @@
 <script lang="ts">
-	import type { Artifact, ArtifactDetail, ArtifactVersion, ArtifactVersionFile } from '@tines/shared';
+	import type {
+		Artifact,
+		ArtifactDetail,
+		ArtifactVersion,
+		ArtifactVersionFile
+	} from '@tines/shared';
 	import IconDownload from '@tabler/icons-svelte/icons/download';
 	import IconExternalLink from '@tabler/icons-svelte/icons/external-link';
 	import IconFile from '@tabler/icons-svelte/icons/file';
@@ -78,18 +83,22 @@
 	}
 
 	/** The one thing being rendered: the version payload, or a folder entry. */
-	const preview = $derived.by((): { kind: ViewKind; path?: string; contentType: string | null } | null => {
-		if (!detail || !version) return null;
-		if (detail.artifact_type === 'folder') {
-			if (pathPick === null) return null;
-			const file = (version.files ?? []).find((f) => f.path === pathPick);
-			return file ? { kind: viewKind(file.content_type), path: file.path, contentType: file.content_type } : null;
+	const preview = $derived.by(
+		(): { kind: ViewKind; path?: string; contentType: string | null } | null => {
+			if (!detail || !version) return null;
+			if (detail.artifact_type === 'folder') {
+				if (pathPick === null) return null;
+				const file = (version.files ?? []).find((f) => f.path === pathPick);
+				return file
+					? { kind: viewKind(file.content_type), path: file.path, contentType: file.content_type }
+					: null;
+			}
+			if (detail.artifact_type === 'file' || detail.artifact_type === 'text') {
+				return { kind: viewKind(version.content_type), contentType: version.content_type };
+			}
+			return null;
 		}
-		if (detail.artifact_type === 'file' || detail.artifact_type === 'text') {
-			return { kind: viewKind(version.content_type), contentType: version.content_type };
-		}
-		return null;
-	});
+	);
 
 	const textKey = $derived(
 		preview && (preview.kind === 'markdown' || preview.kind === 'text')
@@ -129,10 +138,7 @@
 	<!-- header: artifact switcher, version picker, download -->
 	<div class="mb-3 flex flex-wrap items-center gap-2">
 		<Select
-			bind:value={
-				() => selectedName ?? '',
-				(v) => (selectedName = v || null)
-			}
+			bind:value={() => selectedName ?? '', (v) => (selectedName = v || null)}
 			class="h-8 w-48 text-sm"
 			aria-label="Artifact"
 		>
@@ -153,7 +159,9 @@
 				aria-label="Version"
 			>
 				<option value="current">{versionLabel(detail.current_version)} (current)</option>
-				{#each [...detail.versions].reverse().filter((v) => v.version !== detail!.current_version.version) as v (v.version)}
+				{#each [...detail.versions]
+					.reverse()
+					.filter((v) => v.version !== detail!.current_version.version) as v (v.version)}
 					<option value={String(v.version)}>{versionLabel(v)}</option>
 				{/each}
 			</Select>
@@ -171,11 +179,15 @@
 	{#if detail && version}
 		<!-- metadata line -->
 		<p class="text-muted-foreground mb-3 text-xs">
-			{detail.artifact_type}{version.content_type ? ` · ${version.content_type}` : ''}{version.file_count !== null
+			{detail.artifact_type}{version.content_type
+				? ` · ${version.content_type}`
+				: ''}{version.file_count !== null
 				? ` · ${version.file_count} file${version.file_count === 1 ? '' : 's'}`
 				: ''}{version.size_bytes !== null ? ` · ${version.size_bytes.toLocaleString()} bytes` : ''}
 			· {actorLabel(version.actor)} ·
-			<span title={new Date(version.created_at).toLocaleString()}>{relativeTime(version.created_at)}</span>
+			<span title={new Date(version.created_at).toLocaleString()}
+				>{relativeTime(version.created_at)}</span
+			>
 			{#if versionPick === null}
 				· {detail.fresh ? 'fresh' : 'attached before the current state'}
 			{/if}
@@ -194,7 +206,9 @@
 				<IconExternalLink size={16} class="shrink-0" />
 				<span class="min-w-0">
 					<span class="block font-medium">{version.title ?? version.url}</span>
-					{#if version.title}<span class="text-muted-foreground block truncate text-xs">{version.url}</span>{/if}
+					{#if version.title}<span class="text-muted-foreground block truncate text-xs"
+							>{version.url}</span
+						>{/if}
 				</span>
 			</a>
 		{:else if detail.artifact_type === 'pr'}
@@ -226,7 +240,8 @@
 								loading="lazy"
 								class="h-36 w-full rounded object-cover"
 							/>
-							<span class="text-muted-foreground block truncate px-1 pt-1 text-xs">{file.path}</span>
+							<span class="text-muted-foreground block truncate px-1 pt-1 text-xs">{file.path}</span
+							>
 						</button>
 					{/each}
 				</div>
@@ -236,7 +251,11 @@
 						<li class="flex items-center gap-2 px-3 py-2 text-sm">
 							<IconFile size={14} class="text-muted-foreground shrink-0" />
 							{#if viewKind(file.content_type) !== 'download'}
-								<button type="button" class="min-w-0 truncate text-left hover:underline" onclick={() => (pathPick = file.path)}>
+								<button
+									type="button"
+									class="min-w-0 truncate text-left hover:underline"
+									onclick={() => (pathPick = file.path)}
+								>
 									{file.path}
 								</button>
 							{:else}
@@ -257,11 +276,18 @@
 				</ul>
 			{:else}
 				<div class="mb-2 flex items-center gap-2 text-xs">
-					<button type="button" class="text-muted-foreground hover:text-foreground hover:underline" onclick={() => (pathPick = null)}>
+					<button
+						type="button"
+						class="text-muted-foreground hover:text-foreground hover:underline"
+						onclick={() => (pathPick = null)}
+					>
 						← all files
 					</button>
 					<span class="font-mono">{pathPick}</span>
-					<a href={contentUrl({ path: pathPick })} class="text-muted-foreground hover:text-foreground ml-auto inline-flex items-center gap-1">
+					<a
+						href={contentUrl({ path: pathPick })}
+						class="text-muted-foreground hover:text-foreground ml-auto inline-flex items-center gap-1"
+					>
 						<IconDownload size={13} /> Download
 					</a>
 				</div>
@@ -271,7 +297,9 @@
 			{@render fileBody()}
 		{/if}
 	{:else if loadError}
-		<p class="border-destructive/40 bg-destructive/10 text-destructive rounded-md border px-3 py-2 text-sm">
+		<p
+			class="border-destructive/40 bg-destructive/10 text-destructive rounded-md border px-3 py-2 text-sm"
+		>
 			{loadError}
 		</p>
 	{:else}

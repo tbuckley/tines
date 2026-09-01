@@ -5,8 +5,13 @@ vi.mock('$lib/server/auth', () => ({
 	getAuth: () => ({ api: { getSession } })
 }));
 vi.mock('better-auth/svelte-kit', () => ({
-	svelteKitHandler: async ({ event, resolve }: { event: unknown; resolve: (e: unknown) => Response }) =>
-		resolve(event)
+	svelteKitHandler: async ({
+		event,
+		resolve
+	}: {
+		event: unknown;
+		resolve: (e: unknown) => Response;
+	}) => resolve(event)
 }));
 
 const { handle } = await import('./hooks.server');

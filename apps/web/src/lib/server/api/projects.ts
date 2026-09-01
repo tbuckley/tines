@@ -160,7 +160,8 @@ export async function updateProject(
 	body: UpdateProjectRequest
 ): Promise<Project> {
 	const current = await getProject(db, actor.userId, id);
-	const name = body.name !== undefined ? requireString(body.name, 'name', { max: 200 }).trim() : current.name;
+	const name =
+		body.name !== undefined ? requireString(body.name, 'name', { max: 200 }).trim() : current.name;
 	const description =
 		body.description !== undefined
 			? (optionalString(body.description, 'description', { max: 10_000 }) ?? '')
@@ -188,7 +189,11 @@ export async function updateProject(
 		eventInsert(db, actor, {
 			type: 'project.updated',
 			projectId: id,
-			payload: { name, changed, ...(name !== current.name ? { renamed: { from: current.name, to: name } } : {}) }
+			payload: {
+				name,
+				changed,
+				...(name !== current.name ? { renamed: { from: current.name, to: name } } : {})
+			}
 		})
 	]);
 	return getProject(db, actor.userId, id);
@@ -229,7 +234,10 @@ export async function deleteProject(
 		db.deleteFrom('project').where('id', '=', id).compile(),
 		// project_id stays null-able on the event so the feed keeps history
 		// for deleted projects; record the name in the payload.
-		eventInsert(db, actor, { type: 'project.deleted', payload: { project_id: id, name: project.name } })
+		eventInsert(db, actor, {
+			type: 'project.deleted',
+			payload: { project_id: id, name: project.name }
+		})
 	]);
 	return sweep.deleted;
 }

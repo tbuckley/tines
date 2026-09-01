@@ -76,15 +76,18 @@ test.describe('shared routing-rule row', () => {
 		// A custom workflow — the standard one is read-only, so its state
 		// categories cannot be edited.
 		const workflow = await body<Workflow>(
-			await ok(await api.post('/api/v1/workflows', {
-				name: `rulerow-${runId}`,
-				initial_state: STATE_NAME,
-				states: [
-					{ name: STATE_NAME, category: 'active' },
-					{ name: 'Done', category: 'done' }
-				],
-				transitions: [{ name: 'finish', from: STATE_NAME, to: 'Done' }]
-			}), 'create workflow')
+			await ok(
+				await api.post('/api/v1/workflows', {
+					name: `rulerow-${runId}`,
+					initial_state: STATE_NAME,
+					states: [
+						{ name: STATE_NAME, category: 'active' },
+						{ name: 'Done', category: 'done' }
+					],
+					transitions: [{ name: 'finish', from: STATE_NAME, to: 'Done' }]
+				}),
+				'create workflow'
+			)
 		);
 		workflowId = workflow.id;
 		stateId = workflow.states.find((s) => s.name === STATE_NAME)!.id;

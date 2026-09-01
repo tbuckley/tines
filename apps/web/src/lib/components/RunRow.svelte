@@ -34,7 +34,10 @@
 	const cost = $derived(runCostLabel(run));
 </script>
 
-<li class="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2.5 text-sm" transition:slide={{ duration: dur() }}>
+<li
+	class="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2.5 text-sm"
+	transition:slide={{ duration: dur() }}
+>
 	{#if isActiveRun(run.status)}
 		<span class="size-1.5 shrink-0 animate-pulse rounded-full bg-emerald-500"></span>
 	{/if}
@@ -59,7 +62,10 @@
 	{/if}
 	{#if run.provider_session_id && run.status === 'running'}
 		<!-- staleness honesty: managed logs/cost advance only at sweep cadence -->
-		<span class="text-muted-foreground/70 text-xs" title="Managed runs are polled by the sweep — logs and cost can lag by up to ~5 minutes; a quiet log means “not polled yet”, not “agent stuck”.">
+		<span
+			class="text-muted-foreground/70 text-xs"
+			title="Managed runs are polled by the sweep — logs and cost can lag by up to ~5 minutes; a quiet log means “not polled yet”, not “agent stuck”."
+		>
 			updates every ~5m
 		</span>
 	{/if}
@@ -79,7 +85,10 @@
 			{run.error}
 		</span>
 	{/if}
-	<span class="text-muted-foreground ml-auto text-xs" title={new Date(run.created_at).toLocaleString()}>
+	<span
+		class="text-muted-foreground ml-auto text-xs"
+		title={new Date(run.created_at).toLocaleString()}
+	>
 		{relativeTime(run.created_at)}
 	</span>
 	<Button

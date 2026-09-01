@@ -61,7 +61,9 @@
 					<IconArrowRight size={12} class="text-muted-foreground" />
 				{/if}
 				<span
-					class="bg-muted rounded-full px-2 py-0.5 text-xs {target.runner_status === 'paused' ? 'opacity-60' : ''}"
+					class="bg-muted rounded-full px-2 py-0.5 text-xs {target.runner_status === 'paused'
+						? 'opacity-60'
+						: ''}"
 					title={target.runner_status === 'paused' ? 'paused' : undefined}
 				>
 					{target.runner_name}{target.tier ? `:${target.tier}` : ''}

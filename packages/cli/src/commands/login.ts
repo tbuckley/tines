@@ -90,7 +90,10 @@ export function register(program: Command): void {
 			const key = resolveApiKeySetting(opts);
 			const report = {
 				url: { value: url.value, source: url.source },
-				api_key: { value: key.value ? maskKey(key.value) : null, source: key.value ? key.source : null },
+				api_key: {
+					value: key.value ? maskKey(key.value) : null,
+					source: key.value ? key.source : null
+				},
 				config_path: configPath(defaultConfigDir())
 			};
 			if (opts.json) return printJson(report);
