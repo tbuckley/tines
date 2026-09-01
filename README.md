@@ -217,8 +217,12 @@ sweep at or after its nominal time**, so an issue from a schedule set for 09:00 
 creation timestamp up to five minutes later. Schedules are guardrailed to fire no more
 often than hourly, so the lag stays small relative to the recurrence.
 
-Locally, `wrangler dev --test-scheduled` exposes `GET /__scheduled` to fire a sweep on
-demand instead of waiting for the clock.
+Locally, `pnpm preview` (from `apps/web`) builds and runs the worker under `wrangler dev
+--test-scheduled`, which exposes `GET /__scheduled` to fire a sweep on demand instead of
+waiting for the clock; `pnpm dev` (Vite) never runs the `scheduled()` handler. The script
+also passes `--host localhost:8787`: `wrangler dev` otherwise presents every request to the
+worker under the production custom domain from `routes`, and Better Auth then ignores the
+sign-in routes.
 
 ## Google sign-in
 
@@ -274,6 +278,14 @@ pnpm wrangler secret put SECRET_ENCRYPTION_KEY   # `openssl rand -hex 32`; encry
 # Email Service (see "Magic-link sign-in" above)
 pnpm deploy
 ```
+
+### Continuous integration
+
+`.github/workflows/ci.yml` runs on every pull request and push to `main`: one job
+typechecks (`pnpm check`) and runs the unit tests, another installs Chromium and runs the
+Playwright suite (`pnpm test:e2e`) against a local `wrangler dev` with a throwaway D1. It
+needs no secrets, so it runs for fork PRs too. The deploy and publish workflows below run
+the unit tests again before shipping, but the e2e suite runs only here.
 
 ### Automatic deploys
 

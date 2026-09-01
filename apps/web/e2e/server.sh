@@ -18,8 +18,15 @@ node e2e/seed.mjs
 
 # --test-scheduled exposes GET /__scheduled?cron=… so the e2e suite can fire
 # the scheduled-task sweep deterministically.
+#
+# --host: wrangler dev rewrites the Host of every request to the first route
+# in wrangler.jsonc (the production custom domain), so without this the
+# worker sees `http://tines.tbuckley.dev/...` and Better Auth — whose
+# SvelteKit handler only claims requests whose origin matches its base URL —
+# lets every /api/auth/* request fall through to the app's 404 page.
 exec pnpm exec wrangler dev \
 	--port "$PORT" \
+	--host "127.0.0.1:$PORT" \
 	--persist-to .wrangler-e2e \
 	--test-scheduled \
 	--var "BETTER_AUTH_SECRET:tines-e2e-secret" \

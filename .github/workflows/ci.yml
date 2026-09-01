@@ -1,0 +1,71 @@
+name: CI
+
+# The gate every pull request gets, secrets or not: typecheck, unit tests,
+# and the Playwright suite. Deploy, Preview, and Publish each run the unit
+# tests as well, but none of them typechecks, and nothing else runs e2e — so
+# without this job an e2e regression only surfaces when someone runs the
+# suite by hand (the magic-link specs stayed red for a week that way).
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Typecheck and unit tests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4 # version comes from "packageManager" in package.json
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm check
+
+      - run: pnpm test
+
+  e2e:
+    name: Playwright e2e
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Install Chromium
+        working-directory: apps/web
+        run: pnpm exec playwright install --with-deps chromium
+
+      # Builds the worker, migrates and seeds a throwaway local D1, boots it
+      # under `wrangler dev`, and runs the suite against it (apps/web/e2e/
+      # server.sh). Everything is local: no Cloudflare credentials involved.
+      - run: pnpm test:e2e
+
+      - name: Upload Playwright failure output
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-test-results
+          path: apps/web/test-results
+          if-no-files-found: ignore
