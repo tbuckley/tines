@@ -70,6 +70,7 @@
 
 <div
 	bind:this={stripEl}
+	data-testid="label-strip"
 	class="relative flex min-w-0 items-center gap-1.5 overflow-hidden {className}"
 >
 	<!-- Out of flow (`absolute`), so it costs no width and no height: this is
@@ -82,14 +83,14 @@
 		{#each labels as label (label.id)}
 			<LabelChip {label} size="sm" />
 		{/each}
-		<span class="px-0.5 text-[0.6875rem] leading-none font-medium">+{labels.length}</span>
+		<span class="bg-muted text-muted-foreground rounded-full px-1.5 py-0.5 text-[0.6875rem] leading-none font-medium">+{labels.length}</span>
 	</div>
 	{#each labels.slice(0, visibleCount) as label (label.id)}
 		<LabelChip {label} size="sm" class="shrink-0" />
 	{/each}
 	{#if hiddenCount > 0}
 		<span
-			class="text-muted-foreground shrink-0 px-0.5 text-[0.6875rem] leading-none font-medium"
+			class="bg-muted text-muted-foreground rounded-full px-1.5 py-0.5 text-[0.6875rem] leading-none font-medium shrink-0"
 			title={labels
 				.slice(visibleCount)
 				.map((l) => l.name)
