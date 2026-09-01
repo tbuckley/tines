@@ -250,7 +250,8 @@ describe('issue artifacts', () => {
 					requires: [
 						{ artifact: 'notes' },
 						{ artifact: 'spec', type: 'text' },
-						{ artifact: 'shot', type: 'file', content_type: 'image/' }
+						{ artifact: 'shot', type: 'file', content_type: 'image/' },
+						{ artifact: 'ref', type: 'link' }
 					]
 				}
 			]
@@ -296,6 +297,13 @@ describe('issue artifacts', () => {
 		expect(unmet.get('shot')).toMatchObject({ status: 'type_mismatch', current_type: 'file' });
 		expect(unmet.get('shot')!.fix).toContain('attach demo/1 shot --file');
 		expect(unmet.get('shot')!.fix).not.toContain('delete');
+
+		// A link requirement names --link: --url is the CLI's API base URL on
+		// every command, and an agent copying it here would attach a link to
+		// the API itself (Tines/92).
+		expect(unmet.get('ref')).toMatchObject({ status: 'missing' });
+		expect(unmet.get('ref')!.fix).toContain('attach demo/1 ref --link <url>');
+		expect(unmet.get('ref')!.fix).not.toContain('--url');
 	});
 
 	it('counts an artifact attached before the gating state as stale, per the strict rule', async () => {
@@ -795,5 +803,8 @@ describe('issue artifacts', () => {
 		);
 		expect(emptyBlock).toContain('No artifacts attached.');
 		expect(emptyBlock).toContain('Attach one: `tines issues artifacts attach');
+		// The link flag is --link here too (--url is the API base URL).
+		expect(emptyBlock).toContain('--text/--link/--pr');
+		expect(emptyBlock).not.toContain('--url');
 	});
 });
