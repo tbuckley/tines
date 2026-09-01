@@ -17,12 +17,15 @@ test.describe.serial('issue labels UI', () => {
 	const p1Name = `p1-${runId}`;
 	// Five labels on one issue, the first deliberately long: on a phone only
 	// what fits shows, the rest become a "+N", and it stays one line.
+	// Four that fit two-at-a-time on a phone and one that never does. Sizes
+	// matter: two of the short ones fit the strip on their own, but not once
+	// the "+N" needs room too — so the reservation is what this fixture tests.
 	const crowdNames = [
-		`c1-a-really-long-label-name-${runId}`,
+		`c1-${runId}`,
 		`c2-${runId}`,
 		`c3-${runId}`,
 		`c4-${runId}`,
-		`c5-${runId}`
+		`c5-a-really-long-label-name-${runId}`
 	];
 	let project: Project;
 	let labelled: IssueDetail;
@@ -147,6 +150,12 @@ test.describe.serial('issue labels UI', () => {
 		// The names behind the count stay reachable.
 		await expect(overflow).toHaveAttribute('title', new RegExp(crowdNames.at(-1)!));
 
+		// What is shown is shown *whole*: the last thing on the line ends inside
+		// the strip, so nothing is half a chip clipped by the overflow rule.
+		const stripRect = (await strip.boundingBox())!;
+		const lastRect = (await strip.locator('> span:visible').last().boundingBox())!;
+		expect(lastRect.x + lastRect.width).toBeLessThanOrEqual(stripRect.x + stripRect.width + 1);
+
 		// One line, whatever it holds: the strip is a single chip tall...
 		const stripBox = await strip.boundingBox();
 		expect(stripBox!.height).toBeLessThan(24);
@@ -171,7 +180,7 @@ test.describe.serial('issue labels UI', () => {
 		await expect(rendered(crowdNames[3])).toHaveCount(0);
 		await expect(rendered('+2')).toBeVisible();
 		// A long name is ellipsed rather than allowed to push the title out.
-		const chipBox = await rendered(crowdNames[0]).boundingBox();
+		const chipBox = await wideRow.locator(`span:text-is("${wideName}"):visible`).boundingBox();
 		expect(chipBox!.width).toBeLessThan(130);
 		// Inline again, so a labelled row costs no height at this width.
 		const wideBox = await crowdedRow.boundingBox();
