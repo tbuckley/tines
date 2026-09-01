@@ -50,7 +50,7 @@ pnpm build
 node packages/cli/dist/index.js time --url http://localhost:5173
 ```
 
-The CLI reads the API base URL from `--url` or the `TINES_API_URL` env var (default `http://localhost:5173`).
+The CLI resolves the API base URL and key from, in order: `--url` / `--api-key`, the `TINES_API_URL` / `TINES_API_KEY` env vars, the file `tines login` writes (`~/.config/tines/config.json`), and the default `http://localhost:5173`. `tines config` shows what is in effect and where each value came from.
 
 Every `… list` command returns one page. Pass `--all-pages` to follow the cursor and fetch the whole list in one command; without it, `--json` output carries a `next_cursor` and warns on stderr that there is more.
 
@@ -76,11 +76,18 @@ tines --help
 tines time --url https://tines.tbuckley.dev
 ```
 
-To make it target your deployment by default, set the env var in your shell profile (otherwise it talks to `http://localhost:5173`):
+To make it target your deployment by default, store the URL and an API key (Settings →
+API keys in the web app) once; otherwise it talks to `http://localhost:5173`:
 
 ```sh
-export TINES_API_URL=https://tines.tbuckley.dev
+tines login --url https://tines.tbuckley.dev --api-key tines_…   # or `--api-key -` to paste it on stdin
+tines config                                                   # what is in effect, and from where
+tines logout                                                   # forget both
 ```
+
+`login` checks the key against the API before storing it. Env vars still win over the file
+(`TINES_API_URL`, `TINES_API_KEY`), which is how agent runs are configured, and `--url` /
+`--api-key` win over both.
 
 To upgrade later: `git pull`, `pnpm install`, `pnpm build`, then re-run `npm install -g ./packages/cli`. To go back to a released build, `npm install -g tines@latest`.
 

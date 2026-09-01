@@ -55,10 +55,13 @@ describe('command tree', () => {
 		const nouns = program.commands.map((c) => c.name()).sort();
 		expect(nouns).toEqual(
 			[
+				'config',
 				'context',
 				'events',
 				'issues',
 				'journal',
+				'login',
+				'logout',
 				'projects',
 				'routing',
 				'runner',

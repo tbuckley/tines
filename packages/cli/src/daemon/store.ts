@@ -4,29 +4,13 @@
  * and the per-runner state file mapping live runs to PID + workspace — what
  * a restarted daemon uses to kill orphaned harnesses and fail their runs.
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { defaultConfigDir, readJsonFile, writeJsonFile } from '../config.js';
 
-/** `TINES_CONFIG_DIR` overrides (the e2e suite and tests point it at a tmp dir). */
-export function defaultConfigDir(): string {
-	return process.env.TINES_CONFIG_DIR ?? join(homedir(), '.config', 'tines');
-}
-
-function readJsonFile<T>(path: string): T | null {
-	if (!existsSync(path)) return null;
-	try {
-		return JSON.parse(readFileSync(path, 'utf8')) as T;
-	} catch {
-		// A corrupt file is treated as absent rather than crashing the daemon.
-		return null;
-	}
-}
-
-function writeJsonFile(path: string, value: unknown, { secret = false } = {}): void {
-	mkdirSync(dirname(path), { recursive: true });
-	writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, secret ? { mode: 0o600 } : {});
-}
+// The config directory itself (and the JSON helpers) live in ../config.ts,
+// shared with `tines login`; re-exported so the daemon's callers keep one import.
+export { defaultConfigDir };
 
 // ---------------------------------------------------------------------------
 // Runner credentials (runners.json)
