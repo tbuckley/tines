@@ -7,10 +7,12 @@ import {
 	CliRefresher,
 	expandCommandTemplate,
 	LogBatcher,
+	keepWorkspace,
 	RunTable,
 	shellQuote,
 	type AgentCli,
-	type ManagedRun
+	type ManagedRun,
+	type RunOutcome
 } from './support.js';
 
 const input = {
@@ -158,26 +160,44 @@ describe('LogBatcher', () => {
 	});
 });
 
+describe('keepWorkspace', () => {
+	it.each([
+		['never', 'completed', false],
+		['never', 'failed', false],
+		['failed', 'completed', false],
+		['failed', 'failed', true],
+		['always', 'completed', true],
+		['always', 'failed', true]
+	] as const)('%s + %s → %s', (mode, outcome, expected) => {
+		expect(keepWorkspace(mode, outcome)).toBe(expected);
+	});
+});
+
 describe('RunTable', () => {
 	interface TestRun extends ManagedRun {
 		flushed?: number;
 	}
 
-	function harness() {
+	function harness(opts: { keep?: (outcome: RunOutcome) => boolean } = {}) {
 		const finishes: { runId: string; status: string; error?: string }[] = [];
-		const released: string[] = [];
+		const released: { runId: string; keep: boolean; outcome: RunOutcome }[] = [];
+		const notes: string[] = [];
 		const logs: string[] = [];
 		let persists = 0;
 		let failFinish: string | null = null;
-		const table = new RunTable<TestRun>({
-			finish: async (run, status, error) => {
-				if (failFinish) throw new Error(failFinish);
-				finishes.push({ runId: run.runId, status, error });
+		const table = new RunTable<TestRun>(
+			{
+				finish: async (run, status, error) => {
+					if (failFinish) throw new Error(failFinish);
+					finishes.push({ runId: run.runId, status, error });
+				},
+				release: (run, { keep, outcome }) => released.push({ runId: run.runId, keep, outcome }),
+				noteKept: (run) => notes.push(run.runId),
+				persist: () => (persists += 1),
+				log: (m) => logs.push(m)
 			},
-			release: (run) => released.push(run.runId),
-			persist: () => (persists += 1),
-			log: (m) => logs.push(m)
-		});
+			opts
+		);
 		const run = (runId: string): TestRun => ({
 			runId,
 			workspace: `/ws/${runId}`,
@@ -190,6 +210,8 @@ describe('RunTable', () => {
 			run,
 			finishes,
 			released,
+			releasedIds: () => released.map((r) => r.runId),
+			notes,
 			logs,
 			setFailFinish: (m: string) => (failFinish = m),
 			persistCount: () => persists
@@ -205,7 +227,7 @@ describe('RunTable', () => {
 		await h.table.finishAndCleanup(run, 'completed');
 		expect(flushes).toBe(1);
 		expect(h.finishes).toEqual([{ runId: 'arun_1', status: 'completed', error: undefined }]);
-		expect(h.released).toEqual(['arun_1']);
+		expect(h.releasedIds()).toEqual(['arun_1']);
 		expect(h.table.ids()).toEqual([]);
 		// A second call (a racing exit handler) reports nothing more.
 		await h.table.finishAndCleanup(run, 'failed', 'late');
@@ -225,7 +247,7 @@ describe('RunTable', () => {
 		// and nothing is finish-reported over the supervisor's settlement.
 		await h.table.finishAndCleanup(run, 'failed', 'git clone failed');
 		expect(h.finishes).toEqual([]);
-		expect(h.released).toEqual(['arun_1']);
+		expect(h.releasedIds()).toEqual(['arun_1']);
 		expect(h.table.size).toBe(0);
 	});
 
@@ -244,9 +266,74 @@ describe('RunTable', () => {
 		h.table.track(run);
 		h.setFailFinish('run_already_ended');
 		await h.table.finishAndCleanup(run, 'failed', 'harness exited with code 1');
-		expect(h.released).toEqual(['arun_1']);
+		expect(h.releasedIds()).toEqual(['arun_1']);
 		expect(h.table.size).toBe(0);
 		expect(h.logs.some((m) => m.includes('not accepted'))).toBe(true);
+	});
+
+	it('the keep decision reaches release, and only a kept run is noted in its log', async () => {
+		const h = harness({ keep: (outcome) => outcome === 'failed' });
+		// A completed run under keep-on-failed: removed, and nothing appended.
+		const ok = h.run('arun_ok');
+		h.table.track(ok);
+		await h.table.finishAndCleanup(ok, 'completed');
+		expect(h.released).toEqual([{ runId: 'arun_ok', keep: false, outcome: 'completed' }]);
+		expect(h.notes).toEqual([]);
+
+		// A failure: kept, with the error recorded as the marker's note.
+		const bad = h.run('arun_bad');
+		h.table.track(bad);
+		await h.table.finishAndCleanup(bad, 'failed', 'harness exited with code 1');
+		expect(h.released[1]).toEqual({ runId: 'arun_bad', keep: true, outcome: 'failed' });
+		expect(h.notes).toEqual(['arun_bad']);
+		expect(bad.endNote).toBe('harness exited with code 1');
+	});
+
+	it('notes a kept workspace before the flush — the only window an append still ships in', async () => {
+		const h = harness({ keep: () => true });
+		const run = h.run('arun_1');
+		let letFlushFinish!: () => void;
+		const gate = new Promise<void>((resolve) => (letFlushFinish = resolve));
+		let flushed = false;
+		run.flush = () => gate.then(() => void (flushed = true));
+		h.table.track(run);
+		const settling = h.table.finishAndCleanup(run, 'failed', 'timed out');
+		// Synchronous up to the flush: the note is already in the batcher.
+		expect(h.notes).toEqual(['arun_1']);
+		expect(flushed).toBe(false);
+		letFlushFinish();
+		await settling;
+		expect(flushed).toBe(true);
+	});
+
+	it('a supervisor cancel releases as a failure, with no note and no finish report', async () => {
+		const h = harness({ keep: (outcome) => outcome === 'failed' });
+		const run = h.run('arun_1');
+		h.table.track(run);
+		h.table.markCanceled(run.runId);
+		// The exit handler's finishAndCleanup degrades to cleanup — which is
+		// exactly the path that must still keep the workspace.
+		await h.table.finishAndCleanup(run, 'failed', 'harness killed by SIGTERM');
+		expect(h.finishes).toEqual([]);
+		expect(h.notes).toEqual([]);
+		expect(h.released).toEqual([{ runId: 'arun_1', keep: true, outcome: 'failed' }]);
+	});
+
+	it('a bare cleanup defaults to the failed outcome', () => {
+		const h = harness({ keep: (outcome) => outcome === 'failed' });
+		const run = h.run('arun_1');
+		h.table.track(run);
+		h.table.cleanup(run);
+		expect(h.released).toEqual([{ runId: 'arun_1', keep: true, outcome: 'failed' }]);
+	});
+
+	it('without a keep decision, nothing is ever kept', async () => {
+		const h = harness();
+		const run = h.run('arun_1');
+		h.table.track(run);
+		await h.table.finishAndCleanup(run, 'failed', 'boom');
+		expect(h.released).toEqual([{ runId: 'arun_1', keep: false, outcome: 'failed' }]);
+		expect(h.notes).toEqual([]);
 	});
 
 	it('cleanup is idempotent and persists membership changes', () => {
@@ -257,7 +344,7 @@ describe('RunTable', () => {
 		h.table.cleanup(run);
 		h.table.cleanup(run);
 		expect(h.persistCount()).toBe(after + 2);
-		expect(h.released).toEqual(['arun_1', 'arun_1']); // release itself is idempotent (rm -rf force)
+		expect(h.releasedIds()).toEqual(['arun_1', 'arun_1']); // release itself is idempotent (rm -rf force)
 	});
 });
 

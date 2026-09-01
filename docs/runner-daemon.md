@@ -27,11 +27,16 @@ Flags:
 | `--max-concurrent` | Simultaneous runs on this machine (1–100); sent on every poll, so a restart with a new value updates the server-side cap | 1 |
 | `--poll-interval` | Seconds between polls | 15 |
 | `--no-cli-refresh` | Skip the managed CLI install; harnesses use whatever `tines` is on the ambient PATH | refresh on |
+| `--keep-workspaces` | Keep settled runs' workspaces for debugging: `never`, `failed`, or `always` | `never` |
+| `--keep-workspaces-for` | Hours a kept workspace survives | 72 |
+| `--keep-workspaces-max` | Most kept workspaces to hold at once (oldest go first) | 20 |
 
 Each run's workspace (under the config dir) contains `prompt.md` (supervisor preamble +
 stitched context + issue block), `skills/<name>/…`, `repos.json`, and a clone of each listed
 repository made with the machine's own git credentials. The harness runs with
 `TINES_API_KEY` set to the run's ephemeral key and `TINES_API_URL` set to the API base.
+When the run settles the workspace is deleted, unless `--keep-workspaces` says otherwise
+(see "Debugging a failed run").
 
 Rotating a token: `tines runners rotate-token <name>` invalidates the old token and prints
 the new one once. Run it on the daemon machine and the stored token is updated in place —
@@ -140,14 +145,74 @@ loginctl enable-linger "$USER"   # keep it running while logged out
 ## Failure behavior
 
 - **Daemon crash/restart**: on startup the daemon kills harness processes recorded in its
-  state file, reports their runs failed, and removes their workspaces. The supervisor also
+  state file, reports their runs failed, and removes their workspaces (or keeps them, under
+  `--keep-workspaces`). The supervisor also
   fails `running` runs missing from the daemon's `owned_runs` report, and fails everything
   after 5 minutes offline.
 - **Ctrl-C / SIGTERM**: in-flight runs are killed and finish-reported as failed before exit.
 - **Cancel / timeout from the supervisor**: the next poll's `cancels` list makes the daemon
   kill the process without reporting — the supervisor already settled the run. The daemon
-  also enforces the run timeout locally.
+  also enforces the run timeout locally. Both count as failures for `--keep-workspaces`.
 - **Network errors**: polls retry with backoff; the loop never crashes. A 401 (rotated
   token) exits with instructions instead of spinning.
 - **CLI refresh failure**: never fails a run — the last-good copy is used, or the ambient
   `PATH`, with a warning in the daemon log and in each affected run's log.
+
+## Debugging a failed run
+
+When a run fails, the run's log is usually all that survives: the workspace — the clone the
+agent was editing, the `.git` state that explains a failed push, whatever the harness wrote
+to disk — is deleted the moment the run settles. That is the right default, and the wrong
+one when you are trying to salvage 29 minutes of work an agent never pushed.
+
+```sh
+tines runner daemon --keep-workspaces failed
+```
+
+`failed` keeps the workspace of every run that did not complete: a timeout, a cancel (from
+`tines runs cancel` or the UI), a harness that exited non-zero, a clone or setup failure, an
+orphan killed on restart, and any run in flight when you Ctrl-C the daemon. `always` keeps
+completed runs too; `never` (the default) is today's behaviour.
+
+A kept workspace stays at `<configDir>/workspaces/<run_id>` (`~/.config/tines`, or
+`$TINES_CONFIG_DIR`) with a `kept.json` next to `prompt.md` saying what it was:
+
+```json
+{
+  "run_id": "arun_6q7lbleyC82NzLBB",
+  "issue_ref": "Tines/19",
+  "status": "failed",
+  "error": "run exceeded the 30m timeout; harness killed",
+  "kept_at": "2026-08-31T21:50:26.360Z"
+}
+```
+
+To find one:
+
+```sh
+tines runner workspaces          # RUN, ISSUE, STATUS, AGE, SIZE, PATH
+tines runs show <run-id> --logs  # daemon-reported finishes end with "workspace kept at <path>"
+```
+
+The log line lands for finishes the daemon reports — timeout, non-zero exit, clone failure,
+shutdown. A run the *supervisor* settled (a cancel, or the 5-minutes-offline sweep) has
+already ended by the time the daemon lets go, and the API rejects an append to it; those
+runs are still kept, and `tines runner workspaces` plus the daemon's own stdout are how you
+find them.
+
+The repository clones inside are ordinary checkouts made with your git credentials, so
+salvaging is just git: `cd` in, `git -C <dir> status`, commit what the agent left, and push.
+
+**Watch the disk.** A workspace is a few megabytes at materialization and can pass 700 MB
+once the agent installs dependencies, so this is not a flag to leave on forever. Two bounds
+apply, swept on startup and after every finish: anything older than `--keep-workspaces-for`
+hours goes, and beyond `--keep-workspaces-max` the oldest go. Clear them by hand with:
+
+```sh
+tines runner workspaces prune --older-than 24
+tines runner workspaces prune --all
+```
+
+Both sweeps and both commands only ever delete a directory containing a `kept.json`. The
+workspaces directory is shared by every run of every daemon on the machine, so an unmarked
+directory is assumed to be a live run and is left alone.

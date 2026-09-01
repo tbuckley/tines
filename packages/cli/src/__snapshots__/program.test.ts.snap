@@ -765,12 +765,14 @@ Options:
 The local runner daemon
 
 Options:
-  -h, --help        display help for command
+  -h, --help            display help for command
 
 Commands:
-  daemon [options]  Run the local runner daemon: register/reconnect, poll for
-                    assigned runs, execute them
-  help [command]    display help for command
+  daemon [options]      Run the local runner daemon: register/reconnect, poll
+                        for assigned runs, execute them
+  workspaces [options]  List run workspaces the daemon kept for debugging
+                        (--keep-workspaces)
+  help [command]        display help for command
 ",
   "tines runner daemon": "Usage: tines runner daemon [options]
 
@@ -778,21 +780,48 @@ Run the local runner daemon: register/reconnect, poll for assigned runs, execute
 them
 
 Options:
-  --name <name>              runner name, unique per user (default: this
-                             hostname)
-  --harness <harness>        claude-code | codex | custom (default:
-                             "claude-code")
-  --command <template>       custom harness command template ({prompt_file},
-                             {workspace}, {model})
-  --max-concurrent <n>       maximum simultaneous runs (default: 1)
-  --poll-interval <seconds>  seconds between polls (default: 15)
-  --no-cli-refresh           do not install/refresh the agent-facing tines CLI
-                             from npm (harnesses use the ambient PATH)
-  -u, --url <url>            base URL of the Tines API (or set TINES_API_URL;
-                             default http://localhost:5173)
-  --api-key <key>            API key (or set TINES_API_KEY)
-  --json                     output the raw JSON response
-  -h, --help                 display help for command
+  --name <name>                  runner name, unique per user (default: this
+                                 hostname)
+  --harness <harness>            claude-code | codex | custom (default:
+                                 "claude-code")
+  --command <template>           custom harness command template ({prompt_file},
+                                 {workspace}, {model})
+  --max-concurrent <n>           maximum simultaneous runs (default: 1)
+  --poll-interval <seconds>      seconds between polls (default: 15)
+  --no-cli-refresh               do not install/refresh the agent-facing tines
+                                 CLI from npm (harnesses use the ambient PATH)
+  --keep-workspaces <mode>       keep settled runs' workspaces for debugging:
+                                 never | failed | always (default: "never")
+  --keep-workspaces-for <hours>  delete kept workspaces older than this
+                                 (default: 72)
+  --keep-workspaces-max <n>      keep at most this many workspaces (oldest
+                                 removed first) (default: 20)
+  -u, --url <url>                base URL of the Tines API (or set
+                                 TINES_API_URL; default http://localhost:5173)
+  --api-key <key>                API key (or set TINES_API_KEY)
+  --json                         output the raw JSON response
+  -h, --help                     display help for command
+",
+  "tines runner workspaces": "Usage: tines runner workspaces [options] [command]
+
+List run workspaces the daemon kept for debugging (--keep-workspaces)
+
+Options:
+  --json           print JSON instead of a table
+  -h, --help       display help for command
+
+Commands:
+  prune [options]  Delete kept workspaces (never touches a live run's workspace)
+",
+  "tines runner workspaces prune": "Usage: tines runner workspaces prune [options]
+
+Delete kept workspaces (never touches a live run's workspace)
+
+Options:
+  --all                 delete every kept workspace
+  --older-than <hours>  delete kept workspaces older than this
+  --json                print JSON instead of a table
+  -h, --help            display help for command
 ",
   "tines runners": "Usage: tines runners [options] [command]
 
