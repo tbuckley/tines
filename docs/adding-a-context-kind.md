@@ -101,8 +101,9 @@ payload-agnostic.
 ### CLI — `packages/cli/src/`
 
 - `commands/context.ts`: payload flags on `context create` / `context edit`
-  (watch for flag collisions with the global `-u, --url`; see how the repo
-  kind handles it), plus a line in `printContextItem` (show rendering).
+  (never take `--url` for a payload — that is the API base URL on every
+  command; name the flag for what it holds, as the repo kind does with
+  `--repo-url`), plus a line in `printContextItem` (show rendering).
 - `format.ts`: a line in `contextItemSummary` (list rendering).
 - `commands/issues.ts`: the `--out` bundle file in `issues context`.
 
