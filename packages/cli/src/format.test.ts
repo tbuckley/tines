@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
+	ageLabel,
 	artifactSummary,
+	byteSize,
 	commentLines,
 	contextItemSummary,
 	formatTable,
 	issueRef,
+	keptWorkspaceRow,
 	linkRows,
 	prRefLabel,
 	quotaLabel,
@@ -266,5 +269,71 @@ describe('recurrenceLabel', () => {
 describe('scheduleRef', () => {
 	it('joins project and schedule name', () => {
 		expect(scheduleRef({ project_name: 'Tines', name: 'nightly' } as never)).toBe('Tines/nightly');
+	});
+});
+
+describe('byteSize', () => {
+	it.each([
+		[0, '0 B'],
+		[999, '999 B'],
+		[1024, '1 KB'],
+		[934_010, '912 KB'],
+		[4_823_449, '4.6 MB'],
+		[712_000_000, '679.0 MB'],
+		[1_395_864_371, '1.3 GB']
+	])('%i → %s', (bytes, expected) => {
+		expect(byteSize(bytes)).toBe(expected);
+	});
+});
+
+describe('ageLabel', () => {
+	const now = Date.parse('2026-01-10T12:00:00.000Z');
+	it.each([
+		['2026-01-10T11:59:20.000Z', '40s'],
+		['2026-01-10T11:20:00.000Z', '40m'],
+		['2026-01-10T04:00:00.000Z', '8h'],
+		['2026-01-05T12:00:00.000Z', '5d'],
+		// A clock skew (or a marker written ahead of us) reads as brand new,
+		// never as a negative age.
+		['2026-01-11T00:00:00.000Z', '0s'],
+		['not a date', '—']
+	])('%s → %s', (iso, expected) => {
+		expect(ageLabel(iso, now)).toBe(expected);
+	});
+});
+
+describe('keptWorkspaceRow', () => {
+	const now = Date.parse('2026-01-10T12:00:00.000Z');
+
+	it('renders run, issue, status, age, size, and path', () => {
+		expect(
+			keptWorkspaceRow(
+				{
+					run_id: 'arun_1',
+					issue_ref: 'Tines/19',
+					status: 'failed',
+					kept_at: '2026-01-09T12:00:00.000Z',
+					path: '/home/x/.config/tines/workspaces/arun_1'
+				},
+				4_823_449,
+				now
+			)
+		).toEqual([
+			'arun_1',
+			'Tines/19',
+			'failed',
+			'1d',
+			'4.6 MB',
+			'/home/x/.config/tines/workspaces/arun_1'
+		]);
+	});
+
+	it('an orphan kept before issue refs were recorded still renders', () => {
+		const row = keptWorkspaceRow(
+			{ run_id: 'arun_2', status: 'completed', kept_at: '2026-01-10T11:00:00.000Z', path: '/w' },
+			0,
+			now
+		);
+		expect(row).toEqual(['arun_2', '—', 'completed', '1h', '0 B', '/w']);
 	});
 });
