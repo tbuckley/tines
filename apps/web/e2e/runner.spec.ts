@@ -521,9 +521,14 @@ esac
 			.filter({ hasText: `${PROJECT_NAME}/#${issue.number}` })
 			.filter({ hasText: 'running' })
 			.first();
-		await row.getByRole('button', { name: 'Cancel', exact: true }).click();
+		// The button is a Svelte listener, so a click landing before hydration
+		// is swallowed: retry until the dialog is up (clickUntil in ui.spec.ts).
+		const cancelButton = row.getByRole('button', { name: 'Cancel', exact: true });
 		const dialog = page.getByRole('dialog', { name: 'Cancel this run?' });
-		await expect(dialog).toContainText('counts as a strike');
+		await expect(async () => {
+			if (!(await dialog.isVisible())) await cancelButton.click();
+			await expect(dialog).toContainText('counts as a strike', { timeout: 2000 });
+		}).toPass({ timeout: 15_000 });
 		await dialog.getByLabel(/Comment/).fill('Canceled from the dialog — try smaller steps');
 		await dialog.getByRole('button', { name: 'Cancel run' }).click();
 		await expect(dialog).toBeHidden();
