@@ -1039,6 +1039,13 @@ export interface RunnerBudget {
  * auto-migrated).
  */
 export const MODEL_PREDECESSORS: Record<string, readonly string[]> = {
+	'claude-fable-5-1': [
+		'claude-fable-5',
+		'claude-opus-5',
+		'claude-opus-4-8',
+		'claude-opus-4-7',
+		'claude-opus-4-6'
+	],
 	'claude-fable-5': ['claude-opus-5', 'claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6'],
 	'claude-opus-5': [
 		'claude-opus-4-8',
