@@ -17,6 +17,9 @@ let issue: IssueDetail;
 
 const PHONE = { width: 390, height: 844 };
 
+/** The row the stacking test opens; see its comment for why `/context`. */
+const seededItemName = `viewer-ctx-${runId}-00`;
+
 test.beforeAll(async ({ playwright }) => {
 	const request = await playwright.request.newContext({
 		baseURL: test.info().project.use.baseURL
@@ -56,6 +59,20 @@ test.beforeAll(async ({ playwright }) => {
 	await api.post(`/api/v1/issues/${issue.id}/comments`, {
 		body: Array.from({ length: 40 }, (_, i) => `Comment paragraph ${i + 1}.`).join('\n\n')
 	});
+
+	// `/context` is where a dialog legitimately stacks on a modal (see the test
+	// below). Enough project-scoped rows that the list runs past a phone
+	// viewport, so the scroll-lock assertions there mean something; scoped
+	// rather than global so they stay out of every other issue's context.
+	for (let i = 0; i < 30; i++) {
+		await api.post('/api/v1/context', {
+			kind: 'prompt',
+			name: `viewer-ctx-${runId}-${String(i).padStart(2, '0')}`,
+			project_id: project.id,
+			description: 'Row filler for the stacked-dialog test.',
+			body: 'Filler.'
+		});
+	}
 
 	await request.dispose();
 });
@@ -160,31 +177,111 @@ test('the page behind does not scroll while the viewer is open', async ({ page }
 	await expectPageBehindScrolls(page);
 });
 
-test('two modals open at once still release the page when both close', async ({ page }) => {
+/**
+ * Stacking (Tines/29). Focus is trapped and the background is inert, so the
+ * old route to a second dialog — Tab to a trigger behind the overlay — is gone
+ * by design. What still stacks legitimately is a confirm raised from *inside*
+ * an open modal: `ContextItemEditor`'s Delete on `/context`. The nested case is
+ * still worth guarding: the scroll lock and the inert count are both ref-
+ * counted, so the page must stay locked until the last dialog closes and be
+ * released exactly once when it does.
+ */
+test('a confirm stacked on a modal keeps the page locked until both close', async ({ page }) => {
 	await page.setViewportSize(PHONE);
-	await page.goto(issueUrl());
+	await page.goto('/context');
 
-	const viewer = page.getByRole('dialog', { name: 'Artifact viewer' });
-	await openViewer(page.getByRole('button', { name: /^View long-doc/ }), viewer);
+	const row = page.getByRole('button', { name: new RegExp(`^${seededItemName}`) });
+	const editor = page.getByRole('dialog', { name: /^Edit prompt/ });
+	await expect(async () => {
+		if (await row.isVisible()) await row.click();
+		await expect(editor).toBeVisible({ timeout: 2_000 });
+	}).toPass({ timeout: 15_000 });
 
-	// Focus is moved into the dialog but not trapped, and the background is not
-	// inert (Tines/29), so a keyboard user can still reach a trigger behind the
-	// overlay and stack a second modal on the first. The scroll lock has to be
-	// ref-counted to survive that: per-instance save/restore inverts, and the
-	// last close writes 'hidden' back, leaving the whole app unscrollable.
-	const attach = page.getByRole('button', { name: 'Attach artifact' });
-	await attach.focus();
-	await expect(attach).toBeFocused();
-	await page.keyboard.press('Enter');
-	await expect(page.getByRole('dialog', { name: 'Attach artifact' })).toBeVisible();
-	await expect(page.getByRole('dialog')).toHaveCount(2);
+	const confirm = page.getByRole('alertdialog');
+	await editor.getByRole('button', { name: 'Delete' }).click();
+	await expect(confirm).toBeVisible();
+	await expect(editor).toBeVisible();
 	expect(await wheelPageBehind(page)).toBe(0);
 
-	// Escape is a `<svelte:window>` handler in every mounted instance, so one
-	// press closes both.
+	// Escape is handled by the topmost layer only, so the first press dismisses
+	// the confirm and leaves the modal — and the lock — in place.
 	await page.keyboard.press('Escape');
-	await expect(page.getByRole('dialog')).toHaveCount(0);
+	await expect(confirm).toBeHidden();
+	await expect(editor).toBeVisible();
+	expect(await wheelPageBehind(page)).toBe(0);
+
+	await page.keyboard.press('Escape');
+	await expect(editor).toBeHidden();
+	await expect(page.locator('[inert]')).toHaveCount(0);
 	await expectPageBehindScrolls(page);
+});
+
+test('Tab cycles inside the open viewer instead of walking into the page', async ({ page }) => {
+	await page.goto(issueUrl());
+
+	const dialog = page.getByRole('dialog', { name: 'Artifact viewer' });
+	await openViewer(page.getByRole('button', { name: /^View long-doc/ }), dialog);
+	await expect(dialog.getByRole('button', { name: 'Close' })).toBeFocused();
+
+	const focusInsideDialog = () =>
+		page.evaluate(() => {
+			const content = document.querySelector('[role="dialog"][aria-modal="true"]');
+			return !!content && !!document.activeElement && content.contains(document.activeElement);
+		});
+
+	// Backwards off the first tabbable wraps to the last one in the dialog…
+	await page.keyboard.press('Shift+Tab');
+	expect(await focusInsideDialog()).toBe(true);
+
+	// …and no number of forward Tabs reaches the page behind.
+	for (let i = 0; i < 6; i++) {
+		await page.keyboard.press('Tab');
+		expect(await focusInsideDialog()).toBe(true);
+	}
+
+	await page.keyboard.press('Escape');
+	await expect(dialog).toBeHidden();
+});
+
+test('the page behind the viewer is inert while it is open', async ({ page }) => {
+	await page.goto(issueUrl());
+
+	const dialog = page.getByRole('dialog', { name: 'Artifact viewer' });
+	const opener = page.getByRole('button', { name: /^View long-doc/ });
+	await openViewer(opener, dialog);
+
+	// Found through the DOM rather than by role: the point of the assertion is
+	// that the opener sits inside an inert subtree, which is where assistive
+	// tech and the tab order stop seeing it.
+	const openerIsInert = () =>
+		page.evaluate(() => {
+			const button = document.querySelector('button[aria-label^="View long-doc"]');
+			return button ? button.closest('[inert]') !== null : null;
+		});
+
+	expect(await openerIsInert()).toBe(true);
+	// The attribute alone would pass even if `inert` on a `display: contents`
+	// wrapper were a no-op, which is the thing this design actually risked, so
+	// prove it functionally: focusing the opener has to be refused.
+	expect(
+		await page.evaluate(() => {
+			const button = document.querySelector(
+				'button[aria-label^="View long-doc"]'
+			) as HTMLElement | null;
+			button?.focus();
+			return {
+				focused: document.activeElement === button,
+				pointerEvents: button ? getComputedStyle(button).pointerEvents : null
+			};
+		})
+	).toEqual({ focused: false, pointerEvents: 'none' });
+	// The dialog itself is portalled outside the inert wrapper.
+	expect(await dialog.evaluate((el) => el.closest('[inert]') !== null)).toBe(false);
+
+	await dialog.getByRole('button', { name: 'Close' }).click();
+	await expect(dialog).toBeHidden();
+	expect(await openerIsInert()).toBe(false);
+	await expect(page.locator('[inert]')).toHaveCount(0);
 });
 
 test('Escape closes the viewer and returns focus to the button that opened it', async ({
@@ -200,4 +297,61 @@ test('Escape closes the viewer and returns focus to the button that opened it', 
 	await page.keyboard.press('Escape');
 	await expect(dialog).toBeHidden();
 	await expect(opener).toBeFocused();
+});
+
+/**
+ * The enter/exit animation is a pair of tw-animate-css utilities behind a
+ * variant selector, so it is only live if the variant matches the attribute
+ * bits-ui actually stamps. It shipped once written as `data-open:animate-in`,
+ * which compiles to a bare `[data-open]` — an attribute bits-ui 2.19.0 never
+ * sets (it emits `data-state="open"`), leaving the modal with no animation at
+ * all and the reduced-motion guard below with nothing to guard. Nothing else
+ * in the suite can tell the two states apart, so assert the computed animation
+ * rather than the class list.
+ */
+test('the open viewer runs its enter animation', async ({ page }) => {
+	await page.goto(issueUrl());
+
+	const dialog = page.getByRole('dialog', { name: 'Artifact viewer' });
+	await openViewer(page.getByRole('button', { name: /^View long-doc/ }), dialog);
+
+	// `data-state` stays "open" for as long as the dialog is up, so the
+	// animation-name remains applied whether or not the 150ms has elapsed.
+	const animationNames = () =>
+		page.evaluate(() => ({
+			content: getComputedStyle(document.querySelector('[data-dialog-content]') as Element)
+				.animationName,
+			overlay: getComputedStyle(document.querySelector('[data-dialog-overlay]') as Element)
+				.animationName
+		}));
+
+	expect(await animationNames()).toEqual({ content: 'enter', overlay: 'enter' });
+
+	await page.keyboard.press('Escape');
+	await expect(dialog).toBeHidden();
+});
+
+test('the viewer does not animate under prefers-reduced-motion, and still closes', async ({
+	page
+}) => {
+	await page.emulateMedia({ reducedMotion: 'reduce' });
+	await page.goto(issueUrl());
+
+	const dialog = page.getByRole('dialog', { name: 'Artifact viewer' });
+	await openViewer(page.getByRole('button', { name: /^View long-doc/ }), dialog);
+
+	// app.css's reduced-motion block, targeting the primitives' own attributes.
+	expect(
+		await page.evaluate(() => ({
+			content: getComputedStyle(document.querySelector('[data-dialog-content]') as Element)
+				.animationName,
+			overlay: getComputedStyle(document.querySelector('[data-dialog-overlay]') as Element)
+				.animationName
+		}))
+	).toEqual({ content: 'none', overlay: 'none' });
+
+	// An exit animation that is suppressed rather than skipped would leave the
+	// dialog on screen; a tight timeout is the point of the assertion.
+	await page.keyboard.press('Escape');
+	await expect(dialog).toBeHidden({ timeout: 2_000 });
 });

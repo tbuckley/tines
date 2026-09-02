@@ -1,10 +1,12 @@
 <script lang="ts">
 	import * as AlertDialog from '$lib/components/ui/alert-dialog/index.js';
 	import { pendingDialogs, type DialogRequest } from './dialogs.svelte';
+	import { backgroundInert } from './background-inert.svelte';
 
 	let current = $state<DialogRequest | null>(null);
 	let open = $state(false);
 	let settled = false;
+	let releaseInert: (() => void) | null = null;
 
 	$effect(() => {
 		if (!open && !current && pendingDialogs.queue.length > 0) {
@@ -22,11 +24,27 @@
 		settled = true;
 		current.resolve(confirmed);
 		open = false;
+		releaseInert?.();
+		releaseInert = null;
 	}
 
 	function onOpenChange(next: boolean) {
 		if (!next) settle(false);
 	}
+
+	// bits-ui does not hide the page behind from assistive tech; the root layout
+	// does, off this count. Ref-counted, so an AlertDialog raised from inside an
+	// open Modal leaves the background inert until both have closed. The release
+	// is synchronous in `settle` (with this cleanup as the destroy-time backstop)
+	// so the background is focusable again by the time focus is restored to it.
+	$effect(() => {
+		if (!open) return;
+		releaseInert ??= backgroundInert.acquire();
+		return () => {
+			releaseInert?.();
+			releaseInert = null;
+		};
+	});
 
 	// Keep the dialog mounted until the close animation finishes, then let the
 	// effect above pick up the next queued request.
