@@ -5,6 +5,7 @@
 		ContextKind,
 		CreateContextItemRequest,
 		Issue,
+		IssueListItem,
 		Project,
 		UpdateContextItemRequest,
 		WorkflowResponse
@@ -135,7 +136,7 @@
 	// Issues for the issue selector, constrained to the chosen project. Only
 	// the latest request may land: switching projects fires overlapping
 	// fetches whose responses can resolve out of order.
-	let issues = $state<Issue[]>([]);
+	let issues = $state<IssueListItem[]>([]);
 	let issuesRequest = 0;
 	$effect(() => {
 		if (!open) return;

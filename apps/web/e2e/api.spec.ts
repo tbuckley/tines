@@ -90,6 +90,27 @@ test.describe.serial('issue search', () => {
 		const api = apiClient(request, ALICE.apiKey);
 		expect(await listBoth(api, `nothing-${runId}`)).toEqual([[], []]);
 	});
+
+	// brief=1 drops the description bodies that dominate a list payload. Both
+	// list routes parse it, and nothing else about an item may change.
+	test('omits only the description under brief=1, on both routes', async ({ request }) => {
+		const api = apiClient(request, ALICE.apiKey);
+		const paths = [`/api/v1/issues?project=${projectId}`, `/api/v1/projects/${projectId}/issues`];
+		for (const path of paths) {
+			const full = (await body<ListResponse<IssueDetail>>(await api.get(path))).items;
+			const brief = (
+				await body<ListResponse<IssueDetail>>(
+					await api.get(`${path}${path.includes('?') ? '&' : '?'}brief=1`)
+				)
+			).items;
+			expect(full.map((i) => i.description).sort(), path).toEqual(['', '', 'mentions pagination']);
+			for (const [i, item] of brief.entries()) {
+				expect(Object.hasOwn(item, 'description'), path).toBe(false);
+				const { description: _description, ...rest } = full[i];
+				expect(item, path).toEqual(rest);
+			}
+		}
+	});
 });
 
 test.describe.serial('core issue loop', () => {
