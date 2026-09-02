@@ -454,7 +454,7 @@ The steady-state loop once setup is done — the flow that happens dozens of tim
    - **restart:** the state file (run → PID/workspace) lets the daemon kill orphans, `finish`-fail their runs, and remove workspaces;
    - **`owned_runs` reconciliation:** a restarted daemon that lost track reports what it actually owns; the supervisor fails the missing runs;
    - **the 5-minute offline rule:** no restart at all — the sweep fails its `running` runs (error `runner offline`) and revokes their keys, so an orphaned harness is spending against a dead key.
-   All three read the same to the user: run `failed`, issue took a strike, board/explainer reflect it.
+   All three read the same to the user: the run is `failed` with outcome **`interrupted`** — no strike, because the daemon died, not the work. The issue keeps its attempt budget and re-enters the pool in its current state (the reconciliation path queues a dispatch pass, so that is seconds rather than the next cron); a runner that keeps dropping runs is what gets flagged, backing off on its card exactly as a runner that keeps failing to launch does. Board, explainer and run rows reflect it.
 6. **Sleep mid-run, wake later** (the subtle one): the harness was suspended, not dead. A short nap (<5 min): polls resume, the run continues. Longer: the sweep already failed the run and revoked its key — on wake, the daemon's next poll learns via `cancels` that the run is dead and **kills the still-suspended harness without re-reporting it as its own failure** (see Decisions). Wasted partial work is bounded; a re-run picks the issue up with the thread as continuity.
 7. **Machine reboot:** combine 4 and 5 — on next daemon start (automatic under launchd/systemd), orphan cleanup runs against the state file, then normal polling resumes.
 
@@ -473,7 +473,7 @@ The steady-state loop once setup is done — the flow that happens dozens of tim
 
 **What happened**
 
-1. The **activity feed** is the chronological record: every lifecycle moment — runner registered/paused/removed, `agent_run.started` (tier + resolved model in payload), `agent_run.ended` (status, outcome `advanced`/`stalled`, runner, states, final usage), `issue.parked`/`resumed`, settings changes (secrets elided) — attributed "via *runner* · run …" alongside the human's own actions. Skimming it reads like a team standup log.
+1. The **activity feed** is the chronological record: every lifecycle moment — runner registered/paused/removed, `agent_run.started` (tier + resolved model in payload), `agent_run.ended` (status, outcome `advanced`/`stalled`/`interrupted`, runner, states, final usage), `issue.parked`/`resumed`, settings changes (secrets elided) — attributed "via *runner* · run …" alongside the human's own actions. Skimming it reads like a team standup log.
 2. Per issue, the **thread** is the durable narrative: agent comments, transitions, human corrections, in order. An issue's history is legible without ever opening a run log.
 3. Per run, `tines runs list --runner gemini` / `--issue acme/7` filter the attempt history; `runs show <id> --json` includes the full stored log tail and provider link — greppable post-mortems across runs.
 
@@ -483,7 +483,7 @@ The steady-state loop once setup is done — the flow that happens dozens of tim
 
 **Was it worth it**
 
-5. The pieces exist — outcome per run (`advanced`/`stalled`) in `agent_run.ended` payloads and run rows, cost per run on the run row — and the join is scriptable via `runs list --json`. No surface computes aggregate outcome rates in this phase (see Decisions).
+5. The pieces exist — outcome per run (`advanced`/`stalled`/`interrupted`) in `agent_run.ended` payloads and, persisted on the run itself, on run rows, cost per run on the run row — and the join is scriptable via `runs list --json`. No surface computes aggregate outcome rates in this phase (see Decisions).
 
 **Success criterion:** any past action by any agent can be traced from feed → issue → run → log/provider console in a couple of clicks; every dollar figure is decomposable by runner/tier/day and never silently omits unknowns.
 
