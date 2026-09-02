@@ -77,6 +77,16 @@ and prepends `~/.config/tines/cli/node_modules/.bin` to the harness's `PATH`. No
 - To reset, delete `~/.config/tines/cli` (it is rebuilt on the next refresh). To opt out
   entirely, pass `--no-cli-refresh`.
 
+### The harness's own CLI is yours to keep current
+
+The refresh above covers `tines` and nothing else — the daemon never installs or updates
+`claude`, `codex`, or a custom harness binary. That matters because the model the daemon
+passes as `--model` comes from the server, per run, and a harness can be too old for it: the
+built-in `smartest` tier for `claude_code` resolves to `claude-fable-5-1`, which **requires
+Claude Code 2.1.251 or newer**. An older `claude` fails the run in seconds with a
+server-side 400 (`does not support this model`), which reads as a failing agent rather than
+a stale install. Keep it current with `claude update`.
+
 ## What a run's log contains
 
 The log a run leaves behind (`tines runs show <id> --logs`, or the run view in the UI) is

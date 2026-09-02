@@ -1,5 +1,5 @@
 import { json } from '@sveltejs/kit';
-import type { CreateIssueRequest, Issue, ListResponse } from '@tines/shared';
+import type { CreateIssueRequest, IssueListItem, ListResponse } from '@tines/shared';
 import { api, apiContext, encodeCursor, readJson, readPage } from '$lib/server/api/core';
 import { createIssue, listIssues } from '$lib/server/api/issues';
 import { getProject } from '$lib/server/api/projects';
@@ -22,12 +22,14 @@ export const GET: RequestHandler = api(async (event) => {
 			schedule: params.get('schedule') ?? undefined,
 			hideDone: ['1', 'true'].includes(params.get('hide_done') ?? ''),
 			ready: ['1', 'true'].includes(params.get('ready') ?? ''),
-			q: params.get('q') ?? undefined
+			q: params.get('q') ?? undefined,
+			// brief=1 omits description bodies, which are most of the payload.
+			brief: ['1', 'true'].includes(params.get('brief') ?? '')
 		},
 		page
 	);
 	const last = items[items.length - 1];
-	const body: ListResponse<Issue> = {
+	const body: ListResponse<IssueListItem> = {
 		items,
 		next_cursor: hasMore && last ? encodeCursor(last.created_at, last.id) : null
 	};

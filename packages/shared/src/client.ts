@@ -39,11 +39,11 @@ import type {
 	EffectiveContext,
 	EventFilters,
 	LaunchPromptResponse,
-	Issue,
 	IssueDetail,
 	IssueFilters,
 	IssueJournalResponse,
 	IssueLink,
+	IssueListItem,
 	ListResponse,
 	PageParams,
 	Project,
@@ -204,7 +204,7 @@ export function createApiClient(options: ApiClientOptions) {
 
 		// Issues
 		listIssues: (filters: IssueFilters & PageParams = {}) =>
-			get<ListResponse<Issue>>(`/api/v1/issues${query(filters)}`),
+			get<ListResponse<IssueListItem>>(`/api/v1/issues${query(filters)}`),
 		listProjectIssues: (
 			projectId: string,
 			filters: {
@@ -213,8 +213,9 @@ export function createApiClient(options: ApiClientOptions) {
 				hide_done?: boolean;
 				ready?: boolean;
 				q?: string;
+				brief?: boolean;
 			} & PageParams = {}
-		) => get<ListResponse<Issue>>(`/api/v1/projects/${projectId}/issues${query(filters)}`),
+		) => get<ListResponse<IssueListItem>>(`/api/v1/projects/${projectId}/issues${query(filters)}`),
 		createIssue: (projectId: string, body: CreateIssueRequest) =>
 			request<CreateIssueResponse>('POST', `/api/v1/projects/${projectId}/issues`, body),
 		getIssue: (id: string) => get<IssueDetail>(`/api/v1/issues/${id}`),
