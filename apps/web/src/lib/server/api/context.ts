@@ -13,6 +13,7 @@ import {
 	type AppendContextRequest,
 	type Artifact,
 	type ArtifactRequirementCheck,
+	type ArtifactType,
 	type ContextFile,
 	type ContextItem,
 	type ContextKind,
@@ -510,6 +511,52 @@ function scopeEventPayload(scope: ResolvedScope) {
 	};
 }
 
+/**
+ * Every endpoint that writes an artifact payload, in one place: the 422 that
+ * turns a generic create away has to name all of them, and enumerating them
+ * by hand is how `folder` went missing from the message once already. `types`
+ * is what makes the omission testable — the list has to cover ARTIFACT_TYPES.
+ */
+const ARTIFACT_WRITE_ENDPOINTS: readonly {
+	method: string;
+	path: string;
+	types: readonly ArtifactType[];
+	accepts: string;
+}[] = [
+	{
+		method: 'PUT',
+		path: '/api/v1/issues/:id/artifacts/:name',
+		types: ['text', 'link', 'pr'],
+		accepts: 'JSON for text/link/pr'
+	},
+	{
+		method: 'PUT',
+		path: '/api/v1/issues/:id/artifacts/:name/file',
+		types: ['file'],
+		accepts: 'raw upload'
+	},
+	{
+		method: 'PUT',
+		path: '/api/v1/issues/:id/artifacts/:name/folder',
+		types: ['folder'],
+		accepts: 'multipart snapshot'
+	}
+];
+
+/**
+ * The prose half of the same list: the first endpoint in full, the rest
+ * abbreviated from `/:name` the way the docs and the spec write them.
+ */
+function artifactEndpointsMessage(): string {
+	const parts = ARTIFACT_WRITE_ENDPOINTS.map((e, i) =>
+		i === 0
+			? `${e.method} ${e.path} (${e.accepts})`
+			: `…${e.path.slice(e.path.indexOf('/:name'))} (${e.accepts})`
+	);
+	const last = parts.pop();
+	return `Artifacts are created through the artifact endpoints: ${parts.join(', ')}, or ${last}`;
+}
+
 export async function createContextItem(
 	db: Kysely<Database>,
 	env: Env,
@@ -520,12 +567,10 @@ export async function createContextItem(
 	// One creation path is saner than two, and file payloads can't ride a
 	// JSON create: artifacts are created via their own endpoints only.
 	if (kind === 'artifact') {
-		throw new ApiFail(
-			422,
-			'use_artifact_endpoints',
-			'Artifacts are created through the artifact endpoints: PUT /api/v1/issues/:id/artifacts/:name (JSON for text/link/pr) or …/:name/file (raw upload)',
-			{ field: 'kind' }
-		);
+		throw new ApiFail(422, 'use_artifact_endpoints', artifactEndpointsMessage(), {
+			field: 'kind',
+			endpoints: ARTIFACT_WRITE_ENDPOINTS
+		});
 	}
 	const name = validateName(kind, body.name);
 	const description = optionalString(body.description, 'description', { max: 1000 }) ?? '';
