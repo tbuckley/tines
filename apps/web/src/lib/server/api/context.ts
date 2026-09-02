@@ -569,7 +569,7 @@ export async function createContextItem(
 	if (kind === 'artifact') {
 		throw new ApiFail(422, 'use_artifact_endpoints', artifactEndpointsMessage(), {
 			field: 'kind',
-			endpoints: ARTIFACT_WRITE_ENDPOINTS.map((e) => ({ ...e }))
+			endpoints: ARTIFACT_WRITE_ENDPOINTS
 		});
 	}
 	const name = validateName(kind, body.name);
