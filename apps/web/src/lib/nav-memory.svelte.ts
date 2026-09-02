@@ -9,6 +9,7 @@
  * the tab. The URL stays the source of truth for what a list *shows* — this
  * only changes where links *point*.
  */
+import { untrack } from 'svelte';
 
 /** sessionStorage key. */
 export const NAV_MEMORY_STORAGE_KEY = 'tines:nav-memory';
@@ -73,10 +74,17 @@ function readStored(): NavMemory {
 
 let memory = $state<NavMemory>(readStored());
 
-function write(next: NavMemory): void {
+/**
+ * The recorders run inside a page's `$effect`, so the current value has to be
+ * read untracked: a tracked read of state the same effect writes makes the
+ * effect its own dependency, and Svelte aborts the flush (taking the rest of
+ * the page's reactivity with it).
+ */
+function update(patch: Partial<NavMemory>): void {
 	// The module-level state is shared across requests in the Worker isolate,
 	// so it is only ever written in the browser.
 	if (typeof window === 'undefined') return;
+	const next = { ...untrack(() => memory), ...patch };
 	memory = next;
 	try {
 		sessionStorage.setItem(NAV_MEMORY_STORAGE_KEY, JSON.stringify(next));
@@ -95,9 +103,9 @@ export const navMemory = {
 	},
 	/** `search` is `page.url.search`: '' or '?…'. */
 	recordIssues(search: string): void {
-		write({ issuesQuery: search, lastList: { href: `/issues${search}`, label: 'Issues' } });
+		update({ issuesQuery: search, lastList: { href: `/issues${search}`, label: 'Issues' } });
 	},
 	recordProject(projectId: string, search: string, name: string): void {
-		write({ ...memory, lastList: { href: `/projects/${projectId}${search}`, label: name } });
+		update({ lastList: { href: `/projects/${projectId}${search}`, label: name } });
 	}
 };
