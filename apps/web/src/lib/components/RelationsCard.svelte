@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { Issue, IssueLinks, IssueRef, LinkedIssue } from '@tines/shared';
+	import type { IssueLinks, IssueListItem, IssueRef, LinkedIssue } from '@tines/shared';
 	import { ApiError } from '@tines/shared';
 	import IconPlus from '@tabler/icons-svelte/icons/plus';
 	import IconX from '@tabler/icons-svelte/icons/x';
@@ -82,7 +82,7 @@
 	// The picker's pool: fetched once, when the form first opens. Single-user
 	// volumes make client-side filtering fine; a server-side `q` is the
 	// upgrade path if this ever gets heavy.
-	let candidates = $state<Issue[] | null>(null);
+	let candidates = $state<IssueListItem[] | null>(null);
 	let loadingCandidates = $state(false);
 
 	async function toggleForm() {
@@ -185,7 +185,7 @@
 		return { message: e.message };
 	}
 
-	async function add(target: Issue) {
+	async function add(target: IssueListItem) {
 		formError = null;
 		// Optimistic, like pending comments: the row appears dimmed immediately
 		// (which also drops the issue from the suggestions, so a second tap

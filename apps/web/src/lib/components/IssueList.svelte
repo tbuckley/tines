@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { Issue, IssueRef } from '@tines/shared';
+	import type { IssueListItem, IssueRef } from '@tines/shared';
 	import IconAlertTriangle from '@tabler/icons-svelte/icons/alert-triangle';
 	import IconBan from '@tabler/icons-svelte/icons/ban';
 	import IconCopy from '@tabler/icons-svelte/icons/copy';
@@ -14,7 +14,7 @@
 		issues,
 		showProject = true,
 		emptyMessage = 'No issues here.'
-	}: { issues: Issue[]; showProject?: boolean; emptyMessage?: string } = $props();
+	}: { issues: IssueListItem[]; showProject?: boolean; emptyMessage?: string } = $props();
 
 	const dur = () => (prefersReducedMotion() ? 0 : 220);
 

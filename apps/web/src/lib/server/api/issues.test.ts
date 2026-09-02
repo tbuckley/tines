@@ -178,6 +178,45 @@ describe('listIssues search', () => {
 	});
 });
 
+// --- brief: the token-saving list shape (Tines/90) ---------------------------
+
+describe('listIssues brief', () => {
+	let t: TestDb;
+
+	beforeEach(() => {
+		t = createTestDb();
+		seedBase(t);
+		addIssue(t, { title: 'Documented', description: 'a long description body' });
+		addIssue(t, { title: 'Bare' });
+	});
+
+	const list = async (filters: Parameters<typeof listIssues>[2]) =>
+		(await listIssues(t.db, USER, filters, { cursor: null, limit: 50 })).items;
+
+	it('omits the description key entirely — including for an empty one', async () => {
+		const items = await list({ brief: true });
+		expect(items).toHaveLength(2);
+		for (const item of items) expect(Object.hasOwn(item, 'description')).toBe(false);
+	});
+
+	it('changes nothing else about an item', async () => {
+		const full = (await list({})).find((i) => i.title === 'Documented')!;
+		const brief = (await list({ brief: true })).find((i) => i.title === 'Documented')!;
+		expect(full.description).toBe('a long description body');
+		const { description: _description, ...rest } = full;
+		expect(brief).toEqual(rest);
+	});
+
+	it('keeps descriptions without the flag, and with a falsy one', async () => {
+		for (const filters of [{}, { brief: false }]) {
+			const byTitle = Object.fromEntries(
+				(await list(filters)).map((i) => [i.title, i.description])
+			);
+			expect(byTitle).toEqual({ Documented: 'a long description body', Bare: '' });
+		}
+	});
+});
+
 // --- getIssueDetail: the page load's dedupe contract (Tines/32) --------------
 // The issue page resolves the issue row once and hands what it already has to
 // getIssueDetail. These lock in that the shortcuts produce the same answer as
