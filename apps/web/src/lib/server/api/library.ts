@@ -19,7 +19,13 @@ import {
 import type { Kysely } from 'kysely';
 import type { Database } from '$lib/server/db';
 import { ApiFail, type ActorContext } from './core';
-import { contextItemQuery, createContextItem, isJournal, loadFiles, updateContextItem } from './context';
+import {
+	contextItemQuery,
+	createContextItem,
+	isJournal,
+	loadFiles,
+	updateContextItem
+} from './context';
 import { createProject } from './projects';
 import { createWorkflow, loadWorkflows } from './workflows';
 
@@ -59,7 +65,11 @@ export async function buildLibraryDocument(
 		db
 			.selectFrom('project')
 			.leftJoin('workflow', 'workflow.id', 'project.default_workflow_id')
-			.select(['project.name as name', 'project.description as description', 'workflow.name as default_workflow'])
+			.select([
+				'project.name as name',
+				'project.description as description',
+				'workflow.name as default_workflow'
+			])
 			.where('project.user_id', '=', userId)
 			.orderBy('project.created_at asc')
 			.execute(),
@@ -80,29 +90,27 @@ export async function buildLibraryDocument(
 		default_workflow: p.default_workflow ?? null
 	}));
 
-	const workflows: CreateWorkflowRequest[] = workflowRows
-		.filter(isExportableWorkflow)
-		.map((wf) => {
-			const stateName = new Map(wf.states.map((s) => [s.id, s.name]));
-			const states: WorkflowStateInput[] = [...wf.states]
-				.sort((a, b) => a.position - b.position)
-				// Array order carries position; `prompt` is not used — stage
-				// instructions travel as ordinary state-scoped context items.
-				.map((s) => ({ name: s.name, category: s.category }));
-			const transitions: WorkflowTransitionInput[] = wf.transitions.map((t) => ({
-				name: t.name,
-				from: stateName.get(t.from_state_id) ?? t.from_state_id,
-				to: stateName.get(t.to_state_id) ?? t.to_state_id,
-				...(t.requires && t.requires.length > 0 ? { requires: t.requires } : {})
-			}));
-			return {
-				name: wf.name,
-				description: wf.description,
-				initial_state: stateName.get(wf.initial_state_id) ?? wf.initial_state_id,
-				states,
-				transitions
-			};
-		});
+	const workflows: CreateWorkflowRequest[] = workflowRows.filter(isExportableWorkflow).map((wf) => {
+		const stateName = new Map(wf.states.map((s) => [s.id, s.name]));
+		const states: WorkflowStateInput[] = [...wf.states]
+			.sort((a, b) => a.position - b.position)
+			// Array order carries position; `prompt` is not used — stage
+			// instructions travel as ordinary state-scoped context items.
+			.map((s) => ({ name: s.name, category: s.category }));
+		const transitions: WorkflowTransitionInput[] = wf.transitions.map((t) => ({
+			name: t.name,
+			from: stateName.get(t.from_state_id) ?? t.from_state_id,
+			to: stateName.get(t.to_state_id) ?? t.to_state_id,
+			...(t.requires && t.requires.length > 0 ? { requires: t.requires } : {})
+		}));
+		return {
+			name: wf.name,
+			description: wf.description,
+			initial_state: stateName.get(wf.initial_state_id) ?? wf.initial_state_id,
+			states,
+			transitions
+		};
+	});
 
 	const kept = contextRows.filter((row) => includeJournals || !isJournal(row));
 	const files = await loadFiles(
@@ -267,7 +275,10 @@ export async function planImport(
 	// A project's default workflow resolves against what exists here plus what
 	// this document brings; a name in `doc.workflows` ends up present either
 	// way (created, or already here under that name).
-	const availableWorkflows = new Set([...workflowNames.keys(), ...doc.workflows.map((wf) => wf.name)]);
+	const availableWorkflows = new Set([
+		...workflowNames.keys(),
+		...doc.workflows.map((wf) => wf.name)
+	]);
 	const existingContext = new Map(
 		contextRows.map((row) => [
 			contextKey(row.kind, row.name, row.project_id, row.workflow_state_id),
@@ -281,13 +292,23 @@ export async function planImport(
 		const ref = `project "${project.name}"`;
 		if (projectIds.has(project.name)) {
 			steps.push({
-				entry: { section: 'project', ref, action: 'skip', reason: 'a project with this name already exists' }
+				entry: {
+					section: 'project',
+					ref,
+					action: 'skip',
+					reason: 'a project with this name already exists'
+				}
 			});
 			continue;
 		}
 		if (!createProjects) {
 			steps.push({
-				entry: { section: 'project', ref, action: 'skip', reason: 'creating missing projects is turned off' }
+				entry: {
+					section: 'project',
+					ref,
+					action: 'skip',
+					reason: 'creating missing projects is turned off'
+				}
 			});
 			continue;
 		}
@@ -347,13 +368,23 @@ export async function planImport(
 		const ref = contextRef(entry);
 		if (entry.journal && !includeJournals) {
 			steps.push({
-				entry: { section: 'context', ref, action: 'skip', reason: 'journals are excluded from this import' }
+				entry: {
+					section: 'context',
+					ref,
+					action: 'skip',
+					reason: 'journals are excluded from this import'
+				}
 			});
 			continue;
 		}
 		if (entry.kind === 'artifact') {
 			steps.push({
-				entry: { section: 'context', ref, action: 'skip', reason: 'artifacts are issue data, not library content' }
+				entry: {
+					section: 'context',
+					ref,
+					action: 'skip',
+					reason: 'artifacts are issue data, not library content'
+				}
 			});
 			continue;
 		}
@@ -398,7 +429,12 @@ export async function planImport(
 			steps.push(
 				overwrite
 					? {
-							entry: { section: 'context', ref, action: 'overwrite', reason: 'replacing the existing item' },
+							entry: {
+								section: 'context',
+								ref,
+								action: 'overwrite',
+								reason: 'replacing the existing item'
+							},
 							context: entry,
 							targetId: existing.id
 						}
@@ -549,7 +585,8 @@ async function writeContextEntry(
 	let stateId: string | null = null;
 	if (entry.scope.state) {
 		const key = `${entry.scope.state.workflow}${SEP}${entry.scope.state.name}`;
-		stateId = createdStates.get(key) ?? (await lookupStateId(db, actor.userId, entry.scope.state)) ?? null;
+		stateId =
+			createdStates.get(key) ?? (await lookupStateId(db, actor.userId, entry.scope.state)) ?? null;
 		if (!stateId) {
 			throw new Error(
 				`state "${entry.scope.state.name}" in workflow "${entry.scope.state.workflow}" could not be resolved`

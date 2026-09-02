@@ -25,17 +25,24 @@ pnpm install
 
 # one-time local setup
 cd apps/web
-cp .dev.vars.example .dev.vars           # fill in Google OAuth creds to test sign-in
-pnpm db:migrate:local                     # create the Better Auth tables in local D1
+cp .dev.vars.example .dev.vars           # works as-is; Google OAuth creds are optional
+pnpm db:migrate:local                     # create the tables in local D1
+pnpm db:seed:local                        # a dev user (dev@tines.local) and an API key
 
 # run the app (from the repo root)
 pnpm dev                                  # http://localhost:5173
 ```
 
-With the dev server running, try the CLI:
+To sign in, enter `dev@tines.local` (or any address) on the landing page. Nothing is
+delivered locally: `pnpm dev` prints the magic link to its console — open it. Google
+sign-in also works once the OAuth credentials are in `.dev.vars` (see below).
+
+With the dev server running, try the CLI with the seeded key (the seed prints it):
 
 ```sh
+export TINES_API_KEY=tines_dev0000000000000000000000000000000000000
 pnpm cli time                             # dev mode (tsx, no build needed)
+pnpm cli projects list
 pnpm cli time -- --json
 
 # or the built binary
@@ -43,7 +50,7 @@ pnpm build
 node packages/cli/dist/index.js time --url http://localhost:5173
 ```
 
-The CLI reads the API base URL from `--url` (accepted by every command, without exception) or the `TINES_API_URL` env var; the default is the production deployment, `https://tines.tbuckley.dev`. For local development, set `TINES_API_URL=http://localhost:5173` or pass `--url` — `pnpm cli` does that for you, so the snippet above talks to your dev server.
+The CLI reads the API base URL from `--url` (accepted by every command, without exception), then the `TINES_API_URL` env var, then the file `tines login` writes (`~/.config/tines/config.json`); the default is the production deployment, `https://tines.tbuckley.dev`. The API key resolves the same way (`--api-key`, `TINES_API_KEY`, the file). For local development, set `TINES_API_URL=http://localhost:5173` or pass `--url` — `pnpm cli` does that for you, so the snippet above talks to your dev server. `tines config` shows what is in effect and where each value came from.
 
 Every `… list` command returns one page. Pass `--all-pages` to follow the cursor and fetch the whole list in one command; without it, `--json` output carries a `next_cursor` and warns on stderr that there is more.
 
@@ -69,11 +76,21 @@ tines --help
 tines time                                # https://tines.tbuckley.dev, the default
 ```
 
-To point it at a local dev server instead, pass `--url` or set the env var in your shell profile:
+Store an API key (Settings → API keys in the web app) once and every command is
+authenticated. To point it at a local dev server or another deployment, store that URL too,
+or set the env var in your shell profile:
 
 ```sh
-export TINES_API_URL=http://localhost:5173
+tines login --api-key tines_…                    # or `--api-key -` to paste it on stdin
+tines login --url http://localhost:5173          # a dev server; the default is the production URL
+tines config                                     # what is in effect, and from where
+tines logout                                     # forget both
+export TINES_API_URL=http://localhost:5173       # the env-var alternative
 ```
+
+`login` checks the key against the API before storing it. Env vars still win over the file
+(`TINES_API_URL`, `TINES_API_KEY`), which is how agent runs are configured, and `--url` /
+`--api-key` win over both.
 
 To upgrade later: `git pull`, `pnpm install`, `pnpm build`, then re-run `npm install -g ./packages/cli`. To go back to a released build, `npm install -g tines@latest`.
 
@@ -217,8 +234,12 @@ sweep at or after its nominal time**, so an issue from a schedule set for 09:00 
 creation timestamp up to five minutes later. Schedules are guardrailed to fire no more
 often than hourly, so the lag stays small relative to the recurrence.
 
-Locally, `wrangler dev --test-scheduled` exposes `GET /__scheduled` to fire a sweep on
-demand instead of waiting for the clock.
+Locally, `pnpm preview` (from `apps/web`) builds and runs the worker under `wrangler dev
+--test-scheduled`, which exposes `GET /__scheduled` to fire a sweep on demand instead of
+waiting for the clock; `pnpm dev` (Vite) never runs the `scheduled()` handler. The script
+also passes `--host localhost:8787`: `wrangler dev` otherwise presents every request to the
+worker under the production custom domain from `routes`, and Better Auth then ignores the
+sign-in routes.
 
 ## Google sign-in
 
@@ -232,7 +253,7 @@ Better Auth is mounted at `/api/auth/*` (see `apps/web/src/hooks.server.ts`); it
 
 Email sign-in links are sent with [Cloudflare Email Service](https://developers.cloudflare.com/email-service/) (beta, requires the Workers Paid plan) through the `EMAIL` send binding in `apps/web/wrangler.jsonc`.
 
-Local dev needs no setup: `wrangler dev` simulates the binding, logging each email (including the sign-in link) to the dev server console instead of delivering it.
+Local dev needs no setup: the binding is simulated and nothing is delivered. `pnpm dev` prints each sign-in link to its console; `wrangler dev` (and `pnpm preview`) instead log the message's file paths under `.wrangler/tmp/email/`, and the link is in the `.txt` one.
 
 To send real emails in production:
 
@@ -274,6 +295,14 @@ pnpm wrangler secret put SECRET_ENCRYPTION_KEY   # `openssl rand -hex 32`; encry
 # Email Service (see "Magic-link sign-in" above)
 pnpm deploy
 ```
+
+### Continuous integration
+
+`.github/workflows/ci.yml` runs on every pull request and push to `main`: one job
+typechecks (`pnpm check`) and runs the unit tests, another installs Chromium and runs the
+Playwright suite (`pnpm test:e2e`) against a local `wrangler dev` with a throwaway D1. It
+needs no secrets, so it runs for fork PRs too. The deploy and publish workflows below run
+the unit tests again before shipping, but the e2e suite runs only here.
 
 ### Automatic deploys
 

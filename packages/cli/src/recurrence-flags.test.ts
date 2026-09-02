@@ -37,17 +37,32 @@ describe('buildRecurrence', () => {
 	it.each([
 		[{ every: 'hourly' }, { kind: 'hourly', every_hours: 1, minute: 0 }],
 		[{ every: '6h' }, { kind: 'hourly', every_hours: 6, minute: 0 }],
-		[{ every: '2h', at: ':15' }, { kind: 'hourly', every_hours: 2, minute: 15 }],
+		[
+			{ every: '2h', at: ':15' },
+			{ kind: 'hourly', every_hours: 2, minute: 15 }
+		],
 		// For hourly, --at is bare minutes too.
-		[{ every: '2h', at: '15' }, { kind: 'hourly', every_hours: 2, minute: 15 }],
+		[
+			{ every: '2h', at: '15' },
+			{ kind: 'hourly', every_hours: 2, minute: 15 }
+		],
 		[{ every: 'daily' }, { kind: 'daily', time: '09:00' }],
-		[{ every: 'daily', at: '18:30' }, { kind: 'daily', time: '18:30' }],
-		[{ every: 'weekly', on: 'tue' }, { kind: 'weekly', time: '09:00', weekday: 2 }],
+		[
+			{ every: 'daily', at: '18:30' },
+			{ kind: 'daily', time: '18:30' }
+		],
+		[
+			{ every: 'weekly', on: 'tue' },
+			{ kind: 'weekly', time: '09:00', weekday: 2 }
+		],
 		[
 			{ every: 'weekly', on: 'friday', at: '17:00' },
 			{ kind: 'weekly', time: '17:00', weekday: 5 }
 		],
-		[{ every: 'monthly', on: '1' }, { kind: 'monthly', time: '09:00', day_of_month: 1 }],
+		[
+			{ every: 'monthly', on: '1' },
+			{ kind: 'monthly', time: '09:00', day_of_month: 1 }
+		],
 		[
 			{ every: 'monthly', on: '31', at: '23:59' },
 			{ kind: 'monthly', time: '23:59', day_of_month: 31 }

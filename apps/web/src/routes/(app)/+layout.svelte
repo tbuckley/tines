@@ -93,7 +93,9 @@
 	<header class="bg-background/90 sticky top-0 z-40 border-b backdrop-blur">
 		<div class="mx-auto flex h-14 w-full max-w-6xl items-center gap-6 px-4">
 			<a href="/issues" class="flex items-center gap-2 font-semibold tracking-tight">
-				<span class="bg-primary text-primary-foreground flex size-7 items-center justify-center rounded-lg">
+				<span
+					class="bg-primary text-primary-foreground flex size-7 items-center justify-center rounded-lg"
+				>
 					<IconArrowsSplit2 size={16} stroke={2} />
 				</span>
 				Tines
@@ -130,9 +132,16 @@
 					aria-label="Account menu"
 				>
 					{#if data.user.image}
-						<img src={data.user.image} alt="" class="size-8 rounded-full border" referrerpolicy="no-referrer" />
+						<img
+							src={data.user.image}
+							alt=""
+							class="size-8 rounded-full border"
+							referrerpolicy="no-referrer"
+						/>
 					{:else}
-						<span class="bg-muted text-muted-foreground flex size-8 items-center justify-center rounded-full border text-xs font-semibold">
+						<span
+							class="bg-muted text-muted-foreground flex size-8 items-center justify-center rounded-full border text-xs font-semibold"
+						>
 							{initials}
 						</span>
 					{/if}

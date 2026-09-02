@@ -39,12 +39,19 @@ export function register(program: Command): void {
 			.description('Create a project (with its initial context prompt)')
 			.option('-d, --description <text>', 'project description')
 			.option('-w, --default-workflow <id-or-name>', 'default workflow for new issues')
-			.option('--prompt <md>', 'initial conventions prompt, stitched into every issue\'s agent prompt: inline Markdown or @file')
+			.option(
+				'--prompt <md>',
+				"initial conventions prompt, stitched into every issue's agent prompt: inline Markdown or @file"
+			)
 			.option('--no-prompt', 'create without an initial prompt')
 	).action(
 		async (
 			name: string,
-			opts: CommonOpts & { description?: string; defaultWorkflow?: string; prompt?: string | boolean }
+			opts: CommonOpts & {
+				description?: string;
+				defaultWorkflow?: string;
+				prompt?: string | boolean;
+			}
 		) => {
 			// Every issue in a project inherits its context, so the CLI insists on
 			// an explicit choice; the UI's optional textarea is nudge enough there.

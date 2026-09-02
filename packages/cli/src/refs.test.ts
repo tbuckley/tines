@@ -112,7 +112,9 @@ describe('assertNewStatesHavePrompts', () => {
 	});
 
 	it('ignores existing states, which inherit their prompt', () => {
-		expect(() => assertNewStatesHavePrompts([{ id: 'st_1', name: 'Design' }], undefined)).not.toThrow();
+		expect(() =>
+			assertNewStatesHavePrompts([{ id: 'st_1', name: 'Design' }], undefined)
+		).not.toThrow();
 	});
 
 	it('names every promptless new state', () => {

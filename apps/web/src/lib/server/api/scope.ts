@@ -148,7 +148,9 @@ export async function resolveScope(
 				'workflow.name as workflow_name'
 			])
 			.where('workflow_state.id', '=', ids.workflowStateId)
-			.where((eb) => eb.or([eb('workflow.user_id', '=', userId), eb('workflow.user_id', 'is', null)]))
+			.where((eb) =>
+				eb.or([eb('workflow.user_id', '=', userId), eb('workflow.user_id', 'is', null)])
+			)
 			.executeTakeFirst();
 		if (!state) {
 			throw new ApiFail(
@@ -175,7 +177,13 @@ export async function resolveScope(
 		const issue = await db
 			.selectFrom('issue')
 			.innerJoin('project', 'project.id', 'issue.project_id')
-			.select(['issue.id', 'issue.number', 'issue.project_id', 'issue.workflow_id', 'project.name as project_name'])
+			.select([
+				'issue.id',
+				'issue.number',
+				'issue.project_id',
+				'issue.workflow_id',
+				'project.name as project_name'
+			])
 			.where('issue.id', '=', issueId)
 			.where('project.user_id', '=', userId)
 			.executeTakeFirst();

@@ -18,63 +18,70 @@ export function register(program: Command): void {
 		.command('supervisor')
 		.description('The automation kill switch, quota policy, and attempt limit');
 
-
-	withCommon(supervisor.command('status').description('One-screen overview: kill switch, quota, utilization, runners')).action(
-		async (opts: CommonOpts) => {
-			const api = client(opts);
-			const [settings, runnersRes, workflows, activeRunItems] = await Promise.all([
-				api.getSupervisorSettings(),
-				api.listRunners(),
-				api.listWorkflows(),
-				listAll((page) => api.listRuns({ active: true, ...page }))
-			]);
-			if (opts.json) {
-				return printJson({ settings, runners: runnersRes.items, active_runs: activeRunItems });
-			}
-			const stateNames = new Map<string, string>();
-			for (const wf of workflows.items) {
-				for (const s of wf.states) stateNames.set(s.id, `${wf.name}/${s.name}`);
-			}
-			console.log(`automation: ${settings.enabled ? 'ON' : 'OFF (kill switch — nothing dispatches)'}`);
-			console.log(quotaLabel(settings.quota, (id) => stateNames.get(id) ?? id));
-			console.log(`utilization: ${utilizationLabel(settings.quota, activeRunItems, (id) => stateNames.get(id) ?? id)}`);
-			console.log(`attempt limit: ${settings.attempt_limit} strikes, then the issue parks`);
-			if (runnersRes.items.length === 0) {
-				console.log('runners: none');
-			} else {
-				console.log('runners:');
-				table(
-					runnersRes.items.map((r) => [
-						`  ${r.name}`,
-						r.type,
-						runnerStatusLabel(r),
-						`${r.active_runs}/${r.max_concurrent}`
-					])
-				);
-			}
+	withCommon(
+		supervisor
+			.command('status')
+			.description('One-screen overview: kill switch, quota, utilization, runners')
+	).action(async (opts: CommonOpts) => {
+		const api = client(opts);
+		const [settings, runnersRes, workflows, activeRunItems] = await Promise.all([
+			api.getSupervisorSettings(),
+			api.listRunners(),
+			api.listWorkflows(),
+			listAll((page) => api.listRuns({ active: true, ...page }))
+		]);
+		if (opts.json) {
+			return printJson({ settings, runners: runnersRes.items, active_runs: activeRunItems });
 		}
-	);
-
-	withCommon(supervisor.command('enable').description('Arm automation (the kill switch on)')).action(
-		async (opts: CommonOpts) => {
-			const settings = await client(opts).updateSupervisorSettings({ enabled: true });
-			if (opts.json) return printJson(settings);
-			console.log('automation is ON — eligible issues with a matching rule will dispatch');
+		const stateNames = new Map<string, string>();
+		for (const wf of workflows.items) {
+			for (const s of wf.states) stateNames.set(s.id, `${wf.name}/${s.name}`);
 		}
-	);
-
-	withCommon(supervisor.command('disable').description('Pause all automation at once (the kill switch off)')).action(
-		async (opts: CommonOpts) => {
-			const settings = await client(opts).updateSupervisorSettings({ enabled: false });
-			if (opts.json) return printJson(settings);
-			console.log('automation is OFF — nothing new dispatches until re-enabled');
+		console.log(
+			`automation: ${settings.enabled ? 'ON' : 'OFF (kill switch — nothing dispatches)'}`
+		);
+		console.log(quotaLabel(settings.quota, (id) => stateNames.get(id) ?? id));
+		console.log(
+			`utilization: ${utilizationLabel(settings.quota, activeRunItems, (id) => stateNames.get(id) ?? id)}`
+		);
+		console.log(`attempt limit: ${settings.attempt_limit} strikes, then the issue parks`);
+		if (runnersRes.items.length === 0) {
+			console.log('runners: none');
+		} else {
+			console.log('runners:');
+			table(
+				runnersRes.items.map((r) => [
+					`  ${r.name}`,
+					r.type,
+					runnerStatusLabel(r),
+					`${r.active_runs}/${r.max_concurrent}`
+				])
+			);
 		}
-	);
+	});
+
+	withCommon(
+		supervisor.command('enable').description('Arm automation (the kill switch on)')
+	).action(async (opts: CommonOpts) => {
+		const settings = await client(opts).updateSupervisorSettings({ enabled: true });
+		if (opts.json) return printJson(settings);
+		console.log('automation is ON — eligible issues with a matching rule will dispatch');
+	});
+
+	withCommon(
+		supervisor.command('disable').description('Pause all automation at once (the kill switch off)')
+	).action(async (opts: CommonOpts) => {
+		const settings = await client(opts).updateSupervisorSettings({ enabled: false });
+		if (opts.json) return printJson(settings);
+		console.log('automation is OFF — nothing new dispatches until re-enabled');
+	});
 
 	const quota = supervisor.command('quota').description('Pick and configure the quota policy');
 
 	withCommon(
-		quota.command('global <n>').description('Use the global cap: at most <n> concurrent runs in total')
+		quota
+			.command('global <n>')
+			.description('Use the global cap: at most <n> concurrent runs in total')
 	).action(async (n: string, opts: CommonOpts) => {
 		const limit = Number.parseInt(n, 10);
 		const settings = await client(opts).updateSupervisorSettings({
@@ -88,7 +95,9 @@ export function register(program: Command): void {
 		quota
 			.command('roster')
 			.description('Use the per-state roster: at most N concurrent runs per workflow state')
-			.requiredOption('--default <n>', 'limit for states without an override', (v) => Number.parseInt(v, 10))
+			.requiredOption('--default <n>', 'limit for states without an override', (v) =>
+				Number.parseInt(v, 10)
+			)
 			.option(
 				'--state <workflow/state=n>',
 				'per-state override (repeatable), counted by the state a run started in',

@@ -13,10 +13,17 @@ export const load: PageServerLoad = async ({ locals, platform, params }) => {
 	const userId = locals.user!.id;
 	const workflow = await loadWorkflow(db, userId, params.id).catch((e) => {
 		const status = e instanceof ApiFail ? e.status : 500;
-		error(status, status === 404 ? `No workflow has the ID “${truncate(params.id)}”.` : 'Not found');
+		error(
+			status,
+			status === 404 ? `No workflow has the ID “${truncate(params.id)}”.` : 'Not found'
+		);
 	});
 	const [contextItems, projects, workflows, routingRules] = await Promise.all([
-		listContextItemsForStates(db, userId, workflow.states.map((s) => s.id)),
+		listContextItemsForStates(
+			db,
+			userId,
+			workflow.states.map((s) => s.id)
+		),
 		listProjects(db, userId),
 		loadWorkflows(db, userId),
 		listRoutingRules(db, userId)

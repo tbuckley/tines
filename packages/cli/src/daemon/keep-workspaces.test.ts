@@ -15,7 +15,12 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
-import { keptMarkerPath, workspacesDir, writeKeptMarker, type KeptWorkspaceMarker } from './store.js';
+import {
+	keptMarkerPath,
+	workspacesDir,
+	writeKeptMarker,
+	type KeptWorkspaceMarker
+} from './store.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const tsx = join(here, '..', '..', 'node_modules', '.bin', 'tsx');
@@ -141,12 +146,16 @@ afterEach(async () => {
 	}
 	server?.close();
 	server = null;
-	if (configDir) rmSync(configDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+	if (configDir)
+		rmSync(configDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
 	configDir = null;
 });
 
 /** Boots stub + daemon and runs one assignment to its finish report. */
-async function runOnce(command: string, extra: string[]): Promise<{ harvest: Harvest; ws: string }> {
+async function runOnce(
+	command: string,
+	extra: string[]
+): Promise<{ harvest: Harvest; ws: string }> {
 	const stub = stubSupervisor();
 	server = stub.server;
 	await new Promise<void>((r) => server!.listen(0, '127.0.0.1', r));
@@ -198,7 +207,7 @@ describe('--keep-workspaces', () => {
 		expect(harvest.log).not.toContain('workspace kept at');
 	}, 30_000);
 
-	it('sweeps expired kept workspaces at startup, leaving a live run\'s bare one alone', async () => {
+	it("sweeps expired kept workspaces at startup, leaving a live run's bare one alone", async () => {
 		const stub = stubSupervisor();
 		server = stub.server;
 		await new Promise<void>((r) => server!.listen(0, '127.0.0.1', r));

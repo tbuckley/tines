@@ -97,8 +97,10 @@ export function validateWorkspacePath(path: unknown, field: string): string {
 	if (p.startsWith('/')) throw fail('paths must be relative (no leading "/")');
 	if (p.includes('=')) throw fail('paths cannot contain "="');
 	const segments = p.split('/');
-	if (segments.some((s) => s === '')) throw fail('paths cannot have empty segments or trailing slashes');
-	if (segments.some((s) => s === '..' || s === '.')) throw fail('paths cannot contain "." or ".." segments');
+	if (segments.some((s) => s === ''))
+		throw fail('paths cannot have empty segments or trailing slashes');
+	if (segments.some((s) => s === '..' || s === '.'))
+		throw fail('paths cannot contain "." or ".." segments');
 	return p;
 }
 
@@ -123,10 +125,15 @@ function validateFiles(value: unknown): ContextFile[] {
 		const input = f as { path?: unknown; content?: unknown };
 		const path = validateWorkspacePath(input.path, `files[${i}].path`);
 		if (seen.has(path)) {
-			throw new ApiFail(422, 'duplicate_path', `Skill file path "${path}" is listed more than once`, {
-				field: 'files',
-				path
-			});
+			throw new ApiFail(
+				422,
+				'duplicate_path',
+				`Skill file path "${path}" is listed more than once`,
+				{
+					field: 'files',
+					path
+				}
+			);
 		}
 		seen.add(path);
 		if (typeof input.content !== 'string') {
@@ -297,7 +304,9 @@ export async function getContextItem(
 	userId: string,
 	id: string
 ): Promise<ContextItem> {
-	const row = await contextItemQuery(db, userId).where('context_item.id', '=', id).executeTakeFirst();
+	const row = await contextItemQuery(db, userId)
+		.where('context_item.id', '=', id)
+		.executeTakeFirst();
 	if (!row) throw notFound();
 	const files =
 		row.kind === 'skill' ? ((await loadFiles(db, [row.id])).get(row.id) ?? []) : undefined;
@@ -363,10 +372,7 @@ export async function listContextItems(
 		// (and occasionally useful) for a search box.
 		const like = `%${filters.q}%`;
 		q = q.where((eb) =>
-			eb.or([
-				eb('context_item.name', 'like', like),
-				eb('context_item.description', 'like', like)
-			])
+			eb.or([eb('context_item.name', 'like', like), eb('context_item.description', 'like', like)])
 		);
 	}
 	if (page.cursor) {
@@ -383,7 +389,10 @@ export async function listContextItems(
 		.orderBy('context_item.id desc')
 		.limit(page.limit + 1)
 		.execute();
-	return { items: rows.slice(0, page.limit).map((r) => serializeItem(r)), hasMore: rows.length > page.limit };
+	return {
+		items: rows.slice(0, page.limit).map((r) => serializeItem(r)),
+		hasMore: rows.length > page.limit
+	};
 }
 
 /** Items scoped to any of the given states (the workflow page's sections). */
@@ -464,7 +473,11 @@ async function assertNameAvailable(
 	}
 }
 
-async function nextPosition(db: Kysely<Database>, userId: string, scope: ScopeIds): Promise<number> {
+async function nextPosition(
+	db: Kysely<Database>,
+	userId: string,
+	scope: ScopeIds
+): Promise<number> {
 	let q = db
 		.selectFrom('context_item')
 		.select((eb) => eb.fn.max('position').as('m'))
@@ -598,7 +611,12 @@ export async function createContextItem(
 function guardedContextEvent(
 	db: Kysely<Database>,
 	actor: ActorContext,
-	input: { type: string; issueId: string | null; projectId: string | null; payload: Record<string, unknown> },
+	input: {
+		type: string;
+		issueId: string | null;
+		projectId: string | null;
+		payload: Record<string, unknown>;
+	},
 	itemId: string,
 	versionAfter: number
 ): CompiledQuery {
@@ -641,10 +659,15 @@ export async function updateContextItem(
 	}
 
 	if (body.kind !== undefined && body.kind !== kind) {
-		throw new ApiFail(422, 'kind_immutable', 'A context item\'s kind cannot be changed after creation', {
-			field: 'kind',
-			kind
-		});
+		throw new ApiFail(
+			422,
+			'kind_immutable',
+			"A context item's kind cannot be changed after creation",
+			{
+				field: 'kind',
+				kind
+			}
+		);
 	}
 	rejectForeignPayload(kind, body as unknown as Record<string, unknown>);
 
@@ -695,7 +718,8 @@ export async function updateContextItem(
 	let repoBranch = row.repo_branch;
 	let repoDir = row.repo_dir;
 	if (kind === 'repo') {
-		if (body.repo_url !== undefined) repoUrl = requireString(body.repo_url, 'repo_url', { max: 1000 }).trim();
+		if (body.repo_url !== undefined)
+			repoUrl = requireString(body.repo_url, 'repo_url', { max: 1000 }).trim();
 		if (body.repo_branch !== undefined) {
 			repoBranch = optionalString(body.repo_branch, 'repo_branch', { max: 200 })?.trim() || null;
 		}
@@ -712,7 +736,9 @@ export async function updateContextItem(
 	if (scopeChanged) position = await nextPosition(db, actor.userId, targetIds);
 	if (body.position !== undefined) {
 		if (typeof body.position !== 'number' || !Number.isInteger(body.position)) {
-			throw new ApiFail(422, 'invalid_field', '"position" must be an integer', { field: 'position' });
+			throw new ApiFail(422, 'invalid_field', '"position" must be an integer', {
+				field: 'position'
+			});
 		}
 		position = body.position;
 	}
@@ -882,9 +908,14 @@ export async function appendContextItem(
 			.executeTakeFirst();
 		if (!row) throw notFound();
 		if (row.kind !== 'prompt') {
-			throw new ApiFail(422, 'not_a_prompt', `Only prompt items can be appended to (this is a ${row.kind})`, {
-				kind: row.kind
-			});
+			throw new ApiFail(
+				422,
+				'not_a_prompt',
+				`Only prompt items can be appended to (this is a ${row.kind})`,
+				{
+					kind: row.kind
+				}
+			);
 		}
 		if (body.expected_version !== undefined && body.expected_version !== row.version) {
 			throw versionConflict(row);
@@ -1008,15 +1039,21 @@ function matchingItemsQuery(db: Kysely<Database>, userId: string, target: MatchT
 	return contextItemQuery(db, userId)
 		.where('context_item.kind', '!=', 'artifact')
 		.where((eb) =>
-		eb.and([
-			eb.or([eb('context_item.project_id', 'is', null), eb('context_item.project_id', '=', target.projectId)]),
-			eb.or([
-				eb('context_item.workflow_state_id', 'is', null),
-				eb('context_item.workflow_state_id', '=', target.stateId)
-			]),
-			eb.or([eb('context_item.issue_id', 'is', null), eb('context_item.issue_id', '=', target.issueId)])
-		])
-	);
+			eb.and([
+				eb.or([
+					eb('context_item.project_id', 'is', null),
+					eb('context_item.project_id', '=', target.projectId)
+				]),
+				eb.or([
+					eb('context_item.workflow_state_id', 'is', null),
+					eb('context_item.workflow_state_id', '=', target.stateId)
+				]),
+				eb.or([
+					eb('context_item.issue_id', 'is', null),
+					eb('context_item.issue_id', '=', target.issueId)
+				])
+			])
+		);
 }
 
 /** Layer order, then position / created_at / id within a layer. */
@@ -1031,7 +1068,10 @@ function sortMatched(rows: ItemRow[]): ItemRow[] {
 }
 
 /** Dedupe by name within a kind: the later (more specific) item wins wholesale. */
-function dedupeByName(rows: ItemRow[]): { winners: ItemRow[]; overridden: OverriddenContextItem[] } {
+function dedupeByName(rows: ItemRow[]): {
+	winners: ItemRow[];
+	overridden: OverriddenContextItem[];
+} {
 	const byName = new Map<string, ItemRow>();
 	const losers: { row: ItemRow; winner: ItemRow }[] = [];
 	for (const row of rows) {
@@ -1200,7 +1240,10 @@ export async function effectiveContextForIssue(
 	const repoDedupe = dedupeByName(rows.filter((r) => r.kind === 'repo'));
 
 	const fileMap = skillFiles
-		? await loadFiles(db, skillDedupe.winners.map((r) => r.id))
+		? await loadFiles(
+				db,
+				skillDedupe.winners.map((r) => r.id)
+			)
 		: new Map<string, ContextFile[]>();
 	const skills: EffectiveSkill[] = skillDedupe.winners.map((r) => ({
 		item_id: r.id,
@@ -1416,7 +1459,7 @@ export function issueBlock(
 			'',
 			// The run key remembers the stage it was launched in, so the old
 			// append-before-you-move ordering trap no longer exists.
-			'Appends land in this stage\'s journal even after you move the issue.',
+			"Appends land in this stage's journal even after you move the issue.",
 			'',
 			`- Append a lesson: \`tines journal append ${ref} "- <date>: <lesson>"\``,
 			'  (or `-` with a quoted heredoc, as for comments, when the body must not be touched by the shell)',
@@ -1495,7 +1538,10 @@ export async function findAttachedContext(
 	if (anchor.stateIds !== undefined) {
 		q = q.where('context_item.workflow_state_id', 'in', anchor.stateIds);
 	}
-	const rows = await q.orderBy('context_item.created_at asc').orderBy('context_item.id asc').execute();
+	const rows = await q
+		.orderBy('context_item.created_at asc')
+		.orderBy('context_item.id asc')
+		.execute();
 	return rows.map((row) => ({
 		id: row.id,
 		kind: row.kind as ContextKind,

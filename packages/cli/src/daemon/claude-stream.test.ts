@@ -76,7 +76,13 @@ describe('renderStreamEvent', () => {
 			renderStreamEvent({
 				type: 'user',
 				message: {
-					content: [{ type: 'tool_result', is_error: true, content: [{ type: 'text', text: 'no such file' }] }]
+					content: [
+						{
+							type: 'tool_result',
+							is_error: true,
+							content: [{ type: 'text', text: 'no such file' }]
+						}
+					]
 				}
 			})
 		).toEqual(['[tool] error: no such file']);
@@ -84,7 +90,12 @@ describe('renderStreamEvent', () => {
 
 	it('summarizes the result, and surfaces the reason when it failed', () => {
 		expect(
-			renderStreamEvent({ type: 'result', subtype: 'success', num_turns: 12, total_cost_usd: 0.4213 })
+			renderStreamEvent({
+				type: 'result',
+				subtype: 'success',
+				num_turns: 12,
+				total_cost_usd: 0.4213
+			})
 		).toEqual(['[session] result: success (12 turns, $0.42)']);
 		expect(
 			renderStreamEvent({
@@ -99,7 +110,9 @@ describe('renderStreamEvent', () => {
 	it('clips a long tool input rather than dropping it', () => {
 		const [line] = renderStreamEvent({
 			type: 'assistant',
-			message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'x'.repeat(1000) } }] }
+			message: {
+				content: [{ type: 'tool_use', name: 'Bash', input: { command: 'x'.repeat(1000) } }]
+			}
 		});
 		expect(line!.length).toBeLessThan(340);
 		expect(line!.endsWith('…')).toBe(true);
@@ -114,7 +127,9 @@ describe('ClaudeStreamRenderer', () => {
 				{ type: 'assistant', message: { content: [{ type: 'text', text: 'On it.' }] } },
 				{
 					type: 'assistant',
-					message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'pnpm test' } }] }
+					message: {
+						content: [{ type: 'tool_use', name: 'Bash', input: { command: 'pnpm test' } }]
+					}
 				},
 				{ type: 'result', subtype: 'success', num_turns: 2, total_cost_usd: 0.01 }
 			])

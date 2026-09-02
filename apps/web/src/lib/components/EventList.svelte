@@ -85,7 +85,9 @@
 				in:slide={{ duration: dur() }}
 				out:fade={{ duration: dur() }}
 			>
-				<span class="bg-muted text-muted-foreground mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full">
+				<span
+					class="bg-muted text-muted-foreground mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full"
+				>
 					<Icon size={14} stroke={1.75} />
 				</span>
 				<div class="min-w-0 flex-1">
@@ -95,7 +97,8 @@
 						<!-- Svelte trims whitespace at block boundaries, so the space before
 						     each segment has to be an explicit text node — and it has to sit
 						     flush against the {#if} or the markup's own newline doubles it. -->
-						<span class="font-medium">{displayActor(ev)}</span>{#each describeEvent(ev) as seg}{' '}{#if seg.kind === 'text'}
+						<span class="font-medium">{displayActor(ev)}</span
+						>{#each describeEvent(ev) as seg}{' '}{#if seg.kind === 'text'}
 								<span class="text-muted-foreground">{seg.text}</span>
 							{:else if seg.kind === 'self-ref'}
 								{@render selfRef(ev)}
@@ -122,7 +125,10 @@
 						{/each}
 					</p>
 				</div>
-				<span class="text-muted-foreground shrink-0 text-xs" title={new Date(ev.created_at).toLocaleString()}>
+				<span
+					class="text-muted-foreground shrink-0 text-xs"
+					title={new Date(ev.created_at).toLocaleString()}
+				>
 					{relativeTime(ev.created_at)}
 				</span>
 			</li>

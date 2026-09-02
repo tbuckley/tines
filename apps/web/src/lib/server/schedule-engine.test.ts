@@ -28,7 +28,16 @@ describe('parseCron', () => {
 		expect([...parseCron('0 0 * * 7').weekdays]).toEqual([0]);
 	});
 
-	for (const bad of ['0 9 * *', '60 9 * * *', '0 24 * * *', '0 9 0 * *', '0 9 * 13 *', '0 9 * * 8', 'x 9 * * *', '5-1 9 * * *']) {
+	for (const bad of [
+		'0 9 * *',
+		'60 9 * * *',
+		'0 24 * * *',
+		'0 9 0 * *',
+		'0 9 * 13 *',
+		'0 9 * * 8',
+		'x 9 * * *',
+		'5-1 9 * * *'
+	]) {
 		it(`rejects "${bad}"`, () => {
 			expect(() => parseCron(bad)).toThrow(ScheduleInputError);
 		});
@@ -64,12 +73,16 @@ describe('compilePreset', () => {
 	it('rejects malformed inputs', () => {
 		expect(() => compilePreset({ kind: 'daily', time: '25:00' })).toThrow(ScheduleInputError);
 		expect(() => compilePreset({ kind: 'weekly', time: '09:00' })).toThrow(/weekday/);
-		expect(() => compilePreset({ kind: 'monthly', time: '09:00', day_of_month: 32 })).toThrow(/day_of_month/);
+		expect(() => compilePreset({ kind: 'monthly', time: '09:00', day_of_month: 32 })).toThrow(
+			/day_of_month/
+		);
 		expect(() => compilePreset({ kind: 'hourly' })).toThrow(/every_hours/);
 		expect(() => compilePreset({ kind: 'hourly', every_hours: 0 })).toThrow(/every_hours/);
 		expect(() => compilePreset({ kind: 'hourly', every_hours: 24 })).toThrow(/every_hours/);
 		expect(() => compilePreset({ kind: 'hourly', every_hours: 2, minute: 60 })).toThrow(/minute/);
-		expect(() => compilePreset({ kind: 'yearly', time: '09:00' } as never)).toThrow(/Unknown preset kind/);
+		expect(() => compilePreset({ kind: 'yearly', time: '09:00' } as never)).toThrow(
+			/Unknown preset kind/
+		);
 	});
 });
 
@@ -92,9 +105,9 @@ describe('nextOccurrence', () => {
 
 	it('evaluates in the schedule timezone', () => {
 		// 09:00 in New York during DST is 13:00 UTC.
-		expect(nextOccurrenceFromCron('0 9 * * *', 'America/New_York', utc('2026-08-23T00:00:00Z'))).toBe(
-			utc('2026-08-23T13:00:00Z')
-		);
+		expect(
+			nextOccurrenceFromCron('0 9 * * *', 'America/New_York', utc('2026-08-23T00:00:00Z'))
+		).toBe(utc('2026-08-23T13:00:00Z'));
 	});
 
 	it('handles weekly schedules (2026-08-23 is a Sunday)', () => {
@@ -105,7 +118,9 @@ describe('nextOccurrence', () => {
 
 	it('keeps local time across a DST change', () => {
 		// US DST ends 2026-11-01: New York goes from UTC-4 to UTC-5.
-		expect(nextOccurrenceFromCron('0 9 * * *', 'America/New_York', utc('2026-10-31T14:00:00Z'))).toBe(
+		expect(
+			nextOccurrenceFromCron('0 9 * * *', 'America/New_York', utc('2026-10-31T14:00:00Z'))
+		).toBe(
 			utc('2026-11-01T14:00:00Z') // 09:00 EST
 		);
 	});
@@ -113,21 +128,21 @@ describe('nextOccurrence', () => {
 	it('fires a spring-forward gap time at the first valid instant', () => {
 		// US DST starts 2026-03-08 02:00 EST: 02:30 does not exist; the clock
 		// jumps to 03:00 EST→EDT at 07:00 UTC.
-		expect(nextOccurrenceFromCron('30 2 * * *', 'America/New_York', utc('2026-03-08T00:00:00Z'))).toBe(
-			utc('2026-03-08T07:00:00Z')
-		);
+		expect(
+			nextOccurrenceFromCron('30 2 * * *', 'America/New_York', utc('2026-03-08T00:00:00Z'))
+		).toBe(utc('2026-03-08T07:00:00Z'));
 	});
 
 	it('fires a fall-back ambiguous time once, at the first instant', () => {
 		// 2026-11-01 01:30 in New York happens at 05:30 UTC (EDT) and 06:30 UTC (EST).
-		expect(nextOccurrenceFromCron('30 1 * * *', 'America/New_York', utc('2026-11-01T00:00:00Z'))).toBe(
-			utc('2026-11-01T05:30:00Z')
-		);
+		expect(
+			nextOccurrenceFromCron('30 1 * * *', 'America/New_York', utc('2026-11-01T00:00:00Z'))
+		).toBe(utc('2026-11-01T05:30:00Z'));
 		// After the first instant has passed, the next occurrence is the next day —
 		// the repeated wall time does not fire twice.
-		expect(nextOccurrenceFromCron('30 1 * * *', 'America/New_York', utc('2026-11-01T05:30:00Z'))).toBe(
-			utc('2026-11-02T06:30:00Z')
-		);
+		expect(
+			nextOccurrenceFromCron('30 1 * * *', 'America/New_York', utc('2026-11-01T05:30:00Z'))
+		).toBe(utc('2026-11-02T06:30:00Z'));
 	});
 
 	it('skips short months for day-31 monthly schedules (cron semantics)', () => {
@@ -193,7 +208,9 @@ describe('templates', () => {
 
 	it('leaves unknown or malformed tokens as-is', () => {
 		const vars = templateVars('s', 1, 'UTC', 0);
-		expect(renderTemplate('{{oops}} {{date} {{}} {{date}}', vars)).toBe('{{oops}} {{date} {{}} 1970-01-01');
+		expect(renderTemplate('{{oops}} {{date} {{}} {{date}}', vars)).toBe(
+			'{{oops}} {{date} {{}} 1970-01-01'
+		);
 	});
 });
 

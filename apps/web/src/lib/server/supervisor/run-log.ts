@@ -52,7 +52,9 @@ const encoder = new TextEncoder();
 // module carries the same local batch helper engine.ts does.
 async function runBatch(env: Env, queries: CompiledQuery[]): Promise<D1Result[]> {
 	if (queries.length === 0) return [];
-	return env.DB.batch(queries.map((q) => env.DB.prepare(q.sql).bind(...(q.parameters as unknown[]))));
+	return env.DB.batch(
+		queries.map((q) => env.DB.prepare(q.sql).bind(...(q.parameters as unknown[])))
+	);
 }
 
 export interface SpillableRun {
@@ -181,7 +183,11 @@ export interface SealableRun {
  * Returns false when it declined (nothing spilled, already sealed, or too
  * many unmerged parts for one pass — the sweep compacts then retries).
  */
-export async function sealRunLog(db: Kysely<Database>, env: Env, run: SealableRun): Promise<boolean> {
+export async function sealRunLog(
+	db: Kysely<Database>,
+	env: Env,
+	run: SealableRun
+): Promise<boolean> {
 	if (run.log_bytes_dropped === 0 || run.log_sealed === 1) return false;
 	const unmerged = run.log_part_count - run.log_compacted_through;
 	if (unmerged > COMPACT_MAX_PER_PASS) return false;
@@ -207,7 +213,9 @@ export async function sealRunLog(db: Kysely<Database>, env: Env, run: SealableRu
 	if ((res?.meta.changes ?? 0) === 0) return false;
 	await store.delete([
 		runLogHeadKey(run.user_id, run.id),
-		...Array.from({ length: run.log_part_count }, (_, i) => runLogPartKey(run.user_id, run.id, i + 1))
+		...Array.from({ length: run.log_part_count }, (_, i) =>
+			runLogPartKey(run.user_id, run.id, i + 1)
+		)
 	]);
 	return true;
 }
@@ -308,7 +316,11 @@ export async function deleteRunLogObjects(env: Env, userId: string, runId: strin
  * `RUN_LOG_RETENTION_MS` ago. The D1 tail is deliberately untouched — run
  * history keeps reading exactly as it did before full logs existed.
  */
-export async function gcExpiredRunLogs(db: Kysely<Database>, env: Env, now: number): Promise<number> {
+export async function gcExpiredRunLogs(
+	db: Kysely<Database>,
+	env: Env,
+	now: number
+): Promise<number> {
 	const rows = await db
 		.selectFrom('agent_run')
 		.select(['id', 'user_id'])

@@ -115,7 +115,7 @@ describe('daemon state file', () => {
 		expect(loadDaemonState(path)[0].started_at).toBe(1234);
 	});
 
-	it('round-trips issue_ref, so an orphan\'s kept workspace can name its issue', () => {
+	it("round-trips issue_ref, so an orphan's kept workspace can name its issue", () => {
 		const dir = tempDir();
 		const path = daemonStatePath(dir, 'rnr_1');
 		saveDaemonState(path, [

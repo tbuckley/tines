@@ -140,8 +140,8 @@
 <section class="mb-8 rounded-lg border p-4">
 	<h2 class="mb-1 text-lg font-medium">Export</h2>
 	<p class="text-muted-foreground mb-3 max-w-2xl text-sm">
-		Downloads one JSON file with every workflow you own and every context item that is not tied to
-		a single issue. Prompts, skills, and journals are included <span class="font-medium">in full</span
+		Downloads one JSON file with every workflow you own and every context item that is not tied to a
+		single issue. Prompts, skills, and journals are included <span class="font-medium">in full</span
 		> — treat the file as sensitive if you have pasted anything private into a prompt.
 	</p>
 	<label class="mb-3 flex items-center gap-2 text-sm">

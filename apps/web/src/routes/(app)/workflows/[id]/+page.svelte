@@ -144,7 +144,9 @@
 		<h1 class="flex items-center gap-2 text-2xl font-semibold tracking-tight">
 			{data.workflow.name}
 			{#if data.workflow.is_system}
-				<span class="text-muted-foreground bg-muted inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium">
+				<span
+					class="text-muted-foreground bg-muted inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium"
+				>
 					<IconLock size={12} /> standard · read-only
 				</span>
 			{/if}
@@ -166,7 +168,9 @@
 				variant="outline"
 				class="text-destructive"
 				disabled={data.workflow.issue_count > 0}
-				title={data.workflow.issue_count > 0 ? 'Workflows with issues cannot be deleted' : undefined}
+				title={data.workflow.issue_count > 0
+					? 'Workflows with issues cannot be deleted'
+					: undefined}
 				onclick={deleteWorkflow}
 			>
 				Delete
@@ -249,9 +253,12 @@
 					{/if}
 				</button>
 				{#if open}
-					<div class="space-y-2 px-3 pb-3" transition:slide={{ duration: prefersReducedMotion() ? 0 : 180 }}>
+					<div
+						class="space-y-2 px-3 pb-3"
+						transition:slide={{ duration: prefersReducedMotion() ? 0 : 180 }}
+					>
 						<ContextItemList
-							items={items}
+							{items}
 							onselect={openContextEdit}
 							emptyMessage="Nothing scoped to this state yet."
 						/>
@@ -283,7 +290,9 @@
 />
 
 {#each data.workflow.warnings ?? [] as warning (warning)}
-	<p class="mt-6 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
+	<p
+		class="mt-6 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400"
+	>
 		{warning}
 	</p>
 {/each}

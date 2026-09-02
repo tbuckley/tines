@@ -15,7 +15,9 @@ export const load: PageServerLoad = async ({ locals, platform, url }) => {
 
 	let q = eventQuery(db, userId);
 	if (project) {
-		q = q.where((eb) => eb.or([eb('event.project_id', '=', project), eb('project.name', '=', project)]));
+		q = q.where((eb) =>
+			eb.or([eb('event.project_id', '=', project), eb('project.name', '=', project)])
+		);
 	}
 	if (type) q = q.where('event.type', '=', type);
 

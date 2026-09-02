@@ -11,7 +11,11 @@ const ACTOR: Actor = {
 	run: null
 };
 
-function event(type: string, payload: Record<string, unknown> = {}, over: Partial<TinesEvent> = {}): TinesEvent {
+function event(
+	type: string,
+	payload: Record<string, unknown> = {},
+	over: Partial<TinesEvent> = {}
+): TinesEvent {
 	return {
 		id: 'evt_1',
 		type,
@@ -35,7 +39,11 @@ function event(type: string, payload: Record<string, unknown> = {}, over: Partia
 const PAYLOADS: Record<KnownEventType, Record<string, unknown>> = {
 	'issue.created': { title: 'A title' },
 	'issue.updated': { changed: ['title', 'description'] },
-	'issue.transitioned': { action: 'Start work', from_state_name: 'Backlog', to_state_name: 'Design' },
+	'issue.transitioned': {
+		action: 'Start work',
+		from_state_name: 'Backlog',
+		to_state_name: 'Design'
+	},
 	'issue.commented': { comment_id: 'cmt_1' },
 	'issue.comment_edited': { comment_id: 'cmt_1', changed: ['body'] },
 	'issue.comment_deleted': { comment_id: 'cmt_1', body_length: 42 },
@@ -69,19 +77,42 @@ const PAYLOADS: Record<KnownEventType, Record<string, unknown>> = {
 	'scheduled_task.updated': { name: 'Daily triage' },
 	'scheduled_task.deleted': { name: 'Daily triage' },
 	'scheduled_task.skipped': { name: 'Daily triage', blocking: ['iss_2', 'iss_3'] },
-	'context.created': { context_id: 'ctx_1', kind: 'prompt', name: 'house-style', scope: { label: 'project Tines' } },
-	'context.updated': { context_id: 'ctx_1', kind: 'prompt', name: 'house-style', scope: { label: 'project Tines' } },
-	'context.deleted': { context_id: 'ctx_1', kind: 'prompt', name: 'house-style', scope: { label: 'project Tines' } },
+	'context.created': {
+		context_id: 'ctx_1',
+		kind: 'prompt',
+		name: 'house-style',
+		scope: { label: 'project Tines' }
+	},
+	'context.updated': {
+		context_id: 'ctx_1',
+		kind: 'prompt',
+		name: 'house-style',
+		scope: { label: 'project Tines' }
+	},
+	'context.deleted': {
+		context_id: 'ctx_1',
+		kind: 'prompt',
+		name: 'house-style',
+		scope: { label: 'project Tines' }
+	},
 	'runner.registered': { name: 'macbook-claude' },
 	'runner.updated': { name: 'macbook-claude' },
 	'runner.removed': { name: 'macbook-claude' },
-	'runner.errored': { runner_name: 'macbook-claude', consecutive_failures: 3, error: 'spawn failed' },
+	'runner.errored': {
+		runner_name: 'macbook-claude',
+		consecutive_failures: 3,
+		error: 'spawn failed'
+	},
 	'routing_rule.created': { scope_label: 'project Tines' },
 	'routing_rule.updated': { scope_label: 'project Tines' },
 	'routing_rule.deleted': { scope_label: 'project Tines' },
 	'settings.updated': { changed: ['max_concurrent_runs'] },
 	'agent_run.started': { runner_name: 'macbook-claude', tier: 'fast', model: 'opus' },
-	'agent_run.ended': { runner_name: 'macbook-claude', status: 'timed_out', outcome: 'no transition' },
+	'agent_run.ended': {
+		runner_name: 'macbook-claude',
+		status: 'timed_out',
+		outcome: 'no transition'
+	},
 	'issue.parked': { attempt_count: 3 },
 	'issue.resumed': {}
 };
@@ -177,7 +208,11 @@ describe('wording carried over from both surfaces', () => {
 	});
 
 	it('says "directly" for a forced transition', () => {
-		const ev = event('issue.transitioned', { forced: true, from_state_name: 'A', to_state_name: 'B' });
+		const ev = event('issue.transitioned', {
+			forced: true,
+			from_state_name: 'A',
+			to_state_name: 'B'
+		});
 		expect(eventSummary(ev)).toBe('moved Tines/#49 directly A → B');
 	});
 
@@ -203,7 +238,9 @@ describe('wording carried over from both surfaces', () => {
 
 	it('singularises the skipped-occurrence count', () => {
 		const ev = event('scheduled_task.skipped', { name: 'Daily triage', blocking: ['iss_2'] });
-		expect(eventSummary(ev)).toBe('skipped an occurrence of schedule "Daily triage" (1 open instance)');
+		expect(eventSummary(ev)).toBe(
+			'skipped an occurrence of schedule "Daily triage" (1 open instance)'
+		);
 	});
 
 	it('de-underscores a run status, the web behaviour', () => {
@@ -274,7 +311,11 @@ describe('displayActor', () => {
 	});
 
 	it('falls back to actorLabel for every other event', () => {
-		const ev = event('issue.commented', {}, { actor: { ...ACTOR, api_key_id: 'key_1', api_key_name: 'laptop' } });
+		const ev = event(
+			'issue.commented',
+			{},
+			{ actor: { ...ACTOR, api_key_id: 'key_1', api_key_name: 'laptop' } }
+		);
 		expect(displayActor(ev)).toBe('Alice via laptop');
 	});
 });

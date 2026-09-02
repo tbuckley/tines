@@ -108,10 +108,15 @@ describe('updateComment', () => {
 	it('rejects an empty or oversized body', async () => {
 		const issue = addIssue(t);
 		const created = await createComment(t.db, t.env, session, issue, { body: 'hi' });
-		expect((await fail(updateComment(t.db, t.env, session, issue, created.id, { body: '' }))).status).toBe(422);
 		expect(
-			(await fail(updateComment(t.db, t.env, session, issue, created.id, { body: 'x'.repeat(100_001) })))
-				.status
+			(await fail(updateComment(t.db, t.env, session, issue, created.id, { body: '' }))).status
+		).toBe(422);
+		expect(
+			(
+				await fail(
+					updateComment(t.db, t.env, session, issue, created.id, { body: 'x'.repeat(100_001) })
+				)
+			).status
 		).toBe(422);
 		expect((await loadComments(t.db, issue))[0].body).toBe('hi');
 	});
@@ -120,8 +125,12 @@ describe('updateComment', () => {
 		const issue = addIssue(t);
 		const other = addIssue(t);
 		const created = await createComment(t.db, t.env, session, other, { body: 'elsewhere' });
-		expect((await fail(updateComment(t.db, t.env, session, issue, 'cmt_nope', { body: 'x' }))).status).toBe(404);
-		expect((await fail(updateComment(t.db, t.env, session, issue, created.id, { body: 'x' }))).status).toBe(404);
+		expect(
+			(await fail(updateComment(t.db, t.env, session, issue, 'cmt_nope', { body: 'x' }))).status
+		).toBe(404);
+		expect(
+			(await fail(updateComment(t.db, t.env, session, issue, created.id, { body: 'x' }))).status
+		).toBe(404);
 	});
 });
 
@@ -135,7 +144,10 @@ describe('deleteComment', () => {
 
 		const deleted = events(issue).filter((e) => e.type === 'issue.comment_deleted');
 		expect(deleted).toHaveLength(1);
-		expect(deleted[0].payload).toEqual({ comment_id: created.id, body_length: 'oops --help'.length });
+		expect(deleted[0].payload).toEqual({
+			comment_id: created.id,
+			body_length: 'oops --help'.length
+		});
 		expect(JSON.stringify(deleted[0].payload)).not.toContain('oops');
 		// The record of the action survives the content.
 		expect(events(issue).map((e) => e.type)).toContain('issue.commented');
@@ -177,7 +189,9 @@ describe('comment authorization', () => {
 		const second = runActor(issue, { id: 'arun_second' });
 		const byFirst = await createComment(t.db, t.env, first, issue, { body: 'handoff notes' });
 
-		const edit = await fail(updateComment(t.db, t.env, second, issue, byFirst.id, { body: 'rewritten' }));
+		const edit = await fail(
+			updateComment(t.db, t.env, second, issue, byFirst.id, { body: 'rewritten' })
+		);
 		expect(edit.status).toBe(403);
 		expect(edit.code).toBe('run_key_forbidden');
 		const del = await fail(deleteComment(t.db, t.env, second, issue, byFirst.id));
@@ -195,7 +209,9 @@ describe('comment authorization', () => {
 		const issue = addIssue(t);
 		const run = runActor(issue);
 		const bySession = await createComment(t.db, t.env, session, issue, { body: 'human says' });
-		expect((await fail(updateComment(t.db, t.env, run, issue, bySession.id, { body: 'no' }))).status).toBe(403);
+		expect(
+			(await fail(updateComment(t.db, t.env, run, issue, bySession.id, { body: 'no' }))).status
+		).toBe(403);
 		expect((await fail(deleteComment(t.db, t.env, run, issue, bySession.id))).status).toBe(403);
 	});
 
@@ -207,7 +223,9 @@ describe('comment authorization', () => {
 				VALUES ('u2', 'bob', 'b@x', 1, 0, 0)`
 		);
 		const bob: ActorContext = { ...session, userId: 'u2', userName: 'bob' };
-		expect((await fail(updateComment(t.db, t.env, bob, issue, created.id, { body: 'x' }))).status).toBe(404);
+		expect(
+			(await fail(updateComment(t.db, t.env, bob, issue, created.id, { body: 'x' }))).status
+		).toBe(404);
 		expect((await fail(deleteComment(t.db, t.env, bob, issue, created.id))).status).toBe(404);
 	});
 });

@@ -56,7 +56,8 @@
 	// The kept value belongs to ONE issue: this component is reused when
 	// navigating between issues, so a key change resets the panel to pending
 	// rather than showing the previous issue's data.
-	type PanelState<T> = { status: 'pending' } | { status: 'loaded'; value: T } | { status: 'failed' };
+	type PanelState<T> =
+		{ status: 'pending' } | { status: 'loaded'; value: T } | { status: 'failed' };
 	function streamed<T>(promise: () => Promise<T>, key: () => unknown) {
 		let current = $state<PanelState<T>>({ status: 'pending' });
 		let lastKey: unknown;
@@ -487,7 +488,10 @@
 	}
 </script>
 
-<svelte:head><title>{data.issue.project_name}/#{data.issue.number} · {data.issue.title} · Tines</title></svelte:head>
+<svelte:head
+	><title>{data.issue.project_name}/#{data.issue.number} · {data.issue.title} · Tines</title
+	></svelte:head
+>
 
 <!--
 	A streamed panel that never arrived. The panels below the fold are sent as
@@ -512,12 +516,14 @@
 	<div class="flex flex-wrap items-start justify-between gap-4">
 		<div class="min-w-0">
 			<p class="text-muted-foreground text-sm">
-				<a href="/projects/{data.issue.project_id}" class="hover:underline">{data.issue.project_name}</a>
+				<a href="/projects/{data.issue.project_id}" class="hover:underline"
+					>{data.issue.project_name}</a
+				>
 				<span class="font-mono">#{data.issue.number}</span>
 				{#if data.issue.scheduled_task_id}
 					<a
 						href="/projects/{data.issue.project_id}?schedule={data.issue.scheduled_task_id}"
-						class="bg-muted text-muted-foreground hover:text-foreground ml-1 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs align-middle"
+						class="bg-muted text-muted-foreground hover:text-foreground ml-1 inline-flex items-center gap-1 rounded-full px-2 py-0.5 align-middle text-xs"
 						title="Created by schedule “{data.issue.scheduled_task_name}”"
 					>
 						<IconRepeat size={12} stroke={1.75} />
@@ -529,7 +535,9 @@
 				<form onsubmit={saveTitle} class="mt-1 flex items-center gap-2">
 					<Input bind:value={titleDraft} class="w-96 max-w-full text-lg font-semibold" autofocus />
 					<Button type="submit" size="sm">Save</Button>
-					<Button type="button" size="sm" variant="ghost" onclick={() => (editingTitle = false)}>Cancel</Button>
+					<Button type="button" size="sm" variant="ghost" onclick={() => (editingTitle = false)}
+						>Cancel</Button
+					>
 				</form>
 			{:else}
 				<!-- wrap-anywhere: a title is arbitrary user text, and one unbroken
@@ -635,8 +643,8 @@
 		<span class="flex items-center gap-2">
 			<IconAlertTriangle size={16} stroke={1.75} class="shrink-0" />
 			Agents struck out {data.issue.attempt_count}
-			time{data.issue.attempt_count === 1 ? '' : 's'} here — the last run ended without moving the
-			issue. It won't be dispatched again until you act.
+			time{data.issue.attempt_count === 1 ? '' : 's'} here — the last run ended without moving the issue.
+			It won't be dispatched again until you act.
 		</span>
 		<Button size="sm" disabled={resuming} onclick={resume}>
 			{resuming ? 'Resuming…' : 'Resume'}
@@ -686,12 +694,18 @@
 			<div class="p-4">
 				{#if editingDescription}
 					<div transition:slide={{ duration: dur() }}>
-						<Textarea bind:value={descriptionDraft} rows={8} placeholder="Describe the work (Markdown)…" />
+						<Textarea
+							bind:value={descriptionDraft}
+							rows={8}
+							placeholder="Describe the work (Markdown)…"
+						/>
 						<div class="mt-2 flex gap-2">
 							<Button size="sm" onclick={saveDescription} disabled={savingDescription}>
 								{savingDescription ? 'Saving…' : 'Save'}
 							</Button>
-							<Button size="sm" variant="ghost" onclick={() => (editingDescription = false)}>Cancel</Button>
+							<Button size="sm" variant="ghost" onclick={() => (editingDescription = false)}
+								>Cancel</Button
+							>
 						</div>
 					</div>
 				{:else if data.issue.description}
@@ -709,9 +723,15 @@
 					Context
 					{#if contextTotal > 0}
 						<span class="text-muted-foreground font-normal">
-							({data.issue.context_summary.prompts} prompt{data.issue.context_summary.prompts === 1 ? '' : 's'},
-							{data.issue.context_summary.skills} skill{data.issue.context_summary.skills === 1 ? '' : 's'},
-							{data.issue.context_summary.repos} repo{data.issue.context_summary.repos === 1 ? '' : 's'})
+							({data.issue.context_summary.prompts} prompt{data.issue.context_summary.prompts === 1
+								? ''
+								: 's'},
+							{data.issue.context_summary.skills} skill{data.issue.context_summary.skills === 1
+								? ''
+								: 's'},
+							{data.issue.context_summary.repos} repo{data.issue.context_summary.repos === 1
+								? ''
+								: 's'})
 						</span>
 					{/if}
 				</h2>
@@ -742,7 +762,9 @@
 					{/if}
 				</div>
 				<details class="group border-t pt-3">
-					<summary class="text-muted-foreground hover:text-foreground cursor-pointer text-sm select-none">
+					<summary
+						class="text-muted-foreground hover:text-foreground cursor-pointer text-sm select-none"
+					>
 						Effective context
 						<span class="text-xs">
 							— everything that applies while in
@@ -782,7 +804,9 @@
 						class="rounded-lg border {comment.pending ? 'opacity-60' : ''}"
 						transition:slide={{ duration: dur() }}
 					>
-						<header class="text-muted-foreground flex items-center gap-2 border-b px-4 py-2 text-xs">
+						<header
+							class="text-muted-foreground flex items-center gap-2 border-b px-4 py-2 text-xs"
+						>
 							<span class="text-foreground font-medium">{actorLabel(comment.actor)}</span>
 							<span title={new Date(comment.created_at).toLocaleString()}>
 								{comment.pending ? 'sending…' : relativeTime(comment.created_at)}
@@ -891,7 +915,9 @@
 								: `Move to ${transition.to_state.name}`}
 						>
 							{transition.name}
-							<span class="text-muted-foreground inline-flex items-center gap-1 text-xs font-normal">
+							<span
+								class="text-muted-foreground inline-flex items-center gap-1 text-xs font-normal"
+							>
 								<IconArrowRight size={12} />
 								{transition.to_state.name}
 							</span>
@@ -911,13 +937,16 @@
 									<IconCheck size={13} class="mt-0.5 shrink-0" />
 									<span>
 										<span class="font-medium">{transition.name}</span>: artifact
-										<span class="font-mono">{r.artifact}</span> is fresh (v{r.current_version?.version}).
+										<span class="font-mono">{r.artifact}</span> is fresh (v{r.current_version
+											?.version}).
 									</span>
 								{:else}
 									<IconBan size={13} class="mt-0.5 shrink-0" />
 									<span>
 										<span class="font-medium">{transition.name}</span> needs artifact
-										<span class="font-mono">{r.artifact}</span>{r.type ? ` (${[r.type, r.content_type].filter(Boolean).join(', ')})` : ''}
+										<span class="font-mono">{r.artifact}</span>{r.type
+											? ` (${[r.type, r.content_type].filter(Boolean).join(', ')})`
+											: ''}
 										—
 										{#if r.status === 'stale'}
 											stale since {new Date(data.issue.state_entered_at).toLocaleString()}; attach a
@@ -943,17 +972,23 @@
 			{/if}
 			<p class="text-muted-foreground mt-3 text-xs">
 				Workflow:
-				<a href="/workflows/{data.issue.workflow.id}" class="hover:underline">{data.issue.workflow.name}</a>
+				<a href="/workflows/{data.issue.workflow.id}" class="hover:underline"
+					>{data.issue.workflow.name}</a
+				>
 			</p>
 
 			<!-- escape hatch: jump to any state, or move onto another workflow -->
 			<details class="mt-4 border-t pt-3">
-				<summary class="text-muted-foreground hover:text-foreground cursor-pointer text-xs select-none">
+				<summary
+					class="text-muted-foreground hover:text-foreground cursor-pointer text-xs select-none"
+				>
 					Move directly…
 				</summary>
 				<form onsubmit={applyOverride} class="mt-3 space-y-3">
 					<div class="space-y-1">
-						<label class="text-muted-foreground text-xs font-medium" for="override-workflow">Workflow</label>
+						<label class="text-muted-foreground text-xs font-medium" for="override-workflow"
+							>Workflow</label
+						>
 						<Select
 							id="override-workflow"
 							bind:value={
@@ -973,7 +1008,9 @@
 						</Select>
 					</div>
 					<div class="space-y-1">
-						<label class="text-muted-foreground text-xs font-medium" for="override-state">State</label>
+						<label class="text-muted-foreground text-xs font-medium" for="override-state"
+							>State</label
+						>
 						<Select
 							id="override-state"
 							bind:value={() => overrideStateId, (v) => (overrideStatePick = v)}
@@ -981,13 +1018,21 @@
 						>
 							{#each overrideWorkflow.states as state (state.id)}
 								<option value={state.id}>
-									{state.name}{overrideWorkflowId === data.issue.workflow.id && state.id === currentState.id ? ' — current' : ''}
+									{state.name}{overrideWorkflowId === data.issue.workflow.id &&
+									state.id === currentState.id
+										? ' — current'
+										: ''}
 								</option>
 							{/each}
 						</Select>
 					</div>
 					<div class="flex items-center gap-2">
-						<Button type="submit" size="sm" variant="outline" disabled={!overrideDirty || applyingOverride}>
+						<Button
+							type="submit"
+							size="sm"
+							variant="outline"
+							disabled={!overrideDirty || applyingOverride}
+						>
 							{applyingOverride ? 'Moving…' : 'Move'}
 						</Button>
 						<p class="text-muted-foreground text-xs">Bypasses the workflow's transitions.</p>
@@ -1051,8 +1096,8 @@
 					placeholder="Feedback, context, or instructions for whoever picks this up…"
 				/>
 				<p class="text-muted-foreground text-xs">
-					Posted with the transition — if this move hands the issue to an agent, its very next
-					run's prompt already contains it.
+					Posted with the transition — if this move hands the issue to an agent, its very next run's
+					prompt already contains it.
 				</p>
 			</div>
 			<div class="flex justify-end gap-2">

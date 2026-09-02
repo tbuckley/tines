@@ -278,9 +278,7 @@
 <IssueList
 	issues={data.issues}
 	showProject={false}
-	emptyMessage={data.ready
-		? 'No ready issues in this project.'
-		: 'No issues in this project yet.'}
+	emptyMessage={data.ready ? 'No ready issues in this project.' : 'No issues in this project yet.'}
 />
 
 <!-- new issue -->

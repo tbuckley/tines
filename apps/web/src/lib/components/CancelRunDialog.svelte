@@ -98,7 +98,11 @@
 		</div>
 		<div class="flex justify-end gap-2">
 			<Button variant="ghost" onclick={onclose}>Keep running</Button>
-			<Button variant="destructive" disabled={canceling || advanced === null} onclick={confirmCancel}>
+			<Button
+				variant="destructive"
+				disabled={canceling || advanced === null}
+				onclick={confirmCancel}
+			>
 				{canceling ? 'Canceling…' : 'Cancel run'}
 			</Button>
 		</div>

@@ -25,7 +25,10 @@ export interface MatchableRule {
 	targets: RoutingTarget[];
 }
 
-function specificity(rule: { project_id: string | null; workflow_state_id: string | null }): number {
+function specificity(rule: {
+	project_id: string | null;
+	workflow_state_id: string | null;
+}): number {
 	return (rule.project_id ? 2 : 0) + (rule.workflow_state_id ? 1 : 0);
 }
 
@@ -256,7 +259,10 @@ export function targetVerdict(
 	}
 	const active = counts.byRunner.get(runner.id) ?? 0;
 	if (active >= runner.max_concurrent) {
-		return { verdict: 'at_capacity', detail: `at max_concurrent (${active}/${runner.max_concurrent})` };
+		return {
+			verdict: 'at_capacity',
+			detail: `at max_concurrent (${active}/${runner.max_concurrent})`
+		};
 	}
 	if (!quotaHasRoom(quota, counts, stateId)) {
 		return {

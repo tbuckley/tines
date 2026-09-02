@@ -34,7 +34,11 @@ describe('untilTime', () => {
 	it('falls back to an absolute date beyond a month out', () => {
 		const far = NOW + 400 * DAY;
 		expect(untilTime(far, NOW)).toBe(
-			new Date(far).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
+			new Date(far).toLocaleDateString(undefined, {
+				month: 'short',
+				day: 'numeric',
+				year: 'numeric'
+			})
 		);
 	});
 

@@ -72,7 +72,9 @@ export interface ClaudeAdapterOptions {
 
 function requireEncryptionKey(env: Env): string {
 	if (!env.SECRET_ENCRYPTION_KEY) {
-		throw new Error('SECRET_ENCRYPTION_KEY is not configured; cannot use stored provider credentials');
+		throw new Error(
+			'SECRET_ENCRYPTION_KEY is not configured; cannot use stored provider credentials'
+		);
 	}
 	return env.SECRET_ENCRYPTION_KEY;
 }
@@ -164,7 +166,12 @@ interface ProviderContext {
 		model: string,
 		effort: string | undefined
 	): Promise<string>;
-	createRunVault(ctx: RunnerContext, runId: string, runKey: string, apiHost: string): Promise<string>;
+	createRunVault(
+		ctx: RunnerContext,
+		runId: string,
+		runKey: string,
+		apiHost: string
+	): Promise<string>;
 }
 
 function createProviderContext(env: Env, opts: ClaudeAdapterOptions): ProviderContext {
@@ -223,7 +230,7 @@ function createProviderContext(env: Env, opts: ClaudeAdapterOptions): ProviderCo
 		if (opts.fetch) {
 			res = await opts.fetch(url, init);
 		} else if (env.SELF) {
-			res = await env.SELF.fetch(url, init).catch(() => fetchFn(url, init)) as Response;
+			res = (await env.SELF.fetch(url, init).catch(() => fetchFn(url, init))) as Response;
 		} else {
 			res = await fetchFn(url, init);
 		}
@@ -290,7 +297,10 @@ function createProviderContext(env: Env, opts: ClaudeAdapterOptions): ProviderCo
 			});
 			agentId = created.id;
 		}
-		ctx.config.agents = { ...ctx.config.agents, [tier]: { agent_id: agentId, model, ...(effort ? { effort } : {}) } };
+		ctx.config.agents = {
+			...ctx.config.agents,
+			[tier]: { agent_id: agentId, model, ...(effort ? { effort } : {}) }
+		};
 		await persistConfig(ctx.row.id, ctx.config);
 		return agentId;
 	}
@@ -345,7 +355,11 @@ function createProviderContext(env: Env, opts: ClaudeAdapterOptions): ProviderCo
 // client, so they live at module scope and `sweepRunner` is the runner-context
 // guard plus three calls.
 
-async function gcEndedRuns(db: Kysely<Database>, client: Anthropic, runnerId: string): Promise<void> {
+async function gcEndedRuns(
+	db: Kysely<Database>,
+	client: Anthropic,
+	runnerId: string
+): Promise<void> {
 	// GC: ended runs whose per-run vault (and session) still exist. The
 	// vault holds an already-revoked key, but it must not accumulate.
 	const ended = await db
@@ -380,7 +394,11 @@ async function gcEndedRuns(db: Kysely<Database>, client: Anthropic, runnerId: st
 	}
 }
 
-async function reconcileVaults(db: Kysely<Database>, client: Anthropic, runnerId: string): Promise<void> {
+async function reconcileVaults(
+	db: Kysely<Database>,
+	client: Anthropic,
+	runnerId: string
+): Promise<void> {
 	// Vault fallback sweep, by name: a run canceled between vault creation
 	// and the running-flip never records `provider_meta`, so the GC above
 	// cannot see its vault. Per-run vaults are named `tines-run-<id>`,
@@ -462,8 +480,16 @@ export function createClaudeAdapter(env: Env, opts: ClaudeAdapterOptions = {}): 
 		// Launch materials, assembled at launch time over our own API.
 		const [issue, prompt, context] = await Promise.all([
 			provider.apiGet<IssueDetail>(base, `/api/v1/issues/${input.issueId}`, input.runKey),
-			provider.apiGet<LaunchPromptResponse>(base, `/api/v1/issues/${input.issueId}/prompt`, input.runKey),
-			provider.apiGet<EffectiveContext>(base, `/api/v1/issues/${input.issueId}/context`, input.runKey)
+			provider.apiGet<LaunchPromptResponse>(
+				base,
+				`/api/v1/issues/${input.issueId}/prompt`,
+				input.runKey
+			),
+			provider.apiGet<EffectiveContext>(
+				base,
+				`/api/v1/issues/${input.issueId}/context`,
+				input.runKey
+			)
 		]);
 		const pat = await provider.githubPat(ctx.row.user_id);
 		if (context.repos.length > 0 && !pat) {
@@ -514,7 +540,12 @@ export function createClaudeAdapter(env: Env, opts: ClaudeAdapterOptions = {}): 
 				metadata: { tines_run_id: input.runId, tines_runner_id: ctx.row.id },
 				vault_ids: [vaultId],
 				...(capCents !== undefined
-					? { budget: { type: 'limit', max_list_cost: { amount: String(capCents), currency: 'USD' } } }
+					? {
+							budget: {
+								type: 'limit',
+								max_list_cost: { amount: String(capCents), currency: 'USD' }
+							}
+						}
 					: {}),
 				resources: repos.map((repo) => ({
 					type: 'github_repository' as const,
@@ -524,7 +555,10 @@ export function createClaudeAdapter(env: Env, opts: ClaudeAdapterOptions = {}): 
 					...(repo.branch ? { checkout: { type: 'branch' as const, name: repo.branch } } : {})
 				})),
 				initial_events: [
-					{ type: 'user.message', content: [{ type: 'text', text: `${preamble}\n\n${prompt.text}` }] }
+					{
+						type: 'user.message',
+						content: [{ type: 'text', text: `${preamble}\n\n${prompt.text}` }]
+					}
 				]
 			});
 		} catch (e) {
@@ -560,7 +594,10 @@ export function createClaudeAdapter(env: Env, opts: ClaudeAdapterOptions = {}): 
 			limit: 200
 		});
 
-		const { lines, cursor, idleReason, lastError } = summarizeEvents(events.data, meta.events_cursor);
+		const { lines, cursor, idleReason, lastError } = summarizeEvents(
+			events.data,
+			meta.events_cursor
+		);
 
 		const result: AdapterPollResult = {
 			usage: mapUsage(session.usage),
@@ -582,7 +619,8 @@ export function createClaudeAdapter(env: Env, opts: ClaudeAdapterOptions = {}): 
 				result.error = 'per-run cost cap reached (session paused at its platform budget)';
 			} else if (reason === 'requires_action') {
 				result.status = 'failed';
-				result.error = 'session paused awaiting a tool confirmation, which supervisor runs never grant';
+				result.error =
+					'session paused awaiting a tool confirmation, which supervisor runs never grant';
 			} else if (reason === 'retries_exhausted') {
 				result.status = 'failed';
 				result.error = lastError ?? 'session exhausted its retries';

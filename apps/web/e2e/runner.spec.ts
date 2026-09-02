@@ -43,7 +43,8 @@ let daemonExited = false;
 let projectId: string;
 let runnerId: string;
 
-const setMode = (mode: 'work' | 'noop' | 'sleep' | 'flood') => writeFileSync(join(e2eDir, 'mode'), mode);
+const setMode = (mode: 'work' | 'noop' | 'sleep' | 'flood') =>
+	writeFileSync(join(e2eDir, 'mode'), mode);
 
 const sideFile = (name: string) => join(e2eDir, name);
 const readSideFile = (name: string) => readFileSync(sideFile(name), 'utf8');
@@ -56,7 +57,8 @@ async function waitFor<T>(
 	for (;;) {
 		const value = await fn();
 		if (value !== undefined && value !== false) return value as T;
-		if (Date.now() > deadline) throw new Error(`timed out waiting for ${label}\ndaemon output:\n${daemonOutput}`);
+		if (Date.now() > deadline)
+			throw new Error(`timed out waiting for ${label}\ndaemon output:\n${daemonOutput}`);
 		await new Promise((r) => setTimeout(r, interval));
 	}
 }
@@ -183,7 +185,12 @@ esac
 			],
 			{
 				cwd: CLI_DIR,
-				env: { ...process.env, TINES_API_KEY: ALICE.apiKey, TINES_CONFIG_DIR: configDir, E2E_DIR: e2eDir },
+				env: {
+					...process.env,
+					TINES_API_KEY: ALICE.apiKey,
+					TINES_CONFIG_DIR: configDir,
+					E2E_DIR: e2eDir
+				},
 				stdio: ['ignore', 'pipe', 'pipe']
 			}
 		);
@@ -304,7 +311,10 @@ esac
 
 		// The completed run's row expands to the captured log tail.
 		await page.getByLabel('Show ended runs').check();
-		const row = page.locator('li', { hasText: RUNNER_NAME }).filter({ hasText: 'completed' }).first();
+		const row = page
+			.locator('li', { hasText: RUNNER_NAME })
+			.filter({ hasText: 'completed' })
+			.first();
 		await row.getByRole('button', { name: 'Logs', exact: true }).click();
 		await expect(page.getByTestId('run-log').first()).toContainText('harness start mode=work');
 
@@ -388,9 +398,15 @@ esac
 		// daemon's own counter that this cannot collide with it.
 		const chunk = 'SEQ-PROBE-LINE\n';
 		const seq = 1_000_000;
-		const first = await request.post(`/api/v1/runs/${running.id}/logs`, { headers: auth, data: { chunk, seq } });
+		const first = await request.post(`/api/v1/runs/${running.id}/logs`, {
+			headers: auth,
+			data: { chunk, seq }
+		});
 		expect(first.ok()).toBe(true);
-		const second = await request.post(`/api/v1/runs/${running.id}/logs`, { headers: auth, data: { chunk, seq } });
+		const second = await request.post(`/api/v1/runs/${running.id}/logs`, {
+			headers: auth,
+			data: { chunk, seq }
+		});
 		expect(second.ok()).toBe(true);
 		expect((await body<{ log_seq: number }>(second)).log_seq).toBe(seq);
 
@@ -420,7 +436,9 @@ esac
 		const canceled = await api.post(`/api/v1/runs/${running.id}/cancel`);
 		expect(canceled.ok()).toBe(true);
 		await waitFor(
-			async () => (await issueRuns(request, issue.id)).find((r) => r.id === running.id)?.status === 'canceled',
+			async () =>
+				(await issueRuns(request, issue.id)).find((r) => r.id === running.id)?.status ===
+				'canceled',
 			{ label: 'the probe run to cancel' }
 		);
 		setMode('work');
@@ -483,9 +501,12 @@ esac
 			{ label: 'the run to start' }
 		);
 		const pid = Number.parseInt(
-			await waitFor(async () => (existsSync(sideFile('sleep-pid')) ? readSideFile('sleep-pid') : undefined), {
-				label: 'the harness pid'
-			}),
+			await waitFor(
+				async () => (existsSync(sideFile('sleep-pid')) ? readSideFile('sleep-pid') : undefined),
+				{
+					label: 'the harness pid'
+				}
+			),
 			10
 		);
 		expect(pid).toBeGreaterThan(0);
@@ -500,9 +521,14 @@ esac
 			.filter({ hasText: `${PROJECT_NAME}/#${issue.number}` })
 			.filter({ hasText: 'running' })
 			.first();
-		await row.getByRole('button', { name: 'Cancel', exact: true }).click();
+		// The button is a Svelte listener, so a click landing before hydration
+		// is swallowed: retry until the dialog is up (clickUntil in ui.spec.ts).
+		const cancelButton = row.getByRole('button', { name: 'Cancel', exact: true });
 		const dialog = page.getByRole('dialog', { name: 'Cancel this run?' });
-		await expect(dialog).toContainText('counts as a strike');
+		await expect(async () => {
+			if (!(await dialog.isVisible())) await cancelButton.click();
+			await expect(dialog).toContainText('counts as a strike', { timeout: 2000 });
+		}).toPass({ timeout: 15_000 });
 		await dialog.getByLabel(/Comment/).fill('Canceled from the dialog — try smaller steps');
 		await dialog.getByRole('button', { name: 'Cancel run' }).click();
 		await expect(dialog).toBeHidden();
@@ -531,10 +557,9 @@ esac
 		expect(posted).toBeDefined();
 		expect(posted!.created_at).toBeLessThanOrEqual(after!.ended_at!);
 		// The workspace was cleaned up.
-		await waitFor(
-			async () => !existsSync(join(configDir, 'workspaces', running.id)),
-			{ label: 'the workspace to be removed' }
-		);
+		await waitFor(async () => !existsSync(join(configDir, 'workspaces', running.id)), {
+			label: 'the workspace to be removed'
+		});
 		setMode('work');
 	});
 

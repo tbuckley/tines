@@ -55,9 +55,7 @@ describe('activeStateIds', () => {
 	});
 
 	it('excludes every non-active category', () => {
-		const ids = activeStateIds([
-			wf(['b', 'backlog'], ['h', 'awaiting_human'], ['d', 'done'])
-		]);
+		const ids = activeStateIds([wf(['b', 'backlog'], ['h', 'awaiting_human'], ['d', 'done'])]);
 		expect(ids.size).toBe(0);
 	});
 

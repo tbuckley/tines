@@ -49,7 +49,17 @@ function fakeNetwork(overrides: Record<string, (call: RecordedCall) => unknown> 
 		'GET /api/v1/issues/iss_1/context': () => ({
 			prompt: { text: '', parts: [] },
 			skills: [],
-			repos: [{ item_id: 'ctx_1', name: 'web', scope: {}, url: 'https://github.com/o/web', branch: 'main', dir: 'web', version: 1 }],
+			repos: [
+				{
+					item_id: 'ctx_1',
+					name: 'web',
+					scope: {},
+					url: 'https://github.com/o/web',
+					branch: 'main',
+					dir: 'web',
+					version: 1
+				}
+			],
 			overridden: [],
 			conflicts: []
 		})
@@ -73,10 +83,13 @@ function fakeNetwork(overrides: Record<string, (call: RecordedCall) => unknown> 
 			if (url.pathname.endsWith('/archive') || url.pathname.endsWith('/events')) {
 				return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
 			}
-			return new Response(JSON.stringify({ error: { message: `no fake for ${method} ${url.pathname}` } }), {
-				status: 500,
-				headers: { 'content-type': 'application/json' }
-			});
+			return new Response(
+				JSON.stringify({ error: { message: `no fake for ${method} ${url.pathname}` } }),
+				{
+					status: 500,
+					headers: { 'content-type': 'application/json' }
+				}
+			);
 		}
 		const result = handler(call);
 		if (result instanceof Response) return result;
@@ -86,10 +99,20 @@ function fakeNetwork(overrides: Record<string, (call: RecordedCall) => unknown> 
 		});
 	}) as typeof globalThis.fetch;
 
-	return { calls, fetch, of: (route: string) => calls.filter((c) => `${c.method} ${c.path}` === route) };
+	return {
+		calls,
+		fetch,
+		of: (route: string) => calls.filter((c) => `${c.method} ${c.path}` === route)
+	};
 }
 
-async function world(opts: { pat?: boolean; runnerConfig?: Record<string, unknown>; budget?: Record<string, number> } = {}) {
+async function world(
+	opts: {
+		pat?: boolean;
+		runnerConfig?: Record<string, unknown>;
+		budget?: Record<string, number>;
+	} = {}
+) {
 	const t = createTestDb();
 	seedBase(t);
 	t.env.SECRET_ENCRYPTION_KEY = ENC_KEY;
@@ -148,8 +171,12 @@ describe('canonicalGitHubRepoUrl', () => {
 	});
 
 	it('preserves dots in repo names without eating them as .git', () => {
-		expect(canonicalGitHubRepoUrl('https://github.com/o/web.js')).toBe('https://github.com/o/web.js');
-		expect(canonicalGitHubRepoUrl('https://github.com/o/web.js.git')).toBe('https://github.com/o/web.js');
+		expect(canonicalGitHubRepoUrl('https://github.com/o/web.js')).toBe(
+			'https://github.com/o/web.js'
+		);
+		expect(canonicalGitHubRepoUrl('https://github.com/o/web.js.git')).toBe(
+			'https://github.com/o/web.js'
+		);
 	});
 
 	it('rejects non-GitHub and non-repo URLs', () => {
@@ -281,7 +308,17 @@ describe('claude adapter launch', () => {
 			'GET /api/v1/issues/iss_1/context': () => ({
 				prompt: { text: '', parts: [] },
 				skills: [],
-				repos: [{ item_id: 'ctx_1', name: 'web', scope: {}, url: 'git@github.com:o/web.git', branch: null, dir: 'web', version: 1 }],
+				repos: [
+					{
+						item_id: 'ctx_1',
+						name: 'web',
+						scope: {},
+						url: 'git@github.com:o/web.git',
+						branch: null,
+						dir: 'web',
+						version: 1
+					}
+				],
 				overridden: [],
 				conflicts: []
 			})
@@ -299,7 +336,17 @@ describe('claude adapter launch', () => {
 			'GET /api/v1/issues/iss_1/context': () => ({
 				prompt: { text: '', parts: [] },
 				skills: [],
-				repos: [{ item_id: 'ctx_1', name: 'internal', scope: {}, url: 'https://git.corp.example/o/web', branch: null, dir: 'web', version: 1 }],
+				repos: [
+					{
+						item_id: 'ctx_1',
+						name: 'internal',
+						scope: {},
+						url: 'https://git.corp.example/o/web',
+						branch: null,
+						dir: 'web',
+						version: 1
+					}
+				],
 				overridden: [],
 				conflicts: []
 			})
@@ -322,10 +369,16 @@ describe('claude adapter launch', () => {
 	it('cleans up the per-run vault when session creation fails', async () => {
 		const net = fakeNetwork({
 			'POST /v1/sessions': () =>
-				new Response(JSON.stringify({ type: 'error', error: { type: 'invalid_request_error', message: 'boom' } }), {
-					status: 400,
-					headers: { 'content-type': 'application/json' }
-				})
+				new Response(
+					JSON.stringify({
+						type: 'error',
+						error: { type: 'invalid_request_error', message: 'boom' }
+					}),
+					{
+						status: 400,
+						headers: { 'content-type': 'application/json' }
+					}
+				)
 		});
 		const adapter = createClaudeAdapter(t.env, { fetch: net.fetch });
 		await expect(adapter.launch(launchInput(runnerId))).rejects.toThrow();
@@ -375,8 +428,19 @@ describe('claude adapter poll', () => {
 				}
 			},
 			[
-				{ type: 'agent.message', id: 'sevt_1', processed_at: '2026-08-27T10:00:00Z', content: [{ type: 'text', text: 'Working on it' }] },
-				{ type: 'agent.tool_use', id: 'sevt_2', processed_at: '2026-08-27T10:00:05Z', name: 'bash', input: { command: 'ls' } }
+				{
+					type: 'agent.message',
+					id: 'sevt_1',
+					processed_at: '2026-08-27T10:00:00Z',
+					content: [{ type: 'text', text: 'Working on it' }]
+				},
+				{
+					type: 'agent.tool_use',
+					id: 'sevt_2',
+					processed_at: '2026-08-27T10:00:05Z',
+					name: 'bash',
+					input: { command: 'ls' }
+				}
 			]
 		);
 		const result = await adapter.poll!(runRef);
@@ -402,7 +466,12 @@ describe('claude adapter poll', () => {
 
 	it('treats idle end_turn as a completed run and archives the session', async () => {
 		const { net, adapter } = await polledWorld({ id: 'sesn_p', status: 'idle', usage: {} }, [
-			{ type: 'session.status_idle', id: 'sevt_9', processed_at: '2026-08-27T10:01:00Z', stop_reason: { type: 'end_turn' } }
+			{
+				type: 'session.status_idle',
+				id: 'sevt_9',
+				processed_at: '2026-08-27T10:01:00Z',
+				stop_reason: { type: 'end_turn' }
+			}
 		]);
 		const result = await adapter.poll!(runRef);
 		expect(result.status).toBe('completed');
@@ -411,7 +480,12 @@ describe('claude adapter poll', () => {
 
 	it('treats the platform budget pause as the per-run cap tripping', async () => {
 		const { adapter } = await polledWorld({ id: 'sesn_p', status: 'idle', usage: {} }, [
-			{ type: 'session.status_idle', id: 'sevt_9', processed_at: '2026-08-27T10:01:00Z', stop_reason: { type: 'budget_reached' } }
+			{
+				type: 'session.status_idle',
+				id: 'sevt_9',
+				processed_at: '2026-08-27T10:01:00Z',
+				stop_reason: { type: 'budget_reached' }
+			}
 		]);
 		const result = await adapter.poll!(runRef);
 		expect(result.status).toBe('failed');
@@ -420,7 +494,12 @@ describe('claude adapter poll', () => {
 
 	it('fails a terminated session that ended on an error', async () => {
 		const { adapter } = await polledWorld({ id: 'sesn_p', status: 'terminated', usage: {} }, [
-			{ type: 'session.error', id: 'sevt_8', processed_at: '2026-08-27T10:00:30Z', error: { type: 'model_request_failed', message: 'provider exploded' } },
+			{
+				type: 'session.error',
+				id: 'sevt_8',
+				processed_at: '2026-08-27T10:00:30Z',
+				error: { type: 'model_request_failed', message: 'provider exploded' }
+			},
 			{ type: 'session.status_terminated', id: 'sevt_9', processed_at: '2026-08-27T10:01:00Z' }
 		]);
 		const result = await adapter.poll!(runRef);
@@ -472,8 +551,11 @@ describe('claude adapter sweepRunner', () => {
 		expect(net.of('POST /v1/sessions/sesn_orphan/archive')).toHaveLength(1);
 		expect(net.of('POST /v1/sessions/sesn_foreign/archive')).toHaveLength(0);
 		const meta = JSON.parse(
-			(t.all('SELECT provider_meta FROM agent_run WHERE id = ?', 'arun_done')[0] as { provider_meta: string })
-				.provider_meta
+			(
+				t.all('SELECT provider_meta FROM agent_run WHERE id = ?', 'arun_done')[0] as {
+					provider_meta: string;
+				}
+			).provider_meta
 		) as { gc_done?: boolean };
 		expect(meta.gc_done).toBe(true);
 
@@ -486,7 +568,13 @@ describe('claude adapter sweepRunner', () => {
 
 	it('the vault-name fallback deletes vaults whose run never recorded them, sparing active and foreign ones', async () => {
 		const { t, runnerId } = await world();
-		addRun(t, { id: 'arun_live', issueId: 'iss_1', runnerId, status: 'running', providerSessionId: 'sesn_x' });
+		addRun(t, {
+			id: 'arun_live',
+			issueId: 'iss_1',
+			runnerId,
+			status: 'running',
+			providerSessionId: 'sesn_x'
+		});
 		addRun(t, { id: 'arun_dead', issueId: 'iss_1', runnerId, status: 'canceled' });
 		const deleted: string[] = [];
 		const net = fakeNetwork({

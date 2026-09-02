@@ -73,7 +73,7 @@ const seedJournal = (stateId: string, body: string) =>
 	});
 
 describe('journalForIssue', () => {
-	it('gives a session actor the issue\'s current state', async () => {
+	it("gives a session actor the issue's current state", async () => {
 		const issue = addIssue(t);
 		const journal = await journalForIssue(t.db, session, issue);
 		expect(journal.anchor).toBe('current');
@@ -82,7 +82,7 @@ describe('journalForIssue', () => {
 		expect(journal.scope.label).toBe('project demo · state Open');
 	});
 
-	it("anchors a run key to its launch state after the issue has moved on", async () => {
+	it('anchors a run key to its launch state after the issue has moved on', async () => {
 		const issue = addIssue(t);
 		const actor = runActor(issue, { stateAtStart: OPEN });
 		await transitionIssue(t.db, t.env, session, issue, { action: 'Submit for review' });
@@ -136,7 +136,9 @@ describe('journalForIssue', () => {
 		const issue = addIssue(t, { state: REVIEW });
 		const actor = runActor(issue, { stateAtStart: OPEN });
 		// A workflow edit mid-run: `state_id_at_start` is kept but dangles.
-		t.sqlite.exec(`UPDATE agent_run SET state_id_at_start = 'wfs_gone' WHERE id = '${actor.agentRunId}'`);
+		t.sqlite.exec(
+			`UPDATE agent_run SET state_id_at_start = 'wfs_gone' WHERE id = '${actor.agentRunId}'`
+		);
 
 		const journal = await journalForIssue(t.db, actor, issue);
 		expect(journal.anchor).toBe('current');

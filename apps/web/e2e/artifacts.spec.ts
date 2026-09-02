@@ -68,9 +68,7 @@ test.describe.serial('issue artifacts', () => {
 		);
 		expect(patched.transitions.find((t) => t.name === 'approve')?.requires).toEqual([requirement]);
 
-		projectId = (
-			await body<Project>(await api.post('/api/v1/projects', { name: projectName }))
-		).id;
+		projectId = (await body<Project>(await api.post('/api/v1/projects', { name: projectName }))).id;
 		const issue = await body<IssueDetail>(
 			await api.post(`/api/v1/projects/${projectId}/issues`, {
 				title: 'Gated work',
@@ -132,7 +130,10 @@ test.describe.serial('issue artifacts', () => {
 		expect(listed.items[0].fresh).toBe(false);
 		const blocked = await api.post(`/api/v1/issues/${issueId}/transition`, { action: 'approve' });
 		expect(blocked.status()).toBe(422);
-		const unmet = (await body<ErrorBody>(blocked)).error.details?.unmet as Record<string, unknown>[];
+		const unmet = (await body<ErrorBody>(blocked)).error.details?.unmet as Record<
+			string,
+			unknown
+		>[];
 		expect(unmet[0]).toMatchObject({ status: 'stale', current_version: { version: 1 } });
 
 		// v2 unblocks; both versions stay downloadable with distinct contents.
@@ -141,7 +142,9 @@ test.describe.serial('issue artifacts', () => {
 			headers,
 			data: Buffer.from('# The design\n\nv2.')
 		});
-		expect((await api.post(`/api/v1/issues/${issueId}/transition`, { action: 'approve' })).ok()).toBe(true);
+		expect(
+			(await api.post(`/api/v1/issues/${issueId}/transition`, { action: 'approve' })).ok()
+		).toBe(true);
 		const v1 = await api.get(`/api/v1/issues/${issueId}/artifacts/design-doc/content?version=1`);
 		const v2 = await api.get(`/api/v1/issues/${issueId}/artifacts/design-doc/content?version=2`);
 		expect(await v1.text()).toContain('v1.');
@@ -155,19 +158,26 @@ test.describe.serial('issue artifacts', () => {
 		expect(reaffirmed.current_version).toMatchObject({ version: 3, reaffirmed_from: 2 });
 		const v3 = await api.get(`/api/v1/issues/${issueId}/artifacts/design-doc/content`);
 		expect(await v3.text()).toContain('v2.');
-		expect((await api.post(`/api/v1/issues/${issueId}/transition`, { action: 'approve' })).ok()).toBe(true);
+		expect(
+			(await api.post(`/api/v1/issues/${issueId}/transition`, { action: 'approve' })).ok()
+		).toBe(true);
 		await api.post(`/api/v1/issues/${issueId}/transition`, { action: 'send back' });
 	});
 
 	test('content serving is attachment-by-default, inline only sandboxed', async ({ request }) => {
 		const api = apiClient(request, ALICE.apiKey);
 		const headers = { authorization: `Bearer ${ALICE.apiKey}`, 'content-type': 'image/png' };
-		await request.put(`/api/v1/issues/${issueId}/artifacts/feature-screenshot/file?filename=shot.png`, {
-			headers,
-			data: Buffer.from([0x89, 0x50, 0x4e, 0x47])
-		});
+		await request.put(
+			`/api/v1/issues/${issueId}/artifacts/feature-screenshot/file?filename=shot.png`,
+			{
+				headers,
+				data: Buffer.from([0x89, 0x50, 0x4e, 0x47])
+			}
+		);
 
-		const attachment = await api.get(`/api/v1/issues/${issueId}/artifacts/feature-screenshot/content`);
+		const attachment = await api.get(
+			`/api/v1/issues/${issueId}/artifacts/feature-screenshot/content`
+		);
 		expect(attachment.headers()['x-content-type-options']).toBe('nosniff');
 		expect(attachment.headers()['content-disposition']).toBe('attachment; filename="shot.png"');
 
@@ -211,7 +221,9 @@ test.describe.serial('issue artifacts', () => {
 
 		const bob = apiClient(request, BOB.apiKey);
 		expect((await bob.get(`/api/v1/issues/${issueId}/artifacts`)).status()).toBe(404);
-		expect((await bob.get(`/api/v1/issues/${issueId}/artifacts/design-doc/content`)).status()).toBe(404);
+		expect((await bob.get(`/api/v1/issues/${issueId}/artifacts/design-doc/content`)).status()).toBe(
+			404
+		);
 	});
 
 	test('the generic context surface lists but never creates artifacts', async ({ request }) => {
@@ -228,7 +240,11 @@ test.describe.serial('issue artifacts', () => {
 			await api.get(`/api/v1/context?issue=${issueId}`)
 		);
 		const artifactItems = listed.items.filter((i) => i.kind === 'artifact');
-		expect(artifactItems.map((i) => i.name).sort()).toEqual(['design-doc', 'feature-screenshot', 'impl-pr']);
+		expect(artifactItems.map((i) => i.name).sort()).toEqual([
+			'design-doc',
+			'feature-screenshot',
+			'impl-pr'
+		]);
 		expect(artifactItems.every((i) => typeof i.artifact_type === 'string')).toBe(true);
 	});
 
@@ -264,7 +280,11 @@ test.describe.serial('issue artifacts', () => {
 		expect(noPath.status()).toBe(422);
 		const noPathErr = await body<ErrorBody>(noPath);
 		expect(noPathErr.error.code).toBe('folder_path_required');
-		expect(noPathErr.error.details?.paths).toEqual(['login.png', 'notes.md', 'settings/billing.png']);
+		expect(noPathErr.error.details?.paths).toEqual([
+			'login.png',
+			'notes.md',
+			'settings/billing.png'
+		]);
 
 		// The JSON upsert refuses folder payload writes, naming the endpoint.
 		const bad = await api.put(`/api/v1/issues/${issueId}/artifacts/screenshots`, { content: 'x' });
@@ -276,7 +296,10 @@ test.describe.serial('issue artifacts', () => {
 			headers,
 			multipart: { f0: { name: 'login.png', mimeType: 'image/png', buffer: Buffer.from('PNG1b') } }
 		});
-		expect((await body<ArtifactShape>(v2)).current_version).toMatchObject({ version: 2, file_count: 1 });
+		expect((await body<ArtifactShape>(v2)).current_version).toMatchObject({
+			version: 2,
+			file_count: 1
+		});
 		const old = await api.get(
 			`/api/v1/issues/${issueId}/artifacts/screenshots/content?version=1&path=notes.md`
 		);
@@ -287,7 +310,11 @@ test.describe.serial('issue artifacts', () => {
 		const reaffirmed = await body<ArtifactShape>(
 			await api.post(`/api/v1/issues/${issueId}/artifacts/screenshots/reaffirm`)
 		);
-		expect(reaffirmed.current_version).toMatchObject({ version: 3, reaffirmed_from: 2, file_count: 1 });
+		expect(reaffirmed.current_version).toMatchObject({
+			version: 3,
+			reaffirmed_from: 2,
+			file_count: 1
+		});
 		const detail = await body<ArtifactShape>(
 			await api.get(`/api/v1/issues/${issueId}/artifacts/screenshots`)
 		);
@@ -301,6 +328,8 @@ test.describe.serial('issue artifacts', () => {
 		const del = await api.delete(`/api/v1/issues/${issueId}/artifacts/design-doc`);
 		expect(del.status()).toBe(204);
 		expect((await api.get(`/api/v1/issues/${issueId}/artifacts/design-doc`)).status()).toBe(404);
-		expect((await api.get(`/api/v1/issues/${issueId}/artifacts/design-doc/content`)).status()).toBe(404);
+		expect((await api.get(`/api/v1/issues/${issueId}/artifacts/design-doc/content`)).status()).toBe(
+			404
+		);
 	});
 });

@@ -13,12 +13,9 @@ describe('parsePreference', () => {
 		for (const pref of THEME_PREFERENCES) expect(parsePreference(pref)).toBe(pref);
 	});
 
-	it.each([null, undefined, '', 'DARK', 'blue', ' dark'])(
-		'falls back to system for %o',
-		(raw) => {
-			expect(parsePreference(raw)).toBe('system');
-		}
-	);
+	it.each([null, undefined, '', 'DARK', 'blue', ' dark'])('falls back to system for %o', (raw) => {
+		expect(parsePreference(raw)).toBe('system');
+	});
 });
 
 describe('resolveTheme', () => {

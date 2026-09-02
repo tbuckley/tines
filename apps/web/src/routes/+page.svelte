@@ -42,13 +42,15 @@
 
 <main class="flex min-h-screen flex-col items-center justify-center gap-8 p-8">
 	<div class="flex flex-col items-center gap-3 text-center">
-		<div class="bg-primary text-primary-foreground flex size-12 items-center justify-center rounded-xl">
+		<div
+			class="bg-primary text-primary-foreground flex size-12 items-center justify-center rounded-xl"
+		>
 			<IconArrowsSplit2 size={26} stroke={1.75} />
 		</div>
 		<h1 class="text-4xl font-bold tracking-tight">Tines</h1>
 		<p class="text-muted-foreground max-w-md text-balance">
-			An issue tracker for humans and their agents — work moves through workflows, and every
-			action is on the record.
+			An issue tracker for humans and their agents — work moves through workflows, and every action
+			is on the record.
 		</p>
 	</div>
 
@@ -61,7 +63,9 @@
 					We sent a sign-in link to <span class="text-foreground font-medium">{sentTo}</span>. It
 					expires in 10 minutes.
 				</p>
-				<Button variant="ghost" size="sm" onclick={() => (sentTo = null)}>Use a different email</Button>
+				<Button variant="ghost" size="sm" onclick={() => (sentTo = null)}
+					>Use a different email</Button
+				>
 			</div>
 		{:else}
 			<form class="flex w-full flex-col gap-2" onsubmit={sendMagicLink}>
@@ -88,7 +92,9 @@
 				or
 				<div class="bg-border h-px flex-1"></div>
 			</div>
-			<Button variant="outline" class="w-full" onclick={signInWithGoogle}>Sign in with Google</Button>
+			<Button variant="outline" class="w-full" onclick={signInWithGoogle}
+				>Sign in with Google</Button
+			>
 		{/if}
 	</div>
 </main>

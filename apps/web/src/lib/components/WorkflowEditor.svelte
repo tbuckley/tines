@@ -94,7 +94,15 @@
 						description: r.description ?? ''
 					}))
 				}))
-			: [{ key: freshKey(), name: 'Complete', from: states[0].key, to: states[1].key, requires: [] }]
+			: [
+					{
+						key: freshKey(),
+						name: 'Complete',
+						from: states[0].key,
+						to: states[1].key,
+						requires: []
+					}
+				]
 	);
 	// svelte-ignore state_referenced_locally
 	let initialKey = $state(workflow?.initial_state_id ?? states[0].key);
@@ -122,7 +130,10 @@
 			(s) => s.key !== fromKey && !transitions.some((t) => t.from === fromKey && t.to === s.key)
 		);
 		if (!target) return;
-		transitions = [...transitions, { key: freshKey(), name: '', from: fromKey, to: target.key, requires: [] }];
+		transitions = [
+			...transitions,
+			{ key: freshKey(), name: '', from: fromKey, to: target.key, requires: [] }
+		];
 	}
 
 	function removeTransition(key: string) {
@@ -144,8 +155,7 @@
 		transitions[ti].requires = transitions[ti].requires.filter((r) => r.key !== key);
 	}
 
-	const stateName = (key: string) =>
-		states.find((s) => s.key === key)?.name.trim() || 'unnamed';
+	const stateName = (key: string) => states.find((s) => s.key === key)?.name.trim() || 'unnamed';
 
 	// Live graph preview: row keys stand in for state ids.
 	const preview = $derived({
@@ -202,7 +212,10 @@
 	const warnings = $derived(
 		states
 			.filter((s) => s.category !== 'done' && !transitions.some((t) => t.from === s.key))
-			.map((s) => `“${s.name.trim() || 'unnamed'}” is not “done” but has no way out — issues that reach it will be stuck.`)
+			.map(
+				(s) =>
+					`“${s.name.trim() || 'unnamed'}” is not “done” but has no way out — issues that reach it will be stuck.`
+			)
 	);
 
 	async function save(e: SubmitEvent) {
@@ -264,7 +277,12 @@
 		</div>
 		<div class="space-y-1.5">
 			<label class="text-sm font-medium" for="wf-description">Description</label>
-			<Textarea id="wf-description" bind:value={description} rows={2} placeholder="When to use this workflow…" />
+			<Textarea
+				id="wf-description"
+				bind:value={description}
+				rows={2}
+				placeholder="When to use this workflow…"
+			/>
 		</div>
 
 		<div class="space-y-3">
@@ -277,13 +295,21 @@
 			{#each states as row, i (row.key)}
 				<div class="space-y-2 rounded-lg border p-3" transition:slide={{ duration: dur() }}>
 					<div class="flex flex-wrap items-center gap-2">
-						<Input bind:value={states[i].name} placeholder="State name" class="min-w-36 flex-1" aria-label="State name" />
+						<Input
+							bind:value={states[i].name}
+							placeholder="State name"
+							class="min-w-36 flex-1"
+							aria-label="State name"
+						/>
 						<Select bind:value={states[i].category} class="w-40 max-sm:w-36" aria-label="Category">
 							{#each STATE_CATEGORIES as cat (cat)}
 								<option value={cat}>{CATEGORY_LABELS[cat]}</option>
 							{/each}
 						</Select>
-						<label class="text-muted-foreground flex shrink-0 items-center gap-1.5 text-xs" title="Newly created issues land here">
+						<label
+							class="text-muted-foreground flex shrink-0 items-center gap-1.5 text-xs"
+							title="Newly created issues land here"
+						>
 							<input type="radio" name="initial-state" value={row.key} bind:group={initialKey} />
 							initial
 						</label>
@@ -302,8 +328,12 @@
 						<!-- creation nudge: seed the state's instructions while it's being made -->
 						{#if row.promptOpen}
 							<div class="space-y-1" transition:slide={{ duration: dur() }}>
-								<label class="text-muted-foreground text-xs font-medium" for="state-prompt-{row.key}">
-									Stage instructions — what “being in {row.name.trim() || 'this state'}” means for an agent
+								<label
+									class="text-muted-foreground text-xs font-medium"
+									for="state-prompt-{row.key}"
+								>
+									Stage instructions — what “being in {row.name.trim() || 'this state'}” means for
+									an agent
 								</label>
 								<Textarea
 									id="state-prompt-{row.key}"
@@ -338,7 +368,11 @@
 											aria-label="Action name"
 										/>
 										<span class="text-muted-foreground text-xs">→</span>
-										<Select bind:value={transitions[ti].to} class="h-8 w-36 text-xs" aria-label="Target state">
+										<Select
+											bind:value={transitions[ti].to}
+											class="h-8 w-36 text-xs"
+											aria-label="Target state"
+										>
 											{#each states.filter((s) => s.key !== row.key) as target (target.key)}
 												<option value={target.key}>{target.name.trim() || 'unnamed'}</option>
 											{/each}
@@ -359,9 +393,15 @@
 									     entered this state) -->
 									<div class="ml-4 space-y-1.5">
 										{#each transition.requires as requirement (requirement.key)}
-											{@const ri = transitions[ti].requires.findIndex((r) => r.key === requirement.key)}
-											<div class="flex flex-wrap items-center gap-2" transition:slide={{ duration: dur() }}>
-												<span class="text-muted-foreground shrink-0 text-xs">requires artifact</span>
+											{@const ri = transitions[ti].requires.findIndex(
+												(r) => r.key === requirement.key
+											)}
+											<div
+												class="flex flex-wrap items-center gap-2"
+												transition:slide={{ duration: dur() }}
+											>
+												<span class="text-muted-foreground shrink-0 text-xs">requires artifact</span
+												>
 												<Input
 													bind:value={transitions[ti].requires[ri].artifact}
 													placeholder="design-doc"
@@ -423,7 +463,9 @@
 								variant="ghost"
 								class="text-muted-foreground h-7 px-2 text-xs"
 								disabled={states.filter(
-									(s) => s.key !== row.key && !transitions.some((t) => t.from === row.key && t.to === s.key)
+									(s) =>
+										s.key !== row.key &&
+										!transitions.some((t) => t.from === row.key && t.to === s.key)
 								).length === 0}
 								onclick={() => addTransition(row.key)}
 							>
@@ -443,12 +485,18 @@
 			</ul>
 		{/if}
 		{#each warnings as warning (warning)}
-			<p class="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400" transition:slide={{ duration: dur() }}>
+			<p
+				class="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400"
+				transition:slide={{ duration: dur() }}
+			>
 				{warning}
 			</p>
 		{/each}
 		{#if errorMessage}
-			<p class="border-destructive/40 bg-destructive/10 text-destructive rounded-md border px-3 py-2 text-sm" transition:slide={{ duration: dur() }}>
+			<p
+				class="border-destructive/40 bg-destructive/10 text-destructive rounded-md border px-3 py-2 text-sm"
+				transition:slide={{ duration: dur() }}
+			>
 				{errorMessage}
 			</p>
 		{/if}
@@ -461,7 +509,9 @@
 	<!-- graph view: how a workflow is read; re-renders live as the form changes -->
 	<div class="min-w-0">
 		<div class="bg-muted/30 sticky top-20 rounded-lg border p-4">
-			<h3 class="text-muted-foreground mb-3 text-xs font-medium tracking-wide uppercase">Live preview</h3>
+			<h3 class="text-muted-foreground mb-3 text-xs font-medium tracking-wide uppercase">
+				Live preview
+			</h3>
 			<WorkflowGraph workflow={preview} />
 		</div>
 	</div>

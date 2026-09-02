@@ -165,9 +165,15 @@ const DESCRIBERS: Record<KnownEventType, Describer> = {
 		name(p.runner_name),
 		text(`fail to launch (${str(p.consecutive_failures)} consecutive): ${str(p.error)}`)
 	],
-	'routing_rule.created': (ev, p) => [text(`${action(ev.type)} the ${str(p.scope_label)} routing rule`)],
-	'routing_rule.updated': (ev, p) => [text(`${action(ev.type)} the ${str(p.scope_label)} routing rule`)],
-	'routing_rule.deleted': (ev, p) => [text(`${action(ev.type)} the ${str(p.scope_label)} routing rule`)],
+	'routing_rule.created': (ev, p) => [
+		text(`${action(ev.type)} the ${str(p.scope_label)} routing rule`)
+	],
+	'routing_rule.updated': (ev, p) => [
+		text(`${action(ev.type)} the ${str(p.scope_label)} routing rule`)
+	],
+	'routing_rule.deleted': (ev, p) => [
+		text(`${action(ev.type)} the ${str(p.scope_label)} routing rule`)
+	],
 	'settings.updated': (_ev, p) => [
 		text(`updated supervisor settings (${joinChanged(p.changed, ', ') || 'no changes'})`)
 	],

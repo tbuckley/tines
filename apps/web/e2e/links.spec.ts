@@ -1,4 +1,11 @@
-import type { Issue, IssueDetail, IssueLink, ListResponse, Project, TinesEvent } from '@tines/shared';
+import type {
+	Issue,
+	IssueDetail,
+	IssueLink,
+	ListResponse,
+	Project,
+	TinesEvent
+} from '@tines/shared';
 import { expect, test } from '@playwright/test';
 import { ALICE, BOB } from './constants.mjs';
 import { apiClient, body, runId } from './helpers';
@@ -157,9 +164,9 @@ test.describe.serial('issue links', () => {
 	test('ready lists unblocked, not-done, non-duplicate issues only', async ({ request }) => {
 		const api = apiClient(request, ALICE.apiKey);
 		const ready = async (params = '') =>
-			(
-				await body<ListResponse<Issue>>(await api.get(`/api/v1/issues?ready=1${params}`))
-			).items.map((i) => i.id);
+			(await body<ListResponse<Issue>>(await api.get(`/api/v1/issues?ready=1${params}`))).items.map(
+				(i) => i.id
+			);
 
 		const ids = await ready(`&project=${projectName}`);
 		// A is done, B is unblocked now (A closed), D was always ready.

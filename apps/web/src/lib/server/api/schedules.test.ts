@@ -63,9 +63,7 @@ describe('schedule start state', () => {
 		expect(schedule.state_id).toBe('wfs_std_review');
 		expect(schedule.state_name).toBe('Human Review');
 		// The scheduled_task.created event names the pinned start state.
-		const [ev] = t.all(
-			`SELECT payload FROM event WHERE type = 'scheduled_task.created'`
-		);
+		const [ev] = t.all(`SELECT payload FROM event WHERE type = 'scheduled_task.created'`);
 		expect(JSON.parse(ev.payload as string).start_state).toBe('Human Review');
 	});
 

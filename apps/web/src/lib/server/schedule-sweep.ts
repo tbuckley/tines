@@ -37,7 +37,11 @@ export function scheduleExecQuery(db: Kysely<Database>) {
 		.innerJoin('workflow', 'workflow.id', 'scheduled_task.workflow_id')
 		.innerJoin('workflow_state as start_state', (join) =>
 			join.on((eb) =>
-				eb('start_state.id', '=', eb.fn.coalesce('scheduled_task.state_id', 'workflow.initial_state_id'))
+				eb(
+					'start_state.id',
+					'=',
+					eb.fn.coalesce('scheduled_task.state_id', 'workflow.initial_state_id')
+				)
 			)
 		)
 		.select([
@@ -163,7 +167,9 @@ export function scheduleEventInsert(
 }
 
 async function runBatch(env: Env, queries: CompiledQuery[]): Promise<void> {
-	await env.DB.batch(queries.map((q) => env.DB.prepare(q.sql).bind(...(q.parameters as unknown[]))));
+	await env.DB.batch(
+		queries.map((q) => env.DB.prepare(q.sql).bind(...(q.parameters as unknown[])))
+	);
 }
 
 /** One due schedule: create an instance or record a gated skip, then advance. */

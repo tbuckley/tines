@@ -23,7 +23,10 @@ const FORM_CONTENT_TYPES = new Set([
 function crossSiteFormSubmission(event: RequestEvent): boolean {
 	const { request, url } = event;
 	if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(request.method)) return false;
-	const contentType = (request.headers.get('content-type') ?? '').split(';')[0].trim().toLowerCase();
+	const contentType = (request.headers.get('content-type') ?? '')
+		.split(';')[0]
+		.trim()
+		.toLowerCase();
 	if (!FORM_CONTENT_TYPES.has(contentType)) return false;
 	if (!request.headers.get('cookie')) return false;
 	return request.headers.get('origin') !== url.origin;

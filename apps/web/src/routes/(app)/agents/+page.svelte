@@ -174,7 +174,10 @@
 				if (!globalRule.targets.some((t) => t.runner_id === createdRunner?.id)) {
 					await api.updateRoutingRule(globalRule.id, {
 						targets: [
-							...globalRule.targets.map((t) => ({ runner_id: t.runner_id, ...(t.tier ? { tier: t.tier } : {}) })),
+							...globalRule.targets.map((t) => ({
+								runner_id: t.runner_id,
+								...(t.tier ? { tier: t.tier } : {})
+							})),
 							{ runner_id: createdRunner.id }
 						]
 					});
@@ -220,8 +223,10 @@
 		editTierEfforts = Object.fromEntries(
 			MODEL_TIERS.map((tier) => [tier, runner.tiers?.[tier]?.effort ?? ''])
 		);
-		editCapUsd = runner.budget?.max_run_cost_usd !== undefined ? String(runner.budget.max_run_cost_usd) : '';
-		editCapTokens = runner.budget?.max_run_tokens !== undefined ? String(runner.budget.max_run_tokens) : '';
+		editCapUsd =
+			runner.budget?.max_run_cost_usd !== undefined ? String(runner.budget.max_run_cost_usd) : '';
+		editCapTokens =
+			runner.budget?.max_run_tokens !== undefined ? String(runner.budget.max_run_tokens) : '';
 		editApiKey = '';
 	}
 
@@ -238,12 +243,16 @@
 				tiers[tier] = { model, ...(effort ? { effort } : {}) };
 			}
 			const budget: RunnerBudget = {
-				...(editTarget.budget?.daily_usd !== undefined ? { daily_usd: editTarget.budget.daily_usd } : {}),
+				...(editTarget.budget?.daily_usd !== undefined
+					? { daily_usd: editTarget.budget.daily_usd }
+					: {}),
 				...(editTarget.budget?.daily_tokens !== undefined
 					? { daily_tokens: editTarget.budget.daily_tokens }
 					: {}),
 				...(editCapUsd.trim() !== '' ? { max_run_cost_usd: Number(editCapUsd) } : {}),
-				...(editCapTokens.trim() !== '' ? { max_run_tokens: Number.parseInt(editCapTokens, 10) } : {})
+				...(editCapTokens.trim() !== ''
+					? { max_run_tokens: Number.parseInt(editCapTokens, 10) }
+					: {})
 			};
 			await api.updateRunner(editTarget.id, {
 				max_concurrent: editMaxConcurrent,
@@ -607,7 +616,9 @@
 			{#each data.runners as runner (runner.id)}
 				<div class="rounded-lg border p-4">
 					<div class="mb-2 flex items-center gap-2">
-						<span class="bg-muted text-muted-foreground flex size-8 items-center justify-center rounded-md">
+						<span
+							class="bg-muted text-muted-foreground flex size-8 items-center justify-center rounded-md"
+						>
 							{#if runner.type === 'local'}
 								<IconDeviceLaptop size={18} stroke={1.75} />
 							{:else}
@@ -632,14 +643,20 @@
 							· ${runner.budget.max_run_cost_usd}/run
 						{/if}
 						{#if runner.launch_failures > 0}
-							<span class="text-amber-600 dark:text-amber-400">· {runner.launch_failures} launch failures</span>
+							<span class="text-amber-600 dark:text-amber-400"
+								>· {runner.launch_failures} launch failures</span
+							>
 						{/if}
 					</p>
 					<div class="flex flex-wrap gap-2">
 						{#if runner.status === 'paused'}
-							<Button size="sm" variant="outline" onclick={() => setRunnerStatus(runner, 'active')}>Resume</Button>
+							<Button size="sm" variant="outline" onclick={() => setRunnerStatus(runner, 'active')}
+								>Resume</Button
+							>
 						{:else}
-							<Button size="sm" variant="outline" onclick={() => setRunnerStatus(runner, 'paused')}>Pause</Button>
+							<Button size="sm" variant="outline" onclick={() => setRunnerStatus(runner, 'paused')}
+								>Pause</Button
+							>
 						{/if}
 						<Button size="sm" variant="ghost" onclick={() => openRunnerEdit(runner)}>Edit</Button>
 						{#if runner.type === 'local'}
@@ -653,7 +670,12 @@
 								<IconKey size={14} /> Rotate token
 							</Button>
 						{/if}
-						<Button size="sm" variant="ghost" class="text-destructive" onclick={() => removeRunner(runner)}>
+						<Button
+							size="sm"
+							variant="ghost"
+							class="text-destructive"
+							onclick={() => removeRunner(runner)}
+						>
 							<IconTrash size={14} /> Remove
 						</Button>
 					</div>
@@ -699,7 +721,9 @@
 		</Button>
 	</div>
 	{#if data.runners.length > 0 && data.rules.length === 0}
-		<div class="mb-3 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-300">
+		<div
+			class="mb-3 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-300"
+		>
 			You have a runner but no routing rules — nothing will dispatch. Add a global rule to route
 			everything.
 		</div>
@@ -715,7 +739,12 @@
 						<li>{warning.message}</li>
 					{/each}
 				</ul>
-				<button type="button" class="shrink-0" aria-label="Dismiss" onclick={() => (ruleWarnings = [])}>
+				<button
+					type="button"
+					class="shrink-0"
+					aria-label="Dismiss"
+					onclick={() => (ruleWarnings = [])}
+				>
 					<IconX size={14} />
 				</button>
 			</div>
@@ -761,7 +790,8 @@
 					: 'bg-muted-foreground/30'}"
 			>
 				<span
-					class="bg-background absolute top-0.5 left-0.5 size-5 rounded-full shadow transition-transform {data.settings.enabled
+					class="bg-background absolute top-0.5 left-0.5 size-5 rounded-full shadow transition-transform {data
+						.settings.enabled
 						? 'translate-x-5'
 						: ''}"
 				></span>
@@ -775,14 +805,18 @@
 				<div class="bg-muted inline-flex rounded-md p-0.5 text-sm">
 					<button
 						type="button"
-						class="rounded px-3 py-1 {quotaType === 'global_cap' ? 'bg-background shadow-xs font-medium' : 'text-muted-foreground'}"
+						class="rounded px-3 py-1 {quotaType === 'global_cap'
+							? 'bg-background font-medium shadow-xs'
+							: 'text-muted-foreground'}"
 						onclick={() => (quotaType = 'global_cap')}
 					>
 						Global cap
 					</button>
 					<button
 						type="button"
-						class="rounded px-3 py-1 {quotaType === 'state_roster' ? 'bg-background shadow-xs font-medium' : 'text-muted-foreground'}"
+						class="rounded px-3 py-1 {quotaType === 'state_roster'
+							? 'bg-background font-medium shadow-xs'
+							: 'text-muted-foreground'}"
 						onclick={() => (quotaType = 'state_roster')}
 					>
 						Per-state roster
@@ -832,7 +866,9 @@
 												<StateBadge {state} />
 												<span class="flex items-center gap-2">
 													{#if (rosterOverrides[state.id] ?? '') === ''}
-														<span class="text-muted-foreground text-xs">inherits {rosterDefault}</span>
+														<span class="text-muted-foreground text-xs"
+															>inherits {rosterDefault}</span
+														>
 													{/if}
 													<Input
 														type="number"
@@ -843,7 +879,10 @@
 														aria-label={`Limit for ${workflow.name} / ${state.name}`}
 														value={rosterOverrides[state.id] ?? ''}
 														oninput={(e) =>
-															(rosterOverrides = { ...rosterOverrides, [state.id]: e.currentTarget.value })}
+															(rosterOverrides = {
+																...rosterOverrides,
+																[state.id]: e.currentTarget.value
+															})}
 													/>
 												</span>
 											</div>
@@ -899,7 +938,9 @@
 				<Input
 					type="password"
 					class="flex-1"
-					placeholder={data.settings.github_pat_hint ? 'Paste a new fine-grained PAT' : 'github_pat_…'}
+					placeholder={data.settings.github_pat_hint
+						? 'Paste a new fine-grained PAT'
+						: 'github_pat_…'}
 					aria-label="GitHub personal access token"
 					bind:value={patInput}
 				/>
@@ -908,14 +949,17 @@
 				</Button>
 			</div>
 			{#if patReplacedNote}
-				<p class="text-xs text-emerald-700 dark:text-emerald-400" transition:slide={{ duration: dur() }}>
+				<p
+					class="text-xs text-emerald-700 dark:text-emerald-400"
+					transition:slide={{ duration: dur() }}
+				>
 					{patReplacedNote}
 				</p>
 			{/if}
 			<p class="text-muted-foreground text-xs">
 				Use a fine-grained token scoped to exactly the repos your context items point at — the token
-				never enters an agent's sandbox, but every run wields its full authority, so that repo set is
-				the blast radius of a compromised run.
+				never enters an agent's sandbox, but every run wields its full authority, so that repo set
+				is the blast radius of a compromised run.
 			</p>
 			<PatInstructions repoUrls={data.contextRepoUrls} />
 		</form>
@@ -929,8 +973,8 @@
 		<!-- final, skippable step: add the new runner to routing (flow 3) -->
 		<div class="space-y-4">
 			<p class="text-sm">
-				Runner <span class="font-medium">{createdRunner.name}</span> is ready — managed runners are
-				always online. It won't take work until a routing rule (or an issue pin) targets it.
+				Runner <span class="font-medium">{createdRunner.name}</span> is ready — managed runners are always
+				online. It won't take work until a routing rule (or an issue pin) targets it.
 			</p>
 			<p class="text-muted-foreground text-xs">
 				{#if data.rules.some((r) => r.scope.project_id === null && r.scope.workflow_state_id === null)}
@@ -951,14 +995,18 @@
 			<div class="bg-muted inline-flex rounded-md p-0.5 text-sm">
 				<button
 					type="button"
-					class="rounded px-3 py-1 {addRunnerType === 'local' ? 'bg-background shadow-xs font-medium' : 'text-muted-foreground'}"
+					class="rounded px-3 py-1 {addRunnerType === 'local'
+						? 'bg-background font-medium shadow-xs'
+						: 'text-muted-foreground'}"
 					onclick={() => (addRunnerType = 'local')}
 				>
 					Local
 				</button>
 				<button
 					type="button"
-					class="rounded px-3 py-1 {addRunnerType === 'claude_managed' ? 'bg-background shadow-xs font-medium' : 'text-muted-foreground'}"
+					class="rounded px-3 py-1 {addRunnerType === 'claude_managed'
+						? 'bg-background font-medium shadow-xs'
+						: 'text-muted-foreground'}"
 					onclick={() => (addRunnerType = 'claude_managed')}
 				>
 					Claude (managed)
@@ -970,7 +1018,12 @@
 					<div class="grid grid-cols-2 gap-3">
 						<div class="space-y-1.5">
 							<label class="text-sm font-medium" for="claude-name">Name</label>
-							<Input id="claude-name" bind:value={runnerName} placeholder="e.g. claude-cloud" required />
+							<Input
+								id="claude-name"
+								bind:value={runnerName}
+								placeholder="e.g. claude-cloud"
+								required
+							/>
 						</div>
 						<div class="space-y-1.5">
 							<label class="text-sm font-medium" for="claude-tier">Default tier</label>
@@ -1004,7 +1057,8 @@
 								min="1"
 								max="100"
 								value={claudeMaxConcurrent}
-								oninput={(e) => (claudeMaxConcurrent = Number.parseInt(e.currentTarget.value, 10) || 1)}
+								oninput={(e) =>
+									(claudeMaxConcurrent = Number.parseInt(e.currentTarget.value, 10) || 1)}
 							/>
 						</div>
 						<div class="space-y-1.5">
@@ -1015,7 +1069,8 @@
 								min="1"
 								max="1440"
 								value={claudeMaxMinutes}
-								oninput={(e) => (claudeMaxMinutes = Number.parseInt(e.currentTarget.value, 10) || 30)}
+								oninput={(e) =>
+									(claudeMaxMinutes = Number.parseInt(e.currentTarget.value, 10) || 30)}
 							/>
 						</div>
 					</div>
@@ -1034,21 +1089,28 @@
 									class="w-24"
 									aria-label="Per-run cost cap in dollars"
 									value={claudeCapUsd}
-									oninput={(e) => (claudeCapUsd = Number(e.currentTarget.value) || DEFAULT_MANAGED_RUN_COST_USD)}
+									oninput={(e) =>
+										(claudeCapUsd = Number(e.currentTarget.value) || DEFAULT_MANAGED_RUN_COST_USD)}
 								/>
 								<span class="text-muted-foreground text-xs">
-									per run, enforced by the platform — the session pauses at the cap and the run ends.
+									per run, enforced by the platform — the session pauses at the cap and the run
+									ends.
 								</span>
 							</div>
 						{:else}
-							<p class="text-xs text-amber-700 dark:text-amber-400" transition:slide={{ duration: dur() }}>
+							<p
+								class="text-xs text-amber-700 dark:text-amber-400"
+								transition:slide={{ duration: dur() }}
+							>
 								Uncapped: a run is bounded only by its timeout × burn rate.
 							</p>
 						{/if}
 					</div>
 					{#if !data.settings.github_pat_hint}
 						<div class="space-y-1.5 rounded-md border border-amber-500/40 bg-amber-500/10 p-3">
-							<label class="text-sm font-medium" for="claude-pat">GitHub access (needed to clone)</label>
+							<label class="text-sm font-medium" for="claude-pat"
+								>GitHub access (needed to clone)</label
+							>
 							<Input
 								id="claude-pat"
 								type="password"
@@ -1067,7 +1129,10 @@
 					{/if}
 					<div class="flex justify-end gap-2">
 						<Button type="button" variant="ghost" onclick={resetAddRunner}>Cancel</Button>
-						<Button type="submit" disabled={creatingClaude || !runnerName.trim() || !claudeApiKey.trim()}>
+						<Button
+							type="submit"
+							disabled={creatingClaude || !runnerName.trim() || !claudeApiKey.trim()}
+						>
 							{creatingClaude ? 'Validating key…' : 'Create runner'}
 						</Button>
 					</div>
@@ -1079,7 +1144,8 @@
 							<label class="text-sm font-medium" for="runner-name">Name</label>
 							<Input id="runner-name" bind:value={runnerName} placeholder="e.g. laptop-m4" />
 							<p class="text-muted-foreground text-xs">
-								Unique — routing rules and the CLI address runners by name. Defaults to the hostname.
+								Unique — routing rules and the CLI address runners by name. Defaults to the
+								hostname.
 							</p>
 						</div>
 						<div class="space-y-1.5">
@@ -1113,14 +1179,16 @@
 							max="100"
 							class="w-24"
 							value={runnerMaxConcurrent}
-							oninput={(e) => (runnerMaxConcurrent = Number.parseInt(e.currentTarget.value, 10) || 1)}
+							oninput={(e) =>
+								(runnerMaxConcurrent = Number.parseInt(e.currentTarget.value, 10) || 1)}
 						/>
 					</div>
-			
+
 					<div class="space-y-1.5">
 						<p class="text-sm font-medium">Run this on the machine</p>
 						<div class="relative">
-							<pre class="bg-muted overflow-x-auto rounded-md border p-3 pr-10 font-mono text-xs">{bootstrapCommand}</pre>
+							<pre
+								class="bg-muted overflow-x-auto rounded-md border p-3 pr-10 font-mono text-xs">{bootstrapCommand}</pre>
 							<Button
 								size="icon"
 								variant="ghost"
@@ -1131,17 +1199,17 @@
 								<IconCopy size={14} />
 							</Button>
 							{#if commandCopied}
-								<span class="text-muted-foreground absolute -bottom-5 right-0 text-xs">copied</span>
+								<span class="text-muted-foreground absolute right-0 -bottom-5 text-xs">copied</span>
 							{/if}
 						</div>
 						<p class="text-muted-foreground pt-1 text-xs">
-							The first start <span class="font-medium">registers</span> the runner with your API key and
-							stores its own long-lived runner token on the machine; it appears here, online, within
+							The first start <span class="font-medium">registers</span> the runner with your API key
+							and stores its own long-lived runner token on the machine; it appears here, online, within
 							seconds. Later starts reconnect with the stored token — the API key is only needed once.
 						</p>
 						<p class="text-muted-foreground text-xs">
-							Keep it running: the runner is infrastructure — put the daemon under launchd/systemd so it
-							survives logouts and reboots (service snippets in
+							Keep it running: the runner is infrastructure — put the daemon under launchd/systemd
+							so it survives logouts and reboots (service snippets in
 							<code class="bg-muted rounded px-1 py-0.5">docs/runner-daemon.md</code>).
 						</p>
 					</div>
@@ -1217,7 +1285,8 @@
 								placeholder={builtin ? `${builtin} (built-in)` : 'model id'}
 								aria-label={`Model override for ${tier}`}
 								value={editTierModels[tier] ?? ''}
-								oninput={(e) => (editTierModels = { ...editTierModels, [tier]: e.currentTarget.value })}
+								oninput={(e) =>
+									(editTierModels = { ...editTierModels, [tier]: e.currentTarget.value })}
 							/>
 							{#if editTarget.type === 'claude_managed'}
 								<Select
@@ -1225,7 +1294,8 @@
 									aria-label={`Effort for ${tier}`}
 									value={editTierEfforts[tier] ?? ''}
 									disabled={(editTierModels[tier] ?? '').trim() === ''}
-									onchange={(e) => (editTierEfforts = { ...editTierEfforts, [tier]: e.currentTarget.value })}
+									onchange={(e) =>
+										(editTierEfforts = { ...editTierEfforts, [tier]: e.currentTarget.value })}
 								>
 									<option value="">effort —</option>
 									{#each ['low', 'medium', 'high', 'xhigh', 'max'] as effort (effort)}
@@ -1236,8 +1306,8 @@
 						</div>
 						{#if stale}
 							<p class="text-muted-foreground pl-22 text-xs">
-								<span class="text-amber-700 dark:text-amber-400">stale override</span> — the built-in
-								for {tier} is now {builtin}
+								<span class="text-amber-700 dark:text-amber-400">stale override</span> — the
+								built-in for {tier} is now {builtin}
 							</p>
 						{/if}
 					{/each}
@@ -1284,7 +1354,9 @@
 						id="edit-api-key"
 						type="password"
 						bind:value={editApiKey}
-						placeholder={editTarget.has_api_key ? 'A key is set — paste a new one to replace it' : 'sk-ant-…'}
+						placeholder={editTarget.has_api_key
+							? 'A key is set — paste a new one to replace it'
+							: 'sk-ant-…'}
 					/>
 					<p class="text-muted-foreground text-xs">
 						Write-only. A replacement is ping-validated first — a bad paste leaves the working key
@@ -1351,12 +1423,13 @@
 				The token for <span class="font-medium">{rotatedToken.runnerName}</span> was rotated. This is
 				the only time the new token is shown — the old one is already dead.
 			</p>
-			<pre class="bg-muted overflow-x-auto rounded-md border p-3 font-mono text-xs select-all">{rotatedToken.token}</pre>
+			<pre
+				class="bg-muted overflow-x-auto rounded-md border p-3 font-mono text-xs select-all">{rotatedToken.token}</pre>
 			<p class="text-muted-foreground text-xs">
 				The daemon's next poll gets a 401 until it adopts this token: run
-				<code class="bg-muted rounded px-1 py-0.5">tines runners rotate-token</code> on the daemon
-				machine to store it automatically, or update the entry in its config directory and restart.
-				The runner's id, history, and rule references are unchanged.
+				<code class="bg-muted rounded px-1 py-0.5">tines runners rotate-token</code> on the daemon machine
+				to store it automatically, or update the entry in its config directory and restart. The runner's
+				id, history, and rule references are unchanged.
 			</p>
 			<div class="flex justify-end">
 				<Button
@@ -1455,17 +1528,24 @@
 						class="flex-1"
 						aria-label={`Target ${i + 1} runner`}
 						value={target.runner_id}
-						onchange={(e) => (ruleTargets[i] = { ...ruleTargets[i], runner_id: e.currentTarget.value })}
+						onchange={(e) =>
+							(ruleTargets[i] = { ...ruleTargets[i], runner_id: e.currentTarget.value })}
 					>
 						{#each data.runners as runner (runner.id)}
-							<option value={runner.id}>{runner.name}{runner.status === 'paused' ? ' (paused)' : ''}</option>
+							<option value={runner.id}
+								>{runner.name}{runner.status === 'paused' ? ' (paused)' : ''}</option
+							>
 						{/each}
 					</Select>
 					<Select
 						class="w-32"
 						aria-label={`Target ${i + 1} tier`}
 						value={target.tier}
-						onchange={(e) => (ruleTargets[i] = { ...ruleTargets[i], tier: e.currentTarget.value as '' | ModelTier })}
+						onchange={(e) =>
+							(ruleTargets[i] = {
+								...ruleTargets[i],
+								tier: e.currentTarget.value as '' | ModelTier
+							})}
 					>
 						<option value="">default tier</option>
 						{#each MODEL_TIERS as tier (tier)}
@@ -1511,7 +1591,8 @@
 				variant="ghost"
 				type="button"
 				disabled={data.runners.length === 0}
-				onclick={() => (ruleTargets = [...ruleTargets, { runner_id: data.runners[0].id, tier: '' }])}
+				onclick={() =>
+					(ruleTargets = [...ruleTargets, { runner_id: data.runners[0].id, tier: '' }])}
 			>
 				<IconPlus size={14} /> Add target
 			</Button>
@@ -1523,7 +1604,10 @@
 
 		<div class="flex justify-end gap-2">
 			<Button type="button" variant="ghost" onclick={() => (ruleModalOpen = false)}>Cancel</Button>
-			<Button type="submit" disabled={savingRule || ruleTargets.length === 0 || staleRuleState !== null}>
+			<Button
+				type="submit"
+				disabled={savingRule || ruleTargets.length === 0 || staleRuleState !== null}
+			>
 				{savingRule ? 'Saving…' : editingRule ? 'Save rule' : 'Create rule'}
 			</Button>
 		</div>

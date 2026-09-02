@@ -113,7 +113,11 @@ export async function addIssueLink(
 		.where('kind', '=', kind)
 		.executeTakeFirst();
 	if (duplicateLink) {
-		throw new ApiFail(409, 'conflict', `${refOf(source)} already ${kind === 'blocks' ? 'blocks' : 'duplicates'} ${refOf(target)}`);
+		throw new ApiFail(
+			409,
+			'conflict',
+			`${refOf(source)} already ${kind === 'blocks' ? 'blocks' : 'duplicates'} ${refOf(target)}`
+		);
 	}
 
 	// Cycle check over the combined graph: the new source→target edge closes

@@ -55,10 +55,13 @@ describe('command tree', () => {
 		const nouns = program.commands.map((c) => c.name()).sort();
 		expect(nouns).toEqual(
 			[
+				'config',
 				'context',
 				'events',
 				'issues',
 				'journal',
+				'login',
+				'logout',
 				'projects',
 				'routing',
 				'runner',
@@ -173,7 +176,7 @@ describe('the --url flag means the API base URL, everywhere', () => {
 	 * flags at all. Anything else appearing here is a command that forgot
 	 * withCommon(), which is how the collision this test exists for got in.
 	 */
-	const OFFLINE_LEAVES = ['tines runner workspaces prune'];
+	const OFFLINE_LEAVES = ['tines logout', 'tines runner workspaces prune'];
 
 	it('is offered by every leaf command that talks to the API', async () => {
 		const program = await freshProgram({});

@@ -93,7 +93,10 @@
 	</Select>
 </div>
 
-<EventList {events} emptyMessage="No activity yet — it will show up here as you and your agents work." />
+<EventList
+	{events}
+	emptyMessage="No activity yet — it will show up here as you and your agents work."
+/>
 
 {#if loadingMore}
 	<div class="mt-4 space-y-2">

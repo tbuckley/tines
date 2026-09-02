@@ -56,7 +56,10 @@ describe('pollManagedRuns', () => {
 		const run = runById(t, runId)!;
 		expect(run.status).toBe('running');
 		expect(run.log).toBe('earlier\n[agent] hello\n');
-		expect(JSON.parse(run.usage as string)).toMatchObject({ cost_usd: 0.5, cost_source: 'provider' });
+		expect(JSON.parse(run.usage as string)).toMatchObject({
+			cost_usd: 0.5,
+			cost_source: 'provider'
+		});
 		expect(JSON.parse(run.provider_meta as string)).toMatchObject({ events_cursor: 'c1' });
 	});
 
@@ -117,6 +120,6 @@ describe('sweep housekeeping hook', () => {
 		await sweepSupervisor(t.db, t.env, NOW + 1000, { local: fake });
 		// The poll arm still ran and settled the run.
 		expect(runById(t, runId)!.status).toBe('completed');
-		expect(t.all("SELECT * FROM agent_run WHERE user_id = ?", USER)).toHaveLength(1);
+		expect(t.all('SELECT * FROM agent_run WHERE user_id = ?', USER)).toHaveLength(1);
 	});
 });

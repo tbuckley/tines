@@ -97,7 +97,9 @@ function resolveRequirements(input: unknown, where: string): ArtifactRequirement
 			requirement.type = r.type as ArtifactType;
 		}
 		if (r.content_type !== undefined) {
-			const contentType = requireString(r.content_type, `${field}.content_type`, { max: 100 }).trim();
+			const contentType = requireString(r.content_type, `${field}.content_type`, {
+				max: 100
+			}).trim();
 			// A prefix match against declared MIME types is only meaningful for
 			// payloads that carry one.
 			if (requirement.type !== 'file' && requirement.type !== 'text') {
@@ -150,11 +152,16 @@ export function resolveDef(
 			throw new ApiFail(422, 'duplicate_state_name', `State name "${name}" is used more than once`);
 		}
 		if (input.id !== undefined && !existingById.has(input.id)) {
-			throw new ApiFail(422, 'unknown_state', `State id "${input.id}" is not part of this workflow`);
+			throw new ApiFail(
+				422,
+				'unknown_state',
+				`State id "${input.id}" is not part of this workflow`
+			);
 		}
 		// `prompt` seeds a state-scoped "instructions" item — new states only;
 		// existing stage instructions are edited through the context surfaces.
-		const prompt = optionalString(input.prompt, `states[${i}].prompt`, { max: 100_000 })?.trim() || undefined;
+		const prompt =
+			optionalString(input.prompt, `states[${i}].prompt`, { max: 100_000 })?.trim() || undefined;
 		if (prompt !== undefined && input.id !== undefined) {
 			throw new ApiFail(
 				422,
@@ -253,7 +260,10 @@ export function deadEndWarnings(def: {
 	const hasOutgoing = new Set(def.transitions.map((t) => t.from_state_id));
 	return def.states
 		.filter((s) => s.category !== 'done' && !hasOutgoing.has(s.id))
-		.map((s) => `State "${s.name}" is not categorized "done" but has no outgoing transitions — issues that reach it will be stuck.`);
+		.map(
+			(s) =>
+				`State "${s.name}" is not categorized "done" but has no outgoing transitions — issues that reach it will be stuck.`
+		);
 }
 
 // ---------------------------------------------------------------------------
@@ -316,9 +326,7 @@ export async function loadWorkflows(
 				name: t.name,
 				from_state_id: t.from_state_id,
 				to_state_id: t.to_state_id,
-				...(t.requirements
-					? { requires: JSON.parse(t.requirements) as ArtifactRequirement[] }
-					: {})
+				...(t.requirements ? { requires: JSON.parse(t.requirements) as ArtifactRequirement[] } : {})
 			})),
 			issue_count: Number(row.issue_count ?? 0),
 			created_at: row.created_at,
@@ -430,7 +438,8 @@ export async function updateWorkflow(
 		);
 	}
 
-	const name = body.name !== undefined ? requireString(body.name, 'name', { max: 200 }).trim() : current.name;
+	const name =
+		body.name !== undefined ? requireString(body.name, 'name', { max: 200 }).trim() : current.name;
 	const description =
 		body.description !== undefined
 			? (optionalString(body.description, 'description', { max: 10_000 }) ?? '')
@@ -480,7 +489,11 @@ export async function updateWorkflow(
 		const occupied = await db
 			.selectFrom('issue')
 			.select(['state_id', (eb) => eb.fn.countAll<number>().as('n')])
-			.where('state_id', 'in', removedStates.map((s) => s.id))
+			.where(
+				'state_id',
+				'in',
+				removedStates.map((s) => s.id)
+			)
 			.groupBy('state_id')
 			.execute();
 		if (occupied.length > 0) {
@@ -500,7 +513,10 @@ export async function updateWorkflow(
 
 	// Same rule for schedules: a state a scheduled task starts instances in
 	// cannot be deleted (the FK's SET NULL is only the race backstop).
-	await assertStatesNotScheduled(db, removedStates.map((s) => s.id));
+	await assertStatesNotScheduled(
+		db,
+		removedStates.map((s) => s.id)
+	);
 
 	// Removing a state with attached context is rejected unless forced; a
 	// forced removal sweeps the items (all-or-nothing, even when one PATCH
@@ -524,11 +540,15 @@ export async function updateWorkflow(
 		.filter((s) => !s.isNew && currentById.get(s.id) && currentById.get(s.id)!.name !== s.name)
 		.map((s) => ({ from: currentById.get(s.id)!.name, to: s.name }));
 	const categoriesChanged = def.states
-		.filter((s) => !s.isNew && currentById.get(s.id) && currentById.get(s.id)!.category !== s.category)
+		.filter(
+			(s) => !s.isNew && currentById.get(s.id) && currentById.get(s.id)!.category !== s.category
+		)
 		.map((s) => ({ state: s.name, from: currentById.get(s.id)!.category, to: s.category }));
 	// Transitions are identified by their (from, to) pair; a kept pair whose
 	// action name changed counts as a rename.
-	const oldByPair = new Map(current.transitions.map((t) => [`${t.from_state_id}→${t.to_state_id}`, t]));
+	const oldByPair = new Map(
+		current.transitions.map((t) => [`${t.from_state_id}→${t.to_state_id}`, t])
+	);
 	const newByPair = new Map(def.transitions.map((t) => [`${t.from_state_id}→${t.to_state_id}`, t]));
 	const transitionsAdded = [...newByPair.keys()].filter((p) => !oldByPair.has(p)).length;
 	const transitionsRemoved = [...oldByPair.keys()].filter((p) => !newByPair.has(p)).length;
@@ -681,7 +701,10 @@ export async function deleteWorkflow(
 		db.deleteFrom('workflow_transition').where('workflow_id', '=', id).compile(),
 		db.deleteFrom('workflow_state').where('workflow_id', '=', id).compile(),
 		db.deleteFrom('workflow').where('id', '=', id).compile(),
-		eventInsert(db, actor, { type: 'workflow.deleted', payload: { workflow_id: id, name: wf.name } })
+		eventInsert(db, actor, {
+			type: 'workflow.deleted',
+			payload: { workflow_id: id, name: wf.name }
+		})
 	]);
 	return sweep.deleted;
 }
