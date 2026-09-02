@@ -55,14 +55,14 @@
 <Dialog.Root bind:open {onOpenChange}>
 	<Dialog.Portal>
 		<Dialog.Overlay
-			class="data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0 fixed inset-0 z-50 bg-black/50 duration-150"
+			class="data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 fixed inset-0 z-50 bg-black/50 duration-150"
 		/>
 		<!-- Anchored near the top on phones so the on-screen keyboard doesn't cover
 		     the dialog's fields; centered on larger screens. A column of a fixed
 		     header and one scrolling body: content of any length scrolls under a
 		     close button that is always on screen. -->
 		<Dialog.Content
-			class="bg-background data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95 fixed top-4 left-1/2 z-50 flex w-[calc(100%-2rem)] {size ===
+			class="bg-background data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 fixed top-4 left-1/2 z-50 flex w-[calc(100%-2rem)] {size ===
 			'xl'
 				? 'max-w-4xl'
 				: 'max-w-md'} -translate-x-1/2 flex-col overflow-hidden rounded-xl border shadow-lg duration-150 sm:top-1/2 sm:-translate-y-1/2"

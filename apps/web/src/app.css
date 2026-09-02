@@ -346,10 +346,15 @@ html[data-tab-slide] .vt-shared {
 	}
 }
 
-/* bits-ui dialogs animate with tw-animate-css utilities (`data-open:animate-in`
-   and friends), which the Svelte `transition:` directives they replaced used to
-   gate on `prefersReducedMotion()`. The compiled variant selectors can't be
-   matched by a plain `.animate-in`, so target the primitives' own attributes. */
+/* bits-ui dialogs animate with tw-animate-css utilities
+   (`data-[state=open]:animate-in` and friends), which the Svelte `transition:`
+   directives they replaced used to gate on `prefersReducedMotion()`. The
+   compiled variant selectors can't be matched by a plain `.animate-in`, so
+   target the primitives' own attributes. The `alert-dialog` selectors below
+   guard nothing today: `ui/alert-dialog` is generated code still carrying the
+   `data-open:` idiom, which bits-ui 2.19.0 never stamps (it emits
+   `data-state`), so those animations don't run in the first place. They stay
+   listed so the guard is already in place when that is fixed. */
 @media (prefers-reduced-motion: reduce) {
 	[data-dialog-overlay],
 	[data-dialog-content],

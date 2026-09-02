@@ -260,6 +260,21 @@ test('the page behind the viewer is inert while it is open', async ({ page }) =>
 		});
 
 	expect(await openerIsInert()).toBe(true);
+	// The attribute alone would pass even if `inert` on a `display: contents`
+	// wrapper were a no-op, which is the thing this design actually risked, so
+	// prove it functionally: focusing the opener has to be refused.
+	expect(
+		await page.evaluate(() => {
+			const button = document.querySelector(
+				'button[aria-label^="View long-doc"]'
+			) as HTMLElement | null;
+			button?.focus();
+			return {
+				focused: document.activeElement === button,
+				pointerEvents: button ? getComputedStyle(button).pointerEvents : null
+			};
+		})
+	).toEqual({ focused: false, pointerEvents: 'none' });
 	// The dialog itself is portalled outside the inert wrapper.
 	expect(await dialog.evaluate((el) => el.closest('[inert]') !== null)).toBe(false);
 
@@ -282,4 +297,61 @@ test('Escape closes the viewer and returns focus to the button that opened it', 
 	await page.keyboard.press('Escape');
 	await expect(dialog).toBeHidden();
 	await expect(opener).toBeFocused();
+});
+
+/**
+ * The enter/exit animation is a pair of tw-animate-css utilities behind a
+ * variant selector, so it is only live if the variant matches the attribute
+ * bits-ui actually stamps. It shipped once written as `data-open:animate-in`,
+ * which compiles to a bare `[data-open]` — an attribute bits-ui 2.19.0 never
+ * sets (it emits `data-state="open"`), leaving the modal with no animation at
+ * all and the reduced-motion guard below with nothing to guard. Nothing else
+ * in the suite can tell the two states apart, so assert the computed animation
+ * rather than the class list.
+ */
+test('the open viewer runs its enter animation', async ({ page }) => {
+	await page.goto(issueUrl());
+
+	const dialog = page.getByRole('dialog', { name: 'Artifact viewer' });
+	await openViewer(page.getByRole('button', { name: /^View long-doc/ }), dialog);
+
+	// `data-state` stays "open" for as long as the dialog is up, so the
+	// animation-name remains applied whether or not the 150ms has elapsed.
+	const animationNames = () =>
+		page.evaluate(() => ({
+			content: getComputedStyle(document.querySelector('[data-dialog-content]') as Element)
+				.animationName,
+			overlay: getComputedStyle(document.querySelector('[data-dialog-overlay]') as Element)
+				.animationName
+		}));
+
+	expect(await animationNames()).toEqual({ content: 'enter', overlay: 'enter' });
+
+	await page.keyboard.press('Escape');
+	await expect(dialog).toBeHidden();
+});
+
+test('the viewer does not animate under prefers-reduced-motion, and still closes', async ({
+	page
+}) => {
+	await page.emulateMedia({ reducedMotion: 'reduce' });
+	await page.goto(issueUrl());
+
+	const dialog = page.getByRole('dialog', { name: 'Artifact viewer' });
+	await openViewer(page.getByRole('button', { name: /^View long-doc/ }), dialog);
+
+	// app.css's reduced-motion block, targeting the primitives' own attributes.
+	expect(
+		await page.evaluate(() => ({
+			content: getComputedStyle(document.querySelector('[data-dialog-content]') as Element)
+				.animationName,
+			overlay: getComputedStyle(document.querySelector('[data-dialog-overlay]') as Element)
+				.animationName
+		}))
+	).toEqual({ content: 'none', overlay: 'none' });
+
+	// An exit animation that is suppressed rather than skipped would leave the
+	// dialog on screen; a tight timeout is the point of the assertion.
+	await page.keyboard.press('Escape');
+	await expect(dialog).toBeHidden({ timeout: 2_000 });
 });
