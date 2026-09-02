@@ -111,7 +111,9 @@ describe('assertPinFieldsAllowed', () => {
 	it('leaves named keys and sessions unfenced', () => {
 		expect(() => assertPinFieldsAllowed(namedKey, { pinned_runner_id: 'rnr_1' })).not.toThrow();
 		expect(() => assertPinFieldsAllowed(namedKey, { pinned_runner_id: null })).not.toThrow();
-		expect(() => assertPinFieldsAllowed(session, { pinned_runner_id: 'rnr_1', pinned_tier: 'smartest' })).not.toThrow();
+		expect(() =>
+			assertPinFieldsAllowed(session, { pinned_runner_id: 'rnr_1', pinned_tier: 'smartest' })
+		).not.toThrow();
 	});
 });
 
@@ -201,7 +203,9 @@ describe('getIssueDetail lookups and preloading', () => {
 	});
 
 	it('404s on an unknown project name', async () => {
-		await expect(getIssueDetail(t.db, USER, { projectName: 'nope', number })).rejects.toThrow(ApiFail);
+		await expect(getIssueDetail(t.db, USER, { projectName: 'nope', number })).rejects.toThrow(
+			ApiFail
+		);
 	});
 
 	it('takes an already-loaded issue instead of re-reading the row', async () => {
@@ -223,7 +227,12 @@ describe('getIssueDetail lookups and preloading', () => {
 	});
 
 	it('accepts a still-in-flight workflows promise', async () => {
-		const detail = await getIssueDetail(t.db, USER, { id }, { workflows: loadWorkflows(t.db, USER) });
+		const detail = await getIssueDetail(
+			t.db,
+			USER,
+			{ id },
+			{ workflows: loadWorkflows(t.db, USER) }
+		);
 		expect(detail.workflow.id).toBe(detail.workflow_id);
 	});
 

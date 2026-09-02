@@ -40,7 +40,9 @@ describe('the GitHub PAT', () => {
 			github_pat_enc: string;
 		};
 		expect(row.github_pat_enc).not.toContain('github_pat_11AAAA');
-		expect(await decryptSecret(row.github_pat_enc, ENC_KEY)).toBe('github_pat_11AAAA0abcdefghijklmn');
+		expect(await decryptSecret(row.github_pat_enc, ENC_KEY)).toBe(
+			'github_pat_11AAAA0abcdefghijklmn'
+		);
 
 		// Rotation is on record, the value never is.
 		const events = t.all("SELECT payload FROM event WHERE type = 'settings.updated'") as {
@@ -61,7 +63,9 @@ describe('the GitHub PAT', () => {
 	it('replacing the PAT does not disturb the plain settings fields', async () => {
 		const t = world();
 		await updateSupervisorSettings(t.db, t.env, actor, { enabled: true, attempt_limit: 5 });
-		await updateSupervisorSettings(t.db, t.env, actor, { github_pat: 'github_pat_11BBBB0abcdefghij' });
+		await updateSupervisorSettings(t.db, t.env, actor, {
+			github_pat: 'github_pat_11BBBB0abcdefghij'
+		});
 		const settings = await getSupervisorSettings(t.db, USER);
 		expect(settings.enabled).toBe(true);
 		expect(settings.attempt_limit).toBe(5);

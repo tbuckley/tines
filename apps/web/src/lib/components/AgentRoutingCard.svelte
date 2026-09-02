@@ -25,7 +25,9 @@
 		<h2 class="flex items-center gap-1.5 text-sm font-semibold">
 			<IconRobot size={16} stroke={1.75} /> Agent routing
 		</h2>
-		<a href="/agents" class="text-muted-foreground hover:text-foreground text-xs">Edit on the Agents tab</a>
+		<a href="/agents" class="text-muted-foreground hover:text-foreground text-xs"
+			>Edit on the Agents tab</a
+		>
 	</div>
 	{#if rules.length === 0}
 		<div class="text-muted-foreground rounded-lg border border-dashed p-4 text-center text-sm">

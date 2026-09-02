@@ -96,7 +96,11 @@ export async function runnerProtocolContext(
 	return { db, env: event.platform.env, runner };
 }
 
-async function serializedRun(db: Kysely<Database>, userId: string, runId: string): Promise<AgentRun> {
+async function serializedRun(
+	db: Kysely<Database>,
+	userId: string,
+	runId: string
+): Promise<AgentRun> {
 	const row = await runQuery(db, userId).where('agent_run.id', '=', runId).executeTakeFirst();
 	if (!row) throw notFound();
 	return serializeRun(row);
@@ -324,10 +328,18 @@ export async function uploadRawRunLog(
 	}
 	const declared = Number(request.headers.get('content-length'));
 	if (!Number.isInteger(declared) || declared <= 0) {
-		throw new ApiFail(411, 'length_required', 'A Content-Length header is required for a raw log upload');
+		throw new ApiFail(
+			411,
+			'length_required',
+			'A Content-Length header is required for a raw log upload'
+		);
 	}
 	if (declared > RUN_LOG_RAW_MAX_BYTES) {
-		throw new ApiFail(413, 'log_too_large', `The raw log must be at most ${RUN_LOG_RAW_MAX_BYTES} bytes`);
+		throw new ApiFail(
+			413,
+			'log_too_large',
+			`The raw log must be at most ${RUN_LOG_RAW_MAX_BYTES} bytes`
+		);
 	}
 	const body = request.body;
 	if (!body) throw new ApiFail(422, 'invalid_body', 'The request had no body');
@@ -374,16 +386,25 @@ export async function appendRunLog(
 	seq?: unknown
 ): Promise<AppendRunLogResponse> {
 	if (typeof chunk !== 'string' || chunk.length > 1_000_000) {
-		throw new ApiFail(422, 'invalid_field', '"chunk" must be a string of at most 1,000,000 characters', {
-			field: 'chunk'
-		});
+		throw new ApiFail(
+			422,
+			'invalid_field',
+			'"chunk" must be a string of at most 1,000,000 characters',
+			{
+				field: 'chunk'
+			}
+		);
 	}
 	if (seq !== undefined && (typeof seq !== 'number' || !Number.isInteger(seq) || seq < 1)) {
 		throw new ApiFail(422, 'invalid_field', '"seq" must be a positive integer', { field: 'seq' });
 	}
 	const run = await loadRunnerRun(db, runner, runId);
 	if (run.status === 'assigned') {
-		throw new ApiFail(422, 'run_not_delivered', 'This run has not been delivered to the daemon yet');
+		throw new ApiFail(
+			422,
+			'run_not_delivered',
+			'This run has not been delivered to the daemon yet'
+		);
 	}
 	if (!(ACTIVE as string[]).includes(run.status)) {
 		throw new ApiFail(422, 'run_already_ended', 'This run has already ended; the log is closed');
@@ -433,7 +454,9 @@ export async function appendRunLog(
 		if ((results[0]?.meta.changes ?? 0) > 0) {
 			return {
 				status:
-					current.status === 'launching' ? 'running' : (current.status as AppendRunLogResponse['status']),
+					current.status === 'launching'
+						? 'running'
+						: (current.status as AppendRunLogResponse['status']),
 				log_bytes_dropped: appended.dropped,
 				log_seq: seq ?? current.log_seq
 			};
@@ -480,7 +503,11 @@ function validateUsage(value: unknown): AgentRunUsage | undefined {
 		'cost_usd'
 	] as const) {
 		if (raw[field] === undefined) continue;
-		if (typeof raw[field] !== 'number' || !Number.isFinite(raw[field]) || (raw[field] as number) < 0) {
+		if (
+			typeof raw[field] !== 'number' ||
+			!Number.isFinite(raw[field]) ||
+			(raw[field] as number) < 0
+		) {
 			throw new ApiFail(422, 'invalid_field', `"usage.${field}" must be a non-negative number`, {
 				field: `usage.${field}`
 			});
@@ -489,9 +516,14 @@ function validateUsage(value: unknown): AgentRunUsage | undefined {
 	}
 	if (raw.cost_source !== undefined) {
 		if (!['provider', 'priced', 'none'].includes(raw.cost_source as string)) {
-			throw new ApiFail(422, 'invalid_field', '"usage.cost_source" must be provider, priced, or none', {
-				field: 'usage.cost_source'
-			});
+			throw new ApiFail(
+				422,
+				'invalid_field',
+				'"usage.cost_source" must be provider, priced, or none',
+				{
+					field: 'usage.cost_source'
+				}
+			);
 		}
 		usage.cost_source = raw.cost_source as AgentRunUsage['cost_source'];
 	}
@@ -523,7 +555,11 @@ export async function finishRun(
 
 	const run = await loadRunnerRun(db, runner, runId);
 	if (run.status === 'assigned') {
-		throw new ApiFail(422, 'run_not_delivered', 'This run has not been delivered to the daemon yet');
+		throw new ApiFail(
+			422,
+			'run_not_delivered',
+			'This run has not been delivered to the daemon yet'
+		);
 	}
 	if (!(ACTIVE as string[]).includes(run.status)) {
 		throw new ApiFail(
@@ -537,7 +573,11 @@ export async function finishRun(
 	}
 	if (usage) {
 		await runAtomic(env, [
-			db.updateTable('agent_run').set({ usage: JSON.stringify(usage) }).where('id', '=', runId).compile()
+			db
+				.updateTable('agent_run')
+				.set({ usage: JSON.stringify(usage) })
+				.where('id', '=', runId)
+				.compile()
 		]);
 	}
 	const endable = await loadEndableRun(db, run.user_id, runId);

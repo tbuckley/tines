@@ -6,11 +6,18 @@
 		state,
 		showDot = true,
 		class: className = ''
-	}: { state: Pick<WorkflowState, 'name' | 'category'>; showDot?: boolean; class?: string } =
-		$props();
+	}: {
+		state: Pick<WorkflowState, 'name' | 'category'>;
+		showDot?: boolean;
+		class?: string;
+	} = $props();
 </script>
 
-<span class="state-badge {className}" style="--cat: {categoryVar(state.category)}" title={state.category}>
+<span
+	class="state-badge {className}"
+	style="--cat: {categoryVar(state.category)}"
+	title={state.category}
+>
 	{#if showDot}<span class="dot"></span>{/if}
 	{state.name}
 </span>

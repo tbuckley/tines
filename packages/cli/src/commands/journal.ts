@@ -107,12 +107,14 @@ function printNote(note: string | null): void {
 export function register(program: Command): void {
 	const journal = program
 		.command('journal')
-		.description("An issue's stage journal: shared notes for its project + the stage your run was launched in");
+		.description(
+			"An issue's stage journal: shared notes for its project + the stage your run was launched in"
+		);
 
 	withCommon(
 		journal
 			.command('show <ref>')
-			.description("Print the journal for the stage your run was launched in")
+			.description('Print the journal for the stage your run was launched in')
 			.option('--state <workflow>/<state>', STATE_FLAG_HELP)
 	).action(async (ref: string, opts: CommonOpts & { state?: string }) => {
 		const api = client(opts);
@@ -139,7 +141,12 @@ export function register(program: Command): void {
 			// arguments, exactly as the launch prompt's copy-pasteable command has it.
 			.passThroughOptions()
 	).action(
-		async (ref: string, markdown: string, opts: CommonOpts & { state?: string }, command: Command) => {
+		async (
+			ref: string,
+			markdown: string,
+			opts: CommonOpts & { state?: string },
+			command: Command
+		) => {
 			if (helpGuard(command, markdown)) return;
 			// Resolved once: stdin is single-consumption and all three paths below
 			// (append, first-use create, create-race recovery) need the same body.
@@ -181,19 +188,26 @@ export function register(program: Command): void {
 			.description('Replace the journal body (to fix or prune entries) — version-checked')
 			.option('--state <workflow>/<state>', STATE_FLAG_HELP)
 			.requiredOption('--body <md>', 'the full new body: inline Markdown or @file')
-			.requiredOption('--expect-version <n>', 'the version being replaced (from the prompt or journal show)', (v) =>
-				Number.parseInt(v, 10)
+			.requiredOption(
+				'--expect-version <n>',
+				'the version being replaced (from the prompt or journal show)',
+				(v) => Number.parseInt(v, 10)
 			)
-	).action(async (ref: string, opts: CommonOpts & { body: string; expectVersion: number; state?: string }) => {
-		const api = client(opts);
-		const { scope, note, item } = await resolveJournal(api, ref, opts.state);
-		printNote(note);
-		if (!item) die(`no journal exists yet for ${scope.label}; nothing to rewrite`);
-		const updated = await api.updateContextItem(item.id, {
-			body: readBodyValue(opts.body),
-			expected_version: opts.expectVersion
-		});
-		if (opts.json) return printJson(updated);
-		console.log(`rewrote the ${scope.label} journal (now v${updated.version})`);
-	});
+	).action(
+		async (
+			ref: string,
+			opts: CommonOpts & { body: string; expectVersion: number; state?: string }
+		) => {
+			const api = client(opts);
+			const { scope, note, item } = await resolveJournal(api, ref, opts.state);
+			printNote(note);
+			if (!item) die(`no journal exists yet for ${scope.label}; nothing to rewrite`);
+			const updated = await api.updateContextItem(item.id, {
+				body: readBodyValue(opts.body),
+				expected_version: opts.expectVersion
+			});
+			if (opts.json) return printJson(updated);
+			console.log(`rewrote the ${scope.label} journal (now v${updated.version})`);
+		}
+	);
 }

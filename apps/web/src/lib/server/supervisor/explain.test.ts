@@ -65,7 +65,9 @@ describe('explainDispatch', () => {
 		const issue = addIssue(t);
 		const blocker = addIssue(t);
 		t.sqlite
-			.prepare(`INSERT INTO issue_link (id, source_issue_id, target_issue_id, kind, created_at) VALUES ('lnk_1', ?, ?, 'blocks', ${NOW})`)
+			.prepare(
+				`INSERT INTO issue_link (id, source_issue_id, target_issue_id, kind, created_at) VALUES ('lnk_1', ?, ?, 'blocks', ${NOW})`
+			)
 			.run(blocker, issue);
 		const ex = (await explainDispatch(t.db, USER, issue, NOW))!;
 		expect(check(ex, 'ready').ok).toBe(false);
@@ -140,7 +142,10 @@ describe('explainDispatch', () => {
 		const runner = addRunner(t);
 		addRule(t, { targets: [{ runner_id: runner }] });
 		const issue = addIssue(t);
-		await runDispatchPass(t.db, t.env, USER, { now: NOW, adapters: { local: createFakeAdapter() } });
+		await runDispatchPass(t.db, t.env, USER, {
+			now: NOW,
+			adapters: { local: createFakeAdapter() }
+		});
 
 		const ex = (await explainDispatch(t.db, USER, issue, NOW))!;
 		expect(ex.active_run).not.toBeNull();
@@ -158,7 +163,10 @@ describe('explainDispatch', () => {
 		addIssue(t, { updatedAt: NOW - 2000 });
 		const waiting = addIssue(t, { updatedAt: NOW - 1000 });
 		// The cap is consumed by the oldest issue's run.
-		await runDispatchPass(t.db, t.env, USER, { now: NOW, adapters: { local: createFakeAdapter() } });
+		await runDispatchPass(t.db, t.env, USER, {
+			now: NOW,
+			adapters: { local: createFakeAdapter() }
+		});
 
 		const ex = (await explainDispatch(t.db, USER, waiting, NOW))!;
 		expect(ex.eligible).toBe(true);
@@ -166,7 +174,9 @@ describe('explainDispatch', () => {
 		// One eligible issue (the middle one) is ahead; the busy one is out of
 		// the pool while its run holds the claim.
 		expect(ex.queue_position).toBe(1);
-		expect(ex.verdict).toBe(`Eligible — waiting for capacity on ${runner} (1 eligible issue ahead)`);
+		expect(ex.verdict).toBe(
+			`Eligible — waiting for capacity on ${runner} (1 eligible issue ahead)`
+		);
 
 		const exBusy = (await explainDispatch(t.db, USER, busy, NOW))!;
 		expect(exBusy.queue_position).toBeNull();

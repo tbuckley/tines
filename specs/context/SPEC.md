@@ -219,7 +219,7 @@ tines context list [--project <name>] [--state <workflow>/<state>] [--issue <ref
 tines context show <id>
 tines context create --kind prompt --name <n> [scope flags] --body <md|@file>
 tines context create --kind skill  --name <n> [scope flags] --file <path>=@<local>...
-tines context create --kind repo   --name <n> [scope flags] --url <u> [--branch <b>] [--dir <d>]
+tines context create --kind repo   --name <n> [scope flags] --repo-url <u> [--branch <b>] [--dir <d>]
 tines context edit <id> [same flags] [--unset project|state|issue] [--remove-file <path>]
 tines context delete <id>
 tines issues context <project>/<number> [--json] [--out <dir>] [--force]
@@ -310,3 +310,7 @@ From the spec review:
 - **Unknown kinds**: strict 422s now; open-endedness is a schema-design property, not API leniency.
 - **Uniqueness enforcement**: API layer only; the scope index is non-unique.
 - **Launch prompt**: context items are context; the issue itself (title, description, state, comments, transitions) is appended as a generated issue block to form the full prompt an agent would run with. Exposed as `GET /api/v1/issues/:id/prompt`, `tines issues prompt`, and a copyable dialog on the issue page — kept out of the effective-context preview, which stays context-only. The issue block includes the runnable CLI commands for each available transition and for commenting, so the prompt alone tells an agent how to act, not just what its options are.
+
+From later work:
+
+- **2026-09-01, Tines/92 — repo clone URL is `--repo-url`, not `--url`**: `-u, --url` is the API base URL on every CLI command without exception. The repo kind originally took `--url` for the clone URL and suppressed the base-URL flag, which left `context create` unable to target a non-default deployment except via `TINES_API_URL`. Payload flags that happen to hold a URL are named for what they hold.

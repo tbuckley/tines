@@ -30,7 +30,9 @@ export function parseWeekday(value: string): number {
 }
 
 /** The preset/cron half of a schedule input, or undefined when no flags given. */
-export function buildRecurrence(opts: RecurrenceOpts): Pick<CreateScheduleInput, 'preset' | 'cron'> | undefined {
+export function buildRecurrence(
+	opts: RecurrenceOpts
+): Pick<CreateScheduleInput, 'preset' | 'cron'> | undefined {
 	const hasPresetFlags = opts.every !== undefined || opts.at !== undefined || opts.on !== undefined;
 	if (opts.cron !== undefined && hasPresetFlags) {
 		throw new CliError('pass --cron or --every/--at/--on, not both');
@@ -44,13 +46,16 @@ export function buildRecurrence(opts: RecurrenceOpts): Pick<CreateScheduleInput,
 	if (hourly !== undefined) {
 		if (opts.on !== undefined) throw new CliError('an hourly recurrence does not take --on');
 		const every = typeof hourly === 'number' ? hourly : Number.parseInt(hourly, 10);
-		if (every < 1 || every > 23) throw new CliError(`--every <N>h needs N between 1 and 23, got "${opts.every}"`);
+		if (every < 1 || every > 23)
+			throw new CliError(`--every <N>h needs N between 1 and 23, got "${opts.every}"`);
 		// For hourly, --at is the minute past the hour (":15" or "15").
 		let minute = 0;
 		if (opts.at !== undefined) {
 			const m = opts.at.match(/^:?(\d{1,2})$/);
 			if (!m || Number.parseInt(m[1], 10) > 59) {
-				throw new CliError(`with an hourly recurrence, --at is the minute past the hour (0-59 or :MM), got "${opts.at}"`);
+				throw new CliError(
+					`with an hourly recurrence, --at is the minute past the hour (0-59 or :MM), got "${opts.at}"`
+				);
 			}
 			minute = Number.parseInt(m[1], 10);
 		}
@@ -75,6 +80,8 @@ export function buildRecurrence(opts: RecurrenceOpts): Pick<CreateScheduleInput,
 			return { preset: { kind: 'monthly', time, day_of_month: day } };
 		}
 		default:
-			throw new CliError(`--every must be hourly, <N>h, daily, weekly, or monthly, got "${opts.every}"`);
+			throw new CliError(
+				`--every must be hourly, <N>h, daily, weekly, or monthly, got "${opts.every}"`
+			);
 	}
 }

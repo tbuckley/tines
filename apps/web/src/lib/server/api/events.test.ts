@@ -41,7 +41,12 @@ describe('serializeEvent', () => {
 	});
 
 	it('drops the issue ref when the issue is gone', () => {
-		const ev = serializeEvent({ ...baseRow, issue_id: null, issue_number: null, issue_title: null });
+		const ev = serializeEvent({
+			...baseRow,
+			issue_id: null,
+			issue_number: null,
+			issue_title: null
+		});
 		expect(ev.issue_ref).toBeNull();
 	});
 });

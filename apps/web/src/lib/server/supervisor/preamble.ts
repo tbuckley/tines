@@ -34,7 +34,7 @@ const VARIANTS: Record<
 		auth: () => [
 			'The runner daemon has set `TINES_API_KEY` (an ephemeral key minted for this run) and',
 			'`TINES_API_URL` in your environment, and refreshes the `tines` CLI on your PATH from npm',
-			'at launch — the first lines of this run\'s log record which version you got, and a warning',
+			"at launch — the first lines of this run's log record which version you got, and a warning",
 			'there means you may be on an older cached copy. The CLI picks both variables up',
 			'automatically; raw `curl` against `$TINES_API_URL/api/v1` with',
 			'`Authorization: Bearer $TINES_API_KEY` works too. The key is revoked the moment this run',
@@ -46,7 +46,7 @@ const VARIANTS: Record<
 			'- `prompt.md` — this prompt.',
 			'- `skills/<name>/…` — the files of every skill attached to this issue.',
 			'- `repos.json` — the effective repositories, already cloned into the listed `dir`s',
-			'  alongside it (with this machine\'s own git credentials).'
+			"  alongside it (with this machine's own git credentials)."
 		]
 	},
 	claude_managed: {
@@ -75,7 +75,7 @@ const VARIANTS: Record<
 			'',
 			'Skills attached to this issue are not pre-seeded; fetch them when needed:',
 			'`tines issues context <ref> --json` (or `GET /api/v1/issues/:id/context`) lists each',
-			'skill\'s files with their contents.'
+			"skill's files with their contents."
 		]
 	}
 };

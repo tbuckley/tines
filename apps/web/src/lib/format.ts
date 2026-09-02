@@ -1,6 +1,10 @@
 /** Absolute fallback for timestamps too far out to phrase as a duration. */
 function shortDate(ms: number): string {
-	return new Date(ms).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+	return new Date(ms).toLocaleDateString(undefined, {
+		month: 'short',
+		day: 'numeric',
+		year: 'numeric'
+	});
 }
 
 export function relativeTime(ms: number, now = Date.now()): string {
@@ -97,7 +101,8 @@ export function prefersReducedMotion(): boolean {
 
 /** Text color for a run status, shared by every run row rendering. */
 export function runStatusClass(status: string): string {
-	if (status === 'running' || status === 'launching') return 'text-emerald-600 dark:text-emerald-400';
+	if (status === 'running' || status === 'launching')
+		return 'text-emerald-600 dark:text-emerald-400';
 	if (status === 'assigned') return 'text-sky-600 dark:text-sky-400';
 	if (status === 'completed') return 'text-muted-foreground';
 	return 'text-amber-700 dark:text-amber-400';

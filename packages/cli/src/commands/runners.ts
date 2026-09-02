@@ -61,29 +61,33 @@ function printTierTable(runner: Runner): void {
 			override?.effort ? `effort ${override.effort}` : null,
 			stale ? `stale — built-in is now ${builtin}` : null
 		].filter(Boolean);
-		console.log(`  ${tier}: ${model}  [${source}]${marks.length > 0 ? `  (${marks.join(', ')})` : ''}`);
+		console.log(
+			`  ${tier}: ${model}  [${source}]${marks.length > 0 ? `  (${marks.join(', ')})` : ''}`
+		);
 	}
 }
 
 export function register(program: Command): void {
 	const runners = program.command('runners').description('Manage the runner registry');
 
-	withCommon(runners.command('list').description('List runners')).action(async (opts: CommonOpts) => {
-		const res = await client(opts).listRunners();
-		if (opts.json) return printJson(res);
-		if (res.items.length === 0) return console.log('no runners');
-		table([
-			['NAME', 'TYPE', 'STATUS', 'RUNS', 'TIER', 'LAST SEEN'],
-			...res.items.map((r) => [
-				r.name,
-				r.type,
-				runnerStatusLabel(r),
-				`${r.active_runs}/${r.max_concurrent}`,
-				r.default_tier,
-				r.last_seen_at ? timestamp(r.last_seen_at) : '—'
-			])
-		]);
-	});
+	withCommon(runners.command('list').description('List runners')).action(
+		async (opts: CommonOpts) => {
+			const res = await client(opts).listRunners();
+			if (opts.json) return printJson(res);
+			if (res.items.length === 0) return console.log('no runners');
+			table([
+				['NAME', 'TYPE', 'STATUS', 'RUNS', 'TIER', 'LAST SEEN'],
+				...res.items.map((r) => [
+					r.name,
+					r.type,
+					runnerStatusLabel(r),
+					`${r.active_runs}/${r.max_concurrent}`,
+					r.default_tier,
+					r.last_seen_at ? timestamp(r.last_seen_at) : '—'
+				])
+			]);
+		}
+	);
 
 	withCommon(runners.command('show <name>').description('Show a runner')).action(
 		async (ref: string, opts: CommonOpts) => {
@@ -108,7 +112,8 @@ export function register(program: Command): void {
 				const b = runner.budget;
 				const parts: string[] = [];
 				if (b.max_run_cost_usd !== undefined) parts.push(`$${b.max_run_cost_usd}/run`);
-				if (b.max_run_tokens !== undefined) parts.push(`${b.max_run_tokens.toLocaleString()} tok/run`);
+				if (b.max_run_tokens !== undefined)
+					parts.push(`${b.max_run_tokens.toLocaleString()} tok/run`);
 				if (b.daily_usd !== undefined) parts.push(`$${b.daily_usd}/day`);
 				if (b.daily_tokens !== undefined) parts.push(`${b.daily_tokens.toLocaleString()} tok/day`);
 				if (parts.length > 0) console.log(`budget: ${parts.join('  ')}`);
@@ -159,7 +164,8 @@ export function register(program: Command): void {
 					}
 					delete tiers[tier];
 				}
-				patch.tiers = Object.keys(tiers).length > 0 ? (tiers as UpdateRunnerRequest['tiers']) : null;
+				patch.tiers =
+					Object.keys(tiers).length > 0 ? (tiers as UpdateRunnerRequest['tiers']) : null;
 			}
 			const updated =
 				Object.keys(patch).length > 0 ? await api.updateRunner(runner.id, patch) : runner;
@@ -175,11 +181,16 @@ export function register(program: Command): void {
 	withCommon(
 		runners
 			.command('budget <name>')
-			.description("Set or clear a runner's money limits (per-run caps enforce now; daily limits arrive with the budgets milestone)")
+			.description(
+				"Set or clear a runner's money limits (per-run caps enforce now; daily limits arrive with the budgets milestone)"
+			)
 			.option('--max-run-usd <n>', 'hard per-run cost cap (platform-enforced on Claude runners)')
 			.option('--max-run-tokens <n>', 'hard per-run token cap (input + output)')
 			.option('--daily-usd <n>', 'daily USD limit (stored now, enforced by the budgets milestone)')
-			.option('--daily-tokens <n>', 'daily token limit (stored now, enforced by the budgets milestone)')
+			.option(
+				'--daily-tokens <n>',
+				'daily token limit (stored now, enforced by the budgets milestone)'
+			)
 			.option('--clear', 'remove all limits')
 	).action(
 		async (
@@ -204,18 +215,25 @@ export function register(program: Command): void {
 			} else if (flags) {
 				const num = (value: string, flag: string): number => {
 					const n = Number(value);
-					if (!Number.isFinite(n) || n <= 0) die(`${flag} must be a positive number, got "${value}"`);
+					if (!Number.isFinite(n) || n <= 0)
+						die(`${flag} must be a positive number, got "${value}"`);
 					return n;
 				};
 				updated = await api.updateRunner(runner.id, {
 					budget: {
 						...(runner.budget ?? {}),
-						...(opts.maxRunUsd !== undefined ? { max_run_cost_usd: num(opts.maxRunUsd, '--max-run-usd') } : {}),
+						...(opts.maxRunUsd !== undefined
+							? { max_run_cost_usd: num(opts.maxRunUsd, '--max-run-usd') }
+							: {}),
 						...(opts.maxRunTokens !== undefined
 							? { max_run_tokens: num(opts.maxRunTokens, '--max-run-tokens') }
 							: {}),
-						...(opts.dailyUsd !== undefined ? { daily_usd: num(opts.dailyUsd, '--daily-usd') } : {}),
-						...(opts.dailyTokens !== undefined ? { daily_tokens: num(opts.dailyTokens, '--daily-tokens') } : {})
+						...(opts.dailyUsd !== undefined
+							? { daily_usd: num(opts.dailyUsd, '--daily-usd') }
+							: {}),
+						...(opts.dailyTokens !== undefined
+							? { daily_tokens: num(opts.dailyTokens, '--daily-tokens') }
+							: {})
 					}
 				});
 			}
@@ -224,16 +242,22 @@ export function register(program: Command): void {
 			if (!b) return console.log(`no limits on "${updated.name}"`);
 			console.log(`limits on "${updated.name}":`);
 			if (b.max_run_cost_usd !== undefined) console.log(`  $${b.max_run_cost_usd} per run`);
-			if (b.max_run_tokens !== undefined) console.log(`  ${b.max_run_tokens.toLocaleString()} tokens per run`);
-			if (b.daily_usd !== undefined) console.log(`  $${b.daily_usd} per day (enforced by the budgets milestone)`);
+			if (b.max_run_tokens !== undefined)
+				console.log(`  ${b.max_run_tokens.toLocaleString()} tokens per run`);
+			if (b.daily_usd !== undefined)
+				console.log(`  $${b.daily_usd} per day (enforced by the budgets milestone)`);
 			if (b.daily_tokens !== undefined) {
-				console.log(`  ${b.daily_tokens.toLocaleString()} tokens per day (enforced by the budgets milestone)`);
+				console.log(
+					`  ${b.daily_tokens.toLocaleString()} tokens per day (enforced by the budgets milestone)`
+				);
 			}
 		}
 	);
 
 	withCommon(
-		runners.command('pause <name>').description('Pause a runner (stops new assignments; identity and rules stay)')
+		runners
+			.command('pause <name>')
+			.description('Pause a runner (stops new assignments; identity and rules stay)')
 	).action(async (ref: string, opts: CommonOpts) => {
 		const api = client(opts);
 		const runner = await resolveRunner(api, ref);
@@ -255,8 +279,13 @@ export function register(program: Command): void {
 	withCommon(
 		runners
 			.command('remove <name>')
-			.description('Remove a runner (refused while routing rules or pins reference it, unless --force)')
-			.option('--force', 'strip the runner from routing rules and clear issue pins (emptied rules are kept, flagged)')
+			.description(
+				'Remove a runner (refused while routing rules or pins reference it, unless --force)'
+			)
+			.option(
+				'--force',
+				'strip the runner from routing rules and clear issue pins (emptied rules are kept, flagged)'
+			)
 	).action(async (ref: string, opts: CommonOpts & { force?: boolean }) => {
 		const api = client(opts);
 		const runner = await resolveRunner(api, ref);
@@ -283,9 +312,13 @@ export function register(program: Command): void {
 				runner_id: rotated.runner.id,
 				token: rotated.runner_token
 			});
-			console.log(`stored it for the daemon on this machine (${defaultConfigDir()}); restart the daemon to adopt it.`);
+			console.log(
+				`stored it for the daemon on this machine (${defaultConfigDir()}); restart the daemon to adopt it.`
+			);
 		} else {
-			console.log('drop it into the daemon machine\'s config — its next poll gets a 401 until it adopts the new token.');
+			console.log(
+				"drop it into the daemon machine's config — its next poll gets a 401 until it adopts the new token."
+			);
 		}
 	});
 
@@ -296,19 +329,29 @@ export function register(program: Command): void {
 	withCommon(
 		runnerCmd
 			.command('daemon')
-			.description('Run the local runner daemon: register/reconnect, poll for assigned runs, execute them')
+			.description(
+				'Run the local runner daemon: register/reconnect, poll for assigned runs, execute them'
+			)
 			.option('--name <name>', 'runner name, unique per user (default: this hostname)')
 			.option('--harness <harness>', 'claude-code | codex | custom', 'claude-code')
-			.option('--command <template>', 'custom harness command template ({prompt_file}, {workspace}, {model})')
+			.option(
+				'--command <template>',
+				'custom harness command template ({prompt_file}, {workspace}, {model})'
+			)
 			.option('--max-concurrent <n>', 'maximum simultaneous runs', (v) => Number.parseInt(v, 10), 1)
-			.option('--poll-interval <seconds>', 'seconds between polls', (v) => Number.parseInt(v, 10), 15)
+			.option(
+				'--poll-interval <seconds>',
+				'seconds between polls',
+				(v) => Number.parseInt(v, 10),
+				15
+			)
 			.option(
 				'--no-cli-refresh',
 				'do not install/refresh the agent-facing tines CLI from npm (harnesses use the ambient PATH)'
 			)
 			.option(
 				'--keep-workspaces <mode>',
-				'keep settled runs\' workspaces for debugging: never | failed | always',
+				"keep settled runs' workspaces for debugging: never | failed | always",
 				'never'
 			)
 			.option(
@@ -342,10 +385,16 @@ export function register(program: Command): void {
 				die(`--harness must be claude-code, codex, or custom, got "${opts.harness}"`);
 			}
 			if (harness === 'custom' && !opts.command) {
-				die('the custom harness needs --command "<template>" ({prompt_file}, {workspace}, {model})');
+				die(
+					'the custom harness needs --command "<template>" ({prompt_file}, {workspace}, {model})'
+				);
 			}
 			if (harness !== 'custom' && opts.command) die('--command only applies to --harness custom');
-			if (!Number.isInteger(opts.maxConcurrent) || opts.maxConcurrent < 1 || opts.maxConcurrent > 100) {
+			if (
+				!Number.isInteger(opts.maxConcurrent) ||
+				opts.maxConcurrent < 1 ||
+				opts.maxConcurrent > 100
+			) {
 				die('--max-concurrent must be an integer between 1 and 100');
 			}
 			if (!Number.isInteger(opts.pollInterval) || opts.pollInterval < 1) {
@@ -353,7 +402,9 @@ export function register(program: Command): void {
 			}
 			const keepWorkspaces = opts.keepWorkspaces as KeepWorkspacesMode;
 			if (!KEEP_WORKSPACES_MODES.includes(keepWorkspaces)) {
-				die(`--keep-workspaces must be ${KEEP_WORKSPACES_MODES.join(', ')}, got "${opts.keepWorkspaces}"`);
+				die(
+					`--keep-workspaces must be ${KEEP_WORKSPACES_MODES.join(', ')}, got "${opts.keepWorkspaces}"`
+				);
 			}
 			if (!Number.isFinite(opts.keepWorkspacesFor) || opts.keepWorkspacesFor <= 0) {
 				die('--keep-workspaces-for must be a positive number of hours');
@@ -393,9 +444,7 @@ export function register(program: Command): void {
 			if (opts.json) return printJson({ items: sized });
 			if (sized.length === 0) {
 				console.log(`no kept workspaces in ${workspacesDir(configDir)}`);
-				return console.log(
-					'the daemon keeps them only with --keep-workspaces failed (or always).'
-				);
+				return console.log('the daemon keeps them only with --keep-workspaces failed (or always).');
 			}
 			table([
 				['RUN', 'ISSUE', 'STATUS', 'AGE', 'SIZE', 'PATH'],
@@ -405,7 +454,7 @@ export function register(program: Command): void {
 
 	workspacesCmd
 		.command('prune')
-		.description('Delete kept workspaces (never touches a live run\'s workspace)')
+		.description("Delete kept workspaces (never touches a live run's workspace)")
 		.option('--all', 'delete every kept workspace')
 		.option('--older-than <hours>', 'delete kept workspaces older than this', (v) => Number(v))
 		.option('--json', 'print JSON instead of a table')
@@ -415,8 +464,12 @@ export function register(program: Command): void {
 			if (opts.all === undefined && opts.olderThan === undefined) {
 				die('pass --all or --older-than <hours>');
 			}
-			if (opts.all && opts.olderThan !== undefined) die('--all cannot be combined with --older-than');
-			if (opts.olderThan !== undefined && (!Number.isFinite(opts.olderThan) || opts.olderThan < 0)) {
+			if (opts.all && opts.olderThan !== undefined)
+				die('--all cannot be combined with --older-than');
+			if (
+				opts.olderThan !== undefined &&
+				(!Number.isFinite(opts.olderThan) || opts.olderThan < 0)
+			) {
 				die('--older-than must be a non-negative number of hours');
 			}
 			const removed = pruneKeptWorkspaces(defaultConfigDir(), {
@@ -453,7 +506,10 @@ export function register(program: Command): void {
 		);
 		printList(res, opts, (items) => {
 			if (items.length === 0) return console.log(opts.active ? 'no active runs' : 'no runs');
-			table([['ID', 'ISSUE', 'RUNNER', 'TIER', 'STATUS', 'DURATION', 'COST', 'CREATED'], ...items.map(runRow)]);
+			table([
+				['ID', 'ISSUE', 'RUNNER', 'TIER', 'STATUS', 'DURATION', 'COST', 'CREATED'],
+				...items.map(runRow)
+			]);
 		});
 	});
 
@@ -464,64 +520,71 @@ export function register(program: Command): void {
 			.option('--logs', 'print the log tail')
 			.option('--full', 'with --logs: print the complete log, not the 256 KB tail')
 			.option('--raw', 'with --logs --full: print the unrendered harness stream instead')
-	).action(async (id: string, opts: CommonOpts & { logs?: boolean; full?: boolean; raw?: boolean }) => {
-		const api = client(opts);
-		const run = await api.getRun(id);
-		if (opts.json) return printJson(run);
-		console.log(`${run.id}  ${run.status}  on ${run.runner_name}`);
-		if (run.issue_ref) console.log(`issue: ${issueRef(run.issue_ref)} — ${run.issue_ref.title}`);
-		console.log(`tier: ${run.tier}  model: ${run.model ?? '(n/a)'}`);
-		console.log(
-			`states: ${run.state_at_start_name ?? run.state_id_at_start} → ${run.state_at_end_name ?? run.state_id_at_end ?? '…'}`
-		);
-		console.log(
-			`created: ${timestamp(run.created_at)}  started: ${run.started_at ? timestamp(run.started_at) : '—'}  ended: ${run.ended_at ? timestamp(run.ended_at) : '—'}  duration: ${runDurationLabel(run)}`
-		);
-		if (run.usage) {
-			const u = run.usage;
-			const parts: string[] = [];
-			if (u.input_tokens !== undefined || u.output_tokens !== undefined) {
-				parts.push(`${(u.input_tokens ?? 0).toLocaleString()} in / ${(u.output_tokens ?? 0).toLocaleString()} out tokens`);
-			}
-			if (u.cost_usd !== undefined) parts.push(`$${u.cost_usd.toFixed(2)}`);
-			if (u.cost_source) parts.push(`(${u.cost_source === 'provider' ? 'provider-reported' : u.cost_source})`);
-			if (parts.length > 0) console.log(`usage: ${parts.join('  ')}`);
-		}
-		if (run.provider_session_id) console.log(`provider session: ${run.provider_session_id}`);
-		if (run.provider_url) console.log(`provider console: ${run.provider_url}`);
-		if (run.error) console.log(`error: ${run.error}`);
-		if (opts.logs) {
-			console.log('');
-			if (opts.full || opts.raw) {
-				// Streamed to stdout: a full log runs to megabytes, and there is
-				// no reason to hold one in memory to print it.
-				const res = await api.getRunLogFull(id, { raw: opts.raw });
-				const body = res.body;
-				if (!body) return;
-				const reader = body.getReader();
-				const decoder = new TextDecoder();
-				for (;;) {
-					const { done, value } = await reader.read();
-					if (done) break;
-					if (value) process.stdout.write(decoder.decode(value, { stream: true }));
+	).action(
+		async (id: string, opts: CommonOpts & { logs?: boolean; full?: boolean; raw?: boolean }) => {
+			const api = client(opts);
+			const run = await api.getRun(id);
+			if (opts.json) return printJson(run);
+			console.log(`${run.id}  ${run.status}  on ${run.runner_name}`);
+			if (run.issue_ref) console.log(`issue: ${issueRef(run.issue_ref)} — ${run.issue_ref.title}`);
+			console.log(`tier: ${run.tier}  model: ${run.model ?? '(n/a)'}`);
+			console.log(
+				`states: ${run.state_at_start_name ?? run.state_id_at_start} → ${run.state_at_end_name ?? run.state_id_at_end ?? '…'}`
+			);
+			console.log(
+				`created: ${timestamp(run.created_at)}  started: ${run.started_at ? timestamp(run.started_at) : '—'}  ended: ${run.ended_at ? timestamp(run.ended_at) : '—'}  duration: ${runDurationLabel(run)}`
+			);
+			if (run.usage) {
+				const u = run.usage;
+				const parts: string[] = [];
+				if (u.input_tokens !== undefined || u.output_tokens !== undefined) {
+					parts.push(
+						`${(u.input_tokens ?? 0).toLocaleString()} in / ${(u.output_tokens ?? 0).toLocaleString()} out tokens`
+					);
 				}
-				process.stdout.write(decoder.decode());
-				return;
+				if (u.cost_usd !== undefined) parts.push(`$${u.cost_usd.toFixed(2)}`);
+				if (u.cost_source)
+					parts.push(`(${u.cost_source === 'provider' ? 'provider-reported' : u.cost_source})`);
+				if (parts.length > 0) console.log(`usage: ${parts.join('  ')}`);
 			}
-			if (run.log_bytes_dropped > 0) {
-				console.log(
-					`[${Math.round(run.log_bytes_dropped / 1024)} KB truncated from the head — ` +
-						(run.log_expired
-							? 'past its retention window; only this tail remains]'
-							: `run \`tines runs show ${run.id} --logs --full\` for the complete ${Math.round(run.log_full_bytes / 1024)} KB log]`)
-				);
+			if (run.provider_session_id) console.log(`provider session: ${run.provider_session_id}`);
+			if (run.provider_url) console.log(`provider console: ${run.provider_url}`);
+			if (run.error) console.log(`error: ${run.error}`);
+			if (opts.logs) {
+				console.log('');
+				if (opts.full || opts.raw) {
+					// Streamed to stdout: a full log runs to megabytes, and there is
+					// no reason to hold one in memory to print it.
+					const res = await api.getRunLogFull(id, { raw: opts.raw });
+					const body = res.body;
+					if (!body) return;
+					const reader = body.getReader();
+					const decoder = new TextDecoder();
+					for (;;) {
+						const { done, value } = await reader.read();
+						if (done) break;
+						if (value) process.stdout.write(decoder.decode(value, { stream: true }));
+					}
+					process.stdout.write(decoder.decode());
+					return;
+				}
+				if (run.log_bytes_dropped > 0) {
+					console.log(
+						`[${Math.round(run.log_bytes_dropped / 1024)} KB truncated from the head — ` +
+							(run.log_expired
+								? 'past its retention window; only this tail remains]'
+								: `run \`tines runs show ${run.id} --logs --full\` for the complete ${Math.round(run.log_full_bytes / 1024)} KB log]`)
+					);
+				}
+				console.log(run.log || '(no log output captured)');
 			}
-			console.log(run.log || '(no log output captured)');
 		}
-	});
+	);
 
 	withCommon(
-		runsCmd.command('cancel <id>').description('Cancel a run (judged like any other end: usually a strike)')
+		runsCmd
+			.command('cancel <id>')
+			.description('Cancel a run (judged like any other end: usually a strike)')
 	).action(async (id: string, opts: CommonOpts) => {
 		const api = client(opts);
 		const run = await api.cancelRun(id);

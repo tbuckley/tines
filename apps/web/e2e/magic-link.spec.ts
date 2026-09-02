@@ -22,5 +22,7 @@ test('shows an error when a sign-in link is invalid', async ({ page }) => {
 		'/api/auth/magic-link/verify?token=not-a-real-token&callbackURL=%2Fissues&errorCallbackURL=%2F'
 	);
 	expect(res?.url()).toContain('error=');
-	await expect(page.getByText('That sign-in link is invalid or has expired', { exact: false })).toBeVisible();
+	await expect(
+		page.getByText('That sign-in link is invalid or has expired', { exact: false })
+	).toBeVisible();
 });

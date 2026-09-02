@@ -49,5 +49,7 @@ export const PUT: RequestHandler = api(async (event) => {
 			bytes: new Uint8Array(await value.arrayBuffer())
 		});
 	}
-	return json(await uploadArtifactFolder(db, env, actor, event.params.id, event.params.name, files));
+	return json(
+		await uploadArtifactFolder(db, env, actor, event.params.id, event.params.name, files)
+	);
 });

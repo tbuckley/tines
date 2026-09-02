@@ -21,19 +21,24 @@ export const load: PageServerLoad = async ({ locals, platform, params, url }) =>
 	const showDone = url.searchParams.get('done') === '1';
 	// Ready already implies not-done; the "show done" param just parks while it is on.
 	const ready = url.searchParams.get('ready') === '1';
-	const [{ items: issues }, workflows, { items: schedules }, { items: contextItems }, routingRules] =
-		await Promise.all([
-			listIssues(
-				db,
-				userId,
-				{ projectId: project.id, hideDone: !showDone, ready },
-				{ cursor: null, limit: 100 }
-			),
-			loadWorkflows(db, userId),
-			listSchedules(db, userId, { projectId: project.id }, { cursor: null, limit: 100 }),
-			listContextItems(db, userId, { project: project.id }, { cursor: null, limit: 100 }),
-			listRoutingRules(db, userId)
-		]);
+	const [
+		{ items: issues },
+		workflows,
+		{ items: schedules },
+		{ items: contextItems },
+		routingRules
+	] = await Promise.all([
+		listIssues(
+			db,
+			userId,
+			{ projectId: project.id, hideDone: !showDone, ready },
+			{ cursor: null, limit: 100 }
+		),
+		loadWorkflows(db, userId),
+		listSchedules(db, userId, { projectId: project.id }, { cursor: null, limit: 100 }),
+		listContextItems(db, userId, { project: project.id }, { cursor: null, limit: 100 }),
+		listRoutingRules(db, userId)
+	]);
 	// The inline agent-routing rows: this project's own rules, or — when it
 	// has none — the global rule its issues would fall back to.
 	const projectRules = routingRules.filter((r) => r.scope.project_id === project.id);

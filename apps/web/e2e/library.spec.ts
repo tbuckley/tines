@@ -15,9 +15,7 @@ type ErrorBody = { error: { code: string; message: string } };
 /** Everything but the per-export timestamp. */
 const comparable = (doc: LibraryDocument) => ({
 	workflows: [...doc.workflows].sort((a, b) => a.name.localeCompare(b.name)),
-	context: [...doc.context].sort(
-		(a, b) => `${a.kind}${a.name}`.localeCompare(`${b.kind}${b.name}`)
-	)
+	context: [...doc.context].sort((a, b) => `${a.kind}${a.name}`.localeCompare(`${b.kind}${b.name}`))
 });
 
 test.describe.serial('library export / import', () => {
@@ -116,9 +114,7 @@ test.describe.serial('library export / import', () => {
 		const bob = apiClient(request, BOB.apiKey);
 		const document = await body<LibraryDocument>(await alice.get('/api/v1/export'));
 
-		const again = await body<ImportLibraryResponse>(
-			await bob.post('/api/v1/import', { document })
-		);
+		const again = await body<ImportLibraryResponse>(await bob.post('/api/v1/import', { document }));
 		expect(again.counts.create).toBe(0);
 		expect(again.counts.error).toBe(0);
 		expect(again.counts.skip).toBeGreaterThan(0);

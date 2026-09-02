@@ -48,7 +48,9 @@ describe('ruleScopesOverlap', () => {
 		expect(ruleScopesOverlap(comboAReview, projectA)).toBe(true);
 		expect(ruleScopesOverlap(comboAReview, stateReview)).toBe(true);
 		expect(ruleScopesOverlap(comboAReview, projectB)).toBe(false);
-		expect(ruleScopesOverlap(comboAReview, { projectId: 'pA', workflowStateId: 'sOther' })).toBe(false);
+		expect(ruleScopesOverlap(comboAReview, { projectId: 'pA', workflowStateId: 'sOther' })).toBe(
+			false
+		);
 	});
 });
 
@@ -66,7 +68,10 @@ describe('shadowWarnings', () => {
 	];
 
 	it('saving a state rule warns that project rules take precedence for their projects', () => {
-		const warnings = shadowWarnings({ id: 'r_new', projectId: null, workflowStateId: 's_open' }, rules);
+		const warnings = shadowWarnings(
+			{ id: 'r_new', projectId: null, workflowStateId: 's_open' },
+			rules
+		);
 		const shadowedBy = warnings.filter((w) => w.message.includes('instead of this rule'));
 		expect(shadowedBy.map((w) => w.rule_id)).toEqual(['r_acme']);
 		// The state Open rule itself outranks only the global rule.
@@ -83,13 +88,19 @@ describe('shadowWarnings', () => {
 		expect(warnings.map((w) => w.rule_id).sort()).toEqual(['r_global', 'r_review']);
 		expect(warnings.every((w) => w.message.includes('takes precedence over'))).toBe(true);
 
-		const acmeWarnings = shadowWarnings({ id: 'r_x', projectId: 'p_acme', workflowStateId: null }, rules);
+		const acmeWarnings = shadowWarnings(
+			{ id: 'r_x', projectId: 'p_acme', workflowStateId: null },
+			rules
+		);
 		const shadowedBy = acmeWarnings.find((w) => w.rule_id === 'r_acme_review');
 		expect(shadowedBy?.message).toContain('more specific');
 	});
 
 	it('excludes the rule being saved and same-scope rules', () => {
-		const warnings = shadowWarnings({ id: 'r_acme', projectId: 'p_acme', workflowStateId: null }, rules);
+		const warnings = shadowWarnings(
+			{ id: 'r_acme', projectId: 'p_acme', workflowStateId: null },
+			rules
+		);
 		expect(warnings.map((w) => w.rule_id)).not.toContain('r_acme');
 	});
 
@@ -109,16 +120,24 @@ describe('findScopeCollision', () => {
 	];
 
 	it('finds the rule at the same exact scope', () => {
-		expect(findScopeCollision({ projectId: null, workflowStateId: null }, rules)?.id).toBe('r_global');
-		expect(findScopeCollision({ projectId: 'p_acme', workflowStateId: null }, rules)?.id).toBe('r_acme');
+		expect(findScopeCollision({ projectId: null, workflowStateId: null }, rules)?.id).toBe(
+			'r_global'
+		);
+		expect(findScopeCollision({ projectId: 'p_acme', workflowStateId: null }, rules)?.id).toBe(
+			'r_acme'
+		);
 	});
 
 	it('a different exact scope is not a collision, even when scopes overlap', () => {
-		expect(findScopeCollision({ projectId: 'p_acme', workflowStateId: 's_review' }, rules)).toBeUndefined();
+		expect(
+			findScopeCollision({ projectId: 'p_acme', workflowStateId: 's_review' }, rules)
+		).toBeUndefined();
 	});
 
 	it('excludes the rule being updated', () => {
-		expect(findScopeCollision({ projectId: 'p_acme', workflowStateId: null }, rules, 'r_acme')).toBeUndefined();
+		expect(
+			findScopeCollision({ projectId: 'p_acme', workflowStateId: null }, rules, 'r_acme')
+		).toBeUndefined();
 	});
 });
 

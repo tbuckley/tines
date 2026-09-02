@@ -15,7 +15,9 @@ TINES_API_KEY=<your user API key> TINES_API_URL=https://your-tines.example \
 The first start **registers** the runner (it appears on the Agents tab within seconds) and
 stores its long-lived runner token in the CLI config directory (`~/.config/tines`, or
 `$TINES_CONFIG_DIR`). Subsequent starts reconnect as the same runner using the stored token —
-`TINES_API_KEY` is only needed for registration.
+`TINES_API_KEY` is only needed for registration. Both values can also come from
+`tines login` (the same directory's `config.json`) instead of the environment; the env vars
+take precedence when set.
 
 Flags:
 

@@ -95,7 +95,10 @@
 						{#if issue.needs_attention}
 							<span
 								class="ml-1.5 inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-1.5 py-0.5 align-middle text-[0.6875rem] leading-none font-medium text-amber-700 dark:text-amber-400"
-								title="Parked — agents struck out {issue.attempt_count} time{issue.attempt_count === 1 ? '' : 's'}; needs attention"
+								title="Parked — agents struck out {issue.attempt_count} time{issue.attempt_count ===
+								1
+									? ''
+									: 's'}; needs attention"
 								transition:fade={{ duration: dur() }}
 							>
 								<IconAlertTriangle size={12} stroke={1.75} />
@@ -114,7 +117,9 @@
 						{/if}
 					</span>
 					{#if showProject}
-						<span class="text-muted-foreground hidden shrink-0 text-xs sm:inline">{issue.project_name}</span>
+						<span class="text-muted-foreground hidden shrink-0 text-xs sm:inline"
+							>{issue.project_name}</span
+						>
 					{/if}
 					<span
 						class="vt-shared"
@@ -125,7 +130,10 @@
 						     state, so lists and the detail header always agree. -->
 						<StateBadge state={issue.effective_state} />
 					</span>
-					<span class="text-muted-foreground hidden w-20 shrink-0 text-right text-xs md:inline" title={new Date(issue.last_activity_at).toLocaleString()}>
+					<span
+						class="text-muted-foreground hidden w-20 shrink-0 text-right text-xs md:inline"
+						title={new Date(issue.last_activity_at).toLocaleString()}
+					>
 						{relativeTime(issue.last_activity_at)}
 					</span>
 				</a>

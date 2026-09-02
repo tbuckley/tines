@@ -45,7 +45,8 @@ async function resolveScopeFlags(
 ): Promise<Pick<CreateContextItemRequest, 'project_id' | 'workflow_state_id' | 'issue_id'>> {
 	const scope: Pick<CreateContextItemRequest, 'project_id' | 'workflow_state_id' | 'issue_id'> = {};
 	if (opts.project !== undefined) scope.project_id = (await resolveProject(api, opts.project)).id;
-	if (opts.state !== undefined) scope.workflow_state_id = (await resolveStateFlag(api, opts.state)).state.id;
+	if (opts.state !== undefined)
+		scope.workflow_state_id = (await resolveStateFlag(api, opts.state)).state.id;
 	if (opts.issue !== undefined) scope.issue_id = (await resolveIssue(api, opts.issue)).id;
 	return scope;
 }
@@ -72,7 +73,9 @@ function printContextItem(item: ContextItem): void {
 	} else {
 		console.log(`\nurl: ${item.repo_url}`);
 		if (item.repo_branch) console.log(`branch: ${item.repo_branch}`);
-		console.log(`dir: ${item.repo_dir ?? `${repoDirFromUrl(item.repo_url ?? '')} (derived from the URL)`}`);
+		console.log(
+			`dir: ${item.repo_dir ?? `${repoDirFromUrl(item.repo_url ?? '')} (derived from the URL)`}`
+		);
 	}
 }
 
@@ -94,54 +97,62 @@ function withScopeFlags(cmd: Command): Command {
 export function register(program: Command): void {
 	const context = program
 		.command('context')
-		.description('Manage context items (prompts, skills, repo pointers) scoped to projects, states, and issues');
+		.description(
+			'Manage context items (prompts, skills, repo pointers) scoped to projects, states, and issues'
+		);
 
 	withList(
 		withScopeFlags(
 			context
 				.command('list')
-				.description('List context items (scope filters match every item whose scope includes the element)')
+				.description(
+					'List context items (scope filters match every item whose scope includes the element)'
+				)
 				.option('-k, --kind <kind>', 'filter by kind: prompt, skill, or repo')
 				.option('--exact', 'only items whose scope sets exactly the given dimensions')
 				.option('-q, --search <text>', 'search names and descriptions')
 		)
-	).action(async (opts: ListOpts & ScopeFlagOpts & { kind?: ContextKind; exact?: boolean; search?: string }) => {
-		const api = client(opts);
-		const scope = await resolveScopeFlags(api, opts);
-		const res = await fetchList(opts, (page) =>
-			api.listContext({
-				kind: opts.kind,
-				project: scope.project_id ?? undefined,
-				state: scope.workflow_state_id ?? undefined,
-				issue: scope.issue_id ?? undefined,
-				q: opts.search,
-				exact: opts.exact ? true : undefined,
-				...page
-			})
-		);
-		printList(res, opts, (items) => {
-			if (items.length === 0) return console.log('no context items');
-			table([
-				['KIND', 'NAME', 'SCOPE', 'PAYLOAD', 'UPDATED', 'ID'],
-				...items.map((i) => [
-					i.kind,
-					i.name,
-					i.scope.label,
-					contextItemSummary(i),
-					timestamp(i.updated_at),
-					i.id
-				])
-			]);
-		});
-	});
-
-	withCommon(context.command('show <id>').description('Show a context item (skills include their files)')).action(
-		async (id: string, opts: CommonOpts) => {
-			const item = await client(opts).getContextItem(id);
-			if (opts.json) return printJson(item);
-			printContextItem(item);
+	).action(
+		async (
+			opts: ListOpts & ScopeFlagOpts & { kind?: ContextKind; exact?: boolean; search?: string }
+		) => {
+			const api = client(opts);
+			const scope = await resolveScopeFlags(api, opts);
+			const res = await fetchList(opts, (page) =>
+				api.listContext({
+					kind: opts.kind,
+					project: scope.project_id ?? undefined,
+					state: scope.workflow_state_id ?? undefined,
+					issue: scope.issue_id ?? undefined,
+					q: opts.search,
+					exact: opts.exact ? true : undefined,
+					...page
+				})
+			);
+			printList(res, opts, (items) => {
+				if (items.length === 0) return console.log('no context items');
+				table([
+					['KIND', 'NAME', 'SCOPE', 'PAYLOAD', 'UPDATED', 'ID'],
+					...items.map((i) => [
+						i.kind,
+						i.name,
+						i.scope.label,
+						contextItemSummary(i),
+						timestamp(i.updated_at),
+						i.id
+					])
+				]);
+			});
 		}
 	);
+
+	withCommon(
+		context.command('show <id>').description('Show a context item (skills include their files)')
+	).action(async (id: string, opts: CommonOpts) => {
+		const item = await client(opts).getContextItem(id);
+		if (opts.json) return printJson(item);
+		printContextItem(item);
+	});
 
 	withCommon(
 		withScopeFlags(
@@ -149,16 +160,22 @@ export function register(program: Command): void {
 				.command('create')
 				.description('Create a context item scoped to a project, state, and/or issue')
 				.requiredOption('-k, --kind <kind>', 'prompt, skill, or repo')
-				.requiredOption('-n, --name <name>', 'item name (slug-like for skills; the dedup/override key)')
+				.requiredOption(
+					'-n, --name <name>',
+					'item name (slug-like for skills; the dedup/override key)'
+				)
 				.option('-d, --description <text>', 'one-liner shown in lists')
 				.option('--body <md>', 'prompt body: inline Markdown or @file (escape a literal @ as @@)')
-				.option('--file <path>=@<local>', 'skill file: workspace path = local file (repeatable)', collect, [])
-				.option('--url <url>', 'repo: clone URL')
+				.option(
+					'--file <path>=@<local>',
+					'skill file: workspace path = local file (repeatable)',
+					collect,
+					[]
+				)
+				.option('--repo-url <url>', 'repo: clone URL')
 				.option('--branch <branch>', 'repo: branch to check out')
 				.option('--dir <dir>', "repo: checkout directory (defaults to the URL's basename)")
-		),
-		// --url is the repo pointer here; the API base comes from TINES_API_URL.
-		{ baseUrlFlag: false }
+		)
 	).action(
 		async (
 			opts: CommonOpts &
@@ -168,13 +185,15 @@ export function register(program: Command): void {
 					description?: string;
 					body?: string;
 					file: string[];
-					url?: string;
+					repoUrl?: string;
 					branch?: string;
 					dir?: string;
 				}
 		) => {
-			// opts.url is the repo pointer on this command, not the API base.
-			const api = client({ apiKey: opts.apiKey, json: opts.json });
+			if (opts.kind === 'repo' && opts.repoUrl === undefined) {
+				die('--kind repo needs --repo-url <clone-url> (--url is the API base URL)');
+			}
+			const api = client(opts);
 			const scope = await resolveScopeFlags(api, opts);
 			const body: CreateContextItemRequest = {
 				kind: opts.kind as ContextKind,
@@ -185,7 +204,7 @@ export function register(program: Command): void {
 			if (opts.body !== undefined) body.body = readBodyValue(opts.body);
 			if (opts.file.length > 0) body.files = opts.file.map(parseFileSpec);
 			if (opts.kind === 'skill' && body.files === undefined) body.files = [];
-			if (opts.url !== undefined) body.repo_url = opts.url;
+			if (opts.repoUrl !== undefined) body.repo_url = opts.repoUrl;
 			if (opts.branch !== undefined) body.repo_branch = opts.branch;
 			if (opts.dir !== undefined) body.repo_dir = opts.dir;
 			const item = await api.createContextItem(body);
@@ -204,16 +223,21 @@ export function register(program: Command): void {
 				.option('--body <md>', 'prompt body: inline Markdown or @file (escape a literal @ as @@)')
 				.option('--file <path>=@<local>', 'add or replace a skill file (repeatable)', collect, [])
 				.option('--remove-file <path>', 'remove a skill file (repeatable)', collect, [])
-				.option('--url <url>', 'repo: clone URL')
+				.option('--repo-url <url>', 'repo: clone URL')
 				.option('--branch <branch>', 'repo: branch (empty string clears it)')
 				.option('--dir <dir>', 'repo: checkout directory (empty string restores the URL default)')
-				.option('--unset <dimension>', 'drop a scope dimension: project, state, or issue (repeatable)', collect, [])
-				.option('--expect-version <n>', 'fail (409) unless the item is still at this version', (v) =>
-					Number.parseInt(v, 10)
+				.option(
+					'--unset <dimension>',
+					'drop a scope dimension: project, state, or issue (repeatable)',
+					collect,
+					[]
 				)
-		),
-		// --url is the repo pointer here; the API base comes from TINES_API_URL.
-		{ baseUrlFlag: false }
+				.option(
+					'--expect-version <n>',
+					'fail (409) unless the item is still at this version',
+					(v) => Number.parseInt(v, 10)
+				)
+		)
 	).action(
 		async (
 			id: string,
@@ -224,15 +248,14 @@ export function register(program: Command): void {
 					body?: string;
 					file: string[];
 					removeFile: string[];
-					url?: string;
+					repoUrl?: string;
 					branch?: string;
 					dir?: string;
 					unset: string[];
 					expectVersion?: number;
 				}
 		) => {
-			// opts.url is the repo pointer on this command, not the API base.
-			const api = client({ apiKey: opts.apiKey, json: opts.json });
+			const api = client(opts);
 			const body: UpdateContextItemRequest = {};
 			if (opts.expectVersion !== undefined) body.expected_version = opts.expectVersion;
 			if (opts.name !== undefined) body.name = opts.name;
@@ -250,7 +273,8 @@ export function register(program: Command): void {
 				// Skill files PATCH declaratively: fetch, apply the edits, send the
 				// full list. --file replaces an existing path or adds a new one.
 				const current = await api.getContextItem(id);
-				if (current.kind !== 'skill') die(`--file/--remove-file only apply to skills (this is a ${current.kind})`);
+				if (current.kind !== 'skill')
+					die(`--file/--remove-file only apply to skills (this is a ${current.kind})`);
 				// The full-list PATCH is built from the files just read, so pin the
 				// write to that read: a concurrent file edit becomes a 409 instead
 				// of being silently replaced by this stale list.
@@ -258,7 +282,9 @@ export function register(program: Command): void {
 				const files = new Map((current.files ?? []).map((f) => [f.path, f.content]));
 				for (const path of opts.removeFile) {
 					if (!files.delete(path)) {
-						die(`no file "${path}" in skill "${current.name}" (have: ${[...files.keys()].join(', ') || 'none'})`);
+						die(
+							`no file "${path}" in skill "${current.name}" (have: ${[...files.keys()].join(', ') || 'none'})`
+						);
 					}
 				}
 				for (const spec of opts.file) {
@@ -267,11 +293,13 @@ export function register(program: Command): void {
 				}
 				body.files = [...files.entries()].map(([path, content]) => ({ path, content }));
 			}
-			if (opts.url !== undefined) body.repo_url = opts.url;
+			if (opts.repoUrl !== undefined) body.repo_url = opts.repoUrl;
 			if (opts.branch !== undefined) body.repo_branch = opts.branch === '' ? null : opts.branch;
 			if (opts.dir !== undefined) body.repo_dir = opts.dir === '' ? null : opts.dir;
 			if (Object.keys(body).length === 0) {
-				die('nothing to update: pass payload flags, --name/--description, scope flags, and/or --unset');
+				die(
+					'nothing to update: pass payload flags, --name/--description, scope flags, and/or --unset'
+				);
 			}
 			const item = await api.updateContextItem(id, body);
 			if (opts.json) return printJson(item);
@@ -295,7 +323,9 @@ export function register(program: Command): void {
 	).action(async (opts: CommonOpts) => {
 		const api = client(opts);
 		// Global items only: exact=true with no dimension filters.
-		const items = await listAll((page) => api.listContext({ kind: 'prompt', exact: true, ...page }));
+		const items = await listAll((page) =>
+			api.listContext({ kind: 'prompt', exact: true, ...page })
+		);
 		const existing = items.find((i) => i.name === AGENT_GUIDELINES_NAME);
 		if (existing) {
 			if (opts.json) return printJson(existing);

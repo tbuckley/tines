@@ -8,7 +8,10 @@ import type { RequestHandler } from './$types';
 export const GET: RequestHandler = api(async (event) => {
 	const { db, actor } = await apiContext(event);
 	// The registry is small by nature (one row per device/integration).
-	const body: ListResponse<Runner> = { items: await listRunners(db, actor.userId), next_cursor: null };
+	const body: ListResponse<Runner> = {
+		items: await listRunners(db, actor.userId),
+		next_cursor: null
+	};
 	return json(body);
 });
 

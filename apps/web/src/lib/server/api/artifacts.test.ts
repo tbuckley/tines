@@ -135,7 +135,9 @@ describe('issue artifacts', () => {
 		});
 		// content_type is only meaningful with a declared file/text type —
 		// folder included: mixed trees admit no honest match rule.
-		await expect(attempt([{ artifact: 'x', type: 'pr', content_type: 'text/' }])).rejects.toMatchObject({
+		await expect(
+			attempt([{ artifact: 'x', type: 'pr', content_type: 'text/' }])
+		).rejects.toMatchObject({
 			status: 422
 		});
 		await expect(
@@ -157,11 +159,17 @@ describe('issue artifacts', () => {
 
 		// 1. Blocked while the slot is empty, with self-correction details.
 		let error: ApiFail | undefined;
-		await transitionIssue(t.db, t.env, actor, issue.id, { action: 'approve' }).catch((e) => (error = e));
+		await transitionIssue(t.db, t.env, actor, issue.id, { action: 'approve' }).catch(
+			(e) => (error = e)
+		);
 		expect(error).toMatchObject({ status: 422, code: 'transition_requirements_unmet' });
 		expect(error!.message).toContain('design-doc');
 		const unmet = error!.details!.unmet as Record<string, unknown>[];
-		expect(unmet[0]).toMatchObject({ artifact: 'design-doc', status: 'missing', current_version: null });
+		expect(unmet[0]).toMatchObject({
+			artifact: 'design-doc',
+			status: 'missing',
+			current_version: null
+		});
 		expect(unmet[0].fix).toContain('tines issues artifacts attach demo/1 design-doc');
 		expect(error!.details!.state_entered_at).toBe(issue.state_entered_at);
 
@@ -183,7 +191,9 @@ describe('issue artifacts', () => {
 		await transitionIssue(t.db, t.env, actor, issue.id, { action: 'send back' });
 		const [stale] = await listArtifacts(t.db, USER, issue.id);
 		expect(stale.fresh).toBe(false);
-		await transitionIssue(t.db, t.env, actor, issue.id, { action: 'approve' }).catch((e) => (error = e));
+		await transitionIssue(t.db, t.env, actor, issue.id, { action: 'approve' }).catch(
+			(e) => (error = e)
+		);
 		expect((error!.details!.unmet as Record<string, unknown>[])[0]).toMatchObject({
 			status: 'stale',
 			current_version: { version: 1 }
@@ -217,14 +227,22 @@ describe('issue artifacts', () => {
 				name: 'shot',
 				artifact_type: 'file',
 				fresh: true,
-				current_version: { version: 1, content_type: 'image/png', created_at: 5 } as Artifact['current_version']
+				current_version: {
+					version: 1,
+					content_type: 'image/png',
+					created_at: 5
+				} as Artifact['current_version']
 			}
 		];
-		expect(checkRequirements([{ artifact: 'shot', content_type: 'image/' }], artifacts)[0]).toMatchObject({
+		expect(
+			checkRequirements([{ artifact: 'shot', content_type: 'image/' }], artifacts)[0]
+		).toMatchObject({
 			status: 'satisfied',
 			current_type: 'file'
 		});
-		expect(checkRequirements([{ artifact: 'shot', type: 'pr' }], artifacts)[0].status).toBe('type_mismatch');
+		expect(checkRequirements([{ artifact: 'shot', type: 'pr' }], artifacts)[0].status).toBe(
+			'type_mismatch'
+		);
 		expect(
 			checkRequirements([{ artifact: 'shot', content_type: 'text/markdown' }], artifacts)[0].status
 		).toBe('type_mismatch');
@@ -250,12 +268,16 @@ describe('issue artifacts', () => {
 					requires: [
 						{ artifact: 'notes' },
 						{ artifact: 'spec', type: 'text' },
-						{ artifact: 'shot', type: 'file', content_type: 'image/' }
+						{ artifact: 'shot', type: 'file', content_type: 'image/' },
+						{ artifact: 'ref', type: 'link' }
 					]
 				}
 			]
 		});
-		const issue = await createIssue(t.db, t.env, actor, PROJECT, { title: 'Fixes', workflow_id: wf.id });
+		const issue = await createIssue(t.db, t.env, actor, PROJECT, {
+			title: 'Fixes',
+			workflow_id: wf.id
+		});
 
 		// notes: attached as text, then made stale by re-entering the state.
 		await upsertArtifact(t.db, t.env, actor, issue.id, 'notes', { type: 'text', content: 'n' });
@@ -265,7 +287,10 @@ describe('issue artifacts', () => {
 		await updateIssue(t.db, t.env, actor, issue.id, { state: 'A' });
 		// spec: the slot holds a link — the wrong immutable type for the text requirement.
 		tick();
-		await upsertArtifact(t.db, t.env, actor, issue.id, 'spec', { type: 'link', url: 'https://x.test/spec' });
+		await upsertArtifact(t.db, t.env, actor, issue.id, 'spec', {
+			type: 'link',
+			url: 'https://x.test/spec'
+		});
 		// shot: the right type (file), the wrong content type.
 		await uploadArtifactFile(t.db, t.env, actor, issue.id, 'shot', {
 			filename: 'shot.txt',
@@ -277,7 +302,10 @@ describe('issue artifacts', () => {
 		await transitionIssue(t.db, t.env, actor, issue.id, { action: 'go' }).catch((e) => (error = e));
 		expect(error).toMatchObject({ status: 422, code: 'transition_requirements_unmet' });
 		const unmet = new Map(
-			(error!.details!.unmet as (Record<string, unknown> & { artifact: string })[]).map((r) => [r.artifact, r])
+			(error!.details!.unmet as (Record<string, unknown> & { artifact: string })[]).map((r) => [
+				r.artifact,
+				r
+			])
 		);
 
 		// Stale over an untyped requirement: a new version keeps the slot's own
@@ -296,6 +324,13 @@ describe('issue artifacts', () => {
 		expect(unmet.get('shot')).toMatchObject({ status: 'type_mismatch', current_type: 'file' });
 		expect(unmet.get('shot')!.fix).toContain('attach demo/1 shot --file');
 		expect(unmet.get('shot')!.fix).not.toContain('delete');
+
+		// A link requirement names --link: --url is the CLI's API base URL on
+		// every command, and an agent copying it here would attach a link to
+		// the API itself (Tines/92).
+		expect(unmet.get('ref')).toMatchObject({ status: 'missing' });
+		expect(unmet.get('ref')!.fix).toContain('attach demo/1 ref --link <url>');
+		expect(unmet.get('ref')!.fix).not.toContain('--url');
 	});
 
 	it('counts an artifact attached before the gating state as stale, per the strict rule', async () => {
@@ -308,7 +343,9 @@ describe('issue artifacts', () => {
 		await updateIssue(t.db, t.env, actor, issue.id, { state: 'Design' });
 		const detail = await getIssueDetail(t.db, USER, { id: issue.id });
 		expect(detail.state_entered_at).toBe(clock);
-		expect(detail.allowed_transitions.find((tr) => tr.name === 'approve')!.requires![0].status).toBe('stale');
+		expect(
+			detail.allowed_transitions.find((tr) => tr.name === 'approve')!.requires![0].status
+		).toBe('stale');
 	});
 
 	// -------------------------------------------------------------------------
@@ -342,7 +379,10 @@ describe('issue artifacts', () => {
 		// Type is immutable per slot.
 		await attachDoc(issue.id);
 		await expect(
-			upsertArtifact(t.db, t.env, actor, issue.id, 'design-doc', { type: 'link', url: 'https://x.test' })
+			upsertArtifact(t.db, t.env, actor, issue.id, 'design-doc', {
+				type: 'link',
+				url: 'https://x.test'
+			})
 		).rejects.toMatchObject({ code: 'artifact_type_mismatch' });
 		// Foreign payload fields are rejected, not dropped.
 		await expect(
@@ -361,7 +401,10 @@ describe('issue artifacts', () => {
 			url: 'https://example.com/review',
 			title: 'Review thread'
 		});
-		expect(link.current_version).toMatchObject({ url: 'https://example.com/review', title: 'Review thread' });
+		expect(link.current_version).toMatchObject({
+			url: 'https://example.com/review',
+			title: 'Review thread'
+		});
 		await expect(
 			upsertArtifact(t.db, t.env, actor, issue.id, 'bad-link', { type: 'link', url: 'ftp://x' })
 		).rejects.toMatchObject({ status: 422 });
@@ -418,10 +461,12 @@ describe('issue artifacts', () => {
 		// reference one stored key.
 		tick();
 		await reaffirmArtifact(t.db, t.env, actor, issue.id, 'feature-screenshot');
-		const keys = t.all(
-			`SELECT r2_key FROM artifact_version av
+		const keys = t
+			.all(
+				`SELECT r2_key FROM artifact_version av
 			 JOIN context_item ci ON ci.id = av.context_item_id WHERE ci.name = 'feature-screenshot'`
-		).map((r) => r.r2_key);
+			)
+			.map((r) => r.r2_key);
 		expect(keys).toHaveLength(2);
 		expect(new Set(keys).size).toBe(1);
 		const stored = await getArtifactStore(t.env).get(keys[0] as string);
@@ -478,7 +523,9 @@ describe('issue artifacts', () => {
 		expect(png.headers.get('content-disposition')).toBe('inline; filename="billing.png"');
 		expect(png.headers.get('content-security-policy')).toBe('sandbox');
 		let noPath: ApiFail | undefined;
-		await artifactContentResponse(t.db, t.env, USER, issue.id, 'screenshots').catch((e) => (noPath = e));
+		await artifactContentResponse(t.db, t.env, USER, issue.id, 'screenshots').catch(
+			(e) => (noPath = e)
+		);
 		expect(noPath).toMatchObject({ code: 'folder_path_required' });
 		expect(noPath!.details!.paths).toEqual(['login.png', 'notes.md', 'settings/billing.png']);
 		await expect(
@@ -500,12 +547,18 @@ describe('issue artifacts', () => {
 		// Reaffirm copies the file rows, reusing the same stored objects.
 		tick();
 		const reaffirmed = await reaffirmArtifact(t.db, t.env, actor, issue.id, 'screenshots');
-		expect(reaffirmed.current_version).toMatchObject({ version: 3, file_count: 1, reaffirmed_from: 2 });
-		const keys = t.all(
-			`SELECT avf.r2_key FROM artifact_version_file avf
+		expect(reaffirmed.current_version).toMatchObject({
+			version: 3,
+			file_count: 1,
+			reaffirmed_from: 2
+		});
+		const keys = t
+			.all(
+				`SELECT avf.r2_key FROM artifact_version_file avf
 			 JOIN artifact_version av ON av.id = avf.artifact_version_id
 			 WHERE av.version IN (2, 3) ORDER BY av.version`
-		).map((r) => r.r2_key);
+			)
+			.map((r) => r.r2_key);
 		expect(keys).toHaveLength(2);
 		expect(keys[0]).toBe(keys[1]);
 
@@ -575,9 +628,14 @@ describe('issue artifacts', () => {
 				}
 			]
 		});
-		const issue = await createIssue(t.db, t.env, actor, PROJECT, { title: 'Any feature', workflow_id: wf.id });
+		const issue = await createIssue(t.db, t.env, actor, PROJECT, {
+			title: 'Any feature',
+			workflow_id: wf.id
+		});
 		let error: ApiFail | undefined;
-		await transitionIssue(t.db, t.env, actor, issue.id, { action: 'submit' }).catch((e) => (error = e));
+		await transitionIssue(t.db, t.env, actor, issue.id, { action: 'submit' }).catch(
+			(e) => (error = e)
+		);
 		expect((error!.details!.unmet as Record<string, unknown>[])[0].fix).toContain('--folder <dir>');
 
 		// A sibling `file` artifact does not satisfy the folder-typed slot…
@@ -674,7 +732,9 @@ describe('issue artifacts', () => {
 		expect(attachment.headers.get('content-disposition')).toBe('attachment; filename="shot.png"');
 		expect(attachment.headers.get('content-security-policy')).toBeNull();
 
-		const inline = await artifactContentResponse(t.db, t.env, USER, issue.id, 'shot', { inline: true });
+		const inline = await artifactContentResponse(t.db, t.env, USER, issue.id, 'shot', {
+			inline: true
+		});
 		expect(inline.headers.get('content-disposition')).toBe('inline; filename="shot.png"');
 		expect(inline.headers.get('content-security-policy')).toBe('sandbox');
 
@@ -684,7 +744,9 @@ describe('issue artifacts', () => {
 			contentType: 'text/html',
 			bytes: new TextEncoder().encode('<script>alert(1)</script>')
 		});
-		const html = await artifactContentResponse(t.db, t.env, USER, issue.id, 'page', { inline: true });
+		const html = await artifactContentResponse(t.db, t.env, USER, issue.id, 'page', {
+			inline: true
+		});
 		expect(html.headers.get('content-disposition')).toContain('attachment');
 
 		// References have no content — the reference is the payload.
@@ -715,7 +777,12 @@ describe('issue artifacts', () => {
 		).rejects.toMatchObject({ code: 'use_artifact_endpoints' });
 
 		await attachDoc(issue.id);
-		const { items } = await listContextItems(t.db, USER, { issue: issue.id }, { cursor: null, limit: 50 });
+		const { items } = await listContextItems(
+			t.db,
+			USER,
+			{ issue: issue.id },
+			{ cursor: null, limit: 50 }
+		);
 		const item = items.find((i) => i.kind === 'artifact')!;
 		expect(item).toMatchObject({ name: 'design-doc', artifact_type: 'text' });
 
@@ -747,15 +814,21 @@ describe('issue artifacts', () => {
 		await attachDoc(issue.id, 'v2');
 		tick();
 		await reaffirmArtifact(t.db, t.env, actor, issue.id, 'design-doc');
-		const events = t.all(
-			`SELECT type, payload FROM event WHERE type LIKE 'context.%' ORDER BY created_at, id`
-		).map((e) => ({ type: e.type, payload: JSON.parse(e.payload as string) as Record<string, unknown> }));
+		const events = t
+			.all(`SELECT type, payload FROM event WHERE type LIKE 'context.%' ORDER BY created_at, id`)
+			.map((e) => ({
+				type: e.type,
+				payload: JSON.parse(e.payload as string) as Record<string, unknown>
+			}));
 		expect(events[0]).toMatchObject({
 			type: 'context.created',
 			payload: { kind: 'artifact', name: 'design-doc', artifact_type: 'text', version: 1 }
 		});
 		expect(events[1]).toMatchObject({ type: 'context.updated', payload: { version: 2 } });
-		expect(events[2]).toMatchObject({ type: 'context.updated', payload: { version: 3, reaffirmed_from: 2 } });
+		expect(events[2]).toMatchObject({
+			type: 'context.updated',
+			payload: { version: 3, reaffirmed_from: 2 }
+		});
 	});
 
 	// -------------------------------------------------------------------------
@@ -775,11 +848,16 @@ describe('issue artifacts', () => {
 		const block = issueBlock(detail, context, artifacts);
 		expect(block).toContain('### Artifacts');
 		expect(block).toContain('- **impl-pr** (pr) — https://github.com/acme/app/pull/123');
-		expect(block).toContain('Requires: artifact `design-doc` (text, text/markdown) — **missing; attach it first**');
+		expect(block).toContain(
+			'Requires: artifact `design-doc` (text, text/markdown) — **missing; attach it first**'
+		);
 
 		tick();
 		await attachDoc(issue.id, '# Secret design');
-		const [d2, a2] = [await getIssueDetail(t.db, USER, { id: issue.id }), await listArtifacts(t.db, USER, issue.id)];
+		const [d2, a2] = [
+			await getIssueDetail(t.db, USER, { id: issue.id }),
+			await listArtifacts(t.db, USER, issue.id)
+		];
 		const block2 = buildLaunchPrompt(context, d2, a2);
 		expect(block2).toContain('- **design-doc** (text, text/markdown, v1, fresh)');
 		expect(block2).toContain('Fetch: `tines issues artifacts get demo/');
@@ -795,5 +873,8 @@ describe('issue artifacts', () => {
 		);
 		expect(emptyBlock).toContain('No artifacts attached.');
 		expect(emptyBlock).toContain('Attach one: `tines issues artifacts attach');
+		// The link flag is --link here too (--url is the API base URL).
+		expect(emptyBlock).toContain('--text/--link/--pr');
+		expect(emptyBlock).not.toContain('--url');
 	});
 });

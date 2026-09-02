@@ -158,7 +158,8 @@ afterEach(async () => {
 	}
 	server?.close();
 	server = null;
-	if (configDir) rmSync(configDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+	if (configDir)
+		rmSync(configDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
 	configDir = null;
 });
 
@@ -209,7 +210,9 @@ describe('the run log a local run leaves behind', () => {
 		expect(harvest.finish?.status).toBe('failed');
 		expect(harvest.finish?.error).toMatch(/timeout/);
 		expect(lines[1]).toBe('$ sleep 30');
-		expect(lines.at(-1)).toMatch(/^# tines runner: exit signal=SIGTERM \(timed out\) after \d+m\d+s$/);
+		expect(lines.at(-1)).toMatch(
+			/^# tines runner: exit signal=SIGTERM \(timed out\) after \d+m\d+s$/
+		);
 	}, 30_000);
 
 	it('a claude_code harness killed mid-event says its last words first', async () => {
@@ -233,6 +236,8 @@ describe('the run log a local run leaves behind', () => {
 		// never comes, so the daemon drains it — before the closing line, or
 		// the log would not end with the line that says how the run ended.
 		expect(lines.at(-2)).toBe('[agent] cut off mid-line');
-		expect(lines.at(-1)).toMatch(/^# tines runner: exit signal=SIGTERM \(timed out\) after \d+m\d+s$/);
+		expect(lines.at(-1)).toMatch(
+			/^# tines runner: exit signal=SIGTERM \(timed out\) after \d+m\d+s$/
+		);
 	}, 30_000);
 });

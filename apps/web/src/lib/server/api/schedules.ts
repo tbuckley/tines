@@ -142,7 +142,8 @@ async function loadScheduleWorkflow(
  * initial state" — so the schedule tracks the workflow if that changes.
  */
 function resolveStartState(workflow: ScheduleWorkflow, ref: string): string | null {
-	const state = workflow.states.find((s) => s.id === ref) ?? workflow.states.find((s) => s.name === ref);
+	const state =
+		workflow.states.find((s) => s.id === ref) ?? workflow.states.find((s) => s.name === ref);
 	if (!state) {
 		throw new ApiFail(422, 'unknown_state', `Workflow "${workflow.name}" has no state "${ref}"`, {
 			field: 'state',
@@ -275,7 +276,10 @@ export async function listSchedules(
 		.orderBy('scheduled_task.id desc')
 		.limit(page.limit + 1)
 		.execute();
-	return { items: rows.slice(0, page.limit).map(serializeSchedule), hasMore: rows.length > page.limit };
+	return {
+		items: rows.slice(0, page.limit).map(serializeSchedule),
+		hasMore: rows.length > page.limit
+	};
 }
 
 export async function getSchedule(
@@ -283,7 +287,9 @@ export async function getSchedule(
 	userId: string,
 	id: string
 ): Promise<Schedule> {
-	const row = await scheduleQuery(db, userId).where('scheduled_task.id', '=', id).executeTakeFirst();
+	const row = await scheduleQuery(db, userId)
+		.where('scheduled_task.id', '=', id)
+		.executeTakeFirst();
 	if (!row) throw notFound();
 	return serializeSchedule(row);
 }
@@ -325,7 +331,9 @@ export async function prepareSchedule(
 	titleTemplate: string,
 	now: number
 ): Promise<PreparedSchedule> {
-	const name = (optionalString(input.name, 'schedule.name', { max: 200 })?.trim() || titleTemplate).slice(0, 200);
+	const name = (
+		optionalString(input.name, 'schedule.name', { max: 200 })?.trim() || titleTemplate
+	).slice(0, 200);
 	const recurrence = resolveRecurrence(input);
 	const timezone = resolveTimezone(input.timezone);
 	await assertScheduleNameAvailable(db, projectId, name);
@@ -357,7 +365,8 @@ export async function updateSchedule(
 ): Promise<Schedule> {
 	const current = await getSchedule(db, actor.userId, id);
 
-	const name = body.name !== undefined ? requireString(body.name, 'name', { max: 200 }).trim() : current.name;
+	const name =
+		body.name !== undefined ? requireString(body.name, 'name', { max: 200 }).trim() : current.name;
 	const titleTemplate =
 		body.title_template !== undefined
 			? requireString(body.title_template, 'title_template', { max: 500 }).trim()
@@ -395,11 +404,17 @@ export async function updateSchedule(
 	const recurrenceEdited = body.preset !== undefined || body.cron !== undefined;
 	const recurrence: ResolvedRecurrence = recurrenceEdited
 		? resolveRecurrence(body)
-		: { cron: current.cron, presetJson: current.preset ? JSON.stringify(current.preset) : null, preset: current.preset };
+		: {
+				cron: current.cron,
+				presetJson: current.preset ? JSON.stringify(current.preset) : null,
+				preset: current.preset
+			};
 	const timezone = body.timezone !== undefined ? resolveTimezone(body.timezone) : current.timezone;
 
 	const requireAllClosed =
-		body.require_all_closed !== undefined ? body.require_all_closed === true : current.require_all_closed;
+		body.require_all_closed !== undefined
+			? body.require_all_closed === true
+			: current.require_all_closed;
 	const enabled = body.enabled !== undefined ? body.enabled === true : current.enabled;
 
 	if (name !== current.name) {
@@ -424,7 +439,8 @@ export async function updateSchedule(
 	const payload: Record<string, unknown> = { schedule_id: id, name };
 	if (name !== current.name) payload.renamed = { from: current.name, to: name };
 	if (titleTemplate !== current.title_template) payload.title_template_changed = true;
-	if (descriptionTemplate !== current.description_template) payload.description_template_changed = true;
+	if (descriptionTemplate !== current.description_template)
+		payload.description_template_changed = true;
 	if (recurrenceEdited && recurrence.cron !== current.cron) {
 		payload.recurrence = {
 			from: describeRecurrence(current.preset, current.cron),
@@ -467,7 +483,13 @@ export async function updateSchedule(
 			.where('id', '=', id)
 			.compile(),
 		...(changed
-			? [eventInsert(db, actor, { type: 'scheduled_task.updated', projectId: current.project_id, payload })]
+			? [
+					eventInsert(db, actor, {
+						type: 'scheduled_task.updated',
+						projectId: current.project_id,
+						payload
+					})
+				]
 			: [])
 	]);
 	return getSchedule(db, actor.userId, id);
@@ -483,7 +505,11 @@ export async function deleteSchedule(
 	await runAtomic(env, [
 		// Explicitly unlink issues (the FK's SET NULL is the backstop); their
 		// issue.created events keep the schedule's identity for history.
-		db.updateTable('issue').set({ scheduled_task_id: null }).where('scheduled_task_id', '=', id).compile(),
+		db
+			.updateTable('issue')
+			.set({ scheduled_task_id: null })
+			.where('scheduled_task_id', '=', id)
+			.compile(),
 		db.deleteFrom('scheduled_task').where('id', '=', id).compile(),
 		eventInsert(db, actor, {
 			type: 'scheduled_task.deleted',
@@ -517,7 +543,13 @@ export async function runScheduleNow(
 				`Schedule "${schedule.name}" requires all previous instances to be closed; ${blockers.length} still open: ${blockers
 					.map((b) => `#${b.number} "${b.title}"`)
 					.join(', ')}`,
-				{ open_instances: blockers.map((b) => ({ issue_id: b.id, number: b.number, title: b.title })) }
+				{
+					open_instances: blockers.map((b) => ({
+						issue_id: b.id,
+						number: b.number,
+						title: b.title
+					}))
+				}
 			);
 		}
 	}
@@ -566,7 +598,12 @@ export async function assertStatesNotScheduled(
 	const schedules = await db
 		.selectFrom('scheduled_task')
 		.innerJoin('workflow_state as state', 'state.id', 'scheduled_task.state_id')
-		.select(['scheduled_task.id', 'scheduled_task.name', 'state.id as state_id', 'state.name as state_name'])
+		.select([
+			'scheduled_task.id',
+			'scheduled_task.name',
+			'state.id as state_id',
+			'state.name as state_name'
+		])
 		.where('scheduled_task.state_id', 'in', stateIds)
 		.execute();
 	if (schedules.length > 0) {

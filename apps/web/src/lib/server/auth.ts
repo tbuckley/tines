@@ -1,3 +1,4 @@
+import { dev } from '$app/environment';
 import { getRequestEvent } from '$app/server';
 import { betterAuth } from 'better-auth';
 import { magicLink } from 'better-auth/plugins';
@@ -9,6 +10,13 @@ import { ConcurrentD1Dialect, getDb } from '$lib/server/db';
 const MAGIC_LINK_EXPIRY_MINUTES = 10;
 
 async function sendMagicLinkEmail(env: Env, email: string, url: string) {
+	if (dev) {
+		// Under `pnpm dev` the EMAIL binding is simulated: nothing is
+		// delivered, and the message lands in a file under .wrangler/tmp/.
+		// Print the link so signing in locally is a copy-paste, not a hunt.
+		console.log(`\n[dev] magic link for ${email}:\n${url}\n`);
+		if (!env.EMAIL || !env.EMAIL_FROM) return;
+	}
 	if (!env.EMAIL || !env.EMAIL_FROM) {
 		throw new Error('Email sending is not configured (EMAIL binding / EMAIL_FROM var missing)');
 	}

@@ -12,7 +12,15 @@ import { appendFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { ConcurrentD1Dialect } from '$lib/server/db';
 import { createTestDb, instrumentLatency, type TestDb } from './test-db';
-import { addIssue, addRunner, seedBase, setSettings, USER, PROJECT, OPEN } from '../supervisor/test-fixtures';
+import {
+	addIssue,
+	addRunner,
+	seedBase,
+	setSettings,
+	USER,
+	PROJECT,
+	OPEN
+} from '../supervisor/test-fixtures';
 
 const LATENCY_MS = 20;
 // Reproduce the pre-Tines/32 baseline: force Kysely's connection mutex back on
@@ -84,7 +92,12 @@ describe(`navigation cost probe (${SERIALIZE ? 'serialized baseline' : 'as shipp
 	it('issues list', async () => {
 		const { load } = await import('../../../routes/(app)/issues/+page.server');
 		const r = await measure('/issues', (env) =>
-			(load as any)({ locals: { user }, platform: { env }, depends, url: new URL('http://x/issues') })
+			(load as any)({
+				locals: { user },
+				platform: { env },
+				depends,
+				url: new URL('http://x/issues')
+			})
 		);
 		expect(r.queries).toBeGreaterThan(0);
 	});
@@ -116,34 +129,54 @@ describe(`navigation cost probe (${SERIALIZE ? 'serialized baseline' : 'as shipp
 		const counts = new Map<string, number>();
 		for (const s of sqls) counts.set(s, (counts.get(s) ?? 0) + 1);
 		const dupes = [...counts.entries()].filter(([, n]) => n > 1).sort((a, b) => b[1] - a[1]);
-		report(`  duplicated statements: ${dupes.length} distinct, ${dupes.reduce((a, [, n]) => a + n - 1, 0)} redundant executions`);
-		for (const [sql, n] of dupes.slice(0, 8)) report(`    ${n}x  ${sql.slice(0, 110).replace(/\s+/g, ' ')}`);
+		report(
+			`  duplicated statements: ${dupes.length} distinct, ${dupes.reduce((a, [, n]) => a + n - 1, 0)} redundant executions`
+		);
+		for (const [sql, n] of dupes.slice(0, 8))
+			report(`    ${n}x  ${sql.slice(0, 110).replace(/\s+/g, ' ')}`);
 		expect(sqls.length).toBeGreaterThan(0);
 	});
 
 	it('projects', async () => {
 		const { load } = await import('../../../routes/(app)/projects/+page.server');
-		await measure('/projects', (env) => (load as any)({ locals: { user }, platform: { env }, depends }));
+		await measure('/projects', (env) =>
+			(load as any)({ locals: { user }, platform: { env }, depends })
+		);
 	});
 
 	it('activity', async () => {
 		const { load } = await import('../../../routes/(app)/activity/+page.server');
 		await measure('/activity', (env) =>
-			(load as any)({ locals: { user }, platform: { env }, depends, url: new URL('http://x/activity') })
+			(load as any)({
+				locals: { user },
+				platform: { env },
+				depends,
+				url: new URL('http://x/activity')
+			})
 		);
 	});
 
 	it('agents', async () => {
 		const { load } = await import('../../../routes/(app)/agents/+page.server');
 		await measure('/agents', (env) =>
-			(load as any)({ locals: { user }, platform: { env }, depends, url: new URL('http://x/agents') })
+			(load as any)({
+				locals: { user },
+				platform: { env },
+				depends,
+				url: new URL('http://x/agents')
+			})
 		);
 	});
 
 	it('context', async () => {
 		const { load } = await import('../../../routes/(app)/context/+page.server');
 		await measure('/context', (env) =>
-			(load as any)({ locals: { user }, platform: { env }, depends, url: new URL('http://x/context') })
+			(load as any)({
+				locals: { user },
+				platform: { env },
+				depends,
+				url: new URL('http://x/context')
+			})
 		);
 	});
 });

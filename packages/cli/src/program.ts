@@ -7,6 +7,7 @@ import { Command } from 'commander';
 import { register as registerContext } from './commands/context.js';
 import { register as registerIssues } from './commands/issues.js';
 import { register as registerJournal } from './commands/journal.js';
+import { register as registerLogin } from './commands/login.js';
 import { registerEvents, registerTime } from './commands/misc.js';
 import { register as registerProjects } from './commands/projects.js';
 import { register as registerRouting } from './commands/routing.js';
@@ -24,6 +25,7 @@ const program = new Command();
 program.name('tines').description('CLI for Tines').version(cliVersion()).enablePositionalOptions();
 
 registerTime(program);
+registerLogin(program);
 registerProjects(program);
 registerWorkflows(program);
 registerIssues(program);

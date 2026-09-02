@@ -145,7 +145,10 @@ export function createApiClient(options: ApiClientOptions) {
 	async function raw(
 		method: string,
 		path: string,
-		opts: { body?: string | Uint8Array | ArrayBuffer | FormData; headers?: Record<string, string> } = {}
+		opts: {
+			body?: string | Uint8Array | ArrayBuffer | FormData;
+			headers?: Record<string, string>;
+		} = {}
 	): Promise<Response> {
 		const headers: Record<string, string> = { ...(opts.headers ?? {}) };
 		if (options.apiKey) headers.authorization = `Bearer ${options.apiKey}`;
@@ -153,7 +156,10 @@ export function createApiClient(options: ApiClientOptions) {
 		// implementation in play accepts that shape without lib-specific types.
 		const body =
 			opts.body instanceof Uint8Array
-				? (opts.body.buffer.slice(opts.body.byteOffset, opts.body.byteOffset + opts.body.byteLength) as ArrayBuffer)
+				? (opts.body.buffer.slice(
+						opts.body.byteOffset,
+						opts.body.byteOffset + opts.body.byteLength
+					) as ArrayBuffer)
 				: opts.body;
 		const res = await fetchFn(`${base}${path}`, { method, headers, body });
 		if (!res.ok) {
@@ -312,7 +318,11 @@ export function createApiClient(options: ApiClientOptions) {
 		) => {
 			const form = new FormData();
 			for (const file of files) {
-				form.append('file', new Blob([file.bytes as ArrayBuffer], { type: file.contentType }), file.path);
+				form.append(
+					'file',
+					new Blob([file.bytes as ArrayBuffer], { type: file.contentType }),
+					file.path
+				);
 			}
 			const res = await raw('PUT', artifactPath(issueId, name, '/folder'), { body: form });
 			return (await res.json()) as Artifact;
@@ -388,7 +398,10 @@ export function createApiClient(options: ApiClientOptions) {
 		putRunLogRaw: (id: string, body: Uint8Array) =>
 			raw('PUT', `/api/v1/runs/${id}/log/raw`, {
 				body,
-				headers: { 'content-type': 'application/x-ndjson', 'content-length': String(body.byteLength) }
+				headers: {
+					'content-type': 'application/x-ndjson',
+					'content-length': String(body.byteLength)
+				}
 			}),
 		cancelRun: (id: string) => request<AgentRunDetail>('POST', `/api/v1/runs/${id}/cancel`),
 
@@ -413,9 +426,7 @@ export function createApiClient(options: ApiClientOptions) {
 
 		// Library export / import (workflows + context; no tracker data, no secrets)
 		exportLibrary: (opts: ExportLibraryOptions = {}) =>
-			get<LibraryDocument>(
-				`/api/v1/export${opts.journals === false ? '?journals=false' : ''}`
-			),
+			get<LibraryDocument>(`/api/v1/export${opts.journals === false ? '?journals=false' : ''}`),
 		/** Plan-then-apply; `dry_run: true` returns the preview the apply follows. */
 		importLibrary: (body: ImportLibraryRequest) =>
 			request<ImportLibraryResponse>('POST', '/api/v1/import', body)

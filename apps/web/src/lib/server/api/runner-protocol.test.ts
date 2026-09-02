@@ -100,7 +100,10 @@ describe('registerRunner', () => {
 
 	it('reconnect updates only the fields the daemon sent — server-side edits survive', async () => {
 		const t = world();
-		const first = await registerRunner(t.db, t.env, actor, { name: 'laptop-m4', max_concurrent: 2 });
+		const first = await registerRunner(t.db, t.env, actor, {
+			name: 'laptop-m4',
+			max_concurrent: 2
+		});
 		// The user tuned these in the UI; the daemon never sends them.
 		await updateRunner(t.db, t.env, actor, first.runner.id, {
 			max_run_minutes: 90,
@@ -152,7 +155,9 @@ describe('registerRunner', () => {
 describe('rotateRunnerToken', () => {
 	it('invalidates the old token, returns the new one once, keeps identity', async () => {
 		const t = world();
-		const { runner, runner_token } = await registerRunner(t.db, t.env, actor, { name: 'laptop-m4' });
+		const { runner, runner_token } = await registerRunner(t.db, t.env, actor, {
+			name: 'laptop-m4'
+		});
 		const rotated = await rotateRunnerToken(t.db, t.env, actor, runner.id);
 		expect(rotated.runner.id).toBe(runner.id);
 		expect(rotated.runner_token).not.toBe(runner_token);
@@ -188,7 +193,13 @@ describe('pollRunner', () => {
 		expect(response).toEqual({ assignments: [], cancels: [] });
 		expect(runnerById(t, id).last_seen_at).toBe(later);
 		// A fresh poll from an online runner is not "coming online".
-		const again = await pollRunner(t.db, t.env, await runnerRow(t, id), { owned_runs: [] }, later + 1000);
+		const again = await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, id),
+			{ owned_runs: [] },
+			later + 1000
+		);
 		expect(again.cameOnline).toBe(false);
 	});
 
@@ -238,12 +249,24 @@ describe('pollRunner', () => {
 		const id = addRunner(t);
 		await expectFail(
 			async () =>
-				pollRunner(t.db, t.env, await runnerRow(t, id), { owned_runs: [], max_concurrent: 0 }, NOW + 1),
+				pollRunner(
+					t.db,
+					t.env,
+					await runnerRow(t, id),
+					{ owned_runs: [], max_concurrent: 0 },
+					NOW + 1
+				),
 			'invalid_field'
 		);
 		await expectFail(
 			async () =>
-				pollRunner(t.db, t.env, await runnerRow(t, id), { owned_runs: [], max_concurrent: 101 }, NOW + 1),
+				pollRunner(
+					t.db,
+					t.env,
+					await runnerRow(t, id),
+					{ owned_runs: [], max_concurrent: 101 },
+					NOW + 1
+				),
 			'invalid_field'
 		);
 	});
@@ -254,7 +277,13 @@ describe('pollRunner', () => {
 		const issue = addIssue(t);
 		const runId = addRun(t, { issueId: issue, runnerId });
 
-		const { response } = await pollRunner(t.db, t.env, await runnerRow(t, runnerId), { owned_runs: [] }, NOW + 1);
+		const { response } = await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, runnerId),
+			{ owned_runs: [] },
+			NOW + 1
+		);
 		expect(response.assignments).toHaveLength(1);
 		const a = response.assignments[0];
 		expect(a.run.id).toBe(runId);
@@ -274,7 +303,13 @@ describe('pollRunner', () => {
 		expect(runById(t, runId)?.status).toBe('launching');
 
 		// One-shot: a second poll (the two-daemons-one-token case) gets nothing.
-		const second = await pollRunner(t.db, t.env, await runnerRow(t, runnerId), { owned_runs: [] }, NOW + 2);
+		const second = await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, runnerId),
+			{ owned_runs: [] },
+			NOW + 2
+		);
 		expect(second.response.assignments).toEqual([]);
 	});
 
@@ -286,7 +321,13 @@ describe('pollRunner', () => {
 		// The issue was transitioned away between claim and delivery.
 		t.sqlite.prepare('UPDATE issue SET state_id = ? WHERE id = ?').run(REVIEW, issue);
 
-		const { response } = await pollRunner(t.db, t.env, await runnerRow(t, runnerId), { owned_runs: [] }, NOW + 1);
+		const { response } = await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, runnerId),
+			{ owned_runs: [] },
+			NOW + 1
+		);
 		expect(response.assignments).toEqual([]);
 		const run = runById(t, runId);
 		expect(run?.status).toBe('canceled');
@@ -303,14 +344,26 @@ describe('pollRunner', () => {
 		const parked = addIssue(t);
 		const runA = addRun(t, { issueId: parked, runnerId });
 		t.sqlite.prepare('UPDATE issue SET needs_attention = 1 WHERE id = ?').run(parked);
-		const { response } = await pollRunner(t.db, t.env, await runnerRow(t, runnerId), { owned_runs: [] }, NOW + 1);
+		const { response } = await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, runnerId),
+			{ owned_runs: [] },
+			NOW + 1
+		);
 		expect(response.assignments).toEqual([]);
 		expect(runById(t, runA)?.status).toBe('canceled');
 
 		const issue = addIssue(t);
 		const runB = addRun(t, { issueId: issue, runnerId });
 		setSettings(t, { enabled: false });
-		const again = await pollRunner(t.db, t.env, await runnerRow(t, runnerId), { owned_runs: [] }, NOW + 2);
+		const again = await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, runnerId),
+			{ owned_runs: [] },
+			NOW + 2
+		);
 		expect(again.response.assignments).toEqual([]);
 		expect(runById(t, runB)?.status).toBe('canceled');
 	});
@@ -320,7 +373,13 @@ describe('pollRunner', () => {
 		const runnerId = addRunner(t, { status: 'paused' });
 		const issue = addIssue(t);
 		const runId = addRun(t, { issueId: issue, runnerId });
-		const { response } = await pollRunner(t.db, t.env, await runnerRow(t, runnerId), { owned_runs: [] }, NOW + 1);
+		const { response } = await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, runnerId),
+			{ owned_runs: [] },
+			NOW + 1
+		);
 		expect(response.assignments).toEqual([]);
 		expect(runById(t, runId)?.status).toBe('assigned');
 	});
@@ -393,7 +452,14 @@ describe('appendRunLog', () => {
 		const runnerId = addRunner(t);
 		const issue = addIssue(t);
 		const runId = addRun(t, { issueId: issue, runnerId, status: 'launching' });
-		const res = await appendRunLog(t.db, t.env, await runnerRow(t, runnerId), runId, 'hello\n', NOW + 5);
+		const res = await appendRunLog(
+			t.db,
+			t.env,
+			await runnerRow(t, runnerId),
+			runId,
+			'hello\n',
+			NOW + 5
+		);
 		expect(res).toEqual({ status: 'running', log_bytes_dropped: 0, log_seq: 0 });
 		const run = runById(t, runId);
 		expect(run?.status).toBe('running');
@@ -404,7 +470,7 @@ describe('appendRunLog', () => {
 		expect(started[0].payload.run_id).toBe(runId);
 	});
 
-	it('rejects appends to undelivered, ended, or other runners\' runs', async () => {
+	it("rejects appends to undelivered, ended, or other runners' runs", async () => {
 		const t = world();
 		const runnerId = addRunner(t);
 		const other = addRunner(t, { name: 'other' });
@@ -544,7 +610,12 @@ describe('pause and kill-switch cancels', () => {
 		const t = world();
 		const runnerId = addRunner(t, { maxConcurrent: 3 });
 		const assigned = addRun(t, { issueId: addIssue(t), runnerId });
-		const running = addRun(t, { issueId: addIssue(t), runnerId, status: 'running', startedAt: NOW });
+		const running = addRun(t, {
+			issueId: addIssue(t),
+			runnerId,
+			status: 'running',
+			startedAt: NOW
+		});
 		await updateRunner(t.db, t.env, actor, runnerId, { status: 'paused' });
 		expect(runById(t, assigned)?.status).toBe('canceled');
 		expect(runById(t, assigned)?.error).toBe('runner paused');
@@ -558,7 +629,12 @@ describe('pause and kill-switch cancels', () => {
 		const assignedA = addRun(t, { issueId: addIssue(t), runnerId: a });
 		const assignedB = addRun(t, { issueId: addIssue(t), runnerId: b });
 		const runningIssue = addIssue(t);
-		const running = addRun(t, { issueId: runningIssue, runnerId: a, status: 'running', startedAt: NOW });
+		const running = addRun(t, {
+			issueId: runningIssue,
+			runnerId: a,
+			status: 'running',
+			startedAt: NOW
+		});
 
 		const off = await updateSupervisorSettings(t.db, t.env, actor, { enabled: false });
 		expect(off.enabled).toBe(false);

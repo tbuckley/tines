@@ -105,7 +105,10 @@ beforeAll(async () => {
 			res.writeHead(200, { 'content-type': 'application/json' });
 			res.end(
 				JSON.stringify(
-					fixed ?? { ...row('/api/v1/context', Number(contextItem![1].slice(1))), body: '- a lesson' }
+					fixed ?? {
+						...row('/api/v1/context', Number(contextItem![1].slice(1))),
+						body: '- a lesson'
+					}
 				)
 			);
 			return;
@@ -228,7 +231,10 @@ describe('list pagination', () => {
 		expect(results).toEqual(LIST_COMMANDS.map(({ argv }) => [argv.join(' '), 0, TOTAL]));
 		// ...by walking its own route: 120 items at 50 per page is three requests each.
 		for (const { argv, path } of LIST_COMMANDS) {
-			expect(requested.filter((p) => p === path), argv.join(' ')).toHaveLength(3);
+			expect(
+				requested.filter((p) => p === path),
+				argv.join(' ')
+			).toHaveLength(3);
 		}
 	}, 120_000);
 });

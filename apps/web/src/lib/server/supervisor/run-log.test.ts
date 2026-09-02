@@ -50,7 +50,10 @@ async function runnerRow(t: TestDb, id: string): Promise<RunnerRow> {
 }
 
 function runById(t: TestDb, id: string) {
-	return t.sqlite.prepare('SELECT * FROM agent_run WHERE id = ?').get(id) as Record<string, unknown>;
+	return t.sqlite.prepare('SELECT * FROM agent_run WHERE id = ?').get(id) as Record<
+		string,
+		unknown
+	>;
 }
 
 /** A run on a live local runner, ready to take log appends. */
@@ -327,7 +330,9 @@ describe('sweep housekeeping', () => {
 		expect(await readAll(t, runId)).toBe(expected);
 
 		// Now end it: the next sweep seals what endRun's inline attempt would.
-		t.sqlite.prepare("UPDATE agent_run SET status='completed', ended_at=? WHERE id=?").run(NOW, runId);
+		t.sqlite
+			.prepare("UPDATE agent_run SET status='completed', ended_at=? WHERE id=?")
+			.run(NOW, runId);
 		await sweepRunLogs(t.db, t.env, NOW);
 		expect(runById(t, runId).log_sealed).toBe(1);
 		expect(await readAll(t, runId)).toBe(expected);
@@ -339,7 +344,9 @@ describe('sweep housekeeping', () => {
 		await appendRunLog(t.db, t.env, runner, runId, 'x'.repeat(RUN_LOG_MAX_BYTES), NOW);
 		await appendRunLog(t.db, t.env, runner, runId, 'y'.repeat(500), NOW);
 		const endedAt = NOW - RUN_LOG_RETENTION_MS - 1;
-		t.sqlite.prepare("UPDATE agent_run SET status='completed', ended_at=? WHERE id=?").run(endedAt, runId);
+		t.sqlite
+			.prepare("UPDATE agent_run SET status='completed', ended_at=? WHERE id=?")
+			.run(endedAt, runId);
 
 		expect(await gcExpiredRunLogs(t.db, t.env, NOW)).toBe(1);
 		expect(store(t).count(runLogPrefix(USER, runId))).toBe(0);
@@ -365,7 +372,9 @@ describe('sweep housekeeping', () => {
 		const { runId, runner } = await liveRun(t);
 		await appendRunLog(t.db, t.env, runner, runId, 'x'.repeat(RUN_LOG_MAX_BYTES), NOW);
 		await appendRunLog(t.db, t.env, runner, runId, 'y'.repeat(500), NOW);
-		t.sqlite.prepare("UPDATE agent_run SET status='completed', ended_at=? WHERE id=?").run(NOW - 1000, runId);
+		t.sqlite
+			.prepare("UPDATE agent_run SET status='completed', ended_at=? WHERE id=?")
+			.run(NOW - 1000, runId);
 		expect(await gcExpiredRunLogs(t.db, t.env, NOW)).toBe(0);
 		expect(store(t).count(runLogPrefix(USER, runId))).toBe(1);
 	});

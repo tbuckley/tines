@@ -23,18 +23,28 @@
 	{/if}
 	{#if scope.project_id}
 		{#if link}
-			<a href="/projects/{scope.project_id}" class="{chipClass} hover:text-foreground" title="project {scope.project_name}">
-				<IconFolder size={12} stroke={1.75} /> {scope.project_name}
+			<a
+				href="/projects/{scope.project_id}"
+				class="{chipClass} hover:text-foreground"
+				title="project {scope.project_name}"
+			>
+				<IconFolder size={12} stroke={1.75} />
+				{scope.project_name}
 			</a>
 		{:else}
 			<span class={chipClass} title="project {scope.project_name}">
-				<IconFolder size={12} stroke={1.75} /> {scope.project_name}
+				<IconFolder size={12} stroke={1.75} />
+				{scope.project_name}
 			</span>
 		{/if}
 	{/if}
 	{#if scope.workflow_state_id}
-		<span class={chipClass} title="state {scope.workflow_state_name} (workflow “{scope.workflow_name}”)">
-			<IconSitemap size={12} stroke={1.75} /> {scope.workflow_state_name}
+		<span
+			class={chipClass}
+			title="state {scope.workflow_state_name} (workflow “{scope.workflow_name}”)"
+		>
+			<IconSitemap size={12} stroke={1.75} />
+			{scope.workflow_state_name}
 		</span>
 	{/if}
 	{#if scope.issue_id && scope.issue_ref}
@@ -44,11 +54,13 @@
 				class="{chipClass} hover:text-foreground"
 				title="issue {scope.issue_ref.project_name}/{scope.issue_ref.number}"
 			>
-				<IconListDetails size={12} stroke={1.75} /> {scope.issue_ref.project_name}/{scope.issue_ref.number}
+				<IconListDetails size={12} stroke={1.75} />
+				{scope.issue_ref.project_name}/{scope.issue_ref.number}
 			</a>
 		{:else}
 			<span class={chipClass} title="issue {scope.issue_ref.project_name}/{scope.issue_ref.number}">
-				<IconListDetails size={12} stroke={1.75} /> {scope.issue_ref.project_name}/{scope.issue_ref.number}
+				<IconListDetails size={12} stroke={1.75} />
+				{scope.issue_ref.project_name}/{scope.issue_ref.number}
 			</span>
 		{/if}
 	{/if}

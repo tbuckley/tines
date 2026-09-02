@@ -6,7 +6,12 @@ import { createTestDb } from './test-db';
 describe('scopeLabel', () => {
 	it('renders set dimensions in project · state · issue order', () => {
 		expect(
-			scopeLabel({ projectName: 'Tines', stateName: 'Review', issueProjectName: 'Tines', issueNumber: 42 })
+			scopeLabel({
+				projectName: 'Tines',
+				stateName: 'Review',
+				issueProjectName: 'Tines',
+				issueNumber: 42
+			})
 		).toBe('project Tines · state Review · issue Tines/42');
 	});
 
@@ -134,9 +139,11 @@ describe('resolveScope', () => {
 	it('rejects a project that does not exist or is not the user’s', async () => {
 		const t = seed();
 		for (const projectId of ['prj_nope', 'prj_bob']) {
-			await expect(
-				resolveScope(t.db, 'u1', { ...empty, projectId })
-			).rejects.toMatchObject({ status: 422, code: 'unknown_project', details: { field: 'project_id' } });
+			await expect(resolveScope(t.db, 'u1', { ...empty, projectId })).rejects.toMatchObject({
+				status: 422,
+				code: 'unknown_project',
+				details: { field: 'project_id' }
+			});
 		}
 	});
 
@@ -149,9 +156,7 @@ describe('resolveScope', () => {
 				VALUES ('wfs_bob', 'wf_bob', 'Doing', 'active', 0, ${now});
 		`);
 		for (const workflowStateId of ['wfs_nope', 'wfs_bob']) {
-			await expect(
-				resolveScope(t.db, 'u1', { ...empty, workflowStateId })
-			).rejects.toMatchObject({
+			await expect(resolveScope(t.db, 'u1', { ...empty, workflowStateId })).rejects.toMatchObject({
 				status: 422,
 				code: 'unknown_state',
 				details: { field: 'workflow_state_id' }
@@ -193,11 +198,13 @@ describe('resolveScope', () => {
 
 	it('rejects an issue that does not exist or is not the user’s', async () => {
 		const t = seed();
-		await expect(resolveScope(t.db, 'u1', { ...empty, issueId: 'iss_nope' })).rejects.toMatchObject({
-			status: 422,
-			code: 'unknown_issue',
-			details: { field: 'issue_id' }
-		});
+		await expect(resolveScope(t.db, 'u1', { ...empty, issueId: 'iss_nope' })).rejects.toMatchObject(
+			{
+				status: 422,
+				code: 'unknown_issue',
+				details: { field: 'issue_id' }
+			}
+		);
 		await expect(resolveScope(t.db, 'u2', { ...empty, issueId: 'iss_1' })).rejects.toMatchObject({
 			code: 'unknown_issue'
 		});

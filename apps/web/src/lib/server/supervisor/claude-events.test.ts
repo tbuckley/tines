@@ -10,7 +10,9 @@ const usage = (obj: Record<string, unknown>) => obj as unknown as BetaManagedAge
 
 describe('renderEvent', () => {
 	// One row per `switch` branch, including both null paths.
-	const cases: Array<[name: string, event: BetaManagedAgentsSessionEvent, expected: string | null]> = [
+	const cases: Array<
+		[name: string, event: BetaManagedAgentsSessionEvent, expected: string | null]
+	> = [
 		[
 			'user.message counts the delivered characters',
 			ev({ type: 'user.message', content: text('hello') }),
@@ -26,7 +28,11 @@ describe('renderEvent', () => {
 			ev({ type: 'agent.message', content: text('  working on it  ') }),
 			'[agent] working on it'
 		],
-		['agent.message with empty text is dropped', ev({ type: 'agent.message', content: text('   ') }), null],
+		[
+			'agent.message with empty text is dropped',
+			ev({ type: 'agent.message', content: text('   ') }),
+			null
+		],
 		['agent.message with no content is dropped', ev({ type: 'agent.message' }), null],
 		[
 			'agent.tool_use renders name and JSON args',
@@ -43,7 +49,11 @@ describe('renderEvent', () => {
 			ev({ type: 'agent.mcp_tool_use', name: 'mcp__x__y', input: { a: 1 } }),
 			'[tool] mcp__x__y {"a":1}'
 		],
-		['agent.tool_result without an error is dropped', ev({ type: 'agent.tool_result', content: text('ok') }), null],
+		[
+			'agent.tool_result without an error is dropped',
+			ev({ type: 'agent.tool_result', content: text('ok') }),
+			null
+		],
 		[
 			'agent.tool_result with is_error false is dropped',
 			ev({ type: 'agent.tool_result', is_error: false, content: text('ok') }),
@@ -54,7 +64,11 @@ describe('renderEvent', () => {
 			ev({ type: 'agent.tool_result', is_error: true, content: text('boom') }),
 			'[tool] error: boom'
 		],
-		['agent.mcp_tool_result without an error is dropped', ev({ type: 'agent.mcp_tool_result' }), null],
+		[
+			'agent.mcp_tool_result without an error is dropped',
+			ev({ type: 'agent.mcp_tool_result' }),
+			null
+		],
 		[
 			'agent.mcp_tool_result with is_error renders the text',
 			ev({ type: 'agent.mcp_tool_result', is_error: true, content: text('nope') }),
@@ -65,7 +79,11 @@ describe('renderEvent', () => {
 			ev({ type: 'session.error', error: { message: 'overloaded' } }),
 			'[error] overloaded'
 		],
-		['session.error without a message falls back', ev({ type: 'session.error' }), '[error] unknown session error'],
+		[
+			'session.error without a message falls back',
+			ev({ type: 'session.error' }),
+			'[error] unknown session error'
+		],
 		['session.status_running', ev({ type: 'session.status_running' }), '[session] running'],
 		[
 			'session.status_idle names its stop reason',
@@ -77,8 +95,16 @@ describe('renderEvent', () => {
 			ev({ type: 'session.status_idle' }),
 			'[session] idle (unknown)'
 		],
-		['session.status_terminated', ev({ type: 'session.status_terminated' }), '[session] terminated'],
-		['agent.thread_context_compacted', ev({ type: 'agent.thread_context_compacted' }), '[session] context compacted'],
+		[
+			'session.status_terminated',
+			ev({ type: 'session.status_terminated' }),
+			'[session] terminated'
+		],
+		[
+			'agent.thread_context_compacted',
+			ev({ type: 'agent.thread_context_compacted' }),
+			'[session] context compacted'
+		],
 		['an unknown event type is dropped', ev({ type: 'session.something_new' }), null]
 	];
 
@@ -97,20 +123,28 @@ describe('renderEvent', () => {
 	});
 
 	it('clips tool arguments at 300 characters', () => {
-		const line = renderEvent(ev({ type: 'agent.tool_use', name: 'Write', input: { body: 'x'.repeat(400) } }));
+		const line = renderEvent(
+			ev({ type: 'agent.tool_use', name: 'Write', input: { body: 'x'.repeat(400) } })
+		);
 		const args = JSON.stringify({ body: 'x'.repeat(400) });
 		expect(line).toBe(`[tool] Write ${args.slice(0, 300)}…`);
 	});
 
 	it('clips tool error text at 300 characters', () => {
-		const line = renderEvent(ev({ type: 'agent.tool_result', is_error: true, content: text('e'.repeat(400)) }));
+		const line = renderEvent(
+			ev({ type: 'agent.tool_result', is_error: true, content: text('e'.repeat(400)) })
+		);
 		expect(line).toBe(`[tool] error: ${'e'.repeat(300)}…`);
 	});
 });
 
 describe('mapUsage', () => {
 	it('reports zeros for absent usage and nothing else', () => {
-		expect(mapUsage(undefined)).toEqual({ input_tokens: 0, output_tokens: 0, cost_source: 'provider' });
+		expect(mapUsage(undefined)).toEqual({
+			input_tokens: 0,
+			output_tokens: 0,
+			cost_source: 'provider'
+		});
 	});
 
 	it('carries input and output tokens through', () => {
@@ -129,8 +163,12 @@ describe('mapUsage', () => {
 	});
 
 	it('accepts a single cache bucket', () => {
-		expect(mapUsage(usage({ cache_creation: { ephemeral_5m_input_tokens: 7 } })).cache_write_tokens).toBe(7);
-		expect(mapUsage(usage({ cache_creation: { ephemeral_1h_input_tokens: 9 } })).cache_write_tokens).toBe(9);
+		expect(
+			mapUsage(usage({ cache_creation: { ephemeral_5m_input_tokens: 7 } })).cache_write_tokens
+		).toBe(7);
+		expect(
+			mapUsage(usage({ cache_creation: { ephemeral_1h_input_tokens: 9 } })).cache_write_tokens
+		).toBe(9);
 	});
 
 	it('reports cache reads', () => {
@@ -157,7 +195,9 @@ describe('mapUsage', () => {
 
 	it('omits cost_usd when the provider reports no list_cost', () => {
 		expect(mapUsage(usage({ input_tokens: 1 }))).not.toHaveProperty('cost_usd');
-		expect(mapUsage(usage({ list_cost: { amount: '', currency: 'USD' } }))).not.toHaveProperty('cost_usd');
+		expect(mapUsage(usage({ list_cost: { amount: '', currency: 'USD' } }))).not.toHaveProperty(
+			'cost_usd'
+		);
 	});
 });
 
@@ -167,7 +207,9 @@ describe('textOf', () => {
 	});
 
 	it('concatenates text blocks and skips the rest', () => {
-		expect(textOf([{ type: 'text', text: 'a' }, { type: 'image' }, { type: 'text', text: 'b' }])).toBe('ab');
+		expect(
+			textOf([{ type: 'text', text: 'a' }, { type: 'image' }, { type: 'text', text: 'b' }])
+		).toBe('ab');
 	});
 
 	it('trims the surrounding whitespace', () => {
@@ -187,7 +229,12 @@ describe('clip', () => {
 
 describe('summarizeEvents', () => {
 	it('is empty for an empty page and keeps the cursor it was given', () => {
-		expect(summarizeEvents([], 'c0')).toEqual({ lines: [], cursor: 'c0', idleReason: undefined, lastError: undefined });
+		expect(summarizeEvents([], 'c0')).toEqual({
+			lines: [],
+			cursor: 'c0',
+			idleReason: undefined,
+			lastError: undefined
+		});
 	});
 
 	it('collects rendered lines and drops the ones renderEvent skips', () => {

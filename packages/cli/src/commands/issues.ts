@@ -51,7 +51,9 @@ function printIssueLinks(links: IssueLinks): void {
 	if (links.blocked_by.length > 0) {
 		console.log('\nblocked by:');
 		// Open blockers are exactly why the issue isn't ready, so call them out.
-		table(linkRows(links.blocked_by, (e) => (e.effective_state.category === 'done' ? '' : '(open)')));
+		table(
+			linkRows(links.blocked_by, (e) => (e.effective_state.category === 'done' ? '' : '(open)'))
+		);
 	}
 	if (links.blocks.length > 0) {
 		console.log('\nblocks:');
@@ -76,7 +78,9 @@ function printIssueDetail(issue: IssueDetail): void {
 		`state: ${issue.effective_state.name} (${issue.effective_state.category})${dup ? ` (via ${issueRef(dup)} — duplicate)` : ''}  workflow: ${issue.workflow.name}  updated: ${timestamp(issue.updated_at)}`
 	);
 	if (dup) {
-		console.log(`own state: ${issue.state.name} (${issue.state.category}) — dormant while this is a duplicate`);
+		console.log(
+			`own state: ${issue.state.name} (${issue.state.category}) — dormant while this is a duplicate`
+		);
 	}
 	console.log(`id: ${issue.id}`);
 	printIssueLinks(issue.links);
@@ -84,7 +88,9 @@ function printIssueDetail(issue: IssueDetail): void {
 		console.log(`\n${issue.description}`);
 	}
 	const allowed = issue.allowed_transitions.map((t) => `"${t.name}" → ${t.to_state.name}`);
-	console.log(`\nallowed actions: ${allowed.length ? allowed.join(', ') : 'none (terminal state)'}`);
+	console.log(
+		`\nallowed actions: ${allowed.length ? allowed.join(', ') : 'none (terminal state)'}`
+	);
 	if (issue.comments.length > 0) {
 		console.log(`\ncomments (${issue.comments.length}):`);
 		// Rendered by commentLines so the id and the (edited) marker — the two
@@ -104,7 +110,11 @@ function walkFolder(dir: string): { path: string; contentType: string; bytes: Bu
 			const nextRel = rel ? `${rel}/${entry.name}` : entry.name;
 			if (entry.isDirectory()) walk(nextAbs, nextRel);
 			else if (entry.isFile()) {
-				files.push({ path: nextRel, contentType: sniffContentType(entry.name), bytes: readFileSync(nextAbs) });
+				files.push({
+					path: nextRel,
+					contentType: sniffContentType(entry.name),
+					bytes: readFileSync(nextAbs)
+				});
 			}
 			// Symlinks and specials are skipped: a snapshot carries plain files.
 		}
@@ -136,7 +146,9 @@ function printExplainer(issue: IssueDetail, ex: DispatchExplainer): void {
 		);
 	}
 	if (ex.queue_position !== null && ex.queue_position > 0) {
-		console.log(`queue: ${ex.queue_position} eligible issue${ex.queue_position === 1 ? '' : 's'} ahead of this one`);
+		console.log(
+			`queue: ${ex.queue_position} eligible issue${ex.queue_position === 1 ? '' : 's'} ahead of this one`
+		);
 	}
 	if (ex.active_run) {
 		console.log(
@@ -162,7 +174,10 @@ export function register(program: Command): void {
 			.option('-c, --category <cat>', 'filter by state category')
 			.option('-w, --workflow <id-or-name>', 'filter by workflow')
 			.option('-a, --all', 'include issues in done states')
-			.option('--ready', 'only issues that are actionable now (not done, not a duplicate, no open blockers)')
+			.option(
+				'--ready',
+				'only issues that are actionable now (not done, not a duplicate, no open blockers)'
+			)
 			.option('-q, --search <text>', 'search titles and descriptions')
 	).action(
 		async (
@@ -214,12 +229,24 @@ export function register(program: Command): void {
 		issues
 			.command('create <project>')
 			.description('Create an issue in a project, optionally with a recurrence (a scheduled task)')
-			.requiredOption('-t, --title <title>', 'issue title (doubles as the title template with a recurrence)')
+			.requiredOption(
+				'-t, --title <title>',
+				'issue title (doubles as the title template with a recurrence)'
+			)
 			.option('-d, --description <markdown>', `issue description (Markdown) — ${BODY_VALUE_HELP}`)
-			.option('-w, --workflow <id-or-name>', 'workflow (defaults to project default, else standard)')
+			.option(
+				'-w, --workflow <id-or-name>',
+				'workflow (defaults to project default, else standard)'
+			)
 			.option('-s, --state <name>', "starting state (defaults to the workflow's initial state)")
-			.option('--every <preset>', 'repeat hourly (or every N hours: "6h"), daily, weekly, or monthly')
-			.option('--at <when>', 'preset time of day HH:MM (default 09:00); for hourly, the minute past the hour :MM (default :00)')
+			.option(
+				'--every <preset>',
+				'repeat hourly (or every N hours: "6h"), daily, weekly, or monthly'
+			)
+			.option(
+				'--at <when>',
+				'preset time of day HH:MM (default 09:00); for hourly, the minute past the hour :MM (default :00)'
+			)
 			.option('--on <when>', 'weekday (weekly) or day of month (monthly)')
 			.option('--cron <expr>', '5-field cron expression (alternative to --every/--at/--on)')
 			.option('--tz <iana>', 'schedule timezone (defaults to the system timezone)')
@@ -311,7 +338,8 @@ export function register(program: Command): void {
 			if (opts.title !== undefined) body.title = opts.title;
 			if (description !== undefined) body.description = description;
 			if (opts.state !== undefined) body.state = opts.state;
-			if (opts.workflow !== undefined) body.workflow_id = (await resolveWorkflow(api, opts.workflow)).id;
+			if (opts.workflow !== undefined)
+				body.workflow_id = (await resolveWorkflow(api, opts.workflow)).id;
 			if (Object.keys(body).length === 0) {
 				die('nothing to update: pass --title, --description, --state, and/or --workflow');
 			}
@@ -367,15 +395,23 @@ export function register(program: Command): void {
 			.description(`Replace the body of your own comment — Markdown body: ${BODY_VALUE_HELP}`)
 			// A body may start with "-"; options go before the arguments.
 			.passThroughOptions()
-	).action(async (ref: string, commentId: string, markdown: string, opts: CommonOpts, command: Command) => {
-		if (helpGuard(command, markdown)) return;
-		const body = readBodyValue(markdown);
-		const api = client(opts);
-		const issue = await resolveIssue(api, ref);
-		const comment = await api.updateComment(issue.id, commentId, { body });
-		if (opts.json) return printJson(comment);
-		console.log(`edited comment ${comment.id} on ${issue.project_name}/#${issue.number}`);
-	});
+	).action(
+		async (
+			ref: string,
+			commentId: string,
+			markdown: string,
+			opts: CommonOpts,
+			command: Command
+		) => {
+			if (helpGuard(command, markdown)) return;
+			const body = readBodyValue(markdown);
+			const api = client(opts);
+			const issue = await resolveIssue(api, ref);
+			const comment = await api.updateComment(issue.id, commentId, { body });
+			if (opts.json) return printJson(comment);
+			console.log(`edited comment ${comment.id} on ${issue.project_name}/#${issue.number}`);
+		}
+	);
 
 	withCommon(
 		issues
@@ -409,7 +445,9 @@ export function register(program: Command): void {
 	});
 
 	withCommon(
-		issues.command('unblock <blocker> <blocked>').description('Remove the link making <blocker> block <blocked>')
+		issues
+			.command('unblock <blocker> <blocked>')
+			.description('Remove the link making <blocker> block <blocked>')
 	).action(async (blockerRef: string, blockedRef: string, opts: CommonOpts) => {
 		const api = client(opts);
 		const blocker = await resolveIssue(api, blockerRef);
@@ -447,8 +485,13 @@ export function register(program: Command): void {
 	withCommon(
 		issues
 			.command('context <ref>')
-			.description("Print an issue's effective context (the assembled bundle for its current state)")
-			.option('--out <dir>', 'write the bundle to a directory: prompt.md, skills/<name>/…, repos.json')
+			.description(
+				"Print an issue's effective context (the assembled bundle for its current state)"
+			)
+			.option(
+				'--out <dir>',
+				'write the bundle to a directory: prompt.md, skills/<name>/…, repos.json'
+			)
 			.option('--force', 'allow --out into a non-empty directory')
 	).action(async (ref: string, opts: CommonOpts & { out?: string; force?: boolean }) => {
 		const api = client(opts);
@@ -461,13 +504,19 @@ export function register(program: Command): void {
 				console.log(`\nskills: ${context.skills.map((s) => s.name).join(', ')}`);
 			}
 			for (const repo of context.repos) {
-				console.log(`repo: ${repo.name} ${repo.url}${repo.branch ? `#${repo.branch}` : ''} → ${repo.dir}/`);
+				console.log(
+					`repo: ${repo.name} ${repo.url}${repo.branch ? `#${repo.branch}` : ''} → ${repo.dir}/`
+				);
 			}
 			for (const o of context.overridden) {
-				console.log(`overridden: ${o.kind} "${o.name}" [${o.scope.label}] (overridden by ${o.overridden_by})`);
+				console.log(
+					`overridden: ${o.kind} "${o.name}" [${o.scope.label}] (overridden by ${o.overridden_by})`
+				);
 			}
 			for (const c of context.conflicts) {
-				console.log(`conflict: repos ${c.item_ids.join(', ')} all resolve to checkout dir "${c.dir}"`);
+				console.log(
+					`conflict: repos ${c.item_ids.join(', ')} all resolve to checkout dir "${c.dir}"`
+				);
 			}
 			return;
 		}
@@ -484,7 +533,10 @@ export function register(program: Command): void {
 			die(`refusing to write into non-empty directory ${opts.out} (pass --force to override)`);
 		}
 		mkdirSync(opts.out, { recursive: true });
-		writeFileSync(join(opts.out, 'prompt.md'), context.prompt.text ? `${context.prompt.text}\n` : '');
+		writeFileSync(
+			join(opts.out, 'prompt.md'),
+			context.prompt.text ? `${context.prompt.text}\n` : ''
+		);
 		for (const skill of context.skills) {
 			for (const file of skill.files) {
 				const target = join(opts.out, 'skills', skill.name, file.path);
@@ -534,37 +586,43 @@ export function register(program: Command): void {
 
 	const artifactsCmd = issues
 		.command('artifacts')
-		.description('Typed, versioned attachments on an issue — the work products transition requirements gate on');
-
-	withCommon(artifactsCmd.command('list <ref>').description('List the artifacts attached to an issue')).action(
-		async (ref: string, opts: CommonOpts) => {
-			const api = client(opts);
-			const issue = await resolveIssue(api, ref);
-			const res = await api.listArtifacts(issue.id);
-			if (opts.json) return printJson(res);
-			if (res.items.length === 0) return console.log('no artifacts attached');
-			table([
-				['NAME', 'TYPE', 'VERSION', 'FRESH', 'SUMMARY', 'ATTACHED'],
-				...res.items.map((a) => [
-					a.name,
-					a.artifact_type,
-					`v${a.current_version.version}`,
-					a.fresh ? 'yes' : 'no',
-					artifactSummary(a),
-					timestamp(a.current_version.created_at)
-				])
-			]);
-		}
-	);
+		.description(
+			'Typed, versioned attachments on an issue — the work products transition requirements gate on'
+		);
 
 	withCommon(
-		artifactsCmd.command('show <ref> <name>').description('Show an artifact with its full version history')
+		artifactsCmd.command('list <ref>').description('List the artifacts attached to an issue')
+	).action(async (ref: string, opts: CommonOpts) => {
+		const api = client(opts);
+		const issue = await resolveIssue(api, ref);
+		const res = await api.listArtifacts(issue.id);
+		if (opts.json) return printJson(res);
+		if (res.items.length === 0) return console.log('no artifacts attached');
+		table([
+			['NAME', 'TYPE', 'VERSION', 'FRESH', 'SUMMARY', 'ATTACHED'],
+			...res.items.map((a) => [
+				a.name,
+				a.artifact_type,
+				`v${a.current_version.version}`,
+				a.fresh ? 'yes' : 'no',
+				artifactSummary(a),
+				timestamp(a.current_version.created_at)
+			])
+		]);
+	});
+
+	withCommon(
+		artifactsCmd
+			.command('show <ref> <name>')
+			.description('Show an artifact with its full version history')
 	).action(async (ref: string, name: string, opts: CommonOpts) => {
 		const api = client(opts);
 		const issue = await resolveIssue(api, ref);
 		const artifact = await api.getArtifact(issue.id, name);
 		if (opts.json) return printJson(artifact);
-		console.log(`${artifact.artifact_type} artifact "${artifact.name}" on ${issue.project_name}/${issue.number}`);
+		console.log(
+			`${artifact.artifact_type} artifact "${artifact.name}" on ${issue.project_name}/${issue.number}`
+		);
 		if (artifact.description) console.log(artifact.description);
 		console.log(
 			`current: v${artifact.current_version.version} (${artifact.fresh ? 'fresh' : 'attached before the current state — reaffirm or attach a new version to satisfy gates'})`
@@ -593,21 +651,21 @@ export function register(program: Command): void {
 	withCommon(
 		artifactsCmd
 			.command('attach <ref> <name>')
-			.description('Attach content to a named artifact slot (creates it, or appends the next version)')
+			.description(
+				'Attach content to a named artifact slot (creates it, or appends the next version)'
+			)
 			.option('-f, --file <path>', 'upload a file (MIME sniffed from the extension)')
 			.option(
 				'--folder <dir>',
 				'snapshot a directory tree as one version (collect locally, attach once; MIME per file sniffed)'
 			)
 			.option('-t, --text <md|@file>', 'inline text document: inline Markdown or @file')
-			.option('--url <url>', 'link: the URL to attach')
+			.option('--link <url>', 'link: the URL to attach')
 			.option('--pr <spec>', 'PR reference: owner/repo#N or a GitHub PR URL')
 			.option('--content-type <mime>', 'declared MIME type (with --file or --text)')
 			.option('--filename <name>', 'display filename (with --text; defaults to <name>.md)')
-			.option('--title <title>', 'display title (with --url)')
-			.option('-d, --description <text>', 'artifact description, shown in lists and launch prompts'),
-		// --url is the link payload here; the API base comes from TINES_API_URL.
-		{ baseUrlFlag: false }
+			.option('--title <title>', 'display title (with --link)')
+			.option('-d, --description <text>', 'artifact description, shown in lists and launch prompts')
 	).action(
 		async (
 			ref: string,
@@ -616,7 +674,7 @@ export function register(program: Command): void {
 				file?: string;
 				folder?: string;
 				text?: string;
-				url?: string;
+				link?: string;
 				pr?: string;
 				contentType?: string;
 				filename?: string;
@@ -624,11 +682,13 @@ export function register(program: Command): void {
 				description?: string;
 			}
 		) => {
-			const api = client({ apiKey: opts.apiKey, json: opts.json });
-			const sources = [opts.file, opts.folder, opts.text, opts.url, opts.pr].filter((v) => v !== undefined);
+			const api = client(opts);
+			const sources = [opts.file, opts.folder, opts.text, opts.link, opts.pr].filter(
+				(v) => v !== undefined
+			);
 			if (sources.length !== 1) {
 				die(
-					'pass exactly one content source: --file <path>, --folder <dir>, --text <md|@file>, --url <url>, or --pr <spec>'
+					'pass exactly one content source: --file <path>, --folder <dir>, --text <md|@file>, --link <url>, or --pr <spec> (a link goes in --link; --url is the API base URL)'
 				);
 			}
 			const issue = await resolveIssue(api, ref);
@@ -667,10 +727,10 @@ export function register(program: Command): void {
 					...(opts.contentType !== undefined ? { content_type: opts.contentType } : {}),
 					...(opts.description !== undefined ? { description: opts.description } : {})
 				});
-			} else if (opts.url !== undefined) {
+			} else if (opts.link !== undefined) {
 				artifact = await api.putArtifact(issue.id, name, {
 					type: 'link',
-					url: opts.url,
+					url: opts.link,
 					...(opts.title !== undefined ? { title: opts.title } : {}),
 					...(opts.description !== undefined ? { description: opts.description } : {})
 				});
@@ -696,7 +756,9 @@ export function register(program: Command): void {
 	withCommon(
 		artifactsCmd
 			.command('reaffirm <ref> <name>')
-			.description('Bless the current content as fresh (appends a version reusing the same payload)')
+			.description(
+				'Bless the current content as fresh (appends a version reusing the same payload)'
+			)
 	).action(async (ref: string, name: string, opts: CommonOpts) => {
 		const api = client(opts);
 		const issue = await resolveIssue(api, ref);
@@ -711,8 +773,13 @@ export function register(program: Command): void {
 		artifactsCmd
 			.command('get <ref> <name>')
 			.description('Fetch content (current version by default); a link/pr prints its URL')
-			.option('--version <n>', 'fetch a specific version from the history', (v) => Number.parseInt(v, 10))
-			.option('--out <path>', 'write to this file, or into this directory (keeps the stored filename)')
+			.option('--version <n>', 'fetch a specific version from the history', (v) =>
+				Number.parseInt(v, 10)
+			)
+			.option(
+				'--out <path>',
+				'write to this file, or into this directory (keeps the stored filename)'
+			)
 	).action(
 		async (ref: string, name: string, opts: CommonOpts & { version?: number; out?: string }) => {
 			const api = client(opts);
@@ -729,7 +796,9 @@ export function register(program: Command): void {
 			}
 			if (artifact.artifact_type === 'link' || artifact.artifact_type === 'pr') {
 				const url =
-					artifact.artifact_type === 'link' ? version.url : `${version.pr_repo_url}/pull/${version.pr_number}`;
+					artifact.artifact_type === 'link'
+						? version.url
+						: `${version.pr_repo_url}/pull/${version.pr_number}`;
 				if (opts.json) return printJson({ url });
 				return console.log(url);
 			}
@@ -780,7 +849,9 @@ export function register(program: Command): void {
 	withCommon(
 		artifactsCmd
 			.command('delete <ref> <name>')
-			.description('Delete an artifact — every version and its stored files (history is not recoverable)')
+			.description(
+				'Delete an artifact — every version and its stored files (history is not recoverable)'
+			)
 	).action(async (ref: string, name: string, opts: CommonOpts) => {
 		const api = client(opts);
 		const issue = await resolveIssue(api, ref);
@@ -796,34 +867,42 @@ export function register(program: Command): void {
 	withCommon(
 		issues
 			.command('assign <ref> [runner]')
-			.description('Pin an issue to a runner (<runner>[:tier]) — replaces routing rules for it; --clear unpins')
+			.description(
+				'Pin an issue to a runner (<runner>[:tier]) — replaces routing rules for it; --clear unpins'
+			)
 			.option('--clear', 'remove the pin')
-	).action(async (ref: string, runnerSpec: string | undefined, opts: CommonOpts & { clear?: boolean }) => {
-		const api = client(opts);
-		const issue = await resolveIssue(api, ref);
-		if (opts.clear) {
-			if (runnerSpec !== undefined) die('--clear does not take a runner');
-			const updated = await api.updateIssue(issue.id, { pinned_runner_id: null });
+	).action(
+		async (ref: string, runnerSpec: string | undefined, opts: CommonOpts & { clear?: boolean }) => {
+			const api = client(opts);
+			const issue = await resolveIssue(api, ref);
+			if (opts.clear) {
+				if (runnerSpec !== undefined) die('--clear does not take a runner');
+				const updated = await api.updateIssue(issue.id, { pinned_runner_id: null });
+				if (opts.json) return printJson(updated);
+				return console.log(
+					`unpinned ${updated.project_name}/#${updated.number} — routing rules apply again`
+				);
+			}
+			if (runnerSpec === undefined) die('pass <runner>[:tier] to pin, or --clear to unpin');
+			const { name, tier } = parseTargetSpec(runnerSpec);
+			const runner = await resolveRunner(api, name);
+			const updated = await api.updateIssue(issue.id, {
+				pinned_runner_id: runner.id,
+				pinned_tier: tier ?? null
+			});
 			if (opts.json) return printJson(updated);
-			return console.log(`unpinned ${updated.project_name}/#${updated.number} — routing rules apply again`);
+			console.log(
+				`pinned ${updated.project_name}/#${updated.number} to ${runner.name}${tier ? ` (tier ${tier})` : ''} — only this runner will take it`
+			);
 		}
-		if (runnerSpec === undefined) die('pass <runner>[:tier] to pin, or --clear to unpin');
-		const { name, tier } = parseTargetSpec(runnerSpec);
-		const runner = await resolveRunner(api, name);
-		const updated = await api.updateIssue(issue.id, {
-			pinned_runner_id: runner.id,
-			pinned_tier: tier ?? null
-		});
-		if (opts.json) return printJson(updated);
-		console.log(
-			`pinned ${updated.project_name}/#${updated.number} to ${runner.name}${tier ? ` (tier ${tier})` : ''} — only this runner will take it`
-		);
-	});
+	);
 
 	withCommon(
 		issues
 			.command('dispatch <ref>')
-			.description('Explain why an issue is (not) dispatching: eligibility, routing, per-runner verdicts')
+			.description(
+				'Explain why an issue is (not) dispatching: eligibility, routing, per-runner verdicts'
+			)
 	).action(async (ref: string, opts: CommonOpts) => {
 		const api = client(opts);
 		const issue = await resolveIssue(api, ref);

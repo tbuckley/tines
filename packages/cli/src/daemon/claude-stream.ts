@@ -96,7 +96,8 @@ export function renderStreamEvent(event: StreamEvent): string[] {
 		case 'result': {
 			const parts: string[] = [];
 			if (typeof event.num_turns === 'number') parts.push(`${event.num_turns} turns`);
-			if (typeof event.total_cost_usd === 'number') parts.push(`$${event.total_cost_usd.toFixed(2)}`);
+			if (typeof event.total_cost_usd === 'number')
+				parts.push(`$${event.total_cost_usd.toFixed(2)}`);
 			const detail = parts.length > 0 ? ` (${parts.join(', ')})` : '';
 			const lines = [`[session] result: ${event.subtype ?? 'done'}${detail}`];
 			// An error result carries the reason in `result`; it is the single

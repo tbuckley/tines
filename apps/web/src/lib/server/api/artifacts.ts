@@ -134,17 +134,24 @@ function validateFolderPath(value: string): string {
 	if (path.startsWith('/')) throw fail('paths must be relative (no leading "/")');
 	if (path.includes('=') || path.includes('"')) throw fail(`paths cannot contain "=" or '"'`);
 	const segments = path.split('/');
-	if (segments.some((s) => s === '')) throw fail('paths cannot have empty segments or trailing slashes');
-	if (segments.some((s) => s === '.' || s === '..')) throw fail('paths cannot contain "." or ".." segments');
+	if (segments.some((s) => s === ''))
+		throw fail('paths cannot have empty segments or trailing slashes');
+	if (segments.some((s) => s === '.' || s === '..'))
+		throw fail('paths cannot contain "." or ".." segments');
 	return path;
 }
 
 function validateContentType(value: string, field = 'content_type'): string {
 	const type = value.trim().toLowerCase();
 	if (!/^[\w!#$&^.+-]+\/[\w!#$&^.+-]+$/.test(type) || type.length > 100) {
-		throw new ApiFail(422, 'invalid_field', `"${field}" must be a MIME type like "text/markdown"; got "${value}"`, {
-			field
-		});
+		throw new ApiFail(
+			422,
+			'invalid_field',
+			`"${field}" must be a MIME type like "text/markdown"; got "${value}"`,
+			{
+				field
+			}
+		);
 	}
 	return type;
 }
@@ -160,7 +167,11 @@ interface IssueRef {
 	stateEnteredAt: number;
 }
 
-async function requireIssue(db: Kysely<Database>, userId: string, issueId: string): Promise<IssueRef> {
+async function requireIssue(
+	db: Kysely<Database>,
+	userId: string,
+	issueId: string
+): Promise<IssueRef> {
 	const row = await db
 		.selectFrom('issue')
 		.innerJoin('project', 'project.id', 'issue.project_id')
@@ -197,24 +208,30 @@ function itemQuery(db: Kysely<Database>, userId: string, issueId: string) {
 type ItemRow = Awaited<ReturnType<ReturnType<typeof itemQuery>['execute']>>[number];
 
 function versionQuery(db: Kysely<Database>) {
-	return db
-		.selectFrom('artifact_version')
-		.leftJoin('user as actor_user', 'actor_user.id', 'artifact_version.actor_user_id')
-		.leftJoin('api_key', 'api_key.id', 'artifact_version.actor_api_key_id')
-		// Run-key attribution, as in the comment/event queries.
-		.leftJoin('agent_run as actor_run', 'actor_run.id', 'api_key.agent_run_id')
-		.leftJoin('runner as actor_runner', 'actor_runner.id', 'actor_run.runner_id')
-		.leftJoin('issue as actor_run_issue', 'actor_run_issue.id', 'actor_run.issue_id')
-		.leftJoin('project as actor_run_project', 'actor_run_project.id', 'actor_run_issue.project_id')
-		.selectAll('artifact_version')
-		.select([
-			'actor_user.name as actor_user_name',
-			'api_key.name as actor_api_key_name',
-			'actor_run.id as actor_run_id',
-			'actor_runner.name as actor_runner_name',
-			'actor_run_project.name as actor_run_project_name',
-			'actor_run_issue.number as actor_run_issue_number'
-		]);
+	return (
+		db
+			.selectFrom('artifact_version')
+			.leftJoin('user as actor_user', 'actor_user.id', 'artifact_version.actor_user_id')
+			.leftJoin('api_key', 'api_key.id', 'artifact_version.actor_api_key_id')
+			// Run-key attribution, as in the comment/event queries.
+			.leftJoin('agent_run as actor_run', 'actor_run.id', 'api_key.agent_run_id')
+			.leftJoin('runner as actor_runner', 'actor_runner.id', 'actor_run.runner_id')
+			.leftJoin('issue as actor_run_issue', 'actor_run_issue.id', 'actor_run.issue_id')
+			.leftJoin(
+				'project as actor_run_project',
+				'actor_run_project.id',
+				'actor_run_issue.project_id'
+			)
+			.selectAll('artifact_version')
+			.select([
+				'actor_user.name as actor_user_name',
+				'api_key.name as actor_api_key_name',
+				'actor_run.id as actor_run_id',
+				'actor_runner.name as actor_runner_name',
+				'actor_run_project.name as actor_run_project_name',
+				'actor_run_issue.number as actor_run_issue_number'
+			])
+	);
 }
 
 type VersionRow = Awaited<ReturnType<ReturnType<typeof versionQuery>['execute']>>[number];
@@ -222,7 +239,10 @@ type VersionRow = Awaited<ReturnType<ReturnType<typeof versionQuery>['execute']>
 export function artifactTypeOf(config: string | null): ArtifactType {
 	try {
 		const parsed = JSON.parse(config ?? '{}') as { artifact_type?: unknown };
-		if (typeof parsed.artifact_type === 'string' && (ARTIFACT_TYPES as readonly string[]).includes(parsed.artifact_type)) {
+		if (
+			typeof parsed.artifact_type === 'string' &&
+			(ARTIFACT_TYPES as readonly string[]).includes(parsed.artifact_type)
+		) {
 			return parsed.artifact_type as ArtifactType;
 		}
 	} catch {
@@ -252,13 +272,11 @@ function serializeVersion(row: VersionRow, files: FileRow[] | undefined): Artifa
 		created_at: row.created_at
 	};
 	if (files) {
-		version.files = files.map(
-			(f): ArtifactVersionFile => ({
-				path: f.path,
-				content_type: f.content_type,
-				size_bytes: Number(f.size_bytes)
-			})
-		);
+		version.files = files.map((f): ArtifactVersionFile => ({
+			path: f.path,
+			content_type: f.content_type,
+			size_bytes: Number(f.size_bytes)
+		}));
 	}
 	return version;
 }
@@ -333,10 +351,20 @@ async function loadVersions(
 }
 
 /** Every artifact on an issue, current-version summarized, `fresh` computed. */
-export async function listArtifacts(db: Kysely<Database>, userId: string, issueId: string): Promise<Artifact[]> {
+export async function listArtifacts(
+	db: Kysely<Database>,
+	userId: string,
+	issueId: string
+): Promise<Artifact[]> {
 	const issue = await requireIssue(db, userId, issueId);
-	const items = await itemQuery(db, userId, issue.id).orderBy('created_at asc').orderBy('id asc').execute();
-	const { byItem, filesByVersion } = await loadVersions(db, items.map((i) => i.id));
+	const items = await itemQuery(db, userId, issue.id)
+		.orderBy('created_at asc')
+		.orderBy('id asc')
+		.execute();
+	const { byItem, filesByVersion } = await loadVersions(
+		db,
+		items.map((i) => i.id)
+	);
 	return items
 		.filter((i) => (byItem.get(i.id) ?? []).length > 0)
 		.map((i) => serializeArtifact(i, byItem.get(i.id)!, filesByVersion, issue));
@@ -404,7 +432,10 @@ export function checkRequirements(
 			...r,
 			status,
 			current_version: artifact
-				? { version: artifact.current_version.version, created_at: artifact.current_version.created_at }
+				? {
+						version: artifact.current_version.version,
+						created_at: artifact.current_version.created_at
+					}
 				: null,
 			current_type: artifact ? artifact.artifact_type : null
 		};
@@ -446,9 +477,14 @@ const emptyPayload: VersionPayload = {
 
 function textPayload(name: string, body: UpsertArtifactRequest): VersionPayload {
 	if (typeof body.content !== 'string' || body.content.length === 0) {
-		throw new ApiFail(422, 'invalid_field', 'A text artifact version needs "content" (the document)', {
-			field: 'content'
-		});
+		throw new ApiFail(
+			422,
+			'invalid_field',
+			'A text artifact version needs "content" (the document)',
+			{
+				field: 'content'
+			}
+		);
 	}
 	const bytes = byteLength(body.content);
 	if (bytes > ARTIFACT_TEXT_MAX_BYTES) {
@@ -464,7 +500,9 @@ function textPayload(name: string, body: UpsertArtifactRequest): VersionPayload 
 		content: body.content,
 		filename: body.filename !== undefined ? validateFilename(String(body.filename)) : `${name}.md`,
 		content_type:
-			body.content_type !== undefined ? validateContentType(String(body.content_type)) : 'text/markdown'
+			body.content_type !== undefined
+				? validateContentType(String(body.content_type))
+				: 'text/markdown'
 	};
 }
 
@@ -476,10 +514,19 @@ function linkPayload(body: UpsertArtifactRequest): VersionPayload {
 	} catch {
 		parsed = null;
 	}
-	if (!parsed || (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') || raw.length > 2000) {
-		throw new ApiFail(422, 'invalid_field', 'A link artifact needs "url" (http or https, at most 2000 chars)', {
-			field: 'url'
-		});
+	if (
+		!parsed ||
+		(parsed.protocol !== 'http:' && parsed.protocol !== 'https:') ||
+		raw.length > 2000
+	) {
+		throw new ApiFail(
+			422,
+			'invalid_field',
+			'A link artifact needs "url" (http or https, at most 2000 chars)',
+			{
+				field: 'url'
+			}
+		);
 	}
 	return {
 		...emptyPayload,
@@ -491,7 +538,11 @@ function linkPayload(body: UpsertArtifactRequest): VersionPayload {
 function prPayload(body: UpsertArtifactRequest): VersionPayload {
 	if (body.pr_url !== undefined) {
 		if (body.pr_repo_url !== undefined || body.pr_number !== undefined) {
-			throw new ApiFail(422, 'invalid_field', 'Pass "pr_url" or the split "pr_repo_url" + "pr_number", not both');
+			throw new ApiFail(
+				422,
+				'invalid_field',
+				'Pass "pr_url" or the split "pr_repo_url" + "pr_number", not both'
+			);
 		}
 		const parsed = typeof body.pr_url === 'string' ? parsePrSpec(body.pr_url) : null;
 		if (!parsed) {
@@ -504,7 +555,8 @@ function prPayload(body: UpsertArtifactRequest): VersionPayload {
 		}
 		return { ...emptyPayload, pr_repo_url: parsed.repo_url, pr_number: parsed.number };
 	}
-	const repoUrl = typeof body.pr_repo_url === 'string' ? canonicalGitHubRepoUrl(body.pr_repo_url) : null;
+	const repoUrl =
+		typeof body.pr_repo_url === 'string' ? canonicalGitHubRepoUrl(body.pr_repo_url) : null;
 	if (!repoUrl) {
 		throw new ApiFail(
 			422,
@@ -513,8 +565,14 @@ function prPayload(body: UpsertArtifactRequest): VersionPayload {
 			{ field: 'pr_repo_url' }
 		);
 	}
-	if (typeof body.pr_number !== 'number' || !Number.isInteger(body.pr_number) || body.pr_number < 1) {
-		throw new ApiFail(422, 'invalid_field', '"pr_number" must be a positive integer', { field: 'pr_number' });
+	if (
+		typeof body.pr_number !== 'number' ||
+		!Number.isInteger(body.pr_number) ||
+		body.pr_number < 1
+	) {
+		throw new ApiFail(422, 'invalid_field', '"pr_number" must be a positive integer', {
+			field: 'pr_number'
+		});
 	}
 	return { ...emptyPayload, pr_repo_url: repoUrl, pr_number: body.pr_number };
 }
@@ -819,7 +877,11 @@ async function upsertArtifactOnce(
 			);
 		}
 		const payload =
-			type === 'text' ? textPayload(name, body) : type === 'link' ? linkPayload(body) : prPayload(body);
+			type === 'text'
+				? textPayload(name, body)
+				: type === 'link'
+					? linkPayload(body)
+					: prPayload(body);
 		const itemId = newId('ctx');
 		const now = Date.now();
 		await runAtomic(
@@ -885,7 +947,11 @@ async function upsertArtifactOnce(
 	}
 	rejectForeignPayload(type, body as unknown as Record<string, unknown>);
 	const payload =
-		type === 'text' ? textPayload(name, body) : type === 'link' ? linkPayload(body) : prPayload(body);
+		type === 'text'
+			? textPayload(name, body)
+			: type === 'link'
+				? linkPayload(body)
+				: prPayload(body);
 	const { queries } = appendVersionQueries(
 		db,
 		actor,
@@ -955,9 +1021,23 @@ async function uploadArtifactFileOnce(
 	// Write order per the spec: object first, then the batch.
 	await getArtifactStore(env).put(key, file.bytes);
 	const queries = existing
-		? appendVersionQueries(db, actor, issue, { item: existing.item, versions: existing.versions, payload }, versionId, now)
-				.queries
-		: createArtifactQueries(db, actor, issue, { name, type: 'file', description: '', payload }, itemId, versionId, now);
+		? appendVersionQueries(
+				db,
+				actor,
+				issue,
+				{ item: existing.item, versions: existing.versions, payload },
+				versionId,
+				now
+			).queries
+		: createArtifactQueries(
+				db,
+				actor,
+				issue,
+				{ name, type: 'file', description: '', payload },
+				itemId,
+				versionId,
+				now
+			);
 	await runAtomic(env, queries);
 	return getArtifact(db, actor.userId, issue, name);
 }
@@ -1013,9 +1093,14 @@ async function uploadArtifactFolderOnce(
 	const entries = files.map((f) => {
 		const path = validateFolderPath(f.path);
 		if (seen.has(path)) {
-			throw new ApiFail(422, 'duplicate_path', `Folder file path "${path}" is listed more than once`, {
-				path
-			});
+			throw new ApiFail(
+				422,
+				'duplicate_path',
+				`Folder file path "${path}" is listed more than once`,
+				{
+					path
+				}
+			);
 		}
 		seen.add(path);
 		if (f.bytes.byteLength > ARTIFACT_FILE_MAX_BYTES) {
@@ -1124,15 +1209,13 @@ async function reaffirmArtifactOnce(
 	};
 	// Folder reaffirms copy the file rows, referencing the same objects
 	// (safe: deletion is whole-artifact only, a prefix delete on the item).
-	const fileRows = (filesByVersion.get(current.id) ?? []).map(
-		(f): NewFileRow => ({
-			id: newId('avf'),
-			path: f.path,
-			content_type: f.content_type,
-			size_bytes: Number(f.size_bytes),
-			r2_key: f.r2_key
-		})
-	);
+	const fileRows = (filesByVersion.get(current.id) ?? []).map((f): NewFileRow => ({
+		id: newId('avf'),
+		path: f.path,
+		content_type: f.content_type,
+		size_bytes: Number(f.size_bytes),
+		r2_key: f.r2_key
+	}));
 	const { queries } = appendVersionQueries(
 		db,
 		actor,
@@ -1151,7 +1234,12 @@ async function reaffirmArtifactOnce(
 	return getArtifact(db, actor.userId, issue, name);
 }
 
-async function getArtifact(db: Kysely<Database>, userId: string, issue: IssueRef, name: string): Promise<Artifact> {
+async function getArtifact(
+	db: Kysely<Database>,
+	userId: string,
+	issue: IssueRef,
+	name: string
+): Promise<Artifact> {
 	const { item, versions, filesByVersion } = await requireArtifact(db, userId, issue, name);
 	return serializeArtifact(item, versions, filesByVersion, issue);
 }
@@ -1222,14 +1310,19 @@ export async function artifactContentResponse(
 	const { item, versions, filesByVersion } = await requireArtifact(db, userId, issue, name);
 	const type = artifactTypeOf(item.config);
 	const row =
-		opts.version === undefined ? versions[versions.length - 1] : versions.find((v) => v.version === opts.version);
+		opts.version === undefined
+			? versions[versions.length - 1]
+			: versions.find((v) => v.version === opts.version);
 	if (!row) throw notFound();
 	if (type === 'link' || type === 'pr') {
 		throw new ApiFail(
 			422,
 			'no_content',
 			`Artifact "${name}" is a ${type} — the reference is the payload (${type === 'link' ? row.url : `${row.pr_repo_url}/pull/${row.pr_number}`})`,
-			{ artifact_type: type, url: type === 'link' ? row.url : `${row.pr_repo_url}/pull/${row.pr_number}` }
+			{
+				artifact_type: type,
+				url: type === 'link' ? row.url : `${row.pr_repo_url}/pull/${row.pr_number}`
+			}
 		);
 	}
 

@@ -24,7 +24,12 @@ import {
 } from 'node:fs';
 import { hostname, platform, arch } from 'node:os';
 import { dirname, join } from 'node:path';
-import { ApiError, RUN_LOG_RAW_MAX_BYTES, createApiClient, type RunnerAssignment } from '@tines/shared';
+import {
+	ApiError,
+	RUN_LOG_RAW_MAX_BYTES,
+	createApiClient,
+	type RunnerAssignment
+} from '@tines/shared';
 import { cliVersion } from '../version.js';
 import { ClaudeStreamRenderer } from './claude-stream';
 import { installAgentCli } from './cli-refresh.js';
@@ -133,7 +138,10 @@ async function uploadRawLog(run: {
 				const marker = Buffer.from(
 					`{"type":"tines_truncated","dropped_bytes":${body.byteLength - RUN_LOG_RAW_MAX_BYTES}}\n`
 				);
-				body = Buffer.concat([marker, body.subarray(body.byteLength - RUN_LOG_RAW_MAX_BYTES + marker.byteLength)]);
+				body = Buffer.concat([
+					marker,
+					body.subarray(body.byteLength - RUN_LOG_RAW_MAX_BYTES + marker.byteLength)
+				]);
 			}
 			await run.rawUpload(body);
 		}
@@ -232,7 +240,9 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 	// -- registration / reconnect ---------------------------------------------
 	let creds: RunnerCredentials | null = loadRunnerCredentials(opts.configDir, opts.url, opts.name);
 	if (creds) {
-		log(`reconnecting as runner "${opts.name}" (${creds.runner_id}) — token from ${opts.configDir}`);
+		log(
+			`reconnecting as runner "${opts.name}" (${creds.runner_id}) — token from ${opts.configDir}`
+		);
 	} else {
 		if (!opts.apiKey) {
 			throw new Error(
@@ -273,48 +283,51 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 			: `tines ${cli.version ?? 'unknown'} (daemon-managed${cli.source === 'stale' ? ', last-good copy' : ''})`;
 	log(`agent CLI: ${cliLabel(await ensureCli())}`);
 
-	const table: RunTable<ActiveRun> = new RunTable<ActiveRun>({
-		finish: async (run, status, error) => {
-			await client.finishRun(run.runId, { status, ...(error ? { error } : {}) });
-		},
-		release: (run, { keep, outcome }) => {
-			if (run.timeout) clearTimeout(run.timeout);
-			// `finishAndCleanup` already drained (before its flush, so the line
-			// actually ships). This is the backstop for the paths that reach
-			// cleanup without finishing — an already-settled run, a clone
-			// failure — where the renderer must not be left holding a line.
-			// `finish()` is idempotent, so the double call is free.
-			run.renderer?.finish();
-			settleWorkspace(run.workspace, keep, {
-				run_id: run.runId,
-				...(run.issueLabel ? { issue_ref: run.issueLabel } : {}),
-				status: outcome,
-				...(run.endNote ? { error: run.endNote } : {})
-			});
-			// Deliberately after cleanup and not awaited: the raw log is a
-			// forensic extra, and a slow or failed upload must not hold a
-			// concurrency slot. The spool lives outside the workspace, so the
-			// rmSync above did not take it.
-			void uploadRawLog(run);
-			sweepKeptWorkspaces();
-		},
-		noteKept: (run) => run.batcher.append(`workspace kept at ${run.workspace}\n`),
-		persist: () => {
-			const entries: DaemonStateEntry[] = table
-				.values()
-				.filter((run) => run.child?.pid !== undefined)
-				.map((run) => ({
+	const table: RunTable<ActiveRun> = new RunTable<ActiveRun>(
+		{
+			finish: async (run, status, error) => {
+				await client.finishRun(run.runId, { status, ...(error ? { error } : {}) });
+			},
+			release: (run, { keep, outcome }) => {
+				if (run.timeout) clearTimeout(run.timeout);
+				// `finishAndCleanup` already drained (before its flush, so the line
+				// actually ships). This is the backstop for the paths that reach
+				// cleanup without finishing — an already-settled run, a clone
+				// failure — where the renderer must not be left holding a line.
+				// `finish()` is idempotent, so the double call is free.
+				run.renderer?.finish();
+				settleWorkspace(run.workspace, keep, {
 					run_id: run.runId,
-					pid: run.child!.pid!,
-					workspace: run.workspace,
-					key_fingerprint: run.keyFingerprint,
-					started_at: run.spawnedAt,
-					...(run.issueLabel ? { issue_ref: run.issueLabel } : {})
-				}));
-			saveDaemonState(statePath, entries);
+					...(run.issueLabel ? { issue_ref: run.issueLabel } : {}),
+					status: outcome,
+					...(run.endNote ? { error: run.endNote } : {})
+				});
+				// Deliberately after cleanup and not awaited: the raw log is a
+				// forensic extra, and a slow or failed upload must not hold a
+				// concurrency slot. The spool lives outside the workspace, so the
+				// rmSync above did not take it.
+				void uploadRawLog(run);
+				sweepKeptWorkspaces();
+			},
+			noteKept: (run) => run.batcher.append(`workspace kept at ${run.workspace}\n`),
+			persist: () => {
+				const entries: DaemonStateEntry[] = table
+					.values()
+					.filter((run) => run.child?.pid !== undefined)
+					.map((run) => ({
+						run_id: run.runId,
+						pid: run.child!.pid!,
+						workspace: run.workspace,
+						key_fingerprint: run.keyFingerprint,
+						started_at: run.spawnedAt,
+						...(run.issueLabel ? { issue_ref: run.issueLabel } : {})
+					}));
+				saveDaemonState(statePath, entries);
+			},
+			log
 		},
-		log
-	}, { keep: (outcome) => keepWorkspace(opts.keepWorkspaces, outcome) });
+		{ keep: (outcome) => keepWorkspace(opts.keepWorkspaces, outcome) }
+	);
 
 	// -- orphan cleanup: a crashed daemon must not leave a zombie harness -----
 	for (const orphan of loadDaemonState(statePath)) {
@@ -333,7 +346,9 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 			if (reused) {
 				log(`state-file pid ${orphan.pid} (run ${orphan.run_id}) was recycled; not killing it`);
 			} else {
-				log(`killing orphaned harness from a previous life: run ${orphan.run_id} (pid ${orphan.pid})`);
+				log(
+					`killing orphaned harness from a previous life: run ${orphan.run_id} (pid ${orphan.pid})`
+				);
 				killTree(orphan.pid, 'SIGKILL');
 			}
 		}
@@ -395,7 +410,9 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 		};
 		run.flush = () => run.batcher.flush();
 		table.track(run);
-		log(`run ${runId} assigned (issue ${issueLabel ?? assignment.run.issue_id}); materializing workspace`);
+		log(
+			`run ${runId} assigned (issue ${issueLabel ?? assignment.run.issue_id}); materializing workspace`
+		);
 
 		try {
 			// The workspace: exactly the `issues context --out` layout.
@@ -417,11 +434,20 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 			// Clone the effective repos with the device's own git credentials.
 			for (const repo of assignment.bundle.repos) {
 				if (run.settled) return table.cleanup(run);
-				const args = ['clone', ...(repo.branch ? ['--branch', repo.branch] : []), repo.url, repo.dir];
+				const args = [
+					'clone',
+					...(repo.branch ? ['--branch', repo.branch] : []),
+					repo.url,
+					repo.dir
+				];
 				run.batcher.append(`$ git ${args.join(' ')}\n`);
 				const result = await runGit(args, workspace, run.batcher);
 				if (result !== 0) {
-					return table.finishAndCleanup(run, 'failed', `git clone failed for ${repo.url} (exit ${result})`);
+					return table.finishAndCleanup(
+						run,
+						'failed',
+						`git clone failed for ${repo.url} (exit ${result})`
+					);
 				}
 			}
 			if (run.settled) return table.cleanup(run);
@@ -498,16 +524,13 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 			// stderr is never stream-json — it is the harness's own diagnostics,
 			// and it goes to the log verbatim for every harness.
 			child.stderr?.on('data', (data: Buffer) => run.batcher.append(data.toString('utf8')));
-			run.timeout = setTimeout(
-				() => {
-					if (run.settled) return;
-					log(`run ${runId} hit its ${assignment.timeout_minutes}m timeout; killing`);
-					run.timedOut = true;
-					if (child.pid) killTree(child.pid, 'SIGTERM');
-					if (child.pid) setTimeout(() => killTree(child.pid!, 'SIGKILL'), 5000).unref?.();
-				},
-				assignment.timeout_minutes * 60_000
-			);
+			run.timeout = setTimeout(() => {
+				if (run.settled) return;
+				log(`run ${runId} hit its ${assignment.timeout_minutes}m timeout; killing`);
+				run.timedOut = true;
+				if (child.pid) killTree(child.pid, 'SIGTERM');
+				if (child.pid) setTimeout(() => killTree(child.pid!, 'SIGKILL'), 5000).unref?.();
+			}, assignment.timeout_minutes * 60_000);
 			child.on('error', (err) => {
 				void table.finishAndCleanup(run, 'failed', `failed to launch harness: ${message(err)}`);
 			});

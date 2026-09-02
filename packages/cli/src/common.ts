@@ -20,11 +20,12 @@ import {
 	type WorkflowState
 } from '@tines/shared';
 import { Option, type Command } from 'commander';
+import { loadCliConfig } from './config.js';
 
-export const DEFAULT_URL = 'http://localhost:5173';
+export const DEFAULT_URL = 'https://tines.tbuckley.dev';
 
 export interface CommonOpts {
-	/** Absent on commands where --url means something else; falls back to TINES_API_URL. */
+	/** Absent unless --url was passed; falls back to TINES_API_URL. */
 	url?: string;
 	/** Absent unless --api-key was passed; falls back to TINES_API_KEY. */
 	apiKey?: string;
@@ -39,19 +40,18 @@ export interface ListOpts extends CommonOpts {
 
 /**
  * Adds the options shared by every command (after the subcommand name).
- * `baseUrlFlag: false` skips `-u, --url` for commands where `--url` means
- * something else (`context create/edit` repo pointers); TINES_API_URL still
- * applies there.
+ * `-u, --url` is the API base URL on every command without exception: a
+ * payload that happens to be a URL gets its own name (`--link`, `--repo-url`),
+ * because a command that quietly reads `--url` as something else turns a
+ * copied-from-the-README invocation into a wrong request (Tines/92).
  */
-export function withCommon(cmd: Command, { baseUrlFlag = true } = {}): Command {
-	if (baseUrlFlag) {
-		cmd.option(
-			'-u, --url <url>',
-			`base URL of the Tines API (or set TINES_API_URL; default ${DEFAULT_URL})`
-		);
-	}
+export function withCommon(cmd: Command): Command {
 	return cmd
-		.option('--api-key <key>', 'API key (or set TINES_API_KEY)')
+		.option(
+			'-u, --url <url>',
+			`base URL of the Tines API (or set TINES_API_URL, or run \`tines login\`; default ${DEFAULT_URL})`
+		)
+		.option('--api-key <key>', 'API key (or set TINES_API_KEY, or run `tines login`)')
 		.option('--json', 'output the raw JSON response');
 }
 
@@ -77,17 +77,44 @@ export function withList(cmd: Command): Command {
 	);
 }
 
+/** Where a resolved setting came from, in precedence order. */
+export type SettingSource = 'flag' | 'env' | 'config' | 'default';
+
+export interface ResolvedSetting {
+	value: string | undefined;
+	source: SettingSource;
+}
+
 /**
  * The env vars are read here rather than declared as commander defaults: an
  * option's default value is rendered into its help text, so defaulting
  * --api-key to TINES_API_KEY printed the caller's live key on every --help.
+ *
+ * After the flag and the env var comes the file `tines login` writes
+ * (config.ts), then the default. `tines config` shows which one won.
  */
+export function resolveUrlSetting(opts: CommonOpts): ResolvedSetting {
+	if (opts.url) return { value: opts.url, source: 'flag' };
+	if (process.env.TINES_API_URL) return { value: process.env.TINES_API_URL, source: 'env' };
+	const stored = loadCliConfig().url;
+	if (stored) return { value: stored, source: 'config' };
+	return { value: DEFAULT_URL, source: 'default' };
+}
+
+export function resolveApiKeySetting(opts: CommonOpts): ResolvedSetting {
+	if (opts.apiKey) return { value: opts.apiKey, source: 'flag' };
+	if (process.env.TINES_API_KEY) return { value: process.env.TINES_API_KEY, source: 'env' };
+	const stored = loadCliConfig().api_key;
+	if (stored) return { value: stored, source: 'config' };
+	return { value: undefined, source: 'default' };
+}
+
 export function resolveUrl(opts: CommonOpts): string {
-	return opts.url ?? process.env.TINES_API_URL ?? DEFAULT_URL;
+	return resolveUrlSetting(opts).value as string;
 }
 
 export function resolveApiKey(opts: CommonOpts): string | undefined {
-	return opts.apiKey ?? process.env.TINES_API_KEY;
+	return resolveApiKeySetting(opts).value;
 }
 
 export function client(opts: CommonOpts): ApiClient {
@@ -144,7 +171,11 @@ export function printJson(value: unknown): void {
  * Prints a page: full `{items, next_cursor}` response under --json, else the
  * rendered table plus a hint when another page exists.
  */
-export function printList<T>(res: ListResponse<T>, opts: ListOpts, render: (items: T[]) => void): void {
+export function printList<T>(
+	res: ListResponse<T>,
+	opts: ListOpts,
+	render: (items: T[]) => void
+): void {
 	if (opts.json) return printJson(res);
 	render(res.items);
 	if (res.next_cursor) {
@@ -235,7 +266,8 @@ export async function resolveStateFlag(
 	const workflow = await resolveWorkflow(api, ref.slice(0, sep));
 	const stateRef = ref.slice(sep + 1);
 	const state =
-		workflow.states.find((s) => s.name === stateRef) ?? workflow.states.find((s) => s.id === stateRef);
+		workflow.states.find((s) => s.name === stateRef) ??
+		workflow.states.find((s) => s.id === stateRef);
 	if (!state) {
 		die(
 			`workflow "${workflow.name}" has no state "${stateRef}" (have: ${workflow.states.map((s) => s.name).join(', ')})`

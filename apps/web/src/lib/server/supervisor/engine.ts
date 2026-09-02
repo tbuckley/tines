@@ -45,7 +45,9 @@ export interface DispatchPassOptions {
 
 async function runBatch(env: Env, queries: CompiledQuery[]): Promise<D1Result[]> {
 	if (queries.length === 0) return [];
-	return env.DB.batch(queries.map((q) => env.DB.prepare(q.sql).bind(...(q.parameters as unknown[]))));
+	return env.DB.batch(
+		queries.map((q) => env.DB.prepare(q.sql).bind(...(q.parameters as unknown[])))
+	);
 }
 
 /**
@@ -58,7 +60,12 @@ async function runBatch(env: Env, queries: CompiledQuery[]): Promise<D1Result[]>
 export function supervisorEvent(
 	db: Kysely<Database>,
 	userId: string,
-	input: { type: string; issueId?: string | null; projectId?: string | null; payload: Record<string, unknown> },
+	input: {
+		type: string;
+		issueId?: string | null;
+		projectId?: string | null;
+		payload: Record<string, unknown>;
+	},
 	now: number,
 	guard?: RawBuilder<boolean>
 ): CompiledQuery {
@@ -162,7 +169,10 @@ export async function loadEligibleIssues(
 	return result.rows;
 }
 
-export async function loadActiveCounts(db: Kysely<Database>, userId: string): Promise<ActiveCounts> {
+export async function loadActiveCounts(
+	db: Kysely<Database>,
+	userId: string
+): Promise<ActiveCounts> {
 	const rows = await db
 		.selectFrom('agent_run')
 		.select(['runner_id', 'state_id_at_start'])
@@ -677,7 +687,11 @@ export async function endRun(
 	db: Kysely<Database>,
 	env: Env,
 	run: EndableRun,
-	input: { status: 'completed' | 'failed' | 'timed_out' | 'canceled'; error?: string | null; now?: number }
+	input: {
+		status: 'completed' | 'failed' | 'timed_out' | 'canceled';
+		error?: string | null;
+		now?: number;
+	}
 ): Promise<EndRunOutcome> {
 	const now = input.now ?? Date.now();
 	const started = run.started_at !== null;
@@ -801,7 +815,8 @@ export async function endRun(
 	}
 	const results = await runBatch(env, queries);
 	// Whether the park landed is the last statement's rows-affected.
-	const parked = strike && issue !== undefined && (results[results.length - 1]?.meta.changes ?? 0) === 1;
+	const parked =
+		strike && issue !== undefined && (results[results.length - 1]?.meta.changes ?? 0) === 1;
 	// Seal the full log into one object now that the status flip has closed
 	// the tail to further appends. Best-effort by design: a run must never
 	// fail to end because R2 was unavailable — the sweep retries unsealed runs.
@@ -843,7 +858,8 @@ export async function loadEndableRun(
 		.executeTakeFirst();
 }
 
-export type CancelRunResult = { kind: 'not_found' } | { kind: 'already_ended' } | { kind: 'canceled' };
+export type CancelRunResult =
+	{ kind: 'not_found' } | { kind: 'already_ended' } | { kind: 'canceled' };
 
 /**
  * Cancels a run: best-effort adapter kill, then an ordinary end judged like
@@ -1040,8 +1056,10 @@ export async function pollManagedRuns(
 				]);
 			}
 
-			let terminal: { status: 'completed' | 'failed' | 'timed_out' | 'canceled'; error: string | null } | null =
-				polled.status ? { status: polled.status, error: polled.error ?? null } : null;
+			let terminal: {
+				status: 'completed' | 'failed' | 'timed_out' | 'canceled';
+				error: string | null;
+			} | null = polled.status ? { status: polled.status, error: polled.error ?? null } : null;
 			if (!terminal && polled.usage) {
 				// The token cap has no provider-native ceiling on Claude; enforce
 				// it at poll time (input + output — cache reads excluded).

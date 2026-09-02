@@ -25,8 +25,10 @@ async function resolveRoutingScope(
 	api: ApiClient,
 	opts: RoutingScopeOpts
 ): Promise<{ projectId: string | null; stateId: string | null; label: string }> {
-	const projectId = opts.project !== undefined ? (await resolveProject(api, opts.project)).id : null;
-	const stateId = opts.state !== undefined ? (await resolveStateFlag(api, opts.state)).state.id : null;
+	const projectId =
+		opts.project !== undefined ? (await resolveProject(api, opts.project)).id : null;
+	const stateId =
+		opts.state !== undefined ? (await resolveStateFlag(api, opts.state)).state.id : null;
 	const parts: string[] = [];
 	if (opts.project) parts.push(`project ${opts.project}`);
 	if (opts.state) parts.push(`state ${opts.state}`);
@@ -36,7 +38,9 @@ async function resolveRoutingScope(
 export function register(program: Command): void {
 	const routing = program
 		.command('routing')
-		.description('Scoped routing rules: which runner takes which issues (most specific scope wins)');
+		.description(
+			'Scoped routing rules: which runner takes which issues (most specific scope wins)'
+		);
 
 	withCommon(routing.command('list').description('List routing rules, most specific first')).action(
 		async (opts: CommonOpts) => {
@@ -53,7 +57,9 @@ export function register(program: Command): void {
 	withCommon(
 		routing
 			.command('set <target...>')
-			.description('Create or replace the rule at a scope: an ordered list of <runner>[:tier] targets')
+			.description(
+				'Create or replace the rule at a scope: an ordered list of <runner>[:tier] targets'
+			)
 			.option('-p, --project <name>', 'scope: project name or id')
 			.option('-s, --state <workflow/state>', 'scope: workflow-qualified state')
 	).action(async (targetSpecs: string[], opts: CommonOpts & RoutingScopeOpts) => {
@@ -72,7 +78,11 @@ export function register(program: Command): void {
 		);
 		const rule = existing
 			? await api.updateRoutingRule(existing.id, { targets })
-			: await api.createRoutingRule({ project_id: scope.projectId, workflow_state_id: scope.stateId, targets });
+			: await api.createRoutingRule({
+					project_id: scope.projectId,
+					workflow_state_id: scope.stateId,
+					targets
+				});
 		if (opts.json) return printJson(rule);
 		console.log(
 			`${existing ? 'updated' : 'created'} the ${rule.scope.label} rule: ${ruleTargetsLabel(rule)}`

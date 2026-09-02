@@ -144,7 +144,15 @@ export function addRule(
 			`INSERT INTO routing_rule (id, user_id, project_id, workflow_state_id, targets, created_at, updated_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?)`
 		)
-		.run(id, USER, opts.project ?? null, opts.state ?? null, JSON.stringify(opts.targets), NOW, NOW);
+		.run(
+			id,
+			USER,
+			opts.project ?? null,
+			opts.state ?? null,
+			JSON.stringify(opts.targets),
+			NOW,
+			NOW
+		);
 	return id;
 }
 

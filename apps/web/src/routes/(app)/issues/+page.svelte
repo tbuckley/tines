@@ -48,14 +48,22 @@
 
 <div class="mb-6 flex flex-wrap items-center gap-3">
 	<div class="relative">
-		<IconSearch size={14} class="text-muted-foreground absolute top-1/2 left-2.5 -translate-y-1/2" />
+		<IconSearch
+			size={14}
+			class="text-muted-foreground absolute top-1/2 left-2.5 -translate-y-1/2"
+		/>
 		<form
 			onsubmit={(e) => {
 				e.preventDefault();
 				setFilter('q', search.trim());
 			}}
 		>
-			<Input bind:value={search} placeholder="Search issues…" class="h-9 w-56 pl-8" aria-label="Search issues" />
+			<Input
+				bind:value={search}
+				placeholder="Search issues…"
+				class="h-9 w-56 pl-8"
+				aria-label="Search issues"
+			/>
 		</form>
 	</div>
 	<Select

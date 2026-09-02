@@ -119,9 +119,14 @@ export function validateTargets(
 	const seen = new Set<string>();
 	for (const [i, entry] of value.entries()) {
 		if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
-			throw new ApiFail(422, 'invalid_field', `"targets[${i}]" must be an object { runner_id, tier? }`, {
-				field: 'targets'
-			});
+			throw new ApiFail(
+				422,
+				'invalid_field',
+				`"targets[${i}]" must be an object { runner_id, tier? }`,
+				{
+					field: 'targets'
+				}
+			);
 		}
 		const input = entry as { runner_id?: unknown; tier?: unknown };
 		if (typeof input.runner_id !== 'string' || !runnersById.has(input.runner_id)) {
@@ -133,7 +138,9 @@ export function validateTargets(
 			);
 		}
 		const tier =
-			input.tier === undefined || input.tier === null ? null : requireTier(input.tier, `targets[${i}].tier`);
+			input.tier === undefined || input.tier === null
+				? null
+				: requireTier(input.tier, `targets[${i}].tier`);
 		const key = `${input.runner_id}:${tier ?? ''}`;
 		if (seen.has(key)) {
 			const name = runnersById.get(input.runner_id)?.name;
@@ -145,7 +152,9 @@ export function validateTargets(
 			);
 		}
 		seen.add(key);
-		targets.push(tier === null ? { runner_id: input.runner_id } : { runner_id: input.runner_id, tier });
+		targets.push(
+			tier === null ? { runner_id: input.runner_id } : { runner_id: input.runner_id, tier }
+		);
 	}
 	return targets;
 }
@@ -221,7 +230,10 @@ function serializeRule(
 	};
 }
 
-export async function listRoutingRules(db: Kysely<Database>, userId: string): Promise<RoutingRule[]> {
+export async function listRoutingRules(
+	db: Kysely<Database>,
+	userId: string
+): Promise<RoutingRule[]> {
 	const [rows, runnersById] = await Promise.all([
 		ruleQuery(db, userId).execute(),
 		loadRunnersById(db, userId)
@@ -232,8 +244,10 @@ export async function listRoutingRules(db: Kysely<Database>, userId: string): Pr
 		.sort(
 			(a, b) =>
 				ruleSpecificity({ projectId: b.row.project_id, workflowStateId: b.row.workflow_state_id }) -
-					ruleSpecificity({ projectId: a.row.project_id, workflowStateId: a.row.workflow_state_id }) ||
-				a.rule.scope.label.localeCompare(b.rule.scope.label)
+					ruleSpecificity({
+						projectId: a.row.project_id,
+						workflowStateId: a.row.workflow_state_id
+					}) || a.rule.scope.label.localeCompare(b.rule.scope.label)
 		)
 		.map((e) => e.rule);
 }
@@ -340,7 +354,9 @@ export async function updateRoutingRule(
 	id: string,
 	body: UpdateRoutingRuleRequest
 ): Promise<RoutingRuleWithWarnings> {
-	const row = await ruleQuery(db, actor.userId).where('routing_rule.id', '=', id).executeTakeFirst();
+	const row = await ruleQuery(db, actor.userId)
+		.where('routing_rule.id', '=', id)
+		.executeTakeFirst();
 	if (!row) throw notFound();
 
 	// Merge-patch scope: omitted = unchanged, explicit null = unset.
@@ -364,7 +380,10 @@ export async function updateRoutingRule(
 			: (JSON.parse(row.targets) as RoutingTarget[]);
 
 	if (!scopeChanged && JSON.stringify(targets) === row.targets) {
-		return { ...serializeRule(row, runnersById), warnings: shadowWarnings({ ...scope, id }, rules) };
+		return {
+			...serializeRule(row, runnersById),
+			warnings: shadowWarnings({ ...scope, id }, rules)
+		};
 	}
 
 	await runAtomic(env, [
@@ -403,7 +422,9 @@ export async function deleteRoutingRule(
 	actor: ActorContext,
 	id: string
 ): Promise<void> {
-	const row = await ruleQuery(db, actor.userId).where('routing_rule.id', '=', id).executeTakeFirst();
+	const row = await ruleQuery(db, actor.userId)
+		.where('routing_rule.id', '=', id)
+		.executeTakeFirst();
 	if (!row) throw notFound();
 	await runAtomic(env, [
 		db.deleteFrom('routing_rule').where('id', '=', id).compile(),

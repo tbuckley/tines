@@ -73,7 +73,11 @@ export async function explainDispatch(
 	if (rule) {
 		const [project, state] = await Promise.all([
 			rule.project_id
-				? db.selectFrom('project').select('name').where('id', '=', rule.project_id).executeTakeFirst()
+				? db
+						.selectFrom('project')
+						.select('name')
+						.where('id', '=', rule.project_id)
+						.executeTakeFirst()
 				: null,
 			rule.workflow_state_id
 				? db
@@ -195,7 +199,14 @@ export async function explainDispatch(
 		attempt_limit: settings.attemptLimit,
 		active_run: activeRun,
 		queue_position: queuePosition,
-		verdict: verdictLine({ issue, settings, checks, targets: targetVerdicts, activeRun, queuePosition })
+		verdict: verdictLine({
+			issue,
+			settings,
+			checks,
+			targets: targetVerdicts,
+			activeRun,
+			queuePosition
+		})
 	};
 }
 
