@@ -153,7 +153,8 @@ The daemon polls for work assigned to it, materializes a per-run workspace (the 
 prompt, the issue's skills, and clones of its repos), runs the harness there, and reports
 the finish. It also keeps its own copy of the `tines` CLI current from npm and puts that on
 the harness's PATH, so agents run the CLI that matches the prompt they were given rather
-than whatever was last installed on the machine. **[docs/runner-daemon.md](docs/runner-daemon.md)**
+than whatever was last installed on the machine — a daemon left running across an upgrade
+keeps whatever behaviour it started with, so restart it after upgrading. **[docs/runner-daemon.md](docs/runner-daemon.md)**
 covers registration, the flags, token rotation, the managed CLI, failure behaviour, and
 launchd/systemd units for keeping it running.
 
@@ -219,6 +220,35 @@ often than hourly, so the lag stays small relative to the recurrence.
 
 Locally, `wrangler dev --test-scheduled` exposes `GET /__scheduled` to fire a sweep on
 demand instead of waiting for the clock.
+
+### Artifacts and transition gates
+
+An issue also carries **artifacts** — named, typed, versioned work products attached along
+the way: a `file` (bytes in R2), a `text` document, a `link`, a `pr` reference, or a
+`folder` (a multi-file tree uploaded as one immutable snapshot). Attaching to a name that
+already exists appends the next version; nothing is overwritten.
+
+```sh
+tines issues artifacts attach <ref> design-doc --file design.md
+tines issues artifacts attach <ref> screenshots --folder ./shots
+tines issues artifacts list <ref>
+tines issues artifacts get <ref> design-doc --out .
+```
+
+Artifacts are what **transition requirements** gate on: a workflow transition can demand a
+*fresh* artifact of a given name (optionally type and content type) before it can be taken.
+Fresh means the version was attached at or after the issue last entered its current state,
+so bouncing an issue back to an earlier state invalidates the old attachment with no
+mutation machinery — `tines issues artifacts reaffirm <ref> <name>` blesses unchanged
+content as current without re-uploading it. A blocked `tines issues move` returns the unmet
+requirements and the attach command to fix them. Agents can satisfy their own gates (run
+keys may attach and reaffirm) but cannot route around one: the forced state-set on an issue
+is human-only.
+
+Artifacts are never stitched into a prompt or seeded into a workspace — the launch prompt
+lists them with a fetch command and the agent pulls what it needs. Caps: 25 MB per file,
+256 KB per text artifact, 50 versions per artifact, and 200 files / 50 MB per folder
+snapshot. The design is in [specs/artifacts/SPEC.md](specs/artifacts/SPEC.md).
 
 ## Google sign-in
 
