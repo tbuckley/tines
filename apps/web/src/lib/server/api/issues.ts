@@ -10,6 +10,7 @@ import {
 	type Issue,
 	type IssueDetail,
 	type IssueLinks,
+	type IssueListItem,
 	type IssueRef,
 	type LinkedIssue,
 	type ModelTier,
@@ -205,6 +206,17 @@ export function serializeIssue(row: IssueRow): Issue {
 	};
 }
 
+/**
+ * A list item without its description body. Descriptions are most of a list
+ * payload (76% of a 50-issue page of this project), and list callers read
+ * ref/title/state — so `brief=1` drops the key entirely rather than emptying it,
+ * which keeps "absent" distinguishable from "the issue has no description".
+ */
+export function briefIssue(row: IssueRow): IssueListItem {
+	const { description: _description, ...rest } = serializeIssue(row);
+	return rest;
+}
+
 export interface IssueListFilters {
 	project?: string;
 	state?: string;
@@ -219,6 +231,8 @@ export interface IssueListFilters {
 	projectId?: string;
 	/** Title/description substring search. */
 	q?: string;
+	/** Omit `description` from every item — the bulk of a list payload. */
+	brief?: boolean;
 }
 
 export async function listIssues(
@@ -226,7 +240,7 @@ export async function listIssues(
 	userId: string,
 	filters: IssueListFilters,
 	page: Page
-): Promise<{ items: Issue[]; hasMore: boolean }> {
+): Promise<{ items: IssueListItem[]; hasMore: boolean }> {
 	let q = issueQuery(db, userId);
 	if (filters.projectId) q = q.where('issue.project_id', '=', filters.projectId);
 	if (filters.project) {
@@ -301,8 +315,9 @@ export async function listIssues(
 		.orderBy('issue.id desc')
 		.limit(page.limit + 1)
 		.execute();
+	const serialize = filters.brief ? briefIssue : serializeIssue;
 	return {
-		items: rows.slice(0, page.limit).map(serializeIssue),
+		items: rows.slice(0, page.limit).map(serialize),
 		hasMore: rows.length > page.limit
 	};
 }

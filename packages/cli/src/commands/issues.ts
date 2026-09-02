@@ -179,6 +179,7 @@ export function register(program: Command): void {
 				'only issues that are actionable now (not done, not a duplicate, no open blockers)'
 			)
 			.option('-q, --search <text>', 'search titles and descriptions')
+			.option('--brief', 'omit description bodies (saves tokens when scanning)')
 	).action(
 		async (
 			opts: ListOpts & {
@@ -189,6 +190,7 @@ export function register(program: Command): void {
 				all?: boolean;
 				ready?: boolean;
 				search?: string;
+				brief?: boolean;
 			}
 		) => {
 			const api = client(opts);
@@ -201,6 +203,10 @@ export function register(program: Command): void {
 					hide_done: !opts.all,
 					ready: opts.ready,
 					q: opts.search,
+					// The table below never prints descriptions, so --brief only
+					// ever changes --json; it is off by default so existing
+					// consumers of the JSON keep the field.
+					brief: opts.brief,
 					...page
 				})
 			);
