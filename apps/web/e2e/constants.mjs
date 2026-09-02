@@ -58,6 +58,8 @@ export const RUNROW = {
 	/** Rendered by runCostLabel as "$1.23". */
 	costUsd: 1.23,
 	costLabel: '$1.23',
+	/** How the end was judged: rendered beside the status on every run row. */
+	outcome: 'advanced',
 	providerUrl: 'https://console.example.test/session/e2e-runrow',
 	providerSessionId: 'sess_e2e_runrow'
 };
