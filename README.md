@@ -43,7 +43,7 @@ pnpm build
 node packages/cli/dist/index.js time --url http://localhost:5173
 ```
 
-The CLI reads the API base URL from `--url` or the `TINES_API_URL` env var (default `http://localhost:5173`).
+The CLI reads the API base URL from `--url` (accepted by every command, without exception) or the `TINES_API_URL` env var; the default is the production deployment, `https://tines.tbuckley.dev`. For local development, set `TINES_API_URL=http://localhost:5173` or pass `--url` — `pnpm cli` does that for you, so the snippet above talks to your dev server.
 
 Every `… list` command returns one page. Pass `--all-pages` to follow the cursor and fetch the whole list in one command; without it, `--json` output carries a `next_cursor` and warns on stderr that there is more.
 
@@ -66,13 +66,13 @@ That puts `tines` on your PATH:
 
 ```sh
 tines --help
-tines time --url https://tines.tbuckley.dev
+tines time                                # https://tines.tbuckley.dev, the default
 ```
 
-To make it target your deployment by default, set the env var in your shell profile (otherwise it talks to `http://localhost:5173`):
+To point it at a local dev server instead, pass `--url` or set the env var in your shell profile:
 
 ```sh
-export TINES_API_URL=https://tines.tbuckley.dev
+export TINES_API_URL=http://localhost:5173
 ```
 
 To upgrade later: `git pull`, `pnpm install`, `pnpm build`, then re-run `npm install -g ./packages/cli`. To go back to a released build, `npm install -g tines@latest`.

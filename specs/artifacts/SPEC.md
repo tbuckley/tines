@@ -488,7 +488,7 @@ tines issues artifacts show <ref> <name>                       # detail + versio
 tines issues artifacts attach <ref> <name> --file <path>       # file (MIME sniffed from
                                                                #   extension, --content-type to override)
 tines issues artifacts attach <ref> <name> --text <md|@file>
-tines issues artifacts attach <ref> <name> --url <u> [--title <t>]
+tines issues artifacts attach <ref> <name> --link <u> [--title <t>]
 tines issues artifacts attach <ref> <name> --pr <owner/repo#N | PR URL>
 tines issues artifacts attach <ref> <name> --folder <dir>      # snapshot a directory tree
                                                                #   as one version (MIME per file
@@ -725,3 +725,7 @@ From the folders/viewer review:
 - **No `content_type` on folder requirements** (422 at definition time):
   mixed-type trees admit no honest all-files/any-file match rule; the gate
   asserts slot + type, prose says what belongs inside.
+
+From later work:
+
+- **2026-09-01, Tines/92 — the link payload flag is `--link`, not `--url`**: `-u, --url` is the API base URL on every CLI command without exception. `attach … --url <link>` used to suppress the base-URL flag and attach the link, so an invocation that copied the documented `--url` idiom silently produced a `link` artifact pointing at the API base URL. Renaming makes that misuse an offline arity error carrying the corrective hint; the server-generated `fix:` line and launch-prompt "Attach one:" hint teach `--link`.
