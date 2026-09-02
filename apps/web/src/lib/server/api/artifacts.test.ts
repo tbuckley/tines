@@ -1,7 +1,9 @@
 import {
 	ARTIFACT_FILE_MAX_BYTES,
 	ARTIFACT_TEXT_MAX_BYTES,
+	ARTIFACT_TYPES,
 	type Artifact,
+	type ArtifactType,
 	type IssueDetail
 } from '@tines/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -772,9 +774,32 @@ describe('issue artifacts', () => {
 
 	it('is a context kind with its own creation path and a fenced generic surface', async () => {
 		const issue = await createIssue(t.db, t.env, actor, PROJECT, { title: 'Ctx' });
-		await expect(
-			createContextItem(t.db, t.env, actor, { kind: 'artifact', name: 'x', issue_id: issue.id })
-		).rejects.toMatchObject({ code: 'use_artifact_endpoints' });
+		const fenced = await createContextItem(t.db, t.env, actor, {
+			kind: 'artifact',
+			name: 'x',
+			issue_id: issue.id
+		}).then(
+			() => null,
+			(e: unknown) => e as ApiFail
+		);
+		expect(fenced).toMatchObject({ status: 422, code: 'use_artifact_endpoints' });
+
+		// The 422 is the whole signpost, so it names every write endpoint —
+		// folder included — in prose and again as data in `details`.
+		expect(fenced!.message).toContain(
+			'PUT /api/v1/issues/:id/artifacts/:name (JSON for text/link/pr)'
+		);
+		expect(fenced!.message).toContain('…/:name/file (raw upload)');
+		expect(fenced!.message).toContain('…/:name/folder (multipart snapshot)');
+		const endpoints = fenced!.details?.endpoints as { path: string; types: ArtifactType[] }[];
+		expect(endpoints.map((e) => e.path)).toEqual([
+			'/api/v1/issues/:id/artifacts/:name',
+			'/api/v1/issues/:id/artifacts/:name/file',
+			'/api/v1/issues/:id/artifacts/:name/folder'
+		]);
+		// A new artifact type that nothing writes would leave the message stale
+		// again, which is exactly the bug this list replaced.
+		expect(endpoints.flatMap((e) => e.types).sort()).toEqual([...ARTIFACT_TYPES].sort());
 
 		await attachDoc(issue.id);
 		const { items } = await listContextItems(

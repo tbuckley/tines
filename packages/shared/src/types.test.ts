@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import type { AgentRunUsage, StateCategory, Workflow } from './types.js';
-import { activeStateIds, isActiveRun, runCostLabel, runDurationLabel } from './types.js';
+import {
+	activeStateIds,
+	isActiveRun,
+	isStaleTierOverride,
+	runCostLabel,
+	runDurationLabel
+} from './types.js';
 
 describe('runCostLabel', () => {
 	const label = (usage: AgentRunUsage | null) => runCostLabel({ usage });
@@ -77,5 +83,19 @@ describe('runDurationLabel', () => {
 
 	it('measures an unfinished run against now', () => {
 		expect(runDurationLabel({ started_at: 5_000, ended_at: null }, 35_000)).toBe('30s');
+	});
+});
+
+describe('isStaleTierOverride', () => {
+	it('flags a predecessor of the current built-in', () => {
+		expect(isStaleTierOverride('claude-fable-5-1', 'claude-fable-5')).toBe(true);
+		expect(isStaleTierOverride('claude-fable-5-1', 'claude-opus-5')).toBe(true);
+	});
+
+	it('does not flag the built-in itself, unknown models, or missing values', () => {
+		expect(isStaleTierOverride('claude-fable-5-1', 'claude-fable-5-1')).toBe(false);
+		expect(isStaleTierOverride('claude-fable-5-1', 'some-custom-model')).toBe(false);
+		expect(isStaleTierOverride(null, 'claude-fable-5')).toBe(false);
+		expect(isStaleTierOverride('claude-fable-5-1', undefined)).toBe(false);
 	});
 });

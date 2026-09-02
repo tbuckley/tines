@@ -36,8 +36,14 @@
 	import { Textarea } from '$lib/components/ui/textarea/index.js';
 	import { actorLabel, prefersReducedMotion, relativeTime } from '$lib/format';
 	import { mergeLinks, type PendingAdd } from '$lib/link-overlay';
+	import { navMemory } from '$lib/nav-memory.svelte';
 
 	let { data } = $props();
+
+	// Back to the list you came from, as you left it — the issues list with its
+	// filters, or the project page. A deep link or a fresh tab has no memory and
+	// falls back to the plain issues list.
+	const backList = $derived(navMemory.lastList ?? { href: '/issues', label: 'Issues' });
 
 	// Mutations and the live poll refresh THIS page's load only (it declares
 	// depends('app:issue')), not the whole load graph: a full invalidate would
@@ -508,10 +514,11 @@
 
 <div class="mb-6">
 	<a
-		href="/issues"
-		class="text-muted-foreground hover:text-foreground mb-3 inline-flex items-center gap-1 text-sm"
+		href={backList.href}
+		class="text-muted-foreground hover:text-foreground mb-3 inline-flex max-w-full min-w-0 items-center gap-1 text-sm"
 	>
-		<IconChevronLeft size={16} /> Issues
+		<IconChevronLeft size={16} class="shrink-0" />
+		<span class="truncate">{backList.label}</span>
 	</a>
 	<div class="flex flex-wrap items-start justify-between gap-4">
 		<div class="min-w-0">

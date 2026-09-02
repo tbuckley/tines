@@ -99,10 +99,13 @@ the issue read can badge them.
 Creation and payload mutation go through dedicated artifact endpoints only —
 `POST /api/v1/context` with `kind: "artifact"` is a 422
 (`use_artifact_endpoints`) because file payloads can't ride a JSON create, and
-one creation path is saner than two. The generic context endpoints still
-**read** artifact items (list/show, payload summarized), still **PATCH**
-name/description (rename re-keys requirement matching, which is the point),
-and still **DELETE** them.
+one creation path is saner than two. That 422 names every write endpoint —
+the JSON upsert, `…/:name/file`, and `…/:name/folder` — in its message and
+again in `details.endpoints` (`method`, `path`, `types`, `accepts`), so the
+redirect stays complete as artifact types are added. The generic context
+endpoints still **read** artifact items (list/show, payload summarized),
+still **PATCH** name/description (rename re-keys requirement matching, which
+is the point), and still **DELETE** them.
 
 ### Versions
 

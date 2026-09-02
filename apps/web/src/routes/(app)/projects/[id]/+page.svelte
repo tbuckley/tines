@@ -21,8 +21,15 @@
 	import { Select } from '$lib/components/ui/select/index.js';
 	import { Textarea } from '$lib/components/ui/textarea/index.js';
 	import { prefersReducedMotion } from '$lib/format';
+	import { navMemory } from '$lib/nav-memory.svelte';
 
 	let { data } = $props();
+
+	// Remember this list (filters and all) so an issue opened from here gets a
+	// back link that returns to it.
+	$effect(() => {
+		navMemory.recordProject(data.project.id, page.url.search, data.project.name);
+	});
 
 	/** Active-category states, so dead routing rules are flagged as such. */
 	const activeStateIds = $derived(deriveActiveStateIds(data.workflows));

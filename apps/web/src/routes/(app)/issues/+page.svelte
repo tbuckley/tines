@@ -9,9 +9,17 @@
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { Select } from '$lib/components/ui/select/index.js';
 	import { CATEGORY_LABELS } from '$lib/format';
+	import { navMemory } from '$lib/nav-memory.svelte';
 	import { STATE_CATEGORIES } from '@tines/shared';
 
 	let { data } = $props();
+
+	// Remember the filters so the Issues nav tab and issue back links return
+	// here as it stands. The URL is already the source of truth, so this picks
+	// up every filter change, search submit, and direct navigation.
+	$effect(() => {
+		navMemory.recordIssues(page.url.search);
+	});
 
 	let newIssueOpen = $state(false);
 
