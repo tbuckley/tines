@@ -13,6 +13,7 @@ import {
 	printJson,
 	resolveApiKeySetting,
 	resolveUrlSetting,
+	withCommon,
 	type CommonOpts
 } from '../common.js';
 import { clearCliConfig, configPath, defaultConfigDir, saveCliConfig } from '../config.js';
@@ -34,7 +35,7 @@ export function register(program: Command): void {
 	program
 		.command('login')
 		.description('Store the API URL and key for this machine, so commands need no env vars')
-		.option('-u, --url <url>', `base URL of the Tines API (default ${DEFAULT_URL})`)
+		.option('-u, --url <url>', `base URL of the Tines API to store (default ${DEFAULT_URL})`)
 		.option('--api-key <key>', 'API key from Settings → API keys ("-" reads it from stdin)')
 		.option('--no-verify', 'store without checking the key against the API')
 		.action(async (opts: { url?: string; apiKey?: string; verify: boolean }) => {
@@ -79,30 +80,30 @@ export function register(program: Command): void {
 			);
 		});
 
-	program
-		.command('config')
-		.description('Show the API URL and key in effect, and where each comes from')
-		.option('-u, --url <url>', 'base URL to report as if passed to a command')
-		.option('--api-key <key>', 'API key to report as if passed to a command')
-		.option('--json', 'output as JSON')
-		.action((opts: CommonOpts) => {
-			const url = resolveUrlSetting(opts);
-			const key = resolveApiKeySetting(opts);
-			const report = {
-				url: { value: url.value, source: url.source },
-				api_key: {
-					value: key.value ? maskKey(key.value) : null,
-					source: key.value ? key.source : null
-				},
-				config_path: configPath(defaultConfigDir())
-			};
-			if (opts.json) return printJson(report);
-			console.log(`url: ${report.url.value} (${report.url.source})`);
-			console.log(
-				report.api_key.value
-					? `api key: ${report.api_key.value} (${report.api_key.source})`
-					: 'api key: none (pass --api-key, set TINES_API_KEY, or run `tines login`)'
-			);
-			console.log(`config file: ${report.config_path}`);
-		});
+	// withCommon: the same three flags every API command takes, so `config`
+	// reports exactly what a command given the same flags would use.
+	withCommon(
+		program
+			.command('config')
+			.description('Show the API URL and key in effect, and where each comes from')
+	).action((opts: CommonOpts) => {
+		const url = resolveUrlSetting(opts);
+		const key = resolveApiKeySetting(opts);
+		const report = {
+			url: { value: url.value, source: url.source },
+			api_key: {
+				value: key.value ? maskKey(key.value) : null,
+				source: key.value ? key.source : null
+			},
+			config_path: configPath(defaultConfigDir())
+		};
+		if (opts.json) return printJson(report);
+		console.log(`url: ${report.url.value} (${report.url.source})`);
+		console.log(
+			report.api_key.value
+				? `api key: ${report.api_key.value} (${report.api_key.source})`
+				: 'api key: none (pass --api-key, set TINES_API_KEY, or run `tines login`)'
+		);
+		console.log(`config file: ${report.config_path}`);
+	});
 }

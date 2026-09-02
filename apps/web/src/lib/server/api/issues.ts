@@ -877,7 +877,7 @@ function unmetRequirements(
 		file: '--file <path>',
 		folder: '--folder <dir>',
 		text: '--text <markdown|@file>',
-		link: '--url <url>',
+		link: '--link <url>',
 		pr: '--pr <owner/repo#N>'
 	};
 	const fixFor = (r: ArtifactRequirementCheck): string => {

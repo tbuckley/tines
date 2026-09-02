@@ -22,7 +22,7 @@ pnpm monorepo (Node >= 20). `apps/web` is a SvelteKit (Svelte 5) app deployed to
 - `pnpm test` — vitest unit tests
 - `pnpm db:migrate:local` / `pnpm db:seed:local` — create the local D1 tables, then a dev user and API key (see the README's Getting started)
 - `pnpm test:e2e` — Playwright e2e suite (boots the built worker under `wrangler dev` with a seeded local D1; see `apps/web/e2e/`). Run by `ci.yml` on pull requests, but not by `pnpm test`.
-- `pnpm cli <command>` — run the CLI from source against `$TINES_API_URL` (default `http://localhost:5173`)
+- `pnpm cli <command>` — run the CLI from source against `$TINES_API_URL` (the script defaults it to `http://localhost:5173`; the published CLI defaults to `https://tines.tbuckley.dev`)
 
 ## Icons
 

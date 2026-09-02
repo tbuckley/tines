@@ -50,7 +50,7 @@ pnpm build
 node packages/cli/dist/index.js time --url http://localhost:5173
 ```
 
-The CLI resolves the API base URL and key from, in order: `--url` / `--api-key`, the `TINES_API_URL` / `TINES_API_KEY` env vars, the file `tines login` writes (`~/.config/tines/config.json`), and the default `http://localhost:5173`. `tines config` shows what is in effect and where each value came from.
+The CLI reads the API base URL from `--url` (accepted by every command, without exception), then the `TINES_API_URL` env var, then the file `tines login` writes (`~/.config/tines/config.json`); the default is the production deployment, `https://tines.tbuckley.dev`. The API key resolves the same way (`--api-key`, `TINES_API_KEY`, the file). For local development, set `TINES_API_URL=http://localhost:5173` or pass `--url` — `pnpm cli` does that for you, so the snippet above talks to your dev server. `tines config` shows what is in effect and where each value came from.
 
 Every `… list` command returns one page. Pass `--all-pages` to follow the cursor and fetch the whole list in one command; without it, `--json` output carries a `next_cursor` and warns on stderr that there is more.
 
@@ -73,16 +73,19 @@ That puts `tines` on your PATH:
 
 ```sh
 tines --help
-tines time --url https://tines.tbuckley.dev
+tines time                                # https://tines.tbuckley.dev, the default
 ```
 
-To make it target your deployment by default, store the URL and an API key (Settings →
-API keys in the web app) once; otherwise it talks to `http://localhost:5173`:
+Store an API key (Settings → API keys in the web app) once and every command is
+authenticated. To point it at a local dev server or another deployment, store that URL too,
+or set the env var in your shell profile:
 
 ```sh
-tines login --url https://tines.tbuckley.dev --api-key tines_…   # or `--api-key -` to paste it on stdin
-tines config                                                   # what is in effect, and from where
-tines logout                                                   # forget both
+tines login --api-key tines_…                    # or `--api-key -` to paste it on stdin
+tines login --url http://localhost:5173          # a dev server; the default is the production URL
+tines config                                     # what is in effect, and from where
+tines logout                                     # forget both
+export TINES_API_URL=http://localhost:5173       # the env-var alternative
 ```
 
 `login` checks the key against the API before storing it. Env vars still win over the file

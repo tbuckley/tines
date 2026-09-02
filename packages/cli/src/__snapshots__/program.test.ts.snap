@@ -39,9 +39,10 @@ Commands:
 Show the API URL and key in effect, and where each comes from
 
 Options:
-  -u, --url <url>  base URL to report as if passed to a command
-  --api-key <key>  API key to report as if passed to a command
-  --json           output as JSON
+  -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
+                   \`tines login\`; default https://tines.tbuckley.dev)
+  --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json           output the raw JSON response
   -h, --help       display help for command
 ",
   "tines context": "Usage: tines context [options] [command]
@@ -78,13 +79,16 @@ Options:
                                 literal @ as @@)
   --file <path>=@<local>        skill file: workspace path = local file
                                 (repeatable) (default: [])
-  --url <url>                   repo: clone URL
+  --repo-url <url>              repo: clone URL
   --branch <branch>             repo: branch to check out
   --dir <dir>                   repo: checkout directory (defaults to the URL's
                                 basename)
   -p, --project <name>          scope: project name or id
   -s, --state <workflow/state>  scope: workflow-qualified state
   -i, --issue <ref>             scope: issue (<project>/<number>)
+  -u, --url <url>               base URL of the Tines API (or set TINES_API_URL,
+                                or run \`tines login\`; default
+                                https://tines.tbuckley.dev)
   --api-key <key>               API key (or set TINES_API_KEY, or run \`tines
                                 login\`)
   --json                        output the raw JSON response
@@ -96,7 +100,7 @@ Delete a context item
 
 Options:
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
-                   \`tines login\`; default http://localhost:5173)
+                   \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
   --json           output the raw JSON response
   -h, --help       display help for command
@@ -113,7 +117,7 @@ Options:
   --file <path>=@<local>        add or replace a skill file (repeatable)
                                 (default: [])
   --remove-file <path>          remove a skill file (repeatable) (default: [])
-  --url <url>                   repo: clone URL
+  --repo-url <url>              repo: clone URL
   --branch <branch>             repo: branch (empty string clears it)
   --dir <dir>                   repo: checkout directory (empty string restores
                                 the URL default)
@@ -124,6 +128,9 @@ Options:
   -p, --project <name>          scope: project name or id
   -s, --state <workflow/state>  scope: workflow-qualified state
   -i, --issue <ref>             scope: issue (<project>/<number>)
+  -u, --url <url>               base URL of the Tines API (or set TINES_API_URL,
+                                or run \`tines login\`; default
+                                https://tines.tbuckley.dev)
   --api-key <key>               API key (or set TINES_API_KEY, or run \`tines
                                 login\`)
   --json                        output the raw JSON response
@@ -135,7 +142,7 @@ Seed the global "agent-guidelines" prompt (a no-op if it already exists)
 
 Options:
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
-                   \`tines login\`; default http://localhost:5173)
+                   \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
   --json           output the raw JSON response
   -h, --help       display help for command
@@ -160,7 +167,7 @@ Options:
                                 large lists)
   -u, --url <url>               base URL of the Tines API (or set TINES_API_URL,
                                 or run \`tines login\`; default
-                                http://localhost:5173)
+                                https://tines.tbuckley.dev)
   --api-key <key>               API key (or set TINES_API_KEY, or run \`tines
                                 login\`)
   --json                        output the raw JSON response
@@ -172,7 +179,7 @@ Show a context item (skills include their files)
 
 Options:
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
-                   \`tines login\`; default http://localhost:5173)
+                   \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
   --json           output the raw JSON response
   -h, --help       display help for command
@@ -201,7 +208,7 @@ Options:
   --all-pages           fetch every page, not just the first (slower on large
                         lists)
   -u, --url <url>       base URL of the Tines API (or set TINES_API_URL, or run
-                        \`tines login\`; default http://localhost:5173)
+                        \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>       API key (or set TINES_API_KEY, or run \`tines login\`)
   --json                output the raw JSON response
   -h, --help            display help for command
@@ -266,14 +273,17 @@ Options:
   --folder <dir>            snapshot a directory tree as one version (collect
                             locally, attach once; MIME per file sniffed)
   -t, --text <md|@file>     inline text document: inline Markdown or @file
-  --url <url>               link: the URL to attach
+  --link <url>              link: the URL to attach
   --pr <spec>               PR reference: owner/repo#N or a GitHub PR URL
   --content-type <mime>     declared MIME type (with --file or --text)
   --filename <name>         display filename (with --text; defaults to
                             <name>.md)
-  --title <title>           display title (with --url)
+  --title <title>           display title (with --link)
   -d, --description <text>  artifact description, shown in lists and launch
                             prompts
+  -u, --url <url>           base URL of the Tines API (or set TINES_API_URL, or
+                            run \`tines login\`; default
+                            https://tines.tbuckley.dev)
   --api-key <key>           API key (or set TINES_API_KEY, or run \`tines login\`)
   --json                    output the raw JSON response
   -h, --help                display help for command
@@ -285,7 +295,7 @@ recoverable)
 
 Options:
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
-                   \`tines login\`; default http://localhost:5173)
+                   \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
   --json           output the raw JSON response
   -h, --help       display help for command
@@ -299,7 +309,7 @@ Options:
   --out <path>     write to this file, or into this directory (keeps the stored
                    filename)
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
-                   \`tines login\`; default http://localhost:5173)
+                   \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
   --json           output the raw JSON response
   -h, --help       display help for command
@@ -310,7 +320,7 @@ List the artifacts attached to an issue
 
 Options:
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
-                   \`tines login\`; default http://localhost:5173)
+                   \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
   --json           output the raw JSON response
   -h, --help       display help for command
@@ -321,7 +331,7 @@ Bless the current content as fresh (appends a version reusing the same payload)
 
 Options:
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
-                   \`tines login\`; default http://localhost:5173)
+                   \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
   --json           output the raw JSON response
   -h, --help       display help for command
@@ -332,7 +342,7 @@ Show an artifact with its full version history
 
 Options:
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
-                   \`tines login\`; default http://localhost:5173)
+                   \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
   --json           output the raw JSON response
   -h, --help       display help for command
@@ -345,7 +355,7 @@ Pin an issue to a runner (<runner>[:tier]) — replaces routing rules for it;
 Options:
   --clear          remove the pin
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
-                   \`tines login\`; default http://localhost:5173)
+                   \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
   --json           output the raw JSON response
   -h, --help       display help for command
@@ -356,7 +366,7 @@ Record that <blocker> blocks <blocked> (advisory: transitions stay allowed)
 
 Options:
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
-                   \`tines login\`; default http://localhost:5173)
+                   \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
   --json           output the raw JSON response
   -h, --help       display help for command
@@ -368,7 +378,7 @@ escape a literal leading @ as @@
 
 Options:
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
-                   \`tines login\`; default http://localhost:5173)
+                   \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
   --json           output the raw JSON response
   -h, --help       display help for command
@@ -379,7 +389,7 @@ Delete your own comment (the event keeps the record of the deletion)
 
 Options:
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
-                   \`tines login\`; default http://localhost:5173)
+                   \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
   --json           output the raw JSON response
   -h, --help       display help for command
@@ -391,7 +401,7 @@ to read stdin; escape a literal leading @ as @@
 
 Options:
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
-                   \`tines login\`; default http://localhost:5173)
+                   \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
   --json           output the raw JSON response
   -h, --help       display help for command
@@ -405,7 +415,7 @@ Options:
                    repos.json
   --force          allow --out into a non-empty directory
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
-                   \`tines login\`; default http://localhost:5173)
+                   \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
   --json           output the raw JSON response
   -h, --help       display help for command
@@ -440,7 +450,7 @@ Options:
                                 the title)
   -u, --url <url>               base URL of the Tines API (or set TINES_API_URL,
                                 or run \`tines login\`; default
-                                http://localhost:5173)
+                                https://tines.tbuckley.dev)
   --api-key <key>               API key (or set TINES_API_KEY, or run \`tines
                                 login\`)
   --json                        output the raw JSON response
@@ -453,7 +463,7 @@ verdicts
 
 Options:
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
-                   \`tines login\`; default http://localhost:5173)
+                   \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
   --json           output the raw JSON response
   -h, --help       display help for command
@@ -464,7 +474,7 @@ Mark <ref> as a duplicate of <canonical> (its state then follows <canonical>)
 
 Options:
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
-                   \`tines login\`; default http://localhost:5173)
+                   \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
   --json           output the raw JSON response
   -h, --help       display help for command
@@ -483,7 +493,7 @@ Options:
   -w, --workflow <id-or-name>   move the issue onto another workflow
   -u, --url <url>               base URL of the Tines API (or set TINES_API_URL,
                                 or run \`tines login\`; default
-                                http://localhost:5173)
+                                https://tines.tbuckley.dev)
   --api-key <key>               API key (or set TINES_API_KEY, or run \`tines
                                 login\`)
   --json                        output the raw JSON response
@@ -509,7 +519,7 @@ Options:
                                large lists)
   -u, --url <url>              base URL of the Tines API (or set TINES_API_URL,
                                or run \`tines login\`; default
-                               http://localhost:5173)
+                               https://tines.tbuckley.dev)
   --api-key <key>              API key (or set TINES_API_KEY, or run \`tines
                                login\`)
   --json                       output the raw JSON response
@@ -521,7 +531,7 @@ Take a transition on an issue by its action name (e.g. "approve")
 
 Options:
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
-                   \`tines login\`; default http://localhost:5173)
+                   \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
   --json           output the raw JSON response
   -h, --help       display help for command
@@ -532,7 +542,7 @@ Print the launch prompt: the stitched context followed by the issue block
 
 Options:
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
-                   \`tines login\`; default http://localhost:5173)
+                   \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
   --json           output the raw JSON response
   -h, --help       display help for command
@@ -543,7 +553,7 @@ Un-park an issue: clear needs-attention and reset the attempt count
 
 Options:
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
-                   \`tines login\`; default http://localhost:5173)
+                   \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
   --json           output the raw JSON response
   -h, --help       display help for command
@@ -554,7 +564,7 @@ Show an issue (<project>/<number>), including allowed transitions
 
 Options:
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
-                   \`tines login\`; default http://localhost:5173)
+                   \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
   --json           output the raw JSON response
   -h, --help       display help for command
@@ -565,7 +575,7 @@ Remove the link making <blocker> block <blocked>
 
 Options:
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
-                   \`tines login\`; default http://localhost:5173)
+                   \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
   --json           output the raw JSON response
   -h, --help       display help for command
@@ -576,7 +586,7 @@ Unmark a duplicate (its own state was never changed, so it simply reappears)
 
 Options:
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
-                   \`tines login\`; default http://localhost:5173)
+                   \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
   --json           output the raw JSON response
   -h, --help       display help for command
@@ -610,7 +620,7 @@ Options:
                               launch stage (options go BEFORE <ref>)
   -u, --url <url>             base URL of the Tines API (or set TINES_API_URL,
                               or run \`tines login\`; default
-                              http://localhost:5173)
+                              https://tines.tbuckley.dev)
   --api-key <key>             API key (or set TINES_API_KEY, or run \`tines
                               login\`)
   --json                      output the raw JSON response
@@ -628,7 +638,7 @@ Options:
                               journal show)
   -u, --url <url>             base URL of the Tines API (or set TINES_API_URL,
                               or run \`tines login\`; default
-                              http://localhost:5173)
+                              https://tines.tbuckley.dev)
   --api-key <key>             API key (or set TINES_API_KEY, or run \`tines
                               login\`)
   --json                      output the raw JSON response
@@ -643,7 +653,7 @@ Options:
                               launch stage (options go BEFORE <ref>)
   -u, --url <url>             base URL of the Tines API (or set TINES_API_URL,
                               or run \`tines login\`; default
-                              http://localhost:5173)
+                              https://tines.tbuckley.dev)
   --api-key <key>             API key (or set TINES_API_KEY, or run \`tines
                               login\`)
   --json                      output the raw JSON response
@@ -654,7 +664,8 @@ Options:
 Store the API URL and key for this machine, so commands need no env vars
 
 Options:
-  -u, --url <url>  base URL of the Tines API (default http://localhost:5173)
+  -u, --url <url>  base URL of the Tines API to store (default
+                   https://tines.tbuckley.dev)
   --api-key <key>  API key from Settings → API keys ("-" reads it from stdin)
   --no-verify      store without checking the key against the API
   -h, --help       display help for command
@@ -696,7 +707,7 @@ Options:
   --no-prompt                          create without an initial prompt
   -u, --url <url>                      base URL of the Tines API (or set
                                        TINES_API_URL, or run \`tines login\`;
-                                       default http://localhost:5173)
+                                       default https://tines.tbuckley.dev)
   --api-key <key>                      API key (or set TINES_API_KEY, or run
                                        \`tines login\`)
   --json                               output the raw JSON response
@@ -708,7 +719,7 @@ Delete a project (refused while it still contains issues)
 
 Options:
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
-                   \`tines login\`; default http://localhost:5173)
+                   \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
   --json           output the raw JSON response
   -h, --help       display help for command
@@ -725,7 +736,7 @@ Options:
                                        standard)
   -u, --url <url>                      base URL of the Tines API (or set
                                        TINES_API_URL, or run \`tines login\`;
-                                       default http://localhost:5173)
+                                       default https://tines.tbuckley.dev)
   --api-key <key>                      API key (or set TINES_API_KEY, or run
                                        \`tines login\`)
   --json                               output the raw JSON response
@@ -741,7 +752,7 @@ Options:
   --all-pages        fetch every page, not just the first (slower on large
                      lists)
   -u, --url <url>    base URL of the Tines API (or set TINES_API_URL, or run
-                     \`tines login\`; default http://localhost:5173)
+                     \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>    API key (or set TINES_API_KEY, or run \`tines login\`)
   --json             output the raw JSON response
   -h, --help         display help for command
@@ -752,7 +763,7 @@ Show a project
 
 Options:
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
-                   \`tines login\`; default http://localhost:5173)
+                   \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
   --json           output the raw JSON response
   -h, --help       display help for command
@@ -781,7 +792,7 @@ Options:
   -s, --state <workflow/state>  scope: workflow-qualified state
   -u, --url <url>               base URL of the Tines API (or set TINES_API_URL,
                                 or run \`tines login\`; default
-                                http://localhost:5173)
+                                https://tines.tbuckley.dev)
   --api-key <key>               API key (or set TINES_API_KEY, or run \`tines
                                 login\`)
   --json                        output the raw JSON response
@@ -793,7 +804,7 @@ List routing rules, most specific first
 
 Options:
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
-                   \`tines login\`; default http://localhost:5173)
+                   \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
   --json           output the raw JSON response
   -h, --help       display help for command
@@ -808,7 +819,7 @@ Options:
   -s, --state <workflow/state>  scope: workflow-qualified state
   -u, --url <url>               base URL of the Tines API (or set TINES_API_URL,
                                 or run \`tines login\`; default
-                                http://localhost:5173)
+                                https://tines.tbuckley.dev)
   --api-key <key>               API key (or set TINES_API_KEY, or run \`tines
                                 login\`)
   --json                        output the raw JSON response
@@ -852,7 +863,7 @@ Options:
                                  removed first) (default: 20)
   -u, --url <url>                base URL of the Tines API (or set
                                  TINES_API_URL, or run \`tines login\`; default
-                                 http://localhost:5173)
+                                 https://tines.tbuckley.dev)
   --api-key <key>                API key (or set TINES_API_KEY, or run \`tines
                                  login\`)
   --json                         output the raw JSON response
@@ -917,7 +928,7 @@ Options:
                         milestone)
   --clear               remove all limits
   -u, --url <url>       base URL of the Tines API (or set TINES_API_URL, or run
-                        \`tines login\`; default http://localhost:5173)
+                        \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>       API key (or set TINES_API_KEY, or run \`tines login\`)
   --json                output the raw JSON response
   -h, --help            display help for command
@@ -928,7 +939,7 @@ List runners
 
 Options:
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
-                   \`tines login\`; default http://localhost:5173)
+                   \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
   --json           output the raw JSON response
   -h, --help       display help for command
@@ -939,7 +950,7 @@ Pause a runner (stops new assignments; identity and rules stay)
 
 Options:
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
-                   \`tines login\`; default http://localhost:5173)
+                   \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
   --json           output the raw JSON response
   -h, --help       display help for command
@@ -953,7 +964,7 @@ Options:
   --force          strip the runner from routing rules and clear issue pins
                    (emptied rules are kept, flagged)
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
-                   \`tines login\`; default http://localhost:5173)
+                   \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
   --json           output the raw JSON response
   -h, --help       display help for command
@@ -964,7 +975,7 @@ Resume a paused runner
 
 Options:
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
-                   \`tines login\`; default http://localhost:5173)
+                   \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
   --json           output the raw JSON response
   -h, --help       display help for command
@@ -975,7 +986,7 @@ Invalidate a local runner's token and mint a fresh one (shown once)
 
 Options:
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
-                   \`tines login\`; default http://localhost:5173)
+                   \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
   --json           output the raw JSON response
   -h, --help       display help for command
@@ -986,7 +997,7 @@ Show a runner
 
 Options:
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
-                   \`tines login\`; default http://localhost:5173)
+                   \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
   --json           output the raw JSON response
   -h, --help       display help for command
@@ -1002,7 +1013,7 @@ Options:
   --unset <tier...>      drop an override, falling back to the built-in
                          (repeatable)
   -u, --url <url>        base URL of the Tines API (or set TINES_API_URL, or run
-                         \`tines login\`; default http://localhost:5173)
+                         \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>        API key (or set TINES_API_KEY, or run \`tines login\`)
   --json                 output the raw JSON response
   -h, --help             display help for command
@@ -1028,7 +1039,7 @@ Cancel a run (judged like any other end: usually a strike)
 
 Options:
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
-                   \`tines login\`; default http://localhost:5173)
+                   \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
   --json           output the raw JSON response
   -h, --help       display help for command
@@ -1046,7 +1057,7 @@ Options:
   --all-pages          fetch every page, not just the first (slower on large
                        lists)
   -u, --url <url>      base URL of the Tines API (or set TINES_API_URL, or run
-                       \`tines login\`; default http://localhost:5173)
+                       \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>      API key (or set TINES_API_KEY, or run \`tines login\`)
   --json               output the raw JSON response
   -h, --help           display help for command
@@ -1061,7 +1072,7 @@ Options:
   --raw            with --logs --full: print the unrendered harness stream
                    instead
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
-                   \`tines login\`; default http://localhost:5173)
+                   \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
   --json           output the raw JSON response
   -h, --help       display help for command
@@ -1095,7 +1106,7 @@ Delete a schedule (existing issues are kept)
 Options:
   -y, --yes        skip the confirmation prompt
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
-                   \`tines login\`; default http://localhost:5173)
+                   \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
   --json           output the raw JSON response
   -h, --help       display help for command
@@ -1130,7 +1141,7 @@ Options:
   --name <new-name>             rename the schedule
   -u, --url <url>               base URL of the Tines API (or set TINES_API_URL,
                                 or run \`tines login\`; default
-                                http://localhost:5173)
+                                https://tines.tbuckley.dev)
   --api-key <key>               API key (or set TINES_API_KEY, or run \`tines
                                 login\`)
   --json                        output the raw JSON response
@@ -1148,7 +1159,7 @@ Options:
   --all-pages           fetch every page, not just the first (slower on large
                         lists)
   -u, --url <url>       base URL of the Tines API (or set TINES_API_URL, or run
-                        \`tines login\`; default http://localhost:5173)
+                        \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>       API key (or set TINES_API_KEY, or run \`tines login\`)
   --json                output the raw JSON response
   -h, --help            display help for command
@@ -1159,7 +1170,7 @@ Pause a schedule (keeps config and history)
 
 Options:
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
-                   \`tines login\`; default http://localhost:5173)
+                   \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
   --json           output the raw JSON response
   -h, --help       display help for command
@@ -1170,7 +1181,7 @@ Resume a paused schedule (recomputes the next occurrence from now)
 
 Options:
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
-                   \`tines login\`; default http://localhost:5173)
+                   \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
   --json           output the raw JSON response
   -h, --help       display help for command
@@ -1181,7 +1192,7 @@ Create an instance now (respects the only-when-closed gate)
 
 Options:
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
-                   \`tines login\`; default http://localhost:5173)
+                   \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
   --json           output the raw JSON response
   -h, --help       display help for command
@@ -1192,7 +1203,7 @@ Show a schedule (<project>/<name>): config, next/last run, recent instances
 
 Options:
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
-                   \`tines login\`; default http://localhost:5173)
+                   \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
   --json           output the raw JSON response
   -h, --help       display help for command
@@ -1218,7 +1229,7 @@ Pause all automation at once (the kill switch off)
 
 Options:
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
-                   \`tines login\`; default http://localhost:5173)
+                   \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
   --json           output the raw JSON response
   -h, --help       display help for command
@@ -1229,7 +1240,7 @@ Arm automation (the kill switch on)
 
 Options:
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
-                   \`tines login\`; default http://localhost:5173)
+                   \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
   --json           output the raw JSON response
   -h, --help       display help for command
@@ -1253,7 +1264,7 @@ Use the global cap: at most <n> concurrent runs in total
 
 Options:
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
-                   \`tines login\`; default http://localhost:5173)
+                   \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
   --json           output the raw JSON response
   -h, --help       display help for command
@@ -1268,7 +1279,7 @@ Options:
                               state a run started in (default: [])
   -u, --url <url>             base URL of the Tines API (or set TINES_API_URL,
                               or run \`tines login\`; default
-                              http://localhost:5173)
+                              https://tines.tbuckley.dev)
   --api-key <key>             API key (or set TINES_API_KEY, or run \`tines
                               login\`)
   --json                      output the raw JSON response
@@ -1280,7 +1291,7 @@ One-screen overview: kill switch, quota, utilization, runners
 
 Options:
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
-                   \`tines login\`; default http://localhost:5173)
+                   \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
   --json           output the raw JSON response
   -h, --help       display help for command
@@ -1291,7 +1302,7 @@ Fetch the current time from the Tines API
 
 Options:
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
-                   \`tines login\`; default http://localhost:5173)
+                   \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
   --json           output the raw JSON response
   -h, --help       display help for command
@@ -1325,7 +1336,7 @@ Options:
   -f, --file <path>  read the JSON definition from a file ("-" for stdin)
   --no-prompts       allow states without initial "prompt" instructions
   -u, --url <url>    base URL of the Tines API (or set TINES_API_URL, or run
-                     \`tines login\`; default http://localhost:5173)
+                     \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>    API key (or set TINES_API_KEY, or run \`tines login\`)
   --json             output the raw JSON response
   -h, --help         display help for command
@@ -1336,7 +1347,7 @@ Delete a workflow (refused while issues still reference it)
 
 Options:
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
-                   \`tines login\`; default http://localhost:5173)
+                   \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
   --json           output the raw JSON response
   -h, --help       display help for command
@@ -1355,7 +1366,7 @@ Options:
                                 instructions
   -u, --url <url>               base URL of the Tines API (or set TINES_API_URL,
                                 or run \`tines login\`; default
-                                http://localhost:5173)
+                                https://tines.tbuckley.dev)
   --api-key <key>               API key (or set TINES_API_KEY, or run \`tines
                                 login\`)
   --json                        output the raw JSON response
@@ -1371,7 +1382,7 @@ Options:
   --all-pages        fetch every page, not just the first (slower on large
                      lists)
   -u, --url <url>    base URL of the Tines API (or set TINES_API_URL, or run
-                     \`tines login\`; default http://localhost:5173)
+                     \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>    API key (or set TINES_API_KEY, or run \`tines login\`)
   --json             output the raw JSON response
   -h, --help         display help for command
@@ -1382,7 +1393,7 @@ Show a workflow with states and transitions
 
 Options:
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
-                   \`tines login\`; default http://localhost:5173)
+                   \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
   --json           output the raw JSON response
   -h, --help       display help for command

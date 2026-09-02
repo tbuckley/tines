@@ -16,13 +16,14 @@ version, so `tines --version` always names the API it was built against.
 ## Pointing it at your Tines
 
 ```sh
-tines login --url https://your-tines.example --api-key tines_…   # key: Settings → API keys
-tines config                                                    # what is in effect, and from where
+tines login --api-key tines_…                       # key: Settings → API keys in the web app
+tines login --url https://your-tines.example        # only for a deployment other than the default
+tines config                                        # what is in effect, and from where
 ```
 
-Or set `TINES_API_URL` and `TINES_API_KEY` in the environment — that is how agent runs are
-configured, and the env vars win over the stored config. `--url` and `--api-key` on any
-command win over both.
+The URL defaults to `https://tines.tbuckley.dev`. Or set `TINES_API_URL` and `TINES_API_KEY`
+in the environment — that is how agent runs are configured, and the env vars win over the
+stored config. `--url` and `--api-key` on any command win over both.
 
 ## Everyday commands
 

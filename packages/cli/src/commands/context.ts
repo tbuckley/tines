@@ -172,12 +172,10 @@ export function register(program: Command): void {
 					collect,
 					[]
 				)
-				.option('--url <url>', 'repo: clone URL')
+				.option('--repo-url <url>', 'repo: clone URL')
 				.option('--branch <branch>', 'repo: branch to check out')
 				.option('--dir <dir>', "repo: checkout directory (defaults to the URL's basename)")
-		),
-		// --url is the repo pointer here; the API base comes from TINES_API_URL.
-		{ baseUrlFlag: false }
+		)
 	).action(
 		async (
 			opts: CommonOpts &
@@ -187,13 +185,15 @@ export function register(program: Command): void {
 					description?: string;
 					body?: string;
 					file: string[];
-					url?: string;
+					repoUrl?: string;
 					branch?: string;
 					dir?: string;
 				}
 		) => {
-			// opts.url is the repo pointer on this command, not the API base.
-			const api = client({ apiKey: opts.apiKey, json: opts.json });
+			if (opts.kind === 'repo' && opts.repoUrl === undefined) {
+				die('--kind repo needs --repo-url <clone-url> (--url is the API base URL)');
+			}
+			const api = client(opts);
 			const scope = await resolveScopeFlags(api, opts);
 			const body: CreateContextItemRequest = {
 				kind: opts.kind as ContextKind,
@@ -204,7 +204,7 @@ export function register(program: Command): void {
 			if (opts.body !== undefined) body.body = readBodyValue(opts.body);
 			if (opts.file.length > 0) body.files = opts.file.map(parseFileSpec);
 			if (opts.kind === 'skill' && body.files === undefined) body.files = [];
-			if (opts.url !== undefined) body.repo_url = opts.url;
+			if (opts.repoUrl !== undefined) body.repo_url = opts.repoUrl;
 			if (opts.branch !== undefined) body.repo_branch = opts.branch;
 			if (opts.dir !== undefined) body.repo_dir = opts.dir;
 			const item = await api.createContextItem(body);
@@ -223,7 +223,7 @@ export function register(program: Command): void {
 				.option('--body <md>', 'prompt body: inline Markdown or @file (escape a literal @ as @@)')
 				.option('--file <path>=@<local>', 'add or replace a skill file (repeatable)', collect, [])
 				.option('--remove-file <path>', 'remove a skill file (repeatable)', collect, [])
-				.option('--url <url>', 'repo: clone URL')
+				.option('--repo-url <url>', 'repo: clone URL')
 				.option('--branch <branch>', 'repo: branch (empty string clears it)')
 				.option('--dir <dir>', 'repo: checkout directory (empty string restores the URL default)')
 				.option(
@@ -237,9 +237,7 @@ export function register(program: Command): void {
 					'fail (409) unless the item is still at this version',
 					(v) => Number.parseInt(v, 10)
 				)
-		),
-		// --url is the repo pointer here; the API base comes from TINES_API_URL.
-		{ baseUrlFlag: false }
+		)
 	).action(
 		async (
 			id: string,
@@ -250,15 +248,14 @@ export function register(program: Command): void {
 					body?: string;
 					file: string[];
 					removeFile: string[];
-					url?: string;
+					repoUrl?: string;
 					branch?: string;
 					dir?: string;
 					unset: string[];
 					expectVersion?: number;
 				}
 		) => {
-			// opts.url is the repo pointer on this command, not the API base.
-			const api = client({ apiKey: opts.apiKey, json: opts.json });
+			const api = client(opts);
 			const body: UpdateContextItemRequest = {};
 			if (opts.expectVersion !== undefined) body.expected_version = opts.expectVersion;
 			if (opts.name !== undefined) body.name = opts.name;
@@ -296,7 +293,7 @@ export function register(program: Command): void {
 				}
 				body.files = [...files.entries()].map(([path, content]) => ({ path, content }));
 			}
-			if (opts.url !== undefined) body.repo_url = opts.url;
+			if (opts.repoUrl !== undefined) body.repo_url = opts.repoUrl;
 			if (opts.branch !== undefined) body.repo_branch = opts.branch === '' ? null : opts.branch;
 			if (opts.dir !== undefined) body.repo_dir = opts.dir === '' ? null : opts.dir;
 			if (Object.keys(body).length === 0) {
