@@ -627,6 +627,30 @@ describe('finishRun', () => {
 		expect(eventsOfType(t, 'runner.errored')).toHaveLength(1);
 	});
 
+	it('a shutdown reporting two runs is one incident, not two', async () => {
+		const t = world();
+		const runnerId = addRunner(t, { maxConcurrent: 2 });
+		const runA = await delivered(t, { runnerId, issueId: addIssue(t) });
+		const runB = await delivered(t, { runnerId, issueId: addIssue(t) });
+		for (const runId of [runA, runB]) {
+			await appendRunLog(t.db, t.env, await runnerRow(t, runnerId), runId, 'x\n', NOW + 10);
+			await finishRun(
+				t.db,
+				t.env,
+				await runnerRow(t, runnerId),
+				runId,
+				{ status: 'failed', error: 'daemon shut down', judgment: 'interrupted' },
+				NOW + 30
+			);
+		}
+		expect(runById(t, runA)?.outcome).toBe('interrupted');
+		expect(runById(t, runB)?.outcome).toBe('interrupted');
+		// One Ctrl-C, one failure: the burst of finish reports lands inside
+		// the backoff window the first one opened.
+		expect(runnerById(t, runnerId).launch_failures).toBe(1);
+		expect(eventsOfType(t, 'runner.errored')).toHaveLength(1);
+	});
+
 	it('an ordinary failed finish still strikes — only the daemon-set judgment is spared', async () => {
 		const t = world();
 		const runnerId = addRunner(t);
