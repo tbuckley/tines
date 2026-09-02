@@ -258,6 +258,12 @@ export interface AgentRunTable {
 	runner_id: string;
 	/** 'assigned' | 'launching' | 'running' | 'completed' | 'failed' | 'timed_out' | 'canceled'. */
 	status: string;
+	/**
+	 * How the end was judged: 'advanced' | 'stalled' | 'interrupted'. NULL
+	 * while the run is active, for runs that never started (nothing to
+	 * judge), and for every row that ended before the column existed.
+	 */
+	outcome: string | null;
 	tier: string;
 	/** Resolved at launch; NULL when the harness cannot vary its model. */
 	model: string | null;

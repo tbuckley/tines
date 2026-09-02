@@ -14,10 +14,15 @@ export const POST: RequestHandler = api(async (event) => {
 	// The token is the credential; the path must name the same runner.
 	if (runner.id !== event.params.id) throw notFound();
 	const body = await readJson<RunnerPollRequest>(event);
-	const { response, cameOnline, capRaised } = await pollRunner(db, env, runner, body);
+	const { response, cameOnline, capRaised, reconciled } = await pollRunner(db, env, runner, body);
 	// A poll bringing an offline runner back — or raising its cap — is
 	// capacity coming online: queue the opportunistic pass so its next poll
-	// finds work waiting.
-	if (cameOnline || capRaised) queueDispatchPass({ env, ctx: event.platform?.ctx }, runner.user_id);
+	// finds work waiting. So is one that freed claims by reconciling runs a
+	// restarted daemon lost: those issues took no strike and are eligible
+	// again this instant, and waiting out the `*/5` cron would be the whole
+	// visible cost of a daemon restart.
+	if (cameOnline || capRaised || reconciled) {
+		queueDispatchPass({ env, ctx: event.platform?.ctx }, runner.user_id);
+	}
 	return json(response);
 });

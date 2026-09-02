@@ -100,7 +100,7 @@ export function register(program: Command): void {
 			if (runner.last_seen_at) console.log(`last seen: ${timestamp(runner.last_seen_at)}`);
 			if (runner.launch_failures > 0) {
 				console.log(
-					`launch failures: ${runner.launch_failures}${runner.backoff_until ? ` (backing off until ${timestamp(runner.backoff_until)})` : ''}`
+					`consecutive failures: ${runner.launch_failures}${runner.backoff_until ? ` (backing off until ${timestamp(runner.backoff_until)})` : ''}`
 				);
 			}
 			const harness = runner.config.harness;

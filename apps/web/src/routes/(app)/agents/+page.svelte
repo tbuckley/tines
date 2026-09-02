@@ -644,7 +644,7 @@
 						{/if}
 						{#if runner.launch_failures > 0}
 							<span class="text-amber-600 dark:text-amber-400"
-								>· {runner.launch_failures} launch failures</span
+								>· {runner.launch_failures} consecutive failures</span
 							>
 						{/if}
 					</p>
