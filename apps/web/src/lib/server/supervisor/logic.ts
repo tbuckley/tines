@@ -61,7 +61,7 @@ export function matchRule<T extends MatchableRule>(
  */
 const BUILTIN_TIER_MODELS: Record<string, Record<ModelTier, string> | null> = {
 	claude_managed: {
-		smartest: 'claude-fable-5',
+		smartest: 'claude-fable-5-1',
 		balanced: 'claude-opus-5',
 		cheapest: 'claude-sonnet-5'
 	},
