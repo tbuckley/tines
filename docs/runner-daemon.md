@@ -75,6 +75,38 @@ and prepends `~/.config/tines/cli/node_modules/.bin` to the harness's `PATH`. No
 - To reset, delete `~/.config/tines/cli` (it is rebuilt on the next refresh). To opt out
   entirely, pass `--no-cli-refresh`.
 
+## What a run's log contains
+
+The log a run leaves behind (`tines runs show <id> --logs`, or the run view in the UI) is
+written by the daemon and by the harness, in this order:
+
+1. `$ git clone …` for each of the issue's effective repos, with git's own output.
+2. A line naming the agent-facing `tines` that will be on the harness's `PATH`.
+3. The **launch banner** — what the daemon is about to run, and under what settings:
+
+   ```
+   $ claude -p --output-format stream-json --verbose --model 'claude-sonnet-5' < '/…/prompt.md'
+   # tines runner: harness=claude_code model=claude-sonnet-5 timeout=30m cli=0.0.84 workspace=/…/arun_xxx
+   ```
+
+   The first line is exactly what was executed: for `claude_code` and `custom` it is the
+   `sh -c` script string, with a custom `--command` template already expanded, so a
+   template that expanded badly is visible rather than inferred (a template containing
+   newlines renders across as many lines — the block is two lines only when the command
+   is one). `model=(fixed)` means the harness cannot vary its model. `cli=` is the
+   daemon's own version, not the agent's. The run key is never here — it rides in the
+   harness's environment, never in argv.
+
+4. The harness's stdout and stderr (for `claude_code`, the rendered stream; `--raw` fetches
+   the unrendered NDJSON).
+5. The **exit line**: `# tines runner: exit code=0 after 3m12s`, or `signal=SIGTERM` when
+   something killed it, with `(timed out)` when that something was the daemon's own
+   timeout. A run canceled by the supervisor has no exit line — the daemon stops logging
+   the moment the supervisor settles the run.
+6. `workspace kept at <path>`, only when `--keep-workspaces` retained this run's
+   workspace (see below). It is the daemon's own note about what it left on disk, so it
+   comes after the harness's exit line rather than before it.
+
 ## Keep it running
 
 The runner is infrastructure: run it under your OS's service manager so it survives logouts

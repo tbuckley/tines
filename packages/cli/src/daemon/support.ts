@@ -96,6 +96,115 @@ export function buildHarnessInvocation(
 }
 
 // ---------------------------------------------------------------------------
+// The launch banner: what the daemon actually ran, in the run's own log.
+// Without it a run log jumps from the git clones straight into harness output,
+// and "which model / which timeout / which expanded --command?" is answerable
+// only from the daemon's console — which a service manager swallows.
+
+/** Longest argv word rendered verbatim in the launch line; the rest is elided. */
+const LAUNCH_ARG_MAX = 160;
+
+/** Words a POSIX shell needs no quoting for; keeps the line readable. */
+const SAFE_WORD = /^[A-Za-z0-9_@%+=:,./-]+$/;
+
+/**
+ * One argv word for the launch line: quoted only where a shell would need it,
+ * and elided past LAUNCH_ARG_MAX — codex takes the whole stitched prompt on
+ * argv, and a 25 KB log line helps nobody (the workspace's prompt.md, and the
+ * run record, still have it whole).
+ */
+function launchWord(word: string): string {
+	if (word.length > LAUNCH_ARG_MAX)
+		return shellQuote(`${word.slice(0, LAUNCH_ARG_MAX)}… [+${word.length - LAUNCH_ARG_MAX} chars]`);
+	return SAFE_WORD.test(word) ? word : shellQuote(word);
+}
+
+/**
+ * The invocation as a shell line. `sh -c <script>` harnesses (claude_code, a
+ * custom template) render the script itself — already expanded, exactly what
+ * the shell was handed — and everything else renders its argv shell-quoted.
+ */
+export function formatLaunchCommand(invocation: HarnessInvocation): string {
+	if (invocation.file === 'sh' && invocation.args.length === 2 && invocation.args[0] === '-c')
+		return invocation.args[1]!;
+	return [invocation.file, ...invocation.args].map(launchWord).join(' ');
+}
+
+export interface LaunchMeta {
+	harness: HarnessKind;
+	/** Minutes before the daemon kills the harness (the assignment's). */
+	timeoutMinutes: number;
+	/** The daemon's own version — the `tines` running the loop, not the agent's. */
+	cliVersion: string;
+}
+
+/**
+ * The two-line block appended to the run log immediately before the spawn:
+ * the command in the same `$ …` convention as the git clones, then a `#`
+ * metadata line. The run key is deliberately absent — it lives in the spawn
+ * environment (buildSpawnEnv), never in argv, and this renders argv.
+ */
+export function formatLaunchBanner(
+	invocation: HarnessInvocation,
+	input: HarnessInput,
+	meta: LaunchMeta
+): string {
+	const fields = [
+		`harness=${meta.harness}`,
+		`model=${input.model ?? '(fixed)'}`,
+		`timeout=${meta.timeoutMinutes}m`,
+		`cli=${meta.cliVersion}`,
+		`workspace=${input.workspace}`
+	];
+	return `$ ${formatLaunchCommand(invocation)}\n# tines runner: ${fields.join(' ')}\n`;
+}
+
+export interface HarnessExit {
+	/** Exit code, or null when a signal took it. */
+	code: number | null;
+	/** The signal that killed it, if any. */
+	signal: NodeJS.Signals | null;
+	/** Wall clock from spawn to exit. */
+	durationMs: number;
+	/** The daemon's own timeout fired — the signal above is the daemon's. */
+	timedOut?: boolean;
+}
+
+/** `<m>m<s>s` — minutes never roll into hours; a run's timeout is in minutes. */
+export function formatDuration(ms: number): string {
+	const seconds = Math.max(0, Math.round(ms / 1000));
+	return `${Math.floor(seconds / 60)}m${seconds % 60}s`;
+}
+
+/**
+ * The closing line, so a run log is self-describing end to end without the
+ * run record beside it. The finish report still carries the authoritative
+ * reason; this is the log's own account of how the harness ended.
+ */
+export function formatExitLine(exit: HarnessExit): string {
+	const parts: string[] = [];
+	if (exit.code !== null) parts.push(`code=${exit.code}`);
+	if (exit.signal) parts.push(`signal=${exit.signal}`);
+	if (parts.length === 0) parts.push('code=?');
+	if (exit.timedOut) parts.push('(timed out)');
+	return `# tines runner: exit ${parts.join(' ')} after ${formatDuration(exit.durationMs)}\n`;
+}
+
+/**
+ * The closing line for a run whose harness just exited, or null when nobody
+ * would read it: a supervisor-canceled run is already settled, takes
+ * `finishAndCleanup`'s cleanup-only path, and so never flushes its batcher
+ * again — the line would only sit there unsent.
+ */
+export function exitLineForRun(
+	run: Pick<ManagedRun, 'settled' | 'timedOut'>,
+	exit: Omit<HarnessExit, 'timedOut'>
+): string | null {
+	if (run.settled) return null;
+	return formatExitLine({ ...exit, timedOut: run.timedOut });
+}
+
+// ---------------------------------------------------------------------------
 // The run table: live-run bookkeeping with the settle/cleanup state machine
 // factored out of the daemon loop so it is unit-testable (support.test.ts).
 
