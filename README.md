@@ -379,6 +379,6 @@ From the repo root:
 - `pnpm dev` — run the web app dev server (with local D1 bindings emulated)
 - `pnpm build` — build all packages
 - `pnpm check` — typecheck all packages (svelte-check + tsc)
-- `pnpm test` — vitest unit tests (what CI runs before deploying or publishing)
-- `pnpm test:e2e` — Playwright e2e suite (boots the built worker under `wrangler dev` with a seeded local D1; see `apps/web/e2e/`). Not run by CI, which stops at `pnpm test`.
+- `pnpm test` — vitest unit tests (`ci.yml` runs them on every pull request, and the deploy and publish workflows run them again before shipping)
+- `pnpm test:e2e` — Playwright e2e suite (boots the built worker under `wrangler dev` with a seeded local D1; see `apps/web/e2e/`). Run by `ci.yml` on pull requests, but not by `pnpm test`.
 - `pnpm cli <command>` — run the CLI in dev mode
