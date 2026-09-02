@@ -27,6 +27,35 @@ export function errorResponse(e: ApiFail): Response {
 	return json(body, { status: e.status });
 }
 
+/**
+ * SvelteKit answers a known route with an unsupported verb itself, before any
+ * handler runs: a bare text body ("PUT method not allowed") with no
+ * content-type. A JSON client that reads `(await res.json()).error` on every
+ * non-2xx then dies on a parse error instead of surfacing the reason, so the
+ * hook re-clothes that response in the documented envelope. Kit's `Allow`
+ * header is already correct (RFC 9110 15.5.6) and is carried over.
+ *
+ * Scoped to /api/v1/*: only the JSON API promises the envelope. A 405 a
+ * handler produced itself already carries a JSON content-type and is left
+ * alone.
+ */
+export function jsonifyMethodNotAllowed(
+	pathname: string,
+	method: string,
+	response: Response
+): Response {
+	if (response.status !== 405) return response;
+	if (!pathname.startsWith('/api/v1/')) return response;
+	if ((response.headers.get('content-type') ?? '').includes('application/json')) return response;
+
+	const replacement = errorResponse(
+		new ApiFail(405, 'method_not_allowed', `${method} is not allowed on this resource`)
+	);
+	const allow = response.headers.get('allow');
+	if (allow) replacement.headers.set('allow', allow);
+	return replacement;
+}
+
 /** Wraps a route handler: ApiFail → structured JSON error, else 500. */
 export function api<E extends RequestEvent>(
 	handler: (event: E) => Promise<Response> | Response
@@ -53,7 +82,7 @@ export function api<E extends RequestEvent>(
 /** Valid JSON that isn't an object ("null", "[]", "42") would otherwise
  * pass the parse and crash on the first field access — a 500 for what is
  * malformed client input. Every endpoint takes an object payload. */
-function requireJsonObject(value: unknown): Record<string, unknown> {
+export function requireJsonObject(value: unknown): Record<string, unknown> {
 	if (typeof value !== 'object' || value === null || Array.isArray(value)) {
 		throw new ApiFail(400, 'invalid_json', 'Request body must be a JSON object');
 	}
@@ -137,7 +166,10 @@ const CONTROL_PLANE_PATTERNS = [
 	/^\/api\/v1\/routing-rules(\/|$)/,
 	/^\/api\/v1\/supervisor\/settings(\/|$)/,
 	/^\/api\/v1\/issues\/[^/]+\/resume$/,
-	/^\/api\/v1\/api-keys(\/|$)/
+	/^\/api\/v1\/api-keys(\/|$)/,
+	// Bulk library writes: an agent must propose context changes, not apply
+	// a whole library over the top of them.
+	/^\/api\/v1\/import(\/|$)/
 ];
 
 /** True for paths a run key must never reach (all methods). */
@@ -153,7 +185,7 @@ export function runKeyForbidden(): ApiFail {
 	return new ApiFail(
 		403,
 		'run_key_forbidden',
-		'Run keys cannot modify runners, routing rules, supervisor settings, parked issues, issue pins, or API keys. ' +
+		'Run keys cannot modify runners, routing rules, supervisor settings, parked issues, issue pins, API keys, or the library import. ' +
 			'Propose the change instead: file an issue titled "Context change: <scope label>" describing ' +
 			'what should change and why; a human reviews and applies it.'
 	);

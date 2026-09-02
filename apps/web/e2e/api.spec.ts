@@ -517,3 +517,40 @@ test.describe('input validation', () => {
 		expect(badTitle.status()).toBe(422);
 	});
 });
+
+test.describe('method not allowed', () => {
+	// Kit answers an unsupported verb on a real route itself, before any
+	// handler runs; only the hook can put that in the envelope (Tines/83).
+	const paths = ['/api/v1/projects', '/api/v1/runners', '/api/v1/issues/iss_nosuchissue/comments'];
+
+	for (const path of paths) {
+		for (const method of ['put', 'patch', 'delete'] as const) {
+			test(`${method.toUpperCase()} ${path} answers the JSON error envelope`, async ({
+				request
+			}) => {
+				const api = apiClient(request, ALICE.apiKey);
+				const res = method === 'delete' ? await api.delete(path) : await api[method](path, {});
+				expect(res.status()).toBe(405);
+				expect(res.headers()['content-type']).toContain('application/json');
+				expect(res.headers()['allow']).toBeTruthy();
+				expect(await body<ErrorBody>(res)).toEqual({
+					error: {
+						code: 'method_not_allowed',
+						message: `${method.toUpperCase()} is not allowed on this resource`
+					}
+				});
+			});
+		}
+	}
+
+	test('a supported verb on the same route is untouched', async ({ request }) => {
+		// The rewrite keys off the 405, so the happy path must not move: this
+		// route's real PATCH still reaches its handler and 404s on the fake id.
+		const res = await apiClient(request, ALICE.apiKey).patch(
+			'/api/v1/issues/iss_nosuchissue/comments/cmt_nosuchcomment',
+			{ body: 'x' }
+		);
+		expect(res.status()).toBe(404);
+		expect((await body<ErrorBody>(res)).error.code).toBe('not_found');
+	});
+});

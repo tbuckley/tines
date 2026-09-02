@@ -18,6 +18,7 @@ import type {
 	Schedule
 } from '@tines/shared';
 import { actorLabel, describeRecurrence, runCostLabel, runDurationLabel } from '@tines/shared';
+import type { KeptWorkspace } from './daemon/store.js';
 
 export function timestamp(ms: number): string {
 	return new Date(ms).toISOString().replace('T', ' ').slice(0, 19);
@@ -157,6 +158,51 @@ export function runRow(run: AgentRun): string[] {
 		runDurationLabel(run),
 		runCostLabel(run) ?? '—',
 		timestamp(run.created_at)
+	];
+}
+
+/** Compact byte count for a table cell: "0 B", "912 KB", "4.6 MB", "1.3 GB". */
+export function byteSize(bytes: number): string {
+	const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+	let value = Math.max(0, bytes);
+	let unit = 0;
+	while (value >= 1024 && unit < units.length - 1) {
+		value /= 1024;
+		unit += 1;
+	}
+	// Whole bytes and kilobytes read better without a decimal; larger units
+	// need one to tell 4.6 MB from 4.0 MB.
+	const rounded = unit <= 1 ? Math.round(value) : Math.round(value * 10) / 10;
+	return `${unit <= 1 ? rounded : rounded.toFixed(1)} ${units[unit]}`;
+}
+
+/** Compact age of an ISO timestamp, in the style of run durations: "42s", "3h", "5d". */
+export function ageLabel(isoTimestamp: string, now: number = Date.now()): string {
+	const then = Date.parse(isoTimestamp);
+	if (!Number.isFinite(then)) return '—';
+	const seconds = Math.max(0, Math.round((now - then) / 1000));
+	if (seconds < 60) return `${seconds}s`;
+	if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+	if (seconds < 86_400) return `${Math.floor(seconds / 3600)}h`;
+	return `${Math.floor(seconds / 86_400)}d`;
+}
+
+/**
+ * One kept workspace as `runner workspaces` prints it. The size is passed in
+ * rather than measured here: this file stays free of I/O.
+ */
+export function keptWorkspaceRow(
+	kept: KeptWorkspace,
+	sizeBytes: number,
+	now: number = Date.now()
+): string[] {
+	return [
+		kept.run_id,
+		kept.issue_ref ?? '—',
+		kept.status,
+		ageLabel(kept.kept_at, now),
+		byteSize(sizeBytes),
+		kept.path
 	];
 }
 

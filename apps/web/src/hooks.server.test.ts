@@ -16,21 +16,25 @@ vi.mock('better-auth/svelte-kit', () => ({
 
 const { handle } = await import('./hooks.server');
 
-function request(pathname: string, headers: Record<string, string> = {}) {
+function request(pathname: string, headers: Record<string, string> = {}, method = 'GET') {
 	const url = new URL(`https://tines.test${pathname}`);
 	return {
 		url,
 		locals: {} as Record<string, unknown>,
 		platform: { env: {} as Env },
-		request: new Request(url, { headers })
+		request: new Request(url, { headers, method })
 	};
 }
 
-async function run(event: ReturnType<typeof request>) {
+async function run(event: ReturnType<typeof request>, resolved = new Response('ok')) {
 	getSession.mockClear();
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	return (await (handle as any)({ event, resolve: async () => new Response('ok') })) as Response;
+	return (await (handle as any)({ event, resolve: async () => resolved })) as Response;
 }
+
+/** What SvelteKit returns itself for an unsupported verb on a real route. */
+const kit405 = () =>
+	new Response('PUT method not allowed', { status: 405, headers: { allow: 'GET, POST, HEAD' } });
 
 describe('handle', () => {
 	it('skips the session lookup for bearer-authenticated API requests', async () => {
@@ -68,6 +72,32 @@ describe('handle', () => {
 	it('still resolves the session for page navigations', async () => {
 		await run(request('/issues', { authorization: 'Bearer tk_abc' }));
 		expect(getSession).toHaveBeenCalledOnce();
+	});
+
+	it('answers a wrong-verb API request with the error envelope', async () => {
+		// Kit's own 405 never reaches a handler, so the hook is the only place
+		// that can put it in the documented shape (Tines/83).
+		const response = await run(
+			request('/api/v1/projects', { authorization: 'Bearer tk_abc' }, 'PUT'),
+			kit405()
+		);
+		expect(response.status).toBe(405);
+		expect(response.headers.get('content-type')).toContain('application/json');
+		expect(response.headers.get('allow')).toBe('GET, POST, HEAD');
+		expect(await response.json()).toEqual({
+			error: { code: 'method_not_allowed', message: 'PUT is not allowed on this resource' }
+		});
+	});
+
+	it('still reports server timing on a rewritten 405', async () => {
+		const response = await run(request('/api/v1/projects', {}, 'PUT'), kit405());
+		expect(response.headers.get('Server-Timing')).toMatch(/auth;dur=[\d.]+, app;dur=[\d.]+/);
+	});
+
+	it('leaves a page 405 as Kit wrote it', async () => {
+		const response = await run(request('/issues', {}, 'PUT'), kit405());
+		expect(response.status).toBe(405);
+		expect(await response.text()).toBe('PUT method not allowed');
 	});
 
 	it('reports server timing', async () => {

@@ -1686,3 +1686,124 @@ export interface ApiErrorBody {
 		details?: Record<string, unknown>;
 	};
 }
+
+// ---------------------------------------------------------------------------
+// Library export / import: the portable form of a deployment's reusable
+// library — non-system workflows plus every non-issue-scoped context item.
+// Deliberately excludes tracker data (issues, comments, events, runs,
+// schedules, artifacts) and every credential.
+
+/** Discriminator on the exported document; guards against feeding in a stray JSON file. */
+export const LIBRARY_FORMAT = 'tines.library';
+/** Bumped when the document shape changes incompatibly; import refuses anything higher. */
+export const LIBRARY_VERSION = 1;
+
+/** Document-level caps, checked before the entries are walked. */
+export const LIBRARY_MAX_BYTES = 5 * 1024 * 1024;
+export const LIBRARY_MAX_ENTRIES = 1000;
+
+/**
+ * A context item's scope by name rather than by id, so a document imports
+ * into a deployment that shares none of the source's ids. `{}` is global;
+ * a state ref is workflow-qualified because state names are unique only
+ * within their workflow.
+ */
+export interface LibraryScopeRef {
+	project?: string;
+	state?: { workflow: string; name: string };
+}
+
+/** A project carried only as a scope referent — no issues come with it. */
+export interface LibraryProject {
+	name: string;
+	description?: string;
+	/**
+	 * Default workflow by name, restored on import when a workflow of that name
+	 * exists here or arrives in the same document; otherwise skipped, with the
+	 * reason recorded on the project's plan entry.
+	 */
+	default_workflow?: string | null;
+}
+
+/**
+ * A context item in portable form: its `CreateContextItemRequest` payload
+ * with the three scope ids replaced by {@link LibraryScopeRef}.
+ */
+export interface LibraryContextEntry {
+	kind: ContextKind;
+	name: string;
+	description?: string;
+	scope: LibraryScopeRef;
+	/** True for the project ∧ state prompt named `journal` (deployment memory). */
+	journal?: boolean;
+	/** prompt */
+	body?: string;
+	/** skill */
+	files?: ContextFile[];
+	/** repo */
+	repo_url?: string;
+	repo_branch?: string | null;
+	repo_dir?: string | null;
+}
+
+/**
+ * The exported document. Each `workflows` entry is literally a valid
+ * `CreateWorkflowRequest`, and each `context` entry is a
+ * `CreateContextItemRequest` bar its scope — so import is a pass-through
+ * into the existing validators rather than a second parser.
+ *
+ * The system `Standard` workflow is never exported (it is seeded with
+ * identical ids on every instance); items scoped to its states are, and
+ * re-resolve by name.
+ */
+export interface LibraryDocument {
+	format: typeof LIBRARY_FORMAT;
+	version: number;
+	exported_at: number;
+	projects: LibraryProject[];
+	workflows: CreateWorkflowRequest[];
+	context: LibraryContextEntry[];
+}
+
+export interface ExportLibraryOptions {
+	/** Journals are deployment-specific memory; opt out to leave them behind. */
+	journals?: boolean;
+}
+
+export interface ImportLibraryRequest {
+	document: LibraryDocument;
+	/** Plan only: returns exactly the plan an apply would follow. */
+	dry_run?: boolean;
+	/** Context items only; workflow definition conflicts always refuse. */
+	on_collision?: 'skip' | 'overwrite';
+	/** Create projects the document scopes to but this deployment lacks (default true). */
+	create_projects?: boolean;
+	/** Import journal items (default true). */
+	include_journals?: boolean;
+}
+
+export type ImportAction = 'create' | 'skip' | 'overwrite' | 'refuse' | 'error';
+
+export const IMPORT_ACTIONS: readonly ImportAction[] = [
+	'create',
+	'skip',
+	'overwrite',
+	'refuse',
+	'error'
+];
+
+export interface ImportPlanEntry {
+	section: 'project' | 'workflow' | 'context';
+	/** Human-readable identity, e.g. `prompt "instructions" (state Engineering / Research)`. */
+	ref: string;
+	action: ImportAction;
+	/** Why, for every action but `create`. */
+	reason?: string;
+}
+
+export interface ImportLibraryResponse {
+	/** False for a dry run: nothing was written. */
+	applied: boolean;
+	entries: ImportPlanEntry[];
+	counts: Record<ImportAction, number>;
+}

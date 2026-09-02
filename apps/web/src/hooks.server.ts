@@ -1,4 +1,5 @@
 import { building } from '$app/environment';
+import { jsonifyMethodNotAllowed } from '$lib/server/api/core';
 import { getAuth } from '$lib/server/auth';
 import type { Handle, RequestEvent } from '@sveltejs/kit';
 import { svelteKitHandler } from 'better-auth/svelte-kit';
@@ -80,7 +81,11 @@ export const handle: Handle = async ({ event, resolve }) => {
 	}
 
 	// Mounts the Better Auth handler at /api/auth/* and passes everything else through.
-	const response = await svelteKitHandler({ event, resolve, auth, building });
+	const response = jsonifyMethodNotAllowed(
+		event.url.pathname,
+		event.request.method,
+		await svelteKitHandler({ event, resolve, auth, building })
+	);
 
 	// Server-Timing: per-request server cost, readable in DevTools -> Network
 	// on any deployment. This is the production counterpart to the modelled

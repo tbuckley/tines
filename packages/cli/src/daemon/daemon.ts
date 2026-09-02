@@ -13,6 +13,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import {
 	createWriteStream,
+	existsSync,
 	mkdirSync,
 	readFileSync,
 	rmSync,
@@ -29,6 +30,7 @@ import {
 	createApiClient,
 	type RunnerAssignment
 } from '@tines/shared';
+import { cliVersion } from '../version.js';
 import { ClaudeStreamRenderer } from './claude-stream';
 import { installAgentCli } from './cli-refresh.js';
 import {
@@ -37,9 +39,13 @@ import {
 	loadDaemonState,
 	loadRunnerCredentials,
 	processStartTimeMs,
+	pruneKeptWorkspaces,
 	saveDaemonState,
 	saveRunnerCredentials,
+	workspacesDir,
+	writeKeptMarker,
 	type DaemonStateEntry,
+	type KeptWorkspaceMarker,
 	type RunnerCredentials
 } from './store.js';
 import {
@@ -47,10 +53,14 @@ import {
 	buildHarnessInvocation,
 	buildSpawnEnv,
 	CliRefresher,
+	exitLineForRun,
+	formatLaunchBanner,
+	keepWorkspace,
 	LogBatcher,
 	RunTable,
 	type AgentCli,
 	type HarnessKind,
+	type KeepWorkspacesMode,
 	type ManagedRun
 } from './support.js';
 
@@ -66,10 +76,19 @@ export interface DaemonOptions {
 	configDir: string;
 	/** Keep the agent-facing `tines` current from npm (--no-cli-refresh turns it off). */
 	cliRefresh: boolean;
+	/** Which settled runs leave their workspace on disk for debugging. */
+	keepWorkspaces: KeepWorkspacesMode;
+	/** Retention window for kept workspaces, in hours. */
+	keepWorkspacesForHours: number;
+	/** At most this many kept workspaces survive a sweep; oldest go first. */
+	keepWorkspacesMax: number;
 }
 
 /** How often a launch may re-attempt the CLI refresh (gated on attempt, not success). */
 const CLI_REFRESH_TTL_MS = 10 * 60_000;
+
+/** This daemon's own version, stamped into every run's launch banner. */
+const DAEMON_VERSION = cliVersion();
 
 interface ActiveRun extends ManagedRun {
 	child?: ChildProcess;
@@ -77,6 +96,8 @@ interface ActiveRun extends ManagedRun {
 	timeout?: ReturnType<typeof setTimeout>;
 	keyFingerprint: string;
 	spawnedAt?: number;
+	/** `Project/123` — recorded in a kept workspace and the state file. */
+	issueLabel?: string;
 	/** claude_code: NDJSON → readable lines for the log (claude-stream.ts). */
 	renderer?: ClaudeStreamRenderer;
 	/** claude_code: the unrendered stream, spooled for the raw-log upload. */
@@ -165,6 +186,56 @@ function pidAlive(pid: number): boolean {
 
 export async function runDaemon(opts: DaemonOptions): Promise<void> {
 	mkdirSync(opts.configDir, { recursive: true });
+	// A workspace holds cloned repositories and whatever the agent wrote, so
+	// the directory they share is created user-only. (The mode applies at
+	// creation; an existing directory keeps whatever permissions it has.)
+	mkdirSync(workspacesDir(opts.configDir), { recursive: true, mode: 0o700 });
+
+	// Kept workspaces (--keep-workspaces) are bounded by age and by count: one
+	// can reach hundreds of megabytes once its agent installed dependencies.
+	// The sweep runs regardless of the current mode, so going back to `never`
+	// still reaps what an earlier run kept, and it only ever touches
+	// directories holding a kept.json — never a live run's bare workspace.
+	const sweepKeptWorkspaces = () => {
+		const removed = pruneKeptWorkspaces(opts.configDir, {
+			maxAgeMs: opts.keepWorkspacesForHours * 3600_000,
+			maxCount: opts.keepWorkspacesMax
+		});
+		if (removed.length > 0) {
+			log(
+				`pruned ${removed.length} kept workspace(s) past retention (${opts.keepWorkspacesForHours}h, max ${opts.keepWorkspacesMax})`
+			);
+		}
+	};
+	sweepKeptWorkspaces();
+
+	/**
+	 * The workspace half of settling a run: removed, or kept and marked with a
+	 * kept.json saying what it was. A marker that cannot be written leaves the
+	 * directory in place regardless — unmarked, so no sweep will ever reap it,
+	 * which is the safe direction for evidence.
+	 */
+	const settleWorkspace = (
+		workspace: string,
+		keep: boolean,
+		marker: Omit<KeptWorkspaceMarker, 'kept_at'>
+	): void => {
+		if (!keep) {
+			rmSync(workspace, { recursive: true, force: true });
+			return;
+		}
+		// Cleanup is idempotent by contract: a second release must not
+		// resurrect a removed workspace as an empty kept one.
+		if (!existsSync(workspace)) return;
+		try {
+			writeKeptMarker(workspace, { ...marker, kept_at: new Date().toISOString() });
+			log(`run ${marker.run_id}: workspace kept at ${workspace}`);
+		} catch (err) {
+			log(
+				`run ${marker.run_id}: workspace kept at ${workspace}, but kept.json could not be written (${message(err)})`
+			);
+		}
+	};
 
 	// -- registration / reconnect ---------------------------------------------
 	let creds: RunnerCredentials | null = loadRunnerCredentials(opts.configDir, opts.url, opts.name);
@@ -212,40 +283,51 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 			: `tines ${cli.version ?? 'unknown'} (daemon-managed${cli.source === 'stale' ? ', last-good copy' : ''})`;
 	log(`agent CLI: ${cliLabel(await ensureCli())}`);
 
-	const table: RunTable<ActiveRun> = new RunTable<ActiveRun>({
-		finish: async (run, status, error) => {
-			await client.finishRun(run.runId, { status, ...(error ? { error } : {}) });
-		},
-		release: (run) => {
-			if (run.timeout) clearTimeout(run.timeout);
-			// `finishAndCleanup` already drained (before its flush, so the line
-			// actually ships). This is the backstop for the paths that reach
-			// cleanup without finishing — an already-settled run, a clone
-			// failure — where the renderer must not be left holding a line.
-			// `finish()` is idempotent, so the double call is free.
-			run.renderer?.finish();
-			rmSync(run.workspace, { recursive: true, force: true });
-			// Deliberately after cleanup and not awaited: the raw log is a
-			// forensic extra, and a slow or failed upload must not hold a
-			// concurrency slot. The spool lives outside the workspace, so the
-			// rmSync above did not take it.
-			void uploadRawLog(run);
-		},
-		persist: () => {
-			const entries: DaemonStateEntry[] = table
-				.values()
-				.filter((run) => run.child?.pid !== undefined)
-				.map((run) => ({
+	const table: RunTable<ActiveRun> = new RunTable<ActiveRun>(
+		{
+			finish: async (run, status, error) => {
+				await client.finishRun(run.runId, { status, ...(error ? { error } : {}) });
+			},
+			release: (run, { keep, outcome }) => {
+				if (run.timeout) clearTimeout(run.timeout);
+				// `finishAndCleanup` already drained (before its flush, so the line
+				// actually ships). This is the backstop for the paths that reach
+				// cleanup without finishing — an already-settled run, a clone
+				// failure — where the renderer must not be left holding a line.
+				// `finish()` is idempotent, so the double call is free.
+				run.renderer?.finish();
+				settleWorkspace(run.workspace, keep, {
 					run_id: run.runId,
-					pid: run.child!.pid!,
-					workspace: run.workspace,
-					key_fingerprint: run.keyFingerprint,
-					started_at: run.spawnedAt
-				}));
-			saveDaemonState(statePath, entries);
+					...(run.issueLabel ? { issue_ref: run.issueLabel } : {}),
+					status: outcome,
+					...(run.endNote ? { error: run.endNote } : {})
+				});
+				// Deliberately after cleanup and not awaited: the raw log is a
+				// forensic extra, and a slow or failed upload must not hold a
+				// concurrency slot. The spool lives outside the workspace, so the
+				// rmSync above did not take it.
+				void uploadRawLog(run);
+				sweepKeptWorkspaces();
+			},
+			noteKept: (run) => run.batcher.append(`workspace kept at ${run.workspace}\n`),
+			persist: () => {
+				const entries: DaemonStateEntry[] = table
+					.values()
+					.filter((run) => run.child?.pid !== undefined)
+					.map((run) => ({
+						run_id: run.runId,
+						pid: run.child!.pid!,
+						workspace: run.workspace,
+						key_fingerprint: run.keyFingerprint,
+						started_at: run.spawnedAt,
+						...(run.issueLabel ? { issue_ref: run.issueLabel } : {})
+					}));
+				saveDaemonState(statePath, entries);
+			},
+			log
 		},
-		log
-	});
+		{ keep: (outcome) => keepWorkspace(opts.keepWorkspaces, outcome) }
+	);
 
 	// -- orphan cleanup: a crashed daemon must not leave a zombie harness -----
 	for (const orphan of loadDaemonState(statePath)) {
@@ -278,13 +360,22 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 		} catch {
 			// Already settled by the supervisor (cancel/timeout/offline sweep).
 		}
-		rmSync(orphan.workspace, { recursive: true, force: true });
+		// No run-log line here: an orphan's run may already be settled
+		// server-side, where an append is rejected. The daemon's own log and
+		// the kept.json are the record.
+		settleWorkspace(orphan.workspace, keepWorkspace(opts.keepWorkspaces, 'failed'), {
+			run_id: orphan.run_id,
+			...(orphan.issue_ref ? { issue_ref: orphan.issue_ref } : {}),
+			status: 'failed',
+			error: 'daemon restarted; orphaned harness killed'
+		});
 	}
 	saveDaemonState(statePath, []);
 
 	const killWithoutFinish = (runId: string) => {
 		const run = table.markCanceled(runId);
 		if (!run) return;
+		run.endNote ??= 'canceled by supervisor';
 		log(`supervisor canceled run ${runId}; killing without finish-reporting`);
 		if (run.child?.pid) {
 			const pid = run.child.pid;
@@ -300,10 +391,14 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 	const launch = async (assignment: RunnerAssignment) => {
 		const runId = assignment.run.id;
 		if (table.has(runId)) return;
-		const workspace = join(opts.configDir, 'workspaces', runId);
+		const workspace = join(workspacesDir(opts.configDir), runId);
+		const issueLabel = assignment.run.issue_ref
+			? `${assignment.run.issue_ref.project_name}/${assignment.run.issue_ref.number}`
+			: undefined;
 		const run: ActiveRun = {
 			runId,
 			workspace,
+			...(issueLabel ? { issueLabel } : {}),
 			canceled: false,
 			timedOut: false,
 			settled: false,
@@ -316,7 +411,7 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 		run.flush = () => run.batcher.flush();
 		table.track(run);
 		log(
-			`run ${runId} assigned (issue ${assignment.run.issue_ref ? `${assignment.run.issue_ref.project_name}/${assignment.run.issue_ref.number}` : assignment.run.issue_id}); materializing workspace`
+			`run ${runId} assigned (issue ${issueLabel ?? assignment.run.issue_id}); materializing workspace`
 		);
 
 		try {
@@ -370,14 +465,26 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 						: `warning: no daemon-managed tines CLI; using whatever \`tines\` is on this machine's PATH\n`
 			);
 
+			const harnessInput = {
+				workspace,
+				promptFile: join(workspace, 'prompt.md'),
+				prompt: assignment.prompt,
+				model: assignment.run.model
+			};
 			const invocation = buildHarnessInvocation(
 				{ harness: opts.harness, command: opts.command },
-				{
-					workspace,
-					promptFile: join(workspace, 'prompt.md'),
-					prompt: assignment.prompt,
-					model: assignment.run.model
-				}
+				harnessInput
+			);
+			// What we are about to run, in the log itself: a failed run is read
+			// long after the daemon's console scrolled away (or was swallowed by
+			// launchd), and "which model / which timeout / which expanded
+			// --command?" is otherwise unanswerable from the run.
+			run.batcher.append(
+				formatLaunchBanner(invocation, harnessInput, {
+					harness: opts.harness,
+					timeoutMinutes: assignment.timeout_minutes,
+					cliVersion: DAEMON_VERSION
+				})
 			);
 			const child = spawn(invocation.file, invocation.args, {
 				cwd: workspace,
@@ -428,6 +535,17 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 				void table.finishAndCleanup(run, 'failed', `failed to launch harness: ${message(err)}`);
 			});
 			child.on('exit', (code, signal) => {
+				// The harness's last words first — a stream renderer holding a
+				// partial line emits it here (drain is idempotent, and
+				// finishAndCleanup calls it too), so the closing line below is
+				// really the log's last.
+				run.drain?.();
+				const closing = exitLineForRun(run, {
+					code,
+					signal,
+					durationMs: Date.now() - (run.spawnedAt ?? Date.now())
+				});
+				if (closing) run.batcher.append(closing);
 				// A supervisor-canceled run is already settled: finishAndCleanup
 				// degrades to cleanup-only, reporting nothing.
 				if (run.timedOut) {
@@ -502,7 +620,12 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 				// killed — their runs are failed by the supervisor's offline rule.
 				for (const run of table.values()) {
 					if (run.child?.pid) killTree(run.child.pid, 'SIGKILL');
-					rmSync(run.workspace, { recursive: true, force: true });
+					settleWorkspace(run.workspace, keepWorkspace(opts.keepWorkspaces, 'failed'), {
+						run_id: run.runId,
+						...(run.issueLabel ? { issue_ref: run.issueLabel } : {}),
+						status: 'failed',
+						error: 'daemon token rejected'
+					});
 				}
 				saveDaemonState(statePath, []);
 				clearRunnerCredentials(opts.configDir, opts.url, opts.name);

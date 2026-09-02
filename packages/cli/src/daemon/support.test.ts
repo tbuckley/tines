@@ -5,12 +5,18 @@ import {
 	buildHarnessInvocation,
 	buildSpawnEnv,
 	CliRefresher,
+	exitLineForRun,
 	expandCommandTemplate,
+	formatExitLine,
+	formatLaunchBanner,
+	formatLaunchCommand,
 	LogBatcher,
+	keepWorkspace,
 	RunTable,
 	shellQuote,
 	type AgentCli,
-	type ManagedRun
+	type ManagedRun,
+	type RunOutcome
 } from './support.js';
 
 const input = {
@@ -74,6 +80,121 @@ describe('buildHarnessInvocation', () => {
 			buildHarnessInvocation({ harness: 'custom', command: 'run {prompt_file}' }, input)
 		).toEqual({ file: 'sh', args: ['-c', `run '/tmp/ws/run 1/prompt.md'`] });
 		expect(() => buildHarnessInvocation({ harness: 'custom' }, input)).toThrow(/--command/);
+	});
+});
+
+describe('formatLaunchBanner', () => {
+	const meta = { harness: 'claude_code' as const, timeoutMinutes: 30, cliVersion: '0.0.1' };
+
+	it('claude_code: the sh -c script verbatim, then the metadata line', () => {
+		const invocation = buildHarnessInvocation({ harness: 'claude_code' }, input);
+		expect(formatLaunchBanner(invocation, input, meta)).toBe(
+			`$ claude -p --output-format stream-json --verbose --model 'claude-sonnet-5' < '/tmp/ws/run 1/prompt.md'\n` +
+				`# tines runner: harness=claude_code model=claude-sonnet-5 timeout=30m cli=0.0.1 workspace=/tmp/ws/run 1\n`
+		);
+	});
+
+	it('a harness that cannot vary the model reads model=(fixed)', () => {
+		const fixed = { ...input, model: null };
+		const banner = formatLaunchBanner(
+			buildHarnessInvocation({ harness: 'claude_code' }, fixed),
+			fixed,
+			meta
+		);
+		expect(banner).toContain('model=(fixed)');
+		expect(banner).not.toContain('--model');
+	});
+
+	it('codex: argv shell-quoted, quoting only the words that need it', () => {
+		const invocation = buildHarnessInvocation({ harness: 'codex' }, input);
+		expect(formatLaunchBanner(invocation, input, { ...meta, harness: 'codex' })).toBe(
+			`$ codex exec --model claude-sonnet-5 'Do the thing'\n` +
+				`# tines runner: harness=codex model=claude-sonnet-5 timeout=30m cli=0.0.1 workspace=/tmp/ws/run 1\n`
+		);
+	});
+
+	it('codex: a stitched prompt on argv is elided, not dumped into the log', () => {
+		const prompt = 'x'.repeat(25_000);
+		const big = { ...input, prompt };
+		const line = formatLaunchCommand(buildHarnessInvocation({ harness: 'codex' }, big));
+		expect(line.length).toBeLessThan(400);
+		expect(line).toContain('[+24840 chars]');
+		expect(line.startsWith('codex exec --model claude-sonnet-5 ')).toBe(true);
+	});
+
+	it('custom: the template as expanded, not as written', () => {
+		const invocation = buildHarnessInvocation(
+			{ harness: 'custom', command: 'my-agent --model {model} -w {workspace} < {prompt_file}' },
+			input
+		);
+		expect(formatLaunchBanner(invocation, input, { ...meta, harness: 'custom' })).toBe(
+			`$ my-agent --model 'claude-sonnet-5' -w '/tmp/ws/run 1' < '/tmp/ws/run 1/prompt.md'\n` +
+				`# tines runner: harness=custom model=claude-sonnet-5 timeout=30m cli=0.0.1 workspace=/tmp/ws/run 1\n`
+		);
+	});
+
+	it('never leaks the run key: it rides in the environment, never in argv', () => {
+		const runKey = 'trk_supersecretrunkey';
+		const env = buildSpawnEnv({}, { binDir: null, apiKey: runKey, apiUrl: 'https://tines.test' });
+		expect(env.TINES_API_KEY).toBe(runKey);
+		for (const spec of [
+			{ harness: 'claude_code' as const },
+			{ harness: 'codex' as const },
+			{ harness: 'custom' as const, command: 'my-agent {prompt_file}' }
+		]) {
+			const banner = formatLaunchBanner(buildHarnessInvocation(spec, input), input, {
+				...meta,
+				harness: spec.harness
+			});
+			expect(banner).not.toContain(runKey);
+			expect(banner).not.toContain('TINES_API_KEY');
+		}
+	});
+});
+
+describe('formatExitLine', () => {
+	it('a clean exit reports its code and how long it took', () => {
+		expect(formatExitLine({ code: 0, signal: null, durationMs: 192_000 })).toBe(
+			'# tines runner: exit code=0 after 3m12s\n'
+		);
+		expect(formatExitLine({ code: 2, signal: null, durationMs: 900 })).toBe(
+			'# tines runner: exit code=2 after 0m1s\n'
+		);
+	});
+
+	it('a signalled exit reports the signal instead of a null code', () => {
+		expect(formatExitLine({ code: null, signal: 'SIGKILL', durationMs: 61_000 })).toBe(
+			'# tines runner: exit signal=SIGKILL after 1m1s\n'
+		);
+	});
+
+	it('a timeout kill says so, so the log explains its own truncation', () => {
+		expect(
+			formatExitLine({ code: null, signal: 'SIGTERM', durationMs: 30 * 60_000, timedOut: true })
+		).toBe('# tines runner: exit signal=SIGTERM (timed out) after 30m0s\n');
+	});
+
+	it('neither code nor signal (should not happen) still renders a line', () => {
+		expect(formatExitLine({ code: null, signal: null, durationMs: 0 })).toBe(
+			'# tines runner: exit code=? after 0m0s\n'
+		);
+	});
+});
+
+describe('exitLineForRun', () => {
+	const exit = { code: null, signal: 'SIGTERM' as const, durationMs: 61_000 };
+
+	it('a run we still own gets its line, timed out or not', () => {
+		expect(exitLineForRun({ settled: false, timedOut: false }, exit)).toBe(
+			'# tines runner: exit signal=SIGTERM after 1m1s\n'
+		);
+		expect(exitLineForRun({ settled: false, timedOut: true }, exit)).toBe(
+			'# tines runner: exit signal=SIGTERM (timed out) after 1m1s\n'
+		);
+	});
+
+	it('a settled run gets none — its batcher never flushes again', () => {
+		expect(exitLineForRun({ settled: true, timedOut: false }, exit)).toBeNull();
 	});
 });
 
@@ -160,26 +281,44 @@ describe('LogBatcher', () => {
 	});
 });
 
+describe('keepWorkspace', () => {
+	it.each([
+		['never', 'completed', false],
+		['never', 'failed', false],
+		['failed', 'completed', false],
+		['failed', 'failed', true],
+		['always', 'completed', true],
+		['always', 'failed', true]
+	] as const)('%s + %s → %s', (mode, outcome, expected) => {
+		expect(keepWorkspace(mode, outcome)).toBe(expected);
+	});
+});
+
 describe('RunTable', () => {
 	interface TestRun extends ManagedRun {
 		flushed?: number;
 	}
 
-	function harness() {
+	function harness(opts: { keep?: (outcome: RunOutcome) => boolean } = {}) {
 		const finishes: { runId: string; status: string; error?: string }[] = [];
-		const released: string[] = [];
+		const released: { runId: string; keep: boolean; outcome: RunOutcome }[] = [];
+		const notes: string[] = [];
 		const logs: string[] = [];
 		let persists = 0;
 		let failFinish: string | null = null;
-		const table = new RunTable<TestRun>({
-			finish: async (run, status, error) => {
-				if (failFinish) throw new Error(failFinish);
-				finishes.push({ runId: run.runId, status, error });
+		const table = new RunTable<TestRun>(
+			{
+				finish: async (run, status, error) => {
+					if (failFinish) throw new Error(failFinish);
+					finishes.push({ runId: run.runId, status, error });
+				},
+				release: (run, { keep, outcome }) => released.push({ runId: run.runId, keep, outcome }),
+				noteKept: (run) => notes.push(run.runId),
+				persist: () => (persists += 1),
+				log: (m) => logs.push(m)
 			},
-			release: (run) => released.push(run.runId),
-			persist: () => (persists += 1),
-			log: (m) => logs.push(m)
-		});
+			opts
+		);
 		const run = (runId: string): TestRun => ({
 			runId,
 			workspace: `/ws/${runId}`,
@@ -192,6 +331,8 @@ describe('RunTable', () => {
 			run,
 			finishes,
 			released,
+			releasedIds: () => released.map((r) => r.runId),
+			notes,
 			logs,
 			setFailFinish: (m: string) => (failFinish = m),
 			persistCount: () => persists
@@ -207,7 +348,7 @@ describe('RunTable', () => {
 		await h.table.finishAndCleanup(run, 'completed');
 		expect(flushes).toBe(1);
 		expect(h.finishes).toEqual([{ runId: 'arun_1', status: 'completed', error: undefined }]);
-		expect(h.released).toEqual(['arun_1']);
+		expect(h.releasedIds()).toEqual(['arun_1']);
 		expect(h.table.ids()).toEqual([]);
 		// A second call (a racing exit handler) reports nothing more.
 		await h.table.finishAndCleanup(run, 'failed', 'late');
@@ -227,7 +368,7 @@ describe('RunTable', () => {
 		// and nothing is finish-reported over the supervisor's settlement.
 		await h.table.finishAndCleanup(run, 'failed', 'git clone failed');
 		expect(h.finishes).toEqual([]);
-		expect(h.released).toEqual(['arun_1']);
+		expect(h.releasedIds()).toEqual(['arun_1']);
 		expect(h.table.size).toBe(0);
 	});
 
@@ -246,9 +387,74 @@ describe('RunTable', () => {
 		h.table.track(run);
 		h.setFailFinish('run_already_ended');
 		await h.table.finishAndCleanup(run, 'failed', 'harness exited with code 1');
-		expect(h.released).toEqual(['arun_1']);
+		expect(h.releasedIds()).toEqual(['arun_1']);
 		expect(h.table.size).toBe(0);
 		expect(h.logs.some((m) => m.includes('not accepted'))).toBe(true);
+	});
+
+	it('the keep decision reaches release, and only a kept run is noted in its log', async () => {
+		const h = harness({ keep: (outcome) => outcome === 'failed' });
+		// A completed run under keep-on-failed: removed, and nothing appended.
+		const ok = h.run('arun_ok');
+		h.table.track(ok);
+		await h.table.finishAndCleanup(ok, 'completed');
+		expect(h.released).toEqual([{ runId: 'arun_ok', keep: false, outcome: 'completed' }]);
+		expect(h.notes).toEqual([]);
+
+		// A failure: kept, with the error recorded as the marker's note.
+		const bad = h.run('arun_bad');
+		h.table.track(bad);
+		await h.table.finishAndCleanup(bad, 'failed', 'harness exited with code 1');
+		expect(h.released[1]).toEqual({ runId: 'arun_bad', keep: true, outcome: 'failed' });
+		expect(h.notes).toEqual(['arun_bad']);
+		expect(bad.endNote).toBe('harness exited with code 1');
+	});
+
+	it('notes a kept workspace before the flush — the only window an append still ships in', async () => {
+		const h = harness({ keep: () => true });
+		const run = h.run('arun_1');
+		let letFlushFinish!: () => void;
+		const gate = new Promise<void>((resolve) => (letFlushFinish = resolve));
+		let flushed = false;
+		run.flush = () => gate.then(() => void (flushed = true));
+		h.table.track(run);
+		const settling = h.table.finishAndCleanup(run, 'failed', 'timed out');
+		// Synchronous up to the flush: the note is already in the batcher.
+		expect(h.notes).toEqual(['arun_1']);
+		expect(flushed).toBe(false);
+		letFlushFinish();
+		await settling;
+		expect(flushed).toBe(true);
+	});
+
+	it('a supervisor cancel releases as a failure, with no note and no finish report', async () => {
+		const h = harness({ keep: (outcome) => outcome === 'failed' });
+		const run = h.run('arun_1');
+		h.table.track(run);
+		h.table.markCanceled(run.runId);
+		// The exit handler's finishAndCleanup degrades to cleanup — which is
+		// exactly the path that must still keep the workspace.
+		await h.table.finishAndCleanup(run, 'failed', 'harness killed by SIGTERM');
+		expect(h.finishes).toEqual([]);
+		expect(h.notes).toEqual([]);
+		expect(h.released).toEqual([{ runId: 'arun_1', keep: true, outcome: 'failed' }]);
+	});
+
+	it('a bare cleanup defaults to the failed outcome', () => {
+		const h = harness({ keep: (outcome) => outcome === 'failed' });
+		const run = h.run('arun_1');
+		h.table.track(run);
+		h.table.cleanup(run);
+		expect(h.released).toEqual([{ runId: 'arun_1', keep: true, outcome: 'failed' }]);
+	});
+
+	it('without a keep decision, nothing is ever kept', async () => {
+		const h = harness();
+		const run = h.run('arun_1');
+		h.table.track(run);
+		await h.table.finishAndCleanup(run, 'failed', 'boom');
+		expect(h.released).toEqual([{ runId: 'arun_1', keep: false, outcome: 'failed' }]);
+		expect(h.notes).toEqual([]);
 	});
 
 	it('cleanup is idempotent and persists membership changes', () => {
@@ -259,7 +465,7 @@ describe('RunTable', () => {
 		h.table.cleanup(run);
 		h.table.cleanup(run);
 		expect(h.persistCount()).toBe(after + 2);
-		expect(h.released).toEqual(['arun_1', 'arun_1']); // release itself is idempotent (rm -rf force)
+		expect(h.releasedIds()).toEqual(['arun_1', 'arun_1']); // release itself is idempotent (rm -rf force)
 	});
 });
 

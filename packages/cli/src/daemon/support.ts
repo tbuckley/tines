@@ -10,6 +10,23 @@ export type HarnessKind = 'claude_code' | 'codex' | 'custom';
 
 export const HARNESS_KINDS: readonly HarnessKind[] = ['claude_code', 'codex', 'custom'];
 
+/** `--keep-workspaces`: which settled runs leave their workspace on disk. */
+export type KeepWorkspacesMode = 'never' | 'failed' | 'always';
+
+export const KEEP_WORKSPACES_MODES: readonly KeepWorkspacesMode[] = ['never', 'failed', 'always'];
+
+/** How a run ended, as far as the workspace decision is concerned. */
+export type RunOutcome = 'completed' | 'failed';
+
+/**
+ * Whether a settling run's workspace survives. Pure, so the daemon's flag and
+ * the state machine's decision are the same one function (see keptMarker in
+ * store.ts for what is written into a kept workspace).
+ */
+export function keepWorkspace(mode: KeepWorkspacesMode, outcome: RunOutcome): boolean {
+	return mode === 'always' || (mode === 'failed' && outcome === 'failed');
+}
+
 /** POSIX single-quote escaping: safe interpolation into an `sh -c` string. */
 export function shellQuote(value: string): string {
 	return `'${value.replaceAll("'", `'\\''`)}'`;
@@ -79,6 +96,115 @@ export function buildHarnessInvocation(
 }
 
 // ---------------------------------------------------------------------------
+// The launch banner: what the daemon actually ran, in the run's own log.
+// Without it a run log jumps from the git clones straight into harness output,
+// and "which model / which timeout / which expanded --command?" is answerable
+// only from the daemon's console — which a service manager swallows.
+
+/** Longest argv word rendered verbatim in the launch line; the rest is elided. */
+const LAUNCH_ARG_MAX = 160;
+
+/** Words a POSIX shell needs no quoting for; keeps the line readable. */
+const SAFE_WORD = /^[A-Za-z0-9_@%+=:,./-]+$/;
+
+/**
+ * One argv word for the launch line: quoted only where a shell would need it,
+ * and elided past LAUNCH_ARG_MAX — codex takes the whole stitched prompt on
+ * argv, and a 25 KB log line helps nobody (the workspace's prompt.md, and the
+ * run record, still have it whole).
+ */
+function launchWord(word: string): string {
+	if (word.length > LAUNCH_ARG_MAX)
+		return shellQuote(`${word.slice(0, LAUNCH_ARG_MAX)}… [+${word.length - LAUNCH_ARG_MAX} chars]`);
+	return SAFE_WORD.test(word) ? word : shellQuote(word);
+}
+
+/**
+ * The invocation as a shell line. `sh -c <script>` harnesses (claude_code, a
+ * custom template) render the script itself — already expanded, exactly what
+ * the shell was handed — and everything else renders its argv shell-quoted.
+ */
+export function formatLaunchCommand(invocation: HarnessInvocation): string {
+	if (invocation.file === 'sh' && invocation.args.length === 2 && invocation.args[0] === '-c')
+		return invocation.args[1]!;
+	return [invocation.file, ...invocation.args].map(launchWord).join(' ');
+}
+
+export interface LaunchMeta {
+	harness: HarnessKind;
+	/** Minutes before the daemon kills the harness (the assignment's). */
+	timeoutMinutes: number;
+	/** The daemon's own version — the `tines` running the loop, not the agent's. */
+	cliVersion: string;
+}
+
+/**
+ * The two-line block appended to the run log immediately before the spawn:
+ * the command in the same `$ …` convention as the git clones, then a `#`
+ * metadata line. The run key is deliberately absent — it lives in the spawn
+ * environment (buildSpawnEnv), never in argv, and this renders argv.
+ */
+export function formatLaunchBanner(
+	invocation: HarnessInvocation,
+	input: HarnessInput,
+	meta: LaunchMeta
+): string {
+	const fields = [
+		`harness=${meta.harness}`,
+		`model=${input.model ?? '(fixed)'}`,
+		`timeout=${meta.timeoutMinutes}m`,
+		`cli=${meta.cliVersion}`,
+		`workspace=${input.workspace}`
+	];
+	return `$ ${formatLaunchCommand(invocation)}\n# tines runner: ${fields.join(' ')}\n`;
+}
+
+export interface HarnessExit {
+	/** Exit code, or null when a signal took it. */
+	code: number | null;
+	/** The signal that killed it, if any. */
+	signal: NodeJS.Signals | null;
+	/** Wall clock from spawn to exit. */
+	durationMs: number;
+	/** The daemon's own timeout fired — the signal above is the daemon's. */
+	timedOut?: boolean;
+}
+
+/** `<m>m<s>s` — minutes never roll into hours; a run's timeout is in minutes. */
+export function formatDuration(ms: number): string {
+	const seconds = Math.max(0, Math.round(ms / 1000));
+	return `${Math.floor(seconds / 60)}m${seconds % 60}s`;
+}
+
+/**
+ * The closing line, so a run log is self-describing end to end without the
+ * run record beside it. The finish report still carries the authoritative
+ * reason; this is the log's own account of how the harness ended.
+ */
+export function formatExitLine(exit: HarnessExit): string {
+	const parts: string[] = [];
+	if (exit.code !== null) parts.push(`code=${exit.code}`);
+	if (exit.signal) parts.push(`signal=${exit.signal}`);
+	if (parts.length === 0) parts.push('code=?');
+	if (exit.timedOut) parts.push('(timed out)');
+	return `# tines runner: exit ${parts.join(' ')} after ${formatDuration(exit.durationMs)}\n`;
+}
+
+/**
+ * The closing line for a run whose harness just exited, or null when nobody
+ * would read it: a supervisor-canceled run is already settled, takes
+ * `finishAndCleanup`'s cleanup-only path, and so never flushes its batcher
+ * again — the line would only sit there unsent.
+ */
+export function exitLineForRun(
+	run: Pick<ManagedRun, 'settled' | 'timedOut'>,
+	exit: Omit<HarnessExit, 'timedOut'>
+): string | null {
+	if (run.settled) return null;
+	return formatExitLine({ ...exit, timedOut: run.timedOut });
+}
+
+// ---------------------------------------------------------------------------
 // The run table: live-run bookkeeping with the settle/cleanup state machine
 // factored out of the daemon loop so it is unit-testable (support.test.ts).
 
@@ -93,6 +219,11 @@ export interface ManagedRun {
 	timedOut: boolean;
 	/** A finish/cancel path owns this run's end; everyone else stands down. */
 	settled: boolean;
+	/**
+	 * Why this run ended, in human words — recorded in a kept workspace's
+	 * marker. Set by whoever settles it; the finish paths use their error text.
+	 */
+	endNote?: string;
 	/** Drains pending log chunks before a finish report. */
 	flush?: () => Promise<void>;
 	/**
@@ -102,11 +233,25 @@ export interface ManagedRun {
 	drain?: () => void;
 }
 
+/** What `release` is being asked to do with a settling run's workspace. */
+export interface RunDisposition {
+	keep: boolean;
+	outcome: RunOutcome;
+}
+
 export interface RunTableEffects<T extends ManagedRun> {
 	/** Report the finish to the supervisor; rejections are the caller-side log. */
 	finish(run: T, status: 'completed' | 'failed', error?: string): Promise<void>;
-	/** Tear down the run's local traces: workspace, timers (idempotent). */
-	release(run: T): void;
+	/**
+	 * Tear down the run's local traces: timers, and the workspace unless the
+	 * disposition says to keep it (idempotent).
+	 */
+	release(run: T, disposition: RunDisposition): void;
+	/**
+	 * Announce a kept workspace in the run's own log. Called between `drain`
+	 * and `flush`, the only window in which an appended line still ships.
+	 */
+	noteKept?(run: T): void;
 	/** Persist the run → pid state file (membership or pid changed). */
 	persist(): void;
 	log(message: string): void;
@@ -115,7 +260,17 @@ export interface RunTableEffects<T extends ManagedRun> {
 export class RunTable<T extends ManagedRun> {
 	private readonly runs = new Map<string, T>();
 
-	constructor(private readonly effects: RunTableEffects<T>) {}
+	/** The daemon's keep decision, as data: `keepWorkspace` bound to its mode. */
+	private readonly keep: (outcome: RunOutcome) => boolean;
+
+	constructor(
+		private readonly effects: RunTableEffects<T>,
+		opts: { keep?: (outcome: RunOutcome) => boolean } = {}
+	) {
+		// Default: today's behaviour, so a caller that passes no decision keeps
+		// nothing.
+		this.keep = opts.keep ?? (() => false);
+	}
 
 	get size(): number {
 		return this.runs.size;
@@ -143,11 +298,19 @@ export class RunTable<T extends ManagedRun> {
 		this.effects.persist();
 	}
 
-	/** Removes the run and releases its local traces. Safe to call twice. */
-	cleanup(run: T): void {
+	/**
+	 * Removes the run and releases its local traces. Safe to call twice.
+	 *
+	 * The outcome defaults to `failed` because every route here that is not an
+	 * explicit completed finish is a failure: a supervisor cancel (which
+	 * reaches cleanup with no status at all), a clone failure on an
+	 * already-settled run, a daemon shutdown. Guessing `failed` also errs the
+	 * safe way — it keeps a directory rather than destroying evidence.
+	 */
+	cleanup(run: T, outcome: RunOutcome = 'failed'): void {
 		this.runs.delete(run.runId);
 		this.effects.persist();
-		this.effects.release(run);
+		this.effects.release(run, { keep: this.keep(outcome), outcome });
 	}
 
 	/**
@@ -159,10 +322,12 @@ export class RunTable<T extends ManagedRun> {
 	async finishAndCleanup(run: T, status: 'completed' | 'failed', error?: string): Promise<void> {
 		if (run.settled) return this.cleanup(run);
 		run.settled = true;
+		run.endNote ??= error;
 		// Before the flush, not after: a line appended afterwards would sit in
 		// the batcher until its timer fired, by which point the run is
 		// finish-reported and the append is rejected.
 		run.drain?.();
+		if (this.keep(status)) this.effects.noteKept?.(run);
 		await run.flush?.();
 		try {
 			await this.effects.finish(run, status, error);
@@ -174,7 +339,7 @@ export class RunTable<T extends ManagedRun> {
 				`finish report for run ${run.runId} not accepted: ${err instanceof Error ? err.message : String(err)}`
 			);
 		}
-		this.cleanup(run);
+		this.cleanup(run, status);
 	}
 
 	/**

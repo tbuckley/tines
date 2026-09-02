@@ -17,9 +17,22 @@ import {
 	type ListOpts
 } from '../common.js';
 import { runDaemon } from '../daemon/daemon.js';
-import { defaultConfigDir, hasRunnerCredentials, saveRunnerCredentials } from '../daemon/store.js';
-import { HARNESS_KINDS, type HarnessKind } from '../daemon/support.js';
-import { issueRef, runRow, runnerStatusLabel, timestamp } from '../format.js';
+import {
+	defaultConfigDir,
+	directorySizeBytes,
+	hasRunnerCredentials,
+	listKeptWorkspaces,
+	pruneKeptWorkspaces,
+	saveRunnerCredentials,
+	workspacesDir
+} from '../daemon/store.js';
+import {
+	HARNESS_KINDS,
+	KEEP_WORKSPACES_MODES,
+	type HarnessKind,
+	type KeepWorkspacesMode
+} from '../daemon/support.js';
+import { issueRef, keptWorkspaceRow, runRow, runnerStatusLabel, timestamp } from '../format.js';
 import {
 	isStaleTierOverride,
 	MODEL_TIERS,
@@ -336,6 +349,23 @@ export function register(program: Command): void {
 				'--no-cli-refresh',
 				'do not install/refresh the agent-facing tines CLI from npm (harnesses use the ambient PATH)'
 			)
+			.option(
+				'--keep-workspaces <mode>',
+				"keep settled runs' workspaces for debugging: never | failed | always",
+				'never'
+			)
+			.option(
+				'--keep-workspaces-for <hours>',
+				'delete kept workspaces older than this',
+				(v) => Number(v),
+				72
+			)
+			.option(
+				'--keep-workspaces-max <n>',
+				'keep at most this many workspaces (oldest removed first)',
+				(v) => Number.parseInt(v, 10),
+				20
+			)
 	).action(
 		async (
 			opts: CommonOpts & {
@@ -345,6 +375,9 @@ export function register(program: Command): void {
 				maxConcurrent: number;
 				pollInterval: number;
 				cliRefresh: boolean;
+				keepWorkspaces: string;
+				keepWorkspacesFor: number;
+				keepWorkspacesMax: number;
 			}
 		) => {
 			const harness = opts.harness.replaceAll('-', '_') as HarnessKind;
@@ -367,6 +400,18 @@ export function register(program: Command): void {
 			if (!Number.isInteger(opts.pollInterval) || opts.pollInterval < 1) {
 				die('--poll-interval must be a positive number of seconds');
 			}
+			const keepWorkspaces = opts.keepWorkspaces as KeepWorkspacesMode;
+			if (!KEEP_WORKSPACES_MODES.includes(keepWorkspaces)) {
+				die(
+					`--keep-workspaces must be ${KEEP_WORKSPACES_MODES.join(', ')}, got "${opts.keepWorkspaces}"`
+				);
+			}
+			if (!Number.isFinite(opts.keepWorkspacesFor) || opts.keepWorkspacesFor <= 0) {
+				die('--keep-workspaces-for must be a positive number of hours');
+			}
+			if (!Number.isInteger(opts.keepWorkspacesMax) || opts.keepWorkspacesMax < 1) {
+				die('--keep-workspaces-max must be a positive integer');
+			}
 			await runDaemon({
 				url: resolveUrl(opts).replace(/\/+$/, ''),
 				apiKey: resolveApiKey(opts),
@@ -376,10 +421,65 @@ export function register(program: Command): void {
 				maxConcurrent: opts.maxConcurrent,
 				pollIntervalMs: opts.pollInterval * 1000,
 				configDir: defaultConfigDir(),
-				cliRefresh: opts.cliRefresh
+				cliRefresh: opts.cliRefresh,
+				keepWorkspaces,
+				keepWorkspacesForHours: opts.keepWorkspacesFor,
+				keepWorkspacesMax: opts.keepWorkspacesMax
 			});
 		}
 	);
+
+	// --- kept workspaces ---------------------------------------------------------
+	// Pure filesystem, no API: these read the same config dir the daemon writes,
+	// and are useful precisely when the supervisor is not what you are debugging.
+
+	const workspacesCmd = runnerCmd
+		.command('workspaces')
+		.description('List run workspaces the daemon kept for debugging (--keep-workspaces)')
+		.option('--json', 'print JSON instead of a table')
+		.action((opts: { json?: boolean }) => {
+			const configDir = defaultConfigDir();
+			const kept = listKeptWorkspaces(configDir);
+			const sized = kept.map((k) => ({ ...k, size_bytes: directorySizeBytes(k.path) }));
+			if (opts.json) return printJson({ items: sized });
+			if (sized.length === 0) {
+				console.log(`no kept workspaces in ${workspacesDir(configDir)}`);
+				return console.log('the daemon keeps them only with --keep-workspaces failed (or always).');
+			}
+			table([
+				['RUN', 'ISSUE', 'STATUS', 'AGE', 'SIZE', 'PATH'],
+				...sized.map((k) => keptWorkspaceRow(k, k.size_bytes))
+			]);
+		});
+
+	workspacesCmd
+		.command('prune')
+		.description("Delete kept workspaces (never touches a live run's workspace)")
+		.option('--all', 'delete every kept workspace')
+		.option('--older-than <hours>', 'delete kept workspaces older than this', (v) => Number(v))
+		.option('--json', 'print JSON instead of a table')
+		.action((opts: { all?: boolean; olderThan?: number; json?: boolean }) => {
+			// No default window: this command cannot know what the daemon was
+			// started with, and guessing would delete evidence.
+			if (opts.all === undefined && opts.olderThan === undefined) {
+				die('pass --all or --older-than <hours>');
+			}
+			if (opts.all && opts.olderThan !== undefined)
+				die('--all cannot be combined with --older-than');
+			if (
+				opts.olderThan !== undefined &&
+				(!Number.isFinite(opts.olderThan) || opts.olderThan < 0)
+			) {
+				die('--older-than must be a non-negative number of hours');
+			}
+			const removed = pruneKeptWorkspaces(defaultConfigDir(), {
+				all: opts.all,
+				...(opts.olderThan !== undefined ? { maxAgeMs: opts.olderThan * 3600_000 } : {})
+			});
+			if (opts.json) return printJson({ items: removed });
+			for (const entry of removed) console.log(`removed ${entry.path}`);
+			console.log(`pruned ${removed.length} kept workspace${removed.length === 1 ? '' : 's'}`);
+		});
 
 	// --- runs --------------------------------------------------------------------
 

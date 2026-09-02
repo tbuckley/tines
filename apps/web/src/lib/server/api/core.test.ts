@@ -3,8 +3,10 @@ import { describe, expect, it } from 'vitest';
 import {
 	ApiFail,
 	assertRunKeyAllowed,
+	errorResponse,
 	encodeCursor,
 	isControlPlanePath,
+	jsonifyMethodNotAllowed,
 	pageResult,
 	readPage
 } from './core';
@@ -84,7 +86,10 @@ describe('isControlPlanePath', () => {
 		'/api/v1/supervisor/settings',
 		'/api/v1/issues/iss_1/resume',
 		'/api/v1/api-keys',
-		'/api/v1/api-keys/key_1'
+		'/api/v1/api-keys/key_1',
+		// Bulk library writes are a control-plane action: an agent proposes
+		// context changes, it does not apply a whole library.
+		'/api/v1/import'
 	])('fences %s', (path) => {
 		expect(isControlPlanePath(path)).toBe(true);
 	});
@@ -96,6 +101,8 @@ describe('isControlPlanePath', () => {
 		'/api/v1/issues/iss_1/transition',
 		'/api/v1/issues/iss_1/prompt',
 		'/api/v1/context',
+		// Export is a read of what a run key can already list.
+		'/api/v1/export',
 		'/api/v1/events',
 		'/api/v1/projects/prj_1/issues',
 		// Similar-looking but distinct segments stay open.
@@ -152,5 +159,54 @@ describe('assertRunKeyAllowed', () => {
 		const named = { agentRunId: null, expiresAt: null };
 		expect(() => assertRunKeyAllowed(named, '/api/v1/supervisor/settings', now)).not.toThrow();
 		expect(() => assertRunKeyAllowed(named, '/api/v1/runners', now)).not.toThrow();
+	});
+});
+
+describe('jsonifyMethodNotAllowed', () => {
+	/** What SvelteKit itself returns for an unsupported verb on a real route. */
+	const kit405 = () =>
+		new Response('PUT method not allowed', {
+			status: 405,
+			headers: { allow: 'GET, POST, HEAD' }
+		});
+
+	it("re-clothes Kit's bare 405 in the error envelope", async () => {
+		const res = jsonifyMethodNotAllowed('/api/v1/projects', 'PUT', kit405());
+		expect(res.status).toBe(405);
+		expect(res.headers.get('content-type')).toContain('application/json');
+		expect(await res.json()).toEqual({
+			error: { code: 'method_not_allowed', message: 'PUT is not allowed on this resource' }
+		});
+	});
+
+	it("carries Kit's Allow header over (RFC 9110 15.5.6)", () => {
+		expect(jsonifyMethodNotAllowed('/api/v1/projects', 'PUT', kit405()).headers.get('allow')).toBe(
+			'GET, POST, HEAD'
+		);
+	});
+
+	it('names the method that was refused', async () => {
+		const res = jsonifyMethodNotAllowed('/api/v1/issues/iss_1/comments', 'PATCH', kit405());
+		expect((await res.json()).error.message).toBe('PATCH is not allowed on this resource');
+	});
+
+	it('leaves non-405 responses alone', async () => {
+		const ok = new Response('hello', { status: 200 });
+		expect(jsonifyMethodNotAllowed('/api/v1/projects', 'GET', ok)).toBe(ok);
+	});
+
+	it('leaves pages and non-API paths alone: only the API promises the envelope', () => {
+		const html = kit405();
+		expect(jsonifyMethodNotAllowed('/issues', 'PUT', html)).toBe(html);
+		expect(jsonifyMethodNotAllowed('/api/auth/callback', 'PUT', html)).toBe(html);
+	});
+
+	it('leaves a handler-built 405 alone', async () => {
+		// errorResponse() output is already the envelope; rewriting it would
+		// throw away the handler's own code and message.
+		const own = errorResponse(new ApiFail(405, 'wrong_verb', 'Use POST instead'));
+		const res = jsonifyMethodNotAllowed('/api/v1/projects', 'PUT', own);
+		expect(res).toBe(own);
+		expect((await res.json()).error.code).toBe('wrong_verb');
 	});
 });

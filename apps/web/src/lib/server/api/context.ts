@@ -278,7 +278,8 @@ function serializeItem(row: ItemRow, files?: ContextFile[]): ContextItem {
 	return item;
 }
 
-async function loadFiles(
+/** Skill file bodies for a batch of items, keyed by item id, ordered by path. */
+export async function loadFiles(
 	db: Kysely<Database>,
 	itemIds: string[]
 ): Promise<Map<string, ContextFile[]>> {
