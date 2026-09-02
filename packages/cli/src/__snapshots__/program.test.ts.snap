@@ -512,6 +512,8 @@ Options:
   --ready                      only issues that are actionable now (not done,
                                not a duplicate, no open blockers)
   -q, --search <text>          search titles and descriptions
+  --brief                      omit description bodies (saves tokens when
+                               scanning)
   --limit <n>                  maximum items to return (page size under
                                --all-pages)
   --cursor <cursor>            resume from the next_cursor of a previous page
