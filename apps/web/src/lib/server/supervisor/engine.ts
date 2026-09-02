@@ -1248,12 +1248,7 @@ export async function sweepSupervisor(
 	const orphaned = await db
 		.selectFrom('agent_run')
 		.innerJoin('runner', 'runner.id', 'agent_run.runner_id')
-		.select([
-			'agent_run.id',
-			'agent_run.user_id',
-			'agent_run.status',
-			'agent_run.runner_id'
-		])
+		.select(['agent_run.id', 'agent_run.user_id', 'agent_run.status', 'agent_run.runner_id'])
 		.where('agent_run.status', 'in', ['launching', 'running'])
 		.where('runner.type', '=', 'local')
 		.where((eb) =>
