@@ -252,7 +252,7 @@ function verdictLine(input: {
 			: first.verdict === 'offline'
 				? `${first.runner_name} is offline`
 				: first.verdict === 'backing_off'
-					? `${first.runner_name} is backing off after launch failures`
+					? `${first.runner_name} is backing off after repeated failures`
 					: `waiting for capacity on ${first.runner_name}`;
 	const queue =
 		input.queuePosition !== null && input.queuePosition > 0

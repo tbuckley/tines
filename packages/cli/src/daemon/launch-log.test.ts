@@ -41,7 +41,7 @@ function assignment(timeoutMinutes: number): unknown {
 
 interface Harvest {
 	log: string;
-	finish: { status: string; error?: string } | null;
+	finish: { status: string; error?: string; judgment?: string } | null;
 }
 
 /**
@@ -49,7 +49,12 @@ interface Harvest {
  * daemon finish-reports it (by which point every log chunk has been flushed —
  * finishAndCleanup flushes before it reports).
  */
-function stubSupervisor(timeoutMinutes = 30): { server: Server; done: Promise<Harvest> } {
+function stubSupervisor(timeoutMinutes = 30): {
+	server: Server;
+	done: Promise<Harvest>;
+	/** Live view, for tests that must act while the run is still going. */
+	harvest: Harvest;
+} {
 	const harvest: Harvest = { log: '', finish: null };
 	let handedOut = false;
 	let resolve!: (h: Harvest) => void;
@@ -77,7 +82,7 @@ function stubSupervisor(timeoutMinutes = 30): { server: Server; done: Promise<Ha
 				return reply({ ok: true });
 			}
 			if (url === `/api/v1/runs/${RUN_ID}/finish`) {
-				harvest.finish = JSON.parse(body) as { status: string; error?: string };
+				harvest.finish = JSON.parse(body) as Harvest['finish'];
 				reply({ id: RUN_ID });
 				return resolve(harvest);
 			}
@@ -85,7 +90,7 @@ function stubSupervisor(timeoutMinutes = 30): { server: Server; done: Promise<Ha
 			res.end(JSON.stringify({ error: { code: 'not_found', message: url } }));
 		});
 	});
-	return { server, done };
+	return { server, done, harvest };
 }
 
 /**
@@ -213,6 +218,28 @@ describe('the run log a local run leaves behind', () => {
 		expect(lines.at(-1)).toMatch(
 			/^# tines runner: exit signal=SIGTERM \(timed out\) after \d+m\d+s$/
 		);
+	}, 30_000);
+
+	it('a daemon shutting down reports its in-flight runs as interrupted', async () => {
+		const { server: stub, done, harvest } = stubSupervisor();
+		server = stub;
+		await new Promise<void>((r) => stub.listen(0, '127.0.0.1', r));
+		const port = (stub.address() as AddressInfo).port;
+		configDir = mkdtempSync(join(tmpdir(), 'tines-daemon-'));
+
+		child = startDaemon(port, configDir, { command: 'sleep 30' });
+		// Ctrl-C only once the harness is genuinely under way — a shutdown
+		// before delivery would report nothing at all.
+		await expect.poll(() => harvest.log.length, { timeout: 20_000 }).toBeGreaterThan(0);
+		child.kill('SIGTERM');
+
+		// The Ctrl-C killed the run; the agent did not fail. The supervisor
+		// needs to be told that, or every CLI upgrade costs an issue a strike.
+		expect((await done).finish).toEqual({
+			status: 'failed',
+			error: 'daemon shut down',
+			judgment: 'interrupted'
+		});
 	}, 30_000);
 
 	it('a claude_code harness killed mid-event says its last words first', async () => {

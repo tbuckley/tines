@@ -210,7 +210,10 @@ All of this is edited on the **Agents** tab, and most of it from the CLI too:
 
 Runs are listed with `tines runs list` (`--active` for the ones holding a claim) and read
 with `tines runs show <id>`. A failed run strikes its issue; after the attempt limit the
-issue is parked with a needs-attention flag until a human runs `tines issues resume <ref>`.
+issue is parked with a needs-attention flag until a human runs `tines issues resume <ref>`. Runs
+the pipe ended rather than the agent — the runner went offline, the daemon restarted or
+shut down — are recorded as `interrupted` and cost the issue nothing; the runner that
+keeps dropping them backs off instead.
 
 ### The sweep and its cadence
 

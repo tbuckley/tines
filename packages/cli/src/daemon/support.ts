@@ -240,8 +240,18 @@ export interface RunDisposition {
 }
 
 export interface RunTableEffects<T extends ManagedRun> {
-	/** Report the finish to the supervisor; rejections are the caller-side log. */
-	finish(run: T, status: 'completed' | 'failed', error?: string): Promise<void>;
+	/**
+	 * Report the finish to the supervisor; rejections are the caller-side log.
+	 * `judgment` is set only on the ends this daemon caused itself — its own
+	 * shutdown, an orphan killed after a restart — so the supervisor knows not
+	 * to charge the issue for them.
+	 */
+	finish(
+		run: T,
+		status: 'completed' | 'failed',
+		error?: string,
+		judgment?: 'interrupted'
+	): Promise<void>;
 	/**
 	 * Tear down the run's local traces: timers, and the workspace unless the
 	 * disposition says to keep it (idempotent).
@@ -318,8 +328,19 @@ export class RunTable<T extends ManagedRun> {
 	 * already settled (a poll-cancel racing a clone failure or spawn error)
 	 * this still cleans up — the slot, workspace, and state entry must never
 	 * outlive the run — but reports nothing.
+	 *
+	 * Pass `judgment: 'interrupted'` when the daemon itself ended the run
+	 * (shutdown, restart) rather than the work failing: the supervisor then
+	 * spares the issue a strike. Everything a run can do wrong to itself —
+	 * a non-zero harness exit, a workspace that would not set up — must not
+	 * set it.
 	 */
-	async finishAndCleanup(run: T, status: 'completed' | 'failed', error?: string): Promise<void> {
+	async finishAndCleanup(
+		run: T,
+		status: 'completed' | 'failed',
+		error?: string,
+		judgment?: 'interrupted'
+	): Promise<void> {
 		if (run.settled) return this.cleanup(run);
 		run.settled = true;
 		run.endNote ??= error;
@@ -330,7 +351,7 @@ export class RunTable<T extends ManagedRun> {
 		if (this.keep(status)) this.effects.noteKept?.(run);
 		await run.flush?.();
 		try {
-			await this.effects.finish(run, status, error);
+			await this.effects.finish(run, status, error, judgment);
 			this.effects.log(`run ${run.runId} finished: ${status}${error ? ` (${error})` : ''}`);
 		} catch (err) {
 			// A settled run (canceled/timed out/swept server-side) is fine; the

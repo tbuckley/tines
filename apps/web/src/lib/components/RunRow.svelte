@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { AgentRun } from '@tines/shared';
+	import type { AgentRun, RunEndOutcome } from '@tines/shared';
 	import { isActiveRun, runCostLabel, runDurationLabel } from '@tines/shared';
 	import { slide } from 'svelte/transition';
 	import RunLogViewer from '$lib/components/RunLogViewer.svelte';
@@ -32,6 +32,15 @@
 	let expanded = $state(false);
 
 	const cost = $derived(runCostLabel(run));
+
+	/** What each judgment meant for the issue's attempt budget. */
+	function outcomeTitle(outcome: RunEndOutcome): string {
+		return outcome === 'advanced'
+			? 'The agent transitioned the issue — attempt count reset'
+			: outcome === 'interrupted'
+				? 'The runner went offline, restarted, or shut down — no strike against the issue'
+				: 'The run ended without transitioning the issue — one strike against its attempt budget';
+	}
 </script>
 
 <li
@@ -56,6 +65,14 @@
 	<span class="text-xs font-medium {runStatusClass(run.status)}">
 		{run.status.replaceAll('_', ' ')}
 	</span>
+	{#if run.outcome}
+		<!-- How the end was judged, subordinate to the status: "failed · interrupted"
+		     says the run failed but the issue was not charged for it. Absent on
+		     active runs and on rows that ended before outcomes were recorded. -->
+		<span class="text-muted-foreground text-xs" title={outcomeTitle(run.outcome)}>
+			· {run.outcome}
+		</span>
+	{/if}
 	<span class="text-muted-foreground text-xs">{runDurationLabel(run)}</span>
 	{#if cost}
 		<span class="text-muted-foreground text-xs">{cost}</span>

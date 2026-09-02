@@ -163,7 +163,9 @@ const DESCRIBERS: Record<KnownEventType, Describer> = {
 	'runner.errored': (_ev, p) => [
 		text('saw runner'),
 		name(p.runner_name),
-		text(`fail to launch (${str(p.consecutive_failures)} consecutive): ${str(p.error)}`)
+		// Not "fail to launch": the same counter now also carries runs a
+		// runner dropped after launch. The cause is in the error text.
+		text(`fail (${str(p.consecutive_failures)} consecutive): ${str(p.error)}`)
 	],
 	'routing_rule.created': (ev, p) => [
 		text(`${action(ev.type)} the ${str(p.scope_label)} routing rule`)

@@ -29,6 +29,7 @@ import {
 	loadEndableRun,
 	markRunRunning,
 	mintRunKeyAndFlip,
+	noteInterruption,
 	supervisorEvent
 } from '$lib/server/supervisor/engine';
 import { getRunLogStore, runLogRawKey } from '$lib/server/run-log-store';
@@ -115,6 +116,12 @@ export interface PollOutcome {
 	cameOnline: boolean;
 	/** True when this poll raised the runner's cap — new capacity, same dispatch pass. */
 	capRaised: boolean;
+	/**
+	 * True when `owned_runs` reconciliation interrupted at least one run.
+	 * Those runs' issues take no strike and re-enter the pool immediately, so
+	 * queue a pass rather than making a restarted daemon wait out the cron.
+	 */
+	reconciled: boolean;
 }
 
 function validateOwnedRuns(body: RunnerPollRequest): string[] {
@@ -191,13 +198,30 @@ export async function pollRunner(
 	// report was lost to a daemon restart — fail it now rather than waiting
 	// out the timeout. (`launching` runs stay for the launch-stall sweep: the
 	// daemon may simply not have received them yet.)
+	const lostError = 'lost by daemon (missing from owned_runs)';
+	let reconciled = false;
 	for (const run of active) {
 		if (run.status !== 'running' || owned.has(run.id)) continue;
 		const endable = await loadEndableRun(db, run.user_id, run.id);
 		if (!endable || endable.status !== 'running') continue;
-		await endRun(db, env, endable, {
+		// The daemon lost the run, the agent did not fail it: `interrupted`,
+		// so the issue keeps its attempt budget and simply gets re-dispatched.
+		const ended = await endRun(db, env, endable, {
 			status: 'failed',
-			error: 'lost by daemon (missing from owned_runs)',
+			error: lostError,
+			judgment: 'interrupted',
+			now
+		});
+		if (ended.outcome === 'interrupted') reconciled = true;
+	}
+	// One incident, one increment: a daemon that came back having dropped
+	// five runs is one failure, not five (noteInterruption's backoff window
+	// would collapse them anyway; calling once keeps the intent legible).
+	if (reconciled) {
+		await noteInterruption(db, env, {
+			userId: runner.user_id,
+			runnerId: runner.id,
+			error: lostError,
 			now
 		});
 	}
@@ -220,7 +244,7 @@ export async function pollRunner(
 		}
 	}
 
-	return { response: { assignments, cancels }, cameOnline, capRaised };
+	return { response: { assignments, cancels }, cameOnline, capRaised, reconciled };
 }
 
 /**
@@ -580,9 +604,33 @@ export async function finishRun(
 				.compile()
 		]);
 	}
+	// The daemon marks the ends it knows were its own fault — a shutdown, an
+	// orphan killed after a restart — as interruptions. Honoured only on a
+	// failure, and only for that exact value: everything else (a harness
+	// exiting non-zero, a workspace that would not clone) is the run failing
+	// and still strikes. Absent, as from any daemon predating the field, is
+	// judged exactly as before.
+	const interrupted = body.status === 'failed' && body.judgment === 'interrupted';
 	const endable = await loadEndableRun(db, run.user_id, runId);
 	if (endable) {
-		await endRun(db, env, endable, { status: body.status, error: error ?? null, now });
+		const ended = await endRun(db, env, endable, {
+			status: body.status,
+			error: error ?? null,
+			...(interrupted ? { judgment: 'interrupted' as const } : {}),
+			now
+		});
+		// A daemon that keeps dying mid-run backs off, the same as one that
+		// keeps failing to launch; the window collapses a shutdown's burst of
+		// finish reports into one incident.
+		if (ended.outcome === 'interrupted') {
+			await noteInterruption(db, env, {
+				userId: run.user_id,
+				runnerId: run.runner_id,
+				runId,
+				error: error ?? 'run interrupted by the daemon',
+				now
+			});
+		}
 	}
 	return serializedRun(db, run.user_id, runId);
 }

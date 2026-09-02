@@ -402,9 +402,44 @@ describe('pollRunner', () => {
 		expect(lostRun?.status).toBe('failed');
 		expect(lostRun?.error).toContain('owned_runs');
 		expect(runById(t, kept)?.status).toBe('running');
-		// The lost run ended without moving its issue: that is a strike.
-		expect(issueById(t, issueA).attempt_count).toBe(1);
+		// The daemon lost the run; the agent did not fail it. Judged
+		// `interrupted`: the issue keeps its budget and is dispatchable again.
+		expect(lostRun?.outcome).toBe('interrupted');
+		expect(issueById(t, issueA).attempt_count).toBe(0);
 		expect(response.cancels).toEqual([]);
+	});
+
+	it('owned_runs reconciliation puts the pressure on the runner, once per poll', async () => {
+		const t = world();
+		const runnerId = addRunner(t, { maxConcurrent: 3 });
+		const lostA = addRun(t, {
+			issueId: addIssue(t),
+			runnerId,
+			status: 'running',
+			startedAt: NOW
+		});
+		const lostB = addRun(t, {
+			issueId: addIssue(t),
+			runnerId,
+			status: 'running',
+			startedAt: NOW
+		});
+		const { reconciled } = await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, runnerId),
+			{ owned_runs: [] },
+			NOW + 1
+		);
+		expect(runById(t, lostA)?.outcome).toBe('interrupted');
+		expect(runById(t, lostB)?.outcome).toBe('interrupted');
+		// Two runs, one daemon restart: one incident, one increment, one event.
+		const runner = runnerById(t, runnerId);
+		expect(runner.launch_failures).toBe(1);
+		expect(runner.backoff_until).toBeGreaterThan(NOW + 1);
+		expect(eventsOfType(t, 'runner.errored')).toHaveLength(1);
+		// The freed claims are dispatchable now, not at the next cron.
+		expect(reconciled).toBe(true);
 	});
 
 	it('cancels lists owned runs the supervisor already settled (kill, do not finish)', async () => {
@@ -561,6 +596,99 @@ describe('finishRun', () => {
 		expect(issueById(t, issue).attempt_count).toBe(1);
 		const ended = eventsOfType(t, 'agent_run.ended');
 		expect(ended[ended.length - 1].payload.outcome).toBe('stalled');
+	});
+
+	it('a daemon reporting its own shutdown is interrupted: no strike, runner backs off', async () => {
+		const t = world();
+		const runnerId = addRunner(t);
+		const issue = addIssue(t, { attemptCount: 2 });
+		const runId = await delivered(t, { runnerId, issueId: issue });
+		await appendRunLog(t.db, t.env, await runnerRow(t, runnerId), runId, 'working…\n', NOW + 10);
+
+		const run = await finishRun(
+			t.db,
+			t.env,
+			await runnerRow(t, runnerId),
+			runId,
+			{ status: 'failed', error: 'daemon shut down', judgment: 'interrupted' },
+			NOW + 30
+		);
+		expect(run.status).toBe('failed');
+		expect(run.outcome).toBe('interrupted');
+		// Neither charged nor forgiven: the attempt the daemon swallowed
+		// simply never happened.
+		expect(issueById(t, issue).attempt_count).toBe(2);
+		expect(eventsOfType(t, 'issue.parked')).toHaveLength(0);
+		expect(keyForRun(t, runId)?.revoked_at).toBe(NOW + 30);
+		const ended = eventsOfType(t, 'agent_run.ended');
+		expect(ended[ended.length - 1].payload.outcome).toBe('interrupted');
+		// The pressure moved to the runner rather than disappearing.
+		expect(runnerById(t, runnerId).launch_failures).toBe(1);
+		expect(eventsOfType(t, 'runner.errored')).toHaveLength(1);
+	});
+
+	it('a shutdown reporting two runs is one incident, not two', async () => {
+		const t = world();
+		const runnerId = addRunner(t, { maxConcurrent: 2 });
+		const runA = await delivered(t, { runnerId, issueId: addIssue(t) });
+		const runB = await delivered(t, { runnerId, issueId: addIssue(t) });
+		for (const runId of [runA, runB]) {
+			await appendRunLog(t.db, t.env, await runnerRow(t, runnerId), runId, 'x\n', NOW + 10);
+			await finishRun(
+				t.db,
+				t.env,
+				await runnerRow(t, runnerId),
+				runId,
+				{ status: 'failed', error: 'daemon shut down', judgment: 'interrupted' },
+				NOW + 30
+			);
+		}
+		expect(runById(t, runA)?.outcome).toBe('interrupted');
+		expect(runById(t, runB)?.outcome).toBe('interrupted');
+		// One Ctrl-C, one failure: the burst of finish reports lands inside
+		// the backoff window the first one opened.
+		expect(runnerById(t, runnerId).launch_failures).toBe(1);
+		expect(eventsOfType(t, 'runner.errored')).toHaveLength(1);
+	});
+
+	it('an ordinary failed finish still strikes — only the daemon-set judgment is spared', async () => {
+		const t = world();
+		const runnerId = addRunner(t);
+		const issue = addIssue(t, { attemptCount: 1 });
+		const runId = await delivered(t, { runnerId, issueId: issue });
+		await appendRunLog(t.db, t.env, await runnerRow(t, runnerId), runId, 'cloning…\n', NOW + 10);
+
+		const run = await finishRun(
+			t.db,
+			t.env,
+			await runnerRow(t, runnerId),
+			runId,
+			{ status: 'failed', error: 'workspace setup failed: git clone exited 128' },
+			NOW + 30
+		);
+		expect(run.outcome).toBe('stalled');
+		expect(issueById(t, issue).attempt_count).toBe(2);
+		expect(runnerById(t, runnerId).launch_failures).toBe(0);
+	});
+
+	it('judgment on a completed finish is ignored: a quiet success still strikes', async () => {
+		const t = world();
+		const runnerId = addRunner(t);
+		const issue = addIssue(t);
+		const runId = await delivered(t, { runnerId, issueId: issue });
+		await appendRunLog(t.db, t.env, await runnerRow(t, runnerId), runId, 'done\n', NOW + 10);
+
+		const run = await finishRun(
+			t.db,
+			t.env,
+			await runnerRow(t, runnerId),
+			runId,
+			{ status: 'completed', judgment: 'interrupted' },
+			NOW + 30
+		);
+		expect(run.outcome).toBe('stalled');
+		expect(issueById(t, issue).attempt_count).toBe(1);
+		expect(runnerById(t, runnerId).launch_failures).toBe(0);
 	});
 
 	it('failed finishes record the error and usage lands on the run', async () => {

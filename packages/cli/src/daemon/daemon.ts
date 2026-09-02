@@ -285,8 +285,12 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 
 	const table: RunTable<ActiveRun> = new RunTable<ActiveRun>(
 		{
-			finish: async (run, status, error) => {
-				await client.finishRun(run.runId, { status, ...(error ? { error } : {}) });
+			finish: async (run, status, error, judgment) => {
+				await client.finishRun(run.runId, {
+					status,
+					...(error ? { error } : {}),
+					...(judgment ? { judgment } : {})
+				});
 			},
 			release: (run, { keep, outcome }) => {
 				if (run.timeout) clearTimeout(run.timeout);
@@ -353,9 +357,12 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 			}
 		}
 		try {
+			// The daemon's restart killed this run, not the agent: report it as
+			// an interruption so the issue keeps its attempt budget.
 			await client.finishRun(orphan.run_id, {
 				status: 'failed',
-				error: 'daemon restarted; orphaned harness killed'
+				error: 'daemon restarted; orphaned harness killed',
+				judgment: 'interrupted'
 			});
 		} catch {
 			// Already settled by the supervisor (cancel/timeout/offline sweep).
@@ -577,7 +584,7 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 		await Promise.all(
 			table.values().map(async (run) => {
 				if (run.child?.pid) killTree(run.child.pid, 'SIGTERM');
-				await table.finishAndCleanup(run, 'failed', 'daemon shut down');
+				await table.finishAndCleanup(run, 'failed', 'daemon shut down', 'interrupted');
 			})
 		);
 		process.exit(0);

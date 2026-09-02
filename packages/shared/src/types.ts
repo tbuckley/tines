@@ -969,6 +969,20 @@ export const RUN_STATUSES: readonly RunStatus[] = [
 	'canceled'
 ];
 
+/**
+ * How the supervisor judged a run's end, orthogonal to its status: an
+ * `advanced` run moved its issue (attempt count resets), a `stalled` one did
+ * not (a strike), and an `interrupted` one never got the chance because the
+ * pipe died — runner offline, daemon restarted or shut down — so the issue is
+ * charged nothing and the pressure lands on the runner instead.
+ *
+ * Deliberately not a `RunStatus`: `agent_run.status` carries a SQL CHECK
+ * constraint, and an interruption is still, honestly, a failed run.
+ */
+export type RunEndOutcome = 'advanced' | 'stalled' | 'interrupted';
+
+export const RUN_END_OUTCOMES: readonly RunEndOutcome[] = ['advanced', 'stalled', 'interrupted'];
+
 /** Statuses that hold the issue's exclusive claim (and count toward caps). */
 export const ACTIVE_RUN_STATUSES: readonly RunStatus[] = ['assigned', 'launching', 'running'];
 
@@ -1317,6 +1331,13 @@ export interface AppendRunLogResponse {
 export interface FinishRunRequest {
 	status: 'completed' | 'failed';
 	error?: string;
+	/**
+	 * `interrupted` = the daemon died, restarted, or was shut down around the
+	 * run; the work did not fail, so the issue must not take a strike. Only
+	 * honoured with `status: 'failed'`; absent — as from any daemon predating
+	 * the field — is judged exactly as before.
+	 */
+	judgment?: 'interrupted';
 	/** Whatever the harness reported (Claude Code JSON output, etc.). */
 	usage?: AgentRunUsage;
 }
@@ -1398,6 +1419,14 @@ export interface AgentRun {
 	runner_id: string;
 	runner_name: string;
 	status: RunStatus;
+	/**
+	 * How the supervisor judged the end. `advanced` = the agent transitioned
+	 * the issue; `stalled` = it did not, and the issue took a strike;
+	 * `interrupted` = the pipe died (runner offline, daemon restart or
+	 * shutdown), so nothing was charged to the issue. Null while the run is
+	 * active, for runs that never started, and for pre-0016 rows.
+	 */
+	outcome: RunEndOutcome | null;
 	tier: ModelTier;
 	/** Resolved at launch; null when the harness cannot vary its model. */
 	model: string | null;

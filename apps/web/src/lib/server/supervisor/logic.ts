@@ -254,7 +254,7 @@ export function targetVerdict(
 	if (runner.backoff_until !== null && runner.backoff_until > now) {
 		return {
 			verdict: 'backing_off',
-			detail: `backing off after launch failures until ${new Date(runner.backoff_until).toISOString()}`
+			detail: `backing off after repeated failures until ${new Date(runner.backoff_until).toISOString()}`
 		};
 	}
 	const active = counts.byRunner.get(runner.id) ?? 0;

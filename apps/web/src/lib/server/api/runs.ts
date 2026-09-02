@@ -4,6 +4,7 @@ import {
 	type AgentRunDetail,
 	type AgentRunUsage,
 	type ModelTier,
+	type RunEndOutcome,
 	type RunStatus
 } from '@tines/shared';
 import type { Kysely } from 'kysely';
@@ -58,6 +59,7 @@ export function serializeRun(row: RunRow): AgentRun {
 		runner_id: row.runner_id,
 		runner_name: row.runner_name,
 		status: row.status as RunStatus,
+		outcome: (row.outcome as RunEndOutcome | null) ?? null,
 		tier: row.tier as ModelTier,
 		model: row.model,
 		usage: parseUsage(row.usage),

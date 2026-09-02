@@ -300,7 +300,12 @@ describe('RunTable', () => {
 	}
 
 	function harness(opts: { keep?: (outcome: RunOutcome) => boolean } = {}) {
-		const finishes: { runId: string; status: string; error?: string }[] = [];
+		const finishes: {
+			runId: string;
+			status: string;
+			error?: string;
+			judgment?: 'interrupted';
+		}[] = [];
 		const released: { runId: string; keep: boolean; outcome: RunOutcome }[] = [];
 		const notes: string[] = [];
 		const logs: string[] = [];
@@ -308,9 +313,9 @@ describe('RunTable', () => {
 		let failFinish: string | null = null;
 		const table = new RunTable<TestRun>(
 			{
-				finish: async (run, status, error) => {
+				finish: async (run, status, error, judgment) => {
 					if (failFinish) throw new Error(failFinish);
-					finishes.push({ runId: run.runId, status, error });
+					finishes.push({ runId: run.runId, status, error, judgment });
 				},
 				release: (run, { keep, outcome }) => released.push({ runId: run.runId, keep, outcome }),
 				noteKept: (run) => notes.push(run.runId),
@@ -353,6 +358,24 @@ describe('RunTable', () => {
 		// A second call (a racing exit handler) reports nothing more.
 		await h.table.finishAndCleanup(run, 'failed', 'late');
 		expect(h.finishes).toHaveLength(1);
+	});
+
+	it("a shutdown's finish is marked interrupted so the supervisor spares the issue", async () => {
+		const h = harness();
+		const run = h.run('arun_1');
+		h.table.track(run);
+		await h.table.finishAndCleanup(run, 'failed', 'daemon shut down', 'interrupted');
+		expect(h.finishes).toEqual([
+			{ runId: 'arun_1', status: 'failed', error: 'daemon shut down', judgment: 'interrupted' }
+		]);
+	});
+
+	it('an ordinary failure carries no judgment: the run failed, and that is a strike', async () => {
+		const h = harness();
+		const run = h.run('arun_1');
+		h.table.track(run);
+		await h.table.finishAndCleanup(run, 'failed', 'harness exited with code 1');
+		expect(h.finishes[0].judgment).toBeUndefined();
 	});
 
 	it('cancel during materialization: the later failure path still cleans up, without a report', async () => {

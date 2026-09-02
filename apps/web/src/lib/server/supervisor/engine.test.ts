@@ -18,6 +18,7 @@ import { createFakeAdapter, type FakeAdapter } from './fake-adapter';
 import {
 	addIssue,
 	addRule,
+	addRun,
 	addRunner,
 	addTransitionEvent,
 	addTwoStageWorkflow,
@@ -610,6 +611,40 @@ describe('end judgment', () => {
 		expect(eventsOfType(t, 'agent_run.ended')[0].payload.outcome).toBe('advanced');
 	});
 
+	it('an interrupted end neither strikes the issue nor forgives its earlier attempts', async () => {
+		const t = world();
+		const { issue, runId } = await runningRun(t, { attemptCount: 2 });
+		const run = await loadEndableRun(t.db, USER, runId);
+		const outcome = await endRun(t.db, t.env, run!, {
+			status: 'failed',
+			error: 'runner offline',
+			judgment: 'interrupted',
+			now: NOW + 60_000
+		});
+		expect(outcome).toEqual({ ended: true, outcome: 'interrupted', parked: false });
+		// Not 3 (no strike) and not 0 (no reset): the attempt never happened.
+		expect(issueById(t, issue).attempt_count).toBe(2);
+		expect(runById(t, runId)!.status).toBe('failed');
+		expect(eventsOfType(t, 'agent_run.ended')[0].payload.outcome).toBe('interrupted');
+		expect(keyForRun(t, runId)!.revoked_at).not.toBeNull();
+	});
+
+	it('an interrupted run whose key moved the issue is still advanced', async () => {
+		const t = world();
+		const { issue, runId, keyId } = await runningRun(t, { attemptCount: 2 });
+		addTransitionEvent(t, { issueId: issue, apiKeyId: keyId, at: NOW + 1000 });
+		const run = await loadEndableRun(t.db, USER, runId);
+		const outcome = await endRun(t.db, t.env, run!, {
+			status: 'failed',
+			error: 'runner offline',
+			judgment: 'interrupted',
+			now: NOW + 60_000
+		});
+		// Authorship is checked first and wins: the work landed either way.
+		expect(outcome.outcome).toBe('advanced');
+		expect(issueById(t, issue).attempt_count).toBe(0);
+	});
+
 	it('A→B→A wandering still counts as engagement, not a strike', async () => {
 		const t = world();
 		const { issue, runId, keyId } = await runningRun(t, { attemptCount: 1 });
@@ -839,6 +874,124 @@ describe('the sweep', () => {
 		expect(run.status).toBe('failed');
 		expect(run.error).toBe('runner offline');
 		expect(keyForRun(t, runId)!.revoked_at).not.toBeNull();
+	});
+
+	it('an offline runner interrupts its running runs: no strike, no park, runner backs off', async () => {
+		const t = world();
+		const fake = createFakeAdapter();
+		setSettings(t, { attemptLimit: 3 });
+		const runner = addRunner(t);
+		addRule(t, { targets: [{ runner_id: runner }] });
+		const issue = addIssue(t, { attemptCount: 2 });
+		await pass(t, fake);
+		const runId = runs(t)[0].id as string;
+		t.sqlite
+			.prepare('UPDATE runner SET last_seen_at = ? WHERE id = ?')
+			.run(NOW - 6 * 60_000, runner);
+		setSettings(t, { enabled: false, attemptLimit: 3 });
+
+		await sweepSupervisor(t.db, t.env, NOW, { local: fake });
+		// One strike short of the limit, and it stays there: the laptop lid
+		// closing is not the issue failing.
+		expect(issueById(t, issue).attempt_count).toBe(2);
+		expect(issueById(t, issue).needs_attention).toBe(0);
+		expect(eventsOfType(t, 'issue.parked')).toHaveLength(0);
+		expect(runById(t, runId)!.outcome).toBe('interrupted');
+		expect(keyForRun(t, runId)!.revoked_at).not.toBeNull();
+		const ended = eventsOfType(t, 'agent_run.ended');
+		expect(ended[ended.length - 1].payload).toMatchObject({
+			status: 'failed',
+			outcome: 'interrupted'
+		});
+		// The pressure lands on the runner instead.
+		expect(runnerById(t, runner).launch_failures).toBe(1);
+		expect(runnerById(t, runner).backoff_until).toBeGreaterThan(NOW);
+		expect(eventsOfType(t, 'runner.errored')).toHaveLength(1);
+	});
+
+	it('an offline run whose agent already transitioned the issue is still advanced', async () => {
+		const t = world();
+		const fake = createFakeAdapter();
+		const runner = addRunner(t);
+		addRule(t, { targets: [{ runner_id: runner }] });
+		const issue = addIssue(t, { attemptCount: 2 });
+		await pass(t, fake);
+		const run = runs(t)[0];
+		addTransitionEvent(t, {
+			issueId: issue,
+			apiKeyId: run.api_key_id as string,
+			at: NOW - 1000
+		});
+		t.sqlite
+			.prepare('UPDATE runner SET last_seen_at = ? WHERE id = ?')
+			.run(NOW - 6 * 60_000, runner);
+		setSettings(t, { enabled: false });
+
+		await sweepSupervisor(t.db, t.env, NOW, { local: fake });
+		// The work landed before the daemon died — credit is unchanged by how
+		// the run ended.
+		expect(runById(t, run.id as string)!.outcome).toBe('advanced');
+		expect(issueById(t, issue).attempt_count).toBe(0);
+	});
+
+	it('one offline sweep taking down two runs is one incident for the runner', async () => {
+		const t = world();
+		const fake = createFakeAdapter();
+		const runner = addRunner(t, { maxConcurrent: 2 });
+		addRule(t, { targets: [{ runner_id: runner }] });
+		addIssue(t);
+		addIssue(t);
+		await pass(t, fake);
+		expect(runs(t)).toHaveLength(2);
+		t.sqlite
+			.prepare('UPDATE runner SET last_seen_at = ? WHERE id = ?')
+			.run(NOW - 6 * 60_000, runner);
+		setSettings(t, { enabled: false });
+
+		await sweepSupervisor(t.db, t.env, NOW, { local: fake });
+		expect(runs(t).every((r) => r.outcome === 'interrupted')).toBe(true);
+		// One dead daemon, one failure — not one per run it happened to hold.
+		expect(runnerById(t, runner).launch_failures).toBe(1);
+		expect(eventsOfType(t, 'runner.errored')).toHaveLength(1);
+
+		// A second incident, once the backoff has expired, does count again —
+		// a daemon that keeps dying keeps escalating.
+		const later = (runnerById(t, runner).backoff_until as number) + 1;
+		addRun(t, {
+			issueId: addIssue(t),
+			runnerId: runner,
+			status: 'running',
+			startedAt: later - 1000
+		});
+		await sweepSupervisor(t.db, t.env, later, { local: fake });
+		expect(runnerById(t, runner).launch_failures).toBe(2);
+		expect(eventsOfType(t, 'runner.errored')).toHaveLength(2);
+	});
+
+	it('a successful launch clears the pressure an interruption applied', async () => {
+		const t = world();
+		const fake = createFakeAdapter();
+		const runner = addRunner(t);
+		addRule(t, { targets: [{ runner_id: runner }] });
+		const issue = addIssue(t);
+		await pass(t, fake);
+		t.sqlite
+			.prepare('UPDATE runner SET last_seen_at = ? WHERE id = ?')
+			.run(NOW - 6 * 60_000, runner);
+		setSettings(t, { enabled: false });
+		await sweepSupervisor(t.db, t.env, NOW, { local: fake });
+		expect(runnerById(t, runner).launch_failures).toBe(1);
+
+		// The daemon comes back and the issue — never struck — is picked up
+		// again. Launching is what proves the runner healthy, so that is what
+		// clears the count; a poll alone (every 15s) would not be evidence.
+		setSettings(t, { enabled: true });
+		const back = (runnerById(t, runner).backoff_until as number) + 1;
+		t.sqlite.prepare('UPDATE runner SET last_seen_at = ? WHERE id = ?').run(back, runner);
+		await pass(t, fake, back);
+		expect(runs(t).some((r) => r.status === 'running' && r.issue_id === issue)).toBe(true);
+		expect(runnerById(t, runner).launch_failures).toBe(0);
+		expect(runnerById(t, runner).backoff_until).toBeNull();
 	});
 
 	it('fails assigned runs unacknowledged after five minutes as launch failures', async () => {
