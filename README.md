@@ -264,6 +264,9 @@ One-time setup (needs `wrangler login` or a `CLOUDFLARE_API_TOKEN` in the enviro
 cd apps/web
 pnpm wrangler d1 create tines             # then paste the database_id into wrangler.jsonc
 pnpm db:migrate:remote
+pnpm wrangler r2 bucket create tines-artifacts   # the ARTIFACTS and RUN_LOGS bindings in
+pnpm wrangler r2 bucket create tines-run-logs    # wrangler.jsonc; without them the worker
+                                                 # silently stores no artifacts or run logs
 pnpm wrangler secret put BETTER_AUTH_SECRET
 pnpm wrangler secret put GOOGLE_CLIENT_ID
 pnpm wrangler secret put GOOGLE_CLIENT_SECRET
@@ -323,6 +326,8 @@ One-time preview setup:
 ```sh
 cd apps/web
 pnpm wrangler d1 create tines-preview     # paste the database_id into env.preview in wrangler.jsonc
+pnpm wrangler r2 bucket create tines-artifacts-preview   # env.preview's two buckets; bucket
+pnpm wrangler r2 bucket create tines-run-logs-preview    # names are global, so no --env here
 pnpm wrangler secret put BETTER_AUTH_SECRET --env preview
 pnpm run build && pnpm wrangler deploy --env preview   # creates the preview worker once
 ```
@@ -345,4 +350,6 @@ From the repo root:
 - `pnpm dev` — run the web app dev server (with local D1 bindings emulated)
 - `pnpm build` — build all packages
 - `pnpm check` — typecheck all packages (svelte-check + tsc)
+- `pnpm test` — vitest unit tests (what CI runs before deploying or publishing)
+- `pnpm test:e2e` — Playwright e2e suite (boots the built worker under `wrangler dev` with a seeded local D1; see `apps/web/e2e/`). Not run by CI, which stops at `pnpm test`.
 - `pnpm cli <command>` — run the CLI in dev mode
