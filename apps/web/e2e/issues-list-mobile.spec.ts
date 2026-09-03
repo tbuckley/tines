@@ -90,6 +90,11 @@ const row = (page: Page, issue: IssueDetail): Locator =>
 /** The truncating title span — the box the badge used to eat. */
 const title = (row: Locator): Locator => row.locator('.vt-shared').first();
 const badge = (row: Locator): Locator => row.locator('.state-badge');
+/** The metadata wrapper: the row's only child div, `contents` at `sm`+. */
+const metaLine = (row: Locator): Locator => row.locator('> div');
+
+const display = (locator: Locator): Promise<string> =>
+	locator.evaluate((el) => getComputedStyle(el).display);
 
 async function box(locator: Locator) {
 	const b = await locator.boundingBox();
@@ -129,7 +134,8 @@ test('the state badge sits on its own line under the title on a phone', async ({
 		const badgeBox = await box(badge(r));
 
 		// Second line: below the title, and hung under it rather than under
-		// the `#number` column (`pl-15`).
+		// the `#number` column (`pl-15`). The wrapper is a real box here.
+		expect(await display(metaLine(r))).toBe('flex');
 		expect(badgeBox.y).toBeGreaterThan(titleBox.y + 15);
 		expect(Math.abs(badgeBox.x - titleBox.x)).toBeLessThan(4);
 		heights.push(rowBox.height);
@@ -166,7 +172,10 @@ test('a desktop row stays a single line in the same order', async ({ page }) => 
 		expect((await box(r)).height).toBeLessThan(60);
 
 		// `sm:contents` dissolves the mobile wrapper, so the number, title and
-		// badge are still the anchor's own flex children, on one line.
+		// badge are still the anchor's own flex children, on one line. Without
+		// it the row still measures as one line — only the computed display
+		// catches the wrapper surviving into the desktop layout.
+		expect(await display(metaLine(r))).toBe('contents');
 		const numberBox = await box(r.getByText(`#${issue.number}`, { exact: true }));
 		const titleBox = await box(title(r));
 		const badgeBox = await box(badge(r));
@@ -188,6 +197,7 @@ test('a desktop row on the project page stays a single line', async ({ page }) =
 	const r = row(page, clarifying);
 	await expect(r).toBeVisible();
 	expect((await box(r)).height).toBeLessThan(60);
+	expect(await display(metaLine(r))).toBe('contents');
 
 	const numberBox = await box(r.getByText(`#${clarifying.number}`, { exact: true }));
 	const titleBox = await box(title(r));
