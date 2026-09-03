@@ -65,12 +65,15 @@ const BUILTIN_TIER_MODELS: Record<string, Record<ModelTier, string> | null> = {
 		balanced: 'claude-opus-5',
 		cheapest: 'claude-sonnet-5'
 	},
-	// Provider ids below are re-verified against live docs at the start of
-	// their milestones (M2 Claude, M4 Gemini) per the plan's risk flag.
+	// Gemini managed runs go through the Antigravity agent, which runs the
+	// Flash family only (3.8 / 3.7 / 3.6 / 3.5 Flash and 3.5 Flash-Lite as of
+	// September 2026) — no Pro tier exists there, so `smartest` and `balanced`
+	// both resolve to the newest Flash. Overrides can name any model the agent
+	// accepts; a rejected id surfaces as a launch failure on the runner.
 	gemini_managed: {
-		smartest: 'gemini-2.5-pro',
-		balanced: 'gemini-2.5-flash',
-		cheapest: 'gemini-2.5-flash-lite'
+		smartest: 'gemini-3.8-flash',
+		balanced: 'gemini-3.8-flash',
+		cheapest: 'gemini-3.5-flash-lite'
 	}
 };
 

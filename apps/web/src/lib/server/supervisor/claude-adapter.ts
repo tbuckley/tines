@@ -31,6 +31,13 @@ import {
 import type { Kysely } from 'kysely';
 import { decryptSecret } from '../crypto';
 import { getDb, type Database } from '../db';
+import {
+	createSelfApi,
+	loadGithubPat,
+	parseJson,
+	requireEncryptionKey,
+	tinesApiBaseUrl
+} from './managed-common';
 import type {
 	AdapterLaunchInput,
 	AdapterLaunchResult,
@@ -70,15 +77,6 @@ export interface ClaudeAdapterOptions {
 // ---------------------------------------------------------------------------
 // Environment plumbing
 
-function requireEncryptionKey(env: Env): string {
-	if (!env.SECRET_ENCRYPTION_KEY) {
-		throw new Error(
-			'SECRET_ENCRYPTION_KEY is not configured; cannot use stored provider credentials'
-		);
-	}
-	return env.SECRET_ENCRYPTION_KEY;
-}
-
 /**
  * Canonicalizes a repo context item's URL to the one form the Managed
  * Agents API accepts for `github_repository` resources. The shared
@@ -86,17 +84,7 @@ function requireEncryptionKey(env: Env): string {
  * re-exported so this module stays the adapter-side import site.
  */
 export { canonicalGitHubRepoUrl } from '@tines/shared';
-
-/** The public base URL managed runs use to reach the Tines API. */
-export function tinesApiBaseUrl(env: Env): string {
-	const base = env.TINES_PUBLIC_URL ?? env.BETTER_AUTH_URL;
-	if (!base) {
-		throw new Error(
-			'Cannot determine the public Tines URL (set TINES_PUBLIC_URL or BETTER_AUTH_URL); managed runs need it to reach the API'
-		);
-	}
-	return base.replace(/\/+$/, '');
-}
+export { tinesApiBaseUrl } from './managed-common';
 
 function anthropic(apiKey: string, opts: ClaudeAdapterOptions): Anthropic {
 	return new Anthropic({ apiKey, ...(opts.fetch ? { fetch: opts.fetch } : {}) });
@@ -135,15 +123,6 @@ interface RunnerContext {
 	client: Anthropic;
 }
 
-function parseJson<T>(raw: string | null | undefined): T | null {
-	if (!raw) return null;
-	try {
-		return JSON.parse(raw) as T;
-	} catch {
-		return null;
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Provider context: everything bound to one worker env
 
@@ -176,7 +155,6 @@ interface ProviderContext {
 
 function createProviderContext(env: Env, opts: ClaudeAdapterOptions): ProviderContext {
 	const db = getDb(env);
-	const fetchFn = opts.fetch ?? globalThis.fetch.bind(globalThis);
 
 	async function runnerContext(runnerId: string): Promise<RunnerContext> {
 		const row = await db
@@ -194,16 +172,7 @@ function createProviderContext(env: Env, opts: ClaudeAdapterOptions): ProviderCo
 		};
 	}
 
-	/** The stored PAT, decrypted; null when none is configured. */
-	async function githubPat(userId: string): Promise<string | null> {
-		const settings = await db
-			.selectFrom('supervisor_settings')
-			.select('github_pat_enc')
-			.where('user_id', '=', userId)
-			.executeTakeFirst();
-		if (!settings?.github_pat_enc) return null;
-		return decryptSecret(settings.github_pat_enc, requireEncryptionKey(env));
-	}
+	const githubPat = (userId: string) => loadGithubPat(db, env, userId);
 
 	async function persistConfig(runnerId: string, config: ClaudeRunnerConfig): Promise<void> {
 		await db
@@ -213,30 +182,7 @@ function createProviderContext(env: Env, opts: ClaudeAdapterOptions): ProviderCo
 			.execute();
 	}
 
-	/**
-	 * GET against our own API with the run key (self-seeding's own
-	 * mechanism). Prefers the SELF service binding — it invokes this worker's
-	 * fetch handler in-process, which is the only way to reach ourselves in
-	 * production: a worker on a custom domain cannot `fetch()` its own
-	 * hostname (Cloudflare routes that to the nonexistent origin → 522). A
-	 * thrown SELF call falls back to plain fetch for dev setups where the
-	 * binding doesn't resolve; HTTP error statuses are real API answers and
-	 * propagate.
-	 */
-	async function apiGet<T>(base: string, path: string, runKey: string): Promise<T> {
-		const url = `${base}${path}`;
-		const init = { headers: { authorization: `Bearer ${runKey}` } };
-		let res: Response;
-		if (opts.fetch) {
-			res = await opts.fetch(url, init);
-		} else if (env.SELF) {
-			res = (await env.SELF.fetch(url, init).catch(() => fetchFn(url, init))) as Response;
-		} else {
-			res = await fetchFn(url, init);
-		}
-		if (!res.ok) throw new Error(`launch materials fetch failed: GET ${path} → ${res.status}`);
-		return res.json() as Promise<T>;
-	}
+	const apiGet = createSelfApi(env, opts.fetch);
 
 	/** The managed environment, created on first use and cached in config. */
 	async function ensureEnvironment(ctx: RunnerContext): Promise<string> {

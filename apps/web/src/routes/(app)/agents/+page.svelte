@@ -12,6 +12,7 @@
 	import {
 		activeStateIds as deriveActiveStateIds,
 		ApiError,
+		DEFAULT_GEMINI_AGENT,
 		DEFAULT_MANAGED_RUN_COST_USD,
 		isActiveRun,
 		isStaleTierOverride,
@@ -99,19 +100,21 @@
 	}
 
 	// The add-runner wizard. The local path shows the bootstrap command (the
-	// daemon registers itself; nothing is created here); the Claude managed
-	// path creates the runner with a ping-validated key, inlining the add-PAT
-	// step when none is stored, and ends with a skippable add-to-routing step.
+	// daemon registers itself; nothing is created here); the managed paths
+	// (Claude, Gemini) create the runner with a ping-validated key, inlining
+	// the add-PAT step when none is stored, and end with a skippable
+	// add-to-routing step.
 	let addRunnerOpen = $state(false);
-	let addRunnerType = $state<'local' | 'claude_managed'>('local');
+	let addRunnerType = $state<'local' | 'claude_managed' | 'gemini_managed'>('local');
 	let runnerName = $state('');
 	let runnerHarness = $state('claude-code');
 	let runnerCommand = $state('');
 	let runnerMaxConcurrent = $state(1);
 	let commandCopied = $state(false);
 
-	// Claude managed form state (flow 3).
+	// Managed form state (flow 3), shared by the Claude and Gemini paths.
 	let claudeApiKey = $state('');
+	let geminiAgent = $state(DEFAULT_GEMINI_AGENT);
 	let claudeMaxConcurrent = $state(3);
 	let claudeMaxMinutes = $state(30);
 	let claudeDefaultTier = $state<ModelTier>('balanced');
@@ -129,7 +132,14 @@
 		claudeApiKey = '';
 		claudePat = '';
 		runnerName = '';
+		geminiAgent = DEFAULT_GEMINI_AGENT;
 	}
+
+	const managedProvider = $derived(
+		addRunnerType === 'gemini_managed'
+			? { keyLabel: 'Gemini API key', placeholder: 'AIza…', example: 'gemini' }
+			: { keyLabel: 'Anthropic API key', placeholder: 'sk-ant-…', example: 'claude-cloud' }
+	);
 
 	async function createClaudeRunner(e: SubmitEvent) {
 		e.preventDefault();
@@ -142,15 +152,17 @@
 			if (claudePat.trim() !== '') {
 				await api.updateSupervisorSettings({ github_pat: claudePat.trim() });
 			}
+			const type = addRunnerType === 'gemini_managed' ? 'gemini_managed' : 'claude_managed';
 			createdRunner = await api.createRunner({
-				type: 'claude_managed',
+				type,
 				name: runnerName.trim(),
 				api_key: claudeApiKey.trim(),
 				max_concurrent: claudeMaxConcurrent,
 				max_run_minutes: claudeMaxMinutes,
 				default_tier: claudeDefaultTier,
 				// An explicit budget replaces the $5 default wholesale; {} = uncapped.
-				budget: claudeCapEnabled ? { max_run_cost_usd: claudeCapUsd } : {}
+				budget: claudeCapEnabled ? { max_run_cost_usd: claudeCapUsd } : {},
+				...(type === 'gemini_managed' ? { config: { agent: geminiAgent.trim() } } : {})
 			});
 			claudeApiKey = '';
 			claudePat = '';
@@ -210,6 +222,7 @@
 	let editCapUsd = $state('');
 	let editCapTokens = $state('');
 	let editApiKey = $state('');
+	let editGeminiAgent = $state('');
 	let savingEdit = $state(false);
 
 	function openRunnerEdit(runner: Runner) {
@@ -228,6 +241,8 @@
 		editCapTokens =
 			runner.budget?.max_run_tokens !== undefined ? String(runner.budget.max_run_tokens) : '';
 		editApiKey = '';
+		editGeminiAgent =
+			runner.type === 'gemini_managed' ? String(runner.config.agent ?? DEFAULT_GEMINI_AGENT) : '';
 	}
 
 	async function saveRunnerEdit(e: SubmitEvent) {
@@ -260,7 +275,10 @@
 				default_tier: editDefaultTier,
 				tiers: Object.keys(tiers).length > 0 ? tiers : null,
 				budget: Object.keys(budget).length > 0 ? budget : null,
-				...(editApiKey.trim() !== '' ? { api_key: editApiKey.trim() } : {})
+				...(editApiKey.trim() !== '' ? { api_key: editApiKey.trim() } : {}),
+				...(editTarget.type === 'gemini_managed'
+					? { config: { agent: editGeminiAgent.trim() } }
+					: {})
 			});
 			editTarget = null;
 			await invalidateAll();
@@ -608,8 +626,8 @@
 	</div>
 	{#if data.runners.length === 0}
 		<div class="text-muted-foreground rounded-lg border border-dashed p-8 text-center text-sm">
-			No runners yet. Add a local runner for this machine, or a Claude managed runner that works
-			issues in the cloud (Gemini arrives in a later milestone).
+			No runners yet. Add a local runner for this machine, or a Claude or Gemini managed runner that
+			works issues in the cloud on your own API key.
 		</div>
 	{:else}
 		<div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -626,7 +644,14 @@
 							{/if}
 						</span>
 						<div class="min-w-0">
-							<p class="truncate text-sm font-medium">{runner.name}</p>
+							<p class="truncate text-sm font-medium">
+								{runner.name}
+								{#if runner.type !== 'local'}
+									<span class="text-muted-foreground text-xs font-normal">
+										· {runner.type === 'gemini_managed' ? 'Gemini' : 'Claude'}
+									</span>
+								{/if}
+							</p>
 							<p class="text-muted-foreground flex items-center gap-1.5 text-xs">
 								<span class="size-1.5 rounded-full {statusDotClass(runner)}"></span>
 								{runnerStatusLabel(runner)}
@@ -1011,9 +1036,18 @@
 				>
 					Claude (managed)
 				</button>
+				<button
+					type="button"
+					class="rounded px-3 py-1 {addRunnerType === 'gemini_managed'
+						? 'bg-background font-medium shadow-xs'
+						: 'text-muted-foreground'}"
+					onclick={() => (addRunnerType = 'gemini_managed')}
+				>
+					Gemini (managed)
+				</button>
 			</div>
 
-			{#if addRunnerType === 'claude_managed'}
+			{#if addRunnerType !== 'local'}
 				<form onsubmit={createClaudeRunner} class="space-y-4">
 					<div class="grid grid-cols-2 gap-3">
 						<div class="space-y-1.5">
@@ -1021,7 +1055,7 @@
 							<Input
 								id="claude-name"
 								bind:value={runnerName}
-								placeholder="e.g. claude-cloud"
+								placeholder="e.g. {managedProvider.example}"
 								required
 							/>
 						</div>
@@ -1035,12 +1069,12 @@
 						</div>
 					</div>
 					<div class="space-y-1.5">
-						<label class="text-sm font-medium" for="claude-key">Anthropic API key</label>
+						<label class="text-sm font-medium" for="claude-key">{managedProvider.keyLabel}</label>
 						<Input
 							id="claude-key"
 							type="password"
 							bind:value={claudeApiKey}
-							placeholder="sk-ant-…"
+							placeholder={managedProvider.placeholder}
 							required
 						/>
 						<p class="text-muted-foreground text-xs">
@@ -1048,6 +1082,21 @@
 							after — the edit view only shows that a key is set.
 						</p>
 					</div>
+					{#if addRunnerType === 'gemini_managed'}
+						<div class="space-y-1.5" transition:slide={{ duration: dur() }}>
+							<label class="text-sm font-medium" for="gemini-agent">Managed agent</label>
+							<Input
+								id="gemini-agent"
+								bind:value={geminiAgent}
+								placeholder={DEFAULT_GEMINI_AGENT}
+							/>
+							<p class="text-muted-foreground text-xs">
+								The Interactions API agent runs go through — the current Antigravity preview by
+								default. Tiers pick the model per run: gemini-3.8-flash unless overridden
+								(Antigravity runs the Flash family).
+							</p>
+						</div>
+					{/if}
 					<div class="grid grid-cols-2 gap-3">
 						<div class="space-y-1.5">
 							<label class="text-sm font-medium" for="claude-cap">Max concurrent runs</label>
@@ -1093,8 +1142,14 @@
 										(claudeCapUsd = Number(e.currentTarget.value) || DEFAULT_MANAGED_RUN_COST_USD)}
 								/>
 								<span class="text-muted-foreground text-xs">
-									per run, enforced by the platform — the session pauses at the cap and the run
-									ends.
+									{#if addRunnerType === 'gemini_managed'}
+										per run, checked each sweep against table-priced usage — a run can overshoot by
+										up to one sweep interval. A token cap (edit view) is the hard, provider-enforced
+										stop.
+									{:else}
+										per run, enforced by the platform — the session pauses at the cap and the run
+										ends.
+									{/if}
 								</span>
 							</div>
 						{:else}
@@ -1347,6 +1402,21 @@
 				{/if}
 			</div>
 
+			{#if editTarget.type === 'gemini_managed'}
+				<div class="space-y-1.5">
+					<label class="text-sm font-medium" for="edit-gemini-agent">Managed agent</label>
+					<Input
+						id="edit-gemini-agent"
+						bind:value={editGeminiAgent}
+						placeholder={DEFAULT_GEMINI_AGENT}
+					/>
+					<p class="text-muted-foreground text-xs">
+						The Interactions API agent this runner's interactions run against; blank falls back to
+						the current Antigravity preview. Takes effect at the next launch.
+					</p>
+				</div>
+			{/if}
+
 			{#if editTarget.type !== 'local'}
 				<div class="space-y-1.5">
 					<label class="text-sm font-medium" for="edit-api-key">Provider API key</label>
@@ -1356,7 +1426,9 @@
 						bind:value={editApiKey}
 						placeholder={editTarget.has_api_key
 							? 'A key is set — paste a new one to replace it'
-							: 'sk-ant-…'}
+							: editTarget.type === 'gemini_managed'
+								? 'AIza…'
+								: 'sk-ant-…'}
 					/>
 					<p class="text-muted-foreground text-xs">
 						Write-only. A replacement is ping-validated first — a bad paste leaves the working key

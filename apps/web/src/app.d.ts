@@ -38,6 +38,12 @@ declare global {
 		 * prompts, the agent's TINES_API_URL). Falls back to BETTER_AUTH_URL.
 		 */
 		TINES_PUBLIC_URL?: string;
+		/**
+		 * Where the supervisor fetches the single-file CLI build it seeds into
+		 * Gemini sandboxes (see supervisor/cli-bundle.ts). Defaults to the
+		 * published package on the npm CDN; override for a fork or a test.
+		 */
+		TINES_CLI_BUNDLE_URL?: string;
 	}
 
 	namespace App {

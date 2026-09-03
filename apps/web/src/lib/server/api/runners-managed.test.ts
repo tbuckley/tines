@@ -97,12 +97,78 @@ describe('createRunner (claude_managed)', () => {
 		);
 		expect(uncapped.budget).toBeNull();
 	});
+});
 
-	it('gemini stays gated behind its milestone', async () => {
+describe('createRunner (gemini_managed)', () => {
+	it('pings the Gemini key, defaults the agent, the $5 cap, and the Flash tiers', async () => {
+		const t = world();
+		const pinged: string[] = [];
+		const runner = await createRunner(
+			t.db,
+			t.env,
+			actor,
+			{ type: 'gemini_managed', name: 'gemini', api_key: 'AIza-key' },
+			(type, key) => {
+				pinged.push(`${type}:${key}`);
+				return Promise.resolve(null);
+			}
+		);
+		expect(pinged).toEqual(['gemini_managed:AIza-key']);
+		expect(runner.type).toBe('gemini_managed');
+		expect(runner.config).toEqual({ agent: 'antigravity-preview-05-2026' });
+		expect(runner.budget).toEqual({ max_run_cost_usd: 5 });
+		expect(runner.max_concurrent).toBe(3);
+		expect(runner.tier_models).toEqual({
+			smartest: 'gemini-3.8-flash',
+			balanced: 'gemini-3.8-flash',
+			cheapest: 'gemini-3.5-flash-lite'
+		});
+		const row = t.all('SELECT secret_enc FROM runner')[0] as { secret_enc: string };
+		expect(await decryptSecret(row.secret_enc, ENC_KEY)).toBe('AIza-key');
+		expect(JSON.stringify(runner)).not.toContain('AIza-key');
+	});
+
+	it('takes an agent override and nothing else in config', async () => {
+		const t = world();
+		const runner = await createRunner(
+			t.db,
+			t.env,
+			actor,
+			{
+				type: 'gemini_managed',
+				name: 'g',
+				api_key: 'k',
+				config: { agent: 'antigravity-preview-09-2026' }
+			},
+			okPing
+		);
+		expect(runner.config).toEqual({ agent: 'antigravity-preview-09-2026' });
+		await expect(
+			createRunner(
+				t.db,
+				t.env,
+				actor,
+				{ type: 'gemini_managed', name: 'g2', api_key: 'k', config: { environment_id: 'x' } },
+				okPing
+			)
+		).rejects.toMatchObject({
+			code: 'invalid_field',
+			details: { rejected_fields: ['environment_id'] }
+		});
+
+		// Editable afterwards; an empty agent falls back to the default.
+		const updated = await updateRunner(t.db, t.env, actor, runner.id, { config: { agent: ' ' } });
+		expect(updated.config).toEqual({ agent: 'antigravity-preview-05-2026' });
+	});
+
+	it('rejects a key the ping rejects, creating nothing', async () => {
 		const t = world();
 		await expect(
-			createRunner(t.db, t.env, actor, { type: 'gemini_managed', name: 'g', api_key: 'k' }, okPing)
-		).rejects.toMatchObject({ code: 'managed_runner_unavailable' });
+			createRunner(t.db, t.env, actor, { type: 'gemini_managed', name: 'g', api_key: 'bad' }, () =>
+				Promise.resolve('Gemini rejected the API key (400: API key not valid.)')
+			)
+		).rejects.toMatchObject({ code: 'invalid_api_key' });
+		expect(t.all('SELECT id FROM runner')).toHaveLength(0);
 	});
 });
 

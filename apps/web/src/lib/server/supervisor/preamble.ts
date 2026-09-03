@@ -2,15 +2,14 @@
  * The supervisor preamble: the directive text prefixed to the stitched
  * `/prompt` output on supervisor launches only — the plain `/prompt` endpoint
  * stays factual (SPEC.md "Workspace setup and launch"). Generated at
- * delivery, per environment: `local` and `claude_managed` ship now; the
- * Gemini variant slots in with its milestone (the differences are the auth
- * story and the bootstrap section).
+ * delivery, per environment — the variants differ only in the auth story
+ * and the workspace/bootstrap section.
  *
  * Pure text assembly — no DB, no `$lib` — so any launch path can import it.
  */
 
 /** Which execution environment the run lands in; drives the auth/bootstrap copy. */
-export type PreambleVariant = 'local' | 'claude_managed'; // 'gemini_managed' arrives in M4
+export type PreambleVariant = 'local' | 'claude_managed' | 'gemini_managed';
 
 export interface PreambleInput {
 	variant: PreambleVariant;
@@ -23,7 +22,22 @@ export interface PreambleInput {
 	apiUrl?: string;
 	/** Managed variants: repos already mounted into the workspace, by directory. */
 	repoDirs?: string[];
+	/**
+	 * Gemini: the branch each seeded repo should be on, by directory —
+	 * repository sources clone the default branch, so the agent checks the
+	 * requested one out itself.
+	 */
+	repoBranches?: Record<string, string>;
+	/** Gemini: skills seeded into `/workspace/skills/<name>/`, by name. */
+	skillNames?: string[];
 }
+
+/** Where the Gemini launch seeds the single-file CLI and its config. */
+export const GEMINI_CLI_DIR = '/workspace/bin';
+export const GEMINI_CLI_BUNDLE_PATH = `${GEMINI_CLI_DIR}/tines.cjs`;
+export const GEMINI_CLI_WRAPPER_PATH = `${GEMINI_CLI_DIR}/tines`;
+export const GEMINI_CLI_CONFIG_PATH = `${GEMINI_CLI_DIR}/tines.config.json`;
+export const GEMINI_SKILLS_DIR = '/workspace/skills';
 
 /** Environment-specific sections, keyed so future variants replace only these. */
 const VARIANTS: Record<
@@ -76,6 +90,45 @@ const VARIANTS: Record<
 			'Skills attached to this issue are not pre-seeded; fetch them when needed:',
 			'`tines issues context <ref> --json` (or `GET /api/v1/issues/:id/context`) lists each',
 			"skill's files with their contents."
+		]
+	},
+	gemini_managed: {
+		auth: (input) => [
+			'This sandbox holds no Tines credential. An egress proxy injects an ephemeral key minted',
+			`for this run on every request to \`${input.apiUrl ?? ''}\`; the key is revoked the moment`,
+			'this run ends. The `tines` CLI is seeded as a single-file build at',
+			`\`${GEMINI_CLI_BUNDLE_PATH}\`, with a config beside it telling it to send no Authorization`,
+			'header of its own. Set it up once per shell:',
+			'',
+			`    export TINES_CONFIG=${GEMINI_CLI_CONFIG_PATH}`,
+			`    chmod +x ${GEMINI_CLI_WRAPPER_PATH} && export PATH="${GEMINI_CLI_DIR}:$PATH"`,
+			'',
+			'then `tines` commands work as documented in the issue block below. Plain `curl` against',
+			`\`${input.apiUrl ?? ''}/api/v1\` works too — send no Authorization header; the proxy adds it.`
+		],
+		workspace: (input) => [
+			...(input.repoDirs && input.repoDirs.length > 0
+				? [
+						'The effective repositories are already cloned into your workspace (at their default',
+						'branch — check out the branch named below first where one is):',
+						'',
+						...input.repoDirs.map((dir) => {
+							const branch = input.repoBranches?.[dir];
+							return `- \`/workspace/${dir}\`${branch ? ` — \`git checkout ${branch}\`` : ''}`;
+						}),
+						'',
+						'Git push and GitHub API calls against github.com are authenticated for you at the',
+						'sandbox boundary — no credentials to configure.'
+					]
+				: ['No repositories are attached to this issue.']),
+			'',
+			...(input.skillNames && input.skillNames.length > 0
+				? [
+						'The skills attached to this issue are seeded under:',
+						'',
+						...input.skillNames.map((name) => `- \`${GEMINI_SKILLS_DIR}/${name}/\``)
+					]
+				: ['No skills are attached to this issue.'])
 		]
 	}
 };

@@ -6,6 +6,12 @@
  * env vars their run is launched with (nothing here is consulted when
  * TINES_API_KEY is set); the file is for humans, who otherwise have to
  * export both variables in every shell before a single command works.
+ *
+ * `TINES_CONFIG` points at a config file somewhere else entirely. That is
+ * how a sandbox with no home directory of note gets its settings — the
+ * Gemini managed runner seeds one next to the CLI build — and it is also
+ * where `auth: "proxy"` lives: the file says "send no Authorization header,
+ * an egress proxy adds one", so no key ever enters that environment.
  */
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -39,10 +45,16 @@ export interface CliConfig {
 	url?: string;
 	/** A user API key (Settings → API keys in the web app). */
 	api_key?: string;
+	/**
+	 * `proxy`: the environment's egress proxy injects the Authorization
+	 * header, so the CLI sends none — and does not fall back to a stored key.
+	 */
+	auth?: 'proxy';
 }
 
+/** `$TINES_CONFIG` when set, else `config.json` in the config directory. */
 export function configPath(dir: string = defaultConfigDir()): string {
-	return join(dir, 'config.json');
+	return process.env.TINES_CONFIG || join(dir, 'config.json');
 }
 
 /** The stored config, with anything that is not a string dropped. Never throws. */
@@ -51,6 +63,7 @@ export function loadCliConfig(dir: string = defaultConfigDir()): CliConfig {
 	const config: CliConfig = {};
 	if (typeof raw?.url === 'string' && raw.url !== '') config.url = raw.url;
 	if (typeof raw?.api_key === 'string' && raw.api_key !== '') config.api_key = raw.api_key;
+	if (raw?.auth === 'proxy') config.auth = 'proxy';
 	return config;
 }
 

@@ -93,7 +93,7 @@ export function register(program: Command): void {
 			url: { value: url.value, source: url.source },
 			api_key: {
 				value: key.value ? maskKey(key.value) : null,
-				source: key.value ? key.source : null
+				source: key.value || key.source === 'proxy' ? key.source : null
 			},
 			config_path: configPath(defaultConfigDir())
 		};
@@ -102,7 +102,9 @@ export function register(program: Command): void {
 		console.log(
 			report.api_key.value
 				? `api key: ${report.api_key.value} (${report.api_key.source})`
-				: 'api key: none (pass --api-key, set TINES_API_KEY, or run `tines login`)'
+				: report.api_key.source === 'proxy'
+					? 'api key: none — the config file says an egress proxy injects it (proxy)'
+					: 'api key: none (pass --api-key, set TINES_API_KEY, or run `tines login`)'
 		);
 		console.log(`config file: ${report.config_path}`);
 	});
