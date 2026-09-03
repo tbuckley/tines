@@ -43,16 +43,16 @@ With the dev server running, try the CLI with the seeded key (the seed prints it
 export TINES_API_KEY=tines_dev0000000000000000000000000000000000000
 pnpm cli time                             # dev mode (tsx, no build needed)
 pnpm cli projects list
-pnpm cli time -- --json
+pnpm cli time --json                      # flags go straight on; `--` breaks pnpm 10
 
 # or the built binary
 pnpm build
 node packages/cli/dist/index.js time --url http://localhost:5173
 ```
 
-The CLI reads the API base URL from `--url` (accepted by every command, without exception), then the `TINES_API_URL` env var, then the file `tines login` writes (`~/.config/tines/config.json`); the default is the production deployment, `https://tines.tbuckley.dev`. The API key resolves the same way (`--api-key`, `TINES_API_KEY`, the file). For local development, set `TINES_API_URL=http://localhost:5173` or pass `--url` — `pnpm cli` does that for you, so the snippet above talks to your dev server. `tines config` shows what is in effect and where each value came from.
+The CLI reads the API base URL from `--url` (accepted by every command that talks to the API — the two that never do, `logout` and `runner workspaces prune`, have no such flag), then the `TINES_API_URL` env var, then the file `tines login` writes (`~/.config/tines/config.json`); the default is the production deployment, `https://tines.tbuckley.dev`. The API key resolves the same way (`--api-key`, `TINES_API_KEY`, the file). For local development, set `TINES_API_URL=http://localhost:5173` or pass `--url` — `pnpm cli` defaults to it (`${TINES_API_URL:-http://localhost:5173}`), so the snippet above talks to your dev server *unless* `TINES_API_URL` is already set in your environment, in which case it wins and `pnpm cli` silently talks to that deployment instead. `tines config` shows what is in effect and where each value came from.
 
-Every `… list` command returns one page. Pass `--all-pages` to follow the cursor and fetch the whole list in one command; without it, `--json` output carries a `next_cursor` and warns on stderr that there is more.
+Paginated `… list` commands return one page. Pass `--all-pages` to follow the cursor and fetch the whole list in one command; without it, `--json` output carries a `next_cursor` and warns on stderr that there is more. Three lists are not paginated and take no such flag — `runners list`, `routing list` and `issues artifacts list` return the whole collection by design.
 
 ## Installing the CLI globally
 
@@ -299,7 +299,7 @@ pnpm wrangler secret put SECRET_ENCRYPTION_KEY   # `openssl rand -hex 32`; encry
                                                  # PAT at rest (see "Running agents")
 # confirm EMAIL_FROM in wrangler.jsonc "vars" is on a domain onboarded to
 # Email Service (see "Magic-link sign-in" above)
-pnpm deploy
+pnpm run deploy                           # `pnpm deploy` is a pnpm builtin, not this script
 ```
 
 ### Continuous integration
