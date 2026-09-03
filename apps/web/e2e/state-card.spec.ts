@@ -30,6 +30,8 @@ let blocked: IssueDetail;
 let fresh: IssueDetail;
 /** In Implementation with a `design-doc` predating the move: the stale line. */
 let stale: IssueDetail;
+/** In Design like `blocked`, but with a description far taller than the card. */
+let tall: IssueDetail;
 
 test.beforeAll(async ({ playwright }) => {
 	const request = await playwright.request.newContext({
@@ -77,9 +79,13 @@ test.beforeAll(async ({ playwright }) => {
 		})
 	);
 
-	const newIssue = async (title: string) =>
+	const newIssue = async (title: string, description = '') =>
 		body<IssueDetail>(
-			await api.post(`/api/v1/projects/${project.id}/issues`, { title, workflow_id: workflow.id })
+			await api.post(`/api/v1/projects/${project.id}/issues`, {
+				title,
+				workflow_id: workflow.id,
+				description
+			})
 		);
 	const attachDesignDoc = (issueId: string) =>
 		api.put(`/api/v1/issues/${issueId}/artifacts/design-doc`, {
@@ -88,6 +94,16 @@ test.beforeAll(async ({ playwright }) => {
 		});
 
 	blocked = await newIssue(`Blocked ${runId}`);
+	// A perfectly ordinary long issue: the main column must out-measure the
+	// aside, or the stretch this fixture exists to catch cannot happen.
+	tall = await newIssue(
+		`Tall ${runId}`,
+		Array.from(
+			{ length: 40 },
+			(_, i) =>
+				`Paragraph ${i + 1}. The State card sits in the right column of a two-column grid whose left column spans both rows, which is exactly the arrangement that used to stretch it.`
+		).join('\n\n')
+	);
 	fresh = await newIssue(`Fresh ${runId}`);
 	await attachDesignDoc(fresh.id);
 
@@ -302,4 +318,42 @@ test('the desktop layout keeps the State card in the right column', async ({ pag
 	// The rest of the aside still follows the card down the same column.
 	expect(agents.y).toBeGreaterThanOrEqual(card.y + card.height - 1);
 	expect(Math.abs(agents.x - card.x)).toBeLessThanOrEqual(1);
+});
+
+test('the State card does not stretch to fill a tall main column', async ({ page }) => {
+	await page.setViewportSize(DESKTOP);
+	await page.goto(issueUrl(tall));
+	await settled(page);
+
+	const [card, description, agents] = await boxes([
+		stateCard(page),
+		page
+			.locator('section')
+			.filter({ has: page.getByRole('heading', { name: 'Description', exact: true }) }),
+		page.locator('section').filter({ has: page.getByRole('heading', { name: 'Agent activity' }) })
+	]);
+
+	// Fixture sanity: with a main column no taller than the aside there is no
+	// row height for the grid to distribute, and the rest proves nothing.
+	expect(description.height).toBeGreaterThan(card.height * 2);
+
+	// The aside picks up one `gap-8` below the card, exactly as it did when the
+	// card was still a block inside it. Without `lg:grid-rows-[auto_1fr]` the
+	// main column's height is shared across both rows and this gap was ~1000px.
+	expect(agents.y - (card.y + card.height)).toBeLessThanOrEqual(40);
+
+	// ...and the card's own border ends where its content does, rather than
+	// enclosing a screenful of empty space under "Move directly…".
+	const slack = await stateCard(page).evaluate((el) => {
+		const style = getComputedStyle(el);
+		const last = el.lastElementChild;
+		if (!last) throw new Error('the State card should have children');
+		return (
+			el.getBoundingClientRect().bottom -
+			parseFloat(style.borderBottomWidth) -
+			parseFloat(style.paddingBottom) -
+			last.getBoundingClientRect().bottom
+		);
+	});
+	expect(slack).toBeLessThan(4);
 });

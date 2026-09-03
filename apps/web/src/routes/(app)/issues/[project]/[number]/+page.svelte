@@ -689,7 +689,13 @@
 
 <LaunchPromptDialog bind:open={promptDialogOpen} issueId={data.issue.id} />
 
-<div class="grid gap-8 lg:grid-cols-[minmax(0,1fr)_22rem]">
+<!-- `lg:grid-rows-[auto_1fr]`: the State card is its own grid item in row 1
+     while main spans both rows, so with default auto rows grid distributes
+     main's height across them and stretches the card's border to fill row 1
+     (~1000px of empty box on a long issue). Row 1 sized to content, row 2
+     absorbing the rest, keeps the card exactly as tall as it was inside the
+     aside. -->
+<div class="grid gap-8 lg:grid-cols-[minmax(0,1fr)_22rem] lg:grid-rows-[auto_1fr]">
 	<!-- state & transitions — first in DOM so a phone gets it before the
 	     description; pinned to the right column on desktop, where the aside
 	     picks up below it. -->
@@ -763,10 +769,14 @@
 													<span class="font-mono">{r.artifact}</span> is stale — this state began
 													{relativeTime(data.issue.state_entered_at)}; attach a new version or
 													reaffirm it.
+												{:else if r.type !== undefined && r.current_type !== r.type}
+													<span class="font-mono">{r.artifact}</span> must be a {r.type} artifact{#if r.content_type}{' '}
+														({r.content_type}){/if} — the attached one is {r.current_type}.
 												{:else}
+													<!-- Only the content type differs; the API doesn't report the
+													     attached version's own content type, so don't name it. -->
 													<span class="font-mono">{r.artifact}</span> must be
-													{[r.type, r.content_type].filter(Boolean).join(', ')} — the attached
-													{r.current_type} doesn't match.
+													{r.content_type} — the attached {r.current_type} isn't.
 												{/if}
 												{#if r.description}
 													<span
