@@ -334,8 +334,10 @@ test('the State card does not stretch to fill a tall main column', async ({ page
 	]);
 
 	// Fixture sanity: with a main column no taller than the aside there is no
-	// row height for the grid to distribute, and the rest proves nothing.
-	expect(description.height).toBeGreaterThan(card.height * 2);
+	// row height for the grid to distribute, and the rest proves nothing. The
+	// threshold is absolute, not a multiple of the card — a stretched card must
+	// red the assertions below, not this one.
+	expect(description.height).toBeGreaterThan(1500);
 
 	// The aside picks up one `gap-8` below the card, exactly as it did when the
 	// card was still a block inside it. Without `lg:grid-rows-[auto_1fr]` the
