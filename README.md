@@ -306,7 +306,8 @@ pnpm deploy:prod                                 # `deploy` alone is a pnpm buil
 After that, deploys are automatic (below); `pnpm deploy:prod` from `apps/web` is
 there for the rare manual one. It is not called `deploy` because `pnpm deploy` is a
 pnpm builtin — builtins win over scripts, so that name is unreachable in the form
-everyone types; `pnpm check` fails on any script named after a pnpm command.
+everyone types; `pnpm check` fails on any script named after a pnpm command (bar
+`start`, `test`, `restart` and `install`, which pnpm does run as scripts).
 
 ### Continuous integration
 
