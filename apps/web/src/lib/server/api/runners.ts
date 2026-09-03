@@ -1,5 +1,6 @@
 import {
 	ACTIVE_RUN_STATUSES,
+	DEFAULT_GEMINI_AGENT,
 	DEFAULT_MANAGED_RUN_COST_USD,
 	MODEL_TIERS,
 	RUNNER_ONLINE_WINDOW_MS,
@@ -21,6 +22,7 @@ import { encryptSecret, sha256Hex } from '$lib/server/crypto';
 import { deleteRunLogObjects } from '$lib/server/supervisor/run-log';
 import { newId, randomString, type Database } from '$lib/server/db';
 import { pingAnthropicKey } from '$lib/server/supervisor/claude-adapter';
+import { pingGeminiKey } from '$lib/server/supervisor/gemini-adapter';
 import { cancelAssignedRuns } from '$lib/server/supervisor/engine';
 import { builtinTierModels } from '$lib/server/supervisor/logic';
 import {
@@ -36,12 +38,15 @@ import { scopeLabel } from './scope';
 
 /**
  * Provider-key ping, injectable for tests (the default reaches the live
- * Anthropic API). Returns null when the key works, else the failure text.
+ * provider API). Returns null when the key works, else the failure text.
  */
 export type ProviderKeyPing = (type: RunnerType, apiKey: string) => Promise<string | null>;
 
-const defaultPing: ProviderKeyPing = (type, apiKey) =>
-	type === 'claude_managed' ? pingAnthropicKey(apiKey) : Promise.resolve('unsupported runner type');
+const defaultPing: ProviderKeyPing = (type, apiKey) => {
+	if (type === 'claude_managed') return pingAnthropicKey(apiKey);
+	if (type === 'gemini_managed') return pingGeminiKey(apiKey);
+	return Promise.resolve('unsupported runner type');
+};
 
 // ---------------------------------------------------------------------------
 // Validation
@@ -153,6 +158,30 @@ function validateLocalConfig(value: unknown): Record<string, unknown> {
 	const platform = optionalString(config.platform, 'config.platform', { max: 200 });
 	if (platform !== undefined) out.platform = platform;
 	return out;
+}
+
+/**
+ * A Gemini managed runner's one user-editable setting: the managed agent
+ * its interactions run against, defaulting to the current Antigravity
+ * preview id. Strict like the local config: unknown keys are rejected.
+ */
+function validateGeminiConfig(value: unknown): Record<string, unknown> {
+	if (value === undefined || value === null) return { agent: DEFAULT_GEMINI_AGENT };
+	if (typeof value !== 'object' || Array.isArray(value)) {
+		throw new ApiFail(422, 'invalid_field', '"config" must be an object', { field: 'config' });
+	}
+	const config = value as Record<string, unknown>;
+	const unknown = Object.keys(config).filter((k) => k !== 'agent');
+	if (unknown.length > 0) {
+		throw new ApiFail(
+			422,
+			'invalid_field',
+			`Unknown config key${unknown.length === 1 ? '' : 's'} ${unknown.map((k) => `"${k}"`).join(', ')}; a Gemini managed runner's config takes: agent`,
+			{ field: 'config', rejected_fields: unknown }
+		);
+	}
+	const agent = optionalString(config.agent, 'config.agent', { max: 200 })?.trim();
+	return { agent: agent || DEFAULT_GEMINI_AGENT };
 }
 
 /**
@@ -401,16 +430,6 @@ export async function createRunner(
 			{ field: 'type', allowed_types: [...RUNNER_TYPES] }
 		);
 	}
-	// Gemini's credential handling (per-launch passing, egress transforms)
-	// arrives with its milestone.
-	if (body.type === 'gemini_managed') {
-		throw new ApiFail(
-			422,
-			'managed_runner_unavailable',
-			'"gemini_managed" runners arrive in a later milestone; "local" and "claude_managed" runners can be created today',
-			{ field: 'type' }
-		);
-	}
 	const managed = body.type !== 'local';
 
 	const name = validateRunnerName(body.name);
@@ -433,17 +452,21 @@ export async function createRunner(
 	let secretEnc: string | null = null;
 	let budget: RunnerBudget | null;
 	if (managed) {
-		// A managed runner's config is Tines-managed (provisioned agent ids,
-		// the environment id) — it is not user input.
-		if (body.config !== undefined && Object.keys(body.config).length > 0) {
-			throw new ApiFail(
-				422,
-				'invalid_field',
-				'Managed runners have no user-editable "config"; the key goes in "api_key" and limits in "budget"',
-				{ field: 'config' }
-			);
+		if (body.type === 'gemini_managed') {
+			config = validateGeminiConfig(body.config);
+		} else {
+			// A Claude runner's config is Tines-managed (provisioned agent ids,
+			// the environment id) — it is not user input.
+			if (body.config !== undefined && Object.keys(body.config).length > 0) {
+				throw new ApiFail(
+					422,
+					'invalid_field',
+					'Claude managed runners have no user-editable "config"; the key goes in "api_key" and limits in "budget"',
+					{ field: 'config' }
+				);
+			}
+			config = {};
 		}
-		config = {};
 		if (body.api_key === undefined) {
 			throw new ApiFail(422, 'invalid_field', `A ${body.type} runner needs an "api_key"`, {
 				field: 'api_key'
@@ -595,12 +618,19 @@ export async function updateRunner(
 		changed.push('api_key');
 	}
 	if (body.config !== undefined) {
-		if (row.type !== 'local') {
-			throw new ApiFail(422, 'invalid_field', 'Only local runners take a "config" here', {
-				field: 'config'
-			});
+		if (row.type === 'claude_managed') {
+			throw new ApiFail(
+				422,
+				'invalid_field',
+				'Claude managed runners have no user-editable "config"',
+				{ field: 'config' }
+			);
 		}
-		const config = JSON.stringify(validateLocalConfig(body.config));
+		const config = JSON.stringify(
+			row.type === 'gemini_managed'
+				? validateGeminiConfig(body.config)
+				: validateLocalConfig(body.config)
+		);
 		if (config !== row.config) {
 			patch.config = config;
 			changed.push('config');

@@ -4,9 +4,35 @@ import {
 	activeStateIds,
 	isActiveRun,
 	isStaleTierOverride,
+	priceUsage,
 	runCostLabel,
 	runDurationLabel
 } from './types.js';
+
+describe('priceUsage', () => {
+	it('prices input, cached input, output, and thinking at their list rates', () => {
+		// gemini-3.8-flash: $0.75 / $3.75 / $0.075 per Mtok
+		expect(
+			priceUsage('gemini-3.8-flash', {
+				input_tokens: 1_000_000,
+				cache_read_tokens: 200_000,
+				output_tokens: 100_000,
+				thought_tokens: 100_000
+			})
+		).toBeCloseTo(0.8 * 0.75 + 0.2 * 0.075 + 0.2 * 3.75, 6);
+	});
+
+	it('bills cached input at the input rate for models with no cached rate', () => {
+		expect(
+			priceUsage('gemini-3.5-flash-lite', { input_tokens: 1_000_000, cache_read_tokens: 1_000_000 })
+		).toBeCloseTo(0.3, 6);
+	});
+
+	it('is undefined for a model the table does not know, or no model at all', () => {
+		expect(priceUsage('gemini-9', { input_tokens: 1 })).toBeUndefined();
+		expect(priceUsage(null, { input_tokens: 1 })).toBeUndefined();
+	});
+});
 
 describe('runCostLabel', () => {
 	const label = (usage: AgentRunUsage | null) => runCostLabel({ usage });
@@ -94,6 +120,8 @@ describe('isStaleTierOverride', () => {
 
 	it('does not flag the built-in itself, unknown models, or missing values', () => {
 		expect(isStaleTierOverride('claude-fable-5-1', 'claude-fable-5-1')).toBe(false);
+		expect(isStaleTierOverride('gemini-3.8-flash', 'gemini-2.5-flash')).toBe(true);
+		expect(isStaleTierOverride('gemini-3.5-flash-lite', 'gemini-2.5-flash-lite')).toBe(true);
 		expect(isStaleTierOverride('claude-fable-5-1', 'some-custom-model')).toBe(false);
 		expect(isStaleTierOverride(null, 'claude-fable-5')).toBe(false);
 		expect(isStaleTierOverride('claude-fable-5-1', undefined)).toBe(false);

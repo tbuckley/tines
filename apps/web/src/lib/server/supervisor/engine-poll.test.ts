@@ -73,6 +73,28 @@ describe('pollManagedRuns', () => {
 		expect(run.ended_at).toBe(NOW + 1000);
 	});
 
+	it('enforces the per-run dollar cap from table-priced usage the provider cannot stop at', async () => {
+		const { t, fake, runId } = world({ budget: { max_run_cost_usd: 2 } });
+		fake.nextPoll({
+			usage: { input_tokens: 1000, output_tokens: 500, cost_usd: 2.5, cost_source: 'priced' }
+		});
+		await pollManagedRuns(t.db, t.env, NOW + 1000, { local: fake });
+		const run = runById(t, runId)!;
+		expect(run.status).toBe('failed');
+		expect(run.error).toMatch(/max_run_cost_usd \(\$2\)/);
+		expect(fake.cancels).toHaveLength(1);
+		// The poll passes the resolved model along, for table-priced adapters.
+		expect(fake.polls[0]).toMatchObject({ id: runId, model: 'claude-sonnet-5' });
+	});
+
+	it('leaves a run under its dollar cap alone', async () => {
+		const { t, fake, runId } = world({ budget: { max_run_cost_usd: 2 } });
+		fake.nextPoll({ usage: { input_tokens: 10, output_tokens: 5, cost_usd: 1.99 } });
+		await pollManagedRuns(t.db, t.env, NOW + 1000, { local: fake });
+		expect(runById(t, runId)!.status).toBe('running');
+		expect(fake.cancels).toHaveLength(0);
+	});
+
 	it('enforces the per-run token cap by cancelling and failing the run', async () => {
 		const { t, fake, runId } = world({ budget: { max_run_tokens: 100 } });
 		fake.nextPoll({ usage: { input_tokens: 90, output_tokens: 20, cost_source: 'provider' } });

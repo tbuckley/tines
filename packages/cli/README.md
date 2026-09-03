@@ -25,6 +25,15 @@ The URL defaults to `https://tines.tbuckley.dev`. Or set `TINES_API_URL` and `TI
 in the environment — that is how agent runs are configured, and the env vars win over the
 stored config. `--url` and `--api-key` on any command win over both.
 
+`TINES_CONFIG=/path/to/file.json` reads the stored settings from that file instead of
+`~/.config/tines/config.json`. A file may say `"auth": "proxy"`, meaning the environment's
+egress proxy injects the `Authorization` header and the CLI must send none — that is how
+the supervisor's Gemini sandboxes run agents with no key inside them.
+
+Besides the `tines` bin, the package ships `dist/tines.cjs`: the same CLI as one
+dependency-free CommonJS file, for environments that can seed a file but not run `npm`
+(`node tines.cjs --help`). It stays under 1 MB by test.
+
 ## Everyday commands
 
 ```sh

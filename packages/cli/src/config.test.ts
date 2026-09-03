@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -10,6 +10,7 @@ let dir: string;
 beforeEach(() => {
 	dir = mkdtempSync(join(tmpdir(), 'tines-cli-config-'));
 	vi.stubEnv('TINES_CONFIG_DIR', dir);
+	vi.stubEnv('TINES_CONFIG', '');
 	vi.stubEnv('TINES_API_URL', '');
 	vi.stubEnv('TINES_API_KEY', '');
 });
@@ -80,5 +81,37 @@ describe('resolution order: flag, env, config, default', () => {
 			value: 'tines_flag',
 			source: 'flag'
 		});
+	});
+});
+
+describe('TINES_CONFIG and proxy auth (the seeded sandbox config)', () => {
+	it('reads the file TINES_CONFIG names instead of the config directory', () => {
+		const seeded = join(dir, 'bin', 'tines.config.json');
+		saveCliConfig(dir, { url: 'https://stored.example', api_key: 'tines_stored' });
+		writeFileSync(join(dir, 'placeholder'), '');
+		vi.stubEnv('TINES_CONFIG', seeded);
+		expect(configPath(dir)).toBe(seeded);
+		expect(loadCliConfig(dir)).toEqual({});
+		mkdirSync(join(dir, 'bin'), { recursive: true });
+		writeFileSync(seeded, JSON.stringify({ url: 'https://sandbox.example', auth: 'proxy' }));
+		expect(loadCliConfig(dir)).toEqual({ url: 'https://sandbox.example', auth: 'proxy' });
+		expect(resolveUrlSetting({})).toEqual({ value: 'https://sandbox.example', source: 'config' });
+	});
+
+	it('resolves no key, deliberately, when the config says an egress proxy injects it', () => {
+		saveCliConfig(dir, { url: 'https://sandbox.example' });
+		writeFileSync(
+			configPath(dir),
+			JSON.stringify({ url: 'https://sandbox.example', auth: 'proxy', api_key: 'ignored' })
+		);
+		expect(resolveApiKeySetting({})).toEqual({ value: undefined, source: 'proxy' });
+		// The flag and the env var still win.
+		vi.stubEnv('TINES_API_KEY', 'tines_env');
+		expect(resolveApiKeySetting({})).toEqual({ value: 'tines_env', source: 'env' });
+	});
+
+	it('drops an auth value it does not know', () => {
+		writeFileSync(configPath(dir), JSON.stringify({ auth: 'magic' }));
+		expect(loadCliConfig(dir)).toEqual({});
 	});
 });

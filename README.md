@@ -151,11 +151,12 @@ the verdict for any issue, runner by runner.
 
 ### Runners
 
-A **runner** is one launch target you own. Two types ship today:
+A **runner** is one launch target you own. Three types ship today:
 
 | Type | What it is | Created by |
 | --- | --- | --- |
 | `claude_managed` | Sessions in Anthropic's managed sandbox, billed to your own Anthropic API key. | Adding the key on the **Agents** tab. |
+| `gemini_managed` | Background interactions of the Gemini Interactions API's Antigravity agent in Google's sandbox, billed to your own Gemini API key. Runs `gemini-3.8-flash` by default. | Adding the key on the **Agents** tab. |
 | `local` | A daemon on one of your own machines driving a harness — Claude Code (`claude -p`), codex (`codex exec`), or a custom command template — on that machine's subscription and git credentials. | The daemon registering itself on first start. |
 
 Local runners are why self-hosting Tines usually means running something on a machine of
@@ -174,15 +175,21 @@ than whatever was last installed on the machine. **[docs/runner-daemon.md](docs/
 covers registration, the flags, token rotation, the managed CLI, failure behaviour, and
 launchd/systemd units for keeping it running.
 
-Managed runners hold an Anthropic API key encrypted at rest with `SECRET_ENCRYPTION_KEY`
+Managed runners hold their provider API key encrypted at rest with `SECRET_ENCRYPTION_KEY`
 (a Workers secret — see Deploying below); it is write-only after saving. They clone repos
-through the provider's git proxy using one GitHub PAT stored in supervisor settings, so
-scope that PAT to exactly the repos your context items point at — it is the blast radius of
-any run. Local runners ignore it and use the device's own git credentials.
+using one GitHub PAT stored in supervisor settings — Claude through Anthropic's git proxy,
+Gemini through the egress proxy of each run's sandbox — so scope that PAT to exactly the
+repos your context items point at: it is the blast radius of any run. Local runners ignore
+it and use the device's own git credentials.
 
-A `gemini_managed` type exists in the schema but has no adapter yet; the registry in
-`apps/web/src/lib/server/supervisor/adapter.ts` is the source of truth for what can
-actually launch.
+Gemini runs get the `tines` CLI seeded into their sandbox as the single-file build the CLI
+package publishes (`dist/tines.cjs`), which the worker fetches from the npm CDN at launch
+(`TINES_CLI_BUNDLE_URL` overrides where from). Their run key never enters the sandbox: the
+egress proxy injects it on requests to this deployment's host, and the seeded CLI config
+(`auth: "proxy"`) tells the CLI to send no key of its own. Gemini reports tokens, not
+dollars, so those runs are priced from the built-in table in `packages/shared`
+(`cost_source: priced`); the registry in `apps/web/src/lib/server/supervisor/adapter.ts`
+is the source of truth for what can actually launch.
 
 ### Routing, quotas, and budgets
 
@@ -203,8 +210,9 @@ All of this is edited on the **Agents** tab, and most of it from the CLI too:
   (`tines supervisor quota roster --default 1 --state "Docs Change/Review=3"`). Each
   runner's own `max_concurrent` always applies on top of it.
 - **Budgets** — `tines runners budget <name>`. The per-run caps enforce today:
-  `--max-run-usd` becomes the platform-enforced session budget on Claude runners,
-  `--max-run-tokens` is checked as the sweep polls usage, and each runner's
+  `--max-run-usd` becomes the platform-enforced session budget on Claude runners and a
+  sweep-time check against table-priced usage on Gemini ones, `--max-run-tokens` becomes
+  Gemini's provider-enforced `max_total_tokens` and a sweep-time check on Claude, and each runner's
   `max_run_minutes` (default 30) is the universal backstop. `--daily-usd` and
   `--daily-tokens` are accepted and stored, but daily budgets are **not yet enforced**.
 

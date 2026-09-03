@@ -11,7 +11,15 @@
  */
 import { readFileSync } from 'node:fs';
 
+/**
+ * Stamped by the single-file build (scripts/build.mjs `define`): that
+ * bundle is seeded into sandboxes on its own, with no manifest beside it.
+ * Absent everywhere else — `typeof` keeps the reference from throwing.
+ */
+declare const __TINES_VERSION__: string | undefined;
+
 export function cliVersion(): string {
+	if (typeof __TINES_VERSION__ === 'string') return __TINES_VERSION__;
 	try {
 		const manifest = new URL('../package.json', import.meta.url);
 		return JSON.parse(readFileSync(manifest, 'utf8')).version ?? '0.0.0-unknown';

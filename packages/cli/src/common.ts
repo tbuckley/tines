@@ -77,8 +77,12 @@ export function withList(cmd: Command): Command {
 	);
 }
 
-/** Where a resolved setting came from, in precedence order. */
-export type SettingSource = 'flag' | 'env' | 'config' | 'default';
+/**
+ * Where a resolved setting came from, in precedence order. `proxy` is the
+ * key's answer when the config file says `auth: "proxy"`: there is no key on
+ * purpose, because the environment's egress proxy injects one.
+ */
+export type SettingSource = 'flag' | 'env' | 'config' | 'proxy' | 'default';
 
 export interface ResolvedSetting {
 	value: string | undefined;
@@ -104,8 +108,9 @@ export function resolveUrlSetting(opts: CommonOpts): ResolvedSetting {
 export function resolveApiKeySetting(opts: CommonOpts): ResolvedSetting {
 	if (opts.apiKey) return { value: opts.apiKey, source: 'flag' };
 	if (process.env.TINES_API_KEY) return { value: process.env.TINES_API_KEY, source: 'env' };
-	const stored = loadCliConfig().api_key;
-	if (stored) return { value: stored, source: 'config' };
+	const stored = loadCliConfig();
+	if (stored.auth === 'proxy') return { value: undefined, source: 'proxy' };
+	if (stored.api_key) return { value: stored.api_key, source: 'config' };
 	return { value: undefined, source: 'default' };
 }
 

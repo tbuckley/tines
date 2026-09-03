@@ -2,12 +2,14 @@
  * The per-runner-type adapter interface. Provider calls live behind it so
  * the dispatch engine (and its tests) never touch a provider API: the engine
  * works purely against this interface, with a fake for unit tests (see
- * fake-adapter.ts) and the Claude managed adapter in claude-adapter.ts.
+ * fake-adapter.ts) and the managed adapters in claude-adapter.ts and
+ * gemini-adapter.ts.
  *
  * Worker-imported (via the engine): relative/package imports only, no `$lib`.
  */
 import type { AgentRunUsage, ModelTier } from '@tines/shared';
 import { createClaudeAdapter } from './claude-adapter';
+import { createGeminiAdapter } from './gemini-adapter';
 
 /** What launch() gets: everything identifying the run and its delivery. */
 export interface AdapterLaunchInput {
@@ -37,6 +39,8 @@ export interface AdapterRunRef {
 	provider_session_id: string | null;
 	/** The stored provider bookkeeping (adapter-owned JSON), when any. */
 	provider_meta?: string | null;
+	/** The run's resolved model — what table-priced adapters price usage at. */
+	model?: string | null;
 }
 
 export interface AdapterPollResult {
@@ -100,12 +104,13 @@ export type AdapterRegistry = Record<string, RunnerAdapter>;
 /**
  * The production registry for an environment. Built per call site (the
  * managed adapters need `env` for the DB and the encryption-key binding);
- * the result is cheap — adapters hold no connections. Gemini is absent
- * until its milestone lands; the engine skips unknown types.
+ * the result is cheap — adapters hold no connections. The engine skips
+ * runner types with no entry here.
  */
 export function buildAdapters(env: Env): AdapterRegistry {
 	return {
 		local: localAdapter,
-		claude_managed: createClaudeAdapter(env)
+		claude_managed: createClaudeAdapter(env),
+		gemini_managed: createGeminiAdapter(env)
 	};
 }

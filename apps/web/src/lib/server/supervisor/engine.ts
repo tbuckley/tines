@@ -1120,7 +1120,8 @@ export async function pollManagedRuns(
 				id: run.id,
 				runner_id: run.runner_id,
 				provider_session_id: run.provider_session_id,
-				provider_meta: run.provider_meta
+				provider_meta: run.provider_meta,
+				model: run.model
 			});
 
 			const patch: Partial<Database['agent_run']> = {};
@@ -1154,8 +1155,13 @@ export async function pollManagedRuns(
 				error: string | null;
 			} | null = polled.status ? { status: polled.status, error: polled.error ?? null } : null;
 			if (!terminal && polled.usage) {
-				// The token cap has no provider-native ceiling on Claude; enforce
-				// it at poll time (input + output — cache reads excluded).
+				// The per-run caps a provider cannot enforce natively are enforced
+				// here, at poll time: the token cap on Claude (input + output —
+				// cache reads excluded), the dollar cap on Gemini (table-priced,
+				// so the provider has no figure to stop at). Where the provider
+				// does enforce a cap (Claude's session budget, Gemini's
+				// max_total_tokens) its pause arrives as a terminal status above
+				// and this check never fires.
 				let budget: RunnerBudget | null = null;
 				try {
 					budget = row.budget ? (JSON.parse(row.budget) as RunnerBudget) : null;
@@ -1163,19 +1169,27 @@ export async function pollManagedRuns(
 					// An unreadable budget column enforces nothing.
 				}
 				const tokens = (polled.usage.input_tokens ?? 0) + (polled.usage.output_tokens ?? 0);
+				let breached: string | null = null;
 				if (budget?.max_run_tokens !== undefined && tokens > budget.max_run_tokens) {
+					breached = `run exceeded max_run_tokens (${budget.max_run_tokens})`;
+				} else if (
+					budget?.max_run_cost_usd !== undefined &&
+					polled.usage.cost_usd !== undefined &&
+					polled.usage.cost_usd > budget.max_run_cost_usd
+				) {
+					breached = `run exceeded max_run_cost_usd ($${budget.max_run_cost_usd})`;
+				}
+				if (breached) {
 					await adapter
 						.cancel({
 							id: run.id,
 							runner_id: run.runner_id,
 							provider_session_id: run.provider_session_id,
-							provider_meta: run.provider_meta
+							provider_meta: run.provider_meta,
+							model: run.model
 						})
 						.catch((e) => console.error(`adapter cancel for run ${run.id} failed:`, e));
-					terminal = {
-						status: 'failed',
-						error: `run exceeded max_run_tokens (${budget.max_run_tokens})`
-					};
+					terminal = { status: 'failed', error: breached };
 				}
 			}
 			if (terminal) {

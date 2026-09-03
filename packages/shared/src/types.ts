@@ -1030,6 +1030,78 @@ export const RUN_LOG_RAW_MAX_BYTES = 64 * 1024 * 1024;
 export const DEFAULT_MANAGED_RUN_COST_USD = 5;
 
 /**
+ * The Gemini managed agent a `gemini_managed` runner runs interactions
+ * against when its config names none: the current Antigravity preview id
+ * (the Interactions API's coding agent). Stored per runner as
+ * `config.agent`, so a runner keeps working when the preview id rolls over.
+ */
+export const DEFAULT_GEMINI_AGENT = 'antigravity-preview-05-2026';
+
+/**
+ * Gemini environment inline-source limits: per file, and for all inline
+ * sources of one environment together. The seeded CLI build, its config,
+ * and every skill file count against them; a launch that would exceed
+ * either fails clearly rather than with a provider 400.
+ */
+export const GEMINI_INLINE_SOURCE_MAX_BYTES = 1024 * 1024;
+export const GEMINI_INLINE_SOURCES_TOTAL_MAX_BYTES = 2 * 1024 * 1024;
+
+/** List prices in USD per million tokens, by class. */
+export interface ModelPrice {
+	input: number;
+	output: number;
+	/** Cached-input rate; the input rate applies when absent. */
+	cache_read?: number;
+}
+
+/**
+ * The built-in pricing table — the ledger's rate card for runs whose
+ * provider reports tokens but no dollars (`cost_source: priced`: Gemini
+ * managed runs, codex). Provider-reported cost (Claude's `list_cost`) always
+ * wins over it. Maintained in code as providers publish prices; the
+ * daily-budget milestone adds user overrides and the unpriced-model warning.
+ *
+ * Gemini 3.6–3.8 Flash are at their introductory price through 2026-12-31
+ * ($1.50 / $7.50 / $0.15 from 2027-01-01) — bump these when it lapses.
+ */
+export const BUILTIN_MODEL_PRICING: Record<string, ModelPrice> = {
+	'gemini-3.8-flash': { input: 0.75, output: 3.75, cache_read: 0.075 },
+	'gemini-3.7-flash': { input: 0.75, output: 3.75, cache_read: 0.075 },
+	'gemini-3.6-flash': { input: 0.75, output: 3.75, cache_read: 0.075 },
+	'gemini-3.5-flash': { input: 1.5, output: 9, cache_read: 0.15 },
+	'gemini-3.5-flash-lite': { input: 0.3, output: 2.5 },
+	'gemini-3.1-flash-lite': { input: 0.25, output: 1.5 },
+	'gemini-2.5-pro': { input: 1.25, output: 10, cache_read: 0.125 },
+	'gemini-2.5-flash': { input: 0.3, output: 2.5 },
+	'gemini-2.5-flash-lite': { input: 0.1, output: 0.4 }
+};
+
+/**
+ * Dollars for a usage record at list rates, or undefined when the model is
+ * not in the table (an *unpriced* run: tokens on record, dollars unknown).
+ * Cache reads are billed at the cached rate; thinking tokens at the output
+ * rate, which is how every provider with a thinking class bills them.
+ */
+export function priceUsage(
+	model: string | null | undefined,
+	usage: Pick<
+		AgentRunUsage,
+		'input_tokens' | 'output_tokens' | 'cache_read_tokens' | 'thought_tokens'
+	>
+): number | undefined {
+	const price = model ? BUILTIN_MODEL_PRICING[model] : undefined;
+	if (!price) return undefined;
+	const cached = usage.cache_read_tokens ?? 0;
+	const input = Math.max(0, (usage.input_tokens ?? 0) - cached);
+	const output = (usage.output_tokens ?? 0) + (usage.thought_tokens ?? 0);
+	const dollars =
+		(input * price.input + cached * (price.cache_read ?? price.input) + output * price.output) /
+		1_000_000;
+	// Six decimals: sub-cent precision without float noise in the ledger.
+	return Math.round(dollars * 1_000_000) / 1_000_000;
+}
+
+/**
  * A per-tier model override: an exact model id plus optional settings.
  * Unlisted tiers fall back to the built-ins (and silently improve as those
  * move); an overridden tier stays frozen until touched.
@@ -1080,6 +1152,20 @@ export const MODEL_PREDECESSORS: Record<string, readonly string[]> = {
 	],
 	'claude-sonnet-5': ['claude-sonnet-4-6', 'claude-sonnet-4-5', 'claude-3-7-sonnet-latest'],
 	'claude-haiku-4-5': ['claude-3-5-haiku-latest'],
+	'gemini-3.8-flash': [
+		'gemini-3.7-flash',
+		'gemini-3.6-flash',
+		'gemini-3.5-flash',
+		'gemini-2.5-flash',
+		'gemini-2.0-flash',
+		'gemini-1.5-flash'
+	],
+	'gemini-3.5-flash-lite': [
+		'gemini-3.1-flash-lite',
+		'gemini-2.5-flash-lite',
+		'gemini-2.0-flash-lite',
+		'gemini-1.5-flash-8b'
+	],
 	'gemini-2.5-pro': ['gemini-1.5-pro'],
 	'gemini-2.5-flash': ['gemini-2.0-flash', 'gemini-1.5-flash'],
 	'gemini-2.5-flash-lite': ['gemini-2.0-flash-lite', 'gemini-1.5-flash-8b']
@@ -1178,7 +1264,7 @@ export interface Runner {
 	budget: RunnerBudget | null;
 	/** Managed types: whether a provider API key is stored (write-only). */
 	has_api_key: boolean;
-	/** Non-secret config (harness, hostname…). */
+	/** Non-secret config (harness, hostname; Gemini's `agent`…). */
 	config: Record<string, unknown>;
 	/**
 	 * Managed runners are always online; a local runner is online while its
@@ -1195,7 +1281,6 @@ export interface Runner {
 }
 
 export interface CreateRunnerRequest {
-	/** 'local' or 'claude_managed' ('gemini_managed' arrives in a later milestone). */
 	type: RunnerType;
 	name: string;
 	/**
@@ -1212,7 +1297,11 @@ export interface CreateRunnerRequest {
 	 * `{}` to create one uncapped (the setup flow shows and edits this).
 	 */
 	budget?: RunnerBudget;
-	/** Local runners: { harness?: 'claude_code' | 'codex' | 'custom', … }. */
+	/**
+	 * Local runners: { harness?: 'claude_code' | 'codex' | 'custom', … }.
+	 * Gemini managed: { agent?: string } (defaults to `DEFAULT_GEMINI_AGENT`).
+	 * Claude managed runners have no user-editable config.
+	 */
 	config?: Record<string, unknown>;
 }
 
@@ -1229,6 +1318,7 @@ export interface UpdateRunnerRequest {
 	tiers?: RunnerTierOverrides | null;
 	/** Replaces the budget wholesale; null clears it. */
 	budget?: RunnerBudget | null;
+	/** Local and Gemini managed runners only (see CreateRunnerRequest). */
 	config?: Record<string, unknown>;
 }
 
@@ -1406,6 +1496,12 @@ export interface AgentRunUsage {
 	output_tokens?: number;
 	cache_read_tokens?: number;
 	cache_write_tokens?: number;
+	/**
+	 * Thinking tokens, where the provider counts them separately (Gemini).
+	 * Priced at the output rate; outside `input + output` for token caps and
+	 * budgets, which the spec defines over those two classes only.
+	 */
+	thought_tokens?: number;
 	cost_usd?: number;
 	cost_source?: 'provider' | 'priced' | 'none';
 }
