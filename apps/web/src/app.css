@@ -3,6 +3,17 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* The generated `ui/alert-dialog` animates behind tw-animate-css's `data-open:`
+   / `data-closed:` variants, which Tailwind would otherwise compile to bare
+   `[data-open]` / `[data-closed]` selectors. bits-ui (2.19.0) stamps neither:
+   its dialog parts carry `data-state="open"|"closed"` and nothing else, so
+   those utilities matched no element and the AlertDialog never animated
+   (Tines/110). Redefining the variants against `data-state` keeps the
+   generated components working as written — including future
+   `shadcn-svelte add` output, which assumes these exist. */
+@custom-variant data-open (&[data-state='open']);
+@custom-variant data-closed (&[data-state='closed']);
+
 :root {
 	color-scheme: light;
 	--radius: 0.625rem;
@@ -342,6 +353,18 @@ html[data-tab-slide] .vt-shared {
 	::view-transition-new(root),
 	::view-transition-old(page),
 	::view-transition-new(page) {
+		animation: none !important;
+	}
+}
+
+/* The AlertDialog animates with tw-animate-css utilities rather than a Svelte
+   `transition:` directive, so `prefersReducedMotion()` never sees it. bits-ui
+   exposes no per-part attribute to hang this on (only `data-state`, shared by
+   overlay and content), so target the `data-slot` the generated components
+   set. */
+@media (prefers-reduced-motion: reduce) {
+	[data-slot='alert-dialog-overlay'],
+	[data-slot='alert-dialog-content'] {
 		animation: none !important;
 	}
 }
