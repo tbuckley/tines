@@ -3,6 +3,12 @@ import { expect, test, type Locator, type Page } from '@playwright/test';
 import { ALICE } from './constants.mjs';
 import { apiClient, body, runId, signIn } from './helpers';
 
+// Named to sort after `artifacts-panel.spec.ts`, not for tidiness: that spec's
+// desktop row-wrap assertion depends on the relative-age string in the row's
+// meta line, so ~11s of extra suite time ahead of it tips "less than a minute"
+// over into a longer wording and wraps the row. Filed separately; until it is
+// fixed, a spec inserted ahead of it alphabetically fails it.
+//
 // The AlertDialog animates with tw-animate-css utilities behind the
 // `data-open:` / `data-closed:` variants that `app.css` defines against
 // bits-ui's `data-state`. Nothing about the class list can tell a live
