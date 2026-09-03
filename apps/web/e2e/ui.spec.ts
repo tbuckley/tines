@@ -309,3 +309,53 @@ test('an issue reached from a project page goes back to that project', async ({ 
 	await backLink(page).click();
 	await expect(page).toHaveURL(`/projects/${project.id}?done=1`);
 });
+
+/** The resolved value of one CSS property, as the browser paints it. */
+const cssValue = (target: Locator, property: string) =>
+	target.evaluate((el, prop) => getComputedStyle(el).getPropertyValue(prop), property);
+
+test.describe('with a dark system preference', () => {
+	test.use({ colorScheme: 'dark' });
+
+	// The filter checkboxes used to be bare `<input type="checkbox">`, which the
+	// browser paints in its own palette — a warm tan border against the app's
+	// cool slate. Pinned by comparison with a control that is unarguably on
+	// palette rather than against a hard-coded color, so a theme edit that moves
+	// `--input` or `--primary` moves the expectation with it.
+	test('filter checkboxes are painted from the app palette, not the browser default', async ({
+		page
+	}) => {
+		await page.goto('/issues');
+		await expect(page.locator('html')).toHaveClass(/\bdark\b/);
+
+		// Named from `aria-label`: the visible text sits in the wrapping <label>,
+		// which does not name a button.
+		const readyOnly = page.getByRole('checkbox', { name: 'Ready only' });
+		const searchField = page.getByRole('textbox', { name: 'Search issues' });
+		await expect(readyOnly).toBeVisible();
+
+		// Unchecked, it wears `--input` — the same border and fill as the search
+		// field standing next to it.
+		expect(await cssValue(readyOnly, 'border-color')).toBe(
+			await cssValue(searchField, 'border-color')
+		);
+		expect(await cssValue(readyOnly, 'background-color')).toBe(
+			await cssValue(searchField, 'background-color')
+		);
+
+		// Checked, it fills with `--primary` — the same fill as a default button.
+		// bits-ui stamps `data-state`, so this is also what proves the
+		// `data-checked` variant in app.css is wired to something real.
+		await clickUntil(readyOnly, async () => {
+			await expect(page).toHaveURL(/ready=1/, { timeout: 2_000 });
+		});
+		await expect(readyOnly).toBeChecked();
+		// Polled, not read once: the control carries `transition-colors`, so a
+		// single read lands mid-interpolation on a half-transparent oklab().
+		const primary = await cssValue(
+			page.getByRole('button', { name: 'New issue' }),
+			'background-color'
+		);
+		await expect.poll(() => cssValue(readyOnly, 'background-color')).toBe(primary);
+	});
+});

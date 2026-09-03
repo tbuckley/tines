@@ -9,6 +9,7 @@
 	import { page } from '$app/state';
 	import { api } from '$lib/api';
 	import AgentRoutingCard from '$lib/components/AgentRoutingCard.svelte';
+	import CheckboxField from '$lib/components/CheckboxField.svelte';
 	import ContextItemEditor from '$lib/components/ContextItemEditor.svelte';
 	import ContextItemList from '$lib/components/ContextItemList.svelte';
 	import { confirmDialog } from '$lib/components/dialogs.svelte';
@@ -259,26 +260,20 @@
 	<h2 class="text-sm font-semibold">Issues</h2>
 	<div class="flex items-center gap-4">
 		<!-- Ready implies not-done, so "Show done" parks while it is on. -->
-		<label
-			class="text-muted-foreground flex items-center gap-2 text-sm {data.ready ? 'opacity-50' : ''}"
+		<CheckboxField
+			label="Show done"
+			class="text-muted-foreground text-sm {data.ready ? 'opacity-50' : ''}"
 			title={data.ready ? 'Ready issues are never done' : undefined}
-		>
-			<input
-				type="checkbox"
-				checked={data.showDone && !data.ready}
-				disabled={data.ready}
-				onchange={(e) => setFilter('done', e.currentTarget.checked)}
-			/>
-			Show done
-		</label>
-		<label class="text-muted-foreground flex items-center gap-2 text-sm">
-			<input
-				type="checkbox"
-				checked={data.ready}
-				onchange={(e) => setFilter('ready', e.currentTarget.checked)}
-			/>
-			Ready only
-		</label>
+			checked={data.showDone && !data.ready}
+			disabled={data.ready}
+			onCheckedChange={(checked) => setFilter('done', checked)}
+		/>
+		<CheckboxField
+			label="Ready only"
+			class="text-muted-foreground text-sm"
+			checked={data.ready}
+			onCheckedChange={(checked) => setFilter('ready', checked)}
+		/>
 	</div>
 </div>
 
