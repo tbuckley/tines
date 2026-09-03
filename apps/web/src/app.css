@@ -14,6 +14,12 @@
 @custom-variant data-open (&[data-state='open']);
 @custom-variant data-closed (&[data-state='closed']);
 
+/* shadcn-svelte emits `data-checked:` utilities, but bits-ui (2.19.0) stamps
+   `data-state="checked"` and never a bare `data-checked` attribute, so those
+   utilities compile to a selector nothing matches. Map the variant here rather
+   than hand-editing generated components (see CLAUDE.md). */
+@custom-variant data-checked (&[data-state='checked']);
+
 :root {
 	color-scheme: light;
 	--radius: 0.625rem;
