@@ -350,8 +350,12 @@ test.describe('with a dark system preference', () => {
 			await expect(page).toHaveURL(/ready=1/, { timeout: 2_000 });
 		});
 		await expect(readyOnly).toBeChecked();
-		expect(await cssValue(readyOnly, 'background-color')).toBe(
-			await cssValue(page.getByRole('button', { name: 'New issue' }), 'background-color')
+		// Polled, not read once: the control carries `transition-colors`, so a
+		// single read lands mid-interpolation on a half-transparent oklab().
+		const primary = await cssValue(
+			page.getByRole('button', { name: 'New issue' }),
+			'background-color'
 		);
+		await expect.poll(() => cssValue(readyOnly, 'background-color')).toBe(primary);
 	});
 });

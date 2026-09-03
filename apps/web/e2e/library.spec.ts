@@ -191,11 +191,15 @@ test.describe('export / import settings page', () => {
 		await signIn(context, ALICE.sessionToken);
 		await page.goto('/settings/export-import');
 
-		// The input is still there and still labelled — it is just off-screen,
-		// so it keeps its keyboard focus and its accessible name.
+		// The input is still there and still labelled — it is only clipped, so it
+		// keeps its place in the tab order and its accessible name. `sr-only`
+		// leaves a 1px box behind, which Playwright still counts as visible, so
+		// the check is on the painted size rather than `not.toBeVisible()`.
 		const input = page.getByLabel('Library file');
 		await expect(input).toBeAttached();
-		await expect(input).not.toBeVisible();
+		const painted = await input.boundingBox();
+		expect(painted?.width).toBeLessThanOrEqual(1);
+		expect(painted?.height).toBeLessThanOrEqual(1);
 
 		// What a sighted user sees instead: a control with the same geometry as
 		// the "Download library" button it sits beside, and the filename spelled
