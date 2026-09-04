@@ -98,7 +98,15 @@
 		</a>
 	{/if}
 	{#if run.error}
-		<span class="max-w-64 truncate text-xs text-amber-700 dark:text-amber-400" title={run.error}>
+		<!-- The most useful line on a failed row, and the one most likely to be
+		     cut mid-word ("ENOSPC: no space left on…"). Two clamped lines carry
+		     roughly twice as much of the reason at every width; the tooltip and
+		     the Logs disclosure below carry the rest. -->
+		<span
+			class="line-clamp-2 max-w-64 text-xs break-words text-amber-700 dark:text-amber-400"
+			title={run.error}
+			data-testid="run-error"
+		>
 			{run.error}
 		</span>
 	{/if}
@@ -124,7 +132,7 @@
 	{/if}
 	{#if expanded}
 		<div class="w-full" transition:slide={{ duration: dur() }}>
-			<RunLogViewer runId={run.id} />
+			<RunLogViewer runId={run.id} runError={run.error} />
 		</div>
 	{/if}
 </li>
