@@ -74,7 +74,8 @@ and prepends `~/.config/tines/cli/node_modules/.bin` to the harness's `PATH`. No
   unchanged.
 - **Failures never fail a run.** npm missing, registry unreachable, or an install hanging
   past 60s all degrade to the last-good copy in the prefix, then to the ambient `PATH`.
-  The daemon logs it, and every run's log records which CLI executed it on its first line.
+  The daemon logs it, and every run's log records which CLI executed it, on the line
+  just after the clones (item 2 below).
 - To reset, delete `~/.config/tines/cli` (it is rebuilt on the next refresh). To opt out
   entirely, pass `--no-cli-refresh`.
 
