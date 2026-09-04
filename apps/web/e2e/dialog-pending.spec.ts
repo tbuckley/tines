@@ -113,10 +113,22 @@ async function openTransitionDialog(page: Page): Promise<void> {
 		})
 	);
 	await page.goto(`/issues/${encodeURIComponent(projectName)}/${issue.number}`);
-	await expect(stateCard(page)).toBeVisible();
-	await clickUntil(stateCard(page).getByRole('button', { name: LONG_TRANSITION }), async () => {
-		await expect(dialogOf(page)).toBeVisible({ timeout: 2_000 });
-	});
+	if (await stateCard(page).isVisible()) {
+		await clickUntil(stateCard(page).getByRole('button', { name: LONG_TRANSITION }), async () => {
+			await expect(dialogOf(page)).toBeVisible({ timeout: 2_000 });
+		});
+	} else {
+		// A phone: the card is a desktop surface, and a name this long never
+		// fits the bar, so it is reached through the State sheet — which the
+		// confirm dialog then replaces, leaving one dialog on the page.
+		const sheet = page.getByRole('dialog', { name: 'State' });
+		await clickUntil(page.getByRole('button', { name: /^State:/ }), async () => {
+			await expect(sheet).toBeVisible({ timeout: 2_000 });
+		});
+		await sheet.getByRole('button', { name: LONG_TRANSITION }).click();
+		await expect(sheet).toBeHidden();
+		await expect(dialogOf(page)).toBeVisible();
+	}
 	await entranceSettled(page);
 }
 

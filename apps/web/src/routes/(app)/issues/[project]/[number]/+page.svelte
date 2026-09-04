@@ -326,6 +326,9 @@
 
 	function requestMove(transition: AllowedTransition) {
 		transitionComment = '';
+		// From the phone's State sheet, the confirm dialog takes the sheet's
+		// place rather than stacking on it.
+		stateSheetOpen = false;
 		pendingTransition = transition;
 	}
 

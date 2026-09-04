@@ -113,6 +113,12 @@ test('the linked-issue row truncates the title instead of widening the column', 
 }) => {
 	await page.setViewportSize(PHONE);
 	await page.goto(issueUrl(dupIssue));
+	// The Relations card folds to one row on a phone (Tines/165); open it.
+	const fold = page.getByRole('button', { name: /^Relations\b/ });
+	await expect(async () => {
+		if ((await fold.getAttribute('aria-expanded')) !== 'true') await fold.click();
+		expect(await fold.getAttribute('aria-expanded')).toBe('true');
+	}).toPass({ timeout: 15_000 });
 
 	// The sidebar is what carried the overflow: its "Duplicate of" row prints
 	// the linked title with `truncate`, whose nowrap set the grid column's
