@@ -185,6 +185,12 @@ test('a stale folder row keeps its metadata and actions on a phone', async ({ pa
 	const { text, meta, actions } = await settledGeometry(row);
 	expect(meta.width).toBeGreaterThan(180);
 
+	// The State card now leads the page on a phone (Tines/128), so this row can
+	// start below the fold — scroll it in first. What this test is about is the
+	// horizontal squeeze that used to clip the actions off the right edge
+	// (Tines/123), not where the row happens to sit down the page.
+	await row.scrollIntoViewIfNeeded();
+
 	// Every action stays on screen, on its own line under the text.
 	for (const name of [
 		'Reaffirm',
