@@ -207,9 +207,9 @@ describe('applying labels to an issue', () => {
 
 	it('applies nothing when a stale id rides along with a good name', async () => {
 		const issue = addIssue(t, { title: 'a' });
-		await expect(
-			addIssueLabels(t.db, t.env, human, issue, ['bug', staleId])
-		).rejects.toMatchObject({ status: 422, code: 'unknown_label' });
+		await expect(addIssueLabels(t.db, t.env, human, issue, ['bug', staleId])).rejects.toMatchObject(
+			{ status: 422, code: 'unknown_label' }
+		);
 		expect(await names()).toEqual([]);
 	});
 

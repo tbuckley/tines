@@ -26,7 +26,9 @@
 	style="--cat: {labelColorVar(label.color)}"
 >
 	<!-- The name owns the overflow so a `max-w-*` on the chip ellipses the text
-	     instead of clipping the pill mid-letter. -->
+	     instead of clipping the pill mid-letter: `.state-badge` is `inline-flex`,
+	     so `text-overflow` cannot reach an anonymous text node. Pinned by the
+	     pill's `scrollWidth` in `labels.spec.ts` - deleting this span reds it. -->
 	<span class="truncate">{label.name}</span>
 	{#if onremove}
 		<button

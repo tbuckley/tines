@@ -46,9 +46,14 @@ export function normalizeLabelName(raw: unknown, field = 'name'): string {
 		throw new ApiFail(422, 'invalid_field', `"${field}" must not be empty`, { field });
 	}
 	if (name.length > LABEL_NAME_MAX) {
-		throw new ApiFail(422, 'invalid_field', `"${field}" must be at most ${LABEL_NAME_MAX} characters`, {
-			field
-		});
+		throw new ApiFail(
+			422,
+			'invalid_field',
+			`"${field}" must be at most ${LABEL_NAME_MAX} characters`,
+			{
+				field
+			}
+		);
 	}
 	if ([...name].some(isControlChar)) {
 		throw new ApiFail(422, 'invalid_field', `"${field}" must not contain control characters`, {

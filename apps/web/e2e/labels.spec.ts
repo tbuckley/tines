@@ -234,6 +234,14 @@ test.describe.serial('issue labels UI', () => {
 		// A long name is ellipsed rather than allowed to push the title out.
 		const chipBox = await wideRow.locator(`span:text-is("${wideName}"):visible`).boundingBox();
 		expect(chipBox!.width).toBeLessThan(130);
+		// …and the pill hides nothing: its inner truncate span shrinks and
+		// ellipses. Without that span the text overflows the pill by ~150px and
+		// is hard-clipped mid-letter — which the width above cannot see, since
+		// the box is the same either way. `.state-badge` names the pill itself
+		// (`:text-is()` would resolve to the inner span and silently retarget).
+		const pill = wideRow.locator('.state-badge:visible', { hasText: wideName });
+		await expect(pill).toHaveCount(1);
+		expect(await pill.evaluate((e) => e.scrollWidth - e.clientWidth)).toBeLessThanOrEqual(1);
 		// Inline again, so a labelled row costs no height at this width either —
 		// against a plain row measured at *this* viewport (a phone row is two
 		// lines whether or not it has labels, so the phone yardstick is taller).

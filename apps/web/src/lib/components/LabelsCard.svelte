@@ -1,6 +1,11 @@
 <script lang="ts">
 	import IconTag from '@tabler/icons-svelte/icons/tag';
-	import { compareLabelNames, type IssueLabel, type Label, type LabelWithUsage } from '@tines/shared';
+	import {
+		compareLabelNames,
+		type IssueLabel,
+		type Label,
+		type LabelWithUsage
+	} from '@tines/shared';
 	import { invalidateAll } from '$app/navigation';
 	import { api } from '$lib/api';
 	import LabelChip from '$lib/components/LabelChip.svelte';
