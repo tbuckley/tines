@@ -100,7 +100,10 @@ describe('registerRunner', () => {
 
 	it('reconnect updates only the fields the daemon sent — server-side edits survive', async () => {
 		const t = world();
-		const first = await registerRunner(t.db, t.env, actor, { name: 'laptop-m4', max_concurrent: 2 });
+		const first = await registerRunner(t.db, t.env, actor, {
+			name: 'laptop-m4',
+			max_concurrent: 2
+		});
 		// The user tuned these in the UI; the daemon never sends them.
 		await updateRunner(t.db, t.env, actor, first.runner.id, {
 			max_run_minutes: 90,
@@ -152,7 +155,9 @@ describe('registerRunner', () => {
 describe('rotateRunnerToken', () => {
 	it('invalidates the old token, returns the new one once, keeps identity', async () => {
 		const t = world();
-		const { runner, runner_token } = await registerRunner(t.db, t.env, actor, { name: 'laptop-m4' });
+		const { runner, runner_token } = await registerRunner(t.db, t.env, actor, {
+			name: 'laptop-m4'
+		});
 		const rotated = await rotateRunnerToken(t.db, t.env, actor, runner.id);
 		expect(rotated.runner.id).toBe(runner.id);
 		expect(rotated.runner_token).not.toBe(runner_token);
@@ -188,7 +193,13 @@ describe('pollRunner', () => {
 		expect(response).toEqual({ assignments: [], cancels: [] });
 		expect(runnerById(t, id).last_seen_at).toBe(later);
 		// A fresh poll from an online runner is not "coming online".
-		const again = await pollRunner(t.db, t.env, await runnerRow(t, id), { owned_runs: [] }, later + 1000);
+		const again = await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, id),
+			{ owned_runs: [] },
+			later + 1000
+		);
 		expect(again.cameOnline).toBe(false);
 	});
 
@@ -238,12 +249,24 @@ describe('pollRunner', () => {
 		const id = addRunner(t);
 		await expectFail(
 			async () =>
-				pollRunner(t.db, t.env, await runnerRow(t, id), { owned_runs: [], max_concurrent: 0 }, NOW + 1),
+				pollRunner(
+					t.db,
+					t.env,
+					await runnerRow(t, id),
+					{ owned_runs: [], max_concurrent: 0 },
+					NOW + 1
+				),
 			'invalid_field'
 		);
 		await expectFail(
 			async () =>
-				pollRunner(t.db, t.env, await runnerRow(t, id), { owned_runs: [], max_concurrent: 101 }, NOW + 1),
+				pollRunner(
+					t.db,
+					t.env,
+					await runnerRow(t, id),
+					{ owned_runs: [], max_concurrent: 101 },
+					NOW + 1
+				),
 			'invalid_field'
 		);
 	});
@@ -254,7 +277,13 @@ describe('pollRunner', () => {
 		const issue = addIssue(t);
 		const runId = addRun(t, { issueId: issue, runnerId });
 
-		const { response } = await pollRunner(t.db, t.env, await runnerRow(t, runnerId), { owned_runs: [] }, NOW + 1);
+		const { response } = await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, runnerId),
+			{ owned_runs: [] },
+			NOW + 1
+		);
 		expect(response.assignments).toHaveLength(1);
 		const a = response.assignments[0];
 		expect(a.run.id).toBe(runId);
@@ -274,7 +303,13 @@ describe('pollRunner', () => {
 		expect(runById(t, runId)?.status).toBe('launching');
 
 		// One-shot: a second poll (the two-daemons-one-token case) gets nothing.
-		const second = await pollRunner(t.db, t.env, await runnerRow(t, runnerId), { owned_runs: [] }, NOW + 2);
+		const second = await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, runnerId),
+			{ owned_runs: [] },
+			NOW + 2
+		);
 		expect(second.response.assignments).toEqual([]);
 	});
 
@@ -286,7 +321,13 @@ describe('pollRunner', () => {
 		// The issue was transitioned away between claim and delivery.
 		t.sqlite.prepare('UPDATE issue SET state_id = ? WHERE id = ?').run(REVIEW, issue);
 
-		const { response } = await pollRunner(t.db, t.env, await runnerRow(t, runnerId), { owned_runs: [] }, NOW + 1);
+		const { response } = await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, runnerId),
+			{ owned_runs: [] },
+			NOW + 1
+		);
 		expect(response.assignments).toEqual([]);
 		const run = runById(t, runId);
 		expect(run?.status).toBe('canceled');
@@ -303,14 +344,26 @@ describe('pollRunner', () => {
 		const parked = addIssue(t);
 		const runA = addRun(t, { issueId: parked, runnerId });
 		t.sqlite.prepare('UPDATE issue SET needs_attention = 1 WHERE id = ?').run(parked);
-		const { response } = await pollRunner(t.db, t.env, await runnerRow(t, runnerId), { owned_runs: [] }, NOW + 1);
+		const { response } = await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, runnerId),
+			{ owned_runs: [] },
+			NOW + 1
+		);
 		expect(response.assignments).toEqual([]);
 		expect(runById(t, runA)?.status).toBe('canceled');
 
 		const issue = addIssue(t);
 		const runB = addRun(t, { issueId: issue, runnerId });
 		setSettings(t, { enabled: false });
-		const again = await pollRunner(t.db, t.env, await runnerRow(t, runnerId), { owned_runs: [] }, NOW + 2);
+		const again = await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, runnerId),
+			{ owned_runs: [] },
+			NOW + 2
+		);
 		expect(again.response.assignments).toEqual([]);
 		expect(runById(t, runB)?.status).toBe('canceled');
 	});
@@ -320,7 +373,13 @@ describe('pollRunner', () => {
 		const runnerId = addRunner(t, { status: 'paused' });
 		const issue = addIssue(t);
 		const runId = addRun(t, { issueId: issue, runnerId });
-		const { response } = await pollRunner(t.db, t.env, await runnerRow(t, runnerId), { owned_runs: [] }, NOW + 1);
+		const { response } = await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, runnerId),
+			{ owned_runs: [] },
+			NOW + 1
+		);
 		expect(response.assignments).toEqual([]);
 		expect(runById(t, runId)?.status).toBe('assigned');
 	});
@@ -343,9 +402,44 @@ describe('pollRunner', () => {
 		expect(lostRun?.status).toBe('failed');
 		expect(lostRun?.error).toContain('owned_runs');
 		expect(runById(t, kept)?.status).toBe('running');
-		// The lost run ended without moving its issue: that is a strike.
-		expect(issueById(t, issueA).attempt_count).toBe(1);
+		// The daemon lost the run; the agent did not fail it. Judged
+		// `interrupted`: the issue keeps its budget and is dispatchable again.
+		expect(lostRun?.outcome).toBe('interrupted');
+		expect(issueById(t, issueA).attempt_count).toBe(0);
 		expect(response.cancels).toEqual([]);
+	});
+
+	it('owned_runs reconciliation puts the pressure on the runner, once per poll', async () => {
+		const t = world();
+		const runnerId = addRunner(t, { maxConcurrent: 3 });
+		const lostA = addRun(t, {
+			issueId: addIssue(t),
+			runnerId,
+			status: 'running',
+			startedAt: NOW
+		});
+		const lostB = addRun(t, {
+			issueId: addIssue(t),
+			runnerId,
+			status: 'running',
+			startedAt: NOW
+		});
+		const { reconciled } = await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, runnerId),
+			{ owned_runs: [] },
+			NOW + 1
+		);
+		expect(runById(t, lostA)?.outcome).toBe('interrupted');
+		expect(runById(t, lostB)?.outcome).toBe('interrupted');
+		// Two runs, one daemon restart: one incident, one increment, one event.
+		const runner = runnerById(t, runnerId);
+		expect(runner.launch_failures).toBe(1);
+		expect(runner.backoff_until).toBeGreaterThan(NOW + 1);
+		expect(eventsOfType(t, 'runner.errored')).toHaveLength(1);
+		// The freed claims are dispatchable now, not at the next cron.
+		expect(reconciled).toBe(true);
 	});
 
 	it('cancels lists owned runs the supervisor already settled (kill, do not finish)', async () => {
@@ -370,7 +464,7 @@ describe('pollRunner', () => {
 
 describe('appendLogTail', () => {
 	it('appends under the cap without dropping', () => {
-		expect(appendLogTail('abc', 0, 'def')).toEqual({ log: 'abcdef', dropped: 0 });
+		expect(appendLogTail('abc', 0, 'def')).toEqual({ log: 'abcdef', dropped: 0, evicted: null });
 	});
 
 	it('truncates from the head with byte accounting', () => {
@@ -378,6 +472,8 @@ describe('appendLogTail', () => {
 		const first = appendLogTail(log, 0, 'y'.repeat(30));
 		expect(new TextEncoder().encode(first.log).length).toBe(RUN_LOG_MAX_BYTES);
 		expect(first.dropped).toBe(20);
+		// The evicted bytes come back so the caller can spill them to R2.
+		expect(first.evicted && new TextDecoder().decode(first.evicted)).toBe('x'.repeat(20));
 		expect(first.log.endsWith('y'.repeat(30))).toBe(true);
 		// Accounting accumulates across appends.
 		const second = appendLogTail(first.log, first.dropped, 'z'.repeat(7));
@@ -391,8 +487,15 @@ describe('appendRunLog', () => {
 		const runnerId = addRunner(t);
 		const issue = addIssue(t);
 		const runId = addRun(t, { issueId: issue, runnerId, status: 'launching' });
-		const res = await appendRunLog(t.db, t.env, await runnerRow(t, runnerId), runId, 'hello\n', NOW + 5);
-		expect(res).toEqual({ status: 'running', log_bytes_dropped: 0 });
+		const res = await appendRunLog(
+			t.db,
+			t.env,
+			await runnerRow(t, runnerId),
+			runId,
+			'hello\n',
+			NOW + 5
+		);
+		expect(res).toEqual({ status: 'running', log_bytes_dropped: 0, log_seq: 0 });
 		const run = runById(t, runId);
 		expect(run?.status).toBe('running');
 		expect(run?.started_at).toBe(NOW + 5);
@@ -402,7 +505,7 @@ describe('appendRunLog', () => {
 		expect(started[0].payload.run_id).toBe(runId);
 	});
 
-	it('rejects appends to undelivered, ended, or other runners\' runs', async () => {
+	it("rejects appends to undelivered, ended, or other runners' runs", async () => {
 		const t = world();
 		const runnerId = addRunner(t);
 		const other = addRunner(t, { name: 'other' });
@@ -495,6 +598,99 @@ describe('finishRun', () => {
 		expect(ended[ended.length - 1].payload.outcome).toBe('stalled');
 	});
 
+	it('a daemon reporting its own shutdown is interrupted: no strike, runner backs off', async () => {
+		const t = world();
+		const runnerId = addRunner(t);
+		const issue = addIssue(t, { attemptCount: 2 });
+		const runId = await delivered(t, { runnerId, issueId: issue });
+		await appendRunLog(t.db, t.env, await runnerRow(t, runnerId), runId, 'working…\n', NOW + 10);
+
+		const run = await finishRun(
+			t.db,
+			t.env,
+			await runnerRow(t, runnerId),
+			runId,
+			{ status: 'failed', error: 'daemon shut down', judgment: 'interrupted' },
+			NOW + 30
+		);
+		expect(run.status).toBe('failed');
+		expect(run.outcome).toBe('interrupted');
+		// Neither charged nor forgiven: the attempt the daemon swallowed
+		// simply never happened.
+		expect(issueById(t, issue).attempt_count).toBe(2);
+		expect(eventsOfType(t, 'issue.parked')).toHaveLength(0);
+		expect(keyForRun(t, runId)?.revoked_at).toBe(NOW + 30);
+		const ended = eventsOfType(t, 'agent_run.ended');
+		expect(ended[ended.length - 1].payload.outcome).toBe('interrupted');
+		// The pressure moved to the runner rather than disappearing.
+		expect(runnerById(t, runnerId).launch_failures).toBe(1);
+		expect(eventsOfType(t, 'runner.errored')).toHaveLength(1);
+	});
+
+	it('a shutdown reporting two runs is one incident, not two', async () => {
+		const t = world();
+		const runnerId = addRunner(t, { maxConcurrent: 2 });
+		const runA = await delivered(t, { runnerId, issueId: addIssue(t) });
+		const runB = await delivered(t, { runnerId, issueId: addIssue(t) });
+		for (const runId of [runA, runB]) {
+			await appendRunLog(t.db, t.env, await runnerRow(t, runnerId), runId, 'x\n', NOW + 10);
+			await finishRun(
+				t.db,
+				t.env,
+				await runnerRow(t, runnerId),
+				runId,
+				{ status: 'failed', error: 'daemon shut down', judgment: 'interrupted' },
+				NOW + 30
+			);
+		}
+		expect(runById(t, runA)?.outcome).toBe('interrupted');
+		expect(runById(t, runB)?.outcome).toBe('interrupted');
+		// One Ctrl-C, one failure: the burst of finish reports lands inside
+		// the backoff window the first one opened.
+		expect(runnerById(t, runnerId).launch_failures).toBe(1);
+		expect(eventsOfType(t, 'runner.errored')).toHaveLength(1);
+	});
+
+	it('an ordinary failed finish still strikes — only the daemon-set judgment is spared', async () => {
+		const t = world();
+		const runnerId = addRunner(t);
+		const issue = addIssue(t, { attemptCount: 1 });
+		const runId = await delivered(t, { runnerId, issueId: issue });
+		await appendRunLog(t.db, t.env, await runnerRow(t, runnerId), runId, 'cloning…\n', NOW + 10);
+
+		const run = await finishRun(
+			t.db,
+			t.env,
+			await runnerRow(t, runnerId),
+			runId,
+			{ status: 'failed', error: 'workspace setup failed: git clone exited 128' },
+			NOW + 30
+		);
+		expect(run.outcome).toBe('stalled');
+		expect(issueById(t, issue).attempt_count).toBe(2);
+		expect(runnerById(t, runnerId).launch_failures).toBe(0);
+	});
+
+	it('judgment on a completed finish is ignored: a quiet success still strikes', async () => {
+		const t = world();
+		const runnerId = addRunner(t);
+		const issue = addIssue(t);
+		const runId = await delivered(t, { runnerId, issueId: issue });
+		await appendRunLog(t.db, t.env, await runnerRow(t, runnerId), runId, 'done\n', NOW + 10);
+
+		const run = await finishRun(
+			t.db,
+			t.env,
+			await runnerRow(t, runnerId),
+			runId,
+			{ status: 'completed', judgment: 'interrupted' },
+			NOW + 30
+		);
+		expect(run.outcome).toBe('stalled');
+		expect(issueById(t, issue).attempt_count).toBe(1);
+		expect(runnerById(t, runnerId).launch_failures).toBe(0);
+	});
+
 	it('failed finishes record the error and usage lands on the run', async () => {
 		const t = world();
 		const runnerId = addRunner(t);
@@ -542,7 +738,12 @@ describe('pause and kill-switch cancels', () => {
 		const t = world();
 		const runnerId = addRunner(t, { maxConcurrent: 3 });
 		const assigned = addRun(t, { issueId: addIssue(t), runnerId });
-		const running = addRun(t, { issueId: addIssue(t), runnerId, status: 'running', startedAt: NOW });
+		const running = addRun(t, {
+			issueId: addIssue(t),
+			runnerId,
+			status: 'running',
+			startedAt: NOW
+		});
 		await updateRunner(t.db, t.env, actor, runnerId, { status: 'paused' });
 		expect(runById(t, assigned)?.status).toBe('canceled');
 		expect(runById(t, assigned)?.error).toBe('runner paused');
@@ -556,7 +757,12 @@ describe('pause and kill-switch cancels', () => {
 		const assignedA = addRun(t, { issueId: addIssue(t), runnerId: a });
 		const assignedB = addRun(t, { issueId: addIssue(t), runnerId: b });
 		const runningIssue = addIssue(t);
-		const running = addRun(t, { issueId: runningIssue, runnerId: a, status: 'running', startedAt: NOW });
+		const running = addRun(t, {
+			issueId: runningIssue,
+			runnerId: a,
+			status: 'running',
+			startedAt: NOW
+		});
 
 		const off = await updateSupervisorSettings(t.db, t.env, actor, { enabled: false });
 		expect(off.enabled).toBe(false);

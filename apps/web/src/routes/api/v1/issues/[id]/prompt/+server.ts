@@ -20,7 +20,12 @@ export const GET: RequestHandler = api(async (event) => {
 		listLabels(db, actor.userId)
 	]);
 	const body: LaunchPromptResponse = {
-		text: buildLaunchPrompt(context, issue, artifacts, labels.map((l) => l.name))
+		text: buildLaunchPrompt(
+			context,
+			issue,
+			artifacts,
+			labels.map((l) => l.name)
+		)
 	};
 	return json(body);
 });

@@ -5,6 +5,7 @@
 		ContextKind,
 		CreateContextItemRequest,
 		Issue,
+		IssueListItem,
 		Project,
 		UpdateContextItemRequest,
 		WorkflowResponse
@@ -92,7 +93,11 @@
 			stateId = item ? (item.scope.workflow_state_id ?? '') : (defaults.workflow_state_id ?? '');
 			issueId = item ? (item.scope.issue_id ?? '') : (defaults.issue_id ?? '');
 			body = item?.body ?? '';
-			files = (item?.files ?? []).map((f) => ({ key: nextFileKey++, path: f.path, content: f.content }));
+			files = (item?.files ?? []).map((f) => ({
+				key: nextFileKey++,
+				path: f.path,
+				content: f.content
+			}));
 			// List rows carry only a file count; fetch the files for editing.
 			// Until they arrive, saving is blocked — a PATCH built from the
 			// placeholder empty list would delete every file in the skill.
@@ -106,12 +111,17 @@
 					.getContextItem(itemId)
 					.then((full) => {
 						if (!open || item?.id !== itemId) return;
-						files = (full.files ?? []).map((f) => ({ key: nextFileKey++, path: f.path, content: f.content }));
+						files = (full.files ?? []).map((f) => ({
+							key: nextFileKey++,
+							path: f.path,
+							content: f.content
+						}));
 						filesReady = true;
 					})
 					.catch(() => {
 						if (!open || item?.id !== itemId) return;
-						errorMessage = 'Couldn’t load this skill’s files — close the dialog and reopen to retry.';
+						errorMessage =
+							'Couldn’t load this skill’s files — close the dialog and reopen to retry.';
 					});
 			}
 			repoUrl = item?.repo_url ?? '';
@@ -126,7 +136,7 @@
 	// Issues for the issue selector, constrained to the chosen project. Only
 	// the latest request may land: switching projects fires overlapping
 	// fetches whose responses can resolve out of order.
-	let issues = $state<Issue[]>([]);
+	let issues = $state<IssueListItem[]>([]);
 	let issuesRequest = 0;
 	$effect(() => {
 		if (!open) return;
@@ -164,7 +174,9 @@
 	);
 	/** The fetched list, with the bound issue prepended when it isn't in it. */
 	const issueOptions = $derived(
-		selectedIssue && !issues.some((i) => i.id === selectedIssue.id) ? [selectedIssue, ...issues] : issues
+		selectedIssue && !issues.some((i) => i.id === selectedIssue.id)
+			? [selectedIssue, ...issues]
+			: issues
 	);
 
 	// Picking an issue constrains the state list to its bound workflow.
@@ -177,7 +189,8 @@
 		if (issueId && selectedIssue) {
 			// The issue implies its project; drop a mismatched project pick.
 			if (projectId && projectId !== selectedIssue.project_id) projectId = '';
-			if (stateId && !stateWorkflows.some((w) => w.states.some((s) => s.id === stateId))) stateId = '';
+			if (stateId && !stateWorkflows.some((w) => w.states.some((s) => s.id === stateId)))
+				stateId = '';
 		}
 	});
 
@@ -209,7 +222,8 @@
 					request.issue_id = issueId || null;
 				}
 				if (kind === 'prompt') request.body = body;
-				if (kind === 'skill') request.files = files.map(({ path, content }): ContextFile => ({ path, content }));
+				if (kind === 'skill')
+					request.files = files.map(({ path, content }): ContextFile => ({ path, content }));
 				if (kind === 'repo') {
 					request.repo_url = repoUrl;
 					request.repo_branch = repoBranch.trim() || null;
@@ -226,7 +240,8 @@
 					issue_id: issueId || null
 				};
 				if (kind === 'prompt') request.body = body;
-				if (kind === 'skill') request.files = files.map(({ path, content }): ContextFile => ({ path, content }));
+				if (kind === 'skill')
+					request.files = files.map(({ path, content }): ContextFile => ({ path, content }));
 				if (kind === 'repo') {
 					request.repo_url = repoUrl;
 					request.repo_branch = repoBranch.trim() || null;
@@ -272,7 +287,8 @@
 				<div class="grid gap-1.5">
 					{#each CREATABLE_KINDS as k (k)}
 						<label
-							class="flex cursor-pointer items-center gap-2 rounded-md border px-3 py-2 text-sm {kind === k
+							class="flex cursor-pointer items-center gap-2 rounded-md border px-3 py-2 text-sm {kind ===
+							k
 								? 'border-primary bg-primary/5'
 								: 'hover:bg-muted/50'}"
 						>
@@ -307,7 +323,11 @@
 
 		<div class="space-y-1.5">
 			<label class="text-sm font-medium" for="ctx-description">Description</label>
-			<Input id="ctx-description" bind:value={description} placeholder="Optional one-liner shown in lists" />
+			<Input
+				id="ctx-description"
+				bind:value={description}
+				placeholder="Optional one-liner shown in lists"
+			/>
 		</div>
 
 		<!-- payload -->
@@ -315,7 +335,12 @@
 			<div class="space-y-1.5">
 				<div class="flex items-center justify-between">
 					<label class="text-sm font-medium" for="ctx-body">Body (Markdown)</label>
-					<Button type="button" size="sm" variant="ghost" onclick={() => (previewBody = !previewBody)}>
+					<Button
+						type="button"
+						size="sm"
+						variant="ghost"
+						onclick={() => (previewBody = !previewBody)}
+					>
 						{previewBody ? 'Write' : 'Preview'}
 					</Button>
 				</div>
@@ -369,14 +394,24 @@
 								<IconTrash size={14} />
 							</Button>
 						</div>
-						<Textarea bind:value={file.content} rows={4} class="font-mono text-xs" placeholder="File content…" />
+						<Textarea
+							bind:value={file.content}
+							rows={4}
+							class="font-mono text-xs"
+							placeholder="File content…"
+						/>
 					</div>
 				{/each}
 			</div>
 		{:else if kind === 'repo'}
 			<div class="space-y-1.5">
 				<label class="text-sm font-medium" for="ctx-url">Repository URL</label>
-				<Input id="ctx-url" bind:value={repoUrl} required placeholder="https://github.com/acme/api.git" />
+				<Input
+					id="ctx-url"
+					bind:value={repoUrl}
+					required
+					placeholder="https://github.com/acme/api.git"
+				/>
 			</div>
 			<div class="grid grid-cols-2 gap-3">
 				<div class="space-y-1.5">
@@ -404,69 +439,90 @@
 					: ''} — an artifact's scope cannot be changed.
 			</p>
 		{:else}
-		<fieldset class="space-y-2 rounded-md border p-3">
-			<legend class="px-1 text-sm font-medium">Scope</legend>
-			<p class="text-muted-foreground text-xs">
-				Applies where <em>all</em> chosen dimensions match.
-				{#if isGlobal}
-					<span class="text-foreground font-medium">None chosen — global: applies to every launch prompt.</span>
+			<fieldset class="space-y-2 rounded-md border p-3">
+				<legend class="px-1 text-sm font-medium">Scope</legend>
+				<p class="text-muted-foreground text-xs">
+					Applies where <em>all</em> chosen dimensions match.
+					{#if isGlobal}
+						<span class="text-foreground font-medium"
+							>None chosen — global: applies to every launch prompt.</span
+						>
+					{/if}
+				</p>
+				{#if !issueId}
+					<div class="space-y-1">
+						<label class="text-muted-foreground text-xs font-medium" for="ctx-scope-project"
+							>Project</label
+						>
+						<Select id="ctx-scope-project" bind:value={projectId} class="h-8 text-xs">
+							<option value="">Any project</option>
+							{#each projects as project (project.id)}
+								<option value={project.id}>{project.name}</option>
+							{/each}
+						</Select>
+					</div>
 				{/if}
-			</p>
-			{#if !issueId}
 				<div class="space-y-1">
-					<label class="text-muted-foreground text-xs font-medium" for="ctx-scope-project">Project</label>
-					<Select id="ctx-scope-project" bind:value={projectId} class="h-8 text-xs">
-						<option value="">Any project</option>
-						{#each projects as project (project.id)}
-							<option value={project.id}>{project.name}</option>
+					<label class="text-muted-foreground text-xs font-medium" for="ctx-scope-state">
+						Only in state{selectedIssue
+							? ` (workflow of ${selectedIssue.project_name}/${selectedIssue.number})`
+							: ''}
+					</label>
+					<Select id="ctx-scope-state" bind:value={stateId} class="h-8 text-xs">
+						<option value="">Any state</option>
+						{#each stateWorkflows as workflow (workflow.id)}
+							{#each workflow.states as state (state.id)}
+								<option value={state.id}>{workflow.name} / {state.name}</option>
+							{/each}
 						{/each}
 					</Select>
 				</div>
-			{/if}
-			<div class="space-y-1">
-				<label class="text-muted-foreground text-xs font-medium" for="ctx-scope-state">
-					Only in state{selectedIssue ? ` (workflow of ${selectedIssue.project_name}/${selectedIssue.number})` : ''}
-				</label>
-				<Select id="ctx-scope-state" bind:value={stateId} class="h-8 text-xs">
-					<option value="">Any state</option>
-					{#each stateWorkflows as workflow (workflow.id)}
-						{#each workflow.states as state (state.id)}
-							<option value={state.id}>{workflow.name} / {state.name}</option>
+				<div class="space-y-1">
+					<label class="text-muted-foreground text-xs font-medium" for="ctx-scope-issue"
+						>Only for issue</label
+					>
+					<Select id="ctx-scope-issue" bind:value={issueId} class="h-8 text-xs">
+						<option value="">Any issue</option>
+						{#each issueOptions as issue (issue.id)}
+							<option value={issue.id}>{issue.project_name}/{issue.number} — {issue.title}</option>
 						{/each}
-					{/each}
-				</Select>
-			</div>
-			<div class="space-y-1">
-				<label class="text-muted-foreground text-xs font-medium" for="ctx-scope-issue">Only for issue</label>
-				<Select id="ctx-scope-issue" bind:value={issueId} class="h-8 text-xs">
-					<option value="">Any issue</option>
-					{#each issueOptions as issue (issue.id)}
-						<option value={issue.id}>{issue.project_name}/{issue.number} — {issue.title}</option>
-					{/each}
-				</Select>
-				{#if issueId}
-					<p class="text-muted-foreground text-xs">The issue implies its project.</p>
-				{/if}
-			</div>
-		</fieldset>
+					</Select>
+					{#if issueId}
+						<p class="text-muted-foreground text-xs">The issue implies its project.</p>
+					{/if}
+				</div>
+			</fieldset>
 		{/if}
 
 		{#if errorMessage}
-			<p class="border-destructive/40 bg-destructive/10 text-destructive rounded-md border px-3 py-2 text-xs">
+			<p
+				class="border-destructive/40 bg-destructive/10 text-destructive rounded-md border px-3 py-2 text-xs"
+			>
 				{errorMessage}
 			</p>
 		{/if}
 
 		<div class="flex items-center justify-between gap-2 pt-1">
 			{#if item}
-				<Button type="button" variant="destructive" onclick={deleteItem} disabled={saving}>Delete</Button>
+				<Button type="button" variant="destructive" onclick={deleteItem} disabled={saving}
+					>Delete</Button
+				>
 			{:else}
 				<span></span>
 			{/if}
 			<div class="flex gap-2">
 				<Button type="button" variant="ghost" onclick={() => (open = false)}>Cancel</Button>
-				<Button type="submit" disabled={saving || !name.trim() || (kind === 'skill' && !filesReady)}>
-					{saving ? 'Saving…' : kind === 'skill' && !filesReady ? 'Loading files…' : item ? 'Save' : 'Create'}
+				<Button
+					type="submit"
+					disabled={saving || !name.trim() || (kind === 'skill' && !filesReady)}
+				>
+					{saving
+						? 'Saving…'
+						: kind === 'skill' && !filesReady
+							? 'Loading files…'
+							: item
+								? 'Save'
+								: 'Create'}
 				</Button>
 			</div>
 		</div>

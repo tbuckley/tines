@@ -15,6 +15,8 @@
 		'issue.updated',
 		'issue.transitioned',
 		'issue.commented',
+		'issue.comment_edited',
+		'issue.comment_deleted',
 		'project.created',
 		'project.updated',
 		'project.deleted',
@@ -91,7 +93,10 @@
 	</Select>
 </div>
 
-<EventList {events} emptyMessage="No activity yet — it will show up here as you and your agents work." />
+<EventList
+	{events}
+	emptyMessage="No activity yet — it will show up here as you and your agents work."
+/>
 
 {#if loadingMore}
 	<div class="mt-4 space-y-2">

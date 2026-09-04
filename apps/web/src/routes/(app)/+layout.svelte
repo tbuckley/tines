@@ -2,6 +2,7 @@
 	import IconActivity from '@tabler/icons-svelte/icons/activity';
 	import IconArrowsSplit2 from '@tabler/icons-svelte/icons/arrows-split-2';
 	import IconBooks from '@tabler/icons-svelte/icons/books';
+	import IconDatabaseExport from '@tabler/icons-svelte/icons/database-export';
 	import IconFolder from '@tabler/icons-svelte/icons/folder';
 	import IconKey from '@tabler/icons-svelte/icons/key';
 	import IconListDetails from '@tabler/icons-svelte/icons/list-details';
@@ -14,18 +15,23 @@
 	import { navigating, page } from '$app/state';
 	import { authClient } from '$lib/auth-client';
 	import { prefersReducedMotion } from '$lib/format';
+	import { navMemory } from '$lib/nav-memory.svelte';
 	import { fade } from 'svelte/transition';
 
 	let { data, children } = $props();
 
-	const tabs = [
-		{ href: '/issues', label: 'Issues', icon: IconListDetails },
-		{ href: '/workflows', label: 'Workflows', icon: IconSitemap },
-		{ href: '/projects', label: 'Projects', icon: IconFolder },
-		{ href: '/context', label: 'Context', icon: IconBooks },
-		{ href: '/agents', label: 'Agents', icon: IconRobot },
-		{ href: '/activity', label: 'Activity', icon: IconActivity }
-	];
+	// `path` identifies the tab (active state, slide direction, keys); `href` is
+	// where it goes — the Issues tab carries the filters you last used, so the
+	// list comes back as you left it. Derived so it tracks the store: the
+	// layout outlives every navigation.
+	const tabs = $derived([
+		{ path: '/issues', href: navMemory.issuesHref, label: 'Issues', icon: IconListDetails },
+		{ path: '/workflows', href: '/workflows', label: 'Workflows', icon: IconSitemap },
+		{ path: '/projects', href: '/projects', label: 'Projects', icon: IconFolder },
+		{ path: '/context', href: '/context', label: 'Context', icon: IconBooks },
+		{ path: '/agents', href: '/agents', label: 'Agents', icon: IconRobot },
+		{ path: '/activity', href: '/activity', label: 'Activity', icon: IconActivity }
+	]);
 
 	let menuOpen = $state(false);
 
@@ -37,6 +43,13 @@
 	}
 
 	// Shared-element page transitions (View Transitions API where available).
+	//
+	// The old page stays frozen until `navigation.complete`, so this turns
+	// server latency straight into perceived latency: the transition is only as
+	// fast as the slowest thing a page `load` *awaits*. Panels a page streams
+	// (returned as promises under `data.deferred`) are not part of it and land
+	// after the commit — which is why the issue page awaits only its first D1
+	// wave. Keep it that way when adding data to a load.
 	onNavigate((navigation) => {
 		if (!document.startViewTransition || prefersReducedMotion()) return;
 
@@ -62,7 +75,7 @@
 
 	function tabIndex(pathname: string | undefined) {
 		if (!pathname) return -1;
-		return tabs.findIndex((tab) => pathname.startsWith(tab.href));
+		return tabs.findIndex((tab) => pathname.startsWith(tab.path));
 	}
 
 	// The bottom bar highlights the destination tab the moment navigation
@@ -86,15 +99,17 @@
 	<header class="bg-background/90 sticky top-0 z-40 border-b backdrop-blur">
 		<div class="mx-auto flex h-14 w-full max-w-6xl items-center gap-6 px-4">
 			<a href="/issues" class="flex items-center gap-2 font-semibold tracking-tight">
-				<span class="bg-primary text-primary-foreground flex size-7 items-center justify-center rounded-lg">
+				<span
+					class="bg-primary text-primary-foreground flex size-7 items-center justify-center rounded-lg"
+				>
 					<IconArrowsSplit2 size={16} stroke={2} />
 				</span>
 				Tines
 			</a>
 			<!-- On phones the tabs live in the bottom bar instead. -->
 			<nav class="hidden h-full items-center gap-1 sm:flex">
-				{#each tabs as tab (tab.href)}
-					{@const active = page.url.pathname.startsWith(tab.href)}
+				{#each tabs as tab (tab.path)}
+					{@const active = page.url.pathname.startsWith(tab.path)}
 					<a
 						href={tab.href}
 						class="relative flex h-full items-center px-3 text-sm font-medium transition-colors {active
@@ -123,9 +138,16 @@
 					aria-label="Account menu"
 				>
 					{#if data.user.image}
-						<img src={data.user.image} alt="" class="size-8 rounded-full border" referrerpolicy="no-referrer" />
+						<img
+							src={data.user.image}
+							alt=""
+							class="size-8 rounded-full border"
+							referrerpolicy="no-referrer"
+						/>
 					{:else}
-						<span class="bg-muted text-muted-foreground flex size-8 items-center justify-center rounded-full border text-xs font-semibold">
+						<span
+							class="bg-muted text-muted-foreground flex size-8 items-center justify-center rounded-full border text-xs font-semibold"
+						>
 							{initials}
 						</span>
 					{/if}
@@ -193,9 +215,9 @@
 		aria-label="Primary"
 	>
 		<div class="grid h-16 grid-cols-6">
-			{#each tabs as tab (tab.href)}
-				{@const active = mobileTabPath.startsWith(tab.href)}
-				{@const pending = active && !page.url.pathname.startsWith(tab.href)}
+			{#each tabs as tab (tab.path)}
+				{@const active = mobileTabPath.startsWith(tab.path)}
+				{@const pending = active && !page.url.pathname.startsWith(tab.path)}
 				<a
 					href={tab.href}
 					class="flex flex-col items-center justify-center gap-1 text-[0.6875rem] font-medium transition active:scale-90 {active

@@ -11,7 +11,7 @@ import { createHash } from 'node:crypto';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ALICE, BOB, SCHED } from './constants.mjs';
+import { ALICE, BOB, RUNROW, SCHED } from './constants.mjs';
 
 const sha256Hex = (s) => createHash('sha256').update(s).digest('hex');
 
@@ -54,12 +54,48 @@ statements.push(
 	   '${SCHED.gatedId}', ${nowMs}, ${nowMs});`
 );
 
+// Managed-run fixture for the run-row spec: a finished run carrying a cost,
+// a provider console URL and a provider session id. `provider_url` is
+// unreachable through the API (only an adapter writes it, at launch), so the
+// row is seeded here — see RUNROW in constants.mjs for why it is `completed`.
+const runStart = nowMs - 120_000;
+statements.push(
+	`INSERT INTO project (id, user_id, name, description, created_at, updated_at)
+	 VALUES ('${RUNROW.projectId}', '${ALICE.id}', '${RUNROW.projectName}', '', ${nowMs}, ${nowMs});`,
+	`INSERT INTO issue (id, project_id, number, title, description, workflow_id, state_id, created_at, updated_at)
+	 VALUES ('${RUNROW.issueId}', '${RUNROW.projectId}', ${RUNROW.issueNumber}, 'Managed run row', '',
+	   'wf_standard', 'wfs_std_open', ${nowMs}, ${nowMs});`,
+	`INSERT INTO runner (id, user_id, type, name, status, max_concurrent, max_run_minutes, default_tier,
+	   config, created_at, updated_at)
+	 VALUES ('${RUNROW.runnerId}', '${ALICE.id}', 'claude_managed', '${RUNROW.runnerName}', 'active', 1, 30,
+	   'balanced', '{}', ${nowMs}, ${nowMs});`,
+	`INSERT INTO agent_run (id, user_id, issue_id, runner_id, status, outcome, tier, model, usage,
+	   state_id_at_start, state_id_at_end, provider_session_id, provider_url, log, error,
+	   created_at, started_at, ended_at)
+	 VALUES ('${RUNROW.runId}', '${ALICE.id}', '${RUNROW.issueId}', '${RUNROW.runnerId}', 'completed',
+	   '${RUNROW.outcome}',
+	   'balanced', 'claude-opus-4', '{"input_tokens":1000,"output_tokens":2000,"cost_usd":${RUNROW.costUsd},"cost_source":"provider"}',
+	   'wfs_std_open', 'wfs_std_open', '${RUNROW.providerSessionId}', '${RUNROW.providerUrl}', 'seeded log tail', NULL,
+	   ${runStart}, ${runStart}, ${nowMs});`
+);
+
 const sqlFile = join(mkdtempSync(join(tmpdir(), 'tines-e2e-')), 'seed.sql');
 writeFileSync(sqlFile, statements.join('\n'));
 
 execFileSync(
 	'pnpm',
-	['exec', 'wrangler', 'd1', 'execute', 'tines', '--local', '--persist-to', '.wrangler-e2e', '--file', sqlFile],
+	[
+		'exec',
+		'wrangler',
+		'd1',
+		'execute',
+		'tines',
+		'--local',
+		'--persist-to',
+		'.wrangler-e2e',
+		'--file',
+		sqlFile
+	],
 	{ stdio: 'inherit' }
 );
 console.log('e2e seed complete');

@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { ApiFail, type ActorContext } from './core';
-import { deleteRunner, planRunnerRemoval, requireTier, runnerOnline, type RunnerRemovalRefs } from './runners';
+import {
+	deleteRunner,
+	planRunnerRemoval,
+	requireTier,
+	runnerOnline,
+	type RunnerRemovalRefs
+} from './runners';
 import { createTestDb, type TestDb } from './test-db';
 
 const runner = { id: 'rnr_1', name: 'laptop-m4' };
@@ -161,7 +167,9 @@ describe('deleteRunner (db batch)', () => {
 		]);
 		// Targets stripped; the emptied rule is kept, flagged by its empty list.
 		const targets = Object.fromEntries(
-			t.all(`SELECT id, targets FROM routing_rule`).map((r) => [r.id, JSON.parse(r.targets as string)])
+			t
+				.all(`SELECT id, targets FROM routing_rule`)
+				.map((r) => [r.id, JSON.parse(r.targets as string)])
 		);
 		expect(targets).toEqual({
 			rul_1: [{ runner_id: 'rnr_2', tier: 'cheapest' }],
@@ -178,7 +186,14 @@ describe('deleteRunner (db batch)', () => {
 		const t = createTestDb();
 		seedRemovalFixture(t);
 		await expect(deleteRunner(t.db, t.env, actor, 'rnr_1', false)).rejects.toMatchObject({
-			code: 'runner_referenced'
+			code: 'runner_referenced',
+			// The referenced rules are named with the canonical scope label.
+			details: {
+				rules: [
+					{ rule_id: 'rul_1', label: 'global' },
+					{ rule_id: 'rul_2', label: 'project demo' }
+				]
+			}
 		});
 		expect(t.all(`SELECT id FROM runner`)).toHaveLength(2);
 		expect(t.all(`SELECT pinned_runner_id FROM issue WHERE id = 'iss_1'`)).toEqual([
@@ -206,7 +221,12 @@ describe('deleteRunner (db batch)', () => {
 		});
 		// The in-batch guards made every statement a no-op: nothing stripped,
 		// nothing deleted, no events recorded.
-		expect(t.all(`SELECT id FROM runner`).map((r) => r.id).sort()).toEqual(['rnr_1', 'rnr_2']);
+		expect(
+			t
+				.all(`SELECT id FROM runner`)
+				.map((r) => r.id)
+				.sort()
+		).toEqual(['rnr_1', 'rnr_2']);
 		expect(t.all(`SELECT pinned_runner_id FROM issue WHERE id = 'iss_1'`)).toEqual([
 			{ pinned_runner_id: 'rnr_1' }
 		]);

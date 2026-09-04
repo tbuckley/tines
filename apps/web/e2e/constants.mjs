@@ -10,7 +10,9 @@
 
 export const PORT = Number(process.env.E2E_PORT ?? 8788);
 export const BASE_URL = `http://127.0.0.1:${PORT}`;
-export const AUTH_SECRET = 'tines-e2e-secret';
+/** 32+ high-entropy characters, or Better Auth warns twice at every server start. */
+export const AUTH_SECRET =
+	'tines-e2e-secret-4b8e1c3f9a2d7e5b0c6f1a8d3e9b2c7f4a1e6d0b5c8f3a2e7d9b4c1f6a0e3d8b';
 
 export const ALICE = {
 	id: 'usr_e2e_alice',
@@ -36,6 +38,30 @@ export const SCHED = {
 	gatedId: 'sch_e2e_gated',
 	gatedName: 'Gated triage',
 	gatedIssueId: 'iss_e2e_gated_1'
+};
+
+/**
+ * Seeded managed-run fixture (Alice's), for the run-row spec. A run's
+ * `provider_url` is written only by an adapter at launch — no API request
+ * body carries it — so the row is seeded directly. `completed` rather than
+ * `running` on purpose: a live run would hold the issue's claim and be
+ * failed by any sweep firing after RUNNER_OFFLINE_FAIL_MS, i.e. flake.
+ */
+export const RUNROW = {
+	projectId: 'prj_e2e_runrow',
+	projectName: 'runrow-seed',
+	issueId: 'iss_e2e_runrow_1',
+	issueNumber: 1,
+	runnerId: 'rnr_e2e_runrow',
+	runnerName: 'runrow-managed',
+	runId: 'run_e2e_runrow',
+	/** Rendered by runCostLabel as "$1.23". */
+	costUsd: 1.23,
+	costLabel: '$1.23',
+	/** How the end was judged: rendered beside the status on every run row. */
+	outcome: 'advanced',
+	providerUrl: 'https://console.example.test/session/e2e-runrow',
+	providerSessionId: 'sess_e2e_runrow'
 };
 
 export const BOB = {

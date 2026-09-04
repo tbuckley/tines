@@ -12,7 +12,14 @@ import {
 } from '@tines/shared';
 import { sql, type CompiledQuery, type Kysely } from 'kysely';
 import { newId, type Database } from '$lib/server/db';
-import { ApiFail, notFound, optionalString, requireString, runAtomic, type ActorContext } from './core';
+import {
+	ApiFail,
+	notFound,
+	optionalString,
+	requireString,
+	runAtomic,
+	type ActorContext
+} from './core';
 import { eventInsert } from './events';
 
 const NAME_MAX = 50;
@@ -107,7 +114,9 @@ export async function listLabels(db: Kysely<Database>, userId: string): Promise<
 		.selectFrom('label')
 		.selectAll('label')
 		.select(
-			sql<number>`(SELECT COUNT(*) FROM issue_label il WHERE il.label_id = label.id)`.as('issue_count')
+			sql<number>`(SELECT COUNT(*) FROM issue_label il WHERE il.label_id = label.id)`.as(
+				'issue_count'
+			)
 		)
 		.where('user_id', '=', userId)
 		.orderBy(sql`name COLLATE NOCASE`)
@@ -266,7 +275,9 @@ export async function resolveOrCreateLabels(
 	field = 'labels'
 ): Promise<ResolvedLabels> {
 	if (!Array.isArray(refs)) {
-		throw new ApiFail(422, 'invalid_field', `"${field}" must be an array of label names`, { field });
+		throw new ApiFail(422, 'invalid_field', `"${field}" must be an array of label names`, {
+			field
+		});
 	}
 	const names = refs.map((r) => normalizeLabelName(r, field));
 

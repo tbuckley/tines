@@ -43,7 +43,10 @@ describe('resolveDef', () => {
 	it('resolves transition and initial refs by existing state id', () => {
 		const existing = [{ id: 'wfs_x1', name: 'Open', category: 'active' as const }];
 		const def = resolveDef(
-			[{ id: 'wfs_x1', name: 'Renamed', category: 'active' }, { name: 'Done', category: 'done' }],
+			[
+				{ id: 'wfs_x1', name: 'Renamed', category: 'active' },
+				{ name: 'Done', category: 'done' }
+			],
 			[{ name: 'Finish', from: 'wfs_x1', to: 'Done' }],
 			'wfs_x1',
 			existing

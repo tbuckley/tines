@@ -25,7 +25,10 @@ export interface MatchableRule {
 	targets: RoutingTarget[];
 }
 
-function specificity(rule: { project_id: string | null; workflow_state_id: string | null }): number {
+function specificity(rule: {
+	project_id: string | null;
+	workflow_state_id: string | null;
+}): number {
 	return (rule.project_id ? 2 : 0) + (rule.workflow_state_id ? 1 : 0);
 }
 
@@ -58,7 +61,7 @@ export function matchRule<T extends MatchableRule>(
  */
 const BUILTIN_TIER_MODELS: Record<string, Record<ModelTier, string> | null> = {
 	claude_managed: {
-		smartest: 'claude-fable-5',
+		smartest: 'claude-fable-5-1',
 		balanced: 'claude-opus-5',
 		cheapest: 'claude-sonnet-5'
 	},
@@ -153,16 +156,26 @@ export function appendLogTail(
 	log: string,
 	dropped: number,
 	chunk: string
-): { log: string; dropped: number } {
+): { log: string; dropped: number; evicted: Uint8Array | null } {
 	const combined = log + chunk;
 	const bytes = new TextEncoder().encode(combined);
-	if (bytes.length <= RUN_LOG_MAX_BYTES) return { log: combined, dropped };
-	const kept = bytes.slice(bytes.length - RUN_LOG_MAX_BYTES);
-	// A multi-byte character split at the boundary decodes to U+FFFD at the
-	// head of the tail — cosmetic, and cheaper than re-scanning boundaries.
+	if (bytes.length <= RUN_LOG_MAX_BYTES) return { log: combined, dropped, evicted: null };
+	// The cut advances over any UTF-8 continuation bytes (0b10xxxxxx) so it
+	// lands on a character boundary. Two reasons: the tail no longer opens
+	// with a U+FFFD where a multi-byte character was sliced, and — the one
+	// that matters — the evicted prefix and the tail are each independently
+	// decodable, so `spilled + tail` is byte-for-byte the original log. The
+	// cap is a maximum, so a tail a byte or two under it is fine.
+	let cut = bytes.length - RUN_LOG_MAX_BYTES;
+	while (cut < bytes.length && (bytes[cut]! & 0xc0) === 0x80) cut++;
+	const kept = bytes.slice(cut);
+	// `evicted` is the dropped bytes, handed to the caller so they can be
+	// spilled to R2 rather than lost (supervisor/run-log.ts); raw bytes and
+	// not a string so the caller stores exactly what was removed.
 	return {
 		log: new TextDecoder().decode(kept),
-		dropped: dropped + (bytes.length - RUN_LOG_MAX_BYTES)
+		dropped: dropped + cut,
+		evicted: bytes.slice(0, cut)
 	};
 }
 
@@ -241,12 +254,15 @@ export function targetVerdict(
 	if (runner.backoff_until !== null && runner.backoff_until > now) {
 		return {
 			verdict: 'backing_off',
-			detail: `backing off after launch failures until ${new Date(runner.backoff_until).toISOString()}`
+			detail: `backing off after repeated failures until ${new Date(runner.backoff_until).toISOString()}`
 		};
 	}
 	const active = counts.byRunner.get(runner.id) ?? 0;
 	if (active >= runner.max_concurrent) {
-		return { verdict: 'at_capacity', detail: `at max_concurrent (${active}/${runner.max_concurrent})` };
+		return {
+			verdict: 'at_capacity',
+			detail: `at max_concurrent (${active}/${runner.max_concurrent})`
+		};
 	}
 	if (!quotaHasRoom(quota, counts, stateId)) {
 		return {

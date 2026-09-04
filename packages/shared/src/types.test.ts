@@ -1,0 +1,101 @@
+import { describe, expect, it } from 'vitest';
+import type { AgentRunUsage, StateCategory, Workflow } from './types.js';
+import {
+	activeStateIds,
+	isActiveRun,
+	isStaleTierOverride,
+	runCostLabel,
+	runDurationLabel
+} from './types.js';
+
+describe('runCostLabel', () => {
+	const label = (usage: AgentRunUsage | null) => runCostLabel({ usage });
+
+	it('prefers dollars whenever a cost is known', () => {
+		expect(label({ cost_usd: 1.2, cost_source: 'provider' })).toBe('$1.20');
+		// tokens present too — dollars still win
+		expect(label({ cost_usd: 0, input_tokens: 500, output_tokens: 10 })).toBe('$0.00');
+	});
+
+	it('says so when the provider reports no cost at all', () => {
+		expect(label({ cost_source: 'none', input_tokens: 10, output_tokens: 20 })).toBe('unreported');
+	});
+
+	it('falls back to summed tokens when only they are known', () => {
+		expect(label({ input_tokens: 1000, output_tokens: 2000 })).toBe('3,000 tok');
+		expect(label({ output_tokens: 2000 })).toBe('2,000 tok');
+	});
+
+	it('renders nothing rather than a misleading zero', () => {
+		expect(label(null)).toBeNull();
+		expect(label({})).toBeNull();
+		expect(label({ input_tokens: 0, output_tokens: 0 })).toBeNull();
+	});
+});
+
+describe('isActiveRun', () => {
+	it('is true for exactly the claim-holding statuses', () => {
+		expect(isActiveRun('assigned')).toBe(true);
+		expect(isActiveRun('launching')).toBe(true);
+		expect(isActiveRun('running')).toBe(true);
+	});
+
+	it('is false once the run has settled', () => {
+		for (const status of ['completed', 'failed', 'timed_out', 'canceled'] as const) {
+			expect(isActiveRun(status)).toBe(false);
+		}
+	});
+});
+
+describe('activeStateIds', () => {
+	const wf = (...states: [string, StateCategory][]): Pick<Workflow, 'states'> => ({
+		states: states.map(([id, category], i) => ({ id, name: id, category, position: i }))
+	});
+
+	it('collects active states across every workflow', () => {
+		const ids = activeStateIds([
+			wf(['a1', 'active'], ['b1', 'backlog']),
+			wf(['a2', 'active'], ['d1', 'done'])
+		]);
+		expect([...ids].sort()).toEqual(['a1', 'a2']);
+	});
+
+	it('excludes every non-active category', () => {
+		const ids = activeStateIds([wf(['b', 'backlog'], ['h', 'awaiting_human'], ['d', 'done'])]);
+		expect(ids.size).toBe(0);
+	});
+
+	it('handles no workflows and stateless workflows', () => {
+		expect(activeStateIds([]).size).toBe(0);
+		expect(activeStateIds([wf()]).size).toBe(0);
+	});
+});
+
+describe('runDurationLabel', () => {
+	it('is the documented em-dash before launch', () => {
+		expect(runDurationLabel({ started_at: null, ended_at: null })).toBe('—');
+	});
+
+	it('counts seconds under a minute and whole minutes above', () => {
+		expect(runDurationLabel({ started_at: 1000, ended_at: 43_000 })).toBe('42s');
+		expect(runDurationLabel({ started_at: 1000, ended_at: 1000 + 12 * 60_000 })).toBe('12m');
+	});
+
+	it('measures an unfinished run against now', () => {
+		expect(runDurationLabel({ started_at: 5_000, ended_at: null }, 35_000)).toBe('30s');
+	});
+});
+
+describe('isStaleTierOverride', () => {
+	it('flags a predecessor of the current built-in', () => {
+		expect(isStaleTierOverride('claude-fable-5-1', 'claude-fable-5')).toBe(true);
+		expect(isStaleTierOverride('claude-fable-5-1', 'claude-opus-5')).toBe(true);
+	});
+
+	it('does not flag the built-in itself, unknown models, or missing values', () => {
+		expect(isStaleTierOverride('claude-fable-5-1', 'claude-fable-5-1')).toBe(false);
+		expect(isStaleTierOverride('claude-fable-5-1', 'some-custom-model')).toBe(false);
+		expect(isStaleTierOverride(null, 'claude-fable-5')).toBe(false);
+		expect(isStaleTierOverride('claude-fable-5-1', undefined)).toBe(false);
+	});
+});

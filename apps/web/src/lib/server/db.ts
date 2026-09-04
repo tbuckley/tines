@@ -1,5 +1,5 @@
 import type { StateCategory } from '@tines/shared';
-import { Kysely } from 'kysely';
+import { Kysely, SqliteAdapter } from 'kysely';
 import { D1Dialect } from 'kysely-d1';
 
 export interface ProjectTable {
@@ -208,6 +208,8 @@ export interface CommentTable {
 	actor_user_id: string;
 	actor_api_key_id: string | null;
 	created_at: number;
+	/** Null until the comment is edited. */
+	updated_at: number | null;
 }
 
 export interface EventTable {
@@ -273,6 +275,12 @@ export interface AgentRunTable {
 	runner_id: string;
 	/** 'assigned' | 'launching' | 'running' | 'completed' | 'failed' | 'timed_out' | 'canceled'. */
 	status: string;
+	/**
+	 * How the end was judged: 'advanced' | 'stalled' | 'interrupted'. NULL
+	 * while the run is active, for runs that never started (nothing to
+	 * judge), and for every row that ended before the column existed.
+	 */
+	outcome: string | null;
 	tier: string;
 	/** Resolved at launch; NULL when the harness cannot vary its model. */
 	model: string | null;
@@ -291,6 +299,18 @@ export interface AgentRunTable {
 	/** Append-only tail, head-truncated at the cap. */
 	log: string;
 	log_bytes_dropped: number;
+	/** Highest client-assigned chunk seq applied (log append idempotency). */
+	log_seq: number;
+	/** Highest `part.{n}` object written to the run-log bucket. */
+	log_part_count: number;
+	/** Parts at or below this index are merged into the `head` object. */
+	log_compacted_through: number;
+	/** 1 once the complete log is written to the `full` object. */
+	log_sealed: number;
+	/** Size of the raw harness stream object; 0 = none uploaded. */
+	log_raw_bytes: number;
+	/** Retention GC deleted this run's R2 objects (the D1 tail survives). */
+	log_objects_deleted_at: number | null;
 	error: string | null;
 	created_at: number;
 	started_at: number | null;
@@ -306,6 +326,17 @@ export interface RoutingRuleTable {
 	/** JSON ordered target list: [ { runner_id, tier? } ]. */
 	targets: string;
 	created_at: number;
+	updated_at: number;
+}
+
+/**
+ * Global, singleton-per-key housekeeping state for sweep passes that cannot
+ * finish in one pass. Currently just the run-log orphan pass's position in
+ * the R2 keyspace (`run_log_gc_after`).
+ */
+export interface SupervisorSweepStateTable {
+	key: string;
+	value: string | null;
 	updated_at: number;
 }
 
@@ -355,7 +386,38 @@ export interface Database {
 	agent_run: AgentRunTable;
 	routing_rule: RoutingRuleTable;
 	supervisor_settings: SupervisorSettingsTable;
+	supervisor_sweep_state: SupervisorSweepStateTable;
 	user: UserTable;
+}
+
+/**
+ * kysely-d1 reuses Kysely's stock SqliteAdapter, whose
+ * `supportsMultipleConnections = false` makes Kysely wrap every query in a
+ * connection mutex. That is right for a local SQLite file and wrong for D1,
+ * which is a remote binding that accepts concurrent statements: the mutex
+ * silently serialises every `Promise.all` fan-out in our loads (measured:
+ * the issue page ran 26 queries in 26 sequential round trips).
+ *
+ * INVARIANT: nothing under `apps/web/src` may call `db.transaction()`. A
+ * Kysely transaction pins one connection, and with the mutex lifted unrelated
+ * statements would interleave into it. Every multi-statement write goes
+ * through `runAtomic()` -> `env.DB.batch()`, which never touches Kysely's
+ * connection at all. Enforced by a test in db.test.ts.
+ *
+ * Fan-out ceiling: the widest load (the issue page) peaks at ~11 concurrent
+ * statements — far below the Worker subrequest cap — so no throttle is
+ * needed. Re-check that if a load grows a much wider Promise.all.
+ */
+class ConcurrentD1Adapter extends SqliteAdapter {
+	override get supportsMultipleConnections() {
+		return true;
+	}
+}
+
+export class ConcurrentD1Dialect extends D1Dialect {
+	override createAdapter(): SqliteAdapter {
+		return new ConcurrentD1Adapter();
+	}
 }
 
 const dbs = new WeakMap<object, Kysely<Database>>();
@@ -369,10 +431,24 @@ const dbs = new WeakMap<object, Kysely<Database>>();
 export function getDb(env: Env): Kysely<Database> {
 	let db = dbs.get(env.DB);
 	if (!db) {
-		db = new Kysely<Database>({ dialect: new D1Dialect({ database: env.DB }) });
+		db = new Kysely<Database>({ dialect: new ConcurrentD1Dialect({ database: env.DB }) });
 		dbs.set(env.DB, db);
 	}
 	return db;
+}
+
+/**
+ * D1 caps bound parameters per statement at 100, and each id in an `IN` list
+ * binds one. Anything that builds an `IN` list from a set the caller does not
+ * control the size of — a page of R2 keys, a user's whole artifact list —
+ * queries in chunks of this and re-assembles.
+ */
+export const IN_LIST_CHUNK = 90;
+
+export function idChunks(ids: string[]): string[][] {
+	const chunks: string[][] = [];
+	for (let i = 0; i < ids.length; i += IN_LIST_CHUNK) chunks.push(ids.slice(i, i + IN_LIST_CHUNK));
+	return chunks;
 }
 
 const ID_ALPHABET = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';

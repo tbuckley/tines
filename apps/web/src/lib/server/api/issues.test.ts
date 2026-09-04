@@ -6,10 +6,14 @@ import {
 	allowedTransitions,
 	assertPinFieldsAllowed,
 	createIssue,
+	getIssueDetail,
 	listIssues,
+	loadIssue,
 	resolveStateRef
 } from './issues';
 import { createLabel, listLabels } from './labels';
+import { listArtifacts } from './artifacts';
+import { loadWorkflows } from './workflows';
 import { createTestDb, type TestDb } from './test-db';
 
 const workflow: WorkflowResponse = {
@@ -109,7 +113,9 @@ describe('assertPinFieldsAllowed', () => {
 	it('leaves named keys and sessions unfenced', () => {
 		expect(() => assertPinFieldsAllowed(namedKey, { pinned_runner_id: 'rnr_1' })).not.toThrow();
 		expect(() => assertPinFieldsAllowed(namedKey, { pinned_runner_id: null })).not.toThrow();
-		expect(() => assertPinFieldsAllowed(session, { pinned_runner_id: 'rnr_1', pinned_tier: 'smartest' })).not.toThrow();
+		expect(() =>
+			assertPinFieldsAllowed(session, { pinned_runner_id: 'rnr_1', pinned_tier: 'smartest' })
+		).not.toThrow();
 	});
 });
 
@@ -243,7 +249,130 @@ describe('createIssue with labels', () => {
 	it('filters on a label applied at creation time', async () => {
 		const labelled = await create(human, ['bug']);
 		await createIssue(t.db, t.env, human, PROJECT, { title: 'Plain' });
-		const { items } = await listIssues(t.db, USER, { labels: ['bug'] }, { cursor: null, limit: 50 });
+		const { items } = await listIssues(
+			t.db,
+			USER,
+			{ labels: ['bug'] },
+			{ cursor: null, limit: 50 }
+		);
 		expect(items.map((i) => i.id)).toEqual([labelled.id]);
+	});
+});
+
+// --- brief: the token-saving list shape (Tines/90) ---------------------------
+
+describe('listIssues brief', () => {
+	let t: TestDb;
+
+	beforeEach(() => {
+		t = createTestDb();
+		seedBase(t);
+		addIssue(t, { title: 'Documented', description: 'a long description body' });
+		addIssue(t, { title: 'Bare' });
+	});
+
+	const list = async (filters: Parameters<typeof listIssues>[2]) =>
+		(await listIssues(t.db, USER, filters, { cursor: null, limit: 50 })).items;
+
+	it('omits the description key entirely — including for an empty one', async () => {
+		const items = await list({ brief: true });
+		expect(items).toHaveLength(2);
+		for (const item of items) expect(Object.hasOwn(item, 'description')).toBe(false);
+	});
+
+	it('changes nothing else about an item', async () => {
+		const full = (await list({})).find((i) => i.title === 'Documented')!;
+		const brief = (await list({ brief: true })).find((i) => i.title === 'Documented')!;
+		expect(full.description).toBe('a long description body');
+		const { description: _description, ...rest } = full;
+		expect(brief).toEqual(rest);
+	});
+
+	it('keeps descriptions without the flag, and with a falsy one', async () => {
+		for (const filters of [{}, { brief: false }]) {
+			const byTitle = Object.fromEntries(
+				(await list(filters)).map((i) => [i.title, i.description])
+			);
+			expect(byTitle).toEqual({ Documented: 'a long description body', Bare: '' });
+		}
+	});
+});
+
+// --- getIssueDetail: the page load's dedupe contract (Tines/32) --------------
+// The issue page resolves the issue row once and hands what it already has to
+// getIssueDetail. These lock in that the shortcuts produce the same answer as
+// the long way round, and that they really skip the queries.
+
+describe('getIssueDetail lookups and preloading', () => {
+	let t: TestDb;
+	let id: string;
+	let number: number;
+
+	beforeEach(() => {
+		t = createTestDb();
+		seedBase(t);
+		id = addIssue(t, { title: 'Detail me' });
+		number = (t.all('SELECT number FROM issue WHERE id = ?', id)[0] as { number: number }).number;
+	});
+
+	it('resolves by project name — the URL shape — in one statement', async () => {
+		const byName = await getIssueDetail(t.db, USER, { projectName: 'demo', number });
+		expect(byName.id).toBe(id);
+		const byId = await getIssueDetail(t.db, USER, { id });
+		expect(byName).toEqual(byId);
+	});
+
+	it('404s on an unknown project name', async () => {
+		await expect(getIssueDetail(t.db, USER, { projectName: 'nope', number })).rejects.toThrow(
+			ApiFail
+		);
+	});
+
+	it('takes an already-loaded issue instead of re-reading the row', async () => {
+		const issue = await loadIssue(t.db, USER, { id });
+		const spy = t.spyOnQueries();
+		const detail = await getIssueDetail(t.db, USER, issue);
+		expect(detail.id).toBe(id);
+		expect(spy().some((sql) => sql.includes('dup_chain'))).toBe(false);
+	});
+
+	it('uses preloaded workflows instead of querying for them', async () => {
+		const workflows = await loadWorkflows(t.db, USER);
+		const plain = await getIssueDetail(t.db, USER, { id });
+		const spy = t.spyOnQueries();
+		const preloaded = await getIssueDetail(t.db, USER, { id }, { workflows });
+		expect(preloaded.workflow).toEqual(plain.workflow);
+		expect(preloaded.allowed_transitions).toEqual(plain.allowed_transitions);
+		expect(spy().some((sql) => sql.includes('workflow_transition'))).toBe(false);
+	});
+
+	it('accepts a still-in-flight workflows promise', async () => {
+		const detail = await getIssueDetail(
+			t.db,
+			USER,
+			{ id },
+			{ workflows: loadWorkflows(t.db, USER) }
+		);
+		expect(detail.workflow.id).toBe(detail.workflow_id);
+	});
+
+	it('404s when the preloaded workflows do not contain the issue’s workflow', async () => {
+		await expect(getIssueDetail(t.db, USER, { id }, { workflows: [] })).rejects.toThrow(ApiFail);
+	});
+
+	it('returns artifacts only when asked, and reads them exactly once', async () => {
+		expect((await getIssueDetail(t.db, USER, { id })).artifacts).toBeUndefined();
+
+		const baseline = t.spyOnQueries();
+		await listArtifacts(t.db, USER, id);
+		const oneRead = baseline().length;
+
+		const spy = t.spyOnQueries();
+		const withArtifacts = await getIssueDetail(t.db, USER, { id }, { artifacts: true });
+		expect(withArtifacts.artifacts).toEqual([]);
+		// The requirement pre-flight reuses the list the caller asked for rather
+		// than fetching a second copy.
+		const artifactReads = spy().filter((sql) => sql.includes('context_item')).length;
+		expect(artifactReads).toBe(oneRead);
 	});
 });

@@ -18,7 +18,12 @@ type ErrorBody = { error: { code: string; message: string; details?: Record<stri
 const todayUtc = () => new Date().toISOString().slice(0, 10);
 /** Today (YYYY-MM-DD) in a schedule's timezone — {{date}} renders in it. */
 const todayIn = (timeZone: string) =>
-	new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+	new Intl.DateTimeFormat('en-CA', {
+		timeZone,
+		year: 'numeric',
+		month: '2-digit',
+		day: '2-digit'
+	}).format(new Date());
 
 const fireSweep = async (request: import('@playwright/test').APIRequestContext) => {
 	// wrangler dev --test-scheduled exposes the scheduled() handler here.
@@ -60,7 +65,9 @@ test.describe.serial('scheduled-task sweep (seeded due schedules)', () => {
 		expect(created!.payload.manual).toBeUndefined();
 	});
 
-	test('skips a gated schedule while an instance is open, recording the blockers', async ({ request }) => {
+	test('skips a gated schedule while an instance is open, recording the blockers', async ({
+		request
+	}) => {
 		const api = apiClient(request, ALICE.apiKey);
 		// Still only the seeded open instance — the occurrence was skipped.
 		const issues = await body<ListResponse<Issue>>(
@@ -101,7 +108,9 @@ test.describe.serial('schedule lifecycle over the API', () => {
 	let scheduleId: string;
 	let firstIssue: IssueDetail;
 
-	test('creating an issue with a recurrence creates it immediately plus the schedule', async ({ request }) => {
+	test('creating an issue with a recurrence creates it immediately plus the schedule', async ({
+		request
+	}) => {
 		const api = apiClient(request, ALICE.apiKey);
 		projectId = (await body<Project>(await api.post('/api/v1/projects', { name: projectName }))).id;
 
@@ -172,7 +181,9 @@ test.describe.serial('schedule lifecycle over the API', () => {
 		expect(schedule.run_count).toBe(2);
 	});
 
-	test('editing the recurrence recomputes next_run_at; pause and resume work', async ({ request }) => {
+	test('editing the recurrence recomputes next_run_at; pause and resume work', async ({
+		request
+	}) => {
 		const api = apiClient(request, ALICE.apiKey);
 		const before = await body<Schedule>(await api.get(`/api/v1/schedules/${scheduleId}`));
 
@@ -241,8 +252,15 @@ test.describe('schedule validation', () => {
 		).id;
 	});
 
-	const create = (request: import('@playwright/test').APIRequestContext, schedule: unknown, title = 'T') =>
-		apiClient(request, ALICE.apiKey).post(`/api/v1/projects/${projectId}/issues`, { title, schedule });
+	const create = (
+		request: import('@playwright/test').APIRequestContext,
+		schedule: unknown,
+		title = 'T'
+	) =>
+		apiClient(request, ALICE.apiKey).post(`/api/v1/projects/${projectId}/issues`, {
+			title,
+			schedule
+		});
 
 	test('rejects an invalid cron expression', async ({ request }) => {
 		const res = await create(request, { cron: 'not a cron' });
@@ -370,6 +388,20 @@ test.describe('schedules in the web UI', () => {
 			page.getByRole('button', { name: `From schedule ${SCHED.gatedName}` })
 		).toBeVisible();
 
+		// The next-run line is phrased against the real next_run_at: a pending
+		// run counts down, a past-due one says so. It must never read as an
+		// imminent countdown while the timestamp is behind us (Tines/55).
+		const api = apiClient(page.request, ALICE.apiKey);
+		const schedule = await body<Schedule>(await api.get(`/api/v1/schedules/${SCHED.plainId}`));
+		const line = page
+			.locator('li', { hasText: SCHED.plainName })
+			.locator('p', { hasText: /overdue|due now|^next in/ });
+		if (schedule.next_run_at >= Date.now()) {
+			await expect(line).toHaveText(/^next in (<1m|\d+[mhd]|\w{3} \d+, \d{4})$/);
+		} else {
+			await expect(line).toHaveText(/^(due now|\d+[mhd] overdue|overdue since .+)$/);
+		}
+
 		await context.close();
 	});
 
@@ -397,7 +429,13 @@ test.describe('schedules in the web UI', () => {
 		await expect(dialog.getByText('{{date}}', { exact: true })).toBeHidden();
 		await page.locator('#issue-repeat-kind').selectOption('weekly');
 		await expect(page.getByText(/Every \w+ at \d{2}:\d{2},.*— next:/)).toBeVisible();
-		for (const token of ['{{date}}', '{{time}}', '{{datetime}}', '{{schedule_name}}', '{{count}}']) {
+		for (const token of [
+			'{{date}}',
+			'{{time}}',
+			'{{datetime}}',
+			'{{schedule_name}}',
+			'{{count}}'
+		]) {
 			await expect(dialog.getByText(token, { exact: true })).toBeVisible();
 		}
 		await expect(page.getByRole('button', { name: 'Create issue + schedule' })).toBeVisible();

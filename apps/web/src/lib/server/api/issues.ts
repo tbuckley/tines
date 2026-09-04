@@ -11,11 +11,13 @@ import {
 	type IssueDetail,
 	type IssueLabel,
 	type IssueLinks,
+	type IssueListItem,
 	type IssueRef,
 	type LinkedIssue,
 	type ModelTier,
 	type StateCategory,
 	type TransitionIssueRequest,
+	type UpdateCommentRequest,
 	type UpdateIssueRequest,
 	type WorkflowResponse,
 	type WorkflowState
@@ -38,7 +40,7 @@ import { actorOf, eventInsert } from './events';
 import { issueLabelInserts, labelInserts, resolveOrCreateLabels } from './labels';
 import { requireTier } from './runners';
 import { getSchedule, prepareSchedule } from './schedules';
-import { loadWorkflow } from './workflows';
+import { loadWorkflow, loadWorkflows } from './workflows';
 
 /**
  * SQL for the effective category of the blocker on a `blocks` edge into
@@ -219,6 +221,17 @@ export function serializeIssue(row: IssueRow): Issue {
 	};
 }
 
+/**
+ * A list item without its description body. Descriptions are most of a list
+ * payload (76% of a 50-issue page of this project), and list callers read
+ * ref/title/state — so `brief=1` drops the key entirely rather than emptying it,
+ * which keeps "absent" distinguishable from "the issue has no description".
+ */
+export function briefIssue(row: IssueRow): IssueListItem {
+	const { description: _description, ...rest } = serializeIssue(row);
+	return rest;
+}
+
 export interface IssueListFilters {
 	project?: string;
 	state?: string;
@@ -235,6 +248,8 @@ export interface IssueListFilters {
 	q?: string;
 	/** Label names or ids; every one must be present (AND). */
 	labels?: string[];
+	/** Omit `description` from every item — the bulk of a list payload. */
+	brief?: boolean;
 }
 
 export async function listIssues(
@@ -242,7 +257,7 @@ export async function listIssues(
 	userId: string,
 	filters: IssueListFilters,
 	page: Page
-): Promise<{ items: Issue[]; hasMore: boolean }> {
+): Promise<{ items: IssueListItem[]; hasMore: boolean }> {
 	let q = issueQuery(db, userId);
 	if (filters.projectId) q = q.where('issue.project_id', '=', filters.projectId);
 	if (filters.project) {
@@ -310,7 +325,9 @@ export async function listIssues(
 		// Plain substring search; % and _ act as wildcards, which is harmless
 		// (and occasionally useful) for a search box.
 		const like = `%${filters.q}%`;
-		q = q.where((eb) => eb.or([eb('issue.title', 'like', like), eb('issue.description', 'like', like)]));
+		q = q.where((eb) =>
+			eb.or([eb('issue.title', 'like', like), eb('issue.description', 'like', like)])
+		);
 	}
 	if (page.cursor) {
 		const { createdAt, id } = page.cursor;
@@ -326,7 +343,11 @@ export async function listIssues(
 		.orderBy('issue.id desc')
 		.limit(page.limit + 1)
 		.execute();
-	return { items: rows.slice(0, page.limit).map(serializeIssue), hasMore: rows.length > page.limit };
+	const serialize = filters.brief ? briefIssue : serializeIssue;
+	return {
+		items: rows.slice(0, page.limit).map(serialize),
+		hasMore: rows.length > page.limit
+	};
 }
 
 // ---------------------------------------------------------------------------
@@ -351,14 +372,13 @@ export function resolveStateRef(
 	ref: string,
 	field = 'state'
 ): WorkflowState {
-	const state = workflow.states.find((s) => s.id === ref) ?? workflow.states.find((s) => s.name === ref);
+	const state =
+		workflow.states.find((s) => s.id === ref) ?? workflow.states.find((s) => s.name === ref);
 	if (!state) {
-		throw new ApiFail(
-			422,
-			'unknown_state',
-			`Workflow "${workflow.name}" has no state "${ref}"`,
-			{ field, known_states: workflow.states.map((s) => ({ id: s.id, name: s.name })) }
-		);
+		throw new ApiFail(422, 'unknown_state', `Workflow "${workflow.name}" has no state "${ref}"`, {
+			field,
+			known_states: workflow.states.map((s) => ({ id: s.id, name: s.name }))
+		});
 	}
 	return state;
 }
@@ -391,7 +411,8 @@ async function loadComments(db: Kysely<Database>, issueId: string): Promise<Comm
 		issue_id: row.issue_id,
 		body: row.body,
 		actor: actorOf(row),
-		created_at: row.created_at
+		created_at: row.created_at,
+		updated_at: row.updated_at
 	}));
 }
 
@@ -416,7 +437,9 @@ export async function loadIssueLinks(
 		.execute();
 
 	const otherIds = [
-		...new Set(rows.map((l) => (l.source_issue_id === issueId ? l.target_issue_id : l.source_issue_id)))
+		...new Set(
+			rows.map((l) => (l.source_issue_id === issueId ? l.target_issue_id : l.source_issue_id))
+		)
 	];
 	const others =
 		otherIds.length === 0
@@ -448,30 +471,78 @@ export async function loadIssueLinks(
 	return links;
 }
 
+/**
+ * How to find an issue. `projectName` is the URL shape: it is resolved in the
+ * *same* statement as the issue row rather than in a lookup wave of its own.
+ * (Names are unique per user; the ordering is belt-and-braces.)
+ */
+export type IssueLookup =
+	{ id: string } | { projectId: string; number: number } | { projectName: string; number: number };
+
+/** The issue row alone: one statement, no fan-out. */
+export async function loadIssue(
+	db: Kysely<Database>,
+	userId: string,
+	ref: IssueLookup
+): Promise<Issue> {
+	let q = issueQuery(db, userId);
+	if ('id' in ref) q = q.where('issue.id', '=', ref.id);
+	else if ('projectId' in ref)
+		q = q.where('issue.project_id', '=', ref.projectId).where('issue.number', '=', ref.number);
+	else
+		q = q
+			.where('project.name', '=', ref.projectName)
+			.where('issue.number', '=', ref.number)
+			.orderBy('project.created_at desc');
+	const row = await q.executeTakeFirst();
+	if (!row) throw notFound();
+	return serializeIssue(row);
+}
+
+export interface IssueDetailOptions {
+	/**
+	 * Every workflow the user can see, when the caller already has (or is
+	 * already fetching) them — saves the two-statement `loadWorkflow`. A promise
+	 * is fine and preferred: it is awaited alongside comments/links/context, so
+	 * an in-flight `loadWorkflows` costs no extra round-trip wave.
+	 */
+	workflows?: WorkflowResponse[] | Promise<WorkflowResponse[]>;
+	/**
+	 * Include the issue's artifacts on the result. Off by default so API
+	 * responses keep their current shape; the issue page needs them for its
+	 * artifacts panel and would otherwise fetch them a second time.
+	 */
+	artifacts?: boolean;
+}
+
 export async function getIssueDetail(
 	db: Kysely<Database>,
 	userId: string,
-	ref: { id: string } | { projectId: string; number: number }
+	ref: IssueLookup | Issue,
+	opts: IssueDetailOptions = {}
 ): Promise<IssueDetail> {
-	let q = issueQuery(db, userId);
-	q =
-		'id' in ref
-			? q.where('issue.id', '=', ref.id)
-			: q.where('issue.project_id', '=', ref.projectId).where('issue.number', '=', ref.number);
-	const row = await q.executeTakeFirst();
-	if (!row) throw notFound();
+	// An already-loaded issue can be passed straight in (the page resolves the
+	// row first so everything below it starts in one wave).
+	const issue = 'workflow_id' in ref ? ref : await loadIssue(db, userId, ref);
 
-	const issue = serializeIssue(row);
-	const [workflow, comments, links, contextSummary] = await Promise.all([
-		loadWorkflow(db, userId, issue.workflow_id),
+	// Artifacts are needed unconditionally when the caller asked for them, and
+	// otherwise only if some outgoing transition declares requirements — which
+	// we cannot know until the workflow lands. Fetching them in this wave when
+	// asked keeps the requirement pre-flight off the critical path entirely.
+	const [workflows, comments, links, contextSummary, preloadedArtifacts] = await Promise.all([
+		opts.workflows ?? loadWorkflows(db, userId, issue.workflow_id),
 		loadComments(db, issue.id),
 		loadIssueLinks(db, userId, issue.id),
 		contextSummaryForIssue(db, userId, {
 			projectId: issue.project_id,
 			stateId: issue.state.id,
 			issueId: issue.id
-		})
+		}),
+		opts.artifacts ? listArtifacts(db, userId, issue.id) : null
 	]);
+
+	const workflow = workflows.find((w) => w.id === issue.workflow_id);
+	if (!workflow) throw notFound();
 
 	// Pre-flight requirement visibility: each allowed transition's declared
 	// requirements with live status. The artifact load only happens when some
@@ -479,7 +550,7 @@ export async function getIssueDetail(
 	const transitionById = new Map(workflow.transitions.map((t) => [t.id, t]));
 	let allowed = allowedTransitions(workflow, issue.state.id);
 	if (allowed.some((t) => (transitionById.get(t.transition_id)?.requires ?? []).length > 0)) {
-		const artifacts = await listArtifacts(db, userId, issue.id);
+		const artifacts = preloadedArtifacts ?? (await listArtifacts(db, userId, issue.id));
 		allowed = allowed.map((t) => {
 			const requires = transitionById.get(t.transition_id)?.requires;
 			return requires?.length ? { ...t, requires: checkRequirements(requires, artifacts) } : t;
@@ -492,7 +563,8 @@ export async function getIssueDetail(
 		comments,
 		allowed_transitions: allowed,
 		links,
-		context_summary: contextSummary
+		context_summary: contextSummary,
+		...(preloadedArtifacts ? { artifacts: preloadedArtifacts } : {})
 	};
 }
 
@@ -539,7 +611,9 @@ export async function createIssue(
 	// With a recurrence, the title/description double as the schedule's
 	// templates: the first issue is created immediately (placeholders
 	// rendered) and the schedule takes over from there.
-	const schedule = body.schedule ? await prepareSchedule(db, projectId, body.schedule, title, now) : null;
+	const schedule = body.schedule
+		? await prepareSchedule(db, projectId, body.schedule, title, now)
+		: null;
 	const vars = schedule ? templateVars(schedule.name, 1, schedule.timezone, now) : null;
 	const issueTitle = vars ? renderTemplate(title, vars) : title;
 	const issueDescription = vars ? renderTemplate(description, vars) : description;
@@ -678,9 +752,14 @@ export async function updateIssue(
 ): Promise<IssueDetail> {
 	assertPinFieldsAllowed(actor, body);
 	const current = await getIssueDetail(db, actor.userId, { id });
-	const title = body.title !== undefined ? requireString(body.title, 'title', { max: 500 }).trim() : current.title;
+	const title =
+		body.title !== undefined
+			? requireString(body.title, 'title', { max: 500 }).trim()
+			: current.title;
 	const description =
-		body.description !== undefined ? (optionalString(body.description, 'description') ?? '') : current.description;
+		body.description !== undefined
+			? (optionalString(body.description, 'description') ?? '')
+			: current.description;
 
 	// Workflow move and forced state set: the escape hatch beside
 	// transitionIssue's guarded moves.
@@ -741,7 +820,8 @@ export async function updateIssue(
 		}
 		pinnedTier = null;
 	}
-	const pinChanged = pinnedRunnerId !== current.pinned_runner_id || pinnedTier !== current.pinned_tier;
+	const pinChanged =
+		pinnedRunnerId !== current.pinned_runner_id || pinnedTier !== current.pinned_tier;
 
 	const changed: string[] = [];
 	if (title !== current.title) changed.push('title');
@@ -794,7 +874,12 @@ export async function updateIssue(
 			payload.to_state_name = nextState.name;
 		}
 		queries.push(
-			eventInsert(db, actor, { type: 'issue.updated', issueId: id, projectId: current.project_id, payload }, guard)
+			eventInsert(
+				db,
+				actor,
+				{ type: 'issue.updated', issueId: id, projectId: current.project_id, payload },
+				guard
+			)
 		);
 	}
 	if (stateChanged && !workflowChanged) {
@@ -847,11 +932,12 @@ function unmetRequirements(
 		file: '--file <path>',
 		folder: '--folder <dir>',
 		text: '--text <markdown|@file>',
-		link: '--url <url>',
+		link: '--link <url>',
 		pr: '--pr <owner/repo#N>'
 	};
 	const fixFor = (r: ArtifactRequirementCheck): string => {
-		const attach = (type: string) => `tines issues artifacts attach ${ref} ${r.artifact} ${attachFlag[type]}`;
+		const attach = (type: string) =>
+			`tines issues artifacts attach ${ref} ${r.artifact} ${attachFlag[type]}`;
 		if (r.status === 'missing' || r.current_type === null) return attach(r.type ?? 'file');
 		if (r.status === 'stale') {
 			// The slot passed the type checks, so a new version keeps the
@@ -877,7 +963,9 @@ function unmetRequirements(
 		422,
 		'transition_requirements_unmet',
 		`Transition "${target.name}" requires a fresh artifact "${first.artifact}"${requirementSpecLabel(first)}${
-			unmet.length > 1 ? ` (and ${unmet.length - 1} more unmet requirement${unmet.length > 2 ? 's' : ''})` : ''
+			unmet.length > 1
+				? ` (and ${unmet.length - 1} more unmet requirement${unmet.length > 2 ? 's' : ''})`
+				: ''
 		}. Attach it (or a new version), then retry the same transition.`,
 		{
 			transition: { name: target.name, to_state: target.to_state.name },
@@ -1050,6 +1138,104 @@ export async function createComment(
 	const created = comments.find((c) => c.id === id);
 	if (!created) throw new ApiFail(500, 'internal', 'Comment insert failed');
 	return created;
+}
+
+/**
+ * Who may rewrite the shared record. Sessions and named keys act with full
+ * owner authority over their own workspace — the motivating case is a human
+ * cleaning up an agent's mis-posted comment. A run key is narrower: it may fix
+ * only what it wrote itself, so agents cannot rewrite each other's handoff
+ * notes (the affordance asymmetry of specs/context/AGENT_EDITING.md).
+ */
+export function assertCommentActionAllowed(
+	actor: Pick<ActorContext, 'agentRunId' | 'apiKeyId'>,
+	comment: { actor_api_key_id: string | null }
+): void {
+	if (!actor.agentRunId) return;
+	// The null check guards a state the types allow but auth cannot produce: a
+	// run actor always carries its key, so a session-authored comment (key id
+	// null) must never match by two nulls.
+	if (comment.actor_api_key_id !== null && comment.actor_api_key_id === actor.apiKeyId) return;
+	throw new ApiFail(
+		403,
+		'run_key_forbidden',
+		'Run keys can only edit or delete comments they authored themselves. Other comments are ' +
+			'the shared record — ask a human, or note the correction in a new comment.'
+	);
+}
+
+/** The comment row itself, scoped to an issue the actor can see. */
+async function requireComment(
+	db: Kysely<Database>,
+	actor: ActorContext,
+	issueId: string,
+	commentId: string
+): Promise<{
+	issue: IssueDetail;
+	row: { id: string; body: string; actor_api_key_id: string | null };
+}> {
+	const issue = await getIssueDetail(db, actor.userId, { id: issueId });
+	const row = await db
+		.selectFrom('comment')
+		.select(['id', 'body', 'actor_api_key_id'])
+		.where('id', '=', commentId)
+		.where('issue_id', '=', issue.id)
+		.executeTakeFirst();
+	if (!row) throw notFound();
+	assertCommentActionAllowed(actor, row);
+	return { issue, row };
+}
+
+export async function updateComment(
+	db: Kysely<Database>,
+	env: Env,
+	actor: ActorContext,
+	issueId: string,
+	commentId: string,
+	body: UpdateCommentRequest
+): Promise<Comment> {
+	const { issue } = await requireComment(db, actor, issueId, commentId);
+	const text = requireString(body.body, 'body', { max: 100_000 });
+
+	await runAtomic(env, [
+		db
+			.updateTable('comment')
+			.set({ body: text, updated_at: Date.now() })
+			.where('id', '=', commentId)
+			.compile(),
+		// Payload stays content-free: the audit trail records the action, not
+		// the text (events are append-only, and a mis-posted secret is exactly
+		// what an edit is for).
+		eventInsert(db, actor, {
+			type: 'issue.comment_edited',
+			issueId: issue.id,
+			projectId: issue.project_id,
+			payload: { comment_id: commentId, changed: ['body'] }
+		})
+	]);
+	const comments = await loadComments(db, issue.id);
+	const updated = comments.find((c) => c.id === commentId);
+	if (!updated) throw new ApiFail(500, 'internal', 'Comment update failed');
+	return updated;
+}
+
+export async function deleteComment(
+	db: Kysely<Database>,
+	env: Env,
+	actor: ActorContext,
+	issueId: string,
+	commentId: string
+): Promise<void> {
+	const { issue, row } = await requireComment(db, actor, issueId, commentId);
+	await runAtomic(env, [
+		db.deleteFrom('comment').where('id', '=', commentId).compile(),
+		eventInsert(db, actor, {
+			type: 'issue.comment_deleted',
+			issueId: issue.id,
+			projectId: issue.project_id,
+			payload: { comment_id: commentId, body_length: row.body.length }
+		})
+	]);
 }
 
 export { loadComments };

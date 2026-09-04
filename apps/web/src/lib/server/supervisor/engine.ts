@@ -15,6 +15,7 @@ import {
 	type ModelTier,
 	type QuotaPolicy,
 	type RoutingTarget,
+	type RunEndOutcome,
 	type RunnerBudget
 } from '@tines/shared';
 import type { D1Result } from '@cloudflare/workers-types';
@@ -31,6 +32,7 @@ import {
 	type ActiveCounts,
 	type MatchableRule
 } from './logic';
+import { loadSealableRun, sealRunLog, spillEvicted, sweepRunLogs } from './run-log';
 
 const ACTIVE = [...ACTIVE_RUN_STATUSES];
 
@@ -44,7 +46,9 @@ export interface DispatchPassOptions {
 
 async function runBatch(env: Env, queries: CompiledQuery[]): Promise<D1Result[]> {
 	if (queries.length === 0) return [];
-	return env.DB.batch(queries.map((q) => env.DB.prepare(q.sql).bind(...(q.parameters as unknown[]))));
+	return env.DB.batch(
+		queries.map((q) => env.DB.prepare(q.sql).bind(...(q.parameters as unknown[])))
+	);
 }
 
 /**
@@ -57,7 +61,12 @@ async function runBatch(env: Env, queries: CompiledQuery[]): Promise<D1Result[]>
 export function supervisorEvent(
 	db: Kysely<Database>,
 	userId: string,
-	input: { type: string; issueId?: string | null; projectId?: string | null; payload: Record<string, unknown> },
+	input: {
+		type: string;
+		issueId?: string | null;
+		projectId?: string | null;
+		payload: Record<string, unknown>;
+	},
 	now: number,
 	guard?: RawBuilder<boolean>
 ): CompiledQuery {
@@ -161,7 +170,10 @@ export async function loadEligibleIssues(
 	return result.rows;
 }
 
-export async function loadActiveCounts(db: Kysely<Database>, userId: string): Promise<ActiveCounts> {
+export async function loadActiveCounts(
+	db: Kysely<Database>,
+	userId: string
+): Promise<ActiveCounts> {
 	const rows = await db
 		.selectFrom('agent_run')
 		.select(['runner_id', 'state_id_at_start'])
@@ -512,6 +524,75 @@ async function failLaunch(
 	]);
 }
 
+/**
+ * Runner-health pressure for a pipe failure *after* launch: the same
+ * counter, backoff and `runner.errored` event `failLaunch` applies, minus
+ * everything about the run (an interrupted run is ended by `endRun`, which
+ * already flipped it and revoked its key).
+ *
+ * It exists because removing the strike removes the only bound there was on
+ * a crash-looping daemon: with no per-runner budget enforcement yet, the
+ * backoff is what stops a runner that dies every time from re-taking the
+ * same issue forever. The issue is no longer blamed, but the loop is still
+ * broken — the guard rail moved from the strike system to runner health.
+ *
+ * Counted once per *incident*, not per run: one offline sweep pass ends
+ * every run of a runner, and one shutdown finish-reports all of them. The
+ * backoff window is the incident marker — both statements are guarded on it
+ * being absent or expired, so the first end of a burst trips the backoff and
+ * the rest fall inside it and no-op. Reusing the window costs no new column
+ * and keeps a genuinely flapping runner escalating (2× per consecutive
+ * failure), which is exactly the behaviour launch failures already get.
+ *
+ * Cleared only by a successful launch, as launch failures are. Deliberately
+ * *not* by a poll: a returning daemon polls within 15 seconds, which would
+ * erase the backoff in precisely the case it exists for.
+ */
+export async function noteInterruption(
+	db: Kysely<Database>,
+	env: Env,
+	input: { userId: string; runnerId: string; runId?: string; error: string; now: number }
+): Promise<void> {
+	const runner = await db
+		.selectFrom('runner')
+		.select(['id', 'name', 'launch_failures', 'backoff_until'])
+		.where('id', '=', input.runnerId)
+		.executeTakeFirst();
+	if (!runner) return;
+	// The read-to-write race here is harmless: a concurrent increment implies
+	// a live backoff window, which the guard below then rejects.
+	if (runner.backoff_until !== null && runner.backoff_until >= input.now) return;
+	const failures = runner.launch_failures + 1;
+	const fresh = sql<boolean>`EXISTS (
+		SELECT 1 FROM runner
+		WHERE id = ${runner.id} AND (backoff_until IS NULL OR backoff_until < ${input.now})
+	)`;
+	await runBatch(env, [
+		// The event first: it reads the pre-update state through the same
+		// guard, so it lands iff the increment below does.
+		supervisorEvent(
+			db,
+			input.userId,
+			{
+				type: 'runner.errored',
+				payload: {
+					runner_id: runner.id,
+					runner_name: runner.name,
+					...(input.runId ? { run_id: input.runId } : {}),
+					error: input.error,
+					consecutive_failures: failures
+				}
+			},
+			input.now,
+			fresh
+		),
+		sql`
+			UPDATE runner SET launch_failures = launch_failures + 1,
+				backoff_until = ${input.now + launchBackoffMs(failures)}
+			WHERE id = ${runner.id} AND (backoff_until IS NULL OR backoff_until < ${input.now})`.compile(db)
+	]);
+}
+
 // ---------------------------------------------------------------------------
 // The dispatch pass
 
@@ -641,7 +722,7 @@ export interface EndRunOutcome {
 	/** False when another pass already ended the run (lost the CAS). */
 	ended: boolean;
 	/** Null for runs that never started (nothing to judge). */
-	outcome: 'advanced' | 'stalled' | null;
+	outcome: RunEndOutcome | null;
 	parked: boolean;
 }
 
@@ -665,6 +746,12 @@ interface EndableRun {
  * the issue at the attempt limit. Runs that never reached `running` (a
  * canceled `assigned` run, e.g.) are not judged: nothing happened yet.
  *
+ * `judgment: 'interrupted'` is the exception the caller asks for when the
+ * *pipe* died rather than the work — the offline sweep, `owned_runs` loss, a
+ * daemon reporting its own shutdown or orphans. Such a run is still `failed`,
+ * but the issue is charged nothing (no strike, and no reset either); the
+ * pressure goes on the runner instead, via `noteInterruption`.
+ *
  * The status flip runs first, alone, as the CAS: whoever lands it owns the
  * end, and a losing caller (concurrent sweep vs. cancel — possibly with an
  * identical clock) returns before writing anything else. The dependent
@@ -676,10 +763,17 @@ export async function endRun(
 	db: Kysely<Database>,
 	env: Env,
 	run: EndableRun,
-	input: { status: 'completed' | 'failed' | 'timed_out' | 'canceled'; error?: string | null; now?: number }
+	input: {
+		status: 'completed' | 'failed' | 'timed_out' | 'canceled';
+		error?: string | null;
+		/** 'interrupted' = the pipe died, not the work: no strike, no reset. */
+		judgment?: 'strike' | 'interrupted';
+		now?: number;
+	}
 ): Promise<EndRunOutcome> {
 	const now = input.now ?? Date.now();
 	const started = run.started_at !== null;
+	const interrupted = input.judgment === 'interrupted';
 
 	let advanced = false;
 	if (started && run.api_key_id) {
@@ -698,10 +792,25 @@ export async function endRun(
 		advanced = transition !== undefined;
 	}
 
-	// The CAS: own the end before any dependent write.
+	// The judgment itself, decided before the flip so it can ride in it: a
+	// run that advanced its issue is `advanced` however it ended (an
+	// interrupted run whose agent already transitioned still counts), an
+	// interruption is `interrupted`, everything else is a strike.
+	const outcome: RunEndOutcome | null = !started
+		? null
+		: advanced
+			? 'advanced'
+			: interrupted
+				? 'interrupted'
+				: 'stalled';
+
+	// The CAS: own the end before any dependent write. The outcome is written
+	// here rather than in a follow-up statement, so a losing racer records
+	// none and the stored outcome can never disagree with the recorded end.
 	const [flip] = await runBatch(env, [
 		sql`
 			UPDATE agent_run SET status = ${input.status}, error = ${input.error ?? null}, ended_at = ${now},
+				outcome = ${outcome},
 				state_id_at_end = (SELECT state_id FROM issue WHERE id = ${run.issue_id})
 			WHERE id = ${run.id} AND status IN (${sql.join(ACTIVE)})`.compile(db)
 	]);
@@ -716,7 +825,7 @@ export async function endRun(
 		loadDispatchSettings(db, run.user_id),
 		db.selectFrom('runner').select('name').where('id', '=', run.runner_id).executeTakeFirst()
 	]);
-	const strike = started && !advanced;
+	const strike = outcome === 'stalled';
 
 	const flipGuard = sql<boolean>`EXISTS (
 		SELECT 1 FROM agent_run WHERE id = ${run.id} AND status = ${input.status} AND ended_at = ${now}
@@ -731,7 +840,10 @@ export async function endRun(
 			.where(flipGuard)
 			.compile()
 	];
-	if (started && issue) {
+	// An interruption touches the issue's budget in neither direction: it is
+	// not a strike, and it is not a reset either — the attempt that the pipe
+	// swallowed simply never happened.
+	if (issue && (advanced || strike)) {
 		queries.push(
 			advanced
 				? db
@@ -762,7 +874,7 @@ export async function endRun(
 					runner_id: run.runner_id,
 					runner_name: runner?.name ?? 'removed runner',
 					status: input.status,
-					...(started ? { outcome: advanced ? 'advanced' : 'stalled' } : {}),
+					...(outcome ? { outcome } : {}),
 					state_id_at_start: run.state_id_at_start,
 					state_id_at_end: issue?.state_id ?? null,
 					...(run.usage ? { usage: JSON.parse(run.usage) as Record<string, unknown> } : {}),
@@ -800,12 +912,18 @@ export async function endRun(
 	}
 	const results = await runBatch(env, queries);
 	// Whether the park landed is the last statement's rows-affected.
-	const parked = strike && issue !== undefined && (results[results.length - 1]?.meta.changes ?? 0) === 1;
-	return {
-		ended: true,
-		outcome: started ? (advanced ? 'advanced' : 'stalled') : null,
-		parked
-	};
+	const parked =
+		strike && issue !== undefined && (results[results.length - 1]?.meta.changes ?? 0) === 1;
+	// Seal the full log into one object now that the status flip has closed
+	// the tail to further appends. Best-effort by design: a run must never
+	// fail to end because R2 was unavailable — the sweep retries unsealed runs.
+	try {
+		const sealable = await loadSealableRun(db, run.id);
+		if (sealable) await sealRunLog(db, env, sealable);
+	} catch (e) {
+		console.error(`sealing the full log for run ${run.id} failed:`, e);
+	}
+	return { ended: true, outcome, parked };
 }
 
 /** Loads a run in the shape endRun needs, scoped to the user. */
@@ -833,7 +951,8 @@ export async function loadEndableRun(
 		.executeTakeFirst();
 }
 
-export type CancelRunResult = { kind: 'not_found' } | { kind: 'already_ended' } | { kind: 'canceled' };
+export type CancelRunResult =
+	{ kind: 'not_found' } | { kind: 'already_ended' } | { kind: 'canceled' };
 
 /**
  * Cancels a run: best-effort adapter kill, then an ordinary end judged like
@@ -1009,6 +1128,12 @@ export async function pollManagedRuns(
 				const appended = appendLogTail(run.log, run.log_bytes_dropped, polled.logChunk);
 				patch.log = appended.log;
 				patch.log_bytes_dropped = appended.dropped;
+				// Managed runs' rendered event summaries spill and are retained
+				// exactly like a local daemon's stdout: one writer, no seq needed.
+				if (appended.evicted) {
+					const spill = await spillEvicted(env, run, appended.evicted);
+					patch.log_part_count = spill.log_part_count;
+				}
 			}
 			if (polled.usage) patch.usage = JSON.stringify(polled.usage);
 			if (polled.provider_meta !== undefined) patch.provider_meta = polled.provider_meta;
@@ -1024,8 +1149,10 @@ export async function pollManagedRuns(
 				]);
 			}
 
-			let terminal: { status: 'completed' | 'failed' | 'timed_out' | 'canceled'; error: string | null } | null =
-				polled.status ? { status: polled.status, error: polled.error ?? null } : null;
+			let terminal: {
+				status: 'completed' | 'failed' | 'timed_out' | 'canceled';
+				error: string | null;
+			} | null = polled.status ? { status: polled.status, error: polled.error ?? null } : null;
 			if (!terminal && polled.usage) {
 				// The token cap has no provider-native ceiling on Claude; enforce
 				// it at poll time (input + output — cache reads excluded).
@@ -1121,7 +1248,7 @@ export async function sweepSupervisor(
 	const orphaned = await db
 		.selectFrom('agent_run')
 		.innerJoin('runner', 'runner.id', 'agent_run.runner_id')
-		.select(['agent_run.id', 'agent_run.user_id', 'agent_run.status'])
+		.select(['agent_run.id', 'agent_run.user_id', 'agent_run.status', 'agent_run.runner_id'])
 		.where('agent_run.status', 'in', ['launching', 'running'])
 		.where('runner.type', '=', 'local')
 		.where((eb) =>
@@ -1131,13 +1258,34 @@ export async function sweepSupervisor(
 			])
 		)
 		.execute();
+	// The disappearance is the pipe failing, not the issue: these ends are
+	// judged `interrupted` (no strike, no reset) and the pressure lands on
+	// the runner instead — once per runner, since one dead daemon takes down
+	// every run it held.
+	const interruptedRunners = new Map<string, string>();
 	for (const row of orphaned) {
 		try {
 			const run = await loadEndableRun(db, row.user_id, row.id);
 			if (!run || (run.status !== 'running' && run.status !== 'launching')) continue;
-			await endRun(db, env, run, { status: 'failed', error: 'runner offline', now });
+			const ended = await endRun(db, env, run, {
+				status: 'failed',
+				error: 'runner offline',
+				judgment: 'interrupted',
+				now
+			});
+			// Only a run that had actually started is evidence of a runner
+			// dying mid-work; a never-started `launching` run is not judged at
+			// all (`outcome` null) and the launch-stall arm owns that story.
+			if (ended.outcome === 'interrupted') interruptedRunners.set(row.runner_id, row.user_id);
 		} catch (e) {
 			console.error(`supervisor sweep: failing offline run ${row.id} failed:`, e);
+		}
+	}
+	for (const [runnerId, userId] of interruptedRunners) {
+		try {
+			await noteInterruption(db, env, { userId, runnerId, error: 'runner offline', now });
+		} catch (e) {
+			console.error(`supervisor sweep: noting offline runner ${runnerId} failed:`, e);
 		}
 	}
 
@@ -1182,6 +1330,14 @@ export async function sweepSupervisor(
 		} catch (e) {
 			console.error(`supervisor sweep: failing stalled run ${run.id} failed:`, e);
 		}
+	}
+
+	// Full run logs: compact spilled parts, seal ended runs whose inline seal
+	// did not land, drop objects past retention, and sweep orphans.
+	try {
+		await sweepRunLogs(db, env, now);
+	} catch (e) {
+		console.error('supervisor sweep: run-log housekeeping failed:', e);
 	}
 
 	// Expired run keys die even if their run's end was never detected.

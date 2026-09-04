@@ -1,4 +1,11 @@
-import type { IssueDetail, ListResponse, Project, TinesEvent, WorkflowResponse } from '@tines/shared';
+import type {
+	Comment,
+	IssueDetail,
+	ListResponse,
+	Project,
+	TinesEvent,
+	WorkflowResponse
+} from '@tines/shared';
 import { expect, test } from '@playwright/test';
 import { ALICE, BOB } from './constants.mjs';
 import { apiClient, body, runId } from './helpers';
@@ -83,6 +90,27 @@ test.describe.serial('issue search', () => {
 		const api = apiClient(request, ALICE.apiKey);
 		expect(await listBoth(api, `nothing-${runId}`)).toEqual([[], []]);
 	});
+
+	// brief=1 drops the description bodies that dominate a list payload. Both
+	// list routes parse it, and nothing else about an item may change.
+	test('omits only the description under brief=1, on both routes', async ({ request }) => {
+		const api = apiClient(request, ALICE.apiKey);
+		const paths = [`/api/v1/issues?project=${projectId}`, `/api/v1/projects/${projectId}/issues`];
+		for (const path of paths) {
+			const full = (await body<ListResponse<IssueDetail>>(await api.get(path))).items;
+			const brief = (
+				await body<ListResponse<IssueDetail>>(
+					await api.get(`${path}${path.includes('?') ? '&' : '?'}brief=1`)
+				)
+			).items;
+			expect(full.map((i) => i.description).sort(), path).toEqual(['', '', 'mentions pagination']);
+			for (const [i, item] of brief.entries()) {
+				expect(Object.hasOwn(item, 'description'), path).toBe(false);
+				const { description: _description, ...rest } = full[i];
+				expect(item, path).toEqual(rest);
+			}
+		}
+	});
 });
 
 test.describe.serial('core issue loop', () => {
@@ -122,7 +150,9 @@ test.describe.serial('core issue loop', () => {
 			(t) => t.name === 'Submit for review'
 		)!.transition_id;
 
-		const second = await api.post(`/api/v1/projects/${projectId}/issues`, { title: 'Second issue' });
+		const second = await api.post(`/api/v1/projects/${projectId}/issues`, {
+			title: 'Second issue'
+		});
 		expect((await body<IssueDetail>(second)).number).toBe(2);
 	});
 
@@ -164,6 +194,42 @@ test.describe.serial('core issue loop', () => {
 		expect(comment.actor.api_key_name).toBe(ALICE.apiKeyName);
 	});
 
+	test('a comment can be edited and deleted, and both land on the event stream', async ({
+		request
+	}) => {
+		const api = apiClient(request, ALICE.apiKey);
+		const created = await body<Comment>(
+			await api.post(`/api/v1/issues/${issueId}/comments`, { body: 'teh fix is in' })
+		);
+		expect(created.updated_at).toBeNull();
+
+		const patched = await api.patch(`/api/v1/issues/${issueId}/comments/${created.id}`, {
+			body: 'the fix is in'
+		});
+		expect(patched.status()).toBe(200);
+		const edited = await body<Comment>(patched);
+		expect(edited.body).toBe('the fix is in');
+		expect(edited.updated_at).toBeGreaterThan(0);
+
+		const detail = await body<IssueDetail>(await api.get(`/api/v1/issues/${issueId}`));
+		expect(detail.comments.find((c) => c.id === created.id)?.updated_at).toBe(edited.updated_at);
+
+		const removed = await api.delete(`/api/v1/issues/${issueId}/comments/${created.id}`);
+		expect(removed.status()).toBe(204);
+		const after = await body<IssueDetail>(await api.get(`/api/v1/issues/${issueId}`));
+		expect(after.comments.map((c) => c.id)).not.toContain(created.id);
+
+		const events = (
+			await body<ListResponse<TinesEvent>>(await api.get(`/api/v1/events?issue=${issueId}`))
+		).items;
+		const editEvent = events.find((e) => e.type === 'issue.comment_edited');
+		const deleteEvent = events.find((e) => e.type === 'issue.comment_deleted');
+		expect(editEvent?.payload).toMatchObject({ comment_id: created.id, changed: ['body'] });
+		expect(deleteEvent?.payload).toMatchObject({ comment_id: created.id, body_length: 13 });
+		// The audit trail records the action, never the text.
+		expect(JSON.stringify([editEvent?.payload, deleteEvent?.payload])).not.toContain('fix is in');
+	});
+
 	test('done issues drop out of the filtered list', async ({ request }) => {
 		const api = apiClient(request, ALICE.apiKey);
 		const approve = await api.post(`/api/v1/issues/${issueId}/transition`, { action: 'Approve' });
@@ -187,7 +253,9 @@ test.describe.serial('core issue loop', () => {
 		expect(types).toContain('issue.created');
 		expect(types).toContain('issue.commented');
 		expect(types.filter((t) => t === 'issue.transitioned')).toHaveLength(2);
-		const transition = events.find((e) => e.type === 'issue.transitioned' && e.payload.action === 'Approve');
+		const transition = events.find(
+			(e) => e.type === 'issue.transitioned' && e.payload.action === 'Approve'
+		);
 		expect(transition?.payload).toMatchObject({
 			from_state_name: 'Human Review',
 			to_state_name: 'Closed'
@@ -209,7 +277,9 @@ test.describe.serial('core issue loop', () => {
 		expect([409, 422]).toContain(statuses[1]);
 
 		// Exactly one transition event was recorded for the winner.
-		const events = await body<ListResponse<TinesEvent>>(await api.get(`/api/v1/events?issue=${raceId}`));
+		const events = await body<ListResponse<TinesEvent>>(
+			await api.get(`/api/v1/events?issue=${raceId}`)
+		);
 		expect(events.items.filter((e) => e.type === 'issue.transitioned')).toHaveLength(1);
 	});
 });
@@ -336,7 +406,9 @@ test.describe.serial('workflow editing rules', () => {
 });
 
 test.describe('cross-user isolation', () => {
-	test("bob cannot see alice's data, and shared workflow counts are scoped", async ({ request }) => {
+	test("bob cannot see alice's data, and shared workflow counts are scoped", async ({
+		request
+	}) => {
 		const alice = apiClient(request, ALICE.apiKey);
 		const bob = apiClient(request, BOB.apiKey);
 
@@ -349,7 +421,9 @@ test.describe('cross-user isolation', () => {
 
 		expect((await bob.get(`/api/v1/projects/${project.id}`)).status()).toBe(404);
 		expect((await bob.get(`/api/v1/issues/${issue.id}`)).status()).toBe(404);
-		expect((await bob.post(`/api/v1/issues/${issue.id}/comments`, { body: 'hi' })).status()).toBe(404);
+		expect((await bob.post(`/api/v1/issues/${issue.id}/comments`, { body: 'hi' })).status()).toBe(
+			404
+		);
 
 		const bobIssues = await body<ListResponse<IssueDetail>>(await bob.get('/api/v1/issues'));
 		expect(bobIssues.items.map((i) => i.id)).not.toContain(issue.id);
@@ -524,5 +598,42 @@ test.describe.serial('issue label filter', () => {
 
 	test('returns nothing for a label no issue carries, without erroring', async ({ request }) => {
 		expect(await listBoth(apiClient(request, ALICE.apiKey), `absent-${runId}`)).toEqual([[], []]);
+	});
+});
+
+test.describe('method not allowed', () => {
+	// Kit answers an unsupported verb on a real route itself, before any
+	// handler runs; only the hook can put that in the envelope (Tines/83).
+	const paths = ['/api/v1/projects', '/api/v1/runners', '/api/v1/issues/iss_nosuchissue/comments'];
+
+	for (const path of paths) {
+		for (const method of ['put', 'patch', 'delete'] as const) {
+			test(`${method.toUpperCase()} ${path} answers the JSON error envelope`, async ({
+				request
+			}) => {
+				const api = apiClient(request, ALICE.apiKey);
+				const res = method === 'delete' ? await api.delete(path) : await api[method](path, {});
+				expect(res.status()).toBe(405);
+				expect(res.headers()['content-type']).toContain('application/json');
+				expect(res.headers()['allow']).toBeTruthy();
+				expect(await body<ErrorBody>(res)).toEqual({
+					error: {
+						code: 'method_not_allowed',
+						message: `${method.toUpperCase()} is not allowed on this resource`
+					}
+				});
+			});
+		}
+	}
+
+	test('a supported verb on the same route is untouched', async ({ request }) => {
+		// The rewrite keys off the 405, so the happy path must not move: this
+		// route's real PATCH still reaches its handler and 404s on the fake id.
+		const res = await apiClient(request, ALICE.apiKey).patch(
+			'/api/v1/issues/iss_nosuchissue/comments/cmt_nosuchcomment',
+			{ body: 'x' }
+		);
+		expect(res.status()).toBe(404);
+		expect((await body<ErrorBody>(res)).error.code).toBe('not_found');
 	});
 });

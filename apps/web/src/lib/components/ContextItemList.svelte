@@ -8,11 +8,14 @@
 	let {
 		items,
 		showScope = true,
+		shortScope = false,
 		emptyMessage = 'No context items.',
 		onselect
 	}: {
 		items: ContextItem[];
 		showScope?: boolean;
+		/** Drop the workflow from the state chip, for lists already grouped by state. */
+		shortScope?: boolean;
 		emptyMessage?: string;
 		/** Row click → open the editor. */
 		onselect?: (item: ContextItem) => void;
@@ -52,14 +55,19 @@
 						<span class="flex items-center gap-2">
 							<span class="truncate font-medium">{item.name}</span>
 							{#if showScope}
-								<ContextScopeChips scope={item.scope} />
+								<ContextScopeChips scope={item.scope} short={shortScope} />
 							{/if}
 						</span>
 						{#if payloadSummary(item)}
-							<span class="text-muted-foreground block truncate text-xs">{payloadSummary(item)}</span>
+							<span class="text-muted-foreground block truncate text-xs"
+								>{payloadSummary(item)}</span
+							>
 						{/if}
 					</span>
-					<span class="text-muted-foreground shrink-0 text-xs" title={new Date(item.updated_at).toLocaleString()}>
+					<span
+						class="text-muted-foreground shrink-0 text-xs"
+						title={new Date(item.updated_at).toLocaleString()}
+					>
 						{relativeTime(item.updated_at)}
 					</span>
 				</button>

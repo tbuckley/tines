@@ -2,6 +2,7 @@ import type {
 	ContextItem,
 	EffectiveContext,
 	IssueDetail,
+	IssueJournalResponse,
 	LaunchPromptResponse,
 	ListResponse,
 	Project,
@@ -10,7 +11,7 @@ import type {
 } from '@tines/shared';
 import { expect, test } from '@playwright/test';
 import { ALICE, BOB } from './constants.mjs';
-import { apiClient, body, runId } from './helpers';
+import { apiClient, body, runId, signIn } from './helpers';
 
 type ErrorBody = { error: { code: string; message: string; details?: Record<string, unknown> } };
 
@@ -54,7 +55,10 @@ test.describe.serial('context attachments', () => {
 		).id;
 		otherProjectId = (
 			await body<Project>(
-				await api.post('/api/v1/projects', { name: otherProjectName, default_workflow_id: workflow.id })
+				await api.post('/api/v1/projects', {
+					name: otherProjectName,
+					default_workflow_id: workflow.id
+				})
 			)
 		).id;
 		issueId = (
@@ -105,8 +109,11 @@ test.describe.serial('context attachments', () => {
 
 		// Strictness: unknown kind, foreign payload, missing scope, bad paths.
 		expect(
-			(await body<ErrorBody>(await api.post('/api/v1/context', { kind: 'widget', name: 'x', project_id: projectId })))
-				.error.code
+			(
+				await body<ErrorBody>(
+					await api.post('/api/v1/context', { kind: 'widget', name: 'x', project_id: projectId })
+				)
+			).error.code
 		).toBe('unknown_kind');
 		expect(
 			(
@@ -123,7 +130,11 @@ test.describe.serial('context attachments', () => {
 		).toBe('kind_payload_mismatch');
 		// An empty scope is not an error: it is global (AGENT_EDITING.md).
 		// Created and removed here so it doesn't color other suites' prompts.
-		const globalRes = await api.post('/api/v1/context', { kind: 'prompt', name: `g-${runId}`, body: 'b' });
+		const globalRes = await api.post('/api/v1/context', {
+			kind: 'prompt',
+			name: `g-${runId}`,
+			body: 'b'
+		});
 		expect(globalRes.status()).toBe(201);
 		const globalItem = await body<ContextItem>(globalRes);
 		expect(globalItem.scope.label).toBe('global');
@@ -167,7 +178,9 @@ test.describe.serial('context attachments', () => {
 		expect(ctx.skills).toEqual([]);
 
 		// The intersection holds: a different project's issue gets nothing.
-		const other = await body<EffectiveContext>(await api.get(`/api/v1/issues/${otherIssueId}/context`));
+		const other = await body<EffectiveContext>(
+			await api.get(`/api/v1/issues/${otherIssueId}/context`)
+		);
 		expect(other.prompt.parts).toEqual([]);
 
 		// Transition to Review: the journal leaves, the skill appears.
@@ -226,7 +239,9 @@ test.describe.serial('context attachments', () => {
 				repo_url: 'https://github.com/elsewhere/api.git'
 			})
 		);
-		const withConflict = await body<EffectiveContext>(await api.get(`/api/v1/issues/${issueId}/context`));
+		const withConflict = await body<EffectiveContext>(
+			await api.get(`/api/v1/issues/${issueId}/context`)
+		);
 		expect(withConflict.conflicts).toEqual([
 			{ kind: 'repo_dir', dir: 'api', item_ids: expect.arrayContaining([clash.id]) }
 		]);
@@ -254,12 +269,14 @@ test.describe.serial('context attachments', () => {
 	test('builds the launch prompt: context first, issue block last', async ({ request }) => {
 		const api = apiClient(request, ALICE.apiKey);
 		await api.post(`/api/v1/issues/${issueId}/comments`, { body: 'A note.' });
-		const prompt = await body<LaunchPromptResponse>(await api.get(`/api/v1/issues/${issueId}/prompt`));
+		const prompt = await body<LaunchPromptResponse>(
+			await api.get(`/api/v1/issues/${issueId}/prompt`)
+		);
 		expect(prompt.text.startsWith(`## Context: project ${projectName}`)).toBe(true);
 		expect(prompt.text).toContain(`## Issue: ${projectName}/1 — Context target`);
 		expect(prompt.text).toContain('### Comments');
 		expect(prompt.text).toContain('A note.');
-		expect(prompt.text).toContain(`Add a comment: \`tines issues comment ${projectName}/1 "<markdown>"\``);
+		expect(prompt.text).toContain(`tines issues comment ${projectName}/1 - <<'EOF'`);
 		expect(prompt.text).toContain(
 			`- **send back** → Implementing (active): \`tines issues move ${projectName}/1 "send back"\``
 		);
@@ -292,11 +309,11 @@ test.describe.serial('context attachments', () => {
 			expect.objectContaining({ kind: 'skill', name: 'review-checklist' })
 		]);
 
-		const events = await body<ListResponse<TinesEvent>>(await api.get('/api/v1/events?type=context.deleted'));
+		const events = await body<ListResponse<TinesEvent>>(
+			await api.get('/api/v1/events?type=context.deleted')
+		);
 		expect(
-			events.items.some(
-				(e) => e.payload.name === 'review-checklist' && e.payload.forced === true
-			)
+			events.items.some((e) => e.payload.name === 'review-checklist' && e.payload.forced === true)
 		).toBe(true);
 	});
 
@@ -347,7 +364,12 @@ test.describe.serial('agent-maintained context', () => {
 
 		// prompt on an existing state is rejected — context surfaces own edits.
 		const rejected = await api.patch(`/api/v1/workflows/${workflow.id}`, {
-			states: workflow.states.map((s) => ({ id: s.id, name: s.name, category: s.category, prompt: 'nope' }))
+			states: workflow.states.map((s) => ({
+				id: s.id,
+				name: s.name,
+				category: s.category,
+				prompt: 'nope'
+			}))
 		});
 		expect(rejected.status()).toBe(422);
 		expect((await body<ErrorBody>(rejected)).error.code).toBe('prompt_on_existing_state');
@@ -439,7 +461,9 @@ test.describe.serial('agent-maintained context', () => {
 				files: [{ path: 'SKILL.md', content: 'x' }]
 			})
 		);
-		expect((await api.post(`/api/v1/context/${skill.id}/append`, { text: 'x' })).status()).toBe(422);
+		expect((await api.post(`/api/v1/context/${skill.id}/append`, { text: 'x' })).status()).toBe(
+			422
+		);
 
 		const ctx = await body<EffectiveContext>(await api.get(`/api/v1/issues/${issueId}/context`));
 		expect(ctx.prompt.text).toContain(
@@ -449,13 +473,37 @@ test.describe.serial('agent-maintained context', () => {
 		expect(part.version).toBe(3);
 	});
 
+	test('the journal endpoint names the scope a caller owns, and is per-user', async ({
+		request
+	}) => {
+		const api = apiClient(request, ALICE.apiKey);
+		// A PAT is not a run, so it gets the issue's current state. (Run keys
+		// anchor to their launch state — unit-tested, since minting one here
+		// would mean driving the whole runner protocol.)
+		const resolved = await body<IssueJournalResponse>(
+			await api.get(`/api/v1/issues/${issueId}/journal`)
+		);
+		expect(resolved.anchor).toBe('current');
+		expect(resolved.note).toBeNull();
+		expect(resolved.scope.label).toBe(`project ${projectName} · state Working`);
+		expect(resolved.item?.id).toBe(journalId);
+
+		const bob = apiClient(request, BOB.apiKey);
+		expect((await bob.get(`/api/v1/issues/${issueId}/journal`)).status()).toBe(404);
+	});
+
 	test('the launch prompt is id-free with the journal as its one write affordance', async ({
 		request
 	}) => {
 		const api = apiClient(request, ALICE.apiKey);
-		const prompt = await body<LaunchPromptResponse>(await api.get(`/api/v1/issues/${issueId}/prompt`));
+		const prompt = await body<LaunchPromptResponse>(
+			await api.get(`/api/v1/issues/${issueId}/prompt`)
+		);
 		expect(prompt.text).not.toContain('ctx_');
 		expect(prompt.text).toContain('### Journal');
+		expect(prompt.text).toContain(
+			"Appends land in this stage's journal even after you move the issue."
+		);
 		expect(prompt.text).toContain(`\`tines journal append ${issueRef} "- <date>: <lesson>"\``);
 		expect(prompt.text).toContain(`--expect-version 3`);
 		expect(prompt.text).toContain(`Attached to this issue: skill "sk-${runId}" (1 file)`);
@@ -464,5 +512,78 @@ test.describe.serial('agent-maintained context', () => {
 
 		// Keep later suites clean: the global item affects every launch prompt.
 		await api.delete(`/api/v1/context/${globalId}`);
+	});
+});
+
+/**
+ * The Context page's state chips. A real library has an `instructions` prompt
+ * for every state of every workflow, so "Review" alone names dozens of rows —
+ * the chip has to carry the workflow, and the filter row has to narrow by it.
+ */
+test.describe.serial('context list state chips', () => {
+	const engName = `Chip Eng ${runId}`;
+	const qaName = `Chip QA ${runId}`;
+	let eng: WorkflowResponse;
+	let qa: WorkflowResponse;
+
+	const flow = (name: string) => ({
+		name,
+		initial_state: 'Review',
+		states: [
+			{ name: 'Review', category: 'active', prompt: `Instructions for ${name}.` },
+			{ name: 'Done', category: 'done' }
+		],
+		transitions: [{ name: 'finish', from: 'Review', to: 'Done' }]
+	});
+
+	test('sets up two workflows that share a state name', async ({ request }) => {
+		const api = apiClient(request, ALICE.apiKey);
+		eng = await body<WorkflowResponse>(await api.post('/api/v1/workflows', flow(engName)));
+		qa = await body<WorkflowResponse>(await api.post('/api/v1/workflows', flow(qaName)));
+		// One seeded item each: the Review state's instructions.
+		for (const wf of [eng, qa]) {
+			const reviewId = wf.states.find((s) => s.name === 'Review')!.id;
+			const items = await body<ListResponse<ContextItem>>(
+				await api.get(`/api/v1/context?state=${reviewId}`)
+			);
+			expect(items.items.map((i) => i.name)).toEqual(['instructions']);
+		}
+	});
+
+	test('the chip names the workflow, and the Workflow filter narrows to it', async ({
+		page,
+		context
+	}) => {
+		await signIn(context, ALICE.sessionToken);
+		await page.goto(`/context?workflow=${eng.id}`);
+		const row = page.locator('li').filter({ hasText: 'instructions' });
+		await expect(row).toHaveCount(1);
+		await expect(row).toContainText(`${engName} / Review`);
+
+		// Switching the filter re-runs the load and swaps in the other workflow's
+		// item — same name, different chip.
+		const select = page.getByLabel('Filter by workflow');
+		await expect(async () => {
+			await select.selectOption(qa.id);
+			await expect(page).toHaveURL(new RegExp(`workflow=${qa.id}`));
+		}).toPass({ timeout: 15_000 });
+		await expect(row).toHaveCount(1);
+		await expect(row).toContainText(`${qaName} / Review`);
+		await expect(row).not.toContainText(engName);
+	});
+
+	test('the workflow page keeps its own chips short', async ({ page, context }) => {
+		await signIn(context, ALICE.sessionToken);
+		await page.goto(`/workflows/${eng.id}`);
+		const section = page.getByRole('heading', { name: 'Context by state' }).locator('..');
+		const expander = section.getByRole('button', { name: /^Review/ });
+		const row = section.locator('li').filter({ hasText: 'instructions' });
+		await expect(async () => {
+			await expander.click();
+			await expect(row).toBeVisible();
+		}).toPass({ timeout: 15_000 });
+		// The section groups by state, so the chip stays the bare state name.
+		await expect(row).toContainText('Review');
+		await expect(row).not.toContainText(engName);
 	});
 });

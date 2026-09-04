@@ -187,7 +187,9 @@ test('two modals open at once still release the page when both close', async ({ 
 	await expectPageBehindScrolls(page);
 });
 
-test('Escape closes the viewer and returns focus to the button that opened it', async ({ page }) => {
+test('Escape closes the viewer and returns focus to the button that opened it', async ({
+	page
+}) => {
 	await page.goto(issueUrl());
 
 	const opener = page.getByRole('button', { name: /^View long-doc/ });

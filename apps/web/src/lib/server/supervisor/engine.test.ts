@@ -18,6 +18,7 @@ import { createFakeAdapter, type FakeAdapter } from './fake-adapter';
 import {
 	addIssue,
 	addRule,
+	addRun,
 	addRunner,
 	addTransitionEvent,
 	addTwoStageWorkflow,
@@ -72,11 +73,15 @@ describe('eligibility', () => {
 		const blocked = addIssue(t);
 		const blocker = addIssue(t, { state: REVIEW });
 		t.sqlite
-			.prepare(`INSERT INTO issue_link (id, source_issue_id, target_issue_id, kind, created_at) VALUES (?, ?, ?, 'blocks', ${NOW})`)
+			.prepare(
+				`INSERT INTO issue_link (id, source_issue_id, target_issue_id, kind, created_at) VALUES (?, ?, ?, 'blocks', ${NOW})`
+			)
 			.run('lnk_1', blocker, blocked);
 		const dup = addIssue(t);
 		t.sqlite
-			.prepare(`INSERT INTO issue_link (id, source_issue_id, target_issue_id, kind, created_at) VALUES (?, ?, ?, 'duplicate_of', ${NOW})`)
+			.prepare(
+				`INSERT INTO issue_link (id, source_issue_id, target_issue_id, kind, created_at) VALUES (?, ?, ?, 'duplicate_of', ${NOW})`
+			)
 			.run('lnk_2', dup, eligible);
 
 		const candidates = await loadEligibleIssues(t.db, USER);
@@ -225,7 +230,9 @@ describe('the guarded claim', () => {
 		const first = addIssue(t);
 		const second = addIssue(t);
 		expect(await claimRun(t.db, t.env, claimInput(t, first, r1, { maxConcurrent: 1 }))).toBe(true);
-		expect(await claimRun(t.db, t.env, claimInput(t, second, r1, { maxConcurrent: 1 }))).toBe(false);
+		expect(await claimRun(t.db, t.env, claimInput(t, second, r1, { maxConcurrent: 1 }))).toBe(
+			false
+		);
 	});
 
 	it('enforces the global cap inside the statement', async () => {
@@ -244,9 +251,9 @@ describe('the guarded claim', () => {
 		const quota = { type: 'state_roster' as const, default_limit: 1, overrides: {} };
 		const first = addIssue(t, { workflow: 'wf_two', state: STAGE_A });
 		const second = addIssue(t, { workflow: 'wf_two', state: STAGE_A });
-		expect(
-			await claimRun(t.db, t.env, claimInput(t, first, r1, { stateId: STAGE_A, quota }))
-		).toBe(true);
+		expect(await claimRun(t.db, t.env, claimInput(t, first, r1, { stateId: STAGE_A, quota }))).toBe(
+			true
+		);
 		// The agent moves the first issue onward mid-run; the run still
 		// occupies its starting state's roster slot until it ends.
 		t.sqlite.prepare('UPDATE issue SET state_id = ? WHERE id = ?').run(STAGE_B, first);
@@ -381,7 +388,11 @@ describe('dispatch pass against the fake adapter', () => {
 		addIssue(t, { updatedAt: NOW - 1000 });
 
 		expect((await pass(t)).claimed).toBe(2);
-		expect(runs(t).map((r) => r.runner_id).sort()).toEqual([r1, r2].sort());
+		expect(
+			runs(t)
+				.map((r) => r.runner_id)
+				.sort()
+		).toEqual([r1, r2].sort());
 	});
 
 	it('a pin replaces rule matching entirely, tier included', async () => {
@@ -564,7 +575,12 @@ describe('end judgment', () => {
 		return { issue, runner, runId: run.id as string, keyId: run.api_key_id as string };
 	}
 
-	async function end(t: TestDb, runId: string, status: 'completed' | 'failed' | 'timed_out' | 'canceled', now = NOW + 60_000) {
+	async function end(
+		t: TestDb,
+		runId: string,
+		status: 'completed' | 'failed' | 'timed_out' | 'canceled',
+		now = NOW + 60_000
+	) {
 		const run = await loadEndableRun(t.db, USER, runId);
 		return endRun(t.db, t.env, run!, { status, now });
 	}
@@ -595,11 +611,57 @@ describe('end judgment', () => {
 		expect(eventsOfType(t, 'agent_run.ended')[0].payload.outcome).toBe('advanced');
 	});
 
+	it('an interrupted end neither strikes the issue nor forgives its earlier attempts', async () => {
+		const t = world();
+		const { issue, runId } = await runningRun(t, { attemptCount: 2 });
+		const run = await loadEndableRun(t.db, USER, runId);
+		const outcome = await endRun(t.db, t.env, run!, {
+			status: 'failed',
+			error: 'runner offline',
+			judgment: 'interrupted',
+			now: NOW + 60_000
+		});
+		expect(outcome).toEqual({ ended: true, outcome: 'interrupted', parked: false });
+		// Not 3 (no strike) and not 0 (no reset): the attempt never happened.
+		expect(issueById(t, issue).attempt_count).toBe(2);
+		expect(runById(t, runId)!.status).toBe('failed');
+		expect(eventsOfType(t, 'agent_run.ended')[0].payload.outcome).toBe('interrupted');
+		expect(keyForRun(t, runId)!.revoked_at).not.toBeNull();
+	});
+
+	it('an interrupted run whose key moved the issue is still advanced', async () => {
+		const t = world();
+		const { issue, runId, keyId } = await runningRun(t, { attemptCount: 2 });
+		addTransitionEvent(t, { issueId: issue, apiKeyId: keyId, at: NOW + 1000 });
+		const run = await loadEndableRun(t.db, USER, runId);
+		const outcome = await endRun(t.db, t.env, run!, {
+			status: 'failed',
+			error: 'runner offline',
+			judgment: 'interrupted',
+			now: NOW + 60_000
+		});
+		// Authorship is checked first and wins: the work landed either way.
+		expect(outcome.outcome).toBe('advanced');
+		expect(issueById(t, issue).attempt_count).toBe(0);
+	});
+
 	it('A→B→A wandering still counts as engagement, not a strike', async () => {
 		const t = world();
 		const { issue, runId, keyId } = await runningRun(t, { attemptCount: 1 });
-		addTransitionEvent(t, { issueId: issue, apiKeyId: keyId, at: NOW + 1000, from: OPEN, to: REVIEW });
-		addTransitionEvent(t, { issueId: issue, apiKeyId: keyId, at: NOW + 2000, from: REVIEW, to: OPEN });
+		addTransitionEvent(t, {
+			issueId: issue,
+			apiKeyId: keyId,
+			at: NOW + 1000,
+			from: OPEN,
+			to: REVIEW
+		});
+		addTransitionEvent(t, {
+			issueId: issue,
+			apiKeyId: keyId,
+			at: NOW + 2000,
+			from: REVIEW,
+			to: OPEN
+		});
 		const outcome = await end(t, runId, 'completed');
 		expect(outcome.outcome).toBe('advanced');
 		expect(issueById(t, issue).attempt_count).toBe(0);
@@ -648,8 +710,12 @@ describe('end judgment', () => {
 		const t = world();
 		const { issue, runId } = await runningRun(t);
 		const run = await loadEndableRun(t.db, USER, runId);
-		expect((await endRun(t.db, t.env, run!, { status: 'completed', now: NOW + 1000 })).ended).toBe(true);
-		expect((await endRun(t.db, t.env, run!, { status: 'canceled', now: NOW + 2000 })).ended).toBe(false);
+		expect((await endRun(t.db, t.env, run!, { status: 'completed', now: NOW + 1000 })).ended).toBe(
+			true
+		);
+		expect((await endRun(t.db, t.env, run!, { status: 'canceled', now: NOW + 2000 })).ended).toBe(
+			false
+		);
 		expect(issueById(t, issue).attempt_count).toBe(1);
 		expect(eventsOfType(t, 'agent_run.ended')).toHaveLength(1);
 	});
@@ -798,7 +864,9 @@ describe('the sweep', () => {
 		addIssue(t);
 		await pass(t, fake);
 		const runId = runs(t)[0].id as string;
-		t.sqlite.prepare('UPDATE runner SET last_seen_at = ? WHERE id = ?').run(NOW - 6 * 60_000, runner);
+		t.sqlite
+			.prepare('UPDATE runner SET last_seen_at = ? WHERE id = ?')
+			.run(NOW - 6 * 60_000, runner);
 		setSettings(t, { enabled: false });
 
 		await sweepSupervisor(t.db, t.env, NOW, { local: fake });
@@ -806,6 +874,124 @@ describe('the sweep', () => {
 		expect(run.status).toBe('failed');
 		expect(run.error).toBe('runner offline');
 		expect(keyForRun(t, runId)!.revoked_at).not.toBeNull();
+	});
+
+	it('an offline runner interrupts its running runs: no strike, no park, runner backs off', async () => {
+		const t = world();
+		const fake = createFakeAdapter();
+		setSettings(t, { attemptLimit: 3 });
+		const runner = addRunner(t);
+		addRule(t, { targets: [{ runner_id: runner }] });
+		const issue = addIssue(t, { attemptCount: 2 });
+		await pass(t, fake);
+		const runId = runs(t)[0].id as string;
+		t.sqlite
+			.prepare('UPDATE runner SET last_seen_at = ? WHERE id = ?')
+			.run(NOW - 6 * 60_000, runner);
+		setSettings(t, { enabled: false, attemptLimit: 3 });
+
+		await sweepSupervisor(t.db, t.env, NOW, { local: fake });
+		// One strike short of the limit, and it stays there: the laptop lid
+		// closing is not the issue failing.
+		expect(issueById(t, issue).attempt_count).toBe(2);
+		expect(issueById(t, issue).needs_attention).toBe(0);
+		expect(eventsOfType(t, 'issue.parked')).toHaveLength(0);
+		expect(runById(t, runId)!.outcome).toBe('interrupted');
+		expect(keyForRun(t, runId)!.revoked_at).not.toBeNull();
+		const ended = eventsOfType(t, 'agent_run.ended');
+		expect(ended[ended.length - 1].payload).toMatchObject({
+			status: 'failed',
+			outcome: 'interrupted'
+		});
+		// The pressure lands on the runner instead.
+		expect(runnerById(t, runner).launch_failures).toBe(1);
+		expect(runnerById(t, runner).backoff_until).toBeGreaterThan(NOW);
+		expect(eventsOfType(t, 'runner.errored')).toHaveLength(1);
+	});
+
+	it('an offline run whose agent already transitioned the issue is still advanced', async () => {
+		const t = world();
+		const fake = createFakeAdapter();
+		const runner = addRunner(t);
+		addRule(t, { targets: [{ runner_id: runner }] });
+		const issue = addIssue(t, { attemptCount: 2 });
+		await pass(t, fake);
+		const run = runs(t)[0];
+		addTransitionEvent(t, {
+			issueId: issue,
+			apiKeyId: run.api_key_id as string,
+			at: NOW - 1000
+		});
+		t.sqlite
+			.prepare('UPDATE runner SET last_seen_at = ? WHERE id = ?')
+			.run(NOW - 6 * 60_000, runner);
+		setSettings(t, { enabled: false });
+
+		await sweepSupervisor(t.db, t.env, NOW, { local: fake });
+		// The work landed before the daemon died — credit is unchanged by how
+		// the run ended.
+		expect(runById(t, run.id as string)!.outcome).toBe('advanced');
+		expect(issueById(t, issue).attempt_count).toBe(0);
+	});
+
+	it('one offline sweep taking down two runs is one incident for the runner', async () => {
+		const t = world();
+		const fake = createFakeAdapter();
+		const runner = addRunner(t, { maxConcurrent: 2 });
+		addRule(t, { targets: [{ runner_id: runner }] });
+		addIssue(t);
+		addIssue(t);
+		await pass(t, fake);
+		expect(runs(t)).toHaveLength(2);
+		t.sqlite
+			.prepare('UPDATE runner SET last_seen_at = ? WHERE id = ?')
+			.run(NOW - 6 * 60_000, runner);
+		setSettings(t, { enabled: false });
+
+		await sweepSupervisor(t.db, t.env, NOW, { local: fake });
+		expect(runs(t).every((r) => r.outcome === 'interrupted')).toBe(true);
+		// One dead daemon, one failure — not one per run it happened to hold.
+		expect(runnerById(t, runner).launch_failures).toBe(1);
+		expect(eventsOfType(t, 'runner.errored')).toHaveLength(1);
+
+		// A second incident, once the backoff has expired, does count again —
+		// a daemon that keeps dying keeps escalating.
+		const later = (runnerById(t, runner).backoff_until as number) + 1;
+		addRun(t, {
+			issueId: addIssue(t),
+			runnerId: runner,
+			status: 'running',
+			startedAt: later - 1000
+		});
+		await sweepSupervisor(t.db, t.env, later, { local: fake });
+		expect(runnerById(t, runner).launch_failures).toBe(2);
+		expect(eventsOfType(t, 'runner.errored')).toHaveLength(2);
+	});
+
+	it('a successful launch clears the pressure an interruption applied', async () => {
+		const t = world();
+		const fake = createFakeAdapter();
+		const runner = addRunner(t);
+		addRule(t, { targets: [{ runner_id: runner }] });
+		const issue = addIssue(t);
+		await pass(t, fake);
+		t.sqlite
+			.prepare('UPDATE runner SET last_seen_at = ? WHERE id = ?')
+			.run(NOW - 6 * 60_000, runner);
+		setSettings(t, { enabled: false });
+		await sweepSupervisor(t.db, t.env, NOW, { local: fake });
+		expect(runnerById(t, runner).launch_failures).toBe(1);
+
+		// The daemon comes back and the issue — never struck — is picked up
+		// again. Launching is what proves the runner healthy, so that is what
+		// clears the count; a poll alone (every 15s) would not be evidence.
+		setSettings(t, { enabled: true });
+		const back = (runnerById(t, runner).backoff_until as number) + 1;
+		t.sqlite.prepare('UPDATE runner SET last_seen_at = ? WHERE id = ?').run(back, runner);
+		await pass(t, fake, back);
+		expect(runs(t).some((r) => r.status === 'running' && r.issue_id === issue)).toBe(true);
+		expect(runnerById(t, runner).launch_failures).toBe(0);
+		expect(runnerById(t, runner).backoff_until).toBeNull();
 	});
 
 	it('fails assigned runs unacknowledged after five minutes as launch failures', async () => {
@@ -903,7 +1089,9 @@ describe('the sweep', () => {
 		`);
 		setSettings(t, { enabled: false });
 		await sweepSupervisor(t.db, t.env, NOW + 2000);
-		expect(t.all(`SELECT revoked_at FROM api_key WHERE id = 'key_x'`)[0].revoked_at).toBe(NOW + 2000);
+		expect(t.all(`SELECT revoked_at FROM api_key WHERE id = 'key_x'`)[0].revoked_at).toBe(
+			NOW + 2000
+		);
 	});
 
 	it('runs the dispatch pass for every armed user', async () => {

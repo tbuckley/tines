@@ -18,12 +18,21 @@ import {
 } from '@tines/shared';
 import { sql, type CompiledQuery, type Kysely } from 'kysely';
 import { encryptSecret, sha256Hex } from '$lib/server/crypto';
+import { deleteRunLogObjects } from '$lib/server/supervisor/run-log';
 import { newId, randomString, type Database } from '$lib/server/db';
 import { pingAnthropicKey } from '$lib/server/supervisor/claude-adapter';
 import { cancelAssignedRuns } from '$lib/server/supervisor/engine';
 import { builtinTierModels } from '$lib/server/supervisor/logic';
-import { ApiFail, notFound, optionalString, requireString, runAtomic, type ActorContext } from './core';
+import {
+	ApiFail,
+	notFound,
+	optionalString,
+	requireString,
+	runAtomic,
+	type ActorContext
+} from './core';
 import { eventInsert } from './events';
+import { scopeLabel } from './scope';
 
 /**
  * Provider-key ping, injectable for tests (the default reaches the live
@@ -65,11 +74,21 @@ function validateRunnerName(value: unknown): string {
 	return name;
 }
 
-export function validateBoundedInt(value: unknown, field: string, min: number, max: number): number {
+export function validateBoundedInt(
+	value: unknown,
+	field: string,
+	min: number,
+	max: number
+): number {
 	if (typeof value !== 'number' || !Number.isInteger(value) || value < min || value > max) {
-		throw new ApiFail(422, 'invalid_field', `"${field}" must be an integer between ${min} and ${max}`, {
-			field
-		});
+		throw new ApiFail(
+			422,
+			'invalid_field',
+			`"${field}" must be an integer between ${min} and ${max}`,
+			{
+				field
+			}
+		);
 	}
 	return value;
 }
@@ -108,15 +127,25 @@ function validateLocalConfig(value: unknown): Record<string, unknown> {
 	const out: Record<string, unknown> = { harness };
 	if (config.command !== undefined) {
 		if (harness !== 'custom') {
-			throw new ApiFail(422, 'invalid_field', '"config.command" only applies to the custom harness', {
-				field: 'config'
-			});
+			throw new ApiFail(
+				422,
+				'invalid_field',
+				'"config.command" only applies to the custom harness',
+				{
+					field: 'config'
+				}
+			);
 		}
 		out.command = requireString(config.command, 'config.command', { max: 1000 });
 	} else if (harness === 'custom') {
-		throw new ApiFail(422, 'invalid_field', 'The custom harness needs a "config.command" template', {
-			field: 'config'
-		});
+		throw new ApiFail(
+			422,
+			'invalid_field',
+			'The custom harness needs a "config.command" template',
+			{
+				field: 'config'
+			}
+		);
 	}
 	// Device display info, reported by the daemon at registration.
 	const hostname = optionalString(config.hostname, 'config.hostname', { max: 200 });
@@ -143,9 +172,14 @@ export function validateTierOverrides(value: unknown): RunnerTierOverrides | nul
 		requireTier(tier, 'tiers');
 		const raw = typeof override === 'string' ? { model: override } : override;
 		if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
-			throw new ApiFail(422, 'invalid_field', `"tiers.${tier}" must be a model id or { model, effort? }`, {
-				field: `tiers.${tier}`
-			});
+			throw new ApiFail(
+				422,
+				'invalid_field',
+				`"tiers.${tier}" must be a model id or { model, effort? }`,
+				{
+					field: `tiers.${tier}`
+				}
+			);
 		}
 		const rec = raw as Record<string, unknown>;
 		const unknown = Object.keys(rec).filter((k) => !['model', 'effort'].includes(k));
@@ -312,7 +346,10 @@ function serializeRunner(row: RunnerRow, now = Date.now()): Runner {
 }
 
 export async function listRunners(db: Kysely<Database>, userId: string): Promise<Runner[]> {
-	const rows = await runnerQuery(db, userId).orderBy('runner.created_at asc').orderBy('runner.id asc').execute();
+	const rows = await runnerQuery(db, userId)
+		.orderBy('runner.created_at asc')
+		.orderBy('runner.id asc')
+		.execute();
 	const now = Date.now();
 	return rows.map((r) => serializeRunner(r, now));
 }
@@ -329,7 +366,11 @@ async function assertRunnerNameAvailable(
 	name: string,
 	excludeId?: string
 ) {
-	let q = db.selectFrom('runner').select('id').where('user_id', '=', userId).where('name', '=', name);
+	let q = db
+		.selectFrom('runner')
+		.select('id')
+		.where('user_id', '=', userId)
+		.where('name', '=', name);
 	if (excludeId) q = q.where('id', '!=', excludeId);
 	const existing = await q.executeTakeFirst();
 	if (existing) {
@@ -384,7 +425,8 @@ export async function createRunner(
 		body.max_run_minutes === undefined
 			? 30
 			: validateBoundedInt(body.max_run_minutes, 'max_run_minutes', 1, 24 * 60);
-	const defaultTier = body.default_tier === undefined ? 'balanced' : requireTier(body.default_tier, 'default_tier');
+	const defaultTier =
+		body.default_tier === undefined ? 'balanced' : requireTier(body.default_tier, 'default_tier');
 	const tiers = validateTierOverrides(body.tiers);
 
 	let config: Record<string, unknown>;
@@ -416,7 +458,9 @@ export async function createRunner(
 				: validateRunnerBudget(body.budget);
 	} else {
 		if (body.api_key !== undefined) {
-			throw new ApiFail(422, 'invalid_field', 'Local runners take no "api_key"', { field: 'api_key' });
+			throw new ApiFail(422, 'invalid_field', 'Local runners take no "api_key"', {
+				field: 'api_key'
+			});
 		}
 		config = validateLocalConfig(body.config);
 		budget = body.budget === undefined ? null : validateRunnerBudget(body.budget);
@@ -492,7 +536,9 @@ export async function updateRunner(
 	}
 	if (body.status !== undefined) {
 		if (body.status !== 'active' && body.status !== 'paused') {
-			throw new ApiFail(422, 'invalid_field', '"status" must be "active" or "paused"', { field: 'status' });
+			throw new ApiFail(422, 'invalid_field', '"status" must be "active" or "paused"', {
+				field: 'status'
+			});
 		}
 		if (body.status !== row.status) {
 			patch.status = body.status;
@@ -538,7 +584,9 @@ export async function updateRunner(
 	}
 	if (body.api_key !== undefined) {
 		if (row.type === 'local') {
-			throw new ApiFail(422, 'invalid_field', 'Local runners take no "api_key"', { field: 'api_key' });
+			throw new ApiFail(422, 'invalid_field', 'Local runners take no "api_key"', {
+				field: 'api_key'
+			});
 		}
 		// Replace-key: ping-validated before anything changes, so a bad paste
 		// leaves the working key in place. In-flight sessions are unaffected;
@@ -548,7 +596,9 @@ export async function updateRunner(
 	}
 	if (body.config !== undefined) {
 		if (row.type !== 'local') {
-			throw new ApiFail(422, 'invalid_field', 'Only local runners take a "config" here', { field: 'config' });
+			throw new ApiFail(422, 'invalid_field', 'Only local runners take a "config" here', {
+				field: 'config'
+			});
 		}
 		const config = JSON.stringify(validateLocalConfig(body.config));
 		if (config !== row.config) {
@@ -660,7 +710,12 @@ export async function registerRunner(
 			changed.push('max_concurrent');
 		}
 		if (body.max_run_minutes !== undefined) {
-			patch.max_run_minutes = validateBoundedInt(body.max_run_minutes, 'max_run_minutes', 1, 24 * 60);
+			patch.max_run_minutes = validateBoundedInt(
+				body.max_run_minutes,
+				'max_run_minutes',
+				1,
+				24 * 60
+			);
 			changed.push('max_run_minutes');
 		}
 		if (body.default_tier !== undefined) {
@@ -694,7 +749,9 @@ export async function registerRunner(
 		...(body.platform !== undefined ? { platform: body.platform } : {})
 	});
 	const maxConcurrent =
-		body.max_concurrent === undefined ? 1 : validateBoundedInt(body.max_concurrent, 'max_concurrent', 1, 100);
+		body.max_concurrent === undefined
+			? 1
+			: validateBoundedInt(body.max_concurrent, 'max_concurrent', 1, 100);
 	const maxRunMinutes =
 		body.max_run_minutes === undefined
 			? 30
@@ -756,7 +813,11 @@ export async function rotateRunnerToken(
 		.executeTakeFirst();
 	if (!runner) throw notFound();
 	if (runner.type !== 'local') {
-		throw new ApiFail(422, 'invalid_runner_type', 'Only local runners carry a runner token to rotate');
+		throw new ApiFail(
+			422,
+			'invalid_runner_type',
+			'Only local runners carry a runner token to rotate'
+		);
 	}
 	const token = generateRunnerToken();
 	await runAtomic(env, [
@@ -841,14 +902,6 @@ export function planRunnerRemoval(
 	};
 }
 
-/** Scope label for a routing rule row (no issue dimension). */
-function ruleLabel(row: { project_name: string | null; state_name: string | null }): string {
-	const parts: string[] = [];
-	if (row.project_name) parts.push(`project ${row.project_name}`);
-	if (row.state_name) parts.push(`state ${row.state_name}`);
-	return parts.length > 0 ? parts.join(' · ') : 'global';
-}
-
 export async function deleteRunner(
 	db: Kysely<Database>,
 	env: Env,
@@ -878,6 +931,8 @@ export async function deleteRunner(
 		.select([
 			'routing_rule.id',
 			'routing_rule.targets',
+			'routing_rule.project_id',
+			'routing_rule.workflow_state_id',
 			'project.name as project_name',
 			'workflow_state.name as state_name'
 		])
@@ -886,7 +941,12 @@ export async function deleteRunner(
 	const rules = ruleRows
 		.map((r) => ({
 			id: r.id,
-			label: ruleLabel(r),
+			label: scopeLabel({
+				projectId: r.project_id,
+				projectName: r.project_name,
+				workflowStateId: r.workflow_state_id,
+				stateName: r.state_name
+			}),
 			targets: JSON.parse(r.targets) as RoutingTarget[]
 		}))
 		.filter((r) => r.targets.some((t) => t.runner_id === id));
@@ -897,15 +957,19 @@ export async function deleteRunner(
 		.where('issue.pinned_runner_id', '=', id)
 		.execute();
 
-	const plan = planRunnerRemoval(runner, {
-		activeRuns: Number(activeRuns?.n ?? 0),
-		rules,
-		pins: pinRows.map((p) => ({
-			issue_id: p.id,
-			project_id: p.project_id,
-			ref: `${p.project_name}/${p.number}`
-		}))
-	}, force);
+	const plan = planRunnerRemoval(
+		runner,
+		{
+			activeRuns: Number(activeRuns?.n ?? 0),
+			rules,
+			pins: pinRows.map((p) => ({
+				issue_id: p.id,
+				project_id: p.project_id,
+				ref: `${p.project_name}/${p.number}`
+			}))
+		},
+		force
+	);
 
 	// The active-run guard above is a read before the batch (TOCTOU): a run
 	// can go active between the check and the writes, and an unguarded batch
@@ -988,7 +1052,11 @@ export async function deleteRunner(
 		db
 			.updateTable('api_key')
 			.set({ agent_run_id: null })
-			.where('agent_run_id', 'in', db.selectFrom('agent_run').select('id').where('runner_id', '=', id))
+			.where(
+				'agent_run_id',
+				'in',
+				db.selectFrom('agent_run').select('id').where('runner_id', '=', id)
+			)
 			.where(noActiveRuns)
 			.compile(),
 		db.deleteFrom('agent_run').where('runner_id', '=', id).where(noActiveRuns).compile(),
@@ -1006,6 +1074,19 @@ export async function deleteRunner(
 			}
 		})
 	);
+	// R2 deletes cannot join a D1 batch, so the runs' full-log objects are
+	// identified before the batch and dropped after it succeeds. A failure
+	// here just leaves orphans, which the sweep's orphan pass collects.
+	// Only the runs that actually spilled own objects, and the overwhelming
+	// majority never do. Without this filter a runner with a long history
+	// costs one R2 list per run and blows the Worker's subrequest budget —
+	// the same filter the retention pass uses.
+	const doomedRuns = await db
+		.selectFrom('agent_run')
+		.select(['id', 'user_id'])
+		.where('runner_id', '=', id)
+		.where((eb) => eb.or([eb('log_bytes_dropped', '>', 0), eb('log_raw_bytes', '>', 0)]))
+		.execute();
 	const results = await runAtomic(env, queries);
 	// The runner delete is the second-to-last statement.
 	if ((results[results.length - 2]?.meta.changes ?? 0) === 0) {
@@ -1022,5 +1103,10 @@ export async function deleteRunner(
 				`Cannot remove runner "${runner.name}": a run went active while removing it. Cancel it (or let it finish) and retry.`
 			);
 		}
+	}
+	for (const run of doomedRuns) {
+		await deleteRunLogObjects(env, run.user_id, run.id).catch((e) =>
+			console.error(`deleting run-log objects for run ${run.id} failed:`, e)
+		);
 	}
 }

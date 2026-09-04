@@ -173,7 +173,9 @@ export function compilePreset(preset: SchedulePreset): string {
 		case 'weekly': {
 			const weekday = preset.weekday;
 			if (typeof weekday !== 'number' || !Number.isInteger(weekday) || weekday < 0 || weekday > 6) {
-				throw new ScheduleInputError('Weekly preset needs a weekday between 0 (Sunday) and 6 (Saturday)');
+				throw new ScheduleInputError(
+					'Weekly preset needs a weekday between 0 (Sunday) and 6 (Saturday)'
+				);
 			}
 			return `${minute} ${hour} * * ${weekday}`;
 		}
@@ -317,7 +319,9 @@ export function nextOccurrence(cron: ParsedCron, tz: string, afterMs: number): n
 	const start = wallTimeOf(afterMs, tz);
 	// Walk local wall-clock minutes on a fake-UTC calendar (Date.UTC used as
 	// plain calendar arithmetic, no timezone meaning).
-	const cal = new Date(Date.UTC(start.year, start.month - 1, start.day, start.hour, start.minute + 1));
+	const cal = new Date(
+		Date.UTC(start.year, start.month - 1, start.day, start.hour, start.minute + 1)
+	);
 	const limit = Date.UTC(start.year + 5, start.month - 1, start.day);
 	let steps = 0;
 	while (cal.getTime() < limit) {
@@ -385,7 +389,12 @@ export interface TemplateVars {
 }
 
 /** The placeholder values for an instance created at `atMs`, in the schedule's timezone. */
-export function templateVars(scheduleName: string, count: number, tz: string, atMs: number): TemplateVars {
+export function templateVars(
+	scheduleName: string,
+	count: number,
+	tz: string,
+	atMs: number
+): TemplateVars {
 	const w = wallTimeOf(atMs, tz);
 	const pad = (n: number) => String(n).padStart(2, '0');
 	const date = `${w.year}-${pad(w.month)}-${pad(w.day)}`;

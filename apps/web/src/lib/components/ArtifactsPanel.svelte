@@ -59,7 +59,8 @@
 		return `/api/v1/issues/${issueId}/artifacts/${encodeURIComponent(name)}/content?${params.toString()}`;
 	};
 
-	const prUrl = (a: Artifact) => `${a.current_version.pr_repo_url}/pull/${a.current_version.pr_number}`;
+	const prUrl = (a: Artifact) =>
+		`${a.current_version.pr_repo_url}/pull/${a.current_version.pr_number}`;
 	const prRef = (a: Artifact) =>
 		`${(a.current_version.pr_repo_url ?? '').replace(/^https:\/\/github\.com\//, '')}#${a.current_version.pr_number}`;
 
@@ -230,7 +231,11 @@
 					await api.putArtifact(issueId, attachName, { description });
 				}
 			} else if (attachType === 'text') {
-				await api.putArtifact(issueId, attachName, { type: 'text', content: attachText, description });
+				await api.putArtifact(issueId, attachName, {
+					type: 'text',
+					content: attachText,
+					description
+				});
 			} else if (attachType === 'link') {
 				await api.putArtifact(issueId, attachName, {
 					type: 'link',
@@ -257,7 +262,7 @@
 	}
 </script>
 
-<section class="rounded-lg border">
+<section id="artifacts" class="rounded-lg border">
 	<header class="flex items-center justify-between border-b px-4 py-2.5">
 		<h2 class="text-sm font-semibold">
 			Artifacts
@@ -313,7 +318,11 @@
 						{/if}
 						<div class="min-w-0 grow basis-40">
 							<div class="flex flex-wrap items-center gap-2 text-sm">
-								<button type="button" class="font-medium hover:underline" onclick={() => openViewer(artifact)}>
+								<button
+									type="button"
+									class="font-medium hover:underline"
+									onclick={() => openViewer(artifact)}
+								>
 									{artifact.name}
 								</button>
 								{#if stale}
@@ -345,7 +354,9 @@
 										{prRef(artifact)}
 									</a>
 								{:else if summaryLabel(artifact)}
-									<span class="text-muted-foreground truncate text-xs">{summaryLabel(artifact)}</span>
+									<span class="text-muted-foreground truncate text-xs"
+										>{summaryLabel(artifact)}</span
+									>
 								{/if}
 							</div>
 							{#if artifact.description}
@@ -357,7 +368,9 @@
 									(reaffirmed v{cv.reaffirmed_from})
 								{/if}
 								· {actorLabel(cv.actor)} ·
-								<span title={new Date(cv.created_at).toLocaleString()}>{relativeTime(cv.created_at)}</span>
+								<span title={new Date(cv.created_at).toLocaleString()}
+									>{relativeTime(cv.created_at)}</span
+								>
 							</p>
 						</div>
 						<div class="ml-auto flex shrink-0 items-center gap-1">
@@ -434,11 +447,18 @@
 					{#each ['file', 'folder', 'text', 'link', 'pr'] as const as t (t)}
 						{@const TypeIcon = typeIcons[t]}
 						<label
-							class="flex cursor-pointer items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-sm {attachType === t
+							class="flex cursor-pointer items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-sm {attachType ===
+							t
 								? 'border-primary bg-primary/5'
 								: 'hover:bg-muted/50'}"
 						>
-							<input type="radio" name="artifact-type" value={t} bind:group={attachType} class="sr-only" />
+							<input
+								type="radio"
+								name="artifact-type"
+								value={t}
+								bind:group={attachType}
+								class="sr-only"
+							/>
 							<TypeIcon size={14} stroke={1.75} />
 							{t}
 						</label>
@@ -449,7 +469,9 @@
 
 		{#if attachType === 'file'}
 			<div
-				class="rounded-md border border-dashed p-4 text-center text-sm {dragOver ? 'bg-muted/50' : ''}"
+				class="rounded-md border border-dashed p-4 text-center text-sm {dragOver
+					? 'bg-muted/50'
+					: ''}"
 				role="group"
 				aria-label="File drop zone"
 				ondragover={(e) => {
@@ -482,7 +504,9 @@
 			</div>
 		{:else if attachType === 'folder'}
 			<div
-				class="rounded-md border border-dashed p-4 text-center text-sm {dragOver ? 'bg-muted/50' : ''}"
+				class="rounded-md border border-dashed p-4 text-center text-sm {dragOver
+					? 'bg-muted/50'
+					: ''}"
 				role="group"
 				aria-label="Folder drop zone"
 				ondragover={(e) => {
@@ -544,11 +568,17 @@
 
 		<div class="space-y-1.5">
 			<label class="text-sm font-medium" for="artifact-description">Description (optional)</label>
-			<Input id="artifact-description" bind:value={attachDescription} placeholder="One-liner shown in lists and prompts" />
+			<Input
+				id="artifact-description"
+				bind:value={attachDescription}
+				placeholder="One-liner shown in lists and prompts"
+			/>
 		</div>
 
 		{#if attachError}
-			<p class="border-destructive/40 bg-destructive/10 text-destructive rounded-md border px-3 py-2 text-sm">
+			<p
+				class="border-destructive/40 bg-destructive/10 text-destructive rounded-md border px-3 py-2 text-sm"
+			>
 				{attachError}
 			</p>
 		{/if}
@@ -556,7 +586,11 @@
 		<div class="flex justify-end gap-2">
 			<Button type="button" variant="ghost" onclick={() => (attachOpen = false)}>Cancel</Button>
 			<Button type="submit" disabled={!attachReady || attaching}>
-				{attaching ? 'Attaching…' : attachTo ? `Attach v${attachTo.current_version.version + 1}` : 'Attach'}
+				{attaching
+					? 'Attaching…'
+					: attachTo
+						? `Attach v${attachTo.current_version.version + 1}`
+						: 'Attach'}
 			</Button>
 		</div>
 	</form>

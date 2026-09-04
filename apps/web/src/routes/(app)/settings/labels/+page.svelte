@@ -44,8 +44,8 @@
 
 <h1 class="mb-1 text-2xl font-semibold tracking-tight">Labels</h1>
 <p class="text-muted-foreground mb-6 text-sm">
-	Labels are shared across every project. Agents can apply the ones listed here, but only you
-	can add to the vocabulary.
+	Labels are shared across every project. Agents can apply the ones listed here, but only you can
+	add to the vocabulary.
 </p>
 
 {#if errorMessage}
@@ -53,7 +53,12 @@
 {/if}
 
 <form onsubmit={create} class="mb-6 flex flex-wrap items-center gap-2">
-	<Input bind:value={newName} placeholder="New label name" class="h-9 w-56" aria-label="New label name" />
+	<Input
+		bind:value={newName}
+		placeholder="New label name"
+		class="h-9 w-56"
+		aria-label="New label name"
+	/>
 	<Button type="submit" size="sm" disabled={creating || newName.trim().length === 0}>
 		<IconPlus size={16} /> Create
 	</Button>
@@ -81,7 +86,8 @@
 					class="h-9 w-32"
 					value={label.color}
 					aria-label="Color for {label.name}"
-					onchange={(e) => run(() => api.updateLabel(label.id, { color: e.currentTarget.value as LabelColor }))}
+					onchange={(e) =>
+						run(() => api.updateLabel(label.id, { color: e.currentTarget.value as LabelColor }))}
 				>
 					{#each LABEL_COLORS as color (color)}
 						<option value={color}>{color}</option>

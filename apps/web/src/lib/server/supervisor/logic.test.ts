@@ -49,7 +49,9 @@ describe('resolveTier', () => {
 	it('falls back to the runner default tier, itself defaulting to balanced', () => {
 		const runner = local({ harness: 'claude_code' }, { default_tier: 'cheapest' });
 		expect(resolveTier(runner, null).tier).toBe('cheapest');
-		expect(resolveTier(local({ harness: 'claude_code' }, { default_tier: '' }), null).tier).toBe('balanced');
+		expect(resolveTier(local({ harness: 'claude_code' }, { default_tier: '' }), null).tier).toBe(
+			'balanced'
+		);
 	});
 
 	it('an explicit tier wins over the default', () => {
@@ -68,7 +70,10 @@ describe('resolveTier', () => {
 	});
 
 	it('a custom harness has no model dimension: any tier, model unknown', () => {
-		const resolved = resolveTier(local({ harness: 'custom', command: 'run {prompt_file}' }), 'smartest');
+		const resolved = resolveTier(
+			local({ harness: 'custom', command: 'run {prompt_file}' }),
+			'smartest'
+		);
 		expect(resolved).toEqual({ tier: 'smartest', model: null });
 	});
 
@@ -123,14 +128,19 @@ describe('targetVerdict', () => {
 	});
 
 	it('paused wins over everything else', () => {
-		expect(targetVerdict(runner({ status: 'paused' }), counts(), globalCap, 's1', NOW).verdict).toBe('paused');
+		expect(
+			targetVerdict(runner({ status: 'paused' }), counts(), globalCap, 's1', NOW).verdict
+		).toBe('paused');
 	});
 
 	it('a local runner unseen for over 2 minutes is offline; managed runners never are', () => {
 		expect(
-			targetVerdict(runner({ last_seen_at: NOW - 3 * 60_000 }), counts(), globalCap, 's1', NOW).verdict
+			targetVerdict(runner({ last_seen_at: NOW - 3 * 60_000 }), counts(), globalCap, 's1', NOW)
+				.verdict
 		).toBe('offline');
-		expect(targetVerdict(runner({ last_seen_at: null }), counts(), globalCap, 's1', NOW).verdict).toBe('offline');
+		expect(
+			targetVerdict(runner({ last_seen_at: null }), counts(), globalCap, 's1', NOW).verdict
+		).toBe('offline');
 		expect(
 			targetVerdict(
 				runner({ type: 'claude_managed', last_seen_at: null }),
@@ -163,7 +173,13 @@ describe('targetVerdict', () => {
 
 	it('roster counts per start state with overrides over the default', () => {
 		const roster = { type: 'state_roster' as const, default_limit: 1, overrides: { s2: 2 } };
-		const c = counts({ total: 2, byStartState: new Map([['s1', 1], ['s2', 1]]) });
+		const c = counts({
+			total: 2,
+			byStartState: new Map([
+				['s1', 1],
+				['s2', 1]
+			])
+		});
 		expect(targetVerdict(runner(), c, roster, 's1', NOW).verdict).toBe('quota_exhausted');
 		expect(targetVerdict(runner(), c, roster, 's2', NOW).verdict).toBe('ok');
 	});

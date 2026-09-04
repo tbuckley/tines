@@ -6,9 +6,15 @@
 	"scripts": {
 		"dev": "pnpm --filter @tines/web dev",
 		"build": "pnpm -r build",
-		"check": "pnpm -r check",
+		"check": "pnpm check:migrations && pnpm check:scripts && pnpm -r check",
+		"check:migrations": "node apps/web/scripts/check-migrations.mjs",
+		"check:scripts": "node scripts/check-package-scripts.mjs",
+		"format": "prettier --write .",
+		"format:check": "prettier --check .",
 		"test": "pnpm -r test",
 		"test:e2e": "pnpm --filter @tines/web test:e2e",
+		"db:migrate:local": "pnpm --filter @tines/web db:migrate:local",
+		"db:seed:local": "pnpm --filter @tines/web db:seed:local",
 		"cli": "pnpm --filter tines start"
 	},
 	"packageManager": "pnpm@10.33.0",
@@ -21,5 +27,10 @@
 			"workerd",
 			"sharp"
 		]
+	},
+	"devDependencies": {
+		"prettier": "^3.9.6",
+		"prettier-plugin-svelte": "^4.1.1",
+		"prettier-plugin-tailwindcss": "^0.8.1"
 	}
 }

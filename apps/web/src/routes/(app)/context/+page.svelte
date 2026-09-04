@@ -79,7 +79,10 @@
 
 <div class="mb-4 flex flex-wrap items-center gap-2">
 	<div class="relative">
-		<IconSearch size={14} class="text-muted-foreground absolute top-1/2 left-2.5 -translate-y-1/2" />
+		<IconSearch
+			size={14}
+			class="text-muted-foreground absolute top-1/2 left-2.5 -translate-y-1/2"
+		/>
 		<form
 			onsubmit={(e) => {
 				e.preventDefault();
@@ -112,10 +115,23 @@
 			<option value={project.id}>{project.name}</option>
 		{/each}
 	</Select>
+	<Select
+		value={data.filters.workflow ?? ''}
+		onchange={(e) => setParam('workflow', e.currentTarget.value)}
+		class="h-9 w-auto text-sm"
+		aria-label="Filter by workflow"
+	>
+		<option value="">All workflows</option>
+		{#each data.workflows as workflow (workflow.id)}
+			<option value={workflow.id}>{workflow.name}</option>
+		{/each}
+	</Select>
 </div>
 
 {#if !data.hasAgentGuidelines}
-	<div class="border-primary/30 bg-primary/5 mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border px-4 py-3">
+	<div
+		class="border-primary/30 bg-primary/5 mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border px-4 py-3"
+	>
 		<div class="text-sm">
 			<p class="font-medium">Add the starter agent guidance</p>
 			<p class="text-muted-foreground text-xs">
@@ -127,7 +143,8 @@
 			{/if}
 		</div>
 		<Button size="sm" variant="outline" onclick={seedGuidelines} disabled={seeding}>
-			<IconSparkles size={14} /> {seeding ? 'Adding…' : 'Add guidance'}
+			<IconSparkles size={14} />
+			{seeding ? 'Adding…' : 'Add guidance'}
 		</Button>
 	</div>
 {/if}
@@ -135,7 +152,7 @@
 <ContextItemList
 	items={data.items}
 	onselect={openEdit}
-	emptyMessage={data.filters.kind || data.filters.project || data.filters.q
+	emptyMessage={data.filters.kind || data.filters.project || data.filters.workflow || data.filters.q
 		? 'No context items match these filters.'
 		: 'No context items yet. Attach a prompt, skill, or repo to a project, workflow state, or issue.'}
 />

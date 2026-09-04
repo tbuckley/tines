@@ -81,7 +81,9 @@ describe('the label library', () => {
 	it('creates a label with a derived color and lists it with usage', async () => {
 		const label = await createLabel(t.db, t.env, human, { name: 'bug' });
 		expect(label.color).toBe(defaultLabelColor('bug'));
-		expect(await listLabels(t.db, USER)).toEqual([expect.objectContaining({ name: 'bug', issue_count: 0 })]);
+		expect(await listLabels(t.db, USER)).toEqual([
+			expect.objectContaining({ name: 'bug', issue_count: 0 })
+		]);
 	});
 
 	it('rejects a duplicate name case-insensitively', async () => {
@@ -199,7 +201,9 @@ describe('the run-key vocabulary fence', () => {
 	it('422s on an unknown label, listing it and the known vocabulary', async () => {
 		const issue = addIssue(t, { title: 'a' });
 		await createLabel(t.db, t.env, human, { name: 'bug' });
-		await expect(addIssueLabels(t.db, t.env, runKey, issue, ['bug', 'invented'])).rejects.toMatchObject({
+		await expect(
+			addIssueLabels(t.db, t.env, runKey, issue, ['bug', 'invented'])
+		).rejects.toMatchObject({
 			status: 422,
 			code: 'unknown_label',
 			details: { unknown: ['invented'], known_labels: [{ name: 'bug' }] }
@@ -271,7 +275,9 @@ describe('reading and filtering by label', () => {
 
 	it('matches by label id too', async () => {
 		const bug = (await listLabels(t.db, USER)).find((l) => l.name === 'bug')!;
-		expect((await search([bug.id])).map((i) => i.id).sort()).toEqual([ids.both, ids.bugOnly].sort());
+		expect((await search([bug.id])).map((i) => i.id).sort()).toEqual(
+			[ids.both, ids.bugOnly].sort()
+		);
 	});
 });
 
@@ -300,7 +306,12 @@ describe('losing a get-or-create race', () => {
 		expect((await listLabels(t.db, USER)).map((l) => `${l.name}:${l.issue_count}`)).toEqual([
 			'bug:1'
 		]);
-		const { items } = await listIssues(t.db, USER, { labels: ['bug'] }, { cursor: null, limit: 50 });
+		const { items } = await listIssues(
+			t.db,
+			USER,
+			{ labels: ['bug'] },
+			{ cursor: null, limit: 50 }
+		);
 		expect(items.map((i) => i.labels.map((l) => l.id))).toEqual([[winner.id]]);
 	});
 });

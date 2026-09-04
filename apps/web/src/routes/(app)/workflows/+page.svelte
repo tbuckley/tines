@@ -28,7 +28,9 @@
 			<div class="mb-1 flex items-center gap-2">
 				<h2 class="font-semibold">{workflow.name}</h2>
 				{#if workflow.is_system}
-					<span class="text-muted-foreground bg-muted inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs">
+					<span
+						class="text-muted-foreground bg-muted inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs"
+					>
 						<IconLock size={11} /> standard
 					</span>
 				{/if}

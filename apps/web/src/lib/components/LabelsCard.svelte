@@ -36,7 +36,9 @@
 			if (gone.has(a.id) || merged.some((l) => l.id === a.id)) continue;
 			merged.push(a);
 		}
-		return [...merged].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+		return [...merged].sort((a, b) =>
+			a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
+		);
 	});
 	const selectedIds = $derived(shown.map((l) => l.id));
 	// Locally minted labels are visible in the picker before the load reruns.
@@ -102,7 +104,12 @@
 	{:else}
 		<div class="flex flex-wrap gap-1.5">
 			{#each shown as label (label.id)}
-				<LabelChip {label} size="sm" onremove={() => remove(label.id)} removeBusy={removals.includes(label.id)} />
+				<LabelChip
+					{label}
+					size="sm"
+					onremove={() => remove(label.id)}
+					removeBusy={removals.includes(label.id)}
+				/>
 			{/each}
 		</div>
 	{/if}

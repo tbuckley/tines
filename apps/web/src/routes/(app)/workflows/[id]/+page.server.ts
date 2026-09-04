@@ -1,4 +1,5 @@
 import { error } from '@sveltejs/kit';
+import { truncate } from '$lib/format';
 import { listContextItemsForStates } from '$lib/server/api/context';
 import { ApiFail } from '$lib/server/api/core';
 import { listProjects } from '$lib/server/api/projects';
@@ -11,10 +12,18 @@ export const load: PageServerLoad = async ({ locals, platform, params }) => {
 	const db = getDb(platform!.env);
 	const userId = locals.user!.id;
 	const workflow = await loadWorkflow(db, userId, params.id).catch((e) => {
-		error(e instanceof ApiFail ? e.status : 500, 'Not found');
+		const status = e instanceof ApiFail ? e.status : 500;
+		error(
+			status,
+			status === 404 ? `No workflow has the ID “${truncate(params.id)}”.` : 'Not found'
+		);
 	});
 	const [contextItems, projects, workflows, routingRules] = await Promise.all([
-		listContextItemsForStates(db, userId, workflow.states.map((s) => s.id)),
+		listContextItemsForStates(
+			db,
+			userId,
+			workflow.states.map((s) => s.id)
+		),
 		listProjects(db, userId),
 		loadWorkflows(db, userId),
 		listRoutingRules(db, userId)

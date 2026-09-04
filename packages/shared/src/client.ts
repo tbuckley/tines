@@ -34,6 +34,10 @@ import type {
 	CreateRoutingRuleRequest,
 	CreateRunnerRequest,
 	CreateWorkflowRequest,
+	ExportLibraryOptions,
+	ImportLibraryRequest,
+	ImportLibraryResponse,
+	LibraryDocument,
 	DeleteAnchorRequest,
 	DeleteAnchorResponse,
 	DeleteRunnerRequest,
@@ -41,10 +45,11 @@ import type {
 	EffectiveContext,
 	EventFilters,
 	LaunchPromptResponse,
-	Issue,
 	IssueDetail,
 	IssueFilters,
+	IssueJournalResponse,
 	IssueLink,
+	IssueListItem,
 	ListResponse,
 	PageParams,
 	Project,
@@ -59,6 +64,7 @@ import type {
 	SupervisorSettingsResponse,
 	TinesEvent,
 	TransitionIssueRequest,
+	UpdateCommentRequest,
 	UpdateContextItemRequest,
 	UpdateIssueRequest,
 	UpsertArtifactRequest,
@@ -149,7 +155,10 @@ export function createApiClient(options: ApiClientOptions) {
 	async function raw(
 		method: string,
 		path: string,
-		opts: { body?: string | Uint8Array | ArrayBuffer | FormData; headers?: Record<string, string> } = {}
+		opts: {
+			body?: string | Uint8Array | ArrayBuffer | FormData;
+			headers?: Record<string, string>;
+		} = {}
 	): Promise<Response> {
 		const headers: Record<string, string> = { ...(opts.headers ?? {}) };
 		if (options.apiKey) headers.authorization = `Bearer ${options.apiKey}`;
@@ -157,7 +166,10 @@ export function createApiClient(options: ApiClientOptions) {
 		// implementation in play accepts that shape without lib-specific types.
 		const body =
 			opts.body instanceof Uint8Array
-				? (opts.body.buffer.slice(opts.body.byteOffset, opts.body.byteOffset + opts.body.byteLength) as ArrayBuffer)
+				? (opts.body.buffer.slice(
+						opts.body.byteOffset,
+						opts.body.byteOffset + opts.body.byteLength
+					) as ArrayBuffer)
 				: opts.body;
 		const res = await fetchFn(`${base}${path}`, { method, headers, body });
 		if (!res.ok) {
@@ -202,7 +214,7 @@ export function createApiClient(options: ApiClientOptions) {
 
 		// Issues
 		listIssues: (filters: IssueFilters & PageParams = {}) =>
-			get<ListResponse<Issue>>(`/api/v1/issues${query(filters)}`),
+			get<ListResponse<IssueListItem>>(`/api/v1/issues${query(filters)}`),
 		listLabels: () => get<{ items: LabelWithUsage[] }>('/api/v1/labels'),
 		createLabel: (body: CreateLabelRequest) => request<Label>('POST', '/api/v1/labels', body),
 		updateLabel: (labelRef: string, body: UpdateLabelRequest) =>
@@ -221,8 +233,9 @@ export function createApiClient(options: ApiClientOptions) {
 				hide_done?: boolean;
 				ready?: boolean;
 				q?: string;
+				brief?: boolean;
 			} & PageParams = {}
-		) => get<ListResponse<Issue>>(`/api/v1/projects/${projectId}/issues${query(filters)}`),
+		) => get<ListResponse<IssueListItem>>(`/api/v1/projects/${projectId}/issues${query(filters)}`),
 		createIssue: (projectId: string, body: CreateIssueRequest) =>
 			request<CreateIssueResponse>('POST', `/api/v1/projects/${projectId}/issues`, body),
 		getIssue: (id: string) => get<IssueDetail>(`/api/v1/issues/${id}`),
@@ -248,6 +261,10 @@ export function createApiClient(options: ApiClientOptions) {
 			get<ListResponse<Comment>>(`/api/v1/issues/${issueId}/comments${query(page)}`),
 		createComment: (issueId: string, body: CreateCommentRequest) =>
 			request<Comment>('POST', `/api/v1/issues/${issueId}/comments`, body),
+		updateComment: (issueId: string, commentId: string, body: UpdateCommentRequest) =>
+			request<Comment>('PATCH', `/api/v1/issues/${issueId}/comments/${commentId}`, body),
+		deleteComment: (issueId: string, commentId: string) =>
+			request<void>('DELETE', `/api/v1/issues/${issueId}/comments/${commentId}`),
 
 		// Scheduled tasks
 		listSchedules: (filters: ScheduleFilters & PageParams = {}) =>
@@ -276,6 +293,12 @@ export function createApiClient(options: ApiClientOptions) {
 		/** Effective context for an issue: the assembled bundle. */
 		getIssueContext: (issueId: string) =>
 			get<EffectiveContext>(`/api/v1/issues/${issueId}/context`),
+		/**
+		 * Which journal this caller's `tines journal` commands target — the
+		 * run's launch state for a run key, the issue's current state otherwise.
+		 */
+		getIssueJournal: (issueId: string) =>
+			get<IssueJournalResponse>(`/api/v1/issues/${issueId}/journal`),
 		/** Launch prompt: stitched context plus the generated issue block. */
 		getIssuePrompt: (issueId: string) =>
 			get<LaunchPromptResponse>(`/api/v1/issues/${issueId}/prompt`),
@@ -316,7 +339,11 @@ export function createApiClient(options: ApiClientOptions) {
 		) => {
 			const form = new FormData();
 			for (const file of files) {
-				form.append('file', new Blob([file.bytes as ArrayBuffer], { type: file.contentType }), file.path);
+				form.append(
+					'file',
+					new Blob([file.bytes as ArrayBuffer], { type: file.contentType }),
+					file.path
+				);
 			}
 			const res = await raw('PUT', artifactPath(issueId, name, '/folder'), { body: form });
 			return (await res.json()) as Artifact;
@@ -379,6 +406,24 @@ export function createApiClient(options: ApiClientOptions) {
 		listRuns: (filters: RunFilters & PageParams = {}) =>
 			get<ListResponse<AgentRun>>(`/api/v1/runs${query(filters)}`),
 		getRun: (id: string) => get<AgentRunDetail>(`/api/v1/runs/${id}`),
+		/**
+		 * The run's complete log (not the 256 KB tail `getRun` returns) as a
+		 * streamed Response, so a multi-megabyte log never has to be held in
+		 * memory. `raw` asks for the unrendered harness stream instead.
+		 */
+		getRunLogFull: (id: string, opts: { raw?: boolean } = {}) =>
+			raw('GET', `/api/v1/runs/${id}/log${opts.raw ? '?raw=1' : ''}`, {
+				headers: { accept: 'text/plain' }
+			}),
+		/** Daemon-only: uploads the raw harness stream for a settled run. */
+		putRunLogRaw: (id: string, body: Uint8Array) =>
+			raw('PUT', `/api/v1/runs/${id}/log/raw`, {
+				body,
+				headers: {
+					'content-type': 'application/x-ndjson',
+					'content-length': String(body.byteLength)
+				}
+			}),
 		cancelRun: (id: string) => request<AgentRunDetail>('POST', `/api/v1/runs/${id}/cancel`),
 
 		// Routing rules (one per exact scope; responses carry shadow hints)
@@ -398,7 +443,14 @@ export function createApiClient(options: ApiClientOptions) {
 		listApiKeys: () => get<ListResponse<ApiKey>>('/api/v1/api-keys'),
 		createApiKey: (body: CreateApiKeyRequest) =>
 			request<ApiKeyCreated>('POST', '/api/v1/api-keys', body),
-		revokeApiKey: (id: string) => request<void>('DELETE', `/api/v1/api-keys/${id}`)
+		revokeApiKey: (id: string) => request<void>('DELETE', `/api/v1/api-keys/${id}`),
+
+		// Library export / import (workflows + context; no tracker data, no secrets)
+		exportLibrary: (opts: ExportLibraryOptions = {}) =>
+			get<LibraryDocument>(`/api/v1/export${opts.journals === false ? '?journals=false' : ''}`),
+		/** Plan-then-apply; `dry_run: true` returns the preview the apply follows. */
+		importLibrary: (body: ImportLibraryRequest) =>
+			request<ImportLibraryResponse>('POST', '/api/v1/import', body)
 	};
 }
 

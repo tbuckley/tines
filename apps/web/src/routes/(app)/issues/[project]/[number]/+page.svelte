@@ -9,15 +9,18 @@
 	import IconCopy from '@tabler/icons-svelte/icons/copy';
 	import IconPencil from '@tabler/icons-svelte/icons/pencil';
 	import IconPlus from '@tabler/icons-svelte/icons/plus';
+	import IconTrash from '@tabler/icons-svelte/icons/trash';
 	import IconRepeat from '@tabler/icons-svelte/icons/repeat';
 	import IconRocket from '@tabler/icons-svelte/icons/rocket';
 	import { untrack } from 'svelte';
+	import { flip } from 'svelte/animate';
 	import { fade, slide } from 'svelte/transition';
-	import { invalidateAll } from '$app/navigation';
+	import { invalidate } from '$app/navigation';
 	import { api } from '$lib/api';
 	import AgentActivityCard from '$lib/components/AgentActivityCard.svelte';
 	import ArtifactsPanel from '$lib/components/ArtifactsPanel.svelte';
 	import ContextItemEditor from '$lib/components/ContextItemEditor.svelte';
+	import { confirmDialog } from '$lib/components/dialogs.svelte';
 	import ContextItemList from '$lib/components/ContextItemList.svelte';
 	import EffectiveContextView from '$lib/components/EffectiveContextView.svelte';
 	import EventList from '$lib/components/EventList.svelte';
@@ -32,17 +35,83 @@
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { Select } from '$lib/components/ui/select/index.js';
+	import { Skeleton } from '$lib/components/ui/skeleton/index.js';
 	import { Textarea } from '$lib/components/ui/textarea/index.js';
 	import { actorLabel, prefersReducedMotion, relativeTime } from '$lib/format';
 	import { mergeLinks, type PendingAdd } from '$lib/link-overlay';
+	import { navMemory } from '$lib/nav-memory.svelte';
 
 	let { data } = $props();
+
+	// Back to the list you came from, as you left it — the issues list with its
+	// filters, or the project page. A deep link or a fresh tab has no memory and
+	// falls back to the plain issues list.
+	const backList = $derived(navMemory.lastList ?? { href: '/issues', label: 'Issues' });
+
+	// Mutations and the live poll refresh THIS page's load only (it declares
+	// depends('app:issue')), not the whole load graph: a full invalidate would
+	// also re-run the (app) layout and every other load for no reason.
+	const refresh = () => invalidate('app:issue');
+
+	// --- streamed panels ---------------------------------------------------------
+	// Every refresh — each mutation, and every poll tick that spots someone
+	// else's event — replaces data.deferred with FRESH pending promises.
+	// Rendering them with {#await} would collapse the panels back to skeletons
+	// on each resync, so each panel instead tracks the latest value across
+	// promise replacements: pending only before the first value ever arrives,
+	// the previous value kept on screen while a newer promise is in flight, and
+	// a rejection surfacing as an error only when there is no value to keep
+	// (afterwards the stale value stands and the next poll tick retries).
+	// The kept value belongs to ONE issue: this component is reused when
+	// navigating between issues, so a key change resets the panel to pending
+	// rather than showing the previous issue's data.
+	type PanelState<T> =
+		{ status: 'pending' } | { status: 'loaded'; value: T } | { status: 'failed' };
+	function streamed<T>(promise: () => Promise<T>, key: () => unknown) {
+		let current = $state<PanelState<T>>({ status: 'pending' });
+		let lastKey: unknown;
+		$effect(() => {
+			// Reading the promise here makes the effect re-run when a refresh
+			// swaps data.deferred; the flag parks the superseded promise so an
+			// out-of-order settlement can't overwrite a newer one.
+			const k = key();
+			if (k !== lastKey) {
+				lastKey = k;
+				current = { status: 'pending' };
+			}
+			let superseded = false;
+			promise().then(
+				(value) => {
+					if (!superseded) current = { status: 'loaded', value };
+				},
+				() => {
+					if (!superseded && current.status !== 'loaded') current = { status: 'failed' };
+				}
+			);
+			return () => {
+				superseded = true;
+			};
+		});
+		return {
+			get current() {
+				return current;
+			}
+		};
+	}
+
+	const issueKey = () => data.issue.id;
+	const contextItemsPanel = streamed(() => data.deferred.contextItems, issueKey);
+	const effectiveContextPanel = streamed(() => data.deferred.effectiveContext, issueKey);
+	const agentActivityPanel = streamed(
+		() => Promise.all([data.deferred.dispatch, data.deferred.issueRuns, data.deferred.runners]),
+		issueKey
+	);
 
 	const dur = () => (prefersReducedMotion() ? 0 : 180);
 
 	// Everything optimistic on this page renders as server truth + an overlay
 	// of in-flight work, never a blind local copy resynced by effect. With the
-	// live-updates poll below, invalidateAll() can land at ANY moment — not
+	// live-updates poll below, a refresh can land at ANY moment — not
 	// just at the quiet point after the viewer's own mutation — and a blind
 	// copy would snap back to stale data mid-mutation. Each overlay entry is
 	// cleared only once its own mutation's reload has settled (or it failed).
@@ -53,7 +122,7 @@
 
 	// Comments: server list + in-flight posts. A confirmed overlay entry is
 	// hidden as soon as any reload delivers the server copy, so a poll resync
-	// racing the post's own invalidateAll can't duplicate it.
+	// racing the post's own refresh can't duplicate it.
 	let pendingComments = $state<(Comment & { pending?: boolean })[]>([]);
 	const comments = $derived.by((): (Comment & { pending?: boolean })[] => {
 		const confirmed = new Set(data.issue.comments.map((c) => c.id));
@@ -64,7 +133,7 @@
 
 	// --- live updates ------------------------------------------------------------
 	// Other agents/users can post comments, transition, or edit this issue while
-	// it's open here. Every mutation path below already calls invalidateAll() to
+	// it's open here. Every mutation path below already calls refresh() to
 	// fully resync; polling the events feed just supplies the missing trigger for
 	// when someone *else* changes something.
 	// Plain (non-reactive) guard, set before the fetch so an overlapping tick
@@ -76,7 +145,7 @@
 		try {
 			const latest = await api.listEvents({ issue: data.issue.id, limit: 1 });
 			const newestId = latest.items[0]?.id ?? null;
-			if (newestId !== latestEventId) await invalidateAll();
+			if (newestId !== latestEventId) await refresh();
 		} catch {
 			// Silent — a missed poll tick just waits for the next one, or the
 			// visibility-change backstop below.
@@ -140,7 +209,7 @@
 		removingDuplicate = true;
 		try {
 			await api.removeIssueLink(data.issue.id, prev.link_id);
-			await invalidateAll();
+			await refresh();
 			linkAdds = linkAdds.filter((a) => a.entry.link_id !== prev.link_id);
 		} catch (e) {
 			showError(e);
@@ -183,6 +252,15 @@
 	const unmetFor = (transition: AllowedTransition) =>
 		(transition.requires ?? []).filter((r) => r.status !== 'satisfied');
 
+	// The action you came to take goes first: enabled transitions above blocked
+	// ones, workflow order kept inside each group. `requires` is undefined while
+	// an optimistic move is in flight, so everything counts as enabled then —
+	// the split is stable, so nothing reshuffles mid-animation.
+	const ordered = $derived([
+		...allowed.filter((t) => unmetFor(t).length === 0),
+		...allowed.filter((t) => unmetFor(t).length > 0)
+	]);
+
 	// The transition dialog: an optional comment posted atomically with the
 	// move — comment first, so a sub-second dispatch triggered by the
 	// transition already reads it in the launch prompt (SPEC.md "Transition
@@ -205,7 +283,7 @@
 			pendingState = transition.to_state; // optimistic: badge + graph animate immediately
 			await api.transitionIssue(data.issue.id, { transition_id: transition.transition_id });
 			pendingTransition = null;
-			await invalidateAll();
+			await refresh();
 		} catch (e) {
 			showError(e);
 		} finally {
@@ -258,7 +336,7 @@
 					: {}),
 				state: overrideStateId
 			});
-			await invalidateAll();
+			await refresh();
 			// Applied and reloaded — the defaults now describe the new
 			// position, so the picks have served their purpose.
 			overrideWorkflowPick = null;
@@ -278,7 +356,7 @@
 		resuming = true;
 		try {
 			await api.resumeIssue(data.issue.id);
-			await invalidateAll();
+			await refresh();
 		} catch (e) {
 			showError(e);
 		} finally {
@@ -302,6 +380,7 @@
 			body,
 			actor: { user_id: '', user_name: data.user.name, api_key_id: null, api_key_name: null },
 			created_at: Date.now(),
+			updated_at: null,
 			pending: true
 		};
 		pendingComments = [...pendingComments, temp];
@@ -310,7 +389,7 @@
 			// Swap in the confirmed comment under its real id; the overlay's
 			// dedupe hides it the moment any reload delivers the server copy.
 			pendingComments = pendingComments.map((c) => (c.id === temp.id ? created : c));
-			await invalidateAll();
+			await refresh();
 			pendingComments = pendingComments.filter((c) => c.id !== created.id);
 		} catch (err) {
 			pendingComments = pendingComments.filter((c) => c.id !== temp.id);
@@ -318,6 +397,57 @@
 			showError(err);
 		} finally {
 			posting = false;
+		}
+	}
+
+	// Edit/delete are offered on every comment: the signed-in viewer owns this
+	// workspace, and the motivating case is a human cleaning up an agent's
+	// mis-post. (Run keys are the narrow ones — the server only lets them touch
+	// their own comments.)
+	let editingCommentId = $state<string | null>(null);
+	let commentDraft = $state('');
+	// Per-comment, not page-global: a save on one comment must not disable the
+	// buttons on every other one.
+	let busyCommentId = $state<string | null>(null);
+
+	function startEditComment(comment: Comment) {
+		editingCommentId = comment.id;
+		commentDraft = comment.body;
+	}
+
+	async function saveComment(comment: Comment) {
+		const body = commentDraft.trim();
+		if (!body || busyCommentId === comment.id) return;
+		busyCommentId = comment.id;
+		try {
+			await api.updateComment(data.issue.id, comment.id, { body });
+			editingCommentId = null;
+			await refresh();
+		} catch (err) {
+			showError(err);
+		} finally {
+			busyCommentId = null;
+		}
+	}
+
+	async function deleteComment(comment: Comment) {
+		if (busyCommentId === comment.id) return;
+		const ok = await confirmDialog({
+			title: 'Delete this comment?',
+			body: 'The comment is removed from the thread; the activity feed keeps a record that it was deleted.',
+			confirmLabel: 'Delete comment',
+			destructive: true
+		});
+		if (!ok || busyCommentId === comment.id) return;
+		busyCommentId = comment.id;
+		try {
+			await api.deleteComment(data.issue.id, comment.id);
+			if (editingCommentId === comment.id) editingCommentId = null;
+			await refresh();
+		} catch (err) {
+			showError(err);
+		} finally {
+			busyCommentId = null;
 		}
 	}
 
@@ -332,7 +462,7 @@
 		if (!title || title === data.issue.title) return;
 		try {
 			await api.updateIssue(data.issue.id, { title });
-			await invalidateAll();
+			await refresh();
 		} catch (err) {
 			showError(err);
 		}
@@ -366,7 +496,7 @@
 		savingDescription = true;
 		try {
 			await api.updateIssue(data.issue.id, { description: descriptionDraft });
-			await invalidateAll();
+			await refresh();
 			editingDescription = false;
 		} catch (err) {
 			showError(err);
@@ -376,24 +506,43 @@
 	}
 </script>
 
-<svelte:head><title>{data.issue.project_name}/#{data.issue.number} · {data.issue.title} · Tines</title></svelte:head>
+<svelte:head
+	><title>{data.issue.project_name}/#{data.issue.number} · {data.issue.title} · Tines</title
+	></svelte:head
+>
+
+<!--
+	A streamed panel that never arrived. The panels below the fold are sent as
+	promises so the page can paint (and the View Transition commit) on the first
+	D1 wave; a rejection here is a failed panel, not a failed page.
+-->
+{#snippet loadFailed(what: string)}
+	<div class="text-muted-foreground flex items-center gap-2 py-2 text-sm">
+		<IconAlertTriangle size={16} class="text-destructive" />
+		<span>Couldn't load {what}.</span>
+		<Button size="sm" variant="ghost" onclick={refresh}>Retry</Button>
+	</div>
+{/snippet}
 
 <div class="mb-6">
 	<a
-		href="/issues"
-		class="text-muted-foreground hover:text-foreground mb-3 inline-flex items-center gap-1 text-sm"
+		href={backList.href}
+		class="text-muted-foreground hover:text-foreground mb-3 inline-flex max-w-full min-w-0 items-center gap-1 text-sm"
 	>
-		<IconChevronLeft size={16} /> Issues
+		<IconChevronLeft size={16} class="shrink-0" />
+		<span class="truncate">{backList.label}</span>
 	</a>
 	<div class="flex flex-wrap items-start justify-between gap-4">
 		<div class="min-w-0">
 			<p class="text-muted-foreground text-sm">
-				<a href="/projects/{data.issue.project_id}" class="hover:underline">{data.issue.project_name}</a>
+				<a href="/projects/{data.issue.project_id}" class="hover:underline"
+					>{data.issue.project_name}</a
+				>
 				<span class="font-mono">#{data.issue.number}</span>
 				{#if data.issue.scheduled_task_id}
 					<a
 						href="/projects/{data.issue.project_id}?schedule={data.issue.scheduled_task_id}"
-						class="bg-muted text-muted-foreground hover:text-foreground ml-1 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs align-middle"
+						class="bg-muted text-muted-foreground hover:text-foreground ml-1 inline-flex items-center gap-1 rounded-full px-2 py-0.5 align-middle text-xs"
 						title="Created by schedule “{data.issue.scheduled_task_name}”"
 					>
 						<IconRepeat size={12} stroke={1.75} />
@@ -405,10 +554,17 @@
 				<form onsubmit={saveTitle} class="mt-1 flex items-center gap-2">
 					<Input bind:value={titleDraft} class="w-96 max-w-full text-lg font-semibold" autofocus />
 					<Button type="submit" size="sm">Save</Button>
-					<Button type="button" size="sm" variant="ghost" onclick={() => (editingTitle = false)}>Cancel</Button>
+					<Button type="button" size="sm" variant="ghost" onclick={() => (editingTitle = false)}
+						>Cancel</Button
+					>
 				</form>
 			{:else}
-				<h1 class="group mt-1 flex items-center gap-2 text-2xl font-semibold tracking-tight">
+				<!-- wrap-anywhere: a title is arbitrary user text, and one unbroken
+				     token (a pasted URL is enough) otherwise sets the document width
+				     and drags every card on the page wider than the viewport. -->
+				<h1
+					class="group mt-1 flex items-center gap-2 text-2xl font-semibold tracking-tight wrap-anywhere"
+				>
 					<!-- The transition name sits on a text-hugging span (not the h1,
 					     whose width includes the edit affordance) so the morph from
 					     the list row scales cleanly. -->
@@ -484,7 +640,7 @@
 		transition:slide={{ duration: dur() }}
 	>
 		<IconCopy size={16} stroke={1.75} class="shrink-0" />
-		<p class="min-w-0">
+		<p class="min-w-0 wrap-anywhere">
 			Duplicate of
 			<a
 				href="/issues/{encodeURIComponent(duplicateOf.project_name)}/{duplicateOf.number}"
@@ -515,8 +671,8 @@
 		<span class="flex items-center gap-2">
 			<IconAlertTriangle size={16} stroke={1.75} class="shrink-0" />
 			Agents struck out {data.issue.attempt_count}
-			time{data.issue.attempt_count === 1 ? '' : 's'} here — the last run ended without moving the
-			issue. It won't be dispatched again until you act.
+			time{data.issue.attempt_count === 1 ? '' : 's'} here — the last run ended without moving the issue.
+			It won't be dispatched again until you act.
 		</span>
 		<Button size="sm" disabled={resuming} onclick={resume}>
 			{resuming ? 'Resuming…' : 'Resume'}
@@ -539,13 +695,191 @@
 	defaults={{ issue_id: data.issue.id }}
 	projects={data.projects}
 	workflows={data.workflows}
-	onsaved={invalidateAll}
+	onsaved={refresh}
 />
 
 <LaunchPromptDialog bind:open={promptDialogOpen} issueId={data.issue.id} />
 
-<div class="grid gap-8 lg:grid-cols-[minmax(0,1fr)_22rem]">
-	<div class="min-w-0 space-y-8">
+<!-- `lg:grid-rows-[auto_1fr]`: the State card is its own grid item in row 1
+     while main spans both rows, so with default auto rows grid distributes
+     main's height across them and stretches the card's border to fill row 1
+     (~1000px of empty box on a long issue). Row 1 sized to content, row 2
+     absorbing the rest, keeps the card exactly as tall as it was inside the
+     aside. -->
+<div class="grid gap-8 lg:grid-cols-[minmax(0,1fr)_22rem] lg:grid-rows-[auto_1fr]">
+	<!-- state & transitions — first in DOM so a phone gets it before the
+	     description; pinned to the right column on desktop, where the aside
+	     picks up below it. -->
+	<!-- On a duplicate the section stops pretending to be the source of
+	     truth (muted), but the graph and buttons still act on this issue's
+	     own, dormant state — moving a duplicate is allowed. -->
+	<section
+		class="min-w-0 rounded-lg border p-4 transition-opacity duration-200 lg:col-start-2 lg:row-start-1 {duplicateOf
+			? 'opacity-70'
+			: ''}"
+	>
+		<h2 class="mb-3 text-sm font-semibold">State</h2>
+		{#if duplicateOf}
+			<p class="text-muted-foreground mb-3 text-xs italic" transition:slide={{ duration: dur() }}>
+				This issue is a duplicate — its displayed state follows
+				<a
+					href="/issues/{encodeURIComponent(duplicateOf.project_name)}/{duplicateOf.number}"
+					class="hover:underline">{duplicateOf.project_name}/#{duplicateOf.number}</a
+				>.
+			</p>
+		{/if}
+		<div class="mb-4">
+			<WorkflowGraph workflow={data.issue.workflow} currentStateId={currentState.id} compact />
+		</div>
+		{#if ordered.length > 0}
+			<div class="flex flex-col gap-2">
+				{#each ordered as transition (transition.transition_id)}
+					{@const unmet = unmetFor(transition)}
+					{@const reqId = `transition-req-${transition.transition_id}`}
+					<div class="min-w-0" animate:flip={{ duration: dur() }}>
+						<!-- Reason lines are SIBLINGS of the button, never children: the
+						     button's accessible name stays "<name> → <state>". -->
+						<Button
+							size="sm"
+							variant="outline"
+							class="w-full justify-between"
+							disabled={transitioning || unmet.length > 0}
+							aria-describedby={transition.requires?.length ? reqId : undefined}
+							onclick={() => requestMove(transition)}
+							title={transition.name}
+						>
+							<span class="min-w-0 truncate text-left">{transition.name}</span>
+							<span
+								class="text-muted-foreground inline-flex shrink-0 items-center gap-1 text-xs font-normal"
+							>
+								<IconArrowRight size={12} />
+								{transition.to_state.name}
+							</span>
+						</Button>
+						{#if transition.requires?.length}
+							<ul id={reqId} class="mt-1 space-y-1 px-1">
+								{#each transition.requires as r (r.artifact)}
+									<li
+										class="flex items-start gap-1.5 text-xs {r.status === 'satisfied'
+											? 'text-muted-foreground'
+											: 'text-amber-700 dark:text-amber-400'}"
+									>
+										{#if r.status === 'satisfied'}
+											<IconCheck size={13} class="mt-0.5 shrink-0" />
+											<span class="min-w-0">
+												<span class="font-mono">{r.artifact}</span> is fresh (v{r.current_version
+													?.version}).
+											</span>
+										{:else}
+											<IconBan size={13} class="mt-0.5 shrink-0" />
+											<span class="min-w-0">
+												{#if r.status === 'missing'}
+													Needs artifact <span class="font-mono">{r.artifact}</span> — attach it in
+													<a href="#artifacts" class="underline">Artifacts</a>.
+												{:else if r.status === 'stale'}
+													<span class="font-mono">{r.artifact}</span> is stale — this state began
+													{relativeTime(data.issue.state_entered_at)}; attach a new version or
+													reaffirm it.
+												{:else if r.type !== undefined && r.current_type !== r.type}
+													<span class="font-mono">{r.artifact}</span> must be a {r.type} artifact{#if r.content_type}{' '}
+														({r.content_type}){/if} — the attached one is {r.current_type}.
+												{:else}
+													<!-- Only the content type differs; the API doesn't report the
+													     attached version's own content type, so don't name it. -->
+													<span class="font-mono">{r.artifact}</span> must be
+													{r.content_type} — the attached {r.current_type} isn't.
+												{/if}
+												{#if r.description}
+													<span
+														class="text-muted-foreground mt-0.5 line-clamp-2 italic"
+														title={r.description}>{r.description}</span
+													>
+												{/if}
+											</span>
+										{/if}
+									</li>
+								{/each}
+							</ul>
+						{/if}
+					</div>
+				{/each}
+			</div>
+		{:else}
+			<p class="text-muted-foreground text-xs" transition:fade={{ duration: dur() }}>
+				No outgoing transitions — this state is terminal.
+			</p>
+		{/if}
+		<p class="text-muted-foreground mt-3 text-xs">
+			Workflow:
+			<a href="/workflows/{data.issue.workflow.id}" class="hover:underline"
+				>{data.issue.workflow.name}</a
+			>
+		</p>
+
+		<!-- escape hatch: jump to any state, or move onto another workflow -->
+		<details class="mt-4 border-t pt-3">
+			<summary
+				class="text-muted-foreground hover:text-foreground cursor-pointer text-xs select-none"
+			>
+				Move directly…
+			</summary>
+			<form onsubmit={applyOverride} class="mt-3 space-y-3">
+				<div class="space-y-1">
+					<label class="text-muted-foreground text-xs font-medium" for="override-workflow"
+						>Workflow</label
+					>
+					<Select
+						id="override-workflow"
+						bind:value={
+							() => overrideWorkflowId,
+							(v) => {
+								overrideWorkflowPick = v;
+								overrideStatePick = null; // a new workflow restarts the state default
+							}
+						}
+						class="h-8 text-xs"
+					>
+						{#each data.workflows as workflow (workflow.id)}
+							<option value={workflow.id}>
+								{workflow.name}{workflow.is_system ? ' (standard)' : ''}
+							</option>
+						{/each}
+					</Select>
+				</div>
+				<div class="space-y-1">
+					<label class="text-muted-foreground text-xs font-medium" for="override-state">State</label
+					>
+					<Select
+						id="override-state"
+						bind:value={() => overrideStateId, (v) => (overrideStatePick = v)}
+						class="h-8 text-xs"
+					>
+						{#each overrideWorkflow.states as state (state.id)}
+							<option value={state.id}>
+								{state.name}{overrideWorkflowId === data.issue.workflow.id &&
+								state.id === currentState.id
+									? ' — current'
+									: ''}
+							</option>
+						{/each}
+					</Select>
+				</div>
+				<div class="flex items-center gap-2">
+					<Button
+						type="submit"
+						size="sm"
+						variant="outline"
+						disabled={!overrideDirty || applyingOverride}
+					>
+						{applyingOverride ? 'Moving…' : 'Move'}
+					</Button>
+					<p class="text-muted-foreground text-xs">Bypasses the workflow's transitions.</p>
+				</div>
+			</form>
+		</details>
+	</section>
+
+	<div class="min-w-0 space-y-8 lg:col-start-1 lg:row-span-2 lg:row-start-1">
 		<!-- description -->
 		<section class="rounded-lg border">
 			<header class="flex items-center justify-between border-b px-4 py-2.5">
@@ -566,12 +900,18 @@
 			<div class="p-4">
 				{#if editingDescription}
 					<div transition:slide={{ duration: dur() }}>
-						<Textarea bind:value={descriptionDraft} rows={8} placeholder="Describe the work (Markdown)…" />
+						<Textarea
+							bind:value={descriptionDraft}
+							rows={8}
+							placeholder="Describe the work (Markdown)…"
+						/>
 						<div class="mt-2 flex gap-2">
 							<Button size="sm" onclick={saveDescription} disabled={savingDescription}>
 								{savingDescription ? 'Saving…' : 'Save'}
 							</Button>
-							<Button size="sm" variant="ghost" onclick={() => (editingDescription = false)}>Cancel</Button>
+							<Button size="sm" variant="ghost" onclick={() => (editingDescription = false)}
+								>Cancel</Button
+							>
 						</div>
 					</div>
 				{:else if data.issue.description}
@@ -589,9 +929,15 @@
 					Context
 					{#if contextTotal > 0}
 						<span class="text-muted-foreground font-normal">
-							({data.issue.context_summary.prompts} prompt{data.issue.context_summary.prompts === 1 ? '' : 's'},
-							{data.issue.context_summary.skills} skill{data.issue.context_summary.skills === 1 ? '' : 's'},
-							{data.issue.context_summary.repos} repo{data.issue.context_summary.repos === 1 ? '' : 's'})
+							({data.issue.context_summary.prompts} prompt{data.issue.context_summary.prompts === 1
+								? ''
+								: 's'},
+							{data.issue.context_summary.skills} skill{data.issue.context_summary.skills === 1
+								? ''
+								: 's'},
+							{data.issue.context_summary.repos} repo{data.issue.context_summary.repos === 1
+								? ''
+								: 's'})
 						</span>
 					{/if}
 				</h2>
@@ -609,14 +955,22 @@
 					<h3 class="text-muted-foreground mb-2 text-xs font-semibold tracking-wide uppercase">
 						This issue's context
 					</h3>
-					<ContextItemList
-						items={data.contextItems}
-						onselect={openContextEdit}
-						emptyMessage="Nothing attached to this issue yet — add a note, skill, or repo."
-					/>
+					{#if contextItemsPanel.current.status === 'pending'}
+						<Skeleton class="h-16 w-full" />
+					{:else if contextItemsPanel.current.status === 'loaded'}
+						<ContextItemList
+							items={contextItemsPanel.current.value}
+							onselect={openContextEdit}
+							emptyMessage="Nothing attached to this issue yet — add a note, skill, or repo."
+						/>
+					{:else}
+						{@render loadFailed("this issue's context")}
+					{/if}
 				</div>
 				<details class="group border-t pt-3">
-					<summary class="text-muted-foreground hover:text-foreground cursor-pointer text-sm select-none">
+					<summary
+						class="text-muted-foreground hover:text-foreground cursor-pointer text-sm select-none"
+					>
 						Effective context
 						<span class="text-xs">
 							— everything that applies while in
@@ -624,7 +978,13 @@
 						</span>
 					</summary>
 					<div class="mt-3">
-						<EffectiveContextView context={data.effectiveContext} />
+						{#if effectiveContextPanel.current.status === 'pending'}
+							<Skeleton class="h-24 w-full" />
+						{:else if effectiveContextPanel.current.status === 'loaded'}
+							<EffectiveContextView context={effectiveContextPanel.current.value} />
+						{:else}
+							{@render loadFailed('the effective context')}
+						{/if}
 					</div>
 				</details>
 			</div>
@@ -635,7 +995,7 @@
 			issueId={data.issue.id}
 			artifacts={data.artifacts}
 			allowedTransitions={data.issue.allowed_transitions}
-			onchanged={invalidateAll}
+			onchanged={refresh}
 			onerror={showError}
 		/>
 
@@ -650,14 +1010,64 @@
 						class="rounded-lg border {comment.pending ? 'opacity-60' : ''}"
 						transition:slide={{ duration: dur() }}
 					>
-						<header class="text-muted-foreground flex items-center gap-2 border-b px-4 py-2 text-xs">
+						<header
+							class="text-muted-foreground flex items-center gap-2 border-b px-4 py-2 text-xs"
+						>
 							<span class="text-foreground font-medium">{actorLabel(comment.actor)}</span>
 							<span title={new Date(comment.created_at).toLocaleString()}>
 								{comment.pending ? 'sending…' : relativeTime(comment.created_at)}
 							</span>
+							{#if comment.updated_at}
+								<span class="italic" title={new Date(comment.updated_at).toLocaleString()}>
+									(edited)
+								</span>
+							{/if}
+							{#if !comment.pending}
+								<div class="ml-auto flex items-center gap-1">
+									<Button
+										variant="ghost"
+										size="icon"
+										class="size-6"
+										title="Edit comment"
+										aria-label="Edit comment"
+										disabled={busyCommentId === comment.id}
+										onclick={() => startEditComment(comment)}
+									>
+										<IconPencil size={14} stroke={1.5} />
+									</Button>
+									<Button
+										variant="ghost"
+										size="icon"
+										class="size-6"
+										title="Delete comment"
+										aria-label="Delete comment"
+										disabled={busyCommentId === comment.id}
+										onclick={() => deleteComment(comment)}
+									>
+										<IconTrash size={14} stroke={1.5} />
+									</Button>
+								</div>
+							{/if}
 						</header>
 						<div class="p-4">
-							<Markdown source={comment.body} />
+							{#if editingCommentId === comment.id}
+								<Textarea bind:value={commentDraft} rows={6} />
+								<div class="mt-2 flex justify-end gap-2">
+									<Button
+										variant="ghost"
+										size="sm"
+										disabled={busyCommentId === comment.id}
+										onclick={() => (editingCommentId = null)}>Cancel</Button
+									>
+									<Button
+										size="sm"
+										disabled={!commentDraft.trim() || busyCommentId === comment.id}
+										onclick={() => saveComment(comment)}>Save</Button
+									>
+								</div>
+							{:else}
+								<Markdown source={comment.body} />
+							{/if}
 						</div>
 					</article>
 				{/each}
@@ -671,156 +1081,19 @@
 		</section>
 	</div>
 
-	<aside class="space-y-8">
-		<!-- state & transitions -->
-		<!-- On a duplicate the section stops pretending to be the source of
-		     truth (muted), but the graph and buttons still act on this issue's
-		     own, dormant state — moving a duplicate is allowed. -->
-		<section
-			class="rounded-lg border p-4 transition-opacity duration-200 {duplicateOf
-				? 'opacity-70'
-				: ''}"
-		>
-			<h2 class="mb-3 text-sm font-semibold">State</h2>
-			{#if duplicateOf}
-				<p class="text-muted-foreground mb-3 text-xs italic" transition:slide={{ duration: dur() }}>
-					This issue is a duplicate — its displayed state follows
-					<a
-						href="/issues/{encodeURIComponent(duplicateOf.project_name)}/{duplicateOf.number}"
-						class="hover:underline">{duplicateOf.project_name}/#{duplicateOf.number}</a
-					>.
-				</p>
-			{/if}
-			<div class="mb-4">
-				<WorkflowGraph workflow={data.issue.workflow} currentStateId={currentState.id} compact />
-			</div>
-			{#if allowed.length > 0}
-				<div class="flex flex-wrap gap-2">
-					{#each allowed as transition (transition.transition_id)}
-						{@const unmet = unmetFor(transition)}
-						<Button
-							size="sm"
-							variant="outline"
-							disabled={transitioning || unmet.length > 0}
-							onclick={() => requestMove(transition)}
-							title={unmet.length > 0
-								? `Blocked: requires artifact “${unmet[0].artifact}” (${unmet[0].status.replaceAll('_', ' ')})`
-								: `Move to ${transition.to_state.name}`}
-						>
-							{transition.name}
-							<span class="text-muted-foreground inline-flex items-center gap-1 text-xs font-normal">
-								<IconArrowRight size={12} />
-								{transition.to_state.name}
-							</span>
-						</Button>
-					{/each}
-				</div>
-				<!-- requirement pre-flight: why a button is disabled, or a subtle check -->
-				{#each allowed.filter((t) => (t.requires ?? []).length > 0) as transition (transition.transition_id)}
-					<ul class="mt-2 space-y-1">
-						{#each transition.requires ?? [] as r (r.artifact)}
-							<li
-								class="flex items-start gap-1.5 text-xs {r.status === 'satisfied'
-									? 'text-muted-foreground'
-									: 'text-amber-700 dark:text-amber-400'}"
-							>
-								{#if r.status === 'satisfied'}
-									<IconCheck size={13} class="mt-0.5 shrink-0" />
-									<span>
-										<span class="font-medium">{transition.name}</span>: artifact
-										<span class="font-mono">{r.artifact}</span> is fresh (v{r.current_version?.version}).
-									</span>
-								{:else}
-									<IconBan size={13} class="mt-0.5 shrink-0" />
-									<span>
-										<span class="font-medium">{transition.name}</span> needs artifact
-										<span class="font-mono">{r.artifact}</span>{r.type ? ` (${[r.type, r.content_type].filter(Boolean).join(', ')})` : ''}
-										—
-										{#if r.status === 'stale'}
-											stale since {new Date(data.issue.state_entered_at).toLocaleString()}; attach a
-											new version or reaffirm it.
-										{:else if r.status === 'missing'}
-											missing; attach it below.
-										{:else}
-											the attached artifact doesn't match.
-										{/if}
-										{#if r.description}
-											<span class="italic">{r.description}</span>
-										{/if}
-									</span>
-								{/if}
-							</li>
-						{/each}
-					</ul>
-				{/each}
-			{:else}
-				<p class="text-muted-foreground text-xs" transition:fade={{ duration: dur() }}>
-					No outgoing transitions — this state is terminal.
-				</p>
-			{/if}
-			<p class="text-muted-foreground mt-3 text-xs">
-				Workflow:
-				<a href="/workflows/{data.issue.workflow.id}" class="hover:underline">{data.issue.workflow.name}</a>
-			</p>
-
-			<!-- escape hatch: jump to any state, or move onto another workflow -->
-			<details class="mt-4 border-t pt-3">
-				<summary class="text-muted-foreground hover:text-foreground cursor-pointer text-xs select-none">
-					Move directly…
-				</summary>
-				<form onsubmit={applyOverride} class="mt-3 space-y-3">
-					<div class="space-y-1">
-						<label class="text-muted-foreground text-xs font-medium" for="override-workflow">Workflow</label>
-						<Select
-							id="override-workflow"
-							bind:value={
-								() => overrideWorkflowId,
-								(v) => {
-									overrideWorkflowPick = v;
-									overrideStatePick = null; // a new workflow restarts the state default
-								}
-							}
-							class="h-8 text-xs"
-						>
-							{#each data.workflows as workflow (workflow.id)}
-								<option value={workflow.id}>
-									{workflow.name}{workflow.is_system ? ' (standard)' : ''}
-								</option>
-							{/each}
-						</Select>
-					</div>
-					<div class="space-y-1">
-						<label class="text-muted-foreground text-xs font-medium" for="override-state">State</label>
-						<Select
-							id="override-state"
-							bind:value={() => overrideStateId, (v) => (overrideStatePick = v)}
-							class="h-8 text-xs"
-						>
-							{#each overrideWorkflow.states as state (state.id)}
-								<option value={state.id}>
-									{state.name}{overrideWorkflowId === data.issue.workflow.id && state.id === currentState.id ? ' — current' : ''}
-								</option>
-							{/each}
-						</Select>
-					</div>
-					<div class="flex items-center gap-2">
-						<Button type="submit" size="sm" variant="outline" disabled={!overrideDirty || applyingOverride}>
-							{applyingOverride ? 'Moving…' : 'Move'}
-						</Button>
-						<p class="text-muted-foreground text-xs">Bypasses the workflow's transitions.</p>
-					</div>
-				</form>
-			</details>
-		</section>
-
+	<!-- min-w-0, like the main column: a grid item defaults to a min-content
+	     floor, so one nowrap row in here (a truncated linked-issue title) would
+	     otherwise widen the column past the viewport. -->
+	<aside class="min-w-0 space-y-8 lg:col-start-2 lg:row-start-2">
 		<!-- the supervisor's view of this issue -->
-		<AgentActivityCard
-			issue={data.issue}
-			dispatch={data.dispatch}
-			runs={data.issueRuns}
-			runners={data.runners}
-			onerror={showError}
-		/>
+		{#if agentActivityPanel.current.status === 'pending'}
+			<Skeleton class="h-40 w-full" />
+		{:else if agentActivityPanel.current.status === 'loaded'}
+			{@const [dispatch, runs, runners] = agentActivityPanel.current.value}
+			<AgentActivityCard issue={data.issue} {dispatch} {runs} {runners} onerror={showError} />
+		{:else}
+			{@render loadFailed('agent activity')}
+		{/if}
 
 		<LabelsCard
 			issueId={data.issue.id}
@@ -874,8 +1147,8 @@
 					placeholder="Feedback, context, or instructions for whoever picks this up…"
 				/>
 				<p class="text-muted-foreground text-xs">
-					Posted with the transition — if this move hands the issue to an agent, its very next
-					run's prompt already contains it.
+					Posted with the transition — if this move hands the issue to an agent, its very next run's
+					prompt already contains it.
 				</p>
 			</div>
 			<div class="flex justify-end gap-2">

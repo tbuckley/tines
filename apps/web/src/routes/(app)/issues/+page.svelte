@@ -3,6 +3,7 @@
 	import IconSearch from '@tabler/icons-svelte/icons/search';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
+	import CheckboxField from '$lib/components/CheckboxField.svelte';
 	import IssueList from '$lib/components/IssueList.svelte';
 	import LabelChip from '$lib/components/LabelChip.svelte';
 	import LabelPicker from '$lib/components/LabelPicker.svelte';
@@ -11,9 +12,17 @@
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { Select } from '$lib/components/ui/select/index.js';
 	import { CATEGORY_LABELS } from '$lib/format';
+	import { navMemory } from '$lib/nav-memory.svelte';
 	import { STATE_CATEGORIES } from '@tines/shared';
 
 	let { data } = $props();
+
+	// Remember the filters so the Issues nav tab and issue back links return
+	// here as it stands. The URL is already the source of truth, so this picks
+	// up every filter change, search submit, and direct navigation.
+	$effect(() => {
+		navMemory.recordIssues(page.url.search);
+	});
 
 	let newIssueOpen = $state(false);
 
@@ -34,7 +43,9 @@
 	// The filter carries label ids, so a rename never breaks a bookmarked URL.
 	const selectedLabels = $derived(
 		data.filters.labels
-			.map((ref) => data.labels.find((l) => l.id === ref || l.name.toLowerCase() === ref.toLowerCase()))
+			.map((ref) =>
+				data.labels.find((l) => l.id === ref || l.name.toLowerCase() === ref.toLowerCase())
+			)
 			.filter((l) => l !== undefined)
 	);
 
@@ -65,14 +76,22 @@
 
 <div class="mb-6 flex flex-wrap items-center gap-3">
 	<div class="relative">
-		<IconSearch size={14} class="text-muted-foreground absolute top-1/2 left-2.5 -translate-y-1/2" />
+		<IconSearch
+			size={14}
+			class="text-muted-foreground absolute top-1/2 left-2.5 -translate-y-1/2"
+		/>
 		<form
 			onsubmit={(e) => {
 				e.preventDefault();
 				setFilter('q', search.trim());
 			}}
 		>
-			<Input bind:value={search} placeholder="Search issues…" class="h-9 w-56 pl-8" aria-label="Search issues" />
+			<Input
+				bind:value={search}
+				placeholder="Search issues…"
+				class="h-9 w-56 pl-8"
+				aria-label="Search issues"
+			/>
 		</form>
 	</div>
 	<Select
@@ -135,28 +154,20 @@
 	</LabelPicker>
 	<!-- Ready implies not-done, so "Show done" parks (unchecked and disabled)
 	     while Ready is on; its URL param survives, so unchecking restores it. -->
-	<label
-		class="text-muted-foreground flex items-center gap-2 text-sm {data.filters.ready
-			? 'opacity-50'
-			: ''}"
+	<CheckboxField
+		label="Show done"
+		class="text-muted-foreground text-sm {data.filters.ready ? 'opacity-50' : ''}"
 		title={data.filters.ready ? 'Ready issues are never done' : undefined}
-	>
-		<input
-			type="checkbox"
-			checked={data.filters.showDone && !data.filters.ready}
-			disabled={data.filters.ready}
-			onchange={(e) => setFilter('done', e.currentTarget.checked ? '1' : '')}
-		/>
-		Show done
-	</label>
-	<label class="text-muted-foreground flex items-center gap-2 text-sm">
-		<input
-			type="checkbox"
-			checked={data.filters.ready}
-			onchange={(e) => setFilter('ready', e.currentTarget.checked ? '1' : '')}
-		/>
-		Ready only
-	</label>
+		checked={data.filters.showDone && !data.filters.ready}
+		disabled={data.filters.ready}
+		onCheckedChange={(checked) => setFilter('done', checked ? '1' : '')}
+	/>
+	<CheckboxField
+		label="Ready only"
+		class="text-muted-foreground text-sm"
+		checked={data.filters.ready}
+		onCheckedChange={(checked) => setFilter('ready', checked ? '1' : '')}
+	/>
 </div>
 
 <NewIssueModal

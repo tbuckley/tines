@@ -166,7 +166,10 @@
 				<Select id="issue-workflow" bind:value={workflowId}>
 					{#each workflows as workflow (workflow.id)}
 						<option value={workflow.id}>
-							{workflow.name}{workflow.is_system ? ' (standard)' : ''}{workflow.id === defaultWorkflowId ? ' — default' : ''}
+							{workflow.name}{workflow.is_system ? ' (standard)' : ''}{workflow.id ===
+							defaultWorkflowId
+								? ' — default'
+								: ''}
 						</option>
 					{/each}
 				</Select>

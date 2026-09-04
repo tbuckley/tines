@@ -13,6 +13,7 @@ import {
 	type AppendContextRequest,
 	type Artifact,
 	type ArtifactRequirementCheck,
+	type ArtifactType,
 	type ContextFile,
 	type ContextItem,
 	type ContextKind,
@@ -25,6 +26,7 @@ import {
 	type EffectiveRepo,
 	type EffectiveSkill,
 	type IssueDetail,
+	type IssueJournalResponse,
 	type OverriddenContextItem,
 	type RepoDirConflict,
 	type UpdateContextItemRequest
@@ -44,6 +46,13 @@ import {
 } from './core';
 import { artifactTypeOf } from './artifacts';
 import { eventInsert } from './events';
+import {
+	resolveScope,
+	scopeLabel,
+	toContextScope,
+	type ResolvedScope,
+	type ScopeIds
+} from './scope';
 
 // ---------------------------------------------------------------------------
 // Validation
@@ -89,8 +98,10 @@ export function validateWorkspacePath(path: unknown, field: string): string {
 	if (p.startsWith('/')) throw fail('paths must be relative (no leading "/")');
 	if (p.includes('=')) throw fail('paths cannot contain "="');
 	const segments = p.split('/');
-	if (segments.some((s) => s === '')) throw fail('paths cannot have empty segments or trailing slashes');
-	if (segments.some((s) => s === '..' || s === '.')) throw fail('paths cannot contain "." or ".." segments');
+	if (segments.some((s) => s === ''))
+		throw fail('paths cannot have empty segments or trailing slashes');
+	if (segments.some((s) => s === '..' || s === '.'))
+		throw fail('paths cannot contain "." or ".." segments');
 	return p;
 }
 
@@ -115,10 +126,15 @@ function validateFiles(value: unknown): ContextFile[] {
 		const input = f as { path?: unknown; content?: unknown };
 		const path = validateWorkspacePath(input.path, `files[${i}].path`);
 		if (seen.has(path)) {
-			throw new ApiFail(422, 'duplicate_path', `Skill file path "${path}" is listed more than once`, {
-				field: 'files',
-				path
-			});
+			throw new ApiFail(
+				422,
+				'duplicate_path',
+				`Skill file path "${path}" is listed more than once`,
+				{
+					field: 'files',
+					path
+				}
+			);
 		}
 		seen.add(path);
 		if (typeof input.content !== 'string') {
@@ -183,166 +199,6 @@ function rejectForeignPayload(kind: ContextKind, body: Record<string, unknown>) 
 			{ kind, rejected_fields: foreign, allowed_fields: [...KIND_FIELDS[kind]] }
 		);
 	}
-}
-
-// ---------------------------------------------------------------------------
-// Scope: resolution, coherence, labels
-
-export interface ScopeIds {
-	projectId: string | null;
-	workflowStateId: string | null;
-	issueId: string | null;
-}
-
-/** Denormalized referents of a (validated) scope, for labels and events. */
-export interface ResolvedScope extends ScopeIds {
-	projectName: string | null;
-	stateName: string | null;
-	workflowId: string | null;
-	workflowName: string | null;
-	issueNumber: number | null;
-	issueProjectName: string | null;
-	/** The issue's project — used for event references. */
-	issueProjectId: string | null;
-}
-
-/**
- * Canonical display label: set dimensions in project · state · issue order;
- * the empty scope is "global".
- */
-export function scopeLabel(scope: {
-	projectName?: string | null;
-	stateName?: string | null;
-	issueProjectName?: string | null;
-	issueNumber?: number | null;
-}): string {
-	const parts: string[] = [];
-	if (scope.projectName) parts.push(`project ${scope.projectName}`);
-	if (scope.stateName) parts.push(`state ${scope.stateName}`);
-	if (scope.issueProjectName && scope.issueNumber !== null && scope.issueNumber !== undefined) {
-		parts.push(`issue ${scope.issueProjectName}/${scope.issueNumber}`);
-	}
-	return parts.length > 0 ? parts.join(' · ') : 'global';
-}
-
-function toContextScope(scope: ResolvedScope): ContextScope {
-	return {
-		project_id: scope.projectId,
-		project_name: scope.projectName,
-		workflow_state_id: scope.workflowStateId,
-		workflow_state_name: scope.stateName,
-		workflow_id: scope.workflowId,
-		workflow_name: scope.workflowName,
-		issue_id: scope.issueId,
-		issue_ref:
-			scope.issueId && scope.issueProjectName && scope.issueNumber !== null
-				? { project_name: scope.issueProjectName, number: scope.issueNumber }
-				: null,
-		label: scopeLabel(scope)
-	};
-}
-
-/**
- * Validates a scope: every referenced element exists and belongs to the user
- * (states may come from the system standard workflow), and the set dimensions
- * cohere (issue in project; state in the issue's bound workflow). An empty
- * scope is valid — the item is global and matches every issue.
- */
-async function resolveScope(
-	db: Kysely<Database>,
-	userId: string,
-	ids: ScopeIds
-): Promise<ResolvedScope> {
-	const scope: ResolvedScope = {
-		projectId: ids.projectId,
-		workflowStateId: ids.workflowStateId,
-		issueId: ids.issueId,
-		projectName: null,
-		stateName: null,
-		workflowId: null,
-		workflowName: null,
-		issueNumber: null,
-		issueProjectName: null,
-		issueProjectId: null
-	};
-
-	if (ids.projectId) {
-		const project = await db
-			.selectFrom('project')
-			.select(['id', 'name'])
-			.where('id', '=', ids.projectId)
-			.where('user_id', '=', userId)
-			.executeTakeFirst();
-		if (!project) {
-			throw new ApiFail(422, 'unknown_project', `Project "${ids.projectId}" does not exist`, {
-				field: 'project_id'
-			});
-		}
-		scope.projectName = project.name;
-	}
-
-	if (ids.workflowStateId) {
-		const state = await db
-			.selectFrom('workflow_state')
-			.innerJoin('workflow', 'workflow.id', 'workflow_state.workflow_id')
-			.select([
-				'workflow_state.id',
-				'workflow_state.name',
-				'workflow.id as workflow_id',
-				'workflow.name as workflow_name'
-			])
-			.where('workflow_state.id', '=', ids.workflowStateId)
-			.where((eb) => eb.or([eb('workflow.user_id', '=', userId), eb('workflow.user_id', 'is', null)]))
-			.executeTakeFirst();
-		if (!state) {
-			throw new ApiFail(
-				422,
-				'unknown_state',
-				`Workflow state "${ids.workflowStateId}" does not exist`,
-				{ field: 'workflow_state_id' }
-			);
-		}
-		scope.stateName = state.name;
-		scope.workflowId = state.workflow_id;
-		scope.workflowName = state.workflow_name;
-	}
-
-	if (ids.issueId) {
-		const issue = await db
-			.selectFrom('issue')
-			.innerJoin('project', 'project.id', 'issue.project_id')
-			.select(['issue.id', 'issue.number', 'issue.project_id', 'issue.workflow_id', 'project.name as project_name'])
-			.where('issue.id', '=', ids.issueId)
-			.where('project.user_id', '=', userId)
-			.executeTakeFirst();
-		if (!issue) {
-			throw new ApiFail(422, 'unknown_issue', `Issue "${ids.issueId}" does not exist`, {
-				field: 'issue_id'
-			});
-		}
-		scope.issueNumber = issue.number;
-		scope.issueProjectName = issue.project_name;
-		scope.issueProjectId = issue.project_id;
-
-		if (ids.projectId && issue.project_id !== ids.projectId) {
-			throw new ApiFail(
-				422,
-				'scope_incoherent',
-				`Issue ${issue.project_name}/${issue.number} does not belong to project "${scope.projectName}"`,
-				{ issue_project_id: issue.project_id, project_id: ids.projectId }
-			);
-		}
-		if (ids.workflowStateId && scope.workflowId !== issue.workflow_id) {
-			throw new ApiFail(
-				422,
-				'scope_incoherent',
-				`State "${scope.stateName}" belongs to workflow "${scope.workflowName}", not the workflow bound to issue ${issue.project_name}/${issue.number}`,
-				{ state_workflow_id: scope.workflowId, issue_workflow_id: issue.workflow_id }
-			);
-		}
-	}
-
-	return scope;
 }
 
 // ---------------------------------------------------------------------------
@@ -423,7 +279,8 @@ function serializeItem(row: ItemRow, files?: ContextFile[]): ContextItem {
 	return item;
 }
 
-async function loadFiles(
+/** Skill file bodies for a batch of items, keyed by item id, ordered by path. */
+export async function loadFiles(
 	db: Kysely<Database>,
 	itemIds: string[]
 ): Promise<Map<string, ContextFile[]>> {
@@ -448,7 +305,9 @@ export async function getContextItem(
 	userId: string,
 	id: string
 ): Promise<ContextItem> {
-	const row = await contextItemQuery(db, userId).where('context_item.id', '=', id).executeTakeFirst();
+	const row = await contextItemQuery(db, userId)
+		.where('context_item.id', '=', id)
+		.executeTakeFirst();
 	if (!row) throw notFound();
 	const files =
 		row.kind === 'skill' ? ((await loadFiles(db, [row.id])).get(row.id) ?? []) : undefined;
@@ -461,6 +320,12 @@ export interface ContextItemFilters {
 	project?: string;
 	/** Workflow state id. */
 	state?: string;
+	/**
+	 * Workflow id: items scoped to any state of that workflow. A grouping
+	 * convenience for the Context page's filter row, not a scope dimension —
+	 * the HTTP list endpoint deliberately does not expose it.
+	 */
+	workflow?: string;
 	/** Issue id. */
 	issue?: string;
 	/** Name/description substring search. */
@@ -504,6 +369,9 @@ export async function listContextItems(
 	} else if (filters.exact) {
 		q = q.where('context_item.workflow_state_id', 'is', null);
 	}
+	if (filters.workflow) {
+		q = q.where('scope_workflow.id', '=', filters.workflow);
+	}
 	if (filters.issue) {
 		q = q.where('context_item.issue_id', '=', filters.issue);
 	} else if (filters.exact) {
@@ -514,10 +382,7 @@ export async function listContextItems(
 		// (and occasionally useful) for a search box.
 		const like = `%${filters.q}%`;
 		q = q.where((eb) =>
-			eb.or([
-				eb('context_item.name', 'like', like),
-				eb('context_item.description', 'like', like)
-			])
+			eb.or([eb('context_item.name', 'like', like), eb('context_item.description', 'like', like)])
 		);
 	}
 	if (page.cursor) {
@@ -534,7 +399,10 @@ export async function listContextItems(
 		.orderBy('context_item.id desc')
 		.limit(page.limit + 1)
 		.execute();
-	return { items: rows.slice(0, page.limit).map((r) => serializeItem(r)), hasMore: rows.length > page.limit };
+	return {
+		items: rows.slice(0, page.limit).map((r) => serializeItem(r)),
+		hasMore: rows.length > page.limit
+	};
 }
 
 /** Items scoped to any of the given states (the workflow page's sections). */
@@ -615,7 +483,11 @@ async function assertNameAvailable(
 	}
 }
 
-async function nextPosition(db: Kysely<Database>, userId: string, scope: ScopeIds): Promise<number> {
+async function nextPosition(
+	db: Kysely<Database>,
+	userId: string,
+	scope: ScopeIds
+): Promise<number> {
 	let q = db
 		.selectFrom('context_item')
 		.select((eb) => eb.fn.max('position').as('m'))
@@ -648,6 +520,52 @@ function scopeEventPayload(scope: ResolvedScope) {
 	};
 }
 
+/**
+ * Every endpoint that writes an artifact payload, in one place: the 422 that
+ * turns a generic create away has to name all of them, and enumerating them
+ * by hand is how `folder` went missing from the message once already. `types`
+ * is what makes the omission testable — the list has to cover ARTIFACT_TYPES.
+ */
+const ARTIFACT_WRITE_ENDPOINTS: readonly {
+	method: string;
+	path: string;
+	types: readonly ArtifactType[];
+	accepts: string;
+}[] = [
+	{
+		method: 'PUT',
+		path: '/api/v1/issues/:id/artifacts/:name',
+		types: ['text', 'link', 'pr'],
+		accepts: 'JSON for text/link/pr'
+	},
+	{
+		method: 'PUT',
+		path: '/api/v1/issues/:id/artifacts/:name/file',
+		types: ['file'],
+		accepts: 'raw upload'
+	},
+	{
+		method: 'PUT',
+		path: '/api/v1/issues/:id/artifacts/:name/folder',
+		types: ['folder'],
+		accepts: 'multipart snapshot'
+	}
+];
+
+/**
+ * The prose half of the same list: the first endpoint in full, the rest
+ * abbreviated from `/:name` the way the docs and the spec write them.
+ */
+function artifactEndpointsMessage(): string {
+	const parts = ARTIFACT_WRITE_ENDPOINTS.map((e, i) =>
+		i === 0
+			? `${e.method} ${e.path} (${e.accepts})`
+			: `…${e.path.slice(e.path.indexOf('/:name'))} (${e.accepts})`
+	);
+	const last = parts.pop();
+	return `Artifacts are created through the artifact endpoints: ${parts.join(', ')}, or ${last}`;
+}
+
 export async function createContextItem(
 	db: Kysely<Database>,
 	env: Env,
@@ -658,12 +576,10 @@ export async function createContextItem(
 	// One creation path is saner than two, and file payloads can't ride a
 	// JSON create: artifacts are created via their own endpoints only.
 	if (kind === 'artifact') {
-		throw new ApiFail(
-			422,
-			'use_artifact_endpoints',
-			'Artifacts are created through the artifact endpoints: PUT /api/v1/issues/:id/artifacts/:name (JSON for text/link/pr) or …/:name/file (raw upload)',
-			{ field: 'kind' }
-		);
+		throw new ApiFail(422, 'use_artifact_endpoints', artifactEndpointsMessage(), {
+			field: 'kind',
+			endpoints: ARTIFACT_WRITE_ENDPOINTS
+		});
 	}
 	const name = validateName(kind, body.name);
 	const description = optionalString(body.description, 'description', { max: 1000 }) ?? '';
@@ -749,7 +665,12 @@ export async function createContextItem(
 function guardedContextEvent(
 	db: Kysely<Database>,
 	actor: ActorContext,
-	input: { type: string; issueId: string | null; projectId: string | null; payload: Record<string, unknown> },
+	input: {
+		type: string;
+		issueId: string | null;
+		projectId: string | null;
+		payload: Record<string, unknown>;
+	},
 	itemId: string,
 	versionAfter: number
 ): CompiledQuery {
@@ -792,10 +713,15 @@ export async function updateContextItem(
 	}
 
 	if (body.kind !== undefined && body.kind !== kind) {
-		throw new ApiFail(422, 'kind_immutable', 'A context item\'s kind cannot be changed after creation', {
-			field: 'kind',
-			kind
-		});
+		throw new ApiFail(
+			422,
+			'kind_immutable',
+			"A context item's kind cannot be changed after creation",
+			{
+				field: 'kind',
+				kind
+			}
+		);
 	}
 	rejectForeignPayload(kind, body as unknown as Record<string, unknown>);
 
@@ -846,7 +772,8 @@ export async function updateContextItem(
 	let repoBranch = row.repo_branch;
 	let repoDir = row.repo_dir;
 	if (kind === 'repo') {
-		if (body.repo_url !== undefined) repoUrl = requireString(body.repo_url, 'repo_url', { max: 1000 }).trim();
+		if (body.repo_url !== undefined)
+			repoUrl = requireString(body.repo_url, 'repo_url', { max: 1000 }).trim();
 		if (body.repo_branch !== undefined) {
 			repoBranch = optionalString(body.repo_branch, 'repo_branch', { max: 200 })?.trim() || null;
 		}
@@ -863,7 +790,9 @@ export async function updateContextItem(
 	if (scopeChanged) position = await nextPosition(db, actor.userId, targetIds);
 	if (body.position !== undefined) {
 		if (typeof body.position !== 'number' || !Number.isInteger(body.position)) {
-			throw new ApiFail(422, 'invalid_field', '"position" must be an integer', { field: 'position' });
+			throw new ApiFail(422, 'invalid_field', '"position" must be an integer', {
+				field: 'position'
+			});
 		}
 		position = body.position;
 	}
@@ -1033,9 +962,14 @@ export async function appendContextItem(
 			.executeTakeFirst();
 		if (!row) throw notFound();
 		if (row.kind !== 'prompt') {
-			throw new ApiFail(422, 'not_a_prompt', `Only prompt items can be appended to (this is a ${row.kind})`, {
-				kind: row.kind
-			});
+			throw new ApiFail(
+				422,
+				'not_a_prompt',
+				`Only prompt items can be appended to (this is a ${row.kind})`,
+				{
+					kind: row.kind
+				}
+			);
 		}
 		if (body.expected_version !== undefined && body.expected_version !== row.version) {
 			throw versionConflict(row);
@@ -1159,15 +1093,21 @@ function matchingItemsQuery(db: Kysely<Database>, userId: string, target: MatchT
 	return contextItemQuery(db, userId)
 		.where('context_item.kind', '!=', 'artifact')
 		.where((eb) =>
-		eb.and([
-			eb.or([eb('context_item.project_id', 'is', null), eb('context_item.project_id', '=', target.projectId)]),
-			eb.or([
-				eb('context_item.workflow_state_id', 'is', null),
-				eb('context_item.workflow_state_id', '=', target.stateId)
-			]),
-			eb.or([eb('context_item.issue_id', 'is', null), eb('context_item.issue_id', '=', target.issueId)])
-		])
-	);
+			eb.and([
+				eb.or([
+					eb('context_item.project_id', 'is', null),
+					eb('context_item.project_id', '=', target.projectId)
+				]),
+				eb.or([
+					eb('context_item.workflow_state_id', 'is', null),
+					eb('context_item.workflow_state_id', '=', target.stateId)
+				]),
+				eb.or([
+					eb('context_item.issue_id', 'is', null),
+					eb('context_item.issue_id', '=', target.issueId)
+				])
+			])
+		);
 }
 
 /** Layer order, then position / created_at / id within a layer. */
@@ -1182,7 +1122,10 @@ function sortMatched(rows: ItemRow[]): ItemRow[] {
 }
 
 /** Dedupe by name within a kind: the later (more specific) item wins wholesale. */
-function dedupeByName(rows: ItemRow[]): { winners: ItemRow[]; overridden: OverriddenContextItem[] } {
+function dedupeByName(rows: ItemRow[]): {
+	winners: ItemRow[];
+	overridden: OverriddenContextItem[];
+} {
 	const byName = new Map<string, ItemRow>();
 	const losers: { row: ItemRow; winner: ItemRow }[] = [];
 	for (const row of rows) {
@@ -1219,6 +1162,106 @@ async function issueMatchTarget(
 	return { projectId: issue.project_id, stateId: issue.state_id, issueId: issue.id };
 }
 
+// ---------------------------------------------------------------------------
+// Journal resolution: which journal a caller's `tines journal` commands own
+
+/** The run anchor's verdict: a launch state, or why there isn't one. */
+export interface LaunchStateResolution {
+	/** The state the run was launched in; null when the run anchor does not apply. */
+	stateId: string | null;
+	/** Why a present run key could not anchor (null otherwise). */
+	note: string | null;
+}
+
+/**
+ * The state this actor's run was launched in — the anchor that keeps a lesson
+ * with the stage that learned it after the issue has already moved on.
+ *
+ * Returns `{ stateId: null, note: null }` for callers that are not a run (a
+ * browser session or a named key), and a `note` whenever a run key is present
+ * but cannot anchor: another issue's key, or a launch state a workflow edit
+ * deleted mid-run. Never throws — a lost lesson is worse than a misfiled one.
+ */
+export async function launchStateForRun(
+	db: Kysely<Database>,
+	actor: ActorContext,
+	issueId: string
+): Promise<LaunchStateResolution> {
+	if (!actor.agentRunId) return { stateId: null, note: null };
+	const run = await db
+		.selectFrom('agent_run')
+		.innerJoin('issue', 'issue.id', 'agent_run.issue_id')
+		.innerJoin('project', 'project.id', 'issue.project_id')
+		// State names survive workflow edits loosely: left join, id kept.
+		.leftJoin('workflow_state as start_state', 'start_state.id', 'agent_run.state_id_at_start')
+		.select([
+			'agent_run.issue_id',
+			'issue.number as issue_number',
+			'project.name as project_name',
+			'start_state.id as start_state_id'
+		])
+		.where('agent_run.id', '=', actor.agentRunId)
+		.where('agent_run.user_id', '=', actor.userId)
+		.executeTakeFirst();
+	// The run's key is revoked in the same batch that ends the run, so a live
+	// key implies a live run; a missing row can only be stale data.
+	if (!run) return { stateId: null, note: null };
+	if (run.issue_id !== issueId) {
+		return {
+			stateId: null,
+			note: `this run key belongs to ${run.project_name}/${run.issue_number}; using the requested issue's current state`
+		};
+	}
+	// Run status is deliberately not checked: if the daemon's finish call
+	// races the agent's last append, the launch state is still the answer.
+	if (!run.start_state_id) {
+		return {
+			stateId: null,
+			note: "the state this run was launched in no longer exists; using the issue's current state"
+		};
+	}
+	return { stateId: run.start_state_id, note: null };
+}
+
+/**
+ * The journal a caller's `tines journal` commands target: the prompt named
+ * `journal` at project ∧ state, where the state is the run's launch state for
+ * a run key on this issue and the issue's current state for everyone else.
+ *
+ * The decision lives here rather than in the CLI because the run → launch
+ * state link (`api_key.agent_run_id` → `agent_run.state_id_at_start`) is only
+ * knowable server-side.
+ */
+export async function journalForIssue(
+	db: Kysely<Database>,
+	actor: ActorContext,
+	issueId: string
+): Promise<IssueJournalResponse> {
+	const target = await issueMatchTarget(db, actor.userId, issueId);
+	const launch = await launchStateForRun(db, actor, issueId);
+	const stateId = launch.stateId ?? target.stateId;
+	const scope = toContextScope(
+		await resolveScope(db, actor.userId, {
+			projectId: target.projectId,
+			workflowStateId: stateId,
+			issueId: null
+		})
+	);
+	const row = await contextItemQuery(db, actor.userId)
+		.where('context_item.kind', '=', 'prompt')
+		.where('context_item.name', '=', JOURNAL_NAME)
+		.where('context_item.project_id', '=', target.projectId)
+		.where('context_item.workflow_state_id', '=', stateId)
+		.where('context_item.issue_id', 'is', null)
+		.executeTakeFirst();
+	return {
+		scope,
+		anchor: launch.stateId ? 'run' : 'current',
+		note: launch.note,
+		item: row ? serializeItem(row) : null
+	};
+}
+
 /**
  * The assembled bundle for an issue, computed on read. Pass
  * `skillFiles: false` for a display-only bundle (skill file contents can be
@@ -1251,7 +1294,10 @@ export async function effectiveContextForIssue(
 	const repoDedupe = dedupeByName(rows.filter((r) => r.kind === 'repo'));
 
 	const fileMap = skillFiles
-		? await loadFiles(db, skillDedupe.winners.map((r) => r.id))
+		? await loadFiles(
+				db,
+				skillDedupe.winners.map((r) => r.id)
+			)
 		: new Map<string, ContextFile[]>();
 	const skills: EffectiveSkill[] = skillDedupe.winners.map((r) => ({
 		item_id: r.id,
@@ -1431,7 +1477,27 @@ export function issueBlock(
 			);
 		}
 	}
-	lines.push(`Add a comment: \`tines issues comment ${ref} "<markdown>"\``, '', '### Artifacts', '');
+	// A quoted heredoc, not an inline argument: comment bodies are prose full
+	// of backticks, $VARS and apostrophes, and a mangled comment costs a round
+	// trip to repair even now that it can be repaired (Tines/9, Tines/11). The
+	// fallback line is not decoration: a CLI predating that change treats the
+	// `-` as the body itself and posts it, exit 0, so the failure is silent
+	// unless the agent has been told what it looks like. The repair line names
+	// `--json` for ids because an older CLI shows ids nowhere else (a CLI
+	// without the commands at all fails loudly, which is fine).
+	lines.push(
+		'Add a comment (the quoted heredoc keeps backticks, $VARS and quotes literal):',
+		'```',
+		`tines issues comment ${ref} - <<'EOF'`,
+		'<markdown>',
+		'EOF',
+		'```',
+		`A \`tines\` too old for that form posts a literal \`-\` instead of your body, without failing. If \`tines issues comment --help\` does not mention \`@file\`, use \`tines issues comment ${ref} "<markdown>"\` and mind the shell quoting.`,
+		`Fix your own mis-post rather than leaving it in the thread: \`tines issues comment-edit ${ref} <comment-id> -\` (same body forms) replaces a body, \`tines issues comment-delete ${ref} <comment-id>\` removes it. Ids are echoed when you post and listed by \`tines issues show ${ref} --json\`; you can only edit or delete comments you wrote.`,
+		'',
+		'### Artifacts',
+		''
+	);
 	// A listing, never contents: agents fetch on demand.
 	if (issueArtifacts.length === 0) {
 		lines.push('No artifacts attached.', '');
@@ -1442,7 +1508,7 @@ export function issueBlock(
 		lines.push('');
 	}
 	lines.push(
-		`Attach one: \`tines issues artifacts attach ${ref} <name> --file <path>\` (or --text/--url/--pr, or --folder <dir> for a multi-file snapshot)`,
+		`Attach one: \`tines issues artifacts attach ${ref} <name> --file <path>\` (or --text/--link/--pr, or --folder <dir> for a multi-file snapshot)`,
 		'',
 		'### Available transitions',
 		''
@@ -1473,14 +1539,20 @@ export function issueBlock(
 			'Your journal for this project and stage is the "Journal" section above',
 			`(currently v${journal.version}).`,
 			'',
+			// The run key remembers the stage it was launched in, so the old
+			// append-before-you-move ordering trap no longer exists.
+			"Appends land in this stage's journal even after you move the issue.",
+			'',
 			`- Append a lesson: \`tines journal append ${ref} "- <date>: <lesson>"\``,
+			'  (or `-` with a quoted heredoc, as for comments, when the body must not be touched by the shell)',
 			`- Fix or prune entries: \`tines journal show ${ref} --json\`, revise, then`,
 			`  \`tines journal rewrite ${ref} --body @file --expect-version ${journal.version}\``
 		);
 	} else {
 		lines.push(
 			`No journal exists yet for project ${issue.project_name} · state ${issue.state.name}. Start one:`,
-			`\`tines journal append ${ref} "- <date>: <lesson>"\``
+			`\`tines journal append ${ref} "- <date>: <lesson>"\``,
+			'(or `-` with a quoted heredoc, as for comments, when the body must not be touched by the shell)'
 		);
 	}
 
@@ -1549,7 +1621,10 @@ export async function findAttachedContext(
 	if (anchor.stateIds !== undefined) {
 		q = q.where('context_item.workflow_state_id', 'in', anchor.stateIds);
 	}
-	const rows = await q.orderBy('context_item.created_at asc').orderBy('context_item.id asc').execute();
+	const rows = await q
+		.orderBy('context_item.created_at asc')
+		.orderBy('context_item.id asc')
+		.execute();
 	return rows.map((row) => ({
 		id: row.id,
 		kind: row.kind as ContextKind,

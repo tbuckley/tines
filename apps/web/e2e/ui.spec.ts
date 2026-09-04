@@ -51,7 +51,9 @@ test('a signed-in visit to / lands on the issues list', async ({ page }) => {
 	await expect(page.getByRole('link', { name: new RegExp(issueTitle) })).toBeVisible();
 });
 
-test('an issue can be created from the issues list, picking project and starting state', async ({ page }) => {
+test('an issue can be created from the issues list, picking project and starting state', async ({
+	page
+}) => {
 	await page.goto('/issues');
 	const dialog = page.getByRole('dialog', { name: 'New issue' });
 	await clickUntil(page.getByRole('button', { name: /New issue/ }), async () => {
@@ -138,7 +140,9 @@ test('issue detail renders markdown, transitions, and comments', async ({ page }
 		await api.get(`/api/v1/events?issue=${issue.id}&type=issue.transitioned`)
 	);
 	expect(events.items.length).toBeGreaterThanOrEqual(1);
-	expect(posted!.created_at).toBeLessThanOrEqual(Math.max(...events.items.map((e) => e.created_at)));
+	expect(posted!.created_at).toBeLessThanOrEqual(
+		Math.max(...events.items.map((e) => e.created_at))
+	);
 
 	// Comment round-trip.
 	await page.getByPlaceholder(/Leave a comment/).fill('From the browser');
@@ -178,6 +182,51 @@ test('issue detail picks up comments and transitions made elsewhere, without a r
 	await expect(stateBadge(page)).toContainText(toState!.name, { timeout: 15_000 });
 });
 
+test('a comment can be edited and deleted from the issue page', async ({ page }) => {
+	const api = apiClient(page.request, ALICE.apiKey);
+	const created = await body<{ id: string }>(
+		await api.post(`/api/v1/issues/${issue.id}/comments`, { body: 'Typpo here' })
+	);
+	await page.goto(`/issues/${encodeURIComponent(projectName)}/${issue.number}`);
+	const comment = page.locator('article').filter({ hasText: 'Typpo here' }).first();
+	await expect(comment).toBeVisible();
+
+	// Editing swaps the rendered body for a textarea, so the article stops
+	// matching on its text: address it by the Save button instead.
+	const editing = page
+		.locator('article')
+		.filter({ has: page.getByRole('button', { name: 'Save', exact: true }) });
+	await clickUntil(comment.getByRole('button', { name: 'Edit comment' }), async () => {
+		await expect(editing).toBeVisible({ timeout: 2_000 });
+	});
+	await editing.getByRole('textbox').fill('Typo fixed');
+	await editing.getByRole('button', { name: 'Save', exact: true }).click();
+
+	const edited = page.locator('article').filter({ hasText: 'Typo fixed' }).first();
+	await expect(edited).toBeVisible({ timeout: 10_000 });
+	await expect(edited.getByText('(edited)')).toBeVisible();
+	await expect(page.getByText('Typpo here')).toHaveCount(0);
+
+	// Delete goes through the shared confirm dialog.
+	const dialog = page.getByRole('alertdialog');
+	await clickUntil(edited.getByRole('button', { name: 'Delete comment' }), async () => {
+		await expect(dialog).toBeVisible({ timeout: 2_000 });
+	});
+	await dialog.getByRole('button', { name: 'Delete comment', exact: true }).click();
+	await expect(page.getByText('Typo fixed')).toHaveCount(0, { timeout: 10_000 });
+
+	// The events outlive the comment.
+	const events = await body<{ items: { type: string; payload: Record<string, unknown> }[] }>(
+		await api.get(`/api/v1/events?issue=${issue.id}`)
+	);
+	const types = events.items.map((e) => e.type);
+	expect(types).toContain('issue.comment_edited');
+	expect(types).toContain('issue.comment_deleted');
+	expect(events.items.find((e) => e.type === 'issue.comment_deleted')?.payload.comment_id).toBe(
+		created.id
+	);
+});
+
 test('workflow library shows the read-only standard workflow with its graph', async ({ page }) => {
 	await page.goto('/workflows');
 	const link = page.getByRole('link', { name: /Standard/ }).first();
@@ -202,4 +251,111 @@ test('a duplicate project name surfaces the API error in the create modal', asyn
 	await page.getByLabel('Name').fill(projectName);
 	await page.getByRole('button', { name: 'Create project' }).click();
 	await expect(page.getByText(/already exists/)).toBeVisible();
+});
+
+// --- list memory -------------------------------------------------------------
+//
+// The issues list keeps its filters in the URL and nowhere else, so every route
+// back to it used to drop them. The Issues tab and an issue's back link now
+// return to the list as you left it.
+
+/** The issue page's back link, as distinct from the header's Issues tab. */
+const backLink = (page: Page) => page.locator('main').getByRole('link').first();
+
+test('the Issues tab and an issue back link keep the list filters', async ({ page }) => {
+	const query = `q=${encodeURIComponent(issueTitle)}`;
+	await page.goto(`/issues?${query}`);
+
+	// The tab href picking up the query is also the proof that the page has
+	// hydrated and recorded itself.
+	const issuesTab = page.locator('header').getByRole('link', { name: 'Issues' });
+	await expect(issuesTab).toHaveAttribute(
+		'href',
+		new RegExp(`q=UI(%20|\\+)smoke(%20|\\+)${runId}`)
+	);
+
+	await page.getByRole('link', { name: new RegExp(issueTitle) }).click();
+	await expect(page).toHaveURL(new RegExp(`/issues/${projectName}/${issue.number}$`));
+
+	// Back to the filtered list, not to a bare one.
+	await expect(backLink(page)).toHaveText('Issues');
+	await backLink(page).click();
+	await expect(page).toHaveURL(new RegExp(`q=UI(%20|\\+)smoke(%20|\\+)${runId}`));
+
+	// The nav tab restores them too, from wherever you are.
+	await page.getByRole('link', { name: new RegExp(issueTitle) }).click();
+	await expect(page).toHaveURL(new RegExp(`/issues/${projectName}/${issue.number}$`));
+	await page.locator('header').getByRole('link', { name: 'Issues' }).click();
+	await expect(page).toHaveURL(new RegExp(`q=UI(%20|\\+)smoke(%20|\\+)${runId}`));
+	await expect(page.getByRole('link', { name: new RegExp(issueTitle) })).toBeVisible();
+});
+
+test('an issue reached from a project page goes back to that project', async ({ page }) => {
+	await page.goto(`/projects/${project.id}`);
+
+	// The checkbox is a Svelte listener, so retry across the hydration window.
+	// Landing on `?done=1` also proves the page has recorded itself.
+	const showDone = page.getByLabel('Show done');
+	await expect(async () => {
+		await showDone.check();
+		await expect(page).toHaveURL(/done=1/, { timeout: 2_000 });
+	}).toPass({ timeout: 15_000 });
+
+	await page.getByRole('link', { name: new RegExp(issueTitle) }).click();
+	await expect(page).toHaveURL(new RegExp(`/issues/${projectName}/${issue.number}$`));
+
+	// The back link names the project, and returns to it still filtered.
+	await expect(backLink(page)).toHaveText(projectName);
+	await backLink(page).click();
+	await expect(page).toHaveURL(`/projects/${project.id}?done=1`);
+});
+
+/** The resolved value of one CSS property, as the browser paints it. */
+const cssValue = (target: Locator, property: string) =>
+	target.evaluate((el, prop) => getComputedStyle(el).getPropertyValue(prop), property);
+
+test.describe('with a dark system preference', () => {
+	test.use({ colorScheme: 'dark' });
+
+	// The filter checkboxes used to be bare `<input type="checkbox">`, which the
+	// browser paints in its own palette — a warm tan border against the app's
+	// cool slate. Pinned by comparison with a control that is unarguably on
+	// palette rather than against a hard-coded color, so a theme edit that moves
+	// `--input` or `--primary` moves the expectation with it.
+	test('filter checkboxes are painted from the app palette, not the browser default', async ({
+		page
+	}) => {
+		await page.goto('/issues');
+		await expect(page.locator('html')).toHaveClass(/\bdark\b/);
+
+		// Named from `aria-label`: the visible text sits in the wrapping <label>,
+		// which does not name a button.
+		const readyOnly = page.getByRole('checkbox', { name: 'Ready only' });
+		const searchField = page.getByRole('textbox', { name: 'Search issues' });
+		await expect(readyOnly).toBeVisible();
+
+		// Unchecked, it wears `--input` — the same border and fill as the search
+		// field standing next to it.
+		expect(await cssValue(readyOnly, 'border-color')).toBe(
+			await cssValue(searchField, 'border-color')
+		);
+		expect(await cssValue(readyOnly, 'background-color')).toBe(
+			await cssValue(searchField, 'background-color')
+		);
+
+		// Checked, it fills with `--primary` — the same fill as a default button.
+		// bits-ui stamps `data-state`, so this is also what proves the
+		// `data-checked` variant in app.css is wired to something real.
+		await clickUntil(readyOnly, async () => {
+			await expect(page).toHaveURL(/ready=1/, { timeout: 2_000 });
+		});
+		await expect(readyOnly).toBeChecked();
+		// Polled, not read once: the control carries `transition-colors`, so a
+		// single read lands mid-interpolation on a half-transparent oklab().
+		const primary = await cssValue(
+			page.getByRole('button', { name: 'New issue' }),
+			'background-color'
+		);
+		await expect.poll(() => cssValue(readyOnly, 'background-color')).toBe(primary);
+	});
 });

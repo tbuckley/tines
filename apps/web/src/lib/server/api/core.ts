@@ -27,6 +27,35 @@ export function errorResponse(e: ApiFail): Response {
 	return json(body, { status: e.status });
 }
 
+/**
+ * SvelteKit answers a known route with an unsupported verb itself, before any
+ * handler runs: a bare text body ("PUT method not allowed") with no
+ * content-type. A JSON client that reads `(await res.json()).error` on every
+ * non-2xx then dies on a parse error instead of surfacing the reason, so the
+ * hook re-clothes that response in the documented envelope. Kit's `Allow`
+ * header is already correct (RFC 9110 15.5.6) and is carried over.
+ *
+ * Scoped to /api/v1/*: only the JSON API promises the envelope. A 405 a
+ * handler produced itself already carries a JSON content-type and is left
+ * alone.
+ */
+export function jsonifyMethodNotAllowed(
+	pathname: string,
+	method: string,
+	response: Response
+): Response {
+	if (response.status !== 405) return response;
+	if (!pathname.startsWith('/api/v1/')) return response;
+	if ((response.headers.get('content-type') ?? '').includes('application/json')) return response;
+
+	const replacement = errorResponse(
+		new ApiFail(405, 'method_not_allowed', `${method} is not allowed on this resource`)
+	);
+	const allow = response.headers.get('allow');
+	if (allow) replacement.headers.set('allow', allow);
+	return replacement;
+}
+
 /** Wraps a route handler: ApiFail → structured JSON error, else 500. */
 export function api<E extends RequestEvent>(
 	handler: (event: E) => Promise<Response> | Response
@@ -53,7 +82,7 @@ export function api<E extends RequestEvent>(
 /** Valid JSON that isn't an object ("null", "[]", "42") would otherwise
  * pass the parse and crash on the first field access — a 500 for what is
  * malformed client input. Every endpoint takes an object payload. */
-function requireJsonObject(value: unknown): Record<string, unknown> {
+export function requireJsonObject(value: unknown): Record<string, unknown> {
 	if (typeof value !== 'object' || value === null || Array.isArray(value)) {
 		throw new ApiFail(400, 'invalid_json', 'Request body must be a JSON object');
 	}
@@ -95,7 +124,11 @@ export function requireString(value: unknown, field: string, { max = 10_000 } = 
 	return value;
 }
 
-export function optionalString(value: unknown, field: string, { max = 100_000 } = {}): string | undefined {
+export function optionalString(
+	value: unknown,
+	field: string,
+	{ max = 100_000 } = {}
+): string | undefined {
 	if (value === undefined || value === null) return undefined;
 	if (typeof value !== 'string') {
 		throw new ApiFail(422, 'invalid_field', `"${field}" must be a string`, { field });
@@ -137,7 +170,10 @@ const CONTROL_PLANE_PATTERNS = [
 	// The label library is vocabulary, not classification: run keys may apply
 	// and remove existing labels (/issues/:id/labels stays open to them) but
 	// cannot mint, rename, or delete the terms themselves.
-	/^\/api\/v1\/labels(\/|$)/
+	/^\/api\/v1\/labels(\/|$)/,
+	// Bulk library writes: an agent must propose context changes, not apply
+	// a whole library over the top of them.
+	/^\/api\/v1\/import(\/|$)/
 ];
 
 /** True for paths a run key must never reach (all methods). */
@@ -153,7 +189,7 @@ export function runKeyForbidden(): ApiFail {
 	return new ApiFail(
 		403,
 		'run_key_forbidden',
-		'Run keys cannot modify runners, routing rules, supervisor settings, parked issues, issue pins, the label library, or API keys. ' +
+		'Run keys cannot modify runners, routing rules, supervisor settings, parked issues, issue pins, the label library, API keys, or the library import. ' +
 			'Propose the change instead: file an issue titled "Context change: <scope label>" describing ' +
 			'what should change and why; a human reviews and applies it.'
 	);
@@ -170,7 +206,11 @@ export function assertRunKeyAllowed(
 	now = Date.now()
 ): void {
 	if (key.expiresAt !== null && key.expiresAt <= now) {
-		throw new ApiFail(401, 'run_key_expired', 'This run key has expired; the run it belonged to is over');
+		throw new ApiFail(
+			401,
+			'run_key_expired',
+			'This run key has expired; the run it belonged to is over'
+		);
 	}
 	if (key.agentRunId !== null && isControlPlanePath(pathname)) {
 		throw runKeyForbidden();
@@ -191,7 +231,11 @@ export async function requireActor(event: RequestEvent): Promise<ActorContext> {
 	const header = event.request.headers.get('authorization');
 	const key = header?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim();
 	if (!key || !event.platform) {
-		throw new ApiFail(401, 'unauthorized', 'Sign in or pass an API key as "Authorization: Bearer <key>"');
+		throw new ApiFail(
+			401,
+			'unauthorized',
+			'Sign in or pass an API key as "Authorization: Bearer <key>"'
+		);
 	}
 
 	const db = getDb(event.platform.env);
@@ -240,7 +284,11 @@ export async function requireActor(event: RequestEvent): Promise<ActorContext> {
 export async function requireSessionActor(event: RequestEvent): Promise<ActorContext> {
 	const actor = await requireActor(event);
 	if (!actor.viaSession) {
-		throw new ApiFail(403, 'session_required', 'API keys are managed from the web UI (browser session), not with a key');
+		throw new ApiFail(
+			403,
+			'session_required',
+			'API keys are managed from the web UI (browser session), not with a key'
+		);
 	}
 	return actor;
 }

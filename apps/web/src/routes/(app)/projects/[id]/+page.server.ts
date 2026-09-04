@@ -1,4 +1,5 @@
 import { error } from '@sveltejs/kit';
+import { truncate } from '$lib/format';
 import { listContextItems } from '$lib/server/api/context';
 import { ApiFail } from '$lib/server/api/core';
 import { listIssues } from '$lib/server/api/issues';
@@ -14,24 +15,30 @@ export const load: PageServerLoad = async ({ locals, platform, params, url }) =>
 	const userId = locals.user!.id;
 
 	const project = await getProject(db, userId, params.id).catch((e) => {
-		error(e instanceof ApiFail ? e.status : 500, 'Not found');
+		const status = e instanceof ApiFail ? e.status : 500;
+		error(status, status === 404 ? `No project has the ID “${truncate(params.id)}”.` : 'Not found');
 	});
 	const showDone = url.searchParams.get('done') === '1';
 	// Ready already implies not-done; the "show done" param just parks while it is on.
 	const ready = url.searchParams.get('ready') === '1';
-	const [{ items: issues }, workflows, { items: schedules }, { items: contextItems }, routingRules] =
-		await Promise.all([
-			listIssues(
-				db,
-				userId,
-				{ projectId: project.id, hideDone: !showDone, ready },
-				{ cursor: null, limit: 100 }
-			),
-			loadWorkflows(db, userId),
-			listSchedules(db, userId, { projectId: project.id }, { cursor: null, limit: 100 }),
-			listContextItems(db, userId, { project: project.id }, { cursor: null, limit: 100 }),
-			listRoutingRules(db, userId)
-		]);
+	const [
+		{ items: issues },
+		workflows,
+		{ items: schedules },
+		{ items: contextItems },
+		routingRules
+	] = await Promise.all([
+		listIssues(
+			db,
+			userId,
+			{ projectId: project.id, hideDone: !showDone, ready },
+			{ cursor: null, limit: 100 }
+		),
+		loadWorkflows(db, userId),
+		listSchedules(db, userId, { projectId: project.id }, { cursor: null, limit: 100 }),
+		listContextItems(db, userId, { project: project.id }, { cursor: null, limit: 100 }),
+		listRoutingRules(db, userId)
+	]);
 	// The inline agent-routing rows: this project's own rules, or — when it
 	// has none — the global rule its issues would fall back to.
 	const projectRules = routingRules.filter((r) => r.scope.project_id === project.id);

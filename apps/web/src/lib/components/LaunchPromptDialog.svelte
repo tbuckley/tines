@@ -31,7 +31,8 @@
 				.getIssuePrompt(issueId)
 				.then((res) => (text = res.text))
 				.catch((err) => {
-					errorMessage = err instanceof ApiError ? err.message : 'Failed to load the launch prompt.';
+					errorMessage =
+						err instanceof ApiError ? err.message : 'Failed to load the launch prompt.';
 				});
 		}
 		wasOpen = open;
@@ -55,14 +56,18 @@
 			<div class="bg-muted inline-flex rounded-md p-0.5 text-xs">
 				<button
 					type="button"
-					class="rounded px-2.5 py-1 {view === 'rendered' ? 'bg-background shadow-sm' : 'text-muted-foreground'}"
+					class="rounded px-2.5 py-1 {view === 'rendered'
+						? 'bg-background shadow-sm'
+						: 'text-muted-foreground'}"
 					onclick={() => (view = 'rendered')}
 				>
 					Rendered
 				</button>
 				<button
 					type="button"
-					class="rounded px-2.5 py-1 {view === 'raw' ? 'bg-background shadow-sm' : 'text-muted-foreground'}"
+					class="rounded px-2.5 py-1 {view === 'raw'
+						? 'bg-background shadow-sm'
+						: 'text-muted-foreground'}"
 					onclick={() => (view = 'raw')}
 				>
 					Raw
@@ -77,7 +82,9 @@
 			</Button>
 		</div>
 		{#if errorMessage}
-			<p class="border-destructive/40 bg-destructive/10 text-destructive rounded-md border px-3 py-2 text-xs">
+			<p
+				class="border-destructive/40 bg-destructive/10 text-destructive rounded-md border px-3 py-2 text-xs"
+			>
 				{errorMessage}
 			</p>
 		{:else if text === null}
@@ -87,7 +94,8 @@
 				<Markdown source={text} />
 			</div>
 		{:else}
-			<pre class="bg-muted/40 overflow-x-auto rounded-md border p-3 font-mono text-xs whitespace-pre-wrap">{text}</pre>
+			<pre
+				class="bg-muted/40 overflow-x-auto rounded-md border p-3 font-mono text-xs whitespace-pre-wrap">{text}</pre>
 		{/if}
 	</div>
 </Modal>

@@ -39,13 +39,20 @@ export function validateQuotaPolicy(value: unknown): QuotaPolicy {
 		if (extra.length > 0) {
 			throw fail(`Unknown global_cap field${extra.length === 1 ? '' : 's'}: ${extra.join(', ')}`);
 		}
-		if (typeof quota.limit !== 'number' || !Number.isInteger(quota.limit) || quota.limit < 1 || quota.limit > 100) {
+		if (
+			typeof quota.limit !== 'number' ||
+			!Number.isInteger(quota.limit) ||
+			quota.limit < 1 ||
+			quota.limit > 100
+		) {
 			throw fail('"quota.limit" must be an integer between 1 and 100');
 		}
 		return { type: 'global_cap', limit: quota.limit };
 	}
 	if (quota.type === 'state_roster') {
-		const extra = Object.keys(quota).filter((k) => !['type', 'default_limit', 'overrides'].includes(k));
+		const extra = Object.keys(quota).filter(
+			(k) => !['type', 'default_limit', 'overrides'].includes(k)
+		);
 		if (extra.length > 0) {
 			throw fail(`Unknown state_roster field${extra.length === 1 ? '' : 's'}: ${extra.join(', ')}`);
 		}
@@ -76,9 +83,14 @@ export function validateQuotaPolicy(value: unknown): QuotaPolicy {
 
 export function validateAttemptLimit(value: unknown): number {
 	if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > 100) {
-		throw new ApiFail(422, 'invalid_field', '"attempt_limit" must be an integer between 1 and 100', {
-			field: 'attempt_limit'
-		});
+		throw new ApiFail(
+			422,
+			'invalid_field',
+			'"attempt_limit" must be an integer between 1 and 100',
+			{
+				field: 'attempt_limit'
+			}
+		);
 	}
 	return value;
 }
@@ -184,7 +196,9 @@ export async function updateSupervisorSettings(
 		await assertRosterStatesExist(db, actor.userId, quota);
 	}
 	const attemptLimit =
-		body.attempt_limit !== undefined ? validateAttemptLimit(body.attempt_limit) : current.attempt_limit;
+		body.attempt_limit !== undefined
+			? validateAttemptLimit(body.attempt_limit)
+			: current.attempt_limit;
 
 	// The GitHub PAT: write-only — validated for shape, encrypted, and only
 	// a display hint stored beside it. `null` clears; undefined keeps.
@@ -238,7 +252,9 @@ export async function updateSupervisorSettings(
 						quota: JSON.stringify(quota),
 						attempt_limit: attemptLimit,
 						// The PAT columns only move when this write replaces/clears them.
-						...(patEnc !== undefined ? { github_pat_enc: patEnc, github_pat_hint: patHint ?? null } : {}),
+						...(patEnc !== undefined
+							? { github_pat_enc: patEnc, github_pat_hint: patHint ?? null }
+							: {}),
 						updated_at: now
 					})
 				)

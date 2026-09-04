@@ -326,6 +326,14 @@ export interface Issue {
 	last_activity_at: number;
 }
 
+/**
+ * What the issue *list* endpoints return. Identical to `Issue` except that
+ * `description` is absent under `brief=1` — description bodies dominate a list
+ * payload (76% of a 50-issue page), and the callers that scan lists (agents,
+ * the CLI table) only read ref/title/state.
+ */
+export type IssueListItem = Omit<Issue, 'description'> & { description?: string };
+
 // ---------------------------------------------------------------------------
 // Issue links (dependencies & duplicates)
 
@@ -393,6 +401,11 @@ export interface IssueDetail extends Issue {
 	links: IssueLinks;
 	/** Per-kind counts of the currently effective context, post-dedupe. */
 	context_summary: ContextSummary;
+	/**
+	 * The issue's artifacts, only when the caller asked for them (the issue page
+	 * does, so it does not fetch the same list twice). Absent from API reads.
+	 */
+	artifacts?: Artifact[];
 }
 
 export interface CreateIssueRequest {
@@ -544,6 +557,8 @@ export interface IssueFilters {
 	q?: string;
 	/** Label names or ids; repeated labels narrow (AND). */
 	label?: string[];
+	/** Omit `description` from every list item (saves tokens when scanning). */
+	brief?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -574,7 +589,16 @@ export const STATE_PROMPT_NAME = 'instructions';
  */
 export const AGENT_GUIDELINES_BODY = `You are an agent working on a Tines issue over its HTTP API / CLI. Beyond doing the work, leave the workspace smarter than you found it. Four places to write, chosen by who should inherit what you learned:
 
-- **Issue comments** — all prose about this issue: progress, findings, dead ends, questions, and instructions for whoever picks it up next. \`tines issues comment <project>/<number> "<markdown>"\`
+- **Issue comments** — all prose about this issue: progress, findings, dead ends, questions, and instructions for whoever picks it up next. Pass the body on stdin with a quoted heredoc, so backticks, \$VARS, quotes and apostrophes reach the thread untouched by the shell (\`tines issues comment-edit <ref> <comment-id>\` and \`comment-delete\` repair your own mis-posts, but a clean first post is cheaper):
+
+  \`\`\`
+  tines issues comment <project>/<number> - <<'EOF'
+  <markdown>
+  EOF
+  \`\`\`
+
+  A \`tines\` too old for that form posts a literal \`-\` instead of your body, without failing. If \`tines issues comment --help\` does not mention \`@file\`, use \`tines issues comment <project>/<number> "<markdown>"\` and mind the shell quoting.
+
 - **Issue context (artifacts)** — things this issue needs *attached*, not said: a skill, a repo/branch pin, or an override of a broader item (reuse its name): \`tines context create --kind <k> --name <n> --issue <project>/<number> …\`. Never notes — notes are comments.
 - **Your journal** — shared notes for anyone doing this stage of work in this project. Append a dated bullet whenever you learn something they would want: commands that actually work, gotchas, where things live (see "Journal" at the end of this prompt for the exact commands). If an entry is wrong or stale, rewrite the journal to fix it — do not append a correction on top. Keep it short; prune when you touch it.
 - **Context change requests** — never edit shared context (project-, state-, or global-scoped items) directly. Propose instead: file an issue in the project you are working in, titled \`Context change: <scope label>\`, naming the item (kind, name, scope) with the full proposed text in the description. A human reviews and applies it.
@@ -776,6 +800,28 @@ export interface LaunchPromptResponse {
 	text: string;
 }
 
+/**
+ * `GET /api/v1/issues/:id/journal` — which journal this caller's `tines
+ * journal` commands target. Run keys are anchored to the state their run was
+ * launched in, so a lesson lands in the stage that learned it even if the
+ * issue has already moved on.
+ */
+export interface IssueJournalResponse {
+	/** The resolved project ∧ state scope (canonical "project X · state Y" label). */
+	scope: ContextScope;
+	/**
+	 * Why this scope was chosen:
+	 *  - 'run'     — the caller is the run key of a run on this issue; the scope is that run's launch state.
+	 *  - 'current' — the issue's current state (session/PAT callers, another issue's run key, or a run
+	 *                whose launch state no longer exists — see `note`).
+	 */
+	anchor: 'run' | 'current';
+	/** Human-readable reason when the anchor is 'current' *despite* a run key (null otherwise). */
+	note: string | null;
+	/** The journal item at that scope, or null if none exists yet. */
+	item: ContextItem | null;
+}
+
 /** A context item swept by a forced delete, as reported in the response. */
 export interface DeletedContextItem {
 	id: string;
@@ -795,7 +841,8 @@ export function repoDirFromUrl(url: string): string {
 	const stripped = url.replace(/[?#].*$/, '').replace(/\/+$/, '');
 	const lastSlash = Math.max(stripped.lastIndexOf('/'), stripped.lastIndexOf(':'));
 	const base = stripped.slice(lastSlash + 1).replace(/\.git$/, '');
-	if (!base || base === '.' || base === '..' || base.includes('\\') || base.includes('=')) return 'repo';
+	if (!base || base === '.' || base === '..' || base.includes('\\') || base.includes('='))
+		return 'repo';
 	return base;
 }
 
@@ -996,13 +1043,7 @@ export type ModelTier = 'smartest' | 'balanced' | 'cheapest';
 export const MODEL_TIERS: readonly ModelTier[] = ['smartest', 'balanced', 'cheapest'];
 
 export type RunStatus =
-	| 'assigned'
-	| 'launching'
-	| 'running'
-	| 'completed'
-	| 'failed'
-	| 'timed_out'
-	| 'canceled';
+	'assigned' | 'launching' | 'running' | 'completed' | 'failed' | 'timed_out' | 'canceled';
 
 export const RUN_STATUSES: readonly RunStatus[] = [
 	'assigned',
@@ -1013,6 +1054,20 @@ export const RUN_STATUSES: readonly RunStatus[] = [
 	'timed_out',
 	'canceled'
 ];
+
+/**
+ * How the supervisor judged a run's end, orthogonal to its status: an
+ * `advanced` run moved its issue (attempt count resets), a `stalled` one did
+ * not (a strike), and an `interrupted` one never got the chance because the
+ * pipe died — runner offline, daemon restarted or shut down — so the issue is
+ * charged nothing and the pressure lands on the runner instead.
+ *
+ * Deliberately not a `RunStatus`: `agent_run.status` carries a SQL CHECK
+ * constraint, and an interruption is still, honestly, a failed run.
+ */
+export type RunEndOutcome = 'advanced' | 'stalled' | 'interrupted';
+
+export const RUN_END_OUTCOMES: readonly RunEndOutcome[] = ['advanced', 'stalled', 'interrupted'];
 
 /** Statuses that hold the issue's exclusive claim (and count toward caps). */
 export const ACTIVE_RUN_STATUSES: readonly RunStatus[] = ['assigned', 'launching', 'running'];
@@ -1032,8 +1087,27 @@ export const LAUNCH_STALL_MS = 5 * 60 * 1000;
 /** Run-key expiry slack beyond `max_run_minutes`. */
 export const RUN_KEY_SLACK_MS = 10 * 60 * 1000;
 
-/** Run log tail cap; older output is truncated from the head. */
+/**
+ * Run log tail cap: the D1 `agent_run.log` column keeps at most this many
+ * bytes, truncated from the head. Bytes evicted from the tail are not lost —
+ * they spill to the run-log bucket (see apps/web/src/lib/server/run-log.ts)
+ * and the full log is served by `GET /api/v1/runs/:id/log`.
+ */
 export const RUN_LOG_MAX_BYTES = 256 * 1024;
+
+/**
+ * How long a run's spilled full-log objects survive past the run's end.
+ * The sweep deletes them after this; the D1 tail is kept forever, so run
+ * history reads exactly as it did before full logs existed.
+ */
+export const RUN_LOG_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+
+/**
+ * Cap on the raw harness stream a daemon may upload per run. The daemon
+ * keeps the trailing bytes with a truncation marker; the server rejects
+ * anything larger.
+ */
+export const RUN_LOG_RAW_MAX_BYTES = 64 * 1024 * 1024;
 
 /**
  * Managed runners are created with this per-run cost cap (editable,
@@ -1075,8 +1149,21 @@ export interface RunnerBudget {
  * auto-migrated).
  */
 export const MODEL_PREDECESSORS: Record<string, readonly string[]> = {
+	'claude-fable-5-1': [
+		'claude-fable-5',
+		'claude-opus-5',
+		'claude-opus-4-8',
+		'claude-opus-4-7',
+		'claude-opus-4-6'
+	],
 	'claude-fable-5': ['claude-opus-5', 'claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6'],
-	'claude-opus-5': ['claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6', 'claude-opus-4-5', 'claude-opus-4-1'],
+	'claude-opus-5': [
+		'claude-opus-4-8',
+		'claude-opus-4-7',
+		'claude-opus-4-6',
+		'claude-opus-4-5',
+		'claude-opus-4-1'
+	],
 	'claude-sonnet-5': ['claude-sonnet-4-6', 'claude-sonnet-4-5', 'claude-3-7-sonnet-latest'],
 	'claude-haiku-4-5': ['claude-3-5-haiku-latest'],
 	'gemini-2.5-pro': ['gemini-1.5-pro'],
@@ -1309,18 +1396,34 @@ export interface RunnerPollResponse {
 /** `POST /api/v1/runs/:id/logs` — runner-token auth; appended to the tail. */
 export interface AppendRunLogRequest {
 	chunk: string;
+	/**
+	 * Per-run, 1-based, monotonic chunk number assigned by the daemon. A
+	 * chunk whose seq the server has already applied is a retry of a send
+	 * whose response was lost, and is ignored — appends are exactly-once.
+	 * Optional: older daemons and the managed-run sweep send none.
+	 */
+	seq?: number;
 }
 
 export interface AppendRunLogResponse {
 	/** Post-append status (the first append flips `launching` → `running`). */
 	status: RunStatus;
 	log_bytes_dropped: number;
+	/** Highest chunk seq the server has applied (0 when the client sends none). */
+	log_seq: number;
 }
 
 /** `POST /api/v1/runs/:id/finish` — runner-token auth. */
 export interface FinishRunRequest {
 	status: 'completed' | 'failed';
 	error?: string;
+	/**
+	 * `interrupted` = the daemon died, restarted, or was shut down around the
+	 * run; the work did not fail, so the issue must not take a strike. Only
+	 * honoured with `status: 'failed'`; absent — as from any daemon predating
+	 * the field — is judged exactly as before.
+	 */
+	judgment?: 'interrupted';
 	/** Whatever the harness reported (Claude Code JSON output, etc.). */
 	usage?: AgentRunUsage;
 }
@@ -1402,6 +1505,14 @@ export interface AgentRun {
 	runner_id: string;
 	runner_name: string;
 	status: RunStatus;
+	/**
+	 * How the supervisor judged the end. `advanced` = the agent transitioned
+	 * the issue; `stalled` = it did not, and the issue took a strike;
+	 * `interrupted` = the pipe died (runner offline, daemon restart or
+	 * shutdown), so nothing was charged to the issue. Null while the run is
+	 * active, for runs that never started, and for pre-0016 rows.
+	 */
+	outcome: RunEndOutcome | null;
 	tier: ModelTier;
 	/** Resolved at launch; null when the harness cannot vary its model. */
 	model: string | null;
@@ -1423,6 +1534,16 @@ export interface AgentRunDetail extends AgentRun {
 	log: string;
 	/** Bytes truncated from the head of the log when it hit the cap. */
 	log_bytes_dropped: number;
+	/**
+	 * Size of the complete log (`log_bytes_dropped` + the tail's byte
+	 * length) — what `GET /api/v1/runs/:id/log` serves. Deliberately a
+	 * number and not the log itself: this payload is polled every 3s.
+	 */
+	log_full_bytes: number;
+	/** Size of the raw harness stream, retrievable with `?raw=1`; 0 = none. */
+	log_raw_bytes: number;
+	/** Set once retention GC removed the full log; only the tail remains. */
+	log_expired: boolean;
 }
 
 export interface RunFilters {
@@ -1442,6 +1563,32 @@ export function runDurationLabel(
 	if (!run.started_at) return '—';
 	const seconds = Math.max(0, Math.round(((run.ended_at ?? now) - run.started_at) / 1000));
 	return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m`;
+}
+
+/** Run cost for a row: dollars where known, tokens where only they are, honest markers otherwise. */
+export function runCostLabel(run: Pick<AgentRun, 'usage'>): string | null {
+	const usage = run.usage;
+	if (!usage) return null;
+	if (usage.cost_usd !== undefined) return `$${usage.cost_usd.toFixed(2)}`;
+	if (usage.cost_source === 'none') return 'unreported';
+	const tokens = (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0);
+	return tokens > 0 ? `${tokens.toLocaleString()} tok` : null;
+}
+
+/** Whether a run still holds its issue's exclusive claim (and counts toward caps). */
+export function isActiveRun(status: RunStatus): boolean {
+	return ACTIVE_RUN_STATUSES.includes(status);
+}
+
+/**
+ * Ids of every active-category state across the given workflows — the only
+ * states the supervisor dispatches from, so the only ones a routing rule can
+ * usefully be scoped to.
+ */
+export function activeStateIds(workflows: Pick<Workflow, 'states'>[]): Set<string> {
+	return new Set(
+		workflows.flatMap((w) => w.states.filter((s) => s.category === 'active').map((s) => s.id))
+	);
 }
 
 /**
@@ -1472,7 +1619,9 @@ export function utilizationLabel(
 	}
 	if (counts.size === 0) return `no active runs (roster default ${quota.default_limit} per state)`;
 	return [...counts.entries()]
-		.map(([stateId, { name, n }]) => `${name} ${n}/${quota.overrides[stateId] ?? quota.default_limit}`)
+		.map(
+			([stateId, { name, n }]) => `${name} ${n}/${quota.overrides[stateId] ?? quota.default_limit}`
+		)
 		.join(' · ');
 }
 
@@ -1481,24 +1630,13 @@ export function utilizationLabel(
 
 /** One eligibility check, pass or fail, with a human-readable detail. */
 export interface DispatchCheck {
-	name:
-		| 'automation_enabled'
-		| 'state_active'
-		| 'ready'
-		| 'no_active_run'
-		| 'not_parked'
-		| 'routed';
+	name: 'automation_enabled' | 'state_active' | 'ready' | 'no_active_run' | 'not_parked' | 'routed';
 	ok: boolean;
 	detail: string;
 }
 
 export type DispatchTargetVerdict =
-	| 'ok'
-	| 'paused'
-	| 'offline'
-	| 'at_capacity'
-	| 'backing_off'
-	| 'quota_exhausted';
+	'ok' | 'paused' | 'offline' | 'at_capacity' | 'backing_off' | 'quota_exhausted';
 
 /** One rule/pin target's verdict, in preference order. */
 export interface DispatchTarget {
@@ -1544,56 +1682,77 @@ export interface Comment {
 	body: string;
 	actor: Actor;
 	created_at: number;
+	/** Null when the comment has never been edited. */
+	updated_at: number | null;
 }
 
 export interface CreateCommentRequest {
 	body: string;
 }
 
+export interface UpdateCommentRequest {
+	body: string;
+}
+
 // ---------------------------------------------------------------------------
 // Events
 
-export type EventType =
-	| 'issue.created'
-	| 'issue.updated'
-	| 'issue.transitioned'
-	| 'issue.commented'
-	| 'issue.link_added'
-	| 'issue.link_removed'
-	| 'issue.labeled'
-	| 'issue.unlabeled'
-	| 'label.created'
-	| 'label.updated'
-	| 'label.deleted'
-	| 'project.created'
-	| 'project.updated'
-	| 'project.deleted'
-	| 'workflow.created'
-	| 'workflow.updated'
-	| 'workflow.deleted'
-	| 'api_key.created'
-	| 'api_key.revoked'
-	| 'scheduled_task.created'
-	| 'scheduled_task.updated'
-	| 'scheduled_task.deleted'
-	| 'scheduled_task.skipped'
-	| 'context.created'
-	| 'context.updated'
-	| 'context.deleted'
-	| 'runner.registered'
-	| 'runner.updated'
-	| 'runner.removed'
-	| 'runner.errored'
-	| 'routing_rule.created'
-	| 'routing_rule.updated'
-	| 'routing_rule.deleted'
-	| 'settings.updated'
-	| 'agent_run.started'
-	| 'agent_run.ended'
-	| 'issue.parked'
-	| 'issue.resumed'
-	// Open-ended by design: later phases add types without migration.
-	| (string & {});
+/**
+ * Every event type this build knows how to render, in emission order.
+ *
+ * The array is the source of truth rather than the union: it gives the
+ * renderer in `events.ts` a closed set to be exhaustive over (a missing
+ * describer is a compile error) and the tests a list to iterate.
+ */
+export const EVENT_TYPES = [
+	'issue.created',
+	'issue.updated',
+	'issue.transitioned',
+	'issue.commented',
+	'issue.comment_edited',
+	'issue.comment_deleted',
+	'issue.link_added',
+	'issue.link_removed',
+	'issue.labeled',
+	'issue.unlabeled',
+	'label.created',
+	'label.updated',
+	'label.deleted',
+	'project.created',
+	'project.updated',
+	'project.deleted',
+	'workflow.created',
+	'workflow.updated',
+	'workflow.deleted',
+	'api_key.created',
+	'api_key.revoked',
+	'scheduled_task.created',
+	'scheduled_task.updated',
+	'scheduled_task.deleted',
+	'scheduled_task.skipped',
+	'context.created',
+	'context.updated',
+	'context.deleted',
+	'runner.registered',
+	'runner.updated',
+	'runner.removed',
+	'runner.errored',
+	'routing_rule.created',
+	'routing_rule.updated',
+	'routing_rule.deleted',
+	'settings.updated',
+	'agent_run.started',
+	'agent_run.ended',
+	'issue.parked',
+	'issue.resumed'
+] as const;
+
+/** An event type this build knows about — closed, so `Record` keys can be checked. */
+export type KnownEventType = (typeof EVENT_TYPES)[number];
+
+// Open-ended by design: later phases add types without migration, and an
+// older client reading a newer server's feed must still accept them.
+export type EventType = KnownEventType | (string & {});
 
 export interface TinesEvent {
 	id: string;
@@ -1663,4 +1822,125 @@ export interface ApiErrorBody {
 		message: string;
 		details?: Record<string, unknown>;
 	};
+}
+
+// ---------------------------------------------------------------------------
+// Library export / import: the portable form of a deployment's reusable
+// library — non-system workflows plus every non-issue-scoped context item.
+// Deliberately excludes tracker data (issues, comments, events, runs,
+// schedules, artifacts) and every credential.
+
+/** Discriminator on the exported document; guards against feeding in a stray JSON file. */
+export const LIBRARY_FORMAT = 'tines.library';
+/** Bumped when the document shape changes incompatibly; import refuses anything higher. */
+export const LIBRARY_VERSION = 1;
+
+/** Document-level caps, checked before the entries are walked. */
+export const LIBRARY_MAX_BYTES = 5 * 1024 * 1024;
+export const LIBRARY_MAX_ENTRIES = 1000;
+
+/**
+ * A context item's scope by name rather than by id, so a document imports
+ * into a deployment that shares none of the source's ids. `{}` is global;
+ * a state ref is workflow-qualified because state names are unique only
+ * within their workflow.
+ */
+export interface LibraryScopeRef {
+	project?: string;
+	state?: { workflow: string; name: string };
+}
+
+/** A project carried only as a scope referent — no issues come with it. */
+export interface LibraryProject {
+	name: string;
+	description?: string;
+	/**
+	 * Default workflow by name, restored on import when a workflow of that name
+	 * exists here or arrives in the same document; otherwise skipped, with the
+	 * reason recorded on the project's plan entry.
+	 */
+	default_workflow?: string | null;
+}
+
+/**
+ * A context item in portable form: its `CreateContextItemRequest` payload
+ * with the three scope ids replaced by {@link LibraryScopeRef}.
+ */
+export interface LibraryContextEntry {
+	kind: ContextKind;
+	name: string;
+	description?: string;
+	scope: LibraryScopeRef;
+	/** True for the project ∧ state prompt named `journal` (deployment memory). */
+	journal?: boolean;
+	/** prompt */
+	body?: string;
+	/** skill */
+	files?: ContextFile[];
+	/** repo */
+	repo_url?: string;
+	repo_branch?: string | null;
+	repo_dir?: string | null;
+}
+
+/**
+ * The exported document. Each `workflows` entry is literally a valid
+ * `CreateWorkflowRequest`, and each `context` entry is a
+ * `CreateContextItemRequest` bar its scope — so import is a pass-through
+ * into the existing validators rather than a second parser.
+ *
+ * The system `Standard` workflow is never exported (it is seeded with
+ * identical ids on every instance); items scoped to its states are, and
+ * re-resolve by name.
+ */
+export interface LibraryDocument {
+	format: typeof LIBRARY_FORMAT;
+	version: number;
+	exported_at: number;
+	projects: LibraryProject[];
+	workflows: CreateWorkflowRequest[];
+	context: LibraryContextEntry[];
+}
+
+export interface ExportLibraryOptions {
+	/** Journals are deployment-specific memory; opt out to leave them behind. */
+	journals?: boolean;
+}
+
+export interface ImportLibraryRequest {
+	document: LibraryDocument;
+	/** Plan only: returns exactly the plan an apply would follow. */
+	dry_run?: boolean;
+	/** Context items only; workflow definition conflicts always refuse. */
+	on_collision?: 'skip' | 'overwrite';
+	/** Create projects the document scopes to but this deployment lacks (default true). */
+	create_projects?: boolean;
+	/** Import journal items (default true). */
+	include_journals?: boolean;
+}
+
+export type ImportAction = 'create' | 'skip' | 'overwrite' | 'refuse' | 'error';
+
+export const IMPORT_ACTIONS: readonly ImportAction[] = [
+	'create',
+	'skip',
+	'overwrite',
+	'refuse',
+	'error'
+];
+
+export interface ImportPlanEntry {
+	section: 'project' | 'workflow' | 'context';
+	/** Human-readable identity, e.g. `prompt "instructions" (state Engineering / Research)`. */
+	ref: string;
+	action: ImportAction;
+	/** Why, for every action but `create`. */
+	reason?: string;
+}
+
+export interface ImportLibraryResponse {
+	/** False for a dry run: nothing was written. */
+	applied: boolean;
+	entries: ImportPlanEntry[];
+	counts: Record<ImportAction, number>;
 }

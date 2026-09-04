@@ -116,9 +116,9 @@ The steady-state loop once setup is done — the flow that happens dozens of tim
 **Entry points (two, converging on the same viewer):** the issue page's Agent activity panel, or the Agents tab's Runs section (`active` filter on by default) showing the fleet-wide picture: issue ref, runner, tier + resolved model, live status, duration, cost so far.
 
 1. The user opens the Agents tab. Two runs are `running`, one is `launching`. Rows live-update; managed-run rows and the log viewer carry a **"last updated Xs ago" hint** (see Decisions), since their logs/cost advance only at sweep cadence (up to ~5 min), while local runs stream continuously.
-2. They expand a row into the **log-tail viewer**: monospace, follows while running, "N KB truncated" header when the 256 KB cap has clipped the head. For a local run this is the harness's stdout/stderr live; for a managed run it's the sweep-rendered event summary (tool calls, messages, status changes).
+2. They expand a row into the **log-tail viewer**: monospace, follows while running, and when the 256 KB cap has clipped the head, an "N KB truncated" header that links to the complete log. For a local run this is the harness's output live — rendered tool calls, shell commands, and agent messages; for a managed run it's the sweep-rendered event summary (tool calls, messages, status changes). Both read the same way.
 3. Cross-checking the narrative: the log is the debugging view, the issue thread is the story — the run row links to the issue and vice versa.
-4. **Deep inspection** (managed runs with a `provider_url`): a console link opens the provider's logs page where the full transcript lives — Tines deliberately keeps only the tail.
+4. **Deep inspection**: the truncation header's link (or `tines runs show <id> --logs --full`) serves every byte the run emitted, for local and managed runs alike, for 30 days after the run ends. `--raw` gets the unrendered harness stream. For managed runs a `provider_url` console link is still there when the provider's own transcript format is what's wanted.
 5. **Intervention:** the viewer offers **Cancel**, behind a **confirmation dialog** (see Decisions) that states the strike cost when the run hasn't transitioned the issue ("this run hasn't moved the issue yet — canceling counts as a strike, 2 remaining"). Steering with a corrective comment is flow 10.
 6. If the run ends while they watch: the row animates to its terminal status, records duration/cost/outcome, and drops off the `active` filter; the expanded log stays readable.
 
@@ -454,7 +454,7 @@ The steady-state loop once setup is done — the flow that happens dozens of tim
    - **restart:** the state file (run → PID/workspace) lets the daemon kill orphans, `finish`-fail their runs, and remove workspaces;
    - **`owned_runs` reconciliation:** a restarted daemon that lost track reports what it actually owns; the supervisor fails the missing runs;
    - **the 5-minute offline rule:** no restart at all — the sweep fails its `running` runs (error `runner offline`) and revokes their keys, so an orphaned harness is spending against a dead key.
-   All three read the same to the user: run `failed`, issue took a strike, board/explainer reflect it.
+   All three read the same to the user: the run is `failed` with outcome **`interrupted`** — no strike, because the daemon died, not the work. The issue keeps its attempt budget and re-enters the pool in its current state (the reconciliation path queues a dispatch pass, so that is seconds rather than the next cron); a runner that keeps dropping runs is what gets flagged, backing off on its card exactly as a runner that keeps failing to launch does. Board, explainer and run rows reflect it.
 6. **Sleep mid-run, wake later** (the subtle one): the harness was suspended, not dead. A short nap (<5 min): polls resume, the run continues. Longer: the sweep already failed the run and revoked its key — on wake, the daemon's next poll learns via `cancels` that the run is dead and **kills the still-suspended harness without re-reporting it as its own failure** (see Decisions). Wasted partial work is bounded; a re-run picks the issue up with the thread as continuity.
 7. **Machine reboot:** combine 4 and 5 — on next daemon start (automatic under launchd/systemd), orphan cleanup runs against the state file, then normal polling resumes.
 
@@ -473,7 +473,7 @@ The steady-state loop once setup is done — the flow that happens dozens of tim
 
 **What happened**
 
-1. The **activity feed** is the chronological record: every lifecycle moment — runner registered/paused/removed, `agent_run.started` (tier + resolved model in payload), `agent_run.ended` (status, outcome `advanced`/`stalled`, runner, states, final usage), `issue.parked`/`resumed`, settings changes (secrets elided) — attributed "via *runner* · run …" alongside the human's own actions. Skimming it reads like a team standup log.
+1. The **activity feed** is the chronological record: every lifecycle moment — runner registered/paused/removed, `agent_run.started` (tier + resolved model in payload), `agent_run.ended` (status, outcome `advanced`/`stalled`/`interrupted`, runner, states, final usage), `issue.parked`/`resumed`, settings changes (secrets elided) — attributed "via *runner* · run …" alongside the human's own actions. Skimming it reads like a team standup log.
 2. Per issue, the **thread** is the durable narrative: agent comments, transitions, human corrections, in order. An issue's history is legible without ever opening a run log.
 3. Per run, `tines runs list --runner gemini` / `--issue acme/7` filter the attempt history; `runs show <id> --json` includes the full stored log tail and provider link — greppable post-mortems across runs.
 
@@ -483,7 +483,7 @@ The steady-state loop once setup is done — the flow that happens dozens of tim
 
 **Was it worth it**
 
-5. The pieces exist — outcome per run (`advanced`/`stalled`) in `agent_run.ended` payloads and run rows, cost per run on the run row — and the join is scriptable via `runs list --json`. No surface computes aggregate outcome rates in this phase (see Decisions).
+5. The pieces exist — outcome per run (`advanced`/`stalled`/`interrupted`) in `agent_run.ended` payloads and, persisted on the run itself, on run rows, cost per run on the run row — and the join is scriptable via `runs list --json`. No surface computes aggregate outcome rates in this phase (see Decisions).
 
 **Success criterion:** any past action by any agent can be traced from feed → issue → run → log/provider console in a couple of clicks; every dollar figure is decomposable by runner/tier/day and never silently omits unknowns.
 

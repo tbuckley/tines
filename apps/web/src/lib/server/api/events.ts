@@ -85,38 +85,44 @@ export function actorOf(row: {
 
 /** Base query for the event feed with everything needed for display. */
 export function eventQuery(db: Kysely<Database>, userId: string) {
-	return db
-		.selectFrom('event')
-		.innerJoin('user as actor_user', 'actor_user.id', 'event.actor_user_id')
-		.leftJoin('api_key', 'api_key.id', 'event.actor_api_key_id')
-		// Run-key attribution: resolve through the run to the runner and the
-		// run's issue for "via <runner> · run on <project>/<number>" rendering.
-		.leftJoin('agent_run as actor_run', 'actor_run.id', 'api_key.agent_run_id')
-		.leftJoin('runner as actor_runner', 'actor_runner.id', 'actor_run.runner_id')
-		.leftJoin('issue as actor_run_issue', 'actor_run_issue.id', 'actor_run.issue_id')
-		.leftJoin('project as actor_run_project', 'actor_run_project.id', 'actor_run_issue.project_id')
-		.leftJoin('issue', 'issue.id', 'event.issue_id')
-		.leftJoin('project', 'project.id', 'event.project_id')
-		.select([
-			'event.id',
-			'event.type',
-			'event.issue_id',
-			'event.project_id',
-			'event.payload',
-			'event.created_at',
-			'event.actor_user_id',
-			'actor_user.name as actor_user_name',
-			'event.actor_api_key_id',
-			'api_key.name as actor_api_key_name',
-			'actor_run.id as actor_run_id',
-			'actor_runner.name as actor_runner_name',
-			'actor_run_project.name as actor_run_project_name',
-			'actor_run_issue.number as actor_run_issue_number',
-			'issue.number as issue_number',
-			'issue.title as issue_title',
-			'project.name as project_name'
-		])
-		.where('event.user_id', '=', userId);
+	return (
+		db
+			.selectFrom('event')
+			.innerJoin('user as actor_user', 'actor_user.id', 'event.actor_user_id')
+			.leftJoin('api_key', 'api_key.id', 'event.actor_api_key_id')
+			// Run-key attribution: resolve through the run to the runner and the
+			// run's issue for "via <runner> · run on <project>/<number>" rendering.
+			.leftJoin('agent_run as actor_run', 'actor_run.id', 'api_key.agent_run_id')
+			.leftJoin('runner as actor_runner', 'actor_runner.id', 'actor_run.runner_id')
+			.leftJoin('issue as actor_run_issue', 'actor_run_issue.id', 'actor_run.issue_id')
+			.leftJoin(
+				'project as actor_run_project',
+				'actor_run_project.id',
+				'actor_run_issue.project_id'
+			)
+			.leftJoin('issue', 'issue.id', 'event.issue_id')
+			.leftJoin('project', 'project.id', 'event.project_id')
+			.select([
+				'event.id',
+				'event.type',
+				'event.issue_id',
+				'event.project_id',
+				'event.payload',
+				'event.created_at',
+				'event.actor_user_id',
+				'actor_user.name as actor_user_name',
+				'event.actor_api_key_id',
+				'api_key.name as actor_api_key_name',
+				'actor_run.id as actor_run_id',
+				'actor_runner.name as actor_runner_name',
+				'actor_run_project.name as actor_run_project_name',
+				'actor_run_issue.number as actor_run_issue_number',
+				'issue.number as issue_number',
+				'issue.title as issue_title',
+				'project.name as project_name'
+			])
+			.where('event.user_id', '=', userId)
+	);
 }
 
 type EventRow = Awaited<ReturnType<ReturnType<typeof eventQuery>['execute']>>[number];

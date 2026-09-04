@@ -5,11 +5,12 @@ import {
 	isJournal,
 	issueBlock,
 	layerRank,
-	scopeLabel,
+	listContextItems,
 	stitchPrompt,
 	validateWorkspacePath
 } from './context';
 import { ApiFail } from './core';
+import { createTestDb, type TestDb } from './test-db';
 
 describe('layerRank', () => {
 	it('orders the eight scopes exactly as the spec enumerates them', () => {
@@ -33,26 +34,14 @@ describe('layerRank', () => {
 	});
 });
 
-describe('scopeLabel', () => {
-	it('renders set dimensions in project · state · issue order', () => {
-		expect(
-			scopeLabel({ projectName: 'Tines', stateName: 'Review', issueProjectName: 'Tines', issueNumber: 42 })
-		).toBe('project Tines · state Review · issue Tines/42');
-	});
-
-	it('renders single dimensions without separators', () => {
-		expect(scopeLabel({ projectName: 'Tines' })).toBe('project Tines');
-		expect(scopeLabel({ stateName: 'Review' })).toBe('state Review');
-		expect(scopeLabel({ issueProjectName: 'Tines', issueNumber: 7 })).toBe('issue Tines/7');
-	});
-
-	it('labels the empty scope "global"', () => {
-		expect(scopeLabel({})).toBe('global');
-	});
-});
-
 describe('isJournal', () => {
-	const base = { kind: 'prompt', name: 'journal', project_id: 'p', workflow_state_id: 's', issue_id: null };
+	const base = {
+		kind: 'prompt',
+		name: 'journal',
+		project_id: 'p',
+		workflow_state_id: 's',
+		issue_id: null
+	};
 	it('matches only a prompt named journal at exactly project ∧ state', () => {
 		expect(isJournal(base)).toBe(true);
 		expect(isJournal({ ...base, kind: 'skill' })).toBe(false);
@@ -169,7 +158,8 @@ const issue: IssueDetail = {
 			issue_id: 'iss_1',
 			body: 'Looks close.',
 			actor: { user_id: 'u1', user_name: 'Alice', api_key_id: 'k1', api_key_name: 'laptop' },
-			created_at: 1700000000000
+			created_at: 1700000000000,
+			updated_at: null
 		}
 	],
 	allowed_transitions: [
@@ -249,7 +239,12 @@ const richContext: EffectiveContext = {
 		{
 			item_id: 'ctx_s',
 			name: 'review-checklist',
-			scope: { ...emptyScope, workflow_state_id: 's_review', workflow_state_name: 'Review', label: 'state Review' },
+			scope: {
+				...emptyScope,
+				workflow_state_id: 's_review',
+				workflow_state_name: 'Review',
+				label: 'state Review'
+			},
 			files: [{ path: 'SKILL.md', content: 'x' }],
 			file_count: 1,
 			version: 2
@@ -259,7 +254,12 @@ const richContext: EffectiveContext = {
 		{
 			item_id: 'ctx_r',
 			name: 'src',
-			scope: { ...emptyScope, issue_id: 'iss_1', issue_ref: { project_name: 'Tines', number: 42 }, label: 'issue Tines/42' },
+			scope: {
+				...emptyScope,
+				issue_id: 'iss_1',
+				issue_ref: { project_name: 'Tines', number: 42 },
+				label: 'issue Tines/42'
+			},
 			url: 'https://github.com/acme/api.git',
 			branch: 'experiment',
 			dir: 'api',
@@ -277,7 +277,19 @@ describe('issueBlock', () => {
 		expect(block).toContain('Do it *well*.');
 		expect(block).toContain('Review (awaiting_human), in workflow "Two-step".');
 		expect(block).toContain('**Alice via laptop** (2023-11-14T22:13:20.000Z):\nLooks close.');
-		expect(block).toContain('Add a comment: `tines issues comment Tines/42 "<markdown>"`');
+		// The comment affordance is a quoted heredoc, so an agent's prose survives
+		// the shell verbatim (Tines/9) — with the fallback spelled out, because a
+		// CLI predating that change posts a bare `-` and exits 0. Asserted as one
+		// whole line: split across two lines.push() entries it renders with a
+		// newline in the middle and reads as a broken sentence.
+		expect(block).toContain("tines issues comment Tines/42 - <<'EOF'");
+		expect(block).toContain(
+			'A `tines` too old for that form posts a literal `-` instead of your body, without failing. If `tines issues comment --help` does not mention `@file`, use `tines issues comment Tines/42 "<markdown>"` and mind the shell quoting.'
+		);
+		// Repair affordance (Tines/11), one whole line for the same reason.
+		expect(block).toContain(
+			'Fix your own mis-post rather than leaving it in the thread: `tines issues comment-edit Tines/42 <comment-id> -` (same body forms) replaces a body, `tines issues comment-delete Tines/42 <comment-id>` removes it. Ids are echoed when you post and listed by `tines issues show Tines/42 --json`; you can only edit or delete comments you wrote.'
+		);
 		// Multi-word actions are quoted so they paste correctly.
 		expect(block).toContain(
 			'- **send back** → Open (active): `tines issues move Tines/42 "send back"`'
@@ -295,11 +307,20 @@ describe('issueBlock', () => {
 		expect(withJournal).toContain('### Journal');
 		expect(withJournal).toContain('(currently v7)');
 		expect(withJournal).toContain('`tines journal append Tines/42 "- <date>: <lesson>"`');
-		expect(withJournal).toContain('`tines journal rewrite Tines/42 --body @file --expect-version 7`');
+		// ...and the shell-proof alternative for bodies that need it.
+		expect(withJournal).toContain('(or `-` with a quoted heredoc, as for comments,');
+		expect(withJournal).toContain(
+			'`tines journal rewrite Tines/42 --body @file --expect-version 7`'
+		);
+		// The old append-before-you-move ordering trap, retired by run anchoring.
+		expect(withJournal).toContain(
+			"Appends land in this stage's journal even after you move the issue."
+		);
 		expect(withJournal).not.toContain('ctx_'); // no item ids anywhere
 
 		const without = issueBlock(issue, emptyContext);
 		expect(without).toContain('No journal exists yet for project Tines · state Review. Start one:');
+		expect(without).toContain('(or `-` with a quoted heredoc, as for comments,');
 	});
 
 	it('lists artifacts with the fetch command and shared prompts names-only', () => {
@@ -319,7 +340,9 @@ describe('buildLaunchPrompt', () => {
 	it('puts the context first and the issue block last', () => {
 		const text = buildLaunchPrompt(richContext, issue);
 		expect(text.startsWith('## Context: global')).toBe(true);
-		expect(text.indexOf('## Issue:')).toBeGreaterThan(text.indexOf('## Journal (project Tines · state Review)'));
+		expect(text.indexOf('## Issue:')).toBeGreaterThan(
+			text.indexOf('## Journal (project Tines · state Review)')
+		);
 	});
 
 	it('is just the issue block when no context applies', () => {
@@ -346,5 +369,74 @@ describe('buildLaunchPrompt', () => {
 		const text = buildLaunchPrompt(emptyContext, issue, [], []);
 		expect(text).not.toContain('Labels:');
 		expect(text).toContain('no labels exist yet');
+	});
+});
+
+describe('listContextItems workflow filter', () => {
+	// Two workflows sharing a state name is the case the Context page's
+	// filter exists for: "Review" alone says nothing about which flow it is.
+	function seed(): TestDb {
+		const t = createTestDb();
+		t.sqlite.exec(`
+			INSERT INTO user (id, name, email, emailVerified, createdAt, updatedAt)
+				VALUES ('u1', 'alice', 'a@example.com', 1, 0, 0);
+			INSERT INTO project (id, user_id, name, created_at, updated_at)
+				VALUES ('prj_1', 'u1', 'demo', 0, 0);
+			INSERT INTO workflow (id, user_id, name, description, initial_state_id, created_at, updated_at) VALUES
+				('wf_eng', 'u1', 'Engineering', '', 'wfs_eng_review', 0, 0),
+				('wf_qa', 'u1', 'QA', '', 'wfs_qa_review', 0, 0);
+			INSERT INTO workflow_state (id, workflow_id, name, category, position, created_at) VALUES
+				('wfs_eng_review', 'wf_eng', 'Review', 'active', 0, 0),
+				('wfs_eng_done', 'wf_eng', 'Done', 'done', 1, 0),
+				('wfs_qa_review', 'wf_qa', 'Review', 'active', 0, 0);
+			INSERT INTO context_item (id, user_id, kind, name, description, project_id, workflow_state_id,
+				issue_id, body, position, version, created_at, updated_at) VALUES
+				('ctx_eng_review', 'u1', 'prompt', 'instructions', '', NULL, 'wfs_eng_review', NULL, 'e', 0, 1, 0, 3),
+				('ctx_eng_done', 'u1', 'skill', 'wrap-up', '', 'prj_1', 'wfs_eng_done', NULL, NULL, 0, 1, 0, 2),
+				('ctx_qa_review', 'u1', 'prompt', 'instructions', '', NULL, 'wfs_qa_review', NULL, 'q', 0, 1, 0, 1),
+				('ctx_global', 'u1', 'prompt', 'agent-guidelines', '', NULL, NULL, NULL, 'g', 0, 1, 0, 0);
+		`);
+		return t;
+	}
+	const page = { cursor: null, limit: 50 };
+	const names = (r: { items: { id: string }[] }) => r.items.map((i) => i.id);
+
+	it('keeps only items scoped to a state of that workflow', async () => {
+		const t = seed();
+		expect(names(await listContextItems(t.db, 'u1', { workflow: 'wf_eng' }, page))).toEqual([
+			'ctx_eng_review',
+			'ctx_eng_done'
+		]);
+		expect(names(await listContextItems(t.db, 'u1', { workflow: 'wf_qa' }, page))).toEqual([
+			'ctx_qa_review'
+		]);
+		// Unfiltered still sees everything, newest first.
+		expect(names(await listContextItems(t.db, 'u1', {}, page))).toEqual([
+			'ctx_eng_review',
+			'ctx_eng_done',
+			'ctx_qa_review',
+			'ctx_global'
+		]);
+	});
+
+	it('ANDs with the other filters', async () => {
+		const t = seed();
+		expect(
+			names(await listContextItems(t.db, 'u1', { workflow: 'wf_eng', kind: 'prompt' }, page))
+		).toEqual(['ctx_eng_review']);
+		expect(
+			names(await listContextItems(t.db, 'u1', { workflow: 'wf_eng', project: 'demo' }, page))
+		).toEqual(['ctx_eng_done']);
+		expect(
+			names(await listContextItems(t.db, 'u1', { workflow: 'wf_qa', kind: 'skill' }, page))
+		).toEqual([]);
+	});
+
+	it('never matches an unscoped item, and stays per-user', async () => {
+		const t = seed();
+		expect(names(await listContextItems(t.db, 'u1', { workflow: 'wf_eng' }, page))).not.toContain(
+			'ctx_global'
+		);
+		expect(names(await listContextItems(t.db, 'u2', { workflow: 'wf_eng' }, page))).toEqual([]);
 	});
 });

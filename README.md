@@ -4,7 +4,7 @@ An orchestration layer for AI agents, allowing you to create an ecosystem of age
 
 The core of Tines is an issue tracker, which makes work legible to both humans and agents. It acts as a log of work, actions taken, and hand offs. Issues move between states according to workflows, finite state machines that define the allowed transitions and roles for each state.
 
-Tines acts as a supervisor, assigning tasks to agents across managed services (using your own API keys) as well as local devices (using your own subscriptions).
+Tines acts as a supervisor, assigning tasks to agents across managed services (using your own API keys) as well as local devices (using your own subscriptions). See [Running agents](#running-agents) for how that side works.
 
 ## Repository layout
 
@@ -25,17 +25,24 @@ pnpm install
 
 # one-time local setup
 cd apps/web
-cp .dev.vars.example .dev.vars           # fill in Google OAuth creds to test sign-in
-pnpm db:migrate:local                     # create the Better Auth tables in local D1
+cp .dev.vars.example .dev.vars           # works as-is; Google OAuth creds are optional
+pnpm db:migrate:local                     # create the tables in local D1
+pnpm db:seed:local                        # a dev user (dev@tines.local) and an API key
 
 # run the app (from the repo root)
 pnpm dev                                  # http://localhost:5173
 ```
 
-With the dev server running, try the CLI:
+To sign in, enter `dev@tines.local` (or any address) on the landing page. Nothing is
+delivered locally: `pnpm dev` prints the magic link to its console — open it. Google
+sign-in also works once the OAuth credentials are in `.dev.vars` (see below).
+
+With the dev server running, try the CLI with the seeded key (the seed prints it):
 
 ```sh
+export TINES_API_KEY=tines_dev0000000000000000000000000000000000000
 pnpm cli time                             # dev mode (tsx, no build needed)
+pnpm cli projects list
 pnpm cli time -- --json
 
 # or the built binary
@@ -43,9 +50,13 @@ pnpm build
 node packages/cli/dist/index.js time --url http://localhost:5173
 ```
 
-The CLI reads the API base URL from `--url` or the `TINES_API_URL` env var (default `http://localhost:5173`).
+The CLI reads the API base URL from `--url` (accepted by every command, without exception), then the `TINES_API_URL` env var, then the file `tines login` writes (`~/.config/tines/config.json`); the default is the production deployment, `https://tines.tbuckley.dev`. The API key resolves the same way (`--api-key`, `TINES_API_KEY`, the file). For local development, set `TINES_API_URL=http://localhost:5173` or pass `--url` — `pnpm cli` does that for you, so the snippet above talks to your dev server. `tines config` shows what is in effect and where each value came from.
 
-## Installing the CLI globally (from GitHub)
+Every `… list` command returns one page. Pass `--all-pages` to follow the cursor and fetch the whole list in one command; without it, `--json` output carries a `next_cursor` and warns on stderr that there is more.
+
+## Installing the CLI globally
+
+Normally, install from npm — `npm install -g tines` — which is always current, because every push to `main` publishes a new version (see "Publishing the CLI to npm" below). The rest of this section is for running an unmerged branch.
 
 Installing straight from the repo URL (`npm install -g github:tbuckley/tines`) does **not** work — the repo is a pnpm workspace and the CLI lives in `packages/cli` — so install from a local clone instead. The build bundles `@tines/shared` into `dist/index.js`, so the package folder is installable on its own:
 
@@ -62,33 +73,32 @@ That puts `tines` on your PATH:
 
 ```sh
 tines --help
-tines time --url https://tines.tbuckley.dev
+tines time                                # https://tines.tbuckley.dev, the default
 ```
 
-To make it target your deployment by default, set the env var in your shell profile (otherwise it talks to `http://localhost:5173`):
+Store an API key (Settings → API keys in the web app) once and every command is
+authenticated. To point it at a local dev server or another deployment, store that URL too,
+or set the env var in your shell profile:
 
 ```sh
-export TINES_API_URL=https://tines.tbuckley.dev
+tines login --api-key tines_…                    # or `--api-key -` to paste it on stdin
+tines login --url http://localhost:5173          # a dev server; the default is the production URL
+tines config                                     # what is in effect, and from where
+tines logout                                     # forget both
+export TINES_API_URL=http://localhost:5173       # the env-var alternative
 ```
 
-To upgrade later: `git pull`, `pnpm install`, `pnpm build`, then re-run `npm install -g ./packages/cli`.
+`login` checks the key against the API before storing it. Env vars still win over the file
+(`TINES_API_URL`, `TINES_API_KEY`), which is how agent runs are configured, and `--url` /
+`--api-key` win over both.
+
+To upgrade later: `git pull`, `pnpm install`, `pnpm build`, then re-run `npm install -g ./packages/cli`. To go back to a released build, `npm install -g tines@latest`.
 
 If you're actively hacking on the CLI, run `pnpm link --global` from `packages/cli` instead of `npm install -g` (requires a one-time `pnpm setup`). The global `tines` then symlinks into your clone, so every `pnpm build` is picked up without reinstalling.
 
 ## Publishing the CLI to npm
 
-Publishing lets anyone — including coding agents — install the CLI without cloning this repo. The package publishes as the bare name **`tines`** (unclaimed on npm as of August 2026; the first publish claims it). It's publish-ready: the tarball ships only `dist` (see `files` in `packages/cli/package.json`), `prepublishOnly` rebuilds before every publish, and since `@tines/shared` is bundled at build time the only runtime dependency is `commander`.
-
-For each release:
-
-```sh
-cd packages/cli
-npm login                                 # once per machine
-npm version patch                         # or minor / major — npm rejects re-publishing an existing version
-pnpm publish
-```
-
-Publish from a clean checkout of `main` (pnpm's git checks enforce this; `--no-git-checks` overrides in a pinch). If the first publish is rejected with a 403 despite the name being free, npm's name rules are blocking a too-similar name — fall back to a scoped name like `@tbuckley/tines` (add `--access public`, which scoped first publishes require); the installed command is named by the `bin` field, so it stays `tines` regardless of the package name.
+Publishing lets anyone — including coding agents — install the CLI without cloning this repo. The package publishes as the bare name **`tines`**. The tarball ships only `dist` (see `files` in `packages/cli/package.json`), `prepublishOnly` rebuilds before every publish, and the build bundles everything — `@tines/shared` and `commander` alike — so the package has **no runtime dependencies**.
 
 Once published, anyone can install or run it:
 
@@ -97,7 +107,142 @@ npm install -g tines                      # installs the `tines` command globall
 npx -y tines time                         # one-shot, no install — handy for agents
 ```
 
-The `npx -y` form is the most agent-friendly: it needs no global install, PATH changes, or prior setup — just Node 20+. To automate releases, add a GitHub Actions workflow that runs `pnpm publish` on version tags with an npm [granular access token](https://docs.npmjs.com/about-access-tokens) stored as an `NPM_TOKEN` repo secret.
+The `npx -y` form is the most agent-friendly: it needs no global install, PATH changes, or prior setup — just Node 20+.
+
+### Releases are automatic
+
+**Every push to `main` publishes a new version** (`.github/workflows/publish-cli.yml`). Nothing is tagged, gated on a changelog, or released by hand. That is deliberate: the CLI and the API in `apps/web` deploy from the same commits, and an installed CLI that lags the API is a silent trap — agents follow instructions naming subcommands their binary does not have (Tines/42).
+
+Versions are `<major>.<minor>.<commit-count-on-main>`:
+
+- **`<major>.<minor>`** is whatever `packages/cli/package.json` says. Bump it in a normal PR when you want to start a new line.
+- **The patch** is `git rev-list --count HEAD`, stamped into the manifest by CI just before publishing. It is monotonic and unique per merge, and it needs no bump commit pushed back to `main` — which the `main-protect` ruleset forbids anyway (PR-only, no bypass actors).
+
+So the version committed in `packages/cli/package.json` is a *base*, not the released number, and will not match npm. `tines --version` reads the manifest at runtime, so an installed CLI always reports the version it was actually published as — that is the number to quote when diagnosing drift.
+
+The workflow no-ops if the computed version is already on npm, so re-runs and `workflow_dispatch` are safe. It does not pass `--provenance`: npm attestations require a public source repository and this one is private.
+
+Local builds (`npm install -g ./packages/cli`) report the base version from the manifest, so a `tines --version` far below `npm view tines version` means you are on a local build, not a stale install.
+
+#### One-time setup
+
+The workflow authenticates by [trusted publishing](https://docs.npmjs.com/trusted-publishers/) (OIDC) — there is no npm token stored anywhere, nothing to rotate, and nothing that can expire and quietly break the publish. On <https://www.npmjs.com/package/tines/access>, add a trusted publisher of type GitHub Actions:
+
+- **Organization or user:** `tbuckley`
+- **Repository:** `tines`
+- **Workflow filename:** `publish-cli.yml`
+- **Environment:** leave blank
+
+That is the whole setup. npmjs then trusts publishes coming from that exact repo + workflow: GitHub mints a short-lived, workflow-scoped OIDC token per run (the workflow requests `id-token: write`), and npm swaps it for a one-shot publish credential. The exchange lives in the npm CLI and needs npm ≥ 11.5.1 — `pnpm publish` delegates the actual publish, auth included, to the npm on PATH, and Node 22's bundled npm 10 fails with `ENEEDAUTH` without ever attempting it — so the workflow upgrades npm on the runner first. Until the publisher is configured, the publish step fails with an auth error; everything before it still passes. Constraints to know about: GitHub-hosted runners only, and because this repository is private you get no provenance attestations (the workflow pins provenance off).
+
+To publish by hand in a pinch: `cd packages/cli && npm login && pnpm publish --no-git-checks` after setting the version yourself. Prefer merging to `main`.
+
+## Running agents
+
+Behind the issue tracker sits a supervisor: it decides which issues agents should take on,
+launches them, streams their output back as a run log, and records what each attempt cost.
+Nothing runs until you arm it — the automation kill switch is **off for a new user**, so
+adding a runner or a routing rule is safe on its own.
+
+An issue is eligible for an agent exactly when its state's category is `active` (states in
+`backlog`, `awaiting_human`, and `done` are never touched), it is unblocked, it has no run
+already in flight, and some routing rule matches it. `tines issues dispatch <ref>` explains
+the verdict for any issue, runner by runner.
+
+### Runners
+
+A **runner** is one launch target you own. Two types ship today:
+
+| Type | What it is | Created by |
+| --- | --- | --- |
+| `claude_managed` | Sessions in Anthropic's managed sandbox, billed to your own Anthropic API key. | Adding the key on the **Agents** tab. |
+| `local` | A daemon on one of your own machines driving a harness — Claude Code (`claude -p`), codex (`codex exec`), or a custom command template — on that machine's subscription and git credentials. | The daemon registering itself on first start. |
+
+Local runners are why self-hosting Tines usually means running something on a machine of
+your own:
+
+```sh
+TINES_API_KEY=<your API key> TINES_API_URL=https://your-tines.example \
+  tines runner daemon --name laptop --harness claude-code
+```
+
+The daemon polls for work assigned to it, materializes a per-run workspace (the launch
+prompt, the issue's skills, and clones of its repos), runs the harness there, and reports
+the finish. It also keeps its own copy of the `tines` CLI current from npm and puts that on
+the harness's PATH, so agents run the CLI that matches the prompt they were given rather
+than whatever was last installed on the machine. **[docs/runner-daemon.md](docs/runner-daemon.md)**
+covers registration, the flags, token rotation, the managed CLI, failure behaviour, and
+launchd/systemd units for keeping it running.
+
+Managed runners hold an Anthropic API key encrypted at rest with `SECRET_ENCRYPTION_KEY`
+(a Workers secret — see Deploying below); it is write-only after saving. They clone repos
+through the provider's git proxy using one GitHub PAT stored in supervisor settings, so
+scope that PAT to exactly the repos your context items point at — it is the blast radius of
+any run. Local runners ignore it and use the device's own git credentials.
+
+A `gemini_managed` type exists in the schema but has no adapter yet; the registry in
+`apps/web/src/lib/server/supervisor/adapter.ts` is the source of truth for what can
+actually launch.
+
+### Routing, quotas, and budgets
+
+All of this is edited on the **Agents** tab, and most of it from the CLI too:
+
+- **The kill switch** — `tines supervisor enable` / `tines supervisor disable`, with
+  `tines supervisor status` for a one-screen overview.
+- **Routing rules** decide who takes an issue. A rule is scoped globally, per project, per
+  workflow state, or both (most specific wins, no merging), and its payload is an ordered
+  preference list of `<runner>[:tier]` targets:
+  `tines routing set claude:cheapest laptop --state "Docs Change/Writing"`. An issue no rule
+  matches never dispatches — automation is opt-in. A single issue can override routing with
+  a pin: `tines issues assign <ref> <runner>[:tier]`.
+- **Tiers** — rules say `smartest`, `balanced`, or `cheapest` rather than naming model ids
+  that go stale; per-runner overrides live in `tines runners tiers <name>`.
+- **Quota policy** — one per user: a global concurrency cap
+  (`tines supervisor quota global 3`) or a per-state roster
+  (`tines supervisor quota roster --default 1 --state "Docs Change/Review=3"`). Each
+  runner's own `max_concurrent` always applies on top of it.
+- **Budgets** — `tines runners budget <name>`. The per-run caps enforce today:
+  `--max-run-usd` becomes the platform-enforced session budget on Claude runners,
+  `--max-run-tokens` is checked as the sweep polls usage, and each runner's
+  `max_run_minutes` (default 30) is the universal backstop. `--daily-usd` and
+  `--daily-tokens` are accepted and stored, but daily budgets are **not yet enforced**.
+
+Runs are listed with `tines runs list` (`--active` for the ones holding a claim) and read
+with `tines runs show <id>`. A failed run strikes its issue; after the attempt limit the
+issue is parked with a needs-attention flag until a human runs `tines issues resume <ref>`. Runs
+the pipe ended rather than the agent — the runner went offline, the daemon restarted or
+shut down — are recorded as `interrupted` and cost the issue nothing; the runner that
+keeps dropping them backs off instead.
+
+### The sweep and its cadence
+
+Agent dispatch and **scheduled tasks** — recurring issue templates, created with
+`tines issues create <project> --title … --every daily` and managed with `tines schedules`
+— share one clock. One Cloudflare Cron Trigger drives everything time-based —
+`"triggers": { "crons": ["*/5 * * * *"] }` in `apps/web/wrangler.jsonc`. Each firing runs
+`apps/web/worker/index.ts`, which sweeps scheduled tasks first (creating issues whose
+recurrence is due) and then the supervisor (dispatching eligible issues, polling managed
+runs for status and usage, timing out overdue runs, failing runs whose local daemon has
+gone offline) — in that order, so an issue a schedule creates can be dispatched by the same
+firing.
+
+Five minutes is the backstop, not the latency: eligibility-changing writes — a transition,
+an unblock, a daemon poll freeing capacity, a settings edit — queue an opportunistic
+dispatch pass immediately, and the sweep exists to make those passes optional rather than
+load-bearing.
+
+The cadence does have one user-visible consequence. **An occurrence fires at the first
+sweep at or after its nominal time**, so an issue from a schedule set for 09:00 can carry a
+creation timestamp up to five minutes later. Schedules are guardrailed to fire no more
+often than hourly, so the lag stays small relative to the recurrence.
+
+Locally, `pnpm preview` (from `apps/web`) builds and runs the worker under `wrangler dev
+--test-scheduled`, which exposes `GET /__scheduled` to fire a sweep on demand instead of
+waiting for the clock; `pnpm dev` (Vite) never runs the `scheduled()` handler. The script
+also passes `--host localhost:8787`: `wrangler dev` otherwise presents every request to the
+worker under the production custom domain from `routes`, and Better Auth then ignores the
+sign-in routes.
 
 ## Google sign-in
 
@@ -111,7 +256,7 @@ Better Auth is mounted at `/api/auth/*` (see `apps/web/src/hooks.server.ts`); it
 
 Email sign-in links are sent with [Cloudflare Email Service](https://developers.cloudflare.com/email-service/) (beta, requires the Workers Paid plan) through the `EMAIL` send binding in `apps/web/wrangler.jsonc`.
 
-Local dev needs no setup: `wrangler dev` simulates the binding, logging each email (including the sign-in link) to the dev server console instead of delivering it.
+Local dev needs no setup: the binding is simulated and nothing is delivered. `pnpm dev` prints each sign-in link to its console; `wrangler dev` (and `pnpm preview`) instead log the message's file paths under `.wrangler/tmp/email/`, and the link is in the `.txt` one.
 
 To send real emails in production:
 
@@ -143,13 +288,34 @@ One-time setup (needs `wrangler login` or a `CLOUDFLARE_API_TOKEN` in the enviro
 cd apps/web
 pnpm wrangler d1 create tines             # then paste the database_id into wrangler.jsonc
 pnpm db:migrate:remote
+pnpm wrangler r2 bucket create tines-artifacts   # the ARTIFACTS and RUN_LOGS bindings in
+pnpm wrangler r2 bucket create tines-run-logs    # wrangler.jsonc; without them the worker
+                                                 # silently stores no artifacts or run logs
 pnpm wrangler secret put BETTER_AUTH_SECRET
 pnpm wrangler secret put GOOGLE_CLIENT_ID
 pnpm wrangler secret put GOOGLE_CLIENT_SECRET
+pnpm wrangler secret put SECRET_ENCRYPTION_KEY   # `openssl rand -hex 32`; encrypts
+                                                 # stored provider keys and the GitHub
+                                                 # PAT at rest (see "Running agents")
 # confirm EMAIL_FROM in wrangler.jsonc "vars" is on a domain onboarded to
 # Email Service (see "Magic-link sign-in" above)
-pnpm deploy
+pnpm deploy:prod                                 # `deploy` alone is a pnpm builtin,
+                                                 # which is why the script is suffixed
 ```
+
+After that, deploys are automatic (below); `pnpm deploy:prod` from `apps/web` is
+there for the rare manual one. It is not called `deploy` because `pnpm deploy` is a
+pnpm builtin — builtins win over scripts, so that name is unreachable in the form
+everyone types; `pnpm check` fails on any script named after a pnpm command (bar
+`start`, `test`, `restart` and `install`, which pnpm does run as scripts).
+
+### Continuous integration
+
+`.github/workflows/ci.yml` runs on every pull request and push to `main`: one job
+typechecks (`pnpm check`) and runs the unit tests, another installs Chromium and runs the
+Playwright suite (`pnpm test:e2e`) against a local `wrangler dev` with a throwaway D1. It
+needs no secrets, so it runs for fork PRs too. The deploy and publish workflows below run
+the unit tests again before shipping, but the e2e suite runs only here.
 
 ### Automatic deploys
 
@@ -199,6 +365,8 @@ One-time preview setup:
 ```sh
 cd apps/web
 pnpm wrangler d1 create tines-preview     # paste the database_id into env.preview in wrangler.jsonc
+pnpm wrangler r2 bucket create tines-artifacts-preview   # env.preview's two buckets; bucket
+pnpm wrangler r2 bucket create tines-run-logs-preview    # names are global, so no --env here
 pnpm wrangler secret put BETTER_AUTH_SECRET --env preview
 pnpm run build && pnpm wrangler deploy --env preview   # creates the preview worker once
 ```
@@ -220,5 +388,7 @@ From the repo root:
 
 - `pnpm dev` — run the web app dev server (with local D1 bindings emulated)
 - `pnpm build` — build all packages
-- `pnpm check` — typecheck all packages (svelte-check + tsc)
+- `pnpm check` — the migration-numbering and script-name guards in `scripts/` and `apps/web/scripts/`, then typecheck all packages (svelte-check + tsc)
+- `pnpm test` — vitest unit tests (`ci.yml` runs them on every pull request, and the deploy and publish workflows run them again before shipping)
+- `pnpm test:e2e` — Playwright e2e suite (boots the built worker under `wrangler dev` with a seeded local D1; see `apps/web/e2e/`). Run by `ci.yml` on pull requests, but not by `pnpm test`.
 - `pnpm cli <command>` — run the CLI in dev mode

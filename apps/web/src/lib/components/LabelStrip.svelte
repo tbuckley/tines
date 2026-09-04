@@ -2,10 +2,7 @@
 	import type { IssueLabel } from '@tines/shared';
 	import LabelChip from '$lib/components/LabelChip.svelte';
 
-	let {
-		labels,
-		class: className = ''
-	}: { labels: IssueLabel[]; class?: string } = $props();
+	let { labels, class: className = '' }: { labels: IssueLabel[]; class?: string } = $props();
 
 	/** `gap-1.5`, in px — the gap the strip lays its chips out with. */
 	const GAP = 6;
@@ -83,14 +80,17 @@
 		{#each labels as label (label.id)}
 			<LabelChip {label} size="sm" />
 		{/each}
-		<span class="bg-muted text-muted-foreground rounded-full px-1.5 py-0.5 text-[0.6875rem] leading-none font-medium">+{labels.length}</span>
+		<span
+			class="bg-muted text-muted-foreground rounded-full px-1.5 py-0.5 text-[0.6875rem] leading-none font-medium"
+			>+{labels.length}</span
+		>
 	</div>
 	{#each labels.slice(0, visibleCount) as label (label.id)}
 		<LabelChip {label} size="sm" class="shrink-0" />
 	{/each}
 	{#if hiddenCount > 0}
 		<span
-			class="bg-muted text-muted-foreground rounded-full px-1.5 py-0.5 text-[0.6875rem] leading-none font-medium shrink-0"
+			class="bg-muted text-muted-foreground shrink-0 rounded-full px-1.5 py-0.5 text-[0.6875rem] leading-none font-medium"
 			title={labels
 				.slice(visibleCount)
 				.map((l) => l.name)

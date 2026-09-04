@@ -58,7 +58,9 @@ describe('validateQuotaPolicy', () => {
 	});
 
 	it('rejects stray fields — the policy shape is typed, not a grab bag', () => {
-		expect(() => validateQuotaPolicy({ type: 'global_cap', limit: 3, extra: true })).toThrowError(ApiFail);
+		expect(() => validateQuotaPolicy({ type: 'global_cap', limit: 3, extra: true })).toThrowError(
+			ApiFail
+		);
 		expect(() =>
 			validateQuotaPolicy({ type: 'state_roster', default_limit: 1, limit: 3 })
 		).toThrowError(ApiFail);

@@ -12,6 +12,7 @@ import { newId, type Database } from '$lib/server/db';
 import { ApiFail, notFound, runAtomic, type ActorContext } from './core';
 import { eventInsert } from './events';
 import { requireTier } from './runners';
+import { resolveScope, scopeLabel, toContextScope } from './scope';
 
 // ---------------------------------------------------------------------------
 // Scope: two nullable dimensions (no issue — pins cover that), AND semantics
@@ -118,9 +119,14 @@ export function validateTargets(
 	const seen = new Set<string>();
 	for (const [i, entry] of value.entries()) {
 		if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
-			throw new ApiFail(422, 'invalid_field', `"targets[${i}]" must be an object { runner_id, tier? }`, {
-				field: 'targets'
-			});
+			throw new ApiFail(
+				422,
+				'invalid_field',
+				`"targets[${i}]" must be an object { runner_id, tier? }`,
+				{
+					field: 'targets'
+				}
+			);
 		}
 		const input = entry as { runner_id?: unknown; tier?: unknown };
 		if (typeof input.runner_id !== 'string' || !runnersById.has(input.runner_id)) {
@@ -132,7 +138,9 @@ export function validateTargets(
 			);
 		}
 		const tier =
-			input.tier === undefined || input.tier === null ? null : requireTier(input.tier, `targets[${i}].tier`);
+			input.tier === undefined || input.tier === null
+				? null
+				: requireTier(input.tier, `targets[${i}].tier`);
 		const key = `${input.runner_id}:${tier ?? ''}`;
 		if (seen.has(key)) {
 			const name = runnersById.get(input.runner_id)?.name;
@@ -144,7 +152,9 @@ export function validateTargets(
 			);
 		}
 		seen.add(key);
-		targets.push(tier === null ? { runner_id: input.runner_id } : { runner_id: input.runner_id, tier });
+		targets.push(
+			tier === null ? { runner_id: input.runner_id } : { runner_id: input.runner_id, tier }
+		);
 	}
 	return targets;
 }
@@ -170,21 +180,20 @@ function ruleQuery(db: Kysely<Database>, userId: string) {
 
 type RuleRow = Awaited<ReturnType<ReturnType<typeof ruleQuery>['execute']>>[number];
 
+/** A rule row on the wire — a rule scope never has the issue dimension. */
 function rowScope(row: RuleRow): ContextScope {
-	const parts: string[] = [];
-	if (row.scope_project_name) parts.push(`project ${row.scope_project_name}`);
-	if (row.scope_state_name) parts.push(`state ${row.scope_state_name}`);
-	return {
-		project_id: row.project_id,
-		project_name: row.scope_project_name,
-		workflow_state_id: row.workflow_state_id,
-		workflow_state_name: row.scope_state_name,
-		workflow_id: row.scope_workflow_id,
-		workflow_name: row.scope_workflow_name,
-		issue_id: null,
-		issue_ref: null,
-		label: parts.length > 0 ? parts.join(' · ') : 'global'
-	};
+	return toContextScope({
+		projectId: row.project_id,
+		workflowStateId: row.workflow_state_id,
+		issueId: null,
+		projectName: row.scope_project_name,
+		stateName: row.scope_state_name,
+		workflowId: row.scope_workflow_id,
+		workflowName: row.scope_workflow_name,
+		issueNumber: null,
+		issueProjectName: null,
+		issueProjectId: null
+	});
 }
 
 async function loadRunnersById(
@@ -221,7 +230,10 @@ function serializeRule(
 	};
 }
 
-export async function listRoutingRules(db: Kysely<Database>, userId: string): Promise<RoutingRule[]> {
+export async function listRoutingRules(
+	db: Kysely<Database>,
+	userId: string
+): Promise<RoutingRule[]> {
 	const [rows, runnersById] = await Promise.all([
 		ruleQuery(db, userId).execute(),
 		loadRunnersById(db, userId)
@@ -232,8 +244,10 @@ export async function listRoutingRules(db: Kysely<Database>, userId: string): Pr
 		.sort(
 			(a, b) =>
 				ruleSpecificity({ projectId: b.row.project_id, workflowStateId: b.row.workflow_state_id }) -
-					ruleSpecificity({ projectId: a.row.project_id, workflowStateId: a.row.workflow_state_id }) ||
-				a.rule.scope.label.localeCompare(b.rule.scope.label)
+					ruleSpecificity({
+						projectId: a.row.project_id,
+						workflowStateId: a.row.workflow_state_id
+					}) || a.rule.scope.label.localeCompare(b.rule.scope.label)
 		)
 		.map((e) => e.rule);
 }
@@ -250,59 +264,6 @@ export async function getRoutingRule(
 
 // ---------------------------------------------------------------------------
 // Mutations
-
-/** Validates scope references (project/state exist and are the user's). */
-async function resolveRuleScope(
-	db: Kysely<Database>,
-	userId: string,
-	ids: RuleScopeIds
-): Promise<{ projectName: string | null; stateName: string | null; label: string }> {
-	let projectName: string | null = null;
-	let stateName: string | null = null;
-	if (ids.projectId) {
-		const project = await db
-			.selectFrom('project')
-			.select('name')
-			.where('id', '=', ids.projectId)
-			.where('user_id', '=', userId)
-			.executeTakeFirst();
-		if (!project) {
-			throw new ApiFail(422, 'unknown_project', `Project "${ids.projectId}" does not exist`, {
-				field: 'project_id'
-			});
-		}
-		projectName = project.name;
-	}
-	if (ids.workflowStateId) {
-		const state = await db
-			.selectFrom('workflow_state')
-			.innerJoin('workflow', 'workflow.id', 'workflow_state.workflow_id')
-			.select(['workflow_state.name', 'workflow_state.category'])
-			.where('workflow_state.id', '=', ids.workflowStateId)
-			.where((eb) => eb.or([eb('workflow.user_id', '=', userId), eb('workflow.user_id', 'is', null)]))
-			.executeTakeFirst();
-		if (!state) {
-			throw new ApiFail(422, 'unknown_state', `Workflow state "${ids.workflowStateId}" does not exist`, {
-				field: 'workflow_state_id'
-			});
-		}
-		// The supervisor only dispatches issues whose state category is
-		// `active`, so a rule scoped to any other state can never match.
-		if (state.category !== 'active') {
-			throw new ApiFail(
-				422,
-				'state_not_dispatchable',
-				`State "${state.name}" is categorized ${state.category.replaceAll('_', ' ')} — agents only pick up issues in active states, so a rule scoped to it would never match anything. Leave the state unset to cover every active state`,
-				{ field: 'workflow_state_id', state_category: state.category }
-			);
-		}
-		stateName = state.name;
-	}
-	const parts: string[] = [];
-	if (projectName) parts.push(`project ${projectName}`);
-	if (stateName) parts.push(`state ${stateName}`);
-	return { projectName, stateName, label: parts.length > 0 ? parts.join(' · ') : 'global' };
-}
 
 async function loadRulesForShadowing(
 	db: Kysely<Database>,
@@ -344,7 +305,9 @@ export async function createRoutingRule(
 		projectId: body.project_id ?? null,
 		workflowStateId: body.workflow_state_id ?? null
 	};
-	const { label } = await resolveRuleScope(db, actor.userId, scope);
+	const label = scopeLabel(
+		await resolveScope(db, actor.userId, scope, { issue: false, requireActiveState: true })
+	);
 	const rules = await loadRulesForShadowing(db, actor.userId);
 	assertNoScopeCollision(scope, label, rules);
 	const runnersById = await loadRunnersById(db, actor.userId);
@@ -391,7 +354,9 @@ export async function updateRoutingRule(
 	id: string,
 	body: UpdateRoutingRuleRequest
 ): Promise<RoutingRuleWithWarnings> {
-	const row = await ruleQuery(db, actor.userId).where('routing_rule.id', '=', id).executeTakeFirst();
+	const row = await ruleQuery(db, actor.userId)
+		.where('routing_rule.id', '=', id)
+		.executeTakeFirst();
 	if (!row) throw notFound();
 
 	// Merge-patch scope: omitted = unchanged, explicit null = unset.
@@ -402,7 +367,9 @@ export async function updateRoutingRule(
 	};
 	const scopeChanged =
 		scope.projectId !== row.project_id || scope.workflowStateId !== row.workflow_state_id;
-	const { label } = await resolveRuleScope(db, actor.userId, scope);
+	const label = scopeLabel(
+		await resolveScope(db, actor.userId, scope, { issue: false, requireActiveState: true })
+	);
 	const rules = await loadRulesForShadowing(db, actor.userId);
 	if (scopeChanged) assertNoScopeCollision(scope, label, rules, id);
 
@@ -413,7 +380,10 @@ export async function updateRoutingRule(
 			: (JSON.parse(row.targets) as RoutingTarget[]);
 
 	if (!scopeChanged && JSON.stringify(targets) === row.targets) {
-		return { ...serializeRule(row, runnersById), warnings: shadowWarnings({ ...scope, id }, rules) };
+		return {
+			...serializeRule(row, runnersById),
+			warnings: shadowWarnings({ ...scope, id }, rules)
+		};
 	}
 
 	await runAtomic(env, [
@@ -452,7 +422,9 @@ export async function deleteRoutingRule(
 	actor: ActorContext,
 	id: string
 ): Promise<void> {
-	const row = await ruleQuery(db, actor.userId).where('routing_rule.id', '=', id).executeTakeFirst();
+	const row = await ruleQuery(db, actor.userId)
+		.where('routing_rule.id', '=', id)
+		.executeTakeFirst();
 	if (!row) throw notFound();
 	await runAtomic(env, [
 		db.deleteFrom('routing_rule').where('id', '=', id).compile(),

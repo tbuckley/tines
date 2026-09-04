@@ -80,8 +80,8 @@
 	</Button>
 </div>
 <p class="text-muted-foreground mb-6 max-w-2xl text-sm">
-	Named keys let agents and the CLI act on your behalf — every action they take is attributed to
-	the key by name. Pass a key via <code class="bg-muted rounded px-1.5 py-0.5">TINES_API_KEY</code>
+	Named keys let agents and the CLI act on your behalf — every action they take is attributed to the
+	key by name. Pass a key via <code class="bg-muted rounded px-1.5 py-0.5">TINES_API_KEY</code>
 	or the <code class="bg-muted rounded px-1.5 py-0.5">Authorization: Bearer</code> header.
 </p>
 
@@ -97,7 +97,9 @@
 					<p class="text-sm font-medium">
 						{key.name}
 						{#if key.revoked_at}
-							<span class="text-destructive ml-2 text-xs font-normal">revoked {relativeTime(key.revoked_at)}</span>
+							<span class="text-destructive ml-2 text-xs font-normal"
+								>revoked {relativeTime(key.revoked_at)}</span
+							>
 						{/if}
 					</p>
 					<p class="text-muted-foreground font-mono text-xs">{key.key_prefix}…</p>
@@ -107,14 +109,20 @@
 					<p>{key.last_used_at ? `last used ${relativeTime(key.last_used_at)}` : 'never used'}</p>
 				</div>
 				{#if !key.revoked_at}
-					<Button size="sm" variant="outline" onclick={() => revoke(key.id, key.name)}>Revoke</Button>
+					<Button size="sm" variant="outline" onclick={() => revoke(key.id, key.name)}
+						>Revoke</Button
+					>
 				{/if}
 			</li>
 		{/each}
 	</ul>
 {/if}
 
-<Modal bind:open={createOpen} title={created ? 'API key created' : 'New API key'} onclose={closeCreate}>
+<Modal
+	bind:open={createOpen}
+	title={created ? 'API key created' : 'New API key'}
+	onclose={closeCreate}
+>
 	{#if created}
 		<div class="space-y-4">
 			<p class="text-sm">
@@ -122,7 +130,9 @@
 				<span class="font-medium">it will not be shown again.</span>
 			</p>
 			<div class="flex items-center gap-2">
-				<code class="bg-muted min-w-0 flex-1 overflow-x-auto rounded-md px-3 py-2 font-mono text-xs">
+				<code
+					class="bg-muted min-w-0 flex-1 overflow-x-auto rounded-md px-3 py-2 font-mono text-xs"
+				>
 					{created.key}
 				</code>
 				<Button size="sm" variant="outline" onclick={copyKey}>
@@ -130,7 +140,9 @@
 				</Button>
 			</div>
 			<p class="text-muted-foreground text-xs">
-				e.g. <code class="bg-muted rounded px-1 py-0.5">TINES_API_KEY={created.key.slice(0, 14)}… tines issues list</code>
+				e.g. <code class="bg-muted rounded px-1 py-0.5"
+					>TINES_API_KEY={created.key.slice(0, 14)}… tines issues list</code
+				>
 			</p>
 			<div class="flex justify-end">
 				<Button onclick={closeCreate}>Done</Button>

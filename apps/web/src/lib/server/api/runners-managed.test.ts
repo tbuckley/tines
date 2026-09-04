@@ -51,7 +51,7 @@ describe('createRunner (claude_managed)', () => {
 		expect(runner.online).toBe(true);
 		expect(runner.has_api_key).toBe(true);
 		expect(runner.budget).toEqual({ max_run_cost_usd: 5 });
-		expect(runner.tier_models).toMatchObject({ smartest: 'claude-fable-5' });
+		expect(runner.tier_models).toMatchObject({ smartest: 'claude-fable-5-1' });
 		// Encrypted at rest — never the plaintext, and never serialized.
 		const row = t.all('SELECT secret_enc FROM runner')[0] as { secret_enc: string };
 		expect(row.secret_enc).not.toContain('sk-ant-key');
@@ -63,7 +63,13 @@ describe('createRunner (claude_managed)', () => {
 	it('a failed ping creates nothing', async () => {
 		const t = world();
 		await expect(
-			createRunner(t.db, t.env, actor, { type: 'claude_managed', name: 'c', api_key: 'bad' }, badPing)
+			createRunner(
+				t.db,
+				t.env,
+				actor,
+				{ type: 'claude_managed', name: 'c', api_key: 'bad' },
+				badPing
+			)
 		).rejects.toMatchObject({ code: 'invalid_api_key' });
 		expect(t.all('SELECT * FROM runner')).toHaveLength(0);
 	});
@@ -127,9 +133,11 @@ describe('updateRunner (managed credentials, tiers, budget)', () => {
 		const events = t.all("SELECT payload FROM event WHERE type = 'runner.updated'") as {
 			payload: string;
 		}[];
-		expect(events.some((e) => (JSON.parse(e.payload) as { changed: string[] }).changed.includes('api_key'))).toBe(
-			true
-		);
+		expect(
+			events.some((e) =>
+				(JSON.parse(e.payload) as { changed: string[] }).changed.includes('api_key')
+			)
+		).toBe(true);
 		expect(events.every((e) => !e.payload.includes('sk-new'))).toBe(true);
 	});
 
@@ -165,10 +173,12 @@ describe('validators', () => {
 		});
 		expect(() => validateTierOverrides({ turbo: { model: 'x' } })).toThrowError(ApiFail);
 		expect(() => validateTierOverrides({ smartest: {} })).toThrowError(ApiFail);
-		expect(() => validateTierOverrides({ smartest: { model: 'x', effort: 'extreme' } })).toThrowError(
+		expect(() =>
+			validateTierOverrides({ smartest: { model: 'x', effort: 'extreme' } })
+		).toThrowError(ApiFail);
+		expect(() => validateTierOverrides({ smartest: { model: 'x', unknown: 1 } })).toThrowError(
 			ApiFail
 		);
-		expect(() => validateTierOverrides({ smartest: { model: 'x', unknown: 1 } })).toThrowError(ApiFail);
 	});
 
 	it('validateRunnerBudget: known fields, positive numbers, integer token caps', () => {
