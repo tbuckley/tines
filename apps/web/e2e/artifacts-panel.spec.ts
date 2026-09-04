@@ -92,6 +92,20 @@ test.beforeEach(async ({ context }) => {
 	await signIn(context, ALICE.sessionToken);
 });
 
+/**
+ * On a phone the Artifacts panel folds to one row (Tines/165); open it before
+ * reaching for anything inside. A no-op on desktop, where there is no fold.
+ * Retried across the hydration window: the row is a Svelte listener.
+ */
+async function unfoldArtifacts(page: Page): Promise<void> {
+	const fold = page.getByRole('button', { name: /^Artifacts\b/ });
+	if (!(await fold.isVisible())) return;
+	await expect(async () => {
+		if ((await fold.getAttribute('aria-expanded')) !== 'true') await fold.click();
+		expect(await fold.getAttribute('aria-expanded')).toBe('true');
+	}).toPass({ timeout: 15_000 });
+}
+
 const issueUrl = (issue: IssueDetail) =>
 	`/issues/${encodeURIComponent(projectName)}/${issue.number}`;
 
@@ -156,6 +170,7 @@ async function settledGeometry(row: Locator): Promise<RowGeometry> {
 test('a folder row keeps its metadata readable on a phone', async ({ page }) => {
 	await page.setViewportSize(PHONE);
 	await page.goto(issueUrl(plain));
+	await unfoldArtifacts(page);
 
 	const row = photosRow(page);
 	await expect(row).toBeVisible();
@@ -177,6 +192,7 @@ test('a folder row keeps its metadata readable on a phone', async ({ page }) => 
 test('a stale folder row keeps its metadata and actions on a phone', async ({ page }) => {
 	await page.setViewportSize(PHONE);
 	await page.goto(issueUrl(stale));
+	await unfoldArtifacts(page);
 
 	const row = photosRow(page);
 	await expect(row.getByText('stale')).toBeVisible();
@@ -206,6 +222,7 @@ test('a stale folder row keeps its metadata and actions on a phone', async ({ pa
 test('a folder row stays one line on a desktop', async ({ page }) => {
 	await page.setViewportSize(DESKTOP);
 	await page.goto(issueUrl(plain));
+	await unfoldArtifacts(page);
 
 	const row = photosRow(page);
 	await expect(row).toBeVisible();
