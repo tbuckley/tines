@@ -4,14 +4,12 @@ import { ALICE } from './constants.mjs';
 import { apiClient, body, runId, signIn } from './helpers';
 
 /**
- * An issue row on a phone (Tines/126): the row was one flex line and the
- * state badge is `white-space: nowrap`, so the title cell — the only
- * shrinkable thing in it — was all that gave. Measured at 390px: the title
- * span was 108px next to a "Needs Clarification" badge and 178px next to
- * "Design", i.e. ~15 readable characters and a different truncation point on
- * every row. The metadata now drops to a second line below `sm`, so every
- * title gets the same full-width cell and every row the same 51px → 73px
- * height. Desktop must stay a single line, in the same order.
+ * An issue row at both widths. On a phone the title is the whole first line
+ * (wrapping to two, never fewer than the row's full width — Tines/126 was a
+ * title squeezed to 108px beside a "Needs Clarification" badge) and the
+ * state, ref, signals, labels and time share one metadata line beneath it.
+ * From `sm` up the row is a single 40px line in reading order: state, ref,
+ * title, then the rest.
  */
 
 const PHONE = { width: 390, height: 844 };
@@ -19,23 +17,22 @@ const DESKTOP = { width: 1440, height: 900 };
 
 /**
  * The longest and one of the shortest state names in the Engineering
- * workflow: the widest badge spread, which is what made the old truncation
- * ragged.
+ * workflow: the widest spread, which is what made the old truncation ragged.
  */
 const LONG_STATE = 'Needs Clarification';
 const SHORT_STATE = 'Design';
 
-/** Long enough to truncate at 390px whatever the badge does. */
+/** Long enough to wrap at 390px whatever the state cell does. */
 const LONG_TITLE = `USER_GUIDE.md refers to a --json flag that no command actually accepts`;
 const SHORT_STATE_TITLE = `Full-text search across issue descriptions and comment bodies`;
 
 const projectName = `issues-list-mobile-${runId}`;
 let project: Project;
-/** Sits in `Needs Clarification` — the widest badge. */
+/** Sits in `Needs Clarification` — the widest state cell. */
 let clarifying: IssueDetail;
-/** Transitioned to `Design` — a much narrower badge. */
+/** Transitioned to `Design` — a much narrower one. */
 let designing: IssueDetail;
-/** A duplicate of `clarifying`, so its row carries the `dup` marker. */
+/** A duplicate of `clarifying`, so its row carries the `dup` signal. */
 let duplicate: IssueDetail;
 
 test.beforeAll(async ({ playwright }) => {
@@ -87,16 +84,13 @@ const listUrl = `/issues?project=${encodeURIComponent(projectName)}`;
 const row = (page: Page, issue: IssueDetail): Locator =>
 	page.getByRole('link', { name: new RegExp(`#${issue.number}\\b`) });
 
-/** The truncating title span — the box the badge used to eat. */
+/** The title text — the box the badge used to eat. */
 const title = (row: Locator): Locator => row.locator('.vt-shared').first();
-const badge = (row: Locator): Locator => row.locator('.state-badge');
-/**
- * The `#number`. It is rendered twice — a desktop-only column, and a phone-only
- * copy that rides inside the title text (Tines/31) — so match whichever of the
- * two the current viewport actually shows.
- */
+/** The state cell: glyph plus name, named for the view transition. */
+const stateCell = (row: Locator): Locator => row.locator('[style*="issue-state"]');
+/** The `#number`; bare, since the list is filtered to one project. */
 const number = (row: Locator, issue: IssueDetail): Locator =>
-	row.getByText(`#${issue.number}`, { exact: true }).filter({ visible: true });
+	row.getByText(`#${issue.number}`, { exact: true });
 /** The metadata wrapper: the row's only child div, `contents` at `sm`+. */
 const metaLine = (row: Locator): Locator => row.locator('> div');
 
@@ -124,11 +118,11 @@ test('every title on a phone gets the same readable width', async ({ page }) => 
 	expect(longTitle.width).toBeGreaterThan(240);
 	expect(shortTitle.width).toBeGreaterThan(240);
 
-	// And the same width, so the two rows truncate at the same character.
+	// And the same width, so the two rows wrap at the same character.
 	expect(Math.abs(longTitle.width - shortTitle.width)).toBeLessThan(2);
 });
 
-test('the state badge sits on its own line under the title on a phone', async ({ page }) => {
+test('the state sits on the metadata line under the title on a phone', async ({ page }) => {
 	await page.setViewportSize(PHONE);
 	await page.goto(listUrl);
 
@@ -138,82 +132,110 @@ test('the state badge sits on its own line under the title on a phone', async ({
 		await expect(r).toBeVisible();
 		const rowBox = await box(r);
 		const titleBox = await box(title(r));
-		const badgeBox = await box(badge(r));
+		const stateBox = await box(stateCell(r));
 
-		// Second line: below the title, and hung at the row's own left edge.
-		// The `#number` column is desktop-only now and the phone copy rides in
-		// the title text (Tines/31), so this line carries no hanging indent and
-		// the label strip after the badge gets the row's full width — the badge
-		// therefore starts left of where the title text does.
+		// Second line: below the title, and hung at the row's own left edge,
+		// so the line gets the row's full width.
 		expect(await display(metaLine(r))).toBe('flex');
-		expect(badgeBox.y).toBeGreaterThan(titleBox.y + 15);
-		expect(badgeBox.x).toBeLessThan(titleBox.x);
-		expect(badgeBox.x - rowBox.x).toBeLessThan(24);
+		expect(stateBox.y).toBeGreaterThan(titleBox.y + titleBox.height - 1);
+		expect(stateBox.x - rowBox.x).toBeLessThan(24);
+		// The ref follows the state on that line; the time ends it.
+		const numberBox = await box(number(r, r === rows[0] ? clarifying : designing));
+		expect(numberBox.x).toBeGreaterThan(stateBox.x + stateBox.width - 1);
+		expect(Math.abs(numberBox.y - stateBox.y)).toBeLessThan(8);
 		heights.push(rowBox.height);
 	}
 
-	// Two lines, not more: uniform rows a phone screen can be scanned down.
+	// Both titles wrap to two lines here, so the rows are the same height —
+	// and three lines at most: uniform rows a phone screen can be scanned down.
 	expect(heights[0]).toBeLessThan(90);
 	expect(Math.abs(heights[0] - heights[1])).toBeLessThan(2);
 });
 
-test('markers still render inside the title cell on a phone', async ({ page }) => {
+test('signals ride the metadata line on a phone', async ({ page }) => {
 	await page.setViewportSize(PHONE);
 	await page.goto(listUrl);
 
 	const dup = row(page, duplicate);
 	await expect(dup).toBeVisible();
 
-	// Accepted trade-off, not a regression: markers stay inline after the
-	// title and wrap inside the cell, so a marker row is taller than a plain
-	// one. It must still be on screen and readable.
+	// The marker is on the second line, after the ref, and costs no height:
+	// the duplicate's row is the same height as a plain two-line one.
 	const marker = dup.getByText('dup', { exact: true });
 	await expect(marker).toBeInViewport();
-	expect((await box(dup)).height).toBeGreaterThanOrEqual((await box(row(page, designing))).height);
+	const markerBox = await box(marker);
+	const stateBox = await box(stateCell(dup));
+	expect(
+		Math.abs(markerBox.y + markerBox.height / 2 - (stateBox.y + stateBox.height / 2))
+	).toBeLessThan(6);
+	expect(markerBox.x).toBeGreaterThan(stateBox.x + stateBox.width);
+	expect(Math.abs((await box(dup)).height - (await box(row(page, designing))).height)).toBeLessThan(
+		2
+	);
 	expect((await box(title(dup))).width).toBeGreaterThan(240);
 });
 
-test('a desktop row stays a single line in the same order', async ({ page }) => {
+test('a desktop row is a single line: state, ref, title', async ({ page }) => {
 	await page.setViewportSize(DESKTOP);
 	await page.goto(listUrl);
 
 	for (const issue of [clarifying, designing]) {
 		const r = row(page, issue);
 		await expect(r).toBeVisible();
-		expect((await box(r)).height).toBeLessThan(60);
+		expect((await box(r)).height).toBeLessThan(48);
 
-		// `sm:contents` dissolves the mobile wrapper, so the number, title and
-		// badge are still the anchor's own flex children, on one line. Without
-		// it the row still measures as one line — only the computed display
-		// catches the wrapper surviving into the desktop layout.
+		// `sm:contents` dissolves the mobile wrapper, so the state, ref and
+		// title are the anchor's own flex children, on one line. Without it the
+		// row still measures as one line — only the computed display catches
+		// the wrapper surviving into the desktop layout.
 		expect(await display(metaLine(r))).toBe('contents');
 		const numberBox = await box(number(r, issue));
 		const titleBox = await box(title(r));
-		const badgeBox = await box(badge(r));
-		expect(Math.abs(badgeBox.y - titleBox.y)).toBeLessThan(12);
+		const stateBox = await box(stateCell(r));
+		expect(
+			Math.abs(stateBox.y + stateBox.height / 2 - (titleBox.y + titleBox.height / 2))
+		).toBeLessThan(6);
+		expect(stateBox.x).toBeLessThan(numberBox.x);
 		expect(numberBox.x).toBeLessThan(titleBox.x);
-		expect(titleBox.x).toBeLessThan(badgeBox.x);
 
-		// The project name is rendered by the dissolved wrapper too.
-		await expect(r.getByText(projectName, { exact: true })).toBeVisible();
+		// Filtered to one project, the ref is the bare number.
+		await expect(r.getByText(projectName)).toHaveCount(0);
 	}
+
+	// Every title starts at the same x, whatever the state name's length: the
+	// state is a fixed column, not a badge the title trails.
+	const longStateTitle = await box(title(row(page, clarifying)));
+	const shortStateTitle = await box(title(row(page, designing)));
+	expect(Math.abs(longStateTitle.x - shortStateTitle.x)).toBeLessThan(1);
+});
+
+test('the unfiltered list shows the project in each ref', async ({ page }) => {
+	await page.setViewportSize(DESKTOP);
+	await page.goto('/issues');
+
+	const r = row(page, clarifying).filter({ hasText: projectName });
+	await expect(r).toBeVisible();
+	await expect(r.getByText(`${projectName}/`, { exact: true })).toBeVisible();
+	await expect(number(r, clarifying)).toBeVisible();
 });
 
 test('a desktop row on the project page stays a single line', async ({ page }) => {
 	await page.setViewportSize(DESKTOP);
 	await page.goto(`/projects/${project.id}`);
 
-	// `showProject={false}` here, so the wrapper holds only the badge and the
-	// time — the other call site of the same component.
+	// `showProject={false}` here — the other call site of the same component.
 	const r = row(page, clarifying);
 	await expect(r).toBeVisible();
-	expect((await box(r)).height).toBeLessThan(60);
+	expect((await box(r)).height).toBeLessThan(48);
 	expect(await display(metaLine(r))).toBe('contents');
 
 	const numberBox = await box(number(r, clarifying));
 	const titleBox = await box(title(r));
-	const badgeBox = await box(badge(r));
-	expect(Math.abs(badgeBox.y - titleBox.y)).toBeLessThan(12);
+	const stateBox = await box(stateCell(r));
+	expect(
+		Math.abs(stateBox.y + stateBox.height / 2 - (titleBox.y + titleBox.height / 2))
+	).toBeLessThan(6);
+	expect(stateBox.x).toBeLessThan(numberBox.x);
 	expect(numberBox.x).toBeLessThan(titleBox.x);
-	expect(titleBox.x).toBeLessThan(badgeBox.x);
+	await expect(r.getByText(projectName)).toHaveCount(0);
 });

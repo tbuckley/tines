@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { nextRunLabel, truncate, untilTime } from './format';
+import { nextRunLabel, relativeTimeShort, truncate, untilTime } from './format';
 
 describe('truncate', () => {
 	it('leaves short values alone', () => {
@@ -22,6 +22,27 @@ const NOW = Date.UTC(2026, 5, 15, 12, 0, 0);
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
+
+describe('relativeTimeShort', () => {
+	it('phrases the recent past as a bare duration', () => {
+		expect(relativeTimeShort(NOW - 30_000, NOW)).toBe('now');
+		expect(relativeTimeShort(NOW - 5 * MINUTE, NOW)).toBe('5m');
+		expect(relativeTimeShort(NOW - 3 * HOUR, NOW)).toBe('3h');
+		expect(relativeTimeShort(NOW - 2 * DAY, NOW)).toBe('2d');
+		expect(relativeTimeShort(NOW - 29 * DAY, NOW)).toBe('29d');
+	});
+
+	it('falls back to the day within the year, and to the year beyond it', () => {
+		const thisYear = NOW - 40 * DAY;
+		expect(relativeTimeShort(thisYear, NOW)).toBe(
+			new Date(thisYear).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+		);
+		const lastYear = NOW - 400 * DAY;
+		expect(relativeTimeShort(lastYear, NOW)).toBe(
+			new Date(lastYear).toLocaleDateString(undefined, { month: 'short', year: 'numeric' })
+		);
+	});
+});
 
 describe('untilTime', () => {
 	it('counts down to a future timestamp', () => {
