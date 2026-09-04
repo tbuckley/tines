@@ -13,14 +13,15 @@
 	 * "c1 +4" is noise; the count is the information). The full set always
 	 * lives on the detail page.
 	 *
-	 * Two things keep the decision stable. The measurement copy of the full set
-	 * is *in flow* (invisible, stacked under the visible row in a one-cell
-	 * grid), so the strip's natural width is always the full set's, whatever
-	 * is currently shown — measuring the visible row would feed each decision
-	 * into the next. And the collapsed chip's width becomes the strip's
-	 * `min-width`, so a flex row can squeeze the strip down to it and no
-	 * further: the chip is never clipped, and what the row does with the
-	 * remaining overflow (truncating the title, say) is the row's call.
+	 * The decision has to be stable, so the strip's width must never depend on
+	 * what it currently shows — measuring the visible row would feed each
+	 * decision into the next. The measurement copy of the full set is
+	 * therefore *in flow* (invisible, stacked under the visible row in a
+	 * one-cell grid), and the two measured widths become the strip's bounds:
+	 * the collapsed chip's as `min-width`, so the chip is never clipped, and
+	 * the full set's as `max-width`, so the strip claims no more of a row than
+	 * it can use. A row sizes it between those (in practice as a growing flex
+	 * item) and the strip renders whichever form fits.
 	 */
 	let stripEl: HTMLElement | undefined = $state();
 	let measureEl: HTMLElement | undefined = $state();
@@ -31,8 +32,10 @@
 	let stripWidth = $state(0);
 
 	// Pre-measurement (SSR, first paint): render them all and let the strip
-	// clip. The decision settles on the first frame after mount.
-	const collapsed = $derived(stripWidth > 0 && allWidth > 0 && allWidth > stripWidth);
+	// clip. The decision settles on the first frame after mount. Half a pixel
+	// of slack: both sides are fractional sums of subpixel boxes, and a strip
+	// sized to exactly the full set must count as fitting it.
+	const collapsed = $derived(stripWidth > 0 && allWidth > 0 && allWidth - stripWidth > 0.5);
 
 	const names = $derived(labels.map((l) => l.name).join(', '));
 	/** Up to four colours, in label order, for the stacked dots. */
@@ -46,7 +49,8 @@
 		const gap = parseFloat(getComputedStyle(measureEl).columnGap) || 0;
 		allWidth = chips.reduce((sum, w) => sum + w, 0) + gap * Math.max(0, chips.length - 1);
 		collapsedWidth = children.at(-1)?.getBoundingClientRect().width ?? 0;
-		stripWidth = stripEl.clientWidth;
+		// Fractional, like the chip widths: `clientWidth` rounds.
+		stripWidth = stripEl.getBoundingClientRect().width;
 	};
 
 	$effect(() => {
@@ -88,6 +92,7 @@
 	class="grid min-w-0 overflow-hidden {className}"
 	style:grid-template-columns="minmax(0, 1fr)"
 	style:min-width={collapsedWidth > 0 ? `${collapsedWidth}px` : undefined}
+	style:max-width={allWidth > 0 ? `${allWidth}px` : undefined}
 >
 	<!-- The visible row comes first in the DOM, so a text lookup finds what
 	     renders before the measurement copy of the same names. -->

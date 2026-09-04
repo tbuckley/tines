@@ -222,8 +222,7 @@ test.describe.serial('issue labels UI', () => {
 		await expect(wideChip).toBeVisible();
 		expect(await wideChip.evaluate((e) => e.scrollWidth - e.clientWidth)).toBeLessThanOrEqual(1);
 		// Whole or counted, never cut: every visible chip in the crowded row
-		// ends inside the strip, and the title keeps the larger share of the row
-		// (labels are capped at a quarter of it).
+		// ends inside the strip, and labels take only what the title leaves.
 		const chips = visibleChips(strip);
 		const shown = await chips.count();
 		expect(shown === crowdNames.length || shown === 1).toBe(true);
@@ -233,11 +232,11 @@ test.describe.serial('issue labels UI', () => {
 			expect(b.x + b.width).toBeLessThanOrEqual(desktopStrip.x + desktopStrip.width + 1);
 			expect(await chip.evaluate((e) => e.scrollWidth - e.clientWidth)).toBeLessThanOrEqual(1);
 		}
-		const rowBox = (await crowdedRow.boundingBox())!;
 		const titleText = crowdedRow.locator('[style*="issue-title"]');
 		const titleCell = (await titleText.locator('..').boundingBox())!;
-		expect(titleCell.width).toBeGreaterThan(rowBox.width * 0.45);
-		// ...and this title, which fits that share, is not truncated at all.
+		expect(titleCell.width).toBeGreaterThanOrEqual((await titleText.boundingBox())!.width - 1);
+		// This title fits the row, so it is not truncated at all: five labels
+		// gave way to a count before the title lost a character.
 		expect(await titleText.evaluate((e) => e.scrollWidth - e.clientWidth)).toBeLessThanOrEqual(1);
 		// A labelled row costs no height at this width either — one 40px line,
 		// like the plain row.

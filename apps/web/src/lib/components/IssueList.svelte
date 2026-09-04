@@ -66,7 +66,7 @@
 						? 'opacity-60'
 						: ''}"
 				>
-					<span class="w-full min-w-0 text-sm font-medium sm:order-3 sm:w-auto sm:flex-1">
+					<span class="w-full min-w-0 text-sm font-medium sm:order-3 sm:w-auto sm:flex-[1_1_auto]">
 						<!-- The transition name sits on the text itself: on desktop an
 						     inline-block that hugs the title, so the morph to the detail
 						     heading keeps its proportions. -->
@@ -179,19 +179,24 @@
 								{/if}
 							</span>
 						{/if}
-						<!-- Labels and time, hugging the right edge. No `min-w-0` here on
-						     purpose: the group's floor is the collapsed label chip plus
-						     the time, so the row squeezes it that far and no further. -->
-						<span class="ml-auto flex shrink-[999] items-center gap-3 sm:order-5 sm:max-w-[25%]">
-							{#if issue.labels.length > 0}
-								<LabelStrip labels={issue.labels} />
-							{/if}
-							<span
-								class="text-muted-foreground shrink-0 text-right text-xs whitespace-nowrap tabular-nums"
-								title={new Date(issue.last_activity_at).toLocaleString()}
-							>
-								{relativeTimeShort(issue.last_activity_at)}
-							</span>
+						<!-- Labels, then the time, hugging the right edge. The strip
+						     grows from nothing into the line's free space (never shrinking
+						     the state name by a subpixel into an ellipsis), floored at its
+						     collapsed chip and capped at the full set, both measured. On
+						     desktop the title's basis is its own text, so labels get only
+						     what the title leaves, and a title that outgrows the row
+						     truncates only once the strip is down to its floor. -->
+						{#if issue.labels.length > 0}
+							<LabelStrip labels={issue.labels} class="ml-auto flex-1 sm:order-5" />
+						{/if}
+						<span
+							class="text-muted-foreground shrink-0 text-right text-xs whitespace-nowrap tabular-nums sm:order-6 {issue
+								.labels.length === 0
+								? 'ml-auto'
+								: ''}"
+							title={new Date(issue.last_activity_at).toLocaleString()}
+						>
+							{relativeTimeShort(issue.last_activity_at)}
 						</span>
 					</div>
 				</a>
