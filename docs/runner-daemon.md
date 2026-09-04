@@ -57,7 +57,8 @@ So the daemon maintains its own copy. At start, and before each launch if the la
 is more than 10 minutes old, it runs:
 
 ```sh
-npm install --prefix ~/.config/tines/cli tines@latest --min-release-age=0 --no-audit --no-fund
+npm install --prefix ~/.config/tines/cli tines@latest \
+  --min-release-age=0 --no-audit --no-fund --loglevel=error
 ```
 
 and prepends `~/.config/tines/cli/node_modules/.bin` to the harness's `PATH`. Notes:
