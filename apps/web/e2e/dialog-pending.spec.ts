@@ -30,7 +30,7 @@ const LONG_TRANSITION = 'Send back to research for another pass';
 
 const projectName = `dialog-pending-${runId}`;
 let project: Project;
-let issue: IssueDetail;
+let workflowId: string;
 
 test.beforeAll(async ({ playwright }) => {
 	const request = await playwright.request.newContext({
@@ -50,13 +50,7 @@ test.beforeAll(async ({ playwright }) => {
 			transitions: [{ name: LONG_TRANSITION, from: 'Design', to: 'Research' }]
 		})
 	);
-	issue = await body<IssueDetail>(
-		await api.post(`/api/v1/projects/${project.id}/issues`, {
-			title: `Dialog pending ${runId}`,
-			workflow_id: workflow.id,
-			description: 'Fixture for the confirm-button pending assertions.'
-		})
-	);
+	workflowId = workflow.id;
 	await request.dispose();
 });
 
@@ -87,12 +81,43 @@ async function clickUntil(button: Locator, done: () => Promise<void>): Promise<v
 	}).toPass({ timeout: 15_000 });
 }
 
+/**
+ * The dialog's entrance animation has finished. Everything below depends on
+ * this: `Modal` scales in from 0.96, so a box read mid-intro is ~4% small (and
+ * two `evaluate` round-trips inside one frame read the *same* wrong box, which
+ * is enough to fool a settle loop). Svelte also reverses an outro from
+ * whatever progress the intro reached, so a Cancel clicked at 17% opacity
+ * closes in 40ms rather than 150 — a real animation that measures like a hard
+ * cut. `getAnimations()` on the dialog itself: no `subtree`, so the spinner's
+ * infinite `animate-spin` can never make this unsatisfiable.
+ */
+async function entranceSettled(page: Page): Promise<void> {
+	await page.waitForFunction(() => {
+		const dialog = document.querySelector('[role="dialog"]');
+		return !!dialog && dialog.getAnimations().every((a) => a.playState === 'finished');
+	});
+}
+
+/**
+ * A fresh issue per test, not one shared fixture: the first test confirms the
+ * transition for real, which moves the issue out of `Design` and takes the
+ * only transition button with it.
+ */
 async function openTransitionDialog(page: Page): Promise<void> {
+	const api = apiClient(page.request, ALICE.apiKey);
+	const issue = await body<IssueDetail>(
+		await api.post(`/api/v1/projects/${project.id}/issues`, {
+			title: `Dialog pending ${Date.now().toString(36)}`,
+			workflow_id: workflowId,
+			description: 'Fixture for the confirm-button pending assertions.'
+		})
+	);
 	await page.goto(`/issues/${encodeURIComponent(projectName)}/${issue.number}`);
 	await expect(stateCard(page)).toBeVisible();
 	await clickUntil(stateCard(page).getByRole('button', { name: LONG_TRANSITION }), async () => {
 		await expect(dialogOf(page)).toBeVisible({ timeout: 2_000 });
 	});
+	await entranceSettled(page);
 }
 
 type Box = { x: number; y: number; width: number; height: number };
@@ -123,8 +148,14 @@ async function footerBoxes(page: Page): Promise<Footer> {
 			return { confirm: box(confirm), cancel: box(cancel), row: box(row) };
 		});
 
+	// A frame between reads, deliberately: rendering is rAF-throttled, so two
+	// reads inside one frame return an identical box even mid-animation.
+	const nextFrame = () =>
+		page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
+
 	let previous = await read();
 	for (let attempt = 0; attempt < 20; attempt++) {
+		await nextFrame();
 		const next = await read();
 		if (JSON.stringify(next) === JSON.stringify(previous)) return next;
 		previous = next;
