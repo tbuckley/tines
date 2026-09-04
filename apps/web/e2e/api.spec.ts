@@ -8,9 +8,7 @@ import type {
 } from '@tines/shared';
 import { expect, test } from '@playwright/test';
 import { ALICE, BOB } from './constants.mjs';
-import { apiClient, body, runId } from './helpers';
-
-type ErrorBody = { error: { code: string; message: string; details?: Record<string, unknown> } };
+import { apiClient, body, errorBody, runId } from './helpers';
 
 test.describe('auth', () => {
 	test('rejects requests without a key', async ({ request }) => {
@@ -21,7 +19,7 @@ test.describe('auth', () => {
 	test('rejects an invalid key', async ({ request }) => {
 		const res = await apiClient(request, 'tines_not_a_real_key').get('/api/v1/projects');
 		expect(res.status()).toBe(401);
-		expect((await body<ErrorBody>(res)).error.code).toBe('unauthorized');
+		expect((await errorBody(res)).error.code).toBe('unauthorized');
 	});
 
 	test('accepts a seeded key', async ({ request }) => {
@@ -32,7 +30,7 @@ test.describe('auth', () => {
 	test('refuses API-key management over bearer auth', async ({ request }) => {
 		const res = await apiClient(request, ALICE.apiKey).post('/api/v1/api-keys', { name: 'nope' });
 		expect(res.status()).toBe(403);
-		expect((await body<ErrorBody>(res)).error.code).toBe('session_required');
+		expect((await errorBody(res)).error.code).toBe('session_required');
 	});
 });
 
@@ -127,7 +125,7 @@ test.describe.serial('core issue loop', () => {
 
 		const dup = await api.post('/api/v1/projects', { name: projectName });
 		expect(dup.status()).toBe(422);
-		expect((await body<ErrorBody>(dup)).error.code).toBe('duplicate_project_name');
+		expect((await errorBody(dup)).error.code).toBe('duplicate_project_name');
 	});
 
 	test('creates issues with sequential numbers in the standard workflow', async ({ request }) => {
@@ -160,7 +158,7 @@ test.describe.serial('core issue loop', () => {
 		const api = apiClient(request, ALICE.apiKey);
 		const res = await api.post(`/api/v1/issues/${issueId}/transition`, { action: 'Approve' });
 		expect(res.status()).toBe(422);
-		const err = (await body<ErrorBody>(res)).error;
+		const err = (await errorBody(res)).error;
 		expect(err.code).toBe('invalid_transition');
 		const allowed = err.details?.allowed_transitions as { name: string }[];
 		expect(allowed.map((t) => t.name).sort()).toEqual(['Abandon', 'Submit for review']);
@@ -182,7 +180,7 @@ test.describe.serial('core issue loop', () => {
 			transition_id: submitTransitionId
 		});
 		expect(res.status()).toBe(422);
-		expect((await body<ErrorBody>(res)).error.code).toBe('invalid_transition');
+		expect((await errorBody(res)).error.code).toBe('invalid_transition');
 	});
 
 	test('comments are attributed to the API key', async ({ request }) => {
@@ -367,7 +365,7 @@ test.describe.serial('workflow editing rules', () => {
 			transitions: [{ name: 'finish', from: stateIds.Doing, to: stateIds.Done }]
 		});
 		expect(occupied.status()).toBe(422);
-		expect((await body<ErrorBody>(occupied)).error.code).toBe('state_in_use');
+		expect((await errorBody(occupied)).error.code).toBe('state_in_use');
 
 		// Dropping the initial state without designating a replacement gets the
 		// spec-mandated guidance.
@@ -379,14 +377,14 @@ test.describe.serial('workflow editing rules', () => {
 			transitions: [{ name: 'finish', from: stateIds.Doing, to: stateIds.Done }]
 		});
 		expect(noInitial.status()).toBe(422);
-		expect((await body<ErrorBody>(noInitial)).error.code).toBe('initial_state_removed');
+		expect((await errorBody(noInitial)).error.code).toBe('initial_state_removed');
 	});
 
 	test('cannot delete a workflow that issues reference', async ({ request }) => {
 		const api = apiClient(request, ALICE.apiKey);
 		const res = await api.delete(`/api/v1/workflows/${workflowId}`);
 		expect(res.status()).toBe(422);
-		expect((await body<ErrorBody>(res)).error.code).toBe('workflow_in_use');
+		expect((await errorBody(res)).error.code).toBe('workflow_in_use');
 	});
 
 	test('renaming states keeps issue references intact', async ({ request }) => {
@@ -468,7 +466,7 @@ test.describe.serial('direct state placement and workflow moves', () => {
 			state: 'Nowhere'
 		});
 		expect(unknown.status()).toBe(422);
-		expect((await body<ErrorBody>(unknown)).error.code).toBe('unknown_state');
+		expect((await errorBody(unknown)).error.code).toBe('unknown_state');
 
 		const res = await api.post(`/api/v1/projects/${projectId}/issues`, {
 			title: 'Starts in review',
@@ -616,7 +614,7 @@ test.describe('method not allowed', () => {
 				expect(res.status()).toBe(405);
 				expect(res.headers()['content-type']).toContain('application/json');
 				expect(res.headers()['allow']).toBeTruthy();
-				expect(await body<ErrorBody>(res)).toEqual({
+				expect(await errorBody(res)).toEqual({
 					error: {
 						code: 'method_not_allowed',
 						message: `${method.toUpperCase()} is not allowed on this resource`
@@ -634,6 +632,54 @@ test.describe('method not allowed', () => {
 			{ body: 'x' }
 		);
 		expect(res.status()).toBe(404);
-		expect((await body<ErrorBody>(res)).error.code).toBe('not_found');
+		expect((await errorBody(res)).error.code).toBe('not_found');
+	});
+});
+
+test.describe('e2e helper: body() surfaces a failed request', () => {
+	// Tines/157: `body()` used to return the error envelope typed as the created
+	// object, so a `beforeAll` that 4xx'd looked like a successful seed and the
+	// spec failed much later against undefined ids. These pin that a failed
+	// request stops at the call that made it, naming the server's own reason.
+	const projectName = `helper-body-${runId}`;
+
+	test('throws with the server code and message instead of returning the envelope', async ({
+		request
+	}) => {
+		const api = apiClient(request, ALICE.apiKey);
+		expect((await api.post('/api/v1/projects', { name: projectName })).status()).toBe(201);
+
+		// The exact Tines/31 shape: a second create under a name already taken.
+		const dup = await api.post('/api/v1/projects', { name: projectName });
+		await expect(body<Project>(dup)).rejects.toThrow(/422.*duplicate_project_name/s);
+	});
+
+	test('reports a non-JSON failure as its body, not a parse error', async ({ request }) => {
+		// An unknown /api path falls out of the JSON API to Kit's HTML error
+		// page. Reading 6KB of HTML as JSON throws a SyntaxError naming nothing;
+		// the status, the URL and a truncated body at least say what happened.
+		const res = await apiClient(request, ALICE.apiKey).get('/api/v1/no-such-endpoint');
+		expect(res.status()).toBe(404);
+		expect(res.headers()['content-type']).toContain('text/html');
+
+		const err = await body(res).then(
+			() => null,
+			(e: Error) => e
+		);
+		expect(err?.message).toContain('404');
+		expect(err?.message).toContain('/api/v1/no-such-endpoint');
+		expect(err?.message).toContain('<!doctype html>');
+		expect(err?.message).not.toContain('JSON');
+		// Truncated: a whole error page would bury the status it is reported with.
+		expect(err?.message.length).toBeLessThan(700);
+	});
+
+	test('errorBody() throws when the request unexpectedly succeeded', async ({ request }) => {
+		// The inverse trap: `.error.code` on a 200 is `undefined`, which compares
+		// equal to no expected code at all and reports an absent error as a
+		// wrong one.
+		const ok = await apiClient(request, ALICE.apiKey).get('/api/v1/projects');
+		expect(ok.ok()).toBe(true);
+		await expect(errorBody(ok)).rejects.toThrow(/Expected an error.*200/s);
 	});
 });

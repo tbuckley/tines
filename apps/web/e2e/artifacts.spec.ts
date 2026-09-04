@@ -1,9 +1,7 @@
 import type { IssueDetail, Project, WorkflowResponse } from '@tines/shared';
 import { expect, test } from '@playwright/test';
 import { ALICE, BOB } from './constants.mjs';
-import { apiClient, body, runId } from './helpers';
-
-type ErrorBody = { error: { code: string; message: string; details?: Record<string, unknown> } };
+import { apiClient, body, errorBody, runId } from './helpers';
 
 interface ArtifactShape {
 	name: string;
@@ -83,7 +81,7 @@ test.describe.serial('issue artifacts', () => {
 		const api = apiClient(request, ALICE.apiKey);
 		const res = await api.post(`/api/v1/issues/${issueId}/transition`, { action: 'approve' });
 		expect(res.status()).toBe(422);
-		const err = await body<ErrorBody>(res);
+		const err = await errorBody(res);
 		expect(err.error.code).toBe('transition_requirements_unmet');
 		const unmet = err.error.details?.unmet as Record<string, unknown>[];
 		expect(unmet[0]).toMatchObject({ artifact: 'design-doc', status: 'missing' });
@@ -130,10 +128,7 @@ test.describe.serial('issue artifacts', () => {
 		expect(listed.items[0].fresh).toBe(false);
 		const blocked = await api.post(`/api/v1/issues/${issueId}/transition`, { action: 'approve' });
 		expect(blocked.status()).toBe(422);
-		const unmet = (await body<ErrorBody>(blocked)).error.details?.unmet as Record<
-			string,
-			unknown
-		>[];
+		const unmet = (await errorBody(blocked)).error.details?.unmet as Record<string, unknown>[];
 		expect(unmet[0]).toMatchObject({ status: 'stale', current_version: { version: 1 } });
 
 		// v2 unblocks; both versions stay downloadable with distinct contents.
@@ -202,7 +197,7 @@ test.describe.serial('issue artifacts', () => {
 		});
 		const noContent = await api.get(`/api/v1/issues/${issueId}/artifacts/impl-pr/content`);
 		expect(noContent.status()).toBe(422);
-		expect((await body<ErrorBody>(noContent)).error.code).toBe('no_content');
+		expect((await errorBody(noContent)).error.code).toBe('no_content');
 
 		const issue = await body<IssueDetail>(await api.get(`/api/v1/issues/${issueId}`));
 		expect(issue.context_summary.artifacts).toBe(3);
@@ -217,7 +212,7 @@ test.describe.serial('issue artifacts', () => {
 			content: 'x'.repeat(256 * 1024 + 1)
 		});
 		expect(big.status()).toBe(422);
-		expect((await body<ErrorBody>(big)).error.code).toBe('artifact_too_large');
+		expect((await errorBody(big)).error.code).toBe('artifact_too_large');
 
 		const bob = apiClient(request, BOB.apiKey);
 		expect((await bob.get(`/api/v1/issues/${issueId}/artifacts`)).status()).toBe(404);
@@ -234,7 +229,7 @@ test.describe.serial('issue artifacts', () => {
 			issue_id: issueId
 		});
 		expect(create.status()).toBe(422);
-		expect((await body<ErrorBody>(create)).error.code).toBe('use_artifact_endpoints');
+		expect((await errorBody(create)).error.code).toBe('use_artifact_endpoints');
 
 		const listed = await body<{ items: { kind: string; name: string; artifact_type?: string }[] }>(
 			await api.get(`/api/v1/context?issue=${issueId}`)
@@ -278,7 +273,7 @@ test.describe.serial('issue artifacts', () => {
 		expect(file.headers()['content-disposition']).toBe('attachment; filename="billing.png"');
 		const noPath = await api.get(`/api/v1/issues/${issueId}/artifacts/screenshots/content`);
 		expect(noPath.status()).toBe(422);
-		const noPathErr = await body<ErrorBody>(noPath);
+		const noPathErr = await errorBody(noPath);
 		expect(noPathErr.error.code).toBe('folder_path_required');
 		expect(noPathErr.error.details?.paths).toEqual([
 			'login.png',
@@ -289,7 +284,7 @@ test.describe.serial('issue artifacts', () => {
 		// The JSON upsert refuses folder payload writes, naming the endpoint.
 		const bad = await api.put(`/api/v1/issues/${issueId}/artifacts/screenshots`, { content: 'x' });
 		expect(bad.status()).toBe(422);
-		expect((await body<ErrorBody>(bad)).error.code).toBe('use_folder_endpoint');
+		expect((await errorBody(bad)).error.code).toBe('use_folder_endpoint');
 
 		// A new snapshot replaces the set wholesale; v1 stays addressable.
 		const v2 = await request.put(`/api/v1/issues/${issueId}/artifacts/screenshots/folder`, {

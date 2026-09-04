@@ -8,9 +8,7 @@
 import type { ImportLibraryResponse, LibraryDocument } from '@tines/shared';
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import { ALICE, BOB } from './constants.mjs';
-import { apiClient, body, runId, signIn } from './helpers';
-
-type ErrorBody = { error: { code: string; message: string } };
+import { apiClient, body, errorBody, runId, signIn } from './helpers';
 
 /** Everything but the per-export timestamp. */
 const comparable = (doc: LibraryDocument) => ({
@@ -128,7 +126,7 @@ test.describe.serial('library export / import', () => {
 			document: { ...document, version: 99 }
 		});
 		expect(res.status()).toBe(422);
-		const err = await body<ErrorBody>(res);
+		const err = await errorBody(res);
 		expect(err.error.code).toBe('unsupported_format');
 		expect(err.error.message).toMatch(/newer Tines/);
 	});
@@ -139,7 +137,7 @@ test.describe.serial('library export / import', () => {
 			data: 'null'
 		});
 		expect(res.status()).toBe(400);
-		const err = await body<ErrorBody>(res);
+		const err = await errorBody(res);
 		expect(err.error.code).toBe('invalid_json');
 	});
 });
