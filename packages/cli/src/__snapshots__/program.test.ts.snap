@@ -20,6 +20,7 @@ Commands:
   projects          Manage projects
   workflows         Manage the workflow library
   issues            Work with issues
+  labels            Manage the label library
   context           Manage context items (prompts, skills, repo pointers) scoped
                     to projects, states, and issues
   journal           An issue's stage journal: shared notes for its project + the
@@ -229,6 +230,8 @@ Commands:
   comment [options] <ref> <markdown>                    Comment on an issue — Markdown body: inline text, @file, or "-" to read stdin; escape a literal leading @ as @@
   comment-edit [options] <ref> <comment-id> <markdown>  Replace the body of your own comment — Markdown body: inline text, @file, or "-" to read stdin; escape a literal leading @ as @@
   comment-delete [options] <ref> <comment-id>           Delete your own comment (the event keeps the record of the deletion)
+  label [options] <ref> <name...>                       Add labels to an issue (a label that does not exist yet is created)
+  unlabel [options] <ref> <name...>                     Remove labels from an issue
   block [options] <blocker> <blocked>                   Record that <blocker> blocks <blocked> (advisory: transitions stay allowed)
   unblock [options] <blocker> <blocked>                 Remove the link making <blocker> block <blocked>
   duplicate|dupe [options] <ref> <canonical>            Mark <ref> as a duplicate of <canonical> (its state then follows <canonical>)
@@ -448,6 +451,8 @@ Options:
                                 instances are closed
   --schedule-name <name>        schedule name, unique per project (defaults to
                                 the title)
+  -l, --label <name>            attach a label; repeat for several (created if
+                                new) (default: [])
   -u, --url <url>               base URL of the Tines API (or set TINES_API_URL,
                                 or run \`tines login\`; default
                                 https://tines.tbuckley.dev)
@@ -499,6 +504,17 @@ Options:
   --json                        output the raw JSON response
   -h, --help                    display help for command
 ",
+  "tines issues label": "Usage: tines issues label [options] <ref> <name...>
+
+Add labels to an issue (a label that does not exist yet is created)
+
+Options:
+  -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
+                   \`tines login\`; default https://tines.tbuckley.dev)
+  --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json           output the raw JSON response
+  -h, --help       display help for command
+",
   "tines issues list": "Usage: tines issues list [options]
 
 List issues across projects (hides done issues unless --all)
@@ -512,6 +528,8 @@ Options:
   --ready                      only issues that are actionable now (not done,
                                not a duplicate, no open blockers)
   -q, --search <text>          search titles and descriptions
+  -l, --label <name>           filter by label; repeat to require all of them
+                               (default: [])
   --brief                      omit description bodies (saves tokens when
                                scanning)
   --limit <n>                  maximum items to return (page size under
@@ -593,6 +611,17 @@ Options:
   --json           output the raw JSON response
   -h, --help       display help for command
 ",
+  "tines issues unlabel": "Usage: tines issues unlabel [options] <ref> <name...>
+
+Remove labels from an issue
+
+Options:
+  -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
+                   \`tines login\`; default https://tines.tbuckley.dev)
+  --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json           output the raw JSON response
+  -h, --help       display help for command
+",
   "tines journal": "Usage: tines journal [options] [command]
 
 An issue's stage journal: shared notes for its project + the stage your run was
@@ -660,6 +689,75 @@ Options:
                               login\`)
   --json                      output the raw JSON response
   -h, --help                  display help for command
+",
+  "tines labels": "Usage: tines labels [options] [command]
+
+Manage the label library
+
+Options:
+  -h, --help               display help for command
+
+Commands:
+  list [options]           List labels with how many issues carry each
+  create [options] <name>  Create a label
+  edit [options] <name>    Rename or restyle a label
+  delete [options] <name>  Delete a label and detach it from every issue
+  help [command]           display help for command
+",
+  "tines labels create": "Usage: tines labels create [options] <name>
+
+Create a label
+
+Options:
+  --color <key>             chip color (slate, red, orange, amber, green, teal,
+                            blue, violet, pink); defaults to one derived from
+                            the name
+  -d, --description <text>  what the label means
+  -u, --url <url>           base URL of the Tines API (or set TINES_API_URL, or
+                            run \`tines login\`; default
+                            https://tines.tbuckley.dev)
+  --api-key <key>           API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json                    output the raw JSON response
+  -h, --help                display help for command
+",
+  "tines labels delete": "Usage: tines labels delete [options] <name>
+
+Delete a label and detach it from every issue
+
+Options:
+  -y, --yes        skip the confirmation
+  -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
+                   \`tines login\`; default https://tines.tbuckley.dev)
+  --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json           output the raw JSON response
+  -h, --help       display help for command
+",
+  "tines labels edit": "Usage: tines labels edit [options] <name>
+
+Rename or restyle a label
+
+Options:
+  --name <new>              new name
+  --color <key>             chip color (slate, red, orange, amber, green, teal,
+                            blue, violet, pink)
+  -d, --description <text>  what the label means
+  -u, --url <url>           base URL of the Tines API (or set TINES_API_URL, or
+                            run \`tines login\`; default
+                            https://tines.tbuckley.dev)
+  --api-key <key>           API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json                    output the raw JSON response
+  -h, --help                display help for command
+",
+  "tines labels list": "Usage: tines labels list [options]
+
+List labels with how many issues carry each
+
+Options:
+  -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
+                   \`tines login\`; default https://tines.tbuckley.dev)
+  --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json           output the raw JSON response
+  -h, --help       display help for command
 ",
   "tines login": "Usage: tines login [options]
 

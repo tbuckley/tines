@@ -50,6 +50,7 @@ function row(path: string, n: number): Record<string, unknown> {
 		effective_state: { name: 'Backlog', category: 'active' },
 		last_activity_at: 0,
 		open_blockers: [],
+		labels: [],
 		duplicate_of: null,
 		kind: 'prompt',
 		version: 1,
