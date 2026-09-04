@@ -17,6 +17,8 @@ let issue: IssueDetail;
 
 const PHONE = { width: 390, height: 844 };
 
+type Box = { x: number; y: number; width: number; height: number };
+
 test.beforeAll(async ({ playwright }) => {
 	const request = await playwright.request.newContext({
 		baseURL: test.info().project.use.baseURL
@@ -200,4 +202,152 @@ test('Escape closes the viewer and returns focus to the button that opened it', 
 	await page.keyboard.press('Escape');
 	await expect(dialog).toBeHidden();
 	await expect(opener).toBeFocused();
+});
+
+/**
+ * Stepping through a folder's files (Tines/152): the detail view used to have
+ * `← all files` as its only navigation, so reading eight screenshots in order
+ * meant eight round trips through the index. These cover the Prev/Next
+ * cluster, the arrow-key shortcut and its guards, and the header row's layout
+ * — the row now carries three more controls than it was measured for.
+ */
+
+/** Open the photos folder and click into its first file. */
+async function openFirstPhoto(page: Page): Promise<Locator> {
+	const dialog = page.getByRole('dialog', { name: 'Artifact viewer' });
+	await openViewer(page.getByRole('button', { name: /^View photos/ }).first(), dialog);
+	// The gallery thumbnails name themselves by their contents (alt + caption),
+	// so address them by the title the markup gives them instead.
+	await dialog.locator('button[title="View shot-0.png"]').click();
+	return dialog;
+}
+
+/** The `n of N` position indicator in the file-detail header. */
+const counterOf = (dialog: Locator) => dialog.locator('span.tabular-nums');
+/** The truncating path span in the file-detail header. */
+const pathOf = (dialog: Locator) => dialog.locator('span.font-mono');
+
+test('Prev/Next step through a folder in order and stop at the ends', async ({ page }) => {
+	await page.goto(issueUrl());
+	const dialog = await openFirstPhoto(page);
+
+	const counter = counterOf(dialog);
+	const prev = dialog.getByRole('button', { name: 'Previous file' });
+	const next = dialog.getByRole('button', { name: 'Next file' });
+
+	await expect(counter).toHaveText('1 of 8');
+	await expect(prev).toHaveAttribute('aria-disabled', 'true');
+	await expect(next).toHaveAttribute('aria-disabled', 'false');
+
+	// Stepping moves the preview, not just the label: the <img> follows.
+	await next.click();
+	await next.click();
+	await expect(counter).toHaveText('3 of 8');
+	await expect(pathOf(dialog)).toHaveText('shot-2.png');
+	await expect(dialog.locator('img[alt="shot-2.png"]')).toHaveAttribute(
+		'src',
+		/path=shot-2\.png&inline=1/
+	);
+
+	await prev.click();
+	await expect(counter).toHaveText('2 of 8');
+	await expect(pathOf(dialog)).toHaveText('shot-1.png');
+
+	for (let i = 0; i < 6; i++) await next.click();
+	await expect(counter).toHaveText('8 of 8');
+	await expect(next).toHaveAttribute('aria-disabled', 'true');
+
+	// The end is `aria-disabled`, not `disabled`, so the button that took the
+	// user here keeps focus — activating it again is simply a no-op.
+	await expect(next).toBeFocused();
+	await page.keyboard.press('Enter');
+	await expect(counter).toHaveText('8 of 8');
+	await expect(next).toBeFocused();
+
+	await dialog.getByRole('button', { name: '← all files' }).click();
+	await expect(dialog.locator('button[title="View shot-0.png"]')).toBeVisible();
+	await expect(counter).toHaveCount(0);
+});
+
+test('arrow keys step, and are left alone inside the header selects', async ({ page }) => {
+	await page.goto(issueUrl());
+	const dialog = await openFirstPhoto(page);
+	const counter = counterOf(dialog);
+	await expect(counter).toHaveText('1 of 8');
+
+	await page.keyboard.press('ArrowRight');
+	await expect(counter).toHaveText('2 of 8');
+	await page.keyboard.press('ArrowLeft');
+	await expect(counter).toHaveText('1 of 8');
+	// The first file is the end: another press stays put rather than wrapping.
+	await page.keyboard.press('ArrowLeft');
+	await expect(counter).toHaveText('1 of 8');
+
+	// The header's version picker is a native <select>, which owns arrow keys.
+	const versionSelect = dialog.getByRole('combobox', { name: 'Version' });
+	await versionSelect.focus();
+	await page.keyboard.press('ArrowRight');
+	await expect(counter).toHaveText('1 of 8');
+	await expect(versionSelect).toBeFocused();
+});
+
+type NavGeometry = { row: Box; path: Box; cluster: Box };
+
+/**
+ * The header row's boxes from one layout pass (the Tines/123 lesson): the
+ * assertions below are about where the parts sit relative to each other, and
+ * separate `boundingBox()` reads would also measure whatever the dialog
+ * reflowed in between.
+ */
+function navGeometry(dialog: Locator): Promise<NavGeometry> {
+	// Reached from the Prev button outwards rather than by class: the classes
+	// this test exists to pin are exactly the ones a locator must not depend on
+	// (drop `flex-wrap` and a `div.flex-wrap` locator matches nothing, which
+	// would fail as a timeout instead of as a layout claim).
+	return dialog.getByRole('button', { name: 'Previous file' }).evaluate((prevButton) => {
+		const box = (el: Element): Box => {
+			const { x, y, width, height } = el.getBoundingClientRect();
+			return { x, y, width, height };
+		};
+		const cluster = prevButton.parentElement!;
+		const row = cluster.parentElement!;
+		return {
+			row: box(row),
+			path: box(row.querySelector(':scope > span')!),
+			cluster: box(cluster)
+		};
+	});
+}
+
+async function settledNavGeometry(dialog: Locator): Promise<NavGeometry> {
+	let settled = await navGeometry(dialog);
+	await expect(async () => {
+		const before = JSON.stringify(settled);
+		settled = await navGeometry(dialog);
+		expect(JSON.stringify(settled)).toBe(before);
+	})
+		.toPass({ intervals: [100, 100, 200, 400], timeout: 3_000 })
+		// Best effort: a row that never stops moving is a failure too, but the
+		// assertions below name it far better than a timeout in here would.
+		.catch(() => {});
+	return settled;
+}
+
+test('the file-detail header keeps one line on desktop and wraps on a phone', async ({ page }) => {
+	await page.setViewportSize({ width: 1440, height: 900 });
+	await page.goto(issueUrl());
+	const dialog = await openFirstPhoto(page);
+
+	const wide = await settledNavGeometry(dialog);
+	// One line: the trailing cluster sits beside the path, not under it.
+	expect(wide.cluster.y).toBeLessThan(wide.path.y + wide.path.height);
+	expect(wide.path.y).toBeLessThan(wide.cluster.y + wide.cluster.height);
+	expect(wide.row.height).toBeLessThanOrEqual(40);
+
+	await page.setViewportSize(PHONE);
+	const narrow = await settledNavGeometry(dialog);
+	// Two lines: the cluster drops below a path that is truncated, not crushed.
+	expect(narrow.cluster.y).toBeGreaterThanOrEqual(narrow.path.y + narrow.path.height);
+	expect(narrow.path.width).toBeGreaterThan(100);
+	expect(narrow.row.height).toBeLessThanOrEqual(80);
 });

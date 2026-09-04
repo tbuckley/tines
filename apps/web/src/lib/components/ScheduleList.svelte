@@ -4,6 +4,7 @@
 	import IconPencil from '@tabler/icons-svelte/icons/pencil';
 	import IconPlayerPlay from '@tabler/icons-svelte/icons/player-play';
 	import IconTrash from '@tabler/icons-svelte/icons/trash';
+	import { onMount } from 'svelte';
 	import { fade, slide } from 'svelte/transition';
 	import { invalidateAll } from '$app/navigation';
 	import { api } from '$lib/api';
@@ -37,6 +38,17 @@
 	} = $props();
 
 	const dur = () => (prefersReducedMotion() ? 0 : 180);
+
+	// The list can sit well below the fold (the project page leads with issues),
+	// so a ?schedule= deep link brings its highlighted row into view. onMount, not
+	// $effect: arriving once, not again on every invalidateAll() after a mutation.
+	onMount(() => {
+		if (!highlightId) return;
+		document.getElementById(`schedule-${highlightId}`)?.scrollIntoView({
+			block: 'center',
+			behavior: prefersReducedMotion() ? 'auto' : 'smooth'
+		});
+	});
 
 	// One in-flight mutation at a time keeps the optimistic states simple.
 	let busyId = $state<string | null>(null);
@@ -139,6 +151,7 @@
 <ul class="divide-y rounded-lg border">
 	{#each schedules as s (s.id)}
 		<li
+			id="schedule-{s.id}"
 			class="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-3 transition-[opacity,background-color] duration-200 {s.enabled
 				? ''
 				: 'opacity-60'} {highlightId === s.id ? 'bg-accent/60' : ''}"

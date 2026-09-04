@@ -11,7 +11,7 @@ import { createHash } from 'node:crypto';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ALICE, BOB, RUNROW, SCHED } from './constants.mjs';
+import { ALICE, BOB, RUNROW, RUNROW_FAILED, SCHED } from './constants.mjs';
 
 const sha256Hex = (s) => createHash('sha256').update(s).digest('hex');
 
@@ -76,6 +76,22 @@ statements.push(
 	   '${RUNROW.outcome}',
 	   'balanced', 'claude-opus-4', '{"input_tokens":1000,"output_tokens":2000,"cost_usd":${RUNROW.costUsd},"cost_source":"provider"}',
 	   'wfs_std_open', 'wfs_std_open', '${RUNROW.providerSessionId}', '${RUNROW.providerUrl}', 'seeded log tail', NULL,
+	   ${runStart}, ${runStart}, ${nowMs});`,
+	// A second run on the same issue, this one failed with a long error: the
+	// row clamps it to two lines and the Logs disclosure carries it whole.
+	// Its own runner keeps every `hasText: <runner name>` row selector at one
+	// match on both the issue page and the Agents tab.
+	`INSERT INTO runner (id, user_id, type, name, status, max_concurrent, max_run_minutes, default_tier,
+	   config, created_at, updated_at)
+	 VALUES ('${RUNROW_FAILED.runnerId}', '${ALICE.id}', 'local', '${RUNROW_FAILED.runnerName}', 'paused', 1, 30,
+	   'balanced', '{}', ${nowMs}, ${nowMs});`,
+	`INSERT INTO agent_run (id, user_id, issue_id, runner_id, status, outcome, tier, model, usage,
+	   state_id_at_start, state_id_at_end, provider_session_id, provider_url, log, error,
+	   created_at, started_at, ended_at)
+	 VALUES ('${RUNROW_FAILED.runId}', '${ALICE.id}', '${RUNROW.issueId}', '${RUNROW_FAILED.runnerId}', 'failed',
+	   'stalled',
+	   'balanced', NULL, NULL,
+	   'wfs_std_open', 'wfs_std_open', NULL, NULL, 'seeded failed log tail', '${RUNROW_FAILED.error}',
 	   ${runStart}, ${runStart}, ${nowMs});`
 );
 
