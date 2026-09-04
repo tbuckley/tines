@@ -50,7 +50,7 @@ pnpm build
 node packages/cli/dist/index.js time --url http://localhost:5173
 ```
 
-The CLI reads the API base URL from `--url` (accepted by every command, without exception), then the `TINES_API_URL` env var, then the file `tines login` writes (`~/.config/tines/config.json`); the default is the production deployment, `https://tines.tbuckley.dev`. The API key resolves the same way (`--api-key`, `TINES_API_KEY`, the file). For local development, set `TINES_API_URL=http://localhost:5173` or pass `--url` — `pnpm cli` does that for you, so the snippet above talks to your dev server. `tines config` shows what is in effect and where each value came from.
+The CLI reads the API base URL from `--url` (accepted by every command, without exception), then the `TINES_API_URL` env var, then the file `tines login` writes (`~/.config/tines/config.json`); the default is the production deployment, `https://tines.tbuckley.dev`. The API key resolves the same way (`--api-key`, `TINES_API_KEY`, the file). For local development, `pnpm cli` **always** targets `http://localhost:5173` — its script pins `TINES_API_URL` rather than defaulting it, so a `TINES_API_URL` already in your environment (every agent run has one, pointing at production) is ignored and the snippet above talks to your dev server. To reach any other deployment from source, including a dev server vite moved to another port, pass `--url` (`pnpm cli time --url http://localhost:5174`) or use the installed `tines` / the built binary. `tines config` shows what is in effect and where each value came from.
 
 Every `… list` command returns one page. Pass `--all-pages` to follow the cursor and fetch the whole list in one command; without it, `--json` output carries a `next_cursor` and warns on stderr that there is more.
 
@@ -391,4 +391,4 @@ From the repo root:
 - `pnpm check` — the migration-numbering and script-name guards in `scripts/` and `apps/web/scripts/`, then typecheck all packages (svelte-check + tsc)
 - `pnpm test` — vitest unit tests (`ci.yml` runs them on every pull request, and the deploy and publish workflows run them again before shipping)
 - `pnpm test:e2e` — Playwright e2e suite (boots the built worker under `wrangler dev` with a seeded local D1; see `apps/web/e2e/`). Run by `ci.yml` on pull requests, but not by `pnpm test`.
-- `pnpm cli <command>` — run the CLI in dev mode
+- `pnpm cli <command>` — run the CLI from source against the local dev server (`http://localhost:5173`, pinned; pass `--url` for anything else)
