@@ -82,7 +82,7 @@
 	}
 </script>
 
-<section>
+<section class="rounded-lg border p-4">
 	<div class="mb-3 flex items-center justify-between gap-2">
 		<h2 class="text-sm font-semibold">Labels</h2>
 		<LabelPicker
