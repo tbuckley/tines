@@ -10,9 +10,7 @@ import type {
 } from '@tines/shared';
 import { expect, test, type Locator } from '@playwright/test';
 import { ALICE, BOB, SCHED } from './constants.mjs';
-import { apiClient, body, runId, signIn } from './helpers';
-
-type ErrorBody = { error: { code: string; message: string; details?: Record<string, unknown> } };
+import { apiClient, body, errorBody, runId, signIn } from './helpers';
 
 /** Today's ISO date in UTC — the seeded schedules render {{date}} in UTC. */
 const todayUtc = () => new Date().toISOString().slice(0, 10);
@@ -152,7 +150,7 @@ test.describe.serial('schedule lifecycle over the API', () => {
 		const api = apiClient(request, ALICE.apiKey);
 		const res = await api.post(`/api/v1/schedules/${scheduleId}/run`);
 		expect(res.status()).toBe(422);
-		const err = (await body<ErrorBody>(res)).error;
+		const err = (await errorBody(res)).error;
 		expect(err.code).toBe('schedule_blocked');
 		expect(err.details?.open_instances).toEqual([
 			{ issue_id: firstIssue.id, number: firstIssue.number, title: firstIssue.title }
@@ -265,13 +263,13 @@ test.describe('schedule validation', () => {
 	test('rejects an invalid cron expression', async ({ request }) => {
 		const res = await create(request, { cron: 'not a cron' });
 		expect(res.status()).toBe(422);
-		expect((await body<ErrorBody>(res)).error.code).toBe('invalid_cron');
+		expect((await errorBody(res)).error.code).toBe('invalid_cron');
 	});
 
 	test('rejects sub-hourly recurrences', async ({ request }) => {
 		const res = await create(request, { cron: '*/15 * * * *' });
 		expect(res.status()).toBe(422);
-		const err = (await body<ErrorBody>(res)).error;
+		const err = (await errorBody(res)).error;
 		expect(err.code).toBe('invalid_cron');
 		expect(err.message).toContain('more often than once per hour');
 	});
@@ -279,7 +277,7 @@ test.describe('schedule validation', () => {
 	test('rejects an unknown timezone', async ({ request }) => {
 		const res = await create(request, { cron: '0 9 * * *', timezone: 'Mars/Olympus' });
 		expect(res.status()).toBe(422);
-		expect((await body<ErrorBody>(res)).error.code).toBe('invalid_timezone');
+		expect((await errorBody(res)).error.code).toBe('invalid_timezone');
 	});
 
 	test('rejects both preset and cron, and neither', async ({ request }) => {
@@ -288,11 +286,11 @@ test.describe('schedule validation', () => {
 			preset: { kind: 'daily', time: '09:00' }
 		});
 		expect(both.status()).toBe(422);
-		expect((await body<ErrorBody>(both)).error.code).toBe('invalid_recurrence');
+		expect((await errorBody(both)).error.code).toBe('invalid_recurrence');
 
 		const neither = await create(request, {});
 		expect(neither.status()).toBe(422);
-		expect((await body<ErrorBody>(neither)).error.code).toBe('invalid_recurrence');
+		expect((await errorBody(neither)).error.code).toBe('invalid_recurrence');
 	});
 
 	test('accepts an hourly preset, compiling it to every-N-hours cron', async ({ request }) => {
@@ -316,7 +314,7 @@ test.describe('schedule validation', () => {
 		for (const every_hours of [0, 24]) {
 			const res = await create(request, { preset: { kind: 'hourly', every_hours } });
 			expect(res.status()).toBe(422);
-			const err = (await body<ErrorBody>(res)).error;
+			const err = (await errorBody(res)).error;
 			expect(err.code).toBe('invalid_recurrence');
 			expect(err.message).toContain('every_hours');
 		}
@@ -327,7 +325,7 @@ test.describe('schedule validation', () => {
 		expect(first.status()).toBe(201);
 		const dup = await create(request, { preset: { kind: 'daily', time: '10:00' } }, 'Same name');
 		expect(dup.status()).toBe(422);
-		expect((await body<ErrorBody>(dup)).error.code).toBe('duplicate_schedule_name');
+		expect((await errorBody(dup)).error.code).toBe('duplicate_schedule_name');
 	});
 });
 
@@ -360,7 +358,7 @@ test.describe.serial('workflow deletion guard', () => {
 
 		const res = await api.delete(`/api/v1/workflows/${workflow.id}`);
 		expect(res.status()).toBe(422);
-		const err = (await body<ErrorBody>(res)).error;
+		const err = (await errorBody(res)).error;
 		expect(err.code).toBe('workflow_in_use');
 		expect(err.message).toContain('scheduled task');
 		expect(err.details?.schedules).toEqual([

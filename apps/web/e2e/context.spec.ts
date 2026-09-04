@@ -11,9 +11,7 @@ import type {
 } from '@tines/shared';
 import { expect, test } from '@playwright/test';
 import { ALICE, BOB } from './constants.mjs';
-import { apiClient, body, runId, signIn } from './helpers';
-
-type ErrorBody = { error: { code: string; message: string; details?: Record<string, unknown> } };
+import { apiClient, body, errorBody, runId, signIn } from './helpers';
 
 /**
  * The context-attachments acceptance loop (specs/context/SPEC.md): scoped
@@ -110,14 +108,14 @@ test.describe.serial('context attachments', () => {
 		// Strictness: unknown kind, foreign payload, missing scope, bad paths.
 		expect(
 			(
-				await body<ErrorBody>(
+				await errorBody(
 					await api.post('/api/v1/context', { kind: 'widget', name: 'x', project_id: projectId })
 				)
 			).error.code
 		).toBe('unknown_kind');
 		expect(
 			(
-				await body<ErrorBody>(
+				await errorBody(
 					await api.post('/api/v1/context', {
 						kind: 'prompt',
 						name: 'x',
@@ -141,7 +139,7 @@ test.describe.serial('context attachments', () => {
 		await api.delete(`/api/v1/context/${globalItem.id}`);
 		expect(
 			(
-				await body<ErrorBody>(
+				await errorBody(
 					await api.post('/api/v1/context', {
 						kind: 'skill',
 						name: 'esc',
@@ -153,7 +151,7 @@ test.describe.serial('context attachments', () => {
 		).toBe('invalid_path');
 		expect(
 			(
-				await body<ErrorBody>(
+				await errorBody(
 					await api.post('/api/v1/context', {
 						kind: 'prompt',
 						name: 'house-conventions',
@@ -293,7 +291,7 @@ test.describe.serial('context attachments', () => {
 		const patch = { states: keep, transitions: [] };
 		const rejected = await api.patch(`/api/v1/workflows/${workflow.id}`, patch);
 		expect(rejected.status()).toBe(422);
-		const err = (await body<ErrorBody>(rejected)).error;
+		const err = (await errorBody(rejected)).error;
 		expect(err.code).toBe('context_attached');
 		expect(err.details?.context_items).toEqual([
 			expect.objectContaining({ kind: 'skill', name: 'review-checklist' })
@@ -372,7 +370,7 @@ test.describe.serial('agent-maintained context', () => {
 			}))
 		});
 		expect(rejected.status()).toBe(422);
-		expect((await body<ErrorBody>(rejected)).error.code).toBe('prompt_on_existing_state');
+		expect((await errorBody(rejected)).error.code).toBe('prompt_on_existing_state');
 	});
 
 	test('project creation seeds its conventions atomically', async ({ request }) => {
@@ -444,7 +442,7 @@ test.describe.serial('agent-maintained context', () => {
 			expected_version: 1
 		});
 		expect(stale.status()).toBe(409);
-		const conflict = (await body<ErrorBody>(stale)).error;
+		const conflict = (await errorBody(stale)).error;
 		expect(conflict.code).toBe('version_conflict');
 		expect((conflict.details?.current as ContextItem).version).toBe(2);
 		const rewritten = await body<ContextItem>(

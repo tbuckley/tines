@@ -8,9 +8,7 @@ import type {
 } from '@tines/shared';
 import { expect, test } from '@playwright/test';
 import { ALICE, BOB } from './constants.mjs';
-import { apiClient, body, runId } from './helpers';
-
-type ErrorBody = { error: { code: string; message: string; details?: Record<string, unknown> } };
+import { apiClient, body, errorBody, runId } from './helpers';
 
 /**
  * Dependencies & duplicates (specs/issue_dependencies/SPEC.md): blocking
@@ -104,7 +102,7 @@ test.describe.serial('issue links', () => {
 		expect(dup.status()).toBe(409);
 		const self = await api.post(`/api/v1/issues/${a.id}/links`, { kind: 'blocks', issue_id: a.id });
 		expect(self.status()).toBe(422);
-		expect((await body<ErrorBody>(self)).error.code).toBe('self_link');
+		expect((await errorBody(self)).error.code).toBe('self_link');
 	});
 
 	test('links to another user’s issue are indistinguishable from nonexistent', async ({
@@ -158,7 +156,7 @@ test.describe.serial('issue links', () => {
 			issue_id: d.id
 		});
 		expect(res.status()).toBe(422);
-		expect((await body<ErrorBody>(res)).error.code).toBe('already_duplicate');
+		expect((await errorBody(res)).error.code).toBe('already_duplicate');
 	});
 
 	test('ready lists unblocked, not-done, non-duplicate issues only', async ({ request }) => {
@@ -187,7 +185,7 @@ test.describe.serial('issue links', () => {
 			issue_id: a.id
 		});
 		expect(back.status()).toBe(422);
-		const err = (await body<ErrorBody>(back)).error;
+		const err = (await errorBody(back)).error;
 		expect(err.code).toBe('link_cycle');
 		expect(err.message).toContain(`${projectName}/${b.number}`);
 		expect(err.message).toContain(`${projectName}/${a.number}`);
@@ -199,7 +197,7 @@ test.describe.serial('issue links', () => {
 			issue_id: a.id
 		});
 		expect(mixed.status()).toBe(422);
-		expect((await body<ErrorBody>(mixed)).error.code).toBe('link_cycle');
+		expect((await errorBody(mixed)).error.code).toBe('link_cycle');
 
 		// Duplicate loop closing a chain: a duplicate_of c while c duplicate_of a.
 		const loop = await api.post(`/api/v1/issues/${a.id}/links`, {
@@ -207,7 +205,7 @@ test.describe.serial('issue links', () => {
 			issue_id: c.id
 		});
 		expect(loop.status()).toBe(422);
-		expect((await body<ErrorBody>(loop)).error.code).toBe('link_cycle');
+		expect((await errorBody(loop)).error.code).toBe('link_cycle');
 	});
 
 	test('duplicate chains resolve to the terminus', async ({ request }) => {
