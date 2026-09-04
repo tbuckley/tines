@@ -4,6 +4,7 @@
 	import { goto, invalidateAll } from '$app/navigation';
 	import { api } from '$lib/api';
 	import Modal from '$lib/components/Modal.svelte';
+	import PendingButton from '$lib/components/PendingButton.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { Textarea } from '$lib/components/ui/textarea/index.js';
@@ -114,11 +115,23 @@
 		{#if createError}
 			<p class="text-destructive text-sm">{createError}</p>
 		{/if}
-		<div class="flex justify-end gap-2">
-			<Button type="button" variant="ghost" onclick={() => (createOpen = false)}>Cancel</Button>
-			<Button type="submit" disabled={creating || !name.trim()}>
-				{creating ? 'Creating…' : 'Create project'}
+		<div class="flex flex-wrap justify-end gap-2">
+			<Button
+				type="button"
+				variant="ghost"
+				disabled={creating}
+				onclick={() => (createOpen = false)}
+			>
+				Cancel
 			</Button>
+			<PendingButton
+				type="submit"
+				pending={creating}
+				pendingLabel="Creating…"
+				disabled={!name.trim()}
+			>
+				Create project
+			</PendingButton>
 		</div>
 	</form>
 </Modal>

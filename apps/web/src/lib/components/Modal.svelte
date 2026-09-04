@@ -89,11 +89,15 @@
 
 <svelte:window {onkeydown} />
 
+<!-- Both transitions are `|global`: a local transition only plays when *this*
+     `{#if}` toggles, but consumers may mount a Modal inside their own `{#if}`
+     with `open={true}` and close it by destroying that block — which hard-cut
+     the dialog away with no outro (Tines/153). -->
 {#if open}
 	<div
 		class="fixed inset-0 z-50 bg-black/50"
 		use:portal
-		transition:fade={{ duration: dur() }}
+		transition:fade|global={{ duration: dur() }}
 		onclick={close}
 		aria-hidden="true"
 	></div>
@@ -107,7 +111,7 @@
 			: 'max-w-md'} -translate-x-1/2 flex-col overflow-hidden rounded-xl border shadow-lg sm:top-1/2 sm:-translate-y-1/2"
 		style="max-height: calc(100dvh - 2rem - env(safe-area-inset-bottom, 0px))"
 		use:portal
-		transition:scale={{ duration: dur(), start: 0.96 }}
+		transition:scale|global={{ duration: dur(), start: 0.96 }}
 		role="dialog"
 		aria-modal="true"
 		aria-labelledby={titleId}

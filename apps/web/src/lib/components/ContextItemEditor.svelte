@@ -18,6 +18,7 @@
 	import { confirmDialog } from '$lib/components/dialogs.svelte';
 	import Markdown from '$lib/components/Markdown.svelte';
 	import Modal from '$lib/components/Modal.svelte';
+	import PendingButton from '$lib/components/PendingButton.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { Select } from '$lib/components/ui/select/index.js';
@@ -510,20 +511,18 @@
 			{:else}
 				<span></span>
 			{/if}
-			<div class="flex gap-2">
-				<Button type="button" variant="ghost" onclick={() => (open = false)}>Cancel</Button>
-				<Button
-					type="submit"
-					disabled={saving || !name.trim() || (kind === 'skill' && !filesReady)}
-				>
-					{saving
-						? 'Saving…'
-						: kind === 'skill' && !filesReady
-							? 'Loading files…'
-							: item
-								? 'Save'
-								: 'Create'}
+			<div class="flex flex-wrap gap-2">
+				<Button type="button" variant="ghost" disabled={saving} onclick={() => (open = false)}>
+					Cancel
 				</Button>
+				<PendingButton
+					type="submit"
+					pending={saving}
+					pendingLabel="Saving…"
+					disabled={!name.trim() || (kind === 'skill' && !filesReady)}
+				>
+					{kind === 'skill' && !filesReady ? 'Loading files…' : item ? 'Save' : 'Create'}
+				</PendingButton>
 			</div>
 		</div>
 	</form>
