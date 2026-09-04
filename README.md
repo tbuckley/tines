@@ -338,7 +338,10 @@ Migrations run before the new worker version goes live, so keep them
 backwards-compatible with the previously deployed code (add columns/tables
 freely; do renames and drops in two releases, expand/contract style).
 D1 tracks applied migrations in a `d1_migrations` table, so already-applied
-files are skipped and a no-op run is safe.
+files are skipped and a no-op run is safe. That ledger keys on the *filename*:
+renaming an applied file makes D1 run it again under the new name, on
+production and preview alike, so only rename migrations whose every statement
+is `IF NOT EXISTS`.
 
 ### PR preview URLs
 
