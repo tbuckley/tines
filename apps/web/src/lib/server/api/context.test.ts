@@ -5,10 +5,12 @@ import {
 	isJournal,
 	issueBlock,
 	layerRank,
+	listContextItems,
 	stitchPrompt,
 	validateWorkspacePath
 } from './context';
 import { ApiFail } from './core';
+import { createTestDb, type TestDb } from './test-db';
 
 describe('layerRank', () => {
 	it('orders the eight scopes exactly as the spec enumerates them', () => {
@@ -344,5 +346,74 @@ describe('buildLaunchPrompt', () => {
 
 	it('is just the issue block when no context applies', () => {
 		expect(buildLaunchPrompt(emptyContext, issue).startsWith('## Issue:')).toBe(true);
+	});
+});
+
+describe('listContextItems workflow filter', () => {
+	// Two workflows sharing a state name is the case the Context page's
+	// filter exists for: "Review" alone says nothing about which flow it is.
+	function seed(): TestDb {
+		const t = createTestDb();
+		t.sqlite.exec(`
+			INSERT INTO user (id, name, email, emailVerified, createdAt, updatedAt)
+				VALUES ('u1', 'alice', 'a@example.com', 1, 0, 0);
+			INSERT INTO project (id, user_id, name, created_at, updated_at)
+				VALUES ('prj_1', 'u1', 'demo', 0, 0);
+			INSERT INTO workflow (id, user_id, name, description, initial_state_id, created_at, updated_at) VALUES
+				('wf_eng', 'u1', 'Engineering', '', 'wfs_eng_review', 0, 0),
+				('wf_qa', 'u1', 'QA', '', 'wfs_qa_review', 0, 0);
+			INSERT INTO workflow_state (id, workflow_id, name, category, position, created_at) VALUES
+				('wfs_eng_review', 'wf_eng', 'Review', 'active', 0, 0),
+				('wfs_eng_done', 'wf_eng', 'Done', 'done', 1, 0),
+				('wfs_qa_review', 'wf_qa', 'Review', 'active', 0, 0);
+			INSERT INTO context_item (id, user_id, kind, name, description, project_id, workflow_state_id,
+				issue_id, body, position, version, created_at, updated_at) VALUES
+				('ctx_eng_review', 'u1', 'prompt', 'instructions', '', NULL, 'wfs_eng_review', NULL, 'e', 0, 1, 0, 3),
+				('ctx_eng_done', 'u1', 'skill', 'wrap-up', '', 'prj_1', 'wfs_eng_done', NULL, NULL, 0, 1, 0, 2),
+				('ctx_qa_review', 'u1', 'prompt', 'instructions', '', NULL, 'wfs_qa_review', NULL, 'q', 0, 1, 0, 1),
+				('ctx_global', 'u1', 'prompt', 'agent-guidelines', '', NULL, NULL, NULL, 'g', 0, 1, 0, 0);
+		`);
+		return t;
+	}
+	const page = { cursor: null, limit: 50 };
+	const names = (r: { items: { id: string }[] }) => r.items.map((i) => i.id);
+
+	it('keeps only items scoped to a state of that workflow', async () => {
+		const t = seed();
+		expect(names(await listContextItems(t.db, 'u1', { workflow: 'wf_eng' }, page))).toEqual([
+			'ctx_eng_review',
+			'ctx_eng_done'
+		]);
+		expect(names(await listContextItems(t.db, 'u1', { workflow: 'wf_qa' }, page))).toEqual([
+			'ctx_qa_review'
+		]);
+		// Unfiltered still sees everything, newest first.
+		expect(names(await listContextItems(t.db, 'u1', {}, page))).toEqual([
+			'ctx_eng_review',
+			'ctx_eng_done',
+			'ctx_qa_review',
+			'ctx_global'
+		]);
+	});
+
+	it('ANDs with the other filters', async () => {
+		const t = seed();
+		expect(
+			names(await listContextItems(t.db, 'u1', { workflow: 'wf_eng', kind: 'prompt' }, page))
+		).toEqual(['ctx_eng_review']);
+		expect(
+			names(await listContextItems(t.db, 'u1', { workflow: 'wf_eng', project: 'demo' }, page))
+		).toEqual(['ctx_eng_done']);
+		expect(
+			names(await listContextItems(t.db, 'u1', { workflow: 'wf_qa', kind: 'skill' }, page))
+		).toEqual([]);
+	});
+
+	it('never matches an unscoped item, and stays per-user', async () => {
+		const t = seed();
+		expect(names(await listContextItems(t.db, 'u1', { workflow: 'wf_eng' }, page))).not.toContain(
+			'ctx_global'
+		);
+		expect(names(await listContextItems(t.db, 'u2', { workflow: 'wf_eng' }, page))).toEqual([]);
 	});
 });

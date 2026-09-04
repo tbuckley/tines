@@ -262,7 +262,7 @@
 	}
 </script>
 
-<section class="rounded-lg border">
+<section id="artifacts" class="rounded-lg border">
 	<header class="flex items-center justify-between border-b px-4 py-2.5">
 		<h2 class="text-sm font-semibold">
 			Artifacts

@@ -11,7 +11,7 @@ import type {
 } from '@tines/shared';
 import { expect, test } from '@playwright/test';
 import { ALICE, BOB } from './constants.mjs';
-import { apiClient, body, runId } from './helpers';
+import { apiClient, body, runId, signIn } from './helpers';
 
 type ErrorBody = { error: { code: string; message: string; details?: Record<string, unknown> } };
 
@@ -512,5 +512,78 @@ test.describe.serial('agent-maintained context', () => {
 
 		// Keep later suites clean: the global item affects every launch prompt.
 		await api.delete(`/api/v1/context/${globalId}`);
+	});
+});
+
+/**
+ * The Context page's state chips. A real library has an `instructions` prompt
+ * for every state of every workflow, so "Review" alone names dozens of rows —
+ * the chip has to carry the workflow, and the filter row has to narrow by it.
+ */
+test.describe.serial('context list state chips', () => {
+	const engName = `Chip Eng ${runId}`;
+	const qaName = `Chip QA ${runId}`;
+	let eng: WorkflowResponse;
+	let qa: WorkflowResponse;
+
+	const flow = (name: string) => ({
+		name,
+		initial_state: 'Review',
+		states: [
+			{ name: 'Review', category: 'active', prompt: `Instructions for ${name}.` },
+			{ name: 'Done', category: 'done' }
+		],
+		transitions: [{ name: 'finish', from: 'Review', to: 'Done' }]
+	});
+
+	test('sets up two workflows that share a state name', async ({ request }) => {
+		const api = apiClient(request, ALICE.apiKey);
+		eng = await body<WorkflowResponse>(await api.post('/api/v1/workflows', flow(engName)));
+		qa = await body<WorkflowResponse>(await api.post('/api/v1/workflows', flow(qaName)));
+		// One seeded item each: the Review state's instructions.
+		for (const wf of [eng, qa]) {
+			const reviewId = wf.states.find((s) => s.name === 'Review')!.id;
+			const items = await body<ListResponse<ContextItem>>(
+				await api.get(`/api/v1/context?state=${reviewId}`)
+			);
+			expect(items.items.map((i) => i.name)).toEqual(['instructions']);
+		}
+	});
+
+	test('the chip names the workflow, and the Workflow filter narrows to it', async ({
+		page,
+		context
+	}) => {
+		await signIn(context, ALICE.sessionToken);
+		await page.goto(`/context?workflow=${eng.id}`);
+		const row = page.locator('li').filter({ hasText: 'instructions' });
+		await expect(row).toHaveCount(1);
+		await expect(row).toContainText(`${engName} / Review`);
+
+		// Switching the filter re-runs the load and swaps in the other workflow's
+		// item — same name, different chip.
+		const select = page.getByLabel('Filter by workflow');
+		await expect(async () => {
+			await select.selectOption(qa.id);
+			await expect(page).toHaveURL(new RegExp(`workflow=${qa.id}`));
+		}).toPass({ timeout: 15_000 });
+		await expect(row).toHaveCount(1);
+		await expect(row).toContainText(`${qaName} / Review`);
+		await expect(row).not.toContainText(engName);
+	});
+
+	test('the workflow page keeps its own chips short', async ({ page, context }) => {
+		await signIn(context, ALICE.sessionToken);
+		await page.goto(`/workflows/${eng.id}`);
+		const section = page.getByRole('heading', { name: 'Context by state' }).locator('..');
+		const expander = section.getByRole('button', { name: /^Review/ });
+		const row = section.locator('li').filter({ hasText: 'instructions' });
+		await expect(async () => {
+			await expander.click();
+			await expect(row).toBeVisible();
+		}).toPass({ timeout: 15_000 });
+		// The section groups by state, so the chip stays the bare state name.
+		await expect(row).toContainText('Review');
+		await expect(row).not.toContainText(engName);
 	});
 });
