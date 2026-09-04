@@ -4,7 +4,8 @@
 	import IconUpload from '@tabler/icons-svelte/icons/upload';
 	import { invalidateAll } from '$app/navigation';
 	import { api } from '$lib/api';
-	import { Button } from '$lib/components/ui/button/index.js';
+	import CheckboxField from '$lib/components/CheckboxField.svelte';
+	import { Button, buttonVariants } from '$lib/components/ui/button/index.js';
 
 	let includeJournalsOnExport = $state(true);
 	let exporting = $state(false);
@@ -144,10 +145,12 @@
 		single issue. Prompts, skills, and journals are included <span class="font-medium">in full</span
 		> — treat the file as sensitive if you have pasted anything private into a prompt.
 	</p>
-	<label class="mb-3 flex items-center gap-2 text-sm">
-		<input type="checkbox" bind:checked={includeJournalsOnExport} class="size-4" />
-		Include journals (each stage's accumulated notes)
-	</label>
+	<CheckboxField
+		label="Include journals (each stage's accumulated notes)"
+		class="mb-3 text-sm"
+		checked={includeJournalsOnExport}
+		onCheckedChange={(checked) => (includeJournalsOnExport = checked)}
+	/>
 	{#if exportError}
 		<p class="text-destructive mb-3 text-sm">{exportError}</p>
 	{/if}
@@ -164,35 +167,53 @@
 		anything that collides with what you already have is skipped by default.
 	</p>
 
-	<label class="mb-3 flex items-center gap-2 text-sm">
-		<input
-			type="file"
-			accept="application/json,.json"
-			onchange={chooseFile}
-			class="text-sm file:mr-3 file:rounded-md file:border file:bg-transparent file:px-3 file:py-1.5 file:text-sm"
-			aria-label="Library file"
-		/>
-	</label>
+	<div class="mb-3 flex flex-wrap items-center gap-3">
+		<!-- The label itself is the button: a nested <button> would swallow the
+		     click instead of forwarding it to the (focusable) sr-only input. -->
+		<label
+			class="{buttonVariants({
+				variant: 'outline'
+			})} focus-within:border-ring focus-within:ring-ring/50 cursor-pointer focus-within:ring-[3px]"
+		>
+			<input
+				type="file"
+				accept="application/json,.json"
+				onchange={chooseFile}
+				class="sr-only"
+				aria-label="Library file"
+			/>
+			<IconUpload size={16} />
+			Choose file
+		</label>
+		<span class="text-muted-foreground text-sm">{fileName ?? 'No file chosen'}</span>
+	</div>
 
 	{#if document_}
 		<div class="mb-3 flex flex-wrap gap-4 text-sm">
-			<label class="flex items-center gap-2">
-				<input type="checkbox" bind:checked={overwrite} onchange={plan} class="size-4" />
-				Overwrite existing context items
-			</label>
-			<label class="flex items-center gap-2">
-				<input type="checkbox" bind:checked={createProjects} onchange={plan} class="size-4" />
-				Create missing projects
-			</label>
-			<label class="flex items-center gap-2">
-				<input
-					type="checkbox"
-					bind:checked={includeJournalsOnImport}
-					onchange={plan}
-					class="size-4"
-				/>
-				Include journals
-			</label>
+			<CheckboxField
+				label="Overwrite existing context items"
+				checked={overwrite}
+				onCheckedChange={(checked) => {
+					overwrite = checked;
+					plan();
+				}}
+			/>
+			<CheckboxField
+				label="Create missing projects"
+				checked={createProjects}
+				onCheckedChange={(checked) => {
+					createProjects = checked;
+					plan();
+				}}
+			/>
+			<CheckboxField
+				label="Include journals"
+				checked={includeJournalsOnImport}
+				onCheckedChange={(checked) => {
+					includeJournalsOnImport = checked;
+					plan();
+				}}
+			/>
 		</div>
 	{/if}
 
