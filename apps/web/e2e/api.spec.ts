@@ -636,7 +636,7 @@ test.describe('method not allowed', () => {
 	});
 });
 
-test.describe.serial('e2e helper: body() surfaces a failed request', () => {
+test.describe('e2e helper: body() surfaces a failed request', () => {
 	// Tines/157: `body()` used to return the error envelope typed as the created
 	// object, so a `beforeAll` that 4xx'd looked like a successful seed and the
 	// spec failed much later against undefined ids. These pin that a failed
@@ -655,17 +655,23 @@ test.describe.serial('e2e helper: body() surfaces a failed request', () => {
 	});
 
 	test('reports a non-JSON failure as its body, not a parse error', async ({ request }) => {
-		// Kit answers an unknown page with an HTML error document. Reading it as
-		// JSON throws a SyntaxError that names nothing; the raw body at least
-		// names the status.
-		const res = await apiClient(request, ALICE.apiKey).get(`/no-such-page-${runId}`);
+		// An unknown /api path falls out of the JSON API to Kit's HTML error
+		// page. Reading 6KB of HTML as JSON throws a SyntaxError naming nothing;
+		// the status, the URL and a truncated body at least say what happened.
+		const res = await apiClient(request, ALICE.apiKey).get('/api/v1/no-such-endpoint');
 		expect(res.status()).toBe(404);
+		expect(res.headers()['content-type']).toContain('text/html');
+
 		const err = await body(res).then(
 			() => null,
 			(e: Error) => e
 		);
 		expect(err?.message).toContain('404');
+		expect(err?.message).toContain('/api/v1/no-such-endpoint');
+		expect(err?.message).toContain('<!doctype html>');
 		expect(err?.message).not.toContain('JSON');
+		// Truncated: a whole error page would bury the status it is reported with.
+		expect(err?.message.length).toBeLessThan(700);
 	});
 
 	test('errorBody() throws when the request unexpectedly succeeded', async ({ request }) => {
