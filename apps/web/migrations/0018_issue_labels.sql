@@ -4,10 +4,14 @@
 -- mean one thing everywhere. A nullable `project_id` can be added later
 -- without breaking this shape.
 --
--- IF NOT EXISTS throughout: this migration first shipped as
--- 0013_issue_labels.sql (identical content) and was applied to the shared
--- preview database under that name before being renumbered around
--- 0013_run_log_full.sql. Same story as 0008_issue_links.sql.
+-- IF NOT EXISTS throughout: this migration has been renumbered twice, and
+-- each time the previous name was already in a D1 ledger, so the new name
+-- re-runs it as a no-op. It shipped as 0013_issue_labels.sql (applied to the
+-- shared preview database), then as 0017_issue_labels.sql (applied to
+-- preview AND production) until 0017_runner_draining.sql merged with the
+-- same number. That file is an ALTER TABLE ADD COLUMN, which SQLite cannot
+-- make idempotent, so this one moved instead. Same story as
+-- 0008_issue_links.sql.
 CREATE TABLE IF NOT EXISTS `label` (
 	`id` TEXT PRIMARY KEY,
 	`user_id` TEXT NOT NULL REFERENCES `user`(`id`) ON DELETE CASCADE,

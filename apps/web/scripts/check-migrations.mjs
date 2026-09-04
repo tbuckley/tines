@@ -7,7 +7,13 @@
  * Rules: every file is `NNNN_snake_case.sql`; numbers are unique and run
  * 0001..N with no gaps. The one existing duplicate is grandfathered — the
  * files are already applied under those names in production, and renaming
- * an applied migration would make D1 re-run it.
+ * an applied migration would make D1 re-run it, so only a migration whose
+ * statements are all `IF NOT EXISTS` may be renumbered; if neither file
+ * qualifies, grandfather the number here instead.
+ *
+ * On a pull request CI checks out the merge commit, so a duplicate reported
+ * on a PR is real even when the branch's own tree holds only one of the two
+ * files — it is arriving from `main`, and merging over it puts it on `main`.
  */
 import { readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -35,7 +41,9 @@ for (const file of files) {
 for (const [number, names] of byNumber) {
 	if (names.length > 1 && !GRANDFATHERED_DUPLICATES.has(number)) {
 		problems.push(
-			`${number} is used ${names.length} times: ${names.join(', ')} — renumber the newer one`
+			`${number} is used ${names.length} times: ${names.join(', ')} — renumber the one that is ` +
+				`safe to re-run: every statement IF NOT EXISTS (CREATE TABLE/INDEX only; SQLite cannot ` +
+				`make ADD COLUMN idempotent). See the header of 0008_issue_links.sql.`
 		);
 	}
 }
