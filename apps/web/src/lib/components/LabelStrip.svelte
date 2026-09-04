@@ -31,11 +31,15 @@
 	let collapsedWidth = $state(0);
 	let stripWidth = $state(0);
 
-	// Pre-measurement (SSR, first paint): render them all and let the strip
-	// clip. The decision settles on the first frame after mount. Half a pixel
-	// of slack: both sides are fractional sums of subpixel boxes, and a strip
-	// sized to exactly the full set must count as fitting it.
-	const collapsed = $derived(stripWidth > 0 && allWidth > 0 && allWidth - stripWidth > 0.5);
+	// Pre-measurement (SSR, first paint) there is no width to compare, so a set
+	// renders as its count: always legible, unlike a row of chips clipped to
+	// whatever the strip was handed. The decision settles on the first frame
+	// after mount, expanding to chips where they fit. Half a pixel of slack:
+	// both sides are fractional sums of subpixel boxes, and a strip sized to
+	// exactly the full set must count as fitting it.
+	const collapsed = $derived(
+		allWidth > 0 && stripWidth > 0 ? allWidth - stripWidth > 0.5 : labels.length > 1
+	);
 
 	const names = $derived(labels.map((l) => l.name).join(', '));
 	/** Up to four colours, in label order, for the stacked dots. */
