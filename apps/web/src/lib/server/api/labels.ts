@@ -1,6 +1,7 @@
 import {
 	defaultLabelColor,
 	LABEL_COLORS,
+	LABEL_NAME_MAX,
 	type AddIssueLabelsResponse,
 	type CreateLabelRequest,
 	type DeleteLabelResponse,
@@ -22,8 +23,6 @@ import {
 } from './core';
 import { eventInsert } from './events';
 
-const NAME_MAX = 50;
-
 const isControlChar = (c: string): boolean => {
 	const code = c.codePointAt(0) ?? 0;
 	return code < 0x20 || code === 0x7f;
@@ -39,8 +38,8 @@ export function normalizeLabelName(raw: unknown, field = 'name'): string {
 	if (name.length === 0) {
 		throw new ApiFail(422, 'invalid_field', `"${field}" must not be empty`, { field });
 	}
-	if (name.length > NAME_MAX) {
-		throw new ApiFail(422, 'invalid_field', `"${field}" must be at most ${NAME_MAX} characters`, {
+	if (name.length > LABEL_NAME_MAX) {
+		throw new ApiFail(422, 'invalid_field', `"${field}" must be at most ${LABEL_NAME_MAX} characters`, {
 			field
 		});
 	}

@@ -1,4 +1,4 @@
-import { defaultLabelColor, LABEL_COLORS } from '@tines/shared';
+import { compareLabelNames, defaultLabelColor, LABEL_COLORS } from '@tines/shared';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { PROJECT, USER, addIssue, seedBase } from '../supervisor/test-fixtures';
 import { ApiFail, isControlPlanePath, runAtomic, type ActorContext } from './core';
@@ -134,6 +134,16 @@ describe('the label library', () => {
 
 	it('404s on an unknown label', async () => {
 		await expect(deleteLabel(t.db, t.env, human, 'nope')).rejects.toMatchObject({ status: 404 });
+	});
+});
+
+describe('label order', () => {
+	// The client sorts optimistic chips itself; it may only do that if its
+	// comparator agrees with what SQLite's `COLLATE NOCASE` actually returns.
+	it('matches what the server reads back for accented and mixed-case names', async () => {
+		const inputs = ['zeta', 'éclair', 'Bug', 'apple'];
+		for (const name of inputs) await createLabel(t.db, t.env, human, { name });
+		expect(await names()).toEqual([...inputs].sort(compareLabelNames));
 	});
 });
 
