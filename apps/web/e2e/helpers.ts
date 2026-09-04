@@ -36,8 +36,59 @@ export function apiClient(request: APIRequestContext, apiKey: string) {
 	};
 }
 
+/** The envelope every `/api/v1` failure carries (the server's `ApiErrorBody`). */
+export type ErrorBody = {
+	error: { code: string; message: string; details?: Record<string, unknown> };
+};
+
+/** Enough of a failed response to name it: status, URL, and the server's own reason. */
+async function describeFailure(res: APIResponse): Promise<string> {
+	const text = await res.text();
+	let detail = text.length > 500 ? `${text.slice(0, 500)}… (${text.length} bytes)` : text;
+	try {
+		const { error } = JSON.parse(text) as Partial<ErrorBody>;
+		if (error?.code) {
+			detail = `${error.code}: ${error.message}`;
+			if (error.details) detail += ` ${JSON.stringify(error.details)}`;
+		}
+	} catch {
+		// Not JSON — a Kit HTML error page or a bare-text 405. Show the raw body.
+	}
+	return `${res.status()} ${res.statusText()} from ${res.url()} — ${detail}`;
+}
+
+/**
+ * Reads a successful JSON response, throwing on any non-2xx.
+ *
+ * Fixtures are seeded through this in `beforeAll`, and before the check a
+ * create that 4xx'd returned the *error envelope* typed as the created
+ * object: the spec then ran against undefined ids and failed much later with
+ * an assertion naming neither the request nor the reason. Raising the
+ * server's own code and message at the call that failed turns a three-round
+ * CI hunt into one line.
+ *
+ * Use `errorBody()` for a response the spec expects to fail.
+ */
 export async function body<T = Record<string, unknown>>(res: APIResponse): Promise<T> {
+	if (!res.ok()) throw new Error(await describeFailure(res));
 	return (await res.json()) as T;
+}
+
+/**
+ * The counterpart for a response a spec asserts *is* an error: returns the
+ * envelope, and throws if the request unexpectedly succeeded — otherwise a
+ * `.error.code` assertion on a 200 compares `undefined` and reports the
+ * absence of an error as the wrong error.
+ */
+export async function errorBody(res: APIResponse): Promise<ErrorBody> {
+	if (res.ok()) {
+		const text = await res.text();
+		throw new Error(
+			`Expected an error from ${res.url()}, got ${res.status()} — ` +
+				(text.length > 200 ? `${text.slice(0, 200)}…` : text)
+		);
+	}
+	return (await res.json()) as ErrorBody;
 }
 
 /** Unique per-process suffix so re-runs against a reused server don't collide. */
