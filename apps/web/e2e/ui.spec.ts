@@ -293,13 +293,22 @@ test('the Issues tab and an issue back link keep the list filters', async ({ pag
 test('an issue reached from a project page goes back to that project', async ({ page }) => {
 	await page.goto(`/projects/${project.id}`);
 
-	// The checkbox is a Svelte listener, so retry across the hydration window.
-	// Landing on `?done=1` also proves the page has recorded itself.
-	const showDone = page.getByLabel('Show done');
-	await expect(async () => {
-		await showDone.check();
-		await expect(page).toHaveURL(/done=1/, { timeout: 2_000 });
-	}).toPass({ timeout: 15_000 });
+	// The Done tab is a plain link, so it works before hydration too. Landing
+	// on `?category=done` also proves the page has recorded itself — and the
+	// list must still show the issue, so switch back to Open by the same route.
+	await page.getByRole('link', { name: /^Done\b/ }).click();
+	await expect(page).toHaveURL(/category=done/);
+	await page.getByRole('link', { name: /^Open\b/ }).click();
+	await expect(page).toHaveURL(new RegExp(`/projects/${project.id}$`));
+	// Now a filter that keeps the issue listed: Ready only, from the menu.
+	await clickUntil(page.getByRole('button', { name: /^Filter/ }), async () => {
+		await expect(page.getByRole('checkbox', { name: 'Ready only' })).toBeVisible({
+			timeout: 2_000
+		});
+	});
+	await page.getByRole('checkbox', { name: 'Ready only' }).check();
+	await expect(page).toHaveURL(/ready=1/);
+	await page.keyboard.press('Escape');
 
 	await page.getByRole('link', { name: new RegExp(issueTitle) }).click();
 	await expect(page).toHaveURL(new RegExp(`/issues/${projectName}/${issue.number}$`));
@@ -307,7 +316,7 @@ test('an issue reached from a project page goes back to that project', async ({ 
 	// The back link names the project, and returns to it still filtered.
 	await expect(backLink(page)).toHaveText(projectName);
 	await backLink(page).click();
-	await expect(page).toHaveURL(`/projects/${project.id}?done=1`);
+	await expect(page).toHaveURL(`/projects/${project.id}?ready=1`);
 });
 
 /** The resolved value of one CSS property, as the browser paints it. */
@@ -329,10 +338,12 @@ test.describe('with a dark system preference', () => {
 		await expect(page.locator('html')).toHaveClass(/\bdark\b/);
 
 		// Named from `aria-label`: the visible text sits in the wrapping <label>,
-		// which does not name a button.
+		// which does not name a button. It lives in the Filter menu now.
 		const readyOnly = page.getByRole('checkbox', { name: 'Ready only' });
 		const searchField = page.getByRole('textbox', { name: 'Search issues' });
-		await expect(readyOnly).toBeVisible();
+		await clickUntil(page.getByRole('button', { name: /^Filter/ }), async () => {
+			await expect(readyOnly).toBeVisible({ timeout: 2_000 });
+		});
 
 		// Unchecked, it wears `--input` — the same border and fill as the search
 		// field standing next to it.

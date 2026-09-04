@@ -86,10 +86,12 @@ test.describe.serial('issue labels UI', () => {
 		await page.goto(`/issues?project=${encodeURIComponent(projectName)}&label=${bug.id}`);
 		await expect(page.getByText(`Labelled ${runId}`)).toBeVisible();
 		await expect(page.getByText(`Plain ${runId}`)).toHaveCount(0);
-		// The trigger reflects the active filter rather than "All labels".
-		await expect(page.getByRole('button', { name: 'Filter by label' })).not.toContainText(
-			'All labels'
-		);
+		// The active filter shows as a chip beside the Filter button, and the
+		// button counts it.
+		await expect(
+			page.getByRole('button', { name: `Remove filter label: ${bugName}` })
+		).toBeVisible();
+		await expect(page.getByRole('button', { name: 'Filter, 1 active' })).toBeVisible();
 	});
 
 	test('the detail card adds and removes a label', async ({ page }) => {

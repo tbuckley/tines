@@ -252,13 +252,13 @@ export interface IssueListFilters {
 	brief?: boolean;
 }
 
-export async function listIssues(
-	db: Kysely<Database>,
-	userId: string,
-	filters: IssueListFilters,
-	page: Page
-): Promise<{ items: IssueListItem[]; hasMore: boolean }> {
-	let q = issueQuery(db, userId);
+/**
+ * Every filter but the two the category tabs own (`category`, `hideDone`),
+ * so a list and its per-category counts read the same population.
+ */
+type IssueQuery = ReturnType<typeof issueQuery>;
+
+function applyScopeFilters(q: IssueQuery, userId: string, filters: IssueListFilters): IssueQuery {
 	if (filters.projectId) q = q.where('issue.project_id', '=', filters.projectId);
 	if (filters.project) {
 		const p = filters.project;
@@ -270,11 +270,6 @@ export async function listIssues(
 		const s = filters.state;
 		q = q.where(
 			sql<boolean>`(COALESCE(eff_state.id, state.id) = ${s} OR COALESCE(eff_state.name, state.name) = ${s})`
-		);
-	}
-	if (filters.category) {
-		q = q.where(
-			sql<boolean>`COALESCE(eff_state.category, state.category) = ${filters.category as StateCategory}`
 		);
 	}
 	if (filters.workflow) {
@@ -297,9 +292,6 @@ export async function listIssues(
 		);
 	}
 	if (filters.schedule) q = q.where('issue.scheduled_task_id', '=', filters.schedule);
-	if (filters.hideDone) {
-		q = q.where(sql<boolean>`COALESCE(eff_state.category, state.category) != 'done'`);
-	}
 	if (filters.ready) {
 		// Ready = effectively not done, not itself a duplicate, and no blocker
 		// still effectively open. Readiness is the default; links only take it away.
@@ -329,6 +321,57 @@ export async function listIssues(
 			eb.or([eb('issue.title', 'like', like), eb('issue.description', 'like', like)])
 		);
 	}
+	return q;
+}
+
+function applyCategoryFilters(q: IssueQuery, filters: IssueListFilters): IssueQuery {
+	if (filters.category) {
+		q = q.where(
+			sql<boolean>`COALESCE(eff_state.category, state.category) = ${filters.category as StateCategory}`
+		);
+	}
+	if (filters.hideDone) {
+		q = q.where(sql<boolean>`COALESCE(eff_state.category, state.category) != 'done'`);
+	}
+	return q;
+}
+
+/**
+ * How many issues each category holds under the given filters, ignoring
+ * `category` and `hideDone` — the numbers a list's category tabs show, so a
+ * tab's count is what clicking it will list. Categories with no issues are
+ * present as 0.
+ */
+export async function countIssuesByCategory(
+	db: Kysely<Database>,
+	userId: string,
+	filters: IssueListFilters
+): Promise<Record<StateCategory, number>> {
+	const rows = await applyScopeFilters(issueQuery(db, userId), userId, filters)
+		.clearSelect()
+		.select([
+			sql<StateCategory>`COALESCE(eff_state.category, state.category)`.as('category'),
+			sql<number>`COUNT(*)`.as('n')
+		])
+		.groupBy(sql`COALESCE(eff_state.category, state.category)`)
+		.execute();
+	const counts: Record<StateCategory, number> = {
+		backlog: 0,
+		active: 0,
+		awaiting_human: 0,
+		done: 0
+	};
+	for (const row of rows) if (row.category in counts) counts[row.category] = Number(row.n);
+	return counts;
+}
+
+export async function listIssues(
+	db: Kysely<Database>,
+	userId: string,
+	filters: IssueListFilters,
+	page: Page
+): Promise<{ items: IssueListItem[]; hasMore: boolean }> {
+	let q = applyCategoryFilters(applyScopeFilters(issueQuery(db, userId), userId, filters), filters);
 	if (page.cursor) {
 		const { createdAt, id } = page.cursor;
 		q = q.where((eb) =>
