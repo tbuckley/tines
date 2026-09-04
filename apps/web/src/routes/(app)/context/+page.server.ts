@@ -15,6 +15,7 @@ export const load: PageServerLoad = async ({ locals, platform, url }) => {
 	const filters = {
 		kind: rawKind && (CONTEXT_KINDS as readonly string[]).includes(rawKind) ? rawKind : undefined,
 		project: url.searchParams.get('project') ?? undefined,
+		workflow: url.searchParams.get('workflow') ?? undefined,
 		q: url.searchParams.get('q') ?? undefined
 	};
 	const [{ items }, projects, workflows, guidelines] = await Promise.all([

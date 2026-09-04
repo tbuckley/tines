@@ -320,6 +320,12 @@ export interface ContextItemFilters {
 	project?: string;
 	/** Workflow state id. */
 	state?: string;
+	/**
+	 * Workflow id: items scoped to any state of that workflow. A grouping
+	 * convenience for the Context page's filter row, not a scope dimension —
+	 * the HTTP list endpoint deliberately does not expose it.
+	 */
+	workflow?: string;
 	/** Issue id. */
 	issue?: string;
 	/** Name/description substring search. */
@@ -362,6 +368,9 @@ export async function listContextItems(
 		q = q.where('context_item.workflow_state_id', '=', filters.state);
 	} else if (filters.exact) {
 		q = q.where('context_item.workflow_state_id', 'is', null);
+	}
+	if (filters.workflow) {
+		q = q.where('scope_workflow.id', '=', filters.workflow);
 	}
 	if (filters.issue) {
 		q = q.where('context_item.issue_id', '=', filters.issue);

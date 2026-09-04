@@ -9,6 +9,7 @@
 	import { ApiError, ARTIFACT_NAME_PATTERN, ARTIFACT_TYPES, STATE_CATEGORIES } from '@tines/shared';
 	import IconPlus from '@tabler/icons-svelte/icons/plus';
 	import IconTrash from '@tabler/icons-svelte/icons/trash';
+	import type { Snippet } from 'svelte';
 	import { slide } from 'svelte/transition';
 	import WorkflowGraph from '$lib/components/WorkflowGraph.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
@@ -31,12 +32,15 @@
 	let {
 		workflow = null,
 		saveLabel = 'Save workflow',
-		onsave
+		onsave,
+		footerActions
 	}: {
 		workflow?: WorkflowResponse | null;
 		saveLabel?: string;
 		/** Called with the request body; throw an ApiError to surface it inline. */
 		onsave: (request: CreateWorkflowRequest) => Promise<void>;
+		/** Extra controls for the save row, aligned opposite the submit button. */
+		footerActions?: Snippet;
 	} = $props();
 
 	let nextKey = 0;
@@ -501,9 +505,14 @@
 			</p>
 		{/if}
 
-		<Button type="submit" disabled={saving || problems.length > 0}>
-			{saving ? 'Saving…' : saveLabel}
-		</Button>
+		<div class="flex flex-wrap items-center justify-between gap-2">
+			<Button type="submit" disabled={saving || problems.length > 0}>
+				{saving ? 'Saving…' : saveLabel}
+			</Button>
+			{#if footerActions}
+				<div class="flex gap-2">{@render footerActions()}</div>
+			{/if}
+		</div>
 	</form>
 
 	<!-- graph view: how a workflow is read; re-renders live as the form changes -->
