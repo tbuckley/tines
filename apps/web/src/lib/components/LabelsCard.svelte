@@ -64,6 +64,9 @@
 			await invalidateAll();
 		} catch (e) {
 			onerror(e instanceof Error ? e.message : 'Could not add label');
+			// The likeliest cause is a label deleted since this page loaded;
+			// reload so the dead entry leaves the picker too.
+			await invalidateAll();
 		} finally {
 			adds = adds.filter((a) => a !== optimistic);
 		}

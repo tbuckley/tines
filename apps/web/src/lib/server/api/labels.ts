@@ -23,6 +23,13 @@ import {
 } from './core';
 import { eventInsert } from './events';
 
+/**
+ * Exactly what `newId('lbl')` mints (16 chars of `ID_ALPHABET`). A ref of
+ * this shape that resolves to nothing is a stale id, not a name: get-or-
+ * create must refuse it rather than mint a label called `lbl_…`.
+ */
+const LABEL_ID_RE = /^lbl_[0-9A-Za-z]{16}$/;
+
 const isControlChar = (c: string): boolean => {
 	const code = c.codePointAt(0) ?? 0;
 	return code < 0x20 || code === 0x7f;
@@ -294,7 +301,7 @@ export async function resolveOrCreateLabels(
 			labels.push(existing);
 			continue;
 		}
-		if (actor.agentRunId) {
+		if (actor.agentRunId || LABEL_ID_RE.test(name)) {
 			unknown.push(name);
 			continue;
 		}
@@ -312,13 +319,17 @@ export async function resolveOrCreateLabels(
 
 	if (unknown.length > 0) {
 		const known = await listLabels(db, actor.userId);
-		throw new ApiFail(
-			422,
-			'unknown_label',
-			`No such label: ${unknown.join(', ')}. Run keys can apply existing labels only - ` +
-				`ask a human to add it, or use one of: ${known.map((l) => l.name).join(', ') || '(none yet)'}`,
-			{ field, unknown, known_labels: known.map((l) => ({ id: l.id, name: l.name })) }
-		);
+		// For a human every other miss was created, so `unknown` here can only
+		// hold stale ids - a page that loaded before someone deleted the label.
+		const why = actor.agentRunId
+			? `Run keys can apply existing labels only - ask a human to add it, or use one of: ` +
+				`${known.map((l) => l.name).join(', ') || '(none yet)'}`
+			: 'It may have been deleted since the page loaded - reload and pick again.';
+		throw new ApiFail(422, 'unknown_label', `No such label: ${unknown.join(', ')}. ${why}`, {
+			field,
+			unknown,
+			known_labels: known.map((l) => ({ id: l.id, name: l.name }))
+		});
 	}
 	return { labels, toCreate };
 }

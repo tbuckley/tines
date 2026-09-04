@@ -104,6 +104,9 @@ test.describe.serial('issue labels UI', () => {
 			await card.getByRole('button', { name: 'Edit' }).click();
 			await expect(page.getByRole('button', { name: p1Name })).toBeVisible({ timeout: 2000 });
 		}).toPass({ timeout: 15_000 });
+		// The filter box caps at the API's own limit, so a too-long name is
+		// never offered for creation and never costs a round trip.
+		await expect(page.getByLabel('Filter labels')).toHaveAttribute('maxlength', '50');
 		await page.getByRole('button', { name: p1Name }).click();
 		await expect(card.getByText(p1Name)).toBeVisible();
 
