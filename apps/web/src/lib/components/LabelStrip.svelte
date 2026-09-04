@@ -1,52 +1,51 @@
 <script lang="ts">
 	import type { IssueLabel } from '@tines/shared';
 	import LabelChip from '$lib/components/LabelChip.svelte';
+	import { labelColorVar } from '$lib/format';
 
 	let { labels, class: className = '' }: { labels: IssueLabel[]; class?: string } = $props();
 
-	/** `gap-1.5`, in px — the gap the strip lays its chips out with. */
-	const GAP = 6;
-
+	/**
+	 * A row's labels, whole or counted: every chip when they all fit the width
+	 * the row gives the strip, otherwise one chip — the first few colours as
+	 * stacked dots and "N labels" — with the names in its tooltip. Never a chip
+	 * cut mid-name, and never an arbitrary subset (which label survives a
+	 * "c1 +4" is noise; the count is the information). The full set always
+	 * lives on the detail page.
+	 *
+	 * Two things keep the decision stable. The measurement copy of the full set
+	 * is *in flow* (invisible, stacked under the visible row in a one-cell
+	 * grid), so the strip's natural width is always the full set's, whatever
+	 * is currently shown — measuring the visible row would feed each decision
+	 * into the next. And the collapsed chip's width becomes the strip's
+	 * `min-width`, so a flex row can squeeze the strip down to it and no
+	 * further: the chip is never clipped, and what the row does with the
+	 * remaining overflow (truncating the title, say) is the row's call.
+	 */
 	let stripEl: HTMLElement | undefined = $state();
 	let measureEl: HTMLElement | undefined = $state();
 
-	/**
-	 * Natural widths of every chip plus the "+N", read off the out-of-flow copy
-	 * below. Measuring a separate row is what keeps this stable: the visible row
-	 * only holds the chips that fit, so measuring *it* would feed the result of
-	 * the last calculation back into the next one.
-	 */
-	let chipWidths: number[] = $state([]);
-	let overflowWidth = $state(0);
+	/** The full set's natural width, and the collapsed chip's. */
+	let allWidth = $state(0);
+	let collapsedWidth = $state(0);
 	let stripWidth = $state(0);
 
-	/**
-	 * How many chips fit whole on one line. When any are left over, room for the
-	 * "+N" is reserved as well — so a single label too wide for the row shows as
-	 * a bare "+1" rather than a chip clipped mid-name.
-	 */
-	const visibleCount = $derived.by(() => {
-		// Pre-measurement (SSR, first paint): render them all and let the strip
-		// clip. The count settles on the first frame after mount.
-		if (stripWidth === 0 || chipWidths.length !== labels.length) return labels.length;
-		const all = chipWidths.reduce((sum, w) => sum + w, 0) + GAP * (labels.length - 1);
-		if (all <= stripWidth) return labels.length;
-		let used = 0;
-		for (let i = 0; i < labels.length; i++) {
-			const next = used + (i === 0 ? 0 : GAP) + chipWidths[i];
-			if (next + GAP + overflowWidth > stripWidth) return i;
-			used = next;
-		}
-		return labels.length;
-	});
-	const hiddenCount = $derived(labels.length - visibleCount);
+	// Pre-measurement (SSR, first paint): render them all and let the strip
+	// clip. The decision settles on the first frame after mount.
+	const collapsed = $derived(stripWidth > 0 && allWidth > 0 && allWidth > stripWidth);
+
+	const names = $derived(labels.map((l) => l.name).join(', '));
+	/** Up to four colours, in label order, for the stacked dots. */
+	const dots = $derived(labels.slice(0, 4).map((l) => labelColorVar(l.color)));
 
 	const remeasure = () => {
 		if (!stripEl || !measureEl) return;
-		const widths = [...measureEl.children].map((el) => el.getBoundingClientRect().width);
-		// The measurement row ends with the "+N"; everything before it is a chip.
-		overflowWidth = widths.pop() ?? 0;
-		chipWidths = widths;
+		const children = [...measureEl.children] as HTMLElement[];
+		// The measurement row is the full set of chips, then the collapsed chip.
+		const chips = children.slice(0, -1).map((el) => el.getBoundingClientRect().width);
+		const gap = parseFloat(getComputedStyle(measureEl).columnGap) || 0;
+		allWidth = chips.reduce((sum, w) => sum + w, 0) + gap * Math.max(0, chips.length - 1);
+		collapsedWidth = children.at(-1)?.getBoundingClientRect().width ?? 0;
 		stripWidth = stripEl.clientWidth;
 	};
 
@@ -56,8 +55,8 @@
 		if (!stripEl) return;
 		remeasure();
 		const observer = new ResizeObserver(remeasure);
-		// Widths only change with the strip's own width — including the jump from
-		// `display: none` to visible when the viewport crosses `sm`.
+		// The strip's own width is what the row hands it, so watch that —
+		// including the jump from `display: none` to visible at a breakpoint.
 		observer.observe(stripEl);
 		// A late web font resizes every chip under us.
 		void document.fonts?.ready.then(remeasure);
@@ -65,38 +64,55 @@
 	});
 </script>
 
+{#snippet stack()}
+	<span
+		class="bg-background text-muted-foreground inline-flex h-5 items-center gap-1.5 rounded-full border px-1.5 text-[0.6875rem] leading-none font-medium whitespace-nowrap"
+		title={names}
+	>
+		<span class="flex items-center">
+			{#each dots as color, i (i)}
+				<span
+					class="ring-background size-[7px] rounded-full ring-[1.5px] {i > 0 ? '-ml-[3px]' : ''}"
+					style="background: {color}"
+				></span>
+			{/each}
+		</span>
+		{labels.length}
+		{labels.length === 1 ? 'label' : 'labels'}
+	</span>
+{/snippet}
+
 <div
 	bind:this={stripEl}
 	data-testid="label-strip"
-	class="relative flex min-w-0 items-center gap-1.5 overflow-hidden {className}"
+	class="grid min-w-0 overflow-hidden {className}"
+	style:grid-template-columns="minmax(0, 1fr)"
+	style:min-width={collapsedWidth > 0 ? `${collapsedWidth}px` : undefined}
 >
-	<!-- Out of flow (`absolute`), so it costs no width and no height: this is
-	     the full set at natural size, purely to be measured. -->
+	<!-- The visible row comes first in the DOM, so a text lookup finds what
+	     renders before the measurement copy of the same names. -->
+	<div class="col-start-1 row-start-1 flex min-w-0 items-center justify-end gap-1.5">
+		{#if collapsed}
+			{@render stack()}
+		{:else}
+			{#each labels as label (label.id)}
+				<LabelChip {label} variant="dot" class="shrink-0" />
+			{/each}
+		{/if}
+	</div>
+	<!-- In flow but invisible: this row sets the strip's natural width (the
+	     full set) and costs no height of its own, since it shares the visible
+	     row's grid cell. -->
 	<div
 		bind:this={measureEl}
 		aria-hidden="true"
-		class="pointer-events-none invisible absolute top-0 left-0 flex items-center gap-1.5"
+		class="pointer-events-none invisible relative col-start-1 row-start-1 flex min-w-0 items-center gap-1.5"
 	>
 		{#each labels as label (label.id)}
-			<LabelChip {label} size="sm" />
+			<LabelChip {label} variant="dot" class="shrink-0" />
 		{/each}
-		<span
-			class="bg-muted text-muted-foreground rounded-full px-1.5 py-0.5 text-[0.6875rem] leading-none font-medium"
-			>+{labels.length}</span
-		>
+		<!-- Out of flow, so the collapsed chip is measured without adding its
+		     width to the strip's natural size. -->
+		<span class="absolute top-0 left-0">{@render stack()}</span>
 	</div>
-	{#each labels.slice(0, visibleCount) as label (label.id)}
-		<LabelChip {label} size="sm" class="shrink-0" />
-	{/each}
-	{#if hiddenCount > 0}
-		<span
-			class="bg-muted text-muted-foreground shrink-0 rounded-full px-1.5 py-0.5 text-[0.6875rem] leading-none font-medium"
-			title={labels
-				.slice(visibleCount)
-				.map((l) => l.name)
-				.join(', ')}
-		>
-			+{hiddenCount}
-		</span>
-	{/if}
 </div>

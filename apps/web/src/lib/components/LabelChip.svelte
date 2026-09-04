@@ -6,12 +6,20 @@
 	let {
 		label,
 		size = 'md',
+		variant = 'pill',
 		onremove,
 		removeBusy = false,
 		class: className = ''
 	}: {
 		label: Pick<IssueLabel, 'name' | 'color'>;
 		size?: 'sm' | 'md';
+		/**
+		 * `pill` is the filled, coloured chip of the detail page and pickers.
+		 * `dot` is the quiet list-row form: a coloured dot and the name in the
+		 * foreground colour on a hairline border, so a row of labels reads as
+		 * attributes and never competes with the state beside them.
+		 */
+		variant?: 'pill' | 'dot';
 		/** When set, the chip grows an inline remove button. */
 		onremove?: () => void;
 		removeBusy?: boolean;
@@ -20,11 +28,17 @@
 </script>
 
 <!-- Same pill as StateBadge: `.state-badge` renders entirely from `--cat`, so
-     pointing it at a `--label-*` token gets correct dark mode for free. -->
+     pointing it at a `--label-*` token gets correct dark mode for free. The
+     dot variant reuses the token for its dot alone. -->
 <span
-	class="state-badge {size === 'sm' ? 'px-1.5 py-0.5 text-[0.6875rem]' : ''} {className}"
+	class="{variant === 'dot'
+		? 'bg-background text-foreground inline-flex h-5 items-center gap-1.5 rounded-full border px-1.5 text-[0.6875rem] leading-none font-medium whitespace-nowrap'
+		: `state-badge ${size === 'sm' ? 'px-1.5 py-0.5 text-[0.6875rem]' : ''}`} {className}"
 	style="--cat: {labelColorVar(label.color)}"
 >
+	{#if variant === 'dot'}
+		<span class="size-[7px] shrink-0 rounded-full" style="background: var(--cat)"></span>
+	{/if}
 	<!-- The name owns the overflow so a `max-w-*` on the chip ellipses the text
 	     instead of clipping the pill mid-letter: `.state-badge` is `inline-flex`,
 	     so `text-overflow` cannot reach an anonymous text node. Pinned by the
