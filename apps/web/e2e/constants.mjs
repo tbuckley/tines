@@ -64,6 +64,27 @@ export const RUNROW = {
 	providerSessionId: 'sess_e2e_runrow'
 };
 
+/**
+ * Seeded *failed* run (Alice's), on the same issue as RUNROW: a run's `error`
+ * is written only when a runner reports a finish, so the row is seeded. Its
+ * own runner, so each spec's `hasText: <runner name>` still selects exactly
+ * one row on both surfaces — and paused, so the supervisor can never dispatch
+ * to it and add a second run to the issue.
+ */
+export const RUNROW_FAILED = {
+	runnerId: 'rnr_e2e_runrow_failed',
+	runnerName: 'runrow-failed',
+	runId: 'run_e2e_runrow_failed',
+	/**
+	 * A real ENOSPC message: long enough to overflow two clamped lines in the
+	 * issue sidebar, so the row test measures a clamp rather than a short
+	 * string that happens to fit.
+	 */
+	error:
+		'harness exited 1: ENOSPC: no space left on device, write ' +
+		'/Users/runner/.config/tines/workspaces/arun_9Xq2TbW/tines/node_modules/.vite/deps/chunk-4QWERTY.js'
+};
+
 export const BOB = {
 	id: 'usr_e2e_bob',
 	name: 'Bob E2E',
