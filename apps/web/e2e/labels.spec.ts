@@ -12,9 +12,14 @@ const DESKTOP = { width: 1280, height: 900 };
  * behaviour (AND filtering, run-key rules) lives in api.spec.ts.
  */
 test.describe.serial('issue labels UI', () => {
-	const projectName = `labels-${runId}`;
-	const bugName = `bug-${runId}`;
-	const p1Name = `p1-${runId}`;
+	// `-ui-` rather than plain `labels-`/`bug-`/`p1-`: api.spec.ts's own label
+	// block claims those, `runId` is per-process so a full-suite run shares it,
+	// and a project name is unique per user — the duplicate 422s in beforeAll
+	// where nothing checks the status, leaving this spec looking at an empty
+	// list rather than at a failure.
+	const projectName = `labels-ui-${runId}`;
+	const bugName = `bug-ui-${runId}`;
+	const p1Name = `p1-ui-${runId}`;
 	// Five labels on one issue, the first deliberately long: on a phone only
 	// what fits shows, the rest become a "+N", and it stays one line.
 	// Four that fit two-at-a-time on a phone and one that never does. Sizes
