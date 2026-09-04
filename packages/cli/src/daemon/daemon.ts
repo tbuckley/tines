@@ -16,6 +16,7 @@ import {
 	existsSync,
 	mkdirSync,
 	readFileSync,
+	realpathSync,
 	rmSync,
 	statSync,
 	unlinkSync,
@@ -32,7 +33,7 @@ import {
 } from '@tines/shared';
 import { cliVersion } from '../version.js';
 import { ClaudeStreamRenderer } from './claude-stream';
-import { installAgentCli } from './cli-refresh.js';
+import { agentCliPrefix, installAgentCli } from './cli-refresh.js';
 import {
 	clearRunnerCredentials,
 	daemonStatePath,
@@ -57,6 +58,8 @@ import {
 	formatLaunchBanner,
 	keepWorkspace,
 	LogBatcher,
+	pathWithin,
+	pendingSelfUpdate,
 	RunTable,
 	type AgentCli,
 	type HarnessKind,
@@ -76,6 +79,12 @@ export interface DaemonOptions {
 	configDir: string;
 	/** Keep the agent-facing `tines` current from npm (--no-cli-refresh turns it off). */
 	cliRefresh: boolean;
+	/**
+	 * Exit, once idle, when the refresh installed a newer `tines` than this
+	 * daemon — for the service manager to relaunch it (--no-self-update turns
+	 * it off). Only acts when the daemon runs from the managed prefix.
+	 */
+	selfUpdate: boolean;
 	/** Which settled runs leave their workspace on disk for debugging. */
 	keepWorkspaces: KeepWorkspacesMode;
 	/** Retention window for kept workspaces, in hours. */
@@ -275,8 +284,45 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 	const refresher = new CliRefresher(() => installAgentCli({ configDir: opts.configDir, log }), {
 		ttlMs: CLI_REFRESH_TTL_MS
 	});
+
+	// -- self-update ----------------------------------------------------------
+	// That refresh also keeps a current *daemon* on disk — when this process
+	// was launched from the same prefix, which is what the service-manager
+	// units in docs/runner-daemon.md do. A newer install cannot replace a
+	// running process, so the daemon drains (polls with `draining`, so the
+	// dispatcher assigns it nothing new while runs it already holds finish)
+	// and exits once idle for launchd/systemd to relaunch it. Launched from
+	// anywhere else an exit would relaunch the same old binary, so there the
+	// newer version is only reported.
+	const prefix = agentCliPrefix(opts.configDir);
+	const selfPath = realpathOrNull(process.argv[1]);
+	// Both sides resolved: a config dir reached through a symlink must not
+	// read as "not the prefix". (The prefix may not exist yet on a first run.)
+	const managedInstall =
+		selfPath !== null && pathWithin(selfPath, realpathOrNull(prefix) ?? prefix);
+	const selfUpdate = opts.selfUpdate && opts.cliRefresh && managedInstall;
+	if (opts.selfUpdate && opts.cliRefresh) {
+		log(
+			managedInstall
+				? `self-update: on — this daemon (tines ${DAEMON_VERSION}) runs from ${prefix} and will restart once idle after a newer release is installed there`
+				: `self-update: off — this daemon (tines ${DAEMON_VERSION}) runs from ${selfPath ?? process.argv[1] ?? '?'}, not ${prefix}; launch it from ${join(prefix, 'node_modules', '.bin', 'tines')} to have refreshes apply on restart (docs/runner-daemon.md)`
+		);
+	}
+	let pendingUpdate: string | null = null;
+	const noteCli = (cli: AgentCli): AgentCli => {
+		if (!selfUpdate || pendingUpdate) return cli;
+		const newer = pendingSelfUpdate(cli, DAEMON_VERSION);
+		if (newer) {
+			pendingUpdate = newer;
+			log(
+				`tines ${newer} is installed in ${prefix} (this daemon is ${DAEMON_VERSION}); draining — no new runs accepted, restarting once the in-flight ones finish`
+			);
+		}
+		return cli;
+	};
+
 	const ensureCli = (): Promise<AgentCli> =>
-		opts.cliRefresh ? refresher.ensure() : Promise.resolve(AMBIENT_CLI);
+		opts.cliRefresh ? refresher.ensure().then(noteCli) : Promise.resolve(AMBIENT_CLI);
 	const cliLabel = (cli: AgentCli) =>
 		cli.source === 'ambient'
 			? `ambient PATH (${opts.cliRefresh ? 'refresh failed' : 'refresh disabled'})`
@@ -604,7 +650,11 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 			// re-registering.
 			const res = await client.pollRunner(creds.runner_id, {
 				owned_runs: table.ids(),
-				max_concurrent: opts.maxConcurrent
+				max_concurrent: opts.maxConcurrent,
+				// Stated on every poll while pending; absent otherwise, which
+				// the server reads as "not draining" — so a daemon that died
+				// mid-drain cannot pin its runner shut past its relaunch.
+				...(pendingUpdate ? { draining: true } : {})
 			});
 			failures = 0;
 			for (const runId of res.cancels) killWithoutFinish(runId);
@@ -619,6 +669,23 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 					);
 				}
 				void launch(assignment);
+			}
+			// Launches are the only other refresh trigger, and an idle daemon
+			// never launches — so it would never learn of a newer release.
+			// TTL-gated (one npm run per 10 minutes at most), and pointless
+			// once a restart is already pending.
+			if (selfUpdate && !pendingUpdate) void ensureCli();
+			// `launch` tracks its run before its first await, so an empty
+			// table here means nothing is in flight and nothing was just
+			// delivered. Exit for the service manager; the relaunched daemon
+			// polls within seconds and any run assigned meanwhile is still
+			// waiting for it.
+			if (pendingUpdate && res.assignments.length === 0 && table.size === 0) {
+				await refresher.settled();
+				log(
+					`exiting to restart as tines ${pendingUpdate} — the service manager relaunches this daemon (KeepAlive / Restart=always)`
+				);
+				process.exit(0);
 			}
 		} catch (err) {
 			if (err instanceof ApiError && err.status === 401) {
@@ -655,6 +722,21 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 
 function message(err: unknown): string {
 	return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * A path with its symlinks resolved, or null when it cannot be. For the
+ * daemon's own entry script (`process.argv[1]`) this turns the npm
+ * `.bin/tines` shim in the managed prefix into that prefix's
+ * `node_modules/tines/dist/index.js`, which is what the prefix check needs.
+ */
+function realpathOrNull(path: string | undefined): string | null {
+	if (!path) return null;
+	try {
+		return realpathSync(path);
+	} catch {
+		return null;
+	}
 }
 
 /** Runs git with output streamed into the run log; resolves to the exit code. */

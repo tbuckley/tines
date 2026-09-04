@@ -5,6 +5,9 @@ import {
 	buildHarnessInvocation,
 	buildSpawnEnv,
 	CliRefresher,
+	isNewerVersion,
+	pathWithin,
+	pendingSelfUpdate,
 	exitLineForRun,
 	expandCommandTemplate,
 	formatExitLine,
@@ -589,5 +592,83 @@ describe('CliRefresher', () => {
 		h.advance(1000);
 		await expect(h.refresher.ensure()).resolves.toEqual(AMBIENT_CLI);
 		expect(h.calls).toBe(2);
+	});
+
+	it('settled() waits out an in-flight install and never starts one', async () => {
+		let release!: (cli: AgentCli) => void;
+		const h = harness(() => new Promise<AgentCli>((resolve) => (release = resolve)));
+		// Nothing in flight: resolves at once, and the TTL-expired refresher
+		// did not take that as a cue to install.
+		await h.refresher.settled();
+		expect(h.calls).toBe(0);
+
+		void h.refresher.ensure();
+		await Promise.resolve();
+		let done = false;
+		const waiting = h.refresher.settled().then(() => (done = true));
+		await Promise.resolve();
+		expect(done).toBe(false);
+		release(fresh('0.0.3'));
+		await waiting;
+		expect(done).toBe(true);
+		expect(h.calls).toBe(1);
+	});
+});
+
+describe('isNewerVersion', () => {
+	it('compares dotted numeric parts, not strings', () => {
+		expect(isNewerVersion('0.0.105', '0.0.99')).toBe(true);
+		expect(isNewerVersion('0.0.99', '0.0.105')).toBe(false);
+		expect(isNewerVersion('0.1.0', '0.0.999')).toBe(true);
+		expect(isNewerVersion('1.0', '0.9.9')).toBe(true);
+	});
+
+	it('is strict: an equal version is not newer, nor is a shorter spelling of it', () => {
+		expect(isNewerVersion('0.0.84', '0.0.84')).toBe(false);
+		expect(isNewerVersion('1.0', '1.0.0')).toBe(false);
+		expect(isNewerVersion('1.0.0', '1.0')).toBe(false);
+	});
+
+	it('never trusts a version it cannot parse, in either position', () => {
+		expect(isNewerVersion('0.0.0-unknown', '0.0.1')).toBe(false);
+		expect(isNewerVersion('9.9.9', '0.0.0-unknown')).toBe(false);
+		expect(isNewerVersion('0.0.100-beta.1', '0.0.99')).toBe(false);
+		expect(isNewerVersion('', '0.0.1')).toBe(false);
+	});
+});
+
+describe('pendingSelfUpdate', () => {
+	const cli = (version: string | null, source: AgentCli['source'] = 'fresh'): AgentCli => ({
+		binDir: '/cfg/cli/node_modules/.bin',
+		version,
+		source
+	});
+
+	it('names a newer installed version, fresh or last-good', () => {
+		expect(pendingSelfUpdate(cli('0.0.105'), '0.0.84')).toBe('0.0.105');
+		expect(pendingSelfUpdate(cli('0.0.105', 'stale'), '0.0.84')).toBe('0.0.105');
+	});
+
+	it('is null for the ambient PATH, an unreadable version, or nothing newer', () => {
+		expect(pendingSelfUpdate(AMBIENT_CLI, '0.0.84')).toBeNull();
+		expect(pendingSelfUpdate(cli(null), '0.0.84')).toBeNull();
+		expect(pendingSelfUpdate(cli('0.0.84'), '0.0.84')).toBeNull();
+		expect(pendingSelfUpdate(cli('0.0.80'), '0.0.84')).toBeNull();
+		// A repo checkout under tsx reports 0.0.1; every published release is
+		// newer, but that daemon never runs from the prefix, so daemon.ts
+		// never asks. The decision itself still says "newer".
+		expect(pendingSelfUpdate(cli('0.0.105'), '0.0.1')).toBe('0.0.105');
+	});
+});
+
+describe('pathWithin', () => {
+	it('requires the boundary to fall on a separator', () => {
+		expect(pathWithin('/cfg/cli/node_modules/tines/dist/index.js', '/cfg/cli')).toBe(true);
+		expect(pathWithin('/cfg/cli/node_modules/tines/dist/index.js', '/cfg/cli/')).toBe(true);
+		expect(pathWithin('/cfg/cli-old/node_modules/tines/dist/index.js', '/cfg/cli')).toBe(false);
+		expect(pathWithin('/cfg/cli', '/cfg/cli')).toBe(false);
+		expect(pathWithin('/opt/homebrew/lib/node_modules/tines/dist/index.js', '/cfg/cli')).toBe(
+			false
+		);
 	});
 });

@@ -1288,6 +1288,12 @@ export interface Runner {
 	 */
 	online: boolean;
 	last_seen_at: number | null;
+	/**
+	 * Local runners: the daemon is finishing its in-flight runs and will exit
+	 * for its service manager to relaunch a newer version. Nothing new is
+	 * dispatched to it until the relaunched daemon polls.
+	 */
+	draining: boolean;
 	launch_failures: number;
 	backoff_until: number | null;
 	/** Runs currently holding a claim on this runner (assigned/launching/running). */
@@ -1382,6 +1388,13 @@ export interface RunnerPollRequest {
 	 * effect without re-registering.
 	 */
 	max_concurrent?: number;
+	/**
+	 * True while the daemon is finishing its runs before exiting for a
+	 * self-update restart: the dispatcher assigns it nothing new, while runs
+	 * it already claimed are still delivered. Absent or false clears it, so
+	 * the relaunched daemon's first poll reopens the runner.
+	 */
+	draining?: boolean;
 }
 
 /** One delivered assignment: everything the daemon needs to launch. */
@@ -1652,7 +1665,7 @@ export interface DispatchCheck {
 }
 
 export type DispatchTargetVerdict =
-	'ok' | 'paused' | 'offline' | 'at_capacity' | 'backing_off' | 'quota_exhausted';
+	'ok' | 'paused' | 'offline' | 'draining' | 'at_capacity' | 'backing_off' | 'quota_exhausted';
 
 /** One rule/pin target's verdict, in preference order. */
 export interface DispatchTarget {

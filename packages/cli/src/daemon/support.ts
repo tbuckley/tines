@@ -4,7 +4,7 @@
  * unit-testable without a daemon (see support.test.ts). The loop itself
  * lives in daemon.ts.
  */
-import { delimiter } from 'node:path';
+import { delimiter, sep } from 'node:path';
 
 export type HarnessKind = 'claude_code' | 'codex' | 'custom';
 
@@ -523,6 +523,15 @@ export class CliRefresher {
 		private readonly opts: { ttlMs?: number; now?: () => number } = {}
 	) {}
 
+	/**
+	 * Resolves once no install is in flight, starting none. A daemon about to
+	 * exit for a self-update waits on this so it never restarts into a
+	 * half-extracted prefix.
+	 */
+	settled(): Promise<void> {
+		return this.inFlight ? this.inFlight.then(() => undefined) : Promise.resolve();
+	}
+
 	/** The current CLI, refreshing first when the TTL elapsed. Never rejects. */
 	ensure(): Promise<AgentCli> {
 		if (this.inFlight) return this.inFlight;
@@ -543,6 +552,55 @@ export class CliRefresher {
 			});
 		return this.inFlight;
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Self-update: the refresh above keeps a current `tines` on disk, and a daemon
+// launched from that same prefix is running an older copy of it. It cannot
+// replace itself in place; it drains and exits for the service manager to
+// relaunch (daemon.ts). These are the decisions, kept pure.
+
+/**
+ * Whether `candidate` is a strictly newer release than `current`: dotted
+ * numeric parts compared left to right, a missing part counting as 0.
+ * Anything that is not plain dotted digits — a prerelease tag, the
+ * `0.0.0-unknown` an unreadable manifest yields — is never newer, so an
+ * unreadable version can never trigger a restart.
+ */
+export function isNewerVersion(candidate: string, current: string): boolean {
+	const parse = (v: string): number[] | null =>
+		/^\d+(\.\d+)*$/.test(v) ? v.split('.').map(Number) : null;
+	const a = parse(candidate);
+	const b = parse(current);
+	if (!a || !b) return false;
+	for (let i = 0; i < Math.max(a.length, b.length); i++) {
+		const x = a[i] ?? 0;
+		const y = b[i] ?? 0;
+		if (x !== y) return x > y;
+	}
+	return false;
+}
+
+/**
+ * The version a self-update would restart into, or null when the resolved
+ * CLI is not a newer daemon: the ambient PATH (nothing was installed), an
+ * unreadable version, or one no newer than `running`. A last-good (`stale`)
+ * copy counts — an earlier refresh installed it and it is what a relaunch
+ * would run.
+ */
+export function pendingSelfUpdate(cli: AgentCli, running: string): string | null {
+	if (cli.source === 'ambient' || !cli.version) return null;
+	return isNewerVersion(cli.version, running) ? cli.version : null;
+}
+
+/**
+ * Whether `path` lies inside `dir` (both already resolved: no symlinks, no
+ * `..`). A prefix string match alone would let `/cfg/cli-old/x` pass for
+ * `/cfg/cli`, so the boundary must fall on a separator.
+ */
+export function pathWithin(path: string, dir: string): boolean {
+	const root = dir.endsWith(sep) ? dir : dir + sep;
+	return path.startsWith(root);
 }
 
 /**

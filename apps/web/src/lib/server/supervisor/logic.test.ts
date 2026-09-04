@@ -112,6 +112,7 @@ describe('targetVerdict', () => {
 		status: 'active',
 		max_concurrent: 2,
 		last_seen_at: NOW,
+		draining: 0,
 		backoff_until: null,
 		...over
 	});
@@ -144,6 +145,30 @@ describe('targetVerdict', () => {
 		expect(
 			targetVerdict(
 				runner({ type: 'claude_managed', last_seen_at: null }),
+				counts(),
+				globalCap,
+				's1',
+				NOW
+			).verdict
+		).toBe('ok');
+	});
+
+	it('a draining local daemon takes nothing new; offline outranks it, and managed runners never drain', () => {
+		expect(targetVerdict(runner({ draining: 1 }), counts(), globalCap, 's1', NOW).verdict).toBe(
+			'draining'
+		);
+		expect(
+			targetVerdict(
+				runner({ draining: 1, last_seen_at: NOW - 3 * 60_000 }),
+				counts(),
+				globalCap,
+				's1',
+				NOW
+			).verdict
+		).toBe('offline');
+		expect(
+			targetVerdict(
+				runner({ type: 'claude_managed', last_seen_at: null, draining: 1 }),
 				counts(),
 				globalCap,
 				's1',
