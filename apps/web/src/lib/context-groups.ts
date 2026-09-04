@@ -51,7 +51,9 @@ export function groupContextByWorkflow(
 
 		let stateGroup = entry.byState.get(stateId);
 		if (!stateGroup) {
-			const state = workflows.find((w) => w.id === workflowId)?.states.find((s) => s.id === stateId);
+			const state = workflows
+				.find((w) => w.id === workflowId)
+				?.states.find((s) => s.id === stateId);
 			stateGroup = {
 				stateId,
 				state: {
@@ -70,7 +72,10 @@ export function groupContextByWorkflow(
 	for (const { group, byState } of groups.values()) {
 		// States a workflow no longer lists (or that predate it) sort last, by name.
 		const positions = new Map(
-			(workflows.find((w) => w.id === group.workflowId)?.states ?? []).map((s) => [s.id, s.position])
+			(workflows.find((w) => w.id === group.workflowId)?.states ?? []).map((s) => [
+				s.id,
+				s.position
+			])
 		);
 		const position = (sg: StateGroup) => positions.get(sg.stateId) ?? Infinity;
 		group.states.sort((a, b) => {
@@ -83,5 +88,8 @@ export function groupContextByWorkflow(
 
 	return [...groups.values()]
 		.map((e) => e.group)
-		.sort((a, b) => a.workflowName.localeCompare(b.workflowName) || a.workflowId.localeCompare(b.workflowId));
+		.sort(
+			(a, b) =>
+				a.workflowName.localeCompare(b.workflowName) || a.workflowId.localeCompare(b.workflowId)
+		);
 }

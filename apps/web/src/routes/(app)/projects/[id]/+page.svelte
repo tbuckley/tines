@@ -17,10 +17,12 @@
 	import Modal from '$lib/components/Modal.svelte';
 	import NewIssueModal from '$lib/components/NewIssueModal.svelte';
 	import ScheduleList from '$lib/components/ScheduleList.svelte';
+	import StateBadge from '$lib/components/StateBadge.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { Select } from '$lib/components/ui/select/index.js';
 	import { Textarea } from '$lib/components/ui/textarea/index.js';
+	import { groupContextByWorkflow } from '$lib/context-groups';
 	import { prefersReducedMotion } from '$lib/format';
 	import { navMemory } from '$lib/nav-memory.svelte';
 
@@ -65,23 +67,12 @@
 		contextEditorOpen = true;
 	}
 
-	// Project-only items first, then project ∧ state grouped under their
-	// state names (issue-anchored items are excluded server-side).
+	// Project-only items stay expanded; project ∧ state items collapse into one
+	// accordion row per workflow (issue-anchored items are excluded server-side).
 	const projectOnlyItems = $derived(data.contextItems.filter((i) => !i.scope.workflow_state_id));
-	const stateGroups = $derived.by(() => {
-		const groups = new Map<string, { label: string; items: ContextItem[] }>();
-		for (const item of data.contextItems) {
-			if (!item.scope.workflow_state_id) continue;
-			const key = item.scope.workflow_state_id;
-			const group = groups.get(key) ?? {
-				label: `${item.scope.workflow_name} / ${item.scope.workflow_state_name}`,
-				items: []
-			};
-			group.items.push(item);
-			groups.set(key, group);
-		}
-		return [...groups.values()];
-	});
+	const workflowGroups = $derived(groupContextByWorkflow(data.contextItems, data.workflows));
+	/** The one open accordion row, or null — closed by default. */
+	let openWorkflowId = $state<string | null>(null);
 
 	// --- settings ----------------------------------------------------------------
 
@@ -204,6 +195,37 @@
 	</div>
 {/if}
 
+<div class="mb-8">
+	<div class="mb-3 flex items-center justify-between">
+		<h2 class="text-sm font-semibold">Issues</h2>
+		<div class="flex items-center gap-4">
+			<!-- Ready implies not-done, so "Show done" parks while it is on. -->
+			<CheckboxField
+				label="Show done"
+				class="text-muted-foreground text-sm {data.ready ? 'opacity-50' : ''}"
+				title={data.ready ? 'Ready issues are never done' : undefined}
+				checked={data.showDone && !data.ready}
+				disabled={data.ready}
+				onCheckedChange={(checked) => setFilter('done', checked)}
+			/>
+			<CheckboxField
+				label="Ready only"
+				class="text-muted-foreground text-sm"
+				checked={data.ready}
+				onCheckedChange={(checked) => setFilter('ready', checked)}
+			/>
+		</div>
+	</div>
+
+	<IssueList
+		issues={data.issues}
+		showProject={false}
+		emptyMessage={data.ready
+			? 'No ready issues in this project.'
+			: 'No issues in this project yet.'}
+	/>
+</div>
+
 {#if data.schedules.length > 0}
 	<div class="mb-8">
 		<div class="mb-3 flex items-center justify-between">
@@ -221,12 +243,26 @@
 	</div>
 {/if}
 
+<AgentRoutingCard
+	rules={data.routingRules}
+	{activeStateIds}
+	emptyMessage="No routing rule covers this project — its issues will not dispatch to agents."
+/>
+
 <div class="mb-8">
 	<div class="mb-3 flex items-center justify-between">
 		<h2 class="text-sm font-semibold">Context</h2>
-		<Button size="sm" variant="ghost" onclick={openContextCreate} aria-label="Add context">
-			<IconPlus size={14} /> Add
-		</Button>
+		<div class="flex items-center gap-3">
+			<a
+				href="/context?project={data.project.id}"
+				class="text-muted-foreground hover:text-foreground text-xs"
+			>
+				View all in Context
+			</a>
+			<Button size="sm" variant="ghost" onclick={openContextCreate} aria-label="Add context">
+				<IconPlus size={14} /> Add
+			</Button>
+		</div>
 	</div>
 	{#if data.contextItems.length === 0}
 		<div class="text-muted-foreground rounded-lg border border-dashed p-6 text-center text-sm">
@@ -238,50 +274,57 @@
 			{#if projectOnlyItems.length > 0}
 				<ContextItemList items={projectOnlyItems} showScope={false} onselect={openContextEdit} />
 			{/if}
-			{#each stateGroups as group (group.label)}
+			{#if workflowGroups.length > 0}
 				<div>
 					<h3 class="text-muted-foreground mb-1.5 text-xs font-semibold">
-						Only in state <span class="text-foreground">{group.label}</span>
+						Only in a workflow state
 					</h3>
-					<ContextItemList items={group.items} showScope={false} onselect={openContextEdit} />
+					<div class="rounded-lg border">
+						{#each workflowGroups as group (group.workflowId)}
+							{@const open = openWorkflowId === group.workflowId}
+							{@const panelId = `project-context-${group.workflowId}`}
+							<div class="border-b last:border-0">
+								<button
+									type="button"
+									class="hover:bg-muted/50 flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm"
+									onclick={() => (openWorkflowId = open ? null : group.workflowId)}
+									aria-expanded={open}
+									aria-controls={panelId}
+								>
+									<span class="font-medium">{group.workflowName}</span>
+									<span
+										class="bg-primary/10 text-primary rounded-full px-2 py-0.5 text-xs font-medium"
+									>
+										{group.states.length} state{group.states.length === 1 ? '' : 's'} ·
+										{group.itemCount} item{group.itemCount === 1 ? '' : 's'}
+									</span>
+								</button>
+								{#if open}
+									<div
+										id={panelId}
+										class="space-y-3 px-3 pb-3"
+										transition:slide={{ duration: dur() }}
+									>
+										{#each group.states as stateGroup (stateGroup.stateId)}
+											<div>
+												<h4 class="mb-1.5"><StateBadge state={stateGroup.state} /></h4>
+												<ContextItemList
+													items={stateGroup.items}
+													showScope={false}
+													onselect={openContextEdit}
+												/>
+											</div>
+										{/each}
+									</div>
+								{/if}
+							</div>
+						{/each}
+					</div>
 				</div>
-			{/each}
+			{/if}
 		</div>
 	{/if}
 </div>
-
-<AgentRoutingCard
-	rules={data.routingRules}
-	{activeStateIds}
-	emptyMessage="No routing rule covers this project — its issues will not dispatch to agents."
-/>
-
-<div class="mb-3 flex items-center justify-between">
-	<h2 class="text-sm font-semibold">Issues</h2>
-	<div class="flex items-center gap-4">
-		<!-- Ready implies not-done, so "Show done" parks while it is on. -->
-		<CheckboxField
-			label="Show done"
-			class="text-muted-foreground text-sm {data.ready ? 'opacity-50' : ''}"
-			title={data.ready ? 'Ready issues are never done' : undefined}
-			checked={data.showDone && !data.ready}
-			disabled={data.ready}
-			onCheckedChange={(checked) => setFilter('done', checked)}
-		/>
-		<CheckboxField
-			label="Ready only"
-			class="text-muted-foreground text-sm"
-			checked={data.ready}
-			onCheckedChange={(checked) => setFilter('ready', checked)}
-		/>
-	</div>
-</div>
-
-<IssueList
-	issues={data.issues}
-	showProject={false}
-	emptyMessage={data.ready ? 'No ready issues in this project.' : 'No issues in this project yet.'}
-/>
 
 <!-- new issue -->
 <NewIssueModal
