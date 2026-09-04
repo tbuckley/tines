@@ -556,7 +556,13 @@ test.describe.serial('context list state chips', () => {
 	}) => {
 		await signIn(context, ALICE.sessionToken);
 		await page.goto(`/context?workflow=${eng.id}`);
-		const row = page.locator('li').filter({ hasText: 'instructions' });
+		// `li:not([inert])`: the old row outros for 180 ms after a filter change
+		// (`transition:slide` in ContextItemList.svelte), and Svelte 5 marks an
+		// outroing element `inert` while it is still a sibling of the new row inside
+		// the same live <ul>. Excluding it keeps this locator at exactly one element
+		// at every instant, so each assertion below auto-retries against the live row
+		// instead of tripping strict mode on the stale one (Tines/154).
+		const row = page.locator('li:not([inert])').filter({ hasText: 'instructions' });
 		await expect(row).toHaveCount(1);
 		await expect(row).toContainText(`${engName} / Review`);
 
@@ -577,7 +583,9 @@ test.describe.serial('context list state chips', () => {
 		await page.goto(`/workflows/${eng.id}`);
 		const section = page.getByRole('heading', { name: 'Context by state' }).locator('..');
 		const expander = section.getByRole('button', { name: /^Review/ });
-		const row = section.locator('li').filter({ hasText: 'instructions' });
+		// Same live-row scoping as above; this path has no swap, so it is consistency,
+		// not a fix.
+		const row = section.locator('li:not([inert])').filter({ hasText: 'instructions' });
 		await expect(async () => {
 			await expander.click();
 			await expect(row).toBeVisible();
