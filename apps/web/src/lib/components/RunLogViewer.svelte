@@ -3,7 +3,19 @@
 	import { isActiveRun } from '@tines/shared';
 	import { api } from '$lib/api';
 
-	let { runId }: { runId: string } = $props();
+	let {
+		runId,
+		runError = null
+	}: {
+		runId: string;
+		/**
+		 * The run's failure reason, passed in rather than read off `detail`:
+		 * the row clamps it to two lines, so this disclosure is where the
+		 * whole string is read — and it must be there the moment the row
+		 * expands, including when the log fetch itself fails.
+		 */
+		runError?: string | null;
+	} = $props();
 
 	let detail = $state<AgentRunDetail | null>(null);
 	let error = $state<string | null>(null);
@@ -42,6 +54,14 @@
 </script>
 
 <div class="mt-1 w-full min-w-0">
+	{#if runError}
+		<p
+			class="mb-1 text-xs break-words whitespace-pre-wrap text-amber-700 dark:text-amber-400"
+			data-testid="run-error-full"
+		>
+			{runError}
+		</p>
+	{/if}
 	{#if error}
 		<p class="text-muted-foreground text-xs italic">{error}</p>
 	{:else if detail}
