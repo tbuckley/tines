@@ -60,6 +60,7 @@ describe('command tree', () => {
 				'events',
 				'issues',
 				'journal',
+				'labels',
 				'login',
 				'logout',
 				'projects',

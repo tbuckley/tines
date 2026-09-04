@@ -21,6 +21,7 @@ export const GET: RequestHandler = api(async (event) => {
 			hideDone: ['1', 'true'].includes(params.get('hide_done') ?? ''),
 			ready: ['1', 'true'].includes(params.get('ready') ?? ''),
 			q: params.get('q') ?? undefined,
+			labels: params.getAll('label'),
 			// brief=1 omits description bodies, which are most of the payload.
 			brief: ['1', 'true'].includes(params.get('brief') ?? '')
 		},

@@ -5,6 +5,8 @@
 	import { page } from '$app/state';
 	import CheckboxField from '$lib/components/CheckboxField.svelte';
 	import IssueList from '$lib/components/IssueList.svelte';
+	import LabelChip from '$lib/components/LabelChip.svelte';
+	import LabelPicker from '$lib/components/LabelPicker.svelte';
 	import NewIssueModal from '$lib/components/NewIssueModal.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
@@ -38,10 +40,27 @@
 		data.projects.find((p) => p.name === data.filters.project)?.id ?? null
 	);
 
+	// The filter carries label ids, so a rename never breaks a bookmarked URL.
+	const selectedLabels = $derived(
+		data.filters.labels
+			.map((ref) =>
+				data.labels.find((l) => l.id === ref || l.name.toLowerCase() === ref.toLowerCase())
+			)
+			.filter((l) => l !== undefined)
+	);
+
 	function setFilter(key: string, value: string) {
 		const params = new URLSearchParams(page.url.searchParams);
 		if (value) params.set(key, value);
 		else params.delete(key);
+		goto(`/issues?${params}`, { keepFocus: true, noScroll: true });
+	}
+
+	/** Repeatable counterpart of setFilter: `?label=a&label=b`. */
+	function setMulti(key: string, values: string[]) {
+		const params = new URLSearchParams(page.url.searchParams);
+		params.delete(key);
+		for (const v of values) params.append(key, v);
 		goto(`/issues?${params}`, { keepFocus: true, noScroll: true });
 	}
 </script>
@@ -108,6 +127,31 @@
 			<option value={cat}>{CATEGORY_LABELS[cat]}</option>
 		{/each}
 	</Select>
+	<LabelPicker
+		labels={data.labels}
+		selected={selectedLabels.map((l) => l.id)}
+		onchange={(ids) => setMulti('label', ids)}
+	>
+		{#snippet trigger({ props })}
+			<button
+				{...props}
+				type="button"
+				class="border-input hover:bg-accent flex h-9 min-w-32 items-center gap-1.5 rounded-md border px-3 text-sm"
+				aria-label="Filter by label"
+			>
+				{#if selectedLabels.length === 0}
+					<span class="text-muted-foreground">All labels</span>
+				{:else}
+					{#each selectedLabels.slice(0, 2) as label (label.id)}
+						<LabelChip {label} size="sm" />
+					{/each}
+					{#if selectedLabels.length > 2}
+						<span class="text-muted-foreground text-xs">+{selectedLabels.length - 2}</span>
+					{/if}
+				{/if}
+			</button>
+		{/snippet}
+	</LabelPicker>
 	<!-- Ready implies not-done, so "Show done" parks (unchecked and disabled)
 	     while Ready is on; its URL param survives, so unchecking restores it. -->
 	<CheckboxField
@@ -130,6 +174,7 @@
 	bind:open={newIssueOpen}
 	projects={data.projects}
 	workflows={data.workflows}
+	labels={data.labels}
 	defaultProjectId={filteredProjectId}
 />
 

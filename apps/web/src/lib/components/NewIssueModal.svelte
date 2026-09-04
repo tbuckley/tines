@@ -1,11 +1,14 @@
 <script lang="ts">
-	import type { Project, WorkflowResponse } from '@tines/shared';
+	import type { Label, LabelWithUsage, Project, WorkflowResponse } from '@tines/shared';
 	import { ApiError } from '@tines/shared';
 	import IconChevronRight from '@tabler/icons-svelte/icons/chevron-right';
 	import IconRepeat from '@tabler/icons-svelte/icons/repeat';
+	import IconTag from '@tabler/icons-svelte/icons/tag';
 	import { slide } from 'svelte/transition';
 	import { goto, invalidateAll } from '$app/navigation';
 	import { api } from '$lib/api';
+	import LabelPicker from '$lib/components/LabelPicker.svelte';
+	import LabelChip from '$lib/components/LabelChip.svelte';
 	import Modal from '$lib/components/Modal.svelte';
 	import PendingButton from '$lib/components/PendingButton.svelte';
 	import RepeatFields from '$lib/components/RepeatFields.svelte';
@@ -21,6 +24,7 @@
 		open = $bindable(false),
 		projects,
 		workflows,
+		labels = [],
 		project = null,
 		defaultProjectId = null,
 		repeatOpen = $bindable(false)
@@ -28,6 +32,8 @@
 		open?: boolean;
 		projects: Project[];
 		workflows: WorkflowResponse[];
+		/** The user's label vocabulary, for the picker. */
+		labels?: LabelWithUsage[];
 		/** Fixed project (no picker), e.g. on the project page. */
 		project?: Project | null;
 		/** Preselects the picker, e.g. from an active project filter. */
@@ -44,6 +50,9 @@
 	let workflowId = $state('');
 	let stateId = $state('');
 	let repeat = $state(defaultRepeatState());
+	let labelIds = $state<string[]>([]);
+	/** Labels minted from the picker before this issue exists. */
+	let minted = $state<Label[]>([]);
 	let creating = $state(false);
 	let errorMessage = $state<string | null>(null);
 
@@ -55,6 +64,10 @@
 		selectedProject?.default_workflow_id ?? workflows.find((w) => w.is_system)?.id ?? ''
 	);
 	const pickedWorkflow = $derived(workflows.find((w) => w.id === workflowId));
+	const pickerLabels = $derived([
+		...labels,
+		...minted.filter((m) => !labels.some((l) => l.id === m.id))
+	]);
 
 	// Reset the form whenever the dialog is closed (also seeds the first open).
 	$effect(() => {
@@ -64,6 +77,8 @@
 			errorMessage = null;
 			projectId = project?.id ?? defaultProjectId ?? projects[0]?.id ?? '';
 			repeat = defaultRepeatState();
+			labelIds = [];
+			minted = [];
 			repeatOpen = false;
 		}
 	});
@@ -87,7 +102,8 @@
 				description: description || undefined,
 				workflow_id: workflowId || undefined,
 				state: stateId || undefined,
-				schedule: repeatToScheduleInput(repeat) ?? undefined
+				schedule: repeatToScheduleInput(repeat) ?? undefined,
+				labels: labelIds.length > 0 ? labelIds : undefined
 			});
 			open = false;
 			await invalidateAll();
@@ -119,6 +135,31 @@
 		<div class="space-y-1.5">
 			<label class="text-sm font-medium" for="issue-description">Description (Markdown)</label>
 			<Textarea id="issue-description" bind:value={description} rows={4} />
+		</div>
+		<div class="space-y-1.5">
+			<span class="text-sm font-medium">Labels</span>
+			<div class="flex flex-wrap items-center gap-1.5">
+				{#each pickerLabels.filter((l) => labelIds.includes(l.id)) as label (label.id)}
+					<LabelChip
+						{label}
+						size="sm"
+						onremove={() => (labelIds = labelIds.filter((id) => id !== label.id))}
+					/>
+				{/each}
+				<LabelPicker
+					labels={pickerLabels}
+					selected={labelIds}
+					onchange={(ids) => (labelIds = ids)}
+					allowCreate
+					oncreated={(l) => (minted = [...minted, l])}
+				>
+					{#snippet trigger({ props })}
+						<Button {...props} type="button" size="sm" variant="outline" class="h-7 px-2 text-xs">
+							<IconTag size={14} /> Add label
+						</Button>
+					{/snippet}
+				</LabelPicker>
+			</div>
 		</div>
 		<div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
 			<div class="space-y-1.5">

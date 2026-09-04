@@ -3,6 +3,7 @@ import { truncate } from '$lib/format';
 import { effectiveContextForIssue, listContextItems } from '$lib/server/api/context';
 import { eventQuery, serializeEvent } from '$lib/server/api/events';
 import { getIssueDetail, loadIssue } from '$lib/server/api/issues';
+import { listLabels } from '$lib/server/api/labels';
 import { listProjects } from '$lib/server/api/projects';
 import { listRunners } from '$lib/server/api/runners';
 import { listRuns } from '$lib/server/api/runs';
@@ -75,10 +76,12 @@ export const load: PageServerLoad = async ({ locals, platform, params, depends }
 		.execute()
 		.then((rows) => rows.map(serializeEvent));
 
-	const [detail, events, projects] = await Promise.all([
+	const [detail, events, projects, labelLibrary] = await Promise.all([
 		detailPromise,
 		eventsPromise,
-		projectsPromise
+		projectsPromise,
+		// The whole vocabulary, for the labels picker in the aside.
+		listLabels(db, userId)
 	]);
 
 	// The artifacts ride along on the detail (fetched in the same wave); expose
@@ -91,6 +94,7 @@ export const load: PageServerLoad = async ({ locals, platform, params, depends }
 		workflows: await workflowsPromise,
 		projects,
 		artifacts: artifacts ?? [],
+		labelLibrary,
 		// Streamed: the sidebar panels. Each renders a skeleton until its first
 		// value lands; on refreshes the page keeps the previous value on screen
 		// while the replacement promise is in flight (streamed() in +page.svelte).

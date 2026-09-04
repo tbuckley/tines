@@ -1,15 +1,17 @@
 import type { WorkflowResponse } from '@tines/shared';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { CLOSED, PROJECT, USER, addIssue, seedBase } from '../supervisor/test-fixtures';
-import { ApiFail } from './core';
+import { ApiFail, type ActorContext } from './core';
 import {
 	allowedTransitions,
 	assertPinFieldsAllowed,
+	createIssue,
 	getIssueDetail,
 	listIssues,
 	loadIssue,
 	resolveStateRef
 } from './issues';
+import { createLabel, listLabels } from './labels';
 import { listArtifacts } from './artifacts';
 import { loadWorkflows } from './workflows';
 import { createTestDb, type TestDb } from './test-db';
@@ -175,6 +177,85 @@ describe('listIssues search', () => {
 
 	it('returns every issue when q is absent', async () => {
 		expect((await search({})).items).toHaveLength(5);
+	});
+});
+
+/**
+ * The create path resolves labels *before* the issue insert and appends the
+ * label writes to the same atomic batch, so label ids exist in memory before
+ * their rows do. These cases pin both halves of that: what a successful
+ * create leaves behind, and that a rejected one leaves nothing at all.
+ */
+describe('createIssue with labels', () => {
+	let t: TestDb;
+	beforeEach(() => {
+		t = createTestDb();
+		seedBase(t);
+	});
+
+	const human: ActorContext = {
+		userId: USER,
+		userName: 'alice',
+		apiKeyId: null,
+		apiKeyName: null,
+		viaSession: true
+	};
+	/** A run key — fenced to the existing vocabulary. Key id null: see labels.test.ts. */
+	const runKey: ActorContext = { ...human, viaSession: false, agentRunId: 'arun_1' };
+
+	const create = (actor: ActorContext, labels: string[]) =>
+		createIssue(t.db, t.env, actor, PROJECT, { title: 'Labelled', labels });
+	const issueCount = () =>
+		Number((t.sqlite.prepare('SELECT COUNT(*) AS n FROM issue').get() as { n: number }).n);
+
+	it('creates unknown labels on the fly for a human and attaches them', async () => {
+		const issue = await create(human, ['bug', 'p1']);
+		expect(issue.labels.map((l) => l.name)).toEqual(['bug', 'p1']);
+		// They land in the library too, each used exactly once.
+		expect((await listLabels(t.db, USER)).map((l) => `${l.name}:${l.issue_count}`)).toEqual([
+			'bug:1',
+			'p1:1'
+		]);
+	});
+
+	it('rejects a run key naming an unknown label without creating the issue', async () => {
+		expect(issueCount()).toBe(0);
+		let caught: unknown;
+		try {
+			await create(runKey, ['bug']);
+		} catch (e) {
+			caught = e;
+		}
+		expect(caught).toBeInstanceOf(ApiFail);
+		expect((caught as ApiFail).code).toBe('unknown_label');
+		// The whole point of resolving before the batch: no half-created issue.
+		expect(issueCount()).toBe(0);
+		expect(await listLabels(t.db, USER)).toEqual([]);
+	});
+
+	it('lets a run key attach an existing label, matched case-insensitively', async () => {
+		await createLabel(t.db, t.env, human, { name: 'bug' });
+		const issue = await create(runKey, ['BUG']);
+		expect(issue.labels.map((l) => l.name)).toEqual(['bug']);
+		expect(await listLabels(t.db, USER)).toHaveLength(1);
+	});
+
+	it('dedupes names that differ only by case within one create', async () => {
+		const issue = await create(human, ['bug', 'Bug']);
+		expect(issue.labels.map((l) => l.name)).toEqual(['bug']);
+		expect(await listLabels(t.db, USER)).toHaveLength(1);
+	});
+
+	it('filters on a label applied at creation time', async () => {
+		const labelled = await create(human, ['bug']);
+		await createIssue(t.db, t.env, human, PROJECT, { title: 'Plain' });
+		const { items } = await listIssues(
+			t.db,
+			USER,
+			{ labels: ['bug'] },
+			{ cursor: null, limit: 50 }
+		);
+		expect(items.map((i) => i.id)).toEqual([labelled.id]);
 	});
 });
 

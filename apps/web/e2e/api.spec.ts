@@ -539,6 +539,68 @@ test.describe('input validation', () => {
 	});
 });
 
+test.describe.serial('issue label filter', () => {
+	// `?label=` is repeatable and ANDs. Covered here rather than in a unit test
+	// because the only thing joining `tines issues list --label` to the SQL is
+	// `params.getAll('label')` in each route file, which unit tests never reach.
+	const projectName = `labels-${runId}`;
+	const bug = `bug-${runId}`;
+	const p1 = `p1-${runId}`;
+	let projectId: string;
+
+	test('seeds issues carrying both labels, one label, and none', async ({ request }) => {
+		const api = apiClient(request, ALICE.apiKey);
+		projectId = (await body<Project>(await api.post('/api/v1/projects', { name: projectName }))).id;
+		const seed = [
+			{ title: 'Both', labels: [bug, p1] },
+			{ title: 'Bug only', labels: [bug] },
+			{ title: 'Unlabelled' }
+		];
+		for (const issue of seed) {
+			const res = await api.post(`/api/v1/projects/${projectId}/issues`, issue);
+			expect(res.status()).toBe(201);
+			// Labels ride along on the create response, no follow-up read needed.
+			expect((await body<IssueDetail>(res)).labels.map((l) => l.name)).toEqual(issue.labels ?? []);
+		}
+	});
+
+	/** The same filter through the global route and the per-project route. */
+	const listBoth = async (
+		api: ReturnType<typeof apiClient>,
+		...labels: string[]
+	): Promise<[string[], string[]]> => {
+		const qs = labels.map((l) => `label=${encodeURIComponent(l)}`).join('&');
+		const global = await body<ListResponse<IssueDetail>>(
+			await api.get(`/api/v1/issues?project=${projectId}&${qs}`)
+		);
+		const scoped = await body<ListResponse<IssueDetail>>(
+			await api.get(`/api/v1/projects/${projectId}/issues?${qs}`)
+		);
+		return [global.items.map((i) => i.title).sort(), scoped.items.map((i) => i.title).sort()];
+	};
+
+	test('filters by one label, on both routes', async ({ request }) => {
+		const [global, scoped] = await listBoth(apiClient(request, ALICE.apiKey), bug);
+		expect(global).toEqual(['Both', 'Bug only']);
+		expect(scoped).toEqual(global);
+	});
+
+	test('ANDs repeated labels rather than widening', async ({ request }) => {
+		const [global, scoped] = await listBoth(apiClient(request, ALICE.apiKey), bug, p1);
+		expect(global).toEqual(['Both']);
+		expect(scoped).toEqual(global);
+	});
+
+	test('matches label names case-insensitively', async ({ request }) => {
+		const [global] = await listBoth(apiClient(request, ALICE.apiKey), bug.toUpperCase());
+		expect(global).toEqual(['Both', 'Bug only']);
+	});
+
+	test('returns nothing for a label no issue carries, without erroring', async ({ request }) => {
+		expect(await listBoth(apiClient(request, ALICE.apiKey), `absent-${runId}`)).toEqual([[], []]);
+	});
+});
+
 test.describe('method not allowed', () => {
 	// Kit answers an unsupported verb on a real route itself, before any
 	// handler runs; only the hook can put that in the envelope (Tines/83).

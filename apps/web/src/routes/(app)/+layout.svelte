@@ -7,6 +7,7 @@
 	import IconKey from '@tabler/icons-svelte/icons/key';
 	import IconListDetails from '@tabler/icons-svelte/icons/list-details';
 	import IconLogout from '@tabler/icons-svelte/icons/logout';
+	import IconTag from '@tabler/icons-svelte/icons/tag';
 	import IconPalette from '@tabler/icons-svelte/icons/palette';
 	import IconRobot from '@tabler/icons-svelte/icons/robot';
 	import IconSitemap from '@tabler/icons-svelte/icons/sitemap';
@@ -171,12 +172,12 @@
 							<IconPalette size={16} stroke={1.75} /> Appearance
 						</a>
 						<a
-							href="/settings/export-import"
+							href="/settings/labels"
 							class="hover:bg-accent hover:text-accent-foreground flex items-center gap-2 rounded-md px-3 py-2 text-sm"
 							role="menuitem"
 							onclick={() => (menuOpen = false)}
 						>
-							<IconDatabaseExport size={16} stroke={1.75} /> Export / import
+							<IconTag size={16} stroke={1.75} /> Labels
 						</a>
 						<a
 							href="/settings/api-keys"

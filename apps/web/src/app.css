@@ -135,6 +135,18 @@
 	--cat-active: oklch(0.55 0.19 255);
 	--cat-awaiting_human: oklch(0.62 0.15 70);
 	--cat-done: oklch(0.55 0.15 150);
+
+	/* Label palette. Keys are stored in `label.color`; both blocks must stay
+	   in sync so a chip is legible in either theme. */
+	--label-slate: oklch(0.52 0.03 260);
+	--label-red: oklch(0.55 0.2 25);
+	--label-orange: oklch(0.58 0.16 50);
+	--label-amber: oklch(0.58 0.13 80);
+	--label-green: oklch(0.53 0.15 150);
+	--label-teal: oklch(0.53 0.11 190);
+	--label-blue: oklch(0.55 0.19 255);
+	--label-violet: oklch(0.55 0.2 300);
+	--label-pink: oklch(0.57 0.19 350);
 }
 
 .dark {
@@ -142,6 +154,16 @@
 	--cat-active: oklch(0.72 0.15 255);
 	--cat-awaiting_human: oklch(0.78 0.14 80);
 	--cat-done: oklch(0.72 0.14 150);
+
+	--label-slate: oklch(0.72 0.03 260);
+	--label-red: oklch(0.72 0.17 25);
+	--label-orange: oklch(0.75 0.14 50);
+	--label-amber: oklch(0.8 0.13 80);
+	--label-green: oklch(0.73 0.14 150);
+	--label-teal: oklch(0.74 0.1 190);
+	--label-blue: oklch(0.72 0.15 255);
+	--label-violet: oklch(0.73 0.16 300);
+	--label-pink: oklch(0.75 0.16 350);
 }
 
 @layer base {

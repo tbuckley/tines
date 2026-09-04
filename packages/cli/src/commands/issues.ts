@@ -4,6 +4,7 @@ import { basename, dirname, join } from 'node:path';
 import { BODY_VALUE_HELP, readBodyValue } from '../body-value.js';
 import {
 	client,
+	collect,
 	die,
 	fetchList,
 	printJson,
@@ -33,6 +34,7 @@ import { buildRecurrence, type RecurrenceOpts } from '../recurrence-flags.js';
 import { parseTargetSpec } from '../refs.js';
 import {
 	actorLabel,
+	ApiError,
 	parsePrSpec,
 	type Artifact,
 	type CreateScheduleInput,
@@ -81,6 +83,9 @@ function printIssueDetail(issue: IssueDetail): void {
 		console.log(
 			`own state: ${issue.state.name} (${issue.state.category}) — dormant while this is a duplicate`
 		);
+	}
+	if (issue.labels.length > 0) {
+		console.log(`labels: ${issue.labels.map((l) => l.name).join(', ')}`);
 	}
 	console.log(`id: ${issue.id}`);
 	printIssueLinks(issue.links);
@@ -179,6 +184,7 @@ export function register(program: Command): void {
 				'only issues that are actionable now (not done, not a duplicate, no open blockers)'
 			)
 			.option('-q, --search <text>', 'search titles and descriptions')
+			.option('-l, --label <name>', 'filter by label; repeat to require all of them', collect, [])
 			.option('--brief', 'omit description bodies (saves tokens when scanning)')
 	).action(
 		async (
@@ -190,6 +196,7 @@ export function register(program: Command): void {
 				all?: boolean;
 				ready?: boolean;
 				search?: string;
+				label?: string[];
 				brief?: boolean;
 			}
 		) => {
@@ -203,6 +210,7 @@ export function register(program: Command): void {
 					hide_done: !opts.all,
 					ready: opts.ready,
 					q: opts.search,
+					label: opts.label,
 					// The table below never prints descriptions, so --brief only
 					// ever changes --json; it is off by default so existing
 					// consumers of the JSON keep the field.
@@ -222,7 +230,11 @@ export function register(program: Command): void {
 						i.effective_state.name,
 						i.effective_state.category,
 						timestamp(i.last_activity_at),
-						[i.open_blockers.length > 0 ? 'blocked' : '', i.duplicate_of ? 'dup' : '']
+						[
+							i.open_blockers.length > 0 ? 'blocked' : '',
+							i.duplicate_of ? 'dup' : '',
+							...i.labels.map((l) => `[${l.name}]`)
+						]
 							.filter(Boolean)
 							.join(' ')
 					])
@@ -258,6 +270,12 @@ export function register(program: Command): void {
 			.option('--tz <iana>', 'schedule timezone (defaults to the system timezone)')
 			.option('--if-closed', 'only create a new instance when all previous instances are closed')
 			.option('--schedule-name <name>', 'schedule name, unique per project (defaults to the title)')
+			.option(
+				'-l, --label <name>',
+				'attach a label; repeat for several (created if new)',
+				collect,
+				[]
+			)
 	).action(
 		async (
 			projectRef: string,
@@ -269,6 +287,7 @@ export function register(program: Command): void {
 					state?: string;
 					ifClosed?: boolean;
 					scheduleName?: string;
+					label?: string[];
 				}
 		) => {
 			// Resolved before any lookup, like the <markdown> positionals: an
@@ -296,11 +315,13 @@ export function register(program: Command): void {
 				description,
 				workflow_id: workflowId,
 				state: opts.state,
-				schedule
+				schedule,
+				labels: opts.label
 			});
 			if (opts.json) return printJson(issue);
 			console.log(
-				`created ${issue.project_name}/#${issue.number} "${issue.title}" in state "${issue.state.name}"`
+				`created ${issue.project_name}/#${issue.number} "${issue.title}" in state "${issue.state.name}"` +
+					(issue.labels.length > 0 ? ` labeled ${issue.labels.map((l) => l.name).join(', ')}` : '')
 			);
 			if (issue.schedule) {
 				console.log(
@@ -429,6 +450,56 @@ export function register(program: Command): void {
 		await api.deleteComment(issue.id, commentId);
 		if (opts.json) return printJson({ id: commentId, deleted: true });
 		console.log(`deleted comment ${commentId} from ${issue.project_name}/#${issue.number}`);
+	});
+
+	// Labels read as sentences too, and label ids never surface: every command
+	// takes names.
+
+	withCommon(
+		issues
+			.command('label <ref> <name...>')
+			.description('Add labels to an issue (a label that does not exist yet is created)')
+	).action(async (ref: string, names: string[], opts: CommonOpts) => {
+		const api = client(opts);
+		const issue = await resolveIssue(api, ref);
+		const res = await api.addIssueLabels(issue.id, names);
+		if (opts.json) return printJson(res);
+		const target = `${issue.project_name}/#${issue.number}`;
+		if (res.added.length === 0) {
+			console.log(`${target} already had ${names.join(', ')} — nothing to do`);
+		} else {
+			console.log(`labeled ${target}: ${res.added.map((l) => l.name).join(', ')}`);
+		}
+		if (res.created.length > 0) {
+			console.log(
+				`created new label${res.created.length > 1 ? 's' : ''} ${res.created.map((l) => l.name).join(', ')}`
+			);
+		}
+	});
+
+	withCommon(
+		issues.command('unlabel <ref> <name...>').description('Remove labels from an issue')
+	).action(async (ref: string, names: string[], opts: CommonOpts) => {
+		const api = client(opts);
+		const issue = await resolveIssue(api, ref);
+		const removed: string[] = [];
+		const missing: string[] = [];
+		// One DELETE per name: a name that was not attached is reported, not
+		// fatal, so `unlabel A x y` still removes y when x was never there.
+		for (const name of names) {
+			try {
+				await api.removeIssueLabel(issue.id, name);
+				removed.push(name);
+			} catch (err) {
+				if (err instanceof ApiError && err.status === 404) missing.push(name);
+				else throw err;
+			}
+		}
+		if (opts.json) return printJson({ removed, missing });
+		const target = `${issue.project_name}/#${issue.number}`;
+		if (removed.length > 0) console.log(`unlabeled ${target}: ${removed.join(', ')}`);
+		if (missing.length > 0) console.log(`not on ${target}: ${missing.join(', ')}`);
+		if (removed.length === 0 && missing.length === 0) console.log('nothing to do');
 	});
 
 	// Links read as sentences: `block A B` means "A blocks B", `duplicate A B`

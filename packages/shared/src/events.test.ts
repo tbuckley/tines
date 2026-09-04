@@ -65,6 +65,11 @@ const PAYLOADS: Record<KnownEventType, Record<string, unknown>> = {
 		other_number: 40,
 		other_title: 'The other one'
 	},
+	'issue.labeled': { label_id: 'lbl_1', name: 'bug' },
+	'issue.unlabeled': { label_id: 'lbl_1', name: 'bug' },
+	'label.created': { label_id: 'lbl_1', name: 'bug' },
+	'label.updated': { label_id: 'lbl_1', name: 'bug' },
+	'label.deleted': { label_id: 'lbl_1', name: 'bug' },
 	'project.created': { name: 'Tines' },
 	'project.updated': { name: 'Tines' },
 	'project.deleted': { name: 'Tines' },

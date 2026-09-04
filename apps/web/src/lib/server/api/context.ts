@@ -1419,10 +1419,19 @@ function requirementStatusLabel(r: ArtifactRequirementCheck): string {
 	}
 }
 
+/**
+ * How many label names the prompt spells out before falling back to a count.
+ * The vocabulary is an affordance, not a reference: past a few dozen the list
+ * costs more tokens than it saves, and `tines labels list` has the rest.
+ */
+const PROMPT_LABEL_VOCABULARY_MAX = 40;
+
 export function issueBlock(
 	issue: IssueDetail,
 	context: EffectiveContext,
-	issueArtifacts: Artifact[] = []
+	issueArtifacts: Artifact[] = [],
+	/** The user's whole label library, so the agent can classify without a round trip. */
+	labelVocabulary: string[] = []
 ): string {
 	const ref = `${issue.project_name}/${issue.number}`;
 	const lines: string[] = [`## Issue: ${ref} — ${issue.title}`, ''];
@@ -1433,6 +1442,25 @@ export function issueBlock(
 		'### Current state',
 		'',
 		`${issue.state.name} (${issue.state.category}), in workflow "${issue.workflow.name}".`,
+		''
+	);
+	// Labels are classification the agent both reads and writes, so the block
+	// carries the current set and the command, the same as comments and
+	// artifacts. The known vocabulary is spelled out because a run key can
+	// only apply labels that already exist.
+	if (issue.labels.length > 0) {
+		lines.push(`Labels: ${issue.labels.map((l) => l.name).join(', ')}`, '');
+	}
+	const vocabulary =
+		labelVocabulary.length > PROMPT_LABEL_VOCABULARY_MAX
+			? `${labelVocabulary.slice(0, PROMPT_LABEL_VOCABULARY_MAX).join(', ')}, ` +
+				`+${labelVocabulary.length - PROMPT_LABEL_VOCABULARY_MAX} more (\`tines labels list\`)`
+			: labelVocabulary.join(', ');
+	lines.push(
+		`Label it: \`tines issues label ${ref} <name...>\`` +
+			(labelVocabulary.length > 0
+				? ` (existing labels only: ${vocabulary})`
+				: ' (no labels exist yet — ask a human to add one)'),
 		'',
 		'### Comments',
 		''
@@ -1559,10 +1587,11 @@ export function issueBlock(
 export function buildLaunchPrompt(
 	context: EffectiveContext,
 	issue: IssueDetail,
-	issueArtifacts: Artifact[] = []
+	issueArtifacts: Artifact[] = [],
+	labelVocabulary: string[] = []
 ): string {
 	const text = context.prompt.text.trim();
-	const block = issueBlock(issue, context, issueArtifacts);
+	const block = issueBlock(issue, context, issueArtifacts, labelVocabulary);
 	return text ? `${text}\n\n${block}` : block;
 }
 

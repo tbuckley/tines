@@ -129,6 +129,11 @@ const DESCRIBERS: Record<KnownEventType, Describer> = {
 	'issue.comment_deleted': () => [text('deleted a comment on'), selfRef()],
 	'issue.link_added': linkSegments,
 	'issue.link_removed': linkSegments,
+	'issue.labeled': (_ev, p) => [text('labeled'), selfRef(), name(p.name)],
+	'issue.unlabeled': (_ev, p) => [text('removed label'), name(p.name), text('from'), selfRef()],
+	'label.created': (ev, p) => [text(`${action(ev.type)} label`), name(p.name)],
+	'label.updated': (ev, p) => [text(`${action(ev.type)} label`), name(p.name)],
+	'label.deleted': (ev, p) => [text(`${action(ev.type)} label`), name(p.name)],
 	'issue.parked': (_ev, p) => [
 		text('parked'),
 		selfRef(),
