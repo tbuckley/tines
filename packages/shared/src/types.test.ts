@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { AgentRunUsage, StateCategory, Workflow } from './types.js';
 import {
 	activeStateIds,
+	compareLabelNames,
 	isActiveRun,
 	isStaleTierOverride,
 	runCostLabel,
@@ -97,5 +98,26 @@ describe('isStaleTierOverride', () => {
 		expect(isStaleTierOverride('claude-fable-5-1', 'some-custom-model')).toBe(false);
 		expect(isStaleTierOverride(null, 'claude-fable-5')).toBe(false);
 		expect(isStaleTierOverride('claude-fable-5-1', undefined)).toBe(false);
+	});
+});
+
+describe('compareLabelNames', () => {
+	it('folds ASCII case and leaves everything else in code-unit order', () => {
+		expect(['zeta', 'éclair', 'Bug', 'apple'].sort(compareLabelNames)).toEqual([
+			'apple',
+			'Bug',
+			'zeta',
+			'éclair'
+		]);
+	});
+
+	it('is a total order: antisymmetric, and equal on a pure case change', () => {
+		const names = ['zeta', 'éclair', 'Bug', 'apple', 'bug'];
+		for (const a of names) {
+			for (const b of names) {
+				expect(compareLabelNames(a, b) + compareLabelNames(b, a)).toBe(0);
+			}
+		}
+		expect(compareLabelNames('Bug', 'bug')).toBe(0);
 	});
 });

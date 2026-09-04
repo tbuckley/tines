@@ -20,6 +20,26 @@ export function relativeTime(ms: number, now = Date.now()): string {
 }
 
 /**
+ * relativeTime for a narrow column: "now", "5m", "3h", "2d". Past a month it
+ * is the day ("Sep 4"), and only once the year differs does the year replace
+ * the day ("Sep 2025") — the column has room for one or the other, not both.
+ */
+export function relativeTimeShort(ms: number, now = Date.now()): string {
+	const diff = now - ms;
+	if (diff < 60_000) return 'now';
+	const minutes = Math.floor(diff / 60_000);
+	if (minutes < 60) return `${minutes}m`;
+	const hours = Math.floor(minutes / 60);
+	if (hours < 24) return `${hours}h`;
+	const days = Math.floor(hours / 24);
+	if (days < 30) return `${days}d`;
+	const date = new Date(ms);
+	return date.getFullYear() === new Date(now).getFullYear()
+		? date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+		: date.toLocaleDateString(undefined, { month: 'short', year: 'numeric' });
+}
+
+/**
  * Future counterpart of relativeTime: "in 5m", "in 3h", "in 2d".
  *
  * A timestamp already in the past reads as overdue ("3h overdue"), never as an

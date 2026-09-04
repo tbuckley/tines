@@ -178,8 +178,11 @@
 	defaultProjectId={filteredProjectId}
 />
 
+<!-- Filtered to one project, every ref would repeat its name: rows show the
+     bare number then, as the project page does. -->
 <IssueList
 	issues={data.issues}
+	showProject={!data.filters.project}
 	emptyMessage={data.projects.length === 0
 		? 'No issues yet — create a project first, then add issues to it.'
 		: data.filters.ready

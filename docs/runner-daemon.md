@@ -29,6 +29,7 @@ Flags:
 | `--max-concurrent` | Simultaneous runs on this machine (1–100); sent on every poll, so a restart with a new value updates the server-side cap | 1 |
 | `--poll-interval` | Seconds between polls | 15 |
 | `--no-cli-refresh` | Skip the managed CLI install; harnesses use whatever `tines` is on the ambient PATH | refresh on |
+| `--no-self-update` | Never exit for the service manager to relaunch a newer daemon (see "Keeping the daemon itself current") | self-update on |
 | `--keep-workspaces` | Keep settled runs' workspaces for debugging: `never`, `failed`, or `always` | `never` |
 | `--keep-workspaces-for` | Hours a kept workspace survives | 72 |
 | `--keep-workspaces-max` | Most kept workspaces to hold at once (oldest go first) | 20 |
@@ -77,6 +78,43 @@ and prepends `~/.config/tines/cli/node_modules/.bin` to the harness's `PATH`. No
 - To reset, delete `~/.config/tines/cli` (it is rebuilt on the next refresh). To opt out
   entirely, pass `--no-cli-refresh`.
 
+### Keeping the daemon itself current
+
+The refresh above updates the CLI *agents* run. The daemon process is whatever binary the
+service manager launched, and a long-lived daemon silently falls behind the API it polls —
+a feature that ships in the daemon (the rendered `claude_code` stream, say) does not show
+up until someone restarts it. The daemon cannot replace itself while it runs, so the
+mechanism is the classic one: it notices, drains, and exits, and the service manager brings
+it back.
+
+Concretely, when the daemon was launched **from the managed prefix** —
+
+```sh
+~/.config/tines/cli/node_modules/.bin/tines runner daemon --name laptop-m4 --harness claude-code
+```
+
+— every refresh that installs a newer `tines` than the running daemon starts a drain: the
+daemon keeps polling but reports `draining`, so the supervisor assigns it nothing new (runs
+it already claimed are still delivered and finished; the runner card reads "restarting to
+update" meanwhile), and once no run is in flight it exits 0 with a log line saying so. The
+`KeepAlive` / `Restart=always` in the units below relaunch it, now from the updated
+prefix. An idle daemon checks the registry on the same 10-minute cadence a busy one does
+before launches, so an update lands within about ten minutes plus the length of whatever
+is running. Notes:
+
+- **It only ever acts from the prefix.** Launched from a global install or a `pnpm link`,
+  an exit would relaunch the same old binary, so the daemon logs once at startup that
+  self-update is off and where to launch it from instead. Its own version is stamped in
+  every run's launch banner (`cli=…`), which is how you tell which daemon ran a run.
+- **The prefix exists after the first run with the refresh on.** Register and run the
+  daemon interactively once (which also stores the token), then point the unit at the
+  prefix path. `~` does not expand in a plist: write the absolute path.
+- **It exits deliberately, so run it under a service manager.** Started by hand in a
+  terminal from the prefix, the daemon stops instead of restarting; pass
+  `--no-self-update` for that, or just relaunch it. `--no-cli-refresh` implies it.
+- **It never kills a run to update**, and never restarts into a half-installed prefix:
+  the exit waits for an in-flight `npm install` to finish first.
+
 ### The harness's own CLI is yours to keep current
 
 The refresh above covers `tines` and nothing else — the daemon never installs or updates
@@ -122,11 +160,16 @@ written by the daemon and by the harness, in this order:
 ## Keep it running
 
 The runner is infrastructure: run it under your OS's service manager so it survives logouts
-and reboots.
+and reboots. Both units below launch the daemon from the managed prefix, which is what lets
+it update itself (see "Keeping the daemon itself current"); the prefix exists once the
+daemon has run interactively once. The npm shim there starts with `#!/usr/bin/env node`,
+and a service manager's `PATH` is minimal, so the units name the directory `node` lives in.
 
 ### macOS (launchd)
 
-Save as `~/Library/LaunchAgents/dev.tines.runner.plist` (adjust the paths, name, and URL):
+Save as `~/Library/LaunchAgents/dev.tines.runner.plist` (adjust the paths, name, and URL —
+`~` does not expand here, and `/opt/homebrew/bin` is where Homebrew's `node` lives on Apple
+silicon; check `dirname "$(which node)"`):
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -137,7 +180,7 @@ Save as `~/Library/LaunchAgents/dev.tines.runner.plist` (adjust the paths, name,
   <key>Label</key><string>dev.tines.runner</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/opt/homebrew/bin/tines</string>
+    <string>/Users/you/.config/tines/cli/node_modules/.bin/tines</string>
     <string>runner</string>
     <string>daemon</string>
     <string>--name</string><string>laptop-m4</string>
@@ -146,8 +189,10 @@ Save as `~/Library/LaunchAgents/dev.tines.runner.plist` (adjust the paths, name,
   <key>EnvironmentVariables</key>
   <dict>
     <key>TINES_API_URL</key><string>https://your-tines.example</string>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
   </dict>
   <key>RunAtLoad</key><true/>
+  <!-- Relaunches after any exit — a crash, and the daemon's own exit for a self-update. -->
   <key>KeepAlive</key><true/>
   <key>StandardOutPath</key><string>/tmp/tines-runner.log</string>
   <key>StandardErrorPath</key><string>/tmp/tines-runner.log</string>
@@ -161,6 +206,9 @@ Register once interactively first (so the token is stored), then:
 launchctl load ~/Library/LaunchAgents/dev.tines.runner.plist
 ```
 
+To restart it by hand (after changing a flag, say): `launchctl kickstart -k
+gui/$(id -u)/dev.tines.runner`.
+
 ### Linux (systemd user unit)
 
 Save as `~/.config/systemd/user/tines-runner.service`:
@@ -171,8 +219,10 @@ Description=Tines local runner daemon
 After=network-online.target
 
 [Service]
-ExecStart=/usr/local/bin/tines runner daemon --name workstation --harness claude-code
+ExecStart=%h/.config/tines/cli/node_modules/.bin/tines runner daemon --name workstation --harness claude-code
 Environment=TINES_API_URL=https://your-tines.example
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+# always, not on-failure: the daemon exits 0 on purpose to pick up a self-update.
 Restart=always
 RestartSec=10
 
@@ -194,6 +244,10 @@ loginctl enable-linger "$USER"   # keep it running while logged out
   fails `running` runs missing from the daemon's `owned_runs` report, and fails everything
   after 5 minutes offline.
 - **Ctrl-C / SIGTERM**: in-flight runs are killed and finish-reported as failed before exit.
+- **Self-update restart**: never interrupts a run — the daemon drains first (nothing new is
+  dispatched to it, its card reads "restarting to update") and exits only once idle, for
+  the service manager to relaunch. A daemon that dies mid-drain does not leave its runner
+  shut: `draining` is stated on every poll, so the next poll from any daemon clears it.
 - **Cancel / timeout from the supervisor**: the next poll's `cancels` list makes the daemon
   kill the process without reporting — the supervisor already settled the run. The daemon
   also enforces the run timeout locally. Both count as failures for `--keep-workspaces`.

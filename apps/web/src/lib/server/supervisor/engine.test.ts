@@ -417,6 +417,16 @@ describe('dispatch pass against the fake adapter', () => {
 		expect((await pass(t)).claimed).toBe(0);
 	});
 
+	it('a draining local runner is skipped by the pass; the next rule target takes the issue', async () => {
+		const t = world();
+		const draining = addRunner(t, { draining: true });
+		const open = addRunner(t);
+		addRule(t, { targets: [{ runner_id: draining }, { runner_id: open }] });
+		addIssue(t);
+		expect((await pass(t)).claimed).toBe(1);
+		expect(runs(t)[0].runner_id).toBe(open);
+	});
+
 	it('rule tier entries override the runner default; entries without one use it', async () => {
 		const t = world();
 		const r1 = addRunner(t, { defaultTier: 'cheapest', maxConcurrent: 10 });

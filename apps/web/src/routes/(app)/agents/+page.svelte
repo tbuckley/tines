@@ -91,12 +91,14 @@
 
 	function runnerStatusLabel(runner: Runner): string {
 		if (runner.status === 'paused') return 'paused';
-		return runner.online ? 'online' : 'offline';
+		if (!runner.online) return 'offline';
+		return runner.draining ? 'restarting to update' : 'online';
 	}
 
 	function statusDotClass(runner: Runner): string {
 		if (runner.status === 'paused') return 'bg-amber-500';
-		return runner.online ? 'bg-emerald-500' : 'bg-muted-foreground/40';
+		if (!runner.online) return 'bg-muted-foreground/40';
+		return runner.draining ? 'bg-amber-500' : 'bg-emerald-500';
 	}
 
 	// The add-runner wizard. The local path shows the bootstrap command (the

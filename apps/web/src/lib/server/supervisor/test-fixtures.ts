@@ -101,14 +101,15 @@ export function addRunner(
 		lastSeen?: number | null;
 		launchFailures?: number;
 		backoffUntil?: number | null;
+		draining?: boolean;
 	} = {}
 ): string {
 	const id = opts.id ?? `rnr_${++runnerSeq}`;
 	t.sqlite
 		.prepare(
 			`INSERT INTO runner (id, user_id, type, name, status, max_concurrent, max_run_minutes,
-				default_tier, tiers, budget, config, secret_enc, last_seen_at, launch_failures, backoff_until, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+				default_tier, tiers, budget, config, secret_enc, last_seen_at, launch_failures, backoff_until, draining, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 		)
 		.run(
 			id,
@@ -126,6 +127,7 @@ export function addRunner(
 			opts.lastSeen === undefined ? NOW : opts.lastSeen,
 			opts.launchFailures ?? 0,
 			opts.backoffUntil ?? null,
+			opts.draining ? 1 : 0,
 			NOW,
 			NOW
 		);

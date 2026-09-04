@@ -2,7 +2,7 @@
 	import { Popover } from 'bits-ui';
 	import IconCheck from '@tabler/icons-svelte/icons/check';
 	import IconPlus from '@tabler/icons-svelte/icons/plus';
-	import type { Label, LabelWithUsage } from '@tines/shared';
+	import { LABEL_NAME_MAX, type Label, type LabelWithUsage } from '@tines/shared';
 	import type { Snippet } from 'svelte';
 	import LabelChip from '$lib/components/LabelChip.svelte';
 	import { api } from '$lib/api';
@@ -37,10 +37,14 @@
 		labels.filter((l) => l.name.toLowerCase().includes(query.trim().toLowerCase()))
 	);
 	// Only offer creation when the query is a genuinely new name, not merely
-	// one that no *visible* row matches (a prefix of an existing label).
+	// one that no *visible* row matches (a prefix of an existing label). A
+	// leading `-` is reserved for a future negation syntax and the API
+	// refuses it, so the row simply does not appear rather than offering a
+	// create the server would 422.
 	const canCreate = $derived(
 		allowCreate &&
 			query.trim().length > 0 &&
+			!query.trim().startsWith('-') &&
 			!labels.some((l) => l.name.toLowerCase() === query.trim().toLowerCase())
 	);
 
@@ -76,12 +80,14 @@
 		<Popover.Content
 			sideOffset={6}
 			align="start"
+			collisionPadding={8}
 			class="bg-popover text-popover-foreground data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 ring-foreground/10 z-50 w-64 rounded-lg p-1 shadow-md ring-1 outline-none"
 		>
 			<!-- svelte-ignore a11y_autofocus -->
 			<input
 				bind:value={query}
 				autofocus
+				maxlength={LABEL_NAME_MAX}
 				placeholder="Filter labels…"
 				aria-label="Filter {fieldLabel.toLowerCase()}"
 				class="placeholder:text-muted-foreground w-full rounded-md bg-transparent px-2 py-1.5 text-sm outline-none"

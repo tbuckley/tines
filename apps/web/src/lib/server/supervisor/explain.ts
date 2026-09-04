@@ -251,9 +251,11 @@ function verdictLine(input: {
 			? `${first.runner_name} is paused`
 			: first.verdict === 'offline'
 				? `${first.runner_name} is offline`
-				: first.verdict === 'backing_off'
-					? `${first.runner_name} is backing off after repeated failures`
-					: `waiting for capacity on ${first.runner_name}`;
+				: first.verdict === 'draining'
+					? `${first.runner_name} is restarting to update`
+					: first.verdict === 'backing_off'
+						? `${first.runner_name} is backing off after repeated failures`
+						: `waiting for capacity on ${first.runner_name}`;
 	const queue =
 		input.queuePosition !== null && input.queuePosition > 0
 			? ` (${input.queuePosition} eligible issue${input.queuePosition === 1 ? '' : 's'} ahead)`

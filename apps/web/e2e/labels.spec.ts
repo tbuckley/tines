@@ -20,11 +20,8 @@ test.describe.serial('issue labels UI', () => {
 	const projectName = `labels-ui-${runId}`;
 	const bugName = `bug-ui-${runId}`;
 	const p1Name = `p1-ui-${runId}`;
-	// Five labels on one issue, the first deliberately long: on a phone only
-	// what fits shows, the rest become a "+N", and it stays one line.
-	// Four that fit two-at-a-time on a phone and one that never does. Sizes
-	// matter: two of the short ones fit the strip on their own, but not once
-	// the "+N" needs room too — so the reservation is what this fixture tests.
+	// Five labels on one issue, the last deliberately long: they never fit a
+	// phone's metadata line, so the row shows one chip carrying the count.
 	const crowdNames = [
 		`c1-${runId}`,
 		`c2-${runId}`,
@@ -37,8 +34,8 @@ test.describe.serial('issue labels UI', () => {
 	let plain: IssueDetail;
 	let crowded: IssueDetail;
 	let bug: Label;
-	// One label too wide for a phone row on its own: nothing fits, so the strip
-	// is just the count.
+	// One label too wide for a phone row on its own: it does not fit, so the
+	// strip is the count ("1 label") rather than a name cut mid-word.
 	const wideName = `w-single-label-far-too-wide-for-a-phone-${runId}`;
 
 	test.beforeAll(async ({ playwright }) => {
@@ -104,6 +101,9 @@ test.describe.serial('issue labels UI', () => {
 			await card.getByRole('button', { name: 'Edit' }).click();
 			await expect(page.getByRole('button', { name: p1Name })).toBeVisible({ timeout: 2000 });
 		}).toPass({ timeout: 15_000 });
+		// The filter box caps at the API's own limit, so a too-long name is
+		// never offered for creation and never costs a round trip.
+		await expect(page.getByLabel('Filter labels')).toHaveAttribute('maxlength', '50');
 		await page.getByRole('button', { name: p1Name }).click();
 		await expect(card.getByText(p1Name)).toBeVisible();
 
@@ -143,42 +143,40 @@ test.describe.serial('issue labels UI', () => {
 		await expect(page.getByText(rename).first()).toBeVisible();
 	});
 
-	test('a phone row carries its labels on the metadata line, costing no height', async ({
-		page
-	}) => {
+	test('a row shows its labels whole or as a count, costing no height', async ({ page }) => {
 		const list = `/issues?project=${encodeURIComponent(projectName)}`;
 		const crowdedRow = page.getByRole('link', { name: new RegExp(`Crowded ${runId}`) });
-		// The unlabelled row is the yardstick: labels may cost one line, never two.
+		// One-line titles with no label and with one: the yardsticks for "labels
+		// cost no height".
 		const plainRow = page.getByRole('link', { name: new RegExp(`Plain ${runId}`) });
+		const wideRow = page.getByRole('link', { name: new RegExp(`Wide ${runId}`) });
 		const strip = crowdedRow.getByTestId('label-strip');
+		// The measurement copy carries the same names, so pin what renders.
+		const visibleChips = (s: typeof strip) => s.locator('> div:not([aria-hidden]) > span:visible');
 
 		await page.setViewportSize(PHONE);
 		await page.goto(list);
 		await expect(crowdedRow).toBeVisible();
-		// The measurement copy carries the same names, so pin the visible chips.
-		const overflow = strip.locator('span:visible', { hasText: /^\+\d+$/ });
-		await expect(overflow).toBeVisible();
-		// Only what fits is shown, and what does not is counted, not dropped: the
-		// visible chips plus the "+N" always account for all five labels.
-		const shown = await strip.locator('> span:visible').count();
-		const hidden = Number((await overflow.textContent())!.trim().slice(1));
-		expect(shown - 1 + hidden).toBe(crowdNames.length);
+		// Five chips never fit a phone's metadata line, so the set is one chip
+		// carrying the count — never a subset, never a name cut mid-word.
+		// A string, not a regex: Playwright normalizes whitespace for the former only.
+		const count = visibleChips(strip).filter({ hasText: '5 labels' });
+		await expect(count).toBeVisible();
+		await expect(visibleChips(strip)).toHaveCount(1);
 		// The names behind the count stay reachable.
-		await expect(overflow).toHaveAttribute('title', new RegExp(crowdNames.at(-1)!));
-
-		// What is shown is shown *whole*: the last thing on the line ends inside
-		// the strip, so nothing is half a chip clipped by the overflow rule.
+		await expect(count).toHaveAttribute('title', new RegExp(crowdNames.at(-1)!));
+		// Nothing spills: the chip ends inside the strip.
 		const stripRect = (await strip.boundingBox())!;
-		const lastRect = (await strip.locator('> span:visible').last().boundingBox())!;
-		expect(lastRect.x + lastRect.width).toBeLessThanOrEqual(stripRect.x + stripRect.width + 1);
+		const chipRect = (await count.boundingBox())!;
+		expect(chipRect.x + chipRect.width).toBeLessThanOrEqual(stripRect.x + stripRect.width + 1);
+		expect(chipRect.x).toBeGreaterThanOrEqual(stripRect.x - 1);
 
 		// One line, whatever it holds: the strip is a single chip tall...
-		const stripBox = await strip.boundingBox();
-		expect(stripBox!.height).toBeLessThan(24);
+		expect(stripRect.height).toBeLessThan(24);
 
-		// ...and it rides the metadata line the state badge is already on,
-		// starting after it — read in one layout pass, so the two boxes are the
-		// same moment (Tines/123).
+		// ...and it rides the metadata line the state is already on, starting
+		// after it — read in one layout pass, so the boxes are the same moment
+		// (Tines/123).
 		const line = await crowdedRow.evaluate((row) => {
 			const box = (el: Element | null) => {
 				const r = el!.getBoundingClientRect();
@@ -186,57 +184,65 @@ test.describe.serial('issue labels UI', () => {
 			};
 			return {
 				row: box(row),
-				// By the view-transition wrapper, not `.state-badge`: label chips
-				// reuse that class, and the row's first one is the desktop chip
-				// (display:none here, so a zero rect).
-				badge: box(row.querySelector('[style*="issue-state"]')),
+				state: box(row.querySelector('[style*="issue-state"]')),
 				strip: box(row.querySelector('[data-testid="label-strip"]')),
 				title: box(row.querySelector('[style*="issue-title"]'))
 			};
 		});
-		expect(line.strip.x).toBeGreaterThanOrEqual(line.badge.right);
-		// Same line as the badge: their vertical spans overlap.
-		expect(line.strip.top).toBeLessThan(line.badge.bottom);
-		expect(line.strip.bottom).toBeGreaterThan(line.badge.top);
+		expect(line.strip.x).toBeGreaterThanOrEqual(line.state.right);
+		// Same line as the state: their vertical spans overlap.
+		expect(line.strip.top).toBeLessThan(line.state.bottom);
+		expect(line.strip.bottom).toBeGreaterThan(line.state.top);
 		// Below the title, not beside it.
 		expect(line.strip.top).toBeGreaterThanOrEqual(line.title.bottom);
-		// That line is not indented under the title any more — the number moved
-		// into the title text, so the labels get the row's full width.
-		expect(line.badge.x - line.row.x).toBeLessThan(24);
+		// That line is not indented under the title: it gets the row's full
+		// width.
+		expect(line.state.x - line.row.x).toBeLessThan(24);
 
-		// The number renders once, wherever it lives at this width.
+		// The number renders once.
 		const number = (row: typeof crowdedRow) => row.locator(`span:text-is("#${crowded.number}")`);
 		await expect(number(crowdedRow).locator('visible=true')).toHaveCount(1);
 
-		// A labelled row now costs no height at all: same as an unlabelled one.
-		const crowdedBox = await crowdedRow.boundingBox();
+		// A single label too wide for the line is the count too ("1 label"),
+		// not a clipped chip — and it costs the row nothing: same height as
+		// the unlabelled row beside it.
+		await expect(visibleChips(wideRow.getByTestId('label-strip'))).toHaveText(['1 label']);
+		const wideBox = await wideRow.boundingBox();
 		const plainBox = await plainRow.boundingBox();
-		expect(Math.abs(crowdedBox!.height - plainBox!.height)).toBeLessThan(1);
+		expect(Math.abs(wideBox!.height - plainBox!.height)).toBeLessThan(1);
+		// Two title lines, one metadata line: never more.
+		expect((await crowdedRow.boundingBox())!.height).toBeLessThan(90);
 
-		// A single label too wide for the row is a bare "+1", not a clipped chip.
-		const wideRow = page.getByRole('link', { name: new RegExp(`Wide ${runId}`) });
-		await expect(wideRow.getByTestId('label-strip').locator('span:visible')).toHaveText(['+1']);
-
-		// Wider viewport: labels go back inline — three chips and "+2", no strip.
+		// Wider viewport: the strip stays, and the wide name now has room, so
+		// it shows whole — a dot chip whose text is not clipped.
 		await page.setViewportSize(DESKTOP);
-		await expect(strip).toBeHidden();
-		// The number is back in its own column, and still rendered exactly once.
+		await expect(strip).toBeVisible();
 		await expect(number(crowdedRow).locator('visible=true')).toHaveCount(1);
-		// A name can appear three times in the row (inline chip, strip chip, the
-		// strip's measurement copy), so every assertion here is on what renders.
-		const rendered = (text: string) => crowdedRow.locator(`span:text-is("${text}"):visible`);
-		await expect(rendered(crowdNames[2])).toBeVisible();
-		await expect(rendered(crowdNames[3])).toHaveCount(0);
-		await expect(rendered('+2')).toBeVisible();
-		// A long name is ellipsed rather than allowed to push the title out.
-		const chipBox = await wideRow.locator(`span:text-is("${wideName}"):visible`).boundingBox();
-		expect(chipBox!.width).toBeLessThan(130);
-		// Inline again, so a labelled row costs no height at this width either —
-		// against a plain row measured at *this* viewport (a phone row is two
-		// lines whether or not it has labels, so the phone yardstick is taller).
-		const wideBox = await crowdedRow.boundingBox();
+		const wideChip = wideRow.locator(`span:visible`, { hasText: wideName }).last();
+		await expect(wideChip).toBeVisible();
+		expect(await wideChip.evaluate((e) => e.scrollWidth - e.clientWidth)).toBeLessThanOrEqual(1);
+		// Whole or counted, never cut: every visible chip in the crowded row
+		// ends inside the strip, and labels take only what the title leaves.
+		const chips = visibleChips(strip);
+		const shown = await chips.count();
+		expect(shown === crowdNames.length || shown === 1).toBe(true);
+		const desktopStrip = (await strip.boundingBox())!;
+		for (const chip of await chips.all()) {
+			const b = (await chip.boundingBox())!;
+			expect(b.x + b.width).toBeLessThanOrEqual(desktopStrip.x + desktopStrip.width + 1);
+			expect(await chip.evaluate((e) => e.scrollWidth - e.clientWidth)).toBeLessThanOrEqual(1);
+		}
+		const titleText = crowdedRow.locator('[style*="issue-title"]');
+		const titleCell = (await titleText.locator('..').boundingBox())!;
+		expect(titleCell.width).toBeGreaterThanOrEqual((await titleText.boundingBox())!.width - 1);
+		// This title fits the row, so it is not truncated at all: five labels
+		// gave way to a count before the title lost a character.
+		expect(await titleText.evaluate((e) => e.scrollWidth - e.clientWidth)).toBeLessThanOrEqual(1);
+		// A labelled row costs no height at this width either — one 40px line,
+		// like the plain row.
+		const crowdedDesktopBox = await crowdedRow.boundingBox();
 		const plainDesktopBox = await plainRow.boundingBox();
-		expect(Math.abs(wideBox!.height - plainDesktopBox!.height)).toBeLessThan(1);
+		expect(Math.abs(crowdedDesktopBox!.height - plainDesktopBox!.height)).toBeLessThan(1);
 
 		// Nothing is lost — the detail page still shows every label.
 		await page.setViewportSize(PHONE);

@@ -244,6 +244,72 @@ describe('pollRunner', () => {
 		expect(runnerById(t, id).max_concurrent).toBe(2);
 	});
 
+	it('draining is stated per poll: set while true, cleared when absent, and leaving it frees capacity', async () => {
+		const t = world();
+		const id = addRunner(t);
+		const entering = await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, id),
+			{ owned_runs: [], draining: true },
+			NOW + 1
+		);
+		expect(entering.capRaised).toBe(false);
+		expect(runnerById(t, id).draining).toBe(1);
+		// No runner.updated event: draining is the daemon's transient state, not an edit.
+		expect(eventsOfType(t, 'runner.updated')).toHaveLength(0);
+
+		// Still draining: nothing new to dispatch for.
+		const still = await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, id),
+			{ owned_runs: [], draining: true },
+			NOW + 2
+		);
+		expect(still.capRaised).toBe(false);
+
+		// The relaunched daemon (or one predating the field) polls without it:
+		// the runner reopens, and that is a capacity change worth a pass.
+		const leaving = await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, id),
+			{ owned_runs: [] },
+			NOW + 3
+		);
+		expect(leaving.capRaised).toBe(true);
+		expect(runnerById(t, id).draining).toBe(0);
+
+		await expectFail(
+			async () =>
+				pollRunner(
+					t.db,
+					t.env,
+					await runnerRow(t, id),
+					{ owned_runs: [], draining: 'yes' as unknown as boolean },
+					NOW + 4
+				),
+			'invalid_field'
+		);
+	});
+
+	it('a draining runner still receives the runs it already claimed', async () => {
+		const t = world();
+		const runnerId = addRunner(t);
+		const issue = addIssue(t);
+		const runId = addRun(t, { issueId: issue, runnerId });
+		const { response } = await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, runnerId),
+			{ owned_runs: [], draining: true },
+			NOW + 1
+		);
+		expect(response.assignments.map((a) => a.run.id)).toEqual([runId]);
+		expect(runById(t, runId)?.status).toBe('launching');
+	});
+
 	it('rejects an out-of-bounds max_concurrent', async () => {
 		const t = world();
 		const id = addRunner(t);
