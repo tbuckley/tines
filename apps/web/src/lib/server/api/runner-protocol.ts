@@ -158,13 +158,25 @@ export async function pollRunner(
 			? runner.max_concurrent
 			: validateBoundedInt(body.max_concurrent, 'max_concurrent', 1, 100);
 	const capChanged = cap !== runner.max_concurrent;
-	const capRaised = cap > runner.max_concurrent;
+	if (body.draining !== undefined && typeof body.draining !== 'boolean') {
+		throw new ApiFail(422, 'invalid_field', '"draining" must be a boolean', { field: 'draining' });
+	}
+	// Every poll states the flag, so a daemon that died mid-drain cannot pin
+	// the runner shut: its relaunch (or any older daemon) polls without it.
+	const draining = body.draining === true ? 1 : 0;
+	// Leaving the drain is capacity coming back, exactly like a raised cap:
+	// the runner took nothing new while it drained, so work may be waiting.
+	const capRaised = cap > runner.max_concurrent || (runner.draining === 1 && draining === 0);
 	const cameOnline =
 		runner.last_seen_at === null || now - runner.last_seen_at > RUNNER_ONLINE_WINDOW_MS;
 	await runAtomic(env, [
 		db
 			.updateTable('runner')
-			.set({ last_seen_at: now, ...(capChanged ? { max_concurrent: cap, updated_at: now } : {}) })
+			.set({
+				last_seen_at: now,
+				draining,
+				...(capChanged ? { max_concurrent: cap, updated_at: now } : {})
+			})
 			.where('id', '=', runner.id)
 			.compile(),
 		// The same runner.updated event a UI edit records, so the change shows
@@ -184,6 +196,7 @@ export async function pollRunner(
 			: [])
 	]);
 	runner.max_concurrent = cap;
+	runner.draining = draining;
 
 	const active = await db
 		.selectFrom('agent_run')
@@ -235,6 +248,9 @@ export async function pollRunner(
 	);
 	const cancels = [...owned].filter((id) => !live.has(id));
 
+	// A draining runner still receives runs it already claimed: they hold
+	// their claim and key, and the daemon finishes them before it exits.
+	// Only the dispatcher's next claim is withheld (targetVerdict).
 	const assignments: RunnerAssignment[] = [];
 	if (runner.status === 'active') {
 		for (const run of active) {

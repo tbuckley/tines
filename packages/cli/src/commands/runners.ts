@@ -350,6 +350,10 @@ export function register(program: Command): void {
 				'do not install/refresh the agent-facing tines CLI from npm (harnesses use the ambient PATH)'
 			)
 			.option(
+				'--no-self-update',
+				'do not exit for the service manager to relaunch a newer daemon (only applies when launched from the daemon-managed prefix)'
+			)
+			.option(
 				'--keep-workspaces <mode>',
 				"keep settled runs' workspaces for debugging: never | failed | always",
 				'never'
@@ -375,6 +379,7 @@ export function register(program: Command): void {
 				maxConcurrent: number;
 				pollInterval: number;
 				cliRefresh: boolean;
+				selfUpdate: boolean;
 				keepWorkspaces: string;
 				keepWorkspacesFor: number;
 				keepWorkspacesMax: number;
@@ -422,6 +427,7 @@ export function register(program: Command): void {
 				pollIntervalMs: opts.pollInterval * 1000,
 				configDir: defaultConfigDir(),
 				cliRefresh: opts.cliRefresh,
+				selfUpdate: opts.selfUpdate,
 				keepWorkspaces,
 				keepWorkspacesForHours: opts.keepWorkspacesFor,
 				keepWorkspacesMax: opts.keepWorkspacesMax

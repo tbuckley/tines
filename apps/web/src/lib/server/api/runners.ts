@@ -337,6 +337,7 @@ function serializeRunner(row: RunnerRow, now = Date.now()): Runner {
 		config,
 		online: runnerOnline(row, now),
 		last_seen_at: row.last_seen_at,
+		draining: row.draining === 1,
 		launch_failures: row.launch_failures,
 		backoff_until: row.backoff_until,
 		active_runs: Number(row.active_runs ?? 0),
@@ -488,6 +489,7 @@ export async function createRunner(
 				runner_token_hash: null,
 				last_seen_at: null,
 				launch_failures: 0,
+				draining: 0,
 				backoff_until: null,
 				created_at: now,
 				updated_at: now
@@ -779,6 +781,7 @@ export async function registerRunner(
 				runner_token_hash: tokenHash,
 				last_seen_at: now,
 				launch_failures: 0,
+				draining: 0,
 				backoff_until: null,
 				created_at: now,
 				updated_at: now

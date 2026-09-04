@@ -857,6 +857,9 @@ Options:
   --poll-interval <seconds>      seconds between polls (default: 15)
   --no-cli-refresh               do not install/refresh the agent-facing tines
                                  CLI from npm (harnesses use the ambient PATH)
+  --no-self-update               do not exit for the service manager to relaunch
+                                 a newer daemon (only applies when launched from
+                                 the daemon-managed prefix)
   --keep-workspaces <mode>       keep settled runs' workspaces for debugging:
                                  never | failed | always (default: "never")
   --keep-workspaces-for <hours>  delete kept workspaces older than this

@@ -199,6 +199,8 @@ export interface VerdictRunner {
 	status: string;
 	max_concurrent: number;
 	last_seen_at: number | null;
+	/** 0/1: a local daemon finishing its runs before a self-update restart. */
+	draining: number;
 	backoff_until: number | null;
 }
 
@@ -249,6 +251,15 @@ export function targetVerdict(
 				runner.last_seen_at === null
 					? 'daemon has never connected'
 					: `daemon last seen ${Math.round((now - runner.last_seen_at) / 60_000)}m ago`
+		};
+	}
+	// After offline, not before: a daemon that died mid-drain is offline, and
+	// that is the truer story. A live one is back within seconds of its last
+	// run ending, so this rarely outlasts one run.
+	if (runner.type === 'local' && runner.draining === 1) {
+		return {
+			verdict: 'draining',
+			detail: 'daemon is finishing its runs before restarting to update'
 		};
 	}
 	if (runner.backoff_until !== null && runner.backoff_until > now) {
