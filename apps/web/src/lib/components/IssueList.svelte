@@ -35,7 +35,7 @@
 			<li animate:flip={{ duration: dur() }} in:fade={{ duration: dur() }}>
 				<a
 					href="/issues/{encodeURIComponent(issue.project_name)}/{issue.number}"
-					class="hover:bg-accent/50 flex items-center gap-3 px-4 py-3 transition-[opacity,background-color] duration-200 {issue.duplicate_of
+					class="hover:bg-accent/50 flex items-center gap-3 gap-y-1 px-4 py-3 transition-[opacity,background-color] duration-200 max-sm:flex-wrap {issue.duplicate_of
 						? 'opacity-60'
 						: ''}"
 				>
@@ -116,26 +116,32 @@
 							</span>
 						{/if}
 					</span>
-					{#if showProject}
-						<span class="text-muted-foreground hidden shrink-0 text-xs sm:inline"
-							>{issue.project_name}</span
+					<!-- Below sm the metadata drops to a second line, hung under the
+					     title, so every title gets the same full-width cell instead of
+					     competing with a nowrap state badge. sm:contents dissolves the
+					     wrapper, leaving the desktop row's flex children unchanged. -->
+					<div class="flex w-full items-center gap-2 pl-15 sm:contents">
+						{#if showProject}
+							<span class="text-muted-foreground hidden shrink-0 text-xs sm:inline"
+								>{issue.project_name}</span
+							>
+						{/if}
+						<span
+							class="vt-shared"
+							style:view-transition-name="issue-state-{issue.id}"
+							style:view-transition-class="vt-fit"
 						>
-					{/if}
-					<span
-						class="vt-shared"
-						style:view-transition-name="issue-state-{issue.id}"
-						style:view-transition-class="vt-fit"
-					>
-						<!-- Effective state: a duplicate displays its canonical issue's
-						     state, so lists and the detail header always agree. -->
-						<StateBadge state={issue.effective_state} />
-					</span>
-					<span
-						class="text-muted-foreground hidden w-20 shrink-0 text-right text-xs md:inline"
-						title={new Date(issue.last_activity_at).toLocaleString()}
-					>
-						{relativeTime(issue.last_activity_at)}
-					</span>
+							<!-- Effective state: a duplicate displays its canonical issue's
+							     state, so lists and the detail header always agree. -->
+							<StateBadge state={issue.effective_state} />
+						</span>
+						<span
+							class="text-muted-foreground hidden w-20 shrink-0 text-right text-xs md:inline"
+							title={new Date(issue.last_activity_at).toLocaleString()}
+						>
+							{relativeTime(issue.last_activity_at)}
+						</span>
+					</div>
 				</a>
 			</li>
 		{/each}

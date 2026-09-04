@@ -13,6 +13,7 @@
 	import IconRepeat from '@tabler/icons-svelte/icons/repeat';
 	import IconRocket from '@tabler/icons-svelte/icons/rocket';
 	import { untrack } from 'svelte';
+	import { flip } from 'svelte/animate';
 	import { fade, slide } from 'svelte/transition';
 	import { invalidate } from '$app/navigation';
 	import { api } from '$lib/api';
@@ -248,6 +249,15 @@
 
 	const unmetFor = (transition: AllowedTransition) =>
 		(transition.requires ?? []).filter((r) => r.status !== 'satisfied');
+
+	// The action you came to take goes first: enabled transitions above blocked
+	// ones, workflow order kept inside each group. `requires` is undefined while
+	// an optimistic move is in flight, so everything counts as enabled then —
+	// the split is stable, so nothing reshuffles mid-animation.
+	const ordered = $derived([
+		...allowed.filter((t) => unmetFor(t).length === 0),
+		...allowed.filter((t) => unmetFor(t).length > 0)
+	]);
 
 	// The transition dialog: an optional comment posted atomically with the
 	// move — comment first, so a sub-second dispatch triggered by the
@@ -679,8 +689,186 @@
 
 <LaunchPromptDialog bind:open={promptDialogOpen} issueId={data.issue.id} />
 
-<div class="grid gap-8 lg:grid-cols-[minmax(0,1fr)_22rem]">
-	<div class="min-w-0 space-y-8">
+<!-- `lg:grid-rows-[auto_1fr]`: the State card is its own grid item in row 1
+     while main spans both rows, so with default auto rows grid distributes
+     main's height across them and stretches the card's border to fill row 1
+     (~1000px of empty box on a long issue). Row 1 sized to content, row 2
+     absorbing the rest, keeps the card exactly as tall as it was inside the
+     aside. -->
+<div class="grid gap-8 lg:grid-cols-[minmax(0,1fr)_22rem] lg:grid-rows-[auto_1fr]">
+	<!-- state & transitions — first in DOM so a phone gets it before the
+	     description; pinned to the right column on desktop, where the aside
+	     picks up below it. -->
+	<!-- On a duplicate the section stops pretending to be the source of
+	     truth (muted), but the graph and buttons still act on this issue's
+	     own, dormant state — moving a duplicate is allowed. -->
+	<section
+		class="min-w-0 rounded-lg border p-4 transition-opacity duration-200 lg:col-start-2 lg:row-start-1 {duplicateOf
+			? 'opacity-70'
+			: ''}"
+	>
+		<h2 class="mb-3 text-sm font-semibold">State</h2>
+		{#if duplicateOf}
+			<p class="text-muted-foreground mb-3 text-xs italic" transition:slide={{ duration: dur() }}>
+				This issue is a duplicate — its displayed state follows
+				<a
+					href="/issues/{encodeURIComponent(duplicateOf.project_name)}/{duplicateOf.number}"
+					class="hover:underline">{duplicateOf.project_name}/#{duplicateOf.number}</a
+				>.
+			</p>
+		{/if}
+		<div class="mb-4">
+			<WorkflowGraph workflow={data.issue.workflow} currentStateId={currentState.id} compact />
+		</div>
+		{#if ordered.length > 0}
+			<div class="flex flex-col gap-2">
+				{#each ordered as transition (transition.transition_id)}
+					{@const unmet = unmetFor(transition)}
+					{@const reqId = `transition-req-${transition.transition_id}`}
+					<div class="min-w-0" animate:flip={{ duration: dur() }}>
+						<!-- Reason lines are SIBLINGS of the button, never children: the
+						     button's accessible name stays "<name> → <state>". -->
+						<Button
+							size="sm"
+							variant="outline"
+							class="w-full justify-between"
+							disabled={transitioning || unmet.length > 0}
+							aria-describedby={transition.requires?.length ? reqId : undefined}
+							onclick={() => requestMove(transition)}
+							title={transition.name}
+						>
+							<span class="min-w-0 truncate text-left">{transition.name}</span>
+							<span
+								class="text-muted-foreground inline-flex shrink-0 items-center gap-1 text-xs font-normal"
+							>
+								<IconArrowRight size={12} />
+								{transition.to_state.name}
+							</span>
+						</Button>
+						{#if transition.requires?.length}
+							<ul id={reqId} class="mt-1 space-y-1 px-1">
+								{#each transition.requires as r (r.artifact)}
+									<li
+										class="flex items-start gap-1.5 text-xs {r.status === 'satisfied'
+											? 'text-muted-foreground'
+											: 'text-amber-700 dark:text-amber-400'}"
+									>
+										{#if r.status === 'satisfied'}
+											<IconCheck size={13} class="mt-0.5 shrink-0" />
+											<span class="min-w-0">
+												<span class="font-mono">{r.artifact}</span> is fresh (v{r.current_version
+													?.version}).
+											</span>
+										{:else}
+											<IconBan size={13} class="mt-0.5 shrink-0" />
+											<span class="min-w-0">
+												{#if r.status === 'missing'}
+													Needs artifact <span class="font-mono">{r.artifact}</span> — attach it in
+													<a href="#artifacts" class="underline">Artifacts</a>.
+												{:else if r.status === 'stale'}
+													<span class="font-mono">{r.artifact}</span> is stale — this state began
+													{relativeTime(data.issue.state_entered_at)}; attach a new version or
+													reaffirm it.
+												{:else if r.type !== undefined && r.current_type !== r.type}
+													<span class="font-mono">{r.artifact}</span> must be a {r.type} artifact{#if r.content_type}{' '}
+														({r.content_type}){/if} — the attached one is {r.current_type}.
+												{:else}
+													<!-- Only the content type differs; the API doesn't report the
+													     attached version's own content type, so don't name it. -->
+													<span class="font-mono">{r.artifact}</span> must be
+													{r.content_type} — the attached {r.current_type} isn't.
+												{/if}
+												{#if r.description}
+													<span
+														class="text-muted-foreground mt-0.5 line-clamp-2 italic"
+														title={r.description}>{r.description}</span
+													>
+												{/if}
+											</span>
+										{/if}
+									</li>
+								{/each}
+							</ul>
+						{/if}
+					</div>
+				{/each}
+			</div>
+		{:else}
+			<p class="text-muted-foreground text-xs" transition:fade={{ duration: dur() }}>
+				No outgoing transitions — this state is terminal.
+			</p>
+		{/if}
+		<p class="text-muted-foreground mt-3 text-xs">
+			Workflow:
+			<a href="/workflows/{data.issue.workflow.id}" class="hover:underline"
+				>{data.issue.workflow.name}</a
+			>
+		</p>
+
+		<!-- escape hatch: jump to any state, or move onto another workflow -->
+		<details class="mt-4 border-t pt-3">
+			<summary
+				class="text-muted-foreground hover:text-foreground cursor-pointer text-xs select-none"
+			>
+				Move directly…
+			</summary>
+			<form onsubmit={applyOverride} class="mt-3 space-y-3">
+				<div class="space-y-1">
+					<label class="text-muted-foreground text-xs font-medium" for="override-workflow"
+						>Workflow</label
+					>
+					<Select
+						id="override-workflow"
+						bind:value={
+							() => overrideWorkflowId,
+							(v) => {
+								overrideWorkflowPick = v;
+								overrideStatePick = null; // a new workflow restarts the state default
+							}
+						}
+						class="h-8 text-xs"
+					>
+						{#each data.workflows as workflow (workflow.id)}
+							<option value={workflow.id}>
+								{workflow.name}{workflow.is_system ? ' (standard)' : ''}
+							</option>
+						{/each}
+					</Select>
+				</div>
+				<div class="space-y-1">
+					<label class="text-muted-foreground text-xs font-medium" for="override-state">State</label
+					>
+					<Select
+						id="override-state"
+						bind:value={() => overrideStateId, (v) => (overrideStatePick = v)}
+						class="h-8 text-xs"
+					>
+						{#each overrideWorkflow.states as state (state.id)}
+							<option value={state.id}>
+								{state.name}{overrideWorkflowId === data.issue.workflow.id &&
+								state.id === currentState.id
+									? ' — current'
+									: ''}
+							</option>
+						{/each}
+					</Select>
+				</div>
+				<div class="flex items-center gap-2">
+					<Button
+						type="submit"
+						size="sm"
+						variant="outline"
+						disabled={!overrideDirty || applyingOverride}
+					>
+						{applyingOverride ? 'Moving…' : 'Move'}
+					</Button>
+					<p class="text-muted-foreground text-xs">Bypasses the workflow's transitions.</p>
+				</div>
+			</form>
+		</details>
+	</section>
+
+	<div class="min-w-0 space-y-8 lg:col-start-1 lg:row-span-2 lg:row-start-1">
 		<!-- description -->
 		<section class="rounded-lg border">
 			<header class="flex items-center justify-between border-b px-4 py-2.5">
@@ -885,169 +1073,7 @@
 	<!-- min-w-0, like the main column: a grid item defaults to a min-content
 	     floor, so one nowrap row in here (a truncated linked-issue title) would
 	     otherwise widen the column past the viewport. -->
-	<aside class="min-w-0 space-y-8">
-		<!-- state & transitions -->
-		<!-- On a duplicate the section stops pretending to be the source of
-		     truth (muted), but the graph and buttons still act on this issue's
-		     own, dormant state — moving a duplicate is allowed. -->
-		<section
-			class="rounded-lg border p-4 transition-opacity duration-200 {duplicateOf
-				? 'opacity-70'
-				: ''}"
-		>
-			<h2 class="mb-3 text-sm font-semibold">State</h2>
-			{#if duplicateOf}
-				<p class="text-muted-foreground mb-3 text-xs italic" transition:slide={{ duration: dur() }}>
-					This issue is a duplicate — its displayed state follows
-					<a
-						href="/issues/{encodeURIComponent(duplicateOf.project_name)}/{duplicateOf.number}"
-						class="hover:underline">{duplicateOf.project_name}/#{duplicateOf.number}</a
-					>.
-				</p>
-			{/if}
-			<div class="mb-4">
-				<WorkflowGraph workflow={data.issue.workflow} currentStateId={currentState.id} compact />
-			</div>
-			{#if allowed.length > 0}
-				<div class="flex flex-wrap gap-2">
-					{#each allowed as transition (transition.transition_id)}
-						{@const unmet = unmetFor(transition)}
-						<Button
-							size="sm"
-							variant="outline"
-							disabled={transitioning || unmet.length > 0}
-							onclick={() => requestMove(transition)}
-							title={unmet.length > 0
-								? `Blocked: requires artifact “${unmet[0].artifact}” (${unmet[0].status.replaceAll('_', ' ')})`
-								: `Move to ${transition.to_state.name}`}
-						>
-							{transition.name}
-							<span
-								class="text-muted-foreground inline-flex items-center gap-1 text-xs font-normal"
-							>
-								<IconArrowRight size={12} />
-								{transition.to_state.name}
-							</span>
-						</Button>
-					{/each}
-				</div>
-				<!-- requirement pre-flight: why a button is disabled, or a subtle check -->
-				{#each allowed.filter((t) => (t.requires ?? []).length > 0) as transition (transition.transition_id)}
-					<ul class="mt-2 space-y-1">
-						{#each transition.requires ?? [] as r (r.artifact)}
-							<li
-								class="flex items-start gap-1.5 text-xs {r.status === 'satisfied'
-									? 'text-muted-foreground'
-									: 'text-amber-700 dark:text-amber-400'}"
-							>
-								{#if r.status === 'satisfied'}
-									<IconCheck size={13} class="mt-0.5 shrink-0" />
-									<span>
-										<span class="font-medium">{transition.name}</span>: artifact
-										<span class="font-mono">{r.artifact}</span> is fresh (v{r.current_version
-											?.version}).
-									</span>
-								{:else}
-									<IconBan size={13} class="mt-0.5 shrink-0" />
-									<span>
-										<span class="font-medium">{transition.name}</span> needs artifact
-										<span class="font-mono">{r.artifact}</span>{r.type
-											? ` (${[r.type, r.content_type].filter(Boolean).join(', ')})`
-											: ''}
-										—
-										{#if r.status === 'stale'}
-											stale since {new Date(data.issue.state_entered_at).toLocaleString()}; attach a
-											new version or reaffirm it.
-										{:else if r.status === 'missing'}
-											missing; attach it below.
-										{:else}
-											the attached artifact doesn't match.
-										{/if}
-										{#if r.description}
-											<span class="italic">{r.description}</span>
-										{/if}
-									</span>
-								{/if}
-							</li>
-						{/each}
-					</ul>
-				{/each}
-			{:else}
-				<p class="text-muted-foreground text-xs" transition:fade={{ duration: dur() }}>
-					No outgoing transitions — this state is terminal.
-				</p>
-			{/if}
-			<p class="text-muted-foreground mt-3 text-xs">
-				Workflow:
-				<a href="/workflows/{data.issue.workflow.id}" class="hover:underline"
-					>{data.issue.workflow.name}</a
-				>
-			</p>
-
-			<!-- escape hatch: jump to any state, or move onto another workflow -->
-			<details class="mt-4 border-t pt-3">
-				<summary
-					class="text-muted-foreground hover:text-foreground cursor-pointer text-xs select-none"
-				>
-					Move directly…
-				</summary>
-				<form onsubmit={applyOverride} class="mt-3 space-y-3">
-					<div class="space-y-1">
-						<label class="text-muted-foreground text-xs font-medium" for="override-workflow"
-							>Workflow</label
-						>
-						<Select
-							id="override-workflow"
-							bind:value={
-								() => overrideWorkflowId,
-								(v) => {
-									overrideWorkflowPick = v;
-									overrideStatePick = null; // a new workflow restarts the state default
-								}
-							}
-							class="h-8 text-xs"
-						>
-							{#each data.workflows as workflow (workflow.id)}
-								<option value={workflow.id}>
-									{workflow.name}{workflow.is_system ? ' (standard)' : ''}
-								</option>
-							{/each}
-						</Select>
-					</div>
-					<div class="space-y-1">
-						<label class="text-muted-foreground text-xs font-medium" for="override-state"
-							>State</label
-						>
-						<Select
-							id="override-state"
-							bind:value={() => overrideStateId, (v) => (overrideStatePick = v)}
-							class="h-8 text-xs"
-						>
-							{#each overrideWorkflow.states as state (state.id)}
-								<option value={state.id}>
-									{state.name}{overrideWorkflowId === data.issue.workflow.id &&
-									state.id === currentState.id
-										? ' — current'
-										: ''}
-								</option>
-							{/each}
-						</Select>
-					</div>
-					<div class="flex items-center gap-2">
-						<Button
-							type="submit"
-							size="sm"
-							variant="outline"
-							disabled={!overrideDirty || applyingOverride}
-						>
-							{applyingOverride ? 'Moving…' : 'Move'}
-						</Button>
-						<p class="text-muted-foreground text-xs">Bypasses the workflow's transitions.</p>
-					</div>
-				</form>
-			</details>
-		</section>
-
+	<aside class="min-w-0 space-y-8 lg:col-start-2 lg:row-start-2">
 		<!-- the supervisor's view of this issue -->
 		{#if agentActivityPanel.current.status === 'pending'}
 			<Skeleton class="h-40 w-full" />

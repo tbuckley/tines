@@ -115,6 +115,17 @@
 			<option value={project.id}>{project.name}</option>
 		{/each}
 	</Select>
+	<Select
+		value={data.filters.workflow ?? ''}
+		onchange={(e) => setParam('workflow', e.currentTarget.value)}
+		class="h-9 w-auto text-sm"
+		aria-label="Filter by workflow"
+	>
+		<option value="">All workflows</option>
+		{#each data.workflows as workflow (workflow.id)}
+			<option value={workflow.id}>{workflow.name}</option>
+		{/each}
+	</Select>
 </div>
 
 {#if !data.hasAgentGuidelines}
@@ -141,7 +152,7 @@
 <ContextItemList
 	items={data.items}
 	onselect={openEdit}
-	emptyMessage={data.filters.kind || data.filters.project || data.filters.q
+	emptyMessage={data.filters.kind || data.filters.project || data.filters.workflow || data.filters.q
 		? 'No context items match these filters.'
 		: 'No context items yet. Attach a prompt, skill, or repo to a project, workflow state, or issue.'}
 />

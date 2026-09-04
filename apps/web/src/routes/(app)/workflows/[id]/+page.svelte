@@ -266,6 +266,7 @@
 					>
 						<ContextItemList
 							{items}
+							shortScope
 							onselect={openContextEdit}
 							emptyMessage="Nothing scoped to this state yet."
 						/>

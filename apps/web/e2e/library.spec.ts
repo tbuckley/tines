@@ -6,7 +6,7 @@
  * none of its ids.
  */
 import type { ImportLibraryResponse, LibraryDocument } from '@tines/shared';
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Locator, type Page } from '@playwright/test';
 import { ALICE, BOB } from './constants.mjs';
 import { apiClient, body, runId, signIn } from './helpers';
 
@@ -183,6 +183,51 @@ test.describe('export / import settings page', () => {
 		await expect(summary).toContainText('Imported');
 		// Exact wording, so a mangled past tense ("skippedd") cannot pass here.
 		await expect(summary).toContainText(/\d+ skipped\./);
+	});
+
+	// The picker used to be a bare `<input type="file">`, whose browser chrome
+	// ("Choose File  No file chosen") ignores the app palette entirely.
+	test('the file picker is an app button, and names the chosen file', async ({ context, page }) => {
+		await signIn(context, ALICE.sessionToken);
+		await page.goto('/settings/export-import');
+
+		// The input is still there and still labelled — it is only clipped, so it
+		// keeps its place in the tab order and its accessible name. `sr-only`
+		// leaves a 1px box behind, which Playwright still counts as visible, so
+		// the check is on the painted size rather than `not.toBeVisible()`.
+		const input = page.getByLabel('Library file');
+		await expect(input).toBeAttached();
+		const painted = await input.boundingBox();
+		expect(painted?.width).toBeLessThanOrEqual(1);
+		expect(painted?.height).toBeLessThanOrEqual(1);
+
+		// What a sighted user sees instead: a control with the same geometry as
+		// the "Download library" button it sits beside, and the filename spelled
+		// out rather than left to the browser.
+		const picker = page.locator('label:has(input[type="file"])');
+		await expect(picker).toBeVisible();
+		await expect(picker).toContainText('Choose file');
+
+		// Same geometry as the button beside it (the fill differs: this one is
+		// the outline variant, which is also why it draws a border at all).
+		const box = (target: Locator) =>
+			target.evaluate((el) => {
+				const s = getComputedStyle(el);
+				return { height: s.height, radius: s.borderRadius };
+			});
+		expect(await box(picker)).toEqual(
+			await box(page.getByRole('button', { name: /Download library/ }))
+		);
+		expect(await picker.evaluate((el) => getComputedStyle(el).borderTopWidth)).not.toBe('0px');
+
+		await expect(page.getByText('No file chosen')).toBeVisible();
+
+		await upload(page, 'named-library.json', { hello: 'world' }, async () => {
+			await expect(page.getByText('named-library.json', { exact: true })).toBeVisible({
+				timeout: 5000
+			});
+		});
+		await expect(page.getByText('No file chosen')).toHaveCount(0);
 	});
 
 	test('rejects a file that is not a library export', async ({ context, page }) => {
