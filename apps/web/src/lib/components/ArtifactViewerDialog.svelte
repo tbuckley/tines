@@ -5,6 +5,8 @@
 		ArtifactVersion,
 		ArtifactVersionFile
 	} from '@tines/shared';
+	import IconChevronLeft from '@tabler/icons-svelte/icons/chevron-left';
+	import IconChevronRight from '@tabler/icons-svelte/icons/chevron-right';
 	import IconDownload from '@tabler/icons-svelte/icons/download';
 	import IconExternalLink from '@tabler/icons-svelte/icons/external-link';
 	import IconFile from '@tabler/icons-svelte/icons/file';
@@ -62,6 +64,25 @@
 		if (versionPick === null) return detail.current_version;
 		return detail.versions.find((v) => v.version === versionPick) ?? detail.current_version;
 	});
+
+	// Stepping through a folder is just moving `pathPick` along the version's
+	// file list, which the API already returns in `path asc` order: every
+	// downstream derived (preview, textKey, the text fetch, fileBody) reacts to
+	// it exactly as it does to a click on the index.
+	const folderFiles = $derived(detail?.artifact_type === 'folder' ? (version?.files ?? []) : []);
+	/** Index of `pathPick` in `folderFiles`; -1 on the index view or a stale pick. */
+	const fileIndex = $derived(
+		pathPick === null ? -1 : folderFiles.findIndex((f) => f.path === pathPick)
+	);
+	const hasPrev = $derived(fileIndex > 0);
+	const hasNext = $derived(fileIndex >= 0 && fileIndex < folderFiles.length - 1);
+
+	function step(delta: -1 | 1) {
+		if (fileIndex < 0) return;
+		const next = folderFiles[fileIndex + delta];
+		if (!next) return; // the ends stop rather than wrap
+		pathPick = next.path;
+	}
 
 	const contentUrl = (opts: { path?: string; inline?: boolean; download?: boolean } = {}) => {
 		const params = new URLSearchParams();
@@ -132,7 +153,23 @@
 	const prUrl = (v: ArtifactVersion) => `${v.pr_repo_url}/pull/${v.pr_number}`;
 	const prRef = (v: ArtifactVersion) =>
 		`${(v.pr_repo_url ?? '').replace(/^https:\/\/github\.com\//, '')}#${v.pr_number}`;
+
+	// Mirrors Modal's Escape handler: a window listener, no focus trap. Guarded
+	// so the header's native <select>s (artifact, version), any text field, and
+	// browser/OS shortcuts keep their own arrow-key behaviour.
+	function onkeydown(e: KeyboardEvent) {
+		if (!open || fileIndex < 0 || e.defaultPrevented) return;
+		if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+		const target = e.target as HTMLElement | null;
+		if (target?.closest('input, select, textarea, [contenteditable]')) return;
+		if (e.key === 'ArrowLeft') step(-1);
+		else if (e.key === 'ArrowRight') step(1);
+		else return;
+		e.preventDefault();
+	}
 </script>
+
+<svelte:window {onkeydown} />
 
 <Modal bind:open title="Artifact viewer" size="xl">
 	<!-- header: artifact switcher, version picker, download -->
@@ -275,21 +312,50 @@
 					{/each}
 				</ul>
 			{:else}
-				<div class="mb-2 flex items-center gap-2 text-xs">
+				<!-- Wraps rather than overflows on a phone (Tines/30 pattern): the path
+				     truncates and the trailing cluster drops to its own line. -->
+				<div class="mb-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
 					<button
 						type="button"
-						class="text-muted-foreground hover:text-foreground hover:underline"
+						class="text-muted-foreground hover:text-foreground shrink-0 hover:underline"
 						onclick={() => (pathPick = null)}
 					>
 						← all files
 					</button>
-					<span class="font-mono">{pathPick}</span>
-					<a
-						href={contentUrl({ path: pathPick })}
-						class="text-muted-foreground hover:text-foreground ml-auto inline-flex items-center gap-1"
-					>
-						<IconDownload size={13} /> Download
-					</a>
+					<span class="min-w-0 grow basis-40 truncate font-mono" title={pathPick}>{pathPick}</span>
+					<div class="ml-auto flex shrink-0 items-center gap-1">
+						<!-- `aria-disabled` rather than `disabled` at the ends: stepping onto the
+						     last file must not drop the focus the next press needs. -->
+						<button
+							type="button"
+							class="text-muted-foreground hover:text-foreground hover:bg-muted inline-flex h-8 items-center gap-0.5 rounded-md px-1.5 aria-disabled:pointer-events-none aria-disabled:opacity-40"
+							aria-disabled={!hasPrev}
+							aria-label="Previous file"
+							onclick={() => step(-1)}
+						>
+							<IconChevronLeft size={14} /> Prev
+						</button>
+						{#if fileIndex >= 0}
+							<span class="text-muted-foreground tabular-nums" aria-live="polite">
+								{fileIndex + 1} of {folderFiles.length}
+							</span>
+						{/if}
+						<button
+							type="button"
+							class="text-muted-foreground hover:text-foreground hover:bg-muted inline-flex h-8 items-center gap-0.5 rounded-md px-1.5 aria-disabled:pointer-events-none aria-disabled:opacity-40"
+							aria-disabled={!hasNext}
+							aria-label="Next file"
+							onclick={() => step(1)}
+						>
+							Next <IconChevronRight size={14} />
+						</button>
+						<a
+							href={contentUrl({ path: pathPick })}
+							class="text-muted-foreground hover:text-foreground ml-1 inline-flex h-8 items-center gap-1 px-1"
+						>
+							<IconDownload size={13} /> Download
+						</a>
+					</div>
 				</div>
 				{@render fileBody()}
 			{/if}
