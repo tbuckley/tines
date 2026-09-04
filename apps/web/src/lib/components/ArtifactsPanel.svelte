@@ -17,6 +17,7 @@
 	import ArtifactViewerDialog from '$lib/components/ArtifactViewerDialog.svelte';
 	import { confirmDialog } from '$lib/components/dialogs.svelte';
 	import Modal from '$lib/components/Modal.svelte';
+	import PendingButton from '$lib/components/PendingButton.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { Textarea } from '$lib/components/ui/textarea/index.js';
@@ -583,15 +584,23 @@
 			</p>
 		{/if}
 
-		<div class="flex justify-end gap-2">
-			<Button type="button" variant="ghost" onclick={() => (attachOpen = false)}>Cancel</Button>
-			<Button type="submit" disabled={!attachReady || attaching}>
-				{attaching
-					? 'Attaching…'
-					: attachTo
-						? `Attach v${attachTo.current_version.version + 1}`
-						: 'Attach'}
+		<div class="flex flex-wrap justify-end gap-2">
+			<Button
+				type="button"
+				variant="ghost"
+				disabled={attaching}
+				onclick={() => (attachOpen = false)}
+			>
+				Cancel
 			</Button>
+			<PendingButton
+				type="submit"
+				pending={attaching}
+				pendingLabel="Attaching…"
+				disabled={!attachReady}
+			>
+				{attachTo ? `Attach v${attachTo.current_version.version + 1}` : 'Attach'}
+			</PendingButton>
 		</div>
 	</form>
 </Modal>

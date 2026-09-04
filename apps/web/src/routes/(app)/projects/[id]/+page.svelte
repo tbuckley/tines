@@ -16,6 +16,7 @@
 	import IssueList from '$lib/components/IssueList.svelte';
 	import Modal from '$lib/components/Modal.svelte';
 	import NewIssueModal from '$lib/components/NewIssueModal.svelte';
+	import PendingButton from '$lib/components/PendingButton.svelte';
 	import ScheduleList from '$lib/components/ScheduleList.svelte';
 	import StateBadge from '$lib/components/StateBadge.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
@@ -375,11 +376,23 @@
 			>
 				Delete project
 			</Button>
-			<div class="flex gap-2">
-				<Button type="button" variant="ghost" onclick={() => (settingsOpen = false)}>Cancel</Button>
-				<Button type="submit" disabled={savingSettings || !settingsName.trim()}>
-					{savingSettings ? 'Saving…' : 'Save'}
+			<div class="flex flex-wrap gap-2">
+				<Button
+					type="button"
+					variant="ghost"
+					disabled={savingSettings}
+					onclick={() => (settingsOpen = false)}
+				>
+					Cancel
 				</Button>
+				<PendingButton
+					type="submit"
+					pending={savingSettings}
+					pendingLabel="Saving…"
+					disabled={!settingsName.trim()}
+				>
+					Save
+				</PendingButton>
 			</div>
 		</div>
 	</form>

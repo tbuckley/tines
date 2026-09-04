@@ -10,6 +10,7 @@
 	import LabelPicker from '$lib/components/LabelPicker.svelte';
 	import LabelChip from '$lib/components/LabelChip.svelte';
 	import Modal from '$lib/components/Modal.svelte';
+	import PendingButton from '$lib/components/PendingButton.svelte';
 	import RepeatFields from '$lib/components/RepeatFields.svelte';
 	import WorkflowGraph from '$lib/components/WorkflowGraph.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
@@ -218,14 +219,18 @@
 		{#if errorMessage}
 			<p class="text-destructive text-sm">{errorMessage}</p>
 		{/if}
-		<div class="flex justify-end gap-2">
-			<Button type="button" variant="ghost" onclick={() => (open = false)}>Cancel</Button>
-			<Button
-				type="submit"
-				disabled={creating || !title.trim() || !selectedProject || (hasRepeat && !repeatValid)}
-			>
-				{creating ? 'Creating…' : hasRepeat ? 'Create issue + schedule' : 'Create issue'}
+		<div class="flex flex-wrap justify-end gap-2">
+			<Button type="button" variant="ghost" disabled={creating} onclick={() => (open = false)}>
+				Cancel
 			</Button>
+			<PendingButton
+				type="submit"
+				pending={creating}
+				pendingLabel="Creating…"
+				disabled={!title.trim() || !selectedProject || (hasRepeat && !repeatValid)}
+			>
+				{hasRepeat ? 'Create issue + schedule' : 'Create issue'}
+			</PendingButton>
 		</div>
 	</form>
 </Modal>

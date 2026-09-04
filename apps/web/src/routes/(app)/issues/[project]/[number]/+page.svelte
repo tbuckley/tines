@@ -29,6 +29,7 @@
 	import LaunchPromptDialog from '$lib/components/LaunchPromptDialog.svelte';
 	import Markdown from '$lib/components/Markdown.svelte';
 	import Modal from '$lib/components/Modal.svelte';
+	import PendingButton from '$lib/components/PendingButton.svelte';
 	import RelationsCard from '$lib/components/RelationsCard.svelte';
 	import StateBadge from '$lib/components/StateBadge.svelte';
 	import WorkflowGraph from '$lib/components/WorkflowGraph.svelte';
@@ -280,8 +281,11 @@
 		try {
 			// Comment BEFORE the transition: re-dispatch can never race past it.
 			if (comment) await api.createComment(data.issue.id, { body: comment });
-			pendingState = transition.to_state; // optimistic: badge + graph animate immediately
 			await api.transitionIssue(data.issue.id, { transition_id: transition.transition_id });
+			// Optimistic, but only once the server has accepted: the badge and graph
+			// animate ahead of the reload, while the State card behind the dialog is
+			// never mutated with the request still in flight (Tines/153).
+			pendingState = transition.to_state;
 			pendingTransition = null;
 			await refresh();
 		} catch (e) {
@@ -1151,13 +1155,23 @@
 					prompt already contains it.
 				</p>
 			</div>
-			<div class="flex justify-end gap-2">
-				<Button type="button" variant="ghost" onclick={() => (pendingTransition = null)}>
+			<div class="flex flex-wrap justify-end gap-2">
+				<Button
+					type="button"
+					variant="ghost"
+					disabled={transitioning}
+					onclick={() => (pendingTransition = null)}
+				>
 					Cancel
 				</Button>
-				<Button type="submit" disabled={transitioning}>
-					{transitioning ? 'Moving…' : transition.name}
-				</Button>
+				<PendingButton
+					type="submit"
+					pending={transitioning}
+					pendingLabel="Moving…"
+					title={transition.name}
+				>
+					{transition.name}
+				</PendingButton>
 			</div>
 		</form>
 	</Modal>
