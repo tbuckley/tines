@@ -190,7 +190,7 @@ A "Scheduled tasks" section on the project detail page (hidden when the project 
 
 ### Scheduled issues elsewhere
 
-- Issue rows and the issue detail page show a small repeat icon/badge on issues with a `scheduled_task_id`, linking to the schedule (the project page section, row highlighted).
+- Issue rows and the issue detail page show a small repeat icon/badge on issues with a `scheduled_task_id`, linking to the schedule (the project page section, row highlighted and — since Tines/146 moved the section below the issue list — scrolled into view).
 - The activity feed renders `scheduled_task.*` events and shows scheduled creations as "via schedule *name*".
 
 ## Acceptance criteria

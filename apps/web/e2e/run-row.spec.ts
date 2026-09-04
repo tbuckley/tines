@@ -12,7 +12,7 @@
  */
 import type { Workflow } from '@tines/shared';
 import { expect, test, type Page } from '@playwright/test';
-import { ALICE, RUNROW } from './constants.mjs';
+import { ALICE, RUNROW, RUNROW_FAILED } from './constants.mjs';
 import { apiClient, body, runId, signIn } from './helpers';
 
 test.describe('shared run row', () => {
@@ -137,5 +137,81 @@ test.describe('shared routing-rule row', () => {
 
 		await page.goto('/agents');
 		await expect(deadRuleRow(page)).toHaveCount(1);
+	});
+});
+
+/**
+ * A failed run's error is the most useful line on its row, and it used to be
+ * cut to one ellipsised line ("…ENOSPC: no space left on…") with the rest
+ * reachable only by opening Logs and scrolling to the end. The row now clamps
+ * to two lines and the Logs disclosure leads with the whole string.
+ */
+test.describe('failed run error', () => {
+	const FULL = RUNROW_FAILED.error;
+
+	test.beforeEach(async ({ context }) => {
+		await signIn(context, ALICE.sessionToken);
+	});
+
+	/** The seeded failed run's row, on whichever surface is loaded. */
+	const failedRow = (page: Page) =>
+		page.locator('li').filter({ has: page.getByTestId('run-error') });
+
+	test('clamps the error to two lines, not one, on the issue page and the Agents tab', async ({
+		page
+	}) => {
+		for (const surface of ['issue', 'agents'] as const) {
+			if (surface === 'issue') {
+				await page.goto(`/issues/${encodeURIComponent(RUNROW.projectName)}/${RUNROW.issueNumber}`);
+			} else {
+				await page.goto('/agents');
+				await page.getByLabel('Show ended runs').check();
+			}
+
+			const row = failedRow(page);
+			await expect(row).toHaveCount(1);
+
+			const error = row.getByTestId('run-error');
+			// The whole reason stays available on hover, at every width.
+			await expect(error).toHaveAttribute('title', FULL);
+
+			// Read every number the assertion compares inside one layout pass:
+			// the run rows keep settling as the log-tail fetches resolve.
+			const box = await error.evaluate((el) => {
+				const style = getComputedStyle(el);
+				return {
+					clamp: style.webkitLineClamp,
+					lineHeight: parseFloat(style.lineHeight),
+					clientHeight: el.clientHeight,
+					scrollHeight: el.scrollHeight
+				};
+			});
+
+			// Fixture sanity: this error is longer than the two lines shown, so
+			// the height below is a clamp and not just a string that fits.
+			expect(box.scrollHeight).toBeGreaterThan(box.clientHeight);
+			expect(box.clamp).toBe('2');
+			// Two lines rendered, where `truncate` gave exactly one.
+			expect(box.clientHeight).toBeGreaterThan(box.lineHeight * 1.5);
+		}
+	});
+
+	test('leads the Logs disclosure with the untruncated error', async ({ page }) => {
+		await page.goto(`/issues/${encodeURIComponent(RUNROW.projectName)}/${RUNROW.issueNumber}`);
+
+		const row = failedRow(page);
+		await row.getByRole('button', { name: 'Logs' }).click();
+
+		// Whole, and readable without hovering or scrolling a log to its end.
+		const full = row.getByTestId('run-error-full');
+		await expect(full).toHaveText(FULL);
+
+		// First line of the disclosure: ahead of the log tail, not below it.
+		// `Node.DOCUMENT_POSITION_FOLLOWING` (4) only exists in the page.
+		const precedesLog = await full.evaluate(
+			(el, pre) => Boolean(el.compareDocumentPosition(pre!) & Node.DOCUMENT_POSITION_FOLLOWING),
+			await row.getByTestId('run-log').elementHandle()
+		);
+		expect(precedesLog).toBe(true);
 	});
 });
