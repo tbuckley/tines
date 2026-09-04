@@ -38,7 +38,7 @@
 	<div class="flex flex-col gap-2">
 		{#each transitions as transition (transition.transition_id)}
 			{@const unmet = unmetFor(transition)}
-			{@const reqId = `${uid}-req-${transition.transition_id}`}
+			{@const reqId = `transition-req-${uid}-${transition.transition_id}`}
 			<div class="min-w-0" animate:flip={{ duration: dur() }}>
 				<!-- Reason lines are SIBLINGS of the button, never children: the
 				     button's accessible name stays "<name> → <state>". -->

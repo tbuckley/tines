@@ -167,9 +167,14 @@ async function boxes(locators: Locator[]): Promise<Box[]> {
 	throw new Error('layout never settled');
 }
 
-/** The streamed panels have all resolved: nothing left is a skeleton. */
+/**
+ * The streamed panels have all resolved: nothing left is a skeleton. The
+ * transitions are up first — in the card on desktop, in the bar on a phone.
+ */
 async function settled(page: Page): Promise<void> {
-	await expect(stateCard(page)).toBeVisible();
+	await expect(
+		stateCard(page).or(page.getByTestId('transition-bar')).locator('visible=true')
+	).toBeVisible();
 	await expect(page.locator('[data-slot="skeleton"]')).toHaveCount(0);
 }
 
