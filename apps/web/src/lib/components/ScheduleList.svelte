@@ -9,6 +9,7 @@
 	import { api } from '$lib/api';
 	import { confirmDialog } from '$lib/components/dialogs.svelte';
 	import Modal from '$lib/components/Modal.svelte';
+	import PendingButton from '$lib/components/PendingButton.svelte';
 	import RepeatFields from '$lib/components/RepeatFields.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
@@ -267,14 +268,18 @@
 		{#if editError}
 			<p class="text-destructive text-sm" transition:slide={{ duration: dur() }}>{editError}</p>
 		{/if}
-		<div class="flex justify-end gap-2">
-			<Button type="button" variant="ghost" onclick={() => (editOpen = false)}>Cancel</Button>
-			<Button
-				type="submit"
-				disabled={saving || !editName.trim() || !editTitle.trim() || !editValid}
-			>
-				{saving ? 'Saving…' : 'Save'}
+		<div class="flex flex-wrap justify-end gap-2">
+			<Button type="button" variant="ghost" disabled={saving} onclick={() => (editOpen = false)}>
+				Cancel
 			</Button>
+			<PendingButton
+				type="submit"
+				pending={saving}
+				pendingLabel="Saving…"
+				disabled={!editName.trim() || !editTitle.trim() || !editValid}
+			>
+				Save
+			</PendingButton>
 		</div>
 	</form>
 </Modal>

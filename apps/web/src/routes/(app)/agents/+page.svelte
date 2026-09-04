@@ -36,6 +36,7 @@
 	import { confirmDialog } from '$lib/components/dialogs.svelte';
 	import Modal from '$lib/components/Modal.svelte';
 	import PatInstructions from '$lib/components/PatInstructions.svelte';
+	import PendingButton from '$lib/components/PendingButton.svelte';
 	import RoutingRuleRow from '$lib/components/RoutingRuleRow.svelte';
 	import RunRow from '$lib/components/RunRow.svelte';
 	import StateBadge from '$lib/components/StateBadge.svelte';
@@ -983,11 +984,18 @@
 					Create a global rule routing everything to it?
 				{/if}
 			</p>
-			<div class="flex justify-end gap-2">
-				<Button variant="ghost" onclick={resetAddRunner}>Skip for now</Button>
-				<Button variant="outline" disabled={addingToRouting} onclick={addCreatedToRouting}>
-					{addingToRouting ? 'Adding…' : 'Add to routing'}
+			<div class="flex flex-wrap justify-end gap-2">
+				<Button variant="ghost" disabled={addingToRouting} onclick={resetAddRunner}>
+					Skip for now
 				</Button>
+				<PendingButton
+					variant="outline"
+					pending={addingToRouting}
+					pendingLabel="Adding…"
+					onclick={addCreatedToRouting}
+				>
+					Add to routing
+				</PendingButton>
 			</div>
 		</div>
 	{:else}
@@ -1127,14 +1135,23 @@
 							<PatInstructions repoUrls={data.contextRepoUrls} />
 						</div>
 					{/if}
-					<div class="flex justify-end gap-2">
-						<Button type="button" variant="ghost" onclick={resetAddRunner}>Cancel</Button>
+					<div class="flex flex-wrap justify-end gap-2">
 						<Button
-							type="submit"
-							disabled={creatingClaude || !runnerName.trim() || !claudeApiKey.trim()}
+							type="button"
+							variant="ghost"
+							disabled={creatingClaude}
+							onclick={resetAddRunner}
 						>
-							{creatingClaude ? 'Validating key…' : 'Create runner'}
+							Cancel
 						</Button>
+						<PendingButton
+							type="submit"
+							pending={creatingClaude}
+							pendingLabel="Validating key…"
+							disabled={!runnerName.trim() || !claudeApiKey.trim()}
+						>
+							Create runner
+						</PendingButton>
 					</div>
 				</form>
 			{:else}
@@ -1365,11 +1382,18 @@
 				</div>
 			{/if}
 
-			<div class="flex justify-end gap-2">
-				<Button type="button" variant="ghost" onclick={() => (editTarget = null)}>Cancel</Button>
-				<Button type="submit" disabled={savingEdit}>
-					{savingEdit ? 'Saving…' : 'Save runner'}
+			<div class="flex flex-wrap justify-end gap-2">
+				<Button
+					type="button"
+					variant="ghost"
+					disabled={savingEdit}
+					onclick={() => (editTarget = null)}
+				>
+					Cancel
 				</Button>
+				<PendingButton type="submit" pending={savingEdit} pendingLabel="Saving…">
+					Save runner
+				</PendingButton>
 			</div>
 		</form>
 	</Modal>
@@ -1401,15 +1425,22 @@
 				dies immediately — the daemon's next poll gets a 401 until it adopts the new one. The
 				runner's id, history, and rule references are unchanged.
 			</p>
-			<div class="flex justify-end gap-2">
-				<Button variant="ghost" onclick={() => (rotateTarget = null)}>Keep current token</Button>
+			<div class="flex flex-wrap justify-end gap-2">
 				<Button
-					variant="outline"
+					variant="ghost"
 					disabled={rotatingRunnerId !== null}
+					onclick={() => (rotateTarget = null)}
+				>
+					Keep current token
+				</Button>
+				<PendingButton
+					variant="outline"
+					pending={rotatingRunnerId !== null}
+					pendingLabel="Rotating…"
 					onclick={() => rotateTarget && rotateToken(rotateTarget)}
 				>
-					{rotatingRunnerId ? 'Rotating…' : 'Rotate token'}
-				</Button>
+					Rotate token
+				</PendingButton>
 			</div>
 		</div>
 	</Modal>
@@ -1460,8 +1491,14 @@
 			Canceling counts as an ordinary cancel per run — a run that hasn't moved its issue takes a
 			strike. Left alone, running work finishes normally.
 		</p>
-		<div class="flex justify-end gap-2">
-			<Button variant="ghost" onclick={() => (disableConfirmOpen = false)}>Keep running</Button>
+		<div class="flex flex-wrap justify-end gap-2">
+			<Button
+				variant="ghost"
+				disabled={togglingEnabled}
+				onclick={() => (disableConfirmOpen = false)}
+			>
+				Keep running
+			</Button>
 			<Button variant="outline" disabled={togglingEnabled} onclick={() => setEnabled(false)}>
 				Turn off only
 			</Button>
@@ -1602,14 +1639,23 @@
 			</p>
 		</div>
 
-		<div class="flex justify-end gap-2">
-			<Button type="button" variant="ghost" onclick={() => (ruleModalOpen = false)}>Cancel</Button>
+		<div class="flex flex-wrap justify-end gap-2">
 			<Button
-				type="submit"
-				disabled={savingRule || ruleTargets.length === 0 || staleRuleState !== null}
+				type="button"
+				variant="ghost"
+				disabled={savingRule}
+				onclick={() => (ruleModalOpen = false)}
 			>
-				{savingRule ? 'Saving…' : editingRule ? 'Save rule' : 'Create rule'}
+				Cancel
 			</Button>
+			<PendingButton
+				type="submit"
+				pending={savingRule}
+				pendingLabel="Saving…"
+				disabled={ruleTargets.length === 0 || staleRuleState !== null}
+			>
+				{editingRule ? 'Save rule' : 'Create rule'}
+			</PendingButton>
 		</div>
 	</form>
 </Modal>
