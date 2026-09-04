@@ -123,9 +123,18 @@ test.describe.serial('issue labels UI', () => {
 		const row = page.locator('li', { has: page.getByLabel(`Rename ${bugName}`) });
 		await expect(row.getByRole('link', { name: '1 issue' })).toBeVisible();
 
+		// A `change` dispatched before hydration finishes is lost — the input is
+		// server-rendered, its handler is not — so the rename is retried. But
+		// `fill` only produces a `change` when the value actually moves, and a
+		// swallowed attempt leaves the field already reading `rename`, so a naive
+		// retry is a silent no-op forever. Blanking the field and blurring first
+		// makes every attempt a real change.
 		await expect(async () => {
-			await page.getByLabel(`Rename ${bugName}`).fill(rename);
-			await page.getByLabel(`Rename ${bugName}`).blur();
+			const field = page.getByLabel(`Rename ${bugName}`);
+			await field.fill('');
+			await field.blur();
+			await field.fill(rename);
+			await field.blur();
 			await expect(page.getByLabel(`Rename ${rename}`)).toBeVisible({ timeout: 3000 });
 		}).toPass({ timeout: 15_000 });
 
