@@ -5,6 +5,7 @@ import { ApiFail, type ActorContext } from './core';
 import {
 	allowedTransitions,
 	assertPinFieldsAllowed,
+	countIssuesByCategory,
 	createIssue,
 	getIssueDetail,
 	listIssues,
@@ -177,6 +178,57 @@ describe('listIssues search', () => {
 
 	it('returns every issue when q is absent', async () => {
 		expect((await search({})).items).toHaveLength(5);
+	});
+});
+
+/**
+ * The category tabs' counts: the same population as the list under every
+ * filter but the tab itself, so a tab's number is what clicking it shows.
+ */
+describe('countIssuesByCategory', () => {
+	const PROJECT2 = 'prj_2';
+	let t: TestDb;
+
+	beforeEach(() => {
+		t = createTestDb();
+		seedBase(t);
+		t.sqlite.exec(
+			`INSERT INTO project (id, user_id, name, created_at, updated_at)
+				VALUES ('${PROJECT2}', '${USER}', 'other', 0, 0)`
+		);
+		addIssue(t, { title: 'open one' });
+		addIssue(t, { title: 'open two' });
+		addIssue(t, { title: 'closed', state: CLOSED });
+		addIssue(t, { title: 'elsewhere', project: PROJECT2 });
+	});
+
+	it('counts every category, zeroes included', async () => {
+		expect(await countIssuesByCategory(t.db, USER, {})).toEqual({
+			backlog: 0,
+			active: 3,
+			awaiting_human: 0,
+			done: 1
+		});
+	});
+
+	it('follows the scope filters but never the category ones', async () => {
+		expect(await countIssuesByCategory(t.db, USER, { project: PROJECT })).toMatchObject({
+			active: 2,
+			done: 1
+		});
+		expect(await countIssuesByCategory(t.db, USER, { q: 'open' })).toMatchObject({
+			active: 2,
+			done: 0
+		});
+		// Ready implies not-done, so the Done tab reads 0 while it is on.
+		expect(await countIssuesByCategory(t.db, USER, { ready: true })).toMatchObject({
+			active: 3,
+			done: 0
+		});
+		// The tab's own filters are ignored: the counts are what each tab would list.
+		expect(
+			await countIssuesByCategory(t.db, USER, { category: 'done', hideDone: true })
+		).toMatchObject({ active: 3, done: 1 });
 	});
 });
 

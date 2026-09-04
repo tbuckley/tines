@@ -2,7 +2,8 @@ import { error } from '@sveltejs/kit';
 import { truncate } from '$lib/format';
 import { listContextItems } from '$lib/server/api/context';
 import { ApiFail } from '$lib/server/api/core';
-import { listIssues } from '$lib/server/api/issues';
+import { countIssuesByCategory, listIssues } from '$lib/server/api/issues';
+import { listLabels } from '$lib/server/api/labels';
 import { getProject } from '$lib/server/api/projects';
 import { listRoutingRules } from '$lib/server/api/routing';
 import { listSchedules } from '$lib/server/api/schedules';
@@ -18,11 +19,26 @@ export const load: PageServerLoad = async ({ locals, platform, params, url }) =>
 		const status = e instanceof ApiFail ? e.status : 500;
 		error(status, status === 404 ? `No project has the ID “${truncate(params.id)}”.` : 'Not found');
 	});
-	const showDone = url.searchParams.get('done') === '1';
-	// Ready already implies not-done; the "show done" param just parks while it is on.
-	const ready = url.searchParams.get('ready') === '1';
+	// The same filters as the all-issues list, scoped to this project.
+	const filters = {
+		state: url.searchParams.get('state') ?? undefined,
+		category: url.searchParams.get('category') ?? undefined,
+		showDone: url.searchParams.get('done') === '1',
+		ready: url.searchParams.get('ready') === '1',
+		q: url.searchParams.get('q') ?? undefined,
+		labels: url.searchParams.getAll('label')
+	};
+	const scope = {
+		projectId: project.id,
+		state: filters.state,
+		ready: filters.ready,
+		q: filters.q,
+		labels: filters.labels
+	};
 	const [
 		{ items: issues },
+		counts,
+		labels,
 		workflows,
 		{ items: schedules },
 		{ items: contextItems },
@@ -31,9 +47,16 @@ export const load: PageServerLoad = async ({ locals, platform, params, url }) =>
 		listIssues(
 			db,
 			userId,
-			{ projectId: project.id, hideDone: !showDone, ready },
+			{
+				...scope,
+				category: filters.category,
+				// Ready already implies not-done; "show done" just parks while it is on.
+				hideDone: !filters.showDone && !filters.category && !filters.state
+			},
 			{ cursor: null, limit: 100 }
 		),
+		countIssuesByCategory(db, userId, scope),
+		listLabels(db, userId),
 		loadWorkflows(db, userId),
 		listSchedules(db, userId, { projectId: project.id }, { cursor: null, limit: 100 }),
 		listContextItems(db, userId, { project: project.id }, { cursor: null, limit: 100 }),
@@ -54,7 +77,8 @@ export const load: PageServerLoad = async ({ locals, platform, params, url }) =>
 		// Issue-anchored items appear only on their issue's page (and the
 		// Context tab) — they are that issue's business.
 		contextItems: contextItems.filter((i) => i.scope.issue_id === null),
-		showDone,
-		ready
+		counts,
+		labels,
+		filters
 	};
 };

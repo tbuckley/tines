@@ -9,10 +9,10 @@
 	import { page } from '$app/state';
 	import { api } from '$lib/api';
 	import AgentRoutingCard from '$lib/components/AgentRoutingCard.svelte';
-	import CheckboxField from '$lib/components/CheckboxField.svelte';
 	import ContextItemEditor from '$lib/components/ContextItemEditor.svelte';
 	import ContextItemList from '$lib/components/ContextItemList.svelte';
 	import { confirmDialog } from '$lib/components/dialogs.svelte';
+	import IssueFilterBar from '$lib/components/IssueFilterBar.svelte';
 	import IssueList from '$lib/components/IssueList.svelte';
 	import Modal from '$lib/components/Modal.svelte';
 	import NewIssueModal from '$lib/components/NewIssueModal.svelte';
@@ -152,13 +152,6 @@
 			showError(err);
 		}
 	}
-
-	function setFilter(key: string, on: boolean) {
-		const params = new URLSearchParams(page.url.searchParams);
-		if (on) params.set(key, '1');
-		else params.delete(key);
-		goto(`/projects/${data.project.id}?${params}`, { keepFocus: true, noScroll: true });
-	}
 </script>
 
 <svelte:head><title>{data.project.name} · Tines</title></svelte:head>
@@ -197,33 +190,23 @@
 {/if}
 
 <div class="mb-8">
-	<div class="mb-3 flex items-center justify-between">
-		<h2 class="text-sm font-semibold">Issues</h2>
-		<div class="flex items-center gap-4">
-			<!-- Ready implies not-done, so "Show done" parks while it is on. -->
-			<CheckboxField
-				label="Show done"
-				class="text-muted-foreground text-sm {data.ready ? 'opacity-50' : ''}"
-				title={data.ready ? 'Ready issues are never done' : undefined}
-				checked={data.showDone && !data.ready}
-				disabled={data.ready}
-				onCheckedChange={(checked) => setFilter('done', checked)}
-			/>
-			<CheckboxField
-				label="Ready only"
-				class="text-muted-foreground text-sm"
-				checked={data.ready}
-				onCheckedChange={(checked) => setFilter('ready', checked)}
-			/>
-		</div>
-	</div>
+	<h2 class="mb-3 text-sm font-semibold">Issues</h2>
+	<!-- The same bar as the all-issues list, minus the project scope. -->
+	<IssueFilterBar
+		filters={data.filters}
+		counts={data.counts}
+		labels={data.labels}
+		workflows={data.workflows}
+	/>
 
 	<IssueList
 		issues={data.issues}
 		showProject={false}
-		emptyMessage={data.ready
+		emptyMessage={data.filters.ready
 			? 'No ready issues in this project.'
-			: 'No issues in this project yet.'}
+			: data.filters.category || data.filters.q || data.filters.labels.length > 0
+				? 'No issues match these filters.'
+				: 'No issues in this project yet.'}
 	/>
 </div>
 

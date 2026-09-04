@@ -1,4 +1,4 @@
-import { listIssues } from '$lib/server/api/issues';
+import { countIssuesByCategory, listIssues } from '$lib/server/api/issues';
 import { listProjects } from '$lib/server/api/projects';
 import { listLabels } from '$lib/server/api/labels';
 import { loadWorkflows } from '$lib/server/api/workflows';
@@ -20,27 +20,33 @@ export const load: PageServerLoad = async ({ locals, platform, url }) => {
 		labels: url.searchParams.getAll('label')
 	};
 
-	const [{ items: issues }, projects, workflows, labels] = await Promise.all([
+	// Everything but the category tab itself; the tabs' counts share it.
+	const scope = {
+		project: filters.project,
+		state: filters.state,
+		ready: filters.ready,
+		q: filters.q,
+		labels: filters.labels
+	};
+
+	const [{ items: issues }, counts, projects, workflows, labels] = await Promise.all([
 		listIssues(
 			db,
 			userId,
 			{
-				project: filters.project,
-				state: filters.state,
+				...scope,
 				category: filters.category,
 				// Ready already implies not-done, so the "show done" state is
 				// simply parked in the URL while it is on.
-				hideDone: !filters.showDone && !filters.category && !filters.state,
-				ready: filters.ready,
-				q: filters.q,
-				labels: filters.labels
+				hideDone: !filters.showDone && !filters.category && !filters.state
 			},
 			{ cursor: null, limit: 100 }
 		),
+		countIssuesByCategory(db, userId, scope),
 		listProjects(db, userId),
 		loadWorkflows(db, userId),
 		listLabels(db, userId)
 	]);
 
-	return { issues, projects, workflows, labels, filters };
+	return { issues, counts, projects, workflows, labels, filters };
 };
