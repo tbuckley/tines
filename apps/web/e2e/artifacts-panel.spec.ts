@@ -102,16 +102,55 @@ function photosRow(page: Page): Locator {
 		.filter({ has: page.getByRole('button', { name: 'photos', exact: true }) });
 }
 
-/**
- * The version/actor/age line — the text the crushed column mangled. Reached
- * structurally: the row's first div is the text column, the actions the second.
- */
-const metaLine = (row: Locator) => row.locator('> div').first().locator('p').last();
+type Box = { x: number; y: number; width: number; height: number };
+type RowGeometry = { row: Box; text: Box; meta: Box; actions: Box };
 
-async function width(locator: Locator): Promise<number> {
-	const box = await locator.boundingBox();
-	expect(box).not.toBeNull();
-	return box!.width;
+/**
+ * Every box of a row, read from one layout pass (Tines/123). The parts are
+ * reached structurally: the row's first div is the text column and the second
+ * the actions, and `meta` is the version/actor/age line the crushed column
+ * mangled — the last paragraph of the text column.
+ *
+ * These tests are all about how the row's parts sit relative to each other,
+ * and a `boundingBox()` per part is a separate round trip: the issue page is
+ * still settling after the row is visible, so two reads can land either side
+ * of a reflow and the difference between them then measures the page shift
+ * rather than the row. That is how the desktop assertion below came to fail
+ * at exactly its boundary in a longer suite run — its two reads were 6px of
+ * page shift apart. Reading every box inside one `evaluate` makes the
+ * comparisons internally consistent whatever the page is doing.
+ */
+function rowGeometry(row: Locator): Promise<RowGeometry> {
+	return row.evaluate((li) => {
+		const box = (el: Element): Box => {
+			const { x, y, width, height } = el.getBoundingClientRect();
+			return { x, y, width, height };
+		};
+		const columns = li.querySelectorAll(':scope > div');
+		const paragraphs = columns[0].querySelectorAll('p');
+		return {
+			row: box(li),
+			text: box(columns[0]),
+			meta: box(paragraphs[paragraphs.length - 1]),
+			actions: box(columns[columns.length - 1])
+		};
+	});
+}
+
+/**
+ * `rowGeometry` once the layout has stopped moving: two reads a beat apart
+ * agreeing. The row slides in, and content above the panel can reflow after
+ * hydration — measuring through that gives a box from a frame no assertion
+ * here means to describe.
+ */
+async function settledGeometry(row: Locator): Promise<RowGeometry> {
+	let settled = await rowGeometry(row);
+	await expect(async () => {
+		const before = JSON.stringify(settled);
+		settled = await rowGeometry(row);
+		expect(JSON.stringify(settled)).toBe(before);
+	}).toPass({ intervals: [100, 100, 200, 400] });
+	return settled;
 }
 
 test('a folder row keeps its metadata readable on a phone', async ({ page }) => {
@@ -120,12 +159,13 @@ test('a folder row keeps its metadata readable on a phone', async ({ page }) => 
 
 	const row = photosRow(page);
 	await expect(row).toBeVisible();
-	const meta = metaLine(row);
+	const { meta } = await settledGeometry(row);
 
-	// Was 14px — one word per line, ten lines tall.
-	expect(await width(meta)).toBeGreaterThan(180);
-	const box = await meta.boundingBox();
-	expect(box!.height).toBeLessThan(40);
+	// Was 14px — one word per line, ten lines tall. The width is the column's,
+	// not the text's, so it does not move with the age wording; the height
+	// still allows the line to wrap once, which the bug's ten lines cannot.
+	expect(meta.width).toBeGreaterThan(180);
+	expect(meta.height).toBeLessThan(40);
 
 	// The thumbnail strip gives up its extra images at this width; the first
 	// still opens the viewer.
@@ -142,7 +182,14 @@ test('a stale folder row keeps its metadata and actions on a phone', async ({ pa
 	await expect(row.getByText('stale')).toBeVisible();
 
 	// Was 0px: the Reaffirm button took the last of the row.
-	expect(await width(metaLine(row))).toBeGreaterThan(180);
+	const { text, meta, actions } = await settledGeometry(row);
+	expect(meta.width).toBeGreaterThan(180);
+
+	// The State card now leads the page on a phone (Tines/128), so this row can
+	// start below the fold — scroll it in first. What this test is about is the
+	// horizontal squeeze that used to clip the actions off the right edge
+	// (Tines/123), not where the row happens to sit down the page.
+	await row.scrollIntoViewIfNeeded();
 
 	// Every action stays on screen, on its own line under the text.
 	for (const name of [
@@ -153,9 +200,7 @@ test('a stale folder row keeps its metadata and actions on a phone', async ({ pa
 	]) {
 		await expect(row.getByRole('button', { name })).toBeInViewport();
 	}
-	const rowBox = await row.boundingBox();
-	const actionsBox = await row.getByRole('button', { name: 'Reaffirm' }).boundingBox();
-	expect(actionsBox!.y).toBeGreaterThan(rowBox!.y + 20);
+	expect(actions.y).toBeGreaterThanOrEqual(text.y + text.height);
 });
 
 test('a folder row stays one line on a desktop', async ({ page }) => {
@@ -170,9 +215,13 @@ test('a folder row stays one line on a desktop', async ({ page }) => {
 	await expect(thumbs).toHaveCount(3);
 	for (let i = 0; i < 3; i++) await expect(thumbs.nth(i)).toBeVisible();
 
-	const rowBox = await row.boundingBox();
-	expect(rowBox!.height).toBeLessThan(72);
-	const trash = await row.getByRole('button', { name: 'Delete photos' }).boundingBox();
-	const meta = await metaLine(row).boundingBox();
-	expect(Math.abs(trash!.y - meta!.y)).toBeLessThan(24);
+	// Nothing wrapped: the actions sit beside the text column, sharing its
+	// flex line, and the row is one line tall. Stated as a relation between
+	// the two columns rather than as a y-delta against the metadata text,
+	// whose height moves with its wording (Tines/123).
+	const { row: rowBox, text, actions } = await settledGeometry(row);
+	expect(rowBox.height).toBeLessThan(72);
+	expect(actions.x).toBeGreaterThanOrEqual(text.x + text.width);
+	expect(actions.y).toBeLessThan(text.y + text.height);
+	expect(text.y).toBeLessThan(actions.y + actions.height);
 });
