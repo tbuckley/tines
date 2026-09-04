@@ -129,7 +129,9 @@ test.describe.serial('issue labels UI', () => {
 		await expect(page.getByText(rename).first()).toBeVisible();
 	});
 
-	test('a phone row keeps its labels to one line below the title', async ({ page }) => {
+	test('a phone row carries its labels on the metadata line, costing no height', async ({
+		page
+	}) => {
 		const list = `/issues?project=${encodeURIComponent(projectName)}`;
 		const crowdedRow = page.getByRole('link', { name: new RegExp(`Crowded ${runId}`) });
 		// The unlabelled row is the yardstick: labels may cost one line, never two.
@@ -159,12 +161,43 @@ test.describe.serial('issue labels UI', () => {
 		// One line, whatever it holds: the strip is a single chip tall...
 		const stripBox = await strip.boundingBox();
 		expect(stripBox!.height).toBeLessThan(24);
-		// ...and the row it sits in is one line taller than an unlabelled one.
+
+		// ...and it rides the metadata line the state badge is already on,
+		// starting after it — read in one layout pass, so the two boxes are the
+		// same moment (Tines/123).
+		const line = await crowdedRow.evaluate((row) => {
+			const box = (el: Element | null) => {
+				const r = el!.getBoundingClientRect();
+				return { x: r.x, right: r.right, top: r.top, bottom: r.bottom };
+			};
+			return {
+				row: box(row),
+				// By the view-transition wrapper, not `.state-badge`: label chips
+				// reuse that class, and the row's first one is the desktop chip
+				// (display:none here, so a zero rect).
+				badge: box(row.querySelector('[style*="issue-state"]')),
+				strip: box(row.querySelector('[data-testid="label-strip"]')),
+				title: box(row.querySelector('[style*="issue-title"]'))
+			};
+		});
+		expect(line.strip.x).toBeGreaterThanOrEqual(line.badge.right);
+		// Same line as the badge: their vertical spans overlap.
+		expect(line.strip.top).toBeLessThan(line.badge.bottom);
+		expect(line.strip.bottom).toBeGreaterThan(line.badge.top);
+		// Below the title, not beside it.
+		expect(line.strip.top).toBeGreaterThanOrEqual(line.title.bottom);
+		// That line is not indented under the title any more — the number moved
+		// into the title text, so the labels get the row's full width.
+		expect(line.badge.x - line.row.x).toBeLessThan(24);
+
+		// The number renders once, wherever it lives at this width.
+		const number = (row: typeof crowdedRow) => row.locator(`span:text-is("#${crowded.number}")`);
+		await expect(number(crowdedRow).locator('visible=true')).toHaveCount(1);
+
+		// A labelled row now costs no height at all: same as an unlabelled one.
 		const crowdedBox = await crowdedRow.boundingBox();
 		const plainBox = await plainRow.boundingBox();
-		const grew = crowdedBox!.height - plainBox!.height;
-		expect(grew).toBeGreaterThan(4);
-		expect(grew).toBeLessThan(28);
+		expect(Math.abs(crowdedBox!.height - plainBox!.height)).toBeLessThan(1);
 
 		// A single label too wide for the row is a bare "+1", not a clipped chip.
 		const wideRow = page.getByRole('link', { name: new RegExp(`Wide ${runId}`) });
@@ -173,6 +206,8 @@ test.describe.serial('issue labels UI', () => {
 		// Wider viewport: labels go back inline — three chips and "+2", no strip.
 		await page.setViewportSize(DESKTOP);
 		await expect(strip).toBeHidden();
+		// The number is back in its own column, and still rendered exactly once.
+		await expect(number(crowdedRow).locator('visible=true')).toHaveCount(1);
 		// A name can appear three times in the row (inline chip, strip chip, the
 		// strip's measurement copy), so every assertion here is on what renders.
 		const rendered = (text: string) => crowdedRow.locator(`span:text-is("${text}"):visible`);
@@ -182,9 +217,12 @@ test.describe.serial('issue labels UI', () => {
 		// A long name is ellipsed rather than allowed to push the title out.
 		const chipBox = await wideRow.locator(`span:text-is("${wideName}"):visible`).boundingBox();
 		expect(chipBox!.width).toBeLessThan(130);
-		// Inline again, so a labelled row costs no height at this width.
+		// Inline again, so a labelled row costs no height at this width either —
+		// against a plain row measured at *this* viewport (a phone row is two
+		// lines whether or not it has labels, so the phone yardstick is taller).
 		const wideBox = await crowdedRow.boundingBox();
-		expect(Math.abs(wideBox!.height - plainBox!.height)).toBeLessThan(1);
+		const plainDesktopBox = await plainRow.boundingBox();
+		expect(Math.abs(wideBox!.height - plainDesktopBox!.height)).toBeLessThan(1);
 
 		// Nothing is lost — the detail page still shows every label.
 		await page.setViewportSize(PHONE);
