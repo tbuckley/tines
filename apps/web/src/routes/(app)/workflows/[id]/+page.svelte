@@ -151,32 +151,22 @@
 				</span>
 			{/if}
 		</h1>
-		{#if data.workflow.description}
+		<!-- The editable page repeats the description in its Description field, so
+		     the header only carries it where that form is absent. -->
+		{#if data.workflow.is_system && data.workflow.description}
 			<p class="text-muted-foreground mt-1 max-w-xl text-sm">{data.workflow.description}</p>
 		{/if}
 		<p class="text-muted-foreground mt-1 text-xs">
 			{data.workflow.issue_count} issue{data.workflow.issue_count === 1 ? ' uses' : 's use'} this workflow
 		</p>
 	</div>
-	<div class="flex gap-2">
-		{#if data.workflow.is_system}
+	{#if data.workflow.is_system}
+		<div class="flex gap-2">
 			<Button variant="outline" onclick={copyToLibrary}>
 				<IconCopy size={16} /> Copy to library
 			</Button>
-		{:else}
-			<Button
-				variant="outline"
-				class="text-destructive"
-				disabled={data.workflow.issue_count > 0}
-				title={data.workflow.issue_count > 0
-					? 'Workflows with issues cannot be deleted'
-					: undefined}
-				onclick={deleteWorkflow}
-			>
-				Delete
-			</Button>
-		{/if}
-	</div>
+		</div>
+	{/if}
 </div>
 
 {#if errorMessage}
@@ -219,7 +209,24 @@
 	</div>
 {:else}
 	{#key data.workflow.updated_at}
-		<WorkflowEditor workflow={data.workflow} onsave={saveWorkflow} />
+		<WorkflowEditor workflow={data.workflow} onsave={saveWorkflow}>
+			<!-- Delete sits with Save rather than in the header, so the page opens on
+			     the form and no destructive action shares the title row. -->
+			{#snippet footerActions()}
+				<Button
+					type="button"
+					variant="outline"
+					class="text-destructive"
+					disabled={data.workflow.issue_count > 0}
+					title={data.workflow.issue_count > 0
+						? 'Workflows with issues cannot be deleted'
+						: undefined}
+					onclick={deleteWorkflow}
+				>
+					Delete
+				</Button>
+			{/snippet}
+		</WorkflowEditor>
 	{/key}
 {/if}
 
