@@ -1,4 +1,4 @@
-import { defaultLabelColor, LABEL_COLORS } from '@tines/shared';
+import { compareLabelNames, defaultLabelColor, LABEL_COLORS } from '@tines/shared';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { PROJECT, USER, addIssue, seedBase } from '../supervisor/test-fixtures';
 import { ApiFail, isControlPlanePath, runAtomic, type ActorContext } from './core';
@@ -137,6 +137,16 @@ describe('the label library', () => {
 	});
 });
 
+describe('label order', () => {
+	// The client sorts optimistic chips itself; it may only do that if its
+	// comparator agrees with what SQLite's `COLLATE NOCASE` actually returns.
+	it('matches what the server reads back for accented and mixed-case names', async () => {
+		const inputs = ['zeta', 'éclair', 'Bug', 'apple'];
+		for (const name of inputs) await createLabel(t.db, t.env, human, { name });
+		expect(await names()).toEqual([...inputs].sort(compareLabelNames));
+	});
+});
+
 describe('applying labels to an issue', () => {
 	it('creates unknown labels for a human and attaches them', async () => {
 		const issue = addIssue(t, { title: 'a' });
@@ -176,6 +186,48 @@ describe('applying labels to an issue', () => {
 		});
 	});
 
+	// A page that loaded before someone deleted a label still submits its id;
+	// get-or-create must not turn that id into a label literally named `lbl_…`.
+	const staleId = 'lbl_' + 'a'.repeat(16);
+
+	it('422s on a stale label id rather than minting a label named after it', async () => {
+		const issue = addIssue(t, { title: 'a' });
+		await expect(addIssueLabels(t.db, t.env, human, issue, [staleId])).rejects.toMatchObject({
+			status: 422,
+			code: 'unknown_label',
+			details: { unknown: [staleId] }
+		});
+		await expect(addIssueLabels(t.db, t.env, human, issue, [staleId])).rejects.toThrowError(
+			/deleted/
+		);
+		expect(await names()).toEqual([]);
+		const { items } = await listIssues(t.db, USER, {}, { cursor: null, limit: 10 });
+		expect(items[0].labels).toEqual([]);
+	});
+
+	it('applies nothing when a stale id rides along with a good name', async () => {
+		const issue = addIssue(t, { title: 'a' });
+		await expect(addIssueLabels(t.db, t.env, human, issue, ['bug', staleId])).rejects.toMatchObject(
+			{ status: 422, code: 'unknown_label' }
+		);
+		expect(await names()).toEqual([]);
+	});
+
+	it('still resolves a real label id', async () => {
+		const issue = addIssue(t, { title: 'a' });
+		const bug = await createLabel(t.db, t.env, human, { name: 'bug' });
+		const res = await addIssueLabels(t.db, t.env, human, issue, [bug.id]);
+		expect(res.added.map((l) => l.name)).toEqual(['bug']);
+		expect(res.created).toEqual([]);
+	});
+
+	it('creates names that merely look like an id: the shape test is exact', async () => {
+		const issue = addIssue(t, { title: 'a' });
+		const nearly = ['lbl_short', 'lbl_' + 'a'.repeat(17), 'lbl_' + 'a'.repeat(15)];
+		const res = await addIssueLabels(t.db, t.env, human, issue, nearly);
+		expect(res.created.map((l) => l.name)).toEqual(nearly);
+	});
+
 	it('removes a label by name, and 404s when it is not attached', async () => {
 		const issue = addIssue(t, { title: 'a' });
 		await addIssueLabels(t.db, t.env, human, issue, ['bug', 'p1']);
@@ -208,6 +260,13 @@ describe('the run-key vocabulary fence', () => {
 			code: 'unknown_label',
 			details: { unknown: ['invented'], known_labels: [{ name: 'bug' }] }
 		});
+	});
+
+	it('keeps the run-key wording on a stale id, not the human one', async () => {
+		const issue = addIssue(t, { title: 'a' });
+		await expect(
+			addIssueLabels(t.db, t.env, runKey, issue, ['lbl_' + 'a'.repeat(16)])
+		).rejects.toThrowError(/Run keys can apply existing labels only/);
 	});
 
 	it('applies nothing at all when any name is unknown', async () => {

@@ -230,6 +230,22 @@ export function defaultLabelColor(name: string): LabelColor {
 	return LABEL_COLORS[hash % LABEL_COLORS.length];
 }
 
+/** Longest label name the API accepts, so the UI can cap its input to match. */
+export const LABEL_NAME_MAX = 50;
+
+/**
+ * The order the server reads labels in (`ORDER BY name COLLATE NOCASE`):
+ * SQLite's NOCASE folds ASCII A-Z only, everything else compares by code
+ * unit. Any client-side sort of labels must use this, so an optimistic
+ * render does not reorder itself once the server's list arrives.
+ */
+export function compareLabelNames(a: string, b: string): number {
+	const fold = (s: string) => s.replace(/[A-Z]/g, (c) => c.toLowerCase());
+	const x = fold(a);
+	const y = fold(b);
+	return x < y ? -1 : x > y ? 1 : 0;
+}
+
 export interface Label {
 	id: string;
 	name: string;

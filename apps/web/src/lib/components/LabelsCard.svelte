@@ -1,6 +1,11 @@
 <script lang="ts">
 	import IconTag from '@tabler/icons-svelte/icons/tag';
-	import type { IssueLabel, Label, LabelWithUsage } from '@tines/shared';
+	import {
+		compareLabelNames,
+		type IssueLabel,
+		type Label,
+		type LabelWithUsage
+	} from '@tines/shared';
 	import { invalidateAll } from '$app/navigation';
 	import { api } from '$lib/api';
 	import LabelChip from '$lib/components/LabelChip.svelte';
@@ -36,9 +41,9 @@
 			if (gone.has(a.id) || merged.some((l) => l.id === a.id)) continue;
 			merged.push(a);
 		}
-		return [...merged].sort((a, b) =>
-			a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
-		);
+		// Same order the server returns (`COLLATE NOCASE`), so an optimistic
+		// chip does not jump when the reload lands.
+		return [...merged].sort((a, b) => compareLabelNames(a.name, b.name));
 	});
 	const selectedIds = $derived(shown.map((l) => l.id));
 	// Locally minted labels are visible in the picker before the load reruns.
@@ -64,6 +69,9 @@
 			await invalidateAll();
 		} catch (e) {
 			onerror(e instanceof Error ? e.message : 'Could not add label');
+			// The likeliest cause is a label deleted since this page loaded;
+			// reload so the dead entry leaves the picker too.
+			await invalidateAll();
 		} finally {
 			adds = adds.filter((a) => a !== optimistic);
 		}
@@ -82,7 +90,7 @@
 	}
 </script>
 
-<section>
+<section class="rounded-lg border p-4">
 	<div class="mb-3 flex items-center justify-between gap-2">
 		<h2 class="text-sm font-semibold">Labels</h2>
 		<LabelPicker
