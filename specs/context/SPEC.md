@@ -54,6 +54,7 @@ An item's scope is a set of optional dimensions, stored as nullable references o
 | --- | --- | --- |
 | `project_id` | project | applies only to issues in this project |
 | `workflow_state_id` | workflow state | applies only to issues currently in this state |
+| `label_id` | issue label | applies only to issues carrying this label |
 | `issue_id` | issue | applies only to this issue |
 
 **At least one dimension must be set.** An item applies to an issue when **all** of its set dimensions match (logical AND). Examples:
@@ -61,11 +62,15 @@ An item's scope is a set of optional dimensions, stored as nullable references o
 - `project=Tines` — house conventions for every issue in the project.
 - `state=Review` — a review checklist for any issue sitting in that state, in any project whose workflow includes it.
 - `project=Tines ∧ state=Implementing` — the implementer's journal for this project: private notes on how to build features *here*, invisible to other projects and to other stages of work.
+- `label=design` — a component-testing skill for design work, in any project.
+- `project=Tines ∧ label=docs` — a docs-audit checklist for this project's documentation issues only.
 - `issue=Tines/42` — context for one issue; optionally `issue=Tines/42 ∧ state=Review` for one issue only while in review.
 
-This is why scope is columns on the item rather than a join table per element: the journal case is a single row with two dimensions set, and a future **role** dimension (or a tag column matching an agent's declared role) is one more nullable column with the same AND semantics — no schema restructuring. Single-element attachment is just the one-dimension degenerate case, which the UI presents as "attach context to this issue/state/project".
+This is why scope is columns on the item rather than a join table per element: the journal case is a single row with two dimensions set, and the **label** dimension added in Tines/168 was one more nullable column with the same AND semantics — no schema restructuring.
 
-**Scope display label.** Wherever a scope is rendered as text — UI badges, stitched-prompt headings, event payloads — it uses one canonical format: set dimensions in the order project · state · issue, joined with `·`, each as `<dimension> <display name>` (issues as `<project>/<number>`). E.g. `project Tines · state Review`.
+**Labels are set-valued, and that is new.** Project, state and issue each hold exactly one value for a given issue; an issue carries a *set* of labels. The AND rule is unchanged (a label dimension matches when the issue carries that label), but two consequences below are specific to it: same-rank layers are no longer impossible, and the layer order had to say where a label sits rather than inherit it from a dimension count. Single-element attachment is just the one-dimension degenerate case, which the UI presents as "attach context to this issue/state/project".
+
+**Scope display label.** Wherever a scope is rendered as text — UI badges, stitched-prompt headings, event payloads — it uses one canonical format: set dimensions in the order project · state · label · issue, joined with `·`, each as `<dimension> <display name>` (issues as `<project>/<number>`). E.g. `project Tines · state Review`, `project Tines · label design`.
 
 **Coherence validation** (422 on violation):
 
@@ -79,17 +84,28 @@ This is why scope is columns on the item rather than a join table per element: t
 
 The assembled bundle for issue *I* in project *P*, currently in state *S*: every item whose set dimensions all match *(P, S, I)*, organized as follows.
 
-**Layer order — by specificity, broad → specific.** Matching items are grouped by their exact scope tuple; scopes order by **number of dimensions set** (fewer first), tie-broken by a fixed dimension precedence in which issue-anchored scopes outrank state-anchored ones, which outrank project-anchored ones. Concretely, the seven possible scopes order:
+**Layer order — by specificity, broad → specific.** Matching items are grouped by their exact scope tuple, and scopes order by a **fixed weight per dimension**, summed: `project=1`, `state=2`, `label=4`, `issue=8`. Lower total sorts first. Read as a rule: each dimension outranks every combination of the dimensions below it, so a scope naming a more specific dimension always sorts later regardless of how many dimensions the other names.
 
-1. `project`
-2. `state`
-3. `project ∧ state`
-4. `issue`
-5. `issue ∧ project`
-6. `issue ∧ state`
-7. `issue ∧ project ∧ state`
+The 15 possible scopes therefore order:
 
-Within a layer, items order by `position`, then `created_at`, then `id` (timestamps are ms integers and can tie). Because names are unique per exact scope and every exact scope is its own layer, **within-layer collisions are impossible by construction**. The rationale for the order: general house rules first, then what-this-stage-of-work means, then refinements — each layer reads as a refinement of the previous. The rule is generative, not enumerated: a future role dimension slots into the same specificity-count ordering without re-deciding anything. When nested projects arrive, ancestor projects' layers prepend before the project's own (root→leaf).
+| Rank | Scope | | Rank | Scope |
+| --- | --- | --- | --- | --- |
+| 1 | `project` | | 9 | `issue ∧ project` |
+| 2 | `state` | | 10 | `issue ∧ state` |
+| 3 | `project ∧ state` | | 11 | `issue ∧ project ∧ state` |
+| 4 | `label` | | 12 | `issue ∧ label` |
+| 5 | `label ∧ project` | | 13 | `issue ∧ label ∧ project` |
+| 6 | `label ∧ state` | | 14 | `issue ∧ label ∧ state` |
+| 7 | `label ∧ project ∧ state` | | 15 | `issue ∧ label ∧ project ∧ state` |
+| 8 | `issue` | | | |
+
+Label sits directly under `issue`: *a label is a per-issue classification, so it outranks the ambient dimensions — which project this is, which stage it is at — but not the issue itself.* This placement is a **prefix extension**: the seven scopes that existed before labels (ranks 1–3 and 8–11) keep their relative order exactly, so no shipped item changed layer when the dimension landed.
+
+An earlier wording ordered layers by **number of dimensions set**, tie-broken by precedence. That was never what the code did — it has always summed bit weights — and the two disagree once a dimension can be skipped (`label ∧ project ∧ state` sets three dimensions but sorts before the one-dimension `issue`). The weight rule is the real one, and it is what generalizes: a future dimension picks a weight and slots in.
+
+Within a layer, items order by `position`, then `created_at`, then `id` (timestamps are ms integers and can tie).
+
+**Same-rank layers, and why they exist.** Names are unique per exact scope, so for the single-valued dimensions every exact scope is its own layer and within-layer collisions are impossible by construction. Labels break that: an issue carrying both `design` and `qa` matches a `label design` layer *and* a `label qa` layer, which have the same rank, and each may hold a skill named `component-testing`. Such layers are ordered **by label name** (case-insensitively, then by label id), which is deterministic, needs no schema, and is visible — the losing item appears in `overridden`, and both `## Context: … · label …` headings are in the prompt. It is arbitrary in the sense that `design` beating `qa` carries no meaning; a `label.position` priority column is the principled upgrade if that ever matters. The rationale for the order: general house rules first, then what-this-stage-of-work means, then what kind of work this is, then refinements — each layer reads as a refinement of the previous. The rule is generative, not enumerated: a future role dimension slots in by picking a weight, without re-deciding anything. When nested projects arrive, ancestor projects' layers prepend before the project's own (root→leaf).
 
 **Per-kind merge:**
 
@@ -149,6 +165,7 @@ One uniform rule for every anchor that context is scoped to — **reject by defa
 
 - **Deleting a project** (`DELETE /api/v1/projects/:id`), **deleting a workflow** (`DELETE /api/v1/workflows/:id`), and **removing a workflow state** (via the whole-workflow `PATCH /api/v1/workflows/:id`, where states are edited) are rejected with a 422 naming the attached context items whenever any item's scope references the deleted element (for workflows: any of their states). Existing phase-one guards (no issues in the project / state / workflow) still apply first.
 - Each of these requests accepts **`force_delete_context: true`** in the body. With it, the operation proceeds and every attached item is deleted — all-or-nothing per request, even when one PATCH removes multiple states. The response reports the deleted items, and each one emits its own `context.deleted` event, attributed to the deleting actor, in the same transaction.
+- **Deleting a label** (`DELETE /api/v1/labels/:id`) follows the same rule: rejected with a 422 (`label_in_use`) naming the context items *and* the routing rules scoped to it, and accepting **`force: true`** in the body, which deletes them with the label. A label-scoped routing rule is **deleted, never label-stripped** — stripping would silently broaden `label docs ∧ project X` into `project X`, which is a live rule doing something nobody asked for. (The flag is `force`, not `force_delete_context`, because it sweeps rules as well as context.)
 - **Issues** cannot be deleted in phase one, so issue-scoped items have no orphan path.
 - An item whose scope references a force-deleted anchor is deleted entirely, even if its other dimensions survive (there is no "partially scoped" leftover).
 
@@ -158,7 +175,8 @@ The workflow editor shows which states carry context, and the UI confirmation di
 
 ```
 context_item        id, user_id, kind, name, description?,
-                    project_id?, workflow_state_id?, issue_id?,     -- scope; ≥1 set (CHECK)
+                    project_id?, workflow_state_id?, label_id?,
+                    issue_id?,                                      -- scope; all-null = global
                     body?,                                          -- prompt: markdown
                     repo_url?, repo_branch?, repo_dir?,             -- repo pointer
                     position, created_at, updated_at
@@ -169,8 +187,9 @@ context_item_file   id, context_item_id, path, content, created_at, updated_at
 Notes:
 
 - Kind-specific payloads live as nullable columns (`body` for prompts, `repo_*` for repos) plus the child file table for skills. A future kind with a structured payload can use a JSON `config` column added at that time; the row shape above deliberately leaves room rather than pre-adding it.
-- A **non-unique** index on `(user_id, project_id, workflow_state_id, issue_id)` supports the matching and listing queries. Name-uniqueness per (kind, exact scope) is enforced **only in the API layer** — a partial-NULL unique index can't express it in SQLite, and a half-enforcing unique index would surface raw constraint errors on the non-NULL cases instead of structured 422s.
-- No `role` column yet; adding one later is a single nullable column + one more AND clause in the matching query.
+- A **non-unique** index on `(user_id, project_id, workflow_state_id, issue_id)` supports the matching and listing queries, and a second on `label_id`. Name-uniqueness per (kind, exact scope) is checked in the API layer so the common case returns a structured 422 rather than a raw constraint error, and is **also** enforced by a unique index over the scope columns wrapped in `COALESCE(<col>, '')` (`context_item_name_scope_uq`, added in `0007`) — `COALESCE` is what expresses partial-NULL uniqueness in SQLite, which the original design thought impossible. The API check is the message; the index is the backstop. Adding a scope dimension therefore means rebuilding that index, not only widening the API check.
+- The ≥1-dimension `CHECK` the original design called for was dropped when `0006` rebuilt the table; an all-null scope is a **global** item (`agent-guidelines` is one), which the UI names and offers directly. The constraint is not re-added.
+- `label_id` (Tines/168) is the fourth scope dimension and the first **set-valued** one — it matches through `issue_label`, so the clause is `label_id IS NULL OR EXISTS (issue_label …)` rather than a column comparison. It arrived exactly as this section predicted for `role`: one nullable column and one more AND clause. No `role` column yet; the same recipe applies.
 - The matching query for an issue is a straightforward `WHERE user_id = ? AND (project_id IS NULL OR project_id = ?) AND (workflow_state_id IS NULL OR workflow_state_id = ?) AND (issue_id IS NULL OR issue_id = ?)` over the user's items — fine at per-user scale on D1.
 
 ## API
@@ -185,7 +204,7 @@ Under `/api/v1/*` with the existing auth and conventions (cursor pagination, str
 | `GET /api/v1/issues/:id/context` | **Effective context** — see response shape below. |
 | `GET /api/v1/issues/:id/prompt` | **Launch prompt** — `{ "text": "…" }`, the stitched context plus the generated issue block. A pure formatter over the context response and the issue read; consumers needing structure use those endpoints. |
 
-**List filter semantics — "scope includes".** `project=X` matches every item whose scope includes project X (project-only, `project ∧ state`, `issue ∧ project`, …); likewise `state=` and `issue=`. Multiple dimension filters AND together. Adding **`exact=true`** restricts to items whose scope sets *only* the given dimensions — the editor's "items scoped exactly here" views. There is no separate `scoped_to` parameter.
+**List filter semantics — "scope includes".** `project=X` matches every item whose scope includes project X (project-only, `project ∧ state`, `issue ∧ project`, …); likewise `state=`, `label=` (by label id or name) and `issue=`. Multiple dimension filters AND together. Adding **`exact=true`** restricts to items whose scope sets *only* the given dimensions — the editor's "items scoped exactly here" views. There is no separate `scoped_to` parameter.
 
 **PATCH semantics.** Merge-patch style: omitted fields are unchanged; an explicit `null` unsets a nullable field (this is how a scope dimension is removed — subject to the ≥1-dimension rule). Payload, name, description, scope, and `position` are updatable; `kind` is not. Re-scoping re-runs coherence validation and the name-uniqueness check against the **target** scope, and re-appends the item at the end of the target scope's position sequence.
 
@@ -302,14 +321,16 @@ From the initial design discussion:
 
 From the spec review:
 
-- **Merge layering**: by specificity count with fixed dimension precedence — every exact scope is its own layer, so name collisions within a layer are impossible; the rule generalizes to future dimensions.
+- **Merge layering**: by summed per-dimension weight (`project=1`, `state=2`, `label=4`, `issue=8`), broad → specific; the rule generalizes to future dimensions, which pick a weight.
+- **Label as the fourth dimension** (Tines/168): weight 4, directly under `issue` — a per-issue classification outranks the ambient dimensions but not the issue. Chosen as a prefix extension so no shipped layer changed rank.
+- **Same-rank label layers**: ordered by label name, case-insensitively. Deterministic and visible in `overridden`; chosen over `created_at` (today's accidental behaviour — invisible and surprising) and over a `label.position` column, which is the upgrade path if the arbitrariness bites.
 - **Deletion posture**: uniform reject-by-default; `force_delete_context` cascades all-or-nothing with per-item `context.deleted` events attributed to the deleting actor — for projects, workflows, and state removal alike.
 - **List filters**: "scope includes" semantics, AND-composable, with `exact=true` for exact-scope views; no separate `scoped_to`.
 - **Badging**: `context_summary` (post-dedupe per-kind counts) on the issue read only; no list badges this phase.
 - **Prompt stitching**: labeled — each part under a `## Context: <scope label>` Markdown heading, blank-line separated, bodies trimmed; the format is API surface.
 - **Dedup key**: item name, uniformly for skills and repos; repo URLs are never compared or normalized.
 - **Unknown kinds**: strict 422s now; open-endedness is a schema-design property, not API leniency.
-- **Uniqueness enforcement**: API layer only; the scope index is non-unique.
+- **Uniqueness enforcement**: checked in the API layer for the error message, backstopped by a `COALESCE`-wrapped unique index over the scope columns since `0007`.
 - **Launch prompt**: context items are context; the issue itself (title, description, state, comments, transitions) is appended as a generated issue block to form the full prompt an agent would run with. Exposed as `GET /api/v1/issues/:id/prompt`, `tines issues prompt`, and a copyable dialog on the issue page — kept out of the effective-context preview, which stays context-only. The issue block includes the runnable CLI commands for each available transition and for commenting, so the prompt alone tells an agent how to act, not just what its options are.
 
 From later work:
