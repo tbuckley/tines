@@ -8,6 +8,7 @@
 	} from '@tines/shared';
 	import IconPlus from '@tabler/icons-svelte/icons/plus';
 	import IconSearch from '@tabler/icons-svelte/icons/search';
+	import IconTags from '@tabler/icons-svelte/icons/tags';
 	import IconSparkles from '@tabler/icons-svelte/icons/sparkles';
 	import { goto, invalidateAll } from '$app/navigation';
 	import { page } from '$app/state';
@@ -70,11 +71,14 @@
 	<div>
 		<h1 class="text-2xl font-semibold tracking-tight">Context</h1>
 		<p class="text-muted-foreground mt-1 text-sm">
-			Prompts, skills, and repos that scope to projects, workflow states, and issues — and merge
-			into each issue's effective context.
+			Prompts, skills, and repos that scope to projects, workflow states, issue labels, and issues —
+			and merge into each issue's effective context.
 		</p>
 	</div>
-	<Button onclick={openCreate}><IconPlus size={16} /> New item</Button>
+	<div class="flex items-center gap-2">
+		<Button variant="outline" href="/labels"><IconTags size={16} /> Labels</Button>
+		<Button onclick={openCreate}><IconPlus size={16} /> New item</Button>
+	</div>
 </div>
 
 <div class="mb-4 flex flex-wrap items-center gap-2">
@@ -126,6 +130,17 @@
 			<option value={workflow.id}>{workflow.name}</option>
 		{/each}
 	</Select>
+	<Select
+		value={data.filters.label ?? ''}
+		onchange={(e) => setParam('label', e.currentTarget.value)}
+		class="h-9 w-auto text-sm"
+		aria-label="Filter by label"
+	>
+		<option value="">All labels</option>
+		{#each data.labels as label (label.id)}
+			<option value={label.id}>{label.name}</option>
+		{/each}
+	</Select>
 </div>
 
 {#if !data.hasAgentGuidelines}
@@ -152,7 +167,11 @@
 <ContextItemList
 	items={data.items}
 	onselect={openEdit}
-	emptyMessage={data.filters.kind || data.filters.project || data.filters.workflow || data.filters.q
+	emptyMessage={data.filters.kind ||
+	data.filters.project ||
+	data.filters.workflow ||
+	data.filters.label ||
+	data.filters.q
 		? 'No context items match these filters.'
 		: 'No context items yet. Attach a prompt, skill, or repo to a project, workflow state, or issue.'}
 />
