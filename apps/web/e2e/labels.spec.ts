@@ -481,7 +481,9 @@ test.describe.serial('label as a scope dimension', () => {
 		expect(routed.ok).toBe(false);
 		expect(routed.detail).toContain('neither is more specific');
 		expect(explained.eligible).toBe(false);
-		expect(explained.verdict).toContain('tie');
+		// Not the verdict line: automation is off in the seeded world, and that
+		// reason outranks the tie. The tie's own wording is pinned in
+		// `explain.test.ts`, where the supervisor can be armed safely.
 
 		// Adding a dimension breaks the tie, rather than needing a delete.
 		await body<RoutingRuleWithWarnings>(
@@ -564,7 +566,9 @@ test.describe.serial('label as a scope dimension', () => {
 		context
 	}) => {
 		await signIn(context, ALICE.sessionToken);
-		await page.goto(`/context?project=${project.id}`);
+		// Unfiltered: this page passes the editor no scope defaults, so the
+		// label select is the only dimension the new item gets.
+		await page.goto('/context');
 		const name = `editor-scoped-${runId}`;
 		const labelSelect = page.getByLabel('Only on issues labelled');
 
@@ -582,12 +586,12 @@ test.describe.serial('label as a scope dimension', () => {
 		// The saved scope shows as the label's own coloured chip...
 		const row = page.locator('li').filter({ hasText: name });
 		await expect(row.getByTitle(`label ${docsName}`)).toBeVisible();
-		// ...and the `label=` filter narrows the list to the two items that
-		// carry it, the new one and the seeded skill.
+		// ...and the `label=` filter narrows the list to what carries it: the
+		// new item and the label-scoped skill — one row for that name, not the
+		// two same-named skills the unfiltered list holds.
 		await page.goto(`/context?label=${docs.id}`);
 		await expect(page.locator('li').filter({ hasText: name })).toBeVisible();
-		await expect(page.locator('li').filter({ hasText: SKILL })).toBeVisible();
-		await expect(page.locator('li').filter({ hasText: `Unlabelled ${runId}` })).toHaveCount(0);
+		await expect(page.locator('li').filter({ hasText: SKILL })).toHaveCount(1);
 	});
 
 	test('deleting the label is refused while it scopes work, then force-cascades', async ({
