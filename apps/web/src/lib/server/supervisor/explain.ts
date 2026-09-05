@@ -65,7 +65,8 @@ export async function explainDispatch(
 		state_id: issue.state.id,
 		updated_at: issue.updated_at,
 		pinned_runner_id: issue.pinned_runner_id,
-		pinned_tier: issue.pinned_tier
+		pinned_tier: issue.pinned_tier,
+		label_ids: issue.labels.map((l) => l.id)
 	};
 	const { targets, rule, pinned } = targetsForIssue(candidateShape, rules);
 
@@ -175,7 +176,12 @@ export async function explainDispatch(
 		const eligibleIssues = await loadEligibleIssues(db, userId);
 		const routed = eligibleIssues.filter((c) => {
 			if (c.pinned_runner_id) return true;
-			const r = matchRule({ project_id: c.project_id, state_id: c.state_id }, rules);
+			// An ambiguous match returns null here, so a tied issue is
+			// correctly excluded from the queue it would never reach.
+			const r = matchRule(
+				{ project_id: c.project_id, state_id: c.state_id, label_ids: c.label_ids },
+				rules
+			);
 			return (r?.targets.length ?? 0) > 0;
 		});
 		const index = routed.findIndex((c) => c.id === issue.id);
