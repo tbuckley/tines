@@ -1518,6 +1518,14 @@ export interface RoutingRule {
 
 /** An authoring-time note that another rule shadows (or is shadowed by) this one. */
 export interface ShadowWarning {
+	/**
+	 * `shadowed` — the named rule is more specific and wins for issues both
+	 * match; `shadows` — this rule wins over the named one; `ambiguous` — the
+	 * two tie, so an issue matching both dispatches to neither until one is
+	 * made more specific. Only labels can produce a tie (an issue carries a
+	 * set of them), so `ambiguous` never appears for project/state scopes.
+	 */
+	kind: 'shadowed' | 'shadows' | 'ambiguous';
 	rule_id: string;
 	scope_label: string;
 	message: string;
@@ -1531,6 +1539,7 @@ export interface RoutingRuleWithWarnings extends RoutingRule {
 export interface CreateRoutingRuleRequest {
 	project_id?: string | null;
 	workflow_state_id?: string | null;
+	label_id?: string | null;
 	targets: RoutingTarget[];
 }
 
@@ -1538,6 +1547,7 @@ export interface UpdateRoutingRuleRequest {
 	/** Scope is merge-patched: omitted = unchanged, explicit null = unset. */
 	project_id?: string | null;
 	workflow_state_id?: string | null;
+	label_id?: string | null;
 	targets?: RoutingTarget[];
 }
 
