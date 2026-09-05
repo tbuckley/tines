@@ -86,7 +86,7 @@ Planning and Delivering alternate so that no PM run ends without a transition. T
 
 ### Routing and capacity
 
-State-scoped rules send the four active PM states (Discovering, Drafting, Planning, Delivering) to the `smartest` tier, matching the other reasoning-heavy stages. The per-state roster quota bounds concurrent PM runs. Human throughput is bounded by design at two gates: Proposed (a paragraph to read) and PRD Review (a document). Staggering the discovery schedules across the week keeps it to about one discovery run per day for five workstreams.
+State-scoped rules send the four active PM states (Discovering, Drafting, Planning, Delivering) to the `smartest` tier, matching the other reasoning-heavy stages. The per-state roster quota bounds concurrent PM runs. Human throughput is bounded by design at two gates: Proposed (a paragraph to read) and PRD Review (a document). Discovery cadence is per schedule; the initial set runs every two days, half the workstreams on odd days and half on even, three hours apart, so at most three discovery runs start on any day.
 
 ### Interaction with Backlog Triage
 
@@ -103,6 +103,21 @@ Until Tines/168 lands, the charter is the description of one issue per workstrea
 
 Humans edit the description directly; agents never do — they propose changes as comments. Every PM issue carries `Workstream: <project>/<number>` and the stage prompts start with `tines issues show <charter ref>`. Tines/182 records the migration: create the `charter` item per label from the issue text, repoint the five prompts and the schedules' templates, and decide whether Workstream issues stay as discussion threads or retire.
 
+## Initial workstreams
+
+Created 2026-09-05 from the drafts in `charters/` (the issue descriptions are the live copies; the files are the design record):
+
+| Label | Charter issue | Discovery schedule (Europe/Dublin) |
+| --- | --- | --- |
+| `onboarding` | Tines/183 | odd days 10:00 |
+| `operator` | Tines/184 | even days 10:00 |
+| `projects` | Tines/185 | odd days 13:00 |
+| `team` | Tines/186 | even days 13:00 |
+| `performance` | Tines/187 | odd days 16:00 |
+| `collab` | Tines/188 | even days 16:00 |
+
+Collaboration runs at tighter limits (1 in flight, 1 pitch per run, tranches of 2) because Tines is single-tenant today and its directions shape architecture first.
+
 ## Setting up a workstream
 
 Once its charter is agreed:
@@ -113,11 +128,11 @@ tines issues create Tines -w Workstream -l <label> -t "Workstream: <Name>" -d @c
 #   → note the ref, e.g. Tines/190
 tines issues create Tines -w "Product Discovery" -l <label> \
   -t "Discovery: <Name>" -d "Workstream: Tines/190" \
-  --every weekly --on <weekday> --at 06:00 --tz Europe/Dublin --if-closed \
+  --cron "0 10 */2 * *" --tz Europe/Dublin --if-closed \
   --schedule-name "discovery-<label>"
 ```
 
-Run keys cannot create labels, so the label is made by a human here; PMs only apply it.
+Run keys cannot create labels, so the label is made by a human here; PMs only apply it. Creating the schedule files its first discovery issue immediately. After creating the charters, add a "Neighbour charters" line with the other issues' refs to each one's *Does not own* section.
 
 ## Acceptance criteria
 

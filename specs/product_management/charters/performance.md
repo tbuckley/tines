@@ -15,6 +15,8 @@ Bottleneck detection: where issues wait and why (queue, quota, awaiting human, p
 - **Onboarding** — the first runner.
 - **Projects** — per-project routing as a structural boundary; this workstream owns per-project cost and throughput.
 
+Neighbour charters: Onboarding Tines/183 · Operator Tines/184 · Projects Tines/185 · Team building Tines/186 · Collaboration Tines/188.
+
 Hand-off rule: a concept that belongs to a neighbour is filed as a Proposed pitch with the neighbour's label and `Workstream:` line, and not pursued here.
 
 ## Evidence sources

@@ -18,6 +18,8 @@ Human view: the Issues tab and its filters, the issue page (state, comments, art
 - **Team performance** — runners, budgets, quotas, cost and throughput analytics; the operator may see a cost on a run row, but the fleet's dashboard is not theirs.
 - **Collaboration** — a second human.
 
+Neighbour charters: Onboarding Tines/183 · Projects Tines/185 · Team building Tines/186 · Team performance Tines/187 · Collaboration Tines/188.
+
 Hand-off rule: a concept that belongs to a neighbour is filed as a Proposed pitch with the neighbour's label and `Workstream:` line, and not pursued here.
 
 ## Evidence sources

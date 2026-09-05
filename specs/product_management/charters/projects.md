@@ -15,6 +15,8 @@ Project structure: hierarchy and nesting, archiving, moving issues between proje
 - **Team performance** — per-project cost is a performance concern; per-project routing as a structural boundary ("acme never leaves the laptop") is this workstream's.
 - **Collaboration** — sharing a project with another human.
 
+Neighbour charters: Onboarding Tines/183 · Operator Tines/184 · Team building Tines/186 · Team performance Tines/187 · Collaboration Tines/188.
+
 Hand-off rule: a concept that belongs to a neighbour is filed as a Proposed pitch with the neighbour's label and `Workstream:` line, and not pursued here.
 
 ## Evidence sources

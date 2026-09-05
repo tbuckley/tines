@@ -17,6 +17,8 @@ Landing and sign-in; the first project and first issue; the first runner (the lo
 - **Team performance** — the second runner, budgets, quotas.
 - **Projects** — anything that only matters once a user has two projects.
 
+Neighbour charters: Operator Tines/184 · Projects Tines/185 · Team building Tines/186 · Team performance Tines/187 · Collaboration Tines/188.
+
 Hand-off rule: a concept that belongs to a neighbour is filed as a Proposed pitch with the neighbour's label and `Workstream:` line, and not pursued here.
 
 ## Evidence sources

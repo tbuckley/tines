@@ -16,6 +16,8 @@ Hiring as a repeatable concept: what a role is (a workflow plus its state prompt
 - **Projects** — where a package lands and how it is scoped.
 - **Collaboration** — sharing between users beyond one-way publishing of packages; anything requiring a shared workspace.
 
+Neighbour charters: Onboarding Tines/183 · Operator Tines/184 · Projects Tines/185 · Team performance Tines/187 · Collaboration Tines/188.
+
 Hand-off rule: a concept that belongs to a neighbour is filed as a Proposed pitch with the neighbour's label and `Workstream:` line, and not pursued here.
 
 ## Evidence sources

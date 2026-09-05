@@ -15,6 +15,8 @@ Sharing a project or workspace; membership and roles for humans; attribution whe
 - **Projects** — structure inside one person's workspace.
 - **Onboarding** — the first human's first hour; the *invited* human's first hour is this workstream's.
 
+Neighbour charters: Onboarding Tines/183 · Operator Tines/184 · Projects Tines/185 · Team building Tines/186 · Team performance Tines/187.
+
 Hand-off rule: a concept that belongs to a neighbour is filed as a Proposed pitch with the neighbour's label and `Workstream:` line, and not pursued here.
 
 ## Evidence sources
