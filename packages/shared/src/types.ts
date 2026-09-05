@@ -258,6 +258,10 @@ export interface Label {
 /** A label in the library listing, with how many issues carry it. */
 export interface LabelWithUsage extends Label {
 	issue_count: number;
+	/** Context items scoped to this label. */
+	context_item_count: number;
+	/** Routing rules scoped to this label. */
+	routing_rule_count: number;
 }
 
 /** The denormalized form that rides along on every issue read. */
@@ -276,10 +280,23 @@ export interface UpdateLabelRequest {
 	description?: string;
 }
 
+export interface DeleteLabelRequest {
+	/**
+	 * Delete the context items and routing rules scoped to this label along
+	 * with it. Without it, a label that scopes anything is refused (422
+	 * `label_in_use`) — deleting scope silently is how a rule gets broadened.
+	 */
+	force?: boolean;
+}
+
 export interface DeleteLabelResponse {
 	deleted: true;
 	/** How many issues carried the label when it was deleted. */
 	issue_count: number;
+	/** Context items deleted with the label (`force` only). */
+	context_items_deleted: { id: string; kind: ContextKind; name: string; scope_label: string }[];
+	/** Routing rules deleted with the label (`force` only). */
+	routing_rules_deleted: { id: string; scope_label: string }[];
 }
 
 export interface AddIssueLabelsRequest {
@@ -641,6 +658,14 @@ export interface ContextScope {
 	workflow_name: string | null;
 	issue_id: string | null;
 	issue_ref: { project_name: string; number: number } | null;
+	/**
+	 * The scope's issue label, if any. Set-valued on the target side: the
+	 * scope matches an issue that *carries* this label among its labels.
+	 */
+	label_id: string | null;
+	label_name: string | null;
+	label_color: LabelColor | null;
+	/** The canonical display string — a scope label, not an issue label. */
 	label: string;
 }
 
@@ -683,6 +708,7 @@ export interface CreateContextItemRequest {
 	project_id?: string | null;
 	workflow_state_id?: string | null;
 	issue_id?: string | null;
+	label_id?: string | null;
 	/** prompt */
 	body?: string;
 	/** skill */
@@ -704,6 +730,7 @@ export interface UpdateContextItemRequest {
 	project_id?: string | null;
 	workflow_state_id?: string | null;
 	issue_id?: string | null;
+	label_id?: string | null;
 	position?: number;
 	body?: string;
 	files?: ContextFile[];
@@ -737,6 +764,8 @@ export interface ContextListFilters {
 	state?: string;
 	/** Issue id. */
 	issue?: string;
+	/** Label id or name. */
+	label?: string;
 	/** Name/description search. */
 	q?: string;
 	exact?: boolean;

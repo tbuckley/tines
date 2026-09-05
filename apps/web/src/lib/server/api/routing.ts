@@ -185,9 +185,14 @@ function rowScope(row: RuleRow): ContextScope {
 	return toContextScope({
 		projectId: row.project_id,
 		workflowStateId: row.workflow_state_id,
+		// Routing gains the label dimension in the follow-up PR of Tines/168;
+		// the column already exists so the scope-uniqueness index covers it.
+		labelId: null,
 		issueId: null,
 		projectName: row.scope_project_name,
 		stateName: row.scope_state_name,
+		labelName: null,
+		labelColor: null,
 		workflowId: row.scope_workflow_id,
 		workflowName: row.scope_workflow_name,
 		issueNumber: null,
@@ -306,7 +311,10 @@ export async function createRoutingRule(
 		workflowStateId: body.workflow_state_id ?? null
 	};
 	const label = scopeLabel(
-		await resolveScope(db, actor.userId, scope, { issue: false, requireActiveState: true })
+		await resolveScope(db, actor.userId, { ...scope, labelId: null }, {
+			issue: false,
+			requireActiveState: true
+		})
 	);
 	const rules = await loadRulesForShadowing(db, actor.userId);
 	assertNoScopeCollision(scope, label, rules);
@@ -323,6 +331,7 @@ export async function createRoutingRule(
 				user_id: actor.userId,
 				project_id: scope.projectId,
 				workflow_state_id: scope.workflowStateId,
+				label_id: null,
 				targets: JSON.stringify(targets),
 				created_at: now,
 				updated_at: now
@@ -368,7 +377,10 @@ export async function updateRoutingRule(
 	const scopeChanged =
 		scope.projectId !== row.project_id || scope.workflowStateId !== row.workflow_state_id;
 	const label = scopeLabel(
-		await resolveScope(db, actor.userId, scope, { issue: false, requireActiveState: true })
+		await resolveScope(db, actor.userId, { ...scope, labelId: null }, {
+			issue: false,
+			requireActiveState: true
+		})
 	);
 	const rules = await loadRulesForShadowing(db, actor.userId);
 	if (scopeChanged) assertNoScopeCollision(scope, label, rules, id);

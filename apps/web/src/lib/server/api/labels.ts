@@ -3,6 +3,7 @@ import {
 	LABEL_COLORS,
 	LABEL_NAME_MAX,
 	type AddIssueLabelsResponse,
+	type ContextKind,
 	type CreateLabelRequest,
 	type DeleteLabelResponse,
 	type IssueLabel,
@@ -21,7 +22,9 @@ import {
 	runAtomic,
 	type ActorContext
 } from './core';
+import { contextItemQuery, deleteContextItem } from './context';
 import { eventInsert } from './events';
+import { scopeLabel } from './scope';
 
 /**
  * Exactly what `newId('lbl')` mints (16 chars of `ID_ALPHABET`). A ref of
@@ -124,15 +127,26 @@ export async function listLabels(db: Kysely<Database>, userId: string): Promise<
 	const rows = await db
 		.selectFrom('label')
 		.selectAll('label')
-		.select(
+		.select([
 			sql<number>`(SELECT COUNT(*) FROM issue_label il WHERE il.label_id = label.id)`.as(
 				'issue_count'
+			),
+			sql<number>`(SELECT COUNT(*) FROM context_item ci WHERE ci.label_id = label.id)`.as(
+				'context_item_count'
+			),
+			sql<number>`(SELECT COUNT(*) FROM routing_rule rr WHERE rr.label_id = label.id)`.as(
+				'routing_rule_count'
 			)
-		)
+		])
 		.where('user_id', '=', userId)
 		.orderBy(sql`name COLLATE NOCASE`)
 		.execute();
-	return rows.map((r) => ({ ...serializeLabel(r), issue_count: Number(r.issue_count) }));
+	return rows.map((r) => ({
+		...serializeLabel(r),
+		issue_count: Number(r.issue_count),
+		context_item_count: Number(r.context_item_count),
+		routing_rule_count: Number(r.routing_rule_count)
+	}));
 }
 
 async function resolveByName(
@@ -235,17 +249,58 @@ export async function updateLabel(
 }
 
 /**
- * Deletes a label and detaches it everywhere. A label is a tag, not a
- * container: being in use is reported, not refused.
+ * Deletes a label and detaches it everywhere.
+ *
+ * Being *carried* by issues is reported, not refused — a label is a tag. But
+ * a label a context item or a routing rule is **scoped to** is more than a
+ * tag: dropping it would silently change what an agent is handed or where it
+ * runs. Those are refused (422 `label_in_use`) unless `force`, which deletes
+ * the scoped items and rules along with the label. A rule is deleted rather
+ * than label-stripped on purpose: stripping would broaden
+ * `label docs ∧ project X` into `project X`, quietly routing more work.
  */
 export async function deleteLabel(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
-	labelRef: string
+	labelRef: string,
+	options: { force?: boolean } = {}
 ): Promise<DeleteLabelResponse> {
 	const label = await resolveLabelRef(db, actor.userId, labelRef);
 	if (!label) throw notFound();
+	const scopedItems = (
+		await contextItemQuery(db, actor.userId).where('context_item.label_id', '=', label.id).execute()
+	).map((row) => ({
+		id: row.id,
+		kind: row.kind as ContextKind,
+		name: row.name,
+		scope_label: scopeLabel({
+			projectId: row.project_id,
+			projectName: row.scope_project_name,
+			workflowStateId: row.workflow_state_id,
+			stateName: row.scope_state_name,
+			labelId: row.label_id,
+			labelName: row.scope_label_name,
+			issueId: row.issue_id,
+			issueProjectName: row.scope_issue_project_name,
+			issueNumber: row.scope_issue_number
+		})
+	}));
+	if (scopedItems.length > 0 && !options.force) {
+		const shown = scopedItems
+			.slice(0, 5)
+			.map((i) => `${i.kind} "${i.name}" (${i.scope_label})`)
+			.join(', ');
+		throw new ApiFail(
+			422,
+			'label_in_use',
+			`Cannot delete label "${label.name}": it scopes ${scopedItems.length} context item${scopedItems.length === 1 ? '' : 's'} (${shown}${scopedItems.length > 5 ? ', …' : ''}). Pass "force": true to delete them with the label`,
+			{ context_items: scopedItems, routing_rules: [] }
+		);
+	}
+	for (const item of scopedItems) {
+		await deleteContextItem(db, env, actor, item.id);
+	}
 	const used = await db
 		.selectFrom('issue_label')
 		.select((eb) => eb.fn.countAll<number>().as('n'))
@@ -259,10 +314,21 @@ export async function deleteLabel(
 		db.deleteFrom('label').where('id', '=', label.id).where('user_id', '=', actor.userId).compile(),
 		eventInsert(db, actor, {
 			type: 'label.deleted',
-			payload: { label_id: label.id, name: label.name, issue_count: issueCount }
+			payload: {
+				label_id: label.id,
+				name: label.name,
+				issue_count: issueCount,
+				context_item_count: scopedItems.length,
+				forced: options.force === true
+			}
 		})
 	]);
-	return { deleted: true, issue_count: issueCount };
+	return {
+		deleted: true,
+		issue_count: issueCount,
+		context_items_deleted: scopedItems,
+		routing_rules_deleted: []
+	};
 }
 
 export interface ResolvedLabels {
