@@ -1,12 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import type { AgentRunUsage, StateCategory, Workflow } from './types.js';
+import type { ActorRun, AgentRunUsage, StateCategory, Workflow } from './types.js';
 import {
+	actorLabel,
 	activeStateIds,
 	compareLabelNames,
 	isActiveRun,
 	isStaleTierOverride,
 	runCostLabel,
-	runDurationLabel
+	runDurationLabel,
+	runRefLabel
 } from './types.js';
 
 describe('runCostLabel', () => {
@@ -119,5 +121,33 @@ describe('compareLabelNames', () => {
 			}
 		}
 		expect(compareLabelNames('Bug', 'bug')).toBe(0);
+	});
+});
+
+describe('runRefLabel', () => {
+	const run: ActorRun = {
+		run_id: 'arun_9Xq2',
+		runner_name: 'laptop-m4',
+		issue_ref: { project_name: 'demo', number: 12 }
+	};
+
+	it('names the issue the run is working', () => {
+		expect(runRefLabel(run)).toBe('run on demo/12');
+	});
+
+	it('falls back to the run id when the issue is gone', () => {
+		expect(runRefLabel({ ...run, issue_ref: null })).toBe('run arun_9Xq2');
+	});
+
+	it('is the same phrase actorLabel uses for a run key', () => {
+		const label = actorLabel({
+			user_id: 'usr_1',
+			user_name: 'alice',
+			api_key_id: 'key_1',
+			api_key_name: 'run arun_9Xq2',
+			run
+		});
+		expect(label).toBe('alice via laptop-m4 · run on demo/12');
+		expect(label.endsWith(runRefLabel(run))).toBe(true);
 	});
 });
