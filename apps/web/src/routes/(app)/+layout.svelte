@@ -163,6 +163,7 @@
 							<p class="text-muted-foreground truncate text-xs">{data.user.email}</p>
 						</div>
 						<div class="bg-border my-1 h-px"></div>
+						<!-- Same four pages, same order, as settings/+layout.svelte. -->
 						<a
 							href="/settings/appearance"
 							class="hover:bg-accent hover:text-accent-foreground flex items-center gap-2 rounded-md px-3 py-2 text-sm"
@@ -186,6 +187,14 @@
 							onclick={() => (menuOpen = false)}
 						>
 							<IconKey size={16} stroke={1.75} /> API keys
+						</a>
+						<a
+							href="/settings/export-import"
+							class="hover:bg-accent hover:text-accent-foreground flex items-center gap-2 rounded-md px-3 py-2 text-sm"
+							role="menuitem"
+							onclick={() => (menuOpen = false)}
+						>
+							<IconDatabaseExport size={16} stroke={1.75} /> Export / import
 						</a>
 						<button
 							class="hover:bg-accent hover:text-accent-foreground flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm"
