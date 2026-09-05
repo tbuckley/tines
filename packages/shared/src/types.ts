@@ -1906,6 +1906,8 @@ export const LIBRARY_MAX_ENTRIES = 1000;
 export interface LibraryScopeRef {
 	project?: string;
 	state?: { workflow: string; name: string };
+	/** Issue label by name; created on import when this deployment lacks it. */
+	label?: string;
 }
 
 /** A project carried only as a scope referent — no issues come with it. */
