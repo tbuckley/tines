@@ -77,39 +77,55 @@ describe('pageResult', () => {
 });
 
 describe('isControlPlanePath', () => {
+	// Everything the fence covers, asserted under GET: only the label library
+	// is readable, so this table is what keeps a future `readable` flag from
+	// quietly opening the rest of the control plane (Tines/93).
 	it.each([
-		'/api/v1/runners',
-		'/api/v1/runners/rnr_1',
-		'/api/v1/runners/rnr_1/rotate-token',
-		'/api/v1/routing-rules',
-		'/api/v1/routing-rules/rul_1',
-		'/api/v1/supervisor/settings',
-		'/api/v1/issues/iss_1/resume',
-		'/api/v1/api-keys',
-		'/api/v1/api-keys/key_1',
+		['/api/v1/runners', 'GET'],
+		['/api/v1/runners/rnr_1', 'GET'],
+		['/api/v1/runners/rnr_1/rotate-token', 'POST'],
+		['/api/v1/routing-rules', 'GET'],
+		['/api/v1/routing-rules/rul_1', 'PATCH'],
+		['/api/v1/supervisor/settings', 'GET'],
+		['/api/v1/issues/iss_1/resume', 'POST'],
+		// Key metadata stays fenced even to a read.
+		['/api/v1/api-keys', 'GET'],
+		['/api/v1/api-keys/key_1', 'DELETE'],
+		// Minting, renaming, and deleting terms is taxonomy, not classification.
+		['/api/v1/labels', 'POST'],
+		['/api/v1/labels/lbl_1', 'PATCH'],
+		['/api/v1/labels/lbl_1', 'DELETE'],
 		// Bulk library writes are a control-plane action: an agent proposes
 		// context changes, it does not apply a whole library.
-		'/api/v1/import'
-	])('fences %s', (path) => {
-		expect(isControlPlanePath(path)).toBe(true);
+		['/api/v1/import', 'GET'],
+		['/api/v1/import', 'POST']
+	])('fences %s %s', (path, method) => {
+		expect(isControlPlanePath(path, method)).toBe(true);
 	});
 
 	it.each([
-		'/api/v1/issues',
-		'/api/v1/issues/iss_1',
-		'/api/v1/issues/iss_1/comments',
-		'/api/v1/issues/iss_1/transition',
-		'/api/v1/issues/iss_1/prompt',
-		'/api/v1/context',
+		['/api/v1/issues', 'GET'],
+		['/api/v1/issues', 'POST'],
+		['/api/v1/issues/iss_1', 'PATCH'],
+		['/api/v1/issues/iss_1/comments', 'POST'],
+		['/api/v1/issues/iss_1/transition', 'POST'],
+		['/api/v1/issues/iss_1/prompt', 'GET'],
+		['/api/v1/context', 'GET'],
 		// Export is a read of what a run key can already list.
-		'/api/v1/export',
-		'/api/v1/events',
-		'/api/v1/projects/prj_1/issues',
+		['/api/v1/export', 'GET'],
+		['/api/v1/events', 'GET'],
+		['/api/v1/projects/prj_1/issues', 'GET'],
+		// The vocabulary itself: an agent must know the terms to apply them,
+		// and the launch prompt points at `tines labels list`.
+		['/api/v1/labels', 'GET'],
+		['/api/v1/labels', 'HEAD'],
+		// Methods arrive from the request verbatim; compare case-insensitively.
+		['/api/v1/labels', 'get'],
 		// Similar-looking but distinct segments stay open.
-		'/api/v1/runnersandmore',
-		'/api/v1/issues/resume'
-	])('leaves %s open', (path) => {
-		expect(isControlPlanePath(path)).toBe(false);
+		['/api/v1/runnersandmore', 'GET'],
+		['/api/v1/issues/resume', 'POST']
+	])('leaves %s %s open', (path, method) => {
+		expect(isControlPlanePath(path, method)).toBe(false);
 	});
 });
 
@@ -118,20 +134,28 @@ describe('assertRunKeyAllowed', () => {
 	const runKey = { agentRunId: 'arun_1', expiresAt: now + 60_000 };
 
 	it('lets a live run key act on issue endpoints', () => {
-		expect(() => assertRunKeyAllowed(runKey, '/api/v1/issues/iss_1/comments', now)).not.toThrow();
+		expect(() =>
+			assertRunKeyAllowed(runKey, '/api/v1/issues/iss_1/comments', 'POST', now)
+		).not.toThrow();
+	});
+
+	it('lets a live run key read the label library it is told to classify with', () => {
+		expect(() => assertRunKeyAllowed(runKey, '/api/v1/labels', 'GET', now)).not.toThrow();
+		expect(() => assertRunKeyAllowed(runKey, '/api/v1/labels', 'HEAD', now)).not.toThrow();
 	});
 
 	it('403s a run key on every control-plane surface, naming the proposal convention', () => {
-		for (const path of [
-			'/api/v1/runners',
-			'/api/v1/routing-rules/rul_1',
-			'/api/v1/supervisor/settings',
-			'/api/v1/issues/iss_1/resume',
-			'/api/v1/api-keys'
+		for (const [path, method] of [
+			['/api/v1/runners', 'GET'],
+			['/api/v1/routing-rules/rul_1', 'PATCH'],
+			['/api/v1/supervisor/settings', 'GET'],
+			['/api/v1/issues/iss_1/resume', 'POST'],
+			['/api/v1/api-keys', 'GET'],
+			['/api/v1/labels', 'POST']
 		]) {
 			try {
-				assertRunKeyAllowed(runKey, path, now);
-				throw new Error(`expected a 403 for ${path}`);
+				assertRunKeyAllowed(runKey, path, method, now);
+				throw new Error(`expected a 403 for ${method} ${path}`);
 			} catch (e) {
 				expect(e).toBeInstanceOf(ApiFail);
 				expect((e as ApiFail).status).toBe(403);
@@ -141,11 +165,27 @@ describe('assertRunKeyAllowed', () => {
 		}
 	});
 
+	it('says what is forbidden about labels: minting terms, not reading them', () => {
+		try {
+			assertRunKeyAllowed(runKey, '/api/v1/labels', 'POST', now);
+			throw new Error('expected a 403');
+		} catch (e) {
+			const message = (e as ApiFail).message;
+			expect(message).toContain('create, rename, or delete labels');
+			expect(message).not.toContain('the label library');
+		}
+	});
+
 	it('401s an expired run key everywhere, before the fence', () => {
 		const expired = { agentRunId: 'arun_1', expiresAt: now - 1 };
-		for (const path of ['/api/v1/issues/iss_1/comments', '/api/v1/supervisor/settings']) {
+		for (const path of [
+			'/api/v1/issues/iss_1/comments',
+			'/api/v1/supervisor/settings',
+			// Even the newly readable library: expiry is checked before the fence.
+			'/api/v1/labels'
+		]) {
 			try {
-				assertRunKeyAllowed(expired, path, now);
+				assertRunKeyAllowed(expired, path, 'GET', now);
 				throw new Error('expected a 401');
 			} catch (e) {
 				expect(e).toBeInstanceOf(ApiFail);
@@ -157,8 +197,11 @@ describe('assertRunKeyAllowed', () => {
 
 	it('never fences ordinary named keys (no agent_run_id, no expiry)', () => {
 		const named = { agentRunId: null, expiresAt: null };
-		expect(() => assertRunKeyAllowed(named, '/api/v1/supervisor/settings', now)).not.toThrow();
-		expect(() => assertRunKeyAllowed(named, '/api/v1/runners', now)).not.toThrow();
+		expect(() =>
+			assertRunKeyAllowed(named, '/api/v1/supervisor/settings', 'PATCH', now)
+		).not.toThrow();
+		expect(() => assertRunKeyAllowed(named, '/api/v1/runners', 'POST', now)).not.toThrow();
+		expect(() => assertRunKeyAllowed(named, '/api/v1/labels', 'POST', now)).not.toThrow();
 	});
 });
 
