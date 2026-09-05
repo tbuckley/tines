@@ -1,7 +1,13 @@
 import type { IssueDetail, Project, WorkflowResponse } from '@tines/shared';
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import { ALICE } from './constants.mjs';
-import { apiClient, body, runId, signIn } from './helpers';
+import { apiClient, body, clickUntil, runId, signIn } from './helpers';
+
+// This file exercises the animation itself; the suite default is reduced
+// motion (playwright.config.ts). The reduced-motion tests below still call
+// page.emulateMedia({ reducedMotion: 'reduce' }) per test, which overrides
+// this file-level setting. See e2e/README.md.
+test.use({ reducedMotion: 'no-preference' });
 
 /**
  * The confirm button's pending state (Tines/153). Confirming a transition used
@@ -72,14 +78,6 @@ const dialogOf = (page: Page) => page.getByRole('dialog');
  */
 const confirmButton = (page: Page) => dialogOf(page).locator('button[type="submit"]');
 const cancelButton = (page: Page) => dialogOf(page).getByRole('button', { name: 'Cancel' });
-
-/** Click that survives the SSR-to-hydration window (see ui.spec.ts). */
-async function clickUntil(button: Locator, done: () => Promise<void>): Promise<void> {
-	await expect(async () => {
-		if (await button.isVisible()) await button.click();
-		await done();
-	}).toPass({ timeout: 15_000 });
-}
 
 /**
  * The dialog's entrance animation has finished. Everything below depends on
@@ -268,10 +266,8 @@ test('a dialog mounted in an {#if} block animates out when it closes', async ({ 
 });
 
 // The pair matters: a fast teardown is also what a dialog that never animated
-// reports, so the test above only means something alongside this one.
-//
-// `page.emulateMedia`, not `test.use({ reducedMotion })` — the context option
-// does not reach the page under Playwright 1.62.1 (see dialog-animation.spec.ts).
+// reports, so the test above only means something alongside this one. The
+// in-test `emulateMedia` overrides this file's `test.use` opt-out.
 test('a reduced-motion preference closes the dialog without an outro', async ({ page }) => {
 	await page.setViewportSize(DESKTOP);
 	await page.emulateMedia({ reducedMotion: 'reduce' });

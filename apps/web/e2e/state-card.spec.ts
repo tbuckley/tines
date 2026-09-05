@@ -1,7 +1,7 @@
 import type { IssueDetail, Project, WorkflowResponse } from '@tines/shared';
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import { ALICE } from './constants.mjs';
-import { apiClient, body, runId, signIn } from './helpers';
+import { apiClient, body, readSettled, runId, signIn } from './helpers';
 
 /**
  * The State card's transition stack (Tines/128): buttons used to be a
@@ -145,26 +145,21 @@ async function reasons(page: Page, name: string): Promise<Locator> {
 type Box = { x: number; y: number; width: number; height: number };
 
 /**
- * Boxes for several elements as of ONE settled layout: the issue page keeps
- * resolving streamed panels after the card is visible, and two separate
- * `boundingBox()` reads are two different moments (Tines/123).
+ * Boxes for several elements as of ONE settled layout (`readSettled` in
+ * `helpers.ts`): the issue page keeps resolving streamed panels after the card
+ * is visible, and two separate `boundingBox()` reads are two different moments
+ * (Tines/123).
  */
-async function boxes(locators: Locator[]): Promise<Box[]> {
-	const read = () =>
+function boxes(locators: Locator[]): Promise<Box[]> {
+	return readSettled(() =>
 		Promise.all(
 			locators.map(async (l) => {
 				const box = await l.boundingBox();
 				expect(box).not.toBeNull();
 				return box!;
 			})
-		);
-	let previous = await read();
-	for (let attempt = 0; attempt < 20; attempt++) {
-		const next = await read();
-		if (JSON.stringify(next) === JSON.stringify(previous)) return next;
-		previous = next;
-	}
-	throw new Error('layout never settled');
+		)
+	);
 }
 
 /**

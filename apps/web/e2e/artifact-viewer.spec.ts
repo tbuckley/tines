@@ -1,7 +1,7 @@
 import type { IssueDetail, Project } from '@tines/shared';
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import { ALICE } from './constants.mjs';
-import { apiClient, body, runId, signIn } from './helpers';
+import { apiClient, body, readSettled, runId, signIn } from './helpers';
 
 /**
  * The artifact viewer on a phone (Tines/28): a markdown doc far taller than
@@ -340,19 +340,10 @@ function navGeometry(dialog: Locator): Promise<NavGeometry> {
 	});
 }
 
-async function settledNavGeometry(dialog: Locator): Promise<NavGeometry> {
-	let settled = await navGeometry(dialog);
-	await expect(async () => {
-		const before = JSON.stringify(settled);
-		settled = await navGeometry(dialog);
-		expect(JSON.stringify(settled)).toBe(before);
-	})
-		.toPass({ intervals: [100, 100, 200, 400], timeout: 3_000 })
-		// Best effort: a row that never stops moving is a failure too, but the
-		// assertions below name it far better than a timeout in here would.
-		.catch(() => {});
-	return settled;
-}
+// Best effort: a row that never stops moving is a failure too, but the
+// assertions below name it far better than a timeout in here would.
+const settledNavGeometry = (dialog: Locator): Promise<NavGeometry> =>
+	readSettled(() => navGeometry(dialog), { timeout: 3_000, bestEffort: true });
 
 test('the file-detail header keeps one line on desktop and wraps on a phone', async ({ page }) => {
 	await page.setViewportSize({ width: 1440, height: 900 });
