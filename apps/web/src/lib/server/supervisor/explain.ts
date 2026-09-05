@@ -68,36 +68,13 @@ export async function explainDispatch(
 		pinned_tier: issue.pinned_tier,
 		label_ids: issue.labels.map((l) => l.id)
 	};
-	const { targets, rule, pinned } = targetsForIssue(candidateShape, rules);
+	const { targets, rule, ambiguous, pinned } = targetsForIssue(candidateShape, rules);
 
-	let matchedRule: DispatchExplainer['matched_rule'] = null;
-	if (rule) {
-		const [project, state] = await Promise.all([
-			rule.project_id
-				? db
-						.selectFrom('project')
-						.select('name')
-						.where('id', '=', rule.project_id)
-						.executeTakeFirst()
-				: null,
-			rule.workflow_state_id
-				? db
-						.selectFrom('workflow_state')
-						.select('name')
-						.where('id', '=', rule.workflow_state_id)
-						.executeTakeFirst()
-				: null
-		]);
-		matchedRule = {
-			rule_id: rule.id,
-			scope_label: scopeLabel({
-				projectId: rule.project_id,
-				projectName: project?.name ?? null,
-				workflowStateId: rule.workflow_state_id,
-				stateName: state?.name ?? null
-			})
-		};
-	}
+	// The winner and, when two label rules tie, the rules that tied: both are
+	// rendered by scope, so they share one name lookup.
+	const described = await describeRules(db, rule ? [rule, ...ambiguous] : ambiguous);
+	const matchedRule: DispatchExplainer['matched_rule'] = rule ? described[0] : null;
+	const ambiguousRules = rule ? described.slice(1) : described;
 
 	// The eligibility checks, in the order the engine applies them.
 	const category = issue.effective_state.category;
@@ -145,7 +122,9 @@ export async function explainDispatch(
 					? targets.length > 0
 						? `matched the ${matchedRule!.scope_label} rule`
 						: `matched the ${matchedRule!.scope_label} rule, but it has no targets`
-					: 'no matching routing rule — automation is opt-in via rules'
+					: ambiguousRules.length > 0
+						? `matches the ${ambiguousRules.map((r) => r.scope_label).join(' and ')} rules equally — neither is more specific; add a project or state to one of them`
+						: 'no matching routing rule — automation is opt-in via rules'
 		}
 	];
 	const eligible = checks.every((c) => c.ok);
@@ -199,6 +178,7 @@ export async function explainDispatch(
 				}
 			: null,
 		matched_rule: matchedRule,
+		ambiguous_rules: ambiguousRules,
 		targets: targetVerdicts,
 		parked: issue.needs_attention,
 		attempt_count: issue.attempt_count,
@@ -210,6 +190,7 @@ export async function explainDispatch(
 			settings,
 			checks,
 			targets: targetVerdicts,
+			ambiguousRules,
 			activeRun,
 			queuePosition
 		})
@@ -222,6 +203,7 @@ function verdictLine(input: {
 	settings: { enabled: boolean };
 	checks: DispatchCheck[];
 	targets: DispatchTarget[];
+	ambiguousRules: { rule_id: string; scope_label: string }[];
 	activeRun: AgentRun | null;
 	queuePosition: number | null;
 }): string {
@@ -245,6 +227,7 @@ function verdictLine(input: {
 	const ready = input.checks.find((c) => c.name === 'ready');
 	if (ready && !ready.ok) return `Not eligible — ${ready.detail}`;
 	if (input.targets.length === 0) {
+		if (input.ambiguousRules.length > 0) return 'Two routing rules tie — make one more specific';
 		return issue.pinned_runner_id
 			? 'Pinned to a removed runner — clear the pin'
 			: 'No matching routing rule — nothing will dispatch';
@@ -267,4 +250,49 @@ function verdictLine(input: {
 			? ` (${input.queuePosition} eligible issue${input.queuePosition === 1 ? '' : 's'} ahead)`
 			: '';
 	return `Eligible — ${why}${queue}`;
+}
+
+/**
+ * Renders a rule's scope the way `tines routing list` does, resolving the
+ * project / state / label names in one round trip for the whole set.
+ */
+async function describeRules(
+	db: Kysely<Database>,
+	rules: { id: string; project_id: string | null; workflow_state_id: string | null; label_id: string | null }[]
+): Promise<{ rule_id: string; scope_label: string }[]> {
+	if (rules.length === 0) return [];
+	const ids = <T>(xs: (T | null)[]) => [...new Set(xs.filter((x): x is T => x !== null))];
+	const projectIds = ids(rules.map((r) => r.project_id));
+	const stateIds = ids(rules.map((r) => r.workflow_state_id));
+	const labelIds = ids(rules.map((r) => r.label_id));
+	const [projects, states, labels] = await Promise.all([
+		projectIds.length
+			? db.selectFrom('project').select(['id', 'name']).where('id', 'in', projectIds).execute()
+			: [],
+		stateIds.length
+			? db
+					.selectFrom('workflow_state')
+					.select(['id', 'name'])
+					.where('id', 'in', stateIds)
+					.execute()
+			: [],
+		labelIds.length
+			? db.selectFrom('label').select(['id', 'name']).where('id', 'in', labelIds).execute()
+			: []
+	]);
+	const byId = (rows: { id: string; name: string }[]) => new Map(rows.map((r) => [r.id, r.name]));
+	const projectNames = byId(projects);
+	const stateNames = byId(states);
+	const labelNames = byId(labels);
+	return rules.map((rule) => ({
+		rule_id: rule.id,
+		scope_label: scopeLabel({
+			projectId: rule.project_id,
+			projectName: rule.project_id ? (projectNames.get(rule.project_id) ?? null) : null,
+			workflowStateId: rule.workflow_state_id,
+			stateName: rule.workflow_state_id ? (stateNames.get(rule.workflow_state_id) ?? null) : null,
+			labelId: rule.label_id,
+			labelName: rule.label_id ? (labelNames.get(rule.label_id) ?? null) : null
+		})
+	}));
 }

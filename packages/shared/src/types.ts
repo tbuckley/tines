@@ -1724,8 +1724,14 @@ export interface DispatchExplainer {
 	checks: DispatchCheck[];
 	/** The pin, when set (replaces rule matching entirely). */
 	pin: { runner_id: string; runner_name: string | null; tier: ModelTier | null } | null;
-	/** The winning rule; null when pinned or nothing matches. */
+	/** The winning rule; null when pinned, nothing matches, or two rules tie. */
 	matched_rule: { rule_id: string; scope_label: string } | null;
+	/**
+	 * The rules that tied, when two label rules match an issue at equal
+	 * specificity: the issue does not dispatch until one is made more
+	 * specific. Empty in every other case.
+	 */
+	ambiguous_rules: { rule_id: string; scope_label: string }[];
 	/** Per-target verdicts, in preference order. */
 	targets: DispatchTarget[];
 	parked: boolean;

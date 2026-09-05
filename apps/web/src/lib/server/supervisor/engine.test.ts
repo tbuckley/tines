@@ -12,11 +12,14 @@ import {
 	loadEndableRun,
 	loadEngineRunners,
 	runDispatchPass,
-	sweepSupervisor
+	sweepSupervisor,
+	targetsForIssue,
+	loadEngineRules
 } from './engine';
 import { createFakeAdapter, type FakeAdapter } from './fake-adapter';
 import {
 	addIssue,
+	addLabel,
 	addRule,
 	addRun,
 	addRunner,
@@ -108,6 +111,52 @@ describe('eligibility', () => {
 		`);
 		const candidates = await loadEligibleIssues(t.db, USER);
 		expect(candidates.map((c) => c.id)).toContain(issue);
+	});
+
+	it('carries each candidate\'s labels, so a label rule can match', async () => {
+		const t = world();
+		const runner = addRunner(t);
+		const docs = addLabel(t, 'docs');
+		addRule(t, { label: docs, targets: [{ runner_id: runner }] });
+		const labelled = addIssue(t, { labels: [docs] });
+		const plain = addIssue(t);
+
+		const candidates = await loadEligibleIssues(t.db, USER);
+		const byId = new Map(candidates.map((c) => [c.id, c.label_ids]));
+		expect(byId.get(labelled)).toEqual([docs]);
+		expect(byId.get(plain)).toEqual([]);
+
+		const rules = await loadEngineRules(t.db, USER);
+		expect(targetsForIssue(candidates.find((c) => c.id === labelled)!, rules).targets).toEqual([
+			{ runner_id: runner }
+		]);
+		expect(targetsForIssue(candidates.find((c) => c.id === plain)!, rules).targets).toEqual([]);
+
+		const result = await pass(t);
+		expect(result.claimed).toBe(1);
+		expect(runs(t)[0].issue_id).toBe(labelled);
+	});
+
+	it('skips — without a strike — an issue two label rules match equally', async () => {
+		const t = world();
+		const runner = addRunner(t);
+		const docs = addLabel(t, 'docs');
+		const security = addLabel(t, 'security');
+		const a = addRule(t, { label: docs, targets: [{ runner_id: runner }] });
+		const b = addRule(t, { label: security, targets: [{ runner_id: runner }] });
+		const issue = addIssue(t, { labels: [docs, security] });
+
+		const candidates = await loadEligibleIssues(t.db, USER);
+		const rules = await loadEngineRules(t.db, USER);
+		const resolved = targetsForIssue(candidates[0], rules);
+		expect(resolved.rule).toBeNull();
+		expect(resolved.targets).toEqual([]);
+		expect(resolved.ambiguous.map((r) => r.id).sort()).toEqual([a, b].sort());
+
+		const result = await pass(t);
+		expect(result.claimed).toBe(0);
+		expect(runs(t)).toHaveLength(0);
+		expect(issueById(t, issue).attempt_count).toBe(0);
 	});
 
 	it('dispatches nothing while the kill switch is off', async () => {
