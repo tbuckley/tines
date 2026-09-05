@@ -66,6 +66,20 @@ test.beforeEach(async ({ context }) => {
 	await signIn(context, ALICE.sessionToken);
 });
 
+/**
+ * On a phone the Artifacts panel folds to one row (Tines/165); open it before
+ * reaching for anything inside. A no-op on desktop, where there is no fold.
+ * Retried across the hydration window: the row is a Svelte listener.
+ */
+async function unfoldArtifacts(page: Page): Promise<void> {
+	const fold = page.getByRole('button', { name: /^Artifacts\b/ });
+	if (!(await fold.isVisible())) return;
+	await expect(async () => {
+		if ((await fold.getAttribute('aria-expanded')) !== 'true') await fold.click();
+		expect(await fold.getAttribute('aria-expanded')).toBe('true');
+	}).toPass({ timeout: 15_000 });
+}
+
 const issueUrl = () => `/issues/${encodeURIComponent(projectName)}/${issue.number}`;
 
 /**
@@ -83,6 +97,7 @@ async function openViewer(opener: Locator, dialog: Locator): Promise<void> {
 test('a long markdown artifact stays dismissable on a phone', async ({ page }) => {
 	await page.setViewportSize(PHONE);
 	await page.goto(issueUrl());
+	await unfoldArtifacts(page);
 
 	const dialog = page.getByRole('dialog', { name: 'Artifact viewer' });
 	await openViewer(page.getByRole('button', { name: /^View long-doc/ }), dialog);
@@ -109,6 +124,7 @@ test('a long markdown artifact stays dismissable on a phone', async ({ page }) =
 test('a folder set stays within the viewport and dismissable on a phone', async ({ page }) => {
 	await page.setViewportSize(PHONE);
 	await page.goto(issueUrl());
+	await unfoldArtifacts(page);
 
 	const dialog = page.getByRole('dialog', { name: 'Artifact viewer' });
 	await openViewer(page.getByRole('button', { name: /^View photos/ }).first(), dialog);
@@ -149,6 +165,7 @@ async function expectPageBehindScrolls(page: Page): Promise<void> {
 test('the page behind does not scroll while the viewer is open', async ({ page }) => {
 	await page.setViewportSize(PHONE);
 	await page.goto(issueUrl());
+	await unfoldArtifacts(page);
 
 	const dialog = page.getByRole('dialog', { name: 'Artifact viewer' });
 	await openViewer(page.getByRole('button', { name: /^View long-doc/ }), dialog);
@@ -165,6 +182,7 @@ test('the page behind does not scroll while the viewer is open', async ({ page }
 test('two modals open at once still release the page when both close', async ({ page }) => {
 	await page.setViewportSize(PHONE);
 	await page.goto(issueUrl());
+	await unfoldArtifacts(page);
 
 	const viewer = page.getByRole('dialog', { name: 'Artifact viewer' });
 	await openViewer(page.getByRole('button', { name: /^View long-doc/ }), viewer);
@@ -193,6 +211,7 @@ test('Escape closes the viewer and returns focus to the button that opened it', 
 	page
 }) => {
 	await page.goto(issueUrl());
+	await unfoldArtifacts(page);
 
 	const opener = page.getByRole('button', { name: /^View long-doc/ });
 	const dialog = page.getByRole('dialog', { name: 'Artifact viewer' });
@@ -229,6 +248,7 @@ const pathOf = (dialog: Locator) => dialog.locator('span.font-mono');
 
 test('Prev/Next step through a folder in order and stop at the ends', async ({ page }) => {
 	await page.goto(issueUrl());
+	await unfoldArtifacts(page);
 	const dialog = await openFirstPhoto(page);
 
 	const counter = counterOf(dialog);
@@ -271,6 +291,7 @@ test('Prev/Next step through a folder in order and stop at the ends', async ({ p
 
 test('arrow keys step, and are left alone inside the header selects', async ({ page }) => {
 	await page.goto(issueUrl());
+	await unfoldArtifacts(page);
 	const dialog = await openFirstPhoto(page);
 	const counter = counterOf(dialog);
 	await expect(counter).toHaveText('1 of 8');
@@ -336,6 +357,7 @@ async function settledNavGeometry(dialog: Locator): Promise<NavGeometry> {
 test('the file-detail header keeps one line on desktop and wraps on a phone', async ({ page }) => {
 	await page.setViewportSize({ width: 1440, height: 900 });
 	await page.goto(issueUrl());
+	await unfoldArtifacts(page);
 	const dialog = await openFirstPhoto(page);
 
 	const wide = await settledNavGeometry(dialog);

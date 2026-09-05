@@ -167,9 +167,14 @@ async function boxes(locators: Locator[]): Promise<Box[]> {
 	throw new Error('layout never settled');
 }
 
-/** The streamed panels have all resolved: nothing left is a skeleton. */
+/**
+ * The streamed panels have all resolved: nothing left is a skeleton. The
+ * transitions are up first — in the card on desktop, in the bar on a phone.
+ */
 async function settled(page: Page): Promise<void> {
-	await expect(stateCard(page)).toBeVisible();
+	await expect(
+		stateCard(page).or(page.getByTestId('transition-bar')).locator('visible=true')
+	).toBeVisible();
 	await expect(page.locator('[data-slot="skeleton"]')).toHaveCount(0);
 }
 
@@ -287,18 +292,32 @@ test('a stale requirement is reported under its blocked button', async ({ page }
 	expect(reason.y).toBeGreaterThanOrEqual(button.y + button.height - 1);
 });
 
-test('the State card comes before the description on a phone', async ({ page }) => {
+test('on a phone the transitions live in a bar pinned above the tab bar', async ({ page }) => {
 	await page.setViewportSize(PHONE);
 	await page.goto(issueUrl(blocked));
 	await settled(page);
 
-	const [state, description] = await boxes([
-		page.getByRole('heading', { name: 'State', exact: true }),
-		page.getByRole('heading', { name: 'Description', exact: true })
-	]);
-	expect(state.y).toBeLessThan(description.y);
-	// First thing on the page, not merely ahead of the description.
-	await expect(transition(page, 'Needs more research')).toBeInViewport();
+	// The State card is a desktop surface; the bar takes its place, on screen
+	// without scrolling and sitting just above the tab bar.
+	await expect(page.getByRole('heading', { name: 'State', exact: true })).toBeHidden();
+	const bar = page.getByTestId('transition-bar');
+	const direct = bar.getByRole('button', { name: 'Needs more research' });
+	await expect(direct).toBeInViewport();
+	const [barBox, tabs] = await boxes([bar, page.getByRole('navigation', { name: 'Primary' })]);
+	expect(barBox.y + barBox.height).toBeLessThanOrEqual(tabs.y + 1);
+
+	// A name that does not fit whole is counted, never truncated...
+	await expect(bar.getByRole('button', { name: LONG_TRANSITION })).toHaveCount(0);
+	await expect(bar.getByRole('button', { name: /more transitions/ })).toBeVisible();
+
+	// ...and the state button opens the sheet with every transition, each
+	// blocked one explained exactly as the desktop card would.
+	await page.getByRole('button', { name: /^State: Design/ }).click();
+	const sheet = page.getByRole('dialog', { name: 'State' });
+	await expect(sheet).toBeVisible();
+	await expect(sheet.getByRole('button', { name: LONG_TRANSITION })).toBeVisible();
+	await expect(sheet.getByRole('button', { name: /^Design complete/ })).toBeDisabled();
+	await expect(sheet.getByText(/Needs artifact/).first()).toBeVisible();
 });
 
 test('the desktop layout keeps the State card in the right column', async ({ page }) => {

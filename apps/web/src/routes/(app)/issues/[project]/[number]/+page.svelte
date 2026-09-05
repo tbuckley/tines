@@ -2,9 +2,7 @@
 	import type { AllowedTransition, Comment, ContextItem, WorkflowState } from '@tines/shared';
 	import { ApiError } from '@tines/shared';
 	import IconAlertTriangle from '@tabler/icons-svelte/icons/alert-triangle';
-	import IconArrowRight from '@tabler/icons-svelte/icons/arrow-right';
 	import IconBan from '@tabler/icons-svelte/icons/ban';
-	import IconCheck from '@tabler/icons-svelte/icons/check';
 	import IconChevronLeft from '@tabler/icons-svelte/icons/chevron-left';
 	import IconCopy from '@tabler/icons-svelte/icons/copy';
 	import IconPencil from '@tabler/icons-svelte/icons/pencil';
@@ -12,13 +10,13 @@
 	import IconTrash from '@tabler/icons-svelte/icons/trash';
 	import IconRepeat from '@tabler/icons-svelte/icons/repeat';
 	import IconRocket from '@tabler/icons-svelte/icons/rocket';
-	import { untrack } from 'svelte';
-	import { flip } from 'svelte/animate';
+	import { tick, untrack } from 'svelte';
 	import { fade, slide } from 'svelte/transition';
 	import { invalidate } from '$app/navigation';
 	import { api } from '$lib/api';
 	import AgentActivityCard from '$lib/components/AgentActivityCard.svelte';
 	import ArtifactsPanel from '$lib/components/ArtifactsPanel.svelte';
+	import Clamp from '$lib/components/Clamp.svelte';
 	import ContextItemEditor from '$lib/components/ContextItemEditor.svelte';
 	import { confirmDialog } from '$lib/components/dialogs.svelte';
 	import ContextItemList from '$lib/components/ContextItemList.svelte';
@@ -29,13 +27,16 @@
 	import LaunchPromptDialog from '$lib/components/LaunchPromptDialog.svelte';
 	import Markdown from '$lib/components/Markdown.svelte';
 	import Modal from '$lib/components/Modal.svelte';
+	import MoveDirectlyForm from '$lib/components/MoveDirectlyForm.svelte';
 	import PendingButton from '$lib/components/PendingButton.svelte';
+	import PhoneFold from '$lib/components/PhoneFold.svelte';
 	import RelationsCard from '$lib/components/RelationsCard.svelte';
+	import RunLogViewer from '$lib/components/RunLogViewer.svelte';
 	import StateBadge from '$lib/components/StateBadge.svelte';
-	import WorkflowGraph from '$lib/components/WorkflowGraph.svelte';
+	import TransitionBar from '$lib/components/TransitionBar.svelte';
+	import TransitionList from '$lib/components/TransitionList.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
-	import { Select } from '$lib/components/ui/select/index.js';
 	import { Skeleton } from '$lib/components/ui/skeleton/index.js';
 	import { Textarea } from '$lib/components/ui/textarea/index.js';
 	import { actorLabel, prefersReducedMotion, relativeTime } from '$lib/format';
@@ -129,6 +130,14 @@
 		const confirmed = new Set(data.issue.comments.map((c) => c.id));
 		return [...data.issue.comments, ...pendingComments.filter((c) => !confirmed.has(c.id))];
 	});
+	// The newest few render; earlier ones sit behind one "Show N earlier" row
+	// until asked for, unrendered — a long thread costs nothing to open.
+	const SHOWN_COMMENTS = 2;
+	let showAllComments = $state(false);
+	const earlierCount = $derived(
+		showAllComments ? 0 : Math.max(0, comments.length - SHOWN_COMMENTS)
+	);
+	const shownComments = $derived(comments.slice(earlierCount));
 
 	const latestEventId = $derived(data.events[0]?.id ?? null);
 
@@ -220,7 +229,9 @@
 		}
 	}
 
-	function scrollToRelations() {
+	async function scrollToRelations() {
+		relationsOpen = true;
+		await tick();
 		document
 			.getElementById('relations')
 			?.scrollIntoView({ behavior: prefersReducedMotion() ? 'auto' : 'smooth', block: 'center' });
@@ -262,6 +273,49 @@
 		...allowed.filter((t) => unmetFor(t).length > 0)
 	]);
 
+	// The one filled button in the phone bar: the first enabled move to a
+	// state later in the workflow than this one. A step back is never primary.
+	const primaryId = $derived(
+		ordered.find((t) => unmetFor(t).length === 0 && t.to_state.position > currentState.position)
+			?.transition_id ?? null
+	);
+
+	// Phone-only surfaces: the State sheet behind the bar, and the fold the
+	// header's "Blocked" chip opens before scrolling to it.
+	let stateSheetOpen = $state(false);
+	let relationsOpen = $state(false);
+	// The active run's logs, one tap from the header at any width.
+	let logsOpen = $state(false);
+
+	// --- fold summaries: what a closed section holds, in a few words ----------
+	const countLabel = (n: number) => (n === 0 ? 'none' : String(n));
+	const relationCount = $derived(
+		links.blocked_by.length +
+			links.blocks.length +
+			links.duplicated_by.length +
+			(links.duplicate_of ? 1 : 0)
+	);
+	const contextSummaryLabel = $derived.by(() => {
+		const c = data.issue.context_summary;
+		const parts = [
+			[c.prompts, 'prompt'],
+			[c.skills, 'skill'],
+			[c.repos, 'repo']
+		]
+			.filter(([n]) => (n as number) > 0)
+			.map(([n, word]) => `${n} ${word}${n === 1 ? '' : 's'}`);
+		return parts.length > 0 ? parts.join(', ') : 'none';
+	});
+	const agentSummaryLabel = $derived.by(() => {
+		const parts: string[] = [];
+		if (data.issue.active_run) parts.push(`${data.issue.active_run.runner_name} running`);
+		if (agentActivityPanel.current.status === 'loaded') {
+			const runs = agentActivityPanel.current.value[1].length;
+			parts.push(`${runs} run${runs === 1 ? '' : 's'}`);
+		}
+		return parts.join(' · ');
+	});
+
 	// The transition dialog: an optional comment posted atomically with the
 	// move — comment first, so a sub-second dispatch triggered by the
 	// transition already reads it in the launch prompt (SPEC.md "Transition
@@ -272,6 +326,9 @@
 
 	function requestMove(transition: AllowedTransition) {
 		transitionComment = '';
+		// From the phone's State sheet, the confirm dialog takes the sheet's
+		// place rather than stacking on it.
+		stateSheetOpen = false;
 		pendingTransition = transition;
 	}
 
@@ -287,6 +344,7 @@
 			// never mutated with the request still in flight (Tines/153).
 			pendingState = transition.to_state;
 			pendingTransition = null;
+			stateSheetOpen = false;
 			await refresh();
 		} catch (e) {
 			showError(e);
@@ -299,56 +357,15 @@
 	}
 
 	// --- fallback: set any state, or move to another workflow -------------------
-
-	// The form's values are the user's explicit picks overlaid on derived
-	// defaults — never effect-reset from `data`, which would wipe a
-	// half-filled form whenever the background poll resyncs. A pick that no
-	// longer resolves (its workflow/state vanished in a resync) falls back to
-	// the default rather than pointing the form at nothing.
-	let overrideWorkflowPick = $state<string | null>(null);
-	let overrideStatePick = $state<string | null>(null);
-	const overrideWorkflowId = $derived(
-		overrideWorkflowPick && data.workflows.some((w) => w.id === overrideWorkflowPick)
-			? overrideWorkflowPick
-			: data.issue.workflow.id
-	);
-	const overrideWorkflow = $derived(
-		data.workflows.find((w) => w.id === overrideWorkflowId) ?? data.issue.workflow
-	);
-	// Staying on the current workflow starts from the current state; a new
-	// workflow starts from its initial state.
-	const overrideStateId = $derived(
-		overrideStatePick && overrideWorkflow.states.some((s) => s.id === overrideStatePick)
-			? overrideStatePick
-			: overrideWorkflowId === data.issue.workflow.id
-				? currentState.id
-				: overrideWorkflow.initial_state_id
-	);
-
-	const overrideDirty = $derived(
-		overrideWorkflowId !== data.issue.workflow.id || overrideStateId !== currentState.id
-	);
-	let applyingOverride = $state(false);
-	async function applyOverride(e: SubmitEvent) {
-		e.preventDefault();
-		if (applyingOverride || !overrideDirty) return;
-		applyingOverride = true;
+	// The form itself is MoveDirectlyForm; this applies its pick and rethrows,
+	// so the form keeps the pick for a retry after the error banner.
+	async function applyOverride(patch: { workflow_id?: string; state: string }) {
 		try {
-			await api.updateIssue(data.issue.id, {
-				...(overrideWorkflowId !== data.issue.workflow.id
-					? { workflow_id: overrideWorkflowId }
-					: {}),
-				state: overrideStateId
-			});
+			await api.updateIssue(data.issue.id, patch);
 			await refresh();
-			// Applied and reloaded — the defaults now describe the new
-			// position, so the picks have served their purpose.
-			overrideWorkflowPick = null;
-			overrideStatePick = null;
 		} catch (err) {
 			showError(err);
-		} finally {
-			applyingOverride = false;
+			throw err;
 		}
 	}
 
@@ -619,6 +636,22 @@
 			>
 				<StateBadge state={headerState} class="text-sm" />
 			</span>
+			{#if data.issue.active_run}
+				<!-- "Being worked right now", with the log tail one tap away — at
+				     any width, without finding the run in the Agent activity card. -->
+				<button
+					type="button"
+					class="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2 py-1 text-xs font-medium text-emerald-700 dark:text-emerald-400"
+					title="{data.issue.active_run.runner_name} is on it ({data.issue.active_run
+						.status}) — view its logs"
+					onclick={() => (logsOpen = true)}
+					transition:fade={{ duration: dur() }}
+				>
+					<span class="size-1.5 shrink-0 animate-pulse rounded-full bg-emerald-500"></span>
+					{data.issue.active_run.runner_name}
+					<span class="font-normal opacity-80">· Logs</span>
+				</button>
+			{/if}
 			{#if openBlockers.length > 0}
 				<!-- Advisory, so no banner — a chip that jumps to the detail. -->
 				<button
@@ -709,183 +742,31 @@
      main's height across them and stretches the card's border to fill row 1
      (~1000px of empty box on a long issue). Row 1 sized to content, row 2
      absorbing the rest, keeps the card exactly as tall as it was inside the
-     aside. -->
-<div class="grid gap-8 lg:grid-cols-[minmax(0,1fr)_22rem] lg:grid-rows-[auto_1fr]">
-	<!-- state & transitions — first in DOM so a phone gets it before the
-	     description; pinned to the right column on desktop, where the aside
-	     picks up below it. -->
+     aside.
+
+     Reading order (Tines/165): the description, then the newest comments —
+     what you came to read — and only then the reference panels, which fold to
+     one row each on a phone. Deciding never needs a scroll: the State card
+     sits at the top of the desktop aside, and on a phone the transition bar
+     is pinned to the bottom of the screen (below). -->
+<div class="grid gap-8 max-sm:gap-0 lg:grid-cols-[minmax(0,1fr)_22rem] lg:grid-rows-[auto_1fr]">
+	<!-- state & transitions — the desktop card. On a phone the bar and its
+	     State sheet take over, so the card is not rendered at that width. -->
 	<!-- On a duplicate the section stops pretending to be the source of
-	     truth (muted), but the graph and buttons still act on this issue's
-	     own, dormant state — moving a duplicate is allowed. -->
+	     truth (muted), but the buttons still act on this issue's own,
+	     dormant state — moving a duplicate is allowed. -->
 	<section
-		class="min-w-0 rounded-lg border p-4 transition-opacity duration-200 lg:col-start-2 lg:row-start-1 {duplicateOf
+		class="min-w-0 rounded-lg border p-4 transition-opacity duration-200 max-sm:hidden lg:col-start-2 lg:row-start-1 {duplicateOf
 			? 'opacity-70'
 			: ''}"
 	>
 		<h2 class="mb-3 text-sm font-semibold">State</h2>
-		{#if duplicateOf}
-			<p class="text-muted-foreground mb-3 text-xs italic" transition:slide={{ duration: dur() }}>
-				This issue is a duplicate — its displayed state follows
-				<a
-					href="/issues/{encodeURIComponent(duplicateOf.project_name)}/{duplicateOf.number}"
-					class="hover:underline">{duplicateOf.project_name}/#{duplicateOf.number}</a
-				>.
-			</p>
-		{/if}
-		<div class="mb-4">
-			<WorkflowGraph workflow={data.issue.workflow} currentStateId={currentState.id} compact />
-		</div>
-		{#if ordered.length > 0}
-			<div class="flex flex-col gap-2">
-				{#each ordered as transition (transition.transition_id)}
-					{@const unmet = unmetFor(transition)}
-					{@const reqId = `transition-req-${transition.transition_id}`}
-					<div class="min-w-0" animate:flip={{ duration: dur() }}>
-						<!-- Reason lines are SIBLINGS of the button, never children: the
-						     button's accessible name stays "<name> → <state>". -->
-						<Button
-							size="sm"
-							variant="outline"
-							class="w-full justify-between"
-							disabled={transitioning || unmet.length > 0}
-							aria-describedby={transition.requires?.length ? reqId : undefined}
-							onclick={() => requestMove(transition)}
-							title={transition.name}
-						>
-							<span class="min-w-0 truncate text-left">{transition.name}</span>
-							<span
-								class="text-muted-foreground inline-flex shrink-0 items-center gap-1 text-xs font-normal"
-							>
-								<IconArrowRight size={12} />
-								{transition.to_state.name}
-							</span>
-						</Button>
-						{#if transition.requires?.length}
-							<ul id={reqId} class="mt-1 space-y-1 px-1">
-								{#each transition.requires as r (r.artifact)}
-									<li
-										class="flex items-start gap-1.5 text-xs {r.status === 'satisfied'
-											? 'text-muted-foreground'
-											: 'text-amber-700 dark:text-amber-400'}"
-									>
-										{#if r.status === 'satisfied'}
-											<IconCheck size={13} class="mt-0.5 shrink-0" />
-											<span class="min-w-0">
-												<span class="font-mono">{r.artifact}</span> is fresh (v{r.current_version
-													?.version}).
-											</span>
-										{:else}
-											<IconBan size={13} class="mt-0.5 shrink-0" />
-											<span class="min-w-0">
-												{#if r.status === 'missing'}
-													Needs artifact <span class="font-mono">{r.artifact}</span> — attach it in
-													<a href="#artifacts" class="underline">Artifacts</a>.
-												{:else if r.status === 'stale'}
-													<span class="font-mono">{r.artifact}</span> is stale — this state began
-													{relativeTime(data.issue.state_entered_at)}; attach a new version or
-													reaffirm it.
-												{:else if r.type !== undefined && r.current_type !== r.type}
-													<span class="font-mono">{r.artifact}</span> must be a {r.type} artifact{#if r.content_type}{' '}
-														({r.content_type}){/if} — the attached one is {r.current_type}.
-												{:else}
-													<!-- Only the content type differs; the API doesn't report the
-													     attached version's own content type, so don't name it. -->
-													<span class="font-mono">{r.artifact}</span> must be
-													{r.content_type} — the attached {r.current_type} isn't.
-												{/if}
-												{#if r.description}
-													<span
-														class="text-muted-foreground mt-0.5 line-clamp-2 italic"
-														title={r.description}>{r.description}</span
-													>
-												{/if}
-											</span>
-										{/if}
-									</li>
-								{/each}
-							</ul>
-						{/if}
-					</div>
-				{/each}
-			</div>
-		{:else}
-			<p class="text-muted-foreground text-xs" transition:fade={{ duration: dur() }}>
-				No outgoing transitions — this state is terminal.
-			</p>
-		{/if}
-		<p class="text-muted-foreground mt-3 text-xs">
-			Workflow:
-			<a href="/workflows/{data.issue.workflow.id}" class="hover:underline"
-				>{data.issue.workflow.name}</a
-			>
-		</p>
-
-		<!-- escape hatch: jump to any state, or move onto another workflow -->
-		<details class="mt-4 border-t pt-3">
-			<summary
-				class="text-muted-foreground hover:text-foreground cursor-pointer text-xs select-none"
-			>
-				Move directly…
-			</summary>
-			<form onsubmit={applyOverride} class="mt-3 space-y-3">
-				<div class="space-y-1">
-					<label class="text-muted-foreground text-xs font-medium" for="override-workflow"
-						>Workflow</label
-					>
-					<Select
-						id="override-workflow"
-						bind:value={
-							() => overrideWorkflowId,
-							(v) => {
-								overrideWorkflowPick = v;
-								overrideStatePick = null; // a new workflow restarts the state default
-							}
-						}
-						class="h-8 text-xs"
-					>
-						{#each data.workflows as workflow (workflow.id)}
-							<option value={workflow.id}>
-								{workflow.name}{workflow.is_system ? ' (standard)' : ''}
-							</option>
-						{/each}
-					</Select>
-				</div>
-				<div class="space-y-1">
-					<label class="text-muted-foreground text-xs font-medium" for="override-state">State</label
-					>
-					<Select
-						id="override-state"
-						bind:value={() => overrideStateId, (v) => (overrideStatePick = v)}
-						class="h-8 text-xs"
-					>
-						{#each overrideWorkflow.states as state (state.id)}
-							<option value={state.id}>
-								{state.name}{overrideWorkflowId === data.issue.workflow.id &&
-								state.id === currentState.id
-									? ' — current'
-									: ''}
-							</option>
-						{/each}
-					</Select>
-				</div>
-				<div class="flex items-center gap-2">
-					<Button
-						type="submit"
-						size="sm"
-						variant="outline"
-						disabled={!overrideDirty || applyingOverride}
-					>
-						{applyingOverride ? 'Moving…' : 'Move'}
-					</Button>
-					<p class="text-muted-foreground text-xs">Bypasses the workflow's transitions.</p>
-				</div>
-			</form>
-		</details>
+		{@render statePanel()}
 	</section>
 
-	<div class="min-w-0 space-y-8 lg:col-start-1 lg:row-span-2 lg:row-start-1">
+	<div class="min-w-0 space-y-8 max-sm:space-y-0 lg:col-start-1 lg:row-span-2 lg:row-start-1">
 		<!-- description -->
-		<section class="rounded-lg border">
+		<section class="rounded-lg border max-sm:mb-6">
 			<header class="flex items-center justify-between border-b px-4 py-2.5">
 				<h2 class="text-sm font-semibold">Description</h2>
 				{#if !editingDescription}
@@ -919,97 +800,37 @@
 						</div>
 					</div>
 				{:else if data.issue.description}
-					<Markdown source={data.issue.description} />
+					<!-- Held to a few lines on a phone: it is rarely what you came for
+					     there, and the comments are what it pushes down. -->
+					<Clamp maxHeight="9rem" phoneOnly>
+						<Markdown source={data.issue.description} />
+					</Clamp>
 				{:else}
 					<p class="text-muted-foreground text-sm italic">No description.</p>
 				{/if}
 			</div>
 		</section>
 
-		<!-- context -->
-		<section class="rounded-lg border">
-			<header class="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-2.5">
-				<h2 class="text-sm font-semibold">
-					Context
-					{#if contextTotal > 0}
-						<span class="text-muted-foreground font-normal">
-							({data.issue.context_summary.prompts} prompt{data.issue.context_summary.prompts === 1
-								? ''
-								: 's'},
-							{data.issue.context_summary.skills} skill{data.issue.context_summary.skills === 1
-								? ''
-								: 's'},
-							{data.issue.context_summary.repos} repo{data.issue.context_summary.repos === 1
-								? ''
-								: 's'})
-						</span>
-					{/if}
-				</h2>
-				<div class="flex gap-2">
-					<Button size="sm" variant="outline" onclick={() => (promptDialogOpen = true)}>
-						<IconRocket size={14} /> View launch prompt
-					</Button>
-					<Button size="sm" variant="ghost" onclick={openContextCreate}>
-						<IconPlus size={14} /> Add
-					</Button>
-				</div>
-			</header>
-			<div class="space-y-4 p-4">
-				<div>
-					<h3 class="text-muted-foreground mb-2 text-xs font-semibold tracking-wide uppercase">
-						This issue's context
-					</h3>
-					{#if contextItemsPanel.current.status === 'pending'}
-						<Skeleton class="h-16 w-full" />
-					{:else if contextItemsPanel.current.status === 'loaded'}
-						<ContextItemList
-							items={contextItemsPanel.current.value}
-							onselect={openContextEdit}
-							emptyMessage="Nothing attached to this issue yet — add a note, skill, or repo."
-						/>
-					{:else}
-						{@render loadFailed("this issue's context")}
-					{/if}
-				</div>
-				<details class="group border-t pt-3">
-					<summary
-						class="text-muted-foreground hover:text-foreground cursor-pointer text-sm select-none"
-					>
-						Effective context
-						<span class="text-xs">
-							— everything that applies while in
-							<span class="font-medium">{currentState.name}</span> (changes as the issue transitions)
-						</span>
-					</summary>
-					<div class="mt-3">
-						{#if effectiveContextPanel.current.status === 'pending'}
-							<Skeleton class="h-24 w-full" />
-						{:else if effectiveContextPanel.current.status === 'loaded'}
-							<EffectiveContextView context={effectiveContextPanel.current.value} />
-						{:else}
-							{@render loadFailed('the effective context')}
-						{/if}
-					</div>
-				</details>
-			</div>
-		</section>
-
-		<!-- artifacts: the issue's attached work products -->
-		<ArtifactsPanel
-			issueId={data.issue.id}
-			artifacts={data.artifacts}
-			allowedTransitions={data.issue.allowed_transitions}
-			onchanged={refresh}
-			onerror={showError}
-		/>
-
-		<!-- comments -->
-		<section>
+		<!-- comments: the newest few in full, the rest behind one row. A folded
+		     comment is not rendered at all, which is what keeps a long thread
+		     light; a shown one is held to a screen or so with "Show more". -->
+		<section class="max-sm:mb-6">
 			<h2 class="mb-3 text-sm font-semibold">
 				Comments <span class="text-muted-foreground font-normal">({comments.length})</span>
 			</h2>
 			<div class="space-y-3">
-				{#each comments as comment (comment.id)}
+				{#if earlierCount > 0}
+					<button
+						type="button"
+						class="text-muted-foreground hover:text-foreground hover:bg-accent/50 flex w-full items-center gap-3 rounded-lg border border-dashed px-4 py-2.5 text-sm"
+						onclick={() => (showAllComments = true)}
+					>
+						<span class="border-muted-foreground/40 h-px flex-1 border-t border-dashed"></span>
+						Show {earlierCount} earlier comment{earlierCount === 1 ? '' : 's'}
+						<span class="border-muted-foreground/40 h-px flex-1 border-t border-dashed"></span>
+					</button>
+				{/if}
+				{#each shownComments as comment (comment.id)}
 					<article
 						class="rounded-lg border {comment.pending ? 'opacity-60' : ''}"
 						transition:slide={{ duration: dur() }}
@@ -1070,7 +891,9 @@
 									>
 								</div>
 							{:else}
-								<Markdown source={comment.body} />
+								<Clamp maxHeight="24rem">
+									<Markdown source={comment.body} />
+								</Clamp>
 							{/if}
 						</div>
 					</article>
@@ -1083,45 +906,188 @@
 				</div>
 			</form>
 		</section>
+
+		<!-- artifacts: the issue's attached work products -->
+		<PhoneFold title="Artifacts" summary={countLabel(data.artifacts.length)}>
+			<ArtifactsPanel
+				issueId={data.issue.id}
+				artifacts={data.artifacts}
+				allowedTransitions={data.issue.allowed_transitions}
+				onchanged={refresh}
+				onerror={showError}
+			/>
+		</PhoneFold>
+
+		<!-- context -->
+		<PhoneFold title="Context" summary={contextSummaryLabel}>
+			<section class="rounded-lg border">
+				<header class="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-2.5">
+					<h2 class="text-sm font-semibold">
+						Context
+						{#if contextTotal > 0}
+							<span class="text-muted-foreground font-normal">({contextSummaryLabel})</span>
+						{/if}
+					</h2>
+					<div class="flex gap-2">
+						<Button size="sm" variant="outline" onclick={() => (promptDialogOpen = true)}>
+							<IconRocket size={14} /> View launch prompt
+						</Button>
+						<Button size="sm" variant="ghost" onclick={openContextCreate}>
+							<IconPlus size={14} /> Add
+						</Button>
+					</div>
+				</header>
+				<div class="space-y-4 p-4">
+					<div>
+						<h3 class="text-muted-foreground mb-2 text-xs font-semibold tracking-wide uppercase">
+							This issue's context
+						</h3>
+						{#if contextItemsPanel.current.status === 'pending'}
+							<Skeleton class="h-16 w-full" />
+						{:else if contextItemsPanel.current.status === 'loaded'}
+							<ContextItemList
+								items={contextItemsPanel.current.value}
+								onselect={openContextEdit}
+								emptyMessage="Nothing attached to this issue yet — add a note, skill, or repo."
+							/>
+						{:else}
+							{@render loadFailed("this issue's context")}
+						{/if}
+					</div>
+					<details class="group border-t pt-3">
+						<summary
+							class="text-muted-foreground hover:text-foreground cursor-pointer text-sm select-none"
+						>
+							Effective context
+							<span class="text-xs">
+								— everything that applies while in
+								<span class="font-medium">{currentState.name}</span> (changes as the issue transitions)
+							</span>
+						</summary>
+						<div class="mt-3">
+							{#if effectiveContextPanel.current.status === 'pending'}
+								<Skeleton class="h-24 w-full" />
+							{:else if effectiveContextPanel.current.status === 'loaded'}
+								<EffectiveContextView context={effectiveContextPanel.current.value} />
+							{:else}
+								{@render loadFailed('the effective context')}
+							{/if}
+						</div>
+					</details>
+				</div>
+			</section>
+		</PhoneFold>
 	</div>
 
 	<!-- min-w-0, like the main column: a grid item defaults to a min-content
 	     floor, so one nowrap row in here (a truncated linked-issue title) would
 	     otherwise widen the column past the viewport. -->
-	<aside class="min-w-0 space-y-8 lg:col-start-2 lg:row-start-2">
+	<aside class="min-w-0 space-y-8 max-sm:space-y-0 lg:col-start-2 lg:row-start-2">
 		<!-- the supervisor's view of this issue -->
-		{#if agentActivityPanel.current.status === 'pending'}
-			<Skeleton class="h-40 w-full" />
-		{:else if agentActivityPanel.current.status === 'loaded'}
-			{@const [dispatch, runs, runners] = agentActivityPanel.current.value}
-			<AgentActivityCard issue={data.issue} {dispatch} {runs} {runners} onerror={showError} />
-		{:else}
-			{@render loadFailed('agent activity')}
-		{/if}
+		<PhoneFold title="Agent activity" summary={agentSummaryLabel}>
+			{#if agentActivityPanel.current.status === 'pending'}
+				<Skeleton class="h-40 w-full" />
+			{:else if agentActivityPanel.current.status === 'loaded'}
+				{@const [dispatch, runs, runners] = agentActivityPanel.current.value}
+				<AgentActivityCard issue={data.issue} {dispatch} {runs} {runners} onerror={showError} />
+			{:else}
+				{@render loadFailed('agent activity')}
+			{/if}
+		</PhoneFold>
 
-		<LabelsCard
-			issueId={data.issue.id}
-			labels={data.issue.labels}
-			library={data.labelLibrary}
-			onerror={showError}
-		/>
+		<PhoneFold title="Labels" summary={countLabel(data.issue.labels.length)}>
+			<LabelsCard
+				issueId={data.issue.id}
+				labels={data.issue.labels}
+				library={data.labelLibrary}
+				onerror={showError}
+			/>
+		</PhoneFold>
 
 		<!-- dependencies & duplicates -->
-		<RelationsCard
-			issueId={data.issue.id}
-			{links}
-			bind:adds={linkAdds}
-			bind:removals={linkRemovals}
-			onerror={showError}
-		/>
+		<PhoneFold title="Relations" summary={countLabel(relationCount)} bind:open={relationsOpen}>
+			<RelationsCard
+				issueId={data.issue.id}
+				{links}
+				bind:adds={linkAdds}
+				bind:removals={linkRemovals}
+				onerror={showError}
+			/>
+		</PhoneFold>
 
 		<!-- this issue's slice of the activity log -->
-		<section>
-			<h2 class="mb-3 text-sm font-semibold">Activity</h2>
-			<EventList events={data.events} showIssueLinks={false} emptyMessage="No activity yet." />
-		</section>
+		<PhoneFold title="Activity" summary={countLabel(data.events.length)}>
+			<section>
+				<h2 class="mb-3 text-sm font-semibold">Activity</h2>
+				<EventList events={data.events} showIssueLinks={false} emptyMessage="No activity yet." />
+			</section>
+		</PhoneFold>
 	</aside>
 </div>
+
+<!-- The transitions and the escape hatch, shared by the desktop State card
+     and the phone's State sheet so the two never drift. -->
+{#snippet statePanel()}
+	{#if duplicateOf}
+		<p class="text-muted-foreground mb-3 text-xs italic" transition:slide={{ duration: dur() }}>
+			This issue is a duplicate — its displayed state follows
+			<a
+				href="/issues/{encodeURIComponent(duplicateOf.project_name)}/{duplicateOf.number}"
+				class="hover:underline">{duplicateOf.project_name}/#{duplicateOf.number}</a
+			>.
+		</p>
+	{/if}
+	<TransitionList
+		transitions={ordered}
+		{unmetFor}
+		disabled={transitioning}
+		stateEnteredAt={data.issue.state_entered_at}
+		onmove={requestMove}
+	/>
+	<p class="text-muted-foreground mt-3 text-xs">
+		Workflow:
+		<a href="/workflows/{data.issue.workflow.id}" class="hover:underline"
+			>{data.issue.workflow.name}</a
+		>
+	</p>
+	<!-- escape hatch: jump to any state, or move onto another workflow -->
+	<details class="mt-4 border-t pt-3">
+		<summary class="text-muted-foreground hover:text-foreground cursor-pointer text-xs select-none">
+			Move directly…
+		</summary>
+		<div class="mt-3">
+			<MoveDirectlyForm
+				workflows={data.workflows}
+				issueWorkflow={data.issue.workflow}
+				{currentState}
+				onapply={applyOverride}
+			/>
+		</div>
+	</details>
+{/snippet}
+
+<!-- phone: the decide-while-reading bar, and the State sheet it opens. The
+     spacer keeps the last fold row clear of the bar. -->
+<div class="h-14 sm:hidden" aria-hidden="true"></div>
+<TransitionBar
+	current={headerState}
+	transitions={ordered}
+	{unmetFor}
+	{primaryId}
+	disabled={transitioning}
+	onmove={requestMove}
+	onopen={() => (stateSheetOpen = true)}
+/>
+<Modal bind:open={stateSheetOpen} title="State">
+	{@render statePanel()}
+</Modal>
+
+<!-- the active run's log tail, one tap from the header at any width -->
+{#if data.issue.active_run}
+	<Modal bind:open={logsOpen} title="Logs · {data.issue.active_run.runner_name}" size="xl">
+		<RunLogViewer runId={data.issue.active_run.run_id} />
+	</Modal>
+{/if}
 
 <!-- transition dialog: optional comment posted atomically with the move -->
 {#if pendingTransition}
