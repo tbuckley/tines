@@ -52,7 +52,7 @@ One schedule per workstream; each run issue carries the label and the `Workstrea
 
 | State | Category | Meaning |
 | --- | --- | --- |
-| Backlog (initial) | backlog | Created by the schedule, waiting for dispatch. |
+| Backlog (initial) | backlog | Only for hand-created runs; schedules create instances directly in Discovering, since backlog states are never dispatched. |
 | Discovering | active | The PM reads the charter, the record (all directions, prior discovery reports, the labelled engineering backlog), and the product as the target user; files 1–3 pitches. |
 | Proposed | done | Pitches filed. |
 | Nothing to propose | done | Nothing worth filing; the report says what was considered. |
@@ -128,7 +128,7 @@ tines issues create Tines -w Workstream -l <label> -t "Workstream: <Name>" -d @c
 #   → note the ref, e.g. Tines/190
 tines issues create Tines -w "Product Discovery" -l <label> \
   -t "Discovery: <Name>" -d "Workstream: Tines/190" \
-  --cron "0 10 */2 * *" --tz Europe/Dublin --if-closed \
+  -s Discovering --cron "0 10 */2 * *" --tz Europe/Dublin --if-closed \
   --schedule-name "discovery-<label>"
 ```
 
