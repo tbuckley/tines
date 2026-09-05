@@ -1,5 +1,11 @@
 import { createHmac } from 'node:crypto';
-import type { APIRequestContext, APIResponse, BrowserContext } from '@playwright/test';
+import type {
+	APIRequestContext,
+	APIResponse,
+	BrowserContext,
+	Page,
+	Response
+} from '@playwright/test';
 import { AUTH_SECRET, BASE_URL } from './constants.mjs';
 
 /**
@@ -22,6 +28,26 @@ export async function signIn(context: BrowserContext, sessionToken: string): Pro
 			sameSite: 'Lax'
 		}
 	]);
+}
+
+/**
+ * `page.goto` that returns once the page has hydrated, for a spec that is
+ * about to click, fill or otherwise interact. The markup is server-rendered
+ * but its listeners are not: a click or `change` dispatched before
+ * SvelteKit's client has attached them is simply lost, and a spec that
+ * retried it sat out the inner assertion's timeout (5 s by default) before
+ * the second attempt landed. Network idle is the signal: the module scripts
+ * are the last thing a fresh page fetches and hydration runs as they land, so
+ * 500 ms of silence after them means the listeners are up. The retry
+ * wrappers around first clicks (`clickUntil` and friends) still hold as a
+ * belt to this brace; with this they pass first time.
+ *
+ * That half-second is the price, paid on every call, so a page that is only
+ * read (assertions auto-retry and need no listeners) stays on a bare
+ * `page.goto`.
+ */
+export function gotoHydrated(page: Page, url: string): Promise<Response | null> {
+	return page.goto(url, { waitUntil: 'networkidle' });
 }
 
 /** Minimal bearer-auth API client over Playwright's request context. */

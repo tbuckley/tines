@@ -8,7 +8,7 @@
 import type { ImportLibraryResponse, LibraryDocument } from '@tines/shared';
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import { ALICE, BOB } from './constants.mjs';
-import { apiClient, body, errorBody, runId, signIn } from './helpers';
+import { apiClient, body, errorBody, gotoHydrated, runId, signIn } from './helpers';
 
 /** Everything but the per-export timestamp. */
 const comparable = (doc: LibraryDocument) => ({
@@ -165,7 +165,7 @@ test.describe('export / import settings page', () => {
 			await apiClient(request, ALICE.apiKey).get('/api/v1/export')
 		);
 
-		await page.goto('/settings/export-import');
+		await gotoHydrated(page, '/settings/export-import');
 		await expect(page.getByRole('heading', { name: 'Export / import' })).toBeVisible();
 		await expect(page.getByRole('button', { name: /Download library/ })).toBeVisible();
 
@@ -187,7 +187,7 @@ test.describe('export / import settings page', () => {
 	// ("Choose File  No file chosen") ignores the app palette entirely.
 	test('the file picker is an app button, and names the chosen file', async ({ context, page }) => {
 		await signIn(context, ALICE.sessionToken);
-		await page.goto('/settings/export-import');
+		await gotoHydrated(page, '/settings/export-import');
 
 		// The input is still there and still labelled — it is only clipped, so it
 		// keeps its place in the tab order and its accessible name. `sr-only`
@@ -230,7 +230,7 @@ test.describe('export / import settings page', () => {
 
 	test('rejects a file that is not a library export', async ({ context, page }) => {
 		await signIn(context, ALICE.sessionToken);
-		await page.goto('/settings/export-import');
+		await gotoHydrated(page, '/settings/export-import');
 		await upload(page, 'not-a-library.json', { hello: 'world' }, async () => {
 			await expect(page.getByTestId('import-error')).toContainText('Not a Tines library export', {
 				timeout: 5000

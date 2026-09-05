@@ -1,7 +1,7 @@
 import type { IssueDetail, Project } from '@tines/shared';
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import { ALICE } from './constants.mjs';
-import { apiClient, body, runId, signIn } from './helpers';
+import { apiClient, body, gotoHydrated, runId, signIn } from './helpers';
 
 // Browser flows, signed in as the seeded user via a signed session cookie.
 // Names carry the per-run suffix so re-runs against a reused server stay
@@ -54,7 +54,7 @@ test('a signed-in visit to / lands on the issues list', async ({ page }) => {
 test('an issue can be created from the issues list, picking project and starting state', async ({
 	page
 }) => {
-	await page.goto('/issues');
+	await gotoHydrated(page, '/issues');
 	const dialog = page.getByRole('dialog', { name: 'New issue' });
 	await clickUntil(page.getByRole('button', { name: /New issue/ }), async () => {
 		await expect(dialog).toBeVisible({ timeout: 2_000 });
@@ -71,7 +71,7 @@ test('an issue can be created from the issues list, picking project and starting
 });
 
 test('the issues list search box round-trips through the q URL param', async ({ page }) => {
-	await page.goto('/issues');
+	await gotoHydrated(page, '/issues');
 	const box = page.getByLabel('Search issues');
 
 	// The submit is a Svelte listener, so retry across the hydration window.
@@ -106,7 +106,7 @@ test('the mobile layout swaps the header tabs for a bottom bar', async ({ page }
 });
 
 test('issue detail renders markdown, transitions, and comments', async ({ page }) => {
-	await page.goto(`/issues/${encodeURIComponent(projectName)}/${issue.number}`);
+	await gotoHydrated(page, `/issues/${encodeURIComponent(projectName)}/${issue.number}`);
 
 	await expect(page.getByRole('heading', { name: issueTitle })).toBeVisible();
 	// Markdown description rendered, not escaped.
@@ -187,7 +187,7 @@ test('a comment can be edited and deleted from the issue page', async ({ page })
 	const created = await body<{ id: string }>(
 		await api.post(`/api/v1/issues/${issue.id}/comments`, { body: 'Typpo here' })
 	);
-	await page.goto(`/issues/${encodeURIComponent(projectName)}/${issue.number}`);
+	await gotoHydrated(page, `/issues/${encodeURIComponent(projectName)}/${issue.number}`);
 	const comment = page.locator('article').filter({ hasText: 'Typpo here' }).first();
 	await expect(comment).toBeVisible();
 
@@ -228,7 +228,7 @@ test('a comment can be edited and deleted from the issue page', async ({ page })
 });
 
 test('workflow library shows the read-only standard workflow with its graph', async ({ page }) => {
-	await page.goto('/workflows');
+	await gotoHydrated(page, '/workflows');
 	const link = page.getByRole('link', { name: /Standard/ }).first();
 	await link.click();
 	await expect(page).toHaveURL(/\/workflows\/wf_/);
@@ -244,7 +244,7 @@ test('workflow library shows the read-only standard workflow with its graph', as
 });
 
 test('a duplicate project name surfaces the API error in the create modal', async ({ page }) => {
-	await page.goto('/projects');
+	await gotoHydrated(page, '/projects');
 	await clickUntil(page.getByRole('button', { name: /New project/ }), async () => {
 		await expect(page.getByLabel('Name')).toBeVisible({ timeout: 2_000 });
 	});
@@ -264,7 +264,7 @@ const backLink = (page: Page) => page.locator('main').getByRole('link').first();
 
 test('the Issues tab and an issue back link keep the list filters', async ({ page }) => {
 	const query = `q=${encodeURIComponent(issueTitle)}`;
-	await page.goto(`/issues?${query}`);
+	await gotoHydrated(page, `/issues?${query}`);
 
 	// The tab href picking up the query is also the proof that the page has
 	// hydrated and recorded itself.
@@ -291,7 +291,7 @@ test('the Issues tab and an issue back link keep the list filters', async ({ pag
 });
 
 test('an issue reached from a project page goes back to that project', async ({ page }) => {
-	await page.goto(`/projects/${project.id}`);
+	await gotoHydrated(page, `/projects/${project.id}`);
 
 	// The Done tab is a plain link, so it works before hydration too. Landing
 	// on `?category=done` also proves the page has recorded itself — and the
@@ -334,7 +334,7 @@ test.describe('with a dark system preference', () => {
 	test('filter checkboxes are painted from the app palette, not the browser default', async ({
 		page
 	}) => {
-		await page.goto('/issues');
+		await gotoHydrated(page, '/issues');
 		await expect(page.locator('html')).toHaveClass(/\bdark\b/);
 
 		// Named from `aria-label`: the visible text sits in the wrapping <label>,

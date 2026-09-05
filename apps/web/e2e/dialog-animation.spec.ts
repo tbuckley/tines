@@ -1,7 +1,7 @@
 import type { IssueDetail, Project } from '@tines/shared';
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import { ALICE } from './constants.mjs';
-import { apiClient, body, runId, signIn } from './helpers';
+import { apiClient, body, gotoHydrated, runId, signIn } from './helpers';
 
 // Named to sort after `artifacts-panel.spec.ts`, not for tidiness: that spec's
 // desktop row-wrap assertion depends on the relative-age string in the row's
@@ -57,7 +57,7 @@ async function openConfirmDialog(page: Page): Promise<Locator> {
 	const commentBody = `Animation fixture ${Date.now().toString(36)}`;
 	await api.post(`/api/v1/issues/${issue.id}/comments`, { body: commentBody });
 
-	await page.goto(`/issues/${encodeURIComponent(projectName)}/${issue.number}`);
+	await gotoHydrated(page, `/issues/${encodeURIComponent(projectName)}/${issue.number}`);
 	const comment = page.locator('article').filter({ hasText: commentBody }).first();
 	await expect(comment).toBeVisible();
 

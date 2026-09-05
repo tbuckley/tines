@@ -12,8 +12,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:f
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
 	keptMarkerPath,
@@ -21,10 +20,7 @@ import {
 	writeKeptMarker,
 	type KeptWorkspaceMarker
 } from './store.js';
-
-const here = dirname(fileURLToPath(import.meta.url));
-const tsx = join(here, '..', '..', 'node_modules', '.bin', 'tsx');
-const entry = join(here, '..', 'index.ts');
+import { CLI_BIN, NODE } from '../test-bin.js';
 
 const RUN_ID = 'run_stub1';
 
@@ -95,9 +91,9 @@ function stubSupervisor(): { server: Server; done: Promise<Harvest> } {
 
 function startDaemon(port: number, dir: string, command: string, extra: string[]): ChildProcess {
 	return spawn(
-		tsx,
+		NODE,
 		[
-			entry,
+			CLI_BIN,
 			'runner',
 			'daemon',
 			'--url',

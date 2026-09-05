@@ -1,7 +1,7 @@
 import type { IssueDetail, Project, WorkflowResponse } from '@tines/shared';
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import { ALICE } from './constants.mjs';
-import { apiClient, body, runId, signIn } from './helpers';
+import { apiClient, body, gotoHydrated, runId, signIn } from './helpers';
 
 /**
  * The confirm button's pending state (Tines/153). Confirming a transition used
@@ -112,7 +112,7 @@ async function openTransitionDialog(page: Page): Promise<void> {
 			description: 'Fixture for the confirm-button pending assertions.'
 		})
 	);
-	await page.goto(`/issues/${encodeURIComponent(projectName)}/${issue.number}`);
+	await gotoHydrated(page, `/issues/${encodeURIComponent(projectName)}/${issue.number}`);
 	if (await stateCard(page).isVisible()) {
 		await clickUntil(stateCard(page).getByRole('button', { name: LONG_TRANSITION }), async () => {
 			await expect(dialogOf(page)).toBeVisible({ timeout: 2_000 });

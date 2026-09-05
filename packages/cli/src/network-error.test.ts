@@ -3,13 +3,9 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-
-const here = dirname(fileURLToPath(import.meta.url));
-const tsx = join(here, '..', 'node_modules', '.bin', 'tsx');
-const entry = join(here, 'index.ts');
+import { CLI_BIN, NODE } from './test-bin.js';
 
 /**
  * A port nothing listens on, so a connection to it is refused. Taken by
@@ -49,8 +45,8 @@ function cli(args: string[]): Promise<CliResult> {
 		delete env.TINES_API_URL;
 		delete env.TINES_API_KEY;
 		const child = execFile(
-			tsx,
-			[entry, ...args],
+			NODE,
+			[CLI_BIN, ...args],
 			{ env, timeout: 60_000 },
 			(err, stdout, stderr) => {
 				const code = (err as { code?: number } | null)?.code ?? 0;

@@ -1,7 +1,7 @@
 import type { IssueDetail, Project, WorkflowResponse } from '@tines/shared';
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import { ALICE } from './constants.mjs';
-import { apiClient, body, runId, signIn } from './helpers';
+import { apiClient, body, gotoHydrated, runId, signIn } from './helpers';
 
 /**
  * The State card's transition stack (Tines/128): buttons used to be a
@@ -294,7 +294,7 @@ test('a stale requirement is reported under its blocked button', async ({ page }
 
 test('on a phone the transitions live in a bar pinned above the tab bar', async ({ page }) => {
 	await page.setViewportSize(PHONE);
-	await page.goto(issueUrl(blocked));
+	await gotoHydrated(page, issueUrl(blocked));
 	await settled(page);
 
 	// The State card is a desktop surface; the bar takes its place, on screen
