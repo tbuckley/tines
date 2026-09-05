@@ -126,7 +126,12 @@ describe('the label library', () => {
 		const issue = addIssue(t, { title: 'a' });
 		await addIssueLabels(t.db, t.env, human, issue, ['bug']);
 		const res = await deleteLabel(t.db, t.env, human, 'bug');
-		expect(res).toEqual({ deleted: true, issue_count: 1 });
+		expect(res).toEqual({
+			deleted: true,
+			issue_count: 1,
+			context_items_deleted: [],
+			routing_rules_deleted: []
+		});
 		expect(await names()).toEqual([]);
 		const { items } = await listIssues(t.db, USER, {}, { cursor: null, limit: 10 });
 		expect(items[0].labels).toEqual([]);

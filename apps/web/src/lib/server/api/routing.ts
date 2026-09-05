@@ -311,10 +311,15 @@ export async function createRoutingRule(
 		workflowStateId: body.workflow_state_id ?? null
 	};
 	const label = scopeLabel(
-		await resolveScope(db, actor.userId, { ...scope, labelId: null }, {
-			issue: false,
-			requireActiveState: true
-		})
+		await resolveScope(
+			db,
+			actor.userId,
+			{ ...scope, labelId: null },
+			{
+				issue: false,
+				requireActiveState: true
+			}
+		)
 	);
 	const rules = await loadRulesForShadowing(db, actor.userId);
 	assertNoScopeCollision(scope, label, rules);
@@ -377,10 +382,15 @@ export async function updateRoutingRule(
 	const scopeChanged =
 		scope.projectId !== row.project_id || scope.workflowStateId !== row.workflow_state_id;
 	const label = scopeLabel(
-		await resolveScope(db, actor.userId, { ...scope, labelId: null }, {
-			issue: false,
-			requireActiveState: true
-		})
+		await resolveScope(
+			db,
+			actor.userId,
+			{ ...scope, labelId: null },
+			{
+				issue: false,
+				requireActiveState: true
+			}
+		)
 	);
 	const rules = await loadRulesForShadowing(db, actor.userId);
 	if (scopeChanged) assertNoScopeCollision(scope, label, rules, id);
