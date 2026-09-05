@@ -1,13 +1,14 @@
 import type {
 	Comment,
 	IssueDetail,
+	LabelWithUsage,
 	ListResponse,
 	Project,
 	TinesEvent,
 	WorkflowResponse
 } from '@tines/shared';
 import { expect, test } from '@playwright/test';
-import { ALICE, BOB } from './constants.mjs';
+import { ALICE, BOB, RUNROW } from './constants.mjs';
 import { apiClient, body, errorBody, runId } from './helpers';
 
 test.describe('auth', () => {
@@ -31,6 +32,68 @@ test.describe('auth', () => {
 		const res = await apiClient(request, ALICE.apiKey).post('/api/v1/api-keys', { name: 'nope' });
 		expect(res.status()).toBe(403);
 		expect((await errorBody(res)).error.code).toBe('session_required');
+	});
+});
+
+// The fence a run key meets on the control plane. Reading the label library is
+// the one hole in it: the launch prompt tells agents to run `tines labels list`
+// to classify their own work, so that GET must answer them (Tines/169).
+test.describe.serial('run-key fence', () => {
+	const labelName = `fence-${runId}`;
+	const labelDescription = 'What this term means — the field only the GET carries.';
+
+	test('authenticates like any other key', async ({ request }) => {
+		const res = await apiClient(request, RUNROW.runKey).get('/api/v1/projects');
+		expect(res.ok()).toBe(true);
+	});
+
+	test('reads the label library, descriptions and all', async ({ request }) => {
+		// Seeded by the run key's own user, so the read has something to find.
+		await apiClient(request, ALICE.apiKey).post('/api/v1/labels', {
+			name: labelName,
+			color: 'purple',
+			description: labelDescription
+		});
+
+		const res = await apiClient(request, RUNROW.runKey).get('/api/v1/labels');
+		expect(res.status()).toBe(200);
+		const { items } = await body<ListResponse<LabelWithUsage>>(res);
+		const seeded = items.find((l) => l.name === labelName);
+		expect(seeded?.description).toBe(labelDescription);
+	});
+
+	test('still refuses to mint a term, naming what is forbidden', async ({ request }) => {
+		const res = await apiClient(request, RUNROW.runKey).post('/api/v1/labels', {
+			name: `nope-${runId}`,
+			color: 'red'
+		});
+		expect(res.status()).toBe(403);
+		const { error } = await errorBody(res);
+		expect(error.code).toBe('run_key_forbidden');
+		expect(error.message).toContain('create, rename, or delete labels');
+	});
+
+	test('still refuses to rename or delete an existing term', async ({ request }) => {
+		const api = apiClient(request, RUNROW.runKey);
+		const { items } = await body<ListResponse<LabelWithUsage>>(await api.get('/api/v1/labels'));
+		const id = items.find((l) => l.name === labelName)?.id;
+		expect(id).toBeTruthy();
+
+		const renamed = await api.patch(`/api/v1/labels/${id}`, { name: `renamed-${runId}` });
+		expect(renamed.status()).toBe(403);
+		expect((await errorBody(renamed)).error.code).toBe('run_key_forbidden');
+
+		const deleted = await api.delete(`/api/v1/labels/${id}`);
+		expect(deleted.status()).toBe(403);
+		expect((await errorBody(deleted)).error.code).toBe('run_key_forbidden');
+	});
+
+	test('leaves the rest of the control plane fenced, reads included', async ({ request }) => {
+		for (const path of ['/api/v1/runners', '/api/v1/supervisor/settings', '/api/v1/api-keys']) {
+			const res = await apiClient(request, RUNROW.runKey).get(path);
+			expect(res.status(), `GET ${path}`).toBe(403);
+			expect((await errorBody(res)).error.code, `GET ${path}`).toBe('run_key_forbidden');
+		}
 	});
 });
 

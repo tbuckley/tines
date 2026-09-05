@@ -1,7 +1,8 @@
 /**
  * `tines labels` — the label library itself. Applying a label to an issue is
- * `tines issues label`; this group is the vocabulary, which run keys cannot
- * touch (it is control-plane fenced server-side).
+ * `tines issues label`; this group is the vocabulary. `list` is open to run
+ * keys (the launch prompt points agents at it to classify with); `create`,
+ * `edit`, and `delete` are control-plane fenced server-side.
  */
 import { createInterface } from 'node:readline/promises';
 import { client, die, printJson, table, withCommon, type CommonOpts } from '../common.js';
