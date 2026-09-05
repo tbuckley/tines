@@ -42,6 +42,7 @@
 	import { actorLabel, prefersReducedMotion, relativeTime } from '$lib/format';
 	import { mergeLinks, type PendingAdd } from '$lib/link-overlay';
 	import { navMemory } from '$lib/nav-memory.svelte';
+	import { planTransitions } from '$lib/transitions';
 
 	let { data } = $props();
 
@@ -264,21 +265,21 @@
 	const unmetFor = (transition: AllowedTransition) =>
 		(transition.requires ?? []).filter((r) => r.status !== 'satisfied');
 
-	// The action you came to take goes first: enabled transitions above blocked
-	// ones, workflow order kept inside each group. `requires` is undefined while
-	// an optimistic move is in flight, so everything counts as enabled then —
-	// the split is stable, so nothing reshuffles mid-animation.
-	const ordered = $derived([
-		...allowed.filter((t) => unmetFor(t).length === 0),
-		...allowed.filter((t) => unmetFor(t).length > 0)
-	]);
-
-	// The one filled button in the phone bar: the first enabled move to a
-	// state later in the workflow than this one. A step back is never primary.
-	const primaryId = $derived(
-		ordered.find((t) => unmetFor(t).length === 0 && t.to_state.position > currentState.position)
-			?.transition_id ?? null
+	// Order and the one filled button both come from `$lib/transitions.ts`:
+	// forward moves first (enabled, then blocked with their requirement line as
+	// the next action), then steps back, then the escape lane, and a fill only
+	// on the workflow's expected next step. `requires` is undefined while an
+	// optimistic move is in flight, so everything counts as enabled then.
+	const plan = $derived(
+		planTransitions(
+			allowed,
+			currentState,
+			data.issue.workflow.states,
+			(t) => unmetFor(t).length > 0
+		)
 	);
+	const ordered = $derived(plan.ordered);
+	const primaryId = $derived(plan.primaryId);
 
 	// Phone-only surfaces: the State sheet behind the bar, and the fold the
 	// header's "Blocked" chip opens before scrolling to it.
