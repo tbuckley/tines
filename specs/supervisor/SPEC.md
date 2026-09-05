@@ -161,6 +161,8 @@ Two credential kinds, sharply separated:
 
 **Attribution.** Comments and events made with a run key resolve through the run to the runner: rendered as "via ***laptop-m4*** · run on demo/12" — parallel to "via *api-key-name*" and "via schedule *name*". The actor model gains no new cases; a run key is an `api_key` row with extra provenance.
 
+**Where run keys surface.** Settings → API keys lists them, but folded: the user's own keys are the whole visible list, and run keys sit under a collapsed "Run keys — N active, M revoked" disclosure named by the issue each run worked (`run on demo/12` — the same phrase attribution uses). Revoked ones are hidden until asked for and capped at the 50 newest, because the list is otherwise unbounded: one key per run, ~50 runs/day on a busy instance, and none is ever deleted — `comment.actor_api_key_id` and `event.actor_api_key_id` are foreign keys to `api_key`, so purging a revoked run key would erase the attribution above on every past comment. Retention of the row is therefore deliberate, matching the run-log GC, which drops the R2 object at 30 days and keeps the D1 row. Revoke stays available on a *live* run key — that is how a leaked one is killed — with copy naming the run it cuts off and pointing at cancelling the run instead.
+
 **Delivery of the run key** avoids putting secrets in prompt text wherever the platform allows:
 
 - `gemini_managed`: the environment's network allowlist **`transform`** injects `Authorization: Bearer <run key>` on requests to the Tines API host at Google's egress proxy — the key never enters the sandbox. The same mechanism injects the GitHub credential (below).

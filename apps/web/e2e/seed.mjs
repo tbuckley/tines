@@ -98,7 +98,13 @@ statements.push(
 	   'stalled',
 	   'balanced', NULL, NULL,
 	   'wfs_std_open', 'wfs_std_open', NULL, NULL, 'seeded failed log tail', '${RUNROW_FAILED.error}',
-	   ${runStart}, ${runStart}, ${nowMs});`
+	   ${runStart}, ${runStart}, ${nowMs});`,
+	// This run ended, so its key is revoked — the fixture behind the API keys
+	// page's "Show revoked" toggle. Inserted after its agent_run row (FK).
+	`INSERT INTO api_key (id, user_id, name, key_hash, key_prefix, created_at, agent_run_id, expires_at, revoked_at)
+	 VALUES ('key_e2e_runrow_failed', '${ALICE.id}', '${RUNROW_FAILED.runKeyName}',
+	   '${sha256Hex(RUNROW_FAILED.runKey)}', '${RUNROW_FAILED.runKey.slice(0, 14)}', ${runStart},
+	   '${RUNROW_FAILED.runId}', ${Date.parse(expires)}, ${nowMs});`
 );
 
 const sqlFile = join(mkdtempSync(join(tmpdir(), 'tines-e2e-')), 'seed.sql');

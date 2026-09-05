@@ -23,9 +23,10 @@
 	const userKeys = $derived(data.keys.filter((k) => !k.run));
 	const runKeys = $derived(data.keys.filter((k) => k.run));
 	const hasRunKeys = $derived(data.runKeyCounts.active + data.runKeyCounts.revoked > 0);
-	// Opened by hand, or by arriving with ?revoked=1 — the toggle lives inside,
-	// so the disclosure must stay open across the goto that flips the param
-	// (hence untrack: this is the initial value, not a binding to the loader).
+	// Bound, not a plain `open` attribute: "Show revoked" lives *inside* the
+	// disclosure and navigates, so the open state has to outlive the loader
+	// re-run rather than be re-derived from it (untrack: ?revoked=1 seeds the
+	// initial value, it does not drive it thereafter).
 	let runKeysOpen = $state(untrack(() => data.showRevoked));
 
 	function setRevoked(on: boolean) {
