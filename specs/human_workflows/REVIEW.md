@@ -203,6 +203,16 @@ balanced-society framing suggests: **gate changes to the organisation** (context
 workflows, routing, budgets), **digest and spot-check the work** (features, docs,
 fixes), and let the gate placement per stage move as trust grows.
 
+**Decision (2026-09-05): digests wait.** Today every issue passes through an
+`awaiting_human` gate, and every code change through a GitHub merge, before it counts.
+While that holds, the approval queue *is* the complete record of change, and a digest
+would only restate what the Inbox (2.4) already lists. Digests become necessary at the
+moment work starts landing in `active` states without a human placing it there: issues
+created by schedules straight into `Open`, a triage stage (2.1 A) that promotes to
+`Ready` on its own, or quick capture defaulting to an active state. That moment is a
+deliberate choice, and shipping the digest should be part of making it. Until then,
+directions B and C below are recorded, not scheduled; A stays current.
+
 **Direction A — gates stay in the graph, but the graph gets templates.** The
 mechanism exists: an `awaiting_human` state between stages. What is missing is
 guidance. Ship two or three system workflow templates that encode trust levels
@@ -235,9 +245,9 @@ the human, what changed in shared context. This works today.
 
 - Tradeoff: costs a run per day, can be wrong or bland, and the human has to open an
   issue to read it. It is the fastest way to find out whether narrative digests are
-  worth building for real. Recommendation: try C this week; build B regardless,
-  because B is also the Inbox's data source; if C's narrative earns its keep, embed
-  the latest digest comment at the top of B's page.
+  worth building for real. When digests become necessary: try C first for a week,
+  build B regardless because the watermark also serves the Inbox, and if C's
+  narrative earns its keep, embed the latest digest comment at the top of B's page.
 
 **Direction D — notifications, batched and opt-in.** Push or email for a short list
 of high-signal events: issue parked, issue arrived in `awaiting_human`, runner
@@ -373,30 +383,39 @@ These were not in the brief but follow from it.
 
 ## Part 3 — Suggested order
 
-The order optimises for the human seeing a difference each week and for learning
-before building.
+The order follows from the decision in 2.3: while every issue is gated, the bottleneck
+is the human's approval queue, so the work that pays first is whatever makes that queue
+visible, complete, and fast to act on. The six unmerged docs PRs are the measure.
 
-**Week 1, no schema.** Try the agent-written digest as a schedule (2.3 C). Ship the
-"Needs you" tab or a first Inbox (2.4 B or A) with the nav badge. Fix the activity
-type list. Ship the triage workflow template and the quick-capture box (2.1). Add the
-dead-end warning for active states with no way to ask (2.5 B).
+**Week 1, no schema.** Ship the "Needs you" tab or a first Inbox (2.4 B or A) with the
+nav badge; its "Awaiting your decision" section is the approval queue. Show the `pr`
+artifact's link on each row so approval and merge are one visit. Ship the quick-capture
+box (2.1 B) landing in `Backlog` by default, since capture into an active state is the
+auto-pickup regime 2.3 defers. Fix the activity type list. Add the dead-end warning for
+active states with no way to ask (2.5 B).
 
-**Week 2 to 3, small additive migrations.** `comment.kind` and `tines issues ask`
-(2.5 A). `context_item_version` with diff and revert (2.2 A). `event.actor_kind` and
-the organisation feed with actor filter (2.2 B). The watermark and the deterministic
-`/digest` page, then its email (2.3 B).
+**Week 2 to 3, small additive migrations.** PR status polling on the sweep (2.6), so
+the Inbox shows open, green, merged, or stale next to each awaiting issue and a "PR
+merged" requirement can close the loop. `comment.kind` and `tines issues ask` (2.5 A).
+`context_item_version` with diff and revert (2.2 A). `event.actor_kind` and the
+organisation feed with actor filter (2.2 B).
 
-**Later, when the volume justifies it.** Structured proposals with Apply (2.2 C). PR
-status polling and the "PR merged" requirement (2.6). Outcome stats per state and the
-cost roll-up (2.6). Side-by-side options, then parallel samples only if wanted (2.5 C).
-Batched notifications (2.3 D) last, since a good Inbox and digest may make them
-unnecessary for one operator.
+**When work starts being picked up automatically.** This is the trigger for the rest,
+and the triage stage (2.1 A) is the likeliest first cause of it. Ship together: the
+triage workflow template; the watermark and the deterministic `/digest` page, then its
+email (2.3 B), with the agent-written digest (2.3 C) as the cheap trial; batched
+notifications (2.3 D) only if the Inbox and digest leave a gap.
+
+**Later, when the volume justifies it.** Structured proposals with Apply (2.2 C).
+Outcome stats per state and the cost roll-up (2.6). Side-by-side options, then parallel
+samples only if wanted (2.5 C). Spot-check sampling (2.6) once closures stop being
+individually approved.
 
 ## Open questions for the decision
 
 1. Should the Inbox replace `/issues` as the signed-in home, or sit beside it?
-2. Is the digest's unit the day, or the human's own "mark caught up" gesture? The
-   watermark design supports both; the email needs a clock.
+2. Deferred with the digest: is its unit the day, or the human's own "mark caught up"
+   gesture? The watermark design supports both; the email needs a clock.
 3. Should questions be a comment kind (proposed) or a fourth link kind? Comments keep
    the thread as the narrative; links would make "blocked on a human" visible in the
    readiness model. Both could be true; the comment is the smaller change.
