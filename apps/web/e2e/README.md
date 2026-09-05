@@ -122,7 +122,7 @@ Reviewed for Tines/170 and correct as they stand. Do not "fix" them:
 | `run-row.spec.ts:134` (`deadRuleRow`) | `RoutingRuleRow` carries no directive |
 | `schedules.spec.ts:394` | `ScheduleList` is `in:`-only |
 | `workflow-editor.spec.ts:62` | locates `<p>`, not a row |
-| `run-row.spec.ts:172` (`failedRow`) | a `RunRow`, but nothing in that path removes a row, so no outro runs |
+| `run-row.spec.ts:172` (`failedRow`) | a `RunRow`, but nothing in that path removes a row, so no outro runs (it is not `--repeat-each`-safe, for an unrelated reason — see below) |
 | `runner.spec.ts:314`, `:519` | `RunRow`s, saved by `.first()` — see the caveat below |
 
 The `.first()` caveat is worth stating, because it is half a fix: it prevents the strict-mode
@@ -166,6 +166,15 @@ const cdp = await page.context().newCDPSession(page);
 await cdp.send('Emulation.setCPUThrottlingRate', { rate: 20 });
 // ... trigger the swap the locator races ...
 ```
+
+**`--repeat-each N` is not a flake probe for this suite** — it re-runs the fixture-creating
+tests too, and they write to the one shared D1, so every repeat sees the rows the previous
+repeats left. `run-row.spec.ts:178` counts failed-run rows and goes 1 → 2 → 4 → 6 across
+repeats for that reason alone; on a server whose `.wrangler-e2e` already holds an earlier
+run's rows it reds on the first repeat. Measured under Tines/170: `--repeat-each 3` is 633
+passed / 3 failed, and all three failures are this or timing drift in a five-minute run
+(`dialog-pending.spec.ts:257` measures a real outro and is 24/24 in isolation), not the
+behaviour under test. Repeat a single spec file against a freshly seeded server instead.
 
 Then mutate your own fix (revert the locator, flip the config line) and confirm the check
 reds on that mutation alone.
