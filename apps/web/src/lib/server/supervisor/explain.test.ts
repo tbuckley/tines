@@ -123,7 +123,7 @@ describe('explainDispatch', () => {
 		expect(ex.matched_rule!.scope_label).toBe('project demo · state Open');
 	});
 
-	it('names the label in a label-scoped rule\'s scope', async () => {
+	it("names the label in a label-scoped rule's scope", async () => {
 		const t = world();
 		const runner = addRunner(t);
 		const docs = addLabel(t, 'docs');

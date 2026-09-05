@@ -258,7 +258,12 @@ function verdictLine(input: {
  */
 async function describeRules(
 	db: Kysely<Database>,
-	rules: { id: string; project_id: string | null; workflow_state_id: string | null; label_id: string | null }[]
+	rules: {
+		id: string;
+		project_id: string | null;
+		workflow_state_id: string | null;
+		label_id: string | null;
+	}[]
 ): Promise<{ rule_id: string; scope_label: string }[]> {
 	if (rules.length === 0) return [];
 	const ids = <T>(xs: (T | null)[]) => [...new Set(xs.filter((x): x is T => x !== null))];
@@ -270,11 +275,7 @@ async function describeRules(
 			? db.selectFrom('project').select(['id', 'name']).where('id', 'in', projectIds).execute()
 			: [],
 		stateIds.length
-			? db
-					.selectFrom('workflow_state')
-					.select(['id', 'name'])
-					.where('id', 'in', stateIds)
-					.execute()
+			? db.selectFrom('workflow_state').select(['id', 'name']).where('id', 'in', stateIds).execute()
 			: [],
 		labelIds.length
 			? db.selectFrom('label').select(['id', 'name']).where('id', 'in', labelIds).execute()

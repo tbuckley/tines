@@ -20,9 +20,11 @@ import {
 	optionalString,
 	requireString,
 	runAtomic,
+	runKeyForbidden,
 	type ActorContext
 } from './core';
 import { contextItemQuery, deleteContextItem } from './context';
+import { routingRuleDeletes, rulesScopedToLabel } from './routing';
 import { eventInsert } from './events';
 import { scopeLabel } from './scope';
 
@@ -286,16 +288,32 @@ export async function deleteLabel(
 			issueNumber: row.scope_issue_number
 		})
 	}));
-	if (scopedItems.length > 0 && !options.force) {
-		const shown = scopedItems
-			.slice(0, 5)
-			.map((i) => `${i.kind} "${i.name}" (${i.scope_label})`)
-			.join(', ');
+	const scopedRules = await rulesScopedToLabel(db, actor.userId, label.id);
+	if ((scopedItems.length > 0 || scopedRules.length > 0) && !options.force) {
+		const parts: string[] = [];
+		if (scopedItems.length > 0) {
+			const shown = scopedItems
+				.slice(0, 5)
+				.map((i) => `${i.kind} "${i.name}" (${i.scope_label})`)
+				.join(', ');
+			parts.push(
+				`${scopedItems.length} context item${scopedItems.length === 1 ? '' : 's'} (${shown}${scopedItems.length > 5 ? ', …' : ''})`
+			);
+		}
+		if (scopedRules.length > 0) {
+			const shown = scopedRules
+				.slice(0, 5)
+				.map((r) => r.scope_label)
+				.join(', ');
+			parts.push(
+				`${scopedRules.length} routing rule${scopedRules.length === 1 ? '' : 's'} (${shown}${scopedRules.length > 5 ? ', …' : ''})`
+			);
+		}
 		throw new ApiFail(
 			422,
 			'label_in_use',
-			`Cannot delete label "${label.name}": it scopes ${scopedItems.length} context item${scopedItems.length === 1 ? '' : 's'} (${shown}${scopedItems.length > 5 ? ', …' : ''}). Pass "force": true to delete them with the label`,
-			{ context_items: scopedItems, routing_rules: [] }
+			`Cannot delete label "${label.name}": it scopes ${parts.join(' and ')}. Pass "force": true to delete them with the label — rules are deleted, not broadened`,
+			{ context_items: scopedItems, routing_rules: scopedRules }
 		);
 	}
 	for (const item of scopedItems) {
@@ -309,6 +327,8 @@ export async function deleteLabel(
 	const issueCount = Number(used?.n ?? 0);
 
 	await runAtomic(env, [
+		// A label-scoped rule goes with the label: see `routingRuleDeletes`.
+		...routingRuleDeletes(db, actor, scopedRules),
 		// Explicit, because D1 does not enforce foreign keys by default.
 		db.deleteFrom('issue_label').where('label_id', '=', label.id).compile(),
 		db.deleteFrom('label').where('id', '=', label.id).where('user_id', '=', actor.userId).compile(),
@@ -319,6 +339,7 @@ export async function deleteLabel(
 				name: label.name,
 				issue_count: issueCount,
 				context_item_count: scopedItems.length,
+				routing_rule_count: scopedRules.length,
 				forced: options.force === true
 			}
 		})
@@ -327,7 +348,7 @@ export async function deleteLabel(
 		deleted: true,
 		issue_count: issueCount,
 		context_items_deleted: scopedItems,
-		routing_rules_deleted: []
+		routing_rules_deleted: scopedRules.map((r) => ({ id: r.id, scope_label: r.scope_label }))
 	};
 }
 
@@ -486,6 +507,43 @@ async function requireIssue(db: Kysely<Database>, userId: string, ref: string) {
 }
 
 /**
+ * A run key may classify its own issue, but not with a label a routing rule
+ * is scoped to. Routing is resolved at dispatch, so such a change cannot
+ * re-route the *current* run — but it can route the issue's next attempt
+ * (say, to the smartest tier), which is the self-escalation the control-plane
+ * fence exists to prevent. Label-scoped *context* is guidance, not control,
+ * and stays freely self-applicable.
+ *
+ * One indexed lookup on `routing_rule_label_idx`, run-key actors only, and it
+ * runs before anything is written: the call is all-or-nothing, like an
+ * `unknown_label` miss.
+ */
+async function assertLabelsDoNotRoute(
+	db: Kysely<Database>,
+	actor: ActorContext,
+	labels: Label[]
+): Promise<void> {
+	if (!actor.agentRunId || labels.length === 0) return;
+	const rules = await db
+		.selectFrom('routing_rule')
+		.select(['id', 'label_id'])
+		.where('user_id', '=', actor.userId)
+		.where(
+			'label_id',
+			'in',
+			labels.map((l) => l.id)
+		)
+		.execute();
+	if (rules.length === 0) return;
+	const routed = labels.filter((l) => rules.some((r) => r.label_id === l.id));
+	throw runKeyForbidden({
+		reason: 'routing_label',
+		labels: routed.map((l) => l.name),
+		rule_ids: rules.map((r) => r.id)
+	});
+}
+
+/**
  * Adds labels to an issue. Idempotent: re-adding an attached label is a 200
  * with an empty `added`, so a retrying agent never sees an error.
  */
@@ -498,6 +556,7 @@ export async function addIssueLabels(
 ): Promise<AddIssueLabelsResponse> {
 	const issue = await requireIssue(db, actor.userId, issueRef);
 	const { labels, toCreate } = await resolveOrCreateLabels(db, actor, refs);
+	await assertLabelsDoNotRoute(db, actor, labels);
 
 	const already = new Set((await loadIssueLabels(db, issue.id)).map((l) => l.id));
 	const added = labels.filter((l) => !already.has(l.id));
@@ -545,6 +604,8 @@ export async function removeIssueLabel(
 			`${issue.project_name}/${issue.number} does not have the label "${labelRef}"`
 		);
 	}
+
+	await assertLabelsDoNotRoute(db, actor, [label]);
 
 	await runAtomic(env, [
 		db

@@ -113,7 +113,7 @@ describe('eligibility', () => {
 		expect(candidates.map((c) => c.id)).toContain(issue);
 	});
 
-	it('carries each candidate\'s labels, so a label rule can match', async () => {
+	it("carries each candidate's labels, so a label rule can match", async () => {
 		const t = world();
 		const runner = addRunner(t);
 		const docs = addLabel(t, 'docs');
@@ -127,10 +127,18 @@ describe('eligibility', () => {
 		expect(byId.get(plain)).toEqual([]);
 
 		const rules = await loadEngineRules(t.db, USER);
-		expect(targetsForIssue(candidates.find((c) => c.id === labelled)!, rules).targets).toEqual([
-			{ runner_id: runner }
-		]);
-		expect(targetsForIssue(candidates.find((c) => c.id === plain)!, rules).targets).toEqual([]);
+		expect(
+			targetsForIssue(
+				candidates.find((c) => c.id === labelled)!,
+				rules
+			).targets
+		).toEqual([{ runner_id: runner }]);
+		expect(
+			targetsForIssue(
+				candidates.find((c) => c.id === plain)!,
+				rules
+			).targets
+		).toEqual([]);
 
 		const result = await pass(t);
 		expect(result.claimed).toBe(1);

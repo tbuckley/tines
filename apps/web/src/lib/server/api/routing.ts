@@ -7,7 +7,7 @@ import type {
 	ShadowWarning,
 	UpdateRoutingRuleRequest
 } from '@tines/shared';
-import type { Kysely } from 'kysely';
+import type { CompiledQuery, Kysely } from 'kysely';
 import { newId, type Database } from '$lib/server/db';
 import { ApiFail, notFound, runAtomic, type ActorContext } from './core';
 import { eventInsert } from './events';
@@ -471,6 +471,44 @@ export async function updateRoutingRule(
 		...(await getRoutingRule(db, actor.userId, id)),
 		warnings: shadowWarnings({ ...scope, id }, rules)
 	};
+}
+
+/**
+ * The rules a label scopes, for label deletion (D5). Named by scope the way
+ * `tines routing list` prints them, so the 422 reads like the rule list.
+ */
+export async function rulesScopedToLabel(
+	db: Kysely<Database>,
+	userId: string,
+	labelId: string
+): Promise<{ id: string; project_id: string | null; scope_label: string }[]> {
+	const rows = await ruleQuery(db, userId).where('routing_rule.label_id', '=', labelId).execute();
+	return rows.map((row) => ({
+		id: row.id,
+		project_id: row.project_id,
+		scope_label: rowScope(row).label
+	}));
+}
+
+/**
+ * Compiled deletes + `routing_rule.deleted` events for a label's rules, for
+ * the caller's batch. A label-scoped rule is *deleted*, never stripped of its
+ * label: stripping would silently broaden `label docs ∧ project X` into
+ * `project X` and route work nobody asked it to.
+ */
+export function routingRuleDeletes(
+	db: Kysely<Database>,
+	actor: ActorContext,
+	rules: { id: string; project_id: string | null; scope_label: string }[]
+): CompiledQuery[] {
+	return rules.flatMap((rule) => [
+		db.deleteFrom('routing_rule').where('id', '=', rule.id).compile(),
+		eventInsert(db, actor, {
+			type: 'routing_rule.deleted',
+			projectId: rule.project_id,
+			payload: { rule_id: rule.id, scope_label: rule.scope_label, via: 'label.deleted' }
+		})
+	]);
 }
 
 export async function deleteRoutingRule(
