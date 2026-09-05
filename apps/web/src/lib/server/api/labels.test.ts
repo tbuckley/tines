@@ -291,11 +291,17 @@ describe('the run-key vocabulary fence', () => {
 		expect(await names()).toEqual([]);
 	});
 
-	it('fences the library but not label application', () => {
-		expect(isControlPlanePath('/api/v1/labels')).toBe(true);
-		expect(isControlPlanePath('/api/v1/labels/lbl_1')).toBe(true);
-		expect(isControlPlanePath('/api/v1/issues/iss_1/labels')).toBe(false);
-		expect(isControlPlanePath('/api/v1/issues/iss_1/labels/bug')).toBe(false);
+	it('fences library writes but not reading the library or applying labels', () => {
+		// Minting, renaming, and deleting terms is taxonomy: fenced.
+		expect(isControlPlanePath('/api/v1/labels', 'POST')).toBe(true);
+		expect(isControlPlanePath('/api/v1/labels/lbl_1', 'PATCH')).toBe(true);
+		expect(isControlPlanePath('/api/v1/labels/lbl_1', 'DELETE')).toBe(true);
+		// Reading the vocabulary is classification: open. The launch prompt
+		// tells agents to run `tines labels list`, which is this GET.
+		expect(isControlPlanePath('/api/v1/labels', 'GET')).toBe(false);
+		// Applying and removing existing labels was always open.
+		expect(isControlPlanePath('/api/v1/issues/iss_1/labels', 'POST')).toBe(false);
+		expect(isControlPlanePath('/api/v1/issues/iss_1/labels/bug', 'DELETE')).toBe(false);
 	});
 });
 

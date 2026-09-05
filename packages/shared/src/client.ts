@@ -109,6 +109,56 @@ export class ApiError extends Error {
 	}
 }
 
+/**
+ * The runtime's own error code for a failed connection, when it has one.
+ * undici wraps the real cause one (DNS/dual-stack failures two, inside an
+ * AggregateError) levels down from the `TypeError: fetch failed` it throws.
+ */
+function causeCode(err: unknown): string | undefined {
+	const seen = new Set<unknown>();
+	let node: unknown = err;
+	while (node && typeof node === 'object' && !seen.has(node)) {
+		seen.add(node);
+		const e = node as { code?: unknown; cause?: unknown; errors?: unknown };
+		if (typeof e.code === 'string') return e.code;
+		node = e.cause ?? (Array.isArray(e.errors) ? e.errors[0] : undefined);
+	}
+	return undefined;
+}
+
+/**
+ * Thrown when the request never reached the server: connection refused, DNS
+ * failure, TLS error, offline. `fetch` itself only says "fetch failed", which
+ * omits the one fact the caller needs — which server was tried — so this
+ * names the base URL and the request, keeping the original error as `cause`.
+ */
+export class ApiNetworkError extends Error {
+	/** Method of the request that never completed. */
+	method: string;
+	/** Request path, query string included. */
+	path: string;
+	/** Base URL the client was built with; `''` for a same-origin caller. */
+	baseUrl: string;
+	/** The URL that was attempted (`baseUrl + path`). */
+	url: string;
+	/** The runtime's code for the failure (`ECONNREFUSED`, `ENOTFOUND`, …), when it gives one. */
+	code?: string;
+
+	constructor(method: string, path: string, baseUrl: string, cause: unknown) {
+		const code = causeCode(cause);
+		const detail = code ?? (cause instanceof Error ? cause.message : String(cause));
+		// An empty base URL means same-origin (the web app): naming it would
+		// print `could not reach  (…)`, so describe it instead.
+		super(`${method} ${path}: could not reach ${baseUrl || 'the server'} (${detail})`, { cause });
+		this.name = 'ApiNetworkError';
+		this.method = method;
+		this.path = path;
+		this.baseUrl = baseUrl;
+		this.url = `${baseUrl}${path}`;
+		this.code = code;
+	}
+}
+
 function query(params: object): string {
 	const search = new URLSearchParams();
 	for (const [key, value] of Object.entries(params) as [string, unknown][]) {
@@ -126,12 +176,24 @@ export function createApiClient(options: ApiClientOptions) {
 	const base = options.baseUrl.replace(/\/+$/, '');
 	const fetchFn = options.fetch ?? globalThis.fetch;
 
+	/**
+	 * Every request goes through here, so a transport failure is reported as an
+	 * ApiNetworkError naming the base URL rather than a bare "fetch failed".
+	 */
+	async function send(method: string, path: string, init: RequestInit): Promise<Response> {
+		try {
+			return await fetchFn(`${base}${path}`, init);
+		} catch (err) {
+			throw new ApiNetworkError(method, path, base, err);
+		}
+	}
+
 	async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
 		const headers: Record<string, string> = { accept: 'application/json' };
 		if (options.apiKey) headers.authorization = `Bearer ${options.apiKey}`;
 		if (body !== undefined) headers['content-type'] = 'application/json';
 
-		const res = await fetchFn(`${base}${path}`, {
+		const res = await send(method, path, {
 			method,
 			headers,
 			body: body === undefined ? undefined : JSON.stringify(body)
@@ -172,7 +234,7 @@ export function createApiClient(options: ApiClientOptions) {
 						opts.body.byteOffset + opts.body.byteLength
 					) as ArrayBuffer)
 				: opts.body;
-		const res = await fetchFn(`${base}${path}`, { method, headers, body });
+		const res = await send(method, path, { method, headers, body });
 		if (!res.ok) {
 			let parsed: ApiErrorBody['error'] | null = null;
 			try {

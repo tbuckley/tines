@@ -61,7 +61,17 @@ export const RUNROW = {
 	/** How the end was judged: rendered beside the status on every run row. */
 	outcome: 'advanced',
 	providerUrl: 'https://console.example.test/session/e2e-runrow',
-	providerSessionId: 'sess_e2e_runrow'
+	providerSessionId: 'sess_e2e_runrow',
+	/**
+	 * A *run key* for this run: an `api_key` row with `agent_run_id` set, which
+	 * is the only way to exercise the run-key control-plane fence over HTTP
+	 * (a real run's key is minted at launch and revoked when the run ends).
+	 * Safe on a `completed` run: keys are revoked by the run-end transition,
+	 * which already happened for this seeded row, and by the sweep's
+	 * `expires_at <= now` predicate, which the 2030 expiry keeps clear.
+	 */
+	runKey: 'tines_e2erunrow000000000000000000000000000000000',
+	runKeyName: 'run:runrow'
 };
 
 /**

@@ -77,6 +77,12 @@ statements.push(
 	   'balanced', 'claude-opus-4', '{"input_tokens":1000,"output_tokens":2000,"cost_usd":${RUNROW.costUsd},"cost_source":"provider"}',
 	   'wfs_std_open', 'wfs_std_open', '${RUNROW.providerSessionId}', '${RUNROW.providerUrl}', 'seeded log tail', NULL,
 	   ${runStart}, ${runStart}, ${nowMs});`,
+	// The run's key, for the run-key fence cases in api.spec.ts. Inserted after
+	// the agent_run row it references (api_key.agent_run_id is a FK); expiry is
+	// the same far-future date the sessions use, so the sweep never revokes it.
+	`INSERT INTO api_key (id, user_id, name, key_hash, key_prefix, created_at, agent_run_id, expires_at)
+	 VALUES ('key_e2e_runrow', '${ALICE.id}', '${RUNROW.runKeyName}', '${sha256Hex(RUNROW.runKey)}',
+	   '${RUNROW.runKey.slice(0, 14)}', ${nowMs}, '${RUNROW.runId}', ${Date.parse(expires)});`,
 	// A second run on the same issue, this one failed with a long error: the
 	// row clamps it to two lines and the Logs disclosure carries it whole.
 	// Its own runner keeps every `hasText: <runner name>` row selector at one
