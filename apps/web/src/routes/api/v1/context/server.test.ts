@@ -7,11 +7,18 @@
  */
 import { describe, expect, it } from 'vitest';
 import { createContextItem, listContextItems } from '$lib/server/api/context';
+import type { ActorContext } from '$lib/server/api/core';
 import { createTestDb } from '$lib/server/api/test-db';
 import { addLabel, seedBase, USER } from '$lib/server/supervisor/test-fixtures';
 import { GET } from './+server';
 
-const actor = { userId: USER, name: 'alice' };
+const actor: ActorContext = {
+	userId: USER,
+	userName: 'alice',
+	apiKeyId: null,
+	apiKeyName: null,
+	viaSession: true
+};
 
 async function list(t: ReturnType<typeof createTestDb>, query: string) {
 	const url = new URL(`http://test/api/v1/context${query}`);
