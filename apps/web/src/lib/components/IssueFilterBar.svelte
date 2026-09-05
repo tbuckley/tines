@@ -144,7 +144,7 @@
 
 <!-- One line from `sm` up: scope, tabs, Filter and its chips, then search at
      the far right. On a phone, `order` rebuilds it as rows: scope + Filter +
-     search button, then the tabs (scrolling sideways), then any chips, then
+     search button, then the tabs (wrapping to a second row), then any chips, then
      the search field when opened. -->
 <div class="mb-6 flex flex-wrap items-center gap-x-3 gap-y-2">
 	{#if projects}
@@ -161,11 +161,10 @@
 		</Select>
 	{/if}
 
-	<nav
-		aria-label="Category"
-		class="order-3 -mx-1 w-[calc(100%+0.5rem)] [scrollbar-width:none] overflow-x-auto px-1 sm:order-none sm:mx-0 sm:w-auto sm:overflow-visible sm:px-0"
-	>
-		<div class="bg-muted/60 inline-flex h-9 items-center gap-0.5 rounded-md border p-[3px]">
+	<nav aria-label="Category" class="order-3 w-full sm:order-none sm:w-auto">
+		<div
+			class="bg-muted/60 flex flex-wrap items-center gap-0.5 rounded-md border p-[3px] sm:inline-flex sm:h-9 sm:flex-nowrap"
+		>
 			{#each tabs as tab (tab.key)}
 				{@const on = active === tab.key}
 				<a
