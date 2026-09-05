@@ -49,11 +49,14 @@ test.describe.serial('run-key fence', () => {
 
 	test('reads the label library, descriptions and all', async ({ request }) => {
 		// Seeded by the run key's own user, so the read has something to find.
-		await apiClient(request, ALICE.apiKey).post('/api/v1/labels', {
+		// Asserted, so a rejected create fails here rather than as a missing
+		// description below.
+		const created = await apiClient(request, ALICE.apiKey).post('/api/v1/labels', {
 			name: labelName,
-			color: 'purple',
+			color: 'violet',
 			description: labelDescription
 		});
+		expect(created.status()).toBe(201);
 
 		const res = await apiClient(request, RUNROW.runKey).get('/api/v1/labels');
 		expect(res.status()).toBe(200);
