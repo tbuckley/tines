@@ -9,7 +9,8 @@ import { apiClient, body, runId, signIn } from './helpers';
  * title squeezed to 108px beside a "Needs Clarification" badge) and the
  * state, ref, signals, labels and time share one metadata line beneath it.
  * From `sm` up the row is a single 40px line in reading order: state, ref,
- * title, then the rest.
+ * title, then the rest. The category tab strip above the rows is covered at
+ * the foot of this file.
  */
 
 const PHONE = { width: 390, height: 844 };
@@ -238,4 +239,118 @@ test('a desktop row on the project page stays a single line', async ({ page }) =
 	expect(stateBox.x).toBeLessThan(numberBox.x);
 	expect(numberBox.x).toBeLessThan(titleBox.x);
 	await expect(r.getByText(projectName)).toHaveCount(0);
+});
+
+/**
+ * The category tab strip (Tines/180). On a phone the five tabs no longer
+ * scroll sideways inside a 358px box that clipped "Awaiting" mid-tab and put
+ * Done off-screen entirely: the pill wraps them onto a second row, so every
+ * tab is on screen and one tap away, and the selected tab is visible on a
+ * filtered load. From `sm` up the strip is the same single 36px line as before.
+ */
+
+const strip = (page: Page): Locator => page.getByRole('navigation', { name: 'Category' });
+/** The bordered pill inside the nav — the flex container that wraps. */
+const pill = (page: Page): Locator => strip(page).locator('> div');
+/** Tabs are named with their count ("Done 0"), so match the label as a word. */
+const tab = (page: Page, name: string): Locator =>
+	strip(page).getByRole('link', { name: new RegExp(`^${name}\\b`) });
+
+const TABS = ['Open', 'Backlog', 'Active', 'Awaiting', 'Done'];
+
+/** How far the nav could be scrolled sideways: 0 once nothing overflows. */
+const overflow = (page: Page): Promise<number> =>
+	strip(page).evaluate((el) => el.scrollWidth - el.clientWidth);
+
+async function expectAllTabsOnScreen(page: Page, width: number) {
+	for (const name of TABS) {
+		const t = tab(page, name);
+		await expect(t, `${name} tab`).toBeInViewport({ ratio: 1 });
+		const b = await box(t);
+		expect(b.x + b.width, `${name} tab right edge`).toBeLessThanOrEqual(width);
+	}
+	// Not merely "scrolled to the right place": there is nothing to scroll.
+	expect(await overflow(page)).toBe(0);
+}
+
+test.describe('the category tab strip', () => {
+	test('every category tab is fully on screen on a phone', async ({ page }) => {
+		await page.setViewportSize(PHONE);
+		await page.goto(listUrl);
+		await expect(tab(page, 'Open')).toBeVisible();
+
+		await expectAllTabsOnScreen(page, PHONE.width);
+		expect(await strip(page).evaluate((el) => getComputedStyle(el).overflowX)).toBe('visible');
+
+		// Two rows, not one long one and not three: Done sits under Open.
+		const open = await box(tab(page, 'Open'));
+		const done = await box(tab(page, 'Done'));
+		expect(done.y).toBeGreaterThan(open.y + 20);
+		expect((await box(pill(page))).height).toBeLessThan(80);
+
+		// The counts survive the wrap — they are why the strip overflowed, and
+		// dropping them was the alternative this layout was chosen over.
+		const count = tab(page, 'Awaiting').locator('.tabular-nums');
+		await expect(count).toBeVisible();
+		await expect(count).toHaveText(/^\d+$/);
+	});
+
+	test('the strip fits a 320px phone', async ({ page }) => {
+		await page.setViewportSize({ width: 320, height: 568 });
+		await page.goto(listUrl);
+		await expect(tab(page, 'Open')).toBeVisible();
+
+		await expectAllTabsOnScreen(page, 320);
+	});
+
+	test('a filtered load shows its selected tab', async ({ page }) => {
+		await page.setViewportSize(PHONE);
+		// The scroll strip started at scrollLeft 0, so the highlighted tab was
+		// off-screen on exactly the load that needed it.
+		await page.goto(`${listUrl}&category=done`);
+
+		const done = tab(page, 'Done');
+		await expect(done).toHaveAttribute('aria-current', 'page');
+		await expect(done).toBeInViewport({ ratio: 1 });
+	});
+
+	test('Done is one tap on a phone', async ({ page }) => {
+		await page.setViewportSize(PHONE);
+		await page.goto(listUrl);
+
+		// Before the click: Playwright scrolls to what it clicks, so only the
+		// pre-click check proves no swipe was needed to reach the tab.
+		const done = tab(page, 'Done');
+		await expect(done).toBeInViewport({ ratio: 1 });
+		await done.click();
+		await expect(page).toHaveURL(/category=done/);
+		await expect(tab(page, 'Done')).toHaveAttribute('aria-current', 'page');
+	});
+
+	test('the project page strip wraps the same way', async ({ page }) => {
+		await page.setViewportSize(PHONE);
+		await page.goto(`/projects/${project.id}`);
+		await expect(tab(page, 'Open')).toBeVisible();
+
+		await expectAllTabsOnScreen(page, PHONE.width);
+	});
+
+	test('the desktop strip stays one line', async ({ page }) => {
+		await page.setViewportSize(DESKTOP);
+		await page.goto(listUrl);
+		await expect(tab(page, 'Open')).toBeVisible();
+
+		const ys: number[] = [];
+		for (const name of TABS) ys.push((await box(tab(page, name))).y);
+		for (const y of ys) expect(Math.abs(y - ys[0])).toBeLessThan(2);
+		expect((await box(pill(page))).height).toBeLessThan(40);
+
+		// The phone classes must not leak past `sm`: a one-line measurement
+		// would pass with them, these two computed values would not.
+		const styles = await pill(page).evaluate((el) => {
+			const s = getComputedStyle(el);
+			return { wrap: s.flexWrap, display: s.display };
+		});
+		expect(styles).toEqual({ wrap: 'nowrap', display: 'inline-flex' });
+	});
 });
