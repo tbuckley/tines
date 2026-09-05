@@ -1,13 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import {
-	addIssue,
-	addRun,
-	addRunner,
-	NOW,
-	seedBase,
-	USER
-} from '../supervisor/test-fixtures';
+import { addIssue, addRun, addRunner, NOW, seedBase, USER } from '../supervisor/test-fixtures';
 import { countRunKeys, listApiKeys, revokeApiKey } from './apikeys';
+import type { ActorContext } from './core';
 import { actorRunOf } from './events';
 import { createTestDb, type TestDb } from './test-db';
 
@@ -17,7 +11,13 @@ import { createTestDb, type TestDb } from './test-db';
  */
 function addKey(
 	t: TestDb,
-	opts: { id: string; name: string; runId?: string | null; revokedAt?: number | null; createdAt?: number }
+	opts: {
+		id: string;
+		name: string;
+		runId?: string | null;
+		revokedAt?: number | null;
+		createdAt?: number;
+	}
 ): string {
 	t.sqlite
 		.prepare(
@@ -37,7 +37,13 @@ function addKey(
 	return opts.id;
 }
 
-const actor = { userId: USER, apiKeyId: null };
+const actor: ActorContext = {
+	userId: USER,
+	userName: 'alice',
+	apiKeyId: null,
+	apiKeyName: null,
+	viaSession: true
+};
 
 describe('listApiKeys', () => {
 	it('returns a user with no runs their own keys, newest first, with no run provenance', async () => {
