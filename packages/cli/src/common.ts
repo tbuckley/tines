@@ -8,6 +8,7 @@ import { formatTable } from './format.js';
 import { parseIssueRef } from './refs.js';
 import {
 	ApiError,
+	ApiNetworkError,
 	createApiClient,
 	listAll,
 	type ApiClient,
@@ -159,6 +160,13 @@ export function reportError(err: unknown): never {
 			}
 		}
 		die(message);
+	}
+	// A transport failure already names the base URL it tried (ApiNetworkError);
+	// what it cannot know is that the URL is settable, so say where from.
+	if (err instanceof ApiNetworkError) {
+		die(
+			`${err.message}\nhint: set the base URL with --url, TINES_API_URL, or \`tines login --url <url>\` (\`tines config\` shows the one in effect)`
+		);
 	}
 	die(err instanceof Error ? err.message : String(err));
 }
