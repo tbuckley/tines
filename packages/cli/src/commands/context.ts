@@ -8,6 +8,7 @@ import {
 	printJson,
 	printList,
 	resolveIssue,
+	resolveLabelFlag,
 	resolveProject,
 	resolveStateFlag,
 	table,
@@ -43,15 +44,6 @@ type ScopeIdFields = Pick<
 	CreateContextItemRequest,
 	'project_id' | 'workflow_state_id' | 'issue_id' | 'label_id'
 >;
-
-/** Resolves a label by name (case-insensitive) or id against the library. */
-async function resolveLabelFlag(api: ApiClient, ref: string): Promise<string> {
-	const match = (await api.listLabels()).items.find(
-		(l) => l.id === ref || l.name.toLowerCase() === ref.toLowerCase()
-	);
-	if (!match) die(`no such label: ${ref}`);
-	return match.id;
-}
 
 /** Resolves the scope flags (names → ids). Only set flags are returned. */
 async function resolveScopeFlags(api: ApiClient, opts: ScopeFlagOpts): Promise<ScopeIdFields> {

@@ -895,6 +895,7 @@ Delete the rule at a scope (issues it matched stop dispatching)
 Options:
   -p, --project <name>          scope: project name or id
   -s, --state <workflow/state>  scope: workflow-qualified state
+  -l, --label <name>            scope: issue label name or id
   -u, --url <url>               base URL of the Tines API (or set TINES_API_URL,
                                 or run \`tines login\`; default
                                 https://tines.tbuckley.dev)
@@ -922,6 +923,7 @@ targets
 Options:
   -p, --project <name>          scope: project name or id
   -s, --state <workflow/state>  scope: workflow-qualified state
+  -l, --label <name>            scope: issue label name or id
   -u, --url <url>               base URL of the Tines API (or set TINES_API_URL,
                                 or run \`tines login\`; default
                                 https://tines.tbuckley.dev)
