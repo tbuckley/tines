@@ -151,14 +151,18 @@ type Box = { x: number; y: number; width: number; height: number };
  * (Tines/123).
  */
 function boxes(locators: Locator[]): Promise<Box[]> {
-	return readSettled(() =>
-		Promise.all(
-			locators.map(async (l) => {
-				const box = await l.boundingBox();
-				expect(box).not.toBeNull();
-				return box!;
-			})
-		)
+	// Bounded, as the hand-rolled loop this replaced was: a layout that never
+	// settles should fail here in seconds, not burn the whole test timeout.
+	return readSettled(
+		() =>
+			Promise.all(
+				locators.map(async (l) => {
+					const box = await l.boundingBox();
+					expect(box).not.toBeNull();
+					return box!;
+				})
+			),
+		{ timeout: 5_000 }
 	);
 }
 

@@ -71,17 +71,66 @@ per-spec `emulateMedia` workaround.
 ## Rows in animated lists
 
 Svelte 5's `out()` sets `element.inert = true` for the whole outro and clears it at
-`outroend`, at least one frame later **even at 0 ms**. Reduced motion narrows that window;
-it does not remove it. So in a list whose `<li>` carries `transition:` or `out:`, locate
-rows as:
+`outroend`, at least one frame later **even at 0 ms**. So in a list whose `<li>` carries
+`transition:` or `out:`, locate rows as:
 
 ```ts
 page.locator('li:not([inert])', { hasText: name });
 ```
 
-Components that animate an `<li>` with an outro today: `ContextItemList`,
-`EffectiveContextView`, `RunRow`. `IssueList` and `ScheduleList` use `in:`-only directives
-and never go `inert` — do not scope what needs no scoping.
+How much reduced motion alone buys, measured (Tines/170, the `?workflow=` filter swap in
+`context.spec.ts`, CPU throttled 100x right before the swap, unscoped `page.locator('li')`,
+count read once with no auto-retry):
+
+| motion | result |
+| --- | --- |
+| `no-preference` | **10/10 failed** — `2 rows`, strict mode would have thrown |
+| `reduce` | **10/10 passed** |
+
+So at that site reduced motion is on its own sufficient: the 180 ms outro collapses to one
+frame and the sample never lands inside it. Read that as "not observable", not as "gone" —
+`out()` still sets `inert` unconditionally for that frame, and a pass is the failure mode of
+every hazard on this page. Scoping is the cheap belt-and-braces, and it is what makes a
+locator sound rather than lucky, so keep it wherever a row is located and then acted on.
+
+Components that put an outro on the `<li>` itself today — these are the lists that need
+scoping:
+
+| component | directive |
+| --- | --- |
+| `ContextItemList.svelte:45` | `transition:slide` |
+| `EffectiveContextView.svelte:47,71,100` | `transition:slide` |
+| `RunRow.svelte:46` | `transition:slide` |
+| `ArtifactsPanel.svelte:296` | `transition:slide` |
+| `EventList.svelte:83` | `in:slide out:fade` |
+| `RelationsCard.svelte:260` | `animate:flip transition:slide` |
+
+`IssueList.svelte:62` (`animate:flip in:fade`) and `ScheduleList.svelte:153` (`in:fade`) are
+`in:`-only and never go `inert`; `WorkflowEditor.svelte` animates `<p>`/`<div>`, not its
+`<li>`; the `<li>`s on `/settings/labels` and in `RoutingRuleRow.svelte` carry no directive
+at all. Do not scope what needs no scoping — but re-derive this table rather than trusting
+it, with `grep -rn -A6 '<li' --include='*.svelte' src`, since a component gains a directive
+without anyone thinking about this file.
+
+### Sites deliberately left unscoped
+
+Reviewed for Tines/170 and correct as they stand. Do not "fix" them:
+
+| site | why it is sound |
+| --- | --- |
+| `labels.spec.ts:125` | `/settings/labels` rows carry no directive |
+| `run-row.spec.ts:134` (`deadRuleRow`) | `RoutingRuleRow` carries no directive |
+| `schedules.spec.ts:394` | `ScheduleList` is `in:`-only |
+| `workflow-editor.spec.ts:62` | locates `<p>`, not a row |
+| `run-row.spec.ts:172` (`failedRow`) | a `RunRow`, but nothing in that path removes a row, so no outro runs |
+| `runner.spec.ts:314`, `:519` | `RunRow`s, saved by `.first()` — see the caveat below |
+
+The `.first()` caveat is worth stating, because it is half a fix: it prevents the strict-mode
+violation, not the race. `.first()` can still resolve to a row that is on its way out and
+`inert`, and both sites go on to click inside the row (`runner.spec.ts:318`, `:527`). They
+are sound today only because neither path removes a row while the locator is live —
+`runner.spec.ts:527`'s click additionally sits in a `toPass` retry. If either grows a
+removal, scope it; prefer `li:not([inert])` over `.first()` in new code.
 
 The second hazard, which reduced motion does **not** close: the pre-flush window after a
 client-side navigation or filter change — the URL has flipped but the DOM still holds the
@@ -102,7 +151,9 @@ single `boundingBox()` is one frame, and the issue page keeps reflowing after th
 visible as streamed panels resolve (Tines/123) — which reduced motion does not touch, since
 it is reflow rather than transition. `readSettled(read, { bestEffort: true })` returns the
 last read instead of throwing when the layout never settles, for callers whose own
-assertions name that failure better than a timeout here would.
+assertions name that failure better than a timeout here would. Pass a `timeout` so a layout
+that never settles fails there rather than burning the test timeout, and keep `T`
+JSON-comparable — reads are compared with `JSON.stringify`.
 
 ## Verifying a flake fix
 

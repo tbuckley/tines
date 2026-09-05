@@ -118,6 +118,11 @@ export async function clickUntil(button: Locator, done: () => Promise<void>): Pr
  * `bestEffort: true` returns the last read instead of throwing when the
  * layout never settles within `timeout`, for callers whose own assertions
  * name the failure better than a timeout here would.
+ *
+ * Reads are compared by `JSON.stringify`, so `T` must be JSON-comparable with
+ * a stable key order — plain objects and arrays of them. A `Map`, a `Set` or a
+ * field that is sometimes `undefined` serialises to something that hides the
+ * change, and the first read would be declared settled.
  */
 export async function readSettled<T>(
 	read: () => Promise<T>,

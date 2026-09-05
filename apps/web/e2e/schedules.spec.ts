@@ -8,7 +8,7 @@ import type {
 	TinesEvent,
 	WorkflowResponse
 } from '@tines/shared';
-import { expect, test, type Locator } from '@playwright/test';
+import { expect, test } from '@playwright/test';
 import { ALICE, BOB, SCHED } from './constants.mjs';
 import { apiClient, body, clickUntil, errorBody, runId, signIn } from './helpers';
 

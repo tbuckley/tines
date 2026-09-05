@@ -1,5 +1,5 @@
 import type { IssueDetail, Project, WorkflowResponse } from '@tines/shared';
-import { expect, test, type Locator, type Page } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 import { ALICE } from './constants.mjs';
 import { apiClient, body, clickUntil, runId, signIn } from './helpers';
 
