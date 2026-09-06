@@ -11,7 +11,16 @@ import { createHash } from 'node:crypto';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ALICE, BOB, CAROL, PAGINATION, RUNROW, RUNROW_FAILED, SCHED } from './constants.mjs';
+import {
+	ALICE,
+	BOB,
+	CAROL,
+	DANA,
+	PAGINATION,
+	RUNROW,
+	RUNROW_FAILED,
+	SCHED
+} from './constants.mjs';
 
 const sha256Hex = (s) => createHash('sha256').update(s).digest('hex');
 
@@ -20,7 +29,7 @@ const nowMs = Date.now();
 const expires = '2030-01-01T00:00:00.000Z';
 
 const statements = [];
-for (const user of [ALICE, BOB, CAROL, PAGINATION.user]) {
+for (const user of [ALICE, BOB, CAROL, DANA, PAGINATION.user]) {
 	statements.push(
 		`INSERT INTO user (id, name, email, emailVerified, createdAt, updatedAt)
 		 VALUES ('${user.id}', '${user.name}', '${user.email}', 1, '${nowIso}', '${nowIso}');`,
