@@ -1170,6 +1170,25 @@ export interface ArtifactDetail extends Artifact {
 	versions: ArtifactVersion[];
 }
 
+/**
+ * `POST /api/v1/issues/:id/artifacts/:name/site-link` — a short-lived signed
+ * URL that renders an HTML artifact (see specs/artifacts/SPEC.md "Sites").
+ */
+export interface ArtifactSiteLink {
+	/** Absolute `/s/<token>/` URL: the iframe src and the "open full page" href. */
+	url: string;
+	/** The version the link is pinned to. */
+	version: number;
+	/** Epoch ms after which the link 403s. */
+	expires_at: number;
+	/**
+	 * `sandbox-origin`: served from a cross-site host, so storage APIs work.
+	 * `same-origin`: served from the app origin under CSP `sandbox` (opaque
+	 * origin — `localStorage` throws). Local dev, e2e and previews are the latter.
+	 */
+	mode: 'sandbox-origin' | 'same-origin';
+}
+
 export interface ArtifactListResponse {
 	items: Artifact[];
 }
