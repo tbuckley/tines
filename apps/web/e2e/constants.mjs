@@ -92,7 +92,15 @@ export const RUNROW_FAILED = {
 	 */
 	error:
 		'harness exited 1: ENOSPC: no space left on device, write ' +
-		'/Users/runner/.config/tines/workspaces/arun_9Xq2TbW/tines/node_modules/.vite/deps/chunk-4QWERTY.js'
+		'/Users/runner/.config/tines/workspaces/arun_9Xq2TbW/tines/node_modules/.vite/deps/chunk-4QWERTY.js',
+	/**
+	 * This run's key, seeded *already revoked* — the API keys page hides
+	 * revoked run keys until "Show revoked" is ticked, and that is the only
+	 * fixture proving it. Being revoked it can never authenticate, so unlike
+	 * RUNROW.runKey it cannot perturb api.spec.ts's run-key fence cases.
+	 */
+	runKey: 'tines_e2efailedrun000000000000000000000000000000',
+	runKeyName: 'run:runrow-failed'
 };
 
 export const BOB = {
