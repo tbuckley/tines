@@ -2,6 +2,7 @@
 	import type { RoutingRuleWithWarnings } from '@tines/shared';
 	import IconRobot from '@tabler/icons-svelte/icons/robot';
 	import RoutingRuleRow from '$lib/components/RoutingRuleRow.svelte';
+	import { buttonVariants } from '$lib/components/ui/button';
 
 	/**
 	 * The inline "agent routing" rows on project and workflow-state detail
@@ -11,12 +12,15 @@
 	let {
 		rules,
 		activeStateIds,
-		emptyMessage = 'No routing rule applies here — issues will not dispatch to agents.'
+		emptyMessage = 'No routing rule applies here — issues will not dispatch to agents.',
+		emptyAction
 	}: {
 		rules: RoutingRuleWithWarnings[];
 		/** Ids of active-category states, for the "never dispatches" warning on dead rules. */
 		activeStateIds: Set<string>;
 		emptyMessage?: string;
+		/** The next step, when there is one — rendered as a link under the message. */
+		emptyAction?: { label: string; href: string };
 	} = $props();
 </script>
 
@@ -32,6 +36,13 @@
 	{#if rules.length === 0}
 		<div class="text-muted-foreground rounded-lg border border-dashed p-4 text-center text-sm">
 			{emptyMessage}
+			{#if emptyAction}
+				<div class="mt-3">
+					<a href={emptyAction.href} class={buttonVariants({ variant: 'outline', size: 'sm' })}>
+						{emptyAction.label}
+					</a>
+				</div>
+			{/if}
 		</div>
 	{:else}
 		<ul class="divide-y rounded-lg border" aria-label="Agent routing rules">

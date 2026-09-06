@@ -7,6 +7,7 @@
 	import { flip } from 'svelte/animate';
 	import { fade } from 'svelte/transition';
 	import { goto } from '$app/navigation';
+	import { buttonVariants } from '$lib/components/ui/button';
 	import LabelStrip from '$lib/components/LabelStrip.svelte';
 	import StateGlyph from '$lib/components/StateGlyph.svelte';
 	import {
@@ -19,8 +20,15 @@
 	let {
 		issues,
 		showProject = true,
-		emptyMessage = 'No issues here.'
-	}: { issues: IssueListItem[]; showProject?: boolean; emptyMessage?: string } = $props();
+		emptyMessage = 'No issues here.',
+		emptyAction
+	}: {
+		issues: IssueListItem[];
+		showProject?: boolean;
+		emptyMessage?: string;
+		/** The next step, when the empty list has one — rendered as a link under the message. */
+		emptyAction?: { label: string; href: string };
+	} = $props();
 
 	const dur = () => (prefersReducedMotion() ? 0 : 220);
 
@@ -54,6 +62,13 @@
 {#if issues.length === 0}
 	<div class="text-muted-foreground rounded-lg border border-dashed p-10 text-center text-sm">
 		{emptyMessage}
+		{#if emptyAction}
+			<div class="mt-3">
+				<a href={emptyAction.href} class={buttonVariants({ variant: 'outline', size: 'sm' })}>
+					{emptyAction.label}
+				</a>
+			</div>
+		{/if}
 	</div>
 {:else}
 	<ul class="divide-y rounded-lg border">

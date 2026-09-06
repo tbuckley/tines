@@ -36,6 +36,7 @@
 		open = $bindable(false),
 		item = null,
 		defaults = {},
+		defaultKind,
 		projects,
 		workflows,
 		onsaved
@@ -45,6 +46,8 @@
 		item?: ContextItem | null;
 		/** Scope pre-filled on create (e.g. "attach to this issue"). */
 		defaults?: ScopeDefaults;
+		/** Kind pre-selected on create, when the caller opened the editor for a specific one. */
+		defaultKind?: ContextKind;
 		projects: Project[];
 		workflows: WorkflowResponse[];
 		onsaved?: () => void | Promise<void>;
@@ -90,7 +93,7 @@
 		if (open && !wasOpen) {
 			errorMessage = null;
 			previewBody = false;
-			kind = item?.kind ?? 'prompt';
+			kind = item?.kind ?? defaultKind ?? 'prompt';
 			name = item?.name ?? '';
 			description = item?.description ?? '';
 			projectId = item ? (item.scope.project_id ?? '') : (defaults.project_id ?? '');

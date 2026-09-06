@@ -1,6 +1,6 @@
 <script lang="ts">
 	import IconFolderPlus from '@tabler/icons-svelte/icons/folder-plus';
-	import { goto } from '$app/navigation';
+	import { afterNavigate, goto, replaceState } from '$app/navigation';
 	import { page } from '$app/state';
 	import CheckboxField from '$lib/components/CheckboxField.svelte';
 	import NewProjectModal from '$lib/components/NewProjectModal.svelte';
@@ -17,6 +17,24 @@
 	const cards = $derived(data.showArchived ? [...data.live, ...data.archived] : data.live);
 
 	let createOpen = $state(false);
+
+	// `/projects?new=1` is how other surfaces say "start here" (the Issues tab's
+	// empty state). Consume the flag immediately so nav-memory never remembers
+	// it and reopens the dialog on every later Projects click.
+	//
+	// This hangs off afterNavigate rather than an $effect because the link is
+	// often clicked before this page's own JS has run — the empty state is the
+	// first thing on a fresh account's Issues tab — which makes it a full page
+	// load, as does pasting the URL. An $effect runs during hydration, before
+	// the router has started, and `replaceState` is only usable after that:
+	// it reaches into the router's root component and throws, which aborts the
+	// flush that would have rendered the dialog. afterNavigate fires for the
+	// initial load too, once the router is up.
+	afterNavigate(() => {
+		if (page.url.searchParams.get('new') !== '1') return;
+		createOpen = true;
+		replaceState('/projects', page.state);
+	});
 
 	async function toggleArchived(show: boolean) {
 		await goto(show ? '/projects?archived=1' : '/projects', { keepFocus: true, noScroll: true });

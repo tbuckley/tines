@@ -47,6 +47,14 @@ describe('explainDispatch', () => {
 		expect(ex.verdict).toBe('Automation is off');
 		expect(ex.eligible).toBe(false);
 		expect(check(ex, 'automation_enabled').ok).toBe(false);
+		expect(check(ex, 'automation_enabled').action).toEqual({
+			label: 'Turn automation on',
+			href: '/agents',
+			cli: 'tines supervisor enable'
+		});
+		// A remedy is presentational: the passing checks stay bare.
+		expect(check(ex, 'ready').action).toBeUndefined();
+		expect(check(ex, 'no_active_run').action).toBeUndefined();
 	});
 
 	it('reports an archived project, and clears once it is unarchived', async () => {
@@ -90,7 +98,26 @@ describe('explainDispatch', () => {
 			.run(blocker, issue);
 		const ex = (await explainDispatch(t.db, USER, issue, NOW))!;
 		expect(check(ex, 'ready').ok).toBe(false);
+		expect(check(ex, 'ready').action?.href).toMatch(/^\/issues\/demo\/\d+$/);
+		expect(check(ex, 'ready').action?.label).toMatch(/^Open demo\/\d+$/);
 		expect(ex.verdict).toContain('Not eligible — blocked by');
+	});
+
+	it('points a duplicate at the issue it duplicates', async () => {
+		const t = world();
+		const runner = addRunner(t);
+		addRule(t, { targets: [{ runner_id: runner }] });
+		const issue = addIssue(t);
+		const original = addIssue(t);
+		t.sqlite
+			.prepare(
+				`INSERT INTO issue_link (id, source_issue_id, target_issue_id, kind, created_at) VALUES ('lnk_dup', ?, ?, 'duplicate_of', ${NOW})`
+			)
+			.run(issue, original);
+		const ex = (await explainDispatch(t.db, USER, issue, NOW))!;
+		const ready = check(ex, 'ready');
+		expect(ready.ok).toBe(false);
+		expect(ready.action?.href).toMatch(/^\/issues\/demo\/\d+$/);
 	});
 
 	it('reports parking with the attempt tally', async () => {
@@ -103,16 +130,64 @@ describe('explainDispatch', () => {
 		expect(ex.attempt_count).toBe(3);
 		expect(ex.attempt_limit).toBe(3);
 		expect(ex.verdict).toBe('Parked — agents struck out 3 times here');
+		const parked = check(ex, 'not_parked');
+		expect(parked.action?.label).toBe('Resume');
+		expect(parked.action?.cli).toMatch(/^tines issues resume demo\/\d+$/);
+		// The Resume button is the parked banner on the same page, so no link.
+		expect(parked.action?.href).toBeUndefined();
 	});
 
 	it('says so when no rule matches', async () => {
 		const t = world();
-		addRunner(t);
+		addRunner(t, { name: 'macbook-claude' });
 		const issue = addIssue(t);
 		const ex = (await explainDispatch(t.db, USER, issue, NOW))!;
 		expect(ex.matched_rule).toBeNull();
 		expect(check(ex, 'routed').ok).toBe(false);
+		expect(check(ex, 'routed').action).toEqual({
+			label: 'Add a routing rule',
+			href: '/agents#routing',
+			cli: 'tines routing set macbook-claude'
+		});
 		expect(ex.verdict).toBe('No matching routing rule — nothing will dispatch');
+	});
+
+	it('falls back to a placeholder runner name when the account has none', async () => {
+		const t = world();
+		const issue = addIssue(t);
+		const ex = (await explainDispatch(t.db, USER, issue, NOW))!;
+		expect(check(ex, 'routed').action?.cli).toBe('tines routing set <runner>');
+	});
+
+	it('offers to edit a matched rule that has no targets', async () => {
+		const t = world();
+		addRunner(t);
+		addRule(t, { targets: [] });
+		const issue = addIssue(t);
+		const ex = (await explainDispatch(t.db, USER, issue, NOW))!;
+		const routed = check(ex, 'routed');
+		expect(routed.ok).toBe(false);
+		expect(routed.detail).toContain('no targets');
+		expect(routed.action).toEqual({ label: 'Edit the rule', href: '/agents#routing' });
+	});
+
+	it('offers to clear a pin that points at a runner which no longer exists', async () => {
+		const t = world();
+		const runner = addRunner(t);
+		const issue = addIssue(t, { pinnedRunner: runner });
+		// The pin column has no ON DELETE, so reach the dangling state the
+		// verdict line already knows about the only way the test can.
+		t.sqlite.exec(
+			`PRAGMA foreign_keys = OFF; DELETE FROM runner WHERE id = '${runner}'; PRAGMA foreign_keys = ON;`
+		);
+		const ex = (await explainDispatch(t.db, USER, issue, NOW))!;
+		const routed = check(ex, 'routed');
+		// The engine would still try the pin, so the check itself passes —
+		// the remedy rides along with the verdict that nothing can run.
+		expect(routed.ok).toBe(true);
+		expect(ex.verdict).toBe('Pinned to a removed runner — clear the pin');
+		expect(routed.action?.label).toBe('Clear the pin');
+		expect(routed.action?.cli).toMatch(/^tines issues assign demo\/\d+ --clear$/);
 	});
 
 	it('names the matched rule and per-target verdicts with tier→model resolution', async () => {
@@ -171,6 +246,10 @@ describe('explainDispatch', () => {
 		expect(ex.eligible).toBe(false);
 		expect(check(ex, 'routed').ok).toBe(false);
 		expect(check(ex, 'routed').detail).toContain('neither is more specific');
+		expect(check(ex, 'routed').action).toEqual({
+			label: 'Make one rule more specific',
+			href: '/agents#routing'
+		});
 		expect(ex.verdict).toBe('Two routing rules tie — make one more specific');
 	});
 

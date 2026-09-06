@@ -11,6 +11,7 @@ import {
 	ACTIVE_RUN_STATUSES,
 	type AgentRun,
 	type DispatchCheck,
+	type DispatchCheckAction,
 	type DispatchExplainer,
 	type DispatchTarget,
 	type Issue
@@ -84,11 +85,49 @@ export async function explainDispatch(
 		: issue.open_blockers.length > 0
 			? `blocked by ${issue.open_blockers.map((b) => `${b.project_name}/${b.number}`).join(', ')}`
 			: null;
+	// Every remedy the explainer can offer names a control that already
+	// exists: a page to open, or a command to paste. Nothing here is a
+	// suggestion to write new code.
+	const ref = `${issue.project_name}/${issue.number}`;
+	const openIssue = (other: { project_name: string; number: number }): DispatchCheckAction => ({
+		label: `Open ${other.project_name}/${other.number}`,
+		href: `/issues/${other.project_name}/${other.number}`
+	});
+	const readyAction: DispatchCheckAction | undefined = issue.duplicate_of
+		? openIssue(issue.duplicate_of)
+		: issue.open_blockers.length > 0
+			? openIssue(issue.open_blockers[0])
+			: undefined;
+	// The `routed` check is four failure modes in one, so its remedy is
+	// chosen by the same branches that choose its detail.
+	// A pin always yields one target, so a dead pin never fails this check —
+	// its remedy is attached below, once the targets have been resolved.
+	const routedAction: DispatchCheckAction | undefined =
+		targets.length > 0
+			? undefined
+			: rule
+				? { label: 'Edit the rule', href: '/agents#routing' }
+				: ambiguousRules.length > 0
+					? { label: 'Make one rule more specific', href: '/agents#routing' }
+					: {
+							label: 'Add a routing rule',
+							href: '/agents#routing',
+							cli: `tines routing set ${[...runners.values()][0]?.name ?? '<runner>'}`
+						};
 	const checks: DispatchCheck[] = [
 		{
 			name: 'automation_enabled',
 			ok: settings.enabled,
-			detail: settings.enabled ? 'automation is on' : 'the kill switch is off — nothing dispatches'
+			detail: settings.enabled ? 'automation is on' : 'the kill switch is off — nothing dispatches',
+			...(settings.enabled
+				? {}
+				: {
+						action: {
+							label: 'Turn automation on',
+							href: '/agents',
+							cli: 'tines supervisor enable'
+						}
+					})
 		},
 		{
 			name: 'project_archived',
@@ -106,7 +145,8 @@ export async function explainDispatch(
 		{
 			name: 'ready',
 			ok: notReadyDetail === null,
-			detail: notReadyDetail ?? 'ready — not a duplicate, no open blockers'
+			detail: notReadyDetail ?? 'ready — not a duplicate, no open blockers',
+			...(readyAction ? { action: readyAction } : {})
 		},
 		{
 			name: 'no_active_run',
@@ -120,7 +160,10 @@ export async function explainDispatch(
 			ok: !issue.needs_attention,
 			detail: issue.needs_attention
 				? `parked after ${issue.attempt_count} strike${issue.attempt_count === 1 ? '' : 's'} — resume to re-enter the pool`
-				: `${issue.attempt_count} strike${issue.attempt_count === 1 ? '' : 's'} so far`
+				: `${issue.attempt_count} strike${issue.attempt_count === 1 ? '' : 's'} so far`,
+			...(issue.needs_attention
+				? { action: { label: 'Resume', cli: `tines issues resume ${ref}` } }
+				: {})
 		},
 		{
 			name: 'routed',
@@ -133,7 +176,8 @@ export async function explainDispatch(
 						: `matched the ${matchedRule!.scope_label} rule, but it has no targets`
 					: ambiguousRules.length > 0
 						? `matches the ${ambiguousRules.map((r) => r.scope_label).join(' and ')} rules equally — neither is more specific; add a project or state to one of them`
-						: 'no matching routing rule — automation is opt-in via rules'
+						: 'no matching routing rule — automation is opt-in via rules',
+			...(routedAction ? { action: routedAction } : {})
 		}
 	];
 	const eligible = checks.every((c) => c.ok);
@@ -155,6 +199,13 @@ export async function explainDispatch(
 		});
 	}
 	const firstOk = targetVerdicts.find((t) => t.verdict === 'ok') ?? null;
+
+	// A pin to a runner that has since been removed still counts as routed
+	// (the engine would try it), but nothing can run: offer the way out.
+	if (pinned && targetVerdicts.length === 0) {
+		const routedCheck = checks.find((c) => c.name === 'routed')!;
+		routedCheck.action = { label: 'Clear the pin', cli: `tines issues assign ${ref} --clear` };
+	}
 
 	// Queue position, only for eligible-but-waiting: among eligible issues
 	// that would actually route somewhere, how many are ahead in the
