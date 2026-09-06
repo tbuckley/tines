@@ -1236,6 +1236,13 @@ export const RUN_END_OUTCOMES: readonly RunEndOutcome[] = ['advanced', 'stalled'
 /** Statuses that hold the issue's exclusive claim (and count toward caps). */
 export const ACTIVE_RUN_STATUSES: readonly RunStatus[] = ['assigned', 'launching', 'running'];
 
+/**
+ * Runner names are CLI addresses (routing rules and `--name` carry them), so
+ * they are constrained to a shell- and URL-safe shape. Shared so the Add
+ * runner dialog validates against the exact regex the server enforces.
+ */
+export const RUNNER_NAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
+
 /** Local-runner liveness: online = last poll within this window. */
 export const RUNNER_ONLINE_WINDOW_MS = 2 * 60 * 1000;
 
