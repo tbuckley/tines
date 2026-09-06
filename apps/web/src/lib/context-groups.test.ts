@@ -40,9 +40,10 @@ const stateItem = (name: string, workflow: string, state: string) =>
 		label: `state ${workflow} / ${state}`
 	});
 
-const workflows: Pick<Workflow, 'id' | 'states'>[] = [
+const workflows: Pick<Workflow, 'id' | 'name' | 'states'>[] = [
 	{
 		id: 'wf_Engineering',
+		name: 'Engineering',
 		states: [
 			{ id: 'st_Research', name: 'Research', category: 'active', position: 0, inherits_from: null },
 			{ id: 'st_Design', name: 'Design', category: 'active', position: 1, inherits_from: null },
@@ -51,6 +52,7 @@ const workflows: Pick<Workflow, 'id' | 'states'>[] = [
 	},
 	{
 		id: 'wf_Docs',
+		name: 'Docs',
 		states: [
 			{ id: 'st_Draft', name: 'Draft', category: 'active', position: 0, inherits_from: null }
 		]
@@ -131,5 +133,42 @@ describe('groupContextByWorkflow', () => {
 			}));
 		expect(shape([...items].reverse())).toEqual(shape(items));
 		expect(shape([items[2], items[4], items[0], items[3], items[1]])).toEqual(shape(items));
+	});
+
+	it("leaves a parentless state's pointers empty", () => {
+		const groups = groupContextByWorkflow([stateItem('journal', 'Docs', 'Draft')], workflows);
+		expect(groups[0].states[0].inheritsFrom).toBeNull();
+		expect(groups[0].states[0].inheritedBy).toEqual([]);
+	});
+
+	it('names both ends of a pointer across workflows', () => {
+		// Docs / Draft inherits from Engineering / Research.
+		const library = workflows.map((w) =>
+			w.id === 'wf_Docs' ? { ...w, states: [{ ...w.states[0], inherits_from: 'st_Research' }] } : w
+		);
+		const groups = groupContextByWorkflow(
+			[stateItem('journal', 'Docs', 'Draft'), stateItem('instructions', 'Engineering', 'Research')],
+			library
+		);
+		const [docs, eng] = groups;
+		expect(docs.states[0].inheritsFrom).toEqual({
+			stateId: 'st_Research',
+			stateName: 'Research',
+			workflowId: 'wf_Engineering',
+			workflowName: 'Engineering'
+		});
+		expect(docs.states[0].inheritedBy).toEqual([]);
+		expect(eng.states[0].inheritedBy).toEqual([
+			{ stateId: 'st_Draft', stateName: 'Draft', workflowId: 'wf_Docs', workflowName: 'Docs' }
+		]);
+		expect(eng.states[0].inheritsFrom).toBeNull();
+	});
+
+	it('reports a base we cannot see as no pointer at all', () => {
+		const library = workflows.map((w) =>
+			w.id === 'wf_Docs' ? { ...w, states: [{ ...w.states[0], inherits_from: 'st_hidden' }] } : w
+		);
+		const groups = groupContextByWorkflow([stateItem('journal', 'Docs', 'Draft')], library);
+		expect(groups[0].states[0].inheritsFrom).toBeNull();
 	});
 });
