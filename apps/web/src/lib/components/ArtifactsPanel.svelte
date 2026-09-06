@@ -14,6 +14,12 @@
 	import IconTrash from '@tabler/icons-svelte/icons/trash';
 	import { slide } from 'svelte/transition';
 	import { api } from '$lib/api';
+	import {
+		attachGateHint,
+		attachGateWarning,
+		effectiveContentType,
+		gatesForName
+	} from '$lib/artifact-gates';
 	import ArtifactViewerDialog from '$lib/components/ArtifactViewerDialog.svelte';
 	import { confirmDialog } from '$lib/components/dialogs.svelte';
 	import Modal from '$lib/components/Modal.svelte';
@@ -163,6 +169,41 @@
 	let attachError = $state<string | null>(null);
 	let attaching = $state(false);
 	let dragOver = $state(false);
+	/** Set the moment the operator clicks a type: their choice is never overridden. */
+	let typePicked = $state(false);
+
+	/**
+	 * The requirements on this slot, live as the name is typed — the same gates
+	 * the CLI reads, so the dialog pre-selects what `attach` would have inferred.
+	 * An existing artifact's name is the locked one.
+	 */
+	const attachGates = $derived(
+		gatesForName(allowedTransitions, attachTo?.name ?? attachName.trim())
+	);
+	/** Only a new artifact gets a pre-selection: an existing slot's type is immutable. */
+	const gateHint = $derived(attachTo ? null : attachGateHint(attachGates));
+	/** The concrete MIME the gate asks for, declared with the write. */
+	const gateContentType = $derived(
+		attachGateHint(attachGates.filter((g) => g.check.type === attachType))?.contentType
+	);
+	const gateWarning = $derived(
+		attachGateWarning(
+			attachGates,
+			attachType,
+			effectiveContentType(attachType, gateContentType, attachFile?.type)
+		)
+	);
+
+	/**
+	 * Flip the selector to the gate's type as the name is typed. Reads
+	 * `attachType` so the effect settles after its own write; `typePicked`
+	 * stops it re-asserting over a hand-picked type (which would silently
+	 * revert the operator on the next keystroke).
+	 */
+	$effect(() => {
+		const wanted = gateHint?.type;
+		if (wanted !== undefined && !typePicked && attachType !== wanted) attachType = wanted;
+	});
 
 	function openAttach(existing: Artifact | null) {
 		attachTo = existing;
@@ -176,6 +217,7 @@
 		attachTitle = '';
 		attachPr = '';
 		attachError = null;
+		typePicked = false;
 		attachOpen = true;
 	}
 
@@ -240,7 +282,8 @@
 				await api.putArtifact(issueId, attachName, {
 					type: 'text',
 					content: attachText,
-					description
+					description,
+					...(gateContentType !== undefined ? { content_type: gateContentType } : {})
 				});
 			} else if (attachType === 'link') {
 				await api.putArtifact(issueId, attachName, {
@@ -469,7 +512,11 @@
 								type="radio"
 								name="artifact-type"
 								value={t}
-								bind:group={attachType}
+								checked={attachType === t}
+								onchange={() => {
+									attachType = t;
+									typePicked = true;
+								}}
 								class="sr-only"
 							/>
 							<TypeIcon size={14} stroke={1.75} />
@@ -477,7 +524,29 @@
 						</label>
 					{/each}
 				</div>
+				{#if gateHint}
+					<p class="text-muted-foreground text-xs">
+						Required by <span class="font-medium">{gateHint.transition}</span>
+						({gateHint.spec}){#each gateHint.others as other (other.transition)}, and by <span
+								class="font-medium">{other.transition}</span
+							>
+							({other.spec}){/each}.
+					</p>
+				{/if}
 			</div>
+		{/if}
+
+		{#if gateWarning}
+			<p
+				class="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400"
+			>
+				A {attachType} artifact cannot satisfy
+				<span class="font-medium">{gateWarning.transition}</span>
+				(needs {gateWarning.wants}){#each gateWarning.others as other (other)}, nor <span
+						class="font-medium">{other}</span
+					>{/each}{#if attachTo}
+					— the type cannot change; delete and re-attach{/if}. Attaching is still allowed.
+			</p>
 		{/if}
 
 		{#if attachType === 'file'}
