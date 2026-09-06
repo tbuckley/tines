@@ -28,12 +28,7 @@ import {
 } from './context';
 import { createLabel, resolveLabelRef } from './labels';
 import { createProject } from './projects';
-import {
-	createWorkflow,
-	loadWorkflows,
-	workflowAsRequest,
-	workflowFingerprint
-} from './workflows';
+import { createWorkflow, loadWorkflows, workflowAsRequest, workflowFingerprint } from './workflows';
 
 // ---------------------------------------------------------------------------
 // The reusable library — non-system workflows plus every non-issue-scoped

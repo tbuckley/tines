@@ -53,7 +53,9 @@ export const code: Starter = {
 					name: 'Submit for review',
 					from: 'In progress',
 					to: 'Review',
-					requires: [{ artifact: 'pr', type: 'pr', description: 'The pull request implementing this issue' }]
+					requires: [
+						{ artifact: 'pr', type: 'pr', description: 'The pull request implementing this issue' }
+					]
 				},
 				{ name: 'Send back', from: 'Review', to: 'In progress' },
 				{ name: 'Approve', from: 'Review', to: 'Done' },

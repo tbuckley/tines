@@ -460,7 +460,7 @@ change.
 | Change | Detail |
 | --- | --- |
 | `POST /api/v1/context` | Scope may be empty (global). |
-| `POST /api/v1/projects` | Optional `initial_prompt` → project + its `conventions` prompt item, atomically. |
+| `POST /api/v1/projects` | Optional `initial_prompt` → project + its `conventions` prompt item, atomically. Optional `starter` applies a whole built-in bundle in the same batch — see [starters/SPEC.md](../starters/SPEC.md). |
 | `POST/PATCH /api/v1/workflows*` | Optional `prompt` per **new** state → the state + its `instructions` prompt item, atomically; 422 on existing states. |
 | `PATCH /api/v1/context/:id` | Accepts `expected_version`; 409 with the current item on mismatch. Unsetting the last scope dimension now yields a global item instead of a 422. |
 | `POST /api/v1/context/:id/append` | New. `{ text, expected_version? }`; prompts only; atomic; cap-checked; returns the updated item. |

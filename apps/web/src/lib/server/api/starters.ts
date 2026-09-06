@@ -222,7 +222,9 @@ export async function starterQueries(
 		const fingerprint = workflowFingerprint(wf);
 		// `loadWorkflows` orders system-first then oldest-first, so the first
 		// structural match is the most canonical one.
-		const identical = sameName.find((e) => workflowFingerprint(workflowAsRequest(e)) === fingerprint);
+		const identical = sameName.find(
+			(e) => workflowFingerprint(workflowAsRequest(e)) === fingerprint
+		);
 		if (identical) {
 			placements.push({
 				starterName: wf.name,
