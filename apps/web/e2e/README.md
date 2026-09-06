@@ -118,7 +118,7 @@ Reviewed for Tines/170 and correct as they stand. Do not "fix" them:
 
 | site | why it is sound |
 | --- | --- |
-| `labels.spec.ts:125` | `/settings/labels` rows carry no directive |
+| `labels.spec.ts:138` | `/settings/labels` rows carry no directive |
 | `run-row.spec.ts:134` (`deadRuleRow`) | `RoutingRuleRow` carries no directive |
 | `schedules.spec.ts:394` | `ScheduleList` is `in:`-only |
 | `workflow-editor.spec.ts:62` | locates `<p>`, not a row |
