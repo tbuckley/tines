@@ -410,12 +410,14 @@ export function templateVars(
 
 /**
  * Renders `{{date}}`-style placeholders (whitespace inside braces tolerated).
+ * The variable set is open (schedules pass `TemplateVars`, starters their own
+ * inputs) — anything a caller does not declare is left alone.
  * Unknown or malformed tokens are left as-is — they are probably literal
  * Markdown, and silently eating text is worse than rendering `{{oops}}`.
  */
-export function renderTemplate(template: string, vars: TemplateVars): string {
+export function renderTemplate(template: string, vars: Record<string, string>): string {
 	return template.replace(/\{\{\s*(\w+)\s*\}\}/g, (token, key: string) =>
-		Object.prototype.hasOwnProperty.call(vars, key) ? vars[key as keyof TemplateVars] : token
+		Object.prototype.hasOwnProperty.call(vars, key) ? vars[key] : token
 	);
 }
 
