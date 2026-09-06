@@ -1,14 +1,39 @@
 import {
 	ACTIVE_RUN_STATUSES,
+	QUEUE_GROUP_REF_LIMIT,
+	type FleetQueue,
+	type QueueBinding,
+	type QueueGroup,
+	type QueueIssueRef,
+	type QueueVerdict,
 	type QuotaPolicy,
 	type SupervisorSettings,
 	type SupervisorSettingsResponse,
 	type UpdateSupervisorSettingsRequest
 } from '@tines/shared';
-import type { Kysely } from 'kysely';
+import { sql, type Kysely } from 'kysely';
 import { encryptSecret, secretHint } from '$lib/server/crypto';
 import type { Database } from '$lib/server/db';
-import { cancelAssignedRuns, cancelRun } from '$lib/server/supervisor/engine';
+import {
+	cancelAssignedRuns,
+	cancelRun,
+	loadActiveCounts,
+	loadDispatchSettings,
+	loadEligibleIssues,
+	loadEngineRules,
+	loadEngineRunners,
+	targetsForIssue,
+	type EngineRunner
+} from '$lib/server/supervisor/engine';
+import {
+	isRoutedCandidate,
+	queueVerdict,
+	quotaLimitForState,
+	speakingTarget,
+	targetVerdict,
+	type ActiveCounts,
+	type TargetVerdictResult
+} from '$lib/server/supervisor/logic';
 import { ApiFail, requireString, runAtomic, type ActorContext } from './core';
 import { eventInsert } from './events';
 
@@ -307,4 +332,240 @@ export async function updateSupervisorSettings(
 	const settings: SupervisorSettingsResponse = await getSupervisorSettings(db, actor.userId);
 	if (canceledRuns > 0) settings.canceled_runs = canceledRuns;
 	return settings;
+}
+
+// ---------------------------------------------------------------------------
+// The fleet queue: the Now row (Tines/256)
+
+/** The ref columns the parked and awaiting-human queries select. */
+interface QueueRefRow {
+	id: string;
+	number: number;
+	title: string;
+	project_name: string;
+	entered_at: number;
+}
+
+function refOf(row: QueueRefRow, queuePosition: number | null): QueueIssueRef {
+	return {
+		id: row.id,
+		project_name: row.project_name,
+		number: row.number,
+		title: row.title,
+		entered_at: row.entered_at,
+		queue_position: queuePosition
+	};
+}
+
+/**
+ * Every eligible issue with no active run, grouped by *why* it is waiting.
+ *
+ * Computed in one pass over the engine's own loaders — the same five the
+ * dispatch pass and the per-issue explainer use — so the board can never
+ * disagree with either about who would take an issue or what is blocking it.
+ * The grouping verdict comes from `queueVerdict`, which the explainer's own
+ * verdict line is built on; a unit test asserts the two agree per issue.
+ *
+ * Nothing is materialised: this runs on request, on the Agents page load and
+ * for `tines supervisor status`.
+ */
+export async function loadFleetQueue(
+	db: Kysely<Database>,
+	userId: string,
+	now: number = Date.now()
+): Promise<FleetQueue> {
+	const [settings, eligible, runners, rules, counts, parkedRows, humanRow] = await Promise.all([
+		loadDispatchSettings(db, userId),
+		loadEligibleIssues(db, userId),
+		loadEngineRunners(db, userId),
+		loadEngineRules(db, userId),
+		loadActiveCounts(db, userId),
+		// Parked issues are excluded from the eligible set by definition, so
+		// they need their own read. Same eligibility joins, `needs_attention`
+		// flipped: these are the issues a human has to resume.
+		queueRefQuery(db, userId).where('issue.needs_attention', '=', 1).execute(),
+		// Human stages get a summary line only, so a count and a min suffice.
+		db
+			.selectFrom('issue')
+			.innerJoin('project', 'project.id', 'issue.project_id')
+			.innerJoin('workflow_state as st', 'st.id', 'issue.state_id')
+			.where('project.user_id', '=', userId)
+			.where('project.archived_at', 'is', null)
+			.where('st.category', '=', 'awaiting_human')
+			.select((eb) => [
+				eb.fn.countAll<number>().as('n'),
+				eb.fn
+					.min(sql<number>`COALESCE(issue.state_entered_at, issue.created_at)`)
+					.as('oldest')
+			])
+			.executeTakeFirst()
+	]);
+
+	// The queue the explainer reports positions in: eligible issues that would
+	// actually route somewhere, oldest-`updated_at` first.
+	const positions = new Map<string, number>();
+	eligible
+		.filter((c) => isRoutedCandidate(c, rules))
+		.forEach((c, i) => positions.set(c.id, i));
+
+	const groups = new Map<string, QueueGroup>();
+	for (const issue of eligible) {
+		const { targets, rule, ambiguous, pinned } = targetsForIssue(issue, rules);
+		// A target whose runner no longer exists is skipped exactly as the pass
+		// and the explainer skip it — that is how a dead pin reaches an empty
+		// list and reads as `pin_missing`.
+		const resolved: { runner: EngineRunner; verdict: TargetVerdictResult }[] = [];
+		for (const target of targets) {
+			const runner = runners.get(target.runner_id);
+			if (!runner) continue;
+			resolved.push({
+				runner,
+				verdict: targetVerdict(runner, counts, settings.quota, issue.state_id, now)
+			});
+		}
+		const verdict = queueVerdict({
+			enabled: settings.enabled,
+			parked: false,
+			pinned,
+			hasRule: rule !== null,
+			ambiguous: ambiguous.length > 0,
+			targets: resolved.map((r) => r.verdict)
+		});
+		const speaking = speakingTarget(resolved.map((r) => r.verdict));
+		const speakingIndex = speaking ? resolved.findIndex((r) => r.verdict === speaking) : -1;
+		const runner = speakingIndex >= 0 ? resolved[speakingIndex].runner : null;
+
+		const key = `${issue.state_id}|${verdict}|${runner?.id ?? ''}`;
+		let group = groups.get(key);
+		if (!group) {
+			group = {
+				state_id: issue.state_id,
+				state_name: issue.state_name,
+				workflow_id: issue.workflow_id,
+				workflow_name: issue.workflow_name,
+				verdict,
+				detail: groupDetail(verdict, speaking?.detail ?? null, runner?.name ?? null),
+				runner_id: runner?.id ?? null,
+				runner_name: runner?.name ?? null,
+				rule_id: rule?.id ?? null,
+				ambiguous_rule_ids: ambiguous.map((r) => r.id),
+				binding: bindingFor(verdict, runner, counts, settings.quota, issue.state_id),
+				count: 0,
+				oldest_entered_at: issue.entered_at,
+				issues: []
+			};
+			groups.set(key, group);
+		}
+		group.count++;
+		group.oldest_entered_at = Math.min(group.oldest_entered_at, issue.entered_at);
+		if (group.issues.length < QUEUE_GROUP_REF_LIMIT) {
+			group.issues.push(
+				refOf({ ...issue, entered_at: issue.entered_at }, positions.get(issue.id) ?? null)
+			);
+		}
+	}
+
+	const parked = parkedRows.map((row) => refOf(row, null));
+	return {
+		generated_at: now,
+		automation_enabled: settings.enabled,
+		quota: settings.quota,
+		// Biggest problem first, then whatever has been waiting longest.
+		groups: [...groups.values()].sort(
+			(a, b) =>
+				b.count - a.count ||
+				a.oldest_entered_at - b.oldest_entered_at ||
+				a.state_name.localeCompare(b.state_name)
+		),
+		waiting: eligible.length,
+		parked: {
+			count: parked.length,
+			oldest_entered_at: parked[0]?.entered_at ?? null,
+			issues: parked.slice(0, QUEUE_GROUP_REF_LIMIT)
+		},
+		awaiting_human: {
+			count: Number(humanRow?.n ?? 0),
+			oldest_entered_at: humanRow?.oldest ?? null
+		}
+	};
+}
+
+/** The eligibility joins plus the ref columns, ordered by the wait clock. */
+function queueRefQuery(db: Kysely<Database>, userId: string) {
+	return db
+		.selectFrom('issue')
+		.innerJoin('project', 'project.id', 'issue.project_id')
+		.innerJoin('workflow_state as st', 'st.id', 'issue.state_id')
+		.where('project.user_id', '=', userId)
+		.where('project.archived_at', 'is', null)
+		.where('st.category', '=', 'active')
+		.select([
+			'issue.id as id',
+			'issue.number as number',
+			'issue.title as title',
+			'project.name as project_name',
+			sql<number>`COALESCE(issue.state_entered_at, issue.created_at)`.as('entered_at')
+		])
+		.orderBy(sql`COALESCE(issue.state_entered_at, issue.created_at)`, 'asc')
+		.orderBy('issue.id', 'asc');
+}
+
+/**
+ * The group's one-line "why". Target verdicts carry their own detail from the
+ * same helper the explainer renders; the routing failures have no target to
+ * carry one, so they reuse the explainer's wording for the `routed` check.
+ */
+function groupDetail(
+	verdict: QueueVerdict,
+	targetDetail: string | null,
+	runnerName: string | null
+): string {
+	switch (verdict) {
+		case 'automation_off':
+			return 'the kill switch is off — nothing dispatches';
+		case 'no_rule':
+			return 'no matching routing rule — automation is opt-in via rules';
+		case 'ambiguous_rule':
+			return 'two routing rules tie — neither is more specific';
+		case 'no_targets':
+			return 'the matching rule has no targets';
+		case 'pin_missing':
+			return 'pinned to a removed runner — clear the pin';
+		case 'ok':
+			return runnerName ? `would dispatch to ${runnerName} next pass` : 'dispatching next pass';
+		default:
+			return targetDetail ?? '';
+	}
+}
+
+/** Which limit binds, so the panel can offer exactly the editor that raises it. */
+function bindingFor(
+	verdict: QueueVerdict,
+	runner: EngineRunner | null,
+	counts: ActiveCounts,
+	quota: QuotaPolicy,
+	stateId: string
+): QueueBinding | null {
+	if (verdict === 'at_capacity' && runner) {
+		return {
+			kind: 'max_concurrent',
+			runner_id: runner.id,
+			runner_name: runner.name,
+			current: counts.byRunner.get(runner.id) ?? 0,
+			limit: runner.max_concurrent
+		};
+	}
+	if (verdict === 'quota_exhausted') {
+		if (quota.type === 'global_cap') {
+			return { kind: 'global_cap', current: counts.total, limit: quota.limit };
+		}
+		return {
+			kind: 'state_roster',
+			state_id: stateId,
+			current: counts.byStartState.get(stateId) ?? 0,
+			limit: quotaLimitForState(quota, stateId),
+			overridden: stateId in quota.overrides
+		};
+	}
+	return null;
 }
