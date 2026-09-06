@@ -8,6 +8,8 @@ export interface ProjectTable {
 	name: string;
 	description: string;
 	default_workflow_id: string | null;
+	/** Set (ms) while the project is archived; NULL = live. */
+	archived_at: number | null;
 	created_at: number;
 	updated_at: number;
 }

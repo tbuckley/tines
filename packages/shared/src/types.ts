@@ -60,6 +60,8 @@ export interface Project {
 	updated_at: number;
 	/** Issues currently in the project (all states). */
 	issue_count: number;
+	/** Set (ms) while the project is archived; null = live. */
+	archived_at: number | null;
 }
 
 export interface CreateProjectRequest {
@@ -77,6 +79,39 @@ export interface UpdateProjectRequest {
 	name?: string;
 	description?: string;
 	default_workflow_id?: string | null;
+}
+
+/** How `archived` narrows a list; absent means `'false'`. */
+export type ArchivedFilter = 'true' | 'false' | 'all';
+
+export interface ProjectListFilters {
+	/** `'false'` (default) hides archived projects, `'true'` shows only them. */
+	archived?: ArchivedFilter;
+}
+
+/** A run that was still active when its project was archived. */
+export interface DrainingRun {
+	run_id: string;
+	runner_name: string;
+	issue_id: string;
+	issue_number: number;
+}
+
+export interface ArchiveProjectResponse {
+	/** The project with `archived_at` set. */
+	project: Project;
+	/** Enabled schedules that will not fire while the project is archived. */
+	schedules_paused: number;
+	/** Runs allowed to finish on their own issue; nothing new dispatches. */
+	draining_runs: DrainingRun[];
+	/** Issues frozen by the archive. */
+	issues_read_only: number;
+}
+
+export interface UnarchiveProjectResponse {
+	project: Project;
+	/** Enabled schedules whose `next_run_at` was advanced to the next future occurrence. */
+	schedules_resumed: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -300,6 +335,8 @@ export interface Issue {
 	id: string;
 	project_id: string;
 	project_name: string;
+	/** Set (ms) while the issue's project is archived; null = live. */
+	project_archived_at: number | null;
 	number: number;
 	title: string;
 	description: string;
@@ -469,6 +506,8 @@ export interface Schedule {
 	id: string;
 	project_id: string;
 	project_name: string;
+	/** Set (ms) while the schedule's project is archived; null = live. */
+	project_archived_at: number | null;
 	/** Unique within the project; schedules are addressed as `<project>/<name>`. */
 	name: string;
 	title_template: string;
@@ -1659,7 +1698,14 @@ export function utilizationLabel(
 
 /** One eligibility check, pass or fail, with a human-readable detail. */
 export interface DispatchCheck {
-	name: 'automation_enabled' | 'state_active' | 'ready' | 'no_active_run' | 'not_parked' | 'routed';
+	name:
+		| 'automation_enabled'
+		| 'project_archived'
+		| 'state_active'
+		| 'ready'
+		| 'no_active_run'
+		| 'not_parked'
+		| 'routed';
 	ok: boolean;
 	detail: string;
 }
@@ -1750,6 +1796,8 @@ export const EVENT_TYPES = [
 	'project.created',
 	'project.updated',
 	'project.deleted',
+	'project.archived',
+	'project.unarchived',
 	'workflow.created',
 	'workflow.updated',
 	'workflow.deleted',
