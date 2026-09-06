@@ -6,6 +6,7 @@ import {
 	errorResponse,
 	encodeCursor,
 	isControlPlanePath,
+	readArchived,
 	jsonifyMethodNotAllowed,
 	pageResult,
 	readPage
@@ -98,7 +99,11 @@ describe('isControlPlanePath', () => {
 		// Bulk library writes are a control-plane action: an agent proposes
 		// context changes, it does not apply a whole library.
 		['/api/v1/import', 'GET'],
-		['/api/v1/import', 'POST']
+		['/api/v1/import', 'POST'],
+		// Archiving is an operator act: an agent must not freeze the project it
+		// is working in, nor thaw one a human froze.
+		['/api/v1/projects/prj_1/archive', 'POST'],
+		['/api/v1/projects/prj_1/unarchive', 'POST']
 	])('fences %s %s', (path, method) => {
 		expect(isControlPlanePath(path, method)).toBe(true);
 	});
@@ -123,7 +128,11 @@ describe('isControlPlanePath', () => {
 		['/api/v1/labels', 'get'],
 		// Similar-looking but distinct segments stay open.
 		['/api/v1/runnersandmore', 'GET'],
-		['/api/v1/issues/resume', 'POST']
+		['/api/v1/issues/resume', 'POST'],
+		// Reading and working in a project stays open, archived or not.
+		['/api/v1/projects/prj_1', 'GET'],
+		['/api/v1/projects/prj_1/issues', 'POST'],
+		['/api/v1/projects/prj_1/archived', 'POST']
 	])('leaves %s %s open', (path, method) => {
 		expect(isControlPlanePath(path, method)).toBe(false);
 	});
@@ -251,5 +260,31 @@ describe('jsonifyMethodNotAllowed', () => {
 		const res = jsonifyMethodNotAllowed('/api/v1/projects', 'PUT', own);
 		expect(res).toBe(own);
 		expect((await res.json()).error.code).toBe('wrong_verb');
+	});
+});
+
+describe('readArchived', () => {
+	const read = (qs: string) => readArchived(new URLSearchParams(qs));
+
+	it('defaults to hiding archived rows', () => {
+		expect(read('')).toBe('false');
+		expect(read('archived=')).toBe('false');
+	});
+
+	it('accepts the three documented values', () => {
+		expect(read('archived=true')).toBe('true');
+		expect(read('archived=false')).toBe('false');
+		expect(read('archived=all')).toBe('all');
+	});
+
+	it('422s anything else rather than silently defaulting', () => {
+		try {
+			read('archived=yes');
+			throw new Error('expected a 422');
+		} catch (e) {
+			expect(e).toBeInstanceOf(ApiFail);
+			expect((e as ApiFail).code).toBe('invalid_field');
+			expect((e as ApiFail).details).toEqual({ field: 'archived' });
+		}
 	});
 });

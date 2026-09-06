@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { sweepSchedules } from '../schedule-sweep';
 import type { ActorContext } from './core';
 import { createIssue } from './issues';
+import { archiveProject, unarchiveProject } from './projects';
 import { getSchedule, runScheduleNow, updateSchedule } from './schedules';
 import { createTestDb, type TestDb } from './test-db';
 import { updateWorkflow } from './workflows';
@@ -107,6 +108,37 @@ describe('schedule start state', () => {
 		);
 		expect(instances).toHaveLength(2); // the initial issue + the swept one
 		expect(instances[1]).toEqual({ state_id: 'wfs_std_review' });
+	});
+
+	it('skips a due schedule while its project is archived, then resumes without a backfill', async () => {
+		const t = createTestDb();
+		seed(t);
+		const schedule = await createSchedule(t);
+		const due = Date.now() - 60_000;
+		t.sqlite
+			.prepare(`UPDATE scheduled_task SET next_run_at = ? WHERE id = ?`)
+			.run(due, schedule.id);
+		await archiveProject(t.db, t.env, actor, 'prj_1', Date.now());
+
+		const instances = () =>
+			t.all(`SELECT id FROM issue WHERE scheduled_task_id = ?`, schedule.id).length;
+		const before = instances();
+		const runCount = () => t.all(`SELECT run_count FROM scheduled_task WHERE id = ?`, schedule.id);
+		const runsBefore = runCount();
+		await sweepSchedules(t.env);
+		await sweepSchedules(t.env);
+		expect(instances()).toBe(before);
+		// Skipping is silent: an archived project is not a schedule problem.
+		expect(t.all(`SELECT id FROM event WHERE type = 'scheduled_task.skipped'`)).toEqual([]);
+		expect(runCount()).toEqual(runsBefore);
+
+		const now = Date.now();
+		await unarchiveProject(t.db, t.env, actor, 'prj_1', now);
+		const next = (await getSchedule(t.db, 'u1', schedule.id)).next_run_at!;
+		expect(next).toBeGreaterThan(now);
+		// One more sweep at the same instant still fires nothing: no catch-up.
+		await sweepSchedules(t.env);
+		expect(instances()).toBe(before);
 	});
 
 	it('picking the initial state — or explicit null — resets to "follow the workflow"', async () => {

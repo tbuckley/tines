@@ -5,12 +5,13 @@ import {
 	ScheduleInputError,
 	validateScheduleCron,
 	validateTimezone,
+	type ArchivedFilter,
 	type CreateScheduleInput,
 	type Schedule,
 	type SchedulePreset,
 	type UpdateScheduleRequest
 } from '@tines/shared';
-import type { Kysely } from 'kysely';
+import type { CompiledQuery, Kysely } from 'kysely';
 import { newId, type Database } from '$lib/server/db';
 import {
 	instanceInserts,
@@ -28,6 +29,7 @@ import {
 	type ActorContext,
 	type Page
 } from './core';
+import { assertWritable } from './archive';
 import { eventInsert } from './events';
 
 // ---------------------------------------------------------------------------
@@ -188,6 +190,7 @@ export function scheduleQuery(db: Kysely<Database>, userId: string) {
 		.selectAll('scheduled_task')
 		.select([
 			'project.name as project_name',
+			'project.archived_at as project_archived_at',
 			'workflow.name as workflow_name',
 			'start_state.name as state_name'
 		])
@@ -218,6 +221,7 @@ export function serializeSchedule(row: ScheduleRow): Schedule {
 		id: row.id,
 		project_id: row.project_id,
 		project_name: row.project_name,
+		project_archived_at: row.project_archived_at,
 		name: row.name,
 		title_template: row.title_template,
 		description_template: row.description_template,
@@ -245,6 +249,8 @@ export interface ScheduleListFilters {
 	enabled?: boolean;
 	/** Restrict to one project id (the nested per-project route). */
 	projectId?: string;
+	/** Archived projects' schedules, when no project is named; default `'false'`. */
+	archived?: ArchivedFilter;
 }
 
 export async function listSchedules(
@@ -261,6 +267,12 @@ export async function listSchedules(
 	}
 	if (filters.enabled !== undefined) {
 		q = q.where('scheduled_task.enabled', '=', filters.enabled ? 1 : 0);
+	}
+	// A named project lists its schedules whatever its state; without one,
+	// archived projects drop out by default.
+	if (!filters.projectId && !filters.project) {
+		if ((filters.archived ?? 'false') === 'false') q = q.where('project.archived_at', 'is', null);
+		else if (filters.archived === 'true') q = q.where('project.archived_at', 'is not', null);
 	}
 	if (page.cursor) {
 		const { createdAt, id } = page.cursor;
@@ -356,6 +368,11 @@ export async function prepareSchedule(
 // ---------------------------------------------------------------------------
 // Mutations
 
+/** The gate's view of a schedule's project. */
+function scheduleProject(s: Schedule) {
+	return { id: s.project_id, name: s.project_name, archived_at: s.project_archived_at };
+}
+
 export async function updateSchedule(
 	db: Kysely<Database>,
 	env: Env,
@@ -364,6 +381,7 @@ export async function updateSchedule(
 	body: UpdateScheduleRequest
 ): Promise<Schedule> {
 	const current = await getSchedule(db, actor.userId, id);
+	await assertWritable(db, actor, scheduleProject(current));
 
 	const name =
 		body.name !== undefined ? requireString(body.name, 'name', { max: 200 }).trim() : current.name;
@@ -502,6 +520,7 @@ export async function deleteSchedule(
 	id: string
 ): Promise<void> {
 	const current = await getSchedule(db, actor.userId, id);
+	await assertWritable(db, actor, scheduleProject(current));
 	await runAtomic(env, [
 		// Explicitly unlink issues (the FK's SET NULL is the backstop); their
 		// issue.created events keep the schedule's identity for history.
@@ -533,6 +552,11 @@ export async function runScheduleNow(
 	id: string
 ): Promise<string> {
 	const schedule = await getScheduleExecRow(db, actor.userId, id);
+	await assertWritable(db, actor, {
+		id: schedule.project_id,
+		name: schedule.project_name,
+		archived_at: schedule.project_archived_at
+	});
 
 	if (schedule.require_all_closed) {
 		const blockers = await openInstancesQuery(db, schedule.id).execute();
@@ -624,6 +648,39 @@ export async function assertStatesNotScheduled(
 }
 
 /** Statements deleting a project's schedules (project deletion), with events. */
+/**
+ * Advances each schedule's `next_run_at` to its next future occurrence — the
+ * same resume-from-now rule `updateSchedule` applies when a paused schedule is
+ * re-enabled. Used by project unarchive so nothing fires a catch-up burst. A
+ * schedule whose cron or timezone no longer evaluates is left alone rather
+ * than failing the whole unarchive; the sweep already tolerates one.
+ */
+export function rearmScheduleQueries(
+	db: Kysely<Database>,
+	schedules: { id: string; cron: string; timezone: string }[],
+	now: number
+): { queries: CompiledQuery[] } {
+	const queries: CompiledQuery[] = [];
+	for (const s of schedules) {
+		let nextRunAt: number;
+		try {
+			nextRunAt = nextOccurrenceFromCron(s.cron, s.timezone, now);
+		} catch (e) {
+			console.error(`unarchive: schedule ${s.id} could not be re-armed:`, e);
+			continue;
+		}
+		queries.push(
+			db
+				.updateTable('scheduled_task')
+				.set({ next_run_at: nextRunAt, updated_at: now })
+				.where('id', '=', s.id)
+				.where('enabled', '=', 1)
+				.compile()
+		);
+	}
+	return { queries };
+}
+
 export async function projectScheduleDeletions(
 	db: Kysely<Database>,
 	actor: ActorContext,

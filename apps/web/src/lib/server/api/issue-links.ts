@@ -2,6 +2,7 @@ import type { AddIssueLinkRequest, IssueLink, IssueLinkKind } from '@tines/share
 import type { Kysely } from 'kysely';
 import { newId, type Database } from '$lib/server/db';
 import { ApiFail, notFound, requireString, runAtomic, type ActorContext } from './core';
+import { assertWritable, issueProject } from './archive';
 import { eventInsert } from './events';
 import { issueQuery, serializeIssue } from './issues';
 
@@ -84,6 +85,10 @@ export async function addIssueLink(
 	// issue missing = 404 too (cross-user references must be indistinguishable
 	// from nonexistent ones).
 	if (!issue || !other) throw notFound();
+	// Both ends are gated: a draining run's exemption covers its own issue
+	// only, so linking it to another issue in the archived project still 422s.
+	await assertWritable(db, actor, issueProject(issue), { issueId: issue.id });
+	await assertWritable(db, actor, issueProject(other), { issueId: other.id });
 
 	// `blocked_by` is sugar: a `blocks` edge in the other direction, so
 	// callers never reason about orientation.
@@ -197,6 +202,7 @@ export async function removeIssueLink(
 			'source_project.name as source_project_name',
 			'source.number as source_number',
 			'source.title as source_title',
+			'source_project.archived_at as source_project_archived_at',
 			'target.project_id as target_project_id',
 			'target.number as target_number',
 			'target.title as target_title'
@@ -208,6 +214,13 @@ export async function removeIssueLink(
 				.select('target_project.name')
 				.as('target_project_name')
 		)
+		.select((eb) =>
+			eb
+				.selectFrom('project as target_project')
+				.whereRef('target_project.id', '=', 'target.project_id')
+				.select('target_project.archived_at')
+				.as('target_project_archived_at')
+		)
 		.where('issue_link.id', '=', linkId)
 		.where('source_project.user_id', '=', actor.userId)
 		.executeTakeFirst();
@@ -215,6 +228,26 @@ export async function removeIssueLink(
 	if (!link || (link.source_issue_id !== issueId && link.target_issue_id !== issueId)) {
 		throw notFound();
 	}
+	await assertWritable(
+		db,
+		actor,
+		{
+			id: link.source_project_id,
+			name: link.source_project_name,
+			archived_at: link.source_project_archived_at
+		},
+		{ issueId: link.source_issue_id }
+	);
+	await assertWritable(
+		db,
+		actor,
+		{
+			id: link.target_project_id,
+			name: link.target_project_name ?? link.target_project_id,
+			archived_at: link.target_project_archived_at ?? null
+		},
+		{ issueId: link.target_issue_id }
+	);
 
 	const eventFor = (
 		selfIssue: string,

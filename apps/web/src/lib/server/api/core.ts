@@ -1,5 +1,5 @@
 import type { D1Result } from '@cloudflare/workers-types';
-import type { ApiErrorBody } from '@tines/shared';
+import type { ApiErrorBody, ArchivedFilter } from '@tines/shared';
 import { json, type RequestEvent } from '@sveltejs/kit';
 import type { CompiledQuery } from 'kysely';
 import { sha256Hex } from '$lib/server/crypto';
@@ -184,7 +184,10 @@ const CONTROL_PLANE_RULES: ControlPlaneRule[] = [
 	{ pattern: /^\/api\/v1\/labels(\/|$)/, readable: true },
 	// Bulk library writes: an agent must propose context changes, not apply
 	// a whole library over the top of them.
-	{ pattern: /^\/api\/v1\/import(\/|$)/ }
+	{ pattern: /^\/api\/v1\/import(\/|$)/ },
+	// Archiving is an operator act: an agent must not freeze (or thaw) the
+	// project it is working in, least of all the one draining around it.
+	{ pattern: /^\/api\/v1\/projects\/[^/]+\/(archive|unarchive)$/ }
 ];
 
 /** SvelteKit answers HEAD from the GET handler, so both are reads. */
@@ -205,8 +208,9 @@ export function runKeyForbidden(details?: Record<string, unknown>): ApiFail {
 		403,
 		'run_key_forbidden',
 		'Run keys cannot modify runners, routing rules, supervisor settings, parked issues, issue pins, or API keys, ' +
-			'cannot import a library, cannot create, rename, or delete labels, and cannot apply or remove a ' +
-			'label a routing rule is scoped to (reading the library and applying other existing labels is fine). ' +
+			'cannot import a library, cannot archive or unarchive projects, cannot create, rename, or delete ' +
+			'labels, and cannot apply or remove a label a routing rule is scoped to (reading the library and ' +
+			'applying other existing labels is fine). ' +
 			'Propose the change instead: file an issue titled "Context change: <scope label>" describing ' +
 			'what should change and why; a human reviews and applies it.',
 		details
@@ -320,6 +324,19 @@ export async function apiContext(event: RequestEvent, { sessionOnly = false } = 
 	if (!event.platform) throw new ApiFail(500, 'no_platform', 'Platform bindings unavailable');
 	const actor = sessionOnly ? await requireSessionActor(event) : await requireActor(event);
 	return { db: getDb(event.platform.env), env: event.platform.env, actor };
+}
+
+/**
+ * `?archived=` on the four lists that hide archived projects by default.
+ * Absent means `'false'` — the default every list shares.
+ */
+export function readArchived(params: URLSearchParams): ArchivedFilter {
+	const raw = params.get('archived');
+	if (raw === null || raw === '') return 'false';
+	if (raw === 'true' || raw === 'false' || raw === 'all') return raw;
+	throw new ApiFail(422, 'invalid_field', '"archived" must be one of true, false, all', {
+		field: 'archived'
+	});
 }
 
 // ---------------------------------------------------------------------------
