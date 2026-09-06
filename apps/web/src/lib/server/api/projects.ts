@@ -1,6 +1,7 @@
 import type {
 	ArchiveProjectResponse,
 	CreateProjectRequest,
+	CreateProjectResponse,
 	DeletedContextItem,
 	DrainingRun,
 	Project,
@@ -23,6 +24,7 @@ import {
 import { assertWritable } from './archive';
 import { eventInsert } from './events';
 import { projectScheduleDeletions, rearmScheduleQueries } from './schedules';
+import { resolveStarter, starterQueries, type StarterRegistry } from './starters';
 
 function projectQuery(db: Kysely<Database>, userId: string) {
 	return db
@@ -126,31 +128,60 @@ export async function createProject(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
-	body: CreateProjectRequest
-): Promise<Project> {
+	body: CreateProjectRequest,
+	/** Test seam: swap the built-in starter registry (Tines/248). */
+	opts: { starters?: StarterRegistry } = {}
+): Promise<CreateProjectResponse> {
+	// Starter validation is pure and comes first, so an unknown id or a
+	// missing input 422s before any read, let alone any write.
+	const resolvedStarter = resolveStarter(body.starter, opts.starters);
 	const name = requireString(body.name, 'name', { max: 200 }).trim();
 	const description = optionalString(body.description, 'description', { max: 10_000 }) ?? '';
 	await assertNameAvailable(db, actor.userId, name);
+	if (resolvedStarter?.starter.default_workflow && body.default_workflow_id != null) {
+		throw new ApiFail(
+			422,
+			'starter_sets_default_workflow',
+			`Starter "${resolvedStarter.starter.id}" sets the project's default workflow; omit default_workflow_id`,
+			{ field: 'default_workflow_id' }
+		);
+	}
 	if (body.default_workflow_id != null) {
 		await assertWorkflowAccessible(db, actor.userId, body.default_workflow_id);
 	}
 	const now = Date.now();
 	const id = newId('prj');
+	const plan = resolvedStarter
+		? await starterQueries(db, actor, {
+				starter: resolvedStarter.starter,
+				inputs: resolvedStarter.inputs,
+				projectId: id,
+				projectName: name,
+				now
+			})
+		: null;
 	// Optional initial prompt: the project and its "conventions" item land
 	// in one transaction. The project is brand new, so the name can't collide.
+	// An explicit `initial_prompt` (even `''`) beats a starter's template;
+	// absent falls back to it.
 	const initialPrompt = optionalString(body.initial_prompt, 'initial_prompt', {
 		max: 100_000
 	})?.trim();
-	const seed = initialPrompt
+	const conventions =
+		body.initial_prompt !== undefined ? (initialPrompt ?? null) : (plan?.conventions ?? null);
+	const seed = conventions
 		? seedPromptQueries(db, actor, {
 				name: PROJECT_PROMPT_NAME,
-				body: initialPrompt,
+				body: conventions,
 				projectId: id,
 				label: `project ${name}`,
 				now
 			})
 		: null;
+	// Foreign keys force the order: workflows exist before the project can
+	// point at one, and the project exists before its context and issues.
 	await runAtomic(env, [
+		...(plan?.before ?? []),
 		db
 			.insertInto('project')
 			.values({
@@ -158,15 +189,21 @@ export async function createProject(
 				user_id: actor.userId,
 				name,
 				description,
-				default_workflow_id: body.default_workflow_id ?? null,
+				default_workflow_id: plan?.defaultWorkflowId ?? body.default_workflow_id ?? null,
 				created_at: now,
 				updated_at: now
 			})
 			.compile(),
-		eventInsert(db, actor, { type: 'project.created', projectId: id, payload: { name } }),
-		...(seed?.queries ?? [])
+		eventInsert(db, actor, {
+			type: 'project.created',
+			projectId: id,
+			payload: { name, ...(plan ? { starter: plan.applied.id } : {}) }
+		}),
+		...(seed?.queries ?? []),
+		...(plan?.after ?? [])
 	]);
-	return getProject(db, actor.userId, id);
+	const project = await getProject(db, actor.userId, id);
+	return plan ? { ...project, starter: plan.applied } : project;
 }
 
 export async function updateProject(
