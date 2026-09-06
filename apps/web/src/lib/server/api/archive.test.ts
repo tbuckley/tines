@@ -3,7 +3,15 @@
  * exemption that lets a run already under way finish its own issue.
  */
 import { describe, expect, it, beforeEach } from 'vitest';
-import { OPEN, PROJECT, USER, addIssue, addRun, addRunner, seedBase } from '../supervisor/test-fixtures';
+import {
+	OPEN,
+	PROJECT,
+	USER,
+	addIssue,
+	addRun,
+	addRunner,
+	seedBase
+} from '../supervisor/test-fixtures';
 import {
 	archivedDate,
 	assertProjectWritableById,

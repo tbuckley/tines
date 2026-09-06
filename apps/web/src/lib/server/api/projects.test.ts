@@ -4,7 +4,16 @@
  * archived projects from every picker.
  */
 import { describe, expect, it, beforeEach } from 'vitest';
-import { NOW, OPEN, PROJECT, USER, addIssue, addRun, addRunner, seedBase } from '../supervisor/test-fixtures';
+import {
+	NOW,
+	OPEN,
+	PROJECT,
+	USER,
+	addIssue,
+	addRun,
+	addRunner,
+	seedBase
+} from '../supervisor/test-fixtures';
 import { ApiFail, type ActorContext } from './core';
 import { createIssue } from './issues';
 import {
@@ -169,7 +178,7 @@ describe('an archived project is read-only', () => {
 
 	it('keeps its name reserved', async () => {
 		const e = await failure(() =>
-			createProject(t.db, t.env, actor, { name: 'demo', initial_prompt: null })
+			createProject(t.db, t.env, actor, { name: 'demo' })
 		);
 		expect(e.code).toBe('duplicate_project_name');
 	});
@@ -190,8 +199,8 @@ describe('listProjects', () => {
 		expect((await listProjects(t.db, USER, { archived: 'true' })).map((p) => p.name)).toEqual([
 			'demo'
 		]);
-		expect(
-			(await listProjects(t.db, USER, { archived: 'all' })).map((p) => p.name).sort()
-		).toEqual(['demo', 'other']);
+		expect((await listProjects(t.db, USER, { archived: 'all' })).map((p) => p.name).sort()).toEqual(
+			['demo', 'other']
+		);
 	});
 });
