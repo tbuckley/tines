@@ -1,7 +1,7 @@
 import type { IssueDetail, Project } from '@tines/shared';
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import { ALICE } from './constants.mjs';
-import { apiClient, body, readSettled, runId, signIn } from './helpers';
+import { apiClient, body, gotoHydrated, readSettled, runId, signIn } from './helpers';
 
 /**
  * The artifact viewer on a phone (Tines/28): a markdown doc far taller than
@@ -96,7 +96,7 @@ async function openViewer(opener: Locator, dialog: Locator): Promise<void> {
 
 test('a long markdown artifact stays dismissable on a phone', async ({ page }) => {
 	await page.setViewportSize(PHONE);
-	await page.goto(issueUrl());
+	await gotoHydrated(page, issueUrl());
 	await unfoldArtifacts(page);
 
 	const dialog = page.getByRole('dialog', { name: 'Artifact viewer' });
@@ -123,7 +123,7 @@ test('a long markdown artifact stays dismissable on a phone', async ({ page }) =
 
 test('a folder set stays within the viewport and dismissable on a phone', async ({ page }) => {
 	await page.setViewportSize(PHONE);
-	await page.goto(issueUrl());
+	await gotoHydrated(page, issueUrl());
 	await unfoldArtifacts(page);
 
 	const dialog = page.getByRole('dialog', { name: 'Artifact viewer' });
@@ -164,7 +164,7 @@ async function expectPageBehindScrolls(page: Page): Promise<void> {
 
 test('the page behind does not scroll while the viewer is open', async ({ page }) => {
 	await page.setViewportSize(PHONE);
-	await page.goto(issueUrl());
+	await gotoHydrated(page, issueUrl());
 	await unfoldArtifacts(page);
 
 	const dialog = page.getByRole('dialog', { name: 'Artifact viewer' });
@@ -181,7 +181,7 @@ test('the page behind does not scroll while the viewer is open', async ({ page }
 
 test('two modals open at once still release the page when both close', async ({ page }) => {
 	await page.setViewportSize(PHONE);
-	await page.goto(issueUrl());
+	await gotoHydrated(page, issueUrl());
 	await unfoldArtifacts(page);
 
 	const viewer = page.getByRole('dialog', { name: 'Artifact viewer' });
@@ -210,7 +210,7 @@ test('two modals open at once still release the page when both close', async ({ 
 test('Escape closes the viewer and returns focus to the button that opened it', async ({
 	page
 }) => {
-	await page.goto(issueUrl());
+	await gotoHydrated(page, issueUrl());
 	await unfoldArtifacts(page);
 
 	const opener = page.getByRole('button', { name: /^View long-doc/ });
@@ -247,7 +247,7 @@ const counterOf = (dialog: Locator) => dialog.locator('span.tabular-nums');
 const pathOf = (dialog: Locator) => dialog.locator('span.font-mono');
 
 test('Prev/Next step through a folder in order and stop at the ends', async ({ page }) => {
-	await page.goto(issueUrl());
+	await gotoHydrated(page, issueUrl());
 	await unfoldArtifacts(page);
 	const dialog = await openFirstPhoto(page);
 
@@ -290,7 +290,7 @@ test('Prev/Next step through a folder in order and stop at the ends', async ({ p
 });
 
 test('arrow keys step, and are left alone inside the header selects', async ({ page }) => {
-	await page.goto(issueUrl());
+	await gotoHydrated(page, issueUrl());
 	await unfoldArtifacts(page);
 	const dialog = await openFirstPhoto(page);
 	const counter = counterOf(dialog);
@@ -347,7 +347,7 @@ const settledNavGeometry = (dialog: Locator): Promise<NavGeometry> =>
 
 test('the file-detail header keeps one line on desktop and wraps on a phone', async ({ page }) => {
 	await page.setViewportSize({ width: 1440, height: 900 });
-	await page.goto(issueUrl());
+	await gotoHydrated(page, issueUrl());
 	await unfoldArtifacts(page);
 	const dialog = await openFirstPhoto(page);
 

@@ -10,14 +10,10 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
-import { delimiter, dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { delimiter, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { cliVersion } from '../version.js';
-
-const here = dirname(fileURLToPath(import.meta.url));
-const tsx = join(here, '..', '..', 'node_modules', '.bin', 'tsx');
-const entry = join(here, '..', 'index.ts');
+import { CLI_BIN, NODE } from '../test-bin.js';
 
 const RUN_ID = 'run_stub1';
 const RUN_KEY = 'trk_stub_run_key_never_logged';
@@ -118,7 +114,7 @@ function startDaemon(
 	harness: { command: string } | { fakeClaudeDir: string }
 ): ChildProcess {
 	const args = [
-		entry,
+		CLI_BIN,
 		'runner',
 		'daemon',
 		'--url',
@@ -139,7 +135,7 @@ function startDaemon(
 		args.push('--harness', 'claude_code');
 		env.PATH = `${harness.fakeClaudeDir}${delimiter}${process.env.PATH ?? ''}`;
 	}
-	return spawn(tsx, args, { env, stdio: ['ignore', 'pipe', 'pipe'] });
+	return spawn(NODE, args, { env, stdio: ['ignore', 'pipe', 'pipe'] });
 }
 
 let child: ChildProcess | null = null;
