@@ -3,7 +3,7 @@
 		AgentRun,
 		LabelWithUsage,
 		ModelTier,
-		RoutingRule,
+		RoutingRuleWithWarnings,
 		RoutingTarget,
 		Runner,
 		RunnerBudget,
@@ -171,8 +171,14 @@
 		if (!createdRunner || addingToRouting) return;
 		addingToRouting = true;
 		try {
+			// All *three* dimensions null: a bare `label x` rule is not the
+			// global rule, and appending the new runner to it would have
+			// quietly widened where that label's work runs.
 			const globalRule = data.rules.find(
-				(r) => r.scope.project_id === null && r.scope.workflow_state_id === null
+				(r) =>
+					r.scope.project_id === null &&
+					r.scope.workflow_state_id === null &&
+					r.scope.label_id === null
 			);
 			if (globalRule) {
 				if (!globalRule.targets.some((t) => t.runner_id === createdRunner?.id)) {
@@ -391,7 +397,7 @@
 	// --- routing rules -----------------------------------------------------------
 
 	let ruleModalOpen = $state(false);
-	let editingRule = $state<RoutingRule | null>(null);
+	let editingRule = $state<RoutingRuleWithWarnings | null>(null);
 	let ruleProjectId = $state('');
 	/** Rules scoped to these are kept and badged; the editor keeps them selectable. */
 	const archivedProjectIds = $derived(new Set(data.archivedProjects.map((p) => p.id)));
@@ -462,7 +468,7 @@
 		ruleModalOpen = true;
 	}
 
-	function openRuleEdit(rule: RoutingRule) {
+	function openRuleEdit(rule: RoutingRuleWithWarnings) {
 		ruleWarnings = [];
 		editingRule = rule;
 		ruleProjectId = rule.scope.project_id ?? '';
@@ -507,7 +513,7 @@
 		}
 	}
 
-	async function deleteRule(rule: RoutingRule) {
+	async function deleteRule(rule: RoutingRuleWithWarnings) {
 		const ok = await confirmDialog({
 			title: `Delete the ${rule.scope.label} routing rule?`,
 			body: 'Issues it matched stop dispatching.',
@@ -760,9 +766,21 @@
 
 <!-- Routing -->
 <div class="mb-10">
-	<div class="mb-3 flex items-center justify-between">
-		<h2 class="text-sm font-semibold">Routing</h2>
-		<Button size="sm" variant="ghost" onclick={openRuleCreate} disabled={data.runners.length === 0}>
+	<div class="mb-3 flex items-start justify-between gap-3">
+		<div>
+			<h2 class="text-sm font-semibold">Routing</h2>
+			<p class="text-muted-foreground mt-0.5 text-xs">
+				Most specific matching rule wins — label beats project beats state; a global rule is the
+				fallback. Listed most specific first.
+			</p>
+		</div>
+		<Button
+			size="sm"
+			variant="ghost"
+			class="shrink-0"
+			onclick={openRuleCreate}
+			disabled={data.runners.length === 0}
+		>
 			<IconPlus size={14} /> Add rule
 		</Button>
 	</div>
@@ -798,11 +816,11 @@
 	{/if}
 	{#if data.rules.length === 0}
 		<div class="text-muted-foreground rounded-lg border border-dashed p-8 text-center text-sm">
-			No routing rules. A rule is an ordered runner preference list at a scope — the most specific
-			matching rule wins (project ∧ state, then project, then state, then global).
+			No routing rules. A rule is an ordered runner preference list at a scope — add one to start
+			dispatching issues to agents.
 		</div>
 	{:else}
-		<ul class="divide-y rounded-lg border">
+		<ul class="divide-y rounded-lg border" aria-label="Routing rules">
 			{#each data.rules as rule (rule.id)}
 				<RoutingRuleRow
 					{rule}

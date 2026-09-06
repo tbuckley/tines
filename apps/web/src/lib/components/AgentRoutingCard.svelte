@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { RoutingRule } from '@tines/shared';
+	import type { RoutingRuleWithWarnings } from '@tines/shared';
 	import IconRobot from '@tabler/icons-svelte/icons/robot';
 	import RoutingRuleRow from '$lib/components/RoutingRuleRow.svelte';
 
@@ -13,7 +13,7 @@
 		activeStateIds,
 		emptyMessage = 'No routing rule applies here — issues will not dispatch to agents.'
 	}: {
-		rules: RoutingRule[];
+		rules: RoutingRuleWithWarnings[];
 		/** Ids of active-category states, for the "never dispatches" warning on dead rules. */
 		activeStateIds: Set<string>;
 		emptyMessage?: string;
@@ -34,7 +34,7 @@
 			{emptyMessage}
 		</div>
 	{:else}
-		<ul class="divide-y rounded-lg border">
+		<ul class="divide-y rounded-lg border" aria-label="Agent routing rules">
 			{#each rules as rule (rule.id)}
 				<RoutingRuleRow {rule} {activeStateIds} />
 			{/each}
