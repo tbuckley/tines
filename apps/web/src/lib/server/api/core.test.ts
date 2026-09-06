@@ -78,16 +78,18 @@ describe('pageResult', () => {
 });
 
 describe('isControlPlanePath', () => {
-	// Everything the fence covers, asserted under GET: only the label library
-	// is readable, so this table is what keeps a future `readable` flag from
-	// quietly opening the rest of the control plane (Tines/93).
+	// Everything the fence covers, asserted method by method: the label
+	// library and the fleet reads are readable, so this table is what keeps a
+	// future `readable` flag from quietly opening the rest of the control
+	// plane (Tines/93, widened for the fleet queue in Tines/256).
 	it.each([
-		['/api/v1/runners', 'GET'],
-		['/api/v1/runners/rnr_1', 'GET'],
+		['/api/v1/runners', 'POST'],
+		['/api/v1/runners/rnr_1', 'PATCH'],
+		['/api/v1/runners/rnr_1', 'DELETE'],
 		['/api/v1/runners/rnr_1/rotate-token', 'POST'],
 		['/api/v1/routing-rules', 'GET'],
 		['/api/v1/routing-rules/rul_1', 'PATCH'],
-		['/api/v1/supervisor/settings', 'GET'],
+		['/api/v1/supervisor/settings', 'PUT'],
 		['/api/v1/issues/iss_1/resume', 'POST'],
 		// Key metadata stays fenced even to a read.
 		['/api/v1/api-keys', 'GET'],
@@ -124,6 +126,17 @@ describe('isControlPlanePath', () => {
 		// and the launch prompt points at `tines labels list`.
 		['/api/v1/labels', 'GET'],
 		['/api/v1/labels', 'HEAD'],
+		// The fleet's shape: an agent's own dispatch explainer already names
+		// runners, their status and their caps (Tines/256).
+		['/api/v1/runners', 'GET'],
+		['/api/v1/runners', 'HEAD'],
+		['/api/v1/runners/rnr_1', 'GET'],
+		['/api/v1/supervisor/settings', 'GET'],
+		['/api/v1/supervisor/settings', 'HEAD'],
+		// The queue is unfenced by construction: the rule matches
+		// `supervisor/settings`, not `supervisor/*`.
+		['/api/v1/supervisor/queue', 'GET'],
+		['/api/v1/supervisor/queue', 'HEAD'],
 		// Methods arrive from the request verbatim; compare case-insensitively.
 		['/api/v1/labels', 'get'],
 		// Similar-looking but distinct segments stay open.
@@ -151,13 +164,19 @@ describe('assertRunKeyAllowed', () => {
 	it('lets a live run key read the label library it is told to classify with', () => {
 		expect(() => assertRunKeyAllowed(runKey, '/api/v1/labels', 'GET', now)).not.toThrow();
 		expect(() => assertRunKeyAllowed(runKey, '/api/v1/labels', 'HEAD', now)).not.toThrow();
+		// The fleet reads, opened with the Now row (Tines/256).
+		expect(() => assertRunKeyAllowed(runKey, '/api/v1/runners', 'GET', now)).not.toThrow();
+		expect(() =>
+			assertRunKeyAllowed(runKey, '/api/v1/supervisor/settings', 'GET', now)
+		).not.toThrow();
+		expect(() => assertRunKeyAllowed(runKey, '/api/v1/supervisor/queue', 'GET', now)).not.toThrow();
 	});
 
 	it('403s a run key on every control-plane surface, naming the proposal convention', () => {
 		for (const [path, method] of [
-			['/api/v1/runners', 'GET'],
+			['/api/v1/runners', 'POST'],
 			['/api/v1/routing-rules/rul_1', 'PATCH'],
-			['/api/v1/supervisor/settings', 'GET'],
+			['/api/v1/supervisor/settings', 'PUT'],
 			['/api/v1/issues/iss_1/resume', 'POST'],
 			['/api/v1/api-keys', 'GET'],
 			['/api/v1/labels', 'POST']

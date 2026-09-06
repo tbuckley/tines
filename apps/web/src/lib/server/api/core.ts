@@ -172,9 +172,15 @@ export interface ActorContext {
 type ControlPlaneRule = { pattern: RegExp; readable?: boolean };
 
 const CONTROL_PLANE_RULES: ControlPlaneRule[] = [
-	{ pattern: /^\/api\/v1\/runners(\/|$)/ },
+	// The fleet's shape is legible to a run (Tines/256): an agent already reads
+	// its own dispatch explainer, which names runners, their status and their
+	// caps, so the fleet reads behind `tines supervisor status` disclose nothing
+	// new. Only the GETs open — `register`, `rotate-token` and the PATCH/DELETE
+	// writes stay fenced (`poll` is runner-token auth, never a run key), and the
+	// settings GET nulls `github_pat_hint` for run keys.
+	{ pattern: /^\/api\/v1\/runners(\/|$)/, readable: true },
 	{ pattern: /^\/api\/v1\/routing-rules(\/|$)/ },
-	{ pattern: /^\/api\/v1\/supervisor\/settings(\/|$)/ },
+	{ pattern: /^\/api\/v1\/supervisor\/settings(\/|$)/, readable: true },
 	{ pattern: /^\/api\/v1\/issues\/[^/]+\/resume$/ },
 	{ pattern: /^\/api\/v1\/api-keys(\/|$)/ },
 	// The label library is vocabulary, not classification: run keys may read it

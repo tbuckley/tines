@@ -119,8 +119,28 @@ export interface CandidateIssue {
 	label_ids: string[];
 }
 
+/**
+ * A candidate plus the columns only the fleet queue's display needs. Carried
+ * on the same query rather than a second refs round trip; `CandidateIssue`
+ * itself is unchanged, so the pass and the explainer are untouched.
+ */
+export interface EligibleIssue extends CandidateIssue {
+	number: number;
+	title: string;
+	project_name: string;
+	state_name: string;
+	workflow_id: string;
+	workflow_name: string;
+	/** `state_entered_at ?? created_at` — time in the current state. */
+	entered_at: number;
+}
+
 /** The row shape the candidate query returns: `label_ids` arrives as JSON. */
-type CandidateRow = Omit<CandidateIssue, 'label_ids'> & { label_ids_json: string | null };
+type CandidateRow = Omit<EligibleIssue, 'label_ids' | 'entered_at'> & {
+	label_ids_json: string | null;
+	created_at: number;
+	state_entered_at: number | null;
+};
 
 /**
  * Dispatchable issues, oldest-`updated_at` first: effective state category
@@ -132,7 +152,7 @@ type CandidateRow = Omit<CandidateIssue, 'label_ids'> & { label_ids_json: string
 export async function loadEligibleIssues(
 	db: Kysely<Database>,
 	userId: string
-): Promise<CandidateIssue[]> {
+): Promise<EligibleIssue[]> {
 	const result = await sql<CandidateRow>`
 		WITH RECURSIVE dup_chain(issue_id, next_id, depth) AS (
 			SELECT source_issue_id, target_issue_id, 1 FROM issue_link WHERE kind = 'duplicate_of'
@@ -150,6 +170,11 @@ export async function loadEligibleIssues(
 		)
 		SELECT issue.id, issue.project_id, issue.state_id, issue.updated_at,
 			issue.pinned_runner_id, issue.pinned_tier,
+			-- Display columns for the fleet queue's refs and grouping. Free
+			-- here: the joins they read are already in the FROM clause.
+			issue.number, issue.title, issue.created_at, issue.state_entered_at,
+			project.name AS project_name, st.name AS state_name,
+			wf.id AS workflow_id, wf.name AS workflow_name,
 			-- Aggregated in the same statement rather than a second round
 			-- trip: rule matching needs every candidate's labels anyway.
 			(SELECT json_group_array(il.label_id) FROM issue_label il
@@ -157,6 +182,7 @@ export async function loadEligibleIssues(
 		FROM issue
 		JOIN project ON project.id = issue.project_id
 		JOIN workflow_state st ON st.id = issue.state_id
+		JOIN workflow wf ON wf.id = issue.workflow_id
 		WHERE project.user_id = ${userId}
 			AND project.archived_at IS NULL
 			AND st.category = 'active'
@@ -177,7 +203,7 @@ export async function loadEligibleIssues(
 				WHERE issue_id = issue.id AND status IN (${sql.join(ACTIVE)})
 			)
 		ORDER BY issue.updated_at ASC, issue.id ASC`.execute(db);
-	return result.rows.map(({ label_ids_json, ...row }) => {
+	return result.rows.map(({ label_ids_json, created_at, state_entered_at, ...row }) => {
 		// A malformed aggregate degrades to "carries no labels" — the issue
 		// then matches only unlabelled rules rather than failing the pass.
 		let label_ids: string[] = [];
@@ -187,7 +213,9 @@ export async function loadEligibleIssues(
 		} catch {
 			// keep the empty list
 		}
-		return { ...row, label_ids };
+		// `state_entered_at` is nullable (migration 0011 backfilled it, but
+		// nothing enforces it), so the wait clock falls back to creation.
+		return { ...row, label_ids, entered_at: state_entered_at ?? created_at };
 	});
 }
 

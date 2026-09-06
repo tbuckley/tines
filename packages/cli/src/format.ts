@@ -233,6 +233,17 @@ export function ageLabel(isoTimestamp: string, now: number = Date.now()): string
 }
 
 /**
+ * How long something has been waiting, epoch-millis in: "0.3h", "21h", "8d".
+ * The Now row's own unit (Tines/256) — `ageLabel` takes an ISO string and
+ * rounds hours down, which reads as "0h" for everything under the hour.
+ */
+export function hoursLabel(ms: number, now: number = Date.now()): string {
+	const hours = Math.max(0, now - ms) / 3_600_000;
+	if (hours < 48) return `${hours < 10 ? hours.toFixed(1) : Math.round(hours)}h`;
+	return `${Math.round(hours / 24)}d`;
+}
+
+/**
  * One kept workspace as `runner workspaces` prints it. The size is passed in
  * rather than measured here: this file stays free of I/O.
  */

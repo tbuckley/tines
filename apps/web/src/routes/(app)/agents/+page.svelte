@@ -3,6 +3,7 @@
 		AgentRun,
 		ApiKeyCreated,
 		LabelWithUsage,
+		QueueBinding,
 		ModelTier,
 		RoutingRuleWithWarnings,
 		RoutingTarget,
@@ -38,6 +39,7 @@
 	import { api } from '$lib/api';
 	import CancelRunDialog from '$lib/components/CancelRunDialog.svelte';
 	import { confirmDialog } from '$lib/components/dialogs.svelte';
+	import FleetQueuePanel from '$lib/components/FleetQueuePanel.svelte';
 	import Modal from '$lib/components/Modal.svelte';
 	import PatInstructions from '$lib/components/PatInstructions.svelte';
 	import PendingButton from '$lib/components/PendingButton.svelte';
@@ -47,11 +49,176 @@
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { Select } from '$lib/components/ui/select/index.js';
-	import { prefersReducedMotion, relativeTime } from '$lib/format';
+	import { prefersReducedMotion, queueAge, relativeTime } from '$lib/format';
 
 	let { data } = $props();
 
 	const dur = () => (prefersReducedMotion() ? 0 : 180);
+
+	/**
+	 * Every write on this page that can unblock dispatch — a raised cap, a new
+	 * rule, the kill switch — queues a pass, and `queueDispatchPass` runs it on
+	 * `waitUntil`: the response can land before the pass has claimed anything.
+	 * So re-read now (the write's own effect) and once more shortly after (the
+	 * pass's), which is what makes the Now row shrink without a reload
+	 * (Tines/256). `invalidateAll` re-runs the loader without remounting, so
+	 * open dialogs and typed state survive.
+	 *
+	 * The second read is deliberately untestable locally: under `wrangler dev`
+	 * the pass has finished before the write's response returns (traced — the
+	 * group is gone by t≈1s), so deleting it leaves the e2e suite green. It
+	 * defends the deployed Worker's `waitUntil`, where that ordering is not
+	 * guaranteed; the 2s is a margin, not a measurement. Delete it only with a
+	 * measurement from production in hand.
+	 */
+	let dispatchRecheck: ReturnType<typeof setTimeout> | null = null;
+	async function refreshAfterDispatch() {
+		await invalidateAll();
+		if (dispatchRecheck !== null) clearTimeout(dispatchRecheck);
+		dispatchRecheck = setTimeout(() => {
+			dispatchRecheck = null;
+			if (typeof document === 'undefined' || !document.hidden) void invalidateAll();
+		}, 2000);
+	}
+	$effect(() => () => {
+		if (dispatchRecheck !== null) clearTimeout(dispatchRecheck);
+	});
+
+	/** "N waiting" annotations (Tines/256 Part 3), joined on the queue groups. */
+	type Waiting = { count: number; oldest: number; href: string; now: number };
+	function tally(
+		entries: Iterable<[string, { count: number; oldest_entered_at: number; href: string }]>
+	): Map<string, Waiting> {
+		const out = new Map<string, Waiting>();
+		for (const [key, g] of entries) {
+			const seen = out.get(key);
+			if (seen) {
+				seen.count += g.count;
+				seen.oldest = Math.min(seen.oldest, g.oldest_entered_at);
+			} else {
+				// The queue's own clock rides with the count, so an annotation and
+				// the Now row group it links to cannot drift apart on a page left
+				// open — the whole reason `queueAge` is shared.
+				out.set(key, {
+					count: g.count,
+					oldest: g.oldest_entered_at,
+					href: g.href,
+					now: data.queue.generated_at
+				});
+			}
+		}
+		return out;
+	}
+	const waitingByState = $derived(
+		tally(
+			data.queue.groups.map((g) => [
+				g.state_id,
+				{ count: g.count, oldest_entered_at: g.oldest_entered_at, href: `#queue-${g.state_id}` }
+			])
+		)
+	);
+	const waitingByRunner = $derived(
+		tally(
+			data.queue.groups
+				.filter((g) => g.runner_id !== null)
+				.map((g) => [
+					g.runner_id as string,
+					{
+						count: g.count,
+						oldest_entered_at: g.oldest_entered_at,
+						href: `#queue-runner-${g.runner_id}`
+					}
+				])
+		)
+	);
+	const waitingByRule = $derived(
+		tally(
+			data.queue.groups.flatMap((g) =>
+				[g.rule_id, ...g.ambiguous_rule_ids]
+					.filter((id): id is string => id !== null)
+					.map(
+						(id) =>
+							[
+								id,
+								{
+									count: g.count,
+									oldest_entered_at: g.oldest_entered_at,
+									href: `#queue-${g.state_id}`
+								}
+							] as [string, { count: number; oldest_entered_at: number; href: string }]
+					)
+			)
+		)
+	);
+
+	/** Runs already active, by the state they started in — the roster's own unit. */
+	const activeByStartState = $derived.by(() => {
+		const counts = new Map<string, number>();
+		for (const run of data.runs) {
+			if (!isActiveRun(run.status)) continue;
+			const id = run.state_id_at_start;
+			if (!id) continue;
+			counts.set(id, (counts.get(id) ?? 0) + 1);
+		}
+		return counts;
+	});
+
+	/** Set by the Now row's "Raise cap": the edit dialog focuses Max concurrent. */
+	let editFocusCap = $state(false);
+
+	/** Un-park an issue from the Now row's parked block (user flow 9). */
+	async function resumeParked(issueId: string) {
+		try {
+			await api.resumeIssue(issueId);
+			await refreshAfterDispatch();
+		} catch (err) {
+			showError(err);
+		}
+	}
+
+	/** The roster row the Now row just pointed at; ringed briefly, then released. */
+	let highlightStateId = $state<string | null>(null);
+	let highlightTimer: ReturnType<typeof setTimeout> | null = null;
+	function highlight(stateId: string | null) {
+		highlightStateId = stateId;
+		if (highlightTimer !== null) clearTimeout(highlightTimer);
+		if (stateId === null) return;
+		highlightTimer = setTimeout(() => (highlightStateId = null), 2500);
+	}
+
+	/** Scroll the quota editor into view and focus whichever control binds. */
+	function focusQuota(target: { stateId: string | null; binding: QueueBinding | null }) {
+		const binding = target.binding;
+		if (binding?.kind === 'state_roster' || (target.stateId && binding?.kind !== 'global_cap')) {
+			quotaType = 'state_roster';
+		} else if (binding?.kind === 'global_cap') {
+			quotaType = 'global_cap';
+		}
+		const stateId = binding?.kind === 'state_roster' ? binding.state_id : target.stateId;
+		if (quotaType === 'state_roster') highlight(stateId);
+		queueMicrotask(() => {
+			const id = quotaType === 'global_cap' ? 'global-limit' : `roster-limit-${stateId}`;
+			const el = document.getElementById(id) ?? document.getElementById('quota-policy');
+			el?.scrollIntoView({ behavior: prefersReducedMotion() ? 'auto' : 'smooth', block: 'center' });
+			if (el instanceof HTMLInputElement) el.focus();
+		});
+	}
+
+	/**
+	 * The approved global-cap remedy (Tines/200 answer 3): move the workspace to
+	 * a per-state roster whose limits already cover what is queued — the runs
+	 * active in each state plus the ones waiting on it. Prefill and focus only;
+	 * the roster lives inside the settings form, so the user presses Save.
+	 */
+	function switchToRoster(prefill: Record<string, number>) {
+		quotaType = 'state_roster';
+		const next = { ...rosterOverrides };
+		for (const [stateId, waiting] of Object.entries(prefill)) {
+			next[stateId] = String(waiting + (activeByStartState.get(stateId) ?? 0));
+		}
+		rosterOverrides = next;
+		focusQuota({ stateId: Object.keys(prefill)[0] ?? null, binding: null });
+	}
 
 	let errorMessage = $state<string | null>(null);
 	function showError(e: unknown) {
@@ -77,7 +244,7 @@
 				...(cancelInFlight ? { cancel_in_flight: true } : {})
 			});
 			disableConfirmOpen = false;
-			await invalidateAll();
+			await refreshAfterDispatch();
 		} catch (err) {
 			showError(err);
 		} finally {
@@ -287,7 +454,7 @@
 		try {
 			await addRunnerToGlobalRule(namedLocalOnline);
 			resetAddRunner();
-			await invalidateAll();
+			await refreshAfterDispatch();
 		} catch (err) {
 			showError(err);
 		} finally {
@@ -308,6 +475,22 @@
 	let editCapTokens = $state('');
 	let editApiKey = $state('');
 	let savingEdit = $state(false);
+
+	/**
+	 * Opened from the Now row's "Raise cap": land the caret on the field the
+	 * remedy is about, rather than making the operator find it in the dialog.
+	 * The modal calls this once its content has mounted, so the field exists;
+	 * scheduling the focus here instead would race the modal's own parking of
+	 * focus on the close button, which wins and leaves the caret nowhere useful.
+	 */
+	function focusCapField(): HTMLElement | null {
+		if (!editFocusCap) return null;
+		editFocusCap = false;
+		const el = document.getElementById('edit-concurrent');
+		if (!(el instanceof HTMLInputElement)) return null;
+		el.select();
+		return el;
+	}
 
 	function openRunnerEdit(runner: Runner) {
 		editTarget = runner;
@@ -360,7 +543,7 @@
 				...(editApiKey.trim() !== '' ? { api_key: editApiKey.trim() } : {})
 			});
 			editTarget = null;
-			await invalidateAll();
+			await refreshAfterDispatch();
 		} catch (err) {
 			showError(err);
 		} finally {
@@ -471,7 +654,7 @@
 	async function setRunnerStatus(runner: Runner, status: 'active' | 'paused') {
 		try {
 			await api.updateRunner(runner.id, { status });
-			await invalidateAll();
+			await refreshAfterDispatch();
 		} catch (err) {
 			showError(err);
 		}
@@ -591,12 +774,12 @@
 	});
 	const activeStateIds = $derived(deriveActiveStateIds(data.workflows));
 
-	function openRuleCreate() {
+	function openRuleCreate(prefill: { stateId?: string; projectId?: string } = {}) {
 		// Shadow hints belong to the last save; opening an editor stales them.
 		ruleWarnings = [];
 		editingRule = null;
-		ruleProjectId = '';
-		ruleStateId = '';
+		ruleProjectId = prefill.projectId ?? '';
+		ruleStateId = prefill.stateId ?? '';
 		ruleLabelId = '';
 		ruleTargets = data.runners.length > 0 ? [{ runner_id: data.runners[0].id, tier: '' }] : [];
 		loadLabels();
@@ -640,7 +823,7 @@
 			// Shadow hints surface at authoring time, right where the rule was saved.
 			ruleWarnings = saved.warnings;
 			ruleModalOpen = false;
-			await invalidateAll();
+			await refreshAfterDispatch();
 		} catch (err) {
 			showError(err);
 		} finally {
@@ -742,7 +925,7 @@
 							)
 						};
 			await api.updateSupervisorSettings({ quota, attempt_limit: attemptLimit });
-			await invalidateAll();
+			await refreshAfterDispatch();
 		} catch (err) {
 			showError(err);
 		} finally {
@@ -784,6 +967,27 @@
 		<Button size="sm" onclick={() => setEnabled(true)} disabled={togglingEnabled}>Turn on</Button>
 	</div>
 {/if}
+
+<!-- Now row: what is waiting, and why (Tines/256) -->
+<FleetQueuePanel
+	queue={data.queue}
+	runners={data.runners}
+	now={data.queue.generated_at}
+	onraisecap={(runner) => {
+		editFocusCap = true;
+		openRunnerEdit(runner);
+	}}
+	onquota={focusQuota}
+	onswitchtoroster={switchToRoster}
+	onaddrule={(stateId) => openRuleCreate({ stateId })}
+	oneditrule={(ruleId) => {
+		const rule = data.rules.find((r) => r.id === ruleId);
+		if (rule) openRuleEdit(rule);
+	}}
+	onresumerunner={(runner) => setRunnerStatus(runner, 'active')}
+	onresume={resumeParked}
+	onenable={() => setEnabled(true)}
+/>
 
 <!-- Runners -->
 <div class="mb-10">
@@ -831,6 +1035,16 @@
 					<p class="text-muted-foreground mb-3 text-xs">
 						{runner.active_runs}/{runner.max_concurrent} runs · {runner.max_run_minutes}m timeout ·
 						default tier {runner.default_tier}
+						{#if waitingByRunner.has(runner.id)}
+							{@const runnerWaiting = waitingByRunner.get(runner.id)!}
+							·
+							<a
+								class="text-amber-700 underline underline-offset-2 dark:text-amber-400"
+								href={runnerWaiting.href}
+							>
+								{runnerWaiting.count} waiting
+							</a>
+						{/if}
 						{#if runner.budget?.max_run_cost_usd !== undefined}
 							· ${runner.budget.max_run_cost_usd}/run
 						{/if}
@@ -918,7 +1132,7 @@
 			size="sm"
 			variant="ghost"
 			class="shrink-0"
-			onclick={openRuleCreate}
+			onclick={() => openRuleCreate()}
 			disabled={data.runners.length === 0}
 		>
 			<IconPlus size={14} /> Add rule
@@ -978,6 +1192,7 @@
 					{activeStateIds}
 					projectArchived={rule.scope.project_id !== null &&
 						archivedProjectIds.has(rule.scope.project_id)}
+					waiting={waitingByRule.get(rule.id)}
 					onedit={openRuleEdit}
 					ondelete={deleteRule}
 				/>
@@ -1022,7 +1237,7 @@
 
 		<form onsubmit={saveSettings} class="space-y-5">
 			<div class="space-y-2">
-				<p class="text-sm font-medium">Quota policy</p>
+				<p class="text-sm font-medium" id="quota-policy">Quota policy</p>
 				<!-- segmented control -->
 				<div class="bg-muted inline-flex rounded-md p-0.5 text-sm">
 					<button
@@ -1084,8 +1299,27 @@
 									<p class="text-muted-foreground mb-1.5 text-xs font-semibold">{workflow.name}</p>
 									<div class="space-y-1.5">
 										{#each workflow.states as state (state.id)}
-											<div class="flex items-center justify-between gap-2">
-												<StateBadge {state} />
+											{@const waiting = waitingByState.get(state.id)}
+											<div
+												class="flex items-center justify-between gap-2 rounded-md {highlightStateId ===
+												state.id
+													? 'ring-2 ring-amber-400'
+													: ''}"
+											>
+												<span class="flex min-w-0 items-center gap-2">
+													<StateBadge {state} />
+													{#if waiting}
+														<a
+															class="text-xs text-amber-700 underline underline-offset-2 dark:text-amber-400"
+															href={waiting.href}
+														>
+															{waiting.count} waiting · oldest {queueAge(
+																waiting.oldest,
+																waiting.now
+															)}
+														</a>
+													{/if}
+												</span>
 												<span class="flex items-center gap-2">
 													{#if (rosterOverrides[state.id] ?? '') === ''}
 														<span class="text-muted-foreground text-xs"
@@ -1093,6 +1327,7 @@
 														>
 													{/if}
 													<Input
+														id="roster-limit-{state.id}"
 														type="number"
 														min="0"
 														max="100"
@@ -1542,7 +1777,15 @@
 
 <!-- runner edit: caps, budget, tier overrides, replace-key -->
 {#if editTarget}
-	<Modal open={true} onclose={() => (editTarget = null)} title="Edit runner">
+	<Modal
+		open={true}
+		onclose={() => {
+			editTarget = null;
+			editFocusCap = false;
+		}}
+		title="Edit runner"
+		initialFocus={focusCapField}
+	>
 		<form onsubmit={saveRunnerEdit} class="space-y-4">
 			<p class="text-sm">
 				<span class="font-medium">{editTarget.name}</span>
