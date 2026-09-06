@@ -265,8 +265,68 @@ describe('journalForIssue follows the root of the inheritance chain', () => {
 			'Your journal for this project and stage is the journal of Shared stages / Merging'
 		);
 		expect(block).toContain('(currently v1).');
-		expect(block).toContain('The other "Journal" section above belongs to state Open alone');
+		expect(block).toContain(
+			'The "Journal (project demo · state Open)" section above is read-only;'
+		);
 		expect(block).toContain(`tines journal rewrite demo/${detail.number} --body @file`);
+	});
+
+	it('names the read-only section that exists, not the issue\'s own state', async () => {
+		// Depth 3 with the legacy journal part-way up the chain: the issue's own
+		// state has no journal at all, so naming it would send the agent looking
+		// for a heading that is not there.
+		inherit(OPEN, BASE_MERGING);
+		inherit(BASE_MERGING, BASE_ROOT);
+		await seedJournal(BASE_ROOT, '- root lesson');
+		await seedJournal(BASE_MERGING, '- middle lesson');
+		const issue = addIssue(t);
+
+		const block = issueBlock(
+			await getIssueDetail(t.db, USER, { id: issue }),
+			await effectiveContextForIssue(t.db, USER, issue)
+		);
+		expect(block).toContain('is the journal of Shared stages / Root');
+		expect(block).toContain(
+			'The "Journal (project demo · state Shared stages / Merging)" section above is read-only;'
+		);
+		expect(block).not.toContain('state Open');
+	});
+
+	it('names every read-only section when the chain carries more than one', async () => {
+		inherit(OPEN, BASE_MERGING);
+		inherit(BASE_MERGING, BASE_ROOT);
+		await seedJournal(BASE_ROOT, '- root lesson');
+		await seedJournal(BASE_MERGING, '- middle lesson');
+		await seedJournal(OPEN, '- legacy lesson');
+		const issue = addIssue(t);
+
+		const block = issueBlock(
+			await getIssueDetail(t.db, USER, { id: issue }),
+			await effectiveContextForIssue(t.db, USER, issue)
+		);
+		expect(block).toContain(
+			'The "Journal (project demo · state Shared stages / Merging)" and "Journal (project demo · state Open)" sections above are read-only;'
+		);
+	});
+
+	it('explains the stitched journal even before the base has one of its own', async () => {
+		// The configuration this ships into: the children carry their journals
+		// and the new base carries none. Without the paragraph the prompt says
+		// "no journal exists yet" directly under a populated one.
+		inherit(OPEN, BASE_MERGING);
+		await seedJournal(OPEN, '- legacy lesson');
+		const issue = addIssue(t);
+
+		const block = issueBlock(
+			await getIssueDetail(t.db, USER, { id: issue }),
+			await effectiveContextForIssue(t.db, USER, issue)
+		);
+		expect(block).toContain(
+			'No journal exists yet for project demo · state Shared stages / Merging. Start one:'
+		);
+		expect(block).toContain(
+			'The "Journal (project demo · state Open)" section above is read-only;'
+		);
 	});
 
 	it('labels an inherited prompt layer with its workflow in the footnote', async () => {
@@ -327,6 +387,23 @@ describe('journalForIssue follows the root of the inheritance chain', () => {
 			].join('\n')
 		);
 		expect(block).not.toContain('is the journal of');
+		expect(block).not.toContain('read-only');
+	});
+
+	it('names a parentless state plainly when it has no journal yet (PRD signal 4)', async () => {
+		// The other half of signal 4: a state that is its own root reports no
+		// provenance, so the empty-case line stays `state Open`, unqualified.
+		const issue = addIssue(t);
+		const ctx = await effectiveContextForIssue(t.db, USER, issue);
+		expect(ctx.prompt.journal).toEqual({
+			state_id: OPEN,
+			inherited_from: null,
+			item_id: null,
+			version: null
+		});
+
+		const block = issueBlock(await getIssueDetail(t.db, USER, { id: issue }), ctx);
+		expect(block).toContain('No journal exists yet for project demo · state Open. Start one:');
 		expect(block).not.toContain('read-only');
 	});
 });

@@ -1846,6 +1846,21 @@ export function issueBlock(
 	const journal = context.prompt.journal;
 	const from = journal.inherited_from;
 	const baseLabel = from ? `${from.workflow_name || from.workflow_id} / ${from.state_name}` : null;
+	// A journal left on the child — or on a state part-way up a longer chain —
+	// by an earlier run still stitches, because it is knowledge, but writes go
+	// to the root until a merge folds it in. Name those sections exactly as
+	// their headings do: there can be more than one, and the state they belong
+	// to need not be the issue's own.
+	const readOnly = context.prompt.parts
+		.filter((p) => p.is_journal && p.item_id !== journal.item_id)
+		.map((p) => `"Journal (${p.scope.label})"`);
+	const readOnlyLines =
+		readOnly.length === 0
+			? []
+			: [
+					`The ${readOnly.slice(0, -1).join(', ')}${readOnly.length > 1 ? ' and ' : ''}${readOnly[readOnly.length - 1]} section${readOnly.length > 1 ? 's' : ''} above ${readOnly.length > 1 ? 'are' : 'is'} read-only;`,
+					'move anything still worth keeping into your journal with your next append.'
+				];
 	if (journal.item_id !== null) {
 		lines.push(
 			baseLabel
@@ -1854,18 +1869,7 @@ export function issueBlock(
 			`(currently v${journal.version}).`,
 			''
 		);
-		// A journal left on the child by an earlier run still stitches — it is
-		// knowledge — but writes go to the base until a merge folds it in.
-		if (
-			baseLabel &&
-			context.prompt.parts.some((p) => p.is_journal && p.item_id !== journal.item_id)
-		) {
-			lines.push(
-				`The other "Journal" section above belongs to state ${issue.state.name} alone and is read-only;`,
-				'move anything still worth keeping into the journal above with your next append.',
-				''
-			);
-		}
+		if (readOnlyLines.length > 0) lines.push(...readOnlyLines, '');
 		lines.push(
 			// The run key remembers the stage it was launched in, so the old
 			// append-before-you-move ordering trap no longer exists.
@@ -1882,6 +1886,10 @@ export function issueBlock(
 			`\`tines journal append ${ref} "- <date>: <lesson>"\``,
 			'(or `-` with a quoted heredoc, as for comments, when the body must not be touched by the shell)'
 		);
+		// The state of the world the day this ships: the children carry their
+		// journals and the new base carries none, so the populated section above
+		// needs explaining here more than anywhere.
+		if (readOnlyLines.length > 0) lines.push('', ...readOnlyLines);
 	}
 
 	// Factual footnotes: this issue's effective artifacts (with the fetch
