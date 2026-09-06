@@ -226,7 +226,9 @@ function rowScope(row: RuleRow): ContextScope {
 		workflowName: row.scope_workflow_name,
 		issueNumber: null,
 		issueProjectName: null,
-		issueProjectId: null
+		issueProjectId: null,
+		projectArchivedAt: null,
+		issueProjectArchivedAt: null
 	});
 }
 

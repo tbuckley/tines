@@ -11,6 +11,7 @@ import {
 	SKILL_MAX_TOTAL_BYTES,
 	SKILL_NAME_PATTERN,
 	type AppendContextRequest,
+	type ArchivedFilter,
 	type Artifact,
 	type ArtifactRequirementCheck,
 	type ArtifactType,
@@ -45,6 +46,7 @@ import {
 	type Page
 } from './core';
 import { artifactTypeOf } from './artifacts';
+import { assertScopeWritable } from './archive';
 import { eventInsert } from './events';
 import {
 	resolveScope,
@@ -224,7 +226,9 @@ export function contextItemQuery(db: Kysely<Database>, userId: string) {
 			'scope_workflow.name as scope_workflow_name',
 			'scope_issue.number as scope_issue_number',
 			'scope_issue.project_id as scope_issue_project_id',
-			'issue_project.name as scope_issue_project_name'
+			'issue_project.name as scope_issue_project_name',
+			'scope_project.archived_at as scope_project_archived_at',
+			'issue_project.archived_at as scope_issue_project_archived_at'
 		])
 		.select((eb) =>
 			eb
@@ -252,7 +256,9 @@ function rowScope(row: ItemRow): ResolvedScope {
 		workflowName: row.scope_workflow_name,
 		issueNumber: row.scope_issue_number,
 		issueProjectName: row.scope_issue_project_name,
-		issueProjectId: row.scope_issue_project_id
+		issueProjectId: row.scope_issue_project_id,
+		projectArchivedAt: row.scope_project_archived_at,
+		issueProjectArchivedAt: row.scope_issue_project_archived_at
 	};
 }
 
@@ -340,6 +346,12 @@ export interface ContextItemFilters {
 	q?: string;
 	/** Restrict to items whose scope sets only the given dimensions. */
 	exact?: boolean;
+	/**
+	 * Items anchored on an archived project, when no project is named:
+	 * `'false'` (the default) hides them, `'true'` shows only them. Global and
+	 * state-scoped items are anchored on no project and always show.
+	 */
+	archived?: ArchivedFilter;
 }
 
 /**
@@ -399,6 +411,25 @@ export async function listContextItems(
 		q = q.where('context_item.issue_id', '=', filters.issue);
 	} else if (filters.exact) {
 		q = q.where('context_item.issue_id', 'is', null);
+	}
+	// An item is "archived" when either anchor — its own project scope or the
+	// project of its scoped issue — is archived. Naming an anchor (a project or
+	// an issue) overrides the default, the same way `applyScopeFilters` and
+	// `listSchedules` treat an explicit project filter: the caller asked for a
+	// specific place, so its state is not a reason to hide what is there.
+	if (!filters.project && !filters.issue) {
+		if ((filters.archived ?? 'false') === 'false') {
+			q = q
+				.where('scope_project.archived_at', 'is', null)
+				.where('issue_project.archived_at', 'is', null);
+		} else if (filters.archived === 'true') {
+			q = q.where((eb) =>
+				eb.or([
+					eb('scope_project.archived_at', 'is not', null),
+					eb('issue_project.archived_at', 'is not', null)
+				])
+			);
+		}
 	}
 	if (filters.q) {
 		// Plain substring search; % and _ act as wildcards, which is harmless
@@ -618,6 +649,7 @@ export async function createContextItem(
 		labelId: body.label_id ?? null,
 		issueId: body.issue_id ?? null
 	});
+	await assertScopeWritable(db, actor, scope);
 	await assertNameAvailable(db, actor.userId, kind, name, scope);
 
 	let promptBody: string | null = null;
@@ -735,6 +767,7 @@ export async function updateContextItem(
 		.where('context_item.id', '=', id)
 		.executeTakeFirst();
 	if (!row) throw notFound();
+	await assertScopeWritable(db, actor, rowScope(row));
 	const kind = row.kind as ContextKind;
 
 	if (body.expected_version !== undefined && body.expected_version !== row.version) {
@@ -792,6 +825,8 @@ export async function updateContextItem(
 	}
 	const scope =
 		scopeTouched || scopeChanged ? await resolveScope(db, actor.userId, targetIds) : currentScope;
+	// Moving an item *into* an archived project is a write on that project too.
+	if (scopeChanged) await assertScopeWritable(db, actor, scope);
 
 	if (name !== row.name || scopeChanged) {
 		await assertNameAvailable(db, actor.userId, kind, name, targetIds, id);
@@ -948,6 +983,7 @@ export async function deleteContextItem(
 		.executeTakeFirst();
 	if (!row) throw notFound();
 	const scope = rowScope(row);
+	await assertScopeWritable(db, actor, scope);
 	await runAtomic(env, [
 		db.deleteFrom('context_item_file').where('context_item_id', '=', id).compile(),
 		db
@@ -994,6 +1030,7 @@ export async function appendContextItem(
 			.where('context_item.id', '=', id)
 			.executeTakeFirst();
 		if (!row) throw notFound();
+		await assertScopeWritable(db, actor, rowScope(row));
 		if (row.kind !== 'prompt') {
 			throw new ApiFail(
 				422,

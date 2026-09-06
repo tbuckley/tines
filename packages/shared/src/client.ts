@@ -55,6 +55,9 @@ import type {
 	ListResponse,
 	PageParams,
 	Project,
+	ProjectListFilters,
+	ArchiveProjectResponse,
+	UnarchiveProjectResponse,
 	RoutingRule,
 	RoutingRuleWithWarnings,
 	RunFilters,
@@ -255,8 +258,8 @@ export function createApiClient(options: ApiClientOptions) {
 		getTime: () => get<TimeResponse>('/api/time'),
 
 		// Projects
-		listProjects: (page: PageParams = {}) =>
-			get<ListResponse<Project>>(`/api/v1/projects${query(page)}`),
+		listProjects: (params: ProjectListFilters & PageParams = {}) =>
+			get<ListResponse<Project>>(`/api/v1/projects${query(params)}`),
 		createProject: (body: CreateProjectRequest) =>
 			request<Project>('POST', '/api/v1/projects', body),
 		getProject: (id: string) => get<Project>(`/api/v1/projects/${id}`),
@@ -264,6 +267,10 @@ export function createApiClient(options: ApiClientOptions) {
 			request<Project>('PATCH', `/api/v1/projects/${id}`, body),
 		deleteProject: (id: string, body?: DeleteAnchorRequest) =>
 			request<DeleteAnchorResponse | void>('DELETE', `/api/v1/projects/${id}`, body),
+		archiveProject: (id: string) =>
+			request<ArchiveProjectResponse>('POST', `/api/v1/projects/${id}/archive`),
+		unarchiveProject: (id: string) =>
+			request<UnarchiveProjectResponse>('POST', `/api/v1/projects/${id}/unarchive`),
 
 		// Workflows
 		listWorkflows: (page: PageParams = {}) =>

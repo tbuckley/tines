@@ -158,6 +158,7 @@ export async function loadEligibleIssues(
 		JOIN project ON project.id = issue.project_id
 		JOIN workflow_state st ON st.id = issue.state_id
 		WHERE project.user_id = ${userId}
+			AND project.archived_at IS NULL
 			AND st.category = 'active'
 			AND issue.needs_attention = 0
 			AND NOT EXISTS (
@@ -321,9 +322,13 @@ export async function claimRun(
 		SELECT ${input.runId}, ${input.userId}, issue.id, ${input.runnerId}, 'assigned',
 			${input.tier}, ${input.model}, issue.state_id, '', 0, ${input.now}
 		FROM issue
+		JOIN project ON project.id = issue.project_id
 		JOIN workflow_state st ON st.id = issue.state_id
 		WHERE issue.id = ${input.issueId}
 			AND issue.state_id = ${input.stateId}
+			-- Race guard: the project may have been archived between the pass
+			-- reading the queue and this claim.
+			AND project.archived_at IS NULL
 			AND st.category = 'active'
 			AND issue.needs_attention = 0
 			AND NOT EXISTS (
