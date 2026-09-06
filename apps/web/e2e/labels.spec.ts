@@ -527,8 +527,9 @@ test.describe.serial('label as a scope dimension', () => {
 		await page.goto('/agents');
 		// The precedence rule, on the page rather than one click away inside
 		// the Add-rule modal. Matched on this sentence's own tail: the modal's
-		// longer paragraph opens with the same clause.
-		await expect(page.getByText(/a global rule is the fallback/)).toBeVisible();
+		// longer paragraph opens with the same clause, and `getByText` does
+		// not normalise the newline prettier puts mid-sentence.
+		await expect(page.getByText('Listed most specific first.')).toBeVisible();
 
 		// This spec's three rules, among whatever other rules the account has.
 		const rows = page
@@ -536,27 +537,35 @@ test.describe.serial('label as a scope dimension', () => {
 			.locator('li')
 			.filter({ hasText: projectName });
 		await expect(rows).toHaveCount(3);
-		const kind = (text: string) =>
-			text.includes(docsName) ? 'docs' : text.includes(secName) ? 'sec' : 'project-only';
+		// Read the order off each row's own scope chip, never its text: the
+		// tie pill *names the other rule's label*, so a text match would count
+		// the `sec` row as a `docs` one.
+		const scopeChip = (labelName: string) => page.locator(`[title="label ${labelName}"]`);
+		const order = await rows.evaluateAll((lis) =>
+			lis.map(
+				(li) => li.querySelector('span[title^="label "]')?.getAttribute('title') ?? 'no label'
+			)
+		);
 		// Most specific first: both label rules (rank 6) above the bare
 		// project rule (rank 2), the two label rules tie-broken by scope label.
-		expect((await rows.allTextContents()).map(kind)).toEqual(['docs', 'sec', 'project-only']);
+		expect(order).toEqual([`label ${docsName}`, `label ${secName}`, 'no label']);
 
 		// The tie is stated on both rows that cause it — an issue carrying
 		// both labels dispatches nowhere, and until now nothing on this page
 		// said so.
-		const docsRow = rows.filter({ hasText: docsName });
 		await expect(
-			docsRow.getByText(`ties with project ${projectName} · label ${secName}`)
+			rows
+				.filter({ has: scopeChip(docsName) })
+				.getByText(`ties with project ${projectName} · label ${secName}`)
 		).toBeVisible();
 		await expect(
 			rows
-				.filter({ hasText: secName })
+				.filter({ has: scopeChip(secName) })
 				.getByText(`ties with project ${projectName} · label ${docsName}`)
 		).toBeVisible();
 		// The rule both of them outrank says so once, with the count; the two
 		// full sentences are the tooltip.
-		const broadRow = rows.filter({ hasNotText: docsName }).filter({ hasNotText: secName });
+		const broadRow = rows.filter({ hasNot: page.locator('[title^="label "]') });
 		const shadowPill = broadRow.getByText('shadowed by 2 rules');
 		await expect(shadowPill).toBeVisible();
 		await expect(shadowPill).toHaveAttribute('title', /is more specific/);
