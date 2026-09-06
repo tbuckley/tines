@@ -2086,6 +2086,74 @@ export function seedPromptQueries(
 	};
 }
 
+/**
+ * Statements creating a repo item plus its context.created event, for riding
+ * along in a creation batch — the `repo` sibling of `seedPromptQueries`
+ * (starters, Tines/248). The anchor project is brand new, so the scope is
+ * empty by construction and the name cannot collide.
+ */
+export function seedRepoQueries(
+	db: Kysely<Database>,
+	actor: ActorContext,
+	opts: {
+		name: string;
+		description?: string;
+		repoUrl: string;
+		repoBranch?: string | null;
+		repoDir?: string | null;
+		projectId: string;
+		position: number;
+		/** Canonical scope label at creation time, for the event payload. */
+		label: string;
+		now: number;
+	}
+): { id: string; queries: CompiledQuery[] } {
+	const id = newId('ctx');
+	const projectId = opts.projectId;
+	return {
+		id,
+		queries: [
+			db
+				.insertInto('context_item')
+				.values({
+					id,
+					user_id: actor.userId,
+					kind: 'repo',
+					name: opts.name,
+					description: opts.description ?? '',
+					project_id: projectId,
+					workflow_state_id: null,
+					label_id: null,
+					issue_id: null,
+					body: null,
+					repo_url: opts.repoUrl,
+					repo_branch: opts.repoBranch ?? null,
+					repo_dir: opts.repoDir ?? null,
+					position: opts.position,
+					version: 1,
+					created_at: opts.now,
+					updated_at: opts.now
+				})
+				.compile(),
+			eventInsert(db, actor, {
+				type: 'context.created',
+				projectId,
+				payload: {
+					context_id: id,
+					kind: 'repo',
+					name: opts.name,
+					scope: {
+						project_id: projectId,
+						workflow_state_id: null,
+						issue_id: null,
+						label: opts.label
+					}
+				}
+			})
+		]
+	};
+}
+
 /** Seeds the global agent-guidelines prompt once; a no-op if it exists. */
 export async function ensureAgentGuidelines(
 	db: Kysely<Database>,
