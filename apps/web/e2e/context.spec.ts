@@ -11,7 +11,7 @@ import type {
 } from '@tines/shared';
 import { expect, test } from '@playwright/test';
 import { ALICE, BOB } from './constants.mjs';
-import { apiClient, body, errorBody, runId, signIn } from './helpers';
+import { apiClient, body, errorBody, gotoHydrated, runId, signIn } from './helpers';
 
 /**
  * The context-attachments acceptance loop (specs/context/SPEC.md): scoped
@@ -553,7 +553,7 @@ test.describe.serial('context list state chips', () => {
 		context
 	}) => {
 		await signIn(context, ALICE.sessionToken);
-		await page.goto(`/context?workflow=${eng.id}`);
+		await gotoHydrated(page, `/context?workflow=${eng.id}`);
 		// `li:not([inert])`: the old row outros for 180 ms after a filter change
 		// (`transition:slide` in ContextItemList.svelte), and Svelte 5 marks an
 		// outroing element `inert` while it is still a sibling of the new row inside
@@ -677,7 +677,7 @@ test.describe.serial('context list state chips', () => {
 
 	test('the workflow page keeps its own chips short', async ({ page, context }) => {
 		await signIn(context, ALICE.sessionToken);
-		await page.goto(`/workflows/${eng.id}`);
+		await gotoHydrated(page, `/workflows/${eng.id}`);
 		const section = page.getByRole('heading', { name: 'Context by state' }).locator('..');
 		const expander = section.getByRole('button', { name: /^Review/ });
 		// Same live-row scoping as above; this path has no swap, so it is consistency,

@@ -342,10 +342,12 @@ everyone types; `pnpm check` fails on any script named after a pnpm command (bar
 ### Continuous integration
 
 `.github/workflows/ci.yml` runs on every pull request and push to `main`: one job
-typechecks (`pnpm check`) and runs the unit tests, another installs Chromium and runs the
-Playwright suite (`pnpm test:e2e`) against a local `wrangler dev` with a throwaway D1. It
-needs no secrets, so it runs for fork PRs too. The deploy and publish workflows below run
-the unit tests again before shipping, but the e2e suite runs only here.
+typechecks (`pnpm check`) and runs the unit tests, and three more each install Chromium's
+headless shell and run one shard of the Playwright suite (`pnpm test:e2e --shard=N/3`)
+against their own local `wrangler dev` with a throwaway D1. A final "Playwright e2e" job
+just reports whether every shard passed, so the check name predates the sharding. It needs
+no secrets, so it runs for fork PRs too. The deploy and publish workflows below run
+unit tests again before shipping, but the e2e suite runs only here.
 
 ### Automatic deploys
 
@@ -376,7 +378,7 @@ is `IF NOT EXISTS`.
 ### PR preview URLs
 
 `.github/workflows/preview.yml` runs on every pull request (from branches in
-this repo): it builds, runs unit tests, applies the PR's migrations to the
+this repo): it builds the web app, applies the PR's migrations to the
 preview database, then uploads the worker with `wrangler versions upload
 --env preview --preview-alias pr-<number>`. Nothing is promoted to live
 traffic; the upload gets a stable per-PR alias URL like

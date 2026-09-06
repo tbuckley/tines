@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 import { ALICE } from './constants.mjs';
-import { clickUntil, resetFocus, signIn } from './helpers';
+import { clickUntil, gotoHydrated, resetFocus, signIn } from './helpers';
 
 // Theme resolution happens entirely in the browser: a pre-paint script in
 // app.html reads localStorage, and $lib/theme.svelte.ts takes over on hydration.
@@ -43,7 +43,7 @@ test.describe('with a light system preference', () => {
 	test('a dark override persists across a reload and can be handed back to the system', async ({
 		page
 	}) => {
-		await page.goto('/settings/appearance');
+		await gotoHydrated(page, '/settings/appearance');
 		await clickUntil(page.getByTestId('theme-dark'), async () => {
 			await expect(html(page)).toHaveClass(/\bdark\b/, { timeout: 2_000 });
 		});

@@ -1,7 +1,7 @@
 import type { IssueDetail, Project } from '@tines/shared';
 import { expect, test, type Page } from '@playwright/test';
 import { ALICE } from './constants.mjs';
-import { apiClient, body, resetFocus, runId, signIn } from './helpers';
+import { apiClient, body, gotoHydrated, resetFocus, runId, signIn } from './helpers';
 
 /**
  * A title with a long unbroken run of characters — a pasted URL is enough
@@ -114,7 +114,7 @@ test('the linked-issue row truncates the title instead of widening the column', 
 	page
 }) => {
 	await page.setViewportSize(PHONE);
-	await page.goto(issueUrl(dupIssue));
+	await gotoHydrated(page, issueUrl(dupIssue));
 	// The Relations card folds to one row on a phone (Tines/165); open it.
 	const fold = page.getByRole('button', { name: /^Relations\b/ });
 	await expect(async () => {

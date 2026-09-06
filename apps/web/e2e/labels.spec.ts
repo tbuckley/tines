@@ -14,7 +14,7 @@ import type {
 } from '@tines/shared';
 import { expect, test } from '@playwright/test';
 import { ALICE, RUNROW } from './constants.mjs';
-import { apiClient, body, errorBody, resetFocus, runId, signIn } from './helpers';
+import { apiClient, body, errorBody, gotoHydrated, resetFocus, runId, signIn } from './helpers';
 
 const PHONE = { width: 390, height: 844 };
 const DESKTOP = { width: 1280, height: 900 };
@@ -110,7 +110,7 @@ test.describe.serial('issue labels UI', () => {
 	});
 
 	test('the detail card adds and removes a label', async ({ page }) => {
-		await page.goto(`/issues/${encodeURIComponent(projectName)}/${plain.number}`);
+		await gotoHydrated(page, `/issues/${encodeURIComponent(projectName)}/${plain.number}`);
 		const card = page.locator('section', { has: page.getByRole('heading', { name: 'Labels' }) });
 		await expect(card.getByText('No labels.')).toBeVisible();
 
@@ -135,7 +135,7 @@ test.describe.serial('issue labels UI', () => {
 	});
 
 	test('the settings page lists labels with their usage and renames one', async ({ page }) => {
-		await page.goto('/settings/labels');
+		await gotoHydrated(page, '/settings/labels');
 		const rename = `${bugName}-renamed`;
 		const row = page.locator('li', { has: page.getByLabel(`Rename ${bugName}`) });
 		await expect(row.getByRole('link', { name: '1 issue' })).toBeVisible();
@@ -646,7 +646,7 @@ test.describe.serial('label as a scope dimension', () => {
 		await signIn(context, ALICE.sessionToken);
 		// Unfiltered: this page passes the editor no scope defaults, so the
 		// label select is the only dimension the new item gets.
-		await page.goto('/context');
+		await gotoHydrated(page, '/context');
 		const name = `editor-scoped-${runId}`;
 		const labelSelect = page.getByLabel('Only on issues labelled');
 

@@ -10,7 +10,7 @@ import type {
 } from '@tines/shared';
 import { expect, test } from '@playwright/test';
 import { ALICE, BOB, SCHED } from './constants.mjs';
-import { apiClient, body, clickUntil, errorBody, resetFocus, runId, signIn } from './helpers';
+import { apiClient, body, clickUntil, errorBody, gotoHydrated, resetFocus, runId, signIn } from './helpers';
 
 // Specs share one user: a project page sets the focus (Tines/259), so clear it
 // before each test rather than letting it scope a later spec's lists.
@@ -414,7 +414,7 @@ test.describe('schedules in the web UI', () => {
 		await signIn(context, ALICE.sessionToken);
 		const page = await context.newPage();
 
-		await page.goto(`/projects/${SCHED.projectId}`);
+		await gotoHydrated(page, `/projects/${SCHED.projectId}`);
 		const dialog = page.getByRole('dialog', { name: /New issue/ });
 		await clickUntil(page.getByRole('button', { name: 'New issue' }), async () => {
 			await expect(dialog).toBeVisible({ timeout: 2_000 });

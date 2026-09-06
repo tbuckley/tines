@@ -646,6 +646,68 @@ export async function getIssueDetail(
 // ---------------------------------------------------------------------------
 // Mutations
 
+/**
+ * The issue row plus its `issue.created` event, as statements — so numbering
+ * and the event payload have one definition whether the issue is created on
+ * its own, by a schedule, or spliced into a project-creation batch by a
+ * starter (Tines/248).
+ */
+export function issueInsertQueries(
+	db: Kysely<Database>,
+	actor: ActorContext,
+	opts: {
+		id: string;
+		projectId: string;
+		title: string;
+		description: string;
+		workflowId: string;
+		stateId: string;
+		stateName: string;
+		now: number;
+		scheduledTask?: { id: string; name: string };
+	}
+): CompiledQuery[] {
+	const { id, projectId, workflowId, stateId, now, scheduledTask } = opts;
+	return [
+		// MAX(number)+1 inside a single statement (and the batch's implicit
+		// transaction) keeps per-project numbering race-free on D1.
+		db
+			.insertInto('issue')
+			.values({
+				id,
+				project_id: projectId,
+				number: sql<number>`(SELECT COALESCE(MAX(number), 0) + 1 FROM issue WHERE project_id = ${projectId})`,
+				title: opts.title,
+				description: opts.description,
+				workflow_id: workflowId,
+				state_id: stateId,
+				scheduled_task_id: scheduledTask?.id ?? null,
+				pinned_runner_id: null,
+				pinned_tier: null,
+				attempt_count: 0,
+				needs_attention: 0,
+				state_entered_at: now,
+				created_at: now,
+				updated_at: now
+			})
+			.compile(),
+		eventInsert(db, actor, {
+			type: 'issue.created',
+			issueId: id,
+			projectId,
+			payload: {
+				title: opts.title,
+				workflow_id: workflowId,
+				state_id: stateId,
+				state_name: opts.stateName,
+				...(scheduledTask
+					? { scheduled_task_id: scheduledTask.id, scheduled_task_name: scheduledTask.name }
+					: {})
+			}
+		})
+	];
+}
+
 export async function createIssue(
 	db: Kysely<Database>,
 	env: Env,
@@ -730,39 +792,16 @@ export async function createIssue(
 		);
 	}
 	queries.push(
-		// MAX(number)+1 inside a single statement (and the batch's implicit
-		// transaction) keeps per-project numbering race-free on D1.
-		db
-			.insertInto('issue')
-			.values({
-				id,
-				project_id: projectId,
-				number: sql<number>`(SELECT COALESCE(MAX(number), 0) + 1 FROM issue WHERE project_id = ${projectId})`,
-				title: issueTitle,
-				description: issueDescription,
-				workflow_id: workflow.id,
-				state_id: initialState.id,
-				scheduled_task_id: schedule?.id ?? null,
-				pinned_runner_id: null,
-				pinned_tier: null,
-				attempt_count: 0,
-				needs_attention: 0,
-				state_entered_at: now,
-				created_at: now,
-				updated_at: now
-			})
-			.compile(),
-		eventInsert(db, actor, {
-			type: 'issue.created',
-			issueId: id,
+		...issueInsertQueries(db, actor, {
+			id,
 			projectId,
-			payload: {
-				title: issueTitle,
-				workflow_id: workflow.id,
-				state_id: initialState.id,
-				state_name: initialState.name,
-				...(schedule ? { scheduled_task_id: schedule.id, scheduled_task_name: schedule.name } : {})
-			}
+			title: issueTitle,
+			description: issueDescription,
+			workflowId: workflow.id,
+			stateId: initialState.id,
+			stateName: initialState.name,
+			now,
+			...(schedule ? { scheduledTask: { id: schedule.id, name: schedule.name } } : {})
 		})
 	);
 	if (schedule) {

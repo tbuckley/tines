@@ -1,6 +1,6 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import { ALICE } from './constants.mjs';
-import { clickUntil, readSettled, resetFocus, signIn } from './helpers';
+import { clickUntil, gotoHydrated, readSettled, resetFocus, signIn } from './helpers';
 
 /**
  * The settings chrome: one tab row shared by the four settings pages, reached
@@ -36,7 +36,7 @@ const box = (target: Locator) => readSettled(() => target.boundingBox(), { timeo
 
 test.describe('settings navigation', () => {
 	test('the avatar menu offers Settings, which lands on the first tab', async ({ page }) => {
-		await page.goto('/issues');
+		await gotoHydrated(page, '/issues');
 		const menu = page.getByRole('menu');
 		await clickUntil(page.getByRole('button', { name: 'Account menu' }), async () => {
 			await expect(menu).toBeVisible({ timeout: 1000 });
@@ -59,7 +59,7 @@ test.describe('settings navigation', () => {
 	});
 
 	test('the tab row hops between settings pages and marks the current one', async ({ page }) => {
-		await page.goto('/settings/api-keys');
+		await gotoHydrated(page, '/settings/api-keys');
 		await expect(nav(page).getByRole('link')).toHaveText(TABS);
 		await expect(nav(page).getByRole('link', { name: 'API keys' })).toHaveAttribute(
 			'aria-current',

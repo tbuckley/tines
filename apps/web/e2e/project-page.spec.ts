@@ -1,7 +1,7 @@
 import type { CreateIssueResponse, Project, WorkflowResponse } from '@tines/shared';
 import { expect, test, type Page } from '@playwright/test';
 import { ALICE } from './constants.mjs';
-import { apiClient, body, resetFocus, runId, signIn } from './helpers';
+import { apiClient, body, gotoHydrated, resetFocus, runId, signIn } from './helpers';
 
 // Specs share one user: a project page sets the focus (Tines/259), so clear it
 // before each test rather than letting it scope a later spec's lists.
@@ -37,7 +37,7 @@ test.describe.serial('project page layout', () => {
 		const context = await browser.newContext({ viewport });
 		await signIn(context, ALICE.sessionToken);
 		const page = await context.newPage();
-		await page.goto(`/projects/${projectId}${search}`);
+		await gotoHydrated(page, `/projects/${projectId}${search}`);
 		return page;
 	}
 

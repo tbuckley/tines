@@ -47,7 +47,7 @@ interface ResolvedState {
 	inheritsFrom: string | null | undefined;
 }
 
-interface ResolvedDef {
+export interface ResolvedDef {
 	states: ResolvedState[];
 	transitions: {
 		id: string;
@@ -714,22 +714,77 @@ export async function loadWorkflow(
 }
 
 // ---------------------------------------------------------------------------
+// Structural identity (shared by library import and starters)
+
+const FP_SEP = '\u0000';
+
+/**
+ * Canonical form of a workflow definition, for "same or different?". Covers
+ * the initial state, each state's name and category, and the transition set
+ * with its artifact requirements — deliberately *not* stage instructions,
+ * description or inheritance, which are edited independently of the shape.
+ */
+export function workflowFingerprint(wf: CreateWorkflowRequest): string {
+	const states = wf.states.map((s) => `${s.name}:${s.category}`).join('|');
+	const transitions = [...wf.transitions]
+		.map((t) => {
+			const requires = [...(t.requires ?? [])]
+				.map((r) => `${r.artifact}:${r.type ?? ''}:${r.content_type ?? ''}:${r.description ?? ''}`)
+				.sort()
+				.join(',');
+			return `${t.from}>${t.name}>${t.to}[${requires}]`;
+		})
+		.sort()
+		.join('|');
+	return `${wf.initial_state}${FP_SEP}${states}${FP_SEP}${transitions}`;
+}
+
+/**
+ * A stored workflow expressed as the request that would create it — the other
+ * side of a fingerprint comparison.
+ */
+export function workflowAsRequest(wf: WorkflowResponse): CreateWorkflowRequest {
+	return {
+		name: wf.name,
+		initial_state: wf.states.find((s) => s.id === wf.initial_state_id)?.name ?? '',
+		states: [...wf.states]
+			.sort((a, b) => a.position - b.position)
+			.map((s) => ({ name: s.name, category: s.category })),
+		transitions: wf.transitions.map((t) => ({
+			name: t.name,
+			from: wf.states.find((s) => s.id === t.from_state_id)?.name ?? '',
+			to: wf.states.find((s) => s.id === t.to_state_id)?.name ?? '',
+			...(t.requires ? { requires: t.requires } : {})
+		}))
+	};
+}
+
+// ---------------------------------------------------------------------------
 // Mutations
 
-export async function createWorkflow(
+/**
+ * Every statement a brand-new workflow needs — the workflow row, its states
+ * and transitions, the stage-instruction seeds, the inheritance UPDATE pass
+ * and the `workflow.created` event — as one list, so a caller that is already
+ * building a batch (project creation from a starter, Tines/248) can splice
+ * them in rather than run a batch of its own.
+ */
+export function workflowInsertQueries(
 	db: Kysely<Database>,
-	env: Env,
 	actor: ActorContext,
-	body: CreateWorkflowRequest
-): Promise<WorkflowResponse> {
-	const name = requireString(body.name, 'name', { max: 200 }).trim();
-	const description = optionalString(body.description, 'description', { max: 10_000 }) ?? '';
-	const def = resolveDef(body.states, body.transitions ?? [], body.initial_state, []);
-	const id = newId('wf');
-	const inh = await resolveInheritance(db, actor.userId, { id, name }, def.states, []);
-
-	const now = Date.now();
-	const queries: CompiledQuery[] = [
+	opts: {
+		id: string;
+		name: string;
+		description: string;
+		def: ResolvedDef;
+		inh: ResolvedInheritance;
+		now: number;
+		/** Merged into the `workflow.created` payload (e.g. `{ starter: 'code' }`). */
+		eventPayload?: Record<string, unknown>;
+	}
+): CompiledQuery[] {
+	const { id, name, description, def, inh, now } = opts;
+	return [
 		db
 			.insertInto('workflow')
 			.values({
@@ -798,11 +853,26 @@ export async function createWorkflow(
 			payload: {
 				workflow_id: id,
 				name,
-				...(inh.changes.length ? { inheritance_changed: inh.changes } : {})
+				...(inh.changes.length ? { inheritance_changed: inh.changes } : {}),
+				...opts.eventPayload
 			}
 		})
 	];
-	await runAtomic(env, queries);
+}
+
+export async function createWorkflow(
+	db: Kysely<Database>,
+	env: Env,
+	actor: ActorContext,
+	body: CreateWorkflowRequest
+): Promise<WorkflowResponse> {
+	const name = requireString(body.name, 'name', { max: 200 }).trim();
+	const description = optionalString(body.description, 'description', { max: 10_000 }) ?? '';
+	const def = resolveDef(body.states, body.transitions ?? [], body.initial_state, []);
+	const id = newId('wf');
+	const inh = await resolveInheritance(db, actor.userId, { id, name }, def.states, []);
+	const now = Date.now();
+	await runAtomic(env, workflowInsertQueries(db, actor, { id, name, description, def, inh, now }));
 	return loadWorkflow(db, actor.userId, id);
 }
 
