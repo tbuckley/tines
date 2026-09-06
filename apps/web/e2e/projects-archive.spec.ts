@@ -73,11 +73,14 @@ function suite(label: string, viewport: { width: number; height: number }) {
 			const card = page.getByRole('link', { name: projectName });
 			await expect(card).toHaveCount(0);
 
+			// The toggle only navigates once its listener is attached; a click that
+			// lands before hydration flips nothing and leaves the URL bare.
 			const toggle = page.getByRole('checkbox', { name: /^Show archived \(\d+\)$/ });
 			await expect(toggle).toBeVisible();
-			await toggle.click();
+			await clickUntil(toggle, async () => {
+				await expect(page).toHaveURL(/\?archived=1$/);
+			});
 
-			await expect(page).toHaveURL(/\?archived=1$/);
 			await expect(card).toBeVisible();
 			await expect(card).toContainText('Archived');
 			// The Projects nav tab remembers the toggle for the next visit.
