@@ -28,14 +28,19 @@
 		schedules,
 		workflows,
 		highlightId = null,
+		disabledReason = null,
 		onerror
 	}: {
 		schedules: Schedule[];
 		workflows: WorkflowResponse[];
 		/** Row to highlight (?schedule= deep links from issue badges). */
 		highlightId?: string | null;
+		/** When set, every mutating control is disabled and carries this as its tooltip. */
+		disabledReason?: string | null;
 		onerror: (e: unknown) => void;
 	} = $props();
+
+	const readOnly = $derived(disabledReason != null);
 
 	const dur = () => (prefersReducedMotion() ? 0 : 180);
 
@@ -168,7 +173,11 @@
 				</p>
 			</div>
 			<div class="text-muted-foreground hidden shrink-0 text-right text-xs sm:block">
-				{#if s.enabled}
+				{#if s.project_archived_at !== null}
+					<!-- The sweep skips an archived project's schedules without clearing
+					     `enabled`, so the honest label is neither "next …" nor "paused". -->
+					<p>paused · project archived</p>
+				{:else if s.enabled}
 					<p title={new Date(s.next_run_at).toLocaleString()}>{nextRunLabel(s.next_run_at)}</p>
 				{:else}
 					<p>paused</p>
@@ -187,7 +196,8 @@
 					role="switch"
 					aria-checked={s.enabled}
 					aria-label={s.enabled ? `Pause schedule ${s.name}` : `Resume schedule ${s.name}`}
-					disabled={busyId !== null}
+					disabled={busyId !== null || readOnly}
+					title={disabledReason}
 					class="relative h-5 w-9 rounded-full transition-colors duration-200 {s.enabled
 						? 'bg-primary'
 						: 'bg-muted-foreground/30'}"
@@ -203,8 +213,8 @@
 					size="sm"
 					variant="ghost"
 					aria-label="Run schedule {s.name} now"
-					title="Run now"
-					disabled={busyId !== null}
+					title={disabledReason ?? "Run now"}
+					disabled={busyId !== null || readOnly}
 					onclick={() => runNow(s)}
 				>
 					<IconPlayerPlay size={15} />
@@ -213,8 +223,8 @@
 					size="sm"
 					variant="ghost"
 					aria-label="Edit schedule {s.name}"
-					title="Edit"
-					disabled={busyId !== null}
+					title={disabledReason ?? "Edit"}
+					disabled={busyId !== null || readOnly}
 					onclick={() => openEdit(s)}
 				>
 					<IconPencil size={15} />
@@ -223,8 +233,8 @@
 					size="sm"
 					variant="ghost"
 					aria-label="Delete schedule {s.name}"
-					title="Delete (existing issues are kept)"
-					disabled={busyId !== null}
+					title={disabledReason ?? "Delete (existing issues are kept)"}
+					disabled={busyId !== null || readOnly}
 					onclick={() => remove(s)}
 				>
 					<IconTrash size={15} />
