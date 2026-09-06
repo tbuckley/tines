@@ -47,7 +47,9 @@ describe('toContextScope', () => {
 		workflowName: null,
 		issueNumber: null,
 		issueProjectName: null,
-		issueProjectId: null
+		issueProjectId: null,
+		projectArchivedAt: null,
+		issueProjectArchivedAt: null
 	};
 
 	it('serializes the wire shape, including the issue ref and the label', () => {

@@ -17,6 +17,7 @@ import {
 } from '@tines/shared';
 import type { Kysely } from 'kysely';
 import type { Database } from '$lib/server/db';
+import { archivedDate } from '$lib/server/api/archive';
 import { issueQuery, serializeIssue } from '$lib/server/api/issues';
 import { runQuery, serializeRun } from '$lib/server/api/runs';
 import { scopeLabel } from '$lib/server/api/scope';
@@ -110,6 +111,14 @@ export async function explainDispatch(
 			name: 'automation_enabled',
 			ok: settings.enabled,
 			detail: settings.enabled ? 'automation is on' : 'the kill switch is off — nothing dispatches'
+		},
+		{
+			name: 'project_archived',
+			ok: issue.project_archived_at === null,
+			detail:
+				issue.project_archived_at === null
+					? `project ${issue.project_name} is live`
+					: `project ${issue.project_name} is archived (since ${archivedDate(issue.project_archived_at)}) — nothing dispatches`
 		},
 		{
 			name: 'state_active',
