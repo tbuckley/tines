@@ -11,17 +11,30 @@ import type { RequestHandler } from './$types';
 export const PUT: RequestHandler = api(async (event) => {
 	const { db, env, actor } = await apiContext(event);
 	const filename = event.url.searchParams.get('filename');
+	const contentType = event.request.headers.get('content-type');
+	// `?filename=` is what makes this a file upload, so the JSON guard is
+	// only about a misdirected client: no filename plus a JSON body is
+	// someone who meant the JSON upsert next door, and gets told so before
+	// the generic missing-filename 422. A request that *does* name a file is
+	// an upload whatever its MIME type — `.json` included (Tines/242).
 	if (!filename) {
+		if (!contentType || contentType.startsWith('application/json')) {
+			throw new ApiFail(
+				422,
+				'invalid_field',
+				'Send the file bytes as the raw request body with its MIME type in Content-Type (this endpoint does not take JSON)',
+				{ field: 'content_type' }
+			);
+		}
 		throw new ApiFail(422, 'invalid_field', 'Pass the display file name as ?filename=…', {
 			field: 'filename'
 		});
 	}
-	const contentType = event.request.headers.get('content-type');
-	if (!contentType || contentType.startsWith('application/json')) {
+	if (!contentType) {
 		throw new ApiFail(
 			422,
 			'invalid_field',
-			'Send the file bytes as the raw request body with its MIME type in Content-Type (this endpoint does not take JSON)',
+			'Send the file bytes as the raw request body with its MIME type in Content-Type',
 			{ field: 'content_type' }
 		);
 	}
