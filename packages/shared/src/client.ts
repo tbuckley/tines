@@ -18,6 +18,7 @@ import type {
 	RunnerPollResponse,
 	RunnerTokenResponse,
 	ApiKey,
+	RunKeyFilter,
 	ApiKeyCreated,
 	AppendContextRequest,
 	Artifact,
@@ -54,6 +55,9 @@ import type {
 	ListResponse,
 	PageParams,
 	Project,
+	ProjectListFilters,
+	ArchiveProjectResponse,
+	UnarchiveProjectResponse,
 	RoutingRule,
 	RoutingRuleWithWarnings,
 	RunFilters,
@@ -254,8 +258,8 @@ export function createApiClient(options: ApiClientOptions) {
 		getTime: () => get<TimeResponse>('/api/time'),
 
 		// Projects
-		listProjects: (page: PageParams = {}) =>
-			get<ListResponse<Project>>(`/api/v1/projects${query(page)}`),
+		listProjects: (params: ProjectListFilters & PageParams = {}) =>
+			get<ListResponse<Project>>(`/api/v1/projects${query(params)}`),
 		createProject: (body: CreateProjectRequest) =>
 			request<Project>('POST', '/api/v1/projects', body),
 		getProject: (id: string) => get<Project>(`/api/v1/projects/${id}`),
@@ -263,6 +267,10 @@ export function createApiClient(options: ApiClientOptions) {
 			request<Project>('PATCH', `/api/v1/projects/${id}`, body),
 		deleteProject: (id: string, body?: DeleteAnchorRequest) =>
 			request<DeleteAnchorResponse | void>('DELETE', `/api/v1/projects/${id}`, body),
+		archiveProject: (id: string) =>
+			request<ArchiveProjectResponse>('POST', `/api/v1/projects/${id}/archive`),
+		unarchiveProject: (id: string) =>
+			request<UnarchiveProjectResponse>('POST', `/api/v1/projects/${id}/unarchive`),
 
 		// Workflows
 		listWorkflows: (page: PageParams = {}) =>
@@ -507,7 +515,8 @@ export function createApiClient(options: ApiClientOptions) {
 			request<SupervisorSettingsResponse>('PUT', '/api/v1/supervisor/settings', body),
 
 		// API keys (create/revoke require a browser session, not a key)
-		listApiKeys: () => get<ListResponse<ApiKey>>('/api/v1/api-keys'),
+		listApiKeys: (filters: { run_keys?: RunKeyFilter } = {}) =>
+			get<ListResponse<ApiKey>>(`/api/v1/api-keys${query(filters)}`),
 		createApiKey: (body: CreateApiKeyRequest) =>
 			request<ApiKeyCreated>('POST', '/api/v1/api-keys', body),
 		revokeApiKey: (id: string) => request<void>('DELETE', `/api/v1/api-keys/${id}`),

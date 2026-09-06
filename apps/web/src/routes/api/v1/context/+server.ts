@@ -1,7 +1,14 @@
 import { json } from '@sveltejs/kit';
 import type { ContextItem, CreateContextItemRequest, ListResponse } from '@tines/shared';
 import { createContextItem, listContextItems } from '$lib/server/api/context';
-import { api, apiContext, encodeCursor, readJson, readPage } from '$lib/server/api/core';
+import {
+	api,
+	apiContext,
+	encodeCursor,
+	readArchived,
+	readJson,
+	readPage
+} from '$lib/server/api/core';
 import type { RequestHandler } from './$types';
 
 export const GET: RequestHandler = api(async (event) => {
@@ -18,7 +25,8 @@ export const GET: RequestHandler = api(async (event) => {
 			issue: params.get('issue') ?? undefined,
 			label: params.get('label') ?? undefined,
 			q: params.get('q') ?? undefined,
-			exact: ['1', 'true'].includes(params.get('exact') ?? '')
+			exact: ['1', 'true'].includes(params.get('exact') ?? ''),
+			archived: readArchived(params)
 		},
 		page
 	);

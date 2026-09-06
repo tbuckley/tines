@@ -1,10 +1,14 @@
 import type {
+	ArchiveProjectResponse,
 	CreateProjectRequest,
 	DeletedContextItem,
+	DrainingRun,
 	Project,
+	ProjectListFilters,
+	UnarchiveProjectResponse,
 	UpdateProjectRequest
 } from '@tines/shared';
-import { PROJECT_PROMPT_NAME } from '@tines/shared';
+import { ACTIVE_RUN_STATUSES, PROJECT_PROMPT_NAME } from '@tines/shared';
 import type { Kysely } from 'kysely';
 import { newId, type Database } from '$lib/server/db';
 import { findAttachedContext, seedPromptQueries, sweepAttachedContext } from './context';
@@ -16,8 +20,9 @@ import {
 	runAtomic,
 	type ActorContext
 } from './core';
+import { assertWritable } from './archive';
 import { eventInsert } from './events';
-import { projectScheduleDeletions } from './schedules';
+import { projectScheduleDeletions, rearmScheduleQueries } from './schedules';
 
 function projectQuery(db: Kysely<Database>, userId: string) {
 	return db
@@ -43,12 +48,24 @@ function serializeProject(row: ProjectRow): Project {
 		default_workflow_id: row.default_workflow_id,
 		created_at: row.created_at,
 		updated_at: row.updated_at,
-		issue_count: Number(row.issue_count ?? 0)
+		issue_count: Number(row.issue_count ?? 0),
+		archived_at: row.archived_at
 	};
 }
 
-export async function listProjects(db: Kysely<Database>, userId: string): Promise<Project[]> {
-	const rows = await projectQuery(db, userId).orderBy('project.created_at asc').execute();
+/**
+ * Archived projects are hidden by default: every picker and grid loader calls
+ * this with no filter and should stop offering them. `'all'` is the escape.
+ */
+export async function listProjects(
+	db: Kysely<Database>,
+	userId: string,
+	{ archived = 'false' }: ProjectListFilters = {}
+): Promise<Project[]> {
+	let q = projectQuery(db, userId).orderBy('project.created_at asc');
+	if (archived === 'false') q = q.where('project.archived_at', 'is', null);
+	if (archived === 'true') q = q.where('project.archived_at', 'is not', null);
+	const rows = await q.execute();
 	return rows.map(serializeProject);
 }
 
@@ -160,6 +177,7 @@ export async function updateProject(
 	body: UpdateProjectRequest
 ): Promise<Project> {
 	const current = await getProject(db, actor.userId, id);
+	await assertWritable(db, actor, current);
 	const name =
 		body.name !== undefined ? requireString(body.name, 'name', { max: 200 }).trim() : current.name;
 	const description =
@@ -207,6 +225,7 @@ export async function deleteProject(
 	{ forceDeleteContext = false } = {}
 ): Promise<DeletedContextItem[]> {
 	const project = await getProject(db, actor.userId, id);
+	await assertWritable(db, actor, project);
 	if (project.issue_count > 0) {
 		throw new ApiFail(
 			422,
@@ -240,4 +259,118 @@ export async function deleteProject(
 		})
 	]);
 	return sweep.deleted;
+}
+
+// ---------------------------------------------------------------------------
+// Archive / unarchive
+//
+// Archiving drains rather than refuses: it always succeeds and takes effect at
+// once, but runs already active on the project's issues are allowed to finish
+// (see `api/archive.ts` for the exemption). Both calls are idempotent — a
+// second archive reports the same counts and writes nothing.
+
+/** Runs still active on the project's issues at the moment of the call. */
+async function drainingRuns(db: Kysely<Database>, projectId: string): Promise<DrainingRun[]> {
+	const rows = await db
+		.selectFrom('agent_run')
+		.innerJoin('issue', 'issue.id', 'agent_run.issue_id')
+		.innerJoin('runner', 'runner.id', 'agent_run.runner_id')
+		.select([
+			'agent_run.id as run_id',
+			'runner.name as runner_name',
+			'issue.id as issue_id',
+			'issue.number as issue_number'
+		])
+		.where('issue.project_id', '=', projectId)
+		.where('agent_run.status', 'in', [...ACTIVE_RUN_STATUSES])
+		.orderBy('agent_run.created_at asc')
+		.execute();
+	return rows.map((r) => ({ ...r, issue_number: Number(r.issue_number) }));
+}
+
+async function enabledScheduleCount(db: Kysely<Database>, projectId: string): Promise<number> {
+	const row = await db
+		.selectFrom('scheduled_task')
+		.select((eb) => eb.fn.countAll<number>().as('n'))
+		.where('project_id', '=', projectId)
+		.where('enabled', '=', 1)
+		.executeTakeFirst();
+	return Number(row?.n ?? 0);
+}
+
+export async function archiveProject(
+	db: Kysely<Database>,
+	env: Env,
+	actor: ActorContext,
+	id: string,
+	now = Date.now()
+): Promise<ArchiveProjectResponse> {
+	const project = await getProject(db, actor.userId, id);
+	const schedulesPaused = await enabledScheduleCount(db, id);
+	const draining = await drainingRuns(db, id);
+	const report = (p: Project): ArchiveProjectResponse => ({
+		project: p,
+		schedules_paused: schedulesPaused,
+		draining_runs: draining,
+		issues_read_only: p.issue_count
+	});
+	// Already archived: report, write nothing, emit nothing.
+	if (project.archived_at !== null) return report(project);
+	await runAtomic(env, [
+		db
+			.updateTable('project')
+			// Guarded so a racing second archive cannot move the instant.
+			.set({ archived_at: now, updated_at: now })
+			.where('id', '=', id)
+			.where('archived_at', 'is', null)
+			.compile(),
+		eventInsert(db, actor, {
+			type: 'project.archived',
+			projectId: id,
+			payload: {
+				name: project.name,
+				schedules_paused: schedulesPaused,
+				draining_runs: draining.length,
+				issues_read_only: project.issue_count
+			}
+		})
+	]);
+	return report(await getProject(db, actor.userId, id));
+}
+
+export async function unarchiveProject(
+	db: Kysely<Database>,
+	env: Env,
+	actor: ActorContext,
+	id: string,
+	now = Date.now()
+): Promise<UnarchiveProjectResponse> {
+	const project = await getProject(db, actor.userId, id);
+	if (project.archived_at === null) return { project, schedules_resumed: 0 };
+	// Enabled schedules resume from their next future occurrence: a project
+	// archived for a month must not fire a month of catch-up issues.
+	const schedules = await db
+		.selectFrom('scheduled_task')
+		.select(['id', 'cron', 'timezone'])
+		.where('project_id', '=', id)
+		.where('enabled', '=', 1)
+		.execute();
+	const rearm = rearmScheduleQueries(db, schedules, now);
+	await runAtomic(env, [
+		db
+			.updateTable('project')
+			.set({ archived_at: null, updated_at: now })
+			.where('id', '=', id)
+			.compile(),
+		...rearm.queries,
+		eventInsert(db, actor, {
+			type: 'project.unarchived',
+			projectId: id,
+			payload: { name: project.name, schedules_resumed: rearm.queries.length }
+		})
+	]);
+	return {
+		project: await getProject(db, actor.userId, id),
+		schedules_resumed: rearm.queries.length
+	};
 }

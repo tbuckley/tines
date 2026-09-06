@@ -34,16 +34,24 @@ export interface Actor {
 }
 
 /**
+ * How a run is named wherever one is referred to: "run on demo/12", or
+ * "run <id>" when the issue it worked has been deleted. Shared by
+ * `actorLabel` and the API keys page, so both spell a run the same way.
+ */
+export function runRefLabel(run: ActorRun): string {
+	return run.issue_ref
+		? `run on ${run.issue_ref.project_name}/${run.issue_ref.number}`
+		: `run ${run.run_id}`;
+}
+
+/**
  * Canonical actor rendering everywhere actions are attributed: "alice",
  * "alice via laptop-key", or — for run keys — "alice via laptop-m4 · run on
  * demo/12".
  */
 export function actorLabel(actor: Actor): string {
 	if (actor.run) {
-		const ref = actor.run.issue_ref
-			? `run on ${actor.run.issue_ref.project_name}/${actor.run.issue_ref.number}`
-			: `run ${actor.run.run_id}`;
-		return `${actor.user_name} via ${actor.run.runner_name} · ${ref}`;
+		return `${actor.user_name} via ${actor.run.runner_name} · ${runRefLabel(actor.run)}`;
 	}
 	return actor.api_key_name ? `${actor.user_name} via ${actor.api_key_name}` : actor.user_name;
 }
@@ -60,6 +68,8 @@ export interface Project {
 	updated_at: number;
 	/** Issues currently in the project (all states). */
 	issue_count: number;
+	/** Set (ms) while the project is archived; null = live. */
+	archived_at: number | null;
 }
 
 export interface CreateProjectRequest {
@@ -77,6 +87,39 @@ export interface UpdateProjectRequest {
 	name?: string;
 	description?: string;
 	default_workflow_id?: string | null;
+}
+
+/** How `archived` narrows a list; absent means `'false'`. */
+export type ArchivedFilter = 'true' | 'false' | 'all';
+
+export interface ProjectListFilters {
+	/** `'false'` (default) hides archived projects, `'true'` shows only them. */
+	archived?: ArchivedFilter;
+}
+
+/** A run that was still active when its project was archived. */
+export interface DrainingRun {
+	run_id: string;
+	runner_name: string;
+	issue_id: string;
+	issue_number: number;
+}
+
+export interface ArchiveProjectResponse {
+	/** The project with `archived_at` set. */
+	project: Project;
+	/** Enabled schedules that will not fire while the project is archived. */
+	schedules_paused: number;
+	/** Runs allowed to finish on their own issue; nothing new dispatches. */
+	draining_runs: DrainingRun[];
+	/** Issues frozen by the archive. */
+	issues_read_only: number;
+}
+
+export interface UnarchiveProjectResponse {
+	project: Project;
+	/** Enabled schedules whose `next_run_at` was advanced to the next future occurrence. */
+	schedules_resumed: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -317,6 +360,8 @@ export interface Issue {
 	id: string;
 	project_id: string;
 	project_name: string;
+	/** Set (ms) while the issue's project is archived; null = live. */
+	project_archived_at: number | null;
 	number: number;
 	title: string;
 	description: string;
@@ -486,6 +531,8 @@ export interface Schedule {
 	id: string;
 	project_id: string;
 	project_name: string;
+	/** Set (ms) while the schedule's project is archived; null = live. */
+	project_archived_at: number | null;
 	/** Unique within the project; schedules are addressed as `<project>/<name>`. */
 	name: string;
 	title_template: string;
@@ -543,6 +590,8 @@ export interface ScheduleFilters {
 	/** Project id or name. */
 	project?: string;
 	enabled?: boolean;
+	/** Without a project filter, archived projects' schedules are hidden by default. */
+	archived?: ArchivedFilter;
 }
 
 export interface UpdateIssueRequest {
@@ -592,6 +641,8 @@ export interface IssueFilters {
 	label?: string[];
 	/** Omit `description` from every list item (saves tokens when scanning). */
 	brief?: boolean;
+	/** Without a project filter, archived projects' issues are hidden by default. */
+	archived?: ArchivedFilter;
 }
 
 // ---------------------------------------------------------------------------
@@ -769,6 +820,8 @@ export interface ContextListFilters {
 	/** Name/description search. */
 	q?: string;
 	exact?: boolean;
+	/** Without a project filter, items scoped to archived projects are hidden by default. */
+	archived?: ArchivedFilter;
 }
 
 /** One stitched-prompt part, in layer order. */
@@ -1698,7 +1751,14 @@ export function utilizationLabel(
 
 /** One eligibility check, pass or fail, with a human-readable detail. */
 export interface DispatchCheck {
-	name: 'automation_enabled' | 'state_active' | 'ready' | 'no_active_run' | 'not_parked' | 'routed';
+	name:
+		| 'automation_enabled'
+		| 'project_archived'
+		| 'state_active'
+		| 'ready'
+		| 'no_active_run'
+		| 'not_parked'
+		| 'routed';
 	ok: boolean;
 	detail: string;
 }
@@ -1795,6 +1855,8 @@ export const EVENT_TYPES = [
 	'project.created',
 	'project.updated',
 	'project.deleted',
+	'project.archived',
+	'project.unarchived',
 	'workflow.created',
 	'workflow.updated',
 	'workflow.deleted',
@@ -1860,6 +1922,22 @@ export interface ApiKey {
 	created_at: number;
 	last_used_at: number | null;
 	revoked_at: number | null;
+	/**
+	 * Set on *run keys*: the agent run this key was minted for, resolved to the
+	 * runner and the run's issue. Absent on user-created keys.
+	 */
+	run?: ActorRun | null;
+}
+
+/** Which run keys a listing includes alongside the user's own keys. */
+export type RunKeyFilter = 'none' | 'active' | 'all';
+
+export const RUN_KEY_FILTERS: readonly RunKeyFilter[] = ['none', 'active', 'all'];
+
+/** How many run keys a user has, split by whether they can still act. */
+export interface RunKeyCounts {
+	active: number;
+	revoked: number;
 }
 
 export interface ApiKeyCreated extends ApiKey {

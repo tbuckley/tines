@@ -1,8 +1,16 @@
-import { listApiKeys } from '$lib/server/api/apikeys';
+import { countRunKeys, listApiKeys, REVOKED_RUN_KEY_LIMIT } from '$lib/server/api/apikeys';
 import { getDb } from '$lib/server/db';
 import type { PageServerLoad } from './$types';
 
-export const load: PageServerLoad = async ({ locals, platform }) => {
+export const load: PageServerLoad = async ({ locals, platform, url }) => {
 	const db = getDb(platform!.env);
-	return { keys: await listApiKeys(db, locals.user!.id) };
+	const userId = locals.user!.id;
+	// Revoked run keys are opt-in: one is minted per agent run and never
+	// deleted, so shipping them all would grow the page by a row per run.
+	const showRevoked = url.searchParams.get('revoked') === '1';
+	const [keys, runKeyCounts] = await Promise.all([
+		listApiKeys(db, userId, { runKeys: showRevoked ? 'all' : 'active' }),
+		countRunKeys(db, userId)
+	]);
+	return { keys, runKeyCounts, showRevoked, revokedRunKeyLimit: REVOKED_RUN_KEY_LIMIT };
 };

@@ -1,4 +1,4 @@
-import type { Actor, TinesEvent } from '@tines/shared';
+import type { Actor, ActorRun, TinesEvent } from '@tines/shared';
 import { sql, type CompiledQuery, type Kysely } from 'kysely';
 import { newId, type Database } from '$lib/server/db';
 import type { ActorContext } from './core';
@@ -53,6 +53,27 @@ export function eventInsert(
 		)`.compile(db);
 }
 
+/**
+ * Resolve a run key's provenance from a row that joined `agent_run` → `runner`
+ * → the run's issue and project. Shared by the event feed's actor and the API
+ * keys listing, so both fall back the same way when a name is missing.
+ */
+export function actorRunOf(row: {
+	run_id: string;
+	runner_name: string | null;
+	run_project_name: string | null;
+	run_issue_number: number | null;
+}): ActorRun {
+	return {
+		run_id: row.run_id,
+		runner_name: row.runner_name ?? 'unknown runner',
+		issue_ref:
+			row.run_project_name && row.run_issue_number != null
+				? { project_name: row.run_project_name, number: row.run_issue_number }
+				: null
+	};
+}
+
 export function actorOf(row: {
 	actor_user_id: string;
 	actor_user_name: string | null;
@@ -71,14 +92,12 @@ export function actorOf(row: {
 		api_key_name: row.actor_api_key_id ? (row.actor_api_key_name ?? 'unknown key') : null
 	};
 	if (row.actor_run_id) {
-		actor.run = {
+		actor.run = actorRunOf({
 			run_id: row.actor_run_id,
-			runner_name: row.actor_runner_name ?? 'unknown runner',
-			issue_ref:
-				row.actor_run_project_name && row.actor_run_issue_number != null
-					? { project_name: row.actor_run_project_name, number: row.actor_run_issue_number }
-					: null
-		};
+			runner_name: row.actor_runner_name ?? null,
+			run_project_name: row.actor_run_project_name ?? null,
+			run_issue_number: row.actor_run_issue_number ?? null
+		});
 	}
 	return actor;
 }

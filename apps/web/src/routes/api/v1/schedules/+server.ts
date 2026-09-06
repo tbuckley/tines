@@ -1,6 +1,6 @@
 import { json } from '@sveltejs/kit';
 import type { ListResponse, Schedule } from '@tines/shared';
-import { api, apiContext, encodeCursor, readPage } from '$lib/server/api/core';
+import { api, apiContext, encodeCursor, readArchived, readPage } from '$lib/server/api/core';
 import { listSchedules } from '$lib/server/api/schedules';
 import type { RequestHandler } from './$types';
 
@@ -15,7 +15,8 @@ export const GET: RequestHandler = api(async (event) => {
 		actor.userId,
 		{
 			project: params.get('project') ?? undefined,
-			enabled: enabledRaw === null ? undefined : ['1', 'true'].includes(enabledRaw)
+			enabled: enabledRaw === null ? undefined : ['1', 'true'].includes(enabledRaw),
+			archived: readArchived(params)
 		},
 		page
 	);
