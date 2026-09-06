@@ -67,6 +67,7 @@ test.beforeAll(async ({ playwright }) => {
 			states: [
 				{ name: 'Design', category: 'active' },
 				{ name: 'Implementation', category: 'active' },
+				{ name: 'Review', category: 'active' },
 				{ name: 'Done', category: 'done' }
 			],
 			transitions: [
@@ -82,7 +83,7 @@ test.beforeAll(async ({ playwright }) => {
 				{
 					name: 'submit',
 					from: 'Design',
-					to: 'Implementation',
+					to: 'Review',
 					requires: [{ artifact: 'prd', type: 'text', content_type: 'text/markdown' }]
 				},
 				{
@@ -273,12 +274,12 @@ test('a folder row stays one line on a desktop', async ({ page }) => {
  * the very thing the CLI now refuses offline.
  */
 
-/** One option of the type selector: the input is `sr-only`, so click the label. */
-const typeOption = (page: Page, type: string): Locator =>
-	page.locator('form label').filter({ hasText: new RegExp(`^${type}$`) });
-
 const typeRadio = (page: Page, type: string): Locator =>
 	page.locator(`input[name="artifact-type"][value="${type}"]`);
+
+/** One option of the type selector: the input is `sr-only`, so click its label. */
+const typeOption = (page: Page, type: string): Locator =>
+	page.locator(`label:has(input[name="artifact-type"][value="${type}"])`);
 
 /** Open the Attach dialog and name the slot, through the hydration window. */
 async function openAttachFor(page: Page, issue: IssueDetail, name: string): Promise<Locator> {
