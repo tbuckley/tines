@@ -78,6 +78,15 @@ describe('renderStarter', () => {
 		expect(preview.creates.context.map((c) => c.name)).toContain('widget');
 	});
 
+	it('caps a context name at the length the server stores', () => {
+		// `starterQueries` slices the rendered name to 100 characters, so a very
+		// long repo directory must not preview under a name it will never have.
+		const url = `https://github.com/you/${'w'.repeat(140)}.git`;
+		const name = renderStarter(code, { repo_url: url }, 'Site').creates.context[0].name;
+		expect(name).toHaveLength(100);
+		expect(repoDirFromUrl(url).startsWith(name)).toBe(true);
+	});
+
 	it('has no conventions template for blank', () => {
 		const preview = renderStarter(blank, {}, 'Anything');
 		expect(preview.conventions).toBeNull();

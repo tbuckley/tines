@@ -22,6 +22,9 @@ import {
 /** Blank inputs preview as this, so a half-filled form reads as a sentence. */
 const BLANK = '…';
 
+/** Mirrors `MAX_CONTEXT_NAME` in `$lib/server/api/starters.ts`. */
+const MAX_CONTEXT_NAME = 100;
+
 /** The value the user typed for a declared input, trimmed; `''` when absent. */
 function typed(inputs: Record<string, string>, key: string): string {
 	return (inputs[key] ?? '').trim();
@@ -87,7 +90,9 @@ export function renderStarter(
 			workflows: starter.creates.workflows,
 			context: starter.creates.context.map((c) => ({
 				kind: c.kind,
-				name: renderTemplate(c.name, forPreview)
+				// `starterQueries` truncates the same way, so a very long repo
+				// directory previews under the name it will actually be created with.
+				name: renderTemplate(c.name, forPreview).slice(0, MAX_CONTEXT_NAME)
 			})),
 			firstIssue: issue
 				? {

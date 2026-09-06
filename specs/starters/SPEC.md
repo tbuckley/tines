@@ -129,9 +129,15 @@ client fetch: `listStarters()` is pure, so the dialog has no loading or
 failure state. Blank is preselected, so a returning user's flow is unchanged.
 
 Per-starter inputs are rendered from `inputs` — label, hint, `required` — so
-starter *content* can change without touching the dialog. Required inputs
-disable Create; nothing else is enforced client-side, because a client rule
-that blocks a submit the server would accept is worse than the 422.
+starter *content* can change without touching the dialog. Which control an
+input gets is read from the spec too: `max` above 1000 (or absent, i.e. the
+10 000 default) means free-form prose and a textarea, anything shorter a
+single-line field — never the input's key. The one remaining coupling to
+starter ids is the per-card icon, which falls back to a generic one for an id
+it does not know. Required inputs disable Create; nothing else is enforced
+client-side, because a client rule that blocks a submit the server would
+accept is worse than the 422 — a `maxlength` would make the server's cap
+unreachable from the UI and hide the error path.
 
 The conventions textarea is the dialog's own, and `initial_prompt` is sent
 **verbatim**: the server's fallback to `conventions_template` only fires when
@@ -139,7 +145,10 @@ the field is absent, which from the UI it never is. A *pristine* textarea
 mirrors the rendered template continuously, so typing Plan's brief — which its
 template interpolates — updates the prefill live; the first edit freezes it,
 and switching starters then asks before replacing it ("Replace" / "Keep mine").
-The starter switches either way; only the text is at stake. Inputs are kept
+The confirmation says which of the two is about to happen: a starter with no
+template (Blank) *discards* the text rather than replacing it, and must not
+promise a swap it cannot make. The starter switches either way; only the text
+is at stake. Inputs are kept
 across a switch so switching back restores them, and filtered to the selected
 starter's declared keys on submit, so a stale key never 422s.
 

@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { StarterSummary } from '@tines/shared';
+	import type { StarterInputSpec, StarterSummary } from '@tines/shared';
 	import { ApiError } from '@tines/shared';
 	import IconBulb from '@tabler/icons-svelte/icons/bulb';
 	import IconFile from '@tabler/icons-svelte/icons/file';
@@ -79,6 +79,16 @@
 		}
 	});
 
+	/**
+	 * Which control an input gets, from the spec rather than its key: a cap
+	 * above a single line's worth of text (or no cap at all) means free-form
+	 * prose. Keeps the dialog content-agnostic — a starter can rename its
+	 * inputs without this file knowing.
+	 */
+	function multiline(spec: StarterInputSpec): boolean {
+		return (spec.max ?? 10_000) > 1000;
+	}
+
 	function starterIcon(id: string) {
 		if (id === 'code') return IconGitBranch;
 		if (id === 'plan') return IconBulb;
@@ -92,9 +102,14 @@
 		const nextText = next ? (renderStarter(next, inputs, name).conventions ?? '') : '';
 		// Only ask when there is something of the user's to lose.
 		if (conventionsDirty && conventions !== nextText) {
+			const nextName = next?.name ?? id;
+			// A starter with no template (Blank) does not *replace* the text, it
+			// empties the field — say which of the two is about to happen.
 			const replace = await confirmDialog({
 				title: 'Replace your conventions?',
-				body: `Switching to “${next?.name ?? id}” replaces the text you edited with its template.`,
+				body: nextText
+					? `Switching to “${nextName}” replaces the text you edited with its template.`
+					: `Switching to “${nextName}” discards the text you edited — it has no template.`,
 				confirmLabel: 'Replace',
 				cancelLabel: 'Keep mine'
 			});
@@ -180,7 +195,7 @@
 					{spec.label}
 					{#if !spec.required}<span class="text-muted-foreground font-normal">(optional)</span>{/if}
 				</label>
-				{#if spec.key === 'brief'}
+				{#if multiline(spec)}
 					<Textarea
 						id="starter-{spec.key}"
 						bind:value={inputs[spec.key]}

@@ -133,6 +133,39 @@ test('Code repository asks for a URL, previews the repo item, and creates it', a
 	await expectDefaultWorkflow(page, code.creates.workflows.find((w) => w.default)?.name ?? '');
 });
 
+test('clearing the prefilled conventions creates a project without one', async ({ page }) => {
+	// The dialog sends `initial_prompt` verbatim, so an emptied textarea must
+	// mean "no conventions item". Were it sent as `undefined` instead, the
+	// server would fall back to the starter's own template and seed the very
+	// prompt the user just deleted.
+	await gotoHydrated(page, '/projects');
+	const dialog = await openDialog(page);
+	const code = byId('code');
+
+	await dialog.getByTestId('starter-code').click();
+	const name = `starter-noconv-${runId}`;
+	await dialog.getByLabel('Name', { exact: true }).fill(name);
+	await dialog
+		.getByLabel(code.inputs[0].label, { exact: false })
+		.fill(`https://github.com/example/noconv-${runId}.git`);
+
+	const conventions = dialog.getByLabel(/How work is done here/);
+	await expect(conventions).toHaveValue(code.conventions_template ?? '');
+	await conventions.fill('');
+
+	// The preview stops promising it, too.
+	const creates = dialog.getByRole('list', { name: 'This creates' });
+	await expect(creates).toHaveText(new RegExp(`Repository “noconv-${runId}”`));
+	await expect(creates).not.toHaveText(/Prompt “conventions”/);
+
+	await dialog.getByRole('button', { name: 'Create project' }).click();
+	await expect(page).toHaveURL(/\/projects\/prj_/);
+	await expect(page.getByRole('heading', { name })).toBeVisible();
+	// The repo item is there — so the starter did apply — and the prompt is not.
+	await expect(page.getByRole('button', { name: new RegExp(`^noconv-${runId}`) })).toBeVisible();
+	await expect(page.getByRole('button', { name: /^conventions/ })).toHaveCount(0);
+});
+
 test('Plan something together renders the brief into the prefill and the preview', async ({
 	page
 }) => {
@@ -189,6 +222,19 @@ test('switching starters confirms before discarding edited conventions', async (
 	await expect(page.getByRole('alertdialog')).toHaveCount(0);
 	await expect(conventions).not.toHaveValue(byId('code').conventions_template ?? '');
 	expect(plan.conventions_template).not.toBeNull();
+
+	// A starter with no template discards the text rather than replacing it,
+	// and says so: promising a swap and then emptying the field is a lie.
+	const blank = byId('blank');
+	expect(blank.conventions_template, 'blank must have no template').toBeNull();
+	await conventions.fill('Mine again.');
+	await dialog.getByTestId('starter-blank').click();
+	const discard = page.getByRole('alertdialog');
+	await expect(discard).toContainText(new RegExp(`discards the text you edited`));
+	await expect(discard).toContainText(blank.name);
+	await expect(discard).not.toContainText(/with its template/);
+	await discard.getByRole('button', { name: 'Replace' }).click();
+	await expect(conventions).toHaveValue('');
 });
 
 test('a starter 422 from the API is surfaced in the dialog, not swallowed', async ({ page }) => {
