@@ -91,6 +91,60 @@
 			: [])
 	] as { key: string; label: string; short: string; count: number; glyph: StateCategory | null }[]);
 
+	// The strip scrolls sideways on a phone: the five tabs and their counts are
+	// ~490px wide in a ~366px container. A hard cut at the container's edge read
+	// as a rendering bug rather than as more tabs (Tines/180), so fade whichever
+	// edge still has tabs behind it, and snap so a tab never rests half-cut.
+	// From `sm` up nothing overflows, both flags stay false and no mask is set.
+	const FADE = 24;
+	let stripEl: HTMLElement | null = $state(null);
+	let hiddenLeft = $state(false);
+	let hiddenRight = $state(false);
+	const stripMask = $derived(
+		hiddenLeft || hiddenRight
+			? `linear-gradient(to right, ${hiddenLeft ? 'transparent' : '#000'} 0, #000 ${FADE}px, #000 calc(100% - ${FADE}px), ${hiddenRight ? 'transparent' : '#000'} 100%)`
+			: undefined
+	);
+	function measureStrip() {
+		const el = stripEl;
+		if (!el) return;
+		hiddenLeft = el.scrollLeft > 1;
+		hiddenRight = el.scrollLeft < el.scrollWidth - el.clientWidth - 1;
+	}
+	/**
+	 * Keep the selected tab on screen. Left alone the strip loads at
+	 * `scrollLeft` 0, so a fresh `?category=done` — including the bottom nav
+	 * restoring the last filter — put the highlighted tab entirely off-screen
+	 * and the filtered list read as unfiltered.
+	 */
+	function revealActive() {
+		const el = stripEl;
+		if (!el) return;
+		const on = el.querySelector<HTMLElement>('[aria-current="page"]');
+		if (!on) return;
+		const tab = on.getBoundingClientRect();
+		const strip = el.getBoundingClientRect();
+		// Clear of the fade at either edge, so "visible" never means "faded out".
+		if (tab.right > strip.right - FADE) el.scrollLeft += tab.right - strip.right + FADE;
+		else if (tab.left < strip.left + FADE) el.scrollLeft -= strip.left - tab.left + FADE;
+	}
+	$effect(() => {
+		// The selection and the tabs themselves both move the edge a fade
+		// belongs on; so does a resize, which is the only one not reactive.
+		void tabs;
+		void active;
+		const el = stripEl;
+		if (!el) return;
+		const sync = () => {
+			revealActive();
+			measureStrip();
+		};
+		sync();
+		const observer = new ResizeObserver(sync);
+		observer.observe(el);
+		return () => observer.disconnect();
+	});
+
 	// --- The Filter menu: labels, state, ready ------------------------------
 	let menuOpen = $state(false);
 	let labelQuery = $state('');
@@ -144,7 +198,8 @@
 
 <!-- One line from `sm` up: scope, tabs, Filter and its chips, then search at
      the far right. On a phone, `order` rebuilds it as rows: scope + Filter +
-     search button, then the tabs (wrapping to a second row), then any chips, then
+     search button, then the tabs (scrolling sideways, faded at whichever edge
+     has more of them), then any chips, then
      the search field when opened. -->
 <div class="mb-6 flex flex-wrap items-center gap-x-3 gap-y-2">
 	{#if projects}
@@ -161,10 +216,15 @@
 		</Select>
 	{/if}
 
-	<nav aria-label="Category" class="order-3 w-full sm:order-none sm:w-auto">
-		<div
-			class="bg-muted/60 flex flex-wrap items-center gap-0.5 rounded-md border p-[3px] sm:inline-flex sm:h-9 sm:flex-nowrap"
-		>
+	<nav
+		aria-label="Category"
+		bind:this={stripEl}
+		onscroll={measureStrip}
+		style:mask-image={stripMask}
+		style:-webkit-mask-image={stripMask}
+		class="order-3 -mx-1 w-[calc(100%+0.5rem)] snap-x snap-proximity [scrollbar-width:none] overflow-x-auto px-1 sm:order-none sm:mx-0 sm:w-auto sm:overflow-visible sm:px-0"
+	>
+		<div class="bg-muted/60 inline-flex h-9 items-center gap-0.5 rounded-md border p-[3px]">
 			{#each tabs as tab (tab.key)}
 				{@const on = active === tab.key}
 				<a
@@ -172,7 +232,7 @@
 					data-sveltekit-noscroll
 					data-sveltekit-keepfocus
 					aria-current={on ? 'page' : undefined}
-					class="flex h-7 items-center gap-1.5 rounded-[5px] px-2.5 text-[13px] whitespace-nowrap transition-colors {on
+					class="flex h-7 snap-start items-center gap-1.5 rounded-[5px] px-2.5 text-[13px] whitespace-nowrap transition-colors {on
 						? 'bg-background text-foreground font-medium shadow-xs'
 						: 'text-muted-foreground hover:text-foreground'}"
 				>

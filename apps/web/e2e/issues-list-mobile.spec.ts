@@ -242,115 +242,123 @@ test('a desktop row on the project page stays a single line', async ({ page }) =
 });
 
 /**
- * The category tab strip (Tines/180). On a phone the five tabs no longer
- * scroll sideways inside a 358px box that clipped "Awaiting" mid-tab and put
- * Done off-screen entirely: the pill wraps them onto a second row, so every
- * tab is on screen and one tap away, and the selected tab is visible on a
- * filtered load. From `sm` up the strip is the same single 36px line as before.
+ * The category tab strip (Tines/180). On a phone the five tabs are ~490px
+ * wide in a ~366px container, so the strip scrolls sideways. It used to cut
+ * "Awaiting" mid-tab against a hard border with Done off-screen and nothing
+ * saying it scrolled: now whichever edge still hides tabs is faded, the tabs
+ * snap so none rests half-cut, and the selected tab is scrolled into view.
+ * From `sm` up nothing overflows, so there is no fade and no scrolling.
  */
 
 const strip = (page: Page): Locator => page.getByRole('navigation', { name: 'Category' });
-/** The bordered pill inside the nav — the flex container that wraps. */
-const pill = (page: Page): Locator => strip(page).locator('> div');
 /** Tabs are named with their count ("Done 0"), so match the label as a word. */
 const tab = (page: Page, name: string): Locator =>
 	strip(page).getByRole('link', { name: new RegExp(`^${name}\\b`) });
 
 const TABS = ['Open', 'Backlog', 'Active', 'Awaiting', 'Done'];
 
-/** How far the nav could be scrolled sideways: 0 once nothing overflows. */
+/** How far the nav can still be scrolled sideways: 0 when nothing overflows. */
 const overflow = (page: Page): Promise<number> =>
 	strip(page).evaluate((el) => el.scrollWidth - el.clientWidth);
 
-async function expectAllTabsOnScreen(page: Page, width: number) {
-	for (const name of TABS) {
-		const t = tab(page, name);
-		await expect(t, `${name} tab`).toBeInViewport({ ratio: 1 });
-		const b = await box(t);
-		expect(b.x + b.width, `${name} tab right edge`).toBeLessThanOrEqual(width);
-	}
-	// Not merely "scrolled to the right place": there is nothing to scroll.
-	expect(await overflow(page)).toBe(0);
-}
+const stripStyle = (page: Page) =>
+	strip(page).evaluate((el) => {
+		const s = getComputedStyle(el);
+		return { mask: s.maskImage, snapType: s.scrollSnapType, scrollLeft: el.scrollLeft };
+	});
 
 test.describe('the category tab strip', () => {
-	test('every category tab is fully on screen on a phone', async ({ page }) => {
+	test('the phone strip fades the edge that hides tabs', async ({ page }) => {
 		await page.setViewportSize(PHONE);
 		await page.goto(listUrl);
 		await expect(tab(page, 'Open')).toBeVisible();
 
-		await expectAllTabsOnScreen(page, PHONE.width);
-		expect(await strip(page).evaluate((el) => getComputedStyle(el).overflowX)).toBe('visible');
+		// It really does overflow — the fade is describing something.
+		expect(await overflow(page)).toBeGreaterThan(0);
 
-		// Two rows, not one long one and not three: Done sits under Open.
-		const open = await box(tab(page, 'Open'));
-		const done = await box(tab(page, 'Done'));
-		expect(done.y).toBeGreaterThan(open.y + 20);
-		expect((await box(pill(page))).height).toBeLessThan(80);
+		// At rest: Open is flush at the left, Done is behind the right fade.
+		const start = await stripStyle(page);
+		expect(start.scrollLeft).toBe(0);
+		expect(start.snapType).toContain('proximity');
+		expect(start.mask).toMatch(/linear-gradient/);
+		// Opaque at the left, transparent at the right: only one edge hides tabs.
+		expect(start.mask.indexOf('transparent')).toBeGreaterThan(start.mask.indexOf('rgb(0, 0, 0)'));
 
-		// The counts survive the wrap — they are why the strip overflowed, and
-		// dropping them was the alternative this layout was chosen over.
-		const count = tab(page, 'Awaiting').locator('.tabular-nums');
-		await expect(count).toBeVisible();
-		await expect(count).toHaveText(/^\d+$/);
+		// Swiped to the end, the fade swaps sides and Done is fully readable.
+		await strip(page).evaluate((el) => el.scrollTo({ left: el.scrollWidth, behavior: 'instant' }));
+		await expect(tab(page, 'Done')).toBeInViewport({ ratio: 1 });
+		await expect
+			.poll(async () => {
+				const s = await stripStyle(page);
+				return s.mask.indexOf('transparent') < s.mask.indexOf('rgb(0, 0, 0)');
+			})
+			.toBe(true);
 	});
 
-	test('the strip fits a 320px phone', async ({ page }) => {
-		await page.setViewportSize({ width: 320, height: 568 });
+	test('no fade once every tab fits', async ({ page }) => {
+		// The pair for the test above: an unmasked strip must mean "nothing
+		// hidden", not "the mask never ran".
+		await page.setViewportSize(DESKTOP);
 		await page.goto(listUrl);
 		await expect(tab(page, 'Open')).toBeVisible();
 
-		await expectAllTabsOnScreen(page, 320);
+		expect(await overflow(page)).toBe(0);
+		expect((await stripStyle(page)).mask).toBe('none');
+
+		// One line, and the strip is not a scroller at this width.
+		const ys: number[] = [];
+		for (const name of TABS) ys.push((await box(tab(page, name))).y);
+		for (const y of ys) expect(Math.abs(y - ys[0])).toBeLessThan(2);
+		expect(await strip(page).evaluate((el) => getComputedStyle(el).overflowX)).toBe('visible');
+	});
+
+	test('a tab never rests half-cut', async ({ page }) => {
+		await page.setViewportSize(PHONE);
+		await page.goto(listUrl);
+		await expect(tab(page, 'Open')).toBeVisible();
+
+		// Snapping is the strip's job, not each tab's: assert both halves.
+		expect((await stripStyle(page)).snapType).toBe('x proximity');
+		for (const name of TABS) {
+			const align = await tab(page, name).evaluate((el) => getComputedStyle(el).scrollSnapAlign);
+			expect(align, `${name} tab`).toContain('start');
+		}
 	});
 
 	test('a filtered load shows its selected tab', async ({ page }) => {
 		await page.setViewportSize(PHONE);
-		// The scroll strip started at scrollLeft 0, so the highlighted tab was
+		// The strip loaded at scrollLeft 0, so the highlighted tab was
 		// off-screen on exactly the load that needed it.
 		await page.goto(`${listUrl}&category=done`);
 
 		const done = tab(page, 'Done');
 		await expect(done).toHaveAttribute('aria-current', 'page');
 		await expect(done).toBeInViewport({ ratio: 1 });
+		// Scrolled to reach it, and clear of the fade rather than under it.
+		expect((await stripStyle(page)).scrollLeft).toBeGreaterThan(0);
+		const doneBox = await box(done);
+		expect(doneBox.x + doneBox.width).toBeLessThanOrEqual(PHONE.width - 20);
 	});
 
-	test('Done is one tap on a phone', async ({ page }) => {
-		await page.setViewportSize(PHONE);
+	test('the 320px strip fades and still reaches Done', async ({ page }) => {
+		await page.setViewportSize({ width: 320, height: 568 });
 		await page.goto(listUrl);
+		await expect(tab(page, 'Open')).toBeVisible();
 
-		// Before the click: Playwright scrolls to what it clicks, so only the
-		// pre-click check proves no swipe was needed to reach the tab.
-		const done = tab(page, 'Done');
-		await expect(done).toBeInViewport({ ratio: 1 });
-		await done.click();
+		expect(await overflow(page)).toBeGreaterThan(0);
+		expect((await stripStyle(page)).mask).toMatch(/linear-gradient/);
+
+		await tab(page, 'Done').click();
 		await expect(page).toHaveURL(/category=done/);
-		await expect(tab(page, 'Done')).toHaveAttribute('aria-current', 'page');
+		await expect(tab(page, 'Done')).toBeInViewport({ ratio: 1 });
 	});
 
-	test('the project page strip wraps the same way', async ({ page }) => {
+	test('the project page strip fades the same way', async ({ page }) => {
 		await page.setViewportSize(PHONE);
 		await page.goto(`/projects/${project.id}`);
 		await expect(tab(page, 'Open')).toBeVisible();
 
-		await expectAllTabsOnScreen(page, PHONE.width);
-	});
-
-	test('the desktop strip stays one line', async ({ page }) => {
-		await page.setViewportSize(DESKTOP);
-		await page.goto(listUrl);
-		await expect(tab(page, 'Open')).toBeVisible();
-
-		const ys: number[] = [];
-		for (const name of TABS) ys.push((await box(tab(page, name))).y);
-		for (const y of ys) expect(Math.abs(y - ys[0])).toBeLessThan(2);
-		expect((await box(pill(page))).height).toBeLessThan(40);
-
-		// The phone classes must not leak past `sm`: a one-line measurement
-		// would pass with them, these two computed values would not.
-		const styles = await pill(page).evaluate((el) => {
-			const s = getComputedStyle(el);
-			return { wrap: s.flexWrap, display: s.display };
-		});
-		expect(styles).toEqual({ wrap: 'nowrap', display: 'inline-flex' });
+		expect(await overflow(page)).toBeGreaterThan(0);
+		expect((await stripStyle(page)).mask).toMatch(/linear-gradient/);
 	});
 });
