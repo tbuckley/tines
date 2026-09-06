@@ -31,7 +31,7 @@ interface ContentBlock {
 	is_error?: boolean;
 }
 
-interface StreamEvent {
+export interface StreamEvent {
 	type?: string;
 	subtype?: string;
 	model?: string;
@@ -40,6 +40,7 @@ interface StreamEvent {
 	total_cost_usd?: number;
 	is_error?: boolean;
 	result?: string;
+	rate_limit_info?: { status?: string; resetsAt?: number; rateLimitType?: string };
 }
 
 /** Tool results arrive as a string or as content blocks; both flatten to text. */
@@ -57,9 +58,10 @@ function resultText(content: unknown): string {
 /**
  * One stream event → zero or more log lines.
  *
- * Thinking blocks, `system/thinking_tokens`, and `rate_limit_event` are
- * dropped: measured at ~18% of the stream's bytes, and nothing a human
- * reading a run's log is looking for. They survive in the raw upload.
+ * Thinking blocks, `system/thinking_tokens`, and *allowed* `rate_limit_event`s
+ * are dropped: measured at ~18% of the stream's bytes, and nothing a human
+ * reading a run's log is looking for. They survive in the raw upload. A
+ * *rejected* rate limit is the exception — it is why the run is about to end.
  */
 export function renderStreamEvent(event: StreamEvent): string[] {
 	switch (event.type) {
@@ -105,6 +107,15 @@ export function renderStreamEvent(event: StreamEvent): string[] {
 			if (event.is_error && event.result) lines.push(`[error] ${clip(event.result, 2000)}`);
 			return lines;
 		}
+		case 'rate_limit_event': {
+			const info = event.rate_limit_info;
+			if (info?.status !== 'rejected') return [];
+			const resets =
+				typeof info.resetsAt === 'number' && Number.isFinite(info.resetsAt)
+					? new Date(info.resetsAt < 1e12 ? info.resetsAt * 1000 : info.resetsAt).toISOString()
+					: 'unknown';
+			return [`[session] rate limit: ${info.rateLimitType ?? 'usage'} rejected — resets ${resets}`];
+		}
 		default:
 			return [];
 	}
@@ -120,7 +131,14 @@ export function renderStreamEvent(event: StreamEvent): string[] {
 export class ClaudeStreamRenderer {
 	private pending = '';
 
-	constructor(private readonly emit: (line: string) => void) {}
+	/**
+	 * @param onEvent every successfully parsed event, before rendering — so the
+	 * rate-limit detector can read the stream without parsing it a second time.
+	 */
+	constructor(
+		private readonly emit: (line: string) => void,
+		private readonly onEvent?: (event: StreamEvent) => void
+	) {}
 
 	write(chunk: string): void {
 		this.pending += chunk;
@@ -155,6 +173,7 @@ export class ClaudeStreamRenderer {
 			this.emit(`${raw}\n`);
 			return;
 		}
+		this.onEvent?.(event);
 		for (const line of renderStreamEvent(event)) this.emit(`${line}\n`);
 	}
 }

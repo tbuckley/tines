@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
+	rateLimitHoldUntil,
+	RATE_LIMIT_HOLD_DEFAULT_MS,
+	RATE_LIMIT_HOLD_GRACE_MS,
+	RATE_LIMIT_HOLD_MAX_MS,
 	launchBackoffMs,
 	matchRule,
 	resolveRule,
@@ -171,6 +175,28 @@ describe('launchBackoffMs', () => {
 	});
 });
 
+describe('rateLimitHoldUntil', () => {
+	it('holds for the default when the provider gave no usable reset', () => {
+		expect(rateLimitHoldUntil(null, NOW)).toBe(NOW + RATE_LIMIT_HOLD_DEFAULT_MS);
+		expect(rateLimitHoldUntil(undefined, NOW)).toBe(NOW + RATE_LIMIT_HOLD_DEFAULT_MS);
+	});
+
+	it('treats a reset already in the past as unknown', () => {
+		expect(rateLimitHoldUntil(NOW - 1, NOW)).toBe(NOW + RATE_LIMIT_HOLD_DEFAULT_MS);
+		expect(rateLimitHoldUntil(NOW, NOW)).toBe(NOW + RATE_LIMIT_HOLD_DEFAULT_MS);
+	});
+
+	it('holds to the reported reset plus a grace', () => {
+		expect(rateLimitHoldUntil(NOW + 3_600_000, NOW)).toBe(
+			NOW + 3_600_000 + RATE_LIMIT_HOLD_GRACE_MS
+		);
+	});
+
+	it('clamps a far-out reset so a weekly limit re-probes daily', () => {
+		expect(rateLimitHoldUntil(NOW + 7 * 86_400_000, NOW)).toBe(NOW + RATE_LIMIT_HOLD_MAX_MS);
+	});
+});
+
 describe('targetVerdict', () => {
 	const runner = (over: Partial<VerdictRunner> = {}): VerdictRunner => ({
 		id: 'rnr_1',
@@ -180,6 +206,7 @@ describe('targetVerdict', () => {
 		last_seen_at: NOW,
 		draining: 0,
 		backoff_until: null,
+		backoff_reason: null,
 		...over
 	});
 	const counts = (over: Partial<ActiveCounts> = {}): ActiveCounts => ({
@@ -250,6 +277,32 @@ describe('targetVerdict', () => {
 		expect(
 			targetVerdict(runner({ backoff_until: NOW }), counts(), globalCap, 's1', NOW).verdict
 		).toBe('ok');
+	});
+
+	it('a usage-limit hold reads as rate limited, and says when it resumes', () => {
+		const held = targetVerdict(
+			runner({ backoff_until: NOW + 60_000, backoff_reason: 'rate_limit' }),
+			counts(),
+			globalCap,
+			's1',
+			NOW
+		);
+		expect(held.verdict).toBe('rate_limited');
+		expect(held.detail).toContain(new Date(NOW + 60_000).toISOString());
+		// Expired, and the failure backoff with the same window, are unchanged.
+		expect(
+			targetVerdict(
+				runner({ backoff_until: NOW, backoff_reason: 'rate_limit' }),
+				counts(),
+				globalCap,
+				's1',
+				NOW
+			).verdict
+		).toBe('ok');
+		expect(
+			targetVerdict(runner({ backoff_until: NOW + 60_000 }), counts(), globalCap, 's1', NOW)
+				.verdict
+		).toBe('backing_off');
 	});
 
 	it('at max_concurrent', () => {

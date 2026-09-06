@@ -33,6 +33,7 @@ import {
 } from '@tines/shared';
 import { cliVersion } from '../version.js';
 import { ClaudeStreamRenderer } from './claude-stream';
+import { RateLimitDetector } from './rate-limit';
 import { agentCliPrefix, installAgentCli } from './cli-refresh.js';
 import {
 	clearRunnerCredentials,
@@ -109,6 +110,8 @@ interface ActiveRun extends ManagedRun {
 	issueLabel?: string;
 	/** claude_code: NDJSON → readable lines for the log (claude-stream.ts). */
 	renderer?: ClaudeStreamRenderer;
+	/** claude_code: watches the stream and stderr for a provider usage limit. */
+	limiter?: RateLimitDetector;
 	/** claude_code: the unrendered stream, spooled for the raw-log upload. */
 	rawSpool?: WriteStream;
 	/** Where that spool lives — outside the workspace, which release() wipes. */
@@ -340,7 +343,7 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 				await client.finishRun(run.runId, {
 					status,
 					...(error ? { error } : {}),
-					...(judgment ? { judgment } : {})
+					...judgment
 				});
 			},
 			release: (run, { keep, outcome }) => {
@@ -564,7 +567,14 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 				// rendered form. The stream itself is spooled outside the
 				// workspace (release() wipes that) and uploaded at settle, so
 				// nothing the harness emitted is actually lost.
-				const renderer = new ClaudeStreamRenderer((line) => run.batcher.append(line));
+				// The detector reads the same parsed events the renderer does, so
+				// the stream is parsed once — and every stderr chunk below.
+				const limiter = new RateLimitDetector();
+				run.limiter = limiter;
+				const renderer = new ClaudeStreamRenderer(
+					(line) => run.batcher.append(line),
+					(event) => limiter.noteStreamEvent(event)
+				);
 				run.renderer = renderer;
 				run.drain = () => renderer.finish();
 				const spoolPath = join(opts.configDir, 'rawlogs', `${runId}.ndjson`);
@@ -581,7 +591,13 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 			}
 			// stderr is never stream-json — it is the harness's own diagnostics,
 			// and it goes to the log verbatim for every harness.
-			child.stderr?.on('data', (data: Buffer) => run.batcher.append(data.toString('utf8')));
+			child.stderr?.on('data', (data: Buffer) => {
+				const text = data.toString('utf8');
+				run.batcher.append(text);
+				// The only place a usage limit shows up when the session was
+				// already exhausted at start: stdout is empty in that case.
+				run.limiter?.noteStderr(text);
+			});
 			run.timeout = setTimeout(() => {
 				if (run.settled) return;
 				log(`run ${runId} hit its ${assignment.timeout_minutes}m timeout; killing`);
@@ -598,6 +614,7 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 				// finishAndCleanup calls it too), so the closing line below is
 				// really the log's last.
 				run.drain?.();
+				run.limiter?.finish();
 				const closing = exitLineForRun(run, {
 					code,
 					signal,
@@ -615,11 +632,25 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 				} else if (code === 0) {
 					void table.finishAndCleanup(run, 'completed');
 				} else {
-					void table.finishAndCleanup(
-						run,
-						'failed',
-						signal ? `harness killed by ${signal}` : `harness exited with code ${code}`
-					);
+					// A non-zero exit whose cause was the provider refusing on a
+					// usage limit is the runner's condition, not the issue's
+					// fault: report it without a strike and say when the window
+					// reopens, so the supervisor can hold the runner until then.
+					// A signal is our own kill, so it keeps its existing report.
+					const limited = signal ? null : (run.limiter?.signal() ?? null);
+					if (limited) {
+						log(`run ${runId}: harness rate limited (${limited.detail}); reporting without a strike`);
+						void table.finishAndCleanup(run, 'failed', `rate limited: ${limited.detail}`, {
+							judgment: 'rate_limited',
+							...(limited.resumeAt !== null ? { resume_at: limited.resumeAt } : {})
+						});
+					} else {
+						void table.finishAndCleanup(
+							run,
+							'failed',
+							signal ? `harness killed by ${signal}` : `harness exited with code ${code}`
+						);
+					}
 				}
 			});
 		} catch (err) {
@@ -635,7 +666,9 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 		await Promise.all(
 			table.values().map(async (run) => {
 				if (run.child?.pid) killTree(run.child.pid, 'SIGTERM');
-				await table.finishAndCleanup(run, 'failed', 'daemon shut down', 'interrupted');
+				await table.finishAndCleanup(run, 'failed', 'daemon shut down', {
+					judgment: 'interrupted'
+				});
 			})
 		);
 		process.exit(0);
