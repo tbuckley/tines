@@ -1246,7 +1246,8 @@ function dedupeByName(rows: ItemRow[]): {
 			kind: row.kind as ContextKind,
 			name: row.name,
 			scope: toContextScope(rowScope(row)),
-			overridden_by: winner.id
+			overridden_by: winner.id,
+			inherited_from: null
 		}))
 	};
 }
@@ -1390,7 +1391,8 @@ export async function effectiveContextForIssue(
 		scope: toContextScope(rowScope(r)),
 		body: r.body ?? '',
 		version: r.version,
-		is_journal: isJournal(r)
+		is_journal: isJournal(r),
+		inherited_from: null
 	}));
 	const text = stitchPrompt(
 		parts.map((p) => ({ label: p.scope.label, body: p.body, isJournal: p.is_journal }))
@@ -1411,7 +1413,8 @@ export async function effectiveContextForIssue(
 		scope: toContextScope(rowScope(r)),
 		files: fileMap.get(r.id) ?? [],
 		file_count: Number(r.file_count ?? 0),
-		version: r.version
+		version: r.version,
+		inherited_from: null
 	}));
 
 	const repos: EffectiveRepo[] = repoDedupe.winners.map((r) => ({
@@ -1421,7 +1424,8 @@ export async function effectiveContextForIssue(
 		url: r.repo_url ?? '',
 		branch: r.repo_branch,
 		dir: r.repo_dir ?? repoDirFromUrl(r.repo_url ?? ''),
-		version: r.version
+		version: r.version,
+		inherited_from: null
 	}));
 
 	// Post-dedupe checkout-directory collisions are kept but flagged.
