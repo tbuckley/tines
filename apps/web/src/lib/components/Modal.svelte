@@ -30,7 +30,8 @@
 		title,
 		size = 'md',
 		children,
-		onclose
+		onclose,
+		initialFocus
 	}: {
 		open?: boolean;
 		title: string;
@@ -38,6 +39,16 @@
 		size?: 'md' | 'xl';
 		children: Snippet;
 		onclose?: () => void;
+		/**
+		 * Where focus should land on open, when the close button is the wrong
+		 * place — a dialog opened as the remedy for one specific field wants the
+		 * caret in that field. Called after the dialog has mounted; returning
+		 * null falls back to the close button. It has to live here rather than in
+		 * the consumer: the modal's own focus parking runs in the flush that
+		 * mounts the dialog, so anything a caller schedules alongside it loses
+		 * the race and silently focuses nothing (Tines/256).
+		 */
+		initialFocus?: () => HTMLElement | null | undefined;
 	} = $props();
 
 	const titleId = $props.id();
@@ -59,7 +70,8 @@
 
 	// While open: lock the page behind so a touch drag that reaches the end of
 	// the dialog's scroller doesn't scroll the document instead, and park focus
-	// on the close button so a keyboard user's next Tab starts inside. Cleanup
+	// on the close button (or wherever `initialFocus` names) so a keyboard
+	// user's next Tab starts inside. Cleanup
 	// runs on close *and* on destroy, so navigating away can't leave <body>
 	// locked, and the ref count makes the order of one modal's cleanup against
 	// another's setup irrelevant.
@@ -67,7 +79,11 @@
 		if (!open) return;
 		const previouslyFocused = document.activeElement as HTMLElement | null;
 		lockBodyScroll();
-		tick().then(() => closeButton?.focus({ preventScroll: true }));
+		tick().then(() => {
+			const target = initialFocus?.();
+			if (target) target.focus({ preventScroll: true });
+			else closeButton?.focus({ preventScroll: true });
+		});
 		return () => {
 			unlockBodyScroll();
 			if (previouslyFocused?.isConnected) previouslyFocused.focus({ preventScroll: true });

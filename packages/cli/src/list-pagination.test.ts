@@ -52,7 +52,13 @@ function row(path: string, n: number): Record<string, unknown> {
 		version: 1,
 		scope: { label: 'global' },
 		updated_at: 0,
-		states: [{ id: `s${n}`, name: 'Backlog' }]
+		states: [{ id: `s${n}`, name: 'Backlog' }],
+		// `supervisor status` prints a runner table in text mode, and a cell it
+		// cannot stringify crashes the formatter rather than reading empty.
+		type: 'local',
+		status: 'active',
+		active_runs: 0,
+		max_concurrent: 1
 	};
 }
 
@@ -75,6 +81,54 @@ const FIXED_ROUTES: Record<string, unknown> = {
 		enabled: true,
 		quota: { type: 'state_roster', default_limit: 2, overrides: {} },
 		attempt_limit: 3
+	},
+	'/api/v1/supervisor/queue': {
+		generated_at: 0,
+		automation_enabled: true,
+		quota: { type: 'state_roster', default_limit: 2, overrides: {} },
+		groups: [
+			{
+				state_id: 's0',
+				state_name: 'Backlog',
+				workflow_id: 'x0',
+				workflow_name: 'item0',
+				verdict: 'offline',
+				detail: 'the daemon has not polled recently',
+				runner_id: 'rnr_1',
+				runner_name: 'macbook',
+				rule_id: 'rul_1',
+				ambiguous_rule_ids: [],
+				binding: null,
+				count: 2,
+				oldest_entered_at: 0,
+				issues: []
+			},
+			{
+				state_id: 's1',
+				state_name: 'Design',
+				workflow_id: 'x0',
+				workflow_name: 'item0',
+				verdict: 'at_capacity',
+				detail: 'at max_concurrent (3/3)',
+				runner_id: 'rnr_1',
+				runner_name: 'macbook',
+				rule_id: 'rul_1',
+				ambiguous_rule_ids: [],
+				binding: {
+					kind: 'max_concurrent',
+					runner_id: 'rnr_1',
+					runner_name: 'macbook',
+					current: 3,
+					limit: 3
+				},
+				count: 1,
+				oldest_entered_at: 0,
+				issues: []
+			}
+		],
+		waiting: 3,
+		parked: { count: 0, oldest_entered_at: null, issues: [] },
+		awaiting_human: { count: 4, oldest_entered_at: 0 }
 	}
 };
 
@@ -212,6 +266,32 @@ describe('list pagination', () => {
 		expect(res.code).toBe(0);
 		expect(JSON.parse(res.stdout).active_runs).toHaveLength(TOTAL);
 		expect(requested.filter((p) => p === '/api/v1/runs')).toHaveLength(3);
+	}, 60_000);
+
+	// The Now row travels with the status read (Tines/256), in both modes.
+	it('carries the fleet queue in supervisor status --json', async () => {
+		const res = await cli(['supervisor', 'status', '--json']);
+		expect(res.code).toBe(0);
+		const parsed = JSON.parse(res.stdout);
+		expect(parsed.queue.waiting).toBe(3);
+		expect(parsed.queue.groups.map((g: { verdict: string }) => g.verdict)).toEqual([
+			'offline',
+			'at_capacity'
+		]);
+	}, 60_000);
+
+	it('prints the waiting groups, each with its fix, in text mode', async () => {
+		const res = await cli(['supervisor', 'status']);
+		expect(res.stderr).toBe('');
+		expect(res.code).toBe(0);
+		expect(res.stdout).toContain('waiting: 3 issues');
+		// Grouped per (verdict, runner), the state named by the workflow map.
+		expect(res.stdout).toContain('macbook offline: item0/Backlog 2 (oldest');
+		expect(res.stdout).toContain('fix: start the daemon on that machine — tines runner daemon');
+		// The state is named by the workflow map, not by the group's own copy.
+		expect(res.stdout).toContain('at capacity on macbook (3/3): item1/Backlog 1 (oldest');
+		expect(res.stdout).toContain('parked: none');
+		expect(res.stdout).toContain('awaiting you: 4 issues');
 	}, 60_000);
 
 	// Wiring pin: the flag is added once in withList(), but each action has to

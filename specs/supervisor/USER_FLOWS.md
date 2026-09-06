@@ -146,7 +146,7 @@ The steady-state loop once setup is done — the flow that happens dozens of tim
    - **Per-target verdicts**, in preference order: `gemini (cheapest → gemini-flash-lite)` — daily budget exhausted, resets at 00:00 Europe/London; `claude` — at max_concurrent (3/3); `laptop-m4` — offline (last seen 12 min ago).
    - **Pin status**, if pinned: only the pinned runner is evaluated, and the explainer says so.
    - **Queue position** when eligible but capacity-bound (see Decisions): "3 eligible issues ahead of this one" in the oldest-`updated_at`-first queue.
-3. Each verdict points at its remedy, and the remedies are the other flows: blocked → resolve the blocker; no rule → create one (flow 7); parked → resume (flow 9); runner offline → restart the daemon (flow 18); budget → wait or raise it (flow 12); at cap → wait, or bump `max_concurrent`.
+3. Each verdict points at its remedy, and the remedies are the other flows: blocked → resolve the blocker; no rule → create one (flow 7); parked → resume (flow 9); runner offline → restart the daemon (flow 18); budget → wait or raise it (flow 12); at cap → wait, or bump `max_concurrent`. From Tines/256 the same remedies appear **fleet-wide** on the Agents tab's Now row, as controls beside each waiting group, for the operator who is asking about the whole fleet rather than one issue.
 4. The user fixes the actual cause, and because every fixing action fires an opportunistic dispatch pass, the panel flips to an active run within seconds — closing the loop in the same view they diagnosed it in.
 
 **Success criterion:** for any idle issue, the user reaches a specific, actionable reason — never "it just isn't running" — in one click or one command, and the fix takes effect visibly in the same place.
@@ -340,7 +340,7 @@ The steady-state loop once setup is done — the flow that happens dozens of tim
 **Decisions**
 
 - **Roster default stays 1 for unlisted and newly created states**; the editor lists every state (grouped by workflow) showing the inherited default, so no state's limit is a surprise.
-- **Utilization is included in the summary surfaces** — `tines supervisor status` and the Runs section header — cheap aggregation over data the guards already query.
+- **Utilization is included in the summary surfaces** — `tines supervisor status` and the Runs section header — cheap aggregation over data the guards already query. From Tines/256 the same surfaces carry the **Now row**: what is waiting, why, which limit binds, and the remedy for each group as a control.
 
 ---
 
