@@ -380,13 +380,15 @@ export function nextOccurrenceFromCron(cronExpr: string, tz: string, afterMs: nu
 // ---------------------------------------------------------------------------
 // Template placeholders
 
-export interface TemplateVars {
+// A type alias, not an interface: `renderTemplate` takes an open
+// `Record<string, string>` and only aliases get the implicit index signature.
+export type TemplateVars = {
 	date: string;
 	time: string;
 	datetime: string;
 	schedule_name: string;
 	count: string;
-}
+};
 
 /** The placeholder values for an instance created at `atMs`, in the schedule's timezone. */
 export function templateVars(

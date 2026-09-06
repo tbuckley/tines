@@ -28,7 +28,12 @@ import {
 } from './context';
 import { createLabel, resolveLabelRef } from './labels';
 import { createProject } from './projects';
-import { createWorkflow, loadWorkflows } from './workflows';
+import {
+	createWorkflow,
+	loadWorkflows,
+	workflowAsRequest,
+	workflowFingerprint
+} from './workflows';
 
 // ---------------------------------------------------------------------------
 // The reusable library — non-system workflows plus every non-issue-scoped
@@ -183,22 +188,6 @@ const contextKey = (
 	labelId: string | null
 ) => `${kind}${SEP}${name}${SEP}${projectId ?? ''}${SEP}${stateId ?? ''}${SEP}${labelId ?? ''}`;
 
-/** Canonical form of a workflow definition, for "same or different?". */
-function workflowFingerprint(wf: CreateWorkflowRequest): string {
-	const states = wf.states.map((s) => `${s.name}:${s.category}`).join('|');
-	const transitions = [...wf.transitions]
-		.map((t) => {
-			const requires = [...(t.requires ?? [])]
-				.map((r) => `${r.artifact}:${r.type ?? ''}:${r.content_type ?? ''}:${r.description ?? ''}`)
-				.sort()
-				.join(',');
-			return `${t.from}>${t.name}>${t.to}[${requires}]`;
-		})
-		.sort()
-		.join('|');
-	return `${wf.initial_state}${SEP}${states}${SEP}${transitions}`;
-}
-
 /** The document gate: wrong file, future version, or too many entries. */
 export function assertImportableDocument(doc: LibraryDocument | undefined | null): LibraryDocument {
 	if (!doc || typeof doc !== 'object') {
@@ -345,20 +334,8 @@ export async function planImport(
 		const ref = `workflow "${workflow.name}"`;
 		const existing = workflowNames.get(workflow.name);
 		if (existing) {
-			const existingDef: CreateWorkflowRequest = {
-				name: existing.name,
-				initial_state: existing.states.find((s) => s.id === existing.initial_state_id)?.name ?? '',
-				states: [...existing.states]
-					.sort((a, b) => a.position - b.position)
-					.map((s) => ({ name: s.name, category: s.category })),
-				transitions: existing.transitions.map((t) => ({
-					name: t.name,
-					from: existing.states.find((s) => s.id === t.from_state_id)?.name ?? '',
-					to: existing.states.find((s) => s.id === t.to_state_id)?.name ?? '',
-					...(t.requires ? { requires: t.requires } : {})
-				}))
-			};
-			const same = workflowFingerprint(existingDef) === workflowFingerprint(workflow);
+			const same =
+				workflowFingerprint(workflowAsRequest(existing)) === workflowFingerprint(workflow);
 			steps.push({
 				entry: {
 					section: 'workflow',
