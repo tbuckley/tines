@@ -327,6 +327,8 @@ export interface InheritanceChange {
 export interface ResolvedInheritance {
 	/** Final pointer per state in the request, including the unchanged ones. */
 	pointers: Map<string, string | null>;
+	/** Ids of the states whose stored pointer this request moves — the UPDATE pass. */
+	changedIds: Set<string>;
 	/** Only the states whose stored pointer this request moves. */
 	changes: InheritanceChange[];
 	/** Denormalized refs for every state named above. */
@@ -428,6 +430,25 @@ export async function resolveInheritance(
 	for (const s of states) {
 		const target = pointers.get(s.id);
 		if (target === null || target === undefined) continue;
+		// A base this same request drops is still stored at validation time,
+		// so it would pass the existence check below and then fail the batch
+		// on the FK as an unhandled error. Refuse it here instead, so every
+		// way of getting inheritance wrong answers with a readable 422. Only a
+		// pointer this request *moves* is caught: keeping a stored pointer onto
+		// a state being removed is the `state_inherited` guard's case, which
+		// answers with its own 422 and clears under `force_clear_inheritance`.
+		if (
+			!requestIds.has(target) &&
+			currentById.has(target) &&
+			target !== (currentById.get(s.id)?.inherits_from ?? null)
+		) {
+			throw new ApiFail(
+				422,
+				'inheritance_target_removed',
+				`State "${s.name}" inherits from state "${currentById.get(target)!.name}", which this request removes: keep that state, or point elsewhere`,
+				{ field: 'inherits_from', state_id: s.id }
+			);
+		}
 		if (!requestIds.has(target) && !external.has(target)) {
 			throw new ApiFail(
 				422,
@@ -527,11 +548,13 @@ export async function resolveInheritance(
 
 	// 4. What actually moves.
 	const changes: InheritanceChange[] = [];
+	const changedIds = new Set<string>();
 	for (const s of states) {
 		const to = pointers.get(s.id) ?? null;
 		const from = currentById.get(s.id)?.inherits_from ?? null;
 		if (to === from) continue;
 		if (from) await loadExternal([from]);
+		changedIds.add(s.id);
 		changes.push({
 			workflow: workflow.name,
 			state: s.name,
@@ -539,7 +562,7 @@ export async function resolveInheritance(
 			to: to ? stateRefLabel(refs.get(to), to) : null
 		});
 	}
-	return { pointers, changes, refs };
+	return { pointers, changedIds, changes, refs };
 }
 
 /**
@@ -929,7 +952,7 @@ export async function updateWorkflow(
 			`Cannot remove ${byBase
 				.map(
 					(b) =>
-						`state "${b.state_name}" (${b.children.length} state${b.children.length === 1 ? '' : 's'} inherit context from it: ${b.children.map((c) => `${c.workflow_name} / ${c.state_name}`).join(', ')})`
+						`state "${b.state_name}" (${b.children.length} state${b.children.length === 1 ? ' inherits' : 's inherit'} context from it: ${b.children.map((c) => `${c.workflow_name} / ${c.state_name}`).join(', ')})`
 				)
 				.join('; ')}: re-point them first, or pass force_clear_inheritance to clear their pointers`,
 			{ states: byBase }
@@ -1078,14 +1101,12 @@ export async function updateWorkflow(
 		}
 	}
 	// Pointer pass, after every insert so a new state can be a new state's base.
-	for (const change of inh.changes) {
-		const state = def.states.find((s) => s.name === change.state);
-		if (!state) continue;
+	for (const stateId of inh.changedIds) {
 		queries.push(
 			db
 				.updateTable('workflow_state')
-				.set({ inherits_from_state_id: inh.pointers.get(state.id) ?? null })
-				.where('id', '=', state.id)
+				.set({ inherits_from_state_id: inh.pointers.get(stateId) ?? null })
+				.where('id', '=', stateId)
 				.compile()
 		);
 	}
@@ -1146,7 +1167,7 @@ export async function deleteWorkflow(
 		throw new ApiFail(
 			422,
 			'workflow_inherited',
-			`Cannot delete workflow "${wf.name}": ${children.length} state${children.length === 1 ? '' : 's'} in other workflows inherit context from it (${children.map((c) => `${c.workflowName} / ${c.name}`).join(', ')}): re-point them first, or pass force_clear_inheritance to clear their pointers`,
+			`Cannot delete workflow "${wf.name}": ${children.length} state${children.length === 1 ? ' in another workflow inherits' : 's in other workflows inherit'} context from it (${children.map((c) => `${c.workflowName} / ${c.name}`).join(', ')}): re-point them first, or pass force_clear_inheritance to clear their pointers`,
 			{
 				states: children.map((c) => ({
 					state_id: c.id,

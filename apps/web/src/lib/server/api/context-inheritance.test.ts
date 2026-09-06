@@ -138,6 +138,13 @@ describe('inherited layers', () => {
 		const issue = addIssue(t, { workflow: 'wf_two', state: STAGE_A });
 		await prompt(t, 'own', 'child text', { workflow_state_id: STAGE_A });
 		await prompt(t, 'base', 'base text', { workflow_state_id: BASE_MERGING });
+		// Age the child's item so every tie-break *below* the depth key —
+		// position, created_at, id — would put it first. The expected order
+		// then holds because of the depth key alone, not creation order.
+		t.sqlite
+			.prepare(`UPDATE context_item SET created_at = ? WHERE name = ?`)
+			.run(NOW - 1000, 'own');
+		t.sqlite.prepare(`UPDATE context_item SET created_at = ? WHERE name = ?`).run(NOW, 'base');
 
 		const ctx = await effectiveContextForIssue(t.db, USER, issue);
 		expect(ctx.prompt.text).toContain('## Context: state Shared stages / Stage A\n\nbase text');
