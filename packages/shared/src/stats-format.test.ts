@@ -20,7 +20,8 @@ describe('deltaLabel', () => {
 	it('prints a direction and a unit-appropriate size', () => {
 		expect(deltaLabel(3, 'count')).toBe('▲ 3');
 		expect(deltaLabel(-2, 'count')).toBe('▼ 2');
-		expect(deltaLabel(-90 * 60_000, 'ms')).toBe('▼ 90 min');
+		expect(deltaLabel(-45 * 60_000, 'ms')).toBe('▼ 45 min');
+		expect(deltaLabel(-90 * 60_000, 'ms')).toBe('▼ 1.5 h');
 		expect(deltaLabel(0.2, 'share')).toBe('▲ 20 pp');
 		expect(deltaLabel(-1.25, 'ratio')).toBe('▼ 1.3');
 	});

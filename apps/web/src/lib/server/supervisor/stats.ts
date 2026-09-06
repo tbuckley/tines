@@ -311,7 +311,9 @@ export function stageFigures(
 	const runnerCounts = new Map<string, { id: string; name: string; runs: number }>();
 
 	for (const visit of entered) {
-		const runs = (ctx.bound.get(visit.id) ?? []).slice().sort((a, b) => a.created_at - b.created_at);
+		const runs = (ctx.bound.get(visit.id) ?? [])
+			.slice()
+			.sort((a, b) => a.created_at - b.created_at);
 		if (runs.length > 0) visitsWithRuns++;
 		runsTotal += runs.length;
 		for (const run of runs) {
@@ -342,7 +344,10 @@ export function stageFigures(
 	}
 
 	const sentBack = exited.filter((v) => v.sent_back);
-	const byTarget = new Map<string, { state_id: string; state_name: string; count: number; agent: number; human: number }>();
+	const byTarget = new Map<
+		string,
+		{ state_id: string; state_name: string; count: number; agent: number; human: number }
+	>();
 	for (const v of sentBack) {
 		const target = v.to_state_id as string;
 		const entry = byTarget.get(target) ?? {
@@ -395,7 +400,9 @@ export function stageFigures(
 			share: exited.length > 0 ? sentBack.length / exited.length : null,
 			agent: sentBack.filter((v) => v.exit_actor === 'agent').length,
 			human: sentBack.filter((v) => v.exit_actor === 'human').length,
-			by_target: [...byTarget.values()].sort((a, b) => b.count - a.count || a.state_name.localeCompare(b.state_name))
+			by_target: [...byTarget.values()].sort(
+				(a, b) => b.count - a.count || a.state_name.localeCompare(b.state_name)
+			)
 		},
 		received_back: receivedBack,
 		cost: null
@@ -407,7 +414,10 @@ function sub(a: number | null | undefined, b: number | null | undefined): number
 	return a - b;
 }
 
-function deltaOf(current: StageWindowFigures, previous: StageWindowFigures | null): StageStatsDelta {
+function deltaOf(
+	current: StageWindowFigures,
+	previous: StageWindowFigures | null
+): StageStatsDelta {
 	const outcomes = Object.fromEntries(
 		RUN_OUTCOME_BUCKETS.map((b) => [
 			b,

@@ -21,13 +21,62 @@ const WINDOW = 7 * DAY;
 
 // The Engineering workflow the PRD's figures come from.
 const ENG: StatsStateMeta[] = [
-	{ id: 'st_backlog', name: 'Backlog', workflow_id: 'wf_eng', workflow_name: 'Engineering', category: 'backlog', position: 0 },
-	{ id: 'st_disc', name: 'Discovering', workflow_id: 'wf_eng', workflow_name: 'Engineering', category: 'active', position: 1 },
-	{ id: 'st_res', name: 'Research', workflow_id: 'wf_eng', workflow_name: 'Engineering', category: 'active', position: 2 },
-	{ id: 'st_impl', name: 'Implementation', workflow_id: 'wf_eng', workflow_name: 'Engineering', category: 'active', position: 3 },
-	{ id: 'st_rev', name: 'Automated Review', workflow_id: 'wf_eng', workflow_name: 'Engineering', category: 'active', position: 4 },
-	{ id: 'st_human', name: 'Human Review', workflow_id: 'wf_eng', workflow_name: 'Engineering', category: 'awaiting_human', position: 5 },
-	{ id: 'st_done', name: 'Done', workflow_id: 'wf_eng', workflow_name: 'Engineering', category: 'done', position: 6 }
+	{
+		id: 'st_backlog',
+		name: 'Backlog',
+		workflow_id: 'wf_eng',
+		workflow_name: 'Engineering',
+		category: 'backlog',
+		position: 0
+	},
+	{
+		id: 'st_disc',
+		name: 'Discovering',
+		workflow_id: 'wf_eng',
+		workflow_name: 'Engineering',
+		category: 'active',
+		position: 1
+	},
+	{
+		id: 'st_res',
+		name: 'Research',
+		workflow_id: 'wf_eng',
+		workflow_name: 'Engineering',
+		category: 'active',
+		position: 2
+	},
+	{
+		id: 'st_impl',
+		name: 'Implementation',
+		workflow_id: 'wf_eng',
+		workflow_name: 'Engineering',
+		category: 'active',
+		position: 3
+	},
+	{
+		id: 'st_rev',
+		name: 'Automated Review',
+		workflow_id: 'wf_eng',
+		workflow_name: 'Engineering',
+		category: 'active',
+		position: 4
+	},
+	{
+		id: 'st_human',
+		name: 'Human Review',
+		workflow_id: 'wf_eng',
+		workflow_name: 'Engineering',
+		category: 'awaiting_human',
+		position: 5
+	},
+	{
+		id: 'st_done',
+		name: 'Done',
+		workflow_id: 'wf_eng',
+		workflow_name: 'Engineering',
+		category: 'done',
+		position: 6
+	}
 ];
 
 let seq = 0;
@@ -44,7 +93,9 @@ function ev(p: Partial<StatsEvent> & { issue_id: string; created_at: number }): 
 	};
 }
 
-function run(p: Partial<StatsRun> & { issue_id: string; state_id_at_start: string; created_at: number }): StatsRun {
+function run(
+	p: Partial<StatsRun> & { issue_id: string; state_id_at_start: string; created_at: number }
+): StatsRun {
 	seq++;
 	return {
 		id: `run_${seq}`,
@@ -99,7 +150,17 @@ describe('isSentBack', () => {
 				'st_cancel',
 				new Map([
 					...stateMap,
-					['st_cancel', { id: 'st_cancel', name: 'Canceled', workflow_id: 'wf_eng', workflow_name: 'Engineering', category: 'done' as const, position: 0 }]
+					[
+						'st_cancel',
+						{
+							id: 'st_cancel',
+							name: 'Canceled',
+							workflow_id: 'wf_eng',
+							workflow_name: 'Engineering',
+							category: 'done' as const,
+							position: 0
+						}
+					]
 				])
 			)
 		).toBe(false);
@@ -114,7 +175,14 @@ describe('computeStageStats — the PRD figures', () => {
 		const entered = NOW - 3 * DAY;
 		for (let i = 0; i < 55; i++) {
 			const issue = `iss_${i}`;
-			events.push(ev({ issue_id: issue, created_at: entered, to_state_id: 'st_rev', from_state_id: 'st_impl' }));
+			events.push(
+				ev({
+					issue_id: issue,
+					created_at: entered,
+					to_state_id: 'st_rev',
+					from_state_id: 'st_impl'
+				})
+			);
 			// The first 11 go back to Implementation, each by a run key.
 			const back = i < 11;
 			events.push(
@@ -147,7 +215,9 @@ describe('computeStageStats — the PRD figures', () => {
 		const entered = NOW - 2 * DAY;
 		for (let i = 0; i < 6; i++) {
 			const issue = `iss_d${i}`;
-			events.push(ev({ issue_id: issue, created_at: entered, to_state_id: 'st_disc', type: 'issue.created' }));
+			events.push(
+				ev({ issue_id: issue, created_at: entered, to_state_id: 'st_disc', type: 'issue.created' })
+			);
 		}
 		// 11 launch failures (status failed, never started) and 9 that ran.
 		for (let i = 0; i < 20; i++) {
@@ -172,7 +242,11 @@ describe('computeStageStats — the PRD figures', () => {
 		expect(disc?.current.runs.outcomes.failed).toBe(11);
 		expect(disc?.current.runs.outcomes.stalled).toBe(9);
 		expect(disc?.current.runs.per_visit).toBeCloseTo(20 / 6, 10);
-		expect(disc?.current.runs.top_runner).toEqual({ id: 'rnr_1', name: 'macbook-claude', runs: 20 });
+		expect(disc?.current.runs.top_runner).toEqual({
+			id: 'rnr_1',
+			name: 'macbook-claude',
+			runs: 20
+		});
 	});
 
 	it('reports a Research queue-wait p90 of 723 minutes', () => {
@@ -183,10 +257,26 @@ describe('computeStageStats — the PRD figures', () => {
 		const entered = NOW - 4 * DAY;
 		waits.forEach((wait, i) => {
 			const issue = `iss_r${i}`;
-			events.push(ev({ issue_id: issue, created_at: entered, to_state_id: 'st_res', from_state_id: 'st_disc' }));
-			runs.push(run({ issue_id: issue, state_id_at_start: 'st_res', created_at: entered, started_at: entered + wait }));
+			events.push(
+				ev({
+					issue_id: issue,
+					created_at: entered,
+					to_state_id: 'st_res',
+					from_state_id: 'st_disc'
+				})
+			);
+			runs.push(
+				run({
+					issue_id: issue,
+					state_id_at_start: 'st_res',
+					created_at: entered,
+					started_at: entered + wait
+				})
+			);
 		});
-		const res = computeStageStats(input({ events, runs })).states.find((s) => s.state_id === 'st_res');
+		const res = computeStageStats(input({ events, runs })).states.find(
+			(s) => s.state_id === 'st_res'
+		);
 		expect(res?.current.queue_wait?.p90).toBe(723 * MIN);
 		expect(res?.current.queue_wait?.p50).toBe(60 * MIN);
 		expect(res?.current.queue_wait_measured).toBe(10);
@@ -198,7 +288,12 @@ describe('computeStageStats — definitions', () => {
 		const report = computeStageStats(
 			input({
 				events: [
-					ev({ issue_id: 'i1', created_at: NOW - DAY, to_state_id: 'st_human', from_state_id: 'st_rev' })
+					ev({
+						issue_id: 'i1',
+						created_at: NOW - DAY,
+						to_state_id: 'st_human',
+						from_state_id: 'st_rev'
+					})
 				]
 			})
 		);
@@ -207,7 +302,16 @@ describe('computeStageStats — definitions', () => {
 
 	it('counts an issue.created entry and leaves the visit open', () => {
 		const report = computeStageStats(
-			input({ events: [ev({ issue_id: 'i1', created_at: NOW - DAY, to_state_id: 'st_disc', type: 'issue.created' })] })
+			input({
+				events: [
+					ev({
+						issue_id: 'i1',
+						created_at: NOW - DAY,
+						to_state_id: 'st_disc',
+						type: 'issue.created'
+					})
+				]
+			})
 		);
 		const disc = report.states[0];
 		expect(disc.current.visits).toBe(1);
@@ -220,7 +324,14 @@ describe('computeStageStats — definitions', () => {
 		// The entry predates the scan: only the exit event is in the events.
 		const report = computeStageStats(
 			input({
-				events: [ev({ issue_id: 'i1', created_at: NOW - DAY, from_state_id: 'st_rev', to_state_id: 'st_impl' })]
+				events: [
+					ev({
+						issue_id: 'i1',
+						created_at: NOW - DAY,
+						from_state_id: 'st_rev',
+						to_state_id: 'st_impl'
+					})
+				]
 			})
 		);
 		const review = report.states.find((s) => s.state_id === 'st_rev');
@@ -234,9 +345,24 @@ describe('computeStageStats — definitions', () => {
 		const t = NOW - 5 * DAY;
 		const events = [
 			ev({ issue_id: 'i1', created_at: t, to_state_id: 'st_impl', from_state_id: 'st_disc' }),
-			ev({ issue_id: 'i1', created_at: t + 2 * HOUR, from_state_id: 'st_impl', to_state_id: 'st_rev' }),
-			ev({ issue_id: 'i1', created_at: t + 3 * HOUR, from_state_id: 'st_rev', to_state_id: 'st_impl' }),
-			ev({ issue_id: 'i1', created_at: t + 6 * HOUR, from_state_id: 'st_impl', to_state_id: 'st_rev' })
+			ev({
+				issue_id: 'i1',
+				created_at: t + 2 * HOUR,
+				from_state_id: 'st_impl',
+				to_state_id: 'st_rev'
+			}),
+			ev({
+				issue_id: 'i1',
+				created_at: t + 3 * HOUR,
+				from_state_id: 'st_rev',
+				to_state_id: 'st_impl'
+			}),
+			ev({
+				issue_id: 'i1',
+				created_at: t + 6 * HOUR,
+				from_state_id: 'st_impl',
+				to_state_id: 'st_rev'
+			})
 		];
 		const runs = [
 			run({ issue_id: 'i1', state_id_at_start: 'st_impl', created_at: t + HOUR }),
@@ -247,7 +373,9 @@ describe('computeStageStats — definitions', () => {
 		const { bound, unbound } = bindRuns(visits, runs);
 		expect(unbound).toEqual([]);
 		expect([...bound.values()].map((rs) => rs.length).sort()).toEqual([1, 2]);
-		const impl = computeStageStats(input({ events, runs })).states.find((s) => s.state_id === 'st_impl');
+		const impl = computeStageStats(input({ events, runs })).states.find(
+			(s) => s.state_id === 'st_impl'
+		);
 		// Two visits, both with runs: 3 runs over 2 visits.
 		expect(impl?.current.visits).toBe(2);
 		expect(impl?.current.runs.per_visit).toBeCloseTo(1.5, 10);
@@ -255,10 +383,24 @@ describe('computeStageStats — definitions', () => {
 
 	it('does not let a launch failure end the queue wait', () => {
 		const t = NOW - DAY;
-		const events = [ev({ issue_id: 'i1', created_at: t, to_state_id: 'st_impl', from_state_id: 'st_disc' })];
+		const events = [
+			ev({ issue_id: 'i1', created_at: t, to_state_id: 'st_impl', from_state_id: 'st_disc' })
+		];
 		const runs = [
-			run({ issue_id: 'i1', state_id_at_start: 'st_impl', created_at: t + MIN, status: 'failed', outcome: null, started_at: null }),
-			run({ issue_id: 'i1', state_id_at_start: 'st_impl', created_at: t + 30 * MIN, started_at: t + 40 * MIN })
+			run({
+				issue_id: 'i1',
+				state_id_at_start: 'st_impl',
+				created_at: t + MIN,
+				status: 'failed',
+				outcome: null,
+				started_at: null
+			}),
+			run({
+				issue_id: 'i1',
+				state_id_at_start: 'st_impl',
+				created_at: t + 30 * MIN,
+				started_at: t + 40 * MIN
+			})
 		];
 		const impl = computeStageStats(input({ events, runs })).states[0];
 		expect(impl.current.queue_wait?.p50).toBe(40 * MIN);
@@ -274,14 +416,26 @@ describe('computeStageStats — definitions', () => {
 	});
 
 	it('recovers advanced for a pre-0016 run whose key authored a transition', () => {
-		const stale = run({ issue_id: 'i1', state_id_at_start: 'st_impl', created_at: NOW - DAY, outcome: null, api_key_id: 'key_1' });
+		const stale = run({
+			issue_id: 'i1',
+			state_id_at_start: 'st_impl',
+			created_at: NOW - DAY,
+			outcome: null,
+			api_key_id: 'key_1'
+		});
 		expect(bucketOutcome(stale, new Set())).toBe('unrecorded');
 		expect(bucketOutcome(stale, new Set(['key_1']))).toBe('advanced');
 		expect(bucketOutcome({ ...stale, status: 'running' }, new Set())).toBe('active');
 		const t = NOW - DAY;
-		const events = [ev({ issue_id: 'i1', created_at: t, to_state_id: 'st_impl', from_state_id: 'st_disc' })];
+		const events = [
+			ev({ issue_id: 'i1', created_at: t, to_state_id: 'st_impl', from_state_id: 'st_disc' })
+		];
 		const impl = computeStageStats(
-			input({ events, runs: [{ ...stale, created_at: t + MIN }], advancedByKey: new Set(['key_1']) })
+			input({
+				events,
+				runs: [{ ...stale, created_at: t + MIN }],
+				advancedByKey: new Set(['key_1'])
+			})
 		).states[0];
 		expect(impl.current.runs.outcomes.advanced).toBe(1);
 		expect(impl.current.runs.recovered_advanced).toBe(1);
@@ -291,12 +445,40 @@ describe('computeStageStats — definitions', () => {
 		const events: StatsEvent[] = [];
 		// 3 exits this window, 1 sent back; 2 exits last window, 2 sent back.
 		for (let i = 0; i < 3; i++) {
-			events.push(ev({ issue_id: `now_${i}`, created_at: NOW - 3 * DAY, to_state_id: 'st_rev', from_state_id: 'st_impl' }));
-			events.push(ev({ issue_id: `now_${i}`, created_at: NOW - 2 * DAY, from_state_id: 'st_rev', to_state_id: i === 0 ? 'st_impl' : 'st_human' }));
+			events.push(
+				ev({
+					issue_id: `now_${i}`,
+					created_at: NOW - 3 * DAY,
+					to_state_id: 'st_rev',
+					from_state_id: 'st_impl'
+				})
+			);
+			events.push(
+				ev({
+					issue_id: `now_${i}`,
+					created_at: NOW - 2 * DAY,
+					from_state_id: 'st_rev',
+					to_state_id: i === 0 ? 'st_impl' : 'st_human'
+				})
+			);
 		}
 		for (let i = 0; i < 2; i++) {
-			events.push(ev({ issue_id: `then_${i}`, created_at: NOW - 11 * DAY, to_state_id: 'st_rev', from_state_id: 'st_impl' }));
-			events.push(ev({ issue_id: `then_${i}`, created_at: NOW - 10 * DAY, from_state_id: 'st_rev', to_state_id: 'st_impl' }));
+			events.push(
+				ev({
+					issue_id: `then_${i}`,
+					created_at: NOW - 11 * DAY,
+					to_state_id: 'st_rev',
+					from_state_id: 'st_impl'
+				})
+			);
+			events.push(
+				ev({
+					issue_id: `then_${i}`,
+					created_at: NOW - 10 * DAY,
+					from_state_id: 'st_rev',
+					to_state_id: 'st_impl'
+				})
+			);
 		}
 		const review = computeStageStats(input({ events })).states.find((s) => s.state_id === 'st_rev');
 		expect(review?.current.sent_back.share).toBeCloseTo(1 / 3, 10);
@@ -322,8 +504,12 @@ describe('computeStageStats — definitions', () => {
 			['st_rev', 10 * HOUR]
 		] as const) {
 			const issue = `i_${state}`;
-			events.push(ev({ issue_id: issue, created_at: t, to_state_id: state, from_state_id: 'st_backlog' }));
-			runs.push(run({ issue_id: issue, state_id_at_start: state, created_at: t, started_at: t + wait }));
+			events.push(
+				ev({ issue_id: issue, created_at: t, to_state_id: state, from_state_id: 'st_backlog' })
+			);
+			runs.push(
+				run({ issue_id: issue, state_id_at_start: state, created_at: t, started_at: t + wait })
+			);
 		}
 		expect(computeStageStats(input({ events, runs })).states.map((s) => s.state_id)).toEqual([
 			'st_res',

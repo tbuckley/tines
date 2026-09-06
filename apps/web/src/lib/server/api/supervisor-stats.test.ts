@@ -53,7 +53,13 @@ describe('loadStageStats', () => {
 		const issue = addIssue(t, { id: 'iss_1', state: STAGE_B, workflow: 'wf_two' });
 		// Entered Review two days ago, one run started an hour later, then a
 		// run key sent it back to Open.
-		addTransitionEvent(t, { issueId: issue, apiKeyId: null, at: NOW - 2 * DAY, from: STAGE_A, to: STAGE_B });
+		addTransitionEvent(t, {
+			issueId: issue,
+			apiKeyId: null,
+			at: NOW - 2 * DAY,
+			from: STAGE_A,
+			to: STAGE_B
+		});
 		const run = addRun(t, {
 			issueId: issue,
 			runnerId: 'rnr_1',
@@ -65,7 +71,13 @@ describe('loadStageStats', () => {
 			endedAt: NOW - 2 * DAY + 2 * HOUR
 		});
 		const key = addRunKey(t, run);
-		addTransitionEvent(t, { issueId: issue, apiKeyId: key, at: NOW - DAY, from: STAGE_B, to: STAGE_A });
+		addTransitionEvent(t, {
+			issueId: issue,
+			apiKeyId: key,
+			at: NOW - DAY,
+			from: STAGE_B,
+			to: STAGE_A
+		});
 
 		const report = await loadStageStats(t.db, USER, {}, NOW);
 		expect(report.window.ms).toBe(7 * DAY);
@@ -87,8 +99,20 @@ describe('loadStageStats', () => {
 	it('attributes a transition with no key to a human', async () => {
 		const t = setup();
 		const issue = addIssue(t, { id: 'iss_1', state: STAGE_A, workflow: 'wf_two' });
-		addTransitionEvent(t, { issueId: issue, apiKeyId: null, at: NOW - 3 * DAY, from: STAGE_A, to: STAGE_B });
-		addTransitionEvent(t, { issueId: issue, apiKeyId: null, at: NOW - 2 * DAY, from: STAGE_B, to: STAGE_A });
+		addTransitionEvent(t, {
+			issueId: issue,
+			apiKeyId: null,
+			at: NOW - 3 * DAY,
+			from: STAGE_A,
+			to: STAGE_B
+		});
+		addTransitionEvent(t, {
+			issueId: issue,
+			apiKeyId: null,
+			at: NOW - 2 * DAY,
+			from: STAGE_B,
+			to: STAGE_A
+		});
 		const report = await loadStageStats(t.db, USER, {}, NOW);
 		expect(report.states.find((s) => s.state_id === STAGE_B)?.current.sent_back).toMatchObject({
 			count: 1,
@@ -101,15 +125,33 @@ describe('loadStageStats', () => {
 		const t = setup();
 		const other = addOtherProject(t);
 		const mine = addIssue(t, { id: 'iss_mine', state: STAGE_B, workflow: 'wf_two' });
-		addTransitionEvent(t, { issueId: mine, apiKeyId: null, at: NOW - DAY, from: STAGE_A, to: STAGE_B });
+		addTransitionEvent(t, {
+			issueId: mine,
+			apiKeyId: null,
+			at: NOW - DAY,
+			from: STAGE_A,
+			to: STAGE_B
+		});
 		// The other project's event carries its own project_id.
-		const theirs = addIssue(t, { id: 'iss_theirs', state: STAGE_B, workflow: 'wf_two', project: other });
+		const theirs = addIssue(t, {
+			id: 'iss_theirs',
+			state: STAGE_B,
+			workflow: 'wf_two',
+			project: other
+		});
 		t.sqlite
 			.prepare(
 				`INSERT INTO event (id, user_id, type, actor_user_id, actor_api_key_id, issue_id, project_id, payload, created_at)
 				VALUES ('evt_other', ?, 'issue.transitioned', ?, NULL, ?, ?, ?, ?)`
 			)
-			.run(USER, USER, theirs, other, JSON.stringify({ from_state_id: STAGE_A, to_state_id: STAGE_B }), NOW - DAY);
+			.run(
+				USER,
+				USER,
+				theirs,
+				other,
+				JSON.stringify({ from_state_id: STAGE_A, to_state_id: STAGE_B }),
+				NOW - DAY
+			);
 
 		const all = await loadStageStats(t.db, USER, {}, NOW);
 		expect(all.states.find((s) => s.state_id === STAGE_B)?.current.visits).toBe(2);
@@ -129,7 +171,14 @@ describe('loadStageStats', () => {
 				`INSERT INTO event (id, user_id, type, actor_user_id, actor_api_key_id, issue_id, project_id, payload, created_at)
 				VALUES ('evt_c', ?, 'issue.created', ?, NULL, ?, ?, ?, ?)`
 			)
-			.run(USER, USER, issue, PROJECT, JSON.stringify({ state_id: STAGE_B, state_name: 'Stage B' }), NOW - DAY);
+			.run(
+				USER,
+				USER,
+				issue,
+				PROJECT,
+				JSON.stringify({ state_id: STAGE_B, state_name: 'Stage B' }),
+				NOW - DAY
+			);
 		const report = await loadStageStats(t.db, USER, { compare: 'none' }, NOW);
 		expect(report.previous).toBeNull();
 		const stage = report.states.find((s) => s.state_id === STAGE_B);
@@ -143,7 +192,13 @@ describe('loadStageStats', () => {
 	it('ignores events whose issue was deleted', async () => {
 		const t = setup();
 		const issue = addIssue(t, { id: 'iss_1', state: STAGE_B, workflow: 'wf_two' });
-		addTransitionEvent(t, { issueId: issue, apiKeyId: null, at: NOW - DAY, from: STAGE_A, to: STAGE_B });
+		addTransitionEvent(t, {
+			issueId: issue,
+			apiKeyId: null,
+			at: NOW - DAY,
+			from: STAGE_A,
+			to: STAGE_B
+		});
 		t.sqlite.exec(`UPDATE event SET issue_id = NULL`);
 		expect((await loadStageStats(t.db, USER, {}, NOW)).states).toEqual([]);
 	});

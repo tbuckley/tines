@@ -1368,6 +1368,8 @@ Options:
 Commands:
   status [options]   One-screen overview: kill switch, quota, utilization,
                      runners
+  stats [options]    Per-stage flow this week: queue wait, work time, runs per
+                     visit, sent back
   enable [options]   Arm automation (the kill switch on)
   disable [options]  Pause all automation at once (the kill switch off)
   quota              Pick and configure the quota policy
@@ -1434,6 +1436,19 @@ Options:
                               login\`)
   --json                      output the raw JSON response
   -h, --help                  display help for command
+",
+  "tines supervisor stats": "Usage: tines supervisor stats [options]
+
+Per-stage flow this week: queue wait, work time, runs per visit, sent back
+
+Options:
+  --window <window>  Rolling window, e.g. 24h or 7d (default: "7d")
+  --project <ref>    Narrow to one project (id or name)
+  -u, --url <url>    base URL of the Tines API (or set TINES_API_URL, or run
+                     \`tines login\`; default https://tines.tbuckley.dev)
+  --api-key <key>    API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json             output the raw JSON response
+  -h, --help         display help for command
 ",
   "tines supervisor status": "Usage: tines supervisor status [options]
 
