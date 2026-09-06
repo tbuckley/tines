@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { ApiError } from '@tines/shared';
 	import IconFolderPlus from '@tabler/icons-svelte/icons/folder-plus';
-	import { goto, invalidateAll } from '$app/navigation';
+	import { goto, invalidateAll, replaceState } from '$app/navigation';
 	import { page } from '$app/state';
 	import { api } from '$lib/api';
 	import CheckboxField from '$lib/components/CheckboxField.svelte';
@@ -22,6 +22,15 @@
 	const cards = $derived(data.showArchived ? [...data.live, ...data.archived] : data.live);
 
 	let createOpen = $state(false);
+
+	// `/projects?new=1` is how other surfaces say "start here" (the Issues tab's
+	// empty state). Consume the flag immediately so nav-memory never remembers
+	// it and reopens the dialog on every later Projects click.
+	$effect(() => {
+		if (page.url.searchParams.get('new') !== '1') return;
+		createOpen = true;
+		replaceState('/projects', page.state);
+	});
 	let name = $state('');
 	let description = $state('');
 	let initialPrompt = $state('');

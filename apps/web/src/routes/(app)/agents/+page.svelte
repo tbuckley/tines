@@ -662,6 +662,11 @@
 		<div class="text-muted-foreground rounded-lg border border-dashed p-8 text-center text-sm">
 			No runners yet. Add a local runner for this machine, or a Claude managed runner that works
 			issues in the cloud (Gemini arrives in a later milestone).
+			<div class="mt-3">
+				<Button size="sm" variant="outline" onclick={() => (addRunnerOpen = true)}>
+					<IconPlus size={14} /> Add runner
+				</Button>
+			</div>
 		</div>
 	{:else}
 		<div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -818,6 +823,17 @@
 		<div class="text-muted-foreground rounded-lg border border-dashed p-8 text-center text-sm">
 			No routing rules. A rule is an ordered runner preference list at a scope — add one to start
 			dispatching issues to agents.
+			<div class="mt-3">
+				{#if data.runners.length === 0}
+					<Button size="sm" variant="outline" onclick={() => (addRunnerOpen = true)}>
+						<IconPlus size={14} /> Add a runner first
+					</Button>
+				{:else}
+					<Button size="sm" variant="outline" onclick={openRuleCreate}>
+						<IconPlus size={14} /> Add a global rule
+					</Button>
+				{/if}
+			</div>
 		</div>
 	{:else}
 		<ul class="divide-y rounded-lg border" aria-label="Routing rules">
