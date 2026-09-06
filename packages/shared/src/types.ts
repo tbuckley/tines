@@ -1082,6 +1082,12 @@ export interface ArtifactRequirementCheck extends ArtifactRequirement {
 	current_version: { version: number; created_at: number } | null;
 	/** The matching artifact's (immutable) type, when one exists. */
 	current_type: ArtifactType | null;
+	/**
+	 * The runnable command that clears this requirement (`requirementFix`) —
+	 * present on every entry, satisfied or not, so the launch prompt, the
+	 * issue read and the 422 all quote the same string.
+	 */
+	fix: string;
 }
 
 /** A pull-request reference parsed from user input. */
