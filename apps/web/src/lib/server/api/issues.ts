@@ -193,7 +193,9 @@ export function issueQuery(db: Kysely<Database>, userId: string) {
 				// The transition into the current state. The `created_at >=
 				// state_entered_at` guard is what nulls this after a workflow
 				// change, which re-stamps state_entered_at without transitioning.
-				sql<string | null>`CASE WHEN COALESCE(eff_state.category, state.category) = 'awaiting_human' THEN (
+				sql<
+					string | null
+				>`CASE WHEN COALESCE(eff_state.category, state.category) = 'awaiting_human' THEN (
 					SELECT json_object(
 						'action', json_extract(av.payload, '$.action'),
 						'from_state_name', json_extract(av.payload, '$.from_state_name'),
@@ -208,7 +210,9 @@ export function issueQuery(db: Kysely<Database>, userId: string) {
 				) END`.as('arrived_via_json'),
 				// Where the current round starts: the last human-taken
 				// transition, else the issue's creation. Feeds round_summary.
-				sql<number | null>`CASE WHEN COALESCE(eff_state.category, state.category) = 'awaiting_human' THEN COALESCE((
+				sql<
+					number | null
+				>`CASE WHEN COALESCE(eff_state.category, state.category) = 'awaiting_human' THEN COALESCE((
 					SELECT MAX(rb.created_at)
 					FROM event rb
 					LEFT JOIN api_key rbk ON rbk.id = rb.actor_api_key_id
@@ -509,9 +513,13 @@ async function attachRoundSummaries(
 		// Attribution by run id, and only runs on this issue: a version a run on
 		// another issue attached here is not part of this issue's round.
 		const mine = versions.filter(
-			(v) => v.item_issue_id === row.id && v.actor_run_id !== null && v.actor_run_issue_id === row.id
+			(v) =>
+				v.item_issue_id === row.id && v.actor_run_id !== null && v.actor_run_issue_id === row.id
 		);
-		const byName = new Map<string, { name: string; artifact_type: ArtifactType; version: number }>();
+		const byName = new Map<
+			string,
+			{ name: string; artifact_type: ArtifactType; version: number }
+		>();
 		let prUrl: string | null = null;
 		for (const v of mine) {
 			const seen = byName.get(v.item_name);

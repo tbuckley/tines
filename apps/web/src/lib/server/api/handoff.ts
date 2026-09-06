@@ -111,8 +111,7 @@ export function deriveRound(input: RoundInput): Round | null {
 			const source = runsAtStage[runsAtStage.length - 1 - i];
 			const after = source.ended_at ?? source.created_at;
 			const back = events.find(
-				(e) =>
-					e.created_at > after && str((e.payload as TransitionPayload).to_state_id) === stateId
+				(e) => e.created_at > after && str((e.payload as TransitionPayload).to_state_id) === stateId
 			);
 			group[i].returned_via = back ? asTransition(back) : null;
 		}
@@ -171,7 +170,9 @@ function roundRunOf(
 function artifactChangesOf(run: AgentRun, versions: IssueArtifactVersion[]): RoundArtifactChange[] {
 	// Attribution is by run id, never by the run's issue ref: a comment or
 	// version left by a run on *another* issue can never be folded in here.
-	const mine = versions.filter((v) => v.actor_run_id === run.id && v.actor_run_issue_id === run.issue_id);
+	const mine = versions.filter(
+		(v) => v.actor_run_id === run.id && v.actor_run_issue_id === run.issue_id
+	);
 	const byItem = new Map<string, IssueArtifactVersion[]>();
 	for (const v of mine) {
 		const list = byItem.get(v.item_id) ?? [];
@@ -222,9 +223,7 @@ export function deriveSinceLastRun(input: SinceLastRunInput): SinceLastRun | nul
 	if (!previous) return null;
 	const since = previous.ended_at ?? previous.created_at;
 
-	const humanTransitions = events.filter(
-		(e) => e.created_at > since && runIdOf(e.actor) === null
-	);
+	const humanTransitions = events.filter((e) => e.created_at > since && runIdOf(e.actor) === null);
 	const transition = humanTransitions[humanTransitions.length - 1] ?? null;
 	const humanComments = comments.filter((c) => c.created_at > since && runIdOf(c.actor) === null);
 	if (!transition && humanComments.length === 0) return null;
@@ -243,9 +242,13 @@ export function deriveSinceLastRun(input: SinceLastRunInput): SinceLastRun | nul
 }
 
 /**
- * Artifacts the human's move made stale: their current version was attached in
- * the state the issue was sent back *from*, so it was fresh when the human
- * looked at it and is stale now.
+ * Artifacts the human's move made stale: their current version was produced by
+ * the round the human just ended, and is stale now.
+ *
+ * Deliberately measured from the previous *human* transition, not from the one
+ * before the human's move: a run attaches its artifact before it transitions,
+ * so a version is never fresh in the state the run handed the issue to, and
+ * the narrower window would always be empty.
  */
 function staleArtifacts(
 	issue: { created_at: number; state_entered_at: number },
@@ -253,15 +256,17 @@ function staleArtifacts(
 	transition: TinesEvent,
 	versions: IssueArtifactVersion[]
 ): string[] {
-	const before = events.filter((e) => e.created_at < transition.created_at);
-	const previousEntered = before[before.length - 1]?.created_at ?? issue.created_at;
+	const before = events.filter(
+		(e) => e.created_at < transition.created_at && runIdOf(e.actor) === null
+	);
+	const roundStarted = before[before.length - 1]?.created_at ?? issue.created_at;
 	const byItem = new Map<string, IssueArtifactVersion>();
 	for (const v of versions) {
 		const seen = byItem.get(v.item_id);
 		if (!seen || v.version > seen.version) byItem.set(v.item_id, v);
 	}
 	return [...byItem.values()]
-		.filter((v) => v.created_at < issue.state_entered_at && v.created_at >= previousEntered)
+		.filter((v) => v.created_at < issue.state_entered_at && v.created_at >= roundStarted)
 		.map((v) => v.name)
 		.sort();
 }

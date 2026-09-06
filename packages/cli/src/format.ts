@@ -212,8 +212,11 @@ export function commentLines(comment: Comment): string[] {
  */
 export function sinceLastRunLines(since: SinceLastRun, now: number = Date.now()): string[] {
 	const prev = since.previous_run;
-	const ended = prev.ended_at === null ? 'not ended' : `ended ${sharedAgeLabel(prev.ended_at, now)} ago`;
-	const lines = [`since the last run (${prev.state_at_start_name ?? 'unknown state'}, ${prev.run_id} ${ended}):`];
+	const ended =
+		prev.ended_at === null ? 'not ended' : `ended ${sharedAgeLabel(prev.ended_at, now)} ago`;
+	const lines = [
+		`since the last run (${prev.state_at_start_name ?? 'unknown state'}, ${prev.run_id} ${ended}):`
+	];
 	const t = since.transition;
 	if (t) {
 		const via = t.action ? `via "${t.action}"` : 'moved directly';
@@ -251,13 +254,16 @@ export function roundLines(round: Round, now: number = Date.now()): string[] {
 				for (const line of run.summary_comment.body.split('\n')) lines.push(`      ${line}`);
 			}
 			if (run.earlier_comment_ids.length > 0) {
-				lines.push(`    ${run.earlier_comment_ids.length} earlier comments: ${run.earlier_comment_ids.join(', ')}`);
+				lines.push(
+					`    ${run.earlier_comment_ids.length} earlier comments: ${run.earlier_comment_ids.join(', ')}`
+				);
 			}
 		}
 		// Earlier attempts fold to their one line above; only the stage's latest
 		// run spells out its artifacts and summary.
 		const folded = stage.runs.length - 1;
-		if (folded > 0) lines.push(`    ${folded} earlier attempt${folded === 1 ? '' : 's'} folded above`);
+		if (folded > 0)
+			lines.push(`    ${folded} earlier attempt${folded === 1 ? '' : 's'} folded above`);
 	}
 	return lines;
 }
@@ -269,7 +275,9 @@ function runHeadline(run: RoundRun, now: number): string {
 		runDurationLabel(run, now),
 		run.outcome ?? run.status,
 		...(cost ? [cost] : []),
-		run.transition ? `"${run.transition.action ?? 'moved directly'}" → ${run.transition.to_state.name}` : 'no transition'
+		run.transition
+			? `"${run.transition.action ?? 'moved directly'}" → ${run.transition.to_state.name}`
+			: 'no transition'
 	].join(' · ');
 }
 
@@ -284,7 +292,8 @@ function earlierAttemptLine(run: RoundRun, now: number): string {
 }
 
 function artifactChangeLabel(a: RoundArtifactChange): string {
-	const versions = a.from_version === null ? `v${a.to_version}` : `v${a.from_version} → v${a.to_version}`;
+	const versions =
+		a.from_version === null ? `v${a.to_version}` : `v${a.from_version} → v${a.to_version}`;
 	const extra = a.pr_url
 		? ` (${a.pr_url})`
 		: a.files

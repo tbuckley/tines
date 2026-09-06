@@ -41,9 +41,12 @@ from run attribution the supervisor already writes — no column stores a round.
   `comment_count` reporting the total. The prompt's `### Since the last run`
   duplicates comments that also appear under `### Comments`: accepted, because
   the steer is the reason the run exists.
-- **`stale_artifacts`** names artifacts whose current version was attached in
-  the state the human sent the issue back *from* — fresh when they looked at it,
-  stale now.
+- **`stale_artifacts`** names artifacts whose current version was produced by
+  the round the human just ended and is stale now. Measured from the previous
+  human transition, not from the transition before the human's move: a run
+  attaches its artifact *before* it transitions, so a version is never fresh in
+  the state the run handed the issue to, and the narrower window is always
+  empty.
 - **Row derivation is awaiting-human only.** `arrived_via` and
   `round_boundary_at` are `CASE`-gated subqueries, so active rows and the
   dispatch path's `loadIssue` run neither; `round_summary` is one keyed query
