@@ -184,16 +184,17 @@ function inheritanceLines(lib: Library, state: WorkflowState): string[] {
  * already what it wants. Spaces around the separator are tolerated so the
  * form `workflows show` prints can be pasted straight back in.
  *
- * The library is fetched at most once, and only if some state names a pair.
+ * `library` is called at most once, and only if some state names a pair, so a
+ * body with no pair costs no fetch it would not otherwise make.
  */
-async function resolveStateBases(api: ApiClient, states: unknown): Promise<void> {
+async function resolveStateBases(states: unknown, library: () => Promise<Library>): Promise<void> {
 	if (!Array.isArray(states)) return;
 	let lib: Library | undefined;
 	for (const entry of states) {
 		if (typeof entry !== 'object' || entry === null) continue;
 		const state = entry as { name?: unknown; inherits_from?: unknown };
 		if (typeof state.inherits_from !== 'string' || !state.inherits_from.includes('/')) continue;
-		lib ??= await loadLibrary(api);
+		lib ??= await library();
 		state.inherits_from = resolveBasePair(
 			lib,
 			state.inherits_from,
@@ -356,7 +357,7 @@ export function register(program: Command): void {
 			}
 			assertNewStatesHavePrompts(body.states, opts.prompts);
 			const api = client(opts);
-			await resolveStateBases(api, body.states);
+			await resolveStateBases(body.states, () => loadLibrary(api));
 			const wf = await api.createWorkflow(body as unknown as CreateWorkflowRequest);
 			if (opts.json) return printJson(wf);
 			console.log(`created workflow "${wf.name}" (${wf.id})\n`);
@@ -389,10 +390,13 @@ export function register(program: Command): void {
 			}
 		) => {
 			const api = client(opts);
-			const wf = await resolveWorkflow(api, ref);
+			// One library load answers both the ref and any `<workflow>/<state>`
+			// base the body names.
+			const lib = await loadLibrary(api);
+			const wf = pickWorkflow(lib.workflows, ref);
 			const body = (readJsonBody(inline, opts.file) ?? {}) as UpdateWorkflowRequest;
 			assertNewStatesHavePrompts(body.states, opts.prompts);
-			await resolveStateBases(api, body.states);
+			await resolveStateBases(body.states, async () => lib);
 			if (opts.name !== undefined) body.name = opts.name;
 			if (opts.description !== undefined) body.description = opts.description;
 			if (opts.initialState !== undefined) body.initial_state = opts.initialState;

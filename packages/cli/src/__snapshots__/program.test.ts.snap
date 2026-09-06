@@ -1455,6 +1455,8 @@ Commands:
   list [options]                      List the workflow library
   show [options] <id-or-name>         Show a workflow with states and
                                       transitions
+  bases [options]                     List the states other states inherit
+                                      context from, with their children
   create [options] [json]             Create a workflow from a JSON definition
                                       (states carry initial "prompt"
                                       instructions)
@@ -1463,6 +1465,17 @@ Commands:
   delete [options] <id-or-name>       Delete a workflow (refused while issues
                                       still reference it)
   help [command]                      display help for command
+",
+  "tines workflows bases": "Usage: tines workflows bases [options]
+
+List the states other states inherit context from, with their children
+
+Options:
+  -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
+                   \`tines login\`; default https://tines.tbuckley.dev)
+  --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json           output the raw JSON response
+  -h, --help       display help for command
 ",
   "tines workflows create": "Usage: tines workflows create [options] [json]
 
