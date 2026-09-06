@@ -12,7 +12,13 @@ import { directionOf, escapeStateId, fitDirect, planTransitions } from './transi
 // read as the UI does.
 
 const states = (spec: [string, StateCategory][]): WorkflowState[] =>
-	spec.map(([name, category], position) => ({ id: `s:${name}`, name, category, position }));
+	spec.map(([name, category], position) => ({
+		id: `s:${name}`,
+		name,
+		category,
+		position,
+		inherits_from: null
+	}));
 
 const missing = (artifact: string): ArtifactRequirementCheck => ({
 	artifact,

@@ -4,6 +4,7 @@ import { effectiveContextForIssue, listContextItems } from '$lib/server/api/cont
 import { eventQuery, serializeEvent } from '$lib/server/api/events';
 import { getIssueDetail, loadIssue } from '$lib/server/api/issues';
 import { listLabels } from '$lib/server/api/labels';
+import { partitionProjects } from '$lib/archived';
 import { listProjects } from '$lib/server/api/projects';
 import { listRunners } from '$lib/server/api/runners';
 import { listRuns } from '$lib/server/api/runs';
@@ -42,7 +43,9 @@ export const load: PageServerLoad = async ({ locals, platform, params, depends }
 	// project resolve is not a round trip of its own) alongside the two lists
 	// that do not depend on it.
 	const workflowsPromise = loadWorkflows(db, userId);
-	const projectsPromise = listProjects(db, userId);
+	// `all`, so a 404 on an archived project says "no such issue" rather than
+	// "no such project"; the picker below takes the live subset.
+	const projectsPromise = listProjects(db, userId, { archived: 'all' });
 	// A rejected promise that nothing awaits until wave 2 would be an unhandled
 	// rejection if the issue lookup throws first.
 	workflowsPromise.catch(() => {});
@@ -92,7 +95,7 @@ export const load: PageServerLoad = async ({ locals, platform, params, depends }
 		issue: issueDetail,
 		events,
 		workflows: await workflowsPromise,
-		projects,
+		projects: partitionProjects(projects).live,
 		artifacts: artifacts ?? [],
 		labelLibrary,
 		// Streamed: the sidebar panels. Each renders a skeleton until its first

@@ -1,3 +1,4 @@
+import { partitionProjects } from '$lib/archived';
 import { listProjects } from '$lib/server/api/projects';
 import { listRoutingRules } from '$lib/server/api/routing';
 import { listRunners } from '$lib/server/api/runners';
@@ -14,7 +15,7 @@ export const load: PageServerLoad = async ({ locals, platform }) => {
 		listRunners(db, userId),
 		listRoutingRules(db, userId),
 		getSupervisorSettings(db, userId),
-		listProjects(db, userId),
+		listProjects(db, userId, { archived: 'all' }),
 		loadWorkflows(db, userId),
 		listRuns(db, userId, {}, { cursor: null, limit: 50 }),
 		// The repos context items point at, for the PAT instructions: that set
@@ -29,11 +30,15 @@ export const load: PageServerLoad = async ({ locals, platform }) => {
 			.orderBy('repo_url')
 			.execute()
 	]);
+	const { live, archived } = partitionProjects(projects);
 	return {
 		runners,
 		rules,
 		settings,
-		projects,
+		projects: live,
+		// Rules scoped to an archived project are kept and editable — the page
+		// badges them, and the rule editor keeps the project selectable.
+		archivedProjects: archived,
 		workflows,
 		runs: runs.items,
 		contextRepoUrls: repoItems.map((r) => r.repo_url).filter((u): u is string => u !== null)

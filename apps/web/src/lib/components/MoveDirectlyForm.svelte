@@ -17,14 +17,19 @@
 		workflows,
 		issueWorkflow,
 		currentState,
+		disabledReason = null,
 		onapply
 	}: {
 		workflows: WorkflowResponse[];
 		issueWorkflow: Pick<WorkflowResponse, 'id' | 'states' | 'initial_state_id'>;
 		currentState: WorkflowState;
+		/** When set, every control renders disabled with this as its tooltip. */
+		disabledReason?: string | null;
 		/** Applies the move; rejects on failure (the caller reports it). */
 		onapply: (patch: { workflow_id?: string; state: string }) => Promise<void>;
 	} = $props();
+
+	const readOnly = $derived(disabledReason != null);
 
 	const uid = $props.id();
 
@@ -80,6 +85,8 @@
 				}
 			}
 			class="h-8 text-xs"
+			disabled={readOnly}
+			title={disabledReason}
 		>
 			{#each workflows as w (w.id)}
 				<option value={w.id}>{w.name}{w.is_system ? ' (standard)' : ''}</option>
@@ -88,7 +95,13 @@
 	</div>
 	<div class="space-y-1">
 		<label class="text-muted-foreground text-xs font-medium" for="{uid}-state">State</label>
-		<Select id="{uid}-state" bind:value={() => stateId, (v) => (statePick = v)} class="h-8 text-xs">
+		<Select
+			id="{uid}-state"
+			bind:value={() => stateId, (v) => (statePick = v)}
+			class="h-8 text-xs"
+			disabled={readOnly}
+			title={disabledReason}
+		>
 			{#each workflow.states as state (state.id)}
 				<option value={state.id}>
 					{state.name}{workflowId === issueWorkflow.id && state.id === currentState.id
@@ -99,7 +112,13 @@
 		</Select>
 	</div>
 	<div class="flex items-center gap-2">
-		<Button type="submit" size="sm" variant="outline" disabled={!dirty || applying}>
+		<Button
+			type="submit"
+			size="sm"
+			variant="outline"
+			disabled={!dirty || applying || readOnly}
+			title={disabledReason}
+		>
 			{applying ? 'Moving…' : 'Move'}
 		</Button>
 		<p class="text-muted-foreground text-xs">Bypasses the workflow's transitions.</p>
