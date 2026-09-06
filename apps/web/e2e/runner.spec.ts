@@ -223,6 +223,11 @@ esac
 		expect(runner.config.harness).toBe('custom');
 		expect(runner.config.hostname).toBeTruthy();
 
+		// Registration is not arming: stdout says what is still missing, and
+		// where to do it.
+		expect(daemonOutput).toContain(`${BASE_URL}/agents`);
+		expect(daemonOutput).toContain('turn automation on');
+
 		// Route only this project to it (a global rule would grab other specs'
 		// issues), then arm automation.
 		const rule = await api.post('/api/v1/routing-rules', {
@@ -322,12 +327,122 @@ esac
 		// bootstrap (the Claude managed path creates the runner server-side).
 		await page.getByRole('button', { name: 'Add runner' }).click();
 		const dialog = page.getByRole('dialog', { name: 'Add runner' });
-		await dialog.getByLabel('Name').fill('laptop-e2e');
+		const name = dialog.getByLabel('Name');
+
+		// The helper teaches the machine-plus-harness convention before
+		// anything is typed.
+		await expect(dialog).toContainText('macbook-claude');
+
+		// A name that is not a CLI address fails inline, before any submit.
+		await name.fill("Tom's Mac");
+		await expect(dialog.getByText(/letters, digits/)).toBeVisible();
+		await expect(name).toHaveAttribute('aria-invalid', 'true');
+		await expect(dialog.getByRole('button', { name: 'Copy the bootstrap command' })).toBeDisabled();
+
+		// An existing *local* name is a warning, not an error: the daemon
+		// reconnects to it rather than creating a second runner.
+		await name.fill(RUNNER_NAME);
+		await expect(dialog).toContainText('already exists');
+		await expect(dialog).toContainText('reconnects');
+		await expect(dialog.getByRole('button', { name: 'Copy the bootstrap command' })).toBeEnabled();
+
+		await name.fill('laptop-e2e');
+		await expect(dialog).toContainText('npm install -g tines');
 		await expect(dialog).toContainText('tines runner daemon');
 		await expect(dialog).toContainText('--name laptop-e2e');
 		await expect(dialog).toContainText('registers');
 		await expect(dialog).toContainText('launchd/systemd');
 		await dialog.getByRole('button', { name: 'Done' }).click();
+	});
+
+	test('the dialog creates a real key on demand, copies the whole block, and leaves nothing behind otherwise', async ({
+		context,
+		page
+	}) => {
+		await signIn(context, ALICE.sessionToken);
+		// `/api/v1/api-keys` is session-only, so the check rides the browser
+		// context's cookie rather than an API key.
+		const keyNames = async () =>
+			(
+				await body<ListResponse<{ id: string; name: string }>>(
+					await context.request.get('/api/v1/api-keys')
+				)
+			).items;
+		const before = await keyNames();
+
+		await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+		await page.goto('/agents');
+
+		// Abandoning the dialog without clicking Create key leaves no key.
+		await page.getByRole('button', { name: 'Add runner' }).click();
+		let dialog = page.getByRole('dialog', { name: 'Add runner' });
+		await dialog.getByLabel('Name').fill(`abandoned-${runId}`);
+		await dialog.getByRole('button', { name: 'Done' }).click();
+		expect((await keyNames()).length).toBe(before.length);
+
+		const keyRunner = `key-e2e-${runId}`;
+		await page.getByRole('button', { name: 'Add runner' }).click();
+		dialog = page.getByRole('dialog', { name: 'Add runner' });
+		await dialog.getByLabel('Name').fill(keyRunner);
+		await dialog.getByRole('button', { name: 'Create key' }).click();
+
+		// The command now carries a real secret, and the key is on the
+		// account under the runner's name.
+		await expect(dialog).toContainText(/TINES_API_KEY=tines_[A-Za-z0-9._-]+/);
+		const created = (await keyNames()).find((k) => k.name === `runner ${keyRunner}`);
+		expect(created).toBeDefined();
+
+		// Copy takes both lines, secret included.
+		await dialog.getByRole('button', { name: 'Copy the bootstrap command' }).click();
+		const clip = await page.evaluate(() => navigator.clipboard.readText());
+		expect(clip).toContain('npm install -g tines');
+		expect(clip).toContain('tines runner daemon');
+		expect(clip).toContain(`--name ${keyRunner}`);
+		expect(clip).toMatch(/TINES_API_KEY=tines_[A-Za-z0-9._-]+/);
+
+		await dialog.getByRole('button', { name: 'Done' }).click();
+		await context.request.delete(`/api/v1/api-keys/${created!.id}`);
+	});
+
+	test('a registration while the dialog is open ticks it live, and one click routes everything there', async ({
+		context,
+		page,
+		request
+	}) => {
+		const api = apiClient(request, ALICE.apiKey);
+		await signIn(context, ALICE.sessionToken);
+		await page.goto('/agents');
+
+		const liveName = `e2e-live-${runId}`;
+		await page.getByRole('button', { name: 'Add runner' }).click();
+		const dialog = page.getByRole('dialog', { name: 'Add runner' });
+		await dialog.getByLabel('Name').fill(liveName);
+		await expect(dialog).toContainText('Waiting for');
+
+		// A real registration from outside the browser: the page is polling,
+		// so the dialog flips without a reload.
+		const registered = await body<{ runner: Runner }>(
+			await api.post('/api/v1/runners/register', {
+				name: liveName,
+				harness: 'custom',
+				command: 'true'
+			})
+		);
+		await expect(dialog).toContainText(`${liveName} is online`, { timeout: 15_000 });
+
+		await dialog.getByRole('button', { name: `Route everything to ${liveName}` }).click();
+		await expect(page.getByLabel('Routing rules')).toContainText(liveName);
+
+		// Cleanup: the rule references the runner, so it goes first.
+		const rules = await body<ListResponse<{ id: string; targets: { runner_id: string }[] }>>(
+			await api.get('/api/v1/routing-rules')
+		);
+		for (const rule of rules.items) {
+			if (rule.targets.some((t) => t.runner_id === registered.runner.id)) {
+				await api.delete(`/api/v1/routing-rules/${rule.id}`);
+			}
+		}
+		await api.delete(`/api/v1/runners/${registered.runner.id}`);
 	});
 
 	test('an oversized log keeps every byte: the tail truncates, the full log does not', async ({
