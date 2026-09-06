@@ -111,14 +111,22 @@ export async function updatePreferences(
 	return { focused_project_id: focused, last_project_id: last, updated_at: now };
 }
 
-/** Sets the focus (and the New-issue fallback with it) without a request body. */
+/**
+ * Sets the focus (and the New-issue fallback with it) for a page load, which
+ * has a user id rather than a request actor — the `?project=` one-shot.
+ */
 export async function setFocus(
 	db: Kysely<Database>,
 	env: App.Platform['env'],
-	actor: ActorContext,
+	userId: string,
 	projectId: string
 ): Promise<UserPreferences> {
-	return updatePreferences(db, env, actor, { focused_project_id: projectId });
+	return updatePreferences(db, env, actorFor(userId), { focused_project_id: projectId });
+}
+
+/** A page load's actor: preferences are never written on anyone else's behalf. */
+function actorFor(userId: string): ActorContext {
+	return { userId, userName: '', apiKeyId: null, apiKeyName: null, viaSession: true };
 }
 
 export interface ResolvedFocus {

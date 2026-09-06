@@ -112,7 +112,7 @@ describe('resolveFocus', () => {
 	});
 
 	it('resolves a live focus', async () => {
-		await setFocus(t.db, t.env, actor, PROJECT);
+		await setFocus(t.db, t.env, USER, PROJECT);
 		expect(await resolveFocus(t.db, USER)).toEqual({
 			focusId: PROJECT,
 			lastProjectId: PROJECT,
@@ -121,7 +121,7 @@ describe('resolveFocus', () => {
 	});
 
 	it('reads an archived focus as All projects and reports it stale', async () => {
-		await setFocus(t.db, t.env, actor, PROJECT);
+		await setFocus(t.db, t.env, USER, PROJECT);
 		t.sqlite.exec(`UPDATE project SET archived_at = ${NOW} WHERE id = '${PROJECT}'`);
 		expect(await resolveFocus(t.db, USER)).toEqual({
 			focusId: null,
@@ -131,7 +131,7 @@ describe('resolveFocus', () => {
 	});
 
 	it('follows the project pointer to null when the project is deleted', async () => {
-		await setFocus(t.db, t.env, actor, PROJECT);
+		await setFocus(t.db, t.env, USER, PROJECT);
 		t.sqlite.exec(`DELETE FROM project WHERE id = '${PROJECT}'`);
 		// ON DELETE SET NULL: nothing is left to be stale.
 		expect(await resolveFocus(t.db, USER)).toEqual({
@@ -144,7 +144,7 @@ describe('resolveFocus', () => {
 
 describe('clearStaleFocus', () => {
 	it('clears the stale pointer so unarchiving never restores the focus', async () => {
-		await setFocus(t.db, t.env, actor, PROJECT);
+		await setFocus(t.db, t.env, USER, PROJECT);
 		t.sqlite.exec(`UPDATE project SET archived_at = ${NOW} WHERE id = '${PROJECT}'`);
 		await clearStaleFocus(t.db, t.env, USER, PROJECT);
 		t.sqlite.exec(`UPDATE project SET archived_at = NULL WHERE id = '${PROJECT}'`);
@@ -152,10 +152,10 @@ describe('clearStaleFocus', () => {
 	});
 
 	it('does not undo a focus written after the stale one was read', async () => {
-		await setFocus(t.db, t.env, actor, PROJECT);
+		await setFocus(t.db, t.env, USER, PROJECT);
 		t.sqlite.exec(`UPDATE project SET archived_at = ${NOW} WHERE id = '${PROJECT}'`);
 		// The race: a PATCH lands between the load's read and its deferred clear.
-		await setFocus(t.db, t.env, actor, SECOND);
+		await setFocus(t.db, t.env, USER, SECOND);
 		await clearStaleFocus(t.db, t.env, USER, PROJECT);
 		expect(await resolveFocus(t.db, USER)).toMatchObject({ focusId: SECOND });
 	});
