@@ -24,13 +24,15 @@ const missing = (artifact: string): ArtifactRequirementCheck => ({
 	artifact,
 	status: 'missing',
 	current_version: null,
-	current_type: null
+	current_type: null,
+	fix: `tines issues artifacts attach demo/1 ${artifact} --file <path>`
 });
 const satisfied = (artifact: string): ArtifactRequirementCheck => ({
 	artifact,
 	status: 'satisfied',
 	current_version: { version: 1, created_at: 0 },
-	current_type: 'text'
+	current_type: 'text',
+	fix: `tines issues artifacts attach demo/1 ${artifact} --text <markdown|@file>`
 });
 
 /**

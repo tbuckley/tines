@@ -243,6 +243,54 @@ test.describe.serial('issue artifacts', () => {
 		expect(artifactItems.every((i) => typeof i.artifact_type === 'string')).toBe(true);
 	});
 
+	test('a .json file uploads as a file, but a JSON body with no filename does not', async ({
+		request
+	}) => {
+		const api = apiClient(request, ALICE.apiKey);
+		// What the CLI sends for `artifacts attach <ref> <name> --file x.json`:
+		// the sniff table maps .json to application/json, and `?filename=` is
+		// what tells the endpoint this is an upload rather than a client that
+		// meant the JSON upsert next door (Tines/242).
+		const payload = JSON.stringify({ findings: [{ id: 1, note: 'caf\u00e9 \u2615' }] });
+		const upload = await request.put(
+			`/api/v1/issues/${issueId}/artifacts/scan-report/file?filename=report.json`,
+			{
+				headers: { authorization: `Bearer ${ALICE.apiKey}`, 'content-type': 'application/json' },
+				data: Buffer.from(payload)
+			}
+		);
+		expect(await body<ArtifactShape>(upload)).toMatchObject({
+			artifact_type: 'file',
+			current_version: { version: 1, filename: 'report.json', content_type: 'application/json' }
+		});
+
+		// `artifacts get` round-trips the bytes; JSON is off the inline
+		// allowlist, so it is served as an attachment either way.
+		const content = await api.get(`/api/v1/issues/${issueId}/artifacts/scan-report/content`);
+		expect(Buffer.from(await content.body()).equals(Buffer.from(payload))).toBe(true);
+		expect(content.headers()['content-type']).toBe('application/json');
+		expect(content.headers()['content-disposition']).toBe('attachment; filename="report.json"');
+		expect(
+			(await api.get(`/api/v1/issues/${issueId}/artifacts/scan-report/content?inline=1`)).headers()[
+				'content-disposition'
+			]
+		).toBe('attachment; filename="report.json"');
+
+		// The narrowed guard still catches the misdirected JSON client, and
+		// still says *why* rather than only asking for a filename.
+		const misdirected = await request.put(`/api/v1/issues/${issueId}/artifacts/scan-report/file`, {
+			headers: { authorization: `Bearer ${ALICE.apiKey}`, 'content-type': 'application/json' },
+			data: Buffer.from(JSON.stringify({ type: 'text', content: 'oops' }))
+		});
+		expect(misdirected.status()).toBe(422);
+		const err = await errorBody(misdirected);
+		expect(err.error.code).toBe('invalid_field');
+		expect(err.error.message).toContain('does not take JSON');
+		expect(err.error.details?.field).toBe('content_type');
+
+		await api.delete(`/api/v1/issues/${issueId}/artifacts/scan-report`);
+	});
+
 	test('folder snapshots upload whole (multipart) and serve per path', async ({ request }) => {
 		const api = apiClient(request, ALICE.apiKey);
 		const headers = { authorization: `Bearer ${ALICE.apiKey}` };

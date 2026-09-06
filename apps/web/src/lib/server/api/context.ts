@@ -1807,7 +1807,10 @@ export function issueBlock(
 		lines.push('');
 	}
 	lines.push(
-		`Attach one: \`tines issues artifacts attach ${ref} <name> --file <path>\` (or --text/--link/--pr, or --folder <dir> for a multi-file snapshot)`,
+		// No flag is privileged: naming `--file` first taught agents to reach
+		// for it even under a text gate. The gate decides, and each gated
+		// transition below carries its own exact command (`requires[].fix`).
+		`Attach one: \`tines issues artifacts attach ${ref} <name> …\` — the flag follows the gate; each gated transition below names its exact command. Ungated slots: --file <path>, --folder <dir>, --text <md|@file>, --link <url>, --pr <owner/repo#N>.`,
 		'',
 		'### Available transitions',
 		''
@@ -1823,8 +1826,12 @@ export function issueBlock(
 			// agent both its legal moves and their preconditions.
 			for (const r of t.requires ?? []) {
 				const spec = [r.type, r.content_type].filter(Boolean).join(', ');
+				// An unsatisfied requirement ends in the command that clears it,
+				// server-computed from the gate itself — the agent never has to
+				// guess which payload flag this slot takes.
+				const fix = r.status === 'satisfied' ? '' : ` — attach: \`${r.fix}\``;
 				lines.push(
-					`  Requires: artifact \`${r.artifact}\`${spec ? ` (${spec})` : ''} — ${requirementStatusLabel(r)}${r.description ? ` — ${r.description}` : ''}`
+					`  Requires: artifact \`${r.artifact}\`${spec ? ` (${spec})` : ''} — ${requirementStatusLabel(r)}${r.description ? ` — ${r.description}` : ''}${fix}`
 				);
 			}
 		}
