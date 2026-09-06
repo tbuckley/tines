@@ -1510,10 +1510,13 @@ export interface RoutingRuleTarget {
 }
 
 /**
- * A routing rule: at most one per exact scope (project ∧ state, project,
- * state, or global). The most specific matching rule wins outright —
- * `project ∧ state` > `project` > `state` > global — with no fallback
- * across rules. `scope.issue_id` is always null (pins cover per-issue).
+ * A routing rule: at most one per exact scope (any combination of label,
+ * project and state, or global). The most specific matching rule wins
+ * outright — label beats project beats state, so `label` > `project ∧ state`
+ * — with no fallback across rules. Two rules of equal specificity (only
+ * reachable between two label rules, since an issue carries a *set* of
+ * labels) tie, and a tie dispatches nowhere. `scope.issue_id` is always null
+ * (pins cover per-issue).
  */
 export interface RoutingRule {
 	id: string;

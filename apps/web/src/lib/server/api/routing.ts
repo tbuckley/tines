@@ -264,26 +264,54 @@ function serializeRule(
 	};
 }
 
+/** The three scope dimensions of a rule row, as `ruleSpecificity` wants them. */
+function rowScopeIds(row: RuleRow): RuleScopeIds {
+	return {
+		projectId: row.project_id,
+		workflowStateId: row.workflow_state_id,
+		labelId: row.label_id
+	};
+}
+
+/**
+ * Every rule the user owns, most specific first — the same total order the
+ * dispatcher picks a winner in, so the list can be read top-down instead of
+ * mentally sorted.
+ *
+ * Each rule carries the warnings that describe *itself*: `shadowed` (a rule
+ * further up wins for issues both match) and `ambiguous` (a tie, so neither
+ * dispatches). The `shadows` direction is deliberately dropped here — sorted,
+ * it only ever says "the rule below me", which the order already shows. The
+ * create/update responses still carry all three, because there the rule being
+ * written has no place in a list yet.
+ */
 export async function listRoutingRules(
 	db: Kysely<Database>,
 	userId: string
-): Promise<RoutingRule[]> {
+): Promise<RoutingRuleWithWarnings[]> {
 	const [rows, runnersById] = await Promise.all([
 		ruleQuery(db, userId).execute(),
 		loadRunnersById(db, userId)
 	]);
+	const entries = rows.map((row) => ({ row, rule: serializeRule(row, runnersById) }));
+	const forShadowing: RuleForShadowing[] = entries.map(({ row, rule }) => ({
+		id: row.id,
+		...rowScopeIds(row),
+		label: rule.scope.label
+	}));
 	// Most specific first, then by scope label for a stable, readable list.
-	return rows
-		.map((row) => ({ row, rule: serializeRule(row, runnersById) }))
+	return entries
 		.sort(
 			(a, b) =>
-				ruleSpecificity({ projectId: b.row.project_id, workflowStateId: b.row.workflow_state_id }) -
-					ruleSpecificity({
-						projectId: a.row.project_id,
-						workflowStateId: a.row.workflow_state_id
-					}) || a.rule.scope.label.localeCompare(b.rule.scope.label)
+				ruleSpecificity(rowScopeIds(b.row)) - ruleSpecificity(rowScopeIds(a.row)) ||
+				a.rule.scope.label.localeCompare(b.rule.scope.label)
 		)
-		.map((e) => e.rule);
+		.map(({ row, rule }) => ({
+			...rule,
+			warnings: shadowWarnings({ id: row.id, ...rowScopeIds(row) }, forShadowing).filter(
+				(w) => w.kind !== 'shadows'
+			)
+		}));
 }
 
 export async function getRoutingRule(
@@ -304,13 +332,7 @@ async function loadRulesForShadowing(
 	userId: string
 ): Promise<RuleForShadowing[]> {
 	const rows = await ruleQuery(db, userId).execute();
-	return rows.map((row) => ({
-		id: row.id,
-		projectId: row.project_id,
-		workflowStateId: row.workflow_state_id,
-		labelId: row.label_id,
-		label: rowScope(row).label
-	}));
+	return rows.map((row) => ({ id: row.id, ...rowScopeIds(row), label: rowScope(row).label }));
 }
 
 function assertNoScopeCollision(

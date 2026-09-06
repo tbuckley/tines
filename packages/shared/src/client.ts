@@ -495,7 +495,7 @@ export function createApiClient(options: ApiClientOptions) {
 		cancelRun: (id: string) => request<AgentRunDetail>('POST', `/api/v1/runs/${id}/cancel`),
 
 		// Routing rules (one per exact scope; responses carry shadow hints)
-		listRoutingRules: () => get<ListResponse<RoutingRule>>('/api/v1/routing-rules'),
+		listRoutingRules: () => get<ListResponse<RoutingRuleWithWarnings>>('/api/v1/routing-rules'),
 		createRoutingRule: (body: CreateRoutingRuleRequest) =>
 			request<RoutingRuleWithWarnings>('POST', '/api/v1/routing-rules', body),
 		updateRoutingRule: (id: string, body: UpdateRoutingRuleRequest) =>
