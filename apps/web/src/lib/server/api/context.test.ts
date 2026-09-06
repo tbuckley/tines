@@ -445,6 +445,31 @@ describe('issueBlock', () => {
 		);
 	});
 
+	it('pluralises the capped-comment trailer, singular included', () => {
+		const at = 1_699_999_000_000;
+		const human = { user_id: 'u1', user_name: 'Tom Buckley', api_key_id: null, api_key_name: null };
+		const comment = {
+			id: 'cmt_h',
+			issue_id: 'iss_1',
+			body: 'CI is red on the e2e job.',
+			actor: human,
+			created_at: at - 1000,
+			updated_at: null
+		};
+		const since = {
+			previous_run: { run_id: 'arun_1', ended_at: at - 3600_000, state_at_start_name: 'Implementation' },
+			transition: null,
+			comments: Array.from({ length: 10 }, (_, i) => ({ ...comment, id: `cmt_${i}` })),
+			stale_artifacts: []
+		};
+		// The cap is ten, so an eleventh comment hides exactly one — the common
+		// shape, and the one the hardcoded plural got wrong in agent-facing text.
+		const capped = issueBlock({ ...issue, since_last_run: { ...since, comment_count: 11 } }, emptyContext);
+		expect(capped).toContain('… and 1 earlier comment — see ### Comments below.');
+		const two = issueBlock({ ...issue, since_last_run: { ...since, comment_count: 12 } }, emptyContext);
+		expect(two).toContain('… and 2 earlier comments — see ### Comments below.');
+	});
+
 	it('omits the steer section entirely when nothing human happened', () => {
 		expect(issueBlock(issue, emptyContext)).not.toContain('### Since the last run');
 		expect(issueBlock({ ...issue, since_last_run: null }, emptyContext)).not.toContain(

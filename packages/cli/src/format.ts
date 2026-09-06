@@ -228,7 +228,8 @@ export function sinceLastRunLines(since: SinceLastRun, now: number = Date.now())
 	}
 	for (const c of since.comments) lines.push(...commentLines(c));
 	if (since.comment_count > since.comments.length) {
-		lines.push(`  … and ${since.comment_count - since.comments.length} earlier comments`);
+		const hidden = since.comment_count - since.comments.length;
+		lines.push(`  … and ${hidden} earlier comment${hidden === 1 ? '' : 's'}`);
 	}
 	return lines;
 }
@@ -241,29 +242,26 @@ export function roundLines(round: Round, now: number = Date.now()): string[] {
 		: `since created ${timestamp(round.boundary_at)}`;
 	const lines = [`round (${round.run_count} run${round.run_count === 1 ? '' : 's'} ${from}):`];
 	for (const stage of round.stages) {
-		for (let i = 0; i < stage.runs.length; i += 1) {
-			const run = stage.runs[i];
-			if (i === 0) lines.push(`  ${stage.state.name ?? stage.state.id} — ${runHeadline(run, now)}`);
-			else lines.push(`    ${earlierAttemptLine(run, now)}`);
-			if (i > 0) continue;
-			if (run.artifacts.length > 0) {
-				lines.push(`    ${run.artifacts.map(artifactChangeLabel).join(' · ')}`);
-			}
-			if (run.summary_comment) {
-				lines.push(`    summary (${run.summary_comment.id}):`);
-				for (const line of run.summary_comment.body.split('\n')) lines.push(`      ${line}`);
-			}
-			if (run.earlier_comment_ids.length > 0) {
-				lines.push(
-					`    ${run.earlier_comment_ids.length} earlier comments: ${run.earlier_comment_ids.join(', ')}`
-				);
-			}
+		const [latest, ...earlier] = stage.runs;
+		if (!latest) continue;
+		lines.push(`  ${stage.state.name ?? stage.state.id} — ${runHeadline(latest, now)}`);
+		if (latest.artifacts.length > 0) {
+			lines.push(`    ${latest.artifacts.map(artifactChangeLabel).join(' · ')}`);
 		}
-		// Earlier attempts fold to their one line above; only the stage's latest
-		// run spells out its artifacts and summary.
-		const folded = stage.runs.length - 1;
-		if (folded > 0)
-			lines.push(`    ${folded} earlier attempt${folded === 1 ? '' : 's'} folded above`);
+		// Earlier attempts fold to one line each, above the latest run's summary
+		// so a long summary body cannot read as swallowing them. The lines say
+		// how many there were, so no counter follows.
+		for (const run of earlier) lines.push(`    ${earlierAttemptLine(run, now)}`);
+		if (latest.summary_comment) {
+			lines.push(`    summary (${latest.summary_comment.id}):`);
+			for (const line of latest.summary_comment.body.split('\n')) lines.push(`      ${line}`);
+		}
+		const earlierComments = latest.earlier_comment_ids;
+		if (earlierComments.length > 0) {
+			lines.push(
+				`    ${earlierComments.length} earlier comment${earlierComments.length === 1 ? '' : 's'}: ${earlierComments.join(', ')}`
+			);
+		}
 	}
 	return lines;
 }

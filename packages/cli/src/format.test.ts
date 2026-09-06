@@ -551,8 +551,36 @@ describe('the handoff sections', () => {
 			// The earlier attempt gets its one line, naming what ended it, and
 			// none of the detail the stage's latest run gets.
 			expect(text).toContain('arun_early · 10m · stalled · sent back by Automated Review');
-			expect(text).toContain('1 earlier attempt folded above');
 			expect(text.match(/summary \(/g)).toHaveLength(1);
+		});
+
+		it('puts the earlier attempt above the summary body and adds no counter after it', () => {
+			const lines = roundLines(round, NOW);
+			const text = lines.join('\n');
+			// The attempt lines say how many attempts there were, so a "N earlier
+			// attempts folded above" counter would only restate them — and it used
+			// to land after a summary body long enough to swallow it.
+			expect(text).not.toContain('folded above');
+			expect(lines.findIndex((l) => l.includes('arun_early'))).toBeLessThan(
+				lines.findIndex((l) => l.includes('summary (cmt_sum)'))
+			);
+		});
+
+		it('pluralises the folded-comment count', () => {
+			const one = roundLines(
+				{
+					...round,
+					stages: [
+						{
+							...round.stages[0],
+							runs: [run({ earlier_comment_ids: ['cmt_a'] }), round.stages[0].runs[1]]
+						}
+					]
+				},
+				NOW
+			).join('\n');
+			expect(one).toContain('1 earlier comment: cmt_a');
+			expect(one).not.toContain('1 earlier comments');
 		});
 
 		it('says "since created" when no human transition opened the round', () => {
@@ -602,6 +630,12 @@ describe('the handoff sections', () => {
 			expect(text).toContain('moved from Human Review moved directly by Tom Buckley 1h ago');
 			expect(text).not.toContain('now stale');
 			expect(text).toContain('… and 12 earlier comments');
+		});
+
+		it('pluralises the comment-cap trailer for a single hidden comment', () => {
+			const text = sinceLastRunLines({ ...since, comment_count: 2 }, NOW).join('\n');
+			expect(text).toContain('… and 1 earlier comment');
+			expect(text).not.toContain('1 earlier comments');
 		});
 
 		it('drops the move line on a comment-only steer', () => {

@@ -1768,10 +1768,8 @@ function sinceLastRunLines(since: SinceLastRun, now: number): string[] {
 		);
 	}
 	if (since.comment_count > since.comments.length) {
-		lines.push(
-			`… and ${since.comment_count - since.comments.length} earlier comments — see ### Comments below.`,
-			''
-		);
+		const hidden = since.comment_count - since.comments.length;
+		lines.push(`… and ${hidden} earlier comment${hidden === 1 ? '' : 's'} — see ### Comments below.`, '');
 	}
 	return lines;
 }
