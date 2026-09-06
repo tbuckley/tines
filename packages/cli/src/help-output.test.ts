@@ -40,6 +40,25 @@ describe('the shipped bin', () => {
 		expect(stdout).toContain('TINES_API_URL');
 	}, 60_000);
 
+	// The positional source's typing rules live in an addHelpText('after')
+	// epilogue, which commander's helpInformation() leaves out — so
+	// program.test.ts's snapshot of all 84 commands cannot see it, and only the
+	// real bin's rendered --help can.
+	it('documents how a positional source is typed on attach --help', async () => {
+		const { stdout } = await cli(['issues', 'artifacts', 'attach', '--help'], {
+			TINES_API_KEY: SECRET,
+			TINES_API_URL: 'http://127.0.0.1:1'
+		});
+		expect(stdout).toContain(
+			'Usage: tines issues artifacts attach [options] <ref> <name> [source]'
+		);
+		expect(stdout).toContain("typed by the slot's gate");
+		// The ungated rule an agent is most likely to get wrong.
+		expect(stdout).toContain('a .md path included');
+		expect(stdout).toContain('--ignore-gates');
+		expect(stdout).not.toContain(SECRET);
+	}, 60_000);
+
 	/**
 	 * The bin's five lines of try/catch are the only thing turning a thrown
 	 * CliError back into the `error: …` line and exit 1 that every parser
