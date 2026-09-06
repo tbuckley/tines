@@ -1,3 +1,4 @@
+import { ancestorsOf, buildStateLibrary } from '@tines/shared';
 import { error } from '@sveltejs/kit';
 import { truncate } from '$lib/format';
 import { listContextItemsForStates } from '$lib/server/api/context';
@@ -28,6 +29,16 @@ export const load: PageServerLoad = async ({ locals, platform, params }) => {
 		loadWorkflows(db, userId),
 		listRoutingRules(db, userId)
 	]);
+	// A state's base may live in another workflow, and its items are then in
+	// neither fetch above — one more query, and only when a pointer leaves this
+	// workflow, so a workflow with no external base costs nothing.
+	const lib = buildStateLibrary(workflows);
+	const ownIds = new Set(workflow.states.map((s) => s.id));
+	const ancestorIds = [...new Set(workflow.states.flatMap((s) => ancestorsOf(lib, s.id)))].filter(
+		(id) => !ownIds.has(id)
+	);
+	const ancestorItems =
+		ancestorIds.length > 0 ? await listContextItemsForStates(db, userId, ancestorIds) : [];
 	const stateIds = new Set(workflow.states.map((s) => s.id));
 	return {
 		workflow,
@@ -36,7 +47,7 @@ export const load: PageServerLoad = async ({ locals, platform, params }) => {
 			(r) => r.scope.workflow_state_id !== null && stateIds.has(r.scope.workflow_state_id)
 		),
 		// Issue-anchored items stay on their issue's page.
-		contextItems: contextItems.filter((i) => i.scope.issue_id === null),
+		contextItems: [...contextItems, ...ancestorItems].filter((i) => i.scope.issue_id === null),
 		projects,
 		workflows
 	};
