@@ -267,7 +267,12 @@
 	</div>
 {:else}
 	{#key data.workflow.updated_at}
-		<WorkflowEditor workflow={data.workflow} onsave={saveWorkflow}>
+		<WorkflowEditor
+			workflow={data.workflow}
+			workflows={data.workflows}
+			baseItems={data.contextItems}
+			onsave={saveWorkflow}
+		>
 			<!-- Delete sits with Save rather than in the header, so the page opens on
 			     the form and no destructive action shares the title row. -->
 			{#snippet footerActions()}

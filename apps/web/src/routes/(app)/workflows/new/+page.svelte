@@ -3,6 +3,8 @@
 	import { goto, invalidateAll } from '$app/navigation';
 	import { api } from '$lib/api';
 	import WorkflowEditor from '$lib/components/WorkflowEditor.svelte';
+
+	let { data } = $props();
 </script>
 
 <svelte:head><title>New workflow · Tines</title></svelte:head>
@@ -17,6 +19,7 @@
 <h1 class="mb-6 text-2xl font-semibold tracking-tight">New workflow</h1>
 
 <WorkflowEditor
+	workflows={data.workflows}
 	saveLabel="Create workflow"
 	onsave={async (request) => {
 		const workflow = await api.createWorkflow(request);
