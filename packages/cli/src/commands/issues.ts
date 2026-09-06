@@ -137,7 +137,16 @@ function walkFolder(dir: string): { path: string; contentType: string; bytes: Bu
 function printExplainer(issue: IssueDetail, ex: DispatchExplainer): void {
 	console.log(`${issue.project_name}/#${issue.number}  ${issue.title}`);
 	console.log(`\n${ex.verdict}\n`);
-	table(ex.checks.map((c) => [`  ${c.ok ? 'ok' : 'FAIL'}`, c.name.replaceAll('_', ' '), c.detail]));
+	table(
+		ex.checks.map((c) => [
+			`  ${c.ok ? 'ok' : 'FAIL'}`,
+			c.name.replaceAll('_', ' '),
+			c.detail,
+			// The remedy, when the check has one and it is something to run
+			// here: a link is useless without an origin.
+			c.action?.cli ? `fix: ${c.action.cli}` : ''
+		])
+	);
 	if (ex.pin) {
 		console.log(
 			`\npinned to ${ex.pin.runner_name ?? ex.pin.runner_id}${ex.pin.tier ? `:${ex.pin.tier}` : ''} (replaces rule matching)`

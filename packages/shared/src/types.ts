@@ -1819,6 +1819,18 @@ export function utilizationLabel(
 // Dispatch explainer
 
 /** One eligibility check, pass or fail, with a human-readable detail. */
+/**
+ * A remedy for a failing check: a place to click and/or a command to run.
+ * Purely presentational — an action never affects `eligible`.
+ */
+export interface DispatchCheckAction {
+	label: string;
+	/** App-relative path. The web renders it as a link; the CLI has no origin, so text mode ignores it. */
+	href?: string;
+	/** A ready-to-paste CLI command. */
+	cli?: string;
+}
+
 export interface DispatchCheck {
 	name:
 		| 'automation_enabled'
@@ -1830,6 +1842,8 @@ export interface DispatchCheck {
 		| 'routed';
 	ok: boolean;
 	detail: string;
+	/** Present only on checks with something to fix. Optional so published CLIs keep parsing. */
+	action?: DispatchCheckAction;
 }
 
 export type DispatchTargetVerdict =
