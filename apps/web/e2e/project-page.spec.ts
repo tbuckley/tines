@@ -1,7 +1,7 @@
 import type { CreateIssueResponse, Project, WorkflowResponse } from '@tines/shared';
 import { expect, test, type Page } from '@playwright/test';
 import { ALICE } from './constants.mjs';
-import { apiClient, body, runId, signIn } from './helpers';
+import { apiClient, body, gotoHydrated, runId, signIn } from './helpers';
 
 /**
  * The project page's reading order (Tines/146): issues lead, and the
@@ -31,7 +31,7 @@ test.describe.serial('project page layout', () => {
 		const context = await browser.newContext({ viewport });
 		await signIn(context, ALICE.sessionToken);
 		const page = await context.newPage();
-		await page.goto(`/projects/${projectId}${search}`);
+		await gotoHydrated(page, `/projects/${projectId}${search}`);
 		return page;
 	}
 

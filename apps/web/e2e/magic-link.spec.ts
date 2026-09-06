@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { runId } from './helpers';
+import { gotoHydrated, runId } from './helpers';
 
 // The landing-page magic-link form, end to end through the better-auth
 // endpoint and the (locally simulated) Email Service binding. The retry loop
@@ -8,7 +8,7 @@ import { runId } from './helpers';
 
 test('requests a sign-in link from the landing page', async ({ page }) => {
 	const email = `magic-${runId}@example.com`;
-	await page.goto('/');
+	await gotoHydrated(page, '/');
 	await expect(async () => {
 		await page.getByPlaceholder('you@example.com').fill(email);
 		await page.getByRole('button', { name: 'Email me a sign-in link' }).click();

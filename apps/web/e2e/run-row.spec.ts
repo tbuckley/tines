@@ -13,7 +13,7 @@
 import type { Workflow } from '@tines/shared';
 import { expect, test, type Page } from '@playwright/test';
 import { ALICE, RUNROW, RUNROW_FAILED } from './constants.mjs';
-import { apiClient, body, runId, signIn } from './helpers';
+import { apiClient, body, gotoHydrated, runId, signIn } from './helpers';
 
 test.describe('shared run row', () => {
 	test.beforeEach(async ({ context }) => {
@@ -43,7 +43,7 @@ test.describe('shared run row', () => {
 
 		// The Agents tab hides ended runs behind a toggle, and the fixture is
 		// deliberately `completed` (a live run would be swept and flake).
-		await page.goto('/agents');
+		await gotoHydrated(page, '/agents');
 		await page.getByLabel('Show ended runs').check();
 
 		// li:not([inert]): rows in animated lists are marked inert by Svelte 5's
@@ -170,7 +170,7 @@ test.describe('failed run error', () => {
 			if (surface === 'issue') {
 				await page.goto(`/issues/${encodeURIComponent(RUNROW.projectName)}/${RUNROW.issueNumber}`);
 			} else {
-				await page.goto('/agents');
+				await gotoHydrated(page, '/agents');
 				await page.getByLabel('Show ended runs').check();
 			}
 
@@ -203,7 +203,10 @@ test.describe('failed run error', () => {
 	});
 
 	test('leads the Logs disclosure with the untruncated error', async ({ page }) => {
-		await page.goto(`/issues/${encodeURIComponent(RUNROW.projectName)}/${RUNROW.issueNumber}`);
+		await gotoHydrated(
+			page,
+			`/issues/${encodeURIComponent(RUNROW.projectName)}/${RUNROW.issueNumber}`
+		);
 
 		const row = failedRow(page);
 		await row.getByRole('button', { name: 'Logs' }).click();

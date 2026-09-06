@@ -10,7 +10,7 @@ import type {
 } from '@tines/shared';
 import { expect, test } from '@playwright/test';
 import { ALICE, BOB, SCHED } from './constants.mjs';
-import { apiClient, body, clickUntil, errorBody, runId, signIn } from './helpers';
+import { apiClient, body, clickUntil, errorBody, gotoHydrated, runId, signIn } from './helpers';
 
 /** Today's ISO date in UTC — the seeded schedules render {{date}} in UTC. */
 const todayUtc = () => new Date().toISOString().slice(0, 10);
@@ -408,7 +408,7 @@ test.describe('schedules in the web UI', () => {
 		await signIn(context, ALICE.sessionToken);
 		const page = await context.newPage();
 
-		await page.goto(`/projects/${SCHED.projectId}`);
+		await gotoHydrated(page, `/projects/${SCHED.projectId}`);
 		const dialog = page.getByRole('dialog', { name: /New issue/ });
 		await clickUntil(page.getByRole('button', { name: 'New issue' }), async () => {
 			await expect(dialog).toBeVisible({ timeout: 2_000 });
