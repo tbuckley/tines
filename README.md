@@ -188,13 +188,31 @@ A **runner** is one launch target you own. Two types ship today:
 | `claude_managed` | Sessions in Anthropic's managed sandbox, billed to your own Anthropic API key. | Adding the key on the **Agents** tab. |
 | `local` | A daemon on one of your own machines driving a harness — Claude Code (`claude -p`), codex (`codex exec`), or a custom command template — on that machine's subscription and git credentials. | The daemon registering itself on first start. |
 
-Local runners are why self-hosting Tines usually means running something on a machine of
-your own:
+#### Your first agent run
 
-```sh
-TINES_API_KEY=<your API key> TINES_API_URL=https://your-tines.example \
-  tines runner daemon --name laptop --harness claude-code
-```
+Install → key → runner → rule → arm. Five steps, one terminal command and one click:
+
+1. **Install** the CLI on the machine that will do the work: `npm install -g tines`.
+2. **Key** — Settings → API keys, or **Create key** inside the Agents tab's *Add runner →
+   Local* dialog, which fills it into the command below for you.
+3. **Runner** — start the daemon, naming it machine-plus-harness:
+
+   ```sh
+   TINES_API_KEY=tines_… tines runner daemon \
+     --url https://tines.tbuckley.dev \
+     --name macbook-claude \
+     --harness claude-code
+   ```
+
+   `macbook-claude` is what every agent comment will say ("you via macbook-claude") and what
+   routing rules address. It appears on the Agents tab, online, within seconds.
+4. **Rule** — a runner takes no work until something routes to it: click **Route everything
+   to macbook-claude** in the dialog, or `tines routing set macbook-claude`.
+5. **Arm** — flip the automation switch on the Agents tab (`tines supervisor enable`).
+   It is off for new accounts, so nothing dispatches until you turn it on.
+
+Self-hosters swap the `--url` for their own deployment; local runners are why self-hosting
+Tines usually means running something on a machine of your own.
 
 The daemon polls for work assigned to it, materializes a per-run workspace (the launch
 prompt, the issue's skills, and clones of its repos), runs the harness there, and reports
@@ -223,7 +241,7 @@ All of this is edited on the **Agents** tab, and most of it from the CLI too:
 - **Routing rules** decide who takes an issue. A rule is scoped globally, per project, per
   workflow state, or both (most specific wins, no merging), and its payload is an ordered
   preference list of `<runner>[:tier]` targets:
-  `tines routing set claude:cheapest laptop --state "Docs Change/Writing"`. An issue no rule
+  `tines routing set claude:cheapest macbook-claude --state "Docs Change/Writing"`. An issue no rule
   matches never dispatches — automation is opt-in. A single issue can override routing with
   a pin: `tines issues assign <ref> <runner>[:tier]`.
 - **Tiers** — rules say `smartest`, `balanced`, or `cheapest` rather than naming model ids
