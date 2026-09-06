@@ -822,7 +822,14 @@ export function register(program: Command): void {
 			// Everything the invocation implies, decided offline: a refusal here
 			// has written nothing.
 			const plan = planAttach(
-				{ ref: `${issue.project_name}/${issue.number}`, name, positional: source, flags: opts, gates, probe: fsProbe },
+				{
+					ref: `${issue.project_name}/${issue.number}`,
+					name,
+					positional: source,
+					flags: opts,
+					gates,
+					probe: fsProbe
+				},
 				sniffContentType
 			);
 			const withDescription =

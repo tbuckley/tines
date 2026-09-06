@@ -135,12 +135,7 @@ describe('planAttach — positional under a gate', () => {
 	it.each<[ArtifactType, string, string[], AttachPlan['source']]>([
 		['folder', 'notes', ['notes/'], { kind: 'folder', dir: 'notes' }],
 		['link', 'https://e.com/x', [], { kind: 'link', url: 'https://e.com/x' }],
-		[
-			'pr',
-			'o/r#7',
-			[],
-			{ kind: 'pr', pr: { repo_url: 'https://github.com/o/r', number: 7 } }
-		]
+		['pr', 'o/r#7', [], { kind: 'pr', pr: { repo_url: 'https://github.com/o/r', number: 7 } }]
 	])('types a positional under a %s gate', (type, positional, paths, source) => {
 		const g = gate('Submit', { artifact: 'prd', type });
 		expect(plan({ positional, gates: [g], paths })).toEqual({ type, source });
@@ -182,9 +177,10 @@ describe('planAttach — positional under a gate', () => {
 			kind: 'text-path',
 			path: 'prd.md'
 		});
-		expect(
-			plan({ positional: '@@prd.md', gates: [textGate], paths: ['@prd.md'] }).source
-		).toEqual({ kind: 'text-path', path: '@prd.md' });
+		expect(plan({ positional: '@@prd.md', gates: [textGate], paths: ['@prd.md'] }).source).toEqual({
+			kind: 'text-path',
+			path: '@prd.md'
+		});
 	});
 });
 
@@ -241,7 +237,9 @@ describe('planAttach — flags and refusals', () => {
 		const g = gate('Submit', { artifact: 'shot', type: 'file', content_type: 'image/' });
 		expect(() =>
 			plan({ name: 'shot', flags: { file: 'a.md' }, gates: [g], paths: ['a.md'] })
-		).toThrow(/would attach text\/markdown, which does not satisfy it.*--content-type <mime under image\/>/s);
+		).toThrow(
+			/would attach text\/markdown, which does not satisfy it.*--content-type <mime under image\/>/s
+		);
 	});
 
 	it('accepts a flag when at least one gate accepts it', () => {
@@ -272,7 +270,9 @@ describe('planAttach — flags and refusals', () => {
 	});
 
 	it('refuses a missing --file path offline', () => {
-		expect(() => plan({ flags: { file: 'gone.png' } })).toThrow('cannot read gone.png: no such file');
+		expect(() => plan({ flags: { file: 'gone.png' } })).toThrow(
+			'cannot read gone.png: no such file'
+		);
 	});
 
 	it('refuses a --folder that is not a directory', () => {
@@ -282,10 +282,19 @@ describe('planAttach — flags and refusals', () => {
 	});
 
 	it('classifies --text inline, @file and - without reading anything', () => {
-		expect(plan({ flags: { text: 'hello' } }).source).toEqual({ kind: 'text-inline', value: 'hello' });
-		expect(plan({ flags: { text: '@prd.md' } }).source).toEqual({ kind: 'text-path', path: 'prd.md' });
+		expect(plan({ flags: { text: 'hello' } }).source).toEqual({
+			kind: 'text-inline',
+			value: 'hello'
+		});
+		expect(plan({ flags: { text: '@prd.md' } }).source).toEqual({
+			kind: 'text-path',
+			path: 'prd.md'
+		});
 		expect(plan({ flags: { text: '-' } }).source).toEqual({ kind: 'text-stdin' });
-		expect(plan({ flags: { text: '@@lit' } }).source).toEqual({ kind: 'text-inline', value: '@lit' });
+		expect(plan({ flags: { text: '@@lit' } }).source).toEqual({
+			kind: 'text-inline',
+			value: '@lit'
+		});
 	});
 
 	it('throws CliError, so the top-level handler prints error: and exits 1', () => {
@@ -362,7 +371,10 @@ describe('satisfiedBy / gateLabel', () => {
 	it('gateLabel is empty when nothing rejects, and dedupes otherwise', () => {
 		expect(gateLabel(artifact('text', 'text/markdown'), [textGate])).toBe('');
 		expect(
-			gateLabel(artifact('link', null), [textGate, gate('Publish', { artifact: 'prd', type: 'text' })])
+			gateLabel(artifact('link', null), [
+				textGate,
+				gate('Publish', { artifact: 'prd', type: 'text' })
+			])
 		).toBe('wants text');
 	});
 });

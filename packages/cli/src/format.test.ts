@@ -410,7 +410,10 @@ describe('requirementLines', () => {
 			{ status: 'stale' as const, current_type: 'text' as const },
 			'stale (v2, attached before the current state)'
 		],
-		[{ status: 'type_mismatch' as const, current_type: 'link' as const }, 'type mismatch (holds link)'],
+		[
+			{ status: 'type_mismatch' as const, current_type: 'link' as const },
+			'type mismatch (holds link)'
+		],
 		[
 			{ status: 'type_mismatch' as const, current_type: 'text' as const },
 			'type mismatch (v2 is not text/markdown)'
@@ -427,7 +430,13 @@ describe('requirementLines', () => {
 	it('indents both lines under a prefix, and drops the fix when the server sent none', () => {
 		expect(
 			requirementLines(
-				{ artifact: 'notes', status: 'missing', current_type: null, current_version: null, fix: '' },
+				{
+					artifact: 'notes',
+					status: 'missing',
+					current_type: null,
+					current_version: null,
+					fix: ''
+				},
 				{ prefix: '  ' }
 			)
 		).toEqual(['  requires artifact "notes": missing']);

@@ -130,7 +130,10 @@ export function assertOneSource(flags: AttachFlags, positional?: string): void {
 		);
 	}
 	if (count > 1) {
-		const what = [...given, ...(positional !== undefined ? [`the positional "${positional}"`] : [])];
+		const what = [
+			...given,
+			...(positional !== undefined ? [`the positional "${positional}"`] : [])
+		];
 		throw new CliError(`pass the source once: got ${what.join(' and ')}`);
 	}
 }
@@ -152,11 +155,18 @@ function concreteContentType(ct: string | undefined): string | undefined {
 
 /** The distinct declared types among the gates (untyped gates constrain nothing). */
 function declaredTypes(gates: GateEntry[]): ArtifactType[] {
-	return [...new Set(gates.map((g) => g.check.type).filter((t): t is ArtifactType => t !== undefined))];
+	return [
+		...new Set(gates.map((g) => g.check.type).filter((t): t is ArtifactType => t !== undefined))
+	];
 }
 
 /** Which of `types` a positional source's shape could plausibly be. */
-function shapeCompatible(types: ArtifactType[], value: string, stdin: boolean, probe: Probe): ArtifactType[] {
+function shapeCompatible(
+	types: ArtifactType[],
+	value: string,
+	stdin: boolean,
+	probe: Probe
+): ArtifactType[] {
 	if (stdin) return types.filter((t) => t === 'text' || t === 'file');
 	const what = probe(value);
 	if (what === 'dir') return types.filter((t) => t === 'folder');
@@ -225,9 +235,10 @@ export function planAttach(input: AttachPlanInput, sniff: (path: string) => stri
 	// back to shape, and neither pre-flight check runs.
 	const gates = flags.ignoreGates ? [] : input.gates;
 
-	const plan = positional !== undefined
-		? planPositional(name, positional, gates, probe, flags)
-		: planFlags(flags, probe);
+	const plan =
+		positional !== undefined
+			? planPositional(name, positional, gates, probe, flags)
+			: planFlags(flags, probe);
 
 	if (gates.length > 0) {
 		checkExistingSlot(plan, gates, ref, name, flags, positional);
@@ -279,13 +290,18 @@ function planPositional(
 		}
 		const what = probe(value);
 		if (what === 'dir') return withCt({ type: 'folder', source: { kind: 'folder', dir: value } });
-		if (what === 'file') return withCt({ type: 'file', source: { kind: 'file-path', path: value } });
+		if (what === 'file')
+			return withCt({ type: 'file', source: { kind: 'file-path', path: value } });
 		const pr = parsePrSpec(value);
 		if (pr) return withCt({ type: 'pr', source: { kind: 'pr', pr } });
 		if (isUrl(value)) {
 			return withCt({
 				type: 'link',
-				source: { kind: 'link', url: value, ...(flags.title !== undefined ? { title: flags.title } : {}) }
+				source: {
+					kind: 'link',
+					url: value,
+					...(flags.title !== undefined ? { title: flags.title } : {})
+				}
 			});
 		}
 		throw new CliError(
@@ -324,7 +340,11 @@ function planPositional(
 			}
 			return withCt({
 				type: 'link',
-				source: { kind: 'link', url: value, ...(flags.title !== undefined ? { title: flags.title } : {}) }
+				source: {
+					kind: 'link',
+					url: value,
+					...(flags.title !== undefined ? { title: flags.title } : {})
+				}
 			});
 		}
 		case 'pr': {
@@ -370,7 +390,8 @@ function planFlags(flags: AttachFlags, probe: Probe): AttachPlan {
 	if (flags.file !== undefined) {
 		const what = probe(flags.file);
 		if (what === 'missing') throw new CliError(`cannot read ${flags.file}: no such file`);
-		if (what === 'dir') throw new CliError(`--file needs a file, got the directory "${flags.file}"`);
+		if (what === 'dir')
+			throw new CliError(`--file needs a file, got the directory "${flags.file}"`);
 		return { type: 'file', source: { kind: 'file-path', path: flags.file }, ...modifiers };
 	}
 	if (flags.text !== undefined) {
@@ -478,12 +499,10 @@ export function satisfiedBy(
 	return { satisfies, rejects };
 }
 
-function wantsLabel(
-	gate: GateEntry,
-	artifact: Pick<Artifact, 'artifact_type'>
-): string {
+function wantsLabel(gate: GateEntry, artifact: Pick<Artifact, 'artifact_type'>): string {
 	const check = gate.check;
-	if (check.type !== undefined && check.type !== artifact.artifact_type) return `wants ${check.type}`;
+	if (check.type !== undefined && check.type !== artifact.artifact_type)
+		return `wants ${check.type}`;
 	return `wants ${check.content_type ?? check.type ?? 'something else'}`;
 }
 
