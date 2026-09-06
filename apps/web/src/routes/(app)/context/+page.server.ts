@@ -1,6 +1,7 @@
 import { AGENT_GUIDELINES_NAME, CONTEXT_KINDS } from '@tines/shared';
 import { listContextItems } from '$lib/server/api/context';
 import { listLabels } from '$lib/server/api/labels';
+import { findProject, partitionProjects } from '$lib/archived';
 import { listProjects } from '$lib/server/api/projects';
 import { loadWorkflows } from '$lib/server/api/workflows';
 import { getDb } from '$lib/server/db';
@@ -22,15 +23,18 @@ export const load: PageServerLoad = async ({ locals, platform, url }) => {
 	};
 	const [{ items }, projects, workflows, labels, guidelines] = await Promise.all([
 		listContextItems(db, userId, filters, { cursor: null, limit: 100 }),
-		listProjects(db, userId),
+		listProjects(db, userId, { archived: 'all' }),
 		loadWorkflows(db, userId),
 		listLabels(db, userId),
 		// Offer the starter guidance until a global item by that name exists.
 		listContextItems(db, userId, { kind: 'prompt', exact: true }, { cursor: null, limit: 100 })
 	]);
+	const { live, archived } = partitionProjects(projects);
 	return {
 		items,
-		projects,
+		projects: live,
+		// So a ?project= naming an archived project shows its name, not "All projects".
+		archivedProject: findProject(archived, filters.project),
 		workflows,
 		labels,
 		filters,

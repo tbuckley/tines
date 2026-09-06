@@ -79,6 +79,9 @@
 		{#each data.projects as project (project.id)}
 			<option value={project.name}>{project.name}</option>
 		{/each}
+		{#if data.archivedProject}
+			<option value={data.archivedProject.name}>{data.archivedProject.name} (archived)</option>
+		{/if}
 	</Select>
 	<Select
 		class="w-48 max-sm:min-w-36 max-sm:flex-1"

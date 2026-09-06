@@ -137,6 +137,36 @@ That is the whole setup. npmjs then trusts publishes coming from that exact repo
 
 To publish by hand in a pinch: `cd packages/cli && npm login && pnpm publish --no-git-checks` after setting the version yourself. Prefer merging to `main`.
 
+## Projects
+
+Projects are the top-level container for issues. A project you are done with is **archived**
+rather than deleted: archiving hides it from the lists and pickers that feed new work, pauses
+its scheduled tasks, stops agents dispatching on it and makes its issues read-only — while every
+link, ref, artifact and URL keeps resolving. It is reversible at any time.
+
+```sh
+tines projects archive "Paris 2026"      # pauses schedules, stops dispatch, issues read-only
+tines projects unarchive "Paris 2026"    # schedules resume from their next occurrence
+tines projects list --archived           # include archived projects (hidden by default)
+```
+
+Things worth knowing:
+
+- `projects list --archived` **includes** archived projects; it does not filter to them.
+- `issues list`, `schedules list` and `context list` have no `--archived` flag. Their default
+  omits an archived project's rows unless you name the project (`--project`), or, for context,
+  name the issue (`--issue`) — naming an anchor overrides the default. At the HTTP level the
+  same lists take `?archived=true|false|all`.
+- A write against an archived project fails with `422 project_archived`, whose message quotes
+  the command that undoes it (`details.unarchive_command` carries it verbatim).
+- Archiving **drains**: runs already under way finish on their own issue, and stay cancellable.
+  Unarchiving re-arms enabled schedules at their next future occurrence rather than replaying
+  missed ones.
+- In the browser, `/projects` hides archived projects behind a "Show archived (n)" toggle, and
+  an archived project's pages carry a read-only banner with an Unarchive action.
+
+The rules are recorded in [`specs/projects/SPEC.md`](specs/projects/SPEC.md).
+
 ## Running agents
 
 Behind the issue tracker sits a supervisor: it decides which issues agents should take on,

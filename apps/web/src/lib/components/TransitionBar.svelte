@@ -29,6 +29,7 @@
 		unmetFor,
 		primaryId,
 		disabled = false,
+		disabledReason = null,
 		onmove,
 		onopen
 	}: {
@@ -38,6 +39,8 @@
 		/** The one filled button: the workflow's expected next step, when it is enabled. */
 		primaryId: string | null;
 		disabled?: boolean;
+		/** Why the buttons are disabled, as their tooltip (archived project). */
+		disabledReason?: string | null;
 		onmove: (t: AllowedTransition) => void;
 		onopen: () => void;
 	} = $props();
@@ -138,7 +141,7 @@
 					)}"
 					aria-disabled={blocked || undefined}
 					{disabled}
-					title={t.name}
+					title={disabledReason ?? t.name}
 					onclick={() => (blocked ? onopen() : onmove(t))}
 				>
 					{t.name}

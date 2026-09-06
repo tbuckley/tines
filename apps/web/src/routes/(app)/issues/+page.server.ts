@@ -1,4 +1,5 @@
 import { countIssuesByCategory, listIssues } from '$lib/server/api/issues';
+import { findProject, partitionProjects } from '$lib/archived';
 import { listProjects } from '$lib/server/api/projects';
 import { listLabels } from '$lib/server/api/labels';
 import { loadWorkflows } from '$lib/server/api/workflows';
@@ -43,10 +44,21 @@ export const load: PageServerLoad = async ({ locals, platform, url }) => {
 			{ cursor: null, limit: 100 }
 		),
 		countIssuesByCategory(db, userId, scope),
-		listProjects(db, userId),
+		listProjects(db, userId, { archived: 'all' }),
 		loadWorkflows(db, userId),
 		listLabels(db, userId)
 	]);
 
-	return { issues, counts, projects, workflows, labels, filters };
+	// Pickers get the live list; the filter select also has to be able to *name*
+	// an archived project, or a stale ?project= URL reads as "All projects".
+	const { live, archived } = partitionProjects(projects);
+	return {
+		issues,
+		counts,
+		projects: live,
+		archivedProject: findProject(archived, filters.project),
+		workflows,
+		labels,
+		filters
+	};
 };

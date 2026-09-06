@@ -39,6 +39,7 @@
 	labels={data.labels}
 	workflows={data.workflows}
 	projects={data.projects}
+	archivedProject={data.archivedProject}
 />
 
 <NewIssueModal

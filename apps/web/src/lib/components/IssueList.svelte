@@ -107,6 +107,14 @@
 								<span class="truncate">{issue.project_name}/</span>
 							{/if}
 							<span class="shrink-0">#{issue.number}</span>
+							{#if showProject && issue.project_archived_at !== null}
+								<span
+									class="bg-muted text-muted-foreground ml-1 shrink-0 rounded-full px-1.5 py-px font-sans text-[0.625rem] font-medium"
+									title="Project archived"
+								>
+									archived
+								</span>
+							{/if}
 						</span>
 						{#if hasSignal(issue)}
 							<!-- Signals are informational (tooltips), never nested links:
