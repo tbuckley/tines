@@ -38,10 +38,17 @@ import {
 	type Page
 } from './core';
 import { assertWritable, issueProject } from './archive';
-import { checkRequirements, listArtifacts, requirementSpecLabel } from './artifacts';
+import {
+	checkRequirements,
+	listArtifacts,
+	loadIssueVersions,
+	requirementSpecLabel
+} from './artifacts';
 import { contextSummaryForIssue } from './context';
-import { actorOf, eventInsert } from './events';
+import { actorOf, eventInsert, eventQuery, serializeEvent } from './events';
+import { deriveRound, deriveSinceLastRun } from './handoff';
 import { issueLabelInserts, labelInserts, resolveOrCreateLabels } from './labels';
+import { runQuery, serializeRun } from './runs';
 import { requireTier } from './runners';
 import { getSchedule, prepareSchedule } from './schedules';
 import { loadWorkflow, loadWorkflows } from './workflows';
@@ -618,6 +625,13 @@ export interface IssueDetailOptions {
 	 * artifacts panel and would otherwise fetch them a second time.
 	 */
 	artifacts?: boolean;
+	/**
+	 * Derive `round` and `since_last_run` — the handoff. Off by default:
+	 * `getIssueDetail` sits on every mutation's return path, and this costs
+	 * three more reads. The four read paths (the issue endpoints, the prompt
+	 * route and the runner's prompt delivery) opt in.
+	 */
+	round?: boolean;
 }
 
 /** "Project/42" — the ref an agent types, and the one the fix commands quote. */
@@ -639,17 +653,19 @@ export async function getIssueDetail(
 	// otherwise only if some outgoing transition declares requirements — which
 	// we cannot know until the workflow lands. Fetching them in this wave when
 	// asked keeps the requirement pre-flight off the critical path entirely.
-	const [workflows, comments, links, contextSummary, preloadedArtifacts] = await Promise.all([
-		opts.workflows ?? loadWorkflows(db, userId, issue.workflow_id),
-		loadComments(db, issue.id),
-		loadIssueLinks(db, userId, issue.id),
-		contextSummaryForIssue(db, userId, {
-			projectId: issue.project_id,
-			stateId: issue.state.id,
-			issueId: issue.id
-		}),
-		opts.artifacts ? listArtifacts(db, userId, issue.id) : null
-	]);
+	const [workflows, comments, links, contextSummary, preloadedArtifacts, handoff] =
+		await Promise.all([
+			opts.workflows ?? loadWorkflows(db, userId, issue.workflow_id),
+			loadComments(db, issue.id),
+			loadIssueLinks(db, userId, issue.id),
+			contextSummaryForIssue(db, userId, {
+				projectId: issue.project_id,
+				stateId: issue.state.id,
+				issueId: issue.id
+			}),
+			opts.artifacts ? listArtifacts(db, userId, issue.id) : null,
+			opts.round ? loadHandoffRows(db, userId, issue.id) : null
+		]);
 
 	const workflow = workflows.find((w) => w.id === issue.workflow_id);
 	if (!workflow) throw notFound();
@@ -676,8 +692,39 @@ export async function getIssueDetail(
 		allowed_transitions: allowed,
 		links,
 		context_summary: contextSummary,
-		...(preloadedArtifacts ? { artifacts: preloadedArtifacts } : {})
+		...(preloadedArtifacts ? { artifacts: preloadedArtifacts } : {}),
+		...(handoff
+			? {
+					round: deriveRound({ issue, workflow, comments, ...handoff }),
+					since_last_run: deriveSinceLastRun({ issue, comments, ...handoff })
+				}
+			: {})
 	};
+}
+
+/** How many runs of an issue's history the round derivation reads back. */
+const ROUND_RUN_CAP = 50;
+
+/**
+ * The three extra reads the handoff derivations need. Issued inside
+ * `getIssueDetail`'s existing wave, so opting in costs no round trip.
+ */
+async function loadHandoffRows(db: Kysely<Database>, userId: string, issueId: string) {
+	const [eventRows, runRows, versions] = await Promise.all([
+		eventQuery(db, userId)
+			.where('event.issue_id', '=', issueId)
+			.where('event.type', '=', 'issue.transitioned')
+			.orderBy('event.created_at asc')
+			.orderBy('event.id asc')
+			.execute(),
+		runQuery(db, userId)
+			.where('agent_run.issue_id', '=', issueId)
+			.orderBy('agent_run.created_at desc')
+			.limit(ROUND_RUN_CAP)
+			.execute(),
+		loadIssueVersions(db, userId, issueId)
+	]);
+	return { events: eventRows.map(serializeEvent), runs: runRows.map(serializeRun), versions };
 }
 
 // ---------------------------------------------------------------------------
