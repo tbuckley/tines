@@ -1870,8 +1870,10 @@ export function issueBlock(
 	lines.push(
 		// No flag is privileged: naming `--file` first taught agents to reach
 		// for it even under a text gate. The gate decides, and each gated
-		// transition below carries its own exact command (`requires[].fix`).
-		`Attach one: \`tines issues artifacts attach ${ref} <name> …\` — the flag follows the gate; each gated transition below names its exact command. Ungated slots: --file <path>, --folder <dir>, --text <md|@file>, --link <url>, --pr <owner/repo#N>.`,
+		// transition below carries its own exact command (`requires[].fix`) —
+		// which since Tines/274 is a positional source, not a flag, so this
+		// line says "source" and keeps the flag vocabulary for ungated slots.
+		`Attach one: \`tines issues artifacts attach ${ref} <name> …\` — the source follows the gate; each gated transition below names its exact command. Ungated slots: --file <path>, --folder <dir>, --text <md|@file>, --link <url>, --pr <owner/repo#N>.`,
 		'',
 		'### Available transitions',
 		''

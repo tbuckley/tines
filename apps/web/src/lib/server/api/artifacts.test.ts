@@ -381,6 +381,54 @@ describe('issue artifacts', () => {
 		);
 	});
 
+	it('names one type, the one its command attaches, for an untyped requirement', async () => {
+		// AC4. An untyped gate would take text too, but a summary and a command
+		// naming different types is what sent readers looking for a third
+		// answer (Tines/255). The reachable untyped shapes are `missing` (the
+		// command names --file, and the summary stays generic) and a slot that
+		// already holds a type (the command follows the slot). An untyped
+		// requirement can never be `type_mismatch`: only a declared `type` or
+		// `content_type` can miss, and the workflow validator refuses a
+		// content_type without a file/text type — so `requirementFix`'s untyped
+		// delete-and-attach fallback is pinned in @tines/shared, not here.
+		const wf = await createWorkflow(t.db, t.env, actor, {
+			name: 'Untyped gate',
+			initial_state: 'A',
+			states: [
+				{ name: 'A', category: 'active' },
+				{ name: 'B', category: 'active' }
+			],
+			transitions: [{ name: 'go', from: 'A', to: 'B', requires: [{ artifact: 'notes' }] }]
+		});
+		const issue = await createIssue(t.db, t.env, actor, PROJECT, {
+			title: 'Untyped',
+			workflow_id: wf.id
+		});
+		const missing = (await getIssueDetail(t.db, USER, { id: issue.id })).allowed_transitions.find(
+			(tr) => tr.name === 'go'
+		)!.requires![0];
+		expect(missing).toMatchObject({ status: 'missing', current_type: null });
+		expect(missing.fix).toBe('tines issues artifacts attach demo/1 notes --file <path>');
+
+		// A link in the slot: the untyped gate takes it, and once stale the fix
+		// names --link — the slot's own (immutable) type, never the file
+		// default the empty slot advertised.
+		await upsertArtifact(t.db, t.env, actor, issue.id, 'notes', {
+			type: 'link',
+			url: 'https://x.test/notes'
+		});
+		tick();
+		await updateIssue(t.db, t.env, actor, issue.id, { state: 'B' });
+		tick();
+		await updateIssue(t.db, t.env, actor, issue.id, { state: 'A' });
+		const stale = (await getIssueDetail(t.db, USER, { id: issue.id })).allowed_transitions.find(
+			(tr) => tr.name === 'go'
+		)!.requires![0];
+		expect(stale).toMatchObject({ status: 'stale', current_type: 'link' });
+		expect(stale.fix).toBe('tines issues artifacts attach demo/1 notes --link <url>');
+		expect(stale.fix_alternative).toBe('tines issues artifacts reaffirm demo/1 notes');
+	});
+
 	it('names the exact attach command for a satisfied requirement too', async () => {
 		const issue = await gatedIssue();
 		await attachDoc(issue.id);
@@ -1018,6 +1066,10 @@ describe('issue artifacts', () => {
 		);
 		expect(emptyBlock).toContain('No artifacts attached.');
 		expect(emptyBlock).toContain('Attach one: `tines issues artifacts attach demo/2 <name> …`');
+		// The clause has to describe what the gated lines below actually name:
+		// since Tines/274 that is a positional source, not a flag.
+		expect(emptyBlock).toContain('— the source follows the gate;');
+		expect(emptyBlock).not.toContain('the flag follows the gate');
 		// No flag is privileged (Tines/241): the old line put `--file <path>`
 		// inside the command itself, which taught agents to reach for it under
 		// gates that wanted anything else.

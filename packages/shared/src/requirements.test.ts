@@ -187,6 +187,22 @@ describe('requirementFix', () => {
 					'demo/1'
 				).kind
 			).toBe('delete_and_attach');
+			// Untyped, so the re-attach names the flag that types it — `file`,
+			// the same word the 422's summary sentence uses for this shape
+			// (AC4: the summary and the command name one type between them).
+			expect(
+				requirementFix(
+					check({
+						status: 'type_mismatch',
+						content_type: 'text/',
+						current_type,
+						current_version: version
+					}),
+					'demo/1'
+				).command
+			).toBe(
+				'tines issues artifacts delete demo/1 design-doc && tines issues artifacts attach demo/1 design-doc --file <path>'
+			);
 		}
 		for (const current_type of ['file', 'text'] as const) {
 			expect(

@@ -489,7 +489,7 @@ function checkAccepted(
 	// is only honest on a fresh slot. Which branch fires is incidental — the
 	// held type decides (Tines/268).
 	const held = heldType(gates);
-	const escapes = held !== undefined && held !== plan.type;
+	const blockedByHeldType = held !== undefined && held !== plan.type;
 	const typeMatched = gates.filter((g) => (g.check.type ?? plan.type) === plan.type);
 	if (typeMatched.length > 0) {
 		// The type is right and only the content type misses: the fix is a MIME,
@@ -497,14 +497,14 @@ function checkAccepted(
 		const g = typeMatched[0];
 		throw new CliError(
 			`"${name}" is gated by ${joinTransitions(typeMatched.map((x) => x.transition))} as ${gateSpec(g.check)}; ${label} would attach ${effective ?? plan.type}, which does not satisfy it. Use: ${fixCommand(g, ref)} with --content-type <mime under ${g.check.content_type}>${
-				escapes ? IMMUTABLE_TAIL : ' (or --ignore-gates to attach it anyway)'
+				blockedByHeldType ? IMMUTABLE_TAIL : ' (or --ignore-gates to attach it anyway)'
 			}`
 		);
 	}
 	const g = gates[0];
 	throw new CliError(
 		`"${name}" is gated by ${joinTransitions(gates.map((x) => x.transition))} as ${gateSpec(g.check)}; ${label} would create a ${plan.type} artifact that can never satisfy it. Use: ${fixCommand(g, ref)}${
-			escapes ? IMMUTABLE_TAIL : ` (or --ignore-gates to attach a ${plan.type} anyway)`
+			blockedByHeldType ? IMMUTABLE_TAIL : ` (or --ignore-gates to attach a ${plan.type} anyway)`
 		}`
 	);
 }
