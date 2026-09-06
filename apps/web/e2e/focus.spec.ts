@@ -98,20 +98,27 @@ test.describe.serial('project focus', () => {
 	});
 
 	test('New issue opens on the focus, and empty and required under All projects', async ({
-		browser
+		browser,
+		request
 	}) => {
 		const focused = await open(browser, DESKTOP, `/issues?project=${encodeURIComponent(A_NAME)}`);
 		await focused.getByRole('button', { name: 'New issue' }).click();
-		await expect(focused.getByLabel('Project')).toHaveValue(aId);
+		// Scoped to the dialog: the chrome's switcher is labelled `Project focus: …`,
+		// which an unscoped `getByLabel('Project')` also matches.
+		const form = focused.getByRole('dialog');
+		await expect(form.getByLabel('Project', { exact: true })).toHaveValue(aId);
 		// The project's default workflow comes with it.
-		await expect(focused.getByLabel('Workflow')).not.toHaveValue('');
+		await expect(form.getByLabel('Workflow', { exact: true })).not.toHaveValue('');
 		await focused.close();
 
+		// The half above focused a project, which also records it as
+		// `last_project_id`; clear both to reach the true All-projects state.
+		await resetFocus(request);
 		const all = await open(browser, DESKTOP);
 		await all.getByRole('button', { name: 'New issue' }).click();
-		// resetFocus cleared `last_project_id` too, so there is nothing to fall
-		// back to: the select starts empty and the form cannot be submitted.
-		await expect(all.getByLabel('Project')).toHaveValue('');
+		// Nothing to fall back to: the select starts empty and the form cannot
+		// be submitted.
+		await expect(all.getByRole('dialog').getByLabel('Project', { exact: true })).toHaveValue('');
 		await expect(all.getByRole('button', { name: 'Create issue' })).toBeDisabled();
 		await all.close();
 	});
@@ -201,7 +208,9 @@ test.describe.serial('the switcher below two projects', () => {
 		await expect(switcher(page)).toHaveCount(0);
 		// One project still behaves as the focus for New issue.
 		await page.getByRole('button', { name: 'New issue' }).click();
-		await expect(page.getByLabel('Project')).toHaveValue(first.id);
+		await expect(page.getByRole('dialog').getByLabel('Project', { exact: true })).toHaveValue(
+			first.id
+		);
 		await page.keyboard.press('Escape');
 
 		await api.post('/api/v1/projects', { name: `carol-2-${runId}` });
