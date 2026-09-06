@@ -47,8 +47,9 @@ describe('gatesForName', () => {
 
 	it('is empty for a name nothing gates, and for a transition with no requirements', () => {
 		expect(gatesForName([transition('approve', [check()])], 'notes')).toEqual([]);
-		expect(gatesForName([{ ...transition('approve', []), requires: undefined }], 'design-doc'))
-			.toEqual([]);
+		expect(
+			gatesForName([{ ...transition('approve', []), requires: undefined }], 'design-doc')
+		).toEqual([]);
 	});
 });
 
