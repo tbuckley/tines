@@ -234,8 +234,11 @@ const emptyScope = {
 	label: 'global'
 };
 
+/** No journal item anywhere, and the issue's state is its own root. */
+const noJournal = { state_id: 's_review', inherited_from: null, item_id: null, version: null };
+
 const emptyContext: EffectiveContext = {
-	prompt: { text: '', parts: [] },
+	prompt: { text: '', parts: [], journal: noJournal },
 	skills: [],
 	repos: [],
 	overridden: [],
@@ -245,6 +248,7 @@ const emptyContext: EffectiveContext = {
 const richContext: EffectiveContext = {
 	prompt: {
 		text: '## Context: global\n\nGuidance.\n\n## Journal (project Tines · state Review)\n\n- lesson',
+		journal: { state_id: 's_review', inherited_from: null, item_id: 'ctx_j', version: 7 },
 		parts: [
 			{
 				item_id: 'ctx_g',

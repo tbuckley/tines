@@ -217,22 +217,24 @@ describe('inherited layers', () => {
 		expect(ctx.overridden[0].inherited_from?.state_id).toBe(BASE_MERGING);
 	});
 
-	it("writes the journal to the issue's own state, never to the base", async () => {
-		// Inheritance is read-only: an agent's journal append must land on the
-		// leaf, or two workflows sharing a base would write into each other.
+	it('writes the journal to the base, even when the child has a legacy one', async () => {
+		// The point of inheriting is one journal per stage kind: both children
+		// learn and prune in the base's file. A journal left on the child by an
+		// earlier run keeps stitching (see the prompt tests) but is not handed
+		// out — a merge helper folds it in later.
 		const issue = addIssue(t, { workflow: 'wf_two', state: STAGE_A });
-		await prompt(t, 'journal', 'base journal', {
+		const base = await prompt(t, 'journal', 'base journal', {
 			project_id: PROJECT,
 			workflow_state_id: BASE_MERGING
 		});
-		const own = await prompt(t, 'journal', 'own journal', {
+		await prompt(t, 'journal', 'own journal', {
 			project_id: PROJECT,
 			workflow_state_id: STAGE_A
 		});
 
 		const journal = await journalForIssue(t.db, session, issue);
-		expect(journal.scope.workflow_state_id).toBe(STAGE_A);
-		expect(journal.item?.id).toBe(own.id);
+		expect(journal.scope.workflow_state_id).toBe(BASE_MERGING);
+		expect(journal.item?.id).toBe(base.id);
 	});
 
 	it('refuses an item scoped to an issue and a state outside its workflow', async () => {

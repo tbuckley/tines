@@ -23,7 +23,7 @@ import type {
 } from '@tines/shared';
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
 import { ALICE, BASE_URL } from './constants.mjs';
-import { apiClient, body, runId, signIn } from './helpers';
+import { apiClient, body, gotoHydrated, runId, signIn } from './helpers';
 
 const CLI_DIR = fileURLToPath(new URL('../../../packages/cli', import.meta.url));
 const TSX = join(CLI_DIR, 'node_modules', '.bin', 'tsx');
@@ -325,7 +325,7 @@ esac
 		page
 	}) => {
 		await signIn(context, ALICE.sessionToken);
-		await page.goto('/agents');
+		await gotoHydrated(page, '/agents');
 
 		// The daemon-registered runner card, online, with the rotate action.
 		const card = page.locator('div.rounded-lg', { hasText: RUNNER_NAME }).first();
@@ -646,7 +646,7 @@ esac
 		// The UI cancel dialog: strike note (this run hasn't moved the issue)
 		// plus an optional comment posted BEFORE the cancellation.
 		await signIn(context, ALICE.sessionToken);
-		await page.goto('/agents');
+		await gotoHydrated(page, '/agents');
 		// Run rows show the issue ref (project/#number), not the title.
 		const row = page
 			.locator('li')
