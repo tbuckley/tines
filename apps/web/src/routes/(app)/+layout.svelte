@@ -2,14 +2,11 @@
 	import IconActivity from '@tabler/icons-svelte/icons/activity';
 	import IconArrowsSplit2 from '@tabler/icons-svelte/icons/arrows-split-2';
 	import IconBooks from '@tabler/icons-svelte/icons/books';
-	import IconDatabaseExport from '@tabler/icons-svelte/icons/database-export';
 	import IconFolder from '@tabler/icons-svelte/icons/folder';
-	import IconKey from '@tabler/icons-svelte/icons/key';
 	import IconListDetails from '@tabler/icons-svelte/icons/list-details';
 	import IconLogout from '@tabler/icons-svelte/icons/logout';
-	import IconTag from '@tabler/icons-svelte/icons/tag';
-	import IconPalette from '@tabler/icons-svelte/icons/palette';
 	import IconRobot from '@tabler/icons-svelte/icons/robot';
+	import IconSettings from '@tabler/icons-svelte/icons/settings';
 	import IconSitemap from '@tabler/icons-svelte/icons/sitemap';
 	import { goto, invalidateAll, onNavigate } from '$app/navigation';
 	import { navigating, page } from '$app/state';
@@ -27,7 +24,7 @@
 	const tabs = $derived([
 		{ path: '/issues', href: navMemory.issuesHref, label: 'Issues', icon: IconListDetails },
 		{ path: '/workflows', href: '/workflows', label: 'Workflows', icon: IconSitemap },
-		{ path: '/projects', href: '/projects', label: 'Projects', icon: IconFolder },
+		{ path: '/projects', href: navMemory.projectsHref, label: 'Projects', icon: IconFolder },
 		{ path: '/context', href: '/context', label: 'Context', icon: IconBooks },
 		{ path: '/agents', href: '/agents', label: 'Agents', icon: IconRobot },
 		{ path: '/activity', href: '/activity', label: 'Activity', icon: IconActivity }
@@ -163,29 +160,18 @@
 							<p class="text-muted-foreground truncate text-xs">{data.user.email}</p>
 						</div>
 						<div class="bg-border my-1 h-px"></div>
+						<!--
+							One entry, not one per page: the settings pages carry their own tab row
+							(settings/+layout.svelte). This points at the first tab, which is also
+							where a bare /settings redirects.
+						-->
 						<a
 							href="/settings/appearance"
 							class="hover:bg-accent hover:text-accent-foreground flex items-center gap-2 rounded-md px-3 py-2 text-sm"
 							role="menuitem"
 							onclick={() => (menuOpen = false)}
 						>
-							<IconPalette size={16} stroke={1.75} /> Appearance
-						</a>
-						<a
-							href="/settings/labels"
-							class="hover:bg-accent hover:text-accent-foreground flex items-center gap-2 rounded-md px-3 py-2 text-sm"
-							role="menuitem"
-							onclick={() => (menuOpen = false)}
-						>
-							<IconTag size={16} stroke={1.75} /> Labels
-						</a>
-						<a
-							href="/settings/api-keys"
-							class="hover:bg-accent hover:text-accent-foreground flex items-center gap-2 rounded-md px-3 py-2 text-sm"
-							role="menuitem"
-							onclick={() => (menuOpen = false)}
-						>
-							<IconKey size={16} stroke={1.75} /> API keys
+							<IconSettings size={16} stroke={1.75} /> Settings
 						</a>
 						<button
 							class="hover:bg-accent hover:text-accent-foreground flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm"

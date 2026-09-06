@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { RoutingRule } from '@tines/shared';
+	import type { RoutingRuleWithWarnings, ShadowWarning } from '@tines/shared';
 	import IconArrowRight from '@tabler/icons-svelte/icons/arrow-right';
 	import ContextScopeChips from '$lib/components/ContextScopeChips.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
@@ -15,25 +15,59 @@
 	let {
 		rule,
 		activeStateIds,
+		projectArchived = false,
 		onedit,
 		ondelete
 	}: {
-		rule: RoutingRule;
+		rule: RoutingRuleWithWarnings;
 		/**
 		 * Ids of active-category states. Required rather than optional: every
 		 * surface has the workflows to hand, and a default would silently drop
 		 * the "never dispatches" warning.
 		 */
 		activeStateIds: Set<string>;
+		/** The rule is scoped to a project that is archived — kept, editable, never matching. */
+		projectArchived?: boolean;
 		/** Omitted → read-only row (no Edit button). */
-		onedit?: (rule: RoutingRule) => void;
+		onedit?: (rule: RoutingRuleWithWarnings) => void;
 		/** Omitted → read-only row (no Delete button). */
-		ondelete?: (rule: RoutingRule) => void;
+		ondelete?: (rule: RoutingRuleWithWarnings) => void;
 	} = $props();
 
 	/** Scoped to a state that is no longer active — the rule can never match. */
 	const dead = $derived(
 		rule.scope.workflow_state_id !== null && !activeStateIds.has(rule.scope.workflow_state_id)
+	);
+
+	/**
+	 * One pill per warning *kind*, not per warning: a broad rule can be
+	 * shadowed by every rule above it, and four amber pills on one row is
+	 * worse to read than the unsorted list this replaced. The names go in the
+	 * pill while there is one of them, the count when there are more, and the
+	 * server's full sentences always go in the tooltip.
+	 */
+	function pill(warnings: ShadowWarning[], verb: string) {
+		if (warnings.length === 0) return null;
+		return {
+			text:
+				warnings.length === 1
+					? `${verb} ${warnings[0].scope_label}`
+					: `${verb} ${warnings.length} rules`,
+			title: warnings.map((w) => w.message).join('\n')
+		};
+	}
+
+	const shadowed = $derived(
+		pill(
+			rule.warnings.filter((w) => w.kind === 'shadowed'),
+			'shadowed by'
+		)
+	);
+	const ties = $derived(
+		pill(
+			rule.warnings.filter((w) => w.kind === 'ambiguous'),
+			'ties with'
+		)
 	);
 </script>
 
@@ -47,6 +81,22 @@
 			never dispatches
 		</span>
 	{/if}
+	{#if projectArchived}
+		<span
+			class="rounded-full bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-400"
+			title="This project is archived — nothing dispatches on it. The rule is kept and matches again after unarchive."
+		>
+			project archived
+		</span>
+	{/if}
+	{#each [ties, shadowed].filter((p) => p !== null) as p (p.text)}
+		<span
+			class="rounded-full bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-400"
+			title={p.title}
+		>
+			{p.text}
+		</span>
+	{/each}
 	{#if rule.targets.length === 0}
 		<span
 			class="rounded-full bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-400"

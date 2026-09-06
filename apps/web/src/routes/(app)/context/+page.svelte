@@ -118,6 +118,9 @@
 		{#each data.projects as project (project.id)}
 			<option value={project.id}>{project.name}</option>
 		{/each}
+		{#if data.archivedProject}
+			<option value={data.archivedProject.id}>{data.archivedProject.name} (archived)</option>
+		{/if}
 	</Select>
 	<Select
 		value={data.filters.workflow ?? ''}

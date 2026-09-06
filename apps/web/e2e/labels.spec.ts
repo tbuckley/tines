@@ -499,6 +499,82 @@ test.describe.serial('label as a scope dimension', () => {
 		expect((await api.delete(`/api/v1/issues/${labelled.id}/labels/${sec.id}`)).status()).toBe(204);
 	});
 
+	test('the Routing list reads top-down: most specific first, with tie and shadow pills', async ({
+		page,
+		context,
+		request
+	}) => {
+		const api = apiClient(request, ALICE.apiKey);
+		// Re-form the tie the previous test broke, and add a bare project rule
+		// that both label rules outrank — three overlapping scopes, created in
+		// an order that is neither specificity nor alphabetical.
+		const rival = await body<RoutingRuleWithWarnings>(
+			await api.post('/api/v1/routing-rules', {
+				project_id: project.id,
+				label_id: sec.id,
+				targets: [{ runner_id: RUNROW.runnerId }]
+			})
+		);
+		const broad = await body<RoutingRuleWithWarnings>(
+			await api.post('/api/v1/routing-rules', {
+				project_id: project.id,
+				targets: [{ runner_id: RUNROW.runnerId }]
+			})
+		);
+
+		await signIn(context, ALICE.sessionToken);
+		await page.setViewportSize(DESKTOP);
+		await page.goto('/agents');
+		// The precedence rule, on the page rather than one click away inside
+		// the Add-rule modal. Matched on this sentence's own tail: the modal's
+		// longer paragraph opens with the same clause, and `getByText` does
+		// not normalise the newline prettier puts mid-sentence.
+		await expect(page.getByText('Listed most specific first.')).toBeVisible();
+
+		// This spec's three rules, among whatever other rules the account has.
+		const rows = page
+			.getByRole('list', { name: 'Routing rules' })
+			.locator('li')
+			.filter({ hasText: projectName });
+		await expect(rows).toHaveCount(3);
+		// Read the order off each row's own scope chip, never its text: the
+		// tie pill *names the other rule's label*, so a text match would count
+		// the `sec` row as a `docs` one.
+		const scopeChip = (labelName: string) => page.locator(`[title="label ${labelName}"]`);
+		const order = await rows.evaluateAll((lis) =>
+			lis.map(
+				(li) => li.querySelector('span[title^="label "]')?.getAttribute('title') ?? 'no label'
+			)
+		);
+		// Most specific first: both label rules (rank 6) above the bare
+		// project rule (rank 2), the two label rules tie-broken by scope label.
+		expect(order).toEqual([`label ${docsName}`, `label ${secName}`, 'no label']);
+
+		// The tie is stated on both rows that cause it — an issue carrying
+		// both labels dispatches nowhere, and until now nothing on this page
+		// said so.
+		await expect(
+			rows
+				.filter({ has: scopeChip(docsName) })
+				.getByText(`ties with project ${projectName} · label ${secName}`)
+		).toBeVisible();
+		await expect(
+			rows
+				.filter({ has: scopeChip(secName) })
+				.getByText(`ties with project ${projectName} · label ${docsName}`)
+		).toBeVisible();
+		// The rule both of them outrank says so once, with the count; the two
+		// full sentences are the tooltip.
+		const broadRow = rows.filter({ hasNot: page.locator('[title^="label "]') });
+		const shadowPill = broadRow.getByText('shadowed by 2 rules');
+		await expect(shadowPill).toBeVisible();
+		await expect(shadowPill).toHaveAttribute('title', /is more specific/);
+		// ...and no row claims the redundant other direction.
+		await expect(page.getByText(/takes precedence over/)).toHaveCount(0);
+
+		for (const id of [rival.id, broad.id]) await api.delete(`/api/v1/routing-rules/${id}`);
+	});
+
 	test('a run key may not apply or remove a label a routing rule is scoped to', async ({
 		request
 	}) => {

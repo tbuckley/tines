@@ -787,17 +787,32 @@ Options:
 Manage projects
 
 Options:
-  -h, --help                     display help for command
+  -h, --help                        display help for command
 
 Commands:
-  list [options]                 List projects
-  create [options] <name>        Create a project (with its initial context
-                                 prompt)
-  show [options] <id-or-name>    Show a project
-  edit [options] <id-or-name>    Edit a project
-  delete [options] <id-or-name>  Delete a project (refused while it still
-                                 contains issues)
-  help [command]                 display help for command
+  list [options]                    List projects
+  create [options] <name>           Create a project (with its initial context
+                                    prompt)
+  show [options] <id-or-name>       Show a project
+  edit [options] <id-or-name>       Edit a project
+  archive [options] <id-or-name>    Archive a project: pause its schedules, stop
+                                    dispatch, make its issues read-only
+  unarchive [options] <id-or-name>  Unarchive a project: schedules resume from
+                                    their next occurrence
+  delete [options] <id-or-name>     Delete a project (refused while it still
+                                    contains issues)
+  help [command]                    display help for command
+",
+  "tines projects archive": "Usage: tines projects archive [options] <id-or-name>
+
+Archive a project: pause its schedules, stop dispatch, make its issues read-only
+
+Options:
+  -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
+                   \`tines login\`; default https://tines.tbuckley.dev)
+  --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json           output the raw JSON response
+  -h, --help       display help for command
 ",
   "tines projects create": "Usage: tines projects create [options] <name>
 
@@ -852,6 +867,7 @@ Options:
 List projects
 
 Options:
+  --archived         include archived projects (hidden by default)
   --limit <n>        maximum items to return (page size under --all-pages)
   --cursor <cursor>  resume from the next_cursor of a previous page
   --all-pages        fetch every page, not just the first (slower on large
@@ -865,6 +881,17 @@ Options:
   "tines projects show": "Usage: tines projects show [options] <id-or-name>
 
 Show a project
+
+Options:
+  -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
+                   \`tines login\`; default https://tines.tbuckley.dev)
+  --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json           output the raw JSON response
+  -h, --help       display help for command
+",
+  "tines projects unarchive": "Usage: tines projects unarchive [options] <id-or-name>
+
+Unarchive a project: schedules resume from their next occurrence
 
 Options:
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run

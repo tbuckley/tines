@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
+import { addLabel, addRunner, OPEN, PROJECT, seedBase, USER } from '../supervisor/test-fixtures';
 import { api, ApiFail, runAtomic, type ActorContext } from './core';
-import { createTestDb } from './test-db';
+import { createTestDb, type TestDb } from './test-db';
 import {
 	createRoutingRule,
 	findScopeCollision,
+	listRoutingRules,
 	ruleScopesOverlap,
 	ruleSpecificity,
 	shadowWarnings,
@@ -367,5 +369,99 @@ describe('scope-collision unique-index backstop', () => {
 		const body = (await res.json()) as { error: { code: string } };
 		expect(body.error.code).toBe('conflict');
 		expect(t.all(`SELECT id FROM routing_rule`).map((r) => r.id)).toEqual(['rul_winner']);
+	});
+});
+
+describe('listRoutingRules', () => {
+	const actor: ActorContext = {
+		userId: USER,
+		userName: 'alice',
+		apiKeyId: null,
+		apiKeyName: null,
+		viaSession: true
+	};
+
+	/**
+	 * Four overlapping rules over one project, deliberately created in an
+	 * order that is neither the specificity order nor alphabetical: global,
+	 * then `project ∧ state`, then two bare label rules that tie.
+	 */
+	async function seedRules(t: TestDb) {
+		addRunner(t, { id: 'rnr_1', name: 'laptop' });
+		const design = addLabel(t, 'design');
+		const docs = addLabel(t, 'docs');
+		const targets = [{ runner_id: 'rnr_1' }];
+		const ids: Record<string, string> = {};
+		ids.global = (await createRoutingRule(t.db, t.env, actor, { targets })).id;
+		ids.combo = (
+			await createRoutingRule(t.db, t.env, actor, {
+				project_id: PROJECT,
+				workflow_state_id: OPEN,
+				targets
+			})
+		).id;
+		ids.design = (await createRoutingRule(t.db, t.env, actor, { label_id: design, targets })).id;
+		ids.docs = (await createRoutingRule(t.db, t.env, actor, { label_id: docs, targets })).id;
+		return ids;
+	}
+
+	it('sorts most specific first, with label rules above project ∧ state', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const ids = await seedRules(t);
+		// The rank order the dispatcher itself uses. Before labels became the
+		// high bit's *sort* input too, the two label rules — the strongest
+		// claims on where work runs — sorted last, below global's neighbours.
+		expect((await listRoutingRules(t.db, USER)).map((r) => r.id)).toEqual([
+			// label design and label docs tie at 4; the label breaks it.
+			ids.design,
+			ids.docs,
+			ids.combo,
+			ids.global
+		]);
+	});
+
+	it('gives each rule the warnings about itself, and drops the redundant `shadows` half', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const ids = await seedRules(t);
+		const byId = new Map((await listRoutingRules(t.db, USER)).map((r) => [r.id, r]));
+
+		// The tie the Agents list has to show: two bare label rules match an
+		// issue carrying both equally, so neither dispatches.
+		expect(byId.get(ids.design)!.warnings).toEqual([
+			expect.objectContaining({ kind: 'ambiguous', rule_id: ids.docs, scope_label: 'label docs' })
+		]);
+		expect(byId.get(ids.docs)!.warnings.map((w) => w.rule_id)).toEqual([ids.design]);
+
+		// The global rule is outranked by all three, and says so on its own
+		// row rather than only in the modal that saved it.
+		expect(byId.get(ids.global)!.warnings.map((w) => w.kind)).toEqual([
+			'shadowed',
+			'shadowed',
+			'shadowed'
+		]);
+		expect(
+			byId
+				.get(ids.global)!
+				.warnings.map((w) => w.scope_label)
+				.sort()
+		).toEqual(['label design', 'label docs', 'project demo · state Open']);
+
+		// `shadows` is never listed: sorted, it only ever names a rule below,
+		// which the order already shows. The combo rule shadows global and is
+		// shadowed by both label rules — only the latter two survive.
+		expect(byId.get(ids.combo)!.warnings.map((w) => w.kind)).toEqual(['shadowed', 'shadowed']);
+		for (const rule of byId.values()) {
+			expect(rule.warnings.some((w) => w.kind === 'shadows')).toBe(false);
+		}
+	});
+
+	it('leaves a lone rule unwarned', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		addRunner(t, { id: 'rnr_1', name: 'laptop' });
+		await createRoutingRule(t.db, t.env, actor, { targets: [{ runner_id: 'rnr_1' }] });
+		expect((await listRoutingRules(t.db, USER))[0].warnings).toEqual([]);
 	});
 });

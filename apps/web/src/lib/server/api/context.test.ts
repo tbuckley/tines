@@ -152,6 +152,7 @@ const issue: IssueDetail = {
 	id: 'iss_1',
 	project_id: 'prj_1',
 	project_name: 'Tines',
+	project_archived_at: null,
 	number: 42,
 	title: 'Ship the thing',
 	description: 'Do it *well*.',

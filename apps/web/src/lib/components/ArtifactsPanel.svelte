@@ -27,6 +27,7 @@
 		issueId,
 		artifacts,
 		allowedTransitions,
+		disabledReason = null,
 		onchanged,
 		onerror
 	}: {
@@ -34,9 +35,13 @@
 		artifacts: Artifact[];
 		/** For the requirement-relevant stale badge (allowed moves' requires). */
 		allowedTransitions: AllowedTransition[];
+		/** When set, every mutating control renders disabled with this as its tooltip. */
+		disabledReason?: string | null;
 		onchanged: () => void | Promise<void>;
 		onerror: (e: unknown) => void;
 	} = $props();
+
+	const readOnly = $derived(disabledReason != null);
 
 	const dur = () => (prefersReducedMotion() ? 0 : 180);
 
@@ -271,7 +276,13 @@
 				<span class="text-muted-foreground font-normal">({artifacts.length})</span>
 			{/if}
 		</h2>
-		<Button size="sm" variant="ghost" onclick={() => openAttach(null)}>
+		<Button
+			size="sm"
+			variant="ghost"
+			onclick={() => openAttach(null)}
+			disabled={readOnly}
+			title={disabledReason}
+		>
 			<IconPlus size={14} /> Attach artifact
 		</Button>
 	</header>
@@ -379,9 +390,9 @@
 								<Button
 									size="sm"
 									variant="outline"
-									disabled={busy}
+									disabled={busy || readOnly}
 									onclick={() => reaffirm(artifact)}
-									title="This still stands — bless the current content as fresh"
+									title={disabledReason ?? 'This still stands — bless the current content as fresh'}
 								>
 									<IconCheck size={14} /> Reaffirm
 								</Button>
@@ -400,9 +411,10 @@
 								size="icon"
 								variant="ghost"
 								class="text-muted-foreground size-8"
+								disabled={readOnly}
 								onclick={() => openAttach(artifact)}
 								aria-label={`Attach a new version of ${artifact.name}`}
-								title="Attach a new version"
+								title={disabledReason ?? 'Attach a new version'}
 							>
 								<IconRefresh size={15} />
 							</Button>
@@ -410,10 +422,10 @@
 								size="icon"
 								variant="ghost"
 								class="text-muted-foreground hover:text-destructive size-8"
-								disabled={busy}
+								disabled={busy || readOnly}
 								onclick={() => remove(artifact)}
 								aria-label={`Delete ${artifact.name}`}
-								title="Delete (all versions)"
+								title={disabledReason ?? 'Delete (all versions)'}
 							>
 								<IconTrash size={15} />
 							</Button>

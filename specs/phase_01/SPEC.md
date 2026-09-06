@@ -20,7 +20,7 @@ Explicitly out of scope, even where the data model anticipates them:
 - **Collaboration**: no teams, no sharing, no workflow publishing. Everything belongs to a single user.
 - **Project hierarchy**: projects are a single flat layer per user. (Trees come later — the schema must not preclude adding `parent_id`.)
 - **Issue metadata**: no assignee, labels, priority, or due dates. (Labels shipped 2026-09-04, Tines/31; they became a context and routing scope dimension in Tines/168.)
-- **Issue deletion/archival**: moving an issue to a `done` state is the only way to finish it; deleting issues (and the audit questions it raises) is deferred.
+- **Issue deletion/archival**: moving an issue to a `done` state is the only way to finish it; deleting issues (and the audit questions it raises) is deferred. (Project archival shipped 2026-09-06, Tines/206 and Tines/207 — see `specs/projects/SPEC.md`; issue deletion stays deferred.)
 - **Drag-and-drop workflow editing**: workflows always render as a visual graph, but the graph is not an editing surface — creating and editing happens through a form. Manual node positioning and edge-drawing come later, if ever.
 
 ## Concepts
