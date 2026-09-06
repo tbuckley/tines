@@ -44,8 +44,12 @@ function suite(label: string, viewport: { width: number; height: number }) {
 		test('Settings archives the project, and the page goes read-only', async ({ browser }) => {
 			const page = await open(browser, `/projects/${projectId}`);
 
-			await page.getByRole('button', { name: 'Settings' }).click();
-			await page.getByRole('button', { name: 'Archive project' }).click();
+			// The first click can land before hydration, and the modal never opens.
+			const archiveButton = page.getByRole('button', { name: 'Archive project' });
+			await clickUntil(page.getByRole('button', { name: 'Settings' }), async () => {
+				await expect(archiveButton).toBeVisible();
+			});
+			await archiveButton.click();
 
 			// The shared confirm is bits-ui's alert-dialog variant.
 			const dialog = page.getByRole('alertdialog');
@@ -57,8 +61,9 @@ function suite(label: string, viewport: { width: number; height: number }) {
 			await expect(page.getByRole('button', { name: 'New issue' })).toHaveCount(0);
 			await expect(page.getByRole('button', { name: 'Add context' })).toHaveCount(0);
 
-			await page.getByRole('button', { name: 'Settings' }).click();
-			await expect(page.getByRole('button', { name: 'Unarchive' }).first()).toBeVisible();
+			await clickUntil(page.getByRole('button', { name: 'Settings' }), async () => {
+				await expect(page.getByRole('button', { name: 'Unarchive' }).first()).toBeVisible();
+			});
 			await expect(page.getByLabel('Name')).toBeDisabled();
 			await page.close();
 		});
