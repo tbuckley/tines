@@ -3,13 +3,9 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-
-const here = dirname(fileURLToPath(import.meta.url));
-const tsx = join(here, '..', 'node_modules', '.bin', 'tsx');
-const entry = join(here, 'index.ts');
+import { CLI_BIN, NODE } from './test-bin.js';
 
 const dir = mkdtempSync(join(tmpdir(), 'tines-attach-'));
 const prdPath = join(dir, 'prd.md');
@@ -154,8 +150,8 @@ beforeEach(() => {
 function cli(args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
 	return new Promise((resolve) => {
 		const child = execFile(
-			tsx,
-			[entry, ...args],
+			NODE,
+			[CLI_BIN, ...args],
 			{ env: { ...process.env, TINES_API_URL: baseUrl, TINES_API_KEY: 'k' }, timeout: 60_000 },
 			(err, stdout, stderr) => {
 				const code = (err as { code?: number } | null)?.code ?? 0;
