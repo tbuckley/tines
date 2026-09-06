@@ -34,16 +34,24 @@ export interface Actor {
 }
 
 /**
+ * How a run is named wherever one is referred to: "run on demo/12", or
+ * "run <id>" when the issue it worked has been deleted. Shared by
+ * `actorLabel` and the API keys page, so both spell a run the same way.
+ */
+export function runRefLabel(run: ActorRun): string {
+	return run.issue_ref
+		? `run on ${run.issue_ref.project_name}/${run.issue_ref.number}`
+		: `run ${run.run_id}`;
+}
+
+/**
  * Canonical actor rendering everywhere actions are attributed: "alice",
  * "alice via laptop-key", or — for run keys — "alice via laptop-m4 · run on
  * demo/12".
  */
 export function actorLabel(actor: Actor): string {
 	if (actor.run) {
-		const ref = actor.run.issue_ref
-			? `run on ${actor.run.issue_ref.project_name}/${actor.run.issue_ref.number}`
-			: `run ${actor.run.run_id}`;
-		return `${actor.user_name} via ${actor.run.runner_name} · ${ref}`;
+		return `${actor.user_name} via ${actor.run.runner_name} · ${runRefLabel(actor.run)}`;
 	}
 	return actor.api_key_name ? `${actor.user_name} via ${actor.api_key_name}` : actor.user_name;
 }
@@ -1860,6 +1868,22 @@ export interface ApiKey {
 	created_at: number;
 	last_used_at: number | null;
 	revoked_at: number | null;
+	/**
+	 * Set on *run keys*: the agent run this key was minted for, resolved to the
+	 * runner and the run's issue. Absent on user-created keys.
+	 */
+	run?: ActorRun | null;
+}
+
+/** Which run keys a listing includes alongside the user's own keys. */
+export type RunKeyFilter = 'none' | 'active' | 'all';
+
+export const RUN_KEY_FILTERS: readonly RunKeyFilter[] = ['none', 'active', 'all'];
+
+/** How many run keys a user has, split by whether they can still act. */
+export interface RunKeyCounts {
+	active: number;
+	revoked: number;
 }
 
 export interface ApiKeyCreated extends ApiKey {

@@ -18,6 +18,7 @@ import type {
 	RunnerPollResponse,
 	RunnerTokenResponse,
 	ApiKey,
+	RunKeyFilter,
 	ApiKeyCreated,
 	AppendContextRequest,
 	Artifact,
@@ -507,7 +508,8 @@ export function createApiClient(options: ApiClientOptions) {
 			request<SupervisorSettingsResponse>('PUT', '/api/v1/supervisor/settings', body),
 
 		// API keys (create/revoke require a browser session, not a key)
-		listApiKeys: () => get<ListResponse<ApiKey>>('/api/v1/api-keys'),
+		listApiKeys: (filters: { run_keys?: RunKeyFilter } = {}) =>
+			get<ListResponse<ApiKey>>(`/api/v1/api-keys${query(filters)}`),
 		createApiKey: (body: CreateApiKeyRequest) =>
 			request<ApiKeyCreated>('POST', '/api/v1/api-keys', body),
 		revokeApiKey: (id: string) => request<void>('DELETE', `/api/v1/api-keys/${id}`),
