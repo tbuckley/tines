@@ -49,6 +49,8 @@ import type {
 	EffectiveContext,
 	EventFilters,
 	FleetQueue,
+	StageStatsReport,
+	StatsQuery,
 	LaunchPromptResponse,
 	IssueDetail,
 	IssueFilters,
@@ -528,6 +530,8 @@ export function createApiClient(options: ApiClientOptions) {
 			request<UserPreferences>('PATCH', '/api/v1/preferences', body),
 		getSupervisorSettings: () => get<SupervisorSettings>('/api/v1/supervisor/settings'),
 		getSupervisorQueue: () => get<FleetQueue>('/api/v1/supervisor/queue'),
+		getSupervisorStats: (q: StatsQuery = {}) =>
+			get<StageStatsReport>(`/api/v1/supervisor/stats${query(q)}`),
 		updateSupervisorSettings: (body: UpdateSupervisorSettingsRequest) =>
 			request<SupervisorSettingsResponse>('PUT', '/api/v1/supervisor/settings', body),
 

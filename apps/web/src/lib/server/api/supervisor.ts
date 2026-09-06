@@ -7,6 +7,9 @@ import {
 	type QueueIssueRef,
 	type QueueVerdict,
 	type QuotaPolicy,
+	type RunEndOutcome,
+	type StageStatsReport,
+	type StatsQuery,
 	type SupervisorSettings,
 	type SupervisorSettingsResponse,
 	type UpdateSupervisorSettingsRequest
@@ -34,6 +37,7 @@ import {
 	type ActiveCounts,
 	type TargetVerdictResult
 } from '$lib/server/supervisor/logic';
+import { computeStageStats, type StatsEvent } from '$lib/server/supervisor/stats';
 import { ApiFail, requireString, runAtomic, type ActorContext } from './core';
 import { eventInsert } from './events';
 
@@ -573,4 +577,195 @@ function bindingFor(
 		};
 	}
 	return null;
+}
+
+// ---------------------------------------------------------------------------
+// Stage stats — the "This week" row (Tines/257)
+
+/** Types the visit timeline is built from; anything else cannot open or close a visit. */
+const STATS_EVENT_TYPES = ['issue.transitioned', 'issue.created', 'issue.updated'] as const;
+
+/** `1h ≤ window ≤ 90d`; the cap is what bounds the scan. */
+export function parseStatsWindow(raw: string | null | undefined): number {
+	if (raw === null || raw === undefined || raw === '') return 7 * 24 * 60 * 60 * 1000;
+	const match = /^(\d+)(h|d)$/.exec(raw.trim());
+	if (!match) {
+		throw new ApiFail(422, 'validation_error', '"window" must look like "24h" or "7d"', {
+			field: 'window'
+		});
+	}
+	const ms = Number(match[1]) * (match[2] === 'h' ? 60 * 60 * 1000 : 24 * 60 * 60 * 1000);
+	if (ms < 60 * 60 * 1000 || ms > 90 * 24 * 60 * 60 * 1000) {
+		throw new ApiFail(422, 'validation_error', '"window" must be between 1h and 90d', {
+			field: 'window'
+		});
+	}
+	return ms;
+}
+
+/** A project id or name, for the board's filter chip; 404 when it names nothing. */
+export async function resolveProjectRef(
+	db: Kysely<Database>,
+	userId: string,
+	ref: string
+): Promise<{ id: string; name: string }> {
+	const row = await db
+		.selectFrom('project')
+		.where('user_id', '=', userId)
+		.where((eb) => eb.or([eb('id', '=', ref), eb('name', '=', ref)]))
+		.select(['id', 'name'])
+		.executeTakeFirst();
+	if (!row) throw new ApiFail(404, 'not_found', `No project "${ref}"`);
+	return row;
+}
+
+/**
+ * Per-stage flow over a rolling window, computed on request: two indexed
+ * reads feed `computeStageStats`. No rollup table — the PRD's rule is to
+ * revisit only if p95 on `/agents` passes a second.
+ */
+export async function loadStageStats(
+	db: Kysely<Database>,
+	userId: string,
+	query: StatsQuery = {},
+	now: number = Date.now()
+): Promise<StageStatsReport> {
+	const windowMs = parseStatsWindow(query.window);
+	if (query.compare !== undefined && query.compare !== 'previous' && query.compare !== 'none') {
+		throw new ApiFail(422, 'validation_error', '"compare" must be "previous" or "none"', {
+			field: 'compare'
+		});
+	}
+	const compare = query.compare !== 'none';
+	const project = query.project ? await resolveProjectRef(db, userId, query.project) : null;
+	// Both windows are scanned in one pass; `compare=none` still reads them,
+	// which keeps the query plan (and the cache) identical.
+	const scanFrom = now - 2 * windowMs;
+
+	const [stateRows, eventRows, runRows, outcomeRow] = await Promise.all([
+		db
+			.selectFrom('workflow_state as st')
+			.innerJoin('workflow as wf', 'wf.id', 'st.workflow_id')
+			.where('wf.user_id', '=', userId)
+			.select([
+				'st.id as id',
+				'st.name as name',
+				'st.category as category',
+				'st.position as position',
+				'wf.id as workflow_id',
+				'wf.name as workflow_name'
+			])
+			.execute(),
+		(() => {
+			let q = db
+				.selectFrom('event')
+				.leftJoin('api_key', 'api_key.id', 'event.actor_api_key_id')
+				.where('event.user_id', '=', userId)
+				.where('event.created_at', '>=', scanFrom)
+				// A deleted issue's events keep a NULL issue_id (ON DELETE SET
+				// NULL); grouping them by issue would merge every such issue
+				// into one timeline.
+				.where('event.issue_id', 'is not', null)
+				.where('event.type', 'in', [...STATS_EVENT_TYPES])
+				.select([
+					'event.id as id',
+					'event.type as type',
+					'event.issue_id as issue_id',
+					'event.payload as payload',
+					'event.created_at as created_at',
+					'event.actor_api_key_id as actor_api_key_id',
+					sql<number>`CASE WHEN api_key.agent_run_id IS NOT NULL THEN 1 ELSE 0 END`.as(
+						'actor_is_run'
+					)
+				]);
+			if (project) q = q.where('event.project_id', '=', project.id);
+			return q.orderBy('event.created_at').orderBy('event.id').execute();
+		})(),
+		(() => {
+			let q = db
+				.selectFrom('agent_run')
+				.innerJoin('runner', 'runner.id', 'agent_run.runner_id')
+				.innerJoin('issue', 'issue.id', 'agent_run.issue_id')
+				.where('agent_run.user_id', '=', userId)
+				.where('agent_run.created_at', '>=', scanFrom)
+				.select([
+					'agent_run.id as id',
+					'agent_run.issue_id as issue_id',
+					'agent_run.runner_id as runner_id',
+					'runner.name as runner_name',
+					'agent_run.status as status',
+					'agent_run.outcome as outcome',
+					'agent_run.state_id_at_start as state_id_at_start',
+					'agent_run.api_key_id as api_key_id',
+					'agent_run.created_at as created_at',
+					'agent_run.started_at as started_at',
+					'agent_run.ended_at as ended_at'
+				]);
+			if (project) q = q.where('issue.project_id', '=', project.id);
+			return q.execute();
+		})(),
+		db
+			.selectFrom('agent_run')
+			.where('user_id', '=', userId)
+			.where('outcome', 'is not', null)
+			.select((eb) => eb.fn.min<number | null>('ended_at').as('since'))
+			.executeTakeFirst()
+	]);
+
+	const events: StatsEvent[] = [];
+	const advancedByKey = new Set<string>();
+	for (const row of eventRows) {
+		const payload = JSON.parse(row.payload) as Record<string, unknown>;
+		const type = row.type as (typeof STATS_EVENT_TYPES)[number];
+		let toStateId: string | null = null;
+		let fromStateId: string | null = null;
+		if (type === 'issue.transitioned') {
+			fromStateId = (payload.from_state_id as string | undefined) ?? null;
+			toStateId = (payload.to_state_id as string | undefined) ?? null;
+			if (row.actor_api_key_id) advancedByKey.add(row.actor_api_key_id);
+		} else if (type === 'issue.created') {
+			toStateId = (payload.state_id as string | undefined) ?? null;
+		} else {
+			// A workflow change moves the issue but emits `issue.updated`; the
+			// state ids are only on rows written since Tines/257, so an older
+			// row simply closes nothing.
+			if (!payload.workflow_to_id) continue;
+			fromStateId = (payload.from_state_id as string | undefined) ?? null;
+			toStateId = (payload.to_state_id as string | undefined) ?? null;
+			if (!toStateId) continue;
+		}
+		if (!toStateId && !fromStateId) continue;
+		events.push({
+			id: row.id,
+			type,
+			issue_id: row.issue_id as string,
+			created_at: row.created_at,
+			actor_api_key_id: row.actor_api_key_id,
+			actor_is_run: row.actor_is_run === 1,
+			from_state_id: fromStateId,
+			to_state_id: toStateId
+		});
+	}
+
+	return computeStageStats({
+		now,
+		windowMs,
+		compare,
+		states: stateRows.map((s) => ({
+			id: s.id,
+			name: s.name,
+			workflow_id: s.workflow_id,
+			workflow_name: s.workflow_name,
+			category: s.category,
+			position: s.position
+		})),
+		events,
+		runs: runRows.map((r) => ({
+			...r,
+			outcome: (r.outcome as RunEndOutcome | null) ?? null
+		})),
+		advancedByKey,
+		outcomeRecordedSince: outcomeRow?.since ?? null,
+		project
+	});
 }

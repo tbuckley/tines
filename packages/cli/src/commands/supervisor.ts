@@ -4,13 +4,22 @@ import {
 	collect,
 	die,
 	printJson,
+	resolveProject,
 	resolveStateFlag,
 	table,
 	withCommon,
 	type CommonOpts
 } from '../common.js';
 import { hoursLabel, quotaLabel, runnerStatusLabel } from '../format.js';
-import { listAll, utilizationLabel, type QueueGroup } from '@tines/shared';
+import {
+	deltaLabel,
+	durationLabel,
+	listAll,
+	shareLabel,
+	utilizationLabel,
+	type QueueGroup,
+	type StageStats
+} from '@tines/shared';
 import type { Command } from 'commander';
 
 /** One printed block per `(verdict, runner)`, the way the Agents tab groups them. */
@@ -127,6 +136,30 @@ export function queueFix(block: QueueBlock): string | null {
 	}
 }
 
+/**
+ * The outcome mix, with the unrecorded bucket only when it is non-zero and
+ * the deltas blanked when the previous window predates the outcome column —
+ * a fall to zero there would be an artefact of migration 0016, not of work.
+ */
+export function outcomeLabel(stats: StageStats): string {
+	const o = stats.current.runs.outcomes;
+	const parts = [`adv ${o.advanced}`, `stalled ${o.stalled}`, `failed ${o.failed}`];
+	if (o.interrupted > 0) parts.push(`intr ${o.interrupted}`);
+	if (o.unrecorded > 0) parts.push(`unrecorded ${o.unrecorded}`);
+	if (stats.current.runs.active > 0) parts.push(`active ${stats.current.runs.active}`);
+	return parts.join(' · ');
+}
+
+/** The lever behind each column, as commands — the CLI's version of the table's links. */
+export function statsLevers(): string[] {
+	return [
+		'levers:',
+		'  queue wait  tines supervisor quota roster --state <wf>/<state>=<n>',
+		'  runs        tines runs list --state <wf>/<state>',
+		'  sent back   tines context show <wf>/<state> instructions'
+	];
+}
+
 export function register(program: Command): void {
 	const supervisor = program
 		.command('supervisor')
@@ -207,6 +240,47 @@ export function register(program: Command): void {
 				])
 			);
 		}
+	});
+
+	withCommon(
+		supervisor
+			.command('stats')
+			.description('Per-stage flow this week: queue wait, work time, runs per visit, sent back')
+			.option('--window <window>', 'Rolling window, e.g. 24h or 7d', '7d')
+			.option('--project <ref>', 'Narrow to one project (id or name)')
+	).action(async (opts: CommonOpts & { window?: string; project?: string }) => {
+		const api = client(opts);
+		const project = opts.project ? await resolveProject(api, opts.project) : null;
+		const report = await api.getSupervisorStats({
+			window: opts.window,
+			project: project?.id ?? undefined
+		});
+		if (opts.json) return printJson(report);
+		if (report.states.length === 0) {
+			console.log('No agent stage saw work in the last window.');
+			return;
+		}
+		const windowLabel = opts.window ?? '7d';
+		console.log(
+			`this week (${windowLabel}${report.project ? `, project ${report.project.name}` : ''})` +
+				`${report.previous ? ` — vs the ${windowLabel} before` : ''}`
+		);
+		table([
+			['  stage', 'visits', 'queue p50', 'p90', 'work p50', 'runs/visit', 'ended', 'sent back'],
+			...report.states.map((s) => [
+				`  ${s.workflow_name}/${s.state_name}`,
+				`${s.current.visits}·${s.current.exits} ${deltaLabel(s.delta.visits, 'count')}`.trim(),
+				`${durationLabel(s.current.queue_wait?.p50 ?? null)} ${deltaLabel(s.delta.queue_wait_p50, 'ms')}`.trim(),
+				durationLabel(s.current.queue_wait?.p90 ?? null),
+				`${durationLabel(s.current.work?.p50 ?? null)} ${deltaLabel(s.delta.work_p50, 'ms')}`.trim(),
+				s.current.runs.per_visit === null
+					? '—'
+					: `${s.current.runs.per_visit.toFixed(1)} ${deltaLabel(s.delta.runs_per_visit, 'ratio')}`.trim(),
+				outcomeLabel(s),
+				`${s.current.sent_back.count} of ${s.current.exits} (${shareLabel(s.current.sent_back.share)}) · agents ${s.current.sent_back.agent} ${deltaLabel(s.delta.sent_back_share, 'share')}`.trim()
+			])
+		]);
+		for (const line of statsLevers()) console.log(line);
 	});
 
 	withCommon(
