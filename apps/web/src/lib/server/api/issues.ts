@@ -4,6 +4,7 @@ import {
 	templateVars,
 	type AllowedTransition,
 	type ArchivedFilter,
+	type ArrivedVia,
 	type ArtifactRequirementCheck,
 	type Comment,
 	type CreateCommentRequest,
@@ -173,7 +174,36 @@ export function issueQuery(db: Kysely<Database>, userId: string) {
 					WHERE ar.issue_id = issue.id AND ar.status IN ('assigned', 'launching', 'running')
 					ORDER BY ar.created_at DESC
 					LIMIT 1
-				)`.as('active_run_json')
+				)`.as('active_run_json'),
+				// The handoff derivations below are for awaiting-human rows only
+				// — SQLite short-circuits CASE, so active rows (and the dispatch
+				// path's loadIssue) run neither subquery. Both hit event_issue_id_idx.
+				//
+				// The transition into the current state. The `created_at >=
+				// state_entered_at` guard is what nulls this after a workflow
+				// change, which re-stamps state_entered_at without transitioning.
+				sql<string | null>`CASE WHEN COALESCE(eff_state.category, state.category) = 'awaiting_human' THEN (
+					SELECT json_object(
+						'action', json_extract(av.payload, '$.action'),
+						'from_state_name', json_extract(av.payload, '$.from_state_name'),
+						'by_run', avk.agent_run_id IS NOT NULL,
+						'at', av.created_at)
+					FROM event av
+					LEFT JOIN api_key avk ON avk.id = av.actor_api_key_id
+					WHERE av.issue_id = issue.id AND av.type = 'issue.transitioned'
+						AND av.created_at >= COALESCE(issue.state_entered_at, issue.created_at)
+					ORDER BY av.created_at DESC, av.id DESC
+					LIMIT 1
+				) END`.as('arrived_via_json'),
+				// Where the current round starts: the last human-taken
+				// transition, else the issue's creation. Feeds round_summary.
+				sql<number | null>`CASE WHEN COALESCE(eff_state.category, state.category) = 'awaiting_human' THEN COALESCE((
+					SELECT MAX(rb.created_at)
+					FROM event rb
+					LEFT JOIN api_key rbk ON rbk.id = rb.actor_api_key_id
+					WHERE rb.issue_id = issue.id AND rb.type = 'issue.transitioned'
+						AND (rb.actor_api_key_id IS NULL OR rbk.agent_run_id IS NULL)
+				), issue.created_at) END`.as('round_boundary_at')
 			])
 			.select((eb) =>
 				eb
@@ -187,6 +217,12 @@ export function issueQuery(db: Kysely<Database>, userId: string) {
 }
 
 type IssueRow = Awaited<ReturnType<ReturnType<typeof issueQuery>['execute']>>[number];
+
+/** `by_run` crosses SQLite's JSON as 0/1; everything else is already shaped. */
+function parseArrivedVia(json: string): ArrivedVia {
+	const raw = JSON.parse(json) as Omit<ArrivedVia, 'by_run'> & { by_run: number | boolean };
+	return { ...raw, by_run: Boolean(raw.by_run) };
+}
 
 export function serializeIssue(row: IssueRow): Issue {
 	return {
@@ -225,6 +261,7 @@ export function serializeIssue(row: IssueRow): Issue {
 		active_run: row.active_run_json
 			? (JSON.parse(row.active_run_json) as Issue['active_run'])
 			: null,
+		arrived_via: row.arrived_via_json ? parseArrivedVia(row.arrived_via_json) : null,
 		// Backfilled with created_at by migration 0011; the fallback covers
 		// rows inserted without the column (e.g. raw test fixtures).
 		state_entered_at: Number(row.state_entered_at ?? row.created_at),

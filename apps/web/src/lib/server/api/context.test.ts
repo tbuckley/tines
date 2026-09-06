@@ -157,6 +157,7 @@ const issue: IssueDetail = {
 	title: 'Ship the thing',
 	description: 'Do it *well*.',
 	labels: [],
+	arrived_via: null,
 	workflow_id: 'wf_1',
 	state: {
 		id: 's_review',
