@@ -7,6 +7,7 @@
  */
 import type {
 	AgentRun,
+	ArrivedVia,
 	Artifact,
 	ArtifactRequirementCheck,
 	ArtifactVersion,
@@ -14,9 +15,14 @@ import type {
 	ContextItem,
 	LinkedIssue,
 	QuotaPolicy,
+	Round,
+	RoundArtifactChange,
+	RoundRun,
+	RoundSummary,
 	RoutingRule,
 	Runner,
-	Schedule
+	Schedule,
+	SinceLastRun
 } from '@tines/shared';
 import {
 	actorLabel,
@@ -198,6 +204,109 @@ export function quotaLabel(quota: QuotaPolicy, stateName?: (id: string) => strin
 export function commentLines(comment: Comment): string[] {
 	const header = `  [${timestamp(comment.created_at)}] ${actorLabel(comment.actor)} (${comment.id})${comment.updated_at ? ' (edited)' : ''}:`;
 	return ['', header, ...comment.body.split('\n').map((line) => `  ${line}`)];
+}
+
+/**
+ * "since the last run" for `issues show` on an active issue: the human's steer
+ * that started this round, comments and all.
+ */
+export function sinceLastRunLines(since: SinceLastRun, now: number = Date.now()): string[] {
+	const prev = since.previous_run;
+	const ended = prev.ended_at === null ? 'not ended' : `ended ${sharedAgeLabel(prev.ended_at, now)} ago`;
+	const lines = [`since the last run (${prev.state_at_start_name ?? 'unknown state'}, ${prev.run_id} ${ended}):`];
+	const t = since.transition;
+	if (t) {
+		const via = t.action ? `via "${t.action}"` : 'moved directly';
+		const stale =
+			since.stale_artifacts.length > 0 ? ` — now stale: ${since.stale_artifacts.join(', ')}` : '';
+		lines.push(
+			`  moved from ${t.from_state.name} ${via} by ${actorLabel(t.actor)} ${sharedAgeLabel(t.at, now)} ago${stale}`
+		);
+	}
+	for (const c of since.comments) lines.push(...commentLines(c));
+	if (since.comment_count > since.comments.length) {
+		lines.push(`  … and ${since.comment_count - since.comments.length} earlier comments`);
+	}
+	return lines;
+}
+
+/** "round" for `issues show` on an awaiting-human issue: what came back. */
+export function roundLines(round: Round, now: number = Date.now()): string[] {
+	const b = round.boundary;
+	const from = b
+		? `since ${actorLabel(b.actor)} ${b.action ? `moved "${b.action}"` : 'moved it directly'} ${timestamp(b.at)}`
+		: `since created ${timestamp(round.boundary_at)}`;
+	const lines = [`round (${round.run_count} run${round.run_count === 1 ? '' : 's'} ${from}):`];
+	for (const stage of round.stages) {
+		for (let i = 0; i < stage.runs.length; i += 1) {
+			const run = stage.runs[i];
+			if (i === 0) lines.push(`  ${stage.state.name ?? stage.state.id} — ${runHeadline(run, now)}`);
+			else lines.push(`    ${earlierAttemptLine(run, now)}`);
+			if (i > 0) continue;
+			if (run.artifacts.length > 0) {
+				lines.push(`    ${run.artifacts.map(artifactChangeLabel).join(' · ')}`);
+			}
+			if (run.summary_comment) {
+				lines.push(`    summary (${run.summary_comment.id}):`);
+				for (const line of run.summary_comment.body.split('\n')) lines.push(`      ${line}`);
+			}
+			if (run.earlier_comment_ids.length > 0) {
+				lines.push(`    ${run.earlier_comment_ids.length} earlier comments: ${run.earlier_comment_ids.join(', ')}`);
+			}
+		}
+		// Earlier attempts fold to their one line above; only the stage's latest
+		// run spells out its artifacts and summary.
+		const folded = stage.runs.length - 1;
+		if (folded > 0) lines.push(`    ${folded} earlier attempt${folded === 1 ? '' : 's'} folded above`);
+	}
+	return lines;
+}
+
+function runHeadline(run: RoundRun, now: number): string {
+	const cost = runCostLabel(run);
+	return [
+		`${run.run_id} on ${run.runner_name}`,
+		runDurationLabel(run, now),
+		run.outcome ?? run.status,
+		...(cost ? [cost] : []),
+		run.transition ? `"${run.transition.action ?? 'moved directly'}" → ${run.transition.to_state.name}` : 'no transition'
+	].join(' · ');
+}
+
+function earlierAttemptLine(run: RoundRun, now: number): string {
+	const back = run.returned_via;
+	const how = back
+		? back.action
+			? `sent back by ${back.from_state.name} ("${back.action}")`
+			: 'moved directly back'
+		: 'never came back';
+	return `${run.run_id} · ${runDurationLabel(run, now)} · ${run.outcome ?? run.status} · ${how}`;
+}
+
+function artifactChangeLabel(a: RoundArtifactChange): string {
+	const versions = a.from_version === null ? `v${a.to_version}` : `v${a.from_version} → v${a.to_version}`;
+	const extra = a.pr_url
+		? ` (${a.pr_url})`
+		: a.files
+			? ` (${a.files.length} file${a.files.length === 1 ? '' : 's'})`
+			: '';
+	return `${a.name} ${versions}${extra}`;
+}
+
+/** The VIA column: how an awaiting issue arrived where it is. */
+export function arrivedViaLabel(via: ArrivedVia | null): string {
+	if (!via) return '—';
+	return via.action ?? 'moved directly';
+}
+
+/** The ROUND column: the pull request and artifacts the round produced. */
+export function roundSummaryLabel(summary: RoundSummary | null): string {
+	if (!summary) return '—';
+	const parts = [
+		...(summary.pr_url ? [`PR ${summary.pr_url.split('/').pop()}`] : []),
+		...summary.artifacts.map((a) => `${a.name} v${a.version}`)
+	];
+	return parts.length > 0 ? parts.join(' · ') : '—';
 }
 
 export function runRow(run: AgentRun): string[] {
