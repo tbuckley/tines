@@ -78,7 +78,11 @@ function attachFlag(type: ArtifactType, slot: string, contentType: string | unde
  * `attach <ref> prd prd.md` under a `(text, text/plain)` gate stores
  * `text/plain` — no `--content-type` tail needed (Tines/255).
  */
-function positionalSource(type: ArtifactType, slot: string, contentType: string | undefined): string {
+function positionalSource(
+	type: ArtifactType,
+	slot: string,
+	contentType: string | undefined
+): string {
 	switch (type) {
 		case 'file':
 			return '<path>';

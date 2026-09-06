@@ -828,7 +828,7 @@ export function register(program: Command): void {
 		artifactsCmd
 			.command('attach <ref> <name> [source]')
 			.description(
-				'Attach content to a named artifact slot (creates it, or appends the next version)'
+				'Attach content to a named artifact slot — <source> is typed by the gate, flags override (creates it, or appends a version)'
 			)
 			.option('-f, --file <path>', 'upload a file (MIME sniffed from the extension)')
 			.option(

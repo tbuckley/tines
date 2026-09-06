@@ -550,6 +550,8 @@ export function gateLabel(
 /** The `--help` epilogue: the typing rules, written where the reader is choosing a source. */
 export const ATTACH_SOURCE_HELP = `
 Source:
+  Prefer the positional form: it is what a gated slot's own hint prints
+  ("fix:" on \`tines issues show\`, and the launch prompt's Requires: line).
   A positional <source> is typed by the slot's gate when this issue has one:
   a text gate reads the path as the document (the gate's content type wins over
   the extension), a file gate uploads its bytes, a folder gate walks it, and a

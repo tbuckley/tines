@@ -47,8 +47,10 @@ describe('requirementFix', () => {
 			'tines issues artifacts attach demo/1 design-doc --file <path>'
 		);
 		expect(
-			requirementFix(check({ status: 'satisfied', current_type: 'text', current_version: version }), 'demo/1')
-				.command
+			requirementFix(
+				check({ status: 'satisfied', current_type: 'text', current_version: version }),
+				'demo/1'
+			).command
 		).toBe('tines issues artifacts attach demo/1 design-doc --text <markdown|@file>');
 		expect(
 			requirementFix(
@@ -75,9 +77,9 @@ describe('requirementFix', () => {
 			requirementFix(check({ type: 'text', content_type: 'text/plain' }), 'demo/1').command
 		).toBe('tines issues artifacts attach demo/1 design-doc design-doc.txt');
 		// A prefix gate names no single file, so the generic path stands.
-		expect(
-			requirementFix(check({ type: 'text', content_type: 'text/' }), 'demo/1').command
-		).toBe('tines issues artifacts attach demo/1 design-doc <path>');
+		expect(requirementFix(check({ type: 'text', content_type: 'text/' }), 'demo/1').command).toBe(
+			'tines issues artifacts attach demo/1 design-doc <path>'
+		);
 		// The filename follows the slot, not the type.
 		expect(
 			requirementFix(

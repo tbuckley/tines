@@ -323,7 +323,9 @@ describe('issue artifacts', () => {
 		// Two commands, two fields: the primary `fix` runs on its own, and the
 		// reaffirm rides beside it rather than inside it (Tines/255).
 		expect(unmet.get('notes')!.fix).not.toContain('reaffirm');
-		expect(unmet.get('notes')!.fix_alternative).toBe('tines issues artifacts reaffirm demo/1 notes');
+		expect(unmet.get('notes')!.fix_alternative).toBe(
+			'tines issues artifacts reaffirm demo/1 notes'
+		);
 
 		// Wrong immutable type: a same-name attach would 422, so the fix
 		// deletes the slot before re-attaching the required type.
