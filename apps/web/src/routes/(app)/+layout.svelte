@@ -13,6 +13,7 @@
 	import { api } from '$lib/api';
 	import { authClient } from '$lib/auth-client';
 	import ProjectSwitcher from '$lib/components/ProjectSwitcher.svelte';
+	import { focusHint } from '$lib/focus.svelte';
 	import { prefersReducedMotion } from '$lib/format';
 	import { navMemory } from '$lib/nav-memory.svelte';
 	import { fade } from 'svelte/transition';
@@ -36,8 +37,14 @@
 	// there are two projects to move between (Tines/259).
 	const showSwitcher = $derived(data.projects.length >= 2);
 
+	// The chrome's answer to "what am I looking at": the layout's own data,
+	// unless the client has set the focus since (opening a project page does),
+	// which it records as a hint rather than paying for a load rerun.
+	const focus = $derived(focusHint.project !== undefined ? focusHint.project : data.focus);
+
 	async function chooseFocus(projectId: string | null) {
 		await api.updatePreferences({ focused_project_id: projectId });
+		focusHint.clear();
 		// Every list that reads the focus has to refetch, not just the layout.
 		await invalidateAll();
 	}
@@ -118,7 +125,7 @@
 			{#if showSwitcher}
 				<ProjectSwitcher
 					projects={data.projects}
-					focus={data.focus}
+					{focus}
 					variant="header"
 					onchoose={chooseFocus}
 				/>
@@ -228,7 +235,7 @@
 					<!-- Same list as the desktop header, opening upward as a sheet. -->
 					<ProjectSwitcher
 						projects={data.projects}
-						focus={data.focus}
+						{focus}
 						variant="tab"
 						onchoose={chooseFocus}
 					/>

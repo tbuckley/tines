@@ -6,7 +6,8 @@
 	import IconPlus from '@tabler/icons-svelte/icons/plus';
 	import IconSettings from '@tabler/icons-svelte/icons/settings';
 	import { slide } from 'svelte/transition';
-	import { goto, invalidate, invalidateAll } from '$app/navigation';
+	import { goto, invalidateAll } from '$app/navigation';
+	import { focusHint } from '$lib/focus.svelte';
 	import { page } from '$app/state';
 	import { api } from '$lib/api';
 	import AgentRoutingCard from '$lib/components/AgentRoutingCard.svelte';
@@ -39,15 +40,17 @@
 
 	// Opening a project focuses it (Tines/259). Client-side on purpose: doing it
 	// in the load would fire on hover, because the app preloads links on hover.
-	// An archived project cannot be a focus, and a project already focused is a
-	// no-op — that guard is what stops the invalidate below re-firing this.
+	// The chrome is told optimistically rather than by an `invalidate`, whose
+	// load rerun swallowed a link click that landed in its window; the page's
+	// own data is already scoped, so nothing else here has to refetch.
 	$effect(() => {
-		if (data.project.archived_at !== null || data.focus?.id === data.project.id) return;
-		api
-			.updatePreferences({ focused_project_id: data.project.id })
-			// Only the chrome changes; the page's own data is already scoped.
-			.then(() => invalidate('app:preferences'))
-			.catch(() => {});
+		if (data.project.archived_at !== null) return;
+		if (focusHint.project?.id === data.project.id) return;
+		focusHint.set(data.project);
+		api.updatePreferences({ focused_project_id: data.project.id }).catch(() => {
+			// The chrome must not claim a focus the server refused.
+			focusHint.clear();
+		});
 	});
 
 	/** An archived project reads normally and writes nowhere. */
