@@ -67,6 +67,9 @@ function stateScope(
 		workflow_name: workflow.name,
 		issue_id: null,
 		issue_ref: null,
+		label_id: null,
+		label_name: null,
+		label_color: null,
 		label: `project ${issue.project_name} · state ${state.name}`
 	};
 }

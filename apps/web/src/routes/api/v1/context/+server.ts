@@ -23,6 +23,7 @@ export const GET: RequestHandler = api(async (event) => {
 			project: params.get('project') ?? undefined,
 			state: params.get('state') ?? undefined,
 			issue: params.get('issue') ?? undefined,
+			label: params.get('label') ?? undefined,
 			q: params.get('q') ?? undefined,
 			exact: ['1', 'true'].includes(params.get('exact') ?? ''),
 			archived: readArchived(params)

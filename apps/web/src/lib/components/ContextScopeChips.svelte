@@ -1,13 +1,15 @@
 <script lang="ts">
 	import type { ContextScope } from '@tines/shared';
+	import LabelChip from './LabelChip.svelte';
 	import IconFolder from '@tabler/icons-svelte/icons/folder';
 	import IconListDetails from '@tabler/icons-svelte/icons/list-details';
 	import IconSitemap from '@tabler/icons-svelte/icons/sitemap';
 	import IconWorld from '@tabler/icons-svelte/icons/world';
 
 	/**
-	 * Compact chips for a scope, in the canonical project · state · issue
-	 * order. `link` renders project/issue chips as links to their pages.
+	 * Compact chips for a scope, in the canonical project · state · label ·
+	 * issue order. `link` renders project/issue/label chips as links to their
+	 * pages.
 	 *
 	 * The state chip reads `{workflow} / {state}` — the form the item
 	 * editor's "Only in state" select uses — because a state name alone
@@ -25,7 +27,7 @@
 </script>
 
 <span class="inline-flex flex-wrap items-center gap-1">
-	{#if !scope.project_id && !scope.workflow_state_id && !scope.issue_id}
+	{#if !scope.project_id && !scope.workflow_state_id && !scope.label_id && !scope.issue_id}
 		<span class={chipClass} title="Global — applies to every launch prompt">
 			<IconWorld size={12} stroke={1.75} /> global
 		</span>
@@ -57,6 +59,28 @@
 				? scope.workflow_state_name
 				: `${scope.workflow_name} / ${scope.workflow_state_name}`}
 		</span>
+	{/if}
+	{#if scope.label_id && scope.label_name}
+		<!-- The issue label keeps its own colour here rather than wearing the
+		     grey `chipClass`: it is the same object the issue rows show, and a
+		     reader matches it by colour before they read it. -->
+		{#if link}
+			<a href="/context?label={scope.label_id}" title="label {scope.label_name}">
+				<LabelChip
+					label={{ name: scope.label_name, color: scope.label_color ?? 'slate' }}
+					size="sm"
+					variant="dot"
+				/>
+			</a>
+		{:else}
+			<span title="label {scope.label_name}">
+				<LabelChip
+					label={{ name: scope.label_name, color: scope.label_color ?? 'slate' }}
+					size="sm"
+					variant="dot"
+				/>
+			</span>
+		{/if}
 	{/if}
 	{#if scope.issue_id && scope.issue_ref}
 		{#if link}

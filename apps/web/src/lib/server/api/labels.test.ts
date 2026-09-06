@@ -1,6 +1,6 @@
 import { compareLabelNames, defaultLabelColor, LABEL_COLORS } from '@tines/shared';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { PROJECT, USER, addIssue, seedBase } from '../supervisor/test-fixtures';
+import { PROJECT, USER, addIssue, addRunner, seedBase } from '../supervisor/test-fixtures';
 import { ApiFail, isControlPlanePath, runAtomic, type ActorContext } from './core';
 import { listIssues } from './issues';
 import {
@@ -15,6 +15,8 @@ import {
 	resolveOrCreateLabels,
 	updateLabel
 } from './labels';
+import { createContextItem } from './context';
+import { createRoutingRule, listRoutingRules } from './routing';
 import { createTestDb, type TestDb } from './test-db';
 
 const human: ActorContext = {
@@ -126,7 +128,12 @@ describe('the label library', () => {
 		const issue = addIssue(t, { title: 'a' });
 		await addIssueLabels(t.db, t.env, human, issue, ['bug']);
 		const res = await deleteLabel(t.db, t.env, human, 'bug');
-		expect(res).toEqual({ deleted: true, issue_count: 1 });
+		expect(res).toEqual({
+			deleted: true,
+			issue_count: 1,
+			context_items_deleted: [],
+			routing_rules_deleted: []
+		});
 		expect(await names()).toEqual([]);
 		const { items } = await listIssues(t.db, USER, {}, { cursor: null, limit: 10 });
 		expect(items[0].labels).toEqual([]);
@@ -238,6 +245,112 @@ describe('applying labels to an issue', () => {
 			status: 404,
 			code: 'label_not_on_issue'
 		});
+	});
+});
+
+describe('deleting a label that scopes context or routing', () => {
+	/** A `docs` label scoping one skill and one rule. */
+	async function scoped(): Promise<{ labelId: string; runner: string }> {
+		const label = await createLabel(t.db, t.env, human, { name: 'docs' });
+		const runner = addRunner(t);
+		await createContextItem(t.db, t.env, human, {
+			kind: 'skill',
+			name: 'docs-audit',
+			files: [{ path: 'SKILL.md', content: 'audit the docs' }],
+			project_id: PROJECT,
+			label_id: label.id
+		});
+		await createRoutingRule(t.db, t.env, human, {
+			label_id: label.id,
+			targets: [{ runner_id: runner }]
+		});
+		return { labelId: label.id, runner };
+	}
+
+	it('422s naming both the items and the rules it scopes', async () => {
+		await scoped();
+		await expect(deleteLabel(t.db, t.env, human, 'docs')).rejects.toMatchObject({
+			status: 422,
+			code: 'label_in_use',
+			details: {
+				context_items: [{ kind: 'skill', name: 'docs-audit' }],
+				routing_rules: [{ scope_label: 'label docs' }]
+			}
+		});
+		// Nothing was touched by the refusal.
+		expect(await names()).toEqual(['docs']);
+		expect(t.all(`SELECT id FROM context_item`)).toHaveLength(1);
+		expect((await listRoutingRules(t.db, USER)).length).toBe(1);
+	});
+
+	it('force deletes the rule with the label rather than broadening it', async () => {
+		await scoped();
+		const res = await deleteLabel(t.db, t.env, human, 'docs', { force: true });
+		expect(res.context_items_deleted.map((i) => i.name)).toEqual(['docs-audit']);
+		expect(res.routing_rules_deleted.map((r) => r.scope_label)).toEqual(['label docs']);
+		expect(await names()).toEqual([]);
+		expect(t.all(`SELECT id FROM context_item`)).toEqual([]);
+		// Deleted, not label-stripped: a surviving rule would silently route
+		// everything the label used to narrow.
+		expect(await listRoutingRules(t.db, USER)).toEqual([]);
+		expect(t.all(`SELECT type FROM event WHERE type = 'routing_rule.deleted'`)).toHaveLength(1);
+	});
+
+	it('a label nothing scopes still deletes without force', async () => {
+		await createLabel(t.db, t.env, human, { name: 'spare' });
+		expect((await deleteLabel(t.db, t.env, human, 'spare')).deleted).toBe(true);
+	});
+});
+
+describe('run keys and labels a routing rule is scoped to (D4)', () => {
+	async function routedLabel(): Promise<string> {
+		const label = await createLabel(t.db, t.env, human, { name: 'docs' });
+		const runner = addRunner(t);
+		await createRoutingRule(t.db, t.env, human, {
+			label_id: label.id,
+			targets: [{ runner_id: runner }]
+		});
+		return label.id;
+	}
+
+	it('refuses to let a run key apply one, and writes nothing', async () => {
+		await routedLabel();
+		const issue = addIssue(t, { title: 'a' });
+		await expect(addIssueLabels(t.db, t.env, runKey, issue, ['docs'])).rejects.toMatchObject({
+			status: 403,
+			code: 'run_key_forbidden',
+			details: { reason: 'routing_label', labels: ['docs'] }
+		});
+		const { items } = await listIssues(t.db, USER, {}, { cursor: null, limit: 10 });
+		expect(items[0].labels).toEqual([]);
+	});
+
+	it('refuses to let a run key remove one', async () => {
+		await routedLabel();
+		const issue = addIssue(t, { title: 'a' });
+		await addIssueLabels(t.db, t.env, human, issue, ['docs']);
+		await expect(removeIssueLabel(t.db, t.env, runKey, issue, 'docs')).rejects.toMatchObject({
+			status: 403,
+			details: { reason: 'routing_label' }
+		});
+		const { items } = await listIssues(t.db, USER, {}, { cursor: null, limit: 10 });
+		expect(items[0].labels.map((l) => l.name)).toEqual(['docs']);
+	});
+
+	it('leaves a label no rule routes on freely self-applicable', async () => {
+		await routedLabel();
+		await createLabel(t.db, t.env, human, { name: 'flaky' });
+		const issue = addIssue(t, { title: 'a' });
+		const res = await addIssueLabels(t.db, t.env, runKey, issue, ['flaky']);
+		expect(res.added.map((l) => l.name)).toEqual(['flaky']);
+		await removeIssueLabel(t.db, t.env, runKey, issue, 'flaky');
+	});
+
+	it('does not fence a human or a named key', async () => {
+		await routedLabel();
+		const issue = addIssue(t, { title: 'a' });
+		const res = await addIssueLabels(t.db, t.env, human, issue, ['docs']);
+		expect(res.added.map((l) => l.name)).toEqual(['docs']);
 	});
 });
 

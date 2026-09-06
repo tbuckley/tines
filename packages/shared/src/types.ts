@@ -293,6 +293,10 @@ export interface Label {
 /** A label in the library listing, with how many issues carry it. */
 export interface LabelWithUsage extends Label {
 	issue_count: number;
+	/** Context items scoped to this label. */
+	context_item_count: number;
+	/** Routing rules scoped to this label. */
+	routing_rule_count: number;
 }
 
 /** The denormalized form that rides along on every issue read. */
@@ -311,10 +315,23 @@ export interface UpdateLabelRequest {
 	description?: string;
 }
 
+export interface DeleteLabelRequest {
+	/**
+	 * Delete the context items and routing rules scoped to this label along
+	 * with it. Without it, a label that scopes anything is refused (422
+	 * `label_in_use`) — deleting scope silently is how a rule gets broadened.
+	 */
+	force?: boolean;
+}
+
 export interface DeleteLabelResponse {
 	deleted: true;
 	/** How many issues carried the label when it was deleted. */
 	issue_count: number;
+	/** Context items deleted with the label (`force` only). */
+	context_items_deleted: { id: string; kind: ContextKind; name: string; scope_label: string }[];
+	/** Routing rules deleted with the label (`force` only). */
+	routing_rules_deleted: { id: string; scope_label: string }[];
 }
 
 export interface AddIssueLabelsRequest {
@@ -684,6 +701,14 @@ export interface ContextScope {
 	workflow_name: string | null;
 	issue_id: string | null;
 	issue_ref: { project_name: string; number: number } | null;
+	/**
+	 * The scope's issue label, if any. Set-valued on the target side: the
+	 * scope matches an issue that *carries* this label among its labels.
+	 */
+	label_id: string | null;
+	label_name: string | null;
+	label_color: LabelColor | null;
+	/** The canonical display string — a scope label, not an issue label. */
 	label: string;
 }
 
@@ -726,6 +751,7 @@ export interface CreateContextItemRequest {
 	project_id?: string | null;
 	workflow_state_id?: string | null;
 	issue_id?: string | null;
+	label_id?: string | null;
 	/** prompt */
 	body?: string;
 	/** skill */
@@ -747,6 +773,7 @@ export interface UpdateContextItemRequest {
 	project_id?: string | null;
 	workflow_state_id?: string | null;
 	issue_id?: string | null;
+	label_id?: string | null;
 	position?: number;
 	body?: string;
 	files?: ContextFile[];
@@ -780,6 +807,8 @@ export interface ContextListFilters {
 	state?: string;
 	/** Issue id. */
 	issue?: string;
+	/** Label id or name. */
+	label?: string;
 	/** Name/description search. */
 	q?: string;
 	exact?: boolean;
@@ -1534,6 +1563,14 @@ export interface RoutingRule {
 
 /** An authoring-time note that another rule shadows (or is shadowed by) this one. */
 export interface ShadowWarning {
+	/**
+	 * `shadowed` — the named rule is more specific and wins for issues both
+	 * match; `shadows` — this rule wins over the named one; `ambiguous` — the
+	 * two tie, so an issue matching both dispatches to neither until one is
+	 * made more specific. Only labels can produce a tie (an issue carries a
+	 * set of them), so `ambiguous` never appears for project/state scopes.
+	 */
+	kind: 'shadowed' | 'shadows' | 'ambiguous';
 	rule_id: string;
 	scope_label: string;
 	message: string;
@@ -1547,6 +1584,7 @@ export interface RoutingRuleWithWarnings extends RoutingRule {
 export interface CreateRoutingRuleRequest {
 	project_id?: string | null;
 	workflow_state_id?: string | null;
+	label_id?: string | null;
 	targets: RoutingTarget[];
 }
 
@@ -1554,6 +1592,7 @@ export interface UpdateRoutingRuleRequest {
 	/** Scope is merge-patched: omitted = unchanged, explicit null = unset. */
 	project_id?: string | null;
 	workflow_state_id?: string | null;
+	label_id?: string | null;
 	targets?: RoutingTarget[];
 }
 
@@ -1737,8 +1776,14 @@ export interface DispatchExplainer {
 	checks: DispatchCheck[];
 	/** The pin, when set (replaces rule matching entirely). */
 	pin: { runner_id: string; runner_name: string | null; tier: ModelTier | null } | null;
-	/** The winning rule; null when pinned or nothing matches. */
+	/** The winning rule; null when pinned, nothing matches, or two rules tie. */
 	matched_rule: { rule_id: string; scope_label: string } | null;
+	/**
+	 * The rules that tied, when two label rules match an issue at equal
+	 * specificity: the issue does not dispatch until one is made more
+	 * specific. Empty in every other case.
+	 */
+	ambiguous_rules: { rule_id: string; scope_label: string }[];
 	/** Per-target verdicts, in preference order. */
 	targets: DispatchTarget[];
 	parked: boolean;
@@ -1931,6 +1976,8 @@ export const LIBRARY_MAX_ENTRIES = 1000;
 export interface LibraryScopeRef {
 	project?: string;
 	state?: { workflow: string; name: string };
+	/** Issue label by name; created on import when this deployment lacks it. */
+	label?: string;
 }
 
 /** A project carried only as a scope referent — no issues come with it. */

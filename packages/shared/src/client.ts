@@ -5,6 +5,7 @@ import type {
 	AgentRunDetail,
 	ApiErrorBody,
 	CreateLabelRequest,
+	DeleteLabelRequest,
 	DeleteLabelResponse,
 	Label,
 	LabelWithUsage,
@@ -288,8 +289,12 @@ export function createApiClient(options: ApiClientOptions) {
 		createLabel: (body: CreateLabelRequest) => request<Label>('POST', '/api/v1/labels', body),
 		updateLabel: (labelRef: string, body: UpdateLabelRequest) =>
 			request<Label>('PATCH', `/api/v1/labels/${encodeURIComponent(labelRef)}`, body),
-		deleteLabel: (labelRef: string) =>
-			request<DeleteLabelResponse>('DELETE', `/api/v1/labels/${encodeURIComponent(labelRef)}`),
+		deleteLabel: (labelRef: string, body: DeleteLabelRequest = {}) =>
+			request<DeleteLabelResponse>(
+				'DELETE',
+				`/api/v1/labels/${encodeURIComponent(labelRef)}`,
+				body
+			),
 		addIssueLabels: (issueId: string, labels: string[]) =>
 			request<AddIssueLabelsResponse>('POST', `/api/v1/issues/${issueId}/labels`, { labels }),
 		removeIssueLabel: (issueId: string, labelRef: string) =>

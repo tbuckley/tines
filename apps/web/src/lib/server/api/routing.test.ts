@@ -12,23 +12,43 @@ import {
 } from './routing';
 
 describe('ruleSpecificity', () => {
-	it('orders project ∧ state > project > state > global', () => {
+	it('orders the eight scopes, label above project above state', () => {
 		const scopes = [
 			{}, // global
-			{ workflowStateId: 's' }, // state
+			{ workflowStateId: 's', labelId: null }, // state
 			{ projectId: 'p' }, // project — deliberately above state, unlike context
-			{ projectId: 'p', workflowStateId: 's' } // project ∧ state
+			{ projectId: 'p', workflowStateId: 's', labelId: null }, // project ∧ state
+			{ labelId: 'l' }, // label
+			{ labelId: 'l', workflowStateId: 's' },
+			{ labelId: 'l', projectId: 'p' },
+			{ labelId: 'l', projectId: 'p', workflowStateId: 's' }
 		];
-		expect(scopes.map(ruleSpecificity)).toEqual([0, 1, 2, 3]);
+		expect(scopes.map(ruleSpecificity)).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
+	});
+
+	it('adding label left every pre-label scope at its old rank', () => {
+		// The point of the high bit: no rule that existed before labels
+		// changed rank, so nothing silently re-routed when the column landed.
+		expect(ruleSpecificity({ workflowStateId: 's', labelId: null })).toBe(1);
+		expect(ruleSpecificity({ projectId: 'p', labelId: null })).toBe(2);
+		expect(ruleSpecificity({ projectId: 'p', workflowStateId: 's', labelId: null })).toBe(3);
+	});
+
+	it('a bare label rule outranks project ∧ state', () => {
+		// "anything labelled security stays on the laptop" has to beat a
+		// project rule, or the guarantee is not one.
+		expect(ruleSpecificity({ labelId: 'l' })).toBeGreaterThan(
+			ruleSpecificity({ projectId: 'p', workflowStateId: 's', labelId: null })
+		);
 	});
 });
 
 describe('ruleScopesOverlap', () => {
-	const global = { projectId: null, workflowStateId: null };
-	const projectA = { projectId: 'pA', workflowStateId: null };
-	const projectB = { projectId: 'pB', workflowStateId: null };
-	const stateReview = { projectId: null, workflowStateId: 'sR' };
-	const comboAReview = { projectId: 'pA', workflowStateId: 'sR' };
+	const global = { projectId: null, workflowStateId: null, labelId: null };
+	const projectA = { projectId: 'pA', workflowStateId: null, labelId: null };
+	const projectB = { projectId: 'pB', workflowStateId: null, labelId: null };
+	const stateReview = { projectId: null, workflowStateId: 'sR', labelId: null };
+	const comboAReview = { projectId: 'pA', workflowStateId: 'sR', labelId: null };
 
 	it('global overlaps everything', () => {
 		for (const scope of [global, projectA, stateReview, comboAReview]) {
@@ -44,32 +64,90 @@ describe('ruleScopesOverlap', () => {
 		expect(ruleScopesOverlap(projectA, projectB)).toBe(false);
 	});
 
+	it('two different labels always overlap — an issue carries a set of them', () => {
+		// The one place labels differ from every other dimension, and the
+		// reason equal-specificity ties became reachable.
+		const design = { projectId: null, workflowStateId: null, labelId: 'l_design' };
+		const qa = { projectId: null, workflowStateId: null, labelId: 'l_qa' };
+		expect(ruleScopesOverlap(design, qa)).toBe(true);
+		// A conflicting project still makes them disjoint, label or not.
+		expect(ruleScopesOverlap({ ...design, projectId: 'pA' }, { ...qa, projectId: 'pB' })).toBe(
+			false
+		);
+	});
+
 	it('a combo overlaps only compatible dimensions', () => {
 		expect(ruleScopesOverlap(comboAReview, projectA)).toBe(true);
 		expect(ruleScopesOverlap(comboAReview, stateReview)).toBe(true);
 		expect(ruleScopesOverlap(comboAReview, projectB)).toBe(false);
-		expect(ruleScopesOverlap(comboAReview, { projectId: 'pA', workflowStateId: 'sOther' })).toBe(
-			false
-		);
+		expect(
+			ruleScopesOverlap(comboAReview, { projectId: 'pA', workflowStateId: 'sOther', labelId: null })
+		).toBe(false);
 	});
 });
 
 describe('shadowWarnings', () => {
 	const rules: RuleForShadowing[] = [
-		{ id: 'r_global', projectId: null, workflowStateId: null, label: 'global' },
-		{ id: 'r_acme', projectId: 'p_acme', workflowStateId: null, label: 'project acme' },
-		{ id: 'r_review', projectId: null, workflowStateId: 's_review', label: 'state Review' },
+		{ id: 'r_global', projectId: null, workflowStateId: null, labelId: null, label: 'global' },
+		{
+			id: 'r_acme',
+			projectId: 'p_acme',
+			workflowStateId: null,
+			labelId: null,
+			label: 'project acme'
+		},
+		{
+			id: 'r_review',
+			projectId: null,
+			workflowStateId: 's_review',
+			labelId: null,
+			label: 'state Review'
+		},
 		{
 			id: 'r_acme_review',
 			projectId: 'p_acme',
 			workflowStateId: 's_review',
+			labelId: null,
 			label: 'project acme · state Review'
 		}
 	];
 
+	it('two rules differing only by label tie, and saving either warns', () => {
+		const design: RuleForShadowing = {
+			id: 'r_design',
+			projectId: null,
+			workflowStateId: null,
+			labelId: 'l_design',
+			label: 'label design'
+		};
+		const qa: RuleForShadowing = {
+			id: 'r_qa',
+			projectId: null,
+			workflowStateId: null,
+			labelId: 'l_qa',
+			label: 'label qa'
+		};
+		const warnings = shadowWarnings({ ...design }, [qa]);
+		expect(warnings).toHaveLength(1);
+		expect(warnings[0].kind).toBe('ambiguous');
+		expect(warnings[0].rule_id).toBe('r_qa');
+		expect(warnings[0].message).toContain('will not dispatch');
+	});
+
+	it('does not call a project rule ambiguous with a same-rank project rule', () => {
+		// Equal specificity is only reachable through labels: two project
+		// rules of the same rank name different projects and so cannot both
+		// match, and shadowWarnings must still skip them entirely.
+		expect(
+			shadowWarnings({ id: 'r_a', projectId: 'pA', workflowStateId: null, labelId: null }, [
+				{ id: 'r_b', projectId: 'pB', workflowStateId: null, labelId: null, label: 'project B' }
+			])
+		).toEqual([]);
+	});
+
 	it('saving a state rule warns that project rules take precedence for their projects', () => {
 		const warnings = shadowWarnings(
-			{ id: 'r_new', projectId: null, workflowStateId: 's_open' },
+			{ id: 'r_new', projectId: null, workflowStateId: 's_open', labelId: null },
 			rules
 		);
 		const shadowedBy = warnings.filter((w) => w.message.includes('instead of this rule'));
@@ -81,7 +159,7 @@ describe('shadowWarnings', () => {
 
 	it('saving a project rule warns both ways: shadowed by the combo, shadowing state + global', () => {
 		const warnings = shadowWarnings(
-			{ id: 'r_new', projectId: 'p_web', workflowStateId: null },
+			{ id: 'r_new', projectId: 'p_web', workflowStateId: null, labelId: null },
 			rules
 		);
 		// The acme combo can never match p_web issues; only overlapping rules warn.
@@ -89,7 +167,7 @@ describe('shadowWarnings', () => {
 		expect(warnings.every((w) => w.message.includes('takes precedence over'))).toBe(true);
 
 		const acmeWarnings = shadowWarnings(
-			{ id: 'r_x', projectId: 'p_acme', workflowStateId: null },
+			{ id: 'r_x', projectId: 'p_acme', workflowStateId: null, labelId: null },
 			rules
 		);
 		const shadowedBy = acmeWarnings.find((w) => w.rule_id === 'r_acme_review');
@@ -98,7 +176,7 @@ describe('shadowWarnings', () => {
 
 	it('excludes the rule being saved and same-scope rules', () => {
 		const warnings = shadowWarnings(
-			{ id: 'r_acme', projectId: 'p_acme', workflowStateId: null },
+			{ id: 'r_acme', projectId: 'p_acme', workflowStateId: null, labelId: null },
 			rules
 		);
 		expect(warnings.map((w) => w.rule_id)).not.toContain('r_acme');
@@ -106,7 +184,7 @@ describe('shadowWarnings', () => {
 
 	it('a combo rule shadows every broader overlapping rule', () => {
 		const warnings = shadowWarnings(
-			{ id: 'r_new', projectId: 'p_web', workflowStateId: 's_review' },
+			{ id: 'r_new', projectId: 'p_web', workflowStateId: 's_review', labelId: null },
 			rules
 		);
 		expect(warnings.map((w) => w.rule_id).sort()).toEqual(['r_global', 'r_review']);
@@ -115,28 +193,32 @@ describe('shadowWarnings', () => {
 
 describe('findScopeCollision', () => {
 	const rules = [
-		{ id: 'r_global', projectId: null, workflowStateId: null },
-		{ id: 'r_acme', projectId: 'p_acme', workflowStateId: null }
+		{ id: 'r_global', projectId: null, workflowStateId: null, labelId: null },
+		{ id: 'r_acme', projectId: 'p_acme', workflowStateId: null, labelId: null }
 	];
 
 	it('finds the rule at the same exact scope', () => {
-		expect(findScopeCollision({ projectId: null, workflowStateId: null }, rules)?.id).toBe(
-			'r_global'
-		);
-		expect(findScopeCollision({ projectId: 'p_acme', workflowStateId: null }, rules)?.id).toBe(
-			'r_acme'
-		);
+		expect(
+			findScopeCollision({ projectId: null, workflowStateId: null, labelId: null }, rules)?.id
+		).toBe('r_global');
+		expect(
+			findScopeCollision({ projectId: 'p_acme', workflowStateId: null, labelId: null }, rules)?.id
+		).toBe('r_acme');
 	});
 
 	it('a different exact scope is not a collision, even when scopes overlap', () => {
 		expect(
-			findScopeCollision({ projectId: 'p_acme', workflowStateId: 's_review' }, rules)
+			findScopeCollision({ projectId: 'p_acme', workflowStateId: 's_review', labelId: null }, rules)
 		).toBeUndefined();
 	});
 
 	it('excludes the rule being updated', () => {
 		expect(
-			findScopeCollision({ projectId: 'p_acme', workflowStateId: null }, rules, 'r_acme')
+			findScopeCollision(
+				{ projectId: 'p_acme', workflowStateId: null, labelId: null },
+				rules,
+				'r_acme'
+			)
 		).toBeUndefined();
 	});
 });
