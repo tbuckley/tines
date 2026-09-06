@@ -280,8 +280,8 @@ there, and only one of them is writable:
 Your journal for this project and stage is the journal of Shared stages / Merging
 (currently v7).
 
-The other "Journal" section above belongs to state Merging alone and is read-only;
-move anything still worth keeping into the journal above with your next append.
+The "Journal (project Tines · state Implementing)" section above is read-only;
+move anything still worth keeping into your journal with your next append.
 
 Appends land in this stage's journal even after you move the issue.
 ```
@@ -289,10 +289,19 @@ Appends land in this stage's journal even after you move the issue.
 The base is named `<workflow> / <state>`, qualified for the same reason the
 inherited layers' scope labels are: two states in different workflows may
 share a name. The empty case names it the same way
-(`No journal exists yet for project Tines · state Shared stages / Merging`),
-and the read-only paragraph appears only when a legacy journal is actually
-stitched. For a state with no parent every line above is byte-for-byte what
-it was before inheritance existed.
+(`No journal exists yet for project Tines · state Shared stages / Merging`).
+
+The read-only paragraph appears whenever a journal other than the writable one
+is stitched, in both shapes — including the empty one, which is the
+configuration this rule ships into: the children carry their journals and the
+new base carries none, so a populated `## Journal` heading sits directly above
+a line saying no journal exists yet. It names those sections by their headings
+rather than by the issue's own state, because a chain may be three deep and
+the legacy journal may sit part-way up it (or on more than one state, in which
+case every section is named and the sentence is plural). For a state with no
+parent nothing above it is stitched but its own journal, so every line is
+byte-for-byte what it was before inheritance existed — with or without a
+journal of its own.
 
 Then two factual footnote lines, each present only when non-empty:
 

@@ -1487,6 +1487,7 @@ export async function journalForIssue(
 	const launch = await launchStateForRun(db, actor, issueId);
 	// `target.stateChain` is already the issue's own chain, root first; only a
 	// run anchored to some other launch state needs its chain resolved.
+	const leafStateId = launch.stateId ?? target.stateChain[target.stateChain.length - 1];
 	const stateId = launch.stateId
 		? (await resolveStateChain(db, launch.stateId))[0]
 		: target.stateChain[0];
@@ -1496,7 +1497,12 @@ export async function journalForIssue(
 			workflowStateId: stateId,
 			labelId: null,
 			issueId: null
-		})
+		}),
+		// The CLI echoes this label back ("appended to the <label> journal"), so
+		// a base state names its workflow the way the stitched heading and the
+		// prompt's "your journal is …" line do: two base states in different
+		// workflows may share a name.
+		{ qualifyState: stateId !== leafStateId }
 	);
 	const row = await contextItemQuery(db, actor.userId)
 		.where('context_item.kind', '=', 'prompt')

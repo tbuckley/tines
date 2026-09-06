@@ -195,7 +195,9 @@ describe('journalForIssue follows the root of the inheritance chain', () => {
 		for (const actor of [session, runActor(issue, { stateAtStart: OPEN })]) {
 			const journal = await journalForIssue(t.db, actor, issue);
 			expect(journal.scope.workflow_state_id).toBe(BASE_MERGING);
-			expect(journal.scope.label).toBe('project demo · state Merging');
+			// Qualified, as the stitched heading and the prompt's own line are:
+			// the CLI echoes this label when it writes.
+			expect(journal.scope.label).toBe('project demo · state Shared stages / Merging');
 			expect(journal.item?.id).toBe(base.id);
 		}
 	});
@@ -271,7 +273,7 @@ describe('journalForIssue follows the root of the inheritance chain', () => {
 		expect(block).toContain(`tines journal rewrite demo/${detail.number} --body @file`);
 	});
 
-	it('names the read-only section that exists, not the issue\'s own state', async () => {
+	it("names the read-only section that exists, not the issue's own state", async () => {
 		// Depth 3 with the legacy journal part-way up the chain: the issue's own
 		// state has no journal at all, so naming it would send the agent looking
 		// for a heading that is not there.
