@@ -59,8 +59,6 @@ export function requireTier(value: unknown, field: string): ModelTier {
 	return value as ModelTier;
 }
 
-/** Names double as CLI addresses and routing-rule targets: no whitespace, ":", or "/". */
-
 function validateRunnerName(value: unknown): string {
 	const name = requireString(value, 'name', { max: 100 }).trim();
 	if (!RUNNER_NAME_PATTERN.test(name)) {

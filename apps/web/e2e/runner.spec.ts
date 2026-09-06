@@ -21,7 +21,7 @@ import type {
 	Runner,
 	TinesEvent
 } from '@tines/shared';
-import { expect, test, type APIRequestContext } from '@playwright/test';
+import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
 import { ALICE, BASE_URL } from './constants.mjs';
 import { apiClient, body, runId, signIn } from './helpers';
 
@@ -78,6 +78,24 @@ async function createIssue(request: APIRequestContext, title: string): Promise<I
 	const res = await api.post(`/api/v1/projects/${projectId}/issues`, { title });
 	expect(res.status()).toBe(201);
 	return body<IssueDetail>(res);
+}
+
+/**
+ * Open the Add runner dialog across the SSR-to-hydration window. These tests
+ * click the button as their first act on a freshly loaded `/agents`, and a
+ * click landing before the Svelte listeners attach is simply swallowed — the
+ * dialog then never opens and the next `fill` times out (the shape clickUntil
+ * in helpers.ts exists for). Retry until the dialog's own field is up, and
+ * only ever click while it is closed so a retry cannot toggle it shut.
+ */
+async function openAddRunner(page: Page) {
+	const dialog = page.getByRole('dialog', { name: 'Add runner' });
+	const button = page.getByRole('button', { name: 'Add runner' }).first();
+	await expect(async () => {
+		if (!(await dialog.isVisible())) await button.click();
+		await expect(dialog.getByLabel('Name')).toBeVisible({ timeout: 2000 });
+	}).toPass({ timeout: 15_000 });
+	return dialog;
 }
 
 test.describe.serial('local runner end to end', () => {
@@ -325,8 +343,7 @@ esac
 
 		// The add-runner wizard: the local path is the copy-pasteable daemon
 		// bootstrap (the Claude managed path creates the runner server-side).
-		await page.getByRole('button', { name: 'Add runner' }).click();
-		const dialog = page.getByRole('dialog', { name: 'Add runner' });
+		const dialog = await openAddRunner(page);
 		const name = dialog.getByLabel('Name');
 
 		// The helper teaches the machine-plus-harness convention before
@@ -374,15 +391,16 @@ esac
 		await page.goto('/agents');
 
 		// Abandoning the dialog without clicking Create key leaves no key.
-		await page.getByRole('button', { name: 'Add runner' }).click();
-		let dialog = page.getByRole('dialog', { name: 'Add runner' });
+		let dialog = await openAddRunner(page);
 		await dialog.getByLabel('Name').fill(`abandoned-${runId}`);
 		await dialog.getByRole('button', { name: 'Done' }).click();
+		// Settled before reopening: openAddRunner would otherwise see the
+		// closing dialog and take it for the new one.
+		await expect(dialog).toBeHidden();
 		expect((await keyNames()).length).toBe(before.length);
 
 		const keyRunner = `key-e2e-${runId}`;
-		await page.getByRole('button', { name: 'Add runner' }).click();
-		dialog = page.getByRole('dialog', { name: 'Add runner' });
+		dialog = await openAddRunner(page);
 		await dialog.getByLabel('Name').fill(keyRunner);
 		await dialog.getByRole('button', { name: 'Create key' }).click();
 
@@ -414,8 +432,7 @@ esac
 		await page.goto('/agents');
 
 		const liveName = `e2e-live-${runId}`;
-		await page.getByRole('button', { name: 'Add runner' }).click();
-		const dialog = page.getByRole('dialog', { name: 'Add runner' });
+		const dialog = await openAddRunner(page);
 		await dialog.getByLabel('Name').fill(liveName);
 		await expect(dialog).toContainText('Waiting for');
 
