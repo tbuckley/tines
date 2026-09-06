@@ -20,11 +20,13 @@ export type ListMemory = { href: string; label: string };
 export type NavMemory = {
 	/** '' or '?…' — the last `/issues` search string. */
 	issuesQuery: string;
+	/** '' or '?…' — the last `/projects` search string (the archived toggle). */
+	projectsQuery: string;
 	/** The last issue-bearing list visited, or null before any. */
 	lastList: ListMemory | null;
 };
 
-export const DEFAULT_NAV_MEMORY: NavMemory = { issuesQuery: '', lastList: null };
+export const DEFAULT_NAV_MEMORY: NavMemory = { issuesQuery: '', projectsQuery: '', lastList: null };
 
 /**
  * Only same-app list paths may be used as a back target, so a corrupt or
@@ -47,11 +49,10 @@ export function parseNavMemory(raw: string | null | undefined): NavMemory {
 	}
 	if (typeof parsed !== 'object' || parsed === null) return DEFAULT_NAV_MEMORY;
 
-	const { issuesQuery, lastList } = parsed as Record<string, unknown>;
-	const query =
-		typeof issuesQuery === 'string' && (issuesQuery === '' || issuesQuery.startsWith('?'))
-			? issuesQuery
-			: '';
+	const { issuesQuery, projectsQuery, lastList } = parsed as Record<string, unknown>;
+	const search = (value: unknown): string =>
+		typeof value === 'string' && (value === '' || value.startsWith('?')) ? value : '';
+	const query = search(issuesQuery);
 
 	let list: ListMemory | null = null;
 	if (typeof lastList === 'object' && lastList !== null) {
@@ -59,7 +60,7 @@ export function parseNavMemory(raw: string | null | undefined): NavMemory {
 		if (isListHref(href) && typeof label === 'string' && label !== '') list = { href, label };
 	}
 
-	return { issuesQuery: query, lastList: list };
+	return { issuesQuery: query, projectsQuery: search(projectsQuery), lastList: list };
 }
 
 /** Storage throws in Safari private mode and when cookies are blocked. */
@@ -98,12 +99,23 @@ export const navMemory = {
 	get issuesHref(): string {
 		return `/issues${memory.issuesQuery}`;
 	},
+	/** Where the Projects nav tab should point. */
+	get projectsHref(): string {
+		return `/projects${memory.projectsQuery}`;
+	},
 	get lastList(): ListMemory | null {
 		return memory.lastList;
 	},
 	/** `search` is `page.url.search`: '' or '?…'. */
 	recordIssues(search: string): void {
 		update({ issuesQuery: search, lastList: { href: `/issues${search}`, label: 'Issues' } });
+	},
+	/**
+	 * `search` is `page.url.search`. The grid is not an issue-bearing list, so
+	 * this never touches `lastList`.
+	 */
+	recordProjects(search: string): void {
+		update({ projectsQuery: search });
 	},
 	recordProject(projectId: string, search: string, name: string): void {
 		update({ lastList: { href: `/projects/${projectId}${search}`, label: name } });

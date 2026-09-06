@@ -85,6 +85,15 @@ export function nextRunLabel(nextRunAt: number, now = Date.now()): string {
 	return nextRunAt >= now ? `next ${until}` : until;
 }
 
+/** Date only, in the user's locale — for banners that name a day, not a moment. */
+export function formatDate(ms: number): string {
+	return new Date(ms).toLocaleString(undefined, {
+		month: 'short',
+		day: 'numeric',
+		year: 'numeric'
+	});
+}
+
 export function formatDateTime(ms: number): string {
 	return new Date(ms).toLocaleString(undefined, {
 		month: 'short',
