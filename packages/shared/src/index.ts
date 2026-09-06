@@ -2,6 +2,7 @@
 
 export * from './types.js';
 export * from './events.js';
+export * from './requirements.js';
 export * from './client.js';
 export * from './schedule.js';
 export * from './paginate.js';

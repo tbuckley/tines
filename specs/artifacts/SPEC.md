@@ -312,17 +312,42 @@ The issue block gains an **Artifacts** section between *Comments* and
 - **impl-pr** (pr) — https://github.com/acme/app/pull/123
 
 *("No artifacts attached." when empty. The section ends with:
-Attach one: `tines issues artifacts attach <project>/<number> <name> --file <path>`)*
+Attach one: `tines issues artifacts attach <project>/<number> <name> …` — the
+flag follows the gate; each gated transition below names its exact command.
+Ungated slots: --file <path>, --folder <dir>, --text <md|@file>, --link <url>,
+--pr <owner/repo#N>.)*
 ```
 
 And each entry under *Available transitions* appends its requirements with
 live status, so the prompt alone tells an agent both its legal moves and their
-preconditions:
+preconditions. An **unsatisfied** requirement ends in the command that clears
+it — the same `fix` string the 422 and the issue read carry:
 
 ```markdown
 - **approve** → Implementation (active): `tines issues move tines/42 "approve"`
-  Requires: artifact `design-doc` (file, text/markdown) — **stale; attach a new version first**
+  Requires: artifact `design-doc` (text, text/markdown) — **stale; attach a new version (or reaffirm) first** — attach: `tines issues artifacts attach tines/42 design-doc --text @design-doc.md — or, if the current content still stands: tines issues artifacts reaffirm tines/42 design-doc`
 ```
+
+**One source for every attach hint** (Tines/241). `requirementFix` in
+`@tines/shared` maps an `ArtifactRequirementCheck` plus the issue ref to a
+runnable command and a `kind` (`attach` / `reattach_or_reaffirm` /
+`delete_and_attach`). `checkRequirements` calls it once per requirement, so
+`fix` is a **required field on every** `ArtifactRequirementCheck` — satisfied
+ones included, where it is the command that attaches the next version — and
+therefore rides `allowed_transitions[].requires[]` on
+`GET /api/v1/issues/:id`, the launch prompt's `Requires:` lines, and the 422's
+`unmet[]`, byte-identical in all three. The flag follows the gate: a
+`(text, text/markdown)` requirement renders `--text @<slot>.md`, a `text/plain`
+one `@<slot>.txt`, and anything less concrete keeps the
+`--text <markdown|@file>` placeholder. Nothing privileges `--file` any more —
+naming it first in the generic hint taught agents to reach for it under gates
+that wanted something else.
+
+The `transition_requirements_unmet` 422 summary follows the same `kind`: a
+`delete_and_attach` (the slot holds the wrong **immutable** type) says so —
+*the attached "spec" is a link artifact and the gate needs text* — instead of
+the generic "attach it (or a new version)", which would send an agent round
+the identical 422. `missing` and `stale` keep that wording.
 
 ### Events, lifecycle
 
@@ -438,6 +463,13 @@ User-uploaded bytes served from our origin are an XSS surface. Downloads
   regardless of the flag. Markdown previews in the UI render through the
   existing micromark component (which escapes raw HTML), never via inline
   serving.
+- `application/json` is deliberately **not** on the allowlist: a `.json`
+  artifact uploads and downloads byte-identically but is always served as an
+  attachment. Mirroring that, the upload endpoint's "this endpoint does not
+  take JSON" 422 fires only when `?filename=` is absent — the filename is
+  what distinguishes an upload from a client that meant the JSON upsert, so
+  a named `.json` file is a file like any other, and the CLI's sniff table
+  keeps mapping `.json` to `application/json`.
 - Folder versions are addressed per file: `…/content?path=<workspace path>`,
   each file under the same header rules (disposition filename = the path's
   basename). A folder `…/content` request without `path` is a 422
@@ -455,7 +487,7 @@ ergonomics; run keys are allowed everywhere here.
 | `GET /api/v1/issues/:id/artifacts` | List: each artifact with type, description, current version summary, version count, `fresh` flag. |
 | `GET /api/v1/issues/:id/artifacts/:name` | Detail: the artifact plus its full version list (metadata only, no contents). |
 | `PUT /api/v1/issues/:id/artifacts/:name` | **JSON upsert** for `text` / `link` / `pr`: creates the artifact (body declares `type`) or appends a version to it. Payload fields per type; `description` settable alongside. Type mismatch with an existing artifact → 422 `artifact_type_mismatch`. A body with no payload fields is a metadata-only update (no version). |
-| `PUT /api/v1/issues/:id/artifacts/:name/file?filename=…` | **Raw-body upload** for `file`: bytes in the body, MIME in `Content-Type`, creates or appends. Same upsert/type-mismatch semantics. |
+| `PUT /api/v1/issues/:id/artifacts/:name/file?filename=…` | **Raw-body upload** for `file`: bytes in the body, MIME in `Content-Type`, creates or appends. Same upsert/type-mismatch semantics. `filename` is required, and its absence is also what identifies a client that meant the JSON upsert: no filename plus an `application/json` body is a 422 naming that mistake, while a named upload takes any MIME type including `application/json`. |
 | `PUT /api/v1/issues/:id/artifacts/:name/folder` | **Multipart snapshot upload** for `folder`: one part per file (path as the part filename, MIME as the part type), creates the artifact or appends the next whole-set version. Same upsert/type-mismatch semantics. |
 | `POST /api/v1/issues/:id/artifacts/:name/reaffirm` | Append a reaffirming version: copies the current version's payload (same R2 object for files) with a fresh timestamp and the calling actor. 404 if the artifact doesn't exist. |
 | `GET /api/v1/issues/:id/artifacts/:name/content` | Bytes of the current version (`?version=N` for history; `?inline=1` per the serving rules; `?path=…` selects a folder entry — required for folders). `file`/`folder` stream from R2, `text` from D1; `link`/`pr` → 422 `no_content` (the reference *is* the payload). |
@@ -732,3 +764,4 @@ From the folders/viewer review:
 From later work:
 
 - **2026-09-01, Tines/92 — the link payload flag is `--link`, not `--url`**: `-u, --url` is the API base URL on every CLI command without exception. `attach … --url <link>` used to suppress the base-URL flag and attach the link, so an invocation that copied the documented `--url` idiom silently produced a `link` artifact pointing at the API base URL. Renaming makes that misuse an offline arity error carrying the corrective hint; the server-generated `fix:` line and launch-prompt "Attach one:" hint teach `--link`.
+- **2026-09-06, Tines/241 — the requirement is the single source for every attach hint**: the `attachFlag`/`fixFor` logic moved out of the 422 builder into `requirementFix` in `@tines/shared`, and `fix` became a required field on `ArtifactRequirementCheck`. The three surfaces that tell someone how to attach — launch prompt, issue read, 422 — can no longer drift from each other or from the gate, and the CLI can import the same function. Rendering stays on today's *flag* forms (`--text @<slot>.md`, not a positional path): runner CLIs lag npm by days, so a hint the installed CLI cannot parse is worse than a generic one.
