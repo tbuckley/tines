@@ -1,6 +1,6 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import { ALICE } from './constants.mjs';
-import { signIn } from './helpers';
+import { clickUntil, readSettled, signIn } from './helpers';
 
 /**
  * The settings chrome: one tab row shared by the four settings pages, reached
@@ -26,16 +26,11 @@ test.beforeEach(async ({ context }) => {
 	await signIn(context, ALICE.sessionToken);
 });
 
-/** Click that survives the SSR-to-hydration window (see ui.spec.ts). */
-async function clickUntil(button: Locator, done: () => Promise<void>): Promise<void> {
-	await expect(async () => {
-		if (await button.isVisible()) await button.click();
-		await done();
-	}).toPass({ timeout: 15_000 });
-}
-
 /** The settings tab row; scoped by name because its links share names with page headings. */
 const nav = (page: Page) => page.getByRole('navigation', { name: 'Settings' });
+
+/** Geometry read once it has stopped moving — see the Geometry section of e2e/README.md. */
+const box = (target: Locator) => readSettled(() => target.boundingBox(), { timeout: 3_000 });
 
 test.describe('settings navigation', () => {
 	test('the avatar menu offers Settings, which lands on the first tab', async ({ page }) => {
@@ -106,12 +101,12 @@ test.describe('settings navigation', () => {
 
 		const pill = nav(page).locator('div').first();
 		const main = page.locator('main');
-		const oneRow = await pill.boundingBox();
+		const oneRow = await box(pill);
 		expect(oneRow).not.toBeNull();
 		// One row at 390: 3px padding + a 28px tab + 3px + borders.
 		expect(oneRow!.height).toBeLessThan(40);
 		expect(await pill.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
-		const mainBox = (await main.boundingBox())!;
+		const mainBox = (await box(main))!;
 		expect(oneRow!.x + oneRow!.width).toBeLessThanOrEqual(mainBox.x + mainBox.width + 1);
 		for (const label of TABS) {
 			await expect(nav(page).getByRole('link', { name: label })).toBeInViewport({ ratio: 1 });
@@ -120,7 +115,7 @@ test.describe('settings navigation', () => {
 		// Narrower than the row: it folds to a second line, nothing is clipped
 		// and nothing pushes the page into a horizontal scroll.
 		await page.setViewportSize(NARROW);
-		const wrapped = await pill.boundingBox();
+		const wrapped = await box(pill);
 		expect(wrapped!.height).toBeGreaterThan(50);
 		for (const label of TABS) {
 			await expect(nav(page).getByRole('link', { name: label })).toBeInViewport({ ratio: 1 });
@@ -133,7 +128,7 @@ test.describe('settings navigation', () => {
 		await page.goto('/settings/appearance');
 		const pill = nav(page).locator('div').first();
 		expect(await pill.evaluate((el) => getComputedStyle(el).display)).toBe('inline-flex');
-		const box = (await pill.boundingBox())!;
-		expect(box.width).toBeLessThan(400);
+		const pillBox = (await box(pill))!;
+		expect(pillBox.width).toBeLessThan(400);
 	});
 });
