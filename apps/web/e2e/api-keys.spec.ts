@@ -30,7 +30,10 @@ const activeRunRef = `run on ${RUNROW.projectName}/${RUNROW.issueNumber}`;
 /**
  * Open the disclosure. `bind:open` re-asserts its initial value when hydration
  * lands, so a click in the SSR-to-hydration window is undone — the same race
- * `clickUntil` exists for elsewhere in the suite (see theme.spec.ts).
+ * `clickUntil` in `helpers.ts` exists for. Not `clickUntil` itself: it clicks
+ * unconditionally, which on an already-open `<details>` closes it again, and
+ * it checks `done` once rather than holding it across a beat, which is what
+ * catches the snap-back.
  */
 async function openDisclosure(page: Page): Promise<void> {
 	const details = disclosure(page);
