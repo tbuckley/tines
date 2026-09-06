@@ -12,19 +12,50 @@ const check = (over: Partial<RequirementFixInput> = {}): RequirementFixInput => 
 const version = { version: 2, created_at: 5 };
 
 describe('requirementFix', () => {
-	it('names the payload flag the requirement declares', () => {
-		const flagFor = (over: Partial<RequirementFixInput>) =>
+	it('renders the one-line positional source a declared type implies', () => {
+		// Typed gates carry the shape the CLI can read off the gate itself
+		// (Tines/274): one command, no flag, copy-pastable whole.
+		const sourceFor = (over: Partial<RequirementFixInput>) =>
 			requirementFix(check(over), 'demo/1').command;
-		expect(flagFor({ type: 'file' })).toBe(
+		expect(sourceFor({ type: 'file' })).toBe(
+			'tines issues artifacts attach demo/1 design-doc <path>'
+		);
+		expect(sourceFor({ type: 'folder' })).toBe(
+			'tines issues artifacts attach demo/1 design-doc <dir>'
+		);
+		expect(sourceFor({ type: 'link' })).toBe(
+			'tines issues artifacts attach demo/1 design-doc <url>'
+		);
+		expect(sourceFor({ type: 'pr' })).toBe(
+			'tines issues artifacts attach demo/1 design-doc <owner/repo#N>'
+		);
+		// A text gate with no concrete content type still names a path: the
+		// gate types it, the extension does not.
+		expect(sourceFor({ type: 'text' })).toBe(
+			'tines issues artifacts attach demo/1 design-doc <path>'
+		);
+		for (const type of ['file', 'folder', 'link', 'pr', 'text'] as const) {
+			expect(sourceFor({ type })).not.toContain('--');
+		}
+	});
+
+	it('keeps a flag form when the requirement declares no type', () => {
+		// Nothing types a positional source here — the CLI's shape-only
+		// inference never guesses text — so the flag has to say it.
+		// --file is the least surprising default and the one the old server used.
+		expect(requirementFix(check(), 'demo/1').command).toBe(
 			'tines issues artifacts attach demo/1 design-doc --file <path>'
 		);
-		expect(flagFor({ type: 'folder' })).toContain('--folder <dir>');
-		expect(flagFor({ type: 'link' })).toContain('--link <url>');
-		expect(flagFor({ type: 'pr' })).toContain('--pr <owner/repo#N>');
-		expect(flagFor({ type: 'text' })).toContain('--text <markdown|@file>');
-		// An untyped requirement can be satisfied by anything; --file is the
-		// least surprising default and the one the old server used.
-		expect(flagFor({})).toContain('--file <path>');
+		expect(
+			requirementFix(check({ status: 'satisfied', current_type: 'text', current_version: version }), 'demo/1')
+				.command
+		).toBe('tines issues artifacts attach demo/1 design-doc --text <markdown|@file>');
+		expect(
+			requirementFix(
+				check({ status: 'satisfied', current_type: 'link', current_version: version }),
+				'demo/1'
+			).command
+		).toContain('--link <url>');
 	});
 
 	it('names --link, never --url, for a link slot', () => {
@@ -38,25 +69,25 @@ describe('requirementFix', () => {
 			requirementFix(check({ type: 'text', content_type: 'text/markdown' }), 'demo/1')
 		).toEqual({
 			kind: 'attach',
-			command: 'tines issues artifacts attach demo/1 design-doc --text @design-doc.md'
+			command: 'tines issues artifacts attach demo/1 design-doc design-doc.md'
 		});
 		expect(
 			requirementFix(check({ type: 'text', content_type: 'text/plain' }), 'demo/1').command
-		).toContain('--text @design-doc.txt');
-		// A prefix gate names no single file, so the placeholder stands.
+		).toBe('tines issues artifacts attach demo/1 design-doc design-doc.txt');
+		// A prefix gate names no single file, so the generic path stands.
 		expect(
 			requirementFix(check({ type: 'text', content_type: 'text/' }), 'demo/1').command
-		).toContain('--text <markdown|@file>');
+		).toBe('tines issues artifacts attach demo/1 design-doc <path>');
 		// The filename follows the slot, not the type.
 		expect(
 			requirementFix(
 				check({ artifact: 'review-notes', type: 'text', content_type: 'text/markdown' }),
 				'demo/1'
 			).command
-		).toContain('review-notes --text @review-notes.md');
+		).toContain('review-notes review-notes.md');
 	});
 
-	it('offers reaffirm alongside a new version when the content is merely stale', () => {
+	it('offers reaffirm as a separate command when the content is merely stale', () => {
 		// The slot passed the type checks, so the new version keeps the slot's
 		// own type — --text, not the untyped requirement's --file default.
 		const fix = requirementFix(
@@ -64,8 +95,44 @@ describe('requirementFix', () => {
 			'demo/1'
 		);
 		expect(fix.kind).toBe('reattach_or_reaffirm');
-		expect(fix.command).toContain('attach demo/1 design-doc --text <markdown|@file>');
-		expect(fix.command).toContain('tines issues artifacts reaffirm demo/1 design-doc');
+		expect(fix.command).toBe(
+			'tines issues artifacts attach demo/1 design-doc --text <markdown|@file>'
+		);
+		expect(fix.alternative).toBe('tines issues artifacts reaffirm demo/1 design-doc');
+		// The primary command runs on its own: no prose, no second command
+		// glued on, so copying it verbatim cannot fail arity (Tines/255).
+		expect(fix.command).not.toContain('reaffirm');
+		expect(fix.command).not.toContain(' — ');
+	});
+
+	it('renders a stale typed gate as a runnable positional attach', () => {
+		const fix = requirementFix(
+			check({
+				status: 'stale',
+				type: 'text',
+				content_type: 'text/markdown',
+				current_type: 'text',
+				current_version: version
+			}),
+			'demo/1'
+		);
+		expect(fix.command).toBe('tines issues artifacts attach demo/1 design-doc design-doc.md');
+		expect(fix.alternative).toBe('tines issues artifacts reaffirm demo/1 design-doc');
+	});
+
+	it('leaves the alternative unset when there is only one way through', () => {
+		for (const over of [
+			{},
+			{ type: 'text' as const, content_type: 'text/markdown' },
+			{
+				status: 'type_mismatch' as const,
+				type: 'text' as const,
+				current_type: 'link' as const,
+				current_version: version
+			}
+		]) {
+			expect(requirementFix(check(over), 'demo/1').alternative).toBeUndefined();
+		}
 	});
 
 	it('re-attaches in place when only the content type missed', () => {
@@ -83,7 +150,7 @@ describe('requirementFix', () => {
 			'demo/1'
 		);
 		expect(fix.kind).toBe('attach');
-		expect(fix.command).toBe('tines issues artifacts attach demo/1 shot --file <path>');
+		expect(fix.command).toBe('tines issues artifacts attach demo/1 shot <path>');
 	});
 
 	it('deletes first when the slot holds the wrong immutable type', () => {
@@ -99,7 +166,7 @@ describe('requirementFix', () => {
 		);
 		expect(fix.kind).toBe('delete_and_attach');
 		expect(fix.command).toBe(
-			'tines issues artifacts delete demo/1 design-doc && tines issues artifacts attach demo/1 design-doc --text @design-doc.md'
+			'tines issues artifacts delete demo/1 design-doc && tines issues artifacts attach demo/1 design-doc design-doc.md'
 		);
 	});
 
@@ -142,7 +209,7 @@ describe('requirementFix', () => {
 			)
 		).toEqual({
 			kind: 'attach',
-			command: 'tines issues artifacts attach demo/1 design-doc --pr <owner/repo#N>'
+			command: 'tines issues artifacts attach demo/1 design-doc <owner/repo#N>'
 		});
 	});
 

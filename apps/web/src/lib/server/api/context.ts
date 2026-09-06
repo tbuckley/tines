@@ -1889,8 +1889,12 @@ export function issueBlock(
 				const spec = [r.type, r.content_type].filter(Boolean).join(', ');
 				// An unsatisfied requirement ends in the command that clears it,
 				// server-computed from the gate itself — the agent never has to
-				// guess which payload flag this slot takes.
-				const fix = r.status === 'satisfied' ? '' : ` — attach: \`${r.fix}\``;
+				// guess what this slot takes. Each command gets its own code
+				// span: a span holding two commands is not copy-pastable, and a
+				// `stale` requirement has two (attach, or reaffirm) — Tines/255.
+				const alternative =
+					r.fix_alternative !== undefined ? ` — or reaffirm: \`${r.fix_alternative}\`` : '';
+				const fix = r.status === 'satisfied' ? '' : ` — attach: \`${r.fix}\`${alternative}`;
 				lines.push(
 					`  Requires: artifact \`${r.artifact}\`${spec ? ` (${spec})` : ''} — ${requirementStatusLabel(r)}${r.description ? ` — ${r.description}` : ''}${fix}`
 				);

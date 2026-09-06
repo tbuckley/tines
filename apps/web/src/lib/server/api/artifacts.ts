@@ -523,7 +523,12 @@ export function checkRequirements(
 		};
 		// The fix is computed here and nowhere else: the 422, the issue read
 		// and the launch prompt all read it off the check.
-		return { ...checked, fix: requirementFix(checked, ref).command };
+		const fix = requirementFix(checked, ref);
+		return {
+			...checked,
+			fix: fix.command,
+			...(fix.alternative !== undefined ? { fix_alternative: fix.alternative } : {})
+		};
 	});
 }
 
