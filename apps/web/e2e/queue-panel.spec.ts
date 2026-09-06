@@ -13,7 +13,7 @@
 import type { IssueDetail, Project, RoutingRule, Runner } from '@tines/shared';
 import { expect, test } from '@playwright/test';
 import { ALICE, RUNROW } from './constants.mjs';
-import { apiClient, body, runId, signIn } from './helpers';
+import { apiClient, body, clickUntil, gotoHydrated, runId, signIn } from './helpers';
 
 const PROJECT_NAME = `queue-${runId}`;
 const RUNNER_NAME = `queue-${runId}`;
@@ -151,14 +151,22 @@ test.describe.serial('the Now row', () => {
 		await bringOnline(api);
 
 		await signIn(context, ALICE.sessionToken);
-		await page.goto('/agents');
+		// This test clicks, so it waits for hydration (CLAUDE.md); the read-only
+		// tests above stay on a bare goto.
+		await gotoHydrated(page, '/agents');
 		const panel = page.getByRole('region', { name: 'Waiting for an agent' });
 		await expect(panel).toContainText(`at capacity on ${RUNNER_NAME}`);
 
-		await panel.getByRole('button', { name: `Raise cap on ${RUNNER_NAME}` }).click();
 		const dialog = page.getByRole('dialog');
 		const capField = dialog.locator('#edit-concurrent');
-		await expect(capField).toBeVisible();
+		// Retry the open until the field is there, and only while the dialog is
+		// closed, so a retry cannot toggle an open one shut: on CI the first
+		// click on a freshly loaded page can still land before the handler is
+		// attached, and the failure reads as "no dialog" rather than as a
+		// swallowed click.
+		await clickUntil(panel.getByRole('button', { name: `Raise cap on ${RUNNER_NAME}` }), () =>
+			expect(capField).toBeVisible({ timeout: 1000 })
+		);
 		// The remedy lands the caret on the field it is about — the operator
 		// types a number, never hunts for it in the dialog.
 		await expect(capField).toBeFocused();
