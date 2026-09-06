@@ -2,12 +2,13 @@
  * The Now row (Tines/256): eligible issues with no run, grouped by why they
  * are waiting, with each verdict's remedy as a control on the same screen.
  *
- * The scenario needs no daemon. `POST /runners/register` leaves a runner that
- * has never polled — offline — so the group appears; one `POST /runners/:id/poll`
- * with the runner's own token heartbeats it online and lets the dispatch pass
- * claim an issue as `assigned` (poll-mode runs stay `assigned`; nothing
- * launches), which saturates a `max_concurrent: 1` runner. Raising the cap
- * from the panel then has to drain it without a reload.
+ * The scenario needs no daemon. `POST /api/v1/runners` leaves a runner that has
+ * never been seen — offline — so the group appears; registering the same name
+ * reconnects it (stamping `last_seen_at`), and a settings write queues the
+ * dispatch pass that claims one issue as `assigned`, saturating the 1-slot
+ * runner. Raising the cap from the panel then has to drain it without a
+ * reload. Nothing ever launches: an `assigned` local run waits for a daemon
+ * poll that never comes, and the cleanup step disables automation to cancel it.
  */
 import type { IssueDetail, Project, RoutingRule, Runner } from '@tines/shared';
 import { expect, test } from '@playwright/test';
@@ -155,10 +156,13 @@ test.describe.serial('the Now row', () => {
 		await expect(panel).toContainText(`at capacity on ${RUNNER_NAME}`);
 
 		await panel.getByRole('button', { name: `Raise cap on ${RUNNER_NAME}` }).click();
-		const capField = page.locator('#edit-concurrent');
+		const dialog = page.getByRole('dialog');
+		const capField = dialog.locator('#edit-concurrent');
 		await expect(capField).toBeVisible();
 		await capField.fill('3');
-		await page.getByRole('button', { name: /^Save/ }).first().click();
+		// Scoped to the dialog: the settings form behind it has a Save too, and
+		// the modal overlay swallows the click aimed at it.
+		await dialog.getByRole('button', { name: /^Save/ }).click();
 
 		// No `page.reload()`: the shrink has to arrive through the invalidation
 		// the write schedules, which is the point of the acceptance criterion.
