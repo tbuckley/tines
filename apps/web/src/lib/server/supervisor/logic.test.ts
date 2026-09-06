@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
 	launchBackoffMs,
 	matchRule,
+	resolveRule,
 	quotaHasRoom,
 	resolveTier,
 	targetVerdict,
@@ -13,27 +14,89 @@ const NOW = 1_723_000_000_000;
 
 describe('matchRule', () => {
 	const rules = [
-		{ id: 'global', project_id: null, workflow_state_id: null, targets: [] },
-		{ id: 'state', project_id: null, workflow_state_id: 's1', targets: [] },
-		{ id: 'project', project_id: 'p1', workflow_state_id: null, targets: [] },
-		{ id: 'both', project_id: 'p1', workflow_state_id: 's1', targets: [] }
+		{ id: 'global', project_id: null, workflow_state_id: null, label_id: null, targets: [] },
+		{ id: 'state', project_id: null, workflow_state_id: 's1', label_id: null, targets: [] },
+		{ id: 'project', project_id: 'p1', workflow_state_id: null, label_id: null, targets: [] },
+		{ id: 'both', project_id: 'p1', workflow_state_id: 's1', label_id: null, targets: [] }
 	];
+	/** An issue carrying no labels — the shape every pre-label rule sees. */
+	const at = (project_id: string, state_id: string, label_ids: string[] = []) => ({
+		project_id,
+		state_id,
+		label_ids
+	});
 
 	it('picks the most specific match: project ∧ state > project > state > global', () => {
-		expect(matchRule({ project_id: 'p1', state_id: 's1' }, rules)?.id).toBe('both');
-		expect(matchRule({ project_id: 'p1', state_id: 's2' }, rules)?.id).toBe('project');
-		expect(matchRule({ project_id: 'p2', state_id: 's1' }, rules)?.id).toBe('state');
-		expect(matchRule({ project_id: 'p2', state_id: 's2' }, rules)?.id).toBe('global');
+		expect(matchRule(at('p1', 's1'), rules)?.id).toBe('both');
+		expect(matchRule(at('p1', 's2'), rules)?.id).toBe('project');
+		expect(matchRule(at('p2', 's1'), rules)?.id).toBe('state');
+		expect(matchRule(at('p2', 's2'), rules)?.id).toBe('global');
 	});
 
 	it('project beats state (routing is ownership-shaped, unlike context ordering)', () => {
 		const projectVsState = rules.filter((r) => r.id === 'state' || r.id === 'project');
-		expect(matchRule({ project_id: 'p1', state_id: 's1' }, projectVsState)?.id).toBe('project');
+		expect(matchRule(at('p1', 's1'), projectVsState)?.id).toBe('project');
 	});
 
 	it('returns null when nothing matches', () => {
 		const scoped = rules.filter((r) => r.id !== 'global');
-		expect(matchRule({ project_id: 'p9', state_id: 's9' }, scoped)).toBeNull();
+		expect(matchRule(at('p9', 's9'), scoped)).toBeNull();
+	});
+
+	it('a label rule does not match an issue without the label', () => {
+		const labelled = [{ ...rules[0], id: 'design', label_id: 'l_design' }];
+		expect(matchRule(at('p1', 's1'), labelled)).toBeNull();
+		expect(matchRule(at('p1', 's1', ['l_design']), labelled)?.id).toBe('design');
+	});
+});
+
+describe('resolveRule', () => {
+	const design = {
+		id: 'design',
+		project_id: null,
+		workflow_state_id: null,
+		label_id: 'l_design',
+		targets: []
+	};
+	const security = { ...design, id: 'security', label_id: 'l_security' };
+	const at = (label_ids: string[]) => ({ project_id: 'p1', state_id: 's1', label_ids });
+
+	it('a bare label rule beats project ∧ state', () => {
+		const both = {
+			id: 'both',
+			project_id: 'p1',
+			workflow_state_id: 's1',
+			label_id: null,
+			targets: []
+		};
+		expect(resolveRule(at(['l_design']), [both, design]).rule?.id).toBe('design');
+	});
+
+	it('label ∧ state beats a bare label', () => {
+		const designReview = { ...design, id: 'design_review', workflow_state_id: 's1' };
+		expect(resolveRule(at(['l_design']), [design, designReview]).rule?.id).toBe('design_review');
+	});
+
+	it('two label rules an issue matches equally fail closed and name both', () => {
+		const resolved = resolveRule(at(['l_design', 'l_security']), [design, security]);
+		expect(resolved.rule).toBeNull();
+		expect(resolved.ambiguous.map((r) => r.id).sort()).toEqual(['design', 'security']);
+		// matchRule is the same resolution, so every existing caller skips the
+		// issue rather than routing it on an arbitrary winner.
+		expect(matchRule(at(['l_design', 'l_security']), [design, security])).toBeNull();
+	});
+
+	it('a tie is broken by any rule that is more specific', () => {
+		const designHere = { ...design, id: 'design_here', project_id: 'p1' };
+		const resolved = resolveRule(at(['l_design', 'l_security']), [design, security, designHere]);
+		expect(resolved.rule?.id).toBe('design_here');
+		expect(resolved.ambiguous).toEqual([]);
+	});
+
+	it('reports no ambiguity when nothing matches at all', () => {
+		const resolved = resolveRule(at([]), [design, security]);
+		expect(resolved.rule).toBeNull();
+		expect(resolved.ambiguous).toEqual([]);
 	});
 });
 

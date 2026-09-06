@@ -87,6 +87,7 @@ Options:
   -p, --project <name>          scope: project name or id
   -s, --state <workflow/state>  scope: workflow-qualified state
   -i, --issue <ref>             scope: issue (<project>/<number>)
+  -l, --label <name>            scope: issue label name or id
   -u, --url <url>               base URL of the Tines API (or set TINES_API_URL,
                                 or run \`tines login\`; default
                                 https://tines.tbuckley.dev)
@@ -122,13 +123,14 @@ Options:
   --branch <branch>             repo: branch (empty string clears it)
   --dir <dir>                   repo: checkout directory (empty string restores
                                 the URL default)
-  --unset <dimension>           drop a scope dimension: project, state, or issue
-                                (repeatable) (default: [])
+  --unset <dimension>           drop a scope dimension: project, state, issue,
+                                or label (repeatable) (default: [])
   --expect-version <n>          fail (409) unless the item is still at this
                                 version
   -p, --project <name>          scope: project name or id
   -s, --state <workflow/state>  scope: workflow-qualified state
   -i, --issue <ref>             scope: issue (<project>/<number>)
+  -l, --label <name>            scope: issue label name or id
   -u, --url <url>               base URL of the Tines API (or set TINES_API_URL,
                                 or run \`tines login\`; default
                                 https://tines.tbuckley.dev)
@@ -161,6 +163,7 @@ Options:
   -p, --project <name>          scope: project name or id
   -s, --state <workflow/state>  scope: workflow-qualified state
   -i, --issue <ref>             scope: issue (<project>/<number>)
+  -l, --label <name>            scope: issue label name or id
   --limit <n>                   maximum items to return (page size under
                                 --all-pages)
   --cursor <cursor>             resume from the next_cursor of a previous page
@@ -726,6 +729,8 @@ Delete a label and detach it from every issue
 
 Options:
   -y, --yes        skip the confirmation
+  -f, --force      also delete the context items and routing rules scoped to
+                   this label
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
                    \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
@@ -890,6 +895,7 @@ Delete the rule at a scope (issues it matched stop dispatching)
 Options:
   -p, --project <name>          scope: project name or id
   -s, --state <workflow/state>  scope: workflow-qualified state
+  -l, --label <name>            scope: issue label name or id
   -u, --url <url>               base URL of the Tines API (or set TINES_API_URL,
                                 or run \`tines login\`; default
                                 https://tines.tbuckley.dev)
@@ -917,6 +923,7 @@ targets
 Options:
   -p, --project <name>          scope: project name or id
   -s, --state <workflow/state>  scope: workflow-qualified state
+  -l, --label <name>            scope: issue label name or id
   -u, --url <url>               base URL of the Tines API (or set TINES_API_URL,
                                 or run \`tines login\`; default
                                 https://tines.tbuckley.dev)
