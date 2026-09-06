@@ -1,4 +1,4 @@
-import type { ArtifactRequirementCheck, ArtifactType } from '@tines/shared';
+import { requirementFix, type ArtifactRequirementCheck, type ArtifactType } from '@tines/shared';
 import { describe, expect, it } from 'vitest';
 import {
 	assertOneSource,
@@ -276,14 +276,124 @@ describe('planAttach — flags and refusals', () => {
 			fix: 'tines issues artifacts attach Proj/1 prd --text @prd.md'
 		});
 		expect(() => plan({ flags: { file: 'prd.md' }, gates: [g], paths: ['prd.md'] })).toThrow(
-			'"prd" is gated by "Submit for review" as text (text/markdown); --file would create a file artifact that can never satisfy it. Use: tines issues artifacts attach Proj/1 prd --text @prd.md (or --ignore-gates to attach a file anyway)'
+			'"prd" is gated by "Submit for review" as text (text/markdown); --file would create a file artifact that can never satisfy it. Use: tines issues artifacts attach Proj/1 prd --text @prd.md — or attach it under a different name (--ignore-gates does not bypass this; the server rejects the type change too)'
 		);
+	});
+
+	it('offers --ignore-gates only when the slot is empty, never over a held type', () => {
+		// `--ignore-gates` skips the CLI's checks, not the server's: on a slot
+		// already holding another (immutable) type the write 422s anyway, so
+		// advertising the escape sends an agent into a guaranteed failure —
+		// and which refusal branch fires is incidental (Tines/268).
+		const held = (over: Partial<ArtifactRequirementCheck>): GateEntry =>
+			gate('Submit for review', {
+				artifact: 'prd',
+				type: 'text',
+				content_type: 'text/markdown',
+				status: 'satisfied',
+				current_version: { version: 1, created_at: 0 },
+				...over
+			});
+		const honest = /--ignore-gates does not bypass this/;
+		const escape = /or --ignore-gates to attach/;
+
+		// Matrix rows where the held type differs from the planned one: no escape.
+		const occupied: [string, Partial<ArtifactRequirementCheck>, AttachFlags][] = [
+			['satisfied text slot + --file', { current_type: 'text' }, { file: 'prd.md' }],
+			['satisfied text slot + --link', { current_type: 'text' }, { link: 'https://x.test/p' }],
+			[
+				'satisfied folder slot + --file',
+				{ type: 'folder', content_type: undefined, current_type: 'folder' },
+				{ file: 'prd.md' }
+			],
+			['link slot under a text gate + --file', { current_type: 'link' }, { file: 'prd.md' }],
+			['link slot under a text gate + --folder', { current_type: 'link' }, { folder: 'shots' }]
+		];
+		for (const [what, over, flags] of occupied) {
+			let message = '';
+			try {
+				plan({ flags, gates: [held(over)], paths: ['prd.md', 'shots/'] });
+			} catch (e) {
+				message = (e as CliError).message;
+			}
+			expect(message, what).toMatch(honest);
+			expect(message, what).not.toMatch(escape);
+		}
+
+		// An empty slot keeps the escape: --ignore-gates really does work there.
+		let empty = '';
+		try {
+			plan({ flags: { file: 'prd.md' }, gates: [textGate], paths: ['prd.md'] });
+		} catch (e) {
+			empty = (e as CliError).message;
+		}
+		expect(empty).toMatch(escape);
+		expect(empty).not.toMatch(honest);
+	});
+
+	it('keeps the escape off a content-type-only refusal over a held type', () => {
+		// The other `checkAccepted` branch: the gate's type matches the plan's,
+		// only the MIME misses — but the slot holds a link, so the server would
+		// reject the type change whatever --ignore-gates says.
+		const g = gate('Submit for review', {
+			artifact: 'prd',
+			type: 'file',
+			content_type: 'image/',
+			status: 'type_mismatch',
+			current_type: 'link',
+			current_version: { version: 1, created_at: 0 },
+			fix: 'tines issues artifacts delete Proj/1 prd && tines issues artifacts attach Proj/1 prd <path>'
+		});
+		let message = '';
+		try {
+			plan({ flags: { file: 'notes.md' }, gates: [g], paths: ['notes.md'] });
+		} catch (e) {
+			message = (e as CliError).message;
+		}
+		expect(message).toContain('--content-type <mime under image/>');
+		expect(message).toContain('--ignore-gates does not bypass this');
+		expect(message).not.toContain('or --ignore-gates to attach it anyway');
+	});
+
+	it('plans the exact command the server renders, gate content type included', () => {
+		// The closed loop: whatever `requirementFix` prints, the CLI at this
+		// version must parse and type correctly (Tines/255, Tines/274). Take
+		// the rendered fix apart the way a shell does and feed it back in.
+		for (const [contentType, file] of [
+			['text/plain', 'prd.txt'],
+			['text/markdown', 'prd.md']
+		] as const) {
+			const check: ArtifactRequirementCheck = {
+				artifact: 'prd',
+				type: 'text',
+				content_type: contentType,
+				status: 'missing',
+				current_type: null,
+				current_version: null,
+				fix: ''
+			};
+			const argv = requirementFix(check, 'Proj/1').command.split(' ');
+			expect(argv.slice(0, 5)).toEqual(['tines', 'issues', 'artifacts', 'attach', 'Proj/1']);
+			expect(argv.slice(5)).toEqual(['prd', file]); // a positional source, no flag
+			const planned = plan({
+				positional: argv[6],
+				gates: [gate('Submit for review', { ...check })],
+				paths: [file]
+			});
+			// Typed by the gate and declaring the gate's own content type, so
+			// the version it writes satisfies the requirement that printed it.
+			expect(planned).toMatchObject({
+				type: 'text',
+				source: { kind: 'text-path', path: file },
+				contentType
+			});
+		}
 	});
 
 	it('computes the fix locally when an older server omitted it', () => {
 		const g = { ...textGate, check: { ...textGate.check, fix: '' } };
 		expect(() => plan({ flags: { file: 'prd.md' }, gates: [g], paths: ['prd.md'] })).toThrow(
-			/Use: tines issues artifacts attach Proj\/1 prd --text @prd\.md/
+			/Use: tines issues artifacts attach Proj\/1 prd prd\.md/
 		);
 	});
 
