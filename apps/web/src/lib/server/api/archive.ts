@@ -9,8 +9,9 @@
  * It takes the project row the caller *already has*: `issueQuery`,
  * `createIssue`, the lean `requireIssue` helpers, `resolveScope`,
  * `scheduleQuery` and `getProject` all join `project` anyway, so carrying
- * `archived_at` on those selects costs no extra round trip. The by-id
- * fallback exists for the rare caller with no row in hand.
+ * `archived_at` on those selects costs no extra round trip. Every gate site
+ * turned out to have a row in hand, so there is deliberately no by-id
+ * fallback: a new caller should carry the column rather than re-query.
  *
  * **Archive drains, it does not refuse.** A run that was already active when
  * the project was archived is allowed to finish its own issue: it may update,
@@ -30,7 +31,7 @@
 import { ACTIVE_RUN_STATUSES } from '@tines/shared';
 import type { Kysely } from 'kysely';
 import type { Database } from '$lib/server/db';
-import { ApiFail, notFound, type ActorContext } from './core';
+import { ApiFail, type ActorContext } from './core';
 
 /** The three columns the gate needs; every write path already has them. */
 export interface ArchivableProject {
@@ -85,23 +86,6 @@ export async function assertWritable(
 		if (run) return;
 	}
 	throw projectArchivedError(project);
-}
-
-/** Fallback for a caller with no project row in hand. 404 if it is not the actor's. */
-export async function assertProjectWritableById(
-	db: Kysely<Database>,
-	actor: ActorContext,
-	projectId: string,
-	opts: { issueId?: string } = {}
-): Promise<void> {
-	const row = await db
-		.selectFrom('project')
-		.select(['id', 'name', 'archived_at'])
-		.where('id', '=', projectId)
-		.where('user_id', '=', actor.userId)
-		.executeTakeFirst();
-	if (!row) throw notFound();
-	await assertWritable(db, actor, row, opts);
 }
 
 /** Shape adapter for anything carrying an issue's denormalised project columns. */

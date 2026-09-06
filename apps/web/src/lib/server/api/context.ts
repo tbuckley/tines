@@ -413,8 +413,11 @@ export async function listContextItems(
 		q = q.where('context_item.issue_id', 'is', null);
 	}
 	// An item is "archived" when either anchor — its own project scope or the
-	// project of its scoped issue — is archived. A named project overrides.
-	if (!filters.project) {
+	// project of its scoped issue — is archived. Naming an anchor (a project or
+	// an issue) overrides the default, the same way `applyScopeFilters` and
+	// `listSchedules` treat an explicit project filter: the caller asked for a
+	// specific place, so its state is not a reason to hide what is there.
+	if (!filters.project && !filters.issue) {
 		if ((filters.archived ?? 'false') === 'false') {
 			q = q
 				.where('scope_project.archived_at', 'is', null)

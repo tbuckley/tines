@@ -271,4 +271,22 @@ describe('default lists exclude archived projects', () => {
 		expect(await names({ project: 'demo' })).toContain('archived-conventions');
 		expect(await names({ archived: 'all' })).toContain('archived-conventions');
 	});
+
+	it('still returns issue-scoped context when the issue is named', async () => {
+		// The issue page's Context panel and `tines context list --issue <ref>`
+		// pass only `issue`. Naming an issue names an anchor just as `project`
+		// does, and reads of an archived project are never gated.
+		const issue = await createIssue(t.db, t.env, actor, PROJECT, { title: 'Scoped' });
+		await createContextItem(t.db, t.env, actor, {
+			kind: 'prompt',
+			name: 'issue-scoped-note',
+			issue_id: issue.id,
+			body: 'x'
+		});
+		await archiveProject(t.db, t.env, actor, PROJECT, NOW);
+		const names = async (filters: Parameters<typeof listContextItems>[2]) =>
+			(await listContextItems(t.db, USER, filters, page)).items.map((i) => i.name);
+		expect(await names({ issue: issue.id })).toEqual(['issue-scoped-note']);
+		expect(await names({})).not.toContain('issue-scoped-note');
+	});
 });

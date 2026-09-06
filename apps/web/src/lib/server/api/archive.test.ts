@@ -12,13 +12,7 @@ import {
 	addRunner,
 	seedBase
 } from '../supervisor/test-fixtures';
-import {
-	archivedDate,
-	assertProjectWritableById,
-	assertWritable,
-	issueProject,
-	projectArchivedError
-} from './archive';
+import { archivedDate, assertWritable, issueProject, projectArchivedError } from './archive';
 import { ApiFail, type ActorContext } from './core';
 import { createTestDb, type TestDb } from './test-db';
 
@@ -134,23 +128,6 @@ describe('assertWritable', () => {
 		const issue = addIssue(t);
 		const actor = runActor(issue);
 		const e = await failure(() => assertWritable(t.db, actor, archived));
-		expect(e.code).toBe('project_archived');
-	});
-});
-
-describe('assertProjectWritableById', () => {
-	it('passes for a live project of the actor', async () => {
-		await expect(assertProjectWritableById(t.db, session, PROJECT)).resolves.toBeUndefined();
-	});
-
-	it('404s for a project that is not the actor’s', async () => {
-		const e = await failure(() => assertProjectWritableById(t.db, session, 'prj_nope'));
-		expect(e.status).toBe(404);
-	});
-
-	it('422s once the project is archived', async () => {
-		t.sqlite.exec(`UPDATE project SET archived_at = ${ARCHIVED_AT} WHERE id = '${PROJECT}'`);
-		const e = await failure(() => assertProjectWritableById(t.db, session, PROJECT));
 		expect(e.code).toBe('project_archived');
 	});
 });
