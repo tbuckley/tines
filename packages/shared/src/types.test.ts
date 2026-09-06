@@ -52,7 +52,13 @@ describe('isActiveRun', () => {
 
 describe('activeStateIds', () => {
 	const wf = (...states: [string, StateCategory][]): Pick<Workflow, 'states'> => ({
-		states: states.map(([id, category], i) => ({ id, name: id, category, position: i }))
+		states: states.map(([id, category], i) => ({
+			id,
+			name: id,
+			category,
+			position: i,
+			inherits_from: null
+		}))
 	});
 
 	it('collects active states across every workflow', () => {
