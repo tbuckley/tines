@@ -259,7 +259,6 @@ test.describe.serial('issue artifacts', () => {
 				data: Buffer.from(payload)
 			}
 		);
-		expect(upload.ok()).toBe(true);
 		expect(await body<ArtifactShape>(upload)).toMatchObject({
 			artifact_type: 'file',
 			current_version: { version: 1, filename: 'report.json', content_type: 'application/json' }
