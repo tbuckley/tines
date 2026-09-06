@@ -140,6 +140,19 @@ export async function clickUntil(button: Locator, done: () => Promise<void>): Pr
 }
 
 /**
+ * `clickUntil` for a trigger that *toggles* — a popover, a dialog. Retrying a
+ * plain click would shut what the first one opened, so this only clicks while
+ * `opened` is still absent, and the retry is the wait for hydration rather
+ * than a race against it.
+ */
+export async function clickToOpen(trigger: Locator, opened: Locator): Promise<void> {
+	await expect(async () => {
+		if (!(await opened.isVisible())) await trigger.click();
+		await expect(opened).toBeVisible({ timeout: 2_000 });
+	}).toPass({ timeout: 15_000 });
+}
+
+/**
  * `read` once its result has stopped changing: two reads a beat apart that
  * agree. For geometry on a page that is still settling — content above the
  * target reflows after hydration, streamed panels resolve after the target is

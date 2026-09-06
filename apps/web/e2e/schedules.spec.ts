@@ -10,7 +10,16 @@ import type {
 } from '@tines/shared';
 import { expect, test } from '@playwright/test';
 import { ALICE, BOB, SCHED } from './constants.mjs';
-import { apiClient, body, clickUntil, errorBody, gotoHydrated, resetFocus, runId, signIn } from './helpers';
+import {
+	apiClient,
+	body,
+	clickUntil,
+	errorBody,
+	gotoHydrated,
+	resetFocus,
+	runId,
+	signIn
+} from './helpers';
 
 // Specs share one user: a project page sets the focus (Tines/259), so clear it
 // before each test rather than letting it scope a later spec's lists.

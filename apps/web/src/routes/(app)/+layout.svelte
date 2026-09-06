@@ -123,12 +123,7 @@
 				Tines
 			</a>
 			{#if showSwitcher}
-				<ProjectSwitcher
-					projects={data.projects}
-					{focus}
-					variant="header"
-					onchoose={chooseFocus}
-				/>
+				<ProjectSwitcher projects={data.projects} {focus} variant="header" onchoose={chooseFocus} />
 			{/if}
 			<!-- On phones the tabs live in the bottom bar instead. -->
 			<nav class="hidden h-full items-center gap-1 sm:flex">
@@ -233,12 +228,7 @@
 				{@const pending = active && !page.url.pathname.startsWith(tab.path)}
 				{#if tab.path === '/projects' && showSwitcher}
 					<!-- Same list as the desktop header, opening upward as a sheet. -->
-					<ProjectSwitcher
-						projects={data.projects}
-						{focus}
-						variant="tab"
-						onchoose={chooseFocus}
-					/>
+					<ProjectSwitcher projects={data.projects} {focus} variant="tab" onchoose={chooseFocus} />
 				{:else}
 					<a
 						href={tab.href}

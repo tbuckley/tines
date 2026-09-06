@@ -43,12 +43,22 @@
 	// The chrome is told optimistically rather than by an `invalidate`, whose
 	// load rerun swallowed a link click that landed in its window; the page's
 	// own data is already scoped, so nothing else here has to refetch.
+	//
+	// Announced once per project, tracked in a plain `let` that no rerender
+	// resets. A guard reading `focusHint` instead would make the hint a
+	// dependency of this effect, so the switcher could never move the focus
+	// off this page: `chooseFocus` clears the hint and `invalidateAll`s, both
+	// of which re-run this effect, which would then PATCH this project
+	// straight back over the user's choice.
+	let announced: string | null = null;
 	$effect(() => {
 		if (data.project.archived_at !== null) return;
-		if (focusHint.project?.id === data.project.id) return;
+		if (announced === data.project.id) return;
+		announced = data.project.id;
 		focusHint.set(data.project);
 		api.updatePreferences({ focused_project_id: data.project.id }).catch(() => {
 			// The chrome must not claim a focus the server refused.
+			announced = null;
 			focusHint.clear();
 		});
 	});

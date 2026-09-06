@@ -26,6 +26,12 @@ export const load: PageServerLoad = async ({ locals, platform, url }) => {
 
 	// `?project=` is a one-shot: it *sets* the focus and redirects, so the list
 	// keeps one address. Every other filter rides along to the new URL.
+	//
+	// This is the one focus write that happens in a `load`, which is safe only
+	// while no in-app link carries `/issues?project=`: the app preloads links on
+	// hover (`app.html`), so such a link would move the focus on hover alone.
+	// A link that needs to offer a project must point at `/projects/<id>`, whose
+	// page sets the focus client-side, or PATCH `/preferences` itself.
 	const ref = url.searchParams.get('project');
 	let notice: IssuesNotice | null = null;
 	if (ref) {

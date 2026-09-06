@@ -1,7 +1,7 @@
 import type { IssueDetail, Project } from '@tines/shared';
 import { expect, test, type Browser, type Page } from '@playwright/test';
 import { ALICE } from './constants.mjs';
-import { apiClient, body, clickUntil, resetFocus, runId, signIn } from './helpers';
+import { apiClient, body, clickUntil, gotoHydrated, resetFocus, runId, signIn } from './helpers';
 
 // Specs share one user: a project page sets the focus (Tines/259), so clear it
 // before each test rather than letting it scope a later spec's lists.
@@ -29,7 +29,7 @@ function suite(label: string, viewport: { width: number; height: number }) {
 			const context = await browser.newContext({ viewport });
 			await signIn(context, ALICE.sessionToken);
 			const page = await context.newPage();
-			await page.goto(path);
+			await gotoHydrated(page, path);
 			return page;
 		}
 
@@ -93,7 +93,7 @@ function suite(label: string, viewport: { width: number; height: number }) {
 			// phone that slot is the focus sheet (Tines/259), whose "Manage
 			// projects" carries the same memory as the desktop tab's href.
 			if (viewport.width < 640) {
-				await page.goto('/issues');
+				await gotoHydrated(page, '/issues');
 				const sheet = page.getByRole('button', { name: /^Project focus:/ });
 				const manage = page.getByRole('menuitem', { name: 'Manage projects' });
 				// Only click while the sheet is closed: a retry on an open popover
@@ -124,7 +124,7 @@ function suite(label: string, viewport: { width: number; height: number }) {
 			await expect(page.getByLabel('Filter by project')).toHaveCount(0);
 
 			for (const path of ['/context', '/activity']) {
-				await page.goto(path);
+				await gotoHydrated(page, path);
 				await expect(page.getByLabel('Filter by project')).not.toContainText(projectName);
 			}
 			await page.close();
