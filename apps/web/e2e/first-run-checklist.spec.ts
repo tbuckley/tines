@@ -43,17 +43,19 @@ test.beforeAll(async ({ request }) => {
 	).toBe(0);
 });
 
+// Every test drives the UI as Dana; Playwright hands each one a fresh browser
+// context, so the session cookie has to be planted per test, not once.
+test.beforeEach(async ({ context }) => {
+	await signIn(context, DANA.sessionToken);
+});
+
 test.afterAll(async ({ request }) => {
 	daemon?.kill();
 	// Leave automation off for anything that follows.
 	await apiClient(request, DANA.apiKey).put('/api/v1/supervisor/settings', { enabled: false });
 });
 
-test('the Agents tab opens on the checklist, not the off-state banner', async ({
-	context,
-	page
-}) => {
-	await signIn(context, DANA.sessionToken);
+test('the Agents tab opens on the checklist, not the off-state banner', async ({ page }) => {
 	await gotoHydrated(page, '/agents');
 
 	const checklist = checklistOf(page);
