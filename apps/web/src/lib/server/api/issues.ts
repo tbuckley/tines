@@ -1,10 +1,12 @@
 import {
+	prUrlOf,
 	renderTemplate,
 	requirementFix,
 	templateVars,
 	type AllowedTransition,
 	type ArchivedFilter,
 	type ArrivedVia,
+	type ArtifactType,
 	type ArtifactRequirementCheck,
 	type Comment,
 	type CreateCommentRequest,
@@ -39,10 +41,12 @@ import {
 } from './core';
 import { assertWritable, issueProject } from './archive';
 import {
+	artifactTypeOf,
 	checkRequirements,
 	listArtifacts,
 	loadIssueVersions,
-	requirementSpecLabel
+	requirementSpecLabel,
+	versionQuery
 } from './artifacts';
 import { contextSummaryForIssue } from './context';
 import { actorOf, eventInsert, eventQuery, serializeEvent } from './events';
@@ -456,10 +460,75 @@ export async function listIssues(
 		.limit(page.limit + 1)
 		.execute();
 	const serialize = filters.brief ? briefIssue : serializeIssue;
-	return {
-		items: rows.slice(0, page.limit).map(serialize),
-		hasMore: rows.length > page.limit
-	};
+	const pageRows = rows.slice(0, page.limit);
+	const items = pageRows.map(serialize);
+	await attachRoundSummaries(db, userId, pageRows, items);
+	return { items, hasMore: rows.length > page.limit };
+}
+
+/**
+ * `round_summary` on the awaiting-human rows of one page: what the round that
+ * just ended produced, so the Awaiting list can say "impl-pr v2 · PR #78"
+ * without a read per row. A page with no awaiting row issues no statement.
+ */
+async function attachRoundSummaries(
+	db: Kysely<Database>,
+	userId: string,
+	rows: IssueRow[],
+	items: IssueListItem[]
+): Promise<void> {
+	const awaiting = rows
+		.map((row, i) => ({ row, i }))
+		.filter(({ row }) => row.eff_state_category === 'awaiting_human');
+	for (const item of items) item.round_summary = null;
+	if (awaiting.length === 0) return;
+
+	const versions = await versionQuery(db)
+		.innerJoin('context_item', 'context_item.id', 'artifact_version.context_item_id')
+		.select([
+			'context_item.issue_id as item_issue_id',
+			'context_item.name as item_name',
+			'context_item.config as item_config'
+		])
+		.where('context_item.user_id', '=', userId)
+		.where('context_item.kind', '=', 'artifact')
+		.where((eb) =>
+			eb.or(
+				awaiting.map(({ row }) =>
+					eb.and([
+						eb('context_item.issue_id', '=', row.id),
+						eb('artifact_version.created_at', '>', Number(row.round_boundary_at ?? row.created_at))
+					])
+				)
+			)
+		)
+		.orderBy('artifact_version.created_at asc')
+		.execute();
+
+	for (const { row, i } of awaiting) {
+		// Attribution by run id, and only runs on this issue: a version a run on
+		// another issue attached here is not part of this issue's round.
+		const mine = versions.filter(
+			(v) => v.item_issue_id === row.id && v.actor_run_id !== null && v.actor_run_issue_id === row.id
+		);
+		const byName = new Map<string, { name: string; artifact_type: ArtifactType; version: number }>();
+		let prUrl: string | null = null;
+		for (const v of mine) {
+			const seen = byName.get(v.item_name);
+			if (!seen || v.version > seen.version) {
+				byName.set(v.item_name, {
+					name: v.item_name,
+					artifact_type: artifactTypeOf(v.item_config),
+					version: v.version
+				});
+			}
+			prUrl = prUrlOf(v) ?? prUrl;
+		}
+		items[i].round_summary = {
+			pr_url: prUrl,
+			artifacts: [...byName.values()].sort((a, b) => (a.name < b.name ? -1 : 1))
+		};
+	}
 }
 
 // ---------------------------------------------------------------------------

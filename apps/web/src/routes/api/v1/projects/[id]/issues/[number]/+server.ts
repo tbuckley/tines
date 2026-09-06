@@ -8,5 +8,7 @@ export const GET: RequestHandler = api(async (event) => {
 	const { db, actor } = await apiContext(event);
 	const number = Number.parseInt(event.params.number, 10);
 	if (!Number.isFinite(number)) throw notFound();
-	return json(await getIssueDetail(db, actor.userId, { projectId: event.params.id, number }));
+	return json(
+		await getIssueDetail(db, actor.userId, { projectId: event.params.id, number }, { round: true })
+	);
 });
