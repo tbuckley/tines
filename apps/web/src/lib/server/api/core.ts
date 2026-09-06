@@ -413,8 +413,9 @@ export async function runAtomic(env: Env, queries: CompiledQuery[]): Promise<D1R
 
 /**
  * Longest legal state-inheritance chain, counting the state itself: A → B → C
- * is the maximum (Tines/238). Lives here because both the write path
- * (`workflows.ts`, validating) and the read path (`context.ts`, bounding the
- * chain CTE) need it and must not import each other.
+ * is the maximum (Tines/238). Defined in `@tines/shared` so the client-side
+ * depth warnings agree with the write path's validation, and re-exported here
+ * because both the write path (`workflows.ts`) and the read path
+ * (`context.ts`, bounding the chain CTE) already import from this module.
  */
-export const MAX_INHERITANCE_CHAIN = 3;
+export { MAX_INHERITANCE_CHAIN } from '@tines/shared';
