@@ -158,8 +158,20 @@ const issue: IssueDetail = {
 	description: 'Do it *well*.',
 	labels: [],
 	workflow_id: 'wf_1',
-	state: { id: 's_review', name: 'Review', category: 'awaiting_human', position: 1 },
-	effective_state: { id: 's_review', name: 'Review', category: 'awaiting_human', position: 1 },
+	state: {
+		id: 's_review',
+		name: 'Review',
+		category: 'awaiting_human',
+		position: 1,
+		inherits_from: null
+	},
+	effective_state: {
+		id: 's_review',
+		name: 'Review',
+		category: 'awaiting_human',
+		position: 1,
+		inherits_from: null
+	},
 	duplicate_of: null,
 	open_blockers: [],
 	links: { blocked_by: [], blocks: [], duplicate_of: null, duplicated_by: [] },
@@ -200,7 +212,7 @@ const issue: IssueDetail = {
 		{
 			transition_id: 't1',
 			name: 'send back',
-			to_state: { id: 's_open', name: 'Open', category: 'active', position: 0 }
+			to_state: { id: 's_open', name: 'Open', category: 'active', position: 0, inherits_from: null }
 		}
 	],
 	state_entered_at: 0,
@@ -240,7 +252,8 @@ const richContext: EffectiveContext = {
 				scope: emptyScope,
 				body: 'Guidance.',
 				version: 4,
-				is_journal: false
+				is_journal: false,
+				inherited_from: null
 			},
 			{
 				item_id: 'ctx_j',
@@ -255,7 +268,8 @@ const richContext: EffectiveContext = {
 				},
 				body: '- lesson',
 				version: 7,
-				is_journal: true
+				is_journal: true,
+				inherited_from: null
 			},
 			{
 				item_id: 'ctx_c',
@@ -268,7 +282,8 @@ const richContext: EffectiveContext = {
 				},
 				body: 'Must stream.',
 				version: 1,
-				is_journal: false
+				is_journal: false,
+				inherited_from: null
 			}
 		]
 	},
@@ -284,7 +299,8 @@ const richContext: EffectiveContext = {
 			},
 			files: [{ path: 'SKILL.md', content: 'x' }],
 			file_count: 1,
-			version: 2
+			version: 2,
+			inherited_from: null
 		}
 	],
 	repos: [
@@ -300,7 +316,8 @@ const richContext: EffectiveContext = {
 			url: 'https://github.com/acme/api.git',
 			branch: 'experiment',
 			dir: 'api',
-			version: 1
+			version: 1,
+			inherited_from: null
 		}
 	],
 	overridden: [],
