@@ -76,8 +76,7 @@ export async function mintSiteToken(
 }
 
 export type SiteTokenResult =
-	| { ok: true; payload: SiteTokenPayload }
-	| { ok: false; reason: 'invalid' | 'expired' };
+	{ ok: true; payload: SiteTokenPayload } | { ok: false; reason: 'invalid' | 'expired' };
 
 /** Verifies signature (constant time via `crypto.subtle.verify`) then expiry. */
 export async function verifySiteToken(

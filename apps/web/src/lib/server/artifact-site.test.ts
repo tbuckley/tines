@@ -127,7 +127,10 @@ describe('resolveSitePath', () => {
 
 	it('resolves the entry, siblings and nested files of a folder', () => {
 		expect(resolveSitePath('index.html', files, '')).toEqual({ kind: 'file', path: 'index.html' });
-		expect(resolveSitePath('index.html', files, 'app.js')).toEqual({ kind: 'file', path: 'app.js' });
+		expect(resolveSitePath('index.html', files, 'app.js')).toEqual({
+			kind: 'file',
+			path: 'app.js'
+		});
 		expect(resolveSitePath('index.html', files, 'assets/logo.png')).toEqual({
 			kind: 'file',
 			path: 'assets/logo.png'

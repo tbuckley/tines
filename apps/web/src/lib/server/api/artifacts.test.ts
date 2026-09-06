@@ -11,6 +11,8 @@ import { getArtifactStore } from '$lib/server/artifact-store';
 import { PROJECT, USER, seedBase } from '../supervisor/test-fixtures';
 import {
 	artifactContentResponse,
+	artifactSiteResponse,
+	createSiteLink,
 	checkRequirements,
 	deleteArtifact,
 	getArtifactDetail,
@@ -963,5 +965,193 @@ describe('issue artifacts', () => {
 		);
 		// The link flag is --link here too (--url is the API base URL).
 		expect(emptyBlock).not.toContain('--url');
+	});
+
+	// -------------------------------------------------------------------------
+	// Sites: HTML artifacts served live under /s/<token>/
+
+	describe('sites', () => {
+		// The in-memory artifact store is memoized per Env object, so these
+		// mutate the harness env rather than spreading a copy of it.
+		const siteEnv = (over: Partial<Env> = {}): Env => {
+			Object.assign(t.env, {
+				BETTER_AUTH_SECRET: 'e2e-secret',
+				BETTER_AUTH_URL: 'https://tines.example.com',
+				...over
+			});
+			return t.env;
+		};
+		const bytes = (s: string) => new TextEncoder().encode(s);
+		const PAGE = '<!doctype html><meta name="viewport" content="width=device-width"><h1>hi</h1>';
+		const mint = (issueId: string, name: string, env: Env, opts: { version?: number } = {}) =>
+			createSiteLink(t.db, env, actor, issueId, name, {
+				...opts,
+				requestOrigin: 'http://localhost:8788'
+			});
+		const serve = (url: string, env: Env) => {
+			const parsed = new URL(url);
+			const [, , token, ...rest] = parsed.pathname.split('/');
+			return artifactSiteResponse(t.db, env, parsed, token, rest.join('/'));
+		};
+
+		async function htmlIssue(env = siteEnv()) {
+			const issue = await createIssue(t.db, t.env, actor, PROJECT, { title: 'Prototype' });
+			await uploadArtifactFile(t.db, t.env, actor, issue.id, 'proto', {
+				filename: 'proto.html',
+				contentType: 'text/html',
+				bytes: bytes(PAGE)
+			});
+			return { issue, link: await mint(issue.id, 'proto', env) };
+		}
+
+		it('mints a same-origin link when no sandbox origin is configured', async () => {
+			const { link } = await htmlIssue();
+			expect(link.mode).toBe('same-origin');
+			expect(link.version).toBe(1);
+			expect(link.url.startsWith('http://localhost:8788/s/v1.')).toBe(true);
+			expect(link.url.endsWith('/')).toBe(true);
+			expect(link.expires_at).toBe(clock + 60 * 60 * 1000);
+		});
+
+		it('mints on the sandbox origin when one is configured', async () => {
+			const env = siteEnv({ ARTIFACT_SANDBOX_ORIGIN: 'https://proto.example.workers.dev' });
+			const { link } = await htmlIssue(env);
+			expect(link.mode).toBe('sandbox-origin');
+			expect(link.url.startsWith('https://proto.example.workers.dev/s/')).toBe(true);
+		});
+
+		it('serves the page with a CSP pinned to its own prefix, sandboxed on the app origin', async () => {
+			const { link } = await htmlIssue();
+			const res = await serve(link.url, siteEnv());
+			expect(res.status).toBe(200);
+			expect(await res.text()).toBe(PAGE);
+			expect(res.headers.get('content-type')).toBe('text/html; charset=utf-8');
+			expect(res.headers.get('content-disposition')).toBe('inline; filename="proto.html"');
+			const csp = res.headers.get('content-security-policy')!;
+			expect(csp).toContain(`connect-src ${link.url}`);
+			expect(csp).toContain('sandbox allow-scripts');
+			expect(csp).toContain('frame-ancestors https://tines.example.com');
+			// Never 'self': that would name the whole app origin, /api included.
+			expect(csp).not.toContain("'self'");
+		});
+
+		it('drops the sandbox directive only when served from the sandbox host itself', async () => {
+			const env = siteEnv({ ARTIFACT_SANDBOX_ORIGIN: 'https://proto.example.workers.dev' });
+			t.env.ARTIFACT_SANDBOX_ORIGIN = 'https://proto.example.workers.dev';
+			const { link } = await htmlIssue(env);
+			expect((await serve(link.url, env)).headers.get('content-security-policy')).not.toContain(
+				'sandbox'
+			);
+			// The same token replayed against the app origin is still contained.
+			const onApp = link.url.replace('https://proto.example.workers.dev', 'http://localhost:8788');
+			expect((await serve(onApp, env)).headers.get('content-security-policy')).toContain('sandbox');
+		});
+
+		it('serves a text artifact and pins the link to a version', async () => {
+			const issue = await createIssue(t.db, t.env, actor, PROJECT, { title: 'Text site' });
+			await upsertArtifact(t.db, t.env, actor, issue.id, 'prd', {
+				type: 'text',
+				content: '<h1>v1</h1>',
+				content_type: 'text/html'
+			});
+			const v1 = await mint(issue.id, 'prd', siteEnv());
+			tick();
+			// A text version carries its own content_type (an append that omits it
+			// falls back to text/markdown, and would stop being a site).
+			await upsertArtifact(t.db, t.env, actor, issue.id, 'prd', {
+				content: '<h1>v2</h1>',
+				content_type: 'text/html'
+			});
+			expect(await (await serve(v1.url, siteEnv())).text()).toBe('<h1>v1</h1>');
+			const current = await mint(issue.id, 'prd', siteEnv());
+			expect(current.version).toBe(2);
+			expect(await (await serve(current.url, siteEnv())).text()).toBe('<h1>v2</h1>');
+			const pinned = await mint(issue.id, 'prd', siteEnv(), { version: 1 });
+			expect(pinned.version).toBe(1);
+		});
+
+		it('serves a folder site: entry, siblings, directory redirect and 404', async () => {
+			const issue = await createIssue(t.db, t.env, actor, PROJECT, { title: 'Folder site' });
+			await uploadArtifactFolder(t.db, t.env, actor, issue.id, 'app', [
+				{ path: 'index.html', contentType: 'text/html', bytes: bytes('<script src="app.js">') },
+				{ path: 'app.js', contentType: 'text/javascript', bytes: bytes('console.log(1)') },
+				{ path: 'docs/index.html', contentType: 'text/html', bytes: bytes('<h1>docs</h1>') }
+			]);
+			const link = await mint(issue.id, 'app', siteEnv());
+			expect(await (await serve(link.url, siteEnv())).text()).toBe('<script src="app.js">');
+			const js = await serve(`${link.url}app.js`, siteEnv());
+			expect(await js.text()).toBe('console.log(1)');
+			expect(js.headers.get('content-type')).toBe('text/javascript; charset=utf-8');
+
+			const dir = await serve(`${link.url}docs`, siteEnv());
+			expect(dir.status).toBe(302);
+			expect(dir.headers.get('location')).toBe(new URL(`${link.url}docs/`).pathname);
+			expect(await (await serve(`${link.url}docs/`, siteEnv())).text()).toBe('<h1>docs</h1>');
+			expect((await serve(`${link.url}missing.js`, siteEnv())).status).toBe(404);
+		});
+
+		it('422s artifacts that are not sites', async () => {
+			const issue = await createIssue(t.db, t.env, actor, PROJECT, { title: 'Not sites' });
+			await uploadArtifactFile(t.db, t.env, actor, issue.id, 'shot', {
+				filename: 'shot.png',
+				contentType: 'image/png',
+				bytes: bytes('PNG')
+			});
+			await upsertArtifact(t.db, t.env, actor, issue.id, 'notes', {
+				type: 'text',
+				content: '# notes'
+			});
+			await uploadArtifactFolder(t.db, t.env, actor, issue.id, 'bundle', [
+				{ path: 'readme.md', contentType: 'text/markdown', bytes: bytes('# x') }
+			]);
+			for (const name of ['shot', 'notes', 'bundle']) {
+				await expect(mint(issue.id, name, siteEnv())).rejects.toMatchObject({
+					status: 422,
+					code: 'not_a_site'
+				});
+			}
+			await expect(
+				mint(issue.id, 'bundle', siteEnv()).catch((e: ApiFail) => Promise.reject(e.details))
+			).rejects.toMatchObject({ paths: ['readme.md'] });
+		});
+
+		it('503s when the server has no secret to sign with', async () => {
+			delete t.env.BETTER_AUTH_SECRET;
+			delete t.env.SECRET_ENCRYPTION_KEY;
+			const issue = await createIssue(t.db, t.env, actor, PROJECT, { title: 'No secret' });
+			await uploadArtifactFile(t.db, t.env, actor, issue.id, 'proto', {
+				filename: 'proto.html',
+				contentType: 'text/html',
+				bytes: bytes(PAGE)
+			});
+			await expect(
+				createSiteLink(t.db, t.env, actor, issue.id, 'proto', {
+					requestOrigin: 'http://localhost:8788'
+				})
+			).rejects.toMatchObject({ status: 503, code: 'site_unavailable' });
+		});
+
+		it('refuses tampered, expired and other-secret tokens with HTML pages', async () => {
+			const { link } = await htmlIssue();
+			const garbage = await serve('http://localhost:8788/s/nope/', siteEnv());
+			expect(garbage.status).toBe(404);
+			expect(garbage.headers.get('content-type')).toContain('text/html');
+			expect(await garbage.text()).toContain('Not found');
+
+			expect((await serve(link.url, siteEnv({ BETTER_AUTH_SECRET: 'other' }))).status).toBe(404);
+			siteEnv();
+
+			clock += 60 * 60 * 1000 + 1;
+			const expired = await serve(link.url, siteEnv());
+			expect(expired.status).toBe(403);
+			expect(await expired.text()).toContain('expired');
+		});
+
+		it('404s a still-valid token once the artifact is deleted', async () => {
+			const { issue, link } = await htmlIssue();
+			expect((await serve(link.url, siteEnv())).status).toBe(200);
+			await deleteArtifact(t.db, t.env, actor, issue.id, 'proto');
+			expect((await serve(link.url, siteEnv())).status).toBe(404);
+		});
 	});
 });
