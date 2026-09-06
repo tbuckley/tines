@@ -8,6 +8,7 @@ import {
 	printJson,
 	printList,
 	resolveIssue,
+	resolveLabelFlag,
 	resolveProject,
 	resolveStateFlag,
 	table,
@@ -36,18 +37,22 @@ interface ScopeFlagOpts {
 	project?: string;
 	state?: string;
 	issue?: string;
+	label?: string;
 }
 
+type ScopeIdFields = Pick<
+	CreateContextItemRequest,
+	'project_id' | 'workflow_state_id' | 'issue_id' | 'label_id'
+>;
+
 /** Resolves the scope flags (names → ids). Only set flags are returned. */
-async function resolveScopeFlags(
-	api: ApiClient,
-	opts: ScopeFlagOpts
-): Promise<Pick<CreateContextItemRequest, 'project_id' | 'workflow_state_id' | 'issue_id'>> {
-	const scope: Pick<CreateContextItemRequest, 'project_id' | 'workflow_state_id' | 'issue_id'> = {};
+async function resolveScopeFlags(api: ApiClient, opts: ScopeFlagOpts): Promise<ScopeIdFields> {
+	const scope: ScopeIdFields = {};
 	if (opts.project !== undefined) scope.project_id = (await resolveProject(api, opts.project)).id;
 	if (opts.state !== undefined)
 		scope.workflow_state_id = (await resolveStateFlag(api, opts.state)).state.id;
 	if (opts.issue !== undefined) scope.issue_id = (await resolveIssue(api, opts.issue)).id;
+	if (opts.label !== undefined) scope.label_id = await resolveLabelFlag(api, opts.label);
 	return scope;
 }
 
@@ -84,6 +89,7 @@ Scope flags (combinable — an item applies where ALL of its set dimensions matc
   --project <name>              only for issues in this project
   --state <workflow>/<state>    only for issues currently in this state
   --issue <project>/<number>    only for this issue
+  --label <name>                only for issues carrying this label
 `;
 
 function withScopeFlags(cmd: Command): Command {
@@ -91,6 +97,7 @@ function withScopeFlags(cmd: Command): Command {
 		.option('-p, --project <name>', 'scope: project name or id')
 		.option('-s, --state <workflow/state>', 'scope: workflow-qualified state')
 		.option('-i, --issue <ref>', 'scope: issue (<project>/<number>)')
+		.option('-l, --label <name>', 'scope: issue label name or id')
 		.addHelpText('after', SCOPE_FLAGS_HELP);
 }
 
@@ -124,6 +131,7 @@ export function register(program: Command): void {
 					project: scope.project_id ?? undefined,
 					state: scope.workflow_state_id ?? undefined,
 					issue: scope.issue_id ?? undefined,
+					label: scope.label_id ?? undefined,
 					q: opts.search,
 					exact: opts.exact ? true : undefined,
 					...page
@@ -228,7 +236,7 @@ export function register(program: Command): void {
 				.option('--dir <dir>', 'repo: checkout directory (empty string restores the URL default)')
 				.option(
 					'--unset <dimension>',
-					'drop a scope dimension: project, state, or issue (repeatable)',
+					'drop a scope dimension: project, state, issue, or label (repeatable)',
 					collect,
 					[]
 				)
@@ -266,7 +274,8 @@ export function register(program: Command): void {
 				if (dim === 'project') body.project_id = null;
 				else if (dim === 'state') body.workflow_state_id = null;
 				else if (dim === 'issue') body.issue_id = null;
-				else die(`--unset takes project, state, or issue, got "${dim}"`);
+				else if (dim === 'label') body.label_id = null;
+				else die(`--unset takes project, state, issue, or label, got "${dim}"`);
 			}
 			if (opts.body !== undefined) body.body = readBodyValue(opts.body);
 			if (opts.file.length > 0 || opts.removeFile.length > 0) {

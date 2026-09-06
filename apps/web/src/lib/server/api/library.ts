@@ -26,6 +26,7 @@ import {
 	loadFiles,
 	updateContextItem
 } from './context';
+import { createLabel, resolveLabelRef } from './labels';
 import { createProject } from './projects';
 import { createWorkflow, loadWorkflows } from './workflows';
 
@@ -128,7 +129,8 @@ export async function buildLibraryDocument(
 				...(row.scope_project_name ? { project: row.scope_project_name } : {}),
 				...(row.scope_state_name && row.scope_workflow_name
 					? { state: { workflow: row.scope_workflow_name, name: row.scope_state_name } }
-					: {})
+					: {}),
+				...(row.scope_label_name ? { label: row.scope_label_name } : {})
 			}
 		};
 		if (isJournal(row)) entry.journal = true;
@@ -165,6 +167,7 @@ function scopeRefLabel(scope: LibraryScopeRef): string {
 	const parts: string[] = [];
 	if (scope.project) parts.push(`project ${scope.project}`);
 	if (scope.state) parts.push(`state ${scope.state.workflow} / ${scope.state.name}`);
+	if (scope.label) parts.push(`label ${scope.label}`);
 	return parts.length === 0 ? 'global' : parts.join(' ∧ ');
 }
 
@@ -172,8 +175,13 @@ function scopeRefLabel(scope: LibraryScopeRef): string {
 const SEP = '\u0000';
 
 /** Structural key for collision detection: the `context_item_name_scope_uq` tuple. */
-const contextKey = (kind: string, name: string, projectId: string | null, stateId: string | null) =>
-	`${kind}${SEP}${name}${SEP}${projectId ?? ''}${SEP}${stateId ?? ''}`;
+const contextKey = (
+	kind: string,
+	name: string,
+	projectId: string | null,
+	stateId: string | null,
+	labelId: string | null
+) => `${kind}${SEP}${name}${SEP}${projectId ?? ''}${SEP}${stateId ?? ''}${SEP}${labelId ?? ''}`;
 
 /** Canonical form of a workflow definition, for "same or different?". */
 function workflowFingerprint(wf: CreateWorkflowRequest): string {
@@ -258,11 +266,14 @@ export async function planImport(
 	const createProjects = request.create_projects !== false;
 	const includeJournals = request.include_journals !== false;
 
-	const [projectRows, workflowRows, contextRows] = await Promise.all([
+	const [projectRows, workflowRows, contextRows, labelRows] = await Promise.all([
 		db.selectFrom('project').select(['id', 'name']).where('user_id', '=', userId).execute(),
 		loadWorkflows(db, userId),
-		contextItemQuery(db, userId).where('context_item.issue_id', 'is', null).execute()
+		contextItemQuery(db, userId).where('context_item.issue_id', 'is', null).execute(),
+		db.selectFrom('label').select(['id', 'name']).where('user_id', '=', userId).execute()
 	]);
+	// Labels match by name, case-insensitively, as everywhere else.
+	const labelIds = new Map(labelRows.map((l) => [l.name.toLowerCase(), l.id]));
 
 	// Name → id for what exists now. Projects and workflows created earlier in
 	// this same plan are recorded as `null`: known by name, id not yet known.
@@ -281,7 +292,7 @@ export async function planImport(
 	]);
 	const existingContext = new Map(
 		contextRows.map((row) => [
-			contextKey(row.kind, row.name, row.project_id, row.workflow_state_id),
+			contextKey(row.kind, row.name, row.project_id, row.workflow_state_id, row.label_id),
 			row
 		])
 	);
@@ -417,13 +428,21 @@ export async function planImport(
 
 		const projectId = entry.scope.project ? (projectIds.get(entry.scope.project) ?? null) : null;
 		const stateId = stateKey ? (stateIds.get(stateKey) ?? null) : null;
+		// A label the deployment lacks is created by the import (labels are
+		// flat and cheap, unlike a project or a workflow, which must already
+		// exist to be scoped to) — so a missing one is pending, not a skip.
+		const labelId = entry.scope.label
+			? (labelIds.get(entry.scope.label.toLowerCase()) ?? null)
+			: null;
 		// A scope whose carrier is only being created in this same import
 		// cannot collide with anything that already exists.
 		const pending =
-			(entry.scope.project && projectId === null) || (stateKey !== null && stateId === null);
+			(entry.scope.project && projectId === null) ||
+			(stateKey !== null && stateId === null) ||
+			(!!entry.scope.label && labelId === null);
 		const existing = pending
 			? undefined
-			: existingContext.get(contextKey(entry.kind, entry.name, projectId, stateId));
+			: existingContext.get(contextKey(entry.kind, entry.name, projectId, stateId, labelId));
 
 		if (existing) {
 			steps.push(
@@ -493,6 +512,8 @@ export async function applyImport(
 	const projectIds = new Map<string, string>();
 	const stateIds = new Map<string, string>();
 	const workflowIds = new Map<string, string>();
+	// Labels created by this import, keyed lower-case; also memoises lookups.
+	const labelIds = new Map<string, string>();
 
 	// Workflows before projects (a project's default workflow must exist to be
 	// pointed at), context last (every scope carrier is in place by then). The
@@ -526,7 +547,7 @@ export async function applyImport(
 				});
 				projectIds.set(created.name, created.id);
 			} else if (step.context) {
-				await writeContextEntry(db, env, actor, step, projectIds, stateIds);
+				await writeContextEntry(db, env, actor, step, projectIds, stateIds, labelIds);
 			}
 		} catch (e) {
 			step.entry.action = 'error';
@@ -545,7 +566,8 @@ async function writeContextEntry(
 	actor: ActorContext,
 	step: PlannedStep,
 	createdProjects: Map<string, string>,
-	createdStates: Map<string, string>
+	createdStates: Map<string, string>,
+	labelIds: Map<string, string>
 ): Promise<void> {
 	const entry = step.context!;
 	const payload = {
@@ -594,11 +616,25 @@ async function writeContextEntry(
 		}
 	}
 
+	let labelId: string | null = null;
+	if (entry.scope.label) {
+		const key = entry.scope.label.toLowerCase();
+		labelId =
+			labelIds.get(key) ??
+			(await resolveLabelRef(db, actor.userId, entry.scope.label))?.id ??
+			// Unlike a project or a workflow, a label carries nothing but its
+			// name — creating the missing one is cheaper and less surprising
+			// than dropping the item's scope or skipping it.
+			(await createLabel(db, env, actor, { name: entry.scope.label })).id;
+		labelIds.set(key, labelId);
+	}
+
 	await createContextItem(db, env, actor, {
 		kind: entry.kind,
 		name: entry.name,
 		project_id: projectId,
 		workflow_state_id: stateId,
+		label_id: labelId,
 		...payload
 	});
 }
