@@ -19,6 +19,7 @@ import {
 	ARTIFACT_TYPES,
 	canonicalGitHubRepoUrl,
 	parsePrSpec,
+	requirementFix,
 	type Artifact,
 	type ArtifactDetail,
 	type ArtifactRequirement,
@@ -419,7 +420,8 @@ export async function getArtifactDetail(
 
 export function checkRequirements(
 	requires: ArtifactRequirement[],
-	artifacts: Pick<Artifact, 'name' | 'artifact_type' | 'fresh' | 'current_version'>[]
+	artifacts: Pick<Artifact, 'name' | 'artifact_type' | 'fresh' | 'current_version'>[],
+	ref: string
 ): ArtifactRequirementCheck[] {
 	return requires.map((r) => {
 		const artifact = artifacts.find((a) => a.name === r.artifact);
@@ -437,7 +439,7 @@ export function checkRequirements(
 		} else {
 			status = 'satisfied';
 		}
-		return {
+		const checked = {
 			...r,
 			status,
 			current_version: artifact
@@ -448,6 +450,9 @@ export function checkRequirements(
 				: null,
 			current_type: artifact ? artifact.artifact_type : null
 		};
+		// The fix is computed here and nowhere else: the 422, the issue read
+		// and the launch prompt all read it off the check.
+		return { ...checked, fix: requirementFix(checked, ref).command };
 	});
 }
 

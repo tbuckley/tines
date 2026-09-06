@@ -31,6 +31,8 @@ export interface WorkflowStateTable {
 	name: string;
 	category: StateCategory;
 	position: number;
+	/** The state this one inherits context from (Tines/238), or null. */
+	inherits_from_state_id: string | null;
 	created_at: number;
 }
 

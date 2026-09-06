@@ -237,18 +237,22 @@ describe('issue artifacts', () => {
 			}
 		];
 		expect(
-			checkRequirements([{ artifact: 'shot', content_type: 'image/' }], artifacts)[0]
+			checkRequirements([{ artifact: 'shot', content_type: 'image/' }], artifacts, 'demo/1')[0]
 		).toMatchObject({
 			status: 'satisfied',
 			current_type: 'file'
 		});
-		expect(checkRequirements([{ artifact: 'shot', type: 'pr' }], artifacts)[0].status).toBe(
-			'type_mismatch'
-		);
 		expect(
-			checkRequirements([{ artifact: 'shot', content_type: 'text/markdown' }], artifacts)[0].status
+			checkRequirements([{ artifact: 'shot', type: 'pr' }], artifacts, 'demo/1')[0].status
 		).toBe('type_mismatch');
-		expect(checkRequirements([{ artifact: 'other' }], artifacts)[0]).toMatchObject({
+		expect(
+			checkRequirements(
+				[{ artifact: 'shot', content_type: 'text/markdown' }],
+				artifacts,
+				'demo/1'
+			)[0].status
+		).toBe('type_mismatch');
+		expect(checkRequirements([{ artifact: 'other' }], artifacts, 'demo/1')[0]).toMatchObject({
 			status: 'missing',
 			current_type: null
 		});
@@ -333,6 +337,51 @@ describe('issue artifacts', () => {
 		expect(unmet.get('ref')).toMatchObject({ status: 'missing' });
 		expect(unmet.get('ref')!.fix).toContain('attach demo/1 ref --link <url>');
 		expect(unmet.get('ref')!.fix).not.toContain('--url');
+
+		// The issue read is the same source: byte-identical fix per slot, so an
+		// agent that pre-flights the transition and one that 422s see one hint.
+		const detail = await getIssueDetail(t.db, USER, { id: issue.id });
+		const preflight = new Map(
+			detail.allowed_transitions
+				.find((tr) => tr.name === 'go')!
+				.requires!.map((r) => [r.artifact, r.fix])
+		);
+		expect(preflight.size).toBe(4);
+		for (const [artifact, r] of unmet) expect(preflight.get(artifact)).toBe(r.fix);
+	});
+
+	it('says the type itself must change when the slot holds the wrong one', async () => {
+		const issue = await gatedIssue();
+		// design-doc is gated (text, text/markdown); a link can never satisfy it.
+		await upsertArtifact(t.db, t.env, actor, issue.id, 'design-doc', {
+			type: 'link',
+			url: 'https://x.test/doc'
+		});
+		let error: ApiFail | undefined;
+		await transitionIssue(t.db, t.env, actor, issue.id, { action: 'approve' }).catch(
+			(e) => (error = e)
+		);
+		expect(error).toMatchObject({ status: 422, code: 'transition_requirements_unmet' });
+		// The generic "attach a new version" advice would send an agent round
+		// the same 422: artifact type is immutable, so the slot has to go.
+		expect(error!.message).toContain('is a link artifact and the gate needs text');
+		expect(error!.message).toContain('artifact type is immutable');
+		expect(error!.message).not.toContain('Attach it (or a new version)');
+		const unmet = error!.details!.unmet as Record<string, unknown>[];
+		expect(unmet[0].fix).toBe(
+			'tines issues artifacts delete demo/1 design-doc && tines issues artifacts attach demo/1 design-doc --text @design-doc.md'
+		);
+	});
+
+	it('names the exact attach command for a satisfied requirement too', async () => {
+		const issue = await gatedIssue();
+		await attachDoc(issue.id);
+		const detail = await getIssueDetail(t.db, USER, { id: issue.id });
+		const r = detail.allowed_transitions.find((tr) => tr.name === 'approve')!.requires![0];
+		expect(r.status).toBe('satisfied');
+		// Every entry carries a fix; on a satisfied slot it is the command that
+		// attaches the next version, under the slot's own (immutable) type.
+		expect(r.fix).toBe('tines issues artifacts attach demo/1 design-doc --text @design-doc.md');
 	});
 
 	it('counts an artifact attached before the gating state as stale, per the strict rule', async () => {
@@ -876,6 +925,11 @@ describe('issue artifacts', () => {
 		expect(block).toContain(
 			'Requires: artifact `design-doc` (text, text/markdown) — **missing; attach it first**'
 		);
+		// The gate decides the flag: a (text, text/markdown) slot names --text
+		// and a concrete filename, not the generic placeholder.
+		expect(block).toContain(
+			'attach: `tines issues artifacts attach demo/1 design-doc --text @design-doc.md`'
+		);
 
 		tick();
 		await attachDoc(issue.id, '# Secret design');
@@ -887,6 +941,7 @@ describe('issue artifacts', () => {
 		expect(block2).toContain('- **design-doc** (text, text/markdown, v1, fresh)');
 		expect(block2).toContain('Fetch: `tines issues artifacts get demo/');
 		expect(block2).toContain('satisfied (v1, fresh)');
+		expect(block2).not.toContain('attach: `'); // satisfied lines carry no hint
 		expect(block2).not.toContain('Secret design'); // a listing, never contents
 
 		// Empty case.
@@ -897,9 +952,16 @@ describe('issue artifacts', () => {
 			[]
 		);
 		expect(emptyBlock).toContain('No artifacts attached.');
-		expect(emptyBlock).toContain('Attach one: `tines issues artifacts attach');
+		expect(emptyBlock).toContain('Attach one: `tines issues artifacts attach demo/2 <name> …`');
+		// No flag is privileged (Tines/241): the old line put `--file <path>`
+		// inside the command itself, which taught agents to reach for it under
+		// gates that wanted anything else.
+		expect(emptyBlock).not.toContain('attach demo/2 <name> --file');
+		// The whole ungated vocabulary, in one place and one order.
+		expect(emptyBlock).toContain(
+			'Ungated slots: --file <path>, --folder <dir>, --text <md|@file>, --link <url>, --pr <owner/repo#N>.'
+		);
 		// The link flag is --link here too (--url is the API base URL).
-		expect(emptyBlock).toContain('--text/--link/--pr');
 		expect(emptyBlock).not.toContain('--url');
 	});
 });

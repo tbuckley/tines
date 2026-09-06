@@ -19,6 +19,7 @@ import {
 	type ContextItem,
 	type ContextKind,
 	type ContextScope,
+	type InheritedFrom,
 	type ContextSummary,
 	type CreateContextItemRequest,
 	type DeletedContextItem,
@@ -38,6 +39,7 @@ import { artifactKeyPrefix, getArtifactStore } from '$lib/server/artifact-store'
 import { newId, type Database } from '$lib/server/db';
 import {
 	ApiFail,
+	MAX_INHERITANCE_CHAIN,
 	notFound,
 	optionalString,
 	requireString,
@@ -1164,8 +1166,56 @@ export function stitchPrompt(parts: StitchPart[]): string {
 
 interface MatchTarget {
 	projectId: string;
-	stateId: string;
+	/** The issue's state and its ancestors, root → leaf; the leaf is the issue's own state. */
+	stateChain: string[];
 	issueId: string;
+}
+
+/**
+ * The chain root → leaf: a state and its inheritance ancestors. Always ends
+ * with `leafStateId`, even for a state whose pointer dangles.
+ *
+ * The `state_chain(id, next_id, depth)` recursive CTE (depth 0 is the state
+ * itself, `MAX_INHERITANCE_CHAIN` bounds the recursion so a hand-edited cycle
+ * terminates at the cap) is written twice on purpose — once here for the
+ * effective-context read, once inside `contextSummaryForIssue`, which must stay
+ * one query. Change one and change the other.
+ */
+async function resolveStateChain(db: Kysely<Database>, leafStateId: string): Promise<string[]> {
+	const rows = await db
+		.withRecursive('state_chain', (cte) =>
+			cte
+				.selectFrom('workflow_state')
+				.where('workflow_state.id', '=', leafStateId)
+				.select([
+					'workflow_state.id as id',
+					'workflow_state.inherits_from_state_id as next_id',
+					sql<number>`0`.as('depth')
+				])
+				.unionAll(
+					cte
+						.selectFrom('state_chain')
+						.innerJoin('workflow_state', 'workflow_state.id', 'state_chain.next_id')
+						.where('state_chain.depth', '<', MAX_INHERITANCE_CHAIN - 1)
+						.select([
+							'workflow_state.id as id',
+							'workflow_state.inherits_from_state_id as next_id',
+							sql<number>`state_chain.depth + 1`.as('depth')
+						])
+				)
+		)
+		.selectFrom('state_chain')
+		.select(['id', 'depth'])
+		.execute();
+	// Keep each state at its shallowest depth, so the leaf stays last even if a
+	// hand-edited loop reached it again, then order root → leaf.
+	const depths = new Map<string, number>();
+	for (const row of rows) {
+		const seen = depths.get(row.id);
+		if (seen === undefined || row.depth < seen) depths.set(row.id, row.depth);
+	}
+	const chain = [...depths.entries()].sort((a, b) => b[1] - a[1]).map(([id]) => id);
+	return chain.length > 0 ? chain : [leafStateId];
 }
 
 function matchingItemsQuery(db: Kysely<Database>, userId: string, target: MatchTarget) {
@@ -1181,7 +1231,7 @@ function matchingItemsQuery(db: Kysely<Database>, userId: string, target: MatchT
 				]),
 				eb.or([
 					eb('context_item.workflow_state_id', 'is', null),
-					eb('context_item.workflow_state_id', '=', target.stateId)
+					eb('context_item.workflow_state_id', 'in', target.stateChain)
 				]),
 				eb.or([
 					eb('context_item.label_id', 'is', null),
@@ -1215,10 +1265,16 @@ function labelSortKey(row: ItemRow): string {
  * of a by-name dedupe is deterministic and explainable rather than whichever
  * item happened to be created first.
  */
-function sortMatched(rows: ItemRow[]): ItemRow[] {
+function sortMatched(rows: ItemRow[], stateChain: string[]): ItemRow[] {
+	// Ancestors stitch before the state that inherits from them, inside the
+	// state dimension's existing rank: a tie-break, not a new layer. Inert for a
+	// parentless state — every matched row then names the one state in the chain.
+	const stateDepth = (row: ItemRow): number =>
+		row.workflow_state_id ? stateChain.indexOf(row.workflow_state_id) : stateChain.length - 1;
 	return [...rows].sort(
 		(a, b) =>
 			layerRank(rowScope(a)) - layerRank(rowScope(b)) ||
+			stateDepth(a) - stateDepth(b) ||
 			(labelSortKey(a) < labelSortKey(b) ? -1 : labelSortKey(a) > labelSortKey(b) ? 1 : 0) ||
 			a.position - b.position ||
 			a.created_at - b.created_at ||
@@ -1226,8 +1282,38 @@ function sortMatched(rows: ItemRow[]): ItemRow[] {
 	);
 }
 
+/**
+ * Where a matched row came from, when it came from an ancestor of the issue's
+ * state. Inherited layers render `state <workflow> / <state>` so two same-named
+ * states cannot collide under one `## Context: state X` heading.
+ */
+function inheritedFrom(row: ItemRow, leafStateId: string): InheritedFrom | null {
+	if (!row.workflow_state_id || row.workflow_state_id === leafStateId) return null;
+	return {
+		state_id: row.workflow_state_id,
+		state_name: row.scope_state_name ?? row.workflow_state_id,
+		workflow_id: row.scope_workflow_id ?? '',
+		workflow_name: row.scope_workflow_name ?? ''
+	};
+}
+
+/** Scope and provenance for one matched row, qualified when it is inherited. */
+function describeRow(
+	row: ItemRow,
+	leafStateId: string
+): { scope: ContextScope; inherited_from: InheritedFrom | null } {
+	const from = inheritedFrom(row, leafStateId);
+	return {
+		scope: toContextScope(rowScope(row), { qualifyState: from !== null }),
+		inherited_from: from
+	};
+}
+
 /** Dedupe by name within a kind: the later (more specific) item wins wholesale. */
-function dedupeByName(rows: ItemRow[]): {
+function dedupeByName(
+	rows: ItemRow[],
+	leafStateId: string
+): {
 	winners: ItemRow[];
 	overridden: OverriddenContextItem[];
 } {
@@ -1245,7 +1331,7 @@ function dedupeByName(rows: ItemRow[]): {
 			item_id: row.id,
 			kind: row.kind as ContextKind,
 			name: row.name,
-			scope: toContextScope(rowScope(row)),
+			...describeRow(row, leafStateId),
 			overridden_by: winner.id
 		}))
 	};
@@ -1264,7 +1350,11 @@ async function issueMatchTarget(
 		.where('project.user_id', '=', userId)
 		.executeTakeFirst();
 	if (!issue) throw notFound();
-	return { projectId: issue.project_id, stateId: issue.state_id, issueId: issue.id };
+	return {
+		projectId: issue.project_id,
+		stateChain: await resolveStateChain(db, issue.state_id),
+		issueId: issue.id
+	};
 }
 
 // ---------------------------------------------------------------------------
@@ -1344,7 +1434,7 @@ export async function journalForIssue(
 ): Promise<IssueJournalResponse> {
 	const target = await issueMatchTarget(db, actor.userId, issueId);
 	const launch = await launchStateForRun(db, actor, issueId);
-	const stateId = launch.stateId ?? target.stateId;
+	const stateId = launch.stateId ?? target.stateChain[target.stateChain.length - 1];
 	const scope = toContextScope(
 		await resolveScope(db, actor.userId, {
 			projectId: target.projectId,
@@ -1381,13 +1471,17 @@ export async function effectiveContextForIssue(
 	{ skillFiles = true }: { skillFiles?: boolean } = {}
 ): Promise<EffectiveContext> {
 	const target = await issueMatchTarget(db, userId, issueId);
-	const rows = sortMatched(await matchingItemsQuery(db, userId, target).execute());
+	const leafStateId = target.stateChain[target.stateChain.length - 1];
+	const rows = sortMatched(
+		await matchingItemsQuery(db, userId, target).execute(),
+		target.stateChain
+	);
 
 	const prompts = rows.filter((r) => r.kind === 'prompt');
 	const parts: EffectivePromptPart[] = prompts.map((r) => ({
 		item_id: r.id,
 		name: r.name,
-		scope: toContextScope(rowScope(r)),
+		...describeRow(r, leafStateId),
 		body: r.body ?? '',
 		version: r.version,
 		is_journal: isJournal(r)
@@ -1396,8 +1490,14 @@ export async function effectiveContextForIssue(
 		parts.map((p) => ({ label: p.scope.label, body: p.body, isJournal: p.is_journal }))
 	);
 
-	const skillDedupe = dedupeByName(rows.filter((r) => r.kind === 'skill'));
-	const repoDedupe = dedupeByName(rows.filter((r) => r.kind === 'repo'));
+	const skillDedupe = dedupeByName(
+		rows.filter((r) => r.kind === 'skill'),
+		leafStateId
+	);
+	const repoDedupe = dedupeByName(
+		rows.filter((r) => r.kind === 'repo'),
+		leafStateId
+	);
 
 	const fileMap = skillFiles
 		? await loadFiles(
@@ -1408,7 +1508,7 @@ export async function effectiveContextForIssue(
 	const skills: EffectiveSkill[] = skillDedupe.winners.map((r) => ({
 		item_id: r.id,
 		name: r.name,
-		scope: toContextScope(rowScope(r)),
+		...describeRow(r, leafStateId),
 		files: fileMap.get(r.id) ?? [],
 		file_count: Number(r.file_count ?? 0),
 		version: r.version
@@ -1417,7 +1517,7 @@ export async function effectiveContextForIssue(
 	const repos: EffectiveRepo[] = repoDedupe.winners.map((r) => ({
 		item_id: r.id,
 		name: r.name,
-		scope: toContextScope(rowScope(r)),
+		...describeRow(r, leafStateId),
 		url: r.repo_url ?? '',
 		branch: r.repo_branch,
 		dir: r.repo_dir ?? repoDirFromUrl(r.repo_url ?? ''),
@@ -1451,14 +1551,52 @@ export async function contextSummaryForIssue(
 	userId: string,
 	target: { projectId: string; stateId: string; issueId: string }
 ): Promise<ContextSummary> {
+	// This predicate must track `matchingItemsQuery`'s: a badge that disagrees
+	// with the panel is a bug report. The state clause spans the inheritance
+	// chain (a CTE, so this stays one query) and the label clause counts only
+	// labels the issue actually carries.
 	const rows = await db
+		.withRecursive('state_chain', (cte) =>
+			cte
+				.selectFrom('workflow_state')
+				.where('workflow_state.id', '=', target.stateId)
+				.select([
+					'workflow_state.id as id',
+					'workflow_state.inherits_from_state_id as next_id',
+					sql<number>`0`.as('depth')
+				])
+				.unionAll(
+					cte
+						.selectFrom('state_chain')
+						.innerJoin('workflow_state', 'workflow_state.id', 'state_chain.next_id')
+						.where('state_chain.depth', '<', MAX_INHERITANCE_CHAIN - 1)
+						.select([
+							'workflow_state.id as id',
+							'workflow_state.inherits_from_state_id as next_id',
+							sql<number>`state_chain.depth + 1`.as('depth')
+						])
+				)
+		)
 		.selectFrom('context_item')
 		.select(['kind', 'name'])
 		.where('user_id', '=', userId)
 		.where((eb) =>
 			eb.and([
 				eb.or([eb('project_id', 'is', null), eb('project_id', '=', target.projectId)]),
-				eb.or([eb('workflow_state_id', 'is', null), eb('workflow_state_id', '=', target.stateId)]),
+				eb.or([
+					eb('workflow_state_id', 'is', null),
+					eb('workflow_state_id', 'in', eb.selectFrom('state_chain').select('state_chain.id'))
+				]),
+				eb.or([
+					eb('label_id', 'is', null),
+					eb.exists(
+						eb
+							.selectFrom('issue_label')
+							.select('issue_label.label_id')
+							.whereRef('issue_label.label_id', '=', 'context_item.label_id')
+							.where('issue_label.issue_id', '=', target.issueId)
+					)
+				]),
 				eb.or([eb('issue_id', 'is', null), eb('issue_id', '=', target.issueId)])
 			])
 		)
@@ -1614,7 +1752,10 @@ export function issueBlock(
 		lines.push('');
 	}
 	lines.push(
-		`Attach one: \`tines issues artifacts attach ${ref} <name> --file <path>\` (or --text/--link/--pr, or --folder <dir> for a multi-file snapshot)`,
+		// No flag is privileged: naming `--file` first taught agents to reach
+		// for it even under a text gate. The gate decides, and each gated
+		// transition below carries its own exact command (`requires[].fix`).
+		`Attach one: \`tines issues artifacts attach ${ref} <name> …\` — the flag follows the gate; each gated transition below names its exact command. Ungated slots: --file <path>, --folder <dir>, --text <md|@file>, --link <url>, --pr <owner/repo#N>.`,
 		'',
 		'### Available transitions',
 		''
@@ -1630,8 +1771,12 @@ export function issueBlock(
 			// agent both its legal moves and their preconditions.
 			for (const r of t.requires ?? []) {
 				const spec = [r.type, r.content_type].filter(Boolean).join(', ');
+				// An unsatisfied requirement ends in the command that clears it,
+				// server-computed from the gate itself — the agent never has to
+				// guess which payload flag this slot takes.
+				const fix = r.status === 'satisfied' ? '' : ` — attach: \`${r.fix}\``;
 				lines.push(
-					`  Requires: artifact \`${r.artifact}\`${spec ? ` (${spec})` : ''} — ${requirementStatusLabel(r)}${r.description ? ` — ${r.description}` : ''}`
+					`  Requires: artifact \`${r.artifact}\`${spec ? ` (${spec})` : ''} — ${requirementStatusLabel(r)}${r.description ? ` — ${r.description}` : ''}${fix}`
 				);
 			}
 		}

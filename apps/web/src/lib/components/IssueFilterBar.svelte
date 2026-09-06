@@ -34,7 +34,8 @@
 		counts,
 		labels,
 		workflows,
-		projects
+		projects,
+		archivedProject = null
 	}: {
 		filters: IssueFilterState;
 		/** Issues per category under every filter but the category itself. */
@@ -43,6 +44,8 @@
 		workflows: WorkflowResponse[];
 		/** Present on the all-issues list; the project page has no scope to pick. */
 		projects?: Project[];
+		/** The archived project the URL names, if any — kept nameable so the select shows it. */
+		archivedProject?: Project | null;
 	} = $props();
 
 	/**
@@ -258,6 +261,9 @@
 			{#each projects as project (project.id)}
 				<option value={project.name}>{project.name}</option>
 			{/each}
+			{#if archivedProject}
+				<option value={archivedProject.name}>{archivedProject.name} (archived)</option>
+			{/if}
 		</Select>
 	{/if}
 

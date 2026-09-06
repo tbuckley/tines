@@ -24,7 +24,7 @@
 	const tabs = $derived([
 		{ path: '/issues', href: navMemory.issuesHref, label: 'Issues', icon: IconListDetails },
 		{ path: '/workflows', href: '/workflows', label: 'Workflows', icon: IconSitemap },
-		{ path: '/projects', href: '/projects', label: 'Projects', icon: IconFolder },
+		{ path: '/projects', href: navMemory.projectsHref, label: 'Projects', icon: IconFolder },
 		{ path: '/context', href: '/context', label: 'Context', icon: IconBooks },
 		{ path: '/agents', href: '/agents', label: 'Agents', icon: IconRobot },
 		{ path: '/activity', href: '/activity', label: 'Activity', icon: IconActivity }

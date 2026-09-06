@@ -130,6 +130,13 @@ export interface WorkflowState {
 	name: string;
 	category: StateCategory;
 	position: number;
+	/**
+	 * The state this one inherits context from (a `workflow_state` id), or
+	 * null. Items scoped to the base — and to the base's own ancestors —
+	 * are part of an issue's effective context, stitched before this
+	 * state's own layer.
+	 */
+	inherits_from: string | null;
 }
 
 export interface WorkflowTransition {
@@ -172,6 +179,16 @@ export interface WorkflowStateInput {
 	 * context surfaces, not re-sent through workflow updates.
 	 */
 	prompt?: string;
+	/**
+	 * The state whose context this state inherits: one of this request's
+	 * states by id or name, or the id of a state in any workflow you can see
+	 * (your own, or the standard workflow). Chains are at most 3 states long
+	 * and may not cycle. On an EXISTING state (`id` present) the field is
+	 * merge-patch style — absent = unchanged, `null` = clear — so callers
+	 * that round-trip states without knowing about it cannot clear it. On a
+	 * new state, absent and `null` both mean "no base".
+	 */
+	inherits_from?: string | null;
 }
 
 /**
@@ -214,6 +231,24 @@ export interface UpdateWorkflowRequest {
 	 * (all-or-nothing, one `context.deleted` event each).
 	 */
 	force_delete_context?: boolean;
+	/**
+	 * Removing a state other states inherit from is rejected by default;
+	 * with this flag the removal proceeds and those states' pointers are
+	 * cleared (reported in `cleared_inheritance`, one `inheritance_changed`
+	 * entry each). Separate from `force_delete_context` on purpose: sweeping
+	 * your own context is not consent to change other workflows' prompts.
+	 */
+	force_clear_inheritance?: boolean;
+}
+
+/** A state whose inheritance pointer a forced operation cleared. */
+export interface ClearedInheritance {
+	state_id: string;
+	state_name: string;
+	workflow_id: string;
+	workflow_name: string;
+	/** The base it pointed at, as `<workflow> / <state>`. */
+	was: string;
 }
 
 export interface WorkflowResponse extends Workflow {
@@ -221,16 +256,22 @@ export interface WorkflowResponse extends Workflow {
 	warnings?: string[];
 	/** Context items swept by a forced state removal in this update. */
 	deleted_context?: DeletedContextItem[];
+	/** States whose inheritance pointer a forced removal cleared. */
+	cleared_inheritance?: ClearedInheritance[];
 }
 
 /** Body accepted by project/workflow DELETE; see force_delete_context above. */
 export interface DeleteAnchorRequest {
 	force_delete_context?: boolean;
+	/** Workflow DELETE only (projects have no states): see UpdateWorkflowRequest. */
+	force_clear_inheritance?: boolean;
 }
 
 /** DELETE response when a forced delete swept context items (else 204). */
 export interface DeleteAnchorResponse {
 	deleted_context: DeletedContextItem[];
+	/** States in other workflows whose pointer a forced delete cleared. */
+	cleared_inheritance?: ClearedInheritance[];
 }
 
 // ---------------------------------------------------------------------------
@@ -824,6 +865,17 @@ export interface ContextListFilters {
 	archived?: ArchivedFilter;
 }
 
+/**
+ * Where an inherited effective-context part came from: the ancestor state
+ * whose layer it matched through, never the issue's own state.
+ */
+export interface InheritedFrom {
+	state_id: string;
+	state_name: string;
+	workflow_id: string;
+	workflow_name: string;
+}
+
 /** One stitched-prompt part, in layer order. */
 export interface EffectivePromptPart {
 	item_id: string;
@@ -833,6 +885,8 @@ export interface EffectivePromptPart {
 	version: number;
 	/** True for the journal item (renders under `## Journal (<scope>)`). */
 	is_journal: boolean;
+	/** Set when the part matched through an ancestor of the issue's state. */
+	inherited_from: InheritedFrom | null;
 }
 
 export interface EffectiveSkill {
@@ -843,6 +897,8 @@ export interface EffectiveSkill {
 	files: ContextFile[];
 	file_count: number;
 	version: number;
+	/** Set when the skill matched through an ancestor of the issue's state. */
+	inherited_from: InheritedFrom | null;
 }
 
 export interface EffectiveRepo {
@@ -854,6 +910,8 @@ export interface EffectiveRepo {
 	/** Always resolved (falls back to the URL's basename minus `.git`). */
 	dir: string;
 	version: number;
+	/** Set when the repo matched through an ancestor of the issue's state. */
+	inherited_from: InheritedFrom | null;
 }
 
 /** A name-collision loser: a more specific item of the same kind+name won. */
@@ -863,6 +921,8 @@ export interface OverriddenContextItem {
 	name: string;
 	scope: ContextScope;
 	overridden_by: string;
+	/** Set when the loser matched through an ancestor of the issue's state. */
+	inherited_from: InheritedFrom | null;
 }
 
 export interface RepoDirConflict {
@@ -1082,6 +1142,12 @@ export interface ArtifactRequirementCheck extends ArtifactRequirement {
 	current_version: { version: number; created_at: number } | null;
 	/** The matching artifact's (immutable) type, when one exists. */
 	current_type: ArtifactType | null;
+	/**
+	 * The runnable command that clears this requirement (`requirementFix`) —
+	 * present on every entry, satisfied or not, so the launch prompt, the
+	 * issue read and the 422 all quote the same string.
+	 */
+	fix: string;
 }
 
 /** A pull-request reference parsed from user input. */

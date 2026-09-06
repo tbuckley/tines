@@ -1,5 +1,6 @@
 import {
 	renderTemplate,
+	requirementFix,
 	templateVars,
 	type AllowedTransition,
 	type ArchivedFilter,
@@ -123,6 +124,7 @@ export function issueQuery(db: Kysely<Database>, userId: string) {
 				'state.name as state_name',
 				'state.category as state_category',
 				'state.position as state_position',
+				'state.inherits_from_state_id as state_inherits_from',
 				'scheduled_task.name as scheduled_task_name',
 				'pin_runner.name as pinned_runner_name'
 			])
@@ -131,6 +133,11 @@ export function issueQuery(db: Kysely<Database>, userId: string) {
 				sql<string>`COALESCE(eff_state.name, state.name)`.as('eff_state_name'),
 				sql<StateCategory>`COALESCE(eff_state.category, state.category)`.as('eff_state_category'),
 				sql<number>`COALESCE(eff_state.position, state.position)`.as('eff_state_position'),
+				sql<
+					string | null
+				>`COALESCE(eff_state.inherits_from_state_id, state.inherits_from_state_id)`.as(
+					'eff_state_inherits_from'
+				),
 				sql<string | null>`(
 					SELECT json_object('project_name', dp.name, 'number', di.number, 'title', di.title)
 					FROM issue_link dl
@@ -195,13 +202,15 @@ export function serializeIssue(row: IssueRow): Issue {
 			id: row.state_id,
 			name: row.state_name,
 			category: row.state_category,
-			position: row.state_position
+			position: row.state_position,
+			inherits_from: row.state_inherits_from
 		},
 		effective_state: {
 			id: row.eff_state_id,
 			name: row.eff_state_name,
 			category: row.eff_state_category,
-			position: row.eff_state_position
+			position: row.eff_state_position,
+			inherits_from: row.eff_state_inherits_from
 		},
 		duplicate_of: row.duplicate_of_json ? (JSON.parse(row.duplicate_of_json) as IssueRef) : null,
 		open_blockers: row.open_blockers_json ? (JSON.parse(row.open_blockers_json) as IssueRef[]) : [],
@@ -574,6 +583,11 @@ export interface IssueDetailOptions {
 	artifacts?: boolean;
 }
 
+/** "Project/42" — the ref an agent types, and the one the fix commands quote. */
+function issueRef(issue: Pick<Issue, 'project_name' | 'number'>): string {
+	return `${issue.project_name}/${issue.number}`;
+}
+
 export async function getIssueDetail(
 	db: Kysely<Database>,
 	userId: string,
@@ -612,7 +626,9 @@ export async function getIssueDetail(
 		const artifacts = preloadedArtifacts ?? (await listArtifacts(db, userId, issue.id));
 		allowed = allowed.map((t) => {
 			const requires = transitionById.get(t.transition_id)?.requires;
-			return requires?.length ? { ...t, requires: checkRequirements(requires, artifacts) } : t;
+			return requires?.length
+				? { ...t, requires: checkRequirements(requires, artifacts, issueRef(issue)) }
+				: t;
 		});
 	}
 
@@ -984,56 +1000,38 @@ export async function updateIssue(
  * The structured, self-correcting 422 for a gated transition: the message
  * names the fix, and each unmet entry carries a runnable `fix` command, so
  * an agent can attach/reaffirm and retry the same transition without help.
+ *
+ * The `fix` strings are not built here — they are computed once, with the
+ * check itself (`checkRequirements` → `requirementFix`), so this error and
+ * the issue read quote byte-identical commands.
  */
 function unmetRequirements(
 	issue: IssueDetail,
 	target: AllowedTransition,
 	unmet: ArtifactRequirementCheck[]
 ): ApiFail {
-	const ref = `${issue.project_name}/${issue.number}`;
-	const attachFlag: Record<string, string> = {
-		file: '--file <path>',
-		folder: '--folder <dir>',
-		text: '--text <markdown|@file>',
-		link: '--link <url>',
-		pr: '--pr <owner/repo#N>'
-	};
-	const fixFor = (r: ArtifactRequirementCheck): string => {
-		const attach = (type: string) =>
-			`tines issues artifacts attach ${ref} ${r.artifact} ${attachFlag[type]}`;
-		if (r.status === 'missing' || r.current_type === null) return attach(r.type ?? 'file');
-		if (r.status === 'stale') {
-			// The slot passed the type checks, so a new version keeps the
-			// artifact's own type — the artifact type is immutable, and an
-			// attach under the requirement's declared type would 422 whenever
-			// the two differ (e.g. an untyped requirement over a text slot).
-			return `${attach(r.current_type)} — or, if the current content still stands: tines issues artifacts reaffirm ${ref} ${r.artifact}`;
-		}
-		// type_mismatch: when the artifact's own type can still satisfy the
-		// requirement (a content_type-only miss on a file/text slot), a new
-		// version under the same name is enough; otherwise the slot holds the
-		// wrong immutable type and must be deleted before re-attaching.
-		const reattachable =
-			r.type === undefined
-				? r.current_type === 'file' || r.current_type === 'text'
-				: r.current_type === r.type;
-		return reattachable
-			? attach(r.current_type)
-			: `tines issues artifacts delete ${ref} ${r.artifact} && ${attach(r.type ?? 'file')}`;
-	};
 	const first = unmet[0];
+	const more =
+		unmet.length > 1
+			? ` (and ${unmet.length - 1} more unmet requirement${unmet.length > 2 ? 's' : ''})`
+			: '';
+	// A wrong immutable type is the one case a new version cannot fix, so it
+	// gets its own sentence rather than the generic "attach it" advice that
+	// would send an agent into a 422 loop.
+	const wrongType =
+		requirementFix(first, issueRef(issue)).kind === 'delete_and_attach'
+			? `The attached "${first.artifact}" is a ${first.current_type} artifact and the gate needs ${first.type ?? 'file or text'} — artifact type is immutable, so a new version cannot help: delete the slot and attach again (each unmet entry's "fix" is the exact command).`
+			: null;
 	return new ApiFail(
 		422,
 		'transition_requirements_unmet',
-		`Transition "${target.name}" requires a fresh artifact "${first.artifact}"${requirementSpecLabel(first)}${
-			unmet.length > 1
-				? ` (and ${unmet.length - 1} more unmet requirement${unmet.length > 2 ? 's' : ''})`
-				: ''
-		}. Attach it (or a new version), then retry the same transition.`,
+		`Transition "${target.name}" requires a fresh artifact "${first.artifact}"${requirementSpecLabel(first)}${more}. ${
+			wrongType ?? 'Attach it (or a new version), then retry the same transition.'
+		}`,
 		{
 			transition: { name: target.name, to_state: target.to_state.name },
 			state_entered_at: issue.state_entered_at,
-			unmet: unmet.map((r) => ({ ...r, fix: fixFor(r) }))
+			unmet
 		}
 	);
 }

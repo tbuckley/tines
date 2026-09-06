@@ -2,6 +2,7 @@
 	import type { AllowedTransition, Comment, ContextItem, WorkflowState } from '@tines/shared';
 	import { ApiError } from '@tines/shared';
 	import IconAlertTriangle from '@tabler/icons-svelte/icons/alert-triangle';
+	import IconArchive from '@tabler/icons-svelte/icons/archive';
 	import IconBan from '@tabler/icons-svelte/icons/ban';
 	import IconChevronLeft from '@tabler/icons-svelte/icons/chevron-left';
 	import IconCopy from '@tabler/icons-svelte/icons/copy';
@@ -39,12 +40,17 @@
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { Skeleton } from '$lib/components/ui/skeleton/index.js';
 	import { Textarea } from '$lib/components/ui/textarea/index.js';
+	import { PROJECT_ARCHIVED_TOOLTIP } from '$lib/archived';
 	import { actorLabel, prefersReducedMotion, relativeTime } from '$lib/format';
 	import { mergeLinks, type PendingAdd } from '$lib/link-overlay';
 	import { navMemory } from '$lib/nav-memory.svelte';
 	import { planTransitions } from '$lib/transitions';
 
 	let { data } = $props();
+
+	/** An archived project's issues read normally and write nowhere. */
+	const archived = $derived(data.issue.project_archived_at !== null);
+	const reason = $derived(archived ? PROJECT_ARCHIVED_TOOLTIP : null);
 
 	// Back to the list you came from, as you left it — the issues list with its
 	// filters, or the project page. A deep link or a fresh tab has no memory and
@@ -604,6 +610,8 @@
 							editingTitle = true;
 						}}
 						aria-label="Edit title"
+						disabled={archived}
+						title={reason}
 					>
 						<IconPencil size={16} />
 					</button>
@@ -692,11 +700,24 @@
 			size="sm"
 			variant="ghost"
 			class="ml-auto"
-			disabled={removingDuplicate}
+			disabled={removingDuplicate || archived}
+			title={reason}
 			onclick={removeDuplicate}
 		>
 			Not a duplicate?
 		</Button>
+	</div>
+{/if}
+
+{#if archived}
+	<div
+		class="mb-4 flex flex-wrap items-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-4 py-2.5 text-sm text-amber-800 dark:text-amber-300"
+	>
+		<IconArchive size={16} />
+		<span>
+			This project is archived — read-only.
+			<a class="underline" href="/projects/{data.issue.project_id}">Unarchive</a> to make changes.
+		</span>
 	</div>
 {/if}
 
@@ -712,7 +733,7 @@
 			time{data.issue.attempt_count === 1 ? '' : 's'} here — the last run ended without moving the issue.
 			It won't be dispatched again until you act.
 		</span>
-		<Button size="sm" disabled={resuming} onclick={resume}>
+		<Button size="sm" disabled={resuming || archived} title={reason} onclick={resume}>
 			{resuming ? 'Resuming…' : 'Resume'}
 		</Button>
 	</div>
@@ -774,6 +795,8 @@
 					<Button
 						size="sm"
 						variant="ghost"
+						disabled={archived}
+						title={reason}
 						onclick={() => {
 							descriptionDraft = data.issue.description;
 							editingDescription = true;
@@ -848,7 +871,7 @@
 									(edited)
 								</span>
 							{/if}
-							{#if !comment.pending}
+							{#if !comment.pending && !archived}
 								<div class="ml-auto flex items-center gap-1">
 									<Button
 										variant="ghost"
@@ -901,9 +924,20 @@
 				{/each}
 			</div>
 			<form onsubmit={postComment} class="mt-4">
-				<Textarea bind:value={draft} rows={3} placeholder="Leave a comment (Markdown)…" />
+				<Textarea
+					bind:value={draft}
+					rows={3}
+					placeholder="Leave a comment (Markdown)…"
+					disabled={archived}
+					title={reason}
+				/>
 				<div class="mt-2 flex justify-end">
-					<Button type="submit" size="sm" disabled={!draft.trim() || posting}>Comment</Button>
+					<Button
+						type="submit"
+						size="sm"
+						disabled={!draft.trim() || posting || archived}
+						title={reason}>Comment</Button
+					>
 				</div>
 			</form>
 		</section>
@@ -914,6 +948,7 @@
 				issueId={data.issue.id}
 				artifacts={data.artifacts}
 				allowedTransitions={data.issue.allowed_transitions}
+				disabledReason={reason}
 				onchanged={refresh}
 				onerror={showError}
 			/>
@@ -933,7 +968,13 @@
 						<Button size="sm" variant="outline" onclick={() => (promptDialogOpen = true)}>
 							<IconRocket size={14} /> View launch prompt
 						</Button>
-						<Button size="sm" variant="ghost" onclick={openContextCreate}>
+						<Button
+							size="sm"
+							variant="ghost"
+							disabled={archived}
+							title={reason}
+							onclick={openContextCreate}
+						>
 							<IconPlus size={14} /> Add
 						</Button>
 					</div>
@@ -948,7 +989,7 @@
 						{:else if contextItemsPanel.current.status === 'loaded'}
 							<ContextItemList
 								items={contextItemsPanel.current.value}
-								onselect={openContextEdit}
+								onselect={archived ? undefined : openContextEdit}
 								emptyMessage="Nothing attached to this issue yet — add a note, skill, or repo."
 							/>
 						{:else}
@@ -990,7 +1031,14 @@
 				<Skeleton class="h-40 w-full" />
 			{:else if agentActivityPanel.current.status === 'loaded'}
 				{@const [dispatch, runs, runners] = agentActivityPanel.current.value}
-				<AgentActivityCard issue={data.issue} {dispatch} {runs} {runners} onerror={showError} />
+				<AgentActivityCard
+					issue={data.issue}
+					{dispatch}
+					{runs}
+					{runners}
+					disabledReason={reason}
+					onerror={showError}
+				/>
 			{:else}
 				{@render loadFailed('agent activity')}
 			{/if}
@@ -1001,6 +1049,7 @@
 				issueId={data.issue.id}
 				labels={data.issue.labels}
 				library={data.labelLibrary}
+				disabledReason={reason}
 				onerror={showError}
 			/>
 		</PhoneFold>
@@ -1012,6 +1061,7 @@
 				{links}
 				bind:adds={linkAdds}
 				bind:removals={linkRemovals}
+				disabledReason={reason}
 				onerror={showError}
 			/>
 		</PhoneFold>
@@ -1041,7 +1091,8 @@
 	<TransitionList
 		transitions={ordered}
 		{unmetFor}
-		disabled={transitioning}
+		disabled={transitioning || archived}
+		disabledReason={reason}
 		stateEnteredAt={data.issue.state_entered_at}
 		onmove={requestMove}
 	/>
@@ -1061,6 +1112,7 @@
 				workflows={data.workflows}
 				issueWorkflow={data.issue.workflow}
 				{currentState}
+				disabledReason={reason}
 				onapply={applyOverride}
 			/>
 		</div>
@@ -1075,7 +1127,8 @@
 	transitions={ordered}
 	{unmetFor}
 	{primaryId}
-	disabled={transitioning}
+	disabled={transitioning || archived}
+	disabledReason={reason}
 	onmove={requestMove}
 	onopen={() => (stateSheetOpen = true)}
 />

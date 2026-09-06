@@ -18,6 +18,7 @@
 		transitions,
 		unmetFor,
 		disabled = false,
+		disabledReason = null,
 		stateEnteredAt,
 		onmove
 	}: {
@@ -29,6 +30,8 @@
 		transitions: AllowedTransition[];
 		unmetFor: (t: AllowedTransition) => ArtifactRequirementCheck[];
 		disabled?: boolean;
+		/** Why the buttons are disabled, as their tooltip (archived project). */
+		disabledReason?: string | null;
 		stateEnteredAt: number;
 		onmove: (t: AllowedTransition) => void;
 	} = $props();
@@ -53,7 +56,7 @@
 					disabled={disabled || unmet.length > 0}
 					aria-describedby={transition.requires?.length ? reqId : undefined}
 					onclick={() => onmove(transition)}
-					title={transition.name}
+					title={disabledReason ?? transition.name}
 				>
 					<span class="min-w-0 truncate text-left">{transition.name}</span>
 					<span
