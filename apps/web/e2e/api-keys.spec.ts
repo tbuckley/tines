@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 import { ALICE, RUNROW, RUNROW_FAILED } from './constants.mjs';
-import { signIn } from './helpers';
+import { gotoHydrated, signIn } from './helpers';
 
 /**
  * The API keys page folds run keys — one is minted per agent run and never
@@ -103,7 +103,7 @@ test.describe.serial('API keys page', () => {
 	});
 
 	test('"Show revoked" reveals the revoked run key and survives a reload', async ({ page }) => {
-		await page.goto('/settings/api-keys');
+		await gotoHydrated(page, '/settings/api-keys');
 		await openDisclosure(page);
 
 		await disclosure(page).getByLabel('Show revoked').check();
@@ -124,7 +124,7 @@ test.describe.serial('API keys page', () => {
 		await expect(runKeyRow(page, RUNROW.runnerName)).toHaveCount(1);
 
 		// Arriving at the URL directly opens the disclosure with the box ticked.
-		await page.goto('/settings/api-keys?revoked=1');
+		await gotoHydrated(page, '/settings/api-keys?revoked=1');
 		expect(await disclosure(page).evaluate((el: HTMLDetailsElement) => el.open)).toBe(true);
 		await expect(disclosure(page).getByLabel('Show revoked')).toBeChecked();
 		await expect(runKeyRow(page, RUNROW_FAILED.runnerName)).toHaveCount(1);
@@ -136,7 +136,7 @@ test.describe.serial('API keys page', () => {
 	});
 
 	test('revoking a live run key warns that it cuts the agent off mid-run', async ({ page }) => {
-		await page.goto('/settings/api-keys');
+		await gotoHydrated(page, '/settings/api-keys');
 		await openDisclosure(page);
 
 		await runKeyRow(page, RUNROW.runnerName).getByRole('button', { name: 'Revoke' }).click();

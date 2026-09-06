@@ -1,7 +1,7 @@
 import type { IssueDetail, Project, WorkflowResponse } from '@tines/shared';
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import { ALICE } from './constants.mjs';
-import { apiClient, body, readSettled, runId, signIn } from './helpers';
+import { apiClient, body, gotoHydrated, readSettled, runId, signIn } from './helpers';
 
 /**
  * A folder artifact's row on a phone (Tines/30): the type icon, the thumbnail
@@ -161,7 +161,7 @@ const settledGeometry = (row: Locator): Promise<RowGeometry> => readSettled(() =
 
 test('a folder row keeps its metadata readable on a phone', async ({ page }) => {
 	await page.setViewportSize(PHONE);
-	await page.goto(issueUrl(plain));
+	await gotoHydrated(page, issueUrl(plain));
 	await unfoldArtifacts(page);
 
 	const row = photosRow(page);
@@ -183,7 +183,7 @@ test('a folder row keeps its metadata readable on a phone', async ({ page }) => 
 
 test('a stale folder row keeps its metadata and actions on a phone', async ({ page }) => {
 	await page.setViewportSize(PHONE);
-	await page.goto(issueUrl(stale));
+	await gotoHydrated(page, issueUrl(stale));
 	await unfoldArtifacts(page);
 
 	const row = photosRow(page);
@@ -213,7 +213,7 @@ test('a stale folder row keeps its metadata and actions on a phone', async ({ pa
 
 test('a folder row stays one line on a desktop', async ({ page }) => {
 	await page.setViewportSize(DESKTOP);
-	await page.goto(issueUrl(plain));
+	await gotoHydrated(page, issueUrl(plain));
 	await unfoldArtifacts(page);
 
 	const row = photosRow(page);

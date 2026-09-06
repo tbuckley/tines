@@ -79,9 +79,69 @@ export interface CreateProjectRequest {
 	/**
 	 * When present, also creates a project-scoped prompt item named
 	 * "conventions" with this Markdown body, in the same transaction.
+	 * Present (even `''`) beats a starter's `conventions_template`; absent
+	 * falls back to it.
 	 */
 	initial_prompt?: string;
+	/**
+	 * Apply a built-in starter atomically with the project (Tines/248):
+	 * its workflows, context and first issue land in the same batch, or
+	 * nothing does. Absent is equivalent to `{ id: 'blank' }`.
+	 */
+	starter?: { id: string; inputs?: Record<string, string> };
 }
+
+/** The built-in starters. `blank` is today's behaviour, named. */
+export const STARTER_IDS = ['blank', 'code', 'plan'] as const;
+export type StarterId = (typeof STARTER_IDS)[number];
+
+/** The typed inputs a starter can declare. */
+export const STARTER_INPUT_KEYS = ['repo_url', 'repo_branch', 'brief'] as const;
+export type StarterInputKey = (typeof STARTER_INPUT_KEYS)[number];
+
+export interface StarterInputSpec {
+	key: StarterInputKey;
+	/** Form label, e.g. "Repository URL". */
+	label: string;
+	required: boolean;
+	/** Form hint. */
+	description?: string;
+	/** Max length after trimming (default 10_000). */
+	max?: number;
+}
+
+/** What a starter creates, as `GET /api/v1/projects/starters` advertises it. */
+export interface StarterSummary {
+	id: StarterId;
+	name: string;
+	/** One sentence for the chooser card. */
+	description: string;
+	inputs: StarterInputSpec[];
+	/** Prefills the conventions textarea; null for blank. Templated with `{{ key }}`. */
+	conventions_template: string | null;
+	creates: {
+		workflows: { name: string; default: boolean; states: string[] }[];
+		/** Names may still contain `{{ … }}` placeholders. */
+		context: { kind: ContextKind; name: string }[];
+		first_issue: { title: string; workflow: string; state: string } | null;
+	};
+}
+
+export interface ListStartersResponse {
+	items: StarterSummary[];
+}
+
+/** What a starter actually created, reported on the 201. */
+export interface StarterApplied {
+	id: StarterId;
+	/** `reused: true` means an identical-fingerprint workflow already existed. */
+	workflows: { id: string; name: string; reused: boolean }[];
+	context: { id: string; kind: ContextKind; name: string }[];
+	first_issue: { id: string; number: number; ref: string; state_name: string } | null;
+}
+
+/** A created project, plus the starter summary when one applied. */
+export type CreateProjectResponse = Project & { starter?: StarterApplied };
 
 export interface UpdateProjectRequest {
 	name?: string;
@@ -931,12 +991,35 @@ export interface RepoDirConflict {
 	item_ids: string[];
 }
 
+/**
+ * The one journal an issue's runs may write: the `journal` prompt at
+ * project ∧ the *root* of the state's inheritance chain. Two workflows whose
+ * stages inherit from one base state therefore learn and prune in one file
+ * instead of drifting apart. A state that inherits from nothing is its own
+ * root, so nothing about it changes.
+ *
+ * A legacy journal on a state that has since gained a parent keeps stitching
+ * into the prompt — it is knowledge, and dropping it would lose it — but it is
+ * read-only until a merge helper folds it into the root.
+ */
+export interface EffectiveJournalTarget {
+	/** The state whose `project ∧ state` journal is writable. */
+	state_id: string;
+	/** Null when that state is the issue's own; set when it is an ancestor. */
+	inherited_from: InheritedFrom | null;
+	/** The journal item at that scope, or null if none exists yet. */
+	item_id: string | null;
+	version: number | null;
+}
+
 /** `GET /api/v1/issues/:id/context` — the assembled bundle for an issue. */
 export interface EffectiveContext {
 	prompt: {
 		/** The stitched prompt, `## Context: <scope>` headings included. */
 		text: string;
 		parts: EffectivePromptPart[];
+		/** Which journal this issue's runs write — the root of the state chain. */
+		journal: EffectiveJournalTarget;
 	};
 	skills: EffectiveSkill[];
 	repos: EffectiveRepo[];
