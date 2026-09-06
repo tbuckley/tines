@@ -66,6 +66,18 @@ children, so the check runs to a fixpoint, and it happens during planning —
 a dry run lists it before anything is written. The API's own `inheritance_*`
 refusals (depth, cycles) pass through as the entry's error.
 
+A workflow the deployment already has under the same name is matched on
+structure alone — the fingerprint covers states, transitions and artifact
+requirements, deliberately not inheritance, which is edited independently of
+the shape. So the two can be structurally identical and still disagree on
+their pointers, which is exactly what a deployment holding an earlier version
+1 export of the same library looks like. That case is **not** "identical": the
+entry names the states that differ and is refused, or, with `on_collision`
+set to `overwrite`, updates just those pointers on the existing workflow
+(states re-sent by id, a state the document gives no base cleared) and leaves
+everything else untouched. The read-only `Standard` workflow is always
+refused.
+
 ## Version history
 
 `LIBRARY_VERSION` is bumped when the document shape changes; import refuses a
@@ -81,8 +93,10 @@ document from the future and reads every older version.
 `POST /api/v1/import` plans first and applies the same plan: `dry_run` returns
 exactly the entries the confirm would run, each `create` / `skip` /
 `overwrite` / `refuse` / `error` with a reason. Projects and workflows are
-matched by name (an identical workflow is skipped, a different one under the
-same name is refused); context items are matched on the
+matched by name (a structurally identical workflow is skipped, a different one
+under the same name is refused, and one that differs only in its inheritance
+pointers is refused unless `on_collision` is `overwrite`); context items are
+matched on the
 `context_item_name_scope_uq` tuple and skipped unless `on_collision` is
 `overwrite`. Labels are the one thing an import creates to carry a scope —
 they hold nothing but a name. A failing entry is reported and the rest

@@ -589,7 +589,15 @@ describe('inheritance pointers', () => {
 				{ name: 'Done', category: 'done' }
 			],
 			transitions: [
-				{ name: 'Submit', from: 'Design', to: 'Review' },
+				// An artifact requirement rides along so the deferred pointer
+				// pass, which re-sends the whole workflow, has something to
+				// lose if it ever stopped preserving the rest of it.
+				{
+					name: 'Submit',
+					from: 'Design',
+					to: 'Review',
+					requires: [{ artifact: 'design-doc', type: 'text', content_type: 'text/markdown' }]
+				},
 				{ name: 'Approve', from: 'Review', to: 'Done' }
 			]
 		});
@@ -666,7 +674,15 @@ describe('inheritance pointers', () => {
 		const target = freshDeployment();
 		const result = await applyImport(target.db, target.env, actor, { document });
 		expect(result.counts.error).toBe(0);
-		expect(pointers(await buildLibraryDocument(target.db, USER))).toEqual(pointers(document));
+		const rebuilt = await buildLibraryDocument(target.db, USER);
+		expect(pointers(rebuilt)).toEqual(pointers(document));
+		// The pointers are patched on by re-sending the whole workflow, so the
+		// rest of it — transitions and their artifact requirements — has to
+		// survive that second write untouched.
+		const source = document.workflows.find((wf) => wf.name === 'Alpha')!;
+		expect(rebuilt.workflows.find((wf) => wf.name === 'Alpha')!.transitions).toEqual(
+			source.transitions
+		);
 	});
 
 	it('resolves a base the target already has, including the standard workflow', async () => {
@@ -730,6 +746,112 @@ describe('inheritance pointers', () => {
 		]);
 		const gamma = plan.steps.find((s) => s.entry.ref.includes('Gamma'))!;
 		expect(gamma.entry.reason).toMatch(/Alpha \/ Design/);
+	});
+
+	// The rollout configuration: a target that took an earlier version 1
+	// export of this same library already has these workflows, structurally
+	// identical, with no pointers at all. The collision check is a structural
+	// fingerprint, so this is the one branch where a dropped pointer could
+	// pass for "nothing to do".
+	async function targetHoldingTheVersionOneExport() {
+		const source = await buildLibraryDocument(t.db, USER);
+		const stripped: LibraryDocument = {
+			...source,
+			version: 1,
+			workflows: source.workflows.map((wf) => ({
+				...wf,
+				states: wf.states.map(({ name, category }) => ({ name, category }))
+			}))
+		};
+		const target = freshDeployment();
+		const seeded = await applyImport(target.db, target.env, actor, { document: stripped });
+		expect(seeded.counts.error + seeded.counts.refuse).toBe(0);
+		expect(pointers(await buildLibraryDocument(target.db, USER))).toEqual([]);
+		return { target, document: source };
+	}
+
+	it('refuses a workflow that is here already but whose pointers differ, naming the states', async () => {
+		await seedInheritance();
+		const { target, document } = await targetHoldingTheVersionOneExport();
+
+		const result = await applyImport(target.db, target.env, actor, { document });
+		const entries = result.entries.filter((e) => e.section === 'workflow');
+		expect(entries.map((e) => `${e.ref} ${e.action}`).sort()).toEqual([
+			'workflow "Alpha" refuse',
+			'workflow "Base" skip',
+			'workflow "Beta" refuse'
+		]);
+		// The states that differ are named, and the way out is spelled out.
+		expect(entries.find((e) => e.ref.includes('Alpha'))!.reason).toMatch(/"Design", "Review"/);
+		expect(entries.find((e) => e.ref.includes('Alpha'))!.reason).toMatch(/on_collision=overwrite/);
+		// Refused, so nothing moved — never silently skipped with the pointers lost.
+		expect(pointers(await buildLibraryDocument(target.db, USER))).toEqual([]);
+	});
+
+	it('overwrite patches the pointers onto the workflow that is here already', async () => {
+		await seedInheritance();
+		const { target, document } = await targetHoldingTheVersionOneExport();
+
+		const preview = await applyImport(target.db, target.env, actor, {
+			document,
+			on_collision: 'overwrite',
+			dry_run: true
+		});
+		expect(
+			preview.entries
+				.filter((e) => e.section === 'workflow')
+				.map((e) => e.action)
+				.sort()
+		).toEqual(['overwrite', 'overwrite', 'skip']);
+		expect(pointers(await buildLibraryDocument(target.db, USER))).toEqual([]);
+
+		const result = await applyImport(target.db, target.env, actor, {
+			document,
+			on_collision: 'overwrite'
+		});
+		expect(result.counts.error).toBe(0);
+		expect(result.counts.refuse).toBe(0);
+		const rebuilt = await buildLibraryDocument(target.db, USER);
+		expect(pointers(rebuilt)).toEqual(pointers(document));
+		// Only the pointers moved: the rest of the workflow is untouched.
+		const alpha = rebuilt.workflows.find((wf) => wf.name === 'Alpha')!;
+		expect(alpha.transitions).toEqual(
+			document.workflows.find((wf) => wf.name === 'Alpha')!.transitions
+		);
+		// And it converges: a second run has nothing left to do.
+		const again = await applyImport(target.db, target.env, actor, {
+			document,
+			on_collision: 'overwrite'
+		});
+		expect(again.counts.overwrite).toBe(0);
+		expect(again.counts.refuse).toBe(0);
+	});
+
+	it('clears a pointer the document has dropped, on overwrite', async () => {
+		await seedInheritance();
+		const source = await buildLibraryDocument(t.db, USER);
+		const target = freshDeployment();
+		await applyImport(target.db, target.env, actor, { document: source });
+		expect(pointers(await buildLibraryDocument(target.db, USER))).toEqual(pointers(source));
+
+		// Beta stops inheriting; everything else stays as it is.
+		const document: LibraryDocument = {
+			...source,
+			workflows: source.workflows.map((wf) =>
+				wf.name === 'Beta'
+					? { ...wf, states: wf.states.map(({ name, category }) => ({ name, category })) }
+					: wf
+			)
+		};
+		const result = await applyImport(target.db, target.env, actor, {
+			document,
+			on_collision: 'overwrite'
+		});
+		expect(result.counts.error).toBe(0);
+		expect(pointers(await buildLibraryDocument(target.db, USER))).toEqual([
+			'Alpha/Design -> Base/Shared',
+			'Alpha/Review -> Alpha/Design'
+		]);
 	});
 
 	it('imports a version 1 document, which has no pointers, unchanged', async () => {

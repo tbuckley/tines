@@ -236,6 +236,49 @@ function stateRefLabel(ref: string): string {
 const baseRefOf = (state: WorkflowStateInput): string | null =>
 	typeof state.inherits_from === 'string' && state.inherits_from ? state.inherits_from : null;
 
+/** Every state this deployment can see, by id, as the ref a document names it by. */
+function baseRefIndex(workflows: WorkflowResponse[]): Map<string, string> {
+	const out = new Map<string, string>();
+	for (const wf of workflows) {
+		for (const s of wf.states) out.set(s.id, stateRefName(wf.name, s.name));
+	}
+	return out;
+}
+
+/** A stored workflow's pointers as portable refs, by state name. */
+function storedPointers(wf: WorkflowResponse, baseRef: Map<string, string>): Map<string, string> {
+	const out = new Map<string, string>();
+	for (const s of wf.states) {
+		const ref = s.inherits_from ? baseRef.get(s.inherits_from) : undefined;
+		if (ref) out.set(s.name, ref);
+	}
+	return out;
+}
+
+/**
+ * A document workflow's pointers as the same portable refs, by state name —
+ * the create path's bare in-workflow name qualified, so the two sides of a
+ * comparison speak one form.
+ */
+function documentPointers(workflow: CreateWorkflowRequest): Map<string, string> {
+	const out = new Map<string, string>();
+	for (const state of workflow.states) {
+		const ref = baseRefOf(state);
+		if (ref === null) continue;
+		out.set(
+			state.name,
+			workflow.states.some((s) => s.name === ref) ? stateRefName(workflow.name, ref) : ref
+		);
+	}
+	return out;
+}
+
+/** The states whose pointer a document and a stored workflow disagree on, named. */
+function pointerDifference(want: Map<string, string>, have: Map<string, string>): string[] {
+	const names = new Set([...want.keys(), ...have.keys()]);
+	return [...names].filter((n) => (want.get(n) ?? null) !== (have.get(n) ?? null)).sort();
+}
+
 /**
  * The first pointer in `workflow` that names neither one of the workflow's own
  * states nor a state in `known` (this deployment plus what this document
@@ -310,6 +353,8 @@ interface PlannedStep {
 	project?: LibraryProject;
 	workflow?: CreateWorkflowRequest;
 	context?: LibraryContextEntry;
+	/** The workflow this entry updates in place, for a pointer `overwrite`. */
+	existing?: WorkflowResponse;
 	/** Existing item id, for `overwrite`. */
 	targetId?: string;
 }
@@ -350,6 +395,7 @@ export async function planImport(
 		for (const s of wf.states) stateIds.set(`${wf.name}${SEP}${s.name}`, s.id);
 	}
 	const workflowNames = new Map(workflowRows.map((wf) => [wf.name, wf]));
+	const baseRef = baseRefIndex(workflowRows);
 	// A project's default workflow resolves against what exists here plus what
 	// this document brings; a name in `doc.workflows` ends up present either
 	// way (created, or already here under that name).
@@ -414,14 +460,42 @@ export async function planImport(
 		if (existing) {
 			const same =
 				workflowFingerprint(workflowAsRequest(existing)) === workflowFingerprint(workflow);
+			// The fingerprint is structure only — deliberately, since stage
+			// instructions and inheritance are edited independently of the
+			// shape. So two workflows that agree on it can still disagree on
+			// their pointers, which is what a deployment that took an earlier
+			// version 1 export of this same library looks like. Calling that
+			// "identical" would drop every pointer in silence, so the
+			// difference is either applied (on request) or named and refused.
+			const differing = same
+				? pointerDifference(documentPointers(workflow), storedPointers(existing, baseRef))
+				: [];
+			const states = differing.map((n) => `"${n}"`).join(', ');
+			if (same && differing.length > 0 && overwrite && !existing.is_system) {
+				steps.push({
+					entry: {
+						section: 'workflow',
+						ref,
+						action: 'overwrite',
+						reason: `the same workflow is here already; updating the inheritance pointers on ${states}`
+					},
+					workflow,
+					existing
+				});
+				continue;
+			}
 			steps.push({
 				entry: {
 					section: 'workflow',
 					ref,
-					action: same ? 'skip' : 'refuse',
-					reason: same
-						? 'an identical workflow already exists'
-						: 'a different workflow already has this name — rename or delete it first, then re-import. State-scoped context items below still land on the existing workflow.'
+					action: same && differing.length === 0 ? 'skip' : 'refuse',
+					reason: !same
+						? 'a different workflow already has this name — rename or delete it first, then re-import. State-scoped context items below still land on the existing workflow.'
+						: differing.length === 0
+							? 'an identical workflow already exists'
+							: existing.is_system
+								? `the same workflow is here already but its inheritance pointers differ on ${states}, and the standard workflow is read-only`
+								: `the same workflow is here already but its inheritance pointers differ on ${states} — import again with on_collision=overwrite to update them. State-scoped context items below still land on the existing workflow.`
 				}
 			});
 			continue;
@@ -441,13 +515,17 @@ export async function planImport(
 	for (let moved = true; moved;) {
 		moved = false;
 		for (const step of workflowSteps) {
-			if (step.entry.action !== 'create') continue;
+			if (step.entry.action !== 'create' && step.entry.action !== 'overwrite') continue;
 			const missing = unresolvableBase(step.workflow!, stateIds);
 			if (!missing) continue;
 			step.entry.action = 'refuse';
 			step.entry.reason = `state "${missing.state}" inherits from ${stateRefLabel(missing.ref)}, which is neither in this document nor on this deployment — import that workflow first, or clear the pointer`;
-			for (const s of step.workflow!.states)
-				stateIds.delete(`${step.workflow!.name}${SEP}${s.name}`);
+			// A workflow this import would have created takes its states back
+			// out of the index; one that is only being updated keeps them,
+			// since they exist here whatever happens to its pointers.
+			if (!step.existing)
+				for (const s of step.workflow!.states)
+					stateIds.delete(`${step.workflow!.name}${SEP}${s.name}`);
 			moved = true;
 		}
 	}
@@ -612,17 +690,28 @@ export async function applyImport(
 	for (const step of ordered) {
 		try {
 			if (step.workflow) {
-				const request = await resolveWorkflowPointers(
-					db,
-					actor.userId,
-					step.workflow,
-					stateIds,
-					deferred
-				);
-				const created = await createWorkflow(db, env, actor, request);
-				workflowIds.set(created.name, created.id);
-				createdWorkflows.set(created.name, created);
-				for (const s of created.states) stateIds.set(`${created.name}${SEP}${s.name}`, s.id);
+				// An `overwrite` here is a workflow the target already has,
+				// structurally identical, whose pointers this document moves;
+				// everything else is a create.
+				const written = step.existing
+					? await overwritePointers(
+							db,
+							env,
+							actor,
+							step.existing,
+							step.workflow,
+							stateIds,
+							deferred
+						)
+					: await createWorkflow(
+							db,
+							env,
+							actor,
+							await resolveWorkflowPointers(db, actor.userId, step.workflow, stateIds, deferred)
+						);
+				workflowIds.set(written.name, written.id);
+				createdWorkflows.set(written.name, written);
+				for (const s of written.states) stateIds.set(`${written.name}${SEP}${s.name}`, s.id);
 			} else if (step.project) {
 				// Unresolvable defaults are planned with a reason and land as a
 				// project on the system default rather than failing the entry.
@@ -697,6 +786,47 @@ async function resolveWorkflowPointers(
 		states.push({ ...state, inherits_from: resolved });
 	}
 	return { ...workflow, states };
+}
+
+/**
+ * The `overwrite` counterpart of `resolveWorkflowPointers`: the document's
+ * pointers, patched onto a workflow that already exists here through the same
+ * update path the editor uses. States are re-sent by id and every pointer is
+ * stated explicitly — a state the document gives no base gets `null`, since
+ * an absent `inherits_from` means "unchanged" — so nothing but the pointers
+ * moves. A base a later workflow in this document brings is deferred exactly
+ * as it is on the create path.
+ */
+async function overwritePointers(
+	db: Kysely<Database>,
+	env: Env,
+	actor: ActorContext,
+	existing: WorkflowResponse,
+	workflow: CreateWorkflowRequest,
+	stateIds: Map<string, string>,
+	deferred: DeferredPointer[]
+): Promise<WorkflowResponse> {
+	const want = documentPointers(workflow);
+	const idByName = new Map(existing.states.map((s) => [s.name, s.id]));
+	const states: WorkflowStateInput[] = [];
+	for (const state of [...existing.states].sort((a, b) => a.position - b.position)) {
+		const base = { id: state.id, name: state.name, category: state.category };
+		const ref = want.get(state.name);
+		if (ref === undefined) {
+			states.push({ ...base, inherits_from: null });
+			continue;
+		}
+		const own = resolveStateRef(ref, (w, n) => (w === existing.name ? idByName.get(n) : undefined));
+		const resolved = own ?? (await lookupBaseId(db, actor.userId, ref, stateIds));
+		if (resolved === undefined) {
+			deferred.push({ workflow: existing.name, state: state.name, ref });
+			// Left as it stands until the second pass sets it.
+			states.push(base);
+			continue;
+		}
+		states.push({ ...base, inherits_from: resolved });
+	}
+	return updateWorkflow(db, env, actor, existing.id, { states });
 }
 
 /** A `<workflow>/<state>` ref as a state id: created in this pass, else stored here. */
