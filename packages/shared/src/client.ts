@@ -77,8 +77,10 @@ import type {
 	UpdateRoutingRuleRequest,
 	UpdateRunnerRequest,
 	UpdateScheduleRequest,
+	UpdatePreferencesRequest,
 	UpdateSupervisorSettingsRequest,
 	UpdateWorkflowRequest,
+	UserPreferences,
 	WorkflowResponse
 } from './types.js';
 
@@ -510,6 +512,9 @@ export function createApiClient(options: ApiClientOptions) {
 		deleteRoutingRule: (id: string) => request<void>('DELETE', `/api/v1/routing-rules/${id}`),
 
 		// Supervisor settings
+		getPreferences: () => get<UserPreferences>('/api/v1/preferences'),
+		updatePreferences: (body: UpdatePreferencesRequest) =>
+			request<UserPreferences>('PATCH', '/api/v1/preferences', body),
 		getSupervisorSettings: () => get<SupervisorSettings>('/api/v1/supervisor/settings'),
 		updateSupervisorSettings: (body: UpdateSupervisorSettingsRequest) =>
 			request<SupervisorSettingsResponse>('PUT', '/api/v1/supervisor/settings', body),

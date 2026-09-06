@@ -378,6 +378,16 @@ export interface UserTable {
 	email: string;
 }
 
+/** Per-user UI preferences (the project focus, Tines/259); created lazily. */
+export interface UserPreferenceTable {
+	user_id: string;
+	/** The focused project, or null for "All projects". */
+	focused_project_id: string | null;
+	/** The project New issue falls back to under "All projects". */
+	last_project_id: string | null;
+	updated_at: number;
+}
+
 export interface Database {
 	project: ProjectTable;
 	workflow: WorkflowTable;
@@ -400,6 +410,7 @@ export interface Database {
 	routing_rule: RoutingRuleTable;
 	supervisor_settings: SupervisorSettingsTable;
 	supervisor_sweep_state: SupervisorSweepStateTable;
+	user_preference: UserPreferenceTable;
 	user: UserTable;
 }
 
