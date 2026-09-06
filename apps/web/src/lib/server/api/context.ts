@@ -1,5 +1,6 @@
 import {
 	actorLabel,
+	ageLabel,
 	AGENT_GUIDELINES_BODY,
 	AGENT_GUIDELINES_DESCRIPTION,
 	AGENT_GUIDELINES_NAME,
@@ -28,6 +29,7 @@ import {
 	type EffectivePromptPart,
 	type EffectiveRepo,
 	type EffectiveSkill,
+	type SinceLastRun,
 	type IssueDetail,
 	type IssueJournalResponse,
 	type OverriddenContextItem,
@@ -1731,17 +1733,69 @@ function requirementStatusLabel(r: ArtifactRequirementCheck): string {
  */
 const PROMPT_LABEL_VOCABULARY_MAX = 40;
 
+/**
+ * `### Since the last run` — the human's steer, rendered for the launch prompt.
+ * Absent entirely when nothing human happened; never a "none" heading.
+ */
+function sinceLastRunLines(since: SinceLastRun, now: number): string[] {
+	const lines = ['### Since the last run', ''];
+	const t = since.transition;
+	if (t) {
+		const via = t.action ? `via "${t.action}"` : 'directly';
+		const stale =
+			since.stale_artifacts.length > 0
+				? ` Now stale: ${since.stale_artifacts.map((n) => `\`${n}\``).join(', ')}.`
+				: '';
+		lines.push(
+			`Moved from **${t.from_state.name}** → ${t.to_state.name} ${via} by ${actorLabel(t.actor)}, ` +
+				`${ageLabel(t.at, now)} ago (${new Date(t.at).toISOString()}).${stale}`,
+			''
+		);
+	} else {
+		const ended = since.previous_run.ended_at;
+		const when = ended === null ? 'not yet ended' : `ended ${ageLabel(ended, now)} ago`;
+		lines.push(
+			`Since the previous run (${since.previous_run.state_at_start_name ?? 'unknown state'}, ` +
+				`${when}) a human commented:`,
+			''
+		);
+	}
+	for (const comment of since.comments) {
+		lines.push(
+			`**${actorLabel(comment.actor)}** (${new Date(comment.created_at).toISOString()}):`,
+			comment.body.trim(),
+			''
+		);
+	}
+	if (since.comment_count > since.comments.length) {
+		lines.push(
+			`… and ${since.comment_count - since.comments.length} earlier comments — see ### Comments below.`,
+			''
+		);
+	}
+	return lines;
+}
+
 export function issueBlock(
 	issue: IssueDetail,
 	context: EffectiveContext,
 	issueArtifacts: Artifact[] = [],
 	/** The user's whole label library, so the agent can classify without a round trip. */
-	labelVocabulary: string[] = []
+	labelVocabulary: string[] = [],
+	now: number = Date.now()
 ): string {
 	const ref = `${issue.project_name}/${issue.number}`;
 	const lines: string[] = [`## Issue: ${ref} — ${issue.title}`, ''];
 	if (issue.description.trim()) {
 		lines.push(issue.description.trim(), '');
+	}
+	// The human's steer, before anything else the agent reads: what they did to
+	// the issue since the last run ended, and what they said doing it. It
+	// duplicates comments that also appear under `### Comments` below —
+	// deliberately: the steer is the reason this run exists, and an agent that
+	// skims the thread must not be able to miss it.
+	if (issue.since_last_run) {
+		lines.push(...sinceLastRunLines(issue.since_last_run, now));
 	}
 	lines.push(
 		'### Current state',
