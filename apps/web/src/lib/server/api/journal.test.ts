@@ -269,6 +269,26 @@ describe('journalForIssue follows the root of the inheritance chain', () => {
 		expect(block).toContain(`tines journal rewrite demo/${detail.number} --body @file`);
 	});
 
+	it('labels an inherited prompt layer with its workflow in the footnote', async () => {
+		// Two states in different workflows may share a name, so the footnote
+		// qualifies an inherited layer the way its stitched heading does.
+		inherit(OPEN, BASE_MERGING);
+		await createContextItem(t.db, t.env, session, {
+			kind: 'prompt',
+			name: 'instructions',
+			workflow_state_id: BASE_MERGING,
+			body: 'Merge carefully.'
+		});
+		const issue = addIssue(t);
+		const block = issueBlock(
+			await getIssueDetail(t.db, USER, { id: issue }),
+			await effectiveContextForIssue(t.db, USER, issue)
+		);
+		expect(block).toContain(
+			'Also in effect: prompt "instructions" (state Shared stages / Merging).'
+		);
+	});
+
 	it('names the base state even when no journal exists there yet', async () => {
 		inherit(OPEN, BASE_MERGING);
 		const issue = addIssue(t);

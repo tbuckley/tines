@@ -108,6 +108,23 @@ canonical scope label is unchanged everywhere else (UI chips, events,
 `parts[].scope.label`, proposal references), and a non-journal prompt in
 the same layer keeps the ordinary heading.
 
+**The journal follows the root of the state's inheritance chain.** Once a
+workflow state may inherit context from another state (see
+`specs/context/SPEC.md`), "the journal for this stage" would otherwise mean
+one file per state — and two Merging states inheriting from one base would
+learn the same lesson twice and prune neither. So the writable journal is
+the `journal` at `project ∧ the root ancestor` of the launch state's chain,
+not the state's own. `GET /api/v1/issues/:id/journal` resolves it, so
+`tines journal append/show/rewrite <ref>` are unchanged in form and land
+there; `--state` still addresses any state directly. A state that inherits
+from nothing is its own root, so this is inert for it.
+
+A journal left on a state that later *gains* a parent keeps stitching into
+the prompt under its own `## Journal (<scope label>)` heading — it is
+knowledge, and dropping it would lose it — but it is read-only: only the
+root's is handed out. A merge helper folds such a legacy journal into the
+root later; until then the prompt says so in as many words.
+
 **Broader tiers are propose-only for agents.** Project-, state-, and
 global-scoped context governs work the proposing agent cannot see, so
 changes route through review (below) instead of direct writes.
@@ -252,6 +269,30 @@ Without one:
 No journal exists yet for project Tines · state Implementing. Start one:
 `tines journal append Tines/1 "- <date>: <lesson>"`
 ```
+
+When the state inherits, the section names the writable journal rather than
+pointing at "the section above" — there may be two `## Journal` headings up
+there, and only one of them is writable:
+
+```markdown
+### Journal
+
+Your journal for this project and stage is the journal of Shared stages / Merging
+(currently v7).
+
+The other "Journal" section above belongs to state Merging alone and is read-only;
+move anything still worth keeping into the journal above with your next append.
+
+Appends land in this stage's journal even after you move the issue.
+```
+
+The base is named `<workflow> / <state>`, qualified for the same reason the
+inherited layers' scope labels are: two states in different workflows may
+share a name. The empty case names it the same way
+(`No journal exists yet for project Tines · state Shared stages / Merging`),
+and the read-only paragraph appears only when a legacy journal is actually
+stitched. For a state with no parent every line above is byte-for-byte what
+it was before inheritance existed.
 
 Then two factual footnote lines, each present only when non-empty:
 
