@@ -73,6 +73,13 @@ const PAYLOADS: Record<KnownEventType, Record<string, unknown>> = {
 	'project.created': { name: 'Tines' },
 	'project.updated': { name: 'Tines' },
 	'project.deleted': { name: 'Tines' },
+	'project.archived': {
+		name: 'Tines',
+		schedules_paused: 2,
+		draining_runs: 1,
+		issues_read_only: 91
+	},
+	'project.unarchived': { name: 'Tines', schedules_resumed: 2 },
 	'workflow.created': { name: 'Engineering' },
 	'workflow.updated': { name: 'Engineering' },
 	'workflow.deleted': { name: 'Engineering' },

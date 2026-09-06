@@ -7,7 +7,7 @@ import type {
 	ShadowWarning,
 	UpdateRoutingRuleRequest
 } from '@tines/shared';
-import type { Kysely } from 'kysely';
+import type { CompiledQuery, Kysely } from 'kysely';
 import { newId, type Database } from '$lib/server/db';
 import { ApiFail, notFound, runAtomic, type ActorContext } from './core';
 import { eventInsert } from './events';
@@ -15,24 +15,31 @@ import { requireTier } from './runners';
 import { resolveScope, scopeLabel, toContextScope } from './scope';
 
 // ---------------------------------------------------------------------------
-// Scope: two nullable dimensions (no issue — pins cover that), AND semantics
+// Scope: three nullable dimensions (no issue — pins cover that), AND semantics
 
 export interface RuleScopeIds {
 	projectId: string | null;
 	workflowStateId: string | null;
+	labelId: string | null;
 }
 
 /**
  * Routing is winner-take-all, so specificity is a total order — and unlike
  * the context system's merge ordering it puts project above state:
- * `project ∧ state` (3) > `project` (2) > `state` (1) > global (0).
- * Ownership ("acme work never leaves my laptop") is project-shaped.
+ * `label ∧ project ∧ state` (7) > `label ∧ project` (6) > `label ∧ state` (5)
+ * > `label` (4) > `project ∧ state` (3) > `project` (2) > `state` (1) >
+ * global (0). Ownership ("acme work never leaves my laptop") is
+ * project-shaped, and a label outranks it because a label says what the work
+ * *is* ("anything labelled security stays on the laptop") — the strongest
+ * claim on where it may run. Adding label as the high bit is a prefix
+ * extension: every rule that existed before it keeps its rank.
  */
 export function ruleSpecificity(scope: {
 	projectId?: string | null;
 	workflowStateId?: string | null;
+	labelId?: string | null;
 }): number {
-	return (scope.projectId ? 2 : 0) + (scope.workflowStateId ? 1 : 0);
+	return (scope.labelId ? 4 : 0) + (scope.projectId ? 2 : 0) + (scope.workflowStateId ? 1 : 0);
 }
 
 /** Two rule scopes can match the same issue iff no set dimension conflicts. */
@@ -40,11 +47,18 @@ export function ruleScopesOverlap(a: RuleScopeIds, b: RuleScopeIds): boolean {
 	const projectsCompatible = !a.projectId || !b.projectId || a.projectId === b.projectId;
 	const statesCompatible =
 		!a.workflowStateId || !b.workflowStateId || a.workflowStateId === b.workflowStateId;
+	// Labels never make two scopes disjoint: an issue carries a *set* of them,
+	// so `label design` and `label qa` both match an issue carrying both.
+	// There is deliberately no label term here.
 	return projectsCompatible && statesCompatible;
 }
 
 export function sameExactScope(a: RuleScopeIds, b: RuleScopeIds): boolean {
-	return a.projectId === b.projectId && a.workflowStateId === b.workflowStateId;
+	return (
+		a.projectId === b.projectId &&
+		a.workflowStateId === b.workflowStateId &&
+		a.labelId === b.labelId
+	);
 }
 
 export interface RuleForShadowing extends RuleScopeIds {
@@ -70,19 +84,33 @@ export function shadowWarnings(
 		const otherSpec = ruleSpecificity(other);
 		if (otherSpec > savedSpec) {
 			warnings.push({
+				kind: 'shadowed',
 				rule_id: other.id,
 				scope_label: other.label,
 				message: `The ${other.label} rule is more specific, so issues it matches will use it instead of this rule`
 			});
 		} else if (otherSpec < savedSpec) {
 			warnings.push({
+				kind: 'shadows',
 				rule_id: other.id,
 				scope_label: other.label,
 				message: `This rule takes precedence over the ${other.label} rule for issues both match`
 			});
+		} else {
+			// Equal specificity with different scopes used to be unreachable:
+			// two rules of the same rank differ in some dimension, and for
+			// project/state a difference means they cannot both match. Labels
+			// are set-valued, so two different-label rules of equal rank *can*
+			// both match — and then neither is more specific, so the issue
+			// fails closed rather than routing on a coin toss. Say so now,
+			// while the rule is being written.
+			warnings.push({
+				kind: 'ambiguous',
+				rule_id: other.id,
+				scope_label: other.label,
+				message: `Issues matching both this rule and the ${other.label} rule match them equally — neither is more specific, so those issues will not dispatch until one rule adds a project or state`
+			});
 		}
-		// Equal specificity with different scopes can only be project-vs-project
-		// or state-vs-state, which never overlap — unreachable here.
 	}
 	return warnings;
 }
@@ -168,10 +196,13 @@ function ruleQuery(db: Kysely<Database>, userId: string) {
 		.leftJoin('project as scope_project', 'scope_project.id', 'routing_rule.project_id')
 		.leftJoin('workflow_state as scope_state', 'scope_state.id', 'routing_rule.workflow_state_id')
 		.leftJoin('workflow as scope_workflow', 'scope_workflow.id', 'scope_state.workflow_id')
+		.leftJoin('label as scope_label', 'scope_label.id', 'routing_rule.label_id')
 		.selectAll('routing_rule')
 		.select([
 			'scope_project.name as scope_project_name',
 			'scope_state.name as scope_state_name',
+			'scope_label.name as scope_label_name',
+			'scope_label.color as scope_label_color',
 			'scope_workflow.id as scope_workflow_id',
 			'scope_workflow.name as scope_workflow_name'
 		])
@@ -185,14 +216,19 @@ function rowScope(row: RuleRow): ContextScope {
 	return toContextScope({
 		projectId: row.project_id,
 		workflowStateId: row.workflow_state_id,
+		labelId: row.label_id,
 		issueId: null,
 		projectName: row.scope_project_name,
 		stateName: row.scope_state_name,
+		labelName: row.scope_label_name,
+		labelColor: row.scope_label_color,
 		workflowId: row.scope_workflow_id,
 		workflowName: row.scope_workflow_name,
 		issueNumber: null,
 		issueProjectName: null,
-		issueProjectId: null
+		issueProjectId: null,
+		projectArchivedAt: null,
+		issueProjectArchivedAt: null
 	});
 }
 
@@ -274,6 +310,7 @@ async function loadRulesForShadowing(
 		id: row.id,
 		projectId: row.project_id,
 		workflowStateId: row.workflow_state_id,
+		labelId: row.label_id,
 		label: rowScope(row).label
 	}));
 }
@@ -303,10 +340,19 @@ export async function createRoutingRule(
 ): Promise<RoutingRuleWithWarnings> {
 	const scope: RuleScopeIds = {
 		projectId: body.project_id ?? null,
-		workflowStateId: body.workflow_state_id ?? null
+		workflowStateId: body.workflow_state_id ?? null,
+		labelId: body.label_id ?? null
 	};
 	const label = scopeLabel(
-		await resolveScope(db, actor.userId, scope, { issue: false, requireActiveState: true })
+		await resolveScope(
+			db,
+			actor.userId,
+			{ ...scope, issueId: null },
+			{
+				issue: false,
+				requireActiveState: true
+			}
+		)
 	);
 	const rules = await loadRulesForShadowing(db, actor.userId);
 	assertNoScopeCollision(scope, label, rules);
@@ -323,6 +369,7 @@ export async function createRoutingRule(
 				user_id: actor.userId,
 				project_id: scope.projectId,
 				workflow_state_id: scope.workflowStateId,
+				label_id: scope.labelId,
 				targets: JSON.stringify(targets),
 				created_at: now,
 				updated_at: now
@@ -363,12 +410,23 @@ export async function updateRoutingRule(
 	const scope: RuleScopeIds = {
 		projectId: body.project_id !== undefined ? body.project_id : row.project_id,
 		workflowStateId:
-			body.workflow_state_id !== undefined ? body.workflow_state_id : row.workflow_state_id
+			body.workflow_state_id !== undefined ? body.workflow_state_id : row.workflow_state_id,
+		labelId: body.label_id !== undefined ? body.label_id : row.label_id
 	};
 	const scopeChanged =
-		scope.projectId !== row.project_id || scope.workflowStateId !== row.workflow_state_id;
+		scope.projectId !== row.project_id ||
+		scope.workflowStateId !== row.workflow_state_id ||
+		scope.labelId !== row.label_id;
 	const label = scopeLabel(
-		await resolveScope(db, actor.userId, scope, { issue: false, requireActiveState: true })
+		await resolveScope(
+			db,
+			actor.userId,
+			{ ...scope, issueId: null },
+			{
+				issue: false,
+				requireActiveState: true
+			}
+		)
 	);
 	const rules = await loadRulesForShadowing(db, actor.userId);
 	if (scopeChanged) assertNoScopeCollision(scope, label, rules, id);
@@ -392,6 +450,7 @@ export async function updateRoutingRule(
 			.set({
 				project_id: scope.projectId,
 				workflow_state_id: scope.workflowStateId,
+				label_id: scope.labelId,
 				targets: JSON.stringify(targets),
 				updated_at: Date.now()
 			})
@@ -414,6 +473,44 @@ export async function updateRoutingRule(
 		...(await getRoutingRule(db, actor.userId, id)),
 		warnings: shadowWarnings({ ...scope, id }, rules)
 	};
+}
+
+/**
+ * The rules a label scopes, for label deletion (D5). Named by scope the way
+ * `tines routing list` prints them, so the 422 reads like the rule list.
+ */
+export async function rulesScopedToLabel(
+	db: Kysely<Database>,
+	userId: string,
+	labelId: string
+): Promise<{ id: string; project_id: string | null; scope_label: string }[]> {
+	const rows = await ruleQuery(db, userId).where('routing_rule.label_id', '=', labelId).execute();
+	return rows.map((row) => ({
+		id: row.id,
+		project_id: row.project_id,
+		scope_label: rowScope(row).label
+	}));
+}
+
+/**
+ * Compiled deletes + `routing_rule.deleted` events for a label's rules, for
+ * the caller's batch. A label-scoped rule is *deleted*, never stripped of its
+ * label: stripping would silently broaden `label docs ∧ project X` into
+ * `project X` and route work nobody asked it to.
+ */
+export function routingRuleDeletes(
+	db: Kysely<Database>,
+	actor: ActorContext,
+	rules: { id: string; project_id: string | null; scope_label: string }[]
+): CompiledQuery[] {
+	return rules.flatMap((rule) => [
+		db.deleteFrom('routing_rule').where('id', '=', rule.id).compile(),
+		eventInsert(db, actor, {
+			type: 'routing_rule.deleted',
+			projectId: rule.project_id,
+			payload: { rule_id: rule.id, scope_label: rule.scope_label, via: 'label.deleted' }
+		})
+	]);
 }
 
 export async function deleteRoutingRule(

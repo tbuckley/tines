@@ -13,23 +13,56 @@ import { ApiFail } from './core';
 import { createTestDb, type TestDb } from './test-db';
 
 describe('layerRank', () => {
-	it('orders the eight scopes exactly as the spec enumerates them', () => {
+	it('orders the sixteen scopes exactly as the spec enumerates them', () => {
 		const scopes = [
 			{}, // 0. global (empty scope)
 			{ projectId: 'p' }, // 1. project
 			{ workflowStateId: 's' }, // 2. state
 			{ projectId: 'p', workflowStateId: 's' }, // 3. project ∧ state
-			{ issueId: 'i' }, // 4. issue
-			{ issueId: 'i', projectId: 'p' }, // 5. issue ∧ project
-			{ issueId: 'i', workflowStateId: 's' }, // 6. issue ∧ state
-			{ issueId: 'i', projectId: 'p', workflowStateId: 's' } // 7. all three
+			{ labelId: 'l' }, // 4. label
+			{ labelId: 'l', projectId: 'p' }, // 5. label ∧ project
+			{ labelId: 'l', workflowStateId: 's' }, // 6. label ∧ state
+			{ labelId: 'l', projectId: 'p', workflowStateId: 's' }, // 7. label ∧ project ∧ state
+			{ issueId: 'i' }, // 8. issue
+			{ issueId: 'i', projectId: 'p' }, // 9. issue ∧ project
+			{ issueId: 'i', workflowStateId: 's' }, // 10. issue ∧ state
+			{ issueId: 'i', projectId: 'p', workflowStateId: 's' }, // 11. issue ∧ project ∧ state
+			{ issueId: 'i', labelId: 'l' }, // 12. issue ∧ label
+			{ issueId: 'i', labelId: 'l', projectId: 'p' }, // 13. issue ∧ label ∧ project
+			{ issueId: 'i', labelId: 'l', workflowStateId: 's' }, // 14. issue ∧ label ∧ state
+			{ issueId: 'i', labelId: 'l', projectId: 'p', workflowStateId: 's' } // 15. all four
 		];
-		expect(scopes.map(layerRank)).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
+		expect(scopes.map(layerRank)).toEqual([...Array(16).keys()]);
 	});
 
 	it('puts any issue-anchored scope after any non-issue-anchored one', () => {
 		expect(layerRank({ issueId: 'i' })).toBeGreaterThan(
+			layerRank({ labelId: 'l', projectId: 'p', workflowStateId: 's' })
+		);
+	});
+
+	// The label bit is a *prefix extension*: adding it must not re-rank any
+	// layer that shipped before it, or every existing override flips.
+	it('leaves the seven pre-label layers in their original relative order', () => {
+		const shipped = [
+			{},
+			{ projectId: 'p' },
+			{ workflowStateId: 's' },
+			{ projectId: 'p', workflowStateId: 's' },
+			{ issueId: 'i' },
+			{ issueId: 'i', projectId: 'p' },
+			{ issueId: 'i', workflowStateId: 's' },
+			{ issueId: 'i', projectId: 'p', workflowStateId: 's' }
+		];
+		expect(shipped.map(layerRank)).toEqual([0, 1, 2, 3, 8, 9, 10, 11]);
+	});
+
+	it('ranks a label layer above every ambient layer and below every issue layer', () => {
+		expect(layerRank({ labelId: 'l' })).toBeGreaterThan(
 			layerRank({ projectId: 'p', workflowStateId: 's' })
+		);
+		expect(layerRank({ labelId: 'l', projectId: 'p', workflowStateId: 's' })).toBeLessThan(
+			layerRank({ issueId: 'i' })
 		);
 	});
 });
@@ -119,6 +152,7 @@ const issue: IssueDetail = {
 	id: 'iss_1',
 	project_id: 'prj_1',
 	project_name: 'Tines',
+	project_archived_at: null,
 	number: 42,
 	title: 'Ship the thing',
 	description: 'Do it *well*.',
@@ -178,6 +212,9 @@ const emptyScope = {
 	project_name: null,
 	workflow_state_id: null,
 	workflow_state_name: null,
+	label_id: null,
+	label_name: null,
+	label_color: null,
 	workflow_id: null,
 	workflow_name: null,
 	issue_id: null,

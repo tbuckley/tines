@@ -26,7 +26,7 @@ import { buildAdapters, type AdapterRegistry, type RunnerAdapter } from './adapt
 import {
 	appendLogTail,
 	launchBackoffMs,
-	matchRule,
+	resolveRule,
 	resolveTier,
 	targetVerdict,
 	type ActiveCounts,
@@ -115,7 +115,12 @@ export interface CandidateIssue {
 	updated_at: number;
 	pinned_runner_id: string | null;
 	pinned_tier: string | null;
+	/** Labels the issue carries, for label-scoped rule matching. */
+	label_ids: string[];
 }
+
+/** The row shape the candidate query returns: `label_ids` arrives as JSON. */
+type CandidateRow = Omit<CandidateIssue, 'label_ids'> & { label_ids_json: string | null };
 
 /**
  * Dispatchable issues, oldest-`updated_at` first: effective state category
@@ -128,7 +133,7 @@ export async function loadEligibleIssues(
 	db: Kysely<Database>,
 	userId: string
 ): Promise<CandidateIssue[]> {
-	const result = await sql<CandidateIssue>`
+	const result = await sql<CandidateRow>`
 		WITH RECURSIVE dup_chain(issue_id, next_id, depth) AS (
 			SELECT source_issue_id, target_issue_id, 1 FROM issue_link WHERE kind = 'duplicate_of'
 			UNION ALL
@@ -144,11 +149,16 @@ export async function loadEligibleIssues(
 			)
 		)
 		SELECT issue.id, issue.project_id, issue.state_id, issue.updated_at,
-			issue.pinned_runner_id, issue.pinned_tier
+			issue.pinned_runner_id, issue.pinned_tier,
+			-- Aggregated in the same statement rather than a second round
+			-- trip: rule matching needs every candidate's labels anyway.
+			(SELECT json_group_array(il.label_id) FROM issue_label il
+				WHERE il.issue_id = issue.id) AS label_ids_json
 		FROM issue
 		JOIN project ON project.id = issue.project_id
 		JOIN workflow_state st ON st.id = issue.state_id
 		WHERE project.user_id = ${userId}
+			AND project.archived_at IS NULL
 			AND st.category = 'active'
 			AND issue.needs_attention = 0
 			AND NOT EXISTS (
@@ -167,7 +177,18 @@ export async function loadEligibleIssues(
 				WHERE issue_id = issue.id AND status IN (${sql.join(ACTIVE)})
 			)
 		ORDER BY issue.updated_at ASC, issue.id ASC`.execute(db);
-	return result.rows;
+	return result.rows.map(({ label_ids_json, ...row }) => {
+		// A malformed aggregate degrades to "carries no labels" — the issue
+		// then matches only unlabelled rules rather than failing the pass.
+		let label_ids: string[] = [];
+		try {
+			const parsed = JSON.parse(label_ids_json ?? '[]');
+			if (Array.isArray(parsed)) label_ids = parsed.filter((v) => typeof v === 'string');
+		} catch {
+			// keep the empty list
+		}
+		return { ...row, label_ids };
+	});
 }
 
 export async function loadActiveCounts(
@@ -210,7 +231,7 @@ export type EngineRule = MatchableRule;
 export async function loadEngineRules(db: Kysely<Database>, userId: string): Promise<EngineRule[]> {
 	const rows = await db
 		.selectFrom('routing_rule')
-		.select(['id', 'project_id', 'workflow_state_id', 'targets'])
+		.select(['id', 'project_id', 'workflow_state_id', 'label_id', 'targets'])
 		.where('user_id', '=', userId)
 		.execute();
 	return rows.map((r) => {
@@ -220,7 +241,13 @@ export async function loadEngineRules(db: Kysely<Database>, userId: string): Pro
 		} catch {
 			// An unreadable target list dispatches nothing rather than crashing.
 		}
-		return { id: r.id, project_id: r.project_id, workflow_state_id: r.workflow_state_id, targets };
+		return {
+			id: r.id,
+			project_id: r.project_id,
+			workflow_state_id: r.workflow_state_id,
+			label_id: r.label_id,
+			targets
+		};
 	});
 }
 
@@ -228,18 +255,24 @@ export async function loadEngineRules(db: Kysely<Database>, userId: string): Pro
 export function targetsForIssue(
 	issue: CandidateIssue,
 	rules: EngineRule[]
-): { targets: RoutingTarget[]; rule: EngineRule | null; pinned: boolean } {
+): { targets: RoutingTarget[]; rule: EngineRule | null; ambiguous: EngineRule[]; pinned: boolean } {
 	if (issue.pinned_runner_id) {
 		return {
 			targets: [
 				{ runner_id: issue.pinned_runner_id, tier: (issue.pinned_tier as ModelTier | null) ?? null }
 			],
 			rule: null,
+			ambiguous: [],
 			pinned: true
 		};
 	}
-	const rule = matchRule({ project_id: issue.project_id, state_id: issue.state_id }, rules);
-	return { targets: rule?.targets ?? [], rule, pinned: false };
+	// An ambiguous match yields no targets, so the pass skips the issue
+	// exactly as it does one with no matching rule at all — no strike, no run.
+	const { rule, ambiguous } = resolveRule(
+		{ project_id: issue.project_id, state_id: issue.state_id, label_ids: issue.label_ids },
+		rules
+	);
+	return { targets: rule?.targets ?? [], rule, ambiguous, pinned: false };
 }
 
 // ---------------------------------------------------------------------------
@@ -289,9 +322,13 @@ export async function claimRun(
 		SELECT ${input.runId}, ${input.userId}, issue.id, ${input.runnerId}, 'assigned',
 			${input.tier}, ${input.model}, issue.state_id, '', 0, ${input.now}
 		FROM issue
+		JOIN project ON project.id = issue.project_id
 		JOIN workflow_state st ON st.id = issue.state_id
 		WHERE issue.id = ${input.issueId}
 			AND issue.state_id = ${input.stateId}
+			-- Race guard: the project may have been archived between the pass
+			-- reading the queue and this claim.
+			AND project.archived_at IS NULL
 			AND st.category = 'active'
 			AND issue.needs_attention = 0
 			AND NOT EXISTS (

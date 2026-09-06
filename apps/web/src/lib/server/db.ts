@@ -8,6 +8,8 @@ export interface ProjectTable {
 	name: string;
 	description: string;
 	default_workflow_id: string | null;
+	/** Set (ms) while the project is archived; NULL = live. */
+	archived_at: number | null;
 	created_at: number;
 	updated_at: number;
 }
@@ -131,6 +133,8 @@ export interface ContextItemTable {
 	project_id: string | null;
 	workflow_state_id: string | null;
 	issue_id: string | null;
+	/** Set-valued dimension: matches an issue that carries this label. */
+	label_id: string | null;
 	/** Prompt payload: Markdown body. */
 	body: string | null;
 	/** Repo payload: pointer fields (dir defaults at read time). */
@@ -325,9 +329,11 @@ export interface AgentRunTable {
 export interface RoutingRuleTable {
 	id: string;
 	user_id: string;
-	/** Scope: nullable dimensions with AND semantics; both NULL = global. */
+	/** Scope: nullable dimensions with AND semantics; all NULL = global. */
 	project_id: string | null;
 	workflow_state_id: string | null;
+	/** Set-valued dimension: matches an issue that carries this label. */
+	label_id: string | null;
 	/** JSON ordered target list: [ { runner_id, tier? } ]. */
 	targets: string;
 	created_at: number;

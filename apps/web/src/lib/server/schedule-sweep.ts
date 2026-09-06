@@ -28,6 +28,9 @@ export interface ScheduleExecRow {
 	/** The state instances start in: the schedule's pinned state, else the workflow's initial state. */
 	start_state_id: string;
 	start_state_name: string;
+	/** Archived projects are skipped by the sweep and refuse run-now. */
+	project_name: string;
+	project_archived_at: number | null;
 }
 
 export function scheduleExecQuery(db: Kysely<Database>) {
@@ -57,6 +60,8 @@ export function scheduleExecQuery(db: Kysely<Database>) {
 			'scheduled_task.next_run_at',
 			'scheduled_task.run_count',
 			'project.user_id as user_id',
+			'project.name as project_name',
+			'project.archived_at as project_archived_at',
 			'start_state.id as start_state_id',
 			'start_state.name as start_state_name'
 		]);
@@ -232,6 +237,10 @@ export async function sweepSchedules(env: Env, now: number = Date.now()): Promis
 	const due = await scheduleExecQuery(db)
 		.where('scheduled_task.enabled', '=', 1)
 		.where('scheduled_task.next_run_at', '<=', now)
+		// An archived project's schedules are paused, not disabled: `enabled`
+		// records the operator's intent so unarchive can restore it. Skipping
+		// is silent — a paused schedule is not an incident.
+		.where('project.archived_at', 'is', null)
 		.execute();
 	for (const schedule of due) {
 		try {

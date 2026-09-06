@@ -1,6 +1,6 @@
 /**
- * The (project, workflow state, issue) scope triple — one definition of what
- * a scope means, for every subsystem that scopes something by it: context
+ * The (project, workflow state, label, issue) scope tuple — one definition of
+ * what a scope means, for every subsystem that scopes something by it: context
  * items, routing rules, runner-removal impact, and the dispatch explainer.
  *
  * Two operations live here, and only here:
@@ -18,6 +18,13 @@ import { ApiFail } from './core';
 export interface ScopeIds {
 	projectId: string | null;
 	workflowStateId: string | null;
+	/**
+	 * Issue label. Unlike the other three, this dimension is *set-valued* on
+	 * the target side — an issue carries many labels — so a label-scoped item
+	 * matches whenever the issue carries the label, and two scopes that set
+	 * different labels can both match the same issue.
+	 */
+	labelId: string | null;
 	issueId: string | null;
 }
 
@@ -28,16 +35,23 @@ export type ScopeIdsInput = Omit<ScopeIds, 'issueId'> & { issueId?: string | nul
 export interface ResolvedScope extends ScopeIds {
 	projectName: string | null;
 	stateName: string | null;
+	labelName: string | null;
+	labelColor: string | null;
 	workflowId: string | null;
 	workflowName: string | null;
 	issueNumber: number | null;
 	issueProjectName: string | null;
 	/** The issue's project — used for event references. */
 	issueProjectId: string | null;
+	/** Archive state of the scope's project and of the issue's project (null = live). */
+	projectArchivedAt: number | null;
+	issueProjectArchivedAt: number | null;
 }
 
 /**
- * Canonical display label: set dimensions in project · state · issue order;
+ * Canonical display label: set dimensions in project · state · label · issue
+ * order (a label is narrower than the ambient dimensions, broader than a
+ * single issue — the same order `layerRank` ranks them in);
  * the empty scope is "global". A dimension whose id is set but whose name is
  * unknown (a dangling reference) renders the id rather than vanishing — a
  * label must never understate the scope it describes.
@@ -47,6 +61,8 @@ export function scopeLabel(scope: {
 	projectName?: string | null;
 	workflowStateId?: string | null;
 	stateName?: string | null;
+	labelId?: string | null;
+	labelName?: string | null;
 	issueId?: string | null;
 	issueProjectName?: string | null;
 	issueNumber?: number | null;
@@ -57,6 +73,9 @@ export function scopeLabel(scope: {
 	}
 	if (scope.stateName || scope.workflowStateId) {
 		parts.push(`state ${scope.stateName || scope.workflowStateId}`);
+	}
+	if (scope.labelName || scope.labelId) {
+		parts.push(`label ${scope.labelName || scope.labelId}`);
 	}
 	if (scope.issueProjectName && scope.issueNumber !== null && scope.issueNumber !== undefined) {
 		parts.push(`issue ${scope.issueProjectName}/${scope.issueNumber}`);
@@ -75,6 +94,9 @@ export function toContextScope(scope: ResolvedScope): ContextScope {
 		workflow_state_name: scope.stateName,
 		workflow_id: scope.workflowId,
 		workflow_name: scope.workflowName,
+		label_id: scope.labelId,
+		label_name: scope.labelName,
+		label_color: (scope.labelColor as ContextScope['label_color']) ?? null,
 		issue_id: scope.issueId,
 		issue_ref:
 			scope.issueId && scope.issueProjectName && scope.issueNumber !== null
@@ -111,20 +133,25 @@ export async function resolveScope(
 	const scope: ResolvedScope = {
 		projectId: ids.projectId,
 		workflowStateId: ids.workflowStateId,
+		labelId: ids.labelId,
 		issueId,
 		projectName: null,
 		stateName: null,
+		labelName: null,
+		labelColor: null,
 		workflowId: null,
 		workflowName: null,
 		issueNumber: null,
 		issueProjectName: null,
-		issueProjectId: null
+		issueProjectId: null,
+		projectArchivedAt: null,
+		issueProjectArchivedAt: null
 	};
 
 	if (ids.projectId) {
 		const project = await db
 			.selectFrom('project')
-			.select(['id', 'name'])
+			.select(['id', 'name', 'archived_at'])
 			.where('id', '=', ids.projectId)
 			.where('user_id', '=', userId)
 			.executeTakeFirst();
@@ -134,6 +161,7 @@ export async function resolveScope(
 			});
 		}
 		scope.projectName = project.name;
+		scope.projectArchivedAt = project.archived_at;
 	}
 
 	if (ids.workflowStateId) {
@@ -173,6 +201,26 @@ export async function resolveScope(
 		scope.workflowName = state.workflow_name;
 	}
 
+	if (ids.labelId) {
+		// No coherence rule against the other dimensions: labels are flat and
+		// user-wide, and an issue that does not carry the label simply does
+		// not match — the same as a state-scoped item while the issue is
+		// somewhere else.
+		const label = await db
+			.selectFrom('label')
+			.select(['id', 'name', 'color'])
+			.where('id', '=', ids.labelId)
+			.where('user_id', '=', userId)
+			.executeTakeFirst();
+		if (!label) {
+			throw new ApiFail(422, 'unknown_label', `Label "${ids.labelId}" does not exist`, {
+				field: 'label_id'
+			});
+		}
+		scope.labelName = label.name;
+		scope.labelColor = label.color;
+	}
+
 	if (issueId) {
 		const issue = await db
 			.selectFrom('issue')
@@ -182,7 +230,8 @@ export async function resolveScope(
 				'issue.number',
 				'issue.project_id',
 				'issue.workflow_id',
-				'project.name as project_name'
+				'project.name as project_name',
+				'project.archived_at as project_archived_at'
 			])
 			.where('issue.id', '=', issueId)
 			.where('project.user_id', '=', userId)
@@ -195,6 +244,7 @@ export async function resolveScope(
 		scope.issueNumber = issue.number;
 		scope.issueProjectName = issue.project_name;
 		scope.issueProjectId = issue.project_id;
+		scope.issueProjectArchivedAt = issue.project_archived_at;
 
 		if (ids.projectId && issue.project_id !== ids.projectId) {
 			throw new ApiFail(

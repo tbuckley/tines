@@ -11,6 +11,7 @@ import {
 	SKILL_MAX_TOTAL_BYTES,
 	SKILL_NAME_PATTERN,
 	type AppendContextRequest,
+	type ArchivedFilter,
 	type Artifact,
 	type ArtifactRequirementCheck,
 	type ArtifactType,
@@ -45,6 +46,7 @@ import {
 	type Page
 } from './core';
 import { artifactTypeOf } from './artifacts';
+import { assertScopeWritable } from './archive';
 import { eventInsert } from './events';
 import {
 	resolveScope,
@@ -211,17 +213,22 @@ export function contextItemQuery(db: Kysely<Database>, userId: string) {
 		.leftJoin('project as scope_project', 'scope_project.id', 'context_item.project_id')
 		.leftJoin('workflow_state as scope_state', 'scope_state.id', 'context_item.workflow_state_id')
 		.leftJoin('workflow as scope_workflow', 'scope_workflow.id', 'scope_state.workflow_id')
+		.leftJoin('label as scope_label', 'scope_label.id', 'context_item.label_id')
 		.leftJoin('issue as scope_issue', 'scope_issue.id', 'context_item.issue_id')
 		.leftJoin('project as issue_project', 'issue_project.id', 'scope_issue.project_id')
 		.selectAll('context_item')
 		.select([
 			'scope_project.name as scope_project_name',
 			'scope_state.name as scope_state_name',
+			'scope_label.name as scope_label_name',
+			'scope_label.color as scope_label_color',
 			'scope_workflow.id as scope_workflow_id',
 			'scope_workflow.name as scope_workflow_name',
 			'scope_issue.number as scope_issue_number',
 			'scope_issue.project_id as scope_issue_project_id',
-			'issue_project.name as scope_issue_project_name'
+			'issue_project.name as scope_issue_project_name',
+			'scope_project.archived_at as scope_project_archived_at',
+			'issue_project.archived_at as scope_issue_project_archived_at'
 		])
 		.select((eb) =>
 			eb
@@ -239,14 +246,19 @@ function rowScope(row: ItemRow): ResolvedScope {
 	return {
 		projectId: row.project_id,
 		workflowStateId: row.workflow_state_id,
+		labelId: row.label_id,
 		issueId: row.issue_id,
 		projectName: row.scope_project_name,
 		stateName: row.scope_state_name,
+		labelName: row.scope_label_name,
+		labelColor: row.scope_label_color,
 		workflowId: row.scope_workflow_id,
 		workflowName: row.scope_workflow_name,
 		issueNumber: row.scope_issue_number,
 		issueProjectName: row.scope_issue_project_name,
-		issueProjectId: row.scope_issue_project_id
+		issueProjectId: row.scope_issue_project_id,
+		projectArchivedAt: row.scope_project_archived_at,
+		issueProjectArchivedAt: row.scope_issue_project_archived_at
 	};
 }
 
@@ -328,10 +340,18 @@ export interface ContextItemFilters {
 	workflow?: string;
 	/** Issue id. */
 	issue?: string;
+	/** Label id or name. */
+	label?: string;
 	/** Name/description substring search. */
 	q?: string;
 	/** Restrict to items whose scope sets only the given dimensions. */
 	exact?: boolean;
+	/**
+	 * Items anchored on an archived project, when no project is named:
+	 * `'false'` (the default) hides them, `'true'` shows only them. Global and
+	 * state-scoped items are anchored on no project and always show.
+	 */
+	archived?: ArchivedFilter;
 }
 
 /**
@@ -372,10 +392,44 @@ export async function listContextItems(
 	if (filters.workflow) {
 		q = q.where('scope_workflow.id', '=', filters.workflow);
 	}
+	if (filters.label) {
+		const l = filters.label;
+		q = q.where((eb) =>
+			eb.or([
+				eb('context_item.label_id', '=', l),
+				eb(
+					'context_item.label_id',
+					'in',
+					eb.selectFrom('label').select('id').where('name', '=', l).where('user_id', '=', userId)
+				)
+			])
+		);
+	} else if (filters.exact) {
+		q = q.where('context_item.label_id', 'is', null);
+	}
 	if (filters.issue) {
 		q = q.where('context_item.issue_id', '=', filters.issue);
 	} else if (filters.exact) {
 		q = q.where('context_item.issue_id', 'is', null);
+	}
+	// An item is "archived" when either anchor — its own project scope or the
+	// project of its scoped issue — is archived. Naming an anchor (a project or
+	// an issue) overrides the default, the same way `applyScopeFilters` and
+	// `listSchedules` treat an explicit project filter: the caller asked for a
+	// specific place, so its state is not a reason to hide what is there.
+	if (!filters.project && !filters.issue) {
+		if ((filters.archived ?? 'false') === 'false') {
+			q = q
+				.where('scope_project.archived_at', 'is', null)
+				.where('issue_project.archived_at', 'is', null);
+		} else if (filters.archived === 'true') {
+			q = q.where((eb) =>
+				eb.or([
+					eb('scope_project.archived_at', 'is not', null),
+					eb('issue_project.archived_at', 'is not', null)
+				])
+			);
+		}
 	}
 	if (filters.q) {
 		// Plain substring search; % and _ act as wildcards, which is harmless
@@ -467,6 +521,7 @@ async function assertNameAvailable(
 	for (const [column, value] of [
 		['project_id', scope.projectId],
 		['workflow_state_id', scope.workflowStateId],
+		['label_id', scope.labelId],
 		['issue_id', scope.issueId]
 	] as const) {
 		q = value === null ? q.where(column, 'is', null) : q.where(column, '=', value);
@@ -495,6 +550,7 @@ async function nextPosition(
 	for (const [column, value] of [
 		['project_id', scope.projectId],
 		['workflow_state_id', scope.workflowStateId],
+		['label_id', scope.labelId],
 		['issue_id', scope.issueId]
 	] as const) {
 		q = value === null ? q.where(column, 'is', null) : q.where(column, '=', value);
@@ -515,6 +571,8 @@ function scopeEventPayload(scope: ResolvedScope) {
 	return {
 		project_id: scope.projectId,
 		workflow_state_id: scope.workflowStateId,
+		label_id: scope.labelId,
+		label_name: scope.labelName,
 		issue_id: scope.issueId,
 		label: scopeLabel(scope)
 	};
@@ -588,8 +646,10 @@ export async function createContextItem(
 	const scope = await resolveScope(db, actor.userId, {
 		projectId: body.project_id ?? null,
 		workflowStateId: body.workflow_state_id ?? null,
+		labelId: body.label_id ?? null,
 		issueId: body.issue_id ?? null
 	});
+	await assertScopeWritable(db, actor, scope);
 	await assertNameAvailable(db, actor.userId, kind, name, scope);
 
 	let promptBody: string | null = null;
@@ -624,6 +684,7 @@ export async function createContextItem(
 				description,
 				project_id: scope.projectId,
 				workflow_state_id: scope.workflowStateId,
+				label_id: scope.labelId,
 				issue_id: scope.issueId,
 				body: promptBody,
 				repo_url: repoUrl,
@@ -706,6 +767,7 @@ export async function updateContextItem(
 		.where('context_item.id', '=', id)
 		.executeTakeFirst();
 	if (!row) throw notFound();
+	await assertScopeWritable(db, actor, rowScope(row));
 	const kind = row.kind as ContextKind;
 
 	if (body.expected_version !== undefined && body.expected_version !== row.version) {
@@ -736,16 +798,19 @@ export async function updateContextItem(
 	const scopeTouched =
 		body.project_id !== undefined ||
 		body.workflow_state_id !== undefined ||
+		body.label_id !== undefined ||
 		body.issue_id !== undefined;
 	const targetIds: ScopeIds = {
 		projectId: body.project_id !== undefined ? body.project_id : row.project_id,
 		workflowStateId:
 			body.workflow_state_id !== undefined ? body.workflow_state_id : row.workflow_state_id,
+		labelId: body.label_id !== undefined ? body.label_id : row.label_id,
 		issueId: body.issue_id !== undefined ? body.issue_id : row.issue_id
 	};
 	const scopeChanged =
 		targetIds.projectId !== row.project_id ||
 		targetIds.workflowStateId !== row.workflow_state_id ||
+		targetIds.labelId !== row.label_id ||
 		targetIds.issueId !== row.issue_id;
 	// Artifacts are pinned to exactly their issue: rename and description are
 	// legitimate PATCHes here (a rename re-keys requirement matching, which
@@ -760,6 +825,8 @@ export async function updateContextItem(
 	}
 	const scope =
 		scopeTouched || scopeChanged ? await resolveScope(db, actor.userId, targetIds) : currentScope;
+	// Moving an item *into* an archived project is a write on that project too.
+	if (scopeChanged) await assertScopeWritable(db, actor, scope);
 
 	if (name !== row.name || scopeChanged) {
 		await assertNameAvailable(db, actor.userId, kind, name, targetIds, id);
@@ -854,6 +921,7 @@ export async function updateContextItem(
 				description,
 				project_id: scope.projectId,
 				workflow_state_id: scope.workflowStateId,
+				label_id: scope.labelId,
 				issue_id: scope.issueId,
 				body: promptBody,
 				repo_url: repoUrl,
@@ -915,6 +983,7 @@ export async function deleteContextItem(
 		.executeTakeFirst();
 	if (!row) throw notFound();
 	const scope = rowScope(row);
+	await assertScopeWritable(db, actor, scope);
 	await runAtomic(env, [
 		db.deleteFrom('context_item_file').where('context_item_id', '=', id).compile(),
 		db
@@ -961,6 +1030,7 @@ export async function appendContextItem(
 			.where('context_item.id', '=', id)
 			.executeTakeFirst();
 		if (!row) throw notFound();
+		await assertScopeWritable(db, actor, rowScope(row));
 		if (row.kind !== 'prompt') {
 			throw new ApiFail(
 				422,
@@ -1045,18 +1115,29 @@ export function isJournal(row: {
 }
 
 /**
- * Layer rank of an exact scope. Treating (issue, state, project) as bits of
- * a binary number yields exactly the spec's seven-layer order — global (0),
- * project (1), state (2), project ∧ state (3), issue (4), issue ∧ project
- * (5), issue ∧ state (6), issue ∧ project ∧ state (7) — any issue-anchored
- * scope outranks any non-issue-anchored one. Broad layers stitch first.
+ * Layer rank of an exact scope. Treating (issue, label, state, project) as
+ * bits of a binary number yields the spec's layer order: global (0), project
+ * (1), state (2), project ∧ state (3), then every label layer (4–7), then
+ * every issue-anchored layer (8–15). Broad layers stitch first, so the most
+ * specific item wins the by-name dedupe.
+ *
+ * The label bit sits between state and issue because *a label is a per-issue
+ * classification: it outranks the ambient dimensions but not the issue
+ * itself.* Adding it as a new high bit under `issue` is a pure prefix
+ * extension — every layer that shipped keeps its relative order.
  */
 export function layerRank(scope: {
 	projectId?: string | null;
 	workflowStateId?: string | null;
+	labelId?: string | null;
 	issueId?: string | null;
 }): number {
-	return (scope.issueId ? 4 : 0) + (scope.workflowStateId ? 2 : 0) + (scope.projectId ? 1 : 0);
+	return (
+		(scope.issueId ? 8 : 0) +
+		(scope.labelId ? 4 : 0) +
+		(scope.workflowStateId ? 2 : 0) +
+		(scope.projectId ? 1 : 0)
+	);
 }
 
 export interface StitchPart {
@@ -1103,6 +1184,16 @@ function matchingItemsQuery(db: Kysely<Database>, userId: string, target: MatchT
 					eb('context_item.workflow_state_id', '=', target.stateId)
 				]),
 				eb.or([
+					eb('context_item.label_id', 'is', null),
+					eb.exists(
+						eb
+							.selectFrom('issue_label')
+							.select('issue_label.label_id')
+							.whereRef('issue_label.label_id', '=', 'context_item.label_id')
+							.where('issue_label.issue_id', '=', target.issueId)
+					)
+				]),
+				eb.or([
 					eb('context_item.issue_id', 'is', null),
 					eb('context_item.issue_id', '=', target.issueId)
 				])
@@ -1110,11 +1201,25 @@ function matchingItemsQuery(db: Kysely<Database>, userId: string, target: MatchT
 		);
 }
 
-/** Layer order, then position / created_at / id within a layer. */
+/** The label a same-rank tie orders by: name, then id for a dangling label. */
+function labelSortKey(row: ItemRow): string {
+	return (row.scope_label_name ?? '').toLowerCase() || (row.label_id ?? '');
+}
+
+/**
+ * Layer order, then position / created_at / id within a layer.
+ *
+ * A label is set-valued, so two items in the *same* layer can be scoped to
+ * two different labels an issue carries at once — the one case where a layer
+ * holds more than one exact scope. Those order by label name, so the winner
+ * of a by-name dedupe is deterministic and explainable rather than whichever
+ * item happened to be created first.
+ */
 function sortMatched(rows: ItemRow[]): ItemRow[] {
 	return [...rows].sort(
 		(a, b) =>
 			layerRank(rowScope(a)) - layerRank(rowScope(b)) ||
+			(labelSortKey(a) < labelSortKey(b) ? -1 : labelSortKey(a) > labelSortKey(b) ? 1 : 0) ||
 			a.position - b.position ||
 			a.created_at - b.created_at ||
 			(a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
@@ -1244,6 +1349,7 @@ export async function journalForIssue(
 		await resolveScope(db, actor.userId, {
 			projectId: target.projectId,
 			workflowStateId: stateId,
+			labelId: null,
 			issueId: null
 		})
 	);
@@ -1713,6 +1819,7 @@ export function seedPromptQueries(
 					description: '',
 					project_id: projectId,
 					workflow_state_id: workflowStateId,
+					label_id: null,
 					issue_id: null,
 					body: opts.body,
 					repo_url: null,

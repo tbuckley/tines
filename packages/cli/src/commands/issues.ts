@@ -84,6 +84,12 @@ function printIssueDetail(issue: IssueDetail): void {
 			`own state: ${issue.state.name} (${issue.state.category}) — dormant while this is a duplicate`
 		);
 	}
+	// An archived project is read-only, so say so before the reader tries to write.
+	if (issue.project_archived_at !== null) {
+		console.log(
+			`project archived: ${timestamp(issue.project_archived_at)} — this issue is read-only`
+		);
+	}
 	if (issue.labels.length > 0) {
 		console.log(`labels: ${issue.labels.map((l) => l.name).join(', ')}`);
 	}

@@ -22,32 +22,67 @@ export interface MatchableRule {
 	id: string;
 	project_id: string | null;
 	workflow_state_id: string | null;
+	label_id: string | null;
 	targets: RoutingTarget[];
+}
+
+/** The issue dimensions a rule can be scoped to. Labels are set-valued. */
+export interface MatchableIssue {
+	project_id: string;
+	state_id: string;
+	label_ids: string[];
 }
 
 function specificity(rule: {
 	project_id: string | null;
 	workflow_state_id: string | null;
+	label_id: string | null;
 }): number {
-	return (rule.project_id ? 2 : 0) + (rule.workflow_state_id ? 1 : 0);
+	return (rule.label_id ? 4 : 0) + (rule.project_id ? 2 : 0) + (rule.workflow_state_id ? 1 : 0);
 }
 
 /**
- * The most specific rule matching the issue's project and current state:
- * `project ∧ state` > `project` > `state` > global. No fallback across
- * rules — only the winner's targets are ever walked.
+ * The most specific rule matching the issue, or an ambiguity.
+ *
+ * Order: `label ∧ project ∧ state` (7) > `label ∧ project` (6) >
+ * `label ∧ state` (5) > `label` (4) > `project ∧ state` (3) > `project` (2)
+ * > `state` (1) > global (0). No fallback across rules — only the winner's
+ * targets are ever walked.
+ *
+ * Because an issue carries a *set* of labels, two rules scoped to different
+ * labels can both match at the same specificity, and then neither is more
+ * specific. That **fails closed**: `rule` is null and `ambiguous` names the
+ * tied rules, so the issue is not dispatched and the explainer can say why.
+ * Routing on an arbitrary winner would silently send, say, a `docs`+`security`
+ * issue wherever the `docs` rule points — the exact failure the specificity
+ * order exists to prevent.
  */
-export function matchRule<T extends MatchableRule>(
-	issue: { project_id: string; state_id: string },
+export function resolveRule<T extends MatchableRule>(
+	issue: MatchableIssue,
 	rules: T[]
-): T | null {
-	let best: T | null = null;
+): { rule: T | null; ambiguous: T[] } {
+	let best: T[] = [];
+	let bestSpec = -1;
 	for (const rule of rules) {
 		if (rule.project_id && rule.project_id !== issue.project_id) continue;
 		if (rule.workflow_state_id && rule.workflow_state_id !== issue.state_id) continue;
-		if (!best || specificity(rule) > specificity(best)) best = rule;
+		if (rule.label_id && !issue.label_ids.includes(rule.label_id)) continue;
+		const spec = specificity(rule);
+		if (spec > bestSpec) {
+			bestSpec = spec;
+			best = [rule];
+		} else if (spec === bestSpec) {
+			best.push(rule);
+		}
 	}
-	return best;
+	if (best.length === 1) return { rule: best[0], ambiguous: [] };
+	if (best.length === 0) return { rule: null, ambiguous: [] };
+	return { rule: null, ambiguous: best };
+}
+
+/** The winning rule, or null when there is none *or* the match is ambiguous. */
+export function matchRule<T extends MatchableRule>(issue: MatchableIssue, rules: T[]): T | null {
+	return resolveRule(issue, rules).rule;
 }
 
 // ---------------------------------------------------------------------------
