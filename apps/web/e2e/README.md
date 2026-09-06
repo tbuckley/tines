@@ -140,9 +140,15 @@ otherwise fold the claim into one retrying assertion.
 
 ## Hydration
 
-A click landing before the listeners attach is swallowed. Use `clickUntil` from
-`helpers.ts` (retries the click until the expected state holds) rather than a sleep or a
-bare click.
+A click landing before the listeners attach is swallowed. Two helpers in `helpers.ts`
+cover it:
+
+- `gotoHydrated(page, url)` for a navigation that a click, fill or upload follows: it
+  waits for network idle, which is when SvelteKit has attached its listeners, so the first
+  event is seen. It costs about half a second per call, so a page that is only read stays
+  on a bare `page.goto`.
+- `clickUntil` (retries the click until the expected state holds) as belt-and-braces
+  around a first click, rather than a sleep or a bare click.
 
 ## Geometry
 

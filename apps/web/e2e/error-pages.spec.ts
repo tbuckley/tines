@@ -1,7 +1,7 @@
 import type { Project } from '@tines/shared';
 import { expect, test, type Page } from '@playwright/test';
 import { ALICE } from './constants.mjs';
-import { apiClient, body, runId, signIn } from './helpers';
+import { apiClient, body, gotoHydrated, runId, signIn } from './helpers';
 
 // Every 404 should land on an in-app error page: app chrome intact, a message
 // that names what was missing, and a link back to Issues (Tines/44).
@@ -82,7 +82,7 @@ for (const c of cases) {
 }
 
 test('the error page links back to Issues', async ({ page }) => {
-	await page.goto('/issues/NoSuchProject/1');
+	await gotoHydrated(page, '/issues/NoSuchProject/1');
 	await page.getByRole('link', { name: 'Back to issues' }).click();
 	await expect(page).toHaveURL(/\/issues$/);
 	await expect(page.getByRole('heading', { name: 'Issues' })).toBeVisible();

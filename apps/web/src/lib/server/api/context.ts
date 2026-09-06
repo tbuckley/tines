@@ -24,6 +24,7 @@ import {
 	type CreateContextItemRequest,
 	type DeletedContextItem,
 	type EffectiveContext,
+	type EffectiveJournalTarget,
 	type EffectivePromptPart,
 	type EffectiveRepo,
 	type EffectiveSkill,
@@ -1297,6 +1298,49 @@ function inheritedFrom(row: ItemRow, leafStateId: string): InheritedFrom | null 
 	};
 }
 
+/**
+ * The one journal an issue's runs may write: the `journal` prompt at project ∧
+ * the *root* of the state's inheritance chain (`journalForIssue` resolves the
+ * same state server-side). `rows` are the items already matched for this
+ * issue, so an existing journal costs no extra query; only naming a base state
+ * that has no journal yet needs one.
+ */
+async function journalTarget(
+	db: Kysely<Database>,
+	rows: ItemRow[],
+	target: MatchTarget
+): Promise<EffectiveJournalTarget> {
+	const rootStateId = target.stateChain[0];
+	const leafStateId = target.stateChain[target.stateChain.length - 1];
+	const row = rows.find(
+		(r) => isJournal(r) && r.project_id === target.projectId && r.workflow_state_id === rootStateId
+	);
+	const base = { state_id: rootStateId, item_id: row?.id ?? null, version: row?.version ?? null };
+	// A parentless state is its own root: no provenance to report, and every
+	// surface reading this stays word-for-word what it was before inheritance.
+	if (rootStateId === leafStateId) return { ...base, inherited_from: null };
+	if (row) return { ...base, inherited_from: inheritedFrom(row, leafStateId) };
+	const state = await db
+		.selectFrom('workflow_state')
+		.leftJoin('workflow', 'workflow.id', 'workflow_state.workflow_id')
+		.select([
+			'workflow_state.name as state_name',
+			'workflow_state.workflow_id as workflow_id',
+			'workflow.name as workflow_name'
+		])
+		.where('workflow_state.id', '=', rootStateId)
+		.executeTakeFirst();
+	return {
+		...base,
+		inherited_from: {
+			state_id: rootStateId,
+			state_name: state?.state_name ?? rootStateId,
+			workflow_id: state?.workflow_id ?? '',
+			workflow_name: state?.workflow_name ?? ''
+		}
+	};
+}
+
 /** Scope and provenance for one matched row, qualified when it is inherited. */
 function describeRow(
 	row: ItemRow,
@@ -1423,6 +1467,13 @@ export async function launchStateForRun(
  * `journal` at project ∧ state, where the state is the run's launch state for
  * a run key on this issue and the issue's current state for everyone else.
  *
+ * The journal then follows the *root* of that state's inheritance chain: two
+ * workflows whose stages inherit from one base state share one writable
+ * journal, so a lesson learned in either is pruned and re-read by both. A
+ * state that inherits from nothing is its own root, so this is inert for it.
+ * A legacy journal left on a child keeps stitching into the prompt read-only;
+ * only the root's is handed out.
+ *
  * The decision lives here rather than in the CLI because the run → launch
  * state link (`api_key.agent_run_id` → `agent_run.state_id_at_start`) is only
  * knowable server-side.
@@ -1434,14 +1485,24 @@ export async function journalForIssue(
 ): Promise<IssueJournalResponse> {
 	const target = await issueMatchTarget(db, actor.userId, issueId);
 	const launch = await launchStateForRun(db, actor, issueId);
-	const stateId = launch.stateId ?? target.stateChain[target.stateChain.length - 1];
+	// `target.stateChain` is already the issue's own chain, root first; only a
+	// run anchored to some other launch state needs its chain resolved.
+	const leafStateId = launch.stateId ?? target.stateChain[target.stateChain.length - 1];
+	const stateId = launch.stateId
+		? (await resolveStateChain(db, launch.stateId))[0]
+		: target.stateChain[0];
 	const scope = toContextScope(
 		await resolveScope(db, actor.userId, {
 			projectId: target.projectId,
 			workflowStateId: stateId,
 			labelId: null,
 			issueId: null
-		})
+		}),
+		// The CLI echoes this label back ("appended to the <label> journal"), so
+		// a base state names its workflow the way the stitched heading and the
+		// prompt's "your journal is …" line do: two base states in different
+		// workflows may share a name.
+		{ qualifyState: stateId !== leafStateId }
 	);
 	const row = await contextItemQuery(db, actor.userId)
 		.where('context_item.kind', '=', 'prompt')
@@ -1534,7 +1595,7 @@ export async function effectiveContextForIssue(
 		.map(([dir, item_ids]) => ({ kind: 'repo_dir', dir, item_ids }));
 
 	return {
-		prompt: { text, parts },
+		prompt: { text, parts, journal: await journalTarget(db, rows, target) },
 		skills,
 		repos,
 		overridden: [...skillDedupe.overridden, ...repoDedupe.overridden],
@@ -1784,12 +1845,38 @@ export function issueBlock(
 
 	// The journal affordance sits prompt-final, where recency favors it.
 	lines.push('', '### Journal', '');
-	const journal = context.prompt.parts.find((p) => p.is_journal);
-	if (journal) {
+	// The writable journal follows the root of the state's inheritance chain,
+	// so two workflows sharing a base stage learn in one file. For a state that
+	// inherits from nothing the root is the state itself and every line below is
+	// what it has always been, to the byte.
+	const journal = context.prompt.journal;
+	const from = journal.inherited_from;
+	const baseLabel = from ? `${from.workflow_name || from.workflow_id} / ${from.state_name}` : null;
+	// A journal left on the child — or on a state part-way up a longer chain —
+	// by an earlier run still stitches, because it is knowledge, but writes go
+	// to the root until a merge folds it in. Name those sections exactly as
+	// their headings do: there can be more than one, and the state they belong
+	// to need not be the issue's own.
+	const readOnly = context.prompt.parts
+		.filter((p) => p.is_journal && p.item_id !== journal.item_id)
+		.map((p) => `"Journal (${p.scope.label})"`);
+	const readOnlyLines =
+		readOnly.length === 0
+			? []
+			: [
+					`The ${readOnly.slice(0, -1).join(', ')}${readOnly.length > 1 ? ' and ' : ''}${readOnly[readOnly.length - 1]} section${readOnly.length > 1 ? 's' : ''} above ${readOnly.length > 1 ? 'are' : 'is'} read-only;`,
+					'move anything still worth keeping into your journal with your next append.'
+				];
+	if (journal.item_id !== null) {
 		lines.push(
-			'Your journal for this project and stage is the "Journal" section above',
+			baseLabel
+				? `Your journal for this project and stage is the journal of ${baseLabel}`
+				: 'Your journal for this project and stage is the "Journal" section above',
 			`(currently v${journal.version}).`,
-			'',
+			''
+		);
+		if (readOnlyLines.length > 0) lines.push(...readOnlyLines, '');
+		lines.push(
 			// The run key remembers the stage it was launched in, so the old
 			// append-before-you-move ordering trap no longer exists.
 			"Appends land in this stage's journal even after you move the issue.",
@@ -1801,10 +1888,14 @@ export function issueBlock(
 		);
 	} else {
 		lines.push(
-			`No journal exists yet for project ${issue.project_name} · state ${issue.state.name}. Start one:`,
+			`No journal exists yet for project ${issue.project_name} · state ${baseLabel ?? issue.state.name}. Start one:`,
 			`\`tines journal append ${ref} "- <date>: <lesson>"\``,
 			'(or `-` with a quoted heredoc, as for comments, when the body must not be touched by the shell)'
 		);
+		// The state of the world the day this ships: the children carry their
+		// journals and the new base carries none, so the populated section above
+		// needs explaining here more than anywhere.
+		if (readOnlyLines.length > 0) lines.push('', ...readOnlyLines);
 	}
 
 	// Factual footnotes: this issue's effective artifacts (with the fetch

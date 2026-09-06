@@ -991,12 +991,35 @@ export interface RepoDirConflict {
 	item_ids: string[];
 }
 
+/**
+ * The one journal an issue's runs may write: the `journal` prompt at
+ * project ∧ the *root* of the state's inheritance chain. Two workflows whose
+ * stages inherit from one base state therefore learn and prune in one file
+ * instead of drifting apart. A state that inherits from nothing is its own
+ * root, so nothing about it changes.
+ *
+ * A legacy journal on a state that has since gained a parent keeps stitching
+ * into the prompt — it is knowledge, and dropping it would lose it — but it is
+ * read-only until a merge helper folds it into the root.
+ */
+export interface EffectiveJournalTarget {
+	/** The state whose `project ∧ state` journal is writable. */
+	state_id: string;
+	/** Null when that state is the issue's own; set when it is an ancestor. */
+	inherited_from: InheritedFrom | null;
+	/** The journal item at that scope, or null if none exists yet. */
+	item_id: string | null;
+	version: number | null;
+}
+
 /** `GET /api/v1/issues/:id/context` — the assembled bundle for an issue. */
 export interface EffectiveContext {
 	prompt: {
 		/** The stitched prompt, `## Context: <scope>` headings included. */
 		text: string;
 		parts: EffectivePromptPart[];
+		/** Which journal this issue's runs write — the root of the state chain. */
+		journal: EffectiveJournalTarget;
 	};
 	skills: EffectiveSkill[];
 	repos: EffectiveRepo[];

@@ -3,18 +3,17 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
+import { CLI_BIN, NODE } from './test-bin.js';
 
 const run = promisify(execFile);
 
 const here = dirname(fileURLToPath(import.meta.url));
-const tsx = join(here, '..', 'node_modules', '.bin', 'tsx');
-const entry = join(here, 'index.ts');
 
 const SECRET = 'tines_help-must-never-print-this';
 
-/** Runs the CLI from source through the real bin. */
+/** Runs the built CLI through the real bin. */
 function cli(args: string[], env: NodeJS.ProcessEnv) {
-	return run(tsx, [entry, ...args], {
+	return run(NODE, [CLI_BIN, ...args], {
 		env: { ...process.env, ...env },
 		timeout: 60_000
 	});

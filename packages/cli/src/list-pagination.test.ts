@@ -1,13 +1,9 @@
 import { execFile } from 'node:child_process';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-
-const here = dirname(fileURLToPath(import.meta.url));
-const tsx = join(here, '..', 'node_modules', '.bin', 'tsx');
-const entry = join(here, 'index.ts');
+import { CLI_BIN, NODE } from './test-bin.js';
 
 /** Every list command reachable through withList(), and the route it pages. */
 const LIST_COMMANDS: { argv: string[]; path: string }[] = [
@@ -133,12 +129,12 @@ interface CliResult {
 	stderr: string;
 }
 
-/** Runs the CLI from source against the stub; never rejects, so exit codes can be asserted. */
+/** Runs the built CLI against the stub; never rejects, so exit codes can be asserted. */
 function cli(args: string[]): Promise<CliResult> {
 	return new Promise((resolve) => {
 		const child = execFile(
-			tsx,
-			[entry, ...args],
+			NODE,
+			[CLI_BIN, ...args],
 			{ env: { ...process.env, TINES_API_URL: baseUrl, TINES_API_KEY: 'k' }, timeout: 60_000 },
 			(err, stdout, stderr) => {
 				const code = (err as { code?: number } | null)?.code ?? 0;
