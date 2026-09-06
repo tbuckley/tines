@@ -31,7 +31,13 @@ from run attribution the supervisor already writes — no column stores a round.
   back into that state afterwards ("sent back by Automated Review").
 - **Attribution is by run id, never by the run's issue ref.** A comment or
   artifact version left on this issue by a run working *another* issue appears
-  in the thread but in no round entry.
+  in the thread but in no round entry. The row-level `round_summary` has no run
+  to key on, so it compares the version's `actor_run_issue_id` to the row's id
+  instead — the same rule reached the other way round.
+- **The round reads back at most fifty runs** (`ROUND_RUN_CAP`). The boundary
+  normally bounds it long before that; an issue with more runs than the cap
+  since its last human action reports the newest fifty, and `run_count` counts
+  those.
 - **`since_last_run` measures from the previous run**, the newest run that is no
   longer active — at dispatch the current run's row already exists. It is
   present when a human transitioned the issue or commented after that run ended,
@@ -46,7 +52,10 @@ from run attribution the supervisor already writes — no column stores a round.
   human transition, not from the transition before the human's move: a run
   attaches its artifact *before* it transitions, so a version is never fresh in
   the state the run handed the issue to, and the narrower window is always
-  empty.
+  empty. The consequence is that after a full round the line names every
+  artifact the round produced, which is what `fresh` means after any state
+  change. Freshness is a property of the artifact on this issue, so a version
+  attached by a run working another issue counts here — unlike in `round`.
 - **Row derivation is awaiting-human only.** `arrived_via` and
   `round_boundary_at` are `CASE`-gated subqueries, so active rows and the
   dispatch path's `loadIssue` run neither; `round_summary` is one keyed query

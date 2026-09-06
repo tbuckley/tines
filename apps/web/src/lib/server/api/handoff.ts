@@ -168,11 +168,12 @@ function roundRunOf(
 
 /** The artifacts one run touched, with the version numbers either side. */
 function artifactChangesOf(run: AgentRun, versions: IssueArtifactVersion[]): RoundArtifactChange[] {
-	// Attribution is by run id, never by the run's issue ref: a comment or
-	// version left by a run on *another* issue can never be folded in here.
-	const mine = versions.filter(
-		(v) => v.actor_run_id === run.id && v.actor_run_issue_id === run.issue_id
-	);
+	// Attribution is by run id, never by the run's issue ref: a version left on
+	// this issue by a run working *another* issue carries that run's id, which
+	// is never one of this round's, so it can never be folded in here. (The
+	// row-level summary in `issues.ts` has no run to key on and must compare
+	// `actor_run_issue_id` instead.)
+	const mine = versions.filter((v) => v.actor_run_id === run.id);
 	const byItem = new Map<string, IssueArtifactVersion[]>();
 	for (const v of mine) {
 		const list = byItem.get(v.item_id) ?? [];

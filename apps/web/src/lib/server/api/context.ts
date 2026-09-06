@@ -1769,7 +1769,10 @@ function sinceLastRunLines(since: SinceLastRun, now: number): string[] {
 	}
 	if (since.comment_count > since.comments.length) {
 		const hidden = since.comment_count - since.comments.length;
-		lines.push(`… and ${hidden} earlier comment${hidden === 1 ? '' : 's'} — see ### Comments below.`, '');
+		lines.push(
+			`… and ${hidden} earlier comment${hidden === 1 ? '' : 's'} — see ### Comments below.`,
+			''
+		);
 	}
 	return lines;
 }

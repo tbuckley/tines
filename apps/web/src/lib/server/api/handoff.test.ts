@@ -263,6 +263,10 @@ function seedTines29(): string {
 		at: NOW + 6 * h + 2,
 		files: ['a.png', 'b.png']
 	});
+	// A version attached to this issue by that same other-issue run: the
+	// version half of the attribution guard the stray comment covers.
+	const stray = addArtifact(issueId, 'stray-notes', 'text');
+	addVersion(stray, 1, { apiKeyId: otherKey, at: NOW + 5 * h + 5 });
 	return issueId;
 }
 
@@ -289,6 +293,65 @@ describe('round', () => {
 		expect(impl.runs[1].returned_via?.action).toBe('Review failed');
 		expect(impl.runs[1].returned_via?.from_state.name).toBe('Automated Review');
 		expect(impl.runs[0].returned_via).toBeNull();
+	});
+
+	it('folds in neither the comment nor the artifact version of a run working another issue', async () => {
+		const issueId = seedTines29();
+		const detail = await getIssueDetail(t.db, USER, { id: issueId }, { round: true });
+		const entries = detail.round!.stages.flatMap((s) => s.runs);
+		expect(entries.map((r) => r.run_id)).not.toContain('arun_other');
+		expect(entries.flatMap((r) => r.artifacts.map((a) => a.name))).not.toContain('stray-notes');
+		expect(entries.flatMap((r) => r.earlier_comment_ids)).not.toContain('cmt_stray');
+		expect(entries.map((r) => r.summary_comment?.id)).not.toContain('cmt_stray');
+		// The row summary applies the same guard by issue id.
+		const { items } = await listIssues(t.db, USER, {}, { limit: 20, cursor: null });
+		expect(
+			items.find((i) => i.id === issueId)!.round_summary?.artifacts.map((a) => a.name)
+		).not.toContain('stray-notes');
+	});
+
+	it('sorts stages by workflow position, not by when the round first reached them', async () => {
+		// A round that moves *backwards*: Implementation → Automated Review →
+		// Design → Human Review. First-seen order is Implementation, Automated
+		// Review, Design — so only a position sort produces workflow order.
+		const issueId = addIssue(t, { workflow: 'wf_eng', state: ENG_STATES.humanReview });
+		const h = 3_600_000;
+		finishedRun({
+			id: 'arun_i',
+			issueId,
+			from: ENG_STATES.impl,
+			to: ENG_STATES.autoReview,
+			action: 'Submit for automated review',
+			fromName: 'Implementation',
+			toName: 'Automated Review',
+			at: NOW + h
+		});
+		finishedRun({
+			id: 'arun_ar',
+			issueId,
+			from: ENG_STATES.autoReview,
+			to: ENG_STATES.design,
+			action: 'Design unworkable',
+			fromName: 'Automated Review',
+			toName: 'Design',
+			at: NOW + 2 * h
+		});
+		finishedRun({
+			id: 'arun_d',
+			issueId,
+			from: ENG_STATES.design,
+			to: ENG_STATES.humanReview,
+			action: 'Design complete',
+			fromName: 'Design',
+			toName: 'Human Review',
+			at: NOW + 3 * h
+		});
+		const detail = await getIssueDetail(t.db, USER, { id: issueId }, { round: true });
+		expect(detail.round!.stages.map((s) => s.state.name)).toEqual([
+			'Design',
+			'Implementation',
+			'Automated Review'
+		]);
 	});
 
 	it('carries each run its summary comment, folded earlier ids and artifact versions', async () => {
@@ -475,7 +538,15 @@ describe('since_last_run', () => {
 		expect(since.comments.map((c) => c.id)).toEqual(['cmt_human']);
 		expect(since.comment_count).toBe(1);
 		// Everything the round produced is stale now that the issue has moved.
-		expect(since.stale_artifacts).toEqual(['impl-pr', 'review-notes', 'screenshots']);
+		// Freshness is a property of the artifact on this issue, so the version a
+		// run working another issue attached counts here — unlike in `round`,
+		// which reports what *this* issue's runs produced.
+		expect(since.stale_artifacts).toEqual([
+			'impl-pr',
+			'review-notes',
+			'screenshots',
+			'stray-notes'
+		]);
 	});
 
 	it('is null when nothing human happened after the previous run', async () => {

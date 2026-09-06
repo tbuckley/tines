@@ -457,16 +457,26 @@ describe('issueBlock', () => {
 			updated_at: null
 		};
 		const since = {
-			previous_run: { run_id: 'arun_1', ended_at: at - 3600_000, state_at_start_name: 'Implementation' },
+			previous_run: {
+				run_id: 'arun_1',
+				ended_at: at - 3600_000,
+				state_at_start_name: 'Implementation'
+			},
 			transition: null,
 			comments: Array.from({ length: 10 }, (_, i) => ({ ...comment, id: `cmt_${i}` })),
 			stale_artifacts: []
 		};
 		// The cap is ten, so an eleventh comment hides exactly one — the common
 		// shape, and the one the hardcoded plural got wrong in agent-facing text.
-		const capped = issueBlock({ ...issue, since_last_run: { ...since, comment_count: 11 } }, emptyContext);
+		const capped = issueBlock(
+			{ ...issue, since_last_run: { ...since, comment_count: 11 } },
+			emptyContext
+		);
 		expect(capped).toContain('… and 1 earlier comment — see ### Comments below.');
-		const two = issueBlock({ ...issue, since_last_run: { ...since, comment_count: 12 } }, emptyContext);
+		const two = issueBlock(
+			{ ...issue, since_last_run: { ...since, comment_count: 12 } },
+			emptyContext
+		);
 		expect(two).toContain('… and 2 earlier comments — see ### Comments below.');
 	});
 

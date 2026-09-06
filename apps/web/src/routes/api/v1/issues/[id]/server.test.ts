@@ -98,6 +98,10 @@ function seedSteeredIssue(t: TestDb): string {
 	return issueId;
 }
 
+/**
+ * The slice of a `RequestEvent` these handlers touch. Cast at the call site so
+ * one helper can drive routes whose `RouteParams` differ.
+ */
 function routeEvent(t: TestDb, path: string, params: Record<string, string>) {
 	const url = new URL(`http://test${path}`);
 	return {
@@ -106,14 +110,16 @@ function routeEvent(t: TestDb, path: string, params: Record<string, string>) {
 		request: new Request(url),
 		params,
 		url
-	} as unknown as Parameters<typeof getIssue>[0];
+	} as unknown;
 }
 
 describe('the issue read routes', () => {
 	it('asks for the handoff on GET /issues/:id', async () => {
 		const t = createTestDb();
 		const issueId = seedSteeredIssue(t);
-		const res = await getIssue(routeEvent(t, `/api/v1/issues/${issueId}`, { id: issueId }));
+		const res = await getIssue(
+			routeEvent(t, `/api/v1/issues/${issueId}`, { id: issueId }) as Parameters<typeof getIssue>[0]
+		);
 		const body = (await res.json()) as IssueDetail;
 		// The keys exist at all only because the route opted in.
 		expect('round' in body).toBe(true);
@@ -131,7 +137,7 @@ describe('the issue read routes', () => {
 			routeEvent(t, `/api/v1/projects/${PROJECT}/issues/${number.number}`, {
 				id: PROJECT,
 				number: String(number.number)
-			})
+			}) as Parameters<typeof getByRef>[0]
 		);
 		const body = (await res.json()) as IssueDetail;
 		expect('round' in body).toBe(true);
@@ -145,7 +151,7 @@ describe('the issue read routes', () => {
 		const res = await getPrompt(
 			routeEvent(t, `/api/v1/issues/${issueId}/prompt`, {
 				id: issueId
-			}) as unknown as Parameters<typeof getPrompt>[0]
+			}) as Parameters<typeof getPrompt>[0]
 		);
 		const body = (await res.json()) as LaunchPromptResponse;
 		expect(body.text).toContain('### Since the last run');
