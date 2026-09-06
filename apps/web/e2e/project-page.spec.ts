@@ -1,7 +1,13 @@
 import type { CreateIssueResponse, Project, WorkflowResponse } from '@tines/shared';
 import { expect, test, type Page } from '@playwright/test';
 import { ALICE } from './constants.mjs';
-import { apiClient, body, runId, signIn } from './helpers';
+import { apiClient, body, resetFocus, runId, signIn } from './helpers';
+
+// Specs share one user: a project page sets the focus (Tines/259), so clear it
+// before each test rather than letting it scope a later spec's lists.
+test.beforeEach(async ({ request }) => {
+	await resetFocus(request);
+});
 
 /**
  * The project page's reading order (Tines/146): issues lead, and the

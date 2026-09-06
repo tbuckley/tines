@@ -14,7 +14,7 @@ import type {
 } from '@tines/shared';
 import { expect, test } from '@playwright/test';
 import { ALICE, RUNROW } from './constants.mjs';
-import { apiClient, body, errorBody, runId, signIn } from './helpers';
+import { apiClient, body, errorBody, resetFocus, runId, signIn } from './helpers';
 
 const PHONE = { width: 390, height: 844 };
 const DESKTOP = { width: 1280, height: 900 };
@@ -86,8 +86,10 @@ test.describe.serial('issue labels UI', () => {
 		await request.dispose();
 	});
 
-	test.beforeEach(async ({ context }) => {
+	test.beforeEach(async ({ context, request }) => {
 		await signIn(context, ALICE.sessionToken);
+		// Specs share one user: a focus left behind would scope this one's lists.
+		await resetFocus(request);
 	});
 
 	test('list rows carry chips and the filter narrows to them', async ({ page }) => {

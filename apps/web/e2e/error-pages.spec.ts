@@ -1,7 +1,7 @@
 import type { Project } from '@tines/shared';
 import { expect, test, type Page } from '@playwright/test';
 import { ALICE } from './constants.mjs';
-import { apiClient, body, runId, signIn } from './helpers';
+import { apiClient, body, resetFocus, runId, signIn } from './helpers';
 
 // Every 404 should land on an in-app error page: app chrome intact, a message
 // that names what was missing, and a link back to Issues (Tines/44).
@@ -18,8 +18,10 @@ test.beforeAll(async ({ playwright }) => {
 	await request.dispose();
 });
 
-test.beforeEach(async ({ context }) => {
+test.beforeEach(async ({ context, request }) => {
 	await signIn(context, ALICE.sessionToken);
+	// Specs share one user: a focus left behind would scope this one's lists.
+	await resetFocus(request);
 });
 
 /**

@@ -1,6 +1,6 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import { ALICE } from './constants.mjs';
-import { clickUntil, readSettled, signIn } from './helpers';
+import { clickUntil, readSettled, resetFocus, signIn } from './helpers';
 
 /**
  * The settings chrome: one tab row shared by the four settings pages, reached
@@ -22,8 +22,10 @@ const PATHS = [
 	'/settings/export-import'
 ];
 
-test.beforeEach(async ({ context }) => {
+test.beforeEach(async ({ context, request }) => {
 	await signIn(context, ALICE.sessionToken);
+	// Specs share one user: a focus left behind would scope this one's lists.
+	await resetFocus(request);
 });
 
 /** The settings tab row; scoped by name because its links share names with page headings. */

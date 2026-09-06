@@ -1,7 +1,11 @@
 import { createHmac } from 'node:crypto';
 import { expect } from '@playwright/test';
 import type { APIRequestContext, APIResponse, BrowserContext, Locator } from '@playwright/test';
-import { AUTH_SECRET, BASE_URL } from './constants.mjs';
+import { ALICE, AUTH_SECRET, BASE_URL } from './constants.mjs';
+
+/** The two viewports the suite asserts at: a phone and a laptop. */
+export const PHONE = { width: 390, height: 844 };
+export const DESKTOP = { width: 1440, height: 900 };
 
 /**
  * Better Auth session cookies are `<token>.<base64 HMAC-SHA256(token)>`,
@@ -142,4 +146,19 @@ export async function readSettled<T>(
 	if (opts.bestEffort) await attempt.catch(() => {});
 	else await attempt;
 	return settled;
+}
+
+/**
+ * Clears Alice's project focus (Tines/259). Every spec that loads a list runs
+ * this first: the suite shares one user with `workers: 1`, so a focus left
+ * behind by one spec would silently scope another spec's `/issues`.
+ *
+ * A PAT is enough — `/preferences` is fenced from run keys, not from PATs.
+ */
+export async function resetFocus(request: APIRequestContext): Promise<void> {
+	const res = await apiClient(request, ALICE.apiKey).patch('/api/v1/preferences', {
+		focused_project_id: null,
+		last_project_id: null
+	});
+	expect(res.ok(), await describeFailure(res)).toBe(true);
 }

@@ -1,7 +1,7 @@
 import type { IssueDetail, Project } from '@tines/shared';
 import { expect, test, type Page } from '@playwright/test';
 import { ALICE } from './constants.mjs';
-import { apiClient, body, runId, signIn } from './helpers';
+import { apiClient, body, resetFocus, runId, signIn } from './helpers';
 
 /**
  * A title with a long unbroken run of characters — a pasted URL is enough
@@ -49,8 +49,10 @@ test.beforeAll(async ({ playwright }) => {
 	await request.dispose();
 });
 
-test.beforeEach(async ({ context }) => {
+test.beforeEach(async ({ context, request }) => {
 	await signIn(context, ALICE.sessionToken);
+	// Specs share one user: a focus left behind would scope this one's lists.
+	await resetFocus(request);
 });
 
 const issueUrl = (issue: IssueDetail) =>
