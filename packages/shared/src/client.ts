@@ -46,6 +46,7 @@ import type {
 	DispatchExplainer,
 	EffectiveContext,
 	EventFilters,
+	FleetQueue,
 	LaunchPromptResponse,
 	IssueDetail,
 	IssueFilters,
@@ -511,6 +512,7 @@ export function createApiClient(options: ApiClientOptions) {
 
 		// Supervisor settings
 		getSupervisorSettings: () => get<SupervisorSettings>('/api/v1/supervisor/settings'),
+		getSupervisorQueue: () => get<FleetQueue>('/api/v1/supervisor/queue'),
 		updateSupervisorSettings: (body: UpdateSupervisorSettingsRequest) =>
 			request<SupervisorSettingsResponse>('PUT', '/api/v1/supervisor/settings', body),
 
