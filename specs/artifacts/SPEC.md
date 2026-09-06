@@ -438,6 +438,13 @@ User-uploaded bytes served from our origin are an XSS surface. Downloads
   regardless of the flag. Markdown previews in the UI render through the
   existing micromark component (which escapes raw HTML), never via inline
   serving.
+- `application/json` is deliberately **not** on the allowlist: a `.json`
+  artifact uploads and downloads byte-identically but is always served as an
+  attachment. Mirroring that, the upload endpoint's "this endpoint does not
+  take JSON" 422 fires only when `?filename=` is absent — the filename is
+  what distinguishes an upload from a client that meant the JSON upsert, so
+  a named `.json` file is a file like any other, and the CLI's sniff table
+  keeps mapping `.json` to `application/json`.
 - Folder versions are addressed per file: `…/content?path=<workspace path>`,
   each file under the same header rules (disposition filename = the path's
   basename). A folder `…/content` request without `path` is a 422
@@ -455,7 +462,7 @@ ergonomics; run keys are allowed everywhere here.
 | `GET /api/v1/issues/:id/artifacts` | List: each artifact with type, description, current version summary, version count, `fresh` flag. |
 | `GET /api/v1/issues/:id/artifacts/:name` | Detail: the artifact plus its full version list (metadata only, no contents). |
 | `PUT /api/v1/issues/:id/artifacts/:name` | **JSON upsert** for `text` / `link` / `pr`: creates the artifact (body declares `type`) or appends a version to it. Payload fields per type; `description` settable alongside. Type mismatch with an existing artifact → 422 `artifact_type_mismatch`. A body with no payload fields is a metadata-only update (no version). |
-| `PUT /api/v1/issues/:id/artifacts/:name/file?filename=…` | **Raw-body upload** for `file`: bytes in the body, MIME in `Content-Type`, creates or appends. Same upsert/type-mismatch semantics. |
+| `PUT /api/v1/issues/:id/artifacts/:name/file?filename=…` | **Raw-body upload** for `file`: bytes in the body, MIME in `Content-Type`, creates or appends. Same upsert/type-mismatch semantics. `filename` is required, and its absence is also what identifies a client that meant the JSON upsert: no filename plus an `application/json` body is a 422 naming that mistake, while a named upload takes any MIME type including `application/json`. |
 | `PUT /api/v1/issues/:id/artifacts/:name/folder` | **Multipart snapshot upload** for `folder`: one part per file (path as the part filename, MIME as the part type), creates the artifact or appends the next whole-set version. Same upsert/type-mismatch semantics. |
 | `POST /api/v1/issues/:id/artifacts/:name/reaffirm` | Append a reaffirming version: copies the current version's payload (same R2 object for files) with a fresh timestamp and the calling actor. 404 if the artifact doesn't exist. |
 | `GET /api/v1/issues/:id/artifacts/:name/content` | Bytes of the current version (`?version=N` for history; `?inline=1` per the serving rules; `?path=…` selects a folder entry — required for folders). `file`/`folder` stream from R2, `text` from D1; `link`/`pr` → 422 `no_content` (the reference *is* the payload). |

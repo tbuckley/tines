@@ -76,9 +76,7 @@ describe('PUT /api/v1/issues/:id/artifacts/:name/file', () => {
 		const content = await artifactContentResponse(t.db, t.env, actor.userId, issue.id, 'report');
 		expect(await content.text()).toBe(payload);
 		// JSON is not on the inline allowlist: it is served as a download.
-		expect(content.headers.get('content-disposition')).toBe(
-			'attachment; filename="report.json"'
-		);
+		expect(content.headers.get('content-disposition')).toBe('attachment; filename="report.json"');
 	});
 
 	it('refuses a JSON body with no filename, naming the JSON mistake', async () => {
