@@ -2119,6 +2119,86 @@ export interface DispatchExplainer {
 }
 
 // ---------------------------------------------------------------------------
+// Fleet queue: the Now row — every eligible issue with no active run, grouped
+// by why it is waiting (Tines/256).
+
+/**
+ * Why an eligible issue is waiting. The target verdicts, plus the routing and
+ * eligibility failures a per-runner verdict cannot express (an issue with no
+ * matching rule has no target to carry a verdict at all).
+ */
+export type QueueVerdict =
+	| DispatchTargetVerdict
+	| 'no_rule'
+	| 'ambiguous_rule'
+	| 'no_targets'
+	| 'pin_missing'
+	| 'automation_off'
+	| 'parked';
+
+/** Which limit is binding, for the capacity and quota verdicts; null for the rest. */
+export type QueueBinding =
+	| {
+			kind: 'max_concurrent';
+			runner_id: string;
+			runner_name: string;
+			current: number;
+			limit: number;
+	  }
+	| { kind: 'global_cap'; current: number; limit: number }
+	| { kind: 'state_roster'; state_id: string; current: number; limit: number; overridden: boolean };
+
+export interface QueueIssueRef {
+	id: string;
+	project_name: string;
+	number: number;
+	title: string;
+	/** `COALESCE(state_entered_at, created_at)` — the wait clock. */
+	entered_at: number;
+	/** Position in the dispatch queue, matching the explainer; null when unrouted or parked. */
+	queue_position: number | null;
+}
+
+/** One `{state, verdict, runner}` bucket of the Now row. */
+export interface QueueGroup {
+	state_id: string;
+	state_name: string;
+	workflow_id: string;
+	workflow_name: string;
+	verdict: QueueVerdict;
+	/** The speaking target's verdict detail, or the routing failure sentence. */
+	detail: string;
+	runner_id: string | null;
+	runner_name: string | null;
+	/** The matched rule, for the "no targets" remedy and rule-row annotations. */
+	rule_id: string | null;
+	/** The tied rules, for `ambiguous_rule`; empty otherwise. */
+	ambiguous_rule_ids: string[];
+	binding: QueueBinding | null;
+	count: number;
+	oldest_entered_at: number;
+	/** Refs in dispatch order, capped at `QUEUE_GROUP_REF_LIMIT`; `count` is authoritative. */
+	issues: QueueIssueRef[];
+}
+
+/** How many issue refs a group carries; the count is always the full size. */
+export const QUEUE_GROUP_REF_LIMIT = 10;
+
+/** `GET /api/v1/supervisor/queue` — the fleet's waiting work. */
+export interface FleetQueue {
+	generated_at: number;
+	automation_enabled: boolean;
+	quota: QuotaPolicy;
+	/** Sorted count desc, then oldest first. */
+	groups: QueueGroup[];
+	/** Sum of the group counts; excludes parked and awaiting-human. */
+	waiting: number;
+	parked: { count: number; oldest_entered_at: number | null; issues: QueueIssueRef[] };
+	/** Human stages get a summary line only — no table (Tines/256 scope). */
+	awaiting_human: { count: number; oldest_entered_at: number | null };
+}
+
+// ---------------------------------------------------------------------------
 // Comments
 
 export interface Comment {
