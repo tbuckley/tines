@@ -2,6 +2,7 @@ import {
 	renderTemplate,
 	templateVars,
 	type AllowedTransition,
+	type ArchivedFilter,
 	type ArtifactRequirementCheck,
 	type Comment,
 	type CreateCommentRequest,
@@ -253,6 +254,12 @@ export interface IssueListFilters {
 	labels?: string[];
 	/** Omit `description` from every item — the bulk of a list payload. */
 	brief?: boolean;
+	/**
+	 * Archived projects' issues, when no project is named: `'false'` (the
+	 * default) hides them, `'true'` shows only them, `'all'` shows both. A
+	 * named project is listed whatever its state.
+	 */
+	archived?: ArchivedFilter;
 }
 
 /**
@@ -263,6 +270,12 @@ type IssueQuery = ReturnType<typeof issueQuery>;
 
 function applyScopeFilters(q: IssueQuery, userId: string, filters: IssueListFilters): IssueQuery {
 	if (filters.projectId) q = q.where('issue.project_id', '=', filters.projectId);
+	// An explicitly named project is listed whatever its state; without one,
+	// archived projects drop out of every list by default.
+	if (!filters.projectId && !filters.project) {
+		if ((filters.archived ?? 'false') === 'false') q = q.where('project.archived_at', 'is', null);
+		else if (filters.archived === 'true') q = q.where('project.archived_at', 'is not', null);
+	}
 	if (filters.project) {
 		const p = filters.project;
 		q = q.where((eb) => eb.or([eb('project.id', '=', p), eb('project.name', '=', p)]));

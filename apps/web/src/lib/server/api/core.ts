@@ -1,5 +1,5 @@
 import type { D1Result } from '@cloudflare/workers-types';
-import type { ApiErrorBody } from '@tines/shared';
+import type { ApiErrorBody, ArchivedFilter } from '@tines/shared';
 import { json, type RequestEvent } from '@sveltejs/kit';
 import type { CompiledQuery } from 'kysely';
 import { sha256Hex } from '$lib/server/crypto';
@@ -322,6 +322,19 @@ export async function apiContext(event: RequestEvent, { sessionOnly = false } = 
 	if (!event.platform) throw new ApiFail(500, 'no_platform', 'Platform bindings unavailable');
 	const actor = sessionOnly ? await requireSessionActor(event) : await requireActor(event);
 	return { db: getDb(event.platform.env), env: event.platform.env, actor };
+}
+
+/**
+ * `?archived=` on the four lists that hide archived projects by default.
+ * Absent means `'false'` — the default every list shares.
+ */
+export function readArchived(params: URLSearchParams): ArchivedFilter {
+	const raw = params.get('archived');
+	if (raw === null || raw === '') return 'false';
+	if (raw === 'true' || raw === 'false' || raw === 'all') return raw;
+	throw new ApiFail(422, 'invalid_field', '"archived" must be one of true, false, all', {
+		field: 'archived'
+	});
 }
 
 // ---------------------------------------------------------------------------

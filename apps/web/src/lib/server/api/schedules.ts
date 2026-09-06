@@ -5,6 +5,7 @@ import {
 	ScheduleInputError,
 	validateScheduleCron,
 	validateTimezone,
+	type ArchivedFilter,
 	type CreateScheduleInput,
 	type Schedule,
 	type SchedulePreset,
@@ -248,6 +249,8 @@ export interface ScheduleListFilters {
 	enabled?: boolean;
 	/** Restrict to one project id (the nested per-project route). */
 	projectId?: string;
+	/** Archived projects' schedules, when no project is named; default `'false'`. */
+	archived?: ArchivedFilter;
 }
 
 export async function listSchedules(
@@ -264,6 +267,12 @@ export async function listSchedules(
 	}
 	if (filters.enabled !== undefined) {
 		q = q.where('scheduled_task.enabled', '=', filters.enabled ? 1 : 0);
+	}
+	// A named project lists its schedules whatever its state; without one,
+	// archived projects drop out by default.
+	if (!filters.projectId && !filters.project) {
+		if ((filters.archived ?? 'false') === 'false') q = q.where('project.archived_at', 'is', null);
+		else if (filters.archived === 'true') q = q.where('project.archived_at', 'is not', null);
 	}
 	if (page.cursor) {
 		const { createdAt, id } = page.cursor;

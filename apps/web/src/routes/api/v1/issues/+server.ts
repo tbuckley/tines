@@ -1,6 +1,6 @@
 import { json } from '@sveltejs/kit';
 import type { IssueListItem, ListResponse } from '@tines/shared';
-import { api, apiContext, encodeCursor, readPage } from '$lib/server/api/core';
+import { api, apiContext, encodeCursor, readArchived, readPage } from '$lib/server/api/core';
 import { listIssues } from '$lib/server/api/issues';
 import type { RequestHandler } from './$types';
 
@@ -23,7 +23,8 @@ export const GET: RequestHandler = api(async (event) => {
 			q: params.get('q') ?? undefined,
 			labels: params.getAll('label'),
 			// brief=1 omits description bodies, which are most of the payload.
-			brief: ['1', 'true'].includes(params.get('brief') ?? '')
+			brief: ['1', 'true'].includes(params.get('brief') ?? ''),
+			archived: readArchived(params)
 		},
 		page
 	);

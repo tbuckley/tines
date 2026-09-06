@@ -11,6 +11,7 @@ import {
 	SKILL_MAX_TOTAL_BYTES,
 	SKILL_NAME_PATTERN,
 	type AppendContextRequest,
+	type ArchivedFilter,
 	type Artifact,
 	type ArtifactRequirementCheck,
 	type ArtifactType,
@@ -337,6 +338,12 @@ export interface ContextItemFilters {
 	q?: string;
 	/** Restrict to items whose scope sets only the given dimensions. */
 	exact?: boolean;
+	/**
+	 * Items anchored on an archived project, when no project is named:
+	 * `'false'` (the default) hides them, `'true'` shows only them. Global and
+	 * state-scoped items are anchored on no project and always show.
+	 */
+	archived?: ArchivedFilter;
 }
 
 /**
@@ -381,6 +388,22 @@ export async function listContextItems(
 		q = q.where('context_item.issue_id', '=', filters.issue);
 	} else if (filters.exact) {
 		q = q.where('context_item.issue_id', 'is', null);
+	}
+	// An item is "archived" when either anchor — its own project scope or the
+	// project of its scoped issue — is archived. A named project overrides.
+	if (!filters.project) {
+		if ((filters.archived ?? 'false') === 'false') {
+			q = q
+				.where('scope_project.archived_at', 'is', null)
+				.where('issue_project.archived_at', 'is', null);
+		} else if (filters.archived === 'true') {
+			q = q.where((eb) =>
+				eb.or([
+					eb('scope_project.archived_at', 'is not', null),
+					eb('issue_project.archived_at', 'is not', null)
+				])
+			);
+		}
 	}
 	if (filters.q) {
 		// Plain substring search; % and _ act as wildcards, which is harmless
@@ -767,6 +790,8 @@ export async function updateContextItem(
 	}
 	const scope =
 		scopeTouched || scopeChanged ? await resolveScope(db, actor.userId, targetIds) : currentScope;
+	// Moving an item *into* an archived project is a write on that project too.
+	if (scopeChanged) await assertScopeWritable(db, actor, scope);
 
 	if (name !== row.name || scopeChanged) {
 		await assertNameAvailable(db, actor.userId, kind, name, targetIds, id);

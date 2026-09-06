@@ -565,6 +565,8 @@ export interface ScheduleFilters {
 	/** Project id or name. */
 	project?: string;
 	enabled?: boolean;
+	/** Without a project filter, archived projects' schedules are hidden by default. */
+	archived?: ArchivedFilter;
 }
 
 export interface UpdateIssueRequest {
@@ -614,6 +616,8 @@ export interface IssueFilters {
 	label?: string[];
 	/** Omit `description` from every list item (saves tokens when scanning). */
 	brief?: boolean;
+	/** Without a project filter, archived projects' issues are hidden by default. */
+	archived?: ArchivedFilter;
 }
 
 // ---------------------------------------------------------------------------
@@ -779,6 +783,8 @@ export interface ContextListFilters {
 	/** Name/description search. */
 	q?: string;
 	exact?: boolean;
+	/** Without a project filter, items scoped to archived projects are hidden by default. */
+	archived?: ArchivedFilter;
 }
 
 /** One stitched-prompt part, in layer order. */
