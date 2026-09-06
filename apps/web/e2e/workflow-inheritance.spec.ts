@@ -222,11 +222,11 @@ test('removing a base offers to clear the pointers that name it', async ({ page 
 
 	// The base holds the instructions item, so consent for the sweep is asked
 	// before consent for the pointers — both guards fire on this one save.
-	const sweep = page.getByRole('dialog', { name: 'Delete attached context too?' });
+	const sweep = page.getByRole('alertdialog', { name: 'Delete attached context too?' });
 	await expect(sweep).toContainText('instructions');
 	await sweep.getByRole('button', { name: 'Delete them' }).click();
 
-	const dialog = page.getByRole('dialog', { name: 'Clear inheritance pointers too?' });
+	const dialog = page.getByRole('alertdialog', { name: 'Clear inheritance pointers too?' });
 	await expect(dialog).toContainText(`${ENG} / Merging`);
 	await expect(dialog).toContainText(`${DOCS} / Merging`);
 	await dialog.getByRole('button', { name: 'Clear and continue' }).click();
