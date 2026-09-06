@@ -3,6 +3,7 @@
 	import IconArrowRight from '@tabler/icons-svelte/icons/arrow-right';
 	import ContextScopeChips from '$lib/components/ContextScopeChips.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
+	import { queueAge } from '$lib/format';
 
 	/**
 	 * The one routing-rule row, shared by every surface that lists rules (the
@@ -16,6 +17,7 @@
 		rule,
 		activeStateIds,
 		projectArchived = false,
+		waiting,
 		onedit,
 		ondelete
 	}: {
@@ -28,6 +30,12 @@
 		activeStateIds: Set<string>;
 		/** The rule is scoped to a project that is archived — kept, editable, never matching. */
 		projectArchived?: boolean;
+		/**
+		 * Eligible issues this rule matches that are waiting for an agent, from
+		 * the Now row's queue (Tines/256). Omitted → nothing renders, so the
+		 * read-only surfaces are unaffected.
+		 */
+		waiting?: { count: number; oldest: number; href: string };
 		/** Omitted → read-only row (no Edit button). */
 		onedit?: (rule: RoutingRuleWithWarnings) => void;
 		/** Omitted → read-only row (no Delete button). */
@@ -73,6 +81,17 @@
 
 <li class="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3 text-sm">
 	<ContextScopeChips scope={rule.scope} />
+	{#if waiting}
+		<a
+			class="rounded-full bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-400"
+			href={waiting.href}
+			title="{waiting.count} eligible {waiting.count === 1
+				? 'issue matches'
+				: 'issues match'} this rule and are waiting for an agent"
+		>
+			{waiting.count} waiting · oldest {queueAge(waiting.oldest)}
+		</a>
+	{/if}
 	{#if dead}
 		<span
 			class="rounded-full bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-400"
