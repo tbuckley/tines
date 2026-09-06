@@ -5,6 +5,7 @@
 	import PendingButton from '$lib/components/PendingButton.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { queueAge, relativeTime } from '$lib/format';
+	import { waitingCountsByState } from '$lib/queue';
 
 	/**
 	 * The Now row (Tines/256): every eligible issue with no active run, grouped
@@ -239,9 +240,10 @@
 										variant="ghost"
 										onclick={() =>
 											onswitchtoroster(
-												// Waiting counts per state; the page adds the runs already
-												// active in each state, which only it has to hand.
-												Object.fromEntries(queue.groups.map((g) => [g.state_id, g.count]))
+												// Waiting counts per state, summed across the groups that
+												// share one (a state can appear in several); the page adds
+												// the runs already active in each, which only it has to hand.
+												waitingCountsByState(queue.groups)
 											)}
 									>
 										Switch to per-state roster

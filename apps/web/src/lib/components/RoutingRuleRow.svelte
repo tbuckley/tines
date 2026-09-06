@@ -33,9 +33,10 @@
 		/**
 		 * Eligible issues this rule matches that are waiting for an agent, from
 		 * the Now row's queue (Tines/256). Omitted → nothing renders, so the
-		 * read-only surfaces are unaffected.
+		 * read-only surfaces are unaffected. `now` is the queue's own clock, so
+		 * the age here and the Now row's cannot drift on a page left open.
 		 */
-		waiting?: { count: number; oldest: number; href: string };
+		waiting?: { count: number; oldest: number; href: string; now: number };
 		/** Omitted → read-only row (no Edit button). */
 		onedit?: (rule: RoutingRuleWithWarnings) => void;
 		/** Omitted → read-only row (no Delete button). */
@@ -89,7 +90,7 @@
 				? 'issue matches'
 				: 'issues match'} this rule and are waiting for an agent"
 		>
-			{waiting.count} waiting · oldest {queueAge(waiting.oldest)}
+			{waiting.count} waiting · oldest {queueAge(waiting.oldest, waiting.now)}
 		</a>
 	{/if}
 	{#if dead}

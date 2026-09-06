@@ -82,22 +82,33 @@ export function queueHeadline(block: QueueBlock): string {
 	}
 }
 
-/** The one command or knob that unblocks a block; null when nothing to do but wait. */
+/**
+ * The one command or knob that unblocks a block; null when nothing to do but
+ * wait.
+ *
+ * Every `tines …` here has to be a command that actually exists and actually
+ * takes the flags named — an operator pastes these. `queue-fix.test.ts` walks
+ * the real command tree and fails on any citation that does not resolve, so a
+ * renamed subcommand or dropped flag reds here rather than printing a help
+ * dump at whoever is trying to unblock their fleet.
+ */
 export function queueFix(block: QueueBlock): string | null {
 	const runner = block.runnerName ?? 'the routed runner';
 	switch (block.verdict) {
 		case 'at_capacity':
-			return `raise max_concurrent on ${runner} (tines runner update ${runner} --max-concurrent N), or the quota policy`;
+			// No CLI command sets a runner's server-side max_concurrent: the daemon's
+			// flag rides along on every poll, so restarting it is the CLI remedy.
+			return `raise the cap on ${runner} — restart its daemon with tines runner daemon --max-concurrent N, or edit the runner on the Agents page`;
 		case 'quota_exhausted':
 			return block.binding?.kind === 'state_roster'
-				? 'raise the roster limit for that state — tines supervisor quota state <state> <n>'
-				: 'raise the cap — tines supervisor quota global <n> — or switch to a per-state roster';
+				? 'raise the roster limit — tines supervisor quota roster --default <n> --state <workflow>/<state>=<n> (this replaces the whole roster, so restate every override you keep)'
+				: 'raise the cap — tines supervisor quota global <n> — or switch to a per-state roster with tines supervisor quota roster';
 		case 'offline':
 			return `start the daemon on that machine — tines runner daemon`;
 		case 'paused':
-			return `tines runner resume ${runner}`;
+			return `tines runners resume ${runner}`;
 		case 'no_rule':
-			return 'add a routing rule for that state — tines routing set <runner> --state <state>';
+			return 'add a routing rule for that state — tines routing set <runner> --state <workflow>/<state>';
 		case 'no_targets':
 		case 'ambiguous_rule':
 			return 'tines routing list, then edit the rule';

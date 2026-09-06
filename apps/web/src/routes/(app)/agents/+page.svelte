@@ -75,7 +75,7 @@
 	});
 
 	/** "N waiting" annotations (Tines/256 Part 3), joined on the queue groups. */
-	type Waiting = { count: number; oldest: number; href: string };
+	type Waiting = { count: number; oldest: number; href: string; now: number };
 	function tally(
 		entries: Iterable<[string, { count: number; oldest_entered_at: number; href: string }]>
 	): Map<string, Waiting> {
@@ -86,7 +86,15 @@
 				seen.count += g.count;
 				seen.oldest = Math.min(seen.oldest, g.oldest_entered_at);
 			} else {
-				out.set(key, { count: g.count, oldest: g.oldest_entered_at, href: g.href });
+				// The queue's own clock rides with the count, so an annotation and
+				// the Now row group it links to cannot drift apart on a page left
+				// open — the whole reason `queueAge` is shared.
+				out.set(key, {
+					count: g.count,
+					oldest: g.oldest_entered_at,
+					href: g.href,
+					now: data.queue.generated_at
+				});
 			}
 		}
 		return out;
@@ -815,6 +823,7 @@
 <FleetQueuePanel
 	queue={data.queue}
 	runners={data.runners}
+	now={data.queue.generated_at}
 	onraisecap={(runner) => {
 		editFocusCap = true;
 		openRunnerEdit(runner);
@@ -1139,7 +1148,10 @@
 															class="text-xs text-amber-700 underline underline-offset-2 dark:text-amber-400"
 															href={waiting.href}
 														>
-															{waiting.count} waiting · oldest {queueAge(waiting.oldest)}
+															{waiting.count} waiting · oldest {queueAge(
+																waiting.oldest,
+																waiting.now
+															)}
 														</a>
 													{/if}
 												</span>
