@@ -160,38 +160,56 @@ export interface ActorContext {
 // authority but are fenced off the control plane — an agent must not be able
 // to raise its own budget, un-park itself, re-route work, or touch
 // credentials. Ordinary named keys keep their full authority.
+//
+// The fence is per method, not per path: a surface an agent must *understand*
+// to do its job can be readable while its writes stay fenced (the label
+// library is the one such surface today).
 
-const CONTROL_PLANE_PATTERNS = [
-	/^\/api\/v1\/runners(\/|$)/,
-	/^\/api\/v1\/routing-rules(\/|$)/,
-	/^\/api\/v1\/supervisor\/settings(\/|$)/,
-	/^\/api\/v1\/issues\/[^/]+\/resume$/,
-	/^\/api\/v1\/api-keys(\/|$)/,
-	// The label library is vocabulary, not classification: run keys may apply
-	// and remove existing labels (/issues/:id/labels stays open to them) but
+/**
+ * A fenced surface. Every method is fenced unless `readable` is set, in which
+ * case GET/HEAD pass: reading is classification, writing is control.
+ */
+type ControlPlaneRule = { pattern: RegExp; readable?: boolean };
+
+const CONTROL_PLANE_RULES: ControlPlaneRule[] = [
+	{ pattern: /^\/api\/v1\/runners(\/|$)/ },
+	{ pattern: /^\/api\/v1\/routing-rules(\/|$)/ },
+	{ pattern: /^\/api\/v1\/supervisor\/settings(\/|$)/ },
+	{ pattern: /^\/api\/v1\/issues\/[^/]+\/resume$/ },
+	{ pattern: /^\/api\/v1\/api-keys(\/|$)/ },
+	// The label library is vocabulary, not classification: run keys may read it
+	// (`tines labels list` — the launch prompt points at it) and may apply and
+	// remove existing labels (/issues/:id/labels stays open to them), but
 	// cannot mint, rename, or delete the terms themselves.
-	/^\/api\/v1\/labels(\/|$)/,
+	{ pattern: /^\/api\/v1\/labels(\/|$)/, readable: true },
 	// Bulk library writes: an agent must propose context changes, not apply
 	// a whole library over the top of them.
-	/^\/api\/v1\/import(\/|$)/
+	{ pattern: /^\/api\/v1\/import(\/|$)/ }
 ];
 
-/** True for paths a run key must never reach (all methods). */
-export function isControlPlanePath(pathname: string): boolean {
-	return CONTROL_PLANE_PATTERNS.some((p) => p.test(pathname));
+/** SvelteKit answers HEAD from the GET handler, so both are reads. */
+const READ_METHODS = new Set(['GET', 'HEAD']);
+
+/** True when a run key must not make `method` requests to `pathname`. */
+export function isControlPlanePath(pathname: string, method: string): boolean {
+	const read = READ_METHODS.has(method.toUpperCase());
+	return CONTROL_PLANE_RULES.some((r) => r.pattern.test(pathname) && !(read && r.readable));
 }
 
 /**
  * The fence's 403, shared by the path fence and field-level guards (pins on
  * PATCH /issues/:id live on an otherwise run-key-legal route).
  */
-export function runKeyForbidden(): ApiFail {
+export function runKeyForbidden(details?: Record<string, unknown>): ApiFail {
 	return new ApiFail(
 		403,
 		'run_key_forbidden',
-		'Run keys cannot modify runners, routing rules, supervisor settings, parked issues, issue pins, the label library, API keys, or the library import. ' +
+		'Run keys cannot modify runners, routing rules, supervisor settings, parked issues, issue pins, or API keys, ' +
+			'cannot import a library, cannot create, rename, or delete labels, and cannot apply or remove a ' +
+			'label a routing rule is scoped to (reading the library and applying other existing labels is fine). ' +
 			'Propose the change instead: file an issue titled "Context change: <scope label>" describing ' +
-			'what should change and why; a human reviews and applies it.'
+			'what should change and why; a human reviews and applies it.',
+		details
 	);
 }
 
@@ -203,6 +221,7 @@ export function runKeyForbidden(): ApiFail {
 export function assertRunKeyAllowed(
 	key: { agentRunId: string | null; expiresAt: number | null },
 	pathname: string,
+	method: string,
 	now = Date.now()
 ): void {
 	if (key.expiresAt !== null && key.expiresAt <= now) {
@@ -212,7 +231,7 @@ export function assertRunKeyAllowed(
 			'This run key has expired; the run it belonged to is over'
 		);
 	}
-	if (key.agentRunId !== null && isControlPlanePath(pathname)) {
+	if (key.agentRunId !== null && isControlPlanePath(pathname, method)) {
 		throw runKeyForbidden();
 	}
 }
@@ -259,7 +278,8 @@ export async function requireActor(event: RequestEvent): Promise<ActorContext> {
 	}
 	assertRunKeyAllowed(
 		{ agentRunId: row.agent_run_id, expiresAt: row.expires_at },
-		event.url.pathname
+		event.url.pathname,
+		event.request.method
 	);
 
 	const touch = db

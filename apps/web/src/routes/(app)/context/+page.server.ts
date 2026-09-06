@@ -1,5 +1,6 @@
 import { AGENT_GUIDELINES_NAME, CONTEXT_KINDS } from '@tines/shared';
 import { listContextItems } from '$lib/server/api/context';
+import { listLabels } from '$lib/server/api/labels';
 import { listProjects } from '$lib/server/api/projects';
 import { loadWorkflows } from '$lib/server/api/workflows';
 import { getDb } from '$lib/server/db';
@@ -16,12 +17,14 @@ export const load: PageServerLoad = async ({ locals, platform, url }) => {
 		kind: rawKind && (CONTEXT_KINDS as readonly string[]).includes(rawKind) ? rawKind : undefined,
 		project: url.searchParams.get('project') ?? undefined,
 		workflow: url.searchParams.get('workflow') ?? undefined,
+		label: url.searchParams.get('label') ?? undefined,
 		q: url.searchParams.get('q') ?? undefined
 	};
-	const [{ items }, projects, workflows, guidelines] = await Promise.all([
+	const [{ items }, projects, workflows, labels, guidelines] = await Promise.all([
 		listContextItems(db, userId, filters, { cursor: null, limit: 100 }),
 		listProjects(db, userId),
 		loadWorkflows(db, userId),
+		listLabels(db, userId),
 		// Offer the starter guidance until a global item by that name exists.
 		listContextItems(db, userId, { kind: 'prompt', exact: true }, { cursor: null, limit: 100 })
 	]);
@@ -29,6 +32,7 @@ export const load: PageServerLoad = async ({ locals, platform, url }) => {
 		items,
 		projects,
 		workflows,
+		labels,
 		filters,
 		hasAgentGuidelines: guidelines.items.some((i) => i.name === AGENT_GUIDELINES_NAME)
 	};

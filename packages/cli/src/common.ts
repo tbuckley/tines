@@ -259,6 +259,15 @@ export async function resolveIssue(api: ApiClient, ref: string): Promise<IssueDe
 	return api.getIssueByNumber(proj.id, number);
 }
 
+/** Resolves a label by name (case-insensitive) or id against the library. */
+export async function resolveLabelFlag(api: ApiClient, ref: string): Promise<string> {
+	const match = (await api.listLabels()).items.find(
+		(l) => l.id === ref || l.name.toLowerCase() === ref.toLowerCase()
+	);
+	if (!match) die(`no such label: ${ref}`);
+	return match.id;
+}
+
 /**
  * Resolves `--state <workflow>/<state>` (state names are only unique per
  * workflow, so the qualified form is required everywhere).

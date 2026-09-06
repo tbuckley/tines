@@ -54,6 +54,7 @@ export function addIssue(
 		needsAttention?: boolean;
 		title?: string;
 		description?: string;
+		labels?: string[];
 	} = {}
 ): string {
 	const id = opts.id ?? `iss_${++issueSeq}`;
@@ -78,6 +79,25 @@ export function addIssue(
 			NOW,
 			opts.updatedAt ?? NOW
 		);
+	for (const labelId of opts.labels ?? []) {
+		t.sqlite
+			.prepare(`INSERT INTO issue_label (issue_id, label_id, created_at) VALUES (?, ?, ?)`)
+			.run(id, labelId, NOW);
+	}
+	return id;
+}
+
+let labelSeq = 0;
+
+/** An issue label, the fourth scope dimension a rule can carry. */
+export function addLabel(t: TestDb, name: string, opts: { id?: string } = {}): string {
+	const id = opts.id ?? `lab_${++labelSeq}`;
+	t.sqlite
+		.prepare(
+			`INSERT INTO label (id, user_id, name, color, description, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)`
+		)
+		.run(id, USER, name, 'slate', '', NOW, NOW);
 	return id;
 }
 
@@ -138,19 +158,26 @@ let ruleSeq = 0;
 
 export function addRule(
 	t: TestDb,
-	opts: { id?: string; project?: string | null; state?: string | null; targets: RoutingTarget[] }
+	opts: {
+		id?: string;
+		project?: string | null;
+		state?: string | null;
+		label?: string | null;
+		targets: RoutingTarget[];
+	}
 ): string {
 	const id = opts.id ?? `rul_${++ruleSeq}`;
 	t.sqlite
 		.prepare(
-			`INSERT INTO routing_rule (id, user_id, project_id, workflow_state_id, targets, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?)`
+			`INSERT INTO routing_rule (id, user_id, project_id, workflow_state_id, label_id, targets, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
 		)
 		.run(
 			id,
 			USER,
 			opts.project ?? null,
 			opts.state ?? null,
+			opts.label ?? null,
 			JSON.stringify(opts.targets),
 			NOW,
 			NOW

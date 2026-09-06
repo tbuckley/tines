@@ -21,7 +21,11 @@
 		stateEnteredAt,
 		onmove
 	}: {
-		/** Already ordered: enabled first, then blocked. */
+		/**
+		 * Already ordered by `planTransitions`: forward moves first (enabled, then
+		 * blocked, whose requirement line is the next action), then steps back,
+		 * then the escape lane.
+		 */
 		transitions: AllowedTransition[];
 		unmetFor: (t: AllowedTransition) => ArtifactRequirementCheck[];
 		disabled?: boolean;

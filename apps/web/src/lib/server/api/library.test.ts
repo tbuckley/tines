@@ -9,6 +9,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { PROJECT, USER, addIssue, seedBase } from '../supervisor/test-fixtures';
 import { createContextItem } from './context';
 import { ApiFail, type ActorContext } from './core';
+import { createLabel } from './labels';
 import { applyImport, assertImportableDocument, buildLibraryDocument, planImport } from './library';
 import { createWorkflow } from './workflows';
 import { createTestDb, type TestDb } from './test-db';
@@ -356,6 +357,56 @@ describe('applyImport', () => {
 
 		const rebuilt = await buildLibraryDocument(target.db, USER);
 		expect(comparable(rebuilt)).toEqual(comparable(source));
+	});
+
+	it('carries a label-scoped item and creates the label it names', async () => {
+		const label = await createLabel(t.db, t.env, actor, { name: 'design' });
+		await createContextItem(t.db, t.env, actor, {
+			kind: 'prompt',
+			name: 'component-testing',
+			label_id: label.id,
+			body: 'Test the component.'
+		});
+		const source = await buildLibraryDocument(t.db, USER);
+		expect(source.context.find((e) => e.name === 'component-testing')?.scope).toEqual({
+			label: 'design'
+		});
+
+		const target = freshDeployment();
+		const result = await applyImport(target.db, target.env, actor, { document: source });
+		expect(result.counts.error).toBe(0);
+		// The label did not exist on the target: unlike a project or a
+		// workflow, it is created rather than costing the item its scope.
+		const rebuilt = await buildLibraryDocument(target.db, USER);
+		expect(rebuilt.context.find((e) => e.name === 'component-testing')?.scope).toEqual({
+			label: 'design'
+		});
+	});
+
+	it('treats the same name under two labels as two items, not a collision', async () => {
+		const design = await createLabel(t.db, t.env, actor, { name: 'design' });
+		const qa = await createLabel(t.db, t.env, actor, { name: 'qa' });
+		for (const id of [design.id, qa.id]) {
+			await createContextItem(t.db, t.env, actor, {
+				kind: 'prompt',
+				name: 'component-testing',
+				label_id: id,
+				body: id
+			});
+		}
+		const document = await buildLibraryDocument(t.db, USER);
+		const target = freshDeployment();
+		const result = await applyImport(target.db, target.env, actor, { document });
+		expect(result.counts.error).toBe(0);
+		const rebuilt = await buildLibraryDocument(target.db, USER);
+		// Both survive: `contextKey` includes the label, so the second is not
+		// read as a collision with the first.
+		expect(
+			rebuilt.context
+				.filter((e) => e.name === 'component-testing')
+				.map((e) => e.scope.label)
+				.sort()
+		).toEqual(['design', 'qa']);
 	});
 
 	it('is idempotent: a second import creates nothing', async () => {
