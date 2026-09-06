@@ -158,8 +158,20 @@ const issue: IssueDetail = {
 	description: 'Do it *well*.',
 	labels: [],
 	workflow_id: 'wf_1',
-	state: { id: 's_review', name: 'Review', category: 'awaiting_human', position: 1, inherits_from: null },
-	effective_state: { id: 's_review', name: 'Review', category: 'awaiting_human', position: 1, inherits_from: null },
+	state: {
+		id: 's_review',
+		name: 'Review',
+		category: 'awaiting_human',
+		position: 1,
+		inherits_from: null
+	},
+	effective_state: {
+		id: 's_review',
+		name: 'Review',
+		category: 'awaiting_human',
+		position: 1,
+		inherits_from: null
+	},
 	duplicate_of: null,
 	open_blockers: [],
 	links: { blocked_by: [], blocks: [], duplicate_of: null, duplicated_by: [] },

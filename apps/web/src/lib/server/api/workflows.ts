@@ -18,6 +18,7 @@ import type { CompiledQuery, Kysely } from 'kysely';
 import { newId, type Database, type WorkflowStateTable } from '$lib/server/db';
 import { findAttachedContext, seedPromptQueries, sweepAttachedContext } from './context';
 import {
+	MAX_INHERITANCE_CHAIN,
 	ApiFail,
 	notFound,
 	optionalString,
@@ -304,9 +305,6 @@ export function resolveDef(
 // ---------------------------------------------------------------------------
 // Inheritance (Tines/238)
 
-/** Longest legal chain, counting the state itself: A → B → C is the maximum. */
-export const MAX_INHERITANCE_CHAIN = 3;
-
 /** A state as the inheritance machinery needs to name it in a message. */
 interface StateRef {
 	id: string;
@@ -451,12 +449,9 @@ export async function resolveInheritance(
 		while (cursor !== null) {
 			if (seen.has(cursor)) {
 				const loop = [...chain, cursor].map((id) => stateRefLabel(refs.get(id), id));
-				throw new ApiFail(
-					422,
-					'inheritance_cycle',
-					`Inheritance would loop: ${loop.join(' → ')}`,
-					{ chain: [...chain, cursor] }
-				);
+				throw new ApiFail(422, 'inheritance_cycle', `Inheritance would loop: ${loop.join(' → ')}`, {
+					chain: [...chain, cursor]
+				});
 			}
 			chain.push(cursor);
 			seen.add(cursor);

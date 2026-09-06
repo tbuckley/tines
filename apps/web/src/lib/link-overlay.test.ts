@@ -2,7 +2,13 @@ import type { IssueLinks, LinkedIssue, WorkflowState } from '@tines/shared';
 import { describe, expect, it } from 'vitest';
 import { isTempLink, mergeLinks, TEMP_LINK_PREFIX, type PendingAdd } from './link-overlay';
 
-const state: WorkflowState = { id: 's1', name: 'Open', category: 'active', position: 0, inherits_from: null };
+const state: WorkflowState = {
+	id: 's1',
+	name: 'Open',
+	category: 'active',
+	position: 0,
+	inherits_from: null
+};
 
 const linked = (linkId: string, issueId: string): LinkedIssue => ({
 	link_id: linkId,

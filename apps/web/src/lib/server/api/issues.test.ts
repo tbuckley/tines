@@ -25,7 +25,13 @@ const workflow: WorkflowResponse = {
 	initial_state_id: 's_open',
 	states: [
 		{ id: 's_open', name: 'Open', category: 'active', position: 0, inherits_from: null },
-		{ id: 's_review', name: 'Review', category: 'awaiting_human', position: 1, inherits_from: null },
+		{
+			id: 's_review',
+			name: 'Review',
+			category: 'awaiting_human',
+			position: 1,
+			inherits_from: null
+		},
 		{ id: 's_closed', name: 'Closed', category: 'done', position: 2, inherits_from: null }
 	],
 	transitions: [

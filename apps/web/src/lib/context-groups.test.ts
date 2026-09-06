@@ -51,7 +51,9 @@ const workflows: Pick<Workflow, 'id' | 'states'>[] = [
 	},
 	{
 		id: 'wf_Docs',
-		states: [{ id: 'st_Draft', name: 'Draft', category: 'active', position: 0, inherits_from: null }]
+		states: [
+			{ id: 'st_Draft', name: 'Draft', category: 'active', position: 0, inherits_from: null }
+		]
 	}
 ];
 

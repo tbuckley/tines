@@ -132,7 +132,9 @@ export function issueQuery(db: Kysely<Database>, userId: string) {
 				sql<string>`COALESCE(eff_state.name, state.name)`.as('eff_state_name'),
 				sql<StateCategory>`COALESCE(eff_state.category, state.category)`.as('eff_state_category'),
 				sql<number>`COALESCE(eff_state.position, state.position)`.as('eff_state_position'),
-				sql<string | null>`COALESCE(eff_state.inherits_from_state_id, state.inherits_from_state_id)`.as(
+				sql<
+					string | null
+				>`COALESCE(eff_state.inherits_from_state_id, state.inherits_from_state_id)`.as(
 					'eff_state_inherits_from'
 				),
 				sql<string | null>`(

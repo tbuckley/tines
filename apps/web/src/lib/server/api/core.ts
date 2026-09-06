@@ -404,3 +404,11 @@ export async function runAtomic(env: Env, queries: CompiledQuery[]): Promise<D1R
 		queries.map((q) => env.DB.prepare(q.sql).bind(...(q.parameters as unknown[])))
 	);
 }
+
+/**
+ * Longest legal state-inheritance chain, counting the state itself: A → B → C
+ * is the maximum (Tines/238). Lives here because both the write path
+ * (`workflows.ts`, validating) and the read path (`context.ts`, bounding the
+ * chain CTE) need it and must not import each other.
+ */
+export const MAX_INHERITANCE_CHAIN = 3;
