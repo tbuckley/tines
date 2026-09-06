@@ -13,7 +13,7 @@
 import { expect, test } from '@playwright/test';
 import type { ListResponse, Project } from '@tines/shared';
 import { BOB } from './constants.mjs';
-import { apiClient, body, runId, signIn } from './helpers';
+import { apiClient, body, gotoHydrated, runId, signIn } from './helpers';
 
 test.describe.serial('the first-run path on an empty account', () => {
 	test('the Issues tab sends a projectless account to New project', async ({
@@ -29,7 +29,7 @@ test.describe.serial('the first-run path on an empty account', () => {
 		).toHaveLength(0);
 
 		await signIn(context, BOB.sessionToken);
-		await page.goto('/issues');
+		await gotoHydrated(page, '/issues');
 		await page.getByRole('link', { name: 'New project' }).click();
 
 		// The dialog opens from `?new=1`, which is consumed with replaceState so
@@ -49,7 +49,7 @@ test.describe.serial('the first-run path on an empty account', () => {
 		page
 	}) => {
 		await signIn(context, BOB.sessionToken);
-		await page.goto('/projects?new=1');
+		await gotoHydrated(page, '/projects?new=1');
 
 		await expect(page.getByRole('dialog', { name: /New project/i })).toBeVisible();
 		await expect(page).toHaveURL(/\/projects$/);
@@ -60,7 +60,7 @@ test.describe.serial('the first-run path on an empty account', () => {
 		page
 	}) => {
 		await signIn(context, BOB.sessionToken);
-		await page.goto('/agents');
+		await gotoHydrated(page, '/agents');
 
 		// The routing empty state knows there is no runner to route to yet.
 		const addRunner = page.getByRole('button', { name: 'Add runner' }).last();
@@ -87,7 +87,7 @@ test.describe.serial('the first-run path on an empty account', () => {
 		const projectId = project.id;
 
 		await signIn(context, BOB.sessionToken);
-		await page.goto(`/projects/${projectId}`);
+		await gotoHydrated(page, `/projects/${projectId}`);
 
 		// The routing card's empty state is a link to where routing lives.
 		const routing = page.getByRole('link', { name: 'Set up routing' });

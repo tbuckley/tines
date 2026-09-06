@@ -388,7 +388,7 @@ esac
 		const before = await keyNames();
 
 		await context.grantPermissions(['clipboard-read', 'clipboard-write']);
-		await page.goto('/agents');
+		await gotoHydrated(page, '/agents');
 
 		// Abandoning the dialog without clicking Create key leaves no key.
 		let dialog = await openAddRunner(page);
@@ -429,7 +429,7 @@ esac
 	}) => {
 		const api = apiClient(request, ALICE.apiKey);
 		await signIn(context, ALICE.sessionToken);
-		await page.goto('/agents');
+		await gotoHydrated(page, '/agents');
 
 		const liveName = `e2e-live-${runId}`;
 		const dialog = await openAddRunner(page);

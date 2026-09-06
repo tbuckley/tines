@@ -13,7 +13,7 @@
 import { expect, test } from '@playwright/test';
 import type { IssueDetail, Project } from '@tines/shared';
 import { BOB } from './constants.mjs';
-import { apiClient, body, runId, signIn } from './helpers';
+import { apiClient, body, gotoHydrated, runId, signIn } from './helpers';
 
 test("an unarmed account's explainer links to the control that would fix it", async ({
 	context,
@@ -28,7 +28,7 @@ test("an unarmed account's explainer links to the control that would fix it", as
 	);
 
 	await signIn(context, BOB.sessionToken);
-	await page.goto(`/issues/${encodeURIComponent(projectName)}/${issue.number}`);
+	await gotoHydrated(page, `/issues/${encodeURIComponent(projectName)}/${issue.number}`);
 	await page.getByText('Why?').first().click();
 
 	const automation = page.getByRole('link', { name: 'Turn automation on' }).first();
