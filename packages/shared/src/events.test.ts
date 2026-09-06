@@ -115,6 +115,14 @@ const PAYLOADS: Record<KnownEventType, Record<string, unknown>> = {
 		consecutive_failures: 3,
 		error: 'spawn failed'
 	},
+	'runner.rate_limited': {
+		runner_name: 'macbook-claude',
+		run_id: 'run_1',
+		error: 'rate limited: session limit · resets 3pm (America/New_York)',
+		resets_at: 1_788_739_260_000,
+		reported_reset_at: 1_788_739_200_000,
+		limit: 'five_hour'
+	},
 	'routing_rule.created': { scope_label: 'project Tines' },
 	'routing_rule.updated': { scope_label: 'project Tines' },
 	'routing_rule.deleted': { scope_label: 'project Tines' },

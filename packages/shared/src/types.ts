@@ -1534,6 +1534,12 @@ export interface Runner {
 	draining: boolean;
 	launch_failures: number;
 	backoff_until: number | null;
+	/**
+	 * Why `backoff_until` is set: 'rate_limit' = the runner's harness account hit
+	 * a usage limit and the hold ends at the reported reset; null = the ordinary
+	 * consecutive-failure backoff counted by `launch_failures`.
+	 */
+	backoff_reason: 'rate_limit' | null;
 	/** Runs currently holding a claim on this runner (assigned/launching/running). */
 	active_runs: number;
 	created_at: number;
@@ -1689,8 +1695,17 @@ export interface FinishRunRequest {
 	 * run; the work did not fail, so the issue must not take a strike. Only
 	 * honoured with `status: 'failed'`; absent — as from any daemon predating
 	 * the field — is judged exactly as before.
+	 *
+	 * `rate_limited` = the harness's provider refused the work because its usage
+	 * limit was reached. The run is judged like an interruption (no strike), and
+	 * the runner is held until `resume_at`.
 	 */
-	judgment?: 'interrupted';
+	judgment?: 'interrupted' | 'rate_limited';
+	/**
+	 * `rate_limited` only: when the harness's provider said the usage window
+	 * resets, epoch ms. Absent = unknown; the server applies a default hold.
+	 */
+	resume_at?: number;
 	/** Whatever the harness reported (Claude Code JSON output, etc.). */
 	usage?: AgentRunUsage;
 }
@@ -1937,7 +1952,14 @@ export interface DispatchCheck {
 }
 
 export type DispatchTargetVerdict =
-	'ok' | 'paused' | 'offline' | 'draining' | 'at_capacity' | 'backing_off' | 'quota_exhausted';
+	| 'ok'
+	| 'paused'
+	| 'offline'
+	| 'draining'
+	| 'at_capacity'
+	| 'backing_off'
+	| 'rate_limited'
+	| 'quota_exhausted';
 
 /** One rule/pin target's verdict, in preference order. */
 export interface DispatchTarget {
@@ -2126,6 +2148,7 @@ export const EVENT_TYPES = [
 	'runner.updated',
 	'runner.removed',
 	'runner.errored',
+	'runner.rate_limited',
 	'routing_rule.created',
 	'routing_rule.updated',
 	'routing_rule.deleted',

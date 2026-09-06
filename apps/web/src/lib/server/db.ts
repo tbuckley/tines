@@ -270,6 +270,8 @@ export interface RunnerTable {
 	last_seen_at: number | null;
 	launch_failures: number;
 	backoff_until: number | null;
+	/** 'rate_limit' when the hold is a usage limit; NULL for the failure backoff. */
+	backoff_reason: string | null;
 	/**
 	 * 0/1: the daemon is finishing its runs before restarting for a
 	 * self-update; set and cleared by its polls. Dispatch skips it while set.

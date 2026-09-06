@@ -48,6 +48,11 @@ function str(v: unknown): string {
 	return v === null || v === undefined ? '' : String(v);
 }
 
+/** An epoch-ms payload field as an ISO string; the surfaces reformat if they wish. */
+function isoTime(v: unknown): string {
+	return typeof v === 'number' && Number.isFinite(v) ? new Date(v).toISOString() : 'an unknown time';
+}
+
 /** Comma/`and` joins over a payload's `changed` array, which may be absent. */
 function joinChanged(v: unknown, sep: string): string {
 	return Array.isArray(v) ? v.join(sep) : '';
@@ -173,6 +178,13 @@ const DESCRIBERS: Record<KnownEventType, Describer> = {
 		// Not "fail to launch": the same counter now also carries runs a
 		// runner dropped after launch. The cause is in the error text.
 		text(`fail (${str(p.consecutive_failures)} consecutive): ${str(p.error)}`)
+	],
+	'runner.rate_limited': (_ev, p) => [
+		text('saw runner'),
+		name(p.runner_name),
+		// A provider condition, not a failure: the runner holds itself until the
+		// reported reset and resumes with nobody in the loop.
+		text(`hit its usage limit — resumes ${isoTime(p.resets_at)}: ${str(p.error)}`)
 	],
 	'routing_rule.created': (ev, p) => [
 		text(`${action(ev.type)} the ${str(p.scope_label)} routing rule`)
