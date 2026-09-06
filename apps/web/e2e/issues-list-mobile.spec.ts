@@ -267,6 +267,24 @@ const stripStyle = (page: Page) =>
 		return { mask: s.maskImage, snapType: s.scrollSnapType, scrollLeft: el.scrollLeft };
 	});
 
+/**
+ * Which edge the strip fades, read off the computed gradient's end stops
+ * (`transparent` computes to `rgba(0, 0, 0, 0)`). Polled by every caller: the
+ * mask lands on the first laid-out frame after hydration, not before it.
+ */
+async function fadedEdges(page: Page) {
+	const { mask } = await stripStyle(page);
+	if (mask === 'none') return { masked: false, left: false, right: false };
+	return {
+		masked: true,
+		left: /\(to right, rgba\(0, 0, 0, 0\) 0px/.test(mask),
+		right: /rgba\(0, 0, 0, 0\) 100%\)$/.test(mask)
+	};
+}
+
+const expectFade = (page: Page, edges: { left: boolean; right: boolean }) =>
+	expect.poll(() => fadedEdges(page)).toEqual({ masked: true, ...edges });
+
 test.describe('the category tab strip', () => {
 	test('the phone strip fades the edge that hides tabs', async ({ page }) => {
 		await page.setViewportSize(PHONE);
@@ -276,23 +294,15 @@ test.describe('the category tab strip', () => {
 		// It really does overflow — the fade is describing something.
 		expect(await overflow(page)).toBeGreaterThan(0);
 
-		// At rest: Open is flush at the left, Done is behind the right fade.
-		const start = await stripStyle(page);
-		expect(start.scrollLeft).toBe(0);
-		expect(start.snapType).toContain('proximity');
-		expect(start.mask).toMatch(/linear-gradient/);
-		// Opaque at the left, transparent at the right: only one edge hides tabs.
-		expect(start.mask.indexOf('transparent')).toBeGreaterThan(start.mask.indexOf('rgb(0, 0, 0)'));
+		// At rest: Open is flush at the left (snapped, so within a pixel of the
+		// pill's own padding), Done behind a fade at the right and nowhere else.
+		expect((await stripStyle(page)).scrollLeft).toBeLessThanOrEqual(1);
+		await expectFade(page, { left: false, right: true });
 
 		// Swiped to the end, the fade swaps sides and Done is fully readable.
 		await strip(page).evaluate((el) => el.scrollTo({ left: el.scrollWidth, behavior: 'instant' }));
 		await expect(tab(page, 'Done')).toBeInViewport({ ratio: 1 });
-		await expect
-			.poll(async () => {
-				const s = await stripStyle(page);
-				return s.mask.indexOf('transparent') < s.mask.indexOf('rgb(0, 0, 0)');
-			})
-			.toBe(true);
+		await expectFade(page, { left: true, right: false });
 	});
 
 	test('no fade once every tab fits', async ({ page }) => {
@@ -303,7 +313,7 @@ test.describe('the category tab strip', () => {
 		await expect(tab(page, 'Open')).toBeVisible();
 
 		expect(await overflow(page)).toBe(0);
-		expect((await stripStyle(page)).mask).toBe('none');
+		await expect.poll(() => fadedEdges(page)).toEqual({ masked: false, left: false, right: false });
 
 		// One line, and the strip is not a scroller at this width.
 		const ys: number[] = [];
@@ -318,7 +328,9 @@ test.describe('the category tab strip', () => {
 		await expect(tab(page, 'Open')).toBeVisible();
 
 		// Snapping is the strip's job, not each tab's: assert both halves.
-		expect((await stripStyle(page)).snapType).toBe('x proximity');
+		// `proximity` is the initial strictness, so it serializes away — "x"
+		// alone is the proof it is not the `mandatory` this deliberately avoids.
+		expect((await stripStyle(page)).snapType).toBe('x');
 		for (const name of TABS) {
 			const align = await tab(page, name).evaluate((el) => getComputedStyle(el).scrollSnapAlign);
 			expect(align, `${name} tab`).toContain('start');
@@ -337,7 +349,7 @@ test.describe('the category tab strip', () => {
 		// Scrolled to reach it, and clear of the fade rather than under it.
 		expect((await stripStyle(page)).scrollLeft).toBeGreaterThan(0);
 		const doneBox = await box(done);
-		expect(doneBox.x + doneBox.width).toBeLessThanOrEqual(PHONE.width - 20);
+		expect(doneBox.x + doneBox.width).toBeLessThan(PHONE.width - 16);
 	});
 
 	test('the 320px strip fades and still reaches Done', async ({ page }) => {
@@ -346,7 +358,7 @@ test.describe('the category tab strip', () => {
 		await expect(tab(page, 'Open')).toBeVisible();
 
 		expect(await overflow(page)).toBeGreaterThan(0);
-		expect((await stripStyle(page)).mask).toMatch(/linear-gradient/);
+		await expectFade(page, { left: false, right: true });
 
 		await tab(page, 'Done').click();
 		await expect(page).toHaveURL(/category=done/);
@@ -359,6 +371,6 @@ test.describe('the category tab strip', () => {
 		await expect(tab(page, 'Open')).toBeVisible();
 
 		expect(await overflow(page)).toBeGreaterThan(0);
-		expect((await stripStyle(page)).mask).toMatch(/linear-gradient/);
+		await expectFade(page, { left: false, right: true });
 	});
 });

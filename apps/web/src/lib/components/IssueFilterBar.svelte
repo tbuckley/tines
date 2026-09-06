@@ -140,9 +140,20 @@
 			measureStrip();
 		};
 		sync();
+		// The first run can land before the strip has been laid out, where
+		// every measurement is 0 and nothing looks hidden; the next frame has
+		// real numbers, and the observer picks up every change after that.
+		const frame = requestAnimationFrame(sync);
+		// The nav's own box never changes width, so watch the pill inside it
+		// too: a web font landing or a count gaining a digit reflows the
+		// content without resizing the scroller, and left the flags stale.
 		const observer = new ResizeObserver(sync);
 		observer.observe(el);
-		return () => observer.disconnect();
+		if (el.firstElementChild) observer.observe(el.firstElementChild);
+		return () => {
+			cancelAnimationFrame(frame);
+			observer.disconnect();
+		};
 	});
 
 	// --- The Filter menu: labels, state, ready ------------------------------
@@ -222,7 +233,7 @@
 		onscroll={measureStrip}
 		style:mask-image={stripMask}
 		style:-webkit-mask-image={stripMask}
-		class="order-3 -mx-1 w-[calc(100%+0.5rem)] snap-x snap-proximity [scrollbar-width:none] overflow-x-auto px-1 sm:order-none sm:mx-0 sm:w-auto sm:overflow-visible sm:px-0"
+		class="order-3 -mx-1 w-[calc(100%+0.5rem)] snap-x snap-proximity scroll-px-[7px] [scrollbar-width:none] overflow-x-auto px-1 sm:order-none sm:mx-0 sm:w-auto sm:overflow-visible sm:px-0"
 	>
 		<div class="bg-muted/60 inline-flex h-9 items-center gap-0.5 rounded-md border p-[3px]">
 			{#each tabs as tab (tab.key)}
