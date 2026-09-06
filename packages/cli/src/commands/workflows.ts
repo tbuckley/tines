@@ -4,6 +4,7 @@ import {
 	client,
 	die,
 	fetchList,
+	pickWorkflow,
 	printJson,
 	printList,
 	resolveWorkflow,
@@ -13,11 +14,15 @@ import {
 	type CommonOpts,
 	type ListOpts
 } from '../common.js';
+import { formatTable } from '../format.js';
 import { assertNewStatesHavePrompts, parseJsonObject } from '../refs.js';
 import {
+	listAll,
+	type ApiClient,
 	type CreateWorkflowRequest,
 	type UpdateWorkflowRequest,
-	type WorkflowResponse
+	type WorkflowResponse,
+	type WorkflowState
 } from '@tines/shared';
 import type { Command } from 'commander';
 
@@ -84,6 +89,20 @@ existing sets wholesale when present.
 Each NEW state should carry a "prompt" — its initial stage instructions,
 created as a state-scoped context item — or pass --no-prompts to skip.
 
+A state may inherit context from another state — its base — with
+"inherits_from". Give the base as "<workflow>/<state>" (the qualified form
+\`tines workflows show\` prints, so it can be pasted straight back in), as a
+bare state name to mean one of this same request's states, or as a state id:
+
+  { "id": "wfs_abc", "name": "Merging", "category": "active",
+    "inherits_from": "Engineering/Review" }
+
+Items scoped to the base are part of an issue's context in the child state,
+stitched before the child's own layer. Chains are at most 3 states long and
+may not cycle. On an EXISTING state (one with an "id") the field is
+merge-patch: leaving it out keeps the current base, and "inherits_from": null
+clears it. See \`tines workflows bases\` for the pointers already in place.
+
 A transition may declare artifact requirements ("requires"): it can then only
 be taken once a FRESH artifact with that name — attached (or reaffirmed)
 since the issue entered its current state — exists on the issue:
@@ -98,18 +117,142 @@ since the issue entered its current state — exists on the issue:
 name issues must carry (see: tines issues artifacts --help).
 `;
 
-function printWorkflowDetail(wf: WorkflowResponse): void {
+// ---------------------------------------------------------------------------
+// State inheritance (Tines/240)
+
+/** A state together with the workflow it lives in — how every ref is named. */
+interface LibraryState {
+	workflow: WorkflowResponse;
+	state: WorkflowState;
+}
+
+/**
+ * The whole workflow library, indexed by state id. A base may live in another
+ * workflow, so naming one — and finding the states that inherit from it —
+ * takes the library, not the workflow in hand.
+ */
+interface Library {
+	workflows: WorkflowResponse[];
+	states: Map<string, LibraryState>;
+	/** Base state id → the states pointing at it, library-wide. */
+	children: Map<string, LibraryState[]>;
+}
+
+async function loadLibrary(api: ApiClient): Promise<Library> {
+	const workflows = await listAll((page) => api.listWorkflows(page));
+	// Insertion order is library order, which is what keeps `bases` grouped by
+	// workflow without a second sort.
+	const states = new Map<string, LibraryState>();
+	for (const workflow of workflows) {
+		for (const state of workflow.states) states.set(state.id, { workflow, state });
+	}
+	const children = new Map<string, LibraryState[]>();
+	for (const entry of states.values()) {
+		const base = entry.state.inherits_from;
+		if (base === null) continue;
+		const siblings = children.get(base);
+		if (siblings) siblings.push(entry);
+		else children.set(base, [entry]);
+	}
+	return { workflows, states, children };
+}
+
+/** `<workflow> / <state>` — the qualified form, since state names are unique only per workflow. */
+const qualify = (entry: LibraryState): string => `${entry.workflow.name} / ${entry.state.name}`;
+
+/** The same, from an id: falls back to the bare id for a state we cannot see. */
+function stateLabel(lib: Library, id: string): string {
+	const entry = lib.states.get(id);
+	return entry ? qualify(entry) : id;
+}
+
+/** The `inherits from:` / `inherited by:` lines under one state, in `show` order. */
+function inheritanceLines(lib: Library, state: WorkflowState): string[] {
+	const lines: string[] = [];
+	if (state.inherits_from !== null) {
+		lines.push(`    inherits from: ${stateLabel(lib, state.inherits_from)}`);
+	}
+	const kids = lib.children.get(state.id) ?? [];
+	if (kids.length > 0) lines.push(`    inherited by: ${kids.map(qualify).join(', ')}`);
+	return lines;
+}
+
+/**
+ * Rewrites every `inherits_from: "<workflow>/<state>"` among a request's
+ * states into the state id the API takes. A value with no `/` is left alone:
+ * the API resolves a bare name against the request's own states, and an id is
+ * already what it wants. Spaces around the separator are tolerated so the
+ * form `workflows show` prints can be pasted straight back in.
+ *
+ * The library is fetched at most once, and only if some state names a pair.
+ */
+async function resolveStateBases(api: ApiClient, states: unknown): Promise<void> {
+	if (!Array.isArray(states)) return;
+	let lib: Library | undefined;
+	for (const entry of states) {
+		if (typeof entry !== 'object' || entry === null) continue;
+		const state = entry as { name?: unknown; inherits_from?: unknown };
+		if (typeof state.inherits_from !== 'string' || !state.inherits_from.includes('/')) continue;
+		lib ??= await loadLibrary(api);
+		state.inherits_from = resolveBasePair(
+			lib,
+			state.inherits_from,
+			typeof state.name === 'string' ? state.name : '(unnamed)'
+		);
+	}
+}
+
+/** One `<workflow>/<state>` pair → a state id, or a message naming the pair. */
+function resolveBasePair(lib: Library, pair: string, stateName: string): string {
+	const sep = pair.indexOf('/');
+	const workflowRef = pair.slice(0, sep).trim();
+	const stateRef = pair.slice(sep + 1).trim();
+	const where = `state "${stateName}" inherits from "${pair}"`;
+	if (!workflowRef || !stateRef) {
+		die(`${where}, which is not a <workflow>/<state> pair`);
+	}
+	const byName = lib.workflows.filter((w) => w.name === workflowRef);
+	if (byName.length > 1)
+		die(`${where}, but workflow name "${workflowRef}" is ambiguous; use an id`);
+	const workflow = lib.workflows.find((w) => w.id === workflowRef) ?? byName[0];
+	if (!workflow) {
+		die(
+			`${where}, but there is no workflow "${workflowRef}" (have: ${lib.workflows.map((w) => w.name).join(', ')})`
+		);
+	}
+	const state =
+		workflow.states.find((s) => s.name === stateRef) ??
+		workflow.states.find((s) => s.id === stateRef);
+	if (!state) {
+		die(
+			`${where}, but workflow "${workflow.name}" has no state "${stateRef}" (have: ${workflow.states.map((s) => s.name).join(', ')})`
+		);
+	}
+	return state.id;
+}
+
+function printWorkflowDetail(wf: WorkflowResponse, lib: Library): void {
 	console.log(`${wf.name}${wf.is_system ? ' (standard, read-only)' : ''}  [${wf.id}]`);
 	if (wf.description) console.log(wf.description);
 	console.log('\nstates:');
 	const byId = new Map(wf.states.map((s) => [s.id, s]));
-	table(
-		wf.states.map((s) => [
-			`  ${s.name}`,
-			s.category,
-			s.id === wf.initial_state_id ? '(initial)' : ''
-		])
-	);
+	// Rendered as one table, then split apart again, so a state's inheritance
+	// sits under its own row without costing the columns their alignment —
+	// the shape a transition's requirements already have below.
+	const rows =
+		wf.states.length === 0
+			? []
+			: formatTable(
+					wf.states.map((s) => [
+						`  ${s.name}`,
+						s.category,
+						s.id === wf.initial_state_id ? '(initial)' : ''
+					])
+				).split('\n');
+	for (const [i, row] of rows.entries()) {
+		console.log(row);
+		for (const line of inheritanceLines(lib, wf.states[i])) console.log(line);
+	}
 	console.log('\ntransitions:');
 	for (const t of wf.transitions) {
 		console.log(
@@ -153,10 +296,44 @@ export function register(program: Command): void {
 			.command('show <id-or-name>')
 			.description('Show a workflow with states and transitions')
 	).action(async (ref: string, opts: CommonOpts) => {
-		const api = client(opts);
-		const wf = await resolveWorkflow(api, ref);
+		// The whole library, because a base — and the states inheriting from
+		// this one — may live in another workflow.
+		const lib = await loadLibrary(client(opts));
+		const wf = pickWorkflow(lib.workflows, ref);
 		if (opts.json) return printJson(wf);
-		printWorkflowDetail(wf);
+		printWorkflowDetail(wf, lib);
+	});
+
+	withCommon(
+		workflows
+			.command('bases')
+			.description('List the states other states inherit context from, with their children')
+	).action(async (opts: CommonOpts) => {
+		const lib = await loadLibrary(client(opts));
+		// Library order, so the bases arrive already grouped by workflow.
+		const bases = [...lib.states.values()].filter((e) => lib.children.has(e.state.id));
+		if (opts.json) {
+			const ref = (e: LibraryState) => ({
+				workflow: { id: e.workflow.id, name: e.workflow.name },
+				state: { id: e.state.id, name: e.state.name }
+			});
+			return printJson(
+				bases.map((b) => ({
+					...ref(b),
+					inherited_by: lib.children.get(b.state.id)!.map(ref)
+				}))
+			);
+		}
+		if (bases.length === 0) return console.log('no base states');
+		let group: string | undefined;
+		for (const base of bases) {
+			if (base.workflow.id !== group) {
+				console.log(`${group === undefined ? '' : '\n'}${base.workflow.name}`);
+				group = base.workflow.id;
+			}
+			console.log(`  ${base.state.name}`);
+			console.log(`    inherited by: ${lib.children.get(base.state.id)!.map(qualify).join(', ')}`);
+		}
 	});
 
 	withCommon(
@@ -178,10 +355,14 @@ export function register(program: Command): void {
 				);
 			}
 			assertNewStatesHavePrompts(body.states, opts.prompts);
-			const wf = await client(opts).createWorkflow(body as unknown as CreateWorkflowRequest);
+			const api = client(opts);
+			await resolveStateBases(api, body.states);
+			const wf = await api.createWorkflow(body as unknown as CreateWorkflowRequest);
 			if (opts.json) return printJson(wf);
 			console.log(`created workflow "${wf.name}" (${wf.id})\n`);
-			printWorkflowDetail(wf);
+			// Re-read after the write: the library the pointers are named
+			// against now includes this workflow.
+			printWorkflowDetail(wf, await loadLibrary(api));
 		}
 	);
 
@@ -211,6 +392,7 @@ export function register(program: Command): void {
 			const wf = await resolveWorkflow(api, ref);
 			const body = (readJsonBody(inline, opts.file) ?? {}) as UpdateWorkflowRequest;
 			assertNewStatesHavePrompts(body.states, opts.prompts);
+			await resolveStateBases(api, body.states);
 			if (opts.name !== undefined) body.name = opts.name;
 			if (opts.description !== undefined) body.description = opts.description;
 			if (opts.initialState !== undefined) body.initial_state = opts.initialState;
@@ -220,7 +402,7 @@ export function register(program: Command): void {
 			const updated = await api.updateWorkflow(wf.id, body);
 			if (opts.json) return printJson(updated);
 			console.log(`updated workflow "${updated.name}" (${updated.id})\n`);
-			printWorkflowDetail(updated);
+			printWorkflowDetail(updated, await loadLibrary(api));
 		}
 	);
 
