@@ -19,7 +19,9 @@
 	// Projects nav tab, exactly as the Issues tab does with its filters.
 	$effect(() => navMemory.recordProjects(page.url.search));
 
-	const cards = $derived(data.showArchived ? [...data.projects, ...data.archivedProjects] : data.projects);
+	const cards = $derived(
+		data.showArchived ? [...data.projects, ...data.archivedProjects] : data.projects
+	);
 
 	let createOpen = $state(false);
 	let name = $state('');

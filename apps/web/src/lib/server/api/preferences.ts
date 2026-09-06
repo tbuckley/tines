@@ -134,10 +134,7 @@ export interface ResolvedFocus {
  * One query: the preferences row LEFT JOINed to its focused project, so a
  * missing or archived project reads as "All projects" without a second wave.
  */
-export async function resolveFocus(
-	db: Kysely<Database>,
-	userId: string
-): Promise<ResolvedFocus> {
+export async function resolveFocus(db: Kysely<Database>, userId: string): Promise<ResolvedFocus> {
 	const row = await db
 		.selectFrom('user_preference')
 		.leftJoin('project', (join) =>

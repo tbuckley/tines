@@ -10,7 +10,9 @@
 	import IconSitemap from '@tabler/icons-svelte/icons/sitemap';
 	import { goto, invalidateAll, onNavigate } from '$app/navigation';
 	import { navigating, page } from '$app/state';
+	import { api } from '$lib/api';
 	import { authClient } from '$lib/auth-client';
+	import ProjectSwitcher from '$lib/components/ProjectSwitcher.svelte';
 	import { prefersReducedMotion } from '$lib/format';
 	import { navMemory } from '$lib/nav-memory.svelte';
 	import { fade } from 'svelte/transition';
@@ -29,6 +31,16 @@
 		{ path: '/agents', href: '/agents', label: 'Agents', icon: IconRobot },
 		{ path: '/activity', href: '/activity', label: 'Activity', icon: IconActivity }
 	]);
+
+	// The project focus is chrome, not a page filter: it only makes sense once
+	// there are two projects to move between (Tines/259).
+	const showSwitcher = $derived(data.projects.length >= 2);
+
+	async function chooseFocus(projectId: string | null) {
+		await api.updatePreferences({ focused_project_id: projectId });
+		// Every list that reads the focus has to refetch, not just the layout.
+		await invalidateAll();
+	}
 
 	let menuOpen = $state(false);
 
@@ -94,7 +106,7 @@
 
 <div class="flex min-h-screen flex-col">
 	<header class="bg-background/90 sticky top-0 z-40 border-b backdrop-blur">
-		<div class="mx-auto flex h-14 w-full max-w-6xl items-center gap-6 px-4">
+		<div class="mx-auto flex h-14 w-full max-w-6xl items-center gap-4 px-4">
 			<a href="/issues" class="flex items-center gap-2 font-semibold tracking-tight">
 				<span
 					class="bg-primary text-primary-foreground flex size-7 items-center justify-center rounded-lg"
@@ -103,6 +115,14 @@
 				</span>
 				Tines
 			</a>
+			{#if showSwitcher}
+				<ProjectSwitcher
+					projects={data.projects}
+					focus={data.focus}
+					variant="header"
+					onchoose={chooseFocus}
+				/>
+			{/if}
 			<!-- On phones the tabs live in the bottom bar instead. -->
 			<nav class="hidden h-full items-center gap-1 sm:flex">
 				{#each tabs as tab (tab.path)}
@@ -204,18 +224,28 @@
 			{#each tabs as tab (tab.path)}
 				{@const active = mobileTabPath.startsWith(tab.path)}
 				{@const pending = active && !page.url.pathname.startsWith(tab.path)}
-				<a
-					href={tab.href}
-					class="flex flex-col items-center justify-center gap-1 text-[0.6875rem] font-medium transition active:scale-90 {active
-						? 'text-foreground'
-						: 'text-muted-foreground'}"
-					aria-current={active ? 'page' : undefined}
-				>
-					<span class={pending ? 'motion-safe:animate-pulse' : ''}>
-						<tab.icon size={20} stroke={active ? 2 : 1.5} />
-					</span>
-					{tab.label}
-				</a>
+				{#if tab.path === '/projects' && showSwitcher}
+					<!-- Same list as the desktop header, opening upward as a sheet. -->
+					<ProjectSwitcher
+						projects={data.projects}
+						focus={data.focus}
+						variant="tab"
+						onchoose={chooseFocus}
+					/>
+				{:else}
+					<a
+						href={tab.href}
+						class="flex flex-col items-center justify-center gap-1 text-[0.6875rem] font-medium transition active:scale-90 {active
+							? 'text-foreground'
+							: 'text-muted-foreground'}"
+						aria-current={active ? 'page' : undefined}
+					>
+						<span class={pending ? 'motion-safe:animate-pulse' : ''}>
+							<tab.icon size={20} stroke={active ? 2 : 1.5} />
+						</span>
+						{tab.label}
+					</a>
+				{/if}
 			{/each}
 		</div>
 	</nav>

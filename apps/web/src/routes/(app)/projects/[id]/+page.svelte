@@ -6,7 +6,7 @@
 	import IconPlus from '@tabler/icons-svelte/icons/plus';
 	import IconSettings from '@tabler/icons-svelte/icons/settings';
 	import { slide } from 'svelte/transition';
-	import { goto, invalidateAll } from '$app/navigation';
+	import { goto, invalidate, invalidateAll } from '$app/navigation';
 	import { page } from '$app/state';
 	import { api } from '$lib/api';
 	import AgentRoutingCard from '$lib/components/AgentRoutingCard.svelte';
@@ -35,6 +35,19 @@
 	// back link that returns to it.
 	$effect(() => {
 		navMemory.recordProject(data.project.id, page.url.search, data.project.name);
+	});
+
+	// Opening a project focuses it (Tines/259). Client-side on purpose: doing it
+	// in the load would fire on hover, because the app preloads links on hover.
+	// An archived project cannot be a focus, and a project already focused is a
+	// no-op — that guard is what stops the invalidate below re-firing this.
+	$effect(() => {
+		if (data.project.archived_at !== null || data.focus?.id === data.project.id) return;
+		api
+			.updatePreferences({ focused_project_id: data.project.id })
+			// Only the chrome changes; the page's own data is already scoped.
+			.then(() => invalidate('app:preferences'))
+			.catch(() => {});
 	});
 
 	/** An archived project reads normally and writes nowhere. */
