@@ -1,16 +1,17 @@
 /**
  * The first hour, as a user who has nothing: every empty state on the way to a
- * first agent run points at the next step, and the issue explainer's failing
- * checks carry a remedy link (Tines/252).
+ * first agent run points at the next step (Tines/252).
  *
  * Runs as BOB, the seeded account with no projects, runners or rules. That
  * emptiness is only true until another spec writes to BOB, so this file sorts
  * before `api.spec.ts` (which creates a project for him) — keep the name ahead
  * of it, and it asserts the precondition up front rather than failing
- * mysteriously later.
+ * mysteriously later. Every project this file creates is deleted again; the
+ * explainer's remedy links need an *issue*, which cannot be deleted at all, so
+ * that case lives in `issue-explainer-remedies.spec.ts` after `api.spec.ts`.
  */
 import { expect, test } from '@playwright/test';
-import type { IssueDetail, ListResponse, Project } from '@tines/shared';
+import type { ListResponse, Project } from '@tines/shared';
 import { BOB } from './constants.mjs';
 import { apiClient, body, runId, signIn } from './helpers';
 
@@ -22,7 +23,10 @@ test.describe.serial('the first-run path on an empty account', () => {
 	}) => {
 		const api = apiClient(request, BOB.apiKey);
 		const { items } = await body<ListResponse<Project>>(await api.get('/api/v1/projects'));
-		expect(items, 'BOB must still be projectless here — see the file comment').toHaveLength(0);
+		expect(
+			items,
+			"BOB must still be projectless here: this file has to sort before every spec that writes to him, and a re-run against a warm .wrangler-e2e sees the last run's leftovers — restart e2e/server.sh"
+		).toHaveLength(0);
 
 		await signIn(context, BOB.sessionToken);
 		await page.goto('/issues');
@@ -101,20 +105,9 @@ test.describe.serial('the first-run path on an empty account', () => {
 		}).toPass({ timeout: 15_000 });
 		await page.keyboard.press('Escape');
 
-		// The explainer's failing checks render their remedies as real links:
-		// nothing on this account is armed, so both of them fail.
-		const issue = await body<IssueDetail>(
-			await api.post(`/api/v1/projects/${projectId}/issues`, { title: 'Why is nothing running?' })
-		);
-		await page.goto(`/issues/${encodeURIComponent(projectName)}/${issue.number}`);
-		await page.getByText('Why?').first().click();
-		const automation = page.getByRole('link', { name: 'Turn automation on' }).first();
-		await expect(automation).toBeVisible();
-		await expect(automation).toHaveAttribute('href', '/agents');
-		const rule = page.getByRole('link', { name: 'Add a routing rule' }).first();
-		await expect(rule).toHaveAttribute('href', '/agents#routing');
-
-		// Leave the account as empty as it was found.
-		await api.delete(`/api/v1/projects/${projectId}`);
+		// Leave the account as empty as it was found — `deleteProject` refuses a
+		// project that still has issues, so assert it actually went.
+		const deleted = await api.delete(`/api/v1/projects/${projectId}`);
+		expect(deleted.ok(), await deleted.text()).toBe(true);
 	});
 });
