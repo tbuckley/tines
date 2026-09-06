@@ -79,7 +79,11 @@
 		moreWidth = all.pop() ?? 0;
 		all.shift();
 		widths = all;
-		barWidth = barEl.clientWidth;
+		// The content box: `clientWidth` includes the bar's own `px-3`, and with
+		// a chip that can no longer shrink to nothing those 24 px are the
+		// difference between a button that fits and one that spills out.
+		const pad = getComputedStyle(barEl);
+		barWidth = barEl.clientWidth - parseFloat(pad.paddingLeft) - parseFloat(pad.paddingRight);
 		// The chip's *natural* width: it is `min-w-[4.5rem] shrink`, so a chip
 		// already squeezed by a long first button measures at the floor and the
 		// arithmetic would hold its own outcome true.

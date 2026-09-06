@@ -375,7 +375,10 @@ test('on a phone the transitions live in a bar pinned above the tab bar', async 
 	// ...and tapping the blocked slot opens the sheet at that same move, first
 	// in the list with its requirement directly under it — every blocked one
 	// explained exactly as the desktop card would.
-	await direct.click();
+	// `force`: the button is deliberately `aria-disabled` rather than
+	// `disabled`, so it still takes the tap that opens the sheet — which
+	// Playwright's actionability check reads as "not enabled".
+	await direct.click({ force: true });
 	const sheet = page.getByRole('dialog', { name: 'State' });
 	await expect(sheet).toBeVisible();
 	const lead = sheet.getByRole('button', { name: /^Design complete/ });
