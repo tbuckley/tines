@@ -979,8 +979,9 @@ Run the local runner daemon: register/reconnect, poll for assigned runs, execute
 them
 
 Options:
-  --name <name>                  runner name, unique per user (default: this
-                                 hostname)
+  --name <name>                  runner name, unique per user; name it
+                                 machine-plus-harness, e.g. macbook-claude
+                                 (default: this hostname)
   --harness <harness>            claude-code | codex | custom (default:
                                  "claude-code")
   --command <template>           custom harness command template ({prompt_file},
