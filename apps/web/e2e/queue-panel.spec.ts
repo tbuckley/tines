@@ -9,7 +9,7 @@
  * launches), which saturates a `max_concurrent: 1` runner. Raising the cap
  * from the panel then has to drain it without a reload.
  */
-import type { IssueDetail, Project, RoutingRule, Runner, WorkflowResponse } from '@tines/shared';
+import type { IssueDetail, Project, RoutingRule, Runner } from '@tines/shared';
 import { expect, test } from '@playwright/test';
 import { ALICE, RUNROW } from './constants.mjs';
 import { apiClient, body, runId, signIn } from './helpers';
@@ -18,10 +18,27 @@ const PROJECT_NAME = `queue-${runId}`;
 const RUNNER_NAME = `queue-${runId}`;
 
 let projectId: string;
-let stateId: string;
 let runnerId: string;
-let runnerToken: string;
 let ruleId: string;
+
+/** Registering an existing name reconnects it: stamps `last_seen_at`, mints a token. */
+async function bringOnline(api: ReturnType<typeof apiClient>): Promise<void> {
+	const res = await api.post('/api/v1/runners/register', {
+		name: RUNNER_NAME,
+		harness: 'custom',
+		command: 'true'
+	});
+	expect(res.status(), 'reconnect the fixture runner').toBe(201);
+	expect((await res.json()).runner.id).toBe(runnerId);
+}
+
+/** Active runs currently claimed by the fixture runner. */
+async function claimedRuns(api: ReturnType<typeof apiClient>): Promise<number> {
+	const runs = await body<{ items: { runner_id: string }[] }>(
+		await api.get('/api/v1/runs?active=true')
+	);
+	return runs.items.filter((r) => r.runner_id === runnerId).length;
+}
 
 test.describe.serial('the Now row', () => {
 	test('seeds three eligible issues behind one offline runner', async ({ request }) => {
@@ -29,12 +46,9 @@ test.describe.serial('the Now row', () => {
 		const project = await body<Project>(await api.post('/api/v1/projects', { name: PROJECT_NAME }));
 		projectId = project.id;
 
-		// The project's own initial state, whatever the default workflow calls it.
-		const workflow = await body<WorkflowResponse>(
-			await api.get(`/api/v1/workflows/${project.default_workflow_id}`)
-		);
-		stateId = workflow.states.find((s) => s.category === 'active')!.id;
-		expect(stateId, 'the default workflow has an active state').toBeTruthy();
+		// The rule is scoped to the project, not to a state: a new project's
+		// issues open in its workflow's initial state, which is active, so all
+		// three are eligible without naming it.
 
 		for (let i = 0; i < 3; i++) {
 			const res = await api.post(`/api/v1/projects/${projectId}/issues`, {
@@ -43,17 +57,19 @@ test.describe.serial('the Now row', () => {
 			expect(res.status(), 'seeded issue').toBe(201);
 		}
 
-		const registered = await api.post('/api/v1/runners/register', {
-			name: RUNNER_NAME,
-			harness: 'custom',
-			command: 'true',
-			max_concurrent: 1
-		});
-		expect(registered.status()).toBe(201);
-		const runner = await registered.json();
+		// Created rather than registered: `register` stamps `last_seen_at`, so a
+		// registered runner is online from birth and the offline group never
+		// appears. The later phase registers this same name to reconnect it,
+		// which both mints the token and puts it online.
+		const runner = await body<Runner>(
+			await api.post('/api/v1/runners', {
+				type: 'local',
+				name: RUNNER_NAME,
+				max_concurrent: 1
+			})
+		);
 		runnerId = runner.id;
-		runnerToken = runner.token;
-		expect(runnerToken, 'the register response carries the runner token').toBeTruthy();
+		expect(runner.last_seen_at, 'a created runner has never polled').toBeNull();
 
 		// Project-scoped: a global rule would route every other spec's issues here.
 		const rule = await body<RoutingRule>(
@@ -96,21 +112,30 @@ test.describe.serial('the Now row', () => {
 		expect((await settings.json()).github_pat_hint).toBeNull();
 	});
 
-	test('flips to "at capacity" once the runner polls and claims one', async ({
+	test('flips to "at capacity" once the runner is online and one issue is claimed', async ({
 		context,
 		page,
 		request
 	}) => {
-		const poll = await request.post(`/api/v1/runners/${runnerId}/poll`, {
-			headers: { authorization: `Bearer ${runnerToken}` },
-			data: { owned_runs: [] }
-		});
-		expect(poll.status()).toBe(200);
+		const api = apiClient(request, ALICE.apiKey);
+		await bringOnline(api);
+
+		// A settings write queues an opportunistic pass, which claims one issue
+		// as `assigned` and saturates the 1-slot runner. (The poll route only
+		// queues a pass when the runner *comes* online, and registering already
+		// stamped `last_seen_at`.)
+		expect((await api.put('/api/v1/supervisor/settings', { enabled: true })).status()).toBe(200);
+		await expect
+			.poll(() => claimedRuns(api), {
+				timeout: 20_000,
+				message: 'the pass claims one issue for the runner'
+			})
+			.toBe(1);
 
 		await signIn(context, ALICE.sessionToken);
 		await page.goto('/agents');
 		const panel = page.getByRole('region', { name: 'Waiting for an agent' });
-		await expect(panel).toContainText(`at capacity on ${RUNNER_NAME} (1/1)`, { timeout: 15_000 });
+		await expect(panel).toContainText(`at capacity on ${RUNNER_NAME} (1/1)`);
 		await expect(panel).toContainText('2 issues');
 	});
 
@@ -119,27 +144,26 @@ test.describe.serial('the Now row', () => {
 		page,
 		request
 	}) => {
-		// The online window is two minutes; re-poll so the verdict is capacity,
-		// not the runner having gone quiet while the previous test ran.
-		await request.post(`/api/v1/runners/${runnerId}/poll`, {
-			headers: { authorization: `Bearer ${runnerToken}` },
-			data: { owned_runs: [] }
-		});
+		// The online window is two minutes; re-register so the verdict is
+		// capacity, not the runner having gone quiet while the last test ran.
+		const api = apiClient(request, ALICE.apiKey);
+		await bringOnline(api);
 
 		await signIn(context, ALICE.sessionToken);
 		await page.goto('/agents');
 		const panel = page.getByRole('region', { name: 'Waiting for an agent' });
-		await expect(panel).toContainText(`at capacity on ${RUNNER_NAME}`, { timeout: 15_000 });
+		await expect(panel).toContainText(`at capacity on ${RUNNER_NAME}`);
 
 		await panel.getByRole('button', { name: `Raise cap on ${RUNNER_NAME}` }).click();
 		const capField = page.locator('#edit-concurrent');
 		await expect(capField).toBeVisible();
 		await capField.fill('3');
-		await page.getByRole('button', { name: /Save/ }).first().click();
+		await page.getByRole('button', { name: /^Save/ }).first().click();
 
 		// No `page.reload()`: the shrink has to arrive through the invalidation
 		// the write schedules, which is the point of the acceptance criterion.
-		await expect(panel).toContainText('Waiting for an agent — 0', { timeout: 20_000 });
+		await expect(panel).not.toContainText('at capacity', { timeout: 20_000 });
+		await expect(panel).not.toContainText(`${RUNNER_NAME} offline`);
 	});
 
 	test('cleans up the fixture fleet', async ({ request }) => {
