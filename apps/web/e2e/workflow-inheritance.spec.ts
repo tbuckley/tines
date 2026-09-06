@@ -98,12 +98,11 @@ test.beforeAll(async ({ playwright }) => {
 		await api.post('/api/v1/projects', {
 			name: projectName,
 			key: `INH${runId.slice(-4).toUpperCase()}`,
-			workflow_id: eng.id
+			default_workflow_id: eng.id
 		})
 	);
 	const issue = await body<{ number: number }>(
-		await api.post('/api/v1/issues', {
-			project_id: project.id,
+		await api.post(`/api/v1/projects/${project.id}/issues`, {
 			title: `Inherited context ${runId}`,
 			description: 'Sits in Eng / Merging, which inherits from Shared / Merging.'
 		})
@@ -189,11 +188,15 @@ test('the workflow page names both directions of a pointer', async ({ page }) =>
 	await expect(base).toContainText(`${DOCS} / Merging`);
 
 	await gotoHydrated(page, `/workflows/${eng.id}`);
-	const child = page.locator(`#state-${stateId(eng, 'Merging')}`);
-	await expect(child).toContainText(`inherits from`);
-	await child
-		.getByRole('link', { name: `${SHARED} / Merging` })
-		.first()
+	// The accordion header is a button, so its pointer line is text; the
+	// editor row above it carries the link to the base.
+	await expect(page.locator(`#state-${stateId(eng, 'Merging')}`)).toContainText(
+		`inherits from ${SHARED} / Merging`
+	);
+	await page
+		.locator('form div.rounded-lg')
+		.filter({ has: picker(page, stateId(eng, 'Merging')) })
+		.getByRole('link', { name: 'Edit base →' })
 		.click();
 	await expect(page).toHaveURL(
 		new RegExp(`/workflows/${shared.id}#state-${stateId(shared, 'Merging')}$`)
@@ -216,6 +219,12 @@ test('removing a base offers to clear the pointers that name it', async ({ page 
 		.filter({ has: picker(page, stateId(shared, 'Merging')) });
 	await row.getByRole('button', { name: 'Remove state' }).click();
 	await page.getByRole('button', { name: 'Save workflow' }).click();
+
+	// The base holds the instructions item, so consent for the sweep is asked
+	// before consent for the pointers — both guards fire on this one save.
+	const sweep = page.getByRole('dialog', { name: 'Delete attached context too?' });
+	await expect(sweep).toContainText('instructions');
+	await sweep.getByRole('button', { name: 'Delete them' }).click();
 
 	const dialog = page.getByRole('dialog', { name: 'Clear inheritance pointers too?' });
 	await expect(dialog).toContainText(`${ENG} / Merging`);
