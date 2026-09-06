@@ -21,6 +21,7 @@ import {
 	runAtomic,
 	type ActorContext
 } from './core';
+import { assertWritable, issueProject } from './archive';
 import { eventInsert } from './events';
 
 /**
@@ -409,7 +410,13 @@ async function requireIssue(db: Kysely<Database>, userId: string, ref: string) {
 	let q = db
 		.selectFrom('issue')
 		.innerJoin('project', 'project.id', 'issue.project_id')
-		.select(['issue.id', 'issue.project_id', 'project.name as project_name', 'issue.number'])
+		.select([
+			'issue.id',
+			'issue.project_id',
+			'project.name as project_name',
+			'project.archived_at as project_archived_at',
+			'issue.number'
+		])
 		.where('project.user_id', '=', userId);
 	q = match
 		? q.where('project.name', '=', match[1]).where('issue.number', '=', Number(match[2]))
@@ -431,6 +438,7 @@ export async function addIssueLabels(
 	refs: unknown
 ): Promise<AddIssueLabelsResponse> {
 	const issue = await requireIssue(db, actor.userId, issueRef);
+	await assertWritable(db, actor, issueProject(issue), { issueId: issue.id });
 	const { labels, toCreate } = await resolveOrCreateLabels(db, actor, refs);
 
 	const already = new Set((await loadIssueLabels(db, issue.id)).map((l) => l.id));
@@ -463,6 +471,7 @@ export async function removeIssueLabel(
 	labelRef: string
 ): Promise<void> {
 	const issue = await requireIssue(db, actor.userId, issueRef);
+	await assertWritable(db, actor, issueProject(issue), { issueId: issue.id });
 	const label = await resolveLabelRef(db, actor.userId, labelRef);
 	const attached = label
 		? await db

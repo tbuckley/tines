@@ -45,6 +45,7 @@ import {
 	type Page
 } from './core';
 import { artifactTypeOf } from './artifacts';
+import { assertScopeWritable } from './archive';
 import { eventInsert } from './events';
 import {
 	resolveScope,
@@ -221,7 +222,9 @@ export function contextItemQuery(db: Kysely<Database>, userId: string) {
 			'scope_workflow.name as scope_workflow_name',
 			'scope_issue.number as scope_issue_number',
 			'scope_issue.project_id as scope_issue_project_id',
-			'issue_project.name as scope_issue_project_name'
+			'issue_project.name as scope_issue_project_name',
+			'scope_project.archived_at as scope_project_archived_at',
+			'issue_project.archived_at as scope_issue_project_archived_at'
 		])
 		.select((eb) =>
 			eb
@@ -246,7 +249,9 @@ function rowScope(row: ItemRow): ResolvedScope {
 		workflowName: row.scope_workflow_name,
 		issueNumber: row.scope_issue_number,
 		issueProjectName: row.scope_issue_project_name,
-		issueProjectId: row.scope_issue_project_id
+		issueProjectId: row.scope_issue_project_id,
+		projectArchivedAt: row.scope_project_archived_at,
+		issueProjectArchivedAt: row.scope_issue_project_archived_at
 	};
 }
 
@@ -590,6 +595,7 @@ export async function createContextItem(
 		workflowStateId: body.workflow_state_id ?? null,
 		issueId: body.issue_id ?? null
 	});
+	await assertScopeWritable(db, actor, scope);
 	await assertNameAvailable(db, actor.userId, kind, name, scope);
 
 	let promptBody: string | null = null;
@@ -706,6 +712,7 @@ export async function updateContextItem(
 		.where('context_item.id', '=', id)
 		.executeTakeFirst();
 	if (!row) throw notFound();
+	await assertScopeWritable(db, actor, rowScope(row));
 	const kind = row.kind as ContextKind;
 
 	if (body.expected_version !== undefined && body.expected_version !== row.version) {
@@ -915,6 +922,7 @@ export async function deleteContextItem(
 		.executeTakeFirst();
 	if (!row) throw notFound();
 	const scope = rowScope(row);
+	await assertScopeWritable(db, actor, scope);
 	await runAtomic(env, [
 		db.deleteFrom('context_item_file').where('context_item_id', '=', id).compile(),
 		db
@@ -961,6 +969,7 @@ export async function appendContextItem(
 			.where('context_item.id', '=', id)
 			.executeTakeFirst();
 		if (!row) throw notFound();
+		await assertScopeWritable(db, actor, rowScope(row));
 		if (row.kind !== 'prompt') {
 			throw new ApiFail(
 				422,

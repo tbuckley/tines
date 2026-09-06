@@ -34,6 +34,9 @@ export interface ResolvedScope extends ScopeIds {
 	issueProjectName: string | null;
 	/** The issue's project — used for event references. */
 	issueProjectId: string | null;
+	/** Archive state of the scope's project and of the issue's project (null = live). */
+	projectArchivedAt: number | null;
+	issueProjectArchivedAt: number | null;
 }
 
 /**
@@ -118,13 +121,15 @@ export async function resolveScope(
 		workflowName: null,
 		issueNumber: null,
 		issueProjectName: null,
-		issueProjectId: null
+		issueProjectId: null,
+		projectArchivedAt: null,
+		issueProjectArchivedAt: null
 	};
 
 	if (ids.projectId) {
 		const project = await db
 			.selectFrom('project')
-			.select(['id', 'name'])
+			.select(['id', 'name', 'archived_at'])
 			.where('id', '=', ids.projectId)
 			.where('user_id', '=', userId)
 			.executeTakeFirst();
@@ -134,6 +139,7 @@ export async function resolveScope(
 			});
 		}
 		scope.projectName = project.name;
+		scope.projectArchivedAt = project.archived_at;
 	}
 
 	if (ids.workflowStateId) {
@@ -182,7 +188,8 @@ export async function resolveScope(
 				'issue.number',
 				'issue.project_id',
 				'issue.workflow_id',
-				'project.name as project_name'
+				'project.name as project_name',
+				'project.archived_at as project_archived_at'
 			])
 			.where('issue.id', '=', issueId)
 			.where('project.user_id', '=', userId)
@@ -195,6 +202,7 @@ export async function resolveScope(
 		scope.issueNumber = issue.number;
 		scope.issueProjectName = issue.project_name;
 		scope.issueProjectId = issue.project_id;
+		scope.issueProjectArchivedAt = issue.project_archived_at;
 
 		if (ids.projectId && issue.project_id !== ids.projectId) {
 			throw new ApiFail(

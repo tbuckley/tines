@@ -34,6 +34,7 @@ import {
 	type ActorContext,
 	type Page
 } from './core';
+import { assertWritable, issueProject } from './archive';
 import { checkRequirements, listArtifacts, requirementSpecLabel } from './artifacts';
 import { contextSummaryForIssue } from './context';
 import { actorOf, eventInsert } from './events';
@@ -117,6 +118,7 @@ export function issueQuery(db: Kysely<Database>, userId: string) {
 			.selectAll('issue')
 			.select([
 				'project.name as project_name',
+				'project.archived_at as project_archived_at',
 				'state.name as state_name',
 				'state.category as state_category',
 				'state.position as state_position',
@@ -183,6 +185,7 @@ export function serializeIssue(row: IssueRow): Issue {
 		id: row.id,
 		project_id: row.project_id,
 		project_name: row.project_name,
+		project_archived_at: row.project_archived_at,
 		number: row.number,
 		title: row.title,
 		description: row.description,
@@ -628,6 +631,9 @@ export async function createIssue(
 		.where('user_id', '=', actor.userId)
 		.executeTakeFirst();
 	if (!project) throw notFound();
+	// Creating issues (and the schedules that ride along) is a project-level
+	// write: no draining run is exempt from it.
+	await assertWritable(db, actor, project);
 
 	const title = requireString(body.title, 'title', { max: 500 }).trim();
 	const description = optionalString(body.description, 'description') ?? '';
@@ -795,6 +801,7 @@ export async function updateIssue(
 ): Promise<IssueDetail> {
 	assertPinFieldsAllowed(actor, body);
 	const current = await getIssueDetail(db, actor.userId, { id });
+	await assertWritable(db, actor, issueProject(current), { issueId: current.id });
 	const title =
 		body.title !== undefined
 			? requireString(body.title, 'title', { max: 500 }).trim()
@@ -1026,6 +1033,7 @@ export async function transitionIssue(
 	body: TransitionIssueRequest
 ): Promise<IssueDetail> {
 	const current = await getIssueDetail(db, actor.userId, { id });
+	await assertWritable(db, actor, issueProject(current), { issueId: current.id });
 
 	const action = body.action?.trim();
 	const transitionId = body.transition_id?.trim();
@@ -1130,6 +1138,7 @@ export async function resumeIssue(
 	id: string
 ): Promise<IssueDetail> {
 	const current = await getIssueDetail(db, actor.userId, { id });
+	await assertWritable(db, actor, issueProject(current), { issueId: current.id });
 	if (!current.needs_attention && current.attempt_count === 0) return current;
 	await runAtomic(env, [
 		db
@@ -1155,6 +1164,7 @@ export async function createComment(
 	body: CreateCommentRequest
 ): Promise<Comment> {
 	const issue = await getIssueDetail(db, actor.userId, { id: issueId });
+	await assertWritable(db, actor, issueProject(issue), { issueId: issue.id });
 	const text = requireString(body.body, 'body', { max: 100_000 });
 
 	const id = newId('cmt');
@@ -1218,6 +1228,7 @@ async function requireComment(
 	row: { id: string; body: string; actor_api_key_id: string | null };
 }> {
 	const issue = await getIssueDetail(db, actor.userId, { id: issueId });
+	await assertWritable(db, actor, issueProject(issue), { issueId: issue.id });
 	const row = await db
 		.selectFrom('comment')
 		.select(['id', 'body', 'actor_api_key_id'])

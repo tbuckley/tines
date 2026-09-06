@@ -184,7 +184,10 @@ const CONTROL_PLANE_RULES: ControlPlaneRule[] = [
 	{ pattern: /^\/api\/v1\/labels(\/|$)/, readable: true },
 	// Bulk library writes: an agent must propose context changes, not apply
 	// a whole library over the top of them.
-	{ pattern: /^\/api\/v1\/import(\/|$)/ }
+	{ pattern: /^\/api\/v1\/import(\/|$)/ },
+	// Archiving is an operator act: an agent must not freeze (or thaw) the
+	// project it is working in, least of all the one draining around it.
+	{ pattern: /^\/api\/v1\/projects\/[^/]+\/(archive|unarchive)$/ }
 ];
 
 /** SvelteKit answers HEAD from the GET handler, so both are reads. */
@@ -205,8 +208,8 @@ export function runKeyForbidden(): ApiFail {
 		403,
 		'run_key_forbidden',
 		'Run keys cannot modify runners, routing rules, supervisor settings, parked issues, issue pins, or API keys, ' +
-			'cannot import a library, and cannot create, rename, or delete labels (reading the library and ' +
-			'applying existing labels is fine). ' +
+			'cannot import a library, cannot archive or unarchive projects, and cannot create, rename, or delete ' +
+			'labels (reading the library and applying existing labels is fine). ' +
 			'Propose the change instead: file an issue titled "Context change: <scope label>" describing ' +
 			'what should change and why; a human reviews and applies it.'
 	);
