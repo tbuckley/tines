@@ -1,4 +1,10 @@
-# Tines — Project Archival Spec
+# Tines — Projects Spec
+
+Two subsystems share this file because they share one rule set about which
+projects exist and which one you are looking at: **Archival** (Tines/195) and
+**Project focus** (Tines/196).
+
+## Archival
 
 Extends [phase one](../phase_01/SPEC.md), whose non-goals deferred deletion and
 archival wholesale. Project archival is lifted out of that deferral here
@@ -10,7 +16,7 @@ issues still appear in every list, its schedules still create work, agents still
 dispatch on it, and the only way to stop that was to delete the project — which
 the API refuses while it holds issues, and which would take the record with it.
 
-## Goals
+### Goals
 
 - Retire a project without losing anything: every link, ref, artifact, comment
   and URL keeps resolving after archiving.
@@ -18,9 +24,9 @@ the API refuses while it holds issues, and which would take the record with it.
 - Reversible with one command or one button, at any time.
 - Never strand a run that was already under way.
 
-## Decisions
+### Decisions
 
-### Archive drains, it does not refuse
+#### Archive drains, it does not refuse
 
 Archiving a project with active runs succeeds. The runs finish on their own
 issue and are reported in the response's `draining_runs`. Refusing would make
@@ -28,26 +34,26 @@ archiving unreliable exactly when a project is busiest; killing the runs would
 throw away work and leave half-written issues. `/api/v1/runs/*` and
 `/api/v1/runners/*` stay ungated so a draining run can report and be cancelled.
 
-### Hidden by default, nameable on request
+#### Hidden by default, nameable on request
 
 Lists hide archived projects rather than filtering them out of existence, and
 **naming an anchor overrides the default**. Anything else silently empties a
 list that a stale URL or a saved filter points at.
 
-### Schedules keep `enabled`
+#### Schedules keep `enabled`
 
 The sweep skips an archived project's schedules without clearing their
 `enabled` flag, so unarchiving restores exactly the state the user left. The UI
 labels such a row "paused · project archived" rather than lying in either
 direction.
 
-### The name stays reserved
+#### The name stays reserved
 
 An archived project still owns its name: creating a new project with it is
 `duplicate_project_name`. Reusing the name would make refs (`Project/12`)
 ambiguous across the archive boundary.
 
-## Rules
+### Rules
 
 1. **Hidden.** `GET /projects`, `/issues`, `/schedules` and `/context` omit
    archived projects by default. `GET /projects` takes
@@ -93,18 +99,91 @@ ambiguous across the archive boundary.
     unarchive to make changes" (Cancel run excepted, per rule 6) and every read
     is untouched. Any project select that a URL or a saved rule can point at
     keeps the archived project selectable, rendered "<name> (archived)", so
-    nothing is silently unset or silently unfiltered.
+    nothing is silently unset or silently unfiltered — except the `/issues`
+    list, whose project scope is the focus (below) and which has no project
+    select at all: a stale `?project=` naming an archived project becomes a
+    notice there, not a selection.
 
 Recorded non-issue: `GET /issues?schedule=<id>` with no project returns empty
 for an archived project. That parameter is a highlight id, unreachable from the
 app and absent from the CLI, so it is documented rather than fixed.
 
-## Non-goals
+### Non-goals
 
 - Deleting projects or issues (deletion of a project with issues is still
   refused; issue deletion stays deferred per phase one).
-- The project-focus switcher's behaviour when its project is archived
-  (Tines/196).
 - Per-project cost reporting (Tines/187).
 - Archiving anything other than a project — issues, workflows and context items
   have no archived state.
+
+## Project focus
+
+The project is a sticky, per-user **focus** rather than a URL filter (Tines/196
+→ Tines/259 for this half; Tines/260 extends the readers). One focus per user:
+either "All projects" or exactly one live project.
+
+### Goals
+
+- The project you are working in survives a reload, a new tab and another
+  device, without a parameter in the URL.
+- Scope is visible in the chrome, so no list has to explain what it is showing.
+- Agents and the CLI are untouched: a focus is a human's view, never a
+  permission or routing boundary.
+
+### Decisions
+
+**Server-side, not a cookie.** The focus lives in `user_preference`
+(`focused_project_id`, `last_project_id`), read by the `(app)` layout in the
+same wave as the project list. A cookie would be per-device and would have to be
+re-sent from every client; the row costs one primary-key lookup.
+
+**Opening a project page sets the focus.** It does not merely offer it: opening
+`/projects/<id>` is the clearest statement of what you are working on. The write
+is made from the client, never from the page `load` — the app preloads links on
+hover, so a load-side write would flip the focus on hover of a grid card.
+
+**`?project=` is retired as a persistent filter.** `/issues` is the one address
+for the list; `?project=<id|name>` there is a **one-shot** that sets the focus
+and redirects to `/issues` (keeping every other filter). There is no "from
+link" mode and no marker: after the redirect the chrome is the only thing
+saying what the scope is.
+
+### Rules
+
+1. **What sets the focus:** the chrome switcher, opening `/projects/<id>`,
+   creating a project (its `goto` lands on the project page), and the
+   `/issues?project=<id|name>` one-shot. Nothing else. `last_project_id` is a
+   New-issue default, not a focus, and setting a focus also sets it.
+2. **What the focus scopes:** the `/issues` list and its category counts, and
+   the project New issue opens with. No API list applies it.
+3. **A ref that cannot be honoured writes nothing.** An unknown `?project=`
+   renders the current list with "No project `<ref>`. Showing <scope>."; a ref
+   naming an archived project says so and links to it. Both leave the focus as
+   it was.
+4. **Resolution.** A focus whose project is missing or archived reads as All
+   projects, and the layout clears the stored pointer lazily — so unarchiving
+   the project does **not** restore it as the focus. Deleting a project nulls
+   both pointers (`ON DELETE SET NULL`).
+5. **The switcher never lists archived projects**, and `PATCH /preferences`
+   refuses one for either pointer (422 `invalid_field`).
+6. **Hidden below two projects.** With zero or one project neither the desktop
+   switcher nor the mobile Projects sheet renders and every page looks as it did
+   before; a single project still behaves as the focus for the New-issue
+   default. The first-project experience belongs to onboarding (Tines/183).
+7. **New issue's default project:** the focus, else `last_project_id` (last
+   focused or last created in), else — at two or more projects — an empty,
+   required select. Never `projects[0]`.
+8. **nav-memory** remembers the non-project Issues filters (category, state,
+   label, q) per tab as before; it strips `project`, which would otherwise
+   re-fire the one-shot on every click of the Issues tab.
+9. **Agents and the CLI.** `GET`/`PATCH /api/v1/preferences` is control-plane
+   fenced, reads included: a run key gets the same 403 as for runners and
+   settings. Every API list stays unscoped whatever its owner's focus is.
+
+### Non-goals
+
+- A CLI or agent default project, and focus as a permission or routing
+  boundary.
+- Remembering non-project filters server-side, or more than one focus at a time.
+- Moving issues between projects, project membership (Tines/205), per-project
+  labels, and project nesting.
