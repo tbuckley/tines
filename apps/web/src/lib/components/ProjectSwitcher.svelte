@@ -4,7 +4,9 @@
 	bar's Projects slot, which opens the same list upward as a sheet.
 
 	Hidden below two projects — with one project there is nothing to switch
-	between, and the empty state belongs to onboarding.
+	between, and the empty state belongs to onboarding. The header variant is
+	desktop-only: on a phone the bottom bar's slot is the same control, and two
+	of them on one screen would be two answers to "what am I looking at".
 -->
 <script lang="ts">
 	import type { Project } from '@tines/shared';
@@ -56,7 +58,7 @@
 					<button
 						{...props}
 						type="button"
-						class="text-muted-foreground hover:text-foreground -ml-1 flex h-8 max-w-[14rem] items-center gap-1 rounded-md px-1.5 text-sm font-medium transition-colors"
+						class="text-muted-foreground hover:text-foreground -ml-1 hidden h-8 max-w-[14rem] items-center gap-1 rounded-md px-1.5 text-sm font-medium transition-colors sm:flex"
 						aria-label="Project focus: {label}"
 						aria-haspopup="menu"
 					>
