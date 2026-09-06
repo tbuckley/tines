@@ -270,6 +270,11 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 		creds = { runner_id: registered.runner.id, token: registered.runner_token };
 		saveRunnerCredentials(opts.configDir, opts.url, opts.name, creds);
 		log(`registered runner "${opts.name}" (${creds.runner_id}); token stored in ${opts.configDir}`);
+		// A registered runner still takes no work until it is routed to and
+		// automation is on — say so here rather than leaving a silent poller.
+		log(
+			`next: route work to "${opts.name}" and turn automation on — ${opts.url}/agents (or: tines routing set ${opts.name} && tines supervisor enable)`
+		);
 	}
 
 	const client = createApiClient({ baseUrl: opts.url, apiKey: creds.token });

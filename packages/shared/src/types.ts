@@ -1319,6 +1319,13 @@ export const RUN_END_OUTCOMES: readonly RunEndOutcome[] = ['advanced', 'stalled'
 /** Statuses that hold the issue's exclusive claim (and count toward caps). */
 export const ACTIVE_RUN_STATUSES: readonly RunStatus[] = ['assigned', 'launching', 'running'];
 
+/**
+ * Runner names are CLI addresses (routing rules and `--name` carry them), so
+ * they are constrained to a shell- and URL-safe shape. Shared so the Add
+ * runner dialog validates against the exact regex the server enforces.
+ */
+export const RUNNER_NAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
+
 /** Local-runner liveness: online = last poll within this window. */
 export const RUNNER_ONLINE_WINDOW_MS = 2 * 60 * 1000;
 
@@ -1902,6 +1909,18 @@ export function utilizationLabel(
 // Dispatch explainer
 
 /** One eligibility check, pass or fail, with a human-readable detail. */
+/**
+ * A remedy for a failing check: a place to click and/or a command to run.
+ * Purely presentational — an action never affects `eligible`.
+ */
+export interface DispatchCheckAction {
+	label: string;
+	/** App-relative path. The web renders it as a link; the CLI has no origin, so text mode ignores it. */
+	href?: string;
+	/** A ready-to-paste CLI command. */
+	cli?: string;
+}
+
 export interface DispatchCheck {
 	name:
 		| 'automation_enabled'
@@ -1913,6 +1932,8 @@ export interface DispatchCheck {
 		| 'routed';
 	ok: boolean;
 	detail: string;
+	/** Present only on checks with something to fix. Optional so published CLIs keep parsing. */
+	action?: DispatchCheckAction;
 }
 
 export type DispatchTargetVerdict =

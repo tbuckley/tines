@@ -4,7 +4,7 @@
  * more `commands/*.ts` modules lives here; single-consumer helpers travel with
  * their noun.
  */
-import { formatTable } from './format.js';
+import { formatTable, requirementLines } from './format.js';
 import { parseIssueRef } from './refs.js';
 import {
 	ApiError,
@@ -12,6 +12,7 @@ import {
 	createApiClient,
 	listAll,
 	type ApiClient,
+	type ArtifactRequirementCheck,
 	type IssueDetail,
 	type ListResponse,
 	type PageParams,
@@ -145,18 +146,12 @@ export function reportError(err: unknown): never {
 		// fix command the server includes, so the loop closes without help.
 		const unmet = err.details?.unmet;
 		if (Array.isArray(unmet)) {
+			// Rendered by the same helper `issues show` uses, so the pre-flight
+			// view of a gate and the failure it produces cannot drift.
 			for (const raw of unmet) {
-				const r = raw as {
-					artifact: string;
-					type?: string;
-					content_type?: string;
-					status?: string;
-					description?: string;
-					fix?: string;
-				};
-				const spec = [r.type, r.content_type].filter(Boolean).join(', ');
-				message += `\nrequires artifact "${r.artifact}"${spec ? ` (${spec})` : ''}: ${r.status ?? 'unmet'}${r.description ? ` — ${r.description}` : ''}`;
-				if (r.fix) message += `\n  fix: ${r.fix}`;
+				for (const line of requirementLines(raw as ArtifactRequirementCheck)) {
+					message += `\n${line}`;
+				}
 			}
 		}
 		die(message);

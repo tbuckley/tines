@@ -2,6 +2,7 @@ import {
 	ACTIVE_RUN_STATUSES,
 	DEFAULT_MANAGED_RUN_COST_USD,
 	MODEL_TIERS,
+	RUNNER_NAME_PATTERN,
 	RUNNER_ONLINE_WINDOW_MS,
 	RUNNER_TYPES,
 	type CreateRunnerRequest,
@@ -57,9 +58,6 @@ export function requireTier(value: unknown, field: string): ModelTier {
 	}
 	return value as ModelTier;
 }
-
-/** Names double as CLI addresses and routing-rule targets: no whitespace, ":", or "/". */
-const RUNNER_NAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
 
 function validateRunnerName(value: unknown): string {
 	const name = requireString(value, 'name', { max: 100 }).trim();

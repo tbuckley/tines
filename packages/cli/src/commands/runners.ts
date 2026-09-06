@@ -332,7 +332,10 @@ export function register(program: Command): void {
 			.description(
 				'Run the local runner daemon: register/reconnect, poll for assigned runs, execute them'
 			)
-			.option('--name <name>', 'runner name, unique per user (default: this hostname)')
+			.option(
+				'--name <name>',
+				'runner name, unique per user; name it machine-plus-harness, e.g. macbook-claude (default: this hostname)'
+			)
 			.option('--harness <harness>', 'claude-code | codex | custom', 'claude-code')
 			.option(
 				'--command <template>',

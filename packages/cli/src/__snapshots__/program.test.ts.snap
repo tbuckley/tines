@@ -253,23 +253,18 @@ Typed, versioned attachments on an issue — the work products transition
 requirements gate on
 
 Options:
-  -h, --help                       display help for command
+  -h, --help                              display help for command
 
 Commands:
-  list [options] <ref>             List the artifacts attached to an issue
-  show [options] <ref> <name>      Show an artifact with its full version
-                                   history
-  attach [options] <ref> <name>    Attach content to a named artifact slot
-                                   (creates it, or appends the next version)
-  reaffirm [options] <ref> <name>  Bless the current content as fresh (appends a
-                                   version reusing the same payload)
-  get [options] <ref> <name>       Fetch content (current version by default); a
-                                   link/pr prints its URL
-  delete [options] <ref> <name>    Delete an artifact — every version and its
-                                   stored files (history is not recoverable)
-  help [command]                   display help for command
+  list [options] <ref>                    List the artifacts attached to an issue
+  show [options] <ref> <name>             Show an artifact with its full version history
+  attach [options] <ref> <name> [source]  Attach content to a named artifact slot (creates it, or appends the next version)
+  reaffirm [options] <ref> <name>         Bless the current content as fresh (appends a version reusing the same payload)
+  get [options] <ref> <name>              Fetch content (current version by default); a link/pr prints its URL
+  delete [options] <ref> <name>           Delete an artifact — every version and its stored files (history is not recoverable)
+  help [command]                          display help for command
 ",
-  "tines issues artifacts attach": "Usage: tines issues artifacts attach [options] <ref> <name>
+  "tines issues artifacts attach": "Usage: tines issues artifacts attach [options] <ref> <name> [source]
 
 Attach content to a named artifact slot (creates it, or appends the next
 version)
@@ -287,6 +282,9 @@ Options:
   --title <title>           display title (with --link)
   -d, --description <text>  artifact description, shown in lists and launch
                             prompts
+  --ignore-gates            attach this type even when a transition requirement
+                            rejects it (skips inference and the pre-flight
+                            checks)
   -u, --url <url>           base URL of the Tines API (or set TINES_API_URL, or
                             run \`tines login\`; default
                             https://tines.tbuckley.dev)
@@ -979,8 +977,9 @@ Run the local runner daemon: register/reconnect, poll for assigned runs, execute
 them
 
 Options:
-  --name <name>                  runner name, unique per user (default: this
-                                 hostname)
+  --name <name>                  runner name, unique per user; name it
+                                 machine-plus-harness, e.g. macbook-claude
+                                 (default: this hostname)
   --harness <harness>            claude-code | codex | custom (default:
                                  "claude-code")
   --command <template>           custom harness command template ({prompt_file},

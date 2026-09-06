@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
 	ageLabel,
 	artifactSummary,
+	artifactTypeLabel,
 	byteSize,
 	commentLines,
 	contextItemSummary,
@@ -10,6 +11,7 @@ import {
 	keptWorkspaceRow,
 	linkRows,
 	prRefLabel,
+	requirementLines,
 	quotaLabel,
 	recurrenceLabel,
 	ruleTargetsLabel,
@@ -363,5 +365,77 @@ describe('keptWorkspaceRow', () => {
 			now
 		);
 		expect(row).toEqual(['arun_2', '—', 'completed', '1h', '0 B', '/w']);
+	});
+});
+
+describe('artifactTypeLabel', () => {
+	it.each([
+		['text' as const, 'text/markdown', 'text, text/markdown'],
+		['file' as const, 'image/png', 'file, image/png'],
+		// A type with no content type of its own reads as the bare type.
+		['folder' as const, null, 'folder'],
+		['link' as const, null, 'link'],
+		['pr' as const, null, 'pr']
+	])('labels a %s artifact', (type, contentType, expected) => {
+		expect(
+			artifactTypeLabel({
+				artifact_type: type,
+				current_version: { content_type: contentType } as never
+			})
+		).toBe(expected);
+	});
+});
+
+describe('requirementLines', () => {
+	const base = {
+		artifact: 'prd',
+		type: 'text' as const,
+		content_type: 'text/markdown',
+		description: 'The product requirements',
+		fix: 'tines issues artifacts attach Proj/1 prd --text @prd.md'
+	};
+
+	it('names the slot, its spec, the status, the description and the fix', () => {
+		expect(
+			requirementLines({ ...base, status: 'missing', current_type: null, current_version: null })
+		).toEqual([
+			'requires artifact "prd" (text, text/markdown): missing — The product requirements',
+			'  fix: tines issues artifacts attach Proj/1 prd --text @prd.md'
+		]);
+	});
+
+	it.each([
+		[{ status: 'satisfied' as const, current_type: 'text' as const }, 'satisfied (v2)'],
+		[
+			{ status: 'stale' as const, current_type: 'text' as const },
+			'stale (v2, attached before the current state)'
+		],
+		[
+			{ status: 'type_mismatch' as const, current_type: 'link' as const },
+			'type mismatch (holds link)'
+		],
+		[
+			{ status: 'type_mismatch' as const, current_type: 'text' as const },
+			'type mismatch (v2 is not text/markdown)'
+		]
+	])('reports the %o status', (over, expected) => {
+		const [line] = requirementLines({
+			...base,
+			...over,
+			current_version: { version: 2, created_at: 0 }
+		});
+		expect(line).toContain(`: ${expected}`);
+	});
+
+	it('drops the fix line when the server sent none', () => {
+		expect(
+			requirementLines({
+				artifact: 'notes',
+				status: 'missing',
+				current_type: null,
+				current_version: null,
+				fix: ''
+			})
+		).toEqual(['requires artifact "notes": missing']);
 	});
 });
