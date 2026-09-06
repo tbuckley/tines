@@ -48,6 +48,8 @@ export function addIssue(
 		workflow?: string;
 		project?: string;
 		updatedAt?: number;
+		/** The wait clock the fleet queue reads; defaults to `created_at`. */
+		stateEnteredAt?: number;
 		pinnedRunner?: string;
 		pinnedTier?: ModelTier;
 		attemptCount?: number;
@@ -61,8 +63,9 @@ export function addIssue(
 	t.sqlite
 		.prepare(
 			`INSERT INTO issue (id, project_id, number, title, description, workflow_id, state_id,
-				pinned_runner_id, pinned_tier, attempt_count, needs_attention, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+				pinned_runner_id, pinned_tier, attempt_count, needs_attention, created_at, updated_at,
+				state_entered_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 		)
 		.run(
 			id,
@@ -77,7 +80,8 @@ export function addIssue(
 			opts.attemptCount ?? 0,
 			opts.needsAttention ? 1 : 0,
 			NOW,
-			opts.updatedAt ?? NOW
+			opts.updatedAt ?? NOW,
+			opts.stateEnteredAt ?? NOW
 		);
 	for (const labelId of opts.labels ?? []) {
 		t.sqlite
