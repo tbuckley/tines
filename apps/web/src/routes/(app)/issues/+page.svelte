@@ -60,4 +60,7 @@
 		: data.filters.ready
 			? 'No ready issues match these filters.'
 			: 'No issues match these filters.'}
+	emptyAction={data.projects.length === 0
+		? { label: 'New project', href: '/projects?new=1' }
+		: undefined}
 />

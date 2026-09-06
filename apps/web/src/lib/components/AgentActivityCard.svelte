@@ -96,7 +96,18 @@
 							{:else}
 								<IconX size={14} class="mt-px shrink-0 text-amber-700 dark:text-amber-400" />
 							{/if}
-							<span class={check.ok ? 'text-muted-foreground' : ''}>{check.detail}</span>
+							<span class={check.ok ? 'text-muted-foreground' : ''}>
+								{check.detail}
+								{#if check.action}
+									{#if check.action.href}
+										<a href={check.action.href} class="ml-1 underline underline-offset-2"
+											>{check.action.label}</a
+										>
+									{:else if check.action.cli}
+										<code class="bg-muted ml-1 rounded px-1 py-0.5">{check.action.cli}</code>
+									{/if}
+								{/if}
+							</span>
 						</li>
 					{/each}
 				</ul>
