@@ -119,6 +119,40 @@ The 201 from `POST /api/v1/projects` carries the mirror image: `starter:
 StarterApplied`, naming the workflows created or reused (`reused: true`), the
 context items, and the first issue's id, number, ref and state.
 
+## The chooser
+
+The New-project dialog (`NewProjectModal.svelte`) opens with a **Start from**
+radiogroup above Name, one stacked row per starter at every width — a
+three-across grid does not fit `Modal size="md"` (~400 px of content on
+desktop, ~310 px at 390 px). The menu comes from the page's server load, not a
+client fetch: `listStarters()` is pure, so the dialog has no loading or
+failure state. Blank is preselected, so a returning user's flow is unchanged.
+
+Per-starter inputs are rendered from `inputs` — label, hint, `required` — so
+starter *content* can change without touching the dialog. Required inputs
+disable Create; nothing else is enforced client-side, because a client rule
+that blocks a submit the server would accept is worse than the 422.
+
+The conventions textarea is the dialog's own, and `initial_prompt` is sent
+**verbatim**: the server's fallback to `conventions_template` only fires when
+the field is absent, which from the UI it never is. A *pristine* textarea
+mirrors the rendered template continuously, so typing Plan's brief — which its
+template interpolates — updates the prefill live; the first edit freezes it,
+and switching starters then asks before replacing it ("Replace" / "Keep mine").
+The starter switches either way; only the text is at stake. Inputs are kept
+across a switch so switching back restores them, and filtered to the selected
+starter's declared keys on submit, so a stale key never 422s.
+
+"This creates:" is rendered client-side by `$lib/starter-preview.ts` using the
+server's exact variable set (`{ ...inputs, project, repo_name }`) — for the
+prefill, blanks render as `''` as the server would; for the preview, as `…`,
+so a half-filled form reads as a sentence. Two deliberate imprecisions: the
+`Prompt "conventions"` line is added by the client (`creates.context` omits
+it, because `createProject` seeds it itself) and only when the textarea is
+non-blank; and the workflow lines say what a fresh project gets, ignoring the
+collision rule above, because the client cannot know whether a workflow will
+be reused or renamed. The project page shows the truth.
+
 ## Security
 
 No run-key fence. `POST /projects`, `/workflows`, `/context` and `/issues` are

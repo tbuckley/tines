@@ -41,6 +41,17 @@ test.beforeEach(async ({ context }) => {
 	await signIn(context, ALICE.sessionToken);
 });
 
+/**
+ * The project page does not name its default workflow, so the grid card —
+ * which does — is where that acceptance criterion is checked. Called from the
+ * project page it has just landed on.
+ */
+async function expectDefaultWorkflow(page: Page, name: string) {
+	const href = new URL(page.url()).pathname;
+	await page.goto('/projects');
+	await expect(page.locator(`a[href="${href}"]`)).toContainText(`workflow: ${name}`);
+}
+
 /** Opens the New-project dialog on an already-hydrated /projects. */
 async function openDialog(page: Page) {
 	const dialog = page.getByRole('dialog', { name: 'New project' });
@@ -75,8 +86,9 @@ test('Blank is preselected and creates a project with only the conventions promp
 	await dialog.getByRole('button', { name: 'Create project' }).click();
 	await expect(page).toHaveURL(/\/projects\/prj_/);
 	await expect(page.getByRole('heading', { name })).toBeVisible();
-	await expect(page.getByRole('link', { name: 'conventions' })).toBeVisible();
-	await expect(page.getByText('No issues yet.')).toBeVisible();
+	// Context items are buttons (they open the editor), not links.
+	await expect(page.getByRole('button', { name: /^conventions/ })).toBeVisible();
+	await expect(page.getByText('No issues in this project yet.')).toBeVisible();
 });
 
 test('Code repository asks for a URL, previews the repo item, and creates it', async ({ page }) => {
@@ -114,11 +126,11 @@ test('Code repository asks for a URL, previews the repo item, and creates it', a
 	await expect(
 		page.getByRole('link', { name: new RegExp(code.creates.first_issue?.title ?? 'nope') })
 	).toBeVisible();
-	await expect(page.getByRole('link', { name: 'conventions' })).toBeVisible();
-	await expect(page.getByRole('link', { name: `widget-${runId}` })).toBeVisible();
-	// The starter's own workflow is the project's default.
-	const defaultWorkflow = code.creates.workflows.find((w) => w.default)?.name;
-	await expect(page.getByText(new RegExp(`workflow: ${defaultWorkflow}`))).toBeVisible();
+	await expect(page.getByRole('button', { name: /^conventions/ })).toBeVisible();
+	await expect(page.getByRole('button', { name: new RegExp(`^widget-${runId}`) })).toBeVisible();
+	// The starter's own workflow is the project's default — the grid card is
+	// where the project page does not say so itself.
+	await expectDefaultWorkflow(page, code.creates.workflows.find((w) => w.default)?.name ?? '');
 });
 
 test('Plan something together renders the brief into the prefill and the preview', async ({
@@ -144,9 +156,8 @@ test('Plan something together renders the brief into the prefill and the preview
 	await expect(page).toHaveURL(/\/projects\/prj_/);
 	const title = plan.creates.first_issue?.title.replace('{{ brief }}', brief) ?? 'nope';
 	await expect(page.getByRole('link', { name: title })).toBeVisible();
-	await expect(page.getByRole('link', { name: 'conventions' })).toBeVisible();
-	const defaultWorkflow = plan.creates.workflows.find((w) => w.default)?.name;
-	await expect(page.getByText(new RegExp(`workflow: ${defaultWorkflow}`))).toBeVisible();
+	await expect(page.getByRole('button', { name: /^conventions/ })).toBeVisible();
+	await expectDefaultWorkflow(page, plan.creates.workflows.find((w) => w.default)?.name ?? '');
 });
 
 test('switching starters confirms before discarding edited conventions', async ({ page }) => {
