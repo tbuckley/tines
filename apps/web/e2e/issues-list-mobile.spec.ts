@@ -285,6 +285,31 @@ async function fadedEdges(page: Page) {
 const expectFade = (page: Page, edges: { left: boolean; right: boolean }) =>
 	expect.poll(() => fadedEdges(page)).toEqual({ masked: true, ...edges });
 
+/** The width of the fade at either edge, as the bar renders it. */
+const FADE = 24;
+
+/**
+ * The selected tab, whole *and* out of the fade: a tab under the fade is
+ * hidden as surely as one past the container's edge, so `toBeInViewport`
+ * alone would pass on the defect this pins.
+ */
+async function expectSelectedClear(page: Page, name: string) {
+	const on = tab(page, name);
+	await expect(on).toHaveAttribute('aria-current', 'page');
+	await expect(on).toBeInViewport({ ratio: 1 });
+	await expect
+		.poll(async () => {
+			const edges = await fadedEdges(page);
+			const t = await box(on);
+			const s = await box(strip(page));
+			return {
+				clearOfLeftFade: t.x >= s.x + (edges.left ? FADE : 0) - 1,
+				clearOfRightFade: t.x + t.width <= s.x + s.width - (edges.right ? FADE : 0) + 1
+			};
+		})
+		.toEqual({ clearOfLeftFade: true, clearOfRightFade: true });
+}
+
 test.describe('the category tab strip', () => {
 	test('the phone strip fades the edge that hides tabs', async ({ page }) => {
 		await page.setViewportSize(PHONE);
@@ -335,6 +360,23 @@ test.describe('the category tab strip', () => {
 			const align = await tab(page, name).evaluate((el) => getComputedStyle(el).scrollSnapAlign);
 			expect(align, `${name} tab`).toContain('start');
 		}
+
+		// And behaviourally: nudged a few pixels off a snap position, the strip
+		// settles back onto one instead of resting mid-tab. That correction is
+		// also what used to swallow a small programmatic reveal, which is why
+		// `revealActive` targets a snap position rather than an offset.
+		const settled = await strip(page).evaluate(async (el) => {
+			const pad = parseFloat(getComputedStyle(el).scrollPaddingLeft) || 0;
+			const max = el.scrollWidth - el.clientWidth;
+			const origin = el.getBoundingClientRect().left - el.scrollLeft;
+			const snaps = [...el.querySelectorAll('a[href]')].map((node) =>
+				Math.min(Math.max(node.getBoundingClientRect().left - origin - pad, 0), max)
+			);
+			el.scrollTo({ left: snaps[1] + 6, behavior: 'instant' });
+			await new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
+			return { scrollLeft: el.scrollLeft, snaps };
+		});
+		expect(Math.min(...settled.snaps.map((x) => Math.abs(x - settled.scrollLeft)))).toBeLessThan(2);
 	});
 
 	test('a filtered load shows its selected tab', async ({ page }) => {
@@ -363,6 +405,38 @@ test.describe('the category tab strip', () => {
 		await tab(page, 'Done').click();
 		await expect(page).toHaveURL(/category=done/);
 		await expect(tab(page, 'Done')).toBeInViewport({ ratio: 1 });
+	});
+
+	/**
+	 * `awaiting_human` is the small-correction case: the reveal needs ~29px at
+	 * 390, which `snap-proximity` used to swallow whole, leaving the selected
+	 * tab clipped by 4px and its count rendering at a third alpha under the
+	 * fade — the issue's original symptom, on the highlighted tab.
+	 */
+	test('a filtered load on a mid-strip category clears the fade', async ({ page }) => {
+		for (const size of [PHONE, { width: 320, height: 568 }]) {
+			await page.setViewportSize(size);
+			await page.goto(`${listUrl}&category=awaiting_human`);
+			await expect(tab(page, 'Open')).toBeVisible();
+			await expectSelectedClear(page, 'Awaiting');
+		}
+
+		// And `done=1`, whose selected tab is the sixth "All" one the strip
+		// only grows when it is on.
+		await page.setViewportSize(PHONE);
+		await page.goto(`${listUrl}&done=1`);
+		await expect(tab(page, 'All')).toBeVisible();
+		await expectSelectedClear(page, 'All');
+	});
+
+	test('tapping a mid-strip tab leaves it clear of the fade', async ({ page }) => {
+		await page.setViewportSize(PHONE);
+		await page.goto(listUrl);
+		await expect(tab(page, 'Open')).toBeVisible();
+
+		await tab(page, 'Awaiting').click();
+		await expect(page).toHaveURL(/category=awaiting_human/);
+		await expectSelectedClear(page, 'Awaiting');
 	});
 
 	test('the project page strip fades the same way', async ({ page }) => {
