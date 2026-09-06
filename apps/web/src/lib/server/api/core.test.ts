@@ -164,13 +164,19 @@ describe('assertRunKeyAllowed', () => {
 	it('lets a live run key read the label library it is told to classify with', () => {
 		expect(() => assertRunKeyAllowed(runKey, '/api/v1/labels', 'GET', now)).not.toThrow();
 		expect(() => assertRunKeyAllowed(runKey, '/api/v1/labels', 'HEAD', now)).not.toThrow();
+		// The fleet reads, opened with the Now row (Tines/256).
+		expect(() => assertRunKeyAllowed(runKey, '/api/v1/runners', 'GET', now)).not.toThrow();
+		expect(() =>
+			assertRunKeyAllowed(runKey, '/api/v1/supervisor/settings', 'GET', now)
+		).not.toThrow();
+		expect(() => assertRunKeyAllowed(runKey, '/api/v1/supervisor/queue', 'GET', now)).not.toThrow();
 	});
 
 	it('403s a run key on every control-plane surface, naming the proposal convention', () => {
 		for (const [path, method] of [
-			['/api/v1/runners', 'GET'],
+			['/api/v1/runners', 'POST'],
 			['/api/v1/routing-rules/rul_1', 'PATCH'],
-			['/api/v1/supervisor/settings', 'GET'],
+			['/api/v1/supervisor/settings', 'PUT'],
 			['/api/v1/issues/iss_1/resume', 'POST'],
 			['/api/v1/api-keys', 'GET'],
 			['/api/v1/labels', 'POST']
