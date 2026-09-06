@@ -29,6 +29,7 @@ let stale: IssueDetail;
 let gatedMd: IssueDetail;
 let gatedPlain: IssueDetail;
 let gatedPhone: IssueDetail;
+let gatedFile: IssueDetail;
 
 test.beforeAll(async ({ playwright }) => {
 	const request = await playwright.request.newContext({
@@ -68,6 +69,7 @@ test.beforeAll(async ({ playwright }) => {
 				{ name: 'Design', category: 'active' },
 				{ name: 'Implementation', category: 'active' },
 				{ name: 'Review', category: 'active' },
+				{ name: 'Archive', category: 'active' },
 				{ name: 'Done', category: 'done' }
 			],
 			transitions: [
@@ -91,6 +93,15 @@ test.beforeAll(async ({ playwright }) => {
 					from: 'Design',
 					to: 'Done',
 					requires: [{ artifact: 'notes', type: 'text', content_type: 'text/plain' }]
+				},
+				// A concrete *file* MIME: the write declares the picked file, so
+				// only reading that file catches a PNG under a PDF gate. Its own
+				// to_state, since a workflow takes one transition per state pair.
+				{
+					name: 'archive',
+					from: 'Design',
+					to: 'Archive',
+					requires: [{ artifact: 'deck', type: 'file', content_type: 'application/pdf' }]
 				}
 			]
 		})
@@ -114,6 +125,7 @@ test.beforeAll(async ({ playwright }) => {
 	gatedMd = await inDesign('Panel gated md');
 	gatedPlain = await inDesign('Panel gated plain');
 	gatedPhone = await inDesign('Panel gated phone');
+	gatedFile = await inDesign('Panel gated file');
 
 	await request.dispose();
 });
@@ -381,4 +393,33 @@ test('the gate note and warning wrap on a phone', async ({ page }) => {
 	// link for some other purpose.
 	await page.locator('#artifact-url').fill('https://example.com/prd');
 	await expect(page.getByRole('button', { name: 'Attach', exact: true })).toBeEnabled();
+});
+
+test('the pre-selection re-arms on a new slot name, and a file gate reads the picked file', async ({
+	page
+}) => {
+	await openAttachFor(page, gatedFile, 'prd');
+	await expect(typeRadio(page, 'text')).toBeChecked();
+
+	// A hand pick wins over the gate it was made against…
+	await typeOption(page, 'link').click();
+	await expect(typeRadio(page, 'link')).toBeChecked();
+
+	// …and a name matching a *different* gate re-arms the pre-selection.
+	await page.locator('#artifact-name').fill('deck');
+	await expect(typeRadio(page, 'file')).toBeChecked();
+	await expect(page.getByText('Required by archive (file, application/pdf)')).toBeVisible();
+
+	// The upload declares the picked file, never the gate — so a PNG under a
+	// PDF gate warns rather than storing image/png in silence.
+	const fileInput = page.locator('[aria-label="File drop zone"] input[type="file"]');
+	await fileInput.setInputFiles({ name: 'deck.png', mimeType: 'image/png', buffer: PNG });
+	const warning = page.getByText(/cannot satisfy/);
+	await expect(warning).toBeVisible();
+	await expect(warning).toContainText('needs application/pdf');
+	await expect(page.getByRole('button', { name: 'Attach', exact: true })).toBeEnabled();
+
+	// What the gate asked for clears it.
+	await fileInput.setInputFiles({ name: 'deck.pdf', mimeType: 'application/pdf', buffer: PNG });
+	await expect(warning).toBeHidden();
 });

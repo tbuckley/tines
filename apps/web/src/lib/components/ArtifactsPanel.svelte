@@ -169,8 +169,14 @@
 	let attachError = $state<string | null>(null);
 	let attaching = $state(false);
 	let dragOver = $state(false);
-	/** Set the moment the operator clicks a type: their choice is never overridden. */
-	let typePicked = $state(false);
+	/**
+	 * The gate set the operator's last hand pick was made against. A pick wins
+	 * over the pre-selection while the name keeps matching the same gates; when
+	 * the typed name matches a *different* gate set the pre-selection re-arms,
+	 * which is what "not chosen one by hand since the name last matched" means.
+	 * Null until they pick.
+	 */
+	let pickedFor = $state<string | null>(null);
 
 	/**
 	 * The requirements on this slot, live as the name is typed — the same gates
@@ -186,19 +192,30 @@
 	const gateContentType = $derived(
 		attachGateHint(attachGates.filter((g) => g.check.type === attachType))?.contentType
 	);
+	/** Exactly what the file branch of `submitAttach` will declare, or nothing yet. */
+	const attachFileType = $derived(
+		attachFile ? attachFile.type || 'application/octet-stream' : undefined
+	);
 	const gateWarning = $derived(
 		attachGateWarning(
 			attachGates,
 			attachType,
-			effectiveContentType(attachType, gateContentType, attachFile?.type)
+			effectiveContentType(attachType, gateContentType, attachFileType)
 		)
 	);
+	/** Identity of the gates on the typed name — the pre-selection re-arms when it changes. */
+	const gateKey = $derived(
+		attachGates
+			.map((g) => `${g.transition}:${g.check.type ?? ''}:${g.check.content_type ?? ''}`)
+			.join('|')
+	);
+	const typePicked = $derived(pickedFor !== null && pickedFor === gateKey);
 
 	/**
 	 * Flip the selector to the gate's type as the name is typed. Reads
 	 * `attachType` so the effect settles after its own write; `typePicked`
-	 * stops it re-asserting over a hand-picked type (which would silently
-	 * revert the operator on the next keystroke).
+	 * stops it re-asserting over a type picked against these same gates
+	 * (which would silently revert the operator on the next keystroke).
 	 */
 	$effect(() => {
 		const wanted = gateHint?.type;
@@ -217,7 +234,7 @@
 		attachTitle = '';
 		attachPr = '';
 		attachError = null;
-		typePicked = false;
+		pickedFor = null;
 		attachOpen = true;
 	}
 
@@ -515,7 +532,7 @@
 								checked={attachType === t}
 								onchange={() => {
 									attachType = t;
-									typePicked = true;
+									pickedFor = gateKey;
 								}}
 								class="sr-only"
 							/>
@@ -544,8 +561,8 @@
 				<span class="font-medium">{gateWarning.transition}</span>
 				(needs {gateWarning.wants}){#each gateWarning.others as other (other)}, nor <span
 						class="font-medium">{other}</span
-					>{/each}{#if attachTo}
-					— the type cannot change; delete and re-attach{/if}. Attaching is still allowed.
+					>{/each}{#if attachTo}{' '}— the type cannot change; delete and re-attach{/if}. Attaching
+				is still allowed.
 			</p>
 		{/if}
 

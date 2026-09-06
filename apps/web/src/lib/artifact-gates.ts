@@ -71,12 +71,23 @@ export function attachGateHint(gates: ArtifactGate[]): AttachGateHint | null {
 		type,
 		transition: first.transition,
 		spec: gateSpec(first.check),
-		others: rest.map((g) => ({ transition: g.transition, spec: gateSpec(g.check) })),
+		others: dedupe(rest.map((g) => ({ transition: g.transition, spec: gateSpec(g.check) }))),
 		contentType: declaredContentType(
 			typed.map((g) => g.check),
 			type
 		)
 	};
+}
+
+/** One entry per distinct transition/spec pair, as the warning's list is. */
+function dedupe(entries: { transition: string; spec: string }[]): { transition: string; spec: string }[] {
+	const seen = new Set<string>();
+	return entries.filter((e) => {
+		const key = `${e.transition}\u0000${e.spec}`;
+		if (seen.has(key)) return false;
+		seen.add(key);
+		return true;
+	});
 }
 
 /** The chosen type cannot satisfy any gate on the slot. */
@@ -116,17 +127,20 @@ function wantsLabel(check: ArtifactRequirementCheck, type: ArtifactType): string
 }
 
 /**
- * The content type a submit will declare, for the acceptance check and the
- * `PUT` body. A text write defaults to `text/markdown` (the server's default),
- * a file to the picked file's own type; folder/link/pr declare none.
+ * The content type a submit will actually declare, for the acceptance check.
+ * Only the *text* write inherits the gate's MIME (the dialog puts it in the
+ * body); a file upload declares the picked file's own type, so reading the
+ * gate's MIME there would check a claim the write never makes — a `.png`
+ * under a `(file, application/pdf)` gate would pass silently and then fail
+ * the move on an immutable artifact. A file not yet picked declares nothing
+ * (undefined), which no requirement can refuse offline.
  */
 export function effectiveContentType(
 	type: ArtifactType,
 	gateContentType: string | undefined,
 	fileType: string | undefined
 ): string | undefined {
-	if (gateContentType !== undefined) return gateContentType;
-	if (type === 'text') return 'text/markdown';
-	if (type === 'file') return fileType || undefined;
+	if (type === 'text') return gateContentType ?? 'text/markdown';
+	if (type === 'file') return fileType;
 	return undefined;
 }

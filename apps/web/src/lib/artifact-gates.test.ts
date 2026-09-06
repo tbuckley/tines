@@ -19,15 +19,7 @@ const check = (over: Partial<ArtifactRequirementCheck> = {}): ArtifactRequiremen
 const transition = (name: string, requires: ArtifactRequirementCheck[]): AllowedTransition => ({
 	transition_id: `t_${name}`,
 	name,
-	to_state: {
-		id: 's',
-		workflow_id: 'w',
-		name: 'Next',
-		category: 'active',
-		position: 0,
-		created_at: 0,
-		updated_at: 0
-	},
+	to_state: { id: 's', name: 'Next', category: 'active', position: 0, inherits_from: null },
 	requires
 });
 
@@ -98,6 +90,17 @@ describe('attachGateHint', () => {
 		expect(hint?.contentType).toBeUndefined();
 	});
 
+	it('lists a repeated gate once', () => {
+		const hint = attachGateHint(
+			gates(
+				transition('approve', [check({ type: 'text' })]),
+				transition('ship', [check({ type: 'file' })]),
+				transition('ship', [check({ type: 'file' })])
+			)
+		);
+		expect(hint?.others).toEqual([{ transition: 'ship', spec: 'file' }]);
+	});
+
 	it('has no opinion without a declared type', () => {
 		expect(attachGateHint(gates(transition('approve', [check()])))).toBeNull();
 		expect(attachGateHint([])).toBeNull();
@@ -135,6 +138,22 @@ describe('attachGateWarning', () => {
 		});
 	});
 
+	it('warns on a file whose own MIME a concrete gate rejects', () => {
+		// The panel's derivation chain, end to end: the file branch of the write
+		// declares the picked file's type, never the gate's, so the check has to
+		// read the file — the stricter gate was the quiet one before (Tines/275
+		// review round 1).
+		const found = gates(
+			transition('archive', [check({ type: 'file', content_type: 'application/pdf' })])
+		);
+		const ct = (fileType: string | undefined) =>
+			effectiveContentType('file', attachGateHint(found)?.contentType, fileType);
+		expect(attachGateWarning(found, 'file', ct('image/png'))?.wants).toBe('application/pdf');
+		expect(attachGateWarning(found, 'file', ct('application/pdf'))).toBeNull();
+		// Nothing picked yet: there is no claim to refuse.
+		expect(attachGateWarning(found, 'file', ct(undefined))).toBeNull();
+	});
+
 	it('never warns on an ungated slot or an untyped requirement', () => {
 		expect(warn('link', undefined)).toBeNull();
 		expect(warn('link', undefined, transition('approve', [check()]))).toBeNull();
@@ -142,13 +161,15 @@ describe('attachGateWarning', () => {
 });
 
 describe('effectiveContentType', () => {
-	it('prefers the gate, then the type default, then the picked file', () => {
+	it('declares the gate MIME for text, and the picked file itself for a file', () => {
 		expect(effectiveContentType('text', 'text/plain', undefined)).toBe('text/plain');
 		expect(effectiveContentType('text', undefined, undefined)).toBe('text/markdown');
 		expect(effectiveContentType('file', undefined, 'image/png')).toBe('image/png');
+		// The upload declares the file, so the gate's MIME must not stand in for it.
+		expect(effectiveContentType('file', 'application/pdf', 'image/png')).toBe('image/png');
 		// No file picked yet, and the types that declare nothing.
-		expect(effectiveContentType('file', undefined, '')).toBeUndefined();
-		expect(effectiveContentType('folder', undefined, undefined)).toBeUndefined();
+		expect(effectiveContentType('file', 'application/pdf', undefined)).toBeUndefined();
+		expect(effectiveContentType('folder', 'application/zip', undefined)).toBeUndefined();
 		expect(effectiveContentType('pr', undefined, undefined)).toBeUndefined();
 	});
 });
