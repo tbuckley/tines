@@ -28,8 +28,15 @@ export function register(program: Command): void {
 		if (opts.json) return printJson(res);
 		if (res.items.length === 0) return console.log('no labels');
 		table([
-			['NAME', 'COLOR', 'ISSUES', 'DESCRIPTION'],
-			...res.items.map((l) => [l.name, l.color, String(l.issue_count), l.description])
+			['NAME', 'COLOR', 'ISSUES', 'ITEMS', 'RULES', 'DESCRIPTION'],
+			...res.items.map((l) => [
+				l.name,
+				l.color,
+				String(l.issue_count),
+				String(l.context_item_count),
+				String(l.routing_rule_count),
+				l.description
+			])
 		]);
 	});
 
@@ -79,24 +86,46 @@ export function register(program: Command): void {
 			.command('delete <name>')
 			.description('Delete a label and detach it from every issue')
 			.option('-y, --yes', 'skip the confirmation')
-	).action(async (name: string, opts: CommonOpts & { yes?: boolean }) => {
+			.option('-f, --force', 'also delete the context items and routing rules scoped to this label')
+	).action(async (name: string, opts: CommonOpts & { yes?: boolean; force?: boolean }) => {
 		const api = client(opts);
 		if (!opts.yes) {
 			const existing = (await api.listLabels()).items.find(
 				(l) => l.name.toLowerCase() === name.toLowerCase() || l.id === name
 			);
 			if (!existing) die(`no such label: ${name}`);
+			// Scoped items and rules are what --force destroys, so name them
+			// before asking rather than after the 422.
+			const scoped = [
+				`${existing.issue_count} issue${existing.issue_count === 1 ? '' : 's'}`,
+				...(existing.context_item_count > 0
+					? [
+							`${existing.context_item_count} context item${existing.context_item_count === 1 ? '' : 's'}`
+						]
+					: []),
+				...(existing.routing_rule_count > 0
+					? [
+							`${existing.routing_rule_count} routing rule${existing.routing_rule_count === 1 ? '' : 's'}`
+						]
+					: [])
+			].join(', ');
 			const rl = createInterface({ input: process.stdin, output: process.stdout });
 			const answer = await rl.question(
-				`Delete label "${existing.name}"? It is on ${existing.issue_count} issue${existing.issue_count === 1 ? '' : 's'}. [y/N] `
+				`Delete label "${existing.name}"${opts.force ? ' and everything scoped to it' : ''}? It is on ${scoped}. [y/N] `
 			);
 			rl.close();
 			if (!/^y(es)?$/i.test(answer.trim())) die('aborted');
 		}
-		const res = await api.deleteLabel(name);
+		const res = await api.deleteLabel(name, opts.force ? { force: true } : {});
 		if (opts.json) return printJson(res);
 		console.log(
 			`deleted label "${name}" (was on ${res.issue_count} issue${res.issue_count === 1 ? '' : 's'})`
 		);
+		for (const item of res.context_items_deleted) {
+			console.log(`  deleted ${item.kind} "${item.name}" (${item.scope_label})`);
+		}
+		for (const rule of res.routing_rules_deleted) {
+			console.log(`  deleted routing rule (${rule.scope_label})`);
+		}
 	});
 }

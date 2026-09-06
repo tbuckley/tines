@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type {
 		AgentRun,
+		LabelWithUsage,
 		ModelTier,
 		RoutingRule,
 		RoutingTarget,
@@ -393,6 +394,29 @@
 	let editingRule = $state<RoutingRule | null>(null);
 	let ruleProjectId = $state('');
 	let ruleStateId = $state('');
+	let ruleLabelId = $state('');
+	let labels = $state<LabelWithUsage[]>([]);
+	/**
+	 * The rule's own label, when the lazily-fetched list has not arrived (or
+	 * no longer holds it): without an option carrying the current value the
+	 * select would silently broaden the rule's scope on save.
+	 */
+	const missingRuleLabel = $derived(
+		ruleLabelId && !labels.some((l) => l.id === ruleLabelId)
+			? (editingRule?.scope.label_name ?? ruleLabelId)
+			: null
+	);
+
+	/** One fetch the first time a rule editor opens; a failure just leaves the select empty. */
+	function loadLabels() {
+		if (labels.length > 0) return;
+		api
+			.listLabels()
+			.then((res) => {
+				labels = res.items;
+			})
+			.catch(() => {});
+	}
 	let ruleTargets = $state<{ runner_id: string; tier: '' | ModelTier }[]>([]);
 	let savingRule = $state(false);
 	let ruleWarnings = $state<ShadowWarning[]>([]);
@@ -421,7 +445,9 @@
 		editingRule = null;
 		ruleProjectId = '';
 		ruleStateId = '';
+		ruleLabelId = '';
 		ruleTargets = data.runners.length > 0 ? [{ runner_id: data.runners[0].id, tier: '' }] : [];
+		loadLabels();
 		ruleModalOpen = true;
 	}
 
@@ -430,7 +456,9 @@
 		editingRule = rule;
 		ruleProjectId = rule.scope.project_id ?? '';
 		ruleStateId = rule.scope.workflow_state_id ?? '';
+		ruleLabelId = rule.scope.label_id ?? '';
 		ruleTargets = rule.targets.map((t) => ({ runner_id: t.runner_id, tier: t.tier ?? '' }));
+		loadLabels();
 		ruleModalOpen = true;
 	}
 
@@ -449,7 +477,11 @@
 			const targets: RoutingTarget[] = ruleTargets.map((t) =>
 				t.tier ? { runner_id: t.runner_id, tier: t.tier } : { runner_id: t.runner_id }
 			);
-			const scope = { project_id: ruleProjectId || null, workflow_state_id: ruleStateId || null };
+			const scope = {
+				project_id: ruleProjectId || null,
+				workflow_state_id: ruleStateId || null,
+				label_id: ruleLabelId || null
+			};
 			const saved = editingRule
 				? await api.updateRoutingRule(editingRule.id, { ...scope, targets })
 				: await api.createRoutingRule({ ...scope, targets });
@@ -1518,7 +1550,7 @@
 <!-- rule editor -->
 <Modal bind:open={ruleModalOpen} title={editingRule ? 'Edit routing rule' : 'New routing rule'}>
 	<form onsubmit={saveRule} class="space-y-4">
-		<div class="grid grid-cols-2 gap-3">
+		<div class="grid grid-cols-2 gap-3 sm:grid-cols-3">
 			<div class="space-y-1.5">
 				<label class="text-sm font-medium" for="rule-project">Project</label>
 				<Select id="rule-project" bind:value={ruleProjectId}>
@@ -1544,6 +1576,18 @@
 					{/each}
 				</Select>
 			</div>
+			<div class="space-y-1.5">
+				<label class="text-sm font-medium" for="rule-label">Label</label>
+				<Select id="rule-label" bind:value={ruleLabelId}>
+					<option value="">Any label</option>
+					{#if missingRuleLabel}
+						<option value={ruleLabelId}>{missingRuleLabel}</option>
+					{/if}
+					{#each labels as label (label.id)}
+						<option value={label.id}>{label.name}</option>
+					{/each}
+				</Select>
+			</div>
 		</div>
 		{#if staleRuleState}
 			<p class="text-xs text-amber-700 dark:text-amber-400">
@@ -1552,10 +1596,12 @@
 			</p>
 		{/if}
 		<p class="text-muted-foreground text-xs">
-			Both empty = a global rule. The most specific matching rule wins: project ∧ state, then
-			project, then state, then global — no fallback across rules. Agents only pick up issues in
-			active states — backlog, human-review, and done issues never dispatch — so a global rule is
-			already a default for all agent work.
+			All three empty = a global rule. The most specific matching rule wins — label beats project
+			beats state, so a label rule outranks project ∧ state — with no fallback across rules. An
+			issue carrying two labels with a rule each matches both equally and will not dispatch until
+			one rule is made more specific. Agents only pick up issues in active states — backlog,
+			human-review, and done issues never dispatch — so a global rule is already a default for all
+			agent work.
 		</p>
 
 		<div class="space-y-1.5">

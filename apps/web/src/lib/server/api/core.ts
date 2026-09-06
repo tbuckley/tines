@@ -200,15 +200,16 @@ export function isControlPlanePath(pathname: string, method: string): boolean {
  * The fence's 403, shared by the path fence and field-level guards (pins on
  * PATCH /issues/:id live on an otherwise run-key-legal route).
  */
-export function runKeyForbidden(): ApiFail {
+export function runKeyForbidden(details?: Record<string, unknown>): ApiFail {
 	return new ApiFail(
 		403,
 		'run_key_forbidden',
 		'Run keys cannot modify runners, routing rules, supervisor settings, parked issues, issue pins, or API keys, ' +
-			'cannot import a library, and cannot create, rename, or delete labels (reading the library and ' +
-			'applying existing labels is fine). ' +
+			'cannot import a library, cannot create, rename, or delete labels, and cannot apply or remove a ' +
+			'label a routing rule is scoped to (reading the library and applying other existing labels is fine). ' +
 			'Propose the change instead: file an issue titled "Context change: <scope label>" describing ' +
-			'what should change and why; a human reviews and applies it.'
+			'what should change and why; a human reviews and applies it.',
+		details
 	);
 }
 
