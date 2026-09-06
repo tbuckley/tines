@@ -605,6 +605,26 @@ artifact** button — drag-and-drop / file picker for files, a directory
 picker / folder drop for folders, small forms for text (Markdown editor,
 same component as descriptions), link, and PR.
 
+**The gate types the dialog.** The requirement on an available transition is
+the single source for every attach hint, in the UI as in the CLI. As the slot
+name is typed, a requirement matching it that declares a `type` pre-selects
+the type selector and notes where that came from — *Required by `submit`
+(text, text/markdown)* — listing the other typed gates on the same name after
+the first, in `allowed_transitions` order; an untyped requirement pre-selects
+nothing. The auto-switch never overrides a type the operator has picked by
+hand. A `text` gate naming a concrete content type declares it on the `PUT`
+(a prefix like `image/` declares nothing — the server sniffs it), so a
+document attached through the dialog clears the gate on the first `move`
+rather than storing the default `text/markdown` under a `text/plain` gate.
+
+Choosing a type no available transition's requirement for that name could
+accept **warns without blocking** — *cannot satisfy `submit` (needs text)*,
+submit still live, because the operator may be attaching for a purpose no
+transition gates. On the *attach a new version* path the type is the
+artifact's own and immutable, so the same warning adds "the type cannot
+change; delete and re-attach" — the CLI's `checkExistingSlot` advice, minus
+the refusal.
+
 Rows stay **one line tall**. The only inline content is a lazy image
 thumbnail (image files, and up to a few image entries of a folder — the
 glanceable case); everything else shows metadata only. `link`/`pr` rows
