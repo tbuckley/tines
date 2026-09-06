@@ -13,6 +13,7 @@ import {
 	type LibraryDocument,
 	type LibraryProject,
 	type LibraryScopeRef,
+	type WorkflowResponse,
 	type WorkflowStateInput,
 	type WorkflowTransitionInput
 } from '@tines/shared';
@@ -28,7 +29,13 @@ import {
 } from './context';
 import { createLabel, resolveLabelRef } from './labels';
 import { createProject } from './projects';
-import { createWorkflow, loadWorkflows, workflowAsRequest, workflowFingerprint } from './workflows';
+import {
+	createWorkflow,
+	loadWorkflows,
+	updateWorkflow,
+	workflowAsRequest,
+	workflowFingerprint
+} from './workflows';
 
 // ---------------------------------------------------------------------------
 // The reusable library — non-system workflows plus every non-issue-scoped
@@ -91,13 +98,27 @@ export async function buildLibraryDocument(
 		default_workflow: p.default_workflow ?? null
 	}));
 
+	// Every state this deployment can see, by id — including the standard
+	// workflow's, which is never exported but can be a base.
+	const baseRef = new Map<string, string>();
+	for (const wf of workflowRows) {
+		for (const s of wf.states) baseRef.set(s.id, stateRefName(wf.name, s.name));
+	}
+
 	const workflows: CreateWorkflowRequest[] = workflowRows.filter(isExportableWorkflow).map((wf) => {
 		const stateName = new Map(wf.states.map((s) => [s.id, s.name]));
 		const states: WorkflowStateInput[] = [...wf.states]
 			.sort((a, b) => a.position - b.position)
 			// Array order carries position; `prompt` is not used — stage
 			// instructions travel as ordinary state-scoped context items.
-			.map((s) => ({ name: s.name, category: s.category }));
+			// An inheritance pointer travels by name on both sides, so it can
+			// be re-resolved on a deployment that shares none of these ids; a
+			// state with no base carries no key at all, which is what keeps a
+			// pointer-free deployment exporting the version 1 document.
+			.map((s) => {
+				const base = s.inherits_from ? baseRef.get(s.inherits_from) : undefined;
+				return { name: s.name, category: s.category, ...(base ? { inherits_from: base } : {}) };
+			});
 		const transitions: WorkflowTransitionInput[] = wf.transitions.map((t) => ({
 			name: t.name,
 			from: stateName.get(t.from_state_id) ?? t.from_state_id,
@@ -173,6 +194,68 @@ function scopeRefLabel(scope: LibraryScopeRef): string {
 
 /** Key delimiter: a NUL can never appear in a name, kind or id. */
 const SEP = '\u0000';
+
+/**
+ * A state's portable identity in a library document — how an inheritance
+ * pointer names its base, since ids are not shared between deployments.
+ */
+const stateRefName = (workflow: string, state: string) => `${workflow}/${state}`;
+
+/**
+ * Every way a `<workflow>/<state>` ref could split. Both halves are free-form
+ * names that may themselves contain a slash, so the ref is ambiguous on its
+ * own and the caller resolves each candidate until one names something real.
+ */
+function splitCandidates(ref: string): [string, string][] {
+	const out: [string, string][] = [];
+	for (let i = ref.indexOf('/'); i !== -1; i = ref.indexOf('/', i + 1)) {
+		out.push([ref.slice(0, i), ref.slice(i + 1)]);
+	}
+	return out;
+}
+
+/** First candidate that resolves, or undefined. */
+function resolveStateRef<T>(
+	ref: string,
+	resolve: (workflow: string, state: string) => T | undefined
+): T | undefined {
+	for (const [workflow, state] of splitCandidates(ref)) {
+		const found = resolve(workflow, state);
+		if (found !== undefined) return found;
+	}
+	return undefined;
+}
+
+/** The ref as a message names it, matching the inheritance 422s: `<workflow> / <state>`. */
+function stateRefLabel(ref: string): string {
+	const i = ref.indexOf('/');
+	return i === -1 ? ref : `${ref.slice(0, i)} / ${ref.slice(i + 1)}`;
+}
+
+/** The pointer a state carries in a document, or null (a bare `null` clears nothing here). */
+const baseRefOf = (state: WorkflowStateInput): string | null =>
+	typeof state.inherits_from === 'string' && state.inherits_from ? state.inherits_from : null;
+
+/**
+ * The first pointer in `workflow` that names neither one of the workflow's own
+ * states nor a state in `known` (this deployment plus what this document
+ * brings), or null when every pointer resolves.
+ */
+function unresolvableBase(
+	workflow: CreateWorkflowRequest,
+	known: Map<string, string | null>
+): { state: string; ref: string } | null {
+	for (const state of workflow.states) {
+		const ref = baseRefOf(state);
+		if (ref === null) continue;
+		// A bare state name is the create path's own in-request form; keep
+		// accepting it so a hand-written document is not refused for using it.
+		if (workflow.states.some((s) => s.name === ref)) continue;
+		const found = resolveStateRef(ref, (w, n) => (known.has(`${w}${SEP}${n}`) ? true : undefined));
+		if (!found) return { state: state.name, ref };
+	}
+	return null;
+}
 
 /** Structural key for collision detection: the `context_item_name_scope_uq` tuple. */
 const contextKey = (
@@ -347,6 +430,28 @@ export async function planImport(
 		steps.push({ entry: { section: 'workflow', ref, action: 'create' }, workflow });
 	}
 
+	// Inheritance pointers (format version 2 and up). A base must be a state
+	// this deployment already has or one a workflow in this document brings —
+	// in either order, since every workflow's states are known by name before
+	// this runs. A workflow whose base is missing is refused whole: creating
+	// it with the pointer silently dropped would import stages that look right
+	// and inherit nothing. Refusing one can strand its own children, so the
+	// sweep repeats until no more entries move.
+	const workflowSteps = steps.filter((step) => step.workflow);
+	for (let moved = true; moved;) {
+		moved = false;
+		for (const step of workflowSteps) {
+			if (step.entry.action !== 'create') continue;
+			const missing = unresolvableBase(step.workflow!, stateIds);
+			if (!missing) continue;
+			step.entry.action = 'refuse';
+			step.entry.reason = `state "${missing.state}" inherits from ${stateRefLabel(missing.ref)}, which is neither in this document nor on this deployment — import that workflow first, or clear the pointer`;
+			for (const s of step.workflow!.states)
+				stateIds.delete(`${step.workflow!.name}${SEP}${s.name}`);
+			moved = true;
+		}
+	}
+
 	for (const entry of doc.context) {
 		const ref = contextRef(entry);
 		if (entry.journal && !includeJournals) {
@@ -499,11 +604,24 @@ export async function applyImport(
 		...runnable.filter((s) => s.context)
 	];
 
+	// Pointers whose base a workflow later in this document brings: they cannot
+	// be part of the create, so they are patched on once every workflow exists.
+	const deferred: DeferredPointer[] = [];
+	const createdWorkflows = new Map<string, WorkflowResponse>();
+
 	for (const step of ordered) {
 		try {
 			if (step.workflow) {
-				const created = await createWorkflow(db, env, actor, step.workflow);
+				const request = await resolveWorkflowPointers(
+					db,
+					actor.userId,
+					step.workflow,
+					stateIds,
+					deferred
+				);
+				const created = await createWorkflow(db, env, actor, request);
 				workflowIds.set(created.name, created.id);
+				createdWorkflows.set(created.name, created);
 				for (const s of created.states) stateIds.set(`${created.name}${SEP}${s.name}`, s.id);
 			} else if (step.project) {
 				// Unresolvable defaults are planned with a reason and land as a
@@ -527,8 +645,132 @@ export async function applyImport(
 		}
 	}
 
+	await applyDeferredPointers(db, env, actor, ordered, createdWorkflows, stateIds, deferred);
+
 	const entries = plan.steps.map((s) => s.entry);
 	return { applied: true, entries, counts: tally(entries) };
+}
+
+/** A pointer this import must patch on after every workflow in it exists. */
+interface DeferredPointer {
+	/** The child state's workflow, by name — it is being created in this pass. */
+	workflow: string;
+	/** The child state, by name. */
+	state: string;
+	/** The `<workflow>/<state>` ref, still unresolved. */
+	ref: string;
+}
+
+/**
+ * The document's `<workflow>/<state>` pointers as the create path wants them:
+ * a name for a base in the same workflow (which `resolveDef` resolves against
+ * the request's own states) and a state id for one anywhere else. A base a
+ * later workflow in this same document brings has no id yet, so it is dropped
+ * from the create and recorded in `deferred`.
+ */
+async function resolveWorkflowPointers(
+	db: Kysely<Database>,
+	userId: string,
+	workflow: CreateWorkflowRequest,
+	stateIds: Map<string, string>,
+	deferred: DeferredPointer[]
+): Promise<CreateWorkflowRequest> {
+	const states: WorkflowStateInput[] = [];
+	for (const state of workflow.states) {
+		const ref = baseRefOf(state);
+		if (ref === null) {
+			states.push(state);
+			continue;
+		}
+		const own = workflow.states.some((s) => s.name === ref)
+			? ref
+			: resolveStateRef(ref, (w, n) =>
+					w === workflow.name && workflow.states.some((s) => s.name === n) ? n : undefined
+				);
+		const resolved = own ?? (await lookupBaseId(db, userId, ref, stateIds));
+		if (resolved === undefined) {
+			deferred.push({ workflow: workflow.name, state: state.name, ref });
+			const { inherits_from: _dropped, ...rest } = state;
+			states.push(rest);
+			continue;
+		}
+		states.push({ ...state, inherits_from: resolved });
+	}
+	return { ...workflow, states };
+}
+
+/** A `<workflow>/<state>` ref as a state id: created in this pass, else stored here. */
+async function lookupBaseId(
+	db: Kysely<Database>,
+	userId: string,
+	ref: string,
+	stateIds: Map<string, string>
+): Promise<string | undefined> {
+	const created = resolveStateRef(ref, (w, n) => stateIds.get(`${w}${SEP}${n}`));
+	if (created !== undefined) return created;
+	for (const [workflow, name] of splitCandidates(ref)) {
+		const id = await lookupStateId(db, userId, { workflow, name });
+		if (id !== undefined) return id;
+	}
+	return undefined;
+}
+
+/**
+ * The second pass: every deferred pointer, patched on through the same update
+ * path the workflow editor uses. States are re-sent by id, so nothing but the
+ * pointers moves; a workflow whose create failed has none to patch.
+ */
+async function applyDeferredPointers(
+	db: Kysely<Database>,
+	env: Env,
+	actor: ActorContext,
+	steps: PlannedStep[],
+	createdWorkflows: Map<string, WorkflowResponse>,
+	stateIds: Map<string, string>,
+	deferred: DeferredPointer[]
+): Promise<void> {
+	if (deferred.length === 0) return;
+	for (const [workflowName, pointers] of groupByWorkflow(deferred)) {
+		const created = createdWorkflows.get(workflowName);
+		if (!created) continue;
+		const step = steps.find((s) => s.workflow?.name === workflowName);
+		try {
+			const bases = new Map<string, string>();
+			for (const pointer of pointers) {
+				const id = await lookupBaseId(db, actor.userId, pointer.ref, stateIds);
+				if (id === undefined) {
+					throw new Error(
+						`state "${pointer.state}" inherits from ${stateRefLabel(pointer.ref)}, which this import did not create`
+					);
+				}
+				bases.set(pointer.state, id);
+			}
+			const states: WorkflowStateInput[] = [...created.states]
+				.sort((a, b) => a.position - b.position)
+				.map((s) => ({
+					id: s.id,
+					name: s.name,
+					category: s.category,
+					...(bases.has(s.name) ? { inherits_from: bases.get(s.name)! } : {})
+				}));
+			await updateWorkflow(db, env, actor, created.id, { states });
+		} catch (e) {
+			if (step) {
+				step.entry.action = 'error';
+				step.entry.reason = errorMessage(e);
+			}
+		}
+	}
+}
+
+function groupByWorkflow(deferred: DeferredPointer[]): Map<string, DeferredPointer[]> {
+	const out = new Map<string, DeferredPointer[]>();
+	for (const pointer of deferred) {
+		const list = out.get(pointer.workflow);
+		if (list) list.push(pointer);
+		else out.set(pointer.workflow, [pointer]);
+	}
+	return out;
 }
 
 /** Resolve an entry's scope to ids and hand its payload to the normal create/update path. */
