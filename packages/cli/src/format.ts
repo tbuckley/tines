@@ -18,7 +18,14 @@ import type {
 	Runner,
 	Schedule
 } from '@tines/shared';
-import { actorLabel, describeRecurrence, runCostLabel, runDurationLabel } from '@tines/shared';
+import {
+	actorLabel,
+	ageLabel as sharedAgeLabel,
+	describeRecurrence,
+	prUrlOf,
+	runCostLabel,
+	runDurationLabel
+} from '@tines/shared';
 import type { KeptWorkspace } from './daemon/store.js';
 
 export function timestamp(ms: number): string {
@@ -106,7 +113,7 @@ export function artifactSummary(a: Artifact): string {
 		case 'link':
 			return cv.title ? `${cv.title} — ${cv.url}` : (cv.url ?? '');
 		case 'pr':
-			return `${prRefLabel(cv)} — ${cv.pr_repo_url}/pull/${cv.pr_number}`;
+			return `${prRefLabel(cv)} — ${prUrlOf(cv)}`;
 	}
 }
 
@@ -223,13 +230,7 @@ export function byteSize(bytes: number): string {
 
 /** Compact age of an ISO timestamp, in the style of run durations: "42s", "3h", "5d". */
 export function ageLabel(isoTimestamp: string, now: number = Date.now()): string {
-	const then = Date.parse(isoTimestamp);
-	if (!Number.isFinite(then)) return '—';
-	const seconds = Math.max(0, Math.round((now - then) / 1000));
-	if (seconds < 60) return `${seconds}s`;
-	if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
-	if (seconds < 86_400) return `${Math.floor(seconds / 3600)}h`;
-	return `${Math.floor(seconds / 86_400)}d`;
+	return sharedAgeLabel(Date.parse(isoTimestamp), now);
 }
 
 /**
