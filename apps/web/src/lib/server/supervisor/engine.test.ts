@@ -189,6 +189,25 @@ describe('readiness equivalence with the issues API', () => {
 	});
 });
 
+describe('an archived project', () => {
+	it('drops out of the dispatch queue and comes back on unarchive', async () => {
+		const t = world();
+		const runner = addRunner(t, { maxConcurrent: 10 });
+		addRule(t, { targets: [{ runner_id: runner }] });
+		const issue = addIssue(t);
+		expect((await loadEligibleIssues(t.db, USER)).map((c) => c.id)).toEqual([issue]);
+
+		t.sqlite.exec(`UPDATE project SET archived_at = ${NOW} WHERE id = '${PROJECT}'`);
+		expect(await loadEligibleIssues(t.db, USER)).toEqual([]);
+		expect((await pass(t)).claimed).toBe(0);
+		expect(runs(t)).toHaveLength(0);
+
+		t.sqlite.exec(`UPDATE project SET archived_at = NULL WHERE id = '${PROJECT}'`);
+		expect((await pass(t)).claimed).toBe(1);
+		expect(runs(t)).toHaveLength(1);
+	});
+});
+
 describe('the guarded claim', () => {
 	const claimInput = (t: TestDb, issueId: string, runnerId: string, over: object = {}) => ({
 		runId: `arun_${Math.random().toString(36).slice(2)}`,
@@ -202,6 +221,17 @@ describe('the guarded claim', () => {
 		quota: { type: 'global_cap' as const, limit: 10 },
 		now: NOW,
 		...over
+	});
+
+	it('refuses an issue whose project was archived between the queue read and the claim', async () => {
+		const t = world();
+		const runner = addRunner(t);
+		const issue = addIssue(t);
+		const input = claimInput(t, issue, runner);
+		// The pass read the queue while the project was live.
+		t.sqlite.exec(`UPDATE project SET archived_at = ${NOW} WHERE id = '${PROJECT}'`);
+		expect(await claimRun(t.db, t.env, input)).toBe(false);
+		expect(runs(t)).toHaveLength(0);
 	});
 
 	it('two racing claims on one issue: exactly one insert wins', async () => {

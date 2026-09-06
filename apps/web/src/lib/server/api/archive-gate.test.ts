@@ -81,11 +81,15 @@ beforeEach(async () => {
 	scheduleId = created.schedule!.id;
 	other = (await createIssue(t.db, t.env, session, PROJECT, { title: 'Second issue' })).id;
 
-	ownComment = (await createComment(t.db, t.env, session, own, { body: 'seeded' })).id;
 	await upsertArtifact(t.db, t.env, session, own, 'notes', { type: 'text', content: 'seeded' });
 	await createLabel(t.db, t.env, session, { name: 'docs' });
+	await createLabel(t.db, t.env, session, { name: 'qa' });
 	liveIssue = (await createIssue(t.db, t.env, session, 'prj_2', { title: 'Live issue' })).id;
-	linkId = (await addIssueLink(t.db, t.env, session, own, { kind: 'blocks', issue_id: other })).id;
+	// The removable link points at the live project: with the archived end
+	// exempt for the run, only its own end is under test here.
+	linkId = (await addIssueLink(t.db, t.env, session, own, { kind: 'blocks', issue_id: liveIssue }))
+		.id;
+	await addIssueLabels(t.db, t.env, session, own, ['docs']);
 	projectItem = (
 		await createContextItem(t.db, t.env, session, {
 			kind: 'prompt',
@@ -112,6 +116,11 @@ beforeEach(async () => {
 		status: 'running',
 		stateAtStart: OPEN
 	});
+	// The event writer has a foreign key to api_key, so the run's key must exist.
+	t.sqlite.exec(`
+		INSERT INTO api_key (id, user_id, name, key_hash, key_prefix, agent_run_id, expires_at, created_at)
+			VALUES ('key_${runId}', '${USER}', 'run ${runId}', 'h_${runId}', 'p', '${runId}', 9999999999999, 0);
+	`);
 	draining = {
 		userId: USER,
 		userName: 'alice',
@@ -120,6 +129,9 @@ beforeEach(async () => {
 		viaSession: false,
 		agentRunId: runId
 	};
+	// A comment the run authored: run keys may only edit their own, so the
+	// author check must not stand in for the gate in the rows below.
+	ownComment = (await createComment(t.db, t.env, draining, own, { body: 'from the run' })).id;
 });
 
 async function failure(fn: () => Promise<unknown>): Promise<ApiFail> {
@@ -160,7 +172,7 @@ const rows = (): Row[] => [
 	},
 	{
 		name: 'transition issue',
-		write: (a) => transitionIssue(t.db, t.env, a, own, { action: 'Start review' }),
+		write: (a) => transitionIssue(t.db, t.env, a, own, { action: 'Submit for review' }),
 		drains: true
 	},
 	{ name: 'resume issue', write: (a) => resumeIssue(t.db, t.env, a, own), drains: true },
@@ -196,7 +208,7 @@ const rows = (): Row[] => [
 	},
 	{
 		name: 'add label',
-		write: (a) => addIssueLabels(t.db, t.env, a, own, ['docs']),
+		write: (a) => addIssueLabels(t.db, t.env, a, own, ['qa']),
 		drains: true
 	},
 	{
@@ -207,7 +219,7 @@ const rows = (): Row[] => [
 	{
 		// The far end is live, so only the run's own (archived) end is in play.
 		name: 'add link',
-		write: (a) => addIssueLink(t.db, t.env, a, own, { kind: 'blocks', issue_id: liveIssue }),
+		write: (a) => addIssueLink(t.db, t.env, a, own, { kind: 'duplicate_of', issue_id: liveIssue }),
 		drains: true
 	},
 	{ name: 'remove link', write: (a) => removeIssueLink(t.db, t.env, a, own, linkId), drains: true },
@@ -272,7 +284,8 @@ describe('a run already draining finishes its own issue', () => {
 	for (const row of rows()) {
 		if (row.drains) {
 			it(`lets the run ${row.name}`, async () => {
-				await expect(row.write(draining)).resolves.toBeDefined;
+				// A throw fails the test; the gate is what would throw.
+				await row.write(draining);
 			});
 		} else {
 			it(`still refuses the run ${row.name}`, async () => {

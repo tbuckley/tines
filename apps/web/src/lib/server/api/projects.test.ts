@@ -14,8 +14,9 @@ import {
 	addRunner,
 	seedBase
 } from '../supervisor/test-fixtures';
+import { createContextItem, listContextItems } from './context';
 import { ApiFail, type ActorContext } from './core';
-import { createIssue } from './issues';
+import { countIssuesByCategory, createIssue, listIssues } from './issues';
 import {
 	archiveProject,
 	createProject,
@@ -24,7 +25,7 @@ import {
 	unarchiveProject,
 	updateProject
 } from './projects';
-import { getSchedule } from './schedules';
+import { getSchedule, listSchedules } from './schedules';
 import { createTestDb, type TestDb } from './test-db';
 
 const actor: ActorContext = {
@@ -177,9 +178,7 @@ describe('an archived project is read-only', () => {
 	});
 
 	it('keeps its name reserved', async () => {
-		const e = await failure(() =>
-			createProject(t.db, t.env, actor, { name: 'demo' })
-		);
+		const e = await failure(() => createProject(t.db, t.env, actor, { name: 'demo' }));
 		expect(e.code).toBe('duplicate_project_name');
 	});
 });
@@ -202,5 +201,74 @@ describe('listProjects', () => {
 		expect((await listProjects(t.db, USER, { archived: 'all' })).map((p) => p.name).sort()).toEqual(
 			['demo', 'other']
 		);
+	});
+});
+
+describe('default lists exclude archived projects', () => {
+	const page = { cursor: null, limit: 50 };
+
+	/** One issue, one schedule and two context items in each of two projects. */
+	async function seedBoth() {
+		t.sqlite.exec(`
+			INSERT INTO project (id, user_id, name, created_at, updated_at)
+				VALUES ('prj_2', '${USER}', 'live', ${NOW}, ${NOW});
+		`);
+		await createIssue(t.db, t.env, actor, PROJECT, {
+			title: 'Archived-side issue',
+			schedule: { preset: { kind: 'daily', time: '09:00' } }
+		});
+		await createIssue(t.db, t.env, actor, 'prj_2', {
+			title: 'Live-side issue',
+			schedule: { preset: { kind: 'daily', time: '10:00' } }
+		});
+		await createContextItem(t.db, t.env, actor, {
+			kind: 'prompt',
+			name: 'archived-conventions',
+			project_id: PROJECT,
+			body: 'x'
+		});
+		await createContextItem(t.db, t.env, actor, {
+			kind: 'prompt',
+			name: 'global-guidelines',
+			body: 'x'
+		});
+		await archiveProject(t.db, t.env, actor, PROJECT, NOW);
+	}
+
+	const titles = async (filters: Parameters<typeof listIssues>[2]) =>
+		(await listIssues(t.db, USER, filters, page)).items.map((i) => i.title);
+
+	it('hides an archived project’s issues until a project or archived filter asks', async () => {
+		await seedBoth();
+		expect(await titles({})).toEqual(['Live-side issue']);
+		expect(await titles({ project: 'demo' })).toEqual(['Archived-side issue']);
+		expect(await titles({ projectId: PROJECT })).toEqual(['Archived-side issue']);
+		expect(await titles({ archived: 'true' })).toEqual(['Archived-side issue']);
+		expect((await titles({ archived: 'all' })).sort()).toEqual([
+			'Archived-side issue',
+			'Live-side issue'
+		]);
+		// The category tabs count the same population the list shows.
+		const counts = await countIssuesByCategory(t.db, USER, {});
+		expect(counts.active).toBe(1);
+	});
+
+	it('hides an archived project’s schedules the same way', async () => {
+		await seedBoth();
+		const names = async (filters: Parameters<typeof listSchedules>[2]) =>
+			(await listSchedules(t.db, USER, filters, page)).items.map((s) => s.project_name);
+		expect(await names({})).toEqual(['live']);
+		expect(await names({ projectId: PROJECT })).toEqual(['demo']);
+		expect((await names({ archived: 'all' })).sort()).toEqual(['demo', 'live']);
+	});
+
+	it('hides context anchored on an archived project, but never global items', async () => {
+		await seedBoth();
+		const names = async (filters: Parameters<typeof listContextItems>[2]) =>
+			(await listContextItems(t.db, USER, filters, page)).items.map((i) => i.name).sort();
+		expect(await names({})).not.toContain('archived-conventions');
+		expect(await names({})).toContain('global-guidelines');
+		expect(await names({ project: 'demo' })).toContain('archived-conventions');
+		expect(await names({ archived: 'all' })).toContain('archived-conventions');
 	});
 });

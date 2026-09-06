@@ -48,6 +48,24 @@ describe('explainDispatch', () => {
 		expect(check(ex, 'automation_enabled').ok).toBe(false);
 	});
 
+	it('reports an archived project, and clears once it is unarchived', async () => {
+		const t = world();
+		const runner = addRunner(t);
+		addRule(t, { targets: [{ runner_id: runner }] });
+		const issue = addIssue(t);
+		expect(check((await explainDispatch(t.db, USER, issue, NOW))!, 'project_archived').ok).toBe(
+			true
+		);
+
+		t.sqlite.exec(`UPDATE project SET archived_at = ${NOW} WHERE id = '${PROJECT}'`);
+		const ex = (await explainDispatch(t.db, USER, issue, NOW))!;
+		const archived = check(ex, 'project_archived');
+		expect(archived.ok).toBe(false);
+		expect(archived.detail).toContain('is archived (since');
+		expect(archived.detail).toContain('nothing dispatches');
+		expect(ex.eligible).toBe(false);
+	});
+
 	it('names the ineligible state and category', async () => {
 		const t = world();
 		const runner = addRunner(t);
