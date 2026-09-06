@@ -98,7 +98,9 @@
 				<h2 class="flex items-center gap-2 font-semibold">
 					{project.name}
 					{#if project.archived_at !== null}
-						<span class="bg-muted text-muted-foreground rounded-full px-2 py-0.5 text-xs font-medium">
+						<span
+							class="bg-muted text-muted-foreground rounded-full px-2 py-0.5 text-xs font-medium"
+						>
 							Archived
 						</span>
 					{/if}

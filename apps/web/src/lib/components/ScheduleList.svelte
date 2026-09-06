@@ -213,7 +213,7 @@
 					size="sm"
 					variant="ghost"
 					aria-label="Run schedule {s.name} now"
-					title={disabledReason ?? "Run now"}
+					title={disabledReason ?? 'Run now'}
 					disabled={busyId !== null || readOnly}
 					onclick={() => runNow(s)}
 				>
@@ -223,7 +223,7 @@
 					size="sm"
 					variant="ghost"
 					aria-label="Edit schedule {s.name}"
-					title={disabledReason ?? "Edit"}
+					title={disabledReason ?? 'Edit'}
 					disabled={busyId !== null || readOnly}
 					onclick={() => openEdit(s)}
 				>
@@ -233,7 +233,7 @@
 					size="sm"
 					variant="ghost"
 					aria-label="Delete schedule {s.name}"
-					title={disabledReason ?? "Delete (existing issues are kept)"}
+					title={disabledReason ?? 'Delete (existing issues are kept)'}
 					disabled={busyId !== null || readOnly}
 					onclick={() => remove(s)}
 				>

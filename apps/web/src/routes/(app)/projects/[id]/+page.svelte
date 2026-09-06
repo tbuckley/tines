@@ -259,7 +259,9 @@
 {/if}
 
 {#if archiveNotice}
-	<div class="bg-muted/40 mb-4 flex flex-wrap items-center gap-2 rounded-md border px-4 py-2.5 text-sm">
+	<div
+		class="bg-muted/40 mb-4 flex flex-wrap items-center gap-2 rounded-md border px-4 py-2.5 text-sm"
+	>
 		<span class="min-w-0">{archiveNotice}</span>
 		<Button size="sm" variant="ghost" onclick={() => (archiveNotice = null)}>Dismiss</Button>
 	</div>
@@ -346,7 +348,11 @@
 	{:else}
 		<div class="space-y-4">
 			{#if projectOnlyItems.length > 0}
-				<ContextItemList items={projectOnlyItems} showScope={false} onselect={archived ? undefined : openContextEdit} />
+				<ContextItemList
+					items={projectOnlyItems}
+					showScope={false}
+					onselect={archived ? undefined : openContextEdit}
+				/>
 			{/if}
 			{#if workflowGroups.length > 0}
 				<div>
@@ -446,28 +452,30 @@
 		</div>
 		<div class="flex items-center justify-between gap-2 pt-2">
 			<div class="flex flex-wrap gap-2">
-			{#if archived}
-				<PendingButton
+				{#if archived}
+					<PendingButton
+						type="button"
+						variant="outline"
+						pending={unarchiving}
+						pendingLabel="Unarchiving…"
+						onclick={unarchive}
+					>
+						Unarchive
+					</PendingButton>
+				{:else}
+					<Button type="button" variant="outline" onclick={archive}>Archive project</Button>
+				{/if}
+				<Button
 					type="button"
-					variant="outline"
-					pending={unarchiving}
-					pendingLabel="Unarchiving…"
-					onclick={unarchive}
+					variant="destructive"
+					disabled={data.project.issue_count > 0}
+					title={data.project.issue_count > 0
+						? 'Projects with issues cannot be deleted'
+						: undefined}
+					onclick={deleteProject}
 				>
-					Unarchive
-				</PendingButton>
-			{:else}
-				<Button type="button" variant="outline" onclick={archive}>Archive project</Button>
-			{/if}
-			<Button
-				type="button"
-				variant="destructive"
-				disabled={data.project.issue_count > 0}
-				title={data.project.issue_count > 0 ? 'Projects with issues cannot be deleted' : undefined}
-				onclick={deleteProject}
-			>
-				Delete project
-			</Button>
+					Delete project
+				</Button>
 			</div>
 			<div class="flex flex-wrap gap-2">
 				<Button

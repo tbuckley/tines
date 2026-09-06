@@ -392,8 +392,7 @@
 									variant="outline"
 									disabled={busy || readOnly}
 									onclick={() => reaffirm(artifact)}
-									title={disabledReason ??
-										'This still stands — bless the current content as fresh'}
+									title={disabledReason ?? 'This still stands — bless the current content as fresh'}
 								>
 									<IconCheck size={14} /> Reaffirm
 								</Button>

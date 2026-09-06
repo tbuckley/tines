@@ -1,7 +1,7 @@
-import type { CreateIssueResponse, Project } from '@tines/shared';
+import type { IssueDetail, Project } from '@tines/shared';
 import { expect, test, type Browser, type Page } from '@playwright/test';
 import { ALICE } from './constants.mjs';
-import { apiClient, body, runId, signIn } from './helpers';
+import { apiClient, body, clickUntil, runId, signIn } from './helpers';
 
 /**
  * Project archiving in the browser (Tines/207): archive → grid toggle → issue
@@ -33,10 +33,12 @@ function suite(label: string, viewport: { width: number; height: number }) {
 				await api.post('/api/v1/projects', { name: projectName, description: 'archive me' })
 			);
 			projectId = project.id;
-			const issue = await body<CreateIssueResponse>(
-				await api.post('/api/v1/issues', { project: projectName, title: `${projectName} issue` })
+			const issue = await body<IssueDetail>(
+				await api.post(`/api/v1/projects/${project.id}/issues`, {
+					title: `${projectName} issue`
+				})
 			);
-			issueNumber = issue.issue.number;
+			issueNumber = issue.number;
 		});
 
 		test('Settings archives the project, and the page goes read-only', async ({ browser }) => {
@@ -101,32 +103,34 @@ function suite(label: string, viewport: { width: number; height: number }) {
 			const page = await open(browser, `/issues?project=${encodeURIComponent(projectName)}`);
 			await expect(page.getByLabel('Filter by project')).toHaveValue(projectName);
 			await expect(page.getByLabel('Filter by project')).toContainText(`${projectName} (archived)`);
-			await expect(page.getByRole('link', { name: new RegExp(`${projectName} issue`) })).toBeVisible();
+			await expect(
+				page.getByRole('link', { name: new RegExp(`${projectName} issue`) })
+			).toBeVisible();
 			await page.close();
 		});
 
 		test('the issue page reads normally and writes nowhere', async ({ browser }) => {
-			const page = await open(
-				browser,
-				`/issues/${encodeURIComponent(projectName)}/${issueNumber}`
-			);
-			await expect(
-				page.getByText('This project is archived — read-only.')
-			).toBeVisible();
+			const page = await open(browser, `/issues/${encodeURIComponent(projectName)}/${issueNumber}`);
+			await expect(page.getByText('This project is archived — read-only.')).toBeVisible();
 
 			const comment = page.getByRole('button', { name: 'Comment' });
 			await expect(comment).toBeDisabled();
 			await expect(comment).toHaveAttribute('title', TOOLTIP);
-			// Reads stay live.
-			await expect(page.getByRole('button', { name: 'View launch prompt' })).toBeEnabled();
+			// Reads stay live. (The context header sits inside a fold on a phone, so
+			// the launch-prompt button is only on screen at desktop width.)
+			await expect(page.getByRole('heading', { name: `${projectName} issue` })).toBeVisible();
+			if (label === 'desk') {
+				await expect(page.getByRole('button', { name: 'View launch prompt' })).toBeEnabled();
+			}
 			await page.close();
 		});
 
 		test('Unarchive restores the project', async ({ browser }) => {
 			const page = await open(browser, `/projects/${projectId}`);
-			await page.getByRole('button', { name: 'Unarchive' }).first().click();
+			await clickUntil(page.getByRole('button', { name: 'Unarchive' }).first(), async () => {
+				await expect(page.getByText(/^Archived /)).toHaveCount(0);
+			});
 
-			await expect(page.getByText(/^Archived /)).toHaveCount(0);
 			await expect(page.getByRole('button', { name: 'New issue' })).toBeVisible();
 			await page.close();
 		});

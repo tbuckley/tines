@@ -932,8 +932,11 @@
 					title={reason}
 				/>
 				<div class="mt-2 flex justify-end">
-					<Button type="submit" size="sm" disabled={!draft.trim() || posting || archived} title={reason}
-						>Comment</Button
+					<Button
+						type="submit"
+						size="sm"
+						disabled={!draft.trim() || posting || archived}
+						title={reason}>Comment</Button
 					>
 				</div>
 			</form>
