@@ -140,9 +140,7 @@ function kindNoun(kind: ContextKind): string {
 export function createsLines(preview: StarterPreview, conventionsPresent: boolean): string[] {
 	const lines: string[] = [];
 	for (const wf of preview.creates.workflows) {
-		lines.push(
-			`Workflow “${wf.name}”${wf.default ? ' (default)' : ''}: ${wf.states.join(' → ')}`
-		);
+		lines.push(`Workflow “${wf.name}”${wf.default ? ' (default)' : ''}: ${wf.states.join(' → ')}`);
 	}
 	if (conventionsPresent) lines.push('Prompt “conventions”');
 	for (const item of preview.creates.context) {
