@@ -28,6 +28,7 @@ Read the supervisor spec's usage, budgets, quotas, and "Future work" sections (o
 - max in flight: 2
 - pitches per run: 2
 - tranche size: 3
+- issue size: up to ~2k lines of hand-written change per issue; prefer fewer, larger issues
 - filed issues start in: Research
 
 ## Standing decisions

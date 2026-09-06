@@ -28,6 +28,7 @@ Read `specs/phase_01` (the collaboration non-goal and "everything belongs to a s
 - max in flight: 1
 - pitches per run: 1
 - tranche size: 2
+- issue size: up to ~2k lines of hand-written change per issue; prefer fewer, larger issues
 - filed issues start in: Research
 
 ## Standing decisions

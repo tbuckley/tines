@@ -31,6 +31,7 @@ Walk a day in the running app with the seeded data: Issues tab → an awaiting-h
 - max in flight: 2
 - pitches per run: 2
 - tranche size: 3
+- issue size: up to ~2k lines of hand-written change per issue; prefer fewer, larger issues
 - filed issues start in: Research (Implementation for small, fully-specified items)
 
 ## Standing decisions

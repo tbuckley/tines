@@ -30,6 +30,7 @@ Walk the first hour end to end in the running app at desktop and mobile: landing
 - max in flight: 2
 - pitches per run: 2
 - tranche size: 3
+- issue size: up to ~2k lines of hand-written change per issue; prefer fewer, larger issues
 - filed issues start in: Research (Implementation for small, fully-specified items)
 
 ## Standing decisions

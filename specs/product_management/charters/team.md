@@ -29,6 +29,7 @@ Read the whole workflow library (`tines workflows list`, `show` each) and every 
 - max in flight: 2
 - pitches per run: 2
 - tranche size: 3
+- issue size: up to ~2k lines of hand-written change per issue; prefer fewer, larger issues
 - filed issues start in: Research
 
 ## Standing decisions
