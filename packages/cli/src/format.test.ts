@@ -1,6 +1,9 @@
+import { ageLabel as sharedAgeLabel } from '@tines/shared';
+import type { Comment, Round, RoundRun, SinceLastRun } from '@tines/shared';
 import { describe, expect, it } from 'vitest';
 import {
 	ageLabel,
+	arrivedViaLabel,
 	artifactSummary,
 	artifactTypeLabel,
 	byteSize,
@@ -13,6 +16,9 @@ import {
 	prRefLabel,
 	requirementLines,
 	quotaLabel,
+	roundLines,
+	roundSummaryLabel,
+	sinceLastRunLines,
 	recurrenceLabel,
 	ruleTargetsLabel,
 	runRow,
@@ -437,5 +443,205 @@ describe('requirementLines', () => {
 				fix: ''
 			})
 		).toEqual(['requires artifact "notes": missing']);
+	});
+});
+
+describe('the handoff sections', () => {
+	const NOW = 1_700_000_000_000;
+	const human = {
+		user_id: 'u1',
+		user_name: 'Tom Buckley',
+		api_key_id: null,
+		api_key_name: null
+	};
+	const comment = (id: string, body: string, at: number): Comment => ({
+		id,
+		issue_id: 'iss_1',
+		body,
+		actor: human,
+		created_at: at,
+		updated_at: null
+	});
+	const run = (over: Partial<RoundRun> = {}): RoundRun => ({
+		run_id: 'arun_late',
+		runner_name: 'macbook',
+		status: 'succeeded',
+		outcome: 'advanced',
+		started_at: NOW - 3_600_000,
+		ended_at: NOW - 3_000_000,
+		usage: null,
+		transition: {
+			action: 'Submit for automated review',
+			from_state: { id: 's_impl', name: 'Implementation' },
+			to_state: { id: 's_ar', name: 'Automated Review' },
+			actor: { user_id: 'u1', user_name: 'Tom Buckley', api_key_id: 'ak_1', api_key_name: 'run' },
+			at: NOW - 3_000_000
+		},
+		summary_comment: { id: 'cmt_sum', body: 'Implementation\nlanded the thing.', created_at: NOW },
+		earlier_comment_ids: ['cmt_a', 'cmt_b'],
+		artifacts: [
+			{
+				name: 'impl-pr',
+				artifact_type: 'pr',
+				from_version: null,
+				to_version: 1,
+				pr_url: 'https://github.com/tbuckley/tines/pull/129',
+				files: null
+			}
+		],
+		returned_via: null,
+		...over
+	});
+
+	describe('roundLines', () => {
+		const round: Round = {
+			boundary: {
+				action: 'Send back to implementation',
+				from_state: { id: 's_hr', name: 'Human Review' },
+				to_state: { id: 's_impl', name: 'Implementation' },
+				actor: human,
+				at: NOW - 7_200_000
+			},
+			boundary_at: NOW - 7_200_000,
+			stages: [
+				{
+					state: { id: 's_impl', name: 'Implementation', position: 3 },
+					runs: [
+						run(),
+						run({
+							run_id: 'arun_early',
+							outcome: 'stalled',
+							transition: null,
+							summary_comment: null,
+							earlier_comment_ids: [],
+							artifacts: [],
+							returned_via: {
+								action: 'Review failed',
+								from_state: { id: 's_ar', name: 'Automated Review' },
+								to_state: { id: 's_impl', name: 'Implementation' },
+								actor: {
+									user_id: 'u1',
+									user_name: 'Tom Buckley',
+									api_key_id: 'ak_2',
+									api_key_name: 'run'
+								},
+								at: NOW - 5_000_000
+							}
+						})
+					]
+				}
+			],
+			run_count: 2
+		};
+
+		it('heads the round with its boundary and names every run', () => {
+			const lines = roundLines(round, NOW);
+			expect(lines[0]).toContain('round (2 runs since Tom Buckley moved "Send back to');
+			expect(lines.join('\n')).toContain(
+				'Implementation — arun_late on macbook · 10m · advanced · "Submit for automated review" → Automated Review'
+			);
+		});
+
+		it('spells out the latest run only, folding the earlier attempt to one line', () => {
+			const text = roundLines(round, NOW).join('\n');
+			expect(text).toContain('impl-pr v1 (https://github.com/tbuckley/tines/pull/129)');
+			expect(text).toContain('summary (cmt_sum):');
+			expect(text).toContain('landed the thing.');
+			expect(text).toContain('2 earlier comments: cmt_a, cmt_b');
+			// The earlier attempt gets its one line, naming what ended it, and
+			// none of the detail the stage's latest run gets.
+			expect(text).toContain('arun_early · 10m · stalled · sent back by Automated Review');
+			expect(text).toContain('1 earlier attempt folded above');
+			expect(text.match(/summary \(/g)).toHaveLength(1);
+		});
+
+		it('says "since created" when no human transition opened the round', () => {
+			const lines = roundLines({ ...round, boundary: null }, NOW);
+			expect(lines[0]).toContain('since created');
+		});
+	});
+
+	describe('sinceLastRunLines', () => {
+		const since: SinceLastRun = {
+			previous_run: {
+				run_id: 'arun_prev',
+				ended_at: NOW - 7_200_000,
+				state_at_start_name: 'Implementation'
+			},
+			transition: {
+				action: 'Send back to implementation',
+				from_state: { id: 's_hr', name: 'Human Review' },
+				to_state: { id: 's_impl', name: 'Implementation' },
+				actor: human,
+				at: NOW - 3_600_000
+			},
+			comments: [comment('cmt_h', 'CI is red on the e2e job.', NOW - 3_500_000)],
+			comment_count: 1,
+			stale_artifacts: ['impl-pr']
+		};
+
+		it('names the previous run, the human move and what went stale', () => {
+			const text = sinceLastRunLines(since, NOW).join('\n');
+			expect(text).toContain('since the last run (Implementation, arun_prev ended 2h ago):');
+			expect(text).toContain(
+				'moved from Human Review via "Send back to implementation" by Tom Buckley 1h ago — now stale: impl-pr'
+			);
+			expect(text).toContain('CI is red on the e2e job.');
+		});
+
+		it('renders a forced move as "moved directly" and reports the comment cap', () => {
+			const text = sinceLastRunLines(
+				{
+					...since,
+					transition: { ...since.transition!, action: null },
+					stale_artifacts: [],
+					comment_count: 13
+				},
+				NOW
+			).join('\n');
+			expect(text).toContain('moved from Human Review moved directly by Tom Buckley 1h ago');
+			expect(text).not.toContain('now stale');
+			expect(text).toContain('… and 12 earlier comments');
+		});
+
+		it('drops the move line on a comment-only steer', () => {
+			const text = sinceLastRunLines({ ...since, transition: null }, NOW).join('\n');
+			expect(text).not.toContain('moved from');
+			expect(text).toContain('CI is red on the e2e job.');
+		});
+	});
+
+	describe('the awaiting-human columns', () => {
+		it('labels how the issue arrived, falling back for a forced move', () => {
+			expect(arrivedViaLabel({ action: 'Review passed', from_state_name: 'x', by_run: true, at: 0 })).toBe(
+				'Review passed'
+			);
+			expect(arrivedViaLabel({ action: null, from_state_name: null, by_run: false, at: 0 })).toBe(
+				'moved directly'
+			);
+			expect(arrivedViaLabel(null)).toBe('—');
+		});
+
+		it('summarises the round as the PR number and the artifacts it produced', () => {
+			expect(
+				roundSummaryLabel({
+					pr_url: 'https://github.com/tbuckley/tines/pull/129',
+					artifacts: [{ name: 'review-notes', artifact_type: 'text', version: 2 }]
+				})
+			).toBe('PR 129 · review-notes v2');
+			expect(roundSummaryLabel({ pr_url: null, artifacts: [] })).toBe('—');
+			expect(roundSummaryLabel(null)).toBe('—');
+		});
+	});
+});
+
+describe('ageLabel delegation', () => {
+	// One spelling of an age across the launch prompt and the CLI: the ISO form
+	// here is the shared helper with a Date.parse in front of it.
+	it('is the shared helper with the ISO string parsed', () => {
+		const now = Date.parse('2026-09-06T12:00:00.000Z');
+		for (const ms of [12_000, 900_000, 40_000_000, 400_000_000]) {
+			expect(ageLabel(new Date(now - ms).toISOString(), now)).toBe(sharedAgeLabel(now - ms, now));
+		}
 	});
 });
