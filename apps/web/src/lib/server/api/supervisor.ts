@@ -394,9 +394,7 @@ export async function loadFleetQueue(
 			.where('st.category', '=', 'awaiting_human')
 			.select((eb) => [
 				eb.fn.countAll<number>().as('n'),
-				eb.fn
-					.min(sql<number>`COALESCE(issue.state_entered_at, issue.created_at)`)
-					.as('oldest')
+				eb.fn.min(sql<number>`COALESCE(issue.state_entered_at, issue.created_at)`).as('oldest')
 			])
 			.executeTakeFirst()
 	]);
@@ -404,9 +402,7 @@ export async function loadFleetQueue(
 	// The queue the explainer reports positions in: eligible issues that would
 	// actually route somewhere, oldest-`updated_at` first.
 	const positions = new Map<string, number>();
-	eligible
-		.filter((c) => isRoutedCandidate(c, rules))
-		.forEach((c, i) => positions.set(c.id, i));
+	eligible.filter((c) => isRoutedCandidate(c, rules)).forEach((c, i) => positions.set(c.id, i));
 
 	const groups = new Map<string, QueueGroup>();
 	for (const issue of eligible) {

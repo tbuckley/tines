@@ -1896,7 +1896,13 @@ export type QueueVerdict =
 
 /** Which limit is binding, for the capacity and quota verdicts; null for the rest. */
 export type QueueBinding =
-	| { kind: 'max_concurrent'; runner_id: string; runner_name: string; current: number; limit: number }
+	| {
+			kind: 'max_concurrent';
+			runner_id: string;
+			runner_name: string;
+			current: number;
+			limit: number;
+	  }
 	| { kind: 'global_cap'; current: number; limit: number }
 	| { kind: 'state_roster'; state_id: string; current: number; limit: number; overridden: boolean };
 

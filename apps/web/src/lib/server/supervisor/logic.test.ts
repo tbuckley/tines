@@ -349,10 +349,28 @@ describe('queueVerdict', () => {
 
 describe('isRoutedCandidate', () => {
 	const rules = [
-		{ id: 'r1', project_id: 'p1', workflow_state_id: null, label_id: null, targets: [{ runner_id: 'rnr_1', tier: null }] },
+		{
+			id: 'r1',
+			project_id: 'p1',
+			workflow_state_id: null,
+			label_id: null,
+			targets: [{ runner_id: 'rnr_1', tier: null }]
+		},
 		{ id: 'empty', project_id: 'p2', workflow_state_id: null, label_id: null, targets: [] },
-		{ id: 'lab_a', project_id: null, workflow_state_id: null, label_id: 'l_a', targets: [{ runner_id: 'rnr_1', tier: null }] },
-		{ id: 'lab_b', project_id: null, workflow_state_id: null, label_id: 'l_b', targets: [{ runner_id: 'rnr_2', tier: null }] }
+		{
+			id: 'lab_a',
+			project_id: null,
+			workflow_state_id: null,
+			label_id: 'l_a',
+			targets: [{ runner_id: 'rnr_1', tier: null }]
+		},
+		{
+			id: 'lab_b',
+			project_id: null,
+			workflow_state_id: null,
+			label_id: 'l_b',
+			targets: [{ runner_id: 'rnr_2', tier: null }]
+		}
 	];
 	const issue = (project_id: string, label_ids: string[] = [], pin: string | null = null) => ({
 		project_id,
