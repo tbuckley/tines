@@ -26,8 +26,10 @@ test.describe.serial('the first-run path on an empty account', () => {
 
 		await signIn(context, BOB.sessionToken);
 		await page.goto('/issues');
+		// This is the suite's first spec file, so this is the first page the
+		// worker ever renders: a cold start blows the 5s default on CI.
 		const link = page.getByRole('link', { name: 'New project' });
-		await expect(link).toBeVisible();
+		await expect(link).toBeVisible({ timeout: 30_000 });
 		await link.click();
 
 		// The dialog opens from `?new=1`, which is consumed with replaceState so
