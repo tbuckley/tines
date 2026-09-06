@@ -20,7 +20,12 @@ import {
 	addTwoStageWorkflow,
 	seedBase
 } from '../supervisor/test-fixtures';
-import { contextSummaryForIssue, createContextItem, effectiveContextForIssue } from './context';
+import {
+	contextSummaryForIssue,
+	createContextItem,
+	effectiveContextForIssue,
+	journalForIssue
+} from './context';
 import type { ActorContext } from './core';
 import { createTestDb, type TestDb } from './test-db';
 
@@ -210,6 +215,33 @@ describe('inherited layers', () => {
 		expect(ctx.overridden).toHaveLength(1);
 		expect(ctx.overridden[0].scope.label).toBe('state Shared stages / Stage A');
 		expect(ctx.overridden[0].inherited_from?.state_id).toBe(BASE_MERGING);
+	});
+
+	it("writes the journal to the issue's own state, never to the base", async () => {
+		// Inheritance is read-only: an agent's journal append must land on the
+		// leaf, or two workflows sharing a base would write into each other.
+		const issue = addIssue(t, { workflow: 'wf_two', state: STAGE_A });
+		await prompt(t, 'journal', 'base journal', {
+			project_id: PROJECT,
+			workflow_state_id: BASE_MERGING
+		});
+		const own = await prompt(t, 'journal', 'own journal', {
+			project_id: PROJECT,
+			workflow_state_id: STAGE_A
+		});
+
+		const journal = await journalForIssue(t.db, session, issue);
+		expect(journal.scope.workflow_state_id).toBe(STAGE_A);
+		expect(journal.item?.id).toBe(own.id);
+	});
+
+	it('refuses an item scoped to an issue and a state outside its workflow', async () => {
+		// A base state belongs to another workflow, so `issue ∧ base state` is
+		// incoherent even though the issue inherits that state's context.
+		const issue = addIssue(t, { workflow: 'wf_two', state: STAGE_A });
+		await expect(
+			prompt(t, 'both', 'x', { issue_id: issue, workflow_state_id: BASE_MERGING })
+		).rejects.toMatchObject({ status: 422, code: 'scope_incoherent' });
 	});
 
 	it('counts inherited items in the summary badge, and only labels the issue carries', async () => {
