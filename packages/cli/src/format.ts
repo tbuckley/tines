@@ -8,6 +8,7 @@
 import type {
 	AgentRun,
 	Artifact,
+	ArtifactRequirementCheck,
 	ArtifactVersion,
 	Comment,
 	ContextItem,
@@ -107,6 +108,54 @@ export function artifactSummary(a: Artifact): string {
 		case 'pr':
 			return `${prRefLabel(cv)} — ${cv.pr_repo_url}/pull/${cv.pr_number}`;
 	}
+}
+
+/**
+ * The type and declared MIME of an artifact, short enough for the line that
+ * confirms an attach: `text, text/markdown`, `file, image/png`, `folder`.
+ * The fuller `artifactSummary` (filename, sizes, URLs) stays for show/list.
+ */
+export function artifactTypeLabel(a: Pick<Artifact, 'artifact_type' | 'current_version'>): string {
+	const ct = a.current_version.content_type;
+	return (a.artifact_type === 'file' || a.artifact_type === 'text') && ct
+		? `${a.artifact_type}, ${ct}`
+		: a.artifact_type;
+}
+
+/** A requirement's live status, written the way a reader decides what to do next. */
+function requirementStatus(r: ArtifactRequirementCheck): string {
+	switch (r.status) {
+		case 'satisfied':
+			return `satisfied (v${r.current_version?.version})`;
+		case 'missing':
+			return 'missing';
+		case 'stale':
+			return `stale (v${r.current_version?.version}, attached before the current state)`;
+		case 'type_mismatch':
+			// Two different misses wear the same status: the wrong (immutable)
+			// type, which needs a delete, and a content type outside the gate's
+			// prefix, which a new version fixes. Say which.
+			return r.type !== undefined && r.current_type !== null && r.current_type !== r.type
+				? `type mismatch (holds ${r.current_type})`
+				: `type mismatch (v${r.current_version?.version} is not ${r.content_type ?? r.type})`;
+	}
+}
+
+/**
+ * The two lines every requirement is rendered as — what it wants plus the
+ * runnable fix. `issues show` and the `transition_requirements_unmet` 422 both
+ * print these, so the pre-flight view and the failure cannot drift.
+ */
+export function requirementLines(
+	r: ArtifactRequirementCheck,
+	options: { prefix?: string } = {}
+): string[] {
+	const prefix = options.prefix ?? '';
+	const spec = [r.type, r.content_type].filter(Boolean).join(', ');
+	return [
+		`${prefix}requires artifact "${r.artifact}"${spec ? ` (${spec})` : ''}: ${requirementStatus(r)}${r.description ? ` — ${r.description}` : ''}`,
+		...(r.fix ? [`${prefix}  fix: ${r.fix}`] : [])
+	];
 }
 
 export function scheduleRef(s: Schedule): string {
