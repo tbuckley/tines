@@ -618,7 +618,7 @@ re-arms it. A `text` gate naming a concrete content type declares it on the
 document attached through the dialog clears the gate on the first `move`
 rather than storing the default `text/markdown` under a `text/plain` gate. A
 `file` upload declares the picked file's own type and nothing else — the gate
-never stands in for it, or a `.png` under an `(file, application/pdf)` gate
+never stands in for it, or a `.png` under a `(file, application/pdf)` gate
 would look accepted and then fail the move on an artifact whose type cannot
 change.
 

@@ -80,7 +80,9 @@ export function attachGateHint(gates: ArtifactGate[]): AttachGateHint | null {
 }
 
 /** One entry per distinct transition/spec pair, as the warning's list is. */
-function dedupe(entries: { transition: string; spec: string }[]): { transition: string; spec: string }[] {
+function dedupe(
+	entries: { transition: string; spec: string }[]
+): { transition: string; spec: string }[] {
 	const seen = new Set<string>();
 	return entries.filter((e) => {
 		const key = `${e.transition}\u0000${e.spec}`;
