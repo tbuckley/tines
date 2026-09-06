@@ -1010,7 +1010,11 @@
 							{#if effectiveContextPanel.current.status === 'pending'}
 								<Skeleton class="h-24 w-full" />
 							{:else if effectiveContextPanel.current.status === 'loaded'}
-								<EffectiveContextView context={effectiveContextPanel.current.value} />
+								<EffectiveContextView
+									context={effectiveContextPanel.current.value}
+									workflows={data.workflows}
+									stateId={currentState.id}
+								/>
 							{:else}
 								{@render loadFailed('the effective context')}
 							{/if}

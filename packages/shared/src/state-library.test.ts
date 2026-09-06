@@ -45,9 +45,14 @@ function library() {
 			transitions: [{ id: 't1', name: 'ship', from_state_id: 'e_merge', to_state_id: 'e_done' }]
 		}
 	);
-	const docs = workflow('wf_docs', 'Docs Change', [state('d_merge', 'Merging', 'active', 's_merge')], {
-		transitions: [{ id: 't2', name: 'ship', from_state_id: 'd_merge', to_state_id: 'd_merge' }]
-	});
+	const docs = workflow(
+		'wf_docs',
+		'Docs Change',
+		[state('d_merge', 'Merging', 'active', 's_merge')],
+		{
+			transitions: [{ id: 't2', name: 'ship', from_state_id: 'd_merge', to_state_id: 'd_merge' }]
+		}
+	);
 	return { shared, eng, docs, lib: buildStateLibrary([shared, eng, docs]) };
 }
 

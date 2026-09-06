@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { ContextItem } from '@tines/shared';
+	import type { ContextItem, InheritedFrom } from '@tines/shared';
 	import { slide } from 'svelte/transition';
 	import ContextKindIcon from '$lib/components/ContextKindIcon.svelte';
 	import ContextScopeChips from '$lib/components/ContextScopeChips.svelte';
@@ -10,6 +10,7 @@
 		showScope = true,
 		shortScope = false,
 		emptyMessage = 'No context items.',
+		inheritedFrom = null,
 		onselect
 	}: {
 		items: ContextItem[];
@@ -17,6 +18,11 @@
 		/** Drop the workflow from the state chip, for lists already grouped by state. */
 		shortScope?: boolean;
 		emptyMessage?: string;
+		/**
+		 * Set when this whole list is a base's items, seen from a state that
+		 * inherits them: every row gets the `via <workflow> / <state>` chip.
+		 */
+		inheritedFrom?: InheritedFrom | null;
 		/** Row click → open the editor. */
 		onselect?: (item: ContextItem) => void;
 	} = $props();
@@ -55,7 +61,7 @@
 						<span class="flex items-center gap-2">
 							<span class="truncate font-medium">{item.name}</span>
 							{#if showScope}
-								<ContextScopeChips scope={item.scope} short={shortScope} />
+								<ContextScopeChips scope={item.scope} short={shortScope} {inheritedFrom} />
 							{/if}
 						</span>
 						{#if payloadSummary(item)}

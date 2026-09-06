@@ -299,7 +299,9 @@ export function register(program: Command): void {
 				group = base.workflow.id;
 			}
 			console.log(`  ${base.state.name}`);
-			console.log(`    inherited by: ${childrenOf(lib, base.state.id).map(qualifyEntry).join(', ')}`);
+			console.log(
+				`    inherited by: ${childrenOf(lib, base.state.id).map(qualifyEntry).join(', ')}`
+			);
 		}
 	});
 
