@@ -576,7 +576,11 @@ before the first write and every use below costs no extra request:
   `--ignore-gates` skips the check. A content-type-only miss names
   `--content-type` instead. A slot that already holds the wrong (immutable)
   type is refused the same way, with the delete-and-reattach command: the CLI
-  teaches the dance rather than converting.
+  teaches the dance rather than converting. That refusal is checked *after*
+  acceptance, so passing the wrong flag at a slot whose current type already
+  satisfies the gate gets the gate's own fix — never advice to delete the
+  artifact that satisfies it — and it names no `--ignore-gates` escape, since
+  the server rejects a type change unconditionally.
 - **Reading the gate.** The line confirming an attach names the transitions the
   new version satisfies (or what a gate wanted instead); `issues show` prints
   each gated transition's requirement with its status and `fix`; and

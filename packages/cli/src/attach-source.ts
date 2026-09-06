@@ -241,8 +241,12 @@ export function planAttach(input: AttachPlanInput, sniff: (path: string) => stri
 			: planFlags(flags, probe);
 
 	if (gates.length > 0) {
-		checkExistingSlot(plan, gates, ref, name, flags, positional);
+		// Acceptance first: when a slot already holds the very type the gate wants
+		// and the wrong flag is passed, the gate refusal is the useful one — the
+		// immutable-type advice would tell the agent to delete the artifact that
+		// satisfies the gate and re-create it as one that never can.
 		checkAccepted(plan, gates, ref, name, flags, positional, sniff);
+		checkExistingSlot(plan, gates, ref, name, flags, positional);
 	}
 	return plan;
 }
@@ -441,7 +445,7 @@ function checkExistingSlot(
 		? fixCommand(rejecting, ref)
 		: `tines issues artifacts delete ${ref} ${name} && tines issues artifacts attach ${ref} ${name} ${flagFor(plan.type)} <source>`;
 	throw new CliError(
-		`"${name}" already holds a ${held} artifact and the type is immutable; ${sourceLabel(flags, positional)} would attach ${plan.type}. Use: ${fix} (or --ignore-gates to attach it anyway)`
+		`"${name}" already holds a ${held} artifact and the type is immutable; ${sourceLabel(flags, positional)} would attach ${plan.type}. Use: ${fix} — or attach it under a different name (--ignore-gates does not bypass this; the server rejects the type change too)`
 	);
 }
 

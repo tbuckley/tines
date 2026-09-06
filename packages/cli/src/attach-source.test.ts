@@ -258,7 +258,25 @@ describe('planAttach — flags and refusals', () => {
 			fix: 'tines issues artifacts delete Proj/1 prd && tines issues artifacts attach Proj/1 prd --text @prd.md'
 		});
 		expect(() => plan({ positional: 'prd.md', gates: [g], paths: ['prd.md'] })).toThrow(
-			'"prd" already holds a link artifact and the type is immutable; the positional source would attach text. Use: tines issues artifacts delete Proj/1 prd && tines issues artifacts attach Proj/1 prd --text @prd.md (or --ignore-gates to attach it anyway)'
+			'"prd" already holds a link artifact and the type is immutable; the positional source would attach text. Use: tines issues artifacts delete Proj/1 prd && tines issues artifacts attach Proj/1 prd --text @prd.md — or attach it under a different name (--ignore-gates does not bypass this; the server rejects the type change too)'
+		);
+	});
+
+	it('prefers the gate refusal over the immutable-type one when the slot already satisfies the gate', () => {
+		// The anti-pattern this direction exists to kill: a satisfied text slot
+		// plus --file. The delete-and-reattach advice would destroy the artifact
+		// that satisfies the gate, so acceptance is checked first.
+		const g = gate('Submit for review', {
+			artifact: 'prd',
+			type: 'text',
+			content_type: 'text/markdown',
+			status: 'satisfied',
+			current_type: 'text',
+			current_version: { version: 1, created_at: 0 },
+			fix: 'tines issues artifacts attach Proj/1 prd --text @prd.md'
+		});
+		expect(() => plan({ flags: { file: 'prd.md' }, gates: [g], paths: ['prd.md'] })).toThrow(
+			'"prd" is gated by "Submit for review" as text (text/markdown); --file would create a file artifact that can never satisfy it. Use: tines issues artifacts attach Proj/1 prd --text @prd.md (or --ignore-gates to attach a file anyway)'
 		);
 	});
 
