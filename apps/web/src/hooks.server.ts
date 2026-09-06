@@ -60,6 +60,19 @@ export const handle: Handle = async ({ event, resolve }) => {
 	if (building || !event.platform) {
 		return resolve(event);
 	}
+	// The sandbox host (ARTIFACT_SANDBOX_ORIGIN) serves artifact sites and
+	// nothing else: no sign-in page, no /api, no app assets — so a prototype's
+	// JavaScript has nothing of ours to reach even on its own origin. It never
+	// carries an app session either, since it is a different registrable domain.
+	const sandboxOrigin = event.platform.env.ARTIFACT_SANDBOX_ORIGIN;
+	if (sandboxOrigin && event.url.origin === sandboxOrigin) {
+		if (!event.url.pathname.startsWith('/s/')) {
+			return new Response('Not found', { status: 404 });
+		}
+		event.locals.user = null;
+		event.locals.session = null;
+		return resolve(event);
+	}
 	if (crossSiteFormSubmission(event)) {
 		return new Response('Cross-site form submissions are forbidden', { status: 403 });
 	}

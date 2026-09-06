@@ -93,7 +93,7 @@ export async function verifySiteToken(
 		valid = await crypto.subtle.verify(
 			'HMAC',
 			await hmacKey(keyMaterial),
-			fromBase64Url(parts[2]) as unknown as ArrayBufferView,
+			fromBase64Url(parts[2]).buffer as ArrayBuffer,
 			new TextEncoder().encode(`${parts[0]}.${parts[1]}`)
 		);
 		payload = JSON.parse(new TextDecoder().decode(fromBase64Url(parts[1])));
