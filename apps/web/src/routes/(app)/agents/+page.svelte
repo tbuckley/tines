@@ -32,6 +32,7 @@
 	import IconTrash from '@tabler/icons-svelte/icons/trash';
 	import IconX from '@tabler/icons-svelte/icons/x';
 	import { slide } from 'svelte/transition';
+	import { tick } from 'svelte';
 	import { invalidateAll } from '$app/navigation';
 	import { api } from '$lib/api';
 	import CancelRunDialog from '$lib/components/CancelRunDialog.svelte';
@@ -60,6 +61,13 @@
 	 * pass's), which is what makes the Now row shrink without a reload
 	 * (Tines/256). `invalidateAll` re-runs the loader without remounting, so
 	 * open dialogs and typed state survive.
+	 *
+	 * The second read is deliberately untestable locally: under `wrangler dev`
+	 * the pass has finished before the write's response returns (traced — the
+	 * group is gone by t≈1s), so deleting it leaves the e2e suite green. It
+	 * defends the deployed Worker's `waitUntil`, where that ordering is not
+	 * guaranteed; the 2s is a margin, not a measurement. Delete it only with a
+	 * measurement from production in hand.
 	 */
 	let dispatchRecheck: ReturnType<typeof setTimeout> | null = null;
 	async function refreshAfterDispatch() {
@@ -386,8 +394,11 @@
 		editTarget = runner;
 		// Opened from the Now row's "Raise cap": land the caret on the field the
 		// remedy is about, rather than making the operator find it in the dialog.
+		// `tick()`, not `queueMicrotask`: the dialog is mounted by the same flush
+		// this assignment schedules, so a microtask can run before the field
+		// exists and silently focus nothing.
 		if (editFocusCap) {
-			queueMicrotask(() => {
+			void tick().then(() => {
 				const el = document.getElementById('edit-concurrent');
 				if (el instanceof HTMLInputElement) el.select();
 				editFocusCap = false;

@@ -159,6 +159,9 @@ test.describe.serial('the Now row', () => {
 		const dialog = page.getByRole('dialog');
 		const capField = dialog.locator('#edit-concurrent');
 		await expect(capField).toBeVisible();
+		// The remedy lands the caret on the field it is about — the operator
+		// types a number, never hunts for it in the dialog.
+		await expect(capField).toBeFocused();
 		await capField.fill('3');
 		// Scoped to the dialog: the settings form behind it has a Save too, and
 		// the modal overlay swallows the click aimed at it.

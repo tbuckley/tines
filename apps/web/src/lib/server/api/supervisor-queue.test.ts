@@ -332,6 +332,68 @@ describe('the fleet queue and the per-issue explainer agree', () => {
 		expect(checked).toBe(queue.waiting);
 	});
 
+	/**
+	 * The verdicts agreeing is only half of it: `verdictLine` (explain.ts) and
+	 * `groupDetail` (supervisor.ts) are independent string tables over the same
+	 * union, so the two surfaces can classify an issue identically and still
+	 * *say* contradictory things. This pins what each one says per verdict, and
+	 * fails if the world grows a verdict the table has no wording for.
+	 */
+	const SAYS: Partial<Record<QueueVerdict, { explainer: RegExp; detail: RegExp }>> = {
+		ok: { explainer: /would dispatch to/, detail: /would dispatch to/ },
+		offline: { explainer: /is offline/, detail: /daemon (last seen|has never connected)/ },
+		at_capacity: { explainer: /waiting for capacity on/, detail: /at max_concurrent/ },
+		paused: { explainer: /is paused/, detail: /runner is paused/ },
+		quota_exhausted: {
+			explainer: /waiting for capacity on/,
+			detail: /(global cap reached|state roster full)/
+		},
+		no_rule: { explainer: /No matching routing rule/, detail: /no matching routing rule/ },
+		ambiguous_rule: { explainer: /Two routing rules tie/, detail: /two routing rules tie/ },
+		pin_missing: { explainer: /Pinned to a removed runner/, detail: /pinned to a removed runner/ },
+		automation_off: { explainer: /Automation is off/, detail: /kill switch is off/ }
+	};
+
+	it('and say the same thing about it, not just classify it the same', async () => {
+		const t = world();
+		addTwoStageWorkflow(t);
+		const offline = addRunner(t, { name: 'asleep', lastSeen: NOW - 10 * HOUR });
+		const full = addRunner(t, { name: 'full', maxConcurrent: 1 });
+		const paused = addRunner(t, { name: 'paused', status: 'paused' });
+		const docs = addLabel(t, 'docs');
+		const qa = addLabel(t, 'qa');
+
+		addRule(t, { state: OPEN, targets: [{ runner_id: offline }] });
+		addRule(t, { state: STAGE_A, targets: [{ runner_id: full }] });
+		addRule(t, { label: docs, targets: [{ runner_id: paused }] });
+		addRule(t, { label: qa, targets: [{ runner_id: paused }] });
+
+		const busy = addIssue(t, { workflow: 'wf_two', state: STAGE_A });
+		addRun(t, { issueId: busy, runnerId: full, status: 'assigned' });
+		addIssue(t);
+		addIssue(t, { workflow: 'wf_two', state: STAGE_A });
+		addIssue(t, { labels: [docs, qa] });
+		pinToForeignRunner(t, addIssue(t, { id: 'iss_says_pinned' }));
+
+		const queue = await loadFleetQueue(t.db, USER, NOW);
+		let checked = 0;
+		for (const group of queue.groups) {
+			const says = SAYS[group.verdict];
+			expect(says, `no wording pinned for ${group.verdict}`).toBeDefined();
+			expect(group.detail, group.verdict).toMatch(says!.detail);
+			for (const ref of group.issues) {
+				const explainer = await explainDispatch(t.db, USER, ref.id, NOW);
+				expect(explainer!.verdict, `${ref.id} (${group.verdict})`).toMatch(says!.explainer);
+				// Whichever runner one surface names, the other names too.
+				if (group.runner_name !== null) {
+					expect(explainer!.verdict, ref.id).toContain(group.runner_name);
+				}
+				checked++;
+			}
+		}
+		expect(checked).toBe(queue.waiting);
+	});
+
 	it('including when the kill switch is off', async () => {
 		const t = world();
 		setSettings(t, { enabled: false });
