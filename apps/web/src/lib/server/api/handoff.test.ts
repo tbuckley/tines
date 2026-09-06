@@ -384,6 +384,60 @@ describe('round', () => {
 			'arun_impl3'
 		]);
 	});
+
+	it('treats a forced move as a boundary, naming no action', async () => {
+		const issueId = seedTines29();
+		const h = 3_600_000;
+		// `issues edit -s` moves an issue without an action: still the human
+		// acting, so it still opens a new round.
+		addTransitionEvent(t, {
+			issueId,
+			apiKeyId: null,
+			at: NOW + 7 * h,
+			from: ENG_STATES.humanReview,
+			to: ENG_STATES.impl,
+			action: null,
+			fromName: 'Human Review',
+			toName: 'Implementation',
+			forced: true
+		});
+		finishedRun({
+			id: 'arun_after_force',
+			issueId,
+			from: ENG_STATES.impl,
+			to: ENG_STATES.humanReview,
+			action: 'Submit for automated review',
+			fromName: 'Implementation',
+			toName: 'Human Review',
+			at: NOW + 8 * h
+		});
+		const detail = await getIssueDetail(t.db, USER, { id: issueId }, { round: true });
+		expect(detail.round!.boundary).toMatchObject({ action: null, at: NOW + 7 * h });
+		expect(detail.round!.run_count).toBe(1);
+	});
+
+	it('does not treat a workflow change as a boundary, and stops claiming how the issue arrived', async () => {
+		const issueId = seedTines29();
+		const h = 3_600_000;
+		// A workflow change re-stamps state_entered_at and emits issue.updated,
+		// never issue.transitioned: the round it interrupts is unchanged, but
+		// nothing transitioned the issue into where it now sits.
+		t.sqlite
+			.prepare(`UPDATE issue SET state_entered_at = ? WHERE id = ?`)
+			.run(NOW + 7 * h, issueId);
+		t.sqlite
+			.prepare(
+				`INSERT INTO event (id, user_id, type, actor_user_id, actor_api_key_id, issue_id, project_id, payload, created_at)
+				VALUES ('evt_wfchange', ?, 'issue.updated', ?, NULL, ?, ?, '{"workflow_id":"wf_eng"}', ?)`
+			)
+			.run(USER, USER, issueId, PROJECT, NOW + 7 * h);
+
+		const detail = await getIssueDetail(t.db, USER, { id: issueId }, { round: true });
+		expect(detail.round!.run_count).toBe(6);
+		expect(detail.round!.boundary).toBeNull();
+		const { items } = await listIssues(t.db, USER, {}, { limit: 20, cursor: null });
+		expect(items.find((i) => i.id === issueId)!.arrived_via).toBeNull();
+	});
 });
 
 describe('since_last_run', () => {
@@ -450,6 +504,38 @@ describe('since_last_run', () => {
 		// The newest ten, oldest first: the very first note is the one dropped.
 		expect(since.comments[0].id).toBe('cmt_h1');
 		expect(since.stale_artifacts).toEqual([]);
+	});
+
+	// The three shapes the launch prompt's steer section exists for. They differ
+	// only in which awaiting state the human acted from; the rendering is pinned
+	// once in context.test.ts and end to end in runner-protocol.test.ts.
+	it.each([
+		['sent back from Human Review', ENG_STATES.humanReview, 'Send back to implementation'],
+		['reworked from PRD Review', ENG_STATES.autoReview, 'Rework the PRD'],
+		['answered from Needs Clarification', ENG_STATES.autoReview, 'Answer']
+	])('carries a steer %s', async (_label, fromState, action) => {
+		const issueId = seedTines29();
+		const h = 3_600_000;
+		t.sqlite
+			.prepare(`UPDATE issue SET state_id = ?, state_entered_at = ? WHERE id = ?`)
+			.run(ENG_STATES.impl, NOW + 7 * h, issueId);
+		addTransitionEvent(t, {
+			issueId,
+			apiKeyId: null,
+			at: NOW + 7 * h,
+			from: fromState,
+			to: ENG_STATES.impl,
+			action,
+			fromName: 'Awaiting',
+			toName: 'Implementation'
+		});
+		addComment(t, { issueId, body: 'here is the answer', apiKeyId: null, at: NOW + 7 * h + 1 });
+
+		const since = (await getIssueDetail(t.db, USER, { id: issueId }, { round: true }))
+			.since_last_run!;
+		expect(since.transition?.action).toBe(action);
+		expect(since.transition?.from_state.id).toBe(fromState);
+		expect(since.comments.map((c) => c.body)).toEqual(['here is the answer']);
 	});
 
 	it('is null when the issue has never had a finished run', async () => {

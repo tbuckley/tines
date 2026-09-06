@@ -77,7 +77,7 @@ describe('runnerStatusLabel', () => {
 describe('runRow', () => {
 	const base = {
 		id: 'arun_1',
-		status: 'succeeded',
+		status: 'completed',
 		created_at: Date.UTC(2026, 7, 31),
 		started_at: Date.UTC(2026, 7, 31),
 		ended_at: Date.UTC(2026, 7, 31) + 90_000
@@ -465,7 +465,7 @@ describe('the handoff sections', () => {
 	const run = (over: Partial<RoundRun> = {}): RoundRun => ({
 		run_id: 'arun_late',
 		runner_name: 'macbook',
-		status: 'succeeded',
+		status: 'completed',
 		outcome: 'advanced',
 		started_at: NOW - 3_600_000,
 		ended_at: NOW - 3_000_000,
@@ -613,9 +613,9 @@ describe('the handoff sections', () => {
 
 	describe('the awaiting-human columns', () => {
 		it('labels how the issue arrived, falling back for a forced move', () => {
-			expect(arrivedViaLabel({ action: 'Review passed', from_state_name: 'x', by_run: true, at: 0 })).toBe(
-				'Review passed'
-			);
+			expect(
+				arrivedViaLabel({ action: 'Review passed', from_state_name: 'x', by_run: true, at: 0 })
+			).toBe('Review passed');
 			expect(arrivedViaLabel({ action: null, from_state_name: null, by_run: false, at: 0 })).toBe(
 				'moved directly'
 			);

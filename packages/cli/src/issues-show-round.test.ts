@@ -33,7 +33,7 @@ const ROUND = {
 				{
 					run_id: 'arun_late',
 					runner_name: 'macbook',
-					status: 'succeeded',
+					status: 'completed',
 					outcome: 'advanced',
 					started_at: NOW - 3_600_000,
 					ended_at: NOW - 3_000_000,
