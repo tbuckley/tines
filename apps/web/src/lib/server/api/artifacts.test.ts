@@ -965,6 +965,12 @@ describe('issue artifacts', () => {
 		);
 		// The link flag is --link here too (--url is the API base URL).
 		expect(emptyBlock).not.toContain('--url');
+		// Sites are the one attach whose content has rules a gate cannot state
+		// (Tines/272): inline-only, responsive, and how to see the result.
+		expect(emptyBlock).toContain('renders live as a prototype');
+		expect(emptyBlock).toContain('external CDNs are blocked');
+		expect(emptyBlock).toContain('width=device-width');
+		expect(emptyBlock).toContain('site-link demo/2 <name>');
 	});
 
 	// -------------------------------------------------------------------------
