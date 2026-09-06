@@ -226,6 +226,27 @@ export function launchBackoffMs(consecutiveFailures: number): number {
 	return Math.min(BACKOFF_BASE_MS * 2 ** (consecutiveFailures - 1), BACKOFF_MAX_MS);
 }
 
+/**
+ * Longest a usage-limit hold may run before the fleet re-probes. A weekly limit
+ * (or a misparsed reset) would otherwise sit for days; a daily probe costs one
+ * ~1 s interrupted run and never a strike.
+ */
+export const RATE_LIMIT_HOLD_MAX_MS = 24 * 60 * 60 * 1000;
+/** Hold applied when the provider gave no usable reset time. */
+export const RATE_LIMIT_HOLD_DEFAULT_MS = 30 * 60 * 1000;
+/** Slack past the reported reset: the window is not always open at that second. */
+export const RATE_LIMIT_HOLD_GRACE_MS = 60 * 1000;
+
+/**
+ * How long to hold a runner whose harness reported a usage limit. A reset in
+ * the past (clock skew, a stale printed time) counts as unknown.
+ */
+export function rateLimitHoldUntil(resumeAt: number | null | undefined, now: number): number {
+	if (resumeAt === null || resumeAt === undefined || !Number.isFinite(resumeAt) || resumeAt <= now)
+		return now + RATE_LIMIT_HOLD_DEFAULT_MS;
+	return Math.min(resumeAt + RATE_LIMIT_HOLD_GRACE_MS, now + RATE_LIMIT_HOLD_MAX_MS);
+}
+
 // ---------------------------------------------------------------------------
 // Target verdicts: why a runner is (not) assignable right now
 
@@ -238,6 +259,8 @@ export interface VerdictRunner {
 	/** 0/1: a local daemon finishing its runs before a self-update restart. */
 	draining: number;
 	backoff_until: number | null;
+	/** 'rate_limit' when the hold is a usage limit; null for the failure backoff. */
+	backoff_reason: string | null;
 }
 
 /** Live concurrency the pass tracks (its own claims included). */
@@ -299,10 +322,12 @@ export function targetVerdict(
 		};
 	}
 	if (runner.backoff_until !== null && runner.backoff_until > now) {
-		return {
-			verdict: 'backing_off',
-			detail: `backing off after repeated failures until ${new Date(runner.backoff_until).toISOString()}`
-		};
+		const until = new Date(runner.backoff_until).toISOString();
+		// A usage limit is the provider's clock, not this runner misbehaving —
+		// say so, or the fleet reads as broken when it is merely waiting.
+		return runner.backoff_reason === 'rate_limit'
+			? { verdict: 'rate_limited', detail: `usage limit reached — resumes ${until}` }
+			: { verdict: 'backing_off', detail: `backing off after repeated failures until ${until}` };
 	}
 	const active = counts.byRunner.get(runner.id) ?? 0;
 	if (active >= runner.max_concurrent) {

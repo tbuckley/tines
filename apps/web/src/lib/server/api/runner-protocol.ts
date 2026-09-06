@@ -30,6 +30,7 @@ import {
 	markRunRunning,
 	mintRunKeyAndFlip,
 	noteInterruption,
+	noteRateLimit,
 	supervisorEvent
 } from '$lib/server/supervisor/engine';
 import { getRunLogStore, runLogRawKey } from '$lib/server/run-log-store';
@@ -633,19 +634,47 @@ export async function finishRun(
 	// exiting non-zero, a workspace that would not clone) is the run failing
 	// and still strikes. Absent, as from any daemon predating the field, is
 	// judged exactly as before.
-	const interrupted = body.status === 'failed' && body.judgment === 'interrupted';
+	//
+	// `rate_limited` is the same judgment with a cause: the harness's provider
+	// refused the work outright, so the run is no more the issue's fault than a
+	// shutdown is — but the *runner* must stop asking until the window resets.
+	const judgment =
+		body.status === 'failed' && (body.judgment === 'interrupted' || body.judgment === 'rate_limited')
+			? body.judgment
+			: undefined;
+	if (
+		body.resume_at !== undefined &&
+		(typeof body.resume_at !== 'number' || !Number.isFinite(body.resume_at))
+	) {
+		throw new ApiFail(422, 'invalid_field', '"resume_at" must be a number (epoch ms)', {
+			field: 'resume_at'
+		});
+	}
 	const endable = await loadEndableRun(db, run.user_id, runId);
 	if (endable) {
 		const ended = await endRun(db, env, endable, {
 			status: body.status,
 			error: error ?? null,
-			...(interrupted ? { judgment: 'interrupted' as const } : {}),
+			...(judgment ? { judgment: 'interrupted' as const } : {}),
 			now
 		});
-		// A daemon that keeps dying mid-run backs off, the same as one that
-		// keeps failing to launch; the window collapses a shutdown's burst of
-		// finish reports into one incident.
-		if (ended.outcome === 'interrupted') {
+		if (judgment === 'rate_limited' && ended.ended) {
+			// On `ended`, not on the outcome: an agent that transitioned the
+			// issue before hitting the wall leaves an `advanced` run, and the
+			// runner is rate-limited all the same.
+			await noteRateLimit(db, env, {
+				userId: run.user_id,
+				runnerId: run.runner_id,
+				runId,
+				error: error ?? 'harness reported a usage limit',
+				resumeAt: body.resume_at ?? null,
+				limit: null,
+				now
+			});
+		} else if (ended.outcome === 'interrupted') {
+			// A daemon that keeps dying mid-run backs off, the same as one that
+			// keeps failing to launch; the window collapses a shutdown's burst of
+			// finish reports into one incident.
 			await noteInterruption(db, env, {
 				userId: run.user_id,
 				runnerId: run.runner_id,
