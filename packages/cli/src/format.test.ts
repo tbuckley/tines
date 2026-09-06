@@ -427,18 +427,15 @@ describe('requirementLines', () => {
 		expect(line).toContain(`: ${expected}`);
 	});
 
-	it('indents both lines under a prefix, and drops the fix when the server sent none', () => {
+	it('drops the fix line when the server sent none', () => {
 		expect(
-			requirementLines(
-				{
-					artifact: 'notes',
-					status: 'missing',
-					current_type: null,
-					current_version: null,
-					fix: ''
-				},
-				{ prefix: '  ' }
-			)
-		).toEqual(['  requires artifact "notes": missing']);
+			requirementLines({
+				artifact: 'notes',
+				status: 'missing',
+				current_type: null,
+				current_version: null,
+				fix: ''
+			})
+		).toEqual(['requires artifact "notes": missing']);
 	});
 });

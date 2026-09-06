@@ -112,6 +112,21 @@ beforeAll(async () => {
 			req.resume();
 			return req.on('end', () => json(fileArtifact));
 		}
+		if (url.pathname === '/api/v1/issues/i1/transition') {
+			req.resume();
+			return req.on('end', () => {
+				res.writeHead(422, { 'content-type': 'application/json' });
+				res.end(
+					JSON.stringify({
+						error: {
+							code: 'transition_requirements_unmet',
+							message: 'Transition "Submit for review" requires a fresh artifact "prd".',
+							details: { unmet: [requirement] }
+						}
+					})
+				);
+			});
+		}
 		if (url.pathname === '/api/v1/issues/i1/artifacts/prd') {
 			const chunks: Buffer[] = [];
 			req.on('data', (c) => chunks.push(c as Buffer));
@@ -228,6 +243,17 @@ describe('the gate elsewhere in the CLI', () => {
 		const res = await cli(['issues', 'artifacts', 'list', 'Stub/1']);
 		expect(res.stdout).toContain('GATE');
 		expect(res.stdout).toContain('wants text');
+	});
+
+	it("renders a blocked move's 422 with the same requirement lines issues show prints", async () => {
+		const res = await cli(['issues', 'move', 'Stub/1', 'Submit for review']);
+		expect(res.code).toBe(1);
+		// The server's own unmet entries, through requirementLines — so the
+		// pre-flight view and the failure cannot drift.
+		expect(res.stderr).toContain(
+			'requires artifact "prd" (text, text/markdown): missing — The product requirements'
+		);
+		expect(res.stderr).toContain(`fix: ${FIX}`);
 	});
 
 	it('leaves the GATE column out when nothing is rejected', async () => {

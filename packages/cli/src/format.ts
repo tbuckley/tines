@@ -146,15 +146,11 @@ function requirementStatus(r: ArtifactRequirementCheck): string {
  * runnable fix. `issues show` and the `transition_requirements_unmet` 422 both
  * print these, so the pre-flight view and the failure cannot drift.
  */
-export function requirementLines(
-	r: ArtifactRequirementCheck,
-	options: { prefix?: string } = {}
-): string[] {
-	const prefix = options.prefix ?? '';
+export function requirementLines(r: ArtifactRequirementCheck): string[] {
 	const spec = [r.type, r.content_type].filter(Boolean).join(', ');
 	return [
-		`${prefix}requires artifact "${r.artifact}"${spec ? ` (${spec})` : ''}: ${requirementStatus(r)}${r.description ? ` — ${r.description}` : ''}`,
-		...(r.fix ? [`${prefix}  fix: ${r.fix}`] : [])
+		`requires artifact "${r.artifact}"${spec ? ` (${spec})` : ''}: ${requirementStatus(r)}${r.description ? ` — ${r.description}` : ''}`,
+		...(r.fix ? [`  fix: ${r.fix}`] : [])
 	];
 }
 
