@@ -15,9 +15,14 @@ import {
 	addRunner,
 	seedBase
 } from '../supervisor/test-fixtures';
-import { createContextItem, journalForIssue } from './context';
+import {
+	createContextItem,
+	effectiveContextForIssue,
+	issueBlock,
+	journalForIssue
+} from './context';
 import { ApiFail, type ActorContext } from './core';
-import { transitionIssue } from './issues';
+import { getIssueDetail, transitionIssue } from './issues';
 import { createTestDb, type TestDb } from './test-db';
 
 const session: ActorContext = {
@@ -153,5 +158,155 @@ describe('journalForIssue', () => {
 		await journalForIssue(t.db, session, 'iss_nope').catch((e) => (error = e));
 		expect(error).toBeInstanceOf(ApiFail);
 		expect((error as ApiFail).status).toBe(404);
+	});
+});
+
+/**
+ * One writable journal for a family of stages (Tines/239): when a state
+ * inherits from another, the journal handed out is the *root* ancestor's, so
+ * two workflows whose stages share a base learn and prune in one file.
+ */
+describe('journalForIssue follows the root of the inheritance chain', () => {
+	const BASE_MERGING = 'wfs_base_merging';
+	const BASE_ROOT = 'wfs_base_root';
+
+	/** A base workflow whose states exist only to be inherited from. */
+	const addBaseWorkflow = () =>
+		t.sqlite.exec(`
+			INSERT INTO workflow (id, user_id, name, initial_state_id, created_at, updated_at)
+				VALUES ('wf_base', '${USER}', 'Shared stages', '${BASE_MERGING}', 0, 0);
+			INSERT INTO workflow_state (id, workflow_id, name, category, position, created_at) VALUES
+				('${BASE_MERGING}', 'wf_base', 'Merging', 'backlog', 0, 0),
+				('${BASE_ROOT}', 'wf_base', 'Root', 'backlog', 1, 0);
+		`);
+
+	const inherit = (child: string, base: string | null) =>
+		t.sqlite
+			.prepare(`UPDATE workflow_state SET inherits_from_state_id = ? WHERE id = ?`)
+			.run(base, child);
+
+	beforeEach(addBaseWorkflow);
+
+	it('resolves a depth-2 chain to the base, for a session and for a run key', async () => {
+		inherit(OPEN, BASE_MERGING);
+		const base = await seedJournal(BASE_MERGING, '- shared lesson');
+		const issue = addIssue(t);
+
+		for (const actor of [session, runActor(issue, { stateAtStart: OPEN })]) {
+			const journal = await journalForIssue(t.db, actor, issue);
+			expect(journal.scope.workflow_state_id).toBe(BASE_MERGING);
+			expect(journal.scope.label).toBe('project demo · state Merging');
+			expect(journal.item?.id).toBe(base.id);
+		}
+	});
+
+	it('resolves a depth-3 chain to the root, not to the state in the middle', async () => {
+		inherit(OPEN, BASE_MERGING);
+		inherit(BASE_MERGING, BASE_ROOT);
+		await seedJournal(BASE_MERGING, '- middle lesson');
+		const root = await seedJournal(BASE_ROOT, '- root lesson');
+
+		const journal = await journalForIssue(t.db, session, addIssue(t));
+		expect(journal.scope.workflow_state_id).toBe(BASE_ROOT);
+		expect(journal.item?.id).toBe(root.id);
+	});
+
+	it('anchors a run key to the root of its LAUNCH state, not of the current one', async () => {
+		inherit(OPEN, BASE_MERGING);
+		const base = await seedJournal(BASE_MERGING, '- shared lesson');
+		await seedJournal(REVIEW, '- review lesson');
+		const issue = addIssue(t);
+		const actor = runActor(issue, { stateAtStart: OPEN });
+		await transitionIssue(t.db, t.env, session, issue, { action: 'Submit for review' });
+
+		const journal = await journalForIssue(t.db, actor, issue);
+		expect(journal.anchor).toBe('run');
+		expect(journal.scope.workflow_state_id).toBe(BASE_MERGING);
+		expect(journal.item?.id).toBe(base.id);
+		// Review does not inherit, so its own journal is still its own.
+		expect((await journalForIssue(t.db, session, issue)).scope.workflow_state_id).toBe(REVIEW);
+	});
+
+	it('hands out the base journal, and reports null when only the child has one', async () => {
+		inherit(OPEN, BASE_MERGING);
+		const legacy = await seedJournal(OPEN, '- legacy lesson');
+		const issue = addIssue(t);
+
+		const before = await journalForIssue(t.db, session, issue);
+		expect(before.scope.workflow_state_id).toBe(BASE_MERGING);
+		expect(before.item).toBeNull();
+
+		const base = await seedJournal(BASE_MERGING, '- shared lesson');
+		const after = await journalForIssue(t.db, session, issue);
+		expect(after.item?.id).toBe(base.id);
+		expect(after.item?.id).not.toBe(legacy.id);
+	});
+
+	it("stitches a child's legacy journal read-only while naming the base as writable", async () => {
+		inherit(OPEN, BASE_MERGING);
+		await seedJournal(BASE_MERGING, '- shared lesson');
+		await seedJournal(OPEN, '- legacy lesson');
+		const issue = addIssue(t);
+
+		const ctx = await effectiveContextForIssue(t.db, USER, issue);
+		// Both headings survive: the legacy file is knowledge, and dropping it
+		// would lose it until a merge helper folds it into the base.
+		expect(ctx.prompt.text).toContain('## Journal (project demo · state Shared stages / Merging)');
+		expect(ctx.prompt.text).toContain('## Journal (project demo · state Open)');
+		expect(ctx.prompt.journal.inherited_from).toMatchObject({
+			state_id: BASE_MERGING,
+			state_name: 'Merging',
+			workflow_name: 'Shared stages'
+		});
+
+		const detail = await getIssueDetail(t.db, USER, { id: issue });
+		const block = issueBlock(detail, ctx);
+		expect(block).toContain(
+			'Your journal for this project and stage is the journal of Shared stages / Merging'
+		);
+		expect(block).toContain('(currently v1).');
+		expect(block).toContain('The other "Journal" section above belongs to state Open alone');
+		expect(block).toContain(`tines journal rewrite demo/${detail.number} --body @file`);
+	});
+
+	it('names the base state even when no journal exists there yet', async () => {
+		inherit(OPEN, BASE_MERGING);
+		const issue = addIssue(t);
+		const block = issueBlock(
+			await getIssueDetail(t.db, USER, { id: issue }),
+			await effectiveContextForIssue(t.db, USER, issue)
+		);
+		expect(block).toContain(
+			'No journal exists yet for project demo · state Shared stages / Merging. Start one:'
+		);
+	});
+
+	it('leaves a state with no parent word-for-word as it was (PRD signal 4)', async () => {
+		// The same fixture with the pointer cleared: nothing about the resolved
+		// journal or the prompt section may move for a parentless state.
+		await seedJournal(OPEN, '- own lesson');
+		const issue = addIssue(t);
+		const detail = await getIssueDetail(t.db, USER, { id: issue });
+
+		const journal = await journalForIssue(t.db, session, issue);
+		expect(journal.scope.workflow_state_id).toBe(OPEN);
+		expect(journal.scope.label).toBe('project demo · state Open');
+
+		const ctx = await effectiveContextForIssue(t.db, USER, issue);
+		expect(ctx.prompt.journal).toEqual({
+			state_id: OPEN,
+			inherited_from: null,
+			item_id: journal.item?.id,
+			version: 1
+		});
+		const block = issueBlock(detail, ctx);
+		expect(block).toContain(
+			[
+				'Your journal for this project and stage is the "Journal" section above',
+				'(currently v1).'
+			].join('\n')
+		);
+		expect(block).not.toContain('is the journal of');
+		expect(block).not.toContain('read-only');
 	});
 });

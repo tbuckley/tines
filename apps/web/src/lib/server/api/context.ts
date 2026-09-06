@@ -1313,8 +1313,7 @@ async function journalTarget(
 	const rootStateId = target.stateChain[0];
 	const leafStateId = target.stateChain[target.stateChain.length - 1];
 	const row = rows.find(
-		(r) =>
-			isJournal(r) && r.project_id === target.projectId && r.workflow_state_id === rootStateId
+		(r) => isJournal(r) && r.project_id === target.projectId && r.workflow_state_id === rootStateId
 	);
 	const base = { state_id: rootStateId, item_id: row?.id ?? null, version: row?.version ?? null };
 	// A parentless state is its own root: no provenance to report, and every
@@ -1850,7 +1849,10 @@ export function issueBlock(
 		);
 		// A journal left on the child by an earlier run still stitches — it is
 		// knowledge — but writes go to the base until a merge folds it in.
-		if (baseLabel && context.prompt.parts.some((p) => p.is_journal && p.item_id !== journal.item_id)) {
+		if (
+			baseLabel &&
+			context.prompt.parts.some((p) => p.is_journal && p.item_id !== journal.item_id)
+		) {
 			lines.push(
 				`The other "Journal" section above belongs to state ${issue.state.name} alone and is read-only;`,
 				'move anything still worth keeping into the journal above with your next append.',
