@@ -26,14 +26,27 @@ test.describe.serial('the first-run path on an empty account', () => {
 
 		await signIn(context, BOB.sessionToken);
 		await page.goto('/issues');
-		// This is the suite's first spec file, so this is the first page the
-		// worker ever renders: a cold start blows the 5s default on CI.
-		const link = page.getByRole('link', { name: 'New project' });
-		await expect(link).toBeVisible({ timeout: 30_000 });
-		await link.click();
+		await page.getByRole('link', { name: 'New project' }).click();
 
 		// The dialog opens from `?new=1`, which is consumed with replaceState so
 		// nav memory never reopens it.
+		await expect(page.getByRole('dialog', { name: /New project/i })).toBeVisible();
+		await expect(page).toHaveURL(/\/projects$/);
+	});
+
+	// The link above is the first thing on a fresh account's Issues tab, so it
+	// is routinely clicked before that page has hydrated — a full page load of
+	// `/projects?new=1` rather than a client-side navigation. Pasting the URL
+	// does the same. The dialog has to open on that path too, and it only does
+	// if the flag is consumed after the router has started (CI caught this as a
+	// dialog that never appeared; see the page's own comment).
+	test('a cold load of /projects?new=1 opens the dialog just the same', async ({
+		context,
+		page
+	}) => {
+		await signIn(context, BOB.sessionToken);
+		await page.goto('/projects?new=1');
+
 		await expect(page.getByRole('dialog', { name: /New project/i })).toBeVisible();
 		await expect(page).toHaveURL(/\/projects$/);
 	});
