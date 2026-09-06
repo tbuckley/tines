@@ -58,7 +58,9 @@ export function apiClient(request: APIRequestContext, apiKey: string) {
 		post: (path: string, data?: unknown) => request.post(path, { headers, data }),
 		put: (path: string, data?: unknown) => request.put(path, { headers, data }),
 		patch: (path: string, data?: unknown) => request.patch(path, { headers, data }),
-		delete: (path: string) => request.delete(path, { headers })
+		// `data` for the endpoints whose body carries an option rather than a
+		// payload — `DELETE /labels/:id` with `{ force: true }`.
+		delete: (path: string, data?: unknown) => request.delete(path, { headers, data })
 	};
 }
 

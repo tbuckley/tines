@@ -6,6 +6,7 @@ import { explainDispatch } from './explain';
 import { createFakeAdapter } from './fake-adapter';
 import {
 	addIssue,
+	addLabel,
 	addRule,
 	addRunner,
 	NOW,
@@ -120,6 +121,39 @@ describe('explainDispatch', () => {
 		const issue = addIssue(t);
 		const ex = (await explainDispatch(t.db, USER, issue, NOW))!;
 		expect(ex.matched_rule!.scope_label).toBe('project demo · state Open');
+	});
+
+	it("names the label in a label-scoped rule's scope", async () => {
+		const t = world();
+		const runner = addRunner(t);
+		const docs = addLabel(t, 'docs');
+		addRule(t, { project: PROJECT, label: docs, targets: [{ runner_id: runner }] });
+		const issue = addIssue(t, { labels: [docs] });
+		const ex = (await explainDispatch(t.db, USER, issue, NOW))!;
+		expect(ex.matched_rule!.scope_label).toBe('project demo · label docs');
+		expect(ex.ambiguous_rules).toEqual([]);
+		expect(check(ex, 'routed').ok).toBe(true);
+	});
+
+	it('names both rules, and refuses to route, when two label rules tie', async () => {
+		const t = world();
+		const runner = addRunner(t);
+		const docs = addLabel(t, 'docs');
+		const security = addLabel(t, 'security');
+		addRule(t, { label: docs, targets: [{ runner_id: runner }] });
+		addRule(t, { label: security, targets: [{ runner_id: runner }] });
+		const issue = addIssue(t, { labels: [docs, security] });
+
+		const ex = (await explainDispatch(t.db, USER, issue, NOW))!;
+		expect(ex.matched_rule).toBeNull();
+		expect(ex.ambiguous_rules.map((r) => r.scope_label).sort()).toEqual([
+			'label docs',
+			'label security'
+		]);
+		expect(ex.eligible).toBe(false);
+		expect(check(ex, 'routed').ok).toBe(false);
+		expect(check(ex, 'routed').detail).toContain('neither is more specific');
+		expect(ex.verdict).toBe('Two routing rules tie — make one more specific');
 	});
 
 	it('shows the pin (replacing rules) even when a rule would match', async () => {
