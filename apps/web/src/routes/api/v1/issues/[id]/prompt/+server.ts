@@ -14,7 +14,7 @@ import type { RequestHandler } from './$types';
 export const GET: RequestHandler = api(async (event) => {
 	const { db, actor } = await apiContext(event);
 	const [issue, context, artifacts, labels] = await Promise.all([
-		getIssueDetail(db, actor.userId, { id: event.params.id }),
+		getIssueDetail(db, actor.userId, { id: event.params.id }, { round: true }),
 		effectiveContextForIssue(db, actor.userId, event.params.id),
 		listArtifacts(db, actor.userId, event.params.id),
 		listLabels(db, actor.userId)

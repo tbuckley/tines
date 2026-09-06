@@ -20,6 +20,8 @@ import {
 	type ListOpts
 } from '../common.js';
 import {
+	ageLabel,
+	arrivedViaLabel,
 	artifactSummary,
 	artifactTypeLabel,
 	commentLines,
@@ -28,6 +30,9 @@ import {
 	prRefLabel,
 	recurrenceLabel,
 	requirementLines,
+	roundLines,
+	roundSummaryLabel,
+	sinceLastRunLines,
 	sniffContentType,
 	timestamp
 } from '../format.js';
@@ -124,6 +129,18 @@ function printIssueDetail(issue: IssueDetail): void {
 			console.log(`  "${t.name}" ${head}`);
 			for (const line of rest) console.log(`  ${line}`);
 		}
+	}
+	// The handoff, two halves that never both apply: an awaiting-human issue is
+	// asking the reader to judge what came back (round); an active one is
+	// telling the agent what the human said last (since the last run). Both are
+	// omitted entirely when empty — no header, no "none".
+	if (issue.since_last_run && issue.effective_state.category === 'active') {
+		console.log('');
+		for (const line of sinceLastRunLines(issue.since_last_run)) console.log(line);
+	}
+	if (issue.round && issue.effective_state.category === 'awaiting_human') {
+		console.log('');
+		for (const line of roundLines(issue.round)) console.log(line);
 	}
 	if (issue.comments.length > 0) {
 		console.log(`\ncomments (${issue.comments.length}):`);
@@ -272,6 +289,30 @@ export function register(program: Command): void {
 			);
 			printList(res, opts, (items) => {
 				if (items.length === 0) return console.log(opts.ready ? 'no ready issues' : 'no issues');
+				// The awaiting-human table answers a different question — how long
+				// has this been waiting, how did it get here, what came back — so
+				// it swaps three columns. Every other invocation is unchanged.
+				if (opts.category === 'awaiting_human') {
+					table([
+						['REF', 'TITLE', 'STATE', 'WAITING', 'VIA', 'ROUND', ''],
+						...items.map((i) => [
+							`${i.project_name}/${i.number}`,
+							i.title,
+							i.effective_state.name,
+							ageLabel(new Date(i.state_entered_at).toISOString()),
+							arrivedViaLabel(i.arrived_via),
+							roundSummaryLabel(i.round_summary ?? null),
+							[
+								i.open_blockers.length > 0 ? 'blocked' : '',
+								i.duplicate_of ? 'dup' : '',
+								...i.labels.map((l) => `[${l.name}]`)
+							]
+								.filter(Boolean)
+								.join(' ')
+						])
+					]);
+					return;
+				}
 				table([
 					['REF', 'TITLE', 'STATE', 'CATEGORY', 'LAST ACTIVITY', ''],
 					...items.map((i) => [

@@ -217,7 +217,7 @@ function itemQuery(db: Kysely<Database>, userId: string, issueId: string) {
 
 type ItemRow = Awaited<ReturnType<ReturnType<typeof itemQuery>['execute']>>[number];
 
-function versionQuery(db: Kysely<Database>) {
+export function versionQuery(db: Kysely<Database>) {
 	return (
 		db
 			.selectFrom('artifact_version')
@@ -237,6 +237,9 @@ function versionQuery(db: Kysely<Database>) {
 				'actor_user.name as actor_user_name',
 				'api_key.name as actor_api_key_name',
 				'actor_run.id as actor_run_id',
+				// The run's own issue: a version attributed to a run on *another*
+				// issue must not be folded into this issue's round.
+				'actor_run.issue_id as actor_run_issue_id',
 				'actor_runner.name as actor_runner_name',
 				'actor_run_project.name as actor_run_project_name',
 				'actor_run_issue.number as actor_run_issue_number'
@@ -358,6 +361,74 @@ async function loadVersions(
 		}
 	}
 	return { byItem, filesByVersion };
+}
+
+/** One artifact version on an issue, with its item's name and its file list. */
+export interface IssueArtifactVersion {
+	item_id: string;
+	name: string;
+	artifact_type: ArtifactType;
+	version: number;
+	actor_run_id: string | null;
+	actor_run_issue_id: string | null;
+	pr_repo_url: string | null;
+	pr_number: number | null;
+	created_at: number;
+	/** folder versions: the snapshot's paths, sorted; empty for other types. */
+	files: string[];
+}
+
+/**
+ * Every version of every artifact on one issue, oldest first. The handoff
+ * derivations need the whole history (they compare `from_version` against what
+ * preceded a run), so this deliberately does not collapse to current versions.
+ */
+export async function loadIssueVersions(
+	db: Kysely<Database>,
+	userId: string,
+	issueId: string
+): Promise<IssueArtifactVersion[]> {
+	const rows = await versionQuery(db)
+		.innerJoin('context_item', 'context_item.id', 'artifact_version.context_item_id')
+		.select(['context_item.name as item_name', 'context_item.config as item_config'])
+		.where('context_item.user_id', '=', userId)
+		.where('context_item.kind', '=', 'artifact')
+		.where('context_item.issue_id', '=', issueId)
+		.orderBy('artifact_version.created_at asc')
+		.orderBy('artifact_version.version asc')
+		.execute();
+	const filesByVersion = new Map<string, string[]>();
+	if (rows.length > 0) {
+		const fileRows = (
+			await Promise.all(
+				idChunks(rows.map((r) => r.id)).map((chunk) =>
+					db
+						.selectFrom('artifact_version_file')
+						.select(['artifact_version_id', 'path'])
+						.where('artifact_version_id', 'in', chunk)
+						.orderBy('path asc')
+						.execute()
+				)
+			)
+		).flat();
+		for (const f of fileRows) {
+			const list = filesByVersion.get(f.artifact_version_id) ?? [];
+			list.push(f.path);
+			filesByVersion.set(f.artifact_version_id, list);
+		}
+	}
+	return rows.map((r) => ({
+		item_id: r.context_item_id,
+		name: r.item_name,
+		artifact_type: artifactTypeOf(r.item_config),
+		version: r.version,
+		actor_run_id: r.actor_run_id,
+		actor_run_issue_id: r.actor_run_issue_id,
+		pr_repo_url: r.pr_repo_url,
+		pr_number: r.pr_number,
+		created_at: r.created_at,
+		files: filesByVersion.get(r.id) ?? []
+	}));
 }
 
 /** Every artifact on an issue, current-version summarized, `fresh` computed. */
