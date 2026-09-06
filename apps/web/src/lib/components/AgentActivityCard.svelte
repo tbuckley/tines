@@ -18,14 +18,19 @@
 		dispatch,
 		runs,
 		runners,
+		disabledReason = null,
 		onerror
 	}: {
 		issue: IssueDetail;
 		dispatch: DispatchExplainer | null;
 		runs: AgentRun[];
 		runners: Runner[];
+		/** When set, the pin controls render disabled with this as their tooltip. Cancel run stays live. */
+		disabledReason?: string | null;
 		onerror: (e: unknown) => void;
 	} = $props();
+
+	const readOnly = $derived(disabledReason != null);
 
 	const dur = () => (prefersReducedMotion() ? 0 : 180);
 
@@ -160,7 +165,8 @@
 					class="h-8 w-28 text-xs"
 					bind:value={pinTier}
 					aria-label="Pinned tier"
-					disabled={!pinRunnerId}
+					disabled={!pinRunnerId || readOnly}
+					title={disabledReason}
 				>
 					<option value="">default tier</option>
 					{#each MODEL_TIERS as tier (tier)}
@@ -171,7 +177,8 @@
 					size="sm"
 					variant="outline"
 					class="h-8"
-					disabled={!pinDirty || savingPin}
+					disabled={!pinDirty || savingPin || readOnly}
+					title={disabledReason}
 					onclick={savePin}
 				>
 					{savingPin ? '…' : 'Save'}

@@ -30,6 +30,7 @@ describe('parseNavMemory', () => {
 	it('round-trips a valid value', () => {
 		const memory = {
 			issuesQuery: '?project=Tines&q=nav',
+			projectsQuery: '?archived=1',
 			lastList: { href: '/projects/prj_1?done=1', label: 'Tines' }
 		};
 		expect(parseNavMemory(JSON.stringify(memory))).toEqual(memory);
@@ -44,6 +45,15 @@ describe('parseNavMemory', () => {
 
 	it.each(['x=1', 42, null, undefined])('drops an issuesQuery of %o', (issuesQuery) => {
 		expect(parseNavMemory(JSON.stringify({ issuesQuery })).issuesQuery).toBe('');
+	});
+
+	it.each(['archived=1', 42, null, undefined])('drops a projectsQuery of %o', (projectsQuery) => {
+		expect(parseNavMemory(JSON.stringify({ projectsQuery })).projectsQuery).toBe('');
+	});
+
+	it('reads a blob stored before projectsQuery existed', () => {
+		const legacy = { issuesQuery: '?q=a', lastList: null };
+		expect(parseNavMemory(JSON.stringify(legacy)).projectsQuery).toBe('');
 	});
 
 	it.each([
@@ -61,10 +71,10 @@ describe('parseNavMemory', () => {
 
 	it('keeps a good field when the other is corrupt', () => {
 		const badList = parseNavMemory(JSON.stringify({ issuesQuery: '?q=a', lastList: 'nope' }));
-		expect(badList).toEqual({ issuesQuery: '?q=a', lastList: null });
+		expect(badList).toEqual({ issuesQuery: '?q=a', projectsQuery: '', lastList: null });
 
 		const list = { href: '/issues?q=a', label: 'Issues' };
 		const badQuery = parseNavMemory(JSON.stringify({ issuesQuery: 12, lastList: list }));
-		expect(badQuery).toEqual({ issuesQuery: '', lastList: list });
+		expect(badQuery).toEqual({ issuesQuery: '', projectsQuery: '', lastList: list });
 	});
 });

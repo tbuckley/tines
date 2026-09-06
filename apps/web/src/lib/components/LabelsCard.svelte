@@ -16,6 +16,7 @@
 		issueId,
 		labels,
 		library,
+		disabledReason = null,
 		onerror
 	}: {
 		issueId: string;
@@ -23,8 +24,12 @@
 		labels: IssueLabel[];
 		/** The user's whole vocabulary, for the picker. */
 		library: LabelWithUsage[];
+		/** When set, every mutating control renders disabled with this as its tooltip. */
+		disabledReason?: string | null;
 		onerror: (message: string) => void;
 	} = $props();
+
+	const readOnly = $derived(disabledReason != null);
 
 	// Same discipline as RelationsCard: render server truth + an overlay of
 	// in-flight work, so an invalidateAll() belonging to some other mutation
@@ -101,7 +106,14 @@
 			oncreated={(l) => (picked = [...picked, l])}
 		>
 			{#snippet trigger({ props })}
-				<Button {...props} size="sm" variant="ghost" class="h-7 px-2 text-xs">
+				<Button
+					{...props}
+					size="sm"
+					variant="ghost"
+					class="h-7 px-2 text-xs"
+					disabled={readOnly}
+					title={disabledReason}
+				>
 					<IconTag size={14} /> Edit
 				</Button>
 			{/snippet}
@@ -115,7 +127,7 @@
 				<LabelChip
 					{label}
 					size="sm"
-					onremove={() => remove(label.id)}
+					onremove={readOnly ? undefined : () => remove(label.id)}
 					removeBusy={removals.includes(label.id)}
 				/>
 			{/each}

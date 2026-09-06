@@ -15,6 +15,7 @@
 	let {
 		rule,
 		activeStateIds,
+		projectArchived = false,
 		onedit,
 		ondelete
 	}: {
@@ -25,6 +26,8 @@
 		 * the "never dispatches" warning.
 		 */
 		activeStateIds: Set<string>;
+		/** The rule is scoped to a project that is archived — kept, editable, never matching. */
+		projectArchived?: boolean;
 		/** Omitted → read-only row (no Edit button). */
 		onedit?: (rule: RoutingRuleWithWarnings) => void;
 		/** Omitted → read-only row (no Delete button). */
@@ -76,6 +79,14 @@
 			title="This state is no longer categorized active; agents only pick up issues in active states, so this rule never matches"
 		>
 			never dispatches
+		</span>
+	{/if}
+	{#if projectArchived}
+		<span
+			class="rounded-full bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-400"
+			title="This project is archived — nothing dispatches on it. The rule is kept and matches again after unarchive."
+		>
+			project archived
 		</span>
 	{/if}
 	{#each [ties, shadowed].filter((p) => p !== null) as p (p.text)}
