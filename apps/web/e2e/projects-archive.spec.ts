@@ -89,27 +89,12 @@ function suite(label: string, viewport: { width: number; height: number }) {
 
 			await expect(card).toBeVisible();
 			await expect(card).toContainText('Archived');
-			// The Projects entry point remembers the toggle for the next visit. On a
-			// phone that slot is the focus sheet (Tines/259), whose "Manage
-			// projects" carries the same memory as the desktop tab's href.
-			if (viewport.width < 640) {
-				await gotoHydrated(page, '/issues');
-				const sheet = page.getByRole('button', { name: /^Project focus:/ });
-				const manage = page.getByRole('menuitem', { name: 'Manage projects' });
-				// Only click while the sheet is closed: a retry on an open popover
-				// would shut it again (the trigger stays visible either way).
-				await expect(async () => {
-					if ((await sheet.getAttribute('data-state')) !== 'open') await sheet.click();
-					await expect(manage).toBeVisible({ timeout: 2_000 });
-				}).toPass({ timeout: 15_000 });
-				await manage.click();
-				await expect(page).toHaveURL(/\/projects\?archived=1$/);
-			} else {
-				await expect(page.getByRole('link', { name: 'Projects' }).first()).toHaveAttribute(
-					'href',
-					'/projects?archived=1'
-				);
-			}
+			// The Projects entry point remembers the toggle for the next visit —
+			// the desktop tab and the phone's bottom-bar slot are the same link.
+			await expect(page.getByRole('link', { name: 'Projects' }).first()).toHaveAttribute(
+				'href',
+				'/projects?archived=1'
+			);
 
 			await clickUntil(toggle, async () => {
 				await expect(card).toHaveCount(0);

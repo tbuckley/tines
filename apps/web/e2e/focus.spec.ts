@@ -33,8 +33,7 @@ const switcher = (page: Page) => page.getByRole('button', { name: /^Project focu
  * choosing twice is idempotent, so a retry costs nothing.
  *
  * `name` matches the menu entry, `expected` the full focus name the chrome
- * then reports — the phone trigger truncates its visible text but not its
- * `aria-label`, so this assertion holds at both widths.
+ * then reports in its `aria-label`, which is untruncated at every width.
  */
 async function chooseFocus(page: Page, name: string, expected = name): Promise<void> {
 	const item = page.getByRole('menuitemradio', { name });
@@ -99,12 +98,24 @@ test.describe.serial('project focus', () => {
 		await page.close();
 	});
 
-	test('the phone bottom bar carries the focus in its Projects slot', async ({ browser }) => {
+	test('the phone header carries the switcher, not the bottom bar', async ({ browser }) => {
+		// Human review, round 2: the switcher is in the header at every width —
+		// the phone header has the room, the bottom bar's sixth of a screen did
+		// not, and the Projects slot is a plain link to the grid again.
 		const page = await open(browser, PHONE);
-		await expect(switcher(page)).toContainText('Projects');
+		await expect(switcher(page)).toBeVisible();
+		await expect(switcher(page)).toContainText('All projects');
 
 		await chooseFocus(page, A_NAME);
-		await expect(switcher(page)).toContainText(A_NAME.slice(0, 11));
+		await expect(switcher(page)).toContainText(A_NAME);
+		// One control, not two: the bottom bar navigates and says nothing about
+		// the focus.
+		const bottomBar = page.getByRole('navigation', { name: 'Primary' });
+		await expect(bottomBar.getByRole('link', { name: 'Projects' })).toHaveAttribute(
+			'href',
+			/^\/projects/
+		);
+		await expect(bottomBar.getByRole('button', { name: /^Project focus:/ })).toHaveCount(0);
 		await page.close();
 	});
 

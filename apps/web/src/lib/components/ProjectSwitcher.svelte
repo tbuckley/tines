@@ -1,33 +1,30 @@
 <!--
-	The project focus, in the app chrome (Tines/259). One control in two
-	dresses: the desktop header's `Tines · <project> ▾` and the mobile bottom
-	bar's Projects slot, which opens the same list upward as a sheet.
+	The project focus, in the app chrome (Tines/259). One control at every
+	width: `Tines · <project> ▾` next to the wordmark, opening the list of
+	projects plus All projects and Manage projects.
 
 	Hidden below two projects — with one project there is nothing to switch
-	between, and the empty state belongs to onboarding. The header variant is
-	desktop-only: on a phone the bottom bar's slot is the same control, and two
-	of them on one screen would be two answers to "what am I looking at".
+	between, and the empty state belongs to onboarding. It lives in the header
+	on a phone too (human review, round 2): the phone header is otherwise
+	wordmark and avatar with the width between them empty, while the bottom
+	bar's Projects slot is a sixth of the screen and truncates the name to
+	nothing. The bottom bar stays pure navigation.
 -->
 <script lang="ts">
 	import type { Project } from '@tines/shared';
 	import IconCheck from '@tabler/icons-svelte/icons/check';
 	import IconChevronDown from '@tabler/icons-svelte/icons/chevron-down';
-	import IconFolder from '@tabler/icons-svelte/icons/folder';
 	import { Popover } from 'bits-ui';
 	import { goto } from '$app/navigation';
-	import { page } from '$app/state';
-	import { truncate } from '$lib/format';
 	import { navMemory } from '$lib/nav-memory.svelte';
 
 	let {
 		projects,
 		focus,
-		variant = 'header',
 		onchoose
 	}: {
 		projects: Project[];
 		focus: Project | null;
-		variant?: 'header' | 'tab';
 		/** Null means "All projects". */
 		onchoose: (projectId: string | null) => Promise<void>;
 	} = $props();
@@ -36,7 +33,6 @@
 	let error = $state<string | null>(null);
 
 	const label = $derived(focus?.name ?? 'All projects');
-	const onProjects = $derived(page.url.pathname.startsWith('/projects'));
 
 	async function choose(id: string | null) {
 		open = false;
@@ -54,47 +50,30 @@
 	<Popover.Root bind:open>
 		<Popover.Trigger>
 			{#snippet child({ props })}
-				{#if variant === 'header'}
-					<button
-						{...props}
-						type="button"
-						class="text-muted-foreground hover:text-foreground -ml-1 hidden h-8 max-w-[14rem] items-center gap-1 rounded-md px-1.5 text-sm font-medium transition-colors sm:flex"
-						aria-label="Project focus: {label}"
-						aria-haspopup="menu"
-					>
-						<span aria-hidden="true">·</span>
-						<span class="truncate">{label}</span>
-						<IconChevronDown size={14} stroke={2} />
-					</button>
-				{:else}
-					<button
-						{...props}
-						type="button"
-						class="flex flex-col items-center justify-center gap-1 text-[0.6875rem] font-medium transition active:scale-90 {onProjects
-							? 'text-foreground'
-							: 'text-muted-foreground'}"
-						aria-label="Project focus: {label}"
-						aria-haspopup="menu"
-						aria-current={onProjects ? 'page' : undefined}
-					>
-						<IconFolder size={20} stroke={onProjects ? 2 : 1.5} />
-						<span class="max-w-full truncate px-1"
-							>{focus ? truncate(focus.name, 12) : 'Projects'}</span
-						>
-					</button>
-				{/if}
+				<!--
+					`min-w-0` so a long name truncates instead of pushing the
+					account menu off a phone screen.
+				-->
+				<button
+					{...props}
+					type="button"
+					class="text-muted-foreground hover:text-foreground -ml-1 flex h-8 max-w-[14rem] min-w-0 items-center gap-1 rounded-md px-1.5 text-sm font-medium transition-colors"
+					aria-label="Project focus: {label}"
+					aria-haspopup="menu"
+				>
+					<span aria-hidden="true">·</span>
+					<span class="truncate">{label}</span>
+					<IconChevronDown size={14} stroke={2} class="shrink-0" />
+				</button>
 			{/snippet}
 		</Popover.Trigger>
 		<Popover.Portal>
 			<Popover.Content
-				side={variant === 'tab' ? 'top' : 'bottom'}
-				sideOffset={variant === 'tab' ? 8 : 6}
+				side="bottom"
+				sideOffset={6}
 				align="start"
 				collisionPadding={8}
-				class="bg-popover text-popover-foreground data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 ring-foreground/10 z-50 rounded-lg p-1 shadow-md ring-1 outline-none {variant ===
-				'tab'
-					? 'w-[calc(100vw-1rem)]'
-					: 'w-64'}"
+				class="bg-popover text-popover-foreground data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 ring-foreground/10 z-50 w-64 max-w-[calc(100vw-1rem)] rounded-lg p-1 shadow-md ring-1 outline-none"
 			>
 				<div role="menu" aria-label="Project focus" class="max-h-80 overflow-y-auto">
 					{#each [null, ...projects] as project (project?.id ?? 'all')}

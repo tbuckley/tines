@@ -166,17 +166,23 @@ saying what the scope is.
    both pointers (`ON DELETE SET NULL`).
 5. **The switcher never lists archived projects**, and `PATCH /preferences`
    refuses one for either pointer (422 `invalid_field`).
-6. **Hidden below two projects.** With zero or one project neither the desktop
-   switcher nor the mobile Projects sheet renders and every page looks as it did
-   before; a single project still behaves as the focus for the New-issue
-   default. The first-project experience belongs to onboarding (Tines/183).
-7. **New issue's default project:** the focus, else `last_project_id` (last
+6. **One switcher, in the header, at every width.** `Tines · <project> ▾` sits
+   next to the wordmark on desktop and on a phone alike: the phone header is
+   otherwise empty between the wordmark and the avatar, while the bottom bar's
+   Projects slot is a sixth of the screen and truncated the name away (human
+   review, Tines/259). The bottom bar stays pure navigation — its Projects slot
+   is a plain link to the grid.
+7. **Hidden below two projects.** With zero or one project the switcher does not
+   render and every page looks as it did before; a single project still behaves
+   as the focus for the New-issue default. The first-project experience belongs
+   to onboarding (Tines/183).
+8. **New issue's default project:** the focus, else `last_project_id` (last
    focused or last created in), else — at two or more projects — an empty,
    required select. Never `projects[0]`.
-8. **nav-memory** remembers the non-project Issues filters (category, state,
+9. **nav-memory** remembers the non-project Issues filters (category, state,
    label, q) per tab as before; it strips `project`, which would otherwise
    re-fire the one-shot on every click of the Issues tab.
-9. **Agents and the CLI.** `GET`/`PATCH /api/v1/preferences` is control-plane
+10. **Agents and the CLI.** `GET`/`PATCH /api/v1/preferences` is control-plane
    fenced, reads included: a run key gets the same 403 as for runners and
    settings. Every API list stays unscoped whatever its owner's focus is.
 

@@ -114,7 +114,7 @@
 <div class="flex min-h-screen flex-col">
 	<header class="bg-background/90 sticky top-0 z-40 border-b backdrop-blur">
 		<div class="mx-auto flex h-14 w-full max-w-6xl items-center gap-4 px-4">
-			<a href="/issues" class="flex items-center gap-2 font-semibold tracking-tight">
+			<a href="/issues" class="flex shrink-0 items-center gap-2 font-semibold tracking-tight">
 				<span
 					class="bg-primary text-primary-foreground flex size-7 items-center justify-center rounded-lg"
 				>
@@ -123,7 +123,7 @@
 				Tines
 			</a>
 			{#if showSwitcher}
-				<ProjectSwitcher projects={data.projects} {focus} variant="header" onchoose={chooseFocus} />
+				<ProjectSwitcher projects={data.projects} {focus} onchoose={chooseFocus} />
 			{/if}
 			<!-- On phones the tabs live in the bottom bar instead. -->
 			<nav class="hidden h-full items-center gap-1 sm:flex">
@@ -226,23 +226,18 @@
 			{#each tabs as tab (tab.path)}
 				{@const active = mobileTabPath.startsWith(tab.path)}
 				{@const pending = active && !page.url.pathname.startsWith(tab.path)}
-				{#if tab.path === '/projects' && showSwitcher}
-					<!-- Same list as the desktop header, opening upward as a sheet. -->
-					<ProjectSwitcher projects={data.projects} {focus} variant="tab" onchoose={chooseFocus} />
-				{:else}
-					<a
-						href={tab.href}
-						class="flex flex-col items-center justify-center gap-1 text-[0.6875rem] font-medium transition active:scale-90 {active
-							? 'text-foreground'
-							: 'text-muted-foreground'}"
-						aria-current={active ? 'page' : undefined}
-					>
-						<span class={pending ? 'motion-safe:animate-pulse' : ''}>
-							<tab.icon size={20} stroke={active ? 2 : 1.5} />
-						</span>
-						{tab.label}
-					</a>
-				{/if}
+				<a
+					href={tab.href}
+					class="flex flex-col items-center justify-center gap-1 text-[0.6875rem] font-medium transition active:scale-90 {active
+						? 'text-foreground'
+						: 'text-muted-foreground'}"
+					aria-current={active ? 'page' : undefined}
+				>
+					<span class={pending ? 'motion-safe:animate-pulse' : ''}>
+						<tab.icon size={20} stroke={active ? 2 : 1.5} />
+					</span>
+					{tab.label}
+				</a>
 			{/each}
 		</div>
 	</nav>
