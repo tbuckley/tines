@@ -4,8 +4,9 @@
 
 	let { children }: { children: Snippet } = $props();
 
-	// The same four pages, in the same order, as the avatar menu in
-	// (app)/+layout.svelte — keep the two lists in step.
+	// The settings pages, in order. The avatar menu holds a single Settings entry
+	// pointing at the first of these, and /settings/+page.ts redirects there too,
+	// so this list is where the set of pages and the default tab both live.
 	const tabs = [
 		{ href: '/settings/appearance', label: 'Appearance' },
 		{ href: '/settings/labels', label: 'Labels' },

@@ -3,10 +3,11 @@ import { ALICE } from './constants.mjs';
 import { signIn } from './helpers';
 
 /**
- * The settings chrome: one tab row shared by the four settings pages, and the
- * avatar menu that must list the same four. Export / import was linked from
- * the menu once and a stale-branch merge overwrote the entry in place; nothing
- * asserted the menu, so it passed CI. These tests are that guard.
+ * The settings chrome: one tab row shared by the four settings pages, reached
+ * from a single Settings entry in the avatar menu. Export / import was linked
+ * from the menu once and a stale-branch merge overwrote the entry in place;
+ * nothing asserted it, so it passed CI. The tab row is now the only route to
+ * those pages, so these tests walk it from the menu.
  */
 
 const PHONE = { width: 390, height: 844 };
@@ -37,21 +38,25 @@ async function clickUntil(button: Locator, done: () => Promise<void>): Promise<v
 const nav = (page: Page) => page.getByRole('navigation', { name: 'Settings' });
 
 test.describe('settings navigation', () => {
-	test('the avatar menu lists the four settings pages, Export / import included', async ({
-		page
-	}) => {
+	test('the avatar menu offers Settings, which lands on the first tab', async ({ page }) => {
 		await page.goto('/issues');
 		const menu = page.getByRole('menu');
 		await clickUntil(page.getByRole('button', { name: 'Account menu' }), async () => {
 			await expect(menu).toBeVisible({ timeout: 1000 });
 		});
 
-		// Each item carries an icon, so its text content is ` Appearance`; compare trimmed.
+		// One settings entry, not one per page. Each item carries an icon, so its
+		// text content is ` Settings`; compare trimmed.
 		await expect
 			.poll(async () => (await menu.getByRole('menuitem').allTextContents()).map((t) => t.trim()))
-			.toEqual([...TABS, 'Sign out']);
+			.toEqual(['Settings', 'Sign out']);
 
-		await menu.getByRole('menuitem', { name: 'Export / import' }).click();
+		await menu.getByRole('menuitem', { name: 'Settings' }).click();
+		await expect(page).toHaveURL('/settings/appearance');
+		await expect(page.getByRole('heading', { name: 'Appearance' })).toBeVisible();
+
+		// Export / import has no menu entry of its own: the tab row is how it is found.
+		await nav(page).getByRole('link', { name: 'Export / import' }).click();
 		await expect(page).toHaveURL('/settings/export-import');
 		await expect(page.getByRole('heading', { name: 'Export / import' })).toBeVisible();
 	});
