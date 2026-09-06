@@ -246,7 +246,14 @@ export async function resolveProject(api: ApiClient, ref: string): Promise<Proje
 }
 
 export async function resolveWorkflow(api: ApiClient, ref: string): Promise<WorkflowResponse> {
-	const { items } = await api.listWorkflows();
+	return pickWorkflow((await api.listWorkflows()).items, ref);
+}
+
+/**
+ * The matching half of `resolveWorkflow`, for callers that already hold the
+ * library (resolving several refs against one fetch).
+ */
+export function pickWorkflow(items: WorkflowResponse[], ref: string): WorkflowResponse {
 	const found =
 		items.find((w) => w.id === ref) ??
 		(items.filter((w) => w.name === ref).length === 1
