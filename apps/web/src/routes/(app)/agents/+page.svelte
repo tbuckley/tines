@@ -393,6 +393,17 @@
 	let ruleModalOpen = $state(false);
 	let editingRule = $state<RoutingRule | null>(null);
 	let ruleProjectId = $state('');
+	/** Rules scoped to these are kept and badged; the editor keeps them selectable. */
+	const archivedProjectIds = $derived(new Set(data.archivedProjects.map((p) => p.id)));
+	/**
+	 * The rule's own project when it is archived: without an option carrying the
+	 * current value, saving would silently broaden the rule's scope.
+	 */
+	const archivedRuleProject = $derived(
+		ruleProjectId && archivedProjectIds.has(ruleProjectId)
+			? (data.archivedProjects.find((p) => p.id === ruleProjectId) ?? null)
+			: null
+	);
 	let ruleStateId = $state('');
 	let ruleLabelId = $state('');
 	let labels = $state<LabelWithUsage[]>([]);
@@ -793,7 +804,14 @@
 	{:else}
 		<ul class="divide-y rounded-lg border">
 			{#each data.rules as rule (rule.id)}
-				<RoutingRuleRow {rule} {activeStateIds} onedit={openRuleEdit} ondelete={deleteRule} />
+				<RoutingRuleRow
+					{rule}
+					{activeStateIds}
+					projectArchived={rule.scope.project_id !== null &&
+						archivedProjectIds.has(rule.scope.project_id)}
+					onedit={openRuleEdit}
+					ondelete={deleteRule}
+				/>
 			{/each}
 		</ul>
 	{/if}
@@ -1558,6 +1576,9 @@
 					{#each data.projects as project (project.id)}
 						<option value={project.id}>{project.name}</option>
 					{/each}
+					{#if archivedRuleProject}
+						<option value={archivedRuleProject.id}>{archivedRuleProject.name} (archived)</option>
+					{/if}
 				</Select>
 			</div>
 			<div class="space-y-1.5">
