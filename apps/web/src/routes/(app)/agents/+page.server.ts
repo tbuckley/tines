@@ -1,5 +1,3 @@
-import { partitionProjects } from '$lib/archived';
-import { listProjects } from '$lib/server/api/projects';
 import { listRoutingRules } from '$lib/server/api/routing';
 import { listRunners } from '$lib/server/api/runners';
 import { listRuns } from '$lib/server/api/runs';
@@ -11,11 +9,10 @@ import type { PageServerLoad } from './$types';
 export const load: PageServerLoad = async ({ locals, platform }) => {
 	const db = getDb(platform!.env);
 	const userId = locals.user!.id;
-	const [runners, rules, settings, projects, workflows, runs, repoItems] = await Promise.all([
+	const [runners, rules, settings, workflows, runs, repoItems] = await Promise.all([
 		listRunners(db, userId),
 		listRoutingRules(db, userId),
 		getSupervisorSettings(db, userId),
-		listProjects(db, userId, { archived: 'all' }),
 		loadWorkflows(db, userId),
 		listRuns(db, userId, {}, { cursor: null, limit: 50 }),
 		// The repos context items point at, for the PAT instructions: that set
@@ -30,15 +27,13 @@ export const load: PageServerLoad = async ({ locals, platform }) => {
 			.orderBy('repo_url')
 			.execute()
 	]);
-	const { live, archived } = partitionProjects(projects);
+	// `projects` / `archivedProjects` come from the app layout. Rules scoped to
+	// an archived project are kept and editable — the page badges them, and the
+	// rule editor keeps the project selectable.
 	return {
 		runners,
 		rules,
 		settings,
-		projects: live,
-		// Rules scoped to an archived project are kept and editable — the page
-		// badges them, and the rule editor keeps the project selectable.
-		archivedProjects: archived,
 		workflows,
 		runs: runs.items,
 		contextRepoUrls: repoItems.map((r) => r.repo_url).filter((u): u is string => u !== null)

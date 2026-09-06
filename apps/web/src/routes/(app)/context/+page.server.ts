@@ -1,8 +1,6 @@
 import { AGENT_GUIDELINES_NAME, CONTEXT_KINDS } from '@tines/shared';
 import { listContextItems } from '$lib/server/api/context';
 import { listLabels } from '$lib/server/api/labels';
-import { findProject, partitionProjects } from '$lib/archived';
-import { listProjects } from '$lib/server/api/projects';
 import { loadWorkflows } from '$lib/server/api/workflows';
 import { getDb } from '$lib/server/db';
 import type { PageServerLoad } from './$types';
@@ -21,20 +19,17 @@ export const load: PageServerLoad = async ({ locals, platform, url }) => {
 		label: url.searchParams.get('label') ?? undefined,
 		q: url.searchParams.get('q') ?? undefined
 	};
-	const [{ items }, projects, workflows, labels, guidelines] = await Promise.all([
+	const [{ items }, workflows, labels, guidelines] = await Promise.all([
 		listContextItems(db, userId, filters, { cursor: null, limit: 100 }),
-		listProjects(db, userId, { archived: 'all' }),
 		loadWorkflows(db, userId),
 		listLabels(db, userId),
 		// Offer the starter guidance until a global item by that name exists.
 		listContextItems(db, userId, { kind: 'prompt', exact: true }, { cursor: null, limit: 100 })
 	]);
-	const { live, archived } = partitionProjects(projects);
+	// The project halves come from the app layout; the page derives the archived
+	// name it needs (so a ?project= naming an archived project is not "All projects").
 	return {
 		items,
-		projects: live,
-		// So a ?project= naming an archived project shows its name, not "All projects".
-		archivedProject: findProject(archived, filters.project),
 		workflows,
 		labels,
 		filters,
