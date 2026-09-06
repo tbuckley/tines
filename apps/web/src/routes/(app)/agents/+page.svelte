@@ -32,7 +32,6 @@
 	import IconTrash from '@tabler/icons-svelte/icons/trash';
 	import IconX from '@tabler/icons-svelte/icons/x';
 	import { slide } from 'svelte/transition';
-	import { tick } from 'svelte';
 	import { invalidateAll } from '$app/navigation';
 	import { api } from '$lib/api';
 	import CancelRunDialog from '$lib/components/CancelRunDialog.svelte';
@@ -390,20 +389,24 @@
 	let editApiKey = $state('');
 	let savingEdit = $state(false);
 
+	/**
+	 * Opened from the Now row's "Raise cap": land the caret on the field the
+	 * remedy is about, rather than making the operator find it in the dialog.
+	 * The modal calls this once its content has mounted, so the field exists;
+	 * scheduling the focus here instead would race the modal's own parking of
+	 * focus on the close button, which wins and leaves the caret nowhere useful.
+	 */
+	function focusCapField(): HTMLElement | null {
+		if (!editFocusCap) return null;
+		editFocusCap = false;
+		const el = document.getElementById('edit-concurrent');
+		if (!(el instanceof HTMLInputElement)) return null;
+		el.select();
+		return el;
+	}
+
 	function openRunnerEdit(runner: Runner) {
 		editTarget = runner;
-		// Opened from the Now row's "Raise cap": land the caret on the field the
-		// remedy is about, rather than making the operator find it in the dialog.
-		// `tick()`, not `queueMicrotask`: the dialog is mounted by the same flush
-		// this assignment schedules, so a microtask can run before the field
-		// exists and silently focus nothing.
-		if (editFocusCap) {
-			void tick().then(() => {
-				const el = document.getElementById('edit-concurrent');
-				if (el instanceof HTMLInputElement) el.select();
-				editFocusCap = false;
-			});
-		}
 		editMaxConcurrent = runner.max_concurrent;
 		editMaxMinutes = runner.max_run_minutes;
 		editDefaultTier = runner.default_tier;
@@ -1543,7 +1546,15 @@
 
 <!-- runner edit: caps, budget, tier overrides, replace-key -->
 {#if editTarget}
-	<Modal open={true} onclose={() => (editTarget = null)} title="Edit runner">
+	<Modal
+		open={true}
+		onclose={() => {
+			editTarget = null;
+			editFocusCap = false;
+		}}
+		title="Edit runner"
+		initialFocus={focusCapField}
+	>
 		<form onsubmit={saveRunnerEdit} class="space-y-4">
 			<p class="text-sm">
 				<span class="font-medium">{editTarget.name}</span>
