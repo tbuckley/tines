@@ -52,13 +52,16 @@ describe('rateLimitFromStreamEvent', () => {
 
 	it('survives a rejection with no reset time', () => {
 		expect(
-			rateLimitFromStreamEvent({ type: 'rate_limit_event', rate_limit_info: { status: 'rejected' } })
+			rateLimitFromStreamEvent({
+				type: 'rate_limit_event',
+				rate_limit_info: { status: 'rejected' }
+			})
 		).toMatchObject({ resumeAt: null, limit: null });
 	});
 });
 
 describe('rateLimitFromStderrLine', () => {
-	it("matches the line the harness actually printed, and parses its reset", () => {
+	it('matches the line the harness actually printed, and parses its reset', () => {
 		const signal = rateLimitFromStderrLine(
 			"You've hit your session limit · resets 3pm (America/New_York)",
 			NOW
@@ -78,7 +81,9 @@ describe('rateLimitFromStderrLine', () => {
 		for (const prefix of USAGE_LIMIT_PREFIXES) {
 			expect(rateLimitFromStderrLine(`${prefix} whatever follows`, NOW), prefix).not.toBeNull();
 		}
-		expect(rateLimitFromStderrLine('Fable 5.1 requires usage credits. Add some.', NOW)).not.toBeNull();
+		expect(
+			rateLimitFromStderrLine('Fable 5.1 requires usage credits. Add some.', NOW)
+		).not.toBeNull();
 	});
 
 	it('does not match ordinary harness noise or a near miss', () => {

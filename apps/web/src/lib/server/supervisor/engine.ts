@@ -506,9 +506,7 @@ export async function launchClaimedRun(
 				.updateTable('runner')
 				.set({ launch_failures: 0, backoff_until: null, backoff_reason: null })
 				.where('id', '=', runner.id)
-				.where((eb) =>
-					eb.or([eb('launch_failures', '>', 0), eb('backoff_until', 'is not', null)])
-				)
+				.where((eb) => eb.or([eb('launch_failures', '>', 0), eb('backoff_until', 'is not', null)]))
 				.compile(),
 			supervisorEvent(
 				db,

@@ -736,7 +736,11 @@ describe('finishRun', () => {
 			t.env,
 			await runnerRow(t, runnerId),
 			runId,
-			{ status: 'failed', error: "rate limited: You've hit your session limit", judgment: 'rate_limited' },
+			{
+				status: 'failed',
+				error: "rate limited: You've hit your session limit",
+				judgment: 'rate_limited'
+			},
 			NOW + 30
 		);
 		// No reset reported: the default hold, not nothing.
@@ -755,7 +759,12 @@ describe('finishRun', () => {
 				t.env,
 				await runnerRow(t, runnerId),
 				runId,
-				{ status: 'failed', error: 'rate limited', judgment: 'rate_limited', resume_at: NOW + 600_000 },
+				{
+					status: 'failed',
+					error: 'rate limited',
+					judgment: 'rate_limited',
+					resume_at: NOW + 600_000
+				},
 				NOW + 30
 			);
 		await report(runA);

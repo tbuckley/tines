@@ -639,7 +639,9 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 					// A signal is our own kill, so it keeps its existing report.
 					const limited = signal ? null : (run.limiter?.signal() ?? null);
 					if (limited) {
-						log(`run ${runId}: harness rate limited (${limited.detail}); reporting without a strike`);
+						log(
+							`run ${runId}: harness rate limited (${limited.detail}); reporting without a strike`
+						);
 						void table.finishAndCleanup(run, 'failed', `rate limited: ${limited.detail}`, {
 							judgment: 'rate_limited',
 							...(limited.resumeAt !== null ? { resume_at: limited.resumeAt } : {})

@@ -117,20 +117,7 @@ export function rateLimitFromStderrLine(line: string, now: number): RateLimitSig
 	return { resumeAt, source: 'stderr', limit: null, detail: clean };
 }
 
-const MONTHS = [
-	'jan',
-	'feb',
-	'mar',
-	'apr',
-	'may',
-	'jun',
-	'jul',
-	'aug',
-	'sep',
-	'oct',
-	'nov',
-	'dec'
-];
+const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
 
 /** The named zone's UTC offset in ms at `at`, via the standard parts trick. */
 function zoneOffsetMs(zone: string, at: number): number {
@@ -147,7 +134,14 @@ function zoneOffsetMs(zone: string, at: number): number {
 	const get = (type: string): number => Number(parts.find((p) => p.type === type)?.value ?? '0');
 	// `hour: '2-digit'` with hour12:false renders midnight as 24 in some ICUs.
 	const hour = get('hour') % 24;
-	const asUtc = Date.UTC(get('year'), get('month') - 1, get('day'), hour, get('minute'), get('second'));
+	const asUtc = Date.UTC(
+		get('year'),
+		get('month') - 1,
+		get('day'),
+		hour,
+		get('minute'),
+		get('second')
+	);
 	return asUtc - Math.floor(at / 1000) * 1000;
 }
 

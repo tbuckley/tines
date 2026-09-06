@@ -50,7 +50,9 @@ function str(v: unknown): string {
 
 /** An epoch-ms payload field as an ISO string; the surfaces reformat if they wish. */
 function isoTime(v: unknown): string {
-	return typeof v === 'number' && Number.isFinite(v) ? new Date(v).toISOString() : 'an unknown time';
+	return typeof v === 'number' && Number.isFinite(v)
+		? new Date(v).toISOString()
+		: 'an unknown time';
 }
 
 /** Comma/`and` joins over a payload's `changed` array, which may be absent. */

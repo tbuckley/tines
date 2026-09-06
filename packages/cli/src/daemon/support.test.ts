@@ -308,7 +308,7 @@ describe('RunTable', () => {
 			runId: string;
 			status: string;
 			error?: string;
-		judgment?: RunJudgment;
+			judgment?: RunJudgment;
 		}[] = [];
 		const released: { runId: string; keep: boolean; outcome: RunOutcome }[] = [];
 		const notes: string[] = [];

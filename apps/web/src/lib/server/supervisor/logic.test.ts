@@ -300,8 +300,7 @@ describe('targetVerdict', () => {
 			).verdict
 		).toBe('ok');
 		expect(
-			targetVerdict(runner({ backoff_until: NOW + 60_000 }), counts(), globalCap, 's1', NOW)
-				.verdict
+			targetVerdict(runner({ backoff_until: NOW + 60_000 }), counts(), globalCap, 's1', NOW).verdict
 		).toBe('backing_off');
 	});
 

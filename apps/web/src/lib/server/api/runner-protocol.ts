@@ -639,7 +639,8 @@ export async function finishRun(
 	// refused the work outright, so the run is no more the issue's fault than a
 	// shutdown is — but the *runner* must stop asking until the window resets.
 	const judgment =
-		body.status === 'failed' && (body.judgment === 'interrupted' || body.judgment === 'rate_limited')
+		body.status === 'failed' &&
+		(body.judgment === 'interrupted' || body.judgment === 'rate_limited')
 			? body.judgment
 			: undefined;
 	if (

@@ -211,8 +211,8 @@
 								</p>
 							{:else if block.verdict === 'rate_limited'}
 								<p class="text-muted-foreground mt-1 text-xs">
-									The Claude account behind {block.runnerName ?? 'this runner'} is out of usage.
-									Resumes automatically{runner?.backoff_until
+									The Claude account behind {block.runnerName ?? 'this runner'} is out of usage. Resumes
+									automatically{runner?.backoff_until
 										? ` at ${new Date(runner.backoff_until).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`
 										: ''}; nothing to do.
 								</p>
