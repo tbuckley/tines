@@ -34,7 +34,7 @@
 			{emptyMessage}
 		</div>
 	{:else}
-		<ul class="divide-y rounded-lg border">
+		<ul class="divide-y rounded-lg border" aria-label="Agent routing rules">
 			{#each rules as rule (rule.id)}
 				<RoutingRuleRow {rule} {activeStateIds} />
 			{/each}

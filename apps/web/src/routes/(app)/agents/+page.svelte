@@ -809,7 +809,7 @@
 			dispatching issues to agents.
 		</div>
 	{:else}
-		<ul class="divide-y rounded-lg border">
+		<ul class="divide-y rounded-lg border" aria-label="Routing rules">
 			{#each data.rules as rule (rule.id)}
 				<RoutingRuleRow {rule} {activeStateIds} onedit={openRuleEdit} ondelete={deleteRule} />
 			{/each}
