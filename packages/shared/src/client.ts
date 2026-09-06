@@ -33,6 +33,7 @@ import type {
 	CreateIssueRequest,
 	CreateIssueResponse,
 	CreateProjectRequest,
+	CreateProjectResponse,
 	CreateRoutingRuleRequest,
 	CreateRunnerRequest,
 	CreateWorkflowRequest,
@@ -53,6 +54,7 @@ import type {
 	IssueLink,
 	IssueListItem,
 	ListResponse,
+	ListStartersResponse,
 	PageParams,
 	Project,
 	ProjectListFilters,
@@ -261,7 +263,8 @@ export function createApiClient(options: ApiClientOptions) {
 		listProjects: (params: ProjectListFilters & PageParams = {}) =>
 			get<ListResponse<Project>>(`/api/v1/projects${query(params)}`),
 		createProject: (body: CreateProjectRequest) =>
-			request<Project>('POST', '/api/v1/projects', body),
+			request<CreateProjectResponse>('POST', '/api/v1/projects', body),
+		listStarters: () => get<ListStartersResponse>('/api/v1/projects/starters'),
 		getProject: (id: string) => get<Project>(`/api/v1/projects/${id}`),
 		updateProject: (id: string, body: UpdateProjectRequest) =>
 			request<Project>('PATCH', `/api/v1/projects/${id}`, body),
