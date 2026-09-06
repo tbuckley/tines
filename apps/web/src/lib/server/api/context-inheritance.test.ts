@@ -181,12 +181,7 @@ describe('inherited layers', () => {
 		// `project ∧ base` still ranks with `project ∧ state` (rank 3), i.e. after
 		// every bare state layer and before any label layer. Only `base` vs `own`
 		// — both rank 2 — is decided by depth.
-		expect(ctx.prompt.parts.map((p) => p.name)).toEqual([
-			'base',
-			'own',
-			'proj-base',
-			'label-base'
-		]);
+		expect(ctx.prompt.parts.map((p) => p.name)).toEqual(['base', 'own', 'proj-base', 'label-base']);
 	});
 
 	it('lets the child override an inherited item by name and flags the loser', async () => {
@@ -233,5 +228,4 @@ describe('inherited layers', () => {
 		expect(summary.prompts).toBe(2);
 		expect(summary.prompts).toBe(ctx.prompt.parts.length);
 	});
-
 });

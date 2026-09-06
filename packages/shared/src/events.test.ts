@@ -272,6 +272,19 @@ describe('wording carried over from both surfaces', () => {
 		expect(eventSummary(ev)).toBe('started a fast run via "macbook-claude" on Tines/#49');
 	});
 
+	it('renders a workflow event by name, whatever else the payload carries', () => {
+		// `inheritance_changed` (Tines/238) rides along on workflow.created /
+		// .updated / .deleted; the feed names the workflow and nothing else, so
+		// the key needs no renderer of its own.
+		const ev = event('workflow.updated', {
+			name: 'Engineering',
+			inheritance_changed: [
+				{ workflow: 'Engineering', state: 'Merging', from: null, to: 'Shared stages / Merging' }
+			]
+		});
+		expect(eventSummary(ev)).toBe(eventSummary(event('workflow.updated', { name: 'Engineering' })));
+	});
+
 	it('keeps the web workflow-change clause on issue.updated', () => {
 		const ev = event('issue.updated', {
 			changed: ['workflow'],
