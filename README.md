@@ -219,7 +219,8 @@ actually launch.
 All of this is edited on the **Agents** tab, and most of it from the CLI too:
 
 - **The kill switch** — `tines supervisor enable` / `tines supervisor disable`, with
-  `tines supervisor status` for a one-screen overview.
+  `tines supervisor status` for a one-screen overview — which now also lists the issues
+  waiting for an agent, grouped by why, with the fix for each.
 - **Routing rules** decide who takes an issue. A rule is scoped globally, per project, per
   workflow state, or both (most specific wins, no merging), and its payload is an ordered
   preference list of `<runner>[:tier]` targets:
