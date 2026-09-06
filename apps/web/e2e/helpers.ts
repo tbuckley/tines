@@ -1,8 +1,10 @@
 import { createHmac } from 'node:crypto';
+import { expect } from '@playwright/test';
 import type {
 	APIRequestContext,
 	APIResponse,
 	BrowserContext,
+	Locator,
 	Page,
 	Response
 } from '@playwright/test';
@@ -121,3 +123,50 @@ export async function errorBody(res: APIResponse): Promise<ErrorBody> {
 
 /** Unique per-process suffix so re-runs against a reused server don't collide. */
 export const runId = Date.now().toString(36);
+
+/**
+ * Click that survives the SSR-to-hydration window: a click landing before
+ * the listeners attach is swallowed, so retry until `done` holds.
+ */
+export async function clickUntil(button: Locator, done: () => Promise<void>): Promise<void> {
+	await expect(async () => {
+		if (await button.isVisible()) await button.click();
+		await done();
+	}).toPass({ timeout: 15_000 });
+}
+
+/**
+ * `read` once its result has stopped changing: two reads a beat apart that
+ * agree. For geometry on a page that is still settling — content above the
+ * target reflows after hydration, streamed panels resolve after the target is
+ * visible (Tines/123) — a single read is a frame no assertion means to
+ * describe. Reduced motion (the suite default, see README.md) removes
+ * transitions from that movement but not reflow, so this is still needed
+ * under it.
+ *
+ * `bestEffort: true` returns the last read instead of throwing when the
+ * layout never settles within `timeout`, for callers whose own assertions
+ * name the failure better than a timeout here would.
+ *
+ * Reads are compared by `JSON.stringify`, so `T` must be JSON-comparable with
+ * a stable key order — plain objects and arrays of them. A `Map`, a `Set` or a
+ * field that is sometimes `undefined` serialises to something that hides the
+ * change, and the first read would be declared settled.
+ */
+export async function readSettled<T>(
+	read: () => Promise<T>,
+	opts: { timeout?: number; bestEffort?: boolean } = {}
+): Promise<T> {
+	let settled = await read();
+	const attempt = expect(async () => {
+		const before = JSON.stringify(settled);
+		settled = await read();
+		expect(JSON.stringify(settled)).toBe(before);
+	}).toPass({
+		intervals: [100, 100, 200, 400],
+		...(opts.timeout ? { timeout: opts.timeout } : {})
+	});
+	if (opts.bestEffort) await attempt.catch(() => {});
+	else await attempt;
+	return settled;
+}

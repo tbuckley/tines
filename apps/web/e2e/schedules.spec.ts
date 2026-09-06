@@ -8,9 +8,9 @@ import type {
 	TinesEvent,
 	WorkflowResponse
 } from '@tines/shared';
-import { expect, test, type Locator } from '@playwright/test';
+import { expect, test } from '@playwright/test';
 import { ALICE, BOB, SCHED } from './constants.mjs';
-import { apiClient, body, errorBody, gotoHydrated, runId, signIn } from './helpers';
+import { apiClient, body, clickUntil, errorBody, gotoHydrated, runId, signIn } from './helpers';
 
 /** Today's ISO date in UTC — the seeded schedules render {{date}} in UTC. */
 const todayUtc = () => new Date().toISOString().slice(0, 10);
@@ -407,15 +407,6 @@ test.describe('schedules in the web UI', () => {
 		const context = await browser.newContext();
 		await signIn(context, ALICE.sessionToken);
 		const page = await context.newPage();
-
-		// Clicks landing before hydration attaches listeners are swallowed, so
-		// retry until the expected state holds (same pattern as ui.spec.ts).
-		const clickUntil = async (button: Locator, done: () => Promise<void>) => {
-			await expect(async () => {
-				if (await button.isVisible()) await button.click();
-				await done();
-			}).toPass({ timeout: 15_000 });
-		};
 
 		await gotoHydrated(page, `/projects/${SCHED.projectId}`);
 		const dialog = page.getByRole('dialog', { name: /New issue/ });

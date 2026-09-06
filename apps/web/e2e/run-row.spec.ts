@@ -27,7 +27,10 @@ test.describe('shared run row', () => {
 		// surface that used to show neither field.
 		await page.goto(`/issues/${encodeURIComponent(RUNROW.projectName)}/${RUNROW.issueNumber}`);
 
-		const issueRow = page.locator('li', { hasText: RUNROW.runnerName });
+		// li:not([inert]): rows in animated lists are marked inert by Svelte 5's
+		// out() while they are still siblings inside the live <ul>, so an
+		// unscoped li can match a row on its way out (Tines/154, e2e/README.md).
+		const issueRow = page.locator('li:not([inert])', { hasText: RUNROW.runnerName });
 		await expect(issueRow).toHaveCount(1);
 		await expect(issueRow).toContainText(RUNROW.costLabel);
 		// How the end was judged, beside the status: the difference between a
@@ -43,7 +46,10 @@ test.describe('shared run row', () => {
 		await gotoHydrated(page, '/agents');
 		await page.getByLabel('Show ended runs').check();
 
-		const agentsRow = page.locator('li', { hasText: RUNROW.runnerName });
+		// li:not([inert]): rows in animated lists are marked inert by Svelte 5's
+		// out() while they are still siblings inside the live <ul>, so an
+		// unscoped li can match a row on its way out (Tines/154, e2e/README.md).
+		const agentsRow = page.locator('li:not([inert])', { hasText: RUNROW.runnerName });
 		await expect(agentsRow).toHaveCount(1);
 		await expect(agentsRow).toContainText(RUNROW.costLabel);
 		await expect(agentsRow).toContainText(RUNROW.outcome);

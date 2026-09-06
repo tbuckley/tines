@@ -21,14 +21,29 @@ import type { Command } from 'commander';
 export function register(program: Command): void {
 	const projects = program.command('projects').description('Manage projects');
 
-	withList(projects.command('list').description('List projects')).action(async (opts: ListOpts) => {
+	withList(
+		projects
+			.command('list')
+			.description('List projects')
+			.option('--archived', 'include archived projects (hidden by default)')
+	).action(async (opts: ListOpts & { archived?: boolean }) => {
 		const api = client(opts);
-		const res = await fetchList(opts, (page) => api.listProjects(page));
+		const res = await fetchList(opts, (page) =>
+			api.listProjects({ ...page, ...(opts.archived ? { archived: 'all' as const } : {}) })
+		);
 		printList(res, opts, (items) => {
 			if (items.length === 0) return console.log('no projects');
+			// The ARCHIVED column only appears with the flag, so the default
+			// output is unchanged for everyone who never archives anything.
 			table([
-				['NAME', 'ISSUES', 'ID', 'CREATED'],
-				...items.map((p) => [p.name, String(p.issue_count), p.id, timestamp(p.created_at)])
+				['NAME', 'ISSUES', 'ID', 'CREATED', ...(opts.archived ? ['ARCHIVED'] : [])],
+				...items.map((p) => [
+					p.name,
+					String(p.issue_count),
+					p.id,
+					timestamp(p.created_at),
+					...(opts.archived ? [p.archived_at ? timestamp(p.archived_at) : '-'] : [])
+				])
 			]);
 		});
 	});
@@ -93,6 +108,7 @@ export function register(program: Command): void {
 			console.log(
 				`issues: ${project.issue_count}  created: ${timestamp(project.created_at)}  updated: ${timestamp(project.updated_at)}`
 			);
+			if (project.archived_at !== null) console.log(`archived: ${timestamp(project.archived_at)}`);
 		}
 	);
 
@@ -126,6 +142,47 @@ export function register(program: Command): void {
 			console.log(`updated project "${updated.name}" (${updated.id})`);
 		}
 	);
+
+	withCommon(
+		projects
+			.command('archive <id-or-name>')
+			.description(
+				'Archive a project: pause its schedules, stop dispatch, make its issues read-only'
+			)
+	).action(async (ref: string, opts: CommonOpts) => {
+		const api = client(opts);
+		const project = await resolveProject(api, ref);
+		const res = await api.archiveProject(project.id);
+		if (opts.json) return printJson(res);
+		// Archiving drains: runs already under way finish on their own issue.
+		const draining = res.draining_runs.length
+			? `${res.draining_runs.length} run${res.draining_runs.length === 1 ? '' : 's'} draining (` +
+				res.draining_runs
+					.map((r) => `${r.runner_name} on ${res.project.name}/${r.issue_number}`)
+					.join(', ') +
+				')'
+			: '0 runs draining';
+		console.log(
+			`archived project "${res.project.name}" (${res.project.id}): ` +
+				`${res.schedules_paused} schedule${res.schedules_paused === 1 ? '' : 's'} paused, ` +
+				`${draining}, ${res.issues_read_only} issue${res.issues_read_only === 1 ? '' : 's'} read-only`
+		);
+	});
+
+	withCommon(
+		projects
+			.command('unarchive <id-or-name>')
+			.description('Unarchive a project: schedules resume from their next occurrence')
+	).action(async (ref: string, opts: CommonOpts) => {
+		const api = client(opts);
+		const project = await resolveProject(api, ref);
+		const res = await api.unarchiveProject(project.id);
+		if (opts.json) return printJson(res);
+		console.log(
+			`unarchived project "${res.project.name}" (${res.project.id}): ` +
+				`${res.schedules_resumed} schedule${res.schedules_resumed === 1 ? '' : 's'} resumed`
+		);
+	});
 
 	withCommon(
 		projects

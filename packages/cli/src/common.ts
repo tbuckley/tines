@@ -227,8 +227,13 @@ export function table(rows: string[][]): void {
 // ---------------------------------------------------------------------------
 // Reference resolution (names are the human interface; the API wants ids)
 
+/**
+ * Archived projects still resolve — an issue ref or an unarchive call must
+ * keep naming one — so this asks for the unfiltered list rather than the
+ * API's non-archived default.
+ */
 export async function resolveProject(api: ApiClient, ref: string): Promise<Project> {
-	const { items } = await api.listProjects();
+	const { items } = await api.listProjects({ archived: 'all' });
 	const byId = items.find((p) => p.id === ref);
 	if (byId) return byId;
 	const byName = items.filter((p) => p.name === ref);
@@ -236,7 +241,8 @@ export async function resolveProject(api: ApiClient, ref: string): Promise<Proje
 	if (byName.length > 1) {
 		die(`project name "${ref}" is ambiguous; use an id: ${byName.map((p) => p.id).join(', ')}`);
 	}
-	die(`no project named "${ref}" (have: ${items.map((p) => p.name).join(', ') || 'none'})`);
+	const have = items.map((p) => (p.archived_at ? `${p.name} (archived)` : p.name)).join(', ');
+	die(`no project named "${ref}" (have: ${have || 'none'})`);
 }
 
 export async function resolveWorkflow(api: ApiClient, ref: string): Promise<WorkflowResponse> {

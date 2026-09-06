@@ -37,6 +37,7 @@ import {
 	getArtifactStore
 } from '$lib/server/artifact-store';
 import { idChunks, newId, type Database } from '$lib/server/db';
+import { assertWritable } from './archive';
 import { ApiFail, notFound, optionalString, runAtomic, type ActorContext } from './core';
 import { actorOf, eventInsert } from './events';
 
@@ -163,8 +164,14 @@ interface IssueRef {
 	id: string;
 	projectId: string;
 	projectName: string;
+	projectArchivedAt: number | null;
 	number: number;
 	stateEnteredAt: number;
+}
+
+/** The gate's view of an artifact issue's project. */
+function artifactProject(issue: IssueRef) {
+	return { id: issue.projectId, name: issue.projectName, archived_at: issue.projectArchivedAt };
 }
 
 async function requireIssue(
@@ -181,7 +188,8 @@ async function requireIssue(
 			'issue.number',
 			'issue.state_entered_at',
 			'issue.created_at',
-			'project.name as project_name'
+			'project.name as project_name',
+			'project.archived_at as project_archived_at'
 		])
 		.where('issue.id', '=', issueId)
 		.where('project.user_id', '=', userId)
@@ -191,6 +199,7 @@ async function requireIssue(
 		id: row.id,
 		projectId: row.project_id,
 		projectName: row.project_name,
+		projectArchivedAt: row.project_archived_at,
 		number: row.number,
 		stateEnteredAt: Number(row.state_entered_at ?? row.created_at)
 	};
@@ -844,6 +853,7 @@ async function upsertArtifactOnce(
 	body: UpsertArtifactRequest
 ): Promise<Artifact> {
 	const issue = await requireIssue(db, actor.userId, issueId);
+	await assertWritable(db, actor, artifactProject(issue), { issueId: issue.id });
 	const name = validateArtifactName(rawName);
 	const description = optionalString(body.description, 'description', { max: 1000 });
 	const existing = await loadCurrent(db, actor.userId, issue, name);
@@ -989,6 +999,7 @@ async function uploadArtifactFileOnce(
 	file: { filename: string; contentType: string; bytes: Uint8Array }
 ): Promise<Artifact> {
 	const issue = await requireIssue(db, actor.userId, issueId);
+	await assertWritable(db, actor, artifactProject(issue), { issueId: issue.id });
 	const name = validateArtifactName(rawName);
 	const filename = validateFilename(file.filename);
 	const contentType = validateContentType(file.contentType);
@@ -1074,6 +1085,7 @@ async function uploadArtifactFolderOnce(
 	files: FolderUploadFile[]
 ): Promise<Artifact> {
 	const issue = await requireIssue(db, actor.userId, issueId);
+	await assertWritable(db, actor, artifactProject(issue), { issueId: issue.id });
 	const name = validateArtifactName(rawName);
 	if (files.length === 0) {
 		throw new ApiFail(422, 'invalid_field', 'A folder snapshot needs at least one file part', {
@@ -1194,6 +1206,7 @@ async function reaffirmArtifactOnce(
 	name: string
 ): Promise<Artifact> {
 	const issue = await requireIssue(db, actor.userId, issueId);
+	await assertWritable(db, actor, artifactProject(issue), { issueId: issue.id });
 	const { item, versions, filesByVersion } = await requireArtifact(db, actor.userId, issue, name);
 	const current = versions[versions.length - 1];
 	const payload: VersionPayload = {
@@ -1252,6 +1265,7 @@ export async function deleteArtifact(
 	name: string
 ): Promise<void> {
 	const issue = await requireIssue(db, actor.userId, issueId);
+	await assertWritable(db, actor, artifactProject(issue), { issueId: issue.id });
 	const { item } = await requireArtifact(db, actor.userId, issue, name);
 	await runAtomic(env, [
 		db

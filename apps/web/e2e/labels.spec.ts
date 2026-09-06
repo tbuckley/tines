@@ -583,15 +583,17 @@ test.describe.serial('label as a scope dimension', () => {
 		await page.getByLabel('Body (Markdown)').fill('Only for labelled work.');
 		await page.getByRole('button', { name: 'Create' }).click();
 
-		// The saved scope shows as the label's own coloured chip...
-		const row = page.locator('li').filter({ hasText: name });
+		// The saved scope shows as the label's own coloured chip. `:not([inert])`
+		// because `ContextItemList`'s rows carry `transition:slide`, and the
+		// `label=` swap below removes rows — see `e2e/README.md`.
+		const row = page.locator('li:not([inert])').filter({ hasText: name });
 		await expect(row.getByTitle(`label ${docsName}`)).toBeVisible();
 		// ...and the `label=` filter narrows the list to what carries it: the
 		// new item and the label-scoped skill — one row for that name, not the
 		// two same-named skills the unfiltered list holds.
 		await page.goto(`/context?label=${docs.id}`);
-		await expect(page.locator('li').filter({ hasText: name })).toBeVisible();
-		await expect(page.locator('li').filter({ hasText: SKILL })).toHaveCount(1);
+		await expect(page.locator('li:not([inert])').filter({ hasText: name })).toBeVisible();
+		await expect(page.locator('li:not([inert])').filter({ hasText: SKILL })).toHaveCount(1);
 	});
 
 	test('deleting the label is refused while it scopes work, then force-cascades', async ({

@@ -3,7 +3,7 @@ import { gotoHydrated, runId } from './helpers';
 
 // The landing-page magic-link form, end to end through the better-auth
 // endpoint and the (locally simulated) Email Service binding. The retry loop
-// mirrors clickUntil in ui.spec.ts: a submit landing before hydration is
+// mirrors clickUntil in helpers.ts: a submit landing before hydration is
 // swallowed, so re-fill and re-click until the sent state renders.
 
 test('requests a sign-in link from the landing page', async ({ page }) => {

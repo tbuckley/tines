@@ -522,7 +522,7 @@ esac
 			.filter({ hasText: 'running' })
 			.first();
 		// The button is a Svelte listener, so a click landing before hydration
-		// is swallowed: retry until the dialog is up (clickUntil in ui.spec.ts).
+		// is swallowed: retry until the dialog is up (clickUntil in helpers.ts).
 		const cancelButton = row.getByRole('button', { name: 'Cancel', exact: true });
 		const dialog = page.getByRole('dialog', { name: 'Cancel this run?' });
 		await expect(async () => {

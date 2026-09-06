@@ -1,7 +1,7 @@
 import type { IssueDetail, Project } from '@tines/shared';
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import { ALICE } from './constants.mjs';
-import { apiClient, body, gotoHydrated, runId, signIn } from './helpers';
+import { apiClient, body, clickUntil, gotoHydrated, runId, signIn } from './helpers';
 
 // Browser flows, signed in as the seeded user via a signed session cookie.
 // Names carry the per-run suffix so re-runs against a reused server stay
@@ -31,18 +31,17 @@ test.beforeEach(async ({ context }) => {
 	await signIn(context, ALICE.sessionToken);
 });
 
-/**
- * Click that survives the SSR-to-hydration window: a click landing before
- * the listeners attach is swallowed, so retry until `done` holds.
- */
-async function clickUntil(button: Locator, done: () => Promise<void>): Promise<void> {
-	await expect(async () => {
-		if (await button.isVisible()) await button.click();
-		await done();
-	}).toPass({ timeout: 15_000 });
-}
-
 const stateBadge = (page: Page) => page.locator('.state-badge').first();
+
+test('the suite runs under reduced motion by default', async ({ page }) => {
+	// Guards playwright.config.ts's reducedMotion: 'reduce'. If this fails after
+	// a Playwright bump, the context option has stopped reaching the page again
+	// (it did not on 1.62.1) and the suite is silently exercising outros.
+	await page.goto('/');
+	expect(await page.evaluate(() => matchMedia('(prefers-reduced-motion: reduce)').matches)).toBe(
+		true
+	);
+});
 
 test('a signed-in visit to / lands on the issues list', async ({ page }) => {
 	await page.goto('/');
