@@ -25,11 +25,26 @@ let bId: string;
 /** The header control, which doubles as the assertion for the current focus. */
 const switcher = (page: Page) => page.getByRole('button', { name: /^Project focus:/ });
 
-/** Opens the switcher and picks a project, or All projects. */
-async function chooseFocus(page: Page, name: string | RegExp): Promise<void> {
+/**
+ * Opens the switcher and picks an entry, retrying the whole gesture until the
+ * chrome agrees. Choosing re-renders the layout (`invalidateAll`), so a second
+ * choice can find a menu item that detaches under the click — seen only on CI.
+ * Retrying the open-and-click, keyed on the outcome, is the stable shape;
+ * choosing twice is idempotent, so a retry costs nothing.
+ *
+ * `name` matches the menu entry, `expected` the full focus name the chrome
+ * then reports — the phone trigger truncates its visible text but not its
+ * `aria-label`, so this assertion holds at both widths.
+ */
+async function chooseFocus(page: Page, name: string, expected = name): Promise<void> {
 	const item = page.getByRole('menuitemradio', { name });
-	await clickToOpen(switcher(page), item);
-	await item.click();
+	await expect(async () => {
+		if (!(await item.isVisible())) await switcher(page).click();
+		await item.click({ timeout: 2_000 });
+		await expect(switcher(page)).toHaveAttribute('aria-label', `Project focus: ${expected}`, {
+			timeout: 5_000
+		});
+	}).toPass({ timeout: 20_000 });
 }
 
 async function open(browser: Browser, viewport: typeof DESKTOP, path = '/issues'): Promise<Page> {
