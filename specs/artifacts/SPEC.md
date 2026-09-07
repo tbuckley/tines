@@ -64,6 +64,9 @@ exist (in the launch prompt's issue block) and fetch content on demand.
   requirement semantics don't want them.
 - **Deleting individual versions**: history is immutable; delete the whole
   artifact or nothing (v1).
+- **Third-party resources in sites**: an HTML artifact is self-contained.
+  A CDN allowlist, a bought user-content domain and Browser-Rendering
+  thumbnails are all deferred (see "Sites: HTML artifacts").
 
 ## Concepts
 
@@ -478,6 +481,85 @@ User-uploaded bytes served from our origin are an XSS surface. Downloads
   basename). A folder `…/content` request without `path` is a 422
   (`folder_path_required`) whose details list the version's paths, so an
   agent self-corrects in one round trip.
+- HTML is the exception that gets its own route rather than a widened
+  allowlist: `?inline=1` still never renders it, and executing HTML happens
+  only under `/s/<token>/` — see "Sites: HTML artifacts" below.
+
+### Sites: HTML artifacts
+
+An HTML artifact renders **live** — scripts running — for quick prototypes,
+interactive PRDs and anything richer than Markdown allows. Serving it is the
+one place we deliberately execute user bytes, so it happens on its own route
+under its own rules; `…/content?inline=1` is unchanged and still never
+renders HTML.
+
+**What is a site.** `siteEntry()` in `@tines/shared` is the single answer,
+used by the server, the viewer and the CLI: a `file` or `text` artifact whose
+`content_type` is `text/html` (the entry is the file itself), or a `folder`
+whose version has a root `index.html`. Nothing else. There is no sixth
+artifact type — a site is a property of the bytes, so requirement gating on
+`content_type: "text/html"` already works. Note that appending a `text`
+version without repeating `content_type` falls back to `text/markdown`, so
+v2 of an HTML text artifact silently stops being a site.
+
+**Link.** `POST …/artifacts/:name/site-link` mints a stateless HMAC
+capability — `v1.<payload>.<sig>`, binding user, item, version and expiry,
+keyed off `SECRET_ENCRYPTION_KEY` (falling back to `BETTER_AUTH_SECRET`) —
+valid for 60 minutes and pinned to one version. Links are snapshots, not
+shares: they are not meant to be pasted into comments, and the residual risk
+is that a URL in browser history works for up to an hour for anyone holding
+it (acceptable single-tenant; `Referrer-Policy: no-referrer` stops it
+leaking outward). Minting is a control-plane write, so a run key cannot do
+it on another user's behalf — an agent mints for its own artifacts through
+its user's key.
+
+**Route.** `GET /s/<token>/<path…>` serves the version's bytes.
+`trailingSlash` is `ignore`, and a folder resolves `dir` → `dir/` (302) →
+`dir/index.html`, so relative URLs inside the entry document (`./app.js`,
+`img/logo.png`) work — the reason folder sites need path-shaped URLs rather
+than the `?path=` addressing downloads use. Errors are HTML pages, since the
+reader is looking at a rendered page: 403 expired/tampered, 404 no such
+file, 503 no signing secret configured.
+
+**Two modes, decided per request from the request's own origin** (never from
+config, so a replayed token is contained):
+
+| | `sandbox-origin` | `same-origin` (fallback) |
+| --- | --- | --- |
+| When | request landed on `ARTIFACT_SANDBOX_ORIGIN` | anywhere else — local dev, e2e, PR previews, an unset var |
+| Origin of the page | the workers.dev host — a different registrable domain (workers.dev is on the Public Suffix List), so no app cookies | the app host, under CSP `sandbox` → **opaque** origin |
+| `localStorage`, cookies | work | throw |
+| iframe `sandbox` | `allow-scripts allow-forms allow-popups allow-same-origin` | same, minus `allow-same-origin` |
+
+Neither mode ever grants top-level navigation. Configure the origin with
+`vars.ARTIFACT_SANDBOX_ORIGIN` in `apps/web/wrangler.jsonc`
+(`https://tines-web.<subdomain>.workers.dev`); `hooks.server.ts` gates that
+hostname to `/s/*` so the app itself is unreachable there. The known
+limitation is that previews and e2e are always the fallback, so a
+storage-using prototype needs production.
+
+**Headers on every served document.** CSP pins each fetchable source to the
+artifact's own `/s/<token>/` prefix — a literal path, never `'self'` — so
+the Tines API is unreachable even in fallback mode (the API also sets no
+CORS headers anywhere, so nothing would be readable in any case);
+`connect-src` restricted to that same signed artifact prefix (sibling fetches only), no external CDNs, `frame-ancestors` naming the app,
+`X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, and the
+`sandbox` directive itself whenever the request did not land on the sandbox
+origin. That directive applies to top-level documents too, so "open full
+page" is the same URL in both modes — no wrapper page.
+
+**Responsive nudge.** The reader is often on a phone, so
+`lintHtmlArtifact()` (shared, client-side) warns at attach time — in the CLI
+as `warning:` lines and in the web attach dialog as a note — about a missing
+`<meta name="viewport" content="width=device-width, initial-scale=1">` and
+about external scripts/styles, which the CSP blocks and which therefore make
+a page come up blank. Warnings never block an attach. The launch prompt's
+"Attach one:" hint says the same to agents.
+
+**Deferred** (additive later, no migration): a CDN allowlist var appended to
+`script-src`/`style-src`/`font-src`, a bought user-content domain with
+per-artifact subdomains, Browser-Rendering phone thumbnails, and surfacing
+the frame's console errors in the viewer.
 
 ## API
 
@@ -494,6 +576,8 @@ ergonomics; run keys are allowed everywhere here.
 | `PUT /api/v1/issues/:id/artifacts/:name/folder` | **Multipart snapshot upload** for `folder`: one part per file (path as the part filename, MIME as the part type), creates the artifact or appends the next whole-set version. Same upsert/type-mismatch semantics. |
 | `POST /api/v1/issues/:id/artifacts/:name/reaffirm` | Append a reaffirming version: copies the current version's payload (same R2 object for files) with a fresh timestamp and the calling actor. 404 if the artifact doesn't exist. |
 | `GET /api/v1/issues/:id/artifacts/:name/content` | Bytes of the current version (`?version=N` for history; `?inline=1` per the serving rules; `?path=…` selects a folder entry — required for folders). `file`/`folder` stream from R2, `text` from D1; `link`/`pr` → 422 `no_content` (the reference *is* the payload). |
+| `POST /api/v1/issues/:id/artifacts/:name/site-link` | Mint a 60-minute signed URL that renders an HTML artifact live (`?version` pinned by the body's `version`, defaulting to current). 422 `not_a_site` when `siteEntry()` says no, 503 when no signing secret is configured. Control-plane: not reachable with a run key. |
+| `GET /s/<token>/<path…>` | **Not under `/api/v1`** — serves the pinned version's bytes to the browser under the site headers. No auth header: the token is the capability. |
 | `DELETE /api/v1/issues/:id/artifacts/:name` | Delete the artifact, all versions, and its R2 objects. |
 
 The upsert PUT is deliberately the whole write surface: "attach a new design
@@ -547,6 +631,12 @@ tines issues artifacts attach <ref> <name> … --ignore-gates    # attach this t
 tines issues artifacts reaffirm <ref> <name>                   # bless current content as fresh
 tines issues artifacts get <ref> <name> [--version N] [--out <path>]   # content; link/pr prints the
                                                                #   URL; a folder writes its tree
+tines issues artifacts site-link <ref> <name> [--version N]     # mint a URL that renders an HTML
+                                                               #   artifact live; prints the URL,
+                                                               #   the pinned version and the
+                                                               #   expiry, and says when the
+                                                               #   fallback mode makes storage
+                                                               #   APIs throw
 tines issues artifacts delete <ref> <name>
 ```
 
@@ -557,7 +647,9 @@ screenshots taken over a run land as one set). `tines issues move` already
 relays structured errors, so a blocked transition prints the unmet requirements
 and the attach command verbatim from the error details — the agent loop closes
 without any new CLI logic. `tines workflows` create/edit accept `requires`
-inside their transition definitions.
+inside their transition definitions. `show` and `attach` print a `site:`
+line when the artifact renders live, and `attach` follows it with the
+`warning:` lines `lintHtmlArtifact()` produces.
 
 **The CLI uses the gate it can already see** (Tines/243). `resolveIssue`
 fetches the `IssueDetail`, so `allowed_transitions[].requires[]` is in hand
@@ -623,7 +715,11 @@ actor, fresh/stale). The body renders by type: Markdown through
 PDFs in an `<iframe>` against the sandboxed inline URL (the dialog is what
 makes PDF preview possible at all), other files as a download link,
 `link`/`pr` as outbound cards. A folder renders as an image-grid gallery
-when every file is an image, else as a file tree with per-file preview.
+when every file is an image, else as a file tree with per-file preview. A
+**site** (see "Sites: HTML artifacts") renders live in a sandboxed iframe
+with a Phone / Tablet / Full width switcher — the reader is usually going to
+be on a phone — an **Open full page** link, and *Files* / *Source* escapes
+back to the ordinary folder and text views.
 
 ### Transitions
 

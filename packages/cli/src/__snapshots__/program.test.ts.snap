@@ -260,6 +260,7 @@ Commands:
   show [options] <ref> <name>             Show an artifact with its full version history
   attach [options] <ref> <name> [source]  Attach content to a named artifact slot (creates it, or appends the next version)
   reaffirm [options] <ref> <name>         Bless the current content as fresh (appends a version reusing the same payload)
+  site-link [options] <ref> <name>        Mint a short-lived URL that renders an HTML artifact live (scripts running) — for screenshotting your own prototype
   get [options] <ref> <name>              Fetch content (current version by default); a link/pr prints its URL
   delete [options] <ref> <name>           Delete an artifact — every version and its stored files (history is not recoverable)
   help [command]                          display help for command
@@ -345,6 +346,19 @@ Options:
 Show an artifact with its full version history
 
 Options:
+  -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
+                   \`tines login\`; default https://tines.tbuckley.dev)
+  --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json           output the raw JSON response
+  -h, --help       display help for command
+",
+  "tines issues artifacts site-link": "Usage: tines issues artifacts site-link [options] <ref> <name>
+
+Mint a short-lived URL that renders an HTML artifact live (scripts running) —
+for screenshotting your own prototype
+
+Options:
+  --version <n>    pin the link to a specific version (defaults to current)
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
                    \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
