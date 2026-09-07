@@ -472,8 +472,17 @@ export function getDb(env: Env): Kysely<Database> {
 export const IN_LIST_CHUNK = 90;
 
 export function idChunks(ids: string[]): string[][] {
-	const chunks: string[][] = [];
-	for (let i = 0; i < ids.length; i += IN_LIST_CHUNK) chunks.push(ids.slice(i, i + IN_LIST_CHUNK));
+	return chunked(ids, IN_LIST_CHUNK);
+}
+
+/**
+ * `items` in slices of at most `size`. For a statement that binds more than
+ * one parameter per item, pass `IN_LIST_CHUNK / perItem` (floored) so a full
+ * chunk still fits under D1's cap.
+ */
+export function chunked<T>(items: T[], size: number): T[][] {
+	const chunks: T[][] = [];
+	for (let i = 0; i < items.length; i += size) chunks.push(items.slice(i, i + size));
 	return chunks;
 }
 
