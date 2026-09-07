@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
 	parseResetTime,
+	providerErrorFromStderrLine,
+	providerErrorFromStreamEvent,
 	RateLimitDetector,
 	rateLimitFromStderrLine,
 	rateLimitFromStreamEvent,
@@ -99,6 +101,50 @@ describe('rateLimitFromStderrLine', () => {
 		expect(
 			rateLimitFromStderrLine("You've hit your weekly limit · resets later", NOW)?.resumeAt
 		).toBeNull();
+	});
+});
+
+describe('provider error classification', () => {
+	it.each([
+		'API Error: 500 Internal Server Error',
+		'API Error: 529 Overloaded',
+		'request failed: ECONNRESET',
+		'connection reset by peer',
+		'socket hang up'
+	])('recognises a transient stderr failure: %s', (line) => {
+		expect(providerErrorFromStderrLine(`\x1b[31m${line}\x1b[0m`)).toMatchObject({
+			source: 'stderr',
+			detail: line
+		});
+	});
+
+	it('recognises the same failure in an error result event', () => {
+		expect(
+			providerErrorFromStreamEvent({
+				type: 'result',
+				is_error: true,
+				result: 'API Error: 529 Overloaded'
+			})
+		).toEqual({ source: 'stream', detail: 'API Error: 529 Overloaded' });
+	});
+
+	it('does not trust successful results, other event types, 4xx, or ordinary errors', () => {
+		expect(
+			providerErrorFromStreamEvent({
+				type: 'result',
+				is_error: false,
+				result: 'API Error: 529 Overloaded'
+			})
+		).toBeNull();
+		expect(
+			providerErrorFromStreamEvent({
+				type: 'assistant',
+				is_error: true,
+				result: 'API Error: 529 Overloaded'
+			})
+		).toBeNull();
+		expect(providerErrorFromStderrLine('API Error: 429 Too Many Requests')).toBeNull();
+		expect(providerErrorFromStderrLine('authentication failed')).toBeNull();
 	});
 });
 
@@ -205,5 +251,27 @@ describe('RateLimitDetector', () => {
 			rate_limit_info: { status: 'rejected', resetsAt: 2000 }
 		});
 		expect(d.signal()?.resumeAt).toBe(2_000_000);
+	});
+
+	it('joins and flushes provider errors from stderr chunks', () => {
+		const d = new RateLimitDetector();
+		d.noteStderr('API Error: 529 Over', NOW);
+		d.noteStderr('loaded', NOW);
+		expect(d.providerError()).toBeNull();
+		d.finish(NOW);
+		expect(d.providerError()).toEqual({
+			source: 'stderr',
+			detail: 'API Error: 529 Overloaded'
+		});
+	});
+
+	it('prefers a structured provider error over stderr', () => {
+		const d = new RateLimitDetector();
+		d.noteStderr('socket hang up\n', NOW);
+		d.noteStreamEvent({ type: 'result', is_error: true, result: 'API Error: 503 unavailable' });
+		expect(d.providerError()).toEqual({
+			source: 'stream',
+			detail: 'API Error: 503 unavailable'
+		});
 	});
 });

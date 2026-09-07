@@ -107,6 +107,22 @@ function fakeClaude(dir: string): string {
 	return bin;
 }
 
+/** A claude_code process whose structured result reports a provider outage. */
+function fakeClaudeProviderError(dir: string, exitCode = 1): string {
+	const bin = join(dir, 'fakebin');
+	mkdirSync(bin, { recursive: true });
+	const event = JSON.stringify({
+		type: 'result',
+		subtype: 'error_during_execution',
+		is_error: true,
+		result: 'API Error: 529 Overloaded'
+	});
+	writeFileSync(join(bin, 'claude'), `#!/bin/sh\nprintf '%s\\n' '${event}'\nexit ${exitCode}\n`, {
+		mode: 0o755
+	});
+	return bin;
+}
+
 /** Boots the daemon against the stub: a custom template, or claude_code. */
 function startDaemon(
 	port: number,
@@ -262,5 +278,39 @@ describe('the run log a local run leaves behind', () => {
 		expect(lines.at(-1)).toMatch(
 			/^# tines runner: exit signal=SIGTERM \(timed out\) after \d+m\d+s$/
 		);
+	}, 30_000);
+
+	it('a provider outage is reported as interrupted instead of striking the issue', async () => {
+		const { server: stub, done } = stubSupervisor();
+		server = stub;
+		await new Promise<void>((r) => stub.listen(0, '127.0.0.1', r));
+		const port = (stub.address() as AddressInfo).port;
+		configDir = mkdtempSync(join(tmpdir(), 'tines-daemon-'));
+
+		child = startDaemon(port, configDir, {
+			fakeClaudeDir: fakeClaudeProviderError(configDir)
+		});
+
+		const harvest = await done;
+		expect(harvest.finish).toEqual({
+			status: 'failed',
+			error: 'provider error: API Error: 529 Overloaded',
+			judgment: 'interrupted'
+		});
+		expect(harvest.log).toContain('[error] API Error: 529 Overloaded');
+	}, 30_000);
+
+	it('does not override a successful harness exit based on its output alone', async () => {
+		const { server: stub, done } = stubSupervisor();
+		server = stub;
+		await new Promise<void>((r) => stub.listen(0, '127.0.0.1', r));
+		const port = (stub.address() as AddressInfo).port;
+		configDir = mkdtempSync(join(tmpdir(), 'tines-daemon-'));
+
+		child = startDaemon(port, configDir, {
+			fakeClaudeDir: fakeClaudeProviderError(configDir, 0)
+		});
+
+		expect((await done).finish).toEqual({ status: 'completed' });
 	}, 30_000);
 });
