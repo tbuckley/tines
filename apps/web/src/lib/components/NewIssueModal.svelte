@@ -36,7 +36,7 @@
 		labels?: LabelWithUsage[];
 		/** Fixed project (no picker), e.g. on the project page. */
 		project?: Project | null;
-		/** Preselects the picker, e.g. from an active project filter. */
+		/** Preselects the picker: the project focus, else the last one used. */
 		defaultProjectId?: string | null;
 		/** Starts with the Repeat section expanded (the schedules "add" affordance). */
 		repeatOpen?: boolean;
@@ -75,7 +75,9 @@
 			title = '';
 			description = '';
 			errorMessage = null;
-			projectId = project?.id ?? defaultProjectId ?? projects[0]?.id ?? '';
+			// No `projects[0]` fallback: under "All projects" with no last project
+			// the select starts empty and required, so nothing is filed by accident.
+			projectId = project?.id ?? defaultProjectId ?? '';
 			repeat = defaultRepeatState();
 			labelIds = [];
 			minted = [];
@@ -106,6 +108,11 @@
 				labels: labelIds.length > 0 ? labelIds : undefined
 			});
 			open = false;
+			// "Last created-in": what New issue falls back to next time under
+			// "All projects". Non-fatal — the issue itself already exists.
+			if (!project && selectedProject.id !== defaultProjectId) {
+				await api.updatePreferences({ last_project_id: selectedProject.id }).catch(() => {});
+			}
 			await invalidateAll();
 			await goto(`/issues/${encodeURIComponent(issue.project_name)}/${issue.number}`);
 		} catch (err) {
@@ -122,6 +129,7 @@
 			<div class="space-y-1.5">
 				<label class="text-sm font-medium" for="issue-project">Project</label>
 				<Select id="issue-project" bind:value={projectId} required>
+					<option value="" disabled>Choose a project…</option>
 					{#each projects as p (p.id)}
 						<option value={p.id}>{p.name}</option>
 					{/each}

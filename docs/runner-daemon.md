@@ -278,6 +278,13 @@ loginctl enable-linger "$USER"   # keep it running while logged out
 - **Cancel / timeout from the supervisor**: the next poll's `cancels` list makes the daemon
   kill the process without reporting — the supervisor already settled the run. The daemon
   also enforces the run timeout locally. Both count as failures for `--keep-workspaces`.
+- **Claude usage limit**: when the harness reports a usage limit — as a rejected
+  `rate_limit_event` on its stream, or as its own message on stderr when the limit was
+  already spent before the process started — the daemon finish-reports the run as rate
+  limited rather than failed. The issue takes no strike, and the runner's card reads
+  "rate limited — resumes <time>" until the window resets. Nothing needs doing: the
+  supervisor dispatches to it again on its own. A weekly limit is re-probed once a day,
+  which costs one run that ends in about a second.
 - **Network errors**: polls retry with backoff; the loop never crashes. A 401 (rotated
   token) exits with instructions instead of spinning.
 - **CLI refresh failure**: never fails a run — the last-good copy is used, or the ambient

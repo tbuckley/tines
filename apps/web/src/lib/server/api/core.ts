@@ -193,7 +193,10 @@ const CONTROL_PLANE_RULES: ControlPlaneRule[] = [
 	{ pattern: /^\/api\/v1\/import(\/|$)/ },
 	// Archiving is an operator act: an agent must not freeze (or thaw) the
 	// project it is working in, least of all the one draining around it.
-	{ pattern: /^\/api\/v1\/projects\/[^/]+\/(archive|unarchive)$/ }
+	{ pattern: /^\/api\/v1\/projects\/[^/]+\/(archive|unarchive)$/ },
+	// Per-user UI preferences (the project focus): an agent has no focus of its
+	// own and must not read or move its owner's. GET is fenced too.
+	{ pattern: /^\/api\/v1\/preferences(\/|$)/ }
 ];
 
 /** SvelteKit answers HEAD from the GET handler, so both are reads. */
