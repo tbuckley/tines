@@ -32,4 +32,5 @@ exec pnpm exec wrangler dev \
 	--persist-to .wrangler-e2e \
 	--test-scheduled \
 	--var "BETTER_AUTH_SECRET:$AUTH_SECRET" \
-	--var "BETTER_AUTH_URL:http://127.0.0.1:$PORT"
+	--var "BETTER_AUTH_URL:http://127.0.0.1:$PORT" \
+	--var "ARTIFACT_SANDBOX_ORIGIN:http://localhost:$PORT"

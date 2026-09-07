@@ -41,6 +41,7 @@ import {
 	getArtifactStore
 } from '$lib/server/artifact-store';
 import {
+	isConfiguredOrigin,
 	mintSiteToken,
 	resolveSitePath,
 	siteErrorPage,
@@ -1554,7 +1555,7 @@ export async function artifactSiteResponse(
 		appOrigin: appOriginOf(env),
 		// Sandboxed unless this request landed on the configured sandbox host:
 		// a site reaching the app origin is contained whatever the config says.
-		sandboxed: !env.ARTIFACT_SANDBOX_ORIGIN || env.ARTIFACT_SANDBOX_ORIGIN !== url.origin,
+		sandboxed: !isConfiguredOrigin(env.ARTIFACT_SANDBOX_ORIGIN, url.origin),
 		contentType,
 		filename
 	});
