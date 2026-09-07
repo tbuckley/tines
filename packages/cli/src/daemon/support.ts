@@ -84,9 +84,10 @@ export function buildHarnessInvocation(
 				]
 			};
 		case 'codex':
+			// --skip-git-repo-check is required to treat the folder as trusted
 			return {
 				file: 'codex',
-				args: ['exec', ...(input.model ? ['--model', input.model] : []), input.prompt]
+				args: ['exec', '--skip-git-repo-check', ...(input.model ? ['--model', input.model] : []), input.prompt]
 			};
 		case 'custom': {
 			if (!spec.command) throw new Error('the custom harness needs a --command template');
