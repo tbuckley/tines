@@ -1,6 +1,7 @@
 import { RUN_LOG_MAX_BYTES } from '@tines/shared';
 import { describe, expect, it } from 'vitest';
 import {
+	addComment,
 	addIssue,
 	addRun,
 	addRunner,
@@ -377,6 +378,48 @@ describe('pollRunner', () => {
 			NOW + 2
 		);
 		expect(second.response.assignments).toEqual([]);
+	});
+
+	it('opens the delivered issue block with the human steer that started the round', async () => {
+		const t = world();
+		const runnerId = addRunner(t);
+		const issue = addIssue(t);
+		// A previous run ended, then the human sent the issue back and said why.
+		addRun(t, {
+			issueId: issue,
+			runnerId,
+			status: 'completed',
+			endedAt: NOW - 7_200_000,
+			stateAtStart: REVIEW
+		});
+		addTransitionEvent(t, {
+			issueId: issue,
+			apiKeyId: null,
+			at: NOW - 3_600_000,
+			from: REVIEW,
+			to: OPEN,
+			fromName: 'In review',
+			toName: 'Open',
+			action: 'Send back'
+		});
+		addComment(t, { issueId: issue, body: 'CI is red on the e2e job.', at: NOW - 3_500_000 });
+		const runId = addRun(t, { issueId: issue, runnerId });
+
+		const { response } = await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, runnerId),
+			{ owned_runs: [] },
+			NOW + 1
+		);
+		const prompt = response.assignments[0].prompt;
+		expect(response.assignments[0].run.id).toBe(runId);
+		// The steer reaches the agent through the delivered prompt, not only
+		// through a read of the issue.
+		expect(prompt).toContain('### Since the last run');
+		expect(prompt).toContain('Send back');
+		expect(prompt).toContain('CI is red on the e2e job.');
+		expect(prompt.indexOf('### Since the last run')).toBeLessThan(prompt.indexOf('### Comments'));
 	});
 
 	it('cancels the assignment instead of delivering when the issue moved away', async () => {

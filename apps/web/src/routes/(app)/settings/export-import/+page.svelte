@@ -191,7 +191,7 @@
 	{#if document_}
 		<div class="mb-3 flex flex-wrap gap-4 text-sm">
 			<CheckboxField
-				label="Overwrite existing context items"
+				label="Overwrite existing context items and inheritance pointers"
 				checked={overwrite}
 				onCheckedChange={(checked) => {
 					overwrite = checked;

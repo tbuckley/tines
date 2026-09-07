@@ -242,7 +242,10 @@ export interface WorkflowStateInput {
 	/**
 	 * The state whose context this state inherits: one of this request's
 	 * states by id or name, or the id of a state in any workflow you can see
-	 * (your own, or the standard workflow). Chains are at most 3 states long
+	 * (your own, or the standard workflow). In a {@link LibraryDocument} the
+	 * cross-workflow form is the portable `"<workflow name>/<state name>"`
+	 * instead of an id, resolved by the importer before it reaches this
+	 * request. Chains are at most 3 states long
 	 * and may not cycle. On an EXISTING state (`id` present) the field is
 	 * merge-patch style — absent = unchanged, `null` = clear — so callers
 	 * that round-trip states without knowing about it cannot clear it. On a
@@ -492,6 +495,18 @@ export interface Issue {
 	attempt_count: number;
 	/** Parked after striking out; cleared by resume or a manual transition. */
 	needs_attention: boolean;
+	/**
+	 * The transition that brought the issue into its current state. Derived for
+	 * awaiting-human issues only (the handoff rows); null on every other row and
+	 * after a direct workflow change, which re-stamps `state_entered_at` without
+	 * emitting a transition.
+	 */
+	arrived_via: ArrivedVia | null;
+	/**
+	 * What the round that just ended produced, for awaiting-human list rows.
+	 * Null on other rows; absent from reads that do not assemble it.
+	 */
+	round_summary?: RoundSummary | null;
 	/** The run currently holding this issue's exclusive claim, if any. */
 	active_run: { run_id: string; runner_name: string; status: RunStatus } | null;
 	/**
@@ -585,6 +600,113 @@ export interface IssueDetail extends Issue {
 	 * does, so it does not fetch the same list twice). Absent from API reads.
 	 */
 	artifacts?: Artifact[];
+	/**
+	 * The runs on this issue since the human last acted, grouped by the state
+	 * each started in. Only when the caller opted in; null when no run falls
+	 * inside the round (a human moved the issue here directly).
+	 */
+	round?: Round | null;
+	/**
+	 * The human's steer since the previous run ended. Only when the caller opted
+	 * in; null when nothing human happened after it, or there is no previous run.
+	 */
+	since_last_run?: SinceLastRun | null;
+}
+
+// ---------------------------------------------------------------------------
+// The handoff: what came back from a round, and what the human said since
+
+/** A transition as it appears inside the round / since-last-run derivations. */
+export interface RoundTransition {
+	/** Null on a forced move (`issues edit -s`): render "moved directly". */
+	action: string | null;
+	from_state: { id: string; name: string };
+	to_state: { id: string; name: string };
+	actor: Actor;
+	at: number;
+}
+
+/** The transition into an issue's current state, as list rows carry it. */
+export interface ArrivedVia {
+	action: string | null;
+	from_state_name: string | null;
+	/** True when a run took it, false when a human did. */
+	by_run: boolean;
+	at: number;
+}
+
+/** One artifact a run touched, with the version numbers either side. */
+export interface RoundArtifactChange {
+	name: string;
+	artifact_type: ArtifactType;
+	/** Version before this run touched it; null when the run created it. */
+	from_version: number | null;
+	/** The last version this run attached (a reaffirmation counts). */
+	to_version: number;
+	/** pr artifacts: https://github.com/{owner}/{repo}/pull/{n}. */
+	pr_url: string | null;
+	/** folder artifacts: workspace-relative paths of `to_version`'s snapshot. */
+	files: string[] | null;
+}
+
+/** One run inside a round. */
+export interface RoundRun {
+	run_id: string;
+	runner_name: string;
+	status: RunStatus;
+	outcome: RunEndOutcome | null;
+	started_at: number | null;
+	ended_at: number | null;
+	usage: AgentRunUsage | null;
+	/** The transition this run took, or null (stalled / still running). */
+	transition: RoundTransition | null;
+	/** The run's last comment on this issue — its summary — in full. */
+	summary_comment: { id: string; body: string; created_at: number } | null;
+	/** Ids of the run's earlier comments, oldest first (resolve against `comments`). */
+	earlier_comment_ids: string[];
+	/** Artifact versions whose actor is this run, in name order. */
+	artifacts: RoundArtifactChange[];
+	/**
+	 * For an earlier attempt at a stage: the transition that brought the issue
+	 * back into this run's start state afterwards ("sent back by Automated
+	 * Review"). Null on the stage's latest run.
+	 */
+	returned_via: RoundTransition | null;
+}
+
+/** Every run in the round that started in one state, latest first. */
+export interface RoundStage {
+	state: { id: string; name: string | null; position: number | null };
+	/** Latest run first; `runs.slice(1)` are the earlier attempts to fold. */
+	runs: RoundRun[];
+}
+
+export interface Round {
+	/** The human action the round starts after; null = the issue's creation. */
+	boundary: RoundTransition | null;
+	boundary_at: number;
+	/** In workflow position order; states no longer in the workflow sort last. */
+	stages: RoundStage[];
+	run_count: number;
+}
+
+export interface SinceLastRun {
+	previous_run: { run_id: string; ended_at: number | null; state_at_start_name: string | null };
+	/** The human-taken transition after the previous run, or null (comment only). */
+	transition: RoundTransition | null;
+	/** Human comments after the previous run, oldest first, at most ten (the newest ten). */
+	comments: Comment[];
+	/** Total human comments in the window, so a cap can be reported. */
+	comment_count: number;
+	/** Artifacts whose current version was fresh before the transition and is stale now. */
+	stale_artifacts: string[];
+}
+
+/** Compact "what this round produced", for awaiting-human list rows. */
+export interface RoundSummary {
+	pr_url: string | null;
+	/** Artifacts a run in this round attached or re-versioned. */
+	artifacts: { name: string; artifact_type: ArtifactType; version: number }[];
 }
 
 export interface CreateIssueRequest {
@@ -1850,6 +1972,25 @@ export interface RunFilters {
 	active?: boolean;
 }
 
+/**
+ * Compact age of a timestamp, in the style of run durations: "42s", "5m",
+ * "3h", "2d". Shared so the launch prompt and the CLI spell an age the same
+ * way; the CLI's ISO-string form delegates here.
+ */
+export function ageLabel(at: number, now: number = Date.now()): string {
+	if (!Number.isFinite(at)) return '—';
+	const seconds = Math.max(0, Math.round((now - at) / 1000));
+	if (seconds < 60) return `${seconds}s`;
+	if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+	if (seconds < 86_400) return `${Math.floor(seconds / 3600)}h`;
+	return `${Math.floor(seconds / 86_400)}d`;
+}
+
+/** A pr version's canonical pull-request URL, or null when it is not a pr. */
+export function prUrlOf(v: Pick<ArtifactVersion, 'pr_repo_url' | 'pr_number'>): string | null {
+	return v.pr_repo_url && v.pr_number !== null ? `${v.pr_repo_url}/pull/${v.pr_number}` : null;
+}
+
 /** Compact duration for run rows: "42s", "12m"; "—" before launch. */
 export function runDurationLabel(
 	run: Pick<AgentRun, 'started_at' | 'ended_at'>,
@@ -2260,8 +2401,17 @@ export interface ApiErrorBody {
 
 /** Discriminator on the exported document; guards against feeding in a stray JSON file. */
 export const LIBRARY_FORMAT = 'tines.library';
-/** Bumped when the document shape changes incompatibly; import refuses anything higher. */
-export const LIBRARY_VERSION = 1;
+/**
+ * Bumped when the document shape changes incompatibly; import refuses anything
+ * higher. Version history:
+ *
+ * - **1** — projects, workflows (states, transitions, artifact requirements)
+ *   and context items, all referenced by name.
+ * - **2** — a state may carry `inherits_from` (Tines/270): the state whose
+ *   context it inherits, as `"<workflow name>/<state name>"`. Version 1
+ *   documents read unchanged — they simply have no pointers.
+ */
+export const LIBRARY_VERSION = 2;
 
 /** Document-level caps, checked before the entries are walked. */
 export const LIBRARY_MAX_BYTES = 5 * 1024 * 1024;
@@ -2321,7 +2471,9 @@ export interface LibraryContextEntry {
  *
  * The system `Standard` workflow is never exported (it is seeded with
  * identical ids on every instance); items scoped to its states are, and
- * re-resolve by name.
+ * re-resolve by name — as does a state's `inherits_from`, which points at
+ * its base as `"<workflow name>/<state name>"` (version 2 and up) so that a
+ * pointer survives a move between deployments that share no ids.
  */
 export interface LibraryDocument {
 	format: typeof LIBRARY_FORMAT;

@@ -7,6 +7,7 @@
  */
 import type {
 	AgentRun,
+	ArrivedVia,
 	Artifact,
 	ArtifactRequirementCheck,
 	ArtifactVersion,
@@ -14,11 +15,23 @@ import type {
 	ContextItem,
 	LinkedIssue,
 	QuotaPolicy,
+	Round,
+	RoundArtifactChange,
+	RoundRun,
+	RoundSummary,
 	RoutingRule,
 	Runner,
-	Schedule
+	Schedule,
+	SinceLastRun
 } from '@tines/shared';
-import { actorLabel, describeRecurrence, runCostLabel, runDurationLabel } from '@tines/shared';
+import {
+	actorLabel,
+	ageLabel as sharedAgeLabel,
+	describeRecurrence,
+	prUrlOf,
+	runCostLabel,
+	runDurationLabel
+} from '@tines/shared';
 import type { KeptWorkspace } from './daemon/store.js';
 
 export function timestamp(ms: number): string {
@@ -106,7 +119,7 @@ export function artifactSummary(a: Artifact): string {
 		case 'link':
 			return cv.title ? `${cv.title} — ${cv.url}` : (cv.url ?? '');
 		case 'pr':
-			return `${prRefLabel(cv)} — ${cv.pr_repo_url}/pull/${cv.pr_number}`;
+			return `${prRefLabel(cv)} — ${prUrlOf(cv)}`;
 	}
 }
 
@@ -197,6 +210,116 @@ export function commentLines(comment: Comment): string[] {
 	return ['', header, ...comment.body.split('\n').map((line) => `  ${line}`)];
 }
 
+/**
+ * "since the last run" for `issues show` on an active issue: the human's steer
+ * that started this round, comments and all.
+ */
+export function sinceLastRunLines(since: SinceLastRun, now: number = Date.now()): string[] {
+	const prev = since.previous_run;
+	const ended =
+		prev.ended_at === null ? 'not ended' : `ended ${sharedAgeLabel(prev.ended_at, now)} ago`;
+	const lines = [
+		`since the last run (${prev.state_at_start_name ?? 'unknown state'}, ${prev.run_id} ${ended}):`
+	];
+	const t = since.transition;
+	if (t) {
+		const via = t.action ? `via "${t.action}"` : 'moved directly';
+		const stale =
+			since.stale_artifacts.length > 0 ? ` — now stale: ${since.stale_artifacts.join(', ')}` : '';
+		lines.push(
+			`  moved from ${t.from_state.name} ${via} by ${actorLabel(t.actor)} ${sharedAgeLabel(t.at, now)} ago${stale}`
+		);
+	}
+	for (const c of since.comments) lines.push(...commentLines(c));
+	if (since.comment_count > since.comments.length) {
+		const hidden = since.comment_count - since.comments.length;
+		lines.push(`  … and ${hidden} earlier comment${hidden === 1 ? '' : 's'}`);
+	}
+	return lines;
+}
+
+/** "round" for `issues show` on an awaiting-human issue: what came back. */
+export function roundLines(round: Round, now: number = Date.now()): string[] {
+	const b = round.boundary;
+	const from = b
+		? `since ${actorLabel(b.actor)} ${b.action ? `moved "${b.action}"` : 'moved it directly'} ${timestamp(b.at)}`
+		: `since created ${timestamp(round.boundary_at)}`;
+	const lines = [`round (${round.run_count} run${round.run_count === 1 ? '' : 's'} ${from}):`];
+	for (const stage of round.stages) {
+		const [latest, ...earlier] = stage.runs;
+		if (!latest) continue;
+		lines.push(`  ${stage.state.name ?? stage.state.id} — ${runHeadline(latest, now)}`);
+		if (latest.artifacts.length > 0) {
+			lines.push(`    ${latest.artifacts.map(artifactChangeLabel).join(' · ')}`);
+		}
+		// Earlier attempts fold to one line each, above the latest run's summary
+		// so a long summary body cannot read as swallowing them. The lines say
+		// how many there were, so no counter follows.
+		for (const run of earlier) lines.push(`    ${earlierAttemptLine(run, now)}`);
+		if (latest.summary_comment) {
+			lines.push(`    summary (${latest.summary_comment.id}):`);
+			for (const line of latest.summary_comment.body.split('\n')) lines.push(`      ${line}`);
+		}
+		const earlierComments = latest.earlier_comment_ids;
+		if (earlierComments.length > 0) {
+			lines.push(
+				`    ${earlierComments.length} earlier comment${earlierComments.length === 1 ? '' : 's'}: ${earlierComments.join(', ')}`
+			);
+		}
+	}
+	return lines;
+}
+
+function runHeadline(run: RoundRun, now: number): string {
+	const cost = runCostLabel(run);
+	return [
+		`${run.run_id} on ${run.runner_name}`,
+		runDurationLabel(run, now),
+		run.outcome ?? run.status,
+		...(cost ? [cost] : []),
+		run.transition
+			? `"${run.transition.action ?? 'moved directly'}" → ${run.transition.to_state.name}`
+			: 'no transition'
+	].join(' · ');
+}
+
+function earlierAttemptLine(run: RoundRun, now: number): string {
+	const back = run.returned_via;
+	const how = back
+		? back.action
+			? `sent back by ${back.from_state.name} ("${back.action}")`
+			: 'moved directly back'
+		: 'never came back';
+	return `${run.run_id} · ${runDurationLabel(run, now)} · ${run.outcome ?? run.status} · ${how}`;
+}
+
+function artifactChangeLabel(a: RoundArtifactChange): string {
+	const versions =
+		a.from_version === null ? `v${a.to_version}` : `v${a.from_version} → v${a.to_version}`;
+	const extra = a.pr_url
+		? ` (${a.pr_url})`
+		: a.files
+			? ` (${a.files.length} file${a.files.length === 1 ? '' : 's'})`
+			: '';
+	return `${a.name} ${versions}${extra}`;
+}
+
+/** The VIA column: how an awaiting issue arrived where it is. */
+export function arrivedViaLabel(via: ArrivedVia | null): string {
+	if (!via) return '—';
+	return via.action ?? 'moved directly';
+}
+
+/** The ROUND column: the pull request and artifacts the round produced. */
+export function roundSummaryLabel(summary: RoundSummary | null): string {
+	if (!summary) return '—';
+	const parts = [
+		...(summary.pr_url ? [`PR ${summary.pr_url.split('/').pop()}`] : []),
+		...summary.artifacts.map((a) => `${a.name} v${a.version}`)
+	];
+	return parts.length > 0 ? parts.join(' · ') : '—';
+}
+
 export function runRow(run: AgentRun): string[] {
 	return [
 		run.id,
@@ -227,13 +350,7 @@ export function byteSize(bytes: number): string {
 
 /** Compact age of an ISO timestamp, in the style of run durations: "42s", "3h", "5d". */
 export function ageLabel(isoTimestamp: string, now: number = Date.now()): string {
-	const then = Date.parse(isoTimestamp);
-	if (!Number.isFinite(then)) return '—';
-	const seconds = Math.max(0, Math.round((now - then) / 1000));
-	if (seconds < 60) return `${seconds}s`;
-	if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
-	if (seconds < 86_400) return `${Math.floor(seconds / 3600)}h`;
-	return `${Math.floor(seconds / 86_400)}d`;
+	return sharedAgeLabel(Date.parse(isoTimestamp), now);
 }
 
 /**
