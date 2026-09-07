@@ -114,6 +114,7 @@ test('creating an issue ticks item 1 on both surfaces without a reload', async (
 	await item(page, 'issue').getByRole('button', { name: 'Create an issue' }).click();
 	const dialog = page.getByRole('dialog');
 	await expect(dialog).toBeVisible();
+	await dialog.getByLabel('Project').selectOption({ label: PROJECT_NAME });
 	await dialog.getByLabel('Title').fill('First run');
 	await dialog.getByRole('button', { name: /create/i }).click();
 
