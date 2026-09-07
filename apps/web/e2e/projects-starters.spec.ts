@@ -1,6 +1,14 @@
-import type { StarterSummary } from '@tines/shared';
+import { execFileSync } from 'node:child_process';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import type {
+	CreateProjectResponse,
+	IssueDetail,
+	LaunchPromptResponse,
+	StarterSummary
+} from '@tines/shared';
 import { expect, test, type Page } from '@playwright/test';
-import { ALICE } from './constants.mjs';
+import { ALICE, BASE_URL } from './constants.mjs';
 import { apiClient, body, clickUntil, gotoHydrated, runId, signIn } from './helpers';
 
 /**
@@ -20,6 +28,9 @@ import { apiClient, body, clickUntil, gotoHydrated, runId, signIn } from './help
  */
 
 let starters: StarterSummary[];
+const CLI_DIR = fileURLToPath(new URL('../../../packages/cli', import.meta.url));
+const TSX = join(CLI_DIR, 'node_modules', '.bin', 'tsx');
+const CLI_ENTRY = join(CLI_DIR, 'src', 'index.ts');
 const byId = (id: string): StarterSummary => {
 	const found = starters.find((s) => s.id === id);
 	if (!found) throw new Error(`starter ${id} missing from the menu`);
@@ -39,6 +50,64 @@ test.beforeAll(async ({ playwright }) => {
 
 test.beforeEach(async ({ context }) => {
 	await signIn(context, ALICE.sessionToken);
+});
+
+test('Code repository seeds the first issue launch context and gated review workflow', async ({
+	page,
+	request
+}) => {
+	const api = apiClient(request, ALICE.apiKey);
+	const projectName = `starter-code-api-${runId}`;
+	const repoName = `prompt-${runId}`;
+	const conventions = [
+		'Test command: pnpm test',
+		'Branch rules: branch from main',
+		'PR expectations: focused, with a test',
+		'Where things live: source is in apps/web/src'
+	].join('\n');
+	const created = await body<CreateProjectResponse>(
+		await api.post('/api/v1/projects', {
+			name: projectName,
+			initial_prompt: conventions,
+			starter: {
+				id: 'code',
+				inputs: {
+					repo_url: `https://github.com/example/${repoName}.git`,
+					repo_branch: 'main'
+				}
+			}
+		})
+	);
+	const first = created.starter?.first_issue;
+	expect(first).toMatchObject({ number: 1, state_name: 'In progress' });
+
+	const issue = await body<IssueDetail>(await api.get(`/api/v1/issues/${first?.id}`));
+	const submit = issue.allowed_transitions.find(
+		(transition) => transition.name === 'Submit for review'
+	);
+	expect(submit?.requires).toEqual([
+		expect.objectContaining({ artifact: 'pr', type: 'pr', status: 'missing' })
+	]);
+
+	const prompt = await body<LaunchPromptResponse>(
+		await api.get(`/api/v1/issues/${first?.id}/prompt`)
+	);
+	expect(prompt.text).toContain(`## Context: project ${projectName}`);
+	expect(prompt.text).toContain(conventions);
+	expect(prompt.text).toContain('## Context: state In progress');
+	expect(prompt.text).toContain('Unanswered template lines mean “not specified”');
+	expect(prompt.text).toContain(`repo "${repoName}" (branch main)`);
+
+	const workflow = execFileSync(TSX, [CLI_ENTRY, 'workflows', 'show', 'Code change'], {
+		cwd: CLI_DIR,
+		env: { ...process.env, TINES_API_KEY: ALICE.apiKey, TINES_API_URL: BASE_URL },
+		encoding: 'utf8'
+	});
+	expect(workflow).toContain('"Submit for review": In progress → Review');
+	expect(workflow).toContain('requires artifact "pr" (pr)');
+
+	await page.goto(`/issues/${encodeURIComponent(projectName)}/1`);
+	await expect(page.getByRole('button', { name: /Submit for review/ }).first()).toBeDisabled();
 });
 
 /**

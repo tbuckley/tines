@@ -1,11 +1,6 @@
 import type { Starter } from './types';
 
-/**
- * "Code repository" — structurally complete, deliberately minimal prose.
- * Tines/250 replaces the stage instructions, the conventions template and
- * the first issue's description with the real content; the shape below is
- * what the apply path and its tests pin.
- */
+/** "Code repository" — a complete first pull-request loop. */
 export const code: Starter = {
 	id: 'code',
 	name: 'Code repository',
@@ -36,14 +31,22 @@ export const code: Starter = {
 				{
 					name: 'In progress',
 					category: 'active',
-					prompt:
-						'Implement the change the issue describes. Work on a branch, keep commits small, run the project’s tests, then open a pull request that references this issue and attach it as the `pr` artifact.'
+					prompt: [
+						'Read the project conventions before you begin. Unanswered template lines mean “not specified”: find out from the repository or ask instead of guessing.',
+						'',
+						'Work on a branch that follows the Branch rules in the conventions. Implement the issue, add or update a test, and run the Test command from the conventions. Open a pull request that references this issue and follows the PR expectations.',
+						'',
+						'Attach the pull request with `tines issues artifacts attach <ref> pr --pr <url>`. Comment on the issue with what you changed, why, and how you verified it, then transition the issue with `tines issues move <ref> "Submit for review"`.'
+					].join('\n')
 				},
 				{
 					name: 'Review',
 					category: 'awaiting_human',
-					prompt:
-						'A human reviews the pull request. Approve to close the issue, or send it back with the changes you want.'
+					prompt: [
+						'Review the attached pull request. Check that the chosen change is a real bug, the fix is focused, the test demonstrates the failure and the project’s conventions were followed.',
+						'',
+						'Approve when it is ready. If changes are needed, leave a specific comment and choose “Send back”; that returns the issue to In progress so the agent can address the feedback.'
+					].join('\n')
 				},
 				{ name: 'Done', category: 'done' }
 			],
@@ -74,15 +77,18 @@ export const code: Starter = {
 		}
 	],
 	conventions_template: [
-		'Test command: <how to run the tests>',
-		'Lint / typecheck command: <how to run them>',
-		'Branch naming: <the convention, if you have one>',
-		'Anything an agent should never touch: <paths or systems>'
+		'Test command: <the command that must pass before opening a PR>',
+		'Branch rules: <the base branch and any branch naming rules>',
+		'PR expectations: <what every pull request should include>',
+		'Where things live: <the important directories, docs, or files>'
 	].join('\n'),
 	first_issue: {
 		title: 'Find and fix a bug',
-		description:
-			'Read enough of {{ repo_name }} to find one real, small bug — a wrong edge case, a missing guard, a stale comment that hides a defect — and fix it. Add a test that fails before the fix and passes after.',
+		description: [
+			'Read {{ repo_name }} and pick one small bug you can verify: a failing test, a crash, a wrong message, or a broken link.',
+			'',
+			'Fix it on a branch with a test, open a pull request, attach it as the `pr` artifact, and explain in an issue comment why you chose that bug. If nothing qualifies, do not invent work: explain what you checked in a comment and move this issue to Review with that comment.'
+		].join('\n'),
 		workflow: 'Code change',
 		state: 'In progress'
 	}
