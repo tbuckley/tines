@@ -296,7 +296,10 @@ function verdictLine(input: {
 					? `${first.runner_name} is restarting to update`
 					: first.verdict === 'backing_off'
 						? `${first.runner_name} is backing off after repeated failures`
-						: `waiting for capacity on ${first.runner_name}`;
+						: first.verdict === 'rate_limited'
+							? // The detail carries the ISO reset; the surfaces localise it.
+								`${first.runner_name} hit its usage limit — ${first.detail.replace(/^usage limit reached — /, '')}`
+							: `waiting for capacity on ${first.runner_name}`;
 	const queue =
 		input.queuePosition !== null && input.queuePosition > 0
 			? ` (${input.queuePosition} eligible issue${input.queuePosition === 1 ? '' : 's'} ahead)`
