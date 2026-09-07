@@ -72,6 +72,36 @@ test('the Agents tab opens on the checklist, not the off-state banner', async ({
 	await expect(page.getByRole('dialog')).toBeVisible();
 });
 
+test('the managed-runner path reaches key validation without misreporting progress', async ({
+	page,
+	request
+}) => {
+	await gotoHydrated(page, '/agents');
+	await item(page, 'runner').getByRole('button', { name: 'Add a runner' }).click();
+
+	const dialog = page.getByRole('dialog', { name: 'Add runner' });
+	await dialog.getByRole('button', { name: 'Claude (managed)' }).click();
+	await expect(dialog.getByLabel('Name')).toHaveAttribute('placeholder', 'cloud-claude');
+	await expect(dialog.getByLabel('GitHub access (needed to clone)')).toBeVisible();
+	await expect(dialog.getByText(/fine-grained token scoped to exactly the repos/)).toBeVisible();
+
+	await dialog.getByLabel('Name').fill('cloud-claude');
+	await dialog.getByLabel('Anthropic API key').fill('sk-ant-invalid');
+	await dialog.getByRole('button', { name: 'Create runner' }).click();
+	await expect(page.getByText('Anthropic rejected the API key (401)')).toBeVisible({
+		timeout: 30_000
+	});
+
+	// A failed ping creates nothing, so the checklist must not tick either the
+	// CLI or runner item. This is the parity boundary for a no-key managed walk.
+	const runners = await body<ListResponse<unknown>>(
+		await apiClient(request, DANA.apiKey).get('/api/v1/runners')
+	);
+	expect(runners.items).toHaveLength(0);
+	await expect(item(page, 'cli')).toHaveAttribute('data-done', 'false');
+	await expect(item(page, 'runner')).toHaveAttribute('data-done', 'false');
+});
+
 test('creating an issue ticks item 1 on both surfaces without a reload', async ({
 	page,
 	request
