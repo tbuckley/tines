@@ -137,6 +137,8 @@
 				return `${runner} draining`;
 			case 'backing_off':
 				return `${runner} backing off`;
+			case 'rate_limited':
+				return `${runner} rate limited`;
 			case 'no_rule':
 				return 'no matching routing rule';
 			case 'no_targets':
@@ -206,6 +208,13 @@
 							{:else if block.verdict === 'backing_off'}
 								<p class="text-muted-foreground mt-1 text-xs">
 									Retries automatically; check the daemon log if it keeps failing.
+								</p>
+							{:else if block.verdict === 'rate_limited'}
+								<p class="text-muted-foreground mt-1 text-xs">
+									The Claude account behind {block.runnerName ?? 'this runner'} is out of usage. Resumes
+									automatically{runner?.backoff_until
+										? ` at ${new Date(runner.backoff_until).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`
+										: ''}; nothing to do.
 								</p>
 							{/if}
 						</div>
