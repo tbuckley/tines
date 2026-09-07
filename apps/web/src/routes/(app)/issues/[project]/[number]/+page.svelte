@@ -210,6 +210,7 @@
 	function startDescription() {
 		descriptionDraft = data.issue.description;
 		editingDescription = true;
+		tick().then(() => descriptionTextarea?.focus());
 	}
 
 	function addProjectRepo() {
@@ -649,6 +650,7 @@
 	);
 
 	let editingDescription = $state(false);
+	let descriptionTextarea = $state<HTMLTextAreaElement | null>(null);
 	let descriptionDraft = $state('');
 	let savingDescription = $state(false);
 	async function saveDescription() {
@@ -956,8 +958,10 @@
 				{#if editingDescription}
 					<div transition:slide={{ duration: dur() }}>
 						<Textarea
+							bind:ref={descriptionTextarea}
 							bind:value={descriptionDraft}
 							rows={8}
+							aria-label="Description"
 							placeholder="Describe the work (Markdown)…"
 						/>
 						<div class="mt-2 flex gap-2">
