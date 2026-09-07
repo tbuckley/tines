@@ -1,9 +1,12 @@
 import {
+	prUrlOf,
 	renderTemplate,
 	requirementFix,
 	templateVars,
 	type AllowedTransition,
 	type ArchivedFilter,
+	type ArrivedVia,
+	type ArtifactType,
 	type ArtifactRequirementCheck,
 	type Comment,
 	type CreateCommentRequest,
@@ -37,10 +40,19 @@ import {
 	type Page
 } from './core';
 import { assertWritable, issueProject } from './archive';
-import { checkRequirements, listArtifacts, requirementSpecLabel } from './artifacts';
+import {
+	artifactTypeOf,
+	checkRequirements,
+	listArtifacts,
+	loadIssueVersions,
+	requirementSpecLabel,
+	versionQuery
+} from './artifacts';
 import { contextSummaryForIssue } from './context';
-import { actorOf, eventInsert } from './events';
+import { actorOf, eventInsert, eventQuery, serializeEvent } from './events';
+import { deriveRound, deriveSinceLastRun } from './handoff';
 import { issueLabelInserts, labelInserts, resolveOrCreateLabels } from './labels';
+import { runQuery, serializeRun } from './runs';
 import { requireTier } from './runners';
 import { getSchedule, prepareSchedule } from './schedules';
 import { loadWorkflow, loadWorkflows } from './workflows';
@@ -173,7 +185,40 @@ export function issueQuery(db: Kysely<Database>, userId: string) {
 					WHERE ar.issue_id = issue.id AND ar.status IN ('assigned', 'launching', 'running')
 					ORDER BY ar.created_at DESC
 					LIMIT 1
-				)`.as('active_run_json')
+				)`.as('active_run_json'),
+				// The handoff derivations below are for awaiting-human rows only
+				// — SQLite short-circuits CASE, so active rows (and the dispatch
+				// path's loadIssue) run neither subquery. Both hit event_issue_id_idx.
+				//
+				// The transition into the current state. The `created_at >=
+				// state_entered_at` guard is what nulls this after a workflow
+				// change, which re-stamps state_entered_at without transitioning.
+				sql<
+					string | null
+				>`CASE WHEN COALESCE(eff_state.category, state.category) = 'awaiting_human' THEN (
+					SELECT json_object(
+						'action', json_extract(av.payload, '$.action'),
+						'from_state_name', json_extract(av.payload, '$.from_state_name'),
+						'by_run', avk.agent_run_id IS NOT NULL,
+						'at', av.created_at)
+					FROM event av
+					LEFT JOIN api_key avk ON avk.id = av.actor_api_key_id
+					WHERE av.issue_id = issue.id AND av.type = 'issue.transitioned'
+						AND av.created_at >= COALESCE(issue.state_entered_at, issue.created_at)
+					ORDER BY av.created_at DESC, av.id DESC
+					LIMIT 1
+				) END`.as('arrived_via_json'),
+				// Where the current round starts: the last human-taken
+				// transition, else the issue's creation. Feeds round_summary.
+				sql<
+					number | null
+				>`CASE WHEN COALESCE(eff_state.category, state.category) = 'awaiting_human' THEN COALESCE((
+					SELECT MAX(rb.created_at)
+					FROM event rb
+					LEFT JOIN api_key rbk ON rbk.id = rb.actor_api_key_id
+					WHERE rb.issue_id = issue.id AND rb.type = 'issue.transitioned'
+						AND (rb.actor_api_key_id IS NULL OR rbk.agent_run_id IS NULL)
+				), issue.created_at) END`.as('round_boundary_at')
 			])
 			.select((eb) =>
 				eb
@@ -187,6 +232,12 @@ export function issueQuery(db: Kysely<Database>, userId: string) {
 }
 
 type IssueRow = Awaited<ReturnType<ReturnType<typeof issueQuery>['execute']>>[number];
+
+/** `by_run` crosses SQLite's JSON as 0/1; everything else is already shaped. */
+function parseArrivedVia(json: string): ArrivedVia {
+	const raw = JSON.parse(json) as Omit<ArrivedVia, 'by_run'> & { by_run: number | boolean };
+	return { ...raw, by_run: Boolean(raw.by_run) };
+}
 
 export function serializeIssue(row: IssueRow): Issue {
 	return {
@@ -225,6 +276,7 @@ export function serializeIssue(row: IssueRow): Issue {
 		active_run: row.active_run_json
 			? (JSON.parse(row.active_run_json) as Issue['active_run'])
 			: null,
+		arrived_via: row.arrived_via_json ? parseArrivedVia(row.arrived_via_json) : null,
 		// Backfilled with created_at by migration 0011; the fallback covers
 		// rows inserted without the column (e.g. raw test fixtures).
 		state_entered_at: Number(row.state_entered_at ?? row.created_at),
@@ -412,10 +464,79 @@ export async function listIssues(
 		.limit(page.limit + 1)
 		.execute();
 	const serialize = filters.brief ? briefIssue : serializeIssue;
-	return {
-		items: rows.slice(0, page.limit).map(serialize),
-		hasMore: rows.length > page.limit
-	};
+	const pageRows = rows.slice(0, page.limit);
+	const items = pageRows.map(serialize);
+	await attachRoundSummaries(db, userId, pageRows, items);
+	return { items, hasMore: rows.length > page.limit };
+}
+
+/**
+ * `round_summary` on the awaiting-human rows of one page: what the round that
+ * just ended produced, so the Awaiting list can say "impl-pr v2 · PR #78"
+ * without a read per row. A page with no awaiting row issues no statement.
+ */
+async function attachRoundSummaries(
+	db: Kysely<Database>,
+	userId: string,
+	rows: IssueRow[],
+	items: IssueListItem[]
+): Promise<void> {
+	const awaiting = rows
+		.map((row, i) => ({ row, i }))
+		.filter(({ row }) => row.eff_state_category === 'awaiting_human');
+	for (const item of items) item.round_summary = null;
+	if (awaiting.length === 0) return;
+
+	const versions = await versionQuery(db)
+		.innerJoin('context_item', 'context_item.id', 'artifact_version.context_item_id')
+		.select([
+			'context_item.issue_id as item_issue_id',
+			'context_item.name as item_name',
+			'context_item.config as item_config'
+		])
+		.where('context_item.user_id', '=', userId)
+		.where('context_item.kind', '=', 'artifact')
+		.where((eb) =>
+			eb.or(
+				awaiting.map(({ row }) =>
+					eb.and([
+						eb('context_item.issue_id', '=', row.id),
+						eb('artifact_version.created_at', '>', Number(row.round_boundary_at ?? row.created_at))
+					])
+				)
+			)
+		)
+		.orderBy('artifact_version.created_at asc')
+		.execute();
+
+	for (const { row, i } of awaiting) {
+		// Attribution by run id, and only runs on this issue: a version a run on
+		// another issue attached here is not part of this issue's round.
+		const mine = versions.filter(
+			(v) =>
+				v.item_issue_id === row.id && v.actor_run_id !== null && v.actor_run_issue_id === row.id
+		);
+		const byName = new Map<
+			string,
+			{ name: string; artifact_type: ArtifactType; version: number }
+		>();
+		let prUrl: string | null = null;
+		for (const v of mine) {
+			const seen = byName.get(v.item_name);
+			if (!seen || v.version > seen.version) {
+				byName.set(v.item_name, {
+					name: v.item_name,
+					artifact_type: artifactTypeOf(v.item_config),
+					version: v.version
+				});
+			}
+			prUrl = prUrlOf(v) ?? prUrl;
+		}
+		items[i].round_summary = {
+			pr_url: prUrl,
+			artifacts: [...byName.values()].sort((a, b) => (a.name < b.name ? -1 : 1))
+		};
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -581,6 +702,13 @@ export interface IssueDetailOptions {
 	 * artifacts panel and would otherwise fetch them a second time.
 	 */
 	artifacts?: boolean;
+	/**
+	 * Derive `round` and `since_last_run` — the handoff. Off by default:
+	 * `getIssueDetail` sits on every mutation's return path, and this costs
+	 * three more reads. The four read paths (the issue endpoints, the prompt
+	 * route and the runner's prompt delivery) opt in.
+	 */
+	round?: boolean;
 }
 
 /** "Project/42" — the ref an agent types, and the one the fix commands quote. */
@@ -602,17 +730,19 @@ export async function getIssueDetail(
 	// otherwise only if some outgoing transition declares requirements — which
 	// we cannot know until the workflow lands. Fetching them in this wave when
 	// asked keeps the requirement pre-flight off the critical path entirely.
-	const [workflows, comments, links, contextSummary, preloadedArtifacts] = await Promise.all([
-		opts.workflows ?? loadWorkflows(db, userId, issue.workflow_id),
-		loadComments(db, issue.id),
-		loadIssueLinks(db, userId, issue.id),
-		contextSummaryForIssue(db, userId, {
-			projectId: issue.project_id,
-			stateId: issue.state.id,
-			issueId: issue.id
-		}),
-		opts.artifacts ? listArtifacts(db, userId, issue.id) : null
-	]);
+	const [workflows, comments, links, contextSummary, preloadedArtifacts, handoff] =
+		await Promise.all([
+			opts.workflows ?? loadWorkflows(db, userId, issue.workflow_id),
+			loadComments(db, issue.id),
+			loadIssueLinks(db, userId, issue.id),
+			contextSummaryForIssue(db, userId, {
+				projectId: issue.project_id,
+				stateId: issue.state.id,
+				issueId: issue.id
+			}),
+			opts.artifacts ? listArtifacts(db, userId, issue.id) : null,
+			opts.round ? loadHandoffRows(db, userId, issue.id) : null
+		]);
 
 	const workflow = workflows.find((w) => w.id === issue.workflow_id);
 	if (!workflow) throw notFound();
@@ -639,8 +769,39 @@ export async function getIssueDetail(
 		allowed_transitions: allowed,
 		links,
 		context_summary: contextSummary,
-		...(preloadedArtifacts ? { artifacts: preloadedArtifacts } : {})
+		...(preloadedArtifacts ? { artifacts: preloadedArtifacts } : {}),
+		...(handoff
+			? {
+					round: deriveRound({ issue, workflow, comments, ...handoff }),
+					since_last_run: deriveSinceLastRun({ issue, comments, ...handoff })
+				}
+			: {})
 	};
+}
+
+/** How many runs of an issue's history the round derivation reads back. */
+const ROUND_RUN_CAP = 50;
+
+/**
+ * The three extra reads the handoff derivations need. Issued inside
+ * `getIssueDetail`'s existing wave, so opting in costs no round trip.
+ */
+async function loadHandoffRows(db: Kysely<Database>, userId: string, issueId: string) {
+	const [eventRows, runRows, versions] = await Promise.all([
+		eventQuery(db, userId)
+			.where('event.issue_id', '=', issueId)
+			.where('event.type', '=', 'issue.transitioned')
+			.orderBy('event.created_at asc')
+			.orderBy('event.id asc')
+			.execute(),
+		runQuery(db, userId)
+			.where('agent_run.issue_id', '=', issueId)
+			.orderBy('agent_run.created_at desc')
+			.limit(ROUND_RUN_CAP)
+			.execute(),
+		loadIssueVersions(db, userId, issueId)
+	]);
+	return { events: eventRows.map(serializeEvent), runs: runRows.map(serializeRun), versions };
 }
 
 // ---------------------------------------------------------------------------
