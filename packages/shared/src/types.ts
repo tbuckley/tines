@@ -1617,6 +1617,28 @@ export interface SupervisorSettingsResponse extends SupervisorSettings {
 	canceled_runs?: number;
 }
 
+/**
+ * Per-user UI preferences. Never read by agents: `/api/v1/preferences` is
+ * control-plane fenced, GET included. See specs/projects/SPEC.md "Project focus".
+ */
+export interface UserPreferences {
+	/**
+	 * The focused project, or null for "All projects". Raw: it may still name a
+	 * project that has since been archived, until a page load resolves it.
+	 */
+	focused_project_id: string | null;
+	/** The project New issue falls back to under "All projects": last focused or last created-in. */
+	last_project_id: string | null;
+	/** Null until the preferences row has been written at least once. */
+	updated_at: number | null;
+}
+
+/** Merge-patch: an absent field is unchanged, an explicit null clears it. */
+export interface UpdatePreferencesRequest {
+	focused_project_id?: string | null;
+	last_project_id?: string | null;
+}
+
 /** A registered executor. Secrets are never serialized. */
 export interface Runner {
 	id: string;

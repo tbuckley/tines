@@ -1,12 +1,14 @@
 import { expect, test, type Page } from '@playwright/test';
 import { ALICE } from './constants.mjs';
-import { clickUntil, gotoHydrated, signIn } from './helpers';
+import { clickUntil, gotoHydrated, resetFocus, signIn } from './helpers';
 
 // Theme resolution happens entirely in the browser: a pre-paint script in
 // app.html reads localStorage, and $lib/theme.svelte.ts takes over on hydration.
 
-test.beforeEach(async ({ context }) => {
+test.beforeEach(async ({ context, request }) => {
 	await signIn(context, ALICE.sessionToken);
+	// Specs share one user: a focus left behind would scope this one's lists.
+	await resetFocus(request);
 });
 
 const html = (page: Page) => page.locator('html');

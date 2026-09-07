@@ -1,7 +1,6 @@
 <script lang="ts" module>
 	/** The list filters a page parses from its URL, as the bar reads them. */
 	export interface IssueFilterState {
-		project?: string;
 		category?: string;
 		state?: string;
 		/** Label ids or names, as they appear in the URL. */
@@ -18,7 +17,7 @@
 	import IconFilter from '@tabler/icons-svelte/icons/filter';
 	import IconSearch from '@tabler/icons-svelte/icons/search';
 	import IconX from '@tabler/icons-svelte/icons/x';
-	import type { Label, Project, StateCategory, WorkflowResponse } from '@tines/shared';
+	import type { Label, StateCategory, WorkflowResponse } from '@tines/shared';
 	import { tick } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
@@ -33,19 +32,13 @@
 		filters,
 		counts,
 		labels,
-		workflows,
-		projects,
-		archivedProject = null
+		workflows
 	}: {
 		filters: IssueFilterState;
 		/** Issues per category under every filter but the category itself. */
 		counts: Record<StateCategory, number>;
 		labels: Label[];
 		workflows: WorkflowResponse[];
-		/** Present on the all-issues list; the project page has no scope to pick. */
-		projects?: Project[];
-		/** The archived project the URL names, if any — kept nameable so the select shows it. */
-		archivedProject?: Project | null;
 	} = $props();
 
 	/**
@@ -55,6 +48,9 @@
 	 */
 	function navigate(mutate: (params: URLSearchParams) => void) {
 		const params = new URLSearchParams(page.url.searchParams);
+		// `?project=` on /issues is a one-shot that sets the focus (Tines/259);
+		// carrying it into the next filter click would re-fire it forever.
+		params.delete('project');
 		mutate(params);
 		const qs = params.toString();
 		goto(`${page.url.pathname}${qs ? `?${qs}` : ''}`, { keepFocus: true, noScroll: true });
@@ -68,6 +64,8 @@
 	// no tab of its own, but stays reachable by URL and shows as "All" while on.
 	const tabHref = (category: StateCategory | 'all' | null) => {
 		const params = new URLSearchParams(page.url.searchParams);
+		// See `navigate`: the one-shot focus param never rides along.
+		params.delete('project');
 		params.delete('category');
 		params.delete('done');
 		if (category === 'all') params.set('done', '1');
@@ -244,29 +242,12 @@
 	}
 </script>
 
-<!-- One line from `sm` up: scope, tabs, Filter and its chips, then search at
-     the far right. On a phone, `order` rebuilds it as rows: scope + Filter +
-     search button, then the tabs (scrolling sideways, faded at whichever edge
-     has more of them), then any chips, then
-     the search field when opened. -->
+<!-- One line from `sm` up: tabs, Filter and its chips, then search at the far
+     right. On a phone, `order` rebuilds it as rows: Filter + search button,
+     then the tabs (scrolling sideways, faded at whichever edge has more of
+     them), then any chips, then the search field when opened. The project
+     scope is not here: the app chrome owns it (Tines/259). -->
 <div class="mb-6 flex flex-wrap items-center gap-x-3 gap-y-2">
-	{#if projects}
-		<Select
-			class="w-40 max-sm:min-w-0 max-sm:flex-1"
-			value={filters.project ?? ''}
-			onchange={(e) => set('project', e.currentTarget.value)}
-			aria-label="Filter by project"
-		>
-			<option value="">All projects</option>
-			{#each projects as project (project.id)}
-				<option value={project.name}>{project.name}</option>
-			{/each}
-			{#if archivedProject}
-				<option value={archivedProject.name}>{archivedProject.name} (archived)</option>
-			{/if}
-		</Select>
-	{/if}
-
 	<nav
 		aria-label="Category"
 		bind:this={stripEl}
