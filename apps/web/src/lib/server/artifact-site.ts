@@ -50,16 +50,6 @@ export function siteKeyMaterial(env: {
 	return env.SECRET_ENCRYPTION_KEY || env.BETTER_AUTH_SECRET || null;
 }
 
-/** Compare a configured origin after URL canonicalization; invalid values never match. */
-export function isConfiguredOrigin(configured: string | undefined, requestOrigin: string): boolean {
-	if (!configured) return false;
-	try {
-		return new URL(configured).origin === new URL(requestOrigin).origin;
-	} catch {
-		return false;
-	}
-}
-
 async function hmacKey(keyMaterial: string): Promise<CryptoKey> {
 	const digest = await crypto.subtle.digest(
 		'SHA-256',

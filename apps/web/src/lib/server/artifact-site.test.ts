@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import {
-	isConfiguredOrigin,
 	mintSiteToken,
 	resolveSitePath,
 	siteErrorPage,
@@ -9,18 +8,6 @@ import {
 	verifySiteToken,
 	type SiteTokenPayload
 } from './artifact-site';
-
-describe('configured origin', () => {
-	it('canonicalizes valid origins and refuses absent or malformed values', () => {
-		expect(isConfiguredOrigin('https://sandbox.example/', 'https://sandbox.example')).toBe(true);
-		expect(isConfiguredOrigin('https://sandbox.example/path', 'https://sandbox.example')).toBe(
-			true
-		);
-		expect(isConfiguredOrigin('https://other.example', 'https://sandbox.example')).toBe(false);
-		expect(isConfiguredOrigin(undefined, 'https://sandbox.example')).toBe(false);
-		expect(isConfiguredOrigin('not a URL', 'https://sandbox.example')).toBe(false);
-	});
-});
 
 const KEY = 'test-secret-material';
 const payload = (over: Partial<SiteTokenPayload> = {}): SiteTokenPayload => ({

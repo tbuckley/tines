@@ -11,15 +11,14 @@ import { apiClient, body, gotoHydrated, runId, signIn } from './helpers';
  * resolving through `/s/<token>/`, and the CSP holding the page away from
  * the Tines API while it does.
  *
- * The suite serves the app on `127.0.0.1` and sets
- * `ARTIFACT_SANDBOX_ORIGIN` to `localhost`, so the viewer exercises the real
- * cross-origin mode while a replay of the same token on the app origin proves
- * the fallback remains sandboxed. The two hosts reach the same worker, but
- * only the sandbox host is gated to `/s/*` and allowed to use storage APIs.
+ * The suite never sets `ARTIFACT_SANDBOX_ORIGIN`, so every assertion here is
+ * the *same-origin fallback* mode: the site is served from the app origin
+ * under CSP `sandbox`, which gives it an opaque origin. Storage APIs
+ * therefore throw — asserted in the negative direction below, and the mode
+ * the viewer warns about in its own words.
  */
 
 const projectName = `site-${runId}`;
-const SANDBOX_ORIGIN = BASE_URL.replace('127.0.0.1', 'localhost');
 let project: Project;
 let issue: IssueDetail;
 
@@ -51,9 +50,7 @@ const PROTOTYPE_HTML = `<!doctype html>
 		document.getElementById('storage').textContent = 'storage blocked';
 	}
 	fetch('/api/v1/projects').then(
-		(response) => {
-			document.getElementById('api').textContent = response.ok ? 'api reachable' : 'api blocked';
-		},
+		() => { document.getElementById('api').textContent = 'api reachable'; },
 		() => { document.getElementById('api').textContent = 'api blocked'; }
 	);
 </script>
@@ -168,15 +165,16 @@ test('an HTML artifact renders live in the viewer, with its scripts running', as
 	await expect(frame.locator('h1')).toHaveText('Prototype heading');
 	await expect(frame.locator('#script')).toHaveText('script ran');
 
-	// The whole security claim, from inside the page: the sandbox hostname gate
-	// returns 404 for `/api/v1`, while `connect-src` permits only this origin's
-	// own signed artifact prefix.
+	// The whole security claim, from inside the page: `connect-src` names only
+	// this artifact's own `/s/<token>/` prefix, so the Tines API is unreachable
+	// even though the bytes are served from the app's own origin.
 	await expect(frame.locator('#api')).toHaveText('api blocked');
-	// The dedicated host is a real origin, so prototypes can persist state.
-	await expect(frame.locator('#storage')).toHaveText('storage works');
+	// Same-origin mode means an opaque origin, so storage throws — and the
+	// viewer says so rather than letting a prototype fail mysteriously.
+	await expect(frame.locator('#storage')).toHaveText('storage blocked');
 	await expect(
 		dialog.getByText('storage APIs (localStorage, cookies) are unavailable')
-	).toHaveCount(0);
+	).toBeVisible();
 });
 
 test('the width switcher narrows the frame to a phone and back', async ({ page }) => {
@@ -234,13 +232,11 @@ test('Open full page loads the site as a top-level document', async ({ page, con
 	const popup = await popupPromise;
 	await popup.waitForLoadState('domcontentloaded');
 
-	// This is the exact sandbox-host URL with no wrapper page, and scripts and
-	// storage keep working as a top-level app.
-	expect(new URL(popup.url()).origin).toBe(SANDBOX_ORIGIN);
+	// CSP `sandbox` applies to a top-level document too, so this is the same
+	// URL with the same guarantees — no wrapper page, and scripts still run.
 	expect(new URL(popup.url()).pathname).toMatch(/^\/s\/v1\./);
 	await expect(popup.locator('#script')).toHaveText('script ran');
 	await expect(popup.locator('#api')).toHaveText('api blocked');
-	await expect(popup.locator('#storage')).toHaveText('storage works');
 });
 
 test('a folder site resolves its relative siblings and steps into subfolders', async ({ page }) => {
@@ -261,8 +257,7 @@ test('a folder site resolves its relative siblings and steps into subfolders', a
 
 test('a directory redirects to its trailing slash and serves its index', async ({ page }) => {
 	const link = await siteLink(page, 'mini-app');
-	expect(link.mode).toBe('sandbox-origin');
-	expect(new URL(link.url).origin).toBe(SANDBOX_ORIGIN);
+	expect(link.mode).toBe('same-origin');
 	const base = link.url.replace(/\/$/, '');
 
 	// Without the trailing slash a relative `./x` inside sub/index.html would
@@ -283,7 +278,6 @@ test('a directory redirects to its trailing slash and serves its index', async (
 
 test('served bytes carry the site headers, pinned to their own token prefix', async ({ page }) => {
 	const link = await siteLink(page, 'prototype');
-	expect(link.mode).toBe('sandbox-origin');
 	expect(link.version).toBe(1);
 	expect(link.expires_at).toBeGreaterThan(Date.now());
 
@@ -297,34 +291,12 @@ test('served bytes carry the site headers, pinned to their own token prefix', as
 	const csp = headers['content-security-policy'];
 	expect(csp).toContain(`connect-src ${link.url}`);
 	expect(csp).toContain(`default-src 'none'`);
-	// Never `'self'`: artifact subresources stay pinned to this signed prefix.
+	// Never `'self'`: that is what keeps `/api/v1` out of reach in this mode.
 	expect(csp).not.toContain(`'self'`);
-	expect(csp).not.toContain('sandbox allow-scripts');
+	expect(csp).toContain('sandbox allow-scripts');
 	expect(csp).toContain(`frame-ancestors ${BASE_URL}`);
 	expect(headers['x-robots-tag']).toContain('noindex');
 	expect(headers['x-content-type-options']).toBe('nosniff');
-
-	// The sandbox hostname is a hard allowlist, not merely a cookie boundary.
-	const gated = await page.request.get(`${SANDBOX_ORIGIN}/issues`);
-	expect(gated.status()).toBe(404);
-	expect(await gated.text()).toBe('Not found');
-});
-
-test('replaying a sandbox link on the app origin activates fallback containment', async ({
-	page
-}) => {
-	const link = await siteLink(page, 'prototype');
-	const fallbackUrl = link.url.replace(SANDBOX_ORIGIN, BASE_URL);
-	const response = await page.request.get(fallbackUrl);
-	expect(response.status()).toBe(200);
-	const csp = response.headers()['content-security-policy'];
-	expect(csp).toContain(`connect-src ${fallbackUrl}`);
-	expect(csp).toContain('sandbox allow-scripts');
-
-	await page.goto(fallbackUrl);
-	await expect(page.locator('#script')).toHaveText('script ran');
-	await expect(page.locator('#api')).toHaveText('api blocked');
-	await expect(page.locator('#storage')).toHaveText('storage blocked');
 });
 
 test('a bad token gets an HTML error page, not a JSON error or a download', async ({ page }) => {

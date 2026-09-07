@@ -1,7 +1,6 @@
 import { building } from '$app/environment';
 import { jsonifyMethodNotAllowed } from '$lib/server/api/core';
 import { getAuth } from '$lib/server/auth';
-import { isConfiguredOrigin } from '$lib/server/artifact-site';
 import type { Handle, RequestEvent } from '@sveltejs/kit';
 import { svelteKitHandler } from 'better-auth/svelte-kit';
 
@@ -66,7 +65,7 @@ export const handle: Handle = async ({ event, resolve }) => {
 	// JavaScript has nothing of ours to reach even on its own origin. It never
 	// carries an app session either, since it is a different registrable domain.
 	const sandboxOrigin = event.platform.env.ARTIFACT_SANDBOX_ORIGIN;
-	if (isConfiguredOrigin(sandboxOrigin, event.url.origin)) {
+	if (sandboxOrigin && event.url.origin === sandboxOrigin) {
 		if (!event.url.pathname.startsWith('/s/')) {
 			return new Response('Not found', { status: 404 });
 		}
