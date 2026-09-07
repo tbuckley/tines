@@ -1,5 +1,6 @@
 import { delimiter } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import type { RunJudgment } from './support';
 import {
 	AMBIENT_CLI,
 	buildHarnessInvocation,
@@ -307,7 +308,7 @@ describe('RunTable', () => {
 			runId: string;
 			status: string;
 			error?: string;
-			judgment?: 'interrupted';
+			judgment?: RunJudgment;
 		}[] = [];
 		const released: { runId: string; keep: boolean; outcome: RunOutcome }[] = [];
 		const notes: string[] = [];
@@ -367,9 +368,34 @@ describe('RunTable', () => {
 		const h = harness();
 		const run = h.run('arun_1');
 		h.table.track(run);
-		await h.table.finishAndCleanup(run, 'failed', 'daemon shut down', 'interrupted');
+		await h.table.finishAndCleanup(run, 'failed', 'daemon shut down', {
+			judgment: 'interrupted'
+		});
 		expect(h.finishes).toEqual([
-			{ runId: 'arun_1', status: 'failed', error: 'daemon shut down', judgment: 'interrupted' }
+			{
+				runId: 'arun_1',
+				status: 'failed',
+				error: 'daemon shut down',
+				judgment: { judgment: 'interrupted' }
+			}
+		]);
+	});
+
+	it('forwards a rate-limited judgment, resume time and all, unchanged', async () => {
+		const h = harness();
+		const run = h.run('arun_1');
+		h.table.track(run);
+		await h.table.finishAndCleanup(run, 'failed', 'rate limited: session limit', {
+			judgment: 'rate_limited',
+			resume_at: 1_788_739_200_000
+		});
+		expect(h.finishes).toEqual([
+			{
+				runId: 'arun_1',
+				status: 'failed',
+				error: 'rate limited: session limit',
+				judgment: { judgment: 'rate_limited', resume_at: 1_788_739_200_000 }
+			}
 		]);
 	});
 

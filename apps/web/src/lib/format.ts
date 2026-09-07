@@ -20,6 +20,19 @@ export function relativeTime(ms: number, now = Date.now()): string {
 }
 
 /**
+ * A queue wait, scannable in a row rather than phrased for prose: "41 min",
+ * "1.9 h", "21 h", "8.2 d". Shared by the Now row and its annotations
+ * (Tines/256), so a group and the roster row pointing at it never disagree.
+ */
+export function queueAge(enteredAt: number, now = Date.now()): string {
+	const minutes = Math.max(0, Math.round((now - enteredAt) / 60_000));
+	if (minutes < 60) return `${minutes} min`;
+	const hours = minutes / 60;
+	if (hours < 48) return `${hours < 10 ? hours.toFixed(1) : Math.round(hours)} h`;
+	return `${(hours / 24).toFixed(1)} d`;
+}
+
+/**
  * relativeTime for a narrow column: "now", "5m", "3h", "2d". Past a month it
  * is the day ("Sep 4"), and only once the year differs does the year replace
  * the day ("Sep 2025") — the column has room for one or the other, not both.

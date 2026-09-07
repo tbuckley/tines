@@ -7,23 +7,50 @@ finish. No inbound connection to the machine is ever needed.
 
 ## First start
 
-```sh
-TINES_API_KEY=<your user API key> TINES_API_URL=https://your-tines.example \
-  tines runner daemon --name laptop-m4 --harness claude-code
-```
+Five steps from nothing to an agent working an issue. The hosted app is
+`https://tines.tbuckley.dev`; self-hosters substitute their own URL everywhere below.
 
-The first start **registers** the runner (it appears on the Agents tab within seconds) and
-stores its long-lived runner token in the CLI config directory (`~/.config/tines`, or
-`$TINES_CONFIG_DIR`). Subsequent starts reconnect as the same runner using the stored token —
-`TINES_API_KEY` is only needed for registration. Both values can also come from
-`tines login` (the same directory's `config.json`) instead of the environment; the env vars
-take precedence when set.
+1. **Install** the CLI on the machine that will run agents:
+
+   ```sh
+   npm install -g tines
+   ```
+
+2. **Key** — Settings → API keys on the app, or click **Create key** in the Agents tab's
+   *Add runner → Local* dialog, which also fills it into the command in step 3.
+
+3. **Runner** — start the daemon (or paste the block the dialog shows):
+
+   ```sh
+   TINES_API_KEY=tines_… tines runner daemon \
+     --url https://tines.tbuckley.dev \
+     --name macbook-claude \
+     --harness claude-code
+   ```
+
+   Name it **machine-plus-harness** — `macbook-claude`. It is what every agent comment says
+   ("you via macbook-claude") and what routing rules address. The daemon prints `registered
+   runner "macbook-claude"` followed by the remaining steps, and the Agents tab shows it
+   online within seconds — no reload.
+
+4. **Rule** — a registered runner takes no work until something routes to it. Click
+   **Route everything to macbook-claude** in the same dialog, or run
+   `tines routing set macbook-claude` for a global rule.
+
+5. **Arm** — flip the automation switch on the Agents tab (or `tines supervisor enable`).
+   Automation is off for new accounts; nothing dispatches until it is on.
+
+The first start **registers** the runner and stores its long-lived runner token in the CLI
+config directory (`~/.config/tines`, or `$TINES_CONFIG_DIR`). Subsequent starts reconnect as
+the same runner using the stored token — `TINES_API_KEY` is only needed for registration.
+Both values can also come from `tines login` (the same directory's `config.json`) instead of
+the environment; the env vars take precedence when set.
 
 Flags:
 
 | Flag | Meaning | Default |
 | --- | --- | --- |
-| `--name` | Runner name (unique per user; routing rules address it) | the hostname |
+| `--name` | Runner name, unique per user; name it machine-plus-harness, e.g. `macbook-claude` — routing rules and agent comments address it | the hostname |
 | `--harness` | `claude-code`, `codex`, or `custom` | `claude-code` |
 | `--command` | Custom harness command template; placeholders `{prompt_file}`, `{workspace}`, `{model}` | — |
 | `--max-concurrent` | Simultaneous runs on this machine (1–100); sent on every poll, so a restart with a new value updates the server-side cap | 1 |
@@ -90,7 +117,7 @@ it back.
 Concretely, when the daemon was launched **from the managed prefix** —
 
 ```sh
-~/.config/tines/cli/node_modules/.bin/tines runner daemon --name laptop-m4 --harness claude-code
+~/.config/tines/cli/node_modules/.bin/tines runner daemon --name macbook-claude --harness claude-code
 ```
 
 — every refresh that installs a newer `tines` than the running daemon starts a drain: the
@@ -183,7 +210,7 @@ silicon; check `dirname "$(which node)"`):
     <string>/Users/you/.config/tines/cli/node_modules/.bin/tines</string>
     <string>runner</string>
     <string>daemon</string>
-    <string>--name</string><string>laptop-m4</string>
+    <string>--name</string><string>macbook-claude</string>
     <string>--harness</string><string>claude-code</string>
   </array>
   <key>EnvironmentVariables</key>
@@ -219,7 +246,7 @@ Description=Tines local runner daemon
 After=network-online.target
 
 [Service]
-ExecStart=%h/.config/tines/cli/node_modules/.bin/tines runner daemon --name workstation --harness claude-code
+ExecStart=%h/.config/tines/cli/node_modules/.bin/tines runner daemon --name macbook-claude --harness claude-code
 Environment=TINES_API_URL=https://your-tines.example
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
 # always, not on-failure: the daemon exits 0 on purpose to pick up a self-update.
@@ -251,6 +278,13 @@ loginctl enable-linger "$USER"   # keep it running while logged out
 - **Cancel / timeout from the supervisor**: the next poll's `cancels` list makes the daemon
   kill the process without reporting — the supervisor already settled the run. The daemon
   also enforces the run timeout locally. Both count as failures for `--keep-workspaces`.
+- **Claude usage limit**: when the harness reports a usage limit — as a rejected
+  `rate_limit_event` on its stream, or as its own message on stderr when the limit was
+  already spent before the process started — the daemon finish-reports the run as rate
+  limited rather than failed. The issue takes no strike, and the runner's card reads
+  "rate limited — resumes <time>" until the window resets. Nothing needs doing: the
+  supervisor dispatches to it again on its own. A weekly limit is re-probed once a day,
+  which costs one run that ends in about a second.
 - **Network errors**: polls retry with backoff; the loop never crashes. A 401 (rotated
   token) exits with instructions instead of spinning.
 - **CLI refresh failure**: never fails a run — the last-good copy is used, or the ambient

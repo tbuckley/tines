@@ -98,6 +98,11 @@ export function register(program: Command): void {
 				`active runs: ${runner.active_runs}/${runner.max_concurrent}  timeout: ${runner.max_run_minutes}m  default tier: ${runner.default_tier}`
 			);
 			if (runner.last_seen_at) console.log(`last seen: ${timestamp(runner.last_seen_at)}`);
+			if (runner.backoff_reason === 'rate_limit' && runner.backoff_until) {
+				console.log(
+					`rate limited: the harness account is out of usage; resumes ${timestamp(runner.backoff_until)}`
+				);
+			}
 			if (runner.launch_failures > 0) {
 				console.log(
 					`consecutive failures: ${runner.launch_failures}${runner.backoff_until ? ` (backing off until ${timestamp(runner.backoff_until)})` : ''}`
@@ -332,7 +337,10 @@ export function register(program: Command): void {
 			.description(
 				'Run the local runner daemon: register/reconnect, poll for assigned runs, execute them'
 			)
-			.option('--name <name>', 'runner name, unique per user (default: this hostname)')
+			.option(
+				'--name <name>',
+				'runner name, unique per user; name it machine-plus-harness, e.g. macbook-claude (default: this hostname)'
+			)
 			.option('--harness <harness>', 'claude-code | codex | custom', 'claude-code')
 			.option(
 				'--command <template>',

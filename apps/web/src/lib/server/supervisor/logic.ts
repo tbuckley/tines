@@ -12,6 +12,7 @@ import {
 	type DispatchTargetVerdict,
 	type ModelTier,
 	type QuotaPolicy,
+	type QueueVerdict,
 	type RoutingTarget
 } from '@tines/shared';
 
@@ -225,6 +226,27 @@ export function launchBackoffMs(consecutiveFailures: number): number {
 	return Math.min(BACKOFF_BASE_MS * 2 ** (consecutiveFailures - 1), BACKOFF_MAX_MS);
 }
 
+/**
+ * Longest a usage-limit hold may run before the fleet re-probes. A weekly limit
+ * (or a misparsed reset) would otherwise sit for days; a daily probe costs one
+ * ~1 s interrupted run and never a strike.
+ */
+export const RATE_LIMIT_HOLD_MAX_MS = 24 * 60 * 60 * 1000;
+/** Hold applied when the provider gave no usable reset time. */
+export const RATE_LIMIT_HOLD_DEFAULT_MS = 30 * 60 * 1000;
+/** Slack past the reported reset: the window is not always open at that second. */
+export const RATE_LIMIT_HOLD_GRACE_MS = 60 * 1000;
+
+/**
+ * How long to hold a runner whose harness reported a usage limit. A reset in
+ * the past (clock skew, a stale printed time) counts as unknown.
+ */
+export function rateLimitHoldUntil(resumeAt: number | null | undefined, now: number): number {
+	if (resumeAt === null || resumeAt === undefined || !Number.isFinite(resumeAt) || resumeAt <= now)
+		return now + RATE_LIMIT_HOLD_DEFAULT_MS;
+	return Math.min(resumeAt + RATE_LIMIT_HOLD_GRACE_MS, now + RATE_LIMIT_HOLD_MAX_MS);
+}
+
 // ---------------------------------------------------------------------------
 // Target verdicts: why a runner is (not) assignable right now
 
@@ -237,6 +259,8 @@ export interface VerdictRunner {
 	/** 0/1: a local daemon finishing its runs before a self-update restart. */
 	draining: number;
 	backoff_until: number | null;
+	/** 'rate_limit' when the hold is a usage limit; null for the failure backoff. */
+	backoff_reason: string | null;
 }
 
 /** Live concurrency the pass tracks (its own claims included). */
@@ -298,10 +322,12 @@ export function targetVerdict(
 		};
 	}
 	if (runner.backoff_until !== null && runner.backoff_until > now) {
-		return {
-			verdict: 'backing_off',
-			detail: `backing off after repeated failures until ${new Date(runner.backoff_until).toISOString()}`
-		};
+		const until = new Date(runner.backoff_until).toISOString();
+		// A usage limit is the provider's clock, not this runner misbehaving —
+		// say so, or the fleet reads as broken when it is merely waiting.
+		return runner.backoff_reason === 'rate_limit'
+			? { verdict: 'rate_limited', detail: `usage limit reached — resumes ${until}` }
+			: { verdict: 'backing_off', detail: `backing off after repeated failures until ${until}` };
 	}
 	const active = counts.byRunner.get(runner.id) ?? 0;
 	if (active >= runner.max_concurrent) {
@@ -320,4 +346,70 @@ export function targetVerdict(
 		};
 	}
 	return { verdict: 'ok', detail: 'available' };
+}
+
+// ---------------------------------------------------------------------------
+// Queue verdicts: why a *waiting* issue is waiting (the Now row, Tines/256)
+
+/**
+ * The target that speaks for an issue: the first `ok` one, because that is
+ * where dispatch would send it, else the first in preference order. Shared by
+ * the explainer's verdict line and the fleet queue's grouping, so the board
+ * and the per-issue explanation can never name different runners.
+ */
+export function speakingTarget<T extends { verdict: DispatchTargetVerdict }>(
+	targets: T[]
+): T | null {
+	return targets.find((t) => t.verdict === 'ok') ?? targets[0] ?? null;
+}
+
+export interface QueueVerdictInput {
+	/** The kill switch. */
+	enabled: boolean;
+	parked: boolean;
+	/** The issue carries a pin (which replaces rule matching entirely). */
+	pinned: boolean;
+	/** A rule matched — its target list may still be empty. */
+	hasRule: boolean;
+	/** Two rules tied at equal specificity. */
+	ambiguous: boolean;
+	/** Targets whose runner still exists, in preference order. */
+	targets: { verdict: DispatchTargetVerdict }[];
+}
+
+/**
+ * Why one waiting issue is waiting, in the same order the explainer's verdict
+ * line applies its cases — the two are tested against each other, so a change
+ * here without one there is a test failure rather than a silent disagreement.
+ */
+export function queueVerdict(input: QueueVerdictInput): QueueVerdict {
+	if (!input.enabled) return 'automation_off';
+	if (input.parked) return 'parked';
+	if (input.targets.length === 0) {
+		// A pin whose runner was deleted resolves to a target the runner map
+		// cannot answer, so it arrives here with an empty list.
+		if (input.pinned) return 'pin_missing';
+		if (input.ambiguous) return 'ambiguous_rule';
+		return input.hasRule ? 'no_targets' : 'no_rule';
+	}
+	return speakingTarget(input.targets)!.verdict;
+}
+
+/**
+ * The explainer's "would this issue route somewhere?" predicate, which defines
+ * the queue whose positions it reports. Shared so the board's `queue_position`
+ * counts the same issues the explainer does.
+ */
+export function isRoutedCandidate<T extends MatchableRule>(
+	issue: MatchableIssue & { pinned_runner_id: string | null },
+	rules: T[]
+): boolean {
+	if (issue.pinned_runner_id) return true;
+	// An ambiguous match resolves to null here, so a tied issue is correctly
+	// excluded from a queue it would never reach.
+	const rule = matchRule(
+		{ project_id: issue.project_id, state_id: issue.state_id, label_ids: issue.label_ids },
+		rules
+	);
+	return (rule?.targets.length ?? 0) > 0;
 }

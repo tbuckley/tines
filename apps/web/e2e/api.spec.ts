@@ -1,5 +1,6 @@
 import type {
 	Comment,
+	FleetQueue,
 	IssueDetail,
 	LabelWithUsage,
 	ListResponse,
@@ -92,16 +93,35 @@ test.describe.serial('run-key fence', () => {
 	});
 
 	test('leaves the rest of the control plane fenced, reads included', async ({ request }) => {
-		for (const path of [
-			'/api/v1/runners',
-			'/api/v1/supervisor/settings',
-			'/api/v1/api-keys',
-			'/api/v1/preferences'
-		]) {
+		for (const path of ['/api/v1/api-keys', '/api/v1/routing-rules', '/api/v1/preferences']) {
 			const res = await apiClient(request, RUNROW.runKey).get(path);
 			expect(res.status(), `GET ${path}`).toBe(403);
 			expect((await errorBody(res)).error.code, `GET ${path}`).toBe('run_key_forbidden');
 		}
+	});
+
+	// Tines/256: the fleet's shape is legible to a run — the reads behind
+	// `tines supervisor status` and the Now row, and nothing else.
+	test('opens the fleet reads to a run key, without the PAT hint', async ({ request }) => {
+		const api = apiClient(request, RUNROW.runKey);
+		for (const path of ['/api/v1/runners', '/api/v1/supervisor/queue']) {
+			const res = await api.get(path);
+			expect(res.status(), `GET ${path}`).toBe(200);
+		}
+		const settings = await api.get('/api/v1/supervisor/settings');
+		expect(settings.status()).toBe(200);
+		expect((await settings.json()).github_pat_hint).toBeNull();
+		const queue = await body<FleetQueue>(await api.get('/api/v1/supervisor/queue'));
+		expect(Array.isArray(queue.groups)).toBe(true);
+		expect(typeof queue.waiting).toBe('number');
+	});
+
+	test('still fences the fleet writes', async ({ request }) => {
+		const res = await apiClient(request, RUNROW.runKey).put('/api/v1/supervisor/settings', {
+			enabled: true
+		});
+		expect(res.status()).toBe(403);
+		expect((await errorBody(res)).error.code).toBe('run_key_forbidden');
 	});
 });
 

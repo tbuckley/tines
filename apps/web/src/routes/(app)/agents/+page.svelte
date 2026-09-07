@@ -1,7 +1,9 @@
 <script lang="ts">
 	import type {
 		AgentRun,
+		ApiKeyCreated,
 		LabelWithUsage,
+		QueueBinding,
 		ModelTier,
 		RoutingRuleWithWarnings,
 		RoutingTarget,
@@ -17,6 +19,7 @@
 		isActiveRun,
 		isStaleTierOverride,
 		MODEL_TIERS,
+		RUNNER_NAME_PATTERN,
 		utilizationLabel
 	} from '@tines/shared';
 	import IconAlertTriangle from '@tabler/icons-svelte/icons/alert-triangle';
@@ -30,11 +33,13 @@
 	import IconRobot from '@tabler/icons-svelte/icons/robot';
 	import IconTrash from '@tabler/icons-svelte/icons/trash';
 	import IconX from '@tabler/icons-svelte/icons/x';
+	import { untrack } from 'svelte';
 	import { slide } from 'svelte/transition';
 	import { invalidateAll } from '$app/navigation';
 	import { api } from '$lib/api';
 	import CancelRunDialog from '$lib/components/CancelRunDialog.svelte';
 	import { confirmDialog } from '$lib/components/dialogs.svelte';
+	import FleetQueuePanel from '$lib/components/FleetQueuePanel.svelte';
 	import Modal from '$lib/components/Modal.svelte';
 	import PatInstructions from '$lib/components/PatInstructions.svelte';
 	import PendingButton from '$lib/components/PendingButton.svelte';
@@ -44,11 +49,176 @@
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { Select } from '$lib/components/ui/select/index.js';
-	import { prefersReducedMotion, relativeTime } from '$lib/format';
+	import { prefersReducedMotion, queueAge, relativeTime } from '$lib/format';
 
 	let { data } = $props();
 
 	const dur = () => (prefersReducedMotion() ? 0 : 180);
+
+	/**
+	 * Every write on this page that can unblock dispatch — a raised cap, a new
+	 * rule, the kill switch — queues a pass, and `queueDispatchPass` runs it on
+	 * `waitUntil`: the response can land before the pass has claimed anything.
+	 * So re-read now (the write's own effect) and once more shortly after (the
+	 * pass's), which is what makes the Now row shrink without a reload
+	 * (Tines/256). `invalidateAll` re-runs the loader without remounting, so
+	 * open dialogs and typed state survive.
+	 *
+	 * The second read is deliberately untestable locally: under `wrangler dev`
+	 * the pass has finished before the write's response returns (traced — the
+	 * group is gone by t≈1s), so deleting it leaves the e2e suite green. It
+	 * defends the deployed Worker's `waitUntil`, where that ordering is not
+	 * guaranteed; the 2s is a margin, not a measurement. Delete it only with a
+	 * measurement from production in hand.
+	 */
+	let dispatchRecheck: ReturnType<typeof setTimeout> | null = null;
+	async function refreshAfterDispatch() {
+		await invalidateAll();
+		if (dispatchRecheck !== null) clearTimeout(dispatchRecheck);
+		dispatchRecheck = setTimeout(() => {
+			dispatchRecheck = null;
+			if (typeof document === 'undefined' || !document.hidden) void invalidateAll();
+		}, 2000);
+	}
+	$effect(() => () => {
+		if (dispatchRecheck !== null) clearTimeout(dispatchRecheck);
+	});
+
+	/** "N waiting" annotations (Tines/256 Part 3), joined on the queue groups. */
+	type Waiting = { count: number; oldest: number; href: string; now: number };
+	function tally(
+		entries: Iterable<[string, { count: number; oldest_entered_at: number; href: string }]>
+	): Map<string, Waiting> {
+		const out = new Map<string, Waiting>();
+		for (const [key, g] of entries) {
+			const seen = out.get(key);
+			if (seen) {
+				seen.count += g.count;
+				seen.oldest = Math.min(seen.oldest, g.oldest_entered_at);
+			} else {
+				// The queue's own clock rides with the count, so an annotation and
+				// the Now row group it links to cannot drift apart on a page left
+				// open — the whole reason `queueAge` is shared.
+				out.set(key, {
+					count: g.count,
+					oldest: g.oldest_entered_at,
+					href: g.href,
+					now: data.queue.generated_at
+				});
+			}
+		}
+		return out;
+	}
+	const waitingByState = $derived(
+		tally(
+			data.queue.groups.map((g) => [
+				g.state_id,
+				{ count: g.count, oldest_entered_at: g.oldest_entered_at, href: `#queue-${g.state_id}` }
+			])
+		)
+	);
+	const waitingByRunner = $derived(
+		tally(
+			data.queue.groups
+				.filter((g) => g.runner_id !== null)
+				.map((g) => [
+					g.runner_id as string,
+					{
+						count: g.count,
+						oldest_entered_at: g.oldest_entered_at,
+						href: `#queue-runner-${g.runner_id}`
+					}
+				])
+		)
+	);
+	const waitingByRule = $derived(
+		tally(
+			data.queue.groups.flatMap((g) =>
+				[g.rule_id, ...g.ambiguous_rule_ids]
+					.filter((id): id is string => id !== null)
+					.map(
+						(id) =>
+							[
+								id,
+								{
+									count: g.count,
+									oldest_entered_at: g.oldest_entered_at,
+									href: `#queue-${g.state_id}`
+								}
+							] as [string, { count: number; oldest_entered_at: number; href: string }]
+					)
+			)
+		)
+	);
+
+	/** Runs already active, by the state they started in — the roster's own unit. */
+	const activeByStartState = $derived.by(() => {
+		const counts = new Map<string, number>();
+		for (const run of data.runs) {
+			if (!isActiveRun(run.status)) continue;
+			const id = run.state_id_at_start;
+			if (!id) continue;
+			counts.set(id, (counts.get(id) ?? 0) + 1);
+		}
+		return counts;
+	});
+
+	/** Set by the Now row's "Raise cap": the edit dialog focuses Max concurrent. */
+	let editFocusCap = $state(false);
+
+	/** Un-park an issue from the Now row's parked block (user flow 9). */
+	async function resumeParked(issueId: string) {
+		try {
+			await api.resumeIssue(issueId);
+			await refreshAfterDispatch();
+		} catch (err) {
+			showError(err);
+		}
+	}
+
+	/** The roster row the Now row just pointed at; ringed briefly, then released. */
+	let highlightStateId = $state<string | null>(null);
+	let highlightTimer: ReturnType<typeof setTimeout> | null = null;
+	function highlight(stateId: string | null) {
+		highlightStateId = stateId;
+		if (highlightTimer !== null) clearTimeout(highlightTimer);
+		if (stateId === null) return;
+		highlightTimer = setTimeout(() => (highlightStateId = null), 2500);
+	}
+
+	/** Scroll the quota editor into view and focus whichever control binds. */
+	function focusQuota(target: { stateId: string | null; binding: QueueBinding | null }) {
+		const binding = target.binding;
+		if (binding?.kind === 'state_roster' || (target.stateId && binding?.kind !== 'global_cap')) {
+			quotaType = 'state_roster';
+		} else if (binding?.kind === 'global_cap') {
+			quotaType = 'global_cap';
+		}
+		const stateId = binding?.kind === 'state_roster' ? binding.state_id : target.stateId;
+		if (quotaType === 'state_roster') highlight(stateId);
+		queueMicrotask(() => {
+			const id = quotaType === 'global_cap' ? 'global-limit' : `roster-limit-${stateId}`;
+			const el = document.getElementById(id) ?? document.getElementById('quota-policy');
+			el?.scrollIntoView({ behavior: prefersReducedMotion() ? 'auto' : 'smooth', block: 'center' });
+			if (el instanceof HTMLInputElement) el.focus();
+		});
+	}
+
+	/**
+	 * The approved global-cap remedy (Tines/200 answer 3): move the workspace to
+	 * a per-state roster whose limits already cover what is queued — the runs
+	 * active in each state plus the ones waiting on it. Prefill and focus only;
+	 * the roster lives inside the settings form, so the user presses Save.
+	 */
+	function switchToRoster(prefill: Record<string, number>) {
+		quotaType = 'state_roster';
+		const next = { ...rosterOverrides };
+		for (const [stateId, waiting] of Object.entries(prefill)) {
+			next[stateId] = String(waiting + (activeByStartState.get(stateId) ?? 0));
+		}
+		rosterOverrides = next;
+		focusQuota({ stateId: Object.keys(prefill)[0] ?? null, binding: null });
+	}
 
 	let errorMessage = $state<string | null>(null);
 	function showError(e: unknown) {
@@ -74,7 +244,7 @@
 				...(cancelInFlight ? { cancel_in_flight: true } : {})
 			});
 			disableConfirmOpen = false;
-			await invalidateAll();
+			await refreshAfterDispatch();
 		} catch (err) {
 			showError(err);
 		} finally {
@@ -90,15 +260,28 @@
 
 	// --- runners -----------------------------------------------------------------
 
+	// The queue's own timestamp, so the card and the Now row above it agree on
+	// whether a hold is still live; both refresh together on invalidation.
+	const now = $derived(data.queue.generated_at);
+
+	/** A live usage-limit hold: the daemon is fine, its provider is not. */
+	function rateLimited(runner: Runner, at: number): boolean {
+		return runner.backoff_reason === 'rate_limit' && (runner.backoff_until ?? 0) > at;
+	}
+
 	function runnerStatusLabel(runner: Runner): string {
 		if (runner.status === 'paused') return 'paused';
 		if (!runner.online) return 'offline';
+		// Ahead of draining: a rate-limited runner polls normally, so "online"
+		// would read as healthy while it is quietly taking nothing.
+		if (rateLimited(runner, now)) return 'rate limited';
 		return runner.draining ? 'restarting to update' : 'online';
 	}
 
 	function statusDotClass(runner: Runner): string {
 		if (runner.status === 'paused') return 'bg-amber-500';
 		if (!runner.online) return 'bg-muted-foreground/40';
+		if (rateLimited(runner, now)) return 'bg-amber-500';
 		return runner.draining ? 'bg-amber-500' : 'bg-emerald-500';
 	}
 
@@ -113,6 +296,73 @@
 	let runnerCommand = $state('');
 	let runnerMaxConcurrent = $state(1);
 	let commandCopied = $state(false);
+	/** The key created from inside the dialog, shown once and never re-fetchable. */
+	let createdKey = $state<ApiKeyCreated | null>(null);
+	let creatingKey = $state(false);
+
+	/** `macbook-claude` — the machine, then the harness that runs on it. */
+	const HARNESS_SLUG: Record<string, string> = {
+		'claude-code': 'claude',
+		codex: 'codex',
+		custom: 'agent'
+	};
+	const namePlaceholder = $derived(`macbook-${HARNESS_SLUG[runnerHarness] ?? 'agent'}`);
+	const trimmedName = $derived(runnerName.trim());
+
+	/**
+	 * What is wrong with the typed name, if anything. An existing *local*
+	 * runner is only a warning: `registerRunner` reconnects to it rather than
+	 * refusing. A managed collision is a hard 422, so it is an error here.
+	 */
+	const nameIssue = $derived.by((): { level: 'error' | 'warning'; message: string } | null => {
+		if (trimmedName === '') return null;
+		if (!RUNNER_NAME_PATTERN.test(trimmedName)) {
+			return {
+				level: 'error',
+				message:
+					'Names are CLI addresses: letters, digits, ".", "_" and "-", starting with a letter or digit — try macbook-claude.'
+			};
+		}
+		const existing = data.runners.find((r) => r.name === trimmedName);
+		if (!existing) return null;
+		return existing.type === 'local'
+			? {
+					level: 'warning',
+					message: `A local runner named ${trimmedName} already exists — starting the daemon with this name reconnects to it rather than creating a second one.`
+				}
+			: {
+					level: 'error',
+					message: `A managed runner named ${trimmedName} already exists — pick another name.`
+				};
+	});
+	const nameReady = $derived(trimmedName !== '' && nameIssue?.level !== 'error');
+
+	/** The named local runner, once it has registered and is polling. */
+	const namedLocalOnline = $derived(
+		data.runners.find((r) => r.type === 'local' && r.name === trimmedName && r.online) ?? null
+	);
+
+	/** All three scope dimensions null — a bare `label x` rule is not global. */
+	const globalRule = $derived(
+		data.rules.find(
+			(r) =>
+				r.scope.project_id === null &&
+				r.scope.workflow_state_id === null &&
+				r.scope.label_id === null
+		) ?? null
+	);
+
+	async function createRunnerKey() {
+		if (!nameReady || creatingKey || createdKey) return;
+		creatingKey = true;
+		try {
+			createdKey = await api.createApiKey({ name: `runner ${trimmedName}` });
+		} catch (err) {
+			showError(err);
+		} finally {
+			creatingKey = false;
+		}
+	}
 
 	// Claude managed form state (flow 3).
 	let claudeApiKey = $state('');
@@ -133,6 +383,9 @@
 		claudeApiKey = '';
 		claudePat = '';
 		runnerName = '';
+		createdKey = null;
+		creatingKey = false;
+		commandCopied = false;
 	}
 
 	async function createClaudeRunner(e: SubmitEvent) {
@@ -166,41 +419,55 @@
 		}
 	}
 
-	/** The skippable final step: append the new runner to the global rule as a fallback. */
+	/**
+	 * Route everything to one runner: append it to the global rule, or create
+	 * that rule when there is none. Shared by the managed wizard's final step
+	 * and the local path's one-click "Route everything to <name>".
+	 */
+	async function addRunnerToGlobalRule(runner: Runner): Promise<void> {
+		if (globalRule) {
+			if (globalRule.targets.some((t) => t.runner_id === runner.id)) return;
+			await api.updateRoutingRule(globalRule.id, {
+				targets: [
+					...globalRule.targets.map((t) => ({
+						runner_id: t.runner_id,
+						...(t.tier ? { tier: t.tier } : {})
+					})),
+					{ runner_id: runner.id }
+				]
+			});
+			return;
+		}
+		await api.createRoutingRule({
+			project_id: null,
+			workflow_state_id: null,
+			targets: [{ runner_id: runner.id }]
+		});
+	}
+
+	/** The skippable final step of the managed wizard. */
 	async function addCreatedToRouting() {
 		if (!createdRunner || addingToRouting) return;
 		addingToRouting = true;
 		try {
-			// All *three* dimensions null: a bare `label x` rule is not the
-			// global rule, and appending the new runner to it would have
-			// quietly widened where that label's work runs.
-			const globalRule = data.rules.find(
-				(r) =>
-					r.scope.project_id === null &&
-					r.scope.workflow_state_id === null &&
-					r.scope.label_id === null
-			);
-			if (globalRule) {
-				if (!globalRule.targets.some((t) => t.runner_id === createdRunner?.id)) {
-					await api.updateRoutingRule(globalRule.id, {
-						targets: [
-							...globalRule.targets.map((t) => ({
-								runner_id: t.runner_id,
-								...(t.tier ? { tier: t.tier } : {})
-							})),
-							{ runner_id: createdRunner.id }
-						]
-					});
-				}
-			} else {
-				await api.createRoutingRule({
-					project_id: null,
-					workflow_state_id: null,
-					targets: [{ runner_id: createdRunner.id }]
-				});
-			}
+			await addRunnerToGlobalRule(createdRunner);
 			resetAddRunner();
 			await invalidateAll();
+		} catch (err) {
+			showError(err);
+		} finally {
+			addingToRouting = false;
+		}
+	}
+
+	/** The local path's one-click rule, from inside the open dialog. */
+	async function routeEverythingToNamed() {
+		if (!namedLocalOnline || addingToRouting) return;
+		addingToRouting = true;
+		try {
+			await addRunnerToGlobalRule(namedLocalOnline);
+			resetAddRunner();
+			await refreshAfterDispatch();
 		} catch (err) {
 			showError(err);
 		} finally {
@@ -221,6 +488,22 @@
 	let editCapTokens = $state('');
 	let editApiKey = $state('');
 	let savingEdit = $state(false);
+
+	/**
+	 * Opened from the Now row's "Raise cap": land the caret on the field the
+	 * remedy is about, rather than making the operator find it in the dialog.
+	 * The modal calls this once its content has mounted, so the field exists;
+	 * scheduling the focus here instead would race the modal's own parking of
+	 * focus on the close button, which wins and leaves the caret nowhere useful.
+	 */
+	function focusCapField(): HTMLElement | null {
+		if (!editFocusCap) return null;
+		editFocusCap = false;
+		const el = document.getElementById('edit-concurrent');
+		if (!(el instanceof HTMLInputElement)) return null;
+		el.select();
+		return el;
+	}
 
 	function openRunnerEdit(runner: Runner) {
 		editTarget = runner;
@@ -273,7 +556,7 @@
 				...(editApiKey.trim() !== '' ? { api_key: editApiKey.trim() } : {})
 			});
 			editTarget = null;
-			await invalidateAll();
+			await refreshAfterDispatch();
 		} catch (err) {
 			showError(err);
 		} finally {
@@ -287,7 +570,7 @@
 	const bootstrapCommand = $derived.by(() => {
 		const origin = typeof location !== 'undefined' ? location.origin : '<tines-url>';
 		const parts = [
-			'TINES_API_KEY=<your-api-key>',
+			`TINES_API_KEY=${createdKey?.key ?? '<your-api-key>'}`,
 			'tines runner daemon',
 			`--url ${origin}`,
 			`--name ${runnerName.trim() || '<name>'}`,
@@ -300,9 +583,57 @@
 		return parts.join(' \\\n  ');
 	});
 
+	/**
+	 * While the account has no local runner online — or the dialog is open and
+	 * someone is starting a daemon right now — watch for one arriving. A
+	 * reconnecting machine emits `runner.updated`, not `runner.registered`, so
+	 * this polls the runner list rather than the events feed: one request that
+	 * catches register, reconnect and offline→online alike.
+	 */
+	const shouldPoll = $derived(
+		addRunnerOpen || !data.runners.some((r) => r.type === 'local' && r.online)
+	);
+	const runnerSignature = (rs: Runner[]) =>
+		rs
+			.map((r) => `${r.id}:${r.online ? 1 : 0}`)
+			.sort()
+			.join(',');
+	let syncingRunners = false;
+	async function checkRunners() {
+		if (syncingRunners) return;
+		syncingRunners = true;
+		try {
+			const { items } = await api.listRunners();
+			if (runnerSignature(items) !== runnerSignature(untrack(() => data.runners))) {
+				// Re-runs the loader without remounting, so the open dialog,
+				// the typed name and any created key survive the refresh.
+				await invalidateAll();
+			}
+		} catch {
+			// Transient: the next tick tries again.
+		} finally {
+			syncingRunners = false;
+		}
+	}
+	$effect(() => {
+		if (!shouldPoll) return;
+		const tick = () => {
+			if (document.visibilityState === 'visible') void checkRunners();
+		};
+		const timer = setInterval(tick, 5000);
+		document.addEventListener('visibilitychange', tick);
+		return () => {
+			clearInterval(timer);
+			document.removeEventListener('visibilitychange', tick);
+		};
+	});
+
+	/** What the user actually needs on a fresh machine: install, then run. */
+	const bootstrapBlock = $derived(`npm install -g tines\n${bootstrapCommand}`);
+
 	async function copyBootstrapCommand() {
 		try {
-			await navigator.clipboard.writeText(bootstrapCommand);
+			await navigator.clipboard.writeText(bootstrapBlock);
 			commandCopied = true;
 			setTimeout(() => (commandCopied = false), 2000);
 		} catch {
@@ -336,7 +667,7 @@
 	async function setRunnerStatus(runner: Runner, status: 'active' | 'paused') {
 		try {
 			await api.updateRunner(runner.id, { status });
-			await invalidateAll();
+			await refreshAfterDispatch();
 		} catch (err) {
 			showError(err);
 		}
@@ -456,12 +787,12 @@
 	});
 	const activeStateIds = $derived(deriveActiveStateIds(data.workflows));
 
-	function openRuleCreate() {
+	function openRuleCreate(prefill: { stateId?: string; projectId?: string } = {}) {
 		// Shadow hints belong to the last save; opening an editor stales them.
 		ruleWarnings = [];
 		editingRule = null;
-		ruleProjectId = '';
-		ruleStateId = '';
+		ruleProjectId = prefill.projectId ?? '';
+		ruleStateId = prefill.stateId ?? '';
 		ruleLabelId = '';
 		ruleTargets = data.runners.length > 0 ? [{ runner_id: data.runners[0].id, tier: '' }] : [];
 		loadLabels();
@@ -505,7 +836,7 @@
 			// Shadow hints surface at authoring time, right where the rule was saved.
 			ruleWarnings = saved.warnings;
 			ruleModalOpen = false;
-			await invalidateAll();
+			await refreshAfterDispatch();
 		} catch (err) {
 			showError(err);
 		} finally {
@@ -607,7 +938,7 @@
 							)
 						};
 			await api.updateSupervisorSettings({ quota, attempt_limit: attemptLimit });
-			await invalidateAll();
+			await refreshAfterDispatch();
 		} catch (err) {
 			showError(err);
 		} finally {
@@ -650,6 +981,27 @@
 	</div>
 {/if}
 
+<!-- Now row: what is waiting, and why (Tines/256) -->
+<FleetQueuePanel
+	queue={data.queue}
+	runners={data.runners}
+	now={data.queue.generated_at}
+	onraisecap={(runner) => {
+		editFocusCap = true;
+		openRunnerEdit(runner);
+	}}
+	onquota={focusQuota}
+	onswitchtoroster={switchToRoster}
+	onaddrule={(stateId) => openRuleCreate({ stateId })}
+	oneditrule={(ruleId) => {
+		const rule = data.rules.find((r) => r.id === ruleId);
+		if (rule) openRuleEdit(rule);
+	}}
+	onresumerunner={(runner) => setRunnerStatus(runner, 'active')}
+	onresume={resumeParked}
+	onenable={() => setEnabled(true)}
+/>
+
 <!-- Runners -->
 <div class="mb-10">
 	<div class="mb-3 flex items-center justify-between">
@@ -662,6 +1014,11 @@
 		<div class="text-muted-foreground rounded-lg border border-dashed p-8 text-center text-sm">
 			No runners yet. Add a local runner for this machine, or a Claude managed runner that works
 			issues in the cloud (Gemini arrives in a later milestone).
+			<div class="mt-3">
+				<Button size="sm" variant="outline" onclick={() => (addRunnerOpen = true)}>
+					<IconPlus size={14} /> Add runner
+				</Button>
+			</div>
 		</div>
 	{:else}
 		<div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -691,8 +1048,25 @@
 					<p class="text-muted-foreground mb-3 text-xs">
 						{runner.active_runs}/{runner.max_concurrent} runs · {runner.max_run_minutes}m timeout ·
 						default tier {runner.default_tier}
+						{#if waitingByRunner.has(runner.id)}
+							{@const runnerWaiting = waitingByRunner.get(runner.id)!}
+							·
+							<a
+								class="text-amber-700 underline underline-offset-2 dark:text-amber-400"
+								href={runnerWaiting.href}
+							>
+								{runnerWaiting.count} waiting
+							</a>
+						{/if}
 						{#if runner.budget?.max_run_cost_usd !== undefined}
 							· ${runner.budget.max_run_cost_usd}/run
+						{/if}
+						{#if rateLimited(runner, now)}
+							<span class="text-amber-600 dark:text-amber-400"
+								>· usage limit — resumes {new Date(
+									runner.backoff_until as number
+								).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</span
+							>
 						{/if}
 						{#if runner.launch_failures > 0}
 							<span class="text-amber-600 dark:text-amber-400"
@@ -765,7 +1139,7 @@
 </div>
 
 <!-- Routing -->
-<div class="mb-10">
+<div class="mb-10" id="routing">
 	<div class="mb-3 flex items-start justify-between gap-3">
 		<div>
 			<h2 class="text-sm font-semibold">Routing</h2>
@@ -778,7 +1152,7 @@
 			size="sm"
 			variant="ghost"
 			class="shrink-0"
-			onclick={openRuleCreate}
+			onclick={() => openRuleCreate()}
 			disabled={data.runners.length === 0}
 		>
 			<IconPlus size={14} /> Add rule
@@ -818,6 +1192,17 @@
 		<div class="text-muted-foreground rounded-lg border border-dashed p-8 text-center text-sm">
 			No routing rules. A rule is an ordered runner preference list at a scope — add one to start
 			dispatching issues to agents.
+			<div class="mt-3">
+				{#if data.runners.length === 0}
+					<Button size="sm" variant="outline" onclick={() => (addRunnerOpen = true)}>
+						<IconPlus size={14} /> Add a runner first
+					</Button>
+				{:else}
+					<Button size="sm" variant="outline" onclick={openRuleCreate}>
+						<IconPlus size={14} /> Add a global rule
+					</Button>
+				{/if}
+			</div>
 		</div>
 	{:else}
 		<ul class="divide-y rounded-lg border" aria-label="Routing rules">
@@ -827,6 +1212,7 @@
 					{activeStateIds}
 					projectArchived={rule.scope.project_id !== null &&
 						archivedProjectIds.has(rule.scope.project_id)}
+					waiting={waitingByRule.get(rule.id)}
 					onedit={openRuleEdit}
 					ondelete={deleteRule}
 				/>
@@ -871,7 +1257,7 @@
 
 		<form onsubmit={saveSettings} class="space-y-5">
 			<div class="space-y-2">
-				<p class="text-sm font-medium">Quota policy</p>
+				<p class="text-sm font-medium" id="quota-policy">Quota policy</p>
 				<!-- segmented control -->
 				<div class="bg-muted inline-flex rounded-md p-0.5 text-sm">
 					<button
@@ -933,8 +1319,27 @@
 									<p class="text-muted-foreground mb-1.5 text-xs font-semibold">{workflow.name}</p>
 									<div class="space-y-1.5">
 										{#each workflow.states as state (state.id)}
-											<div class="flex items-center justify-between gap-2">
-												<StateBadge {state} />
+											{@const waiting = waitingByState.get(state.id)}
+											<div
+												class="flex items-center justify-between gap-2 rounded-md {highlightStateId ===
+												state.id
+													? 'ring-2 ring-amber-400'
+													: ''}"
+											>
+												<span class="flex min-w-0 items-center gap-2">
+													<StateBadge {state} />
+													{#if waiting}
+														<a
+															class="text-xs text-amber-700 underline underline-offset-2 dark:text-amber-400"
+															href={waiting.href}
+														>
+															{waiting.count} waiting · oldest {queueAge(
+																waiting.oldest,
+																waiting.now
+															)}
+														</a>
+													{/if}
+												</span>
 												<span class="flex items-center gap-2">
 													{#if (rosterOverrides[state.id] ?? '') === ''}
 														<span class="text-muted-foreground text-xs"
@@ -942,6 +1347,7 @@
 														>
 													{/if}
 													<Input
+														id="roster-limit-{state.id}"
 														type="number"
 														min="0"
 														max="100"
@@ -1048,7 +1454,7 @@
 				online. It won't take work until a routing rule (or an issue pin) targets it.
 			</p>
 			<p class="text-muted-foreground text-xs">
-				{#if data.rules.some((r) => r.scope.project_id === null && r.scope.workflow_state_id === null)}
+				{#if globalRule}
 					Add it to your global rule as a fallback target?
 				{:else}
 					Create a global rule routing everything to it?
@@ -1096,12 +1502,7 @@
 					<div class="grid grid-cols-2 gap-3">
 						<div class="space-y-1.5">
 							<label class="text-sm font-medium" for="claude-name">Name</label>
-							<Input
-								id="claude-name"
-								bind:value={runnerName}
-								placeholder="e.g. claude-cloud"
-								required
-							/>
+							<Input id="claude-name" bind:value={runnerName} placeholder="cloud-claude" required />
 						</div>
 						<div class="space-y-1.5">
 							<label class="text-sm font-medium" for="claude-tier">Default tier</label>
@@ -1229,11 +1630,34 @@
 					<div class="grid grid-cols-2 gap-3">
 						<div class="space-y-1.5">
 							<label class="text-sm font-medium" for="runner-name">Name</label>
-							<Input id="runner-name" bind:value={runnerName} placeholder="e.g. laptop-m4" />
-							<p class="text-muted-foreground text-xs">
-								Unique — routing rules and the CLI address runners by name. Defaults to the
-								hostname.
+							<Input
+								id="runner-name"
+								bind:value={runnerName}
+								placeholder={namePlaceholder}
+								readonly={createdKey !== null}
+								aria-invalid={nameIssue?.level === 'error' || undefined}
+								aria-describedby="runner-name-help"
+							/>
+							<p class="text-muted-foreground text-xs" id="runner-name-help">
+								Name it machine-plus-harness, like
+								<span class="font-medium">{namePlaceholder}</span> — it is what every agent comment
+								will say ("you via {namePlaceholder}") and what routing rules address.
 							</p>
+							{#if nameIssue}
+								<p
+									class="text-xs {nameIssue.level === 'error'
+										? 'text-destructive'
+										: 'text-amber-700 dark:text-amber-300'}"
+								>
+									{nameIssue.message}
+								</p>
+							{/if}
+							{#if createdKey}
+								<p class="text-muted-foreground text-xs">
+									The key is named after this runner — close the dialog to start over with another
+									name.
+								</p>
+							{/if}
 						</div>
 						<div class="space-y-1.5">
 							<label class="text-sm font-medium" for="runner-harness">Harness</label>
@@ -1275,12 +1699,14 @@
 						<p class="text-sm font-medium">Run this on the machine</p>
 						<div class="relative">
 							<pre
-								class="bg-muted overflow-x-auto rounded-md border p-3 pr-10 font-mono text-xs">{bootstrapCommand}</pre>
+								class="bg-muted overflow-x-auto rounded-md border p-3 pr-10 font-mono text-xs">{bootstrapBlock}</pre>
 							<Button
 								size="icon"
 								variant="ghost"
 								class="absolute top-1.5 right-1.5 size-7"
 								aria-label="Copy the bootstrap command"
+								disabled={!nameReady}
+								title={nameReady ? undefined : 'Enter a valid runner name first'}
 								onclick={copyBootstrapCommand}
 							>
 								<IconCopy size={14} />
@@ -1289,11 +1715,71 @@
 								<span class="text-muted-foreground absolute right-0 -bottom-5 text-xs">copied</span>
 							{/if}
 						</div>
-						<p class="text-muted-foreground pt-1 text-xs">
-							The first start <span class="font-medium">registers</span> the runner with your API key
-							and stores its own long-lived runner token on the machine; it appears here, online, within
-							seconds. Later starts reconnect with the stored token — the API key is only needed once.
-						</p>
+						<div class="flex flex-wrap items-center gap-2 pt-1">
+							{#if !createdKey}
+								<PendingButton
+									type="button"
+									size="sm"
+									variant="outline"
+									pending={creatingKey}
+									pendingLabel="Creating…"
+									disabled={!nameReady}
+									onclick={createRunnerKey}
+								>
+									<IconKey size={14} /> Create key
+								</PendingButton>
+								<span class="text-muted-foreground text-xs">
+									Creates an API key named
+									<code class="bg-muted rounded px-1 py-0.5">runner {trimmedName || '<name>'}</code>
+									and drops it into the command — or use one from
+									<a href="/settings/api-keys" class="underline underline-offset-2"
+										>Settings → API keys</a
+									>.
+								</span>
+							{:else}
+								<span class="text-muted-foreground text-xs">
+									Key <code class="bg-muted rounded px-1 py-0.5">runner {trimmedName}</code> created
+									and filled in above — copy the block now; the key will not be shown again. Manage
+									it on
+									<a href="/settings/api-keys" class="underline underline-offset-2"
+										>Settings → API keys</a
+									>.
+								</span>
+							{/if}
+						</div>
+						{#if namedLocalOnline}
+							<div
+								class="mt-2 rounded-md border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-xs"
+								transition:slide={{ duration: dur() }}
+							>
+								<p>
+									<span class="font-medium">{namedLocalOnline.name} is online.</span> It won't take work
+									until a routing rule targets it.
+								</p>
+								<div class="mt-2 flex items-center gap-2">
+									<PendingButton
+										type="button"
+										size="sm"
+										pending={addingToRouting}
+										pendingLabel="Adding…"
+										disabled={globalRule?.targets.some((t) => t.runner_id === namedLocalOnline.id)}
+										onclick={routeEverythingToNamed}
+									>
+										{globalRule?.targets.some((t) => t.runner_id === namedLocalOnline.id)
+											? 'Already routed'
+											: `Route everything to ${namedLocalOnline.name}`}
+									</PendingButton>
+									<Button size="sm" variant="ghost" onclick={resetAddRunner}>Done</Button>
+								</div>
+							</div>
+						{:else}
+							<p class="text-muted-foreground pt-1 text-xs">
+								Waiting for <span class="font-medium">{trimmedName || 'the runner'}</span> — the
+								first start <span class="font-medium">registers</span> it with your API key and stores
+								its own long-lived runner token on the machine; it appears here, online, within seconds.
+								Later starts reconnect with the stored token — the API key is only needed once.
+							</p>
+						{/if}
 						<p class="text-muted-foreground text-xs">
 							Keep it running: the runner is infrastructure — put the daemon under launchd/systemd
 							so it survives logouts and reboots (service snippets in
@@ -1311,7 +1797,15 @@
 
 <!-- runner edit: caps, budget, tier overrides, replace-key -->
 {#if editTarget}
-	<Modal open={true} onclose={() => (editTarget = null)} title="Edit runner">
+	<Modal
+		open={true}
+		onclose={() => {
+			editTarget = null;
+			editFocusCap = false;
+		}}
+		title="Edit runner"
+		initialFocus={focusCapField}
+	>
 		<form onsubmit={saveRunnerEdit} class="space-y-4">
 			<p class="text-sm">
 				<span class="font-medium">{editTarget.name}</span>

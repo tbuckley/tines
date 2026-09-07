@@ -347,7 +347,10 @@ The `transition_requirements_unmet` 422 summary follows the same `kind`: a
 `delete_and_attach` (the slot holds the wrong **immutable** type) says so —
 *the attached "spec" is a link artifact and the gate needs text* — instead of
 the generic "attach it (or a new version)", which would send an agent round
-the identical 422. `missing` and `stale` keep that wording.
+the identical 422. `missing` and `stale` keep that wording. The CLI's own pre-flight refusals quote
+the same `fix` verbatim rather than composing a second wording, and `issues
+show` renders it beside the requirement, so the hint an agent reads before it
+attaches and the one it reads after a blocked `move` are the same string.
 
 ### Events, lifecycle
 
@@ -520,6 +523,17 @@ Artifact reads carry per-type payload summaries: folder versions report
 ```
 tines issues artifacts list <ref>
 tines issues artifacts show <ref> <name>                       # detail + versions
+tines issues artifacts attach <ref> <name> <source>            # gate-typed (Tines/243): a text
+                                                               #   gate reads the path as the
+                                                               #   document, a file gate uploads
+                                                               #   its bytes, a folder gate walks
+                                                               #   it, a link/pr gate takes a URL
+                                                               #   or owner/repo#N; ungated, the
+                                                               #   shape alone types it — dir →
+                                                               #   folder, URL → link (a GitHub PR
+                                                               #   URL → pr), owner/repo#N → pr,
+                                                               #   anything else → file, a .md
+                                                               #   path included. Never text.
 tines issues artifacts attach <ref> <name> --file <path>       # file (MIME sniffed from
                                                                #   extension, --content-type to override)
 tines issues artifacts attach <ref> <name> --text <md|@file>
@@ -528,19 +542,53 @@ tines issues artifacts attach <ref> <name> --pr <owner/repo#N | PR URL>
 tines issues artifacts attach <ref> <name> --folder <dir>      # snapshot a directory tree
                                                                #   as one version (MIME per file
                                                                #   sniffed from extensions)
+tines issues artifacts attach <ref> <name> … --ignore-gates    # attach this type even when a
+                                                               #   requirement rejects it
 tines issues artifacts reaffirm <ref> <name>                   # bless current content as fresh
 tines issues artifacts get <ref> <name> [--version N] [--out <path>]   # content; link/pr prints the
                                                                #   URL; a folder writes its tree
 tines issues artifacts delete <ref> <name>
 ```
 
-`attach` infers the type from the flag used; re-attaching appends a version
-(for a folder, the next whole snapshot — the agent collects locally and
-attaches once, e.g. screenshots taken over a run land as one set).
-`tines issues move` already relays structured errors, so a blocked transition
-prints the unmet requirements and the attach command verbatim from the error
-details — the agent loop closes without any new CLI logic. `tines workflows`
-create/edit accept `requires` inside their transition definitions.
+`attach` infers the type from the flag used, or — with a positional `<source>`
+— from the gate on the slot; re-attaching appends a version (for a folder, the
+next whole snapshot — the agent collects locally and attaches once, e.g.
+screenshots taken over a run land as one set). `tines issues move` already
+relays structured errors, so a blocked transition prints the unmet requirements
+and the attach command verbatim from the error details — the agent loop closes
+without any new CLI logic. `tines workflows` create/edit accept `requires`
+inside their transition definitions.
+
+**The CLI uses the gate it can already see** (Tines/243). `resolveIssue`
+fetches the `IssueDetail`, so `allowed_transitions[].requires[]` is in hand
+before the first write and every use below costs no extra request:
+
+- **Typing.** Under a gate the declared type wins over the source's shape, and
+  the gate's *concrete* content type is declared with the upload — so
+  `attach <ref> prd prd.md` against a `(text, text/markdown)` requirement
+  stores bytes identical to `--text @prd.md`. A prefix content type
+  (`image/`) is left to the server to sniff. When several available
+  transitions gate the slot at different types, the shape discriminates; when
+  it cannot, the CLI refuses and names both flags.
+- **Refusal before the write.** A flag whose type *no* available transition's
+  requirement for that slot could ever accept exits 1 having written nothing,
+  quoting the requirement's own `fix` — one gate accepting is enough, and
+  `--ignore-gates` skips the check. A content-type-only miss names
+  `--content-type` instead. A slot that already holds the wrong (immutable)
+  type is refused the same way, with the delete-and-reattach command: the CLI
+  teaches the dance rather than converting. That refusal is checked *after*
+  acceptance, so passing the wrong flag at a slot whose current type already
+  satisfies the gate gets the gate's own fix — never advice to delete the
+  artifact that satisfies it — and it names no `--ignore-gates` escape, since
+  the server rejects a type change unconditionally.
+- **Reading the gate.** The line confirming an attach names the transitions the
+  new version satisfies (or what a gate wanted instead); `issues show` prints
+  each gated transition's requirement with its status and `fix`; and
+  `artifacts list` grows a `GATE` column marking rows a gate on the issue
+  rejects.
+
+Inline text is never inferred — a positional source is always a path, a URL or
+`owner/repo#N`, and the document goes in `--text`.
 
 ## Web UI
 

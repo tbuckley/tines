@@ -1,15 +1,10 @@
 <script lang="ts">
-	import { ApiError } from '@tines/shared';
 	import IconFolderPlus from '@tabler/icons-svelte/icons/folder-plus';
-	import { goto, invalidateAll } from '$app/navigation';
+	import { afterNavigate, goto, replaceState } from '$app/navigation';
 	import { page } from '$app/state';
-	import { api } from '$lib/api';
 	import CheckboxField from '$lib/components/CheckboxField.svelte';
-	import Modal from '$lib/components/Modal.svelte';
-	import PendingButton from '$lib/components/PendingButton.svelte';
+	import NewProjectModal from '$lib/components/NewProjectModal.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
-	import { Input } from '$lib/components/ui/input/index.js';
-	import { Textarea } from '$lib/components/ui/textarea/index.js';
 	import { formatDate, relativeTime } from '$lib/format';
 	import { navMemory } from '$lib/nav-memory.svelte';
 
@@ -24,35 +19,24 @@
 	);
 
 	let createOpen = $state(false);
-	let name = $state('');
-	let description = $state('');
-	let initialPrompt = $state('');
-	let creating = $state(false);
-	let createError = $state<string | null>(null);
 
-	async function create(e: SubmitEvent) {
-		e.preventDefault();
-		if (creating) return;
-		creating = true;
-		createError = null;
-		try {
-			const project = await api.createProject({
-				name,
-				description,
-				initial_prompt: initialPrompt.trim() || undefined
-			});
-			createOpen = false;
-			name = '';
-			description = '';
-			initialPrompt = '';
-			await invalidateAll();
-			await goto(`/projects/${project.id}`);
-		} catch (err) {
-			createError = err instanceof ApiError ? err.message : 'Failed to create project.';
-		} finally {
-			creating = false;
-		}
-	}
+	// `/projects?new=1` is how other surfaces say "start here" (the Issues tab's
+	// empty state). Consume the flag immediately so nav-memory never remembers
+	// it and reopens the dialog on every later Projects click.
+	//
+	// This hangs off afterNavigate rather than an $effect because the link is
+	// often clicked before this page's own JS has run — the empty state is the
+	// first thing on a fresh account's Issues tab — which makes it a full page
+	// load, as does pasting the URL. An $effect runs during hydration, before
+	// the router has started, and `replaceState` is only usable after that:
+	// it reaches into the router's root component and throws, which aborts the
+	// flush that would have rendered the dialog. afterNavigate fires for the
+	// initial load too, once the router is up.
+	afterNavigate(() => {
+		if (page.url.searchParams.get('new') !== '1') return;
+		createOpen = true;
+		replaceState('/projects', page.state);
+	});
 
 	async function toggleArchived(show: boolean) {
 		await goto(show ? '/projects?archived=1' : '/projects', { keepFocus: true, noScroll: true });
@@ -122,55 +106,4 @@
 	</div>
 {/if}
 
-<Modal bind:open={createOpen} title="New project">
-	<form onsubmit={create} class="space-y-4">
-		<div class="space-y-1.5">
-			<label class="text-sm font-medium" for="project-name">Name</label>
-			<Input id="project-name" bind:value={name} placeholder="e.g. website" required />
-		</div>
-		<div class="space-y-1.5">
-			<label class="text-sm font-medium" for="project-description">Description</label>
-			<Textarea
-				id="project-description"
-				bind:value={description}
-				rows={3}
-				placeholder="What is this project about?"
-			/>
-		</div>
-		<div class="space-y-1.5">
-			<label class="text-sm font-medium" for="project-prompt">
-				House conventions <span class="text-muted-foreground font-normal">(optional)</span>
-			</label>
-			<Textarea
-				id="project-prompt"
-				bind:value={initialPrompt}
-				rows={4}
-				placeholder="Stitched into the prompt of every agent working in this project — style rules, commands that must pass, where things live…"
-			/>
-			<p class="text-muted-foreground text-xs">
-				Saved as a project-scoped context prompt named “conventions”; editable any time.
-			</p>
-		</div>
-		{#if createError}
-			<p class="text-destructive text-sm">{createError}</p>
-		{/if}
-		<div class="flex flex-wrap justify-end gap-2">
-			<Button
-				type="button"
-				variant="ghost"
-				disabled={creating}
-				onclick={() => (createOpen = false)}
-			>
-				Cancel
-			</Button>
-			<PendingButton
-				type="submit"
-				pending={creating}
-				pendingLabel="Creating…"
-				disabled={!name.trim()}
-			>
-				Create project
-			</PendingButton>
-		</div>
-	</form>
-</Modal>
+<NewProjectModal bind:open={createOpen} starters={data.starters} />

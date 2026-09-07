@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { ContextItem } from '@tines/shared';
+	import type { ContextItem, ContextKind } from '@tines/shared';
 	import { activeStateIds as deriveActiveStateIds, ApiError } from '@tines/shared';
 	import IconArchive from '@tabler/icons-svelte/icons/archive';
 	import IconChevronLeft from '@tabler/icons-svelte/icons/chevron-left';
@@ -140,9 +140,11 @@
 
 	let contextEditorOpen = $state(false);
 	let editingContextItem = $state<ContextItem | null>(null);
+	let contextDefaultKind = $state<ContextKind>('prompt');
 
-	function openContextCreate() {
+	function openContextCreate(kind: ContextKind = 'prompt') {
 		editingContextItem = null;
+		contextDefaultKind = kind;
 		contextEditorOpen = true;
 	}
 	function openContextEdit(item: ContextItem) {
@@ -347,6 +349,7 @@
 	rules={data.routingRules}
 	{activeStateIds}
 	emptyMessage="No routing rule covers this project — its issues will not dispatch to agents."
+	emptyAction={{ label: 'Set up routing', href: '/agents#routing' }}
 />
 
 <div class="mb-8">
@@ -360,7 +363,12 @@
 				View all in Context
 			</a>
 			{#if !archived}
-				<Button size="sm" variant="ghost" onclick={openContextCreate} aria-label="Add context">
+				<Button
+					size="sm"
+					variant="ghost"
+					onclick={() => openContextCreate()}
+					aria-label="Add context"
+				>
 					<IconPlus size={14} /> Add
 				</Button>
 			{/if}
@@ -370,6 +378,13 @@
 		<div class="text-muted-foreground rounded-lg border border-dashed p-6 text-center text-sm">
 			No context for this project yet — attach conventions, skills, or repos that every issue here
 			should carry.
+			{#if !archived}
+				<div class="mt-3">
+					<Button size="sm" variant="outline" onclick={() => openContextCreate('repo')}>
+						<IconPlus size={14} /> Add a repo
+					</Button>
+				</div>
+			{/if}
 		</div>
 	{:else}
 		<div class="space-y-4">
@@ -446,6 +461,7 @@
 	bind:open={contextEditorOpen}
 	item={editingContextItem}
 	defaults={{ project_id: data.project.id }}
+	defaultKind={contextDefaultKind}
 	projects={[data.project]}
 	workflows={data.workflows}
 	onsaved={invalidateAll}

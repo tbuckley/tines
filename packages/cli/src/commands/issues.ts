@@ -20,27 +20,45 @@ import {
 	type ListOpts
 } from '../common.js';
 import {
+	ageLabel,
+	arrivedViaLabel,
 	artifactSummary,
+	artifactTypeLabel,
 	commentLines,
 	issueRef,
 	linkRows,
 	prRefLabel,
 	recurrenceLabel,
+	requirementLines,
+	roundLines,
+	roundSummaryLabel,
+	sinceLastRunLines,
 	sniffContentType,
 	timestamp
 } from '../format.js';
+import {
+	assertOneSource,
+	ATTACH_SOURCE_HELP,
+	fsProbe,
+	gateLabel,
+	gatesFor,
+	planAttach,
+	satisfiedBy,
+	type AttachFlags,
+	type AttachSource
+} from '../attach-source.js';
 import { helpGuard } from '../help-guard.js';
 import { buildRecurrence, type RecurrenceOpts } from '../recurrence-flags.js';
 import { parseTargetSpec } from '../refs.js';
 import {
 	actorLabel,
 	ApiError,
-	parsePrSpec,
 	type Artifact,
 	type CreateScheduleInput,
 	type DispatchExplainer,
 	type IssueDetail,
 	type IssueLinks,
+	type PrRef,
 	type StateCategory,
 	type UpdateIssueRequest
 } from '@tines/shared';
@@ -102,6 +120,28 @@ function printIssueDetail(issue: IssueDetail): void {
 	console.log(
 		`\nallowed actions: ${allowed.length ? allowed.join(', ') : 'none (terminal state)'}`
 	);
+	// A gated transition is not takeable until its slots are filled, so the
+	// reader sees what each one wants and the command that fills it before
+	// spending a `move` on the 422.
+	for (const t of issue.allowed_transitions) {
+		for (const check of t.requires ?? []) {
+			const [head, ...rest] = requirementLines(check);
+			console.log(`  "${t.name}" ${head}`);
+			for (const line of rest) console.log(`  ${line}`);
+		}
+	}
+	// The handoff, two halves that never both apply: an awaiting-human issue is
+	// asking the reader to judge what came back (round); an active one is
+	// telling the agent what the human said last (since the last run). Both are
+	// omitted entirely when empty — no header, no "none".
+	if (issue.since_last_run && issue.effective_state.category === 'active') {
+		console.log('');
+		for (const line of sinceLastRunLines(issue.since_last_run)) console.log(line);
+	}
+	if (issue.round && issue.effective_state.category === 'awaiting_human') {
+		console.log('');
+		for (const line of roundLines(issue.round)) console.log(line);
+	}
 	if (issue.comments.length > 0) {
 		console.log(`\ncomments (${issue.comments.length}):`);
 		// Rendered by commentLines so the id and the (edited) marker — the two
@@ -110,6 +150,20 @@ function printIssueDetail(issue: IssueDetail): void {
 			for (const line of commentLines(c)) console.log(line);
 		}
 	}
+}
+
+/** The document behind a planned text source (inline, @file, or stdin). */
+function readTextSource(source: AttachSource): string {
+	if (source.kind === 'text-inline') return source.value;
+	if (source.kind === 'text-stdin') return readBodyValue('-');
+	if (source.kind === 'text-path') {
+		try {
+			return readFileSync(source.path, 'utf8');
+		} catch (err) {
+			die(`cannot read ${source.path}: ${err instanceof Error ? err.message : String(err)}`);
+		}
+	}
+	throw new Error(`not a text source: ${source.kind}`);
 }
 
 /** All regular files under a directory, workspace-relative with `/` separators. */
@@ -137,7 +191,16 @@ function walkFolder(dir: string): { path: string; contentType: string; bytes: Bu
 function printExplainer(issue: IssueDetail, ex: DispatchExplainer): void {
 	console.log(`${issue.project_name}/#${issue.number}  ${issue.title}`);
 	console.log(`\n${ex.verdict}\n`);
-	table(ex.checks.map((c) => [`  ${c.ok ? 'ok' : 'FAIL'}`, c.name.replaceAll('_', ' '), c.detail]));
+	table(
+		ex.checks.map((c) => [
+			`  ${c.ok ? 'ok' : 'FAIL'}`,
+			c.name.replaceAll('_', ' '),
+			c.detail,
+			// The remedy, when the check has one and it is something to run
+			// here: a link is useless without an origin.
+			c.action?.cli ? `fix: ${c.action.cli}` : ''
+		])
+	);
 	if (ex.pin) {
 		console.log(
 			`\npinned to ${ex.pin.runner_name ?? ex.pin.runner_id}${ex.pin.tier ? `:${ex.pin.tier}` : ''} (replaces rule matching)`
@@ -226,6 +289,30 @@ export function register(program: Command): void {
 			);
 			printList(res, opts, (items) => {
 				if (items.length === 0) return console.log(opts.ready ? 'no ready issues' : 'no issues');
+				// The awaiting-human table answers a different question — how long
+				// has this been waiting, how did it get here, what came back — so
+				// it swaps three columns. Every other invocation is unchanged.
+				if (opts.category === 'awaiting_human') {
+					table([
+						['REF', 'TITLE', 'STATE', 'WAITING', 'VIA', 'ROUND', ''],
+						...items.map((i) => [
+							`${i.project_name}/${i.number}`,
+							i.title,
+							i.effective_state.name,
+							ageLabel(new Date(i.state_entered_at).toISOString()),
+							arrivedViaLabel(i.arrived_via),
+							roundSummaryLabel(i.round_summary ?? null),
+							[
+								i.open_blockers.length > 0 ? 'blocked' : '',
+								i.duplicate_of ? 'dup' : '',
+								...i.labels.map((l) => `[${l.name}]`)
+							]
+								.filter(Boolean)
+								.join(' ')
+						])
+					]);
+					return;
+				}
 				table([
 					['REF', 'TITLE', 'STATE', 'CATEGORY', 'LAST ACTIVITY', ''],
 					...items.map((i) => [
@@ -681,13 +768,19 @@ export function register(program: Command): void {
 		const res = await api.listArtifacts(issue.id);
 		if (opts.json) return printJson(res);
 		if (res.items.length === 0) return console.log('no artifacts attached');
+		// A row a gate on this issue rejects carries what that gate wanted
+		// instead; the column only appears when something is actually rejected.
+		const gates = gatesFor(issue);
+		const labels = res.items.map((a) => gateLabel(a, gates));
+		const gated = labels.some((l) => l !== '');
 		table([
-			['NAME', 'TYPE', 'VERSION', 'FRESH', 'SUMMARY', 'ATTACHED'],
-			...res.items.map((a) => [
+			['NAME', 'TYPE', 'VERSION', 'FRESH', ...(gated ? ['GATE'] : []), 'SUMMARY', 'ATTACHED'],
+			...res.items.map((a, i) => [
 				a.name,
 				a.artifact_type,
 				`v${a.current_version.version}`,
 				a.fresh ? 'yes' : 'no',
+				...(gated ? [labels[i] || 'ok'] : []),
 				artifactSummary(a),
 				timestamp(a.current_version.created_at)
 			])
@@ -733,7 +826,7 @@ export function register(program: Command): void {
 
 	withCommon(
 		artifactsCmd
-			.command('attach <ref> <name>')
+			.command('attach <ref> <name> [source]')
 			.description(
 				'Attach content to a named artifact slot (creates it, or appends the next version)'
 			)
@@ -749,89 +842,119 @@ export function register(program: Command): void {
 			.option('--filename <name>', 'display filename (with --text; defaults to <name>.md)')
 			.option('--title <title>', 'display title (with --link)')
 			.option('-d, --description <text>', 'artifact description, shown in lists and launch prompts')
+			.option(
+				'--ignore-gates',
+				'attach this type even when a transition requirement rejects it (skips inference and the pre-flight checks)'
+			)
+			.addHelpText('after', ATTACH_SOURCE_HELP)
 	).action(
 		async (
 			ref: string,
 			name: string,
-			opts: CommonOpts & {
-				file?: string;
-				folder?: string;
-				text?: string;
-				link?: string;
-				pr?: string;
-				contentType?: string;
-				filename?: string;
-				title?: string;
-				description?: string;
-			}
+			source: string | undefined,
+			opts: CommonOpts &
+				AttachFlags & {
+					description?: string;
+				}
 		) => {
 			const api = client(opts);
-			const sources = [opts.file, opts.folder, opts.text, opts.link, opts.pr].filter(
-				(v) => v !== undefined
-			);
-			if (sources.length !== 1) {
-				die(
-					'pass exactly one content source: --file <path>, --folder <dir>, --text <md|@file>, --link <url>, or --pr <spec> (a link goes in --link; --url is the API base URL)'
-				);
+			// Arity first, before any request: a mistyped invocation must die
+			// offline (Tines/92 — `--url <link>` is the API base URL, not a
+			// source). die() rather than letting the CliError unwind, so that
+			// guarantee stays assertable in-process (program.test.ts).
+			try {
+				assertOneSource(opts, source);
+			} catch (err) {
+				die(err instanceof Error ? err.message : String(err));
 			}
 			const issue = await resolveIssue(api, ref);
+			const gates = gatesFor(issue, name);
+			// Everything the invocation implies, decided offline: a refusal here
+			// has written nothing.
+			const plan = planAttach(
+				{
+					ref: `${issue.project_name}/${issue.number}`,
+					name,
+					positional: source,
+					flags: opts,
+					gates,
+					probe: fsProbe
+				},
+				sniffContentType
+			);
+			const withDescription =
+				opts.description !== undefined ? { description: opts.description } : {};
 			let artifact: Artifact;
-			if (opts.folder !== undefined) {
-				if (!existsSync(opts.folder) || !statSync(opts.folder).isDirectory()) {
-					die(`--folder needs a directory, got "${opts.folder}"`);
-				}
-				const files = walkFolder(opts.folder);
-				if (files.length === 0) die(`${opts.folder} contains no files to snapshot`);
+			if (plan.type === 'folder') {
+				const dir = (plan.source as { dir: string }).dir;
+				const files = walkFolder(dir);
+				if (files.length === 0) die(`${dir} contains no files to snapshot`);
 				artifact = await api.uploadArtifactFolder(issue.id, name, files);
 				// The folder endpoint has no description slot; set it alongside.
 				if (opts.description !== undefined) {
 					artifact = await api.putArtifact(issue.id, name, { description: opts.description });
 				}
-			} else if (opts.file !== undefined) {
+			} else if (plan.type === 'file') {
+				const fromPath = plan.source.kind === 'file-path' ? plan.source.path : null;
 				let bytes: Buffer;
-				try {
-					bytes = readFileSync(opts.file);
-				} catch (err) {
-					die(`cannot read ${opts.file}: ${err instanceof Error ? err.message : String(err)}`);
+				if (fromPath === null) {
+					if (process.stdin.isTTY) die('"-" reads the file from stdin, but stdin is a terminal');
+					bytes = readFileSync(0);
+				} else {
+					try {
+						bytes = readFileSync(fromPath);
+					} catch (err) {
+						die(`cannot read ${fromPath}: ${err instanceof Error ? err.message : String(err)}`);
+					}
 				}
 				artifact = await api.uploadArtifactFile(issue.id, name, bytes, {
-					filename: opts.filename ?? basename(opts.file),
-					contentType: opts.contentType ?? sniffContentType(opts.file)
+					filename: plan.filename ?? (fromPath === null ? name : basename(fromPath)),
+					contentType:
+						plan.contentType ??
+						(fromPath === null ? 'application/octet-stream' : sniffContentType(fromPath))
 				});
 				// The file endpoint has no description slot; set it alongside.
 				if (opts.description !== undefined) {
 					artifact = await api.putArtifact(issue.id, name, { description: opts.description });
 				}
-			} else if (opts.text !== undefined) {
+			} else if (plan.type === 'text') {
+				const content = readTextSource(plan.source);
 				artifact = await api.putArtifact(issue.id, name, {
 					type: 'text',
-					content: readBodyValue(opts.text),
-					...(opts.filename !== undefined ? { filename: opts.filename } : {}),
-					...(opts.contentType !== undefined ? { content_type: opts.contentType } : {}),
-					...(opts.description !== undefined ? { description: opts.description } : {})
+					content,
+					...(plan.filename !== undefined ? { filename: plan.filename } : {}),
+					...(plan.contentType !== undefined ? { content_type: plan.contentType } : {}),
+					...withDescription
 				});
-			} else if (opts.link !== undefined) {
+			} else if (plan.type === 'link') {
+				const link = plan.source as { url: string; title?: string };
 				artifact = await api.putArtifact(issue.id, name, {
 					type: 'link',
-					url: opts.link,
-					...(opts.title !== undefined ? { title: opts.title } : {}),
-					...(opts.description !== undefined ? { description: opts.description } : {})
+					url: link.url,
+					...(link.title !== undefined ? { title: link.title } : {}),
+					...withDescription
 				});
 			} else {
-				const parsed = parsePrSpec(opts.pr!);
-				if (!parsed) {
-					die(`--pr takes owner/repo#N or a GitHub PR URL, got "${opts.pr}"`);
-				}
+				const { pr } = plan.source as { pr: PrRef };
 				artifact = await api.putArtifact(issue.id, name, {
 					type: 'pr',
-					pr_repo_url: parsed.repo_url,
-					pr_number: parsed.number,
-					...(opts.description !== undefined ? { description: opts.description } : {})
+					pr_repo_url: pr.repo_url,
+					pr_number: pr.number,
+					...withDescription
 				});
 			}
 			if (opts.json) return printJson(artifact);
+			// The version just landed, so it is fresh by construction; what the
+			// reader still needs to know is which gate it cleared.
+			const { satisfies, rejects } = satisfiedBy(artifact, gates);
+			const gateNote =
+				satisfies.length > 0
+					? `; satisfies ${satisfies.map((t) => `"${t}"`).join(', ')}`
+					: rejects.length > 0
+						? `, but does not satisfy ${rejects.map((r) => `"${r.transition}" (${r.wants})`).join(', ')}`
+						: '';
 			console.log(
-				`attached "${artifact.name}" v${artifact.current_version.version} (${artifactSummary(artifact)}) to ${issue.project_name}/${issue.number} — fresh`
+				`attached "${artifact.name}" v${artifact.current_version.version} (${artifactTypeLabel(artifact)}) to ${issue.project_name}/${issue.number} — fresh${gateNote}`
 			);
 		}
 	);

@@ -2,6 +2,7 @@ import {
 	ACTIVE_RUN_STATUSES,
 	DEFAULT_MANAGED_RUN_COST_USD,
 	MODEL_TIERS,
+	RUNNER_NAME_PATTERN,
 	RUNNER_ONLINE_WINDOW_MS,
 	RUNNER_TYPES,
 	type CreateRunnerRequest,
@@ -57,9 +58,6 @@ export function requireTier(value: unknown, field: string): ModelTier {
 	}
 	return value as ModelTier;
 }
-
-/** Names double as CLI addresses and routing-rule targets: no whitespace, ":", or "/". */
-const RUNNER_NAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
 
 function validateRunnerName(value: unknown): string {
 	const name = requireString(value, 'name', { max: 100 }).trim();
@@ -340,6 +338,7 @@ function serializeRunner(row: RunnerRow, now = Date.now()): Runner {
 		draining: row.draining === 1,
 		launch_failures: row.launch_failures,
 		backoff_until: row.backoff_until,
+		backoff_reason: row.backoff_reason === 'rate_limit' ? 'rate_limit' : null,
 		active_runs: Number(row.active_runs ?? 0),
 		created_at: row.created_at,
 		updated_at: row.updated_at
@@ -491,6 +490,7 @@ export async function createRunner(
 				launch_failures: 0,
 				draining: 0,
 				backoff_until: null,
+				backoff_reason: null,
 				created_at: now,
 				updated_at: now
 			})
@@ -783,6 +783,7 @@ export async function registerRunner(
 				launch_failures: 0,
 				draining: 0,
 				backoff_until: null,
+				backoff_reason: null,
 				created_at: now,
 				updated_at: now
 			})
