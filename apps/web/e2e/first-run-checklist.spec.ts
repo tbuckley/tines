@@ -197,6 +197,7 @@ test('routing, arming and the first run land live on both surfaces', async ({ pa
 	const agentsPage = await page.context().newPage();
 	await gotoHydrated(agentsPage, '/agents');
 	await expect(checklistOf(agentsPage)).toBeVisible();
+	await page.bringToFront();
 
 	await checklistOf(page).getByRole('button', { name: 'Turn automation on' }).click();
 	await expect(item(page, 'enabled')).toHaveAttribute('data-done', 'true', { timeout: 15_000 });
@@ -210,6 +211,9 @@ test('routing, arming and the first run land live on both surfaces', async ({ pa
 		timeout: 60_000
 	});
 	await expect(item(page, 'run')).toHaveAttribute('data-done', 'true');
+	// Background tabs intentionally pause the poll. Focusing this one fires the
+	// visibility-change backstop and makes the account-level update immediate.
+	await agentsPage.bringToFront();
 	await expect(
 		checklistOf(agentsPage).getByText(/Your first run has (started|run) on/)
 	).toBeVisible({ timeout: 60_000 });
