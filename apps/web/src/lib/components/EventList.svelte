@@ -7,6 +7,7 @@
 	import IconFolder from '@tabler/icons-svelte/icons/folder';
 	import IconKey from '@tabler/icons-svelte/icons/key';
 	import IconAlertTriangle from '@tabler/icons-svelte/icons/alert-triangle';
+	import IconClockPause from '@tabler/icons-svelte/icons/clock-pause';
 	import IconMessage from '@tabler/icons-svelte/icons/message';
 	import IconPencil from '@tabler/icons-svelte/icons/pencil';
 	import IconPlayerPlay from '@tabler/icons-svelte/icons/player-play';
@@ -36,6 +37,7 @@
 		if (type === 'scheduled_task.skipped') return IconPlayerSkipForward;
 		if (type.startsWith('scheduled_task.')) return IconRepeat;
 		if (type === 'issue.parked' || type === 'runner.errored') return IconAlertTriangle;
+		if (type === 'runner.rate_limited') return IconClockPause;
 		if (type === 'issue.resumed') return IconPlayerPlay;
 		if (
 			type.startsWith('runner.') ||

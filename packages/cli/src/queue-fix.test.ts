@@ -82,6 +82,7 @@ const VERDICTS = [
 	'no_rule',
 	'ambiguous_rule',
 	'no_targets',
+	'rate_limited',
 	'pin_missing',
 	'automation_off',
 	'parked'

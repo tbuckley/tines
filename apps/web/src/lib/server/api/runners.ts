@@ -338,6 +338,7 @@ function serializeRunner(row: RunnerRow, now = Date.now()): Runner {
 		draining: row.draining === 1,
 		launch_failures: row.launch_failures,
 		backoff_until: row.backoff_until,
+		backoff_reason: row.backoff_reason === 'rate_limit' ? 'rate_limit' : null,
 		active_runs: Number(row.active_runs ?? 0),
 		created_at: row.created_at,
 		updated_at: row.updated_at
@@ -489,6 +490,7 @@ export async function createRunner(
 				launch_failures: 0,
 				draining: 0,
 				backoff_until: null,
+				backoff_reason: null,
 				created_at: now,
 				updated_at: now
 			})
@@ -781,6 +783,7 @@ export async function registerRunner(
 				launch_failures: 0,
 				draining: 0,
 				backoff_until: null,
+				backoff_reason: null,
 				created_at: now,
 				updated_at: now
 			})

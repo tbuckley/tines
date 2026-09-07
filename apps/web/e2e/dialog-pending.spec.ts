@@ -1,7 +1,7 @@
 import type { IssueDetail, Project, WorkflowResponse } from '@tines/shared';
 import { expect, test, type Page } from '@playwright/test';
 import { ALICE } from './constants.mjs';
-import { apiClient, body, clickUntil, gotoHydrated, runId, signIn } from './helpers';
+import { apiClient, body, clickUntil, gotoHydrated, resetFocus, runId, signIn } from './helpers';
 
 // This file exercises the animation itself; the suite default is reduced
 // motion (playwright.config.ts). The reduced-motion tests below still call
@@ -60,8 +60,10 @@ test.beforeAll(async ({ playwright }) => {
 	await request.dispose();
 });
 
-test.beforeEach(async ({ context }) => {
+test.beforeEach(async ({ context, request }) => {
 	await signIn(context, ALICE.sessionToken);
+	// Specs share one user: a focus left behind would scope this one's lists.
+	await resetFocus(request);
 });
 
 const stateCard = (page: Page) =>

@@ -260,15 +260,28 @@
 
 	// --- runners -----------------------------------------------------------------
 
+	// The queue's own timestamp, so the card and the Now row above it agree on
+	// whether a hold is still live; both refresh together on invalidation.
+	const now = $derived(data.queue.generated_at);
+
+	/** A live usage-limit hold: the daemon is fine, its provider is not. */
+	function rateLimited(runner: Runner, at: number): boolean {
+		return runner.backoff_reason === 'rate_limit' && (runner.backoff_until ?? 0) > at;
+	}
+
 	function runnerStatusLabel(runner: Runner): string {
 		if (runner.status === 'paused') return 'paused';
 		if (!runner.online) return 'offline';
+		// Ahead of draining: a rate-limited runner polls normally, so "online"
+		// would read as healthy while it is quietly taking nothing.
+		if (rateLimited(runner, now)) return 'rate limited';
 		return runner.draining ? 'restarting to update' : 'online';
 	}
 
 	function statusDotClass(runner: Runner): string {
 		if (runner.status === 'paused') return 'bg-amber-500';
 		if (!runner.online) return 'bg-muted-foreground/40';
+		if (rateLimited(runner, now)) return 'bg-amber-500';
 		return runner.draining ? 'bg-amber-500' : 'bg-emerald-500';
 	}
 
@@ -1047,6 +1060,13 @@
 						{/if}
 						{#if runner.budget?.max_run_cost_usd !== undefined}
 							· ${runner.budget.max_run_cost_usd}/run
+						{/if}
+						{#if rateLimited(runner, now)}
+							<span class="text-amber-600 dark:text-amber-400"
+								>· usage limit — resumes {new Date(
+									runner.backoff_until as number
+								).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</span
+							>
 						{/if}
 						{#if runner.launch_failures > 0}
 							<span class="text-amber-600 dark:text-amber-400"
