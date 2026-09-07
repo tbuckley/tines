@@ -103,6 +103,20 @@ export const RUNROW_FAILED = {
 	runKeyName: 'run:runrow-failed'
 };
 
+/**
+ * A third account with **no projects of its own**, for the "hidden below two
+ * projects" half of the project switcher (Tines/259). Bob cannot serve: the
+ * library spec imports projects for him.
+ */
+export const CAROL = {
+	id: 'usr_e2e_carol',
+	name: 'Carol E2E',
+	email: 'carol@e2e.test',
+	apiKey: 'tines_e2ecarol00000000000000000000000000000000000',
+	apiKeyName: 'carol-key',
+	sessionToken: 'e2e-session-carol'
+};
+
 export const BOB = {
 	id: 'usr_e2e_bob',
 	name: 'Bob E2E',

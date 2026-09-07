@@ -14,7 +14,9 @@
 	// Projects nav tab, exactly as the Issues tab does with its filters.
 	$effect(() => navMemory.recordProjects(page.url.search));
 
-	const cards = $derived(data.showArchived ? [...data.live, ...data.archived] : data.live);
+	const cards = $derived(
+		data.showArchived ? [...data.projects, ...data.archivedProjects] : data.projects
+	);
 
 	let createOpen = $state(false);
 
@@ -51,11 +53,11 @@
 <div class="mb-6 flex items-center justify-between">
 	<h1 class="text-2xl font-semibold tracking-tight">Projects</h1>
 	<div class="flex items-center gap-4">
-		{#if data.archived.length > 0}
+		{#if data.archivedProjects.length > 0}
 			<CheckboxField
 				class="text-muted-foreground text-sm"
 				checked={data.showArchived}
-				label="Show archived ({data.archived.length})"
+				label="Show archived ({data.archivedProjects.length})"
 				onCheckedChange={toggleArchived}
 			/>
 		{/if}

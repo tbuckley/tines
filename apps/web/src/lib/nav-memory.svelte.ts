@@ -94,6 +94,20 @@ function update(patch: Partial<NavMemory>): void {
 	}
 }
 
+/**
+ * The Issues filters worth remembering per tab: everything but `project`.
+ * The project scope is the focus now (Tines/259) and `?project=` is a
+ * one-shot that *sets* it — remembering one would re-fire it on every click
+ * of the Issues tab, including for a pre-deploy tab still holding the old URL.
+ */
+export function rememberedIssuesQuery(search: string): string {
+	const params = new URLSearchParams(search);
+	if (!params.has('project')) return search;
+	params.delete('project');
+	const qs = params.toString();
+	return qs ? `?${qs}` : '';
+}
+
 export const navMemory = {
 	/** Where the Issues nav tab should point. */
 	get issuesHref(): string {
@@ -108,7 +122,11 @@ export const navMemory = {
 	},
 	/** `search` is `page.url.search`: '' or '?…'. */
 	recordIssues(search: string): void {
-		update({ issuesQuery: search, lastList: { href: `/issues${search}`, label: 'Issues' } });
+		const remembered = rememberedIssuesQuery(search);
+		update({
+			issuesQuery: remembered,
+			lastList: { href: `/issues${remembered}`, label: 'Issues' }
+		});
 	},
 	/**
 	 * `search` is `page.url.search`. The grid is not an issue-bearing list, so

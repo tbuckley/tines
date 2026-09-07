@@ -1,7 +1,7 @@
 import type { IssueDetail, Project, WorkflowResponse } from '@tines/shared';
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import { ALICE } from './constants.mjs';
-import { apiClient, body, runId, signIn } from './helpers';
+import { apiClient, body, DESKTOP, PHONE, resetFocus, runId, signIn } from './helpers';
 
 /**
  * An issue row at both widths. On a phone the title is the whole first line
@@ -12,9 +12,6 @@ import { apiClient, body, runId, signIn } from './helpers';
  * title, then the rest. The category tab strip above the rows is covered at
  * the foot of this file.
  */
-
-const PHONE = { width: 390, height: 844 };
-const DESKTOP = { width: 1440, height: 900 };
 
 /**
  * The longest and one of the shortest state names in the Engineering
@@ -75,11 +72,17 @@ test.beforeAll(async ({ playwright }) => {
 	await request.dispose();
 });
 
-test.beforeEach(async ({ context }) => {
+test.beforeEach(async ({ context, request }) => {
 	await signIn(context, ALICE.sessionToken);
+	// Specs share one user: a focus left behind would scope this one's lists.
+	await resetFocus(request);
 });
 
-/** The issues list, filtered to this spec's project so only its rows show. */
+/**
+ * The issues list scoped to this spec's project, so only its rows show. The
+ * parameter is the one-shot that sets the project focus and redirects to
+ * `/issues` (Tines/259); `beforeEach` clears the focus again for the next test.
+ */
 const listUrl = `/issues?project=${encodeURIComponent(projectName)}`;
 
 const row = (page: Page, issue: IssueDetail): Locator =>

@@ -7,6 +7,7 @@
 	import IconSettings from '@tabler/icons-svelte/icons/settings';
 	import { slide } from 'svelte/transition';
 	import { goto, invalidateAll } from '$app/navigation';
+	import { focusHint } from '$lib/focus.svelte';
 	import { page } from '$app/state';
 	import { api } from '$lib/api';
 	import AgentRoutingCard from '$lib/components/AgentRoutingCard.svelte';
@@ -35,6 +36,31 @@
 	// back link that returns to it.
 	$effect(() => {
 		navMemory.recordProject(data.project.id, page.url.search, data.project.name);
+	});
+
+	// Opening a project focuses it (Tines/259). Client-side on purpose: doing it
+	// in the load would fire on hover, because the app preloads links on hover.
+	// The chrome is told optimistically rather than by an `invalidate`, whose
+	// load rerun swallowed a link click that landed in its window; the page's
+	// own data is already scoped, so nothing else here has to refetch.
+	//
+	// Announced once per project, tracked in a plain `let` that no rerender
+	// resets. A guard reading `focusHint` instead would make the hint a
+	// dependency of this effect, so the switcher could never move the focus
+	// off this page: `chooseFocus` clears the hint and `invalidateAll`s, both
+	// of which re-run this effect, which would then PATCH this project
+	// straight back over the user's choice.
+	let announced: string | null = null;
+	$effect(() => {
+		if (data.project.archived_at !== null) return;
+		if (announced === data.project.id) return;
+		announced = data.project.id;
+		focusHint.set(data.project);
+		api.updatePreferences({ focused_project_id: data.project.id }).catch(() => {
+			// The chrome must not claim a focus the server refused.
+			announced = null;
+			focusHint.clear();
+		});
 	});
 
 	/** An archived project reads normally and writes nowhere. */

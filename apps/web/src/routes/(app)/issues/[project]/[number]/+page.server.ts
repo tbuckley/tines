@@ -4,8 +4,6 @@ import { effectiveContextForIssue, listContextItems } from '$lib/server/api/cont
 import { eventQuery, serializeEvent } from '$lib/server/api/events';
 import { getIssueDetail, loadIssue } from '$lib/server/api/issues';
 import { listLabels } from '$lib/server/api/labels';
-import { partitionProjects } from '$lib/archived';
-import { listProjects } from '$lib/server/api/projects';
 import { listRunners } from '$lib/server/api/runners';
 import { listRuns } from '$lib/server/api/runs';
 import { loadWorkflows } from '$lib/server/api/workflows';
@@ -26,7 +24,7 @@ import type { PageServerLoad } from './$types';
  * paint. Keep the awaited set small: anything moved out of `deferred` puts
  * itself back on the navigation critical path.
  */
-export const load: PageServerLoad = async ({ locals, platform, params, depends }) => {
+export const load: PageServerLoad = async ({ locals, platform, params, depends, parent }) => {
 	const db = getDb(platform!.env);
 	const userId = locals.user!.id;
 
@@ -43,23 +41,19 @@ export const load: PageServerLoad = async ({ locals, platform, params, depends }
 	// project resolve is not a round trip of its own) alongside the two lists
 	// that do not depend on it.
 	const workflowsPromise = loadWorkflows(db, userId);
-	// `all`, so a 404 on an archived project says "no such issue" rather than
-	// "no such project"; the picker below takes the live subset.
-	const projectsPromise = listProjects(db, userId, { archived: 'all' });
 	// A rejected promise that nothing awaits until wave 2 would be an unhandled
 	// rejection if the issue lookup throws first.
 	workflowsPromise.catch(() => {});
-	projectsPromise.catch(() => {});
 
 	const issue = await loadIssue(db, userId, { projectName: params.project, number }).catch(
 		async () => {
 			// Only the 404 path pays for naming which half of the address was
-			// wrong, and it pays nothing extra: the project list is already in
-			// flight for wave 2.
-			const projects = await projectsPromise.catch(() => []);
+			// wrong, and only it awaits the layout: both halves, so an archived
+			// project says "no such issue" rather than "no such project".
+			const { projects, archivedProjects } = await parent();
 			error(
 				404,
-				projects.some((p) => p.name === params.project)
+				[...projects, ...archivedProjects].some((p) => p.name === params.project)
 					? `Issue #${number} does not exist in “${truncate(params.project)}”.`
 					: `You have no project named “${truncate(params.project)}”.`
 			);
@@ -79,10 +73,9 @@ export const load: PageServerLoad = async ({ locals, platform, params, depends }
 		.execute()
 		.then((rows) => rows.map(serializeEvent));
 
-	const [detail, events, projects, labelLibrary] = await Promise.all([
+	const [detail, events, labelLibrary] = await Promise.all([
 		detailPromise,
 		eventsPromise,
-		projectsPromise,
 		// The whole vocabulary, for the labels picker in the aside.
 		listLabels(db, userId)
 	]);
@@ -95,7 +88,7 @@ export const load: PageServerLoad = async ({ locals, platform, params, depends }
 		issue: issueDetail,
 		events,
 		workflows: await workflowsPromise,
-		projects: partitionProjects(projects).live,
+		// `projects` comes from the app layout.
 		artifacts: artifacts ?? [],
 		labelLibrary,
 		// Streamed: the sidebar panels. Each renders a skeleton until its first

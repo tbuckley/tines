@@ -1,7 +1,5 @@
 import { encodeCursor } from '$lib/server/api/core';
 import { eventQuery, serializeEvent } from '$lib/server/api/events';
-import { findProject, partitionProjects } from '$lib/archived';
-import { listProjects } from '$lib/server/api/projects';
 import { getDb } from '$lib/server/db';
 import type { PageServerLoad } from './$types';
 
@@ -22,23 +20,19 @@ export const load: PageServerLoad = async ({ locals, platform, url }) => {
 	}
 	if (type) q = q.where('event.type', '=', type);
 
-	const [rows, projects] = await Promise.all([
-		q
-			.orderBy('event.created_at desc')
-			.orderBy('event.id desc')
-			.limit(PAGE_SIZE + 1)
-			.execute(),
-		listProjects(db, userId, { archived: 'all' })
-	]);
+	const rows = await q
+		.orderBy('event.created_at desc')
+		.orderBy('event.id desc')
+		.limit(PAGE_SIZE + 1)
+		.execute();
 
 	const events = rows.slice(0, PAGE_SIZE).map(serializeEvent);
 	const last = events[events.length - 1];
 	return {
 		events,
 		nextCursor: rows.length > PAGE_SIZE && last ? encodeCursor(last.created_at, last.id) : null,
-		projects: partitionProjects(projects).live,
-		// So a ?project= naming an archived project shows its name, not "All projects".
-		archivedProject: findProject(partitionProjects(projects).archived, project),
+		// The project halves come from the app layout; the page derives the
+		// archived name a stale ?project= needs.
 		filters: { project: project ?? '', type: type ?? '' }
 	};
 };
