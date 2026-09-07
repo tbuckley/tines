@@ -1,5 +1,6 @@
 import type { ArtifactSiteLink, IssueDetail, Project } from '@tines/shared';
 import { expect, test, type Page } from '@playwright/test';
+import { siteHeaders } from '../src/lib/server/artifact-site';
 import { ALICE, BASE_URL } from './constants.mjs';
 import { apiClient, body, gotoHydrated, runId, signIn } from './helpers';
 
@@ -11,7 +12,7 @@ import { apiClient, body, gotoHydrated, runId, signIn } from './helpers';
  * resolving through `/s/<token>/`, and the CSP holding the page away from
  * the Tines API while it does.
  *
- * The suite never sets `ARTIFACT_SANDBOX_ORIGIN`, so every assertion here is
+ * The worker suite never sets `ARTIFACT_SANDBOX_ORIGIN`, so every assertion here is
  * the *same-origin fallback* mode: the site is served from the app origin
  * under CSP `sandbox`, which gives it an opaque origin. Storage APIs
  * therefore throw — asserted in the negative direction below, and the mode
@@ -252,7 +253,16 @@ test('a folder site resolves its relative siblings and steps into subfolders', a
 
 	// The escape hatch out of the rendered page for a folder is its file list.
 	await dialog.getByRole('button', { name: 'Files' }).click();
-	await expect(dialog.getByText('app.js')).toBeVisible();
+	const files = dialog.getByRole('list');
+	await expect(files.getByRole('listitem')).toHaveCount(4);
+	await expect(files.getByRole('button', { name: 'index.html', exact: true })).toBeVisible();
+	await expect(files.getByRole('button', { name: 'styles.css', exact: true })).toBeVisible();
+	await files.getByRole('button', { name: 'styles.css', exact: true }).click();
+	await expect(dialog.locator('pre')).toHaveText(FOLDER_STYLES_CSS.trim());
+	await dialog.getByRole('button', { name: 'all files' }).click();
+	await expect(files.getByRole('listitem')).toHaveCount(4);
+	await dialog.getByRole('button', { name: 'Back to the rendered page' }).click();
+	await expect(frame.locator('#sibling')).toHaveText('sibling script ran');
 });
 
 test('a directory redirects to its trailing slash and serves its index', async ({ page }) => {
@@ -323,4 +333,63 @@ test('a bad token gets an HTML error page, not a JSON error or a download', asyn
 	);
 	expect(refused.status()).toBe(422);
 	expect((await refused.json()).error.code).toBe('not_a_site');
+});
+
+/**
+ * Browser integration for the dedicated-origin viewer branch. Wrangler local
+ * host rewriting cannot reproduce the production hostname boundary, so this
+ * fixture supplies the dedicated host with Playwright routing. The real hook
+ * is exercised independently in hooks.server.test.ts; headers here come from
+ * the same production builder, not a permissive substitute.
+ */
+test('the dedicated-origin iframe permits storage while containing the prototype', async ({
+	page,
+	context
+}) => {
+	const sandboxOrigin = 'https://artifact-sandbox.test';
+	const token = 'browser-probe';
+	const url = `${sandboxOrigin}/s/${token}/`;
+	await context.route(`${sandboxOrigin}/**`, async (route) => {
+		if (route.request().url() !== url) {
+			await route.fulfill({ status: 404, body: 'Not found' });
+			return;
+		}
+		await route.fulfill({
+			status: 200,
+			headers: siteHeaders({
+				servedOrigin: sandboxOrigin,
+				token,
+				appOrigin: BASE_URL,
+				sandboxed: false,
+				contentType: 'text/html',
+				filename: 'prototype.html'
+			}),
+			body: PROTOTYPE_HTML
+		});
+	});
+	await page.route(`**/api/v1/issues/${issue.id}/artifacts/prototype/site-link`, (route) =>
+		route.fulfill({
+			json: { url, mode: 'sandbox-origin', version: 1, expires_at: Date.now() + 60_000 }
+		})
+	);
+	await gotoHydrated(page, issueUrl());
+	const dialog = await openViewer(page, 'prototype');
+	const iframe = dialog.locator('iframe[title="prototype preview"]');
+	await expect(iframe).toHaveAttribute('src', url);
+	await expect(iframe).toHaveAttribute(
+		'sandbox',
+		'allow-scripts allow-same-origin allow-forms allow-modals allow-popups'
+	);
+	const frame = page.frameLocator('iframe[title="prototype preview"]');
+	await expect(frame.locator('#script')).toHaveText('script ran');
+	await expect(frame.locator('#storage')).toHaveText('storage works');
+	await expect(frame.locator('#api')).toHaveText('api blocked');
+	await expect(
+		dialog.getByText('storage APIs (localStorage, cookies) are unavailable')
+	).toHaveCount(0);
+	const popupPromise = context.waitForEvent('page');
+	await dialog.getByRole('link', { name: 'Open full page' }).click();
+	const popup = await popupPromise;
+	await expect(popup.locator('#storage')).toHaveText('storage works');
+	await expect(popup.locator('#api')).toHaveText('api blocked');
 });

@@ -41,6 +41,7 @@ import {
 	getArtifactStore
 } from '$lib/server/artifact-store';
 import {
+	artifactSandboxOrigin,
 	mintSiteToken,
 	resolveSitePath,
 	siteErrorPage,
@@ -1535,7 +1536,7 @@ export async function createSiteLink(
 		{ u: actor.userId, a: item.id, v: row.id, e: expiresAt },
 		keyMaterial
 	);
-	const sandboxOrigin = env.ARTIFACT_SANDBOX_ORIGIN;
+	const sandboxOrigin = artifactSandboxOrigin(env.ARTIFACT_SANDBOX_ORIGIN);
 	return {
 		url: `${sandboxOrigin || opts.requestOrigin}/s/${token}/`,
 		version: row.version,
@@ -1625,7 +1626,7 @@ export async function artifactSiteResponse(
 		appOrigin: appOriginOf(env),
 		// Sandboxed unless this request landed on the configured sandbox host:
 		// a site reaching the app origin is contained whatever the config says.
-		sandboxed: !env.ARTIFACT_SANDBOX_ORIGIN || env.ARTIFACT_SANDBOX_ORIGIN !== url.origin,
+		sandboxed: artifactSandboxOrigin(env.ARTIFACT_SANDBOX_ORIGIN) !== url.origin,
 		contentType,
 		filename
 	});

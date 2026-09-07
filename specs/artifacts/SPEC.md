@@ -542,7 +542,7 @@ storage-using prototype needs production.
 artifact's own `/s/<token>/` prefix — a literal path, never `'self'` — so
 the Tines API is unreachable even in fallback mode (the API also sets no
 CORS headers anywhere, so nothing would be readable in any case);
-`connect-src 'none'`, no external CDNs, `frame-ancestors` naming the app,
+`connect-src` restricted to that same signed artifact prefix (sibling fetches only), no external CDNs, `frame-ancestors` naming the app,
 `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, and the
 `sandbox` directive itself whenever the request did not land on the sandbox
 origin. That directive applies to top-level documents too, so "open full

@@ -1026,6 +1026,36 @@ describe('issue artifacts', () => {
 			expect(link.url.startsWith('https://proto.example.workers.dev/s/')).toBe(true);
 		});
 
+		it.each(['https://proto.example.workers.dev/', 'https://PROTO.example.workers.dev:443/'])(
+			'canonicalizes %s for both minting and serving',
+			async (configured) => {
+				const env = siteEnv({ ARTIFACT_SANDBOX_ORIGIN: configured });
+				const { link } = await htmlIssue(env);
+				expect(link.mode).toBe('sandbox-origin');
+				expect(link.url).toMatch(/^https:\/\/proto.example.workers.dev\/s\/v1\./);
+				const response = await serve(link.url, env);
+				expect(response.status).toBe(200);
+				expect(response.headers.get('content-security-policy')).not.toContain('sandbox');
+			}
+		);
+
+		it.each([
+			'garbage',
+			'javascript:alert(1)',
+			'https://proto.example.workers.dev/path',
+			'https://proto.example.workers.dev/?x=1',
+			'https://proto.example.workers.dev/#x',
+			'https://user:pass@proto.example.workers.dev'
+		])('falls back consistently for invalid config %s', async (configured) => {
+			const env = siteEnv({ ARTIFACT_SANDBOX_ORIGIN: configured });
+			const { link } = await htmlIssue(env);
+			expect(link.mode).toBe('same-origin');
+			expect(link.url).toMatch(/^http:\/\/localhost:8788\/s\/v1\./);
+			expect((await serve(link.url, env)).headers.get('content-security-policy')).toContain(
+				'sandbox allow-scripts'
+			);
+		});
+
 		it('serves the page with a CSP pinned to its own prefix, sandboxed on the app origin', async () => {
 			const { link } = await htmlIssue();
 			const res = await serve(link.url, siteEnv());

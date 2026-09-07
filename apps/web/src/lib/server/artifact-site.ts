@@ -8,6 +8,27 @@
  */
 import { ARTIFACT_SITE_INDEX } from '@tines/shared';
 
+/** Parse an origin, accepting equivalent spellings but never paths or credentials.
+ * Invalid configuration fails closed to opaque-origin rendering. */
+export function artifactSandboxOrigin(configured: string | undefined): string | null {
+	if (!configured) return null;
+	try {
+		const url = new URL(configured);
+		if (
+			!['https:', 'http:'].includes(url.protocol) ||
+			url.username ||
+			url.password ||
+			url.pathname !== '/' ||
+			url.search ||
+			url.hash
+		)
+			return null;
+		return url.origin;
+	} catch {
+		return null;
+	}
+}
+
 /** Payload of a site token: a specific version of a specific artifact, for one user. */
 export interface SiteTokenPayload {
 	/** Owner (artifact rows are user-scoped). */

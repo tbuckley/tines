@@ -47,6 +47,7 @@
 	let siteLink = $state<ArtifactSiteLink | null>(null);
 	let siteError = $state<string | null>(null);
 	let showSource = $state(false);
+	let showFiles = $state(false);
 	/** Simulated device width for the frame; `null` fills the dialog. */
 	let deviceWidth = $state<number | null>(null);
 
@@ -60,6 +61,7 @@
 		versionPick = null;
 		pathPick = null;
 		showSource = false;
+		showFiles = false;
 		api
 			.getArtifact(issueId, name)
 			.then((full) => {
@@ -114,7 +116,7 @@
 			: null
 	);
 	/** The site renders unless the reader asked for the source or a folder file. */
-	const isSite = $derived(entry !== null && !showSource && pathPick === null);
+	const isSite = $derived(entry !== null && !showSource && !showFiles && pathPick === null);
 
 	type ViewKind = 'site' | 'image' | 'pdf' | 'markdown' | 'text' | 'download';
 	function viewKind(contentType: string | null): ViewKind {
@@ -429,11 +431,15 @@
 		{:else}
 			{@render fileBody()}
 		{/if}
-		{#if entry !== null && showSource}
+		{#if entry !== null && (showSource || showFiles)}
 			<button
 				type="button"
 				class="text-muted-foreground hover:text-foreground mt-2 inline-flex items-center gap-1 text-xs"
-				onclick={() => (showSource = false)}
+				onclick={() => {
+					showSource = false;
+					showFiles = false;
+					pathPick = null;
+				}}
 			>
 				← Back to the rendered page
 			</button>
@@ -487,7 +493,7 @@
 						<button
 							type="button"
 							class="text-muted-foreground hover:text-foreground ml-auto inline-flex items-center gap-1 text-xs"
-							onclick={() => (pathPick = (version?.files ?? [])[0]?.path ?? null)}
+							onclick={() => (showFiles = true)}
 						>
 							<IconFolder size={14} /> Files
 						</button>
