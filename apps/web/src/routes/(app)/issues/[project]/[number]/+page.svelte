@@ -149,6 +149,8 @@
 	 */
 	let agentFoldOpen = $state(false);
 	let agentFoldOpened = false;
+	// svelte-ignore state_referenced_locally
+	let checklistIssueId = $state(data.issue.id);
 	$effect(() => {
 		const panel = agentActivityPanel.current;
 		if (panel.status !== 'loaded') return;
@@ -161,7 +163,9 @@
 	});
 	$effect(() => {
 		// A different issue: the sticky flag belongs to the page-session of one.
-		data.issue.id;
+		const issueId = data.issue.id;
+		if (issueId === checklistIssueId) return;
+		checklistIssueId = issueId;
 		untrack(() => {
 			checklistVisible = false;
 			agentFoldOpened = false;
