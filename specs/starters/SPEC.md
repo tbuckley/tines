@@ -13,7 +13,8 @@ Tines/248.
 ## The bundle shape
 
 A starter is a library document (`LibraryDocument`: `workflows` entries that
-are literally `CreateWorkflowRequest`s, plus `context` entries) extended with:
+are literally `CreateWorkflowRequest`s, plus `context` entries — the format is
+`specs/library/SPEC.md`) extended with:
 
 - **typed inputs** — `repo_url`, `repo_branch`, `brief`, each declared with a
   label, a hint, `required`, and a max length. Values are trimmed; an absent

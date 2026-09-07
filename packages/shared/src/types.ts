@@ -242,7 +242,10 @@ export interface WorkflowStateInput {
 	/**
 	 * The state whose context this state inherits: one of this request's
 	 * states by id or name, or the id of a state in any workflow you can see
-	 * (your own, or the standard workflow). Chains are at most 3 states long
+	 * (your own, or the standard workflow). In a {@link LibraryDocument} the
+	 * cross-workflow form is the portable `"<workflow name>/<state name>"`
+	 * instead of an id, resolved by the importer before it reaches this
+	 * request. Chains are at most 3 states long
 	 * and may not cycle. On an EXISTING state (`id` present) the field is
 	 * merge-patch style — absent = unchanged, `null` = clear — so callers
 	 * that round-trip states without knowing about it cannot clear it. On a
@@ -2375,8 +2378,17 @@ export interface ApiErrorBody {
 
 /** Discriminator on the exported document; guards against feeding in a stray JSON file. */
 export const LIBRARY_FORMAT = 'tines.library';
-/** Bumped when the document shape changes incompatibly; import refuses anything higher. */
-export const LIBRARY_VERSION = 1;
+/**
+ * Bumped when the document shape changes incompatibly; import refuses anything
+ * higher. Version history:
+ *
+ * - **1** — projects, workflows (states, transitions, artifact requirements)
+ *   and context items, all referenced by name.
+ * - **2** — a state may carry `inherits_from` (Tines/270): the state whose
+ *   context it inherits, as `"<workflow name>/<state name>"`. Version 1
+ *   documents read unchanged — they simply have no pointers.
+ */
+export const LIBRARY_VERSION = 2;
 
 /** Document-level caps, checked before the entries are walked. */
 export const LIBRARY_MAX_BYTES = 5 * 1024 * 1024;
@@ -2436,7 +2448,9 @@ export interface LibraryContextEntry {
  *
  * The system `Standard` workflow is never exported (it is seeded with
  * identical ids on every instance); items scoped to its states are, and
- * re-resolve by name.
+ * re-resolve by name — as does a state's `inherits_from`, which points at
+ * its base as `"<workflow name>/<state name>"` (version 2 and up) so that a
+ * pointer survives a move between deployments that share no ids.
  */
 export interface LibraryDocument {
 	format: typeof LIBRARY_FORMAT;
