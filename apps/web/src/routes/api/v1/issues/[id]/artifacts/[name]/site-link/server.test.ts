@@ -63,9 +63,9 @@ describe('POST artifact site-link', () => {
 		expect(served.status).toBe(200);
 		expect(await served.text()).toBe(`<h1>v${version}</h1>`);
 	});
-	it.each([0, -1, 1.5, '1', true, {}, []])(
-		'rejects invalid version %j at the boundary',
-		async (version) => {
+	it.each([0, -1, 1.5, '1', true, {}, []].map((version) => ({ version })))(
+		'rejects invalid version $version at the boundary',
+		async ({ version }) => {
 			const response = await post({ version });
 			expect(response.status).toBe(422);
 			expect(await response.json()).toMatchObject({
