@@ -258,7 +258,7 @@
 	// Plain (non-reactive) guard, set before the fetch so an overlapping tick
 	// (slow request + interval, or interval + refocus) can't double-resync.
 	let syncing = false;
-	/** Newest account-level event id, set on the first tick; a change = refresh. */
+	/** Newest account-level event id; the first non-empty observation also refreshes. */
 	let latestAccountEventId: string | null = null;
 	async function checkForUpdates() {
 		if (syncing) return;
@@ -275,10 +275,7 @@
 			]);
 			const newestId = latest.items[0]?.id ?? null;
 			const newestAccountId = account?.items[0]?.id ?? null;
-			const accountMoved =
-				newestAccountId !== null &&
-				latestAccountEventId !== null &&
-				newestAccountId !== latestAccountEventId;
+			const accountMoved = newestAccountId !== null && newestAccountId !== latestAccountEventId;
 			latestAccountEventId = newestAccountId ?? latestAccountEventId;
 			if (newestId !== latestEventId || accountMoved) await refresh();
 		} catch {

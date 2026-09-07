@@ -594,7 +594,7 @@
 			.sort()
 			.join(',');
 	let syncingRunners = false;
-	/** Newest account-level event id, set on the first tick; a change = refresh. */
+	/** Newest account-level event id; the first non-empty observation also refreshes. */
 	let latestAccountEventId: string | null = null;
 	async function checkRunners() {
 		if (syncingRunners) return;
@@ -609,10 +609,7 @@
 				checklistVisible ? api.listEvents({ limit: 1 }) : Promise.resolve(null)
 			]);
 			const newestEventId = events?.items[0]?.id ?? null;
-			const eventMoved =
-				newestEventId !== null &&
-				latestAccountEventId !== null &&
-				newestEventId !== latestAccountEventId;
+			const eventMoved = newestEventId !== null && newestEventId !== latestAccountEventId;
 			latestAccountEventId = newestEventId ?? latestAccountEventId;
 			if (eventMoved || runnerSignature(items) !== runnerSignature(untrack(() => data.runners))) {
 				// Re-runs the loader without remounting, so the open dialog,
