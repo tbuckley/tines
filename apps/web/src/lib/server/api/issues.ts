@@ -28,7 +28,7 @@ import {
 	type WorkflowState
 } from '@tines/shared';
 import { sql, type CompiledQuery, type Kysely } from 'kysely';
-import { newId, type Database } from '$lib/server/db';
+import { IN_LIST_CHUNK, chunked, newId, type Database } from '$lib/server/db';
 import {
 	ApiFail,
 	notFound,
@@ -487,27 +487,40 @@ async function attachRoundSummaries(
 	for (const item of items) item.round_summary = null;
 	if (awaiting.length === 0) return;
 
-	const versions = await versionQuery(db)
-		.innerJoin('context_item', 'context_item.id', 'artifact_version.context_item_id')
-		.select([
-			'context_item.issue_id as item_issue_id',
-			'context_item.name as item_name',
-			'context_item.config as item_config'
-		])
-		.where('context_item.user_id', '=', userId)
-		.where('context_item.kind', '=', 'artifact')
-		.where((eb) =>
-			eb.or(
-				awaiting.map(({ row }) =>
-					eb.and([
-						eb('context_item.issue_id', '=', row.id),
-						eb('artifact_version.created_at', '>', Number(row.round_boundary_at ?? row.created_at))
+	// Each awaiting row binds two parameters (issue id, round boundary), and a
+	// page is up to 100 rows — an all-awaiting page such as the Awaiting tab
+	// would bind 200, twice D1's cap, so the rows are queried in chunks.
+	const versions = (
+		await Promise.all(
+			chunked(awaiting, Math.floor(IN_LIST_CHUNK / 2)).map((chunk) =>
+				versionQuery(db)
+					.innerJoin('context_item', 'context_item.id', 'artifact_version.context_item_id')
+					.select([
+						'context_item.issue_id as item_issue_id',
+						'context_item.name as item_name',
+						'context_item.config as item_config'
 					])
-				)
+					.where('context_item.user_id', '=', userId)
+					.where('context_item.kind', '=', 'artifact')
+					.where((eb) =>
+						eb.or(
+							chunk.map(({ row }) =>
+								eb.and([
+									eb('context_item.issue_id', '=', row.id),
+									eb(
+										'artifact_version.created_at',
+										'>',
+										Number(row.round_boundary_at ?? row.created_at)
+									)
+								])
+							)
+						)
+					)
+					.orderBy('artifact_version.created_at asc')
+					.execute()
 			)
 		)
-		.orderBy('artifact_version.created_at asc')
-		.execute();
+	).flat();
 
 	for (const { row, i } of awaiting) {
 		// Attribution by run id, and only runs on this issue: a version a run on

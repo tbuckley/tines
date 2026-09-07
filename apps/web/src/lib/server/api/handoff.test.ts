@@ -20,6 +20,7 @@ import {
 	addTransitionEvent,
 	seedBase
 } from '../supervisor/test-fixtures';
+import { IN_LIST_CHUNK } from '$lib/server/db';
 import { getIssueDetail, listIssues } from './issues';
 import { createTestDb, type TestDb } from './test-db';
 
@@ -638,6 +639,53 @@ describe('list rows', () => {
 		]);
 		expect(active.arrived_via).toBeNull();
 		expect(active.round_summary).toBeNull();
+	});
+
+	/**
+	 * The round-summary lookup binds two parameters per awaiting row, and the
+	 * web Awaiting tab lists a page of 100 — 200 parameters against D1's cap
+	 * of 100, which 500'd the page once enough issues were awaiting. The test
+	 * D1 does not enforce the cap, so this asserts the chunking directly.
+	 */
+	it('chunks the round-summary lookup so a full awaiting page fits D1 bound parameters', async () => {
+		const ids: string[] = [];
+		for (let i = 0; i < 100; i++) {
+			const issueId = addIssue(t, { workflow: 'wf_eng', state: ENG_STATES.humanReview });
+			const key = finishedRun({
+				id: `arun_page${i}`,
+				issueId,
+				from: ENG_STATES.impl,
+				to: ENG_STATES.humanReview,
+				action: 'Done',
+				fromName: 'Implementation',
+				toName: 'Human Review',
+				at: NOW + i
+			});
+			addVersion(addArtifact(issueId, 'impl-pr', 'pr'), 1, {
+				apiKeyId: key,
+				at: NOW + i + 1,
+				pr: ['https://github.com/tbuckley/tines', 100 + i]
+			});
+			ids.push(issueId);
+		}
+		const seen = t.spyOnQueries();
+		const { items } = await listIssues(
+			t.db,
+			USER,
+			{ category: 'awaiting_human' },
+			{ limit: 100, cursor: null }
+		);
+		expect(items.length).toBe(100);
+		for (const [i, issueId] of ids.entries()) {
+			const item = items.find((it) => it.id === issueId)!;
+			expect(item.round_summary?.pr_url).toBe(`https://github.com/tbuckley/tines/pull/${100 + i}`);
+			expect(item.round_summary?.artifacts).toEqual([
+				{ name: 'impl-pr', artifact_type: 'pr', version: 1 }
+			]);
+		}
+		const lookups = seen().filter((q) => q.includes('from "artifact_version"'));
+		expect(lookups.length).toBe(Math.ceil(100 / Math.floor(IN_LIST_CHUNK / 2)));
+		for (const q of lookups) expect((q.match(/\?/g) ?? []).length).toBeLessThanOrEqual(100);
 	});
 
 	it('leaves state_entered_at alone when a comment arrives', async () => {
