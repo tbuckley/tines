@@ -234,7 +234,7 @@ test('the checklist retires account-wide once a run exists', async ({ page, requ
 	// back to the steady-state explainer with its remedy links (Tines/252).
 	await page.goto(issuePath(secondIssueNumber));
 	await expect(checklistOf(page)).toHaveCount(0);
-	await expect(page.getByRole('button', { name: 'Why?' })).toBeVisible();
+	await expect(page.getByRole('group', { name: 'Why?' })).toBeVisible();
 
 	await page.goto('/agents');
 	await expect(checklistOf(page)).toHaveCount(0);
