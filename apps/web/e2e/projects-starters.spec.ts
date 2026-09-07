@@ -80,8 +80,9 @@ test('Code repository seeds the first issue launch context and gated review work
 	);
 	const first = created.starter?.first_issue;
 	expect(first).toMatchObject({ number: 1, state_name: 'In progress' });
+	if (!first) throw new Error('the code starter did not create its first issue');
 
-	const issue = await body<IssueDetail>(await api.get(`/api/v1/issues/${first?.id}`));
+	const issue = await body<IssueDetail>(await api.get(`/api/v1/issues/${first.id}`));
 	const submit = issue.allowed_transitions.find(
 		(transition) => transition.name === 'Submit for review'
 	);
@@ -90,7 +91,7 @@ test('Code repository seeds the first issue launch context and gated review work
 	]);
 
 	const prompt = await body<LaunchPromptResponse>(
-		await api.get(`/api/v1/issues/${first?.id}/prompt`)
+		await api.get(`/api/v1/issues/${first.id}/prompt`)
 	);
 	expect(prompt.text).toContain(`## Context: project ${projectName}`);
 	expect(prompt.text).toContain(conventions);
