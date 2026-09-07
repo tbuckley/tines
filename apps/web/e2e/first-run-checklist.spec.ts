@@ -178,7 +178,7 @@ test('a registering daemon ticks the runner and CLI items live', async ({ page }
 	await expect(item(page, 'cli')).toHaveAttribute('data-done', 'true');
 });
 
-test('routing and arming tick from the issue card', async ({ page, request }) => {
+test('routing, arming and the first run land live on both surfaces', async ({ page, request }) => {
 	const api = apiClient(request, DANA.apiKey);
 	await gotoHydrated(page, issuePath(issueNumber));
 
@@ -190,25 +190,30 @@ test('routing and arming tick from the issue card', async ({ page, request }) =>
 	const rules = await body<ListResponse<RoutingRule>>(await api.get('/api/v1/routing-rules'));
 	expect(rules.items).toHaveLength(1);
 
+	// Mount the Agents checklist before the first run too. Once a run exists a
+	// fresh load correctly retires it, so this second live page is what proves
+	// the account-wide landing moment rather than accidentally relying on stale
+	// loader data after navigating away and back.
+	const agentsPage = await page.context().newPage();
+	await gotoHydrated(agentsPage, '/agents');
+	await expect(checklistOf(agentsPage)).toBeVisible();
+
 	await checklistOf(page).getByRole('button', { name: 'Turn automation on' }).click();
 	await expect(item(page, 'enabled')).toHaveAttribute('data-done', 'true', { timeout: 15_000 });
 	const settings = await body<{ enabled: boolean }>(await api.get('/api/v1/supervisor/settings'));
 	expect(settings.enabled).toBe(true);
-});
 
-test('the last item becomes the run row when the first run starts', async ({ page }) => {
-	// The issue was created in "Open", which is an active state, so arming was
-	// the last thing dispatch was waiting for.
-	await gotoHydrated(page, issuePath(issueNumber));
+	// The issue was created in "Open", which is active, so arming was the last
+	// dispatch gate. Neither page reloads: each mounted checklist watches the
+	// account event feed and keeps itself sticky until the run row can land.
 	await expect(checklistOf(page).getByText(/Your first run has (started|run) on/)).toBeVisible({
 		timeout: 60_000
 	});
 	await expect(item(page, 'run')).toHaveAttribute('data-done', 'true');
-
-	// The same item on the Agents tab carries the run row, labelled with the
-	// issue it is on.
-	await gotoHydrated(page, '/agents');
-	await expect(checklistOf(page).getByText(/Your first run has (started|run) on/)).toBeVisible();
+	await expect(
+		checklistOf(agentsPage).getByText(/Your first run has (started|run) on/)
+	).toBeVisible({ timeout: 60_000 });
+	await agentsPage.close();
 });
 
 test('the checklist retires account-wide once a run exists', async ({ page, request }) => {
