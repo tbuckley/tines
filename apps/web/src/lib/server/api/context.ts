@@ -1606,6 +1606,38 @@ export async function effectiveContextForIssue(
 }
 
 /**
+ * The effective workflow brief for an issue. Prompts intentionally concatenate:
+ * an issue may match broad guidance and a more specific refinement with the
+ * same name, so this follows the effective-context ordering without its skill
+ * and repository work.
+ */
+export async function instructionsForIssue(
+	db: Kysely<Database>,
+	userId: string,
+	issueId: string
+): Promise<EffectivePromptPart[]> {
+	const target = await issueMatchTarget(db, userId, issueId);
+	const leafStateId = target.stateChain[target.stateChain.length - 1];
+	const rows = sortMatched(
+		await matchingItemsQuery(db, userId, target)
+			.where('context_item.kind', '=', 'prompt')
+			.where('context_item.name', '=', 'instructions')
+			.execute(),
+		target.stateChain
+	);
+	return rows
+		.filter((row) => (row.body ?? '').trim().length > 0)
+		.map((row) => ({
+			item_id: row.id,
+			name: row.name,
+			...describeRow(row, leafStateId),
+			body: row.body ?? '',
+			version: row.version,
+			is_journal: false
+		}));
+}
+
+/**
  * Per-kind counts of the currently effective context, post-dedupe — the
  * issue read's lightweight `context_summary`. One cheap query, no joins.
  */

@@ -20,6 +20,8 @@
 		disabled = false,
 		disabledReason = null,
 		stateEnteredAt,
+		meanings = {},
+		wrapLabels = false,
 		onmove
 	}: {
 		/**
@@ -33,6 +35,8 @@
 		/** Why the buttons are disabled, as their tooltip (archived project). */
 		disabledReason?: string | null;
 		stateEnteredAt: number;
+		meanings?: Record<string, string>;
+		wrapLabels?: boolean;
 		onmove: (t: AllowedTransition) => void;
 	} = $props();
 
@@ -46,19 +50,27 @@
 		{#each transitions as transition (transition.transition_id)}
 			{@const unmet = unmetFor(transition)}
 			{@const reqId = `transition-req-${uid}-${transition.transition_id}`}
+			{@const meaningId = `transition-meaning-${uid}-${transition.transition_id}`}
 			<div class="min-w-0" animate:flip={{ duration: dur() }}>
 				<!-- Reason lines are SIBLINGS of the button, never children: the
 				     button's accessible name stays "<name> → <state>". -->
 				<Button
 					size="sm"
 					variant="outline"
-					class="w-full justify-between"
+					class="w-full justify-between {wrapLabels ? 'h-auto min-h-11 gap-3 py-2' : ''}"
 					disabled={disabled || unmet.length > 0}
-					aria-describedby={transition.requires?.length ? reqId : undefined}
+					aria-describedby={[
+						transition.requires?.length ? reqId : null,
+						meanings[transition.transition_id] ? meaningId : null
+					]
+						.filter(Boolean)
+						.join(' ') || undefined}
 					onclick={() => onmove(transition)}
 					title={disabledReason ?? transition.name}
 				>
-					<span class="min-w-0 truncate text-left">{transition.name}</span>
+					<span class="min-w-0 text-left {wrapLabels ? 'whitespace-normal' : 'truncate'}"
+						>{transition.name}</span
+					>
 					<span
 						class="text-muted-foreground inline-flex shrink-0 items-center gap-1 text-xs font-normal"
 					>
@@ -66,6 +78,11 @@
 						{transition.to_state.name}
 					</span>
 				</Button>
+				{#if meanings[transition.transition_id]}
+					<p id={meaningId} class="text-muted-foreground mt-1 px-1 text-xs">
+						{meanings[transition.transition_id]}
+					</p>
+				{/if}
 				{#if transition.requires?.length}
 					<ul id={reqId} class="mt-1 space-y-1 px-1">
 						{#each transition.requires as r (r.artifact)}

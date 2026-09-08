@@ -24,13 +24,17 @@
 		issueId,
 		artifacts,
 		open = $bindable(false),
-		selectedName = $bindable<string | null>(null)
+		selectedName = $bindable<string | null>(null),
+		initialVersion = null,
+		initialPath = null
 	}: {
 		issueId: string;
 		artifacts: Artifact[];
 		open?: boolean;
 		/** The artifact the viewer shows; the header dropdown switches it. */
 		selectedName?: string | null;
+		initialVersion?: number | null;
+		initialPath?: string | null;
 	} = $props();
 
 	// The viewer is a reader over the detail read (versions incl. folder file
@@ -58,8 +62,8 @@
 		const token = ++loadToken;
 		detail = null;
 		loadError = null;
-		versionPick = null;
-		pathPick = null;
+		versionPick = initialVersion;
+		pathPick = initialPath;
 		showSource = false;
 		showFiles = false;
 		api
@@ -75,7 +79,7 @@
 	const version = $derived.by((): ArtifactVersion | null => {
 		if (!detail) return null;
 		if (versionPick === null) return detail.current_version;
-		return detail.versions.find((v) => v.version === versionPick) ?? detail.current_version;
+		return detail.versions.find((v) => v.version === versionPick) ?? null;
 	});
 
 	// Stepping through a folder is just moving `pathPick` along the version's
@@ -450,6 +454,20 @@
 		>
 			{loadError}
 		</p>
+	{:else if detail && !version}
+		<div class="rounded-md border border-dashed p-4 text-sm">
+			<p>This version is unavailable.</p>
+			<button
+				type="button"
+				class="text-muted-foreground mt-2 text-xs underline"
+				onclick={() => {
+					versionPick = null;
+					pathPick = null;
+				}}
+			>
+				Open the current version
+			</button>
+		</div>
 	{:else}
 		<p class="text-muted-foreground text-sm">Loading…</p>
 	{/if}

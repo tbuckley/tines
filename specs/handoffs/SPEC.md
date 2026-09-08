@@ -63,11 +63,20 @@ from run attribution the supervisor already writes — no column stores a round.
 - **The detail derivation is opt-in** (`IssueDetailOptions.round`).
   `getIssueDetail` sits on every mutation's return path; only the two issue
   read endpoints, the prompt route and the runner's prompt delivery ask for it.
+- **Awaiting-human pages lead with the handoff.** The issue's effective
+  `instructions` prompts form a Markdown brief, followed by the arrival and
+  legal actions, then the supplied round in latest-stage-first display order.
+  Comments are resolved only through the run's supplied comment ids. Artifact
+  chips and screenshot thumbnails pin the version recorded in the round.
+  Desktop actions live in the handoff card; the existing phone transition bar
+  and State sheet remain the phone action surface.
+- **The web Awaiting tab is waiting-ordered.** Its private first-page read sorts
+  `state_entered_at` (falling back to creation) ascending before its 100-row
+  limit. Public list cursor order is unchanged. Awaiting rows show that clock,
+  arrival, PR and round artifact summaries; comments never reset the clock.
 
 ## Non-goals
 
 - No agent behaviour, stage prompt, CLI flag or agent-facing command changes.
 - No linkage between a transition and a comment, and no atomic comment+move.
 - No aggregation of waiting time or cost across issues, and no PR check status.
-- No UI: the handoff card, the Awaiting rows and the brief are Tines/264, which
-  consumes these fields.

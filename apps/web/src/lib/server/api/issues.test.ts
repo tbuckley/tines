@@ -1,6 +1,6 @@
 import type { WorkflowResponse } from '@tines/shared';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { CLOSED, PROJECT, USER, addIssue, seedBase } from '../supervisor/test-fixtures';
+import { CLOSED, PROJECT, REVIEW, USER, addIssue, seedBase } from '../supervisor/test-fixtures';
 import { ApiFail, type ActorContext } from './core';
 import {
 	allowedTransitions,
@@ -8,6 +8,7 @@ import {
 	countIssuesByCategory,
 	createIssue,
 	getIssueDetail,
+	listAwaitingIssues,
 	listIssues,
 	loadIssue,
 	resolveStateRef
@@ -61,6 +62,23 @@ describe('allowedTransitions', () => {
 
 	it('returns an empty list for terminal states', () => {
 		expect(allowedTransitions(workflow, 's_closed')).toEqual([]);
+	});
+});
+
+describe('listAwaitingIssues', () => {
+	it('selects the oldest waiting issues before applying the limit', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const newest = addIssue(t, { id: 'iss_newest', state: REVIEW, stateEnteredAt: 300 });
+		const oldest = addIssue(t, { id: 'iss_oldest', state: REVIEW, stateEnteredAt: 100 });
+		const middle = addIssue(t, { id: 'iss_middle', state: REVIEW, stateEnteredAt: 200 });
+		addIssue(t, { id: 'iss_active' });
+
+		const page = await listAwaitingIssues(t.db, USER, {}, { limit: 2 });
+		expect(page.items.map((issue) => issue.id)).toEqual([oldest, middle]);
+		expect(page.items.every((issue) => issue.state.category === 'awaiting_human')).toBe(true);
+		expect(page.hasMore).toBe(true);
+		expect(page.items.map((issue) => issue.id)).not.toContain(newest);
 	});
 });
 

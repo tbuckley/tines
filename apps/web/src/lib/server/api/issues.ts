@@ -472,6 +472,40 @@ export async function listIssues(
 	return { items, hasMore: rows.length > page.limit };
 }
 
+/** The web Awaiting tab: select the longest-waiting rows before its limit. */
+export async function listAwaitingIssues(
+	db: Kysely<Database>,
+	userId: string,
+	filters: IssueListFilters,
+	page: Page & { direction?: 'after' | 'before' }
+): Promise<{ items: IssueListItem[]; hasMore: boolean }> {
+	let q = applyCategoryFilters(
+		applyScopeFilters(issueQuery(db, userId), userId, filters),
+		{ ...filters, category: 'awaiting_human' }
+	);
+	const backwards = page.direction === 'before';
+	const waitingAt = sql<number>`COALESCE(issue.state_entered_at, issue.created_at)`;
+	if (page.cursor) {
+		const { createdAt, id } = page.cursor;
+		q = q.where((eb) =>
+			eb.or([
+				eb(waitingAt, backwards ? '<' : '>', createdAt),
+				eb.and([eb(waitingAt, '=', createdAt), eb('issue.id', backwards ? '<' : '>', id)])
+			])
+		);
+	}
+	const rows = await q
+		.orderBy(waitingAt, backwards ? 'desc' : 'asc')
+		.orderBy('issue.id', backwards ? 'desc' : 'asc')
+		.limit(page.limit + 1)
+		.execute();
+	const pageRows = rows.slice(0, page.limit);
+	if (backwards) pageRows.reverse();
+	const items = pageRows.map(filters.brief ? briefIssue : serializeIssue);
+	await attachRoundSummaries(db, userId, pageRows, items);
+	return { items, hasMore: rows.length > page.limit };
+}
+
 /**
  * `round_summary` on the awaiting-human rows of one page: what the round that
  * just ended produced, so the Awaiting list can say "impl-pr v2 · PR #78"

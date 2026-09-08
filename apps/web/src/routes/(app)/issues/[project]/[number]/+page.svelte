@@ -23,6 +23,7 @@
 	import ContextItemList from '$lib/components/ContextItemList.svelte';
 	import EffectiveContextView from '$lib/components/EffectiveContextView.svelte';
 	import EventList from '$lib/components/EventList.svelte';
+	import HandoffCard from '$lib/components/HandoffCard.svelte';
 	import LabelChip from '$lib/components/LabelChip.svelte';
 	import LabelsCard from '$lib/components/LabelsCard.svelte';
 	import LaunchPromptDialog from '$lib/components/LaunchPromptDialog.svelte';
@@ -43,6 +44,7 @@
 	import { PROJECT_ARCHIVED_TOOLTIP } from '$lib/archived';
 	import { actorLabel, prefersReducedMotion, relativeTime } from '$lib/format';
 	import { mergeLinks, type PendingAdd } from '$lib/link-overlay';
+	import { transitionMeanings } from '$lib/handoff';
 	import { navMemory } from '$lib/nav-memory.svelte';
 	import { planTransitions } from '$lib/transitions';
 
@@ -286,6 +288,13 @@
 	);
 	const ordered = $derived(plan.ordered);
 	const primaryId = $derived(plan.primaryId);
+	const hasHandoff = $derived(data.issue.state.category === 'awaiting_human');
+	const handoffMeanings = $derived(
+		transitionMeanings(
+			data.handoffBrief?.status === 'ready' ? data.handoffBrief.parts : [],
+			ordered
+		)
+	);
 
 	// Phone-only surfaces: the State sheet behind the bar, and the fold the
 	// header's "Blocked" chip opens before scrolling to it.
@@ -778,15 +787,31 @@
 	     truth (muted), but the buttons still act on this issue's own,
 	     dormant state — moving a duplicate is allowed. -->
 	<section
-		class="min-w-0 rounded-lg border p-4 transition-opacity duration-200 max-sm:hidden lg:col-start-2 lg:row-start-1 {duplicateOf
-			? 'opacity-70'
-			: ''}"
+		class="min-w-0 rounded-lg border p-4 transition-opacity duration-200 max-sm:hidden lg:col-start-2 lg:row-start-1 {hasHandoff
+			? 'max-lg:order-2'
+			: ''} {duplicateOf ? 'opacity-70' : ''}"
 	>
 		<h2 class="mb-3 text-sm font-semibold">State</h2>
-		{@render statePanel()}
+		{@render statePanel(!hasHandoff)}
 	</section>
 
-	<div class="min-w-0 space-y-8 max-sm:space-y-0 lg:col-start-1 lg:row-span-2 lg:row-start-1">
+	<div
+		class="min-w-0 space-y-8 max-sm:space-y-0 lg:col-start-1 lg:row-span-2 lg:row-start-1 {hasHandoff
+			? 'max-lg:order-1'
+			: ''}"
+	>
+		{#if hasHandoff}
+			<HandoffCard
+				issue={data.issue}
+				artifacts={data.artifacts}
+				brief={data.handoffBrief}
+				transitions={ordered}
+				{unmetFor}
+				disabled={transitioning || archived}
+				disabledReason={reason}
+				onmove={requestMove}
+			/>
+		{/if}
 		<!-- description -->
 		<section class="rounded-lg border max-sm:mb-6">
 			<header class="flex items-center justify-between border-b px-4 py-2.5">
@@ -1078,7 +1103,7 @@
 
 <!-- The transitions and the escape hatch, shared by the desktop State card
      and the phone's State sheet so the two never drift. -->
-{#snippet statePanel()}
+{#snippet statePanel(showTransitions = true)}
 	{#if duplicateOf}
 		<p class="text-muted-foreground mb-3 text-xs italic" transition:slide={{ duration: dur() }}>
 			This issue is a duplicate — its displayed state follows
@@ -1088,14 +1113,18 @@
 			>.
 		</p>
 	{/if}
-	<TransitionList
-		transitions={ordered}
-		{unmetFor}
-		disabled={transitioning || archived}
-		disabledReason={reason}
-		stateEnteredAt={data.issue.state_entered_at}
-		onmove={requestMove}
-	/>
+	{#if showTransitions}
+		<TransitionList
+			transitions={ordered}
+			{unmetFor}
+			disabled={transitioning || archived}
+			disabledReason={reason}
+			stateEnteredAt={data.issue.state_entered_at}
+			meanings={handoffMeanings}
+			wrapLabels={hasHandoff}
+			onmove={requestMove}
+		/>
+	{/if}
 	<p class="text-muted-foreground mt-3 text-xs">
 		Workflow:
 		<a href="/workflows/{data.issue.workflow.id}" class="hover:underline"
