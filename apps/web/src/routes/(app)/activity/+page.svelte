@@ -3,12 +3,17 @@
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { api } from '$lib/api';
+	import { findProject } from '$lib/archived';
 	import EventList from '$lib/components/EventList.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Select } from '$lib/components/ui/select/index.js';
 	import { Skeleton } from '$lib/components/ui/skeleton/index.js';
 
 	let { data } = $props();
+
+	// The project halves live on the app layout; a ?project= that names an
+	// archived one still has to show its name rather than "All projects".
+	const archivedProject = $derived(findProject(data.archivedProjects, data.filters.project));
 
 	const EVENT_TYPES = [
 		'issue.created',
@@ -79,8 +84,8 @@
 		{#each data.projects as project (project.id)}
 			<option value={project.name}>{project.name}</option>
 		{/each}
-		{#if data.archivedProject}
-			<option value={data.archivedProject.name}>{data.archivedProject.name} (archived)</option>
+		{#if archivedProject}
+			<option value={archivedProject.name}>{archivedProject.name} (archived)</option>
 		{/if}
 	</Select>
 	<Select

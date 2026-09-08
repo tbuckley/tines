@@ -1,7 +1,7 @@
 import type { IssueDetail, Project } from '@tines/shared';
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import { ALICE } from './constants.mjs';
-import { apiClient, body, clickUntil, gotoHydrated, runId, signIn } from './helpers';
+import { apiClient, body, clickUntil, gotoHydrated, resetFocus, runId, signIn } from './helpers';
 
 // Browser flows, signed in as the seeded user via a signed session cookie.
 // Names carry the per-run suffix so re-runs against a reused server stay
@@ -27,8 +27,10 @@ test.beforeAll(async ({ playwright }) => {
 	await request.dispose();
 });
 
-test.beforeEach(async ({ context }) => {
+test.beforeEach(async ({ context, request }) => {
 	await signIn(context, ALICE.sessionToken);
+	// Specs share one user: a focus left behind would scope this one's lists.
+	await resetFocus(request);
 });
 
 const stateBadge = (page: Page) => page.locator('.state-badge').first();

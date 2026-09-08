@@ -1,8 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import {
+	rateLimitHoldUntil,
+	RATE_LIMIT_HOLD_DEFAULT_MS,
+	RATE_LIMIT_HOLD_GRACE_MS,
+	RATE_LIMIT_HOLD_MAX_MS,
 	launchBackoffMs,
 	matchRule,
 	resolveRule,
+	isRoutedCandidate,
+	queueVerdict,
+	speakingTarget,
 	quotaHasRoom,
 	resolveTier,
 	targetVerdict,
@@ -168,6 +175,28 @@ describe('launchBackoffMs', () => {
 	});
 });
 
+describe('rateLimitHoldUntil', () => {
+	it('holds for the default when the provider gave no usable reset', () => {
+		expect(rateLimitHoldUntil(null, NOW)).toBe(NOW + RATE_LIMIT_HOLD_DEFAULT_MS);
+		expect(rateLimitHoldUntil(undefined, NOW)).toBe(NOW + RATE_LIMIT_HOLD_DEFAULT_MS);
+	});
+
+	it('treats a reset already in the past as unknown', () => {
+		expect(rateLimitHoldUntil(NOW - 1, NOW)).toBe(NOW + RATE_LIMIT_HOLD_DEFAULT_MS);
+		expect(rateLimitHoldUntil(NOW, NOW)).toBe(NOW + RATE_LIMIT_HOLD_DEFAULT_MS);
+	});
+
+	it('holds to the reported reset plus a grace', () => {
+		expect(rateLimitHoldUntil(NOW + 3_600_000, NOW)).toBe(
+			NOW + 3_600_000 + RATE_LIMIT_HOLD_GRACE_MS
+		);
+	});
+
+	it('clamps a far-out reset so a weekly limit re-probes daily', () => {
+		expect(rateLimitHoldUntil(NOW + 7 * 86_400_000, NOW)).toBe(NOW + RATE_LIMIT_HOLD_MAX_MS);
+	});
+});
+
 describe('targetVerdict', () => {
 	const runner = (over: Partial<VerdictRunner> = {}): VerdictRunner => ({
 		id: 'rnr_1',
@@ -177,6 +206,7 @@ describe('targetVerdict', () => {
 		last_seen_at: NOW,
 		draining: 0,
 		backoff_until: null,
+		backoff_reason: null,
 		...over
 	});
 	const counts = (over: Partial<ActiveCounts> = {}): ActiveCounts => ({
@@ -249,6 +279,31 @@ describe('targetVerdict', () => {
 		).toBe('ok');
 	});
 
+	it('a usage-limit hold reads as rate limited, and says when it resumes', () => {
+		const held = targetVerdict(
+			runner({ backoff_until: NOW + 60_000, backoff_reason: 'rate_limit' }),
+			counts(),
+			globalCap,
+			's1',
+			NOW
+		);
+		expect(held.verdict).toBe('rate_limited');
+		expect(held.detail).toContain(new Date(NOW + 60_000).toISOString());
+		// Expired, and the failure backoff with the same window, are unchanged.
+		expect(
+			targetVerdict(
+				runner({ backoff_until: NOW, backoff_reason: 'rate_limit' }),
+				counts(),
+				globalCap,
+				's1',
+				NOW
+			).verdict
+		).toBe('ok');
+		expect(
+			targetVerdict(runner({ backoff_until: NOW + 60_000 }), counts(), globalCap, 's1', NOW).verdict
+		).toBe('backing_off');
+	});
+
 	it('at max_concurrent', () => {
 		const c = counts({ byRunner: new Map([['rnr_1', 2]]), total: 2 });
 		expect(targetVerdict(runner(), c, globalCap, 's1', NOW).verdict).toBe('at_capacity');
@@ -279,5 +334,114 @@ describe('quotaHasRoom', () => {
 		const counts: ActiveCounts = { total: 0, byRunner: new Map(), byStartState: new Map() };
 		expect(quotaHasRoom(roster, counts, 's1')).toBe(false);
 		expect(quotaHasRoom(roster, counts, 's2')).toBe(true);
+	});
+});
+
+describe('speakingTarget', () => {
+	it('prefers the first ok target — where dispatch would actually send it', () => {
+		const targets = [
+			{ id: 'a', verdict: 'offline' as const },
+			{ id: 'b', verdict: 'ok' as const },
+			{ id: 'c', verdict: 'ok' as const }
+		];
+		expect(speakingTarget(targets)?.id).toBe('b');
+	});
+
+	it('falls back to the first target in preference order', () => {
+		const targets = [
+			{ id: 'a', verdict: 'at_capacity' as const },
+			{ id: 'b', verdict: 'offline' as const }
+		];
+		expect(speakingTarget(targets)?.id).toBe('a');
+	});
+
+	it('is null for no targets', () => {
+		expect(speakingTarget([])).toBeNull();
+	});
+});
+
+describe('queueVerdict', () => {
+	const base = {
+		enabled: true,
+		parked: false,
+		pinned: false,
+		hasRule: true,
+		ambiguous: false,
+		targets: [{ verdict: 'ok' as const }]
+	};
+
+	it('reports the kill switch above everything else', () => {
+		expect(queueVerdict({ ...base, enabled: false, parked: true, targets: [] })).toBe(
+			'automation_off'
+		);
+	});
+
+	it('reports parked above the routing failures', () => {
+		expect(queueVerdict({ ...base, parked: true, hasRule: false, targets: [] })).toBe('parked');
+	});
+
+	it('distinguishes the four ways an issue reaches no targets', () => {
+		const none = { ...base, targets: [] };
+		expect(queueVerdict({ ...none, pinned: true })).toBe('pin_missing');
+		expect(queueVerdict({ ...none, ambiguous: true, hasRule: false })).toBe('ambiguous_rule');
+		expect(queueVerdict({ ...none, hasRule: true })).toBe('no_targets');
+		expect(queueVerdict({ ...none, hasRule: false })).toBe('no_rule');
+	});
+
+	it('otherwise speaks for the speaking target', () => {
+		expect(queueVerdict(base)).toBe('ok');
+		expect(
+			queueVerdict({ ...base, targets: [{ verdict: 'offline' }, { verdict: 'at_capacity' }] })
+		).toBe('offline');
+		expect(queueVerdict({ ...base, targets: [{ verdict: 'offline' }, { verdict: 'ok' }] })).toBe(
+			'ok'
+		);
+	});
+});
+
+describe('isRoutedCandidate', () => {
+	const rules = [
+		{
+			id: 'r1',
+			project_id: 'p1',
+			workflow_state_id: null,
+			label_id: null,
+			targets: [{ runner_id: 'rnr_1', tier: null }]
+		},
+		{ id: 'empty', project_id: 'p2', workflow_state_id: null, label_id: null, targets: [] },
+		{
+			id: 'lab_a',
+			project_id: null,
+			workflow_state_id: null,
+			label_id: 'l_a',
+			targets: [{ runner_id: 'rnr_1', tier: null }]
+		},
+		{
+			id: 'lab_b',
+			project_id: null,
+			workflow_state_id: null,
+			label_id: 'l_b',
+			targets: [{ runner_id: 'rnr_2', tier: null }]
+		}
+	];
+	const issue = (project_id: string, label_ids: string[] = [], pin: string | null = null) => ({
+		project_id,
+		state_id: 's1',
+		label_ids,
+		pinned_runner_id: pin
+	});
+
+	it('routes a pinned issue regardless of the rules', () => {
+		expect(isRoutedCandidate(issue('p9', [], 'rnr_9'), rules)).toBe(true);
+	});
+
+	it('routes an issue whose winning rule has targets', () => {
+		expect(isRoutedCandidate(issue('p1'), rules)).toBe(true);
+	});
+
+	it('excludes a rule with no targets, no rule at all, and a tie', () => {
+		expect(isRoutedCandidate(issue('p2'), rules)).toBe(false);
+		expect(isRoutedCandidate(issue('p9'), rules)).toBe(false);
+		expect(isRoutedCandidate(issue('p9', ['l_a', 'l_b']), rules)).toBe(false);
 	});
 });

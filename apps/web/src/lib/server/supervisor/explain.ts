@@ -30,7 +30,7 @@ import {
 	loadEngineRunners,
 	targetsForIssue
 } from './engine';
-import { matchRule, resolveTier, targetVerdict } from './logic';
+import { isRoutedCandidate, resolveTier, speakingTarget, targetVerdict } from './logic';
 
 export async function explainDispatch(
 	db: Kysely<Database>,
@@ -213,16 +213,7 @@ export async function explainDispatch(
 	let queuePosition: number | null = null;
 	if (eligible && !firstOk) {
 		const eligibleIssues = await loadEligibleIssues(db, userId);
-		const routed = eligibleIssues.filter((c) => {
-			if (c.pinned_runner_id) return true;
-			// An ambiguous match returns null here, so a tied issue is
-			// correctly excluded from the queue it would never reach.
-			const r = matchRule(
-				{ project_id: c.project_id, state_id: c.state_id, label_ids: c.label_ids },
-				rules
-			);
-			return (r?.targets.length ?? 0) > 0;
-		});
+		const routed = eligibleIssues.filter((c) => isRoutedCandidate(c, rules));
 		const index = routed.findIndex((c) => c.id === issue.id);
 		queuePosition = index >= 0 ? index : null;
 	}
@@ -292,9 +283,10 @@ function verdictLine(input: {
 			? 'Pinned to a removed runner — clear the pin'
 			: 'No matching routing rule — nothing will dispatch';
 	}
-	const firstOk = input.targets.find((t) => t.verdict === 'ok');
-	if (firstOk) return `Eligible — would dispatch to ${firstOk.runner_name} next pass`;
-	const first = input.targets[0];
+	// The same target the fleet queue groups by (`speakingTarget`): the first
+	// `ok` one, because that is where dispatch would send it, else the first.
+	const first = speakingTarget(input.targets)!;
+	if (first.verdict === 'ok') return `Eligible — would dispatch to ${first.runner_name} next pass`;
 	const why =
 		first.verdict === 'paused'
 			? `${first.runner_name} is paused`
@@ -304,7 +296,10 @@ function verdictLine(input: {
 					? `${first.runner_name} is restarting to update`
 					: first.verdict === 'backing_off'
 						? `${first.runner_name} is backing off after repeated failures`
-						: `waiting for capacity on ${first.runner_name}`;
+						: first.verdict === 'rate_limited'
+							? // The detail carries the ISO reset; the surfaces localise it.
+								`${first.runner_name} hit its usage limit — ${first.detail.replace(/^usage limit reached — /, '')}`
+							: `waiting for capacity on ${first.runner_name}`;
 	const queue =
 		input.queuePosition !== null && input.queuePosition > 0
 			? ` (${input.queuePosition} eligible issue${input.queuePosition === 1 ? '' : 's'} ahead)`

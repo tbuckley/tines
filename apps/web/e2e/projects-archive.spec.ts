@@ -1,7 +1,13 @@
 import type { IssueDetail, Project } from '@tines/shared';
 import { expect, test, type Browser, type Page } from '@playwright/test';
 import { ALICE } from './constants.mjs';
-import { apiClient, body, clickUntil, runId, signIn } from './helpers';
+import { apiClient, body, clickUntil, gotoHydrated, resetFocus, runId, signIn } from './helpers';
+
+// Specs share one user: a project page sets the focus (Tines/259), so clear it
+// before each test rather than letting it scope a later spec's lists.
+test.beforeEach(async ({ request }) => {
+	await resetFocus(request);
+});
 
 /**
  * Project archiving in the browser (Tines/207): archive → grid toggle → issue
@@ -23,7 +29,7 @@ function suite(label: string, viewport: { width: number; height: number }) {
 			const context = await browser.newContext({ viewport });
 			await signIn(context, ALICE.sessionToken);
 			const page = await context.newPage();
-			await page.goto(path);
+			await gotoHydrated(page, path);
 			return page;
 		}
 
@@ -83,23 +89,27 @@ function suite(label: string, viewport: { width: number; height: number }) {
 
 			await expect(card).toBeVisible();
 			await expect(card).toContainText('Archived');
-			// The Projects nav tab remembers the toggle for the next visit.
+			// The Projects entry point remembers the toggle for the next visit —
+			// the desktop tab and the phone's bottom-bar slot are the same link.
 			await expect(page.getByRole('link', { name: 'Projects' }).first()).toHaveAttribute(
 				'href',
 				'/projects?archived=1'
 			);
 
-			await toggle.click();
-			await expect(card).toHaveCount(0);
+			await clickUntil(toggle, async () => {
+				await expect(card).toHaveCount(0);
+			});
 			await page.close();
 		});
 
 		test('every project picker omits the archived project', async ({ browser }) => {
+			// /issues has no project select at all now: the chrome owns the scope
+			// (Tines/259), and the switcher never lists an archived project.
 			const page = await open(browser, '/issues');
-			await expect(page.getByLabel('Filter by project')).not.toContainText(projectName);
+			await expect(page.getByLabel('Filter by project')).toHaveCount(0);
 
 			for (const path of ['/context', '/activity']) {
-				await page.goto(path);
+				await gotoHydrated(page, path);
 				await expect(page.getByLabel('Filter by project')).not.toContainText(projectName);
 			}
 			await page.close();
@@ -109,11 +119,18 @@ function suite(label: string, viewport: { width: number; height: number }) {
 			browser
 		}) => {
 			const page = await open(browser, `/issues?project=${encodeURIComponent(projectName)}`);
-			await expect(page.getByLabel('Filter by project')).toHaveValue(projectName);
-			await expect(page.getByLabel('Filter by project')).toContainText(`${projectName} (archived)`);
+			// The one-shot cannot focus a frozen project, so it writes nothing and
+			// says so; the list stays as it was rather than emptying.
+			await expect(page.getByRole('status')).toContainText(`Project “${projectName}” is archived.`);
+			await expect(page.getByRole('link', { name: 'View project' })).toHaveAttribute(
+				'href',
+				`/projects/${projectId}`
+			);
 			await expect(
 				page.getByRole('link', { name: new RegExp(`${projectName} issue`) })
-			).toBeVisible();
+			).toHaveCount(0);
+			// Unfocused, so the rest of the list is still there under All projects.
+			await expect(page.getByRole('link', { name: /#\d+/ }).first()).toBeVisible();
 			await page.close();
 		});
 

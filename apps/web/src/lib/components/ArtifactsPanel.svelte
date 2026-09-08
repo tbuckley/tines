@@ -1,6 +1,13 @@
 <script lang="ts">
 	import type { AllowedTransition, Artifact, ArtifactType } from '@tines/shared';
-	import { ApiError, ARTIFACT_NAME_PATTERN, parsePrSpec } from '@tines/shared';
+	import {
+		ApiError,
+		ARTIFACT_NAME_PATTERN,
+		ARTIFACT_SITE_INDEX,
+		lintHtmlArtifact,
+		parsePrSpec,
+		siteEntry
+	} from '@tines/shared';
 	import IconCheck from '@tabler/icons-svelte/icons/check';
 	import IconExternalLink from '@tabler/icons-svelte/icons/external-link';
 	import IconEye from '@tabler/icons-svelte/icons/eye';
@@ -266,6 +273,41 @@
 		const cut = rel.indexOf('/');
 		return cut > 0 ? rel.slice(cut + 1) : rel;
 	}
+
+	/**
+	 * Attach-time lint of the HTML that is about to become a site (Tines/272):
+	 * the two things that make a prototype look broken — no viewport meta (it
+	 * renders desktop-wide on a phone) and external scripts/styles (blocked by
+	 * the site CSP, so the page comes up blank). Warnings, never a block.
+	 */
+	let siteWarnings = $state<string[]>([]);
+
+	$effect(() => {
+		const entryFile =
+			attachType === 'file'
+				? attachFile !== null && siteEntry('file', attachFile.type) !== null
+					? attachFile
+					: null
+				: attachType === 'folder'
+					? (attachFolderFiles.find((f) => folderEntryPath(f) === ARTIFACT_SITE_INDEX) ?? null)
+					: null;
+		if (entryFile === null) {
+			siteWarnings = [];
+			return;
+		}
+		let live = true;
+		entryFile
+			.text()
+			.then((html) => {
+				if (live) siteWarnings = lintHtmlArtifact(html);
+			})
+			.catch(() => {
+				if (live) siteWarnings = [];
+			});
+		return () => {
+			live = false;
+		};
+	});
 
 	async function submitAttach(e: SubmitEvent) {
 		e.preventDefault();
@@ -673,6 +715,20 @@
 				placeholder="One-liner shown in lists and prompts"
 			/>
 		</div>
+
+		{#if siteWarnings.length > 0}
+			<div
+				class="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm"
+				data-testid="site-lint"
+			>
+				<p class="font-medium">This will render live as a site. Two things to check:</p>
+				<ul class="mt-1 list-disc space-y-1 pl-4">
+					{#each siteWarnings as warning (warning)}
+						<li>{warning}</li>
+					{/each}
+				</ul>
+			</div>
+		{/if}
 
 		{#if attachError}
 			<p

@@ -172,9 +172,15 @@ export interface ActorContext {
 type ControlPlaneRule = { pattern: RegExp; readable?: boolean };
 
 const CONTROL_PLANE_RULES: ControlPlaneRule[] = [
-	{ pattern: /^\/api\/v1\/runners(\/|$)/ },
+	// The fleet's shape is legible to a run (Tines/256): an agent already reads
+	// its own dispatch explainer, which names runners, their status and their
+	// caps, so the fleet reads behind `tines supervisor status` disclose nothing
+	// new. Only the GETs open — `register`, `rotate-token` and the PATCH/DELETE
+	// writes stay fenced (`poll` is runner-token auth, never a run key), and the
+	// settings GET nulls `github_pat_hint` for run keys.
+	{ pattern: /^\/api\/v1\/runners(\/|$)/, readable: true },
 	{ pattern: /^\/api\/v1\/routing-rules(\/|$)/ },
-	{ pattern: /^\/api\/v1\/supervisor\/settings(\/|$)/ },
+	{ pattern: /^\/api\/v1\/supervisor\/settings(\/|$)/, readable: true },
 	{ pattern: /^\/api\/v1\/issues\/[^/]+\/resume$/ },
 	{ pattern: /^\/api\/v1\/api-keys(\/|$)/ },
 	// The label library is vocabulary, not classification: run keys may read it
@@ -187,7 +193,10 @@ const CONTROL_PLANE_RULES: ControlPlaneRule[] = [
 	{ pattern: /^\/api\/v1\/import(\/|$)/ },
 	// Archiving is an operator act: an agent must not freeze (or thaw) the
 	// project it is working in, least of all the one draining around it.
-	{ pattern: /^\/api\/v1\/projects\/[^/]+\/(archive|unarchive)$/ }
+	{ pattern: /^\/api\/v1\/projects\/[^/]+\/(archive|unarchive)$/ },
+	// Per-user UI preferences (the project focus): an agent has no focus of its
+	// own and must not read or move its owner's. GET is fenced too.
+	{ pattern: /^\/api\/v1\/preferences(\/|$)/ }
 ];
 
 /** SvelteKit answers HEAD from the GET handler, so both are reads. */

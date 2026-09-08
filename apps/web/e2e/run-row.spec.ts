@@ -13,11 +13,13 @@
 import type { Workflow } from '@tines/shared';
 import { expect, test, type Page } from '@playwright/test';
 import { ALICE, RUNROW, RUNROW_FAILED } from './constants.mjs';
-import { apiClient, body, gotoHydrated, runId, signIn } from './helpers';
+import { apiClient, body, gotoHydrated, resetFocus, runId, signIn } from './helpers';
 
 test.describe('shared run row', () => {
-	test.beforeEach(async ({ context }) => {
+	test.beforeEach(async ({ context, request }) => {
 		await signIn(context, ALICE.sessionToken);
+		// Specs share one user: a focus left behind would scope this one's lists.
+		await resetFocus(request);
 	});
 
 	test('shows cost and the provider console link on the issue page and the Agents tab', async ({
@@ -125,8 +127,10 @@ test.describe('shared routing-rule row', () => {
 		);
 	});
 
-	test.beforeEach(async ({ context }) => {
+	test.beforeEach(async ({ context, request }) => {
 		await signIn(context, ALICE.sessionToken);
+		// Specs share one user: a focus left behind would scope this one's lists.
+		await resetFocus(request);
 	});
 
 	/** The rule row for this suite's state, carrying the dead-rule badge. */
@@ -155,8 +159,10 @@ test.describe('shared routing-rule row', () => {
 test.describe('failed run error', () => {
 	const FULL = RUNROW_FAILED.error;
 
-	test.beforeEach(async ({ context }) => {
+	test.beforeEach(async ({ context, request }) => {
 		await signIn(context, ALICE.sessionToken);
+		// Specs share one user: a focus left behind would scope this one's lists.
+		await resetFocus(request);
 	});
 
 	/** The seeded failed run's row, on whichever surface is loaded. */

@@ -157,6 +157,7 @@ const issue: IssueDetail = {
 	title: 'Ship the thing',
 	description: 'Do it *well*.',
 	labels: [],
+	arrived_via: null,
 	workflow_id: 'wf_1',
 	state: {
 		id: 's_review',
@@ -379,6 +380,111 @@ describe('issueBlock', () => {
 		const without = issueBlock(issue, emptyContext);
 		expect(without).toContain('No journal exists yet for project Tines · state Review. Start one:');
 		expect(without).toContain('(or `-` with a quoted heredoc, as for comments,');
+	});
+
+	it('opens with the human steer, before the thread, when there is one', () => {
+		const at = 1_699_999_000_000;
+		const steered = issueBlock(
+			{
+				...issue,
+				since_last_run: {
+					previous_run: {
+						run_id: 'arun_1',
+						ended_at: at - 3600_000,
+						state_at_start_name: 'Implementation'
+					},
+					transition: {
+						action: 'Send back to implementation',
+						from_state: { id: 's_review', name: 'Human Review' },
+						to_state: { id: 's_impl', name: 'Implementation' },
+						actor: {
+							user_id: 'u1',
+							user_name: 'Tom Buckley',
+							api_key_id: null,
+							api_key_name: null
+						},
+						at
+					},
+					comments: [
+						{
+							id: 'cmt_h',
+							issue_id: 'iss_1',
+							body: 'CI is red on the e2e job.',
+							actor: {
+								user_id: 'u1',
+								user_name: 'Tom Buckley',
+								api_key_id: null,
+								api_key_name: null
+							},
+							created_at: at - 1000,
+							updated_at: null
+						}
+					],
+					comment_count: 1,
+					stale_artifacts: ['impl-pr']
+				}
+			},
+			emptyContext,
+			[],
+			[],
+			at + 7_200_000
+		);
+		expect(steered).toContain('### Since the last run');
+		expect(steered).toContain(
+			'Moved from **Human Review** → Implementation via "Send back to implementation" by Tom Buckley, 2h ago'
+		);
+		expect(steered).toContain('Now stale: `impl-pr`.');
+		expect(steered).toContain(
+			'**Tom Buckley** (2023-11-14T21:56:39.000Z):\nCI is red on the e2e job.'
+		);
+		// The steer is what this run is for, so it precedes everything the agent
+		// would otherwise read first — including the full thread.
+		expect(steered.indexOf('### Since the last run')).toBeLessThan(steered.indexOf('### Comments'));
+		expect(steered.indexOf('Do it *well*.')).toBeLessThan(
+			steered.indexOf('### Since the last run')
+		);
+	});
+
+	it('pluralises the capped-comment trailer, singular included', () => {
+		const at = 1_699_999_000_000;
+		const human = { user_id: 'u1', user_name: 'Tom Buckley', api_key_id: null, api_key_name: null };
+		const comment = {
+			id: 'cmt_h',
+			issue_id: 'iss_1',
+			body: 'CI is red on the e2e job.',
+			actor: human,
+			created_at: at - 1000,
+			updated_at: null
+		};
+		const since = {
+			previous_run: {
+				run_id: 'arun_1',
+				ended_at: at - 3600_000,
+				state_at_start_name: 'Implementation'
+			},
+			transition: null,
+			comments: Array.from({ length: 10 }, (_, i) => ({ ...comment, id: `cmt_${i}` })),
+			stale_artifacts: []
+		};
+		// The cap is ten, so an eleventh comment hides exactly one — the common
+		// shape, and the one the hardcoded plural got wrong in agent-facing text.
+		const capped = issueBlock(
+			{ ...issue, since_last_run: { ...since, comment_count: 11 } },
+			emptyContext
+		);
+		expect(capped).toContain('… and 1 earlier comment — see ### Comments below.');
+		const two = issueBlock(
+			{ ...issue, since_last_run: { ...since, comment_count: 12 } },
+			emptyContext
+		);
+		expect(two).toContain('… and 2 earlier comments — see ### Comments below.');
+	});
+
+	it('omits the steer section entirely when nothing human happened', () => {
+		expect(issueBlock(issue, emptyContext)).not.toContain('### Since the last run');
+		expect(issueBlock({ ...issue, since_last_run: null }, emptyContext)).not.toContain(
+			'### Since the last run'
+		);
 	});
 
 	it('lists artifacts with the fetch command and shared prompts names-only', () => {
