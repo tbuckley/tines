@@ -60,7 +60,9 @@
 	const backList = $derived(
 		issueBackTarget(navMemory.lastList, effectiveFocus?.id ?? null, navMemory.issuesHref)
 	);
-	const issueProject = $derived(data.projects.find((project) => project.id === data.issue.project_id));
+	const issueProject = $derived(
+		data.projects.find((project) => project.id === data.issue.project_id)
+	);
 	const canOfferFocus = $derived(!archived && effectiveFocus?.id !== data.issue.project_id);
 	let focusing = $state(false);
 	let focusError = $state<string | null>(null);

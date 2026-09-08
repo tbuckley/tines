@@ -113,7 +113,7 @@ test.describe.serial('project focus', () => {
 		const bottomBar = page.getByRole('navigation', { name: 'Primary' });
 		await expect(bottomBar.getByRole('link', { name: 'Projects' })).toHaveAttribute(
 			'href',
-			/^\/projects/
+			`/projects/${aId}`
 		);
 		await expect(bottomBar.getByRole('button', { name: /^Project focus:/ })).toHaveCount(0);
 		await page.close();
@@ -139,6 +139,40 @@ test.describe.serial('project focus', () => {
 		await expect(openTab).toContainText(String(listed.items.length));
 		await page.close();
 	});
+
+	for (const [label, viewport] of [
+		['desktop', DESKTOP],
+		['phone', PHONE]
+	] as const) {
+		test(`remaining focused surfaces and cross-project offer work on ${label}`, async ({
+			browser
+		}) => {
+			const page = await open(browser, viewport, `/issues?project=${encodeURIComponent(A_NAME)}`);
+
+			await gotoHydrated(page, '/context');
+			await expect(page.getByLabel('Filter by project')).toHaveCount(0);
+			await expect(
+				page.getByText(/shared items? \(global and state-scoped\) apply here too/)
+			).toBeVisible();
+
+			await gotoHydrated(page, '/activity');
+			await expect(page.getByLabel('Filter by project')).toHaveCount(0);
+			await expect(page.getByRole('link', { name: '#1', exact: true }).first()).toBeVisible();
+
+			await gotoHydrated(page, '/workflows');
+			await expect(page.getByText(/1 open issue/).first()).toBeVisible();
+
+			await gotoHydrated(page, `/issues/${encodeURIComponent(B_NAME)}/1`);
+			await expect(page.getByRole('button', { name: `Focus ${B_NAME}` })).toBeVisible();
+			await expect(switcher(page)).toHaveAttribute('aria-label', `Project focus: ${A_NAME}`);
+
+			await expect(page.getByRole('link', { name: 'Projects' }).first()).toHaveAttribute(
+				'href',
+				`/projects/${aId}`
+			);
+			await page.close();
+		});
+	}
 
 	test('New issue opens on the focus, and empty and required under All projects', async ({
 		browser,
@@ -220,27 +254,32 @@ test.describe.serial('project focus', () => {
 		await page.close();
 	});
 
-	test('archiving the focused project falls back to All projects, for good', async ({
-		browser,
-		request
-	}) => {
-		const api = apiClient(request, ALICE.apiKey);
-		const page = await open(browser, DESKTOP, `/issues?project=${encodeURIComponent(B_NAME)}`);
-		await expect(switcher(page)).toHaveAttribute('aria-label', `Project focus: ${B_NAME}`);
+	for (const [label, viewport] of [
+		['desktop', DESKTOP],
+		['phone', PHONE]
+	] as const) {
+		test(`archiving the focused project falls back to All projects, for good on ${label}`, async ({
+			browser,
+			request
+		}) => {
+			const api = apiClient(request, ALICE.apiKey);
+			const page = await open(browser, viewport, `/issues?project=${encodeURIComponent(B_NAME)}`);
+			await expect(switcher(page)).toHaveAttribute('aria-label', `Project focus: ${B_NAME}`);
 
-		expect((await api.post(`/api/v1/projects/${bId}/archive`)).ok()).toBe(true);
-		await page.reload();
-		await expect(switcher(page)).toHaveAttribute('aria-label', 'Project focus: All projects');
-		await clickToOpen(switcher(page), page.getByRole('menuitemradio', { name: 'All projects' }));
-		await expect(page.getByRole('menuitemradio', { name: B_NAME })).toHaveCount(0);
-		await page.keyboard.press('Escape');
+			expect((await api.post(`/api/v1/projects/${bId}/archive`)).ok()).toBe(true);
+			await page.reload();
+			await expect(switcher(page)).toHaveAttribute('aria-label', 'Project focus: All projects');
+			await clickToOpen(switcher(page), page.getByRole('menuitemradio', { name: 'All projects' }));
+			await expect(page.getByRole('menuitemradio', { name: B_NAME })).toHaveCount(0);
+			await page.keyboard.press('Escape');
 
-		// The pointer was cleared, so thawing the project does not bring it back.
-		expect((await api.post(`/api/v1/projects/${bId}/unarchive`)).ok()).toBe(true);
-		await page.reload();
-		await expect(switcher(page)).toHaveAttribute('aria-label', 'Project focus: All projects');
-		await page.close();
-	});
+			// The pointer was cleared, so thawing the project does not bring it back.
+			expect((await api.post(`/api/v1/projects/${bId}/unarchive`)).ok()).toBe(true);
+			await page.reload();
+			await expect(switcher(page)).toHaveAttribute('aria-label', 'Project focus: All projects');
+			await page.close();
+		});
+	}
 
 	test('a run key cannot read or move its owner’s focus', async ({ request }) => {
 		const api = apiClient(request, RUNROW.runKey);

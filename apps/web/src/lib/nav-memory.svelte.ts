@@ -122,7 +122,8 @@ export function issueBackTarget(
 		return { ...lastList, href: `/issues${query ? `?${query}` : ''}` };
 	}
 	const match = /^\/projects\/([^/?#]+)(?:[/?#]|$)/.exec(lastList.href);
-	if (!focusedProjectId || (match && decodeURIComponent(match[1]) === focusedProjectId)) return lastList;
+	if (!focusedProjectId || (match && decodeURIComponent(match[1]) === focusedProjectId))
+		return lastList;
 	return { href: issuesHref, label: 'Issues' };
 }
 

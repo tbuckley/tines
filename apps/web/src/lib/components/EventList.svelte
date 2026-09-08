@@ -73,7 +73,9 @@
 			href="/issues/{encodeURIComponent(ev.issue_ref.project_name)}/{ev.issue_ref.number}"
 			class="font-medium hover:underline"
 		>
-			{showProject ? `${ev.issue_ref.project_name}/#${ev.issue_ref.number}` : `#${ev.issue_ref.number}`}
+			{showProject
+				? `${ev.issue_ref.project_name}/#${ev.issue_ref.number}`
+				: `#${ev.issue_ref.number}`}
 		</a>
 	{:else}
 		<span class="font-medium">this issue</span>

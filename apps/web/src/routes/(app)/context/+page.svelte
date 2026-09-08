@@ -108,8 +108,8 @@
 
 {#if data.sharedItemCount !== null}
 	<p class="text-muted-foreground mb-4 text-sm">
-		{data.sharedItemCount} shared {data.sharedItemCount === 1 ? 'item' : 'items'} (global and
-		state-scoped) {data.sharedItemCount === 1 ? 'applies' : 'apply'} here too ·
+		{data.sharedItemCount} shared {data.sharedItemCount === 1 ? 'item' : 'items'} (global and state-scoped)
+		{data.sharedItemCount === 1 ? 'applies' : 'apply'} here too ·
 		<button class="underline underline-offset-2" onclick={showAllProjects} disabled={clearingFocus}
 			>All projects</button
 		>
@@ -192,10 +192,7 @@
 <ContextItemList
 	items={data.items}
 	onselect={openEdit}
-	emptyMessage={data.filters.kind ||
-	data.filters.workflow ||
-	data.filters.label ||
-	data.filters.q
+	emptyMessage={data.filters.kind || data.filters.workflow || data.filters.label || data.filters.q
 		? 'No context items match these filters.'
 		: 'No context items yet. Attach a prompt, skill, or repo to a project, workflow state, or issue.'}
 />

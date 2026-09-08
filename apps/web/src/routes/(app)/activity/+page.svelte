@@ -114,7 +114,9 @@
 	</div>
 {/if}
 
-{#if loadError}<p class="text-destructive mt-4 text-center text-sm" role="alert">{loadError}</p>{/if}
+{#if loadError}<p class="text-destructive mt-4 text-center text-sm" role="alert">
+		{loadError}
+	</p>{/if}
 
 {#if nextCursor}
 	<div class="mt-6 flex justify-center">

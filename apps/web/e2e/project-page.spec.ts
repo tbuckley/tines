@@ -202,7 +202,7 @@ test.describe.serial('project page layout', () => {
 		const page = await open(browser, { width: 1440, height: 900 });
 		await expect(page.getByRole('link', { name: 'View all in Context' })).toHaveAttribute(
 			'href',
-			`/context?project=${projectId}`
+			'/context'
 		);
 		await page.context().close();
 	});

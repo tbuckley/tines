@@ -110,7 +110,7 @@ function suite(label: string, viewport: { width: number; height: number }) {
 
 			for (const path of ['/context', '/activity']) {
 				await gotoHydrated(page, path);
-				await expect(page.getByLabel('Filter by project')).not.toContainText(projectName);
+				await expect(page.getByLabel('Filter by project')).toHaveCount(0);
 			}
 			await page.close();
 		});

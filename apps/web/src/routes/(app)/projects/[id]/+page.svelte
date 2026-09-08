@@ -367,10 +367,7 @@
 	<div class="mb-3 flex items-center justify-between">
 		<h2 class="text-sm font-semibold">Context</h2>
 		<div class="flex items-center gap-3">
-			<a
-				href="/context"
-				class="text-muted-foreground hover:text-foreground text-xs"
-			>
+			<a href="/context" class="text-muted-foreground hover:text-foreground text-xs">
 				View all in Context
 			</a>
 			{#if !archived}

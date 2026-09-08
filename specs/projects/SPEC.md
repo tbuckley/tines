@@ -142,9 +142,9 @@ re-sent from every client; the row costs one primary-key lookup.
 is made from the client, never from the page `load` — the app preloads links on
 hover, so a load-side write would flip the focus on hover of a grid card.
 
-**`?project=` is retired as a persistent filter.** `/issues` is the one address
-for the list; `?project=<id|name>` there is a **one-shot** that sets the focus
-and redirects to `/issues` (keeping every other filter). There is no "from
+**`?project=` is retired as a persistent filter.** `/issues`, `/context`, and
+`/activity` each have one address; `?project=<id|name>` on any is a **one-shot**
+that sets the focus and redirects (keeping every other filter). There is no "from
 link" mode and no marker: after the redirect the chrome is the only thing
 saying what the scope is.
 
@@ -152,10 +152,14 @@ saying what the scope is.
 
 1. **What sets the focus:** the chrome switcher, opening `/projects/<id>`,
    creating a project (its `goto` lands on the project page), and the
-   `/issues?project=<id|name>` one-shot. Nothing else. `last_project_id` is a
+   list one-shots above. An issue in another project only offers a `Focus
+   <project>` action; merely following a cross-project link never changes focus. `last_project_id` is a
    New-issue default, not a focus, and setting a focus also sets it.
-2. **What the focus scopes:** the `/issues` list and its category counts, and
-   the project New issue opens with. No API list applies it.
+2. **What the focus scopes:** Issues and its counts; Context items anchored on
+   the project or one of its issues (with a separate shared global/state count);
+   project-tagged Activity events; workflow open-issue usage; and the Agents
+   routing/runs presentation. Runners, queue, quotas and automation controls
+   remain workspace-wide. New-item editors default to the focus. No API list applies it.
 3. **A ref that cannot be honoured writes nothing.** An unknown `?project=`
    renders the current list with "No project `<ref>`. Showing <scope>."; a ref
    naming an archived project says so and links to it. Both leave the focus as
@@ -170,8 +174,9 @@ saying what the scope is.
    next to the wordmark on desktop and on a phone alike: the phone header is
    otherwise empty between the wordmark and the avatar, while the bottom bar's
    Projects slot is a sixth of the screen and truncated the name away (human
-   review, Tines/259). The bottom bar stays pure navigation — its Projects slot
-   is a plain link to the grid.
+   review, Tines/259). The bottom bar stays pure navigation. At every width the
+   Projects tab opens the focused project's home, or the remembered grid under
+   All projects; Manage projects and the project breadcrumb lead to the grid.
 7. **Hidden below two projects.** With zero or one project the switcher does not
    render and every page looks as it did before; a single project still behaves
    as the focus for the New-issue default. The first-project experience belongs
@@ -182,6 +187,8 @@ saying what the scope is.
 9. **nav-memory** remembers the non-project Issues filters (category, state,
    label, q) per tab as before; it strips `project`, which would otherwise
    re-fire the one-shot on every click of the Issues tab.
+   Issue-page Back keeps an Issues target, but keeps a remembered project page
+   only when it matches the current focus.
 10. **Agents and the CLI.** `GET`/`PATCH /api/v1/preferences` is control-plane
    fenced, reads included: a run key gets the same 403 as for runners and
    settings. Every API list stays unscoped whatever its owner's focus is.
