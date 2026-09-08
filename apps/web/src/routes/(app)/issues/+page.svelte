@@ -5,9 +5,9 @@
 	import IssueList from '$lib/components/IssueList.svelte';
 	import IssuePagination from '$lib/components/IssuePagination.svelte';
 	import NewIssueModal from '$lib/components/NewIssueModal.svelte';
+	import ProjectFocusNotice from '$lib/components/ProjectFocusNotice.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { defaultProjectId } from '$lib/focus';
-	import { truncate } from '$lib/format';
 	import { navMemory } from '$lib/nav-memory.svelte';
 
 	let { data } = $props();
@@ -36,21 +36,7 @@
 
 <!-- A `?project=` that could not be honoured. It changed nothing: the list
      below is still the focus's, and the chrome still says so. -->
-{#if data.notice}
-	<p
-		class="mb-4 flex flex-wrap items-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-4 py-2.5 text-sm text-amber-800 dark:text-amber-300"
-		role="status"
-	>
-		{#if data.notice.kind === 'unknown'}
-			No project “{truncate(data.notice.ref, 40)}”. Showing {scopeLabel}.
-		{:else}
-			Project “{truncate(data.notice.project.name, 40)}” is archived. Showing {scopeLabel}.
-			<a class="underline underline-offset-2" href="/projects/{data.notice.project.id}"
-				>View project</a
-			>
-		{/if}
-	</p>
-{/if}
+<ProjectFocusNotice notice={data.notice} {scopeLabel} />
 
 <IssueFilterBar
 	filters={data.filters}
