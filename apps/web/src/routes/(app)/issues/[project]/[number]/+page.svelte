@@ -4,6 +4,7 @@
 		Comment,
 		ContextItem,
 		ContextKind,
+		RoutingRule,
 		WorkflowState
 	} from '@tines/shared';
 	import { ApiError } from '@tines/shared';
@@ -142,6 +143,11 @@
 	// than the checklist vanishing at the moment it pays off. A later load
 	// (this issue or any other) never shows it again.
 	let checklistVisible = $state(false);
+	// The server deliberately stops fetching account rules once the first run
+	// exists, because a fresh page will not mount this checklist. Keep the last
+	// run-free snapshot for the checklist that stays mounted through its landing
+	// moment, so a completed routing item cannot regress when item 7 fills in.
+	let checklistRules = $state<RoutingRule[]>([]);
 	/**
 	 * On a phone the card is one folded row, so the checklist would hide behind
 	 * it. Opened once, the first time the checklist appears — never forced
@@ -154,6 +160,7 @@
 	$effect(() => {
 		const panel = agentActivityPanel.current;
 		if (panel.status !== 'loaded') return;
+		if (!panel.value[3]) checklistRules = panel.value[4];
 		if (panel.value[3]) return;
 		checklistVisible = true;
 		if (!agentFoldOpened) {
@@ -175,13 +182,13 @@
 	const checklistInputs = $derived.by((): FirstRunInputs | null => {
 		const panel = agentActivityPanel.current;
 		if (!checklistVisible || panel.status !== 'loaded') return null;
-		const [dispatch, runs, runners, , rules] = panel.value;
+		const [dispatch, runs, runners, hasAnyRun, rules] = panel.value;
 		return {
 			surface: 'issue',
 			hasAnyIssue: true,
 			hasAnyProject: true,
 			runners,
-			rules,
+			rules: hasAnyRun ? checklistRules : rules,
 			enabled: dispatch?.checks.find((c) => c.name === 'automation_enabled')?.ok ?? false,
 			issue: {
 				project_name: data.issue.project_name,

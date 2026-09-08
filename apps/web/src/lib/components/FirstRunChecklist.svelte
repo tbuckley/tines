@@ -94,7 +94,7 @@
 
 	let enabling = $state(false);
 	async function enable() {
-		if (enabling) return;
+		if (readOnly || enabling) return;
 		enabling = true;
 		try {
 			await onenable();
@@ -266,8 +266,12 @@
 				{/if}
 			</div>
 			{#if !byId.enabled.done}
-				<PendingButton size="sm" pending={enabling} onclick={enable}
-					>Turn automation on</PendingButton
+				<PendingButton
+					size="sm"
+					pending={enabling}
+					disabled={readOnly}
+					title={disabledReason}
+					onclick={enable}>Turn automation on</PendingButton
 				>
 			{/if}
 		</li>

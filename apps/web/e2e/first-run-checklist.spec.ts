@@ -27,6 +27,7 @@ const PROJECT_NAME = `walk-${runId}`;
 const RUNNER_NAME = `dana-${runId}`;
 
 let daemon: Daemon | null = null;
+let projectId: string;
 let issueNumber: number;
 let secondIssueNumber: number;
 
@@ -107,7 +108,8 @@ test('creating an issue ticks item 1 on both surfaces without a reload', async (
 	request
 }) => {
 	const api = apiClient(request, DANA.apiKey);
-	await body<Project>(await api.post('/api/v1/projects', { name: PROJECT_NAME }));
+	const project = await body<Project>(await api.post('/api/v1/projects', { name: PROJECT_NAME }));
+	projectId = project.id;
 
 	await gotoHydrated(page, '/agents');
 	// With a project and no issue, the same item offers the issue dialog.
@@ -165,6 +167,18 @@ test('at 390 px the fold is open on the checklist, with progress in its summary'
 	await page.setViewportSize({ width: 1280, height: 800 });
 });
 
+test('an archived issue cannot turn on account-wide automation', async ({ page, request }) => {
+	const api = apiClient(request, DANA.apiKey);
+	expect((await api.post(`/api/v1/projects/${projectId}/archive`)).ok()).toBe(true);
+
+	await gotoHydrated(page, issuePath(issueNumber));
+	const enable = checklistOf(page).getByRole('button', { name: 'Turn automation on' });
+	await expect(enable).toBeDisabled();
+	await expect(enable).toHaveAttribute('title', 'Project archived — unarchive to make changes');
+
+	expect((await api.post(`/api/v1/projects/${projectId}/unarchive`)).ok()).toBe(true);
+});
+
 test('a registering daemon ticks the runner and CLI items live', async ({ page }) => {
 	await gotoHydrated(page, issuePath(issueNumber));
 	await expect(item(page, 'runner')).toHaveAttribute('data-done', 'false');
@@ -210,6 +224,9 @@ test('routing, arming and the first run land live on both surfaces', async ({ pa
 	await expect(checklistOf(page).getByText(/Your first run has (started|run) on/)).toBeVisible({
 		timeout: 60_000
 	});
+	// The sticky landing checklist keeps the last run-free rule snapshot even
+	// though fresh steady-state loads no longer fetch rules.
+	await expect(item(page, 'rule')).toHaveAttribute('data-done', 'true');
 	await expect(item(page, 'run')).toHaveAttribute('data-done', 'true');
 	// Background tabs intentionally pause the poll. Focusing this one fires the
 	// visibility-change backstop and makes the account-level update immediate.
@@ -217,6 +234,11 @@ test('routing, arming and the first run land live on both surfaces', async ({ pa
 	await expect(
 		checklistOf(agentsPage).getByText(/Your first run has (started|run) on/)
 	).toBeVisible({ timeout: 60_000 });
+	await expect(
+		checklistOf(agentsPage).getByRole('link', {
+			name: `${PROJECT_NAME}/#${issueNumber}`
+		})
+	).toHaveAttribute('href', issuePath(issueNumber));
 	await agentsPage.close();
 });
 
