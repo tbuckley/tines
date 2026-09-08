@@ -40,6 +40,7 @@
 	import CancelRunDialog from '$lib/components/CancelRunDialog.svelte';
 	import { confirmDialog } from '$lib/components/dialogs.svelte';
 	import FleetQueuePanel from '$lib/components/FleetQueuePanel.svelte';
+	import StageStatsTable from '$lib/components/StageStatsTable.svelte';
 	import Modal from '$lib/components/Modal.svelte';
 	import PatInstructions from '$lib/components/PatInstructions.svelte';
 	import PendingButton from '$lib/components/PendingButton.svelte';
@@ -1016,6 +1017,8 @@
 	onenable={() => setEnabled(true)}
 />
 
+<StageStatsTable report={data.stats} quota={data.settings.quota} />
+
 <!-- Runners -->
 <div class="mb-10">
 	<div class="mb-3 flex items-center justify-between">
@@ -1037,7 +1040,7 @@
 	{:else}
 		<div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
 			{#each data.runners as runner (runner.id)}
-				<div class="rounded-lg border p-4">
+				<div class="rounded-lg border p-4" id={`runner-${runner.id}`}>
 					<div class="mb-2 flex items-center gap-2">
 						<span
 							class="bg-muted text-muted-foreground flex size-8 items-center justify-center rounded-md"

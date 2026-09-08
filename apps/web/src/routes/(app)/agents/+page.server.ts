@@ -1,15 +1,15 @@
 import { listRoutingRules } from '$lib/server/api/routing';
 import { listRunners } from '$lib/server/api/runners';
 import { listRuns } from '$lib/server/api/runs';
-import { getSupervisorSettings, loadFleetQueue } from '$lib/server/api/supervisor';
+import { getSupervisorSettings, loadFleetQueue, loadStageStats } from '$lib/server/api/supervisor';
 import { loadWorkflows } from '$lib/server/api/workflows';
 import { getDb } from '$lib/server/db';
 import type { PageServerLoad } from './$types';
 
-export const load: PageServerLoad = async ({ locals, platform }) => {
+export const load: PageServerLoad = async ({ locals, platform, url }) => {
 	const db = getDb(platform!.env);
 	const userId = locals.user!.id;
-	const [runners, rules, settings, workflows, runs, queue, repoItems] = await Promise.all([
+	const [runners, rules, settings, workflows, runs, queue, stats, repoItems] = await Promise.all([
 		listRunners(db, userId),
 		listRoutingRules(db, userId),
 		getSupervisorSettings(db, userId),
@@ -18,6 +18,7 @@ export const load: PageServerLoad = async ({ locals, platform }) => {
 		// The Now row (Tines/256): everything eligible with no run, grouped by
 		// why it is waiting. Itself one parallel wave, so this adds no round trip.
 		loadFleetQueue(db, userId),
+		loadStageStats(db, userId, { project: url.searchParams.get('project') ?? undefined }),
 		// The repos context items point at, for the PAT instructions: that set
 		// is exactly what the token should be scoped to (and its blast radius).
 		db
@@ -40,6 +41,7 @@ export const load: PageServerLoad = async ({ locals, platform }) => {
 		workflows,
 		runs: runs.items,
 		queue,
+		stats,
 		contextRepoUrls: repoItems.map((r) => r.repo_url).filter((u): u is string => u !== null)
 	};
 };
