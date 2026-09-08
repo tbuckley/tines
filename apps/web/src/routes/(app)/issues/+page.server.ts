@@ -1,10 +1,13 @@
-import { redirect } from '@sveltejs/kit';
+import { error, redirect } from '@sveltejs/kit';
+import { clearIssuePagination, issuePageHref } from '$lib/issue-pagination';
+import { ApiFail } from '$lib/server/api/core';
 import { countIssuesByCategory, listIssues } from '$lib/server/api/issues';
 import { resolveFocus, setFocus } from '$lib/server/api/preferences';
 import { listLabels } from '$lib/server/api/labels';
 import { listProjects } from '$lib/server/api/projects';
 import { loadWorkflows } from '$lib/server/api/workflows';
 import { getDb } from '$lib/server/db';
+import { issuePagination, readIssuePage } from '$lib/server/issue-pagination';
 import type { PageServerLoad } from './$types';
 
 /**
@@ -23,6 +26,13 @@ export const load: PageServerLoad = async ({ locals, platform, url }) => {
 	// The project scope is the focus, not a URL filter (Tines/259) — one
 	// PK-indexed query ahead of the lists that read it.
 	const { focusId, lastProjectId } = await resolveFocus(db, userId);
+	let page;
+	try {
+		page = readIssuePage(url);
+	} catch (e) {
+		if (e instanceof ApiFail) error(e.status, e.message);
+		throw e;
+	}
 
 	// `?project=` is a one-shot: it *sets* the focus and redirects, so the list
 	// keeps one address. Every other filter rides along to the new URL.
@@ -41,6 +51,7 @@ export const load: PageServerLoad = async ({ locals, platform, url }) => {
 			await setFocus(db, platform!.env, userId, hit.id);
 			const rest = new URLSearchParams(url.searchParams);
 			rest.delete('project');
+			clearIssuePagination(rest);
 			const qs = rest.toString();
 			redirect(303, `/issues${qs ? `?${qs}` : ''}`);
 		}
@@ -49,6 +60,12 @@ export const load: PageServerLoad = async ({ locals, platform, url }) => {
 		notice = hit
 			? { kind: 'archived', ref, project: { id: hit.id, name: hit.name } }
 			: { kind: 'unknown', ref };
+	}
+
+	const pageScope = focusId ?? 'all';
+	const suppliedScope = url.searchParams.get('page_scope');
+	if (page.cursor && suppliedScope !== null && suppliedScope !== pageScope) {
+		redirect(303, issuePageHref(url));
 	}
 
 	const filters = {
@@ -72,7 +89,7 @@ export const load: PageServerLoad = async ({ locals, platform, url }) => {
 		labels: filters.labels
 	};
 
-	const [{ items: issues }, counts, workflows, labels] = await Promise.all([
+	const [{ items: issues, hasMore }, counts, workflows, labels] = await Promise.all([
 		listIssues(
 			db,
 			userId,
@@ -81,9 +98,10 @@ export const load: PageServerLoad = async ({ locals, platform, url }) => {
 				category: filters.category,
 				// Ready already implies not-done, so the "show done" state is
 				// simply parked in the URL while it is on.
-				hideDone: !filters.showDone && !filters.category && !filters.state
+				hideDone: !filters.showDone && !filters.category && !filters.state,
+				brief: true
 			},
-			{ cursor: null, limit: 100 }
+			page
 		),
 		countIssuesByCategory(db, userId, scope),
 		loadWorkflows(db, userId),
@@ -91,5 +109,15 @@ export const load: PageServerLoad = async ({ locals, platform, url }) => {
 	]);
 
 	// `projects` and `focus` come from the app layout.
-	return { issues, counts, workflows, labels, filters, focusId, lastProjectId, notice };
+	return {
+		issues,
+		counts,
+		workflows,
+		labels,
+		filters,
+		focusId,
+		lastProjectId,
+		notice,
+		pagination: issuePagination(url, page, issues, hasMore, pageScope)
+	};
 };

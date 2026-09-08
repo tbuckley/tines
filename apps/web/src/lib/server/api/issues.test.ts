@@ -356,6 +356,88 @@ describe('listIssues brief', () => {
 	});
 });
 
+describe('listIssues bidirectional pagination', () => {
+	it('walks 205 rows forward and back without gaps or duplicates', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		for (let n = 1; n <= 205; n += 1) {
+			const id = `iss_page_${String(n).padStart(3, '0')}`;
+			addIssue(t, { id });
+			t.sqlite.prepare('UPDATE issue SET created_at = ? WHERE id = ?').run(n, id);
+		}
+		const first = await listIssues(t.db, USER, { brief: true }, { cursor: null, limit: 100 });
+		const second = await listIssues(
+			t.db,
+			USER,
+			{ brief: true },
+			{
+				cursor: {
+					createdAt: first.items.at(-1)!.created_at,
+					id: first.items.at(-1)!.id
+				},
+				limit: 100,
+				direction: 'after'
+			}
+		);
+		const third = await listIssues(
+			t.db,
+			USER,
+			{},
+			{
+				cursor: {
+					createdAt: second.items.at(-1)!.created_at,
+					id: second.items.at(-1)!.id
+				},
+				limit: 100,
+				direction: 'after'
+			}
+		);
+		expect([first.items.length, second.items.length, third.items.length]).toEqual([100, 100, 5]);
+		expect([first.hasMore, second.hasMore, third.hasMore]).toEqual([true, true, false]);
+		const ids = [...first.items, ...second.items, ...third.items].map((issue) => issue.id);
+		expect(new Set(ids).size).toBe(205);
+		expect(ids[0]).toBe('iss_page_205');
+		expect(ids.at(-1)).toBe('iss_page_001');
+
+		const back = await listIssues(
+			t.db,
+			USER,
+			{},
+			{
+				cursor: { createdAt: third.items[0].created_at, id: third.items[0].id },
+				limit: 100,
+				direction: 'before'
+			}
+		);
+		expect(back.items.map((issue) => issue.id)).toEqual(second.items.map((issue) => issue.id));
+		expect(back.hasMore).toBe(true);
+	});
+
+	it('uses id as the stable reverse tie-breaker without looking up the boundary row', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		for (const id of ['iss_tie_a', 'iss_tie_b', 'iss_tie_c']) {
+			addIssue(t, { id });
+			t.sqlite.prepare('UPDATE issue SET created_at = 10 WHERE id = ?').run(id);
+		}
+		t.sqlite.prepare("DELETE FROM issue WHERE id = 'iss_tie_b'").run();
+		const older = await listIssues(
+			t.db,
+			USER,
+			{},
+			{ cursor: { createdAt: 10, id: 'iss_tie_b' }, limit: 10, direction: 'after' }
+		);
+		const newer = await listIssues(
+			t.db,
+			USER,
+			{},
+			{ cursor: { createdAt: 10, id: 'iss_tie_b' }, limit: 10, direction: 'before' }
+		);
+		expect(older.items.map((issue) => issue.id)).toEqual(['iss_tie_a']);
+		expect(newer.items.map((issue) => issue.id)).toEqual(['iss_tie_c']);
+	});
+});
+
 // --- getIssueDetail: the page load's dedupe contract (Tines/32) --------------
 // The issue page resolves the issue row once and hands what it already has to
 // getIssueDetail. These lock in that the shortcuts produce the same answer as
