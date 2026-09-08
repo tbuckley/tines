@@ -58,8 +58,12 @@
 						<ContextKindIcon kind={item.kind} />
 					</span>
 					<span class="min-w-0 flex-1">
-						<span class="flex items-center gap-2">
-							<span class="truncate font-medium">{item.name}</span>
+						<span class="flex items-center gap-2" class:flex-wrap={inheritedFrom !== null}>
+							<span
+								class="truncate font-medium"
+								class:min-w-24={inheritedFrom !== null}
+								class:flex-1={inheritedFrom !== null}>{item.name}</span
+							>
 							{#if showScope}
 								<ContextScopeChips scope={item.scope} short={shortScope} {inheritedFrom} />
 							{/if}

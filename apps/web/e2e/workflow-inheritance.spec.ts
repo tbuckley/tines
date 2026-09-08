@@ -152,6 +152,23 @@ test('the editor sets, previews and clears a pointer', async ({ page }) => {
 		.toBe(stateId(shared, 'Merging'));
 });
 
+test('the editor previews a saved base in the same workflow', async ({ page }) => {
+	await gotoHydrated(page, `/workflows/${shared.id}`);
+	const select = picker(page, stateId(shared, 'Root'));
+	await select.selectOption(stateId(shared, 'Merging'));
+	const row = page.locator('form div.rounded-lg').filter({ has: select });
+	await row.getByRole('button', { name: 'Show inherited instructions' }).click();
+	await expect(row).toContainText(INSTRUCTIONS);
+});
+
+test('a new workflow can choose a base from the loaded library', async ({ page }) => {
+	await gotoHydrated(page, '/workflows/new');
+	const select = page.getByRole('combobox', { name: 'Inherits from' }).first();
+	await select.selectOption(stateId(shared, 'Merging'));
+	await expect(select).toHaveValue(stateId(shared, 'Merging'));
+	await expect(page.locator('form')).toContainText(`Inherits context from ${SHARED} / Merging`);
+});
+
 test('a cycle and an over-deep chain are refused with the API’s own message', async ({ page }) => {
 	// Docs / Merging already inherits from Shared / Merging, so pointing the
 	// base back at its own child closes the loop.
@@ -193,14 +210,27 @@ test('the workflow page names both directions of a pointer', async ({ page }) =>
 	await expect(page.locator(`#state-${stateId(eng, 'Merging')}`)).toContainText(
 		`inherits from ${SHARED} / Merging`
 	);
-	await page
-		.locator('form div.rounded-lg')
-		.filter({ has: picker(page, stateId(eng, 'Merging')) })
-		.getByRole('link', { name: 'Edit base →' })
-		.click();
+	const child = page.locator(`#state-${stateId(eng, 'Merging')}`);
+	await child.getByRole('button').first().click();
+	await expect(child).toContainText(INSTRUCTIONS);
+	const via = child.getByRole('link', { name: `via ${SHARED} / Merging` });
+	await expect(via).toBeVisible();
+
+	// At phone width the chips wrap below the name instead of crushing it to a glyph.
+	await page.setViewportSize({ width: 390, height: 844 });
+	const itemName = child.getByText('instructions', { exact: true });
+	await expect(itemName).toBeVisible();
+	expect((await itemName.boundingBox())!.width).toBeGreaterThan(80);
+	await via.click();
 	await expect(page).toHaveURL(
 		new RegExp(`/workflows/${shared.id}#state-${stateId(shared, 'Merging')}$`)
 	);
+	await expect(
+		page
+			.locator(`#state-${stateId(shared, 'Merging')}`)
+			.getByRole('button')
+			.first()
+	).toHaveAttribute('aria-expanded', 'true');
 });
 
 test('the issue page attributes an inherited layer to its base', async ({ page }) => {

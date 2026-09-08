@@ -277,8 +277,8 @@
 	const lib = $derived(buildStateLibrary(workflows));
 	/** Rows the picker can offer as a base from inside this editor. */
 	const siblingRows = $derived(states.filter((s) => !s.id));
-	/** True for a picker value naming a row in this editor rather than a state id. */
-	const isRowKey = (value: string) => states.some((s) => s.key === value);
+	/** True only for an unsaved sibling; saved row keys are also real state ids. */
+	const isUnsavedRowKey = (value: string) => states.some((s) => !s.id && s.key === value);
 	const ownWorkflowLabel = $derived(name.trim() || 'This workflow');
 
 	/** What a chosen base is called, whether it is a library state or a row here. */
@@ -331,7 +331,7 @@
 	function togglePreview(i: number) {
 		const row = states[i];
 		states[i].previewOpen = !row.previewOpen;
-		if (states[i].previewOpen && row.inheritsFrom && !isRowKey(row.inheritsFrom)) {
+		if (states[i].previewOpen && row.inheritsFrom && !isUnsavedRowKey(row.inheritsFrom)) {
 			void loadBaseItems(row.inheritsFrom);
 		}
 	}
@@ -358,7 +358,7 @@
 			if (entry && entry.workflow.issue_count > 0) {
 				const n = entry.workflow.issue_count;
 				list.push(
-					`${base} belongs to a workflow ${n} issue${n === 1 ? '' : 's'} use — context added there for those issues reaches ${rowName} too.`
+					`${base} belongs to a workflow ${n === 1 ? '1 issue uses' : `${n} issues use`} — context added there for those issues reaches ${rowName} too.`
 				);
 			}
 			if (s.id && wouldCycle(lib, s.id, value)) {
@@ -516,7 +516,7 @@
 							aria-label="Inherits from"
 						>
 							<option value={null}>None</option>
-							{#if row.inheritsFrom && !isRowKey(row.inheritsFrom) && !lib.states.has(row.inheritsFrom)}
+							{#if row.inheritsFrom && !isUnsavedRowKey(row.inheritsFrom) && !lib.states.has(row.inheritsFrom)}
 								<!-- keep the select truthful about a pointer we cannot name -->
 								<option value={row.inheritsFrom} disabled>Unknown state ({row.inheritsFrom})</option
 								>
@@ -541,7 +541,7 @@
 						{@const value = row.inheritsFrom}
 						{@const href = baseHref(value)}
 						{@const others = otherChildren(row, value)}
-						{@const items = isRowKey(value) ? null : itemsFor(value)}
+						{@const items = isUnsavedRowKey(value) ? null : itemsFor(value)}
 						<div
 							class="text-muted-foreground space-y-1 text-xs"
 							transition:slide={{ duration: dur() }}
@@ -562,11 +562,11 @@
 								{/if}
 								{#if href}
 									<a class="hover:text-foreground underline underline-offset-2" {href}>
-										{isRowKey(value) ? 'Go to state' : 'Edit base'} →
+										{isUnsavedRowKey(value) ? 'Go to state' : 'Edit base'} →
 									</a>
 								{/if}
 							</p>
-							{#if !isRowKey(value)}
+							{#if !isUnsavedRowKey(value)}
 								<Button
 									type="button"
 									size="sm"
