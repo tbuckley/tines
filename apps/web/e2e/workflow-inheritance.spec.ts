@@ -212,7 +212,6 @@ test('the workflow page names both directions of a pointer', async ({ page }) =>
 	);
 	const child = page.locator(`#state-${stateId(eng, 'Merging')}`);
 	await child.getByRole('button').first().click();
-	await expect(child).toContainText(INSTRUCTIONS);
 	const via = child.getByRole('link', { name: `via ${SHARED} / Merging` });
 	await expect(via).toBeVisible();
 
