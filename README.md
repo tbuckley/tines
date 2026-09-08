@@ -239,6 +239,9 @@ All of this is edited on the **Agents** tab, and most of it from the CLI too:
 - **The kill switch** — `tines supervisor enable` / `tines supervisor disable`, with
   `tines supervisor status` for a one-screen overview — which now also lists the issues
   waiting for an agent, grouped by why, with the fix for each.
+- **Stage flow** — the Agents tab and `tines supervisor stats --window 7d` compare queue wait,
+  work time, runs per visit, outcomes and sent-back rates with the prior window. Project and
+  event-window filters keep the board and `tines events list` on the same slice.
 - **Routing rules** decide who takes an issue. A rule is scoped globally, per project, per
   workflow state, or both (most specific wins), and its payload is an ordered
   preference list of `<runner>[:tier]` targets:
