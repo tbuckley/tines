@@ -166,7 +166,7 @@ test.describe.serial('project focus', () => {
 			await gotoHydrated(page, '/context');
 			await expect(page.getByLabel('Filter by project')).toHaveCount(0);
 			await expect(page.locator('p').filter({ hasText: /shared items?/ })).toContainText(
-				/\(global and state-scoped\) appl(?:y|ies) here too/
+				/\(global and state-scoped\)\s+appl(?:y|ies) here too/
 			);
 			await expect(page.getByText(`${A_NAME}-context`, { exact: true })).toBeVisible();
 			await expect(page.getByText(`${B_NAME}-context`, { exact: true })).toHaveCount(0);
