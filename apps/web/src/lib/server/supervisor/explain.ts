@@ -84,7 +84,9 @@ export async function explainDispatch(
 	const describedById = new Map(described.map((item) => [item.rule_id, item]));
 	const matchedRule: DispatchExplainer['matched_rule'] = rule ? describedById.get(rule.id)! : null;
 	const runnerRuleDescription: DispatchExplainer['runner_rule'] = runnerRule
-		? describedById.get(runnerRule.id)!
+		? tierOverride
+			? describedById.get(runnerRule.id)!
+			: null
 		: null;
 	const ambiguousRules = ambiguous.map((item) => describedById.get(item.id)!);
 
@@ -119,7 +121,7 @@ export async function explainDispatch(
 				? { label: 'Make one rule more specific', href: '/agents#routing' }
 				: rule
 					? {
-							label: runnerRule ? 'Edit the runner rule' : 'Configure routing',
+							label: tierOverride && runnerRule ? 'Edit the runner rule' : 'Edit the rule',
 							href: '/agents#routing'
 						}
 					: {
@@ -189,7 +191,7 @@ export async function explainDispatch(
 						? `Tier ${tierOverride} from ${matchedRule!.scope_label}; runners from ${runnerRuleDescription!.scope_label}`
 						: failure === 'no_runner_rule'
 							? `matched the ${matchedRule!.scope_label} tier override, but no broader routing rule supplies runners`
-							: rule && runnerRule && failure === 'no_targets'
+							: rule && tierOverride && runnerRule && failure === 'no_targets'
 								? `matched the ${matchedRule!.scope_label} tier override, but the ${runnerRuleDescription!.scope_label} runner rule has no targets`
 								: rule
 									? targets.length > 0

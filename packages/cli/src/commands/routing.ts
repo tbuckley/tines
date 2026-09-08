@@ -71,7 +71,7 @@ export function register(program: Command): void {
 		routing
 			.command('set <target...>')
 			.description(
-				'Create or replace the rule at a scope: an ordered list of <runner>[:tier] targets'
+				"Create or replace a rule with <runner>[:tier] targets, or scoped '*:smartest' tier inheritance"
 			)
 			.option('-p, --project <name>', 'scope: project name or id')
 			.option('-s, --state <workflow/state>', 'scope: workflow-qualified state')

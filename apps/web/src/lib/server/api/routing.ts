@@ -97,14 +97,14 @@ export function shadowWarnings(
 				kind: 'shadowed',
 				rule_id: other.id,
 				scope_label: other.label,
-				message: `The ${other.label} rule is more specific, so issues it matches will use it instead of this rule`
+				message: `The ${other.label} rule has higher priority for issues both rules match. A higher-priority tier-only rule can inherit runners from a lower-priority matching rule.`
 			});
 		} else if (otherSpec < savedSpec) {
 			warnings.push({
 				kind: 'shadows',
 				rule_id: other.id,
 				scope_label: other.label,
-				message: `This rule takes precedence over the ${other.label} rule for issues both match`
+				message: `This rule has higher priority than the ${other.label} rule for issues both match. A higher-priority tier-only rule can inherit runners from a lower-priority matching rule.`
 			});
 		} else {
 			// Equal specificity with different scopes used to be unreachable:
