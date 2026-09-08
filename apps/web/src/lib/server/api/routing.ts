@@ -470,6 +470,7 @@ export async function createRoutingRule(
 			payload: {
 				rule_id: id,
 				scope_label: label,
+				workflow_state_id: scope.workflowStateId,
 				targets: targets.map((t) => ({
 					runner_name:
 						t.runner_id === INHERIT_RUNNER_ID
@@ -555,6 +556,7 @@ export async function updateRoutingRule(
 			payload: {
 				rule_id: id,
 				scope_label: label,
+				workflow_state_id: scope.workflowStateId,
 				targets: targets.map((t) => ({
 					runner_name:
 						t.runner_id === INHERIT_RUNNER_ID
@@ -579,11 +581,19 @@ export async function rulesScopedToLabel(
 	db: Kysely<Database>,
 	userId: string,
 	labelId: string
-): Promise<{ id: string; project_id: string | null; scope_label: string }[]> {
+): Promise<
+	{
+		id: string;
+		project_id: string | null;
+		workflow_state_id: string | null;
+		scope_label: string;
+	}[]
+> {
 	const rows = await ruleQuery(db, userId).where('routing_rule.label_id', '=', labelId).execute();
 	return rows.map((row) => ({
 		id: row.id,
 		project_id: row.project_id,
+		workflow_state_id: row.workflow_state_id,
 		scope_label: rowScope(row).label
 	}));
 }
@@ -597,14 +607,24 @@ export async function rulesScopedToLabel(
 export function routingRuleDeletes(
 	db: Kysely<Database>,
 	actor: ActorContext,
-	rules: { id: string; project_id: string | null; scope_label: string }[]
+	rules: {
+		id: string;
+		project_id: string | null;
+		workflow_state_id: string | null;
+		scope_label: string;
+	}[]
 ): CompiledQuery[] {
 	return rules.flatMap((rule) => [
 		db.deleteFrom('routing_rule').where('id', '=', rule.id).compile(),
 		eventInsert(db, actor, {
 			type: 'routing_rule.deleted',
 			projectId: rule.project_id,
-			payload: { rule_id: rule.id, scope_label: rule.scope_label, via: 'label.deleted' }
+			payload: {
+				rule_id: rule.id,
+				scope_label: rule.scope_label,
+				workflow_state_id: rule.workflow_state_id,
+				via: 'label.deleted'
+			}
 		})
 	]);
 }
@@ -624,7 +644,11 @@ export async function deleteRoutingRule(
 		eventInsert(db, actor, {
 			type: 'routing_rule.deleted',
 			projectId: row.project_id,
-			payload: { rule_id: id, scope_label: rowScope(row).label }
+			payload: {
+				rule_id: id,
+				scope_label: rowScope(row).label,
+				workflow_state_id: row.workflow_state_id
+			}
 		})
 	]);
 }

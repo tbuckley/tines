@@ -381,6 +381,27 @@ describe('computeStageStats — definitions', () => {
 		expect(impl?.current.runs.per_visit).toBeCloseTo(1.5, 10);
 	});
 
+	it('includes visits with no runs in the runs-per-visit denominator', () => {
+		const entered = NOW - DAY;
+		const events = Array.from({ length: 10 }, (_, i) =>
+			ev({
+				issue_id: `queued_${i}`,
+				created_at: entered,
+				from_state_id: 'st_disc',
+				to_state_id: 'st_impl'
+			})
+		);
+		const runs = Array.from({ length: 3 }, (_, i) =>
+			run({ issue_id: `queued_${i}`, state_id_at_start: 'st_impl', created_at: entered + MIN })
+		);
+		const impl = computeStageStats(input({ events, runs })).states.find(
+			(stage) => stage.state_id === 'st_impl'
+		);
+		expect(impl?.current.visits).toBe(10);
+		expect(impl?.current.runs.total).toBe(3);
+		expect(impl?.current.runs.per_visit).toBeCloseTo(0.3, 10);
+	});
+
 	it('does not let a launch failure end the queue wait', () => {
 		const t = NOW - DAY;
 		const events = [

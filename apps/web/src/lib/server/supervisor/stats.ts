@@ -306,7 +306,6 @@ export function stageFigures(
 	let runsTotal = 0;
 	let active = 0;
 	let recovered = 0;
-	let visitsWithRuns = 0;
 	const outcomes = emptyOutcomes();
 	const runnerCounts = new Map<string, { id: string; name: string; runs: number }>();
 
@@ -314,7 +313,6 @@ export function stageFigures(
 		const runs = (ctx.bound.get(visit.id) ?? [])
 			.slice()
 			.sort((a, b) => a.created_at - b.created_at);
-		if (runs.length > 0) visitsWithRuns++;
 		runsTotal += runs.length;
 		for (const run of runs) {
 			const bucket = bucketOutcome(run, ctx.advancedByKey);
@@ -388,7 +386,9 @@ export function stageFigures(
 		open_now: openNow,
 		runs: {
 			total: runsTotal,
-			per_visit: visitsWithRuns > 0 ? runsTotal / visitsWithRuns : null,
+			// A visit that never launched is still a visit. Keeping it in the
+			// denominator makes this metric expose queueing instead of hiding it.
+			per_visit: entered.length > 0 ? runsTotal / entered.length : null,
 			active,
 			unbound: unboundHere,
 			recovered_advanced: recovered,

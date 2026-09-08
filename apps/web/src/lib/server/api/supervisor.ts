@@ -720,24 +720,39 @@ export async function loadStageStats(
 			.where('outcome', 'is not', null)
 			.select((eb) => eb.fn.min<number | null>('ended_at').as('since'))
 			.executeTakeFirst(),
-		db
-			.selectFrom('event')
-			.select(['id', 'type', 'payload', 'created_at', 'actor_api_key_id', 'actor_user_id'])
-			.where('user_id', '=', userId)
-			.where('created_at', '>=', now - windowMs)
-			.where('created_at', '<', now)
-			.where('type', 'in', [
-				'context.created',
-				'context.updated',
-				'context.deleted',
-				'settings.updated',
-				'runner.updated',
-				'routing_rule.created',
-				'routing_rule.updated',
-				'routing_rule.deleted'
-			])
-			.orderBy('created_at')
-			.execute()
+		(() => {
+			let q = db
+				.selectFrom('event')
+				.select([
+					'id',
+					'type',
+					'payload',
+					'project_id',
+					'created_at',
+					'actor_api_key_id',
+					'actor_user_id'
+				])
+				.where('user_id', '=', userId)
+				.where('created_at', '>=', now - windowMs)
+				.where('created_at', '<', now)
+				.where('type', 'in', [
+					'context.created',
+					'context.updated',
+					'context.deleted',
+					'settings.updated',
+					'runner.updated',
+					'routing_rule.created',
+					'routing_rule.updated',
+					'routing_rule.deleted'
+				])
+				.orderBy('created_at');
+			if (project) {
+				q = q.where((eb) =>
+					eb.or([eb('project_id', 'is', null), eb('project_id', '=', project.id)])
+				);
+			}
+			return q.execute();
+		})()
 	]);
 
 	const events: StatsEvent[] = [];
@@ -755,11 +770,20 @@ export async function loadStageStats(
 			toStateId = (payload.state_id as string | undefined) ?? null;
 		} else {
 			// A workflow change moves the issue but emits `issue.updated`; the
-			// state ids are only on rows written since Tines/257, so an older
-			// row simply closes nothing.
+			// state ids are only on rows written since Tines/257. Resolve older
+			// payloads by the state names within the named workflows.
 			if (!payload.workflow_to_id) continue;
-			fromStateId = (payload.from_state_id as string | undefined) ?? null;
-			toStateId = (payload.to_state_id as string | undefined) ?? null;
+			const resolveNamedState = (workflowId: unknown, stateName: unknown) =>
+				typeof workflowId === 'string' && typeof stateName === 'string'
+					? (stateRows.find((state) => state.workflow_id === workflowId && state.name === stateName)
+							?.id ?? null)
+					: null;
+			fromStateId =
+				(payload.from_state_id as string | undefined) ??
+				resolveNamedState(payload.workflow_from_id, payload.from_state_name);
+			toStateId =
+				(payload.to_state_id as string | undefined) ??
+				resolveNamedState(payload.workflow_to_id, payload.to_state_name);
 			if (!toStateId) continue;
 		}
 		if (!toStateId && !fromStateId) continue;
@@ -834,7 +858,11 @@ export async function loadStageStats(
 			label = `Runner cap changed${payload.name ? `: ${payload.name}` : ''}`;
 		} else if (row.type.startsWith('routing_rule.')) {
 			kind = 'rule';
-			label = 'Routing rule changed';
+			if (typeof payload.workflow_state_id === 'string') {
+				stateIds = [payload.workflow_state_id];
+			}
+			const scope = stateIds.length > 0 ? 'Stage' : row.project_id ? 'Project' : 'Global';
+			label = `${scope} routing rule changed`;
 		}
 		if (!kind) continue;
 		const actor = row.actor_api_key_id ?? row.actor_user_id;
@@ -968,26 +996,75 @@ export async function loadSentBackDrilldown(
 		.where('name', '=', 'instructions')
 		.where('workflow_state_id', '=', state.id)
 		.executeTakeFirst();
-	const promptEvents = prompt
-		? await db
-				.selectFrom('event')
-				.select(['payload', 'created_at'])
-				.where('user_id', '=', userId)
-				.where('type', '=', 'context.updated')
-				.where(sql<string>`json_extract(payload, '$.context_id')`, '=', prompt.id)
-				.orderBy('created_at')
-				.execute()
-		: [];
+	// Resolve prompt generations from their lifecycle events, not from the
+	// currently-live row: delete/recreate gives the replacement a new id.
+	const promptEvents = await db
+		.selectFrom('event')
+		.select(['type', 'payload', 'created_at'])
+		.where('user_id', '=', userId)
+		.where('type', 'in', ['context.created', 'context.updated', 'context.deleted'])
+		.orderBy('created_at')
+		.orderBy('id')
+		.execute();
+	type PromptGeneration = {
+		id: string;
+		created_at: number;
+		deleted_at: number | null;
+		updates: { at: number; version: number | null }[];
+	};
+	const generations = new Map<string, PromptGeneration>();
+	for (const event of promptEvents) {
+		const payload = JSON.parse(event.payload) as Record<string, any>;
+		const id = typeof payload.context_id === 'string' ? payload.context_id : null;
+		if (!id) continue;
+		const scope = payload.scope_to ?? payload.scope;
+		const relevant =
+			payload.kind === 'prompt' &&
+			payload.name === 'instructions' &&
+			scope?.workflow_state_id === state.id;
+		if (event.type === 'context.created' && relevant) {
+			generations.set(id, { id, created_at: event.created_at, deleted_at: null, updates: [] });
+			continue;
+		}
+		const generation = generations.get(id);
+		if (!generation) continue;
+		if (event.type === 'context.deleted') generation.deleted_at = event.created_at;
+		else if (event.type === 'context.updated') {
+			generation.updates.push({
+				at: event.created_at,
+				version: Number.isFinite(Number(payload.version)) ? Number(payload.version) : null
+			});
+		}
+	}
+	// Old fixtures/data may predate context.created events. The current row is
+	// still a valid generation, with its version countable backwards.
+	if (prompt && !generations.has(prompt.id)) {
+		generations.set(prompt.id, {
+			id: prompt.id,
+			created_at: 0,
+			deleted_at: null,
+			updates: promptEvents
+				.filter((event) => {
+					const payload = JSON.parse(event.payload) as Record<string, unknown>;
+					return event.type === 'context.updated' && payload.context_id === prompt.id;
+				})
+				.map((event) => {
+					const version = Number((JSON.parse(event.payload) as Record<string, unknown>).version);
+					return { at: event.created_at, version: Number.isFinite(version) ? version : null };
+				})
+		});
+	}
 	const promptVersionAt = (at: number): number | null => {
-		if (!prompt) return null;
-		const exact = promptEvents
-			.filter((event) => event.created_at <= at)
-			.map((event) => Number((JSON.parse(event.payload) as Record<string, unknown>).version))
-			.filter(Number.isFinite)
+		const generation = [...generations.values()]
+			.filter((item) => item.created_at <= at && (item.deleted_at === null || item.deleted_at > at))
 			.at(-1);
+		if (!generation) return null;
+		const updates = generation.updates.filter((event) => event.at <= at);
 		return (
-			exact ??
-			Math.max(1, prompt.version - promptEvents.filter((event) => event.created_at > at).length)
+			updates
+				.map((event) => event.version)
+				.filter((v): v is number => v !== null)
+				.at(-1) ?? 1 + updates.length
 		);
 	};
 

@@ -190,6 +190,39 @@ describe('loadStageStats', () => {
 		).rejects.toThrow(/compare/);
 	});
 
+	it('resolves historical workflow changes from workflow and state names', async () => {
+		const t = setup();
+		t.sqlite.exec(`
+			INSERT INTO workflow (id, user_id, name, initial_state_id, created_at, updated_at)
+			VALUES ('wf_old', '${USER}', 'Old flow', 'wfs_old_open', ${NOW}, ${NOW});
+			INSERT INTO workflow_state (id, workflow_id, name, category, position, created_at)
+			VALUES ('wfs_old_open', 'wf_old', 'Old open', 'active', 0, ${NOW});
+		`);
+		const issue = addIssue(t, { id: 'iss_old_move', state: STAGE_B, workflow: 'wf_two' });
+		t.sqlite
+			.prepare(
+				`INSERT INTO event (id, user_id, type, actor_user_id, issue_id, project_id, payload, created_at)
+				 VALUES ('evt_old_move', ?, 'issue.updated', ?, ?, ?, ?, ?)`
+			)
+			.run(
+				USER,
+				USER,
+				issue,
+				PROJECT,
+				JSON.stringify({
+					changed: ['workflow'],
+					workflow_from_id: 'wf_old',
+					workflow_to_id: 'wf_two',
+					from_state_name: 'Old open',
+					to_state_name: 'Stage B'
+				}),
+				NOW - DAY
+			);
+		const report = await loadStageStats(t.db, USER, {}, NOW);
+		expect(report.states.find((stage) => stage.state_id === STAGE_B)?.current.visits).toBe(1);
+		expect(report.states.find((stage) => stage.state_id === 'wfs_old_open')?.current.exits).toBe(1);
+	});
+
 	it('ignores events whose issue was deleted', async () => {
 		const t = setup();
 		const issue = addIssue(t, { id: 'iss_1', state: STAGE_B, workflow: 'wf_two' });
@@ -250,6 +283,46 @@ describe('loadStageStats', () => {
 			report.markers[0].effects.find((effect) => effect.state_id === STAGE_B)?.before
 		).toMatchObject({ exits: 1, sent_back_share: 1 });
 	});
+
+	it('project filters rule markers and scopes stage rules to their affected state', async () => {
+		const t = setup();
+		const other = addOtherProject(t);
+		const issue = addIssue(t, { id: 'iss_marker_scope', state: STAGE_B, workflow: 'wf_two' });
+		addTransitionEvent(t, {
+			issueId: issue,
+			apiKeyId: null,
+			at: NOW - DAY,
+			from: STAGE_A,
+			to: STAGE_B
+		});
+		t.sqlite
+			.prepare(
+				`INSERT INTO event (id, user_id, type, actor_user_id, project_id, payload, created_at) VALUES
+				 ('evt_rule_mine', ?, 'routing_rule.updated', ?, ?, ?, ?),
+				 ('evt_rule_other', ?, 'routing_rule.updated', ?, ?, ?, ?)`
+			)
+			.run(
+				USER,
+				USER,
+				PROJECT,
+				JSON.stringify({ workflow_state_id: STAGE_B }),
+				NOW - HOUR,
+				USER,
+				USER,
+				other,
+				JSON.stringify({ workflow_state_id: STAGE_A }),
+				NOW - 2 * HOUR
+			);
+
+		const report = await loadStageStats(t.db, USER, { project: 'demo' }, NOW);
+		expect(report.markers).toHaveLength(1);
+		expect(report.markers[0]).toMatchObject({
+			id: 'evt_rule_mine',
+			label: 'Stage routing rule changed',
+			state_ids: [STAGE_B]
+		});
+		expect(report.markers[0].effects.map((effect) => effect.state_id)).toEqual([STAGE_B]);
+	});
 });
 
 describe('loadSentBackDrilldown', () => {
@@ -286,5 +359,36 @@ describe('loadSentBackDrilldown', () => {
 			prompt_version: 2,
 			comment: { excerpt: 'Please address the review notes.' }
 		});
+	});
+
+	it('keeps the prompt version across deletion and recreation', async () => {
+		const t = setup();
+		const issue = addIssue(t, { id: 'iss_old_prompt', state: STAGE_A, workflow: 'wf_two' });
+		addTransitionEvent(t, {
+			issueId: issue,
+			apiKeyId: null,
+			at: NOW - 3 * DAY,
+			from: STAGE_B,
+			to: STAGE_A
+		});
+		t.sqlite.exec(`
+			INSERT INTO context_item (id, user_id, kind, name, description, project_id, workflow_state_id,
+				issue_id, label_id, body, repo_url, repo_branch, repo_dir, config, position, version, created_at, updated_at)
+			VALUES ('ctx_new', '${USER}', 'prompt', 'instructions', '', NULL, '${STAGE_B}', NULL, NULL,
+				'New prompt.', NULL, NULL, NULL, NULL, 0, 1, ${NOW - DAY}, ${NOW - DAY});
+			INSERT INTO event (id, user_id, type, actor_user_id, payload, created_at) VALUES
+				('evt_old_created', '${USER}', 'context.created', '${USER}',
+				 '{"context_id":"ctx_old","kind":"prompt","name":"instructions","scope":{"workflow_state_id":"${STAGE_B}"}}', ${NOW - 6 * DAY}),
+				('evt_old_v2', '${USER}', 'context.updated', '${USER}',
+				 '{"context_id":"ctx_old","kind":"prompt","name":"instructions","version":2,"scope":{"workflow_state_id":"${STAGE_B}"}}', ${NOW - 4 * DAY}),
+				('evt_old_deleted', '${USER}', 'context.deleted', '${USER}',
+				 '{"context_id":"ctx_old","kind":"prompt","name":"instructions","scope":{"workflow_state_id":"${STAGE_B}"}}', ${NOW - 2 * DAY}),
+				('evt_new_created', '${USER}', 'context.created', '${USER}',
+				 '{"context_id":"ctx_new","kind":"prompt","name":"instructions","scope":{"workflow_state_id":"${STAGE_B}"}}', ${NOW - DAY});
+		`);
+
+		const detail = await loadSentBackDrilldown(t.db, USER, { state: STAGE_B }, NOW);
+		expect(detail.prompt).toMatchObject({ context_id: 'ctx_new', current_version: 1 });
+		expect(detail.items[0].prompt_version).toBe(2);
 	});
 });
