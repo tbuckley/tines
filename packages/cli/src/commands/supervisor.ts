@@ -72,7 +72,7 @@ export function queueHeadline(block: QueueBlock): string {
 		case 'no_rule':
 			return 'no matching routing rule';
 		case 'no_targets':
-			return 'the matching rule has no targets';
+			return 'the matching rule has no effective targets';
 		case 'ambiguous_rule':
 			return 'two routing rules tie';
 		case 'pin_missing':
