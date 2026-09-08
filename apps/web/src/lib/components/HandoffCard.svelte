@@ -70,6 +70,13 @@
 			? (artifacts.find((artifact) => artifact.name === 'clarification-request') ?? null)
 			: null
 	);
+	const clarificationInRound = $derived.by(() => {
+		for (const stage of issue.round?.stages ?? [])
+			for (const run of stage.runs)
+				if (run.artifacts.some((artifact) => artifact.name === 'clarification-request'))
+					return true;
+		return false;
+	});
 	const clarificationVersion = $derived.by(() => {
 		let selected: number | null = null;
 		for (const stage of issue.round?.stages ?? [])
@@ -179,7 +186,9 @@
 	{#if issue.state.name === 'Needs Clarification'}
 		<section class="bg-muted/40 mb-4 rounded-md border p-3">
 			<h3 class="mb-2 text-sm font-semibold">
-				Clarification requested{#if clarificationVersion !== null}
+				{clarificationInRound
+					? 'Clarification requested'
+					: 'Current clarification-request'}{#if clarificationVersion !== null}
 					· v{clarificationVersion}{/if}
 			</h3>
 			{#if !clarificationArtifact}
