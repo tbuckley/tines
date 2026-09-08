@@ -1228,7 +1228,7 @@
 						<IconPlus size={14} /> Add a runner first
 					</Button>
 				{:else}
-					<Button size="sm" variant="outline" onclick={openRuleCreate}>
+					<Button size="sm" variant="outline" onclick={() => openRuleCreate({ projectId: '' })}>
 						<IconPlus size={14} /> Add a global rule
 					</Button>
 				{/if}
