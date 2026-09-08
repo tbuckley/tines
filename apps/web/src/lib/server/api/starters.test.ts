@@ -203,6 +203,7 @@ describe('applying a built-in to an empty database', () => {
 					{ artifact: 'pr', type: 'pr', description: 'The pull request implementing this issue' }
 				]
 			},
+			{ name: 'No bug found', from: 'In progress', to: 'Review' },
 			{ name: 'Send back', from: 'Review', to: 'In progress' },
 			{ name: 'Approve', from: 'Review', to: 'Done' },
 			{ name: 'Abandon', from: 'In progress', to: 'Done' }
@@ -228,6 +229,9 @@ describe('applying a built-in to an empty database', () => {
 			state: 'In progress'
 		});
 		expect(starter.first_issue?.description).toContain('a failing test, a crash, a wrong message');
+		expect(starter.first_issue?.description).toContain(
+			'tines issues move <ref> "No bug found"'
+		);
 		expect(starter.first_issue?.description).toContain('If nothing qualifies, do not invent work');
 	});
 

@@ -89,6 +89,8 @@ test('Code repository seeds the first issue launch context and gated review work
 	expect(submit?.requires).toEqual([
 		expect.objectContaining({ artifact: 'pr', type: 'pr', status: 'missing' })
 	]);
+	const noBug = issue.allowed_transitions.find((transition) => transition.name === 'No bug found');
+	expect(noBug?.requires).toEqual([]);
 
 	const prompt = await body<LaunchPromptResponse>(
 		await api.get(`/api/v1/issues/${first.id}/prompt`)
@@ -109,6 +111,13 @@ test('Code repository seeds the first issue launch context and gated review work
 
 	await page.goto(`/issues/${encodeURIComponent(projectName)}/1`);
 	await expect(page.getByRole('button', { name: /Submit for review/ }).first()).toBeDisabled();
+
+	const moved = await api.post(`/api/v1/issues/${first.id}/transition`, {
+		action: 'No bug found'
+	});
+	expect(moved.ok(), 'the no-work fallback must not require a PR').toBe(true);
+	const reviewed = await body<IssueDetail>(await api.get(`/api/v1/issues/${first.id}`));
+	expect(reviewed.state.name).toBe('Review');
 });
 
 /**

@@ -60,6 +60,7 @@ export const code: Starter = {
 						{ artifact: 'pr', type: 'pr', description: 'The pull request implementing this issue' }
 					]
 				},
+				{ name: 'No bug found', from: 'In progress', to: 'Review' },
 				{ name: 'Send back', from: 'Review', to: 'In progress' },
 				{ name: 'Approve', from: 'Review', to: 'Done' },
 				{ name: 'Abandon', from: 'In progress', to: 'Done' }
@@ -87,7 +88,7 @@ export const code: Starter = {
 		description: [
 			'Read {{ repo_name }} and pick one small bug you can verify: a failing test, a crash, a wrong message, or a broken link.',
 			'',
-			'Fix it on a branch with a test, open a pull request, attach it as the `pr` artifact, and explain in an issue comment why you chose that bug. If nothing qualifies, do not invent work: explain what you checked in a comment and move this issue to Review with that comment.'
+			'Fix it on a branch with a test, open a pull request, attach it as the `pr` artifact, and explain in an issue comment why you chose that bug. If nothing qualifies, do not invent work: explain what you checked in a comment, then move this issue to Review with `tines issues move <ref> "No bug found"`.'
 		].join('\n'),
 		workflow: 'Code change',
 		state: 'In progress'
