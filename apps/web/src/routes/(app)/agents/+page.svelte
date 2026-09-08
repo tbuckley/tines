@@ -35,7 +35,7 @@
 	import IconX from '@tabler/icons-svelte/icons/x';
 	import { untrack } from 'svelte';
 	import { slide } from 'svelte/transition';
-	import { invalidateAll } from '$app/navigation';
+	import { goto, invalidateAll } from '$app/navigation';
 	import { api } from '$lib/api';
 	import CancelRunDialog from '$lib/components/CancelRunDialog.svelte';
 	import { confirmDialog } from '$lib/components/dialogs.svelte';
@@ -55,6 +55,12 @@
 	let { data } = $props();
 
 	const dur = () => (prefersReducedMotion() ? 0 : 180);
+	function filterProject(project: string) {
+		const url = new URL(window.location.href);
+		if (project) url.searchParams.set('project', project);
+		else url.searchParams.delete('project');
+		void goto(`${url.pathname}${url.search}${url.hash}`);
+	}
 
 	/**
 	 * Every write on this page that can unblock dispatch — a raised cap, a new
@@ -1001,6 +1007,17 @@
 {/if}
 
 <!-- Now row: what is waiting, and why (Tines/256) -->
+<div class="mb-3 flex justify-end">
+	<label class="text-muted-foreground flex items-center gap-2 text-xs">
+		Project
+		<Select value={data.boardProject ?? ''} onchange={(event) => filterProject(event.currentTarget.value)}>
+			<option value="">All projects</option>
+			{#each data.projects as project (project.id)}
+				<option value={project.id}>{project.name}</option>
+			{/each}
+		</Select>
+	</label>
+</div>
 <FleetQueuePanel
 	queue={data.queue}
 	runners={data.runners}

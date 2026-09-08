@@ -2269,6 +2269,7 @@ export const QUEUE_GROUP_REF_LIMIT = 10;
 /** `GET /api/v1/supervisor/queue` — the fleet's waiting work. */
 export interface FleetQueue {
 	generated_at: number;
+	project: { id: string; name: string } | null;
 	automation_enabled: boolean;
 	quota: QuotaPolicy;
 	/** Sorted count desc, then oldest first. */

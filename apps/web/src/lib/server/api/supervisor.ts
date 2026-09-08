@@ -376,9 +376,11 @@ function refOf(row: QueueRefRow, queuePosition: number | null): QueueIssueRef {
 export async function loadFleetQueue(
 	db: Kysely<Database>,
 	userId: string,
-	now: number = Date.now()
+	now: number = Date.now(),
+	options: { project?: string } = {}
 ): Promise<FleetQueue> {
-	const [settings, eligible, runners, rules, counts, parkedRows, humanRow] = await Promise.all([
+	const project = options.project ? await resolveProjectRef(db, userId, options.project) : null;
+	const [settings, allEligible, runners, rules, counts, parkedRows, humanRow] = await Promise.all([
 		loadDispatchSettings(db, userId),
 		loadEligibleIssues(db, userId),
 		loadEngineRunners(db, userId),
@@ -387,7 +389,7 @@ export async function loadFleetQueue(
 		// Parked issues are excluded from the eligible set by definition, so
 		// they need their own read. Same eligibility joins, `needs_attention`
 		// flipped: these are the issues a human has to resume.
-		queueRefQuery(db, userId).where('issue.needs_attention', '=', 1).execute(),
+		queueRefQuery(db, userId, project?.id).where('issue.needs_attention', '=', 1).execute(),
 		// Human stages get a summary line only, so a count and a min suffice.
 		db
 			.selectFrom('issue')
@@ -396,12 +398,16 @@ export async function loadFleetQueue(
 			.where('project.user_id', '=', userId)
 			.where('project.archived_at', 'is', null)
 			.where('st.category', '=', 'awaiting_human')
+			.$if(project !== null, (q) => q.where('issue.project_id', '=', project!.id))
 			.select((eb) => [
 				eb.fn.countAll<number>().as('n'),
 				eb.fn.min(sql<number>`COALESCE(issue.state_entered_at, issue.created_at)`).as('oldest')
 			])
 			.executeTakeFirst()
 	]);
+	const eligible = project
+		? allEligible.filter((issue) => issue.project_id === project.id)
+		: allEligible;
 
 	// The queue the explainer reports positions in: eligible issues that would
 	// actually route somewhere, oldest-`updated_at` first.
@@ -472,6 +478,7 @@ export async function loadFleetQueue(
 	const parked = parkedRows.map((row) => refOf(row, null));
 	return {
 		generated_at: now,
+		project,
 		automation_enabled: settings.enabled,
 		quota: settings.quota,
 		// Biggest problem first, then whatever has been waiting longest.
@@ -495,14 +502,16 @@ export async function loadFleetQueue(
 }
 
 /** The eligibility joins plus the ref columns, ordered by the wait clock. */
-function queueRefQuery(db: Kysely<Database>, userId: string) {
-	return db
+function queueRefQuery(db: Kysely<Database>, userId: string, projectId?: string) {
+	let q = db
 		.selectFrom('issue')
 		.innerJoin('project', 'project.id', 'issue.project_id')
 		.innerJoin('workflow_state as st', 'st.id', 'issue.state_id')
 		.where('project.user_id', '=', userId)
 		.where('project.archived_at', 'is', null)
-		.where('st.category', '=', 'active')
+		.where('st.category', '=', 'active');
+	if (projectId) q = q.where('issue.project_id', '=', projectId);
+	return q
 		.select([
 			'issue.id as id',
 			'issue.number as number',

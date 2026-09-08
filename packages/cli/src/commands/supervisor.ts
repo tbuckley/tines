@@ -169,14 +169,15 @@ export function register(program: Command): void {
 		supervisor
 			.command('status')
 			.description('One-screen overview: kill switch, quota, utilization, runners')
-	).action(async (opts: CommonOpts) => {
+			.option('--project <name-or-id>', 'filter waiting work to one project')
+	).action(async (opts: CommonOpts & { project?: string }) => {
 		const api = client(opts);
 		const [settings, runnersRes, workflows, activeRunItems, queue] = await Promise.all([
 			api.getSupervisorSettings(),
 			api.listRunners(),
 			api.listWorkflows(),
 			listAll((page) => api.listRuns({ active: true, ...page })),
-			api.getSupervisorQueue()
+			api.getSupervisorQueue({ project: opts.project })
 		]);
 		if (opts.json) {
 			return printJson({

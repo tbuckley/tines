@@ -10,6 +10,7 @@ export const load: PageServerLoad = async ({ locals, platform, url }) => {
 	const db = getDb(platform!.env);
 	const userId = locals.user!.id;
 	const runsState = url.searchParams.get('runs_state');
+	const project = url.searchParams.get('project');
 	const [runners, rules, settings, workflows, runs, queue, stats, repoItems] = await Promise.all([
 		listRunners(db, userId),
 		listRoutingRules(db, userId),
@@ -18,8 +19,8 @@ export const load: PageServerLoad = async ({ locals, platform, url }) => {
 		listRuns(db, userId, { state: runsState ?? undefined }, { cursor: null, limit: 50 }),
 		// The Now row (Tines/256): everything eligible with no run, grouped by
 		// why it is waiting. Itself one parallel wave, so this adds no round trip.
-		loadFleetQueue(db, userId),
-		loadStageStats(db, userId, { project: url.searchParams.get('project') ?? undefined }),
+		loadFleetQueue(db, userId, Date.now(), { project: project ?? undefined }),
+		loadStageStats(db, userId, { project: project ?? undefined }),
 		// The repos context items point at, for the PAT instructions: that set
 		// is exactly what the token should be scoped to (and its blast radius).
 		db
@@ -44,6 +45,7 @@ export const load: PageServerLoad = async ({ locals, platform, url }) => {
 		runsState,
 		queue,
 		stats,
+		boardProject: project,
 		contextRepoUrls: repoItems.map((r) => r.repo_url).filter((u): u is string => u !== null)
 	};
 };
