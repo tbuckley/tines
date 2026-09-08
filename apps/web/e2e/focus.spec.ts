@@ -220,11 +220,7 @@ test.describe.serial('project focus', () => {
 		);
 		expect((await api.post(`/api/v1/projects/${archived.id}/archive`)).ok()).toBe(true);
 
-		const page = await open(
-			browser,
-			DESKTOP,
-			`/agents?keep=1&new=rule&project=${encodeURIComponent(A_NAME)}#routing`
-		);
+		const page = await open(browser, DESKTOP, `/agents?keep=1&new=rule&project=${aId}#routing`);
 		await expect(page.getByRole('dialog', { name: 'New routing rule' })).toBeVisible();
 		await expect(page.getByRole('dialog').getByLabel('Project', { exact: true })).toHaveValue(aId);
 		await expect(page).toHaveURL('/agents?keep=1#routing');
