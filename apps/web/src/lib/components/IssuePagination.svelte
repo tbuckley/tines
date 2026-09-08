@@ -16,8 +16,10 @@
 					class={buttonVariants({ variant: 'outline', size: 'sm' }) + ' min-h-11'}>Previous</a
 				>
 			{:else}
-				<span class={buttonVariants({ variant: 'outline', size: 'sm' }) + ' min-h-11 opacity-50'}
-					>Previous</span
+				<button
+					type="button"
+					disabled
+					class={buttonVariants({ variant: 'outline', size: 'sm' }) + ' min-h-11'}>Previous</button
 				>
 			{/if}
 			{#if pagination.nextHref}
@@ -26,8 +28,10 @@
 					class={buttonVariants({ variant: 'outline', size: 'sm' }) + ' min-h-11'}>Next</a
 				>
 			{:else}
-				<span class={buttonVariants({ variant: 'outline', size: 'sm' }) + ' min-h-11 opacity-50'}
-					>Next</span
+				<button
+					type="button"
+					disabled
+					class={buttonVariants({ variant: 'outline', size: 'sm' }) + ' min-h-11'}>Next</button
 				>
 			{/if}
 		</div>

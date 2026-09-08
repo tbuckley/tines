@@ -48,10 +48,9 @@ export function issuePagination(
 			bounded && (page.direction === 'after' || hasMore)
 				? issuePageHref(url, 'before', first, scope)
 				: null;
-		nextHref =
-			((page.direction === 'before' || hasMore) && bounded) || hasMore
-				? issuePageHref(url, 'after', last, scope)
-				: null;
+		nextHref = (!bounded || page.direction === 'after' ? hasMore : true)
+			? issuePageHref(url, 'after', last, scope)
+			: null;
 	} else if (page.cursor) {
 		const raw = encodeCursor(page.cursor.createdAt, page.cursor.id);
 		if (page.direction === 'after') previousHref = issuePageHref(url, 'before', raw, scope);
