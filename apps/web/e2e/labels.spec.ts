@@ -303,6 +303,7 @@ test.describe.serial('label as a scope dimension', () => {
 		request
 	}) => {
 		const api = apiClient(request, ALICE.apiKey);
+		await resetFocus(request);
 		// Its own workflow with an active initial state: a routing rule's scope
 		// must be active at authoring time, so the default workflow's category
 		// cannot be left to chance.
@@ -507,6 +508,7 @@ test.describe.serial('label as a scope dimension', () => {
 		request
 	}) => {
 		const api = apiClient(request, ALICE.apiKey);
+		await resetFocus(request);
 		// Re-form the tie the previous test broke, and add a bare project rule
 		// that both label rules outrank — three overlapping scopes, created in
 		// an order that is neither specificity nor alphabetical.

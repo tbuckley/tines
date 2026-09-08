@@ -152,7 +152,7 @@ test.describe.serial('project focus', () => {
 			await gotoHydrated(page, '/context');
 			await expect(page.getByLabel('Filter by project')).toHaveCount(0);
 			await expect(
-				page.getByText(/shared items? \(global and state-scoped\) apply here too/)
+				page.getByText(/shared items? \(global and state-scoped\) appl(?:y|ies) here too/)
 			).toBeVisible();
 
 			await gotoHydrated(page, '/activity');
