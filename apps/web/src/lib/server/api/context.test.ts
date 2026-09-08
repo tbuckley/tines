@@ -4,6 +4,7 @@ import {
 	buildLaunchPrompt,
 	isJournal,
 	issueBlock,
+	instructionsForIssue,
 	layerRank,
 	listContextItems,
 	stitchPrompt,
@@ -64,6 +65,35 @@ describe('layerRank', () => {
 		expect(layerRank({ labelId: 'l', projectId: 'p', workflowStateId: 's' })).toBeLessThan(
 			layerRank({ issueId: 'i' })
 		);
+	});
+});
+
+describe('instructionsForIssue', () => {
+	it('returns only nonempty instructions in broad-to-specific order without deduping', async () => {
+		const t = createTestDb();
+		t.sqlite.exec(`
+			INSERT INTO user (id, name, email, emailVerified, createdAt, updatedAt)
+				VALUES ('u1', 'alice', 'a@example.com', 1, 0, 0);
+			INSERT INTO project (id, user_id, name, created_at, updated_at)
+				VALUES ('p1', 'u1', 'Demo', 0, 0);
+			INSERT INTO workflow (id, user_id, name, description, initial_state_id, created_at, updated_at)
+				VALUES ('w1', 'u1', 'Flow', '', 's1', 0, 0);
+			INSERT INTO workflow_state (id, workflow_id, name, category, position, created_at)
+				VALUES ('s1', 'w1', 'Review', 'awaiting_human', 0, 0);
+			INSERT INTO issue (id, project_id, number, title, description, workflow_id, state_id,
+				attempt_count, needs_attention, created_at, updated_at, state_entered_at)
+				VALUES ('i1', 'p1', 1, 'Review me', '', 'w1', 's1', 0, 0, 0, 0, 0);
+			INSERT INTO context_item (id, user_id, kind, name, description, project_id,
+				workflow_state_id, issue_id, body, position, version, created_at, updated_at) VALUES
+				('global', 'u1', 'prompt', 'instructions', '', NULL, NULL, NULL, 'Broad', 0, 1, 0, 0),
+				('state', 'u1', 'prompt', 'instructions', '', NULL, 's1', NULL, 'Specific', 0, 1, 1, 1),
+				('empty', 'u1', 'prompt', 'instructions', '', 'p1', NULL, NULL, '   ', 0, 1, 2, 2),
+				('other', 'u1', 'prompt', 'journal', '', NULL, NULL, NULL, 'No', 0, 1, 3, 3);
+		`);
+		expect((await instructionsForIssue(t.db, 'u1', 'i1')).map((part) => part.body)).toEqual([
+			'Broad',
+			'Specific'
+		]);
 	});
 });
 

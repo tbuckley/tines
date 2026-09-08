@@ -11,6 +11,10 @@ export function splitBrief(source: string): { lead: string; rest: string } {
 	const blocks = normalized.split(/\n\s*\n/);
 	let end = 0;
 	while (end < blocks.length && /^#{1,6}\s/.test(blocks[end])) end += 1;
+	// Only split a plain paragraph. Lists, fences, HTML and indented code can
+	// contain blank lines internally, so keeping the source whole is safer.
+	if (/^(?:\s*(```|~~~|[-+*]\s|\d+[.)]\s|>|<)| {4})/.test(blocks[end] ?? ''))
+		return { lead: normalized, rest: '' };
 	if (end < blocks.length) end += 1;
 	return { lead: blocks.slice(0, end).join('\n\n'), rest: blocks.slice(end).join('\n\n') };
 }

@@ -5,6 +5,7 @@
 	import IconCopy from '@tabler/icons-svelte/icons/copy';
 	import IconRepeat from '@tabler/icons-svelte/icons/repeat';
 	import { flip } from 'svelte/animate';
+	import { onMount } from 'svelte';
 	import { fade } from 'svelte/transition';
 	import { goto } from '$app/navigation';
 	import { buttonVariants } from '$lib/components/ui/button';
@@ -31,6 +32,11 @@
 	} = $props();
 
 	const dur = () => (prefersReducedMotion() ? 0 : 220);
+	let now = $state(Date.now());
+	onMount(() => {
+		const timer = setInterval(() => (now = Date.now()), 60_000);
+		return () => clearInterval(timer);
+	});
 
 	const refLabel = (ref: IssueRef) => `${ref.project_name}/#${ref.number} — ${ref.title}`;
 
@@ -234,7 +240,7 @@
 								datetime={new Date(issue.state_entered_at).toISOString()}
 								title={new Date(issue.state_entered_at).toLocaleString()}
 							>
-								waiting {ageLabel(issue.state_entered_at)}
+								waiting {ageLabel(issue.state_entered_at, now)}
 							</time>
 							{#if issue.arrived_via}
 								<span aria-hidden="true">·</span>

@@ -8,6 +8,7 @@
 		type IssueDetail
 	} from '@tines/shared';
 	import ArtifactViewerDialog from '$lib/components/ArtifactViewerDialog.svelte';
+	import { onMount } from 'svelte';
 	import { api } from '$lib/api';
 	import HandoffRun from '$lib/components/HandoffRun.svelte';
 	import Markdown from '$lib/components/Markdown.svelte';
@@ -59,21 +60,39 @@
 			? `${issue.round.run_count} runs · ${issue.round.stages.length} stages${shots.length ? ` · ${shots.length} screenshots` : ''}`
 			: ''
 	);
+	let now = $state(Date.now());
+	onMount(() => {
+		const timer = setInterval(() => (now = Date.now()), 60_000);
+		return () => clearInterval(timer);
+	});
 	const clarificationArtifact = $derived(
 		issue.state.name === 'Needs Clarification'
 			? (artifacts.find((artifact) => artifact.name === 'clarification-request') ?? null)
 			: null
 	);
+	const clarificationVersion = $derived.by(() => {
+		let selected: number | null = null;
+		for (const stage of issue.round?.stages ?? [])
+			for (const run of stage.runs)
+				for (const artifact of run.artifacts)
+					if (
+						artifact.name === 'clarification-request' &&
+						(selected === null || artifact.to_version > selected)
+					)
+						selected = artifact.to_version;
+		return selected ?? clarificationArtifact?.current_version.version ?? null;
+	});
 	let clarification = $state<{ status: 'loading' | 'loaded' | 'failed'; body?: string }>({
 		status: 'loading'
 	});
 	$effect(() => {
 		const artifact = clarificationArtifact;
-		if (!artifact) return;
+		const version = clarificationVersion;
+		if (!artifact || version === null) return;
 		let stale = false;
 		clarification = { status: 'loading' };
 		api
-			.getArtifactContent(issue.id, artifact.name, { version: artifact.current_version.version })
+			.getArtifactContent(issue.id, artifact.name, { version })
 			.then((content) => {
 				if (!stale)
 					clarification = {
@@ -135,7 +154,7 @@
 			datetime={new Date(issue.state_entered_at).toISOString()}
 			title={new Date(issue.state_entered_at).toLocaleString()}
 		>
-			Waiting {ageLabel(issue.state_entered_at)}
+			Waiting {ageLabel(issue.state_entered_at, now)}
 		</time>
 		{#if issue.arrived_via}
 			· {issue.arrived_via.action
@@ -144,7 +163,10 @@
 	</p>
 	{#if issue.state.name === 'Needs Clarification'}
 		<section class="bg-muted/40 mb-4 rounded-md border p-3">
-			<h3 class="mb-2 text-sm font-semibold">Clarification requested</h3>
+			<h3 class="mb-2 text-sm font-semibold">
+				Clarification requested{#if clarificationVersion !== null}
+					· v{clarificationVersion}{/if}
+			</h3>
 			{#if !clarificationArtifact}
 				<p class="text-muted-foreground text-sm">No clarification request attached.</p>
 			{:else if clarification.status === 'loaded'}
@@ -155,8 +177,10 @@
 					type="button"
 					class="mt-2 text-xs underline"
 					onclick={() =>
-						openArtifact(clarificationArtifact.name, clarificationArtifact.current_version.version)}
-					>Open artifact</button
+						openArtifact(
+							clarificationArtifact.name,
+							clarificationVersion ?? clarificationArtifact.current_version.version
+						)}>Open artifact</button
 				>
 			{:else}
 				<p class="text-muted-foreground text-sm">Loading clarification request…</p>

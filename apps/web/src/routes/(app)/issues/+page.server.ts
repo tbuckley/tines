@@ -108,7 +108,6 @@ export const load: PageServerLoad = async ({ locals, platform, url }) => {
 		loadWorkflows(db, userId),
 		listLabels(db, userId)
 	]);
-
 	// `projects` and `focus` come from the app layout.
 	return {
 		issues,

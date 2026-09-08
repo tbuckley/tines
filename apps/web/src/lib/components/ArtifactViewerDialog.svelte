@@ -56,14 +56,25 @@
 	let deviceWidth = $state<number | null>(null);
 
 	let loadToken = 0;
+	let wasOpen = false;
+	let openingName: string | null = null;
+	$effect(() => {
+		if (!open) {
+			wasOpen = false;
+			openingName = null;
+			return;
+		}
+		if (!wasOpen) openingName = selectedName;
+		wasOpen = true;
+	});
 	$effect(() => {
 		if (!open || !selectedName) return;
 		const name = selectedName;
 		const token = ++loadToken;
 		detail = null;
 		loadError = null;
-		versionPick = initialVersion;
-		pathPick = initialPath;
+		versionPick = selectedName === openingName ? initialVersion : null;
+		pathPick = selectedName === openingName ? initialPath : null;
 		showSource = false;
 		showFiles = false;
 		api
