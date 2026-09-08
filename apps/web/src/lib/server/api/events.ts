@@ -3,6 +3,37 @@ import { sql, type CompiledQuery, type Kysely } from 'kysely';
 import { newId, type Database } from '$lib/server/db';
 import type { ActorContext } from './core';
 
+export interface EventWindowFilters {
+	since?: number;
+	until?: number;
+	type?: string | string[];
+	state?: string;
+}
+
+/** Apply the time/type/state predicates shared by activity and stage stats. */
+export function applyEventWindow<Q>(query: Q, filters: EventWindowFilters): Q {
+	// Kysely's table type differs for the display query and the slim analytics
+	// query; both expose the same where builder for event columns.
+	let q = query as Q & { where: (...args: unknown[]) => Q };
+	if (filters.since !== undefined) q = q.where('event.created_at', '>=', filters.since) as typeof q;
+	if (filters.until !== undefined) q = q.where('event.created_at', '<', filters.until) as typeof q;
+	if (filters.type) {
+		const types = Array.isArray(filters.type) ? filters.type : [filters.type];
+		q = q.where('event.type', 'in', types) as typeof q;
+	}
+	if (filters.state) {
+		const state = filters.state;
+		q = q.where((eb: any) =>
+			eb.or([
+			eb(sql<string>`json_extract(event.payload, '$.from_state_id')`, '=', state),
+			eb(sql<string>`json_extract(event.payload, '$.to_state_id')`, '=', state),
+			eb(sql<string>`json_extract(event.payload, '$.state_id')`, '=', state)
+		])
+		) as typeof q;
+	}
+	return q as Q;
+}
+
 export interface EventInput {
 	type: string;
 	issueId?: string | null;

@@ -39,7 +39,7 @@ import {
 } from '$lib/server/supervisor/logic';
 import { computeStageStats, type StatsEvent } from '$lib/server/supervisor/stats';
 import { ApiFail, requireString, runAtomic, type ActorContext } from './core';
-import { eventInsert } from './events';
+import { applyEventWindow, eventInsert } from './events';
 
 // ---------------------------------------------------------------------------
 // Defaults & validation
@@ -670,12 +670,10 @@ export async function loadStageStats(
 				.selectFrom('event')
 				.leftJoin('api_key', 'api_key.id', 'event.actor_api_key_id')
 				.where('event.user_id', '=', userId)
-				.where('event.created_at', '>=', scanFrom)
 				// A deleted issue's events keep a NULL issue_id (ON DELETE SET
 				// NULL); grouping them by issue would merge every such issue
 				// into one timeline.
 				.where('event.issue_id', 'is not', null)
-				.where('event.type', 'in', [...STATS_EVENT_TYPES])
 				.select([
 					'event.id as id',
 					'event.type as type',
@@ -687,6 +685,7 @@ export async function loadStageStats(
 						'actor_is_run'
 					)
 				]);
+			q = applyEventWindow(q, { since: scanFrom, until: now, type: [...STATS_EVENT_TYPES] });
 			if (project) q = q.where('event.project_id', '=', project.id);
 			return q.orderBy('event.created_at').orderBy('event.id').execute();
 		})(),

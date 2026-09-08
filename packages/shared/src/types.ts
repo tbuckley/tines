@@ -2506,7 +2506,14 @@ export interface EventFilters {
 	issue?: string;
 	/** Project id. */
 	project?: string;
+	/** One event type or a comma-separated list. */
 	type?: string;
+	/** Inclusive lower time bound, epoch ms or ISO 8601. */
+	since?: number | string;
+	/** Exclusive upper time bound, epoch ms or ISO 8601. */
+	until?: number | string;
+	/** Workflow state id referenced by an event payload. */
+	state?: string;
 }
 
 // ---------------------------------------------------------------------------
