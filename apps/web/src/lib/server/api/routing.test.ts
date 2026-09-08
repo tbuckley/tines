@@ -9,6 +9,7 @@ import {
 	ruleScopesOverlap,
 	ruleSpecificity,
 	shadowWarnings,
+	updateRoutingRule,
 	validateTargets,
 	type RuleForShadowing
 } from './routing';
@@ -355,6 +356,20 @@ describe('rule scope state category', () => {
 		expect(rule.targets).toEqual([
 			{ runner_id: '*', runner_name: '*', runner_status: null, tier: 'smartest' }
 		]);
+	});
+
+	it('rejects an update that makes a tier-only rule global', async () => {
+		const t = seed();
+		const rule = await createRoutingRule(t.db, t.env, actor, {
+			workflow_state_id: 'wfs_std_open',
+			targets: [{ runner_id: '*', tier: 'smartest' }]
+		});
+		await expect(
+			updateRoutingRule(t.db, t.env, actor, rule.id, { workflow_state_id: null })
+		).rejects.toMatchObject({ status: 422, code: 'invalid_field' });
+		expect((await listRoutingRules(t.db, actor.userId))[0].scope.workflow_state_id).toBe(
+			'wfs_std_open'
+		);
 	});
 });
 

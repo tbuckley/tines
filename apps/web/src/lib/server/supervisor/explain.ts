@@ -119,16 +119,18 @@ export async function explainDispatch(
 			? undefined
 			: failure === 'ambiguous_rule'
 				? { label: 'Make one rule more specific', href: '/agents#routing' }
-				: rule
-					? {
-							label: tierOverride && runnerRule ? 'Edit the runner rule' : 'Edit the rule',
-							href: '/agents#routing'
-						}
-					: {
-							label: 'Add a routing rule',
-							href: '/agents#routing',
-							cli: `tines routing set ${[...runners.values()][0]?.name ?? '<runner>'}`
-						};
+				: failure === 'no_runner_rule'
+					? { label: 'Configure routing', href: '/agents#routing' }
+					: rule
+						? {
+								label: tierOverride && runnerRule ? 'Edit the runner rule' : 'Edit the rule',
+								href: '/agents#routing'
+							}
+						: {
+								label: 'Add a routing rule',
+								href: '/agents#routing',
+								cli: `tines routing set ${[...runners.values()][0]?.name ?? '<runner>'}`
+							};
 	const checks: DispatchCheck[] = [
 		{
 			name: 'automation_enabled',

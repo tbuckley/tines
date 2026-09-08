@@ -1162,13 +1162,7 @@
 				fallback. Listed most specific first.
 			</p>
 		</div>
-		<Button
-			size="sm"
-			variant="ghost"
-			class="shrink-0"
-			onclick={() => openRuleCreate()}
-			disabled={data.runners.length === 0}
-		>
+		<Button size="sm" variant="ghost" class="shrink-0" onclick={() => openRuleCreate()}>
 			<IconPlus size={14} /> Add rule
 		</Button>
 	</div>
