@@ -36,6 +36,39 @@ describe('handoff presentation helpers', () => {
 		expect(meanings).toEqual({ b: 'approve now — merge the work' });
 	});
 
+	it('matches the arrow and connector wording used by awaiting-human workflow prompts', () => {
+		const transitions = [
+			{ transition_id: 'approve', name: 'Approve' },
+			{ transition_id: 'implementation', name: 'Send back to Implementation' },
+			{ transition_id: 'design', name: 'Send back to Design' },
+			{ transition_id: 'research', name: 'Send back to Research' },
+			{ transition_id: 'cancel', name: 'Cancel' }
+		] as AllowedTransition[];
+		expect(
+			transitionMeanings(
+				[
+					{
+						body: [
+							'- **Approve** → Merging: the work is ready.',
+							'- **Send back to Implementation** for code changes.',
+							'- **Send back to Design** for a revised plan.',
+							'- **Send back to Research** to investigate further.',
+							'- **Cancel** if the work should stop.',
+							'- Approve later is not an action.'
+						].join('\n')
+					}
+				],
+				transitions
+			)
+		).toEqual({
+			approve: 'Approve → Merging: the work is ready.',
+			implementation: 'Send back to Implementation for code changes.',
+			design: 'Send back to Design for a revised plan.',
+			research: 'Send back to Research to investigate further.',
+			cancel: 'Cancel if the work should stop.'
+		});
+	});
+
 	it('shows later workflow positions first and deleted stages last', () => {
 		const round = {
 			stages: [

@@ -44,7 +44,7 @@ export function transitionMeanings(
 			const text = plain(match[1]);
 			const transition = ordered.find((t) => {
 				const name = t.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-				return new RegExp(`^${name}(?=$|\\s*[:—–-])`, 'i').test(text);
+				return new RegExp(`^${name}(?=$|\\s*(?:[:—–→-]|\\b(?:for|if|to)\\b))`, 'i').test(text);
 			});
 			if (transition) result[transition.transition_id] = text;
 		}

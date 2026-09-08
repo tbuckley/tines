@@ -82,22 +82,36 @@
 						selected = artifact.to_version;
 		return selected ?? clarificationArtifact?.current_version.version ?? null;
 	});
-	let clarification = $state<{ status: 'loading' | 'loaded' | 'failed'; body?: string }>({
+	let clarificationRetry = $state(0);
+	let clarification = $state<{
+		status: 'loading' | 'loaded' | 'unsupported' | 'failed';
+		body?: string;
+		contentType?: string | null;
+	}>({
 		status: 'loading'
 	});
 	$effect(() => {
 		const artifact = clarificationArtifact;
 		const version = clarificationVersion;
+		clarificationRetry;
 		if (!artifact || version === null) return;
 		let stale = false;
 		clarification = { status: 'loading' };
 		api
-			.getArtifactContent(issue.id, artifact.name, { version })
-			.then((content) => {
+			.getArtifact(issue.id, artifact.name)
+			.then(async (detail) => {
+				const selected = detail.versions.find((candidate) => candidate.version === version);
+				const contentType = selected?.content_type ?? null;
+				if (contentType !== 'text/markdown' && contentType !== 'text/plain') {
+					if (!stale) clarification = { status: 'unsupported', contentType };
+					return;
+				}
+				const content = await api.getArtifactContent(issue.id, artifact.name, { version });
 				if (!stale)
 					clarification = {
 						status: 'loaded',
-						body: new TextDecoder().decode(content.bytes)
+						body: new TextDecoder().decode(content.bytes),
+						contentType
 					};
 			})
 			.catch(() => {
@@ -111,6 +125,7 @@
 	let viewerName = $state<string | null>(null);
 	let viewerVersion = $state<number | null>(null);
 	let viewerPath = $state<string | null>(null);
+	let failedShots = $state<Record<string, boolean>>({});
 	function openArtifact(name: string, version: number, path?: string) {
 		viewerName = name;
 		viewerVersion = version;
@@ -169,10 +184,16 @@
 			</h3>
 			{#if !clarificationArtifact}
 				<p class="text-muted-foreground text-sm">No clarification request attached.</p>
-			{:else if clarification.status === 'loaded'}
+			{:else if clarification.status === 'loaded' && clarification.contentType === 'text/markdown'}
 				<div class="text-sm"><Markdown source={clarification.body ?? ''} /></div>
-			{:else if clarification.status === 'failed'}
-				<p class="text-destructive text-sm">Couldn’t load the clarification request.</p>
+			{:else if clarification.status === 'loaded'}
+				<pre class="overflow-x-auto text-sm whitespace-pre-wrap">{clarification.body ?? ''}</pre>
+			{:else if clarification.status === 'unsupported'}
+				<p class="text-muted-foreground text-sm">
+					This artifact type can’t be shown inline{clarification.contentType
+						? ` (${clarification.contentType})`
+						: ''}.
+				</p>
 				<button
 					type="button"
 					class="mt-2 text-xs underline"
@@ -182,6 +203,22 @@
 							clarificationVersion ?? clarificationArtifact.current_version.version
 						)}>Open artifact</button
 				>
+			{:else if clarification.status === 'failed'}
+				<p class="text-destructive text-sm">Couldn’t load the clarification request.</p>
+				<div class="mt-2 flex gap-3">
+					<button type="button" class="text-xs underline" onclick={() => (clarificationRetry += 1)}
+						>Retry</button
+					>
+					<button
+						type="button"
+						class="text-xs underline"
+						onclick={() =>
+							openArtifact(
+								clarificationArtifact.name,
+								clarificationVersion ?? clarificationArtifact.current_version.version
+							)}>Open artifact</button
+					>
+				</div>
 			{:else}
 				<p class="text-muted-foreground text-sm">Loading clarification request…</p>
 			{/if}
@@ -228,34 +265,49 @@
 				{#if screenshots}
 					<section>
 						<h3 class="mb-2 text-sm font-semibold">Screenshots · v{screenshots.to_version}</h3>
-						<div class="grid grid-cols-2 gap-2 sm:grid-cols-3">
-							{#each shots as path (path)}
-								<button
-									class="min-w-0 text-left"
-									type="button"
-									onclick={() => openArtifact('screenshots', screenshots!.to_version, path)}
-									aria-label="Open {path}, screenshots version {screenshots.to_version}"
-								>
-									<span class="bg-muted block aspect-4/3 overflow-hidden rounded border">
-										<img
-											src={artifactContentUrl(
-												issue.id,
-												'screenshots',
-												screenshots.to_version,
-												path
-											)}
-											alt={path}
-											class="size-full object-contain"
-											loading="lazy"
-											decoding="async"
-										/>
-									</span>
-									<span class="text-muted-foreground mt-1 block truncate text-xs"
-										>{path.split('/').at(-1)}</span
+						{#if shots.length}
+							<div class="grid grid-cols-2 gap-2 sm:grid-cols-3">
+								{#each shots as path (path)}
+									<button
+										class="min-w-0 text-left"
+										type="button"
+										onclick={() => openArtifact('screenshots', screenshots!.to_version, path)}
+										aria-label="Open {path}, screenshots version {screenshots.to_version}"
 									>
-								</button>
-							{/each}
-						</div>
+										<span
+											class="bg-muted flex aspect-4/3 items-center justify-center overflow-hidden rounded border"
+										>
+											{#if failedShots[path]}
+												<span class="text-muted-foreground px-2 text-center text-xs">
+													{path.split('/').at(-1)} · open file
+												</span>
+											{:else}<img
+													src={artifactContentUrl(
+														issue.id,
+														'screenshots',
+														screenshots.to_version,
+														path
+													)}
+													alt={path}
+													class="size-full object-contain"
+													loading="lazy"
+													decoding="async"
+													onerror={() => (failedShots = { ...failedShots, [path]: true })}
+												/>{/if}
+										</span>
+										<span class="text-muted-foreground mt-1 block truncate text-xs"
+											>{path.split('/').at(-1)}</span
+										>
+									</button>
+								{/each}
+							</div>
+						{:else}
+							<ul class="text-muted-foreground space-y-1 text-xs">
+								{#each screenshots.files ?? [] as path (path)}
+									<li class="break-all">{path}</li>
+								{/each}
+							</ul>
+						{/if}
 						{#if (screenshots.files?.length ?? 0) > shots.length}
 							<button
 								type="button"

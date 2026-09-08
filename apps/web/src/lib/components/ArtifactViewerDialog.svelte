@@ -60,6 +60,7 @@
 	let openingName: string | null = null;
 	$effect(() => {
 		if (!open) {
+			loadToken += 1;
 			wasOpen = false;
 			openingName = null;
 			return;
@@ -295,7 +296,32 @@
 		{/if}
 	</div>
 
-	{#if detail && version}
+	{#if detail && version && pathPick !== null && fileIndex < 0}
+		<div class="rounded-md border border-dashed p-4 text-sm">
+			<p>This file is unavailable in version {version.version}.</p>
+			<div class="mt-2 flex flex-wrap gap-3">
+				<button
+					type="button"
+					class="text-muted-foreground text-xs underline"
+					onclick={() => (pathPick = null)}
+				>
+					Open the folder index
+				</button>
+				{#if versionPick !== null}
+					<button
+						type="button"
+						class="text-muted-foreground text-xs underline"
+						onclick={() => {
+							versionPick = null;
+							pathPick = null;
+						}}
+					>
+						Open the current version
+					</button>
+				{/if}
+			</div>
+		</div>
+	{:else if detail && version}
 		<!-- metadata line -->
 		<p class="text-muted-foreground mb-3 text-xs">
 			{detail.artifact_type}{version.content_type
