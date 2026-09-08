@@ -83,7 +83,7 @@ test('filters the weekly row and opens its evidence and lever links', async ({ c
 	await signIn(context, ALICE.sessionToken);
 	await gotoHydrated(page, `/agents?project=${project.id}`);
 
-	const projectFilter = page.getByLabel('Project');
+	const projectFilter = page.locator(`select:has(option[value="${project.id}"])`).first();
 	await expect(projectFilter).toHaveValue(project.id);
 	const section = page.getByRole('region', { name: /This week/ });
 	const row = section.getByRole('row').filter({ hasText: 'Automated Review' });
@@ -115,6 +115,8 @@ test('keeps the weekly table and project filter usable on a phone', async ({ con
 	await page.setViewportSize({ width: 390, height: 844 });
 	await signIn(context, ALICE.sessionToken);
 	await gotoHydrated(page, `/agents?project=${project.id}`);
-	await expect(page.getByLabel('Project')).toHaveValue(project.id);
+	await expect(page.locator(`select:has(option[value="${project.id}"])`).first()).toHaveValue(
+		project.id
+	);
 	await expect(page.getByRole('region', { name: /This week/ }).getByRole('table')).toBeVisible();
 });
