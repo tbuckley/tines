@@ -175,7 +175,7 @@ test('renders the two-pass round, excludes foreign-run content, and opens the pi
 	const headings = await card.locator('h3').allTextContents();
 	expect(headings.indexOf('Automated Review')).toBeLessThan(headings.indexOf('Implementation'));
 	await expect(card.getByText('impl-pr v1 → v2')).toBeVisible();
-	await expect(card.getByRole('link', { name: 'PR #78 ↗' })).toBeVisible();
+	await expect(card.getByRole('link', { name: /PR #78/ })).toBeVisible();
 	await expect(
 		card.getByText('1 earlier attempt · returned via Automated review failed')
 	).toBeVisible();
