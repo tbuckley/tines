@@ -60,14 +60,18 @@ test.beforeAll(async ({ playwright }) => {
 		);
 		const submit = issue.allowed_transitions.find((transition) => transition.name === 'submit')!;
 		issue = await body<IssueDetail>(
-			await api.post(`/api/v1/issues/${issue.id}/transition`, { transition_id: submit.id })
+			await api.post(`/api/v1/issues/${issue.id}/transition`, {
+				transition_id: submit.transition_id
+			})
 		);
 		if (sendBack) {
 			await api.post(`/api/v1/issues/${issue.id}/comments`, {
 				body: 'Please address the findings.'
 			});
 			const back = issue.allowed_transitions.find((transition) => transition.name === 'send back')!;
-			await api.post(`/api/v1/issues/${issue.id}/transition`, { transition_id: back.id });
+			await api.post(`/api/v1/issues/${issue.id}/transition`, {
+				transition_id: back.transition_id
+			});
 		}
 	};
 	await seedVisit(project.id, `Sent back ${runId}`, true);
