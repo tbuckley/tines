@@ -1,7 +1,7 @@
-import type { IssueDetail, Project, WorkflowResponse } from '@tines/shared';
+import type { Artifact, IssueDetail, Project, WorkflowResponse } from '@tines/shared';
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import { ALICE } from './constants.mjs';
-import { apiClient, body, gotoHydrated, readSettled, runId, signIn } from './helpers';
+import { apiClient, body, clickUntil, gotoHydrated, readSettled, runId, signIn } from './helpers';
 
 /**
  * A folder artifact's row on a phone (Tines/30): the type icon, the thumbnail
@@ -25,6 +25,11 @@ const projectName = `artifacts-panel-${runId}`;
 let project: Project;
 let plain: IssueDetail;
 let stale: IssueDetail;
+/** Three issues sitting in Design, where the typed gates below are available. */
+let gatedMd: IssueDetail;
+let gatedPlain: IssueDetail;
+let gatedPhone: IssueDetail;
+let gatedFile: IssueDetail;
 
 test.beforeAll(async ({ playwright }) => {
 	const request = await playwright.request.newContext({
@@ -63,6 +68,8 @@ test.beforeAll(async ({ playwright }) => {
 			states: [
 				{ name: 'Design', category: 'active' },
 				{ name: 'Implementation', category: 'active' },
+				{ name: 'Review', category: 'active' },
+				{ name: 'Archive', category: 'active' },
 				{ name: 'Done', category: 'done' }
 			],
 			transitions: [
@@ -72,6 +79,29 @@ test.beforeAll(async ({ playwright }) => {
 					from: 'Implementation',
 					to: 'Done',
 					requires: [{ artifact: 'photos', type: 'folder' }]
+				},
+				// The gates the Attach dialog reads (Tines/275): one concrete
+				// Markdown slot, one text/plain slot, out of the initial state.
+				{
+					name: 'submit',
+					from: 'Design',
+					to: 'Review',
+					requires: [{ artifact: 'prd', type: 'text', content_type: 'text/markdown' }]
+				},
+				{
+					name: 'publish',
+					from: 'Design',
+					to: 'Done',
+					requires: [{ artifact: 'notes', type: 'text', content_type: 'text/plain' }]
+				},
+				// A concrete *file* MIME: the write declares the picked file, so
+				// only reading that file catches a PNG under a PDF gate. Its own
+				// to_state, since a workflow takes one transition per state pair.
+				{
+					name: 'archive',
+					from: 'Design',
+					to: 'Archive',
+					requires: [{ artifact: 'deck', type: 'file', content_type: 'application/pdf' }]
 				}
 			]
 		})
@@ -84,6 +114,18 @@ test.beforeAll(async ({ playwright }) => {
 	);
 	await attachPhotos(stale.id);
 	await api.post(`/api/v1/issues/${stale.id}/transition`, { action: 'approve' });
+
+	const inDesign = async (title: string) =>
+		body<IssueDetail>(
+			await api.post(`/api/v1/projects/${project.id}/issues`, {
+				title: `${title} ${runId}`,
+				workflow_id: workflow.id
+			})
+		);
+	gatedMd = await inDesign('Panel gated md');
+	gatedPlain = await inDesign('Panel gated plain');
+	gatedPhone = await inDesign('Panel gated phone');
+	gatedFile = await inDesign('Panel gated file');
 
 	await request.dispose();
 });
@@ -233,4 +275,151 @@ test('a folder row stays one line on a desktop', async ({ page }) => {
 	expect(actions.x).toBeGreaterThanOrEqual(text.x + text.width);
 	expect(actions.y).toBeLessThan(text.y + text.height);
 	expect(text.y).toBeLessThan(actions.y + actions.height);
+});
+
+/**
+ * The Attach dialog reads the gate (Tines/275): the requirement on an
+ * available transition is the single source for the type it pre-selects, the
+ * content type it declares, and the warning it shows when the operator picks
+ * a type the gate can never accept. A human attaching `prd` under a
+ * `(text, text/markdown)` gate used to create an immutable `file` artifact —
+ * the very thing the CLI now refuses offline.
+ */
+
+const typeRadio = (page: Page, type: string): Locator =>
+	page.locator(`input[name="artifact-type"][value="${type}"]`);
+
+/** One option of the type selector: the input is `sr-only`, so click its label. */
+const typeOption = (page: Page, type: string): Locator =>
+	page.locator(`label:has(input[name="artifact-type"][value="${type}"])`);
+
+/** Open the Attach dialog and name the slot, through the hydration window. */
+async function openAttachFor(page: Page, issue: IssueDetail, name: string): Promise<Locator> {
+	await gotoHydrated(page, issueUrl(issue));
+	await unfoldArtifacts(page);
+	const nameField = page.locator('#artifact-name');
+	await clickUntil(page.getByRole('button', { name: 'Attach artifact' }), async () => {
+		await expect(nameField).toBeVisible();
+	});
+	await nameField.fill(name);
+	return nameField;
+}
+
+test('the attach dialog pre-selects the gate type and warns on one it rejects', async ({
+	page,
+	playwright
+}) => {
+	await openAttachFor(page, gatedMd, 'prd');
+
+	// Typing the slot name flips the selector to the gate's type…
+	await expect(typeRadio(page, 'text')).toBeChecked();
+	await expect(page.getByText('Required by submit (text, text/markdown)')).toBeVisible();
+
+	// …and picking a type the gate can never accept warns without blocking.
+	await typeOption(page, 'file').click();
+	await expect(typeRadio(page, 'file')).toBeChecked();
+	const warning = page.getByText(/cannot satisfy/);
+	await expect(warning).toBeVisible();
+	await expect(warning).toContainText('needs text');
+
+	// The hand-picked type survives further typing — the note still names the
+	// gate, but the selector is the operator's.
+	await page.locator('#artifact-name').fill('prd');
+	await expect(typeRadio(page, 'file')).toBeChecked();
+
+	await typeOption(page, 'text').click();
+	await expect(warning).toBeHidden();
+	await page.locator('#artifact-text').fill('# PRD\n\nThe document.');
+	await page.getByRole('button', { name: 'Attach', exact: true }).click();
+
+	await expect(page.getByRole('button', { name: 'prd', exact: true })).toBeVisible();
+
+	// What the gate wanted, and it clears the gate on the first try.
+	const request = await playwright.request.newContext({
+		baseURL: test.info().project.use.baseURL
+	});
+	const api = apiClient(request, ALICE.apiKey);
+	const artifact = await body<Artifact>(
+		await api.get(`/api/v1/issues/${gatedMd.id}/artifacts/prd`)
+	);
+	expect(artifact.artifact_type).toBe('text');
+	expect(artifact.current_version.content_type).toBe('text/markdown');
+	const moved = await api.post(`/api/v1/issues/${gatedMd.id}/transition`, { action: 'submit' });
+	expect(moved.status(), await moved.text()).toBe(200);
+	await request.dispose();
+});
+
+test('a text gate with a concrete content type is declared on the write', async ({
+	page,
+	playwright
+}) => {
+	await openAttachFor(page, gatedPlain, 'notes');
+
+	await expect(typeRadio(page, 'text')).toBeChecked();
+	await expect(page.getByText('Required by publish (text, text/plain)')).toBeVisible();
+	await page.locator('#artifact-text').fill('plain words');
+	await page.getByRole('button', { name: 'Attach', exact: true }).click();
+	await expect(page.getByRole('button', { name: 'notes', exact: true })).toBeVisible();
+
+	// The gate's MIME, not the server's text/markdown default.
+	const request = await playwright.request.newContext({
+		baseURL: test.info().project.use.baseURL
+	});
+	const api = apiClient(request, ALICE.apiKey);
+	const artifact = await body<Artifact>(
+		await api.get(`/api/v1/issues/${gatedPlain.id}/artifacts/notes`)
+	);
+	expect(artifact.current_version.content_type).toBe('text/plain');
+	await request.dispose();
+});
+
+test('the gate note and warning wrap on a phone', async ({ page }) => {
+	await page.setViewportSize(PHONE);
+	await openAttachFor(page, gatedPhone, 'prd');
+
+	const note = page.getByText('Required by submit (text, text/markdown)');
+	await expect(note).toBeVisible();
+	await typeOption(page, 'link').click();
+	const warning = page.getByText(/cannot satisfy/);
+	await expect(warning).toBeVisible();
+
+	// Neither line pushes the dialog off the right edge — they wrap like the
+	// rest of the panel does at this width.
+	for (const line of [note, warning]) {
+		const box = (await line.boundingBox())!;
+		expect(box.x + box.width).toBeLessThanOrEqual(PHONE.width);
+	}
+	// Warn, never block: the submit stays live for an operator attaching a
+	// link for some other purpose.
+	await page.locator('#artifact-url').fill('https://example.com/prd');
+	await expect(page.getByRole('button', { name: 'Attach', exact: true })).toBeEnabled();
+});
+
+test('the pre-selection re-arms on a new slot name, and a file gate reads the picked file', async ({
+	page
+}) => {
+	await openAttachFor(page, gatedFile, 'prd');
+	await expect(typeRadio(page, 'text')).toBeChecked();
+
+	// A hand pick wins over the gate it was made against…
+	await typeOption(page, 'link').click();
+	await expect(typeRadio(page, 'link')).toBeChecked();
+
+	// …and a name matching a *different* gate re-arms the pre-selection.
+	await page.locator('#artifact-name').fill('deck');
+	await expect(typeRadio(page, 'file')).toBeChecked();
+	await expect(page.getByText('Required by archive (file, application/pdf)')).toBeVisible();
+
+	// The upload declares the picked file, never the gate — so a PNG under a
+	// PDF gate warns rather than storing image/png in silence.
+	const fileInput = page.locator('[aria-label="File drop zone"] input[type="file"]');
+	await fileInput.setInputFiles({ name: 'deck.png', mimeType: 'image/png', buffer: PNG });
+	const warning = page.getByText(/cannot satisfy/);
+	await expect(warning).toBeVisible();
+	await expect(warning).toContainText('needs application/pdf');
+	await expect(page.getByRole('button', { name: 'Attach', exact: true })).toBeEnabled();
+
+	// What the gate asked for clears it.
+	await fileInput.setInputFiles({ name: 'deck.pdf', mimeType: 'application/pdf', buffer: PNG });
+	await expect(warning).toBeHidden();
 });

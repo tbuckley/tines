@@ -34,6 +34,14 @@ declare global {
 		 */
 		SELF?: Fetcher;
 		/**
+		 * Origin that serves artifact sites (`/s/<token>/…`), e.g.
+		 * `https://tines-web.<subdomain>.workers.dev` — a different registrable
+		 * domain from the app, so a prototype's JavaScript cannot touch app
+		 * cookies. Unset (local dev, e2e, previews) degrades to serving on the
+		 * app origin under CSP `sandbox`; see lib/server/artifact-site.ts.
+		 */
+		ARTIFACT_SANDBOX_ORIGIN?: string;
+		/**
 		 * Public base URL managed runs use to reach the API (self-seeding
 		 * prompts, the agent's TINES_API_URL). Falls back to BETTER_AUTH_URL.
 		 */

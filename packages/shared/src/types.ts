@@ -1292,6 +1292,25 @@ export interface ArtifactDetail extends Artifact {
 	versions: ArtifactVersion[];
 }
 
+/**
+ * `POST /api/v1/issues/:id/artifacts/:name/site-link` — a short-lived signed
+ * URL that renders an HTML artifact (see specs/artifacts/SPEC.md "Sites").
+ */
+export interface ArtifactSiteLink {
+	/** Absolute `/s/<token>/` URL: the iframe src and the "open full page" href. */
+	url: string;
+	/** The version the link is pinned to. */
+	version: number;
+	/** Epoch ms after which the link 403s. */
+	expires_at: number;
+	/**
+	 * `sandbox-origin`: served from a cross-site host, so storage APIs work.
+	 * `same-origin`: served from the app origin under CSP `sandbox` (opaque
+	 * origin — `localStorage` throws). Local dev, e2e and previews are the latter.
+	 */
+	mode: 'sandbox-origin' | 'same-origin';
+}
+
 export interface ArtifactListResponse {
 	items: Artifact[];
 }
@@ -1856,6 +1875,7 @@ export interface FinishRunRequest {
 
 /** One entry of a rule's ordered preference list, as stored/sent. */
 export interface RoutingTarget {
+	/** `'*'` is reserved for a singleton scoped tier-only rule. */
 	runner_id: string;
 	/** Null/absent = the runner's default tier. */
 	tier?: ModelTier | null;
@@ -1865,7 +1885,8 @@ export interface RoutingTarget {
 export interface RoutingRuleTarget {
 	runner_id: string;
 	runner_name: string;
-	runner_status: RunnerStatus;
+	/** Null for the `'*'` inherited-runner sentinel. */
+	runner_status: RunnerStatus | null;
 	tier: ModelTier | null;
 }
 
@@ -2144,6 +2165,10 @@ export interface DispatchExplainer {
 	pin: { runner_id: string; runner_name: string | null; tier: ModelTier | null } | null;
 	/** The winning rule; null when pinned, nothing matches, or two rules tie. */
 	matched_rule: { rule_id: string; scope_label: string } | null;
+	/** Concrete runner source when `matched_rule` is a tier-only rule. */
+	runner_rule?: { rule_id: string; scope_label: string } | null;
+	/** Tier applied to all inherited runner targets. */
+	tier_override?: ModelTier | null;
 	/**
 	 * The rules that tied, when two label rules match an issue at equal
 	 * specificity: the issue does not dispatch until one is made more
