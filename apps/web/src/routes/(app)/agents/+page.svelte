@@ -711,9 +711,13 @@
 
 	// --- runs --------------------------------------------------------------------
 
-	let showAllRuns = $state(false);
+	let showAllRuns = $state(untrack(() => data.runsState !== null));
 	const activeRuns = $derived(data.runs.filter((r) => isActiveRun(r.status)));
 	const visibleRuns = $derived(showAllRuns ? data.runs : activeRuns);
+	const runStateName = $derived(
+		data.workflows.flatMap((w) => w.states).find((state) => state.id === data.runsState)?.name ??
+			data.runsState
+	);
 
 	/** Utilization against the active policy — same math the CLI status shows. */
 	const utilization = $derived.by(() => {
@@ -1020,7 +1024,7 @@
 <StageStatsTable report={data.stats} quota={data.settings.quota} />
 
 <!-- Runners -->
-<div class="mb-10">
+<div class="mb-10" id="runs">
 	<div class="mb-3 flex items-center justify-between">
 		<h2 class="text-sm font-semibold">Runners</h2>
 		<Button size="sm" variant="ghost" onclick={() => (addRunnerOpen = true)}>
@@ -1135,6 +1139,11 @@
 			Runs
 			<span class="text-muted-foreground font-normal">— {utilization}</span>
 		</h2>
+		{#if data.runsState}
+			<a class="bg-muted rounded-full px-2 py-1 text-xs hover:underline" href="/agents#runs">
+				filtered to {runStateName} · clear
+			</a>
+		{/if}
 		<label class="text-muted-foreground flex items-center gap-2 text-xs">
 			<input type="checkbox" bind:checked={showAllRuns} class="accent-primary" />
 			Show ended runs

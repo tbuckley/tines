@@ -9,12 +9,13 @@ import type { PageServerLoad } from './$types';
 export const load: PageServerLoad = async ({ locals, platform, url }) => {
 	const db = getDb(platform!.env);
 	const userId = locals.user!.id;
+	const runsState = url.searchParams.get('runs_state');
 	const [runners, rules, settings, workflows, runs, queue, stats, repoItems] = await Promise.all([
 		listRunners(db, userId),
 		listRoutingRules(db, userId),
 		getSupervisorSettings(db, userId),
 		loadWorkflows(db, userId),
-		listRuns(db, userId, {}, { cursor: null, limit: 50 }),
+		listRuns(db, userId, { state: runsState ?? undefined }, { cursor: null, limit: 50 }),
 		// The Now row (Tines/256): everything eligible with no run, grouped by
 		// why it is waiting. Itself one parallel wave, so this adds no round trip.
 		loadFleetQueue(db, userId),
@@ -40,6 +41,7 @@ export const load: PageServerLoad = async ({ locals, platform, url }) => {
 		settings,
 		workflows,
 		runs: runs.items,
+		runsState,
 		queue,
 		stats,
 		contextRepoUrls: repoItems.map((r) => r.repo_url).filter((u): u is string => u !== null)

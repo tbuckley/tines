@@ -95,6 +95,8 @@ export interface RunListFilters {
 	issue?: string;
 	/** Runner id. */
 	runner?: string;
+	/** Workflow state id captured when the run started. */
+	state?: string;
 	/** Only runs holding a claim (assigned/launching/running). */
 	active?: boolean;
 }
@@ -108,6 +110,7 @@ export async function listRuns(
 	let q = runQuery(db, userId);
 	if (filters.issue) q = q.where('agent_run.issue_id', '=', filters.issue);
 	if (filters.runner) q = q.where('agent_run.runner_id', '=', filters.runner);
+	if (filters.state) q = q.where('agent_run.state_id_at_start', '=', filters.state);
 	if (filters.active) q = q.where('agent_run.status', 'in', [...ACTIVE_RUN_STATUSES]);
 	if (page.cursor) {
 		const { createdAt, id } = page.cursor;

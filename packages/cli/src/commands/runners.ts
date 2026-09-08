@@ -9,6 +9,7 @@ import {
 	resolveApiKey,
 	resolveIssue,
 	resolveRunner,
+	resolveStateFlag,
 	resolveUrl,
 	table,
 	withCommon,
@@ -505,15 +506,18 @@ export function register(program: Command): void {
 			.description('List runs, newest first')
 			.option('-i, --issue <ref>', 'filter to one issue (<project>/<number>)')
 			.option('-r, --runner <name>', 'filter by runner name')
+			.option('--state <workflow/state>', 'filter by state at run start')
 			.option('--active', 'only runs holding a claim (assigned/launching/running)')
-	).action(async (opts: ListOpts & { issue?: string; runner?: string; active?: boolean }) => {
+	).action(async (opts: ListOpts & { issue?: string; runner?: string; state?: string; active?: boolean }) => {
 		const api = client(opts);
 		const issueId = opts.issue ? (await resolveIssue(api, opts.issue)).id : undefined;
 		const runnerId = opts.runner ? (await resolveRunner(api, opts.runner)).id : undefined;
+		const stateId = opts.state ? (await resolveStateFlag(api, opts.state)).state.id : undefined;
 		const res = await fetchList(opts, (page) =>
 			api.listRuns({
 				issue: issueId,
 				runner: runnerId,
+				state: stateId,
 				active: opts.active ? true : undefined,
 				...page
 			})

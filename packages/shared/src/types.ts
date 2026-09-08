@@ -2019,6 +2019,8 @@ export interface RunFilters {
 	issue?: string;
 	/** Runner id. */
 	runner?: string;
+	/** Workflow state id captured when the run started. */
+	state?: string;
 	/** Only runs holding a claim (assigned/launching/running). */
 	active?: boolean;
 }

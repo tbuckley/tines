@@ -14,6 +14,7 @@ export const GET: RequestHandler = api(async (event) => {
 		{
 			issue: params.get('issue') ?? undefined,
 			runner: params.get('runner') ?? undefined,
+			state: params.get('state') ?? undefined,
 			active: ['1', 'true'].includes(params.get('active') ?? '')
 		},
 		page
