@@ -204,18 +204,23 @@ Commands:
 List activity events, newest first
 
 Options:
-  -i, --issue <ref>     filter to one issue (<project>/<number>)
-  -p, --project <name>  filter by project name or id
-  -t, --type <type>     filter by event type (e.g. issue.transitioned)
-  --limit <n>           maximum items to return (page size under --all-pages)
-  --cursor <cursor>     resume from the next_cursor of a previous page
-  --all-pages           fetch every page, not just the first (slower on large
-                        lists)
-  -u, --url <url>       base URL of the Tines API (or set TINES_API_URL, or run
-                        \`tines login\`; default https://tines.tbuckley.dev)
-  --api-key <key>       API key (or set TINES_API_KEY, or run \`tines login\`)
-  --json                output the raw JSON response
-  -h, --help            display help for command
+  -i, --issue <ref>         filter to one issue (<project>/<number>)
+  -p, --project <name>      filter by project name or id
+  -t, --type <type>         filter by event type (e.g. issue.transitioned)
+  --since <time>            inclusive lower bound (ISO 8601 or epoch ms)
+  --until <time>            exclusive upper bound (ISO 8601 or epoch ms)
+  --state <workflow/state>  events referencing a workflow state
+  --limit <n>               maximum items to return (page size under
+                            --all-pages)
+  --cursor <cursor>         resume from the next_cursor of a previous page
+  --all-pages               fetch every page, not just the first (slower on
+                            large lists)
+  -u, --url <url>           base URL of the Tines API (or set TINES_API_URL, or
+                            run \`tines login\`; default
+                            https://tines.tbuckley.dev)
+  --api-key <key>           API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json                    output the raw JSON response
+  -h, --help                display help for command
 ",
   "tines issues": "Usage: tines issues [options] [command]
 
@@ -1199,18 +1204,22 @@ Options:
 List runs, newest first
 
 Options:
-  -i, --issue <ref>    filter to one issue (<project>/<number>)
-  -r, --runner <name>  filter by runner name
-  --active             only runs holding a claim (assigned/launching/running)
-  --limit <n>          maximum items to return (page size under --all-pages)
-  --cursor <cursor>    resume from the next_cursor of a previous page
-  --all-pages          fetch every page, not just the first (slower on large
-                       lists)
-  -u, --url <url>      base URL of the Tines API (or set TINES_API_URL, or run
-                       \`tines login\`; default https://tines.tbuckley.dev)
-  --api-key <key>      API key (or set TINES_API_KEY, or run \`tines login\`)
-  --json               output the raw JSON response
-  -h, --help           display help for command
+  -i, --issue <ref>         filter to one issue (<project>/<number>)
+  -r, --runner <name>       filter by runner name
+  --state <workflow/state>  filter by state at run start
+  --active                  only runs holding a claim
+                            (assigned/launching/running)
+  --limit <n>               maximum items to return (page size under
+                            --all-pages)
+  --cursor <cursor>         resume from the next_cursor of a previous page
+  --all-pages               fetch every page, not just the first (slower on
+                            large lists)
+  -u, --url <url>           base URL of the Tines API (or set TINES_API_URL, or
+                            run \`tines login\`; default
+                            https://tines.tbuckley.dev)
+  --api-key <key>           API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json                    output the raw JSON response
+  -h, --help                display help for command
 ",
   "tines runs show": "Usage: tines runs show [options] <id>
 
@@ -1442,24 +1451,28 @@ Options:
 Per-stage flow this week: queue wait, work time, runs per visit, sent back
 
 Options:
-  --window <window>  Rolling window, e.g. 24h or 7d (default: "7d")
-  --project <ref>    Narrow to one project (id or name)
-  -u, --url <url>    base URL of the Tines API (or set TINES_API_URL, or run
-                     \`tines login\`; default https://tines.tbuckley.dev)
-  --api-key <key>    API key (or set TINES_API_KEY, or run \`tines login\`)
-  --json             output the raw JSON response
-  -h, --help         display help for command
+  --window <window>             Rolling window, e.g. 24h or 7d (default: "7d")
+  --project <ref>               Narrow to one project (id or name)
+  --sent-back <workflow/state>  Show the issues behind one sent-back figure
+  -u, --url <url>               base URL of the Tines API (or set TINES_API_URL,
+                                or run \`tines login\`; default
+                                https://tines.tbuckley.dev)
+  --api-key <key>               API key (or set TINES_API_KEY, or run \`tines
+                                login\`)
+  --json                        output the raw JSON response
+  -h, --help                    display help for command
 ",
   "tines supervisor status": "Usage: tines supervisor status [options]
 
 One-screen overview: kill switch, quota, utilization, runners
 
 Options:
-  -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
-                   \`tines login\`; default https://tines.tbuckley.dev)
-  --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
-  --json           output the raw JSON response
-  -h, --help       display help for command
+  --project <name-or-id>  filter waiting work to one project
+  -u, --url <url>         base URL of the Tines API (or set TINES_API_URL, or
+                          run \`tines login\`; default https://tines.tbuckley.dev)
+  --api-key <key>         API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json                  output the raw JSON response
+  -h, --help              display help for command
 ",
   "tines time": "Usage: tines time [options]
 

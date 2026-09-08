@@ -5,9 +5,11 @@ import type { RequestHandler } from './$types';
 
 export const GET: RequestHandler = api(async (event) => {
 	const { db, actor } = await apiContext(event);
-	return json(await loadSentBackDrilldown(db, actor.userId, {
-		state: requireString(event.url.searchParams.get('state'), 'state'),
-		window: event.url.searchParams.get('window') ?? undefined,
-		project: event.url.searchParams.get('project') ?? undefined
-	}));
+	return json(
+		await loadSentBackDrilldown(db, actor.userId, {
+			state: requireString(event.url.searchParams.get('state'), 'state'),
+			window: event.url.searchParams.get('window') ?? undefined,
+			project: event.url.searchParams.get('project') ?? undefined
+		})
+	);
 });

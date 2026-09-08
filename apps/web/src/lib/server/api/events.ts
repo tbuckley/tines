@@ -25,10 +25,10 @@ export function applyEventWindow<Q>(query: Q, filters: EventWindowFilters): Q {
 		const state = filters.state;
 		q = q.where((eb: any) =>
 			eb.or([
-			eb(sql<string>`json_extract(event.payload, '$.from_state_id')`, '=', state),
-			eb(sql<string>`json_extract(event.payload, '$.to_state_id')`, '=', state),
-			eb(sql<string>`json_extract(event.payload, '$.state_id')`, '=', state)
-		])
+				eb(sql<string>`json_extract(event.payload, '$.from_state_id')`, '=', state),
+				eb(sql<string>`json_extract(event.payload, '$.to_state_id')`, '=', state),
+				eb(sql<string>`json_extract(event.payload, '$.state_id')`, '=', state)
+			])
 		) as typeof q;
 	}
 	return q as Q;

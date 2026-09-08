@@ -40,8 +40,12 @@
 								{@const state = report.states.find((row) => row.state_id === effect.state_id)}
 								<p>
 									{state?.state_name ?? effect.state_id}: since {effect.after?.exits ?? 0} exits,
-									{shareLabel(effect.after?.sent_back_share)} sent back, queue {durationLabel(effect.after?.queue_wait_p50)}
-									· before {effect.before?.exits ?? 0} exits, {shareLabel(effect.before?.sent_back_share)} sent back, queue {durationLabel(effect.before?.queue_wait_p50)}
+									{shareLabel(effect.after?.sent_back_share)} sent back, queue {durationLabel(
+										effect.after?.queue_wait_p50
+									)}
+									· before {effect.before?.exits ?? 0} exits, {shareLabel(
+										effect.before?.sent_back_share
+									)} sent back, queue {durationLabel(effect.before?.queue_wait_p50)}
 								</p>
 							{/each}
 						</div>
@@ -67,26 +71,39 @@
 					{#each report.states as stage (stage.state_id)}
 						<tr class="align-top">
 							<td class="px-3 py-3">
-								<a class="font-medium hover:underline" href={`/workflows/${stage.workflow_id}?state=${stage.state_id}#state-${stage.state_id}`}>
+								<a
+									class="font-medium hover:underline"
+									href={`/workflows/${stage.workflow_id}?state=${stage.state_id}#state-${stage.state_id}`}
+								>
 									{stage.workflow_name}/{stage.state_name}
 								</a>
 							</td>
 							<td class="px-3 py-3">
 								<span>{stage.current.visits} · {stage.current.exits}</span>
-								<span class="text-muted-foreground ml-1">{deltaLabel(stage.delta.visits, 'count')}</span>
+								<span class="text-muted-foreground ml-1"
+									>{deltaLabel(stage.delta.visits, 'count')}</span
+								>
 								{#if stage.current.waiting_now > 0}
-									<div class="text-muted-foreground mt-1">{stage.current.waiting_now} waiting, not timed</div>
+									<div class="text-muted-foreground mt-1">
+										{stage.current.waiting_now} waiting, not timed
+									</div>
 								{/if}
 							</td>
 							<td class="px-3 py-3">
 								<a class="hover:underline" href={rosterHref(stage.state_id)}>
-									{durationLabel(stage.current.queue_wait?.p50)} / {durationLabel(stage.current.queue_wait?.p90)}
+									{durationLabel(stage.current.queue_wait?.p50)} / {durationLabel(
+										stage.current.queue_wait?.p90
+									)}
 								</a>
-								<div class="text-muted-foreground">{deltaLabel(stage.delta.queue_wait_p50, 'ms')}</div>
+								<div class="text-muted-foreground">
+									{deltaLabel(stage.delta.queue_wait_p50, 'ms')}
+								</div>
 							</td>
 							<td class="px-3 py-3">
 								<a class="hover:underline" href={`/agents?runs_state=${stage.state_id}#runs`}>
-									{durationLabel(stage.current.work?.p50)} / {durationLabel(stage.current.work?.p90)}
+									{durationLabel(stage.current.work?.p50)} / {durationLabel(
+										stage.current.work?.p90
+									)}
 								</a>
 								<div class="text-muted-foreground">{deltaLabel(stage.delta.work_p50, 'ms')}</div>
 							</td>
@@ -94,26 +111,46 @@
 								<a class="hover:underline" href={`/agents?runs_state=${stage.state_id}#runs`}>
 									{stage.current.runs.per_visit?.toFixed(1) ?? '—'}
 								</a>
-								<span class="text-muted-foreground ml-1">{deltaLabel(stage.delta.runs_per_visit, 'ratio')}</span>
+								<span class="text-muted-foreground ml-1"
+									>{deltaLabel(stage.delta.runs_per_visit, 'ratio')}</span
+								>
 								{#if stage.current.runs.top_runner}
 									<div class="text-muted-foreground mt-1">
-										<a class="hover:underline" href={`#runner-${stage.current.runs.top_runner.id}`}>{stage.current.runs.top_runner.name}</a>
+										<a class="hover:underline" href={`#runner-${stage.current.runs.top_runner.id}`}
+											>{stage.current.runs.top_runner.name}</a
+										>
 									</div>
 								{/if}
 							</td>
 							<td class="px-3 py-3">
 								<a class="hover:underline" href={`/agents?runs_state=${stage.state_id}#runs`}>
-									adv {stage.current.runs.outcomes.advanced} · stalled {stage.current.runs.outcomes.stalled}<br />
-									failed {stage.current.runs.outcomes.failed} · intr {stage.current.runs.outcomes.interrupted}
+									adv {stage.current.runs.outcomes.advanced} · stalled {stage.current.runs.outcomes
+										.stalled}<br />
+									failed {stage.current.runs.outcomes.failed} · intr {stage.current.runs.outcomes
+										.interrupted}
 								</a>
-								{#if stage.current.runs.outcomes.unrecorded > 0}<div class="text-muted-foreground">unrecorded {stage.current.runs.outcomes.unrecorded}</div>{/if}
-								{#if outcomeDeltasAvailable(stage)}<div class="text-muted-foreground">failed {deltaLabel(stage.delta.outcomes.failed, 'count')}</div>{/if}
+								{#if stage.current.runs.outcomes.unrecorded > 0}<div class="text-muted-foreground">
+										unrecorded {stage.current.runs.outcomes.unrecorded}
+									</div>{/if}
+								{#if outcomeDeltasAvailable(stage)}<div class="text-muted-foreground">
+										failed {deltaLabel(stage.delta.outcomes.failed, 'count')}
+									</div>{/if}
 							</td>
 							<td class="px-3 py-3">
-								<button type="button" class="text-left hover:underline" onclick={() => onsentback?.(stage)}>
-									{stage.current.sent_back.count} of {stage.current.exits} ({shareLabel(stage.current.sent_back.share)})
-									<div class="text-muted-foreground">agents {stage.current.sent_back.agent} · humans {stage.current.sent_back.human}</div>
-									<div class="text-muted-foreground">{deltaLabel(stage.delta.sent_back_share, 'share')}</div>
+								<button
+									type="button"
+									class="text-left hover:underline"
+									onclick={() => onsentback?.(stage)}
+								>
+									{stage.current.sent_back.count} of {stage.current.exits} ({shareLabel(
+										stage.current.sent_back.share
+									)})
+									<div class="text-muted-foreground">
+										agents {stage.current.sent_back.agent} · humans {stage.current.sent_back.human}
+									</div>
+									<div class="text-muted-foreground">
+										{deltaLabel(stage.delta.sent_back_share, 'share')}
+									</div>
 								</button>
 							</td>
 							<td class="px-3 py-3">{stage.current.received_back}</td>

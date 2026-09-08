@@ -249,9 +249,30 @@ export function register(program: Command): void {
 			.description('Per-stage flow this week: queue wait, work time, runs per visit, sent back')
 			.option('--window <window>', 'Rolling window, e.g. 24h or 7d', '7d')
 			.option('--project <ref>', 'Narrow to one project (id or name)')
-	).action(async (opts: CommonOpts & { window?: string; project?: string }) => {
+			.option('--sent-back <workflow/state>', 'Show the issues behind one sent-back figure')
+	).action(async (opts: CommonOpts & { window?: string; project?: string; sentBack?: string }) => {
 		const api = client(opts);
 		const project = opts.project ? await resolveProject(api, opts.project) : null;
+		if (opts.sentBack) {
+			const { state } = await resolveStateFlag(api, opts.sentBack);
+			const detail = await api.getSupervisorSentBack({
+				state: state.id,
+				window: opts.window,
+				project: project?.id ?? undefined
+			});
+			if (opts.json) return printJson(detail);
+			console.log(`sent back from ${detail.state.workflow_name}/${detail.state.name}`);
+			if (detail.prompt)
+				console.log(`prompt: ${detail.prompt.name} (current v${detail.prompt.current_version})`);
+			if (detail.items.length === 0) return console.log('no issues sent back');
+			for (const item of detail.items) {
+				console.log(
+					`${item.issue.project_name}/${item.issue.number} → ${item.to_state_name} · prompt ${item.prompt_version ? `v${item.prompt_version}` : 'unknown'} · ${item.actor.user_name}`
+				);
+				console.log(`  ${item.comment?.excerpt.split('\n')[0] ?? 'no comment'}`);
+			}
+			return;
+		}
 		const report = await api.getSupervisorStats({
 			window: opts.window,
 			project: project?.id ?? undefined
@@ -281,6 +302,18 @@ export function register(program: Command): void {
 				`${s.current.sent_back.count} of ${s.current.exits} (${shareLabel(s.current.sent_back.share)}) · agents ${s.current.sent_back.agent} ${deltaLabel(s.delta.sent_back_share, 'share')}`.trim()
 			])
 		]);
+		if (report.markers.length > 0) {
+			console.log('changes:');
+			for (const marker of report.markers) {
+				console.log(`  ${marker.label}`);
+				for (const effect of marker.effects) {
+					const state = report.states.find((row) => row.state_id === effect.state_id);
+					console.log(
+						`    ${state?.state_name ?? effect.state_id}: since ${effect.after?.exits ?? 0} exits, ${shareLabel(effect.after?.sent_back_share)} sent back, queue ${durationLabel(effect.after?.queue_wait_p50)} · before ${effect.before?.exits ?? 0} exits, ${shareLabel(effect.before?.sent_back_share)} sent back, queue ${durationLabel(effect.before?.queue_wait_p50)}`
+					);
+				}
+			}
+		}
 		for (const line of statsLevers()) console.log(line);
 	});
 

@@ -16,7 +16,12 @@ export const GET: RequestHandler = api(async (event) => {
 		if (!value) return undefined;
 		const parsed = /^\d+$/.test(value) ? Number(value) : Date.parse(value);
 		if (!Number.isFinite(parsed)) {
-			throw new ApiFail(422, 'validation_error', `"${name}" must be epoch milliseconds or ISO 8601`, { field: name });
+			throw new ApiFail(
+				422,
+				'validation_error',
+				`"${name}" must be epoch milliseconds or ISO 8601`,
+				{ field: name }
+			);
 		}
 		return parsed;
 	}

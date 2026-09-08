@@ -1031,7 +1031,10 @@
 <div class="mb-3 flex justify-end">
 	<label class="text-muted-foreground flex items-center gap-2 text-xs">
 		Project
-		<Select value={data.boardProject ?? ''} onchange={(event) => filterProject(event.currentTarget.value)}>
+		<Select
+			value={data.boardProject ?? ''}
+			onchange={(event) => filterProject(event.currentTarget.value)}
+		>
 			<option value="">All projects</option>
 			{#each data.projects as project (project.id)}
 				<option value={project.id}>{project.name}</option>
@@ -1067,8 +1070,13 @@
 	{:else if sentBackData}
 		<div class="space-y-3">
 			<div class="flex items-center justify-between gap-3 text-sm">
-				<span class="font-medium">{sentBackData.state.workflow_name}/{sentBackData.state.name}</span>
-				{#if sentBackData.prompt}<a class="text-primary text-xs hover:underline" href={sentBackData.prompt.edit_url}>Edit prompt · current v{sentBackData.prompt.current_version}</a>{/if}
+				<span class="font-medium">{sentBackData.state.workflow_name}/{sentBackData.state.name}</span
+				>
+				{#if sentBackData.prompt}<a
+						class="text-primary text-xs hover:underline"
+						href={sentBackData.prompt.edit_url}
+						>Edit prompt · current v{sentBackData.prompt.current_version}</a
+					>{/if}
 			</div>
 			{#if sentBackData.items.length === 0}
 				<p class="text-muted-foreground text-sm">No issues were sent back in this window.</p>
@@ -1076,8 +1084,16 @@
 				<ul class="divide-y rounded-lg border">
 					{#each sentBackData.items as item (item.issue.id + item.transitioned_at)}
 						<li class="space-y-1 px-3 py-3 text-sm">
-							<a class="font-medium hover:underline" href={`/issues/${encodeURIComponent(item.issue.project_name)}/${item.issue.number}`}>{item.issue.project_name}/{item.issue.number} — {item.issue.title}</a>
-							<div class="text-muted-foreground text-xs">to {item.to_state_name} · {relativeTime(item.transitioned_at)} · prompt {item.prompt_version ? `v${item.prompt_version}` : 'unknown'}</div>
+							<a
+								class="font-medium hover:underline"
+								href={`/issues/${encodeURIComponent(item.issue.project_name)}/${item.issue.number}`}
+								>{item.issue.project_name}/{item.issue.number} — {item.issue.title}</a
+							>
+							<div class="text-muted-foreground text-xs">
+								to {item.to_state_name} · {relativeTime(item.transitioned_at)} · prompt {item.prompt_version
+									? `v${item.prompt_version}`
+									: 'unknown'}
+							</div>
 							<p class="text-xs">{item.comment?.excerpt ?? 'no comment'}</p>
 						</li>
 					{/each}

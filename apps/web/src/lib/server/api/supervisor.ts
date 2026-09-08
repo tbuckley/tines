@@ -727,8 +727,14 @@ export async function loadStageStats(
 			.where('created_at', '>=', now - windowMs)
 			.where('created_at', '<', now)
 			.where('type', 'in', [
-				'context.created', 'context.updated', 'context.deleted', 'settings.updated',
-				'runner.updated', 'routing_rule.created', 'routing_rule.updated', 'routing_rule.deleted'
+				'context.created',
+				'context.updated',
+				'context.deleted',
+				'settings.updated',
+				'runner.updated',
+				'routing_rule.created',
+				'routing_rule.updated',
+				'routing_rule.deleted'
 			])
 			.orderBy('created_at')
 			.execute()
@@ -803,41 +809,94 @@ export async function loadStageStats(
 		let stateIds: string[] = [];
 		if (row.type.startsWith('context.')) {
 			const scope = payload.scope ?? payload.scope_to;
-			if (payload.kind !== 'prompt' || payload.name === 'journal' || !scope?.workflow_state_id) continue;
+			if (payload.kind !== 'prompt' || payload.name === 'journal' || !scope?.workflow_state_id)
+				continue;
 			kind = 'prompt';
 			stateIds = [scope.workflow_state_id];
 			const meta = states.find((state) => state.id === scope.workflow_state_id);
 			label = `Stage prompt edited${meta ? `: ${meta.workflow_name}/${meta.name}` : ''}`;
 		} else if (row.type === 'settings.updated') {
 			const changed = Array.isArray(payload.changed) ? payload.changed : [];
-			if (changed.includes('quota')) { kind = 'quota'; label = 'Supervisor quota changed'; }
-			else if (changed.includes('enabled')) { kind = 'automation'; label = 'Automation setting changed'; }
+			if (changed.includes('quota')) {
+				kind = 'quota';
+				label = 'Supervisor quota changed';
+			} else if (changed.includes('enabled')) {
+				kind = 'automation';
+				label = 'Automation setting changed';
+			}
 		} else if (row.type === 'runner.updated') {
-			if (!(payload.changed as unknown[] | undefined)?.includes('max_concurrent') || payload.reconnected) continue;
-			kind = 'runner_cap'; label = `Runner cap changed${payload.name ? `: ${payload.name}` : ''}`;
+			if (
+				!(payload.changed as unknown[] | undefined)?.includes('max_concurrent') ||
+				payload.reconnected
+			)
+				continue;
+			kind = 'runner_cap';
+			label = `Runner cap changed${payload.name ? `: ${payload.name}` : ''}`;
 		} else if (row.type.startsWith('routing_rule.')) {
-			kind = 'rule'; label = 'Routing rule changed';
+			kind = 'rule';
+			label = 'Routing rule changed';
 		}
 		if (!kind) continue;
 		const actor = row.actor_api_key_id ?? row.actor_user_id;
 		const previous = seeds.at(-1);
-		if (previous && previous.kind === kind && previous.actor === actor && row.created_at - previous.at <= 60_000) {
+		if (
+			previous &&
+			previous.kind === kind &&
+			previous.actor === actor &&
+			row.created_at - previous.at <= 60_000
+		) {
 			previous.event_ids.push(row.id);
 			previous.state_ids = [...new Set([...previous.state_ids, ...stateIds])];
 			continue;
 		}
-		seeds.push({ id: row.id, at: row.created_at, kind, label, event_ids: [row.id], state_ids: stateIds, actor });
+		seeds.push({
+			id: row.id,
+			at: row.created_at,
+			kind,
+			label,
+			event_ids: [row.id],
+			state_ids: stateIds,
+			actor
+		});
 	}
 	const figures = (subReport: StageStatsReport, stateId: string) => {
 		const row = subReport.states.find((stage) => stage.state_id === stateId)?.current;
-		return row ? { visits: row.visits, exits: row.exits, sent_back_share: row.sent_back.share, queue_wait_p50: row.queue_wait?.p50 ?? null } : null;
+		return row
+			? {
+					visits: row.visits,
+					exits: row.exits,
+					sent_back_share: row.sent_back.share,
+					queue_wait_p50: row.queue_wait?.p50 ?? null
+				}
+			: null;
 	};
-	report.markers = seeds.slice(-20).reverse().map((seed) => {
-		const before = computeStageStats({ ...baseInput, now: seed.at, windowMs: Math.max(1, seed.at - report.window.since), compare: false });
-		const after = computeStageStats({ ...baseInput, now, windowMs: Math.max(1, now - seed.at), compare: false });
-		const affected = seed.state_ids.length > 0 ? seed.state_ids : report.states.map((stage) => stage.state_id);
-		return { ...seed, effects: affected.map((stateId) => ({ state_id: stateId, before: figures(before, stateId), after: figures(after, stateId) })) };
-	});
+	report.markers = seeds
+		.slice(-20)
+		.reverse()
+		.map((seed) => {
+			const before = computeStageStats({
+				...baseInput,
+				now: seed.at,
+				windowMs: Math.max(1, seed.at - report.window.since),
+				compare: false
+			});
+			const after = computeStageStats({
+				...baseInput,
+				now,
+				windowMs: Math.max(1, now - seed.at),
+				compare: false
+			});
+			const affected =
+				seed.state_ids.length > 0 ? seed.state_ids : report.states.map((stage) => stage.state_id);
+			return {
+				...seed,
+				effects: affected.map((stateId) => ({
+					state_id: stateId,
+					before: figures(before, stateId),
+					after: figures(after, stateId)
+				}))
+			};
+		});
 	return report;
 }
 
@@ -855,7 +914,14 @@ export async function loadSentBackDrilldown(
 		.selectFrom('workflow_state as st')
 		.innerJoin('workflow as wf', 'wf.id', 'st.workflow_id')
 		.where((eb) => eb.or([eb('wf.user_id', '=', userId), eb('wf.user_id', 'is', null)]))
-		.select(['st.id', 'st.name', 'st.position', 'st.category', 'st.workflow_id', 'wf.name as workflow_name'])
+		.select([
+			'st.id',
+			'st.name',
+			'st.position',
+			'st.category',
+			'st.workflow_id',
+			'wf.name as workflow_name'
+		])
 		.execute();
 	const state = states.find((row) => row.id === query.state);
 	if (!state) throw new ApiFail(404, 'not_found', `No workflow state "${query.state}"`);
@@ -876,12 +942,23 @@ export async function loadSentBackDrilldown(
 	const events = (await transitions.orderBy('event.created_at desc').execute()).map(serializeEvent);
 	const sent = events.filter((event) => {
 		const target = stateById.get(String(event.payload.to_state_id ?? ''));
-		return target?.workflow_id === state.workflow_id && target.category !== 'done' && target.position < state.position;
+		return (
+			target?.workflow_id === state.workflow_id &&
+			target.category !== 'done' &&
+			target.position < state.position
+		);
 	});
 
-	const issueIds = [...new Set(sent.map((event) => event.issue_id).filter((id): id is string => id !== null))];
+	const issueIds = [
+		...new Set(sent.map((event) => event.issue_id).filter((id): id is string => id !== null))
+	];
 	const comments = issueIds.length
-		? await db.selectFrom('comment').selectAll().where('issue_id', 'in', issueIds).orderBy('created_at').execute()
+		? await db
+				.selectFrom('comment')
+				.selectAll()
+				.where('issue_id', 'in', issueIds)
+				.orderBy('created_at')
+				.execute()
 		: [];
 	const prompt = await db
 		.selectFrom('context_item')
@@ -908,33 +985,59 @@ export async function loadSentBackDrilldown(
 			.map((event) => Number((JSON.parse(event.payload) as Record<string, unknown>).version))
 			.filter(Number.isFinite)
 			.at(-1);
-		return exact ?? Math.max(1, prompt.version - promptEvents.filter((event) => event.created_at > at).length);
+		return (
+			exact ??
+			Math.max(1, prompt.version - promptEvents.filter((event) => event.created_at > at).length)
+		);
 	};
 
 	return {
-		state: { id: state.id, name: state.name, workflow_id: state.workflow_id, workflow_name: state.workflow_name },
+		state: {
+			id: state.id,
+			name: state.name,
+			workflow_id: state.workflow_id,
+			workflow_name: state.workflow_name
+		},
 		window: { since, until: now },
 		prompt: prompt
-			? { context_id: prompt.id, name: prompt.name, current_version: prompt.version, edit_url: `/workflows/${state.workflow_id}?state=${state.id}#state-${state.id}` }
+			? {
+					context_id: prompt.id,
+					name: prompt.name,
+					current_version: prompt.version,
+					edit_url: `/workflows/${state.workflow_id}?state=${state.id}#state-${state.id}`
+				}
 			: null,
 		items: sent.flatMap((event) => {
 			if (!event.issue_id || !event.issue_ref) return [];
-			const candidates = comments.filter((comment) => comment.issue_id === event.issue_id && comment.created_at <= event.created_at);
+			const candidates = comments.filter(
+				(comment) => comment.issue_id === event.issue_id && comment.created_at <= event.created_at
+			);
 			const authored = candidates.filter((comment) =>
-				event.actor.api_key_id ? comment.actor_api_key_id === event.actor.api_key_id : comment.actor_user_id === event.actor.user_id && comment.actor_api_key_id === null
+				event.actor.api_key_id
+					? comment.actor_api_key_id === event.actor.api_key_id
+					: comment.actor_user_id === event.actor.user_id && comment.actor_api_key_id === null
 			);
 			const comment = authored.at(-1) ?? candidates.at(-1) ?? null;
 			const targetId = String(event.payload.to_state_id);
-			return [{
-				issue: { id: event.issue_id, ...event.issue_ref },
-				transitioned_at: event.created_at,
-				to_state_id: targetId,
-				to_state_name: stateById.get(targetId)?.name ?? String(event.payload.to_state_name ?? targetId),
-				action: typeof event.payload.action === 'string' ? event.payload.action : null,
-				actor: event.actor,
-				comment: comment ? { id: comment.id, excerpt: comment.body.slice(0, 280), created_at: comment.created_at } : null,
-				prompt_version: promptVersionAt(event.created_at)
-			}];
+			return [
+				{
+					issue: { id: event.issue_id, ...event.issue_ref },
+					transitioned_at: event.created_at,
+					to_state_id: targetId,
+					to_state_name:
+						stateById.get(targetId)?.name ?? String(event.payload.to_state_name ?? targetId),
+					action: typeof event.payload.action === 'string' ? event.payload.action : null,
+					actor: event.actor,
+					comment: comment
+						? {
+								id: comment.id,
+								excerpt: comment.body.slice(0, 280),
+								created_at: comment.created_at
+							}
+						: null,
+					prompt_version: promptVersionAt(event.created_at)
+				}
+			];
 		})
 	};
 }
