@@ -214,9 +214,9 @@ describe('applying a built-in to an empty database', () => {
 		expect(inProgress.prompt).toContain('run the Test command');
 		expect(inProgress.prompt).toContain('tines issues artifacts attach <ref> pr --pr <url>');
 		expect(inProgress.prompt).toContain('tines issues move <ref> "Submit for review"');
-		expect(workflow.states.find((state) => state.name === 'Review')!.prompt).toContain(
-			'choose “Send back”'
-		);
+		const reviewPrompt = workflow.states.find((state) => state.name === 'Review')!.prompt;
+		expect(reviewPrompt).toContain('issue arrived through “No bug found”');
+		expect(reviewPrompt).toContain('choose “Send back”');
 		expect(starter.conventions_template?.split('\n').map((line) => line.split(':')[0])).toEqual([
 			'Test command',
 			'Branch rules',

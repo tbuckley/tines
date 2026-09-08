@@ -43,9 +43,9 @@ export const code: Starter = {
 					name: 'Review',
 					category: 'awaiting_human',
 					prompt: [
-						'Review the attached pull request. Check that the chosen change is a real bug, the fix is focused, the test demonstrates the failure and the project’s conventions were followed.',
+						'Review the attached pull request. Check that the chosen change is a real bug, the fix is focused, the test demonstrates the failure and the project’s conventions were followed. If the issue arrived through “No bug found”, review the issue comment and what the agent checked instead.',
 						'',
-						'Approve when it is ready. If changes are needed, leave a specific comment and choose “Send back”; that returns the issue to In progress so the agent can address the feedback.'
+						'Approve when it is ready. If changes are needed, or you know of a small verifiable bug the agent missed, leave a specific comment and choose “Send back”; that returns the issue to In progress so the agent can address the feedback.'
 					].join('\n')
 				},
 				{ name: 'Done', category: 'done' }
