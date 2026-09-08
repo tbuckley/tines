@@ -594,8 +594,8 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 			child.stderr?.on('data', (data: Buffer) => {
 				const text = data.toString('utf8');
 				run.batcher.append(text);
-				// The only place a usage limit shows up when the session was
-				// already exhausted at start: stdout is empty in that case.
+				// Usage exhaustion at process start and some provider/transport
+				// failures only appear here; stdout is empty in those cases.
 				run.limiter?.noteStderr(text);
 			});
 			run.timeout = setTimeout(() => {
@@ -638,6 +638,7 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 					// reopens, so the supervisor can hold the runner until then.
 					// A signal is our own kill, so it keeps its existing report.
 					const limited = signal ? null : (run.limiter?.signal() ?? null);
+					const providerError = signal ? null : (run.limiter?.providerError() ?? null);
 					if (limited) {
 						log(
 							`run ${runId}: harness rate limited (${limited.detail}); reporting without a strike`
@@ -645,6 +646,13 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 						void table.finishAndCleanup(run, 'failed', `rate limited: ${limited.detail}`, {
 							judgment: 'rate_limited',
 							...(limited.resumeAt !== null ? { resume_at: limited.resumeAt } : {})
+						});
+					} else if (providerError) {
+						log(
+							`run ${runId}: transient provider error (${providerError.detail}); reporting without a strike`
+						);
+						void table.finishAndCleanup(run, 'failed', `provider error: ${providerError.detail}`, {
+							judgment: 'interrupted'
 						});
 					} else {
 						void table.finishAndCleanup(
