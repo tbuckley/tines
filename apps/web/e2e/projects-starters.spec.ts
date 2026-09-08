@@ -90,7 +90,8 @@ test('Code repository seeds the first issue launch context and gated review work
 		expect.objectContaining({ artifact: 'pr', type: 'pr', status: 'missing' })
 	]);
 	const noBug = issue.allowed_transitions.find((transition) => transition.name === 'No bug found');
-	expect(noBug?.requires).toEqual([]);
+	expect(noBug).toBeDefined();
+	expect(noBug?.requires).toBeUndefined();
 
 	const prompt = await body<LaunchPromptResponse>(
 		await api.get(`/api/v1/issues/${first.id}/prompt`)
