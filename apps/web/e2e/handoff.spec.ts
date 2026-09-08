@@ -212,13 +212,46 @@ test('renders Product Direction and clarification handoffs inline', async ({ pag
 	await expect(card).toContainText('Drafting complete with every open question included.');
 	await expect(card.getByText('prd v1')).toBeVisible();
 
+	let failedOnce = false;
+	await page.route('**/artifacts/clarification-request/content*', async (route) => {
+		if (!failedOnce) {
+			failedOnce = true;
+			await route.fulfill({ status: 500, body: 'temporary failure' });
+		} else await route.continue();
+	});
 	await gotoHydrated(
 		page,
 		`/issues/${encodeURIComponent(projectName)}/${clarificationIssue.number}`
 	);
 	card = page.getByTestId('handoff-card');
 	await expect(card.getByText('Current clarification-request · v1')).toBeVisible();
+	await expect(card.getByText('Couldn’t load the clarification request.')).toBeVisible();
+	await card.getByRole('button', { name: 'Retry' }).click();
 	await expect(card.locator('pre')).toContainText('Which launch date should we use?');
+});
+
+test('a missing historical screenshot path offers recovery instead of a blank viewer', async ({
+	page
+}) => {
+	await page.route(`**/api/v1/issues/${HANDOFF.issueId}/artifacts/screenshots`, async (route) => {
+		const response = await route.fetch();
+		const envelope = (await response.json()) as {
+			data: { versions: { version: number; files: { path: string }[] | null }[] };
+		};
+		const historical = envelope.data.versions.find((version) => version.version === 2);
+		if (historical?.files)
+			historical.files = historical.files.filter((file) => file.path !== 'dashboard-mobile.png');
+		await route.fulfill({ response, json: envelope });
+	});
+	await gotoHydrated(page, richUrl);
+	await page
+		.getByTestId('handoff-card')
+		.getByRole('button', { name: /dashboard-mobile\.png, screenshots version 2/ })
+		.click();
+	const viewer = page.getByRole('dialog', { name: 'Artifact viewer' });
+	await expect(viewer.getByText('This file is unavailable in version 2.')).toBeVisible();
+	await expect(viewer.getByRole('button', { name: 'Open the folder index' })).toBeVisible();
+	await expect(viewer.getByRole('button', { name: 'Open the current version' })).toBeVisible();
 });
 
 test('Awaiting aliases show oldest waiting first and comments do not reset the wait clock', async ({
