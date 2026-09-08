@@ -8,6 +8,7 @@ import {
 	type QueueVerdict,
 	type QuotaPolicy,
 	type RunEndOutcome,
+	type SentBackDrilldown,
 	type StageStatsReport,
 	type StatsQuery,
 	type SupervisorSettings,
@@ -39,7 +40,7 @@ import {
 } from '$lib/server/supervisor/logic';
 import { computeStageStats, type StatsEvent } from '$lib/server/supervisor/stats';
 import { ApiFail, requireString, runAtomic, type ActorContext } from './core';
-import { applyEventWindow, eventInsert } from './events';
+import { applyEventWindow, eventInsert, eventQuery, serializeEvent } from './events';
 
 // ---------------------------------------------------------------------------
 // Defaults & validation
@@ -776,4 +777,102 @@ export async function loadStageStats(
 		outcomeRecordedSince: outcomeRow?.since ?? null,
 		project
 	});
+}
+
+/** The issue, actor, comment and prompt-version evidence behind sent-back. */
+export async function loadSentBackDrilldown(
+	db: Kysely<Database>,
+	userId: string,
+	query: { state: string; window?: string; project?: string },
+	now: number = Date.now()
+): Promise<SentBackDrilldown> {
+	const windowMs = parseStatsWindow(query.window);
+	const since = now - windowMs;
+	const project = query.project ? await resolveProjectRef(db, userId, query.project) : null;
+	const states = await db
+		.selectFrom('workflow_state as st')
+		.innerJoin('workflow as wf', 'wf.id', 'st.workflow_id')
+		.where((eb) => eb.or([eb('wf.user_id', '=', userId), eb('wf.user_id', 'is', null)]))
+		.select(['st.id', 'st.name', 'st.position', 'st.category', 'st.workflow_id', 'wf.name as workflow_name'])
+		.execute();
+	const state = states.find((row) => row.id === query.state);
+	if (!state) throw new ApiFail(404, 'not_found', `No workflow state "${query.state}"`);
+	const stateById = new Map(states.map((row) => [row.id, row]));
+
+	let transitions = applyEventWindow(eventQuery(db, userId), {
+		since,
+		until: now,
+		type: 'issue.transitioned',
+		state: query.state
+	});
+	transitions = transitions.where(
+		sql<string>`json_extract(event.payload, '$.from_state_id')`,
+		'=',
+		query.state
+	);
+	if (project) transitions = transitions.where('event.project_id', '=', project.id);
+	const events = (await transitions.orderBy('event.created_at desc').execute()).map(serializeEvent);
+	const sent = events.filter((event) => {
+		const target = stateById.get(String(event.payload.to_state_id ?? ''));
+		return target?.workflow_id === state.workflow_id && target.category !== 'done' && target.position < state.position;
+	});
+
+	const issueIds = [...new Set(sent.map((event) => event.issue_id).filter((id): id is string => id !== null))];
+	const comments = issueIds.length
+		? await db.selectFrom('comment').selectAll().where('issue_id', 'in', issueIds).orderBy('created_at').execute()
+		: [];
+	const prompt = await db
+		.selectFrom('context_item')
+		.select(['id', 'name', 'version'])
+		.where('user_id', '=', userId)
+		.where('kind', '=', 'prompt')
+		.where('name', '=', 'instructions')
+		.where('workflow_state_id', '=', state.id)
+		.executeTakeFirst();
+	const promptEvents = prompt
+		? await db
+				.selectFrom('event')
+				.select(['payload', 'created_at'])
+				.where('user_id', '=', userId)
+				.where('type', '=', 'context.updated')
+				.where(sql<string>`json_extract(payload, '$.context_id')`, '=', prompt.id)
+				.orderBy('created_at')
+				.execute()
+		: [];
+	const promptVersionAt = (at: number): number | null => {
+		if (!prompt) return null;
+		const exact = promptEvents
+			.filter((event) => event.created_at <= at)
+			.map((event) => Number((JSON.parse(event.payload) as Record<string, unknown>).version))
+			.filter(Number.isFinite)
+			.at(-1);
+		return exact ?? Math.max(1, prompt.version - promptEvents.filter((event) => event.created_at > at).length);
+	};
+
+	return {
+		state: { id: state.id, name: state.name, workflow_id: state.workflow_id, workflow_name: state.workflow_name },
+		window: { since, until: now },
+		prompt: prompt
+			? { context_id: prompt.id, name: prompt.name, current_version: prompt.version, edit_url: `/workflows/${state.workflow_id}?state=${state.id}#state-${state.id}` }
+			: null,
+		items: sent.flatMap((event) => {
+			if (!event.issue_id || !event.issue_ref) return [];
+			const candidates = comments.filter((comment) => comment.issue_id === event.issue_id && comment.created_at <= event.created_at);
+			const authored = candidates.filter((comment) =>
+				event.actor.api_key_id ? comment.actor_api_key_id === event.actor.api_key_id : comment.actor_user_id === event.actor.user_id && comment.actor_api_key_id === null
+			);
+			const comment = authored.at(-1) ?? candidates.at(-1) ?? null;
+			const targetId = String(event.payload.to_state_id);
+			return [{
+				issue: { id: event.issue_id, ...event.issue_ref },
+				transitioned_at: event.created_at,
+				to_state_id: targetId,
+				to_state_name: stateById.get(targetId)?.name ?? String(event.payload.to_state_name ?? targetId),
+				action: typeof event.payload.action === 'string' ? event.payload.action : null,
+				actor: event.actor,
+				comment: comment ? { id: comment.id, excerpt: comment.body.slice(0, 280), created_at: comment.created_at } : null,
+				prompt_version: promptVersionAt(event.created_at)
+			}];
+		})
+	};
 }

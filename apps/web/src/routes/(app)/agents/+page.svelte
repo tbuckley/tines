@@ -10,6 +10,8 @@
 		Runner,
 		RunnerBudget,
 		RunnerTierOverrides,
+		SentBackDrilldown,
+		StageStats,
 		ShadowWarning
 	} from '@tines/shared';
 	import {
@@ -55,6 +57,25 @@
 	let { data } = $props();
 
 	const dur = () => (prefersReducedMotion() ? 0 : 180);
+	let sentBackOpen = $state(false);
+	let sentBackLoading = $state(false);
+	let sentBackData = $state<SentBackDrilldown | null>(null);
+	async function openSentBack(stage: StageStats) {
+		sentBackOpen = true;
+		sentBackLoading = true;
+		sentBackData = null;
+		try {
+			sentBackData = await api.getSupervisorSentBack({
+				state: stage.state_id,
+				project: data.boardProject ?? undefined
+			});
+		} catch (error) {
+			showError(error);
+			sentBackOpen = false;
+		} finally {
+			sentBackLoading = false;
+		}
+	}
 	function filterProject(project: string) {
 		const url = new URL(window.location.href);
 		if (project) url.searchParams.set('project', project);
@@ -1038,7 +1059,33 @@
 	onenable={() => setEnabled(true)}
 />
 
-<StageStatsTable report={data.stats} quota={data.settings.quota} />
+<StageStatsTable report={data.stats} quota={data.settings.quota} onsentback={openSentBack} />
+
+<Modal bind:open={sentBackOpen} title="Issues sent back" size="md">
+	{#if sentBackLoading}
+		<p class="text-muted-foreground text-sm">Loading evidence…</p>
+	{:else if sentBackData}
+		<div class="space-y-3">
+			<div class="flex items-center justify-between gap-3 text-sm">
+				<span class="font-medium">{sentBackData.state.workflow_name}/{sentBackData.state.name}</span>
+				{#if sentBackData.prompt}<a class="text-primary text-xs hover:underline" href={sentBackData.prompt.edit_url}>Edit prompt · current v{sentBackData.prompt.current_version}</a>{/if}
+			</div>
+			{#if sentBackData.items.length === 0}
+				<p class="text-muted-foreground text-sm">No issues were sent back in this window.</p>
+			{:else}
+				<ul class="divide-y rounded-lg border">
+					{#each sentBackData.items as item (item.issue.id + item.transitioned_at)}
+						<li class="space-y-1 px-3 py-3 text-sm">
+							<a class="font-medium hover:underline" href={`/issues/${encodeURIComponent(item.issue.project_name)}/${item.issue.number}`}>{item.issue.project_name}/{item.issue.number} — {item.issue.title}</a>
+							<div class="text-muted-foreground text-xs">to {item.to_state_name} · {relativeTime(item.transitioned_at)} · prompt {item.prompt_version ? `v${item.prompt_version}` : 'unknown'}</div>
+							<p class="text-xs">{item.comment?.excerpt ?? 'no comment'}</p>
+						</li>
+					{/each}
+				</ul>
+			{/if}
+		</div>
+	{/if}
+</Modal>
 
 <!-- Runners -->
 <div class="mb-10" id="runs">

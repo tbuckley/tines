@@ -2404,6 +2404,23 @@ export interface StatsQuery {
 	project?: string;
 }
 
+/** Evidence behind one stage's sent-back figure. */
+export interface SentBackDrilldown {
+	state: { id: string; name: string; workflow_id: string; workflow_name: string };
+	window: { since: number; until: number };
+	prompt: { context_id: string; name: string; current_version: number; edit_url: string } | null;
+	items: {
+		issue: { id: string; project_name: string; number: number; title: string };
+		transitioned_at: number;
+		to_state_id: string;
+		to_state_name: string;
+		action: string | null;
+		actor: Actor;
+		comment: { id: string; excerpt: string; created_at: number } | null;
+		prompt_version: number | null;
+	}[];
+}
+
 // ---------------------------------------------------------------------------
 // Comments
 
