@@ -352,6 +352,7 @@
 <AgentRoutingCard
 	rules={data.routingRules}
 	{activeStateIds}
+	editable={!archived}
 	emptyMessage="No routing rule covers this project — its issues will not dispatch to agents."
 	emptyAction={{
 		label: 'Edit routing',

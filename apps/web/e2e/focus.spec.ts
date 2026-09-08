@@ -71,6 +71,20 @@ test.describe.serial('project focus', () => {
 		]) {
 			const res = await api.post(`/api/v1/projects/${id}/issues`, { title: `${name} issue` });
 			expect(res.status(), await res.text()).toBe(201);
+			const context = await api.post('/api/v1/context', {
+				kind: 'prompt',
+				name: `${name}-context`,
+				body: `${name} only`,
+				project_id: id
+			});
+			expect(context.status(), await context.text()).toBe(201);
+		}
+		for (const project_id of [aId, bId]) {
+			const rule = await api.post('/api/v1/routing-rules', {
+				project_id,
+				targets: [{ runner_id: RUNROW.runnerId }]
+			});
+			expect(rule.status(), await rule.text()).toBe(201);
 		}
 	});
 
@@ -151,16 +165,38 @@ test.describe.serial('project focus', () => {
 
 			await gotoHydrated(page, '/context');
 			await expect(page.getByLabel('Filter by project')).toHaveCount(0);
-			await expect(
-				page.getByText(/shared items? \(global and state-scoped\) appl(?:y|ies) here too/)
-			).toBeVisible();
+			await expect(page.locator('p').filter({ hasText: /shared items?/ })).toContainText(
+				/\(global and state-scoped\) appl(?:y|ies) here too/
+			);
+			await expect(page.getByText(`${A_NAME}-context`, { exact: true })).toBeVisible();
+			await expect(page.getByText(`${B_NAME}-context`, { exact: true })).toHaveCount(0);
 
 			await gotoHydrated(page, '/activity');
 			await expect(page.getByLabel('Filter by project')).toHaveCount(0);
-			await expect(page.getByRole('link', { name: '#1', exact: true }).first()).toBeVisible();
+			const issueLinks = page.locator(`a[href^="/issues/"]`);
+			await expect(issueLinks.first()).toBeVisible();
+			expect(
+				await issueLinks.evaluateAll((links) => links.map((link) => link.getAttribute('href')))
+			).toEqual(expect.arrayContaining([`/issues/${encodeURIComponent(A_NAME)}/1`]));
+			expect(
+				await issueLinks.evaluateAll((links) => links.map((link) => link.getAttribute('href')))
+			).not.toContain(`/issues/${encodeURIComponent(B_NAME)}/1`);
 
 			await gotoHydrated(page, '/workflows');
 			await expect(page.getByText(/1 open issue/).first()).toBeVisible();
+
+			await gotoHydrated(page, '/agents');
+			const routingRules = page.getByRole('list', { name: 'Routing rules' });
+			await expect(routingRules.getByText(A_NAME, { exact: true })).toBeVisible();
+			await expect(routingRules.getByText(B_NAME, { exact: true })).toHaveCount(0);
+			await page.getByLabel('Show ended runs').check();
+			await expect(
+				page.getByRole('link', { name: new RegExp(`${RUNROW.projectName}/#`) })
+			).toHaveCount(0);
+			const ruleDialog = page.getByRole('dialog', { name: 'New routing rule' });
+			await clickToOpen(page.getByRole('button', { name: 'Add rule' }), ruleDialog);
+			await expect(ruleDialog.getByLabel('Project', { exact: true })).toHaveValue(aId);
+			await page.keyboard.press('Escape');
 
 			await gotoHydrated(page, `/issues/${encodeURIComponent(B_NAME)}/1`);
 			await expect(page.getByRole('button', { name: `Focus ${B_NAME}` })).toBeVisible();
@@ -173,6 +209,39 @@ test.describe.serial('project focus', () => {
 			await page.close();
 		});
 	}
+
+	test('routing editor one-shots are consumed on success and every invalid shape', async ({
+		browser,
+		request
+	}) => {
+		const api = apiClient(request, ALICE.apiKey);
+		const archived = await body<Project>(
+			await api.post('/api/v1/projects', { name: `focus-archived-${runId}` })
+		);
+		expect((await api.post(`/api/v1/projects/${archived.id}/archive`)).ok()).toBe(true);
+
+		const page = await open(
+			browser,
+			DESKTOP,
+			`/agents?keep=1&new=rule&project=${encodeURIComponent(A_NAME)}#routing`
+		);
+		await expect(page.getByRole('dialog', { name: 'New routing rule' })).toBeVisible();
+		await expect(page.getByRole('dialog').getByLabel('Project', { exact: true })).toHaveValue(aId);
+		await expect(page).toHaveURL('/agents?keep=1#routing');
+		await page.keyboard.press('Escape');
+
+		for (const query of [
+			'new=rule',
+			`new=rule&project=nope-${runId}`,
+			`new=rule&project=${archived.id}`
+		]) {
+			await gotoHydrated(page, `/agents?keep=1&${query}#routing`);
+			await expect(page.getByText('That project is unavailable for routing.')).toBeVisible();
+			await expect(page).toHaveURL('/agents?keep=1#routing');
+			await expect(page.getByRole('dialog', { name: 'New routing rule' })).toHaveCount(0);
+		}
+		await page.close();
+	});
 
 	test('New issue opens on the focus, and empty and required under All projects', async ({
 		browser,

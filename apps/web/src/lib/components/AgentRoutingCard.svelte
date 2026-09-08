@@ -14,7 +14,8 @@
 		activeStateIds,
 		emptyMessage = 'No routing rule applies here — issues will not dispatch to agents.',
 		emptyAction,
-		editAction = { label: 'Edit on the Agents tab', href: '/agents' }
+		editAction = { label: 'Edit on the Agents tab', href: '/agents' },
+		editable = true
 	}: {
 		rules: RoutingRuleWithWarnings[];
 		/** Ids of active-category states, for the "never dispatches" warning on dead rules. */
@@ -23,6 +24,8 @@
 		/** The next step, when there is one — rendered as a link under the message. */
 		emptyAction?: { label: string; href: string };
 		editAction?: { label: string; href: string };
+		/** Archived/read-only parents can show routing without offering mutations. */
+		editable?: boolean;
 	} = $props();
 </script>
 
@@ -31,14 +34,16 @@
 		<h2 class="flex items-center gap-1.5 text-sm font-semibold">
 			<IconRobot size={16} stroke={1.75} /> Agent routing
 		</h2>
-		<a href={editAction.href} class="text-muted-foreground hover:text-foreground text-xs"
-			>{editAction.label}</a
-		>
+		{#if editable}
+			<a href={editAction.href} class="text-muted-foreground hover:text-foreground text-xs"
+				>{editAction.label}</a
+			>
+		{/if}
 	</div>
 	{#if rules.length === 0}
 		<div class="text-muted-foreground rounded-lg border border-dashed p-4 text-center text-sm">
 			{emptyMessage}
-			{#if emptyAction}
+			{#if editable && emptyAction}
 				<div class="mt-3">
 					<a href={emptyAction.href} class={buttonVariants({ variant: 'outline', size: 'sm' })}>
 						{emptyAction.label}

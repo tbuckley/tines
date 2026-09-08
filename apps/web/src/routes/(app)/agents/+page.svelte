@@ -814,15 +814,17 @@
 		const project = projectId
 			? data.projects.find((candidate) => candidate.id === projectId)
 			: null;
+		// `new` and `project` are one-shot instructions, including when invalid.
+		// Consume them before either outcome so refresh never replays an error.
+		const clean = new URL(page.url);
+		clean.searchParams.delete('new');
+		clean.searchParams.delete('project');
+		replaceState(clean, page.state);
 		if (!project) {
 			errorMessage = 'That project is unavailable for routing.';
 			return;
 		}
 		openRuleCreate({ projectId: project.id });
-		const clean = new URL(page.url);
-		clean.searchParams.delete('new');
-		clean.searchParams.delete('project');
-		replaceState(clean, page.state);
 	});
 
 	function openRuleEdit(rule: RoutingRuleWithWarnings) {

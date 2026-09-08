@@ -66,6 +66,10 @@ function suite(label: string, viewport: { width: number; height: number }) {
 			await expect(page.getByText(/^Archived /)).toBeVisible();
 			await expect(page.getByRole('button', { name: 'New issue' })).toHaveCount(0);
 			await expect(page.getByRole('button', { name: 'Add context' })).toHaveCount(0);
+			// Routing remains readable, but an archived project must not offer a
+			// deep link into the mutating rule editor (Tines/260 review).
+			await expect(page.getByRole('heading', { name: 'Agent routing' })).toBeVisible();
+			await expect(page.getByRole('link', { name: 'Edit routing' })).toHaveCount(0);
 
 			await clickUntil(page.getByRole('button', { name: 'Settings' }), async () => {
 				await expect(page.getByRole('button', { name: 'Unarchive' }).first()).toBeVisible();
