@@ -69,7 +69,7 @@
 	const shadowed = $derived(
 		pill(
 			rule.warnings.filter((w) => w.kind === 'shadowed'),
-			'shadowed by'
+			'lower priority than'
 		)
 	);
 	const ties = $derived(
@@ -123,6 +123,13 @@
 			title="A forced runner removal emptied this rule; add targets or delete it"
 		>
 			no targets
+		</span>
+	{:else if rule.targets.length === 1 && rule.targets[0].runner_id === '*'}
+		<span
+			class="bg-muted rounded-full px-2 py-0.5 text-xs"
+			title="Uses the next lower-priority matching rule's runners"
+		>
+			*:{rule.targets[0].tier} · inherited runners
 		</span>
 	{:else}
 		<span class="flex flex-wrap items-center gap-1">

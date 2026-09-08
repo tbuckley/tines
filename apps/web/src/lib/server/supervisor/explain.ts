@@ -70,13 +70,23 @@ export async function explainDispatch(
 		pinned_tier: issue.pinned_tier,
 		label_ids: issue.labels.map((l) => l.id)
 	};
-	const { targets, rule, ambiguous, pinned } = targetsForIssue(candidateShape, rules);
+	const { targets, rule, runnerRule, tierOverride, ambiguous, failure, pinned } = targetsForIssue(
+		candidateShape,
+		rules
+	);
 
 	// The winner and, when two label rules tie, the rules that tied: both are
 	// rendered by scope, so they share one name lookup.
-	const described = await describeRules(db, rule ? [rule, ...ambiguous] : ambiguous);
-	const matchedRule: DispatchExplainer['matched_rule'] = rule ? described[0] : null;
-	const ambiguousRules = rule ? described.slice(1) : described;
+	const described = await describeRules(
+		db,
+		[rule, runnerRule, ...ambiguous].filter((r): r is NonNullable<typeof r> => r !== null)
+	);
+	const describedById = new Map(described.map((item) => [item.rule_id, item]));
+	const matchedRule: DispatchExplainer['matched_rule'] = rule ? describedById.get(rule.id)! : null;
+	const runnerRuleDescription: DispatchExplainer['runner_rule'] = runnerRule
+		? describedById.get(runnerRule.id)!
+		: null;
+	const ambiguousRules = ambiguous.map((item) => describedById.get(item.id)!);
 
 	// The eligibility checks, in the order the engine applies them.
 	const category = issue.effective_state.category;
@@ -105,10 +115,13 @@ export async function explainDispatch(
 	const routedAction: DispatchCheckAction | undefined =
 		targets.length > 0
 			? undefined
-			: rule
-				? { label: 'Edit the rule', href: '/agents#routing' }
-				: ambiguousRules.length > 0
-					? { label: 'Make one rule more specific', href: '/agents#routing' }
+			: failure === 'ambiguous_rule'
+				? { label: 'Make one rule more specific', href: '/agents#routing' }
+				: rule
+					? {
+							label: runnerRule ? 'Edit the runner rule' : 'Configure routing',
+							href: '/agents#routing'
+						}
 					: {
 							label: 'Add a routing rule',
 							href: '/agents#routing',
@@ -170,13 +183,19 @@ export async function explainDispatch(
 			ok: targets.length > 0,
 			detail: pinned
 				? `pinned to ${issue.pinned_runner_name ?? issue.pinned_runner_id}${issue.pinned_tier ? ` (tier ${issue.pinned_tier})` : ''} — replaces rule matching`
-				: rule
-					? targets.length > 0
-						? `matched the ${matchedRule!.scope_label} rule`
-						: `matched the ${matchedRule!.scope_label} rule, but it has no targets`
-					: ambiguousRules.length > 0
-						? `matches the ${ambiguousRules.map((r) => r.scope_label).join(' and ')} rules equally — neither is more specific; add a project or state to one of them`
-						: 'no matching routing rule — automation is opt-in via rules',
+				: failure === 'ambiguous_rule'
+					? `matches the ${ambiguousRules.map((r) => r.scope_label).join(' and ')} rules equally — neither is more specific; add a project or state to one of them`
+					: rule && tierOverride && targets.length > 0
+						? `Tier ${tierOverride} from ${matchedRule!.scope_label}; runners from ${runnerRuleDescription!.scope_label}`
+						: failure === 'no_runner_rule'
+							? `matched the ${matchedRule!.scope_label} tier override, but no broader routing rule supplies runners`
+							: rule && runnerRule && failure === 'no_targets'
+								? `matched the ${matchedRule!.scope_label} tier override, but the ${runnerRuleDescription!.scope_label} runner rule has no targets`
+								: rule
+									? targets.length > 0
+										? `matched the ${matchedRule!.scope_label} rule`
+										: `matched the ${matchedRule!.scope_label} rule, but it has no targets`
+									: 'no matching routing rule — automation is opt-in via rules',
 			...(routedAction ? { action: routedAction } : {})
 		}
 	];
@@ -229,6 +248,8 @@ export async function explainDispatch(
 				}
 			: null,
 		matched_rule: matchedRule,
+		runner_rule: runnerRuleDescription,
+		tier_override: tierOverride,
 		ambiguous_rules: ambiguousRules,
 		targets: targetVerdicts,
 		parked: issue.needs_attention,
@@ -243,7 +264,8 @@ export async function explainDispatch(
 			targets: targetVerdicts,
 			ambiguousRules,
 			activeRun,
-			queuePosition
+			queuePosition,
+			routeFailure: failure
 		})
 	};
 }
@@ -257,6 +279,7 @@ function verdictLine(input: {
 	ambiguousRules: { rule_id: string; scope_label: string }[];
 	activeRun: AgentRun | null;
 	queuePosition: number | null;
+	routeFailure: 'no_rule' | 'ambiguous_rule' | 'no_runner_rule' | 'no_targets' | null;
 }): string {
 	const { issue, activeRun } = input;
 	if (activeRun) {
@@ -279,6 +302,9 @@ function verdictLine(input: {
 	if (ready && !ready.ok) return `Not eligible — ${ready.detail}`;
 	if (input.targets.length === 0) {
 		if (input.ambiguousRules.length > 0) return 'Two routing rules tie — make one more specific';
+		if (input.routeFailure === 'no_runner_rule')
+			return 'No inherited runners — add or edit a broader routing rule';
+		if (input.routeFailure === 'no_targets') return 'No effective targets — edit routing';
 		return issue.pinned_runner_id
 			? 'Pinned to a removed runner — clear the pin'
 			: 'No matching routing rule — nothing will dispatch';

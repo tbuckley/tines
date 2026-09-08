@@ -13,7 +13,7 @@ import {
 } from '../common.js';
 import { ruleTargetsLabel } from '../format.js';
 import { parseTargetSpec } from '../refs.js';
-import { type ApiClient } from '@tines/shared';
+import { INHERIT_RUNNER_ID, type ApiClient } from '@tines/shared';
 import type { Command } from 'commander';
 
 interface RoutingScopeOpts {
@@ -77,13 +77,26 @@ export function register(program: Command): void {
 			.option('-s, --state <workflow/state>', 'scope: workflow-qualified state')
 			.option('-l, --label <name>', 'scope: issue label name or id')
 	).action(async (targetSpecs: string[], opts: CommonOpts & RoutingScopeOpts) => {
+		const parsed = targetSpecs.map(parseTargetSpec);
+		const wildcard = parsed.filter((target) => target.name === INHERIT_RUNNER_ID);
+		if (wildcard.length > 0) {
+			if (parsed.length !== 1) die("'*:tier' cannot be mixed with runner targets");
+			if (!wildcard[0]!.tier)
+				die("the '*' target requires an explicit tier, for example '*:smartest'");
+			if (opts.project === undefined && opts.state === undefined && opts.label === undefined) {
+				die('a tier-only rule requires --project, --state, or --label');
+			}
+		}
 		const api = client(opts);
 		const scope = await resolveRoutingScope(api, opts);
 		const targets = [];
-		for (const spec of targetSpecs) {
-			const { name, tier } = parseTargetSpec(spec);
-			const runner = await resolveRunner(api, name);
-			targets.push(tier ? { runner_id: runner.id, tier } : { runner_id: runner.id });
+		for (const { name, tier } of parsed) {
+			if (name === INHERIT_RUNNER_ID) {
+				targets.push({ runner_id: INHERIT_RUNNER_ID, tier: tier! });
+			} else {
+				const runner = await resolveRunner(api, name);
+				targets.push(tier ? { runner_id: runner.id, tier } : { runner_id: runner.id });
+			}
 		}
 		// One rule per exact scope: replace the existing rule's targets, else create.
 		const { items } = await api.listRoutingRules();
@@ -111,7 +124,7 @@ export function register(program: Command): void {
 	withCommon(
 		routing
 			.command('clear')
-			.description('Delete the rule at a scope (issues it matched stop dispatching)')
+			.description('Delete the rule at a scope (matching issues are re-evaluated)')
 			.option('-p, --project <name>', 'scope: project name or id')
 			.option('-s, --state <workflow/state>', 'scope: workflow-qualified state')
 			.option('-l, --label <name>', 'scope: issue label name or id')

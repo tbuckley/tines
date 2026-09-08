@@ -7,6 +7,12 @@ import type {
 	ShadowWarning,
 	UpdateRoutingRuleRequest
 } from '@tines/shared';
+import {
+	INHERIT_RUNNER_ID,
+	isGlobalRoutingScope,
+	isTierOnlyTargets,
+	routingScopeSpecificity
+} from '@tines/shared';
 import type { CompiledQuery, Kysely } from 'kysely';
 import { newId, type Database } from '$lib/server/db';
 import { ApiFail, notFound, runAtomic, type ActorContext } from './core';
@@ -39,7 +45,11 @@ export function ruleSpecificity(scope: {
 	workflowStateId?: string | null;
 	labelId?: string | null;
 }): number {
-	return (scope.labelId ? 4 : 0) + (scope.projectId ? 2 : 0) + (scope.workflowStateId ? 1 : 0);
+	return routingScopeSpecificity({
+		project_id: scope.projectId,
+		workflow_state_id: scope.workflowStateId,
+		label_id: scope.labelId
+	});
 }
 
 /** Two rule scopes can match the same issue iff no set dimension conflicts. */
@@ -142,6 +152,36 @@ export function validateTargets(
 			'"targets" must be a non-empty ordered array of { runner_id, tier? }',
 			{ field: 'targets' }
 		);
+	}
+	const wildcardEntries = value.filter(
+		(entry) =>
+			typeof entry === 'object' &&
+			entry !== null &&
+			!Array.isArray(entry) &&
+			(entry as { runner_id?: unknown }).runner_id === INHERIT_RUNNER_ID
+	);
+	if (wildcardEntries.length > 0) {
+		if (value.length !== 1) {
+			throw new ApiFail(
+				422,
+				'invalid_field',
+				'A tier-only target cannot be mixed with runner targets',
+				{
+					field: 'targets'
+				}
+			);
+		}
+		const input = wildcardEntries[0] as { runner_id: '*'; tier?: unknown };
+		if (input.tier === undefined || input.tier === null) {
+			throw new ApiFail(422, 'invalid_field', 'A tier-only target requires an explicit tier', {
+				field: 'targets'
+			});
+		}
+		const target: RoutingTarget = {
+			runner_id: INHERIT_RUNNER_ID,
+			tier: requireTier(input.tier, 'targets[0].tier')
+		};
+		return [target];
 	}
 	const targets: RoutingTarget[] = [];
 	const seen = new Set<string>();
@@ -249,6 +289,14 @@ function serializeRule(
 	runnersById: Map<string, { id: string; name: string; status: string }>
 ): RoutingRule {
 	const targets = (JSON.parse(row.targets) as RoutingTarget[]).map((t) => {
+		if (t.runner_id === INHERIT_RUNNER_ID) {
+			return {
+				runner_id: INHERIT_RUNNER_ID,
+				runner_name: INHERIT_RUNNER_ID,
+				runner_status: null,
+				tier: t.tier ?? null
+			};
+		}
 		const runner = runnersById.get(t.runner_id);
 		return {
 			runner_id: t.runner_id,
@@ -264,6 +312,24 @@ function serializeRule(
 		created_at: row.created_at,
 		updated_at: row.updated_at
 	};
+}
+
+function assertTierOnlyScope(scope: RuleScopeIds, targets: RoutingTarget[]): void {
+	if (
+		isTierOnlyTargets(targets) &&
+		isGlobalRoutingScope({
+			project_id: scope.projectId,
+			workflow_state_id: scope.workflowStateId,
+			label_id: scope.labelId
+		})
+	) {
+		throw new ApiFail(
+			422,
+			'invalid_field',
+			'A tier-only rule requires a project, state, or label scope.',
+			{ field: 'targets' }
+		);
+	}
 }
 
 /** The three scope dimensions of a rule row, as `ruleSpecificity` wants them. */
@@ -380,6 +446,7 @@ export async function createRoutingRule(
 	assertNoScopeCollision(scope, label, rules);
 	const runnersById = await loadRunnersById(db, actor.userId);
 	const targets = validateTargets(body.targets, runnersById);
+	assertTierOnlyScope(scope, targets);
 
 	const now = Date.now();
 	const id = newId('rul');
@@ -404,7 +471,10 @@ export async function createRoutingRule(
 				rule_id: id,
 				scope_label: label,
 				targets: targets.map((t) => ({
-					runner_name: runnersById.get(t.runner_id)?.name,
+					runner_name:
+						t.runner_id === INHERIT_RUNNER_ID
+							? INHERIT_RUNNER_ID
+							: runnersById.get(t.runner_id)?.name,
 					tier: t.tier ?? null
 				}))
 			}
@@ -458,6 +528,7 @@ export async function updateRoutingRule(
 		body.targets !== undefined
 			? validateTargets(body.targets, runnersById)
 			: (JSON.parse(row.targets) as RoutingTarget[]);
+	assertTierOnlyScope(scope, targets);
 
 	if (!scopeChanged && JSON.stringify(targets) === row.targets) {
 		return {
@@ -485,7 +556,10 @@ export async function updateRoutingRule(
 				rule_id: id,
 				scope_label: label,
 				targets: targets.map((t) => ({
-					runner_name: runnersById.get(t.runner_id)?.name,
+					runner_name:
+						t.runner_id === INHERIT_RUNNER_ID
+							? INHERIT_RUNNER_ID
+							: runnersById.get(t.runner_id)?.name,
 					tier: t.tier ?? null
 				}))
 			}

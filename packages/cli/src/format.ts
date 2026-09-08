@@ -182,6 +182,9 @@ export function runnerStatusLabel(runner: Runner): string {
 
 export function ruleTargetsLabel(rule: RoutingRule): string {
 	if (rule.targets.length === 0) return '(no targets)';
+	if (rule.targets.length === 1 && rule.targets[0]?.runner_id === '*') {
+		return `*:${rule.targets[0].tier} (inherited runners)`;
+	}
 	return rule.targets
 		.map(
 			(t) =>
