@@ -1164,6 +1164,8 @@ export async function updateIssue(
 			payload.workflow_from_name = current.workflow.name;
 			payload.workflow_to_id = workflow.id;
 			payload.workflow_to_name = workflow.name;
+			payload.from_state_id = current.state.id;
+			payload.to_state_id = nextState.id;
 			payload.from_state_name = current.state.name;
 			payload.to_state_name = nextState.name;
 		}
