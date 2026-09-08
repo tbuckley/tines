@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { createTestDb, type TestDb } from './test-db';
-import { loadStageStats, parseStatsWindow } from './supervisor';
+import { loadSentBackDrilldown, loadStageStats, parseStatsWindow } from './supervisor';
 import {
 	addIssue,
+	addComment,
 	addRun,
 	addRunKey,
 	addRunner,
@@ -218,5 +219,72 @@ describe('loadStageStats', () => {
 		expect((await loadStageStats(t.db, USER, {}, NOW)).outcome_recorded_since).toBe(
 			NOW - 3 * DAY + HOUR
 		);
+	});
+
+	it('reports quota changes with before/after figures', async () => {
+		const t = setup();
+		const issue = addIssue(t, { id: 'iss_marker', state: STAGE_B, workflow: 'wf_two' });
+		addTransitionEvent(t, {
+			issueId: issue,
+			apiKeyId: null,
+			at: NOW - 3 * DAY,
+			from: STAGE_A,
+			to: STAGE_B
+		});
+		addTransitionEvent(t, {
+			issueId: issue,
+			apiKeyId: null,
+			at: NOW - 2 * DAY,
+			from: STAGE_B,
+			to: STAGE_A
+		});
+		t.sqlite
+			.prepare(
+				`INSERT INTO event (id, user_id, type, actor_user_id, payload, created_at) VALUES ('evt_quota', ?, 'settings.updated', ?, ?, ?)`
+			)
+			.run(USER, USER, JSON.stringify({ changed: ['quota'] }), NOW - DAY);
+
+		const report = await loadStageStats(t.db, USER, {}, NOW);
+		expect(report.markers[0]).toMatchObject({ kind: 'quota', label: 'Supervisor quota changed' });
+		expect(
+			report.markers[0].effects.find((effect) => effect.state_id === STAGE_B)?.before
+		).toMatchObject({ exits: 1, sent_back_share: 1 });
+	});
+});
+
+describe('loadSentBackDrilldown', () => {
+	it('names the transition comment and prompt version in force', async () => {
+		const t = setup();
+		const issue = addIssue(t, { id: 'iss_1', state: STAGE_A, workflow: 'wf_two' });
+		addComment(t, {
+			issueId: issue,
+			body: 'Please address the review notes.',
+			at: NOW - DAY - MIN
+		});
+		addTransitionEvent(t, {
+			issueId: issue,
+			apiKeyId: null,
+			at: NOW - DAY,
+			from: STAGE_B,
+			to: STAGE_A
+		});
+		t.sqlite.exec(`
+			INSERT INTO context_item (id, user_id, kind, name, description, project_id, workflow_state_id,
+				issue_id, label_id, body, repo_url, repo_branch, repo_dir, config, position, version, created_at, updated_at)
+			VALUES ('ctx_prompt', '${USER}', 'prompt', 'instructions', '', NULL, '${STAGE_B}', NULL, NULL,
+				'Review carefully.', NULL, NULL, NULL, NULL, 0, 3, ${NOW - 3 * DAY}, ${NOW});
+			INSERT INTO event (id, user_id, type, actor_user_id, payload, created_at)
+			VALUES
+				('evt_prompt_2', '${USER}', 'context.updated', '${USER}', '{"context_id":"ctx_prompt","version":2}', ${NOW - 2 * DAY}),
+				('evt_prompt_3', '${USER}', 'context.updated', '${USER}', '{"context_id":"ctx_prompt","version":3}', ${NOW - HOUR});
+		`);
+
+		const detail = await loadSentBackDrilldown(t.db, USER, { state: STAGE_B }, NOW);
+		expect(detail.prompt).toMatchObject({ context_id: 'ctx_prompt', current_version: 3 });
+		expect(detail.items).toHaveLength(1);
+		expect(detail.items[0]).toMatchObject({
+			prompt_version: 2,
+			comment: { excerpt: 'Please address the review notes.' }
+		});
 	});
 });
