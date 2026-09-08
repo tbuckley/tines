@@ -256,7 +256,6 @@ export function resolveDef(
 	}
 
 	const transitions: ResolvedDef['transitions'] = [];
-	const seenPairs = new Set<string>();
 	const seenActions = new Set<string>();
 	for (const [i, t] of (transitionsInput ?? []).entries()) {
 		const name = requireString(t.name, `transitions[${i}].name`, { max: 100 }).trim();
@@ -269,14 +268,6 @@ export function resolveDef(
 				`Transition "${name}" loops "${from.name}" onto itself; self-transitions are not allowed`
 			);
 		}
-		const pairKey = `${from.id}→${to.id}`;
-		if (seenPairs.has(pairKey)) {
-			throw new ApiFail(
-				422,
-				'duplicate_transition',
-				`Transition "${from.name}" → "${to.name}" is listed more than once`
-			);
-		}
 		// Action names must be unambiguous within a source state ("reject"
 		// out of two different states is fine).
 		const actionKey = `${from.id}:${name.toLowerCase()}`;
@@ -287,7 +278,6 @@ export function resolveDef(
 				`State "${from.name}" has more than one transition named "${name}"`
 			);
 		}
-		seenPairs.add(pairKey);
 		seenActions.add(actionKey);
 		const requires = resolveRequirements(t.requires, `transitions[${i}]`);
 		transitions.push({

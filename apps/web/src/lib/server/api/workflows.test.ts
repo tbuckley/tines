@@ -95,12 +95,15 @@ describe('resolveDef', () => {
 		).toBe('self_transition');
 	});
 
-	it('rejects duplicate (from, to) pairs', () => {
-		const dup = [
+	it('allows distinct actions between the same pair of states', () => {
+		const parallel = [
 			{ name: 'A', from: 'Open', to: 'Review' },
 			{ name: 'B', from: 'Open', to: 'Review' }
 		];
-		expect(failCode(() => resolveDef(states, dup, 'Open', []))).toBe('duplicate_transition');
+		expect(resolveDef(states, parallel, 'Open', []).transitions.map((t) => t.name)).toEqual([
+			'A',
+			'B'
+		]);
 	});
 
 	it('rejects two same-named actions out of one state (case-insensitive)', () => {

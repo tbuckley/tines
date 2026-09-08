@@ -229,9 +229,7 @@ describe('applying a built-in to an empty database', () => {
 			state: 'In progress'
 		});
 		expect(starter.first_issue?.description).toContain('a failing test, a crash, a wrong message');
-		expect(starter.first_issue?.description).toContain(
-			'tines issues move <ref> "No bug found"'
-		);
+		expect(starter.first_issue?.description).toContain('tines issues move <ref> "No bug found"');
 		expect(starter.first_issue?.description).toContain('If nothing qualifies, do not invent work');
 	});
 
