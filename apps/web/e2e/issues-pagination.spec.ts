@@ -20,9 +20,13 @@ test.describe('issue list pagination', () => {
 		await page.reload();
 		await expect(page).toHaveURL(bounded);
 		await expect(page.getByText('Page issue 105', { exact: true })).toBeVisible();
+		await page.getByRole('textbox', { name: 'Search issues' }).fill('Page issue 105');
+		await page.getByRole('textbox', { name: 'Search issues' }).press('Enter');
+		await expect(page).toHaveURL(/q=Page(?:\+|%20)issue(?:\+|%20)105/);
+		await expect(page).not.toHaveURL(/(?:after|before|page_scope)=/);
+		await expect(page.getByText('Page issue 105', { exact: true })).toBeVisible();
 
-		await page.getByRole('link', { name: 'Previous' }).click();
-		await expect(page.getByText('Page issue 205', { exact: true })).toBeVisible();
+		await gotoHydrated(page, bounded);
 		await page.getByRole('link', { name: /^Active/ }).click();
 		await expect(page).not.toHaveURL(/(?:after|before|page_scope)=/);
 		await expect(page.getByText('Page issue 205', { exact: true })).toBeVisible();
