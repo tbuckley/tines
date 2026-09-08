@@ -108,7 +108,7 @@ statements.push(
 	 VALUES ('${HANDOFF.projectId}', '${ALICE.id}', '${HANDOFF.projectName}', '', ${handoffBase}, ${handoffBase});`,
 	`INSERT INTO issue (id, project_id, number, title, description, workflow_id, state_id, created_at, updated_at, state_entered_at)
 	 VALUES ('${HANDOFF.issueId}', '${HANDOFF.projectId}', ${HANDOFF.issueNumber}, 'Rich handoff', 'Description marker',
-	 'wf_e2e_handoff', 'wfs_e2e_handoff_human', ${handoffBase}, ${nowMs}, ${nowMs - handoffHour});`,
+	 'wf_e2e_handoff', 'wfs_e2e_handoff_human', ${handoffBase}, ${nowMs}, ${handoffBase + 4 * handoffHour + 1000});`,
 	`INSERT INTO issue (id, project_id, number, title, description, workflow_id, state_id, created_at, updated_at, state_entered_at)
 	 VALUES ('${HANDOFF.foreignIssueId}', '${HANDOFF.projectId}', 2, 'Foreign run', '',
 	 'wf_e2e_handoff', 'wfs_e2e_handoff_impl', ${handoffBase}, ${nowMs}, ${nowMs});`,
@@ -207,7 +207,7 @@ statements.push(
 	 ('wft_e2e_prd_back', 'wf_e2e_prd', 'Revise PRD', 'wfs_e2e_prd_review', 'wfs_e2e_prd_drafting');`,
 	`INSERT INTO issue (id, project_id, number, title, description, workflow_id, state_id, created_at, updated_at, state_entered_at)
 	 VALUES ('${HANDOFF.prdIssueId}', '${HANDOFF.projectId}', ${HANDOFF.prdIssueNumber}, 'PRD handoff', '',
-	 'wf_e2e_prd', 'wfs_e2e_prd_review', ${handoffBase}, ${nowMs}, ${nowMs - 30 * 60 * 1000});`,
+	 'wf_e2e_prd', 'wfs_e2e_prd_review', ${handoffBase}, ${nowMs}, ${handoffBase + handoffHour + 1000});`,
 	`INSERT INTO context_item (id, user_id, kind, name, description, workflow_state_id, body, position, version, created_at, updated_at)
 	 VALUES ('ctx_e2e_prd_instructions', '${ALICE.id}', 'prompt', 'instructions', '', 'wfs_e2e_prd_review',
 	 'Decide whether this product direction is ready to deliver.\n\n- **Revise PRD** for gaps in the proposal', 0, 1, ${handoffBase}, ${handoffBase});`,
@@ -219,7 +219,11 @@ statements.push(
 	 VALUES ('evt_e2e_handoff_prd', '${ALICE.id}', 'issue.transitioned', '${ALICE.id}', 'key_e2e_handoff_prd', '${HANDOFF.prdIssueId}', '${HANDOFF.projectId}',
 	 '{"action":"Submit PRD for review","from_state_id":"wfs_e2e_prd_drafting","from_state_name":"Drafting","to_state_id":"wfs_e2e_prd_review","to_state_name":"PRD Review"}', ${handoffBase + handoffHour + 1000});`,
 	`INSERT INTO comment (id, issue_id, body, actor_user_id, actor_api_key_id, created_at)
-	 VALUES ('cmt_e2e_handoff_prd', '${HANDOFF.prdIssueId}', 'Drafting complete with every open question included.', '${ALICE.id}', 'key_e2e_handoff_prd', ${handoffBase + handoffHour + 500});`
+	 VALUES ('cmt_e2e_handoff_prd', '${HANDOFF.prdIssueId}', 'Drafting complete with every open question included.', '${ALICE.id}', 'key_e2e_handoff_prd', ${handoffBase + handoffHour + 500});`,
+	`INSERT INTO context_item (id, user_id, kind, name, description, issue_id, config, position, version, created_at, updated_at)
+	 VALUES ('ctx_e2e_handoff_prd_artifact', '${ALICE.id}', 'artifact', 'prd', '', '${HANDOFF.prdIssueId}', '{"artifact_type":"text"}', 0, 1, ${handoffBase + handoffHour + 500}, ${handoffBase + handoffHour + 500});`,
+	`INSERT INTO artifact_version (id, context_item_id, version, content_type, size_bytes, content, actor_user_id, actor_api_key_id, created_at)
+	 VALUES ('av_e2e_handoff_prd', 'ctx_e2e_handoff_prd_artifact', 1, 'text/markdown', 35, '# Direction\n\nThe complete proposal.', '${ALICE.id}', 'key_e2e_handoff_prd', ${handoffBase + handoffHour + 600});`
 );
 
 // Managed-run fixture for the run-row spec: a finished run carrying a cost,

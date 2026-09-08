@@ -91,15 +91,6 @@ test.beforeAll(async ({ playwright }) => {
 		content_type: 'text/markdown',
 		content: '# Passing review\n\nAll checks passed.'
 	});
-	const prdAttachment = await apiClient(request, HANDOFF.runKeys.prd).put(
-		`/api/v1/issues/${HANDOFF.prdIssueId}/artifacts/prd`,
-		{
-			type: 'text',
-			content_type: 'text/markdown',
-			content: '# Direction\n\nThe complete proposal.'
-		}
-	);
-	expect(prdAttachment.ok(), await prdAttachment.text()).toBe(true);
 	const png = Buffer.from(
 		'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
 		'base64'

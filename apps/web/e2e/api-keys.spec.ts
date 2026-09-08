@@ -72,9 +72,9 @@ test.describe.serial('API keys page', () => {
 		const details = disclosure(page);
 		await expect(details).toBeVisible();
 		await expect(details.locator('summary')).toContainText('Run keys');
-		// One active (RUNROW), one revoked (RUNROW_FAILED) — the whole point of
-		// the split: the counts are of run keys only, not of the user's keys.
-		await expect(details.locator('summary')).toContainText('1 active, 1 revoked');
+		// RUNROW plus the six attributed handoff-fixture runs are active; the
+		// failed RUNROW is revoked. The counts are run keys only, not user keys.
+		await expect(details.locator('summary')).toContainText('7 active, 1 revoked');
 		expect(await details.evaluate((el: HTMLDetailsElement) => el.open)).toBe(false);
 		// Closed means its contents are not rendered to the user.
 		await expect(details.getByText(activeRunRef)).toBeHidden();
