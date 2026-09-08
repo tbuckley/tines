@@ -13,7 +13,8 @@
 		rules,
 		activeStateIds,
 		emptyMessage = 'No routing rule applies here — issues will not dispatch to agents.',
-		emptyAction
+		emptyAction,
+		editAction = { label: 'Edit on the Agents tab', href: '/agents' }
 	}: {
 		rules: RoutingRuleWithWarnings[];
 		/** Ids of active-category states, for the "never dispatches" warning on dead rules. */
@@ -21,6 +22,7 @@
 		emptyMessage?: string;
 		/** The next step, when there is one — rendered as a link under the message. */
 		emptyAction?: { label: string; href: string };
+		editAction?: { label: string; href: string };
 	} = $props();
 </script>
 
@@ -29,8 +31,8 @@
 		<h2 class="flex items-center gap-1.5 text-sm font-semibold">
 			<IconRobot size={16} stroke={1.75} /> Agent routing
 		</h2>
-		<a href="/agents" class="text-muted-foreground hover:text-foreground text-xs"
-			>Edit on the Agents tab</a
+		<a href={editAction.href} class="text-muted-foreground hover:text-foreground text-xs"
+			>{editAction.label}</a
 		>
 	</div>
 	{#if rules.length === 0}

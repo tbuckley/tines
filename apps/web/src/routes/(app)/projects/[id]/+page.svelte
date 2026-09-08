@@ -242,10 +242,10 @@
 <svelte:head><title>{data.project.name} · Tines</title></svelte:head>
 
 <a
-	href="/projects"
+	href={navMemory.projectsHref}
 	class="text-muted-foreground hover:text-foreground mb-3 inline-flex items-center gap-1 text-sm"
 >
-	<IconChevronLeft size={16} /> Projects
+	<IconChevronLeft size={16} /> Manage projects
 </a>
 
 <div class="mb-6 flex flex-wrap items-start justify-between gap-4">
@@ -353,7 +353,14 @@
 	rules={data.routingRules}
 	{activeStateIds}
 	emptyMessage="No routing rule covers this project — its issues will not dispatch to agents."
-	emptyAction={{ label: 'Set up routing', href: '/agents#routing' }}
+	emptyAction={{
+		label: 'Edit routing',
+		href: `/agents?new=rule&project=${encodeURIComponent(data.project.id)}#routing`
+	}}
+	editAction={{
+		label: 'Edit routing',
+		href: `/agents?new=rule&project=${encodeURIComponent(data.project.id)}#routing`
+	}}
 />
 
 <div class="mb-8">
@@ -361,7 +368,7 @@
 		<h2 class="text-sm font-semibold">Context</h2>
 		<div class="flex items-center gap-3">
 			<a
-				href="/context?project={data.project.id}"
+				href="/context"
 				class="text-muted-foreground hover:text-foreground text-xs"
 			>
 				View all in Context

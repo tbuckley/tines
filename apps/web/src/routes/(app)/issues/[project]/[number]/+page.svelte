@@ -43,7 +43,8 @@
 	import { PROJECT_ARCHIVED_TOOLTIP } from '$lib/archived';
 	import { actorLabel, prefersReducedMotion, relativeTime } from '$lib/format';
 	import { mergeLinks, type PendingAdd } from '$lib/link-overlay';
-	import { navMemory } from '$lib/nav-memory.svelte';
+	import { issueBackTarget, navMemory } from '$lib/nav-memory.svelte';
+	import { focusHint } from '$lib/focus.svelte';
 	import { planTransitions } from '$lib/transitions';
 
 	let { data } = $props();
@@ -55,7 +56,28 @@
 	// Back to the list you came from, as you left it — the issues list with its
 	// filters, or the project page. A deep link or a fresh tab has no memory and
 	// falls back to the plain issues list.
-	const backList = $derived(navMemory.lastList ?? { href: '/issues', label: 'Issues' });
+	const effectiveFocus = $derived(focusHint.project !== undefined ? focusHint.project : data.focus);
+	const backList = $derived(
+		issueBackTarget(navMemory.lastList, effectiveFocus?.id ?? null, navMemory.issuesHref)
+	);
+	const issueProject = $derived(data.projects.find((project) => project.id === data.issue.project_id));
+	const canOfferFocus = $derived(!archived && effectiveFocus?.id !== data.issue.project_id);
+	let focusing = $state(false);
+	let focusError = $state<string | null>(null);
+	async function focusIssueProject() {
+		if (!issueProject || focusing) return;
+		focusing = true;
+		focusError = null;
+		try {
+			await api.updatePreferences({ focused_project_id: issueProject.id });
+			focusHint.clear();
+			await invalidate('app:preferences');
+		} catch (err) {
+			focusError = err instanceof ApiError ? err.message : 'Failed to focus this project.';
+		} finally {
+			focusing = false;
+		}
+	}
 
 	// Mutations and the live poll refresh THIS page's load only (it declares
 	// depends('app:issue')), not the whole load graph: a full invalidate would
@@ -566,6 +588,16 @@
 				<a href="/projects/{data.issue.project_id}" class="hover:underline"
 					>{data.issue.project_name}</a
 				>
+				{#if canOfferFocus}
+					<button
+						class="hover:text-foreground ml-2 underline underline-offset-2"
+						onclick={focusIssueProject}
+						disabled={focusing}
+						title="Focus {data.issue.project_name}"
+					>
+						{focusing ? 'Focusing…' : `Focus ${data.issue.project_name}`}
+					</button>
+				{/if}
 				<span class="font-mono">#{data.issue.number}</span>
 				{#if data.issue.scheduled_task_id}
 					<a
@@ -578,6 +610,7 @@
 					</a>
 				{/if}
 			</p>
+			{#if focusError}<p class="text-destructive mt-1 text-xs" role="alert">{focusError}</p>{/if}
 			{#if editingTitle}
 				<form onsubmit={saveTitle} class="mt-1 flex items-center gap-2">
 					<Input bind:value={titleDraft} class="w-96 max-w-full text-lg font-semibold" autofocus />
