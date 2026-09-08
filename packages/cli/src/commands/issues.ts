@@ -53,6 +53,9 @@ import { parseTargetSpec } from '../refs.js';
 import {
 	actorLabel,
 	ApiError,
+	ARTIFACT_SITE_INDEX,
+	lintHtmlArtifact,
+	siteEntry,
 	type Artifact,
 	type CreateScheduleInput,
 	type DispatchExplainer,
@@ -804,6 +807,17 @@ export function register(program: Command): void {
 			`current: v${artifact.current_version.version} (${artifact.fresh ? 'fresh' : 'attached before the current state — reaffirm or attach a new version to satisfy gates'})`
 		);
 		console.log(`summary: ${artifactSummary(artifact)}`);
+		// Sites are the one thing a summary line can't convey: it renders live.
+		const entry = siteEntry(
+			artifact.artifact_type,
+			artifact.current_version.content_type,
+			artifact.current_version.files ?? []
+		);
+		if (entry !== null) {
+			console.log(
+				`site: renders live from /${entry} — "tines issues artifacts site-link ${issue.project_name}/${issue.number} ${artifact.name}" for a viewable URL`
+			);
+		}
 		console.log('\nversions:');
 		table(
 			artifact.versions.map((v) => [
@@ -885,10 +899,15 @@ export function register(program: Command): void {
 			const withDescription =
 				opts.description !== undefined ? { description: opts.description } : {};
 			let artifact: Artifact;
+			// The entry HTML of whatever we are about to attach, so the lint can
+			// warn about the two things that make a site look broken (§7).
+			let siteHtml: string | null = null;
 			if (plan.type === 'folder') {
 				const dir = (plan.source as { dir: string }).dir;
 				const files = walkFolder(dir);
 				if (files.length === 0) die(`${dir} contains no files to snapshot`);
+				const index = files.find((f) => f.path === ARTIFACT_SITE_INDEX);
+				if (index) siteHtml = index.bytes.toString('utf8');
 				artifact = await api.uploadArtifactFolder(issue.id, name, files);
 				// The folder endpoint has no description slot; set it alongside.
 				if (opts.description !== undefined) {
@@ -907,11 +926,13 @@ export function register(program: Command): void {
 						die(`cannot read ${fromPath}: ${err instanceof Error ? err.message : String(err)}`);
 					}
 				}
+				const contentType =
+					plan.contentType ??
+					(fromPath === null ? 'application/octet-stream' : sniffContentType(fromPath));
+				if (siteEntry('file', contentType) !== null) siteHtml = bytes.toString('utf8');
 				artifact = await api.uploadArtifactFile(issue.id, name, bytes, {
 					filename: plan.filename ?? (fromPath === null ? name : basename(fromPath)),
-					contentType:
-						plan.contentType ??
-						(fromPath === null ? 'application/octet-stream' : sniffContentType(fromPath))
+					contentType
 				});
 				// The file endpoint has no description slot; set it alongside.
 				if (opts.description !== undefined) {
@@ -919,6 +940,7 @@ export function register(program: Command): void {
 				}
 			} else if (plan.type === 'text') {
 				const content = readTextSource(plan.source);
+				if (siteEntry('text', plan.contentType ?? null) !== null) siteHtml = content;
 				artifact = await api.putArtifact(issue.id, name, {
 					type: 'text',
 					content,
@@ -956,6 +978,12 @@ export function register(program: Command): void {
 			console.log(
 				`attached "${artifact.name}" v${artifact.current_version.version} (${artifactTypeLabel(artifact)}) to ${issue.project_name}/${issue.number} — fresh${gateNote}`
 			);
+			if (siteHtml !== null) {
+				console.log(
+					`site: renders live — "tines issues artifacts site-link ${issue.project_name}/${issue.number} ${artifact.name}" for a viewable URL`
+				);
+				for (const warning of lintHtmlArtifact(siteHtml)) console.log(`warning: ${warning}`);
+			}
 		}
 	);
 
@@ -973,6 +1001,36 @@ export function register(program: Command): void {
 		console.log(
 			`reaffirmed "${artifact.name}" on ${issue.project_name}/${issue.number}: v${artifact.current_version.version} reaffirms v${artifact.current_version.reaffirmed_from} — fresh as of now`
 		);
+	});
+
+	withCommon(
+		artifactsCmd
+			.command('site-link <ref> <name>')
+			.description(
+				'Mint a short-lived URL that renders an HTML artifact live (scripts running) — for screenshotting your own prototype'
+			)
+			.option('--version <n>', 'pin the link to a specific version (defaults to current)', (v) =>
+				Number.parseInt(v, 10)
+			)
+	).action(async (ref: string, name: string, opts: CommonOpts & { version?: number }) => {
+		const api = client(opts);
+		const issue = await resolveIssue(api, ref);
+		const link = await api.createArtifactSiteLink(
+			issue.id,
+			name,
+			opts.version === undefined ? {} : { version: opts.version }
+		);
+		if (opts.json) return printJson(link);
+		console.log(link.url);
+		const minutes = Math.max(1, Math.round((link.expires_at - Date.now()) / 60_000));
+		console.log(`v${link.version}, expires in ~${minutes} minute${minutes === 1 ? '' : 's'}`);
+		// Which mode you got decides whether storage APIs work inside the page,
+		// so say it rather than letting a prototype fail mysteriously.
+		if (link.mode === 'same-origin') {
+			console.log(
+				'mode: same-origin sandbox (opaque origin) — localStorage and cookies throw inside the page'
+			);
+		}
 	});
 
 	withCommon(

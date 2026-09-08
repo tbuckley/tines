@@ -327,9 +327,26 @@ pnpm dlx shadcn-svelte@latest add card
 Production is served at <https://tines.tbuckley.dev> via a Workers custom
 domain (`routes` in `apps/web/wrangler.jsonc`); the tbuckley.dev zone must be
 on the same Cloudflare account, and the first deploy creates the DNS record
-and certificate automatically. `workers_dev` is off, so the workers.dev
-subdomain serves no production traffic — it's only used for per-version
-preview URLs (below).
+and certificate automatically. `workers_dev` is on so its hostname can become
+the **artifact sandbox origin**, the cross-site host that executes HTML artifacts.
+The hostname serves only artifacts once `ARTIFACT_SANDBOX_ORIGIN` is configured. `workers.dev` is
+on the Public Suffix List, so a page there is a different registrable domain
+from `tines.tbuckley.dev` and carries none of the app's cookies;
+`hooks.server.ts` serves nothing but `/s/*` on that host. To turn it on, set
+`vars.ARTIFACT_SANDBOX_ORIGIN` in `apps/web/wrangler.jsonc` to
+`https://tines-web.<subdomain>.workers.dev` — `<subdomain>` is the account's
+workers.dev subdomain, which any preview URL (below) spells out. The value must
+be an HTTP(S) origin without credentials, a path, query, or fragment; a trailing
+slash, host capitalization, and default port are normalized. Invalid values
+fall back to same-origin sandboxing. Before enabling it, smoke-test the real
+host: `/issues` and `/api/v1/projects` must return 404, while a minted `/s/…/`
+link must run in the viewer with storage available and API access blocked.
+Leaving the
+var unset is supported and is what local dev, e2e and PR previews do: sites
+are then served from the app origin under CSP `sandbox`, which is equally
+locked down but gives the page an opaque origin, so `localStorage` throws.
+See `specs/artifacts/SPEC.md` "Sites: HTML artifacts". Per-version preview
+URLs (below) are unaffected either way.
 
 One-time setup (needs `wrangler login` or a `CLOUDFLARE_API_TOKEN` in the environment):
 
