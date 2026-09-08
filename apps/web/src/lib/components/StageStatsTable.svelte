@@ -30,6 +30,25 @@
 			No agent stage saw work in the last 7 days.
 		</p>
 	{:else}
+		{#if report.markers.length > 0}
+			<div class="mb-3 flex flex-wrap gap-2" aria-label="Changes this week">
+				{#each report.markers as marker (marker.id)}
+					<details class="bg-muted rounded-md px-2 py-1">
+						<summary class="cursor-pointer text-xs">{marker.label}</summary>
+						<div class="mt-2 space-y-1 text-xs">
+							{#each marker.effects as effect (effect.state_id)}
+								{@const state = report.states.find((row) => row.state_id === effect.state_id)}
+								<p>
+									{state?.state_name ?? effect.state_id}: since {effect.after?.exits ?? 0} exits,
+									{shareLabel(effect.after?.sent_back_share)} sent back, queue {durationLabel(effect.after?.queue_wait_p50)}
+									· before {effect.before?.exits ?? 0} exits, {shareLabel(effect.before?.sent_back_share)} sent back, queue {durationLabel(effect.before?.queue_wait_p50)}
+								</p>
+							{/each}
+						</div>
+					</details>
+				{/each}
+			</div>
+		{/if}
 		<div class="overflow-x-auto rounded-lg border">
 			<table class="w-full min-w-[1050px] text-left text-xs">
 				<thead class="bg-muted/50 text-muted-foreground">

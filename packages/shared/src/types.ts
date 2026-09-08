@@ -2379,6 +2379,23 @@ export interface StageStats {
 	delta: StageStatsDelta;
 }
 
+export interface MarkerFigures {
+	visits: number;
+	exits: number;
+	sent_back_share: number | null;
+	queue_wait_p50: number | null;
+}
+
+export interface ChangeMarker {
+	id: string;
+	at: number;
+	kind: 'prompt' | 'quota' | 'automation' | 'runner_cap' | 'rule';
+	label: string;
+	event_ids: string[];
+	state_ids: string[];
+	effects: { state_id: string; before: MarkerFigures | null; after: MarkerFigures | null }[];
+}
+
 /** `GET /api/v1/supervisor/stats` — per-stage flow over a rolling window. */
 export interface StageStatsReport {
 	generated_at: number;
@@ -2392,6 +2409,8 @@ export interface StageStatsReport {
 	outcome_recorded_since: number | null;
 	/** Active states that saw work in either window, ordered by total queue wait desc. */
 	states: StageStats[];
+	/** Newest prompt, quota, cap and routing edits inside the current window. */
+	markers: ChangeMarker[];
 }
 
 /** Query for `GET /api/v1/supervisor/stats`. */

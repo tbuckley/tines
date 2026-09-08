@@ -2,6 +2,7 @@ import {
 	ACTIVE_RUN_STATUSES,
 	QUEUE_GROUP_REF_LIMIT,
 	type FleetQueue,
+	type ChangeMarker,
 	type QueueBinding,
 	type QueueGroup,
 	type QueueIssueRef,
@@ -652,7 +653,7 @@ export async function loadStageStats(
 	// which keeps the query plan (and the cache) identical.
 	const scanFrom = now - 2 * windowMs;
 
-	const [stateRows, eventRows, runRows, outcomeRow] = await Promise.all([
+	const [stateRows, eventRows, runRows, outcomeRow, markerRows] = await Promise.all([
 		db
 			.selectFrom('workflow_state as st')
 			.innerJoin('workflow as wf', 'wf.id', 'st.workflow_id')
@@ -718,7 +719,19 @@ export async function loadStageStats(
 			.where('user_id', '=', userId)
 			.where('outcome', 'is not', null)
 			.select((eb) => eb.fn.min<number | null>('ended_at').as('since'))
-			.executeTakeFirst()
+			.executeTakeFirst(),
+		db
+			.selectFrom('event')
+			.select(['id', 'type', 'payload', 'created_at', 'actor_api_key_id', 'actor_user_id'])
+			.where('user_id', '=', userId)
+			.where('created_at', '>=', now - windowMs)
+			.where('created_at', '<', now)
+			.where('type', 'in', [
+				'context.created', 'context.updated', 'context.deleted', 'settings.updated',
+				'runner.updated', 'routing_rule.created', 'routing_rule.updated', 'routing_rule.deleted'
+			])
+			.orderBy('created_at')
+			.execute()
 	]);
 
 	const events: StatsEvent[] = [];
@@ -756,27 +769,76 @@ export async function loadStageStats(
 		});
 	}
 
-	return computeStageStats({
+	const states = stateRows.map((s) => ({
+		id: s.id,
+		name: s.name,
+		workflow_id: s.workflow_id,
+		workflow_name: s.workflow_name,
+		category: s.category,
+		position: s.position
+	}));
+	const runs = runRows.map((r) => ({
+		...r,
+		outcome: (r.outcome as RunEndOutcome | null) ?? null
+	}));
+	const baseInput = {
 		now,
 		windowMs,
 		compare,
-		states: stateRows.map((s) => ({
-			id: s.id,
-			name: s.name,
-			workflow_id: s.workflow_id,
-			workflow_name: s.workflow_name,
-			category: s.category,
-			position: s.position
-		})),
+		states,
 		events,
-		runs: runRows.map((r) => ({
-			...r,
-			outcome: (r.outcome as RunEndOutcome | null) ?? null
-		})),
+		runs,
 		advancedByKey,
 		outcomeRecordedSince: outcomeRow?.since ?? null,
 		project
+	};
+	const report = computeStageStats(baseInput);
+
+	type MarkerSeed = Omit<ChangeMarker, 'effects'> & { actor: string };
+	const seeds: MarkerSeed[] = [];
+	for (const row of markerRows) {
+		const payload = JSON.parse(row.payload) as Record<string, any>;
+		let kind: ChangeMarker['kind'] | null = null;
+		let label = '';
+		let stateIds: string[] = [];
+		if (row.type.startsWith('context.')) {
+			const scope = payload.scope ?? payload.scope_to;
+			if (payload.kind !== 'prompt' || payload.name === 'journal' || !scope?.workflow_state_id) continue;
+			kind = 'prompt';
+			stateIds = [scope.workflow_state_id];
+			const meta = states.find((state) => state.id === scope.workflow_state_id);
+			label = `Stage prompt edited${meta ? `: ${meta.workflow_name}/${meta.name}` : ''}`;
+		} else if (row.type === 'settings.updated') {
+			const changed = Array.isArray(payload.changed) ? payload.changed : [];
+			if (changed.includes('quota')) { kind = 'quota'; label = 'Supervisor quota changed'; }
+			else if (changed.includes('enabled')) { kind = 'automation'; label = 'Automation setting changed'; }
+		} else if (row.type === 'runner.updated') {
+			if (!(payload.changed as unknown[] | undefined)?.includes('max_concurrent') || payload.reconnected) continue;
+			kind = 'runner_cap'; label = `Runner cap changed${payload.name ? `: ${payload.name}` : ''}`;
+		} else if (row.type.startsWith('routing_rule.')) {
+			kind = 'rule'; label = 'Routing rule changed';
+		}
+		if (!kind) continue;
+		const actor = row.actor_api_key_id ?? row.actor_user_id;
+		const previous = seeds.at(-1);
+		if (previous && previous.kind === kind && previous.actor === actor && row.created_at - previous.at <= 60_000) {
+			previous.event_ids.push(row.id);
+			previous.state_ids = [...new Set([...previous.state_ids, ...stateIds])];
+			continue;
+		}
+		seeds.push({ id: row.id, at: row.created_at, kind, label, event_ids: [row.id], state_ids: stateIds, actor });
+	}
+	const figures = (subReport: StageStatsReport, stateId: string) => {
+		const row = subReport.states.find((stage) => stage.state_id === stateId)?.current;
+		return row ? { visits: row.visits, exits: row.exits, sent_back_share: row.sent_back.share, queue_wait_p50: row.queue_wait?.p50 ?? null } : null;
+	};
+	report.markers = seeds.slice(-20).reverse().map((seed) => {
+		const before = computeStageStats({ ...baseInput, now: seed.at, windowMs: Math.max(1, seed.at - report.window.since), compare: false });
+		const after = computeStageStats({ ...baseInput, now, windowMs: Math.max(1, now - seed.at), compare: false });
+		const affected = seed.state_ids.length > 0 ? seed.state_ids : report.states.map((stage) => stage.state_id);
+		return { ...seed, effects: affected.map((stateId) => ({ state_id: stateId, before: figures(before, stateId), after: figures(after, stateId) })) };
 	});
+	return report;
 }
 
 /** The issue, actor, comment and prompt-version evidence behind sent-back. */

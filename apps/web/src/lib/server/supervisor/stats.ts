@@ -504,6 +504,7 @@ export function computeStageStats(input: StatsInput): StageStatsReport {
 		previous: input.compare ? { since: prevSince, until: since } : null,
 		project: input.project,
 		outcome_recorded_since: input.outcomeRecordedSince,
-		states: rows
+		states: rows,
+		markers: []
 	};
 }
