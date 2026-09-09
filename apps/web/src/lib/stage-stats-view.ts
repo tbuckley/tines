@@ -9,7 +9,11 @@ import {
 export type MeasureKind = 'ms' | 'share' | 'ratio' | 'count';
 export const measureLabel = (value: number | null | undefined, kind: MeasureKind): string =>
 	value == null
-		? 'Not measured'
+		? kind === 'share'
+			? 'No exits'
+			: kind === 'ratio'
+				? 'No visits'
+				: 'Not measured'
 		: kind === 'ms'
 			? durationLabel(value)
 			: kind === 'share'

@@ -123,6 +123,7 @@
 		overflow-wrap: anywhere;
 	}
 	.mobile-label {
+		margin-right: 0.25rem;
 		display: none;
 	}
 	@media (max-width: 759px) {
