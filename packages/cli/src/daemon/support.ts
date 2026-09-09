@@ -90,6 +90,7 @@ export function buildHarnessInvocation(
 				file: 'codex',
 				args: [
 					'exec',
+					'--json',
 					'--skip-git-repo-check',
 					...(input.model ? ['--model', input.model] : []),
 					input.prompt

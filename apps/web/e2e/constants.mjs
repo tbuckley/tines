@@ -85,6 +85,8 @@ export const RUNROW_FAILED = {
 	runnerId: 'rnr_e2e_runrow_failed',
 	runnerName: 'runrow-failed',
 	runId: 'run_e2e_runrow_failed',
+	providerSessionId: 'thread_e2e_codex',
+	tokenLabel: '1,100 tok',
 	/**
 	 * A real ENOSPC message: long enough to overflow two clamped lines in the
 	 * issue sidebar, so the row test measures a clamp rather than a short

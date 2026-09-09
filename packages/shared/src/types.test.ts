@@ -27,6 +27,15 @@ describe('runCostLabel', () => {
 	it('falls back to summed tokens when only they are known', () => {
 		expect(label({ input_tokens: 1000, output_tokens: 2000 })).toBe('3,000 tok');
 		expect(label({ output_tokens: 2000 })).toBe('2,000 tok');
+		expect(
+			label({
+				input_tokens: 400,
+				output_tokens: 100,
+				cache_read_tokens: 600,
+				cache_write_tokens: 50
+			})
+		).toBe('1,150 tok');
+		expect(label({ cache_read_tokens: 600 })).toBe('600 tok');
 	});
 
 	it('renders nothing rather than a misleading zero', () => {

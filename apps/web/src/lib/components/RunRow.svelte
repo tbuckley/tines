@@ -77,6 +77,11 @@
 	{#if cost}
 		<span class="text-muted-foreground text-xs">{cost}</span>
 	{/if}
+	{#if run.provider_session_id}
+		<span class="text-muted-foreground max-w-full font-mono text-xs break-all select-text">
+			session: {run.provider_session_id}
+		</span>
+	{/if}
 	{#if run.provider_session_id && run.status === 'running'}
 		<!-- staleness honesty: managed logs/cost advance only at sweep cadence -->
 		<span

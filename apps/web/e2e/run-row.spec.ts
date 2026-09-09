@@ -35,6 +35,7 @@ test.describe('shared run row', () => {
 		const issueRow = page.locator('li:not([inert])', { hasText: RUNROW.runnerName });
 		await expect(issueRow).toHaveCount(1);
 		await expect(issueRow).toContainText(RUNROW.costLabel);
+		await expect(issueRow).toContainText(`session: ${RUNROW.providerSessionId}`);
 		// How the end was judged, beside the status: the difference between a
 		// run that cost the issue a strike and one that cost it nothing.
 		await expect(issueRow).toContainText(RUNROW.outcome);
@@ -54,11 +55,19 @@ test.describe('shared run row', () => {
 		const agentsRow = page.locator('li:not([inert])', { hasText: RUNROW.runnerName });
 		await expect(agentsRow).toHaveCount(1);
 		await expect(agentsRow).toContainText(RUNROW.costLabel);
+		await expect(agentsRow).toContainText(`session: ${RUNROW.providerSessionId}`);
 		await expect(agentsRow).toContainText(RUNROW.outcome);
 		await expect(agentsRow.getByRole('link', { name: /console/ })).toHaveAttribute(
 			'href',
 			RUNROW.providerUrl
 		);
+	});
+
+	test('shows unpriced Codex tokens and a local thread id', async ({ page }) => {
+		await page.goto(`/issues/${encodeURIComponent(RUNROW.projectName)}/${RUNROW.issueNumber}`);
+		const row = page.locator('li:not([inert])', { hasText: RUNROW_FAILED.runnerName });
+		await expect(row).toContainText(RUNROW_FAILED.tokenLabel);
+		await expect(row).toContainText(`session: ${RUNROW_FAILED.providerSessionId}`);
 	});
 });
 

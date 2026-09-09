@@ -177,15 +177,24 @@ written by the daemon and by the harness, in this order:
    daemon's own version, not the agent's. The run key is never here — it rides in the
    harness's environment, never in argv.
 
-4. The harness's stdout and stderr (for `claude_code`, the rendered stream; `--raw` fetches
-   the unrendered NDJSON).
+4. The harness's stdout and stderr. Claude Code and Codex both run in structured JSON mode,
+	 which the daemon renders as readable `[agent]`, `[tool]`, `[session]`, and `[error]` lines.
+	 For Claude Code, `--raw` fetches the unrendered NDJSON.
 5. The **exit line**: `# tines runner: exit code=0 after 3m12s`, or `signal=SIGTERM` when
    something killed it, with `(timed out)` when that something was the daemon's own
    timeout. A run canceled by the supervisor has no exit line — the daemon stops logging
    the moment the supervisor settles the run.
 6. `workspace kept at <path>`, only when `--keep-workspaces` retained this run's
    workspace (see below). It is the daemon's own note about what it left on disk, so it
-   comes after the harness's exit line rather than before it.
+	 comes after the harness's exit line rather than before it.
+
+When a structured harness finishes, its terminal report is also saved on the run. Claude
+Code supplies provider cost, input/output/cache tokens, and its session id. Codex supplies
+input/output/cache-read tokens and its thread id but no dollar cost, so its token total is
+shown without pretending it has been priced. Custom harnesses and processes that stop before
+a terminal usage event are marked `unreported`. Usage already emitted is retained even when
+the harness exits unsuccessfully. The session/thread id is shown on the run row and by
+`tines runs show`, ready for future resume support.
 
 ## Keep it running
 

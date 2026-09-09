@@ -147,8 +147,8 @@ statements.push(
 	   created_at, started_at, ended_at)
 	 VALUES ('${RUNROW_FAILED.runId}', '${ALICE.id}', '${RUNROW.issueId}', '${RUNROW_FAILED.runnerId}', 'failed',
 	   'stalled',
-	   'balanced', NULL, NULL,
-	   'wfs_std_open', 'wfs_std_open', NULL, NULL, 'seeded failed log tail', '${RUNROW_FAILED.error}',
+	   'balanced', NULL, '{"input_tokens":400,"cache_read_tokens":600,"output_tokens":100}',
+	   'wfs_std_open', 'wfs_std_open', '${RUNROW_FAILED.providerSessionId}', NULL, 'seeded failed log tail', '${RUNROW_FAILED.error}',
 	   ${runStart}, ${runStart}, ${nowMs});`,
 	// This run ended, so its key is revoked — the fixture behind the API keys
 	// page's "Show revoked" toggle. Inserted after its agent_run row (FK).
