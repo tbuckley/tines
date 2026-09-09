@@ -38,6 +38,15 @@ test.beforeAll(async ({ playwright }) => {
 			body: 'Check the implementation and its evidence.\n\n- **Approve** — accept the work\n- **Send back** — request changes'
 		})
 	);
+	await body(
+		await api.post('/api/v1/context', {
+			kind: 'prompt',
+			name: 'instructions',
+			project_id: project.id,
+			workflow_state_id: review.id,
+			body: 'For this project, confirm the release notes are accurate.'
+		})
+	);
 	issue = await body<IssueDetail>(
 		await api.post(`/api/v1/projects/${project.id}/issues`, {
 			title: `Awaiting handoff ${runId}`,
@@ -130,6 +139,9 @@ test('awaiting page leads with its brief and owns desktop transitions once', asy
 	await gotoHydrated(page, `/issues/${encodeURIComponent(projectName)}/${issue.number}`);
 	const card = page.getByTestId('handoff-card');
 	await expect(card).toContainText('Check the implementation and its evidence.');
+	await card.getByText('More from the workflow').click();
+	await expect(card).toContainText(`project ${projectName} · state Human Review`);
+	await expect(card).toContainText('For this project, confirm the release notes are accurate.');
 	await expect(card).toContainText('Arrived via Ready for human');
 	await expect(card).toContainText('No agent work in this round.');
 	await expect(page.getByRole('button', { name: /Approve/ })).toHaveCount(1);
@@ -177,7 +189,7 @@ test('renders the two-pass round, excludes foreign-run content, and opens the pi
 	await expect(card.getByText('impl-pr v1 → v2')).toBeVisible();
 	await expect(card.getByRole('link', { name: /PR #78/ })).toBeVisible();
 	await expect(
-		card.getByText('1 earlier attempt · returned via Automated review failed')
+		card.getByText(/1 earlier attempt\s*·\s*returned via Automated review failed/)
 	).toBeVisible();
 	await expect(
 		card.getByRole('button', { name: /dashboard-desktop\.png, screenshots version 2/ })

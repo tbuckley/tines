@@ -52,8 +52,8 @@
 	const screenshots = $derived(issue.round ? latestScreenshots(issue.round) : null);
 	const shots = $derived(screenshots ? screenshotPaths(screenshots) : []);
 	const restParts = $derived([
-		...(first.rest ? [{ body: first.rest, scope: parts[0]?.scope }] : []),
-		...parts.slice(1)
+		...(first.rest ? [{ body: first.rest, scopeLabel: null }] : []),
+		...parts.slice(1).map((part) => ({ body: part.body, scopeLabel: part.scope.label }))
 	]);
 	const roundSummary = $derived(
 		issue.round
@@ -161,7 +161,12 @@
 				>
 				<div class="mt-3 space-y-4">
 					{#each restParts as part}
-						<div class="text-sm"><Markdown source={part.body} /></div>
+						<div>
+							{#if part.scopeLabel}
+								<p class="text-muted-foreground mb-1 text-xs font-medium">{part.scopeLabel}</p>
+							{/if}
+							<div class="text-sm"><Markdown source={part.body} /></div>
+						</div>
 					{/each}
 				</div>
 			</details>
