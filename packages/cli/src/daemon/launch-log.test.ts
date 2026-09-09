@@ -127,14 +127,15 @@ function fakeClaudeProviderError(dir: string, exitCode = 1): string {
 function startDaemon(
 	port: number,
 	dir: string,
-	harness: { command: string } | { fakeClaudeDir: string }
+	harness: { command: string } | { fakeClaudeDir: string },
+	trailingSlashes = 0
 ): ChildProcess {
 	const args = [
 		CLI_BIN,
 		'runner',
 		'daemon',
 		'--url',
-		`http://127.0.0.1:${port}`,
+		`http://127.0.0.1:${port}${'/'.repeat(trailingSlashes)}`,
 		'--name',
 		'stub',
 		'--poll-interval',
@@ -190,7 +191,9 @@ describe('the run log a local run leaves behind', () => {
 
 		// A placeholder proves the log shows the template as expanded, not as
 		// written — the whole point for a misbehaving --command.
-		child = startDaemon(port, configDir, { command: 'cat {prompt_file}' });
+		// A caller with multiple trailing slashes still reaches every protocol
+		// endpoint; the stub deliberately recognizes only canonical paths.
+		child = startDaemon(port, configDir, { command: 'cat {prompt_file}' }, 3);
 
 		const harvest = await done;
 		const workspace = join(configDir, 'workspaces', RUN_ID);
