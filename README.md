@@ -240,11 +240,13 @@ All of this is edited on the **Agents** tab, and most of it from the CLI too:
   `tines supervisor status` for a one-screen overview — which now also lists the issues
   waiting for an agent, grouped by why, with the fix for each.
 - **Routing rules** decide who takes an issue. A rule is scoped globally, per project, per
-  workflow state, or both (most specific wins, no merging), and its payload is an ordered
+  workflow state, or both (most specific wins), and its payload is an ordered
   preference list of `<runner>[:tier]` targets:
   `tines routing set claude:cheapest macbook-claude --state "Docs Change/Writing"`. An issue no rule
   matches never dispatches — automation is opt-in. A single issue can override routing with
-  a pin: `tines issues assign <ref> <runner>[:tier]`.
+  a pin: `tines issues assign <ref> <runner>[:tier]`. A scoped singleton such as
+  `tines routing set --state "Docs Change/Writing" '*:smartest'` inherits the next
+  lower-priority rule's ordered runners while overriding every entry to that tier.
 - **Tiers** — rules say `smartest`, `balanced`, or `cheapest` rather than naming model ids
   that go stale; per-runner overrides live in `tines runners tiers <name>`.
 - **Quota policy** — one per user: a global concurrency cap

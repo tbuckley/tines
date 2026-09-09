@@ -921,15 +921,15 @@ Options:
 
 Commands:
   list [options]             List routing rules, most specific first
-  set [options] <target...>  Create or replace the rule at a scope: an ordered
-                             list of <runner>[:tier] targets
-  clear [options]            Delete the rule at a scope (issues it matched stop
-                             dispatching)
+  set [options] <target...>  Create or replace a rule with <runner>[:tier]
+                             targets, or scoped '*:smartest' tier inheritance
+  clear [options]            Delete the rule at a scope (matching issues are
+                             re-evaluated)
   help [command]             display help for command
 ",
   "tines routing clear": "Usage: tines routing clear [options]
 
-Delete the rule at a scope (issues it matched stop dispatching)
+Delete the rule at a scope (matching issues are re-evaluated)
 
 Options:
   -p, --project <name>          scope: project name or id
@@ -956,8 +956,8 @@ Options:
 ",
   "tines routing set": "Usage: tines routing set [options] <target...>
 
-Create or replace the rule at a scope: an ordered list of <runner>[:tier]
-targets
+Create or replace a rule with <runner>[:tier] targets, or scoped '*:smartest'
+tier inheritance
 
 Options:
   -p, --project <name>          scope: project name or id

@@ -210,6 +210,8 @@ function printExplainer(issue: IssueDetail, ex: DispatchExplainer): void {
 		);
 	} else if (ex.matched_rule) {
 		console.log(`\nmatched rule: ${ex.matched_rule.scope_label}`);
+		if (ex.tier_override) console.log(`tier override: ${ex.tier_override}`);
+		if (ex.runner_rule) console.log(`runner source: ${ex.runner_rule.scope_label}`);
 	}
 	if (ex.targets.length > 0) {
 		console.log('targets (preference order):');

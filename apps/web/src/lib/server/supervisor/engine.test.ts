@@ -524,6 +524,24 @@ describe('dispatch pass against the fake adapter', () => {
 		expect(runs(t)[0].tier).toBe('smartest');
 	});
 
+	it('dispatches a scoped tier-only rule through its broader runner fallback list', async () => {
+		const t = world();
+		const held = addRunner(t, { backoffUntil: NOW + 60_000 });
+		const available = addRunner(t, {
+			tiers: { smartest: { model: 'runner-two-smartest' } }
+		});
+		addRule(t, { targets: [{ runner_id: held }, { runner_id: available }] });
+		addRule(t, { state: OPEN, targets: [{ runner_id: '*', tier: 'smartest' }] });
+		addIssue(t);
+
+		expect((await pass(t)).claimed).toBe(1);
+		expect(runs(t)[0]).toMatchObject({
+			runner_id: available,
+			tier: 'smartest',
+			model: 'runner-two-smartest'
+		});
+	});
+
 	it('honors per-runner tier overrides at launch', async () => {
 		const t = world();
 		const r1 = addRunner(t, { tiers: { balanced: { model: 'my-pinned-model' } } });

@@ -27,7 +27,7 @@ import {
 	appendLogTail,
 	launchBackoffMs,
 	rateLimitHoldUntil,
-	resolveRule,
+	resolveRoute,
 	resolveTier,
 	targetVerdict,
 	type ActiveCounts,
@@ -284,7 +284,7 @@ export async function loadEngineRules(db: Kysely<Database>, userId: string): Pro
 export function targetsForIssue(
 	issue: CandidateIssue,
 	rules: EngineRule[]
-): { targets: RoutingTarget[]; rule: EngineRule | null; ambiguous: EngineRule[]; pinned: boolean } {
+): ReturnType<typeof resolveRoute<EngineRule>> & { pinned: boolean } {
 	if (issue.pinned_runner_id) {
 		return {
 			targets: [
@@ -292,16 +292,19 @@ export function targetsForIssue(
 			],
 			rule: null,
 			ambiguous: [],
+			runnerRule: null,
+			tierOverride: null,
+			failure: null,
 			pinned: true
 		};
 	}
 	// An ambiguous match yields no targets, so the pass skips the issue
 	// exactly as it does one with no matching rule at all — no strike, no run.
-	const { rule, ambiguous } = resolveRule(
+	const resolved = resolveRoute(
 		{ project_id: issue.project_id, state_id: issue.state_id, label_ids: issue.label_ids },
 		rules
 	);
-	return { targets: rule?.targets ?? [], rule, ambiguous, pinned: false };
+	return { ...resolved, pinned: false };
 }
 
 // ---------------------------------------------------------------------------

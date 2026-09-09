@@ -9,6 +9,7 @@ import {
 	ruleScopesOverlap,
 	ruleSpecificity,
 	shadowWarnings,
+	updateRoutingRule,
 	validateTargets,
 	type RuleForShadowing
 } from './routing';
@@ -152,10 +153,10 @@ describe('shadowWarnings', () => {
 			{ id: 'r_new', projectId: null, workflowStateId: 's_open', labelId: null },
 			rules
 		);
-		const shadowedBy = warnings.filter((w) => w.message.includes('instead of this rule'));
+		const shadowedBy = warnings.filter((w) => w.kind === 'shadowed');
 		expect(shadowedBy.map((w) => w.rule_id)).toEqual(['r_acme']);
 		// The state Open rule itself outranks only the global rule.
-		const shadows = warnings.filter((w) => w.message.includes('takes precedence over'));
+		const shadows = warnings.filter((w) => w.kind === 'shadows');
 		expect(shadows.map((w) => w.rule_id)).toEqual(['r_global']);
 	});
 
@@ -166,14 +167,14 @@ describe('shadowWarnings', () => {
 		);
 		// The acme combo can never match p_web issues; only overlapping rules warn.
 		expect(warnings.map((w) => w.rule_id).sort()).toEqual(['r_global', 'r_review']);
-		expect(warnings.every((w) => w.message.includes('takes precedence over'))).toBe(true);
+		expect(warnings.every((w) => w.kind === 'shadows')).toBe(true);
 
 		const acmeWarnings = shadowWarnings(
 			{ id: 'r_x', projectId: 'p_acme', workflowStateId: null, labelId: null },
 			rules
 		);
 		const shadowedBy = acmeWarnings.find((w) => w.rule_id === 'r_acme_review');
-		expect(shadowedBy?.message).toContain('more specific');
+		expect(shadowedBy?.message).toContain('higher priority');
 	});
 
 	it('excludes the rule being saved and same-scope rules', () => {
@@ -241,6 +242,16 @@ describe('validateTargets', () => {
 
 	it('rejects an empty list', () => {
 		expect(() => validateTargets([], runners)).toThrowError(ApiFail);
+	});
+
+	it('accepts a singleton tier-only target and rejects incomplete or mixed forms', () => {
+		expect(validateTargets([{ runner_id: '*', tier: 'smartest' }], runners)).toEqual([
+			{ runner_id: '*', tier: 'smartest' }
+		]);
+		expect(() => validateTargets([{ runner_id: '*' }], runners)).toThrowError(ApiFail);
+		expect(() =>
+			validateTargets([{ runner_id: '*', tier: 'balanced' }, { runner_id: 'rnr_1' }], runners)
+		).toThrowError(ApiFail);
 	});
 
 	it("rejects a runner that isn't the user's", () => {
@@ -329,6 +340,36 @@ describe('rule scope state category', () => {
 		});
 		expect(rule.scope.workflow_state_id).toBe('wfs_std_open');
 		expect(rule.scope.label).toBe('state Open');
+	});
+
+	it('accepts a scoped tier-only rule, serializes its sentinel, and rejects a global one', async () => {
+		const t = seed();
+		await expect(
+			createRoutingRule(t.db, t.env, actor, {
+				targets: [{ runner_id: '*', tier: 'smartest' }]
+			})
+		).rejects.toMatchObject({ status: 422, code: 'invalid_field' });
+		const rule = await createRoutingRule(t.db, t.env, actor, {
+			workflow_state_id: 'wfs_std_open',
+			targets: [{ runner_id: '*', tier: 'smartest' }]
+		});
+		expect(rule.targets).toEqual([
+			{ runner_id: '*', runner_name: '*', runner_status: null, tier: 'smartest' }
+		]);
+	});
+
+	it('rejects an update that makes a tier-only rule global', async () => {
+		const t = seed();
+		const rule = await createRoutingRule(t.db, t.env, actor, {
+			workflow_state_id: 'wfs_std_open',
+			targets: [{ runner_id: '*', tier: 'smartest' }]
+		});
+		await expect(
+			updateRoutingRule(t.db, t.env, actor, rule.id, { workflow_state_id: null })
+		).rejects.toMatchObject({ status: 422, code: 'invalid_field' });
+		expect((await listRoutingRules(t.db, actor.userId))[0].scope.workflow_state_id).toBe(
+			'wfs_std_open'
+		);
 	});
 });
 

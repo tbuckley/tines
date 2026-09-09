@@ -406,7 +406,7 @@ export async function loadFleetQueue(
 
 	const groups = new Map<string, QueueGroup>();
 	for (const issue of eligible) {
-		const { targets, rule, ambiguous, pinned } = targetsForIssue(issue, rules);
+		const { targets, rule, ambiguous, failure, pinned } = targetsForIssue(issue, rules);
 		// A target whose runner no longer exists is skipped exactly as the pass
 		// and the explainer skip it — that is how a dead pin reaches an empty
 		// list and reads as `pin_missing`.
@@ -431,7 +431,11 @@ export async function loadFleetQueue(
 		const speakingIndex = speaking ? resolved.findIndex((r) => r.verdict === speaking) : -1;
 		const runner = speakingIndex >= 0 ? resolved[speakingIndex].runner : null;
 
-		const key = `${issue.state_id}|${verdict}|${runner?.id ?? ''}`;
+		const ambiguityKey = ambiguous
+			.map((r) => r.id)
+			.sort()
+			.join(',');
+		const key = `${issue.state_id}|${verdict}|${runner?.id ?? ''}|${rule?.id ?? ''}|${ambiguityKey}`;
 		let group = groups.get(key);
 		if (!group) {
 			group = {
@@ -440,7 +444,7 @@ export async function loadFleetQueue(
 				workflow_id: issue.workflow_id,
 				workflow_name: issue.workflow_name,
 				verdict,
-				detail: groupDetail(verdict, speaking?.detail ?? null, runner?.name ?? null),
+				detail: groupDetail(verdict, speaking?.detail ?? null, runner?.name ?? null, failure),
 				runner_id: runner?.id ?? null,
 				runner_name: runner?.name ?? null,
 				rule_id: rule?.id ?? null,
@@ -514,7 +518,8 @@ function queueRefQuery(db: Kysely<Database>, userId: string) {
 function groupDetail(
 	verdict: QueueVerdict,
 	targetDetail: string | null,
-	runnerName: string | null
+	runnerName: string | null,
+	routeFailure: ReturnType<typeof targetsForIssue>['failure'] = null
 ): string {
 	switch (verdict) {
 		case 'automation_off':
@@ -524,7 +529,11 @@ function groupDetail(
 		case 'ambiguous_rule':
 			return 'two routing rules tie — neither is more specific';
 		case 'no_targets':
-			return 'the matching rule has no targets';
+			return routeFailure === 'no_runner_rule'
+				? 'no broader rule supplies runners'
+				: routeFailure === 'no_targets'
+					? 'the effective runner rule has no targets'
+					: 'the matching rule has no effective targets';
 		case 'pin_missing':
 			return 'pinned to a removed runner — clear the pin';
 		case 'ok':
