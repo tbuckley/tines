@@ -14,6 +14,19 @@ already solved once is not re-solved per spec (Tines/170).
   on one machine.
 - A single-test run of a `describe.serial` spec generally fails: the fixture is created in
   the file's first test. Run the whole file.
+- If a polling page is followed by `ProxyController emitErrorEvent`, `Error inside
+  ProxyWorker`, or `Network connection lost` and the dev server exits, check the workspace
+  version with `pnpm --filter @tines/web exec wrangler --version`. This is the
+  [Wrangler proxy bug](https://github.com/cloudflare/workers-sdk/issues/14926) fixed by
+  [workers-sdk#15252](https://github.com/cloudflare/workers-sdk/pull/15252) and released in
+  [Wrangler 4.129.1](https://github.com/cloudflare/workers-sdk/releases/tag/wrangler%404.129.1).
+  Wrangler 4.129.1 or newer is the project-level mitigation: run
+  `pnpm install --frozen-lockfile`, stop the server process you own, and relaunch it so it
+  uses the installed version. Verify the same process survives a caught 30-second missing
+  locator timeout while at least three `/api/v1/events` polls succeed, responds to
+  `/api/time`, shows an externally posted comment through polling, and still responds
+  after the browser context closes. Short scripts or locator timeouts are not required as
+  a workaround for this known fault.
 - `e2e/` is typechecked by nothing — `pnpm check` runs `svelte-check` against
   `.svelte-kit/tsconfig.json`, whose `include` is `src/`, `test/`, `tests/` and the vite
   config (Tines/159). To check it ad hoc, drop a `tsconfig.e2e-check.json` in `apps/web`:

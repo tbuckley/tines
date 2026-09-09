@@ -317,7 +317,11 @@ test('a bad token gets an HTML error page, not a JSON error or a download', asyn
 	// the only thing standing between a reader and someone else's artifact.
 	const link = await siteLink(page, 'prototype');
 	const token = new URL(link.url).pathname.split('/')[2];
-	const tampered = token.slice(0, -1) + (token.endsWith('A') ? 'B' : 'A');
+	const signatureStart = token.lastIndexOf('.') + 1;
+	// Do not mutate the final unpadded base64url character: its unused low bits
+	// can change the encoded text without changing the decoded HMAC bytes.
+	const replacement = token[signatureStart] === 'A' ? 'B' : 'A';
+	const tampered = token.slice(0, signatureStart) + replacement + token.slice(signatureStart + 1);
 	expect(tampered).not.toBe(token);
 	await page.goto(`/s/${tampered}/`);
 	await expect(page.getByRole('heading', { name: 'Not found' })).toBeVisible();
