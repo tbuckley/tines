@@ -1,5 +1,12 @@
 <script lang="ts">
-	import type { AllowedTransition, Comment, ContextItem, WorkflowState } from '@tines/shared';
+	import type {
+		AllowedTransition,
+		Comment,
+		ContextItem,
+		ContextKind,
+		RoutingRule,
+		WorkflowState
+	} from '@tines/shared';
 	import { ApiError } from '@tines/shared';
 	import IconAlertTriangle from '@tabler/icons-svelte/icons/alert-triangle';
 	import IconArchive from '@tabler/icons-svelte/icons/archive';
@@ -16,6 +23,7 @@
 	import { invalidate } from '$app/navigation';
 	import { api } from '$lib/api';
 	import AgentActivityCard from '$lib/components/AgentActivityCard.svelte';
+	import FirstRunChecklist from '$lib/components/FirstRunChecklist.svelte';
 	import ArtifactsPanel from '$lib/components/ArtifactsPanel.svelte';
 	import Clamp from '$lib/components/Clamp.svelte';
 	import ContextItemEditor from '$lib/components/ContextItemEditor.svelte';
@@ -41,6 +49,8 @@
 	import { Skeleton } from '$lib/components/ui/skeleton/index.js';
 	import { Textarea } from '$lib/components/ui/textarea/index.js';
 	import { PROJECT_ARCHIVED_TOOLTIP } from '$lib/archived';
+	import { checklistItems, checklistProgress, type FirstRunInputs } from '$lib/first-run';
+	import { addRunnerToGlobalRule } from '$lib/routing';
 	import { actorLabel, prefersReducedMotion, relativeTime } from '$lib/format';
 	import { mergeLinks, type PendingAdd } from '$lib/link-overlay';
 	import { navMemory } from '$lib/nav-memory.svelte';
@@ -112,11 +122,107 @@
 	const contextItemsPanel = streamed(() => data.deferred.contextItems, issueKey);
 	const effectiveContextPanel = streamed(() => data.deferred.effectiveContext, issueKey);
 	const agentActivityPanel = streamed(
-		() => Promise.all([data.deferred.dispatch, data.deferred.issueRuns, data.deferred.runners]),
+		() =>
+			Promise.all([
+				data.deferred.dispatch,
+				data.deferred.issueRuns,
+				data.deferred.runners,
+				data.deferred.hasAnyRun,
+				data.deferred.rules
+			]),
 		issueKey
 	);
 
 	const dur = () => (prefersReducedMotion() ? 0 : 180);
+
+	// --- first-run checklist -----------------------------------------------------
+	// While the account has never had an agent run, the card shows the same
+	// seven-item checklist as the Agents tab in place of the verdict and its
+	// checks. The server flag decides whether it mounts; once mounted it stays
+	// for this page-session, so the first run can land in the last item rather
+	// than the checklist vanishing at the moment it pays off. A later load
+	// (this issue or any other) never shows it again.
+	let checklistVisible = $state(false);
+	// The server deliberately stops fetching account rules once the first run
+	// exists, because a fresh page will not mount this checklist. Keep the last
+	// run-free snapshot for the checklist that stays mounted through its landing
+	// moment, so a completed routing item cannot regress when item 7 fills in.
+	let checklistRules = $state<RoutingRule[]>([]);
+	/**
+	 * On a phone the card is one folded row, so the checklist would hide behind
+	 * it. Opened once, the first time the checklist appears — never forced
+	 * afterwards, so closing it stays closed.
+	 */
+	let agentFoldOpen = $state(false);
+	let agentFoldOpened = false;
+	// svelte-ignore state_referenced_locally
+	let checklistIssueId = $state(data.issue.id);
+	$effect(() => {
+		const panel = agentActivityPanel.current;
+		if (panel.status !== 'loaded') return;
+		if (!panel.value[3]) checklistRules = panel.value[4];
+		if (panel.value[3]) return;
+		checklistVisible = true;
+		if (!agentFoldOpened) {
+			agentFoldOpened = true;
+			agentFoldOpen = true;
+		}
+	});
+	$effect(() => {
+		// A different issue: the sticky flag belongs to the page-session of one.
+		const issueId = data.issue.id;
+		if (issueId === checklistIssueId) return;
+		checklistIssueId = issueId;
+		untrack(() => {
+			checklistVisible = false;
+			agentFoldOpened = false;
+		});
+	});
+
+	const checklistInputs = $derived.by((): FirstRunInputs | null => {
+		const panel = agentActivityPanel.current;
+		if (!checklistVisible || panel.status !== 'loaded') return null;
+		const [dispatch, runs, runners, hasAnyRun, rules] = panel.value;
+		return {
+			surface: 'issue',
+			hasAnyIssue: true,
+			hasAnyProject: true,
+			runners,
+			rules: hasAnyRun ? checklistRules : rules,
+			enabled: dispatch?.checks.find((c) => c.name === 'automation_enabled')?.ok ?? false,
+			issue: {
+				project_name: data.issue.project_name,
+				number: data.issue.number,
+				title: data.issue.title,
+				has_description: data.issue.description.trim() !== '',
+				// The issue's *effective* context: a repo item at any scope that
+				// covers it is a repo the agent would clone.
+				has_repo: data.issue.context_summary.repos > 0
+			},
+			firstRun: runs[0] ?? null,
+			// A run exists on the account but not on this issue.
+			runElsewhere: runs.length === 0 && panel.value[3]
+		};
+	});
+
+	async function enableAutomation() {
+		await api.updateSupervisorSettings({ enabled: true });
+		await refresh();
+	}
+
+	async function routeToSoleRunner() {
+		const panel = agentActivityPanel.current;
+		if (panel.status !== 'loaded') return;
+		const [, , runners, , rules] = panel.value;
+		await addRunnerToGlobalRule(rules, runners[0]);
+		await refresh();
+	}
+
+	function startDescription() {
+		descriptionDraft = data.issue.description;
+		editingDescription = true;
+		tick().then(() => descriptionTextarea?.focus());
+	}
 
 	// Everything optimistic on this page renders as server truth + an overlay
 	// of in-flight work, never a blind local copy resynced by effect. With the
@@ -156,13 +262,26 @@
 	// Plain (non-reactive) guard, set before the fetch so an overlapping tick
 	// (slow request + interval, or interval + refocus) can't double-resync.
 	let syncing = false;
+	/** Newest account-level event id; the first non-empty observation also refreshes. */
+	let latestAccountEventId: string | null = null;
 	async function checkForUpdates() {
 		if (syncing) return;
 		syncing = true;
 		try {
-			const latest = await api.listEvents({ issue: data.issue.id, limit: 1 });
+			// While the checklist shows, three of its items tick on account-level
+			// writes (a runner registering, the rule, the kill switch) that this
+			// issue's own feed never sees — so the newest account event is watched
+			// alongside it, for that population only.
+			const watchAccount = checklistVisible;
+			const [latest, account] = await Promise.all([
+				api.listEvents({ issue: data.issue.id, limit: 1 }),
+				watchAccount ? api.listEvents({ limit: 1 }) : Promise.resolve(null)
+			]);
 			const newestId = latest.items[0]?.id ?? null;
-			if (newestId !== latestEventId) await refresh();
+			const newestAccountId = account?.items[0]?.id ?? null;
+			const accountMoved = newestAccountId !== null && newestAccountId !== latestAccountEventId;
+			latestAccountEventId = newestAccountId ?? latestAccountEventId;
+			if (newestId !== latestEventId || accountMoved) await refresh();
 		} catch {
 			// Silent — a missed poll tick just waits for the next one, or the
 			// visibility-change backstop below.
@@ -314,6 +433,12 @@
 		return parts.length > 0 ? parts.join(', ') : 'none';
 	});
 	const agentSummaryLabel = $derived.by(() => {
+		// The checklist is the whole card while it shows, and on a phone the fold
+		// row is all you see of it until you open it: say how far along it is.
+		if (checklistInputs) {
+			const { done, total } = checklistProgress(checklistItems(checklistInputs));
+			return `first run · ${done} of ${total}`;
+		}
 		const parts: string[] = [];
 		if (data.issue.active_run) parts.push(`${data.issue.active_run.runner_name} running`);
 		if (agentActivityPanel.current.status === 'loaded') {
@@ -502,8 +627,16 @@
 	let editingContextItem = $state<ContextItem | null>(null);
 	let promptDialogOpen = $state(false);
 
+	// The editor reads these when it opens, so each entry point sets them: the
+	// aside's own button attaches to this issue, the checklist's repo hint
+	// attaches a repo to the project.
+	let contextEditorDefaults = $state<{ project_id?: string; issue_id?: string }>({});
+	let contextEditorKind = $state<ContextKind | undefined>(undefined);
+
 	function openContextCreate() {
 		editingContextItem = null;
+		contextEditorDefaults = { issue_id: data.issue.id };
+		contextEditorKind = undefined;
 		contextEditorOpen = true;
 	}
 	function openContextEdit(item: ContextItem) {
@@ -518,6 +651,7 @@
 	);
 
 	let editingDescription = $state(false);
+	let descriptionTextarea = $state<HTMLTextAreaElement | null>(null);
 	let descriptionDraft = $state('');
 	let savingDescription = $state(false);
 	async function saveDescription() {
@@ -748,10 +882,24 @@
 	</div>
 {/if}
 
+{#snippet firstRunChecklist()}
+	{#if checklistInputs}
+		<FirstRunChecklist
+			inputs={checklistInputs}
+			disabledReason={reason}
+			onroute={routeToSoleRunner}
+			onenable={enableAutomation}
+			onadddescription={startDescription}
+			onerror={showError}
+		/>
+	{/if}
+{/snippet}
+
 <ContextItemEditor
 	bind:open={contextEditorOpen}
 	item={editingContextItem}
-	defaults={{ issue_id: data.issue.id }}
+	defaults={contextEditorDefaults}
+	defaultKind={contextEditorKind}
 	projects={data.projects}
 	workflows={data.workflows}
 	onsaved={refresh}
@@ -810,8 +958,10 @@
 				{#if editingDescription}
 					<div transition:slide={{ duration: dur() }}>
 						<Textarea
+							bind:ref={descriptionTextarea}
 							bind:value={descriptionDraft}
 							rows={8}
+							aria-label="Description"
 							placeholder="Describe the work (Markdown)…"
 						/>
 						<div class="mt-2 flex gap-2">
@@ -1026,7 +1176,7 @@
 	     otherwise widen the column past the viewport. -->
 	<aside class="min-w-0 space-y-8 max-sm:space-y-0 lg:col-start-2 lg:row-start-2">
 		<!-- the supervisor's view of this issue -->
-		<PhoneFold title="Agent activity" summary={agentSummaryLabel}>
+		<PhoneFold title="Agent activity" summary={agentSummaryLabel} bind:open={agentFoldOpen}>
 			{#if agentActivityPanel.current.status === 'pending'}
 				<Skeleton class="h-40 w-full" />
 			{:else if agentActivityPanel.current.status === 'loaded'}
@@ -1038,6 +1188,7 @@
 					{runners}
 					disabledReason={reason}
 					onerror={showError}
+					checklist={checklistInputs ? firstRunChecklist : undefined}
 				/>
 			{:else}
 				{@render loadFailed('agent activity')}

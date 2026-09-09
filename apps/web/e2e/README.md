@@ -184,3 +184,13 @@ behaviour under test. Repeat a single spec file against a freshly seeded server 
 
 Then mutate your own fix (revert the locator, flip the config line) and confirm the check
 reds on that mutation alone.
+
+## Dana, and the one-way account
+
+`first-run-checklist.spec.ts` walks a brand-new account (`DANA` in
+`constants.mjs`) from nothing to its first agent run through the UI checklist.
+The checklist is derived from "this account has no runs" and retires the moment
+one exists, so the walk is **one-way**: no other spec may depend on Dana being
+run-free, and new cases in that file must sort after the walk. Alice always has
+seeded runs and Bob is run-free but is used by the explainer specs, which is why
+the walk gets an account of its own.
