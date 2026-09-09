@@ -1389,7 +1389,7 @@ Options:
 Commands:
   status [options]   One-screen overview: kill switch, quota, utilization,
                      runners
-  enable [options]   Arm automation (the kill switch on)
+  enable [options]   Resume automation (the kill switch on)
   disable [options]  Pause all automation at once (the kill switch off)
   quota              Pick and configure the quota policy
   help [command]     display help for command
@@ -1407,7 +1407,7 @@ Options:
 ",
   "tines supervisor enable": "Usage: tines supervisor enable [options]
 
-Arm automation (the kill switch on)
+Resume automation (the kill switch on)
 
 Options:
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run

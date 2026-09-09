@@ -1302,4 +1302,23 @@ describe('the sweep', () => {
 		expect(runs(t)).toHaveLength(1);
 		expect(runs(t)[0].status).toBe('assigned');
 	});
+
+	it('sweeps issue owners with missing settings and preserves saved stops', async () => {
+		const t = world();
+		const runner = addRunner(t);
+		addRule(t, { targets: [{ runner_id: runner }] });
+		addIssue(t, { title: 'Title only', description: '' });
+		t.sqlite.exec(`DELETE FROM supervisor_settings WHERE user_id = '${USER}'`);
+
+		await sweepSupervisor(t.db, t.env, NOW);
+		expect(runs(t)).toHaveLength(1);
+
+		const stopped = world();
+		const stoppedRunner = addRunner(stopped);
+		addRule(stopped, { targets: [{ runner_id: stoppedRunner }] });
+		addIssue(stopped);
+		setSettings(stopped, { enabled: false });
+		await sweepSupervisor(stopped.db, stopped.env, NOW);
+		expect(runs(stopped)).toHaveLength(0);
+	});
 });

@@ -7,7 +7,7 @@ finish. No inbound connection to the machine is ever needed.
 
 ## First start
 
-Five steps from nothing to an agent working an issue. The hosted app is
+Four setup steps from nothing to an agent working an issue. The hosted app is
 `https://tines.tbuckley.dev`; self-hosters substitute their own URL everywhere below.
 
 1. **Install** the CLI on the machine that will run agents:
@@ -37,10 +37,11 @@ Five steps from nothing to an agent working an issue. The hosted app is
    **Route everything to macbook-claude** in the same dialog, or run
    `tines routing set macbook-claude` for a global rule.
 
-5. **Arm** — flip the automation switch on the Agents tab (or `tines supervisor enable`).
-   Automation is off for new accounts; nothing dispatches until it is on. Before
-   your first run the Agents tab and every issue card show a first-run checklist
-   that ticks off these steps as you do them, arming included.
+Automation is on by default: eligible work can start as soon as the runner is available and
+routing matches. Before your first run, Agents and every issue card show the six milestones
+through the first run itself. A description and repository context are optional guidance.
+If automation was explicitly stopped, it remains stopped across runner registration and
+other settings changes; resume it on Agents or with `tines supervisor enable`.
 
 The first start **registers** the runner and stores its long-lived runner token in the CLI
 config directory (`~/.config/tines`, or `$TINES_CONFIG_DIR`). Subsequent starts reconnect as
