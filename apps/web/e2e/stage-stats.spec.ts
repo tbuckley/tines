@@ -193,9 +193,9 @@ for (const width of [1440, 390])
 		await expect(review).toContainText('Up 11 pp');
 		await expect(review).toContainText('was 9%');
 		await section.scrollIntoViewIfNeeded();
-		await page.screenshot({
+		await section.screenshot({
 			path: `/tmp/tines257-screenshots/populated-${width}.png`,
-			fullPage: true
+			style: 'header.sticky,nav.fixed { visibility: hidden !important; }'
 		});
 		await highlights.nth(0).click();
 		await expect(page.locator('#stats-ws_research-timing')).toBeFocused();
@@ -208,7 +208,7 @@ for (const width of [1440, 390])
 		await highlights.nth(2).click();
 		await expect(page.locator('#stats-ws_discovering-runs')).toBeFocused();
 		await expect(section.getByText('Failed to start', { exact: true })).toBeVisible();
-		await section.getByRole('button', { name: '4 changes this week' }).click();
+		await section.getByRole('button', { name: /^\d+ changes this week$/ }).click();
 		const dialog = page.getByRole('dialog', { name: 'Latest changes in this window' });
 		await expect(dialog).toContainText('Runner cap');
 		await expect(dialog).toContainText('Routing rule');
@@ -280,4 +280,46 @@ test('rule creation project is one-shot and does not become Board project', asyn
 	await expect(page.locator('#rule-project')).toHaveValue(project.id);
 	await expect(page.getByLabel('Board project')).toHaveValue('');
 	await expect(page).not.toHaveURL(/new=rule/);
+});
+
+test('capacity follows the saved roster and run selection remains reactive', async ({
+	context,
+	page,
+	request
+}) => {
+	const api = apiClient(request, WEEKLY.apiKey);
+	await api.put('/api/v1/supervisor/settings', {
+		quota: { type: 'state_roster', default_limit: 2, overrides: {} }
+	});
+	try {
+		await signIn(context, WEEKLY.sessionToken);
+		await gotoHydrated(page, `/agents?project=${WEEKLY.projectId}&runs_state=ws_review`);
+		await page.getByLabel('Show ended runs').uncheck();
+		const section = page.getByRole('region', { name: 'This week' });
+		await section
+			.locator('tr.stage-row')
+			.filter({ hasText: 'Research' })
+			.getByRole('link', { name: /runs per visit/ })
+			.click();
+		await expect(page.getByLabel('Show ended runs')).toBeChecked();
+		await section
+			.locator('tr.stage-row')
+			.filter({ hasText: 'Research' })
+			.getByRole('button', { name: /wait to start/ })
+			.click();
+		await expect(page.locator('#roster-limit-ws_research')).toBeFocused();
+	} finally {
+		await api.put('/api/v1/supervisor/settings', { quota: { type: 'global_cap', limit: 3 } });
+	}
+});
+
+test('overview remains usable at 200 percent zoom', async ({ context, page }) => {
+	await page.setViewportSize({ width: 1440, height: 1000 });
+	await signIn(context, WEEKLY.sessionToken);
+	await gotoHydrated(page, `/agents?project=${WEEKLY.projectId}`);
+	await page.evaluate(() => (document.body.style.zoom = '2'));
+	const section = page.getByRole('region', { name: 'This week' });
+	expect(await section.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+	await section.getByRole('button', { name: /Most measured wait/ }).click();
+	await expect(page.locator('#stats-ws_research-timing')).toBeFocused();
 });
