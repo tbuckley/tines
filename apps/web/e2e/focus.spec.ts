@@ -221,7 +221,7 @@ test.describe.serial('project focus', () => {
 			await page.getByLabel('Show ended runs').check();
 			await expect(
 				page.getByRole('link', { name: `${RUNROW.projectName}/#${RUNROW.issueNumber}` })
-			).toBeVisible();
+			).toHaveCount(2);
 			const ruleDialog = page.getByRole('dialog', { name: 'New routing rule' });
 			await gotoHydrated(page, `/issues?project=${aId}`);
 			await gotoHydrated(page, '/agents');
