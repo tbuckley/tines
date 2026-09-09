@@ -418,16 +418,34 @@ function checkExistingSlot(
 	flags: AttachFlags,
 	positional: string | undefined
 ): void {
-	const held = gates.find((g) => g.check.current_type !== null)?.check.current_type;
-	if (held === undefined || held === null || held === plan.type) return;
+	const held = heldType(gates);
+	if (held === undefined || held === plan.type) return;
 	const rejecting = gates.find((g) => g.check.type !== undefined && g.check.type !== held);
 	const fix = rejecting
 		? fixCommand(rejecting, ref)
 		: `tines issues artifacts delete ${ref} ${name} && tines issues artifacts attach ${ref} ${name} ${flagFor(plan.type)} <source>`;
 	throw new CliError(
-		`"${name}" already holds a ${held} artifact and the type is immutable; ${sourceLabel(flags, positional)} would attach ${plan.type}. Use: ${fix} — or attach it under a different name (--ignore-gates does not bypass this; the server rejects the type change too)`
+		`"${name}" already holds a ${held} artifact and the type is immutable; ${sourceLabel(flags, positional)} would attach ${plan.type}.${' '}Use: ${fix}${IMMUTABLE_TAIL}`
 	);
 }
+
+/**
+ * The (immutable) type the slot already holds, per the gates' live check —
+ * `undefined` when the slot is empty. Both refusals read it: what is true of
+ * `--ignore-gates` depends on it, not on which branch happens to fire.
+ */
+function heldType(gates: GateEntry[]): ArtifactType | undefined {
+	return gates.find((g) => g.check.current_type !== null)?.check.current_type ?? undefined;
+}
+
+/**
+ * What to say instead of the `--ignore-gates` escape when the slot already
+ * holds a different type: the flag skips the CLI's checks only, and the
+ * server then throws `artifact_type_mismatch` unconditionally on all three
+ * write paths (Tines/268).
+ */
+const IMMUTABLE_TAIL =
+	' — or attach it under a different name (--ignore-gates does not bypass this; the server rejects the type change too)';
 
 /**
  * No available transition's requirement for this slot can ever accept what the
@@ -446,18 +464,28 @@ function checkAccepted(
 	const effective = effectiveContentType(plan.type, plan.source, plan.contentType, sniff);
 	if (gates.some((g) => requirementAccepts(g.check, plan.type, effective))) return;
 	const label = sourceLabel(flags, positional);
+	// `--ignore-gates` skips this check, not the server's: on a slot already
+	// holding a different (immutable) type the write 422s anyway, so the escape
+	// is only honest on a fresh slot. Which branch fires is incidental — the
+	// held type decides (Tines/268).
+	const held = heldType(gates);
+	const blockedByHeldType = held !== undefined && held !== plan.type;
 	const typeMatched = gates.filter((g) => (g.check.type ?? plan.type) === plan.type);
 	if (typeMatched.length > 0) {
 		// The type is right and only the content type misses: the fix is a MIME,
 		// not a different flag.
 		const g = typeMatched[0];
 		throw new CliError(
-			`"${name}" is gated by ${joinTransitions(typeMatched.map((x) => x.transition))} as ${gateSpec(g.check)}; ${label} would attach ${effective ?? plan.type}, which does not satisfy it. Use: ${fixCommand(g, ref)} with --content-type <mime under ${g.check.content_type}> (or --ignore-gates to attach it anyway)`
+			`"${name}" is gated by ${joinTransitions(typeMatched.map((x) => x.transition))} as ${gateSpec(g.check)}; ${label} would attach ${effective ?? plan.type}, which does not satisfy it. Use: ${fixCommand(g, ref)} with --content-type <mime under ${g.check.content_type}>${
+				blockedByHeldType ? IMMUTABLE_TAIL : ' (or --ignore-gates to attach it anyway)'
+			}`
 		);
 	}
 	const g = gates[0];
 	throw new CliError(
-		`"${name}" is gated by ${joinTransitions(gates.map((x) => x.transition))} as ${gateSpec(g.check)}; ${label} would create a ${plan.type} artifact that can never satisfy it. Use: ${fixCommand(g, ref)} (or --ignore-gates to attach a ${plan.type} anyway)`
+		`"${name}" is gated by ${joinTransitions(gates.map((x) => x.transition))} as ${gateSpec(g.check)}; ${label} would create a ${plan.type} artifact that can never satisfy it. Use: ${fixCommand(g, ref)}${
+			blockedByHeldType ? IMMUTABLE_TAIL : ` (or --ignore-gates to attach a ${plan.type} anyway)`
+		}`
 	);
 }
 
@@ -508,6 +536,8 @@ export function gateLabel(
 /** The `--help` epilogue: the typing rules, written where the reader is choosing a source. */
 export const ATTACH_SOURCE_HELP = `
 Source:
+  Prefer the positional form: it is what a gated slot's own hint prints
+  ("fix:" on \`tines issues show\`, and the launch prompt's Requires: line).
   A positional <source> is typed by the slot's gate when this issue has one:
   a text gate reads the path as the document (the gate's content type wins over
   the extension), a file gate uploads its bytes, a folder gate walks it, and a

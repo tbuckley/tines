@@ -1369,9 +1369,17 @@ export interface ArtifactRequirementCheck extends ArtifactRequirement {
 	/**
 	 * The runnable command that clears this requirement (`requirementFix`) —
 	 * present on every entry, satisfied or not, so the launch prompt, the
-	 * issue read and the 422 all quote the same string.
+	 * issue read and the 422 all quote the same string. Always exactly one
+	 * command: copy-pastable whole.
 	 */
 	fix: string;
+	/**
+	 * A second command that also clears it, when one exists — today only a
+	 * `stale` requirement's `reaffirm`, whose alternative to re-attaching is
+	 * "the current content still stands". Additive: every consumer that reads
+	 * `fix` alone stays correct (Tines/274).
+	 */
+	fix_alternative?: string;
 }
 
 /** A pull-request reference parsed from user input. */

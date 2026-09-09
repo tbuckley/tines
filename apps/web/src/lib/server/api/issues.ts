@@ -1232,10 +1232,17 @@ function unmetRequirements(
 			: '';
 	// A wrong immutable type is the one case a new version cannot fix, so it
 	// gets its own sentence rather than the generic "attach it" advice that
-	// would send an agent into a 422 loop.
+	// would send an agent into a 422 loop. The type it names is the one the
+	// `fix` command attaches: an untyped gate would take text too, but a
+	// summary and a command naming different types is what sent readers
+	// looking for a third answer (Tines/255). The `?? 'file'` is defensive
+	// only: an untyped requirement cannot reach `type_mismatch` (a workflow
+	// refuses a `content_type` without a file/text `type`), so no gate the API
+	// accepts renders this sentence untyped — `requirementFix` pins the same
+	// word for the shape in @tines/shared.
 	const wrongType =
 		requirementFix(first, issueRef(issue)).kind === 'delete_and_attach'
-			? `The attached "${first.artifact}" is a ${first.current_type} artifact and the gate needs ${first.type ?? 'file or text'} — artifact type is immutable, so a new version cannot help: delete the slot and attach again (each unmet entry's "fix" is the exact command).`
+			? `The attached "${first.artifact}" is a ${first.current_type} artifact and the gate needs ${first.type ?? 'file'} — artifact type is immutable, so a new version cannot help: delete the slot and attach again (each unmet entry's "fix" is the exact command).`
 			: null;
 	return new ApiFail(
 		422,
