@@ -224,13 +224,6 @@
 		tick().then(() => descriptionTextarea?.focus());
 	}
 
-	function addProjectRepo() {
-		editingContextItem = null;
-		contextEditorDefaults = { project_id: data.issue.project_id };
-		contextEditorKind = 'repo';
-		contextEditorOpen = true;
-	}
-
 	// Everything optimistic on this page renders as server truth + an overlay
 	// of in-flight work, never a blind local copy resynced by effect. With the
 	// live-updates poll below, a refresh can land at ANY moment — not
@@ -897,7 +890,6 @@
 			onroute={routeToSoleRunner}
 			onenable={enableAutomation}
 			onadddescription={startDescription}
-			onaddrepo={addProjectRepo}
 			onerror={showError}
 		/>
 	{/if}

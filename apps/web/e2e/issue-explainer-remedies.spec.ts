@@ -49,8 +49,9 @@ test("an unarmed account's issue card offers the first-run checklist's controls"
 	await expect(rule).toHaveAttribute('data-done', 'false');
 	await expect(rule).toContainText('Add a runner first');
 
-	// The kill switch is actionable from here (no confirmation on enable), but
-	// this spec does not click it: BOB's off state is what it asserts.
-	await expect(checklist.getByRole('button', { name: 'Turn automation on' })).toBeVisible();
+	// Only the current runner action is interactive; later actions are guidance
+	// until the account's real state advances to them.
+	await expect(checklist.locator('button, a[href]')).toHaveCount(1);
+	await expect(checklist.getByRole('button', { name: 'Turn automation on' })).toHaveCount(0);
 	await expect(page.getByText('Why?')).toHaveCount(0);
 });

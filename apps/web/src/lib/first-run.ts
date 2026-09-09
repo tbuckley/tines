@@ -49,11 +49,6 @@ function hasRunner(i: FirstRunInputs): boolean {
 	return i.runners.length > 0;
 }
 
-/** Managed runners are always online; a paused runner dispatches nothing. */
-function hasOnlineRunner(i: FirstRunInputs): boolean {
-	return i.runners.some((r) => r.online && r.status !== 'paused');
-}
-
 /**
  * "A rule covers the runner" — any scope, any target that still exists.
  * Deliberately looser than the dispatch check, which also fails for ties and
@@ -67,8 +62,8 @@ function hasCoveringRule(i: FirstRunInputs): boolean {
 
 export function checklistItems(i: FirstRunInputs): FirstRunItem[] {
 	const issueDone = i.surface === 'issue' || i.hasAnyIssue;
-	const runner = hasOnlineRunner(i);
-	const cli = hasRunner(i);
+	const runner = hasRunner(i);
+	const cli = runner;
 	const rule = hasCoveringRule(i);
 	const run = i.firstRun !== null || i.runElsewhere === true;
 	return [
@@ -84,6 +79,24 @@ export function checklistItems(i: FirstRunInputs): FirstRunItem[] {
 			blocked: !run && !(issueDone && runner && rule && i.enabled)
 		}
 	];
+}
+
+/**
+ * The single step whose control should be offered now. CLI installation is
+ * supporting copy for adding a runner, and the run row has no setup control,
+ * so neither becomes the current action independently.
+ */
+export function checklistCurrentAction(items: FirstRunItem[]): FirstRunItemId | null {
+	// Brief the issue before exposing the switch that can dispatch it. The
+	// checklist's display order remains the PRD's seven-item order; this order
+	// is specifically the safe sequence of controls.
+	const actionOrder: FirstRunItemId[] = ['issue', 'runner', 'rule', 'content', 'enabled'];
+	return (
+		actionOrder.find((id) => {
+			const item = items.find((candidate) => candidate.id === id);
+			return item != null && !item.done && !item.blocked;
+		}) ?? null
+	);
 }
 
 /**

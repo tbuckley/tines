@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { AgentRun, RoutingRule, Runner } from '@tines/shared';
 import {
 	checklistItems,
+	checklistCurrentAction,
 	checklistProgress,
 	showRepoHint,
 	type FirstRunInputs,
@@ -79,9 +80,9 @@ describe('checklistItems', () => {
 		expect(done(inputs({ runners: [managed] }))).toEqual(['cli', 'runner']);
 	});
 
-	it('does not tick the runner item for a paused or offline runner, but the CLI item stands', () => {
-		expect(done(inputs({ runners: [runner({ status: 'paused' })] }))).toEqual(['cli']);
-		expect(done(inputs({ runners: [runner({ online: false })] }))).toEqual(['cli']);
+	it('ticks both setup items for any registered runner, regardless of its current status', () => {
+		expect(done(inputs({ runners: [runner({ status: 'paused' })] }))).toEqual(['cli', 'runner']);
+		expect(done(inputs({ runners: [runner({ online: false })] }))).toEqual(['cli', 'runner']);
 	});
 
 	it('does not tick the rule item when the rule targets a runner that is gone', () => {
@@ -138,6 +139,68 @@ describe('checklistItems', () => {
 		const byId = (i: FirstRunInputs) => checklistItems(i).find((it) => it.id === 'rule')!;
 		expect(byId(inputs()).blocked).toBe(true);
 		expect(byId(inputs({ runners: [runner({ online: false })] })).blocked).toBe(false);
+	});
+});
+
+describe('checklistCurrentAction', () => {
+	it('offers only the earliest incomplete actionable step', () => {
+		expect(checklistCurrentAction(checklistItems(inputs()))).toBe('issue');
+		expect(checklistCurrentAction(checklistItems(inputs({ hasAnyIssue: true })))).toBe('runner');
+		expect(
+			checklistCurrentAction(
+				checklistItems(inputs({ hasAnyIssue: true, runners: [runner({ online: false })] }))
+			)
+		).toBe('rule');
+	});
+
+	it('skips steps already completed out of order', () => {
+		const i = inputs({
+			hasAnyIssue: true,
+			runners: [runner()],
+			rules: [rule(['rnr_1'])],
+			enabled: true,
+			issue: {
+				project_name: 'demo',
+				number: 1,
+				title: 'First run',
+				has_description: false,
+				has_repo: false
+			}
+		});
+		expect(checklistCurrentAction(checklistItems(i))).toBe('content');
+	});
+
+	it('offers issue content before the switch that can dispatch it', () => {
+		const i = inputs({
+			hasAnyIssue: true,
+			runners: [runner()],
+			rules: [rule(['rnr_1'])],
+			issue: {
+				project_name: 'demo',
+				number: 1,
+				title: 'First run',
+				has_description: false,
+				has_repo: false
+			}
+		});
+		expect(checklistCurrentAction(checklistItems(i))).toBe('content');
+	});
+
+	it('returns no action once only the run is outstanding', () => {
+		const i = inputs({
+			hasAnyIssue: true,
+			runners: [runner()],
+			rules: [rule(['rnr_1'])],
+			enabled: true,
+			issue: {
+				project_name: 'demo',
+				number: 1,
+				title: 'First run',
+				has_description: true,
+				has_repo: true
+			}
+		});
+		expect(checklistCurrentAction(checklistItems(i))).toBeNull();
 	});
 });
 

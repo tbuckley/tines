@@ -33,6 +33,7 @@ let secondIssueNumber: number;
 
 const checklistOf = (page: Page) => page.getByRole('region', { name: 'First run checklist' });
 const item = (page: Page, id: string) => checklistOf(page).locator(`li[data-item="${id}"]`);
+const checklistControls = (page: Page) => checklistOf(page).locator('button, a[href]');
 const issuePath = (n: number) => `/issues/${encodeURIComponent(PROJECT_NAME)}/${n}`;
 
 test.beforeAll(async ({ request }) => {
@@ -68,6 +69,8 @@ test('the Agents tab opens on the checklist, not the off-state banner', async ({
 	// With no project at all, item 1 is the project step and links at the
 	// dialog `/projects?new=1` opens.
 	await expect(item(page, 'issue')).toHaveAttribute('data-done', 'false');
+	await expect(item(page, 'issue')).toHaveAttribute('data-current', 'true');
+	await expect(checklistControls(page)).toHaveCount(1);
 	await checklist.getByRole('link', { name: 'Create a project' }).click();
 	await expect(page).toHaveURL('/projects');
 	await expect(page.getByRole('dialog')).toBeVisible();
@@ -78,7 +81,10 @@ test('the managed-runner path reaches key validation without misreporting progre
 	request
 }) => {
 	await gotoHydrated(page, '/agents');
-	await item(page, 'runner').getByRole('button', { name: 'Add a runner' }).click();
+	// The checklist exposes only its current issue action at this point. The
+	// regular Runners panel remains available for this failed managed-path probe.
+	await expect(checklistControls(page)).toHaveCount(1);
+	await page.getByRole('heading', { name: 'Runners' }).locator('..').getByRole('button').click();
 
 	const dialog = page.getByRole('dialog', { name: 'Add runner' });
 	await dialog.getByRole('button', { name: 'Claude (managed)' }).click();
@@ -125,34 +131,27 @@ test('creating an issue ticks item 1 on both surfaces without a reload', async (
 	await expect(page).toHaveURL(/\/issues\/.+\/\d+$/);
 	issueNumber = Number(new URL(page.url()).pathname.split('/').pop());
 	await expect(item(page, 'issue')).toHaveAttribute('data-done', 'true');
+	await expect(item(page, 'runner')).toHaveAttribute('data-current', 'true');
+	await expect(checklistControls(page)).toHaveCount(1);
 
 	await gotoHydrated(page, '/agents');
 	await expect(item(page, 'issue')).toHaveAttribute('data-done', 'true');
+	await expect(item(page, 'runner')).toHaveAttribute('data-current', 'true');
+	await expect(checklistControls(page)).toHaveCount(1);
 });
 
-test('the issue card offers the content items, and neither one blocks', async ({ page }) => {
+test('the issue card shows later setup steps as text until they are current', async ({ page }) => {
 	await gotoHydrated(page, issuePath(issueNumber));
 	const checklist = checklistOf(page);
 	await expect(checklist).toBeVisible();
 
-	// The repo hint is optional and is offered while the project has none.
-	await checklist.getByRole('button', { name: 'Give the project a repo' }).click();
-	const repoDialog = page.getByRole('dialog');
-	await expect(repoDialog).toBeVisible();
-	await expect(repoDialog.locator('input[name="kind"][value="repo"]')).toBeChecked();
-	await page.keyboard.press('Escape');
-	await expect(repoDialog).toBeHidden();
-
-	// A description ticks item 6 — the only content item that does.
-	await checklist.getByRole('button', { name: 'Add a description' }).click();
-	const editor = page.getByRole('textbox', { name: /description/i });
-	await expect(editor).toBeFocused();
-	await editor.fill('Work out what the first run should do.');
-	await page.getByRole('button', { name: /^save/i }).click();
-	await expect(item(page, 'content')).toHaveAttribute('data-done', 'true');
-
-	// Optional means optional: the repo is still missing and progress counts on.
-	await expect(page.getByTestId('first-run-progress')).toContainText('of 7');
+	// The runner is the sole current action. Description, repo and automation
+	// guidance remain visible, but none competes with it as a control.
+	await expect(item(page, 'runner')).toHaveAttribute('data-current', 'true');
+	await expect(checklist.getByText('Optional: give the project a repo')).toBeVisible();
+	await expect(checklist.getByRole('button', { name: 'Add a description' })).toHaveCount(0);
+	await expect(checklist.getByRole('button', { name: 'Turn automation on' })).toHaveCount(0);
+	await expect(checklistControls(page)).toHaveCount(1);
 });
 
 test('at 390 px the fold is open on the checklist, with progress in its summary', async ({
@@ -167,18 +166,6 @@ test('at 390 px the fold is open on the checklist, with progress in its summary'
 	await page.setViewportSize({ width: 1280, height: 800 });
 });
 
-test('an archived issue cannot turn on account-wide automation', async ({ page, request }) => {
-	const api = apiClient(request, DANA.apiKey);
-	expect((await api.post(`/api/v1/projects/${projectId}/archive`)).ok()).toBe(true);
-
-	await gotoHydrated(page, issuePath(issueNumber));
-	const enable = checklistOf(page).getByRole('button', { name: 'Turn automation on' });
-	await expect(enable).toBeDisabled();
-	await expect(enable).toHaveAttribute('title', 'Project archived — unarchive to make changes');
-
-	expect((await api.post(`/api/v1/projects/${projectId}/unarchive`)).ok()).toBe(true);
-});
-
 test('a registering daemon ticks the runner and CLI items live', async ({ page }) => {
 	await gotoHydrated(page, issuePath(issueNumber));
 	await expect(item(page, 'runner')).toHaveAttribute('data-done', 'false');
@@ -190,6 +177,8 @@ test('a registering daemon ticks the runner and CLI items live', async ({ page }
 	await expect(item(page, 'runner')).toHaveAttribute('data-done', 'true', { timeout: 30_000 });
 	// Installing the CLI is proved by a runner having registered with it.
 	await expect(item(page, 'cli')).toHaveAttribute('data-done', 'true');
+	await expect(item(page, 'rule')).toHaveAttribute('data-current', 'true');
+	await expect(checklistControls(page)).toHaveCount(1);
 });
 
 test('routing, arming and the first run land live on both surfaces', async ({ page, request }) => {
@@ -204,6 +193,31 @@ test('routing, arming and the first run land live on both surfaces', async ({ pa
 	const rules = await body<ListResponse<RoutingRule>>(await api.get('/api/v1/routing-rules'));
 	expect(rules.items).toHaveLength(1);
 
+	// Content is the next control even though automation is displayed one row
+	// above it: briefing the issue comes before exposing the dispatch switch.
+	await expect(item(page, 'content')).toHaveAttribute('data-current', 'true');
+	await expect(checklistControls(page)).toHaveCount(1);
+	await checklistOf(page).getByRole('button', { name: 'Add a description' }).click();
+	const editor = page.getByRole('textbox', { name: /description/i });
+	await expect(editor).toBeFocused();
+	await editor.fill('Work out what the first run should do.');
+	await page.getByRole('button', { name: /^save/i }).click();
+	await expect(item(page, 'content')).toHaveAttribute('data-done', 'true');
+	await expect(item(page, 'enabled')).toHaveAttribute('data-current', 'true');
+	await expect(checklistControls(page)).toHaveCount(1);
+
+	// The sole current action still honors the issue card's read-only state.
+	expect((await api.post(`/api/v1/projects/${projectId}/archive`)).ok()).toBe(true);
+	await gotoHydrated(page, issuePath(issueNumber));
+	const archivedEnable = checklistOf(page).getByRole('button', { name: 'Turn automation on' });
+	await expect(archivedEnable).toBeDisabled();
+	await expect(archivedEnable).toHaveAttribute(
+		'title',
+		'Project archived — unarchive to make changes'
+	);
+	expect((await api.post(`/api/v1/projects/${projectId}/unarchive`)).ok()).toBe(true);
+	await gotoHydrated(page, issuePath(issueNumber));
+
 	// Mount the Agents checklist before the first run too. Once a run exists a
 	// fresh load correctly retires it, so this second live page is what proves
 	// the account-wide landing moment rather than accidentally relying on stale
@@ -211,6 +225,7 @@ test('routing, arming and the first run land live on both surfaces', async ({ pa
 	const agentsPage = await page.context().newPage();
 	await gotoHydrated(agentsPage, '/agents');
 	await expect(checklistOf(agentsPage)).toBeVisible();
+	await expect(checklistControls(agentsPage)).toHaveCount(1);
 	await page.bringToFront();
 
 	await checklistOf(page).getByRole('button', { name: 'Turn automation on' }).click();

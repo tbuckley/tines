@@ -2,13 +2,13 @@
 	import IconCheck from '@tabler/icons-svelte/icons/check';
 	import IconCircle from '@tabler/icons-svelte/icons/circle';
 	import IconCircleDashed from '@tabler/icons-svelte/icons/circle-dashed';
-	import IconCopy from '@tabler/icons-svelte/icons/copy';
 	import { scale, slide } from 'svelte/transition';
 	import RunRow from '$lib/components/RunRow.svelte';
 	import PendingButton from '$lib/components/PendingButton.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import {
 		checklistItems,
+		checklistCurrentAction,
 		checklistProgress,
 		showRepoHint,
 		type FirstRunInputs,
@@ -32,7 +32,6 @@
 		onroute,
 		onenable,
 		onadddescription,
-		onaddrepo,
 		onerror
 	}: {
 		inputs: FirstRunInputs;
@@ -47,8 +46,6 @@
 		onenable: () => Promise<void>;
 		/** Issue page only. */
 		onadddescription?: () => void;
-		/** Issue page only. */
-		onaddrepo?: () => void;
 		onerror: (e: unknown) => void;
 	} = $props();
 
@@ -57,6 +54,7 @@
 
 	const items = $derived(checklistItems(inputs));
 	const progress = $derived(checklistProgress(items));
+	const currentAction = $derived(checklistCurrentAction(items));
 	const byId = $derived(
 		Object.fromEntries(items.map((i) => [i.id, i])) as Record<
 			FirstRunItemId,
@@ -68,16 +66,6 @@
 	const soleRunner = $derived(inputs.runners.length === 1 ? inputs.runners[0] : null);
 
 	const INSTALL_COMMAND = 'npm install -g tines';
-	let commandCopied = $state(false);
-	async function copyInstall() {
-		try {
-			await navigator.clipboard.writeText(INSTALL_COMMAND);
-			commandCopied = true;
-			setTimeout(() => (commandCopied = false), 2000);
-		} catch {
-			// Clipboard unavailable (permissions): the text stays selectable.
-		}
-	}
 
 	let routing = $state(false);
 	async function route() {
@@ -139,6 +127,7 @@
 			class="flex flex-wrap items-start gap-x-3 gap-y-1"
 			data-item="issue"
 			data-done={byId.issue.done}
+			data-current={currentAction === 'issue'}
 		>
 			{@render mark('issue')}
 			<div class="min-w-0 flex-1">
@@ -147,7 +136,7 @@
 					<p class="text-muted-foreground text-xs">Agents work issues — one is enough to start.</p>
 				{/if}
 			</div>
-			{#if !byId.issue.done}
+			{#if currentAction === 'issue'}
 				{#if !inputs.hasAnyProject}
 					<Button size="sm" variant="outline" href="/projects?new=1">Create a project</Button>
 				{:else if oncreateissue}
@@ -169,17 +158,14 @@
 			class="flex flex-wrap items-start gap-x-3 gap-y-1"
 			data-item="cli"
 			data-done={byId.cli.done}
+			data-current="false"
 		>
 			{@render mark('cli')}
 			<div class="min-w-0 flex-1">
 				<p class:text-muted-foreground={byId.cli.done}>Install the CLI</p>
 				{#if !byId.cli.done}
-					<p class="text-muted-foreground mt-0.5 flex flex-wrap items-center gap-2 text-xs">
+					<p class="text-muted-foreground mt-0.5 text-xs">
 						<code class="bg-muted rounded px-1.5 py-0.5">{INSTALL_COMMAND}</code>
-						<Button size="sm" variant="ghost" class="h-6 px-1.5" onclick={copyInstall}>
-							<IconCopy size={12} />
-							{commandCopied ? 'Copied' : 'Copy'}
-						</Button>
 					</p>
 				{/if}
 			</div>
@@ -190,6 +176,7 @@
 			class="flex flex-wrap items-start gap-x-3 gap-y-1"
 			data-item="runner"
 			data-done={byId.runner.done}
+			data-current={currentAction === 'runner'}
 		>
 			{@render mark('runner')}
 			<div class="min-w-0 flex-1">
@@ -206,7 +193,7 @@
 					</p>
 				{/if}
 			</div>
-			{#if !byId.runner.done}
+			{#if currentAction === 'runner'}
 				{#if onaddrunner}
 					<Button size="sm" variant="outline" onclick={onaddrunner}>Add a runner</Button>
 				{:else}
@@ -220,6 +207,7 @@
 			class="flex flex-wrap items-start gap-x-3 gap-y-1"
 			data-item="rule"
 			data-done={byId.rule.done}
+			data-current={currentAction === 'rule'}
 		>
 			{@render mark('rule')}
 			<div class="min-w-0 flex-1">
@@ -232,7 +220,7 @@
 					</p>
 				{/if}
 			</div>
-			{#if !byId.rule.done && !byId.rule.blocked}
+			{#if currentAction === 'rule'}
 				{#if onroute && soleRunner}
 					<PendingButton
 						size="sm"
@@ -255,6 +243,7 @@
 			class="flex flex-wrap items-start gap-x-3 gap-y-1"
 			data-item="enabled"
 			data-done={byId.enabled.done}
+			data-current={currentAction === 'enabled'}
 		>
 			{@render mark('enabled')}
 			<div class="min-w-0 flex-1">
@@ -265,7 +254,7 @@
 					</p>
 				{/if}
 			</div>
-			{#if !byId.enabled.done}
+			{#if currentAction === 'enabled'}
 				<PendingButton
 					size="sm"
 					pending={enabling}
@@ -281,6 +270,7 @@
 			class="flex flex-wrap items-start gap-x-3 gap-y-1"
 			data-item="content"
 			data-done={byId.content.done}
+			data-current={currentAction === 'content'}
 		>
 			{@render mark('content')}
 			<div class="min-w-0 flex-1">
@@ -293,30 +283,27 @@
 					<p class="text-muted-foreground text-xs">
 						{#if inputs.surface === 'agents'}
 							A description is what the agent is briefed with — add one to
-							<a
-								href="/issues/{encodeURIComponent(inputs.issue.project_name)}/{inputs.issue.number}"
-								class="underline underline-offset-2">{inputs.issue.title}</a
-							>.
+							{#if currentAction === 'content'}
+								<a
+									href="/issues/{encodeURIComponent(inputs.issue.project_name)}/{inputs.issue
+										.number}"
+									class="underline underline-offset-2">{inputs.issue.title}</a
+								>
+							{:else}
+								{inputs.issue.title}
+							{/if}.
 						{:else}
 							A description is what the agent is briefed with.
 						{/if}
 					</p>
 				{/if}
-				{#if showRepoHint(inputs) && onaddrepo}
+				{#if showRepoHint(inputs)}
 					<p class="text-muted-foreground mt-1 text-xs">
-						Optional: a repo gives the agent code to work in.
-						<Button
-							size="sm"
-							variant="ghost"
-							class="h-6 px-1.5"
-							disabled={readOnly}
-							title={disabledReason}
-							onclick={onaddrepo}>Give the project a repo</Button
-						>
+						Optional: give the project a repo so the agent has code to work in.
 					</p>
 				{/if}
 			</div>
-			{#if !byId.content.done && !byId.content.blocked && onadddescription}
+			{#if currentAction === 'content' && onadddescription}
 				<Button
 					size="sm"
 					variant="outline"
@@ -332,6 +319,7 @@
 			class="flex flex-wrap items-start gap-x-3 gap-y-1"
 			data-item="run"
 			data-done={byId.run.done}
+			data-current="false"
 		>
 			{@render mark('run')}
 			<div class="min-w-0 flex-1">
