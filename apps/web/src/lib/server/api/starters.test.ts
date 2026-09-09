@@ -180,6 +180,59 @@ describe('applying a built-in to an empty database', () => {
 		expect(issue.description).toContain('website');
 	});
 
+	it('"code" installs the complete first pull-request loop', async () => {
+		const starter = STARTERS.code;
+		const workflow = starter.workflows[0];
+		expect(workflow).toMatchObject({
+			name: 'Code change',
+			initial_state: 'Backlog',
+			states: [
+				{ name: 'Backlog', category: 'backlog' },
+				{ name: 'In progress', category: 'active' },
+				{ name: 'Review', category: 'awaiting_human' },
+				{ name: 'Done', category: 'done' }
+			]
+		});
+		expect(workflow.transitions).toEqual([
+			{ name: 'Start', from: 'Backlog', to: 'In progress' },
+			{
+				name: 'Submit for review',
+				from: 'In progress',
+				to: 'Review',
+				requires: [
+					{ artifact: 'pr', type: 'pr', description: 'The pull request implementing this issue' }
+				]
+			},
+			{ name: 'No bug found', from: 'In progress', to: 'Review' },
+			{ name: 'Send back', from: 'Review', to: 'In progress' },
+			{ name: 'Approve', from: 'Review', to: 'Done' },
+			{ name: 'Abandon', from: 'In progress', to: 'Done' }
+		]);
+
+		const inProgress = workflow.states.find((state) => state.name === 'In progress')!;
+		expect(inProgress.prompt).toContain('Unanswered template lines mean “not specified”');
+		expect(inProgress.prompt).toContain('run the Test command');
+		expect(inProgress.prompt).toContain('tines issues artifacts attach <ref> pr --pr <url>');
+		expect(inProgress.prompt).toContain('tines issues move <ref> "Submit for review"');
+		const reviewPrompt = workflow.states.find((state) => state.name === 'Review')!.prompt;
+		expect(reviewPrompt).toContain('issue arrived through “No bug found”');
+		expect(reviewPrompt).toContain('choose “Send back”');
+		expect(starter.conventions_template?.split('\n').map((line) => line.split(':')[0])).toEqual([
+			'Test command',
+			'Branch rules',
+			'PR expectations',
+			'Where things live'
+		]);
+		expect(starter.first_issue).toMatchObject({
+			title: 'Find and fix a bug',
+			workflow: 'Code change',
+			state: 'In progress'
+		});
+		expect(starter.first_issue?.description).toContain('a failing test, a crash, a wrong message');
+		expect(starter.first_issue?.description).toContain('tines issues move <ref> "No bug found"');
+		expect(starter.first_issue?.description).toContain('If nothing qualifies, do not invent work');
+	});
+
 	it('an optional input the caller omits renders as nothing, not as its token', async () => {
 		const created = await createProject(t.db, t.env, actor, {
 			name: 'nobranch',
