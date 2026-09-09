@@ -479,10 +479,10 @@ export async function listAwaitingIssues(
 	filters: IssueListFilters,
 	page: Page & { direction?: 'after' | 'before' }
 ): Promise<{ items: IssueListItem[]; hasMore: boolean }> {
-	let q = applyCategoryFilters(
-		applyScopeFilters(issueQuery(db, userId), userId, filters),
-		{ ...filters, category: 'awaiting_human' }
-	);
+	let q = applyCategoryFilters(applyScopeFilters(issueQuery(db, userId), userId, filters), {
+		...filters,
+		category: 'awaiting_human'
+	});
 	const backwards = page.direction === 'before';
 	const waitingAt = sql<number>`COALESCE(issue.state_entered_at, issue.created_at)`;
 	if (page.cursor) {

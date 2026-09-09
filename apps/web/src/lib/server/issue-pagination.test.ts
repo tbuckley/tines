@@ -59,4 +59,23 @@ describe('issue pagination URLs', () => {
 			firstHref: '/issues'
 		});
 	});
+
+	it('can encode a list-specific ordering key', () => {
+		const first = readIssuePage(url('?category=awaiting'));
+		const waiting = [
+			{ ...item('a', 3), state_entered_at: 10 },
+			{ ...item('b', 2), state_entered_at: 20 }
+		];
+		const pagination = issuePagination(
+			url('?category=awaiting'),
+			first,
+			waiting,
+			true,
+			'all',
+			(issue) => issue.state_entered_at ?? issue.created_at
+		);
+		expect(new URL(pagination.nextHref!, url()).searchParams.get('after')).toBe(
+			encodeCursor(20, 'b')
+		);
+	});
 });

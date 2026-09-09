@@ -74,11 +74,35 @@ describe('listAwaitingIssues', () => {
 		const middle = addIssue(t, { id: 'iss_middle', state: REVIEW, stateEnteredAt: 200 });
 		addIssue(t, { id: 'iss_active' });
 
-		const page = await listAwaitingIssues(t.db, USER, {}, { limit: 2 });
+		const page = await listAwaitingIssues(t.db, USER, {}, { cursor: null, limit: 2 });
 		expect(page.items.map((issue) => issue.id)).toEqual([oldest, middle]);
 		expect(page.items.every((issue) => issue.state.category === 'awaiting_human')).toBe(true);
 		expect(page.hasMore).toBe(true);
 		expect(page.items.map((issue) => issue.id)).not.toContain(newest);
+
+		const after = await listAwaitingIssues(
+			t.db,
+			USER,
+			{},
+			{
+				limit: 2,
+				direction: 'after',
+				cursor: { createdAt: 200, id: middle }
+			}
+		);
+		expect(after.items.map((issue) => issue.id)).toEqual([newest]);
+
+		const before = await listAwaitingIssues(
+			t.db,
+			USER,
+			{},
+			{
+				limit: 2,
+				direction: 'before',
+				cursor: { createdAt: 200, id: middle }
+			}
+		);
+		expect(before.items.map((issue) => issue.id)).toEqual([oldest]);
 	});
 });
 
