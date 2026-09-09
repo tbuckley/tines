@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { WorkflowStateInput, WorkflowTransitionInput } from '@tines/shared';
 import { ApiFail } from './core';
-import { deadEndWarnings, resolveDef } from './workflows';
+import { deadEndWarnings, diffTransitions, resolveDef } from './workflows';
 
 const states: WorkflowStateInput[] = [
 	{ name: 'Open', category: 'active' },
@@ -214,6 +214,45 @@ describe('resolveDef', () => {
 			{ name: 'advance', from: 'Review', to: 'Closed' }
 		];
 		expect(() => resolveDef(states, ok, 'Open', [])).not.toThrow();
+	});
+});
+
+describe('diffTransitions', () => {
+	const submit = {
+		name: 'Submit for review',
+		from_state_id: 'progress',
+		to_state_id: 'review',
+		requires: [{ artifact: 'pr', type: 'pr' as const }]
+	};
+	const noBug = {
+		name: 'No bug found',
+		from_state_id: 'progress',
+		to_state_id: 'review'
+	};
+
+	it('distinguishes additions and removals among parallel actions', () => {
+		const abandon = { name: 'Abandon', from_state_id: 'progress', to_state_id: 'done' };
+		expect(diffTransitions([submit, noBug], [submit, noBug, abandon])).toMatchObject({
+			added: 1,
+			removed: 0
+		});
+		expect(diffTransitions([submit, noBug], [submit])).toMatchObject({ added: 0, removed: 1 });
+	});
+
+	it('detects a requirement change on either parallel action', () => {
+		const gatedNoBug = { ...noBug, requires: [{ artifact: 'explanation', type: 'text' as const }] };
+		expect(diffTransitions([submit, noBug], [submit, gatedNoBug]).requirementsChanged).toBe(true);
+		expect(diffTransitions([submit, noBug], [submit, noBug]).requirementsChanged).toBe(false);
+	});
+
+	it('retains an unambiguous action rename', () => {
+		const renamed = { ...noBug, name: 'Nothing suitable found' };
+		expect(diffTransitions([submit, noBug], [submit, renamed])).toEqual({
+			added: 0,
+			removed: 0,
+			renamed: [{ from: 'No bug found', to: 'Nothing suitable found' }],
+			requirementsChanged: false
+		});
 	});
 });
 

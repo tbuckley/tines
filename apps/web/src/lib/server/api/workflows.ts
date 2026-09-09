@@ -59,6 +59,59 @@ export interface ResolvedDef {
 	initialStateId: string;
 }
 
+type DiffTransition = {
+	name: string;
+	from_state_id: string;
+	to_state_id: string;
+	requires?: ArtifactRequirement[];
+};
+
+/**
+ * Summarize transition edits using the server's uniqueness rule: an action is
+ * identified by source state plus case-insensitive name. Parallel actions to
+ * one target therefore remain distinct. An otherwise unambiguous replacement
+ * on the same state pair is retained as a rename rather than add + remove.
+ */
+export function diffTransitions(
+	oldTransitions: DiffTransition[],
+	newTransitions: DiffTransition[]
+) {
+	const key = (t: DiffTransition) => `${t.from_state_id}\0${t.name.trim().toLowerCase()}`;
+	const pair = (t: DiffTransition) => `${t.from_state_id}\0${t.to_state_id}`;
+	const oldByKey = new Map(oldTransitions.map((t) => [key(t), t]));
+	const newByKey = new Map(newTransitions.map((t) => [key(t), t]));
+	const unmatchedOld = oldTransitions.filter((t) => !newByKey.has(key(t)));
+	const unmatchedNew = newTransitions.filter((t) => !oldByKey.has(key(t)));
+	const renamed: { from: string; to: string }[] = [];
+	const renamedOld = new Set<DiffTransition>();
+	const renamedNew = new Set<DiffTransition>();
+
+	for (const old of unmatchedOld) {
+		const oldAtPair = unmatchedOld.filter((t) => pair(t) === pair(old));
+		const newAtPair = unmatchedNew.filter((t) => pair(t) === pair(old));
+		if (oldAtPair.length === 1 && newAtPair.length === 1) {
+			renamed.push({ from: old.name, to: newAtPair[0].name });
+			renamedOld.add(old);
+			renamedNew.add(newAtPair[0]);
+		}
+	}
+
+	for (const [actionKey, current] of newByKey) {
+		const old = oldByKey.get(actionKey);
+		if (old && old.name !== current.name) renamed.push({ from: old.name, to: current.name });
+	}
+
+	return {
+		added: unmatchedNew.filter((t) => !renamedNew.has(t)).length,
+		removed: unmatchedOld.filter((t) => !renamedOld.has(t)).length,
+		renamed,
+		requirementsChanged: [...newByKey.entries()].some(([actionKey, t]) => {
+			const old = oldByKey.get(actionKey);
+			return old && JSON.stringify(old.requires ?? null) !== JSON.stringify(t.requires ?? null);
+		})
+	};
+}
+
 /**
  * Validates a transition's artifact requirements: slug slot names (unique
  * per transition), known types, content_type only alongside type file/text.
@@ -1037,21 +1090,7 @@ export async function updateWorkflow(
 			(s) => !s.isNew && currentById.get(s.id) && currentById.get(s.id)!.category !== s.category
 		)
 		.map((s) => ({ state: s.name, from: currentById.get(s.id)!.category, to: s.category }));
-	// Transitions are identified by their (from, to) pair; a kept pair whose
-	// action name changed counts as a rename.
-	const oldByPair = new Map(
-		current.transitions.map((t) => [`${t.from_state_id}→${t.to_state_id}`, t])
-	);
-	const newByPair = new Map(def.transitions.map((t) => [`${t.from_state_id}→${t.to_state_id}`, t]));
-	const transitionsAdded = [...newByPair.keys()].filter((p) => !oldByPair.has(p)).length;
-	const transitionsRemoved = [...oldByPair.keys()].filter((p) => !newByPair.has(p)).length;
-	const transitionsRenamed = [...newByPair.entries()]
-		.filter(([pair, t]) => oldByPair.has(pair) && oldByPair.get(pair)!.name !== t.name)
-		.map(([pair, t]) => ({ from: oldByPair.get(pair)!.name, to: t.name }));
-	const requirementsChanged = [...newByPair.entries()].some(([pair, t]) => {
-		const old = oldByPair.get(pair);
-		return old && JSON.stringify(old.requires ?? null) !== JSON.stringify(t.requires ?? null);
-	});
+	const transitionDiff = diffTransitions(current.transitions, def.transitions);
 
 	const payload: Record<string, unknown> = { workflow_id: id, name };
 	if (name !== current.name) payload.renamed = { from: current.name, to: name };
@@ -1060,10 +1099,10 @@ export async function updateWorkflow(
 	if (statesRemoved.length) payload.states_removed = statesRemoved;
 	if (statesRenamed.length) payload.states_renamed = statesRenamed;
 	if (categoriesChanged.length) payload.categories_changed = categoriesChanged;
-	if (transitionsAdded) payload.transitions_added = transitionsAdded;
-	if (transitionsRemoved) payload.transitions_removed = transitionsRemoved;
-	if (transitionsRenamed.length) payload.transitions_renamed = transitionsRenamed;
-	if (requirementsChanged) payload.transition_requirements_changed = true;
+	if (transitionDiff.added) payload.transitions_added = transitionDiff.added;
+	if (transitionDiff.removed) payload.transitions_removed = transitionDiff.removed;
+	if (transitionDiff.renamed.length) payload.transitions_renamed = transitionDiff.renamed;
+	if (transitionDiff.requirementsChanged) payload.transition_requirements_changed = true;
 	const inheritanceChanged = [
 		...inh.changes,
 		...clearedInheritance.map((c) => ({

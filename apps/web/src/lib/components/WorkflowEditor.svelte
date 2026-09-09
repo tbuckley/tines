@@ -130,9 +130,7 @@
 	}
 
 	function addTransition(fromKey: string) {
-		const target = states.find(
-			(s) => s.key !== fromKey && !transitions.some((t) => t.from === fromKey && t.to === s.key)
-		);
+		const target = states.find((s) => s.key !== fromKey);
 		if (!target) return;
 		transitions = [
 			...transitions,
@@ -193,10 +191,6 @@
 		const actionKeys = transitions.map((t) => `${t.from}:${t.name.trim().toLowerCase()}`);
 		if (new Set(actionKeys).size !== actionKeys.length) {
 			list.push('Action names must be unique within a state.');
-		}
-		const pairs = transitions.map((t) => `${t.from}→${t.to}`);
-		if (new Set(pairs).size !== pairs.length) {
-			list.push('Only one action can lead from a state to the same target.');
 		}
 		for (const t of transitions) {
 			const slots = t.requires.map((r) => r.artifact.trim());
@@ -466,11 +460,7 @@
 								size="sm"
 								variant="ghost"
 								class="text-muted-foreground h-7 px-2 text-xs"
-								disabled={states.filter(
-									(s) =>
-										s.key !== row.key &&
-										!transitions.some((t) => t.from === row.key && t.to === s.key)
-								).length === 0}
+								disabled={states.every((s) => s.key === row.key)}
 								onclick={() => addTransition(row.key)}
 							>
 								<IconPlus size={12} /> Add action
