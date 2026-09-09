@@ -37,6 +37,7 @@ import { getRunLogStore, runLogRawKey } from '$lib/server/run-log-store';
 import { spillEvicted } from '$lib/server/supervisor/run-log';
 import { appendLogTail } from '$lib/server/supervisor/logic';
 import { buildSupervisorPreamble } from '$lib/server/supervisor/preamble';
+import { effectiveAutomationEnabled } from '$lib/server/supervisor/settings';
 import { listArtifacts } from './artifacts';
 import { listLabels } from './labels';
 import { buildLaunchPrompt, effectiveContextForIssue } from './context';
@@ -298,7 +299,7 @@ async function deliverAssignedRun(
 		eligibility.state_id === run.state_id_at_start &&
 		eligibility.category === 'active' &&
 		eligibility.needs_attention === 0 &&
-		settings?.enabled === 1;
+		effectiveAutomationEnabled(settings?.enabled);
 	if (!eligible) {
 		const endable = await loadEndableRun(db, run.user_id, run.id);
 		if (endable && endable.status === 'assigned') {

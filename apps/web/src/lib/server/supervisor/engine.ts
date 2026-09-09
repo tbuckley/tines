@@ -34,6 +34,7 @@ import {
 	type MatchableRule
 } from './logic';
 import { loadSealableRun, sealRunLog, spillEvicted, sweepRunLogs } from './run-log';
+import { effectiveAutomationEnabled } from './settings';
 
 const ACTIVE = [...ACTIVE_RUN_STATUSES];
 
@@ -98,15 +99,24 @@ export async function loadDispatchSettings(
 		.select(['enabled', 'quota', 'attempt_limit'])
 		.where('user_id', '=', userId)
 		.executeTakeFirst();
-	// No row = the defaults, kill switch off (arming automation is explicit).
-	if (!row) return { enabled: false, quota: DEFAULT_QUOTA, attemptLimit: 3 };
+	if (!row) {
+		return {
+			enabled: effectiveAutomationEnabled(undefined),
+			quota: DEFAULT_QUOTA,
+			attemptLimit: 3
+		};
+	}
 	let quota = DEFAULT_QUOTA;
 	try {
 		quota = JSON.parse(row.quota) as QuotaPolicy;
 	} catch {
 		// Unreadable policy column falls back to the default.
 	}
-	return { enabled: row.enabled === 1, quota, attemptLimit: row.attempt_limit };
+	return {
+		enabled: effectiveAutomationEnabled(row.enabled),
+		quota,
+		attemptLimit: row.attempt_limit
+	};
 }
 
 export interface CandidateIssue {
@@ -1518,13 +1528,22 @@ export async function sweepSupervisor(
 		}
 	}
 
-	// The dispatch pass itself — for every user with automation armed. This
+	// The dispatch pass itself — for every issue owner whose automation is
+	// effectively enabled. Missing settings inherit enabled; saved stops do not.
 	// is also what retries launch-failure backoff: an expired backoff_until
 	// simply stops excluding the runner.
 	const enabled = await db
-		.selectFrom('supervisor_settings')
-		.select('user_id')
-		.where('enabled', '=', 1)
+		.selectFrom('issue')
+		.innerJoin('project', 'project.id', 'issue.project_id')
+		.leftJoin('supervisor_settings', 'supervisor_settings.user_id', 'project.user_id')
+		.select('project.user_id as user_id')
+		.where((eb) =>
+			eb.or([
+				eb('supervisor_settings.enabled', 'is', null),
+				eb('supervisor_settings.enabled', '=', 1)
+			])
+		)
+		.distinct()
 		.execute();
 	for (const row of enabled) {
 		try {

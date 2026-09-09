@@ -1,13 +1,13 @@
 /**
  * The first-run checklist, derived rather than stored. While an account has
  * never had an agent run, the Agents tab and an issue's agent-activity card
- * both show the same seven items; each ticks from data the surface already
+ * both show the same six items; each ticks from data the surface already
  * loads, so the list is order-agnostic and self-healing. Once a run exists the
  * checklist retires account-wide — there is no dismissal and nothing persisted.
  */
 import type { AgentRun, RoutingRule, Runner } from '@tines/shared';
 
-export type FirstRunItemId = 'issue' | 'cli' | 'runner' | 'rule' | 'enabled' | 'content' | 'run';
+export type FirstRunItemId = 'issue' | 'cli' | 'runner' | 'rule' | 'enabled' | 'run';
 
 /** The issue the "give it something to work with" item is about. */
 export interface FirstRunIssue {
@@ -72,7 +72,6 @@ export function checklistItems(i: FirstRunInputs): FirstRunItem[] {
 		{ id: 'runner', done: runner, blocked: false },
 		{ id: 'rule', done: rule, blocked: !cli },
 		{ id: 'enabled', done: i.enabled, blocked: false },
-		{ id: 'content', done: i.issue !== null && i.issue.has_description, blocked: i.issue === null },
 		{
 			id: 'run',
 			done: run,
@@ -87,10 +86,9 @@ export function checklistItems(i: FirstRunInputs): FirstRunItem[] {
  * so neither becomes the current action independently.
  */
 export function checklistCurrentAction(items: FirstRunItem[]): FirstRunItemId | null {
-	// Brief the issue before exposing the switch that can dispatch it. The
-	// checklist's display order remains the PRD's seven-item order; this order
-	// is specifically the safe sequence of controls.
-	const actionOrder: FirstRunItemId[] = ['issue', 'runner', 'rule', 'content', 'enabled'];
+	// A saved stop always exposes Resume first; enabled accounts then follow
+	// the ordinary issue → runner → explicit-routing setup path.
+	const actionOrder: FirstRunItemId[] = ['enabled', 'issue', 'runner', 'rule'];
 	return (
 		actionOrder.find((id) => {
 			const item = items.find((candidate) => candidate.id === id);
@@ -100,8 +98,8 @@ export function checklistCurrentAction(items: FirstRunItem[]): FirstRunItemId | 
 }
 
 /**
- * Progress for the fold summary ("first run · 3 of 7"). The repo hint is a
- * sub-item of `content`, never a row of its own, so it is not counted.
+ * Progress for the fold summary ("first run · 3 of 6"). Optional content
+ * guidance is deliberately outside this count.
  */
 export function checklistProgress(items: FirstRunItem[]): { done: number; total: number } {
 	return { done: items.filter((item) => item.done).length, total: items.length };

@@ -2,6 +2,7 @@ import { json } from '@sveltejs/kit';
 import type { RegisterRunnerRequest } from '@tines/shared';
 import { api, apiContext, readJson } from '$lib/server/api/core';
 import { registerRunner } from '$lib/server/api/runners';
+import { queueDispatchPass } from '$lib/server/supervisor/engine';
 import type { RequestHandler } from './$types';
 
 /**
@@ -12,5 +13,7 @@ import type { RequestHandler } from './$types';
 export const POST: RequestHandler = api(async (event) => {
 	const { db, env, actor } = await apiContext(event);
 	const body = await readJson<RegisterRunnerRequest>(event);
-	return json(await registerRunner(db, env, actor, body), { status: 201 });
+	const runner = await registerRunner(db, env, actor, body);
+	queueDispatchPass(event.platform, actor.userId);
+	return json(runner, { status: 201 });
 });

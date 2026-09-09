@@ -924,7 +924,6 @@
 			disabledReason={reason}
 			onroute={routeToSoleRunner}
 			onenable={enableAutomation}
-			onadddescription={startDescription}
 			onerror={showError}
 		/>
 	{/if}

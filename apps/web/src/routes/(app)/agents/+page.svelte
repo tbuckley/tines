@@ -1034,7 +1034,9 @@
 			<IconAlertTriangle size={16} stroke={1.75} />
 			Automation is off — nothing dispatches until you turn it on.
 		</span>
-		<Button size="sm" onclick={() => setEnabled(true)} disabled={togglingEnabled}>Turn on</Button>
+		<Button size="sm" onclick={() => setEnabled(true)} disabled={togglingEnabled}
+			>Resume automation</Button
+		>
 	</div>
 {/if}
 
