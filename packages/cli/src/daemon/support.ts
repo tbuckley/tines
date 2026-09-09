@@ -348,9 +348,9 @@ export class RunTable<T extends ManagedRun> {
 	 * (shutdown, restart) rather than the work failing: the supervisor then
 	 * spares the issue a strike. Everything a run can do wrong to itself —
 	 * a non-zero harness exit, a workspace that would not set up — must not
-	 * set it. The one exception is `{ judgment: 'rate_limited' }`: a non-zero
-	 * exit whose cause was the provider refusing on a usage limit is the
-	 * runner's condition, not the work's.
+	 * set it. Exceptions are provider-side failures: usage exhaustion uses
+	 * `{ judgment: 'rate_limited' }` with its reset time, while transient 5xx
+	 * and transport outages use `interrupted` and the normal short backoff.
 	 */
 	async finishAndCleanup(
 		run: T,

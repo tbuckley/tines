@@ -1369,9 +1369,17 @@ export interface ArtifactRequirementCheck extends ArtifactRequirement {
 	/**
 	 * The runnable command that clears this requirement (`requirementFix`) —
 	 * present on every entry, satisfied or not, so the launch prompt, the
-	 * issue read and the 422 all quote the same string.
+	 * issue read and the 422 all quote the same string. Always exactly one
+	 * command: copy-pastable whole.
 	 */
 	fix: string;
+	/**
+	 * A second command that also clears it, when one exists — today only a
+	 * `stale` requirement's `reaffirm`, whose alternative to re-attaching is
+	 * "the current content still stands". Additive: every consumer that reads
+	 * `fix` alone stays correct (Tines/274).
+	 */
+	fix_alternative?: string;
 }
 
 /** A pull-request reference parsed from user input. */
@@ -1875,6 +1883,7 @@ export interface FinishRunRequest {
 
 /** One entry of a rule's ordered preference list, as stored/sent. */
 export interface RoutingTarget {
+	/** `'*'` is reserved for a singleton scoped tier-only rule. */
 	runner_id: string;
 	/** Null/absent = the runner's default tier. */
 	tier?: ModelTier | null;
@@ -1884,7 +1893,8 @@ export interface RoutingTarget {
 export interface RoutingRuleTarget {
 	runner_id: string;
 	runner_name: string;
-	runner_status: RunnerStatus;
+	/** Null for the `'*'` inherited-runner sentinel. */
+	runner_status: RunnerStatus | null;
 	tier: ModelTier | null;
 }
 
@@ -2163,6 +2173,10 @@ export interface DispatchExplainer {
 	pin: { runner_id: string; runner_name: string | null; tier: ModelTier | null } | null;
 	/** The winning rule; null when pinned, nothing matches, or two rules tie. */
 	matched_rule: { rule_id: string; scope_label: string } | null;
+	/** Concrete runner source when `matched_rule` is a tier-only rule. */
+	runner_rule?: { rule_id: string; scope_label: string } | null;
+	/** Tier applied to all inherited runner targets. */
+	tier_override?: ModelTier | null;
 	/**
 	 * The rules that tied, when two label rules match an issue at equal
 	 * specificity: the issue does not dispatch until one is made more

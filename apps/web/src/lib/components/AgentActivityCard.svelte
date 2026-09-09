@@ -118,6 +118,15 @@
 						>
 					</p>
 				{/if}
+				{#if dispatch.tier_override}
+					<p class="text-muted-foreground">
+						Tier override: <span class="text-foreground font-medium">{dispatch.tier_override}</span>
+						{#if dispatch.runner_rule}
+							· runners from <span class="text-foreground font-medium"
+								>{dispatch.runner_rule.scope_label}</span
+							>{/if}
+					</p>
+				{/if}
 				{#if dispatch.targets.length > 0}
 					<div>
 						<p class="text-muted-foreground mb-1">Targets, in preference order:</p>

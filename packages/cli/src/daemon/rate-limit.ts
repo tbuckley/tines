@@ -1,13 +1,13 @@
 /**
- * Recognises "the Claude account behind this runner is out of usage" from what
- * the harness actually emits, and works out when it comes back (Tines/273).
+ * Recognises provider-side failures from what the Claude harness actually
+ * emits: usage exhaustion (Tines/273) and transient outages (Tines/277).
  *
  * Why this exists: a usage limit kills every run the daemon launches, within a
  * second each, and the supervisor's only reading of a non-zero harness exit is
  * "the work failed" — so three strikes park the issue, and the fleet keeps
  * feeding it more. The runner is the thing that is unavailable, not the work.
  *
- * Two signals, because the incident has two shapes:
+ * Usage exhaustion has two signals because the incident has two shapes:
  *
  * - **Mid-session**: the stream carries a `rate_limit_event` whose
  *   `rate_limit_info.status` is `rejected`, with an exact `resetsAt`. This is
@@ -16,6 +16,10 @@
  *   on *stderr* and exits 1 with an empty stdout — there is no stream to read.
  *   All we have is prose, so we match its own message prefixes and parse the
  *   `· resets 3pm (America/New_York)` suffix best-effort.
+ *
+ * Transient outages are narrower: a 5xx `API Error` or a known transport-reset
+ * phrase in an error `result` or stderr. They have no reset time, so the daemon
+ * reports them as interrupted and lets the supervisor's short backoff apply.
  *
  * Everything here is pure and only ever consulted for a harness that exited
  * non-zero, and only over stderr and the structured stream — never over
@@ -31,6 +35,12 @@ export interface RateLimitSignal {
 	detail: string;
 	/** `five_hour` | `seven_day` | … when the stream named the window. */
 	limit: string | null;
+}
+
+export interface ProviderErrorSignal {
+	source: 'stream' | 'stderr';
+	/** The provider/transport error, for the finish report and daemon log. */
+	detail: string;
 }
 
 /**
@@ -56,6 +66,34 @@ export const USAGE_LIMIT_PREFIXES = [
 const USAGE_LIMIT_PATTERN = /^Fable(?: [^·\n]{1,40})? requires usage credits\./;
 
 const ANSI = /\x1b\[[0-9;]*m/g;
+
+/**
+ * Transient failures emitted by Claude Code itself. Keep this deliberately
+ * narrow: a false positive spares a real agent failure from a strike.
+ */
+const PROVIDER_ERROR =
+	/(?:\bAPI Error:\s*5\d{2}\b|\bECONNRESET\b|\bconnection reset(?: by peer)?\b|\bsocket hang up\b)/i;
+
+function providerErrorDetail(value: unknown): string | null {
+	if (typeof value !== 'string') return null;
+	const clean = value.replace(ANSI, '').trim();
+	return clean && PROVIDER_ERROR.test(clean) ? clean : null;
+}
+
+/** A stream `result` error caused by a transient provider/transport outage. */
+export function providerErrorFromStreamEvent(event: unknown): ProviderErrorSignal | null {
+	if (typeof event !== 'object' || event === null) return null;
+	const ev = event as { type?: unknown; is_error?: unknown; result?: unknown };
+	if (ev.type !== 'result' || ev.is_error !== true) return null;
+	const detail = providerErrorDetail(ev.result);
+	return detail ? { source: 'stream', detail } : null;
+}
+
+/** One stderr line caused by a transient provider/transport outage. */
+export function providerErrorFromStderrLine(line: string): ProviderErrorSignal | null {
+	const detail = providerErrorDetail(line);
+	return detail ? { source: 'stderr', detail } : null;
+}
 
 /** A `resetsAt` may be epoch seconds (what the harness sends) or already ms. */
 function toEpochMs(value: number): number {
@@ -245,12 +283,16 @@ export function parseResetTime(text: string, now: number): number | null {
 export class RateLimitDetector {
 	private stream: RateLimitSignal | null = null;
 	private stderr: RateLimitSignal | null = null;
+	private providerStream: ProviderErrorSignal | null = null;
+	private providerStderr: ProviderErrorSignal | null = null;
 	private pending = '';
 
 	noteStreamEvent(event: unknown): void {
 		const signal = rateLimitFromStreamEvent(event);
 		// Last one wins: a later rejection carries the later reset.
 		if (signal) this.stream = signal;
+		const provider = providerErrorFromStreamEvent(event);
+		if (provider) this.providerStream = provider;
 	}
 
 	noteStderr(chunk: string, now: number = Date.now()): void {
@@ -276,8 +318,15 @@ export class RateLimitDetector {
 		return this.stream ?? this.stderr;
 	}
 
+	/** A structured provider error when present; stderr as a fallback. */
+	providerError(): ProviderErrorSignal | null {
+		return this.providerStream ?? this.providerStderr;
+	}
+
 	private line(raw: string, now: number): void {
 		const signal = rateLimitFromStderrLine(raw, now);
 		if (signal) this.stderr = signal;
+		const provider = providerErrorFromStderrLine(raw);
+		if (provider) this.providerStderr = provider;
 	}
 }

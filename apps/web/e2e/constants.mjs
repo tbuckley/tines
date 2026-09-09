@@ -125,3 +125,17 @@ export const BOB = {
 	apiKeyName: 'bob-key',
 	sessionToken: 'e2e-session-bob'
 };
+
+/** Isolated 205-row population for issue-list pagination. */
+export const PAGINATION = {
+	user: {
+		id: 'usr_e2e_pagination',
+		name: 'Pagination E2E',
+		email: 'pagination@e2e.test',
+		apiKey: 'tines_e2epagination000000000000000000000000000000',
+		apiKeyName: 'pagination-key',
+		sessionToken: 'e2e-session-pagination'
+	},
+	projectId: 'prj_e2e_pagination',
+	projectName: 'pagination-seed'
+};

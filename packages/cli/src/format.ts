@@ -155,15 +155,19 @@ function requirementStatus(r: ArtifactRequirementCheck): string {
 }
 
 /**
- * The two lines every requirement is rendered as — what it wants plus the
- * runnable fix. `issues show` and the `transition_requirements_unmet` 422 both
- * print these, so the pre-flight view and the failure cannot drift.
+ * The lines every requirement is rendered as — what it wants, the runnable
+ * fix, and (a `stale` slot only) the reaffirm that also clears it. `issues
+ * show` and the `transition_requirements_unmet` 422 both print these, so the
+ * pre-flight view and the failure cannot drift.
  */
 export function requirementLines(r: ArtifactRequirementCheck): string[] {
 	const spec = [r.type, r.content_type].filter(Boolean).join(', ');
 	return [
 		`requires artifact "${r.artifact}"${spec ? ` (${spec})` : ''}: ${requirementStatus(r)}${r.description ? ` — ${r.description}` : ''}`,
-		...(r.fix ? [`  fix: ${r.fix}`] : [])
+		...(r.fix ? [`  fix: ${r.fix}`] : []),
+		// A second line, never a second command on the first: each line is
+		// copy-pastable on its own (Tines/255).
+		...(r.fix_alternative ? [`  or: ${r.fix_alternative}`] : [])
 	];
 }
 
@@ -182,6 +186,9 @@ export function runnerStatusLabel(runner: Runner): string {
 
 export function ruleTargetsLabel(rule: RoutingRule): string {
 	if (rule.targets.length === 0) return '(no targets)';
+	if (rule.targets.length === 1 && rule.targets[0]?.runner_id === '*') {
+		return `*:${rule.targets[0].tier} (inherited runners)`;
+	}
 	return rule.targets
 		.map(
 			(t) =>

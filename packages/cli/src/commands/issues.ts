@@ -210,6 +210,8 @@ function printExplainer(issue: IssueDetail, ex: DispatchExplainer): void {
 		);
 	} else if (ex.matched_rule) {
 		console.log(`\nmatched rule: ${ex.matched_rule.scope_label}`);
+		if (ex.tier_override) console.log(`tier override: ${ex.tier_override}`);
+		if (ex.runner_rule) console.log(`runner source: ${ex.runner_rule.scope_label}`);
 	}
 	if (ex.targets.length > 0) {
 		console.log('targets (preference order):');
@@ -842,7 +844,7 @@ export function register(program: Command): void {
 		artifactsCmd
 			.command('attach <ref> <name> [source]')
 			.description(
-				'Attach content to a named artifact slot (creates it, or appends the next version)'
+				'Attach content to a named artifact slot — <source> is typed by the gate, flags override (creates it, or appends a version)'
 			)
 			.option('-f, --file <path>', 'upload a file (MIME sniffed from the extension)')
 			.option(

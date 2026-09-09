@@ -11,7 +11,7 @@ import { createHash } from 'node:crypto';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ALICE, BOB, CAROL, RUNROW, RUNROW_FAILED, SCHED } from './constants.mjs';
+import { ALICE, BOB, CAROL, PAGINATION, RUNROW, RUNROW_FAILED, SCHED } from './constants.mjs';
 
 const sha256Hex = (s) => createHash('sha256').update(s).digest('hex');
 
@@ -20,7 +20,7 @@ const nowMs = Date.now();
 const expires = '2030-01-01T00:00:00.000Z';
 
 const statements = [];
-for (const user of [ALICE, BOB, CAROL]) {
+for (const user of [ALICE, BOB, CAROL, PAGINATION.user]) {
 	statements.push(
 		`INSERT INTO user (id, name, email, emailVerified, createdAt, updatedAt)
 		 VALUES ('${user.id}', '${user.name}', '${user.email}', 1, '${nowIso}', '${nowIso}');`,
@@ -28,6 +28,21 @@ for (const user of [ALICE, BOB, CAROL]) {
 		 VALUES ('ses_${user.id}', '${expires}', '${user.sessionToken}', '${nowIso}', '${nowIso}', '${user.id}');`,
 		`INSERT INTO api_key (id, user_id, name, key_hash, key_prefix, created_at)
 		 VALUES ('key_${user.id}', '${user.id}', '${user.apiKeyName}', '${sha256Hex(user.apiKey)}', '${user.apiKey.slice(0, 14)}', ${nowMs});`
+	);
+}
+
+// A separate account keeps these 205 rows from slowing or changing every
+// existing Alice/Bob list assertion. Descending timestamps make the visible
+// boundaries explicit: 205..106, then 105..6, then 5..1.
+statements.push(
+	`INSERT INTO project (id, user_id, name, description, created_at, updated_at)
+	 VALUES ('${PAGINATION.projectId}', '${PAGINATION.user.id}', '${PAGINATION.projectName}', '', ${nowMs}, ${nowMs});`
+);
+for (let number = 1; number <= 205; number += 1) {
+	statements.push(
+		`INSERT INTO issue (id, project_id, number, title, description, workflow_id, state_id, created_at, updated_at)
+		 VALUES ('iss_e2e_page_${number}', '${PAGINATION.projectId}', ${number}, 'Page issue ${number}',
+		 'large body omitted from list ${number}', 'wf_standard', 'wfs_std_open', ${number}, ${number});`
 	);
 }
 
