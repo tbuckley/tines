@@ -238,13 +238,13 @@ test('a missing historical screenshot path offers recovery instead of a blank vi
 }) => {
 	await page.route(`**/api/v1/issues/${HANDOFF.issueId}/artifacts/screenshots`, async (route) => {
 		const response = await route.fetch();
-		const envelope = (await response.json()) as {
-			data: { versions: { version: number; files: { path: string }[] | null }[] };
+		const detail = (await response.json()) as {
+			versions: { version: number; files: { path: string }[] | null }[];
 		};
-		const historical = envelope.data.versions.find((version) => version.version === 2);
+		const historical = detail.versions.find((version) => version.version === 2);
 		if (historical?.files)
 			historical.files = historical.files.filter((file) => file.path !== 'dashboard-mobile.png');
-		await route.fulfill({ response, json: envelope });
+		await route.fulfill({ response, json: detail });
 	});
 	await gotoHydrated(page, richUrl);
 	await page

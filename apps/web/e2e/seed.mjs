@@ -114,7 +114,7 @@ statements.push(
 	 'wf_e2e_handoff', 'wfs_e2e_handoff_impl', ${handoffBase}, ${nowMs}, ${nowMs});`,
 	`INSERT INTO issue (id, project_id, number, title, description, workflow_id, state_id, created_at, updated_at, state_entered_at)
 	 VALUES ('iss_e2e_handoff_oldest', '${HANDOFF.projectId}', 3, 'Oldest awaiting', '',
-	 'wf_e2e_handoff', 'wfs_e2e_handoff_human', ${handoffBase}, ${nowMs}, ${nowMs - 3 * handoffHour});`,
+	 'wf_e2e_handoff', 'wfs_e2e_handoff_human', ${handoffBase}, ${nowMs}, ${nowMs - 6 * handoffHour});`,
 	`INSERT INTO issue (id, project_id, number, title, description, workflow_id, state_id, created_at, updated_at, state_entered_at)
 	 VALUES ('iss_e2e_handoff_newest', '${HANDOFF.projectId}', 4, 'Newest awaiting', '',
 	 'wf_e2e_handoff', 'wfs_e2e_handoff_human', ${handoffBase}, ${nowMs}, ${nowMs - 10 * 60 * 1000});`,
