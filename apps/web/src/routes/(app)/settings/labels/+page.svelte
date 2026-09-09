@@ -66,6 +66,10 @@
 			}
 		}
 	}
+
+	function clearSaveStatus(labelId: string) {
+		delete saveStatuses[labelId];
+	}
 </script>
 
 <svelte:head><title>Labels · Tines</title></svelte:head>
@@ -106,6 +110,7 @@
 					value={label.name}
 					class="h-9 w-48"
 					aria-label="Rename {label.name}"
+					oninput={() => clearSaveStatus(label.id)}
 					onchange={(e) => {
 						const name = e.currentTarget.value.trim();
 						if (name && name !== label.name) saveLabel(label.id, { name });
@@ -126,6 +131,7 @@
 					placeholder="Description"
 					class="h-9 min-w-40 flex-1"
 					aria-label="Description for {label.name}"
+					oninput={() => clearSaveStatus(label.id)}
 					onchange={(e) => {
 						const description = e.currentTarget.value;
 						if (description !== label.description) saveLabel(label.id, { description });

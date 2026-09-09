@@ -12,7 +12,7 @@ import type {
 	TinesEvent,
 	WorkflowResponse
 } from '@tines/shared';
-import { expect, test } from '@playwright/test';
+import { expect, test, type Route } from '@playwright/test';
 import { ALICE, RUNROW } from './constants.mjs';
 import { apiClient, body, errorBody, gotoHydrated, resetFocus, runId, signIn } from './helpers';
 
@@ -181,13 +181,67 @@ test.describe.serial('issue labels UI', () => {
 			})
 		);
 		const renamedRow = page.locator('li', { has: page.getByLabel(`Rename ${rename}`) });
-		await renamedRow.getByLabel(`Description for ${rename}`).fill('will not save');
-		await renamedRow.getByLabel(`Description for ${rename}`).blur();
+		const description = renamedRow.getByLabel(`Description for ${rename}`);
+		await description.fill('will not save');
+		// The prior acknowledgement must not describe a value that has only been
+		// typed locally, including an invalid value that will never be requested.
+		await expect(renamedRow.getByText('Saved', { exact: true })).toHaveCount(0);
+		await description.blur();
 		await expect(renamedRow.getByText('Not saved', { exact: false })).toHaveAttribute(
 			'title',
 			'Try again later'
 		);
 		await expect(renamedRow.getByText('Saved', { exact: true })).toHaveCount(0);
+
+		// Completion order, rather than request order, must not let a stale
+		// response replace the newest request's acknowledgement.
+		await page.unroute(updateEndpoint);
+		const pending = new Map<string, Route>();
+		await page.route(updateEndpoint, (route) => {
+			const value = route.request().postDataJSON().description as string;
+			pending.set(value, route);
+		});
+		const startDescriptionSave = async (value: string) => {
+			await description.fill(value);
+			await description.blur();
+			await expect.poll(() => pending.has(value)).toBe(true);
+		};
+		const finish = async (value: string, status: 200 | 503) => {
+			const response = page.waitForResponse(
+				(candidate) =>
+					candidate.url().endsWith(`/api/v1/labels/${bug.id}`) &&
+					candidate.request().postDataJSON().description === value
+			);
+			await pending.get(value)!.fulfill(
+				status === 200
+					? { status, json: { ...bug, name: rename, description: value } }
+					: {
+							status,
+							contentType: 'application/json',
+							body: JSON.stringify({
+								error: { code: 'unavailable', message: 'Try again later' }
+							})
+						}
+			);
+			await response;
+			await page.waitForLoadState('networkidle');
+		};
+
+		await startDescriptionSave('older success');
+		await startDescriptionSave('newer failure');
+		await finish('newer failure', 503);
+		await expect(renamedRow.getByText('Not saved', { exact: false })).toBeVisible();
+		await finish('older success', 200);
+		await expect(renamedRow.getByText('Not saved', { exact: false })).toBeVisible();
+		await expect(renamedRow.getByText('Saved', { exact: true })).toHaveCount(0);
+
+		await startDescriptionSave('older failure');
+		await startDescriptionSave('newer success');
+		await finish('newer success', 200);
+		await expect(renamedRow.getByText('Saved', { exact: true })).toBeVisible();
+		await finish('older failure', 503);
+		await expect(renamedRow.getByText('Saved', { exact: true })).toBeVisible();
+		await expect(renamedRow.getByText('Not saved', { exact: false })).toHaveCount(0);
 
 		// The rename reaches the chips that render from the same row.
 		await page.goto(`/issues/${encodeURIComponent(projectName)}/${labelled.number}`);
