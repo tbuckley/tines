@@ -84,18 +84,26 @@ export function register(program: Command): void {
 	withCommon(
 		projects
 			.command('create <name>')
-			.description('Create a project (with its initial context prompt)')
+			.description(
+				'Create a project; nonblank starters supply a conventions template unless --prompt or --no-prompt overrides it'
+			)
 			.option('-d, --description <text>', 'project description')
-			.option('-w, --default-workflow <id-or-name>', 'default workflow for new issues')
+			.option(
+				'-w, --default-workflow <id-or-name>',
+				'default workflow for new issues (conflicts with a starter that sets one)'
+			)
 			.option('--starter <id>', 'built-in starter (discover with `tines projects starters`)')
 			.option('--repo <url>', 'repository URL for the code starter')
 			.option('--branch <branch>', 'repository branch for the code starter')
 			.option('--brief <text>', 'planning brief for the plan starter')
 			.option(
 				'--prompt <md>',
-				"initial conventions prompt, stitched into every issue's agent prompt: inline Markdown or @file"
+				"override the starter's conventions template: inline Markdown or @file"
 			)
-			.option('--no-prompt', 'create without an initial prompt')
+			.option(
+				'--no-prompt',
+				"omit the starter's conventions template (other starter context remains)"
+			)
 	).action(
 		async (
 			name: string,

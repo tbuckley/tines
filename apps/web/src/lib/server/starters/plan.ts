@@ -42,7 +42,7 @@ ${reworking}
 
 \`\`\`sh
 tines issues artifacts get "<candidate-ref>" proposal --out .
-tines issues edit "<candidate-ref>" -a title -d @description.md
+tines issues edit "<candidate-ref>" -t "Revised candidate title" -d @description.md
 tines issues artifacts attach "<candidate-ref>" proposal --text @proposal.md
 tines issues comment "<candidate-ref>" @changes.md
 tines issues move "<candidate-ref>" "Re-propose"

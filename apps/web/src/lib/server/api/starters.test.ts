@@ -4,13 +4,14 @@
  * the workflow it already created, every rejection happens before the first
  * write, and a failure midway leaves nothing behind.
  */
-import { describe, expect, it, beforeEach } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PROJECT_PROMPT_NAME, STARTER_IDS, STATE_PROMPT_NAME } from '@tines/shared';
 import { NOW, USER, seedBase } from '../supervisor/test-fixtures';
 import { STARTERS, type Starter } from '../starters';
 import { effectiveContextForIssue, listContextItems } from './context';
 import { ApiFail, type ActorContext, type Page } from './core';
-import { getIssueDetail, listIssues } from './issues';
+import { upsertArtifact } from './artifacts';
+import { createComment, createIssue, getIssueDetail, listIssues, transitionIssue } from './issues';
 import { createProject } from './projects';
 import { listStarters, resolveStarter } from './starters';
 import { loadWorkflows } from './workflows';
@@ -33,6 +34,8 @@ beforeEach(() => {
 	t = createTestDb();
 	seedBase(t);
 });
+
+afterEach(() => vi.restoreAllMocks());
 
 const counts = () => ({
 	projects: t.sqlite.prepare('SELECT COUNT(*) AS n FROM project').get() as { n: number },
@@ -464,9 +467,94 @@ describe('Plan journey content and compatibility limits', () => {
 		expect(guide.body).toContain(created.id);
 		expect(guide.body).toContain('Never invent addresses, hours, prices');
 		expect(guide.body).toContain('tines issues move "<candidate-ref>" "Propose"');
+		expect(guide.body).toContain(
+			'tines issues edit "<candidate-ref>" -t "Revised candidate title" -d @description.md'
+		);
 		const issue = await getIssueDetail(t.db, USER, { id: created.starter!.first_issue!.id });
 		expect(issue.description).toContain(brief);
 		expect(issue.description).toContain('Nothing to file');
+	});
+
+	it('enforces the proposal type and a fresh revision through the full Idea loop', async () => {
+		let clock = 1_800_000_000_000;
+		vi.spyOn(Date, 'now').mockImplementation(() => clock);
+		const created = await createProject(t.db, t.env, actor, {
+			name: 'Proposal gates',
+			starter: { id: 'plan', inputs: { brief: 'A family day out' } }
+		});
+		const idea = created.starter!.workflows.find((workflow) => workflow.name === 'Idea')!;
+		const workflow = (await loadWorkflows(t.db, USER)).find((item) => item.id === idea.id)!;
+		expect(workflow.transitions.find((item) => item.name === 'Propose')!.requires).toEqual([
+			{
+				artifact: 'proposal',
+				type: 'text',
+				content_type: 'text/markdown',
+				description: 'What, why it fits, when it works, practical details, and uncertainties'
+			}
+		]);
+		expect(workflow.transitions.find((item) => item.name === 'Re-propose')!.requires).toEqual([
+			{
+				artifact: 'proposal',
+				type: 'text',
+				content_type: 'text/markdown',
+				description: 'The revised proposal addressing the latest human feedback'
+			}
+		]);
+
+		const missing = await createIssue(t.db, t.env, actor, created.id, {
+			title: 'Missing proposal',
+			workflow_id: idea.id
+		});
+		await expect(
+			transitionIssue(t.db, t.env, actor, missing.id, { action: 'Propose' })
+		).rejects.toMatchObject({ code: 'transition_requirements_unmet' });
+
+		const wrongType = await createIssue(t.db, t.env, actor, created.id, {
+			title: 'Wrong proposal',
+			workflow_id: idea.id
+		});
+		await upsertArtifact(t.db, t.env, actor, wrongType.id, 'proposal', {
+			type: 'link',
+			url: 'https://example.test/candidate'
+		});
+		await expect(
+			transitionIssue(t.db, t.env, actor, wrongType.id, { action: 'Propose' })
+		).rejects.toMatchObject({ code: 'transition_requirements_unmet' });
+
+		const candidate = await createIssue(t.db, t.env, actor, created.id, {
+			title: 'Botanical garden',
+			workflow_id: idea.id
+		});
+		clock += 1_000;
+		await upsertArtifact(t.db, t.env, actor, candidate.id, 'proposal', {
+			type: 'text',
+			content: '# Proposal v1'
+		});
+		expect(
+			(await transitionIssue(t.db, t.env, actor, candidate.id, { action: 'Propose' })).state.name
+		).toBe('Proposed');
+		clock += 1_000;
+		await createComment(t.db, t.env, actor, candidate.id, {
+			body: 'Please verify rainy-day access.'
+		});
+		clock += 1_000;
+		expect(
+			(await transitionIssue(t.db, t.env, actor, candidate.id, { action: 'Send back' })).state.name
+		).toBe('Reworking');
+		await expect(
+			transitionIssue(t.db, t.env, actor, candidate.id, { action: 'Re-propose' })
+		).rejects.toMatchObject({
+			code: 'transition_requirements_unmet',
+			details: { unmet: [expect.objectContaining({ artifact: 'proposal', status: 'stale' })] }
+		});
+		clock += 1_000;
+		await upsertArtifact(t.db, t.env, actor, candidate.id, 'proposal', {
+			type: 'text',
+			content: '# Proposal v2\n\nRainy-day access verified.'
+		});
+		expect(
+			(await transitionIssue(t.db, t.env, actor, candidate.id, { action: 'Re-propose' })).state.name
+		).toBe('Proposed');
 	});
 
 	it('caps the previewable title but preserves the maximum-length brief in its description', async () => {
@@ -541,5 +629,91 @@ describe('Plan journey content and compatibility limits', () => {
 		).items.find((item) => item.name === 'planning-guide')!;
 		expect(guide.body).toContain(second.id);
 		expect(guide.body).not.toContain(first.id);
+		for (const placement of second.starter!.workflows) {
+			expect(guide.body).toContain(`${placement.name} (${placement.id})`);
+		}
+		const idea = second.starter!.workflows.find((workflow) => workflow.name === 'Idea')!;
+		expect(guide.body).toContain(
+			`tines issues list -p "${second.id}" -w "${idea.id}" --all --all-pages --json`
+		);
+		const issue = await getIssueDetail(t.db, USER, { id: second.starter!.first_issue!.id });
+		for (const placement of second.starter!.workflows) {
+			expect(issue.description).toContain(`${placement.name} (${placement.id})`);
+		}
+	});
+
+	it.each(['Idea', 'Scout'])(
+		'binds a renamed %s workflow beside a reused sibling',
+		async (changed) => {
+			const first = await createProject(t.db, t.env, actor, {
+				name: 'First',
+				starter: { id: 'plan', inputs: { brief: 'First brief' } }
+			});
+			const changedId = first.starter!.workflows.find((workflow) => workflow.name === changed)!.id;
+			t.sqlite
+				.prepare(
+					'INSERT INTO workflow_state (id, workflow_id, name, category, position, created_at) VALUES (?, ?, ?, ?, ?, ?)'
+				)
+				.run(`wfs_custom_${changed.toLowerCase()}`, changedId, 'Custom', 'backlog', 99, NOW);
+
+			const second = await createProject(t.db, t.env, actor, {
+				name: 'Second',
+				starter: { id: 'plan', inputs: { brief: 'Second brief' } }
+			});
+			const changedPlacement = second.starter!.workflows.find((workflow) =>
+				workflow.name.startsWith(`${changed} (`)
+			)!;
+			const sibling = second.starter!.workflows.find(
+				(workflow) => workflow.id !== changedPlacement.id
+			)!;
+			expect(changedPlacement).toMatchObject({ reused: false });
+			expect(sibling).toMatchObject({ reused: true });
+			const guide = (
+				await listContextItems(t.db, USER, { project: second.id, kind: 'prompt' }, PAGE)
+			).items.find((item) => item.name === 'planning-guide')!;
+			for (const placement of second.starter!.workflows) {
+				expect(guide.body).toContain(`${placement.name} (${placement.id})`);
+			}
+			const issue = await getIssueDetail(t.db, USER, { id: second.starter!.first_issue!.id });
+			for (const placement of second.starter!.workflows) {
+				expect(issue.description).toContain(`${placement.name} (${placement.id})`);
+			}
+		}
+	);
+
+	it('binds both collision-renamed workflows without leaking the originals', async () => {
+		const first = await createProject(t.db, t.env, actor, {
+			name: 'First',
+			starter: { id: 'plan', inputs: { brief: 'First brief' } }
+		});
+		for (const placement of first.starter!.workflows) {
+			t.sqlite
+				.prepare(
+					'INSERT INTO workflow_state (id, workflow_id, name, category, position, created_at) VALUES (?, ?, ?, ?, ?, ?)'
+				)
+				.run(
+					`wfs_custom_${placement.name.toLowerCase()}`,
+					placement.id,
+					'Custom',
+					'backlog',
+					99,
+					NOW
+				);
+		}
+		const second = await createProject(t.db, t.env, actor, {
+			name: 'Second',
+			starter: { id: 'plan', inputs: { brief: 'Second brief' } }
+		});
+		expect(second.starter!.workflows.every((workflow) => !workflow.reused)).toBe(true);
+		const guide = (
+			await listContextItems(t.db, USER, { project: second.id, kind: 'prompt' }, PAGE)
+		).items.find((item) => item.name === 'planning-guide')!;
+		for (const placement of second.starter!.workflows) {
+			expect(placement.name).toContain('(Second)');
+			expect(guide.body).toContain(`${placement.name} (${placement.id})`);
+		}
+		for (const placement of first.starter!.workflows) {
+			expect(guide.body).not.toContain(placement.id);
+		}
 	});
 });
