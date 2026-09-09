@@ -44,4 +44,5 @@ it('keeps explicit board run scope and fleet reads independent, including one-sh
 	expect((await page(`?runs_state=${STAGE_A}`)).runs).toHaveLength(2);
 	expect((await page(`?new=rule&project=${PROJECT}`)).boardProject).toBeNull();
 	expect((await page(`?project=${PROJECT}`)).boardProject).toBe(PROJECT);
+	expect((await page('?project=demo')).boardProject).toBe(PROJECT);
 });

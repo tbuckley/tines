@@ -55,7 +55,7 @@ export const load: PageServerLoad = async ({ locals, platform, url }) => {
 		runsState,
 		queue,
 		stats,
-		boardProject: project,
+		boardProject: boardProject?.id ?? null,
 		contextRepoUrls: repoItems.map((r) => r.repo_url).filter((u): u is string => u !== null)
 	};
 };

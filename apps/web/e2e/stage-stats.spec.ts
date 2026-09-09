@@ -208,6 +208,10 @@ for (const width of [1440, 390])
 		await highlights.nth(2).click();
 		await expect(page.locator('#stats-ws_discovering-runs')).toBeFocused();
 		await expect(section.getByText('Failed to start', { exact: true })).toBeVisible();
+		await section.screenshot({
+			path: `/tmp/tines257-screenshots/populated-detail-${width}.png`,
+			style: 'header.sticky,nav.fixed { visibility: hidden !important; }'
+		});
 		await section.getByRole('button', { name: /^\d+ changes this week$/ }).click();
 		const dialog = page.getByRole('dialog', { name: 'Latest changes in this window' });
 		await expect(dialog).toContainText('Runner cap');
@@ -222,7 +226,10 @@ for (const width of [1440, 390])
 		expect(await dialog.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
 		await page.keyboard.press('Escape');
 		await page.emulateMedia({ colorScheme: 'dark' });
-		await page.screenshot({ path: `/tmp/tines257-screenshots/dark-${width}.png`, fullPage: true });
+		await section.screenshot({
+			path: `/tmp/tines257-screenshots/dark-${width}.png`,
+			style: 'header.sticky,nav.fixed { visibility: hidden !important; }'
+		});
 	});
 
 test('late evidence cannot replace another stage and keyboard focus stays in the viewer', async ({
