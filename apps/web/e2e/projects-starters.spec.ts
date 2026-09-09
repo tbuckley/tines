@@ -121,6 +121,47 @@ test('Code repository seeds the first issue launch context and gated review work
 	expect(reviewed.state.name).toBe('Review');
 });
 
+test('CLI applies Code and Plan through the same atomic starter endpoint', async ({ request }) => {
+	const run = (args: string[]) =>
+		JSON.parse(
+			execFileSync(TSX, [CLI_ENTRY, ...args, '--json'], {
+				cwd: CLI_DIR,
+				env: { ...process.env, TINES_API_KEY: ALICE.apiKey, TINES_API_URL: BASE_URL },
+				encoding: 'utf8'
+			})
+		) as CreateProjectResponse;
+	const codeName = `starter-cli-code-${runId}`;
+	const code = run([
+		'projects',
+		'create',
+		codeName,
+		'--starter',
+		'code',
+		'--repo',
+		`https://github.com/example/${codeName}.git`,
+		'--branch',
+		'main'
+	]);
+	expect(code.starter?.first_issue?.state_name).toBe('In progress');
+	expect(code.starter?.context.map((item) => item.kind)).toEqual(['repo']);
+
+	const plan = run([
+		'projects',
+		'create',
+		`starter-cli-plan-${runId}`,
+		'--starter',
+		'plan',
+		'--brief',
+		'One day with children\nRainy-day backup'
+	]);
+	expect(plan.starter?.first_issue?.state_name).toBe('Scouting');
+	expect(plan.starter?.context.map((item) => item.name)).toEqual(['planning-guide']);
+	const issue = await body<IssueDetail>(
+		await apiClient(request, ALICE.apiKey).get(`/api/v1/issues/${plan.starter!.first_issue!.id}`)
+	);
+	expect(issue.description).toContain('One day with children\nRainy-day backup');
+});
+
 /**
  * The project page does not name its default workflow, so the grid card —
  * which does — is where that acceptance criterion is checked. Called from the
@@ -395,6 +436,17 @@ test('at 390px the chooser stacks and the whole form stays reachable', async ({ 
 	await submit.scrollIntoViewIfNeeded();
 	await expect(submit).toBeVisible();
 	await expect(submit).toBeEnabled();
+
+	await dialog.getByTestId('starter-plan').click();
+	await dialog.getByLabel('What are you planning?', { exact: false }).fill('x'.repeat(10_000));
+	const previewRows = dialog.getByRole('list', { name: 'This creates' }).getByRole('listitem');
+	const previewHeight = await previewRows.evaluateAll((rows) =>
+		rows.reduce((height, row) => height + row.getBoundingClientRect().height, 0)
+	);
+	expect(previewHeight).toBeLessThan(300);
+	expect(await dialog.evaluate((element) => element.scrollHeight)).toBeLessThan(1_600);
+	await submit.scrollIntoViewIfNeeded();
+	await expect(submit).toBeVisible();
 
 	await context.close();
 });
