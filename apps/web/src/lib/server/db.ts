@@ -357,7 +357,7 @@ export interface SupervisorSweepStateTable {
 
 export interface SupervisorSettingsTable {
 	user_id: string;
-	/** 0/1: the kill switch. Off (0) by default for new users. */
+	/** 0/1: the kill switch. Missing rows and new rows default on; stored 0 stays stopped. */
 	enabled: number;
 	/** JSON typed quota policy. */
 	quota: string;

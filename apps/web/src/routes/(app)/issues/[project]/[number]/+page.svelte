@@ -238,7 +238,10 @@
 		const panel = agentActivityPanel.current;
 		if (panel.status !== 'loaded') return;
 		const [, , runners, , rules] = panel.value;
-		await addRunnerToGlobalRule(rules, runners[0]);
+		const updated = await addRunnerToGlobalRule(rules, runners[0]);
+		// Routing can dispatch immediately now. Capture the completed rule before
+		// refresh observes the first run and freezes the landing snapshot.
+		checklistRules = [...rules.filter((rule) => rule.id !== updated.id), updated];
 		await refresh();
 	}
 
@@ -924,7 +927,6 @@
 			disabledReason={reason}
 			onroute={routeToSoleRunner}
 			onenable={enableAutomation}
-			onadddescription={startDescription}
 			onerror={showError}
 		/>
 	{/if}

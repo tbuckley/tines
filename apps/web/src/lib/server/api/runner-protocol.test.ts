@@ -422,6 +422,23 @@ describe('pollRunner', () => {
 		expect(prompt.indexOf('### Since the last run')).toBeLessThan(prompt.indexOf('### Comments'));
 	});
 
+	it('delivers a title-only assignment when the settings row is missing', async () => {
+		const t = world();
+		t.sqlite.exec(`DELETE FROM supervisor_settings WHERE user_id = '${USER}'`);
+		const runnerId = addRunner(t);
+		const issue = addIssue(t, { title: 'Title only', description: '' });
+		const runId = addRun(t, { issueId: issue, runnerId });
+
+		const { response } = await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, runnerId),
+			{ owned_runs: [] },
+			NOW + 1
+		);
+		expect(response.assignments.map((assignment) => assignment.run.id)).toEqual([runId]);
+	});
+
 	it('cancels the assignment instead of delivering when the issue moved away', async () => {
 		const t = world();
 		const runnerId = addRunner(t);

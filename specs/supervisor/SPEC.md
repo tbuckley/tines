@@ -1,5 +1,8 @@
 # Tines — Supervisor & Agent Execution Spec
 
+> **Decision amendment (2026-09-09):** The historical off-by-default, arming, and seven-item
+> onboarding passages below are superseded by [automation enabled by default](./AUTOMATION_DEFAULT_2026-09-09.md).
+
 Phase one made work legible; the context specs made it launchable. This spec adds the **supervisor**: Tines itself assigns eligible issues to **runners** — Claude Managed Agents (Anthropic API), Gemini Managed Agents (the Interactions API's Antigravity agent), or local devices driving Claude Code / codex — launches them with the assembled launch prompt and workspace, watches them run, and records what happened. The tracker stops being a board agents *visit* and becomes one that *dispatches*.
 
 The architecture is **cloud brain, local hands**: the Cloudflare worker is the single supervisor — it owns eligibility, routing, quotas, claiming, and launching. Managed agents are launched directly over the provider APIs using credentials stored in the runner's configuration. Local devices run a thin **runner daemon** that polls Tines for work assigned to it, materializes the workspace, launches the harness, and streams results back. No inbound connection to a device is ever needed.

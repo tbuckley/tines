@@ -2115,7 +2115,6 @@ export function utilizationLabel(
 // ---------------------------------------------------------------------------
 // Dispatch explainer
 
-/** One eligibility check, pass or fail, with a human-readable detail. */
 /**
  * A remedy for a failing check: a place to click and/or a command to run.
  * Purely presentational — an action never affects `eligible`.
@@ -2128,6 +2127,7 @@ export interface DispatchCheckAction {
 	cli?: string;
 }
 
+/** One eligibility check, pass or fail, with a human-readable detail. */
 export interface DispatchCheck {
 	name:
 		| 'automation_enabled'
