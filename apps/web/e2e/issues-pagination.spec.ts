@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { PAGINATION } from './constants.mjs';
-import { gotoHydrated, signIn } from './helpers';
+import { gotoHydrated, PHONE, signIn } from './helpers';
 
 test.describe('issue list pagination', () => {
 	test.beforeEach(async ({ context }) => {
@@ -40,5 +40,33 @@ test.describe('issue list pagination', () => {
 		await expect(page).toHaveURL(/\/projects\/prj_e2e_pagination\?after=/);
 		await expect(page.getByText('Page issue 105', { exact: true })).toBeVisible();
 		expect((await page.goto('/issues?after=one&before=two'))?.status()).toBe(400);
+	});
+
+	test('stale-page recovery is a full phone tap target without overflow', async ({ page }) => {
+		await page.setViewportSize(PHONE);
+		const staleCursor = btoa('0:iss_stale_boundary');
+
+		for (const path of [
+			`/issues?after=${staleCursor}`,
+			`/projects/${PAGINATION.projectId}?after=${staleCursor}`
+		]) {
+			await page.goto(path);
+			await expect(
+				page.getByText('No issues on this page. Results may have changed.')
+			).toBeVisible();
+
+			const recovery = page.getByRole('link', { name: 'First page' });
+			await expect(recovery).toBeVisible();
+			const box = await recovery.boundingBox();
+			expect(box).not.toBeNull();
+			expect(box!.height).toBeGreaterThanOrEqual(44);
+			expect(box!.width).toBeGreaterThanOrEqual(44);
+			expect(box!.x + box!.width).toBeLessThanOrEqual(PHONE.width);
+			expect(
+				await page.evaluate(
+					() => document.documentElement.scrollWidth <= document.documentElement.clientWidth
+				)
+			).toBe(true);
+		}
 	});
 });
