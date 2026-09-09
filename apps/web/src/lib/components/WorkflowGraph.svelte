@@ -143,7 +143,7 @@
 			const a = nodeById.get(t.from_state_id);
 			const b = nodeById.get(t.to_state_id);
 			if (!a || !b) continue;
-			const key = `${t.from_state_id}→${t.to_state_id}`;
+			const key = `${t.from_state_id}→${t.name}`;
 			const label = !compact && t.name ? t.name : null;
 			if (rank.get(a.id)! < rank.get(b.id)!) {
 				// Forward: right edge of source to left edge of target.
