@@ -109,13 +109,70 @@
 		});
 	}
 
-	async function saveWorkflow(request: UpdateWorkflowRequest) {
-		try {
-			await api.updateWorkflow(data.workflow.id, request);
-		} catch (err) {
-			if (!(await confirmContextSweep(err))) throw err;
-			await api.updateWorkflow(data.workflow.id, { ...request, force_delete_context: true });
+	/**
+	 * When removing a state (or a whole workflow) would orphan states that
+	 * inherit context from it, name them and ask before clearing their
+	 * pointers — the same consent `force_delete_context` asks for the items.
+	 */
+	async function confirmInheritanceClear(err: unknown): Promise<boolean> {
+		if (!(err instanceof ApiError)) return false;
+		if (err.code !== 'state_inherited' && err.code !== 'workflow_inherited') return false;
+		const bases = (err.details?.states ?? []) as {
+			state_name: string;
+			workflow_name?: string;
+			children?: { state_name: string; workflow_name: string }[];
+		}[];
+		// `state_inherited` nests children under each removed base;
+		// `workflow_inherited` lists the inheriting states flat.
+		const items = bases.flatMap((base) =>
+			base.children
+				? base.children.map(
+						(c) => `“${c.workflow_name} / ${c.state_name}” (inherits from “${base.state_name}”)`
+					)
+				: [`“${base.workflow_name} / ${base.state_name}”`]
+		);
+		return confirmDialog({
+			title: 'Clear inheritance pointers too?',
+			body: `${items.length} state${items.length === 1 ? '' : 's'} in other workflows inherit context from what you are removing. Clearing their pointers changes the context their issues receive.`,
+			items,
+			confirmLabel: 'Clear and continue',
+			destructive: true
+		});
+	}
+
+	interface ForceFlags {
+		force_delete_context?: true;
+		force_clear_inheritance?: true;
+	}
+
+	/**
+	 * Run `attempt`, and on each refusal that a force flag can answer, ask and
+	 * retry with that flag added. Both guards can fire on one save, so the
+	 * loop runs until the call succeeds or refuses something we cannot ask for.
+	 */
+	async function withForceRetries<T>(attempt: (flags: ForceFlags) => Promise<T>): Promise<T> {
+		const flags: ForceFlags = {};
+		for (;;) {
+			try {
+				return await attempt(flags);
+			} catch (err) {
+				if (!flags.force_delete_context && (await confirmContextSweep(err))) {
+					flags.force_delete_context = true;
+				} else if (!flags.force_clear_inheritance && (await confirmInheritanceClear(err))) {
+					flags.force_clear_inheritance = true;
+				} else {
+					// Declined, or a refusal no flag answers: the caller's banner
+					// shows the API's own message.
+					throw err;
+				}
+			}
 		}
+	}
+
+	async function saveWorkflow(request: UpdateWorkflowRequest) {
+		await withForceRetries((flags) =>
+			api.updateWorkflow(data.workflow.id, { ...request, ...flags })
+		);
 		await invalidateAll();
 	}
 
@@ -165,12 +222,7 @@
 		});
 		if (!ok) return;
 		try {
-			try {
-				await api.deleteWorkflow(data.workflow.id);
-			} catch (err) {
-				if (!(await confirmContextSweep(err))) throw err;
-				await api.deleteWorkflow(data.workflow.id, { force_delete_context: true });
-			}
+			await withForceRetries((flags) => api.deleteWorkflow(data.workflow.id, flags));
 			await goto('/workflows');
 			await invalidateAll();
 		} catch (err) {
@@ -267,7 +319,12 @@
 	</div>
 {:else}
 	{#key data.workflow.updated_at}
-		<WorkflowEditor workflow={data.workflow} onsave={saveWorkflow}>
+		<WorkflowEditor
+			workflow={data.workflow}
+			workflows={data.workflows}
+			baseItems={data.contextItems}
+			onsave={saveWorkflow}
+		>
 			<!-- Delete sits with Save rather than in the header, so the page opens on
 			     the form and no destructive action shares the title row. -->
 			{#snippet footerActions()}
@@ -361,6 +418,7 @@
 									<ContextItemList
 										items={itemsByState.get(ancestorId) ?? []}
 										shortScope
+										linkInheritedFrom
 										inheritedFrom={{
 											state_id: entry.state.id,
 											state_name: entry.state.name,

@@ -167,6 +167,26 @@ Things worth knowing:
 
 The rules are recorded in [`specs/projects/SPEC.md`](specs/projects/SPEC.md).
 
+## Workflows
+
+A workflow is the state machine an issue moves through, and each of its states can carry
+context — the instructions an agent gets while an issue sits there. States can **inherit**
+that context: a state names another state as its base and receives the base's context before
+its own. A shared **base workflow** is just a workflow with no transitions whose states are
+all categorized `backlog` — nothing is ever bound to it, so it works as a library of stages
+(the convention is to name it "Shared stages"). There is no separate template entity.
+
+```bash
+tines workflows bases              # base-like workflows and the states inheriting from them
+tines workflows show Engineering  # per state: "inherits from" and "inherited by"
+tines workflows edit --help       # the JSON definition, including "inherits_from"
+```
+
+In the browser, every state in the workflow editor has an **Inherits from** picker, with a
+read-only preview of the base's instructions and a link to edit the base. The issue page's
+*Effective context* panel marks each inherited layer with the base it came from. The rules
+are recorded in [`specs/context/SPEC.md`](specs/context/SPEC.md).
+
 ## Running agents
 
 Behind the issue tracker sits a supervisor: it decides which issues agents should take on,

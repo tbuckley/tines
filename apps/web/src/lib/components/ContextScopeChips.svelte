@@ -27,12 +27,15 @@
 		scope,
 		link = false,
 		short = false,
-		inheritedFrom = null
+		inheritedFrom = null,
+		linkInheritedFrom = link
 	}: {
 		scope: ContextScope;
 		link?: boolean;
 		short?: boolean;
 		inheritedFrom?: InheritedFrom | null;
+		/** Link only the provenance chip when the surrounding scope stays read-only. */
+		linkInheritedFrom?: boolean;
 	} = $props();
 </script>
 
@@ -74,7 +77,7 @@
 		</span>
 	{/if}
 	{#if inheritedFrom}
-		<InheritedFromChip from={inheritedFrom} {link} />
+		<InheritedFromChip from={inheritedFrom} link={linkInheritedFrom} />
 	{/if}
 	{#if scope.label_id && scope.label_name}
 		<!-- The issue label keeps its own colour here rather than wearing the

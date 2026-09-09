@@ -203,7 +203,7 @@ A persistent top nav with four tabs — **Issues, Workflows, Projects, Activity*
 - **Issue detail**: title, rendered Markdown description (editable), state with allowed-transition buttons — labeled by action name, with the target state as secondary text — plus a compact graph of the issue's workflow with the current state highlighted, comment thread, and this issue's slice of the activity log — with actors shown throughout.
 - **Workflow detail/editor**: two views of the same FSM, side by side:
   - A **graph view** — the primary way a workflow is *read*. States are nodes (color-coded by category; initial and dead-end states visually distinguished), transitions are directed edges labeled with their action names (labels elided in compact previews), laid out automatically client-side (no stored positions, no manual arranging). Shown wherever a workflow appears: the detail page, the editor, and as a compact preview when picking a workflow at issue creation.
-  - A **form-based editor** — the way a workflow is *written*: add/rename/remove states, set each state's category, pick the initial state, per-state pickers for allowed target states. The graph re-renders live as the form changes, so the user sees the machine they're building. Editing-rule violations surface inline.
+  - A **form-based editor** — the way a workflow is *written*: add/rename/remove states, set each state's category, pick the initial state, per-state pickers for allowed target states, an Inherits-from picker per state with a preview of the base's instructions. The graph re-renders live as the form changes, so the user sees the machine they're building. Editing-rule violations surface inline.
 
 ### Look and feel
 
