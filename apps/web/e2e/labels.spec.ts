@@ -207,6 +207,14 @@ test.describe.serial('issue labels UI', () => {
 			await expect.poll(() => pending.has(value)).toBe(true);
 		};
 		const finish = async (value: string, status: 200 | 503) => {
+			const invalidated =
+				status === 200
+					? page.waitForResponse(
+							(candidate) =>
+								candidate.request().method() === 'GET' &&
+								new URL(candidate.url()).pathname.endsWith('/settings/labels/__data.json')
+						)
+					: null;
 			const response = page.waitForResponse(
 				(candidate) =>
 					candidate.url().endsWith(`/api/v1/labels/${bug.id}`) &&
@@ -224,7 +232,13 @@ test.describe.serial('issue labels UI', () => {
 						}
 			);
 			await response;
-			await page.waitForLoadState('networkidle');
+			if (invalidated) await invalidated;
+			await page.evaluate(
+				() =>
+					new Promise<void>((resolve) =>
+						requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+					)
+			);
 		};
 
 		await startDescriptionSave('older success');
