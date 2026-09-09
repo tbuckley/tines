@@ -433,3 +433,81 @@ describe('resolveStarter', () => {
 		expect(resolved.inputs).toEqual({ repo_url: REPO, repo_branch: '' });
 	});
 });
+
+describe('Plan journey content and compatibility limits', () => {
+	it('creates actionable conventions, guide, and a full multiline first brief', async () => {
+		const brief = 'Two adults and two children\nRainy-day backup needed';
+		const created = await createProject(t.db, t.env, actor, {
+			name: 'Weekend',
+			starter: { id: 'plan', inputs: { brief } }
+		});
+		const items = (await listContextItems(t.db, USER, { project: created.id }, PAGE)).items;
+		expect(items.map((item) => [item.name, item.position])).toEqual([
+			['conventions', 0],
+			['planning-guide', 1]
+		]);
+		expect(items[0].body).toContain('Constraints (naps, walking, budget, diet):');
+		expect(items[1].body).toContain(created.id);
+		expect(items[1].body).toContain('Never invent addresses, hours, prices');
+		expect(items[1].body).toContain('tines issues move "<candidate-ref>" "Propose"');
+		const issue = await getIssueDetail(t.db, USER, { id: created.starter!.first_issue!.id });
+		expect(issue.description).toContain(brief);
+		expect(issue.description).toContain('Nothing to file');
+	});
+
+	it('caps the previewable title but preserves the maximum-length brief in its description', async () => {
+		const brief = 'x'.repeat(10_000);
+		const created = await createProject(t.db, t.env, actor, {
+			name: 'Long',
+			starter: { id: 'plan', inputs: { brief } }
+		});
+		const issue = await getIssueDetail(t.db, USER, { id: created.starter!.first_issue!.id });
+		expect(issue.title).toHaveLength(500);
+		expect(issue.description).toContain(brief);
+	});
+
+	it('keeps the planning guide when conventions are explicitly omitted', async () => {
+		const created = await createProject(t.db, t.env, actor, {
+			name: 'No conventions',
+			initial_prompt: '',
+			starter: { id: 'plan', inputs: { brief: 'A family day out' } }
+		});
+		const items = (await listContextItems(t.db, USER, { project: created.id }, PAGE)).items;
+		expect(items.map((item) => [item.name, item.position])).toEqual([['planning-guide', 1]]);
+	});
+
+	it('rejects a starter-owned conventions entry before any write', async () => {
+		const broken: Starter = {
+			...STARTERS.plan,
+			context: [{ kind: 'prompt', name: ' conventions ', body: 'collision' }]
+		};
+		const before = counts();
+		await expect(
+			createProject(
+				t.db,
+				t.env,
+				actor,
+				{ name: 'Bad', starter: { id: 'plan', inputs: { brief: 'x' } } },
+				{ starters: { ...STARTERS, plan: broken } }
+			)
+		).rejects.toThrow(expect.objectContaining({ code: 'invalid_starter', status: 422 }) as Error);
+		expect(counts()).toEqual(before);
+	});
+
+	it('isolates placement bindings when workflows are reused', async () => {
+		const first = await createProject(t.db, t.env, actor, {
+			name: 'First',
+			starter: { id: 'plan', inputs: { brief: 'First brief' } }
+		});
+		const second = await createProject(t.db, t.env, actor, {
+			name: 'Second',
+			starter: { id: 'plan', inputs: { brief: 'Second brief' } }
+		});
+		expect(second.starter!.workflows.every((workflow) => workflow.reused)).toBe(true);
+		const guide = (
+			await listContextItems(t.db, USER, { project: second.id, kind: 'prompt' }, PAGE)
+		).items.find((item) => item.name === 'planning-guide')!;
+		expect(guide.body).toContain(second.id);
+		expect(guide.body).not.toContain(first.id);
+	});
+});

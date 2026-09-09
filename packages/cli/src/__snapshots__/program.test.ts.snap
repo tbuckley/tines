@@ -802,6 +802,8 @@ Options:
   -h, --help                        display help for command
 
 Commands:
+  starters [options]                List built-in project starters and their
+                                    inputs
   list [options]                    List projects
   create [options] <name>           Create a project (with its initial context
                                     prompt)
@@ -833,6 +835,11 @@ Create a project (with its initial context prompt)
 Options:
   -d, --description <text>             project description
   -w, --default-workflow <id-or-name>  default workflow for new issues
+  --starter <id>                       built-in starter (discover with \`tines
+                                       projects starters\`)
+  --repo <url>                         repository URL for the code starter
+  --branch <branch>                    repository branch for the code starter
+  --brief <text>                       planning brief for the plan starter
   --prompt <md>                        initial conventions prompt, stitched into
                                        every issue's agent prompt: inline
                                        Markdown or @file
@@ -893,6 +900,17 @@ Options:
   "tines projects show": "Usage: tines projects show [options] <id-or-name>
 
 Show a project
+
+Options:
+  -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
+                   \`tines login\`; default https://tines.tbuckley.dev)
+  --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json           output the raw JSON response
+  -h, --help       display help for command
+",
+  "tines projects starters": "Usage: tines projects starters [options]
+
+List built-in project starters and their inputs
 
 Options:
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run

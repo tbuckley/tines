@@ -166,6 +166,7 @@ test('Blank is preselected and creates a project with only the conventions promp
 	await dialog.getByRole('button', { name: 'Create project' }).click();
 	await expect(page).toHaveURL(/\/projects\/prj_/);
 	await expect(page.getByRole('heading', { name })).toBeVisible();
+	await expect(page.getByRole('link', { name: 'Next: get an agent running' })).toHaveCount(0);
 	// Context items are buttons (they open the editor), not links.
 	await expect(page.getByRole('button', { name: /^conventions/ })).toBeVisible();
 	await expect(page.getByText('No issues in this project yet.')).toBeVisible();
@@ -203,8 +204,13 @@ test('Code repository asks for a URL, previews the repo item, and creates it', a
 
 	await dialog.getByRole('button', { name: 'Create project' }).click();
 	await expect(page).toHaveURL(/\/projects\/prj_/);
+	await expect(page.getByText('First issue')).toBeVisible();
+	await expect(page.getByRole('link', { name: 'Next: get an agent running' })).toHaveAttribute(
+		'href',
+		'/agents'
+	);
 	await expect(
-		page.getByRole('link', { name: new RegExp(code.creates.first_issue?.title ?? 'nope') })
+		page.getByRole('link', { name: new RegExp(code.creates.first_issue?.title ?? 'nope') }).first()
 	).toBeVisible();
 	await expect(page.getByRole('button', { name: /^conventions/ })).toBeVisible();
 	await expect(page.getByRole('button', { name: new RegExp(`^widget-${runId}`) })).toBeVisible();
@@ -246,16 +252,20 @@ test('clearing the prefilled conventions creates a project without one', async (
 	await expect(page.getByRole('button', { name: /^conventions/ })).toHaveCount(0);
 });
 
-test('Plan something together renders the brief into the prefill and the preview', async ({
-	page
+test('Plan something together renders a multiline brief and lands on its first issue', async ({
+	page,
+	request
 }) => {
 	await gotoHydrated(page, '/projects');
 	const dialog = await openDialog(page);
 	const plan = byId('plan');
 
 	await dialog.getByTestId('starter-plan').click();
-	const brief = `hiring for Q1 ${runId}`;
-	await dialog.getByLabel(plan.inputs[0].label, { exact: false }).fill(brief);
+	const brief = `Two adults and two children ${runId}\nOutdoor options and a rainy-day backup`;
+	const briefInput = dialog.getByLabel(plan.inputs[0].label, { exact: false });
+	await expect(briefInput.evaluate((element) => element.tagName)).resolves.toBe('TEXTAREA');
+	await briefInput.fill(brief);
+	await expect(briefInput).toHaveValue(brief);
 
 	// Both the pristine textarea and the preview follow the brief live.
 	await expect(dialog.getByLabel(/How work is done here/)).toHaveValue(new RegExp(brief));
@@ -268,8 +278,20 @@ test('Plan something together renders the brief into the prefill and the preview
 
 	await expect(page).toHaveURL(/\/projects\/prj_/);
 	const title = plan.creates.first_issue?.title.replace('{{ brief }}', brief) ?? 'nope';
-	await expect(page.getByRole('link', { name: title })).toBeVisible();
+	await expect(page.getByRole('link', { name: title }).first()).toBeVisible();
+	await expect(page.getByRole('link', { name: 'Next: get an agent running' })).toBeVisible();
 	await expect(page.getByRole('button', { name: /^conventions/ })).toBeVisible();
+	await expect(page.getByRole('button', { name: /^planning-guide/ })).toBeVisible();
+	const projectId = new URL(page.url()).pathname.split('/').at(-1)!;
+	const listed = await body<{ items: { id: string }[] }>(
+		await apiClient(request, ALICE.apiKey).get(`/api/v1/issues?project=${projectId}`)
+	);
+	const persisted = await body<IssueDetail>(
+		await apiClient(request, ALICE.apiKey).get(`/api/v1/issues/${listed.items[0].id}`)
+	);
+	expect(persisted.description).toContain(brief);
+	await page.reload();
+	await expect(page.getByRole('link', { name: 'Next: get an agent running' })).toHaveCount(0);
 	await expectDefaultWorkflow(page, plan.creates.workflows.find((w) => w.default)?.name ?? '');
 });
 
