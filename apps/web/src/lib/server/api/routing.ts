@@ -382,6 +382,35 @@ export async function listRoutingRules(
 		}));
 }
 
+/** Rules compatible with a project, with warnings recomputed within that view. */
+export function routingRulesForProject(
+	rules: RoutingRuleWithWarnings[],
+	projectId: string
+): RoutingRuleWithWarnings[] {
+	const compatible = rules.filter(
+		(rule) => rule.scope.project_id === null || rule.scope.project_id === projectId
+	);
+	const peers: RuleForShadowing[] = compatible.map((rule) => ({
+		id: rule.id,
+		projectId: rule.scope.project_id,
+		workflowStateId: rule.scope.workflow_state_id,
+		labelId: rule.scope.label_id,
+		label: rule.scope.label
+	}));
+	return compatible.map((rule) => ({
+		...rule,
+		warnings: shadowWarnings(
+			{
+				id: rule.id,
+				projectId: rule.scope.project_id,
+				workflowStateId: rule.scope.workflow_state_id,
+				labelId: rule.scope.label_id
+			},
+			peers
+		).filter((warning) => warning.kind !== 'shadows')
+	}));
+}
+
 export async function getRoutingRule(
 	db: Kysely<Database>,
 	userId: string,

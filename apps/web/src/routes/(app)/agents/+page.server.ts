@@ -1,4 +1,4 @@
-import { listRoutingRules } from '$lib/server/api/routing';
+import { listRoutingRules, routingRulesForProject } from '$lib/server/api/routing';
 import { listRunners } from '$lib/server/api/runners';
 import { listRuns } from '$lib/server/api/runs';
 import { getSupervisorSettings, loadFleetQueue } from '$lib/server/api/supervisor';
@@ -55,6 +55,13 @@ export const load: PageServerLoad = async ({ locals, platform, parent }) => {
 	const hasAnyIssue = [...layoutData.projects, ...layoutData.archivedProjects].some(
 		(p) => p.issue_count > 0
 	);
+	const focusId = layoutData.focus?.id ?? null;
+	const displayRuns = focusId
+		? (await listRuns(db, userId, { projectId: focusId }, { cursor: null, limit: 50 })).items
+		: runs.items;
+	// `projects` / `archivedProjects` come from the app layout. Rules scoped to
+	// an archived project are kept and editable — the page badges them, and the
+	// rule editor keeps the project selectable.
 	return {
 		hasAnyIssue,
 		hasAnyRun: runs.items.length > 0,
@@ -74,6 +81,9 @@ export const load: PageServerLoad = async ({ locals, platform, parent }) => {
 		settings,
 		workflows,
 		runs: runs.items,
+		displayRuns,
+		displayRules: focusId ? routingRulesForProject(rules, focusId) : rules,
+		focusId,
 		queue,
 		contextRepoUrls: repoItems.map((r) => r.repo_url).filter((u): u is string => u !== null)
 	};

@@ -20,6 +20,11 @@
 	import { prefersReducedMotion } from '$lib/format';
 
 	let { data } = $props();
+	const isProjectDefault = $derived(
+		data.focus &&
+			(data.workflow.id === data.focus.default_workflow_id ||
+				(data.focus.default_workflow_id === null && data.workflow.is_system))
+	);
 
 	/** Active-category states, so dead routing rules are flagged as such. */
 	const activeStateIds = $derived(deriveActiveStateIds(data.workflows));
@@ -158,6 +163,11 @@
 	<div class="min-w-0">
 		<h1 class="flex items-center gap-2 text-2xl font-semibold tracking-tight">
 			{data.workflow.name}
+			{#if isProjectDefault}
+				<span class="bg-primary/10 text-primary rounded-full px-2.5 py-1 text-xs font-medium"
+					>Project default</span
+				>
+			{/if}
 			{#if data.workflow.is_system}
 				<span
 					class="text-muted-foreground bg-muted inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium"
@@ -171,9 +181,17 @@
 		{#if data.workflow.is_system && data.workflow.description}
 			<p class="text-muted-foreground mt-1 max-w-xl text-sm">{data.workflow.description}</p>
 		{/if}
-		<p class="text-muted-foreground mt-1 text-xs">
-			{data.workflow.issue_count} issue{data.workflow.issue_count === 1 ? ' uses' : 's use'} this workflow
-		</p>
+		{#if data.focusedOpenCount !== null && data.focus}
+			<p class="text-muted-foreground mt-1 text-xs">
+				{data.focusedOpenCount} open issue{data.focusedOpenCount === 1 ? '' : 's'} in {data.focus
+					.name}
+				{data.focusedOpenCount === 1 ? 'uses' : 'use'} this workflow
+			</p>
+		{:else}
+			<p class="text-muted-foreground mt-1 text-xs">
+				{data.workflow.issue_count} issue{data.workflow.issue_count === 1 ? ' uses' : 's use'} this workflow
+			</p>
+		{/if}
 	</div>
 	{#if data.workflow.is_system}
 		<div class="flex gap-2">

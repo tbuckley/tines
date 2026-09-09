@@ -91,6 +91,8 @@ function serializeRunDetail(row: RunRow): AgentRunDetail {
 }
 
 export interface RunListFilters {
+	/** Internal web presentation scope; public handlers opt in explicitly. */
+	projectId?: string;
 	/** Issue id. */
 	issue?: string;
 	/** Runner id. */
@@ -121,6 +123,7 @@ export async function listRuns(
 	page: Page
 ): Promise<{ items: AgentRun[]; hasMore: boolean }> {
 	let q = runQuery(db, userId);
+	if (filters.projectId) q = q.where('issue.project_id', '=', filters.projectId);
 	if (filters.issue) q = q.where('agent_run.issue_id', '=', filters.issue);
 	if (filters.runner) q = q.where('agent_run.runner_id', '=', filters.runner);
 	if (filters.active) q = q.where('agent_run.status', 'in', [...ACTIVE_RUN_STATUSES]);

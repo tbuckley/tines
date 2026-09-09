@@ -109,9 +109,9 @@ test.describe.serial('the first-run path on an empty account', () => {
 		await gotoHydrated(page, `/projects/${projectId}`);
 
 		// The routing card's empty state is a link to where routing lives.
-		const routing = page.getByRole('link', { name: 'Set up routing' });
+		const routing = page.getByRole('link', { name: 'Edit routing' }).first();
 		await expect(routing).toBeVisible();
-		await expect(routing).toHaveAttribute('href', '/agents#routing');
+		await expect(routing).toHaveAttribute('href', `/agents?new=rule&project=${projectId}#routing`);
 
 		// The context card's empty state opens the editor already on `repo`.
 		const addRepo = page.getByRole('button', { name: 'Add a repo' });

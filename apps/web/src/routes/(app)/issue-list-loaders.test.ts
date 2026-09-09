@@ -44,13 +44,15 @@ type TestEvent = {
 	platform: { env: Record<string, never> };
 	params: Record<string, string>;
 	url: URL;
+	depends: ReturnType<typeof vi.fn>;
 };
 
 const event = (url: string, params: Record<string, string> = {}): TestEvent => ({
 	locals: { user: { id: 'usr_test' } },
 	platform: { env: {} },
 	params,
-	url: new URL(url)
+	url: new URL(url),
+	depends: vi.fn()
 });
 
 const callLoad = (load: unknown, input: TestEvent) =>

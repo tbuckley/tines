@@ -13,7 +13,7 @@
 import type { IssueDetail, Project, RoutingRule, Runner } from '@tines/shared';
 import { expect, test } from '@playwright/test';
 import { ALICE, RUNROW } from './constants.mjs';
-import { apiClient, body, clickUntil, gotoHydrated, runId, signIn } from './helpers';
+import { apiClient, body, clickUntil, gotoHydrated, resetFocus, runId, signIn } from './helpers';
 
 const PROJECT_NAME = `queue-${runId}`;
 const RUNNER_NAME = `queue-${runId}`;
@@ -84,7 +84,12 @@ test.describe.serial('the Now row', () => {
 		expect((await api.put('/api/v1/supervisor/settings', { enabled: true })).status()).toBe(200);
 	});
 
-	test('reads "3 waiting · <runner> offline" at the top of /agents', async ({ context, page }) => {
+	test('reads "3 waiting · <runner> offline" at the top of /agents', async ({
+		context,
+		page,
+		request
+	}) => {
+		await resetFocus(request);
 		await signIn(context, ALICE.sessionToken);
 		await page.goto('/agents');
 

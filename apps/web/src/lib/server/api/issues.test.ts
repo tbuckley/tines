@@ -6,6 +6,7 @@ import {
 	allowedTransitions,
 	assertPinFieldsAllowed,
 	countIssuesByCategory,
+	countOpenIssuesByWorkflow,
 	createIssue,
 	getIssueDetail,
 	listIssues,
@@ -235,6 +236,20 @@ describe('countIssuesByCategory', () => {
 		expect(
 			await countIssuesByCategory(t.db, USER, { category: 'done', hideDone: true })
 		).toMatchObject({ active: 3, done: 1 });
+	});
+});
+
+describe('countOpenIssuesByWorkflow', () => {
+	it('counts open issues in the selected project and excludes done and other projects', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		t.sqlite.exec(`INSERT INTO project (id, user_id, name, created_at, updated_at)
+			VALUES ('prj_2', '${USER}', 'other', 0, 0)`);
+		addIssue(t);
+		addIssue(t);
+		addIssue(t, { state: CLOSED });
+		addIssue(t, { project: 'prj_2' });
+		expect(await countOpenIssuesByWorkflow(t.db, USER, PROJECT)).toEqual({ wf_standard: 2 });
 	});
 });
 

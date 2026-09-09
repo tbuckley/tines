@@ -35,7 +35,8 @@
 	import IconX from '@tabler/icons-svelte/icons/x';
 	import { untrack } from 'svelte';
 	import { slide } from 'svelte/transition';
-	import { invalidateAll } from '$app/navigation';
+	import { afterNavigate, invalidateAll, replaceState } from '$app/navigation';
+	import { page } from '$app/state';
 	import { api } from '$lib/api';
 	import CancelRunDialog from '$lib/components/CancelRunDialog.svelte';
 	import FirstRunChecklist from '$lib/components/FirstRunChecklist.svelte';
@@ -719,7 +720,8 @@
 
 	let showAllRuns = $state(false);
 	const activeRuns = $derived(data.runs.filter((r) => isActiveRun(r.status)));
-	const visibleRuns = $derived(showAllRuns ? data.runs : activeRuns);
+	const displayActiveRuns = $derived(data.displayRuns.filter((r) => isActiveRun(r.status)));
+	const visibleRuns = $derived(showAllRuns ? data.displayRuns : displayActiveRuns);
 
 	/** Utilization against the active policy — same math the CLI status shows. */
 	const utilization = $derived.by(() => {
@@ -800,7 +802,7 @@
 		// Shadow hints belong to the last save; opening an editor stales them.
 		ruleWarnings = [];
 		editingRule = null;
-		ruleProjectId = prefill.projectId ?? '';
+		ruleProjectId = prefill.projectId ?? data.focusId ?? '';
 		ruleStateId = prefill.stateId ?? '';
 		ruleLabelId = '';
 		ruleTargets = data.runners.length > 0 ? [{ runner_id: data.runners[0].id, tier: '' }] : [];
@@ -809,6 +811,28 @@
 		loadLabels();
 		ruleModalOpen = true;
 	}
+
+	let handledRuleUrl = '';
+	afterNavigate(() => {
+		const key = page.url.href;
+		if (key === handledRuleUrl || page.url.searchParams.get('new') !== 'rule') return;
+		handledRuleUrl = key;
+		const projectId = page.url.searchParams.get('project');
+		const project = projectId
+			? data.projects.find((candidate) => candidate.id === projectId)
+			: null;
+		// `new` and `project` are one-shot instructions, including when invalid.
+		// Consume them before either outcome so refresh never replays an error.
+		const clean = new URL(page.url);
+		clean.searchParams.delete('new');
+		clean.searchParams.delete('project');
+		replaceState(clean, page.state);
+		if (!project) {
+			errorMessage = 'That project is unavailable for routing.';
+			return;
+		}
+		openRuleCreate({ projectId: project.id });
+	});
 
 	function openRuleEdit(rule: RoutingRuleWithWarnings) {
 		ruleWarnings = [];
@@ -1215,7 +1239,7 @@
 			</div>
 		</div>
 	{/if}
-	{#if data.rules.length === 0}
+	{#if data.displayRules.length === 0}
 		<div class="text-muted-foreground rounded-lg border border-dashed p-8 text-center text-sm">
 			No routing rules. A rule is an ordered runner preference list at a scope — add one to start
 			dispatching issues to agents.
@@ -1225,7 +1249,7 @@
 						<IconPlus size={14} /> Add a runner first
 					</Button>
 				{:else}
-					<Button size="sm" variant="outline" onclick={openRuleCreate}>
+					<Button size="sm" variant="outline" onclick={() => openRuleCreate({ projectId: '' })}>
 						<IconPlus size={14} /> Add a global rule
 					</Button>
 				{/if}
@@ -1233,7 +1257,7 @@
 		</div>
 	{:else}
 		<ul class="divide-y rounded-lg border" aria-label="Routing rules">
-			{#each data.rules as rule (rule.id)}
+			{#each data.displayRules as rule (rule.id)}
 				<RoutingRuleRow
 					{rule}
 					{activeStateIds}

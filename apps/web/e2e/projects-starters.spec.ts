@@ -170,7 +170,9 @@ test('CLI applies Code and Plan through the same atomic starter endpoint', async
 async function expectDefaultWorkflow(page: Page, name: string) {
 	const href = new URL(page.url()).pathname;
 	await page.goto('/projects');
-	await expect(page.locator(`a[href="${href}"]`)).toContainText(`workflow: ${name}`);
+	await expect(
+		page.locator(`a[href="${href}"]`).filter({ hasText: `workflow: ${name}` })
+	).toHaveCount(1);
 }
 
 /** Opens the New-project dialog on an already-hydrated /projects. */

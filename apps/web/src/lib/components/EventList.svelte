@@ -23,8 +23,14 @@
 	let {
 		events,
 		showIssueLinks = true,
+		showProject = true,
 		emptyMessage = 'Nothing has happened yet.'
-	}: { events: TinesEvent[]; showIssueLinks?: boolean; emptyMessage?: string } = $props();
+	}: {
+		events: TinesEvent[];
+		showIssueLinks?: boolean;
+		showProject?: boolean;
+		emptyMessage?: string;
+	} = $props();
 
 	const dur = () => (prefersReducedMotion() ? 0 : 200);
 
@@ -67,7 +73,9 @@
 			href="/issues/{encodeURIComponent(ev.issue_ref.project_name)}/{ev.issue_ref.number}"
 			class="font-medium hover:underline"
 		>
-			{ev.issue_ref.project_name}/#{ev.issue_ref.number}
+			{showProject
+				? `${ev.issue_ref.project_name}/#${ev.issue_ref.number}`
+				: `#${ev.issue_ref.number}`}
 		</a>
 	{:else}
 		<span class="font-medium">this issue</span>
