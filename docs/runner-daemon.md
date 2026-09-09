@@ -38,7 +38,9 @@ Five steps from nothing to an agent working an issue. The hosted app is
    `tines routing set macbook-claude` for a global rule.
 
 5. **Arm** — flip the automation switch on the Agents tab (or `tines supervisor enable`).
-   Automation is off for new accounts; nothing dispatches until it is on.
+   Automation is off for new accounts; nothing dispatches until it is on. Before
+   your first run the Agents tab and every issue card show a first-run checklist
+   that ticks off these steps as you do them, arming included.
 
 The first start **registers** the runner and stores its long-lived runner token in the CLI
 config directory (`~/.config/tines`, or `$TINES_CONFIG_DIR`). Subsequent starts reconnect as

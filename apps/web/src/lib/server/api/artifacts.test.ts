@@ -319,25 +319,33 @@ describe('issue artifacts', () => {
 		// Stale over an untyped requirement: a new version keeps the slot's own
 		// type (--text, not the file default), or the reaffirm alternative.
 		expect(unmet.get('notes')).toMatchObject({ status: 'stale', current_type: 'text' });
-		expect(unmet.get('notes')!.fix).toContain('attach demo/1 notes --text');
-		expect(unmet.get('notes')!.fix).toContain('reaffirm demo/1 notes');
+		expect(unmet.get('notes')!.fix).toBe(
+			'tines issues artifacts attach demo/1 notes --text <markdown|@file>'
+		);
+		// Two commands, two fields: the primary `fix` runs on its own, and the
+		// reaffirm rides beside it rather than inside it (Tines/255).
+		expect(unmet.get('notes')!.fix).not.toContain('reaffirm');
+		expect(unmet.get('notes')!.fix_alternative).toBe(
+			'tines issues artifacts reaffirm demo/1 notes'
+		);
 
 		// Wrong immutable type: a same-name attach would 422, so the fix
 		// deletes the slot before re-attaching the required type.
 		expect(unmet.get('spec')).toMatchObject({ status: 'type_mismatch', current_type: 'link' });
 		expect(unmet.get('spec')!.fix).toContain('delete demo/1 spec && ');
-		expect(unmet.get('spec')!.fix).toContain('attach demo/1 spec --text');
+		// A bare `text` gate names a path: the gate types it, not the extension.
+		expect(unmet.get('spec')!.fix).toContain('attach demo/1 spec <path>');
 
 		// content_type-only miss on the right type: a plain re-attach suffices.
 		expect(unmet.get('shot')).toMatchObject({ status: 'type_mismatch', current_type: 'file' });
-		expect(unmet.get('shot')!.fix).toContain('attach demo/1 shot --file');
+		expect(unmet.get('shot')!.fix).toContain('attach demo/1 shot <path>');
 		expect(unmet.get('shot')!.fix).not.toContain('delete');
 
 		// A link requirement names --link: --url is the CLI's API base URL on
 		// every command, and an agent copying it here would attach a link to
 		// the API itself (Tines/92).
 		expect(unmet.get('ref')).toMatchObject({ status: 'missing' });
-		expect(unmet.get('ref')!.fix).toContain('attach demo/1 ref --link <url>');
+		expect(unmet.get('ref')!.fix).toBe('tines issues artifacts attach demo/1 ref <url>');
 		expect(unmet.get('ref')!.fix).not.toContain('--url');
 
 		// The issue read is the same source: byte-identical fix per slot, so an
@@ -371,8 +379,56 @@ describe('issue artifacts', () => {
 		expect(error!.message).not.toContain('Attach it (or a new version)');
 		const unmet = error!.details!.unmet as Record<string, unknown>[];
 		expect(unmet[0].fix).toBe(
-			'tines issues artifacts delete demo/1 design-doc && tines issues artifacts attach demo/1 design-doc --text @design-doc.md'
+			'tines issues artifacts delete demo/1 design-doc && tines issues artifacts attach demo/1 design-doc design-doc.md'
 		);
+	});
+
+	it('names one type, the one its command attaches, for an untyped requirement', async () => {
+		// AC4. An untyped gate would take text too, but a summary and a command
+		// naming different types is what sent readers looking for a third
+		// answer (Tines/255). The reachable untyped shapes are `missing` (the
+		// command names --file, and the summary stays generic) and a slot that
+		// already holds a type (the command follows the slot). An untyped
+		// requirement can never be `type_mismatch`: only a declared `type` or
+		// `content_type` can miss, and the workflow validator refuses a
+		// content_type without a file/text type — so `requirementFix`'s untyped
+		// delete-and-attach fallback is pinned in @tines/shared, not here.
+		const wf = await createWorkflow(t.db, t.env, actor, {
+			name: 'Untyped gate',
+			initial_state: 'A',
+			states: [
+				{ name: 'A', category: 'active' },
+				{ name: 'B', category: 'active' }
+			],
+			transitions: [{ name: 'go', from: 'A', to: 'B', requires: [{ artifact: 'notes' }] }]
+		});
+		const issue = await createIssue(t.db, t.env, actor, PROJECT, {
+			title: 'Untyped',
+			workflow_id: wf.id
+		});
+		const missing = (await getIssueDetail(t.db, USER, { id: issue.id })).allowed_transitions.find(
+			(tr) => tr.name === 'go'
+		)!.requires![0];
+		expect(missing).toMatchObject({ status: 'missing', current_type: null });
+		expect(missing.fix).toBe('tines issues artifacts attach demo/1 notes --file <path>');
+
+		// A link in the slot: the untyped gate takes it, and once stale the fix
+		// names --link — the slot's own (immutable) type, never the file
+		// default the empty slot advertised.
+		await upsertArtifact(t.db, t.env, actor, issue.id, 'notes', {
+			type: 'link',
+			url: 'https://x.test/notes'
+		});
+		tick();
+		await updateIssue(t.db, t.env, actor, issue.id, { state: 'B' });
+		tick();
+		await updateIssue(t.db, t.env, actor, issue.id, { state: 'A' });
+		const stale = (await getIssueDetail(t.db, USER, { id: issue.id })).allowed_transitions.find(
+			(tr) => tr.name === 'go'
+		)!.requires![0];
+		expect(stale).toMatchObject({ status: 'stale', current_type: 'link' });
+		expect(stale.fix).toBe('tines issues artifacts attach demo/1 notes --link <url>');
+		expect(stale.fix_alternative).toBe('tines issues artifacts reaffirm demo/1 notes');
 	});
 
 	it('names the exact attach command for a satisfied requirement too', async () => {
@@ -383,7 +439,58 @@ describe('issue artifacts', () => {
 		expect(r.status).toBe('satisfied');
 		// Every entry carries a fix; on a satisfied slot it is the command that
 		// attaches the next version, under the slot's own (immutable) type.
-		expect(r.fix).toBe('tines issues artifacts attach demo/1 design-doc --text @design-doc.md');
+		expect(r.fix).toBe('tines issues artifacts attach demo/1 design-doc design-doc.md');
+	});
+
+	it('renders a text/plain gate as a fix that, run as the CLI runs it, satisfies it', async () => {
+		// The closed loop Tines/255 found broken: the hint used to name
+		// `--text @notes.txt`, which stores text/markdown (the server's default
+		// for a text body) and 422s the very gate that printed it.
+		const requirement = { artifact: 'notes', type: 'text' as const, content_type: 'text/plain' };
+		const before = checkRequirements([requirement], [], 'demo/1')[0];
+		expect(before.status).toBe('missing');
+		expect(before.fix).toBe('tines issues artifacts attach demo/1 notes notes.txt');
+		expect(before.fix).not.toContain('--content-type');
+		// A positional source under a typed gate is typed by the gate, and the
+		// gate's concrete content type is declared with the upload (spec
+		// "Typing") — so that command writes a text artifact at text/plain.
+		const attached: Pick<Artifact, 'name' | 'artifact_type' | 'fresh' | 'current_version'>[] = [
+			{
+				name: 'notes',
+				artifact_type: 'text',
+				fresh: true,
+				current_version: {
+					version: 1,
+					content_type: 'text/plain',
+					created_at: 5
+				} as Artifact['current_version']
+			}
+		];
+		expect(checkRequirements([requirement], attached, 'demo/1')[0].status).toBe('satisfied');
+	});
+
+	it('gives a stale requirement two runnable commands, each in its own span', async () => {
+		const issue = await gatedIssue();
+		await attachDoc(issue.id);
+		// Force elsewhere and back: state_entered_at advances past the attach.
+		tick();
+		await updateIssue(t.db, t.env, actor, issue.id, { state: 'Implementation' });
+		tick();
+		await updateIssue(t.db, t.env, actor, issue.id, { state: 'Design' });
+		const [detail, context, artifacts] = [
+			await getIssueDetail(t.db, USER, { id: issue.id }),
+			await effectiveContextForIssue(t.db, USER, issue.id),
+			await listArtifacts(t.db, USER, issue.id)
+		];
+		const r = detail.allowed_transitions.find((tr) => tr.name === 'approve')!.requires![0];
+		expect(r.status).toBe('stale');
+		// `fix` stays one command, so copying it verbatim runs (Tines/255).
+		expect(r.fix).toBe('tines issues artifacts attach demo/1 design-doc design-doc.md');
+		expect(r.fix_alternative).toBe('tines issues artifacts reaffirm demo/1 design-doc');
+		const block = issueBlock(detail, context, artifacts);
+		expect(block).toContain(
+			'attach: `tines issues artifacts attach demo/1 design-doc design-doc.md` — or reaffirm: `tines issues artifacts reaffirm demo/1 design-doc`'
+		);
 	});
 
 	it('counts an artifact attached before the gating state as stale, per the strict rule', async () => {
@@ -689,7 +796,9 @@ describe('issue artifacts', () => {
 		await transitionIssue(t.db, t.env, actor, issue.id, { action: 'submit' }).catch(
 			(e) => (error = e)
 		);
-		expect((error!.details!.unmet as Record<string, unknown>[])[0].fix).toContain('--folder <dir>');
+		expect((error!.details!.unmet as Record<string, unknown>[])[0].fix).toContain(
+			'attach demo/1 screenshots <dir>'
+		);
 
 		// A sibling `file` artifact does not satisfy the folder-typed slot…
 		tick();
@@ -927,11 +1036,15 @@ describe('issue artifacts', () => {
 		expect(block).toContain(
 			'Requires: artifact `design-doc` (text, text/markdown) — **missing; attach it first**'
 		);
-		// The gate decides the flag: a (text, text/markdown) slot names --text
-		// and a concrete filename, not the generic placeholder.
+		// The gate decides the source: a (text, text/markdown) slot names the
+		// one-line positional form and a concrete filename — no flag at all,
+		// so the span is what an agent runs (Tines/274).
 		expect(block).toContain(
-			'attach: `tines issues artifacts attach demo/1 design-doc --text @design-doc.md`'
+			'attach: `tines issues artifacts attach demo/1 design-doc design-doc.md`'
 		);
+		// The generic "Attach one:" line still lists the flags; the gated
+		// requirement no longer names one.
+		expect(block).not.toContain('--text @design-doc.md');
 
 		tick();
 		await attachDoc(issue.id, '# Secret design');
@@ -955,6 +1068,10 @@ describe('issue artifacts', () => {
 		);
 		expect(emptyBlock).toContain('No artifacts attached.');
 		expect(emptyBlock).toContain('Attach one: `tines issues artifacts attach demo/2 <name> …`');
+		// The clause has to describe what the gated lines below actually name:
+		// since Tines/274 that is a positional source, not a flag.
+		expect(emptyBlock).toContain('— the source follows the gate;');
+		expect(emptyBlock).not.toContain('the flag follows the gate');
 		// No flag is privileged (Tines/241): the old line put `--file <path>`
 		// inside the command itself, which taught agents to reach for it under
 		// gates that wanted anything else.

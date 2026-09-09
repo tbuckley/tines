@@ -101,6 +101,21 @@ export interface RunListFilters {
 	active?: boolean;
 }
 
+/**
+ * Has this account ever had an agent run? The first-run checklist retires on
+ * the first one, so this is asked on every issue page load of an account that
+ * has none — one indexed existence check, never a count.
+ */
+export async function hasAnyRun(db: Kysely<Database>, userId: string): Promise<boolean> {
+	const row = await db
+		.selectFrom('agent_run')
+		.select('agent_run.id')
+		.where('agent_run.user_id', '=', userId)
+		.limit(1)
+		.executeTakeFirst();
+	return row !== undefined;
+}
+
 export async function listRuns(
 	db: Kysely<Database>,
 	userId: string,

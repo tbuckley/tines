@@ -44,7 +44,7 @@ Plus: [Spec deltas from this review](#spec-deltas-from-this-review) · [Future w
 
 **Persona & starting point:** an existing Tines user (projects, workflows, issues, context items from phase one) who has never used the supervisor. They want their laptop to start working the backlog with Claude Code.
 
-1. They open the new **Agents tab**. It's empty-state: no runners, no rules, and the kill switch is **off** (the default for a new user — see Decisions).
+1. They open the new **Agents tab**. Before their first run it leads with the **first-run checklist** (Tines/253) rather than the off-state banner: seven derived items — issue, CLI, runner, rule, automation, issue content, first run — each carrying the control that completes it, ticking live and retiring account-wide once one run exists. No runners, no rules, and the kill switch is **off** (the default for a new user — see Decisions).
 2. They click **Add runner → Local**. The UI shows a copy-pasteable bootstrap: `tines runner daemon --name laptop-m4 --harness claude-code`, with the registration step explained (first start with their `TINES_API_KEY` registers and persists a runner token).
 3. In a terminal, they run the command. The daemon registers, stores its token, and starts polling. Back in the browser, the runner card appears: online dot, 0/1 runs, hostname/platform.
 4. Still on the Agents tab, they create a **global routing rule** targeting `laptop-m4` (no tier — the runner's `default_tier`, `balanced`, applies). The empty state nudged them here (see Decisions).

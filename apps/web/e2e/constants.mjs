@@ -139,3 +139,23 @@ export const PAGINATION = {
 	projectId: 'prj_e2e_pagination',
 	projectName: 'pagination-seed'
 };
+
+/**
+ * A third seeded account, for the first-run checklist walk. Dana starts with
+ * no projects, no runners, no rules and — the point — no agent runs, which is
+ * the only state in which the checklist is shown at all (it retires
+ * account-wide on the first run, and is derived, so there is nothing to
+ * reset).
+ *
+ * `first-run-checklist.spec.ts` walks her all the way to a real run, so the
+ * account is one-way: no other spec may depend on Dana being run-free, and
+ * anything added to that file must sort after the walk inside it.
+ */
+export const DANA = {
+	id: 'usr_e2e_dana',
+	name: 'Dana E2E',
+	email: 'dana@e2e.test',
+	apiKey: 'tines_e2edana00000000000000000000000000000000000',
+	apiKeyName: 'dana-key',
+	sessionToken: 'e2e-session-dana'
+};

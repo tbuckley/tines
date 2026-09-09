@@ -5,7 +5,8 @@
  * The dialog prefills the conventions textarea and previews what the project
  * will contain, so both have to be rendered with *the server's* variable set
  * — `starterQueries` in `$lib/server/api/starters.ts` builds
- * `{ ...inputs, project, repo_name }` and renders every template with it.
+ * `{ ...inputs, project, repo_name }` for chooser-visible templates. Placement
+ * variables exist only after creation and occur only in non-previewed bodies.
  * This module is pure (no Svelte, no `$lib/server`) so it can be unit-tested
  * against the real `listStarters()` summaries and stays content-agnostic:
  * every label, hint and line comes from the summary, never from a hardcoded
@@ -24,6 +25,7 @@ const BLANK = '…';
 
 /** Mirrors `MAX_CONTEXT_NAME` in `$lib/server/api/starters.ts`. */
 const MAX_CONTEXT_NAME = 100;
+const MAX_ISSUE_TITLE = 500;
 
 /** The value the user typed for a declared input, trimmed; `''` when absent. */
 function typed(inputs: Record<string, string>, key: string): string {
@@ -96,7 +98,7 @@ export function renderStarter(
 			})),
 			firstIssue: issue
 				? {
-						title: renderTemplate(issue.title, forPreview),
+						title: renderTemplate(issue.title, forPreview).slice(0, MAX_ISSUE_TITLE),
 						workflow: issue.workflow,
 						state: issue.state
 					}

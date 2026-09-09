@@ -258,7 +258,7 @@ Options:
 Commands:
   list [options] <ref>                    List the artifacts attached to an issue
   show [options] <ref> <name>             Show an artifact with its full version history
-  attach [options] <ref> <name> [source]  Attach content to a named artifact slot (creates it, or appends the next version)
+  attach [options] <ref> <name> [source]  Attach content to a named artifact slot — <source> is typed by the gate, flags override (creates it, or appends a version)
   reaffirm [options] <ref> <name>         Bless the current content as fresh (appends a version reusing the same payload)
   site-link [options] <ref> <name>        Mint a short-lived URL that renders an HTML artifact live (scripts running) — for screenshotting your own prototype
   get [options] <ref> <name>              Fetch content (current version by default); a link/pr prints its URL
@@ -267,8 +267,8 @@ Commands:
 ",
   "tines issues artifacts attach": "Usage: tines issues artifacts attach [options] <ref> <name> [source]
 
-Attach content to a named artifact slot (creates it, or appends the next
-version)
+Attach content to a named artifact slot — <source> is typed by the gate, flags
+override (creates it, or appends a version)
 
 Options:
   -f, --file <path>         upload a file (MIME sniffed from the extension)
@@ -802,9 +802,12 @@ Options:
   -h, --help                        display help for command
 
 Commands:
+  starters [options]                List built-in project starters and their
+                                    inputs
   list [options]                    List projects
-  create [options] <name>           Create a project (with its initial context
-                                    prompt)
+  create [options] <name>           Create a project; nonblank starters supply a
+                                    conventions template unless --prompt or
+                                    --no-prompt overrides it
   show [options] <id-or-name>       Show a project
   edit [options] <id-or-name>       Edit a project
   archive [options] <id-or-name>    Archive a project: pause its schedules, stop
@@ -828,15 +831,22 @@ Options:
 ",
   "tines projects create": "Usage: tines projects create [options] <name>
 
-Create a project (with its initial context prompt)
+Create a project; nonblank starters supply a conventions template unless
+--prompt or --no-prompt overrides it
 
 Options:
   -d, --description <text>             project description
   -w, --default-workflow <id-or-name>  default workflow for new issues
-  --prompt <md>                        initial conventions prompt, stitched into
-                                       every issue's agent prompt: inline
-                                       Markdown or @file
-  --no-prompt                          create without an initial prompt
+                                       (conflicts with a starter that sets one)
+  --starter <id>                       built-in starter (discover with \`tines
+                                       projects starters\`)
+  --repo <url>                         repository URL for the code starter
+  --branch <branch>                    repository branch for the code starter
+  --brief <text>                       planning brief for the plan starter
+  --prompt <md>                        override the starter's conventions
+                                       template: inline Markdown or @file
+  --no-prompt                          omit the starter's conventions template
+                                       (other starter context remains)
   -u, --url <url>                      base URL of the Tines API (or set
                                        TINES_API_URL, or run \`tines login\`;
                                        default https://tines.tbuckley.dev)
@@ -893,6 +903,17 @@ Options:
   "tines projects show": "Usage: tines projects show [options] <id-or-name>
 
 Show a project
+
+Options:
+  -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
+                   \`tines login\`; default https://tines.tbuckley.dev)
+  --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json           output the raw JSON response
+  -h, --help       display help for command
+",
+  "tines projects starters": "Usage: tines projects starters [options]
+
+List built-in project starters and their inputs
 
 Options:
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run

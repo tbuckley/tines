@@ -1,6 +1,14 @@
-import type { StarterSummary } from '@tines/shared';
+import { execFileSync } from 'node:child_process';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import type {
+	CreateProjectResponse,
+	IssueDetail,
+	LaunchPromptResponse,
+	StarterSummary
+} from '@tines/shared';
 import { expect, test, type Page } from '@playwright/test';
-import { ALICE } from './constants.mjs';
+import { ALICE, BASE_URL } from './constants.mjs';
 import { apiClient, body, clickUntil, gotoHydrated, runId, signIn } from './helpers';
 
 /**
@@ -20,6 +28,9 @@ import { apiClient, body, clickUntil, gotoHydrated, runId, signIn } from './help
  */
 
 let starters: StarterSummary[];
+const CLI_DIR = fileURLToPath(new URL('../../../packages/cli', import.meta.url));
+const TSX = join(CLI_DIR, 'node_modules', '.bin', 'tsx');
+const CLI_ENTRY = join(CLI_DIR, 'src', 'index.ts');
 const byId = (id: string): StarterSummary => {
 	const found = starters.find((s) => s.id === id);
 	if (!found) throw new Error(`starter ${id} missing from the menu`);
@@ -39,6 +50,116 @@ test.beforeAll(async ({ playwright }) => {
 
 test.beforeEach(async ({ context }) => {
 	await signIn(context, ALICE.sessionToken);
+});
+
+test('Code repository seeds the first issue launch context and gated review workflow', async ({
+	page,
+	request
+}) => {
+	const api = apiClient(request, ALICE.apiKey);
+	const projectName = `starter-code-api-${runId}`;
+	const repoName = `prompt-${runId}`;
+	const conventions = [
+		'Test command: pnpm test',
+		'Branch rules: branch from main',
+		'PR expectations: focused, with a test',
+		'Where things live: source is in apps/web/src'
+	].join('\n');
+	const created = await body<CreateProjectResponse>(
+		await api.post('/api/v1/projects', {
+			name: projectName,
+			initial_prompt: conventions,
+			starter: {
+				id: 'code',
+				inputs: {
+					repo_url: `https://github.com/example/${repoName}.git`,
+					repo_branch: 'main'
+				}
+			}
+		})
+	);
+	const first = created.starter?.first_issue;
+	expect(first).toMatchObject({ number: 1, state_name: 'In progress' });
+	if (!first) throw new Error('the code starter did not create its first issue');
+
+	const issue = await body<IssueDetail>(await api.get(`/api/v1/issues/${first.id}`));
+	const submit = issue.allowed_transitions.find(
+		(transition) => transition.name === 'Submit for review'
+	);
+	expect(submit?.requires).toEqual([
+		expect.objectContaining({ artifact: 'pr', type: 'pr', status: 'missing' })
+	]);
+	const noBug = issue.allowed_transitions.find((transition) => transition.name === 'No bug found');
+	expect(noBug).toBeDefined();
+	expect(noBug?.requires).toBeUndefined();
+
+	const prompt = await body<LaunchPromptResponse>(
+		await api.get(`/api/v1/issues/${first.id}/prompt`)
+	);
+	expect(prompt.text).toContain(`## Context: project ${projectName}`);
+	expect(prompt.text).toContain(conventions);
+	expect(prompt.text).toContain('## Context: state In progress');
+	expect(prompt.text).toContain('Unanswered template lines mean “not specified”');
+	expect(prompt.text).toContain(`repo "${repoName}" (branch main)`);
+
+	const workflow = execFileSync(TSX, [CLI_ENTRY, 'workflows', 'show', 'Code change'], {
+		cwd: CLI_DIR,
+		env: { ...process.env, TINES_API_KEY: ALICE.apiKey, TINES_API_URL: BASE_URL },
+		encoding: 'utf8'
+	});
+	expect(workflow).toContain('"Submit for review": In progress → Review');
+	expect(workflow).toContain('requires artifact "pr" (pr)');
+
+	await page.goto(`/issues/${encodeURIComponent(projectName)}/1`);
+	await expect(page.getByRole('button', { name: /Submit for review/ }).first()).toBeDisabled();
+
+	const moved = await api.post(`/api/v1/issues/${first.id}/transition`, {
+		action: 'No bug found'
+	});
+	expect(moved.ok(), 'the no-work fallback must not require a PR').toBe(true);
+	const reviewed = await body<IssueDetail>(await api.get(`/api/v1/issues/${first.id}`));
+	expect(reviewed.state.name).toBe('Review');
+});
+
+test('CLI applies Code and Plan through the same atomic starter endpoint', async ({ request }) => {
+	const run = (args: string[]) =>
+		JSON.parse(
+			execFileSync(TSX, [CLI_ENTRY, ...args, '--json'], {
+				cwd: CLI_DIR,
+				env: { ...process.env, TINES_API_KEY: ALICE.apiKey, TINES_API_URL: BASE_URL },
+				encoding: 'utf8'
+			})
+		) as CreateProjectResponse;
+	const codeName = `starter-cli-code-${runId}`;
+	const code = run([
+		'projects',
+		'create',
+		codeName,
+		'--starter',
+		'code',
+		'--repo',
+		`https://github.com/example/${codeName}.git`,
+		'--branch',
+		'main'
+	]);
+	expect(code.starter?.first_issue?.state_name).toBe('In progress');
+	expect(code.starter?.context.map((item) => item.kind)).toEqual(['repo']);
+
+	const plan = run([
+		'projects',
+		'create',
+		`starter-cli-plan-${runId}`,
+		'--starter',
+		'plan',
+		'--brief',
+		'One day with children\nRainy-day backup'
+	]);
+	expect(plan.starter?.first_issue?.state_name).toBe('Scouting');
+	expect(plan.starter?.context.map((item) => item.name)).toEqual(['planning-guide']);
+	const issue = await body<IssueDetail>(
+		await apiClient(request, ALICE.apiKey).get(`/api/v1/issues/${plan.starter!.first_issue!.id}`)
+	);
+	expect(issue.description).toContain('One day with children\nRainy-day backup');
 });
 
 /**
@@ -88,6 +209,7 @@ test('Blank is preselected and creates a project with only the conventions promp
 	await dialog.getByRole('button', { name: 'Create project' }).click();
 	await expect(page).toHaveURL(/\/projects\/prj_/);
 	await expect(page.getByRole('heading', { name })).toBeVisible();
+	await expect(page.getByRole('link', { name: 'Next: get an agent running' })).toHaveCount(0);
 	// Context items are buttons (they open the editor), not links.
 	await expect(page.getByRole('button', { name: /^conventions/ })).toBeVisible();
 	await expect(page.getByText('No issues in this project yet.')).toBeVisible();
@@ -125,8 +247,13 @@ test('Code repository asks for a URL, previews the repo item, and creates it', a
 
 	await dialog.getByRole('button', { name: 'Create project' }).click();
 	await expect(page).toHaveURL(/\/projects\/prj_/);
+	await expect(page.getByText('First issue')).toBeVisible();
+	await expect(page.getByRole('link', { name: 'Next: get an agent running' })).toHaveAttribute(
+		'href',
+		'/agents'
+	);
 	await expect(
-		page.getByRole('link', { name: new RegExp(code.creates.first_issue?.title ?? 'nope') })
+		page.getByRole('link', { name: new RegExp(code.creates.first_issue?.title ?? 'nope') }).first()
 	).toBeVisible();
 	await expect(page.getByRole('button', { name: /^conventions/ })).toBeVisible();
 	await expect(page.getByRole('button', { name: new RegExp(`^widget-${runId}`) })).toBeVisible();
@@ -168,16 +295,20 @@ test('clearing the prefilled conventions creates a project without one', async (
 	await expect(page.getByRole('button', { name: /^conventions/ })).toHaveCount(0);
 });
 
-test('Plan something together renders the brief into the prefill and the preview', async ({
-	page
+test('Plan something together renders a multiline brief and lands on its first issue', async ({
+	page,
+	request
 }) => {
 	await gotoHydrated(page, '/projects');
 	const dialog = await openDialog(page);
 	const plan = byId('plan');
 
 	await dialog.getByTestId('starter-plan').click();
-	const brief = `hiring for Q1 ${runId}`;
-	await dialog.getByLabel(plan.inputs[0].label, { exact: false }).fill(brief);
+	const brief = `Two adults and two children ${runId}\nOutdoor options and a rainy-day backup`;
+	const briefInput = dialog.getByLabel(plan.inputs[0].label, { exact: false });
+	await expect(briefInput.evaluate((element) => element.tagName)).resolves.toBe('TEXTAREA');
+	await briefInput.fill(brief);
+	await expect(briefInput).toHaveValue(brief);
 
 	// Both the pristine textarea and the preview follow the brief live.
 	await expect(dialog.getByLabel(/How work is done here/)).toHaveValue(new RegExp(brief));
@@ -190,8 +321,20 @@ test('Plan something together renders the brief into the prefill and the preview
 
 	await expect(page).toHaveURL(/\/projects\/prj_/);
 	const title = plan.creates.first_issue?.title.replace('{{ brief }}', brief) ?? 'nope';
-	await expect(page.getByRole('link', { name: title })).toBeVisible();
+	await expect(page.getByRole('link', { name: title }).first()).toBeVisible();
+	await expect(page.getByRole('link', { name: 'Next: get an agent running' })).toBeVisible();
 	await expect(page.getByRole('button', { name: /^conventions/ })).toBeVisible();
+	await expect(page.getByRole('button', { name: /^planning-guide/ })).toBeVisible();
+	const projectId = new URL(page.url()).pathname.split('/').at(-1)!;
+	const listed = await body<{ items: { id: string }[] }>(
+		await apiClient(request, ALICE.apiKey).get(`/api/v1/issues?project=${projectId}`)
+	);
+	const persisted = await body<IssueDetail>(
+		await apiClient(request, ALICE.apiKey).get(`/api/v1/issues/${listed.items[0].id}`)
+	);
+	expect(persisted.description).toContain(brief);
+	await page.reload();
+	await expect(page.getByRole('link', { name: 'Next: get an agent running' })).toHaveCount(0);
 	await expectDefaultWorkflow(page, plan.creates.workflows.find((w) => w.default)?.name ?? '');
 });
 
@@ -295,6 +438,17 @@ test('at 390px the chooser stacks and the whole form stays reachable', async ({ 
 	await submit.scrollIntoViewIfNeeded();
 	await expect(submit).toBeVisible();
 	await expect(submit).toBeEnabled();
+
+	await dialog.getByTestId('starter-plan').click();
+	await dialog.getByLabel('What are you planning?', { exact: false }).fill('x'.repeat(10_000));
+	const previewRows = dialog.getByRole('list', { name: 'This creates' }).getByRole('listitem');
+	const previewHeight = await previewRows.evaluateAll((rows) =>
+		rows.reduce((height, row) => height + row.getBoundingClientRect().height, 0)
+	);
+	expect(previewHeight).toBeLessThan(300);
+	expect(await dialog.evaluate((element) => element.scrollHeight)).toBeLessThan(1_600);
+	await submit.scrollIntoViewIfNeeded();
+	await expect(submit).toBeVisible();
 
 	await context.close();
 });

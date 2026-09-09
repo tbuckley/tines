@@ -1,0 +1,283 @@
+/**
+ * The first-run walk (Tines/253): a brand-new account goes from nothing to a
+ * running agent entirely through the checklist's own controls — create an
+ * issue, register a runner, route work to it, turn automation on — and the
+ * last item becomes the run row when the run lands, with no reload anywhere.
+ *
+ * Runs as DANA, who exists for exactly this: no project, no runner, no rule,
+ * automation off, and — the precondition the whole file rests on — no agent
+ * run. The checklist is derived from that last fact and retires account-wide
+ * the moment a run exists, so **this file is one-way**: it leaves Dana with a
+ * run and no other spec may depend on her being run-free. New cases here go
+ * after the walk, and the retirement case at the end is what pins the
+ * steady-state card (the plain explainer with its `action` links) now that
+ * `issue-explainer-remedies.spec.ts` sees the checklist instead.
+ *
+ * Serial by necessity: each step is the next state of one account.
+ */
+import { expect, test, type Page } from '@playwright/test';
+import type { IssueDetail, ListResponse, Project, RoutingRule } from '@tines/shared';
+import { DANA } from './constants.mjs';
+import { spawnDaemon, type Daemon } from './daemon';
+import { apiClient, body, gotoHydrated, runId, signIn } from './helpers';
+
+test.describe.configure({ mode: 'serial' });
+
+const PROJECT_NAME = `walk-${runId}`;
+const RUNNER_NAME = `dana-${runId}`;
+
+let daemon: Daemon | null = null;
+let projectId: string;
+let issueNumber: number;
+let secondIssueNumber: number;
+
+const checklistOf = (page: Page) => page.getByRole('region', { name: 'First run checklist' });
+const item = (page: Page, id: string) => checklistOf(page).locator(`li[data-item="${id}"]`);
+const checklistControls = (page: Page) => checklistOf(page).locator('button, a[href]');
+const issuePath = (n: number) => `/issues/${encodeURIComponent(PROJECT_NAME)}/${n}`;
+
+test.beforeAll(async ({ request }) => {
+	const api = apiClient(request, DANA.apiKey);
+	const runs = await body<ListResponse<unknown>>(await api.get('/api/v1/runs'));
+	expect(
+		runs.items.length,
+		'Dana must have no agent runs — this spec walks her to her first one, so re-running it against a reused server fails here. Restart e2e/server.sh to reseed.'
+	).toBe(0);
+});
+
+// Every test drives the UI as Dana; Playwright hands each one a fresh browser
+// context, so the session cookie has to be planted per test, not once.
+test.beforeEach(async ({ context }) => {
+	await signIn(context, DANA.sessionToken);
+});
+
+test.afterAll(async ({ request }) => {
+	daemon?.kill();
+	// Leave automation off for anything that follows.
+	await apiClient(request, DANA.apiKey).put('/api/v1/supervisor/settings', { enabled: false });
+});
+
+test('the Agents tab opens on the checklist, not the off-state banner', async ({ page }) => {
+	await gotoHydrated(page, '/agents');
+
+	const checklist = checklistOf(page);
+	await expect(checklist).toBeVisible();
+	await expect(checklist.getByRole('listitem')).toHaveCount(7);
+	// The checklist replaces the amber banner outright.
+	await expect(page.getByText('Automation is off')).toHaveCount(0);
+
+	// With no project at all, item 1 is the project step and links at the
+	// dialog `/projects?new=1` opens.
+	await expect(item(page, 'issue')).toHaveAttribute('data-done', 'false');
+	await expect(item(page, 'issue')).toHaveAttribute('data-current', 'true');
+	await expect(checklistControls(page)).toHaveCount(1);
+	await checklist.getByRole('link', { name: 'Create a project' }).click();
+	await expect(page).toHaveURL('/projects');
+	await expect(page.getByRole('dialog')).toBeVisible();
+});
+
+test('the managed-runner path reaches key validation without misreporting progress', async ({
+	page,
+	request
+}) => {
+	await gotoHydrated(page, '/agents');
+	// The checklist exposes only its current issue action at this point. The
+	// regular Runners panel remains available for this failed managed-path probe.
+	await expect(checklistControls(page)).toHaveCount(1);
+	await page.getByRole('heading', { name: 'Runners' }).locator('..').getByRole('button').click();
+
+	const dialog = page.getByRole('dialog', { name: 'Add runner' });
+	await dialog.getByRole('button', { name: 'Claude (managed)' }).click();
+	await expect(dialog.getByLabel('Name')).toHaveAttribute('placeholder', 'cloud-claude');
+	await expect(dialog.getByLabel('GitHub access (needed to clone)')).toBeVisible();
+	await expect(dialog.getByText(/fine-grained token scoped to exactly the repos/)).toBeVisible();
+
+	await dialog.getByLabel('Name').fill('cloud-claude');
+	await dialog.getByLabel('Anthropic API key').fill('sk-ant-invalid');
+	await dialog.getByRole('button', { name: 'Create runner' }).click();
+	await expect(page.getByText('Anthropic rejected the API key (401)')).toBeVisible({
+		timeout: 30_000
+	});
+
+	// A failed ping creates nothing, so the checklist must not tick either the
+	// CLI or runner item. This is the parity boundary for a no-key managed walk.
+	const runners = await body<ListResponse<unknown>>(
+		await apiClient(request, DANA.apiKey).get('/api/v1/runners')
+	);
+	expect(runners.items).toHaveLength(0);
+	await expect(item(page, 'cli')).toHaveAttribute('data-done', 'false');
+	await expect(item(page, 'runner')).toHaveAttribute('data-done', 'false');
+});
+
+test('creating an issue ticks item 1 on both surfaces without a reload', async ({
+	page,
+	request
+}) => {
+	const api = apiClient(request, DANA.apiKey);
+	const project = await body<Project>(await api.post('/api/v1/projects', { name: PROJECT_NAME }));
+	projectId = project.id;
+
+	await gotoHydrated(page, '/agents');
+	// With a project and no issue, the same item offers the issue dialog.
+	await item(page, 'issue').getByRole('button', { name: 'Create an issue' }).click();
+	const dialog = page.getByRole('dialog');
+	await expect(dialog).toBeVisible();
+	await dialog.getByLabel('Project').selectOption({ label: PROJECT_NAME });
+	await dialog.getByLabel('Title').fill('First run');
+	await dialog.getByRole('button', { name: /create/i }).click();
+
+	// The modal navigates client-side to the new issue, whose checklist is the
+	// same component with item 1 already ticked — no reload.
+	await expect(page).toHaveURL(/\/issues\/.+\/\d+$/);
+	issueNumber = Number(new URL(page.url()).pathname.split('/').pop());
+	await expect(item(page, 'issue')).toHaveAttribute('data-done', 'true');
+	await expect(item(page, 'runner')).toHaveAttribute('data-current', 'true');
+	await expect(checklistControls(page)).toHaveCount(1);
+
+	await gotoHydrated(page, '/agents');
+	await expect(item(page, 'issue')).toHaveAttribute('data-done', 'true');
+	await expect(item(page, 'runner')).toHaveAttribute('data-current', 'true');
+	await expect(checklistControls(page)).toHaveCount(1);
+});
+
+test('the issue card shows later setup steps as text until they are current', async ({ page }) => {
+	await gotoHydrated(page, issuePath(issueNumber));
+	const checklist = checklistOf(page);
+	await expect(checklist).toBeVisible();
+
+	// The runner is the sole current action. Description, repo and automation
+	// guidance remain visible, but none competes with it as a control.
+	await expect(item(page, 'runner')).toHaveAttribute('data-current', 'true');
+	await expect(checklist.getByText('Optional: give the project a repo')).toBeVisible();
+	await expect(checklist.getByRole('button', { name: 'Add a description' })).toHaveCount(0);
+	await expect(checklist.getByRole('button', { name: 'Turn automation on' })).toHaveCount(0);
+	await expect(checklistControls(page)).toHaveCount(1);
+});
+
+test('at 390 px the fold is open on the checklist, with progress in its summary', async ({
+	page
+}) => {
+	await page.setViewportSize({ width: 390, height: 844 });
+	await gotoHydrated(page, issuePath(issueNumber));
+	// The card's phone fold renders closed by default; while the checklist
+	// shows it is bound open, so the items are reachable without a tap.
+	await expect(checklistOf(page)).toBeVisible();
+	await expect(page.getByText(/first run · \d of 7/)).toBeVisible();
+	await page.setViewportSize({ width: 1280, height: 800 });
+});
+
+test('a registering daemon ticks the runner and CLI items live', async ({ page }) => {
+	await gotoHydrated(page, issuePath(issueNumber));
+	await expect(item(page, 'runner')).toHaveAttribute('data-done', 'false');
+
+	daemon = spawnDaemon({ apiKey: DANA.apiKey, name: RUNNER_NAME });
+
+	// No reload: the page's 5 s poll watches the newest account event, and
+	// `runner.registered` is one.
+	await expect(item(page, 'runner')).toHaveAttribute('data-done', 'true', { timeout: 30_000 });
+	// Installing the CLI is proved by a runner having registered with it.
+	await expect(item(page, 'cli')).toHaveAttribute('data-done', 'true');
+	await expect(item(page, 'rule')).toHaveAttribute('data-current', 'true');
+	await expect(checklistControls(page)).toHaveCount(1);
+});
+
+test('routing, arming and the first run land live on both surfaces', async ({ page, request }) => {
+	const api = apiClient(request, DANA.apiKey);
+	await gotoHydrated(page, issuePath(issueNumber));
+
+	// One runner, so the item offers the one-click global rule by name.
+	await checklistOf(page)
+		.getByRole('button', { name: `Route everything to ${RUNNER_NAME}` })
+		.click();
+	await expect(item(page, 'rule')).toHaveAttribute('data-done', 'true', { timeout: 15_000 });
+	const rules = await body<ListResponse<RoutingRule>>(await api.get('/api/v1/routing-rules'));
+	expect(rules.items).toHaveLength(1);
+
+	// Content is the next control even though automation is displayed one row
+	// above it: briefing the issue comes before exposing the dispatch switch.
+	await expect(item(page, 'content')).toHaveAttribute('data-current', 'true');
+	await expect(checklistControls(page)).toHaveCount(1);
+	await checklistOf(page).getByRole('button', { name: 'Add a description' }).click();
+	const editor = page.getByRole('textbox', { name: /description/i });
+	await expect(editor).toBeFocused();
+	await editor.fill('Work out what the first run should do.');
+	await page
+		.getByRole('heading', { name: 'Description' })
+		.locator('..')
+		.locator('..')
+		.getByRole('button', { name: 'Save' })
+		.click();
+	await expect(item(page, 'content')).toHaveAttribute('data-done', 'true');
+	await expect(item(page, 'enabled')).toHaveAttribute('data-current', 'true');
+	await expect(checklistControls(page)).toHaveCount(1);
+
+	// The sole current action still honors the issue card's read-only state.
+	expect((await api.post(`/api/v1/projects/${projectId}/archive`)).ok()).toBe(true);
+	await gotoHydrated(page, issuePath(issueNumber));
+	const archivedEnable = checklistOf(page).getByRole('button', { name: 'Turn automation on' });
+	await expect(archivedEnable).toBeDisabled();
+	await expect(archivedEnable).toHaveAttribute(
+		'title',
+		'Project archived — unarchive to make changes'
+	);
+	expect((await api.post(`/api/v1/projects/${projectId}/unarchive`)).ok()).toBe(true);
+	await gotoHydrated(page, issuePath(issueNumber));
+
+	// Mount the Agents checklist before the first run too. Once a run exists a
+	// fresh load correctly retires it, so this second live page is what proves
+	// the account-wide landing moment rather than accidentally relying on stale
+	// loader data after navigating away and back.
+	const agentsPage = await page.context().newPage();
+	await gotoHydrated(agentsPage, '/agents');
+	await expect(checklistOf(agentsPage)).toBeVisible();
+	await expect(checklistControls(agentsPage)).toHaveCount(1);
+	await page.bringToFront();
+
+	await checklistOf(page).getByRole('button', { name: 'Turn automation on' }).click();
+	await expect(item(page, 'enabled')).toHaveAttribute('data-done', 'true', { timeout: 15_000 });
+	const settings = await body<{ enabled: boolean }>(await api.get('/api/v1/supervisor/settings'));
+	expect(settings.enabled).toBe(true);
+
+	// The issue was created in "Open", which is active, so arming was the last
+	// dispatch gate. Neither page reloads: each mounted checklist watches the
+	// account event feed and keeps itself sticky until the run row can land.
+	await expect(checklistOf(page).getByText(/Your first run has (started|run) on/)).toBeVisible({
+		timeout: 60_000
+	});
+	// The sticky landing checklist keeps the last run-free rule snapshot even
+	// though fresh steady-state loads no longer fetch rules.
+	await expect(item(page, 'rule')).toHaveAttribute('data-done', 'true');
+	await expect(item(page, 'run')).toHaveAttribute('data-done', 'true');
+	// Background tabs intentionally pause the poll. Focusing this one fires the
+	// visibility-change backstop and makes the account-level update immediate.
+	await agentsPage.bringToFront();
+	await expect(
+		checklistOf(agentsPage).getByText(/Your first run has (started|run) on/)
+	).toBeVisible({ timeout: 60_000 });
+	await expect(
+		checklistOf(agentsPage).getByRole('link', {
+			name: `${PROJECT_NAME}/#${issueNumber}`
+		})
+	).toHaveAttribute('href', issuePath(issueNumber));
+	await agentsPage.close();
+});
+
+test('the checklist retires account-wide once a run exists', async ({ page, request }) => {
+	const api = apiClient(request, DANA.apiKey);
+	const project = (await body<ListResponse<Project>>(await api.get('/api/v1/projects'))).items.find(
+		(p) => p.name === PROJECT_NAME
+	)!;
+	const second = await body<IssueDetail>(
+		await api.post(`/api/v1/projects/${project.id}/issues`, { title: 'Second issue' })
+	);
+	secondIssueNumber = second.number;
+
+	// A fresh load past the first run: no checklist anywhere, and the card is
+	// back to the steady-state explainer with its remedy links (Tines/252).
+	await page.goto(issuePath(secondIssueNumber));
+	await expect(checklistOf(page)).toHaveCount(0);
+	await expect(page.locator('details > summary').filter({ hasText: 'Why?' })).toBeVisible();
+
+	await page.goto('/agents');
+	await expect(checklistOf(page)).toHaveCount(0);
+});

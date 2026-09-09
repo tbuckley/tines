@@ -26,14 +26,26 @@ export type RequirementFixKind = 'attach' | 'reattach_or_reaffirm' | 'delete_and
 
 export interface RequirementFix {
 	kind: RequirementFixKind;
-	/** A runnable `tines …` command line. */
+	/** A runnable `tines …` command line — one command, copy-pastable whole. */
 	command: string;
+	/**
+	 * A second, equally runnable command that also clears the requirement, when
+	 * one exists (`reattach_or_reaffirm`: the reaffirm). Kept out of `command`
+	 * so a consumer can render each in its own code span — a single span
+	 * carrying both fails with commander's `too many arguments` when copied
+	 * (Tines/255).
+	 */
+	alternative?: string;
 }
 
 /**
  * The payload flag for a slot of `type`, specialised by the gate's declared
  * content type where that names a concrete file (a `text/markdown` gate wants
  * `--text @<slot>.md`, not the generic placeholder).
+ *
+ * Only *untyped* requirements render this now (see `attachArg`): with no
+ * declared type the CLI has nothing to type a positional source by, and its
+ * shape-only inference never guesses `text`.
  *
  * `--link`, never `--url`: `-u, --url` is the API base URL on every CLI
  * command, and an agent copying it here would attach a link to the API itself
@@ -58,6 +70,54 @@ function attachFlag(type: ArtifactType, slot: string, contentType: string | unde
 }
 
 /**
+ * The positional `<source>` for a slot of `type` under a gate that declares
+ * it, named after what the reader has to supply: a concrete text gate wants a
+ * file whose default name is the slot's (`<slot>.md`), everything else a
+ * placeholder. The CLI types a positional source by the gate and declares the
+ * gate's concrete content type with the upload (spec "Typing"), so
+ * `attach <ref> prd prd.md` under a `(text, text/plain)` gate stores
+ * `text/plain` — no `--content-type` tail needed (Tines/255).
+ */
+function positionalSource(
+	type: ArtifactType,
+	slot: string,
+	contentType: string | undefined
+): string {
+	switch (type) {
+		case 'file':
+			return '<path>';
+		case 'folder':
+			return '<dir>';
+		case 'link':
+			return '<url>';
+		case 'pr':
+			return '<owner/repo#N>';
+		case 'text': {
+			const ext =
+				contentType === 'text/markdown' ? 'md' : contentType === 'text/plain' ? 'txt' : null;
+			return ext ? `${slot}.${ext}` : '<path>';
+		}
+	}
+}
+
+/**
+ * The source argument the fix command carries: the one-line positional form
+ * for a gate that declares a `type` (Tines/274 — safe since the gate-typed
+ * positional shipped in `tines@0.0.141`; an older CLI fails it with
+ * commander's `too many arguments`, having written nothing), and the flag
+ * form for an untyped one, whose type only a flag can pin down.
+ */
+function attachArg(
+	r: RequirementFixInput,
+	type: ArtifactType,
+	contentType: string | undefined
+): string {
+	return r.type === undefined
+		? attachFlag(type, r.artifact, contentType)
+		: positionalSource(type, r.artifact, contentType);
+}
+
+/**
  * The command that clears `r` on the issue `ref` ("Project/42"), with the
  * shape it takes. Pure: same requirement check in, same command out, on the
  * server and (once the CLI adopts it) in the CLI.
@@ -67,7 +127,7 @@ function attachFlag(type: ArtifactType, slot: string, contentType: string | unde
  */
 export function requirementFix(r: RequirementFixInput, ref: string): RequirementFix {
 	const attach = (type: ArtifactType): string =>
-		`tines issues artifacts attach ${ref} ${r.artifact} ${attachFlag(type, r.artifact, r.content_type)}`;
+		`tines issues artifacts attach ${ref} ${r.artifact} ${attachArg(r, type, r.content_type)}`;
 
 	if (r.status === 'missing' || r.current_type === null) {
 		return { kind: 'attach', command: attach(r.type ?? 'file') };
@@ -82,7 +142,8 @@ export function requirementFix(r: RequirementFixInput, ref: string): Requirement
 		// the two differ (e.g. an untyped requirement over a text slot).
 		return {
 			kind: 'reattach_or_reaffirm',
-			command: `${attach(r.current_type)} — or, if the current content still stands: tines issues artifacts reaffirm ${ref} ${r.artifact}`
+			command: attach(r.current_type),
+			alternative: `tines issues artifacts reaffirm ${ref} ${r.artifact}`
 		};
 	}
 	// type_mismatch: when the artifact's own type can still satisfy the

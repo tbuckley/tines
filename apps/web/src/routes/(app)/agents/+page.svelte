@@ -39,9 +39,11 @@
 	import { page } from '$app/state';
 	import { api } from '$lib/api';
 	import CancelRunDialog from '$lib/components/CancelRunDialog.svelte';
+	import FirstRunChecklist from '$lib/components/FirstRunChecklist.svelte';
 	import { confirmDialog } from '$lib/components/dialogs.svelte';
 	import FleetQueuePanel from '$lib/components/FleetQueuePanel.svelte';
 	import Modal from '$lib/components/Modal.svelte';
+	import NewIssueModal from '$lib/components/NewIssueModal.svelte';
 	import PatInstructions from '$lib/components/PatInstructions.svelte';
 	import PendingButton from '$lib/components/PendingButton.svelte';
 	import RoutingRuleRow from '$lib/components/RoutingRuleRow.svelte';
@@ -50,7 +52,9 @@
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { Select } from '$lib/components/ui/select/index.js';
+	import type { FirstRunInputs } from '$lib/first-run';
 	import { prefersReducedMotion, queueAge, relativeTime } from '$lib/format';
+	import { addRunnerToGlobalRule, findGlobalRule } from '$lib/routing';
 
 	let { data } = $props();
 
@@ -227,6 +231,31 @@
 		setTimeout(() => (errorMessage = null), 8000);
 	}
 
+	// --- first-run checklist -----------------------------------------------------
+
+	// The server decides whether this account has ever had a run; once mounted
+	// the checklist stays for this page-session so the first run can land in its
+	// last item. A later load never shows it again.
+	// svelte-ignore state_referenced_locally
+	let checklistVisible = $state(!data.hasAnyRun);
+	let newIssueOpen = $state(false);
+
+	const checklistInputs = $derived<FirstRunInputs>({
+		surface: 'agents',
+		hasAnyIssue: data.hasAnyIssue,
+		hasAnyProject: data.projects.length > 0,
+		runners: data.runners,
+		rules: data.rules,
+		enabled: data.settings.enabled,
+		issue: data.newestIssue,
+		firstRun: data.runs[0] ?? null
+	});
+
+	async function routeToSoleRunner() {
+		await addRunnerToGlobalRule(data.rules, data.runners[0]);
+		await invalidateAll();
+	}
+
 	// --- kill switch -------------------------------------------------------------
 
 	let togglingEnabled = $state(false);
@@ -343,15 +372,7 @@
 		data.runners.find((r) => r.type === 'local' && r.name === trimmedName && r.online) ?? null
 	);
 
-	/** All three scope dimensions null — a bare `label x` rule is not global. */
-	const globalRule = $derived(
-		data.rules.find(
-			(r) =>
-				r.scope.project_id === null &&
-				r.scope.workflow_state_id === null &&
-				r.scope.label_id === null
-		) ?? null
-	);
+	const globalRule = $derived(findGlobalRule(data.rules));
 
 	async function createRunnerKey() {
 		if (!nameReady || creatingKey || createdKey) return;
@@ -420,38 +441,12 @@
 		}
 	}
 
-	/**
-	 * Route everything to one runner: append it to the global rule, or create
-	 * that rule when there is none. Shared by the managed wizard's final step
-	 * and the local path's one-click "Route everything to <name>".
-	 */
-	async function addRunnerToGlobalRule(runner: Runner): Promise<void> {
-		if (globalRule) {
-			if (globalRule.targets.some((t) => t.runner_id === runner.id)) return;
-			await api.updateRoutingRule(globalRule.id, {
-				targets: [
-					...globalRule.targets.map((t) => ({
-						runner_id: t.runner_id,
-						...(t.tier ? { tier: t.tier } : {})
-					})),
-					{ runner_id: runner.id }
-				]
-			});
-			return;
-		}
-		await api.createRoutingRule({
-			project_id: null,
-			workflow_state_id: null,
-			targets: [{ runner_id: runner.id }]
-		});
-	}
-
 	/** The skippable final step of the managed wizard. */
 	async function addCreatedToRouting() {
 		if (!createdRunner || addingToRouting) return;
 		addingToRouting = true;
 		try {
-			await addRunnerToGlobalRule(createdRunner);
+			await addRunnerToGlobalRule(data.rules, createdRunner);
 			resetAddRunner();
 			await invalidateAll();
 		} catch (err) {
@@ -466,7 +461,7 @@
 		if (!namedLocalOnline || addingToRouting) return;
 		addingToRouting = true;
 		try {
-			await addRunnerToGlobalRule(namedLocalOnline);
+			await addRunnerToGlobalRule(data.rules, namedLocalOnline);
 			resetAddRunner();
 			await refreshAfterDispatch();
 		} catch (err) {
@@ -592,7 +587,7 @@
 	 * catches register, reconnect and offline→online alike.
 	 */
 	const shouldPoll = $derived(
-		addRunnerOpen || !data.runners.some((r) => r.type === 'local' && r.online)
+		addRunnerOpen || checklistVisible || !data.runners.some((r) => r.type === 'local' && r.online)
 	);
 	const runnerSignature = (rs: Runner[]) =>
 		rs
@@ -600,12 +595,24 @@
 			.sort()
 			.join(',');
 	let syncingRunners = false;
+	/** Newest account-level event id; the first non-empty observation also refreshes. */
+	let latestAccountEventId: string | null = null;
 	async function checkRunners() {
 		if (syncingRunners) return;
 		syncingRunners = true;
 		try {
-			const { items } = await api.listRunners();
-			if (runnerSignature(items) !== runnerSignature(untrack(() => data.runners))) {
+			// While the checklist shows, a rule, the kill switch and the first run
+			// all tick it too — and none of them moves the runner signature. The
+			// newest account event is one extra request that catches all three,
+			// and only pre-first-run accounts pay for it.
+			const [{ items }, events] = await Promise.all([
+				api.listRunners(),
+				checklistVisible ? api.listEvents({ limit: 1 }) : Promise.resolve(null)
+			]);
+			const newestEventId = events?.items[0]?.id ?? null;
+			const eventMoved = newestEventId !== null && newestEventId !== latestAccountEventId;
+			latestAccountEventId = newestEventId ?? latestAccountEventId;
+			if (eventMoved || runnerSignature(items) !== runnerSignature(untrack(() => data.runners))) {
 				// Re-runs the loader without remounting, so the open dialog,
 				// the typed name and any created key survive the refresh.
 				await invalidateAll();
@@ -1006,8 +1013,20 @@
 	</div>
 {/if}
 
-<!-- kill-switch off-state banner: persistent while automation is disabled -->
-{#if !data.settings.enabled}
+<!-- Before the first run the checklist stands in for the off-state banner: it
+     says the same thing in place, as one of seven steps. -->
+{#if checklistVisible}
+	<FirstRunChecklist
+		inputs={checklistInputs}
+		oncreateissue={() => (newIssueOpen = true)}
+		onaddrunner={() => (addRunnerOpen = true)}
+		onroute={routeToSoleRunner}
+		onenable={() => setEnabled(true)}
+		onerror={showError}
+	/>
+	<NewIssueModal bind:open={newIssueOpen} projects={data.projects} workflows={data.workflows} />
+{:else if !data.settings.enabled}
+	<!-- kill-switch off-state banner: persistent while automation is disabled -->
 	<div
 		class="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-800 dark:text-amber-300"
 	>

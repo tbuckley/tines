@@ -169,3 +169,33 @@ No run-key fence. `POST /projects`, `/workflows`, `/context` and `/issues` are
 all run-key-legal today, so a starter fuses calls an agent can already make,
 and it never overwrites anything — a name collision reuses or renames.
 `/api/v1/import` is fenced because it *can* overwrite; this is not that.
+
+## Clarified decision (Tines/327, 2026-09-09)
+
+Starter validation is guaranteed before writes, though workflow matching and
+inheritance reads may happen first. `conventions` is reserved for the separately
+seeded project prompt; starter context cannot claim it. Conventions has position
+0 and every declared starter context entry advances positions from 1, regardless
+of kind or whether conventions was omitted.
+
+Shared state prompts remain project-independent because structurally identical
+workflows reuse them. After all workflow placements resolve, project context and
+the first-issue description may render `project_id` and normalized
+`workflow_<name>_{id,name}` variables. Plan therefore creates an editable
+project-scoped `planning-guide` with the actual applied workflow bindings and
+commands; this stays correct under full reuse and collision renames without
+overwriting another project's shared instructions.
+
+The CLI discovers starter inputs from `projects starters`; it does not duplicate
+bundle definitions. Code accepts `--repo`/`--branch`, Plan accepts `--brief`, and
+irrelevant or missing inputs fail before POST. A nonblank starter supplies its
+prompt template unless `--prompt` or `--no-prompt` explicitly overrides it. Blank
+and omitted starters retain the explicit prompt choice. A starter that sets a
+default workflow conflicts with `--default-workflow`.
+
+The chooser caps its first-issue preview at the server's 500-character limit and
+bounds multiline rows with collision-safe index keys. Successful UI creation
+carries a consumed navigation-state marker: only the untouched, sole active
+first issue on the immediate unfiltered project arrival gets the first-issue and
+Agents next-step callout. The marker is removed from history, so reloads and
+ordinary later visits never replay onboarding guidance.

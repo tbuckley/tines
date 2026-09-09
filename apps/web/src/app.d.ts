@@ -56,7 +56,9 @@ declare global {
 			session: import('better-auth').Session | null;
 		}
 		// interface PageData {}
-		// interface PageState {}
+		interface PageState {
+			starterLanding?: { projectId: string; firstIssueId: string };
+		}
 		interface Platform {
 			env: Env;
 			cf?: IncomingRequestCfProperties;
