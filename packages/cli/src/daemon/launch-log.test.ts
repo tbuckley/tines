@@ -127,11 +127,31 @@ function fakeClaudeProviderError(dir: string, exitCode = 1): string {
 	return bin;
 }
 
+function fakeCodex(dir: string): string {
+	const bin = join(dir, 'fakebin');
+	mkdirSync(bin, { recursive: true });
+	const started = JSON.stringify({ type: 'thread.started', thread_id: 'thread_local' });
+	const message = JSON.stringify({
+		type: 'item.completed',
+		item: { type: 'agent_message', text: 'Codex finished.' }
+	});
+	const completed = JSON.stringify({
+		type: 'turn.completed',
+		usage: { input_tokens: 1000, cached_input_tokens: 600, output_tokens: 100 }
+	});
+	writeFileSync(
+		join(bin, 'codex'),
+		`#!/bin/sh\nprintf '%s\\n' '${started}' '${message}' '${completed}'\n`,
+		{ mode: 0o755 }
+	);
+	return bin;
+}
+
 /** Boots the daemon against the stub: a custom template, or claude_code. */
 function startDaemon(
 	port: number,
 	dir: string,
-	harness: { command: string } | { fakeClaudeDir: string },
+	harness: { command: string } | { fakeClaudeDir: string } | { fakeCodexDir: string },
 	trailingSlashes = 0
 ): ChildProcess {
 	const args = [
@@ -152,9 +172,12 @@ function startDaemon(
 		TINES_CONFIG_DIR: dir
 	};
 	if ('command' in harness) args.push('--harness', 'custom', '--command', harness.command);
-	else {
+	else if ('fakeClaudeDir' in harness) {
 		args.push('--harness', 'claude_code');
 		env.PATH = `${harness.fakeClaudeDir}${delimiter}${process.env.PATH ?? ''}`;
+	} else {
+		args.push('--harness', 'codex');
+		env.PATH = `${harness.fakeCodexDir}${delimiter}${process.env.PATH ?? ''}`;
 	}
 	return spawn(NODE, args, { env, stdio: ['ignore', 'pipe', 'pipe'] });
 }
@@ -336,5 +359,23 @@ describe('the run log a local run leaves behind', () => {
 			},
 			provider_session_id: 'session_failed'
 		});
+	}, 30_000);
+
+	it('reports local Codex tokens and thread id while keeping logs readable', async () => {
+		const { server: stub, done } = stubSupervisor();
+		server = stub;
+		await new Promise<void>((r) => stub.listen(0, '127.0.0.1', r));
+		const port = (stub.address() as AddressInfo).port;
+		configDir = mkdtempSync(join(tmpdir(), 'tines-daemon-'));
+
+		child = startDaemon(port, configDir, { fakeCodexDir: fakeCodex(configDir) });
+		const harvest = await done;
+		expect(harvest.finish).toEqual({
+			status: 'completed',
+			usage: { input_tokens: 400, cache_read_tokens: 600, output_tokens: 100 },
+			provider_session_id: 'thread_local'
+		});
+		expect(harvest.log).toContain('[agent] Codex finished.');
+		expect(harvest.log).not.toContain('"thread.started"');
 	}, 30_000);
 });
