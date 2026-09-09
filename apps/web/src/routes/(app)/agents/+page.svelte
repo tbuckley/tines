@@ -260,15 +260,28 @@
 
 	// --- runners -----------------------------------------------------------------
 
+	// The queue's own timestamp, so the card and the Now row above it agree on
+	// whether a hold is still live; both refresh together on invalidation.
+	const now = $derived(data.queue.generated_at);
+
+	/** A live usage-limit hold: the daemon is fine, its provider is not. */
+	function rateLimited(runner: Runner, at: number): boolean {
+		return runner.backoff_reason === 'rate_limit' && (runner.backoff_until ?? 0) > at;
+	}
+
 	function runnerStatusLabel(runner: Runner): string {
 		if (runner.status === 'paused') return 'paused';
 		if (!runner.online) return 'offline';
+		// Ahead of draining: a rate-limited runner polls normally, so "online"
+		// would read as healthy while it is quietly taking nothing.
+		if (rateLimited(runner, now)) return 'rate limited';
 		return runner.draining ? 'restarting to update' : 'online';
 	}
 
 	function statusDotClass(runner: Runner): string {
 		if (runner.status === 'paused') return 'bg-amber-500';
 		if (!runner.online) return 'bg-muted-foreground/40';
+		if (rateLimited(runner, now)) return 'bg-amber-500';
 		return runner.draining ? 'bg-amber-500' : 'bg-emerald-500';
 	}
 
@@ -753,6 +766,8 @@
 			.catch(() => {});
 	}
 	let ruleTargets = $state<{ runner_id: string; tier: '' | ModelTier }[]>([]);
+	let ruleMode = $state<'runners' | 'tier'>('runners');
+	let ruleOverrideTier = $state<ModelTier>('smartest');
 	let savingRule = $state(false);
 	let ruleWarnings = $state<ShadowWarning[]>([]);
 
@@ -782,6 +797,8 @@
 		ruleStateId = prefill.stateId ?? '';
 		ruleLabelId = '';
 		ruleTargets = data.runners.length > 0 ? [{ runner_id: data.runners[0].id, tier: '' }] : [];
+		ruleMode = 'runners';
+		ruleOverrideTier = 'smartest';
 		loadLabels();
 		ruleModalOpen = true;
 	}
@@ -792,7 +809,14 @@
 		ruleProjectId = rule.scope.project_id ?? '';
 		ruleStateId = rule.scope.workflow_state_id ?? '';
 		ruleLabelId = rule.scope.label_id ?? '';
-		ruleTargets = rule.targets.map((t) => ({ runner_id: t.runner_id, tier: t.tier ?? '' }));
+		const tierOnly = rule.targets.length === 1 && rule.targets[0]?.runner_id === '*';
+		ruleMode = tierOnly ? 'tier' : 'runners';
+		ruleOverrideTier = tierOnly ? (rule.targets[0]!.tier ?? 'smartest') : 'smartest';
+		ruleTargets = tierOnly
+			? data.runners.length > 0
+				? [{ runner_id: data.runners[0].id, tier: '' }]
+				: []
+			: rule.targets.map((t) => ({ runner_id: t.runner_id, tier: t.tier ?? '' }));
 		loadLabels();
 		ruleModalOpen = true;
 	}
@@ -809,9 +833,12 @@
 		if (savingRule) return;
 		savingRule = true;
 		try {
-			const targets: RoutingTarget[] = ruleTargets.map((t) =>
-				t.tier ? { runner_id: t.runner_id, tier: t.tier } : { runner_id: t.runner_id }
-			);
+			const targets: RoutingTarget[] =
+				ruleMode === 'tier'
+					? [{ runner_id: '*', tier: ruleOverrideTier }]
+					: ruleTargets.map((t) =>
+							t.tier ? { runner_id: t.runner_id, tier: t.tier } : { runner_id: t.runner_id }
+						);
 			const scope = {
 				project_id: ruleProjectId || null,
 				workflow_state_id: ruleStateId || null,
@@ -834,7 +861,7 @@
 	async function deleteRule(rule: RoutingRuleWithWarnings) {
 		const ok = await confirmDialog({
 			title: `Delete the ${rule.scope.label} routing rule?`,
-			body: 'Issues it matched stop dispatching.',
+			body: 'Matching issues will be re-evaluated against the remaining rules.',
 			confirmLabel: 'Delete rule',
 			destructive: true
 		});
@@ -1048,6 +1075,13 @@
 						{#if runner.budget?.max_run_cost_usd !== undefined}
 							· ${runner.budget.max_run_cost_usd}/run
 						{/if}
+						{#if rateLimited(runner, now)}
+							<span class="text-amber-600 dark:text-amber-400"
+								>· usage limit — resumes {new Date(
+									runner.backoff_until as number
+								).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</span
+							>
+						{/if}
 						{#if runner.launch_failures > 0}
 							<span class="text-amber-600 dark:text-amber-400"
 								>· {runner.launch_failures} consecutive failures</span
@@ -1128,13 +1162,7 @@
 				fallback. Listed most specific first.
 			</p>
 		</div>
-		<Button
-			size="sm"
-			variant="ghost"
-			class="shrink-0"
-			onclick={() => openRuleCreate()}
-			disabled={data.runners.length === 0}
-		>
+		<Button size="sm" variant="ghost" class="shrink-0" onclick={() => openRuleCreate()}>
 			<IconPlus size={14} /> Add rule
 		</Button>
 	</div>
@@ -2110,95 +2138,122 @@
 		{/if}
 		<p class="text-muted-foreground text-xs">
 			All three empty = a global rule. The most specific matching rule wins — label beats project
-			beats state, so a label rule outranks project ∧ state — with no fallback across rules. An
-			issue carrying two labels with a rule each matches both equally and will not dispatch until
-			one rule is made more specific. Agents only pick up issues in active states — backlog,
-			human-review, and done issues never dispatch — so a global rule is already a default for all
-			agent work.
+			beats state, so a label rule outranks project ∧ state. Concrete runner lists never fall back
+			to broader rules when unavailable; tier-only rules inherit their list before availability
+			checks. An issue carrying two labels with a rule each matches both equally and will not
+			dispatch until one rule is made more specific. Agents only pick up issues in active states —
+			backlog, human-review, and done issues never dispatch — so a global rule is already a default
+			for all agent work.
 		</p>
 
 		<div class="space-y-1.5">
-			<p class="text-sm font-medium">Targets (preference order)</p>
-			{#each ruleTargets as target, i (i)}
-				<div class="flex items-center gap-1.5">
-					<span class="text-muted-foreground w-4 text-right text-xs">{i + 1}.</span>
-					<Select
-						class="flex-1"
-						aria-label={`Target ${i + 1} runner`}
-						value={target.runner_id}
-						onchange={(e) =>
-							(ruleTargets[i] = { ...ruleTargets[i], runner_id: e.currentTarget.value })}
-					>
-						{#each data.runners as runner (runner.id)}
-							<option value={runner.id}
-								>{runner.name}{runner.status === 'paused' ? ' (paused)' : ''}</option
-							>
-						{/each}
-					</Select>
-					<Select
-						class="w-32"
-						aria-label={`Target ${i + 1} tier`}
-						value={target.tier}
-						onchange={(e) =>
-							(ruleTargets[i] = {
-								...ruleTargets[i],
-								tier: e.currentTarget.value as '' | ModelTier
-							})}
-					>
-						<option value="">default tier</option>
-						{#each MODEL_TIERS as tier (tier)}
-							<option value={tier}>{tier}</option>
-						{/each}
-					</Select>
-					<Button
-						size="icon"
-						variant="ghost"
-						type="button"
-						class="size-8"
-						disabled={i === 0}
-						aria-label="Move up"
-						onclick={() => moveTarget(i, -1)}
-					>
-						<IconArrowUp size={14} />
-					</Button>
-					<Button
-						size="icon"
-						variant="ghost"
-						type="button"
-						class="size-8"
-						disabled={i === ruleTargets.length - 1}
-						aria-label="Move down"
-						onclick={() => moveTarget(i, 1)}
-					>
-						<IconArrowDown size={14} />
-					</Button>
-					<Button
-						size="icon"
-						variant="ghost"
-						type="button"
-						class="text-destructive size-8"
-						aria-label="Remove target"
-						onclick={() => (ruleTargets = ruleTargets.filter((_, j) => j !== i))}
-					>
-						<IconX size={14} />
-					</Button>
-				</div>
-			{/each}
-			<Button
-				size="sm"
-				variant="ghost"
-				type="button"
-				disabled={data.runners.length === 0}
-				onclick={() =>
-					(ruleTargets = [...ruleTargets, { runner_id: data.runners[0].id, tier: '' }])}
-			>
-				<IconPlus size={14} /> Add target
-			</Button>
-			<p class="text-muted-foreground text-xs">
-				The first target that is online, unpaused, and under its caps takes the issue; if the list
-				is exhausted, the issue waits.
-			</p>
+			<label class="text-sm font-medium" for="rule-mode">Routing mode</label>
+			<Select id="rule-mode" bind:value={ruleMode}>
+				<option value="runners">Choose runners</option>
+				<option value="tier">Set tier only</option>
+			</Select>
 		</div>
+
+		{#if ruleMode === 'tier'}
+			<div class="space-y-1.5">
+				<label class="text-sm font-medium" for="rule-override-tier">Tier</label>
+				<Select id="rule-override-tier" bind:value={ruleOverrideTier}>
+					{#each MODEL_TIERS as tier (tier)}<option value={tier}>{tier}</option>{/each}
+				</Select>
+				<p class="text-muted-foreground text-xs">
+					Uses runners from the next lower-priority matching rule and applies this tier to every
+					fallback runner.
+				</p>
+				{#if !ruleProjectId && !ruleStateId && !ruleLabelId}
+					<p class="text-xs text-amber-700 dark:text-amber-400">
+						Choose a project, state, or label to set only the tier.
+					</p>
+				{/if}
+			</div>
+		{:else}
+			<div class="space-y-1.5">
+				<p class="text-sm font-medium">Targets (preference order)</p>
+				{#each ruleTargets as target, i (i)}
+					<div class="flex items-center gap-1.5">
+						<span class="text-muted-foreground w-4 text-right text-xs">{i + 1}.</span>
+						<Select
+							class="flex-1"
+							aria-label={`Target ${i + 1} runner`}
+							value={target.runner_id}
+							onchange={(e) =>
+								(ruleTargets[i] = { ...ruleTargets[i], runner_id: e.currentTarget.value })}
+						>
+							{#each data.runners as runner (runner.id)}
+								<option value={runner.id}
+									>{runner.name}{runner.status === 'paused' ? ' (paused)' : ''}</option
+								>
+							{/each}
+						</Select>
+						<Select
+							class="w-32"
+							aria-label={`Target ${i + 1} tier`}
+							value={target.tier}
+							onchange={(e) =>
+								(ruleTargets[i] = {
+									...ruleTargets[i],
+									tier: e.currentTarget.value as '' | ModelTier
+								})}
+						>
+							<option value="">default tier</option>
+							{#each MODEL_TIERS as tier (tier)}
+								<option value={tier}>{tier}</option>
+							{/each}
+						</Select>
+						<Button
+							size="icon"
+							variant="ghost"
+							type="button"
+							class="size-8"
+							disabled={i === 0}
+							aria-label="Move up"
+							onclick={() => moveTarget(i, -1)}
+						>
+							<IconArrowUp size={14} />
+						</Button>
+						<Button
+							size="icon"
+							variant="ghost"
+							type="button"
+							class="size-8"
+							disabled={i === ruleTargets.length - 1}
+							aria-label="Move down"
+							onclick={() => moveTarget(i, 1)}
+						>
+							<IconArrowDown size={14} />
+						</Button>
+						<Button
+							size="icon"
+							variant="ghost"
+							type="button"
+							class="text-destructive size-8"
+							aria-label="Remove target"
+							onclick={() => (ruleTargets = ruleTargets.filter((_, j) => j !== i))}
+						>
+							<IconX size={14} />
+						</Button>
+					</div>
+				{/each}
+				<Button
+					size="sm"
+					variant="ghost"
+					type="button"
+					disabled={data.runners.length === 0}
+					onclick={() =>
+						(ruleTargets = [...ruleTargets, { runner_id: data.runners[0].id, tier: '' }])}
+				>
+					<IconPlus size={14} /> Add target
+				</Button>
+				<p class="text-muted-foreground text-xs">
+					The first target that is online, unpaused, and under its caps takes the issue; if the list
+					is exhausted, the issue waits.
+				</p>
+			</div>
+		{/if}
 
 		<div class="flex flex-wrap justify-end gap-2">
 			<Button
@@ -2213,7 +2268,9 @@
 				type="submit"
 				pending={savingRule}
 				pendingLabel="Saving…"
-				disabled={ruleTargets.length === 0 || staleRuleState !== null}
+				disabled={(ruleMode === 'runners' && ruleTargets.length === 0) ||
+					staleRuleState !== null ||
+					(ruleMode === 'tier' && !ruleProjectId && !ruleStateId && !ruleLabelId)}
 			>
 				{editingRule ? 'Save rule' : 'Create rule'}
 			</PendingButton>

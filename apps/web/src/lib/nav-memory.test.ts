@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_NAV_MEMORY, isListHref, parseNavMemory } from './nav-memory.svelte';
+import {
+	DEFAULT_NAV_MEMORY,
+	isListHref,
+	parseNavMemory,
+	rememberedIssuesQuery
+} from './nav-memory.svelte';
 
 describe('isListHref', () => {
 	it.each(['/issues', '/issues?q=a&project=Tines', '/projects/prj_1', '/projects/prj_1?ready=1'])(
@@ -76,5 +81,24 @@ describe('parseNavMemory', () => {
 		const list = { href: '/issues?q=a', label: 'Issues' };
 		const badQuery = parseNavMemory(JSON.stringify({ issuesQuery: 12, lastList: list }));
 		expect(badQuery).toEqual({ issuesQuery: '', projectsQuery: '', lastList: list });
+	});
+});
+
+describe('rememberedIssuesQuery', () => {
+	it('drops the one-shot project param but keeps every other filter', () => {
+		expect(rememberedIssuesQuery('?project=Tines&category=done&q=nav')).toBe(
+			'?category=done&q=nav'
+		);
+	});
+
+	it('remembers nothing when the project param was all there was', () => {
+		expect(rememberedIssuesQuery('?project=Tines')).toBe('');
+	});
+
+	it('leaves a search with no project param exactly as it is', () => {
+		expect(rememberedIssuesQuery('?category=done&label=a&label=b')).toBe(
+			'?category=done&label=a&label=b'
+		);
+		expect(rememberedIssuesQuery('')).toBe('');
 	});
 });

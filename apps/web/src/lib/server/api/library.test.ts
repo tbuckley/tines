@@ -561,3 +561,329 @@ describe('applyImport', () => {
 		expect(result.entries.find((e) => e.action === 'error')?.ref).toMatch(/tines-github/);
 	});
 });
+
+// ---------------------------------------------------------------------------
+// Inheritance pointers (format version 2, Tines/270)
+
+describe('inheritance pointers', () => {
+	/** Chains worth moving: `Base / Shared` under two workflows, and one two deep. */
+	async function seedInheritance() {
+		const base = await createWorkflow(t.db, t.env, actor, {
+			name: 'Base',
+			initial_state: 'Shared',
+			states: [
+				{ name: 'Shared', category: 'active' },
+				{ name: 'Retired', category: 'done' }
+			],
+			transitions: [{ name: 'Retire', from: 'Shared', to: 'Retired' }]
+		});
+		const shared = base.states.find((s) => s.name === 'Shared')!;
+		const alpha = await createWorkflow(t.db, t.env, actor, {
+			name: 'Alpha',
+			initial_state: 'Design',
+			states: [
+				// Cross-workflow base by id, then an in-workflow base by name:
+				// a chain of three, which is the deepest the API allows.
+				{ name: 'Design', category: 'active', inherits_from: shared.id },
+				{ name: 'Review', category: 'active', inherits_from: 'Design' },
+				{ name: 'Done', category: 'done' }
+			],
+			transitions: [
+				// An artifact requirement rides along so the deferred pointer
+				// pass, which re-sends the whole workflow, has something to
+				// lose if it ever stopped preserving the rest of it.
+				{
+					name: 'Submit',
+					from: 'Design',
+					to: 'Review',
+					requires: [{ artifact: 'design-doc', type: 'text', content_type: 'text/markdown' }]
+				},
+				{ name: 'Approve', from: 'Review', to: 'Done' }
+			]
+		});
+		const beta = await createWorkflow(t.db, t.env, actor, {
+			name: 'Beta',
+			initial_state: 'Triage',
+			states: [
+				{ name: 'Triage', category: 'backlog', inherits_from: shared.id },
+				{ name: 'Shipped', category: 'done' }
+			],
+			transitions: [{ name: 'Ship', from: 'Triage', to: 'Shipped' }]
+		});
+		return { base, alpha, beta, shared };
+	}
+
+	/** Every pointer in a document, as `<workflow>/<state> -> <ref>`. */
+	const pointers = (doc: LibraryDocument) =>
+		doc.workflows
+			.flatMap((wf) =>
+				wf.states.map((s) => (s.inherits_from ? `${wf.name}/${s.name} -> ${s.inherits_from}` : ''))
+			)
+			.filter(Boolean)
+			.sort();
+
+	it('exports each pointer by name, and nothing at all for a state without one', async () => {
+		await seedInheritance();
+		const doc = await buildLibraryDocument(t.db, USER);
+		expect(pointers(doc)).toEqual([
+			'Alpha/Design -> Base/Shared',
+			'Alpha/Review -> Alpha/Design',
+			'Beta/Triage -> Base/Shared'
+		]);
+		// A state with no base carries no key — that is what keeps a
+		// pointer-free deployment exporting the version 1 document.
+		const untouched = doc.workflows.flatMap((wf) =>
+			wf.states.filter((s) => !['Design', 'Review', 'Triage'].includes(s.name))
+		);
+		expect(untouched.length).toBeGreaterThan(0);
+		for (const state of untouched) expect(Object.keys(state).sort()).toEqual(['category', 'name']);
+	});
+
+	it('exports the version 1 document, bar the version, when nothing inherits', async () => {
+		await seedLibrary();
+		const doc = await buildLibraryDocument(t.db, USER);
+		expect(doc.version).toBe(2);
+		expect(JSON.stringify(doc.workflows)).not.toContain('inherits_from');
+	});
+
+	it('round-trips every pointer onto a deployment that shares none of the ids', async () => {
+		await seedInheritance();
+		const document = await buildLibraryDocument(t.db, USER);
+		const target = freshDeployment();
+
+		const result = await applyImport(target.db, target.env, actor, { document });
+		expect(result.counts.error).toBe(0);
+		expect(result.counts.refuse).toBe(0);
+
+		const rebuilt = await buildLibraryDocument(target.db, USER);
+		expect(pointers(rebuilt)).toEqual(pointers(document));
+		// By name, and genuinely re-resolved: the target's own ids.
+		const alpha = rebuilt.workflows.find((wf) => wf.name === 'Alpha')!;
+		expect(alpha.states.find((s) => s.name === 'Design')?.inherits_from).toBe('Base/Shared');
+	});
+
+	it('resolves a base that arrives later in the same document', async () => {
+		await seedInheritance();
+		const document = await buildLibraryDocument(t.db, USER);
+		// Children first, base last: order in the document must not matter.
+		document.workflows = [...document.workflows].sort((a, b) =>
+			a.name === 'Base' ? 1 : b.name === 'Base' ? -1 : 0
+		);
+		expect(document.workflows.at(-1)?.name).toBe('Base');
+
+		const target = freshDeployment();
+		const result = await applyImport(target.db, target.env, actor, { document });
+		expect(result.counts.error).toBe(0);
+		const rebuilt = await buildLibraryDocument(target.db, USER);
+		expect(pointers(rebuilt)).toEqual(pointers(document));
+		// The pointers are patched on by re-sending the whole workflow, so the
+		// rest of it — transitions and their artifact requirements — has to
+		// survive that second write untouched.
+		const source = document.workflows.find((wf) => wf.name === 'Alpha')!;
+		expect(rebuilt.workflows.find((wf) => wf.name === 'Alpha')!.transitions).toEqual(
+			source.transitions
+		);
+	});
+
+	it('resolves a base the target already has, including the standard workflow', async () => {
+		await createWorkflow(t.db, t.env, actor, {
+			name: 'Alpha',
+			initial_state: 'Design',
+			states: [{ name: 'Design', category: 'active', inherits_from: 'wfs_std_open' }],
+			transitions: []
+		});
+		const document = await buildLibraryDocument(t.db, USER);
+		expect(pointers(document)).toEqual(['Alpha/Design -> Standard/Open']);
+
+		// The standard workflow is never exported: the target's own copy,
+		// seeded by the migration, is what the name resolves against.
+		const target = freshDeployment();
+		const result = await applyImport(target.db, target.env, actor, { document });
+		expect(result.counts.error).toBe(0);
+		expect(pointers(await buildLibraryDocument(target.db, USER))).toEqual([
+			'Alpha/Design -> Standard/Open'
+		]);
+	});
+
+	it('refuses a workflow whose base is nowhere, naming it, and writes nothing', async () => {
+		await seedInheritance();
+		const document = await buildLibraryDocument(t.db, USER);
+		// The base workflow stays behind: Alpha and Beta now point at nothing.
+		document.workflows = document.workflows.filter((wf) => wf.name !== 'Base');
+		const target = freshDeployment();
+
+		const preview = await applyImport(target.db, target.env, actor, { document, dry_run: true });
+		const refused = preview.entries.filter((e) => e.action === 'refuse');
+		expect(refused.map((e) => e.ref).sort()).toEqual(['workflow "Alpha"', 'workflow "Beta"']);
+		for (const entry of refused) expect(entry.reason).toMatch(/Base \/ Shared/);
+
+		const result = await applyImport(target.db, target.env, actor, { document });
+		expect(result.counts.error).toBe(0);
+		expect(result.counts.refuse).toBe(2);
+		expect((await buildLibraryDocument(target.db, USER)).workflows).toEqual([]);
+	});
+
+	it('refuses the children of a workflow it refuses for a missing base', async () => {
+		await seedInheritance();
+		// Alpha's own Review inherits from its Design, so the whole workflow
+		// goes; a third workflow hanging off Alpha must go with it.
+		const document = await buildLibraryDocument(t.db, USER);
+		document.workflows = document.workflows.filter((wf) => wf.name !== 'Base');
+		document.workflows.push({
+			name: 'Gamma',
+			initial_state: 'Start',
+			states: [{ name: 'Start', category: 'active', inherits_from: 'Alpha/Design' }],
+			transitions: []
+		});
+		const plan = await planImport(freshDeployment().db, USER, { document });
+		const actions = plan.steps
+			.filter((s) => s.entry.section === 'workflow')
+			.map((s) => `${s.entry.ref} ${s.entry.action}`);
+		expect(actions).toEqual([
+			'workflow "Alpha" refuse',
+			'workflow "Beta" refuse',
+			'workflow "Gamma" refuse'
+		]);
+		const gamma = plan.steps.find((s) => s.entry.ref.includes('Gamma'))!;
+		expect(gamma.entry.reason).toMatch(/Alpha \/ Design/);
+	});
+
+	// The rollout configuration: a target that took an earlier version 1
+	// export of this same library already has these workflows, structurally
+	// identical, with no pointers at all. The collision check is a structural
+	// fingerprint, so this is the one branch where a dropped pointer could
+	// pass for "nothing to do".
+	async function targetHoldingTheVersionOneExport() {
+		const source = await buildLibraryDocument(t.db, USER);
+		const stripped: LibraryDocument = {
+			...source,
+			version: 1,
+			workflows: source.workflows.map((wf) => ({
+				...wf,
+				states: wf.states.map(({ name, category }) => ({ name, category }))
+			}))
+		};
+		const target = freshDeployment();
+		const seeded = await applyImport(target.db, target.env, actor, { document: stripped });
+		expect(seeded.counts.error + seeded.counts.refuse).toBe(0);
+		expect(pointers(await buildLibraryDocument(target.db, USER))).toEqual([]);
+		return { target, document: source };
+	}
+
+	it('refuses a workflow that is here already but whose pointers differ, naming the states', async () => {
+		await seedInheritance();
+		const { target, document } = await targetHoldingTheVersionOneExport();
+
+		const result = await applyImport(target.db, target.env, actor, { document });
+		const entries = result.entries.filter((e) => e.section === 'workflow');
+		expect(entries.map((e) => `${e.ref} ${e.action}`).sort()).toEqual([
+			'workflow "Alpha" refuse',
+			'workflow "Base" skip',
+			'workflow "Beta" refuse'
+		]);
+		// The states that differ are named, and the way out is spelled out.
+		expect(entries.find((e) => e.ref.includes('Alpha'))!.reason).toMatch(/"Design", "Review"/);
+		expect(entries.find((e) => e.ref.includes('Alpha'))!.reason).toMatch(/on_collision=overwrite/);
+		// Refused, so nothing moved — never silently skipped with the pointers lost.
+		expect(pointers(await buildLibraryDocument(target.db, USER))).toEqual([]);
+	});
+
+	it('overwrite patches the pointers onto the workflow that is here already', async () => {
+		await seedInheritance();
+		const { target, document } = await targetHoldingTheVersionOneExport();
+
+		const preview = await applyImport(target.db, target.env, actor, {
+			document,
+			on_collision: 'overwrite',
+			dry_run: true
+		});
+		expect(
+			preview.entries
+				.filter((e) => e.section === 'workflow')
+				.map((e) => e.action)
+				.sort()
+		).toEqual(['overwrite', 'overwrite', 'skip']);
+		expect(pointers(await buildLibraryDocument(target.db, USER))).toEqual([]);
+
+		const result = await applyImport(target.db, target.env, actor, {
+			document,
+			on_collision: 'overwrite'
+		});
+		expect(result.counts.error).toBe(0);
+		expect(result.counts.refuse).toBe(0);
+		const rebuilt = await buildLibraryDocument(target.db, USER);
+		expect(pointers(rebuilt)).toEqual(pointers(document));
+		// Only the pointers moved: the rest of the workflow is untouched.
+		const alpha = rebuilt.workflows.find((wf) => wf.name === 'Alpha')!;
+		expect(alpha.transitions).toEqual(
+			document.workflows.find((wf) => wf.name === 'Alpha')!.transitions
+		);
+		// And it converges: a second run has nothing left to do.
+		const again = await applyImport(target.db, target.env, actor, {
+			document,
+			on_collision: 'overwrite'
+		});
+		expect(again.counts.overwrite).toBe(0);
+		expect(again.counts.refuse).toBe(0);
+	});
+
+	it('clears a pointer the document has dropped, on overwrite', async () => {
+		await seedInheritance();
+		const source = await buildLibraryDocument(t.db, USER);
+		const target = freshDeployment();
+		await applyImport(target.db, target.env, actor, { document: source });
+		expect(pointers(await buildLibraryDocument(target.db, USER))).toEqual(pointers(source));
+
+		// Beta stops inheriting; everything else stays as it is.
+		const document: LibraryDocument = {
+			...source,
+			workflows: source.workflows.map((wf) =>
+				wf.name === 'Beta'
+					? { ...wf, states: wf.states.map(({ name, category }) => ({ name, category })) }
+					: wf
+			)
+		};
+		const result = await applyImport(target.db, target.env, actor, {
+			document,
+			on_collision: 'overwrite'
+		});
+		expect(result.counts.error).toBe(0);
+		expect(pointers(await buildLibraryDocument(target.db, USER))).toEqual([
+			'Alpha/Design -> Base/Shared',
+			'Alpha/Review -> Alpha/Design'
+		]);
+	});
+
+	it('imports a version 1 document, which has no pointers, unchanged', async () => {
+		await seedLibrary();
+		const document: LibraryDocument = { ...(await buildLibraryDocument(t.db, USER)), version: 1 };
+		const target = freshDeployment();
+		const result = await applyImport(target.db, target.env, actor, { document });
+		expect(result.counts.error).toBe(0);
+		expect(result.counts.refuse).toBe(0);
+
+		const rebuilt = await buildLibraryDocument(target.db, USER);
+		expect(pointers(rebuilt)).toEqual([]);
+		expect(rebuilt.workflows.map((wf) => wf.name)).toEqual(['Engineering']);
+	});
+
+	it("passes the API's depth refusal through as the entry's error", async () => {
+		await seedInheritance();
+		const document = await buildLibraryDocument(t.db, USER);
+		// One more link than `MAX_INHERITANCE_CHAIN` allows: Base / Shared →
+		// Alpha / Design → Alpha / Review → here.
+		document.workflows.push({
+			name: 'Gamma',
+			initial_state: 'Start',
+			states: [{ name: 'Start', category: 'active', inherits_from: 'Alpha/Review' }],
+			transitions: []
+		});
+		const target = freshDeployment();
+		const result = await applyImport(target.db, target.env, actor, { document });
+		const gamma = result.entries.find((e) => e.ref.includes('Gamma'))!;
+		expect(gamma.action).toBe('error');
+		expect(gamma.reason).toMatch(/chain/i);
+		// Everything else still landed.
+		expect(result.counts.create).toBeGreaterThan(0);
+	});
+});

@@ -9,6 +9,8 @@
 import {
 	RUN_LOG_MAX_BYTES,
 	RUNNER_ONLINE_WINDOW_MS,
+	isTierOnlyTargets,
+	routingScopeSpecificity,
 	type DispatchTargetVerdict,
 	type ModelTier,
 	type QuotaPolicy,
@@ -32,14 +34,6 @@ export interface MatchableIssue {
 	project_id: string;
 	state_id: string;
 	label_ids: string[];
-}
-
-function specificity(rule: {
-	project_id: string | null;
-	workflow_state_id: string | null;
-	label_id: string | null;
-}): number {
-	return (rule.label_id ? 4 : 0) + (rule.project_id ? 2 : 0) + (rule.workflow_state_id ? 1 : 0);
 }
 
 /**
@@ -68,7 +62,7 @@ export function resolveRule<T extends MatchableRule>(
 		if (rule.project_id && rule.project_id !== issue.project_id) continue;
 		if (rule.workflow_state_id && rule.workflow_state_id !== issue.state_id) continue;
 		if (rule.label_id && !issue.label_ids.includes(rule.label_id)) continue;
-		const spec = specificity(rule);
+		const spec = routingScopeSpecificity(rule);
 		if (spec > bestSpec) {
 			bestSpec = spec;
 			best = [rule];
@@ -79,6 +73,91 @@ export function resolveRule<T extends MatchableRule>(
 	if (best.length === 1) return { rule: best[0], ambiguous: [] };
 	if (best.length === 0) return { rule: null, ambiguous: [] };
 	return { rule: null, ambiguous: best };
+}
+
+export interface ResolvedRoute<T extends MatchableRule> {
+	rule: T | null;
+	runnerRule: T | null;
+	tierOverride: ModelTier | null;
+	targets: RoutingTarget[];
+	ambiguous: T[];
+	failure: 'no_rule' | 'ambiguous_rule' | 'no_runner_rule' | 'no_targets' | null;
+}
+
+/** Resolve a winning rule and, for tier-only rules, its lower-priority runner source. */
+export function resolveRoute<T extends MatchableRule>(
+	issue: MatchableIssue,
+	rules: T[]
+): ResolvedRoute<T> {
+	const byRank = new Map<number, T[]>();
+	for (const rule of rules) {
+		if (rule.project_id && rule.project_id !== issue.project_id) continue;
+		if (rule.workflow_state_id && rule.workflow_state_id !== issue.state_id) continue;
+		if (rule.label_id && !issue.label_ids.includes(rule.label_id)) continue;
+		const rank = routingScopeSpecificity(rule);
+		byRank.set(rank, [...(byRank.get(rank) ?? []), rule]);
+	}
+	let winner: T | null = null;
+	let tierOverride: ModelTier | null = null;
+	for (let rank = 7; rank >= 0; rank--) {
+		const matches = byRank.get(rank) ?? [];
+		if (matches.length === 0) continue;
+		if (matches.length > 1) {
+			return {
+				rule: winner,
+				runnerRule: null,
+				tierOverride,
+				targets: [],
+				ambiguous: matches,
+				failure: 'ambiguous_rule'
+			};
+		}
+		const source = matches[0]!;
+		if (!winner) winner = source;
+		const wildcardEntries = source.targets.filter((target) => target.runner_id === '*');
+		if (wildcardEntries.length > 0) {
+			if (!isTierOnlyTargets(source.targets)) {
+				return {
+					rule: winner,
+					runnerRule: source,
+					tierOverride,
+					targets: [],
+					ambiguous: [],
+					failure: 'no_targets'
+				};
+			}
+			tierOverride ??= source.targets[0]!.tier;
+			continue;
+		}
+		const targets = tierOverride
+			? source.targets.map((target) => ({ ...target, tier: tierOverride }))
+			: source.targets.map((target) => ({ ...target }));
+		return {
+			rule: winner,
+			runnerRule: source,
+			tierOverride,
+			targets,
+			ambiguous: [],
+			failure: targets.length === 0 ? 'no_targets' : null
+		};
+	}
+	if (!winner)
+		return {
+			rule: null,
+			runnerRule: null,
+			tierOverride: null,
+			targets: [],
+			ambiguous: [],
+			failure: 'no_rule'
+		};
+	return {
+		rule: winner,
+		runnerRule: null,
+		tierOverride,
+		targets: [],
+		ambiguous: [],
+		failure: 'no_runner_rule'
+	};
 }
 
 /** The winning rule, or null when there is none *or* the match is ambiguous. */
@@ -226,6 +305,27 @@ export function launchBackoffMs(consecutiveFailures: number): number {
 	return Math.min(BACKOFF_BASE_MS * 2 ** (consecutiveFailures - 1), BACKOFF_MAX_MS);
 }
 
+/**
+ * Longest a usage-limit hold may run before the fleet re-probes. A weekly limit
+ * (or a misparsed reset) would otherwise sit for days; a daily probe costs one
+ * ~1 s interrupted run and never a strike.
+ */
+export const RATE_LIMIT_HOLD_MAX_MS = 24 * 60 * 60 * 1000;
+/** Hold applied when the provider gave no usable reset time. */
+export const RATE_LIMIT_HOLD_DEFAULT_MS = 30 * 60 * 1000;
+/** Slack past the reported reset: the window is not always open at that second. */
+export const RATE_LIMIT_HOLD_GRACE_MS = 60 * 1000;
+
+/**
+ * How long to hold a runner whose harness reported a usage limit. A reset in
+ * the past (clock skew, a stale printed time) counts as unknown.
+ */
+export function rateLimitHoldUntil(resumeAt: number | null | undefined, now: number): number {
+	if (resumeAt === null || resumeAt === undefined || !Number.isFinite(resumeAt) || resumeAt <= now)
+		return now + RATE_LIMIT_HOLD_DEFAULT_MS;
+	return Math.min(resumeAt + RATE_LIMIT_HOLD_GRACE_MS, now + RATE_LIMIT_HOLD_MAX_MS);
+}
+
 // ---------------------------------------------------------------------------
 // Target verdicts: why a runner is (not) assignable right now
 
@@ -238,6 +338,8 @@ export interface VerdictRunner {
 	/** 0/1: a local daemon finishing its runs before a self-update restart. */
 	draining: number;
 	backoff_until: number | null;
+	/** 'rate_limit' when the hold is a usage limit; null for the failure backoff. */
+	backoff_reason: string | null;
 }
 
 /** Live concurrency the pass tracks (its own claims included). */
@@ -299,10 +401,12 @@ export function targetVerdict(
 		};
 	}
 	if (runner.backoff_until !== null && runner.backoff_until > now) {
-		return {
-			verdict: 'backing_off',
-			detail: `backing off after repeated failures until ${new Date(runner.backoff_until).toISOString()}`
-		};
+		const until = new Date(runner.backoff_until).toISOString();
+		// A usage limit is the provider's clock, not this runner misbehaving —
+		// say so, or the fleet reads as broken when it is merely waiting.
+		return runner.backoff_reason === 'rate_limit'
+			? { verdict: 'rate_limited', detail: `usage limit reached — resumes ${until}` }
+			: { verdict: 'backing_off', detail: `backing off after repeated failures until ${until}` };
 	}
 	const active = counts.byRunner.get(runner.id) ?? 0;
 	if (active >= runner.max_concurrent) {
@@ -382,9 +486,9 @@ export function isRoutedCandidate<T extends MatchableRule>(
 	if (issue.pinned_runner_id) return true;
 	// An ambiguous match resolves to null here, so a tied issue is correctly
 	// excluded from a queue it would never reach.
-	const rule = matchRule(
+	const route = resolveRoute(
 		{ project_id: issue.project_id, state_id: issue.state_id, label_ids: issue.label_ids },
 		rules
 	);
-	return (rule?.targets.length ?? 0) > 0;
+	return route.targets.length > 0;
 }

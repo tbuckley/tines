@@ -11,6 +11,8 @@ import { getArtifactStore } from '$lib/server/artifact-store';
 import { PROJECT, USER, seedBase } from '../supervisor/test-fixtures';
 import {
 	artifactContentResponse,
+	artifactSiteResponse,
+	createSiteLink,
 	checkRequirements,
 	deleteArtifact,
 	getArtifactDetail,
@@ -317,25 +319,33 @@ describe('issue artifacts', () => {
 		// Stale over an untyped requirement: a new version keeps the slot's own
 		// type (--text, not the file default), or the reaffirm alternative.
 		expect(unmet.get('notes')).toMatchObject({ status: 'stale', current_type: 'text' });
-		expect(unmet.get('notes')!.fix).toContain('attach demo/1 notes --text');
-		expect(unmet.get('notes')!.fix).toContain('reaffirm demo/1 notes');
+		expect(unmet.get('notes')!.fix).toBe(
+			'tines issues artifacts attach demo/1 notes --text <markdown|@file>'
+		);
+		// Two commands, two fields: the primary `fix` runs on its own, and the
+		// reaffirm rides beside it rather than inside it (Tines/255).
+		expect(unmet.get('notes')!.fix).not.toContain('reaffirm');
+		expect(unmet.get('notes')!.fix_alternative).toBe(
+			'tines issues artifacts reaffirm demo/1 notes'
+		);
 
 		// Wrong immutable type: a same-name attach would 422, so the fix
 		// deletes the slot before re-attaching the required type.
 		expect(unmet.get('spec')).toMatchObject({ status: 'type_mismatch', current_type: 'link' });
 		expect(unmet.get('spec')!.fix).toContain('delete demo/1 spec && ');
-		expect(unmet.get('spec')!.fix).toContain('attach demo/1 spec --text');
+		// A bare `text` gate names a path: the gate types it, not the extension.
+		expect(unmet.get('spec')!.fix).toContain('attach demo/1 spec <path>');
 
 		// content_type-only miss on the right type: a plain re-attach suffices.
 		expect(unmet.get('shot')).toMatchObject({ status: 'type_mismatch', current_type: 'file' });
-		expect(unmet.get('shot')!.fix).toContain('attach demo/1 shot --file');
+		expect(unmet.get('shot')!.fix).toContain('attach demo/1 shot <path>');
 		expect(unmet.get('shot')!.fix).not.toContain('delete');
 
 		// A link requirement names --link: --url is the CLI's API base URL on
 		// every command, and an agent copying it here would attach a link to
 		// the API itself (Tines/92).
 		expect(unmet.get('ref')).toMatchObject({ status: 'missing' });
-		expect(unmet.get('ref')!.fix).toContain('attach demo/1 ref --link <url>');
+		expect(unmet.get('ref')!.fix).toBe('tines issues artifacts attach demo/1 ref <url>');
 		expect(unmet.get('ref')!.fix).not.toContain('--url');
 
 		// The issue read is the same source: byte-identical fix per slot, so an
@@ -369,8 +379,56 @@ describe('issue artifacts', () => {
 		expect(error!.message).not.toContain('Attach it (or a new version)');
 		const unmet = error!.details!.unmet as Record<string, unknown>[];
 		expect(unmet[0].fix).toBe(
-			'tines issues artifacts delete demo/1 design-doc && tines issues artifacts attach demo/1 design-doc --text @design-doc.md'
+			'tines issues artifacts delete demo/1 design-doc && tines issues artifacts attach demo/1 design-doc design-doc.md'
 		);
+	});
+
+	it('names one type, the one its command attaches, for an untyped requirement', async () => {
+		// AC4. An untyped gate would take text too, but a summary and a command
+		// naming different types is what sent readers looking for a third
+		// answer (Tines/255). The reachable untyped shapes are `missing` (the
+		// command names --file, and the summary stays generic) and a slot that
+		// already holds a type (the command follows the slot). An untyped
+		// requirement can never be `type_mismatch`: only a declared `type` or
+		// `content_type` can miss, and the workflow validator refuses a
+		// content_type without a file/text type — so `requirementFix`'s untyped
+		// delete-and-attach fallback is pinned in @tines/shared, not here.
+		const wf = await createWorkflow(t.db, t.env, actor, {
+			name: 'Untyped gate',
+			initial_state: 'A',
+			states: [
+				{ name: 'A', category: 'active' },
+				{ name: 'B', category: 'active' }
+			],
+			transitions: [{ name: 'go', from: 'A', to: 'B', requires: [{ artifact: 'notes' }] }]
+		});
+		const issue = await createIssue(t.db, t.env, actor, PROJECT, {
+			title: 'Untyped',
+			workflow_id: wf.id
+		});
+		const missing = (await getIssueDetail(t.db, USER, { id: issue.id })).allowed_transitions.find(
+			(tr) => tr.name === 'go'
+		)!.requires![0];
+		expect(missing).toMatchObject({ status: 'missing', current_type: null });
+		expect(missing.fix).toBe('tines issues artifacts attach demo/1 notes --file <path>');
+
+		// A link in the slot: the untyped gate takes it, and once stale the fix
+		// names --link — the slot's own (immutable) type, never the file
+		// default the empty slot advertised.
+		await upsertArtifact(t.db, t.env, actor, issue.id, 'notes', {
+			type: 'link',
+			url: 'https://x.test/notes'
+		});
+		tick();
+		await updateIssue(t.db, t.env, actor, issue.id, { state: 'B' });
+		tick();
+		await updateIssue(t.db, t.env, actor, issue.id, { state: 'A' });
+		const stale = (await getIssueDetail(t.db, USER, { id: issue.id })).allowed_transitions.find(
+			(tr) => tr.name === 'go'
+		)!.requires![0];
+		expect(stale).toMatchObject({ status: 'stale', current_type: 'link' });
+		expect(stale.fix).toBe('tines issues artifacts attach demo/1 notes --link <url>');
+		expect(stale.fix_alternative).toBe('tines issues artifacts reaffirm demo/1 notes');
 	});
 
 	it('names the exact attach command for a satisfied requirement too', async () => {
@@ -381,7 +439,58 @@ describe('issue artifacts', () => {
 		expect(r.status).toBe('satisfied');
 		// Every entry carries a fix; on a satisfied slot it is the command that
 		// attaches the next version, under the slot's own (immutable) type.
-		expect(r.fix).toBe('tines issues artifacts attach demo/1 design-doc --text @design-doc.md');
+		expect(r.fix).toBe('tines issues artifacts attach demo/1 design-doc design-doc.md');
+	});
+
+	it('renders a text/plain gate as a fix that, run as the CLI runs it, satisfies it', async () => {
+		// The closed loop Tines/255 found broken: the hint used to name
+		// `--text @notes.txt`, which stores text/markdown (the server's default
+		// for a text body) and 422s the very gate that printed it.
+		const requirement = { artifact: 'notes', type: 'text' as const, content_type: 'text/plain' };
+		const before = checkRequirements([requirement], [], 'demo/1')[0];
+		expect(before.status).toBe('missing');
+		expect(before.fix).toBe('tines issues artifacts attach demo/1 notes notes.txt');
+		expect(before.fix).not.toContain('--content-type');
+		// A positional source under a typed gate is typed by the gate, and the
+		// gate's concrete content type is declared with the upload (spec
+		// "Typing") — so that command writes a text artifact at text/plain.
+		const attached: Pick<Artifact, 'name' | 'artifact_type' | 'fresh' | 'current_version'>[] = [
+			{
+				name: 'notes',
+				artifact_type: 'text',
+				fresh: true,
+				current_version: {
+					version: 1,
+					content_type: 'text/plain',
+					created_at: 5
+				} as Artifact['current_version']
+			}
+		];
+		expect(checkRequirements([requirement], attached, 'demo/1')[0].status).toBe('satisfied');
+	});
+
+	it('gives a stale requirement two runnable commands, each in its own span', async () => {
+		const issue = await gatedIssue();
+		await attachDoc(issue.id);
+		// Force elsewhere and back: state_entered_at advances past the attach.
+		tick();
+		await updateIssue(t.db, t.env, actor, issue.id, { state: 'Implementation' });
+		tick();
+		await updateIssue(t.db, t.env, actor, issue.id, { state: 'Design' });
+		const [detail, context, artifacts] = [
+			await getIssueDetail(t.db, USER, { id: issue.id }),
+			await effectiveContextForIssue(t.db, USER, issue.id),
+			await listArtifacts(t.db, USER, issue.id)
+		];
+		const r = detail.allowed_transitions.find((tr) => tr.name === 'approve')!.requires![0];
+		expect(r.status).toBe('stale');
+		// `fix` stays one command, so copying it verbatim runs (Tines/255).
+		expect(r.fix).toBe('tines issues artifacts attach demo/1 design-doc design-doc.md');
+		expect(r.fix_alternative).toBe('tines issues artifacts reaffirm demo/1 design-doc');
+		const block = issueBlock(detail, context, artifacts);
+		expect(block).toContain(
+			'attach: `tines issues artifacts attach demo/1 design-doc design-doc.md` — or reaffirm: `tines issues artifacts reaffirm demo/1 design-doc`'
+		);
 	});
 
 	it('counts an artifact attached before the gating state as stale, per the strict rule', async () => {
@@ -687,7 +796,9 @@ describe('issue artifacts', () => {
 		await transitionIssue(t.db, t.env, actor, issue.id, { action: 'submit' }).catch(
 			(e) => (error = e)
 		);
-		expect((error!.details!.unmet as Record<string, unknown>[])[0].fix).toContain('--folder <dir>');
+		expect((error!.details!.unmet as Record<string, unknown>[])[0].fix).toContain(
+			'attach demo/1 screenshots <dir>'
+		);
 
 		// A sibling `file` artifact does not satisfy the folder-typed slot…
 		tick();
@@ -925,11 +1036,15 @@ describe('issue artifacts', () => {
 		expect(block).toContain(
 			'Requires: artifact `design-doc` (text, text/markdown) — **missing; attach it first**'
 		);
-		// The gate decides the flag: a (text, text/markdown) slot names --text
-		// and a concrete filename, not the generic placeholder.
+		// The gate decides the source: a (text, text/markdown) slot names the
+		// one-line positional form and a concrete filename — no flag at all,
+		// so the span is what an agent runs (Tines/274).
 		expect(block).toContain(
-			'attach: `tines issues artifacts attach demo/1 design-doc --text @design-doc.md`'
+			'attach: `tines issues artifacts attach demo/1 design-doc design-doc.md`'
 		);
+		// The generic "Attach one:" line still lists the flags; the gated
+		// requirement no longer names one.
+		expect(block).not.toContain('--text @design-doc.md');
 
 		tick();
 		await attachDoc(issue.id, '# Secret design');
@@ -953,6 +1068,10 @@ describe('issue artifacts', () => {
 		);
 		expect(emptyBlock).toContain('No artifacts attached.');
 		expect(emptyBlock).toContain('Attach one: `tines issues artifacts attach demo/2 <name> …`');
+		// The clause has to describe what the gated lines below actually name:
+		// since Tines/274 that is a positional source, not a flag.
+		expect(emptyBlock).toContain('— the source follows the gate;');
+		expect(emptyBlock).not.toContain('the flag follows the gate');
 		// No flag is privileged (Tines/241): the old line put `--file <path>`
 		// inside the command itself, which taught agents to reach for it under
 		// gates that wanted anything else.
@@ -963,5 +1082,229 @@ describe('issue artifacts', () => {
 		);
 		// The link flag is --link here too (--url is the API base URL).
 		expect(emptyBlock).not.toContain('--url');
+		// Sites are the one attach whose content has rules a gate cannot state
+		// (Tines/272): inline-only, responsive, and how to see the result.
+		expect(emptyBlock).toContain('renders live as a prototype');
+		expect(emptyBlock).toContain('external CDNs are blocked');
+		expect(emptyBlock).toContain('width=device-width');
+		expect(emptyBlock).toContain('site-link demo/2 <name>');
+	});
+
+	// -------------------------------------------------------------------------
+	// Sites: HTML artifacts served live under /s/<token>/
+
+	describe('sites', () => {
+		// The in-memory artifact store is memoized per Env object, so these
+		// mutate the harness env rather than spreading a copy of it.
+		const siteEnv = (over: Partial<Env> = {}): Env => {
+			Object.assign(t.env, {
+				BETTER_AUTH_SECRET: 'e2e-secret',
+				BETTER_AUTH_URL: 'https://tines.example.com',
+				...over
+			});
+			return t.env;
+		};
+		const bytes = (s: string) => new TextEncoder().encode(s);
+		const PAGE = '<!doctype html><meta name="viewport" content="width=device-width"><h1>hi</h1>';
+		const mint = (issueId: string, name: string, env: Env, opts: { version?: number } = {}) =>
+			createSiteLink(t.db, env, actor, issueId, name, {
+				...opts,
+				requestOrigin: 'http://localhost:8788'
+			});
+		const serve = (url: string, env: Env) => {
+			const parsed = new URL(url);
+			const [, , token, ...rest] = parsed.pathname.split('/');
+			return artifactSiteResponse(t.db, env, parsed, token, rest.join('/'));
+		};
+
+		async function htmlIssue(env = siteEnv()) {
+			const issue = await createIssue(t.db, t.env, actor, PROJECT, { title: 'Prototype' });
+			await uploadArtifactFile(t.db, t.env, actor, issue.id, 'proto', {
+				filename: 'proto.html',
+				contentType: 'text/html',
+				bytes: bytes(PAGE)
+			});
+			return { issue, link: await mint(issue.id, 'proto', env) };
+		}
+
+		it('mints a same-origin link when no sandbox origin is configured', async () => {
+			const { link } = await htmlIssue();
+			expect(link.mode).toBe('same-origin');
+			expect(link.version).toBe(1);
+			expect(link.url.startsWith('http://localhost:8788/s/v1.')).toBe(true);
+			expect(link.url.endsWith('/')).toBe(true);
+			expect(link.expires_at).toBe(clock + 60 * 60 * 1000);
+		});
+
+		it('mints on the sandbox origin when one is configured', async () => {
+			const env = siteEnv({ ARTIFACT_SANDBOX_ORIGIN: 'https://proto.example.workers.dev' });
+			const { link } = await htmlIssue(env);
+			expect(link.mode).toBe('sandbox-origin');
+			expect(link.url.startsWith('https://proto.example.workers.dev/s/')).toBe(true);
+		});
+
+		it.each(['https://proto.example.workers.dev/', 'https://PROTO.example.workers.dev:443/'])(
+			'canonicalizes %s for both minting and serving',
+			async (configured) => {
+				const env = siteEnv({ ARTIFACT_SANDBOX_ORIGIN: configured });
+				const { link } = await htmlIssue(env);
+				expect(link.mode).toBe('sandbox-origin');
+				expect(link.url).toMatch(/^https:\/\/proto.example.workers.dev\/s\/v1\./);
+				const response = await serve(link.url, env);
+				expect(response.status).toBe(200);
+				expect(response.headers.get('content-security-policy')).not.toContain('sandbox');
+			}
+		);
+
+		it.each([
+			'garbage',
+			'javascript:alert(1)',
+			'https://proto.example.workers.dev/path',
+			'https://proto.example.workers.dev/?x=1',
+			'https://proto.example.workers.dev/#x',
+			'https://user:pass@proto.example.workers.dev'
+		])('falls back consistently for invalid config %s', async (configured) => {
+			const env = siteEnv({ ARTIFACT_SANDBOX_ORIGIN: configured });
+			const { link } = await htmlIssue(env);
+			expect(link.mode).toBe('same-origin');
+			expect(link.url).toMatch(/^http:\/\/localhost:8788\/s\/v1\./);
+			expect((await serve(link.url, env)).headers.get('content-security-policy')).toContain(
+				'sandbox allow-scripts'
+			);
+		});
+
+		it('serves the page with a CSP pinned to its own prefix, sandboxed on the app origin', async () => {
+			const { link } = await htmlIssue();
+			const res = await serve(link.url, siteEnv());
+			expect(res.status).toBe(200);
+			expect(await res.text()).toBe(PAGE);
+			expect(res.headers.get('content-type')).toBe('text/html; charset=utf-8');
+			expect(res.headers.get('content-disposition')).toBe('inline; filename="proto.html"');
+			const csp = res.headers.get('content-security-policy')!;
+			expect(csp).toContain(`connect-src ${link.url}`);
+			expect(csp).toContain('sandbox allow-scripts');
+			expect(csp).toContain('frame-ancestors https://tines.example.com');
+			// Never 'self': that would name the whole app origin, /api included.
+			expect(csp).not.toContain("'self'");
+		});
+
+		it('drops the sandbox directive only when served from the sandbox host itself', async () => {
+			const env = siteEnv({ ARTIFACT_SANDBOX_ORIGIN: 'https://proto.example.workers.dev' });
+			t.env.ARTIFACT_SANDBOX_ORIGIN = 'https://proto.example.workers.dev';
+			const { link } = await htmlIssue(env);
+			expect((await serve(link.url, env)).headers.get('content-security-policy')).not.toContain(
+				'sandbox'
+			);
+			// The same token replayed against the app origin is still contained.
+			const onApp = link.url.replace('https://proto.example.workers.dev', 'http://localhost:8788');
+			expect((await serve(onApp, env)).headers.get('content-security-policy')).toContain('sandbox');
+		});
+
+		it('serves a text artifact and pins the link to a version', async () => {
+			const issue = await createIssue(t.db, t.env, actor, PROJECT, { title: 'Text site' });
+			await upsertArtifact(t.db, t.env, actor, issue.id, 'prd', {
+				type: 'text',
+				content: '<h1>v1</h1>',
+				content_type: 'text/html'
+			});
+			const v1 = await mint(issue.id, 'prd', siteEnv());
+			tick();
+			// A text version carries its own content_type (an append that omits it
+			// falls back to text/markdown, and would stop being a site).
+			await upsertArtifact(t.db, t.env, actor, issue.id, 'prd', {
+				content: '<h1>v2</h1>',
+				content_type: 'text/html'
+			});
+			expect(await (await serve(v1.url, siteEnv())).text()).toBe('<h1>v1</h1>');
+			const current = await mint(issue.id, 'prd', siteEnv());
+			expect(current.version).toBe(2);
+			expect(await (await serve(current.url, siteEnv())).text()).toBe('<h1>v2</h1>');
+			const pinned = await mint(issue.id, 'prd', siteEnv(), { version: 1 });
+			expect(pinned.version).toBe(1);
+		});
+
+		it('serves a folder site: entry, siblings, directory redirect and 404', async () => {
+			const issue = await createIssue(t.db, t.env, actor, PROJECT, { title: 'Folder site' });
+			await uploadArtifactFolder(t.db, t.env, actor, issue.id, 'app', [
+				{ path: 'index.html', contentType: 'text/html', bytes: bytes('<script src="app.js">') },
+				{ path: 'app.js', contentType: 'text/javascript', bytes: bytes('console.log(1)') },
+				{ path: 'docs/index.html', contentType: 'text/html', bytes: bytes('<h1>docs</h1>') }
+			]);
+			const link = await mint(issue.id, 'app', siteEnv());
+			expect(await (await serve(link.url, siteEnv())).text()).toBe('<script src="app.js">');
+			const js = await serve(`${link.url}app.js`, siteEnv());
+			expect(await js.text()).toBe('console.log(1)');
+			expect(js.headers.get('content-type')).toBe('text/javascript; charset=utf-8');
+
+			const dir = await serve(`${link.url}docs`, siteEnv());
+			expect(dir.status).toBe(302);
+			expect(dir.headers.get('location')).toBe(new URL(`${link.url}docs/`).pathname);
+			expect(await (await serve(`${link.url}docs/`, siteEnv())).text()).toBe('<h1>docs</h1>');
+			expect((await serve(`${link.url}missing.js`, siteEnv())).status).toBe(404);
+		});
+
+		it('422s artifacts that are not sites', async () => {
+			const issue = await createIssue(t.db, t.env, actor, PROJECT, { title: 'Not sites' });
+			await uploadArtifactFile(t.db, t.env, actor, issue.id, 'shot', {
+				filename: 'shot.png',
+				contentType: 'image/png',
+				bytes: bytes('PNG')
+			});
+			await upsertArtifact(t.db, t.env, actor, issue.id, 'notes', {
+				type: 'text',
+				content: '# notes'
+			});
+			await uploadArtifactFolder(t.db, t.env, actor, issue.id, 'bundle', [
+				{ path: 'readme.md', contentType: 'text/markdown', bytes: bytes('# x') }
+			]);
+			for (const name of ['shot', 'notes', 'bundle']) {
+				await expect(mint(issue.id, name, siteEnv())).rejects.toMatchObject({
+					status: 422,
+					code: 'not_a_site'
+				});
+			}
+			await expect(
+				mint(issue.id, 'bundle', siteEnv()).catch((e: ApiFail) => Promise.reject(e.details))
+			).rejects.toMatchObject({ paths: ['readme.md'] });
+		});
+
+		it('503s when the server has no secret to sign with', async () => {
+			delete t.env.BETTER_AUTH_SECRET;
+			delete t.env.SECRET_ENCRYPTION_KEY;
+			const issue = await createIssue(t.db, t.env, actor, PROJECT, { title: 'No secret' });
+			await uploadArtifactFile(t.db, t.env, actor, issue.id, 'proto', {
+				filename: 'proto.html',
+				contentType: 'text/html',
+				bytes: bytes(PAGE)
+			});
+			await expect(
+				createSiteLink(t.db, t.env, actor, issue.id, 'proto', {
+					requestOrigin: 'http://localhost:8788'
+				})
+			).rejects.toMatchObject({ status: 503, code: 'site_unavailable' });
+		});
+
+		it('refuses tampered, expired and other-secret tokens with HTML pages', async () => {
+			const { link } = await htmlIssue();
+			const garbage = await serve('http://localhost:8788/s/nope/', siteEnv());
+			expect(garbage.status).toBe(404);
+			expect(garbage.headers.get('content-type')).toContain('text/html');
+			expect(await garbage.text()).toContain('Not found');
+
+			expect((await serve(link.url, siteEnv({ BETTER_AUTH_SECRET: 'other' }))).status).toBe(404);
+			siteEnv();
+
+			clock += 60 * 60 * 1000 + 1;
+			const expired = await serve(link.url, siteEnv());
+			expect(expired.status).toBe(403);
+			expect(await expired.text()).toContain('expired');
+		});
+
+		it('404s a still-valid token once the artifact is deleted', async () => {
+			const { issue, link } = await htmlIssue();
+			expect((await serve(link.url, siteEnv())).status).toBe(200);
+			await deleteArtifact(t.db, t.env, actor, issue.id, 'proto');
+			expect((await serve(link.url, siteEnv())).status).toBe(404);
+		});
 	});
 });

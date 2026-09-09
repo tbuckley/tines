@@ -1,15 +1,19 @@
 <script lang="ts">
-	import type {
-		Artifact,
-		ArtifactDetail,
-		ArtifactVersion,
-		ArtifactVersionFile
+	import {
+		siteEntry,
+		type Artifact,
+		type ArtifactDetail,
+		type ArtifactSiteLink,
+		type ArtifactVersion,
+		type ArtifactVersionFile
 	} from '@tines/shared';
 	import IconChevronLeft from '@tabler/icons-svelte/icons/chevron-left';
 	import IconChevronRight from '@tabler/icons-svelte/icons/chevron-right';
 	import IconDownload from '@tabler/icons-svelte/icons/download';
 	import IconExternalLink from '@tabler/icons-svelte/icons/external-link';
+	import IconCode from '@tabler/icons-svelte/icons/code';
 	import IconFile from '@tabler/icons-svelte/icons/file';
+	import IconFolder from '@tabler/icons-svelte/icons/folder';
 	import { api } from '$lib/api';
 	import Markdown from '$lib/components/Markdown.svelte';
 	import Modal from '$lib/components/Modal.svelte';
@@ -39,6 +43,13 @@
 	let pathPick = $state<string | null>(null);
 	/** Fetched text contents, keyed by name@version[/path]. */
 	let textCache = $state<Record<string, string>>({});
+	/** Site view: the minted link, and the two ways out of the rendered page. */
+	let siteLink = $state<ArtifactSiteLink | null>(null);
+	let siteError = $state<string | null>(null);
+	let showSource = $state(false);
+	let showFiles = $state(false);
+	/** Simulated device width for the frame; `null` fills the dialog. */
+	let deviceWidth = $state<number | null>(null);
 
 	let loadToken = 0;
 	$effect(() => {
@@ -49,6 +60,8 @@
 		loadError = null;
 		versionPick = null;
 		pathPick = null;
+		showSource = false;
+		showFiles = false;
 		api
 			.getArtifact(issueId, name)
 			.then((full) => {
@@ -93,7 +106,19 @@
 		return `/api/v1/issues/${issueId}/artifacts/${encodeURIComponent(selectedName ?? '')}/content${q ? `?${q}` : ''}`;
 	};
 
-	type ViewKind = 'image' | 'pdf' | 'markdown' | 'text' | 'download';
+	/**
+	 * The entry document when this version is a site (HTML file/text, or a
+	 * folder with a root index.html) — the thing `/s/<token>/` will serve.
+	 */
+	const entry = $derived(
+		detail && version
+			? siteEntry(detail.artifact_type, version.content_type, version.files ?? [])
+			: null
+	);
+	/** The site renders unless the reader asked for the source or a folder file. */
+	const isSite = $derived(entry !== null && !showSource && !showFiles && pathPick === null);
+
+	type ViewKind = 'site' | 'image' | 'pdf' | 'markdown' | 'text' | 'download';
 	function viewKind(contentType: string | null): ViewKind {
 		const ct = contentType ?? '';
 		if (ct.startsWith('image/')) return 'image';
@@ -107,6 +132,7 @@
 	const preview = $derived.by(
 		(): { kind: ViewKind; path?: string; contentType: string | null } | null => {
 			if (!detail || !version) return null;
+			if (isSite) return { kind: 'site', contentType: version.content_type };
 			if (detail.artifact_type === 'folder') {
 				if (pathPick === null) return null;
 				const file = (version.files ?? []).find((f) => f.path === pathPick);
@@ -139,6 +165,47 @@
 				textCache = { ...textCache, [key]: '(failed to load content)' };
 			});
 	});
+
+	// One mint per artifact+version entering the site view: the link is a
+	// capability with an hour's life, so it is re-minted whenever the version
+	// pick changes or the viewer is reopened.
+	let siteToken = 0;
+	$effect(() => {
+		if (!isSite || !selectedName || !version) {
+			return;
+		}
+		const name = selectedName;
+		const pinned = version.version;
+		const token = ++siteToken;
+		siteLink = null;
+		siteError = null;
+		api
+			.createArtifactSiteLink(issueId, name, { version: pinned })
+			.then((link) => {
+				if (token === siteToken) siteLink = link;
+			})
+			.catch(() => {
+				if (token === siteToken) siteError = 'Couldn’t open this preview — close and retry.';
+			});
+	});
+
+	/**
+	 * `allow-same-origin` is only safe on the dedicated sandbox host, where the
+	 * page's origin is not ours; on the app origin the server's CSP `sandbox`
+	 * already forces an opaque origin, and granting it here would undo that.
+	 * Neither mode grants top navigation, so the page cannot move the app.
+	 */
+	const frameSandbox = $derived(
+		siteLink?.mode === 'sandbox-origin'
+			? 'allow-scripts allow-same-origin allow-forms allow-modals allow-popups'
+			: 'allow-scripts allow-forms allow-modals allow-popups'
+	);
+
+	const WIDTHS: { label: string; width: number | null }[] = [
+		{ label: 'Phone', width: 390 },
+		{ label: 'Tablet', width: 768 },
+		{ label: 'Full', width: null }
+	];
 
 	const allImages = (files: ArtifactVersionFile[]) =>
 		files.length > 0 && files.every((f) => f.content_type.startsWith('image/'));
@@ -259,6 +326,8 @@
 				<span class="font-medium">{prRef(version)}</span>
 				<span class="text-muted-foreground truncate text-xs">{prUrl(version)}</span>
 			</a>
+		{:else if detail.artifact_type === 'folder' && isSite}
+			{@render fileBody()}
 		{:else if detail.artifact_type === 'folder'}
 			{@const files = version.files ?? []}
 			{#if pathPick === null && allImages(files)}
@@ -362,6 +431,19 @@
 		{:else}
 			{@render fileBody()}
 		{/if}
+		{#if entry !== null && (showSource || showFiles)}
+			<button
+				type="button"
+				class="text-muted-foreground hover:text-foreground mt-2 inline-flex items-center gap-1 text-xs"
+				onclick={() => {
+					showSource = false;
+					showFiles = false;
+					pathPick = null;
+				}}
+			>
+				← Back to the rendered page
+			</button>
+		{/if}
 	{:else if loadError}
 		<p
 			class="border-destructive/40 bg-destructive/10 text-destructive rounded-md border px-3 py-2 text-sm"
@@ -375,7 +457,87 @@
 
 {#snippet fileBody()}
 	{#if preview}
-		{#if preview.kind === 'image'}
+		{#if preview.kind === 'site'}
+			<div class="space-y-2">
+				<div class="flex flex-wrap items-center gap-2">
+					<div
+						role="radiogroup"
+						aria-label="Preview width"
+						class="hidden items-center gap-1 rounded-md border p-0.5 sm:flex"
+					>
+						{#each WIDTHS as choice (choice.label)}
+							<button
+								type="button"
+								role="radio"
+								aria-checked={deviceWidth === choice.width}
+								class="rounded px-2 py-1 text-xs {deviceWidth === choice.width
+									? 'bg-muted font-medium'
+									: 'text-muted-foreground hover:text-foreground'}"
+								onclick={() => (deviceWidth = choice.width)}
+							>
+								{choice.label}
+							</button>
+						{/each}
+					</div>
+					{#if siteLink}
+						<a
+							href={siteLink.url}
+							target="_blank"
+							rel="noopener noreferrer"
+							class="text-muted-foreground hover:text-foreground inline-flex items-center gap-1 text-xs"
+						>
+							<IconExternalLink size={14} /> Open full page
+						</a>
+					{/if}
+					{#if detail?.artifact_type === 'folder'}
+						<button
+							type="button"
+							class="text-muted-foreground hover:text-foreground ml-auto inline-flex items-center gap-1 text-xs"
+							onclick={() => (showFiles = true)}
+						>
+							<IconFolder size={14} /> Files
+						</button>
+					{:else}
+						<button
+							type="button"
+							class="text-muted-foreground hover:text-foreground ml-auto inline-flex items-center gap-1 text-xs"
+							onclick={() => (showSource = true)}
+						>
+							<IconCode size={14} /> Source
+						</button>
+					{/if}
+				</div>
+				{#if siteError}
+					<p
+						class="border-destructive/40 bg-destructive/10 text-destructive rounded-md border px-3 py-2 text-sm"
+					>
+						{siteError}
+					</p>
+				{:else if siteLink}
+					<div
+						class="mx-auto w-full"
+						style={deviceWidth ? `max-width:${deviceWidth}px` : undefined}
+					>
+						<iframe
+							src={siteLink.url}
+							title={`${selectedName} preview`}
+							sandbox={frameSandbox}
+							referrerpolicy="no-referrer"
+							loading="lazy"
+							class="h-[70dvh] w-full rounded-md border bg-white"
+						></iframe>
+					</div>
+					{#if siteLink.mode === 'same-origin'}
+						<p class="text-muted-foreground text-xs">
+							Sandboxed on the app origin — storage APIs (localStorage, cookies) are unavailable
+							here.
+						</p>
+					{/if}
+				{:else}
+					<p class="text-muted-foreground text-xs">Preparing preview…</p>
+				{/if}
+			</div>
+		{:else if preview.kind === 'image'}
 			<img
 				src={contentUrl({ path: preview.path, inline: true })}
 				alt={preview.path ?? selectedName}

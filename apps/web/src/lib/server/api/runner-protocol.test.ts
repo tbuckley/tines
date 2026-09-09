@@ -1,6 +1,7 @@
 import { RUN_LOG_MAX_BYTES } from '@tines/shared';
 import { describe, expect, it } from 'vitest';
 import {
+	addComment,
 	addIssue,
 	addRun,
 	addRunner,
@@ -379,6 +380,48 @@ describe('pollRunner', () => {
 		expect(second.response.assignments).toEqual([]);
 	});
 
+	it('opens the delivered issue block with the human steer that started the round', async () => {
+		const t = world();
+		const runnerId = addRunner(t);
+		const issue = addIssue(t);
+		// A previous run ended, then the human sent the issue back and said why.
+		addRun(t, {
+			issueId: issue,
+			runnerId,
+			status: 'completed',
+			endedAt: NOW - 7_200_000,
+			stateAtStart: REVIEW
+		});
+		addTransitionEvent(t, {
+			issueId: issue,
+			apiKeyId: null,
+			at: NOW - 3_600_000,
+			from: REVIEW,
+			to: OPEN,
+			fromName: 'In review',
+			toName: 'Open',
+			action: 'Send back'
+		});
+		addComment(t, { issueId: issue, body: 'CI is red on the e2e job.', at: NOW - 3_500_000 });
+		const runId = addRun(t, { issueId: issue, runnerId });
+
+		const { response } = await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, runnerId),
+			{ owned_runs: [] },
+			NOW + 1
+		);
+		const prompt = response.assignments[0].prompt;
+		expect(response.assignments[0].run.id).toBe(runId);
+		// The steer reaches the agent through the delivered prompt, not only
+		// through a read of the issue.
+		expect(prompt).toContain('### Since the last run');
+		expect(prompt).toContain('Send back');
+		expect(prompt).toContain('CI is red on the e2e job.');
+		expect(prompt.indexOf('### Since the last run')).toBeLessThan(prompt.indexOf('### Comments'));
+	});
+
 	it('cancels the assignment instead of delivering when the issue moved away', async () => {
 		const t = world();
 		const runnerId = addRunner(t);
@@ -691,6 +734,114 @@ describe('finishRun', () => {
 		// The pressure moved to the runner rather than disappearing.
 		expect(runnerById(t, runnerId).launch_failures).toBe(1);
 		expect(eventsOfType(t, 'runner.errored')).toHaveLength(1);
+	});
+
+	it('a usage limit spares the issue and holds the runner to the reset', async () => {
+		const t = world();
+		const runnerId = addRunner(t);
+		const issue = addIssue(t, { attemptCount: 2 });
+		const runId = await delivered(t, { runnerId, issueId: issue });
+
+		const run = await finishRun(
+			t.db,
+			t.env,
+			await runnerRow(t, runnerId),
+			runId,
+			{
+				status: 'failed',
+				error: 'rate limited: session limit · resets 3pm (America/New_York)',
+				judgment: 'rate_limited',
+				resume_at: NOW + 3_600_000
+			},
+			NOW + 30
+		);
+		expect(run.outcome).toBe('interrupted');
+		// The wall was the provider's, not this issue's: no strike, no parking.
+		expect(issueById(t, issue).attempt_count).toBe(2);
+		expect(issueById(t, issue).needs_attention).toBe(0);
+		expect(eventsOfType(t, 'issue.parked')).toHaveLength(0);
+		expect(keyForRun(t, runId)?.revoked_at).toBe(NOW + 30);
+		const r = runnerById(t, runnerId);
+		expect(r.backoff_until).toBe(NOW + 3_600_000 + 60_000);
+		expect(r.backoff_reason).toBe('rate_limit');
+		// Not the dead-credential counter: nothing is wrong with this runner.
+		expect(r.launch_failures).toBe(0);
+		expect(eventsOfType(t, 'runner.errored')).toHaveLength(0);
+		expect(eventsOfType(t, 'runner.rate_limited')).toHaveLength(1);
+	});
+
+	it('holds on the empty-stdout shape too: a run that died while still launching', async () => {
+		const t = world();
+		const runnerId = addRunner(t);
+		const runId = await delivered(t, { runnerId, issueId: addIssue(t) });
+		await finishRun(
+			t.db,
+			t.env,
+			await runnerRow(t, runnerId),
+			runId,
+			{
+				status: 'failed',
+				error: "rate limited: You've hit your session limit",
+				judgment: 'rate_limited'
+			},
+			NOW + 30
+		);
+		// No reset reported: the default hold, not nothing.
+		expect(runnerById(t, runnerId).backoff_until).toBe(NOW + 30 + 30 * 60_000);
+		expect(runnerById(t, runnerId).backoff_reason).toBe('rate_limit');
+	});
+
+	it('a burst of rate-limited finishes is one hold and one event', async () => {
+		const t = world();
+		const runnerId = addRunner(t, { maxConcurrent: 2 });
+		const runA = await delivered(t, { runnerId, issueId: addIssue(t) });
+		const runB = await delivered(t, { runnerId, issueId: addIssue(t) });
+		const report = async (runId: string) =>
+			finishRun(
+				t.db,
+				t.env,
+				await runnerRow(t, runnerId),
+				runId,
+				{
+					status: 'failed',
+					error: 'rate limited',
+					judgment: 'rate_limited',
+					resume_at: NOW + 600_000
+				},
+				NOW + 30
+			);
+		await report(runA);
+		await report(runB);
+		expect(eventsOfType(t, 'runner.rate_limited')).toHaveLength(1);
+		expect(runnerById(t, runnerId).backoff_until).toBe(NOW + 600_000 + 60_000);
+	});
+
+	it('rejects a resume_at that is not a number, and ignores the judgment on success', async () => {
+		const t = world();
+		const runnerId = addRunner(t);
+		const runId = await delivered(t, { runnerId, issueId: addIssue(t) });
+		await expect(
+			finishRun(
+				t.db,
+				t.env,
+				await runnerRow(t, runnerId),
+				runId,
+				{ status: 'failed', judgment: 'rate_limited', resume_at: 'soon' } as never,
+				NOW + 30
+			)
+		).rejects.toThrow(/resume_at/);
+		// A completed run is the work landing; a limit claim on it means nothing.
+		const run = await finishRun(
+			t.db,
+			t.env,
+			await runnerRow(t, runnerId),
+			runId,
+			{ status: 'completed', judgment: 'rate_limited', resume_at: NOW + 600_000 } as never,
+			NOW + 30
+		);
+		expect(run.status).toBe('completed');
+		expect(runnerById(t, runnerId).backoff_reason).toBeNull();
+		expect(eventsOfType(t, 'runner.rate_limited')).toHaveLength(0);
 	});
 
 	it('a shutdown reporting two runs is one incident, not two', async () => {
