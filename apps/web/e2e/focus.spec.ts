@@ -112,6 +112,8 @@ test.describe.serial('project focus', () => {
 				await runnerApi.post(`/api/v1/runners/${registered.runner.id}/poll`, { owned_runs: [] })
 			).ok()
 		).toBe(true);
+		const sweep = await request.get('/__scheduled?cron=*+*+*+*+*');
+		expect(sweep.ok(), await sweep.text()).toBe(true);
 		await expect(async () => {
 			const runs = await body<ListResponse<AgentRun>>(await api.get('/api/v1/runs?active=true'));
 			expect(runs.items.map((run) => run.issue_ref?.project_name)).toEqual(
