@@ -227,7 +227,7 @@ test('renders Product Direction and clarification handoffs inline', async ({ pag
 		`/issues/${encodeURIComponent(projectName)}/${clarificationIssue.number}`
 	);
 	card = page.getByTestId('handoff-card');
-	await expect(card.getByText('Current clarification-request · v1')).toBeVisible();
+	await expect(card.getByText(/Current clarification-request\s*·\s*v1/)).toBeVisible();
 	await expect(card.getByText('Couldn’t load the clarification request.')).toBeVisible();
 	await card.getByRole('button', { name: 'Retry' }).click();
 	await expect(card.locator('pre')).toContainText('Which launch date should we use?');
