@@ -14,7 +14,9 @@
  */
 
 import {
+	declaredContentType,
 	parsePrSpec,
+	requirementAccepts,
 	requirementFix,
 	type Artifact,
 	type ArtifactRequirementCheck,
@@ -148,11 +150,6 @@ function normalizePositional(raw: string): { value: string; stdin: boolean } {
 
 const isUrl = (v: string): boolean => /^https?:\/\//.test(v);
 
-/** A gate's declared content type names a concrete MIME (not a `image/` prefix). */
-function concreteContentType(ct: string | undefined): string | undefined {
-	return ct !== undefined && ct.includes('/') && !ct.endsWith('/') ? ct : undefined;
-}
-
 /** The distinct declared types among the gates (untyped gates constrain nothing). */
 function declaredTypes(gates: GateEntry[]): ArtifactType[] {
 	return [
@@ -193,17 +190,6 @@ function joinTransitions(names: string[]): string {
 /** The `fix` the server sent, or one computed locally when an older server omitted it. */
 function fixCommand(gate: GateEntry, ref: string): string {
 	return gate.check.fix || requirementFix(gate.check, ref).command;
-}
-
-/** Does `gate` accept an artifact of `type` declaring `contentType`? */
-function accepts(gate: GateEntry, type: ArtifactType, contentType: string | undefined): boolean {
-	const check = gate.check;
-	if (check.type !== undefined && check.type !== type) return false;
-	if (check.content_type === undefined) return true;
-	// An unknown effective content type (server default / sniff deferred) cannot
-	// be refused offline: only a declared one is checked.
-	if (contentType === undefined) return true;
-	return contentType.startsWith(check.content_type);
 }
 
 /** What a plan will actually declare, for the acceptance check. */
@@ -365,16 +351,10 @@ function planPositional(
 
 /** The content type a text/file plan inherits from its gates, when they agree on a concrete one. */
 function gateContentType(gates: GateEntry[], type: ArtifactType | undefined): string | undefined {
-	if (type !== 'text' && type !== 'file') return undefined;
-	const declared = [
-		...new Set(
-			gates
-				.filter((g) => g.check.type === type)
-				.map((g) => concreteContentType(g.check.content_type))
-				.filter((ct): ct is string => ct !== undefined)
-		)
-	];
-	return declared.length === 1 ? declared[0] : undefined;
+	return declaredContentType(
+		gates.map((g) => g.check),
+		type
+	);
 }
 
 /** The pre-243 flag semantics, with the path checks moved offline. */
@@ -482,7 +462,7 @@ function checkAccepted(
 	sniff: (path: string) => string
 ): void {
 	const effective = effectiveContentType(plan.type, plan.source, plan.contentType, sniff);
-	if (gates.some((g) => accepts(g, plan.type, effective))) return;
+	if (gates.some((g) => requirementAccepts(g.check, plan.type, effective))) return;
 	const label = sourceLabel(flags, positional);
 	// `--ignore-gates` skips this check, not the server's: on a slot already
 	// holding a different (immutable) type the write 422s anyway, so the escape
@@ -522,7 +502,13 @@ export function satisfiedBy(
 	const rejects: { transition: string; wants: string }[] = [];
 	for (const gate of gates) {
 		if (gate.check.artifact !== artifact.name) continue;
-		if (accepts(gate, artifact.artifact_type, artifact.current_version.content_type ?? undefined)) {
+		if (
+			requirementAccepts(
+				gate.check,
+				artifact.artifact_type,
+				artifact.current_version.content_type ?? undefined
+			)
+		) {
 			satisfies.push(gate.transition);
 		} else {
 			rejects.push({ transition: gate.transition, wants: wantsLabel(gate, artifact) });

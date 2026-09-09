@@ -26,7 +26,8 @@ import { buildAdapters, type AdapterRegistry, type RunnerAdapter } from './adapt
 import {
 	appendLogTail,
 	launchBackoffMs,
-	resolveRule,
+	rateLimitHoldUntil,
+	resolveRoute,
 	resolveTier,
 	targetVerdict,
 	type ActiveCounts,
@@ -283,7 +284,7 @@ export async function loadEngineRules(db: Kysely<Database>, userId: string): Pro
 export function targetsForIssue(
 	issue: CandidateIssue,
 	rules: EngineRule[]
-): { targets: RoutingTarget[]; rule: EngineRule | null; ambiguous: EngineRule[]; pinned: boolean } {
+): ReturnType<typeof resolveRoute<EngineRule>> & { pinned: boolean } {
 	if (issue.pinned_runner_id) {
 		return {
 			targets: [
@@ -291,16 +292,19 @@ export function targetsForIssue(
 			],
 			rule: null,
 			ambiguous: [],
+			runnerRule: null,
+			tierOverride: null,
+			failure: null,
 			pinned: true
 		};
 	}
 	// An ambiguous match yields no targets, so the pass skips the issue
 	// exactly as it does one with no matching rule at all — no strike, no run.
-	const { rule, ambiguous } = resolveRule(
+	const resolved = resolveRoute(
 		{ project_id: issue.project_id, state_id: issue.state_id, label_ids: issue.label_ids },
 		rules
 	);
-	return { targets: rule?.targets ?? [], rule, ambiguous, pinned: false };
+	return { ...resolved, pinned: false };
 }
 
 // ---------------------------------------------------------------------------
@@ -499,12 +503,13 @@ export async function launchClaimedRun(
 				.where('id', '=', ctx.runId)
 				.where('status', '=', 'launching')
 				.compile(),
-			// A successful launch clears the failure count and backoff.
+			// A successful launch clears the failure count and any hold — a
+			// usage-limit hold included: the provider just took the work.
 			db
 				.updateTable('runner')
-				.set({ launch_failures: 0, backoff_until: null })
+				.set({ launch_failures: 0, backoff_until: null, backoff_reason: null })
 				.where('id', '=', runner.id)
-				.where('launch_failures', '>', 0)
+				.where((eb) => eb.or([eb('launch_failures', '>', 0), eb('backoff_until', 'is not', null)]))
 				.compile(),
 			supervisorEvent(
 				db,
@@ -567,7 +572,9 @@ async function failLaunch(
 			.updateTable('runner')
 			.set({
 				launch_failures: sql<number>`launch_failures + 1`,
-				backoff_until: input.now + launchBackoffMs(failures)
+				backoff_until: input.now + launchBackoffMs(failures),
+				// This hold is the failure backoff, whatever the last one was.
+				backoff_reason: null
 			})
 			.where('id', '=', input.runner.id)
 			.compile(),
@@ -653,8 +660,87 @@ export async function noteInterruption(
 		),
 		sql`
 			UPDATE runner SET launch_failures = launch_failures + 1,
-				backoff_until = ${input.now + launchBackoffMs(failures)}
+				backoff_until = ${input.now + launchBackoffMs(failures)},
+				backoff_reason = NULL
 			WHERE id = ${runner.id} AND (backoff_until IS NULL OR backoff_until < ${input.now})`.compile(db)
+	]);
+}
+
+/**
+ * The runner's harness reported a provider usage limit: hold it until the
+ * window resets and say so, without touching `launch_failures`.
+ *
+ * Deliberately not `noteInterruption`: the reset time is *known*, so guessing
+ * an exponential window would keep probing a wall that will not move for
+ * hours, and a busy afternoon would read as the dead-credential escalation
+ * the failure counter exists to raise. Deliberately not `status = 'paused'`
+ * either — a pause needs a human to undo, which is the toil this removes.
+ *
+ * The guard collapses a burst (three long runs die within seconds of each
+ * other) into one hold and one event, but — unlike the interruption guard —
+ * a *later* reset still extends a live hold: better information wins.
+ */
+export async function noteRateLimit(
+	db: Kysely<Database>,
+	env: Env,
+	input: {
+		userId: string;
+		runnerId: string;
+		runId?: string;
+		error: string;
+		/** What the provider said, epoch ms; null when it said nothing usable. */
+		resumeAt: number | null;
+		/** Which window (`five_hour`, `seven_day`, …) when the harness named one. */
+		limit: string | null;
+		now: number;
+	}
+): Promise<void> {
+	const runner = await db
+		.selectFrom('runner')
+		.select(['id', 'name', 'backoff_until', 'backoff_reason'])
+		.where('id', '=', input.runnerId)
+		.executeTakeFirst();
+	if (!runner) return;
+	const until = rateLimitHoldUntil(input.resumeAt, input.now);
+	// Already held at least this long for the same reason: nothing to say.
+	if (
+		runner.backoff_reason === 'rate_limit' &&
+		runner.backoff_until !== null &&
+		runner.backoff_until >= until
+	)
+		return;
+	const fresh = sql<boolean>`EXISTS (
+		SELECT 1 FROM runner
+		WHERE id = ${runner.id}
+			AND (backoff_reason IS NOT 'rate_limit' OR backoff_until IS NULL OR backoff_until < ${until})
+	)`;
+	await runBatch(env, [
+		supervisorEvent(
+			db,
+			input.userId,
+			{
+				type: 'runner.rate_limited',
+				payload: {
+					runner_id: runner.id,
+					runner_name: runner.name,
+					...(input.runId ? { run_id: input.runId } : {}),
+					error: input.error,
+					resets_at: until,
+					reported_reset_at: input.resumeAt,
+					limit: input.limit
+				}
+			},
+			input.now,
+			fresh
+		),
+		// A known reset beats a live failure backoff's guess, so this
+		// overwrites one; `launch_failures` is left for a successful launch.
+		sql`
+			UPDATE runner SET backoff_until = ${until}, backoff_reason = 'rate_limit'
+			WHERE id = ${runner.id}
+				AND (backoff_reason IS NOT 'rate_limit' OR backoff_until IS NULL OR backoff_until < ${until})`.compile(
+			db
+		)
 	]);
 }
 
@@ -759,6 +845,7 @@ export async function runDispatchPass(
 			// issue didn't fail, the pipe did.
 			runner.launch_failures += 1;
 			runner.backoff_until = now + launchBackoffMs(runner.launch_failures);
+			runner.backoff_reason = null;
 		}
 	}
 	return result;

@@ -1874,6 +1874,10 @@ export function issueBlock(
 		// which since Tines/274 is a positional source, not a flag, so this
 		// line says "source" and keeps the flag vocabulary for ungated slots.
 		`Attach one: \`tines issues artifacts attach ${ref} <name> …\` — the source follows the gate; each gated transition below names its exact command. Ungated slots: --file <path>, --folder <dir>, --text <md|@file>, --link <url>, --pr <owner/repo#N>.`,
+		// Sites are the one attach whose *content* has rules, and an agent
+		// cannot discover them from a gate: everything must be inline, and the
+		// reader is usually on a phone.
+		`An HTML file (or a folder with a root index.html) renders live as a prototype — keep all CSS/JS inline (external CDNs are blocked), add \`<meta name="viewport" content="width=device-width, initial-scale=1">\`, and \`tines issues artifacts site-link ${ref} <name>\` mints a URL to see it.`,
 		'',
 		'### Available transitions',
 		''

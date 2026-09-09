@@ -177,11 +177,18 @@ export function scheduleRef(s: Schedule): string {
 
 export function runnerStatusLabel(runner: Runner): string {
 	if (runner.status === 'paused') return 'paused';
+	// Before the online check: a rate-limited daemon is polling happily, and
+	// "online" is exactly the wrong thing to say about a runner taking no work.
+	if (runner.backoff_reason === 'rate_limit' && (runner.backoff_until ?? 0) > Date.now())
+		return 'rate limited';
 	return runner.online ? 'online' : 'offline';
 }
 
 export function ruleTargetsLabel(rule: RoutingRule): string {
 	if (rule.targets.length === 0) return '(no targets)';
+	if (rule.targets.length === 1 && rule.targets[0]?.runner_id === '*') {
+		return `*:${rule.targets[0].tier} (inherited runners)`;
+	}
 	return rule.targets
 		.map(
 			(t) =>

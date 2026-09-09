@@ -187,6 +187,31 @@ describe('loadFleetQueue', () => {
 		expect(group.rule_id).toBeNull();
 	});
 
+	it('keeps queue groups separate when tier policies share one blocked runner', async () => {
+		const t = world();
+		const runner = addRunner(t, { lastSeen: NOW - 10 * HOUR });
+		addRule(t, { targets: [{ runner_id: runner }] });
+		const docs = addLabel(t, 'docs');
+		const qa = addLabel(t, 'qa');
+		const docsRule = addRule(t, {
+			label: docs,
+			targets: [{ runner_id: '*', tier: 'smartest' }]
+		});
+		const qaRule = addRule(t, { label: qa, targets: [{ runner_id: '*', tier: 'cheapest' }] });
+		addIssue(t, { labels: [docs] });
+		addIssue(t, { labels: [docs] });
+		addIssue(t, { labels: [qa] });
+
+		const groups = (await loadFleetQueue(t.db, USER, NOW)).groups;
+		expect(groups).toHaveLength(2);
+		expect(groups.map((group) => [group.rule_id, group.count]).sort()).toEqual(
+			[
+				[docsRule, 2],
+				[qaRule, 1]
+			].sort()
+		);
+	});
+
 	it('reports a pin whose runner was deleted as pin_missing', async () => {
 		const t = world();
 		const issue = addIssue(t);

@@ -1,8 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
+	rateLimitHoldUntil,
+	RATE_LIMIT_HOLD_DEFAULT_MS,
+	RATE_LIMIT_HOLD_GRACE_MS,
+	RATE_LIMIT_HOLD_MAX_MS,
 	launchBackoffMs,
 	matchRule,
 	resolveRule,
+	resolveRoute,
 	isRoutedCandidate,
 	queueVerdict,
 	speakingTarget,
@@ -50,6 +55,74 @@ describe('matchRule', () => {
 		const labelled = [{ ...rules[0], id: 'design', label_id: 'l_design' }];
 		expect(matchRule(at('p1', 's1'), labelled)).toBeNull();
 		expect(matchRule(at('p1', 's1', ['l_design']), labelled)?.id).toBe('design');
+	});
+});
+
+describe('resolveRoute', () => {
+	const issue = { project_id: 'p1', state_id: 's1', label_ids: ['l1', 'l2'] };
+	const rule = (
+		id: string,
+		targets: { runner_id: string; tier?: 'smartest' | 'balanced' | 'cheapest' | null }[],
+		scope: Partial<{ project_id: string; workflow_state_id: string; label_id: string }> = {}
+	) => ({
+		id,
+		project_id: scope.project_id ?? null,
+		workflow_state_id: scope.workflow_state_id ?? null,
+		label_id: scope.label_id ?? null,
+		targets
+	});
+
+	it('inherits the first lower-priority concrete list list and overrides every tier', () => {
+		const state = rule('state', [{ runner_id: '*', tier: 'smartest' }], {
+			workflow_state_id: 's1'
+		});
+		const global = rule('global', [
+			{ runner_id: 'claude', tier: 'balanced' },
+			{ runner_id: 'codex' }
+		]);
+		const resolved = resolveRoute(issue, [global, state]);
+		expect(resolved.rule).toBe(state);
+		expect(resolved.runnerRule).toBe(global);
+		expect(resolved.tierOverride).toBe('smartest');
+		expect(resolved.targets).toEqual([
+			{ runner_id: 'claude', tier: 'smartest' },
+			{ runner_id: 'codex', tier: 'smartest' }
+		]);
+		expect(global.targets[0]!.tier).toBe('balanced');
+	});
+
+	it('stops at an empty source instead of falling through', () => {
+		const result = resolveRoute(issue, [
+			rule('tier', [{ runner_id: '*', tier: 'cheapest' }], { label_id: 'l1' }),
+			rule('empty', [], { project_id: 'p1' }),
+			rule('global', [{ runner_id: 'r1' }])
+		]);
+		expect(result.runnerRule?.id).toBe('empty');
+		expect(result.failure).toBe('no_targets');
+		expect(result.targets).toEqual([]);
+	});
+
+	it('fails closed on a tied inherited source while retaining the tier winner', () => {
+		const winner = rule('winner', [{ runner_id: '*', tier: 'smartest' }], {
+			project_id: 'p1',
+			workflow_state_id: 's1',
+			label_id: 'l1'
+		});
+		const result = resolveRoute(issue, [
+			winner,
+			rule('l1', [{ runner_id: 'r1' }], { label_id: 'l1' }),
+			rule('l2', [{ runner_id: 'r2' }], { label_id: 'l2' })
+		]);
+		expect(result.rule).toBe(winner);
+		expect(result.ambiguous.map((r) => r.id).sort()).toEqual(['l1', 'l2']);
+		expect(result.failure).toBe('ambiguous_rule');
+	});
+
+	it('reports a missing runner source', () => {
+		const result = resolveRoute(issue, [
+			rule('tier', [{ runner_id: '*', tier: 'smartest' }], { workflow_state_id: 's1' })
+		]);
+		expect(result.failure).toBe('no_runner_rule');
 	});
 });
 
@@ -171,6 +244,28 @@ describe('launchBackoffMs', () => {
 	});
 });
 
+describe('rateLimitHoldUntil', () => {
+	it('holds for the default when the provider gave no usable reset', () => {
+		expect(rateLimitHoldUntil(null, NOW)).toBe(NOW + RATE_LIMIT_HOLD_DEFAULT_MS);
+		expect(rateLimitHoldUntil(undefined, NOW)).toBe(NOW + RATE_LIMIT_HOLD_DEFAULT_MS);
+	});
+
+	it('treats a reset already in the past as unknown', () => {
+		expect(rateLimitHoldUntil(NOW - 1, NOW)).toBe(NOW + RATE_LIMIT_HOLD_DEFAULT_MS);
+		expect(rateLimitHoldUntil(NOW, NOW)).toBe(NOW + RATE_LIMIT_HOLD_DEFAULT_MS);
+	});
+
+	it('holds to the reported reset plus a grace', () => {
+		expect(rateLimitHoldUntil(NOW + 3_600_000, NOW)).toBe(
+			NOW + 3_600_000 + RATE_LIMIT_HOLD_GRACE_MS
+		);
+	});
+
+	it('clamps a far-out reset so a weekly limit re-probes daily', () => {
+		expect(rateLimitHoldUntil(NOW + 7 * 86_400_000, NOW)).toBe(NOW + RATE_LIMIT_HOLD_MAX_MS);
+	});
+});
+
 describe('targetVerdict', () => {
 	const runner = (over: Partial<VerdictRunner> = {}): VerdictRunner => ({
 		id: 'rnr_1',
@@ -180,6 +275,7 @@ describe('targetVerdict', () => {
 		last_seen_at: NOW,
 		draining: 0,
 		backoff_until: null,
+		backoff_reason: null,
 		...over
 	});
 	const counts = (over: Partial<ActiveCounts> = {}): ActiveCounts => ({
@@ -250,6 +346,31 @@ describe('targetVerdict', () => {
 		expect(
 			targetVerdict(runner({ backoff_until: NOW }), counts(), globalCap, 's1', NOW).verdict
 		).toBe('ok');
+	});
+
+	it('a usage-limit hold reads as rate limited, and says when it resumes', () => {
+		const held = targetVerdict(
+			runner({ backoff_until: NOW + 60_000, backoff_reason: 'rate_limit' }),
+			counts(),
+			globalCap,
+			's1',
+			NOW
+		);
+		expect(held.verdict).toBe('rate_limited');
+		expect(held.detail).toContain(new Date(NOW + 60_000).toISOString());
+		// Expired, and the failure backoff with the same window, are unchanged.
+		expect(
+			targetVerdict(
+				runner({ backoff_until: NOW, backoff_reason: 'rate_limit' }),
+				counts(),
+				globalCap,
+				's1',
+				NOW
+			).verdict
+		).toBe('ok');
+		expect(
+			targetVerdict(runner({ backoff_until: NOW + 60_000 }), counts(), globalCap, 's1', NOW).verdict
+		).toBe('backing_off');
 	});
 
 	it('at max_concurrent', () => {

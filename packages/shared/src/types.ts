@@ -242,7 +242,10 @@ export interface WorkflowStateInput {
 	/**
 	 * The state whose context this state inherits: one of this request's
 	 * states by id or name, or the id of a state in any workflow you can see
-	 * (your own, or the standard workflow). Chains are at most 3 states long
+	 * (your own, or the standard workflow). In a {@link LibraryDocument} the
+	 * cross-workflow form is the portable `"<workflow name>/<state name>"`
+	 * instead of an id, resolved by the importer before it reaches this
+	 * request. Chains are at most 3 states long
 	 * and may not cycle. On an EXISTING state (`id` present) the field is
 	 * merge-patch style — absent = unchanged, `null` = clear — so callers
 	 * that round-trip states without knowing about it cannot clear it. On a
@@ -1289,6 +1292,25 @@ export interface ArtifactDetail extends Artifact {
 	versions: ArtifactVersion[];
 }
 
+/**
+ * `POST /api/v1/issues/:id/artifacts/:name/site-link` — a short-lived signed
+ * URL that renders an HTML artifact (see specs/artifacts/SPEC.md "Sites").
+ */
+export interface ArtifactSiteLink {
+	/** Absolute `/s/<token>/` URL: the iframe src and the "open full page" href. */
+	url: string;
+	/** The version the link is pinned to. */
+	version: number;
+	/** Epoch ms after which the link 403s. */
+	expires_at: number;
+	/**
+	 * `sandbox-origin`: served from a cross-site host, so storage APIs work.
+	 * `same-origin`: served from the app origin under CSP `sandbox` (opaque
+	 * origin — `localStorage` throws). Local dev, e2e and previews are the latter.
+	 */
+	mode: 'sandbox-origin' | 'same-origin';
+}
+
 export interface ArtifactListResponse {
 	items: Artifact[];
 }
@@ -1622,6 +1644,28 @@ export interface SupervisorSettingsResponse extends SupervisorSettings {
 	canceled_runs?: number;
 }
 
+/**
+ * Per-user UI preferences. Never read by agents: `/api/v1/preferences` is
+ * control-plane fenced, GET included. See specs/projects/SPEC.md "Project focus".
+ */
+export interface UserPreferences {
+	/**
+	 * The focused project, or null for "All projects". Raw: it may still name a
+	 * project that has since been archived, until a page load resolves it.
+	 */
+	focused_project_id: string | null;
+	/** The project New issue falls back to under "All projects": last focused or last created-in. */
+	last_project_id: string | null;
+	/** Null until the preferences row has been written at least once. */
+	updated_at: number | null;
+}
+
+/** Merge-patch: an absent field is unchanged, an explicit null clears it. */
+export interface UpdatePreferencesRequest {
+	focused_project_id?: string | null;
+	last_project_id?: string | null;
+}
+
 /** A registered executor. Secrets are never serialized. */
 export interface Runner {
 	id: string;
@@ -1661,6 +1705,12 @@ export interface Runner {
 	draining: boolean;
 	launch_failures: number;
 	backoff_until: number | null;
+	/**
+	 * Why `backoff_until` is set: 'rate_limit' = the runner's harness account hit
+	 * a usage limit and the hold ends at the reported reset; null = the ordinary
+	 * consecutive-failure backoff counted by `launch_failures`.
+	 */
+	backoff_reason: 'rate_limit' | null;
 	/** Runs currently holding a claim on this runner (assigned/launching/running). */
 	active_runs: number;
 	created_at: number;
@@ -1816,14 +1866,24 @@ export interface FinishRunRequest {
 	 * run; the work did not fail, so the issue must not take a strike. Only
 	 * honoured with `status: 'failed'`; absent — as from any daemon predating
 	 * the field — is judged exactly as before.
+	 *
+	 * `rate_limited` = the harness's provider refused the work because its usage
+	 * limit was reached. The run is judged like an interruption (no strike), and
+	 * the runner is held until `resume_at`.
 	 */
-	judgment?: 'interrupted';
+	judgment?: 'interrupted' | 'rate_limited';
+	/**
+	 * `rate_limited` only: when the harness's provider said the usage window
+	 * resets, epoch ms. Absent = unknown; the server applies a default hold.
+	 */
+	resume_at?: number;
 	/** Whatever the harness reported (Claude Code JSON output, etc.). */
 	usage?: AgentRunUsage;
 }
 
 /** One entry of a rule's ordered preference list, as stored/sent. */
 export interface RoutingTarget {
+	/** `'*'` is reserved for a singleton scoped tier-only rule. */
 	runner_id: string;
 	/** Null/absent = the runner's default tier. */
 	tier?: ModelTier | null;
@@ -1833,7 +1893,8 @@ export interface RoutingTarget {
 export interface RoutingRuleTarget {
 	runner_id: string;
 	runner_name: string;
-	runner_status: RunnerStatus;
+	/** Null for the `'*'` inherited-runner sentinel. */
+	runner_status: RunnerStatus | null;
 	tier: ModelTier | null;
 }
 
@@ -2083,7 +2144,14 @@ export interface DispatchCheck {
 }
 
 export type DispatchTargetVerdict =
-	'ok' | 'paused' | 'offline' | 'draining' | 'at_capacity' | 'backing_off' | 'quota_exhausted';
+	| 'ok'
+	| 'paused'
+	| 'offline'
+	| 'draining'
+	| 'at_capacity'
+	| 'backing_off'
+	| 'rate_limited'
+	| 'quota_exhausted';
 
 /** One rule/pin target's verdict, in preference order. */
 export interface DispatchTarget {
@@ -2105,6 +2173,10 @@ export interface DispatchExplainer {
 	pin: { runner_id: string; runner_name: string | null; tier: ModelTier | null } | null;
 	/** The winning rule; null when pinned, nothing matches, or two rules tie. */
 	matched_rule: { rule_id: string; scope_label: string } | null;
+	/** Concrete runner source when `matched_rule` is a tier-only rule. */
+	runner_rule?: { rule_id: string; scope_label: string } | null;
+	/** Tier applied to all inherited runner targets. */
+	tier_override?: ModelTier | null;
 	/**
 	 * The rules that tied, when two label rules match an issue at equal
 	 * specificity: the issue does not dispatch until one is made more
@@ -2272,6 +2344,7 @@ export const EVENT_TYPES = [
 	'runner.updated',
 	'runner.removed',
 	'runner.errored',
+	'runner.rate_limited',
 	'routing_rule.created',
 	'routing_rule.updated',
 	'routing_rule.deleted',
@@ -2383,8 +2456,17 @@ export interface ApiErrorBody {
 
 /** Discriminator on the exported document; guards against feeding in a stray JSON file. */
 export const LIBRARY_FORMAT = 'tines.library';
-/** Bumped when the document shape changes incompatibly; import refuses anything higher. */
-export const LIBRARY_VERSION = 1;
+/**
+ * Bumped when the document shape changes incompatibly; import refuses anything
+ * higher. Version history:
+ *
+ * - **1** — projects, workflows (states, transitions, artifact requirements)
+ *   and context items, all referenced by name.
+ * - **2** — a state may carry `inherits_from` (Tines/270): the state whose
+ *   context it inherits, as `"<workflow name>/<state name>"`. Version 1
+ *   documents read unchanged — they simply have no pointers.
+ */
+export const LIBRARY_VERSION = 2;
 
 /** Document-level caps, checked before the entries are walked. */
 export const LIBRARY_MAX_BYTES = 5 * 1024 * 1024;
@@ -2444,7 +2526,9 @@ export interface LibraryContextEntry {
  *
  * The system `Standard` workflow is never exported (it is seeded with
  * identical ids on every instance); items scoped to its states are, and
- * re-resolve by name.
+ * re-resolve by name — as does a state's `inherits_from`, which points at
+ * its base as `"<workflow name>/<state name>"` (version 2 and up) so that a
+ * pointer survives a move between deployments that share no ids.
  */
 export interface LibraryDocument {
 	format: typeof LIBRARY_FORMAT;

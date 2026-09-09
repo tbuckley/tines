@@ -93,7 +93,7 @@ test.describe.serial('run-key fence', () => {
 	});
 
 	test('leaves the rest of the control plane fenced, reads included', async ({ request }) => {
-		for (const path of ['/api/v1/api-keys', '/api/v1/routing-rules']) {
+		for (const path of ['/api/v1/api-keys', '/api/v1/routing-rules', '/api/v1/preferences']) {
 			const res = await apiClient(request, RUNROW.runKey).get(path);
 			expect(res.status(), `GET ${path}`).toBe(403);
 			expect((await errorBody(res)).error.code, `GET ${path}`).toBe('run_key_forbidden');

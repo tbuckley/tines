@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
 	ApiFail,
 	assertRunKeyAllowed,
+	decodeCursor,
 	errorResponse,
 	encodeCursor,
 	isControlPlanePath,
@@ -46,6 +47,11 @@ describe('cursor pagination', () => {
 		}
 		throw new Error('expected a malformed cursor to throw');
 	});
+
+	it.each(['', 'aGk', 'OnhpZA', encodeCursor(Number.NaN, 'id')])(
+		'rejects an invalid decoded tuple: %s',
+		(raw) => expect(() => decodeCursor(raw)).toThrowError(ApiFail)
+	);
 
 	it('applies default and max limits', () => {
 		expect(readPage(eventWithUrl('')).limit).toBe(50);
@@ -105,7 +111,11 @@ describe('isControlPlanePath', () => {
 		// Archiving is an operator act: an agent must not freeze the project it
 		// is working in, nor thaw one a human froze.
 		['/api/v1/projects/prj_1/archive', 'POST'],
-		['/api/v1/projects/prj_1/unarchive', 'POST']
+		['/api/v1/projects/prj_1/unarchive', 'POST'],
+		// The project focus is its owner's UI state: an agent has none, and
+		// reading one would let it guess at scope it must not have.
+		['/api/v1/preferences', 'GET'],
+		['/api/v1/preferences', 'PATCH']
 	])('fences %s %s', (path, method) => {
 		expect(isControlPlanePath(path, method)).toBe(true);
 	});

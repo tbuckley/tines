@@ -81,7 +81,11 @@
 	const blocks = $derived.by((): Block[] => {
 		const byKey = new Map<string, Block>();
 		for (const g of queue.groups) {
-			const key = `${g.verdict}|${g.runner_id ?? ''}`;
+			const policyKey =
+				g.verdict === 'no_targets' || g.verdict === 'ambiguous_rule'
+					? `|${g.rule_id ?? ''}|${[...g.ambiguous_rule_ids].sort().join(',')}`
+					: '';
+			const key = `${g.verdict}|${g.runner_id ?? ''}${policyKey}`;
 			const existing = byKey.get(key);
 			if (existing) {
 				existing.count += g.count;
@@ -137,10 +141,12 @@
 				return `${runner} draining`;
 			case 'backing_off':
 				return `${runner} backing off`;
+			case 'rate_limited':
+				return `${runner} rate limited`;
 			case 'no_rule':
 				return 'no matching routing rule';
 			case 'no_targets':
-				return 'the matching rule has no targets';
+				return 'the matching rule has no effective targets';
 			case 'ambiguous_rule':
 				return 'two routing rules tie';
 			case 'pin_missing':
@@ -207,6 +213,13 @@
 								<p class="text-muted-foreground mt-1 text-xs">
 									Retries automatically; check the daemon log if it keeps failing.
 								</p>
+							{:else if block.verdict === 'rate_limited'}
+								<p class="text-muted-foreground mt-1 text-xs">
+									The Claude account behind {block.runnerName ?? 'this runner'} is out of usage. Resumes
+									automatically{runner?.backoff_until
+										? ` at ${new Date(runner.backoff_until).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`
+										: ''}; nothing to do.
+								</p>
 							{/if}
 						</div>
 						<span class="flex shrink-0 flex-wrap gap-1">
@@ -271,7 +284,7 @@
 							{/if}
 							{#if block.verdict === 'no_targets' && block.ruleId && oneditrule}
 								{@const ruleId = block.ruleId}
-								<Button size="sm" onclick={() => oneditrule(ruleId)}>Add targets</Button>
+								<Button size="sm" onclick={() => oneditrule(ruleId)}>Edit routing rule</Button>
 							{/if}
 							{#if block.verdict === 'ambiguous_rule' && block.ambiguousRuleIds.length > 0 && oneditrule}
 								{@const ruleId = block.ambiguousRuleIds[0]}

@@ -1,6 +1,13 @@
 <script lang="ts">
 	import type { AllowedTransition, Artifact, ArtifactType } from '@tines/shared';
-	import { ApiError, ARTIFACT_NAME_PATTERN, parsePrSpec } from '@tines/shared';
+	import {
+		ApiError,
+		ARTIFACT_NAME_PATTERN,
+		ARTIFACT_SITE_INDEX,
+		lintHtmlArtifact,
+		parsePrSpec,
+		siteEntry
+	} from '@tines/shared';
 	import IconCheck from '@tabler/icons-svelte/icons/check';
 	import IconExternalLink from '@tabler/icons-svelte/icons/external-link';
 	import IconEye from '@tabler/icons-svelte/icons/eye';
@@ -14,6 +21,12 @@
 	import IconTrash from '@tabler/icons-svelte/icons/trash';
 	import { slide } from 'svelte/transition';
 	import { api } from '$lib/api';
+	import {
+		attachGateHint,
+		attachGateWarning,
+		effectiveContentType,
+		gatesForName
+	} from '$lib/artifact-gates';
 	import ArtifactViewerDialog from '$lib/components/ArtifactViewerDialog.svelte';
 	import { confirmDialog } from '$lib/components/dialogs.svelte';
 	import Modal from '$lib/components/Modal.svelte';
@@ -163,6 +176,58 @@
 	let attachError = $state<string | null>(null);
 	let attaching = $state(false);
 	let dragOver = $state(false);
+	/**
+	 * The gate set the operator's last hand pick was made against. A pick wins
+	 * over the pre-selection while the name keeps matching the same gates; when
+	 * the typed name matches a *different* gate set the pre-selection re-arms,
+	 * which is what "not chosen one by hand since the name last matched" means.
+	 * Null until they pick.
+	 */
+	let pickedFor = $state<string | null>(null);
+
+	/**
+	 * The requirements on this slot, live as the name is typed — the same gates
+	 * the CLI reads, so the dialog pre-selects what `attach` would have inferred.
+	 * An existing artifact's name is the locked one.
+	 */
+	const attachGates = $derived(
+		gatesForName(allowedTransitions, attachTo?.name ?? attachName.trim())
+	);
+	/** Only a new artifact gets a pre-selection: an existing slot's type is immutable. */
+	const gateHint = $derived(attachTo ? null : attachGateHint(attachGates));
+	/** The concrete MIME the gate asks for, declared with the write. */
+	const gateContentType = $derived(
+		attachGateHint(attachGates.filter((g) => g.check.type === attachType))?.contentType
+	);
+	/** Exactly what the file branch of `submitAttach` will declare, or nothing yet. */
+	const attachFileType = $derived(
+		attachFile ? attachFile.type || 'application/octet-stream' : undefined
+	);
+	const gateWarning = $derived(
+		attachGateWarning(
+			attachGates,
+			attachType,
+			effectiveContentType(attachType, gateContentType, attachFileType)
+		)
+	);
+	/** Identity of the gates on the typed name — the pre-selection re-arms when it changes. */
+	const gateKey = $derived(
+		attachGates
+			.map((g) => `${g.transition}:${g.check.type ?? ''}:${g.check.content_type ?? ''}`)
+			.join('|')
+	);
+	const typePicked = $derived(pickedFor !== null && pickedFor === gateKey);
+
+	/**
+	 * Flip the selector to the gate's type as the name is typed. Reads
+	 * `attachType` so the effect settles after its own write; `typePicked`
+	 * stops it re-asserting over a type picked against these same gates
+	 * (which would silently revert the operator on the next keystroke).
+	 */
+	$effect(() => {
+		const wanted = gateHint?.type;
+		if (wanted !== undefined && !typePicked && attachType !== wanted) attachType = wanted;
+	});
 
 	function openAttach(existing: Artifact | null) {
 		attachTo = existing;
@@ -176,6 +241,7 @@
 		attachTitle = '';
 		attachPr = '';
 		attachError = null;
+		pickedFor = null;
 		attachOpen = true;
 	}
 
@@ -207,6 +273,41 @@
 		const cut = rel.indexOf('/');
 		return cut > 0 ? rel.slice(cut + 1) : rel;
 	}
+
+	/**
+	 * Attach-time lint of the HTML that is about to become a site (Tines/272):
+	 * the two things that make a prototype look broken — no viewport meta (it
+	 * renders desktop-wide on a phone) and external scripts/styles (blocked by
+	 * the site CSP, so the page comes up blank). Warnings, never a block.
+	 */
+	let siteWarnings = $state<string[]>([]);
+
+	$effect(() => {
+		const entryFile =
+			attachType === 'file'
+				? attachFile !== null && siteEntry('file', attachFile.type) !== null
+					? attachFile
+					: null
+				: attachType === 'folder'
+					? (attachFolderFiles.find((f) => folderEntryPath(f) === ARTIFACT_SITE_INDEX) ?? null)
+					: null;
+		if (entryFile === null) {
+			siteWarnings = [];
+			return;
+		}
+		let live = true;
+		entryFile
+			.text()
+			.then((html) => {
+				if (live) siteWarnings = lintHtmlArtifact(html);
+			})
+			.catch(() => {
+				if (live) siteWarnings = [];
+			});
+		return () => {
+			live = false;
+		};
+	});
 
 	async function submitAttach(e: SubmitEvent) {
 		e.preventDefault();
@@ -240,7 +341,8 @@
 				await api.putArtifact(issueId, attachName, {
 					type: 'text',
 					content: attachText,
-					description
+					description,
+					...(gateContentType !== undefined ? { content_type: gateContentType } : {})
 				});
 			} else if (attachType === 'link') {
 				await api.putArtifact(issueId, attachName, {
@@ -469,7 +571,11 @@
 								type="radio"
 								name="artifact-type"
 								value={t}
-								bind:group={attachType}
+								checked={attachType === t}
+								onchange={() => {
+									attachType = t;
+									pickedFor = gateKey;
+								}}
 								class="sr-only"
 							/>
 							<TypeIcon size={14} stroke={1.75} />
@@ -477,7 +583,29 @@
 						</label>
 					{/each}
 				</div>
+				{#if gateHint}
+					<p class="text-muted-foreground text-xs">
+						Required by <span class="font-medium">{gateHint.transition}</span>
+						({gateHint.spec}){#each gateHint.others as other (other.transition)}, and by <span
+								class="font-medium">{other.transition}</span
+							>
+							({other.spec}){/each}.
+					</p>
+				{/if}
 			</div>
+		{/if}
+
+		{#if gateWarning}
+			<p
+				class="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400"
+			>
+				A {attachType} artifact cannot satisfy
+				<span class="font-medium">{gateWarning.transition}</span>
+				(needs {gateWarning.wants}){#each gateWarning.others as other (other)}, nor <span
+						class="font-medium">{other}</span
+					>{/each}{#if attachTo}{' '}— the type cannot change; delete and re-attach{/if}. Attaching
+				is still allowed.
+			</p>
 		{/if}
 
 		{#if attachType === 'file'}
@@ -587,6 +715,20 @@
 				placeholder="One-liner shown in lists and prompts"
 			/>
 		</div>
+
+		{#if siteWarnings.length > 0}
+			<div
+				class="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm"
+				data-testid="site-lint"
+			>
+				<p class="font-medium">This will render live as a site. Two things to check:</p>
+				<ul class="mt-1 list-disc space-y-1 pl-4">
+					{#each siteWarnings as warning (warning)}
+						<li>{warning}</li>
+					{/each}
+				</ul>
+			</div>
+		{/if}
 
 		{#if attachError}
 			<p

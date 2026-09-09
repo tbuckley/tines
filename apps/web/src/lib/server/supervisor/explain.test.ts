@@ -171,6 +171,40 @@ describe('explainDispatch', () => {
 		expect(routed.action).toEqual({ label: 'Edit the rule', href: '/agents#routing' });
 	});
 
+	it('explains a tier-only rule without a broader runner source', async () => {
+		const t = world();
+		addRule(t, { state: OPEN, targets: [{ runner_id: '*', tier: 'smartest' }] });
+		const issue = addIssue(t);
+		const ex = (await explainDispatch(t.db, USER, issue, NOW))!;
+		const routed = check(ex, 'routed');
+		expect(ex.matched_rule?.scope_label).toBe('state Open');
+		expect(ex.runner_rule).toBeNull();
+		expect(ex.tier_override).toBe('smartest');
+		expect(routed.detail).toContain('no broader routing rule supplies runners');
+		expect(routed.action).toEqual({ label: 'Configure routing', href: '/agents#routing' });
+		expect(ex.verdict).toBe('No inherited runners — add or edit a broader routing rule');
+	});
+
+	it('reports both tier and runner-rule provenance with effective target tiers', async () => {
+		const t = world();
+		const first = addRunner(t);
+		const second = addRunner(t);
+		const runnerRule = addRule(t, { targets: [{ runner_id: first }, { runner_id: second }] });
+		const tierRule = addRule(t, {
+			state: OPEN,
+			targets: [{ runner_id: '*', tier: 'cheapest' }]
+		});
+		const issue = addIssue(t);
+		const ex = (await explainDispatch(t.db, USER, issue, NOW))!;
+		expect(ex.matched_rule).toMatchObject({ rule_id: tierRule, scope_label: 'state Open' });
+		expect(ex.runner_rule).toMatchObject({ rule_id: runnerRule, scope_label: 'global' });
+		expect(ex.tier_override).toBe('cheapest');
+		expect(ex.targets.map((target) => [target.runner_id, target.tier])).toEqual([
+			[first, 'cheapest'],
+			[second, 'cheapest']
+		]);
+	});
+
 	it('offers to clear a pin that points at a runner which no longer exists', async () => {
 		const t = world();
 		const runner = addRunner(t);
@@ -205,6 +239,22 @@ describe('explainDispatch', () => {
 		expect(ex.targets[0].model).toMatch(/^claude-/);
 		expect(ex.targets[1]).toMatchObject({ verdict: 'offline', tier: 'cheapest' });
 		expect(ex.verdict).toContain('is paused');
+	});
+
+	it('says a rate-limited runner is waiting on its usage window, not failing', async () => {
+		const t = world();
+		const runner = addRunner(t);
+		addRule(t, { targets: [{ runner_id: runner }] });
+		const issue = addIssue(t);
+		t.sqlite
+			.prepare("UPDATE runner SET backoff_until = ?, backoff_reason = 'rate_limit' WHERE id = ?")
+			.run(NOW + 3_600_000, runner);
+
+		const ex = (await explainDispatch(t.db, USER, issue, NOW))!;
+		expect(ex.targets[0].verdict).toBe('rate_limited');
+		expect(ex.verdict).toContain('hit its usage limit');
+		expect(ex.verdict).toContain(new Date(NOW + 3_600_000).toISOString());
+		expect(ex.verdict).not.toContain('repeated failures');
 	});
 
 	it('labels a scoped rule with the project and state names', async () => {

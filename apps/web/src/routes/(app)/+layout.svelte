@@ -10,7 +10,10 @@
 	import IconSitemap from '@tabler/icons-svelte/icons/sitemap';
 	import { goto, invalidateAll, onNavigate } from '$app/navigation';
 	import { navigating, page } from '$app/state';
+	import { api } from '$lib/api';
 	import { authClient } from '$lib/auth-client';
+	import ProjectSwitcher from '$lib/components/ProjectSwitcher.svelte';
+	import { focusHint } from '$lib/focus.svelte';
 	import { prefersReducedMotion } from '$lib/format';
 	import { navMemory } from '$lib/nav-memory.svelte';
 	import { fade } from 'svelte/transition';
@@ -29,6 +32,22 @@
 		{ path: '/agents', href: '/agents', label: 'Agents', icon: IconRobot },
 		{ path: '/activity', href: '/activity', label: 'Activity', icon: IconActivity }
 	]);
+
+	// The project focus is chrome, not a page filter: it only makes sense once
+	// there are two projects to move between (Tines/259).
+	const showSwitcher = $derived(data.projects.length >= 2);
+
+	// The chrome's answer to "what am I looking at": the layout's own data,
+	// unless the client has set the focus since (opening a project page does),
+	// which it records as a hint rather than paying for a load rerun.
+	const focus = $derived(focusHint.project !== undefined ? focusHint.project : data.focus);
+
+	async function chooseFocus(projectId: string | null) {
+		await api.updatePreferences({ focused_project_id: projectId });
+		focusHint.clear();
+		// Every list that reads the focus has to refetch, not just the layout.
+		await invalidateAll();
+	}
 
 	let menuOpen = $state(false);
 
@@ -94,8 +113,8 @@
 
 <div class="flex min-h-screen flex-col">
 	<header class="bg-background/90 sticky top-0 z-40 border-b backdrop-blur">
-		<div class="mx-auto flex h-14 w-full max-w-6xl items-center gap-6 px-4">
-			<a href="/issues" class="flex items-center gap-2 font-semibold tracking-tight">
+		<div class="mx-auto flex h-14 w-full max-w-6xl items-center gap-4 px-4">
+			<a href="/issues" class="flex shrink-0 items-center gap-2 font-semibold tracking-tight">
 				<span
 					class="bg-primary text-primary-foreground flex size-7 items-center justify-center rounded-lg"
 				>
@@ -103,6 +122,9 @@
 				</span>
 				Tines
 			</a>
+			{#if showSwitcher}
+				<ProjectSwitcher projects={data.projects} {focus} onchoose={chooseFocus} />
+			{/if}
 			<!-- On phones the tabs live in the bottom bar instead. -->
 			<nav class="hidden h-full items-center gap-1 sm:flex">
 				{#each tabs as tab (tab.path)}

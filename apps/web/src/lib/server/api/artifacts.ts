@@ -11,6 +11,7 @@
  */
 import {
 	ARTIFACT_FILE_MAX_BYTES,
+	ARTIFACT_SITE_LINK_TTL_MS,
 	ARTIFACT_FOLDER_MAX_BYTES,
 	ARTIFACT_FOLDER_MAX_FILES,
 	ARTIFACT_MAX_VERSIONS,
@@ -20,11 +21,13 @@ import {
 	canonicalGitHubRepoUrl,
 	parsePrSpec,
 	requirementFix,
+	siteEntry,
 	type Artifact,
 	type ArtifactDetail,
 	type ArtifactRequirement,
 	type ArtifactRequirementCheck,
 	type ArtifactRequirementStatus,
+	type ArtifactSiteLink,
 	type ArtifactType,
 	type ArtifactVersion,
 	type ArtifactVersionFile,
@@ -37,6 +40,15 @@ import {
 	artifactKeyPrefix,
 	getArtifactStore
 } from '$lib/server/artifact-store';
+import {
+	artifactSandboxOrigin,
+	mintSiteToken,
+	resolveSitePath,
+	siteErrorPage,
+	siteHeaders,
+	siteKeyMaterial,
+	verifySiteToken
+} from '$lib/server/artifact-site';
 import { idChunks, newId, type Database } from '$lib/server/db';
 import { assertWritable } from './archive';
 import { ApiFail, notFound, optionalString, runAtomic, type ActorContext } from './core';
@@ -1467,5 +1479,162 @@ export async function artifactContentResponse(
 	// Inline rendering of user bytes on our origin: the sandbox keeps an SVG
 	// or HTML-ish payload from scripting against the app.
 	if (inline) headers['content-security-policy'] = 'sandbox';
+	return new Response(bytes as unknown as BodyInit, { status: 200, headers });
+}
+
+// ---------------------------------------------------------------------------
+// Sites: HTML artifacts served live (specs/artifacts/SPEC.md "Sites")
+
+/**
+ * The app origin allowed to frame a site. `'self'` covers local dev and e2e,
+ * where the app and the site share an origin.
+ */
+function appOriginOf(env: Env): string {
+	return env.TINES_PUBLIC_URL || env.BETTER_AUTH_URL || "'self'";
+}
+
+/**
+ * Mints a short-lived signed URL rendering one version of an HTML artifact.
+ * Deliberately not control-plane fenced: a run key can already read these
+ * bytes, and an agent linking to its own prototype to screenshot it is the
+ * point of the CLI command.
+ */
+export async function createSiteLink(
+	db: Kysely<Database>,
+	env: Env,
+	actor: ActorContext,
+	issueId: string,
+	name: string,
+	opts: { version?: number; requestOrigin: string }
+): Promise<ArtifactSiteLink> {
+	const issue = await requireIssue(db, actor.userId, issueId);
+	const { item, versions, filesByVersion } = await requireArtifact(db, actor.userId, issue, name);
+	const type = artifactTypeOf(item.config);
+	const row =
+		opts.version === undefined
+			? versions[versions.length - 1]
+			: versions.find((v) => v.version === opts.version);
+	if (!row) throw notFound();
+	const files = filesByVersion.get(row.id) ?? [];
+	if (siteEntry(type, row.content_type, files) === null) {
+		throw new ApiFail(
+			422,
+			'not_a_site',
+			`Artifact "${name}" is not a site: sites are file/text artifacts with content type text/html, or folders with a root index.html (this is ${type}${row.content_type ? ` ${row.content_type}` : ''})`,
+			{
+				artifact_type: type,
+				content_type: row.content_type,
+				...(type === 'folder' ? { paths: files.map((f) => f.path) } : {})
+			}
+		);
+	}
+	const keyMaterial = siteKeyMaterial(env);
+	if (!keyMaterial) {
+		throw new ApiFail(
+			503,
+			'site_unavailable',
+			'Site links need SECRET_ENCRYPTION_KEY or BETTER_AUTH_SECRET to be set on the server'
+		);
+	}
+	const expiresAt = Date.now() + ARTIFACT_SITE_LINK_TTL_MS;
+	const token = await mintSiteToken(
+		{ u: actor.userId, a: item.id, v: row.id, e: expiresAt },
+		keyMaterial
+	);
+	const sandboxOrigin = artifactSandboxOrigin(env.ARTIFACT_SANDBOX_ORIGIN);
+	return {
+		url: `${sandboxOrigin || opts.requestOrigin}/s/${token}/`,
+		version: row.version,
+		expires_at: expiresAt,
+		mode: sandboxOrigin ? 'sandbox-origin' : 'same-origin'
+	};
+}
+
+/**
+ * Serves one byte range of a site under `/s/<token>/<path…>`. There is no
+ * session here — the token is the whole authorization — so everything is
+ * looked up by the ids it carries, and a deleted artifact 404s even while
+ * its token is still in date.
+ */
+export async function artifactSiteResponse(
+	db: Kysely<Database>,
+	env: Env,
+	url: URL,
+	token: string,
+	path: string
+): Promise<Response> {
+	const keyMaterial = siteKeyMaterial(env);
+	if (!keyMaterial) return siteErrorPage(404);
+	const verified = await verifySiteToken(token, keyMaterial);
+	if (!verified.ok) return siteErrorPage(verified.reason === 'expired' ? 403 : 404);
+	const { u, a, v } = verified.payload;
+
+	const item = await db
+		.selectFrom('context_item')
+		.selectAll()
+		.where('id', '=', a)
+		.where('user_id', '=', u)
+		.where('kind', '=', 'artifact')
+		.executeTakeFirst();
+	if (!item) return siteErrorPage(404);
+	const row = await db
+		.selectFrom('artifact_version')
+		.selectAll()
+		.where('id', '=', v)
+		.where('context_item_id', '=', a)
+		.executeTakeFirst();
+	if (!row) return siteErrorPage(404);
+	const type = artifactTypeOf(item.config);
+	const files = await db
+		.selectFrom('artifact_version_file')
+		.selectAll()
+		.where('artifact_version_id', '=', row.id)
+		.orderBy('path asc')
+		.execute();
+	const entry = siteEntry(type, row.content_type, files);
+	if (entry === null) return siteErrorPage(404);
+
+	const resolved = resolveSitePath(entry, files, path);
+	if (resolved.kind === 'missing') return siteErrorPage(404);
+	if (resolved.kind === 'redirect') {
+		return new Response(null, {
+			status: 302,
+			headers: { location: `/s/${token}/${resolved.to}`, 'cache-control': 'no-store' }
+		});
+	}
+
+	let bytes: Uint8Array;
+	let contentType: string;
+	let filename: string;
+	if (type === 'folder') {
+		const file = files.find((f) => f.path === resolved.path);
+		if (!file) return siteErrorPage(404);
+		const object = await getArtifactStore(env).get(file.r2_key);
+		if (!object) return siteErrorPage(404);
+		bytes = object;
+		contentType = file.content_type;
+		filename = sanitizeFilename(file.path.split('/').pop() ?? null, item.name);
+	} else if (type === 'text') {
+		bytes = new TextEncoder().encode(row.content ?? '');
+		contentType = row.content_type ?? 'text/html';
+		filename = sanitizeFilename(row.filename, item.name);
+	} else {
+		const object = row.r2_key ? await getArtifactStore(env).get(row.r2_key) : null;
+		if (!object) return siteErrorPage(404);
+		bytes = object;
+		contentType = row.content_type ?? 'text/html';
+		filename = sanitizeFilename(row.filename, item.name);
+	}
+	const headers = siteHeaders({
+		servedOrigin: url.origin,
+		token,
+		appOrigin: appOriginOf(env),
+		// Sandboxed unless this request landed on the configured sandbox host:
+		// a site reaching the app origin is contained whatever the config says.
+		sandboxed: artifactSandboxOrigin(env.ARTIFACT_SANDBOX_ORIGIN) !== url.origin,
+		contentType,
+		filename
+	});
+	headers['content-length'] = String(bytes.byteLength);
 	return new Response(bytes as unknown as BodyInit, { status: 200, headers });
 }

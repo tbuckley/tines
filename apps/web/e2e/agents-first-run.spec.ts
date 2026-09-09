@@ -11,7 +11,7 @@
  * that case lives in `issue-explainer-remedies.spec.ts` after `api.spec.ts`.
  */
 import { expect, test } from '@playwright/test';
-import type { ListResponse, Project } from '@tines/shared';
+import type { ListResponse, Project, RoutingRuleWithWarnings } from '@tines/shared';
 import { BOB } from './constants.mjs';
 import { apiClient, body, gotoHydrated, runId, signIn } from './helpers';
 
@@ -55,17 +55,36 @@ test.describe.serial('the first-run path on an empty account', () => {
 		await expect(page).toHaveURL(/\/projects$/);
 	});
 
-	test('the Agents tab offers a runner and a rule instead of a sentence', async ({
+	test('the Agents tab permits a scoped tier-only rule before any runner exists', async ({
 		context,
-		page
+		page,
+		request
 	}) => {
+		const api = apiClient(request, BOB.apiKey);
+		const project = await body<Project>(
+			await api.post('/api/v1/projects', { name: `runnerless-routing-${runId}` })
+		);
 		await signIn(context, BOB.sessionToken);
 		await gotoHydrated(page, '/agents');
 
 		// The routing empty state knows there is no runner to route to yet.
 		const addRunner = page.getByRole('button', { name: 'Add runner' }).last();
 		await expect(page.getByRole('button', { name: 'Add a runner first' })).toBeVisible();
-		await expect(page.getByRole('button', { name: 'Add rule' })).toBeDisabled();
+		await page.getByRole('button', { name: 'Add rule' }).click();
+		const ruleDialog = page.getByRole('dialog', { name: 'New routing rule' });
+		await ruleDialog.getByLabel('Project').selectOption(project.id);
+		await ruleDialog.getByLabel('Routing mode').selectOption('tier');
+		await ruleDialog.getByLabel('Tier').selectOption('smartest');
+		await ruleDialog.getByRole('button', { name: 'Create rule' }).click();
+		await expect(page.getByText('*:smartest')).toBeVisible();
+		const { items: rules } = await body<ListResponse<RoutingRuleWithWarnings>>(
+			await api.get('/api/v1/routing-rules')
+		);
+		expect(rules.find((rule) => rule.scope.project_id === project.id)?.targets).toEqual([
+			{ runner_id: '*', runner_name: '*', runner_status: null, tier: 'smartest' }
+		]);
+		await api.delete(`/api/v1/routing-rules/${rules[0].id}`);
+		await api.delete(`/api/v1/projects/${project.id}`);
 
 		// Both empty-state buttons open the same dialog; hydration can swallow
 		// the first click (clickUntil in helpers.ts).
