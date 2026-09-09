@@ -13,7 +13,7 @@
 	import IconRocket from '@tabler/icons-svelte/icons/rocket';
 	import { tick, untrack } from 'svelte';
 	import { fade, slide } from 'svelte/transition';
-	import { invalidate } from '$app/navigation';
+	import { afterNavigate, invalidate } from '$app/navigation';
 	import { api } from '$lib/api';
 	import AgentActivityCard from '$lib/components/AgentActivityCard.svelte';
 	import ArtifactsPanel from '$lib/components/ArtifactsPanel.svelte';
@@ -141,6 +141,12 @@
 	// until asked for, unrendered — a long thread costs nothing to open.
 	const SHOWN_COMMENTS = 2;
 	let showAllComments = $state(false);
+	afterNavigate(async ({ to }) => {
+		if (!to?.url.hash.startsWith('#comment-')) return;
+		showAllComments = true;
+		await tick();
+		document.getElementById(to.url.hash.slice(1))?.scrollIntoView({ block: 'center' });
+	});
 	const earlierCount = $derived(
 		showAllComments ? 0 : Math.max(0, comments.length - SHOWN_COMMENTS)
 	);
@@ -856,6 +862,7 @@
 				{/if}
 				{#each shownComments as comment (comment.id)}
 					<article
+						id={`comment-${comment.id}`}
 						class="rounded-lg border {comment.pending ? 'opacity-60' : ''}"
 						transition:slide={{ duration: dur() }}
 					>

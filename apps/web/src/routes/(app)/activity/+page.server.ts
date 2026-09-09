@@ -1,5 +1,10 @@
 import { encodeCursor } from '$lib/server/api/core';
-import { eventQuery, serializeEvent } from '$lib/server/api/events';
+import {
+	applyEventWindow,
+	eventTimeParam,
+	eventQuery,
+	serializeEvent
+} from '$lib/server/api/events';
 import { getDb } from '$lib/server/db';
 import type { PageServerLoad } from './$types';
 
@@ -12,7 +17,10 @@ export const load: PageServerLoad = async ({ locals, platform, url }) => {
 	const project = url.searchParams.get('project') ?? undefined;
 	const type = url.searchParams.get('type') ?? undefined;
 
-	let q = eventQuery(db, userId);
+	const since = eventTimeParam(url.searchParams, 'since');
+	const until = eventTimeParam(url.searchParams, 'until');
+	const state = url.searchParams.get('state') ?? undefined;
+	let q = applyEventWindow(eventQuery(db, userId), { since, until, state });
 	if (project) {
 		q = q.where((eb) =>
 			eb.or([eb('event.project_id', '=', project), eb('project.name', '=', project)])
@@ -33,6 +41,6 @@ export const load: PageServerLoad = async ({ locals, platform, url }) => {
 		nextCursor: rows.length > PAGE_SIZE && last ? encodeCursor(last.created_at, last.id) : null,
 		// The project halves come from the app layout; the page derives the
 		// archived name a stale ?project= needs.
-		filters: { project: project ?? '', type: type ?? '' }
+		filters: { project: project ?? '', type: type ?? '', since, until, state }
 	};
 };

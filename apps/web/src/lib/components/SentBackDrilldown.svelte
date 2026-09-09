@@ -5,6 +5,7 @@
 	import { api } from '$lib/api';
 	import { comparisonText, workflowHref } from '$lib/stage-stats-view';
 	import Modal from './Modal.svelte';
+	import { containDialogTab } from '$lib/dialog-focus';
 	let {
 		open,
 		stage,
@@ -58,28 +59,13 @@
 		requestToken++;
 		onclose();
 	}
-	// The shared Modal currently parks focus but has no Tab containment. Keep
-	// this content viewer contained without forking the shared modal contract.
-	function trap(event: KeyboardEvent) {
-		if (!open || event.key !== 'Tab') return;
-		const dialog = document.querySelector('[data-sent-back-content]')?.closest('[role="dialog"]');
-		const controls = dialog?.querySelectorAll<HTMLElement>(
-			'button:not([disabled]),a[href],summary,input,select,[tabindex="0"]'
-		);
-		if (!controls?.length) return;
-		const first = controls[0],
-			last = controls[controls.length - 1];
-		if (event.shiftKey && document.activeElement === first) {
-			event.preventDefault();
-			last.focus();
-		} else if (!event.shiftKey && document.activeElement === last) {
-			event.preventDefault();
-			first.focus();
-		}
-	}
 </script>
 
-<svelte:window onkeydown={trap} />
+<svelte:window
+	onkeydown={(event) => {
+		if (open) containDialogTab(event, '[data-sent-back-content]');
+	}}
+/>
 <Modal {open} onclose={close} title="Send-back evidence" size="xl">
 	<div data-sent-back-content class="space-y-4 text-sm break-words">
 		<div>

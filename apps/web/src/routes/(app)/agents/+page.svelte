@@ -37,7 +37,7 @@
 	import IconX from '@tabler/icons-svelte/icons/x';
 	import { tick, untrack } from 'svelte';
 	import { slide } from 'svelte/transition';
-	import { goto, invalidateAll } from '$app/navigation';
+	import { afterNavigate, goto, invalidateAll } from '$app/navigation';
 	import { api } from '$lib/api';
 	import CancelRunDialog from '$lib/components/CancelRunDialog.svelte';
 	import { confirmDialog } from '$lib/components/dialogs.svelte';
@@ -68,8 +68,9 @@
 		sentBackReport = data.stats;
 		sentBackOpen = true;
 	}
+	const evidenceProject = $derived(data.boardProject);
 	$effect(() => {
-		data.boardProject;
+		evidenceProject;
 		sentBackOpen = false;
 	});
 	async function focusStatsCapacity(stateId: string) {
@@ -270,7 +271,7 @@
 	let disableConfirmOpen = $state(false);
 	/** Runs the switch alone would leave finishing (assigned ones cancel free). */
 	const inFlightRuns = $derived(
-		data.runs.filter((r) => r.status === 'launching' || r.status === 'running')
+		data.fleetRuns.filter((r) => r.status === 'launching' || r.status === 'running')
 	);
 
 	async function setEnabled(on: boolean, cancelInFlight = false) {
@@ -749,8 +750,9 @@
 	// --- runs --------------------------------------------------------------------
 
 	let showAllRuns = $state(untrack(() => data.runsState !== null));
+	const selectedRunsState = $derived(data.runsState);
 	$effect(() => {
-		if (data.runsState) showAllRuns = true;
+		if (selectedRunsState) showAllRuns = true;
 	});
 	const activeRuns = $derived(data.runs.filter((r) => isActiveRun(r.status)));
 	const visibleRuns = $derived(showAllRuns ? data.runs : activeRuns);
@@ -833,6 +835,19 @@
 		return state && state.category !== 'active' ? state : null;
 	});
 	const activeStateIds = $derived(deriveActiveStateIds(data.workflows));
+
+	afterNavigate(({ to }) => {
+		if (to?.url.searchParams.get('new') !== 'rule') return;
+		openRuleCreate({ projectId: to.url.searchParams.get('project') ?? undefined });
+		const url = new URL(to.url);
+		url.searchParams.delete('new');
+		url.searchParams.delete('project');
+		void goto(`${url.pathname}${url.search}${url.hash}`, {
+			replaceState: true,
+			noScroll: true,
+			keepFocus: true
+		});
+	});
 
 	function openRuleCreate(prefill: { stateId?: string; projectId?: string } = {}) {
 		// Shadow hints belong to the last save; opening an editor stales them.

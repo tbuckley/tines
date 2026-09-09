@@ -1,7 +1,7 @@
 import type { Actor, ActorRun, TinesEvent } from '@tines/shared';
 import { sql, type CompiledQuery, type Kysely } from 'kysely';
 import { newId, type Database } from '$lib/server/db';
-import type { ActorContext } from './core';
+import { ApiFail, type ActorContext } from './core';
 
 export interface EventWindowFilters {
 	since?: number;
@@ -202,4 +202,18 @@ export function serializeEvent(row: EventRow): TinesEvent {
 		payload,
 		created_at: row.created_at
 	};
+}
+
+export function eventTimeParam(
+	params: URLSearchParams,
+	name: 'since' | 'until'
+): number | undefined {
+	const value = params.get(name);
+	if (!value) return undefined;
+	const parsed = /^\d+$/.test(value) ? Number(value) : Date.parse(value);
+	if (!Number.isFinite(parsed))
+		throw new ApiFail(422, 'validation_error', `"${name}" must be epoch milliseconds or ISO 8601`, {
+			field: name
+		});
+	return parsed;
 }

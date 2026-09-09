@@ -1,8 +1,12 @@
 import { json } from '@sveltejs/kit';
 import type { ListResponse, TinesEvent } from '@tines/shared';
 import { api, apiContext, encodeCursor, readPage } from '$lib/server/api/core';
-import { ApiFail } from '$lib/server/api/core';
-import { applyEventWindow, eventQuery, serializeEvent } from '$lib/server/api/events';
+import {
+	applyEventWindow,
+	eventQuery,
+	serializeEvent,
+	eventTimeParam
+} from '$lib/server/api/events';
 import type { RequestHandler } from './$types';
 
 /** Global activity feed, newest first. */
@@ -11,24 +15,9 @@ export const GET: RequestHandler = api(async (event) => {
 	const page = readPage(event);
 	const params = event.url.searchParams;
 
-	function timeParam(name: 'since' | 'until'): number | undefined {
-		const value = params.get(name);
-		if (!value) return undefined;
-		const parsed = /^\d+$/.test(value) ? Number(value) : Date.parse(value);
-		if (!Number.isFinite(parsed)) {
-			throw new ApiFail(
-				422,
-				'validation_error',
-				`"${name}" must be epoch milliseconds or ISO 8601`,
-				{ field: name }
-			);
-		}
-		return parsed;
-	}
-
 	let q = applyEventWindow(eventQuery(db, actor.userId), {
-		since: timeParam('since'),
-		until: timeParam('until'),
+		since: eventTimeParam(params, 'since'),
+		until: eventTimeParam(params, 'until'),
 		type: params.get('type')?.split(',').filter(Boolean),
 		state: params.get('state') ?? undefined
 	});

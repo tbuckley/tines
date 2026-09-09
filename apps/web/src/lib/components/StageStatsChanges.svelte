@@ -7,13 +7,15 @@
 		markers,
 		stateId,
 		oncapacity,
-		onstage
+		onstage,
+		onnavigate
 	}: {
 		report: StageStatsReport;
 		markers: ChangeMarker[];
 		stateId?: string;
 		oncapacity: (id: string) => void;
 		onstage?: (id: string) => void;
+		onnavigate?: () => void;
 	} = $props();
 	const names = {
 		prompt: 'Prompt',
@@ -44,20 +46,23 @@
 				></summary
 			>
 			<a
+				onclick={onnavigate}
 				class="inline-flex min-h-11 items-center text-sm underline"
-				href={`/activity?since=${marker.at}&until=${marker.at + 60001}${stateId ? `&state=${encodeURIComponent(stateId)}` : ''}`}
-				>View recorded events</a
+				href={`/activity?since=${marker.at}&until=${marker.at + 60001}`}>View recorded events</a
 			>
 			<div class="flex flex-wrap gap-x-4 text-sm">
 				{#if marker.kind === 'automation' || marker.kind === 'quota'}<a
+						onclick={onnavigate}
 						class="inline-flex min-h-11 items-center underline"
 						href="#quota-policy">Open supervisor controls</a
 					>{:else if marker.kind === 'runner_cap'}<a
+						onclick={onnavigate}
 						class="inline-flex min-h-11 items-center underline"
 						href="#runners">View runner caps</a
 					>{:else if marker.kind === 'rule'}<a
+						onclick={onnavigate}
 						class="inline-flex min-h-11 items-center underline"
-						href="#routing-rules">View routing rules</a
+						href="#routing">View routing rules</a
 					>{/if}
 			</div>
 			{#each marker.effects.filter((e) => !stateId || e.state_id === stateId) as effect (effect.state_id)}
@@ -90,6 +95,7 @@
 						{/each}
 					</div>
 					{#if marker.kind === 'prompt' && stage}<a
+							onclick={onnavigate}
 							class="inline-flex min-h-11 items-center text-sm underline"
 							href={workflowHref(stage)}>Edit current stage prompt</a
 						>{:else if marker.kind === 'quota'}<button

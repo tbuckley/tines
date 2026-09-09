@@ -11,6 +11,7 @@
 	import StageStatsDetails from './StageStatsDetails.svelte';
 	import StageStatsChanges from './StageStatsChanges.svelte';
 	import Modal from './Modal.svelte';
+	import { containDialogTab } from '$lib/dialog-focus';
 	import IconChevronDown from '@tabler/icons-svelte/icons/chevron-down';
 	let {
 		report,
@@ -42,11 +43,18 @@
 		changesOpen = false;
 		await tick();
 		const target = document.getElementById(`stats-${id}-${tab}`);
+		target?.parentElement?.setAttribute('open', '');
 		target?.scrollIntoView({ block: 'center' });
 		target?.focus({ preventScroll: true });
 	}
 	const date = (n: number) => new Date(n).toLocaleString();
 </script>
+
+<svelte:window
+	onkeydown={(event) => {
+		if (changesOpen) containDialogTab(event, '[data-stats-changes]');
+	}}
+/>
 
 <section class="mb-10 min-w-0" id="this-week" aria-labelledby="stage-stats-heading">
 	<div class="mb-4 flex flex-wrap items-start justify-between gap-2">
@@ -58,7 +66,11 @@
 				class="min-h-11 text-sm underline"
 				onclick={() => (changesOpen = true)}
 				>{report.markers.length}
-				{report.markers.length === 20 ? 'displayed changes' : 'changes'} this week</button
+				{report.markers.length === 20
+					? 'displayed changes'
+					: report.markers.length === 1
+						? 'change'
+						: 'changes'} this week</button
 			>{/if}
 	</div>
 	{#if highlights.length}
@@ -121,7 +133,10 @@
 									section = 'timing';
 								}}><IconChevronDown size={16} class="shrink-0" />{stage.state_name}</button
 							>
-							<p class="text-muted-foreground text-xs">{stage.workflow_name} · {c.visits} visits</p>
+							<p class="text-muted-foreground text-xs">
+								{stage.workflow_name} · {c.visits}
+								{c.visits === 1 ? 'visit' : 'visits'}
+							</p>
 							{#if !c.visits && !c.exits && !c.runs.total && !c.runs.unbound}<p
 									class="text-muted-foreground mt-1 text-xs"
 								>
@@ -130,7 +145,8 @@
 									{c.waiting_now} of these visits still waiting
 								</p>{/if}{#if changes.length}<button
 									class="min-h-11 text-xs underline"
-									onclick={() => reveal(stage.state_id, 'changes')}>{changes.length} changes</button
+									onclick={() => reveal(stage.state_id, 'changes')}
+									>{changes.length} {changes.length === 1 ? 'change' : 'changes'}</button
 								>{/if}</th
 						>
 						<td
@@ -232,12 +248,18 @@
 	</details>
 </section>
 <Modal bind:open={changesOpen} title="Latest changes in this window" size="xl"
-	><StageStatsChanges
-		{report}
-		markers={report.markers}
-		{oncapacity}
-		onstage={(id) => reveal(id, 'changes')}
-	/></Modal
+	><div data-stats-changes>
+		<StageStatsChanges
+			{report}
+			markers={report.markers}
+			oncapacity={(id) => {
+				changesOpen = false;
+				oncapacity(id);
+			}}
+			onnavigate={() => (changesOpen = false)}
+			onstage={(id) => reveal(id, 'changes')}
+		/>
+	</div></Modal
 >
 
 <style>

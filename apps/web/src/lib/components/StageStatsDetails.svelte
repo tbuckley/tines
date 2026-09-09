@@ -29,7 +29,7 @@
 		<details open={section === tab.key} class="bg-background rounded-lg border p-3">
 			<summary
 				id={`stats-${stage.state_id}-${tab.key}`}
-				tabindex="-1"
+				tabindex="0"
 				class="min-h-11 cursor-pointer scroll-mt-24 text-sm font-semibold">{tab.label}</summary
 			>
 			{#if tab.key === 'changes'}

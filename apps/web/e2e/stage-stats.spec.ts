@@ -4,6 +4,7 @@
  */
 import type { ContextItem, IssueDetail, Project, WorkflowResponse } from '@tines/shared';
 import { expect, test } from '@playwright/test';
+import { WEEKLY } from './stage-stats-seed.mjs';
 import { ALICE } from './constants.mjs';
 import { apiClient, body, clickToOpen, gotoHydrated, runId, signIn } from './helpers';
 
@@ -89,7 +90,7 @@ test('filters the weekly board, focuses capacity, and opens frozen historical ev
 	const section = page.getByRole('region', { name: 'This week' });
 	await expect(section.getByRole('columnheader')).toHaveCount(4);
 	const row = section.locator('tr.stage-row').filter({ hasText: 'Automated Review' });
-	await expect(row).toContainText('1 visits');
+	await expect(row).toContainText('1 visit');
 	await expect(row).toContainText('1 of 1 exits');
 	const runLink = row.getByRole('link', { name: /runs per visit/ });
 	await expect(runLink).toHaveAttribute(
@@ -174,4 +175,109 @@ test('evidence errors remain retryable with the same frozen query', async ({ con
 	await dialog.getByRole('button', { name: 'Retry' }).click();
 	await expect(dialog).toContainText('Please address the findings.');
 	expect(queries[1]).toBe(queries[0]);
+});
+
+for (const width of [1440, 390])
+	test(`populated board highlights and changes at ${width}px`, async ({ context, page }) => {
+		await page.setViewportSize({ width, height: 1000 });
+		await signIn(context, WEEKLY.sessionToken);
+		await gotoHydrated(page, `/agents?project=${WEEKLY.projectId}`);
+		const section = page.getByRole('region', { name: 'This week' });
+		const highlights = section.getByRole('button', { name: /Most/ });
+		await expect(highlights).toHaveCount(3);
+		await expect(highlights.nth(0)).toContainText('Research');
+		await expect(highlights.nth(1)).toContainText('Automated Review');
+		await expect(highlights.nth(2)).toContainText('11 of 20 runs failed to start');
+		const review = section.locator('tr.stage-row').filter({ hasText: 'Automated Review' });
+		await expect(review).toContainText('20%');
+		await expect(review).toContainText('Up 11 pp');
+		await expect(review).toContainText('was 9%');
+		await section.scrollIntoViewIfNeeded();
+		await page.screenshot({
+			path: `/tmp/tines257-screenshots/populated-${width}.png`,
+			fullPage: true
+		});
+		await highlights.nth(0).click();
+		await expect(page.locator('#stats-ws_research-timing')).toBeFocused();
+		await expect(section.getByText('Timed queue visits', { exact: true })).toBeVisible();
+		expect(
+			await page.evaluate(
+				() => document.documentElement.scrollWidth <= document.documentElement.clientWidth
+			)
+		).toBe(true);
+		await highlights.nth(2).click();
+		await expect(page.locator('#stats-ws_discovering-runs')).toBeFocused();
+		await expect(section.getByText('Failed to start', { exact: true })).toBeVisible();
+		await section.getByRole('button', { name: '4 changes this week' }).click();
+		const dialog = page.getByRole('dialog', { name: 'Latest changes in this window' });
+		await expect(dialog).toContainText('Runner cap');
+		await expect(dialog).toContainText('Routing rule');
+		await expect(dialog).toContainText('Quota');
+		await expect(dialog).toContainText('Prompt');
+		await dialog.locator('summary').filter({ hasText: 'Prompt' }).click();
+		await expect(
+			dialog.locator('details[open]').getByText('Before', { exact: true })
+		).toBeVisible();
+		await expect(dialog.locator('details[open]').getByText('Since', { exact: true })).toBeVisible();
+		expect(await dialog.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+		await page.keyboard.press('Escape');
+		await page.emulateMedia({ colorScheme: 'dark' });
+		await page.screenshot({ path: `/tmp/tines257-screenshots/dark-${width}.png`, fullPage: true });
+	});
+
+test('late evidence cannot replace another stage and keyboard focus stays in the viewer', async ({
+	context,
+	page
+}) => {
+	await signIn(context, ALICE.sessionToken);
+	await gotoHydrated(page, `/agents?project=${project.id}`);
+	let release: () => void = () => {};
+	const held = new Promise<void>((resolve) => (release = resolve));
+	let ready: () => void = () => {};
+	const captured = new Promise<void>((resolve) => (ready = resolve));
+	await page.route('**/api/v1/supervisor/stats/sent-back?**', async (route) => {
+		if (new URL(route.request().url()).searchParams.get('state') !== reviewStateId) {
+			await route.continue();
+			return;
+		}
+		const response = await route.fetch();
+		ready();
+		await held;
+		await route.fulfill({ response });
+	});
+	const section = page.getByRole('region', { name: 'This week' });
+	const dialog = page.getByRole('dialog', { name: 'Send-back evidence' });
+	await section
+		.locator('tr.stage-row')
+		.filter({ hasText: 'Automated Review' })
+		.getByRole('button', { name: /sent back: view evidence/ })
+		.click();
+	await captured;
+	await page.keyboard.press('Escape');
+	await section
+		.locator('tr.stage-row')
+		.filter({ hasText: 'Implementation' })
+		.getByRole('button', { name: /sent back: view evidence/ })
+		.click();
+	await expect(dialog.getByRole('heading', { name: 'Implementation', exact: true })).toBeVisible();
+	release();
+	await expect(dialog).toContainText('No send-back events in this window.');
+	await expect(dialog).not.toContainText('Please address the findings.');
+	for (let i = 0; i < 8; i++) {
+		await page.keyboard.press('Tab');
+		expect(await dialog.evaluate((el) => el.contains(document.activeElement))).toBe(true);
+	}
+	await page.keyboard.press('Escape');
+});
+
+test('rule creation project is one-shot and does not become Board project', async ({
+	context,
+	page
+}) => {
+	await signIn(context, ALICE.sessionToken);
+	await gotoHydrated(page, `/agents?new=rule&project=${project.id}`);
+	await expect(page.getByRole('dialog', { name: 'New routing rule' })).toBeVisible();
+	await expect(page.locator('#rule-project')).toHaveValue(project.id);
+	await expect(page.getByLabel('Board project')).toHaveValue('');
+	await expect(page).not.toHaveURL(/new=rule/);
 });

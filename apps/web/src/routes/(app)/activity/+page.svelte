@@ -53,6 +53,9 @@
 				project: data.filters.project || undefined,
 				type: data.filters.type || undefined,
 				cursor: nextCursor,
+				since: data.filters.since,
+				until: data.filters.until,
+				state: data.filters.state,
 				limit: 50
 			});
 			extra = [...extra, ...res.items];
@@ -72,6 +75,16 @@
 
 <svelte:head><title>Activity · Tines</title></svelte:head>
 
+{#if data.filters.since !== undefined || data.filters.until !== undefined || data.filters.state}<p
+		class="text-muted-foreground mb-3 text-sm"
+	>
+		Recorded events {data.filters.since !== undefined
+			? `from ${new Date(data.filters.since).toLocaleString()}`
+			: ''}
+		{data.filters.until !== undefined
+			? `until ${new Date(data.filters.until).toLocaleString()}`
+			: ''}{data.filters.state ? ` · state ${data.filters.state}` : ''}
+	</p>{/if}
 <div class="mb-6 flex flex-wrap items-center gap-3">
 	<h1 class="mr-auto text-2xl font-semibold tracking-tight">Activity</h1>
 	<Select
