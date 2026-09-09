@@ -435,6 +435,15 @@ describe('resolveStarter', () => {
 });
 
 describe('Plan journey content and compatibility limits', () => {
+	it('caps a generated repository context name at 100 characters', async () => {
+		const basename = 'r'.repeat(150);
+		const created = await createProject(t.db, t.env, actor, {
+			name: 'Long repo',
+			starter: { id: 'code', inputs: { repo_url: `https://example.test/${basename}.git` } }
+		});
+		expect(created.starter!.context[0].name).toHaveLength(100);
+	});
+
 	it('creates actionable conventions, guide, and a full multiline first brief', async () => {
 		const brief = 'Two adults and two children\nRainy-day backup needed';
 		const created = await createProject(t.db, t.env, actor, {
@@ -448,10 +457,13 @@ describe('Plan journey content and compatibility limits', () => {
 			['conventions', 0],
 			['planning-guide', 1]
 		]);
-		expect(items[0].body).toContain('Constraints (naps, walking, budget, diet):');
-		expect(items[1].body).toContain(created.id);
-		expect(items[1].body).toContain('Never invent addresses, hours, prices');
-		expect(items[1].body).toContain('tines issues move "<candidate-ref>" "Propose"');
+		expect(items.find((item) => item.name === 'conventions')!.body).toContain(
+			'Constraints (naps, walking, budget, diet):'
+		);
+		const guide = items.find((item) => item.name === 'planning-guide')!;
+		expect(guide.body).toContain(created.id);
+		expect(guide.body).toContain('Never invent addresses, hours, prices');
+		expect(guide.body).toContain('tines issues move "<candidate-ref>" "Propose"');
 		const issue = await getIssueDetail(t.db, USER, { id: created.starter!.first_issue!.id });
 		expect(issue.description).toContain(brief);
 		expect(issue.description).toContain('Nothing to file');
@@ -490,6 +502,24 @@ describe('Plan journey content and compatibility limits', () => {
 				t.env,
 				actor,
 				{ name: 'Bad', starter: { id: 'plan', inputs: { brief: 'x' } } },
+				{ starters: { ...STARTERS, plan: broken } }
+			)
+		).rejects.toThrow(expect.objectContaining({ code: 'invalid_starter', status: 422 }) as Error);
+		expect(counts()).toEqual(before);
+	});
+
+	it('rejects normalized workflow key collisions before any write', async () => {
+		const broken: Starter = {
+			...STARTERS.plan,
+			workflows: [STARTERS.plan.workflows[0], { ...STARTERS.plan.workflows[1], name: 'Idea!' }]
+		};
+		const before = counts();
+		await expect(
+			createProject(
+				t.db,
+				t.env,
+				actor,
+				{ name: 'Bad keys', starter: { id: 'plan', inputs: { brief: 'x' } } },
 				{ starters: { ...STARTERS, plan: broken } }
 			)
 		).rejects.toThrow(expect.objectContaining({ code: 'invalid_starter', status: 422 }) as Error);
