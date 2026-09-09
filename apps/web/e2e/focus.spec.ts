@@ -252,7 +252,7 @@ test.describe.serial('project focus', () => {
 			await gotoHydrated(page, `/issues/${encodeURIComponent(B_NAME)}/1`);
 			await expect(page.getByRole('button', { name: `Focus ${B_NAME}` })).toBeVisible();
 			await expect(switcher(page)).toHaveAttribute('aria-label', `Project focus: ${A_NAME}`);
-			const back = page.getByRole('link', { name: 'Issues' }).first();
+			const back = page.locator('main').getByRole('link', { name: 'Issues', exact: true });
 			await expect(back).toHaveAttribute('href', '/issues');
 			await back.click();
 			await expect(page.getByRole('link', { name: new RegExp(`${A_NAME} issue`) })).toBeVisible();
@@ -261,7 +261,7 @@ test.describe.serial('project focus', () => {
 			await gotoHydrated(page, `/issues/${encodeURIComponent(B_NAME)}/1`);
 			await page.getByRole('button', { name: `Focus ${B_NAME}` }).click();
 			await expect(switcher(page)).toHaveAttribute('aria-label', `Project focus: ${B_NAME}`);
-			await page.getByRole('link', { name: 'Issues' }).first().click();
+			await page.locator('main').getByRole('link', { name: 'Issues', exact: true }).click();
 			await expect(page.getByRole('link', { name: new RegExp(`${B_NAME} issue`) })).toBeVisible();
 			await expect(page.getByRole('link', { name: new RegExp(`${A_NAME} issue`) })).toHaveCount(0);
 
