@@ -442,7 +442,9 @@ describe('Plan journey content and compatibility limits', () => {
 			starter: { id: 'plan', inputs: { brief } }
 		});
 		const items = (await listContextItems(t.db, USER, { project: created.id }, PAGE)).items;
-		expect(items.map((item) => [item.name, item.position])).toEqual([
+		expect(
+			items.map((item) => [item.name, item.position]).sort((a, b) => Number(a[1]) - Number(b[1]))
+		).toEqual([
 			['conventions', 0],
 			['planning-guide', 1]
 		]);

@@ -42,10 +42,15 @@ describe('eligibleStarterIssue', () => {
 		'rejects %s',
 		(_name, candidateMarker, candidateProject, issues, hasQuery, bounded) => {
 			expect(
-				eligibleStarterIssue(candidateMarker, candidateProject, issues as IssueListItem[], {
-					hasQuery,
-					bounded
-				})
+				eligibleStarterIssue(
+					candidateMarker,
+					candidateProject,
+					issues as unknown as IssueListItem[],
+					{
+						hasQuery,
+						bounded
+					}
+				)
 			).toBeNull();
 		}
 	);
