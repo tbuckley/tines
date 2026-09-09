@@ -127,6 +127,53 @@ function fakeClaudeProviderError(dir: string, exitCode = 1): string {
 	return bin;
 }
 
+/**
+ * A claude_code launcher that exits immediately while its inherited writer
+ * emits a terminal result larger than a typical pipe buffer. The missing
+ * trailing newline also makes the renderer hold the event until stdout has
+ * fully closed.
+ */
+function fakeClaudeBufferedResult(dir: string): string {
+	const bin = join(dir, 'fakebin');
+	mkdirSync(bin, { recursive: true });
+	writeFileSync(
+		join(bin, 'claude-writer.mjs'),
+		`const event = {
+	type: 'result',
+	subtype: 'success',
+	is_error: false,
+	result: 'done',
+	session_id: 'session_buffered',
+	total_cost_usd: 1.25,
+	num_turns: 3,
+	duration_ms: 456,
+	usage: {
+		input_tokens: 100,
+		output_tokens: 20,
+		cache_read_input_tokens: 30,
+		cache_creation_input_tokens: 40
+	},
+	padding: 'x'.repeat(4 * 1024 * 1024)
+};
+await new Promise((resolve) => setTimeout(resolve, 50));
+process.stdout.write(JSON.stringify(event));
+	`
+	);
+	// A short-lived launcher leaves its writer holding stdout open. Node's
+	// child-process `exit` event fires for the launcher immediately; `close`
+	// waits until the inherited pipe is drained, which is the production
+	// invariant this fixture exists to pin.
+	writeFileSync(
+		join(bin, 'claude'),
+		`#!/bin/sh
+node "$(dirname "$0")/claude-writer.mjs" &
+exit 0
+`,
+		{ mode: 0o755 }
+	);
+	return bin;
+}
+
 function fakeCodex(dir: string): string {
 	const bin = join(dir, 'fakebin');
 	mkdirSync(bin, { recursive: true });
@@ -359,6 +406,33 @@ describe('the run log a local run leaves behind', () => {
 			},
 			provider_session_id: 'session_failed'
 		});
+	}, 30_000);
+
+	it('drains a large unterminated result before reporting an immediately exiting harness', async () => {
+		const { server: stub, done } = stubSupervisor();
+		server = stub;
+		await new Promise<void>((r) => stub.listen(0, '127.0.0.1', r));
+		const port = (stub.address() as AddressInfo).port;
+		configDir = mkdtempSync(join(tmpdir(), 'tines-daemon-'));
+
+		child = startDaemon(port, configDir, {
+			fakeClaudeDir: fakeClaudeBufferedResult(configDir)
+		});
+
+		const harvest = await done;
+		expect(harvest.finish).toEqual({
+			status: 'completed',
+			usage: {
+				cost_source: 'provider',
+				cost_usd: 1.25,
+				input_tokens: 100,
+				output_tokens: 20,
+				cache_read_tokens: 30,
+				cache_write_tokens: 40
+			},
+			provider_session_id: 'session_buffered'
+		});
+		expect(harvest.log).toContain('[session] result: success (3 turns, $1.25)');
 	}, 30_000);
 
 	it('reports local Codex tokens and thread id while keeping logs readable', async () => {
