@@ -139,6 +139,17 @@ test.describe.serial('issue labels UI', () => {
 		const rename = `${bugName}-renamed`;
 		const row = page.locator('li', { has: page.getByLabel(`Rename ${bugName}`) });
 		await expect(row.getByRole('link', { name: '1 issue' })).toBeVisible();
+		await expect(
+			page.getByText('Changes save automatically when you leave a field.')
+		).toBeVisible();
+
+		let releaseRequest!: () => void;
+		const requestGate = new Promise<void>((resolve) => (releaseRequest = resolve));
+		const updateEndpoint = `**/api/v1/labels/${bug.id}`;
+		await page.route(updateEndpoint, async (route) => {
+			await requestGate;
+			await route.continue();
+		});
 
 		// A `change` dispatched before hydration finishes is lost — the input is
 		// server-rendered, its handler is not — so the rename is retried. But
@@ -152,8 +163,31 @@ test.describe.serial('issue labels UI', () => {
 			await field.blur();
 			await field.fill(rename);
 			await field.blur();
-			await expect(page.getByLabel(`Rename ${rename}`)).toBeVisible({ timeout: 3000 });
+			await expect(row.getByText('Saving…')).toBeVisible({ timeout: 3000 });
 		}).toPass({ timeout: 15_000 });
+		releaseRequest();
+		await expect(page.getByLabel(`Rename ${rename}`)).toBeVisible();
+		await expect(page.getByText('Saved', { exact: true })).toBeVisible();
+		await expect(page.getByText('Saved', { exact: true }).locator('svg')).toBeVisible();
+
+		// A later edit replaces the acknowledgement, and a failed request can
+		// never inherit the earlier success state.
+		await page.unroute(updateEndpoint);
+		await page.route(updateEndpoint, (route) =>
+			route.fulfill({
+				status: 503,
+				contentType: 'application/json',
+				body: JSON.stringify({ error: { code: 'unavailable', message: 'Try again later' } })
+			})
+		);
+		const renamedRow = page.locator('li', { has: page.getByLabel(`Rename ${rename}`) });
+		await renamedRow.getByLabel(`Description for ${rename}`).fill('will not save');
+		await renamedRow.getByLabel(`Description for ${rename}`).blur();
+		await expect(renamedRow.getByText('Not saved', { exact: false })).toHaveAttribute(
+			'title',
+			'Try again later'
+		);
+		await expect(renamedRow.getByText('Saved', { exact: true })).toHaveCount(0);
 
 		// The rename reaches the chips that render from the same row.
 		await page.goto(`/issues/${encodeURIComponent(projectName)}/${labelled.number}`);
