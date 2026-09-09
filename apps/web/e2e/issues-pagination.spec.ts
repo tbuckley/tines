@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { PAGINATION } from './constants.mjs';
-import { gotoHydrated, PHONE, signIn } from './helpers';
+import { gotoHydrated, PHONE, readSettled, signIn } from './helpers';
 
 test.describe('issue list pagination', () => {
 	test.beforeEach(async ({ context }) => {
@@ -57,7 +57,7 @@ test.describe('issue list pagination', () => {
 
 			const recovery = page.getByRole('link', { name: 'First page' });
 			await expect(recovery).toBeVisible();
-			const box = await recovery.boundingBox();
+			const box = await readSettled(() => recovery.boundingBox(), { timeout: 3_000 });
 			expect(box).not.toBeNull();
 			expect(box!.height).toBeGreaterThanOrEqual(44);
 			expect(box!.width).toBeGreaterThanOrEqual(44);
