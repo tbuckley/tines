@@ -5,7 +5,8 @@ import { eventQuery, serializeEvent } from '$lib/server/api/events';
 import { getIssueDetail, loadIssue } from '$lib/server/api/issues';
 import { listLabels } from '$lib/server/api/labels';
 import { listRunners } from '$lib/server/api/runners';
-import { listRuns } from '$lib/server/api/runs';
+import { listRoutingRules } from '$lib/server/api/routing';
+import { hasAnyRun, listRuns } from '$lib/server/api/runs';
 import { loadWorkflows } from '$lib/server/api/workflows';
 import { explainDispatch } from '$lib/server/supervisor/explain';
 import { getDb } from '$lib/server/db';
@@ -84,6 +85,10 @@ export const load: PageServerLoad = async ({ locals, platform, params, depends, 
 	// them under exactly one name so nothing can read a stale second copy.
 	const { artifacts, ...issueDetail } = detail;
 
+	// Awaited by two deferred entries; created once so the check is not made twice.
+	const hasAnyRunPromise = hasAnyRun(db, userId);
+	hasAnyRunPromise.catch(() => {});
+
 	return {
 		issue: issueDetail,
 		events,
@@ -110,7 +115,12 @@ export const load: PageServerLoad = async ({ locals, platform, params, depends, 
 			issueRuns: listRuns(db, userId, { issue: issue.id }, { cursor: null, limit: 20 }).then(
 				(page) => page.items
 			),
-			runners: listRunners(db, userId)
+			runners: listRunners(db, userId),
+			// The first-run checklist: shown only while the account has never had
+			// a run, so the rules it needs are fetched only for that population —
+			// a steady-state page pays one existence check and nothing else.
+			hasAnyRun: hasAnyRunPromise,
+			rules: hasAnyRunPromise.then((has) => (has ? [] : listRoutingRules(db, userId)))
 		}
 	};
 };

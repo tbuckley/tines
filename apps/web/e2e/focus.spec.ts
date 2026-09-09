@@ -71,6 +71,20 @@ test.describe.serial('project focus', () => {
 		]) {
 			const res = await api.post(`/api/v1/projects/${id}/issues`, { title: `${name} issue` });
 			expect(res.status(), await res.text()).toBe(201);
+			const context = await api.post('/api/v1/context', {
+				kind: 'prompt',
+				name: `${name}-context`,
+				body: `${name} only`,
+				project_id: id
+			});
+			expect(context.status(), await context.text()).toBe(201);
+		}
+		for (const project_id of [aId, bId]) {
+			const rule = await api.post('/api/v1/routing-rules', {
+				project_id,
+				targets: [{ runner_id: RUNROW.runnerId }]
+			});
+			expect(rule.status(), await rule.text()).toBe(201);
 		}
 	});
 
@@ -113,7 +127,7 @@ test.describe.serial('project focus', () => {
 		const bottomBar = page.getByRole('navigation', { name: 'Primary' });
 		await expect(bottomBar.getByRole('link', { name: 'Projects' })).toHaveAttribute(
 			'href',
-			/^\/projects/
+			`/projects/${aId}`
 		);
 		await expect(bottomBar.getByRole('button', { name: /^Project focus:/ })).toHaveCount(0);
 		await page.close();
@@ -137,6 +151,134 @@ test.describe.serial('project focus', () => {
 		);
 		const openTab = page.getByRole('link', { name: /^Open/ });
 		await expect(openTab).toContainText(String(listed.items.length));
+		await page.close();
+	});
+
+	for (const [label, viewport] of [
+		['desktop', DESKTOP],
+		['phone', PHONE]
+	] as const) {
+		test(`remaining focused surfaces and cross-project offer work on ${label}`, async ({
+			browser
+		}) => {
+			const page = await open(browser, viewport, `/issues?project=${encodeURIComponent(A_NAME)}`);
+
+			const contextRef = label === 'desktop' ? A_NAME : aId;
+			await gotoHydrated(page, `/context?project=${encodeURIComponent(contextRef)}`);
+			await expect(page).toHaveURL('/context');
+			await expect(page.getByLabel('Filter by project')).toHaveCount(0);
+			await expect(page.locator('p').filter({ hasText: /shared items?/ })).toContainText(
+				/\(global and state-scoped\)\s+appl(?:y|ies) here too/
+			);
+			await expect(page.getByText(`${A_NAME}-context`, { exact: true })).toBeVisible();
+			await expect(page.getByText(`${B_NAME}-context`, { exact: true })).toHaveCount(0);
+			await gotoHydrated(page, `/context?project=nope-${runId}`);
+			await expect(page.getByRole('status')).toContainText(`No project “nope-${runId}”`);
+			await expect(page.getByText(`${A_NAME}-context`, { exact: true })).toBeVisible();
+
+			await gotoHydrated(page, '/activity');
+			await expect(page.getByLabel('Filter by project')).toHaveCount(0);
+			const issueLinks = page.locator(`a[href^="/issues/"]`);
+			await expect(issueLinks.first()).toBeVisible();
+			expect(
+				await issueLinks.evaluateAll((links) => links.map((link) => link.getAttribute('href')))
+			).toEqual(expect.arrayContaining([`/issues/${encodeURIComponent(A_NAME)}/1`]));
+			expect(
+				await issueLinks.evaluateAll((links) => links.map((link) => link.getAttribute('href')))
+			).not.toContain(`/issues/${encodeURIComponent(B_NAME)}/1`);
+
+			await gotoHydrated(page, '/workflows');
+			const standard = page.locator('a[href="/workflows/wf_standard"]');
+			await expect(standard).toBeVisible();
+			await expect(standard).toContainText('1 open issue');
+			await expect(standard).toContainText('Project default');
+			const otherWorkflows = page.locator('details');
+			const otherSummary = page.getByText(/Other workflows in your library \(\d+\)/);
+			await expect(otherSummary).toBeVisible();
+			await expect(otherWorkflows).not.toHaveAttribute('open', '');
+			await otherSummary.focus();
+			await page.keyboard.press('Enter');
+			await expect(otherWorkflows).toHaveAttribute('open', '');
+			await standard.click();
+			await expect(page.getByRole('heading', { level: 1, name: /Standard/ })).toContainText(
+				'Project default'
+			);
+			await expect(page.getByText(`1 open issue in ${A_NAME} uses this workflow`)).toBeVisible();
+
+			await gotoHydrated(page, '/agents');
+			const routingRules = page.getByRole('list', { name: 'Routing rules' });
+			await expect(routingRules.getByText(A_NAME, { exact: true })).toBeVisible();
+			await expect(routingRules.getByText(B_NAME, { exact: true })).toHaveCount(0);
+			await page.getByLabel('Show ended runs').check();
+			await expect(
+				page.getByRole('link', { name: new RegExp(`${RUNROW.projectName}/#`) })
+			).toHaveCount(0);
+			// A negative-only assertion could pass with an accidentally empty
+			// focused list. Focus the seeded run's own project and prove the same
+			// row appears, then return to A for the cross-project issue journey.
+			await gotoHydrated(page, `/issues?project=${RUNROW.projectId}`);
+			await gotoHydrated(page, '/agents');
+			await page.getByLabel('Show ended runs').check();
+			await expect(
+				page.getByRole('link', { name: `${RUNROW.projectName}/#${RUNROW.issueNumber}` })
+			).toHaveCount(2);
+			const ruleDialog = page.getByRole('dialog', { name: 'New routing rule' });
+			await gotoHydrated(page, `/issues?project=${aId}`);
+			await gotoHydrated(page, '/agents');
+			await clickToOpen(page.getByRole('button', { name: 'Add rule' }), ruleDialog);
+			await expect(ruleDialog.getByLabel('Project', { exact: true })).toHaveValue(aId);
+			await page.keyboard.press('Escape');
+
+			await gotoHydrated(page, `/issues/${encodeURIComponent(B_NAME)}/1`);
+			await expect(page.getByRole('button', { name: `Focus ${B_NAME}` })).toBeVisible();
+			await expect(switcher(page)).toHaveAttribute('aria-label', `Project focus: ${A_NAME}`);
+			const back = page.locator('main').getByRole('link', { name: 'Issues', exact: true });
+			await expect(back).toHaveAttribute('href', '/issues');
+			await back.click();
+			await expect(page.getByRole('link', { name: new RegExp(`${A_NAME} issue`) })).toBeVisible();
+			await expect(page.getByRole('link', { name: new RegExp(`${B_NAME} issue`) })).toHaveCount(0);
+
+			await gotoHydrated(page, `/issues/${encodeURIComponent(B_NAME)}/1`);
+			await page.getByRole('button', { name: `Focus ${B_NAME}` }).click();
+			await expect(switcher(page)).toHaveAttribute('aria-label', `Project focus: ${B_NAME}`);
+			await page.locator('main').getByRole('link', { name: 'Issues', exact: true }).click();
+			await expect(page.getByRole('link', { name: new RegExp(`${B_NAME} issue`) })).toBeVisible();
+			await expect(page.getByRole('link', { name: new RegExp(`${A_NAME} issue`) })).toHaveCount(0);
+
+			await expect(page.getByRole('link', { name: 'Projects' }).first()).toHaveAttribute(
+				'href',
+				`/projects/${bId}`
+			);
+			await page.close();
+		});
+	}
+
+	test('routing editor one-shots are consumed on success and every invalid shape', async ({
+		browser,
+		request
+	}) => {
+		const api = apiClient(request, ALICE.apiKey);
+		const archived = await body<Project>(
+			await api.post('/api/v1/projects', { name: `focus-archived-${runId}` })
+		);
+		expect((await api.post(`/api/v1/projects/${archived.id}/archive`)).ok()).toBe(true);
+
+		const page = await open(browser, DESKTOP, `/agents?keep=1&new=rule&project=${aId}#routing`);
+		await expect(page.getByRole('dialog', { name: 'New routing rule' })).toBeVisible();
+		await expect(page.getByRole('dialog').getByLabel('Project', { exact: true })).toHaveValue(aId);
+		await expect(page).toHaveURL('/agents?keep=1#routing');
+		await page.keyboard.press('Escape');
+
+		for (const query of [
+			'new=rule',
+			`new=rule&project=nope-${runId}`,
+			`new=rule&project=${archived.id}`
+		]) {
+			await gotoHydrated(page, `/agents?keep=1&${query}#routing`);
+			await expect(page.getByText('That project is unavailable for routing.')).toBeVisible();
+			await expect(page).toHaveURL('/agents?keep=1#routing');
+			await expect(page.getByRole('dialog', { name: 'New routing rule' })).toHaveCount(0);
+		}
 		await page.close();
 	});
 
@@ -220,27 +362,32 @@ test.describe.serial('project focus', () => {
 		await page.close();
 	});
 
-	test('archiving the focused project falls back to All projects, for good', async ({
-		browser,
-		request
-	}) => {
-		const api = apiClient(request, ALICE.apiKey);
-		const page = await open(browser, DESKTOP, `/issues?project=${encodeURIComponent(B_NAME)}`);
-		await expect(switcher(page)).toHaveAttribute('aria-label', `Project focus: ${B_NAME}`);
+	for (const [label, viewport] of [
+		['desktop', DESKTOP],
+		['phone', PHONE]
+	] as const) {
+		test(`archiving the focused project falls back to All projects, for good on ${label}`, async ({
+			browser,
+			request
+		}) => {
+			const api = apiClient(request, ALICE.apiKey);
+			const page = await open(browser, viewport, `/issues?project=${encodeURIComponent(B_NAME)}`);
+			await expect(switcher(page)).toHaveAttribute('aria-label', `Project focus: ${B_NAME}`);
 
-		expect((await api.post(`/api/v1/projects/${bId}/archive`)).ok()).toBe(true);
-		await page.reload();
-		await expect(switcher(page)).toHaveAttribute('aria-label', 'Project focus: All projects');
-		await clickToOpen(switcher(page), page.getByRole('menuitemradio', { name: 'All projects' }));
-		await expect(page.getByRole('menuitemradio', { name: B_NAME })).toHaveCount(0);
-		await page.keyboard.press('Escape');
+			expect((await api.post(`/api/v1/projects/${bId}/archive`)).ok()).toBe(true);
+			await page.reload();
+			await expect(switcher(page)).toHaveAttribute('aria-label', 'Project focus: All projects');
+			await clickToOpen(switcher(page), page.getByRole('menuitemradio', { name: 'All projects' }));
+			await expect(page.getByRole('menuitemradio', { name: B_NAME })).toHaveCount(0);
+			await page.keyboard.press('Escape');
 
-		// The pointer was cleared, so thawing the project does not bring it back.
-		expect((await api.post(`/api/v1/projects/${bId}/unarchive`)).ok()).toBe(true);
-		await page.reload();
-		await expect(switcher(page)).toHaveAttribute('aria-label', 'Project focus: All projects');
-		await page.close();
-	});
+			// The pointer was cleared, so thawing the project does not bring it back.
+			expect((await api.post(`/api/v1/projects/${bId}/unarchive`)).ok()).toBe(true);
+			await page.reload();
+			await expect(switcher(page)).toHaveAttribute('aria-label', 'Project focus: All projects');
+			await page.close();
+		});
+	}
 
 	test('a run key cannot read or move its owner’s focus', async ({ request }) => {
 		const api = apiClient(request, RUNROW.runKey);

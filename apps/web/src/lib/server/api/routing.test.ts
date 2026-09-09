@@ -6,6 +6,7 @@ import {
 	createRoutingRule,
 	findScopeCollision,
 	listRoutingRules,
+	routingRulesForProject,
 	ruleScopesOverlap,
 	ruleSpecificity,
 	shadowWarnings,
@@ -504,5 +505,24 @@ describe('listRoutingRules', () => {
 		addRunner(t, { id: 'rnr_1', name: 'laptop' });
 		await createRoutingRule(t.db, t.env, actor, { targets: [{ runner_id: 'rnr_1' }] });
 		expect((await listRoutingRules(t.db, USER))[0].warnings).toEqual([]);
+	});
+
+	it('keeps global and matching-project rules while excluding another project', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		t.sqlite.exec(`
+			INSERT INTO project (id, user_id, name, created_at, updated_at)
+				VALUES ('prj_other', '${USER}', 'other', 1723000000000, 1723000000000);
+		`);
+		addRunner(t, { id: 'rnr_1', name: 'laptop' });
+		const targets = [{ runner_id: 'rnr_1' }];
+		const global = (await createRoutingRule(t.db, t.env, actor, { targets })).id;
+		const matching = (await createRoutingRule(t.db, t.env, actor, { project_id: PROJECT, targets }))
+			.id;
+		await createRoutingRule(t.db, t.env, actor, { project_id: 'prj_other', targets });
+
+		expect(
+			routingRulesForProject(await listRoutingRules(t.db, USER), PROJECT).map((rule) => rule.id)
+		).toEqual([matching, global]);
 	});
 });

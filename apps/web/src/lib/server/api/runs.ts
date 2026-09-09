@@ -91,12 +91,29 @@ function serializeRunDetail(row: RunRow): AgentRunDetail {
 }
 
 export interface RunListFilters {
+	/** Internal web presentation scope; public handlers opt in explicitly. */
+	projectId?: string;
 	/** Issue id. */
 	issue?: string;
 	/** Runner id. */
 	runner?: string;
 	/** Only runs holding a claim (assigned/launching/running). */
 	active?: boolean;
+}
+
+/**
+ * Has this account ever had an agent run? The first-run checklist retires on
+ * the first one, so this is asked on every issue page load of an account that
+ * has none — one indexed existence check, never a count.
+ */
+export async function hasAnyRun(db: Kysely<Database>, userId: string): Promise<boolean> {
+	const row = await db
+		.selectFrom('agent_run')
+		.select('agent_run.id')
+		.where('agent_run.user_id', '=', userId)
+		.limit(1)
+		.executeTakeFirst();
+	return row !== undefined;
 }
 
 export async function listRuns(
@@ -106,6 +123,7 @@ export async function listRuns(
 	page: Page
 ): Promise<{ items: AgentRun[]; hasMore: boolean }> {
 	let q = runQuery(db, userId);
+	if (filters.projectId) q = q.where('issue.project_id', '=', filters.projectId);
 	if (filters.issue) q = q.where('agent_run.issue_id', '=', filters.issue);
 	if (filters.runner) q = q.where('agent_run.runner_id', '=', filters.runner);
 	if (filters.active) q = q.where('agent_run.status', 'in', [...ACTIVE_RUN_STATUSES]);

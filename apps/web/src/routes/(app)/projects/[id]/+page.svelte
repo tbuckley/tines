@@ -6,7 +6,7 @@
 	import IconPlus from '@tabler/icons-svelte/icons/plus';
 	import IconSettings from '@tabler/icons-svelte/icons/settings';
 	import { slide } from 'svelte/transition';
-	import { goto, invalidateAll } from '$app/navigation';
+	import { afterNavigate, goto, invalidateAll, replaceState } from '$app/navigation';
 	import { focusHint } from '$lib/focus.svelte';
 	import { page } from '$app/state';
 	import { api } from '$lib/api';
@@ -30,8 +30,29 @@
 	import { groupContextByWorkflow } from '$lib/context-groups';
 	import { formatDate, prefersReducedMotion } from '$lib/format';
 	import { navMemory } from '$lib/nav-memory.svelte';
+	import { eligibleStarterIssue, type StarterLandingMarker } from '$lib/starter-landing';
 
 	let { data } = $props();
+
+	let starterLanding = $state<StarterLandingMarker | undefined>();
+	afterNavigate(() => {
+		starterLanding = page.state.starterLanding;
+		if (page.state.starterLanding) {
+			const { starterLanding: _consumed, ...remaining } = page.state;
+			replaceState('', remaining);
+		}
+	});
+	const starterIssue = $derived(
+		eligibleStarterIssue(starterLanding, data.project, data.issues, {
+			hasQuery: page.url.search !== '',
+			bounded: data.pagination.bounded
+		})
+	);
+	let starterWasEligible = $state(false);
+	$effect(() => {
+		if (starterIssue) starterWasEligible = true;
+		else if (starterWasEligible) starterLanding = undefined;
+	});
 
 	// Remember this list (filters and all) so an issue opened from here gets a
 	// back link that returns to it.
@@ -242,10 +263,10 @@
 <svelte:head><title>{data.project.name} · Tines</title></svelte:head>
 
 <a
-	href="/projects"
+	href={navMemory.projectsHref}
 	class="text-muted-foreground hover:text-foreground mb-3 inline-flex items-center gap-1 text-sm"
 >
-	<IconChevronLeft size={16} /> Projects
+	<IconChevronLeft size={16} /> Manage projects
 </a>
 
 <div class="mb-6 flex flex-wrap items-start justify-between gap-4">
@@ -307,6 +328,23 @@
 
 <div class="mb-8">
 	<h2 class="mb-3 text-sm font-semibold">Issues</h2>
+	{#if starterIssue}
+		<div class="bg-muted/40 mb-3 min-w-0 rounded-md border p-3 text-sm">
+			<p class="text-muted-foreground mb-1 text-xs font-semibold">First issue</p>
+			<a
+				href="/issues/{encodeURIComponent(data.project.name)}/{starterIssue.number}"
+				class="hover:text-primary flex min-w-0 items-start gap-2 font-medium"
+			>
+				<StateBadge state={starterIssue.effective_state} />
+				<span class="line-clamp-2 min-w-0 break-words"
+					>{data.project.name}/#{starterIssue.number} — {starterIssue.title}</span
+				>
+			</a>
+			<a href="/agents" class="text-primary mt-2 inline-block underline-offset-4 hover:underline">
+				Next: get an agent running
+			</a>
+		</div>
+	{/if}
 	<!-- The same bar as the all-issues list, minus the project scope. -->
 	<IssueFilterBar
 		filters={data.filters}
@@ -352,18 +390,23 @@
 <AgentRoutingCard
 	rules={data.routingRules}
 	{activeStateIds}
+	editable={!archived}
 	emptyMessage="No routing rule covers this project — its issues will not dispatch to agents."
-	emptyAction={{ label: 'Set up routing', href: '/agents#routing' }}
+	emptyAction={{
+		label: 'Edit routing',
+		href: `/agents?new=rule&project=${encodeURIComponent(data.project.id)}#routing`
+	}}
+	editAction={{
+		label: 'Edit routing',
+		href: `/agents?new=rule&project=${encodeURIComponent(data.project.id)}#routing`
+	}}
 />
 
 <div class="mb-8">
 	<div class="mb-3 flex items-center justify-between">
 		<h2 class="text-sm font-semibold">Context</h2>
 		<div class="flex items-center gap-3">
-			<a
-				href="/context?project={data.project.id}"
-				class="text-muted-foreground hover:text-foreground text-xs"
-			>
+			<a href="/context" class="text-muted-foreground hover:text-foreground text-xs">
 				View all in Context
 			</a>
 			{#if !archived}

@@ -8,7 +8,7 @@
  */
 import { expect, test, type Page } from '@playwright/test';
 import { ALICE } from './constants.mjs';
-import { apiClient, body, runId, signIn } from './helpers';
+import { apiClient, body, gotoHydrated, runId, signIn } from './helpers';
 
 const workflowName = `Header ${runId}`;
 /** As long as a real workflow's: six lines on a desktop, nine on a phone. */
@@ -37,7 +37,10 @@ test.beforeAll(async ({ playwright }) => {
 				{ name: 'Open', category: 'active' },
 				{ name: 'Done', category: 'done' }
 			],
-			transitions: [{ name: 'Finish', from: 'Open', to: 'Done' }]
+			transitions: [
+				{ name: 'Finish', from: 'Open', to: 'Done' },
+				{ name: 'Abandon', from: 'Open', to: 'Done' }
+			]
 		})
 	);
 	workflowId = created.id;
@@ -64,6 +67,21 @@ test('an editable workflow shows the description once, in the form that edits it
 	await expect(paragraphs).toHaveText(/0 issues use this workflow/);
 
 	await expect(page.getByLabel('Description', { exact: true })).toHaveValue(description);
+});
+
+test('an editable workflow can save parallel named actions to one state', async ({ page }) => {
+	await gotoHydrated(page, `/workflows/${workflowId}`);
+	await expect(page.getByLabel('Action name')).toHaveCount(2);
+	await expect(page.getByText('Only one action can lead')).toHaveCount(0);
+	const save = page.getByRole('button', { name: 'Save workflow' });
+	await expect(save).toBeEnabled();
+	const response = page.waitForResponse(
+		(res) =>
+			res.request().method() === 'PATCH' && res.url().endsWith(`/api/v1/workflows/${workflowId}`)
+	);
+	await save.click();
+	expect((await response).ok()).toBe(true);
+	await expect(page.getByLabel('Action name')).toHaveCount(2);
 });
 
 test('Delete sits in the save row rather than the header', async ({ page }) => {

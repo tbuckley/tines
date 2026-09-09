@@ -333,6 +333,8 @@ export async function getContextItem(
 
 export interface ContextItemFilters {
 	kind?: string;
+	/** Web-only: items anchored directly on a project or on one of its issues. */
+	touchesProjectId?: string;
 	/** Project id or name. */
 	project?: string;
 	/** Workflow state id. */
@@ -389,6 +391,14 @@ export async function listContextItems(
 	} else if (filters.exact) {
 		q = q.where('context_item.project_id', 'is', null);
 	}
+	if (filters.touchesProjectId) {
+		q = q.where((eb) =>
+			eb.or([
+				eb('context_item.project_id', '=', filters.touchesProjectId!),
+				eb('scope_issue.project_id', '=', filters.touchesProjectId!)
+			])
+		);
+	}
 	if (filters.state) {
 		q = q.where('context_item.workflow_state_id', '=', filters.state);
 	} else if (filters.exact) {
@@ -422,7 +432,7 @@ export async function listContextItems(
 	// an issue) overrides the default, the same way `applyScopeFilters` and
 	// `listSchedules` treat an explicit project filter: the caller asked for a
 	// specific place, so its state is not a reason to hide what is there.
-	if (!filters.project && !filters.issue) {
+	if (!filters.project && !filters.issue && !filters.touchesProjectId) {
 		if ((filters.archived ?? 'false') === 'false') {
 			q = q
 				.where('scope_project.archived_at', 'is', null)
@@ -462,6 +472,23 @@ export async function listContextItems(
 		items: rows.slice(0, page.limit).map((r) => serializeItem(r)),
 		hasMore: rows.length > page.limit
 	};
+}
+
+/** Global and state-scoped library context that applies alongside a focused project list. */
+export async function countSharedContextItems(
+	db: Kysely<Database>,
+	userId: string
+): Promise<number> {
+	const row = await db
+		.selectFrom('context_item')
+		.select((eb) => eb.fn.countAll<number>().as('count'))
+		.where('user_id', '=', userId)
+		.where('kind', '!=', 'artifact')
+		.where('project_id', 'is', null)
+		.where('issue_id', 'is', null)
+		.where('label_id', 'is', null)
+		.executeTakeFirstOrThrow();
+	return Number(row.count);
 }
 
 /** Items scoped to any of the given states (the workflow page's sections). */
@@ -2100,6 +2127,8 @@ export function seedPromptQueries(
 		workflowStateId?: string;
 		/** Canonical scope label at creation time, for the event payload. */
 		label: string;
+		/** Ordering within the scope; ordinary creation callers default to first. */
+		position?: number;
 		now: number;
 	}
 ): { id: string; queries: CompiledQuery[] } {
@@ -2126,7 +2155,7 @@ export function seedPromptQueries(
 					repo_url: null,
 					repo_branch: null,
 					repo_dir: null,
-					position: 0,
+					position: opts.position ?? 0,
 					version: 1,
 					created_at: opts.now,
 					updated_at: opts.now

@@ -633,7 +633,10 @@ export function buildSpawnEnv(
 	const env: NodeJS.ProcessEnv = {
 		...base,
 		TINES_API_KEY: opts.apiKey,
-		TINES_API_URL: opts.apiUrl
+		// Own canonicalization at the final child-process boundary too. This
+		// keeps the spawned CLI safe even if a future daemon call site passes
+		// the original --url value instead of its normalized local variable.
+		TINES_API_URL: opts.apiUrl.replace(/\/+$/, '')
 	};
 	if (opts.binDir) env.PATH = base.PATH ? `${opts.binDir}${delimiter}${base.PATH}` : opts.binDir;
 	return env;

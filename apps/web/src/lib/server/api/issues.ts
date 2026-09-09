@@ -442,6 +442,21 @@ export async function countIssuesByCategory(
 	return counts;
 }
 
+/** Open issue counts for every workflow in one focused project. */
+export async function countOpenIssuesByWorkflow(
+	db: Kysely<Database>,
+	userId: string,
+	projectId: string
+): Promise<Record<string, number>> {
+	const rows = await applyScopeFilters(issueQuery(db, userId), userId, { projectId })
+		.clearSelect()
+		.where(sql<boolean>`COALESCE(eff_state.category, state.category) != 'done'`)
+		.select(['issue.workflow_id', sql<number>`COUNT(*)`.as('n')])
+		.groupBy('issue.workflow_id')
+		.execute();
+	return Object.fromEntries(rows.map((row) => [row.workflow_id, Number(row.n)]));
+}
+
 export async function listIssues(
 	db: Kysely<Database>,
 	userId: string,

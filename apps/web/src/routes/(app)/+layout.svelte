@@ -24,10 +24,17 @@
 	// where it goes — the Issues tab carries the filters you last used, so the
 	// list comes back as you left it. Derived so it tracks the store: the
 	// layout outlives every navigation.
+	const focus = $derived(focusHint.project !== undefined ? focusHint.project : data.focus);
+
 	const tabs = $derived([
 		{ path: '/issues', href: navMemory.issuesHref, label: 'Issues', icon: IconListDetails },
 		{ path: '/workflows', href: '/workflows', label: 'Workflows', icon: IconSitemap },
-		{ path: '/projects', href: navMemory.projectsHref, label: 'Projects', icon: IconFolder },
+		{
+			path: '/projects',
+			href: focus ? `/projects/${focus.id}` : navMemory.projectsHref,
+			label: 'Projects',
+			icon: IconFolder
+		},
 		{ path: '/context', href: '/context', label: 'Context', icon: IconBooks },
 		{ path: '/agents', href: '/agents', label: 'Agents', icon: IconRobot },
 		{ path: '/activity', href: '/activity', label: 'Activity', icon: IconActivity }
@@ -40,8 +47,6 @@
 	// The chrome's answer to "what am I looking at": the layout's own data,
 	// unless the client has set the focus since (opening a project page does),
 	// which it records as a hint rather than paying for a load rerun.
-	const focus = $derived(focusHint.project !== undefined ? focusHint.project : data.focus);
-
 	async function chooseFocus(projectId: string | null) {
 		await api.updatePreferences({ focused_project_id: projectId });
 		focusHint.clear();

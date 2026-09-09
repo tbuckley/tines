@@ -126,6 +126,48 @@ export const BOB = {
 	sessionToken: 'e2e-session-bob'
 };
 
+/** Independent empty accounts: these specs must be runnable in any order. */
+export const AGENTS_FIRST_RUN = {
+	id: 'usr_e2e_agents_first_run',
+	name: 'Agents First Run E2E',
+	email: 'agents-first-run@e2e.test',
+	apiKey: 'tines_e2eagentsfirstrun000000000000000000000000000',
+	apiKeyName: 'agents-first-run-key',
+	sessionToken: 'e2e-session-agents-first-run'
+};
+export const API_ISOLATION = {
+	id: 'usr_e2e_api_isolation',
+	name: 'API Isolation E2E',
+	email: 'api-isolation@e2e.test',
+	apiKey: 'tines_e2eapiisolation00000000000000000000000000000',
+	apiKeyName: 'api-isolation-key',
+	sessionToken: 'e2e-session-api-isolation'
+};
+export const EXPLAINER_REMEDIES = {
+	id: 'usr_e2e_explainer_remedies',
+	name: 'Explainer Remedies E2E',
+	email: 'explainer-remedies@e2e.test',
+	apiKey: 'tines_e2eexplainerremedies0000000000000000000000000',
+	apiKeyName: 'explainer-remedies-key',
+	sessionToken: 'e2e-session-explainer-remedies'
+};
+export const STOPPED_FIRST_RUN = {
+	id: 'usr_e2e_stopped_first_run',
+	name: 'Stopped First Run E2E',
+	email: 'stopped-first-run@e2e.test',
+	apiKey: 'tines_e2estoppedfirstrun000000000000000000000000000',
+	apiKeyName: 'stopped-first-run-key',
+	sessionToken: 'e2e-session-stopped-first-run'
+};
+export const MANAGED_SETTINGS = {
+	id: 'usr_e2e_managed_settings',
+	name: 'Managed Settings E2E',
+	email: 'managed-settings@e2e.test',
+	apiKey: 'tines_e2emanagedsettings0000000000000000000000000000',
+	apiKeyName: 'managed-settings-key',
+	sessionToken: 'e2e-session-managed-settings'
+};
+
 /** Isolated 205-row population for issue-list pagination. */
 export const PAGINATION = {
 	user: {
@@ -138,4 +180,24 @@ export const PAGINATION = {
 	},
 	projectId: 'prj_e2e_pagination',
 	projectName: 'pagination-seed'
+};
+
+/**
+ * A third seeded account, for the first-run checklist walk. Dana starts with
+ * no projects, no runners, no rules and — the point — no agent runs, which is
+ * the only state in which the checklist is shown at all (it retires
+ * account-wide on the first run, and is derived, so there is nothing to
+ * reset).
+ *
+ * `first-run-checklist.spec.ts` walks her all the way to a real run, so the
+ * account is one-way: no other spec may depend on Dana being run-free, and
+ * anything added to that file must sort after the walk inside it.
+ */
+export const DANA = {
+	id: 'usr_e2e_dana',
+	name: 'Dana E2E',
+	email: 'dana@e2e.test',
+	apiKey: 'tines_e2edana00000000000000000000000000000000000',
+	apiKeyName: 'dana-key',
+	sessionToken: 'e2e-session-dana'
 };

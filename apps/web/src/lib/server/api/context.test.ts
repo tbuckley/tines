@@ -2,6 +2,7 @@ import { repoDirFromUrl, type EffectiveContext, type IssueDetail } from '@tines/
 import { describe, expect, it } from 'vitest';
 import {
 	buildLaunchPrompt,
+	countSharedContextItems,
 	isJournal,
 	issueBlock,
 	layerRank,
@@ -602,5 +603,34 @@ describe('listContextItems workflow filter', () => {
 			'ctx_global'
 		);
 		expect(names(await listContextItems(t.db, 'u2', { workflow: 'wf_eng' }, page))).toEqual([]);
+	});
+});
+
+describe('focused Context presentation', () => {
+	it('includes direct and issue anchors once, and counts only global/state shared items', async () => {
+		const t = createTestDb();
+		t.sqlite.exec(`
+			INSERT INTO user (id, name, email, emailVerified, createdAt, updatedAt)
+				VALUES ('u1', 'alice', 'a@example.com', 1, 0, 0);
+			INSERT INTO project (id, user_id, name, created_at, updated_at) VALUES
+				('p1', 'u1', 'one', 0, 0), ('p2', 'u1', 'two', 0, 0);
+			INSERT INTO issue (id, project_id, number, title, description, workflow_id, state_id, attempt_count, needs_attention, created_at, updated_at, state_entered_at)
+				VALUES ('i1', 'p1', 1, 'one', '', 'wf_standard', 'wfs_std_open', 0, 0, 0, 0, 0);
+			INSERT INTO context_item (id, user_id, kind, name, description, project_id, workflow_state_id, issue_id, body, position, version, created_at, updated_at) VALUES
+				('direct', 'u1', 'prompt', 'direct', '', 'p1', NULL, NULL, '', 0, 1, 0, 4),
+				('issue', 'u1', 'prompt', 'issue', '', NULL, NULL, 'i1', '', 0, 1, 0, 3),
+				('both', 'u1', 'prompt', 'both', '', 'p1', NULL, 'i1', '', 0, 1, 0, 2),
+				('other', 'u1', 'prompt', 'other', '', 'p2', NULL, NULL, '', 0, 1, 0, 1),
+				('global', 'u1', 'prompt', 'global', '', NULL, NULL, NULL, '', 0, 1, 0, 0),
+				('state', 'u1', 'prompt', 'state', '', NULL, 'wfs_std_open', NULL, '', 0, 1, 0, 0);
+		`);
+		const result = await listContextItems(
+			t.db,
+			'u1',
+			{ touchesProjectId: 'p1' },
+			{ cursor: null, limit: 50 }
+		);
+		expect(result.items.map((item) => item.id)).toEqual(['direct', 'issue', 'both']);
+		expect(await countSharedContextItems(t.db, 'u1')).toBe(2);
 	});
 });
