@@ -1,6 +1,10 @@
 import { error } from '@sveltejs/kit';
 import { truncate } from '$lib/format';
-import { effectiveContextForIssue, listContextItems } from '$lib/server/api/context';
+import {
+	effectiveContextForIssue,
+	instructionsForIssue,
+	listContextItems
+} from '$lib/server/api/context';
 import { eventQuery, serializeEvent } from '$lib/server/api/events';
 import { getIssueDetail, loadIssue } from '$lib/server/api/issues';
 import { listLabels } from '$lib/server/api/labels';
@@ -63,8 +67,18 @@ export const load: PageServerLoad = async ({ locals, platform, params, depends, 
 	// Wave 2: everything else, in parallel.
 	const detailPromise = getIssueDetail(db, userId, issue, {
 		workflows: workflowsPromise,
-		artifacts: true
+		artifacts: true,
+		round: issue.state.category === 'awaiting_human'
 	});
+	const handoffBriefPromise =
+		issue.state.category === 'awaiting_human'
+			? instructionsForIssue(db, userId, issue.id)
+					.then((parts) => ({ status: 'ready' as const, parts }))
+					.catch((cause) => {
+						console.error('Failed to load handoff brief', cause);
+						return { status: 'unavailable' as const };
+					})
+			: Promise.resolve(null);
 	const eventsPromise = eventQuery(db, userId)
 		.where('event.issue_id', '=', issue.id)
 		.orderBy('event.created_at desc')
@@ -73,11 +87,12 @@ export const load: PageServerLoad = async ({ locals, platform, params, depends, 
 		.execute()
 		.then((rows) => rows.map(serializeEvent));
 
-	const [detail, events, labelLibrary] = await Promise.all([
+	const [detail, events, labelLibrary, handoffBrief] = await Promise.all([
 		detailPromise,
 		eventsPromise,
 		// The whole vocabulary, for the labels picker in the aside.
-		listLabels(db, userId)
+		listLabels(db, userId),
+		handoffBriefPromise
 	]);
 
 	// The artifacts ride along on the detail (fetched in the same wave); expose
@@ -91,6 +106,7 @@ export const load: PageServerLoad = async ({ locals, platform, params, depends, 
 		// `projects` comes from the app layout.
 		artifacts: artifacts ?? [],
 		labelLibrary,
+		handoffBrief,
 		// Streamed: the sidebar panels. Each renders a skeleton until its first
 		// value lands; on refreshes the page keeps the previous value on screen
 		// while the replacement promise is in flight (streamed() in +page.svelte).

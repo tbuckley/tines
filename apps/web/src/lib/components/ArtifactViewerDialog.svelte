@@ -24,13 +24,17 @@
 		issueId,
 		artifacts,
 		open = $bindable(false),
-		selectedName = $bindable<string | null>(null)
+		selectedName = $bindable<string | null>(null),
+		initialVersion = null,
+		initialPath = null
 	}: {
 		issueId: string;
 		artifacts: Artifact[];
 		open?: boolean;
 		/** The artifact the viewer shows; the header dropdown switches it. */
 		selectedName?: string | null;
+		initialVersion?: number | null;
+		initialPath?: string | null;
 	} = $props();
 
 	// The viewer is a reader over the detail read (versions incl. folder file
@@ -52,14 +56,26 @@
 	let deviceWidth = $state<number | null>(null);
 
 	let loadToken = 0;
+	let wasOpen = false;
+	let openingName: string | null = null;
+	$effect(() => {
+		if (!open) {
+			loadToken += 1;
+			wasOpen = false;
+			openingName = null;
+			return;
+		}
+		if (!wasOpen) openingName = selectedName;
+		wasOpen = true;
+	});
 	$effect(() => {
 		if (!open || !selectedName) return;
 		const name = selectedName;
 		const token = ++loadToken;
 		detail = null;
 		loadError = null;
-		versionPick = null;
-		pathPick = null;
+		versionPick = selectedName === openingName ? initialVersion : null;
+		pathPick = selectedName === openingName ? initialPath : null;
 		showSource = false;
 		showFiles = false;
 		api
@@ -75,7 +91,7 @@
 	const version = $derived.by((): ArtifactVersion | null => {
 		if (!detail) return null;
 		if (versionPick === null) return detail.current_version;
-		return detail.versions.find((v) => v.version === versionPick) ?? detail.current_version;
+		return detail.versions.find((v) => v.version === versionPick) ?? null;
 	});
 
 	// Stepping through a folder is just moving `pathPick` along the version's
@@ -280,7 +296,32 @@
 		{/if}
 	</div>
 
-	{#if detail && version}
+	{#if detail && version && pathPick !== null && fileIndex < 0}
+		<div class="rounded-md border border-dashed p-4 text-sm">
+			<p>This file is unavailable in version {version.version}.</p>
+			<div class="mt-2 flex flex-wrap gap-3">
+				<button
+					type="button"
+					class="text-muted-foreground text-xs underline"
+					onclick={() => (pathPick = null)}
+				>
+					Open the folder index
+				</button>
+				{#if versionPick !== null}
+					<button
+						type="button"
+						class="text-muted-foreground text-xs underline"
+						onclick={() => {
+							versionPick = null;
+							pathPick = null;
+						}}
+					>
+						Open the current version
+					</button>
+				{/if}
+			</div>
+		</div>
+	{:else if detail && version}
 		<!-- metadata line -->
 		<p class="text-muted-foreground mb-3 text-xs">
 			{detail.artifact_type}{version.content_type
@@ -450,6 +491,20 @@
 		>
 			{loadError}
 		</p>
+	{:else if detail && !version}
+		<div class="rounded-md border border-dashed p-4 text-sm">
+			<p>This version is unavailable.</p>
+			<button
+				type="button"
+				class="text-muted-foreground mt-2 text-xs underline"
+				onclick={() => {
+					versionPick = null;
+					pathPick = null;
+				}}
+			>
+				Open the current version
+			</button>
+		</div>
 	{:else}
 		<p class="text-muted-foreground text-sm">Loading…</p>
 	{/if}

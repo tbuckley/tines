@@ -1,7 +1,7 @@
 import { error, redirect } from '@sveltejs/kit';
 import { clearIssuePagination, issuePageHref } from '$lib/issue-pagination';
 import { ApiFail } from '$lib/server/api/core';
-import { countIssuesByCategory, listIssues } from '$lib/server/api/issues';
+import { countIssuesByCategory, listAwaitingIssues, listIssues } from '$lib/server/api/issues';
 import { resolveFocus, setFocus } from '$lib/server/api/preferences';
 import { listLabels } from '$lib/server/api/labels';
 import { listProjects } from '$lib/server/api/projects';
@@ -68,9 +68,10 @@ export const load: PageServerLoad = async ({ locals, platform, url }) => {
 		redirect(303, issuePageHref(url));
 	}
 
+	const categoryParam = url.searchParams.get('category') ?? undefined;
 	const filters = {
 		state: url.searchParams.get('state') ?? undefined,
-		category: url.searchParams.get('category') ?? undefined,
+		category: categoryParam === 'awaiting' ? 'awaiting_human' : categoryParam,
 		showDone: url.searchParams.get('done') === '1',
 		ready: url.searchParams.get('ready') === '1',
 		q: url.searchParams.get('q') ?? undefined,
@@ -89,25 +90,24 @@ export const load: PageServerLoad = async ({ locals, platform, url }) => {
 		labels: filters.labels
 	};
 
+	const listFilters = {
+		...scope,
+		category: filters.category,
+		// Ready already implies not-done, so the "show done" state is
+		// simply parked in the URL while it is on.
+		hideDone: !filters.showDone && !filters.category && !filters.state,
+		brief: true
+	};
+	const issuesPromise =
+		filters.category === 'awaiting_human'
+			? listAwaitingIssues(db, userId, listFilters, page)
+			: listIssues(db, userId, listFilters, page);
 	const [{ items: issues, hasMore }, counts, workflows, labels] = await Promise.all([
-		listIssues(
-			db,
-			userId,
-			{
-				...scope,
-				category: filters.category,
-				// Ready already implies not-done, so the "show done" state is
-				// simply parked in the URL while it is on.
-				hideDone: !filters.showDone && !filters.category && !filters.state,
-				brief: true
-			},
-			page
-		),
+		issuesPromise,
 		countIssuesByCategory(db, userId, scope),
 		loadWorkflows(db, userId),
 		listLabels(db, userId)
 	]);
-
 	// `projects` and `focus` come from the app layout.
 	return {
 		issues,
@@ -118,6 +118,15 @@ export const load: PageServerLoad = async ({ locals, platform, url }) => {
 		focusId,
 		lastProjectId,
 		notice,
-		pagination: issuePagination(url, page, issues, hasMore, pageScope)
+		pagination: issuePagination(
+			url,
+			page,
+			issues,
+			hasMore,
+			pageScope,
+			filters.category === 'awaiting_human'
+				? (item) => item.state_entered_at ?? item.created_at
+				: undefined
+		)
 	};
 };

@@ -34,11 +34,12 @@ export function issuePagination(
 	page: WebIssuePage,
 	items: IssueListItem[],
 	hasMore: boolean,
-	scope?: string
+	scope?: string,
+	cursorAt: (item: IssueListItem) => number = (item) => item.created_at
 ): IssuePagination {
 	const bounded = page.cursor !== null;
 	const firstHref = issuePageHref(url);
-	const cursorFor = (item: IssueListItem) => encodeCursor(item.created_at, item.id);
+	const cursorFor = (item: IssueListItem) => encodeCursor(cursorAt(item), item.id);
 	let previousHref: string | null = null;
 	let nextHref: string | null = null;
 	if (items.length) {

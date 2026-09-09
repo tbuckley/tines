@@ -103,6 +103,28 @@ export const RUNROW_FAILED = {
 	runKeyName: 'run:runrow-failed'
 };
 
+/** Rich awaiting-human round used by the handoff acceptance coverage. */
+export const HANDOFF = {
+	projectId: 'prj_e2e_handoff',
+	projectName: 'handoff-seed',
+	issueId: 'iss_e2e_handoff',
+	issueNumber: 1,
+	foreignIssueId: 'iss_e2e_handoff_foreign',
+	prdIssueId: 'iss_e2e_handoff_prd',
+	prdIssueNumber: 5,
+	runKeys: {
+		impl1: 'tines_e2ehandoffimpl10000000000000000000000000000000',
+		review1: 'tines_e2ehandoffreview100000000000000000000000000000',
+		impl2: 'tines_e2ehandoffimpl20000000000000000000000000000000',
+		review2: 'tines_e2ehandoffreview200000000000000000000000000000',
+		foreign: 'tines_e2ehandoffforeign00000000000000000000000000000',
+		prd: 'tines_e2ehandoffprd000000000000000000000000000000000'
+	},
+	reviewerTail: 'REVIEWER_UNCLAMPED_TAIL',
+	implementerTail: 'IMPLEMENTER_UNCLAMPED_TAIL',
+	strayBody: 'FOREIGN_RUN_STRAY_COMMENT'
+};
+
 /**
  * A third account with **no projects of its own**, for the "hidden below two
  * projects" half of the project switcher (Tines/259). Bob cannot serve: the

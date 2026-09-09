@@ -1,10 +1,11 @@
 <script lang="ts">
-	import type { IssueListItem, IssueRef } from '@tines/shared';
+	import { ageLabel, type IssueListItem, type IssueRef } from '@tines/shared';
 	import IconAlertTriangle from '@tabler/icons-svelte/icons/alert-triangle';
 	import IconBan from '@tabler/icons-svelte/icons/ban';
 	import IconCopy from '@tabler/icons-svelte/icons/copy';
 	import IconRepeat from '@tabler/icons-svelte/icons/repeat';
 	import { flip } from 'svelte/animate';
+	import { onMount } from 'svelte';
 	import { fade } from 'svelte/transition';
 	import { goto } from '$app/navigation';
 	import { buttonVariants } from '$lib/components/ui/button';
@@ -31,6 +32,11 @@
 	} = $props();
 
 	const dur = () => (prefersReducedMotion() ? 0 : 220);
+	let now = $state(Date.now());
+	onMount(() => {
+		const timer = setInterval(() => (now = Date.now()), 60_000);
+		return () => clearInterval(timer);
+	});
 
 	const refLabel = (ref: IssueRef) => `${ref.project_name}/#${ref.number} — ${ref.title}`;
 
@@ -44,6 +50,7 @@
 		issue.duplicate_of !== null ||
 		issue.needs_attention ||
 		issue.active_run !== null;
+	const prNumber = (url: string) => url.split('/').at(-1);
 
 	/**
 	 * The row, in reading order: state, ref, title, then what the eye needs
@@ -77,9 +84,10 @@
 			<li animate:flip={{ duration: dur() }} in:fade={{ duration: dur() }}>
 				<a
 					href="/issues/{encodeURIComponent(issue.project_name)}/{issue.number}"
-					class="hover:bg-accent/50 flex flex-wrap items-center gap-x-3 gap-y-1.5 px-3 py-2.5 transition-[opacity,background-color] duration-200 sm:h-10 sm:flex-nowrap sm:py-0 {issue.duplicate_of
-						? 'opacity-60'
-						: ''}"
+					class="hover:bg-accent/50 flex flex-wrap items-center gap-x-3 gap-y-1.5 px-3 py-2.5 transition-[opacity,background-color] duration-200 {state.category ===
+					'awaiting_human'
+						? 'sm:min-h-17 sm:py-2'
+						: 'sm:h-10 sm:flex-nowrap sm:py-0'} {issue.duplicate_of ? 'opacity-60' : ''}"
 				>
 					<span class="w-full min-w-0 text-sm font-medium sm:order-3 sm:w-auto sm:flex-[1_1_auto]">
 						<!-- The transition name sits on the text itself: on desktop an
@@ -212,16 +220,50 @@
 						{#if issue.labels.length > 0}
 							<LabelStrip labels={issue.labels} class="ml-auto flex-1 sm:order-5" />
 						{/if}
-						<span
-							class="text-muted-foreground shrink-0 text-right text-xs whitespace-nowrap tabular-nums sm:order-6 {issue
-								.labels.length === 0
-								? 'ml-auto'
-								: ''}"
-							title={new Date(issue.last_activity_at).toLocaleString()}
-						>
-							{relativeTimeShort(issue.last_activity_at)}
-						</span>
+						{#if state.category !== 'awaiting_human'}
+							<span
+								class="text-muted-foreground shrink-0 text-right text-xs whitespace-nowrap tabular-nums sm:order-6 {issue
+									.labels.length === 0
+									? 'ml-auto'
+									: ''}"
+								title={new Date(issue.last_activity_at).toLocaleString()}
+							>
+								{relativeTimeShort(issue.last_activity_at)}
+							</span>
+						{/if}
 					</div>
+					{#if state.category === 'awaiting_human'}
+						<div
+							class="text-muted-foreground flex w-full flex-wrap items-center gap-1.5 text-xs sm:order-7 sm:ml-60"
+						>
+							<time
+								datetime={new Date(issue.state_entered_at).toISOString()}
+								title={new Date(issue.state_entered_at).toLocaleString()}
+							>
+								waiting {ageLabel(issue.state_entered_at, now)}
+							</time>
+							{#if issue.arrived_via}
+								<span aria-hidden="true">·</span>
+								<span
+									>{issue.arrived_via.action
+										? `via ${issue.arrived_via.action}`
+										: 'moved directly'}</span
+								>
+							{/if}
+							{#if issue.round_summary?.pr_url}
+								<span aria-hidden="true">·</span>
+								<span class="bg-muted rounded-full border px-2 py-0.5"
+									>PR #{prNumber(issue.round_summary.pr_url)}</span
+								>
+							{/if}
+							{#each issue.round_summary?.artifacts ?? [] as artifact (`${artifact.name}-${artifact.version}`)}
+								<span aria-hidden="true">·</span>
+								<span class="bg-muted rounded-full border px-2 py-0.5 font-mono"
+									>{artifact.name} v{artifact.version}</span
+								>
+							{/each}
+						</div>
+					{/if}
 				</a>
 			</li>
 		{/each}
