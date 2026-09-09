@@ -313,17 +313,18 @@ test('a bad token gets an HTML error page, not a JSON error or a download', asyn
 	await page.goto('/s/not-a-real-token/');
 	await expect(page.getByRole('heading', { name: 'Not found' })).toBeVisible();
 
-	// A real token with one character of its signature changed: the HMAC is
-	// the only thing standing between a reader and someone else's artifact.
+	// Changing the final base64url character can affect only unused padding bits,
+	// so change the decoded HMAC to ensure the signature bytes differ.
 	const link = await siteLink(page, 'prototype');
 	const token = new URL(link.url).pathname.split('/')[2];
-	const signatureStart = token.lastIndexOf('.') + 1;
-	// Do not mutate the final unpadded base64url character: its unused low bits
-	// can change the encoded text without changing the decoded HMAC bytes.
-	const replacement = token[signatureStart] === 'A' ? 'B' : 'A';
-	const tampered = token.slice(0, signatureStart) + replacement + token.slice(signatureStart + 1);
-	expect(tampered).not.toBe(token);
-	await page.goto(`/s/${tampered}/`);
+	const [version, payload, signature] = token.split('.');
+	const signatureBytes = Buffer.from(signature, 'base64url');
+	expect(signatureBytes).toHaveLength(32);
+	signatureBytes[0] ^= 1;
+	const tampered = `${version}.${payload}.${signatureBytes.toString('base64url')}`;
+	expect(signatureBytes.equals(Buffer.from(signature, 'base64url'))).toBe(false);
+	const response = await page.goto(`/s/${tampered}/`);
+	expect(response?.status()).toBe(404);
 	await expect(page.getByRole('heading', { name: 'Not found' })).toBeVisible();
 
 	// A non-site artifact cannot be minted a link at all.
