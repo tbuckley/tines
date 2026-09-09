@@ -189,13 +189,16 @@ test.describe.serial('project focus', () => {
 
 			await gotoHydrated(page, '/workflows');
 			const standard = page.locator('a[href="/workflows/wf_standard"]');
+			await expect(standard).toBeVisible();
 			await expect(standard).toContainText('1 open issue');
 			await expect(standard).toContainText('Project default');
-			await expect(page.locator('main a[href^="/workflows/"]').first()).toHaveAttribute(
-				'href',
-				'/workflows/wf_standard'
-			);
-			await expect(page.getByText(/Other workflows in your library \(\d+\)/)).toBeVisible();
+			const otherWorkflows = page.locator('details');
+			const otherSummary = page.getByText(/Other workflows in your library \(\d+\)/);
+			await expect(otherSummary).toBeVisible();
+			await expect(otherWorkflows).not.toHaveAttribute('open', '');
+			await otherSummary.focus();
+			await page.keyboard.press('Enter');
+			await expect(otherWorkflows).toHaveAttribute('open', '');
 			await standard.click();
 			await expect(page.getByRole('heading', { level: 1, name: /Standard/ })).toContainText(
 				'Project default'
