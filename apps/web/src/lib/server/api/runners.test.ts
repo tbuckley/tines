@@ -139,7 +139,8 @@ function seedRemovalFixture(t: TestDb) {
 			VALUES ('iss_1', 'prj_1', 12, 'Fix it', 'wf_standard', 'wfs_std_open', 'rnr_1', 'smartest', ${NOW}, ${NOW});
 		INSERT INTO routing_rule (id, user_id, project_id, workflow_state_id, targets, created_at, updated_at) VALUES
 			('rul_1', 'u1', NULL, NULL, '[{"runner_id":"rnr_1"},{"runner_id":"rnr_2","tier":"cheapest"}]', ${NOW}, ${NOW}),
-			('rul_2', 'u1', 'prj_1', NULL, '[{"runner_id":"rnr_1","tier":"smartest"}]', ${NOW}, ${NOW});
+			('rul_2', 'u1', 'prj_1', NULL, '[{"runner_id":"rnr_1","tier":"smartest"}]', ${NOW}, ${NOW}),
+			('rul_3', 'u1', NULL, 'wfs_std_open', '[{"runner_id":"*","tier":"smartest"}]', ${NOW}, ${NOW});
 		INSERT INTO agent_run (id, user_id, issue_id, runner_id, status, tier, state_id_at_start, created_at)
 			VALUES ('arun_1', 'u1', 'iss_1', 'rnr_1', 'completed', 'balanced', 'wfs_std_open', ${NOW});
 		INSERT INTO api_key (id, user_id, name, key_hash, key_prefix, agent_run_id, expires_at, created_at)
@@ -173,7 +174,8 @@ describe('deleteRunner (db batch)', () => {
 		);
 		expect(targets).toEqual({
 			rul_1: [{ runner_id: 'rnr_2', tier: 'cheapest' }],
-			rul_2: []
+			rul_2: [],
+			rul_3: [{ runner_id: '*', tier: 'smartest' }]
 		});
 		// Every cascade step recorded its event.
 		const types = t.all(`SELECT type FROM event ORDER BY id`).map((r) => r.type);

@@ -11,6 +11,7 @@ import {
 	loadEligibleIssues,
 	loadEndableRun,
 	loadEngineRunners,
+	noteRateLimit,
 	runDispatchPass,
 	sweepSupervisor,
 	targetsForIssue,
@@ -521,6 +522,24 @@ describe('dispatch pass against the fake adapter', () => {
 		addIssue(t);
 		await pass(t);
 		expect(runs(t)[0].tier).toBe('smartest');
+	});
+
+	it('dispatches a scoped tier-only rule through its broader runner fallback list', async () => {
+		const t = world();
+		const held = addRunner(t, { backoffUntil: NOW + 60_000 });
+		const available = addRunner(t, {
+			tiers: { smartest: { model: 'runner-two-smartest' } }
+		});
+		addRule(t, { targets: [{ runner_id: held }, { runner_id: available }] });
+		addRule(t, { state: OPEN, targets: [{ runner_id: '*', tier: 'smartest' }] });
+		addIssue(t);
+
+		expect((await pass(t)).claimed).toBe(1);
+		expect(runs(t)[0]).toMatchObject({
+			runner_id: available,
+			tier: 'smartest',
+			model: 'runner-two-smartest'
+		});
 	});
 
 	it('honors per-runner tier overrides at launch', async () => {
@@ -1063,6 +1082,89 @@ describe('the sweep', () => {
 		await sweepSupervisor(t.db, t.env, later, { local: fake });
 		expect(runnerById(t, runner).launch_failures).toBe(2);
 		expect(eventsOfType(t, 'runner.errored')).toHaveLength(2);
+	});
+
+	it('a usage limit holds the runner to the reported reset without a strike', async () => {
+		const t = world();
+		const runner = addRunner(t);
+		await noteRateLimit(t.db, t.env, {
+			userId: USER,
+			runnerId: runner,
+			runId: 'arun_x',
+			error: 'rate limited: session limit',
+			resumeAt: NOW + 3_600_000,
+			limit: 'five_hour',
+			now: NOW
+		});
+		const r = runnerById(t, runner);
+		expect(r.backoff_until).toBe(NOW + 3_600_000 + 60_000);
+		expect(r.backoff_reason).toBe('rate_limit');
+		// A busy afternoon must not read as the dead-credential escalation.
+		expect(r.launch_failures).toBe(0);
+		const events = eventsOfType(t, 'runner.rate_limited');
+		expect(events).toHaveLength(1);
+		expect(events[0].payload).toMatchObject({
+			resets_at: NOW + 3_600_000 + 60_000,
+			reported_reset_at: NOW + 3_600_000,
+			limit: 'five_hour',
+			run_id: 'arun_x'
+		});
+		expect(eventsOfType(t, 'runner.errored')).toHaveLength(0);
+	});
+
+	it('collapses a burst into one hold, but lets a later reset extend it', async () => {
+		const t = world();
+		const runner = addRunner(t);
+		const note = (resumeAt: number) =>
+			noteRateLimit(t.db, t.env, {
+				userId: USER,
+				runnerId: runner,
+				error: 'rate limited',
+				resumeAt,
+				limit: null,
+				now: NOW
+			});
+		await note(NOW + 3_600_000);
+		// The other two runs of the burst die seconds later with the same wall.
+		await note(NOW + 3_600_000);
+		await note(NOW + 60_000);
+		expect(runnerById(t, runner).backoff_until).toBe(NOW + 3_600_000 + 60_000);
+		expect(eventsOfType(t, 'runner.rate_limited')).toHaveLength(1);
+
+		// A later reset is better information, so it wins — unlike the
+		// interruption backoff, which refuses any change inside its window.
+		await note(NOW + 2 * 3_600_000);
+		expect(runnerById(t, runner).backoff_until).toBe(NOW + 2 * 3_600_000 + 60_000);
+		expect(eventsOfType(t, 'runner.rate_limited')).toHaveLength(2);
+	});
+
+	it('a known reset overrides a failure backoff, and a launch clears the reason', async () => {
+		const t = world();
+		const fake = createFakeAdapter();
+		const runner = addRunner(t);
+		addRule(t, { targets: [{ runner_id: runner }] });
+		t.sqlite
+			.prepare('UPDATE runner SET launch_failures = 3, backoff_until = ? WHERE id = ?')
+			.run(NOW + 10_000, runner);
+		await noteRateLimit(t.db, t.env, {
+			userId: USER,
+			runnerId: runner,
+			error: 'rate limited',
+			resumeAt: NOW + 3_600_000,
+			limit: null,
+			now: NOW
+		});
+		expect(runnerById(t, runner).backoff_reason).toBe('rate_limit');
+		expect(runnerById(t, runner).launch_failures).toBe(3);
+
+		addIssue(t);
+		const after = NOW + 4_000_000;
+		t.sqlite.prepare('UPDATE runner SET last_seen_at = ? WHERE id = ?').run(after, runner);
+		await pass(t, fake, after);
+		const r = runnerById(t, runner);
+		expect(r.backoff_until).toBeNull();
+		expect(r.backoff_reason).toBeNull();
+		expect(r.launch_failures).toBe(0);
 	});
 
 	it('a successful launch clears the pressure an interruption applied', async () => {

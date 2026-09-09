@@ -270,6 +270,8 @@ export interface RunnerTable {
 	last_seen_at: number | null;
 	launch_failures: number;
 	backoff_until: number | null;
+	/** 'rate_limit' when the hold is a usage limit; NULL for the failure backoff. */
+	backoff_reason: string | null;
 	/**
 	 * 0/1: the daemon is finishing its runs before restarting for a
 	 * self-update; set and cleared by its polls. Dispatch skips it while set.
@@ -378,6 +380,16 @@ export interface UserTable {
 	email: string;
 }
 
+/** Per-user UI preferences (the project focus, Tines/259); created lazily. */
+export interface UserPreferenceTable {
+	user_id: string;
+	/** The focused project, or null for "All projects". */
+	focused_project_id: string | null;
+	/** The project New issue falls back to under "All projects". */
+	last_project_id: string | null;
+	updated_at: number;
+}
+
 export interface Database {
 	project: ProjectTable;
 	workflow: WorkflowTable;
@@ -400,6 +412,7 @@ export interface Database {
 	routing_rule: RoutingRuleTable;
 	supervisor_settings: SupervisorSettingsTable;
 	supervisor_sweep_state: SupervisorSweepStateTable;
+	user_preference: UserPreferenceTable;
 	user: UserTable;
 }
 
@@ -459,8 +472,17 @@ export function getDb(env: Env): Kysely<Database> {
 export const IN_LIST_CHUNK = 90;
 
 export function idChunks(ids: string[]): string[][] {
-	const chunks: string[][] = [];
-	for (let i = 0; i < ids.length; i += IN_LIST_CHUNK) chunks.push(ids.slice(i, i + IN_LIST_CHUNK));
+	return chunked(ids, IN_LIST_CHUNK);
+}
+
+/**
+ * `items` in slices of at most `size`. For a statement that binds more than
+ * one parameter per item, pass `IN_LIST_CHUNK / perItem` (floored) so a full
+ * chunk still fits under D1's cap.
+ */
+export function chunked<T>(items: T[], size: number): T[][] {
+	const chunks: T[][] = [];
+	for (let i = 0; i < items.length; i += size) chunks.push(items.slice(i, i + size));
 	return chunks;
 }
 

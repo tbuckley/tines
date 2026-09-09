@@ -187,3 +187,44 @@ describe('ClaudeStreamRenderer', () => {
 		expect(out).toEqual([]);
 	});
 });
+
+describe('rate limit events', () => {
+	it('renders a rejected limit — it is why the run is about to end', () => {
+		expect(
+			renderStreamEvent({
+				type: 'rate_limit_event',
+				rate_limit_info: { status: 'rejected', resetsAt: 1_788_739_200, rateLimitType: 'five_hour' }
+			})
+		).toEqual(['[session] rate limit: five_hour rejected — resets 2026-09-07T00:00:00.000Z']);
+	});
+
+	it('still drops the allowed ones, which are ~18% of the stream', () => {
+		expect(
+			renderStreamEvent({
+				type: 'rate_limit_event',
+				rate_limit_info: { status: 'allowed', resetsAt: 1_788_739_200 }
+			})
+		).toEqual([]);
+	});
+
+	it('says so when a rejection carries no reset', () => {
+		expect(
+			renderStreamEvent({ type: 'rate_limit_event', rate_limit_info: { status: 'rejected' } })
+		).toEqual(['[session] rate limit: usage rejected — resets unknown']);
+	});
+
+	it('hands every parsed event to onEvent, and nothing that was not one', () => {
+		const seen: unknown[] = [];
+		const renderer = new ClaudeStreamRenderer(
+			() => {},
+			(event) => seen.push(event)
+		);
+		renderer.write('{"type":"assistant","message":{"content":[{"type":"text","text":"hi"}]}}\n');
+		renderer.write('not json at all\n');
+		renderer.write('{oops\n');
+		renderer.finish();
+		expect(seen).toEqual([
+			{ type: 'assistant', message: { content: [{ type: 'text', text: 'hi' }] } }
+		]);
+	});
+});

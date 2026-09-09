@@ -24,6 +24,7 @@ import type {
 	Artifact,
 	ArtifactDetail,
 	ArtifactListResponse,
+	ArtifactSiteLink,
 	Comment,
 	ContextItem,
 	ContextListFilters,
@@ -80,8 +81,10 @@ import type {
 	UpdateRoutingRuleRequest,
 	UpdateRunnerRequest,
 	UpdateScheduleRequest,
+	UpdatePreferencesRequest,
 	UpdateSupervisorSettingsRequest,
 	UpdateWorkflowRequest,
+	UserPreferences,
 	WorkflowResponse
 } from './types.js';
 
@@ -387,6 +390,12 @@ export function createApiClient(options: ApiClientOptions) {
 			get<ArtifactListResponse>(`/api/v1/issues/${issueId}/artifacts`),
 		getArtifact: (issueId: string, name: string) =>
 			get<ArtifactDetail>(artifactPath(issueId, name)),
+		/**
+		 * Mints a short-lived signed URL that renders an HTML artifact live
+		 * (422 `not_a_site` when the artifact is not HTML / has no index.html).
+		 */
+		createArtifactSiteLink: (issueId: string, name: string, body: { version?: number } = {}) =>
+			request<ArtifactSiteLink>('POST', artifactPath(issueId, name, '/site-link'), body),
 		/** JSON upsert for text/link/pr: creates the artifact or appends a version. */
 		putArtifact: (issueId: string, name: string, body: UpsertArtifactRequest) =>
 			request<Artifact>('PUT', artifactPath(issueId, name), body),
@@ -514,6 +523,9 @@ export function createApiClient(options: ApiClientOptions) {
 		deleteRoutingRule: (id: string) => request<void>('DELETE', `/api/v1/routing-rules/${id}`),
 
 		// Supervisor settings
+		getPreferences: () => get<UserPreferences>('/api/v1/preferences'),
+		updatePreferences: (body: UpdatePreferencesRequest) =>
+			request<UserPreferences>('PATCH', '/api/v1/preferences', body),
 		getSupervisorSettings: () => get<SupervisorSettings>('/api/v1/supervisor/settings'),
 		getSupervisorQueue: () => get<FleetQueue>('/api/v1/supervisor/queue'),
 		updateSupervisorSettings: (body: UpdateSupervisorSettingsRequest) =>

@@ -5,6 +5,7 @@
  * lives in daemon.ts.
  */
 import { delimiter, sep } from 'node:path';
+import type { FinishRunRequest } from '@tines/shared';
 
 export type HarnessKind = 'claude_code' | 'codex' | 'custom';
 
@@ -84,9 +85,15 @@ export function buildHarnessInvocation(
 				]
 			};
 		case 'codex':
+			// --skip-git-repo-check is required to treat the folder as trusted
 			return {
 				file: 'codex',
-				args: ['exec', ...(input.model ? ['--model', input.model] : []), input.prompt]
+				args: [
+					'exec',
+					'--skip-git-repo-check',
+					...(input.model ? ['--model', input.model] : []),
+					input.prompt
+				]
 			};
 		case 'custom': {
 			if (!spec.command) throw new Error('the custom harness needs a --command template');
@@ -239,18 +246,26 @@ export interface RunDisposition {
 	outcome: RunOutcome;
 }
 
+/**
+ * The supervisor's reading of an end this daemon caused itself, and — for a
+ * usage limit — when it can start asking again. Kept as one object so a new
+ * field is not a signature change at every call site.
+ */
+export type RunJudgment = Pick<FinishRunRequest, 'judgment' | 'resume_at'>;
+
 export interface RunTableEffects<T extends ManagedRun> {
 	/**
 	 * Report the finish to the supervisor; rejections are the caller-side log.
 	 * `judgment` is set only on the ends this daemon caused itself — its own
-	 * shutdown, an orphan killed after a restart — so the supervisor knows not
-	 * to charge the issue for them.
+	 * shutdown, an orphan killed after a restart, or a provider usage limit
+	 * that refused the work outright — so the supervisor knows not to charge
+	 * the issue for them.
 	 */
 	finish(
 		run: T,
 		status: 'completed' | 'failed',
 		error?: string,
-		judgment?: 'interrupted'
+		judgment?: RunJudgment
 	): Promise<void>;
 	/**
 	 * Tear down the run's local traces: timers, and the workspace unless the
@@ -329,17 +344,19 @@ export class RunTable<T extends ManagedRun> {
 	 * this still cleans up — the slot, workspace, and state entry must never
 	 * outlive the run — but reports nothing.
 	 *
-	 * Pass `judgment: 'interrupted'` when the daemon itself ended the run
+	 * Pass `{ judgment: 'interrupted' }` when the daemon itself ended the run
 	 * (shutdown, restart) rather than the work failing: the supervisor then
 	 * spares the issue a strike. Everything a run can do wrong to itself —
 	 * a non-zero harness exit, a workspace that would not set up — must not
-	 * set it.
+	 * set it. Exceptions are provider-side failures: usage exhaustion uses
+	 * `{ judgment: 'rate_limited' }` with its reset time, while transient 5xx
+	 * and transport outages use `interrupted` and the normal short backoff.
 	 */
 	async finishAndCleanup(
 		run: T,
 		status: 'completed' | 'failed',
 		error?: string,
-		judgment?: 'interrupted'
+		judgment?: RunJudgment
 	): Promise<void> {
 		if (run.settled) return this.cleanup(run);
 		run.settled = true;

@@ -1,5 +1,6 @@
 import { delimiter } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import type { RunJudgment } from './support';
 import {
 	AMBIENT_CLI,
 	buildHarnessInvocation,
@@ -71,10 +72,10 @@ describe('buildHarnessInvocation', () => {
 		]);
 	});
 
-	it('codex: codex exec [--model] <prompt>', () => {
+	it('codex: codex exec --skip-git-repo-check [--model] <prompt>', () => {
 		expect(buildHarnessInvocation({ harness: 'codex' }, input)).toEqual({
 			file: 'codex',
-			args: ['exec', '--model', 'claude-sonnet-5', 'Do the thing']
+			args: ['exec', '--skip-git-repo-check', '--model', 'claude-sonnet-5', 'Do the thing']
 		});
 	});
 
@@ -111,7 +112,7 @@ describe('formatLaunchBanner', () => {
 	it('codex: argv shell-quoted, quoting only the words that need it', () => {
 		const invocation = buildHarnessInvocation({ harness: 'codex' }, input);
 		expect(formatLaunchBanner(invocation, input, { ...meta, harness: 'codex' })).toBe(
-			`$ codex exec --model claude-sonnet-5 'Do the thing'\n` +
+			`$ codex exec --skip-git-repo-check --model claude-sonnet-5 'Do the thing'\n` +
 				`# tines runner: harness=codex model=claude-sonnet-5 timeout=30m cli=0.0.1 workspace=/tmp/ws/run 1\n`
 		);
 	});
@@ -122,7 +123,7 @@ describe('formatLaunchBanner', () => {
 		const line = formatLaunchCommand(buildHarnessInvocation({ harness: 'codex' }, big));
 		expect(line.length).toBeLessThan(400);
 		expect(line).toContain('[+24840 chars]');
-		expect(line.startsWith('codex exec --model claude-sonnet-5 ')).toBe(true);
+		expect(line.startsWith('codex exec --skip-git-repo-check --model claude-sonnet-5 ')).toBe(true);
 	});
 
 	it('custom: the template as expanded, not as written', () => {
@@ -307,7 +308,7 @@ describe('RunTable', () => {
 			runId: string;
 			status: string;
 			error?: string;
-			judgment?: 'interrupted';
+			judgment?: RunJudgment;
 		}[] = [];
 		const released: { runId: string; keep: boolean; outcome: RunOutcome }[] = [];
 		const notes: string[] = [];
@@ -367,9 +368,34 @@ describe('RunTable', () => {
 		const h = harness();
 		const run = h.run('arun_1');
 		h.table.track(run);
-		await h.table.finishAndCleanup(run, 'failed', 'daemon shut down', 'interrupted');
+		await h.table.finishAndCleanup(run, 'failed', 'daemon shut down', {
+			judgment: 'interrupted'
+		});
 		expect(h.finishes).toEqual([
-			{ runId: 'arun_1', status: 'failed', error: 'daemon shut down', judgment: 'interrupted' }
+			{
+				runId: 'arun_1',
+				status: 'failed',
+				error: 'daemon shut down',
+				judgment: { judgment: 'interrupted' }
+			}
+		]);
+	});
+
+	it('forwards a rate-limited judgment, resume time and all, unchanged', async () => {
+		const h = harness();
+		const run = h.run('arun_1');
+		h.table.track(run);
+		await h.table.finishAndCleanup(run, 'failed', 'rate limited: session limit', {
+			judgment: 'rate_limited',
+			resume_at: 1_788_739_200_000
+		});
+		expect(h.finishes).toEqual([
+			{
+				runId: 'arun_1',
+				status: 'failed',
+				error: 'rate limited: session limit',
+				judgment: { judgment: 'rate_limited', resume_at: 1_788_739_200_000 }
+			}
 		]);
 	});
 

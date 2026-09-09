@@ -67,10 +67,12 @@ export function queueHeadline(block: QueueBlock): string {
 			return `${runner} draining`;
 		case 'backing_off':
 			return `${runner} backing off`;
+		case 'rate_limited':
+			return `${runner} rate limited`;
 		case 'no_rule':
 			return 'no matching routing rule';
 		case 'no_targets':
-			return 'the matching rule has no targets';
+			return 'the matching rule has no effective targets';
 		case 'ambiguous_rule':
 			return 'two routing rules tie';
 		case 'pin_missing':
@@ -118,6 +120,8 @@ export function queueFix(block: QueueBlock): string | null {
 			return 'tines supervisor enable';
 		case 'backing_off':
 			return 'retries automatically; check the daemon log if it keeps failing';
+		case 'rate_limited':
+			return 'resumes automatically when the usage window resets; nothing to do';
 		default:
 			return null;
 	}

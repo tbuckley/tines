@@ -14,7 +14,9 @@
  */
 
 import {
+	declaredContentType,
 	parsePrSpec,
+	requirementAccepts,
 	requirementFix,
 	type Artifact,
 	type ArtifactRequirementCheck,
@@ -148,11 +150,6 @@ function normalizePositional(raw: string): { value: string; stdin: boolean } {
 
 const isUrl = (v: string): boolean => /^https?:\/\//.test(v);
 
-/** A gate's declared content type names a concrete MIME (not a `image/` prefix). */
-function concreteContentType(ct: string | undefined): string | undefined {
-	return ct !== undefined && ct.includes('/') && !ct.endsWith('/') ? ct : undefined;
-}
-
 /** The distinct declared types among the gates (untyped gates constrain nothing). */
 function declaredTypes(gates: GateEntry[]): ArtifactType[] {
 	return [
@@ -193,17 +190,6 @@ function joinTransitions(names: string[]): string {
 /** The `fix` the server sent, or one computed locally when an older server omitted it. */
 function fixCommand(gate: GateEntry, ref: string): string {
 	return gate.check.fix || requirementFix(gate.check, ref).command;
-}
-
-/** Does `gate` accept an artifact of `type` declaring `contentType`? */
-function accepts(gate: GateEntry, type: ArtifactType, contentType: string | undefined): boolean {
-	const check = gate.check;
-	if (check.type !== undefined && check.type !== type) return false;
-	if (check.content_type === undefined) return true;
-	// An unknown effective content type (server default / sniff deferred) cannot
-	// be refused offline: only a declared one is checked.
-	if (contentType === undefined) return true;
-	return contentType.startsWith(check.content_type);
 }
 
 /** What a plan will actually declare, for the acceptance check. */
@@ -365,16 +351,10 @@ function planPositional(
 
 /** The content type a text/file plan inherits from its gates, when they agree on a concrete one. */
 function gateContentType(gates: GateEntry[], type: ArtifactType | undefined): string | undefined {
-	if (type !== 'text' && type !== 'file') return undefined;
-	const declared = [
-		...new Set(
-			gates
-				.filter((g) => g.check.type === type)
-				.map((g) => concreteContentType(g.check.content_type))
-				.filter((ct): ct is string => ct !== undefined)
-		)
-	];
-	return declared.length === 1 ? declared[0] : undefined;
+	return declaredContentType(
+		gates.map((g) => g.check),
+		type
+	);
 }
 
 /** The pre-243 flag semantics, with the path checks moved offline. */
@@ -438,16 +418,34 @@ function checkExistingSlot(
 	flags: AttachFlags,
 	positional: string | undefined
 ): void {
-	const held = gates.find((g) => g.check.current_type !== null)?.check.current_type;
-	if (held === undefined || held === null || held === plan.type) return;
+	const held = heldType(gates);
+	if (held === undefined || held === plan.type) return;
 	const rejecting = gates.find((g) => g.check.type !== undefined && g.check.type !== held);
 	const fix = rejecting
 		? fixCommand(rejecting, ref)
 		: `tines issues artifacts delete ${ref} ${name} && tines issues artifacts attach ${ref} ${name} ${flagFor(plan.type)} <source>`;
 	throw new CliError(
-		`"${name}" already holds a ${held} artifact and the type is immutable; ${sourceLabel(flags, positional)} would attach ${plan.type}. Use: ${fix} — or attach it under a different name (--ignore-gates does not bypass this; the server rejects the type change too)`
+		`"${name}" already holds a ${held} artifact and the type is immutable; ${sourceLabel(flags, positional)} would attach ${plan.type}.${' '}Use: ${fix}${IMMUTABLE_TAIL}`
 	);
 }
+
+/**
+ * The (immutable) type the slot already holds, per the gates' live check —
+ * `undefined` when the slot is empty. Both refusals read it: what is true of
+ * `--ignore-gates` depends on it, not on which branch happens to fire.
+ */
+function heldType(gates: GateEntry[]): ArtifactType | undefined {
+	return gates.find((g) => g.check.current_type !== null)?.check.current_type ?? undefined;
+}
+
+/**
+ * What to say instead of the `--ignore-gates` escape when the slot already
+ * holds a different type: the flag skips the CLI's checks only, and the
+ * server then throws `artifact_type_mismatch` unconditionally on all three
+ * write paths (Tines/268).
+ */
+const IMMUTABLE_TAIL =
+	' — or attach it under a different name (--ignore-gates does not bypass this; the server rejects the type change too)';
 
 /**
  * No available transition's requirement for this slot can ever accept what the
@@ -464,20 +462,30 @@ function checkAccepted(
 	sniff: (path: string) => string
 ): void {
 	const effective = effectiveContentType(plan.type, plan.source, plan.contentType, sniff);
-	if (gates.some((g) => accepts(g, plan.type, effective))) return;
+	if (gates.some((g) => requirementAccepts(g.check, plan.type, effective))) return;
 	const label = sourceLabel(flags, positional);
+	// `--ignore-gates` skips this check, not the server's: on a slot already
+	// holding a different (immutable) type the write 422s anyway, so the escape
+	// is only honest on a fresh slot. Which branch fires is incidental — the
+	// held type decides (Tines/268).
+	const held = heldType(gates);
+	const blockedByHeldType = held !== undefined && held !== plan.type;
 	const typeMatched = gates.filter((g) => (g.check.type ?? plan.type) === plan.type);
 	if (typeMatched.length > 0) {
 		// The type is right and only the content type misses: the fix is a MIME,
 		// not a different flag.
 		const g = typeMatched[0];
 		throw new CliError(
-			`"${name}" is gated by ${joinTransitions(typeMatched.map((x) => x.transition))} as ${gateSpec(g.check)}; ${label} would attach ${effective ?? plan.type}, which does not satisfy it. Use: ${fixCommand(g, ref)} with --content-type <mime under ${g.check.content_type}> (or --ignore-gates to attach it anyway)`
+			`"${name}" is gated by ${joinTransitions(typeMatched.map((x) => x.transition))} as ${gateSpec(g.check)}; ${label} would attach ${effective ?? plan.type}, which does not satisfy it. Use: ${fixCommand(g, ref)} with --content-type <mime under ${g.check.content_type}>${
+				blockedByHeldType ? IMMUTABLE_TAIL : ' (or --ignore-gates to attach it anyway)'
+			}`
 		);
 	}
 	const g = gates[0];
 	throw new CliError(
-		`"${name}" is gated by ${joinTransitions(gates.map((x) => x.transition))} as ${gateSpec(g.check)}; ${label} would create a ${plan.type} artifact that can never satisfy it. Use: ${fixCommand(g, ref)} (or --ignore-gates to attach a ${plan.type} anyway)`
+		`"${name}" is gated by ${joinTransitions(gates.map((x) => x.transition))} as ${gateSpec(g.check)}; ${label} would create a ${plan.type} artifact that can never satisfy it. Use: ${fixCommand(g, ref)}${
+			blockedByHeldType ? IMMUTABLE_TAIL : ` (or --ignore-gates to attach a ${plan.type} anyway)`
+		}`
 	);
 }
 
@@ -494,7 +502,13 @@ export function satisfiedBy(
 	const rejects: { transition: string; wants: string }[] = [];
 	for (const gate of gates) {
 		if (gate.check.artifact !== artifact.name) continue;
-		if (accepts(gate, artifact.artifact_type, artifact.current_version.content_type ?? undefined)) {
+		if (
+			requirementAccepts(
+				gate.check,
+				artifact.artifact_type,
+				artifact.current_version.content_type ?? undefined
+			)
+		) {
 			satisfies.push(gate.transition);
 		} else {
 			rejects.push({ transition: gate.transition, wants: wantsLabel(gate, artifact) });
@@ -522,6 +536,8 @@ export function gateLabel(
 /** The `--help` epilogue: the typing rules, written where the reader is choosing a source. */
 export const ATTACH_SOURCE_HELP = `
 Source:
+  Prefer the positional form: it is what a gated slot's own hint prints
+  ("fix:" on \`tines issues show\`, and the launch prompt's Requires: line).
   A positional <source> is typed by the slot's gate when this issue has one:
   a text gate reads the path as the document (the gate's content type wins over
   the extension), a file gate uploads its bytes, a folder gate walks it, and a

@@ -8,7 +8,11 @@ import type {
 	Page,
 	Response
 } from '@playwright/test';
-import { AUTH_SECRET, BASE_URL } from './constants.mjs';
+import { ALICE, AUTH_SECRET, BASE_URL } from './constants.mjs';
+
+/** The two viewports the suite asserts at: a phone and a laptop. */
+export const PHONE = { width: 390, height: 844 };
+export const DESKTOP = { width: 1440, height: 900 };
 
 /**
  * Better Auth session cookies are `<token>.<base64 HMAC-SHA256(token)>`,
@@ -136,6 +140,19 @@ export async function clickUntil(button: Locator, done: () => Promise<void>): Pr
 }
 
 /**
+ * `clickUntil` for a trigger that *toggles* — a popover, a dialog. Retrying a
+ * plain click would shut what the first one opened, so this only clicks while
+ * `opened` is still absent, and the retry is the wait for hydration rather
+ * than a race against it.
+ */
+export async function clickToOpen(trigger: Locator, opened: Locator): Promise<void> {
+	await expect(async () => {
+		if (!(await opened.isVisible())) await trigger.click();
+		await expect(opened).toBeVisible({ timeout: 2_000 });
+	}).toPass({ timeout: 15_000 });
+}
+
+/**
  * `read` once its result has stopped changing: two reads a beat apart that
  * agree. For geometry on a page that is still settling — content above the
  * target reflows after hydration, streamed panels resolve after the target is
@@ -169,4 +186,19 @@ export async function readSettled<T>(
 	if (opts.bestEffort) await attempt.catch(() => {});
 	else await attempt;
 	return settled;
+}
+
+/**
+ * Clears Alice's project focus (Tines/259). Every spec that loads a list runs
+ * this first: the suite shares one user with `workers: 1`, so a focus left
+ * behind by one spec would silently scope another spec's `/issues`.
+ *
+ * A PAT is enough — `/preferences` is fenced from run keys, not from PATs.
+ */
+export async function resetFocus(request: APIRequestContext): Promise<void> {
+	const res = await apiClient(request, ALICE.apiKey).patch('/api/v1/preferences', {
+		focused_project_id: null,
+		last_project_id: null
+	});
+	expect(res.ok(), await describeFailure(res)).toBe(true);
 }
