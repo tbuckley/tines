@@ -36,7 +36,10 @@
 			{/if}
 		</div>
 		{#if pagination.empty}
-			<a href={pagination.firstHref} class="text-sm underline underline-offset-2">First page</a>
+			<a
+				href={pagination.firstHref}
+				class={buttonVariants({ variant: 'outline', size: 'sm' }) + ' min-h-11'}>First page</a
+			>
 		{/if}
 	</nav>
 {/if}
