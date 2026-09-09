@@ -2100,6 +2100,8 @@ export function seedPromptQueries(
 		workflowStateId?: string;
 		/** Canonical scope label at creation time, for the event payload. */
 		label: string;
+		/** Ordering within the scope; ordinary creation callers default to first. */
+		position?: number;
 		now: number;
 	}
 ): { id: string; queries: CompiledQuery[] } {
@@ -2126,7 +2128,7 @@ export function seedPromptQueries(
 					repo_url: null,
 					repo_branch: null,
 					repo_dir: null,
-					position: 0,
+					position: opts.position ?? 0,
 					version: 1,
 					created_at: opts.now,
 					updated_at: opts.now
