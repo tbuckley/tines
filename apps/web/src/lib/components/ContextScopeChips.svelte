@@ -1,5 +1,7 @@
 <script lang="ts">
-	import type { ContextScope } from '@tines/shared';
+	import type { ContextScope, InheritedFrom } from '@tines/shared';
+	import { chipClass, textClass } from '$lib/chip-classes';
+	import InheritedFromChip from './InheritedFromChip.svelte';
 	import LabelChip from './LabelChip.svelte';
 	import IconFolder from '@tabler/icons-svelte/icons/folder';
 	import IconListDetails from '@tabler/icons-svelte/icons/list-details';
@@ -15,37 +17,23 @@
 	 * editor's "Only in state" select uses — because a state name alone
 	 * ("Backlog", "Review") repeats across every workflow. `short` drops the
 	 * workflow for callers that already group by it.
+	 *
+	 * `inheritedFrom` is a property of resolution, not of the item, so it is
+	 * passed in rather than read off the scope: set it and a `via <workflow> /
+	 * <state>` chip follows the state chip, naming the base an inherited layer
+	 * reached the issue through.
 	 */
 	let {
 		scope,
 		link = false,
-		short = false
-	}: { scope: ContextScope; link?: boolean; short?: boolean } = $props();
-
-	/**
-	 * The chip is the flex box and owns the width cap; the text inside it is a
-	 * separate block child wearing `truncate` (see `textClass`). `text-overflow`
-	 * only applies to a block container's own inline text, so a `truncate` on
-	 * the `inline-flex` chip itself clipped mid-glyph with no ellipsis
-	 * (Tines/221) — it kept the `overflow: hidden` half and silently dropped
-	 * the ellipsis half.
-	 *
-	 * The cap is responsive because a chip does not always share its row with
-	 * something that can wrap: `ContextItemList` puts the item's own name and
-	 * the chips on one non-wrapping flex row, and the chips wrapper never
-	 * shrinks below this cap, so every pixel of it comes out of the name. At
-	 * 224px the name was down to a glyph or two on a phone, so narrow viewports
-	 * keep the old 192px and only `sm` and up get the wider cap.
-	 */
-	const chipClass =
-		'bg-muted text-muted-foreground inline-flex max-w-48 items-center gap-1 overflow-hidden rounded-full px-2 py-0.5 text-xs sm:max-w-56';
-	/**
-	 * The truncating text child. `overflow-hidden` on the chip and `shrink-0` on
-	 * the icons are belt-and-braces today — the chip never shrinks below its cap,
-	 * so this child's own `overflow: hidden` does all the clipping — and become
-	 * load-bearing only if the chip is ever made shrinkable.
-	 */
-	const textClass = 'truncate';
+		short = false,
+		inheritedFrom = null
+	}: {
+		scope: ContextScope;
+		link?: boolean;
+		short?: boolean;
+		inheritedFrom?: InheritedFrom | null;
+	} = $props();
 </script>
 
 <span class="inline-flex flex-wrap items-center gap-1">
@@ -84,6 +72,9 @@
 					: `${scope.workflow_name} / ${scope.workflow_state_name}`}</span
 			>
 		</span>
+	{/if}
+	{#if inheritedFrom}
+		<InheritedFromChip from={inheritedFrom} {link} />
 	{/if}
 	{#if scope.label_id && scope.label_name}
 		<!-- The issue label keeps its own colour here rather than wearing the

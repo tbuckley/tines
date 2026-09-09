@@ -17,9 +17,15 @@ import {
 import { formatTable } from '../format.js';
 import { assertNewStatesHavePrompts, parseJsonObject } from '../refs.js';
 import {
+	buildStateLibrary,
+	childrenOf,
 	listAll,
+	qualifyEntry,
+	qualifyState,
 	type ApiClient,
 	type CreateWorkflowRequest,
+	type LibraryState,
+	type StateLibrary,
 	type UpdateWorkflowRequest,
 	type WorkflowResponse,
 	type WorkflowState
@@ -120,60 +126,20 @@ name issues must carry (see: tines issues artifacts --help).
 // ---------------------------------------------------------------------------
 // State inheritance (Tines/240)
 
-/** A state together with the workflow it lives in — how every ref is named. */
-interface LibraryState {
-	workflow: WorkflowResponse;
-	state: WorkflowState;
-}
+/** The library, indexed by state id — a base may live in another workflow. */
+type Library = StateLibrary<WorkflowResponse>;
 
-/**
- * The whole workflow library, indexed by state id. A base may live in another
- * workflow, so naming one — and finding the states that inherit from it —
- * takes the library, not the workflow in hand.
- */
-interface Library {
-	workflows: WorkflowResponse[];
-	states: Map<string, LibraryState>;
-	/** Base state id → the states pointing at it, library-wide. */
-	children: Map<string, LibraryState[]>;
-}
-
-async function loadLibrary(api: ApiClient): Promise<Library> {
-	const workflows = await listAll((page) => api.listWorkflows(page));
-	// Insertion order is library order, which is what keeps `bases` grouped by
-	// workflow without a second sort.
-	const states = new Map<string, LibraryState>();
-	for (const workflow of workflows) {
-		for (const state of workflow.states) states.set(state.id, { workflow, state });
-	}
-	const children = new Map<string, LibraryState[]>();
-	for (const entry of states.values()) {
-		const base = entry.state.inherits_from;
-		if (base === null) continue;
-		const siblings = children.get(base);
-		if (siblings) siblings.push(entry);
-		else children.set(base, [entry]);
-	}
-	return { workflows, states, children };
-}
-
-/** `<workflow> / <state>` — the qualified form, since state names are unique only per workflow. */
-const qualify = (entry: LibraryState): string => `${entry.workflow.name} / ${entry.state.name}`;
-
-/** The same, from an id: falls back to the bare id for a state we cannot see. */
-function stateLabel(lib: Library, id: string): string {
-	const entry = lib.states.get(id);
-	return entry ? qualify(entry) : id;
-}
+const loadLibrary = async (api: ApiClient): Promise<Library> =>
+	buildStateLibrary(await listAll((page) => api.listWorkflows(page)));
 
 /** The `inherits from:` / `inherited by:` lines under one state, in `show` order. */
 function inheritanceLines(lib: Library, state: WorkflowState): string[] {
 	const lines: string[] = [];
 	if (state.inherits_from !== null) {
-		lines.push(`    inherits from: ${stateLabel(lib, state.inherits_from)}`);
+		lines.push(`    inherits from: ${qualifyState(lib, state.inherits_from)}`);
 	}
-	const kids = lib.children.get(state.id) ?? [];
-	if (kids.length > 0) lines.push(`    inherited by: ${kids.map(qualify).join(', ')}`);
+	const kids = childrenOf(lib, state.id);
+	if (kids.length > 0) lines.push(`    inherited by: ${kids.map(qualifyEntry).join(', ')}`);
 	return lines;
 }
 
@@ -314,14 +280,14 @@ export function register(program: Command): void {
 		// Library order, so the bases arrive already grouped by workflow.
 		const bases = [...lib.states.values()].filter((e) => lib.children.has(e.state.id));
 		if (opts.json) {
-			const ref = (e: LibraryState) => ({
+			const ref = (e: LibraryState<WorkflowResponse>) => ({
 				workflow: { id: e.workflow.id, name: e.workflow.name },
 				state: { id: e.state.id, name: e.state.name }
 			});
 			return printJson(
 				bases.map((b) => ({
 					...ref(b),
-					inherited_by: lib.children.get(b.state.id)!.map(ref)
+					inherited_by: childrenOf(lib, b.state.id).map(ref)
 				}))
 			);
 		}
@@ -333,7 +299,9 @@ export function register(program: Command): void {
 				group = base.workflow.id;
 			}
 			console.log(`  ${base.state.name}`);
-			console.log(`    inherited by: ${lib.children.get(base.state.id)!.map(qualify).join(', ')}`);
+			console.log(
+				`    inherited by: ${childrenOf(lib, base.state.id).map(qualifyEntry).join(', ')}`
+			);
 		}
 	});
 

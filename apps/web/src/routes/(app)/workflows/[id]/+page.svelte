@@ -1,13 +1,20 @@
 <script lang="ts">
 	import type { ContextItem, UpdateWorkflowRequest } from '@tines/shared';
-	import { activeStateIds as deriveActiveStateIds, ApiError } from '@tines/shared';
+	import {
+		activeStateIds as deriveActiveStateIds,
+		ancestorsOf,
+		ApiError,
+		buildStateLibrary,
+		childrenOf,
+		qualifyState
+	} from '@tines/shared';
 	import IconBooks from '@tabler/icons-svelte/icons/books';
 	import IconChevronLeft from '@tabler/icons-svelte/icons/chevron-left';
 	import IconCopy from '@tabler/icons-svelte/icons/copy';
 	import IconLock from '@tabler/icons-svelte/icons/lock';
 	import IconPlus from '@tabler/icons-svelte/icons/plus';
 	import { slide } from 'svelte/transition';
-	import { goto, invalidateAll } from '$app/navigation';
+	import { afterNavigate, goto, invalidateAll } from '$app/navigation';
 	import { api } from '$lib/api';
 	import AgentRoutingCard from '$lib/components/AgentRoutingCard.svelte';
 	import ContextItemEditor from '$lib/components/ContextItemEditor.svelte';
@@ -23,6 +30,18 @@
 
 	/** Active-category states, so dead routing rules are flagged as such. */
 	const activeStateIds = $derived(deriveActiveStateIds(data.workflows));
+
+	/**
+	 * The whole visible library: a state's base — and the states inheriting
+	 * from one of ours — may live in another workflow, so naming either takes
+	 * more than `data.workflow`.
+	 */
+	const lib = $derived(buildStateLibrary(data.workflows));
+	/** Where a state's `inherits from` / `via` links point, library-wide. */
+	const stateHref = (id: string) => {
+		const entry = lib.states.get(id);
+		return entry ? `/workflows/${entry.workflow.id}#state-${id}` : '#';
+	};
 
 	let errorMessage = $state<string | null>(null);
 	function showError(e: unknown) {
@@ -42,6 +61,21 @@
 	});
 
 	let selectedStateId = $state<string | null>(null);
+
+	/**
+	 * `#state-<id>` — the deep link every inheritance line uses — opens that
+	 * row and scrolls to it. In `afterNavigate` rather than an `$effect` so it
+	 * runs once per navigation (the initial load included) instead of
+	 * re-asserting itself over the reader's own clicks.
+	 */
+	afterNavigate(({ to }) => {
+		const id = to?.url.hash?.replace(/^#state-/, '');
+		if (!id || id === to?.url.hash) return;
+		selectedStateId = id;
+		requestAnimationFrame(() =>
+			document.getElementById(`state-${id}`)?.scrollIntoView({ block: 'center' })
+		);
+	});
 	let contextEditorOpen = $state(false);
 	let editingContextItem = $state<ContextItem | null>(null);
 
@@ -215,6 +249,15 @@
 							<td class="text-muted-foreground px-4 py-2.5">{st.category}</td>
 							<td class="text-muted-foreground px-4 py-2.5 text-xs">
 								{st.id === data.workflow.initial_state_id ? 'initial state' : ''}
+								<!-- The standard workflow can only ever be a base, so the spare
+								     column carries the states inheriting from it. -->
+								{#if childrenOf(lib, st.id).length > 0}
+									<span class="block"
+										>inherited by {childrenOf(lib, st.id)
+											.map((k) => `${k.workflow.name} / ${k.state.name}`)
+											.join(', ')}</span
+									>
+								{/if}
 							</td>
 						</tr>
 					{/each}
@@ -258,10 +301,11 @@
 		{#each data.workflow.states as state (state.id)}
 			{@const items = itemsByState.get(state.id) ?? []}
 			{@const open = selectedStateId === state.id}
-			<div class="border-b last:border-0">
+			{@const kids = childrenOf(lib, state.id)}
+			<div class="border-b last:border-0" id="state-{state.id}">
 				<button
 					type="button"
-					class="hover:bg-muted/50 flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm"
+					class="hover:bg-muted/50 flex w-full flex-wrap items-center gap-2 px-3 py-2.5 text-left text-sm"
 					onclick={() => (selectedStateId = open ? null : state.id)}
 					aria-expanded={open}
 				>
@@ -272,6 +316,18 @@
 						</span>
 					{:else}
 						<span class="text-muted-foreground text-xs">no context</span>
+					{/if}
+					{#if state.inherits_from}
+						<span class="text-muted-foreground text-xs"
+							>inherits from {qualifyState(lib, state.inherits_from)}</span
+						>
+					{/if}
+					{#if kids.length > 0}
+						<span class="text-muted-foreground text-xs"
+							>inherited by {kids
+								.map((k) => `${k.workflow.name} / ${k.state.name}`)
+								.join(', ')}</span
+						>
 					{/if}
 				</button>
 				{#if open}
@@ -288,6 +344,34 @@
 						<Button size="sm" variant="ghost" onclick={() => openContextCreate(state.id)}>
 							<IconPlus size={14} /> Add context for this state
 						</Button>
+						<!-- The base's own layers, root last: read-only here, because
+						     they belong to the base's state, and every row carries the
+						     `via` chip saying so. -->
+						{#each ancestorsOf(lib, state.id).slice().reverse() as ancestorId (ancestorId)}
+							{@const entry = lib.states.get(ancestorId)}
+							{#if entry}
+								<div class="border-t pt-2">
+									<h4 class="text-muted-foreground mb-1.5 text-xs">
+										Inherited from
+										<a
+											class="hover:text-foreground underline underline-offset-2"
+											href={stateHref(ancestorId)}>{qualifyState(lib, ancestorId)}</a
+										>
+									</h4>
+									<ContextItemList
+										items={itemsByState.get(ancestorId) ?? []}
+										shortScope
+										inheritedFrom={{
+											state_id: entry.state.id,
+											state_name: entry.state.name,
+											workflow_id: entry.workflow.id,
+											workflow_name: entry.workflow.name
+										}}
+										emptyMessage="No context on the base yet."
+									/>
+								</div>
+							{/if}
+						{/each}
 					</div>
 				{/if}
 			</div>

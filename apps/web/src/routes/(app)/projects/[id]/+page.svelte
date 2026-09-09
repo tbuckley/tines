@@ -432,7 +432,37 @@
 									>
 										{#each group.states as stateGroup (stateGroup.stateId)}
 											<div>
-												<h4 class="mb-1.5"><StateBadge state={stateGroup.state} /></h4>
+												<h4 class="mb-1.5 flex flex-wrap items-baseline gap-2">
+													<StateBadge state={stateGroup.state} />
+													<!-- Inheritance is a property of the state, not of these
+													     items: a base's own items are state-scoped with no
+													     project, so they live on the workflow page, which is
+													     where both of these link. -->
+													{#if stateGroup.inheritsFrom}
+														<span class="text-muted-foreground text-xs">
+															inherits from
+															<a
+																class="hover:text-foreground underline underline-offset-2"
+																href="/workflows/{stateGroup.inheritsFrom
+																	.workflowId}#state-{stateGroup.inheritsFrom.stateId}"
+																>{stateGroup.inheritsFrom.workflowName} / {stateGroup.inheritsFrom
+																	.stateName}</a
+															>
+														</span>
+													{/if}
+													{#if stateGroup.inheritedBy.length > 0}
+														<span class="text-muted-foreground text-xs">
+															inherited by
+															{#each stateGroup.inheritedBy as child, i (child.stateId)}{i > 0
+																	? ', '
+																	: ''}<a
+																	class="hover:text-foreground underline underline-offset-2"
+																	href="/workflows/{child.workflowId}#state-{child.stateId}"
+																	>{child.workflowName} / {child.stateName}</a
+																>{/each}
+														</span>
+													{/if}
+												</h4>
 												<ContextItemList
 													items={stateGroup.items}
 													showScope={false}

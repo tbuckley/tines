@@ -1,13 +1,41 @@
 <script lang="ts">
-	import type { EffectiveContext } from '@tines/shared';
+	import {
+		buildStateLibrary,
+		childrenOf,
+		qualifyEntry,
+		type EffectiveContext,
+		type InheritedFrom,
+		type LibraryWorkflow
+	} from '@tines/shared';
 	import IconAlertTriangle from '@tabler/icons-svelte/icons/alert-triangle';
 	import { slide } from 'svelte/transition';
 	import ContextKindIcon from '$lib/components/ContextKindIcon.svelte';
+	import InheritedFromChip from '$lib/components/InheritedFromChip.svelte';
 	import Markdown from '$lib/components/Markdown.svelte';
 	import { prefersReducedMotion } from '$lib/format';
 
-	/** Renders the assembled bundle (`GET /issues/:id/context`). */
-	let { context }: { context: EffectiveContext } = $props();
+	/**
+	 * Renders the assembled bundle (`GET /issues/:id/context`). Pass
+	 * `workflows` (the visible library) and `stateId` (the issue's own state)
+	 * and every part, skill, repo or overridden entry that matched through an
+	 * ancestor names the base it came from and the base's other users; a part
+	 * with no `inherited_from` renders exactly as it did before Tines/269.
+	 */
+	let {
+		context,
+		workflows = [],
+		stateId = null
+	}: {
+		context: EffectiveContext;
+		workflows?: LibraryWorkflow[];
+		stateId?: string | null;
+	} = $props();
+
+	const lib = $derived(buildStateLibrary(workflows));
+
+	/** The base's other children — the states this layer also reaches. */
+	const alsoInheritedBy = (from: InheritedFrom) =>
+		childrenOf(lib, from.state_id).filter((c) => c.state.id !== stateId);
 
 	const dur = () => (prefersReducedMotion() ? 0 : 180);
 
@@ -15,6 +43,22 @@
 		context.prompt.parts.length === 0 && context.skills.length === 0 && context.repos.length === 0
 	);
 </script>
+
+{#snippet attribution(from: InheritedFrom | null)}
+	{#if from}
+		<InheritedFromChip {from} link />
+		{@const others = alsoInheritedBy(from)}
+		{#if others.length > 0}
+			<span class="text-muted-foreground text-xs">
+				also inherited by
+				{#each others as other, i (other.state.id)}{i > 0 ? ', ' : ''}<a
+						class="hover:text-foreground underline underline-offset-2"
+						href="/workflows/{other.workflow.id}#state-{other.state.id}">{qualifyEntry(other)}</a
+					>{/each}
+			</span>
+		{/if}
+	{/if}
+{/snippet}
 
 {#if empty}
 	<p class="text-muted-foreground text-sm italic">No context applies to this issue right now.</p>
@@ -28,6 +72,7 @@
 							<ContextKindIcon kind="prompt" size={12} />
 							<span class="font-medium">{part.name}</span>
 							<span class="bg-muted rounded-full px-2 py-0.5">{part.scope.label}</span>
+							{@render attribution(part.inherited_from)}
 						</div>
 						<div class="p-3 text-sm">
 							<Markdown source={part.body} />
@@ -53,6 +98,7 @@
 							<span class="bg-muted text-muted-foreground rounded-full px-2 py-0.5 text-xs"
 								>{skill.scope.label}</span
 							>
+							{@render attribution(skill.inherited_from)}
 						</li>
 					{/each}
 				</ul>
@@ -78,6 +124,7 @@
 							<span class="bg-muted text-muted-foreground rounded-full px-2 py-0.5 text-xs"
 								>{repo.scope.label}</span
 							>
+							{@render attribution(repo.inherited_from)}
 						</li>
 					{/each}
 				</ul>
@@ -104,6 +151,7 @@
 							<span class="bg-muted rounded-full px-2 py-0.5 text-xs line-through"
 								>{o.scope.label}</span
 							>
+							{@render attribution(o.inherited_from)}
 							<span class="text-xs"
 								>← overridden by the {winner ? winner.scope.label : 'more specific'} one</span
 							>
