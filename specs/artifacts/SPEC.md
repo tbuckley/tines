@@ -649,6 +649,7 @@ tines issues artifacts attach <ref> <name> … --ignore-gates    # attach this t
 tines issues artifacts reaffirm <ref> <name>                   # bless current content as fresh
 tines issues artifacts get <ref> <name> [--version N] [--out <path>]   # content; link/pr prints the
                                                                #   URL; a folder writes its tree
+                                                               #   only into a new or empty directory
 tines issues artifacts site-link <ref> <name> [--version N]     # mint a URL that renders an HTML
                                                                #   artifact live; prints the URL,
                                                                #   the pinned version and the
@@ -668,6 +669,13 @@ without any new CLI logic. `tines workflows` create/edit accept `requires`
 inside their transition definitions. `show` and `attach` print a `site:`
 line when the artifact renders live, and `attach` follows it with the
 `warning:` lines `lintHtmlArtifact()` produces.
+
+Folder downloads preserve the whole-snapshot boundary locally: `get --out`
+accepts a nonexistent directory or an existing empty directory, but refuses
+an existing directory containing any entry (including hidden files, empty
+children, and symlinks) before requesting file content or writing. The CLI
+does not remove content or offer a force override; callers choose or prepare
+an empty destination.
 
 **The CLI uses the gate it can already see** (Tines/243). `resolveIssue`
 fetches the `IssueDetail`, so `allowed_transitions[].requires[]` is in hand
@@ -857,7 +865,9 @@ Done when this loop works end-to-end:
    regardless of which files the set contains; each file serves at
    `…/content?path=…` under the safety headers; `…/content` without `path`
    is a 422 listing the paths; re-attaching the directory is v2 (whole set);
-   reaffirm appends v3 reusing v2's objects; `get --out` writes the tree;
+   reaffirm appends v3 reusing v2's objects; `get --out` writes the tree into
+   a new or empty directory, while a populated destination is refused before
+   content requests or mutation and remains unchanged;
    a folder requirement declaring `content_type` is rejected at definition
    time; per-version caps (200 files / 50 MB) reject with 422s naming them.
 7. A human force-sets the state past an unmet gate (recorded `forced: true`);
@@ -953,6 +963,12 @@ From the folders/viewer review:
 - **No `content_type` on folder requirements** (422 at definition time):
   mixed-type trees admit no honest all-files/any-file match rule; the gate
   asserts slot + type, prose says what belongs inside.
+- **2026-09-09, Tines/333 — folder downloads never overlay a populated
+  destination**: every folder version is a whole immutable snapshot, so
+  mixing its files with leftovers could create a tree that never existed on
+  the server. The CLI accepts only a new or empty destination and preserves
+  every existing entry on refusal; cleanup and force-overlay behavior stay
+  deliberately absent.
 
 From later work:
 

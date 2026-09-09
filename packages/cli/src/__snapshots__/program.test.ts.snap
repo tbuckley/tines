@@ -312,7 +312,7 @@ Fetch content (current version by default); a link/pr prints its URL
 Options:
   --version <n>    fetch a specific version from the history
   --out <path>     write to this file, or into this directory (keeps the stored
-                   filename)
+                   filename); folder artifacts require a new or empty directory
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
                    \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)

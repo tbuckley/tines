@@ -1044,7 +1044,7 @@ export function register(program: Command): void {
 			)
 			.option(
 				'--out <path>',
-				'write to this file, or into this directory (keeps the stored filename)'
+				'write to this file, or into this directory (keeps the stored filename); folder artifacts require a new or empty directory'
 			)
 	).action(
 		async (ref: string, name: string, opts: CommonOpts & { version?: number; out?: string }) => {
@@ -1075,6 +1075,11 @@ export function register(program: Command): void {
 				}
 				if (existsSync(opts.out) && !statSync(opts.out).isDirectory()) {
 					die(`--out for a folder must be a directory, and "${opts.out}" is a file`);
+				}
+				if (existsSync(opts.out) && readdirSync(opts.out).length > 0) {
+					die(
+						`refusing to write folder artifact into non-empty directory "${opts.out}"; choose a new or empty directory`
+					);
 				}
 				const files = version.files ?? [];
 				let total = 0;
