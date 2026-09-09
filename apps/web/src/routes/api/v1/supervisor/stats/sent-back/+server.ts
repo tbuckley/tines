@@ -9,7 +9,12 @@ export const GET: RequestHandler = api(async (event) => {
 		await loadSentBackDrilldown(db, actor.userId, {
 			state: requireString(event.url.searchParams.get('state'), 'state'),
 			window: event.url.searchParams.get('window') ?? undefined,
-			project: event.url.searchParams.get('project') ?? undefined
+			project: event.url.searchParams.get('project') ?? undefined,
+			until: event.url.searchParams.has('until')
+				? event.url.searchParams.get('until')?.trim()
+					? Number(event.url.searchParams.get('until'))
+					: NaN
+				: undefined
 		})
 	);
 });

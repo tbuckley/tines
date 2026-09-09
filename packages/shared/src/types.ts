@@ -2327,7 +2327,7 @@ export interface StageWindowFigures {
 	open_now: number;
 	runs: {
 		total: number;
-		/** Runs bound to visits ÷ visits with a bound run; null when no visit was measured. */
+		/** Runs bound to visits ÷ all entered visits; null when there are no entered visits. */
 		per_visit: number | null;
 		active: number;
 		/** Runs that could not be bound to a visit in the scan (see `bindRuns`). */
@@ -2437,6 +2437,7 @@ export interface SentBackDrilldown {
 		actor: Actor;
 		comment: { id: string; excerpt: string; created_at: number } | null;
 		prompt_version: number | null;
+		prompt_context_id: string | null;
 	}[];
 }
 

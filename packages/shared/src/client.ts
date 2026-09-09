@@ -534,8 +534,12 @@ export function createApiClient(options: ApiClientOptions) {
 			get<FleetQueue>(`/api/v1/supervisor/queue${query(q)}`),
 		getSupervisorStats: (q: StatsQuery = {}) =>
 			get<StageStatsReport>(`/api/v1/supervisor/stats${query(q)}`),
-		getSupervisorSentBack: (q: { state: string; window?: string; project?: string }) =>
-			get<SentBackDrilldown>(`/api/v1/supervisor/stats/sent-back${query(q)}`),
+		getSupervisorSentBack: (q: {
+			state: string;
+			window?: string;
+			project?: string;
+			until?: number;
+		}) => get<SentBackDrilldown>(`/api/v1/supervisor/stats/sent-back${query(q)}`),
 		updateSupervisorSettings: (body: UpdateSupervisorSettingsRequest) =>
 			request<SupervisorSettingsResponse>('PUT', '/api/v1/supervisor/settings', body),
 

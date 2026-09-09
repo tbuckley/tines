@@ -79,44 +79,99 @@ test.beforeAll(async ({ playwright }) => {
 	await request.dispose();
 });
 
-test('filters the weekly row and opens its evidence and lever links', async ({ context, page }) => {
+test('filters the weekly board, focuses capacity, and opens frozen historical evidence', async ({
+	context,
+	page
+}) => {
 	await signIn(context, ALICE.sessionToken);
 	await gotoHydrated(page, `/agents?project=${project.id}`);
-
-	const projectFilter = page.locator(`select:has(option[value="${project.id}"])`).first();
-	await expect(projectFilter).toHaveValue(project.id);
-	const section = page.getByRole('region', { name: /This week/ });
-	const row = section.getByRole('row').filter({ hasText: 'Automated Review' });
-	await expect(row).toContainText('1 · 1');
-	await expect(row.getByRole('link', { name: /Stage stats.*Automated Review/ })).toHaveAttribute(
+	await expect(page.getByLabel('Board project')).toHaveValue(project.id);
+	const section = page.getByRole('region', { name: 'This week' });
+	await expect(section.getByRole('columnheader')).toHaveCount(4);
+	const row = section.locator('tr.stage-row').filter({ hasText: 'Automated Review' });
+	await expect(row).toContainText('1 visits');
+	await expect(row).toContainText('1 of 1 exits');
+	const runLink = row.getByRole('link', { name: /runs per visit/ });
+	await expect(runLink).toHaveAttribute(
 		'href',
-		new RegExp(`/workflows/${workflow.id}\\?state=${reviewStateId}#state-${reviewStateId}`)
+		`/agents?project=${project.id}&runs_state=${reviewStateId}#runs`
 	);
-	const links = row.getByRole('link');
-	await expect(links.nth(1)).toHaveAttribute('href', '#quota-policy');
-	for (const index of [2, 3, 4]) {
-		await expect(links.nth(index)).toHaveAttribute(
-			'href',
-			`/agents?runs_state=${reviewStateId}#runs`
-		);
-	}
-
-	const dialog = page.getByRole('dialog', { name: 'Issues sent back' });
-	await clickToOpen(row.getByRole('button', { name: /1 of 1/ }), dialog);
-	await expect(dialog).toContainText('prompt v1');
+	await row.getByRole('button', { name: /wait to start/ }).click();
+	await expect(page.locator('#global-limit')).toBeFocused();
+	const trigger = row.getByRole('button', { name: /sent back: view evidence/ });
+	const dialog = page.getByRole('dialog', { name: 'Send-back evidence' });
+	const request = page.waitForRequest((r) => r.url().includes('/stats/sent-back?'));
+	await clickToOpen(trigger, dialog);
+	expect(new URL((await request).url()).searchParams.get('until')).toMatch(/^\d+$/);
+	await expect(dialog).toContainText('instructions · v1 at the time');
 	await expect(dialog).toContainText('Please address the findings.');
-	await expect(dialog.getByRole('link', { name: /Edit prompt/ })).toHaveAttribute(
+	await expect(dialog.getByRole('link', { name: 'Edit current stage prompt' })).toHaveAttribute(
 		'href',
 		new RegExp(`/workflows/${workflow.id}\\?state=${reviewStateId}`)
 	);
+	await dialog.getByText('Historical prompt context ID').click();
+	await expect(dialog.locator('code')).toContainText('ctx_');
+	await page.keyboard.press('Escape');
+	await expect(dialog).not.toBeVisible();
+	await expect(trigger).toBeFocused();
+	await runLink.click();
+	await expect(page).toHaveURL(new RegExp(`runs_state=${reviewStateId}#runs$`));
+	await expect(page.locator('#runs')).toContainText('Latest runs for this stage');
+	await expect(page.getByLabel('Show ended runs')).toBeChecked();
+	await page.locator('#runs').getByRole('link', { name: /clear/ }).click();
+	await expect(page).toHaveURL(new RegExp(`project=${project.id}#runs$`));
 });
 
-test('keeps the weekly table and project filter usable on a phone', async ({ context, page }) => {
-	await page.setViewportSize({ width: 390, height: 844 });
+for (const width of [1440, 768, 390, 320])
+	test(`weekly overview, details and evidence fit at ${width}px`, async ({ context, page }) => {
+		await page.setViewportSize({ width, height: 900 });
+		await signIn(context, ALICE.sessionToken);
+		await gotoHydrated(page, `/agents?project=${project.id}`);
+		const section = page.getByRole('region', { name: 'This week' });
+		const row = section.locator('tr.stage-row').filter({ hasText: 'Automated Review' });
+		const assertFits = async () => {
+			expect(
+				await page.evaluate(
+					() => document.documentElement.scrollWidth <= document.documentElement.clientWidth
+				)
+			).toBe(true);
+			expect(await section.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+		};
+		await assertFits();
+		await section.screenshot({ path: `/tmp/tines257-screenshots/overview-${width}.png` });
+		await row.getByRole('button', { name: 'Automated Review', exact: true }).click();
+		const detail = section.locator(`#stage-detail-${reviewStateId}`);
+		await expect(detail.getByText('Timing and visits', { exact: true })).toBeVisible();
+		await expect(detail.getByText('Timed queue visits', { exact: true })).toBeVisible();
+		await assertFits();
+		await section.screenshot({ path: `/tmp/tines257-screenshots/detail-${width}.png` });
+		const dialog = page.getByRole('dialog', { name: 'Send-back evidence' });
+		await clickToOpen(row.getByRole('button', { name: /sent back: view evidence/ }), dialog);
+		await expect(dialog).toContainText('Please address the findings.');
+		expect(await dialog.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+		await dialog.screenshot({ path: `/tmp/tines257-screenshots/evidence-${width}.png` });
+		await page.keyboard.press('Escape');
+	});
+
+test('evidence errors remain retryable with the same frozen query', async ({ context, page }) => {
 	await signIn(context, ALICE.sessionToken);
 	await gotoHydrated(page, `/agents?project=${project.id}`);
-	await expect(page.locator(`select:has(option[value="${project.id}"])`).first()).toHaveValue(
-		project.id
-	);
-	await expect(page.getByRole('region', { name: /This week/ }).getByRole('table')).toBeVisible();
+	const queries: string[] = [];
+	await page.route('**/api/v1/supervisor/stats/sent-back?**', async (route) => {
+		queries.push(route.request().url());
+		if (queries.length === 1)
+			await route.fulfill({
+				status: 500,
+				contentType: 'application/json',
+				body: JSON.stringify({ error: { code: 'internal_error', message: 'Try again' } })
+			});
+		else await route.continue();
+	});
+	const row = page.locator('tr.stage-row').filter({ hasText: 'Automated Review' });
+	const dialog = page.getByRole('dialog', { name: 'Send-back evidence' });
+	await clickToOpen(row.getByRole('button', { name: /sent back: view evidence/ }), dialog);
+	await expect(dialog.getByRole('alert')).toBeVisible();
+	await dialog.getByRole('button', { name: 'Retry' }).click();
+	await expect(dialog).toContainText('Please address the findings.');
+	expect(queries[1]).toBe(queries[0]);
 });

@@ -10,7 +10,7 @@
 		Runner,
 		RunnerBudget,
 		RunnerTierOverrides,
-		SentBackDrilldown,
+		StageStatsReport,
 		StageStats,
 		ShadowWarning
 	} from '@tines/shared';
@@ -35,14 +35,17 @@
 	import IconRobot from '@tabler/icons-svelte/icons/robot';
 	import IconTrash from '@tabler/icons-svelte/icons/trash';
 	import IconX from '@tabler/icons-svelte/icons/x';
-	import { untrack } from 'svelte';
+	import { tick, untrack } from 'svelte';
 	import { slide } from 'svelte/transition';
 	import { goto, invalidateAll } from '$app/navigation';
 	import { api } from '$lib/api';
 	import CancelRunDialog from '$lib/components/CancelRunDialog.svelte';
 	import { confirmDialog } from '$lib/components/dialogs.svelte';
 	import FleetQueuePanel from '$lib/components/FleetQueuePanel.svelte';
-	import StageStatsTable from '$lib/components/StageStatsTable.svelte';
+	import StageStatsBoard from '$lib/components/StageStatsBoard.svelte';
+	import SentBackDrilldown from '$lib/components/SentBackDrilldown.svelte';
+	import { page } from '$app/state';
+	import { stageRunsHref } from '$lib/stage-stats-view';
 	import Modal from '$lib/components/Modal.svelte';
 	import PatInstructions from '$lib/components/PatInstructions.svelte';
 	import PendingButton from '$lib/components/PendingButton.svelte';
@@ -58,23 +61,30 @@
 
 	const dur = () => (prefersReducedMotion() ? 0 : 180);
 	let sentBackOpen = $state(false);
-	let sentBackLoading = $state(false);
-	let sentBackData = $state<SentBackDrilldown | null>(null);
-	async function openSentBack(stage: StageStats) {
+	let sentBackStage = $state<StageStats | null>(null);
+	let sentBackReport = $state<StageStatsReport | null>(null);
+	function openSentBack(stage: StageStats) {
+		sentBackStage = stage;
+		sentBackReport = data.stats;
 		sentBackOpen = true;
-		sentBackLoading = true;
-		sentBackData = null;
-		try {
-			sentBackData = await api.getSupervisorSentBack({
-				state: stage.state_id,
-				project: data.boardProject ?? undefined
-			});
-		} catch (error) {
-			showError(error);
-			sentBackOpen = false;
-		} finally {
-			sentBackLoading = false;
-		}
+	}
+	$effect(() => {
+		data.boardProject;
+		sentBackOpen = false;
+	});
+	async function focusStatsCapacity(stateId: string) {
+		quotaType = data.settings.quota.type;
+		highlight(quotaType === 'state_roster' ? stateId : null);
+		await tick();
+		const id = quotaType === 'global_cap' ? 'global-limit' : `roster-limit-${stateId}`;
+		const control = document.getElementById(id);
+		const target = control ?? document.getElementById('quota-policy');
+		target?.scrollIntoView({
+			block: 'center',
+			behavior: prefersReducedMotion() ? 'auto' : 'smooth'
+		});
+		if (control instanceof HTMLInputElement) control.focus({ preventScroll: true });
+		else errorMessage = 'Stage capacity no longer available';
 	}
 	function filterProject(project: string) {
 		const url = new URL(window.location.href);
@@ -182,7 +192,7 @@
 	/** Runs already active, by the state they started in — the roster's own unit. */
 	const activeByStartState = $derived.by(() => {
 		const counts = new Map<string, number>();
-		for (const run of data.runs) {
+		for (const run of data.fleetRuns) {
 			if (!isActiveRun(run.status)) continue;
 			const id = run.state_id_at_start;
 			if (!id) continue;
@@ -739,6 +749,9 @@
 	// --- runs --------------------------------------------------------------------
 
 	let showAllRuns = $state(untrack(() => data.runsState !== null));
+	$effect(() => {
+		if (data.runsState) showAllRuns = true;
+	});
 	const activeRuns = $derived(data.runs.filter((r) => isActiveRun(r.status)));
 	const visibleRuns = $derived(showAllRuns ? data.runs : activeRuns);
 	const runStateName = $derived(
@@ -751,7 +764,7 @@
 		const stateNames = new Map(
 			data.workflows.flatMap((w) => w.states.map((s) => [s.id, s.name] as const))
 		);
-		return utilizationLabel(data.settings.quota, activeRuns, (id) => stateNames.get(id) ?? id);
+		return utilizationLabel(data.settings.quota, data.fleetRuns, (id) => stateNames.get(id) ?? id);
 	});
 
 	/** The run awaiting the cancel dialog (strike note + optional comment). */
@@ -1030,7 +1043,7 @@
 <!-- Now row: what is waiting, and why (Tines/256) -->
 <div class="mb-3 flex justify-end">
 	<label class="text-muted-foreground flex items-center gap-2 text-xs">
-		Project
+		Board project
 		<Select
 			value={data.boardProject ?? ''}
 			onchange={(event) => filterProject(event.currentTarget.value)}
@@ -1062,49 +1075,21 @@
 	onenable={() => setEnabled(true)}
 />
 
-<StageStatsTable report={data.stats} quota={data.settings.quota} onsentback={openSentBack} />
+<StageStatsBoard
+	report={data.stats}
+	boardProject={data.boardProject}
+	oncapacity={focusStatsCapacity}
+	onsentback={openSentBack}
+/>
+{#if sentBackStage && sentBackReport}<SentBackDrilldown
+		open={sentBackOpen}
+		stage={sentBackStage}
+		report={sentBackReport}
+		project={data.boardProject}
+		onclose={() => (sentBackOpen = false)}
+	/>{/if}
 
-<Modal bind:open={sentBackOpen} title="Issues sent back" size="md">
-	{#if sentBackLoading}
-		<p class="text-muted-foreground text-sm">Loading evidence…</p>
-	{:else if sentBackData}
-		<div class="space-y-3">
-			<div class="flex items-center justify-between gap-3 text-sm">
-				<span class="font-medium">{sentBackData.state.workflow_name}/{sentBackData.state.name}</span
-				>
-				{#if sentBackData.prompt}<a
-						class="text-primary text-xs hover:underline"
-						href={sentBackData.prompt.edit_url}
-						>Edit prompt · current v{sentBackData.prompt.current_version}</a
-					>{/if}
-			</div>
-			{#if sentBackData.items.length === 0}
-				<p class="text-muted-foreground text-sm">No issues were sent back in this window.</p>
-			{:else}
-				<ul class="divide-y rounded-lg border">
-					{#each sentBackData.items as item (item.issue.id + item.transitioned_at)}
-						<li class="space-y-1 px-3 py-3 text-sm">
-							<a
-								class="font-medium hover:underline"
-								href={`/issues/${encodeURIComponent(item.issue.project_name)}/${item.issue.number}`}
-								>{item.issue.project_name}/{item.issue.number} — {item.issue.title}</a
-							>
-							<div class="text-muted-foreground text-xs">
-								to {item.to_state_name} · {relativeTime(item.transitioned_at)} · prompt {item.prompt_version
-									? `v${item.prompt_version}`
-									: 'unknown'}
-							</div>
-							<p class="text-xs">{item.comment?.excerpt ?? 'no comment'}</p>
-						</li>
-					{/each}
-				</ul>
-			{/if}
-		</div>
-	{/if}
-</Modal>
-
-<!-- Runners -->
-<div class="mb-10" id="runs">
+<div class="mb-10 scroll-mt-24" id="runners">
 	<div class="mb-3 flex items-center justify-between">
 		<h2 class="text-sm font-semibold">Runners</h2>
 		<Button size="sm" variant="ghost" onclick={() => (addRunnerOpen = true)}>
@@ -1213,15 +1198,18 @@
 </div>
 
 <!-- Runs -->
-<div class="mb-10">
+<div class="mb-10 scroll-mt-24" id="runs">
 	<div class="mb-3 flex flex-wrap items-center justify-between gap-2">
 		<h2 class="text-sm font-semibold">
 			Runs
 			<span class="text-muted-foreground font-normal">— {utilization}</span>
 		</h2>
 		{#if data.runsState}
-			<a class="bg-muted rounded-full px-2 py-1 text-xs hover:underline" href="/agents#runs">
-				filtered to {runStateName} · clear
+			<a
+				class="bg-muted rounded-full px-2 py-1 text-xs hover:underline"
+				href={stageRunsHref(page.url, null)}
+			>
+				Latest runs for this stage: {runStateName} · {data.stats.project?.name ?? 'All projects'} · clear
 			</a>
 		{/if}
 		<label class="text-muted-foreground flex items-center gap-2 text-xs">

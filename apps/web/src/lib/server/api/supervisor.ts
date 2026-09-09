@@ -932,10 +932,19 @@ export async function loadStageStats(
 export async function loadSentBackDrilldown(
 	db: Kysely<Database>,
 	userId: string,
-	query: { state: string; window?: string; project?: string },
+	query: { state: string; window?: string; project?: string; until?: number },
 	now: number = Date.now()
 ): Promise<SentBackDrilldown> {
 	const windowMs = parseStatsWindow(query.window);
+	if (query.until !== undefined) {
+		if (!Number.isSafeInteger(query.until) || query.until < 0 || query.until > now)
+			throw new ApiFail(
+				422,
+				'validation_error',
+				'until must be a nonfuture epoch millisecond integer'
+			);
+		now = query.until;
+	}
 	const since = now - windowMs;
 	const project = query.project ? await resolveProjectRef(db, userId, query.project) : null;
 	const states = await db
@@ -1054,18 +1063,20 @@ export async function loadSentBackDrilldown(
 				})
 		});
 	}
-	const promptVersionAt = (at: number): number | null => {
+	const promptAt = (at: number) => {
 		const generation = [...generations.values()]
 			.filter((item) => item.created_at <= at && (item.deleted_at === null || item.deleted_at > at))
 			.at(-1);
-		if (!generation) return null;
+		if (!generation) return { prompt_context_id: null, prompt_version: null };
 		const updates = generation.updates.filter((event) => event.at <= at);
-		return (
-			updates
-				.map((event) => event.version)
-				.filter((v): v is number => v !== null)
-				.at(-1) ?? 1 + updates.length
-		);
+		return {
+			prompt_context_id: generation.id,
+			prompt_version:
+				updates
+					.map((event) => event.version)
+					.filter((v): v is number => v !== null)
+					.at(-1) ?? 1 + updates.length
+		};
 	};
 
 	return {
@@ -1112,7 +1123,7 @@ export async function loadSentBackDrilldown(
 								created_at: comment.created_at
 							}
 						: null,
-					prompt_version: promptVersionAt(event.created_at)
+					...promptAt(event.created_at)
 				}
 			];
 		})

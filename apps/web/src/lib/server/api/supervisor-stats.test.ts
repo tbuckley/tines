@@ -389,6 +389,44 @@ describe('loadSentBackDrilldown', () => {
 
 		const detail = await loadSentBackDrilldown(t.db, USER, { state: STAGE_B }, NOW);
 		expect(detail.prompt).toMatchObject({ context_id: 'ctx_new', current_version: 1 });
-		expect(detail.items[0].prompt_version).toBe(2);
+		expect(detail.items[0]).toMatchObject({ prompt_version: 2, prompt_context_id: 'ctx_old' });
+		for (const at of [NOW - 2 * DAY, NOW - DAY])
+			addTransitionEvent(t, { issueId: issue, apiKeyId: null, at, from: STAGE_B, to: STAGE_A });
+		const lifecycle = await loadSentBackDrilldown(t.db, USER, { state: STAGE_B }, NOW);
+		expect(
+			lifecycle.items.map((item) => [
+				item.transitioned_at,
+				item.prompt_context_id,
+				item.prompt_version
+			])
+		).toEqual([
+			[NOW - DAY, 'ctx_new', 1],
+			[NOW - 2 * DAY, null, null],
+			[NOW - 3 * DAY, 'ctx_old', 2]
+		]);
+	});
+});
+
+describe('frozen sent-back windows', () => {
+	it('includes since and excludes until, preserving the default now', async () => {
+		const t = setup();
+		const issue = addIssue(t, { state: STAGE_A, workflow: 'wf_two' });
+		const until = NOW - DAY;
+		for (const at of [until - 7 * DAY - 1, until - 7 * DAY, until - 1, until, NOW - 1])
+			addTransitionEvent(t, { issueId: issue, apiKeyId: null, at, from: STAGE_B, to: STAGE_A });
+		const frozen = await loadSentBackDrilldown(t.db, USER, { state: STAGE_B, until }, NOW);
+		expect(frozen.window).toEqual({ since: until - 7 * DAY, until });
+		expect(frozen.items.map((i) => i.transitioned_at)).toEqual([until - 1, until - 7 * DAY]);
+		expect(
+			(await loadSentBackDrilldown(t.db, USER, { state: STAGE_B }, NOW)).items.map(
+				(i) => i.transitioned_at
+			)
+		).toEqual([NOW - 1, until, until - 1]);
+	});
+	it.each([NaN, Infinity, -1, 1.2, NOW + 1])('rejects invalid until %s', async (until) => {
+		const t = setup();
+		await expect(
+			loadSentBackDrilldown(t.db, USER, { state: STAGE_B, until }, NOW)
+		).rejects.toMatchObject({ status: 422 });
 	});
 });
