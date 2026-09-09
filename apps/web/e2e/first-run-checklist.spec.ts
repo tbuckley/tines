@@ -201,7 +201,12 @@ test('routing, arming and the first run land live on both surfaces', async ({ pa
 	const editor = page.getByRole('textbox', { name: /description/i });
 	await expect(editor).toBeFocused();
 	await editor.fill('Work out what the first run should do.');
-	await page.getByRole('button', { name: /^save/i }).click();
+	await page
+		.getByRole('heading', { name: 'Description' })
+		.locator('..')
+		.locator('..')
+		.getByRole('button', { name: 'Save' })
+		.click();
 	await expect(item(page, 'content')).toHaveAttribute('data-done', 'true');
 	await expect(item(page, 'enabled')).toHaveAttribute('data-current', 'true');
 	await expect(checklistControls(page)).toHaveCount(1);
