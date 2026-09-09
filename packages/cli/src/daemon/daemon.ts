@@ -25,6 +25,7 @@ import {
 } from 'node:fs';
 import { hostname, platform, arch } from 'node:os';
 import { dirname, join } from 'node:path';
+import { StringDecoder } from 'node:string_decoder';
 import {
 	ApiError,
 	RUN_LOG_RAW_MAX_BYTES,
@@ -33,6 +34,8 @@ import {
 } from '@tines/shared';
 import { cliVersion } from '../version.js';
 import { ClaudeStreamRenderer } from './claude-stream';
+import { CodexStreamRenderer } from './codex-stream.js';
+import type { RunStreamRenderer } from './stream-summary.js';
 import { RateLimitDetector } from './rate-limit';
 import { agentCliPrefix, installAgentCli } from './cli-refresh.js';
 import {
@@ -108,8 +111,8 @@ interface ActiveRun extends ManagedRun {
 	spawnedAt?: number;
 	/** `Project/123` — recorded in a kept workspace and the state file. */
 	issueLabel?: string;
-	/** claude_code: NDJSON → readable lines for the log (claude-stream.ts). */
-	renderer?: ClaudeStreamRenderer;
+	/** Structured provider NDJSON → readable lines plus terminal accounting. */
+	renderer?: RunStreamRenderer;
 	/** claude_code: watches the stream and stderr for a provider usage limit. */
 	limiter?: RateLimitDetector;
 	/** claude_code: the unrendered stream, spooled for the raw-log upload. */
@@ -339,10 +342,13 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 	const table: RunTable<ActiveRun> = new RunTable<ActiveRun>(
 		{
 			finish: async (run, status, error, judgment) => {
+				const summary = run.renderer?.summary();
 				await client.finishRun(run.runId, {
 					status,
 					...(error ? { error } : {}),
-					...judgment
+					...judgment,
+					usage: summary?.usage ?? { cost_source: 'none' },
+					...(summary?.providerSessionId ? { provider_session_id: summary.providerSessionId } : {})
 				});
 			},
 			release: (run, { keep, outcome }) => {
@@ -415,7 +421,8 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 			await client.finishRun(orphan.run_id, {
 				status: 'failed',
 				error: 'daemon restarted; orphaned harness killed',
-				judgment: 'interrupted'
+				judgment: 'interrupted',
+				usage: { cost_source: 'none' }
 			});
 		} catch {
 			// Already settled by the supervisor (cancel/timeout/offline sweep).
@@ -575,16 +582,31 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 					(event) => limiter.noteStreamEvent(event)
 				);
 				run.renderer = renderer;
-				run.drain = () => renderer.finish();
 				const spoolPath = join(opts.configDir, 'rawlogs', `${runId}.ndjson`);
 				mkdirSync(dirname(spoolPath), { recursive: true });
 				run.rawSpoolPath = spoolPath;
 				run.rawSpool = createWriteStream(spoolPath);
 				run.rawUpload = (body) => client.putRunLogRaw(runId, body);
+				const decoder = new StringDecoder('utf8');
+				run.drain = () => {
+					const trailing = decoder.end();
+					if (trailing) renderer.write(trailing);
+					renderer.finish();
+				};
 				child.stdout?.on('data', (data: Buffer) => {
 					run.rawSpool?.write(data);
-					renderer.write(data.toString('utf8'));
+					renderer.write(decoder.write(data));
 				});
+			} else if (opts.harness === 'codex') {
+				const renderer = new CodexStreamRenderer((line) => run.batcher.append(line));
+				const decoder = new StringDecoder('utf8');
+				run.renderer = renderer;
+				run.drain = () => {
+					const trailing = decoder.end();
+					if (trailing) renderer.write(trailing);
+					renderer.finish();
+				};
+				child.stdout?.on('data', (data: Buffer) => renderer.write(decoder.write(data)));
 			} else {
 				child.stdout?.on('data', (data: Buffer) => run.batcher.append(data.toString('utf8')));
 			}
@@ -607,7 +629,7 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 			child.on('error', (err) => {
 				void table.finishAndCleanup(run, 'failed', `failed to launch harness: ${message(err)}`);
 			});
-			child.on('exit', (code, signal) => {
+			child.on('close', (code, signal) => {
 				// The harness's last words first — a stream renderer holding a
 				// partial line emits it here (drain is idempotent, and
 				// finishAndCleanup calls it too), so the closing line below is

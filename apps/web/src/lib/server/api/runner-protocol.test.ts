@@ -952,6 +952,56 @@ describe('finishRun', () => {
 		});
 	});
 
+	it('persists a local provider session id alongside token-only usage', async () => {
+		const t = world();
+		const runnerId = addRunner(t);
+		const runId = await delivered(t, { runnerId, issueId: addIssue(t) });
+		const session = 's'.repeat(255);
+		const run = await finishRun(
+			t.db,
+			t.env,
+			await runnerRow(t, runnerId),
+			runId,
+			{
+				status: 'completed',
+				provider_session_id: session,
+				usage: { input_tokens: 4, cache_read_tokens: 6, output_tokens: 1 }
+			},
+			NOW + 30
+		);
+		expect(run.provider_session_id).toBe(session);
+		expect(run.usage).toEqual({ input_tokens: 4, cache_read_tokens: 6, output_tokens: 1 });
+	});
+
+	it.each([null, '', '   ', 'bad\nvalue', 'x'.repeat(256), 42])(
+		'rejects malformed provider session ids without mutating the run: %j',
+		async (providerSessionId) => {
+			const t = world();
+			const runnerId = addRunner(t);
+			const runId = await delivered(t, { runnerId, issueId: addIssue(t) });
+			await expectFail(
+				async () =>
+					finishRun(
+						t.db,
+						t.env,
+						await runnerRow(t, runnerId),
+						runId,
+						{
+							status: 'completed',
+							provider_session_id: providerSessionId,
+							usage: { output_tokens: 1 }
+						} as never,
+						NOW + 30
+					),
+				'invalid_field'
+			);
+			const unchanged = runById(t, runId);
+			expect(unchanged?.status).toBe('launching');
+			expect(unchanged?.provider_session_id).toBeNull();
+			expect(unchanged?.usage).toBeNull();
+		}
+	);
+
 	it('finishing a settled run 422s (the cancels path reports nothing)', async () => {
 		const t = world();
 		const runnerId = addRunner(t);

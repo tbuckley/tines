@@ -579,6 +579,22 @@ function validateUsage(value: unknown): AgentRunUsage | undefined {
 	return usage;
 }
 
+function validateProviderSessionId(value: unknown): string | undefined {
+	if (value === undefined) return undefined;
+	if (
+		typeof value !== 'string' ||
+		value.length < 1 ||
+		value.length > 255 ||
+		!value.trim() ||
+		/[\x00-\x1f\x7f]/.test(value)
+	) {
+		throw new ApiFail(422, 'invalid_field', '"provider_session_id" must be a short opaque string', {
+			field: 'provider_session_id'
+		});
+	}
+	return value;
+}
+
 /**
  * `POST /api/v1/runs/:id/finish`: the daemon's end report → endRun with
  * immediate key revocation and the usual judgment. A finish arriving while
@@ -601,6 +617,7 @@ export async function finishRun(
 	}
 	const error = optionalString(body.error, 'error', { max: 10_000 });
 	const usage = validateUsage(body.usage);
+	const providerSessionId = validateProviderSessionId(body.provider_session_id);
 
 	const run = await loadRunnerRun(db, runner, runId);
 	if (run.status === 'assigned') {
@@ -620,11 +637,14 @@ export async function finishRun(
 	if (run.status === 'launching') {
 		await markRunRunning(db, env, run, now);
 	}
-	if (usage) {
+	if (usage || providerSessionId) {
 		await runAtomic(env, [
 			db
 				.updateTable('agent_run')
-				.set({ usage: JSON.stringify(usage) })
+				.set({
+					...(usage ? { usage: JSON.stringify(usage) } : {}),
+					...(providerSessionId ? { provider_session_id: providerSessionId } : {})
+				})
 				.where('id', '=', runId)
 				.compile()
 		]);

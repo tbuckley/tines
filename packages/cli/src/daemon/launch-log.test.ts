@@ -12,6 +12,7 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import type { FinishRunRequest } from '@tines/shared';
 import { cliVersion } from '../version.js';
 import { CLI_BIN, NODE } from '../test-bin.js';
 
@@ -37,7 +38,7 @@ function assignment(timeoutMinutes: number): unknown {
 
 interface Harvest {
 	log: string;
-	finish: { status: string; error?: string; judgment?: string } | null;
+	finish: FinishRunRequest | null;
 }
 
 /**
@@ -115,7 +116,10 @@ function fakeClaudeProviderError(dir: string, exitCode = 1): string {
 		type: 'result',
 		subtype: 'error_during_execution',
 		is_error: true,
-		result: 'API Error: 529 Overloaded'
+		result: 'API Error: 529 Overloaded',
+		session_id: 'session_failed',
+		total_cost_usd: 0.25,
+		usage: { input_tokens: 10, output_tokens: 2 }
 	});
 	writeFileSync(join(bin, 'claude'), `#!/bin/sh\nprintf '%s\\n' '${event}'\nexit ${exitCode}\n`, {
 		mode: 0o755
@@ -199,7 +203,7 @@ describe('the run log a local run leaves behind', () => {
 		const workspace = join(configDir, 'workspaces', RUN_ID);
 		const lines = harvest.log.trimEnd().split('\n');
 
-		expect(harvest.finish).toEqual({ status: 'completed' });
+		expect(harvest.finish).toEqual({ status: 'completed', usage: { cost_source: 'none' } });
 		// Setup first (here: the --no-cli-refresh notice; a run with repos also
 		// has its `$ git clone` lines), then the banner, then the harness.
 		expect(lines[0]).toMatch(/^warning: no daemon-managed tines CLI/);
@@ -253,7 +257,8 @@ describe('the run log a local run leaves behind', () => {
 		expect((await done).finish).toEqual({
 			status: 'failed',
 			error: 'daemon shut down',
-			judgment: 'interrupted'
+			judgment: 'interrupted',
+			usage: { cost_source: 'none' }
 		});
 	}, 30_000);
 
@@ -298,7 +303,14 @@ describe('the run log a local run leaves behind', () => {
 		expect(harvest.finish).toEqual({
 			status: 'failed',
 			error: 'provider error: API Error: 529 Overloaded',
-			judgment: 'interrupted'
+			judgment: 'interrupted',
+			usage: {
+				cost_source: 'provider',
+				cost_usd: 0.25,
+				input_tokens: 10,
+				output_tokens: 2
+			},
+			provider_session_id: 'session_failed'
 		});
 		expect(harvest.log).toContain('[error] API Error: 529 Overloaded');
 	}, 30_000);
@@ -314,6 +326,15 @@ describe('the run log a local run leaves behind', () => {
 			fakeClaudeDir: fakeClaudeProviderError(configDir, 0)
 		});
 
-		expect((await done).finish).toEqual({ status: 'completed' });
+		expect((await done).finish).toEqual({
+			status: 'completed',
+			usage: {
+				cost_source: 'provider',
+				cost_usd: 0.25,
+				input_tokens: 10,
+				output_tokens: 2
+			},
+			provider_session_id: 'session_failed'
+		});
 	}, 30_000);
 });
