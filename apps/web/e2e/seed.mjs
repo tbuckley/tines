@@ -11,16 +11,7 @@ import { createHash } from 'node:crypto';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import {
-	ALICE,
-	BOB,
-	CAROL,
-	DANA,
-	PAGINATION,
-	RUNROW,
-	RUNROW_FAILED,
-	SCHED
-} from './constants.mjs';
+import { ALICE, BOB, CAROL, DANA, PAGINATION, RUNROW, RUNROW_FAILED, SCHED } from './constants.mjs';
 
 const sha256Hex = (s) => createHash('sha256').update(s).digest('hex');
 
