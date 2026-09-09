@@ -241,10 +241,18 @@ esac
 		expect(runner.config.harness).toBe('custom');
 		expect(runner.config.hostname).toBeTruthy();
 
-		// Registration is not arming: stdout says what is still missing, and
-		// where to do it.
-		expect(daemonOutput).toContain(`${BASE_URL}/agents`);
-		expect(daemonOutput).toContain('turn automation on');
+		// Registration readiness and guidance are separate stdout writes. Wait
+		// for the latter rather than racing it after the API row appears.
+		await waitFor(
+			async () =>
+				daemonOutput.includes(`next: route work to "${RUNNER_NAME}"`) &&
+				daemonOutput.includes(`${BASE_URL}/agents`) &&
+				daemonOutput.includes(
+					'Eligible work starts when this runner is available and routing matches.'
+				),
+			{ label: 'post-registration guidance' }
+		);
+		expect(daemonOutput).toContain('If automation is stopped, resume it');
 
 		// Route only this project to it (a global rule would grab other specs'
 		// issues), then arm automation.

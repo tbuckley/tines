@@ -1,5 +1,8 @@
 # Supervisor — User Flows
 
+> **Decision amendment (2026-09-09):** The historical off-by-default and first-time arming
+> passages below are superseded by [automation enabled by default](./AUTOMATION_DEFAULT_2026-09-09.md).
+
 Twenty user flows derived from [SPEC.md](./SPEC.md), ordered from the core automation loop outward to niche and operational flows. Each was reviewed individually; **Decisions** sections record the calls made during that review, including a few deliberate deltas from SPEC.md (collected at the end).
 
 ## Contents

@@ -177,8 +177,9 @@ The rules are recorded in [`specs/projects/SPEC.md`](specs/projects/SPEC.md).
 
 Behind the issue tracker sits a supervisor: it decides which issues agents should take on,
 launches them, streams their output back as a run log, and records what each attempt cost.
-Nothing runs until you arm it — the automation kill switch is **off for a new user**, so
-adding a runner or a routing rule is safe on its own.
+Automation is **on by default**. Eligible work can start as soon as an available runner and
+an explicit matching routing rule exist. The kill switch remains an intentional stop/resume
+control; an account that has saved automation off stays stopped until explicitly resumed.
 
 An issue is eligible for an agent exactly when its state's category is `active` (states in
 `backlog`, `awaiting_human`, and `done` are never touched), it is unblocked, it has no run
@@ -196,7 +197,7 @@ A **runner** is one launch target you own. Two types ship today:
 
 #### Your first agent run
 
-Install → key → runner → rule → arm. Five steps, one terminal command and one click:
+Install → key → runner → rule → observe. Automation needs no separate arming step:
 
 1. **Install** the CLI on the machine that will do the work: `npm install -g tines`.
 2. **Key** — Settings → API keys, or **Create key** inside the Agents tab's *Add runner →
@@ -214,8 +215,9 @@ Install → key → runner → rule → arm. Five steps, one terminal command an
    routing rules address. It appears on the Agents tab, online, within seconds.
 4. **Rule** — a runner takes no work until something routes to it: click **Route everything
    to macbook-claude** in the dialog, or `tines routing set macbook-claude`.
-5. **Arm** — flip the automation switch on the Agents tab (`tines supervisor enable`).
-   It is off for new accounts, so nothing dispatches until you turn it on.
+5. **Observe** — eligible work starts when the runner is available and routing matches.
+   Descriptions and repository context are useful but optional. If you previously stopped
+   automation, resume it on Agents or with `tines supervisor enable`.
 
 Self-hosters swap the `--url` for their own deployment; local runners are why self-hosting
 Tines usually means running something on a machine of your own.
@@ -242,7 +244,7 @@ actually launch.
 
 All of this is edited on the **Agents** tab, and most of it from the CLI too:
 
-- **The kill switch** — `tines supervisor enable` / `tines supervisor disable`, with
+- **The kill switch** — `tines supervisor enable` (resume) / `tines supervisor disable`, with
   `tines supervisor status` for a one-screen overview — which now also lists the issues
   waiting for an agent, grouped by why, with the fix for each.
 - **Routing rules** decide who takes an issue. A rule is scoped globally, per project, per

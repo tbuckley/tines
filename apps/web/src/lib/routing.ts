@@ -22,11 +22,14 @@ export function findGlobalRule(rules: RoutingRule[]): RoutingRule | null {
  * Route everything to one runner: append it to the global rule, or create that
  * rule when there is none. A no-op when the rule already targets it.
  */
-export async function addRunnerToGlobalRule(rules: RoutingRule[], runner: Runner): Promise<void> {
+export async function addRunnerToGlobalRule(
+	rules: RoutingRule[],
+	runner: Runner
+): Promise<RoutingRule> {
 	const globalRule = findGlobalRule(rules);
 	if (globalRule) {
-		if (globalRule.targets.some((t) => t.runner_id === runner.id)) return;
-		await api.updateRoutingRule(globalRule.id, {
+		if (globalRule.targets.some((t) => t.runner_id === runner.id)) return globalRule;
+		return api.updateRoutingRule(globalRule.id, {
 			targets: [
 				...globalRule.targets.map((t) => ({
 					runner_id: t.runner_id,
@@ -35,9 +38,8 @@ export async function addRunnerToGlobalRule(rules: RoutingRule[], runner: Runner
 				{ runner_id: runner.id }
 			]
 		});
-		return;
 	}
-	await api.createRoutingRule({
+	return api.createRoutingRule({
 		project_id: null,
 		workflow_state_id: null,
 		targets: [{ runner_id: runner.id }]
