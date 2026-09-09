@@ -2,7 +2,13 @@
  * The project focus (Tines/259): a per-user, server-side scope shown in the
  * app chrome and read by the issues list and New issue.
  */
-import type { Project, UserPreferences } from '@tines/shared';
+import type {
+	AgentRun,
+	ListResponse,
+	Project,
+	RunnerTokenResponse,
+	UserPreferences
+} from '@tines/shared';
 import { expect, test, type Browser, type Page } from '@playwright/test';
 import { ALICE, CAROL, RUNROW } from './constants.mjs';
 import {
@@ -21,6 +27,7 @@ const A_NAME = `focus-a-${runId}`;
 const B_NAME = `focus-b-${runId}`;
 let aId: string;
 let bId: string;
+let focusRunnerToken: string;
 
 /** The header control, which doubles as the assertion for the current focus. */
 const switcher = (page: Page) => page.getByRole('button', { name: /^Project focus:/ });
@@ -63,6 +70,15 @@ test.describe.serial('project focus', () => {
 
 	test('seeds two projects with an issue each', async ({ request }) => {
 		const api = apiClient(request, ALICE.apiKey);
+		const registered = await body<RunnerTokenResponse>(
+			await api.post('/api/v1/runners/register', {
+				name: `focus-runner-${runId}`,
+				harness: 'custom',
+				command: 'true',
+				max_concurrent: 2
+			})
+		);
+		focusRunnerToken = registered.runner_token;
 		aId = (await body<Project>(await api.post('/api/v1/projects', { name: A_NAME }))).id;
 		bId = (await body<Project>(await api.post('/api/v1/projects', { name: B_NAME }))).id;
 		for (const [id, name] of [
@@ -82,10 +98,26 @@ test.describe.serial('project focus', () => {
 		for (const project_id of [aId, bId]) {
 			const rule = await api.post('/api/v1/routing-rules', {
 				project_id,
-				targets: [{ runner_id: RUNROW.runnerId }]
+				targets: [{ runner_id: registered.runner.id }]
 			});
 			expect(rule.status(), await rule.text()).toBe(201);
 		}
+
+		// Bring the fixture runner online after both project rules exist. The
+		// opportunistic pass then creates one live run for A and one for B,
+		// making the focused Runs assertion load-bearing in both directions.
+		const runnerApi = apiClient(request, focusRunnerToken);
+		expect(
+			(
+				await runnerApi.post(`/api/v1/runners/${registered.runner.id}/poll`, { owned_runs: [] })
+			).ok()
+		).toBe(true);
+		await expect(async () => {
+			const runs = await body<ListResponse<AgentRun>>(await api.get('/api/v1/runs?active=true'));
+			expect(runs.items.map((run) => run.issue_ref?.project_name)).toEqual(
+				expect.arrayContaining([A_NAME, B_NAME])
+			);
+		}).toPass({ timeout: 15_000 });
 	});
 
 	test('the chrome shows the switcher and choosing a project sticks', async ({
@@ -163,13 +195,18 @@ test.describe.serial('project focus', () => {
 		}) => {
 			const page = await open(browser, viewport, `/issues?project=${encodeURIComponent(A_NAME)}`);
 
-			await gotoHydrated(page, '/context');
+			const contextRef = label === 'desktop' ? A_NAME : aId;
+			await gotoHydrated(page, `/context?project=${encodeURIComponent(contextRef)}`);
+			await expect(page).toHaveURL('/context');
 			await expect(page.getByLabel('Filter by project')).toHaveCount(0);
 			await expect(page.locator('p').filter({ hasText: /shared items?/ })).toContainText(
 				/\(global and state-scoped\)\s+appl(?:y|ies) here too/
 			);
 			await expect(page.getByText(`${A_NAME}-context`, { exact: true })).toBeVisible();
 			await expect(page.getByText(`${B_NAME}-context`, { exact: true })).toHaveCount(0);
+			await gotoHydrated(page, `/context?project=nope-${runId}`);
+			await expect(page.getByRole('status')).toContainText(`No project “nope-${runId}”`);
+			await expect(page.getByText(`${A_NAME}-context`, { exact: true })).toBeVisible();
 
 			await gotoHydrated(page, '/activity');
 			await expect(page.getByLabel('Filter by project')).toHaveCount(0);
@@ -183,12 +220,26 @@ test.describe.serial('project focus', () => {
 			).not.toContain(`/issues/${encodeURIComponent(B_NAME)}/1`);
 
 			await gotoHydrated(page, '/workflows');
-			await expect(page.getByText(/1 open issue/).first()).toBeVisible();
+			const standard = page.locator('a[href="/workflows/wf_standard"]');
+			await expect(standard).toContainText('1 open issue');
+			await expect(standard).toContainText('Project default');
+			await expect(page.locator('main a[href^="/workflows/"]').first()).toHaveAttribute(
+				'href',
+				'/workflows/wf_standard'
+			);
+			await expect(page.getByText(/Other workflows in your library \(\d+\)/)).toBeVisible();
+			await standard.click();
+			await expect(page.getByRole('heading', { level: 1, name: /Standard/ })).toContainText(
+				'Project default'
+			);
+			await expect(page.getByText(`1 open issue in ${A_NAME} uses this workflow`)).toBeVisible();
 
 			await gotoHydrated(page, '/agents');
 			const routingRules = page.getByRole('list', { name: 'Routing rules' });
 			await expect(routingRules.getByText(A_NAME, { exact: true })).toBeVisible();
 			await expect(routingRules.getByText(B_NAME, { exact: true })).toHaveCount(0);
+			await expect(page.getByRole('link', { name: `${A_NAME}/#1` })).toBeVisible();
+			await expect(page.getByRole('link', { name: `${B_NAME}/#1` })).toHaveCount(0);
 			await page.getByLabel('Show ended runs').check();
 			await expect(
 				page.getByRole('link', { name: new RegExp(`${RUNROW.projectName}/#`) })
@@ -201,10 +252,22 @@ test.describe.serial('project focus', () => {
 			await gotoHydrated(page, `/issues/${encodeURIComponent(B_NAME)}/1`);
 			await expect(page.getByRole('button', { name: `Focus ${B_NAME}` })).toBeVisible();
 			await expect(switcher(page)).toHaveAttribute('aria-label', `Project focus: ${A_NAME}`);
+			const back = page.getByRole('link', { name: 'Issues' }).first();
+			await expect(back).toHaveAttribute('href', '/issues');
+			await back.click();
+			await expect(page.getByRole('link', { name: new RegExp(`${A_NAME} issue`) })).toBeVisible();
+			await expect(page.getByRole('link', { name: new RegExp(`${B_NAME} issue`) })).toHaveCount(0);
+
+			await gotoHydrated(page, `/issues/${encodeURIComponent(B_NAME)}/1`);
+			await page.getByRole('button', { name: `Focus ${B_NAME}` }).click();
+			await expect(switcher(page)).toHaveAttribute('aria-label', `Project focus: ${B_NAME}`);
+			await page.getByRole('link', { name: 'Issues' }).first().click();
+			await expect(page.getByRole('link', { name: new RegExp(`${B_NAME} issue`) })).toBeVisible();
+			await expect(page.getByRole('link', { name: new RegExp(`${A_NAME} issue`) })).toHaveCount(0);
 
 			await expect(page.getByRole('link', { name: 'Projects' }).first()).toHaveAttribute(
 				'href',
-				`/projects/${aId}`
+				`/projects/${bId}`
 			);
 			await page.close();
 		});
