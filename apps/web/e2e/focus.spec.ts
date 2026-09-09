@@ -2,13 +2,7 @@
  * The project focus (Tines/259): a per-user, server-side scope shown in the
  * app chrome and read by the issues list and New issue.
  */
-import type {
-	AgentRun,
-	ListResponse,
-	Project,
-	RunnerTokenResponse,
-	UserPreferences
-} from '@tines/shared';
+import type { Project, UserPreferences } from '@tines/shared';
 import { expect, test, type Browser, type Page } from '@playwright/test';
 import { ALICE, CAROL, RUNROW } from './constants.mjs';
 import {
@@ -27,7 +21,6 @@ const A_NAME = `focus-a-${runId}`;
 const B_NAME = `focus-b-${runId}`;
 let aId: string;
 let bId: string;
-let focusRunnerToken: string;
 
 /** The header control, which doubles as the assertion for the current focus. */
 const switcher = (page: Page) => page.getByRole('button', { name: /^Project focus:/ });
@@ -70,15 +63,6 @@ test.describe.serial('project focus', () => {
 
 	test('seeds two projects with an issue each', async ({ request }) => {
 		const api = apiClient(request, ALICE.apiKey);
-		const registered = await body<RunnerTokenResponse>(
-			await api.post('/api/v1/runners/register', {
-				name: `focus-runner-${runId}`,
-				harness: 'custom',
-				command: 'true',
-				max_concurrent: 2
-			})
-		);
-		focusRunnerToken = registered.runner_token;
 		aId = (await body<Project>(await api.post('/api/v1/projects', { name: A_NAME }))).id;
 		bId = (await body<Project>(await api.post('/api/v1/projects', { name: B_NAME }))).id;
 		for (const [id, name] of [
@@ -98,28 +82,10 @@ test.describe.serial('project focus', () => {
 		for (const project_id of [aId, bId]) {
 			const rule = await api.post('/api/v1/routing-rules', {
 				project_id,
-				targets: [{ runner_id: registered.runner.id }]
+				targets: [{ runner_id: RUNROW.runnerId }]
 			});
 			expect(rule.status(), await rule.text()).toBe(201);
 		}
-
-		// Bring the fixture runner online after both project rules exist. The
-		// opportunistic pass then creates one live run for A and one for B,
-		// making the focused Runs assertion load-bearing in both directions.
-		const runnerApi = apiClient(request, focusRunnerToken);
-		expect(
-			(
-				await runnerApi.post(`/api/v1/runners/${registered.runner.id}/poll`, { owned_runs: [] })
-			).ok()
-		).toBe(true);
-		const sweep = await request.get('/__scheduled?cron=*+*+*+*+*');
-		expect(sweep.ok(), await sweep.text()).toBe(true);
-		await expect(async () => {
-			const runs = await body<ListResponse<AgentRun>>(await api.get('/api/v1/runs?active=true'));
-			expect(runs.items.map((run) => run.issue_ref?.project_name)).toEqual(
-				expect.arrayContaining([A_NAME, B_NAME])
-			);
-		}).toPass({ timeout: 15_000 });
 	});
 
 	test('the chrome shows the switcher and choosing a project sticks', async ({
@@ -240,13 +206,22 @@ test.describe.serial('project focus', () => {
 			const routingRules = page.getByRole('list', { name: 'Routing rules' });
 			await expect(routingRules.getByText(A_NAME, { exact: true })).toBeVisible();
 			await expect(routingRules.getByText(B_NAME, { exact: true })).toHaveCount(0);
-			await expect(page.getByRole('link', { name: `${A_NAME}/#1` })).toBeVisible();
-			await expect(page.getByRole('link', { name: `${B_NAME}/#1` })).toHaveCount(0);
 			await page.getByLabel('Show ended runs').check();
 			await expect(
 				page.getByRole('link', { name: new RegExp(`${RUNROW.projectName}/#`) })
 			).toHaveCount(0);
+			// A negative-only assertion could pass with an accidentally empty
+			// focused list. Focus the seeded run's own project and prove the same
+			// row appears, then return to A for the cross-project issue journey.
+			await gotoHydrated(page, `/issues?project=${RUNROW.projectId}`);
+			await gotoHydrated(page, '/agents');
+			await page.getByLabel('Show ended runs').check();
+			await expect(
+				page.getByRole('link', { name: `${RUNROW.projectName}/#${RUNROW.issueNumber}` })
+			).toBeVisible();
 			const ruleDialog = page.getByRole('dialog', { name: 'New routing rule' });
+			await gotoHydrated(page, `/issues?project=${aId}`);
+			await gotoHydrated(page, '/agents');
 			await clickToOpen(page.getByRole('button', { name: 'Add rule' }), ruleDialog);
 			await expect(ruleDialog.getByLabel('Project', { exact: true })).toHaveValue(aId);
 			await page.keyboard.press('Escape');
@@ -274,17 +249,6 @@ test.describe.serial('project focus', () => {
 			await page.close();
 		});
 	}
-
-	test('retires the focused-run fixtures before archive coverage', async ({ request }) => {
-		const api = apiClient(request, ALICE.apiKey);
-		const runs = await body<ListResponse<AgentRun>>(await api.get('/api/v1/runs?active=true'));
-		for (const run of runs.items.filter((item) =>
-			[A_NAME, B_NAME].includes(item.issue_ref?.project_name ?? '')
-		)) {
-			const canceled = await api.post(`/api/v1/runs/${run.id}/cancel`);
-			expect(canceled.ok(), await canceled.text()).toBe(true);
-		}
-	});
 
 	test('routing editor one-shots are consumed on success and every invalid shape', async ({
 		browser,
