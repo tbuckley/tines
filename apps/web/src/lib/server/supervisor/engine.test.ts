@@ -1318,7 +1318,13 @@ describe('the sweep', () => {
 		addRule(stopped, { targets: [{ runner_id: stoppedRunner }] });
 		addIssue(stopped);
 		setSettings(stopped, { enabled: false });
+		const queries = stopped.spyOnQueries();
 		await sweepSupervisor(stopped.db, stopped.env, NOW);
 		expect(runs(stopped)).toHaveLength(0);
+		// Exclusion happens in the sweep population query, rather than wasting a
+		// dispatch pass whose later settings guard happens to mask the result.
+		expect(queries().filter((query) => query.includes('from "supervisor_settings"')).length).toBe(
+			0
+		);
 	});
 });

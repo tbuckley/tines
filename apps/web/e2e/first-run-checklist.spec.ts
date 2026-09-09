@@ -16,7 +16,7 @@
  * Serial by necessity: each step is the next state of one account.
  */
 import { expect, test, type Page } from '@playwright/test';
-import type { IssueDetail, ListResponse, Project, RoutingRule } from '@tines/shared';
+import type { AgentRun, IssueDetail, ListResponse, Project, RoutingRule } from '@tines/shared';
 import { DANA } from './constants.mjs';
 import { spawnDaemon, type Daemon } from './daemon';
 import { apiClient, body, gotoHydrated, runId, signIn } from './helpers';
@@ -261,4 +261,35 @@ test('the checklist retires account-wide once a run exists', async ({ page, requ
 
 	await page.goto('/agents');
 	await expect(checklistOf(page)).toHaveCount(0);
+});
+
+test('stopping then resuming dispatches title-only work without content entry', async ({
+	page,
+	request
+}) => {
+	const api = apiClient(request, DANA.apiKey);
+	await api.put('/api/v1/supervisor/settings', { enabled: false });
+	const stoppedIssue = await body<IssueDetail>(
+		await api.post(`/api/v1/projects/${projectId}/issues`, { title: 'Runs after resume' })
+	);
+	const before = await body<ListResponse<AgentRun>>(
+		await api.get(`/api/v1/runs?issue=${stoppedIssue.id}`)
+	);
+	expect(before.items).toHaveLength(0);
+
+	await gotoHydrated(page, issuePath(stoppedIssue.number));
+	await expect(page.getByText(/Automation is off/).first()).toBeVisible();
+	await gotoHydrated(page, '/agents');
+	await page.getByRole('button', { name: 'Resume automation' }).click();
+	await expect
+		.poll(
+			async () => {
+				const runs = await body<ListResponse<AgentRun>>(
+					await api.get(`/api/v1/runs?issue=${stoppedIssue.id}`)
+				);
+				return runs.items.length;
+			},
+			{ timeout: 60_000 }
+		)
+		.toBe(1);
 });

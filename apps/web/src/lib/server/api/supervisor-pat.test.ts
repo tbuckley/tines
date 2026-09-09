@@ -46,6 +46,26 @@ describe('the GitHub PAT', () => {
 		expect(t.all('SELECT enabled FROM supervisor_settings')[0].enabled).toBe(0);
 	});
 
+	it('preserves a stop saved after an unrelated writer reads settings', async () => {
+		const t = world();
+		await updateSupervisorSettings(t.db, t.env, actor, { enabled: true });
+		const d1 = t.env.DB as unknown as { batch: (statements: unknown[]) => Promise<unknown[]> };
+		const realBatch = d1.batch.bind(d1);
+		let intercepted = false;
+		d1.batch = async (statements) => {
+			if (!intercepted) {
+				intercepted = true;
+				// Simulate another request committing the kill switch after this
+				// request's initial read but before its upsert conflict branch.
+				t.sqlite.exec(`UPDATE supervisor_settings SET enabled = 0 WHERE user_id = '${USER}'`);
+			}
+			return realBatch(statements as never[]);
+		};
+
+		await updateSupervisorSettings(t.db, t.env, actor, { attempt_limit: 5 });
+		expect((await getSupervisorSettings(t.db, USER)).enabled).toBe(false);
+	});
+
 	it('stores encrypted, reads back only the hint, and clears with null', async () => {
 		const t = world();
 		const saved = await updateSupervisorSettings(t.db, t.env, actor, {
