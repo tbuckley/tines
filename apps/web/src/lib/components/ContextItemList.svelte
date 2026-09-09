@@ -11,6 +11,7 @@
 		shortScope = false,
 		emptyMessage = 'No context items.',
 		inheritedFrom = null,
+		linkInheritedFrom = false,
 		onselect
 	}: {
 		items: ContextItem[];
@@ -23,6 +24,8 @@
 		 * inherits them: every row gets the `via <workflow> / <state>` chip.
 		 */
 		inheritedFrom?: InheritedFrom | null;
+		/** Link the inherited provenance chip to its base workflow state. */
+		linkInheritedFrom?: boolean;
 		/** Row click → open the editor. */
 		onselect?: (item: ContextItem) => void;
 	} = $props();
@@ -41,6 +44,38 @@
 	}
 </script>
 
+{#snippet rowContent(item: ContextItem)}
+	<span class="text-muted-foreground shrink-0" title={item.kind}>
+		<ContextKindIcon kind={item.kind} />
+	</span>
+	<span class="min-w-0 flex-1">
+		<span class="flex items-center gap-2" class:flex-wrap={inheritedFrom !== null}>
+			<span
+				class="truncate font-medium"
+				class:min-w-24={inheritedFrom !== null}
+				class:flex-1={inheritedFrom !== null}>{item.name}</span
+			>
+			{#if showScope}
+				<ContextScopeChips
+					scope={item.scope}
+					short={shortScope}
+					{inheritedFrom}
+					{linkInheritedFrom}
+				/>
+			{/if}
+		</span>
+		{#if payloadSummary(item)}
+			<span class="text-muted-foreground block truncate text-xs">{payloadSummary(item)}</span>
+		{/if}
+	</span>
+	<span
+		class="text-muted-foreground shrink-0 text-xs"
+		title={new Date(item.updated_at).toLocaleString()}
+	>
+		{relativeTime(item.updated_at)}
+	</span>
+{/snippet}
+
 {#if items.length === 0}
 	<div class="text-muted-foreground rounded-lg border border-dashed p-6 text-center text-sm">
 		{emptyMessage}
@@ -49,38 +84,19 @@
 	<ul class="divide-y rounded-lg border">
 		{#each items as item (item.id)}
 			<li transition:slide={{ duration: dur() }}>
-				<button
-					type="button"
-					class="hover:bg-muted/50 flex w-full items-center gap-3 px-3 py-2.5 text-left text-sm"
-					onclick={() => onselect?.(item)}
-				>
-					<span class="text-muted-foreground shrink-0" title={item.kind}>
-						<ContextKindIcon kind={item.kind} />
-					</span>
-					<span class="min-w-0 flex-1">
-						<span class="flex items-center gap-2" class:flex-wrap={inheritedFrom !== null}>
-							<span
-								class="truncate font-medium"
-								class:min-w-24={inheritedFrom !== null}
-								class:flex-1={inheritedFrom !== null}>{item.name}</span
-							>
-							{#if showScope}
-								<ContextScopeChips scope={item.scope} short={shortScope} {inheritedFrom} />
-							{/if}
-						</span>
-						{#if payloadSummary(item)}
-							<span class="text-muted-foreground block truncate text-xs"
-								>{payloadSummary(item)}</span
-							>
-						{/if}
-					</span>
-					<span
-						class="text-muted-foreground shrink-0 text-xs"
-						title={new Date(item.updated_at).toLocaleString()}
+				{#if onselect && !linkInheritedFrom}
+					<button
+						type="button"
+						class="hover:bg-muted/50 flex w-full items-center gap-3 px-3 py-2.5 text-left text-sm"
+						onclick={() => onselect(item)}
 					>
-						{relativeTime(item.updated_at)}
-					</span>
-				</button>
+						{@render rowContent(item)}
+					</button>
+				{:else}
+					<div class="flex w-full items-center gap-3 px-3 py-2.5 text-left text-sm">
+						{@render rowContent(item)}
+					</div>
+				{/if}
 			</li>
 		{/each}
 	</ul>

@@ -418,6 +418,7 @@
 									<ContextItemList
 										items={itemsByState.get(ancestorId) ?? []}
 										shortScope
+										linkInheritedFrom
 										inheritedFrom={{
 											state_id: entry.state.id,
 											state_name: entry.state.name,
