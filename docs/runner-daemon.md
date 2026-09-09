@@ -71,6 +71,14 @@ repository made with the machine's own git credentials. The harness runs with
 When the run settles the workspace is deleted, unless `--keep-workspaces` says otherwise
 (see "Debugging a failed run").
 
+The [Code repository starter](../README.md#your-first-project-hosted) stores its repository
+URL and optional base branch as project context. Effective issue context exports that pin
+to `repos.json`, and the daemon clones and checks out the repository before starting the
+harness. The runner machine's git credentials must allow it to clone the repository—and,
+for the bug-to-PR journey, push a working branch and open a pull request. The starter does
+not test repository reachability. The supplied branch is the input base branch, distinct
+from the working branch the agent creates for its fix.
+
 Rotating a token: `tines runners rotate-token <name>` invalidates the old token and prints
 the new one once. Run it on the daemon machine and the stored token is updated in place —
 just restart the daemon; elsewhere, the daemon exits with a clear 401 message until the new
