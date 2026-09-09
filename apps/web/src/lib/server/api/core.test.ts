@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
 	ApiFail,
 	assertRunKeyAllowed,
+	decodeCursor,
 	errorResponse,
 	encodeCursor,
 	isControlPlanePath,
@@ -46,6 +47,11 @@ describe('cursor pagination', () => {
 		}
 		throw new Error('expected a malformed cursor to throw');
 	});
+
+	it.each(['', 'aGk', 'OnhpZA', encodeCursor(Number.NaN, 'id')])(
+		'rejects an invalid decoded tuple: %s',
+		(raw) => expect(() => decodeCursor(raw)).toThrowError(ApiFail)
+	);
 
 	it('applies default and max limits', () => {
 		expect(readPage(eventWithUrl('')).limit).toBe(50);

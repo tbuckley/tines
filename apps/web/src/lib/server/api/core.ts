@@ -356,6 +356,20 @@ export interface Page {
 	limit: number;
 }
 
+export function decodeCursor(rawCursor: string): NonNullable<Page['cursor']> {
+	try {
+		const decoded = atob(rawCursor.replace(/-/g, '+').replace(/_/g, '/'));
+		const sep = decoded.indexOf(':');
+		if (sep < 1) throw new Error('bad cursor');
+		const createdAt = Number(decoded.slice(0, sep));
+		const id = decoded.slice(sep + 1);
+		if (!Number.isFinite(createdAt) || !id) throw new Error('bad cursor');
+		return { createdAt, id };
+	} catch {
+		throw new ApiFail(400, 'invalid_cursor', 'Malformed pagination cursor');
+	}
+}
+
 export function readPage(event: RequestEvent, { defaultLimit = 50, maxLimit = 100 } = {}): Page {
 	const rawLimit = event.url.searchParams.get('limit');
 	let limit = rawLimit ? Number.parseInt(rawLimit, 10) : defaultLimit;
@@ -363,19 +377,7 @@ export function readPage(event: RequestEvent, { defaultLimit = 50, maxLimit = 10
 	limit = Math.min(limit, maxLimit);
 
 	const rawCursor = event.url.searchParams.get('cursor');
-	let cursor: Page['cursor'] = null;
-	if (rawCursor) {
-		try {
-			const decoded = atob(rawCursor.replace(/-/g, '+').replace(/_/g, '/'));
-			const sep = decoded.indexOf(':');
-			const createdAt = Number(decoded.slice(0, sep));
-			const id = decoded.slice(sep + 1);
-			if (!Number.isFinite(createdAt) || !id) throw new Error('bad cursor');
-			cursor = { createdAt, id };
-		} catch {
-			throw new ApiFail(400, 'invalid_cursor', 'Malformed pagination cursor');
-		}
-	}
+	const cursor = rawCursor ? decodeCursor(rawCursor) : null;
 	return { cursor, limit };
 }
 

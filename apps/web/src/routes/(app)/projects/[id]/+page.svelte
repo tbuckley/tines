@@ -16,6 +16,7 @@
 	import { confirmDialog } from '$lib/components/dialogs.svelte';
 	import IssueFilterBar from '$lib/components/IssueFilterBar.svelte';
 	import IssueList from '$lib/components/IssueList.svelte';
+	import IssuePagination from '$lib/components/IssuePagination.svelte';
 	import Modal from '$lib/components/Modal.svelte';
 	import NewIssueModal from '$lib/components/NewIssueModal.svelte';
 	import PendingButton from '$lib/components/PendingButton.svelte';
@@ -317,12 +318,15 @@
 	<IssueList
 		issues={data.issues}
 		showProject={false}
-		emptyMessage={data.filters.ready
-			? 'No ready issues in this project.'
-			: data.filters.category || data.filters.q || data.filters.labels.length > 0
-				? 'No issues match these filters.'
-				: 'No issues in this project yet.'}
+		emptyMessage={data.pagination.bounded
+			? 'No issues on this page. Results may have changed.'
+			: data.filters.ready
+				? 'No ready issues in this project.'
+				: data.filters.category || data.filters.q || data.filters.labels.length > 0
+					? 'No issues match these filters.'
+					: 'No issues in this project yet.'}
 	/>
+	<IssuePagination pagination={data.pagination} itemCount={data.issues.length} />
 </div>
 
 {#if data.schedules.length > 0}

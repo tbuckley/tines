@@ -3,6 +3,7 @@
 	import { page } from '$app/state';
 	import IssueFilterBar from '$lib/components/IssueFilterBar.svelte';
 	import IssueList from '$lib/components/IssueList.svelte';
+	import IssuePagination from '$lib/components/IssuePagination.svelte';
 	import NewIssueModal from '$lib/components/NewIssueModal.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { defaultProjectId } from '$lib/focus';
@@ -71,12 +72,15 @@
 <IssueList
 	issues={data.issues}
 	showProject={!data.focusId}
-	emptyMessage={data.projects.length === 0
-		? 'No issues yet — create a project first, then add issues to it.'
-		: data.filters.ready
-			? 'No ready issues match these filters.'
-			: 'No issues match these filters.'}
-	emptyAction={data.projects.length === 0
+	emptyMessage={data.pagination.bounded
+		? 'No issues on this page. Results may have changed.'
+		: data.projects.length === 0
+			? 'No issues yet — create a project first, then add issues to it.'
+			: data.filters.ready
+				? 'No ready issues match these filters.'
+				: 'No issues match these filters.'}
+	emptyAction={!data.pagination.bounded && data.projects.length === 0
 		? { label: 'New project', href: '/projects?new=1' }
 		: undefined}
 />
+<IssuePagination pagination={data.pagination} itemCount={data.issues.length} />
