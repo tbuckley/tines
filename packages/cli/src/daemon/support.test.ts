@@ -545,6 +545,12 @@ describe('buildSpawnEnv', () => {
 		);
 	});
 
+	it('canonicalizes the API URL placed in the spawned harness environment', () => {
+		expect(
+			buildSpawnEnv(base, { binDir: null, apiKey: 'k', apiUrl: 'https://t.test///' }).TINES_API_URL
+		).toBe('https://t.test');
+	});
+
 	it('tolerates an environment with no PATH at all', () => {
 		expect(buildSpawnEnv({}, { binDir: '/cfg/bin', apiKey: 'k', apiUrl: 'https://t' }).PATH).toBe(
 			'/cfg/bin'
