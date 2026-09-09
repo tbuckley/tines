@@ -36,6 +36,7 @@ import {
 } from '$lib/server/supervisor/logic';
 import { ApiFail, requireString, runAtomic, type ActorContext } from './core';
 import { eventInsert } from './events';
+import { effectiveAutomationEnabled } from '../supervisor/settings';
 
 // ---------------------------------------------------------------------------
 // Defaults & validation
@@ -161,10 +162,10 @@ export async function getSupervisorSettings(
 		.where('user_id', '=', userId)
 		.executeTakeFirst();
 	if (!row) {
-		// No row yet: the defaults, with the kill switch off — arming
-		// automation is its own explicit act for a new user.
+		// No row yet: automation inherits the product default without
+		// materialising settings on a read.
 		return {
-			enabled: false,
+			enabled: effectiveAutomationEnabled(undefined),
 			quota: DEFAULT_QUOTA,
 			attempt_limit: DEFAULT_ATTEMPT_LIMIT,
 			github_pat_hint: null,
@@ -178,7 +179,7 @@ export async function getSupervisorSettings(
 		// An unreadable quota column falls back to the default policy.
 	}
 	return {
-		enabled: row.enabled === 1,
+		enabled: effectiveAutomationEnabled(row.enabled),
 		quota,
 		attempt_limit: row.attempt_limit,
 		// The PAT is write-only: only its display hint is ever read back.
@@ -256,8 +257,8 @@ export async function updateSupervisorSettings(
 	const now = Date.now();
 	if (changed.length > 0 || current.updated_at === null) {
 		await runAtomic(env, [
-			// Upsert: the row is created lazily on first write, so new users keep
-			// the pure defaults (and the off kill switch) without a signup hook.
+			// Upsert: the row is created lazily on first write. On conflict an
+			// unrelated write must preserve a concurrently saved stop/resume.
 			db
 				.insertInto('supervisor_settings')
 				.values({
@@ -273,7 +274,7 @@ export async function updateSupervisorSettings(
 				})
 				.onConflict((oc) =>
 					oc.column('user_id').doUpdateSet({
-						enabled: enabled ? 1 : 0,
+						...(body.enabled !== undefined ? { enabled: enabled ? 1 : 0 } : {}),
 						quota: JSON.stringify(quota),
 						attempt_limit: attemptLimit,
 						// The PAT columns only move when this write replaces/clears them.

@@ -1001,6 +1001,11 @@
 			Runners execute eligible issues; routing rules decide which runner takes what; the automation
 			settings bound how much runs at once.
 		</p>
+		<p class="text-muted-foreground mt-1 max-w-2xl text-xs">
+			{data.settings.enabled
+				? 'Eligible work can start once a runner is available and routing matches.'
+				: 'Automation stays stopped until you resume it.'}
+		</p>
 	</div>
 </div>
 
@@ -1013,8 +1018,7 @@
 	</div>
 {/if}
 
-<!-- Before the first run the checklist stands in for the off-state banner: it
-     says the same thing in place, as one of seven steps. -->
+<!-- Before the first run the checklist includes automation readiness as one of six steps. -->
 {#if checklistVisible}
 	<FirstRunChecklist
 		inputs={checklistInputs}
@@ -1034,7 +1038,9 @@
 			<IconAlertTriangle size={16} stroke={1.75} />
 			Automation is off — nothing dispatches until you turn it on.
 		</span>
-		<Button size="sm" onclick={() => setEnabled(true)} disabled={togglingEnabled}>Turn on</Button>
+		<Button size="sm" onclick={() => setEnabled(true)} disabled={togglingEnabled}
+			>Resume automation</Button
+		>
 	</div>
 {/if}
 

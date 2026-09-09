@@ -197,6 +197,7 @@ function pidAlive(pid: number): boolean {
 }
 
 export async function runDaemon(opts: DaemonOptions): Promise<void> {
+	const baseUrl = opts.url.replace(/\/+$/, '');
 	mkdirSync(opts.configDir, { recursive: true });
 	// A workspace holds cloned repositories and whatever the agent wrote, so
 	// the directory they share is created user-only. (The mode applies at
@@ -250,7 +251,7 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 	};
 
 	// -- registration / reconnect ---------------------------------------------
-	let creds: RunnerCredentials | null = loadRunnerCredentials(opts.configDir, opts.url, opts.name);
+	let creds: RunnerCredentials | null = loadRunnerCredentials(opts.configDir, baseUrl, opts.name);
 	if (creds) {
 		log(
 			`reconnecting as runner "${opts.name}" (${creds.runner_id}) — token from ${opts.configDir}`
@@ -258,10 +259,10 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 	} else {
 		if (!opts.apiKey) {
 			throw new Error(
-				`no stored runner token for "${opts.name}" at ${opts.url} — set TINES_API_KEY (a user API key) to register`
+				`no stored runner token for "${opts.name}" at ${baseUrl} — set TINES_API_KEY (a user API key) to register`
 			);
 		}
-		const userClient = createApiClient({ baseUrl: opts.url, apiKey: opts.apiKey });
+		const userClient = createApiClient({ baseUrl, apiKey: opts.apiKey });
 		const registered = await userClient.registerRunner({
 			name: opts.name,
 			harness: opts.harness,
@@ -271,16 +272,14 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 			platform: `${platform()} ${arch()}`
 		});
 		creds = { runner_id: registered.runner.id, token: registered.runner_token };
-		saveRunnerCredentials(opts.configDir, opts.url, opts.name, creds);
+		saveRunnerCredentials(opts.configDir, baseUrl, opts.name, creds);
 		log(`registered runner "${opts.name}" (${creds.runner_id}); token stored in ${opts.configDir}`);
-		// A registered runner still takes no work until it is routed to and
-		// automation is on — say so here rather than leaving a silent poller.
 		log(
-			`next: route work to "${opts.name}" and turn automation on — ${opts.url}/agents (or: tines routing set ${opts.name} && tines supervisor enable)`
+			`next: route work to "${opts.name}" — ${baseUrl}/agents (or: tines routing set ${opts.name}). Eligible work starts when this runner is available and routing matches. If automation is stopped, resume it in Agents or with tines supervisor enable.`
 		);
 	}
 
-	const client = createApiClient({ baseUrl: opts.url, apiKey: creds.token });
+	const client = createApiClient({ baseUrl, apiKey: creds.token });
 	const statePath = daemonStatePath(opts.configDir, creds.runner_id);
 	let shuttingDown = false;
 
@@ -552,7 +551,7 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 				env: buildSpawnEnv(process.env, {
 					binDir: cli.binDir,
 					apiKey: assignment.run_key,
-					apiUrl: opts.url
+					apiUrl: baseUrl
 				}),
 				stdio: ['ignore', 'pipe', 'pipe'],
 				detached: true
@@ -688,7 +687,7 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 
 	// -- the poll loop ---------------------------------------------------------
 	log(
-		`polling ${opts.url} every ${Math.round(opts.pollIntervalMs / 1000)}s (harness ${opts.harness}, max ${opts.maxConcurrent} concurrent) — Ctrl-C to stop`
+		`polling ${baseUrl} every ${Math.round(opts.pollIntervalMs / 1000)}s (harness ${opts.harness}, max ${opts.maxConcurrent} concurrent) — Ctrl-C to stop`
 	);
 	let failures = 0;
 	while (!shuttingDown) {
@@ -750,7 +749,7 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 					});
 				}
 				saveDaemonState(statePath, []);
-				clearRunnerCredentials(opts.configDir, opts.url, opts.name);
+				clearRunnerCredentials(opts.configDir, baseUrl, opts.name);
 				throw new Error(
 					`the supervisor rejected this runner's token (was it rotated?) — the stored token was dropped; restart with the new token via \`tines runners rotate-token ${opts.name}\` on this machine, or with TINES_API_KEY set to re-register`
 				);
