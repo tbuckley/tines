@@ -273,6 +273,17 @@ test.describe.serial('project focus', () => {
 		});
 	}
 
+	test('retires the focused-run fixtures before archive coverage', async ({ request }) => {
+		const api = apiClient(request, ALICE.apiKey);
+		const runs = await body<ListResponse<AgentRun>>(await api.get('/api/v1/runs?active=true'));
+		for (const run of runs.items.filter((item) =>
+			[A_NAME, B_NAME].includes(item.issue_ref?.project_name ?? '')
+		)) {
+			const canceled = await api.post(`/api/v1/runs/${run.id}/cancel`);
+			expect(canceled.ok(), await canceled.text()).toBe(true);
+		}
+	});
+
 	test('routing editor one-shots are consumed on success and every invalid shape', async ({
 		browser,
 		request

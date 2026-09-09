@@ -21,12 +21,7 @@ export const load: PageServerLoad = async ({ locals, platform, url, depends }) =
 
 	// The project scope is the focus, not a URL filter (Tines/259) — one
 	// PK-indexed query ahead of the lists that read it.
-	const { focusId, lastProjectId, notice } = await resolvePageFocus(
-		db,
-		platform!.env,
-		userId,
-		url
-	);
+	const { focusId, lastProjectId, notice } = await resolvePageFocus(db, platform!.env, userId, url);
 	let page;
 	try {
 		page = readIssuePage(url);
