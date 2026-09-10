@@ -55,6 +55,12 @@
 
 <!-- Focused on one project, every ref would repeat its name: rows show the
      bare number then, as the project page does. -->
+<IssuePagination
+	pagination={data.pagination}
+	itemCount={data.issues.length}
+	label="Issue pagination above results"
+	class="mb-4"
+/>
 <IssueList
 	issues={data.issues}
 	showProject={!data.focusId}
@@ -69,4 +75,8 @@
 		? { label: 'New project', href: '/projects?new=1' }
 		: undefined}
 />
-<IssuePagination pagination={data.pagination} itemCount={data.issues.length} />
+<IssuePagination
+	pagination={data.pagination}
+	itemCount={data.issues.length}
+	label="Issue pagination below results"
+/>
