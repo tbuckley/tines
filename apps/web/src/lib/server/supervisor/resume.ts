@@ -297,6 +297,9 @@ export async function resumeAffinityByIssue(
 		.where('expires_at', '>', now)
 		.execute();
 	for (const row of rows) {
+		// Both columns are nullable on the table (a resource outlives neither,
+		// but the schema allows it); a row missing either cannot be matched.
+		if (!row.issue_id || !row.runner_id) continue;
 		const runners = affinity.get(row.issue_id) ?? new Set<string>();
 		runners.add(row.runner_id);
 		affinity.set(row.issue_id, runners);
