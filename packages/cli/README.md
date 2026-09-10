@@ -5,6 +5,10 @@ built for humans and their agents: work moves through workflows, every action is
 record, and a supervisor hands eligible issues to agents. This package talks to the same
 HTTP API the web app uses.
 
+Awaiting-session continuation policy fields are staged and default off. Runtime continuation is
+unavailable until support for the runner's provider is released; configuring thresholds does not
+enable continuation.
+
 ```sh
 npm install -g tines        # or, one-shot with no install:
 npx -y tines --help

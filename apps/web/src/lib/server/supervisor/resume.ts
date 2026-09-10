@@ -11,6 +11,8 @@ export interface ResumeCandidateInput {
 	runner: Pick<
 		Runner,
 		| 'id'
+		| 'type'
+		| 'config'
 		| 'resume_enabled'
 		| 'resume_window_hours'
 		| 'resume_max_turns'
@@ -23,8 +25,9 @@ export interface ResumeCandidateInput {
 		ended_at: number | null;
 		outcome: string | null;
 		conversation_turn_count: number | null;
-		usage: AgentRunUsage | null;
 	};
+	/** Provider-level cumulative snapshot, never the predecessor run's public delta. */
+	conversation_usage: AgentRunUsage | null;
 	resource: Pick<
 		RunResourceTable,
 		'kind' | 'runner_id' | 'owner_run_id' | 'state' | 'expires_at' | 'resume_fingerprint'
@@ -37,6 +40,14 @@ export interface ResumeCandidateInput {
 
 export type ResumeEligibility =
 	{ eligible: true } | { eligible: false; reason: ResumeFallbackReason };
+
+/** Runtime continuation stays closed through P1-P3. */
+export function isResumeProviderSupported(
+	_type: Runner['type'],
+	_config: Record<string, unknown>
+): boolean {
+	return false;
+}
 
 function completeManagedUsage(usage: AgentRunUsage | null): Required<AgentRunUsage> | null {
 	if (!usage) return null;
@@ -54,9 +65,14 @@ function completeManagedUsage(usage: AgentRunUsage | null): Required<AgentRunUsa
 }
 
 /** Pure final eligibility check; dispatch affinity may use a cheaper preliminary query. */
-export function resumeEligibility(input: ResumeCandidateInput): ResumeEligibility {
+export function resumeEligibility(
+	input: ResumeCandidateInput,
+	providerSupported = isResumeProviderSupported
+): ResumeEligibility {
 	const { runner, predecessor, resource } = input;
-	if (!runner.resume_enabled) return { eligible: false, reason: 'unsupported' };
+	if (!runner.resume_enabled || !providerSupported(runner.type, runner.config)) {
+		return { eligible: false, reason: 'unsupported' };
+	}
 	if (
 		predecessor.id !== input.newest_ended_run_id ||
 		predecessor.runner_id !== runner.id ||
@@ -92,7 +108,7 @@ export function resumeEligibility(input: ResumeCandidateInput): ResumeEligibilit
 		}
 		return { eligible: true };
 	}
-	const usage = completeManagedUsage(predecessor.usage);
+	const usage = completeManagedUsage(input.conversation_usage);
 	if (!usage) return { eligible: false, reason: 'unavailable' };
 	const tokens =
 		usage.input_tokens + usage.output_tokens + usage.cache_read_tokens + usage.cache_write_tokens;

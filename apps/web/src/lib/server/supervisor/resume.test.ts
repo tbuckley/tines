@@ -1,10 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import { createTestDb } from '../api/test-db';
 import { addIssue, addRun, addRunner, NOW, seedBase, USER } from './test-fixtures';
-import { claimResourceDisposal, claimResumeResource, resumeEligibility } from './resume';
+import {
+	claimResourceDisposal,
+	claimResumeResource,
+	isResumeProviderSupported,
+	resumeEligibility
+} from './resume';
 
 const runner = {
 	id: 'rnr_1',
+	type: 'local' as const,
+	config: { harness: 'claude_code' },
 	resume_enabled: true,
 	resume_window_hours: 48,
 	resume_max_turns: 25,
@@ -20,9 +27,9 @@ const base = {
 		runner_id: runner.id,
 		ended_at: NOW - 1000,
 		outcome: 'advanced',
-		conversation_turn_count: 24,
-		usage: null
+		conversation_turn_count: 24
 	},
+	conversation_usage: null,
 	resource: {
 		kind: 'local_claude' as const,
 		runner_id: runner.id,
@@ -38,26 +45,37 @@ const base = {
 };
 
 describe('resumeEligibility', () => {
+	const supported = () => true;
+
+	it('keeps both production provider gates closed in P1', () => {
+		expect(isResumeProviderSupported('local', { harness: 'claude_code' })).toBe(false);
+		expect(isResumeProviderSupported('claude_managed', {})).toBe(false);
+		expect(resumeEligibility(base)).toEqual({ eligible: false, reason: 'unsupported' });
+	});
+
 	it('accepts a local conversation strictly below the turn threshold', () => {
-		expect(resumeEligibility(base)).toEqual({ eligible: true });
+		expect(resumeEligibility(base, supported)).toEqual({ eligible: true });
 		expect(
-			resumeEligibility({
-				...base,
-				predecessor: { ...base.predecessor, conversation_turn_count: 25 }
-			})
+			resumeEligibility(
+				{
+					...base,
+					predecessor: { ...base.predecessor, conversation_turn_count: 25 }
+				},
+				supported
+			)
 		).toEqual({ eligible: false, reason: 'long_context' });
 	});
 
 	it('uses the shorter of retained and current-policy expiry and rejects drift/newer attempts', () => {
-		expect(resumeEligibility({ ...base, now: NOW + 1000 })).toEqual({
+		expect(resumeEligibility({ ...base, now: NOW + 1000 }, supported)).toEqual({
 			eligible: false,
 			reason: 'expired'
 		});
-		expect(resumeEligibility({ ...base, expected_fingerprint: 'v1:new' })).toEqual({
+		expect(resumeEligibility({ ...base, expected_fingerprint: 'v1:new' }, supported)).toEqual({
 			eligible: false,
 			reason: 'incompatible'
 		});
-		expect(resumeEligibility({ ...base, newest_ended_run_id: 'run_newer' })).toEqual({
+		expect(resumeEligibility({ ...base, newest_ended_run_id: 'run_newer' }, supported)).toEqual({
 			eligible: false,
 			reason: 'unavailable'
 		});
@@ -66,30 +84,31 @@ describe('resumeEligibility', () => {
 	it('requires complete managed cumulative usage and strict token/cost bounds', () => {
 		const managed = {
 			...base,
+			runner: { ...runner, type: 'claude_managed' as const, config: {} },
 			resource: { ...base.resource, kind: 'claude_managed' as const },
-			predecessor: {
-				...base.predecessor,
-				usage: {
-					input_tokens: 40,
-					output_tokens: 20,
-					cache_read_tokens: 30,
-					cache_write_tokens: 9,
-					cost_usd: 1
-				}
+			conversation_usage: {
+				input_tokens: 40,
+				output_tokens: 20,
+				cache_read_tokens: 30,
+				cache_write_tokens: 9,
+				cost_usd: 1
 			}
 		};
-		expect(resumeEligibility(managed)).toEqual({ eligible: true });
-		expect(resumeEligibility({ ...managed, runner: { ...runner, resume_max_tokens: 99 } })).toEqual(
-			{ eligible: false, reason: 'long_context' }
-		);
+		expect(resumeEligibility(managed, supported)).toEqual({ eligible: true });
 		expect(
-			resumeEligibility({
-				...managed,
-				predecessor: {
-					...managed.predecessor,
-					usage: { input_tokens: 1, output_tokens: 1, cost_usd: 1 }
-				}
-			})
+			resumeEligibility(
+				{ ...managed, runner: { ...managed.runner, resume_max_tokens: 99 } },
+				supported
+			)
+		).toEqual({ eligible: false, reason: 'long_context' });
+		expect(
+			resumeEligibility(
+				{
+					...managed,
+					conversation_usage: { input_tokens: 1, output_tokens: 1, cost_usd: 1 }
+				},
+				supported
+			)
 		).toEqual({ eligible: false, reason: 'unavailable' });
 	});
 });

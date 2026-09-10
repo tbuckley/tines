@@ -34,6 +34,10 @@ import {
 } from '../daemon/support.js';
 import { issueRef, keptWorkspaceRow, runRow, runnerStatusLabel, timestamp } from '../format.js';
 import {
+	DEFAULT_RESUME_MAX_COST_USD,
+	DEFAULT_RESUME_MAX_TOKENS,
+	DEFAULT_RESUME_MAX_TURNS,
+	DEFAULT_RESUME_WINDOW_HOURS,
 	isStaleTierOverride,
 	MODEL_TIERS,
 	runDurationLabel,
@@ -140,10 +144,10 @@ export function register(program: Command): void {
 				console.log(`api key: ${runner.has_api_key ? 'set (write-only)' : 'missing'}`);
 			}
 			console.log(
-				`resume awaiting sessions: ${runner.resume_enabled ? 'enabled' : 'disabled'}  window: ${runner.resume_window_hours}h`
+				`resume awaiting sessions: ${(runner.resume_enabled ?? false) ? 'enabled' : 'disabled'}  window: ${runner.resume_window_hours ?? DEFAULT_RESUME_WINDOW_HOURS}h (staged; runtime continuation unavailable)`
 			);
 			console.log(
-				`resume limits: ${runner.resume_max_turns} local turns  ${runner.resume_max_tokens.toLocaleString()} managed tokens  $${runner.resume_max_cost_usd} managed cost`
+				`resume limits: ${runner.resume_max_turns ?? DEFAULT_RESUME_MAX_TURNS} local turns  ${(runner.resume_max_tokens ?? DEFAULT_RESUME_MAX_TOKENS).toLocaleString()} managed tokens  $${runner.resume_max_cost_usd ?? DEFAULT_RESUME_MAX_COST_USD} managed cost`
 			);
 			if (runner.budget) {
 				const b = runner.budget;
@@ -162,8 +166,12 @@ export function register(program: Command): void {
 	withCommon(
 		runners
 			.command('edit <name>')
-			.description('Edit experimental awaiting-session continuation settings')
-			.option('--resume-enabled <true|false>', 'enable or disable continuation', parseBoolean)
+			.description('Edit staged awaiting-session continuation policy (runtime unavailable)')
+			.option(
+				'--resume-enabled <true|false>',
+				'stage opt-in policy (enabling is unavailable until provider support ships)',
+				parseBoolean
+			)
 			.option('--resume-window-hours <n>', 'continuation window (1-168)', boundedInteger(1, 168))
 			.option(
 				'--resume-max-turns <n>',

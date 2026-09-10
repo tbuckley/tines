@@ -1071,8 +1071,8 @@ Options:
 Commands:
   list [options]                 List runners
   show [options] <name>          Show a runner
-  edit [options] <name>          Edit experimental awaiting-session continuation
-                                 settings
+  edit [options] <name>          Edit staged awaiting-session continuation
+                                 policy (runtime unavailable)
   tiers [options] <name>         Show or edit a runner's tier→model mapping
   budget [options] <name>        Set or clear a runner's money limits (per-run
                                  caps enforce now; daily limits arrive with the
@@ -1108,10 +1108,11 @@ Options:
 ",
   "tines runners edit": "Usage: tines runners edit [options] <name>
 
-Edit experimental awaiting-session continuation settings
+Edit staged awaiting-session continuation policy (runtime unavailable)
 
 Options:
-  --resume-enabled <true|false>  enable or disable continuation
+  --resume-enabled <true|false>  stage opt-in policy (enabling is unavailable
+                                 until provider support ships)
   --resume-window-hours <n>      continuation window (1-168)
   --resume-max-turns <n>         local conversation turn limit (1-1000)
   --resume-max-tokens <n>        managed conversation token limit (1-10000000)

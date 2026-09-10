@@ -28,6 +28,7 @@ import { newId, randomString, type Database } from '$lib/server/db';
 import { pingAnthropicKey } from '$lib/server/supervisor/claude-adapter';
 import { cancelAssignedRuns } from '$lib/server/supervisor/engine';
 import { builtinTierModels } from '$lib/server/supervisor/logic';
+import { isResumeProviderSupported } from '$lib/server/supervisor/resume';
 import {
 	ApiFail,
 	notFound,
@@ -109,11 +110,31 @@ function validateResumeCost(value: unknown): number {
 	return value;
 }
 
-function supportsResume(type: string, config: Record<string, unknown>): boolean {
+function supportsResumeHarness(type: string, config: Record<string, unknown>): boolean {
 	return (
 		type === 'claude_managed' ||
 		(type === 'local' && (config.harness ?? 'claude_code') === 'claude_code')
 	);
+}
+
+function validateResumeEnable(type: RunnerType, config: Record<string, unknown>): void {
+	if (!supportsResumeHarness(type, config)) {
+		throw new ApiFail(
+			422,
+			'resume_unsupported',
+			'Resume is supported only by Claude Code local runners and Claude managed runners',
+			{ field: 'resume_enabled' }
+		);
+	}
+	if (!isResumeProviderSupported(type, config)) {
+		const provider = type === 'local' ? 'Claude Code local' : 'Claude managed';
+		throw new ApiFail(
+			422,
+			'resume_unavailable',
+			`Awaiting-session continuation is staged but not yet available for ${provider} runners`,
+			{ field: 'resume_enabled', provider: type }
+		);
+	}
 }
 
 const LOCAL_HARNESSES = ['claude_code', 'codex', 'custom'] as const;
@@ -495,20 +516,13 @@ export async function createRunner(
 		config = validateLocalConfig(body.config);
 		budget = body.budget === undefined ? null : validateRunnerBudget(body.budget);
 	}
-	const resumeEnabled = body.resume_enabled ?? false;
+	const resumeEnabled = body.resume_enabled === undefined ? false : body.resume_enabled;
 	if (typeof resumeEnabled !== 'boolean') {
 		throw new ApiFail(422, 'invalid_field', '"resume_enabled" must be a boolean', {
 			field: 'resume_enabled'
 		});
 	}
-	if (resumeEnabled && !supportsResume(body.type, config)) {
-		throw new ApiFail(
-			422,
-			'resume_unsupported',
-			'Resume is supported only by Claude Code local runners and Claude managed runners',
-			{ field: 'resume_enabled' }
-		);
-	}
+	if (resumeEnabled) validateResumeEnable(body.type, config);
 	const resumeWindowHours =
 		body.resume_window_hours === undefined
 			? DEFAULT_RESUME_WINDOW_HOURS
@@ -597,7 +611,6 @@ export async function updateRunner(
 		resume_max_turns: number;
 		resume_max_tokens: number;
 		resume_max_cost_usd: number;
-		resume_config_revision: number;
 	}> = {};
 
 	if (body.name !== undefined) {
@@ -681,20 +694,14 @@ export async function updateRunner(
 		}
 	}
 	const effectiveConfig = JSON.parse(patch.config ?? row.config) as Record<string, unknown>;
-	const resumeEnabled = body.resume_enabled ?? row.resume_enabled === 1;
+	const resumeEnabled =
+		body.resume_enabled === undefined ? row.resume_enabled === 1 : body.resume_enabled;
 	if (typeof resumeEnabled !== 'boolean') {
 		throw new ApiFail(422, 'invalid_field', '"resume_enabled" must be a boolean', {
 			field: 'resume_enabled'
 		});
 	}
-	if (resumeEnabled && !supportsResume(row.type, effectiveConfig)) {
-		throw new ApiFail(
-			422,
-			'resume_unsupported',
-			'Resume is supported only by Claude Code local runners and Claude managed runners',
-			{ field: 'resume_enabled' }
-		);
-	}
+	if (body.resume_enabled === true) validateResumeEnable(row.type as RunnerType, effectiveConfig);
 	const resumeFields: [
 		keyof Pick<
 			UpdateRunnerRequest,
@@ -726,21 +733,23 @@ export async function updateRunner(
 			changed.push('resume_max_cost_usd');
 		}
 	}
-	if (
-		changed.some(
-			(field) =>
-				field === 'api_key' || field === 'config' || field === 'tiers' || field === 'default_tier'
-		)
-	) {
-		patch.resume_config_revision = row.resume_config_revision + 1;
-	}
+	const revisionChanged = changed.some(
+		(field) =>
+			field === 'api_key' || field === 'config' || field === 'tiers' || field === 'default_tier'
+	);
 
 	if (changed.length === 0) return serializeRunner(row);
 
 	await runAtomic(env, [
 		db
 			.updateTable('runner')
-			.set({ ...patch, updated_at: Date.now() })
+			.set({
+				...patch,
+				...(revisionChanged
+					? { resume_config_revision: sql<number>`resume_config_revision + 1` }
+					: {}),
+				updated_at: Date.now()
+			})
 			.where('id', '=', id)
 			.compile(),
 		eventInsert(db, actor, {
@@ -856,6 +865,7 @@ export async function registerRunner(
 				.set({
 					...patch,
 					config: JSON.stringify(config),
+					resume_config_revision: sql<number>`resume_config_revision + 1`,
 					runner_token_hash: tokenHash,
 					last_seen_at: now,
 					updated_at: now

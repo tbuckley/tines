@@ -81,6 +81,9 @@ describe('the GitHub PAT', () => {
 		expect(await decryptSecret(row.github_pat_enc, ENC_KEY)).toBe(
 			'github_pat_11AAAA0abcdefghijklmn'
 		);
+		expect(t.all('SELECT source_credentials_revision FROM supervisor_settings')).toEqual([
+			{ source_credentials_revision: 1 }
+		]);
 
 		// Rotation is on record, the value never is.
 		const events = t.all("SELECT payload FROM event WHERE type = 'settings.updated'") as {
@@ -96,6 +99,9 @@ describe('the GitHub PAT', () => {
 			github_pat_enc: string | null;
 		};
 		expect(after.github_pat_enc).toBeNull();
+		expect(t.all('SELECT source_credentials_revision FROM supervisor_settings')).toEqual([
+			{ source_credentials_revision: 2 }
+		]);
 	});
 
 	it('replacing the PAT does not disturb the plain settings fields', async () => {
