@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type {
+		DispatchExplainer,
 		EffectiveContext,
 		IssueTransferPreview,
 		IssueTransferResult,
@@ -112,7 +113,34 @@
 		}
 	}
 
-	const changes = $derived(preview?.context.changes.filter((c) => c.change !== 'retained') ?? []);
+	const changes = $derived(preview?.context.changes ?? []);
+
+	const participation = (change: (typeof changes)[number]) =>
+		({
+			added: 'added by destination',
+			removed: 'removed with source',
+			retained: 'retained',
+			rescoped: 'moves with the issue',
+			replaced: 'effective selection changes'
+		})[change.change];
+
+	const effectiveness = (present: boolean, effective: boolean) =>
+		!present ? 'not present' : effective ? 'effective' : 'overridden candidate';
+
+	const repoDetail = (repo: { url: string; branch?: string | null; dir: string }) =>
+		`${repo.url}; branch ${repo.branch ?? 'repository default branch'}; directory ${repo.dir}`;
+
+	const contextSides = (value: IssueTransferPreview) =>
+		[
+			{ label: 'Before', context: value.context.before },
+			{ label: 'After', context: value.context.after }
+		] satisfies { label: string; context: EffectiveContext }[];
+
+	const routingSides = (value: IssueTransferPreview) =>
+		[
+			{ label: 'Before', routing: value.routing.before },
+			{ label: 'After', routing: value.routing.after }
+		] satisfies { label: string; routing: DispatchExplainer | null }[];
 
 	function itemContent(context: EffectiveContext, itemId: string): string[] {
 		const prompt = context.prompt.parts.find((item) => item.item_id === itemId);
@@ -122,6 +150,18 @@
 		const repo = context.repos.find((item) => item.item_id === itemId);
 		if (repo) return [`${repo.url}${repo.branch ? ` @ ${repo.branch}` : ''} → ${repo.dir}`];
 		return [];
+	}
+
+	function reviewedContent(before: EffectiveContext, after: EffectiveContext, itemId: string) {
+		const beforeContent = itemContent(before, itemId);
+		const afterContent = itemContent(after, itemId);
+		if (JSON.stringify(beforeContent) === JSON.stringify(afterContent) && beforeContent.length) {
+			return beforeContent.map((content) => ({ label: 'Before and after', content }));
+		}
+		return [
+			...beforeContent.map((content) => ({ label: 'Before', content })),
+			...afterContent.map((content) => ({ label: 'After', content }))
+		];
 	}
 
 	async function recover() {
@@ -204,48 +244,103 @@
 									<summary class="cursor-pointer">
 										<span class="font-medium">{change.name}</span>
 										<span class="text-muted-foreground text-xs">
-											({change.kind}) — {change.change}
+											({change.kind}) — {participation(change)}
 										</span>
 									</summary>
 									<p class="text-muted-foreground pl-4 text-xs">
 										{change.scope_before?.label ?? '—'} → {change.scope_after?.label ?? '—'}
 									</p>
-									{#if change.repo_after}
-										<p class="text-muted-foreground pl-4 text-xs break-all">
-											{change.repo_after.url} → {change.repo_after.dir}
-										</p>
-									{/if}
-									{#each itemContent(preview.context.before, change.item_id) as content}
+									<p class="text-muted-foreground pl-4 text-xs">
+										Before: {effectiveness(Boolean(change.scope_before), change.effective_before)};
+										after: {effectiveness(Boolean(change.scope_after), change.effective_after)}
+									</p>
+									{#each reviewedContent(preview.context.before, preview.context.after, change.item_id) as item}
+										<p class="mt-1 pl-4 text-xs font-medium">{item.label}</p>
 										<pre
-											class="bg-muted mt-1 max-h-48 overflow-auto p-2 text-xs break-all whitespace-pre-wrap">{content}</pre>
-									{/each}
-									{#each itemContent(preview.context.after, change.item_id) as content}
-										<pre
-											class="bg-muted mt-1 max-h-48 overflow-auto p-2 text-xs break-all whitespace-pre-wrap">{content}</pre>
+											class="bg-muted mt-1 max-h-48 overflow-auto p-2 text-xs break-all whitespace-pre-wrap">{item.content}</pre>
 									{/each}
 								</details>
 							</li>
 						{/each}
 					</ul>
 				{/if}
-				{#each preview.context.after.conflicts as conflict (conflict.dir)}
-					<p class="text-xs">
-						Two repositories still want the “{conflict.dir}” directory at the destination.
-					</p>
-				{/each}
 			</section>
 
 			<section class="space-y-1">
-				<h4 class="font-medium">Routing after the move</h4>
+				<h4 class="font-medium">Effective repositories</h4>
+				<div class="grid gap-3 sm:grid-cols-2">
+					{#each contextSides(preview) as side (side.label)}
+						<div class="min-w-0 space-y-1">
+							<h5 class="text-xs font-medium">{side.label}</h5>
+							{#if side.context.repos.length === 0}<p class="text-muted-foreground text-xs">
+									none
+								</p>{/if}
+							{#each side.context.repos as repo (repo.item_id)}
+								<p class="text-xs wrap-anywhere">
+									<strong>{repo.name}</strong> — effective ({repo.scope.label})
+								</p>
+								<p class="text-muted-foreground text-xs wrap-anywhere">{repoDetail(repo)}</p>
+								{#each side.context.overridden.filter((item) => item.kind === 'repo' && item.name === repo.name) as loser (loser.item_id)}
+									<p class="text-xs wrap-anywhere">
+										Overridden candidate: {loser.name} ({loser.scope.label}) — overridden by {loser.overridden_by}
+									</p>
+									<p class="text-muted-foreground text-xs wrap-anywhere">
+										{loser.repo
+											? repoDetail(loser.repo)
+											: 'Checkout details unavailable from this server.'}
+									</p>
+								{/each}
+							{/each}
+							{#each side.context.conflicts as conflict (conflict.dir)}
+								<p class="text-xs wrap-anywhere">
+									Checkout conflict at “{conflict.dir}”: {conflict.item_ids.join(', ')}
+								</p>
+							{/each}
+						</div>
+					{/each}
+				</div>
+			</section>
+
+			<section class="space-y-2">
+				<h4 class="font-medium">Routing</h4>
+				<div class="grid gap-3 sm:grid-cols-2">
+					{#each routingSides(preview) as side (side.label)}
+						<div class="min-w-0 space-y-1">
+							<h5 class="text-xs font-medium">{side.label}</h5>
+							<p class="text-muted-foreground text-xs">
+								{side.routing?.verdict ?? 'No routing explanation available.'}
+							</p>
+							{#if side.routing}
+								{#if side.routing.pin}<p class="text-xs">
+										Pin: {side.routing.pin.runner_name ?? side.routing.pin.runner_id}; tier {side
+											.routing.pin.tier ?? 'default'}
+									</p>{/if}
+								{#each side.routing.checks as check (check.name)}
+									<p class="text-xs">
+										<strong>{check.ok ? 'Pass' : 'Failed'} {check.name}:</strong>
+										{check.detail}
+									</p>
+								{/each}
+								{#if side.routing.matched_rule}<p class="text-xs">
+										Matched rule: {side.routing.matched_rule.scope_label}
+									</p>{/if}
+								{#each side.routing.ambiguous_rules as rule (rule.rule_id)}<p class="text-xs">
+										Tied rule: {rule.scope_label}
+									</p>{/each}
+								{#each side.routing.targets as target (target.runner_id)}<p
+										class="text-xs wrap-anywhere"
+									>
+										Target {target.runner_name} — {target.tier}{target.model
+											? ` / ${target.model}`
+											: ''}: {target.verdict} — {target.detail}
+									</p>{/each}
+							{/if}
+						</div>
+					{/each}
+				</div>
 				<p class="text-muted-foreground text-xs">
-					{preview.routing.after?.verdict ?? 'No routing explanation available.'}
+					Capacity, heartbeats and spending are advisory and may change at any moment.
 				</p>
-				{#if preview.routing.after?.pin}
-					<p class="text-muted-foreground text-xs">
-						Pinned runner retained: {preview.routing.after.pin.runner_name ??
-							preview.routing.after.pin.runner_id}
-					</p>
-				{/if}
 			</section>
 
 			{#if preview.schedule}

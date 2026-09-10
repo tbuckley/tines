@@ -1467,7 +1467,16 @@ function dedupeByName(
 			kind: row.kind as ContextKind,
 			name: row.name,
 			...describeRow(row, leafStateId),
-			overridden_by: winner.id
+			overridden_by: winner.id,
+			...(row.kind === 'repo' && row.repo_url
+				? {
+						repo: {
+							url: row.repo_url,
+							branch: row.repo_branch,
+							dir: row.repo_dir ?? repoDirFromUrl(row.repo_url)
+						}
+					}
+				: {})
 		}))
 	};
 }
