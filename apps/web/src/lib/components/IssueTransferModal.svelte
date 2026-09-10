@@ -173,7 +173,7 @@
 		</div>
 	{:else}
 		<div class="space-y-4 text-sm" data-testid="transfer-review">
-			<h3 class="break-anywhere text-base font-medium" tabindex="-1" bind:this={reviewHeading}>
+			<h3 class="wrap-anywhere text-base font-medium" tabindex="-1" bind:this={reviewHeading}>
 				{preview.old_ref.ref} → {preview.destination.name}
 			</h3>
 			{#if stale}

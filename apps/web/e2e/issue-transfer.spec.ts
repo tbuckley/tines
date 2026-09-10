@@ -87,7 +87,7 @@ function suite(label: string, viewport: { width: number; height: number }) {
 			const heading = modal.getByRole('heading', { level: 3 });
 			await expect(heading).toBeFocused();
 			await expect(heading).toContainText(longName);
-			expect(await modal.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(
+			expect(await heading.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(
 				true
 			);
 			await modal.getByRole('button', { name: 'Cancel' }).click();
