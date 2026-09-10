@@ -421,3 +421,15 @@ From the spec review (adversarial pass, findings triaged with the user):
 From later work:
 
 - **2026-09-05, Tines/169 — the run-key fence is per method, not per path**: the fence entries gained an optional `readable` flag (GET/HEAD pass; default is still every method fenced, so a forgotten flag fails closed), and the label library — fenced wholesale when labels shipped — is the one entry that sets it. Reading the vocabulary is classification, which is exactly what agents are asked to do; minting, renaming, and deleting terms is taxonomy and stays fenced. The launch prompt already points agents at `tines labels list` when the library is too large to inline, and label *names* were reachable anyway via the unfenced `GET /issues/:id/prompt` — only each label's `description` was genuinely unreachable. Every other fenced surface, `GET /api/v1/api-keys` included, stays closed to reads; opening those is Tines/93's call, now a flag per entry.
+
+### Issue transfer and the claim fence (Tines/392)
+
+Each issue carries an internal `project_assignment_token`, rotated by every
+project transfer. `claimRun` requires both the captured project ID and that
+token in its WHERE, and stores the token on the run, so a candidate selected
+against the source project's routing cannot claim after the issue has moved —
+including a move away and back, which rotates the token twice. A transfer is
+refused while a run is assigned, launching or running, so the two never both
+win. `GET /api/v1/issues/:id/transfer` is readable by a run key (it is the
+review an agent can put in front of its owner); the POST is control-plane
+fenced.

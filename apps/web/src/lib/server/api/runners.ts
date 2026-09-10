@@ -1138,12 +1138,16 @@ export async function deleteRunner(
 		issueId?: string | null;
 		projectId?: string | null;
 		payload: Record<string, unknown>;
-	}): CompiledQuery =>
-		sql`
+	}): CompiledQuery => {
+		const projectId = input.issueId
+			? sql`(SELECT project_id FROM issue WHERE id = ${input.issueId})`
+			: sql`${input.projectId ?? null}`;
+		return sql`
 			INSERT INTO event (id, user_id, type, actor_user_id, actor_api_key_id, issue_id, project_id, payload, created_at)
 			SELECT ${newId('evt')}, ${actor.userId}, ${input.type}, ${actor.userId}, ${actor.apiKeyId ?? null},
-				${input.issueId ?? null}, ${input.projectId ?? null}, ${JSON.stringify(input.payload)}, ${Date.now()}
+				${input.issueId ?? null}, ${projectId}, ${JSON.stringify(input.payload)}, ${Date.now()}
 			WHERE ${noActiveRuns}`.compile(db);
+	};
 
 	const now = Date.now();
 	const queries: CompiledQuery[] = [];

@@ -180,6 +180,8 @@ const issue: IssueDetail = {
 	links: { blocked_by: [], blocks: [], duplicate_of: null, duplicated_by: [] },
 	scheduled_task_id: null,
 	scheduled_task_name: null,
+	scheduled_task_project_id: null,
+	scheduled_task_project_name: null,
 	pinned_runner_id: null,
 	pinned_runner_name: null,
 	pinned_tier: null,
