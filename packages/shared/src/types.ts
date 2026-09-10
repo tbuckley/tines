@@ -1106,6 +1106,8 @@ export interface OverriddenContextItem {
 	name: string;
 	scope: ContextScope;
 	overridden_by: string;
+	/** Repositories only: the losing candidate's checkout details. */
+	repo?: { url: string; branch?: string | null; dir: string };
 	/** Set when the loser matched through an ancestor of the issue's state. */
 	inherited_from: InheritedFrom | null;
 }

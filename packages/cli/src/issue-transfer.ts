@@ -10,13 +10,16 @@ const CHANGE_LABEL: Record<IssueTransferContextChange['change'], string> = {
 	removed: 'removed with source',
 	retained: 'retained',
 	rescoped: 'moves with the issue',
-	replaced: 'overridden at destination'
+	replaced: 'effective selection changes'
 };
 
 /** The item lines an operator inspects by index with `--inspect <n>`. */
 export function inspectableChanges(preview: IssueTransferPreview): IssueTransferContextChange[] {
-	return preview.context.changes.filter((c) => c.change !== 'retained');
+	return preview.context.changes;
 }
+
+const effectiveness = (present: boolean, effective: boolean) =>
+	!present ? 'not present' : effective ? 'effective' : 'overridden candidate';
 
 function repoLine(change: IssueTransferContextChange): string | null {
 	if (change.kind !== 'repo') return null;
@@ -41,16 +44,88 @@ function routingLines(preview: IssueTransferPreview): string[] {
 		lines.push(`${label}: ${explainer.verdict}`);
 		if (explainer.pin) {
 			lines.push(
-				`           pinned runner ${explainer.pin.runner_name ?? explainer.pin.runner_id}${
-					explainer.pin.tier ? ` (${explainer.pin.tier})` : ''
-				} — retained by the move`
+				`           pin: runner ${explainer.pin.runner_name ?? explainer.pin.runner_id}, tier ${explainer.pin.tier ?? 'default'}`
 			);
 		}
+		for (const check of explainer.checks) {
+			lines.push(
+				`           ${check.ok ? 'pass' : 'FAIL'} ${check.name}: ${check.detail}${check.action?.label ? ` (${check.action.label})` : ''}`
+			);
+		}
+		if (explainer.matched_rule)
+			lines.push(`           matched rule ${explainer.matched_rule.scope_label}`);
 		for (const tie of explainer.ambiguous_rules) {
 			lines.push(`           tied rule ${tie.scope_label}`);
 		}
+		if (explainer.runner_rule)
+			lines.push(`           runner source rule ${explainer.runner_rule.scope_label}`);
+		if (explainer.tier_override) lines.push(`           tier override ${explainer.tier_override}`);
+		for (const target of explainer.targets) {
+			lines.push(
+				`           target ${target.runner_name} — ${target.tier}${target.model ? ` / ${target.model}` : ''}: ${target.verdict} — ${target.detail}`
+			);
+		}
+		if (explainer.active_run)
+			lines.push(
+				`           active run ${explainer.active_run.id} (${explainer.active_run.status})`
+			);
+		if (explainer.queue_position !== null)
+			lines.push(`           queue position ${explainer.queue_position}`);
+		lines.push(
+			`           attempts ${explainer.attempt_count}/${explainer.attempt_limit}; parked ${explainer.parked ? 'yes' : 'no'}`
+		);
 	}
 	lines.push('  Capacity, heartbeats and spending are advisory and may change at any moment.');
+	return lines;
+}
+
+function repoDetail(repo: { url: string; branch?: string | null; dir: string }): string {
+	return `${repo.url}; branch ${repo.branch ?? 'repository default branch'}; directory ${repo.dir}`;
+}
+
+function effectiveRepositoryLines(preview: IssueTransferPreview): string[] {
+	const lines = ['', 'Effective repositories:'];
+	for (const [label, context] of [
+		['  before', preview.context.before],
+		['  after ', preview.context.after]
+	] as const) {
+		lines.push(`${label}:`);
+		if (!context.repos.length) lines.push('    none');
+		for (const repo of context.repos) {
+			lines.push(`    ${repo.name} — effective (${repo.scope.label})`);
+			lines.push(`      ${repoDetail(repo)}`);
+			for (const loser of context.overridden.filter(
+				(item) => item.kind === 'repo' && item.name === repo.name
+			)) {
+				lines.push(
+					`      overridden candidate ${loser.name} (${loser.scope.label}) — overridden by ${loser.overridden_by}`
+				);
+				lines.push(
+					`        ${loser.repo ? repoDetail(loser.repo) : 'checkout details unavailable from this server'}`
+				);
+			}
+		}
+	}
+	return lines;
+}
+
+function conflictLines(preview: IssueTransferPreview): string[] {
+	const lines = ['', 'Repository checkout conflicts:'];
+	for (const [label, context] of [
+		['  before', preview.context.before],
+		['  after ', preview.context.after]
+	] as const) {
+		if (!context.conflicts.length) lines.push(`${label}: none`);
+		for (const conflict of context.conflicts) {
+			const participants = conflict.item_ids
+				.map((id) => {
+					const repo = context.repos.find((item) => item.item_id === id);
+					return repo ? `${repo.name} (${repo.scope.label})` : id;
+				})
+				.join(', ');
+			lines.push(`${label}: ${conflict.dir} — ${participants}`);
+		}
+	}
 	return lines;
 }
 
@@ -72,20 +147,19 @@ export function formatTransferPreview(preview: IssueTransferPreview): string {
 	];
 
 	const changes = inspectableChanges(preview);
-	lines.push('', changes.length ? 'Guidance changes:' : 'Guidance: unchanged by this move.');
+	lines.push('', changes.length ? 'Guidance:' : 'Guidance: none.');
 	changes.forEach((change, index) => {
 		lines.push(`  [${index}] ${change.kind} "${change.name}" — ${CHANGE_LABEL[change.change]}`);
 		const scopeBefore = change.scope_before?.label ?? '—';
 		const scopeAfter = change.scope_after?.label ?? '—';
 		lines.push(`      scope: ${scopeBefore} => ${scopeAfter}`);
+		lines.push(
+			`      before: ${effectiveness(Boolean(change.scope_before), change.effective_before)}; after: ${effectiveness(Boolean(change.scope_after), change.effective_after)}`
+		);
 		const repo = repoLine(change);
 		if (repo) lines.push(repo);
 	});
-	for (const conflict of preview.context.after.conflicts) {
-		lines.push(
-			`  ! ${conflict.item_ids.length} repositories still want the "${conflict.dir}" directory at the destination`
-		);
-	}
+	lines.push(...effectiveRepositoryLines(preview), ...conflictLines(preview));
 
 	lines.push(...routingLines(preview));
 
@@ -112,20 +186,46 @@ export function formatTransferPreview(preview: IssueTransferPreview): string {
 export function formatTransferItem(preview: IssueTransferPreview, index: number): string {
 	const change = inspectableChanges(preview)[index];
 	if (!change) return `no item [${index}] in this review`;
-	const side = change.change === 'removed' ? preview.context.before : preview.context.after;
-	const prompt = side.prompt.parts.find((part) => part.item_id === change.item_id);
-	if (prompt) return `${change.name} (prompt, ${prompt.scope.label})\n${prompt.body}`;
-	const skill = side.skills.find((s) => s.item_id === change.item_id);
+	const beforePrompt = preview.context.before.prompt.parts.find(
+		(part) => part.item_id === change.item_id
+	);
+	const afterPrompt = preview.context.after.prompt.parts.find(
+		(part) => part.item_id === change.item_id
+	);
+	if (beforePrompt || afterPrompt) {
+		if (beforePrompt?.body === afterPrompt?.body)
+			return `${change.name} (prompt, Before and after)\n${beforePrompt?.body ?? afterPrompt?.body}`;
+		return [
+			beforePrompt
+				? `${change.name} (prompt, Before — ${beforePrompt.scope.label})\n${beforePrompt.body}`
+				: '',
+			afterPrompt
+				? `${change.name} (prompt, After — ${afterPrompt.scope.label})\n${afterPrompt.body}`
+				: ''
+		]
+			.filter(Boolean)
+			.join('\n\n');
+	}
+	const skill =
+		preview.context.after.skills.find((s) => s.item_id === change.item_id) ??
+		preview.context.before.skills.find((s) => s.item_id === change.item_id);
 	if (skill) {
 		return [
 			`${change.name} (skill, ${skill.scope.label})`,
 			...skill.files.map((f) => `--- ${f.path}\n${f.content}`)
 		].join('\n');
 	}
-	const repo = side.repos.find((r) => r.item_id === change.item_id);
-	if (repo)
-		return `${change.name} (repo, ${repo.scope.label})\n${repo.url} ${repo.branch ?? ''} → ${repo.dir}`;
-	return `${change.name} (${change.kind}) is not effective on either side; nothing to show.`;
+	const repo =
+		preview.context.after.repos.find((r) => r.item_id === change.item_id) ??
+		preview.context.before.repos.find((r) => r.item_id === change.item_id);
+	if (repo) return `${change.name} (repo, ${repo.scope.label})\n${repoDetail(repo)}`;
+	const candidate = [
+		...preview.context.after.overridden,
+		...preview.context.before.overridden
+	].find((item) => item.item_id === change.item_id);
+	if (candidate?.repo)
+		return `${change.name} (overridden repo candidate, ${candidate.scope.label})\n${repoDetail(candidate.repo)}`;
+	return `${change.name} (${change.kind}) is an overridden candidate; content details are unavailable from this server.`;
 }
 
 export function formatTransferResult(result: IssueTransferResult): string {

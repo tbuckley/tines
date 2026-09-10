@@ -1,7 +1,14 @@
+import { execFileSync } from 'node:child_process';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { IssueDetail, Project } from '@tines/shared';
 import { expect, test, type Browser, type Page } from '@playwright/test';
-import { ALICE } from './constants.mjs';
+import { ALICE, BASE_URL } from './constants.mjs';
 import { apiClient, body, clickToOpen, gotoHydrated, resetFocus, runId, signIn } from './helpers';
+
+const CLI_DIR = fileURLToPath(new URL('../../../packages/cli', import.meta.url));
+const TSX = join(CLI_DIR, 'node_modules', '.bin', 'tsx');
+const CLI_ENTRY = join(CLI_DIR, 'src', 'index.ts');
 
 // Specs share one user: a project page sets the focus (Tines/259), so clear it
 // before each test rather than letting it scope a later spec's lists.
@@ -65,6 +72,20 @@ function suite(label: string, viewport: { width: number; height: number }) {
 				project_id: destination.id,
 				body: 'Guidance the issue picks up'
 			});
+			await api.post('/api/v1/context', {
+				kind: 'repo',
+				name: 'app',
+				project_id: source.id,
+				repo_url: 'https://example.test/source.git',
+				repo_dir: 'app'
+			});
+			await api.post('/api/v1/context', {
+				kind: 'repo',
+				name: 'app',
+				project_id: destination.id,
+				repo_url: 'https://example.test/destination.git',
+				repo_dir: 'app'
+			});
 			const issue = await body<IssueDetail>(
 				await api.post(`/api/v1/projects/${source.id}/issues`, {
 					title: `${sourceName} traveller`,
@@ -73,6 +94,29 @@ function suite(label: string, viewport: { width: number; height: number }) {
 			);
 			issueId = issue.id;
 			sourceNumber = issue.number;
+			await api.post('/api/v1/context', {
+				kind: 'prompt',
+				name: `retained-prompt-${label}`,
+				issue_id: issue.id,
+				body: 'Retained issue prompt body'
+			});
+			await api.post('/api/v1/context', {
+				kind: 'skill',
+				name: `retained-skill-${label}`,
+				issue_id: issue.id,
+				files: [
+					{ path: 'SKILL.md', content: 'Retained skill instructions' },
+					{ path: 'checklist.md', content: 'Retained second file' }
+				]
+			});
+			await api.post('/api/v1/context', {
+				kind: 'repo',
+				name: 'app',
+				issue_id: issue.id,
+				repo_url: 'https://example.test/issue-override.git',
+				repo_branch: 'research',
+				repo_dir: 'app'
+			});
 			await api.post(`/api/v1/issues/${issue.id}/comments`, { body: 'a comment that survives' });
 		});
 
@@ -129,6 +173,71 @@ function suite(label: string, viewport: { width: number; height: number }) {
 			await page.close();
 		});
 
+		test('shows retained pins and consequential routing beneath an automation-off headline', async ({
+			browser
+		}) => {
+			const page = await open(browser, `/issues/${sourceName}/${sourceNumber}`);
+			await page.route('**/api/v1/issues/*/transfer?*', async (route) => {
+				const response = await route.fetch();
+				const preview = await response.json();
+				const side = {
+					eligible: false,
+					verdict: 'Automation is off.',
+					checks: [{ name: 'routed', ok: false, detail: 'No routing rule matches this issue.' }],
+					pin: { runner_id: 'rnr_missing', runner_name: null, tier: 'premium' },
+					matched_rule: null,
+					runner_rule: { rule_id: 'rrl_runner', scope_label: 'destination runner rule' },
+					tier_override: 'premium',
+					ambiguous_rules: [{ rule_id: 'rrl_tie', scope_label: 'tied urgent rule' }],
+					targets: [
+						{
+							runner_id: 'rnr_missing',
+							runner_name: 'Unavailable runner',
+							tier: 'premium',
+							model: null,
+							verdict: 'offline',
+							detail: 'No recent heartbeat.'
+						}
+					],
+					parked: true,
+					attempt_count: 3,
+					attempt_limit: 3,
+					active_run: { id: 'arun_existing', runner_name: 'Unavailable runner', status: 'running' },
+					queue_position: 2
+				};
+				await route.fulfill({
+					response,
+					json: {
+						...preview,
+						preserved: {
+							...preview.preserved,
+							pinned_runner_id: 'rnr_missing',
+							pinned_tier: 'premium',
+							attempt_count: 3,
+							parked: true
+						},
+						routing: { before: side, after: side }
+					}
+				});
+			});
+			const modal = page.getByRole('dialog');
+			await clickToOpen(page.getByTestId('move-to-project'), modal);
+			await modal.getByTestId('transfer-destination').selectOption({ label: destinationName });
+			await modal.getByRole('button', { name: 'Review move' }).click();
+			const review = modal.getByTestId('transfer-review');
+			await expect(review).toContainText('Runner pin: rnr_missing; tier pin: premium');
+			await expect(review).toContainText('Automation is off.');
+			await expect(review).toContainText('No routing rule matches this issue.');
+			await expect(review).toContainText('Runner source rule: destination runner rule');
+			await expect(review).toContainText('Tier override: premium');
+			await expect(review).toContainText('Tied rule: tied urgent rule');
+			await expect(review).toContainText('Unavailable runner');
+			await expect(review).toContainText('Active run: arun_existing');
+			await expect(review).toContainText('Queue position: 2');
+			await expect(review).toContainText('Attempts: 3/3; parked: yes');
+			await page.close();
+		});
+
 		test('reviews, inspects and cancels without writing anything', async ({ browser, request }) => {
 			const page = await open(browser, `/issues/${sourceName}/${sourceNumber}`);
 			const modal = page.getByRole('dialog');
@@ -146,13 +255,24 @@ function suite(label: string, viewport: { width: number; height: number }) {
 			await expect(review).toContainText('1 comments');
 			await expect(review).toContainText(`source-only-${label}`);
 			await expect(review).toContainText(`destination-only-${label}`);
+			await expect(review).toContainText(`retained-prompt-${label}`);
+			await expect(review).toContainText(`retained-skill-${label}`);
+			await expect(review).toContainText('https://example.test/issue-override.git');
+			await expect(review).toContainText('branch research; directory app');
+			await expect(review).toContainText('https://example.test/source.git');
+			await expect(review).toContainText('https://example.test/destination.git');
 
 			// Each guidance item is inspectable in place: opening one shows the
 			// scope it moves between rather than a bare name.
-			const item = review.locator('details').first();
+			const item = review.locator('details').filter({ hasText: `retained-prompt-${label}` });
 			await item.locator('summary').click();
 			await expect(item).toContainText('→');
-			await expect(item).toContainText(/Guidance (that stays behind|the issue picks up)/);
+			await expect(item).toContainText('Before and after');
+			await expect(item).toContainText('Retained issue prompt body');
+			const skill = review.locator('details').filter({ hasText: `retained-skill-${label}` });
+			await skill.locator('summary').click();
+			await expect(skill).toContainText('Retained skill instructions');
+			await expect(skill).toContainText('Retained second file');
 
 			await modal.getByRole('button', { name: 'Cancel' }).click();
 			await expect(modal).toHaveCount(0);
@@ -180,11 +300,34 @@ function suite(label: string, viewport: { width: number; height: number }) {
 			await modal.getByTestId('transfer-destination').selectOption({ label: destinationName });
 			await modal.getByRole('button', { name: 'Review move' }).click();
 			await expect(page.getByTestId('transfer-review')).toBeVisible();
-			await page.getByTestId('transfer-confirm').click();
+			const [transferResponse] = await Promise.all([
+				page.waitForResponse(
+					(response) =>
+						response.request().method() === 'POST' &&
+						response.url().endsWith(`/api/v1/issues/${issueId}/transfer`)
+				),
+				page.getByTestId('transfer-confirm').click()
+			]);
+			expect(transferResponse.status()).toBe(200);
+			const receipt = await transferResponse.json();
+			expect(receipt).toMatchObject({
+				status: 'transferred',
+				issue_id: issueId,
+				old_ref: { ref: `${sourceName}/${sourceNumber}` },
+				new_ref: { ref: `${destinationName}/2` },
+				event_id: expect.any(String),
+				issue_path: `/issues/${destinationName}/2`,
+				preserved: expect.any(Object),
+				context_changes: expect.any(Array),
+				routing: expect.any(Object)
+			});
 
 			// The destination's number is its next one (its first is taken), and
 			// the browser lands on that canonical URL without leaving the issue.
 			await expect(page).toHaveURL(new RegExp(`/issues/${destinationName}/2$`));
+			await expect(page.getByRole('status')).toContainText(
+				`Moved ${sourceName}/${sourceNumber} to ${destinationName}/2`
+			);
 			await expect(page.getByRole('heading', { name: `${sourceName} traveller` })).toBeVisible();
 			await expect(page.getByText('a comment that survives')).toBeVisible();
 			await expect(
@@ -220,6 +363,60 @@ function suite(label: string, viewport: { width: number; height: number }) {
 			expect(options).not.toContain(destinationName);
 			expect(options).toContain(sourceName);
 			await page.close();
+		});
+
+		test('real CLI human and JSON confirmations return the first successful D1 receipt', async ({
+			request
+		}) => {
+			const api = apiClient(request, ALICE.apiKey);
+			const humanIssue = await body<IssueDetail>(
+				await api.post(`/api/v1/projects/${sourceId}/issues`, { title: `CLI human ${label}` })
+			);
+			const jsonIssue = await body<IssueDetail>(
+				await api.post(`/api/v1/projects/${sourceId}/issues`, { title: `CLI JSON ${label}` })
+			);
+			const env = { ...process.env, TINES_API_KEY: ALICE.apiKey, TINES_API_URL: BASE_URL };
+			const human = execFileSync(
+				TSX,
+				[
+					CLI_ENTRY,
+					'issues',
+					'transfer',
+					`${sourceName}/${humanIssue.number}`,
+					'--project',
+					destinationName,
+					'--yes'
+				],
+				{ cwd: CLI_DIR, env, encoding: 'utf8' }
+			);
+			expect(human).toContain(`moved ${sourceName}/${humanIssue.number} to ${destinationName}/`);
+			expect(human).toContain(`${sourceName}/${humanIssue.number} still resolves to this issue`);
+			const json = JSON.parse(
+				execFileSync(
+					TSX,
+					[
+						CLI_ENTRY,
+						'issues',
+						'transfer',
+						`${sourceName}/${jsonIssue.number}`,
+						'--project',
+						destinationName,
+						'--yes',
+						'--json'
+					],
+					{ cwd: CLI_DIR, env, encoding: 'utf8' }
+				)
+			);
+			expect(json).toMatchObject({
+				status: 'transferred',
+				issue_id: jsonIssue.id,
+				old_ref: { ref: `${sourceName}/${jsonIssue.number}` },
+				new_ref: { project_name: destinationName },
+				event_id: expect.any(String)
+			});
+			const canonical = await body<IssueDetail>(await api.get(`/api/v1/issues/${jsonIssue.id}`));
+			expect(canonical.project_name).toBe(destinationName);
+			expect(canonical.number).toBe(json.new_ref.number);
 		});
 
 		test('never offers an archived project, and refuses one archived mid-review', async ({

@@ -39,7 +39,7 @@ tines issues show <project>/<number>
 tines issues move <project>/<number> <action>        # a workflow transition
 tines issues transfer <project>/<number> --project <dest>   # move to another project (keeps ID, record and old refs)
 tines issues transfer <ref> --project <dest> --dry-run      # review only: no number allocated, nothing written
-tines issues transfer <ref> --project <dest> --inspect 0    # print reviewed guidance item [0] in full
+tines issues transfer <ref> --project <dest> --inspect 0    # print any reviewed guidance item, including retained, in full
 tines issues transfer <ref> --project <dest> --yes          # skip the prompt (still commits only the fetched review)
 tines issues comment <project>/<number> - <<'EOF'    # body from stdin; @file also works
 …

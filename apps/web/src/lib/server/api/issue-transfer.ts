@@ -496,9 +496,15 @@ export function transferIssueQueries(
 		WHERE issue.id = ${payload.i} AND ${moved}
 	`.compile(db);
 	const receipt = sql`
-		SELECT issue.id, issue.number, project.name AS project_name
-		FROM issue JOIN project ON project.id = issue.project_id
-		WHERE issue.id = ${payload.i} AND ${moved}
+		SELECT issue.id AS issue_id, issue.number, issue.project_id,
+			project.name AS project_name, event.id AS event_id
+		FROM issue
+		JOIN project ON project.id = issue.project_id
+		JOIN event ON event.id = ${eventId}
+			AND event.issue_id = issue.id
+			AND event.project_id = issue.project_id
+			AND event.type = 'issue.transferred'
+		WHERE issue.id = ${payload.i} AND issue.project_id = ${payload.d} AND ${moved}
 	`.compile(db);
 	return {
 		queries: [issueUpdate, contextUpdate, eventInsert, receipt],
@@ -610,22 +616,35 @@ export async function commitIssueTransfer(
 
 	const batch = transferIssueQueries(db, actor, payload, sections, now);
 	const results = await runAtomic(env, batch.queries);
-	if ((results[0]?.meta?.changes ?? 0) !== 1) {
+	const receiptRows = results[3]?.results;
+	if (!Array.isArray(receiptRows)) {
+		throw new Error('Issue transfer batch returned no receipt result');
+	}
+	if (receiptRows.length === 0) {
 		throw new ApiFail(
 			409,
 			'transfer_preview_stale',
 			'The issue or transfer configuration changed during commit; refresh and confirm again'
 		);
 	}
-	const receipt = results[3]?.results?.[0] as
-		{ project_name?: string; number?: number } | undefined;
-	if (!receipt?.project_name || typeof receipt.number !== 'number') {
-		throw new Error('Issue transfer committed without a receipt');
+	const receipt = receiptRows[0] as Partial<{
+		issue_id: string;
+		project_id: string;
+		project_name: string;
+		number: number;
+		event_id: string;
+	}>;
+	if (
+		receiptRows.length !== 1 ||
+		receipt.issue_id !== issueId ||
+		receipt.project_id !== destinationId ||
+		receipt.event_id !== batch.eventId ||
+		!receipt.project_name ||
+		!Number.isInteger(receipt.number) ||
+		(receipt.number ?? 0) < 1
+	) {
+		throw new Error('Issue transfer committed with a malformed receipt');
 	}
-	// Canonical and historical reads are both exercised here so an allocator or
-	// alias regression cannot masquerade as a successful mutation.
-	await loadIssue(db, actor.userId, { projectName: section.source.name, number: payload.n });
-	await loadIssue(db, actor.userId, { projectName: receipt.project_name, number: receipt.number });
 	// Transfer has committed at this point. Opportunistic dispatch is best-effort:
 	// the periodic sweep remains authoritative, so queue failures must never make
 	// the caller believe the already-durable move failed.
@@ -634,7 +653,10 @@ export async function commitIssueTransfer(
 	} catch (e) {
 		console.error('could not queue dispatch after issue transfer:', e);
 	}
-	const newRef = transferRef(section.destination, receipt.number);
+	const newRef = transferRef(
+		{ ...section.destination, name: receipt.project_name },
+		receipt.number as number
+	);
 	return {
 		status: 'transferred',
 		issue_id: issueId,

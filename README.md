@@ -228,10 +228,10 @@ tines issues transfer Tines/392 --project Platform             # review, then co
 
 Things worth knowing about a move:
 
-- The review is the point: it names the guidance the issue loses with the source, gains from
-  the destination and keeps as its own, the repositories whose URL, branch or checkout
-  directory change, retained pins, and how the destination would route the next run. A missing
-  route, a rule tie or a checkout conflict is disclosed, not a veto.
+- The review is the point: it exposes guidance the issue loses, gains and retains; the effective
+  repository winner and overridden candidates with scope, URL, branch and checkout directory;
+  retained pins; checkout conflicts; and routing before and after. Missing routes, rule ties,
+  unavailable runners and checkout conflicts are disclosed, not vetoes.
 - A preview allocates nothing. The destination number is assigned by the confirmed move, so a
   cancelled review consumes no number and emits no event.
 - A move is refused while a run is assigned, launching or running on the issue, and while

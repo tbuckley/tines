@@ -5,6 +5,7 @@ import {
 	PROJECT,
 	USER,
 	addIssue,
+	addRule,
 	addRun,
 	addRunner,
 	seedBase,
@@ -234,17 +235,36 @@ describe('private issue transfer path', () => {
 				('ctx_src_repo', '${USER}', 'repo', 'app', '', '${PROJECT}',
 					NULL, 'https://example.test/source.git', 'app', 1, 1, ${NOW}, ${NOW}),
 				('ctx_dst_repo', '${USER}', 'repo', 'app', '', '${DESTINATION}',
-					NULL, 'https://example.test/destination.git', 'app', 1, 1, ${NOW}, ${NOW});
+					NULL, 'https://example.test/destination.git', 'app', 1, 1, ${NOW}, ${NOW}),
+				('ctx_issue_repo', '${USER}', 'repo', 'app', '', NULL,
+					NULL, 'https://example.test/issue-override.git', 'app', 2, 1, ${NOW}, ${NOW});
+		`);
+		t.sqlite.exec(`
+			UPDATE context_item SET issue_id = '${issueId}', repo_branch = 'research'
+			WHERE id = 'ctx_issue_repo'
 		`);
 
 		const preview = await previewIssueTransfer(t.env, actor, issueId, DESTINATION, NOW + 100);
 		const change = (id: string) => preview.context.changes.find((c) => c.item_id === id);
 		expect(change('ctx_src_shared')?.change).toBe('removed');
 		expect(change('ctx_dst_shared')?.change).toBe('added');
-		expect(change('ctx_src_repo')?.change).toBe('removed');
-		expect(change('ctx_dst_repo')).toMatchObject({
-			change: 'added',
-			repo_after: { url: 'https://example.test/destination.git', dir: 'app' }
+		expect(change('ctx_issue_repo')).toMatchObject({
+			change: 'retained',
+			effective_before: true,
+			effective_after: true,
+			repo_before: { url: 'https://example.test/issue-override.git', branch: 'research' }
+		});
+		expect(preview.context.before.repos[0].item_id).toBe('ctx_issue_repo');
+		expect(preview.context.after.repos[0].item_id).toBe('ctx_issue_repo');
+		expect(
+			preview.context.before.overridden.find((r) => r.item_id === 'ctx_src_repo')
+		).toMatchObject({
+			repo: { url: 'https://example.test/source.git', dir: 'app' }
+		});
+		expect(
+			preview.context.after.overridden.find((r) => r.item_id === 'ctx_dst_repo')
+		).toMatchObject({
+			repo: { url: 'https://example.test/destination.git', dir: 'app' }
 		});
 		// The issue's own anchored prompt moves with it: same item, new project.
 		expect(change('ctx_transfer')).toMatchObject({
@@ -395,6 +415,48 @@ describe('private issue transfer path', () => {
 			old_ref: result.old_ref.ref,
 			new_ref: result.new_ref.ref
 		});
+	});
+
+	it('uses the request-specific receipt instead of trigger-inclusive change metadata', async () => {
+		const preview = await previewIssueTransfer(t.env, actor, issueId, DESTINATION, NOW);
+		const realBatch = t.env.DB.batch.bind(t.env.DB);
+		t.env.DB.batch = async <T = unknown>(statements: Parameters<Env['DB']['batch']>[0]) => {
+			const results = await realBatch<T>(statements);
+			// Real D1 includes the issue-address AFTER UPDATE trigger in this aggregate.
+			results[0].meta.changes = 2;
+			return results;
+		};
+		const result = await commitIssueTransfer(
+			t.env,
+			actor,
+			issueId,
+			DESTINATION,
+			preview.preview_token!,
+			NOW + 1
+		);
+		expect(result).toMatchObject({
+			status: 'transferred',
+			issue_id: issueId,
+			event_id: expect.any(String),
+			new_ref: { project_id: DESTINATION }
+		});
+		expect(t.all(`SELECT * FROM event WHERE type = 'issue.transferred'`)).toHaveLength(1);
+		expect(t.all(`SELECT * FROM issue_address WHERE issue_id = ?`, issueId)).toHaveLength(2);
+	});
+
+	it('treats a mismatched request receipt as an invariant failure, not a stale guard', async () => {
+		const preview = await previewIssueTransfer(t.env, actor, issueId, DESTINATION, NOW);
+		const realBatch = t.env.DB.batch.bind(t.env.DB);
+		t.env.DB.batch = async <T = unknown>(statements: Parameters<Env['DB']['batch']>[0]) => {
+			const results = await realBatch<T>(statements);
+			const receipt = results[3]?.results?.[0] as { event_id?: string } | undefined;
+			if (receipt) receipt.event_id = 'evt_from_another_request';
+			return results;
+		};
+		await expect(
+			commitIssueTransfer(t.env, actor, issueId, DESTINATION, preview.preview_token!, NOW + 1)
+		).rejects.toThrow('malformed receipt');
+		expect(t.all(`SELECT * FROM event WHERE type = 'issue.transferred'`)).toHaveLength(1);
 	});
 
 	it('returns an unchanged same-project no-op with no allocation or event', async () => {
@@ -668,5 +730,43 @@ describe('private issue transfer path', () => {
 		expect(t.all(`SELECT project_id FROM issue WHERE id = ?`, issueId)[0].project_id).toBe(
 			DESTINATION
 		);
+	});
+
+	it('queues dispatch after the receipt and claims with the destination assignment', async () => {
+		const wallNow = Date.now();
+		t.sqlite.exec(
+			`UPDATE issue SET needs_attention = 0, attempt_count = 0 WHERE id = '${issueId}';
+			 UPDATE issue SET state_id = 'wfs_std_closed' WHERE id = 'iss_destination_occupied'`
+		);
+		setSettings(t);
+		const runnerId = addRunner(t, {
+			id: 'rnr_destination',
+			type: 'local',
+			lastSeen: wallNow
+		});
+		addRule(t, { project: DESTINATION, targets: [{ runner_id: runnerId }] });
+		const preview = await previewIssueTransfer(t.env, actor, issueId, DESTINATION, wallNow);
+		expect(preview.routing.after?.eligible, JSON.stringify(preview.routing.after)).toBe(true);
+		const waits: Promise<unknown>[] = [];
+		const result = await commitIssueTransfer(
+			t.env,
+			actor,
+			issueId,
+			DESTINATION,
+			preview.preview_token!,
+			wallNow + 1,
+			{ env: t.env, ctx: { waitUntil: (promise) => waits.push(promise) } }
+		);
+		expect(result.status).toBe('transferred');
+		expect(waits).toHaveLength(1);
+		await Promise.all(waits);
+		expect(
+			t.all(
+				`SELECT agent_run.issue_id, issue.project_id, agent_run.runner_id
+				 FROM agent_run JOIN issue ON issue.id = agent_run.issue_id
+				 WHERE agent_run.issue_id = ?`,
+				issueId
+			)
+		).toEqual([{ issue_id: issueId, project_id: DESTINATION, runner_id: runnerId }]);
 	});
 });
