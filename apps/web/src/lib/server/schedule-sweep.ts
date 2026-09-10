@@ -72,8 +72,15 @@ export function scheduleExecQuery(db: Kysely<Database>) {
 export function openInstancesQuery(db: Kysely<Database>, scheduleId: string) {
 	return db
 		.selectFrom('issue')
+		.innerJoin('project', 'project.id', 'issue.project_id')
 		.innerJoin('workflow_state as state', 'state.id', 'issue.state_id')
-		.select(['issue.id', 'issue.number', 'issue.title'])
+		.select([
+			'issue.id',
+			'issue.number',
+			'issue.title',
+			'issue.project_id',
+			'project.name as project_name'
+		])
 		.where('issue.scheduled_task_id', '=', scheduleId)
 		.where('state.category', '!=', 'done')
 		.orderBy('issue.number asc');
@@ -165,10 +172,13 @@ export function scheduleEventInsert(
 			: sql`EXISTS (SELECT 1 FROM scheduled_task WHERE id = ${schedule.id} AND next_run_at = ${opts.guardDue})`;
 	const actorUserId = opts.actor?.userId ?? schedule.user_id;
 	const actorApiKeyId = opts.actor?.apiKeyId ?? null;
+	const projectId = opts.issueId
+		? sql`(SELECT project_id FROM issue WHERE id = ${opts.issueId})`
+		: sql`${schedule.project_id}`;
 	return sql`
 		INSERT INTO event (id, user_id, type, actor_user_id, actor_api_key_id, issue_id, project_id, payload, created_at)
 		SELECT ${newId('evt')}, ${schedule.user_id}, ${type}, ${actorUserId}, ${actorApiKeyId},
-			${opts.issueId ?? null}, ${schedule.project_id}, ${JSON.stringify(payload)}, ${opts.now}
+			${opts.issueId ?? null}, ${projectId}, ${JSON.stringify(payload)}, ${opts.now}
 		WHERE ${guard}`.compile(db);
 }
 
@@ -204,7 +214,12 @@ async function runDueSchedule(
 						schedule_id: schedule.id,
 						name: schedule.name,
 						occurrence: due,
-						blocking: blockers.map((b) => ({ issue_id: b.id, number: b.number }))
+						blocking: blockers.map((b) => ({
+							issue_id: b.id,
+							project_id: b.project_id,
+							project_name: b.project_name,
+							number: b.number
+						}))
 					},
 					{ now, guardDue: due }
 				),

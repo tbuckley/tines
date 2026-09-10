@@ -486,6 +486,9 @@ export interface Issue {
 	/** Set when the issue was created by a scheduled task (null once the schedule is deleted). */
 	scheduled_task_id: string | null;
 	scheduled_task_name: string | null;
+	/** The schedule keeps its original project when an instance moves. */
+	scheduled_task_project_id: string | null;
+	scheduled_task_project_name: string | null;
 	/** Pin: replaces routing-rule matching entirely for this issue. */
 	pinned_runner_id: string | null;
 	pinned_runner_name: string | null;

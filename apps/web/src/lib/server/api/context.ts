@@ -767,10 +767,13 @@ function guardedContextEvent(
 	itemId: string,
 	versionAfter: number
 ): CompiledQuery {
+	const projectId = input.issueId
+		? sql`(SELECT project_id FROM issue WHERE id = ${input.issueId})`
+		: sql`${input.projectId}`;
 	return sql`
 		INSERT INTO event (id, user_id, type, actor_user_id, actor_api_key_id, issue_id, project_id, payload, created_at)
 		SELECT ${newId('evt')}, ${actor.userId}, ${input.type}, ${actor.userId}, ${actor.apiKeyId},
-			${input.issueId}, ${input.projectId}, ${JSON.stringify(input.payload)}, ${Date.now()}
+			${input.issueId}, ${projectId}, ${JSON.stringify(input.payload)}, ${Date.now()}
 		WHERE EXISTS (
 			SELECT 1 FROM context_item WHERE id = ${itemId} AND version = ${versionAfter}
 		)`.compile(db);

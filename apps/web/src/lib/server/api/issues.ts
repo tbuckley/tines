@@ -129,6 +129,11 @@ export function issueQuery(db: Kysely<Database>, userId: string) {
 			.leftJoin('issue as eff_issue', 'eff_issue.id', 'effective.effective_issue_id')
 			.leftJoin('workflow_state as eff_state', 'eff_state.id', 'eff_issue.state_id')
 			.leftJoin('scheduled_task', 'scheduled_task.id', 'issue.scheduled_task_id')
+			.leftJoin(
+				'project as scheduled_task_project',
+				'scheduled_task_project.id',
+				'scheduled_task.project_id'
+			)
 			.leftJoin('runner as pin_runner', 'pin_runner.id', 'issue.pinned_runner_id')
 			.selectAll('issue')
 			.select([
@@ -139,6 +144,8 @@ export function issueQuery(db: Kysely<Database>, userId: string) {
 				'state.position as state_position',
 				'state.inherits_from_state_id as state_inherits_from',
 				'scheduled_task.name as scheduled_task_name',
+				'scheduled_task_project.id as scheduled_task_project_id',
+				'scheduled_task_project.name as scheduled_task_project_name',
 				'pin_runner.name as pinned_runner_name'
 			])
 			.select([
@@ -269,6 +276,8 @@ export function serializeIssue(row: IssueRow): Issue {
 		labels: row.labels_json ? (JSON.parse(row.labels_json) as IssueLabel[]) : [],
 		scheduled_task_id: row.scheduled_task_id,
 		scheduled_task_name: row.scheduled_task_name,
+		scheduled_task_project_id: row.scheduled_task_project_id,
+		scheduled_task_project_name: row.scheduled_task_project_name,
 		pinned_runner_id: row.pinned_runner_id,
 		pinned_runner_name: row.pinned_runner_name,
 		pinned_tier: row.pinned_tier as ModelTier | null,

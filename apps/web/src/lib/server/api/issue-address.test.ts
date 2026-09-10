@@ -9,6 +9,7 @@ import {
 	seedBase
 } from '../supervisor/test-fixtures';
 import type { ActorContext } from './core';
+import { eventInsert, eventQuery, serializeEvent } from './events';
 import { createIssue, loadIssue } from './issues';
 import { deleteProject } from './projects';
 import { createTestDb } from './test-db';
@@ -83,6 +84,74 @@ describe('permanent issue addresses', () => {
 				number: 7
 			});
 		}
+	});
+
+	it('keeps historical activity attribution separate from the live canonical ref', async () => {
+		const t = fixture();
+		const id = addIssue(t, { title: 'traveller' });
+		await t.db.executeQuery(
+			eventInsert(t.db, actor, {
+				type: 'issue.updated',
+				issueId: id,
+				projectId: PROJECT,
+				payload: { title: 'before' }
+			})
+		);
+		t.sqlite.exec(`
+			UPDATE issue SET project_id = '${DESTINATION}', number = 7,
+				project_assignment_token = 'assignment-2' WHERE id = '${id}'
+		`);
+
+		const row = await eventQuery(t.db, USER)
+			.where('event.issue_id', '=', id)
+			.where('event.type', '=', 'issue.updated')
+			.executeTakeFirstOrThrow();
+		const event = serializeEvent(row);
+		expect(event.project_name).toBe('demo');
+		expect(event.issue_ref).toMatchObject({ project_name: 'destination', number: 7 });
+
+		// Even a caller holding a stale source project resolves attribution in
+		// the INSERT itself, after the move has committed.
+		await t.db.executeQuery(
+			eventInsert(t.db, actor, {
+				type: 'issue.updated',
+				issueId: id,
+				projectId: PROJECT,
+				payload: { title: 'after' }
+			})
+		);
+		const attribution = new Map(
+			t
+				.all("SELECT project_id, payload FROM event WHERE type = 'issue.updated'")
+				.map((row) => [JSON.parse(row.payload as string).title, row.project_id])
+		);
+		expect(attribution).toEqual(
+			new Map([
+				['before', PROJECT],
+				['after', DESTINATION]
+			])
+		);
+	});
+
+	it('links a moved schedule instance back to the schedule origin', async () => {
+		const t = fixture();
+		const id = addIssue(t, { title: 'scheduled traveller' });
+		t.sqlite.exec(`
+			INSERT INTO scheduled_task
+				(id, project_id, name, title_template, description_template, workflow_id, state_id,
+				 cron, timezone, next_run_at, created_at, updated_at)
+			VALUES ('sch_origin', '${PROJECT}', 'Daily', 'Daily', '', 'wf_standard', '${OPEN}',
+				'0 9 * * *', 'UTC', ${NOW + 1000}, ${NOW}, ${NOW});
+			UPDATE issue SET scheduled_task_id = 'sch_origin', project_id = '${DESTINATION}', number = 7,
+				project_assignment_token = 'assignment-2' WHERE id = '${id}';
+		`);
+
+		expect(await loadIssue(t.db, USER, { id })).toMatchObject({
+			scheduled_task_id: 'sch_origin',
+			scheduled_task_name: 'Daily',
+			scheduled_task_project_id: PROJECT,
+			scheduled_task_project_name: 'demo'
+		});
 	});
 
 	it('protects a former source project even during forced deletion', async () => {

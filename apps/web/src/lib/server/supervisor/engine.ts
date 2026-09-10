@@ -77,10 +77,13 @@ export function supervisorEvent(
 	now: number,
 	guard?: RawBuilder<boolean>
 ): CompiledQuery {
+	const projectId = input.issueId
+		? sql`(SELECT project_id FROM issue WHERE id = ${input.issueId})`
+		: sql`${input.projectId ?? null}`;
 	return sql`
 		INSERT INTO event (id, user_id, type, actor_user_id, actor_api_key_id, issue_id, project_id, payload, created_at)
 		SELECT ${newId('evt')}, ${userId}, ${input.type}, ${userId}, ${null},
-			${input.issueId ?? null}, ${input.projectId ?? null}, ${JSON.stringify(input.payload)}, ${now}
+			${input.issueId ?? null}, ${projectId}, ${JSON.stringify(input.payload)}, ${now}
 		WHERE ${guard ?? sql`1`}`.compile(db);
 }
 

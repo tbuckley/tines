@@ -740,7 +740,8 @@
 				<span class="font-mono">#{data.issue.number}</span>
 				{#if data.issue.scheduled_task_id}
 					<a
-						href="/projects/{data.issue.project_id}?schedule={data.issue.scheduled_task_id}"
+						href="/projects/{data.issue.scheduled_task_project_id}?schedule={data.issue
+							.scheduled_task_id}"
 						class="bg-muted text-muted-foreground hover:text-foreground ml-1 inline-flex items-center gap-1 rounded-full px-2 py-0.5 align-middle text-xs"
 						title="Created by schedule “{data.issue.scheduled_task_name}”"
 					>
