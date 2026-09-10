@@ -84,8 +84,10 @@
 			error = fail.message ?? 'The move failed';
 			// A refreshed review needs a new, deliberate confirmation: never repost.
 			if (fail.code === 'transfer_preview_stale') {
-				stale = true;
+				// The refresh clears the flags it is about to re-raise, so the
+				// notice is raised after it: the operator must see what changed.
 				await review();
+				stale = true;
 			} else if (fail.code === 'transfer_conflict') {
 				preview = null;
 			}

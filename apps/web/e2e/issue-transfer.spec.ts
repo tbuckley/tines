@@ -152,6 +152,102 @@ function suite(label: string, viewport: { width: number; height: number }) {
 			expect(options).toContain(sourceName);
 			await page.close();
 		});
+
+		test('never offers an archived project, and refuses one archived mid-review', async ({
+			browser,
+			request
+		}) => {
+			// The issue now lives in the destination; its old source is the one
+			// this test archives.
+			const api = apiClient(request, ALICE.apiKey);
+			const page = await open(browser, `/issues/${destinationName}/2`);
+			const modal = page.getByRole('dialog');
+			await clickToOpen(page.getByTestId('move-to-project'), modal);
+			const chooser = modal.getByTestId('transfer-destination');
+			await chooser.selectOption({ label: sourceName });
+			await modal.getByRole('button', { name: 'Review move' }).click();
+			await expect(page.getByTestId('transfer-review')).toBeVisible();
+
+			// Archived under the open review: confirming is refused with the
+			// server's own reason, and nothing moves.
+			await api.post(`/api/v1/projects/${sourceId}/archive`, {});
+			await page.getByTestId('transfer-confirm').click();
+			await expect(modal.getByRole('alert').filter({ hasText: /archived/i })).toBeVisible();
+			const still = await body<IssueDetail>(await api.get(`/api/v1/issues/${issueId}`));
+			expect(still.project_name).toBe(destinationName);
+			expect(still.number).toBe(2);
+
+			// And an archived project is not offered as a destination at all.
+			await modal.getByRole('button', { name: 'Cancel' }).click();
+			await gotoHydrated(page, `/issues/${destinationName}/2`);
+			await clickToOpen(page.getByTestId('move-to-project'), modal);
+			expect(await chooser.locator('option').allTextContents()).not.toContain(sourceName);
+
+			await api.post(`/api/v1/projects/${sourceId}/unarchive`, {});
+			await page.close();
+		});
+
+		test('asks again when the guidance changes under a review', async ({ browser, request }) => {
+			const page = await open(browser, `/issues/${destinationName}/2`);
+			const modal = page.getByRole('dialog');
+			await clickToOpen(page.getByTestId('move-to-project'), modal);
+			await modal.getByTestId('transfer-destination').selectOption({ label: sourceName });
+			await modal.getByRole('button', { name: 'Review move' }).click();
+			await expect(page.getByTestId('transfer-review')).toBeVisible();
+
+			// Someone adds guidance at the destination after the review was read.
+			const api = apiClient(request, ALICE.apiKey);
+			const late = await body<{ id: string }>(
+				await api.post('/api/v1/context', {
+					kind: 'prompt',
+					name: `late-guidance-${label}-${runId}`,
+					project_id: sourceId,
+					body: 'added after the review'
+				})
+			);
+
+			await page.getByTestId('transfer-confirm').click();
+			// Refused and refreshed, not reposted: the operator confirms the
+			// guidance that is true now.
+			await expect(page.getByTestId('transfer-stale')).toBeVisible();
+			await expect(page.getByTestId('transfer-review')).toContainText(
+				`late-guidance-${label}-${runId}`
+			);
+			const midway = await body<IssueDetail>(await api.get(`/api/v1/issues/${issueId}`));
+			expect(midway.project_name).toBe(destinationName);
+
+			// The refreshed review commits on a second, deliberate confirmation.
+			await page.getByTestId('transfer-confirm').click();
+			await expect(page).toHaveURL(new RegExp(`/issues/${sourceName}/\\d+$`));
+			const moved = await body<IssueDetail>(await api.get(`/api/v1/issues/${issueId}`));
+			expect(moved.project_name).toBe(sourceName);
+			expect(moved.id).toBe(issueId);
+			await api.delete(`/api/v1/context/${late.id}`);
+			await page.close();
+		});
+
+		test('contains focus, closes on Escape and writes nothing', async ({ browser, request }) => {
+			const api = apiClient(request, ALICE.apiKey);
+			const before = await body<IssueDetail>(await api.get(`/api/v1/issues/${issueId}`));
+			const page = await open(browser, `/issues/${before.project_name}/${before.number}`);
+			const modal = page.getByRole('dialog');
+			await clickToOpen(page.getByTestId('move-to-project'), modal);
+
+			// Tab walks the dialog's own controls and never escapes to the page.
+			for (let i = 0; i < 8; i++) {
+				await page.keyboard.press('Tab');
+				expect(await modal.evaluate((el) => el.contains(document.activeElement))).toBe(true);
+			}
+			await page.keyboard.press('Shift+Tab');
+			await page.keyboard.press('Escape');
+			await expect(modal).toHaveCount(0);
+
+			// Escape is a cancellation: the address is untouched.
+			const after = await body<IssueDetail>(await api.get(`/api/v1/issues/${issueId}`));
+			expect(after.project_name).toBe(before.project_name);
+			expect(after.number).toBe(before.number);
+			await page.close();
+		});
 	});
 }
 
