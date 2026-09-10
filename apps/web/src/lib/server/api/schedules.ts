@@ -565,11 +565,13 @@ export async function runScheduleNow(
 				422,
 				'schedule_blocked',
 				`Schedule "${schedule.name}" requires all previous instances to be closed; ${blockers.length} still open: ${blockers
-					.map((b) => `#${b.number} "${b.title}"`)
+					.map((b) => `${b.project_name}/${b.number} "${b.title}"`)
 					.join(', ')}`,
 				{
 					open_instances: blockers.map((b) => ({
 						issue_id: b.id,
+						project_id: b.project_id,
+						project_name: b.project_name,
 						number: b.number,
 						title: b.title
 					}))

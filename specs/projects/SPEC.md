@@ -212,3 +212,36 @@ saying what the scope is.
 - Remembering non-project filters server-side, or more than one focus at a time.
 - Moving issues between projects, project membership (Tines/205), per-project
   labels, and project nesting.
+
+### Moving an issue to another project (Tines/392)
+
+Supersedes the non-goal above: an issue *can* be moved between projects, and a
+move preserves everything but the address. `tines issues transfer <ref>
+--project <dest>`, `GET/POST /api/v1/issues/:id/transfer` and the issue page's
+"Move to project…" all drive one contract — preview, then commit the token that
+preview returned. Project **focus** is still untouched by a move, and everything
+else in the non-goals list (membership, per-project labels, nesting) stands.
+
+1. **Identity.** The issue row keeps its ID; only `project_id`, `number`, an
+   internal assignment token and `updated_at` change. Comments, artifacts and
+   their versions and bytes, labels, links, runs, workflow/state/state-entry
+   time, gate freshness, pins, attempts, parked status and schedule membership
+   are never copied and never rewritten.
+2. **Addresses.** Every number the issue has ever held is a permanent row in
+   `issue_address`, which is also the allocator: ordinary creation, starters and
+   scheduled instances all take `MAX(issue_address.number) + 1`, so moving the
+   highest-numbered issue away cannot free its number for reuse. Old refs
+   resolve for reads and authorized writes; old browser URLs canonicalize.
+3. **Deletion.** A project that owns a historical address refuses deletion with
+   `422 project_has_issue_aliases`, `--force-context` included, and offers
+   archive instead.
+4. **Authority.** Human sessions and ordinary named keys commit; a run key may
+   read the preview and always gets `403 run_key_forbidden` on the POST.
+   Archived source or destination, and an assigned/launching/running issue, are
+   refusals with a remedy — never a drain or an automatic cancellation.
+5. **Freshness.** The preview signs a witness of the move-relevant issue,
+   context and configuration; the commit re-compares those exact SQL witnesses
+   inside its guarded UPDATE. A change means `409 transfer_preview_stale` and an
+   explicit new confirmation. Capacity, heartbeats and spending stay advisory.
+6. **No allocation on preview.** Only the confirmed move takes a number, and a
+   same-project request is a no-op: no number, no event, no token rotation.

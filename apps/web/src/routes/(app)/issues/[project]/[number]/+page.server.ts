@@ -1,4 +1,4 @@
-import { error } from '@sveltejs/kit';
+import { error, redirect } from '@sveltejs/kit';
 import { truncate } from '$lib/format';
 import { effectiveContextForIssue, listContextItems } from '$lib/server/api/context';
 import { eventQuery, serializeEvent } from '$lib/server/api/events';
@@ -25,7 +25,15 @@ import type { PageServerLoad } from './$types';
  * paint. Keep the awaited set small: anything moved out of `deferred` puts
  * itself back on the navigation critical path.
  */
-export const load: PageServerLoad = async ({ locals, platform, params, depends, parent }) => {
+export const load: PageServerLoad = async ({
+	locals,
+	platform,
+	params,
+	depends,
+	parent,
+	url,
+	isDataRequest
+}) => {
 	const db = getDb(platform!.env);
 	const userId = locals.user!.id;
 
@@ -60,6 +68,12 @@ export const load: PageServerLoad = async ({ locals, platform, params, depends, 
 			);
 		}
 	);
+	const canonicalPath = `/issues/${encodeURIComponent(issue.project_name)}/${issue.number}`;
+	if (!isDataRequest && url.pathname !== canonicalPath) {
+		// A native document redirect retains the browser fragment. Client data
+		// navigations are canonicalized in +page.svelte where the hash is visible.
+		redirect(307, `${canonicalPath}${url.search}`);
+	}
 
 	// Wave 2: everything else, in parallel.
 	const detailPromise = getIssueDetail(db, userId, issue, {
@@ -91,6 +105,7 @@ export const load: PageServerLoad = async ({ locals, platform, params, depends, 
 
 	return {
 		issue: issueDetail,
+		canonicalPath,
 		events,
 		workflows: await workflowsPromise,
 		// `projects` comes from the app layout.

@@ -356,6 +356,12 @@
 		workflows={data.workflows}
 	/>
 
+	<IssuePagination
+		pagination={data.pagination}
+		itemCount={data.issues.length}
+		label="Issue pagination above results"
+		class="mb-4"
+	/>
 	<IssueList
 		issues={data.issues}
 		showProject={false}
@@ -367,7 +373,12 @@
 					? 'No issues match these filters.'
 					: 'No issues in this project yet.'}
 	/>
-	<IssuePagination pagination={data.pagination} itemCount={data.issues.length} />
+	<IssuePagination
+		pagination={data.pagination}
+		itemCount={data.issues.length}
+		label="Issue pagination below results"
+		announceCount={false}
+	/>
 </div>
 
 {#if data.schedules.length > 0}

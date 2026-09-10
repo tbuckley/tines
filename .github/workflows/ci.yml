@@ -48,6 +48,12 @@ jobs:
 
       - run: pnpm test
 
+      # The navigation probe (docs/PERFORMANCE.md) is opt-in for `pnpm test`;
+      # run it here so a `load` signature change or a duplicated statement is
+      # caught on the PR, not by the next person who reads the docs. ~1 s.
+      # It gates execution and the zero-duplicates rule, never timings.
+      - run: pnpm --filter web perf:nav
+
   e2e-shard:
     name: Playwright e2e
     runs-on: ubuntu-latest

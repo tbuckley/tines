@@ -520,6 +520,14 @@ async function runContextWrite(env: Env, queries: CompiledQuery[]): Promise<D1Re
 	try {
 		return await runAtomic(env, queries);
 	} catch (e) {
+		if (e instanceof Error && e.message.includes('incoherent_issue_project_scope')) {
+			throw new ApiFail(
+				409,
+				'scope_incoherent',
+				'The issue changed projects while this context write was in flight; re-read its scope and retry',
+				{ field: 'project_id' }
+			);
+		}
 		if (
 			e instanceof Error &&
 			e.message.includes('UNIQUE constraint failed') &&
@@ -767,10 +775,13 @@ function guardedContextEvent(
 	itemId: string,
 	versionAfter: number
 ): CompiledQuery {
+	const projectId = input.issueId
+		? sql`(SELECT project_id FROM issue WHERE id = ${input.issueId})`
+		: sql`${input.projectId}`;
 	return sql`
 		INSERT INTO event (id, user_id, type, actor_user_id, actor_api_key_id, issue_id, project_id, payload, created_at)
 		SELECT ${newId('evt')}, ${actor.userId}, ${input.type}, ${actor.userId}, ${actor.apiKeyId},
-			${input.issueId}, ${input.projectId}, ${JSON.stringify(input.payload)}, ${Date.now()}
+			${input.issueId}, ${projectId}, ${JSON.stringify(input.payload)}, ${Date.now()}
 		WHERE EXISTS (
 			SELECT 1 FROM context_item WHERE id = ${itemId} AND version = ${versionAfter}
 		)`.compile(db);
@@ -965,6 +976,13 @@ export async function updateContextItem(
 			})
 			.where('id', '=', id)
 			.where('version', '=', row.version)
+			// Transfer deliberately preserves version. Fence the complete scope
+			// tuple too, so an edit read before a move can neither restore the
+			// source project nor attach files/events to the wrong scope.
+			.where(sql<boolean>`project_id IS ${row.project_id}`)
+			.where(sql<boolean>`workflow_state_id IS ${row.workflow_state_id}`)
+			.where(sql<boolean>`label_id IS ${row.label_id}`)
+			.where(sql<boolean>`issue_id IS ${row.issue_id}`)
 			.compile()
 	);
 	if (filesChanged && files !== undefined) {
@@ -1194,7 +1212,7 @@ export function stitchPrompt(parts: StitchPart[]): string {
 		.join('\n\n');
 }
 
-interface MatchTarget {
+export interface MatchTarget {
 	projectId: string;
 	/** The issue's state and its ancestors, root → leaf; the leaf is the issue's own state. */
 	stateChain: string[];
@@ -1248,7 +1266,40 @@ async function resolveStateChain(db: Kysely<Database>, leafStateId: string): Pro
 	return chain.length > 0 ? chain : [leafStateId];
 }
 
-function matchingItemsQuery(db: Kysely<Database>, userId: string, target: MatchTarget) {
+/**
+ * Reads project∧issue rows of one project as though they belonged to another —
+ * what a transfer does to them atomically at commit. Only the project dimension
+ * and its display names move; identity, version, position and every other
+ * dimension are untouched, here and in the guarded UPDATE.
+ */
+export interface MatchProjection {
+	fromProjectId: string;
+	toProjectId: string;
+	toProjectName: string | null;
+	toProjectArchivedAt: number | null;
+}
+
+function projectRow(row: ItemRow, projection: MatchProjection | undefined): ItemRow {
+	if (!projection) return row;
+	if (row.project_id !== projection.fromProjectId || !row.issue_id) return row;
+	// Only the item's own project dimension moves. The issue reference in its
+	// scope label keeps the address the issue answers to today: a preview has no
+	// destination number yet, and that project's number N belongs to a different
+	// issue. The old ref keeps resolving after the move, so it stays truthful.
+	return {
+		...row,
+		project_id: projection.toProjectId,
+		scope_project_name: projection.toProjectName,
+		scope_project_archived_at: projection.toProjectArchivedAt
+	};
+}
+
+function matchingItemsQuery(
+	db: Kysely<Database>,
+	userId: string,
+	target: MatchTarget,
+	projection?: MatchProjection
+) {
 	// Artifacts are deliberately not part of the effective context: nothing
 	// is stitched into the prompt, nothing is seeded into a workspace.
 	return contextItemQuery(db, userId)
@@ -1257,7 +1308,18 @@ function matchingItemsQuery(db: Kysely<Database>, userId: string, target: MatchT
 			eb.and([
 				eb.or([
 					eb('context_item.project_id', 'is', null),
-					eb('context_item.project_id', '=', target.projectId)
+					eb('context_item.project_id', '=', target.projectId),
+					// A transfer preview reads the rows anchored to this issue in the
+					// project it is leaving as if they had already been rescoped: the
+					// commit moves their project dimension with the issue.
+					...(projection
+						? [
+								eb.and([
+									eb('context_item.project_id', '=', projection.fromProjectId),
+									eb('context_item.issue_id', '=', target.issueId)
+								])
+							]
+						: [])
 				]),
 				eb.or([
 					eb('context_item.workflow_state_id', 'is', null),
@@ -1410,7 +1472,7 @@ function dedupeByName(
 	};
 }
 
-async function issueMatchTarget(
+export async function issueMatchTarget(
 	db: Kysely<Database>,
 	userId: string,
 	issueId: string
@@ -1558,12 +1620,28 @@ export async function effectiveContextForIssue(
 	db: Kysely<Database>,
 	userId: string,
 	issueId: string,
-	{ skillFiles = true }: { skillFiles?: boolean } = {}
+	opts: { skillFiles?: boolean } = {}
 ): Promise<EffectiveContext> {
-	const target = await issueMatchTarget(db, userId, issueId);
+	return effectiveContextForTarget(db, userId, await issueMatchTarget(db, userId, issueId), opts);
+}
+
+/**
+ * The effective context of an explicit match target — the assembly shared by
+ * the issue's own resolution and a transfer preview's hypothetical destination.
+ * One matcher, one precedence: a preview that disagreed with the launch would
+ * be worse than no preview at all.
+ */
+export async function effectiveContextForTarget(
+	db: Kysely<Database>,
+	userId: string,
+	target: MatchTarget,
+	{ skillFiles = true, projection }: { skillFiles?: boolean; projection?: MatchProjection } = {}
+): Promise<EffectiveContext> {
 	const leafStateId = target.stateChain[target.stateChain.length - 1];
 	const rows = sortMatched(
-		await matchingItemsQuery(db, userId, target).execute(),
+		(await matchingItemsQuery(db, userId, target, projection).execute()).map((row) =>
+			projectRow(row, projection)
+		),
 		target.stateChain
 	);
 

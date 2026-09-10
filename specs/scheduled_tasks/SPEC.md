@@ -214,3 +214,5 @@ A "Scheduled tasks" section on the project detail page (hidden when the project 
 - **UI placement**: managed in a per-project "Scheduled tasks" section (no global schedules page yet); scheduled issues carry a badge.
 - **Attribution**: sweep-created issues/events are attributed to the owning user with the schedule identified in the payload, displayed as "via schedule *name*".
 - **Flood guardrail**: recurrences firing more often than hourly are rejected at validation time.
+
+- **2026-09-10, Tines/392 — a moved instance keeps its schedule**: transferring an instance to another project does not detach it. It keeps `scheduled_task_id`, still blocks its schedule's closure gate until it is done, and links back to the schedule in the schedule's *own* project. Future instances continue to be created there, with a number taken from that project's address ledger — never a number a moved issue once held.

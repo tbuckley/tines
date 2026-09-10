@@ -9,22 +9,57 @@ test.describe('issue list pagination', () => {
 
 	test('steps through the focused issues list and resets on a filter', async ({ page }) => {
 		await gotoHydrated(page, `/issues?project=${PAGINATION.projectName}`);
-		await expect(page.getByText('100 issues on this page')).toBeVisible();
+		await expect(page.getByText('100 issues on this page')).toHaveCount(2);
 		await expect(page.getByText('Page issue 205', { exact: true })).toBeVisible();
 		await expect(page.getByText('Page issue 105', { exact: true })).toHaveCount(0);
+		await expect(
+			page.getByRole('navigation', { name: 'Issue pagination above results' })
+		).toBeVisible();
+		await expect(
+			page.getByRole('navigation', { name: 'Issue pagination below results' })
+		).toBeVisible();
+		await expect(
+			page
+				.getByRole('navigation', { name: 'Issue pagination above results' })
+				.locator('[aria-live]')
+		).toHaveCount(1);
+		await expect(
+			page
+				.getByRole('navigation', { name: 'Issue pagination below results' })
+				.locator('[aria-live]')
+		).toHaveCount(0);
 
-		await page.getByRole('link', { name: 'Next' }).click();
+		await page
+			.getByRole('navigation', { name: 'Issue pagination above results' })
+			.getByRole('link', { name: 'Next' })
+			.click();
 		await expect(page).toHaveURL(/after=.*page_scope=prj_e2e_pagination/);
 		await expect(page.getByText('Page issue 105', { exact: true })).toBeVisible();
 		const bounded = page.url();
 		await page.reload();
 		await expect(page).toHaveURL(bounded);
 		await expect(page.getByText('Page issue 105', { exact: true })).toBeVisible();
+		const topPrevious = page
+			.getByRole('navigation', { name: 'Issue pagination above results' })
+			.getByRole('link', { name: 'Previous' });
+		await expect(topPrevious).toBeVisible();
+		expect(await page.evaluate(() => window.scrollY)).toBe(0);
+		await topPrevious.click();
+		await expect(page.getByText('Page issue 205', { exact: true })).toBeVisible();
+
+		await gotoHydrated(page, bounded);
 		await page.getByRole('textbox', { name: 'Search issues' }).fill('Page issue 105');
 		await page.getByRole('textbox', { name: 'Search issues' }).press('Enter');
 		await expect(page).toHaveURL(/q=Page(?:\+|%20)issue(?:\+|%20)105/);
 		await expect(page).not.toHaveURL(/(?:after|before|page_scope)=/);
 		await expect(page.getByText('Page issue 105', { exact: true })).toBeVisible();
+		await expect(
+			page.getByRole('navigation', { name: 'Issue pagination above results' })
+		).toHaveCount(0);
+		await expect(
+			page.getByRole('navigation', { name: 'Issue pagination below results' })
+		).toHaveCount(0);
+		await expect(page.getByText(/issues? on this page/)).toHaveCount(0);
 
 		await gotoHydrated(page, bounded);
 		await page.getByRole('link', { name: /^Active/ }).click();
@@ -36,7 +71,20 @@ test.describe('issue list pagination', () => {
 		page
 	}) => {
 		await gotoHydrated(page, `/projects/${PAGINATION.projectId}`);
-		await page.getByRole('link', { name: 'Next' }).click();
+		await expect(
+			page
+				.getByRole('navigation', { name: 'Issue pagination above results' })
+				.locator('[aria-live]')
+		).toHaveCount(1);
+		await expect(
+			page
+				.getByRole('navigation', { name: 'Issue pagination below results' })
+				.locator('[aria-live]')
+		).toHaveCount(0);
+		await page
+			.getByRole('navigation', { name: 'Issue pagination above results' })
+			.getByRole('link', { name: 'Next' })
+			.click();
 		await expect(page).toHaveURL(/\/projects\/prj_e2e_pagination\?after=/);
 		await expect(page.getByText('Page issue 105', { exact: true })).toBeVisible();
 		expect((await page.goto('/issues?after=one&before=two'))?.status()).toBe(400);
@@ -55,13 +103,16 @@ test.describe('issue list pagination', () => {
 				page.getByText('No issues on this page. Results may have changed.')
 			).toBeVisible();
 
-			const recovery = page.getByRole('link', { name: 'First page' });
-			await expect(recovery).toBeVisible();
-			const box = await readSettled(() => recovery.boundingBox(), { timeout: 3_000 });
-			expect(box).not.toBeNull();
-			expect(box!.height).toBeGreaterThanOrEqual(44);
-			expect(box!.width).toBeGreaterThanOrEqual(44);
-			expect(box!.x + box!.width).toBeLessThanOrEqual(PHONE.width);
+			const recoveries = page.getByRole('link', { name: 'First page' });
+			await expect(recoveries).toHaveCount(2);
+			for (const recovery of await recoveries.all()) {
+				await expect(recovery).toBeVisible();
+				const box = await readSettled(() => recovery.boundingBox(), { timeout: 3_000 });
+				expect(box).not.toBeNull();
+				expect(box!.height).toBeGreaterThanOrEqual(44);
+				expect(box!.width).toBeGreaterThanOrEqual(44);
+				expect(box!.x + box!.width).toBeLessThanOrEqual(PHONE.width);
+			}
 			expect(
 				await page.evaluate(
 					() => document.documentElement.scrollWidth <= document.documentElement.clientWidth

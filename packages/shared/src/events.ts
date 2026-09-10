@@ -120,6 +120,14 @@ const DESCRIBERS: Record<KnownEventType, Describer> = {
 		}
 		return segs;
 	},
+	'issue.transferred': (_ev, p) => [
+		text('transferred'),
+		selfRef(),
+		text('from'),
+		name(p.old_ref),
+		text('to'),
+		name(p.new_ref)
+	],
 	'issue.transitioned': (_ev, p) => {
 		const segs = [text('moved'), selfRef()];
 		if (p.action) segs.push(text('via'), name(p.action));
