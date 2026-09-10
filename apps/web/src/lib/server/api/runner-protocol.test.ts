@@ -1243,6 +1243,63 @@ describe('resume (retention and delivery)', () => {
 		expect(resources(t)).toHaveLength(0);
 	});
 
+	it('retains nothing when a human, not the run, moved the issue into the awaiting state', async () => {
+		// The end state is awaiting_human either way; what differs is who
+		// authored the transition. Only a run that handed the work back has a
+		// conversation worth continuing — one a human closed out around has
+		// no idea it happened.
+		const t = world();
+		const runnerId = resumeRunner(t);
+		const issue = addIssue(t);
+		const { runId } = await deliver(t, runnerId, issue);
+		// A human moves it; the run itself never transitions anything.
+		addTransitionEvent(t, { issueId: issue, apiKeyId: null, at: NOW + 20, to: REVIEW });
+		t.sqlite.prepare('UPDATE issue SET state_id = ? WHERE id = ?').run(REVIEW, issue);
+		const run = await finishRun(
+			t.db,
+			t.env,
+			await runnerRow(t, runnerId),
+			runId,
+			{
+				status: 'completed',
+				provider_session_id: 'sess-abc',
+				workspace_path: '/tmp/ws/run1'
+			} as Parameters<typeof finishRun>[4],
+			NOW + 30
+		);
+		expect(run.outcome).not.toBe('advanced');
+		expect(resources(t)).toHaveLength(0);
+	});
+
+	it('a rate-limited finish is held to its reset, never counted as an interruption', async () => {
+		// `endRun` takes a rate-limited finish as `interrupted`, so the arms
+		// below it stay one chain rather than two `if`s. Splitting them is a
+		// behavioural no-op today — `noteInterruption` returns early while a
+		// backoff window is live — which is exactly why the outcome deserves
+		// an assertion of its own: this is what must stay true if that guard
+		// ever moves.
+		const t = world();
+		const runnerId = resumeRunner(t);
+		const issue = addIssue(t);
+		const { runId } = await deliver(t, runnerId, issue);
+		await finishRun(
+			t.db,
+			t.env,
+			await runnerRow(t, runnerId),
+			runId,
+			{
+				status: 'failed',
+				error: 'usage limit reached',
+				judgment: 'rate_limited',
+				resume_at: NOW + 60 * 60 * 1000
+			} as Parameters<typeof finishRun>[4],
+			NOW + 30
+		);
+		const runner = await runnerRow(t, runnerId);
+		expect(runner.launch_failures).toBe(0);
+		expect(runner.backoff_until).toBeGreaterThanOrEqual(NOW + 60 * 60 * 1000);
+	});
+
 	it('a send-back on the same runner is delivered as a resume with the reduced prompt', async () => {
 		const t = world();
 		const runnerId = resumeRunner(t);

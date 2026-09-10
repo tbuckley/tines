@@ -126,6 +126,16 @@ async function waitFor(predicate: () => boolean, timeoutMs = 10_000): Promise<bo
 	return predicate();
 }
 
+/** The kept marker, or null while it is absent (or, historically, half-written). */
+function readMarker(ws: string): KeptWorkspaceMarker | null {
+	if (!existsSync(keptMarkerPath(ws))) return null;
+	try {
+		return JSON.parse(readFileSync(keptMarkerPath(ws), 'utf8')) as KeptWorkspaceMarker;
+	} catch {
+		return null;
+	}
+}
+
 let child: ChildProcess | null = null;
 let configDir: string | null = null;
 let server: Server | null = null;
@@ -170,10 +180,13 @@ describe('--keep-workspaces', () => {
 			error: 'harness exited with code 3',
 			usage: { cost_source: 'none' }
 		});
-		expect(await waitFor(() => existsSync(keptMarkerPath(ws)))).toBe(true);
+		// Wait on a *parseable* marker: the write is atomic (config.ts), but
+		// polling existsSync alone would still be a race if it ever stopped
+		// being — this is the assertion that caught it.
+		expect(await waitFor(() => readMarker(ws) !== null)).toBe(true);
 		// The clone the agent was editing is still there, not just the marker.
 		expect(existsSync(join(ws, 'prompt.md'))).toBe(true);
-		const marker = JSON.parse(readFileSync(keptMarkerPath(ws), 'utf8')) as KeptWorkspaceMarker;
+		const marker = readMarker(ws)!;
 		expect(marker).toMatchObject({
 			run_id: RUN_ID,
 			issue_ref: 'Stub/1',
@@ -203,7 +216,10 @@ describe('--keep-workspaces', () => {
 			status: 'completed',
 			usage: { cost_source: 'none' }
 		});
-		expect(await waitFor(() => existsSync(keptMarkerPath(ws)))).toBe(true);
+		// Wait on a *parseable* marker: the write is atomic (config.ts), but
+		// polling existsSync alone would still be a race if it ever stopped
+		// being — this is the assertion that caught it.
+		expect(await waitFor(() => readMarker(ws) !== null)).toBe(true);
 		const marker = JSON.parse(readFileSync(keptMarkerPath(ws), 'utf8')) as KeptWorkspaceMarker;
 		expect(marker.status).toBe('completed');
 		expect(marker.error).toBeUndefined();

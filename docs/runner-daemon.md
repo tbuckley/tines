@@ -69,7 +69,10 @@ stitched context + issue block), `skills/<name>/…`, `repos.json`, and a clone 
 repository made with the machine's own git credentials. The harness runs with
 `TINES_API_KEY` set to the run's ephemeral key and `TINES_API_URL` set to the API base.
 When the run settles the workspace is deleted, unless `--keep-workspaces` says otherwise
-(see "Debugging a failed run").
+(see "Debugging a failed run") or the supervisor retained it for a resume — a run that moved
+its issue into a state awaiting a human keeps its workspace whatever the mode, so the
+send-back can continue in it (see "Resuming a send-back"). `--keep-workspaces-for` and
+`--keep-workspaces-max` bound those the same way.
 
 The [Code repository starter](../README.md#your-first-project-hosted) stores its repository
 URL and optional base branch as project context. Effective issue context exports that pin
@@ -194,7 +197,10 @@ written by the daemon and by the harness, in this order:
    the moment the supervisor settles the run.
 6. `workspace kept at <path>`, only when `--keep-workspaces` retained this run's
    workspace (see below). It is the daemon's own note about what it left on disk, so it
-	 comes after the harness's exit line rather than before it.
+	 comes after the harness's exit line rather than before it. A workspace held for a
+	 resume is announced on the daemon's own console instead — `run <id> workspace kept for
+	 resume at <path>` — because the retention is only known once the finish report comes
+	 back, by which time the run's log is closed.
 
 When a structured harness finishes, its terminal report is also saved on the run. Claude
 Code supplies provider cost, input/output/cache tokens, and its session id. Codex supplies
@@ -202,7 +208,30 @@ input/output/cache-read tokens and its thread id but no dollar cost, so its toke
 shown without pretending it has been priced. Custom harnesses and processes that stop before
 a terminal usage event are marked `unreported`. Usage already emitted is retained even when
 the harness exits unsuccessfully. The session/thread id is shown on the run row and by
-`tines runs show`, ready for future resume support.
+`tines runs show`, and is what a resumed launch continues.
+
+## Resuming a send-back
+
+A run that hands its issue back to a human usually gets sent back to the same stage minutes
+or hours later, and today that means a cold start: fresh workspace, fresh clone, and an
+agent re-reading the repository from zero. When the runner is opted in (Agents → the
+runner's resume settings, off by default), the supervisor instead keeps the finished run's
+workspace and its harness session, and the send-back is delivered as a continuation:
+
+- the daemon launches in the **kept workspace** — no wipe, no re-clone, no skills or
+  `repos.json` rewrite; only `prompt.md` changes;
+- Claude Code is launched as `claude -p --resume <session-id> …`, so the conversation
+  carries on rather than starting over;
+- the prompt is the reduced continuation message (what changed since the last run, the
+  current stage's instructions and the issue block), not the full cold launch prompt;
+- the launch banner names it: `# tines runner: … resumed=<previous-run-id>`, and the run
+  row says `resumed run <id>`.
+
+Every guard falls back to a normal cold launch, silently: a window that has closed (48h by
+default), a previous conversation that has grown past the runner's size guards, a different
+runner, a changed model or harness, or a workspace that is no longer on disk (the daemon
+logs `resume workspace <path> is gone; launching fresh`). Nothing about a resumed run is
+required for correctness — it is only the clone and the re-exploration that are skipped.
 
 ## Keep it running
 

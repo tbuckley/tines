@@ -7,7 +7,15 @@
  * TINES_API_KEY is set); the file is for humans, who otherwise have to
  * export both variables in every shell before a single command works.
  */
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import {
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	renameSync,
+	rmSync,
+	unlinkSync,
+	writeFileSync
+} from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -26,9 +34,24 @@ export function readJsonFile<T>(path: string): T | null {
 	}
 }
 
+/**
+ * Atomic: write a sibling temp file, then rename over the target. A plain
+ * `writeFileSync` is observable half-written — a reader that polls for the
+ * file (the daemon's own kept-workspace sweep, a test waiting on the marker,
+ * another daemon) can catch it empty and parse nothing. Rename within the
+ * directory is atomic on every platform we run on, so the file either is not
+ * there or is complete.
+ */
 export function writeJsonFile(path: string, value: unknown, { secret = false } = {}): void {
 	mkdirSync(dirname(path), { recursive: true });
-	writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, secret ? { mode: 0o600 } : {});
+	const tmp = `${path}.tmp-${process.pid}`;
+	try {
+		writeFileSync(tmp, `${JSON.stringify(value, null, 2)}\n`, secret ? { mode: 0o600 } : {});
+		renameSync(tmp, path);
+	} catch (e) {
+		rmSync(tmp, { force: true });
+		throw e;
+	}
 }
 
 // ---------------------------------------------------------------------------
