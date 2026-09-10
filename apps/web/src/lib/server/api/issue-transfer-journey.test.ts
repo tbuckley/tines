@@ -73,6 +73,14 @@ function record(t: TestDb, issueId: string) {
 			WHERE ci.issue_id = ? AND ci.kind = 'artifact' ORDER BY ci.id, av.version`,
 			issueId
 		),
+		artifactFiles: one(
+			`SELECT avf.id, avf.artifact_version_id, avf.path, avf.size_bytes, avf.r2_key
+			FROM artifact_version_file avf
+			JOIN artifact_version av ON av.id = avf.artifact_version_id
+			JOIN context_item ci ON ci.id = av.context_item_id
+			WHERE ci.issue_id = ? ORDER BY avf.id`,
+			issueId
+		),
 		labels: one('SELECT label_id FROM issue_label WHERE issue_id = ? ORDER BY label_id', issueId),
 		links: one(
 			'SELECT id, source_issue_id, target_issue_id, kind FROM issue_link WHERE source_issue_id = ? OR target_issue_id = ? ORDER BY id',
@@ -152,12 +160,18 @@ function fixture() {
 		INSERT INTO context_item (id, user_id, kind, name, description, issue_id, body, position, version, config, created_at, updated_at)
 		VALUES
 			('ctx_art_text', '${USER}', 'artifact', 'design-doc', '', '${issueId}', '', 0, 1, '{"artifact_type":"text"}', ${NOW}, ${NOW}),
-			('ctx_art_file', '${USER}', 'artifact', 'evidence', '', '${issueId}', '', 1, 1, '{"artifact_type":"file"}', ${NOW}, ${NOW});
+			('ctx_art_file', '${USER}', 'artifact', 'evidence', '', '${issueId}', '', 1, 1, '{"artifact_type":"file"}', ${NOW}, ${NOW}),
+			('ctx_art_folder', '${USER}', 'artifact', 'screenshots', '', '${issueId}', '', 2, 1, '{"artifact_type":"folder"}', ${NOW}, ${NOW});
 		INSERT INTO artifact_version (id, context_item_id, version, content, content_type, size_bytes, r2_key, filename, actor_user_id, created_at)
 		VALUES
 			('av_text_1', 'ctx_art_text', 1, 'first draft', 'text/markdown', 11, NULL, NULL, '${USER}', ${NOW}),
 			('av_text_2', 'ctx_art_text', 2, 'second draft', 'text/markdown', 12, NULL, NULL, '${USER}', ${NOW + 3}),
-			('av_file_1', 'ctx_art_file', 1, NULL, 'image/png', 9, 'artifacts/ctx_art_file/1.png', 'shot.png', '${USER}', ${NOW + 4});
+			('av_file_1', 'ctx_art_file', 1, NULL, 'image/png', 9, 'artifacts/ctx_art_file/1.png', 'shot.png', '${USER}', ${NOW + 4}),
+			('av_folder_1', 'ctx_art_folder', 1, NULL, NULL, 12, NULL, NULL, '${USER}', ${NOW + 5});
+		INSERT INTO artifact_version_file (id, artifact_version_id, path, content_type, size_bytes, r2_key)
+		VALUES
+			('avf_one', 'av_folder_1', 'desktop.png', 'image/png', 5, 'artifacts/ctx_art_folder/desktop.png'),
+			('avf_two', 'av_folder_1', 'phone.png', 'image/png', 7, 'artifacts/ctx_art_folder/phone.png');
 
 		-- Issue-only guidance, and guidance anchored on this issue inside the
 		-- source project: only the second has a project dimension to rescope.
@@ -173,13 +187,19 @@ function fixture() {
 			'0 9 * * 1', 'UTC', 1, 1, ${NOW + 100000}, 1, ${NOW}, ${NOW});
 		UPDATE issue SET scheduled_task_id = 'sch_origin' WHERE id = '${issueId}';
 	`);
-	return { t, issueId, label, other, dupe };
+	const artifactBytes = new Map<string, Uint8Array>([
+		['artifacts/ctx_art_file/1.png', new TextEncoder().encode('PNG-BYTES')],
+		['artifacts/ctx_art_folder/desktop.png', new Uint8Array([1, 2, 3, 4, 5])],
+		['artifacts/ctx_art_folder/phone.png', new Uint8Array([6, 7, 8, 9, 10, 11, 12])]
+	]);
+	return { t, issueId, label, other, dupe, artifactBytes };
 }
 
 describe('populated issue transfer journey', () => {
 	it('carries the whole record through A → B → C → A, changing only the address', async () => {
-		const { t, issueId } = fixture();
+		const { t, issueId, artifactBytes } = fixture();
 		const before = record(t, issueId);
+		const beforeBytes = [...artifactBytes].map(([key, bytes]) => [key, [...bytes]]);
 		const startNumber = Number(t.all('SELECT number FROM issue WHERE id = ?', issueId)[0].number);
 
 		const toB = await transfer(t, issueId, B, NOW + 10);
@@ -192,6 +212,7 @@ describe('populated issue transfer journey', () => {
 
 		const after = record(t, issueId);
 		expect(after).toEqual(before);
+		expect([...artifactBytes].map(([key, bytes]) => [key, [...bytes]])).toEqual(beforeBytes);
 		// The anchored row followed the issue's project dimension and kept its
 		// identity, content and version; the issue-only row never moved.
 		expect(

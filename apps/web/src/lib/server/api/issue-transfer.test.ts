@@ -279,6 +279,19 @@ describe('private issue transfer path', () => {
 		expect(result.context_changes).toHaveLength(201);
 	});
 
+	it('allocates distinct addresses for simultaneous moves to one destination', async () => {
+		const second = addIssue(t, { id: 'iss_transfer_second', title: 'Second traveller' });
+		const [firstPreview, secondPreview] = await Promise.all([
+			previewIssueTransfer(t.env, actor, issueId, DESTINATION, NOW),
+			previewIssueTransfer(t.env, actor, second, DESTINATION, NOW)
+		]);
+		const results = await Promise.all([
+			commitIssueTransfer(t.env, actor, issueId, DESTINATION, firstPreview.preview_token!, NOW + 1),
+			commitIssueTransfer(t.env, actor, second, DESTINATION, secondPreview.preview_token!, NOW + 1)
+		]);
+		expect(new Set(results.map((result) => result.new_ref.number)).size).toBe(2);
+	});
+
 	it('previews without allocating, commits atomically, and resolves both addresses', async () => {
 		const beforeIssue = t.all(`SELECT * FROM issue WHERE id = ?`, issueId)[0];
 		const beforeContext = t.all(`SELECT * FROM context_item WHERE id = 'ctx_transfer'`)[0];

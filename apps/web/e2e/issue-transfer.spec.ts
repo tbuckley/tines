@@ -22,9 +22,11 @@ function suite(label: string, viewport: { width: number; height: number }) {
 	test.describe.serial(`issue transfer (${label})`, () => {
 		const sourceName = `xf-src-${label}-${runId}`;
 		const destinationName = `xf-dst-${label}-${runId}`;
+		const longName = `xf-${label}-` + 'destination'.repeat(17);
 		let issueId: string;
 		let sourceId: string;
 		let sourceNumber: number;
+		let longId: string;
 
 		async function open(browser: Browser, path: string): Promise<Page> {
 			const context = await browser.newContext({ viewport });
@@ -43,6 +45,7 @@ function suite(label: string, viewport: { width: number; height: number }) {
 			const destination = await body<Project>(
 				await api.post('/api/v1/projects', { name: destinationName, description: 'move to here' })
 			);
+			longId = (await body<Project>(await api.post('/api/v1/projects', { name: longName }))).id;
 			// The destination's first number is taken, so the move cannot keep
 			// the issue's old one.
 			await body<IssueDetail>(
@@ -73,6 +76,24 @@ function suite(label: string, viewport: { width: number; height: number }) {
 			await api.post(`/api/v1/issues/${issue.id}/comments`, { body: 'a comment that survives' });
 		});
 
+		test('focuses the chooser and contains a long unbroken destination', async ({ browser }) => {
+			const page = await open(browser, `/issues/${sourceName}/${sourceNumber}`);
+			const modal = page.getByRole('dialog');
+			await clickToOpen(page.getByTestId('move-to-project'), modal);
+			const chooser = modal.getByTestId('transfer-destination');
+			await expect(chooser).toBeFocused();
+			await chooser.selectOption(longId);
+			await modal.getByRole('button', { name: 'Review move' }).click();
+			const heading = modal.getByRole('heading', { level: 3 });
+			await expect(heading).toBeFocused();
+			await expect(heading).toContainText(longName);
+			expect(await modal.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(
+				true
+			);
+			await modal.getByRole('button', { name: 'Cancel' }).click();
+			await page.close();
+		});
+
 		test('reviews, inspects and cancels without writing anything', async ({ browser, request }) => {
 			const page = await open(browser, `/issues/${sourceName}/${sourceNumber}`);
 			const modal = page.getByRole('dialog');
@@ -96,6 +117,7 @@ function suite(label: string, viewport: { width: number; height: number }) {
 			const item = review.locator('details').first();
 			await item.locator('summary').click();
 			await expect(item).toContainText('→');
+			await expect(item).toContainText(/Guidance (that stays behind|the issue picks up)/);
 
 			await modal.getByRole('button', { name: 'Cancel' }).click();
 			await expect(modal).toHaveCount(0);
@@ -139,8 +161,8 @@ function suite(label: string, viewport: { width: number; height: number }) {
 				await api.get(`/api/v1/projects/${sourceId}/issues/${sourceNumber}`)
 			);
 			expect(alias.id).toBe(issueId);
-			await gotoHydrated(page, `/issues/${sourceName}/${sourceNumber}`);
-			await expect(page).toHaveURL(new RegExp(`/issues/${destinationName}/2$`));
+			await gotoHydrated(page, `/issues/${sourceName}/${sourceNumber}?keep=1#activity`);
+			await expect(page).toHaveURL(new RegExp(`/issues/${destinationName}/2\\?keep=1#activity$`));
 
 			// The issue's own project no longer offers itself as a destination.
 			await clickToOpen(page.getByTestId('move-to-project'), modal);
