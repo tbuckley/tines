@@ -925,15 +925,21 @@ export function workflowInsertQueries(
 	];
 }
 
+/** Pure create fields and definition validation, shared with library planning. */
+export function validateWorkflowCreateFields(body: CreateWorkflowRequest) {
+	const name = requireString(body.name, 'name', { max: 200 }).trim();
+	const description = optionalString(body.description, 'description', { max: 10000 }) ?? '';
+	const def = resolveDef(body.states, body.transitions ?? [], body.initial_state, []);
+	return { name, description, def };
+}
+
 export async function createWorkflow(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
 	body: CreateWorkflowRequest
 ): Promise<WorkflowResponse> {
-	const name = requireString(body.name, 'name', { max: 200 }).trim();
-	const description = optionalString(body.description, 'description', { max: 10_000 }) ?? '';
-	const def = resolveDef(body.states, body.transitions ?? [], body.initial_state, []);
+	const { name, description, def } = validateWorkflowCreateFields(body);
 	const id = newId('wf');
 	const inh = await resolveInheritance(db, actor.userId, { id, name }, def.states, []);
 	const now = Date.now();

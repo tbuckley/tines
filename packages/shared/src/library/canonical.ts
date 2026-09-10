@@ -16,8 +16,12 @@ function canonicalValue(value: unknown, path = '', depth = 0): string {
 			]);
 		return JSON.stringify(value);
 	}
-	if (Array.isArray(value))
+	if (Array.isArray(value)) {
+		for (let i = 0; i < value.length; i++)
+			if (!Object.hasOwn(value, i))
+				invalid(pointer(path, i), 'invalid_value', 'Sparse arrays are not JSON values');
 		return `[${value.map((v, i) => canonicalValue(v, pointer(path, i), depth + 1)).join(',')}]`;
+	}
 	if (typeof value === 'object') {
 		if (![Object.prototype, null].includes(Object.getPrototypeOf(value)))
 			invalid(path, 'invalid_value', 'Expected a plain JSON object');

@@ -403,3 +403,12 @@ describe('rendered field review', () => {
 		});
 	});
 });
+
+it('rejects sparse in-memory arrays through both canonical and document APIs', async () => {
+	expect(() => canonicalizeLibraryValue(Array(2))).toThrow('Sparse arrays');
+	const document = inheritedPackage();
+	document.workflows = Array(1);
+	await expect(libraryDocumentDigest(document)).rejects.toMatchObject({
+		diagnostics: [{ path: '/workflows/0', code: 'invalid_type' }]
+	});
+});

@@ -69,7 +69,7 @@ const array =
 	(v, p) => {
 		if (!Array.isArray(v)) invalid(p, 'invalid_type', 'Expected an array');
 		if (v.length > max) invalid(p, 'package_too_large', `Array exceeds ${max} entries`);
-		v.forEach((item, i) => check(item, pointer(p, i)));
+		for (let i = 0; i < v.length; i++) check(v[i], pointer(p, i));
 	};
 function object(v: unknown, p: string): Record<string, unknown> {
 	if (

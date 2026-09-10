@@ -664,12 +664,8 @@ function artifactEndpointsMessage(): string {
 	return `Artifacts are created through the artifact endpoints: ${parts.join(', ')}, or ${last}`;
 }
 
-export async function createContextItem(
-	db: Kysely<Database>,
-	env: Env,
-	actor: ActorContext,
-	body: CreateContextItemRequest
-): Promise<ContextItem> {
+/** Pure ordinary payload validation, shared with library preview. */
+export function validateContextCreateFields(body: CreateContextItemRequest) {
 	const kind = requireKind(body.kind);
 	// One creation path is saner than two, and file payloads can't ride a
 	// JSON create: artifacts are created via their own endpoints only.
@@ -682,16 +678,6 @@ export async function createContextItem(
 	const name = validateName(kind, body.name);
 	const description = optionalString(body.description, 'description', { max: 1000 }) ?? '';
 	rejectForeignPayload(kind, body as unknown as Record<string, unknown>);
-
-	const scope = await resolveScope(db, actor.userId, {
-		projectId: body.project_id ?? null,
-		workflowStateId: body.workflow_state_id ?? null,
-		labelId: body.label_id ?? null,
-		issueId: body.issue_id ?? null
-	});
-	await assertScopeWritable(db, actor, scope);
-	await assertNameAvailable(db, actor.userId, kind, name, scope);
-
 	let promptBody: string | null = null;
 	let files: ContextFile[] = [];
 	let repoUrl: string | null = null;
@@ -709,6 +695,27 @@ export async function createContextItem(
 				? null
 				: validateWorkspacePath(body.repo_dir, 'repo_dir');
 	}
+
+	return { kind, name, description, promptBody, files, repoUrl, repoBranch, repoDir };
+}
+
+export async function createContextItem(
+	db: Kysely<Database>,
+	env: Env,
+	actor: ActorContext,
+	body: CreateContextItemRequest
+): Promise<ContextItem> {
+	const { kind, name, description, promptBody, files, repoUrl, repoBranch, repoDir } =
+		validateContextCreateFields(body);
+
+	const scope = await resolveScope(db, actor.userId, {
+		projectId: body.project_id ?? null,
+		workflowStateId: body.workflow_state_id ?? null,
+		labelId: body.label_id ?? null,
+		issueId: body.issue_id ?? null
+	});
+	await assertScopeWritable(db, actor, scope);
+	await assertNameAvailable(db, actor.userId, kind, name, scope);
 
 	const now = Date.now();
 	const id = newId('ctx');
