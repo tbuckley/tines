@@ -13,6 +13,7 @@ import { claimRun } from '../supervisor/engine';
 import type { ActorContext } from './core';
 import { commitIssueTransfer, previewIssueTransfer } from './issue-transfer';
 import { loadIssue } from './issues';
+import { effectiveContextForIssue } from './context';
 import { createTestDb, type TestDb } from './test-db';
 
 const DESTINATION = 'prj_destination';
@@ -78,6 +79,63 @@ describe('private issue transfer path', () => {
 				'${issueId}', 'preserve me', 3, 7, ${NOW}, ${NOW}
 			);
 		`);
+	});
+
+	it('projects guidance and repositories at the destination, and agrees after the move', async () => {
+		// Shared source guidance the issue loses, destination guidance it gains,
+		// a repo whose checkout changes hands, and its own anchored prompt, which
+		// travels with it.
+		t.sqlite.exec(`
+			INSERT INTO context_item (
+				id, user_id, kind, name, description, project_id, body, repo_url, repo_dir,
+				position, version, created_at, updated_at
+			) VALUES
+				('ctx_src_shared', '${USER}', 'prompt', 'house-style', '', '${PROJECT}',
+					'Source house style', NULL, NULL, 1, 1, ${NOW}, ${NOW}),
+				('ctx_dst_shared', '${USER}', 'prompt', 'house-style', '', '${DESTINATION}',
+					'Destination house style', NULL, NULL, 1, 1, ${NOW}, ${NOW}),
+				('ctx_src_repo', '${USER}', 'repo', 'app', '', '${PROJECT}',
+					NULL, 'https://example.test/source.git', 'app', 1, 1, ${NOW}, ${NOW}),
+				('ctx_dst_repo', '${USER}', 'repo', 'app', '', '${DESTINATION}',
+					NULL, 'https://example.test/destination.git', 'app', 1, 1, ${NOW}, ${NOW});
+		`);
+
+		const preview = await previewIssueTransfer(t.env, actor, issueId, DESTINATION, NOW + 100);
+		const change = (id: string) => preview.context.changes.find((c) => c.item_id === id);
+		expect(change('ctx_src_shared')?.change).toBe('removed');
+		expect(change('ctx_dst_shared')?.change).toBe('added');
+		expect(change('ctx_src_repo')?.change).toBe('removed');
+		expect(change('ctx_dst_repo')).toMatchObject({
+			change: 'added',
+			repo_after: { url: 'https://example.test/destination.git', dir: 'app' }
+		});
+		// The issue's own anchored prompt moves with it: same item, new project.
+		expect(change('ctx_transfer')).toMatchObject({
+			change: 'rescoped',
+			scope_before: { project_id: PROJECT },
+			scope_after: { project_id: DESTINATION }
+		});
+		expect(preview.context.after.prompt.text).toContain('Destination house style');
+		expect(preview.context.after.prompt.text).not.toContain('Source house style');
+		expect(preview.context.after.prompt.text).toContain('preserve me');
+
+		await commitIssueTransfer(
+			t.env,
+			actor,
+			issueId,
+			DESTINATION,
+			preview.preview_token!,
+			NOW + 200
+		);
+
+		// The promise the preview made: the ordinary resolver now says the same,
+		// once the address the preview could not know yet is normalized away.
+		const moved = t.all(`SELECT number FROM issue WHERE id = ?`, issueId)[0];
+		const actual = await effectiveContextForIssue(t.db, USER, issueId);
+		expect(actual.prompt.text.replace(`destination/${moved.number}`, 'demo/1')).toBe(
+			preview.context.after.prompt.text
+		);
+		expect(actual.repos.map((r) => r.url)).toEqual(preview.context.after.repos.map((r) => r.url));
 	});
 
 	it('previews without allocating, commits atomically, and resolves both addresses', async () => {

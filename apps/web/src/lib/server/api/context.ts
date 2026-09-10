@@ -1282,14 +1282,15 @@ export interface MatchProjection {
 function projectRow(row: ItemRow, projection: MatchProjection | undefined): ItemRow {
 	if (!projection) return row;
 	if (row.project_id !== projection.fromProjectId || !row.issue_id) return row;
+	// Only the item's own project dimension moves. The issue reference in its
+	// scope label keeps the address the issue answers to today: a preview has no
+	// destination number yet, and that project's number N belongs to a different
+	// issue. The old ref keeps resolving after the move, so it stays truthful.
 	return {
 		...row,
 		project_id: projection.toProjectId,
 		scope_project_name: projection.toProjectName,
-		scope_project_archived_at: projection.toProjectArchivedAt,
-		scope_issue_project_id: projection.toProjectId,
-		scope_issue_project_name: projection.toProjectName,
-		scope_issue_project_archived_at: projection.toProjectArchivedAt
+		scope_project_archived_at: projection.toProjectArchivedAt
 	};
 }
 
