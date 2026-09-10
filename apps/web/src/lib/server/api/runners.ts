@@ -801,7 +801,7 @@ export async function registerRunner(
 
 	const existing = await db
 		.selectFrom('runner')
-		.select(['id', 'type', 'config'])
+		.select(['id', 'type', 'config', 'default_tier'])
 		.where('user_id', '=', actor.userId)
 		.where('name', '=', name)
 		.executeTakeFirst();
@@ -859,13 +859,19 @@ export async function registerRunner(
 			patch.default_tier = requireTier(body.default_tier, 'default_tier');
 			changed.push('default_tier');
 		}
+		const serializedConfig = JSON.stringify(config);
+		const revisionChanged =
+			serializedConfig !== existing.config ||
+			(patch.default_tier !== undefined && patch.default_tier !== existing.default_tier);
 		await runAtomic(env, [
 			db
 				.updateTable('runner')
 				.set({
 					...patch,
-					config: JSON.stringify(config),
-					resume_config_revision: sql<number>`resume_config_revision + 1`,
+					config: serializedConfig,
+					...(revisionChanged
+						? { resume_config_revision: sql<number>`resume_config_revision + 1` }
+						: {}),
 					runner_token_hash: tokenHash,
 					last_seen_at: now,
 					updated_at: now
