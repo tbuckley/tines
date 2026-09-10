@@ -20,7 +20,8 @@
 	import IconRocket from '@tabler/icons-svelte/icons/rocket';
 	import { tick, untrack } from 'svelte';
 	import { fade, slide } from 'svelte/transition';
-	import { invalidate } from '$app/navigation';
+	import { goto, invalidate } from '$app/navigation';
+	import { page } from '$app/state';
 	import { api } from '$lib/api';
 	import AgentActivityCard from '$lib/components/AgentActivityCard.svelte';
 	import FirstRunChecklist from '$lib/components/FirstRunChecklist.svelte';
@@ -58,6 +59,18 @@
 	import { planTransitions } from '$lib/transitions';
 
 	let { data } = $props();
+
+	// Data requests cannot server-redirect without losing a fragment that only
+	// the browser knows. Replace the stale alias in place while retaining
+	// meaningful query/hash targets and keyboard focus.
+	$effect(() => {
+		if (page.url.pathname === data.canonicalPath) return;
+		void goto(`${data.canonicalPath}${page.url.search}${page.url.hash}`, {
+			replaceState: true,
+			keepFocus: true,
+			noScroll: true
+		});
+	});
 
 	/** An archived project's issues read normally and write nowhere. */
 	const archived = $derived(data.issue.project_archived_at !== null);
