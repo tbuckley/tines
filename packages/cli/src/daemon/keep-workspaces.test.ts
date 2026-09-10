@@ -165,6 +165,7 @@ describe('--keep-workspaces', () => {
 	it('failed: a harness that exits non-zero leaves its workspace, marked and logged', async () => {
 		const { harvest, ws } = await runOnce('exit 3', ['--keep-workspaces', 'failed']);
 		expect(harvest.finish).toEqual({
+			workspace_path: expect.any(String),
 			status: 'failed',
 			error: 'harness exited with code 3',
 			usage: { cost_source: 'none' }
@@ -186,14 +187,22 @@ describe('--keep-workspaces', () => {
 
 	it('failed: a completed run is still removed', async () => {
 		const { harvest, ws } = await runOnce('true', ['--keep-workspaces', 'failed']);
-		expect(harvest.finish).toEqual({ status: 'completed', usage: { cost_source: 'none' } });
+		expect(harvest.finish).toEqual({
+			workspace_path: expect.any(String),
+			status: 'completed',
+			usage: { cost_source: 'none' }
+		});
 		expect(await waitFor(() => !existsSync(ws))).toBe(true);
 		expect(harvest.log).not.toContain('workspace kept at');
 	}, 30_000);
 
 	it('always: a completed run is kept too', async () => {
 		const { harvest, ws } = await runOnce('true', ['--keep-workspaces', 'always']);
-		expect(harvest.finish).toEqual({ status: 'completed', usage: { cost_source: 'none' } });
+		expect(harvest.finish).toEqual({
+			workspace_path: expect.any(String),
+			status: 'completed',
+			usage: { cost_source: 'none' }
+		});
 		expect(await waitFor(() => existsSync(keptMarkerPath(ws)))).toBe(true);
 		const marker = JSON.parse(readFileSync(keptMarkerPath(ws), 'utf8')) as KeptWorkspaceMarker;
 		expect(marker.status).toBe('completed');
