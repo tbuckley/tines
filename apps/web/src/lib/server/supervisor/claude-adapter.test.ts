@@ -278,6 +278,9 @@ describe('claude adapter launch', () => {
 		) as { environment_id: string; agents: Record<string, { agent_id: string; model: string }> };
 		expect(config.environment_id).toBe('env_1');
 		expect(config.agents.balanced).toMatchObject({ agent_id: 'agent_1', model: 'claude-sonnet-5' });
+		expect(t.all('SELECT resume_config_revision FROM runner WHERE id = ?', runnerId)).toEqual([
+			{ resume_config_revision: 2 }
+		]);
 	});
 
 	it('re-provisions a drifted tier agent instead of freezing it', async () => {
@@ -301,6 +304,9 @@ describe('claude adapter launch', () => {
 			(t.all('SELECT config FROM runner WHERE id = ?', runnerId)[0] as { config: string }).config
 		) as { agents: Record<string, { model: string }> };
 		expect(config.agents.balanced.model).toBe('claude-sonnet-5');
+		expect(t.all('SELECT resume_config_revision FROM runner WHERE id = ?', runnerId)).toEqual([
+			{ resume_config_revision: 1 }
+		]);
 	});
 
 	it('mounts a .git-suffixed context URL in canonical form', async () => {

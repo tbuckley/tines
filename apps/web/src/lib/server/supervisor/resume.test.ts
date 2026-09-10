@@ -53,6 +53,12 @@ describe('resumeEligibility', () => {
 		expect(resumeEligibility(base)).toEqual({ eligible: false, reason: 'unsupported' });
 	});
 
+	it('keeps continuation off when the provider is supported but the runner has not opted in', () => {
+		expect(
+			resumeEligibility({ ...base, runner: { ...runner, resume_enabled: false } }, () => true)
+		).toEqual({ eligible: false, reason: 'unsupported' });
+	});
+
 	it('accepts a local conversation strictly below the turn threshold', () => {
 		expect(resumeEligibility(base, supported)).toEqual({ eligible: true });
 		expect(

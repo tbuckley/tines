@@ -68,6 +68,8 @@ test.describe('shared run row', () => {
 		const row = page.locator('li:not([inert])', { hasText: RUNROW_FAILED.runnerName });
 		await expect(row).toContainText(RUNROW_FAILED.tokenLabel);
 		await expect(row).toContainText(`session: ${RUNROW_FAILED.providerSessionId}`);
+		await expect(row).toContainText(`resumed run ${RUNROW_FAILED.resumedFromRunId}`);
+		await expect(row.getByRole('link', { name: /resumed run/ })).toHaveCount(0);
 	});
 });
 

@@ -28,7 +28,7 @@ import {
 	canonicalGitHubRepoUrl,
 	LAUNCH_STALL_MS
 } from '@tines/shared';
-import type { Kysely } from 'kysely';
+import { sql, type Kysely } from 'kysely';
 import { decryptSecret } from '../crypto';
 import { getDb, type Database } from '../db';
 import type {
@@ -208,7 +208,10 @@ function createProviderContext(env: Env, opts: ClaudeAdapterOptions): ProviderCo
 	async function persistConfig(runnerId: string, config: ClaudeRunnerConfig): Promise<void> {
 		await db
 			.updateTable('runner')
-			.set({ config: JSON.stringify(config) })
+			.set({
+				config: JSON.stringify(config),
+				resume_config_revision: sql<number>`resume_config_revision + 1`
+			})
 			.where('id', '=', runnerId)
 			.execute();
 	}
