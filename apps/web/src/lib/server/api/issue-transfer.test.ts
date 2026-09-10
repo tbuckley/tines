@@ -1,5 +1,13 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { NOW, PROJECT, USER, addIssue, seedBase } from '../supervisor/test-fixtures';
+import {
+	NOW,
+	PROJECT,
+	USER,
+	addIssue,
+	addRun,
+	addRunner,
+	seedBase
+} from '../supervisor/test-fixtures';
 import type { ActorContext } from './core';
 import { commitIssueTransfer, previewIssueTransfer } from './issue-transfer';
 import { loadIssue } from './issues';
@@ -156,5 +164,100 @@ describe('private issue transfer path', () => {
 		expect(t.all(`SELECT * FROM issue WHERE id = ?`, issueId)[0]).toEqual(before);
 		expect(t.all(`SELECT * FROM issue_address`)).toHaveLength(addresses);
 		expect(t.all(`SELECT * FROM event WHERE type = 'issue.transferred'`)).toHaveLength(0);
+	});
+
+	it('lets run keys preview the blocker but never commit', async () => {
+		const runActor = { ...actor, viaSession: false, agentRunId: 'arun_self' };
+		const preview = await previewIssueTransfer(t.env, runActor, issueId, DESTINATION, NOW);
+		expect(preview).toMatchObject({
+			canCommit: false,
+			previewToken: null,
+			blockers: [{ code: 'run_key_forbidden' }]
+		});
+		await expect(
+			commitIssueTransfer(t.env, runActor, issueId, DESTINATION, 'anything', NOW)
+		).rejects.toMatchObject({ status: 403, code: 'run_key_forbidden' });
+	});
+
+	it('does not reveal unknown or foreign destinations', async () => {
+		await expect(
+			previewIssueTransfer(t.env, actor, issueId, 'prj_missing', NOW)
+		).rejects.toMatchObject({ status: 404, code: 'not_found' });
+		t.sqlite.exec(`
+			INSERT INTO user (id, name, email, emailVerified, createdAt, updatedAt)
+			VALUES ('u2', 'bob', 'b@example.com', 1, ${NOW}, ${NOW});
+			INSERT INTO project (id, user_id, name, created_at, updated_at)
+			VALUES ('prj_foreign', 'u2', 'foreign', ${NOW}, ${NOW});
+		`);
+		await expect(
+			previewIssueTransfer(t.env, actor, issueId, 'prj_foreign', NOW)
+		).rejects.toMatchObject({ status: 404, code: 'not_found' });
+	});
+
+	it.each([
+		['source', PROJECT],
+		['destination', DESTINATION]
+	])('blocks an archived %s project without writes', async (_which, projectId) => {
+		t.sqlite.exec(`UPDATE project SET archived_at = ${NOW} WHERE id = '${projectId}'`);
+		const preview = await previewIssueTransfer(t.env, actor, issueId, DESTINATION, NOW);
+		expect(preview).toMatchObject({
+			canCommit: false,
+			previewToken: null,
+			blockers: [{ code: 'project_archived' }]
+		});
+		expect(t.all(`SELECT * FROM event WHERE type = 'issue.transferred'`)).toHaveLength(0);
+	});
+
+	it.each(['assigned', 'launching', 'running'])(
+		'blocks %s work and never cancels it',
+		async (status) => {
+			const runnerId = addRunner(t);
+			const preview = await previewIssueTransfer(t.env, actor, issueId, DESTINATION, NOW);
+			addRun(t, { id: `arun_${status}`, issueId, runnerId, status });
+			await expect(
+				commitIssueTransfer(t.env, actor, issueId, DESTINATION, preview.previewToken!, NOW + 1)
+			).rejects.toMatchObject({ status: 409, code: 'issue_busy' });
+			expect(t.all(`SELECT status FROM agent_run WHERE id = ?`, `arun_${status}`)[0]).toEqual({
+				status
+			});
+			expect(t.all(`SELECT project_id FROM issue WHERE id = ?`, issueId)[0]).toEqual({
+				project_id: PROJECT
+			});
+		}
+	);
+
+	it('rejects tampered, expired, and stale previews without partial writes', async () => {
+		const preview = await previewIssueTransfer(t.env, actor, issueId, DESTINATION, NOW);
+		const token = preview.previewToken!;
+		const tokenParts = token.split('.');
+		tokenParts[2] = `${tokenParts[2][0] === 'A' ? 'B' : 'A'}${tokenParts[2].slice(1)}`;
+		const tampered = tokenParts.join('.');
+		await expect(
+			commitIssueTransfer(t.env, actor, issueId, DESTINATION, tampered, NOW + 1)
+		).rejects.toMatchObject({ status: 422, code: 'invalid_preview_token' });
+		await expect(
+			commitIssueTransfer(t.env, actor, issueId, DESTINATION, token, NOW + 15 * 60_000)
+		).rejects.toMatchObject({ status: 409, code: 'transfer_preview_stale' });
+
+		t.sqlite.exec(`UPDATE issue SET title = 'changed after preview' WHERE id = '${issueId}'`);
+		await expect(
+			commitIssueTransfer(t.env, actor, issueId, DESTINATION, token, NOW + 1)
+		).rejects.toMatchObject({ status: 409, code: 'transfer_preview_stale' });
+		expect(t.all(`SELECT project_id FROM issue WHERE id = ?`, issueId)[0]).toEqual({
+			project_id: PROJECT
+		});
+		expect(t.all(`SELECT * FROM event WHERE type = 'issue.transferred'`)).toHaveLength(0);
+	});
+
+	it('rejects replay after A to B to A, so ABA cannot revive an old confirmation', async () => {
+		const first = await previewIssueTransfer(t.env, actor, issueId, DESTINATION, NOW);
+		await commitIssueTransfer(t.env, actor, issueId, DESTINATION, first.previewToken!, NOW + 1);
+		const back = await previewIssueTransfer(t.env, actor, issueId, PROJECT, NOW + 2);
+		await commitIssueTransfer(t.env, actor, issueId, PROJECT, back.previewToken!, NOW + 3);
+
+		await expect(
+			commitIssueTransfer(t.env, actor, issueId, DESTINATION, first.previewToken!, NOW + 4)
+		).rejects.toMatchObject({ status: 409, code: 'transfer_conflict' });
+		expect(t.all(`SELECT * FROM event WHERE type = 'issue.transferred'`)).toHaveLength(2);
 	});
 });

@@ -348,6 +348,8 @@ export async function claimRun(
 		runId: string;
 		userId: string;
 		issueId: string;
+		/** Project captured with routing selection; fences a stale source route. */
+		projectId: string;
 		stateId: string;
 		runnerId: string;
 		maxConcurrent: number;
@@ -381,6 +383,7 @@ export async function claimRun(
 		JOIN project ON project.id = issue.project_id
 		JOIN workflow_state st ON st.id = issue.state_id
 		WHERE issue.id = ${input.issueId}
+			AND issue.project_id = ${input.projectId}
 			AND issue.state_id = ${input.stateId}
 			AND issue.project_assignment_token = ${assignmentToken}
 			-- Race guard: the project may have been archived between the pass
@@ -833,6 +836,7 @@ export async function runDispatchPass(
 				runId,
 				userId,
 				issueId: issue.id,
+				projectId: issue.project_id,
 				stateId: issue.state_id,
 				runnerId: runner.id,
 				maxConcurrent: runner.max_concurrent,
