@@ -8,7 +8,8 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { encryptSecret } from '../crypto';
 import { createTestDb, type TestDb } from '../api/test-db';
 import { canonicalGitHubRepoUrl, createClaudeAdapter } from './claude-adapter';
-import { addIssue, addRun, addRunner, NOW, seedBase, USER } from './test-fixtures';
+import { resumeFingerprint } from './resume';
+import { addIssue, addRun, addRunner, NOW, REVIEW, seedBase, USER } from './test-fixtures';
 
 const ENC_KEY = 'test-encryption-key';
 const TINES_URL = 'https://tines.test';
@@ -740,5 +741,197 @@ describe('claude adapter resume ownership', () => {
 		expect(net.of('POST /v1/sessions/sesn_kept/archive')).toHaveLength(0);
 		expect(net.of('DELETE /v1/vaults/vlt_1')).toHaveLength(0);
 		expect(t.all('SELECT id FROM run_resource')).toHaveLength(1);
+	});
+});
+
+describe('claude adapter resume launch (the hand-over)', () => {
+	/**
+	 * A runner + predecessor + resource shaped so `prepareManagedResume`
+	 * says yes: the predecessor is the newest ended run, it advanced its
+	 * issue into an awaiting state, and the resource is `available` with the
+	 * fingerprint this launch computes.
+	 */
+	// `prepareManagedResume` is called by the real `launch`, which stamps
+	// `Date.now()` — so the window has to be live on the wall clock, not on
+	// the fixtures' frozen NOW.
+	const REAL_NOW = Date.now();
+
+	async function handoverWorld() {
+		const { t, runnerId } = await world({ runnerConfig: { environment_id: 'env_1' } });
+		t.sqlite.prepare('UPDATE runner SET resume_enabled = 1 WHERE id = ?').run(runnerId);
+		// The run being launched, and the one it would continue.
+		addRun(t, { id: 'arun_l1', issueId: 'iss_1', runnerId, status: 'assigned' });
+		addRun(t, {
+			id: 'arun_kept',
+			issueId: 'iss_1',
+			runnerId,
+			status: 'completed',
+			providerSessionId: 'sesn_kept',
+			providerMeta: JSON.stringify({ vault_id: 'vlt_1', credential_id: 'vcred_1', retained: true }),
+			startedAt: NOW,
+			endedAt: REAL_NOW - 60_000,
+			stateAtEnd: REVIEW,
+			outcome: 'advanced',
+			usage: JSON.stringify({
+				input_tokens: 1000,
+				output_tokens: 500,
+				cache_read_tokens: 0,
+				cache_write_tokens: 0,
+				cost_usd: 0.25
+			})
+		});
+		t.sqlite
+			.prepare(
+				`INSERT INTO run_resource (id, user_id, runner_id, issue_id, kind, owner_run_id, state,
+					expires_at, available_seen_at, provider_session_id, vault_id, credential_id,
+					resume_fingerprint, transfer_data, created_at, updated_at)
+				VALUES ('rres_h', ?, ?, 'iss_1', 'claude_managed', 'arun_kept', 'available', ?, ?,
+					'sesn_kept', 'vlt_1', 'vcred_1', ?, ?, ?, ?)`
+			)
+			.run(
+				USER,
+				runnerId,
+				REAL_NOW + 47 * 60 * 60 * 1000,
+				NOW,
+				resumeFingerprint({
+					runnerId,
+					harness: 'claude_managed',
+					model: 'claude-sonnet-5',
+					preambleVariant: 'claude_managed'
+				}),
+				JSON.stringify({ events_cursor: '2024-01-01T00:00:00Z' }),
+				NOW,
+				NOW
+			);
+		return { t, runnerId };
+	}
+
+	function handoverNetwork(overrides: Record<string, (call: never) => unknown> = {}) {
+		return fakeNetwork({
+			'POST /v1/vaults/vlt_1/credentials/vcred_1': () => ({ id: 'vcred_1' }),
+			'POST /v1/sessions/sesn_kept': () => ({
+				id: 'sesn_kept',
+				status: 'idle',
+				created_at: new Date(NOW).toISOString(),
+				metadata: {},
+				usage: {}
+			}),
+			...(overrides as Record<string, (call: RecordedCall) => unknown>)
+		});
+	}
+
+	it('continues the retained session instead of creating one: rotate, retag, send', async () => {
+		const { t, runnerId } = await handoverWorld();
+		const net = handoverNetwork();
+		const adapter = createClaudeAdapter(t.env, { fetch: net.fetch });
+		const result = await adapter.launch(launchInput(runnerId));
+
+		expect(result.provider_session_id).toBe('sesn_kept');
+		// No new session, vault or environment: the whole point of the resume.
+		expect(net.of('POST /v1/sessions')).toHaveLength(0);
+		expect(net.of('POST /v1/vaults')).toHaveLength(0);
+		// The credential the session reads TINES_API_KEY from now holds the new
+		// run's key, and the rotation precedes the send.
+		const rotate = net.of('POST /v1/vaults/vlt_1/credentials/vcred_1')[0]!;
+		expect(rotate.body).toMatchObject({
+			auth: { type: 'environment_variable', secret_value: 'tines_runkey_secret' }
+		});
+		const retag = net.of('POST /v1/sessions/sesn_kept')[0]!;
+		expect(retag.body).toMatchObject({ metadata: { tines_run_id: 'arun_l1' } });
+		const send = net.of('POST /v1/sessions/sesn_kept/events')[0]!;
+		expect(net.calls.indexOf(rotate)).toBeLessThan(net.calls.indexOf(send));
+		const events = (send.body as { events: Array<{ type: string }> }).events;
+		expect(events[0]!.type).toBe('user.message');
+
+		expect(
+			t.all(
+				'SELECT resumed_from_run_id, resume_fallback_reason FROM agent_run WHERE id = ?',
+				'arun_l1'
+			)
+		).toEqual([{ resumed_from_run_id: 'arun_kept', resume_fallback_reason: null }]);
+		// The completed hand-over drops the resource: ownership now lives on
+		// the successor's provider_meta, and the predecessor stops claiming
+		// the handles so its end-of-run GC cannot collect them.
+		expect(t.all('SELECT id FROM run_resource')).toHaveLength(0);
+		expect(
+			JSON.parse(
+				t.all('SELECT provider_meta FROM agent_run WHERE id = ?', 'arun_kept')[0]!
+					.provider_meta as string
+			)
+		).toMatchObject({ retained: false, gc_done: true });
+		expect(JSON.parse(result.provider_meta!)).toMatchObject({
+			vault_id: 'vlt_1',
+			credential_id: 'vcred_1',
+			events_cursor: '2024-01-01T00:00:00Z'
+		});
+	});
+
+	it('the next sweep leaves the successor alone: the predecessor stops owning the handles', async () => {
+		const { t, runnerId } = await handoverWorld();
+		const net = handoverNetwork();
+		const adapter = createClaudeAdapter(t.env, { fetch: net.fetch });
+		const result = await adapter.launch(launchInput(runnerId));
+		// The run the launch belongs to is now live in the inherited session.
+		t.sqlite
+			.prepare(
+				'UPDATE agent_run SET status = ?, provider_session_id = ?, provider_meta = ? WHERE id = ?'
+			)
+			.run('running', result.provider_session_id, result.provider_meta, 'arun_l1');
+
+		const sweepNet = fakeNetwork({
+			// The vault is still named after the PREDECESSOR — the transfer
+			// retags the session, never the vault — and that run has ended.
+			'GET /v1/vaults': () => ({
+				data: [{ id: 'vlt_1', display_name: 'tines-run-arun_kept' }],
+				next_page: null
+			}),
+			'GET /v1/sessions': () => ({
+				data: [
+					{
+						id: 'sesn_kept',
+						status: 'running',
+						created_at: new Date(NOW - 10 * 60_000).toISOString(),
+						metadata: { tines_run_id: 'arun_l1' }
+					}
+				],
+				next_page: null,
+				prev_page: null
+			})
+		});
+		const sweeper = createClaudeAdapter(t.env, { fetch: sweepNet.fetch });
+		await sweeper.sweepRunner!({ id: runnerId, user_id: USER }, NOW + 60_000);
+
+		// Nothing may be collected: the credential this run reads its key from
+		// and the session it is talking in are both live.
+		expect(sweepNet.of('DELETE /v1/vaults/vlt_1')).toHaveLength(0);
+		expect(sweepNet.of('POST /v1/sessions/sesn_kept/archive')).toHaveLength(0);
+	});
+
+	it('a provider error before the send launches fresh instead of failing the run', async () => {
+		const { t, runnerId } = await handoverWorld();
+		const net = handoverNetwork({
+			'POST /v1/vaults/vlt_1/credentials/vcred_1': () =>
+				new Response(JSON.stringify({ error: { message: 'boom' } }), {
+					status: 500,
+					headers: { 'content-type': 'application/json' }
+				})
+		});
+		const adapter = createClaudeAdapter(t.env, { fetch: net.fetch });
+		const result = await adapter.launch(launchInput(runnerId));
+
+		// Fresh launch: a new session on a new vault, and nothing sent to the
+		// retained one.
+		expect(result.provider_session_id).not.toBe('sesn_kept');
+		expect(net.of('POST /v1/sessions')).toHaveLength(1);
+		expect(net.of('POST /v1/vaults')).toHaveLength(1);
+		expect(net.of('POST /v1/sessions/sesn_kept/events')).toHaveLength(0);
+		expect(
+			t.all(
+				'SELECT resumed_from_run_id, resume_fallback_reason FROM agent_run WHERE id = ?',
+				'arun_l1'
+			)
+		).toEqual([{ resumed_from_run_id: null, resume_fallback_reason: 'unavailable' }]);
+		// The abandoned claim is left for the disposal sweep, not pinned.
+		expect(t.all('SELECT state FROM run_resource')).toEqual([{ state: 'disposing' }]);
 	});
 });

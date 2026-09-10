@@ -437,26 +437,90 @@ async function disposeExpiredManagedResources(
  * without this the retained credential is destroyed on the very next sweep
  * and the transfer's `credentials.update` 404s.
  */
-async function retainedVaultIds(db: Kysely<Database>, runnerId: string): Promise<Set<string>> {
+/**
+ * The session and vault handles a *live* run of this runner is using. A
+ * resumed run inherits its predecessor's session and vault, so after the
+ * hand-over both are named by an ended run (the predecessor, by name and by
+ * `provider_meta`) while a running one depends on them — and the resource
+ * row that marked them retained is gone, deleted by the completed transfer.
+ * Every sweep below therefore asks this too: a handle an active run holds is
+ * never garbage, whatever an ended run still says about it.
+ */
+async function liveRunHandles(
+	db: Kysely<Database>,
+	runnerId: string
+): Promise<{ vaults: Set<string>; sessions: Set<string> }> {
 	const rows = await db
-		.selectFrom('run_resource')
-		.select('vault_id')
+		.selectFrom('agent_run')
+		.select(['provider_session_id', 'provider_meta'])
 		.where('runner_id', '=', runnerId)
-		.where('kind', '=', 'claude_managed')
-		.where('state', 'in', ['available', 'claimed'])
+		.where('status', 'in', ['assigned', 'launching', 'running'])
 		.execute();
-	return new Set(rows.map((r) => r.vault_id).filter((id): id is string => !!id));
+	const vaults = new Set<string>();
+	const sessions = new Set<string>();
+	for (const row of rows) {
+		if (row.provider_session_id) sessions.add(row.provider_session_id);
+		const meta = parseJson<ClaudeRunMeta>(row.provider_meta);
+		if (meta?.vault_id) vaults.add(meta.vault_id);
+	}
+	return { vaults, sessions };
 }
 
-async function retainedSessionIds(db: Kysely<Database>, runnerId: string): Promise<Set<string>> {
+async function retainedResourceHandles(
+	db: Kysely<Database>,
+	runnerId: string
+): Promise<{ vaults: Set<string>; sessions: Set<string> }> {
 	const rows = await db
 		.selectFrom('run_resource')
-		.select('provider_session_id')
+		.select(['vault_id', 'provider_session_id'])
 		.where('runner_id', '=', runnerId)
 		.where('kind', '=', 'claude_managed')
 		.where('state', 'in', ['available', 'claimed'])
 		.execute();
-	return new Set(rows.map((r) => r.provider_session_id).filter((id): id is string => !!id));
+	return {
+		vaults: new Set(rows.map((r) => r.vault_id).filter((id): id is string => !!id)),
+		sessions: new Set(rows.map((r) => r.provider_session_id).filter((id): id is string => !!id))
+	};
+}
+
+/**
+ * Everything this runner must not delete: the handles held for a resume
+ * (`run_resource`, still claimable or mid-transfer) plus the handles a live
+ * run is running on.
+ */
+async function protectedHandles(
+	db: Kysely<Database>,
+	runnerId: string
+): Promise<{ vaults: Set<string>; sessions: Set<string> }> {
+	const [retained, live] = await Promise.all([
+		retainedResourceHandles(db, runnerId),
+		liveRunHandles(db, runnerId)
+	]);
+	return {
+		vaults: new Set([...retained.vaults, ...live.vaults]),
+		sessions: new Set([...retained.sessions, ...live.sessions])
+	};
+}
+
+/**
+ * Hands the predecessor's provider resources over on a completed resume: its
+ * `provider_meta` keeps the handles for the run detail view but is marked
+ * collected and no longer retained, so neither the GC nor a future expiry
+ * sweep can act on resources the successor now owns.
+ */
+async function releaseTransferredHandles(db: Kysely<Database>, runId: string): Promise<void> {
+	const row = await db
+		.selectFrom('agent_run')
+		.select('provider_meta')
+		.where('id', '=', runId)
+		.executeTakeFirst();
+	const meta = parseJson<ClaudeRunMeta>(row?.provider_meta ?? null);
+	if (!meta) return;
+	await db
+		.updateTable('agent_run')
+		.set({ provider_meta: JSON.stringify({ ...meta, retained: false, gc_done: true }) })
+		.where('id', '=', runId)
+		.execute();
 }
 
 async function gcEndedRuns(
@@ -475,14 +539,18 @@ async function gcEndedRuns(
 		.orderBy('ended_at desc')
 		.limit(25)
 		.execute();
-	const retained = await retainedSessionIds(db, runnerId);
+	const protectedIds = await protectedHandles(db, runnerId);
 	for (const run of ended) {
 		const meta = parseJson<ClaudeRunMeta>(run.provider_meta);
 		if (!meta || meta.gc_done) continue;
 		// A retained run's session and vault are the resume path's, not
 		// leftovers: only the resource's disposal (expiry, or a reuse that
-		// ends) may delete them.
-		if (meta.retained && run.provider_session_id && retained.has(run.provider_session_id)) continue;
+		// ends) may delete them. The same holds once a hand-over completes:
+		// the predecessor still names the handles its successor is running
+		// on, and its meta is stamped `gc_done` by the transfer — but a crash
+		// between the send and that stamp leaves this the only guard.
+		if (run.provider_session_id && protectedIds.sessions.has(run.provider_session_id)) continue;
+		if (meta.vault_id && protectedIds.vaults.has(meta.vault_id)) continue;
 		try {
 			if (meta.vault_id) {
 				await client.beta.vaults.delete(meta.vault_id).catch((e) => {
@@ -514,12 +582,15 @@ async function reconcileVaults(
 	// which makes them findable regardless — delete any whose run is
 	// unknown or ended.
 	try {
-		const retained = await retainedVaultIds(db, runnerId);
+		const protectedIds = await protectedHandles(db, runnerId);
 		const vaults = await client.beta.vaults.list({ limit: 100 });
 		for (const vault of vaults.data) {
 			// A vault held by a live resource belongs to the resume path, not
-			// to its ended owner run: only disposal may delete it.
-			if (retained.has(vault.id)) continue;
+			// to its ended owner run: only disposal may delete it. The same
+			// applies once a hand-over completes: the vault keeps its
+			// `tines-run-<predecessor>` name, so the lookup below would find
+			// an ended run and delete the successor's credential mid-run.
+			if (protectedIds.vaults.has(vault.id)) continue;
 			const runId = vault.display_name?.startsWith('tines-run-')
 				? vault.display_name.slice('tines-run-'.length)
 				: null;
@@ -551,7 +622,7 @@ async function reconcileSessions(
 	// session create and the DB write) — cancel them. Freshly created
 	// sessions get the launch-stall grace period before qualifying.
 	try {
-		const retained = await retainedSessionIds(db, runnerId);
+		const protectedIds = await protectedHandles(db, runnerId);
 		const page = await client.beta.sessions.list({
 			statuses: ['running', 'idle', 'rescheduling'],
 			limit: 100
@@ -563,7 +634,7 @@ async function reconcileSessions(
 			// An idle session held by a live resource is retained on purpose:
 			// its owner run HAS ended, which is exactly what this sweep would
 			// otherwise read as an orphan.
-			if (retained.has(session.id)) continue;
+			if (protectedIds.sessions.has(session.id)) continue;
 			const run = await db
 				.selectFrom('agent_run')
 				.select(['id', 'status'])
@@ -715,6 +786,11 @@ export function createClaudeAdapter(env: Env, opts: ClaudeAdapterOptions = {}): 
 					]
 				});
 				await completeResumeTransfer(db, resume.resource_id, Date.now());
+				// Ownership has moved: the predecessor must stop naming the
+				// session and vault as its own, or the end-of-run GC would
+				// archive the session this run is now talking in and delete the
+				// credential it reads its key from.
+				await releaseTransferredHandles(db, resume.previous_run_id);
 				const resumedMeta: ClaudeRunMeta = {
 					vault_id: resume.vault_id,
 					credential_id: resume.credential_id,
