@@ -146,6 +146,7 @@ const seen: { method: string; path: string; body: string }[] = [];
 let conflict = false;
 /** Flipped by a test to make the reviewed configuration go stale. */
 let stale = false;
+let blocker: 'project_archived' | 'issue_busy' | 'run_key_forbidden' | null = null;
 
 beforeAll(async () => {
 	server = createServer((req, res) => {
@@ -164,7 +165,17 @@ beforeAll(async () => {
 			if (url.pathname === '/api/v1/projects/prj_src/issues/4') return send(200, issue);
 			if (url.pathname === '/api/v1/issues' || url.pathname.startsWith('/api/v1/issues/iss_1')) {
 				if (url.pathname === '/api/v1/issues/iss_1/transfer' && req.method === 'GET') {
-					return send(200, preview);
+					return send(
+						200,
+						blocker
+							? {
+									...preview,
+									can_commit: false,
+									preview_token: null,
+									blockers: [{ code: blocker, message: `${blocker} blocked`, remedy: 'fix it' }]
+								}
+							: preview
+					);
 				}
 				if (url.pathname === '/api/v1/issues/iss_1/transfer' && req.method === 'POST') {
 					if (stale) {
@@ -215,6 +226,7 @@ beforeEach(() => {
 	seen.length = 0;
 	conflict = false;
 	stale = false;
+	blocker = null;
 });
 
 function cli(args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
@@ -357,4 +369,22 @@ describe('tines issues transfer', () => {
 		expect(JSON.parse(res.stdout).new_ref.ref).toBe('platform/8');
 		expect(res.stdout).not.toContain('Preserved:');
 	}, 60_000);
+
+	for (const code of ['project_archived', 'issue_busy', 'run_key_forbidden'] as const) {
+		it(`returns a failing JSON error for ${code}`, async () => {
+			blocker = code;
+			const res = await cli([
+				'issues',
+				'transfer',
+				'demo/4',
+				'--project',
+				'platform',
+				'--yes',
+				'--json'
+			]);
+			expect(res.code).not.toBe(0);
+			expect(posts()).toHaveLength(0);
+			expect(JSON.parse(res.stdout)).toMatchObject({ error: { code } });
+		}, 60_000);
+	}
 });

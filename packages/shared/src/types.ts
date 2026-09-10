@@ -1238,6 +1238,11 @@ export interface IssueTransferResult {
 	event_id: string | null;
 	/** Canonical browser path for the issue at its current address. */
 	issue_path: string;
+	/** The signed review that this commit validated. */
+	preserved: IssueTransferPreserved;
+	context_changes: IssueTransferContextChange[];
+	routing: IssueTransferPreview['routing'];
+	schedule: IssueTransferSchedule | null;
 }
 
 export interface RepoDirConflict {

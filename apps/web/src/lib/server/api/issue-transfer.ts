@@ -330,7 +330,8 @@ export async function previewIssueTransfer(
 	actor: ActorContext,
 	issueId: string,
 	destinationId: string,
-	now = Date.now()
+	now = Date.now(),
+	readAttempt = 0
 ): Promise<IssueTransferPreview> {
 	const db = getDb(env);
 	const sections = await readWitnessSections(db, issueId, destinationId);
@@ -378,7 +379,28 @@ export async function previewIssueTransfer(
 		}),
 		preservedRecord(db, issue)
 	]);
+	// D1 does not expose an interactive read transaction. Bracket the ordinary
+	// resolvers with the complete dependency witness and only sign a review whose
+	// inputs stayed identical for the entire assembly. A busy configuration gets
+	// a fresh attempt rather than a mixed review.
+	const settledSections = await readWitnessSections(db, issueId, destinationId);
+	if (!settledSections || JSON.stringify(settledSections) !== JSON.stringify(sections)) {
+		if (readAttempt < 2) {
+			return previewIssueTransfer(env, actor, issueId, destinationId, now, readAttempt + 1);
+		}
+		throw new ApiFail(
+			409,
+			'transfer_preview_stale',
+			'The issue or transfer configuration kept changing; refresh and review again'
+		);
+	}
 
+	const summary: TransferWitnessPayload['r'] = {
+		preserved,
+		context_changes: diffEffectiveContext(contextBefore, contextAfter),
+		routing: { before: advisoryRouting(routingBefore), after: advisoryRouting(routingAfter) },
+		schedule: scheduleSummary(issue)
+	};
 	const payload: TransferWitnessPayload = {
 		v: 1,
 		u: actor.userId,
@@ -388,7 +410,8 @@ export async function previewIssueTransfer(
 		a: section.issue.project_assignment_token,
 		n: section.issue.number,
 		e: now + TRANSFER_PREVIEW_TTL_MS,
-		h: await hashTransferWitness(sections)
+		h: await hashTransferWitness(sections),
+		r: summary
 	};
 	const canCommit = blockers.length === 0;
 	return {
@@ -402,10 +425,10 @@ export async function previewIssueTransfer(
 		context: {
 			before: contextBefore,
 			after: contextAfter,
-			changes: diffEffectiveContext(contextBefore, contextAfter)
+			changes: summary.context_changes
 		},
-		routing: { before: advisoryRouting(routingBefore), after: advisoryRouting(routingAfter) },
-		schedule: scheduleSummary(issue),
+		routing: summary.routing,
+		schedule: summary.schedule,
 		noop,
 		can_commit: canCommit,
 		blockers,
@@ -577,7 +600,11 @@ export async function commitIssueTransfer(
 			old_ref: oldRef,
 			new_ref: oldRef,
 			event_id: null,
-			issue_path: `/issues/${encodeURIComponent(section.source.name)}/${payload.n}`
+			issue_path: `/issues/${encodeURIComponent(section.source.name)}/${payload.n}`,
+			preserved: payload.r.preserved,
+			context_changes: payload.r.context_changes,
+			routing: payload.r.routing,
+			schedule: payload.r.schedule
 		};
 	}
 
@@ -616,6 +643,10 @@ export async function commitIssueTransfer(
 		old_ref: oldRef,
 		new_ref: newRef,
 		event_id: batch.eventId,
-		issue_path: `/issues/${encodeURIComponent(newRef.project_name)}/${newRef.number}`
+		issue_path: `/issues/${encodeURIComponent(newRef.project_name)}/${newRef.number}`,
+		preserved: payload.r.preserved,
+		context_changes: payload.r.context_changes,
+		routing: payload.r.routing,
+		schedule: payload.r.schedule
 	};
 }

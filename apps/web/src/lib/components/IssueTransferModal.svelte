@@ -1,5 +1,11 @@
 <script lang="ts">
-	import type { IssueTransferPreview, IssueTransferResult, Project } from '@tines/shared';
+	import type {
+		EffectiveContext,
+		IssueTransferPreview,
+		IssueTransferResult,
+		Project
+	} from '@tines/shared';
+	import { tick } from 'svelte';
 	import { api } from '$lib/api';
 	import Modal from '$lib/components/Modal.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
@@ -37,6 +43,9 @@
 	let committing = $state(false);
 	let error = $state<string | null>(null);
 	let stale = $state(false);
+	let uncertain = $state(false);
+	let destinationSelect = $state<HTMLSelectElement | null>(null);
+	let reviewHeading = $state<HTMLHeadingElement | null>(null);
 	/** Only the newest request may render: an older reply must not overwrite it. */
 	let requestSeq = 0;
 
@@ -45,6 +54,7 @@
 		preview = null;
 		error = null;
 		stale = false;
+		uncertain = false;
 		loading = false;
 		committing = false;
 	}
@@ -59,6 +69,8 @@
 			const next = await api.previewIssueTransfer(issueId, destination);
 			if (seq !== requestSeq) return;
 			preview = next;
+			await tick();
+			reviewHeading?.focus({ preventScroll: true });
 		} catch (e) {
 			if (seq !== requestSeq) return;
 			error = e instanceof Error ? e.message : 'Could not load the review';
@@ -90,6 +102,10 @@
 				stale = true;
 			} else if (fail.code === 'transfer_conflict') {
 				preview = null;
+			} else if (!fail.code) {
+				uncertain = true;
+				error =
+					'The response was lost, so the move may have completed. Check the current issue before trying again.';
 			}
 		} finally {
 			committing = false;
@@ -97,9 +113,30 @@
 	}
 
 	const changes = $derived(preview?.context.changes.filter((c) => c.change !== 'retained') ?? []);
+
+	function itemContent(context: EffectiveContext, itemId: string): string[] {
+		const prompt = context.prompt.parts.find((item) => item.item_id === itemId);
+		if (prompt) return [prompt.body];
+		const skill = context.skills.find((item) => item.item_id === itemId);
+		if (skill) return skill.files.map((file) => `${file.path}\n${file.content}`);
+		const repo = context.repos.find((item) => item.item_id === itemId);
+		if (repo) return [`${repo.url}${repo.branch ? ` @ ${repo.branch}` : ''} → ${repo.dir}`];
+		return [];
+	}
+
+	async function recover() {
+		const issue = await api.getIssue(issueId);
+		window.location.assign(`/issues/${encodeURIComponent(issue.project_name)}/${issue.number}`);
+	}
 </script>
 
-<Modal bind:open title="Move to project…" size="xl" onclose={reset}>
+<Modal
+	bind:open
+	title="Move to project…"
+	size="xl"
+	onclose={reset}
+	initialFocus={() => destinationSelect}
+>
 	{#if !preview}
 		<div class="space-y-4">
 			{#if destinations.length === 0}
@@ -108,6 +145,7 @@
 				<label class="block space-y-1 text-sm">
 					<span class="font-medium">Destination project</span>
 					<select
+						bind:this={destinationSelect}
 						bind:value={destination}
 						class="border-input bg-background w-full rounded-md border px-3 py-2 text-sm"
 						data-testid="transfer-destination"
@@ -135,7 +173,7 @@
 		</div>
 	{:else}
 		<div class="space-y-4 text-sm" data-testid="transfer-review">
-			<h3 class="text-base font-medium" tabindex="-1">
+			<h3 class="break-anywhere text-base font-medium" tabindex="-1" bind:this={reviewHeading}>
 				{preview.old_ref.ref} → {preview.destination.name}
 			</h3>
 			{#if stale}
@@ -177,6 +215,14 @@
 											{change.repo_after.url} → {change.repo_after.dir}
 										</p>
 									{/if}
+									{#each itemContent(preview.context.before, change.item_id) as content}
+										<pre
+											class="bg-muted mt-1 max-h-48 overflow-auto p-2 text-xs break-all whitespace-pre-wrap">{content}</pre>
+									{/each}
+									{#each itemContent(preview.context.after, change.item_id) as content}
+										<pre
+											class="bg-muted mt-1 max-h-48 overflow-auto p-2 text-xs break-all whitespace-pre-wrap">{content}</pre>
+									{/each}
 								</details>
 							</li>
 						{/each}
@@ -213,6 +259,9 @@
 			{/each}
 			{#if error}
 				<p class="text-destructive text-sm" role="alert">{error}</p>
+			{/if}
+			{#if uncertain}
+				<Button variant="outline" onclick={recover}>Check current issue</Button>
 			{/if}
 
 			<div class="flex justify-end gap-2">

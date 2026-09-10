@@ -536,7 +536,17 @@ export function register(program: Command): void {
 			}
 			const blocked = () => {
 				const blocker = preview.blockers[0];
-				if (opts.json) return printJson(preview);
+				if (opts.json) {
+					printJson({
+						error: {
+							code: blocker?.code ?? 'transfer_blocked',
+							message: blocker?.message ?? 'this move is blocked',
+							details: blocker ?? null
+						}
+					});
+					process.exitCode = 1;
+					return;
+				}
 				// Under --json stdout carries exactly one object, so the human review
 				// and every prompt go to stderr.
 				console.error(formatTransferPreview(preview));

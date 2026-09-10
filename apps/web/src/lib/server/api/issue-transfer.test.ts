@@ -111,6 +111,31 @@ describe('private issue transfer path', () => {
 		await expect(
 			commitIssueTransfer(t.env, actor, issueId, DESTINATION, fresh.preview_token!, NOW + 400)
 		).rejects.toMatchObject({ code: 'transfer_preview_stale' });
+
+		// Names are displayed in the preservation review, not merely their IDs.
+		const named = await previewIssueTransfer(t.env, actor, issueId, DESTINATION, NOW + 500);
+		t.sqlite.exec(`UPDATE label SET name = 'renamed' WHERE id = 'lbl_late'`);
+		await expect(
+			commitIssueTransfer(t.env, actor, issueId, DESTINATION, named.preview_token!, NOW + 501)
+		).rejects.toMatchObject({ code: 'transfer_preview_stale' });
+	});
+
+	it('stales rendered workflow inheritance and relationship readiness', async () => {
+		const inheritance = await previewIssueTransfer(t.env, actor, issueId, DESTINATION, NOW);
+		t.sqlite.exec(`UPDATE workflow_state SET name = 'Renamed state' WHERE id = '${OPEN}'`);
+		await expect(
+			commitIssueTransfer(t.env, actor, issueId, DESTINATION, inheritance.preview_token!, NOW + 1)
+		).rejects.toMatchObject({ code: 'transfer_preview_stale' });
+
+		const other = addIssue(t, { id: 'iss_linked' });
+		const readiness = await previewIssueTransfer(t.env, actor, issueId, DESTINATION, NOW + 2);
+		t.sqlite.exec(`
+			INSERT INTO issue_link (id, source_issue_id, target_issue_id, kind, created_at)
+			VALUES ('lnk_late', '${other}', '${issueId}', 'blocks', ${NOW})
+		`);
+		await expect(
+			commitIssueTransfer(t.env, actor, issueId, DESTINATION, readiness.preview_token!, NOW + 3)
+		).rejects.toMatchObject({ code: 'transfer_preview_stale' });
 	});
 
 	it('stales a preview on a structural routing change but not on liveness alone', async () => {
@@ -163,6 +188,12 @@ describe('private issue transfer path', () => {
 			NOW + 22
 		);
 		expect(result.status).toBe('transferred');
+		expect(result).toMatchObject({
+			preserved: live.preserved,
+			context_changes: live.context.changes,
+			routing: live.routing,
+			schedule: live.schedule
+		});
 	});
 
 	it('projects guidance and repositories at the destination, and agrees after the move', async () => {

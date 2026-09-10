@@ -1,5 +1,11 @@
 import { sql, type RawBuilder } from 'kysely';
 import { sha256Hex } from '$lib/server/crypto';
+import type {
+	IssueTransferContextChange,
+	IssueTransferPreserved,
+	IssueTransferPreview,
+	IssueTransferSchedule
+} from '@tines/shared';
 
 const TOKEN_VERSION = 'v1';
 const KEY_PREFIX = 'tines:issue-transfer:v1:';
@@ -15,6 +21,12 @@ export interface TransferWitnessPayload {
 	n: number;
 	e: number;
 	h: { issue: string; context: string; routing: string };
+	r: {
+		preserved: IssueTransferPreserved;
+		context_changes: IssueTransferContextChange[];
+		routing: IssueTransferPreview['routing'];
+		schedule: IssueTransferSchedule | null;
+	};
 }
 
 export interface TransferWitnessSections {
@@ -121,7 +133,9 @@ function isTransferWitnessPayload(value: unknown): value is TransferWitnessPaylo
 		!!h &&
 		typeof h.issue === 'string' &&
 		typeof h.context === 'string' &&
-		typeof h.routing === 'string'
+		typeof h.routing === 'string' &&
+		!!p.r &&
+		typeof p.r === 'object'
 	);
 }
 
@@ -162,8 +176,37 @@ export function transferWitnessExpressions(
 				'updated_at', issue.updated_at,
 				'project_assignment_token', issue.project_assignment_token,
 				'labels', (
-					SELECT json_group_array(label_id)
-					FROM (SELECT label_id FROM issue_label WHERE issue_id = issue.id ORDER BY label_id)
+					SELECT json_group_array(json(row_json)) FROM (
+						SELECT json_object('id', label.id, 'name', label.name, 'color', label.color) AS row_json
+						FROM issue_label JOIN label ON label.id = issue_label.label_id
+						WHERE issue_label.issue_id = issue.id ORDER BY label.id
+					)
+				),
+				'workflow', (
+					SELECT json_object('id', id, 'name', name, 'initial_state_id', initial_state_id,
+						'updated_at', updated_at) FROM workflow WHERE id = issue.workflow_id
+				),
+				'states', (
+					SELECT json_group_array(json(row_json)) FROM (
+						SELECT json_object('id', id, 'name', name, 'category', category,
+							'position', position, 'inherits_from_state_id', inherits_from_state_id) AS row_json
+						FROM workflow_state WHERE workflow_id = issue.workflow_id ORDER BY id
+					)
+				),
+				'transitions', (
+					SELECT json_group_array(json(row_json)) FROM (
+						SELECT json_object('id', id, 'name', name, 'from_state_id', from_state_id,
+							'to_state_id', to_state_id, 'requirements', requirements) AS row_json
+						FROM workflow_transition WHERE workflow_id = issue.workflow_id ORDER BY id
+					)
+				),
+				'links', (
+					SELECT json_group_array(json(row_json)) FROM (
+						SELECT json_object('id', id, 'source_issue_id', source_issue_id,
+							'target_issue_id', target_issue_id, 'kind', kind) AS row_json
+						FROM issue_link
+						WHERE source_issue_id = issue.id OR target_issue_id = issue.id ORDER BY id
+					)
 				)
 			),
 			'source', json_object(
