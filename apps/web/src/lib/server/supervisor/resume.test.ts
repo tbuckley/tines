@@ -4,9 +4,44 @@ import { addIssue, addRun, addRunner, NOW, seedBase, USER } from './test-fixture
 import {
 	claimResourceDisposal,
 	claimResumeResource,
+	disposeExpiredResumeResources,
 	isResumeProviderSupported,
+	orderTargetsByResumeAffinity,
+	resumeAffinityByIssue,
 	resumeEligibility
 } from './resume';
+
+const insertResource = (
+	t: ReturnType<typeof createTestDb>,
+	values: {
+		id: string;
+		runnerId: string;
+		issueId: string;
+		ownerRunId: string;
+		state?: string;
+		expiresAt: number;
+		session?: string;
+	}
+) =>
+	t.sqlite
+		.prepare(
+			`INSERT INTO run_resource (
+			id, user_id, runner_id, issue_id, kind, owner_run_id, state, expires_at,
+			provider_session_id, resume_fingerprint, created_at, updated_at
+		) VALUES (?, ?, ?, ?, 'local_claude', ?, ?, ?, ?, 'v1:abc', ?, ?)`
+		)
+		.run(
+			values.id,
+			USER,
+			values.runnerId,
+			values.issueId,
+			values.ownerRunId,
+			values.state ?? 'available',
+			values.expiresAt,
+			values.session ?? values.id,
+			NOW,
+			NOW
+		);
 
 const runner = {
 	id: 'rnr_1',
@@ -154,5 +189,92 @@ describe('resource claims', () => {
 		expect(t.all(`SELECT state, claim_run_id, transfer_phase FROM run_resource`)).toEqual([
 			{ state: 'claimed', claim_run_id: 'run_new', transfer_phase: 'preparing' }
 		]);
+	});
+});
+
+describe('dispatch affinity', () => {
+	it('only reorders targets, and only for a live available resource', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const runnerId = addRunner(t);
+		const issueId = addIssue(t);
+		addRun(t, { id: 'run_old', issueId, runnerId, createdAt: NOW - 1 });
+		insertResource(t, {
+			id: 'res_live',
+			runnerId,
+			issueId,
+			ownerRunId: 'run_old',
+			expiresAt: NOW + 1000
+		});
+
+		const affinity = await resumeAffinityByIssue(t.db, USER, [issueId], NOW);
+		expect(affinity.get(issueId)).toEqual(new Set([runnerId]));
+
+		const targets = [{ runner_id: 'rnr_other' }, { runner_id: runnerId }];
+		expect(orderTargetsByResumeAffinity(targets, affinity.get(issueId))).toEqual([
+			{ runner_id: runnerId },
+			{ runner_id: 'rnr_other' }
+		]);
+		// Never adds, drops or reorders when there is nothing to prefer.
+		expect(orderTargetsByResumeAffinity(targets, new Set(['rnr_absent']))).toBe(targets);
+		expect(orderTargetsByResumeAffinity(targets, undefined)).toBe(targets);
+	});
+
+	it('ignores expired and claimed resources', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const runnerId = addRunner(t);
+		const issueId = addIssue(t);
+		addRun(t, { id: 'run_old', issueId, runnerId, createdAt: NOW - 1 });
+		insertResource(t, { id: 'res_exp', runnerId, issueId, ownerRunId: 'run_old', expiresAt: NOW });
+		insertResource(t, {
+			id: 'res_claimed',
+			runnerId,
+			issueId,
+			ownerRunId: 'run_old',
+			state: 'claimed',
+			expiresAt: NOW + 1000
+		});
+		expect(await resumeAffinityByIssue(t.db, USER, [issueId], NOW)).toEqual(new Map());
+		expect(await resumeAffinityByIssue(t.db, USER, [], NOW)).toEqual(new Map());
+	});
+});
+
+describe('expired resource disposal', () => {
+	it('disposes expired available rows and leaves live and claimed ones', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const runnerId = addRunner(t);
+		const issueId = addIssue(t);
+		addRun(t, { id: 'run_old', issueId, runnerId, createdAt: NOW - 1 });
+		insertResource(t, {
+			id: 'res_exp',
+			runnerId,
+			issueId,
+			ownerRunId: 'run_old',
+			expiresAt: NOW - 1
+		});
+		insertResource(t, {
+			id: 'res_live',
+			runnerId,
+			issueId,
+			ownerRunId: 'run_old',
+			expiresAt: NOW + 1000
+		});
+		insertResource(t, {
+			id: 'res_claimed',
+			runnerId,
+			issueId,
+			ownerRunId: 'run_old',
+			state: 'claimed',
+			expiresAt: NOW - 1
+		});
+
+		expect(await disposeExpiredResumeResources(t.db, NOW)).toBe(1);
+		expect(t.all(`SELECT id FROM run_resource ORDER BY id`)).toEqual([
+			{ id: 'res_claimed' },
+			{ id: 'res_live' }
+		]);
+		expect(await disposeExpiredResumeResources(t.db, NOW)).toBe(0);
 	});
 });

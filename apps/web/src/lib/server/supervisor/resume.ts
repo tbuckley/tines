@@ -273,3 +273,73 @@ export async function expiredResumeResources(db: Kysely<Database>, now: number, 
 		.limit(limit)
 		.execute();
 }
+
+/**
+ * Dispatch affinity: the runners currently holding a live retained session
+ * for each of these issues. Only `available` and unexpired resources count —
+ * a claimed or expired one cannot be continued, so preferring its runner
+ * would be a routing change for nothing.
+ */
+export async function resumeAffinityByIssue(
+	db: Kysely<Database>,
+	userId: string,
+	issueIds: string[],
+	now: number
+): Promise<Map<string, Set<string>>> {
+	const affinity = new Map<string, Set<string>>();
+	if (issueIds.length === 0) return affinity;
+	const rows = await db
+		.selectFrom('run_resource')
+		.select(['issue_id', 'runner_id'])
+		.where('user_id', '=', userId)
+		.where('issue_id', 'in', issueIds)
+		.where('state', '=', 'available')
+		.where('expires_at', '>', now)
+		.execute();
+	for (const row of rows) {
+		const runners = affinity.get(row.issue_id) ?? new Set<string>();
+		runners.add(row.runner_id);
+		affinity.set(row.issue_id, runners);
+	}
+	return affinity;
+}
+
+/**
+ * Reorder an issue's already-resolved routing targets so a runner holding a
+ * resumable session is tried first. This is a stable partition and nothing
+ * more: it never adds a target routing did not choose, never drops one, and
+ * never waits for a busy runner — an unavailable preferred runner simply
+ * fails its verdict and the pass walks on to the next target as it does
+ * today.
+ */
+export function orderTargetsByResumeAffinity<T extends { runner_id: string }>(
+	targets: T[],
+	preferred: Set<string> | undefined
+): T[] {
+	if (!preferred || preferred.size === 0 || targets.length < 2) return targets;
+	const first = targets.filter((t) => preferred.has(t.runner_id));
+	if (first.length === 0 || first.length === targets.length) return targets;
+	return [...first, ...targets.filter((t) => !preferred.has(t.runner_id))];
+}
+
+/**
+ * GC: dispose every expired retained resource. Each row races the reuse path
+ * through the same `available →` predicate, so a resource claimed by a
+ * launch in flight is left alone. The kept workspace itself is the daemon's
+ * to prune (age and count bounds, as for failed runs); dropping the row is
+ * what stops it being resumed and what unpins it from retention.
+ */
+export async function disposeExpiredResumeResources(
+	db: Kysely<Database>,
+	now: number,
+	limit = 50
+): Promise<number> {
+	const expired = await expiredResumeResources(db, now, limit);
+	let disposed = 0;
+	for (const row of expired) {
+		if (!(await claimResourceDisposal(db, row.id, now))) continue;
+		await db.deleteFrom('run_resource').where('id', '=', row.id).execute();
+		disposed += 1;
+	}
+	return disposed;
+}

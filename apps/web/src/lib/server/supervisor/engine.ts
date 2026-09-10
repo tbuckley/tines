@@ -33,6 +33,11 @@ import {
 	type ActiveCounts,
 	type MatchableRule
 } from './logic';
+import {
+	disposeExpiredResumeResources,
+	orderTargetsByResumeAffinity,
+	resumeAffinityByIssue
+} from './resume';
 import { loadSealableRun, sealRunLog, spillEvicted, sweepRunLogs } from './run-log';
 import { effectiveAutomationEnabled } from './settings';
 
@@ -791,11 +796,20 @@ export async function runDispatchPass(
 	]);
 	if (candidates.length === 0) return result;
 
+	// Runner affinity for resume: which runners hold a live retained session
+	// for these issues. Used only to reorder targets routing already chose.
+	const affinity = await resumeAffinityByIssue(
+		db,
+		userId,
+		candidates.map((issue) => issue.id),
+		now
+	).catch(() => new Map<string, Set<string>>());
+
 	for (const issue of candidates) {
 		// With the global cap saturated nothing more can dispatch this pass.
 		if (settings.quota.type === 'global_cap' && counts.total >= settings.quota.limit) break;
 		const { targets } = targetsForIssue(issue, rules);
-		for (const target of targets) {
+		for (const target of orderTargetsByResumeAffinity(targets, affinity.get(issue.id))) {
 			const runner = runners.get(target.runner_id);
 			if (!runner) continue; // stale target (runner removed mid-pass)
 			const adapter = adapters[runner.type];
@@ -1512,6 +1526,14 @@ export async function sweepSupervisor(
 			.where('expires_at', '<=', now)
 			.compile()
 	]);
+
+	// Retained resume resources past their window: disposed here so a kept
+	// workspace cannot be continued (or pinned) forever. Best-effort.
+	try {
+		await disposeExpiredResumeResources(db, now);
+	} catch (e) {
+		console.error('supervisor sweep: expired resume resources failed:', e);
+	}
 
 	// Per-runner provider housekeeping (managed types): garbage-collect ended
 	// runs' vault credentials and sessions, and cancel orphaned sessions
