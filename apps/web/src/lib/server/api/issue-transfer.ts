@@ -13,6 +13,7 @@ import {
 } from '$lib/server/issue-transfer-witness';
 import { ApiFail, notFound, runAtomic, type ActorContext } from './core';
 import { loadIssue } from './issues';
+import { queueDispatchPass } from '$lib/server/supervisor/engine';
 
 interface WitnessIssue {
 	id: string;
@@ -238,7 +239,8 @@ export async function commitIssueTransfer(
 	issueId: string,
 	destinationId: string,
 	previewToken: string,
-	now = Date.now()
+	now = Date.now(),
+	platform?: { env: Env; ctx?: { waitUntil(promise: Promise<unknown>): void } }
 ): Promise<PrivateIssueTransferResult> {
 	if (actor.agentRunId) {
 		throw new ApiFail(
@@ -328,6 +330,14 @@ export async function commitIssueTransfer(
 	// alias regression cannot masquerade as a successful mutation.
 	await loadIssue(db, actor.userId, { projectName: section.source.name, number: payload.n });
 	await loadIssue(db, actor.userId, { projectName: receipt.project_name, number: receipt.number });
+	// Transfer has committed at this point. Opportunistic dispatch is best-effort:
+	// the periodic sweep remains authoritative, so queue failures must never make
+	// the caller believe the already-durable move failed.
+	try {
+		queueDispatchPass(platform, actor.userId);
+	} catch (e) {
+		console.error('could not queue dispatch after issue transfer:', e);
+	}
 	return {
 		status: 'transferred',
 		issueId,

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
 	NOW,
+	OPEN,
 	PROJECT,
 	USER,
 	addIssue,
@@ -8,6 +9,7 @@ import {
 	addRunner,
 	seedBase
 } from '../supervisor/test-fixtures';
+import { claimRun } from '../supervisor/engine';
 import type { ActorContext } from './core';
 import { commitIssueTransfer, previewIssueTransfer } from './issue-transfer';
 import { loadIssue } from './issues';
@@ -21,6 +23,27 @@ const actor: ActorContext = {
 	apiKeyName: null,
 	viaSession: true
 };
+
+const claimInput = (
+	t: TestDb,
+	issueId: string,
+	runnerId: string,
+	projectId: string,
+	projectAssignmentToken: string
+) => ({
+	runId: `arun_${Math.random().toString(36).slice(2)}`,
+	userId: USER,
+	issueId,
+	projectId,
+	stateId: OPEN,
+	runnerId,
+	maxConcurrent: 5,
+	tier: 'balanced' as const,
+	model: null,
+	quota: { type: 'global_cap' as const, limit: 10 },
+	now: NOW,
+	projectAssignmentToken
+});
 
 describe('private issue transfer path', () => {
 	let t: TestDb;
@@ -259,5 +282,153 @@ describe('private issue transfer path', () => {
 			commitIssueTransfer(t.env, actor, issueId, DESTINATION, first.previewToken!, NOW + 4)
 		).rejects.toMatchObject({ status: 409, code: 'transfer_conflict' });
 		expect(t.all(`SELECT * FROM event WHERE type = 'issue.transferred'`)).toHaveLength(2);
+	});
+
+	it('serializes claim and move: a winning claim blocks transfer without cancellation', async () => {
+		t.sqlite.exec(`UPDATE issue SET needs_attention = 0 WHERE id = '${issueId}'`);
+		const preview = await previewIssueTransfer(t.env, actor, issueId, DESTINATION, NOW);
+		const runnerId = addRunner(t);
+		const issue = t.all(
+			`SELECT project_id, project_assignment_token FROM issue WHERE id = ?`,
+			issueId
+		)[0];
+		expect(
+			await claimRun(
+				t.db,
+				t.env,
+				claimInput(
+					t,
+					issueId,
+					runnerId,
+					String(issue.project_id),
+					String(issue.project_assignment_token)
+				)
+			)
+		).toBe(true);
+
+		await expect(
+			commitIssueTransfer(t.env, actor, issueId, DESTINATION, preview.previewToken!, NOW + 1)
+		).rejects.toMatchObject({ status: 409, code: 'issue_busy' });
+		expect(t.all(`SELECT status FROM agent_run WHERE issue_id = ?`, issueId)).toEqual([
+			{ status: 'assigned' }
+		]);
+		expect(t.all(`SELECT project_id FROM issue WHERE id = ?`, issueId)[0].project_id).toBe(PROJECT);
+	});
+
+	it('serializes move and claim: stale source and ABA candidates lose, a fresh candidate wins', async () => {
+		t.sqlite.exec(`UPDATE issue SET needs_attention = 0 WHERE id = '${issueId}'`);
+		const runnerId = addRunner(t);
+		const source = t.all(
+			`SELECT project_id, project_assignment_token FROM issue WHERE id = ?`,
+			issueId
+		)[0];
+		const staleSourceClaim = claimInput(
+			t,
+			issueId,
+			runnerId,
+			String(source.project_id),
+			String(source.project_assignment_token)
+		);
+		const toDestination = await previewIssueTransfer(t.env, actor, issueId, DESTINATION, NOW);
+		await commitIssueTransfer(
+			t.env,
+			actor,
+			issueId,
+			DESTINATION,
+			toDestination.previewToken!,
+			NOW + 1
+		);
+		expect(await claimRun(t.db, t.env, staleSourceClaim)).toBe(false);
+
+		const back = await previewIssueTransfer(t.env, actor, issueId, PROJECT, NOW + 2);
+		await commitIssueTransfer(t.env, actor, issueId, PROJECT, back.previewToken!, NOW + 3);
+		expect(await claimRun(t.db, t.env, staleSourceClaim)).toBe(false);
+
+		const current = t.all(
+			`SELECT project_id, project_assignment_token FROM issue WHERE id = ?`,
+			issueId
+		)[0];
+		expect(
+			await claimRun(
+				t.db,
+				t.env,
+				claimInput(
+					t,
+					issueId,
+					runnerId,
+					String(current.project_id),
+					String(current.project_assignment_token)
+				)
+			)
+		).toBe(true);
+	});
+
+	it.each([
+		[
+			'context rescope',
+			`CREATE TRIGGER fail_transfer BEFORE UPDATE OF project_id ON context_item BEGIN SELECT RAISE(ABORT, 'injected rescope failure'); END`
+		],
+		[
+			'event insertion',
+			`CREATE TRIGGER fail_transfer BEFORE INSERT ON event WHEN NEW.type = 'issue.transferred' BEGIN SELECT RAISE(ABORT, 'injected event failure'); END`
+		]
+	])('rolls back every transfer write after an injected %s failure', async (_stage, trigger) => {
+		const preview = await previewIssueTransfer(t.env, actor, issueId, DESTINATION, NOW);
+		const before = {
+			issue: t.all(`SELECT * FROM issue WHERE id = ?`, issueId),
+			addresses: t.all(`SELECT * FROM issue_address WHERE issue_id = ?`, issueId),
+			context: t.all(`SELECT * FROM context_item WHERE issue_id = ?`, issueId),
+			events: t.all(`SELECT * FROM event WHERE issue_id = ?`, issueId)
+		};
+		t.sqlite.exec(trigger);
+
+		await expect(
+			commitIssueTransfer(t.env, actor, issueId, DESTINATION, preview.previewToken!, NOW + 1)
+		).rejects.toThrow(/injected/);
+		expect(t.all(`SELECT * FROM issue WHERE id = ?`, issueId)).toEqual(before.issue);
+		expect(t.all(`SELECT * FROM issue_address WHERE issue_id = ?`, issueId)).toEqual(
+			before.addresses
+		);
+		expect(t.all(`SELECT * FROM context_item WHERE issue_id = ?`, issueId)).toEqual(before.context);
+		expect(t.all(`SELECT * FROM event WHERE issue_id = ?`, issueId)).toEqual(before.events);
+	});
+
+	it('does not enqueue when the guarded update loses, but enqueue failure cannot undo a move', async () => {
+		const stale = await previewIssueTransfer(t.env, actor, issueId, DESTINATION, NOW);
+		const realBatch = t.env.DB.batch.bind(t.env.DB);
+		let first = true;
+		t.env.DB.batch = async (statements) => {
+			if (first) {
+				first = false;
+				t.sqlite.exec(`UPDATE issue SET title = 'raced' WHERE id = '${issueId}'`);
+			}
+			return realBatch(statements);
+		};
+		const waits: Promise<unknown>[] = [];
+		await expect(
+			commitIssueTransfer(t.env, actor, issueId, DESTINATION, stale.previewToken!, NOW + 1, {
+				env: t.env,
+				ctx: { waitUntil: (promise) => waits.push(promise) }
+			})
+		).rejects.toMatchObject({ status: 409, code: 'transfer_preview_stale' });
+		expect(waits).toHaveLength(0);
+
+		const fresh = await previewIssueTransfer(t.env, actor, issueId, DESTINATION, NOW + 2);
+		const result = await commitIssueTransfer(
+			t.env,
+			actor,
+			issueId,
+			DESTINATION,
+			fresh.previewToken!,
+			NOW + 3,
+			{
+				env: { DB: null } as unknown as Env,
+				ctx: { waitUntil: (promise) => waits.push(promise) }
+			}
+		);
+		expect(result.status).toBe('transferred');
+		expect(t.all(`SELECT project_id FROM issue WHERE id = ?`, issueId)[0].project_id).toBe(
+			DESTINATION
+		);
 	});
 });
