@@ -253,6 +253,32 @@ describe('private issue transfer path', () => {
 		expect(actual.repos.map((r) => r.url)).toEqual(preview.context.after.repos.map((r) => r.url));
 	});
 
+	it('keeps a high-cardinality signed review inside the public token limit', async () => {
+		for (let i = 0; i < 200; i++) {
+			t.sqlite.exec(`
+				INSERT INTO context_item (
+					id, user_id, kind, name, description, project_id, body,
+					position, version, created_at, updated_at
+				) VALUES (
+					'ctx_many_${i}', '${USER}', 'prompt', 'guidance-${i}', '', '${DESTINATION}',
+					'Inspectable destination guidance ${i}', ${i}, 1, ${NOW}, ${NOW}
+				)
+			`);
+		}
+		const preview = await previewIssueTransfer(t.env, actor, issueId, DESTINATION, NOW);
+		expect(preview.context.changes).toHaveLength(201);
+		expect(preview.preview_token!.length).toBeLessThanOrEqual(4096);
+		const result = await commitIssueTransfer(
+			t.env,
+			actor,
+			issueId,
+			DESTINATION,
+			preview.preview_token!,
+			NOW + 1
+		);
+		expect(result.context_changes).toHaveLength(201);
+	});
+
 	it('previews without allocating, commits atomically, and resolves both addresses', async () => {
 		const beforeIssue = t.all(`SELECT * FROM issue WHERE id = ?`, issueId)[0];
 		const beforeContext = t.all(`SELECT * FROM context_item WHERE id = 'ctx_transfer'`)[0];

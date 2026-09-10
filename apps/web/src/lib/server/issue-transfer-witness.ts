@@ -7,7 +7,7 @@ import type {
 	IssueTransferSchedule
 } from '@tines/shared';
 
-const TOKEN_VERSION = 'v1';
+const TOKEN_VERSION = 'v2';
 const KEY_PREFIX = 'tines:issue-transfer:v1:';
 export const TRANSFER_PREVIEW_TTL_MS = 15 * 60_000;
 
@@ -79,7 +79,11 @@ export async function mintTransferWitness(
 	payload: TransferWitnessPayload,
 	keyMaterial: string
 ): Promise<string> {
-	const body = toBase64Url(new TextEncoder().encode(JSON.stringify(payload)));
+	const encoded = new TextEncoder().encode(JSON.stringify(payload));
+	const compressed = await new Response(
+		new Blob([encoded]).stream().pipeThrough(new CompressionStream('gzip'))
+	).arrayBuffer();
+	const body = toBase64Url(new Uint8Array(compressed));
 	const signed = `${TOKEN_VERSION}.${body}`;
 	const signature = await crypto.subtle.sign(
 		'HMAC',
@@ -108,7 +112,13 @@ export async function verifyTransferWitness(
 			fromBase64Url(parts[2]) as BufferSource,
 			new TextEncoder().encode(`${parts[0]}.${parts[1]}`)
 		);
-		payload = JSON.parse(new TextDecoder().decode(fromBase64Url(parts[1])));
+		const compressed = fromBase64Url(parts[1]);
+		const decoded = await new Response(
+			new Blob([compressed.slice().buffer as ArrayBuffer])
+				.stream()
+				.pipeThrough(new DecompressionStream('gzip'))
+		).arrayBuffer();
+		payload = JSON.parse(new TextDecoder().decode(decoded));
 	} catch {
 		return { ok: false, reason: 'invalid' };
 	}
