@@ -9,6 +9,7 @@
 import { nextOccurrenceFromCron, renderTemplate, templateVars } from '@tines/shared';
 import { sql, type CompiledQuery, type Kysely } from 'kysely';
 import { getDb, newId, type Database } from './db';
+import { nextIssueNumber } from './issue-address';
 
 /** Everything instance creation needs, joined once in the due query. */
 export interface ScheduleExecRow {
@@ -111,7 +112,7 @@ export function instanceInserts(
 	const issueInsert = sql`
 		INSERT INTO issue (id, project_id, number, title, description, workflow_id, state_id, scheduled_task_id, created_at, updated_at)
 		SELECT ${issueId}, ${schedule.project_id},
-			(SELECT COALESCE(MAX(number), 0) + 1 FROM issue WHERE project_id = ${schedule.project_id}),
+			${nextIssueNumber(schedule.project_id)},
 			${title}, ${description}, ${schedule.workflow_id}, ${schedule.start_state_id},
 			${schedule.id}, ${now}, ${now}
 		WHERE ${guard}`.compile(db);

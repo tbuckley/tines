@@ -435,6 +435,9 @@ describe('listIssues bidirectional pagination', () => {
 			addIssue(t, { id });
 			t.sqlite.prepare('UPDATE issue SET created_at = 10 WHERE id = ?').run(id);
 		}
+		// Permanent addresses intentionally outlive issue mutability. This test
+		// removes a synthetic boundary row, so remove its test-only reservation too.
+		t.sqlite.prepare("DELETE FROM issue_address WHERE issue_id = 'iss_tie_b'").run();
 		t.sqlite.prepare("DELETE FROM issue WHERE id = 'iss_tie_b'").run();
 		const older = await listIssues(
 			t.db,

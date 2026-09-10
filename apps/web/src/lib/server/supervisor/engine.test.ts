@@ -292,6 +292,19 @@ describe('the guarded claim', () => {
 		expect(runs(t)).toHaveLength(0);
 	});
 
+	it('refuses a stale route after a project assignment changes, including ABA', async () => {
+		const t = world();
+		const runner = addRunner(t);
+		const issue = addIssue(t);
+		const input = claimInput(t, issue, runner, { projectAssignmentToken: '' });
+		// A -> B -> A can restore the same project while never restoring this token.
+		t.sqlite.exec(
+			`UPDATE issue SET project_assignment_token = 'assignment-after-aba' WHERE id = '${issue}'`
+		);
+		expect(await claimRun(t.db, t.env, input)).toBe(false);
+		expect(runs(t)).toHaveLength(0);
+	});
+
 	it('two racing claims on one issue: exactly one insert wins', async () => {
 		const t = world();
 		const r1 = addRunner(t);

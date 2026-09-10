@@ -56,6 +56,7 @@ import { runQuery, serializeRun } from './runs';
 import { requireTier } from './runners';
 import { getSchedule, prepareSchedule } from './schedules';
 import { loadWorkflow, loadWorkflows } from './workflows';
+import { nextIssueNumber } from '../issue-address';
 
 /**
  * SQL for the effective category of the blocker on a `blocks` edge into
@@ -707,12 +708,27 @@ export async function loadIssue(
 	let q = issueQuery(db, userId);
 	if ('id' in ref) q = q.where('issue.id', '=', ref.id);
 	else if ('projectId' in ref)
-		q = q.where('issue.project_id', '=', ref.projectId).where('issue.number', '=', ref.number);
+		q = q.where(({ exists, selectFrom }) =>
+			exists(
+				selectFrom('issue_address')
+					.select('issue_address.issue_id')
+					.whereRef('issue_address.issue_id', '=', 'issue.id')
+					.where('issue_address.project_id', '=', ref.projectId)
+					.where('issue_address.number', '=', ref.number)
+			)
+		);
 	else
-		q = q
-			.where('project.name', '=', ref.projectName)
-			.where('issue.number', '=', ref.number)
-			.orderBy('project.created_at desc');
+		q = q.where(({ exists, selectFrom }) =>
+			exists(
+				selectFrom('issue_address')
+					.innerJoin('project as address_project', 'address_project.id', 'issue_address.project_id')
+					.select('issue_address.issue_id')
+					.whereRef('issue_address.issue_id', '=', 'issue.id')
+					.where('address_project.user_id', '=', userId)
+					.where('address_project.name', '=', ref.projectName)
+					.where('issue_address.number', '=', ref.number)
+			)
+		);
 	const row = await q.executeTakeFirst();
 	if (!row) throw notFound();
 	return serializeIssue(row);
@@ -860,14 +876,13 @@ export function issueInsertQueries(
 ): CompiledQuery[] {
 	const { id, projectId, workflowId, stateId, now, scheduledTask } = opts;
 	return [
-		// MAX(number)+1 inside a single statement (and the batch's implicit
-		// transaction) keeps per-project numbering race-free on D1.
+		// The permanent ledger prevents reuse after the highest issue moves away.
 		db
 			.insertInto('issue')
 			.values({
 				id,
 				project_id: projectId,
-				number: sql<number>`(SELECT COALESCE(MAX(number), 0) + 1 FROM issue WHERE project_id = ${projectId})`,
+				number: nextIssueNumber(projectId),
 				title: opts.title,
 				description: opts.description,
 				workflow_id: workflowId,
@@ -879,7 +894,8 @@ export function issueInsertQueries(
 				needs_attention: 0,
 				state_entered_at: now,
 				created_at: now,
-				updated_at: now
+				updated_at: now,
+				project_assignment_token: ''
 			})
 			.compile(),
 		eventInsert(db, actor, {

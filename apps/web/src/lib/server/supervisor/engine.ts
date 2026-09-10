@@ -131,6 +131,8 @@ export interface CandidateIssue {
 	updated_at: number;
 	pinned_runner_id: string | null;
 	pinned_tier: string | null;
+	/** Internal ABA fence captured with routing selection. */
+	project_assignment_token?: string;
 	/** Labels the issue carries, for label-scoped rule matching. */
 	label_ids: string[];
 }
@@ -185,6 +187,7 @@ export async function loadEligibleIssues(
 			)
 		)
 		SELECT issue.id, issue.project_id, issue.state_id, issue.updated_at,
+			issue.project_assignment_token,
 			issue.pinned_runner_id, issue.pinned_tier,
 			-- Display columns for the fleet queue's refs and grouping. Free
 			-- here: the joins they read are already in the FROM clause.
@@ -349,8 +352,11 @@ export async function claimRun(
 		model: string | null;
 		quota: QuotaPolicy;
 		now: number;
+		/** Token captured by candidate selection; omitted only by pre-transfer tests/callers. */
+		projectAssignmentToken?: string;
 	}
 ): Promise<boolean> {
+	const assignmentToken = input.projectAssignmentToken ?? '';
 	const quotaGuard =
 		input.quota.type === 'global_cap'
 			? sql<boolean>`(
@@ -365,14 +371,15 @@ export async function claimRun(
 
 	const claim = sql`
 		INSERT INTO agent_run (id, user_id, issue_id, runner_id, status, tier, model,
-			state_id_at_start, log, log_bytes_dropped, created_at)
+			state_id_at_start, log, log_bytes_dropped, created_at, project_assignment_token)
 		SELECT ${input.runId}, ${input.userId}, issue.id, ${input.runnerId}, 'assigned',
-			${input.tier}, ${input.model}, issue.state_id, '', 0, ${input.now}
+			${input.tier}, ${input.model}, issue.state_id, '', 0, ${input.now}, ${assignmentToken}
 		FROM issue
 		JOIN project ON project.id = issue.project_id
 		JOIN workflow_state st ON st.id = issue.state_id
 		WHERE issue.id = ${input.issueId}
 			AND issue.state_id = ${input.stateId}
+			AND issue.project_assignment_token = ${assignmentToken}
 			-- Race guard: the project may have been archived between the pass
 			-- reading the queue and this claim.
 			AND project.archived_at IS NULL
@@ -829,7 +836,8 @@ export async function runDispatchPass(
 				tier: resolved.tier,
 				model: resolved.model,
 				quota: settings.quota,
-				now
+				now,
+				projectAssignmentToken: issue.project_assignment_token
 			});
 			// A lost race means something changed under us (another pass claimed
 			// the issue, or capacity vanished); leave this issue to the next pass.

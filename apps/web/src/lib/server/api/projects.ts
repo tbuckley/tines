@@ -271,6 +271,23 @@ export async function deleteProject(
 			{ issue_count: project.issue_count }
 		);
 	}
+	const aliasCount = Number(
+		(
+			await db
+				.selectFrom('issue_address')
+				.select((eb) => eb.fn.countAll().as('count'))
+				.where('project_id', '=', id)
+				.executeTakeFirstOrThrow()
+		).count
+	);
+	if (aliasCount > 0) {
+		throw new ApiFail(
+			422,
+			'project_has_issue_aliases',
+			`Cannot delete project "${project.name}": it retains ${aliasCount} historical issue address${aliasCount === 1 ? '' : 'es'}. Archive it instead.`,
+			{ alias_count: aliasCount, remedy: `tines projects archive "${project.name}"` }
+		);
+	}
 	// Context scoped to the project rejects deletion unless forced. The
 	// project is issue-less by now, so no issue-scoped items can reference it.
 	const attached = await findAttachedContext(db, actor.userId, { projectId: id });
