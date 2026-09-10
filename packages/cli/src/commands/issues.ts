@@ -4,9 +4,11 @@ import { basename, dirname, join } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { BODY_VALUE_HELP, readBodyValue } from '../body-value.js';
 import {
+	confirmTransfer,
 	formatTransferItem,
 	formatTransferPreview,
-	formatTransferResult
+	formatTransferResult,
+	type TransferTerminal
 } from '../issue-transfer.js';
 import {
 	client,
@@ -521,10 +523,7 @@ export function register(program: Command): void {
 			const destination = await resolveProject(api, opts.project);
 			// Everything below reviews one fetched preview: the token binds this
 			// exact review, so a later read can never be what gets confirmed.
-			const preview = await api.previewIssueTransfer(issue.id, destination.id);
-			// Under --json stdout carries exactly one object, so the human review
-			// and every prompt go to stderr.
-			const review = () => console.error(formatTransferPreview(preview));
+			let preview = await api.previewIssueTransfer(issue.id, destination.id);
 
 			if (opts.inspect !== undefined) {
 				const text = formatTransferItem(preview, Number(opts.inspect));
@@ -535,45 +534,71 @@ export function register(program: Command): void {
 				if (opts.json) return printJson(preview);
 				return console.log(formatTransferPreview(preview));
 			}
-			if (!preview.can_commit || !preview.preview_token) {
+			const blocked = () => {
 				const blocker = preview.blockers[0];
 				if (opts.json) return printJson(preview);
-				review();
+				// Under --json stdout carries exactly one object, so the human review
+				// and every prompt go to stderr.
+				console.error(formatTransferPreview(preview));
 				return die(blocker ? `${blocker.code}: ${blocker.message}` : 'this move is blocked');
-			}
-			if (!opts.yes) {
-				if (!process.stdin.isTTY) {
-					die(
-						`refusing to move without a confirmation: rerun with --yes, or review it first with --dry-run --json`
-					);
-				}
-				review();
-				const rl = createInterface({ input: process.stdin, output: process.stderr });
-				const answer = await rl.question(
-					`Move ${preview.old_ref.ref} to ${preview.destination.name}? [y/N] `
+			};
+			if (!preview.can_commit || !preview.preview_token) return blocked();
+
+			const interactive = !opts.yes && process.stdin.isTTY;
+			if (!opts.yes && !interactive) {
+				die(
+					`refusing to move without a confirmation: rerun with --yes, or review it first with --dry-run --json`
 				);
-				rl.close();
-				if (!/^y(es)?$/i.test(answer.trim())) die('aborted');
 			}
+			const rl = interactive
+				? createInterface({ input: process.stdin, output: process.stderr })
+				: null;
+			const terminal: TransferTerminal = {
+				write: (text) => process.stderr.write(text),
+				ask: (question) => rl!.question(question).catch(() => null)
+			};
 			try {
-				const result = await api.transferIssue(issue.id, {
-					project_id: destination.id,
-					preview_token: preview.preview_token
-				});
-				if (opts.json) return printJson(result);
-				console.log(formatTransferResult(result));
-			} catch (e) {
-				// A stale or competing move is never reposted for the operator: the
-				// destination number would be allocated against a review nobody saw.
-				const fail = e as { code?: string; message?: string; details?: unknown };
-				if (opts.json && fail.code) {
-					printJson({
-						error: { code: fail.code, message: fail.message, details: fail.details ?? null }
-					});
-					process.exitCode = 1;
-					return;
+				// A stale preview is answered once more, never reposted silently: the
+				// operator confirms the guidance that is actually true now.
+				for (let attempt = 0; ; attempt++) {
+					if (interactive) {
+						const decision = await confirmTransfer(
+							preview,
+							terminal,
+							attempt === 0
+								? undefined
+								: 'The configuration this review described has changed. Here is the current one:'
+						);
+						if (decision.action === 'abort') return die(decision.reason);
+					}
+					try {
+						const result = await api.transferIssue(issue.id, {
+							project_id: destination.id,
+							preview_token: preview.preview_token!
+						});
+						if (opts.json) return printJson(result);
+						return console.log(formatTransferResult(result));
+					} catch (e) {
+						const fail = e as { code?: string; message?: string; details?: unknown };
+						// Only a stale preview is worth re-reviewing, and only for someone
+						// who can answer: --yes and a competing move both stop here.
+						if (fail.code === 'transfer_preview_stale' && interactive && attempt === 0) {
+							preview = await api.previewIssueTransfer(issue.id, destination.id);
+							if (!preview.can_commit || !preview.preview_token) return blocked();
+							continue;
+						}
+						if (opts.json && fail.code) {
+							printJson({
+								error: { code: fail.code, message: fail.message, details: fail.details ?? null }
+							});
+							process.exitCode = 1;
+							return;
+						}
+						throw e;
+					}
 				}
-				throw e;
+			} finally {
+				rl?.close();
 			}
 		}
 	);

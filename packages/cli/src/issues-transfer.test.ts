@@ -144,6 +144,8 @@ let baseUrl: string;
 const seen: { method: string; path: string; body: string }[] = [];
 /** Flipped by a test to make the commit lose a race. */
 let conflict = false;
+/** Flipped by a test to make the reviewed configuration go stale. */
+let stale = false;
 
 beforeAll(async () => {
 	server = createServer((req, res) => {
@@ -165,6 +167,15 @@ beforeAll(async () => {
 					return send(200, preview);
 				}
 				if (url.pathname === '/api/v1/issues/iss_1/transfer' && req.method === 'POST') {
+					if (stale) {
+						return send(409, {
+							error: {
+								code: 'transfer_preview_stale',
+								message: 'The guidance changed since you reviewed it; review it again',
+								details: null
+							}
+						});
+					}
 					if (conflict) {
 						return send(409, {
 							error: {
@@ -203,6 +214,7 @@ afterAll(() => new Promise<void>((resolve) => server.close(() => resolve())));
 beforeEach(() => {
 	seen.length = 0;
 	conflict = false;
+	stale = false;
 });
 
 function cli(args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
@@ -221,6 +233,8 @@ function cli(args: string[]): Promise<{ code: number; stdout: string; stderr: st
 }
 
 const posts = () => seen.filter((r) => r.method === 'POST');
+const previews = () =>
+	seen.filter((r) => r.method === 'GET' && r.path === '/api/v1/issues/iss_1/transfer');
 
 describe('tines issues transfer', () => {
 	it('reviews without moving under --dry-run, even with --yes', async () => {
@@ -315,5 +329,32 @@ describe('tines issues transfer', () => {
 				details: { current_ref: 'platform/8' }
 			}
 		});
+	}, 60_000);
+
+	it('does not re-review a stale preview for --yes, and posts exactly once', async () => {
+		stale = true;
+		const res = await cli(['issues', 'transfer', 'demo/4', '--project', 'platform', '--yes']);
+		expect(res.code).not.toBe(0);
+		// Nobody is there to answer a refreshed review, so it stops rather than
+		// confirming guidance the operator never saw.
+		expect(posts()).toHaveLength(1);
+		expect(previews()).toHaveLength(1);
+		expect(res.stderr).toContain('changed');
+	}, 60_000);
+
+	it('keeps stdout free of the review under --json', async () => {
+		const res = await cli([
+			'issues',
+			'transfer',
+			'demo/4',
+			'--project',
+			'platform',
+			'--yes',
+			'--json'
+		]);
+		expect(res.code).toBe(0);
+		// Exactly one object, and none of the human review, on stdout.
+		expect(JSON.parse(res.stdout).new_ref.ref).toBe('platform/8');
+		expect(res.stdout).not.toContain('Preserved:');
 	}, 60_000);
 });

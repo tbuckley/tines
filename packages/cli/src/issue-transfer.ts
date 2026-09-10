@@ -138,3 +138,45 @@ export function formatTransferResult(result: IssueTransferResult): string {
 		`  ${result.new_ref.ref}`
 	].join('\n');
 }
+
+/**
+ * The terminal an interactive confirmation talks to. Injected so the answers an
+ * operator can give — including no answer at all — are testable without a pty.
+ */
+export type TransferTerminal = {
+	/** Where the review and the prompts go: never stdout, which `--json` owns. */
+	write: (text: string) => void;
+	/** One answer, or `null` when the input ended without one (EOF). */
+	ask: (question: string) => Promise<string | null>;
+};
+
+export type TransferDecision = { action: 'commit' } | { action: 'abort'; reason: string };
+
+/**
+ * Review, inspect, answer. Inspecting an item is not an answer: the question is
+ * asked again afterwards, so nothing commits on the strength of a keystroke the
+ * operator spent looking at content.
+ */
+export async function confirmTransfer(
+	preview: IssueTransferPreview,
+	terminal: TransferTerminal,
+	notice?: string
+): Promise<TransferDecision> {
+	if (notice) terminal.write(`${notice}\n`);
+	terminal.write(`${formatTransferPreview(preview)}\n`);
+	const inspectable = inspectableChanges(preview).length;
+	for (;;) {
+		const hint = inspectable ? `, or a number 0-${inspectable - 1} to read that item` : '';
+		const answer = await terminal.ask(
+			`Move ${preview.old_ref.ref} to ${preview.destination.name}? [y/N${hint}] `
+		);
+		if (answer === null) return { action: 'abort', reason: 'no answer' };
+		const trimmed = answer.trim();
+		if (/^\d+$/.test(trimmed)) {
+			terminal.write(`${formatTransferItem(preview, Number(trimmed))}\n`);
+			continue;
+		}
+		if (/^y(es)?$/i.test(trimmed)) return { action: 'commit' };
+		return { action: 'abort', reason: 'aborted' };
+	}
+}
