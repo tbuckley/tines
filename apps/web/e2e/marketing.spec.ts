@@ -98,8 +98,15 @@ test('ignores a delayed auth completion after close and reopen', async ({ page }
 	await page.getByRole('button', { name: 'Close sign-in' }).click();
 	await opener.click();
 	await expect(page.getByText('Preparing your sign-in link…')).toBeHidden();
+	const staleResponse = page.waitForResponse(
+		(response) => response.request().method() === 'POST' && response.url().includes('/api/auth/')
+	);
 	release?.();
-	await expect(page.getByText('stale failure')).toBeHidden();
+	await staleResponse;
+	// Give the auth promise a turn to process the released response before
+	// asserting absence; an immediate hidden assertion can pass before it settles.
+	await page.waitForTimeout(100);
+	await expect(page.getByText('stale failure')).toHaveCount(0);
 	await expect(page.getByRole('dialog')).toBeVisible();
 });
 
@@ -122,6 +129,9 @@ test('resets motion when the reduced-motion preference changes', async ({ page }
 	await motion.click();
 	await expect(motion).toHaveText('Pause motion');
 	await page.emulateMedia({ reducedMotion: 'no-preference' });
+	// The first override has no visible state change to await. Give its media-query
+	// event time to dispatch before sending the second CDP override.
+	await page.waitForTimeout(500);
 	await page.emulateMedia({ reducedMotion: 'reduce' });
 	await expect(motion).toHaveText('Resume motion');
 });
