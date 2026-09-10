@@ -18,6 +18,16 @@ test.describe('issue list pagination', () => {
 		await expect(
 			page.getByRole('navigation', { name: 'Issue pagination below results' })
 		).toBeVisible();
+		await expect(
+			page
+				.getByRole('navigation', { name: 'Issue pagination above results' })
+				.locator('[aria-live]')
+		).toHaveCount(1);
+		await expect(
+			page
+				.getByRole('navigation', { name: 'Issue pagination below results' })
+				.locator('[aria-live]')
+		).toHaveCount(0);
 
 		await page
 			.getByRole('navigation', { name: 'Issue pagination above results' })
@@ -43,6 +53,13 @@ test.describe('issue list pagination', () => {
 		await expect(page).toHaveURL(/q=Page(?:\+|%20)issue(?:\+|%20)105/);
 		await expect(page).not.toHaveURL(/(?:after|before|page_scope)=/);
 		await expect(page.getByText('Page issue 105', { exact: true })).toBeVisible();
+		await expect(
+			page.getByRole('navigation', { name: 'Issue pagination above results' })
+		).toHaveCount(0);
+		await expect(
+			page.getByRole('navigation', { name: 'Issue pagination below results' })
+		).toHaveCount(0);
+		await expect(page.getByText(/issues? on this page/)).toHaveCount(0);
 
 		await gotoHydrated(page, bounded);
 		await page.getByRole('link', { name: /^Active/ }).click();

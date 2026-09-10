@@ -79,4 +79,5 @@
 	pagination={data.pagination}
 	itemCount={data.issues.length}
 	label="Issue pagination below results"
+	announceCount={false}
 />

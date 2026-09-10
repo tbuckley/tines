@@ -6,8 +6,15 @@
 		pagination,
 		itemCount,
 		label: landmarkLabel = 'Issue pagination',
+		announceCount = true,
 		class: className = ''
-	}: { pagination: IssuePagination; itemCount: number; label?: string; class?: string } = $props();
+	}: {
+		pagination: IssuePagination;
+		itemCount: number;
+		label?: string;
+		announceCount?: boolean;
+		class?: string;
+	} = $props();
 	const label = $derived(`${itemCount} issue${itemCount === 1 ? '' : 's'} on this page`);
 </script>
 
@@ -16,7 +23,12 @@
 		aria-label={landmarkLabel}
 		class="mt-4 flex flex-wrap items-center justify-between gap-3 {className}"
 	>
-		<p class="text-muted-foreground w-full text-sm sm:w-auto" aria-live="polite">{label}</p>
+		<p
+			class="text-muted-foreground w-full text-sm sm:w-auto"
+			aria-live={announceCount ? 'polite' : undefined}
+		>
+			{label}
+		</p>
 		<div class="flex gap-2">
 			{#if pagination.previousHref}
 				<a
