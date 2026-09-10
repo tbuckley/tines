@@ -199,7 +199,11 @@ saying what the scope is.
     not erase a newer choice. Optimistic hints only resolve to projects still in
     the live layout list, so in-app archive immediately falls back to All
     projects. Explicit choices invalidate the shared `app:preferences`
-    dependency; archive still refreshes the complete project inventory.
+    dependency while the page remains resident. If navigation is already
+    waiting on the write, its destination load reads the persisted scope and
+    the live hint keeps reused chrome aligned instead of racing a second
+    invalidation against that navigation. Archive still refreshes the complete
+    project inventory.
 
 ### Non-goals
 

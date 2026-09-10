@@ -27,7 +27,7 @@ const switcher = (page: Page) => page.getByRole('button', { name: /^Project focu
 
 /**
  * Opens the switcher and picks an entry, retrying the whole gesture until the
- * chrome agrees. Choosing re-renders the layout (`invalidateAll`), so a second
+ * chrome agrees. Choosing re-runs focus-aware loads (`app:preferences`), so a second
  * choice can find a menu item that detaches under the click — seen only on CI.
  * Retrying the open-and-click, keyed on the outcome, is the stable shape;
  * choosing twice is idempotent, so a retry costs nothing.
