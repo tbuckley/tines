@@ -45,6 +45,9 @@ import {
 	claimResourceDisposal,
 	isResumeProviderSupported,
 	prepareManagedResume,
+	expiredResumeResources,
+	abandonResumeClaim,
+	completeResumeTransfer,
 	resumeFingerprint,
 	retainResumeResource,
 	setTransferPhase
@@ -399,18 +402,16 @@ async function disposeExpiredManagedResources(
 	runnerId: string,
 	now: number
 ): Promise<void> {
-	const expired = await db
-		.selectFrom('run_resource')
-		.selectAll()
-		.where('runner_id', '=', runnerId)
-		.where('kind', '=', 'claude_managed')
-		.where('state', '=', 'available')
-		.where('expires_at', '<=', now)
-		.orderBy('expires_at asc')
-		.limit(25)
-		.execute();
+	const expired = await expiredResumeResources(db, now, 25, 'claude_managed', runnerId);
 	for (const row of expired) {
-		if (!(await claimResourceDisposal(db, row.id, now))) continue;
+		// The CAS is per row state: an `available` row must still lose to a
+		// launch claiming it, while a stale `claimed` one is a dead transfer.
+		if (
+			!(await claimResourceDisposal(db, row.id, now, [
+				row.state as 'available' | 'claimed' | 'disposing'
+			]))
+		)
+			continue;
 		try {
 			if (row.provider_session_id) {
 				await client.beta.sessions.archive(row.provider_session_id).catch((e) => {
@@ -427,6 +428,24 @@ async function disposeExpiredManagedResources(
 			console.error(`claude sweep: disposing resume resource ${row.id} failed:`, e);
 		}
 	}
+}
+
+/**
+ * The vaults this runner is deliberately holding for a resume. The vault
+ * sweep below finds vaults by *name* (`tines-run-<id>`) and deletes any
+ * whose run has ended — and a retained run has ended by definition, so
+ * without this the retained credential is destroyed on the very next sweep
+ * and the transfer's `credentials.update` 404s.
+ */
+async function retainedVaultIds(db: Kysely<Database>, runnerId: string): Promise<Set<string>> {
+	const rows = await db
+		.selectFrom('run_resource')
+		.select('vault_id')
+		.where('runner_id', '=', runnerId)
+		.where('kind', '=', 'claude_managed')
+		.where('state', 'in', ['available', 'claimed'])
+		.execute();
+	return new Set(rows.map((r) => r.vault_id).filter((id): id is string => !!id));
 }
 
 async function retainedSessionIds(db: Kysely<Database>, runnerId: string): Promise<Set<string>> {
@@ -495,8 +514,12 @@ async function reconcileVaults(
 	// which makes them findable regardless — delete any whose run is
 	// unknown or ended.
 	try {
+		const retained = await retainedVaultIds(db, runnerId);
 		const vaults = await client.beta.vaults.list({ limit: 100 });
 		for (const vault of vaults.data) {
+			// A vault held by a live resource belongs to the resume path, not
+			// to its ended owner run: only disposal may delete it.
+			if (retained.has(vault.id)) continue;
 			const runId = vault.display_name?.startsWith('tines-run-')
 				? vault.display_name.slice('tines-run-'.length)
 				: null;
@@ -645,42 +668,67 @@ export function createClaudeAdapter(env: Env, opts: ClaudeAdapterOptions = {}): 
 				repoDirs: repos.map((r) => r.dir),
 				previousRunId: resume.previous_run_id
 			});
-			// Rotate first: a send the session could answer with the dead run's
-			// key would attribute this run's writes to the previous one.
-			await ctx.client.beta.vaults.credentials.update(resume.credential_id, {
-				vault_id: resume.vault_id,
-				auth: { type: 'environment_variable', secret_value: input.runKey }
-			});
-			await ctx.client.beta.sessions.update(resume.provider_session_id, {
-				title: `Tines run ${input.runId} — ${issueRef}`,
-				metadata: { tines_run_id: input.runId, tines_runner_id: ctx.row.id }
-			});
-			// `sending` is the recovery boundary: a crash after this point may
-			// have delivered the message, so reconciliation must reconcile the
-			// session rather than send again.
-			await setTransferPhase(db, resume.resource_id, 'sending', Date.now());
-			await ctx.client.beta.sessions.events.send(resume.provider_session_id, {
-				events: [
-					{
-						type: 'user.message',
-						content: [{ type: 'text', text: `${resumePreamble}\n\n${continuation.text}` }]
-					}
-				]
-			});
-			await setTransferPhase(db, resume.resource_id, 'accepted', Date.now());
-			const resumedMeta: ClaudeRunMeta = {
-				vault_id: resume.vault_id,
-				credential_id: resume.credential_id,
-				// Start the log after the predecessor's last rendered event, so
-				// its conversation does not replay into this run's log — and so
-				// its `end_turn` cannot be read as this run completing.
-				...(resume.events_cursor ? { events_cursor: resume.events_cursor } : {})
-			};
-			return {
-				provider_session_id: resume.provider_session_id,
-				provider_url: `https://platform.claude.com/workspaces/default/sessions/${resume.provider_session_id}`,
-				provider_meta: JSON.stringify(resumedMeta)
-			};
+			// Everything up to the send is retryable-by-abandonment: nothing has
+			// reached the agent yet, so a provider error here must degrade to
+			// the fresh launch below rather than fail the run (which would back
+			// the whole runner off for what is only a lost optimisation). The
+			// claim is abandoned so the session and vault are disposed instead
+			// of being pinned by a claim no one will ever complete.
+			let transferred = true;
+			try {
+				// Rotate first: a send the session could answer with the dead run's
+				// key would attribute this run's writes to the previous one.
+				await ctx.client.beta.vaults.credentials.update(resume.credential_id, {
+					vault_id: resume.vault_id,
+					auth: { type: 'environment_variable', secret_value: input.runKey }
+				});
+				await ctx.client.beta.sessions.update(resume.provider_session_id, {
+					title: `Tines run ${input.runId} — ${issueRef}`,
+					metadata: { tines_run_id: input.runId, tines_runner_id: ctx.row.id }
+				});
+				// `sending` is the recovery boundary: a crash after this point may
+				// have delivered the message, so reconciliation must reconcile the
+				// session rather than send again.
+				await setTransferPhase(db, resume.resource_id, 'sending', Date.now());
+			} catch (e) {
+				console.error(`claude launch: resume transfer for run ${input.runId} failed:`, e);
+				await abandonResumeClaim(db, resume.resource_id, Date.now()).catch(() => false);
+				await db
+					.updateTable('agent_run')
+					.set({ resumed_from_run_id: null, resume_fallback_reason: 'unavailable' })
+					.where('id', '=', input.runId)
+					.execute();
+				transferred = false;
+			}
+			if (transferred) {
+				// The send is the one call that cannot be retried or abandoned: a
+				// delivered message the client never saw acknowledged has already
+				// started this run inside the session, so launching fresh would
+				// duplicate it. Let it throw — the run fails, the resource is left
+				// mid-transfer, and the disposal sweep takes it once it goes stale.
+				await ctx.client.beta.sessions.events.send(resume.provider_session_id, {
+					events: [
+						{
+							type: 'user.message',
+							content: [{ type: 'text', text: `${resumePreamble}\n\n${continuation.text}` }]
+						}
+					]
+				});
+				await completeResumeTransfer(db, resume.resource_id, Date.now());
+				const resumedMeta: ClaudeRunMeta = {
+					vault_id: resume.vault_id,
+					credential_id: resume.credential_id,
+					// Start the log after the predecessor's last rendered event, so
+					// its conversation does not replay into this run's log — and so
+					// its `end_turn` cannot be read as this run completing.
+					...(resume.events_cursor ? { events_cursor: resume.events_cursor } : {})
+				};
+				return {
+					provider_session_id: resume.provider_session_id,
+					provider_url: `https://platform.claude.com/workspaces/default/sessions/${resume.provider_session_id}`,
+					provider_meta: JSON.stringify(resumedMeta)
+				};
+			}
 		}
 
 		const environmentId = await provider.ensureEnvironment(ctx);

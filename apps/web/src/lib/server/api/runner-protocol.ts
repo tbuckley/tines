@@ -507,9 +507,13 @@ async function prepareResume(
 	await runAtomic(env, [
 		db
 			.updateTable('agent_run')
+			// Lineage only. `resume_expires_at` means "this run's own workspace
+			// and session are being held" — the daemon keeps the workspace on
+			// exactly that signal — so a run that merely *inherited* a
+			// predecessor's workspace must not carry it, or a resumed run that
+			// then fails would keep a workspace nothing retained.
 			.set({
 				resumed_from_run_id: predecessor.id,
-				resume_expires_at: resource!.expires_at,
 				workspace_path: resource!.workspace_path
 			})
 			.where('id', '=', run.id)
@@ -955,16 +959,7 @@ export async function finishRun(
 				limit: null,
 				now
 			});
-		} else if (ended.outcome === 'advanced' && ended.ended) {
-			await retainAwaitingSession(db, runner, {
-				run,
-				runId,
-				providerSessionId: providerSessionId ?? run.provider_session_id ?? null,
-				workspacePath: workspacePath ?? null,
-				now
-			});
-		}
-		if (ended.outcome === 'interrupted') {
+		} else if (ended.outcome === 'interrupted') {
 			// A daemon that keeps dying mid-run backs off, the same as one that
 			// keeps failing to launch; the window collapses a shutdown's burst of
 			// finish reports into one incident.
@@ -973,6 +968,17 @@ export async function finishRun(
 				runnerId: run.runner_id,
 				runId,
 				error: error ?? 'run interrupted by the daemon',
+				now
+			});
+		} else if (ended.outcome === 'advanced' && ended.ended) {
+			// One chain, not two ifs: a `rate_limited` finish is passed to
+			// `endRun` as `interrupted`, so a separate interruption arm would
+			// double-notify it — the runner is already held to the reset.
+			await retainAwaitingSession(db, runner, {
+				run,
+				runId,
+				providerSessionId: providerSessionId ?? run.provider_session_id ?? null,
+				workspacePath: workspacePath ?? null,
 				now
 			});
 		}

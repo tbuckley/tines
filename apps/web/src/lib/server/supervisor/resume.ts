@@ -176,19 +176,46 @@ export async function claimResumeResource(
 	return result.numUpdatedRows === 1n;
 }
 
-/** available→disposing races through the same state predicate as a claim. */
+/**
+ * How long a claimed resource may sit mid-transfer before a sweep may take
+ * it: a transfer is three provider calls, so anything older than this is a
+ * launch that died between the claim and the hand-over, not one in flight.
+ */
+export const STALE_TRANSFER_MS = 15 * 60 * 1000;
+
+/**
+ * available→disposing races through the same state predicate as a claim.
+ * `states` widens it to the stale-claim arm: a `claimed`/`disposing` row
+ * whose transfer died is disposable too, and without that arm a launch that
+ * threw after claiming would pin its session and vault forever (nothing else
+ * ever leaves those states).
+ */
 export async function claimResourceDisposal(
 	db: Kysely<Database>,
 	resourceId: string,
-	now: number
+	now: number,
+	states: Array<'available' | 'claimed' | 'disposing'> = ['available']
 ): Promise<boolean> {
 	const result = await db
 		.updateTable('run_resource')
 		.set({ state: 'disposing', updated_at: now })
 		.where('id', '=', resourceId)
-		.where('state', '=', 'available')
+		.where('state', 'in', states)
 		.executeTakeFirst();
 	return result.numUpdatedRows === 1n;
+}
+
+/**
+ * Abandon a claim whose transfer failed before anything was delivered: the
+ * resource is no longer reusable (its credential may already carry the new
+ * run's key), so it goes straight to disposal and the caller launches fresh.
+ */
+export async function abandonResumeClaim(
+	db: Kysely<Database>,
+	resourceId: string,
+	now: number
+): Promise<boolean> {
+	return claimResourceDisposal(db, resourceId, now, ['claimed', 'disposing']);
 }
 
 /**
@@ -270,16 +297,41 @@ export async function findResumeResource(
 		.executeTakeFirst();
 }
 
-/** GC: expired available resources, oldest first, for the disposal sweep. */
-export async function expiredResumeResources(db: Kysely<Database>, now: number, limit = 50) {
-	return db
+/**
+ * GC: the resources a disposal sweep may take — expired `available` ones,
+ * plus claims whose transfer died mid-flight (see `STALE_TRANSFER_MS`).
+ * Without the second arm a launch that threw after claiming leaves a row no
+ * sweep can ever reach, and `retainedSessionIds` keeps its session pinned.
+ */
+export async function expiredResumeResources(
+	db: Kysely<Database>,
+	now: number,
+	limit = 50,
+	kind?: 'local_claude' | 'claude_managed',
+	runnerId?: string
+) {
+	let q = db
 		.selectFrom('run_resource')
 		.selectAll()
-		.where('state', '=', 'available')
-		.where('expires_at', '<=', now)
+		.where((eb) =>
+			eb.or([
+				eb.and([eb('state', '=', 'available'), eb('expires_at', '<=', now)]),
+				eb.and([
+					eb('state', 'in', ['claimed', 'disposing']),
+					eb('claim_started_at', '<=', now - STALE_TRANSFER_MS),
+					// `accepted` means the hand-over completed and the successor
+					// run owns the session: only a crash between the send and
+					// the row's deletion leaves one, and disposing it would
+					// archive a session that is live.
+					eb.or([eb('transfer_phase', 'is', null), eb('transfer_phase', '!=', 'accepted')])
+				])
+			])
+		)
 		.orderBy('expires_at asc')
-		.limit(limit)
-		.execute();
+		.limit(limit);
+	if (kind) q = q.where('kind', '=', kind);
+	if (runnerId) q = q.where('runner_id', '=', runnerId);
+	return q.execute();
 }
 
 /**
@@ -345,10 +397,10 @@ export async function disposeExpiredResumeResources(
 	now: number,
 	limit = 50
 ): Promise<number> {
-	const expired = await expiredResumeResources(db, now, limit);
+	const expired = await expiredResumeResources(db, now, limit, 'local_claude');
 	let disposed = 0;
 	for (const row of expired) {
-		if (!(await claimResourceDisposal(db, row.id, now))) continue;
+		if (!(await claimResourceDisposal(db, row.id, now, [row.state as 'available']))) continue;
 		await db.deleteFrom('run_resource').where('id', '=', row.id).execute();
 		disposed += 1;
 	}
@@ -470,7 +522,9 @@ export async function prepareManagedResume(
 	if (!claimed) return null;
 	await db
 		.updateTable('agent_run')
-		.set({ resumed_from_run_id: predecessor.id, resume_expires_at: resource!.expires_at })
+		// Lineage only — `resume_expires_at` marks a run whose own session is
+		// retained, which this one's is not (it inherited the predecessor's).
+		.set({ resumed_from_run_id: predecessor.id })
 		.where('id', '=', input.runId)
 		.execute();
 	let cursor: string | null = null;
@@ -489,6 +543,21 @@ export async function prepareManagedResume(
 		credential_id: resource!.credential_id,
 		events_cursor: cursor
 	};
+}
+
+/**
+ * The hand-over completed: ownership of the session and vault now lives on
+ * the successor run's `provider_meta`, so the resource row has no job left.
+ * Dropping it is what keeps a `claimed` row unambiguous — one that survives
+ * is a transfer that died, which is exactly what the disposal sweeps take.
+ */
+export async function completeResumeTransfer(
+	db: Kysely<Database>,
+	resourceId: string,
+	now: number
+): Promise<void> {
+	await setTransferPhase(db, resourceId, 'accepted', now);
+	await db.deleteFrom('run_resource').where('id', '=', resourceId).execute();
 }
 
 /** Records how far a managed transfer got, for crash reconciliation. */

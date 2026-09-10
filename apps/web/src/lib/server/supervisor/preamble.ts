@@ -140,8 +140,21 @@ export function buildResumePreamble(input: PreambleInput & { previousRunId: stri
 		'What follows is only what changed while you were away, plus the contract of the stage the',
 		'issue is in now. Everything else — authentication, the workspace layout, the rest of the',
 		'issue — is unchanged from your previous prompt; re-read it there rather than asking for it',
-		'again. Your API key is new: `TINES_API_KEY` in your environment has been replaced with this',
-		"run's key, and the previous one is revoked.",
+		'again.',
+		...(input.variant === 'claude_managed'
+			? [
+					// Managed: the key moves by rotating the vault credential this
+					// session already reads, not by a new process env — and whether
+					// the running session re-reads it is the provider's business, so
+					// say what to do if it has not, rather than asserting it has.
+					"Your API key is new: this run's key has replaced the previous one in the credential",
+					'your session reads `TINES_API_KEY` from, and the previous key is revoked. If a `tines`',
+					'call fails as unauthenticated, re-read the variable before doing anything else.'
+				]
+			: [
+					'Your API key is new: `TINES_API_KEY` in your environment has been replaced with this',
+					"run's key, and the previous one is revoked."
+				]),
 		'',
 		'## The contract',
 		'',

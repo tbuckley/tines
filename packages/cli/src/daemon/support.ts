@@ -382,9 +382,16 @@ export class RunTable<T extends ManagedRun> {
 		run.drain?.();
 		if (this.keep(status, run)) this.effects.noteKept?.(run);
 		await run.flush?.();
+		const keptBeforeFinish = this.keep(status, run);
 		try {
 			await this.effects.finish(run, status, error, judgment);
 			this.effects.log(`run ${run.runId} finished: ${status}${error ? ` (${error})` : ''}`);
+			// Retention is only known once the finish response comes back, and
+			// by then the run's own log is closed — so the daemon log is where
+			// a workspace held for a resume gets announced.
+			if (!keptBeforeFinish && this.keep(status, run)) {
+				this.effects.log(`run ${run.runId} workspace kept for resume at ${run.workspace}`);
+			}
 		} catch (err) {
 			// A settled run (canceled/timed out/swept server-side) is fine; the
 			// supervisor's word stands.
