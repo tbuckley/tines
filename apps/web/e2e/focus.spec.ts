@@ -705,7 +705,14 @@ test.describe.serial('project focus', () => {
 			await page.getByRole('alertdialog').getByRole('button', { name: 'Archive project' }).click();
 
 			await expect(switcher(page)).toHaveAttribute('aria-label', `Project focus: ${A_NAME}`);
-			await gotoHydrated(page, `/issues/${A_NAME}/1`);
+			// Stay inside the hydrated app so the deliberately stale B hint survives
+			// both navigations. A full-document page.goto would reset the module-level
+			// hint and let this pass without the issue-detail live-list validation.
+			await page.getByRole('link', { name: 'Issues', exact: true }).first().click();
+			const issue = page.getByRole('link', { name: new RegExp(`${A_NAME} issue`) });
+			await expect(issue).toBeVisible();
+			await issue.click();
+			await expect(page).toHaveURL(`/issues/${encodeURIComponent(A_NAME)}/1`);
 			await expect(page.getByRole('button', { name: `Focus ${A_NAME}` })).toHaveCount(0);
 			await expect(
 				page.locator('main').getByRole('link', { name: 'Issues', exact: true })

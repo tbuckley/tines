@@ -1,5 +1,4 @@
 import type { Project } from '@tines/shared';
-import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import { defaultProjectId, FocusOperations, resolveClientFocus } from './focus';
 import { FocusHint } from './focus.svelte';
@@ -58,14 +57,6 @@ describe('resolveClientFocus', () => {
 	it('returns the fresh live-list project when its name changed', () => {
 		const fresh = project('a', 'New name');
 		expect(resolveClientFocus(a, b, [fresh, b])).toBe(fresh);
-	});
-
-	it('is applied by the issue-detail hint reader', () => {
-		const source = readFileSync(
-			new URL('../routes/(app)/issues/[project]/[number]/+page.svelte', import.meta.url),
-			'utf8'
-		);
-		expect(source).toContain('resolveClientFocus(focusHint.project, data.focus, data.projects)');
 	});
 });
 
