@@ -43,14 +43,17 @@ export function createOfficeScene({
 		layout,
 		progress = 0,
 		phase = 0,
-		captureConfig = null,
 		disposed = false,
 		frameId = 0;
 	const reduced = matchMedia('(prefers-reduced-motion: reduce)');
 	paused = reduced.matches;
+	const onContextLost = (event) => {
+		event.preventDefault();
+		failed = true;
+		cleanupRenderer();
+		sync();
+	};
 	function build() {
-		if (!T || new URLSearchParams(location.search).has('no-webgl'))
-			throw Error('Still mode requested');
 		renderer = new T.WebGLRenderer({
 			alpha: true,
 			antialias: true,
@@ -421,24 +424,13 @@ export function createOfficeScene({
 		ground.position.y = -0.37;
 		ground.receiveShadow = true;
 		scene.add(ground);
-		renderer.domElement.addEventListener('webglcontextlost', (e) => {
-			e.preventDefault();
-			failed = true;
-			sync();
-		});
+		renderer.domElement.addEventListener('webglcontextlost', onContextLost);
 	}
 	const clamp = (n, a = 0, b = 1) => Math.min(b, Math.max(a, n)),
 		smooth = (n) => {
 			n = clamp(n);
 			return n * n * (3 - 2 * n);
 		};
-	const phases = [
-		'Implementation',
-		'Review failed',
-		'Implementation continued',
-		'Human Review',
-		'Closed'
-	];
 	function measure() {
 		const center = viewportCenter(innerWidth, innerHeight, layout);
 		const apertures = $$('.aperture').map((e) => {
@@ -540,70 +532,16 @@ export function createOfficeScene({
 		note.style.width = Math.min(600, aps[index].width - 44) + 'px';
 		note.style.top = y + stageH / 2 + 8 + 'px';
 		note.hidden = entry < 0.85 || room < 340;
-		const notes = [
-			[
-				'#13 · Implementation',
-				'One desk · one accountable agent',
-				'research-findings → design-doc → impl-pr #64'
-			],
-			[
-				'#13 · Review failed',
-				'Automated Review → Implementation',
-				'“Automated review failed” · Missing regression tests and a branch conflict. See review-notes v2.'
-			],
-			[
-				'#13 · Implementation continued',
-				'Implementation → Automated Review',
-				'“Submit for automated review” · Both findings fixed. Review-notes v3: 796 tests passed.'
-			],
-			[
-				'#13 · Human Review',
-				'Automated Review → Human Review',
-				'Waiting for Tom. Only his recorded “Approve” advances the issue to Merging.'
-			],
-			[
-				'#13 · Closed',
-				'Mailbox → Office → Artifacts out',
-				'QA, docs and ideation share one tracker.'
-			]
-		];
-		const n = [...notes[phase]];
-		if (phase === 0 && p > 0.05) n[1] = 'One issue · a team taking shape';
-		const noteKey = phase + ':' + (p > 0.05);
-		if (note.dataset.phase !== noteKey) {
-			const routeText =
-				phase > 0 && phase < 4
-					? n[1]
-							.split(' → ')
-							.map(
-								(text, i) =>
-									'<span' + (i === 1 ? ' class="destination"' : '') + '>' + text + '</span>'
-							)
-							.join('<i aria-hidden="true">→</i>')
-					: n[1];
-			note.innerHTML =
-				'<b>' + n[0] + '</b><div class="mini-route">' + routeText + '</div><p>' + n[2] + '</p>';
-			note.dataset.phase = noteKey;
-		}
 		return { p, fullH, x, y, entry, stageH, stageW, index, room, noteH };
 	}
 	function render() {
-		const c = captureConfig || config(),
+		const c = config(),
 			p = c.p,
 			upper = clamp(p - 1),
 			grow = clamp(p),
 			{ width: w, height: h } = layout;
 		const label = $('#token-label');
-		label.textContent = phase === 4 ? '#13 · Closed' : '#13 · ' + phases[phase];
 		label.hidden = true;
-		$('#team .record-head span').textContent =
-			phase === 1
-				? 'REVIEW FAILED'
-				: phase === 2
-					? 'CONTINUED'
-					: phase === 3
-						? 'HUMAN REVIEW'
-						: 'V2 → V3';
 		if (!renderer || failed) {
 			updateStill(c);
 			return;
@@ -636,7 +574,7 @@ export function createOfficeScene({
 		];
 		let pos = coords[phase];
 		if (p < 0.8) pos = [-0.56, 1.22, 0.1];
-		if (phase === 2 && !captureConfig) {
+		if (phase === 2) {
 			const f = smooth((scrollY - layout.review.returnAt) / 80);
 			pos = pointOn(
 				[
@@ -687,12 +625,6 @@ export function createOfficeScene({
 		$('#intake-label').hidden = $('#output-label').hidden = true;
 		$('#still').hidden = true;
 		renderer.domElement.hidden = false;
-		$$('.graph [data-node]').forEach((e) =>
-			e.classList.toggle(
-				'active',
-				e.dataset.node === ['implementation', 'review', 'implementation', 'human', 'closed'][phase]
-			)
-		);
 		onFrame({ phase, progress });
 	}
 	function updateStill(c) {
@@ -729,12 +661,6 @@ export function createOfficeScene({
 				el.style.left = c.x + (meta[key][0] * bw - bw / 2) * k + 'px';
 				el.style.top = c.y + (meta[key][1] * bh - bc) * k + 'px';
 			});
-		$$('.graph [data-node]').forEach((e) =>
-			e.classList.toggle(
-				'active',
-				e.dataset.node === ['implementation', 'review', 'implementation', 'human', 'closed'][phase]
-			)
-		);
 		onFrame({ phase, progress });
 	}
 	function sync() {
@@ -755,10 +681,32 @@ export function createOfficeScene({
 		}
 		frameId = requestAnimationFrame(tick);
 	}
+	function cleanupRenderer() {
+		if (scene) {
+			const geometries = new Set();
+			const materials = new Set();
+			scene.traverse((object) => {
+				if (object.geometry) geometries.add(object.geometry);
+				const values = Array.isArray(object.material) ? object.material : [object.material];
+				values.filter(Boolean).forEach((material) => materials.add(material));
+			});
+			geometries.forEach((geometry) => geometry.dispose());
+			materials.forEach((material) => material.dispose());
+			scene = null;
+		}
+		if (renderer) {
+			renderer.domElement.removeEventListener('webglcontextlost', onContextLost);
+			renderer.dispose();
+			renderer.forceContextLoss();
+			renderer.domElement.remove();
+			renderer = null;
+		}
+	}
 	try {
 		build();
 	} catch (e) {
 		failed = true;
+		cleanupRenderer();
 	}
 	measure();
 	sync();
@@ -804,22 +752,7 @@ export function createOfficeScene({
 			window.removeEventListener('resize', onResize);
 			reduced.removeEventListener('change', onReduced);
 			document.removeEventListener('visibilitychange', onVisibility);
-			if (scene) {
-				const geometries = new Set();
-				const materials = new Set();
-				scene.traverse((object) => {
-					if (object.geometry) geometries.add(object.geometry);
-					const values = Array.isArray(object.material) ? object.material : [object.material];
-					values.filter(Boolean).forEach((material) => materials.add(material));
-				});
-				geometries.forEach((geometry) => geometry.dispose());
-				materials.forEach((material) => material.dispose());
-			}
-			if (renderer) {
-				renderer.dispose();
-				renderer.forceContextLoss();
-				renderer.domElement.remove();
-			}
+			cleanupRenderer();
 		}
 	};
 }

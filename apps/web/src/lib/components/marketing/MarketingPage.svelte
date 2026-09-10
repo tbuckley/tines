@@ -3,6 +3,7 @@
 	import MarketingSignIn from './MarketingSignIn.svelte';
 	import './marketing.css';
 	import type { OfficeController } from '$lib/marketing/office-scene';
+	import { officePhase } from '$lib/marketing/office-layout';
 
 	let { linkError = null }: { linkError?: string | null } = $props();
 	let rootEl: HTMLElement;
@@ -22,6 +23,66 @@
 		'Human Review',
 		'Closed'
 	];
+	const phaseNodes = ['implementation', 'review', 'implementation', 'human', 'closed'];
+	const phaseNotes = [
+		[
+			'#13 · Implementation',
+			'One desk · one accountable agent',
+			'research-findings → design-doc → impl-pr #64'
+		],
+		[
+			'#13 · Review failed',
+			'Automated Review → Implementation',
+			'“Automated review failed” · Missing regression tests and a branch conflict. See review-notes v2.'
+		],
+		[
+			'#13 · Implementation continued',
+			'Implementation → Automated Review',
+			'“Submit for automated review” · Both findings fixed. Review-notes v3: 796 tests passed.'
+		],
+		[
+			'#13 · Human Review',
+			'Automated Review → Human Review',
+			'Waiting for Tom. Only his recorded “Approve” advances the issue to Merging.'
+		],
+		['#13 · Closed', 'Mailbox → Office → Artifacts out', 'QA, docs and ideation share one tracker.']
+	];
+	const recordStage = $derived(
+		phase === 1
+			? 'REVIEW FAILED'
+			: phase === 2
+				? 'CONTINUED'
+				: phase === 3
+					? 'HUMAN REVIEW'
+					: 'V2 → V3'
+	);
+
+	function fallbackFrame() {
+		const apertures = [...rootEl.querySelectorAll<HTMLElement>('.aperture')].map((element) => {
+			const rect = element.getBoundingClientRect();
+			return {
+				top: rect.top + scrollY,
+				height: rect.height,
+				left: rect.left,
+				width: rect.width,
+				center: rect.top + scrollY + rect.height / 2
+			};
+		});
+		if (apertures.length !== 3) return;
+		const next = officePhase({
+			width: innerWidth,
+			height: innerHeight,
+			scrollY,
+			end: document.documentElement.scrollHeight - innerHeight,
+			apertures: apertures as [(typeof apertures)[0], (typeof apertures)[0], (typeof apertures)[0]]
+		});
+		phase = next.phase;
+		progress = next.progress;
+		const scope = phase === 0 ? 'task' : phase === 4 ? 'office' : 'team';
+		const still = rootEl.querySelector<HTMLImageElement>('#still');
+		if (still)
+			still.src = `/marketing/office-v1/${innerWidth < 650 ? 'phone' : 'desktop'}-${scope}-${phase}.png`;
+	}
 
 	function openSignIn(event: MouseEvent) {
 		signIn.open(event.currentTarget as HTMLElement);
@@ -29,9 +90,17 @@
 
 	onMount(() => {
 		let disposed = false;
+		let fallbackActive = true;
+		const updateFallback = () => fallbackActive && fallbackFrame();
+		updateFallback();
+		window.addEventListener('scroll', updateFallback, { passive: true });
+		window.addEventListener('resize', updateFallback);
 		void import('$lib/marketing/office-scene')
 			.then(({ createOfficeScene }) => {
 				if (disposed) return;
+				fallbackActive = false;
+				window.removeEventListener('scroll', updateFallback);
+				window.removeEventListener('resize', updateFallback);
 				controller = createOfficeScene({
 					rootEl,
 					onFrame: (frame) => {
@@ -50,6 +119,8 @@
 			});
 		return () => {
 			disposed = true;
+			window.removeEventListener('scroll', updateFallback);
+			window.removeEventListener('resize', updateFallback);
 			controller?.destroy();
 			controller = null;
 		};
@@ -69,7 +140,13 @@
 		<div id="intake-label" hidden>Filed work ↓</div>
 		<div id="output-label" hidden>Artifacts ↗</div>
 	</div>
-	<aside id="scene-note" hidden></aside>
+	<aside id="scene-note">
+		<b>{phaseNotes[phase][0]}</b>
+		<div class="mini-route">
+			{phase === 0 && progress > 0.05 ? 'One issue · a team taking shape' : phaseNotes[phase][1]}
+		</div>
+		<p>{phaseNotes[phase][2]}</p>
+	</aside>
 	<header id="top">
 		<nav>
 			<a href="#top" class="brand" aria-label="Tines home"
@@ -128,7 +205,9 @@
 			<div class="aperture" data-scope="1"></div>
 			<section class="record band">
 				<div class="wrap">
-					<div class="record-head"><b>#13 / REVIEW & CONTINUATION</b><span>V2 → V3</span></div>
+					<div class="record-head">
+						<b>#13 / REVIEW & CONTINUATION</b><span>{recordStage}</span>
+					</div>
 					<div class="review-pair">
 						<div>
 							<h3>Review failed ↶</h3>
@@ -147,10 +226,16 @@
 					</div>
 					<div class="graph" aria-label="Engineering workflow">
 						<span>Backlog</span><i>→</i><span>Research</span><i>→</i><span>Design</span><i>→</i
-						><span data-node="implementation">Implementation</span><i>→</i><span data-node="review"
+						><span data-node="implementation" class:active={phaseNodes[phase] === 'implementation'}
+							>Implementation</span
+						><i>→</i><span data-node="review" class:active={phaseNodes[phase] === 'review'}
 							>Automated Review</span
-						><i>→</i><span data-node="human">Human Review</span><i>→</i><span>Merging</span><i>→</i
-						><span data-node="closed">Closed</span>
+						><i>→</i><span data-node="human" class:active={phaseNodes[phase] === 'human'}
+							>Human Review</span
+						><i>→</i><span>Merging</span><i>→</i><span
+							data-node="closed"
+							class:active={phaseNodes[phase] === 'closed'}>Closed</span
+						>
 					</div>
 					<div class="return-edge">Automated review failed <span>↶ Implementation</span></div>
 					<p class="small">

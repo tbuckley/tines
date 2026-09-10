@@ -393,6 +393,8 @@
 		padding: 35px;
 		max-width: calc(100% - 30px);
 		width: 420px;
+		margin: auto;
+		inset: 0;
 	}
 	dialog::backdrop {
 		background: #18313c99;
@@ -958,13 +960,13 @@
 			width: auto;
 		}
 	}
-}
-.recovery {
-	position: relative;
-	z-index: 4;
-	padding: 12px 22px;
-	background: var(--paper);
-	border-bottom: 1px solid var(--line);
-	color: var(--ink);
-	text-align: center;
+	.recovery {
+		position: relative;
+		z-index: 4;
+		padding: 12px 22px;
+		background: var(--paper);
+		border-bottom: 1px solid var(--line);
+		color: var(--ink);
+		text-align: center;
+	}
 }
