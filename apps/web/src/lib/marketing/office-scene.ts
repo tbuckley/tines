@@ -1,12 +1,34 @@
 // The geometry is intentionally kept close to the approved concept source.
-// @ts-nocheck -- the generated geometry is a direct, isolated port; its public lifecycle is typed below.
 import * as T from 'three';
 import { stillMeta } from './still-meta';
-import { officePhase, viewportCenter } from './office-layout';
+import { officePhase, viewportCenter, type Aperture } from './office-layout';
 
 export type OfficeMotionState = { paused: boolean; failed: boolean };
 export type OfficeFrame = { phase: number; progress: number };
 export type OfficeController = { toggleMotion(): void; destroy(): void };
+type Vec3 = [number, number, number];
+type MaterialKey =
+	| 'board'
+	| 'cut'
+	| 'wood'
+	| 'end'
+	| 'metal'
+	| 'paper'
+	| 'blue'
+	| 'felt'
+	| 'screen'
+	| 'green'
+	| 'clay';
+type SceneLayout = {
+	width: number;
+	height: number;
+	center: number;
+	apertures: [Aperture, Aperture, Aperture];
+	landings: number[];
+	end: number;
+	review: { failedAt: number; returnAt: number; humanAt: number };
+};
+type Traffic = { mesh: T.Group; points: T.Vector3[]; offset: number; kind: string };
 
 export function createOfficeScene({
 	rootEl,
@@ -17,37 +39,43 @@ export function createOfficeScene({
 	onFrame: (frame: OfficeFrame) => void;
 	onMotionChange: (state: OfficeMotionState) => void;
 }): OfficeController {
-	const $ = (s) => rootEl.querySelector(s),
-		$$ = (s) => [...rootEl.querySelectorAll(s)];
+	const $ = <E extends HTMLElement = HTMLElement>(selector: string): E => {
+		const element = rootEl.querySelector<E>(selector);
+		if (!element) throw new Error(`Missing marketing element: ${selector}`);
+		return element;
+	};
+	const $$ = <E extends HTMLElement = HTMLElement>(selector: string): E[] => [
+		...rootEl.querySelectorAll<E>(selector)
+	];
 	const seed = 'm3EdxN3xU2Kv3T',
 		seedValues = [...seed].map((c) => c.charCodeAt(0)),
 		seedGroups = [seed.slice(0, 4), seed.slice(4, 8), seed.slice(8)].map((s) =>
 			[...s].reduce((a, c) => a + c.charCodeAt(0), 0)
 		);
-	let renderer,
-		scene,
-		camera,
-		root,
-		team,
-		org,
-		deskOne,
-		route,
-		token,
-		endpoints,
+	let renderer: T.WebGLRenderer | null = null,
+		scene: T.Scene | null = null,
+		camera: T.OrthographicCamera | null = null,
+		root: T.Group | null = null,
+		team: T.Group | null = null,
+		org: T.Group | null = null,
+		deskOne: T.Group | null = null,
+		route: T.Group | null = null,
+		token: T.Group | null = null,
+		endpoints: T.Group | null = null,
 		failed = false,
-		traffic = [],
+		traffic: Traffic[] = [],
 		elapsed = 0,
-		lastTime = null,
+		lastTime: number | null = null,
 		paused = false,
 		dirty = 3,
-		layout,
+		layout: SceneLayout,
 		progress = 0,
 		phase = 0,
 		disposed = false,
 		frameId = 0;
 	const reduced = matchMedia('(prefers-reduced-motion: reduce)');
 	paused = reduced.matches;
-	const onContextLost = (event) => {
+	const onContextLost = (event: Event) => {
 		event.preventDefault();
 		failed = true;
 		cleanupRenderer();
@@ -109,7 +137,16 @@ export function createOfficeScene({
 		};
 		mat.board.color.lerp(new T.Color(0xa6bbc2), (seedGroups[1] % 13) / 40);
 		mat.wood.color.lerp(new T.Color(0xbba381), (seedGroups[2] % 9) / 30);
-		function box(w, h, d, x, y, z, m, parent = root) {
+		function box(
+			w: number,
+			h: number,
+			d: number,
+			x: number,
+			y: number,
+			z: number,
+			m: MaterialKey,
+			parent: T.Group = root!
+		) {
 			const o = new T.Mesh(new T.BoxGeometry(w, h, d), mat[m]);
 			o.position.set(x, y, z);
 			o.castShadow = true;
@@ -117,7 +154,16 @@ export function createOfficeScene({
 			parent.add(o);
 			return o;
 		}
-		function cyl(r1, r2, h, x, y, z, m, parent = root) {
+		function cyl(
+			r1: number,
+			r2: number,
+			h: number,
+			x: number,
+			y: number,
+			z: number,
+			m: MaterialKey,
+			parent: T.Group = root!
+		) {
 			const o = new T.Mesh(new T.CylinderGeometry(r1, r2, h, 24), mat[m]);
 			o.position.set(x, y, z);
 			o.castShadow = true;
@@ -125,14 +171,14 @@ export function createOfficeScene({
 			parent.add(o);
 			return o;
 		}
-		function ball(r, x, y, z, m, parent) {
+		function ball(r: number, x: number, y: number, z: number, m: MaterialKey, parent: T.Group) {
 			const o = new T.Mesh(new T.SphereGeometry(r, 20, 14), mat[m]);
 			o.position.set(x, y, z);
 			o.castShadow = true;
 			parent.add(o);
 			return o;
 		}
-		function bar(a, b, r, m, parent) {
+		function bar(a: Vec3, b: Vec3, r: number, m: MaterialKey, parent: T.Group) {
 			let av = new T.Vector3(...a),
 				bv = new T.Vector3(...b);
 			const o = cyl(r, r, av.distanceTo(bv), 0, 0, 0, m, parent);
@@ -140,7 +186,7 @@ export function createOfficeScene({
 			o.quaternion.setFromUnitVectors(new T.Vector3(0, 1, 0), bv.sub(av).normalize());
 			return o;
 		}
-		function plant(x, y, z, parent) {
+		function plant(x: number, y: number, z: number, parent: T.Group) {
 			cyl(0.16, 0.12, 0.25, x, y + 0.12, z, 'clay', parent);
 			for (let i = 0; i < 5; i++) {
 				const a = i * 2.4;
@@ -162,7 +208,7 @@ export function createOfficeScene({
 				leaf.scale.set(0.45, 1.5, 0.85);
 			}
 		}
-		function desk(x, y, z, parent, operator = true) {
+		function desk(x: number, y: number, z: number, parent: T.Group, operator = true) {
 			const d = new T.Group();
 			d.position.set(x, y, z);
 			parent.add(d);
@@ -220,34 +266,34 @@ export function createOfficeScene({
 		root.add(team);
 		box(9.8, 0.22, 5.5, 0, -0.24, 0, 'board', team);
 		box(9.8, 0.025, 5.5, 0, -0.115, 0, 'cut', team);
-		[-3.25, 3.25].forEach((x) => desk(x, 0, 0, team));
+		[-3.25, 3.25].forEach((x) => desk(x, 0, 0, team!));
 		[-1.58, 1.58].forEach((x) => {
-			box(0.1, 1.48, 2.4, x, 0.64, -0.45, 'board', team);
-			box(0.14, 0.045, 2.4, x, 1.39, -0.45, 'wood', team);
+			box(0.1, 1.48, 2.4, x, 0.64, -0.45, 'board', team!);
+			box(0.14, 0.045, 2.4, x, 1.39, -0.45, 'wood', team!);
 		});
 		[-3.25, 0, 3.25].forEach((x) => {
-			box(2.95, 1.48, 0.1, x, 0.64, -1.55, 'board', team);
+			box(2.95, 1.48, 0.1, x, 0.64, -1.55, 'board', team!);
 			for (let j = 0; j < 3; j++)
-				box(0.29, 0.22, 0.01, x - 0.6 + j * 0.4, 1.06, -1.489, j === 1 ? 'paper' : 'cut', team);
+				box(0.29, 0.22, 0.01, x - 0.6 + j * 0.4, 1.06, -1.489, j === 1 ? 'paper' : 'cut', team!);
 		});
 		box(1.1, 0.85, 0.7, -3.65, 0.32, -2.1, 'wood', team);
 		[0.05, 0.32, 0.59].forEach((y) => {
-			box(0.99, 0.018, 0.02, -3.65, y, -1.74, 'end', team);
-			box(0.2, 0.025, 0.02, -3.65, y + 0.1, -1.735, 'metal', team);
+			box(0.99, 0.018, 0.02, -3.65, y, -1.74, 'end', team!);
+			box(0.2, 0.025, 0.02, -3.65, y + 0.1, -1.735, 'metal', team!);
 		});
 		plant(4, 0, -2.05, team);
 
 		// Routed brass-free mineral inlay. The issue uses this same polyline.
 		route = new T.Group();
 		team.add(route);
-		const routePoints = [
+		const routePoints: Vec3[] = [
 			[-3.25, 1.15, 0.4],
 			[0, 1.15, 0.4],
 			[0, 1.15, 1.85],
 			[3.25, 1.15, 1.85],
 			[3.25, 1.15, 0.4]
 		];
-		routePoints.slice(1).forEach((b, i) => bar(routePoints[i], b, 0.027, 'blue', route));
+		routePoints.slice(1).forEach((b, i) => bar(routePoints[i], b, 0.027, 'blue', route!));
 		bar([3.25, 1.15, 2.15], [0, 1.15, 2.15], 0.03, 'metal', route);
 		bar([3.25, 1.15, 0.4], [3.25, 1.15, 2.15], 0.03, 'metal', route);
 		bar([0, 1.15, 2.15], [0, 1.15, 0.4], 0.03, 'metal', route);
@@ -255,7 +301,7 @@ export function createOfficeScene({
 			const arrow = new T.Mesh(new T.ConeGeometry(0.085, 0.21, 12), mat.blue);
 			arrow.rotation.z = -Math.PI / 2;
 			arrow.position.set(x, 1.15, 1.85);
-			route.add(arrow);
+			route!.add(arrow);
 		});
 		org = new T.Group();
 		root.add(org);
@@ -270,7 +316,7 @@ export function createOfficeScene({
 		box(leftEdge + 4.9, 0.2, 2.5, (leftEdge - 4.9) / 2, floorY, 0.02, 'board', org);
 		box(4.9 - rightEdge, 0.2, 2.5, (rightEdge + 4.9) / 2, floorY, 0.02, 'board', org);
 		[-4.75, 4.75].forEach((x) =>
-			[-2.6, 2.6].forEach((z) => box(0.13, 3, 0.13, x, 1.25, z, 'wood', org))
+			[-2.6, 2.6].forEach((z) => box(0.13, 3, 0.13, x, 1.25, z, 'wood', org!))
 		);
 		desk(-3.2, 3, 0, org);
 		desk(3.65, 3, 0, org);
@@ -278,8 +324,8 @@ export function createOfficeScene({
 		box(0.15, 2.05, 5.3, -4.85, 3.92, 0, 'board', org);
 		// Clerestory reveals, shelving, stairs and cut end-grain edges.
 		[-3.7, -2.45, -1.2, 0.05, 1.3, 2.55, 3.8].forEach((x) => {
-			box(0.97, 0.95, 0.045, x, 4.18, -2.55, 'cut', org);
-			box(0.035, 0.95, 0.065, x, 4.18, -2.51, 'wood', org);
+			box(0.97, 0.95, 0.045, x, 4.18, -2.55, 'cut', org!);
+			box(0.035, 0.95, 0.065, x, 4.18, -2.51, 'wood', org!);
 		});
 		for (let i = 0; i < 12; i++) box(0.83, 0.12, 0.29, 1.9, i * 0.247, 2.7 - i * 0.26, 'wood', org);
 		bar([2.4, 0.75, 2.9], [2.4, 3.7, -0.3], 0.027, 'metal', org);
@@ -289,7 +335,7 @@ export function createOfficeScene({
 				[2.4, i * 0.247 + 0.8, 2.7 - i * 0.26],
 				0.02,
 				'metal',
-				org
+				org!
 			)
 		);
 		box(0.13, 0.85, 3.3, leftEdge, 3.45, 0.2, 'wood', org);
@@ -335,9 +381,9 @@ export function createOfficeScene({
 		box(1.3, 0.14, 1.1, 6, -0.09, 1.8, 'cut', endpoints);
 		box(0.09, 1.45, 0.09, 6, 0.7, 1.8, 'wood', endpoints);
 		box(0.9, 0.48, 0.09, 6, 1.42, 1.8, 'blue', endpoints);
-		function slip(color, plane = false) {
+		function slip(color: number, plane = false) {
 			const g = new T.Group();
-			endpoints.add(g);
+			endpoints!.add(g);
 			if (plane) {
 				let geom = new T.BufferGeometry();
 				geom.setAttribute(
@@ -426,8 +472,8 @@ export function createOfficeScene({
 		scene.add(ground);
 		renderer.domElement.addEventListener('webglcontextlost', onContextLost);
 	}
-	const clamp = (n, a = 0, b = 1) => Math.min(b, Math.max(a, n)),
-		smooth = (n) => {
+	const clamp = (n: number, a = 0, b = 1) => Math.min(b, Math.max(a, n)),
+		smooth = (n: number) => {
 			n = clamp(n);
 			return n * n * (3 - 2 * n);
 		};
@@ -442,14 +488,15 @@ export function createOfficeScene({
 				width: r.width,
 				center: r.top + scrollY + r.height / 2
 			};
-		});
+		}) as [Aperture, Aperture, Aperture];
 		layout = {
 			width: innerWidth,
 			height: innerHeight,
 			center,
 			apertures,
 			landings: apertures.map((a) => a.center - center),
-			end: document.documentElement.scrollHeight - innerHeight
+			end: document.documentElement.scrollHeight - innerHeight,
+			review: { failedAt: 0, returnAt: 0, humanAt: 0 }
 		};
 		if (renderer) renderer.setSize(innerWidth, innerHeight, false);
 	}
@@ -467,7 +514,7 @@ export function createOfficeScene({
 		layout.review = { failedAt, returnAt, humanAt };
 		return { p: progress, phase };
 	}
-	function pointOn(points, f) {
+	function pointOn(points: T.Vector3[], f: number): T.Vector3 {
 		const lengths = points.slice(1).map((p, i) => p.distanceTo(points[i]));
 		let d = clamp(f) * lengths.reduce((a, b) => a + b, 0);
 		for (let i = 0; i < lengths.length; i++) {
@@ -475,6 +522,7 @@ export function createOfficeScene({
 				return points[i].clone().lerp(points[i + 1], lengths[i] ? clamp(d / lengths[i]) : 0);
 			d -= lengths[i];
 		}
+		return points.at(-1)!.clone();
 	}
 	function config() {
 		let { p } = state();
@@ -483,7 +531,7 @@ export function createOfficeScene({
 		const aps = layout.apertures;
 		const noteH = 135;
 		let stageW = Math.min(w - 28, 930);
-		const frame = (i, y) => {
+		const frame = (i: number, y: number) => {
 			const a = aps[i],
 				top = Math.max(0, a.top - y),
 				bottom = Math.min(h, a.top + a.height - y),
@@ -512,7 +560,9 @@ export function createOfficeScene({
 				f = {
 					room: Math.max(a.room, b.room),
 					stageH: a.stageH + (b.stageH - a.stageH) * t,
-					cy: a.cy + (b.cy - a.cy) * t
+					cy: a.cy + (b.cy - a.cy) * t,
+					top: Math.min(a.top, b.top),
+					bottom: Math.max(a.bottom, b.bottom)
 				};
 			}
 		}
@@ -546,33 +596,33 @@ export function createOfficeScene({
 			updateStill(c);
 			return;
 		}
-		team.visible = grow > 0.001;
-		team.scale.setScalar(Math.max(0.001, grow));
-		org.visible = upper > 0.001;
-		org.scale.setScalar(Math.max(0.001, upper));
-		org.position.y = 0;
-		endpoints.visible = upper > 0.85;
+		team!.visible = grow > 0.001;
+		team!.scale.setScalar(Math.max(0.001, grow));
+		org!.visible = upper > 0.001;
+		org!.scale.setScalar(Math.max(0.001, upper));
+		org!.position.y = 0;
+		endpoints!.visible = upper > 0.85;
 		const halfH = c.fullH / 2,
 			halfW = (halfH * w) / h,
 			cx = (0.5 - c.x / w) * halfW * 2,
 			cy = (c.y / h - 0.5) * halfH * 2;
-		Object.assign(camera, {
+		Object.assign(camera!, {
 			left: -halfW + cx,
 			right: halfW + cx,
 			top: halfH + cy,
 			bottom: -halfH + cy
 		});
-		camera.position.set(9, 10, 14);
-		camera.lookAt(0, 0.6 + upper * 1.65, 0);
-		camera.updateProjectionMatrix();
-		const coords = [
+		camera!.position.set(9, 10, 14);
+		camera!.lookAt(0, 0.6 + upper * 1.65, 0);
+		camera!.updateProjectionMatrix();
+		const coords: Vec3[] = [
 			[0, 1.22, 0.3],
 			[3.25, 1.22, 0.4],
 			[0, 1.22, 0.4],
 			[3.25, 1.22, 1.85],
 			[0, 1.22, 2.15]
 		];
-		let pos = coords[phase];
+		let pos: Vec3 = coords[phase];
 		if (p < 0.8) pos = [-0.56, 1.22, 0.1];
 		if (phase === 2) {
 			const f = smooth((scrollY - layout.review.returnAt) / 80);
@@ -584,12 +634,12 @@ export function createOfficeScene({
 					[0, 1.22, 0.4]
 				].map((a) => new T.Vector3(...a)),
 				f
-			).toArray();
+			).toArray() as Vec3;
 		}
-		token.position.set(...pos);
+		token!.position.set(...pos);
 		traffic.forEach((t, i) => {
 			const f = (elapsed / (i > 2 ? 8 : 11) + t.offset) % 1;
-			const travel = (q) => {
+			const travel = (q: number) => {
 				if (i < 2)
 					return q < 0.12
 						? t.points[0].clone().lerp(t.points[1], q / 0.12)
@@ -612,9 +662,9 @@ export function createOfficeScene({
 			if (f >= 0.93) t.mesh.position.set(-40, -20, 0);
 			t.mesh.scale.setScalar(i > 2 ? 1.9 : 1.5);
 		});
-		renderer.render(scene, camera);
-		function place(id, xyz) {
-			const v = new T.Vector3(...xyz).project(camera),
+		renderer.render(scene!, camera!);
+		function place(id: string, xyz: Vec3) {
+			const v = new T.Vector3(...xyz).project(camera!),
 				el = $(id);
 			el.style.left = (v.x * 0.5 + 0.5) * w + 'px';
 			el.style.top = (-v.y * 0.5 + 0.5) * h + 'px';
@@ -627,10 +677,10 @@ export function createOfficeScene({
 		renderer.domElement.hidden = false;
 		onFrame({ phase, progress });
 	}
-	function updateStill(c) {
+	function updateStill(c: ReturnType<typeof config>) {
 		const scope = phase === 0 ? 'task' : phase === 4 ? 'office' : 'team',
 			key = (layout.width < 650 ? 'phone' : 'desktop') + '-' + scope + '-' + phase;
-		const img = $('#still'),
+		const img = $<HTMLImageElement>('#still'),
 			meta = stillMeta[key];
 		img.src = '/marketing/office-v1/' + key + '.png';
 		img.hidden = false;
@@ -656,7 +706,7 @@ export function createOfficeScene({
 		$('#token-label').hidden = true;
 		$('#intake-label').hidden = $('#output-label').hidden = true;
 		if (meta)
-			['intake', 'output'].forEach((key) => {
+			(['intake', 'output'] as const).forEach((key) => {
 				const el = $('#' + key + '-label');
 				el.style.left = c.x + (meta[key][0] * bw - bw / 2) * k + 'px';
 				el.style.top = c.y + (meta[key][1] * bh - bc) * k + 'px';
@@ -667,7 +717,7 @@ export function createOfficeScene({
 		dirty = 3;
 		onMotionChange({ paused, failed });
 	}
-	function tick(now) {
+	function tick(now: number) {
 		if (disposed) return;
 		const delta = lastTime === null ? 0 : clamp((now - lastTime) / 1000, 0, 0.08);
 		lastTime = now;
@@ -683,11 +733,12 @@ export function createOfficeScene({
 	}
 	function cleanupRenderer() {
 		if (scene) {
-			const geometries = new Set();
-			const materials = new Set();
+			const geometries = new Set<T.BufferGeometry>();
+			const materials = new Set<T.Material>();
 			scene.traverse((object) => {
-				if (object.geometry) geometries.add(object.geometry);
-				const values = Array.isArray(object.material) ? object.material : [object.material];
+				const mesh = object as T.Mesh;
+				if (mesh.geometry) geometries.add(mesh.geometry);
+				const values = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
 				values.filter(Boolean).forEach((material) => materials.add(material));
 			});
 			geometries.forEach((geometry) => geometry.dispose());
@@ -718,7 +769,7 @@ export function createOfficeScene({
 		measure();
 		sync();
 	};
-	const onReduced = (event) => {
+	const onReduced = (event: MediaQueryListEvent) => {
 		paused = event.matches;
 		lastTime = null;
 		sync();

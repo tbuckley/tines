@@ -24,7 +24,12 @@ test('renders the complete public story and shares one sign-in dialog', async ({
 });
 
 test('keeps fallback choreography when the lazy scene chunk fails', async ({ page }) => {
-	await page.route('**/*office-scene*.js', (route) => route.abort());
+	await page.route('**/_app/immutable/chunks/*.js', async (route) => {
+		const response = await route.fetch();
+		const body = await response.body();
+		if (body.includes(Buffer.from('createOfficeScene'))) await route.abort();
+		else await route.fulfill({ response, body });
+	});
 	await gotoHydrated(page, '/');
 	await page.evaluate(() => scrollTo(0, document.documentElement.scrollHeight));
 	await expect(page.locator('.marketing-page')).toHaveAttribute('data-phase', 'Closed');
