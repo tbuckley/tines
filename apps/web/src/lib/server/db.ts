@@ -72,6 +72,15 @@ export interface IssueTable {
 	state_entered_at: number | null;
 	created_at: number;
 	updated_at: number;
+	/** Opaque fence changed on every project transfer, including A -> B -> A. */
+	project_assignment_token: string;
+}
+
+export interface IssueAddressTable {
+	project_id: string;
+	number: number;
+	issue_id: string;
+	created_at: number;
 }
 
 export interface ScheduledTaskTable {
@@ -341,6 +350,8 @@ export interface AgentRunTable {
 	created_at: number;
 	started_at: number | null;
 	ended_at: number | null;
+	/** Assignment fence copied from the issue by the successful claim. */
+	project_assignment_token: string;
 }
 
 export interface RoutingRuleTable {
@@ -434,6 +445,7 @@ export interface Database {
 	workflow_state: WorkflowStateTable;
 	workflow_transition: WorkflowTransitionTable;
 	issue: IssueTable;
+	issue_address: IssueAddressTable;
 	issue_link: IssueLinkTable;
 	label: LabelTable;
 	issue_label: IssueLabelTable;

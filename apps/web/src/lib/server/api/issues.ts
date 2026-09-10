@@ -56,6 +56,7 @@ import { runQuery, serializeRun } from './runs';
 import { requireTier } from './runners';
 import { getSchedule, prepareSchedule } from './schedules';
 import { loadWorkflow, loadWorkflows } from './workflows';
+import { nextIssueNumber } from '../issue-address';
 
 /**
  * SQL for the effective category of the blocker on a `blocks` edge into
@@ -128,6 +129,11 @@ export function issueQuery(db: Kysely<Database>, userId: string) {
 			.leftJoin('issue as eff_issue', 'eff_issue.id', 'effective.effective_issue_id')
 			.leftJoin('workflow_state as eff_state', 'eff_state.id', 'eff_issue.state_id')
 			.leftJoin('scheduled_task', 'scheduled_task.id', 'issue.scheduled_task_id')
+			.leftJoin(
+				'project as scheduled_task_project',
+				'scheduled_task_project.id',
+				'scheduled_task.project_id'
+			)
 			.leftJoin('runner as pin_runner', 'pin_runner.id', 'issue.pinned_runner_id')
 			.selectAll('issue')
 			.select([
@@ -138,6 +144,8 @@ export function issueQuery(db: Kysely<Database>, userId: string) {
 				'state.position as state_position',
 				'state.inherits_from_state_id as state_inherits_from',
 				'scheduled_task.name as scheduled_task_name',
+				'scheduled_task_project.id as scheduled_task_project_id',
+				'scheduled_task_project.name as scheduled_task_project_name',
 				'pin_runner.name as pinned_runner_name'
 			])
 			.select([
@@ -268,6 +276,8 @@ export function serializeIssue(row: IssueRow): Issue {
 		labels: row.labels_json ? (JSON.parse(row.labels_json) as IssueLabel[]) : [],
 		scheduled_task_id: row.scheduled_task_id,
 		scheduled_task_name: row.scheduled_task_name,
+		scheduled_task_project_id: row.scheduled_task_project_id,
+		scheduled_task_project_name: row.scheduled_task_project_name,
 		pinned_runner_id: row.pinned_runner_id,
 		pinned_runner_name: row.pinned_runner_name,
 		pinned_tier: row.pinned_tier as ModelTier | null,
@@ -707,12 +717,27 @@ export async function loadIssue(
 	let q = issueQuery(db, userId);
 	if ('id' in ref) q = q.where('issue.id', '=', ref.id);
 	else if ('projectId' in ref)
-		q = q.where('issue.project_id', '=', ref.projectId).where('issue.number', '=', ref.number);
+		q = q.where(({ exists, selectFrom }) =>
+			exists(
+				selectFrom('issue_address')
+					.select('issue_address.issue_id')
+					.whereRef('issue_address.issue_id', '=', 'issue.id')
+					.where('issue_address.project_id', '=', ref.projectId)
+					.where('issue_address.number', '=', ref.number)
+			)
+		);
 	else
-		q = q
-			.where('project.name', '=', ref.projectName)
-			.where('issue.number', '=', ref.number)
-			.orderBy('project.created_at desc');
+		q = q.where(({ exists, selectFrom }) =>
+			exists(
+				selectFrom('issue_address')
+					.innerJoin('project as address_project', 'address_project.id', 'issue_address.project_id')
+					.select('issue_address.issue_id')
+					.whereRef('issue_address.issue_id', '=', 'issue.id')
+					.where('address_project.user_id', '=', userId)
+					.where('address_project.name', '=', ref.projectName)
+					.where('issue_address.number', '=', ref.number)
+			)
+		);
 	const row = await q.executeTakeFirst();
 	if (!row) throw notFound();
 	return serializeIssue(row);
@@ -860,14 +885,13 @@ export function issueInsertQueries(
 ): CompiledQuery[] {
 	const { id, projectId, workflowId, stateId, now, scheduledTask } = opts;
 	return [
-		// MAX(number)+1 inside a single statement (and the batch's implicit
-		// transaction) keeps per-project numbering race-free on D1.
+		// The permanent ledger prevents reuse after the highest issue moves away.
 		db
 			.insertInto('issue')
 			.values({
 				id,
 				project_id: projectId,
-				number: sql<number>`(SELECT COALESCE(MAX(number), 0) + 1 FROM issue WHERE project_id = ${projectId})`,
+				number: nextIssueNumber(projectId),
 				title: opts.title,
 				description: opts.description,
 				workflow_id: workflowId,
@@ -879,7 +903,8 @@ export function issueInsertQueries(
 				needs_attention: 0,
 				state_entered_at: now,
 				created_at: now,
-				updated_at: now
+				updated_at: now,
+				project_assignment_token: ''
 			})
 			.compile(),
 		eventInsert(db, actor, {

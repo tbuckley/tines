@@ -95,7 +95,14 @@ test.describe.serial('scheduled-task sweep (seeded due schedules)', () => {
 		expect(events.items.length).toBeGreaterThanOrEqual(1);
 		const skipped = events.items[0];
 		expect(skipped.payload.name).toBe(SCHED.gatedName);
-		expect(skipped.payload.blocking).toEqual([{ issue_id: SCHED.gatedIssueId, number: 1 }]);
+		expect(skipped.payload.blocking).toEqual([
+			{
+				issue_id: SCHED.gatedIssueId,
+				number: 1,
+				project_id: SCHED.projectId,
+				project_name: SCHED.projectName
+			}
+		]);
 
 		// Skips are terminal: next_run_at advanced past the missed occurrence.
 		const schedule = await body<Schedule>(await api.get(`/api/v1/schedules/${SCHED.gatedId}`));
@@ -168,7 +175,13 @@ test.describe.serial('schedule lifecycle over the API', () => {
 		const err = (await errorBody(res)).error;
 		expect(err.code).toBe('schedule_blocked');
 		expect(err.details?.open_instances).toEqual([
-			{ issue_id: firstIssue.id, number: firstIssue.number, title: firstIssue.title }
+			{
+				issue_id: firstIssue.id,
+				number: firstIssue.number,
+				title: firstIssue.title,
+				project_id: projectId,
+				project_name: projectName
+			}
 		]);
 	});
 

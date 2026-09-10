@@ -11,7 +11,7 @@ import { createContextItem } from './context';
 import { ApiFail, type ActorContext } from './core';
 import { createLabel } from './labels';
 import { applyImport, assertImportableDocument, buildLibraryDocument, planImport } from './library';
-import { createWorkflow } from './workflows';
+import { createWorkflow, loadWorkflow } from './workflows';
 import { createTestDb, type TestDb } from './test-db';
 
 const actor: ActorContext = {
@@ -886,4 +886,122 @@ describe('inheritance pointers', () => {
 		// Everything else still landed.
 		expect(result.counts.create).toBeGreaterThan(0);
 	});
+});
+
+describe('applyImport — structural identity', () => {
+	// Tines/413. Both sides gate "Finish" differently: the incoming one wants a
+	// `tests` artifact too, the existing one only names it inside the `pr`
+	// requirement's description. The old fingerprint concatenated those fields
+	// with `,` and `:`, so the two encoded identically and the import silently
+	// skipped a workflow whose gates it did not have.
+	const GATE_COLLISION = {
+		name: 'Gate collision',
+		initial_state: 'Work',
+		states: [
+			{ name: 'Work', category: 'active' as const },
+			{ name: 'Done', category: 'done' as const }
+		],
+		transitions: [
+			{
+				name: 'Finish',
+				from: 'Work',
+				to: 'Done',
+				requires: [
+					{ artifact: 'pr', type: 'pr' as const, description: 'Ship' },
+					{ artifact: 'tests', type: 'text' as const }
+				]
+			}
+		]
+	};
+	// Same workflow, transitions and requirements listed the other way round:
+	// order is not identity, and a real import must still call it a skip.
+	const REORDERED = {
+		name: 'Reordered',
+		initial_state: 'Work',
+		states: [
+			{ name: 'Work', category: 'active' as const },
+			{ name: 'Done', category: 'done' as const }
+		],
+		transitions: [
+			{
+				name: 'Finish',
+				from: 'Work',
+				to: 'Done',
+				requires: [
+					{ artifact: 'pr', type: 'pr' as const },
+					{ artifact: 'tests', type: 'text' as const }
+				]
+			},
+			{ name: 'Reopen', from: 'Done', to: 'Work' }
+		]
+	};
+	const REORDERED_MIRROR = {
+		...REORDERED,
+		transitions: [
+			{ name: 'Reopen', from: 'Done', to: 'Work' },
+			{
+				name: 'Finish',
+				from: 'Work',
+				to: 'Done',
+				requires: [
+					{ artifact: 'tests', type: 'text' as const },
+					{ artifact: 'pr', type: 'pr' as const }
+				]
+			}
+		]
+	};
+	const NEAR_MISS = {
+		...GATE_COLLISION,
+		transitions: [
+			{
+				name: 'Finish',
+				from: 'Work',
+				to: 'Done',
+				requires: [{ artifact: 'pr', type: 'pr' as const, description: 'Ship,tests:text::' }]
+			}
+		]
+	};
+
+	it.each([
+		['on its own', {}],
+		['even when asked to overwrite', { on_collision: 'overwrite' as const }]
+	])(
+		'refuses a workflow whose extra gate the existing description spells, %s',
+		async (_l, opts) => {
+			await createWorkflow(t.db, t.env, actor, GATE_COLLISION);
+			await createWorkflow(t.db, t.env, actor, REORDERED);
+			const target = freshDeployment();
+			const stored = await createWorkflow(target.db, target.env, actor, NEAR_MISS);
+			await createWorkflow(target.db, target.env, actor, REORDERED_MIRROR);
+			const document = await buildLibraryDocument(t.db, USER);
+
+			// Preview and apply plan alike: neither may call these identical.
+			for (const dry_run of [true, false]) {
+				const result = await applyImport(target.db, target.env, actor, {
+					document,
+					dry_run,
+					...opts
+				});
+				const entry = result.entries.find((e) => e.ref === `workflow "Gate collision"`)!;
+				expect(entry.action).toBe('refuse');
+				expect(entry.reason).toMatch(/a different workflow already has this name/);
+				// Its neighbour in the same document is the same workflow written
+				// in another order: genuine identity still reads as identity.
+				expect(result.entries.find((e) => e.ref === `workflow "Reordered"`)?.action).toBe('skip');
+			}
+
+			// Refusal is not a partial write: the destination workflow is the one
+			// it was, gate and all.
+			const after = await loadWorkflow(target.db, USER, stored.id);
+			expect(after.states.map((s) => s.name)).toEqual(['Work', 'Done']);
+			const byId = new Map(after.states.map((s) => [s.id, s.name]));
+			expect(after.transitions).toHaveLength(1);
+			expect(after.transitions[0].id).toBe(stored.transitions[0].id);
+			expect(byId.get(after.transitions[0].from_state_id)).toBe('Work');
+			expect(byId.get(after.transitions[0].to_state_id)).toBe('Done');
+			expect(after.transitions[0].requires).toEqual([
+				{ artifact: 'pr', type: 'pr', description: 'Ship,tests:text::' }
+			]);
+		}
+	);
 });

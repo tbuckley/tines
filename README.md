@@ -215,6 +215,36 @@ tines projects unarchive "Paris 2026"    # schedules resume from their next occu
 tines projects list --archived           # include archived projects (hidden by default)
 ```
 
+An issue can also be **moved to another project** without losing anything. The issue keeps its
+stable ID, its comments, artifacts and versions, labels, links, runs, workflow state, pins,
+attempts and its schedule; it gets the destination's next never-used number, and every address
+it has ever answered to keeps resolving — for reads, for authorized writes, and for old browser
+URLs, which redirect to the current canonical one.
+
+```sh
+tines issues transfer Tines/392 --project Platform --dry-run   # review; writes nothing
+tines issues transfer Tines/392 --project Platform             # review, then confirm
+```
+
+Things worth knowing about a move:
+
+- The review is the point: it names the guidance the issue loses with the source, gains from
+  the destination and keeps as its own, the repositories whose URL, branch or checkout
+  directory change, retained pins, and how the destination would route the next run. A missing
+  route, a rule tie or a checkout conflict is disclosed, not a veto.
+- A preview allocates nothing. The destination number is assigned by the confirmed move, so a
+  cancelled review consumes no number and emits no event.
+- A move is refused while a run is assigned, launching or running on the issue, and while
+  either project is archived. Nothing is drained or cancelled on your behalf.
+- Only a human session or an ordinary named key may move an issue. A run key may read the
+  review — that is how an agent argues for a move — but never commits one.
+- A project that owns an issue's old address cannot be deleted, even with `--force-context`;
+  archive it instead. Its old refs must keep working.
+- Activity keeps its history honest: the source project's feed retains the events recorded
+  there, the destination's feed picks up the move and everything after it, and the issue's own
+  feed stays complete.
+- `tines issues move` is unrelated: that is a workflow transition.
+
 Things worth knowing:
 
 - `projects list --archived` **includes** archived projects; it does not filter to them.

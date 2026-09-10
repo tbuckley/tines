@@ -228,7 +228,10 @@ export function table(rows: string[][]): void {
  * API's non-archived default.
  */
 export async function resolveProject(api: ApiClient, ref: string): Promise<Project> {
-	const { items } = await api.listProjects({ archived: 'all' });
+	// A historical issue address may belong to any project in the workspace,
+	// including an archived project beyond the first page. Reference resolution
+	// must therefore consume the whole namespace, not the list UI's first page.
+	const items = await listAll((page) => api.listProjects({ ...page, archived: 'all' }));
 	const byId = items.find((p) => p.id === ref);
 	if (byId) return byId;
 	const byName = items.filter((p) => p.name === ref);

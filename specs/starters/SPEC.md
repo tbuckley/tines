@@ -100,9 +100,13 @@ Two consequences, both accepted:
   editing one project's stage prompt edits every project on that workflow —
   exactly how the shared `Engineering` workflow already behaves. A project ∧
   state override separates them later.
-- **The fingerprint is blind to prompts.** It covers `initial_state`, each
-  state's `name:category`, and the transition set with its artifact
-  requirements — not stage instructions, description or inheritance. So a
+- **The fingerprint is blind to prompts.** It covers `initial_state`, the
+  ordered state name/category tuples, and the transition set with its
+  artifact requirements — not stage instructions, description or
+  inheritance. State order is significant; transitions and requirements are
+  compared without regard to order. The encoding is unambiguous canonical
+  serialization (JSON tuples, not delimited text), so user text that spells
+  a separator cannot make two different workflows fingerprint alike. So a
   workflow whose instructions were deleted still fingerprints identical and
   is reused *without* re-seeding them. Re-seeding would collide with
   `context_item_name_scope_uq` and take the whole creation down, which is a
