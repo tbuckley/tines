@@ -81,6 +81,37 @@ describe('private issue transfer path', () => {
 		`);
 	});
 
+	it('stales a preview when destination guidance or a label changes under it', async () => {
+		const preview = await previewIssueTransfer(t.env, actor, issueId, DESTINATION, NOW + 100);
+		// A prompt added at the destination after the review changes what the
+		// operator approved, even though it touches neither the issue nor the
+		// rows the move rescopes.
+		t.sqlite.exec(`
+			INSERT INTO context_item (
+				id, user_id, kind, name, description, project_id, body,
+				position, version, created_at, updated_at
+			) VALUES ('ctx_late', '${USER}', 'prompt', 'late', '', '${DESTINATION}',
+				'arrived after the review', 1, 1, ${NOW}, ${NOW});
+		`);
+		await expect(
+			commitIssueTransfer(t.env, actor, issueId, DESTINATION, preview.preview_token!, NOW + 200)
+		).rejects.toMatchObject({ code: 'transfer_preview_stale' });
+		expect(t.all(`SELECT * FROM event WHERE type = 'issue.transferred'`)).toHaveLength(0);
+
+		// Labels feed context and routing matching, so they are witnessed too.
+		t.sqlite.exec(`DELETE FROM context_item WHERE id = 'ctx_late'`);
+		const fresh = await previewIssueTransfer(t.env, actor, issueId, DESTINATION, NOW + 300);
+		t.sqlite.exec(`
+			INSERT INTO label (id, user_id, name, color, created_at, updated_at)
+			VALUES ('lbl_late', '${USER}', 'urgent', 'red', ${NOW}, ${NOW});
+			INSERT INTO issue_label (issue_id, label_id, created_at)
+			VALUES ('${issueId}', 'lbl_late', ${NOW});
+		`);
+		await expect(
+			commitIssueTransfer(t.env, actor, issueId, DESTINATION, fresh.preview_token!, NOW + 400)
+		).rejects.toMatchObject({ code: 'transfer_preview_stale' });
+	});
+
 	it('projects guidance and repositories at the destination, and agrees after the move', async () => {
 		// Shared source guidance the issue loses, destination guidance it gains,
 		// a repo whose checkout changes hands, and its own anchored prompt, which
@@ -132,7 +163,7 @@ describe('private issue transfer path', () => {
 		// once the address the preview could not know yet is normalized away.
 		const moved = t.all(`SELECT number FROM issue WHERE id = ?`, issueId)[0];
 		const actual = await effectiveContextForIssue(t.db, USER, issueId);
-		expect(actual.prompt.text.replace(`destination/${moved.number}`, 'demo/1')).toBe(
+		expect(actual.prompt.text.replace(`destination/${moved.number}`, preview.old_ref.ref)).toBe(
 			preview.context.after.prompt.text
 		);
 		expect(actual.repos.map((r) => r.url)).toEqual(preview.context.after.repos.map((r) => r.url));

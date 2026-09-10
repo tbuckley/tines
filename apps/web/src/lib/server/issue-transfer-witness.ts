@@ -123,9 +123,13 @@ function isTransferWitnessPayload(value: unknown): value is TransferWitnessPaylo
 }
 
 /**
- * The compact slice-1 witness. Later slices extend these fixed sections with
- * the context and routing dependency domains before the service is exposed.
- * The same expressions are read for preview and embedded in commit guards.
+ * The witness the preview signs and the commit re-compares inside its guarded
+ * UPDATE. Two fixed sections: the moved issue with both projects and its label
+ * set, and every context row that can match either target — not only the rows
+ * the move rescopes, because a prompt inserted at the destination after the
+ * review would otherwise make the committed guidance differ from what the
+ * operator approved. The same expressions serve both reads, so there is one
+ * source of truth for what "unchanged" means.
  */
 export function transferWitnessExpressions(
 	issueId: string,
@@ -142,7 +146,11 @@ export function transferWitnessExpressions(
 				'attempt_count', issue.attempt_count, 'needs_attention', issue.needs_attention,
 				'state_entered_at', issue.state_entered_at, 'created_at', issue.created_at,
 				'updated_at', issue.updated_at,
-				'project_assignment_token', issue.project_assignment_token
+				'project_assignment_token', issue.project_assignment_token,
+				'labels', (
+					SELECT json_group_array(label_id)
+					FROM (SELECT label_id FROM issue_label WHERE issue_id = issue.id ORDER BY label_id)
+				)
 			),
 			'source', json_object(
 				'id', source.id, 'name', source.name, 'user_id', source.user_id,
@@ -173,8 +181,14 @@ export function transferWitnessExpressions(
 				'updated_at', context_item.updated_at
 			) AS row_json
 			FROM context_item
-			WHERE issue_id = ${issueId}
-				AND project_id = (SELECT project_id FROM issue WHERE id = ${issueId})
+			WHERE context_item.kind != 'artifact'
+				AND context_item.user_id = (SELECT user_id FROM project WHERE id = ${destinationId})
+				AND (
+					context_item.project_id IS NULL
+					OR context_item.project_id = ${destinationId}
+					OR context_item.project_id = (SELECT project_id FROM issue WHERE id = ${issueId})
+				)
+				AND (context_item.issue_id IS NULL OR context_item.issue_id = ${issueId})
 			ORDER BY id
 		)
 	), '[]')`;
