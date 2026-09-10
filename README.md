@@ -18,6 +18,71 @@ This is a pnpm workspace:
 
 ## Getting started
 
+### Your first project (hosted)
+
+Sign in to the [hosted app](https://tines.tbuckley.dev), open **Projects**, and choose
+**New project**. Pick the starter that matches the work; the preview shows what it will
+create, and the workflows, context, and issues it creates remain editable from
+**Workflows**, **Context**, and the issue page.
+
+**Code repository** needs a project name and a cloneable repository URL; the branch is
+optional and defaults to the repository's default branch. Its editable **How we work**
+conventions cover test commands, base and working branches, pull-request expectations, and
+important paths. It creates or reuses the **Code change** workflow as the project default,
+adds repository context and normally conventions, and opens **Find and fix a bug** in **In
+progress**. Follow the Agents checklist (see [Running agents](#running-agents)) to connect and
+route an agent. The agent should verify a real bug, fix and test it on a branch, open and
+attach a `pr` artifact, then **Submit for review**; in **Review**, a human can **Approve** or
+give feedback and **Send back**. **No bug found** is an honest route to Review with an
+explanation, but it is not a successful bug-to-PR result. Approval records the Tines
+workflow decision; it does not merge the GitHub pull request.
+
+**Plan something together** needs a project name and a useful brief, but no repository. Its
+editable conventions capture the people involved, dates and place, constraints, and what
+the human will decide. It creates or reuses **Idea** as the default workflow, adds a
+**Scout** workflow, conventions, and a project-owned `planning-guide` with the actual
+workflow bindings, then opens **Scout candidates for …** in **Scouting**. The agent should
+research worthwhile, sourced ideas (normally four to six), create each in **New**, attach a
+Markdown `proposal`, and **Propose** it. A human can **Approve**, **Pass**, or give feedback
+and **Send back**; **Reworking** must attach a new proposal version before **Re-propose**.
+Fewer or no qualifying candidates is truthful, but does not demonstrate a successful
+four-proposal result.
+
+**Blank** creates an empty project with no starter-created workflow, repository, or first
+issue. Its optional, non-developer **How work is done here** text becomes a conventions
+prompt; leaving it empty creates no conventions prompt. System and user-created workflows
+and other context can still be available, and you add the work and project context you
+need.
+
+CLI users can [install and sign in](#installing-the-cli-globally), discover the current
+starters, and create the same projects (replace the example URL, branch, and brief with
+your own):
+
+```sh
+tines projects starters
+tines projects create "Website" --starter code --repo https://github.com/you/website.git --branch main
+tines projects create "Family weekend" --starter plan --brief "A family weekend in Boston with two adults and children aged 4 and 7; indoor and outdoor options near our base, with time for lunch and rest."
+tines projects create "Household plans" --starter blank --prompt "Keep proposals practical and explain costs and uncertainties."
+tines projects create "Scratch space" --starter blank --no-prompt
+```
+
+Omit `--branch` to use the repository's default. Code and Plan use their rendered
+conventions templates unless `--prompt "…"` (or `--prompt @conventions.md`) replaces only
+the conventions, or `--no-prompt` omits only the conventions. Their workflow, repository
+or planning guide, and first issue are still created. Clearing the browser's conventions
+text has the same omit behavior. Blank—and CLI project creation without `--starter`—requires
+an explicit `--prompt` or `--no-prompt`; do not combine Code or Plan with
+`--default-workflow`, because each supplies its own default.
+
+An identical workflow is reused rather than duplicated, so edits to that shared workflow
+can affect other projects using it; changing only the conventions does not make a separate
+workflow. Starter creation itself does not add routing rules or change automation settings.
+Continue with the app's current **Agents** checklist and [Running agents](#running-agents);
+the [runner daemon guide](docs/runner-daemon.md) explains how a local runner receives the
+repository and starts its harness.
+
+### Contributor setup
+
 Prereqs: Node 20+, pnpm 10 (`corepack enable`).
 
 ```sh
