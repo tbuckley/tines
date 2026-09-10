@@ -1865,6 +1865,11 @@ export interface RunnerAssignmentResume {
 	provider_session_id: string;
 	/** The predecessor's workspace, kept on disk for exactly this. */
 	workspace_path: string;
+	/**
+	 * Turns already in that conversation, so the daemon can report the
+	 * accumulated count and the next resume decision sees the real size.
+	 */
+	prior_turn_count: number;
 }
 
 export interface RunnerPollResponse {

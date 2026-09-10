@@ -518,7 +518,8 @@ async function prepareResume(
 	return {
 		previous_run_id: predecessor.id,
 		provider_session_id: resource!.provider_session_id!,
-		workspace_path: resource!.workspace_path!
+		workspace_path: resource!.workspace_path!,
+		prior_turn_count: predecessor.conversation_turn_count ?? 0
 	};
 }
 
