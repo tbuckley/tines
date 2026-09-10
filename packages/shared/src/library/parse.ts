@@ -1,13 +1,11 @@
 import { LIBRARY_MAX_BYTES } from '../types.js';
 import { libraryDocumentDigest } from './canonical.js';
-import { validateInput } from './inputs.js';
-import { validateWorkflowPackageReferences } from './references.js';
+import { validateLibraryV3References } from './references.js';
 import {
 	LIBRARY_V3_MAX_DEPTH,
 	LibraryValidationError,
 	type LibraryDiagnostic,
-	type PortableLibraryV3Document,
-	type WorkflowPackageDocument
+	type PortableLibraryV3Document
 } from './types.js';
 
 class StrictJsonParser {
@@ -39,7 +37,7 @@ class StrictJsonParser {
 
 	private object(depth: number, path: string): Record<string, unknown> {
 		this.offset++;
-		const result: Record<string, unknown> = {};
+		const result: Record<string, unknown> = Object.create(null);
 		const keys = new Set<string>();
 		this.space();
 		if (this.source[this.offset] === '}') {
@@ -99,7 +97,7 @@ class StrictJsonParser {
 					const unit = value.charCodeAt(i);
 					if (unit >= 0xd800 && unit <= 0xdbff) {
 						const next = value.charCodeAt(++i);
-						if (next < 0xdc00 || next > 0xdfff)
+						if (!(next >= 0xdc00 && next <= 0xdfff))
 							this.fail(path, 'invalid_unicode', 'Lone UTF-16 surrogate is not allowed');
 					} else if (unit >= 0xdc00 && unit <= 0xdfff)
 						this.fail(path, 'invalid_unicode', 'Lone UTF-16 surrogate is not allowed');
@@ -130,7 +128,7 @@ class StrictJsonParser {
 	}
 
 	private space() {
-		while (/\s/.test(this.source[this.offset] ?? 'x')) this.offset++;
+		while (/[ \t\r\n]/.test(this.source[this.offset] ?? 'x')) this.offset++;
 	}
 	private fail(path: string, code: string, message: string): never {
 		throw new LibraryValidationError([{ path, code, message }]);
@@ -244,7 +242,9 @@ export async function parseLibraryV3Document(
 	let source: string;
 	try {
 		source =
-			typeof input === 'string' ? input : new TextDecoder('utf-8', { fatal: true }).decode(input);
+			typeof input === 'string'
+				? input
+				: new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(input);
 	} catch {
 		throw new LibraryValidationError([
 			{ path: '', code: 'invalid_utf8', message: 'Document is not valid UTF-8' }
@@ -254,10 +254,7 @@ export async function parseLibraryV3Document(
 		new StrictJsonParser(source).parse(),
 		options.allowMissingDigest ?? false
 	);
-	if (document.profile === 'workflow') {
-		validateWorkflowPackageReferences(document as WorkflowPackageDocument);
-		for (const input of document.inputs) validateInput(input);
-	}
+	validateLibraryV3References(document);
 	const actual = await libraryDocumentDigest(document);
 	if (document.digest && document.digest !== actual)
 		throw new LibraryValidationError([

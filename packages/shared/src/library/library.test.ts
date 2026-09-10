@@ -71,10 +71,11 @@ describe('workflow package canonical contract', () => {
 			description: '',
 			body: 'x'
 		});
-		document.digest = await libraryDocumentDigest(document);
-		await expect(parseLibraryV3Document(JSON.stringify(document))).rejects.toBeInstanceOf(
-			LibraryValidationError
-		);
+		await expect(libraryDocumentDigest(document)).rejects.toBeInstanceOf(LibraryValidationError);
+		delete (document as Partial<WorkflowPackageDocument>).digest;
+		await expect(
+			parseLibraryV3Document(JSON.stringify(document), { allowMissingDigest: true })
+		).rejects.toBeInstanceOf(LibraryValidationError);
 	});
 });
 

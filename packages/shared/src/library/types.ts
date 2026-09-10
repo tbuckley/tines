@@ -1,3 +1,4 @@
+import type { SchedulePreset } from '../schedule.js';
 import type { ArtifactRequirement, LabelColor, ModelTier, StateCategory } from '../types.js';
 
 export const LIBRARY_V3_VERSION = 3 as const;
@@ -9,6 +10,12 @@ export type LocalId = string;
 export interface BundledStateRef {
 	kind: 'bundled_state';
 	state_id: LocalId;
+}
+
+export interface SystemStateRef {
+	kind: 'system_state';
+	workflow: 'Standard';
+	state_name: string;
 }
 
 export type WorkflowRef =
@@ -50,9 +57,8 @@ export interface PackageFile {
 	content: string;
 }
 
-export type PackageContext = {
+export type ContextPayload = {
 	id: LocalId;
-	state_id: LocalId;
 	name: string;
 	description: string;
 } & (
@@ -60,6 +66,19 @@ export type PackageContext = {
 	| { kind: 'skill'; files: PackageFile[] }
 	| { kind: 'repo'; repo_url: string; repo_branch: string | null; repo_dir: string | null }
 );
+
+export type PackageContext = ContextPayload & { state_id: LocalId };
+export type LibraryV3Context = ContextPayload & {
+	scope: { project_id?: LocalId; state?: BundledStateRef | SystemStateRef; label_id?: LocalId };
+	journal: boolean;
+};
+export interface LibraryV3Workflow extends Omit<PackageWorkflow, 'states'> {
+	states: Array<
+		Omit<PackageState, 'inherits_from'> & { inherits_from: BundledStateRef | SystemStateRef | null }
+	>;
+}
+export type TextUseField =
+	'description' | 'body' | 'content' | 'title_template' | 'description_template';
 
 export interface PackageInput {
 	id: LocalId;
@@ -74,19 +93,19 @@ export interface PackageInput {
 
 export interface TextUse {
 	id: LocalId;
-	target: { record_id: LocalId; field: string };
+	target: { record_id: LocalId; field: TextUseField };
 	input_id: LocalId;
 	token: string;
 }
 
 export interface PackageSchedule {
 	id: LocalId;
-	workflow: WorkflowRef;
+	workflow: { kind: 'bundled_workflow'; workflow_id: LocalId };
 	project: ProjectRef;
 	name: string;
 	title_template: string;
 	description_template: string;
-	recurrence: string;
+	recurrence: { kind: 'preset'; preset: SchedulePreset } | { kind: 'cron'; cron: string };
 	timezone: string;
 	require_all_closed: boolean;
 	start_state: BundledStateRef | null;
@@ -117,7 +136,10 @@ export interface LibraryV3Project {
 	id: LocalId;
 	name: string;
 	description: string;
-	default_workflow: WorkflowRef | { kind: 'system_workflow'; name: 'Standard' } | null;
+	default_workflow:
+		| { kind: 'bundled_workflow'; workflow_id: LocalId }
+		| { kind: 'system_workflow'; name: 'Standard' }
+		| null;
 }
 
 export interface LibraryV3Label {
@@ -134,8 +156,8 @@ export interface LibraryV3Document {
 	digest: string;
 	projects: LibraryV3Project[];
 	labels: LibraryV3Label[];
-	workflows: PackageWorkflow[];
-	context: PackageContext[];
+	workflows: LibraryV3Workflow[];
+	context: LibraryV3Context[];
 }
 
 export type PortableLibraryV3Document = WorkflowPackageDocument | LibraryV3Document;

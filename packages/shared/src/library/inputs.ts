@@ -8,33 +8,72 @@ export function inputToken(key: string, defaultValue: string | null): string {
 	return `{{${key}:${escaped}}}`;
 }
 
+/** Matches the original field once. Inserted values never become match candidates. */
+export function renderDeclaredTokens(
+	source: string,
+	declarations: readonly { token: string; value: string }[]
+): { value: string; counts: number[] } {
+	const tokens = new Set<string>();
+	for (const { token } of declarations) {
+		if (!token || tokens.has(token))
+			throw new LibraryValidationError([
+				{
+					path: '/text_uses',
+					code: 'duplicate_text_use',
+					message: 'Tokens must be non-empty and unique within a field'
+				}
+			]);
+		tokens.add(token);
+	}
+	const matches: { start: number; end: number; index: number; escaped: boolean }[] = [];
+	declarations.forEach(({ token }, index) => {
+		for (let offset = 0; offset < source.length;) {
+			const start = source.indexOf(token, offset);
+			if (start < 0) break;
+			matches.push({
+				start,
+				end: start + token.length,
+				index,
+				escaped: start > 0 && source[start - 1] === '\\'
+			});
+			// Find overlaps too: accepting them would make rendering order-dependent.
+			offset = start + 1;
+		}
+	});
+	matches.sort((a, b) => a.start - b.start || a.end - b.end);
+	for (let i = 1; i < matches.length; i++) {
+		if (matches[i].start < matches[i - 1].end)
+			throw new LibraryValidationError([
+				{
+					path: '/text_uses',
+					code: 'overlapping_text_use',
+					message: 'Declared token occurrences overlap'
+				}
+			]);
+	}
+	let value = '';
+	let offset = 0;
+	const counts = declarations.map(() => 0);
+	for (const match of matches) {
+		value += source.slice(offset, match.escaped ? match.start - 1 : match.start);
+		value += match.escaped ? declarations[match.index].token : declarations[match.index].value;
+		if (!match.escaped) counts[match.index]++;
+		offset = match.end;
+	}
+	return { value: value + source.slice(offset), counts };
+}
+
 export function renderDeclaredToken(
 	source: string,
 	token: string,
 	value: string
 ): { value: string; count: number } {
-	let rendered = '';
-	let count = 0;
-	for (let offset = 0; offset < source.length;) {
-		const found = source.indexOf(token, offset);
-		if (found < 0) {
-			rendered += source.slice(offset).replaceAll(`\\${token}`, token);
-			break;
-		}
-		if (found > 0 && source[found - 1] === '\\') {
-			rendered += source.slice(offset, found - 1) + token;
-			offset = found + token.length;
-			continue;
-		}
-		rendered += source.slice(offset, found) + value;
-		count++;
-		offset = found + token.length;
-	}
-	return { value: rendered, count };
+	const rendered = renderDeclaredTokens(source, [{ token, value }]);
+	return { value: rendered.value, count: rendered.counts[0] };
 }
 
 export function validateInput(input: PackageInput): void {
-	if (!/^[a-z][a-z0-9_]{0,63}$/.test(input.key)) {
+	if (!/^[a-z][a-z0-9_]{0,63}$/.test(input.key))
 		throw new LibraryValidationError([
 			{
 				path: '/inputs',
@@ -42,8 +81,7 @@ export function validateInput(input: PackageInput): void {
 				message: `Invalid input key ${JSON.stringify(input.key)}`
 			}
 		]);
-	}
-	if (input.default !== null && input.default.length > 10_000) {
+	if (input.default !== null && input.default.length > 10000)
 		throw new LibraryValidationError([
 			{
 				path: '/inputs',
@@ -51,5 +89,4 @@ export function validateInput(input: PackageInput): void {
 				message: `Input ${input.key} exceeds 10000 characters`
 			}
 		]);
-	}
 }
