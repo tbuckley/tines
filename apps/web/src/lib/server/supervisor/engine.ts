@@ -33,6 +33,11 @@ import {
 	type ActiveCounts,
 	type MatchableRule
 } from './logic';
+import {
+	disposeExpiredResumeResources,
+	orderTargetsByResumeAffinity,
+	resumeAffinityByIssue
+} from './resume';
 import { loadSealableRun, sealRunLog, spillEvicted, sweepRunLogs } from './run-log';
 import { effectiveAutomationEnabled } from './settings';
 
@@ -791,11 +796,20 @@ export async function runDispatchPass(
 	]);
 	if (candidates.length === 0) return result;
 
+	// Runner affinity for resume: which runners hold a live retained session
+	// for these issues. Used only to reorder targets routing already chose.
+	const affinity = await resumeAffinityByIssue(
+		db,
+		userId,
+		candidates.map((issue) => issue.id),
+		now
+	).catch(() => new Map<string, Set<string>>());
+
 	for (const issue of candidates) {
 		// With the global cap saturated nothing more can dispatch this pass.
 		if (settings.quota.type === 'global_cap' && counts.total >= settings.quota.limit) break;
 		const { targets } = targetsForIssue(issue, rules);
-		for (const target of targets) {
+		for (const target of orderTargetsByResumeAffinity(targets, affinity.get(issue.id))) {
 			const runner = runners.get(target.runner_id);
 			if (!runner) continue; // stale target (runner removed mid-pass)
 			const adapter = adapters[runner.type];
@@ -1343,7 +1357,40 @@ export async function pollManagedRuns(
 			if (terminal) {
 				const endable = await loadEndableRun(db, row.user_id, run.id);
 				if (endable && (ACTIVE as string[]).includes(endable.status)) {
-					await endRun(db, env, endable, { status: terminal.status, error: terminal.error, now });
+					const outcome = await endRun(db, env, endable, {
+						status: terminal.status,
+						error: terminal.error,
+						now
+					});
+					// Provider resources outlive the run only if the server's own
+					// end judgment says so; the adapter never decides retention
+					// from a provider status alone.
+					if (outcome.ended && adapter.finalizeEnd) {
+						const ended = await db
+							.selectFrom('agent_run')
+							.leftJoin('workflow_state as st', 'st.id', 'agent_run.state_id_at_end')
+							.select(['agent_run.outcome', 'agent_run.issue_id', 'agent_run.model', 'st.category'])
+							.where('agent_run.id', '=', run.id)
+							.executeTakeFirst();
+						await adapter
+							.finalizeEnd(
+								{
+									id: run.id,
+									runner_id: run.runner_id,
+									provider_session_id: run.provider_session_id,
+									provider_meta: run.provider_meta
+								},
+								{
+									user_id: row.user_id,
+									issue_id: ended?.issue_id ?? run.issue_id,
+									model: ended?.model ?? null,
+									outcome: ended?.outcome ?? outcome.outcome,
+									ended_in_awaiting_state: ended?.category === 'awaiting_human',
+									now
+								}
+							)
+							.catch((err) => console.error(`adapter finalizeEnd for run ${run.id} failed:`, err));
+					}
 				}
 			}
 		} catch (e) {
@@ -1512,6 +1559,14 @@ export async function sweepSupervisor(
 			.where('expires_at', '<=', now)
 			.compile()
 	]);
+
+	// Retained resume resources past their window: disposed here so a kept
+	// workspace cannot be continued (or pinned) forever. Best-effort.
+	try {
+		await disposeExpiredResumeResources(db, now);
+	} catch (e) {
+		console.error('supervisor sweep: expired resume resources failed:', e);
+	}
 
 	// Per-runner provider housekeeping (managed types): garbage-collect ended
 	// runs' vault credentials and sessions, and cancel orphaned sessions

@@ -265,9 +265,10 @@ describe('updateRunner (managed credentials, tiers, budget)', () => {
 			type: 'local',
 			name: 'claude'
 		});
+		// A Claude Code local runner may now opt in: this is the shipped path.
 		await expect(
 			updateRunner(t.db, t.env, actor, local.id, { resume_enabled: true })
-		).rejects.toMatchObject({ code: 'resume_unavailable', details: { provider: 'local' } });
+		).resolves.toMatchObject({ resume_enabled: true });
 		await expect(
 			updateRunner(t.db, t.env, actor, local.id, {
 				config: { harness: 'codex' },
@@ -279,18 +280,19 @@ describe('updateRunner (managed credentials, tiers, budget)', () => {
 		).resolves.toMatchObject({ resume_enabled: false });
 	});
 
-	it('rejects managed opt-in while allowing threshold-only configuration', async () => {
+	// This pinned managed opt-in as rejected while the credential ownership
+	// transfer did not exist. Tines/362 built it (rotate the run key inside the
+	// retained vault, retag the session, send the continuation), so a managed
+	// runner may now opt in like a local one.
+	it('accepts managed opt-in and threshold configuration', async () => {
 		const t = world();
 		const runner = await withRunner(t);
 		await expect(
 			updateRunner(t.db, t.env, actor, runner.id, { resume_enabled: true })
-		).rejects.toMatchObject({
-			code: 'resume_unavailable',
-			details: { provider: 'claude_managed' }
-		});
+		).resolves.toMatchObject({ resume_enabled: true });
 		await expect(
 			updateRunner(t.db, t.env, actor, runner.id, { resume_window_hours: 24 })
-		).resolves.toMatchObject({ resume_enabled: false, resume_window_hours: 24 });
+		).resolves.toMatchObject({ resume_enabled: true, resume_window_hours: 24 });
 	});
 });
 

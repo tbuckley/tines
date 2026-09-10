@@ -72,6 +72,22 @@ describe('buildHarnessInvocation', () => {
 		]);
 	});
 
+	it('claude_code resumes the previous conversation when the assignment carries a session', () => {
+		// Acceptance criterion 1: the send-back launches with `--resume`, in
+		// the kept workspace, against the same prompt file.
+		expect(
+			buildHarnessInvocation({ harness: 'claude_code' }, { ...input, resumeSessionId: "sess-a'b" })
+				.args
+		).toEqual([
+			'-c',
+			`claude -p --resume 'sess-a'\\''b' --output-format stream-json --verbose --model 'claude-sonnet-5' < '/tmp/ws/run 1/prompt.md'`
+		]);
+		// A cold launch is byte-for-byte what it was before the flag existed.
+		expect(buildHarnessInvocation({ harness: 'claude_code' }, input).args[1]).not.toContain(
+			'--resume'
+		);
+	});
+
 	it('codex: codex exec --json --skip-git-repo-check [--model] <prompt>', () => {
 		expect(buildHarnessInvocation({ harness: 'codex' }, input)).toEqual({
 			file: 'codex',
@@ -103,6 +119,27 @@ describe('formatLaunchBanner', () => {
 			`$ claude -p --output-format stream-json --verbose --model 'claude-sonnet-5' < '/tmp/ws/run 1/prompt.md'\n` +
 				`# tines runner: harness=claude_code model=claude-sonnet-5 timeout=30m cli=0.0.1 workspace=/tmp/ws/run 1\n`
 		);
+	});
+
+	it('a resumed launch says so in the banner, naming the run it continues', () => {
+		// The acceptance criterion names the banner: "resumed run <prev-id>"
+		// must be readable from the run's own log, not inferred from a DB row.
+		const resumed = { ...input, resumeSessionId: 'sess-abc' };
+		const banner = formatLaunchBanner(
+			buildHarnessInvocation({ harness: 'claude_code' }, resumed),
+			resumed,
+			{ ...meta, resumedFromRunId: 'arun_prev' }
+		);
+		expect(banner).toContain('resumed=arun_prev');
+		expect(banner).toContain("--resume 'sess-abc'");
+		// Without the lineage the session id is still better than nothing.
+		expect(
+			formatLaunchBanner(buildHarnessInvocation({ harness: 'claude_code' }, resumed), resumed, meta)
+		).toContain('resumed=sess-abc');
+		// A cold launch carries no `resumed=` field at all.
+		expect(
+			formatLaunchBanner(buildHarnessInvocation({ harness: 'claude_code' }, input), input, meta)
+		).not.toContain('resumed=');
 	});
 
 	it('a harness that cannot vary the model reads model=(fixed)', () => {
