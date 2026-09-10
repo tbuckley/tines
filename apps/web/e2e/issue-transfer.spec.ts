@@ -1,7 +1,14 @@
+import { execFileSync } from 'node:child_process';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { IssueDetail, Project } from '@tines/shared';
 import { expect, test, type Browser, type Page } from '@playwright/test';
-import { ALICE } from './constants.mjs';
+import { ALICE, BASE_URL } from './constants.mjs';
 import { apiClient, body, clickToOpen, gotoHydrated, resetFocus, runId, signIn } from './helpers';
+
+const CLI_DIR = fileURLToPath(new URL('../../../packages/cli', import.meta.url));
+const TSX = join(CLI_DIR, 'node_modules', '.bin', 'tsx');
+const CLI_ENTRY = join(CLI_DIR, 'src', 'index.ts');
 
 // Specs share one user: a project page sets the focus (Tines/259), so clear it
 // before each test rather than letting it scope a later spec's lists.
@@ -356,6 +363,60 @@ function suite(label: string, viewport: { width: number; height: number }) {
 			expect(options).not.toContain(destinationName);
 			expect(options).toContain(sourceName);
 			await page.close();
+		});
+
+		test('real CLI human and JSON confirmations return the first successful D1 receipt', async ({
+			request
+		}) => {
+			const api = apiClient(request, ALICE.apiKey);
+			const humanIssue = await body<IssueDetail>(
+				await api.post(`/api/v1/projects/${sourceId}/issues`, { title: `CLI human ${label}` })
+			);
+			const jsonIssue = await body<IssueDetail>(
+				await api.post(`/api/v1/projects/${sourceId}/issues`, { title: `CLI JSON ${label}` })
+			);
+			const env = { ...process.env, TINES_API_KEY: ALICE.apiKey, TINES_API_URL: BASE_URL };
+			const human = execFileSync(
+				TSX,
+				[
+					CLI_ENTRY,
+					'issues',
+					'transfer',
+					`${sourceName}/${humanIssue.number}`,
+					'--project',
+					destinationName,
+					'--yes'
+				],
+				{ cwd: CLI_DIR, env, encoding: 'utf8' }
+			);
+			expect(human).toContain(`moved ${sourceName}/${humanIssue.number} to ${destinationName}/`);
+			expect(human).toContain(`${sourceName}/${humanIssue.number} still resolves to this issue`);
+			const json = JSON.parse(
+				execFileSync(
+					TSX,
+					[
+						CLI_ENTRY,
+						'issues',
+						'transfer',
+						`${sourceName}/${jsonIssue.number}`,
+						'--project',
+						destinationName,
+						'--yes',
+						'--json'
+					],
+					{ cwd: CLI_DIR, env, encoding: 'utf8' }
+				)
+			);
+			expect(json).toMatchObject({
+				status: 'transferred',
+				issue_id: jsonIssue.id,
+				old_ref: { ref: `${sourceName}/${jsonIssue.number}` },
+				new_ref: { project_name: destinationName },
+				event_id: expect.any(String)
+			});
+			const canonical = await body<IssueDetail>(await api.get(`/api/v1/issues/${jsonIssue.id}`));
+			expect(canonical.project_name).toBe(destinationName);
+			expect(canonical.number).toBe(json.new_ref.number);
 		});
 
 		test('never offers an archived project, and refuses one archived mid-review', async ({
