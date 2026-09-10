@@ -143,12 +143,12 @@ statements.push(
 	 VALUES ('${RUNROW_FAILED.runnerId}', '${ALICE.id}', 'local', '${RUNROW_FAILED.runnerName}', 'paused', 1, 30,
 	   'balanced', '{}', ${nowMs}, ${nowMs});`,
 	`INSERT INTO agent_run (id, user_id, issue_id, runner_id, status, outcome, tier, model, usage,
-	   state_id_at_start, state_id_at_end, provider_session_id, provider_url, log, error,
+	   state_id_at_start, state_id_at_end, provider_session_id, provider_url, log, error, resumed_from_run_id,
 	   created_at, started_at, ended_at)
 	 VALUES ('${RUNROW_FAILED.runId}', '${ALICE.id}', '${RUNROW.issueId}', '${RUNROW_FAILED.runnerId}', 'failed',
 	   'stalled',
 	   'balanced', NULL, '{"input_tokens":400,"cache_read_tokens":600,"output_tokens":100}',
-	   'wfs_std_open', 'wfs_std_open', '${RUNROW_FAILED.providerSessionId}', NULL, 'seeded failed log tail', '${RUNROW_FAILED.error}',
+	   'wfs_std_open', 'wfs_std_open', '${RUNROW_FAILED.providerSessionId}', NULL, 'seeded failed log tail', '${RUNROW_FAILED.error}', '${RUNROW_FAILED.resumedFromRunId}',
 	   ${runStart}, ${runStart}, ${nowMs});`,
 	// This run ended, so its key is revoked — the fixture behind the API keys
 	// page's "Show revoked" toggle. Inserted after its agent_run row (FK).

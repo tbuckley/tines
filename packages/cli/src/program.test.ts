@@ -265,3 +265,17 @@ describe('old --url payload callers are corrected offline', () => {
 		expect(err).toContain('--url is the API base URL');
 	});
 });
+
+describe('runner continuation flags fail before network access', () => {
+	it.each([
+		['runners', 'edit', 'local', '--resume-enabled', 'yes'],
+		['runners', 'edit', 'local', '--resume-window-hours', '0'],
+		['runners', 'edit', 'local', '--resume-max-cost-usd', 'NaN']
+	])('%s', async (...argv) => {
+		const fetchSpy = vi.spyOn(globalThis, 'fetch');
+		const program = await freshProgram({});
+		await runExpectingDie(program, argv);
+		expect(fetchSpy).not.toHaveBeenCalled();
+		fetchSpy.mockRestore();
+	});
+});

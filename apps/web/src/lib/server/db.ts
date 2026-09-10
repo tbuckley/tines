@@ -277,6 +277,12 @@ export interface RunnerTable {
 	 * self-update; set and cleared by its polls. Dispatch skips it while set.
 	 */
 	draining: number;
+	resume_enabled: number;
+	resume_window_hours: number;
+	resume_max_turns: number;
+	resume_max_tokens: number;
+	resume_max_cost_usd: number;
+	resume_config_revision: number;
 	created_at: number;
 	updated_at: number;
 }
@@ -303,6 +309,13 @@ export interface AgentRunTable {
 	state_id_at_end: string | null;
 	provider_session_id: string | null;
 	provider_url: string | null;
+	turn_count: number | null;
+	conversation_turn_count: number | null;
+	workspace_path: string | null;
+	resume_fingerprint: string | null;
+	resumed_from_run_id: string | null;
+	resume_expires_at: number | null;
+	resume_fallback_reason: string | null;
 	api_key_id: string | null;
 	/**
 	 * JSON provider bookkeeping owned by the run's adapter (per-run vault id,
@@ -370,6 +383,31 @@ export interface SupervisorSettingsTable {
 	github_pat_enc: string | null;
 	/** Display hint for the stored PAT ("github_pat_…cdef"); never the value. */
 	github_pat_hint: string | null;
+	source_credentials_revision: number;
+	updated_at: number;
+}
+
+export interface RunResourceTable {
+	id: string;
+	user_id: string;
+	runner_id: string | null;
+	issue_id: string | null;
+	kind: 'local_claude' | 'claude_managed';
+	owner_run_id: string | null;
+	state: 'active' | 'pending_retention' | 'available' | 'claimed' | 'disposing' | 'disposed';
+	claim_run_id: string | null;
+	claim_token: string | null;
+	claim_started_at: number | null;
+	transfer_phase: 'preparing' | 'sending' | 'accepted' | null;
+	expires_at: number | null;
+	available_seen_at: number | null;
+	provider_session_id: string | null;
+	vault_id: string | null;
+	credential_id: string | null;
+	workspace_path: string | null;
+	resume_fingerprint: string;
+	transfer_data: string | null;
+	created_at: number;
 	updated_at: number;
 }
 
@@ -409,6 +447,7 @@ export interface Database {
 	api_key: ApiKeyTable;
 	runner: RunnerTable;
 	agent_run: AgentRunTable;
+	run_resource: RunResourceTable;
 	routing_rule: RoutingRuleTable;
 	supervisor_settings: SupervisorSettingsTable;
 	supervisor_sweep_state: SupervisorSweepStateTable;

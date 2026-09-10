@@ -74,6 +74,11 @@
 		</span>
 	{/if}
 	<span class="text-muted-foreground text-xs">{runDurationLabel(run)}</span>
+	{#if run.resumed_from_run_id}
+		<span class="text-muted-foreground text-xs" title="Predecessor run ID">
+			resumed run {run.resumed_from_run_id}
+		</span>
+	{/if}
 	{#if cost}
 		<span class="text-muted-foreground text-xs">{cost}</span>
 	{/if}

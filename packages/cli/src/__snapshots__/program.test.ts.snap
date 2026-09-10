@@ -1071,6 +1071,8 @@ Options:
 Commands:
   list [options]                 List runners
   show [options] <name>          Show a runner
+  edit [options] <name>          Edit staged awaiting-session continuation
+                                 policy (runtime unavailable)
   tiers [options] <name>         Show or edit a runner's tier→model mapping
   budget [options] <name>        Set or clear a runner's money limits (per-run
                                  caps enforce now; daily limits arrive with the
@@ -1103,6 +1105,25 @@ Options:
   --api-key <key>       API key (or set TINES_API_KEY, or run \`tines login\`)
   --json                output the raw JSON response
   -h, --help            display help for command
+",
+  "tines runners edit": "Usage: tines runners edit [options] <name>
+
+Edit staged awaiting-session continuation policy (runtime unavailable)
+
+Options:
+  --resume-enabled <true|false>  stage opt-in policy (enabling is unavailable
+                                 until provider support ships)
+  --resume-window-hours <n>      continuation window (1-168)
+  --resume-max-turns <n>         local conversation turn limit (1-1000)
+  --resume-max-tokens <n>        managed conversation token limit (1-10000000)
+  --resume-max-cost-usd <n>      managed conversation cost limit (0-1000]
+  -u, --url <url>                base URL of the Tines API (or set
+                                 TINES_API_URL, or run \`tines login\`; default
+                                 https://tines.tbuckley.dev)
+  --api-key <key>                API key (or set TINES_API_KEY, or run \`tines
+                                 login\`)
+  --json                         output the raw JSON response
+  -h, --help                     display help for command
 ",
   "tines runners list": "Usage: tines runners list [options]
 

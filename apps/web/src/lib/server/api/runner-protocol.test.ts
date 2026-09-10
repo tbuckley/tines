@@ -97,6 +97,7 @@ describe('registerRunner', () => {
 		expect(second.runner_token).not.toBe(first.runner_token);
 		expect(await authenticateRunnerToken(t.db, first.runner_token)).toBeUndefined();
 		expect((await authenticateRunnerToken(t.db, second.runner_token))?.id).toBe(first.runner.id);
+		expect(runnerById(t, first.runner.id).resume_config_revision).toBe(0);
 	});
 
 	it('reconnect updates only the fields the daemon sent — server-side edits survive', async () => {
@@ -119,6 +120,7 @@ describe('registerRunner', () => {
 		expect(second.runner.max_run_minutes).toBe(90); // not sent: kept
 		expect(second.runner.default_tier).toBe('smartest'); // not sent: kept
 		expect(second.runner.config.hostname).toBe('mbp.local');
+		expect(runnerById(t, first.runner.id).resume_config_revision).toBe(2);
 	});
 
 	it('reconnect away from the custom harness drops the stored command template', async () => {

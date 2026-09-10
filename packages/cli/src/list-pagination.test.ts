@@ -58,7 +58,20 @@ function row(path: string, n: number): Record<string, unknown> {
 		type: 'local',
 		status: 'active',
 		active_runs: 0,
-		max_concurrent: 1
+		max_concurrent: 1,
+		max_run_minutes: 30,
+		default_tier: 'balanced',
+		config: {},
+		tier_models: null,
+		tiers: null,
+		budget: null,
+		has_api_key: false,
+		online: true,
+		draining: false,
+		launch_failures: 0,
+		backoff_until: null,
+		backoff_reason: null,
+		last_seen_at: null
 	};
 }
 
@@ -200,6 +213,15 @@ function cli(args: string[]): Promise<CliResult> {
 }
 
 describe('list pagination', () => {
+	it('renders safe resume defaults from an older server response', async () => {
+		const res = await cli(['runners', 'show', 'item0']);
+		expect(res.code).toBe(0);
+		expect(res.stderr).toBe('');
+		expect(res.stdout).toContain('resume awaiting sessions: disabled  window: 48h');
+		expect(res.stdout).toContain('resume limits: 25 local turns  100,000 managed tokens  $2');
+		expect(res.stdout).toContain('runtime continuation unavailable');
+	}, 60_000);
+
 	// The bug this flag exists for: agents run `issues list --json` and treat
 	// the result as the complete set. Without --all-pages they get one page.
 	it('fetches every page under --all-pages, and only one without it', async () => {

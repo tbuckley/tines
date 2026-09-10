@@ -90,6 +90,12 @@ describe('runRow', () => {
 	it('renders dollars when the cost is known', () => {
 		expect(runRow({ ...base, usage: { cost_usd: 1.5 } } as never)).toContain('$1.50');
 	});
+
+	it('shows confirmed resume lineage in the status cell', () => {
+		expect(runRow({ ...base, resumed_from_run_id: 'arun_old' } as never)).toContain(
+			'completed · resumed run arun_old'
+		);
+	});
 });
 
 describe('commentLines', () => {

@@ -1,5 +1,9 @@
 # Tines — Supervisor & Agent Execution Spec
 
+> **Implementation status:** Awaiting-session policy, persistence, and lineage fields are staged
+> behind a default-off provider gate. Runtime continuation is unavailable until support for each
+> provider is released; the continuation sections below describe the intended completed system.
+
 > **Decision amendment (2026-09-09):** The historical off-by-default, arming, and seven-item
 > onboarding passages below are superseded by [automation enabled by default](./AUTOMATION_DEFAULT_2026-09-09.md).
 
