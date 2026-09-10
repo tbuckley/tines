@@ -94,6 +94,41 @@ function suite(label: string, viewport: { width: number; height: number }) {
 			await page.close();
 		});
 
+		test('shows a busy run and its actionable remedy', async ({ browser }) => {
+			const page = await open(browser, `/issues/${sourceName}/${sourceNumber}`);
+			await page.route('**/api/v1/issues/*/transfer?*', async (route) => {
+				const response = await route.fetch();
+				const preview = await response.json();
+				await route.fulfill({
+					response,
+					json: {
+						...preview,
+						can_commit: false,
+						preview_token: null,
+						blockers: [
+							{
+								code: 'issue_busy',
+								message: 'Run arun_busy is running; wait for it to finish or cancel it separately',
+								run_id: 'arun_busy',
+								run_status: 'running',
+								remedy: 'tines runs show arun_busy'
+							}
+						]
+					}
+				});
+			});
+			const modal = page.getByRole('dialog');
+			await clickToOpen(page.getByTestId('move-to-project'), modal);
+			await modal.getByTestId('transfer-destination').selectOption({ label: destinationName });
+			await modal.getByRole('button', { name: 'Review move' }).click();
+			await expect(modal.getByTestId('transfer-blocker')).toContainText('arun_busy');
+			await expect(modal.getByTestId('transfer-blocker')).toContainText(
+				'tines runs show arun_busy'
+			);
+			await expect(modal.getByTestId('transfer-confirm')).toBeDisabled();
+			await page.close();
+		});
+
 		test('reviews, inspects and cancels without writing anything', async ({ browser, request }) => {
 			const page = await open(browser, `/issues/${sourceName}/${sourceNumber}`);
 			const modal = page.getByRole('dialog');
@@ -268,6 +303,34 @@ function suite(label: string, viewport: { width: number; height: number }) {
 			const after = await body<IssueDetail>(await api.get(`/api/v1/issues/${issueId}`));
 			expect(after.project_name).toBe(before.project_name);
 			expect(after.number).toBe(before.number);
+			await page.close();
+		});
+
+		test('recovers when the commit response is lost after the move', async ({
+			browser,
+			request
+		}) => {
+			const api = apiClient(request, ALICE.apiKey);
+			const before = await body<IssueDetail>(await api.get(`/api/v1/issues/${issueId}`));
+			const target = before.project_name === sourceName ? destinationName : sourceName;
+			const page = await open(browser, `/issues/${before.project_name}/${before.number}`);
+			await page.route('**/api/v1/issues/*/transfer', async (route) => {
+				if (route.request().method() !== 'POST') return route.continue();
+				const response = await route.fetch();
+				await response.body();
+				await route.abort('failed');
+			});
+			const modal = page.getByRole('dialog');
+			await clickToOpen(page.getByTestId('move-to-project'), modal);
+			await modal.getByTestId('transfer-destination').selectOption({ label: target });
+			await modal.getByRole('button', { name: 'Review move' }).click();
+			await modal.getByTestId('transfer-confirm').click();
+			await expect(modal.getByRole('alert')).toContainText('may have completed');
+			await modal.getByRole('button', { name: 'Check current issue' }).click();
+			const moved = await body<IssueDetail>(await api.get(`/api/v1/issues/${issueId}`));
+			await expect(page).toHaveURL(
+				new RegExp(`/issues/${encodeURIComponent(moved.project_name)}/${moved.number}$`)
+			);
 			await page.close();
 		});
 	});

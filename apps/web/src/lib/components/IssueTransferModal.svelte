@@ -253,9 +253,10 @@
 			{/if}
 
 			{#each preview.blockers as blocker (blocker.code)}
-				<p class="text-destructive text-sm" role="alert" data-testid="transfer-blocker">
-					{blocker.message}
-				</p>
+				<div class="text-destructive text-sm" role="alert" data-testid="transfer-blocker">
+					<p>{blocker.message}</p>
+					{#if blocker.remedy}<p class="font-mono text-xs">{blocker.remedy}</p>{/if}
+				</div>
 			{/each}
 			{#if error}
 				<p class="text-destructive text-sm" role="alert">{error}</p>
