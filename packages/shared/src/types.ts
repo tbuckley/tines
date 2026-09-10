@@ -2391,6 +2391,7 @@ export interface UpdateCommentRequest {
 export const EVENT_TYPES = [
 	'issue.created',
 	'issue.updated',
+	'issue.transferred',
 	'issue.transitioned',
 	'issue.commented',
 	'issue.comment_edited',
