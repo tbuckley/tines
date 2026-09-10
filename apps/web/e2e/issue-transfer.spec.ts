@@ -65,6 +65,20 @@ function suite(label: string, viewport: { width: number; height: number }) {
 				project_id: destination.id,
 				body: 'Guidance the issue picks up'
 			});
+			await api.post('/api/v1/context', {
+				kind: 'repo',
+				name: 'app',
+				project_id: source.id,
+				repo_url: 'https://example.test/source.git',
+				repo_dir: 'app'
+			});
+			await api.post('/api/v1/context', {
+				kind: 'repo',
+				name: 'app',
+				project_id: destination.id,
+				repo_url: 'https://example.test/destination.git',
+				repo_dir: 'app'
+			});
 			const issue = await body<IssueDetail>(
 				await api.post(`/api/v1/projects/${source.id}/issues`, {
 					title: `${sourceName} traveller`,
@@ -73,6 +87,29 @@ function suite(label: string, viewport: { width: number; height: number }) {
 			);
 			issueId = issue.id;
 			sourceNumber = issue.number;
+			await api.post('/api/v1/context', {
+				kind: 'prompt',
+				name: `retained-prompt-${label}`,
+				issue_id: issue.id,
+				body: 'Retained issue prompt body'
+			});
+			await api.post('/api/v1/context', {
+				kind: 'skill',
+				name: `retained-skill-${label}`,
+				issue_id: issue.id,
+				files: [
+					{ path: 'SKILL.md', content: 'Retained skill instructions' },
+					{ path: 'checklist.md', content: 'Retained second file' }
+				]
+			});
+			await api.post('/api/v1/context', {
+				kind: 'repo',
+				name: 'app',
+				issue_id: issue.id,
+				repo_url: 'https://example.test/issue-override.git',
+				repo_branch: 'research',
+				repo_dir: 'app'
+			});
 			await api.post(`/api/v1/issues/${issue.id}/comments`, { body: 'a comment that survives' });
 		});
 
@@ -129,6 +166,71 @@ function suite(label: string, viewport: { width: number; height: number }) {
 			await page.close();
 		});
 
+		test('shows retained pins and consequential routing beneath an automation-off headline', async ({
+			browser
+		}) => {
+			const page = await open(browser, `/issues/${sourceName}/${sourceNumber}`);
+			await page.route('**/api/v1/issues/*/transfer?*', async (route) => {
+				const response = await route.fetch();
+				const preview = await response.json();
+				const side = {
+					eligible: false,
+					verdict: 'Automation is off.',
+					checks: [{ name: 'routed', ok: false, detail: 'No routing rule matches this issue.' }],
+					pin: { runner_id: 'rnr_missing', runner_name: null, tier: 'premium' },
+					matched_rule: null,
+					runner_rule: { rule_id: 'rrl_runner', scope_label: 'destination runner rule' },
+					tier_override: 'premium',
+					ambiguous_rules: [{ rule_id: 'rrl_tie', scope_label: 'tied urgent rule' }],
+					targets: [
+						{
+							runner_id: 'rnr_missing',
+							runner_name: 'Unavailable runner',
+							tier: 'premium',
+							model: null,
+							verdict: 'offline',
+							detail: 'No recent heartbeat.'
+						}
+					],
+					parked: true,
+					attempt_count: 3,
+					attempt_limit: 3,
+					active_run: { id: 'arun_existing', runner_name: 'Unavailable runner', status: 'running' },
+					queue_position: 2
+				};
+				await route.fulfill({
+					response,
+					json: {
+						...preview,
+						preserved: {
+							...preview.preserved,
+							pinned_runner_id: 'rnr_missing',
+							pinned_tier: 'premium',
+							attempt_count: 3,
+							parked: true
+						},
+						routing: { before: side, after: side }
+					}
+				});
+			});
+			const modal = page.getByRole('dialog');
+			await clickToOpen(page.getByTestId('move-to-project'), modal);
+			await modal.getByTestId('transfer-destination').selectOption({ label: destinationName });
+			await modal.getByRole('button', { name: 'Review move' }).click();
+			const review = modal.getByTestId('transfer-review');
+			await expect(review).toContainText('Runner pin: rnr_missing; tier pin: premium');
+			await expect(review).toContainText('Automation is off.');
+			await expect(review).toContainText('No routing rule matches this issue.');
+			await expect(review).toContainText('Runner source rule: destination runner rule');
+			await expect(review).toContainText('Tier override: premium');
+			await expect(review).toContainText('Tied rule: tied urgent rule');
+			await expect(review).toContainText('Unavailable runner');
+			await expect(review).toContainText('Active run: arun_existing');
+			await expect(review).toContainText('Queue position: 2');
+			await expect(review).toContainText('Attempts: 3/3; parked: yes');
+			await page.close();
+		});
+
 		test('reviews, inspects and cancels without writing anything', async ({ browser, request }) => {
 			const page = await open(browser, `/issues/${sourceName}/${sourceNumber}`);
 			const modal = page.getByRole('dialog');
@@ -146,13 +248,24 @@ function suite(label: string, viewport: { width: number; height: number }) {
 			await expect(review).toContainText('1 comments');
 			await expect(review).toContainText(`source-only-${label}`);
 			await expect(review).toContainText(`destination-only-${label}`);
+			await expect(review).toContainText(`retained-prompt-${label}`);
+			await expect(review).toContainText(`retained-skill-${label}`);
+			await expect(review).toContainText('https://example.test/issue-override.git');
+			await expect(review).toContainText('branch research; directory app');
+			await expect(review).toContainText('https://example.test/source.git');
+			await expect(review).toContainText('https://example.test/destination.git');
 
 			// Each guidance item is inspectable in place: opening one shows the
 			// scope it moves between rather than a bare name.
-			const item = review.locator('details').first();
+			const item = review.locator('details').filter({ hasText: `retained-prompt-${label}` });
 			await item.locator('summary').click();
 			await expect(item).toContainText('→');
-			await expect(item).toContainText(/Guidance (that stays behind|the issue picks up)/);
+			await expect(item).toContainText('Before and after');
+			await expect(item).toContainText('Retained issue prompt body');
+			const skill = review.locator('details').filter({ hasText: `retained-skill-${label}` });
+			await skill.locator('summary').click();
+			await expect(skill).toContainText('Retained skill instructions');
+			await expect(skill).toContainText('Retained second file');
 
 			await modal.getByRole('button', { name: 'Cancel' }).click();
 			await expect(modal).toHaveCount(0);

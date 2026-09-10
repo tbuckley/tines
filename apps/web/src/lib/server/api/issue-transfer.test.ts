@@ -5,6 +5,7 @@ import {
 	PROJECT,
 	USER,
 	addIssue,
+	addRule,
 	addRun,
 	addRunner,
 	seedBase,
@@ -419,8 +420,8 @@ describe('private issue transfer path', () => {
 	it('uses the request-specific receipt instead of trigger-inclusive change metadata', async () => {
 		const preview = await previewIssueTransfer(t.env, actor, issueId, DESTINATION, NOW);
 		const realBatch = t.env.DB.batch.bind(t.env.DB);
-		t.env.DB.batch = async (statements) => {
-			const results = await realBatch(statements);
+		t.env.DB.batch = async <T = unknown>(statements: Parameters<Env['DB']['batch']>[0]) => {
+			const results = await realBatch<T>(statements);
 			// Real D1 includes the issue-address AFTER UPDATE trigger in this aggregate.
 			results[0].meta.changes = 2;
 			return results;
@@ -441,6 +442,21 @@ describe('private issue transfer path', () => {
 		});
 		expect(t.all(`SELECT * FROM event WHERE type = 'issue.transferred'`)).toHaveLength(1);
 		expect(t.all(`SELECT * FROM issue_address WHERE issue_id = ?`, issueId)).toHaveLength(2);
+	});
+
+	it('treats a mismatched request receipt as an invariant failure, not a stale guard', async () => {
+		const preview = await previewIssueTransfer(t.env, actor, issueId, DESTINATION, NOW);
+		const realBatch = t.env.DB.batch.bind(t.env.DB);
+		t.env.DB.batch = async <T = unknown>(statements: Parameters<Env['DB']['batch']>[0]) => {
+			const results = await realBatch<T>(statements);
+			const receipt = results[3]?.results?.[0] as { event_id?: string } | undefined;
+			if (receipt) receipt.event_id = 'evt_from_another_request';
+			return results;
+		};
+		await expect(
+			commitIssueTransfer(t.env, actor, issueId, DESTINATION, preview.preview_token!, NOW + 1)
+		).rejects.toThrow('malformed receipt');
+		expect(t.all(`SELECT * FROM event WHERE type = 'issue.transferred'`)).toHaveLength(1);
 	});
 
 	it('returns an unchanged same-project no-op with no allocation or event', async () => {
@@ -714,5 +730,43 @@ describe('private issue transfer path', () => {
 		expect(t.all(`SELECT project_id FROM issue WHERE id = ?`, issueId)[0].project_id).toBe(
 			DESTINATION
 		);
+	});
+
+	it('queues dispatch after the receipt and claims with the destination assignment', async () => {
+		const wallNow = Date.now();
+		t.sqlite.exec(
+			`UPDATE issue SET needs_attention = 0, attempt_count = 0 WHERE id = '${issueId}';
+			 UPDATE issue SET state_id = 'wfs_std_closed' WHERE id = 'iss_destination_occupied'`
+		);
+		setSettings(t);
+		const runnerId = addRunner(t, {
+			id: 'rnr_destination',
+			type: 'local',
+			lastSeen: wallNow
+		});
+		addRule(t, { project: DESTINATION, targets: [{ runner_id: runnerId }] });
+		const preview = await previewIssueTransfer(t.env, actor, issueId, DESTINATION, wallNow);
+		expect(preview.routing.after?.eligible, JSON.stringify(preview.routing.after)).toBe(true);
+		const waits: Promise<unknown>[] = [];
+		const result = await commitIssueTransfer(
+			t.env,
+			actor,
+			issueId,
+			DESTINATION,
+			preview.preview_token!,
+			wallNow + 1,
+			{ env: t.env, ctx: { waitUntil: (promise) => waits.push(promise) } }
+		);
+		expect(result.status).toBe('transferred');
+		expect(waits).toHaveLength(1);
+		await Promise.all(waits);
+		expect(
+			t.all(
+				`SELECT agent_run.issue_id, issue.project_id, agent_run.runner_id
+				 FROM agent_run JOIN issue ON issue.id = agent_run.issue_id
+				 WHERE agent_run.issue_id = ?`,
+				issueId
+			)
+		).toEqual([{ issue_id: issueId, project_id: DESTINATION, runner_id: runnerId }]);
 	});
 });

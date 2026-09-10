@@ -71,6 +71,9 @@ function routingLines(preview: IssueTransferPreview): string[] {
 			);
 		if (explainer.queue_position !== null)
 			lines.push(`           queue position ${explainer.queue_position}`);
+		lines.push(
+			`           attempts ${explainer.attempt_count}/${explainer.attempt_limit}; parked ${explainer.parked ? 'yes' : 'no'}`
+		);
 	}
 	lines.push('  Capacity, heartbeats and spending are advisory and may change at any moment.');
 	return lines;

@@ -230,6 +230,13 @@
 						.preserved.artifact_version_count} versions), {preview.preserved.run_count} runs, {preview
 						.preserved.link_count} links, state, labels, pins and attempts — all unchanged.
 				</p>
+				<p class="text-muted-foreground text-xs">
+					Runner pin: {preview.preserved.pinned_runner_id ?? 'none'}; tier pin: {preview.preserved
+						.pinned_tier ?? 'none'}; attempts: {preview.preserved.attempt_count}; parked: {preview
+						.preserved.parked
+						? 'yes'
+						: 'no'}.
+				</p>
 			</section>
 
 			<section class="space-y-1">
@@ -324,6 +331,12 @@
 								{#if side.routing.matched_rule}<p class="text-xs">
 										Matched rule: {side.routing.matched_rule.scope_label}
 									</p>{/if}
+								{#if side.routing.runner_rule}<p class="text-xs">
+										Runner source rule: {side.routing.runner_rule.scope_label}
+									</p>{/if}
+								{#if side.routing.tier_override}<p class="text-xs">
+										Tier override: {side.routing.tier_override}
+									</p>{/if}
 								{#each side.routing.ambiguous_rules as rule (rule.rule_id)}<p class="text-xs">
 										Tied rule: {rule.scope_label}
 									</p>{/each}
@@ -334,6 +347,20 @@
 											? ` / ${target.model}`
 											: ''}: {target.verdict} — {target.detail}
 									</p>{/each}
+								{#if side.routing.active_run}<p class="text-xs">
+										Active run: {side.routing.active_run.id} on {side.routing.active_run
+											.runner_name}
+										({side.routing.active_run.status})
+									</p>{/if}
+								{#if side.routing.queue_position !== null}<p class="text-xs">
+										Queue position: {side.routing.queue_position}
+									</p>{/if}
+								<p class="text-xs">
+									Attempts: {side.routing.attempt_count}/{side.routing.attempt_limit}; parked: {side
+										.routing.parked
+										? 'yes'
+										: 'no'}
+								</p>
 							{/if}
 						</div>
 					{/each}

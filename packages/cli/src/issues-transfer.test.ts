@@ -27,7 +27,7 @@ const source = {
 };
 const destination = { ...source, id: 'prj_dst', name: 'platform', issue_count: 7 };
 
-const scope = (label: string) => ({
+const scope = (label: string, extra: Record<string, string | null> = {}) => ({
 	project_id: null,
 	project_name: null,
 	workflow_state_id: null,
@@ -39,8 +39,16 @@ const scope = (label: string) => ({
 	label_color: null,
 	issue_id: null,
 	issue_ref: null,
-	label
+	label,
+	...extra
 });
+
+const sourceScope = scope('project demo', { project_id: 'prj_src', project_name: 'demo' });
+const destinationScope = scope('project platform', {
+	project_id: 'prj_dst',
+	project_name: 'platform'
+});
+const issueScope = scope('issue demo/4', { issue_id: 'iss_1', issue_ref: 'demo/4' });
 
 const preview = {
 	issue_id: 'iss_1',
@@ -68,20 +76,81 @@ const preview = {
 	},
 	context: {
 		before: {
-			prompt: { text: '', parts: [], journal: null },
-			skills: [],
-			repos: [],
-			overridden: [],
-			conflicts: []
+			prompt: {
+				text: 'Retained instructions',
+				parts: [
+					{
+						item_id: 'ctx_retained_prompt',
+						name: 'issue-guidance',
+						scope: issueScope,
+						body: 'Retained instructions',
+						version: 1,
+						is_journal: false,
+						inherited_from: null
+					}
+				],
+				journal: null
+			},
+			skills: [
+				{
+					item_id: 'ctx_retained_skill',
+					name: 'release-skill',
+					scope: issueScope,
+					description: '',
+					version: 1,
+					files: [
+						{ path: 'SKILL.md', content: 'Release safely' },
+						{ path: 'checklist.md', content: 'Verify rollback' }
+					]
+				}
+			],
+			repos: [
+				{
+					item_id: 'ctx_issue_repo',
+					name: 'app',
+					scope: issueScope,
+					url: 'https://example.test/issue-override.git',
+					branch: 'research',
+					dir: 'app'
+				},
+				{
+					item_id: 'ctx_docs_repo',
+					name: 'docs',
+					scope: sourceScope,
+					url: 'https://example.test/docs.git',
+					branch: null,
+					dir: 'app'
+				}
+			],
+			overridden: [
+				{
+					item_id: 'ctx_source_repo',
+					kind: 'repo',
+					name: 'app',
+					scope: sourceScope,
+					overridden_by: 'ctx_issue_repo',
+					repo: { url: 'https://example.test/source.git', branch: null, dir: 'app' }
+				}
+			],
+			conflicts: [{ dir: 'app', item_ids: ['ctx_issue_repo', 'ctx_docs_repo'] }]
 		},
 		after: {
 			prompt: {
-				text: '',
+				text: 'Retained instructions\n\nDeploy on Fridays.',
 				parts: [
+					{
+						item_id: 'ctx_retained_prompt',
+						name: 'issue-guidance',
+						scope: issueScope,
+						body: 'Retained instructions',
+						version: 1,
+						is_journal: false,
+						inherited_from: null
+					},
 					{
 						item_id: 'ctx_dest',
 						name: 'platform-context',
-						scope: scope('project platform'),
+						scope: destinationScope,
 						body: 'Deploy on Fridays.',
 						version: 1,
 						is_journal: false,
@@ -90,18 +159,116 @@ const preview = {
 				],
 				journal: null
 			},
-			skills: [],
-			repos: [],
-			overridden: [],
-			conflicts: []
+			skills: [
+				{
+					item_id: 'ctx_retained_skill',
+					name: 'release-skill',
+					scope: issueScope,
+					description: '',
+					version: 1,
+					files: [
+						{ path: 'SKILL.md', content: 'Release safely' },
+						{ path: 'checklist.md', content: 'Verify rollback' }
+					]
+				}
+			],
+			repos: [
+				{
+					item_id: 'ctx_issue_repo',
+					name: 'app',
+					scope: issueScope,
+					url: 'https://example.test/issue-override.git',
+					branch: 'research',
+					dir: 'app'
+				},
+				{
+					item_id: 'ctx_ops_repo',
+					name: 'ops',
+					scope: destinationScope,
+					url: 'https://example.test/ops.git',
+					branch: null,
+					dir: 'app'
+				}
+			],
+			overridden: [
+				{
+					item_id: 'ctx_destination_repo',
+					kind: 'repo',
+					name: 'app',
+					scope: destinationScope,
+					overridden_by: 'ctx_issue_repo',
+					repo: { url: 'https://example.test/destination.git', branch: 'main', dir: 'app' }
+				}
+			],
+			conflicts: [{ dir: 'app', item_ids: ['ctx_issue_repo', 'ctx_ops_repo'] }]
 		},
 		changes: [
+			{
+				item_id: 'ctx_retained_prompt',
+				name: 'issue-guidance',
+				kind: 'prompt',
+				change: 'retained',
+				scope_before: issueScope,
+				scope_after: issueScope,
+				effective_before: true,
+				effective_after: true
+			},
+			{
+				item_id: 'ctx_retained_skill',
+				name: 'release-skill',
+				kind: 'skill',
+				change: 'retained',
+				scope_before: issueScope,
+				scope_after: issueScope,
+				effective_before: true,
+				effective_after: true
+			},
+			{
+				item_id: 'ctx_issue_repo',
+				name: 'app',
+				kind: 'repo',
+				change: 'retained',
+				scope_before: issueScope,
+				scope_after: issueScope,
+				effective_before: true,
+				effective_after: true,
+				repo_before: {
+					url: 'https://example.test/issue-override.git',
+					branch: 'research',
+					dir: 'app'
+				},
+				repo_after: {
+					url: 'https://example.test/issue-override.git',
+					branch: 'research',
+					dir: 'app'
+				}
+			},
+			{
+				item_id: 'ctx_source_repo',
+				name: 'app',
+				kind: 'repo',
+				change: 'removed',
+				scope_before: sourceScope,
+				scope_after: null,
+				effective_before: false,
+				effective_after: false
+			},
+			{
+				item_id: 'ctx_destination_repo',
+				name: 'app',
+				kind: 'repo',
+				change: 'added',
+				scope_before: null,
+				scope_after: destinationScope,
+				effective_before: false,
+				effective_after: false
+			},
 			{
 				item_id: 'ctx_src',
 				name: 'demo-context',
 				kind: 'prompt',
 				change: 'removed',
-				scope_before: scope('project demo'),
+				scope_before: sourceScope,
 				scope_after: null,
 				effective_before: true,
 				effective_after: false
@@ -112,13 +279,78 @@ const preview = {
 				kind: 'prompt',
 				change: 'added',
 				scope_before: null,
-				scope_after: scope('project platform'),
+				scope_after: destinationScope,
 				effective_before: false,
 				effective_after: true
 			}
 		]
 	},
-	routing: { before: null, after: null },
+	routing: {
+		before: {
+			eligible: false,
+			verdict: 'Automation is off.',
+			checks: [
+				{ name: 'automation_enabled', ok: false, detail: 'Automation is off.' },
+				{
+					name: 'routed',
+					ok: false,
+					detail: 'No routing rule matches this issue.',
+					action: { label: 'Add a rule', cli: 'tines routing-rules create' }
+				}
+			],
+			pin: { runner_id: 'rnr_missing', runner_name: null, tier: 'premium' },
+			matched_rule: null,
+			runner_rule: null,
+			tier_override: null,
+			ambiguous_rules: [
+				{ rule_id: 'rrl_a', scope_label: 'project demo' },
+				{ rule_id: 'rrl_b', scope_label: 'label urgent' }
+			],
+			targets: [
+				{
+					runner_id: 'rnr_missing',
+					runner_name: 'Unavailable runner',
+					tier: 'premium',
+					model: null,
+					verdict: 'offline',
+					detail: 'No recent heartbeat.'
+				}
+			],
+			parked: true,
+			attempt_count: 3,
+			attempt_limit: 3,
+			active_run: null,
+			queue_position: null
+		},
+		after: {
+			eligible: false,
+			verdict: 'A matching rule is tied.',
+			checks: [{ name: 'routed', ok: false, detail: 'Two equally specific routing rules match.' }],
+			pin: { runner_id: 'rnr_missing', runner_name: null, tier: 'premium' },
+			matched_rule: null,
+			runner_rule: { rule_id: 'rrl_runner', scope_label: 'project platform' },
+			tier_override: 'premium',
+			ambiguous_rules: [
+				{ rule_id: 'rrl_a', scope_label: 'project platform' },
+				{ rule_id: 'rrl_b', scope_label: 'label urgent' }
+			],
+			targets: [
+				{
+					runner_id: 'rnr_missing',
+					runner_name: 'Unavailable runner',
+					tier: 'premium',
+					model: null,
+					verdict: 'offline',
+					detail: 'No recent heartbeat.'
+				}
+			],
+			parked: false,
+			attempt_count: 3,
+			attempt_limit: 5,
+			active_run: { id: 'arun_existing', runner_name: 'Unavailable runner', status: 'running' },
+			queue_position: 2
+		}
+	},
 	schedule: null,
 	noop: false,
 	can_commit: true,
@@ -265,6 +497,21 @@ describe('tines issues transfer', () => {
 		expect(res.stdout).toContain('Number assigned when you move.');
 		expect(res.stdout).toContain('removed with source');
 		expect(res.stdout).toContain('added by destination');
+		expect(res.stdout).toContain('prompt "issue-guidance" — retained');
+		expect(res.stdout).toContain('skill "release-skill" — retained');
+		expect(res.stdout).toContain('https://example.test/issue-override.git');
+		expect(res.stdout).toContain('branch research; directory app');
+		expect(res.stdout).toContain('https://example.test/source.git');
+		expect(res.stdout).toContain('https://example.test/destination.git');
+		expect(res.stdout).toContain('Repository checkout conflicts:');
+		expect(res.stdout).toContain('Automation is off.');
+		expect(res.stdout).toContain('No routing rule matches this issue.');
+		expect(res.stdout).toContain('tied rule label urgent');
+		expect(res.stdout).toContain('Unavailable runner');
+		expect(res.stdout).toContain('tier override premium');
+		expect(res.stdout).toContain('active run arun_existing');
+		expect(res.stdout).toContain('queue position 2');
+		expect(res.stdout).toContain('attempts 3/3; parked yes');
 		// The retained record is part of the review, not a promise of a lock.
 		expect(res.stdout).toContain('3 comment(s), 2 artifact(s) in 4 version(s)');
 	}, 60_000);
@@ -294,10 +541,10 @@ describe('tines issues transfer', () => {
 			'--project',
 			'platform',
 			'--inspect',
-			'1'
+			'0'
 		]);
 		expect(res.code).toBe(0);
-		expect(res.stdout).toContain('Deploy on Fridays.');
+		expect(res.stdout).toContain('Retained instructions');
 		expect(posts()).toHaveLength(0);
 	}, 60_000);
 

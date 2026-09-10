@@ -26,11 +26,20 @@ function seed(): { t: TestDb; issueId: string } {
 	return { t, issueId };
 }
 
-function routeEvent(t: TestDb, path: string, params: { id: string }, body?: unknown) {
+function routeEvent(
+	t: TestDb,
+	path: string,
+	params: { id: string },
+	body?: unknown,
+	waits: Promise<unknown>[] = []
+) {
 	const url = new URL(`http://test${path}`);
 	return {
 		locals: { user: { id: USER, name: 'alice' } },
-		platform: { env: t.env, ctx: { waitUntil: () => {} } },
+		platform: {
+			env: t.env,
+			ctx: { waitUntil: (promise: Promise<unknown>) => waits.push(promise) }
+		},
 		request: body
 			? new Request(url, {
 					method: 'POST',
@@ -46,6 +55,7 @@ function routeEvent(t: TestDb, path: string, params: { id: string }, body?: unkn
 describe('the issue transfer route', () => {
 	it('previews the destination named by ?project and commits its token', async () => {
 		const { t, issueId } = seed();
+		const waits: Promise<unknown>[] = [];
 		const preview = (await (
 			await GET(
 				routeEvent(t, `/api/v1/issues/${issueId}/transfer?project=${DESTINATION}`, { id: issueId })
@@ -69,7 +79,8 @@ describe('the issue transfer route', () => {
 					{
 						project_id: DESTINATION,
 						preview_token: preview.preview_token
-					}
+					},
+					waits
 				)
 			)
 		).json()) as IssueTransferResult;
@@ -80,6 +91,8 @@ describe('the issue transfer route', () => {
 			new_ref: { project_name: 'destination' }
 		});
 		expect(result.issue_path).toBe(`/issues/destination/${result.new_ref.number}`);
+		expect(waits).toHaveLength(1);
+		await Promise.all(waits);
 	});
 
 	it('rejects a preview with no destination and a body with no token', async () => {
