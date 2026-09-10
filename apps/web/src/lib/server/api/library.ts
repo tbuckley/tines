@@ -28,7 +28,7 @@ import {
 	updateContextItem
 } from './context';
 import { createLabel, resolveLabelRef } from './labels';
-import { createProject } from './projects';
+import { createProject, validateProjectFields } from './projects';
 import {
 	createWorkflow,
 	loadWorkflows,
@@ -424,6 +424,14 @@ export async function planImport(
 
 	for (const project of doc.projects) {
 		const ref = `project "${project.name}"`;
+		try {
+			validateProjectFields(project);
+		} catch (error) {
+			steps.push({
+				entry: { section: 'project', ref, action: 'error', reason: errorMessage(error) }
+			});
+			continue;
+		}
 		if (projectIds.has(project.name)) {
 			steps.push({
 				entry: {

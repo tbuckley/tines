@@ -936,6 +936,26 @@ describe('inheritance pointers', () => {
 	});
 });
 
+describe('project validation parity', () => {
+	it('refuses an over-200-character project name in preview and apply', async () => {
+		const document: LibraryDocument = {
+			format: LIBRARY_FORMAT,
+			version: LIBRARY_VERSION,
+			exported_at: Date.now(),
+			projects: [{ name: 'x'.repeat(201) }],
+			workflows: [],
+			context: []
+		};
+		for (const dry_run of [true, false]) {
+			const result = await applyImport(t.db, t.env, actor, { document, dry_run });
+			expect(result.entries).toHaveLength(1);
+			expect(result.entries[0]).toMatchObject({ section: 'project', action: 'error' });
+			expect(result.entries[0].reason).toMatch(/at most 200/);
+		}
+		expect(await t.db.selectFrom('project').selectAll().execute()).toHaveLength(1);
+	});
+});
+
 describe('applyImport — structural identity', () => {
 	// Tines/413. Both sides gate "Finish" differently: the incoming one wants a
 	// `tests` artifact too, the existing one only names it inside the `pr`
