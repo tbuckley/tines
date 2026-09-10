@@ -61,8 +61,9 @@ anything it streams is not. The issue page is the worked example:
   while a replacement is in flight, instead of `{#await}` collapsing the
   panel back to a skeleton on every resync.
 
-Result (`pnpm perf:nav`): 21 statements, ~3.4 waves to first paint, ~5.5 to
-fully settled — from 26 statements and 29.1 waves before Tines/32.
+Result (`pnpm --filter web perf:nav`): 21 statements, ~3.4 waves to first
+paint, ~5.5 to fully settled — from 26 statements and 29.1 waves before
+Tines/32.
 
 Two rules follow, and the probe enforces the first:
 
