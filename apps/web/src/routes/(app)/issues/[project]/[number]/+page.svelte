@@ -58,6 +58,7 @@
 	import { mergeLinks, type PendingAdd } from '$lib/link-overlay';
 	import { issueBackTarget, navMemory } from '$lib/nav-memory.svelte';
 	import { focusHint } from '$lib/focus.svelte';
+	import { resolveClientFocus } from '$lib/focus';
 	import { planTransitions } from '$lib/transitions';
 
 	let { data } = $props();
@@ -95,7 +96,7 @@
 	// Back to the list you came from, as you left it — the issues list with its
 	// filters, or the project page. A deep link or a fresh tab has no memory and
 	// falls back to the plain issues list.
-	const effectiveFocus = $derived(focusHint.project !== undefined ? focusHint.project : data.focus);
+	const effectiveFocus = $derived(resolveClientFocus(focusHint.project, data.focus, data.projects));
 	const backList = $derived(
 		issueBackTarget(navMemory.lastList, effectiveFocus?.id ?? null, navMemory.issuesHref)
 	);
