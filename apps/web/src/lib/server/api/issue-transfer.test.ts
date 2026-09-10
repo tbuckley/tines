@@ -7,7 +7,8 @@ import {
 	addIssue,
 	addRun,
 	addRunner,
-	seedBase
+	seedBase,
+	setSettings
 } from '../supervisor/test-fixtures';
 import { claimRun } from '../supervisor/engine';
 import type { ActorContext } from './core';
@@ -110,6 +111,58 @@ describe('private issue transfer path', () => {
 		await expect(
 			commitIssueTransfer(t.env, actor, issueId, DESTINATION, fresh.preview_token!, NOW + 400)
 		).rejects.toMatchObject({ code: 'transfer_preview_stale' });
+	});
+
+	it('stales a preview on a structural routing change but not on liveness alone', async () => {
+		const runnerId = addRunner(t, { id: 'rnr_route' });
+		setSettings(t);
+		const stale = await previewIssueTransfer(t.env, actor, issueId, DESTINATION, NOW);
+		// A rule that newly targets the destination changes where the next
+		// launch would go, so the operator's approved routing is no longer what
+		// would happen.
+		t.sqlite.exec(`
+			INSERT INTO routing_rule (id, user_id, project_id, workflow_state_id, label_id,
+				targets, created_at, updated_at)
+			VALUES ('rrl_late', '${USER}', '${DESTINATION}', NULL, NULL,
+				'[{"runner_id":"${runnerId}"}]', ${NOW}, ${NOW});
+		`);
+		await expect(
+			commitIssueTransfer(t.env, actor, issueId, DESTINATION, stale.preview_token!, NOW + 1)
+		).rejects.toMatchObject({ code: 'transfer_preview_stale' });
+		expect(t.all(`SELECT * FROM event WHERE type = 'issue.transferred'`)).toHaveLength(0);
+
+		// So does pausing the runner the route resolves to, and so does the
+		// dispatch quota the explanation reports.
+		for (const change of [
+			`UPDATE runner SET status = 'paused' WHERE id = '${runnerId}'`,
+			`UPDATE supervisor_settings SET quota = '{"type":"global_cap","limit":1}' WHERE user_id = '${USER}'`
+		]) {
+			const fresh = await previewIssueTransfer(t.env, actor, issueId, DESTINATION, NOW + 10);
+			t.sqlite.exec(change);
+			await expect(
+				commitIssueTransfer(t.env, actor, issueId, DESTINATION, fresh.preview_token!, NOW + 11)
+			).rejects.toMatchObject({ code: 'transfer_preview_stale' });
+		}
+
+		// Liveness and capacity move on their own between a review and a
+		// confirm; the preview labels them advisory, so witnessing them would
+		// refuse an honest transfer for a heartbeat.
+		const live = await previewIssueTransfer(t.env, actor, issueId, DESTINATION, NOW + 20);
+		t.sqlite.exec(`
+			UPDATE runner SET last_seen_at = ${NOW + 21}, launch_failures = 3,
+				backoff_until = ${NOW + 900}, backoff_reason = 'rate_limit', draining = 1,
+				config = '{"hostname":"moved"}'
+			WHERE id = '${runnerId}';
+		`);
+		const result = await commitIssueTransfer(
+			t.env,
+			actor,
+			issueId,
+			DESTINATION,
+			live.preview_token!,
+			NOW + 22
+		);
+		expect(result.status).toBe('transferred');
 	});
 
 	it('projects guidance and repositories at the destination, and agrees after the move', async () => {
@@ -376,8 +429,11 @@ describe('private issue transfer path', () => {
 
 	it('serializes claim and move: a winning claim blocks transfer without cancellation', async () => {
 		t.sqlite.exec(`UPDATE issue SET needs_attention = 0 WHERE id = '${issueId}'`);
-		const preview = await previewIssueTransfer(t.env, actor, issueId, DESTINATION, NOW);
+		// The runner exists before the review: adding one afterwards is a
+		// routing change, and the freshness barrier would refuse the commit
+		// for staleness before it could reach the busy check under test.
 		const runnerId = addRunner(t);
+		const preview = await previewIssueTransfer(t.env, actor, issueId, DESTINATION, NOW);
 		const issue = t.all(
 			`SELECT project_id, project_assignment_token FROM issue WHERE id = ?`,
 			issueId

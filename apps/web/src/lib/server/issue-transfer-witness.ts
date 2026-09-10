@@ -14,12 +14,13 @@ export interface TransferWitnessPayload {
 	a: string;
 	n: number;
 	e: number;
-	h: { issue: string; context: string };
+	h: { issue: string; context: string; routing: string };
 }
 
 export interface TransferWitnessSections {
 	issue: string;
 	context: string;
+	routing: string;
 }
 
 export function transferKeyMaterial(env: {
@@ -57,7 +58,8 @@ export async function hashTransferWitness(
 ): Promise<TransferWitnessPayload['h']> {
 	return {
 		issue: await sha256Hex(sections.issue),
-		context: await sha256Hex(sections.context)
+		context: await sha256Hex(sections.context),
+		routing: await sha256Hex(sections.routing)
 	};
 }
 
@@ -118,23 +120,35 @@ function isTransferWitnessPayload(value: unknown): value is TransferWitnessPaylo
 		typeof p.e === 'number' &&
 		!!h &&
 		typeof h.issue === 'string' &&
-		typeof h.context === 'string'
+		typeof h.context === 'string' &&
+		typeof h.routing === 'string'
 	);
 }
 
 /**
  * The witness the preview signs and the commit re-compares inside its guarded
- * UPDATE. Two fixed sections: the moved issue with both projects and its label
- * set, and every context row that can match either target — not only the rows
+ * UPDATE. Three fixed sections: the moved issue with both projects and its
+ * label set, every context row that can match either target — not only the rows
  * the move rescopes, because a prompt inserted at the destination after the
  * review would otherwise make the committed guidance differ from what the
- * operator approved. The same expressions serve both reads, so there is one
- * source of truth for what "unchanged" means.
+ * operator approved — and the structural routing configuration the preview's
+ * before/after explanation was resolved from. The same expressions serve both
+ * reads, so there is one source of truth for what "unchanged" means.
+ *
+ * The routing section deliberately omits every liveness and capacity column
+ * (`last_seen_at`, `draining`, `launch_failures`, `backoff_*`, the runner's
+ * mutable `config`, and the active-run counts): those move on their own between
+ * a review and a confirm, the preview labels them advisory, and witnessing them
+ * would refuse honest transfers for a heartbeat.
  */
 export function transferWitnessExpressions(
 	issueId: string,
 	destinationId: string
-): { issue: RawBuilder<string | null>; context: RawBuilder<string> } {
+): {
+	issue: RawBuilder<string | null>;
+	context: RawBuilder<string>;
+	routing: RawBuilder<string>;
+} {
 	const issue = sql<string | null>`(
 		SELECT json_object(
 			'issue', json_object(
@@ -192,5 +206,36 @@ export function transferWitnessExpressions(
 			ORDER BY id
 		)
 	), '[]')`;
-	return { issue, context };
+	const owner = sql<string>`(SELECT user_id FROM project WHERE id = ${destinationId})`;
+	const routing = sql<string>`(
+		SELECT json_object(
+			'settings', COALESCE((
+				SELECT json_object(
+					'enabled', enabled, 'quota', quota, 'attempt_limit', attempt_limit
+				)
+				FROM supervisor_settings WHERE user_id = ${owner}
+			), 'null'),
+			'rules', COALESCE((
+				SELECT json_group_array(json(row_json)) FROM (
+					SELECT json_object(
+						'id', id, 'project_id', project_id,
+						'workflow_state_id', workflow_state_id, 'label_id', label_id,
+						'targets', targets
+					) AS row_json
+					FROM routing_rule WHERE user_id = ${owner} ORDER BY id
+				)
+			), '[]'),
+			'runners', COALESCE((
+				SELECT json_group_array(json(row_json)) FROM (
+					SELECT json_object(
+						'id', id, 'type', type, 'name', name, 'status', status,
+						'max_concurrent', max_concurrent, 'max_run_minutes', max_run_minutes,
+						'default_tier', default_tier, 'tiers', tiers, 'budget', budget
+					) AS row_json
+					FROM runner WHERE user_id = ${owner} ORDER BY id
+				)
+			), '[]')
+		)
+	)`;
+	return { issue, context, routing };
 }

@@ -63,12 +63,21 @@ async function readWitnessSections(
 	destinationId: string
 ): Promise<TransferWitnessSections | null> {
 	const witness = transferWitnessExpressions(issueId, destinationId);
-	const result = await sql<{ issue_witness: string | null; context_witness: string }>`
-		SELECT ${witness.issue} AS issue_witness, ${witness.context} AS context_witness
+	const result = await sql<{
+		issue_witness: string | null;
+		context_witness: string;
+		routing_witness: string;
+	}>`
+		SELECT ${witness.issue} AS issue_witness, ${witness.context} AS context_witness,
+			${witness.routing} AS routing_witness
 	`.execute(db);
 	const row = result.rows[0];
 	if (!row?.issue_witness) return null;
-	return { issue: row.issue_witness, context: row.context_witness };
+	return {
+		issue: row.issue_witness,
+		context: row.context_witness,
+		routing: row.routing_witness
+	};
 }
 
 function parseIssueSection(sections: TransferWitnessSections): WitnessIssueSection {
@@ -438,6 +447,7 @@ export function transferIssueQueries(
 				AND status IN ('assigned', 'launching', 'running'))
 			AND ${witness.issue} = ${sections.issue}
 			AND ${witness.context} = ${sections.context}
+			AND ${witness.routing} = ${sections.routing}
 	`.compile(db);
 	const contextUpdate = sql`
 		UPDATE context_item SET project_id = ${payload.d}
@@ -532,7 +542,11 @@ export async function commitIssueTransfer(
 		});
 	}
 	const hashes = await hashTransferWitness(sections);
-	if (hashes.issue !== payload.h.issue || hashes.context !== payload.h.context) {
+	if (
+		hashes.issue !== payload.h.issue ||
+		hashes.context !== payload.h.context ||
+		hashes.routing !== payload.h.routing
+	) {
 		throw new ApiFail(
 			409,
 			'transfer_preview_stale',
