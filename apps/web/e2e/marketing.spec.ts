@@ -63,3 +63,84 @@ test('falls back to a still office when WebGL is unavailable', async ({ page }) 
 	await page.getByRole('button', { name: 'Sign in ↗' }).first().click();
 	await expect(page.getByRole('dialog')).toBeVisible();
 });
+
+test('uses native validation without sending an invalid magic-link request', async ({ page }) => {
+	let posts = 0;
+	page.on('request', (request) => {
+		if (request.method() === 'POST' && request.url().includes('/api/auth/')) posts += 1;
+	});
+	await gotoHydrated(page, '/');
+	await page.getByRole('button', { name: 'Sign in ↗' }).first().click();
+	await page.getByPlaceholder('you@example.com').fill('not-an-email');
+	await page.getByRole('button', { name: 'Email me a sign-in link' }).click();
+	await expect(page.getByPlaceholder('you@example.com')).toBeFocused();
+	expect(posts).toBe(0);
+});
+
+test('ignores a delayed auth completion after close and reopen', async ({ page }) => {
+	let release: (() => void) | undefined;
+	const delayed = new Promise<void>((resolve) => (release = resolve));
+	await page.route('**/api/auth/**', async (route) => {
+		if (route.request().method() !== 'POST') return route.continue();
+		await delayed;
+		await route.fulfill({
+			status: 400,
+			contentType: 'application/json',
+			body: '{"message":"stale failure"}'
+		});
+	});
+	await gotoHydrated(page, '/');
+	const opener = page.getByRole('button', { name: 'Sign in ↗' }).first();
+	await opener.click();
+	await page.getByPlaceholder('you@example.com').fill('delayed@example.com');
+	await page.getByRole('button', { name: 'Email me a sign-in link' }).click();
+	await expect(page.getByText('Preparing your sign-in link…')).toBeVisible();
+	await page.getByRole('button', { name: 'Close sign-in' }).click();
+	await opener.click();
+	await expect(page.getByText('Preparing your sign-in link…')).toBeHidden();
+	release?.();
+	await expect(page.getByText('stale failure')).toBeHidden();
+	await expect(page.getByRole('dialog')).toBeVisible();
+});
+
+test('enters terminal still mode after WebGL context loss', async ({ page }) => {
+	await gotoHydrated(page, '/');
+	await expect(page.locator('#stage canvas')).toHaveCount(1);
+	await page.locator('#stage canvas').evaluate((canvas) => {
+		canvas.dispatchEvent(new Event('webglcontextlost', { cancelable: true }));
+	});
+	await expect(page.locator('#stage canvas')).toHaveCount(0);
+	await expect(page.getByRole('button', { name: 'Still office' })).toBeDisabled();
+	await expect(page.locator('#still')).toBeVisible();
+});
+
+test('resets motion when the reduced-motion preference changes', async ({ page }) => {
+	await page.emulateMedia({ reducedMotion: 'reduce' });
+	await gotoHydrated(page, '/');
+	const motion = page.locator('#motion');
+	await expect(motion).toHaveText('Resume motion');
+	await motion.click();
+	await expect(motion).toHaveText('Pause motion');
+	await page.emulateMedia({ reducedMotion: 'no-preference' });
+	await page.emulateMedia({ reducedMotion: 'reduce' });
+	await expect(motion).toHaveText('Resume motion');
+});
+
+test('sends the Google provider payload and recovers from failure', async ({ page }) => {
+	let payload: unknown;
+	await page.route('**/api/auth/**', async (route) => {
+		if (route.request().method() !== 'POST') return route.continue();
+		payload = route.request().postDataJSON();
+		await route.fulfill({
+			status: 500,
+			contentType: 'application/json',
+			body: '{"message":"provider unavailable"}'
+		});
+	});
+	await gotoHydrated(page, '/');
+	await page.getByRole('button', { name: 'Sign in ↗' }).first().click();
+	await page.getByRole('button', { name: 'Continue with Google' }).click();
+	await expect(page.getByRole('status')).toHaveText('provider unavailable');
+	expect(payload).toMatchObject({ provider: 'google', callbackURL: '/issues' });
+	await expect(page.getByRole('button', { name: 'Continue with Google' })).toBeEnabled();
+});
