@@ -182,6 +182,10 @@ const CONTROL_PLANE_RULES: ControlPlaneRule[] = [
 	{ pattern: /^\/api\/v1\/routing-rules(\/|$)/ },
 	{ pattern: /^\/api\/v1\/supervisor\/settings(\/|$)/, readable: true },
 	{ pattern: /^\/api\/v1\/issues\/[^/]+\/resume$/ },
+	// Moving an issue between projects is an operator act: an agent may review
+	// the move (the preview is the argument it makes to its owner) but the POST
+	// is fenced, so a run cannot re-home itself into different guidance.
+	{ pattern: /^\/api\/v1\/issues\/[^/]+\/transfer$/, readable: true },
 	{ pattern: /^\/api\/v1\/api-keys(\/|$)/ },
 	// The label library is vocabulary, not classification: run keys may read it
 	// (`tines labels list` — the launch prompt points at it) and may apply and

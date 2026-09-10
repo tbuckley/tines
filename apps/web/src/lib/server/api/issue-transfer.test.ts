@@ -88,13 +88,14 @@ describe('private issue transfer path', () => {
 		const preview = await previewIssueTransfer(t.env, actor, issueId, DESTINATION, NOW + 100);
 
 		expect(preview).toMatchObject({
-			issueId,
-			oldRef: `demo/${beforeIssue.number}`,
+			issue_id: issueId,
+			old_ref: { ref: `demo/${beforeIssue.number}`, number: Number(beforeIssue.number) },
+			new_ref: null,
 			noop: false,
-			canCommit: true,
+			can_commit: true,
 			blockers: []
 		});
-		expect(preview.previewToken).toEqual(expect.any(String));
+		expect(preview.preview_token).toEqual(expect.any(String));
 		expect(t.all(`SELECT * FROM issue_address`)).toHaveLength(beforeAddresses);
 
 		const result = await commitIssueTransfer(
@@ -102,7 +103,7 @@ describe('private issue transfer path', () => {
 			actor,
 			issueId,
 			DESTINATION,
-			preview.previewToken!,
+			preview.preview_token!,
 			NOW + 200
 		);
 		const afterIssue = t.all(`SELECT * FROM issue WHERE id = ?`, issueId)[0];
@@ -110,11 +111,11 @@ describe('private issue transfer path', () => {
 
 		expect(result).toMatchObject({
 			status: 'transferred',
-			issueId,
-			oldRef: `demo/${beforeIssue.number}`,
-			newRef: `destination/${afterIssue.number}`
+			issue_id: issueId,
+			old_ref: { ref: `demo/${beforeIssue.number}` },
+			new_ref: { ref: `destination/${afterIssue.number}` }
 		});
-		expect(result.eventId).toEqual(expect.any(String));
+		expect(result.event_id).toEqual(expect.any(String));
 		expect(
 			await loadIssue(t.db, USER, { projectName: 'demo', number: Number(beforeIssue.number) })
 		).toMatchObject({ id: issueId, project_id: DESTINATION, number: afterIssue.number });
@@ -150,15 +151,15 @@ describe('private issue transfer path', () => {
 		);
 		expect(events).toHaveLength(1);
 		expect(events[0]).toMatchObject({
-			id: result.eventId,
+			id: result.event_id,
 			project_id: DESTINATION,
 			created_at: NOW + 200
 		});
 		expect(JSON.parse(String(events[0].payload))).toMatchObject({
 			source_project_id: PROJECT,
 			destination_project_id: DESTINATION,
-			old_ref: result.oldRef,
-			new_ref: result.newRef
+			old_ref: result.old_ref.ref,
+			new_ref: result.new_ref.ref
 		});
 	});
 
@@ -166,23 +167,23 @@ describe('private issue transfer path', () => {
 		const before = t.all(`SELECT * FROM issue WHERE id = ?`, issueId)[0];
 		const addresses = t.all(`SELECT * FROM issue_address`).length;
 		const preview = await previewIssueTransfer(t.env, actor, issueId, PROJECT, NOW + 100);
-		expect(preview).toMatchObject({ noop: true, canCommit: true });
+		expect(preview).toMatchObject({ noop: true, can_commit: true });
 
 		const result = await commitIssueTransfer(
 			t.env,
 			actor,
 			issueId,
 			PROJECT,
-			preview.previewToken!,
+			preview.preview_token!,
 			NOW + 200
 		);
 
-		expect(result).toEqual({
+		expect(result).toMatchObject({
 			status: 'noop',
-			issueId,
-			oldRef: `demo/${before.number}`,
-			newRef: `demo/${before.number}`,
-			eventId: null
+			issue_id: issueId,
+			old_ref: { ref: `demo/${before.number}` },
+			new_ref: { ref: `demo/${before.number}` },
+			event_id: null
 		});
 		expect(t.all(`SELECT * FROM issue WHERE id = ?`, issueId)[0]).toEqual(before);
 		expect(t.all(`SELECT * FROM issue_address`)).toHaveLength(addresses);
@@ -193,8 +194,8 @@ describe('private issue transfer path', () => {
 		const runActor = { ...actor, viaSession: false, agentRunId: 'arun_self' };
 		const preview = await previewIssueTransfer(t.env, runActor, issueId, DESTINATION, NOW);
 		expect(preview).toMatchObject({
-			canCommit: false,
-			previewToken: null,
+			can_commit: false,
+			preview_token: null,
 			blockers: [{ code: 'run_key_forbidden' }]
 		});
 		await expect(
@@ -224,8 +225,8 @@ describe('private issue transfer path', () => {
 		t.sqlite.exec(`UPDATE project SET archived_at = ${NOW} WHERE id = '${projectId}'`);
 		const preview = await previewIssueTransfer(t.env, actor, issueId, DESTINATION, NOW);
 		expect(preview).toMatchObject({
-			canCommit: false,
-			previewToken: null,
+			can_commit: false,
+			preview_token: null,
 			blockers: [{ code: 'project_archived' }]
 		});
 		expect(t.all(`SELECT * FROM event WHERE type = 'issue.transferred'`)).toHaveLength(0);
@@ -238,7 +239,7 @@ describe('private issue transfer path', () => {
 			const preview = await previewIssueTransfer(t.env, actor, issueId, DESTINATION, NOW);
 			addRun(t, { id: `arun_${status}`, issueId, runnerId, status });
 			await expect(
-				commitIssueTransfer(t.env, actor, issueId, DESTINATION, preview.previewToken!, NOW + 1)
+				commitIssueTransfer(t.env, actor, issueId, DESTINATION, preview.preview_token!, NOW + 1)
 			).rejects.toMatchObject({ status: 409, code: 'issue_busy' });
 			expect(t.all(`SELECT status FROM agent_run WHERE id = ?`, `arun_${status}`)[0]).toEqual({
 				status
@@ -251,7 +252,7 @@ describe('private issue transfer path', () => {
 
 	it('rejects tampered, expired, and stale previews without partial writes', async () => {
 		const preview = await previewIssueTransfer(t.env, actor, issueId, DESTINATION, NOW);
-		const token = preview.previewToken!;
+		const token = preview.preview_token!;
 		const tokenParts = token.split('.');
 		tokenParts[2] = `${tokenParts[2][0] === 'A' ? 'B' : 'A'}${tokenParts[2].slice(1)}`;
 		const tampered = tokenParts.join('.');
@@ -274,12 +275,12 @@ describe('private issue transfer path', () => {
 
 	it('rejects replay after A to B to A, so ABA cannot revive an old confirmation', async () => {
 		const first = await previewIssueTransfer(t.env, actor, issueId, DESTINATION, NOW);
-		await commitIssueTransfer(t.env, actor, issueId, DESTINATION, first.previewToken!, NOW + 1);
+		await commitIssueTransfer(t.env, actor, issueId, DESTINATION, first.preview_token!, NOW + 1);
 		const back = await previewIssueTransfer(t.env, actor, issueId, PROJECT, NOW + 2);
-		await commitIssueTransfer(t.env, actor, issueId, PROJECT, back.previewToken!, NOW + 3);
+		await commitIssueTransfer(t.env, actor, issueId, PROJECT, back.preview_token!, NOW + 3);
 
 		await expect(
-			commitIssueTransfer(t.env, actor, issueId, DESTINATION, first.previewToken!, NOW + 4)
+			commitIssueTransfer(t.env, actor, issueId, DESTINATION, first.preview_token!, NOW + 4)
 		).rejects.toMatchObject({ status: 409, code: 'transfer_conflict' });
 		expect(t.all(`SELECT * FROM event WHERE type = 'issue.transferred'`)).toHaveLength(2);
 	});
@@ -307,7 +308,7 @@ describe('private issue transfer path', () => {
 		).toBe(true);
 
 		await expect(
-			commitIssueTransfer(t.env, actor, issueId, DESTINATION, preview.previewToken!, NOW + 1)
+			commitIssueTransfer(t.env, actor, issueId, DESTINATION, preview.preview_token!, NOW + 1)
 		).rejects.toMatchObject({ status: 409, code: 'issue_busy' });
 		expect(t.all(`SELECT status FROM agent_run WHERE issue_id = ?`, issueId)).toEqual([
 			{ status: 'assigned' }
@@ -335,13 +336,13 @@ describe('private issue transfer path', () => {
 			actor,
 			issueId,
 			DESTINATION,
-			toDestination.previewToken!,
+			toDestination.preview_token!,
 			NOW + 1
 		);
 		expect(await claimRun(t.db, t.env, staleSourceClaim)).toBe(false);
 
 		const back = await previewIssueTransfer(t.env, actor, issueId, PROJECT, NOW + 2);
-		await commitIssueTransfer(t.env, actor, issueId, PROJECT, back.previewToken!, NOW + 3);
+		await commitIssueTransfer(t.env, actor, issueId, PROJECT, back.preview_token!, NOW + 3);
 		expect(await claimRun(t.db, t.env, staleSourceClaim)).toBe(false);
 
 		const current = t.all(
@@ -383,7 +384,7 @@ describe('private issue transfer path', () => {
 		t.sqlite.exec(trigger);
 
 		await expect(
-			commitIssueTransfer(t.env, actor, issueId, DESTINATION, preview.previewToken!, NOW + 1)
+			commitIssueTransfer(t.env, actor, issueId, DESTINATION, preview.preview_token!, NOW + 1)
 		).rejects.toThrow(/injected/);
 		expect(t.all(`SELECT * FROM issue WHERE id = ?`, issueId)).toEqual(before.issue);
 		expect(t.all(`SELECT * FROM issue_address WHERE issue_id = ?`, issueId)).toEqual(
@@ -406,7 +407,7 @@ describe('private issue transfer path', () => {
 		};
 		const waits: Promise<unknown>[] = [];
 		await expect(
-			commitIssueTransfer(t.env, actor, issueId, DESTINATION, stale.previewToken!, NOW + 1, {
+			commitIssueTransfer(t.env, actor, issueId, DESTINATION, stale.preview_token!, NOW + 1, {
 				env: t.env,
 				ctx: { waitUntil: (promise) => waits.push(promise) }
 			})
@@ -419,7 +420,7 @@ describe('private issue transfer path', () => {
 			actor,
 			issueId,
 			DESTINATION,
-			fresh.previewToken!,
+			fresh.preview_token!,
 			NOW + 3,
 			{
 				env: { DB: null } as unknown as Env,

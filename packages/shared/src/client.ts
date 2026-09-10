@@ -47,6 +47,9 @@ import type {
 	DeleteRunnerRequest,
 	DispatchExplainer,
 	EffectiveContext,
+	IssueTransferPreview,
+	IssueTransferRequest,
+	IssueTransferResult,
 	EventFilters,
 	FleetQueue,
 	LaunchPromptResponse,
@@ -384,6 +387,17 @@ export function createApiClient(options: ApiClientOptions) {
 		/** Launch prompt: stitched context plus the generated issue block. */
 		getIssuePrompt: (issueId: string) =>
 			get<LaunchPromptResponse>(`/api/v1/issues/${issueId}/prompt`),
+		/**
+		 * Review a move to another project: read-only, allocates no number and
+		 * writes nothing. Returns the token that binds this exact review.
+		 */
+		previewIssueTransfer: (issueId: string, destinationProjectId: string) =>
+			get<IssueTransferPreview>(
+				`/api/v1/issues/${issueId}/transfer${query({ project: destinationProjectId })}`
+			),
+		/** Commit the reviewed move. The token must come from a fresh preview. */
+		transferIssue: (issueId: string, body: IssueTransferRequest) =>
+			request<IssueTransferResult>('POST', `/api/v1/issues/${issueId}/transfer`, body),
 
 		// Issue artifacts (name-addressed under the issue)
 		listArtifacts: (issueId: string) =>

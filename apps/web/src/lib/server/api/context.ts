@@ -1212,7 +1212,7 @@ export function stitchPrompt(parts: StitchPart[]): string {
 		.join('\n\n');
 }
 
-interface MatchTarget {
+export interface MatchTarget {
 	projectId: string;
 	/** The issue's state and its ancestors, root → leaf; the leaf is the issue's own state. */
 	stateChain: string[];
@@ -1266,7 +1266,39 @@ async function resolveStateChain(db: Kysely<Database>, leafStateId: string): Pro
 	return chain.length > 0 ? chain : [leafStateId];
 }
 
-function matchingItemsQuery(db: Kysely<Database>, userId: string, target: MatchTarget) {
+/**
+ * Reads project∧issue rows of one project as though they belonged to another —
+ * what a transfer does to them atomically at commit. Only the project dimension
+ * and its display names move; identity, version, position and every other
+ * dimension are untouched, here and in the guarded UPDATE.
+ */
+export interface MatchProjection {
+	fromProjectId: string;
+	toProjectId: string;
+	toProjectName: string | null;
+	toProjectArchivedAt: number | null;
+}
+
+function projectRow(row: ItemRow, projection: MatchProjection | undefined): ItemRow {
+	if (!projection) return row;
+	if (row.project_id !== projection.fromProjectId || !row.issue_id) return row;
+	return {
+		...row,
+		project_id: projection.toProjectId,
+		scope_project_name: projection.toProjectName,
+		scope_project_archived_at: projection.toProjectArchivedAt,
+		scope_issue_project_id: projection.toProjectId,
+		scope_issue_project_name: projection.toProjectName,
+		scope_issue_project_archived_at: projection.toProjectArchivedAt
+	};
+}
+
+function matchingItemsQuery(
+	db: Kysely<Database>,
+	userId: string,
+	target: MatchTarget,
+	projection?: MatchProjection
+) {
 	// Artifacts are deliberately not part of the effective context: nothing
 	// is stitched into the prompt, nothing is seeded into a workspace.
 	return contextItemQuery(db, userId)
@@ -1275,7 +1307,18 @@ function matchingItemsQuery(db: Kysely<Database>, userId: string, target: MatchT
 			eb.and([
 				eb.or([
 					eb('context_item.project_id', 'is', null),
-					eb('context_item.project_id', '=', target.projectId)
+					eb('context_item.project_id', '=', target.projectId),
+					// A transfer preview reads the rows anchored to this issue in the
+					// project it is leaving as if they had already been rescoped: the
+					// commit moves their project dimension with the issue.
+					...(projection
+						? [
+								eb.and([
+									eb('context_item.project_id', '=', projection.fromProjectId),
+									eb('context_item.issue_id', '=', target.issueId)
+								])
+							]
+						: [])
 				]),
 				eb.or([
 					eb('context_item.workflow_state_id', 'is', null),
@@ -1428,7 +1471,7 @@ function dedupeByName(
 	};
 }
 
-async function issueMatchTarget(
+export async function issueMatchTarget(
 	db: Kysely<Database>,
 	userId: string,
 	issueId: string
@@ -1576,12 +1619,28 @@ export async function effectiveContextForIssue(
 	db: Kysely<Database>,
 	userId: string,
 	issueId: string,
-	{ skillFiles = true }: { skillFiles?: boolean } = {}
+	opts: { skillFiles?: boolean } = {}
 ): Promise<EffectiveContext> {
-	const target = await issueMatchTarget(db, userId, issueId);
+	return effectiveContextForTarget(db, userId, await issueMatchTarget(db, userId, issueId), opts);
+}
+
+/**
+ * The effective context of an explicit match target — the assembly shared by
+ * the issue's own resolution and a transfer preview's hypothetical destination.
+ * One matcher, one precedence: a preview that disagreed with the launch would
+ * be worse than no preview at all.
+ */
+export async function effectiveContextForTarget(
+	db: Kysely<Database>,
+	userId: string,
+	target: MatchTarget,
+	{ skillFiles = true, projection }: { skillFiles?: boolean; projection?: MatchProjection } = {}
+): Promise<EffectiveContext> {
 	const leafStateId = target.stateChain[target.stateChain.length - 1];
 	const rows = sortMatched(
-		await matchingItemsQuery(db, userId, target).execute(),
+		(await matchingItemsQuery(db, userId, target, projection).execute()).map((row) =>
+			projectRow(row, projection)
+		),
 		target.stateChain
 	);
 
