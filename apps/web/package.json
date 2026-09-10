@@ -16,7 +16,7 @@
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
 		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
 		"test": "vitest run",
-		"perf:nav": "rm -f /tmp/navperf.txt && NAVPERF=1 vitest run src/lib/server/api/nav-perf.test.ts && cat /tmp/navperf.txt",
+		"perf:nav": "f=\"${NAVPERF_OUT:-/tmp/navperf.txt}\"; rm -f \"$f\"; NAVPERF=1 vitest run src/lib/server/api/nav-perf.test.ts; s=$?; [ -f \"$f\" ] && cat \"$f\"; exit $s",
 		"test:e2e": "playwright test"
 	},
 	"devDependencies": {
