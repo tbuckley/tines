@@ -42,15 +42,18 @@ export type ResumeEligibility =
 	{ eligible: true } | { eligible: false; reason: ResumeFallbackReason };
 
 /**
- * Which providers can actually continue a conversation today. Claude Code
- * local runners can (`claude -p --resume <session-id>` in the kept
- * workspace); managed sessions cannot yet — their reuse needs the credential
- * ownership transfer, which is not built, so enabling it stays rejected.
+ * Which providers can actually continue a conversation. Claude Code local
+ * runners resume in their kept workspace (`claude -p --resume <session-id>`);
+ * Claude managed sessions are kept idle past their run and continued by
+ * rotating the vault credential to the new run's key, retagging the session
+ * and sending the continuation as a `user.message`. Anything else (a
+ * different local harness, a future provider) launches fresh.
  */
 export function isResumeProviderSupported(
 	type: Runner['type'],
 	config: Record<string, unknown>
 ): boolean {
+	if (type === 'claude_managed') return true;
 	return type === 'local' && (config.harness ?? 'claude_code') === 'claude_code';
 }
 
@@ -212,6 +215,7 @@ export async function retainResumeResource(
 		fingerprint: string;
 		expiresAt: number;
 		now: number;
+		transferData?: string | null;
 	}
 ): Promise<void> {
 	// One live resource per (runner, session): a session re-reported by a
@@ -243,7 +247,7 @@ export async function retainResumeResource(
 			credential_id: input.credentialId ?? null,
 			workspace_path: input.workspacePath,
 			resume_fingerprint: input.fingerprint,
-			transfer_data: null,
+			transfer_data: input.transferData ?? null,
 			created_at: input.now,
 			updated_at: input.now
 		})
@@ -349,4 +353,154 @@ export async function disposeExpiredResumeResources(
 		disposed += 1;
 	}
 	return disposed;
+}
+
+/**
+ * The managed equivalent of the local delivery path's `prepareResume`: the
+ * idle session this issue's previous run left behind on this runner, if
+ * every guard passes. Returns null for "launch fresh", which is always safe.
+ *
+ * The claim is the same `available → claimed` CAS the local path uses, so a
+ * GC sweep and a launch can never both take the session.
+ */
+export async function prepareManagedResume(
+	db: Kysely<Database>,
+	input: {
+		runner: Pick<
+			Runner,
+			| 'id'
+			| 'type'
+			| 'resume_enabled'
+			| 'resume_window_hours'
+			| 'resume_max_turns'
+			| 'resume_max_tokens'
+			| 'resume_max_cost_usd'
+		> & { config: Record<string, unknown> };
+		userId: string;
+		issueId: string;
+		runId: string;
+		model: string | null;
+		now: number;
+	}
+): Promise<{
+	previous_run_id: string;
+	resource_id: string;
+	provider_session_id: string;
+	vault_id: string;
+	credential_id: string;
+	events_cursor: string | null;
+} | null> {
+	const { runner, now } = input;
+	if (!runner.resume_enabled || !isResumeProviderSupported(runner.type, runner.config)) return null;
+	const predecessor = await db
+		.selectFrom('agent_run')
+		.select([
+			'id',
+			'runner_id',
+			'ended_at',
+			'outcome',
+			'conversation_turn_count',
+			'state_id_at_end',
+			'usage'
+		])
+		.where('user_id', '=', input.userId)
+		.where('issue_id', '=', input.issueId)
+		.where('ended_at', 'is not', null)
+		.where('id', '!=', input.runId)
+		.orderBy('ended_at desc')
+		.orderBy('id desc')
+		.executeTakeFirst();
+	if (!predecessor) return null;
+	const [resource, endState] = await Promise.all([
+		findResumeResource(db, { userId: input.userId, runnerId: runner.id, issueId: input.issueId }),
+		predecessor.state_id_at_end
+			? db
+					.selectFrom('workflow_state')
+					.select('category')
+					.where('id', '=', predecessor.state_id_at_end)
+					.executeTakeFirst()
+			: Promise.resolve(undefined)
+	]);
+	// Managed size guards read the session's whole cumulative usage, which is
+	// exactly what the provider reports on the owning run — a managed run's
+	// stored usage IS the conversation total, not an invocation delta.
+	let conversationUsage: AgentRunUsage | null = null;
+	try {
+		conversationUsage = predecessor.usage ? (JSON.parse(predecessor.usage) as AgentRunUsage) : null;
+	} catch {
+		conversationUsage = null; // unreadable usage cannot clear a size guard
+	}
+	const verdict = resumeEligibility({
+		now,
+		runner: { ...runner, resume_enabled: true },
+		predecessor,
+		conversation_usage: conversationUsage,
+		resource: resource ?? null,
+		newest_ended_run_id: predecessor.id,
+		ended_in_awaiting_state: endState?.category === 'awaiting_human',
+		last_transition_authored_by_run: predecessor.outcome === 'advanced',
+		expected_fingerprint: resumeFingerprint({
+			runnerId: runner.id,
+			harness: 'claude_managed',
+			model: input.model,
+			preambleVariant: 'claude_managed'
+		})
+	});
+	if (!verdict.eligible) {
+		if (resource) {
+			await db
+				.updateTable('agent_run')
+				.set({ resume_fallback_reason: verdict.reason })
+				.where('id', '=', input.runId)
+				.execute();
+		}
+		return null;
+	}
+	// Without both provider handles the transfer cannot happen: the session
+	// would run on the dead run's revoked key.
+	if (!resource!.provider_session_id || !resource!.vault_id || !resource!.credential_id)
+		return null;
+	const claimed = await claimResumeResource(db, {
+		resourceId: resource!.id,
+		ownerRunId: predecessor.id,
+		claimRunId: input.runId,
+		claimToken: input.runId,
+		now
+	});
+	if (!claimed) return null;
+	await db
+		.updateTable('agent_run')
+		.set({ resumed_from_run_id: predecessor.id, resume_expires_at: resource!.expires_at })
+		.where('id', '=', input.runId)
+		.execute();
+	let cursor: string | null = null;
+	try {
+		cursor = resource!.transfer_data
+			? ((JSON.parse(resource!.transfer_data) as { events_cursor?: string }).events_cursor ?? null)
+			: null;
+	} catch {
+		cursor = null; // no boundary: the send is still safe, the log replays
+	}
+	return {
+		previous_run_id: predecessor.id,
+		resource_id: resource!.id,
+		provider_session_id: resource!.provider_session_id,
+		vault_id: resource!.vault_id,
+		credential_id: resource!.credential_id,
+		events_cursor: cursor
+	};
+}
+
+/** Records how far a managed transfer got, for crash reconciliation. */
+export async function setTransferPhase(
+	db: Kysely<Database>,
+	resourceId: string,
+	phase: 'preparing' | 'sending' | 'accepted',
+	now: number
+): Promise<void> {
+	await db
+		.updateTable('run_resource')
+		.set({ transfer_phase: phase, updated_at: now })
+		.where('id', '=', resourceId)
+		.execute();
 }

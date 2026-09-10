@@ -44,10 +44,12 @@ import { mapUsage, summarizeEvents } from './claude-events';
 import {
 	claimResourceDisposal,
 	isResumeProviderSupported,
+	prepareManagedResume,
 	resumeFingerprint,
-	retainResumeResource
+	retainResumeResource,
+	setTransferPhase
 } from './resume';
-import { buildSupervisorPreamble } from './preamble';
+import { buildResumePreamble, buildSupervisorPreamble } from './preamble';
 
 // ---------------------------------------------------------------------------
 // Config shapes (runner.config / agent_run.provider_meta are adapter-owned)
@@ -603,6 +605,84 @@ export function createClaudeAdapter(env: Env, opts: ClaudeAdapterOptions = {}): 
 			return { ...repo, url: canonical };
 		});
 
+		const issueRef = `${issue.project_name}/${issue.number}`;
+
+		// Continuation: the idle session this issue's previous run left on this
+		// runner, when every guard passes. Ownership moves to this run — the
+		// vault credential is rotated to its key and the session retagged —
+		// so the predecessor's revoked key can never be used again. Any
+		// failure before the claim falls through to the fresh launch below.
+		const resume = await prepareManagedResume(db, {
+			runner: {
+				id: ctx.row.id,
+				type: 'claude_managed',
+				config: ctx.config as Record<string, unknown>,
+				resume_enabled: ctx.row.resume_enabled === 1,
+				resume_window_hours: ctx.row.resume_window_hours,
+				resume_max_turns: ctx.row.resume_max_turns,
+				resume_max_tokens: ctx.row.resume_max_tokens,
+				resume_max_cost_usd: ctx.row.resume_max_cost_usd
+			},
+			userId: ctx.row.user_id,
+			issueId: input.issueId,
+			runId: input.runId,
+			model: input.model,
+			now: Date.now()
+		});
+		if (resume) {
+			const continuation = await provider.apiGet<LaunchPromptResponse>(
+				base,
+				`/api/v1/issues/${input.issueId}/prompt?resume=1`,
+				input.runKey
+			);
+			const resumePreamble = buildResumePreamble({
+				variant: 'claude_managed',
+				runId: input.runId,
+				runnerName: ctx.row.name,
+				issueRef,
+				timeoutMinutes: input.runner.max_run_minutes,
+				apiUrl: base,
+				repoDirs: repos.map((r) => r.dir),
+				previousRunId: resume.previous_run_id
+			});
+			// Rotate first: a send the session could answer with the dead run's
+			// key would attribute this run's writes to the previous one.
+			await ctx.client.beta.vaults.credentials.update(resume.credential_id, {
+				vault_id: resume.vault_id,
+				auth: { type: 'environment_variable', secret_value: input.runKey }
+			});
+			await ctx.client.beta.sessions.update(resume.provider_session_id, {
+				title: `Tines run ${input.runId} — ${issueRef}`,
+				metadata: { tines_run_id: input.runId, tines_runner_id: ctx.row.id }
+			});
+			// `sending` is the recovery boundary: a crash after this point may
+			// have delivered the message, so reconciliation must reconcile the
+			// session rather than send again.
+			await setTransferPhase(db, resume.resource_id, 'sending', Date.now());
+			await ctx.client.beta.sessions.events.send(resume.provider_session_id, {
+				events: [
+					{
+						type: 'user.message',
+						content: [{ type: 'text', text: `${resumePreamble}\n\n${continuation.text}` }]
+					}
+				]
+			});
+			await setTransferPhase(db, resume.resource_id, 'accepted', Date.now());
+			const resumedMeta: ClaudeRunMeta = {
+				vault_id: resume.vault_id,
+				credential_id: resume.credential_id,
+				// Start the log after the predecessor's last rendered event, so
+				// its conversation does not replay into this run's log — and so
+				// its `end_turn` cannot be read as this run completing.
+				...(resume.events_cursor ? { events_cursor: resume.events_cursor } : {})
+			};
+			return {
+				provider_session_id: resume.provider_session_id,
+				provider_url: `https://platform.claude.com/workspaces/default/sessions/${resume.provider_session_id}`,
+				provider_meta: JSON.stringify(resumedMeta)
+			};
+		}
+
 		const environmentId = await provider.ensureEnvironment(ctx);
 		const agentId = await provider.ensureTierAgent(ctx, input.tier, input.model, effort);
 		const { vaultId, credentialId } = await provider.createRunVault(
@@ -612,7 +692,6 @@ export function createClaudeAdapter(env: Env, opts: ClaudeAdapterOptions = {}): 
 			apiHost
 		);
 
-		const issueRef = `${issue.project_name}/${issue.number}`;
 		const preamble = buildSupervisorPreamble({
 			variant: 'claude_managed',
 			runId: input.runId,
@@ -795,7 +874,12 @@ export function createClaudeAdapter(env: Env, opts: ClaudeAdapterOptions = {}): 
 				preambleVariant: 'claude_managed'
 			}),
 			expiresAt,
-			now: input.now
+			now: input.now,
+			// The event boundary the successor starts its log from: without it
+			// the whole predecessor conversation replays into the new run.
+			transferData: meta.events_cursor
+				? JSON.stringify({ events_cursor: meta.events_cursor })
+				: null
 		});
 		// The provider-side sweeps read this flag; the resource row is the
 		// authority, but the flag is what stops a join in the hot GC loop.
