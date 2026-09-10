@@ -333,7 +333,7 @@ export function runRow(run: AgentRun): string[] {
 		run.issue_ref ? issueRef(run.issue_ref) : run.issue_id,
 		run.runner_name,
 		`${run.tier}${run.model ? ` (${run.model})` : ''}`,
-		run.status,
+		`${run.status}${run.resumed_from_run_id ? ` · resumed run ${run.resumed_from_run_id}` : ''}`,
 		runDurationLabel(run),
 		runCostLabel(run) ?? '—',
 		timestamp(run.created_at)

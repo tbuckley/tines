@@ -270,6 +270,7 @@ export async function updateSupervisorSettings(
 					pricing: null,
 					github_pat_enc: patEnc ?? null,
 					github_pat_hint: patHint ?? null,
+					source_credentials_revision: patEnc !== undefined ? 1 : 0,
 					updated_at: now
 				})
 				.onConflict((oc) =>
@@ -279,7 +280,11 @@ export async function updateSupervisorSettings(
 						attempt_limit: attemptLimit,
 						// The PAT columns only move when this write replaces/clears them.
 						...(patEnc !== undefined
-							? { github_pat_enc: patEnc, github_pat_hint: patHint ?? null }
+							? {
+									github_pat_enc: patEnc,
+									github_pat_hint: patHint ?? null,
+									source_credentials_revision: sql`source_credentials_revision + 1`
+								}
 							: {}),
 						updated_at: now
 					})

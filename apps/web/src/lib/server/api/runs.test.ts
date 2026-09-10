@@ -54,3 +54,34 @@ describe('listRuns project scope', () => {
 		expect(other.hasMore).toBe(true);
 	});
 });
+
+describe('run continuation fields', () => {
+	it('serializes lineage, local turn counts and fallback metadata without internal paths', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const runner = addRunner(t);
+		const issue = addIssue(t);
+		addRun(t, { id: 'run_old', issueId: issue, runnerId: runner, createdAt: NOW - 1 });
+		addRun(t, { id: 'run_new', issueId: issue, runnerId: runner, createdAt: NOW });
+		t.sqlite
+			.prepare(
+				`UPDATE agent_run SET
+			turn_count = 4, conversation_turn_count = 11, resumed_from_run_id = 'run_old',
+			resume_expires_at = ?, workspace_path = '/private/workspace',
+			resume_fallback_reason = 'unavailable'
+			WHERE id = 'run_new'`
+			)
+			.run(NOW + 1000);
+
+		const result = await listRuns(t.db, USER, { issue }, { cursor: null, limit: 50 });
+		const run = result.items.find((item) => item.id === 'run_new');
+		expect(run).toMatchObject({
+			turn_count: 4,
+			conversation_turn_count: 11,
+			resumed_from_run_id: 'run_old',
+			resume_expires_at: NOW + 1000,
+			resume_fallback_reason: 'unavailable'
+		});
+		expect(JSON.stringify(run)).not.toContain('/private/workspace');
+	});
+});

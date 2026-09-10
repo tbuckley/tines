@@ -1478,6 +1478,11 @@ export const RUNNER_NAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
 /** Local-runner liveness: online = last poll within this window. */
 export const RUNNER_ONLINE_WINDOW_MS = 2 * 60 * 1000;
 
+export const DEFAULT_RESUME_WINDOW_HOURS = 48;
+export const DEFAULT_RESUME_MAX_TURNS = 25;
+export const DEFAULT_RESUME_MAX_TOKENS = 100_000;
+export const DEFAULT_RESUME_MAX_COST_USD = 2;
+
 /** A local runner unseen this long has its running runs failed by the sweep. */
 export const RUNNER_OFFLINE_FAIL_MS = 5 * 60 * 1000;
 
@@ -1676,6 +1681,12 @@ export interface Runner {
 	/** The runner's own concurrency cap; always enforced. */
 	max_concurrent: number;
 	max_run_minutes: number;
+	/** Experimental continuation policy; disabled by default. */
+	resume_enabled: boolean;
+	resume_window_hours: number;
+	resume_max_turns: number;
+	resume_max_tokens: number;
+	resume_max_cost_usd: number;
 	default_tier: ModelTier;
 	/** Per-tier model overrides; null = all built-ins. */
 	tiers: RunnerTierOverrides | null;
@@ -1728,6 +1739,11 @@ export interface CreateRunnerRequest {
 	api_key?: string;
 	max_concurrent?: number;
 	max_run_minutes?: number;
+	resume_enabled?: boolean;
+	resume_window_hours?: number;
+	resume_max_turns?: number;
+	resume_max_tokens?: number;
+	resume_max_cost_usd?: number;
 	default_tier?: ModelTier;
 	tiers?: RunnerTierOverrides;
 	/**
@@ -1747,6 +1763,11 @@ export interface UpdateRunnerRequest {
 	api_key?: string;
 	max_concurrent?: number;
 	max_run_minutes?: number;
+	resume_enabled?: boolean;
+	resume_window_hours?: number;
+	resume_max_turns?: number;
+	resume_max_tokens?: number;
+	resume_max_cost_usd?: number;
 	default_tier?: ModelTier;
 	/** Replaces the override map wholesale; null clears all overrides. */
 	tiers?: RunnerTierOverrides | null;
@@ -1993,6 +2014,18 @@ export interface AgentRun {
 	state_at_end_name: string | null;
 	provider_session_id: string | null;
 	provider_url: string | null;
+	turn_count: number | null;
+	conversation_turn_count: number | null;
+	resumed_from_run_id: string | null;
+	resume_expires_at: number | null;
+	resume_fallback_reason:
+		| 'expired'
+		| 'long_context'
+		| 'incompatible'
+		| 'unavailable'
+		| 'unsupported'
+		| 'provider_rejected'
+		| null;
 	error: string | null;
 	created_at: number;
 	started_at: number | null;

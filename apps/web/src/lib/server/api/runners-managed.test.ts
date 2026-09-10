@@ -60,6 +60,46 @@ describe('createRunner (claude_managed)', () => {
 		expect(JSON.stringify(runner)).not.toContain(row.secret_enc);
 	});
 
+	it('stores the conservative opt-in resume policy and validates every bound', async () => {
+		const t = world();
+		const runner = await createRunner(
+			t.db,
+			t.env,
+			actor,
+			{
+				type: 'claude_managed',
+				name: 'resume-cloud',
+				api_key: 'sk-ant-key',
+				resume_enabled: true,
+				resume_window_hours: 12,
+				resume_max_turns: 8,
+				resume_max_tokens: 50_000,
+				resume_max_cost_usd: 1.25
+			},
+			okPing
+		);
+		expect(runner).toMatchObject({
+			resume_enabled: true,
+			resume_window_hours: 12,
+			resume_max_turns: 8,
+			resume_max_tokens: 50_000,
+			resume_max_cost_usd: 1.25
+		});
+
+		for (const patch of [
+			{ resume_window_hours: 0 },
+			{ resume_window_hours: 169 },
+			{ resume_max_turns: 0 },
+			{ resume_max_tokens: 10_000_001 },
+			{ resume_max_cost_usd: 0 },
+			{ resume_max_cost_usd: Number.NaN }
+		]) {
+			await expect(updateRunner(t.db, t.env, actor, runner.id, patch)).rejects.toMatchObject({
+				code: 'invalid_field'
+			});
+		}
+	});
+
 	it('a failed ping creates nothing', async () => {
 		const t = world();
 		await expect(
@@ -161,6 +201,32 @@ describe('updateRunner (managed credentials, tiers, budget)', () => {
 		await expect(
 			updateRunner(t.db, t.env, actor, local.id, { api_key: 'sk-x' }, okPing)
 		).rejects.toMatchObject({ code: 'invalid_field', details: { field: 'api_key' } });
+	});
+
+	it('rejects enabling resume on local non-Claude harnesses and on a harness switch', async () => {
+		const t = world();
+		await expect(
+			createRunner(t.db, t.env, actor, {
+				type: 'local',
+				name: 'codex',
+				config: { harness: 'codex' },
+				resume_enabled: true
+			})
+		).rejects.toMatchObject({ code: 'resume_unsupported' });
+
+		const local = await createRunner(t.db, t.env, actor, {
+			type: 'local',
+			name: 'claude',
+			resume_enabled: true
+		});
+		await expect(
+			updateRunner(t.db, t.env, actor, local.id, { config: { harness: 'codex' } })
+		).rejects.toMatchObject({ code: 'resume_unsupported' });
+		const disabled = await updateRunner(t.db, t.env, actor, local.id, {
+			config: { harness: 'codex' },
+			resume_enabled: false
+		});
+		expect(disabled.resume_enabled).toBe(false);
 	});
 });
 

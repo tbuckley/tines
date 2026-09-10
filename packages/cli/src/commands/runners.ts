@@ -41,7 +41,33 @@ import {
 	type Runner,
 	type UpdateRunnerRequest
 } from '@tines/shared';
-import type { Command } from 'commander';
+import { InvalidArgumentError, type Command } from 'commander';
+
+function parseBoolean(value: string): boolean {
+	if (value === 'true') return true;
+	if (value === 'false') return false;
+	throw new InvalidArgumentError('must be true or false');
+}
+
+function boundedInteger(min: number, max: number) {
+	return (value: string): number => {
+		if (!/^\d+$/.test(value))
+			throw new InvalidArgumentError(`must be an integer between ${min} and ${max}`);
+		const parsed = Number(value);
+		if (!Number.isSafeInteger(parsed) || parsed < min || parsed > max) {
+			throw new InvalidArgumentError(`must be an integer between ${min} and ${max}`);
+		}
+		return parsed;
+	};
+}
+
+function resumeCost(value: string): number {
+	const parsed = Number(value);
+	if (!Number.isFinite(parsed) || parsed <= 0 || parsed > 1000) {
+		throw new InvalidArgumentError('must be greater than 0 and at most 1000');
+	}
+	return parsed;
+}
 
 /** The tier mapping, shared by `runners show` and `runners tiers`. */
 function printTierTable(runner: Runner): void {
@@ -113,6 +139,12 @@ export function register(program: Command): void {
 			if (runner.type !== 'local') {
 				console.log(`api key: ${runner.has_api_key ? 'set (write-only)' : 'missing'}`);
 			}
+			console.log(
+				`resume awaiting sessions: ${runner.resume_enabled ? 'enabled' : 'disabled'}  window: ${runner.resume_window_hours}h`
+			);
+			console.log(
+				`resume limits: ${runner.resume_max_turns} local turns  ${runner.resume_max_tokens.toLocaleString()} managed tokens  $${runner.resume_max_cost_usd} managed cost`
+			);
 			if (runner.budget) {
 				const b = runner.budget;
 				const parts: string[] = [];
@@ -124,6 +156,56 @@ export function register(program: Command): void {
 				if (parts.length > 0) console.log(`budget: ${parts.join('  ')}`);
 			}
 			printTierTable(runner);
+		}
+	);
+
+	withCommon(
+		runners
+			.command('edit <name>')
+			.description('Edit experimental awaiting-session continuation settings')
+			.option('--resume-enabled <true|false>', 'enable or disable continuation', parseBoolean)
+			.option('--resume-window-hours <n>', 'continuation window (1-168)', boundedInteger(1, 168))
+			.option(
+				'--resume-max-turns <n>',
+				'local conversation turn limit (1-1000)',
+				boundedInteger(1, 1000)
+			)
+			.option(
+				'--resume-max-tokens <n>',
+				'managed conversation token limit (1-10000000)',
+				boundedInteger(1, 10_000_000)
+			)
+			.option('--resume-max-cost-usd <n>', 'managed conversation cost limit (0-1000]', resumeCost)
+	).action(
+		async (
+			ref: string,
+			opts: CommonOpts & {
+				resumeEnabled?: boolean;
+				resumeWindowHours?: number;
+				resumeMaxTurns?: number;
+				resumeMaxTokens?: number;
+				resumeMaxCostUsd?: number;
+			}
+		) => {
+			const patch: UpdateRunnerRequest = {
+				...(opts.resumeEnabled !== undefined ? { resume_enabled: opts.resumeEnabled } : {}),
+				...(opts.resumeWindowHours !== undefined
+					? { resume_window_hours: opts.resumeWindowHours }
+					: {}),
+				...(opts.resumeMaxTurns !== undefined ? { resume_max_turns: opts.resumeMaxTurns } : {}),
+				...(opts.resumeMaxTokens !== undefined ? { resume_max_tokens: opts.resumeMaxTokens } : {}),
+				...(opts.resumeMaxCostUsd !== undefined
+					? { resume_max_cost_usd: opts.resumeMaxCostUsd }
+					: {})
+			};
+			if (Object.keys(patch).length === 0) die('provide at least one resume setting');
+			const api = client(opts);
+			const runner = await resolveRunner(api, ref);
+			const updated = await api.updateRunner(runner.id, patch);
+			if (opts.json) return printJson(updated);
+			console.log(
+				`updated runner "${updated.name}"; awaiting-session resume is ${updated.resume_enabled ? 'enabled' : 'disabled'}`
+			);
 		}
 	);
 
@@ -539,7 +621,9 @@ export function register(program: Command): void {
 			const api = client(opts);
 			const run = await api.getRun(id);
 			if (opts.json) return printJson(run);
-			console.log(`${run.id}  ${run.status}  on ${run.runner_name}`);
+			console.log(
+				`${run.id}  ${run.status}  on ${run.runner_name}${run.resumed_from_run_id ? `  · resumed run ${run.resumed_from_run_id}` : ''}`
+			);
 			if (run.issue_ref) console.log(`issue: ${issueRef(run.issue_ref)} — ${run.issue_ref.title}`);
 			console.log(`tier: ${run.tier}  model: ${run.model ?? '(n/a)'}`);
 			console.log(

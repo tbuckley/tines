@@ -1,5 +1,9 @@
 import {
 	ACTIVE_RUN_STATUSES,
+	DEFAULT_RESUME_MAX_COST_USD,
+	DEFAULT_RESUME_MAX_TOKENS,
+	DEFAULT_RESUME_MAX_TURNS,
+	DEFAULT_RESUME_WINDOW_HOURS,
 	DEFAULT_MANAGED_RUN_COST_USD,
 	MODEL_TIERS,
 	RUNNER_NAME_PATTERN,
@@ -89,6 +93,27 @@ export function validateBoundedInt(
 		);
 	}
 	return value;
+}
+
+function validateResumeCost(value: unknown): number {
+	if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0 || value > 1000) {
+		throw new ApiFail(
+			422,
+			'invalid_field',
+			'"resume_max_cost_usd" must be greater than 0 and at most 1000',
+			{
+				field: 'resume_max_cost_usd'
+			}
+		);
+	}
+	return value;
+}
+
+function supportsResume(type: string, config: Record<string, unknown>): boolean {
+	return (
+		type === 'claude_managed' ||
+		(type === 'local' && (config.harness ?? 'claude_code') === 'claude_code')
+	);
 }
 
 const LOCAL_HARNESSES = ['claude_code', 'codex', 'custom'] as const;
@@ -327,6 +352,11 @@ function serializeRunner(row: RunnerRow, now = Date.now()): Runner {
 		status: row.status as RunnerStatus,
 		max_concurrent: row.max_concurrent,
 		max_run_minutes: row.max_run_minutes,
+		resume_enabled: row.resume_enabled === 1,
+		resume_window_hours: row.resume_window_hours,
+		resume_max_turns: row.resume_max_turns,
+		resume_max_tokens: row.resume_max_tokens,
+		resume_max_cost_usd: row.resume_max_cost_usd,
 		default_tier: row.default_tier as ModelTier,
 		tiers,
 		tier_models: builtinTierModels(row),
@@ -465,6 +495,36 @@ export async function createRunner(
 		config = validateLocalConfig(body.config);
 		budget = body.budget === undefined ? null : validateRunnerBudget(body.budget);
 	}
+	const resumeEnabled = body.resume_enabled ?? false;
+	if (typeof resumeEnabled !== 'boolean') {
+		throw new ApiFail(422, 'invalid_field', '"resume_enabled" must be a boolean', {
+			field: 'resume_enabled'
+		});
+	}
+	if (resumeEnabled && !supportsResume(body.type, config)) {
+		throw new ApiFail(
+			422,
+			'resume_unsupported',
+			'Resume is supported only by Claude Code local runners and Claude managed runners',
+			{ field: 'resume_enabled' }
+		);
+	}
+	const resumeWindowHours =
+		body.resume_window_hours === undefined
+			? DEFAULT_RESUME_WINDOW_HOURS
+			: validateBoundedInt(body.resume_window_hours, 'resume_window_hours', 1, 168);
+	const resumeMaxTurns =
+		body.resume_max_turns === undefined
+			? DEFAULT_RESUME_MAX_TURNS
+			: validateBoundedInt(body.resume_max_turns, 'resume_max_turns', 1, 1000);
+	const resumeMaxTokens =
+		body.resume_max_tokens === undefined
+			? DEFAULT_RESUME_MAX_TOKENS
+			: validateBoundedInt(body.resume_max_tokens, 'resume_max_tokens', 1, 10_000_000);
+	const resumeMaxCostUsd =
+		body.resume_max_cost_usd === undefined
+			? DEFAULT_RESUME_MAX_COST_USD
+			: validateResumeCost(body.resume_max_cost_usd);
 
 	const now = Date.now();
 	// 'rnr' leaves the `run_` prefix free for agent_run ids.
@@ -491,6 +551,12 @@ export async function createRunner(
 				draining: 0,
 				backoff_until: null,
 				backoff_reason: null,
+				resume_enabled: resumeEnabled ? 1 : 0,
+				resume_window_hours: resumeWindowHours,
+				resume_max_turns: resumeMaxTurns,
+				resume_max_tokens: resumeMaxTokens,
+				resume_max_cost_usd: resumeMaxCostUsd,
+				resume_config_revision: 0,
 				created_at: now,
 				updated_at: now
 			})
@@ -526,6 +592,12 @@ export async function updateRunner(
 		budget: string | null;
 		secret_enc: string;
 		config: string;
+		resume_enabled: number;
+		resume_window_hours: number;
+		resume_max_turns: number;
+		resume_max_tokens: number;
+		resume_max_cost_usd: number;
+		resume_config_revision: number;
 	}> = {};
 
 	if (body.name !== undefined) {
@@ -607,6 +679,60 @@ export async function updateRunner(
 			patch.config = config;
 			changed.push('config');
 		}
+	}
+	const effectiveConfig = JSON.parse(patch.config ?? row.config) as Record<string, unknown>;
+	const resumeEnabled = body.resume_enabled ?? row.resume_enabled === 1;
+	if (typeof resumeEnabled !== 'boolean') {
+		throw new ApiFail(422, 'invalid_field', '"resume_enabled" must be a boolean', {
+			field: 'resume_enabled'
+		});
+	}
+	if (resumeEnabled && !supportsResume(row.type, effectiveConfig)) {
+		throw new ApiFail(
+			422,
+			'resume_unsupported',
+			'Resume is supported only by Claude Code local runners and Claude managed runners',
+			{ field: 'resume_enabled' }
+		);
+	}
+	const resumeFields: [
+		keyof Pick<
+			UpdateRunnerRequest,
+			'resume_window_hours' | 'resume_max_turns' | 'resume_max_tokens'
+		>,
+		number,
+		number
+	][] = [
+		['resume_window_hours', 1, 168],
+		['resume_max_turns', 1, 1000],
+		['resume_max_tokens', 1, 10_000_000]
+	];
+	if (body.resume_enabled !== undefined && Number(resumeEnabled) !== row.resume_enabled) {
+		patch.resume_enabled = resumeEnabled ? 1 : 0;
+		changed.push('resume_enabled');
+	}
+	for (const [field, min, max] of resumeFields) {
+		if (body[field] === undefined) continue;
+		const value = validateBoundedInt(body[field], field, min, max);
+		if (value !== row[field]) {
+			patch[field] = value;
+			changed.push(field);
+		}
+	}
+	if (body.resume_max_cost_usd !== undefined) {
+		const value = validateResumeCost(body.resume_max_cost_usd);
+		if (value !== row.resume_max_cost_usd) {
+			patch.resume_max_cost_usd = value;
+			changed.push('resume_max_cost_usd');
+		}
+	}
+	if (
+		changed.some(
+			(field) =>
+				field === 'api_key' || field === 'config' || field === 'tiers' || field === 'default_tier'
+		)
+	) {
+		patch.resume_config_revision = row.resume_config_revision + 1;
 	}
 
 	if (changed.length === 0) return serializeRunner(row);
@@ -784,6 +910,12 @@ export async function registerRunner(
 				draining: 0,
 				backoff_until: null,
 				backoff_reason: null,
+				resume_enabled: 0,
+				resume_window_hours: DEFAULT_RESUME_WINDOW_HOURS,
+				resume_max_turns: DEFAULT_RESUME_MAX_TURNS,
+				resume_max_tokens: DEFAULT_RESUME_MAX_TOKENS,
+				resume_max_cost_usd: DEFAULT_RESUME_MAX_COST_USD,
+				resume_config_revision: 0,
 				created_at: now,
 				updated_at: now
 			})
