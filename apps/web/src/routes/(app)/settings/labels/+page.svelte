@@ -1,4 +1,6 @@
 <script lang="ts">
+	import IconAlertCircle from '@tabler/icons-svelte/icons/alert-circle';
+	import IconCheck from '@tabler/icons-svelte/icons/check';
 	import IconPlus from '@tabler/icons-svelte/icons/plus';
 	import IconTrash from '@tabler/icons-svelte/icons/trash';
 	import { LABEL_COLORS, type LabelColor, type LabelWithUsage } from '@tines/shared';
@@ -16,6 +18,12 @@
 	let creating = $state(false);
 	let errorMessage = $state<string | null>(null);
 	let pendingDelete = $state<LabelWithUsage | null>(null);
+	type SaveStatus =
+		| { state: 'saving'; request: number }
+		| { state: 'saved'; request: number }
+		| { state: 'error'; request: number; message: string };
+	let saveStatuses = $state<Record<string, SaveStatus>>({});
+	let nextSaveRequest = 0;
 
 	async function run(fn: () => Promise<unknown>) {
 		errorMessage = null;
@@ -38,6 +46,30 @@
 		});
 		creating = false;
 	}
+
+	async function saveLabel(labelId: string, changes: Parameters<typeof api.updateLabel>[1]) {
+		const request = ++nextSaveRequest;
+		saveStatuses[labelId] = { state: 'saving', request };
+		try {
+			await api.updateLabel(labelId, changes);
+			await invalidateAll();
+			if (saveStatuses[labelId]?.request === request) {
+				saveStatuses[labelId] = { state: 'saved', request };
+			}
+		} catch (e) {
+			if (saveStatuses[labelId]?.request === request) {
+				saveStatuses[labelId] = {
+					state: 'error',
+					request,
+					message: e instanceof Error ? e.message : 'Something went wrong — try again.'
+				};
+			}
+		}
+	}
+
+	function clearSaveStatus(labelId: string) {
+		delete saveStatuses[labelId];
+	}
 </script>
 
 <svelte:head><title>Labels · Tines</title></svelte:head>
@@ -45,7 +77,7 @@
 <h1 class="mb-1 text-2xl font-semibold tracking-tight">Labels</h1>
 <p class="text-muted-foreground mb-6 text-sm">
 	Labels are shared across every project. Agents can apply the ones listed here, but only you can
-	add to the vocabulary.
+	add to the vocabulary. Changes save automatically when you leave a field.
 </p>
 
 {#if errorMessage}
@@ -71,23 +103,24 @@
 {:else}
 	<ul class="divide-y rounded-lg border">
 		{#each data.labels as label (label.id)}
+			{@const saveStatus = saveStatuses[label.id]}
 			<li class="flex flex-wrap items-center gap-3 px-4 py-3">
 				<span class="w-40 shrink-0"><LabelChip {label} /></span>
 				<Input
 					value={label.name}
 					class="h-9 w-48"
 					aria-label="Rename {label.name}"
+					oninput={() => clearSaveStatus(label.id)}
 					onchange={(e) => {
 						const name = e.currentTarget.value.trim();
-						if (name && name !== label.name) run(() => api.updateLabel(label.id, { name }));
+						if (name && name !== label.name) saveLabel(label.id, { name });
 					}}
 				/>
 				<Select
 					class="h-9 w-32"
 					value={label.color}
 					aria-label="Color for {label.name}"
-					onchange={(e) =>
-						run(() => api.updateLabel(label.id, { color: e.currentTarget.value as LabelColor }))}
+					onchange={(e) => saveLabel(label.id, { color: e.currentTarget.value as LabelColor })}
 				>
 					{#each LABEL_COLORS as color (color)}
 						<option value={color}>{color}</option>
@@ -98,12 +131,30 @@
 					placeholder="Description"
 					class="h-9 min-w-40 flex-1"
 					aria-label="Description for {label.name}"
+					oninput={() => clearSaveStatus(label.id)}
 					onchange={(e) => {
 						const description = e.currentTarget.value;
-						if (description !== label.description)
-							run(() => api.updateLabel(label.id, { description }));
+						if (description !== label.description) saveLabel(label.id, { description });
 					}}
 				/>
+				<span
+					class="flex w-20 shrink-0 items-center gap-1 text-xs"
+					aria-live="polite"
+					aria-atomic="true"
+				>
+					{#if saveStatus?.state === 'saving'}
+						<span class="text-muted-foreground">Saving…</span>
+					{:else if saveStatus?.state === 'saved'}
+						<span class="flex items-center gap-1 text-emerald-600 dark:text-emerald-400">
+							<IconCheck size={14} stroke={2} /> Saved
+						</span>
+					{:else if saveStatus?.state === 'error'}
+						<span class="text-destructive flex items-center gap-1" title={saveStatus.message}>
+							<IconAlertCircle size={14} stroke={2} /> Not saved
+							<span class="sr-only">: {saveStatus.message}</span>
+						</span>
+					{/if}
+				</span>
 				<a
 					class="text-muted-foreground w-24 shrink-0 text-right text-xs hover:underline"
 					href="/issues?label={encodeURIComponent(label.id)}"
