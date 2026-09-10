@@ -1,7 +1,13 @@
 /** `tines issues` — issues, their artifacts, and their links. */
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
+import { createInterface } from 'node:readline/promises';
 import { BODY_VALUE_HELP, readBodyValue } from '../body-value.js';
+import {
+	formatTransferItem,
+	formatTransferPreview,
+	formatTransferResult
+} from '../issue-transfer.js';
 import {
 	client,
 	collect,
@@ -494,6 +500,83 @@ export function register(program: Command): void {
 			`${moved.project_name}/#${moved.number}: ${issue.state.name} → ${moved.state.name} ("${action}")`
 		);
 	});
+
+	withCommon(
+		issues
+			.command('transfer <ref>')
+			.description(
+				'Move an issue to another project, keeping its ID, record and old refs (this is not the workflow "move")'
+			)
+			.requiredOption('-p, --project <name-or-id>', 'destination project')
+			.option('--dry-run', 'print the review and exit without moving anything')
+			.option('--inspect <n>', 'print the full content of reviewed guidance item [n]')
+			.option('-y, --yes', 'skip the confirmation prompt')
+	).action(
+		async (
+			ref: string,
+			opts: CommonOpts & { project: string; dryRun?: boolean; inspect?: string; yes?: boolean }
+		) => {
+			const api = client(opts);
+			const issue = await resolveIssue(api, ref);
+			const destination = await resolveProject(api, opts.project);
+			// Everything below reviews one fetched preview: the token binds this
+			// exact review, so a later read can never be what gets confirmed.
+			const preview = await api.previewIssueTransfer(issue.id, destination.id);
+			// Under --json stdout carries exactly one object, so the human review
+			// and every prompt go to stderr.
+			const review = () => console.error(formatTransferPreview(preview));
+
+			if (opts.inspect !== undefined) {
+				const text = formatTransferItem(preview, Number(opts.inspect));
+				if (opts.json) return printJson({ ...preview, inspected: text });
+				return console.log(text);
+			}
+			if (opts.dryRun) {
+				if (opts.json) return printJson(preview);
+				return console.log(formatTransferPreview(preview));
+			}
+			if (!preview.can_commit || !preview.preview_token) {
+				const blocker = preview.blockers[0];
+				if (opts.json) return printJson(preview);
+				review();
+				return die(blocker ? `${blocker.code}: ${blocker.message}` : 'this move is blocked');
+			}
+			if (!opts.yes) {
+				if (!process.stdin.isTTY) {
+					die(
+						`refusing to move without a confirmation: rerun with --yes, or review it first with --dry-run --json`
+					);
+				}
+				review();
+				const rl = createInterface({ input: process.stdin, output: process.stderr });
+				const answer = await rl.question(
+					`Move ${preview.old_ref.ref} to ${preview.destination.name}? [y/N] `
+				);
+				rl.close();
+				if (!/^y(es)?$/i.test(answer.trim())) die('aborted');
+			}
+			try {
+				const result = await api.transferIssue(issue.id, {
+					project_id: destination.id,
+					preview_token: preview.preview_token
+				});
+				if (opts.json) return printJson(result);
+				console.log(formatTransferResult(result));
+			} catch (e) {
+				// A stale or competing move is never reposted for the operator: the
+				// destination number would be allocated against a review nobody saw.
+				const fail = e as { code?: string; message?: string; details?: unknown };
+				if (opts.json && fail.code) {
+					printJson({
+						error: { code: fail.code, message: fail.message, details: fail.details ?? null }
+					});
+					process.exitCode = 1;
+					return;
+				}
+				throw e;
+			}
+		}
+	);
 
 	withCommon(
 		issues
