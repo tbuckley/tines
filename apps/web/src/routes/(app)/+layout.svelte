@@ -52,13 +52,24 @@
 		const predecessor = focusHint.predecessor();
 		const write = predecessor.then(async () => {
 			await api.updatePreferences({ focused_project_id: projectId });
-			focusHint.clear();
+			// A navigation that began while this write was pending can reuse the
+			// resident layout node. Keep its chrome aligned with the freshly loaded
+			// child data until a later layout refresh replaces the hint.
+			if (navigating.to) {
+				focusHint.set(
+					data.projects.find((project: { id: string }) => project.id === projectId) ?? null
+				);
+			} else {
+				focusHint.clear();
+			}
 		});
 		focusHint.track(write);
 		await write;
 		// Every focus-aware load shares this dependency, including children that
-		// read the app layout through parent().
-		await invalidate('app:preferences');
+		// read the app layout through parent(). A navigation already waiting on
+		// this write will load that dependency itself; invalidating the resident
+		// page at the same time can supersede the navigation.
+		if (!navigating.to) await invalidate('app:preferences');
 	}
 
 	let menuOpen = $state(false);

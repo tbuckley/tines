@@ -70,7 +70,10 @@ describe('FocusOperations', () => {
 		const waiting = operations.settled().then(done);
 		operations.track(second.promise);
 		first.resolve();
-		await Promise.resolve();
+		// Cross an event-loop turn so the first snapshot's waiter has definitely
+		// continued. A one-snapshot implementation resolves here even though the
+		// operation registered after settled() began is still pending.
+		await new Promise((resolve) => setTimeout(resolve, 0));
 		expect(done).not.toHaveBeenCalled();
 		second.resolve();
 		await waiting;
