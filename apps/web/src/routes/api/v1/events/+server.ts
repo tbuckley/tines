@@ -16,7 +16,7 @@ export const GET: RequestHandler = api(async (event) => {
 	const project = params.get('project');
 	if (project) {
 		q = q.where((eb) =>
-			eb.or([eb('event.project_id', '=', project), eb('project.name', '=', project)])
+			eb.or([eb('event.project_id', '=', project), eb('event_project.name', '=', project)])
 		);
 	}
 	const type = params.get('type');

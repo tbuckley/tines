@@ -55,6 +55,36 @@
 	const dur = () => (prefersReducedMotion() ? 0 : 150);
 
 	let closeButton = $state<HTMLButtonElement | null>(null);
+	let dialog = $state<HTMLElement | null>(null);
+
+	const FOCUSABLE =
+		'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), summary, [tabindex]:not([tabindex="-1"])';
+
+	/**
+	 * Keep Tab inside the dialog. `aria-modal` promises a keyboard user that the
+	 * page behind is unreachable; without this the very next Tab lands on it,
+	 * and the operator confirms a dialog they can no longer see focus in.
+	 */
+	function ontab(e: KeyboardEvent) {
+		if (e.key !== 'Tab' || !dialog) return;
+		const items = [...dialog.querySelectorAll<HTMLElement>(FOCUSABLE)].filter(
+			(el) => el.offsetParent !== null || el === document.activeElement
+		);
+		if (items.length === 0) return;
+		const first = items[0];
+		const last = items[items.length - 1];
+		const active = document.activeElement;
+		if (!dialog.contains(active)) {
+			e.preventDefault();
+			(e.shiftKey ? last : first).focus();
+		} else if (e.shiftKey && active === first) {
+			e.preventDefault();
+			last.focus();
+		} else if (!e.shiftKey && active === last) {
+			e.preventDefault();
+			first.focus();
+		}
+	}
 
 	function close() {
 		open = false;
@@ -65,7 +95,9 @@
 	// this modal already handled (bits-ui prevents default but lets the event
 	// bubble on to window).
 	function onkeydown(e: KeyboardEvent) {
-		if (e.key === 'Escape' && open && !e.defaultPrevented) close();
+		if (!open) return;
+		if (e.key === 'Escape' && !e.defaultPrevented) close();
+		else ontab(e);
 	}
 
 	// While open: lock the page behind so a touch drag that reaches the end of
@@ -126,6 +158,7 @@
 			? 'max-w-4xl'
 			: 'max-w-md'} -translate-x-1/2 flex-col overflow-hidden rounded-xl border shadow-lg sm:top-1/2 sm:-translate-y-1/2"
 		style="max-height: calc(100dvh - 2rem - env(safe-area-inset-bottom, 0px))"
+		bind:this={dialog}
 		use:portal
 		transition:scale|global={{ duration: dur(), start: 0.96 }}
 		role="dialog"

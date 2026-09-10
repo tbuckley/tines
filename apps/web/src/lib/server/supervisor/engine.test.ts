@@ -271,6 +271,7 @@ describe('the guarded claim', () => {
 		runId: `arun_${Math.random().toString(36).slice(2)}`,
 		userId: USER,
 		issueId,
+		projectId: PROJECT,
 		stateId: OPEN,
 		runnerId,
 		maxConcurrent: 5,
@@ -288,6 +289,33 @@ describe('the guarded claim', () => {
 		const input = claimInput(t, issue, runner);
 		// The pass read the queue while the project was live.
 		t.sqlite.exec(`UPDATE project SET archived_at = ${NOW} WHERE id = '${PROJECT}'`);
+		expect(await claimRun(t.db, t.env, input)).toBe(false);
+		expect(runs(t)).toHaveLength(0);
+	});
+
+	it('refuses a stale route after a project assignment changes, including ABA', async () => {
+		const t = world();
+		const runner = addRunner(t);
+		const issue = addIssue(t);
+		const input = claimInput(t, issue, runner, { projectAssignmentToken: '' });
+		// A -> B -> A can restore the same project while never restoring this token.
+		t.sqlite.exec(
+			`UPDATE issue SET project_assignment_token = 'assignment-after-aba' WHERE id = '${issue}'`
+		);
+		expect(await claimRun(t.db, t.env, input)).toBe(false);
+		expect(runs(t)).toHaveLength(0);
+	});
+
+	it('refuses a source route after the issue moves even if its assignment token is unchanged', async () => {
+		const t = world();
+		const runner = addRunner(t);
+		const issue = addIssue(t);
+		const input = claimInput(t, issue, runner);
+		t.sqlite.exec(`
+			INSERT INTO project (id, user_id, name, created_at, updated_at)
+			VALUES ('prj_moved', '${USER}', 'moved', ${NOW}, ${NOW});
+			UPDATE issue SET project_id = 'prj_moved', number = 1 WHERE id = '${issue}';
+		`);
 		expect(await claimRun(t.db, t.env, input)).toBe(false);
 		expect(runs(t)).toHaveLength(0);
 	});
@@ -688,6 +716,7 @@ describe('launch failures', () => {
 			runId: 'arun_race',
 			userId: USER,
 			issueId: issue,
+			projectId: PROJECT,
 			stateId: OPEN,
 			runnerId,
 			maxConcurrent: 1,

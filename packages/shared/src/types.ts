@@ -486,6 +486,9 @@ export interface Issue {
 	/** Set when the issue was created by a scheduled task (null once the schedule is deleted). */
 	scheduled_task_id: string | null;
 	scheduled_task_name: string | null;
+	/** The schedule keeps its original project when an instance moves. */
+	scheduled_task_project_id: string | null;
+	scheduled_task_project_name: string | null;
 	/** Pin: replaces routing-rule matching entirely for this issue. */
 	pinned_runner_id: string | null;
 	pinned_runner_name: string | null;
@@ -1105,6 +1108,141 @@ export interface OverriddenContextItem {
 	overridden_by: string;
 	/** Set when the loser matched through an ancestor of the issue's state. */
 	inherited_from: InheritedFrom | null;
+}
+
+// ---------------------------------------------------------------------------
+// Issue project transfer (Tines/392)
+
+/** One address an issue has answered to: its project and number at that time. */
+export interface IssueTransferRef {
+	project_id: string;
+	project_name: string;
+	number: number;
+	/** The copyable `Project/N` form. */
+	ref: string;
+}
+
+export interface IssueTransferProject {
+	id: string;
+	name: string;
+	archived: boolean;
+}
+
+/** Why a transfer cannot be committed right now, and what to do about it. */
+export interface IssueTransferBlocker {
+	code: 'run_key_forbidden' | 'project_archived' | 'issue_busy' | 'transfer_preview_unavailable';
+	message: string;
+	/** Set for `issue_busy`: the run holding the issue. */
+	run_id?: string;
+	run_status?: string;
+	/** A command or action that clears this blocker, when one exists. */
+	remedy?: string;
+}
+
+/**
+ * How one context item's participation changes across the move. `rescoped`
+ * covers the project∧issue rows the commit carries with the issue; `retained`
+ * an issue-only or shared row that matches on both sides unchanged.
+ */
+export type IssueTransferContextChangeKind =
+	'added' | 'removed' | 'retained' | 'rescoped' | 'replaced';
+
+export interface IssueTransferContextChange {
+	item_id: string;
+	name: string;
+	kind: ContextKind;
+	change: IssueTransferContextChangeKind;
+	scope_before: ContextScope | null;
+	scope_after: ContextScope | null;
+	/** Whether the item wins its name (rather than being overridden) each side. */
+	effective_before: boolean;
+	effective_after: boolean;
+	/** Repositories only: the checkout this item contributes, before and after. */
+	repo_before?: { url: string; branch?: string | null; dir: string } | null;
+	repo_after?: { url: string; branch?: string | null; dir: string } | null;
+}
+
+/** The record the move carries with the issue, unchanged. */
+export interface IssueTransferPreserved {
+	title: string;
+	workflow_id: string;
+	state_id: string;
+	state_entered_at: number;
+	created_at: number;
+	labels: { id: string; name: string }[];
+	pinned_runner_id: string | null;
+	pinned_tier: ModelTier | null;
+	attempt_count: number;
+	parked: boolean;
+	/** Snapshot counts at preview time; ordinary collaboration continues. */
+	comment_count: number;
+	artifact_count: number;
+	artifact_version_count: number;
+	run_count: number;
+	link_count: number;
+}
+
+/** The moved instance's schedule, which stays with its original project. */
+export interface IssueTransferSchedule {
+	id: string;
+	name: string;
+	project_id: string;
+	project_name: string;
+	notice: string;
+}
+
+export interface IssueTransferPreview {
+	issue_id: string;
+	source: IssueTransferProject;
+	destination: IssueTransferProject;
+	old_ref: IssueTransferRef;
+	/** Always null: a preview allocates and reserves no destination number. */
+	new_ref: null;
+	/** Rendered where a preview would otherwise imply a reserved number. */
+	number_notice: string;
+	preserved: IssueTransferPreserved;
+	context: {
+		before: EffectiveContext;
+		after: EffectiveContext;
+		changes: IssueTransferContextChange[];
+	};
+	/**
+	 * Destination routing as the next launch would resolve it. Capacity,
+	 * heartbeat and spending inside each explainer are advisory: they may change
+	 * at any moment and never stale the preview.
+	 */
+	routing: { before: DispatchExplainer | null; after: DispatchExplainer | null };
+	schedule: IssueTransferSchedule | null;
+	noop: boolean;
+	can_commit: boolean;
+	blockers: IssueTransferBlocker[];
+	/** Null whenever the transfer is blocked. Binds this exact review. */
+	preview_token: string | null;
+	previewed_at: number;
+}
+
+export interface IssueTransferRequest {
+	project_id: string;
+	preview_token: string;
+}
+
+export interface IssueTransferResult {
+	status: 'transferred' | 'noop';
+	issue_id: string;
+	source: IssueTransferProject;
+	destination: IssueTransferProject;
+	/** The actual addresses: no guessed destination number appears anywhere. */
+	old_ref: IssueTransferRef;
+	new_ref: IssueTransferRef;
+	/** The single audited move event; null for a same-project no-op. */
+	event_id: string | null;
+	/** Canonical browser path for the issue at its current address. */
+	issue_path: string;
+	/** The signed review that this commit validated. */
+	preserved: IssueTransferPreserved;
+	context_changes: IssueTransferContextChange[];
+	routing: IssueTransferPreview['routing'];
+	schedule: IssueTransferSchedule | null;
 }
 
 export interface RepoDirConflict {
@@ -2388,6 +2526,7 @@ export interface UpdateCommentRequest {
 export const EVENT_TYPES = [
 	'issue.created',
 	'issue.updated',
+	'issue.transferred',
 	'issue.transitioned',
 	'issue.commented',
 	'issue.comment_edited',

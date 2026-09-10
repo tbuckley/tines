@@ -183,6 +183,63 @@ describe('an archived project is read-only', () => {
 	});
 });
 
+describe('project deletion racing a historical address', () => {
+	it('returns the archive remedy and rolls back forced context and schedule deletion', async () => {
+		const source = 'prj_delete_race';
+		const destination = 'prj_delete_destination';
+		t.sqlite.exec(`
+			INSERT INTO project (id, user_id, name, created_at, updated_at) VALUES
+				('${source}', '${USER}', 'former', ${NOW}, ${NOW}),
+				('${destination}', '${USER}', 'live', ${NOW}, ${NOW});
+			INSERT INTO issue (
+				id, project_id, number, title, description, workflow_id, state_id,
+				attempt_count, needs_attention, created_at, updated_at, state_entered_at
+			) VALUES (
+				'iss_delete_race', '${destination}', 1, 'live issue', '', 'wf_standard', '${OPEN}',
+				0, 0, ${NOW}, ${NOW}, ${NOW}
+			);
+			INSERT INTO context_item (
+				id, user_id, kind, name, description, project_id, body, position, version,
+				created_at, updated_at
+			) VALUES (
+				'ctx_delete_race', '${USER}', 'prompt', 'keep on rollback', '', '${source}', '',
+				0, 1, ${NOW}, ${NOW}
+			);
+			INSERT INTO scheduled_task (
+				id, project_id, name, title_template, description_template, workflow_id, state_id,
+				cron, timezone, next_run_at, created_at, updated_at
+			) VALUES (
+				'sch_delete_race', '${source}', 'keep on rollback', 'x', '', 'wf_standard', '${OPEN}',
+				'0 9 * * *', 'UTC', ${NOW + 1000}, ${NOW}, ${NOW}
+			);
+		`);
+		const realBatch = t.env.DB.batch.bind(t.env.DB);
+		let first = true;
+		t.env.DB.batch = async (statements) => {
+			if (first) {
+				first = false;
+				t.sqlite.exec(`
+					INSERT INTO issue_address (project_id, number, issue_id, created_at)
+					VALUES ('${source}', 9, 'iss_delete_race', ${NOW});
+				`);
+			}
+			return realBatch(statements);
+		};
+
+		const error = await failure(() =>
+			deleteProject(t.db, t.env, actor, source, { forceDeleteContext: true })
+		);
+		expect(error).toMatchObject({
+			status: 422,
+			code: 'project_has_issue_aliases',
+			details: { alias_count: 1, remedy: 'tines projects archive "former"' }
+		});
+		expect(t.all(`SELECT id FROM project WHERE id = ?`, source)).toHaveLength(1);
+		expect(t.all(`SELECT id FROM context_item WHERE id = 'ctx_delete_race'`)).toHaveLength(1);
+		expect(t.all(`SELECT id FROM scheduled_task WHERE id = 'sch_delete_race'`)).toHaveLength(1);
+	});
+});
+
 describe('listProjects', () => {
 	it('hides archived projects by default and shows them on request', async () => {
 		t.sqlite.exec(`

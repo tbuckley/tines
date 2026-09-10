@@ -125,6 +125,16 @@ test.describe.serial('project focus', () => {
 
 	test('seeds two projects with an issue each', async ({ request }) => {
 		const api = apiClient(request, ALICE.apiKey);
+		// This spec owns the extra workflow whose collapsed-library affordance it
+		// exercises; no shard may depend on another spec creating it first.
+		const workflow = await api.post('/api/v1/workflows', {
+			name: `focus-workflow-${runId}`,
+			description: 'focus fixture',
+			initial_state: 'Open',
+			states: [{ name: 'Open', category: 'active' }],
+			transitions: []
+		});
+		expect(workflow.status(), await workflow.text()).toBe(201);
 		aId = (await body<Project>(await api.post('/api/v1/projects', { name: A_NAME }))).id;
 		bId = (await body<Project>(await api.post('/api/v1/projects', { name: B_NAME }))).id;
 		for (const [id, name] of [
