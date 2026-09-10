@@ -759,27 +759,49 @@ export async function loadWorkflow(
 // ---------------------------------------------------------------------------
 // Structural identity (shared by library import and starters)
 
-const FP_SEP = '\u0000';
+/**
+ * Sorted by each entry's own canonical serialization, so the order entries
+ * arrive in never reaches the fingerprint. A fresh array: the caller's
+ * request is about to be acted on, and must not be reordered under it.
+ */
+function sortedByEncoding<T>(entries: T[], encode: (entry: T) => unknown[]): unknown[][] {
+	return entries
+		.map((entry) => {
+			const tuple = encode(entry);
+			return { tuple, key: JSON.stringify(tuple) };
+		})
+		.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0))
+		.map((e) => e.tuple);
+}
 
 /**
  * Canonical form of a workflow definition, for "same or different?". Covers
  * the initial state, each state's name and category, and the transition set
  * with its artifact requirements — deliberately *not* stage instructions,
  * description or inheritance, which are edited independently of the shape.
+ *
+ * Every value is a fixed position in a JSON tuple rather than a delimited
+ * string, so no user text can spell a separator: a state named
+ * `Review:active|Done` once serialized exactly as the two states it names,
+ * and a requirement description could hide a whole second gate (Tines/413).
+ * State order is significant; transitions and requirements are not.
  */
 export function workflowFingerprint(wf: CreateWorkflowRequest): string {
-	const states = wf.states.map((s) => `${s.name}:${s.category}`).join('|');
-	const transitions = [...wf.transitions]
-		.map((t) => {
-			const requires = [...(t.requires ?? [])]
-				.map((r) => `${r.artifact}:${r.type ?? ''}:${r.content_type ?? ''}:${r.description ?? ''}`)
-				.sort()
-				.join(',');
-			return `${t.from}>${t.name}>${t.to}[${requires}]`;
-		})
-		.sort()
-		.join('|');
-	return `${wf.initial_state}${FP_SEP}${states}${FP_SEP}${transitions}`;
+	return JSON.stringify([
+		wf.initial_state,
+		wf.states.map((s) => [s.name, s.category]),
+		sortedByEncoding(wf.transitions, (t) => [
+			t.from,
+			t.name,
+			t.to,
+			sortedByEncoding(t.requires ?? [], (r) => [
+				r.artifact,
+				r.type ?? '',
+				r.content_type ?? '',
+				r.description ?? ''
+			])
+		])
+	]);
 }
 
 /**
