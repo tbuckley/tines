@@ -22,7 +22,8 @@ import {
 import type { ActorContext } from './core';
 import { eventInsert, eventQuery, serializeEvent } from './events';
 import { commitIssueTransfer, previewIssueTransfer } from './issue-transfer';
-import { createIssue, loadIssue } from './issues';
+import { createIssue, loadIssue, updateIssue } from './issues';
+import { archiveProject } from './projects';
 import { runScheduleNow } from './schedules';
 import { createTestDb, type TestDb } from './test-db';
 
@@ -279,6 +280,22 @@ describe('populated issue transfer journey', () => {
 		// And the old address is still the traveller's, not the newcomers'.
 		expect(await loadIssue(t.db, USER, { projectId: PROJECT, number: startNumber })).toMatchObject({
 			id: issueId
+		});
+	});
+
+	it('allows an old-ref write after the former source is archived', async () => {
+		const { t, issueId } = fixture();
+		const oldNumber = Number(t.all('SELECT number FROM issue WHERE id = ?', issueId)[0].number);
+		await transfer(t, issueId, B, NOW + 10);
+		await archiveProject(t.db, t.env, actor, PROJECT, NOW + 11);
+		const throughAlias = await loadIssue(t.db, USER, { projectId: PROJECT, number: oldNumber });
+		const updated = await updateIssue(t.db, t.env, actor, throughAlias.id, {
+			title: 'written through the archived alias'
+		});
+		expect(updated).toMatchObject({
+			id: issueId,
+			project_id: B,
+			title: 'written through the archived alias'
 		});
 	});
 

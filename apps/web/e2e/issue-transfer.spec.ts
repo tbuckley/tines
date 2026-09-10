@@ -170,6 +170,10 @@ function suite(label: string, viewport: { width: number; height: number }) {
 			browser,
 			request
 		}) => {
+			const api = apiClient(request, ALICE.apiKey);
+			expect((await api.patch('/api/v1/preferences', { focused_project_id: sourceId })).ok()).toBe(
+				true
+			);
 			const page = await open(browser, `/issues/${sourceName}/${sourceNumber}`);
 			const modal = page.getByRole('dialog');
 			await clickToOpen(page.getByTestId('move-to-project'), modal);
@@ -183,13 +187,21 @@ function suite(label: string, viewport: { width: number; height: number }) {
 			await expect(page).toHaveURL(new RegExp(`/issues/${destinationName}/2$`));
 			await expect(page.getByRole('heading', { name: `${sourceName} traveller` })).toBeVisible();
 			await expect(page.getByText('a comment that survives')).toBeVisible();
+			await expect(
+				page.getByRole('button', { name: `Project focus: ${sourceName}` })
+			).toBeVisible();
+			await expect(page.getByRole('button', { name: `Focus ${destinationName}` })).toBeVisible();
 
 			// The record and the identity survive; only the address changed.
-			const api = apiClient(request, ALICE.apiKey);
 			const moved = await body<IssueDetail>(await api.get(`/api/v1/issues/${issueId}`));
 			expect(moved.project_name).toBe(destinationName);
 			expect(moved.number).toBe(2);
 			expect(moved.id).toBe(issueId);
+			const projects = await body<{ items: Project[] }>(await api.get('/api/v1/projects'));
+			expect(projects.items.find((project) => project.id === sourceId)?.issue_count).toBe(0);
+			expect(projects.items.find((project) => project.name === destinationName)?.issue_count).toBe(
+				2
+			);
 
 			// The old address still reaches it, and the browser canonicalises.
 			const alias = await body<IssueDetail>(
