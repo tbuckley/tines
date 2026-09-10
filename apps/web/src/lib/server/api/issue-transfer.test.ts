@@ -136,6 +136,28 @@ describe('private issue transfer path', () => {
 		await expect(
 			commitIssueTransfer(t.env, actor, issueId, DESTINATION, readiness.preview_token!, NOW + 3)
 		).rejects.toMatchObject({ code: 'transfer_preview_stale' });
+
+		const linkedState = await previewIssueTransfer(t.env, actor, issueId, DESTINATION, NOW + 4);
+		t.sqlite.exec(
+			`UPDATE issue SET state_id = 'wfs_std_closed', updated_at = ${NOW + 5} WHERE id = '${other}'`
+		);
+		await expect(
+			commitIssueTransfer(t.env, actor, issueId, DESTINATION, linkedState.preview_token!, NOW + 5)
+		).rejects.toMatchObject({ code: 'transfer_preview_stale' });
+
+		const artifact = await previewIssueTransfer(t.env, actor, issueId, DESTINATION, NOW + 6);
+		t.sqlite.exec(`
+			INSERT INTO context_item (id, user_id, kind, name, description, issue_id, body,
+				position, version, config, created_at, updated_at)
+			VALUES ('ctx_gate', '${USER}', 'artifact', 'gate', '', '${issueId}', '', 0, 1,
+				'{"artifact_type":"text"}', ${NOW}, ${NOW});
+			INSERT INTO artifact_version (id, context_item_id, version, content, content_type,
+				size_bytes, actor_user_id, created_at)
+			VALUES ('av_gate', 'ctx_gate', 1, 'ready', 'text/markdown', 5, '${USER}', ${NOW});
+		`);
+		await expect(
+			commitIssueTransfer(t.env, actor, issueId, DESTINATION, artifact.preview_token!, NOW + 7)
+		).rejects.toMatchObject({ code: 'transfer_preview_stale' });
 	});
 
 	it('stales a preview on a structural routing change but not on liveness alone', async () => {

@@ -187,7 +187,8 @@ export function transferWitnessExpressions(
 				'project_assignment_token', issue.project_assignment_token,
 				'labels', (
 					SELECT json_group_array(json(row_json)) FROM (
-						SELECT json_object('id', label.id, 'name', label.name, 'color', label.color) AS row_json
+						SELECT json_object('id', label.id, 'name', label.name, 'color', label.color,
+							'updated_at', label.updated_at) AS row_json
 						FROM issue_label JOIN label ON label.id = issue_label.label_id
 						WHERE issue_label.issue_id = issue.id ORDER BY label.id
 					)
@@ -216,6 +217,39 @@ export function transferWitnessExpressions(
 							'target_issue_id', target_issue_id, 'kind', kind) AS row_json
 						FROM issue_link
 						WHERE source_issue_id = issue.id OR target_issue_id = issue.id ORDER BY id
+					)
+				),
+				'linked_issues', (
+					SELECT json_group_array(json(row_json)) FROM (
+						SELECT json_object('id', related.id, 'project_id', related.project_id,
+							'number', related.number, 'workflow_id', related.workflow_id,
+							'state_id', related.state_id, 'state_name', related_state.name,
+							'state_category', related_state.category,
+							'project_assignment_token', related.project_assignment_token,
+							'updated_at', related.updated_at) AS row_json
+						FROM issue AS related
+						JOIN workflow_state AS related_state ON related_state.id = related.state_id
+						WHERE related.id IN (
+							SELECT source_issue_id FROM issue_link WHERE target_issue_id = issue.id
+							UNION SELECT target_issue_id FROM issue_link WHERE source_issue_id = issue.id
+						) ORDER BY related.id
+					)
+				),
+				'artifacts', (
+					SELECT json_group_array(json(row_json)) FROM (
+						SELECT json_object('item_id', ci.id, 'name', ci.name, 'version', ci.version,
+							'config', ci.config, 'artifact_version_id', av.id,
+							'artifact_version', av.version, 'size_bytes', av.size_bytes,
+							'r2_key', av.r2_key, 'content', av.content,
+							'files', COALESCE((SELECT json_group_array(json(file_json)) FROM (
+								SELECT json_object('id', avf.id, 'path', avf.path,
+									'size_bytes', avf.size_bytes, 'r2_key', avf.r2_key) AS file_json
+								FROM artifact_version_file avf WHERE avf.artifact_version_id = av.id ORDER BY avf.id
+							)), '[]')) AS row_json
+						FROM context_item ci
+						JOIN artifact_version av ON av.context_item_id = ci.id
+						WHERE ci.issue_id = issue.id AND ci.kind = 'artifact'
+						ORDER BY ci.id, av.version
 					)
 				)
 			),
