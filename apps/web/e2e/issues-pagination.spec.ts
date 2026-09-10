@@ -71,6 +71,16 @@ test.describe('issue list pagination', () => {
 		page
 	}) => {
 		await gotoHydrated(page, `/projects/${PAGINATION.projectId}`);
+		await expect(
+			page
+				.getByRole('navigation', { name: 'Issue pagination above results' })
+				.locator('[aria-live]')
+		).toHaveCount(1);
+		await expect(
+			page
+				.getByRole('navigation', { name: 'Issue pagination below results' })
+				.locator('[aria-live]')
+		).toHaveCount(0);
 		await page
 			.getByRole('navigation', { name: 'Issue pagination above results' })
 			.getByRole('link', { name: 'Next' })
