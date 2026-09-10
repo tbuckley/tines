@@ -192,6 +192,14 @@ saying what the scope is.
 10. **Agents and the CLI.** `GET`/`PATCH /api/v1/preferences` is control-plane
    fenced, reads included: a run key gets the same 403 as for runners and
    settings. Every API list stays unscoped whatever its owner's focus is.
+11. **Client consistency.** An automatic project-page focus is optimistic, but
+    subsequent same-origin fetched reads wait for its PATCH to settle. Explicit
+    switcher choices queued during that write run afterward in click order. A
+    failed automatic write rolls back its own hint before reads resume and may
+    not erase a newer choice. Optimistic hints only resolve to projects still in
+    the live layout list, so in-app archive immediately falls back to All
+    projects. Explicit choices invalidate the shared `app:preferences`
+    dependency; archive still refreshes the complete project inventory.
 
 ### Non-goals
 

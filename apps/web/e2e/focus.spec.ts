@@ -56,6 +56,36 @@ async function open(browser: Browser, viewport: typeof DESKTOP, path = '/issues'
 	return page;
 }
 
+function holdNextPreferencePatch(page: Page, outcome: 'forward' | 'fail' = 'forward') {
+	let release!: () => void;
+	let started!: () => void;
+	const gate = new Promise<void>((resolve) => (release = resolve));
+	const patchStarted = new Promise<void>((resolve) => (started = resolve));
+	const events: string[] = [];
+	page.on('request', (request) => {
+		if (new URL(request.url()).pathname === '/issues/__data.json') events.push('issues-request');
+	});
+	void page.route('**/api/v1/preferences', async (route) => {
+		if (route.request().method() !== 'PATCH') return route.continue();
+		events.push('patch-request');
+		started();
+		await gate;
+		if (outcome === 'fail') {
+			events.push('patch-response');
+			await route.fulfill({
+				status: 500,
+				contentType: 'application/json',
+				body: JSON.stringify({ error: { code: 'held_failure', message: 'Held failure' } })
+			});
+		} else {
+			const response = await route.fetch();
+			events.push('patch-response');
+			await route.fulfill({ response });
+		}
+	});
+	return { events, patchStarted, release };
+}
+
 test.describe.serial('project focus', () => {
 	test.beforeEach(async ({ request }) => {
 		await resetFocus(request);
@@ -326,6 +356,115 @@ test.describe.serial('project focus', () => {
 		await page.close();
 	});
 
+	for (const [label, viewport, hasTouch] of [
+		['desktop', DESKTOP, false],
+		['phone', PHONE, true]
+	] as const) {
+		test(`immediate Issues navigation waits for project focus on ${label}`, async ({
+			browser,
+			request
+		}) => {
+			const context = await browser.newContext({ viewport, hasTouch });
+			await signIn(context, ALICE.sessionToken);
+			const page = await context.newPage();
+			await gotoHydrated(page, '/projects');
+			const held = holdNextPreferencePatch(page);
+			try {
+				await page.getByRole('link', { name: A_NAME }).click();
+				await held.patchStarted;
+				await expect(switcher(page)).toHaveAttribute('aria-label', `Project focus: ${A_NAME}`);
+
+				const nav = label === 'phone' ? page.getByRole('navigation', { name: 'Primary' }) : page;
+				const issues = nav.getByRole('link', { name: 'Issues', exact: true });
+				if (label === 'desktop') await issues.hover();
+				await issues.click({ noWaitAfter: true });
+				await page.waitForTimeout(150);
+				expect(held.events).not.toContain('issues-request');
+
+				held.release();
+				await expect(page).toHaveURL('/issues');
+				await expect(page.getByRole('link', { name: new RegExp(`${A_NAME} issue`) })).toBeVisible();
+				await expect(page.getByRole('link', { name: new RegExp(`${B_NAME} issue`) })).toHaveCount(
+					0
+				);
+				await expect(switcher(page)).toHaveAttribute('aria-label', `Project focus: ${A_NAME}`);
+				expect(held.events.indexOf('patch-response')).toBeLessThan(
+					held.events.indexOf('issues-request')
+				);
+				await expect
+					.poll(async () => {
+						const prefs = await body<UserPreferences>(
+							await apiClient(request, ALICE.apiKey).get('/api/v1/preferences')
+						);
+						return prefs.focused_project_id;
+					})
+					.toBe(aId);
+			} finally {
+				held.release();
+				await context.close();
+			}
+		});
+	}
+
+	test('a failed automatic focus releases navigation under persisted focus', async ({
+		browser,
+		request
+	}) => {
+		const pageErrors: Error[] = [];
+		const page = await open(browser, DESKTOP, '/projects');
+		page.on('pageerror', (error) => pageErrors.push(error));
+		const held = holdNextPreferencePatch(page, 'fail');
+		try {
+			await page.getByRole('link', { name: A_NAME }).click();
+			await held.patchStarted;
+			await expect(switcher(page)).toHaveAttribute('aria-label', `Project focus: ${A_NAME}`);
+			await page.getByRole('link', { name: 'Issues', exact: true }).click({ noWaitAfter: true });
+			held.release();
+			await expect(page).toHaveURL('/issues');
+			await expect(switcher(page)).toHaveAttribute('aria-label', 'Project focus: All projects');
+			await expect(page.getByRole('link', { name: new RegExp(`${A_NAME} issue`) })).toBeVisible();
+			await expect(page.getByRole('link', { name: new RegExp(`${B_NAME} issue`) })).toBeVisible();
+			const prefs = await body<UserPreferences>(
+				await apiClient(request, ALICE.apiKey).get('/api/v1/preferences')
+			);
+			expect(prefs.focused_project_id).toBe(null);
+			expect(pageErrors).toEqual([]);
+		} finally {
+			held.release();
+			await page.close();
+		}
+	});
+
+	test('an explicit focus waits behind automatic focus and wins', async ({ browser, request }) => {
+		const page = await open(browser, DESKTOP, '/projects');
+		const held = holdNextPreferencePatch(page);
+		try {
+			await page.getByRole('link', { name: A_NAME }).click();
+			await held.patchStarted;
+			await switcher(page).click();
+			await page.getByRole('menuitemradio', { name: B_NAME }).click({ noWaitAfter: true });
+			await page.waitForTimeout(150);
+			expect(held.events.filter((event) => event === 'patch-request')).toHaveLength(1);
+
+			held.release();
+			await expect(switcher(page)).toHaveAttribute('aria-label', `Project focus: ${B_NAME}`);
+			await expect
+				.poll(async () => {
+					const prefs = await body<UserPreferences>(
+						await apiClient(request, ALICE.apiKey).get('/api/v1/preferences')
+					);
+					return prefs.focused_project_id;
+				})
+				.toBe(bId);
+			await page.getByRole('link', { name: 'Issues', exact: true }).click();
+			await expect(page.getByRole('link', { name: new RegExp(`${B_NAME} issue`) })).toBeVisible();
+			await expect(page.getByRole('link', { name: new RegExp(`${A_NAME} issue`) })).toHaveCount(0);
+		} finally {
+			held.release();
+			await page.close();
+		}
+	});
+
 	test('the switcher still moves the focus off a project page', async ({ browser, request }) => {
 		// Regression (Tines/259 review): the project page announces its focus in
 		// an effect, and a guard that read the optimistic hint made that hint a
@@ -386,6 +525,66 @@ test.describe.serial('project focus', () => {
 			await page.reload();
 			await expect(switcher(page)).toHaveAttribute('aria-label', 'Project focus: All projects');
 			await page.close();
+		});
+	}
+
+	for (const [label, viewport] of [
+		['desktop', DESKTOP],
+		['phone', PHONE]
+	] as const) {
+		test(`in-app archive drops the optimistic focused project on ${label}`, async ({
+			browser,
+			request
+		}) => {
+			const api = apiClient(request, ALICE.apiKey);
+			const page = await open(browser, viewport, `/projects/${bId}`);
+			try {
+				await expect
+					.poll(async () => {
+						const prefs = await body<UserPreferences>(await api.get('/api/v1/preferences'));
+						return prefs.focused_project_id;
+					})
+					.toBe(bId);
+
+				const archiveButton = page.getByRole('button', { name: 'Archive project' });
+				await clickToOpen(page.getByRole('button', { name: 'Settings' }), archiveButton);
+				await archiveButton.click();
+				await page
+					.getByRole('alertdialog')
+					.getByRole('button', { name: 'Archive project' })
+					.click();
+
+				await expect(page.getByText(/^Archived /)).toBeVisible();
+				await expect(switcher(page)).toHaveAttribute('aria-label', 'Project focus: All projects');
+				await clickToOpen(
+					switcher(page),
+					page.getByRole('menuitemradio', { name: 'All projects' })
+				);
+				await expect(page.getByRole('menuitemradio', { name: B_NAME })).toHaveCount(0);
+				await page.keyboard.press('Escape');
+
+				const nav = label === 'phone' ? page.getByRole('navigation', { name: 'Primary' }) : page;
+				await nav.getByRole('link', { name: 'Issues', exact: true }).click();
+				await expect(page.getByRole('link', { name: new RegExp(`${A_NAME} issue`) })).toBeVisible();
+				await expect(page.getByRole('link', { name: new RegExp(`${B_NAME} issue`) })).toHaveCount(
+					0
+				);
+				await expect
+					.poll(async () => {
+						const prefs = await body<UserPreferences>(await api.get('/api/v1/preferences'));
+						return prefs.focused_project_id;
+					})
+					.toBe(null);
+
+				await gotoHydrated(page, `/issues/${encodeURIComponent(B_NAME)}/1`);
+				await expect(
+					page.locator('main').getByRole('link', { name: 'Issues', exact: true })
+				).toHaveAttribute('href', '/issues');
+				await expect(page.getByRole('button', { name: `Focus ${B_NAME}` })).toHaveCount(0);
+			} finally {
+				await api.post(`/api/v1/projects/${bId}/unarchive`);
+				await page.close();
+			}
 		});
 	}
 
