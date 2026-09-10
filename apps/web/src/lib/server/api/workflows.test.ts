@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type {
+	ArtifactRequirement,
 	CreateWorkflowRequest,
 	WorkflowStateInput,
 	WorkflowTransitionInput
@@ -302,6 +303,19 @@ describe('workflowFingerprint', () => {
 		...base,
 		...patch
 	});
+	/** Change one field on the first requirement while preserving both gates. */
+	const variedRequirement = (
+		patch: Partial<ArtifactRequirement>
+	): Partial<CreateWorkflowRequest> => ({
+		transitions: [
+			{
+				...base.transitions[0],
+				requires: base.transitions[0].requires?.map((requirement, index) =>
+					index === 0 ? { ...requirement, ...patch } : { ...requirement }
+				)
+			}
+		]
+	});
 
 	it('separates a state list from one whose name spells the old delimiters', () => {
 		// Tines/413: `Review:active|Done` used to serialize exactly as the two
@@ -401,36 +415,10 @@ describe('workflowFingerprint', () => {
 		['a transition name', { transitions: [{ ...base.transitions[0], name: 'Complete' }] }],
 		['a transition source', { transitions: [{ ...base.transitions[0], from: 'Done' }] }],
 		['a transition destination', { transitions: [{ ...base.transitions[0], to: 'Work' }] }],
-		[
-			'a requirement slot',
-			{ transitions: [{ ...base.transitions[0], requires: [{ artifact: 'diff', type: 'pr' }] }] }
-		],
-		[
-			'a requirement type',
-			{ transitions: [{ ...base.transitions[0], requires: [{ artifact: 'pr', type: 'file' }] }] }
-		],
-		[
-			'a requirement content type',
-			{
-				transitions: [
-					{
-						...base.transitions[0],
-						requires: [{ artifact: 'pr', type: 'pr', content_type: 'text/markdown' }]
-					}
-				]
-			}
-		],
-		[
-			'a requirement description',
-			{
-				transitions: [
-					{
-						...base.transitions[0],
-						requires: [{ artifact: 'pr', type: 'pr', description: 'Land it' }]
-					}
-				]
-			}
-		],
+		['a requirement slot', variedRequirement({ artifact: 'diff' })],
+		['a requirement type', variedRequirement({ type: 'file' })],
+		['a requirement content type', variedRequirement({ content_type: 'text/markdown' })],
+		['a requirement description', variedRequirement({ description: 'Land it' })],
 		['a dropped requirement', { transitions: [{ ...base.transitions[0], requires: [] }] }]
 	];
 
