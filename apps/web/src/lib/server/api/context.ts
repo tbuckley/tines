@@ -520,6 +520,14 @@ async function runContextWrite(env: Env, queries: CompiledQuery[]): Promise<D1Re
 	try {
 		return await runAtomic(env, queries);
 	} catch (e) {
+		if (e instanceof Error && e.message.includes('incoherent_issue_project_scope')) {
+			throw new ApiFail(
+				409,
+				'scope_incoherent',
+				'The issue changed projects while this context write was in flight; re-read its scope and retry',
+				{ field: 'project_id' }
+			);
+		}
 		if (
 			e instanceof Error &&
 			e.message.includes('UNIQUE constraint failed') &&
@@ -968,6 +976,13 @@ export async function updateContextItem(
 			})
 			.where('id', '=', id)
 			.where('version', '=', row.version)
+			// Transfer deliberately preserves version. Fence the complete scope
+			// tuple too, so an edit read before a move can neither restore the
+			// source project nor attach files/events to the wrong scope.
+			.where(sql<boolean>`project_id IS ${row.project_id}`)
+			.where(sql<boolean>`workflow_state_id IS ${row.workflow_state_id}`)
+			.where(sql<boolean>`label_id IS ${row.label_id}`)
+			.where(sql<boolean>`issue_id IS ${row.issue_id}`)
 			.compile()
 	);
 	if (filesChanged && files !== undefined) {

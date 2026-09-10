@@ -280,14 +280,14 @@ export async function deleteProject(
 				.executeTakeFirstOrThrow()
 		).count
 	);
-	if (aliasCount > 0) {
-		throw new ApiFail(
+	const aliasError = (count: number) =>
+		new ApiFail(
 			422,
 			'project_has_issue_aliases',
-			`Cannot delete project "${project.name}": it retains ${aliasCount} historical issue address${aliasCount === 1 ? '' : 'es'}. Archive it instead.`,
-			{ alias_count: aliasCount, remedy: `tines projects archive "${project.name}"` }
+			`Cannot delete project "${project.name}": it retains ${count} historical issue address${count === 1 ? '' : 'es'}. Archive it instead.`,
+			{ alias_count: count, remedy: `tines projects archive "${project.name}"` }
 		);
-	}
+	if (aliasCount > 0) throw aliasError(aliasCount);
 	// Context scoped to the project rejects deletion unless forced. The
 	// project is issue-less by now, so no issue-scoped items can reference it.
 	const attached = await findAttachedContext(db, actor.userId, { projectId: id });
@@ -298,20 +298,39 @@ export async function deleteProject(
 		forceDeleteContext,
 		`delete project "${project.name}"`
 	);
-	await runAtomic(env, [
-		// Context events insert while the project row still exists; its
-		// deletion then nulls their project reference (ON DELETE SET NULL).
-		...sweep.queries,
-		// The project is issue-less by now, but its schedules go with it.
-		...(await projectScheduleDeletions(db, actor, id)),
-		db.deleteFrom('project').where('id', '=', id).compile(),
-		// project_id stays null-able on the event so the feed keeps history
-		// for deleted projects; record the name in the payload.
-		eventInsert(db, actor, {
-			type: 'project.deleted',
-			payload: { project_id: id, name: project.name }
-		})
-	]);
+	try {
+		await runAtomic(env, [
+			// Context events insert while the project row still exists; its
+			// deletion then nulls their project reference (ON DELETE SET NULL).
+			...sweep.queries,
+			// The project is issue-less by now, but its schedules go with it.
+			...(await projectScheduleDeletions(db, actor, id)),
+			db.deleteFrom('project').where('id', '=', id).compile(),
+			// project_id stays null-able on the event so the feed keeps history
+			// for deleted projects; record the name in the payload.
+			eventInsert(db, actor, {
+				type: 'project.deleted',
+				payload: { project_id: id, name: project.name }
+			})
+		]);
+	} catch (e) {
+		// The precheck can race a transfer that creates a durable address.
+		// Map only that concrete FK failure; unrelated deletion errors retain
+		// their original diagnostics.
+		if (e instanceof Error && e.message.includes('FOREIGN KEY constraint failed')) {
+			const racedAliasCount = Number(
+				(
+					await db
+						.selectFrom('issue_address')
+						.select((eb) => eb.fn.countAll().as('count'))
+						.where('project_id', '=', id)
+						.executeTakeFirstOrThrow()
+				).count
+			);
+			if (racedAliasCount > 0) throw aliasError(racedAliasCount);
+		}
+		throw e;
+	}
 	return sweep.deleted;
 }
 
