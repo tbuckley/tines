@@ -41,12 +41,38 @@ export interface ResumeCandidateInput {
 export type ResumeEligibility =
 	{ eligible: true } | { eligible: false; reason: ResumeFallbackReason };
 
-/** Runtime continuation stays closed through P1-P3. */
+/**
+ * Which providers can actually continue a conversation today. Claude Code
+ * local runners can (`claude -p --resume <session-id>` in the kept
+ * workspace); managed sessions cannot yet — their reuse needs the credential
+ * ownership transfer, which is not built, so enabling it stays rejected.
+ */
 export function isResumeProviderSupported(
-	_type: Runner['type'],
-	_config: Record<string, unknown>
+	type: Runner['type'],
+	config: Record<string, unknown>
 ): boolean {
-	return false;
+	return type === 'local' && (config.harness ?? 'claude_code') === 'claude_code';
+}
+
+/**
+ * The compatibility fingerprint: everything about the launch that a resumed
+ * conversation cannot be re-pointed at. A resource whose fingerprint no
+ * longer matches the run we would launch is `incompatible` — we launch fresh
+ * rather than continue a session whose harness, model or runner has moved.
+ */
+export function resumeFingerprint(input: {
+	runnerId: string;
+	harness: string;
+	model: string | null;
+	preambleVariant: string;
+}): string {
+	return [
+		'v1',
+		input.runnerId,
+		input.harness,
+		input.model ?? '(fixed)',
+		input.preambleVariant
+	].join('|');
 }
 
 function completeManagedUsage(usage: AgentRunUsage | null): Required<AgentRunUsage> | null {
@@ -160,4 +186,90 @@ export async function claimResourceDisposal(
 		.where('state', '=', 'available')
 		.executeTakeFirst();
 	return result.numUpdatedRows === 1n;
+}
+
+/**
+ * Retention at the end of an awaiting run: the resource row that holds the
+ * kept workspace and its Claude session against the GC until `expires_at`.
+ * Written only for a run that advanced its issue into an awaiting state on a
+ * resume-enabled runner, and only when the daemon reported both a session id
+ * and the workspace it ran in — without either there is nothing to continue.
+ */
+export async function retainResumeResource(
+	db: Kysely<Database>,
+	input: {
+		id: string;
+		userId: string;
+		runnerId: string;
+		issueId: string;
+		ownerRunId: string;
+		providerSessionId: string;
+		workspacePath: string;
+		fingerprint: string;
+		expiresAt: number;
+		now: number;
+	}
+): Promise<void> {
+	// One live resource per (runner, session): a session re-reported by a
+	// second run supersedes the older row rather than colliding with the
+	// partial unique index.
+	await db
+		.deleteFrom('run_resource')
+		.where('runner_id', '=', input.runnerId)
+		.where('provider_session_id', '=', input.providerSessionId)
+		.execute();
+	await db
+		.insertInto('run_resource')
+		.values({
+			id: input.id,
+			user_id: input.userId,
+			runner_id: input.runnerId,
+			issue_id: input.issueId,
+			kind: 'local_claude',
+			owner_run_id: input.ownerRunId,
+			state: 'available',
+			claim_run_id: null,
+			claim_token: null,
+			claim_started_at: null,
+			transfer_phase: null,
+			expires_at: input.expiresAt,
+			available_seen_at: input.now,
+			provider_session_id: input.providerSessionId,
+			vault_id: null,
+			credential_id: null,
+			workspace_path: input.workspacePath,
+			resume_fingerprint: input.fingerprint,
+			transfer_data: null,
+			created_at: input.now,
+			updated_at: input.now
+		})
+		.execute();
+}
+
+/** The newest reusable resource for an issue on a runner, if any. */
+export async function findResumeResource(
+	db: Kysely<Database>,
+	input: { userId: string; runnerId: string; issueId: string }
+) {
+	return db
+		.selectFrom('run_resource')
+		.selectAll()
+		.where('user_id', '=', input.userId)
+		.where('runner_id', '=', input.runnerId)
+		.where('issue_id', '=', input.issueId)
+		.where('state', '=', 'available')
+		.orderBy('created_at desc')
+		.executeTakeFirst();
+}
+
+/** GC: expired available resources, oldest first, for the disposal sweep. */
+export async function expiredResumeResources(db: Kysely<Database>, now: number, limit = 50) {
+	return db
+		.selectFrom('run_resource')
+		.selectAll()
+		.where('state', '=', 'available')
+		.where('expires_at', '<=', now)
+		.orderBy('expires_at asc')
+		.limit(limit)
+		.execute();
 }

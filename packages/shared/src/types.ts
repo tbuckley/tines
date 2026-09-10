@@ -1847,6 +1847,24 @@ export interface RunnerAssignment {
 	run_key: string;
 	/** Minutes until the daemon must kill the harness. */
 	timeout_minutes: number;
+	/**
+	 * Present only when this run continues the previous run's conversation:
+	 * the daemon skips workspace materialization and cloning, launches the
+	 * harness in `workspace_path`, and resumes `provider_session_id`. The
+	 * prompt above is then the reduced continuation message, not a full
+	 * launch prompt. Absent = launch fresh exactly as before.
+	 */
+	resume?: RunnerAssignmentResume;
+}
+
+/** The continuation instructions delivered with a resumed assignment. */
+export interface RunnerAssignmentResume {
+	/** The run whose conversation this one continues. */
+	previous_run_id: string;
+	/** The harness session to reopen (`claude -p --resume <id>`). */
+	provider_session_id: string;
+	/** The predecessor's workspace, kept on disk for exactly this. */
+	workspace_path: string;
 }
 
 export interface RunnerPollResponse {
@@ -1900,6 +1918,20 @@ export interface FinishRunRequest {
 	resume_at?: number;
 	/** Opaque resumable session/thread id reported by the local harness. */
 	provider_session_id?: string;
+	/**
+	 * Assistant turns in THIS run, and in the whole conversation the harness
+	 * ran (they differ only for a resumed run, where the conversation carries
+	 * its predecessors' turns). The conversation count is what the resume
+	 * size guard reads.
+	 */
+	turn_count?: number;
+	conversation_turn_count?: number;
+	/**
+	 * Absolute path of the workspace the run used. Recorded so a later run on
+	 * the same runner can be continued in it; only meaningful together with
+	 * `provider_session_id`.
+	 */
+	workspace_path?: string;
 	/** Whatever the harness reported (Claude Code JSON output, etc.). */
 	usage?: AgentRunUsage;
 }

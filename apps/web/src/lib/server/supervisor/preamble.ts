@@ -114,3 +114,42 @@ export function buildSupervisorPreamble(input: PreambleInput): string {
 	];
 	return lines.join('\n');
 }
+
+/**
+ * The reduced preamble a *resumed* run is launched with. The conversation
+ * already holds the previous run's preamble — its auth story, its workspace
+ * layout, and the whole issue as it stood — so repeating them buys nothing
+ * and costs a longer prefix on every later turn. What genuinely changed is
+ * the run identity (a new run id, a new key, a new timeout) and, because a
+ * send-back usually crosses stages, the contract of the stage the issue is
+ * in now. Tom approved carrying the new comments and the current stage
+ * contract into the continuation (Tines/362): a strictly steer-only message
+ * would drop the Implementation instructions and the current transition
+ * gates on exactly the send-back this feature exists for.
+ */
+export function buildResumePreamble(input: PreambleInput & { previousRunId: string }): string {
+	return [
+		'# Supervisor run (resumed)',
+		'',
+		`You are resuming your own previous session. This is run ${input.runId} on runner` +
+			` "${input.runnerName}" for issue ${input.issueRef}; it times out after` +
+			` ${input.timeoutMinutes} minutes. It continues run ${input.previousRunId}, whose`,
+		'workspace you are still in and whose conversation you are still holding — the repositories,',
+		'the files you edited and everything you learned are as you left them.',
+		'',
+		'What follows is only what changed while you were away, plus the contract of the stage the',
+		'issue is in now. Everything else — authentication, the workspace layout, the rest of the',
+		'issue — is unchanged from your previous prompt; re-read it there rather than asking for it',
+		'again. Your API key is new: `TINES_API_KEY` in your environment has been replaced with this',
+		"run's key, and the previous one is revoked.",
+		'',
+		'## The contract',
+		'',
+		'- Comment progress on the issue as you go — the comment thread is the durable narrative,',
+		'  and the next run (or human) starts from it.',
+		'- Before finishing, transition the issue with one of its available transitions (listed',
+		'  below). A run that ends without moving its issue counts as a strike against it.',
+		'- Work you cannot finish gets a handoff comment — where things stand, what remains, what',
+		'  you would do next — and a transition to the appropriate state.'
+	].join('\n');
+}
