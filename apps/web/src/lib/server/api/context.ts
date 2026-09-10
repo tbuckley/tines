@@ -2017,6 +2017,40 @@ export function issueBlock(
 	return lines.join('\n').trimEnd();
 }
 
+/**
+ * The reduced prompt a resumed run is launched with: the stage-scoped
+ * context (the current state's instructions and its journal — the "current
+ * stage contract" a cross-stage send-back needs and the previous session
+ * never saw) followed by the issue block, which carries the steer, the
+ * current state, the available transitions and the thread.
+ *
+ * Global and project prompts are deliberately dropped: the conversation
+ * being resumed was launched with them, and re-sending them lengthens the
+ * prefix every later turn is priced on without telling the agent anything.
+ */
+export function buildResumePrompt(
+	context: EffectiveContext,
+	issue: IssueDetail,
+	issueArtifacts: Artifact[] = [],
+	labelVocabulary: string[] = []
+): string {
+	const stage = context.prompt.parts.filter((p) => p.scope.workflow_state_id !== null);
+	const block = issueBlock(issue, context, issueArtifacts, labelVocabulary);
+	if (stage.length === 0) return block;
+	const text = stage
+		.map((p) => {
+			const body = p.body.trim();
+			if (!body) return '';
+			const heading = p.is_journal
+				? `## Journal (${p.scope.label})`
+				: `## Context: ${p.scope.label}`;
+			return `${heading}\n\n${body}`;
+		})
+		.filter(Boolean)
+		.join('\n\n');
+	return text ? `${text}\n\n${block}` : block;
+}
+
 /** Context first, the issue block last — the task sits nearest the end. */
 export function buildLaunchPrompt(
 	context: EffectiveContext,

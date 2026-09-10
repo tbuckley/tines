@@ -16,14 +16,16 @@ import {
 	type AgentRunUsage,
 	type AppendRunLogResponse,
 	type FinishRunRequest,
+	type Runner,
 	type RunnerAssignment,
+	type RunnerAssignmentResume,
 	type RunnerPollRequest,
 	type RunnerPollResponse
 } from '@tines/shared';
 import type { RequestEvent } from '@sveltejs/kit';
 import type { Kysely } from 'kysely';
 import { sha256Hex } from '$lib/server/crypto';
-import { getDb, type Database } from '$lib/server/db';
+import { getDb, newId, type Database } from '$lib/server/db';
 import {
 	endRun,
 	loadEndableRun,
@@ -36,11 +38,19 @@ import {
 import { getRunLogStore, runLogRawKey } from '$lib/server/run-log-store';
 import { spillEvicted } from '$lib/server/supervisor/run-log';
 import { appendLogTail } from '$lib/server/supervisor/logic';
-import { buildSupervisorPreamble } from '$lib/server/supervisor/preamble';
+import { buildResumePreamble, buildSupervisorPreamble } from '$lib/server/supervisor/preamble';
+import {
+	claimResumeResource,
+	findResumeResource,
+	isResumeProviderSupported,
+	resumeEligibility,
+	resumeFingerprint,
+	retainResumeResource
+} from '$lib/server/supervisor/resume';
 import { effectiveAutomationEnabled } from '$lib/server/supervisor/settings';
 import { listArtifacts } from './artifacts';
 import { listLabels } from './labels';
-import { buildLaunchPrompt, effectiveContextForIssue } from './context';
+import { buildLaunchPrompt, buildResumePrompt, effectiveContextForIssue } from './context';
 import { ApiFail, notFound, optionalString, runAtomic } from './core';
 import { getIssueDetail } from './issues';
 import { validateBoundedInt } from './runners';
@@ -274,6 +284,15 @@ export async function pollRunner(
  * the issue re-enters the pool and routing re-evaluates. Null = nothing to
  * deliver (canceled here, or another poll won the flip).
  */
+/** A runner's config column as an object; an unreadable one reads as empty. */
+function parseRunnerConfig(raw: string): Record<string, unknown> {
+	try {
+		return JSON.parse(raw) as Record<string, unknown>;
+	} catch {
+		return {};
+	}
+}
+
 async function deliverAssignedRun(
 	db: Kysely<Database>,
 	env: Env,
@@ -328,11 +347,41 @@ async function deliverAssignedRun(
 		listArtifacts(db, run.user_id, run.issue_id),
 		listLabels(db, run.user_id)
 	]);
+	const issueRef = `${issue.project_name}/${issue.number}`;
+
+	// Continuation, when the previous run on this runner left a live session
+	// for this issue and every guard passes. A failure anywhere here — an
+	// ineligible candidate, a lost claim race — falls through to the fresh
+	// launch below, which is the path this runner has always taken.
+	const resume = await prepareResume(db, env, { runner, run, now });
+	if (resume) {
+		const preamble = buildResumePreamble({
+			variant: 'local',
+			runId: run.id,
+			runnerName: runner.name,
+			issueRef,
+			timeoutMinutes: runner.max_run_minutes,
+			previousRunId: resume.previous_run_id
+		});
+		return {
+			run: await serializedRun(db, run.user_id, run.id),
+			prompt: `${preamble}\n\n${buildResumePrompt(
+				bundle,
+				issue,
+				artifacts,
+				labels.map((l) => l.name)
+			)}`,
+			bundle,
+			run_key: minted.secret,
+			timeout_minutes: runner.max_run_minutes,
+			resume
+		};
+	}
 	const preamble = buildSupervisorPreamble({
 		variant: 'local',
 		runId: run.id,
 		runnerName: runner.name,
-		issueRef: `${issue.project_name}/${issue.number}`,
+		issueRef,
 		timeoutMinutes: runner.max_run_minutes
 	});
 	return {
@@ -346,6 +395,135 @@ async function deliverAssignedRun(
 		bundle,
 		run_key: minted.secret,
 		timeout_minutes: runner.max_run_minutes
+	};
+}
+
+/**
+ * The resume decision at delivery. Reads the newest ended run for this issue
+ * on this runner, its retained resource and the runner's policy, runs the
+ * pure eligibility check, and — only when it passes — claims the resource so
+ * the GC cannot dispose it underneath the launch. Records the outcome on the
+ * run either way: `resumed_from_run_id` and `resume_expires_at` on a resume,
+ * `resume_fallback_reason` on a decline, so `tines runs list` can say why a
+ * send-back launched cold.
+ *
+ * Returns null for "launch fresh", which is always safe: nothing about the
+ * fresh path depends on any of this.
+ */
+async function prepareResume(
+	db: Kysely<Database>,
+	env: Env,
+	input: { runner: RunnerRow; run: Database['agent_run']; now: number }
+): Promise<RunnerAssignmentResume | null> {
+	const { runner, run, now } = input;
+	const config = parseRunnerConfig(runner.config);
+	if (!runner.resume_enabled || !isResumeProviderSupported(runner.type as Runner['type'], config)) {
+		return null;
+	}
+	const predecessor = await db
+		.selectFrom('agent_run')
+		.select([
+			'id',
+			'runner_id',
+			'ended_at',
+			'outcome',
+			'conversation_turn_count',
+			'state_id_at_end',
+			'api_key_id'
+		])
+		.where('user_id', '=', run.user_id)
+		.where('issue_id', '=', run.issue_id)
+		.where('ended_at', 'is not', null)
+		.where('id', '!=', run.id)
+		.orderBy('ended_at desc')
+		.orderBy('id desc')
+		.executeTakeFirst();
+	if (!predecessor) return null;
+
+	const [resource, endState] = await Promise.all([
+		findResumeResource(db, {
+			userId: run.user_id,
+			runnerId: runner.id,
+			issueId: run.issue_id
+		}),
+		predecessor.state_id_at_end
+			? db
+					.selectFrom('workflow_state')
+					.select('category')
+					.where('id', '=', predecessor.state_id_at_end)
+					.executeTakeFirst()
+			: Promise.resolve(undefined)
+	]);
+	const fingerprint = resumeFingerprint({
+		runnerId: runner.id,
+		harness: String(config.harness ?? 'claude_code'),
+		model: run.model,
+		preambleVariant: 'local'
+	});
+	const verdict = resumeEligibility({
+		now,
+		runner: {
+			id: runner.id,
+			type: runner.type as Runner['type'],
+			config,
+			resume_enabled: true,
+			resume_window_hours: runner.resume_window_hours,
+			resume_max_turns: runner.resume_max_turns,
+			resume_max_tokens: runner.resume_max_tokens,
+			resume_max_cost_usd: runner.resume_max_cost_usd
+		},
+		predecessor,
+		conversation_usage: null,
+		resource: resource ?? null,
+		newest_ended_run_id: predecessor.id,
+		ended_in_awaiting_state: endState?.category === 'awaiting_human',
+		// The resource only exists because the owning run advanced its issue
+		// itself; `outcome === 'advanced'` above is that same authorship.
+		last_transition_authored_by_run: predecessor.outcome === 'advanced',
+		expected_fingerprint: fingerprint
+	});
+	if (!verdict.eligible) {
+		// Only worth recording when there was something to decline: an issue
+		// this runner has never held an awaiting session for is not a fallback.
+		if (resource) {
+			await runAtomic(env, [
+				db
+					.updateTable('agent_run')
+					.set({ resume_fallback_reason: verdict.reason })
+					.where('id', '=', run.id)
+					.compile()
+			]);
+		}
+		return null;
+	}
+	const claimed = await claimResumeResource(db, {
+		resourceId: resource!.id,
+		ownerRunId: predecessor.id,
+		claimRunId: run.id,
+		claimToken: run.id,
+		now
+	});
+	if (!claimed) return null;
+	await runAtomic(env, [
+		db
+			.updateTable('agent_run')
+			// Lineage only. `resume_expires_at` means "this run's own workspace
+			// and session are being held" — the daemon keeps the workspace on
+			// exactly that signal — so a run that merely *inherited* a
+			// predecessor's workspace must not carry it, or a resumed run that
+			// then fails would keep a workspace nothing retained.
+			.set({
+				resumed_from_run_id: predecessor.id,
+				workspace_path: resource!.workspace_path
+			})
+			.where('id', '=', run.id)
+			.compile()
+	]);
+	return {
+		previous_run_id: predecessor.id,
+		provider_session_id: resource!.provider_session_id!,
+		workspace_path: resource!.workspace_path!,
+		prior_turn_count: predecessor.conversation_turn_count ?? 0
 	};
 }
 
@@ -595,6 +773,73 @@ function validateProviderSessionId(value: unknown): string | undefined {
 	return value;
 }
 
+function validateTurnCount(value: unknown, field: string): number | undefined {
+	if (value === undefined) return undefined;
+	if (typeof value !== 'number' || !Number.isInteger(value) || value < 0 || value > 100_000) {
+		throw new ApiFail(422, 'invalid_field', `"${field}" must be a non-negative integer`, { field });
+	}
+	return value;
+}
+
+/**
+ * Retention: a run that advanced its issue into an awaiting state on a
+ * resume-enabled runner leaves its session and workspace claimable until the
+ * window closes. Everything here is best-effort — a missing session id, a
+ * workspace the daemon did not report, a runner that is not opted in, or an
+ * issue that landed anywhere but an awaiting state simply retains nothing,
+ * and the next dispatch launches fresh as it always has.
+ */
+async function retainAwaitingSession(
+	db: Kysely<Database>,
+	runner: RunnerRow,
+	input: {
+		run: { user_id: string; issue_id: string; model: string | null };
+		runId: string;
+		providerSessionId: string | null;
+		workspacePath: string | null;
+		now: number;
+	}
+): Promise<void> {
+	const config = parseRunnerConfig(runner.config);
+	if (
+		!runner.resume_enabled ||
+		!isResumeProviderSupported(runner.type as Runner['type'], config) ||
+		!input.providerSessionId ||
+		!input.workspacePath
+	) {
+		return;
+	}
+	const ended = await db
+		.selectFrom('agent_run')
+		.innerJoin('workflow_state as st', 'st.id', 'agent_run.state_id_at_end')
+		.select(['st.category'])
+		.where('agent_run.id', '=', input.runId)
+		.executeTakeFirst();
+	if (ended?.category !== 'awaiting_human') return;
+	await retainResumeResource(db, {
+		id: newId('rres'),
+		userId: input.run.user_id,
+		runnerId: runner.id,
+		issueId: input.run.issue_id,
+		ownerRunId: input.runId,
+		providerSessionId: input.providerSessionId,
+		workspacePath: input.workspacePath,
+		fingerprint: resumeFingerprint({
+			runnerId: runner.id,
+			harness: String(config.harness ?? 'claude_code'),
+			model: input.run.model,
+			preambleVariant: 'local'
+		}),
+		expiresAt: input.now + runner.resume_window_hours * 60 * 60 * 1000,
+		now: input.now
+	});
+	await db
+		.updateTable('agent_run')
+		.set({ resume_expires_at: input.now + runner.resume_window_hours * 60 * 60 * 1000 })
+		.where('id', '=', input.runId)
+		.execute();
+}
+
 /**
  * `POST /api/v1/runs/:id/finish`: the daemon's end report → endRun with
  * immediate key revocation and the usual judgment. A finish arriving while
@@ -637,13 +882,34 @@ export async function finishRun(
 	if (run.status === 'launching') {
 		await markRunRunning(db, env, run, now);
 	}
-	if (usage || providerSessionId) {
+	const turnCount = validateTurnCount(body.turn_count, 'turn_count');
+	const conversationTurnCount = validateTurnCount(
+		body.conversation_turn_count,
+		'conversation_turn_count'
+	);
+	const workspacePath = optionalString(body.workspace_path, 'workspace_path', { max: 1024 });
+	if (
+		usage ||
+		providerSessionId ||
+		turnCount !== undefined ||
+		conversationTurnCount !== undefined ||
+		workspacePath
+	) {
 		await runAtomic(env, [
 			db
 				.updateTable('agent_run')
 				.set({
 					...(usage ? { usage: JSON.stringify(usage) } : {}),
-					...(providerSessionId ? { provider_session_id: providerSessionId } : {})
+					...(providerSessionId ? { provider_session_id: providerSessionId } : {}),
+					...(turnCount !== undefined ? { turn_count: turnCount } : {}),
+					// A daemon that reports only its own turn count is not resuming
+					// anything, so the two are the same number.
+					...(conversationTurnCount !== undefined
+						? { conversation_turn_count: conversationTurnCount }
+						: turnCount !== undefined
+							? { conversation_turn_count: turnCount }
+							: {}),
+					...(workspacePath ? { workspace_path: workspacePath } : {})
 				})
 				.where('id', '=', runId)
 				.compile()
@@ -702,6 +968,17 @@ export async function finishRun(
 				runnerId: run.runner_id,
 				runId,
 				error: error ?? 'run interrupted by the daemon',
+				now
+			});
+		} else if (ended.outcome === 'advanced' && ended.ended) {
+			// One chain, not two ifs: a `rate_limited` finish is passed to
+			// `endRun` as `interrupted`, so a separate interruption arm would
+			// double-notify it — the runner is already held to the reset.
+			await retainAwaitingSession(db, runner, {
+				run,
+				runId,
+				providerSessionId: providerSessionId ?? run.provider_session_id ?? null,
+				workspacePath: workspacePath ?? null,
 				now
 			});
 		}

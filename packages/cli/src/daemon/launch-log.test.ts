@@ -273,7 +273,11 @@ describe('the run log a local run leaves behind', () => {
 		const workspace = join(configDir, 'workspaces', RUN_ID);
 		const lines = harvest.log.trimEnd().split('\n');
 
-		expect(harvest.finish).toEqual({ status: 'completed', usage: { cost_source: 'none' } });
+		expect(harvest.finish).toEqual({
+			workspace_path: expect.any(String),
+			status: 'completed',
+			usage: { cost_source: 'none' }
+		});
 		// Setup first (here: the --no-cli-refresh notice; a run with repos also
 		// has its `$ git clone` lines), then the banner, then the harness.
 		expect(lines[0]).toMatch(/^warning: no daemon-managed tines CLI/);
@@ -325,6 +329,7 @@ describe('the run log a local run leaves behind', () => {
 		// The Ctrl-C killed the run; the agent did not fail. The supervisor
 		// needs to be told that, or every CLI upgrade costs an issue a strike.
 		expect((await done).finish).toEqual({
+			workspace_path: expect.any(String),
 			status: 'failed',
 			error: 'daemon shut down',
 			judgment: 'interrupted',
@@ -371,6 +376,7 @@ describe('the run log a local run leaves behind', () => {
 
 		const harvest = await done;
 		expect(harvest.finish).toEqual({
+			workspace_path: expect.any(String),
 			status: 'failed',
 			error: 'provider error: API Error: 529 Overloaded',
 			judgment: 'interrupted',
@@ -397,6 +403,7 @@ describe('the run log a local run leaves behind', () => {
 		});
 
 		expect((await done).finish).toEqual({
+			workspace_path: expect.any(String),
 			status: 'completed',
 			usage: {
 				cost_source: 'provider',
@@ -421,6 +428,7 @@ describe('the run log a local run leaves behind', () => {
 
 		const harvest = await done;
 		expect(harvest.finish).toEqual({
+			workspace_path: expect.any(String),
 			status: 'completed',
 			usage: {
 				cost_source: 'provider',
@@ -430,7 +438,11 @@ describe('the run log a local run leaves behind', () => {
 				cache_read_tokens: 30,
 				cache_write_tokens: 40
 			},
-			provider_session_id: 'session_buffered'
+			provider_session_id: 'session_buffered',
+			// The turn counts the resume size guard reads. A cold run's
+			// conversation is exactly this run, so the two agree.
+			turn_count: 3,
+			conversation_turn_count: 3
 		});
 		expect(harvest.log).toContain('[session] result: success (3 turns, $1.25)');
 	}, 30_000);
@@ -445,6 +457,7 @@ describe('the run log a local run leaves behind', () => {
 		child = startDaemon(port, configDir, { fakeCodexDir: fakeCodex(configDir) });
 		const harvest = await done;
 		expect(harvest.finish).toEqual({
+			workspace_path: expect.any(String),
 			status: 'completed',
 			usage: { input_tokens: 400, cache_read_tokens: 600, output_tokens: 100 },
 			provider_session_id: 'thread_local'

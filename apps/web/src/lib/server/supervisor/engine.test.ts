@@ -359,6 +359,67 @@ describe('the guarded claim', () => {
 });
 
 describe('dispatch pass against the fake adapter', () => {
+	it('prefers a routed runner holding a resumable session, without changing the target set', async () => {
+		const t = world();
+		const cold = addRunner(t, { name: 'cold' });
+		const holder = addRunner(t, { name: 'holder' });
+		// Routing lists the cold runner first; only affinity moves the holder up.
+		addRule(t, { targets: [{ runner_id: cold }, { runner_id: holder }] });
+		const issue = addIssue(t);
+		const prior = 'arun_prior';
+		addRun(t, {
+			id: prior,
+			issueId: issue,
+			runnerId: holder,
+			status: 'completed',
+			createdAt: NOW - 2,
+			endedAt: NOW - 1,
+			outcome: 'advanced'
+		});
+		t.sqlite
+			.prepare(
+				`INSERT INTO run_resource (
+			id, user_id, runner_id, issue_id, kind, owner_run_id, state, expires_at,
+			provider_session_id, resume_fingerprint, created_at, updated_at
+		) VALUES ('res_aff', ?, ?, ?, 'local_claude', ?, 'available', ?, 'sess_prior', 'v1:abc', ?, ?)`
+			)
+			.run(USER, holder, issue, prior, NOW + 60_000, NOW, NOW);
+
+		expect(await pass(t, localAdapter)).toEqual({ claimed: 1, launched: 0 });
+		const claimed = runs(t).find((r) => r.id !== prior);
+		expect(claimed!.runner_id).toBe(holder);
+	});
+
+	it('leaves routing order alone when the resource is expired', async () => {
+		const t = world();
+		const cold = addRunner(t, { name: 'cold' });
+		const holder = addRunner(t, { name: 'holder' });
+		addRule(t, { targets: [{ runner_id: cold }, { runner_id: holder }] });
+		const issue = addIssue(t);
+		const prior = 'arun_prior';
+		addRun(t, {
+			id: prior,
+			issueId: issue,
+			runnerId: holder,
+			status: 'completed',
+			createdAt: NOW - 2,
+			endedAt: NOW - 1,
+			outcome: 'advanced'
+		});
+		t.sqlite
+			.prepare(
+				`INSERT INTO run_resource (
+			id, user_id, runner_id, issue_id, kind, owner_run_id, state, expires_at,
+			provider_session_id, resume_fingerprint, created_at, updated_at
+		) VALUES ('res_aff', ?, ?, ?, 'local_claude', ?, 'available', ?, 'sess_prior', 'v1:abc', ?, ?)`
+			)
+			.run(USER, holder, issue, prior, NOW - 1, NOW, NOW);
+
+		expect(await pass(t, localAdapter)).toEqual({ claimed: 1, launched: 0 });
+		const claimed = runs(t).find((r) => r.id !== prior);
+		expect(claimed!.runner_id).toBe(cold);
+	});
+
 	it('claims, launches, mints the run key, and records the started event', async () => {
 		const t = world();
 		const fake = createFakeAdapter();

@@ -2,6 +2,7 @@ import { repoDirFromUrl, type EffectiveContext, type IssueDetail } from '@tines/
 import { describe, expect, it } from 'vitest';
 import {
 	buildLaunchPrompt,
+	buildResumePrompt,
 	countSharedContextItems,
 	isJournal,
 	issueBlock,
@@ -534,6 +535,27 @@ describe('buildLaunchPrompt', () => {
 		const text = buildLaunchPrompt(emptyContext, issue, [], []);
 		expect(text).not.toContain('Labels:');
 		expect(text).toContain('no labels exist yet');
+	});
+});
+
+describe('buildResumePrompt', () => {
+	it('keeps the stage context and the issue block, and drops what the session already holds', () => {
+		const text = buildResumePrompt(richContext, issue);
+		// The stage's own instructions and journal stay: a send-back usually
+		// crosses stages, so the contract the agent is now working under is
+		// exactly what its previous prompt did NOT contain.
+		expect(text).toContain('## Journal (project Tines · state Review)');
+		expect(text.indexOf('## Issue:')).toBeGreaterThan(text.indexOf('## Journal'));
+		// Global and project parts are dropped — the continued conversation is
+		// still holding them, and repeating them only lengthens every later turn.
+		expect(text).not.toContain('## Context: global');
+		expect(text).not.toContain('## Context: project Tines');
+		// Which makes it strictly shorter than the cold launch prompt.
+		expect(text.length).toBeLessThan(buildLaunchPrompt(richContext, issue).length);
+	});
+
+	it('is just the issue block when the stage contributes nothing', () => {
+		expect(buildResumePrompt(emptyContext, issue).startsWith('## Issue:')).toBe(true);
 	});
 });
 
