@@ -433,3 +433,6 @@ refused while a run is assigned, launching or running, so the two never both
 win. `GET /api/v1/issues/:id/transfer` is readable by a run key (it is the
 review an agent can put in front of its owner); the POST is control-plane
 fenced.
+After the guarded transfer batch returns its request-specific assignment/event
+receipt, dispatch is queued opportunistically. Queue failure cannot turn an
+already committed move into a refusal; the periodic sweep remains authoritative.

@@ -255,10 +255,14 @@ describe('private issue transfer path', () => {
 		});
 		expect(preview.context.before.repos[0].item_id).toBe('ctx_issue_repo');
 		expect(preview.context.after.repos[0].item_id).toBe('ctx_issue_repo');
-		expect(preview.context.before.overridden.find((r) => r.item_id === 'ctx_src_repo')).toMatchObject({
+		expect(
+			preview.context.before.overridden.find((r) => r.item_id === 'ctx_src_repo')
+		).toMatchObject({
 			repo: { url: 'https://example.test/source.git', dir: 'app' }
 		});
-		expect(preview.context.after.overridden.find((r) => r.item_id === 'ctx_dst_repo')).toMatchObject({
+		expect(
+			preview.context.after.overridden.find((r) => r.item_id === 'ctx_dst_repo')
+		).toMatchObject({
 			repo: { url: 'https://example.test/destination.git', dir: 'app' }
 		});
 		// The issue's own anchored prompt moves with it: same item, new project.

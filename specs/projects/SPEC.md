@@ -245,3 +245,8 @@ else in the non-goals list (membership, per-project labels, nesting) stands.
    explicit new confirmation. Capacity, heartbeats and spending stay advisory.
 6. **No allocation on preview.** Only the confirmed move takes a number, and a
    same-project request is a no-op: no number, no event, no token rotation.
+7. **Receipt.** Success is established inside the guarded batch by the fresh
+   assignment token and this request's transfer event, never by D1's aggregate
+   affected-row count (which includes the address trigger). Human web and CLI
+   reviews show retained guidance, effective repositories and overridden
+   candidates, checkout conflicts, and both routing explanations before commit.
