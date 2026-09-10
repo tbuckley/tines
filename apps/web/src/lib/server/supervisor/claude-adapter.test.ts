@@ -603,3 +603,142 @@ describe('claude adapter sweepRunner', () => {
 		expect(net.of('DELETE /v1/vaults/vlt_theirs')).toHaveLength(0);
 	});
 });
+
+describe('claude adapter resume ownership', () => {
+	/** A retained managed resource: the row that holds a session past its run. */
+	function retain(
+		t: TestDb,
+		runnerId: string,
+		opts: {
+			state?: string;
+			expiresAt?: number;
+			claimStartedAt?: number | null;
+			transferPhase?: string | null;
+		} = {}
+	) {
+		t.sqlite
+			.prepare(
+				`INSERT INTO run_resource (id, user_id, runner_id, issue_id, kind, owner_run_id, state,
+					claim_run_id, claim_token, claim_started_at, transfer_phase, expires_at,
+					available_seen_at, provider_session_id, vault_id, credential_id, workspace_path,
+					resume_fingerprint, transfer_data, created_at, updated_at)
+				VALUES (?, ?, ?, 'iss_1', 'claude_managed', 'arun_kept', ?, ?, ?, ?, ?, ?, ?,
+					'sesn_kept', 'vlt_1', 'vcred_1', NULL, 'fp', NULL, ?, ?)`
+			)
+			.run(
+				'rres_1',
+				USER,
+				runnerId,
+				opts.state ?? 'available',
+				null,
+				opts.state === 'claimed' ? 'tok' : null,
+				opts.claimStartedAt ?? null,
+				opts.transferPhase ?? null,
+				opts.expiresAt ?? NOW + 60 * 60 * 1000,
+				NOW,
+				NOW,
+				NOW
+			);
+	}
+
+	async function retainedWorld() {
+		const { t, runnerId } = await world();
+		addRun(t, {
+			id: 'arun_kept',
+			issueId: 'iss_1',
+			runnerId,
+			status: 'completed',
+			providerSessionId: 'sesn_kept',
+			providerMeta: JSON.stringify({ vault_id: 'vlt_1', credential_id: 'vcred_1', retained: true }),
+			startedAt: NOW
+		});
+		t.sqlite.prepare('UPDATE agent_run SET ended_at = ? WHERE id = ?').run(NOW + 1000, 'arun_kept');
+		return { t, runnerId };
+	}
+
+	function sweepNetwork() {
+		return fakeNetwork({
+			// The retained run's own vault, findable by name — which is how the
+			// vault sweep would otherwise reach it.
+			'GET /v1/vaults': () => ({
+				data: [{ id: 'vlt_1', display_name: 'tines-run-arun_kept' }],
+				next_page: null
+			}),
+			'GET /v1/sessions': () => ({
+				data: [
+					{
+						id: 'sesn_kept',
+						status: 'idle',
+						created_at: new Date(NOW - 10 * 60_000).toISOString(),
+						metadata: { tines_run_id: 'arun_kept' }
+					}
+				],
+				next_page: null,
+				prev_page: null
+			})
+		});
+	}
+
+	it('spares a retained session AND its vault — the credential must survive for the transfer', async () => {
+		const { t, runnerId } = await retainedWorld();
+		retain(t, runnerId);
+		const net = sweepNetwork();
+		const adapter = createClaudeAdapter(t.env, { fetch: net.fetch });
+		await adapter.sweepRunner!({ id: runnerId, user_id: USER }, NOW + 60_000);
+
+		// All three sweeps must respect the resource: the run HAS ended, which
+		// is exactly what they would otherwise read as garbage.
+		expect(net.of('DELETE /v1/vaults/vlt_1')).toHaveLength(0);
+		expect(net.of('POST /v1/sessions/sesn_kept/archive')).toHaveLength(0);
+		expect(t.all('SELECT id FROM run_resource')).toHaveLength(1);
+	});
+
+	it('disposes the session and vault once the window has closed', async () => {
+		const { t, runnerId } = await retainedWorld();
+		retain(t, runnerId, { expiresAt: NOW + 1000 });
+		const net = sweepNetwork();
+		const adapter = createClaudeAdapter(t.env, { fetch: net.fetch });
+		await adapter.sweepRunner!({ id: runnerId, user_id: USER }, NOW + 60_000);
+
+		// Disposal archives it; the ordinary GC then finds an ended run whose
+		// session is no longer retained and archives again — both are correct.
+		expect(net.of('POST /v1/sessions/sesn_kept/archive').length).toBeGreaterThanOrEqual(1);
+		expect(net.of('DELETE /v1/vaults/vlt_1').length).toBeGreaterThanOrEqual(1);
+		expect(t.all('SELECT id FROM run_resource')).toHaveLength(0);
+	});
+
+	it('disposes a claim whose transfer died, so a failed launch cannot pin a session forever', async () => {
+		const { t, runnerId } = await retainedWorld();
+		// Claimed by a launch that threw mid-transfer: unexpired, so only the
+		// stale-claim arm can reach it — and nothing else ever will.
+		retain(t, runnerId, {
+			state: 'claimed',
+			transferPhase: 'sending',
+			claimStartedAt: NOW - 60 * 60 * 1000,
+			expiresAt: NOW + 60 * 60 * 1000
+		});
+		const net = sweepNetwork();
+		const adapter = createClaudeAdapter(t.env, { fetch: net.fetch });
+		await adapter.sweepRunner!({ id: runnerId, user_id: USER }, NOW + 60_000);
+
+		expect(net.of('POST /v1/sessions/sesn_kept/archive').length).toBeGreaterThanOrEqual(1);
+		expect(net.of('DELETE /v1/vaults/vlt_1').length).toBeGreaterThanOrEqual(1);
+		expect(t.all('SELECT id FROM run_resource')).toHaveLength(0);
+	});
+
+	it('leaves a completed hand-over alone: `accepted` means the successor owns the session', async () => {
+		const { t, runnerId } = await retainedWorld();
+		retain(t, runnerId, {
+			state: 'claimed',
+			transferPhase: 'accepted',
+			claimStartedAt: NOW - 60 * 60 * 1000
+		});
+		const net = sweepNetwork();
+		const adapter = createClaudeAdapter(t.env, { fetch: net.fetch });
+		await adapter.sweepRunner!({ id: runnerId, user_id: USER }, NOW + 60_000);
+
+		expect(net.of('POST /v1/sessions/sesn_kept/archive')).toHaveLength(0);
+		expect(net.of('DELETE /v1/vaults/vlt_1')).toHaveLength(0);
+		expect(t.all('SELECT id FROM run_resource')).toHaveLength(1);
+	});
+});

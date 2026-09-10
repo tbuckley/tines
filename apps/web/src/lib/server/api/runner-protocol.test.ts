@@ -1120,3 +1120,209 @@ describe('pause and kill-switch cancels', () => {
 		);
 	});
 });
+
+// ---------------------------------------------------------------------------
+
+describe('resume (retention and delivery)', () => {
+	function resumeRunner(t: TestDb, opts: { windowHours?: number; maxTurns?: number } = {}) {
+		const runnerId = addRunner(t);
+		t.sqlite
+			.prepare(
+				'UPDATE runner SET resume_enabled = 1, resume_window_hours = ?, resume_max_turns = ? WHERE id = ?'
+			)
+			.run(opts.windowHours ?? 48, opts.maxTurns ?? 60, runnerId);
+		return runnerId;
+	}
+
+	async function deliver(t: TestDb, runnerId: string, issueId: string, now = NOW + 1) {
+		const runId = addRun(t, { issueId, runnerId });
+		const { response } = await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, runnerId),
+			{ owned_runs: [] },
+			now
+		);
+		const assignment = response.assignments.find((a) => a.run.id === runId);
+		if (!assignment) throw new Error(`run ${runId} was not delivered`);
+		return { runId, assignment };
+	}
+
+	/** Ends a delivered run having advanced its issue into Human Review. */
+	async function finishAdvanced(
+		t: TestDb,
+		runnerId: string,
+		issueId: string,
+		runId: string,
+		body: Record<string, unknown> = {},
+		to: string = REVIEW
+	) {
+		await appendRunLog(t.db, t.env, await runnerRow(t, runnerId), runId, 'working…\n', NOW + 10);
+		const keyId = keyForRun(t, runId)?.id as string;
+		addTransitionEvent(t, { issueId, apiKeyId: keyId, at: NOW + 20, to });
+		t.sqlite.prepare('UPDATE issue SET state_id = ? WHERE id = ?').run(to, issueId);
+		return finishRun(
+			t.db,
+			t.env,
+			await runnerRow(t, runnerId),
+			runId,
+			{
+				status: 'completed',
+				provider_session_id: 'sess-abc',
+				workspace_path: '/tmp/ws/run1',
+				turn_count: 12,
+				conversation_turn_count: 12,
+				...body
+			} as Parameters<typeof finishRun>[4],
+			NOW + 30
+		);
+	}
+
+	function resources(t: TestDb) {
+		return t.sqlite.prepare('SELECT * FROM run_resource').all() as Array<Record<string, unknown>>;
+	}
+
+	it('a run that advances its issue into an awaiting state retains its session and workspace', async () => {
+		const t = world();
+		const runnerId = resumeRunner(t);
+		const issue = addIssue(t);
+		const { runId } = await deliver(t, runnerId, issue);
+		const run = await finishAdvanced(t, runnerId, issue, runId);
+
+		expect(run.outcome).toBe('advanced');
+		const rows = resources(t);
+		expect(rows).toHaveLength(1);
+		expect(rows[0]!).toMatchObject({
+			kind: 'local_claude',
+			state: 'available',
+			owner_run_id: runId,
+			issue_id: issue,
+			runner_id: runnerId,
+			provider_session_id: 'sess-abc',
+			workspace_path: '/tmp/ws/run1',
+			expires_at: NOW + 30 + 48 * 60 * 60 * 1000
+		});
+		// The run row is what the daemon reads to hold the workspace.
+		expect(runById(t, runId)!.resume_expires_at).toBe(NOW + 30 + 48 * 60 * 60 * 1000);
+		expect(runById(t, runId)!.turn_count).toBe(12);
+		expect(runById(t, runId)!.workspace_path).toBe('/tmp/ws/run1');
+	});
+
+	it('retains nothing for a stalled run, an active end state, or an opted-out runner', async () => {
+		// Stalled: no transition at all, so the run never advanced.
+		const t = world();
+		const runnerId = resumeRunner(t);
+		const stalledIssue = addIssue(t);
+		const stalled = await deliver(t, runnerId, stalledIssue);
+		await finishRun(
+			t.db,
+			t.env,
+			await runnerRow(t, runnerId),
+			stalled.runId,
+			{
+				status: 'completed',
+				provider_session_id: 'sess-stalled',
+				workspace_path: '/tmp/ws/stalled'
+			} as Parameters<typeof finishRun>[4],
+			NOW + 30
+		);
+		expect(resources(t)).toHaveLength(0);
+
+		// Advanced, but into an active state: there is no human gap to resume across.
+		const activeIssue = addIssue(t);
+		const active = await deliver(t, runnerId, activeIssue);
+		await finishAdvanced(t, runnerId, activeIssue, active.runId, {}, OPEN);
+		expect(resources(t)).toHaveLength(0);
+
+		// Advanced into awaiting, but the runner is not opted in.
+		const offIssue = addIssue(t);
+		const offRunner = addRunner(t, { name: 'no-resume' });
+		const offRun = addRun(t, { issueId: offIssue, runnerId: offRunner });
+		await pollRunner(t.db, t.env, await runnerRow(t, offRunner), { owned_runs: [] }, NOW + 1);
+		await finishAdvanced(t, offRunner, offIssue, offRun);
+		expect(resources(t)).toHaveLength(0);
+	});
+
+	it('a send-back on the same runner is delivered as a resume with the reduced prompt', async () => {
+		const t = world();
+		const runnerId = resumeRunner(t);
+		const issue = addIssue(t);
+		const first = await deliver(t, runnerId, issue);
+		const coldPrompt = first.assignment.prompt;
+		await finishAdvanced(t, runnerId, issue, first.runId);
+		// The send-back itself: a human moves the issue back into an active
+		// state, which is what makes it dispatchable again.
+		t.sqlite.prepare('UPDATE issue SET state_id = ? WHERE id = ?').run(OPEN, issue);
+
+		const second = await deliver(t, runnerId, issue, NOW + 40);
+		expect(second.assignment.resume).toEqual({
+			previous_run_id: first.runId,
+			provider_session_id: 'sess-abc',
+			workspace_path: '/tmp/ws/run1',
+			prior_turn_count: 12
+		});
+		// The continuation, not the cold launch prompt.
+		expect(second.assignment.prompt).toContain('# Supervisor run (resumed)');
+		expect(second.assignment.prompt).toContain(`It continues run ${first.runId}`);
+		expect(coldPrompt).toContain('# Supervisor run\n');
+		expect(second.assignment.prompt.length).toBeLessThan(coldPrompt.length);
+
+		const row = runById(t, second.runId)!;
+		expect(row.resumed_from_run_id).toBe(first.runId);
+		// Lineage only: this run's own workspace is not what was retained, so
+		// it must not tell the daemon to keep it.
+		expect(row.resume_expires_at).toBeNull();
+		expect(row.workspace_path).toBe('/tmp/ws/run1');
+		// The resource is claimed, so a GC sweep cannot take it underneath.
+		expect(resources(t)[0]!.state).toBe('claimed');
+		expect(resources(t)[0]!.claim_run_id).toBe(second.runId);
+	});
+
+	it('launches fresh outside the window, recording why', async () => {
+		const t = world();
+		const runnerId = resumeRunner(t, { windowHours: 1 });
+		const issue = addIssue(t);
+		const first = await deliver(t, runnerId, issue);
+		await finishAdvanced(t, runnerId, issue, first.runId);
+		// The window has closed by the time the send-back arrives.
+		t.sqlite.prepare('UPDATE run_resource SET expires_at = ?').run(NOW + 30 + 60 * 60 * 1000);
+		t.sqlite.prepare('UPDATE issue SET state_id = ? WHERE id = ?').run(OPEN, issue);
+
+		const runId = addRun(t, { issueId: issue, runnerId });
+		const { response } = await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, runnerId),
+			{ owned_runs: [] },
+			NOW + 30 + 2 * 60 * 60 * 1000
+		);
+		const assignment = response.assignments.find((a) => a.run.id === runId);
+		expect(assignment?.resume).toBeUndefined();
+		expect(assignment!.prompt).toContain('# Supervisor run\n');
+		expect(runById(t, runId)!.resume_fallback_reason).toBe('expired');
+		expect(runById(t, runId)!.resumed_from_run_id).toBeNull();
+	});
+
+	it('launches fresh when the previous conversation is already long', async () => {
+		const t = world();
+		const runnerId = resumeRunner(t, { maxTurns: 10 });
+		const issue = addIssue(t);
+		const first = await deliver(t, runnerId, issue);
+		await finishAdvanced(t, runnerId, issue, first.runId, { conversation_turn_count: 40 });
+		t.sqlite.prepare('UPDATE issue SET state_id = ? WHERE id = ?').run(OPEN, issue);
+
+		const runId = addRun(t, { issueId: issue, runnerId });
+		const { response } = await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, runnerId),
+			{ owned_runs: [] },
+			NOW + 40
+		);
+		const assignment = response.assignments.find((a) => a.run.id === runId);
+		expect(assignment?.resume).toBeUndefined();
+		expect(runById(t, runId)!.resume_fallback_reason).toBe('long_context');
+		// Declining leaves the resource claimable for a later, smaller send-back.
+		expect(resources(t)[0]!.state).toBe('available');
+	});
+});
