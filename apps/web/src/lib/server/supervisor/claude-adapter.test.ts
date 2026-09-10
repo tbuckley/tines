@@ -935,3 +935,94 @@ describe('claude adapter resume launch (the hand-over)', () => {
 		expect(t.all('SELECT state FROM run_resource')).toEqual([{ state: 'disposing' }]);
 	});
 });
+
+describe('claude adapter finalizeEnd (retain or archive)', () => {
+	const runRef = {
+		id: 'arun_kept',
+		runner_id: 'rnr_c1',
+		provider_session_id: 'sesn_kept',
+		provider_meta: JSON.stringify({
+			vault_id: 'vlt_1',
+			credential_id: 'vcred_1',
+			events_cursor: '2024-01-01T00:00:00Z'
+		})
+	};
+	const endInput = {
+		user_id: USER,
+		issue_id: 'iss_1',
+		model: 'claude-sonnet-5',
+		outcome: 'advanced',
+		ended_in_awaiting_state: true,
+		now: NOW
+	};
+
+	async function endedWorld(opts: { resume?: boolean } = {}) {
+		const { t, runnerId } = await world();
+		if (opts.resume !== false)
+			t.sqlite.prepare('UPDATE runner SET resume_enabled = 1 WHERE id = ?').run(runnerId);
+		addRun(t, {
+			id: 'arun_kept',
+			issueId: 'iss_1',
+			runnerId,
+			status: 'completed',
+			providerSessionId: 'sesn_kept',
+			providerMeta: runRef.provider_meta,
+			startedAt: NOW,
+			endedAt: NOW + 1000
+		});
+		return { t, runnerId };
+	}
+
+	it('a run that advanced its issue into an awaiting state keeps its session and vault', async () => {
+		const { t } = await endedWorld();
+		const net = fakeNetwork();
+		const adapter = createClaudeAdapter(t.env, { fetch: net.fetch });
+		await adapter.finalizeEnd!(runRef, endInput);
+
+		expect(net.of('POST /v1/sessions/sesn_kept/archive')).toHaveLength(0);
+		expect(net.of('DELETE /v1/vaults/vlt_1')).toHaveLength(0);
+		const [resource] = t.all('SELECT * FROM run_resource');
+		expect(resource).toMatchObject({
+			kind: 'claude_managed',
+			state: 'available',
+			owner_run_id: 'arun_kept',
+			provider_session_id: 'sesn_kept',
+			vault_id: 'vlt_1',
+			credential_id: 'vcred_1',
+			// The successor's log boundary: without it the predecessor's whole
+			// conversation replays into the new run.
+			transfer_data: JSON.stringify({ events_cursor: '2024-01-01T00:00:00Z' }),
+			expires_at: NOW + 48 * 60 * 60 * 1000
+		});
+		expect(
+			JSON.parse(
+				t.all('SELECT provider_meta FROM agent_run WHERE id = ?', 'arun_kept')[0]!
+					.provider_meta as string
+			)
+		).toMatchObject({ retained: true });
+	});
+
+	it.each([
+		['the run did not advance the issue', { outcome: 'stalled' }],
+		['the issue did not land in an awaiting state', { ended_in_awaiting_state: false }]
+	])('archives immediately when %s', async (_label, override) => {
+		const { t } = await endedWorld();
+		const net = fakeNetwork();
+		const adapter = createClaudeAdapter(t.env, { fetch: net.fetch });
+		await adapter.finalizeEnd!(runRef, { ...endInput, ...override });
+
+		expect(net.of('POST /v1/sessions/sesn_kept/archive')).toHaveLength(1);
+		expect(net.of('DELETE /v1/vaults/vlt_1')).toHaveLength(1);
+		expect(t.all('SELECT id FROM run_resource')).toHaveLength(0);
+	});
+
+	it('archives immediately when the runner is not opted in', async () => {
+		const { t } = await endedWorld({ resume: false });
+		const net = fakeNetwork();
+		const adapter = createClaudeAdapter(t.env, { fetch: net.fetch });
+		await adapter.finalizeEnd!(runRef, endInput);
+
+		expect(net.of('POST /v1/sessions/sesn_kept/archive')).toHaveLength(1);
+		expect(t.all('SELECT id FROM run_resource')).toHaveLength(0);
+	});
+});
