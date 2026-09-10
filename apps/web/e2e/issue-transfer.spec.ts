@@ -180,11 +180,34 @@ function suite(label: string, viewport: { width: number; height: number }) {
 			await modal.getByTestId('transfer-destination').selectOption({ label: destinationName });
 			await modal.getByRole('button', { name: 'Review move' }).click();
 			await expect(page.getByTestId('transfer-review')).toBeVisible();
-			await page.getByTestId('transfer-confirm').click();
+			const [transferResponse] = await Promise.all([
+				page.waitForResponse(
+					(response) =>
+						response.request().method() === 'POST' &&
+						response.url().endsWith(`/api/v1/issues/${issueId}/transfer`)
+				),
+				page.getByTestId('transfer-confirm').click()
+			]);
+			expect(transferResponse.status()).toBe(200);
+			const receipt = await transferResponse.json();
+			expect(receipt).toMatchObject({
+				status: 'transferred',
+				issue_id: issueId,
+				old_ref: { ref: `${sourceName}/${sourceNumber}` },
+				new_ref: { ref: `${destinationName}/2` },
+				event_id: expect.any(String),
+				issue_path: `/issues/${destinationName}/2`,
+				preserved: expect.any(Object),
+				context_changes: expect.any(Array),
+				routing: expect.any(Object)
+			});
 
 			// The destination's number is its next one (its first is taken), and
 			// the browser lands on that canonical URL without leaving the issue.
 			await expect(page).toHaveURL(new RegExp(`/issues/${destinationName}/2$`));
+			await expect(page.getByRole('status')).toContainText(
+				`Moved ${sourceName}/${sourceNumber} to ${destinationName}/2`
+			);
 			await expect(page.getByRole('heading', { name: `${sourceName} traveller` })).toBeVisible();
 			await expect(page.getByText('a comment that survives')).toBeVisible();
 			await expect(
