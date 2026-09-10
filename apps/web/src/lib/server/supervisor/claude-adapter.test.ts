@@ -876,7 +876,7 @@ describe('claude adapter resume launch (the hand-over)', () => {
 			.prepare(
 				'UPDATE agent_run SET status = ?, provider_session_id = ?, provider_meta = ? WHERE id = ?'
 			)
-			.run('running', result.provider_session_id, result.provider_meta, 'arun_l1');
+			.run('running', result.provider_session_id!, result.provider_meta ?? null, 'arun_l1');
 
 		const sweepNet = fakeNetwork({
 			// The vault is still named after the PREDECESSOR — the transfer
