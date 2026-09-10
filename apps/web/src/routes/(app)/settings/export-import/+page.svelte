@@ -163,8 +163,9 @@
 <section class="rounded-lg border p-4">
 	<h2 class="mb-1 text-lg font-medium">Import</h2>
 	<p class="text-muted-foreground mb-3 max-w-2xl text-sm">
-		Upload a file exported from Tines. Nothing is written until you confirm the preview, and
-		anything that collides with what you already have is skipped by default.
+		Upload a file exported from Tines. Existing projects and matching workflows are skipped.
+		Conflicting workflow definitions or inheritance may be refused; overwrite updates supported
+		context and inheritance only. Review the plan before importing.
 	</p>
 
 	<div class="mb-3 flex flex-wrap items-center gap-3">
