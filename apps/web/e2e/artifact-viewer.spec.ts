@@ -53,6 +53,19 @@ test.beforeAll(async ({ playwright }) => {
 		headers: { authorization: `Bearer ${ALICE.apiKey}` },
 		multipart
 	});
+	// A mixed folder takes the file-list path. The standard Word MIME is long
+	// enough to expose any row that lets metadata crowd out its filename/actions.
+	await request.put(`/api/v1/issues/${issue.id}/artifacts/deliverables/folder`, {
+		headers: { authorization: `Bearer ${ALICE.apiKey}` },
+		multipart: {
+			docx: {
+				name: 'onboarding-review.docx',
+				mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+				buffer: Buffer.from('PK')
+			},
+			readme: { name: 'README.md', mimeType: 'text/markdown', buffer: Buffer.from('# Read me') }
+		}
+	});
 	// The page behind has to be taller than the phone viewport for the scroll
 	// lock assertions below to mean anything.
 	await api.post(`/api/v1/issues/${issue.id}/comments`, {
@@ -139,6 +152,72 @@ test('a folder set stays within the viewport and dismissable on a phone', async 
 
 	await closeButton.click();
 	await expect(dialog).toBeHidden();
+});
+
+type FileRowGeometry = {
+	row: Box;
+	filename: Box;
+	download: Box;
+	clientWidth: number;
+	scrollWidth: number;
+};
+
+function fileRowGeometry(download: Locator): Promise<FileRowGeometry> {
+	return download.evaluate((link) => {
+		const bounds = (el: Element): Box => {
+			const { x, y, width, height } = el.getBoundingClientRect();
+			return { x, y, width, height };
+		};
+		const row = link.closest('li')!;
+		const text = link.previousElementSibling!;
+		const filename = text.firstElementChild!;
+		return {
+			row: bounds(row),
+			filename: bounds(filename),
+			download: bounds(link),
+			clientWidth: row.clientWidth,
+			scrollWidth: row.scrollWidth
+		};
+	});
+}
+
+test('Office metadata keeps the filename and Download inside a phone row in both themes', async ({
+	page
+}) => {
+	await page.setViewportSize(PHONE);
+
+	for (const colorScheme of ['light', 'dark'] as const) {
+		await page.emulateMedia({ colorScheme });
+		await gotoHydrated(page, issueUrl());
+		await expect(page.locator('html')).toHaveClass(
+			colorScheme === 'dark' ? /\bdark\b/ : /^(?!.*\bdark\b)/
+		);
+		await unfoldArtifacts(page);
+
+		const dialog = page.getByRole('dialog', { name: 'Artifact viewer' });
+		await openViewer(page.getByRole('button', { name: /^View deliverables/ }).first(), dialog);
+
+		const download = dialog.getByRole('link', { name: 'Download onboarding-review.docx' });
+		await expect(download).toBeInViewport();
+		const geometry = await readSettled(() => fileRowGeometry(download), {
+			timeout: 3_000,
+			bestEffort: true
+		});
+		const dialogBox = await dialog.boundingBox();
+		expect(dialogBox).not.toBeNull();
+
+		expect(geometry.filename.width).toBeGreaterThan(100);
+		expect(geometry.scrollWidth).toBeLessThanOrEqual(geometry.clientWidth);
+		expect(geometry.download.x + geometry.download.width).toBeLessThanOrEqual(
+			geometry.row.x + geometry.row.width
+		);
+		expect(geometry.download.x + geometry.download.width).toBeLessThanOrEqual(
+			dialogBox!.x + dialogBox!.width
+		);
+
+		await dialog.getByRole('button', { name: 'Close' }).click();
+		await expect(dialog).toBeHidden();
+	}
 });
 
 /**

@@ -354,25 +354,31 @@
 			{:else if pathPick === null}
 				<ul class="divide-y rounded-md border">
 					{#each files as file (file.path)}
-						<li class="flex items-center gap-2 px-3 py-2 text-sm">
-							<IconFile size={14} class="text-muted-foreground shrink-0" />
-							{#if viewKind(file.content_type) !== 'download'}
-								<button
-									type="button"
-									class="min-w-0 truncate text-left hover:underline"
-									onclick={() => (pathPick = file.path)}
+						<li class="flex items-start gap-2 px-3 py-2 text-sm">
+							<IconFile size={14} class="text-muted-foreground mt-0.5 shrink-0" />
+							<div class="min-w-0 flex-1">
+								{#if viewKind(file.content_type) !== 'download'}
+									<button
+										type="button"
+										class="block w-full truncate text-left hover:underline"
+										onclick={() => (pathPick = file.path)}
+										title={file.path}
+									>
+										{file.path}
+									</button>
+								{:else}
+									<span class="block truncate" title={file.path}>{file.path}</span>
+								{/if}
+								<span
+									class="text-muted-foreground block text-xs break-all"
+									title={`${file.content_type} · ${file.size_bytes.toLocaleString()} bytes`}
 								>
-									{file.path}
-								</button>
-							{:else}
-								<span class="min-w-0 truncate">{file.path}</span>
-							{/if}
-							<span class="text-muted-foreground ml-auto shrink-0 text-xs">
-								{file.content_type} · {file.size_bytes.toLocaleString()} bytes
-							</span>
+									{file.content_type} · {file.size_bytes.toLocaleString()} bytes
+								</span>
+							</div>
 							<a
 								href={contentUrl({ path: file.path })}
-								class="text-muted-foreground hover:text-foreground shrink-0"
+								class="text-muted-foreground hover:text-foreground shrink-0 self-center"
 								aria-label={`Download ${file.path}`}
 							>
 								<IconDownload size={14} />
