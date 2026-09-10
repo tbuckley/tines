@@ -12,6 +12,7 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import type { FinishRunRequest } from '@tines/shared';
 import { cliVersion } from '../version.js';
 import { CLI_BIN, NODE } from '../test-bin.js';
 
@@ -37,7 +38,7 @@ function assignment(timeoutMinutes: number): unknown {
 
 interface Harvest {
 	log: string;
-	finish: { status: string; error?: string; judgment?: string } | null;
+	finish: FinishRunRequest | null;
 }
 
 /**
@@ -115,7 +116,10 @@ function fakeClaudeProviderError(dir: string, exitCode = 1): string {
 		type: 'result',
 		subtype: 'error_during_execution',
 		is_error: true,
-		result: 'API Error: 529 Overloaded'
+		result: 'API Error: 529 Overloaded',
+		session_id: 'session_failed',
+		total_cost_usd: 0.25,
+		usage: { input_tokens: 10, output_tokens: 2 }
 	});
 	writeFileSync(join(bin, 'claude'), `#!/bin/sh\nprintf '%s\\n' '${event}'\nexit ${exitCode}\n`, {
 		mode: 0o755
@@ -123,11 +127,78 @@ function fakeClaudeProviderError(dir: string, exitCode = 1): string {
 	return bin;
 }
 
+/**
+ * A claude_code launcher that exits immediately while its inherited writer
+ * emits a terminal result larger than a typical pipe buffer. The missing
+ * trailing newline also makes the renderer hold the event until stdout has
+ * fully closed.
+ */
+function fakeClaudeBufferedResult(dir: string): string {
+	const bin = join(dir, 'fakebin');
+	mkdirSync(bin, { recursive: true });
+	writeFileSync(
+		join(bin, 'claude-writer.mjs'),
+		`const event = {
+	type: 'result',
+	subtype: 'success',
+	is_error: false,
+	result: 'done',
+	session_id: 'session_buffered',
+	total_cost_usd: 1.25,
+	num_turns: 3,
+	duration_ms: 456,
+	usage: {
+		input_tokens: 100,
+		output_tokens: 20,
+		cache_read_input_tokens: 30,
+		cache_creation_input_tokens: 40
+	},
+	padding: 'x'.repeat(4 * 1024 * 1024)
+};
+await new Promise((resolve) => setTimeout(resolve, 50));
+process.stdout.write(JSON.stringify(event));
+	`
+	);
+	// A short-lived launcher leaves its writer holding stdout open. Node's
+	// child-process `exit` event fires for the launcher immediately; `close`
+	// waits until the inherited pipe is drained, which is the production
+	// invariant this fixture exists to pin.
+	writeFileSync(
+		join(bin, 'claude'),
+		`#!/bin/sh
+node "$(dirname "$0")/claude-writer.mjs" &
+exit 0
+`,
+		{ mode: 0o755 }
+	);
+	return bin;
+}
+
+function fakeCodex(dir: string): string {
+	const bin = join(dir, 'fakebin');
+	mkdirSync(bin, { recursive: true });
+	const started = JSON.stringify({ type: 'thread.started', thread_id: 'thread_local' });
+	const message = JSON.stringify({
+		type: 'item.completed',
+		item: { type: 'agent_message', text: 'Codex finished.' }
+	});
+	const completed = JSON.stringify({
+		type: 'turn.completed',
+		usage: { input_tokens: 1000, cached_input_tokens: 600, output_tokens: 100 }
+	});
+	writeFileSync(
+		join(bin, 'codex'),
+		`#!/bin/sh\nprintf '%s\\n' '${started}' '${message}' '${completed}'\n`,
+		{ mode: 0o755 }
+	);
+	return bin;
+}
+
 /** Boots the daemon against the stub: a custom template, or claude_code. */
 function startDaemon(
 	port: number,
 	dir: string,
-	harness: { command: string } | { fakeClaudeDir: string },
+	harness: { command: string } | { fakeClaudeDir: string } | { fakeCodexDir: string },
 	trailingSlashes = 0
 ): ChildProcess {
 	const args = [
@@ -148,9 +219,12 @@ function startDaemon(
 		TINES_CONFIG_DIR: dir
 	};
 	if ('command' in harness) args.push('--harness', 'custom', '--command', harness.command);
-	else {
+	else if ('fakeClaudeDir' in harness) {
 		args.push('--harness', 'claude_code');
 		env.PATH = `${harness.fakeClaudeDir}${delimiter}${process.env.PATH ?? ''}`;
+	} else {
+		args.push('--harness', 'codex');
+		env.PATH = `${harness.fakeCodexDir}${delimiter}${process.env.PATH ?? ''}`;
 	}
 	return spawn(NODE, args, { env, stdio: ['ignore', 'pipe', 'pipe'] });
 }
@@ -199,7 +273,7 @@ describe('the run log a local run leaves behind', () => {
 		const workspace = join(configDir, 'workspaces', RUN_ID);
 		const lines = harvest.log.trimEnd().split('\n');
 
-		expect(harvest.finish).toEqual({ status: 'completed' });
+		expect(harvest.finish).toEqual({ status: 'completed', usage: { cost_source: 'none' } });
 		// Setup first (here: the --no-cli-refresh notice; a run with repos also
 		// has its `$ git clone` lines), then the banner, then the harness.
 		expect(lines[0]).toMatch(/^warning: no daemon-managed tines CLI/);
@@ -253,7 +327,8 @@ describe('the run log a local run leaves behind', () => {
 		expect((await done).finish).toEqual({
 			status: 'failed',
 			error: 'daemon shut down',
-			judgment: 'interrupted'
+			judgment: 'interrupted',
+			usage: { cost_source: 'none' }
 		});
 	}, 30_000);
 
@@ -298,7 +373,14 @@ describe('the run log a local run leaves behind', () => {
 		expect(harvest.finish).toEqual({
 			status: 'failed',
 			error: 'provider error: API Error: 529 Overloaded',
-			judgment: 'interrupted'
+			judgment: 'interrupted',
+			usage: {
+				cost_source: 'provider',
+				cost_usd: 0.25,
+				input_tokens: 10,
+				output_tokens: 2
+			},
+			provider_session_id: 'session_failed'
 		});
 		expect(harvest.log).toContain('[error] API Error: 529 Overloaded');
 	}, 30_000);
@@ -314,6 +396,60 @@ describe('the run log a local run leaves behind', () => {
 			fakeClaudeDir: fakeClaudeProviderError(configDir, 0)
 		});
 
-		expect((await done).finish).toEqual({ status: 'completed' });
+		expect((await done).finish).toEqual({
+			status: 'completed',
+			usage: {
+				cost_source: 'provider',
+				cost_usd: 0.25,
+				input_tokens: 10,
+				output_tokens: 2
+			},
+			provider_session_id: 'session_failed'
+		});
+	}, 30_000);
+
+	it('drains a large unterminated result before reporting an immediately exiting harness', async () => {
+		const { server: stub, done } = stubSupervisor();
+		server = stub;
+		await new Promise<void>((r) => stub.listen(0, '127.0.0.1', r));
+		const port = (stub.address() as AddressInfo).port;
+		configDir = mkdtempSync(join(tmpdir(), 'tines-daemon-'));
+
+		child = startDaemon(port, configDir, {
+			fakeClaudeDir: fakeClaudeBufferedResult(configDir)
+		});
+
+		const harvest = await done;
+		expect(harvest.finish).toEqual({
+			status: 'completed',
+			usage: {
+				cost_source: 'provider',
+				cost_usd: 1.25,
+				input_tokens: 100,
+				output_tokens: 20,
+				cache_read_tokens: 30,
+				cache_write_tokens: 40
+			},
+			provider_session_id: 'session_buffered'
+		});
+		expect(harvest.log).toContain('[session] result: success (3 turns, $1.25)');
+	}, 30_000);
+
+	it('reports local Codex tokens and thread id while keeping logs readable', async () => {
+		const { server: stub, done } = stubSupervisor();
+		server = stub;
+		await new Promise<void>((r) => stub.listen(0, '127.0.0.1', r));
+		const port = (stub.address() as AddressInfo).port;
+		configDir = mkdtempSync(join(tmpdir(), 'tines-daemon-'));
+
+		child = startDaemon(port, configDir, { fakeCodexDir: fakeCodex(configDir) });
+		const harvest = await done;
+		expect(harvest.finish).toEqual({
+			status: 'completed',
+			usage: { input_tokens: 400, cache_read_tokens: 600, output_tokens: 100 },
+			provider_session_id: 'thread_local'
+		});
+		expect(harvest.log).toContain('[agent] Codex finished.');
+		expect(harvest.log).not.toContain('"thread.started"');
 	}, 30_000);
 });

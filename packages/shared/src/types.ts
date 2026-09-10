@@ -1877,6 +1877,8 @@ export interface FinishRunRequest {
 	 * resets, epoch ms. Absent = unknown; the server applies a default hold.
 	 */
 	resume_at?: number;
+	/** Opaque resumable session/thread id reported by the local harness. */
+	provider_session_id?: string;
 	/** Whatever the harness reported (Claude Code JSON output, etc.). */
 	usage?: AgentRunUsage;
 }
@@ -2058,7 +2060,11 @@ export function runCostLabel(run: Pick<AgentRun, 'usage'>): string | null {
 	if (!usage) return null;
 	if (usage.cost_usd !== undefined) return `$${usage.cost_usd.toFixed(2)}`;
 	if (usage.cost_source === 'none') return 'unreported';
-	const tokens = (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0);
+	const tokens =
+		(usage.input_tokens ?? 0) +
+		(usage.output_tokens ?? 0) +
+		(usage.cache_read_tokens ?? 0) +
+		(usage.cache_write_tokens ?? 0);
 	return tokens > 0 ? `${tokens.toLocaleString()} tok` : null;
 }
 
