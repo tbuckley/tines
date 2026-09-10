@@ -867,6 +867,54 @@ describe('inheritance pointers', () => {
 		expect(rebuilt.workflows.map((wf) => wf.name)).toEqual(['Engineering']);
 	});
 
+	it.each(['skip', 'overwrite'] as const)(
+		'v1 cannot clear an existing pointer in %s collision mode',
+		async (on_collision) => {
+			const base = await createWorkflow(t.db, t.env, actor, {
+				name: 'Base',
+				initial_state: 'Shared',
+				states: [{ name: 'Shared', category: 'active' }],
+				transitions: []
+			});
+			const shared = base.states[0];
+			await createWorkflow(t.db, t.env, actor, {
+				name: 'Child',
+				initial_state: 'Ready',
+				states: [{ name: 'Ready', category: 'active', inherits_from: shared.id }],
+				transitions: []
+			});
+			const exported = await buildLibraryDocument(t.db, USER);
+			const document: LibraryDocument = {
+				...exported,
+				version: 1,
+				// A permissive old reader may have left this later-version field
+				// in place. Version 1 still has to ignore it completely.
+				workflows: exported.workflows.map((workflow) =>
+					workflow.name === 'Child'
+						? {
+								...workflow,
+								states: workflow.states.map((state) => ({ ...state, inherits_from: null }))
+							}
+						: workflow
+				)
+			};
+
+			const preview = await applyImport(t.db, t.env, actor, {
+				document,
+				on_collision,
+				dry_run: true
+			});
+			expect(
+				preview.entries.filter((entry) => entry.section === 'workflow').map((entry) => entry.action)
+			).toEqual(['skip', 'skip']);
+			const applied = await applyImport(t.db, t.env, actor, { document, on_collision });
+			expect(applied.counts.overwrite).toBe(0);
+			expect(pointers(await buildLibraryDocument(t.db, USER))).toEqual([
+				'Child/Ready -> Base/Shared'
+			]);
+		}
+	);
+
 	it("passes the API's depth refusal through as the entry's error", async () => {
 		await seedInheritance();
 		const document = await buildLibraryDocument(t.db, USER);

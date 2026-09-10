@@ -377,6 +377,16 @@ export async function planImport(
 	const overwrite = request.on_collision === 'overwrite';
 	const createProjects = request.create_projects !== false;
 	const includeJournals = request.include_journals !== false;
+	// Version 1 had no inheritance semantics. Some hand-authored v1 files did
+	// nevertheless contain the later field; accepting those bytes must not let
+	// them compare, clear, or set a destination pointer.
+	const documentWorkflows =
+		doc.version >= 2
+			? doc.workflows
+			: doc.workflows.map((workflow) => ({
+					...workflow,
+					states: workflow.states.map(({ inherits_from: _ignored, ...state }) => state)
+				}));
 
 	const [projectRows, workflowRows, contextRows, labelRows] = await Promise.all([
 		db.selectFrom('project').select(['id', 'name']).where('user_id', '=', userId).execute(),
@@ -401,7 +411,7 @@ export async function planImport(
 	// way (created, or already here under that name).
 	const availableWorkflows = new Set([
 		...workflowNames.keys(),
-		...doc.workflows.map((wf) => wf.name)
+		...documentWorkflows.map((wf) => wf.name)
 	]);
 	const existingContext = new Map(
 		contextRows.map((row) => [
@@ -454,7 +464,7 @@ export async function planImport(
 		});
 	}
 
-	for (const workflow of doc.workflows) {
+	for (const workflow of documentWorkflows) {
 		const ref = `workflow "${workflow.name}"`;
 		const existing = workflowNames.get(workflow.name);
 		if (existing) {
@@ -467,9 +477,10 @@ export async function planImport(
 			// version 1 export of this same library looks like. Calling that
 			// "identical" would drop every pointer in silence, so the
 			// difference is either applied (on request) or named and refused.
-			const differing = same
-				? pointerDifference(documentPointers(workflow), storedPointers(existing, baseRef))
-				: [];
+			const differing =
+				doc.version >= 2 && same
+					? pointerDifference(documentPointers(workflow), storedPointers(existing, baseRef))
+					: [];
 			const states = differing.map((n) => `"${n}"`).join(', ');
 			if (same && differing.length > 0 && overwrite && !existing.is_system) {
 				steps.push({
