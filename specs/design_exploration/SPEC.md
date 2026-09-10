@@ -57,7 +57,7 @@ Transitions: *Submit for critique* requires a fresh `prototype`; *Finished* requ
 
 ### Product-management hookup
 
-The PRD's *Journeys* section ends with **UX exploration:** the journeys worth a round, or `none`; approving the PRD approves that. Planning then files the exploration alone as the first tranche, directly in Fanning out with a `Direction:` line and the workstream label, blocking the direction; Delivering treats a Chosen exploration as "the next tranche implements it", and Planning files those issues with a `UX: <exploration ref>` line. The Engineering Design stage fetches `concept` and `ux-spec` when that line is present and designs to them.
+The PRD's *Journeys* section ends with **UX exploration:** a one-line judgement call with its reason. The default is `none` — incremental UI on existing patterns (a field, a filter, a chip, a dialog) goes straight to engineering; an exploration is proposed for a new surface, a new interaction model, a redesign, a page whose point is how it feels, or a journey with several plausible shapes. Approving the PRD approves the line as written or as amended in the approval comment, which wins either way. Planning then files the exploration alone as the first tranche, directly in Fanning out with a `Direction:` line and the workstream label, blocking the direction; Delivering treats a Chosen exploration as "the next tranche implements it", and Planning files those issues with a `UX: <exploration ref>` line. The Engineering Design stage fetches `concept` and `ux-spec` when that line is present and designs to them.
 
 ## Acceptance criteria
 
