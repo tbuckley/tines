@@ -265,9 +265,10 @@ describe('updateRunner (managed credentials, tiers, budget)', () => {
 			type: 'local',
 			name: 'claude'
 		});
+		// A Claude Code local runner may now opt in: this is the shipped path.
 		await expect(
 			updateRunner(t.db, t.env, actor, local.id, { resume_enabled: true })
-		).rejects.toMatchObject({ code: 'resume_unavailable', details: { provider: 'local' } });
+		).resolves.toMatchObject({ resume_enabled: true });
 		await expect(
 			updateRunner(t.db, t.env, actor, local.id, {
 				config: { harness: 'codex' },

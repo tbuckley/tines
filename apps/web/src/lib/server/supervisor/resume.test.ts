@@ -47,10 +47,15 @@ const base = {
 describe('resumeEligibility', () => {
 	const supported = () => true;
 
-	it('keeps both production provider gates closed in P1', () => {
-		expect(isResumeProviderSupported('local', { harness: 'claude_code' })).toBe(false);
+	// Tines/362 opened the local Claude Code gate: `claude -p --resume` in the
+	// kept workspace is the shipped path. Managed reuse stays closed until the
+	// credential ownership transfer exists, so enabling it is still rejected.
+	it('opens the local Claude Code gate and keeps the managed one closed', () => {
+		expect(isResumeProviderSupported('local', { harness: 'claude_code' })).toBe(true);
+		expect(isResumeProviderSupported('local', {})).toBe(true);
+		expect(isResumeProviderSupported('local', { harness: 'codex' })).toBe(false);
+		expect(isResumeProviderSupported('local', { harness: 'custom' })).toBe(false);
 		expect(isResumeProviderSupported('claude_managed', {})).toBe(false);
-		expect(resumeEligibility(base)).toEqual({ eligible: false, reason: 'unsupported' });
 	});
 
 	it('keeps continuation off when the provider is supported but the runner has not opted in', () => {
