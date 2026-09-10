@@ -24,14 +24,16 @@ import {
 	type LaunchPromptResponse,
 	type ModelTier,
 	type RunnerBudget,
+	type Runner,
 	type RunnerTierOverrides,
 	canonicalGitHubRepoUrl,
 	LAUNCH_STALL_MS
 } from '@tines/shared';
 import { sql, type Kysely } from 'kysely';
 import { decryptSecret } from '../crypto';
-import { getDb, type Database } from '../db';
+import { getDb, newId, type Database } from '../db';
 import type {
+	AdapterEndInput,
 	AdapterLaunchInput,
 	AdapterLaunchResult,
 	AdapterPollResult,
@@ -39,6 +41,12 @@ import type {
 	RunnerAdapter
 } from './adapter';
 import { mapUsage, summarizeEvents } from './claude-events';
+import {
+	claimResourceDisposal,
+	isResumeProviderSupported,
+	resumeFingerprint,
+	retainResumeResource
+} from './resume';
 import { buildSupervisorPreamble } from './preamble';
 
 // ---------------------------------------------------------------------------
@@ -58,8 +66,18 @@ export interface ClaudeRunMeta {
 	vault_id?: string;
 	/** `processed_at` of the newest session event already rendered to the log. */
 	events_cursor?: string;
+	/** The credential inside `vault_id` holding the run key, for rotation. */
+	credential_id?: string;
 	/** Set once end-of-run provider resources were garbage-collected. */
 	gc_done?: boolean;
+	/**
+	 * Set when the end finalizer retained this run's session for a resume:
+	 * the session is deliberately left idle and its vault alive, so the GC
+	 * below must not treat it as an ended run's leftovers. Retention itself
+	 * lives in `run_resource`; this flag is what makes the provider-side
+	 * sweep agree with it without a join.
+	 */
+	retained?: boolean;
 }
 
 export interface ClaudeAdapterOptions {
@@ -171,7 +189,7 @@ interface ProviderContext {
 		runId: string,
 		runKey: string,
 		apiHost: string
-	): Promise<string>;
+	): Promise<{ vaultId: string; credentialId: string }>;
 }
 
 function createProviderContext(env: Env, opts: ClaudeAdapterOptions): ProviderContext {
@@ -314,13 +332,13 @@ function createProviderContext(env: Env, opts: ClaudeAdapterOptions): ProviderCo
 		runId: string,
 		runKey: string,
 		apiHost: string
-	): Promise<string> {
+	): Promise<{ vaultId: string; credentialId: string }> {
 		const vault = await ctx.client.beta.vaults.create({
 			display_name: `tines-run-${runId}`,
 			metadata: { tines_run_id: runId }
 		});
 		try {
-			await ctx.client.beta.vaults.credentials.create(vault.id, {
+			const credential = await ctx.client.beta.vaults.credentials.create(vault.id, {
 				display_name: `Tines run key for ${runId}`,
 				auth: {
 					type: 'environment_variable',
@@ -332,11 +350,11 @@ function createProviderContext(env: Env, opts: ClaudeAdapterOptions): ProviderCo
 					injection_location: { header: true }
 				}
 			});
+			return { vaultId: vault.id, credentialId: credential.id };
 		} catch (e) {
 			await ctx.client.beta.vaults.delete(vault.id).catch(() => {});
 			throw e;
 		}
-		return vault.id;
 	}
 
 	// `persistConfig` stays private: only the two ensure* functions write config.
@@ -358,6 +376,68 @@ function createProviderContext(env: Env, opts: ClaudeAdapterOptions): ProviderCo
 // client, so they live at module scope and `sweepRunner` is the runner-context
 // guard plus three calls.
 
+/**
+ * The sessions this runner is deliberately holding for a resume: every
+ * managed resource that is still claimable (`available`) or mid-transfer
+ * (`claimed`). Both provider-side sweeps below consult it before deciding
+ * that an ended run's session is garbage — retention is precisely the state
+ * where a session outlives its run.
+ */
+/**
+ * Expiry GC, provider side: an expired managed resource is claimed for
+ * disposal through the same `available →` predicate a reuse would use (so a
+ * launch in flight keeps its session), then its session is archived and its
+ * vault deleted before the row goes. A failed provider call leaves the row
+ * in `disposing` for the next sweep rather than dropping the only record of
+ * the handles.
+ */
+async function disposeExpiredManagedResources(
+	db: Kysely<Database>,
+	client: Anthropic,
+	runnerId: string,
+	now: number
+): Promise<void> {
+	const expired = await db
+		.selectFrom('run_resource')
+		.selectAll()
+		.where('runner_id', '=', runnerId)
+		.where('kind', '=', 'claude_managed')
+		.where('state', '=', 'available')
+		.where('expires_at', '<=', now)
+		.orderBy('expires_at asc')
+		.limit(25)
+		.execute();
+	for (const row of expired) {
+		if (!(await claimResourceDisposal(db, row.id, now))) continue;
+		try {
+			if (row.provider_session_id) {
+				await client.beta.sessions.archive(row.provider_session_id).catch((e) => {
+					if (!(e instanceof Anthropic.APIError && e.status === 404)) throw e;
+				});
+			}
+			if (row.vault_id) {
+				await client.beta.vaults.delete(row.vault_id).catch((e) => {
+					if (!(e instanceof Anthropic.APIError && e.status === 404)) throw e;
+				});
+			}
+			await db.deleteFrom('run_resource').where('id', '=', row.id).execute();
+		} catch (e) {
+			console.error(`claude sweep: disposing resume resource ${row.id} failed:`, e);
+		}
+	}
+}
+
+async function retainedSessionIds(db: Kysely<Database>, runnerId: string): Promise<Set<string>> {
+	const rows = await db
+		.selectFrom('run_resource')
+		.select('provider_session_id')
+		.where('runner_id', '=', runnerId)
+		.where('kind', '=', 'claude_managed')
+		.where('state', 'in', ['available', 'claimed'])
+		.execute();
+	return new Set(rows.map((r) => r.provider_session_id).filter((id): id is string => !!id));
+}
+
 async function gcEndedRuns(
 	db: Kysely<Database>,
 	client: Anthropic,
@@ -374,9 +454,14 @@ async function gcEndedRuns(
 		.orderBy('ended_at desc')
 		.limit(25)
 		.execute();
+	const retained = await retainedSessionIds(db, runnerId);
 	for (const run of ended) {
 		const meta = parseJson<ClaudeRunMeta>(run.provider_meta);
 		if (!meta || meta.gc_done) continue;
+		// A retained run's session and vault are the resume path's, not
+		// leftovers: only the resource's disposal (expiry, or a reuse that
+		// ends) may delete them.
+		if (meta.retained && run.provider_session_id && retained.has(run.provider_session_id)) continue;
 		try {
 			if (meta.vault_id) {
 				await client.beta.vaults.delete(meta.vault_id).catch((e) => {
@@ -441,6 +526,7 @@ async function reconcileSessions(
 	// session create and the DB write) — cancel them. Freshly created
 	// sessions get the launch-stall grace period before qualifying.
 	try {
+		const retained = await retainedSessionIds(db, runnerId);
 		const page = await client.beta.sessions.list({
 			statuses: ['running', 'idle', 'rescheduling'],
 			limit: 100
@@ -449,6 +535,10 @@ async function reconcileSessions(
 			const runId = session.metadata?.tines_run_id;
 			if (!runId) continue; // not ours — never touch foreign sessions
 			if (now - Date.parse(session.created_at) < LAUNCH_STALL_MS) continue;
+			// An idle session held by a live resource is retained on purpose:
+			// its owner run HAS ended, which is exactly what this sweep would
+			// otherwise read as an orphan.
+			if (retained.has(session.id)) continue;
 			const run = await db
 				.selectFrom('agent_run')
 				.select(['id', 'status'])
@@ -515,7 +605,12 @@ export function createClaudeAdapter(env: Env, opts: ClaudeAdapterOptions = {}): 
 
 		const environmentId = await provider.ensureEnvironment(ctx);
 		const agentId = await provider.ensureTierAgent(ctx, input.tier, input.model, effort);
-		const vaultId = await provider.createRunVault(ctx, input.runId, input.runKey, apiHost);
+		const { vaultId, credentialId } = await provider.createRunVault(
+			ctx,
+			input.runId,
+			input.runKey,
+			apiHost
+		);
 
 		const issueRef = `${issue.project_name}/${issue.number}`;
 		const preamble = buildSupervisorPreamble({
@@ -572,7 +667,7 @@ export function createClaudeAdapter(env: Env, opts: ClaudeAdapterOptions = {}): 
 			throw e;
 		}
 
-		const meta: ClaudeRunMeta = { vault_id: vaultId };
+		const meta: ClaudeRunMeta = { vault_id: vaultId, credential_id: credentialId };
 		return {
 			provider_session_id: session.id,
 			// Best-effort console link: correct for default-workspace keys; the
@@ -630,9 +725,88 @@ export function createClaudeAdapter(env: Env, opts: ClaudeAdapterOptions = {}): 
 			} else {
 				result.status = 'completed';
 			}
-			await ctx.client.beta.sessions.archive(run.provider_session_id).catch(() => {});
+			// A clean end on a runner that can retain is NOT archived here:
+			// whether the session lives on is a question about the issue's
+			// end state, which only `finalizeEnd` (after the authoritative
+			// `endRun`) can answer. Every other end archives immediately, as
+			// it always has, and the ended-run GC is the crash backstop.
+			const mayRetain =
+				result.status === 'completed' &&
+				ctx.row.resume_enabled === 1 &&
+				isResumeProviderSupported(
+					ctx.row.type as Runner['type'],
+					ctx.config as Record<string, unknown>
+				);
+			if (!mayRetain) {
+				await ctx.client.beta.sessions.archive(run.provider_session_id).catch(() => {});
+			}
 		}
 		return result;
+	}
+
+	/**
+	 * Called once the server has judged the end (see `RunnerAdapter`). A run
+	 * that advanced its issue into an awaiting state on an opted-in runner
+	 * keeps its session idle and its vault alive behind a `run_resource`;
+	 * anything else disposes both here rather than waiting for the sweep.
+	 */
+	async function finalizeEnd(run: AdapterRunRef, input: AdapterEndInput): Promise<void> {
+		if (!run.provider_session_id) return;
+		const ctx = await provider.runnerContext(run.runner_id);
+		const meta = parseJson<ClaudeRunMeta>(run.provider_meta ?? null) ?? {};
+		const retain =
+			input.outcome === 'advanced' &&
+			input.ended_in_awaiting_state &&
+			ctx.row.resume_enabled === 1 &&
+			isResumeProviderSupported(
+				ctx.row.type as Runner['type'],
+				ctx.config as Record<string, unknown>
+			) &&
+			!!meta.vault_id &&
+			!!meta.credential_id;
+		if (!retain) {
+			await ctx.client.beta.sessions.archive(run.provider_session_id).catch(() => {});
+			if (meta.vault_id) {
+				await ctx.client.beta.vaults.delete(meta.vault_id).catch(() => {});
+			}
+			await db
+				.updateTable('agent_run')
+				.set({ provider_meta: JSON.stringify({ ...meta, gc_done: true }) })
+				.where('id', '=', run.id)
+				.execute();
+			return;
+		}
+		const expiresAt = input.now + ctx.row.resume_window_hours * 60 * 60 * 1000;
+		await retainResumeResource(db, {
+			id: newId('rres'),
+			userId: input.user_id,
+			runnerId: run.runner_id,
+			issueId: input.issue_id,
+			ownerRunId: run.id,
+			kind: 'claude_managed',
+			providerSessionId: run.provider_session_id,
+			workspacePath: null,
+			vaultId: meta.vault_id ?? null,
+			credentialId: meta.credential_id ?? null,
+			fingerprint: resumeFingerprint({
+				runnerId: run.runner_id,
+				harness: 'claude_managed',
+				model: input.model,
+				preambleVariant: 'claude_managed'
+			}),
+			expiresAt,
+			now: input.now
+		});
+		// The provider-side sweeps read this flag; the resource row is the
+		// authority, but the flag is what stops a join in the hot GC loop.
+		await db
+			.updateTable('agent_run')
+			.set({
+				provider_meta: JSON.stringify({ ...meta, retained: true }),
+				resume_expires_at: expiresAt
+			})
+			.where('id', '=', run.id)
+			.execute();
 	}
 
 	async function cancel(run: AdapterRunRef): Promise<void> {
@@ -653,10 +827,11 @@ export function createClaudeAdapter(env: Env, opts: ClaudeAdapterOptions = {}): 
 		} catch {
 			return; // no key stored (or runner gone) — nothing provider-side to do
 		}
+		await disposeExpiredManagedResources(db, ctx.client, runner.id, now);
 		await gcEndedRuns(db, ctx.client, runner.id);
 		await reconcileVaults(db, ctx.client, runner.id);
 		await reconcileSessions(db, ctx.client, runner.id, now);
 	}
 
-	return { launchMode: 'immediate', launch, poll, cancel, sweepRunner };
+	return { launchMode: 'immediate', launch, poll, cancel, finalizeEnd, sweepRunner };
 }

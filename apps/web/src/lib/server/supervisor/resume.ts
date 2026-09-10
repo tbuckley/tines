@@ -203,8 +203,12 @@ export async function retainResumeResource(
 		runnerId: string;
 		issueId: string;
 		ownerRunId: string;
+		/** `local_claude` keeps a workspace; `claude_managed` keeps a vault. */
+		kind?: 'local_claude' | 'claude_managed';
 		providerSessionId: string;
-		workspacePath: string;
+		workspacePath: string | null;
+		vaultId?: string | null;
+		credentialId?: string | null;
 		fingerprint: string;
 		expiresAt: number;
 		now: number;
@@ -225,7 +229,7 @@ export async function retainResumeResource(
 			user_id: input.userId,
 			runner_id: input.runnerId,
 			issue_id: input.issueId,
-			kind: 'local_claude',
+			kind: input.kind ?? 'local_claude',
 			owner_run_id: input.ownerRunId,
 			state: 'available',
 			claim_run_id: null,
@@ -235,8 +239,8 @@ export async function retainResumeResource(
 			expires_at: input.expiresAt,
 			available_seen_at: input.now,
 			provider_session_id: input.providerSessionId,
-			vault_id: null,
-			credential_id: null,
+			vault_id: input.vaultId ?? null,
+			credential_id: input.credentialId ?? null,
 			workspace_path: input.workspacePath,
 			resume_fingerprint: input.fingerprint,
 			transfer_data: null,
