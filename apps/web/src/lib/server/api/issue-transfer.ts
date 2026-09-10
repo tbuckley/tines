@@ -51,7 +51,6 @@ interface WitnessIssueSection {
 	destination: WitnessProject;
 }
 
-
 interface TransferQueryBatch {
 	queries: CompiledQuery[];
 	eventId: string;
@@ -238,9 +237,7 @@ export function diffEffectiveContext(
 			scope_after: a?.scope ?? null,
 			effective_before: b?.effective ?? false,
 			effective_after: a?.effective ?? false,
-			...(item.kind === 'repo'
-				? { repo_before: b?.repo ?? null, repo_after: a?.repo ?? null }
-				: {})
+			...(item.kind === 'repo' ? { repo_before: b?.repo ?? null, repo_after: a?.repo ?? null } : {})
 		});
 	}
 	return changes.sort((x, y) => x.kind.localeCompare(y.kind) || x.name.localeCompare(y.name));
@@ -315,7 +312,7 @@ function scheduleSummary(issue: Issue): IssueTransferSchedule | null {
 		project_id: issue.scheduled_task_project_id,
 		project_name: issue.scheduled_task_project_name ?? '',
 		notice:
-			'This instance keeps its schedule and still blocks its closure gate. Future instances are created in the schedule\'s own project.'
+			"This instance keeps its schedule and still blocks its closure gate. Future instances are created in the schedule's own project."
 	};
 }
 

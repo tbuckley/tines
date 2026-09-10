@@ -1130,11 +1130,7 @@ export interface IssueTransferProject {
 
 /** Why a transfer cannot be committed right now, and what to do about it. */
 export interface IssueTransferBlocker {
-	code:
-		| 'run_key_forbidden'
-		| 'project_archived'
-		| 'issue_busy'
-		| 'transfer_preview_unavailable';
+	code: 'run_key_forbidden' | 'project_archived' | 'issue_busy' | 'transfer_preview_unavailable';
 	message: string;
 	/** Set for `issue_busy`: the run holding the issue. */
 	run_id?: string;
@@ -1149,11 +1145,7 @@ export interface IssueTransferBlocker {
  * an issue-only or shared row that matches on both sides unchanged.
  */
 export type IssueTransferContextChangeKind =
-	| 'added'
-	| 'removed'
-	| 'retained'
-	| 'rescoped'
-	| 'replaced';
+	'added' | 'removed' | 'retained' | 'rescoped' | 'replaced';
 
 export interface IssueTransferContextChange {
 	item_id: string;

@@ -67,7 +67,13 @@ const preview = {
 		link_count: 1
 	},
 	context: {
-		before: { prompt: { text: '', parts: [], journal: null }, skills: [], repos: [], overridden: [], conflicts: [] },
+		before: {
+			prompt: { text: '', parts: [], journal: null },
+			skills: [],
+			repos: [],
+			overridden: [],
+			conflicts: []
+		},
 		after: {
 			prompt: {
 				text: '',
@@ -218,7 +224,15 @@ const posts = () => seen.filter((r) => r.method === 'POST');
 
 describe('tines issues transfer', () => {
 	it('reviews without moving under --dry-run, even with --yes', async () => {
-		const res = await cli(['issues', 'transfer', 'demo/4', '--project', 'platform', '--dry-run', '--yes']);
+		const res = await cli([
+			'issues',
+			'transfer',
+			'demo/4',
+			'--project',
+			'platform',
+			'--dry-run',
+			'--yes'
+		]);
 		expect(res.code).toBe(0);
 		expect(posts()).toHaveLength(0);
 		expect(res.stdout).toContain('Move demo/4 from demo to platform');

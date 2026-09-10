@@ -14,9 +14,7 @@ const CHANGE_LABEL: Record<IssueTransferContextChange['change'], string> = {
 };
 
 /** The item lines an operator inspects by index with `--inspect <n>`. */
-export function inspectableChanges(
-	preview: IssueTransferPreview
-): IssueTransferContextChange[] {
+export function inspectableChanges(preview: IssueTransferPreview): IssueTransferContextChange[] {
 	return preview.context.changes.filter((c) => c.change !== 'retained');
 }
 
@@ -24,7 +22,8 @@ function repoLine(change: IssueTransferContextChange): string | null {
 	if (change.kind !== 'repo') return null;
 	const before = change.repo_before;
 	const after = change.repo_after;
-	const show = (r: typeof before) => (r ? `${r.url}${r.branch ? `#${r.branch}` : ''} → ${r.dir}` : 'none');
+	const show = (r: typeof before) =>
+		r ? `${r.url}${r.branch ? `#${r.branch}` : ''} → ${r.dir}` : 'none';
 	if (!before && !after) return null;
 	return `      checkout: ${show(before)} => ${show(after)}`;
 }
@@ -99,18 +98,18 @@ export function formatTransferPreview(preview: IssueTransferPreview): string {
 	if (preview.blockers.length) {
 		lines.push('', 'Cannot move yet:');
 		for (const blocker of preview.blockers) {
-			lines.push(`  ${blocker.code}: ${blocker.message}${blocker.remedy ? ` (${blocker.remedy})` : ''}`);
+			lines.push(
+				`  ${blocker.code}: ${blocker.message}${blocker.remedy ? ` (${blocker.remedy})` : ''}`
+			);
 		}
 	}
-	if (preview.noop) lines.push('', 'This issue is already in that project; moving would change nothing.');
+	if (preview.noop)
+		lines.push('', 'This issue is already in that project; moving would change nothing.');
 	return lines.join('\n');
 }
 
 /** The full body/files behind one reviewed item, from the preview itself. */
-export function formatTransferItem(
-	preview: IssueTransferPreview,
-	index: number
-): string {
+export function formatTransferItem(preview: IssueTransferPreview, index: number): string {
 	const change = inspectableChanges(preview)[index];
 	if (!change) return `no item [${index}] in this review`;
 	const side = change.change === 'removed' ? preview.context.before : preview.context.after;
@@ -124,7 +123,8 @@ export function formatTransferItem(
 		].join('\n');
 	}
 	const repo = side.repos.find((r) => r.item_id === change.item_id);
-	if (repo) return `${change.name} (repo, ${repo.scope.label})\n${repo.url} ${repo.branch ?? ''} → ${repo.dir}`;
+	if (repo)
+		return `${change.name} (repo, ${repo.scope.label})\n${repo.url} ${repo.branch ?? ''} → ${repo.dir}`;
 	return `${change.name} (${change.kind}) is not effective on either side; nothing to show.`;
 }
 

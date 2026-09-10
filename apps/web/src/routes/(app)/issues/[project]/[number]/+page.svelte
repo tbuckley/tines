@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type {
+		IssueTransferResult,
 		AllowedTransition,
 		Comment,
 		ContextItem,
@@ -20,7 +21,7 @@
 	import IconRocket from '@tabler/icons-svelte/icons/rocket';
 	import { tick, untrack } from 'svelte';
 	import { fade, slide } from 'svelte/transition';
-	import { goto, invalidate } from '$app/navigation';
+	import { goto, invalidate, invalidateAll } from '$app/navigation';
 	import { page } from '$app/state';
 	import { api } from '$lib/api';
 	import AgentActivityCard from '$lib/components/AgentActivityCard.svelte';
@@ -37,6 +38,7 @@
 	import LaunchPromptDialog from '$lib/components/LaunchPromptDialog.svelte';
 	import Markdown from '$lib/components/Markdown.svelte';
 	import Modal from '$lib/components/Modal.svelte';
+	import IssueTransferModal from '$lib/components/IssueTransferModal.svelte';
 	import MoveDirectlyForm from '$lib/components/MoveDirectlyForm.svelte';
 	import PendingButton from '$lib/components/PendingButton.svelte';
 	import PhoneFold from '$lib/components/PhoneFold.svelte';
@@ -71,6 +73,20 @@
 			noScroll: true
 		});
 	});
+
+	// The project move lives on the page, not in the dialog: closing the dialog
+	// must never be able to swallow a move the server already committed.
+	let transferOpen = $state(false);
+	let transferNotice = $state<string | null>(null);
+	async function transferCompleted(result: IssueTransferResult) {
+		if (result.status === 'transferred') {
+			transferNotice = `Moved ${result.old_ref.ref} to ${result.new_ref.ref}`;
+			// Stay on the issue at its new canonical address; lists and counts on
+			// both projects moved too, so the whole tree is invalidated once.
+			await goto(`${result.issue_path}${page.url.hash}`, { replaceState: true, keepFocus: true });
+			await invalidateAll();
+		}
+	}
 
 	/** An archived project's issues read normally and write nowhere. */
 	const archived = $derived(data.issue.project_archived_at !== null);
@@ -734,6 +750,15 @@
 		<IconChevronLeft size={16} class="shrink-0" />
 		<span class="truncate">{backList.label}</span>
 	</a>
+	{#if transferNotice}
+		<p class="text-sm" role="status" data-testid="transfer-notice">
+			{transferNotice}
+			<button
+				class="text-muted-foreground hover:text-foreground ml-2 underline underline-offset-2"
+				onclick={() => (transferNotice = null)}>Dismiss</button
+			>
+		</p>
+	{/if}
 	<div class="flex flex-wrap items-start justify-between gap-4">
 		<div class="min-w-0">
 			<p class="text-muted-foreground text-sm">
@@ -750,6 +775,15 @@
 						{focusing ? 'Focusing…' : `Focus ${data.issue.project_name}`}
 					</button>
 				{/if}
+				<button
+					class="hover:text-foreground ml-2 underline underline-offset-2"
+					onclick={() => (transferOpen = true)}
+					disabled={archived}
+					title={archived ? PROJECT_ARCHIVED_TOOLTIP : 'Move this issue to another project'}
+					data-testid="move-to-project"
+				>
+					Move to project…
+				</button>
 				<span class="font-mono">#{data.issue.number}</span>
 				{#if data.issue.scheduled_task_id}
 					<a
@@ -1334,6 +1368,14 @@
 	onmove={requestMove}
 	onopen={() => (stateSheetOpen = true)}
 />
+<IssueTransferModal
+	bind:open={transferOpen}
+	issueId={data.issue.id}
+	currentProjectId={data.issue.project_id}
+	projects={data.projects}
+	oncompleted={transferCompleted}
+/>
+
 <Modal bind:open={stateSheetOpen} title="State">
 	{@render statePanel()}
 </Modal>
