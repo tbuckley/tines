@@ -203,3 +203,16 @@ carries a consumed navigation-state marker: only the untouched, sole active
 first issue on the immediate unfiltered project arrival gets the first-issue and
 Agents next-step callout. The marker is removed from history, so reloads and
 ordinary later visits never replay onboarding guidance.
+
+### Shared builders versus package reuse (Tines/435)
+
+Portable workflow packages share the ordinary guarded workflow/context/label/
+schedule/routing query builders with CRUD and starter machinery. This shares
+validation and object/event shapes, not the starter's reuse policy: a workflow
+package creates independently editable copies of every bundled workflow and
+inheritance dependency, with destination-selected collision renames. Only declared
+destination inputs are reused. Context prompts, skills and repos start with the
+ordinary version-1 counter; they have no separate history table. No source history
+is copied. The package installer must compile and check the complete batch budget
+before submitting one transaction, rather than call starter/CRUD operations in a
+loop.

@@ -700,31 +700,30 @@ export function validateContextCreateFields(body: CreateContextItemRequest) {
 	return { kind, name, description, promptBody, files, repoUrl, repoBranch, repoDir };
 }
 
-export async function createContextItem(
+/** Validated ordinary payload plus a resolved prospective scope. No writes or lookups. */
+export function contextItemInsertQueries(
 	db: Kysely<Database>,
-	env: Env,
 	actor: ActorContext,
-	body: CreateContextItemRequest
-): Promise<ContextItem> {
-	const { kind, name, description, promptBody, files, repoUrl, repoBranch, repoDir } =
-		validateContextCreateFields(body);
-
-	const scope = await resolveScope(db, actor.userId, {
-		projectId: body.project_id ?? null,
-		workflowStateId: body.workflow_state_id ?? null,
-		labelId: body.label_id ?? null,
-		issueId: body.issue_id ?? null
-	});
-	await assertScopeWritable(db, actor, scope);
-	await assertNameAvailable(db, actor.userId, kind, name, scope);
-
-	const now = Date.now();
-	const id = newId('ctx');
-	const position = await nextPosition(db, actor.userId, scope);
-	const queries: CompiledQuery[] = [
-		db
-			.insertInto('context_item')
-			.values({
+	options: {
+		id: string;
+		fields: ReturnType<typeof validateContextCreateFields>;
+		scope: ResolvedScope;
+		position: number;
+		now: number;
+		fileIds?: string[];
+		eventId?: string;
+		guard?: QueryGuard;
+	}
+): CompiledQuery[] {
+	const { id, fields, scope, position, now } = options;
+	const { kind, name, description, promptBody, files, repoUrl, repoBranch, repoDir } = fields;
+	if (options.fileIds && options.fileIds.length !== files.length)
+		throw new Error('Context file ID allocation must match the validated files');
+	return [
+		insertValues(
+			db,
+			'context_item',
+			{
 				id,
 				user_id: actor.userId,
 				kind,
@@ -742,27 +741,67 @@ export async function createContextItem(
 				version: 1,
 				created_at: now,
 				updated_at: now
-			})
-			.compile(),
-		...files.map((f) =>
-			db
-				.insertInto('context_item_file')
-				.values({
-					id: newId('ctf'),
+			},
+			options.guard
+		),
+		...files.map((f, index) =>
+			insertValues(
+				db,
+				'context_item_file',
+				{
+					id: options.fileIds?.[index] ?? newId('ctf'),
 					context_item_id: id,
 					path: f.path,
 					content: f.content,
 					created_at: now,
 					updated_at: now
-				})
-				.compile()
+				},
+				options.guard
+			)
 		),
-		eventInsert(db, actor, {
-			type: 'context.created',
-			...eventRefs(scope),
-			payload: { context_id: id, kind, name, scope: scopeEventPayload(scope) }
-		})
+		eventInsert(
+			db,
+			actor,
+			{
+				id: options.eventId,
+				createdAt: now,
+				type: 'context.created',
+				...eventRefs(scope),
+				payload: { context_id: id, kind, name, scope: scopeEventPayload(scope) }
+			},
+			options.guard
+		)
 	];
+}
+
+export async function createContextItem(
+	db: Kysely<Database>,
+	env: Env,
+	actor: ActorContext,
+	body: CreateContextItemRequest
+): Promise<ContextItem> {
+	const fields = validateContextCreateFields(body);
+	const { kind, name } = fields;
+
+	const scope = await resolveScope(db, actor.userId, {
+		projectId: body.project_id ?? null,
+		workflowStateId: body.workflow_state_id ?? null,
+		labelId: body.label_id ?? null,
+		issueId: body.issue_id ?? null
+	});
+	await assertScopeWritable(db, actor, scope);
+	await assertNameAvailable(db, actor.userId, kind, name, scope);
+
+	const now = Date.now();
+	const id = newId('ctx');
+	const position = await nextPosition(db, actor.userId, scope);
+	const queries = contextItemInsertQueries(db, actor, {
+		id,
+		fields,
+		scope,
+		position,
+		now
+	});
 	await runContextWrite(env, queries);
 	return getContextItem(db, actor.userId, id);
 }

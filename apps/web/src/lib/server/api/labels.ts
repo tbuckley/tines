@@ -27,6 +27,7 @@ import { assertWritable, issueProject } from './archive';
 import { contextItemQuery, deleteContextItem } from './context';
 import { routingRuleDeletes, rulesScopedToLabel } from './routing';
 import { eventInsert } from './events';
+import { insertValues, type QueryGuard } from './query-guard';
 import { scopeLabel } from './scope';
 
 /**
@@ -181,6 +182,29 @@ async function assertNameFree(
 	}
 }
 
+/** Strict creation: unlike on-the-fly labelInserts, a collision must fail the batch. */
+export function labelInsertQueries(
+	db: Kysely<Database>,
+	actor: ActorContext,
+	label: Label,
+	options: { guard?: QueryGuard; eventId?: string } = {}
+): CompiledQuery[] {
+	return [
+		insertValues(db, 'label', { ...label, user_id: actor.userId }, options.guard),
+		eventInsert(
+			db,
+			actor,
+			{
+				id: options.eventId,
+				createdAt: label.created_at,
+				type: 'label.created',
+				payload: { label_id: label.id, name: label.name, color: label.color }
+			},
+			options.guard
+		)
+	];
+}
+
 export async function createLabel(
 	db: Kysely<Database>,
 	env: Env,
@@ -201,16 +225,7 @@ export async function createLabel(
 		created_at: now,
 		updated_at: now
 	};
-	await runAtomic(env, [
-		db
-			.insertInto('label')
-			.values({ ...label, user_id: actor.userId })
-			.compile(),
-		eventInsert(db, actor, {
-			type: 'label.created',
-			payload: { label_id: label.id, name, color }
-		})
-	]);
+	await runAtomic(env, labelInsertQueries(db, actor, label));
 	return label;
 }
 

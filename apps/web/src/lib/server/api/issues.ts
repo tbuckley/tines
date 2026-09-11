@@ -54,7 +54,7 @@ import { deriveRound, deriveSinceLastRun } from './handoff';
 import { issueLabelInserts, labelInserts, resolveOrCreateLabels } from './labels';
 import { runQuery, serializeRun } from './runs';
 import { requireTier } from './runners';
-import { getSchedule, prepareSchedule } from './schedules';
+import { getSchedule, prepareSchedule, scheduleInsertQueries } from './schedules';
 import { loadWorkflow, loadWorkflows } from './workflows';
 import { nextIssueNumber } from '../issue-address';
 
@@ -980,33 +980,20 @@ export async function createIssue(
 	const scheduleStateId = initialState.id === workflow.initial_state_id ? null : initialState.id;
 
 	const queries: CompiledQuery[] = [];
-	if (schedule) {
-		queries.push(
-			db
-				.insertInto('scheduled_task')
-				.values({
-					id: schedule.id,
-					project_id: projectId,
-					name: schedule.name,
-					title_template: title,
-					description_template: description,
-					workflow_id: workflow.id,
-					state_id: scheduleStateId,
-					cron: schedule.recurrence.cron,
-					preset: schedule.recurrence.presetJson,
-					timezone: schedule.timezone,
-					require_all_closed: schedule.requireAllClosed ? 1 : 0,
-					enabled: 1,
-					next_run_at: schedule.nextRunAt,
-					last_run_at: now,
-					// The initial issue counts as the first run.
-					run_count: 1,
-					created_at: now,
-					updated_at: now
-				})
-				.compile()
-		);
-	}
+	const scheduleQueries = schedule
+		? scheduleInsertQueries(db, actor, {
+				schedule,
+				projectId,
+				workflowId: workflow.id,
+				stateId: scheduleStateId,
+				stateName: initialState.name,
+				titleTemplate: title,
+				descriptionTemplate: description,
+				now,
+				mode: 'initial-issue'
+			})
+		: null;
+	if (scheduleQueries) queries.push(scheduleQueries[0]);
 	queries.push(
 		...issueInsertQueries(db, actor, {
 			id,
@@ -1020,22 +1007,7 @@ export async function createIssue(
 			...(schedule ? { scheduledTask: { id: schedule.id, name: schedule.name } } : {})
 		})
 	);
-	if (schedule) {
-		queries.push(
-			eventInsert(db, actor, {
-				type: 'scheduled_task.created',
-				projectId,
-				payload: {
-					schedule_id: schedule.id,
-					name: schedule.name,
-					cron: schedule.recurrence.cron,
-					timezone: schedule.timezone,
-					require_all_closed: schedule.requireAllClosed,
-					...(scheduleStateId ? { start_state: initialState.name } : {})
-				}
-			})
-		);
-	}
+	if (scheduleQueries) queries.push(scheduleQueries[1]);
 	if (resolvedLabels) {
 		queries.push(
 			...labelInserts(db, actor, resolvedLabels.toCreate),

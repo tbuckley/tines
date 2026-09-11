@@ -31,6 +31,7 @@ import {
 } from './core';
 import { assertWritable } from './archive';
 import { eventInsert } from './events';
+import { insertValues, type QueryGuard } from './query-guard';
 
 // ---------------------------------------------------------------------------
 // Recurrence input validation
@@ -105,7 +106,7 @@ export function resolveTimezone(tz: unknown): string {
 // here), so the workflow lookup and state resolution live here in the small
 // form the schedule needs.
 
-interface ScheduleWorkflow {
+export interface ScheduleWorkflow {
 	id: string;
 	name: string;
 	initial_state_id: string;
@@ -143,7 +144,11 @@ async function loadScheduleWorkflow(
  * workflow's initial state normalizes to null — "follow the workflow's
  * initial state" — so the schedule tracks the workflow if that changes.
  */
-function resolveStartState(workflow: ScheduleWorkflow, ref: string): string | null {
+export function resolveStartState(
+	workflow: ScheduleWorkflow,
+	ref: string,
+	options: { preserveExplicitInitial?: boolean } = {}
+): string | null {
 	const state =
 		workflow.states.find((s) => s.id === ref) ?? workflow.states.find((s) => s.name === ref);
 	if (!state) {
@@ -152,7 +157,9 @@ function resolveStartState(workflow: ScheduleWorkflow, ref: string): string | nu
 			known_states: workflow.states.map((s) => ({ id: s.id, name: s.name }))
 		});
 	}
-	return state.id === workflow.initial_state_id ? null : state.id;
+	return !options.preserveExplicitInitial && state.id === workflow.initial_state_id
+		? null
+		: state.id;
 }
 
 async function assertScheduleNameAvailable(
@@ -343,12 +350,22 @@ export async function prepareSchedule(
 	titleTemplate: string,
 	now: number
 ): Promise<PreparedSchedule> {
+	const prepared = validateScheduleCreateFields(input, titleTemplate, now);
+	await assertScheduleNameAvailable(db, projectId, prepared.name);
+	return { id: newId('sch'), ...prepared };
+}
+
+/** Pure recurrence/name validation, also usable before prospective workflows exist. */
+export function validateScheduleCreateFields(
+	input: CreateScheduleInput,
+	titleTemplate: string,
+	now: number
+): Omit<PreparedSchedule, 'id'> {
 	const name = (
 		optionalString(input.name, 'schedule.name', { max: 200 })?.trim() || titleTemplate
 	).slice(0, 200);
 	const recurrence = resolveRecurrence(input);
 	const timezone = resolveTimezone(input.timezone);
-	await assertScheduleNameAvailable(db, projectId, name);
 	let nextRunAt: number;
 	try {
 		nextRunAt = nextOccurrenceFromCron(recurrence.cron, timezone, now);
@@ -356,7 +373,6 @@ export async function prepareSchedule(
 		inputFail(e, 'invalid_recurrence');
 	}
 	return {
-		id: newId('sch'),
 		name,
 		recurrence,
 		timezone,
@@ -367,6 +383,78 @@ export async function prepareSchedule(
 
 // ---------------------------------------------------------------------------
 // Mutations
+
+/**
+ * Ordinary schedule row/event builder. Defaults to a paused, never-run schedule.
+ * The initial-issue mode is for createIssue, which supplies the first instance
+ * separately in the same batch; this function never creates or dispatches work.
+ */
+export function scheduleInsertQueries(
+	db: Kysely<Database>,
+	actor: ActorContext,
+	options: {
+		schedule: PreparedSchedule;
+		projectId: string;
+		workflowId: string;
+		stateId: string | null;
+		stateName: string | null;
+		titleTemplate: string;
+		descriptionTemplate: string;
+		now: number;
+		mode?: 'paused' | 'initial-issue';
+		guard?: QueryGuard;
+		eventId?: string;
+	}
+): [CompiledQuery, CompiledQuery] {
+	const { schedule, projectId, workflowId, stateId, stateName, now } = options;
+	const initial = options.mode === 'initial-issue';
+	return [
+		insertValues(
+			db,
+			'scheduled_task',
+			{
+				id: schedule.id,
+				project_id: projectId,
+				name: schedule.name,
+				title_template: options.titleTemplate,
+				description_template: options.descriptionTemplate,
+				workflow_id: workflowId,
+				state_id: stateId,
+				cron: schedule.recurrence.cron,
+				preset: schedule.recurrence.presetJson,
+				timezone: schedule.timezone,
+				require_all_closed: schedule.requireAllClosed ? 1 : 0,
+				enabled: initial ? 1 : 0,
+				next_run_at: schedule.nextRunAt,
+				last_run_at: initial ? now : null,
+				run_count: initial ? 1 : 0,
+				created_at: now,
+				updated_at: now
+			},
+			options.guard
+		),
+		eventInsert(
+			db,
+			actor,
+			{
+				id: options.eventId,
+				createdAt: now,
+				type: 'scheduled_task.created',
+				projectId,
+				payload: {
+					schedule_id: schedule.id,
+					name: schedule.name,
+					cron: schedule.recurrence.cron,
+					timezone: schedule.timezone,
+					require_all_closed: schedule.requireAllClosed,
+					...(stateId ? { start_state: stateName } : {}),
+					...(!initial ? { enabled: false, initial_issue_created: false } : {})
+				}
+			},
+			options.guard
+		)
+	];
+}
 
 /** The gate's view of a schedule's project. */
 function scheduleProject(s: Schedule) {
