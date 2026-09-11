@@ -2757,12 +2757,19 @@ export interface LibraryDocument {
 }
 
 export interface ExportLibraryOptions {
+	/** v3 is the default; v2 is available for older importers. */
+	version?: 2 | 3;
 	/** Journals are deployment-specific memory; opt out to leave them behind. */
 	journals?: boolean;
 }
 
 export interface ImportLibraryRequest {
-	document: LibraryDocument;
+	document: LibraryDocument | import('./library/types.js').LibraryV3Document;
+	/** Explicit destination choice keyed by document-local workflow ID (v3 only). */
+	workflow_targets?: Record<
+		string,
+		{ kind: 'target'; workflow_id: string } | { kind: 'create'; name: string }
+	>;
 	/** Plan only: returns exactly the plan an apply would follow. */
 	dry_run?: boolean;
 	/** Context items only; workflow definition conflicts always refuse. */
@@ -2784,7 +2791,10 @@ export const IMPORT_ACTIONS: readonly ImportAction[] = [
 ];
 
 export interface ImportPlanEntry {
-	section: 'project' | 'workflow' | 'context';
+	section: 'project' | 'workflow' | 'context' | 'label';
+	/** Stable source identity for v3 reports. */
+	local_id?: string;
+	target_id?: string;
 	/** Human-readable identity, e.g. `prompt "instructions" (state Engineering / Research)`. */
 	ref: string;
 	action: ImportAction;

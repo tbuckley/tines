@@ -317,3 +317,16 @@ describe('readArchived', () => {
 		}
 	});
 });
+
+describe('workflow package read-only run-key paths', () => {
+	it.each([
+		['/api/v1/workflows/wf_standard/export', 'GET'],
+		['/api/v1/library/validate', 'POST'],
+		['/api/v1/library/prepare', 'POST']
+	])('permits %s %s without opening whole-library import', (path, method) => {
+		expect(() =>
+			assertRunKeyAllowed({ agentRunId: 'run', expiresAt: Date.now() + 60_000 }, path, method)
+		).not.toThrow();
+		expect(isControlPlanePath('/api/v1/import', 'POST')).toBe(true);
+	});
+});

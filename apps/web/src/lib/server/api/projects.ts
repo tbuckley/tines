@@ -81,6 +81,14 @@ export async function getProject(
 	return serializeProject(row);
 }
 
+/** Pure field validation shared by ordinary create and library preview. */
+export function validateProjectFields(body: Pick<CreateProjectRequest, 'name' | 'description'>) {
+	return {
+		name: requireString(body.name, 'name', { max: 200 }).trim(),
+		description: optionalString(body.description, 'description', { max: 10_000 }) ?? ''
+	};
+}
+
 /** The referenced workflow must be the user's own or the system workflow. */
 async function assertWorkflowAccessible(db: Kysely<Database>, userId: string, workflowId: unknown) {
 	const id = requireString(workflowId, 'default_workflow_id', { max: 100 });
@@ -135,8 +143,7 @@ export async function createProject(
 	// Starter validation is pure and comes first, so an unknown id or a
 	// missing input 422s before any read, let alone any write.
 	const resolvedStarter = resolveStarter(body.starter, opts.starters);
-	const name = requireString(body.name, 'name', { max: 200 }).trim();
-	const description = optionalString(body.description, 'description', { max: 10_000 }) ?? '';
+	const { name, description } = validateProjectFields(body);
 	await assertNameAvailable(db, actor.userId, name);
 	if (resolvedStarter?.starter.default_workflow && body.default_workflow_id != null) {
 		throw new ApiFail(

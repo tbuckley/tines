@@ -1,5 +1,14 @@
 <script lang="ts">
-	import { ApiError, type ImportLibraryResponse, type LibraryDocument } from '@tines/shared';
+	import {
+		ApiError,
+		parseLibraryV3Document,
+		parseStrictLibraryJson,
+		LibraryValidationError,
+		type ImportLibraryRequest,
+		type ImportLibraryResponse,
+		type LibraryV3Document,
+		type LibraryDocument
+	} from '@tines/shared';
 	import IconDownload from '@tabler/icons-svelte/icons/download';
 	import IconUpload from '@tabler/icons-svelte/icons/upload';
 	import { invalidateAll } from '$app/navigation';
@@ -7,12 +16,20 @@
 	import CheckboxField from '$lib/components/CheckboxField.svelte';
 	import { Button, buttonVariants } from '$lib/components/ui/button/index.js';
 
+	let { data } = $props();
+	let workflowTargets = $state<NonNullable<ImportLibraryRequest['workflow_targets']>>({});
+	let previewRevision = 0;
+
 	let includeJournalsOnExport = $state(true);
 	let exporting = $state(false);
 	let exportError = $state<string | null>(null);
 
 	let fileName = $state<string | null>(null);
-	let document_ = $state<LibraryDocument | null>(null);
+	let document_ = $state<LibraryDocument | LibraryV3Document | null>(null);
+	const v3 = $derived(
+		document_ && 'profile' in document_ ? (document_ as LibraryV3Document) : null
+	);
+
 	let preview = $state<ImportLibraryResponse | null>(null);
 	let result = $state<ImportLibraryResponse | null>(null);
 	let busy = $state(false);
@@ -25,7 +42,7 @@
 	let includeJournalsOnImport = $state(true);
 
 	const message = (err: unknown, fallback: string) =>
-		err instanceof ApiError ? err.message : fallback;
+		err instanceof ApiError || err instanceof LibraryValidationError ? err.message : fallback;
 
 	async function download() {
 		if (exporting) return;
@@ -55,15 +72,46 @@
 		if (!file) return;
 		fileName = file.name;
 		try {
-			document_ = JSON.parse(await file.text()) as LibraryDocument;
-		} catch {
-			importError = 'That file is not valid JSON.';
+			const source = await file.text();
+			const candidate = parseStrictLibraryJson(source) as LibraryDocument;
+			if (candidate?.version === 3) {
+				const parsed = await parseLibraryV3Document(source);
+				if (parsed.profile !== 'library') {
+					importError = 'This is a workflow package. Use the workflow package install flow.';
+					return;
+				}
+				document_ = parsed;
+				const used = new Set(data.workflows.map((w) => w.name));
+				for (const w of parsed.workflows) {
+					const candidates = data.workflows.filter((target) => target.name === w.name);
+					if (
+						candidates.some((target) => target.is_system) ||
+						candidates.length > 1 ||
+						(candidates.length > 0 &&
+							parsed.workflows.filter((other) => other.name === w.name).length > 1)
+					) {
+						let name = w.name;
+						let index = 1;
+						while (used.has(name)) {
+							const suffix = ` (imported ${index++})`;
+							name = w.name.slice(0, 200 - suffix.length) + suffix;
+						}
+						used.add(name);
+						workflowTargets[w.id] = { kind: 'create', name };
+					}
+				}
+			} else document_ = candidate;
+		} catch (err) {
+			importError = message(err, 'That file is not valid JSON.');
 			return;
 		}
 		await plan();
 	}
 
 	function reset() {
+		busy = false;
+		previewRevision++;
+		workflowTargets = {};
 		fileName = null;
 		document_ = null;
 		preview = null;
@@ -74,26 +122,31 @@
 	const options = () => ({
 		on_collision: overwrite ? ('overwrite' as const) : ('skip' as const),
 		create_projects: createProjects,
-		include_journals: includeJournalsOnImport
+		include_journals: includeJournalsOnImport,
+		...(v3 ? { workflow_targets: workflowTargets } : {})
 	});
 
 	async function plan() {
 		if (!document_) return;
+		const revision = ++previewRevision;
+		preview = null;
 		busy = true;
 		importError = null;
 		result = null;
 		try {
-			preview = await api.importLibrary({ document: document_, dry_run: true, ...options() });
+			const next = await api.importLibrary({ document: document_, dry_run: true, ...options() });
+			if (revision === previewRevision) preview = next;
 		} catch (err) {
+			if (revision !== previewRevision) return;
 			preview = null;
 			importError = message(err, 'That file could not be read as a library export.');
 		} finally {
-			busy = false;
+			if (revision === previewRevision) busy = false;
 		}
 	}
 
 	async function confirm() {
-		if (!document_ || busy) return;
+		if (!document_ || busy || !preview) return;
 		busy = true;
 		importError = null;
 		try {
@@ -163,8 +216,11 @@
 <section class="rounded-lg border p-4">
 	<h2 class="mb-1 text-lg font-medium">Import</h2>
 	<p class="text-muted-foreground mb-3 max-w-2xl text-sm">
-		Upload a file exported from Tines. Nothing is written until you confirm the preview, and
-		anything that collides with what you already have is skipped by default.
+		Upload a file exported from Tines. Existing projects and matching workflows are skipped.
+		Conflicting workflow definitions or inheritance may be refused; overwrite updates supported
+		context and inheritance only. Each workflow is identified separately in v3 files. Whole-library
+		import is best effort: valid entries may succeed while others fail. Review the plan before
+		importing.
 	</p>
 
 	<div class="mb-3 flex flex-wrap items-center gap-3">
@@ -181,6 +237,7 @@
 				onchange={chooseFile}
 				class="sr-only"
 				aria-label="Library file"
+				disabled={busy}
 			/>
 			<IconUpload size={16} />
 			Choose file
@@ -215,6 +272,64 @@
 				}}
 			/>
 		</div>
+	{/if}
+
+	{#if v3 && !result}
+		<fieldset class="mb-4 space-y-3 rounded-lg border p-3" disabled={busy}>
+			<legend class="px-1 text-sm font-medium">Workflow destinations</legend>
+			{#each v3.workflows as workflow (workflow.id)}
+				{@const targetChoice = workflowTargets[workflow.id]}
+				<div class="space-y-1" data-testid="workflow-mapping">
+					<p class="text-sm font-medium">
+						{workflow.name} <span class="text-muted-foreground font-normal">[{workflow.id}]</span>
+					</p>
+					<p class="text-muted-foreground text-xs">
+						States: {workflow.states.map((s) => s.name).join(', ')}
+					</p>
+					<select
+						class="bg-background w-full rounded-md border p-2 text-sm"
+						aria-label={`Destination for ${workflow.id}`}
+						value={targetChoice?.kind === 'create'
+							? 'create'
+							: targetChoice?.kind === 'target'
+								? targetChoice.workflow_id
+								: 'auto'}
+						onchange={(event) => {
+							const value = event.currentTarget.value;
+							if (value === 'auto') delete workflowTargets[workflow.id];
+							else
+								workflowTargets[workflow.id] =
+									value === 'create'
+										? { kind: 'create', name: workflow.name + ' (imported)' }
+										: { kind: 'target', workflow_id: value };
+							plan();
+						}}
+					>
+						<option value="auto">Match a unique name, otherwise create</option>
+						<option value="create">Create an independent workflow with a new name</option>
+						{#each data.workflows.filter((w) => !w.is_system) as target (target.id)}
+							<option value={target.id}
+								>{target.name} [{target.id}] — {target.states.map((s) => s.name).join(', ')}</option
+							>
+						{/each}
+					</select>
+					{#if targetChoice?.kind === 'create'}
+						<input
+							class="bg-background w-full rounded-md border p-2 text-sm"
+							aria-label={`Create name for ${workflow.id}`}
+							maxlength="200"
+							value={targetChoice.name}
+							oninput={(event) => {
+								workflowTargets[workflow.id] = { kind: 'create', name: event.currentTarget.value };
+								preview = null;
+								previewRevision++;
+							}}
+							onchange={() => plan()}
+						/>
+					{/if}
+				</div>
+			{/each}
+		</fieldset>
 	{/if}
 
 	{#if importError}

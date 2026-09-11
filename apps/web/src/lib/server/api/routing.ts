@@ -17,6 +17,7 @@ import type { CompiledQuery, Kysely } from 'kysely';
 import { newId, type Database } from '$lib/server/db';
 import { ApiFail, notFound, runAtomic, type ActorContext } from './core';
 import { eventInsert } from './events';
+import { insertValues, type QueryGuard } from './query-guard';
 import { requireTier } from './runners';
 import { resolveScope, scopeLabel, toContextScope } from './scope';
 
@@ -449,6 +450,65 @@ function assertNoScopeCollision(
 	}
 }
 
+/** Build an ordinary rule and its event after scope/capability validation. */
+export function routingRuleInsertQueries(
+	db: Kysely<Database>,
+	actor: ActorContext,
+	options: {
+		id: string;
+		scope: RuleScopeIds;
+		label: string;
+		targets: RoutingTarget[];
+		runnersById: Map<string, { id: string; name: string }>;
+		now: number;
+		guard?: QueryGuard;
+		eventId?: string;
+	}
+): CompiledQuery[] {
+	const { id, scope, label, runnersById, now } = options;
+	const targets = validateTargets(options.targets, runnersById);
+	assertTierOnlyScope(scope, targets);
+	return [
+		insertValues(
+			db,
+			'routing_rule',
+			{
+				id,
+				user_id: actor.userId,
+				project_id: scope.projectId,
+				workflow_state_id: scope.workflowStateId,
+				label_id: scope.labelId,
+				targets: JSON.stringify(targets),
+				created_at: now,
+				updated_at: now
+			},
+			options.guard
+		),
+		eventInsert(
+			db,
+			actor,
+			{
+				id: options.eventId,
+				createdAt: now,
+				type: 'routing_rule.created',
+				projectId: scope.projectId,
+				payload: {
+					rule_id: id,
+					scope_label: label,
+					targets: targets.map((t) => ({
+						runner_name:
+							t.runner_id === INHERIT_RUNNER_ID
+								? INHERIT_RUNNER_ID
+								: runnersById.get(t.runner_id)?.name,
+						tier: t.tier ?? null
+					}))
+				}
+			},
+			options.guard
+		)
+	];
+}
+
 export async function createRoutingRule(
 	db: Kysely<Database>,
 	env: Env,
@@ -479,36 +539,17 @@ export async function createRoutingRule(
 
 	const now = Date.now();
 	const id = newId('rul');
-	await runAtomic(env, [
-		db
-			.insertInto('routing_rule')
-			.values({
-				id,
-				user_id: actor.userId,
-				project_id: scope.projectId,
-				workflow_state_id: scope.workflowStateId,
-				label_id: scope.labelId,
-				targets: JSON.stringify(targets),
-				created_at: now,
-				updated_at: now
-			})
-			.compile(),
-		eventInsert(db, actor, {
-			type: 'routing_rule.created',
-			projectId: scope.projectId,
-			payload: {
-				rule_id: id,
-				scope_label: label,
-				targets: targets.map((t) => ({
-					runner_name:
-						t.runner_id === INHERIT_RUNNER_ID
-							? INHERIT_RUNNER_ID
-							: runnersById.get(t.runner_id)?.name,
-					tier: t.tier ?? null
-				}))
-			}
+	await runAtomic(
+		env,
+		routingRuleInsertQueries(db, actor, {
+			id,
+			scope,
+			label,
+			targets,
+			runnersById,
+			now
 		})
-	]);
+	);
 	return {
 		...(await getRoutingRule(db, actor.userId, id)),
 		warnings: shadowWarnings({ ...scope, id }, rules)

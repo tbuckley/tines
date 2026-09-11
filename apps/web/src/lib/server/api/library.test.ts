@@ -867,6 +867,61 @@ describe('inheritance pointers', () => {
 		expect(rebuilt.workflows.map((wf) => wf.name)).toEqual(['Engineering']);
 	});
 
+	it.each([
+		['skip', false],
+		['skip', true],
+		['overwrite', false],
+		['overwrite', true]
+	] as const)(
+		'v1 cannot clear an existing pointer in %s collision mode (field present: %s)',
+		async (on_collision, present) => {
+			const base = await createWorkflow(t.db, t.env, actor, {
+				name: 'Base',
+				initial_state: 'Shared',
+				states: [{ name: 'Shared', category: 'active' }],
+				transitions: []
+			});
+			const shared = base.states[0];
+			await createWorkflow(t.db, t.env, actor, {
+				name: 'Child',
+				initial_state: 'Ready',
+				states: [{ name: 'Ready', category: 'active', inherits_from: shared.id }],
+				transitions: []
+			});
+			const exported = await buildLibraryDocument(t.db, USER);
+			const document: LibraryDocument = {
+				...exported,
+				version: 1,
+				// A permissive old reader may have left this later-version field
+				// in place. Version 1 still has to ignore it completely.
+				workflows: exported.workflows.map((workflow) =>
+					workflow.name === 'Child'
+						? {
+								...workflow,
+								states: workflow.states.map(({ inherits_from: _ignored, ...state }) =>
+									present ? { ...state, inherits_from: null } : state
+								)
+							}
+						: workflow
+				)
+			};
+
+			const preview = await applyImport(t.db, t.env, actor, {
+				document,
+				on_collision,
+				dry_run: true
+			});
+			expect(
+				preview.entries.filter((entry) => entry.section === 'workflow').map((entry) => entry.action)
+			).toEqual(['skip', 'skip']);
+			const applied = await applyImport(t.db, t.env, actor, { document, on_collision });
+			expect(applied.counts.overwrite).toBe(0);
+			expect(pointers(await buildLibraryDocument(t.db, USER))).toEqual([
+				'Child/Ready -> Base/Shared'
+			]);
+		}
+	);
+
 	it("passes the API's depth refusal through as the entry's error", async () => {
 		await seedInheritance();
 		const document = await buildLibraryDocument(t.db, USER);
@@ -885,6 +940,26 @@ describe('inheritance pointers', () => {
 		expect(gamma.reason).toMatch(/chain/i);
 		// Everything else still landed.
 		expect(result.counts.create).toBeGreaterThan(0);
+	});
+});
+
+describe('project validation parity', () => {
+	it('refuses an over-200-character project name in preview and apply', async () => {
+		const document: LibraryDocument = {
+			format: LIBRARY_FORMAT,
+			version: LIBRARY_VERSION,
+			exported_at: Date.now(),
+			projects: [{ name: 'x'.repeat(201) }],
+			workflows: [],
+			context: []
+		};
+		for (const dry_run of [true, false]) {
+			const result = await applyImport(t.db, t.env, actor, { document, dry_run });
+			expect(result.entries).toHaveLength(1);
+			expect(result.entries[0]).toMatchObject({ section: 'project', action: 'error' });
+			expect(result.entries[0].reason).toMatch(/at most 200/);
+		}
+		expect(await t.db.selectFrom('project').selectAll().execute()).toHaveLength(1);
 	});
 });
 
@@ -1005,3 +1080,387 @@ describe('applyImport — structural identity', () => {
 		}
 	);
 });
+
+describe('legacy ambiguity and retained-state planning', () => {
+	const simple = (name: string, state = 'Ready') => ({
+		name,
+		initial_state: state,
+		states: [{ name: state, category: 'active' as const }],
+		transitions: []
+	});
+	const document = (
+		workflows: LibraryDocument['workflows'],
+		context: LibraryDocument['context'] = []
+	): LibraryDocument => ({
+		format: LIBRARY_FORMAT,
+		version: 2,
+		exported_at: 1,
+		projects: [],
+		workflows,
+		context
+	});
+	it.each(['skip', 'overwrite'] as const)(
+		'refuses duplicate source names and their prompts in %s mode, preserving unrelated entries',
+		async (on_collision) => {
+			const doc = document(
+				[simple('Same'), simple('Same', 'Other'), simple('Independent')],
+				[
+					{
+						kind: 'prompt',
+						name: 'instructions',
+						body: 'Cannot identify which Same',
+						scope: { state: { workflow: 'Same', name: 'Ready' } }
+					},
+					{ kind: 'prompt', name: 'global', body: 'Unrelated', scope: {} }
+				]
+			);
+			const preview = await applyImport(t.db, t.env, actor, {
+				document: doc,
+				on_collision,
+				dry_run: true
+			});
+			const result = await applyImport(t.db, t.env, actor, { document: doc, on_collision });
+			expect(result.entries).toEqual(preview.entries);
+			expect(result.counts).toMatchObject({ refuse: 3, create: 2, error: 0 });
+			expect(
+				result.entries
+					.filter((e) => e.action === 'refuse')
+					.every((e) => /ambiguous/i.test(e.reason!))
+			).toBe(true);
+			expect(
+				await t.db.selectFrom('workflow').selectAll().where('name', '=', 'Same').execute()
+			).toHaveLength(0);
+		}
+	);
+	it('refuses duplicate destination workflows even when only one contains the requested state', async () => {
+		const a = await createWorkflow(t.db, t.env, actor, simple('Same'));
+		const b = await createWorkflow(t.db, t.env, actor, simple('Same', 'Other'));
+		const doc = document(
+			[simple('Same')],
+			[
+				{
+					kind: 'prompt',
+					name: 'instructions',
+					body: 'Wrong recipient',
+					scope: { state: { workflow: 'Same', name: 'Ready' } }
+				}
+			]
+		);
+		doc.projects.push({ name: 'Ambiguous default', default_workflow: 'Same' });
+		const preview = await applyImport(t.db, t.env, actor, {
+			document: doc,
+			dry_run: true,
+			on_collision: 'overwrite'
+		});
+		const result = await applyImport(t.db, t.env, actor, {
+			document: doc,
+			on_collision: 'overwrite'
+		});
+		expect(result.entries).toEqual(preview.entries);
+		expect(result.counts.refuse).toBe(3);
+		expect(await loadWorkflow(t.db, USER, a.id)).toEqual(a);
+		expect(await loadWorkflow(t.db, USER, b.id)).toEqual(b);
+		expect(await t.db.selectFrom('context_item').selectAll().execute()).toHaveLength(0);
+	});
+	it('refuses slash-delimited references with two real splits instead of selecting the first', async () => {
+		await createWorkflow(t.db, t.env, actor, simple('A', 'B/C'));
+		await createWorkflow(t.db, t.env, actor, simple('A/B', 'C'));
+		const child = {
+			...simple('Child'),
+			states: [{ name: 'Ready', category: 'active' as const, inherits_from: 'A/B/C' }]
+		};
+		const doc = document([child]);
+		for (const dry_run of [true, false]) {
+			const result = await applyImport(t.db, t.env, actor, { document: doc, dry_run });
+			expect(result.entries[0]).toMatchObject({
+				action: 'refuse',
+				reason: expect.stringMatching(/ambiguous.*slash/i)
+			});
+		}
+		expect(
+			await t.db.selectFrom('workflow').selectAll().where('name', '=', 'Child').execute()
+		).toHaveLength(0);
+	});
+	it('refuses a missing-base overwrite during planning but keeps stored states available to child workflows and context', async () => {
+		const existing = await createWorkflow(t.db, t.env, actor, simple('Existing'));
+		const doc = document(
+			[
+				{
+					...simple('Existing'),
+					states: [{ name: 'Ready', category: 'active', inherits_from: 'Missing/Base' }]
+				},
+				{
+					...simple('Child'),
+					states: [{ name: 'Ready', category: 'active', inherits_from: 'Existing/Ready' }]
+				}
+			],
+			[
+				{
+					kind: 'prompt',
+					name: 'instructions',
+					body: 'Still available',
+					scope: { state: { workflow: 'Existing', name: 'Ready' } }
+				}
+			]
+		);
+		const preview = await applyImport(t.db, t.env, actor, {
+			document: doc,
+			on_collision: 'overwrite',
+			dry_run: true
+		});
+		expect(preview.entries.map((e) => e.action)).toEqual(['refuse', 'create', 'create']);
+		expect(preview.entries[0].reason).toMatch(/Missing \/ Base/);
+		const result = await applyImport(t.db, t.env, actor, {
+			document: doc,
+			on_collision: 'overwrite'
+		});
+		expect(result.entries).toEqual(preview.entries);
+		expect((await loadWorkflow(t.db, USER, existing.id)).states).toEqual(existing.states);
+		const exported = await buildLibraryDocument(t.db, USER);
+		expect(exported.workflows.find((w) => w.name === 'Child')!.states[0].inherits_from).toBe(
+			'Existing/Ready'
+		);
+		expect(exported.context.find((c) => c.body === 'Still available')!.scope.state).toEqual({
+			workflow: 'Existing',
+			name: 'Ready'
+		});
+	});
+	it('does not promise a refused newly-created workflow as a project default', async () => {
+		const doc = document([
+			{
+				...simple('Unavailable'),
+				states: [{ name: 'Ready', category: 'active', inherits_from: 'Missing/Base' }]
+			}
+		]);
+		doc.projects.push({ name: 'Fresh project', default_workflow: 'Unavailable' });
+		const preview = await applyImport(t.db, t.env, actor, { document: doc, dry_run: true });
+		expect(preview.entries[0]).toMatchObject({
+			action: 'create',
+			reason: expect.stringMatching(/system default/)
+		});
+		const result = await applyImport(t.db, t.env, actor, { document: doc });
+		expect(result.entries).toEqual(preview.entries);
+		const project = await t.db
+			.selectFrom('project')
+			.selectAll()
+			.where('name', '=', 'Fresh project')
+			.executeTakeFirstOrThrow();
+		expect(project.default_workflow_id).toBeNull();
+	});
+	it('retains normalized validated project names for apply and subsequent scopes', async () => {
+		const doc = document(
+			[],
+			[{ kind: 'prompt', name: 'instructions', body: 'Scoped', scope: { project: 'Trimmed' } }]
+		);
+		doc.projects.push({ name: '  Trimmed  ' });
+		const preview = await applyImport(t.db, t.env, actor, { document: doc, dry_run: true });
+		const applied = await applyImport(t.db, t.env, actor, { document: doc });
+		expect(applied.entries).toEqual(preview.entries);
+		expect(applied.counts.create).toBe(2);
+	});
+});
+
+describe('ordinary payload validation parity', () => {
+	const doc = (patch: Partial<LibraryDocument>): LibraryDocument => ({
+		format: LIBRARY_FORMAT,
+		version: 2,
+		exported_at: 1,
+		projects: [],
+		workflows: [],
+		context: [],
+		...patch
+	});
+	it.each([
+		{ name: 'x'.repeat(201) },
+		{ description: 'x'.repeat(10001) },
+		{ states: [] },
+		{ states: [{ name: 'Work', category: 'unknown' }] },
+		{ initial_state: 'Absent' },
+		{ transitions: [{ name: 'Loop', from: 'Backlog', to: 'Backlog' }] },
+		{
+			transitions: [
+				{ name: 'Finish', from: 'Backlog', to: 'Done', requires: [{ artifact: 'Bad Name' }] }
+			]
+		},
+		{
+			transitions: [
+				{
+					name: 'Finish',
+					from: 'Backlog',
+					to: 'Done',
+					requires: [{ artifact: 'valid', type: 'pr', content_type: 'text/plain' }]
+				}
+			]
+		}
+	])('rejects invalid workflow fields in preview and apply: %j', async (patch) => {
+		const document = doc({ workflows: [{ ...ENGINEERING, ...patch } as never] });
+		const preview = await applyImport(t.db, t.env, actor, { document, dry_run: true });
+		const applied = await applyImport(t.db, t.env, actor, { document });
+		expect(preview.entries[0].action).toBe('error');
+		expect(applied.entries).toEqual(preview.entries);
+		expect(
+			await t.db.selectFrom('workflow').selectAll().where('user_id', '=', USER).execute()
+		).toHaveLength(0);
+	});
+	it.each([
+		{ name: 'x'.repeat(101) },
+		{ description: 'x'.repeat(1001) },
+		{ body: '😀'.repeat(8193) },
+		{ kind: 'skill', name: 'not a slug', files: [] },
+		{ kind: 'skill', name: 'valid', files: [{ path: '../escape', content: 'x' }] },
+		{
+			kind: 'skill',
+			name: 'valid',
+			files: [
+				{ path: 'same', content: 'x' },
+				{ path: 'same', content: 'y' }
+			]
+		},
+		{ kind: 'repo', repo_url: '' },
+		{ kind: 'repo', repo_url: 'https://github.com/a/b', repo_dir: '/absolute' },
+		{ scope: { label: '-invalid' } },
+		{ scope: { label: 'invalid\u0000name' } }
+	])('rejects invalid context payloads before any implicit label creation: %j', async (patch) => {
+		const { kind = 'prompt' } = patch;
+		const entry = {
+			kind,
+			name: 'valid',
+			...(kind === 'prompt' ? { body: 'ok' } : {}),
+			scope: { label: 'not-created' },
+			...patch
+		};
+		const document = doc({ context: [entry as never] });
+		const preview = await applyImport(t.db, t.env, actor, { document, dry_run: true });
+		const applied = await applyImport(t.db, t.env, actor, { document });
+		expect(preview.entries[0].action).toBe('error');
+		expect(applied.entries).toEqual(preview.entries);
+		expect(await t.db.selectFrom('context_item').selectAll().execute()).toHaveLength(0);
+		expect(await t.db.selectFrom('label').selectAll().execute()).toHaveLength(0);
+	});
+	it('checks cycles and depth in preview, preserving unrelated valid workflows', async () => {
+		const workflow = (name: string, base: string | null) => ({
+			name,
+			initial_state: 'Work',
+			states: [{ name: 'Work', category: 'active' as const, inherits_from: base }],
+			transitions: []
+		});
+		const document = doc({
+			workflows: [workflow('A', 'B/Work'), workflow('B', 'A/Work'), workflow('Independent', null)]
+		});
+		const preview = await applyImport(t.db, t.env, actor, { document, dry_run: true });
+		const applied = await applyImport(t.db, t.env, actor, { document });
+		expect(applied.entries).toEqual(preview.entries);
+		expect(applied.counts).toMatchObject({ error: 1, refuse: 1, create: 1 });
+		expect(applied.entries.find((e) => e.action === 'error')!.reason).toMatch(/loop/i);
+	});
+	it('checks depth imposed on an existing descendant before overwrite', async () => {
+		const make = async (name: string, base: string | null) =>
+			createWorkflow(t.db, t.env, actor, {
+				name,
+				initial_state: 'Work',
+				states: [{ name: 'Work', category: 'active', inherits_from: base }],
+				transitions: []
+			});
+		const root = await make('Root', null);
+		const child = await make('Child', root.states[0].id);
+		await make('Leaf', child.states[0].id);
+		const base = await make('Base', null);
+		const document = doc({
+			workflows: [
+				{
+					name: 'Root',
+					initial_state: 'Work',
+					states: [{ name: 'Work', category: 'active', inherits_from: 'Base/Work' }],
+					transitions: []
+				}
+			]
+		});
+		const preview = await applyImport(t.db, t.env, actor, {
+			document,
+			dry_run: true,
+			on_collision: 'overwrite'
+		});
+		const applied = await applyImport(t.db, t.env, actor, { document, on_collision: 'overwrite' });
+		expect(applied.entries).toEqual(preview.entries);
+		expect(preview.entries[0]).toMatchObject({
+			action: 'error',
+			reason: expect.stringMatching(/chain.*limit/i)
+		});
+		expect((await loadWorkflow(t.db, USER, root.id)).states[0].inherits_from).toBeNull();
+		expect((await loadWorkflow(t.db, USER, base.id)).states[0].inherits_from).toBeNull();
+	});
+});
+
+describe('legacy scope and repeated-entry parity', () => {
+	const document = (context: LibraryDocument['context']): LibraryDocument => ({
+		format: LIBRARY_FORMAT,
+		version: 1,
+		exported_at: 1,
+		projects: [],
+		workflows: [],
+		context
+	});
+	it('reports an archived project write as an error during preview, without creating a label', async () => {
+		await t.db.updateTable('project').set({ archived_at: 1 }).where('id', '=', PROJECT).execute();
+		const project = await t.db
+			.selectFrom('project')
+			.selectAll()
+			.where('id', '=', PROJECT)
+			.executeTakeFirstOrThrow();
+		const doc = document([
+			{
+				kind: 'prompt',
+				name: 'new',
+				body: 'no write',
+				scope: { project: project.name, label: 'never-create' }
+			}
+		]);
+		const preview = await applyImport(t.db, t.env, actor, { document: doc, dry_run: true });
+		const applied = await applyImport(t.db, t.env, actor, { document: doc });
+		expect(applied.entries).toEqual(preview.entries);
+		expect(preview.entries[0]).toMatchObject({
+			action: 'error',
+			reason: expect.stringMatching(/archived/)
+		});
+		expect(await t.db.selectFrom('label').selectAll().execute()).toHaveLength(0);
+	});
+	it('identifies repeated creates before apply without conflating distinct pending scopes', async () => {
+		const item = { kind: 'prompt' as const, name: 'same', body: 'content', scope: {} };
+		const doc = document([item, item]);
+		const preview = await applyImport(t.db, t.env, actor, { document: doc, dry_run: true });
+		const applied = await applyImport(t.db, t.env, actor, { document: doc });
+		expect(applied.entries).toEqual(preview.entries);
+		expect(preview.entries.map((e) => e.action)).toEqual(['create', 'error']);
+	});
+	it.each([
+		{ scope: { project: '' } },
+		{ scope: { label: '' } },
+		{ scope: { issue_id: 'foreign' } },
+		{ scope: null }
+	])('refuses malformed scope instead of silently broadening it to global: %j', async (patch) => {
+		const doc = document([{ kind: 'prompt', name: 'bad', body: 'x', ...patch } as never]);
+		const preview = await applyImport(t.db, t.env, actor, { document: doc, dry_run: true });
+		const applied = await applyImport(t.db, t.env, actor, { document: doc });
+		expect(applied.entries).toEqual(preview.entries);
+		expect(preview.entries[0].action).toBe('error');
+		expect(await t.db.selectFrom('context_item').selectAll().execute()).toHaveLength(0);
+	});
+});
+
+it.each([1, 2] as const)(
+	'reports malformed workflow states as entry errors in legacy v%i without writing',
+	async (version) => {
+		const document: LibraryDocument = {
+			format: LIBRARY_FORMAT,
+			version,
+			exported_at: 1,
+			projects: [],
+			workflows: [{ ...ENGINEERING, states: [null] as never }],
+			context: []
+		};
+		const preview = await applyImport(t.db, t.env, actor, { document, dry_run: true });
+		const applied = await applyImport(t.db, t.env, actor, { document });
+		expect(preview.entries[0].action).toBe('error');
+		expect(applied.entries).toEqual(preview.entries);
+	}
+);

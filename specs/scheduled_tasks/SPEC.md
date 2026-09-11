@@ -216,3 +216,14 @@ A "Scheduled tasks" section on the project detail page (hidden when the project 
 - **Flood guardrail**: recurrences firing more often than hourly are rejected at validation time.
 
 - **2026-09-10, Tines/392 — a moved instance keeps its schedule**: transferring an instance to another project does not detach it. It keeps `scheduled_task_id`, still blocks its schedule's closure gate until it is done, and links back to the schedule in the schedule's *own* project. Future instances continue to be created there, with a number taken from that project's address ledger — never a number a moved issue once held.
+
+### Workflow-package installation (Tines/435)
+
+Package installation is an explicit exception to create-with-first-issue. It shares
+ordinary recurrence/name/state validation and the `scheduleInsertQueries` builder,
+but creates optional schedules paused (`enabled=0`, `run_count=0`,
+`last_run_at=null`) with a normally calculated `next_run_at`. It creates no issue
+and does not dispatch or sweep. A package's null start follows the workflow's
+initial state; an explicit bundled start keeps its remapped ID even if currently
+initial. Ordinary issue-plus-schedule creation keeps its existing initial-run
+semantics. Resume computes the next future occurrence normally.

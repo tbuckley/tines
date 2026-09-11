@@ -36,6 +36,7 @@ import {
 	type RepoDirConflict,
 	type UpdateContextItemRequest
 } from '@tines/shared';
+import { insertValues, type QueryGuard } from './query-guard';
 import type { D1Result } from '@cloudflare/workers-types';
 import { sql, type CompiledQuery, type Kysely } from 'kysely';
 import { artifactKeyPrefix, getArtifactStore } from '$lib/server/artifact-store';
@@ -664,12 +665,8 @@ function artifactEndpointsMessage(): string {
 	return `Artifacts are created through the artifact endpoints: ${parts.join(', ')}, or ${last}`;
 }
 
-export async function createContextItem(
-	db: Kysely<Database>,
-	env: Env,
-	actor: ActorContext,
-	body: CreateContextItemRequest
-): Promise<ContextItem> {
+/** Pure ordinary payload validation, shared with library preview. */
+export function validateContextCreateFields(body: CreateContextItemRequest) {
 	const kind = requireKind(body.kind);
 	// One creation path is saner than two, and file payloads can't ride a
 	// JSON create: artifacts are created via their own endpoints only.
@@ -682,16 +679,6 @@ export async function createContextItem(
 	const name = validateName(kind, body.name);
 	const description = optionalString(body.description, 'description', { max: 1000 }) ?? '';
 	rejectForeignPayload(kind, body as unknown as Record<string, unknown>);
-
-	const scope = await resolveScope(db, actor.userId, {
-		projectId: body.project_id ?? null,
-		workflowStateId: body.workflow_state_id ?? null,
-		labelId: body.label_id ?? null,
-		issueId: body.issue_id ?? null
-	});
-	await assertScopeWritable(db, actor, scope);
-	await assertNameAvailable(db, actor.userId, kind, name, scope);
-
 	let promptBody: string | null = null;
 	let files: ContextFile[] = [];
 	let repoUrl: string | null = null;
@@ -710,13 +697,33 @@ export async function createContextItem(
 				: validateWorkspacePath(body.repo_dir, 'repo_dir');
 	}
 
-	const now = Date.now();
-	const id = newId('ctx');
-	const position = await nextPosition(db, actor.userId, scope);
-	const queries: CompiledQuery[] = [
-		db
-			.insertInto('context_item')
-			.values({
+	return { kind, name, description, promptBody, files, repoUrl, repoBranch, repoDir };
+}
+
+/** Validated ordinary payload plus a resolved prospective scope. No writes or lookups. */
+export function contextItemInsertQueries(
+	db: Kysely<Database>,
+	actor: ActorContext,
+	options: {
+		id: string;
+		fields: ReturnType<typeof validateContextCreateFields>;
+		scope: ResolvedScope;
+		position: number;
+		now: number;
+		fileIds?: string[];
+		eventId?: string;
+		guard?: QueryGuard;
+	}
+): CompiledQuery[] {
+	const { id, fields, scope, position, now } = options;
+	const { kind, name, description, promptBody, files, repoUrl, repoBranch, repoDir } = fields;
+	if (options.fileIds && options.fileIds.length !== files.length)
+		throw new Error('Context file ID allocation must match the validated files');
+	return [
+		insertValues(
+			db,
+			'context_item',
+			{
 				id,
 				user_id: actor.userId,
 				kind,
@@ -734,27 +741,67 @@ export async function createContextItem(
 				version: 1,
 				created_at: now,
 				updated_at: now
-			})
-			.compile(),
-		...files.map((f) =>
-			db
-				.insertInto('context_item_file')
-				.values({
-					id: newId('ctf'),
+			},
+			options.guard
+		),
+		...files.map((f, index) =>
+			insertValues(
+				db,
+				'context_item_file',
+				{
+					id: options.fileIds?.[index] ?? newId('ctf'),
 					context_item_id: id,
 					path: f.path,
 					content: f.content,
 					created_at: now,
 					updated_at: now
-				})
-				.compile()
+				},
+				options.guard
+			)
 		),
-		eventInsert(db, actor, {
-			type: 'context.created',
-			...eventRefs(scope),
-			payload: { context_id: id, kind, name, scope: scopeEventPayload(scope) }
-		})
+		eventInsert(
+			db,
+			actor,
+			{
+				id: options.eventId,
+				createdAt: now,
+				type: 'context.created',
+				...eventRefs(scope),
+				payload: { context_id: id, kind, name, scope: scopeEventPayload(scope) }
+			},
+			options.guard
+		)
 	];
+}
+
+export async function createContextItem(
+	db: Kysely<Database>,
+	env: Env,
+	actor: ActorContext,
+	body: CreateContextItemRequest
+): Promise<ContextItem> {
+	const fields = validateContextCreateFields(body);
+	const { kind, name } = fields;
+
+	const scope = await resolveScope(db, actor.userId, {
+		projectId: body.project_id ?? null,
+		workflowStateId: body.workflow_state_id ?? null,
+		labelId: body.label_id ?? null,
+		issueId: body.issue_id ?? null
+	});
+	await assertScopeWritable(db, actor, scope);
+	await assertNameAvailable(db, actor.userId, kind, name, scope);
+
+	const now = Date.now();
+	const id = newId('ctx');
+	const position = await nextPosition(db, actor.userId, scope);
+	const queries = contextItemInsertQueries(db, actor, {
+		id,
+		fields,
+		scope,
+		position,
+		now
+	});
 	await runContextWrite(env, queries);
 	return getContextItem(db, actor.userId, id);
 }
@@ -2242,6 +2289,9 @@ export function seedPromptQueries(
 	db: Kysely<Database>,
 	actor: ActorContext,
 	opts: {
+		id?: string;
+		eventId?: string;
+		guard?: QueryGuard;
 		name: string;
 		body: string;
 		projectId?: string;
@@ -2254,15 +2304,16 @@ export function seedPromptQueries(
 	}
 ): { id: string; queries: CompiledQuery[] } {
 	validatePromptBody(opts.body);
-	const id = newId('ctx');
+	const id = opts.id ?? newId('ctx');
 	const projectId = opts.projectId ?? null;
 	const workflowStateId = opts.workflowStateId ?? null;
 	return {
 		id,
 		queries: [
-			db
-				.insertInto('context_item')
-				.values({
+			insertValues(
+				db,
+				'context_item',
+				{
 					id,
 					user_id: actor.userId,
 					kind: 'prompt',
@@ -2280,23 +2331,31 @@ export function seedPromptQueries(
 					version: 1,
 					created_at: opts.now,
 					updated_at: opts.now
-				})
-				.compile(),
-			eventInsert(db, actor, {
-				type: 'context.created',
-				projectId,
-				payload: {
-					context_id: id,
-					kind: 'prompt',
-					name: opts.name,
-					scope: {
-						project_id: projectId,
-						workflow_state_id: workflowStateId,
-						issue_id: null,
-						label: opts.label
+				},
+				opts.guard
+			),
+			eventInsert(
+				db,
+				actor,
+				{
+					id: opts.eventId,
+					createdAt: opts.now,
+					type: 'context.created',
+					projectId,
+					payload: {
+						context_id: id,
+						kind: 'prompt',
+						name: opts.name,
+						scope: {
+							project_id: projectId,
+							workflow_state_id: workflowStateId,
+							issue_id: null,
+							label: opts.label
+						}
 					}
-				}
-			})
+				},
+				opts.guard
+			)
 		]
 	};
 }
