@@ -78,6 +78,36 @@ function addOtherUsersState(): string {
 	return 'wfs_bob_a';
 }
 
+describe('workflow dispatch effects', () => {
+	it('signals only when an existing state changes to active', async () => {
+		const workflow = await makeWorkflow('Dispatch categories', ['Waiting']);
+		let signals = 0;
+		await updateWorkflow(
+			t.db,
+			t.env,
+			session,
+			workflow.id,
+			{
+				states: [{ id: workflow.states[0].id, name: 'Waiting', category: 'active' }]
+			},
+			{ signalDispatch: () => signals++ }
+		);
+		expect(signals).toBe(1);
+
+		await updateWorkflow(
+			t.db,
+			t.env,
+			session,
+			workflow.id,
+			{
+				states: [{ id: workflow.states[0].id, name: 'Waiting', category: 'backlog' }]
+			},
+			{ signalDispatch: () => signals++ }
+		);
+		expect(signals).toBe(1);
+	});
+});
+
 describe('createWorkflow', () => {
 	it('stores an intra-workflow pointer in the second pass', async () => {
 		// The base is *after* its child in the state list on purpose: a self-FK

@@ -25,6 +25,7 @@ import { sql, type CompiledQuery, type Kysely } from 'kysely';
 import { encryptSecret, sha256Hex } from '$lib/server/crypto';
 import { deleteRunLogObjects } from '$lib/server/supervisor/run-log';
 import { newId, randomString, type Database } from '$lib/server/db';
+import type { DispatchEffects } from '$lib/server/dispatch-effects';
 import { pingAnthropicKey } from '$lib/server/supervisor/claude-adapter';
 import { cancelAssignedRuns } from '$lib/server/supervisor/engine';
 import { builtinTierModels } from '$lib/server/supervisor/logic';
@@ -442,7 +443,8 @@ export async function createRunner(
 	env: Env,
 	actor: ActorContext,
 	body: CreateRunnerRequest,
-	ping: ProviderKeyPing = defaultPing
+	ping: ProviderKeyPing = defaultPing,
+	effects?: DispatchEffects
 ): Promise<Runner> {
 	if (typeof body.type !== 'string' || !(RUNNER_TYPES as readonly string[]).includes(body.type)) {
 		throw new ApiFail(
@@ -581,6 +583,7 @@ export async function createRunner(
 			payload: { runner_id: id, name, runner_type: body.type }
 		})
 	]);
+	effects?.signalDispatch();
 	return getRunner(db, actor.userId, id);
 }
 
@@ -590,7 +593,8 @@ export async function updateRunner(
 	actor: ActorContext,
 	id: string,
 	body: UpdateRunnerRequest,
-	ping: ProviderKeyPing = defaultPing
+	ping: ProviderKeyPing = defaultPing,
+	effects?: DispatchEffects
 ): Promise<Runner> {
 	const row = await runnerQuery(db, actor.userId).where('runner.id', '=', id).executeTakeFirst();
 	if (!row) throw notFound();
@@ -738,7 +742,10 @@ export async function updateRunner(
 			field === 'api_key' || field === 'config' || field === 'tiers' || field === 'default_tier'
 	);
 
-	if (changed.length === 0) return serializeRunner(row);
+	if (changed.length === 0) {
+		effects?.signalDispatch();
+		return serializeRunner(row);
+	}
 
 	await runAtomic(env, [
 		db
@@ -769,6 +776,7 @@ export async function updateRunner(
 	if (patch.status === 'paused') {
 		await cancelAssignedRuns(db, env, { userId: actor.userId, runnerId: id }, 'runner paused');
 	}
+	effects?.signalDispatch();
 	return getRunner(db, actor.userId, id);
 }
 
@@ -792,7 +800,8 @@ export async function registerRunner(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
-	body: RegisterRunnerRequest
+	body: RegisterRunnerRequest,
+	effects?: DispatchEffects
 ): Promise<RunnerTokenResponse> {
 	const name = validateRunnerName(body.name);
 	const token = generateRunnerToken();
@@ -883,6 +892,7 @@ export async function registerRunner(
 				payload: { runner_id: existing.id, name, changed, reconnected: true }
 			})
 		]);
+		effects?.signalDispatch();
 		return { runner: await getRunner(db, actor.userId, existing.id), runner_token: token };
 	}
 
@@ -941,6 +951,7 @@ export async function registerRunner(
 			payload: { runner_id: id, name, runner_type: 'local' }
 		})
 	]);
+	effects?.signalDispatch();
 	return { runner: await getRunner(db, actor.userId, id), runner_token: token };
 }
 
@@ -1059,7 +1070,8 @@ export async function deleteRunner(
 	env: Env,
 	actor: ActorContext,
 	id: string,
-	force: boolean
+	force: boolean,
+	effects?: DispatchEffects
 ): Promise<void> {
 	const runner = await db
 		.selectFrom('runner')
@@ -1265,4 +1277,5 @@ export async function deleteRunner(
 			console.error(`deleting run-log objects for run ${run.id} failed:`, e)
 		);
 	}
+	effects?.signalDispatch();
 }

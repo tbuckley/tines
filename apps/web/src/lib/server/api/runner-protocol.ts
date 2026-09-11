@@ -54,6 +54,8 @@ import { listArtifacts } from './artifacts';
 import { listLabels } from './labels';
 import { buildLaunchPrompt, buildResumePrompt, effectiveContextForIssue } from './context';
 import { ApiFail, notFound, optionalString, runAtomic } from './core';
+import { requestDispatchEffects } from './core';
+import type { DispatchEffects } from '$lib/server/dispatch-effects';
 import { getIssueDetail } from './issues';
 import { validateBoundedInt } from './runners';
 import { runQuery, serializeRun } from './runs';
@@ -95,7 +97,7 @@ export function runnerTokenUnauthorized(): ApiFail {
  */
 export async function runnerProtocolContext(
 	event: RequestEvent
-): Promise<{ db: Kysely<Database>; env: Env; runner: RunnerRow }> {
+): Promise<{ db: Kysely<Database>; env: Env; runner: RunnerRow; effects: DispatchEffects }> {
 	if (!event.platform) throw new ApiFail(500, 'no_platform', 'Platform bindings unavailable');
 	const header = event.request.headers.get('authorization');
 	const token = header?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim();
@@ -109,7 +111,12 @@ export async function runnerProtocolContext(
 	const db = getDb(event.platform.env);
 	const runner = await authenticateRunnerToken(db, token);
 	if (!runner) throw runnerTokenUnauthorized();
-	return { db, env: event.platform.env, runner };
+	return {
+		db,
+		env: event.platform.env,
+		runner,
+		effects: requestDispatchEffects(event, runner.user_id)
+	};
 }
 
 async function serializedRun(
@@ -165,7 +172,8 @@ export async function pollRunner(
 	env: Env,
 	runner: RunnerRow,
 	body: RunnerPollRequest,
-	now: number = Date.now()
+	now: number = Date.now(),
+	effects?: DispatchEffects
 ): Promise<PollOutcome> {
 	const owned = new Set(validateOwnedRuns(body));
 	const cap =
@@ -275,6 +283,7 @@ export async function pollRunner(
 		}
 	}
 
+	if (cameOnline || capRaised || reconciled) effects?.signalDispatch();
 	return { response: { assignments, cancels }, cameOnline, capRaised, reconciled };
 }
 
@@ -967,7 +976,8 @@ export async function finishRun(
 	runner: RunnerRow,
 	runId: string,
 	body: FinishRunRequest,
-	now: number = Date.now()
+	now: number = Date.now(),
+	effects?: DispatchEffects
 ): Promise<AgentRun> {
 	if (!REPORTABLE.includes(body.status)) {
 		throw new ApiFail(422, 'invalid_field', '"status" must be "completed" or "failed"', {
@@ -1063,6 +1073,7 @@ export async function finishRun(
 			},
 			now
 		});
+		if (ended.ended) effects?.signalDispatch();
 		if (judgment === 'rate_limited' && ended.ended) {
 			// On `ended`, not on the outcome: an agent that transitioned the
 			// issue before hitting the wall leaves an `advanced` run, and the

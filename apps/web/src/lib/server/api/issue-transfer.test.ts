@@ -11,7 +11,7 @@ import {
 	seedBase,
 	setSettings
 } from '../supervisor/test-fixtures';
-import { claimRun } from '../supervisor/engine';
+import { claimRun, queueDispatchPass } from '../supervisor/engine';
 import type { ActorContext } from './core';
 import { commitIssueTransfer, previewIssueTransfer } from './issue-transfer';
 import { loadIssue } from './issues';
@@ -693,7 +693,7 @@ describe('private issue transfer path', () => {
 		expect(t.all(`SELECT * FROM event WHERE issue_id = ?`, issueId)).toEqual(before.events);
 	});
 
-	it('does not enqueue when the guarded update loses, but enqueue failure cannot undo a move', async () => {
+	it('does not signal when the guarded update loses, but signals after a committed move', async () => {
 		const stale = await previewIssueTransfer(t.env, actor, issueId, DESTINATION, NOW);
 		const realBatch = t.env.DB.batch.bind(t.env.DB);
 		let first = true;
@@ -704,14 +704,13 @@ describe('private issue transfer path', () => {
 			}
 			return realBatch(statements);
 		};
-		const waits: Promise<unknown>[] = [];
+		let signals = 0;
 		await expect(
 			commitIssueTransfer(t.env, actor, issueId, DESTINATION, stale.preview_token!, NOW + 1, {
-				env: t.env,
-				ctx: { waitUntil: (promise) => waits.push(promise) }
+				signalDispatch: () => signals++
 			})
 		).rejects.toMatchObject({ status: 409, code: 'transfer_preview_stale' });
-		expect(waits).toHaveLength(0);
+		expect(signals).toBe(0);
 
 		const fresh = await previewIssueTransfer(t.env, actor, issueId, DESTINATION, NOW + 2);
 		const result = await commitIssueTransfer(
@@ -721,12 +720,10 @@ describe('private issue transfer path', () => {
 			DESTINATION,
 			fresh.preview_token!,
 			NOW + 3,
-			{
-				env: { DB: null } as unknown as Env,
-				ctx: { waitUntil: (promise) => waits.push(promise) }
-			}
+			{ signalDispatch: () => signals++ }
 		);
 		expect(result.status).toBe('transferred');
+		expect(signals).toBe(1);
 		expect(t.all(`SELECT project_id FROM issue WHERE id = ?`, issueId)[0].project_id).toBe(
 			DESTINATION
 		);
@@ -755,7 +752,13 @@ describe('private issue transfer path', () => {
 			DESTINATION,
 			preview.preview_token!,
 			wallNow + 1,
-			{ env: t.env, ctx: { waitUntil: (promise) => waits.push(promise) } }
+			{
+				signalDispatch: () =>
+					queueDispatchPass(
+						{ env: t.env, ctx: { waitUntil: (promise) => waits.push(promise) } },
+						USER
+					)
+			}
 		);
 		expect(result.status).toBe('transferred');
 		expect(waits).toHaveLength(1);

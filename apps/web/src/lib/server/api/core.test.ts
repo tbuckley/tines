@@ -1,7 +1,8 @@
 import type { RequestEvent } from '@sveltejs/kit';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
 	ApiFail,
+	api,
 	assertRunKeyAllowed,
 	decodeCursor,
 	errorResponse,
@@ -10,8 +11,59 @@ import {
 	readArchived,
 	jsonifyMethodNotAllowed,
 	pageResult,
-	readPage
+	readPage,
+	requestDispatchEffects
 } from './core';
+
+const queued = vi.hoisted(() => vi.fn());
+vi.mock('$lib/server/supervisor/engine', () => ({ queueDispatchPass: queued }));
+
+function requestEvent(): RequestEvent {
+	return {
+		platform: { env: {} as Env, ctx: { waitUntil: vi.fn() } },
+		request: new Request('http://test/api/v1/test'),
+		url: new URL('http://test/api/v1/test')
+	} as unknown as RequestEvent;
+}
+
+describe('request dispatch effects', () => {
+	it('coalesces repeated signals and binds them to the authenticated owner', async () => {
+		queued.mockClear();
+		const event = requestEvent();
+		const response = await api(async (wrapped) => {
+			const first = requestDispatchEffects(wrapped, 'usr_one');
+			expect(requestDispatchEffects(wrapped, 'usr_one')).toBe(first);
+			first.signalDispatch();
+			first.signalDispatch();
+			return new Response('ok');
+		})(event);
+		expect(response.status).toBe(200);
+		expect(queued).toHaveBeenCalledOnce();
+		expect(queued).toHaveBeenCalledWith(event.platform, 'usr_one');
+	});
+
+	it('drains a committed signal even when the handler later fails', async () => {
+		queued.mockClear();
+		const response = await api((event) => {
+			requestDispatchEffects(event, 'usr_one').signalDispatch();
+			throw new ApiFail(422, 'later_failure', 'later failure');
+		})(requestEvent());
+		expect(response.status).toBe(422);
+		expect(queued).toHaveBeenCalledOnce();
+	});
+
+	it('rejects owner rebinding and use outside the wrapper', async () => {
+		expect(() => requestDispatchEffects(requestEvent(), 'usr_one')).toThrow(
+			'Dispatch effects requested outside api()'
+		);
+		const response = await api((event) => {
+			requestDispatchEffects(event, 'usr_one');
+			requestDispatchEffects(event, 'usr_two');
+			return new Response('unreachable');
+		})(requestEvent());
+		expect(response.status).toBe(500);
+	});
+});
 
 /** readPage only touches `url.searchParams`. */
 function eventWithUrl(query: string): RequestEvent {

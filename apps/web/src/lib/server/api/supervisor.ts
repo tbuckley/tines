@@ -35,6 +35,7 @@ import {
 	type TargetVerdictResult
 } from '$lib/server/supervisor/logic';
 import { ApiFail, requireString, runAtomic, type ActorContext } from './core';
+import type { DispatchEffects } from '$lib/server/dispatch-effects';
 import { eventInsert } from './events';
 import { effectiveAutomationEnabled } from '../supervisor/settings';
 
@@ -192,7 +193,8 @@ export async function updateSupervisorSettings(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
-	body: UpdateSupervisorSettingsRequest
+	body: UpdateSupervisorSettingsRequest,
+	effects?: DispatchEffects
 ): Promise<SupervisorSettingsResponse> {
 	const current = await getSupervisorSettings(db, actor.userId);
 
@@ -335,6 +337,7 @@ export async function updateSupervisorSettings(
 		}
 	}
 
+	effects?.signalDispatch();
 	const settings: SupervisorSettingsResponse = await getSupervisorSettings(db, actor.userId);
 	if (canceledRuns > 0) settings.canceled_runs = canceledRuns;
 	return settings;

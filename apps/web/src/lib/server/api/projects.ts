@@ -24,6 +24,7 @@ import {
 import { assertWritable } from './archive';
 import { eventInsert } from './events';
 import { projectScheduleDeletions, rearmScheduleQueries } from './schedules';
+import type { DispatchEffects } from '$lib/server/dispatch-effects';
 import { resolveStarter, starterQueries, type StarterRegistry } from './starters';
 
 function projectQuery(db: Kysely<Database>, userId: string) {
@@ -423,10 +424,14 @@ export async function unarchiveProject(
 	env: Env,
 	actor: ActorContext,
 	id: string,
-	now = Date.now()
+	now = Date.now(),
+	effects?: DispatchEffects
 ): Promise<UnarchiveProjectResponse> {
 	const project = await getProject(db, actor.userId, id);
-	if (project.archived_at === null) return { project, schedules_resumed: 0 };
+	if (project.archived_at === null) {
+		effects?.signalDispatch();
+		return { project, schedules_resumed: 0 };
+	}
 	// Enabled schedules resume from their next future occurrence: a project
 	// archived for a month must not fire a month of catch-up issues.
 	const schedules = await db
@@ -449,6 +454,7 @@ export async function unarchiveProject(
 			payload: { name: project.name, schedules_resumed: rearm.queries.length }
 		})
 	]);
+	effects?.signalDispatch();
 	return {
 		project: await getProject(db, actor.userId, id),
 		schedules_resumed: rearm.queries.length

@@ -30,6 +30,7 @@ import {
 	type Page
 } from './core';
 import { assertWritable } from './archive';
+import type { DispatchEffects } from '$lib/server/dispatch-effects';
 import { eventInsert } from './events';
 import { insertValues, type QueryGuard } from './query-guard';
 
@@ -637,7 +638,8 @@ export async function runScheduleNow(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
-	id: string
+	id: string,
+	effects?: DispatchEffects
 ): Promise<string> {
 	const schedule = await getScheduleExecRow(db, actor.userId, id);
 	await assertWritable(db, actor, {
@@ -674,6 +676,7 @@ export async function runScheduleNow(
 		actor: { userId: actor.userId, apiKeyId: actor.apiKeyId }
 	});
 	await runAtomic(env, queries);
+	effects?.signalDispatch();
 	return issueId;
 }
 

@@ -1,7 +1,6 @@
 import { json } from '@sveltejs/kit';
 import { api, apiContext } from '$lib/server/api/core';
 import { resumeIssue } from '$lib/server/api/issues';
-import { queueDispatchPass } from '$lib/server/supervisor/engine';
 import type { RequestHandler } from './$types';
 
 /**
@@ -9,8 +8,7 @@ import type { RequestHandler } from './$types';
  * control-plane fence (403 from auth) — an agent must not un-park itself.
  */
 export const POST: RequestHandler = api(async (event) => {
-	const { db, env, actor } = await apiContext(event);
-	const issue = await resumeIssue(db, env, actor, event.params.id);
-	queueDispatchPass(event.platform, actor.userId);
+	const { db, env, actor, effects } = await apiContext(event);
+	const issue = await resumeIssue(db, env, actor, event.params.id, effects);
 	return json(issue);
 });

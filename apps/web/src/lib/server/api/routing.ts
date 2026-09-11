@@ -15,6 +15,7 @@ import {
 } from '@tines/shared';
 import type { CompiledQuery, Kysely } from 'kysely';
 import { newId, type Database } from '$lib/server/db';
+import type { DispatchEffects } from '$lib/server/dispatch-effects';
 import { ApiFail, notFound, runAtomic, type ActorContext } from './core';
 import { eventInsert } from './events';
 import { insertValues, type QueryGuard } from './query-guard';
@@ -513,7 +514,8 @@ export async function createRoutingRule(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
-	body: CreateRoutingRuleRequest
+	body: CreateRoutingRuleRequest,
+	effects?: DispatchEffects
 ): Promise<RoutingRuleWithWarnings> {
 	const scope: RuleScopeIds = {
 		projectId: body.project_id ?? null,
@@ -550,6 +552,7 @@ export async function createRoutingRule(
 			now
 		})
 	);
+	effects?.signalDispatch();
 	return {
 		...(await getRoutingRule(db, actor.userId, id)),
 		warnings: shadowWarnings({ ...scope, id }, rules)
@@ -561,7 +564,8 @@ export async function updateRoutingRule(
 	env: Env,
 	actor: ActorContext,
 	id: string,
-	body: UpdateRoutingRuleRequest
+	body: UpdateRoutingRuleRequest,
+	effects?: DispatchEffects
 ): Promise<RoutingRuleWithWarnings> {
 	const row = await ruleQuery(db, actor.userId)
 		.where('routing_rule.id', '=', id)
@@ -601,6 +605,7 @@ export async function updateRoutingRule(
 	assertTierOnlyScope(scope, targets);
 
 	if (!scopeChanged && JSON.stringify(targets) === row.targets) {
+		effects?.signalDispatch();
 		return {
 			...serializeRule(row, runnersById),
 			warnings: shadowWarnings({ ...scope, id }, rules)
@@ -635,6 +640,7 @@ export async function updateRoutingRule(
 			}
 		})
 	]);
+	effects?.signalDispatch();
 	return {
 		...(await getRoutingRule(db, actor.userId, id)),
 		warnings: shadowWarnings({ ...scope, id }, rules)
@@ -683,7 +689,8 @@ export async function deleteRoutingRule(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
-	id: string
+	id: string,
+	effects?: DispatchEffects
 ): Promise<void> {
 	const row = await ruleQuery(db, actor.userId)
 		.where('routing_rule.id', '=', id)
@@ -697,4 +704,5 @@ export async function deleteRoutingRule(
 			payload: { rule_id: id, scope_label: rowScope(row).label }
 		})
 	]);
+	effects?.signalDispatch();
 }

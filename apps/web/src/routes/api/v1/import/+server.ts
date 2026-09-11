@@ -11,7 +11,7 @@ import { applyImport } from '$lib/server/api/library';
 import type { RequestHandler } from './$types';
 
 export const POST: RequestHandler = api(async (event) => {
-	const { db, env, actor } = await apiContext(event);
+	const { db, env, actor, effects } = await apiContext(event);
 	const raw = await readLibraryEnvelope(event.request);
 	let body: ImportLibraryRequest;
 	try {
@@ -28,6 +28,6 @@ export const POST: RequestHandler = api(async (event) => {
 		throw new ApiFail(422, 'document_too_large', `Document exceeds ${LIBRARY_MAX_BYTES} bytes`, {
 			max_bytes: LIBRARY_MAX_BYTES
 		});
-	const result = await applyImport(db, env, actor, body);
+	const result = await applyImport(db, env, actor, body, effects);
 	return json(result);
 });
