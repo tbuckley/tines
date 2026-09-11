@@ -1,5 +1,7 @@
 import { repoDirFromUrl, type EffectiveContext, type IssueDetail } from '@tines/shared';
 import { describe, expect, it } from 'vitest';
+import { getDb } from '$lib/server/db';
+import { USER, seedBase } from '../supervisor/test-fixtures';
 import {
 	buildLaunchPrompt,
 	buildResumePrompt,
@@ -8,6 +10,7 @@ import {
 	issueBlock,
 	layerRank,
 	listContextItems,
+	loadFiles,
 	stitchPrompt,
 	validateWorkspacePath
 } from './context';
@@ -656,5 +659,54 @@ describe('focused Context presentation', () => {
 		);
 		expect(result.items.map((item) => item.id)).toEqual(['direct', 'issue', 'both']);
 		expect(await countSharedContextItems(t.db, 'u1')).toBe(2);
+	});
+});
+
+describe('loadFiles D1 parameter budget', () => {
+	it('hydrates three chunks in path order and deduplicates repeated item ids', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const insertItem = t.sqlite.prepare(
+			`INSERT INTO context_item
+				(id, user_id, kind, name, description, position, version, created_at, updated_at)
+			 VALUES (?, ?, 'skill', ?, '', ?, 1, ?, ?)`
+		);
+		const insertFile = t.sqlite.prepare(
+			`INSERT INTO context_item_file
+				(id, context_item_id, path, content, created_at, updated_at)
+			 VALUES (?, ?, ?, ?, 0, 0)`
+		);
+		const ids = Array.from({ length: 181 }, (_, index) => `ctx_bulk_${index}`);
+		for (const [index, id] of ids.entries()) {
+			insertItem.run(id, USER, `skill-${index}`, index, index, index);
+			insertFile.run(`ctf_${index}_z`, id, 'z.txt', `last-${index}`);
+			insertFile.run(`ctf_${index}_a`, id, 'a.txt', `first-${index}`);
+		}
+
+		const files = await loadFiles(getDb(t.env), [...ids, ids[0], ids[100]]);
+		expect([...files.keys()]).toHaveLength(181);
+		for (const index of [0, 89, 90, 180]) {
+			expect(files.get(ids[index])).toEqual([
+				{ path: 'a.txt', content: `first-${index}` },
+				{ path: 'z.txt', content: `last-${index}` }
+			]);
+		}
+	});
+
+	it('skips SQL for empty input and omits unknown or fileless items', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const queries = t.spyOnQueries();
+		expect(await loadFiles(getDb(t.env), [])).toEqual(new Map());
+		expect(queries()).toEqual([]);
+
+		t.sqlite
+			.prepare(
+				`INSERT INTO context_item
+					(id, user_id, kind, name, description, position, version, created_at, updated_at)
+				 VALUES (?, ?, 'skill', ?, '', 0, 1, 0, 0)`
+			)
+			.run('ctx_fileless', USER, 'fileless');
+		expect(await loadFiles(getDb(t.env), ['ctx_fileless', 'ctx_unknown'])).toEqual(new Map());
 	});
 });

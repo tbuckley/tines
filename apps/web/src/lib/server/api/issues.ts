@@ -28,7 +28,7 @@ import {
 	type WorkflowState
 } from '@tines/shared';
 import { sql, type CompiledQuery, type Kysely } from 'kysely';
-import { IN_LIST_CHUNK, chunked, newId, type Database } from '$lib/server/db';
+import { IN_LIST_CHUNK, chunked, idChunks, newId, type Database } from '$lib/server/db';
 import {
 	ApiFail,
 	notFound,
@@ -673,7 +673,13 @@ export async function loadIssueLinks(
 	const others =
 		otherIds.length === 0
 			? []
-			: await issueQuery(db, userId).where('issue.id', 'in', otherIds).execute();
+			: (
+					await Promise.all(
+						idChunks(otherIds).map((chunk) =>
+							issueQuery(db, userId).where('issue.id', 'in', chunk).execute()
+						)
+					)
+				).flat();
 	const byId = new Map(others.map((r) => [r.id, serializeIssue(r)]));
 
 	const links: IssueLinks = { blocked_by: [], blocks: [], duplicate_of: null, duplicated_by: [] };
