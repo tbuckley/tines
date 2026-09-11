@@ -301,6 +301,18 @@ describe('commit-time issue-link graph guard', () => {
 		expect(linkEvents(t)).toHaveLength(4);
 	});
 
+	it('preserves the exact duplicate_of conflict under a race', async () => {
+		const { t, a, b } = fixture();
+		const env = delayedBy(t, () =>
+			addIssueLink(t.db, t.env, competingActor, a, { kind: 'duplicate_of', issue_id: b })
+		);
+		await expect(
+			addIssueLink(t.db, env, actor, a, { kind: 'duplicate_of', issue_id: b })
+		).rejects.toMatchObject({ status: 422, code: 'already_duplicate' });
+		expect(edges(t)).toEqual([{ source: a, target: b, kind: 'duplicate_of' }]);
+		expect(linkEvents(t)).toHaveLength(2);
+	});
+
 	it('returns the transaction-time cycle path even if that path is removed before formatting', async () => {
 		const { t, a, b } = fixture();
 		const link = await addIssueLink(t.db, t.env, actor, a, { kind: 'blocks', issue_id: b });
@@ -459,6 +471,22 @@ describe('commit-time issue-link graph guard', () => {
 			expect(linkEvents(t)).toHaveLength(2);
 		});
 	}
+
+	it('never reports a cycle rejection from a missing diagnostic receipt', async () => {
+		const { t, a, b } = fixture();
+		await addIssueLink(t.db, t.env, competingActor, a, { kind: 'blocks', issue_id: b });
+		const env = { ...t.env, DB: Object.create(t.env.DB) } as Env;
+		env.DB.batch = async <T = unknown>(statements: Parameters<Env['DB']['batch']>[0]) => {
+			const results = await t.env.DB.batch<T>(statements);
+			(results[4] as { results: unknown }).results = null;
+			return results;
+		};
+		await expect(
+			addIssueLink(t.db, env, actor, b, { kind: 'blocks', issue_id: a })
+		).rejects.toThrow(/diagnostic/);
+		expect(edges(t)).toEqual([{ source: a, target: b, kind: 'blocks' }]);
+		expect(linkEvents(t)).toHaveLength(2);
+	});
 
 	it('rechecks endpoint ownership inside the batch and emits nothing after a cross-account move', async () => {
 		const { t, a, b } = fixture();
