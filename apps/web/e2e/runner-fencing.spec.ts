@@ -57,4 +57,8 @@ test('native D1 polling fences the immediate predecessor and preserves legacy om
 		poll(request, id, token, 'daemon_D')
 	]);
 	expect(followups.map((response) => response.status()).sort()).toEqual([200, 409]);
+
+	// The E2E database is shared across files; leave no fleet row that can
+	// alter later runner-card pagination or queue annotations.
+	expect((await api.delete(`/api/v1/runners/${id}`)).ok()).toBe(true);
 });
