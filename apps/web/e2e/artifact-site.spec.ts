@@ -157,6 +157,12 @@ async function openViewer(page: Page, name: string) {
 }
 
 test('an HTML artifact renders live in the viewer, with its scripts running', async ({ page }) => {
+	let requestedVersion: number | undefined;
+	page.on('request', (request) => {
+		if (request.url().endsWith(`/artifacts/prototype/site-link`)) {
+			requestedVersion = request.postDataJSON().version;
+		}
+	});
 	await gotoHydrated(page, issueUrl());
 	const dialog = await openViewer(page, 'prototype');
 
@@ -165,6 +171,7 @@ test('an HTML artifact renders live in the viewer, with its scripts running', as
 	// path would show the tags themselves.
 	await expect(frame.locator('h1')).toHaveText('Prototype heading');
 	await expect(frame.locator('#script')).toHaveText('script ran');
+	expect(requestedVersion).toBe(1);
 
 	// The whole security claim, from inside the page: `connect-src` names only
 	// this artifact's own `/s/<token>/` prefix, so the Tines API is unreachable

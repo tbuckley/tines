@@ -235,6 +235,8 @@ test('a folder set stays within the viewport and dismissable on a phone', async 
 	await page.setViewportSize(PHONE);
 	await gotoHydrated(page, issueUrl());
 	await unfoldArtifacts(page);
+	const panelThumbnail = page.locator('img[alt="shot-0.png"]');
+	await expect(panelThumbnail).toHaveAttribute('src', /[?&]version=1(?:&|$)/);
 
 	const dialog = page.getByRole('dialog', { name: 'Artifact viewer' });
 	await openViewer(page.getByRole('button', { name: /^View photos/ }).first(), dialog);
