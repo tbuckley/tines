@@ -193,3 +193,35 @@ export interface ValidateLibraryResponse {
 	diagnostics: LibraryDiagnostic[];
 	limits: { max_document_bytes: number; max_records: number; max_depth: number };
 }
+
+/** Destination choices are document-local-ID keyed; existing objects are picked by ID. */
+export type PackageInputChoice =
+	| { value: string }
+	| { mode: 'reuse'; id: string }
+	| { mode: 'create'; name: string; color: LabelColor };
+export interface WorkflowPackageChoices {
+	workflow_names?: Record<LocalId, string>;
+	schedule_names?: Record<LocalId, string>;
+	inputs?: Record<LocalId, PackageInputChoice>;
+	schedule_ids?: LocalId[];
+	routing?: Record<LocalId, ModelTier>;
+}
+export interface ResolvedPackageInput {
+	input_id: LocalId;
+	type: PackageInput['type'];
+	mode: 'value' | 'reuse' | 'create' | 'unused';
+	/** Destination display value, substituted only at declared uses. */
+	value: string;
+	id: string | null;
+	color: LabelColor | null;
+}
+export interface PackageObjectAllocation {
+	id: string;
+	event_id: string | null;
+}
+export interface PackageAllocation {
+	/** Workflow/state/transition/context/file/schedule/routing local IDs. */
+	records: Record<LocalId, PackageObjectAllocation>;
+	/** New labels are allocated separately from document record identities. */
+	labels: Record<LocalId, PackageObjectAllocation>;
+}
