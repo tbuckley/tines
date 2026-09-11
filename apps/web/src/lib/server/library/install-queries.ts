@@ -5,29 +5,15 @@ import { packageDestinationExpression } from './destination';
 import { compilePackageObjects } from './compile';
 import type { ResolvedPackage } from './resolve';
 import type { PackagePlanPayload } from './token';
+import type { WorkflowPackageReceipt } from '@tines/shared';
 
-export interface PackageReceipt {
-	id: string;
-	document_digest: string;
-	plan_digest: string;
-	committed_at: number;
-	objects: {
-		kind: string;
-		local_id: string;
-		id: string;
-		name: string;
-		href: string;
-		relationship?: 'main' | 'dependency';
-	}[];
-	reused_inputs: { input_id: string; type: string; id: string; name: string }[];
-}
 export function packageReceipt(
 	plan: PackagePlanPayload,
 	resolved: ResolvedPackage,
 	mainId: string,
 	now: number
-): PackageReceipt {
-	const objects: PackageReceipt['objects'] = [];
+): WorkflowPackageReceipt {
+	const objects: WorkflowPackageReceipt['objects'] = [];
 	for (const w of resolved.workflows)
 		objects.push({
 			kind: 'workflow',
@@ -94,7 +80,7 @@ export function compilePackageInstall(
 	witnessRaw: string,
 	requestDigest: string,
 	executionNonce: string,
-	receipt: PackageReceipt
+	receipt: WorkflowPackageReceipt
 ): CompiledQuery[] {
 	const guard = {
 		predicate: sql<boolean>`EXISTS (SELECT 1 FROM library_install WHERE id=${plan.id} AND user_id=${actor.userId} AND request_digest=${requestDigest} AND execution_nonce=${executionNonce})`
