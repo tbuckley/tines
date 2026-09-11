@@ -5,46 +5,65 @@ import { packageDestinationExpression } from './destination';
 import { compilePackageObjects } from './compile';
 import type { ResolvedPackage } from './resolve';
 import type { PackagePlanPayload } from './token';
+import type { WorkflowPackageReceipt } from '@tines/shared';
 
-export interface PackageReceipt {
-	id: string;
-	document_digest: string;
-	plan_digest: string;
-	committed_at: number;
-	objects: {
-		kind: string;
-		local_id: string;
-		id: string;
-		name: string;
-		href: string;
-		relationship?: 'main' | 'dependency';
-	}[];
-	reused_inputs: { input_id: string; type: string; id: string; name: string }[];
-}
 export function packageReceipt(
 	plan: PackagePlanPayload,
 	resolved: ResolvedPackage,
 	mainId: string,
 	now: number
-): PackageReceipt {
-	const objects: PackageReceipt['objects'] = [];
-	for (const w of resolved.workflows)
+): WorkflowPackageReceipt {
+	const objects: WorkflowPackageReceipt['objects'] = [];
+	for (const w of resolved.workflows) {
+		const workflowId = plan.allocation.records[w.id].id;
 		objects.push({
 			kind: 'workflow',
 			local_id: w.id,
-			id: plan.allocation.records[w.id].id,
+			id: workflowId,
 			name: w.name,
-			href: `/workflows/${plan.allocation.records[w.id].id}`,
+			href: `/workflows/${workflowId}`,
 			relationship: w.id === mainId ? 'main' : 'dependency'
 		});
-	for (const c of resolved.context)
+		for (const state of w.states)
+			objects.push({
+				kind: 'state',
+				local_id: state.id,
+				id: plan.allocation.records[state.id].id,
+				name: state.name,
+				href: `/workflows/${workflowId}#state-${plan.allocation.records[state.id].id}`
+			});
+		for (const transition of w.transitions)
+			objects.push({
+				kind: 'transition',
+				local_id: transition.id,
+				id: plan.allocation.records[transition.id].id,
+				name: transition.name,
+				href: `/workflows/${workflowId}`
+			});
+	}
+	for (const c of resolved.context) {
+		const workflowId =
+			plan.allocation.records[
+				resolved.workflows.find((w) => w.states.some((s) => s.id === c.state_id))!.id
+			].id;
+		const href = `/context?workflow=${workflowId}&q=${encodeURIComponent(c.name)}`;
 		objects.push({
 			kind: c.kind,
 			local_id: c.id,
 			id: plan.allocation.records[c.id].id,
 			name: c.name,
-			href: `/context?workflow=${plan.allocation.records[resolved.workflows.find((w) => w.states.some((s) => s.id === c.state_id))!.id].id}&q=${encodeURIComponent(c.name)}`
+			href
 		});
+		if (c.kind === 'skill')
+			for (const file of c.files)
+				objects.push({
+					kind: 'file',
+					local_id: file.id,
+					id: plan.allocation.records[file.id].id,
+					name: file.path,
+					href
+				});
+	}
 	for (const input of resolved.inputs)
 		if (input.mode === 'create')
 			objects.push({
@@ -94,7 +113,7 @@ export function compilePackageInstall(
 	witnessRaw: string,
 	requestDigest: string,
 	executionNonce: string,
-	receipt: PackageReceipt
+	receipt: WorkflowPackageReceipt
 ): CompiledQuery[] {
 	const guard = {
 		predicate: sql<boolean>`EXISTS (SELECT 1 FROM library_install WHERE id=${plan.id} AND user_id=${actor.userId} AND request_digest=${requestDigest} AND execution_nonce=${executionNonce})`

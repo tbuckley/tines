@@ -108,6 +108,7 @@ describe('isControlPlanePath', () => {
 		// context changes, it does not apply a whole library.
 		['/api/v1/import', 'GET'],
 		['/api/v1/import', 'POST'],
+		['/api/v1/library/install', 'POST'],
 		// Archiving is an operator act: an agent must not freeze the project it
 		// is working in, nor thaw one a human froze.
 		['/api/v1/projects/prj_1/archive', 'POST'],
@@ -130,6 +131,9 @@ describe('isControlPlanePath', () => {
 		['/api/v1/context', 'GET'],
 		// Export is a read of what a run key can already list.
 		['/api/v1/export', 'GET'],
+		['/api/v1/library/validate', 'POST'],
+		['/api/v1/library/prepare', 'POST'],
+		['/api/v1/library/installs/lin_1', 'GET'],
 		['/api/v1/events', 'GET'],
 		['/api/v1/projects/prj_1/issues', 'GET'],
 		// The vocabulary itself: an agent must know the terms to apply them,
@@ -189,7 +193,8 @@ describe('assertRunKeyAllowed', () => {
 			['/api/v1/supervisor/settings', 'PUT'],
 			['/api/v1/issues/iss_1/resume', 'POST'],
 			['/api/v1/api-keys', 'GET'],
-			['/api/v1/labels', 'POST']
+			['/api/v1/labels', 'POST'],
+			['/api/v1/library/install', 'POST']
 		]) {
 			try {
 				assertRunKeyAllowed(runKey, path, method, now);

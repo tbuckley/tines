@@ -439,6 +439,19 @@ export interface UserPreferenceTable {
 	updated_at: number;
 }
 
+/** Immutable proof that one signed workflow-package plan committed. */
+export interface LibraryInstallTable {
+	id: string;
+	user_id: string;
+	actor_key: string;
+	document_digest: string;
+	plan_digest: string;
+	request_digest: string;
+	execution_nonce: string;
+	receipt_json: string;
+	created_at: number;
+}
+
 export interface Database {
 	project: ProjectTable;
 	workflow: WorkflowTable;
@@ -464,6 +477,7 @@ export interface Database {
 	supervisor_settings: SupervisorSettingsTable;
 	supervisor_sweep_state: SupervisorSweepStateTable;
 	user_preference: UserPreferenceTable;
+	library_install: LibraryInstallTable;
 	user: UserTable;
 }
 

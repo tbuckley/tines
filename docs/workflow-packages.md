@@ -53,6 +53,22 @@ runner/model/configuration review, and exact compiled-batch sizes. Its 15-minute
 destination data. Changing anything requires a fresh review. Runner heartbeats and
 unrelated account edits do not stale a plan. Preparation creates no objects,
 schedules, issues or receipt. Run keys may prepare, but the eventual installer
-requires a human session or named key to re-prepare as that actor. Install and
-receipt recovery are planned successor work; do not treat a token as a completed
-installation or actual-run evidence.
+requires a human session or named key to re-prepare as that actor.
+
+## Install and recover
+
+Commit the reviewed plan with `POST /api/v1/library/install`, sending the same
+`document_json` and `plan_token` plus
+`confirmation: {"plan_digest":"<the exact reviewed digest>"}`. The server
+revalidates the signature, actor, file, choices, allocation, destination witness
+and transaction-time expiry, then creates the complete independent copy in one
+atomic batch. Selected schedules are paused with a zero run count. Installation
+does not create an issue, dispatch work, or change a project default.
+
+Success returns an immutable receipt linking every created object and naming
+reused inputs without retaining package prose, input text, credentials or the
+token. Retrying the identical request returns that receipt, including after plan
+expiry. Recover it separately with `GET /api/v1/library/installs/<plan_id>`;
+owner access survives API-key rotation. A missing receipt after a possibly lost
+response is not proof of rollback—retry the same signed request. Run keys may
+read an owner receipt but cannot commit an installation.
