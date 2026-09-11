@@ -77,7 +77,7 @@ test.describe('shared run row', () => {
 	}) => {
 		await gotoHydrated(
 			page,
-			`/issues/${encodeURIComponent(RUNROW.projectName)}/${RUNROW.issueNumber}`
+			`/issues/${encodeURIComponent(RUNROW.projectName)}/${RUNROW_ESTIMATED.issueNumber}`
 		);
 		const row = page.locator('li:not([inert])', { hasText: RUNROW_ESTIMATED.runnerName });
 		const estimate = row.getByRole('button', { name: /Estimated/ });

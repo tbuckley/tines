@@ -216,8 +216,10 @@ statements.push(
 	   '${RUNROW_FAILED.runId}', ${Date.parse(expires)}, ${nowMs});`,
 	`INSERT INTO runner (id, user_id, type, name, status, max_concurrent, max_run_minutes, default_tier, config, created_at, updated_at)
 	 VALUES ('${RUNROW_ESTIMATED.runnerId}', '${ALICE.id}', 'local', '${RUNROW_ESTIMATED.runnerName}', 'paused', 1, 30, 'balanced', '{}', ${nowMs}, ${nowMs});`,
+	`INSERT INTO issue (id, project_id, number, title, description, workflow_id, state_id, created_at, updated_at)
+	 VALUES ('${RUNROW_ESTIMATED.issueId}', '${RUNROW.projectId}', ${RUNROW_ESTIMATED.issueNumber}, 'Estimated Codex run', '', 'wf_standard', 'wfs_std_open', ${nowMs}, ${nowMs});`,
 	`INSERT INTO agent_run (id, user_id, issue_id, runner_id, status, outcome, tier, model, usage, state_id_at_start, state_id_at_end, log, created_at, started_at, ended_at)
-	 VALUES ('${RUNROW_ESTIMATED.runId}', '${ALICE.id}', '${RUNROW.issueId}', '${RUNROW_ESTIMATED.runnerId}', 'completed', 'advanced', 'balanced', 'gpt-5.6-sol', '${estimatedUsage}', 'wfs_std_open', 'wfs_std_open', 'priced log', ${runStart + 1}, ${runStart + 1}, ${nowMs});`
+	 VALUES ('${RUNROW_ESTIMATED.runId}', '${ALICE.id}', '${RUNROW_ESTIMATED.issueId}', '${RUNROW_ESTIMATED.runnerId}', 'completed', 'advanced', 'balanced', 'gpt-5.6-sol', '${estimatedUsage}', 'wfs_std_open', 'wfs_std_open', 'priced log', ${runStart + 1}, ${runStart + 1}, ${nowMs});`
 );
 
 const sqlFile = join(mkdtempSync(join(tmpdir(), 'tines-e2e-')), 'seed.sql');

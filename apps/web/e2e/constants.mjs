@@ -109,7 +109,9 @@ export const RUNROW_FAILED = {
 export const RUNROW_ESTIMATED = {
 	runnerId: 'rnr_e2e_runrow_estimated',
 	runnerName: 'runrow-codex-priced',
-	runId: 'run_e2e_runrow_estimated'
+	runId: 'run_e2e_runrow_estimated',
+	issueId: 'iss_e2e_runrow_estimated',
+	issueNumber: 2
 };
 
 /**
