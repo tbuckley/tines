@@ -780,6 +780,80 @@ describe('finishRun', () => {
 		expect(ended.payload.usage).toEqual(run.usage);
 	});
 
+	it('accounts cold retry attempts independently and refuses a synthetic resumed total', async () => {
+		const t = world();
+		const runnerId = addRunner(t, { maxConcurrent: 3 });
+		const issue = addIssue(t);
+		const claimed = Date.parse('2026-09-11T03:30:00Z');
+		const finish = (runId: string, total: number, resumed = false) => {
+			const read = Math.floor(total / 2);
+			const write = 0;
+			const input = total - read;
+			if (resumed)
+				t.sqlite
+					.prepare('UPDATE agent_run SET resumed_from_run_id = ? WHERE id = ?')
+					.run(ids[0]!, runId);
+			return finishRun(
+				t.db,
+				t.env,
+				awaitRunner,
+				runId,
+				{
+					status: 'completed',
+					usage: {
+						input_tokens: input,
+						cache_read_tokens: read,
+						cache_write_tokens: write,
+						output_tokens: 1
+					},
+					pricing_evidence: {
+						version: 1,
+						harness: 'codex',
+						model: 'gpt-5.6-sol',
+						identity_source: 'launch_argument',
+						usage_scope: 'thread_total',
+						session_mode: resumed ? 'resumed' : 'cold',
+						normalization: 'codex-jsonl-v1',
+						raw_usage: {
+							input_tokens: total,
+							cached_input_tokens: read,
+							cache_write_input_tokens: write,
+							output_tokens: 1
+						},
+						model_rerouted: false,
+						measurement_status: 'complete',
+						terminal_snapshots: 1
+					}
+				},
+				claimed + total
+			);
+		};
+		const awaitRunner = await runnerRow(t, runnerId);
+		const ids = [10, 20, 30].map((total) =>
+			addRun(t, {
+				id: `arun_attempt_${total}`,
+				issueId: issue,
+				runnerId,
+				status: 'running',
+				model: 'gpt-5.6-sol',
+				createdAt: claimed,
+				startedAt: claimed
+			})
+		);
+
+		const first = await finish(ids[0]!, 10);
+		const retry = await finish(ids[1]!, 20);
+		const resumed = await finish(ids[2]!, 30, true);
+		expect(first.usage?.pricing).toMatchObject({ status: 'calculated' });
+		expect(retry.usage?.pricing).toMatchObject({ status: 'calculated' });
+		expect(first.usage?.cost_usd).not.toBe(retry.usage?.cost_usd);
+		expect(resumed.usage?.pricing).toMatchObject({
+			status: 'unpriced',
+			reason: 'attempt_scope_unknown'
+		});
+		expect(eventsOfType(t, 'agent_run.ended')).toHaveLength(3);
+	});
+
 	it('a daemon reporting its own shutdown is interrupted: no strike, runner backs off', async () => {
 		const t = world();
 		const runnerId = addRunner(t);
