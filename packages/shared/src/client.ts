@@ -68,6 +68,7 @@ import type {
 	RoutingRule,
 	RoutingRuleWithWarnings,
 	RunFilters,
+	UsagePendingRun,
 	Runner,
 	Schedule,
 	ScheduleFilters,
@@ -506,8 +507,10 @@ export function createApiClient(options: ApiClientOptions) {
 			request<AgentRun>('POST', `/api/v1/runs/${runId}/finish`, body),
 
 		// Agent runs
-		listRuns: (filters: RunFilters & PageParams = {}) =>
-			get<ListResponse<AgentRun>>(`/api/v1/runs${query(filters)}`),
+		listRuns: <F extends RunFilters & PageParams = RunFilters & PageParams>(filters: F = {} as F) =>
+			get<ListResponse<F extends { population: 'pending' } ? UsagePendingRun : AgentRun>>(
+				`/api/v1/runs${query(filters)}`
+			),
 		getUsage: (
 			filters: ResolvedUsageFilters & {
 				window?: UsageWindow;

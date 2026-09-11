@@ -46,6 +46,7 @@ import {
 	runDurationLabel,
 	type ModelTier,
 	type Runner,
+	type UsagePendingRun,
 	type UpdateRunnerRequest
 } from '@tines/shared';
 import { InvalidArgumentError, Option, type Command } from 'commander';
@@ -670,6 +671,21 @@ export function register(program: Command): void {
 		);
 		printList(res, opts, (items) => {
 			if (items.length === 0) return console.log(opts.active ? 'no active runs' : 'no runs');
+			if (evidence.population === 'pending') {
+				table([
+					['ID', 'ISSUE', 'RUNNER', 'TIER', 'STATUS', 'COST', 'CREATED'],
+					...(items as unknown as UsagePendingRun[]).map((run) => [
+						run.id,
+						run.issue_ref ? `${run.issue_ref.project_name}/${run.issue_ref.number}` : run.issue_id,
+						run.runner_name,
+						run.tier,
+						'Pending at cutoff',
+						'—',
+						timestamp(run.created_at)
+					])
+				]);
+				return;
+			}
 			table([
 				['ID', 'ISSUE', 'RUNNER', 'TIER', 'STATUS', 'DURATION', 'COST', 'CREATED'],
 				...items.map(runRow)

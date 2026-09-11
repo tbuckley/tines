@@ -2773,6 +2773,14 @@ export interface ListResponse<T> {
 	items: T[];
 	/** Pass back as `?cursor=` to fetch the next page; null = no more. */
 	next_cursor: string | null;
+	/** Present on stable period-run evidence pages. */
+	usage_window?: {
+		from: number;
+		to: number;
+		timezone: string;
+		population: 'finalized' | 'pending';
+		cursor_version: 'usage-runs-v1';
+	};
 }
 
 export interface PageParams {

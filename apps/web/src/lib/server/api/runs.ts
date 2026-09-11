@@ -19,11 +19,16 @@ export function runQuery(db: Kysely<Database>, userId: string) {
 	return (
 		db
 			.selectFrom('agent_run')
-			.innerJoin('runner', 'runner.id', 'agent_run.runner_id')
-			.innerJoin('issue', 'issue.id', 'agent_run.issue_id')
-			.innerJoin('project', 'project.id', 'issue.project_id')
+			.leftJoin('runner', (join) =>
+				join.onRef('runner.id', '=', 'agent_run.runner_id').on('runner.user_id', '=', userId)
+			)
+			.leftJoin('issue', 'issue.id', 'agent_run.issue_id')
+			.leftJoin('project', (join) =>
+				join.onRef('project.id', '=', 'issue.project_id').on('project.user_id', '=', userId)
+			)
 			// State names survive workflow edits loosely: left joins, ids kept.
 			.leftJoin('workflow_state as start_state', 'start_state.id', 'agent_run.state_id_at_start')
+			.leftJoin('workflow as start_workflow', 'start_workflow.id', 'start_state.workflow_id')
 			.leftJoin('workflow_state as end_state', 'end_state.id', 'agent_run.state_id_at_end')
 			.selectAll('agent_run')
 			.select([
@@ -53,13 +58,12 @@ export function serializeRun(row: RunRow): AgentRun {
 	return {
 		id: row.id,
 		issue_id: row.issue_id,
-		issue_ref: {
-			project_name: row.project_name,
-			number: row.issue_number,
-			title: row.issue_title
-		},
+		issue_ref:
+			row.project_name !== null && row.issue_number !== null && row.issue_title !== null
+				? { project_name: row.project_name, number: row.issue_number, title: row.issue_title }
+				: null,
 		runner_id: row.runner_id,
-		runner_name: row.runner_name,
+		runner_name: row.runner_name ?? `Unknown/deleted runner (${row.runner_id})`,
 		status: row.status as RunStatus,
 		outcome: (row.outcome as RunEndOutcome | null) ?? null,
 		tier: row.tier as ModelTier,
@@ -162,12 +166,27 @@ export async function listRuns(
 	page: Page
 ): Promise<RunListResult<AgentRun | UsagePendingRun>> {
 	let q = runQuery(db, userId);
-	if (filters.projectId) q = q.where('issue.project_id', '=', filters.projectId);
+	if (filters.projectId === 'unknown') q = q.where('project.id', 'is', null);
+	else if (filters.projectId) q = q.where('issue.project_id', '=', filters.projectId);
 	if (filters.issue) q = q.where('agent_run.issue_id', '=', filters.issue);
-	if (filters.runner) q = q.where('agent_run.runner_id', '=', filters.runner);
-	if (filters.workflow) q = q.where('issue.workflow_id', '=', filters.workflow);
-	if (filters.state) q = q.where('agent_run.state_id_at_start', '=', filters.state);
-	if (filters.tier) q = q.where('agent_run.tier', '=', filters.tier);
+	if (filters.runner === 'unknown') q = q.where('runner.id', 'is', null);
+	else if (filters.runner) q = q.where('agent_run.runner_id', '=', filters.runner);
+	if (filters.workflow === 'unknown')
+		q = q.where('start_workflow.id', 'is', null).where('issue.workflow_id', 'is', null);
+	else if (filters.workflow)
+		q = q.where((eb) =>
+			eb.or([
+				eb('start_workflow.id', '=', filters.workflow!),
+				eb.and([
+					eb('start_workflow.id', 'is', null),
+					eb('issue.workflow_id', '=', filters.workflow!)
+				])
+			])
+		);
+	if (filters.state === 'unknown') q = q.where('start_state.id', 'is', null);
+	else if (filters.state) q = q.where('agent_run.state_id_at_start', '=', filters.state);
+	if (filters.tier === 'unknown') q = q.where('agent_run.tier', 'is', null);
+	else if (filters.tier) q = q.where('agent_run.tier', '=', filters.tier);
 	if (filters.outcome === 'unknown') q = q.where('agent_run.outcome', 'is', null);
 	else if (filters.outcome) q = q.where('agent_run.outcome', '=', filters.outcome);
 	if (filters.active) q = q.where('agent_run.status', 'in', [...ACTIVE_RUN_STATUSES]);
@@ -247,13 +266,16 @@ export async function listRuns(
 			? ({
 					id: row.id,
 					issue_id: row.issue_id,
-					issue_ref: {
-						project_name: row.project_name,
-						number: row.issue_number,
-						title: row.issue_title
-					},
+					issue_ref:
+						row.project_name !== null && row.issue_number !== null && row.issue_title !== null
+							? {
+									project_name: row.project_name,
+									number: row.issue_number,
+									title: row.issue_title
+								}
+							: null,
 					runner_id: row.runner_id,
-					runner_name: row.runner_name,
+					runner_name: row.runner_name ?? `Unknown/deleted runner (${row.runner_id})`,
 					tier: row.tier as ModelTier,
 					state_id_at_start: row.state_id_at_start,
 					state_at_start_name: row.start_state_name,

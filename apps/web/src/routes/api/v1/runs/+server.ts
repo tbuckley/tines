@@ -204,7 +204,7 @@ export const GET: RequestHandler = api(async (event) => {
 		},
 		page
 	);
-	const body: ListResponse<AgentRun | UsagePendingRun> & { usage_window?: unknown } = {
+	const body: ListResponse<AgentRun | UsagePendingRun> = {
 		items,
 		next_cursor:
 			hasMore && nextBoundary
