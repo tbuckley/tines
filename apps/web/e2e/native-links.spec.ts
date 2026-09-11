@@ -138,8 +138,8 @@ test.describe.serial('native D1 issue-link concurrency guard', () => {
 	}) => {
 		const {
 			api,
-			issues: [a, b, c, d, e]
-		} = await makeIssues(request, 'outcomes', 5);
+			issues: [a, b, c, d, e, f]
+		} = await makeIssues(request, 'outcomes', 6);
 		let responses = await race(
 			api,
 			{ issue: a.id, kind: 'blocks', other: b.id },
@@ -156,8 +156,8 @@ test.describe.serial('native D1 issue-link concurrency guard', () => {
 
 		responses = await race(
 			api,
-			{ issue: e.id, kind: 'duplicate_of', other: a.id },
-			{ issue: e.id, kind: 'duplicate_of', other: c.id }
+			{ issue: f.id, kind: 'duplicate_of', other: a.id },
+			{ issue: f.id, kind: 'duplicate_of', other: c.id }
 		);
 		expect(responses.map((response) => response.status()).sort()).toEqual([201, 422]);
 		expect(

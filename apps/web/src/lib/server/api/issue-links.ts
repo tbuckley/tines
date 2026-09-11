@@ -273,7 +273,18 @@ export async function addIssueLink(
 	if (
 		![0, 1].includes(receipt.inserted as number) ||
 		![0, 1].includes(receipt.endpoints_owned as number) ||
-		![0, 1].includes(receipt.exact_exists as number)
+		![0, 1].includes(receipt.exact_exists as number) ||
+		(receipt.endpoints_owned === 1 &&
+			(typeof receipt.source_project_name !== 'string' ||
+				!Number.isInteger(receipt.source_number) ||
+				typeof receipt.source_title !== 'string' ||
+				typeof receipt.target_project_name !== 'string' ||
+				!Number.isInteger(receipt.target_number) ||
+				typeof receipt.target_title !== 'string')) ||
+		(receipt.duplicate_link_id != null &&
+			(typeof receipt.duplicate_project_name !== 'string' ||
+				!Number.isInteger(receipt.duplicate_number) ||
+				typeof receipt.duplicate_title !== 'string'))
 	) {
 		throw new Error('Issue link batch returned a malformed receipt');
 	}

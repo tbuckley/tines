@@ -189,4 +189,68 @@ describe('commit-time issue-link graph guard', () => {
 			expect(statement.sqlText.length).toBeLessThan(100_000);
 		}
 	});
+
+	it('returns a complete diagnostic path beyond the D1 binding limit', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const chain = Array.from({ length: 121 }, (_, index) =>
+			addIssue(t, { id: `iss_chain_${index}`, title: `Chain ${index}` })
+		);
+		const insert = t.sqlite.prepare(
+			'INSERT INTO issue_link (id, source_issue_id, target_issue_id, kind, created_at) VALUES (?, ?, ?, ?, ?)'
+		);
+		for (let index = 0; index < chain.length - 1; index++) {
+			insert.run(`lnk_chain_${index}`, chain[index], chain[index + 1], 'blocks', index);
+		}
+		try {
+			await addIssueLink(t.db, t.env, actor, chain.at(-1)!, {
+				kind: 'blocks',
+				issue_id: chain[0]
+			});
+			expect.fail('expected link_cycle');
+		} catch (error) {
+			expect(error).toMatchObject({ status: 422, code: 'link_cycle' });
+			expect(
+				(error as { details: { path: unknown[] } }).details.path,
+				'the new edge plus all 120 existing hops'
+			).toHaveLength(122);
+		}
+		expect(edges(t)).toHaveLength(120);
+		expect(linkEvents(t)).toEqual([]);
+	});
+
+	for (const role of ['source', 'target'] as const) {
+		it(`rolls back the link and both events when the ${role} event fails`, async () => {
+			const { t, a, b } = fixture();
+			const failedIssue = role === 'source' ? a : b;
+			t.sqlite.exec(`
+				CREATE TRIGGER reject_link_event BEFORE INSERT ON event
+				WHEN NEW.type = 'issue.link_added' AND NEW.issue_id = '${failedIssue}'
+				BEGIN SELECT RAISE(ABORT, 'injected event failure'); END;
+			`);
+			await expect(
+				addIssueLink(t.db, t.env, actor, a, { kind: 'blocks', issue_id: b })
+			).rejects.toThrow('injected event failure');
+			expect(edges(t)).toEqual([]);
+			expect(linkEvents(t)).toEqual([]);
+		});
+	}
+
+	it('rechecks endpoint ownership inside the batch and emits nothing after a cross-account move', async () => {
+		const { t, a, b } = fixture();
+		t.sqlite.exec(`
+			INSERT INTO user (id, name, email, emailVerified, createdAt, updatedAt)
+			VALUES ('u2', 'Bob', 'bob@example.com', 1, 1, 1);
+			INSERT INTO project (id, user_id, name, created_at, updated_at)
+			VALUES ('prj_other', 'u2', 'other', 1, 1);
+		`);
+		const env = delayedBy(t, async () => {
+			t.sqlite.prepare("UPDATE issue SET project_id = 'prj_other' WHERE id = ?").run(b);
+		});
+		await expect(
+			addIssueLink(t.db, env, actor, a, { kind: 'blocks', issue_id: b })
+		).rejects.toMatchObject({ status: 404 });
+		expect(edges(t)).toEqual([]);
+		expect(linkEvents(t)).toEqual([]);
+	});
 });
