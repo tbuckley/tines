@@ -303,3 +303,28 @@ it('refused overwrite retains target states for independent context and inherita
 		result.entries.filter((e) => e.section === 'context').every((e) => e.action === 'overwrite')
 	).toBe(true);
 });
+
+it('never treats an owned workflow named Standard as a typed system reference', async () => {
+	const t = setup();
+	await createWorkflow(t.db, t.env, actor, {
+		name: 'Standard',
+		initial_state: 'Open',
+		states: [
+			{ name: 'Open', category: 'active' },
+			{ name: 'Human Review', category: 'awaiting_human' },
+			{ name: 'Closed', category: 'done' }
+		],
+		transitions: []
+	});
+	const document = await buildLibraryV3Document(t.db, USER);
+	const dest = setup();
+	const preview = await applyImport(dest.db, dest.env, actor, { document, dry_run: true });
+	expect(workflowEntries(preview)[0]).toMatchObject({ action: 'refuse' });
+	expect(workflowEntries(preview)[0].target_id).toBeUndefined();
+	const result = await applyImport(dest.db, dest.env, actor, {
+		document,
+		workflow_targets: { [document.workflows[0].id]: { kind: 'create', name: 'My Standard copy' } }
+	});
+	expect(result.counts.error).toBe(0);
+	expect(workflowEntries(result)[0].action).toBe('create');
+});

@@ -173,10 +173,14 @@ export async function planLibraryV3Import(
 						'Invalid workflow target: choose target with workflow_id or create with name'
 					);
 			} else if (candidates.length) {
-				if (candidates.length !== 1 || sourceCounts.get(source.name)! > 1) {
+				if (
+					candidates.length !== 1 ||
+					candidates[0].is_system ||
+					sourceCounts.get(source.name)! > 1
+				) {
 					report.action = 'refuse';
 					report.reason =
-						'Ambiguous workflow collision; choose a target ID or an unused create name for this local ID';
+						'Ambiguous or system workflow collision; choose an owned target ID or an unused create name for this local ID';
 					continue;
 				}
 				existing = candidates[0];

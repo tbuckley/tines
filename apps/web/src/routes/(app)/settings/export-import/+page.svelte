@@ -85,6 +85,7 @@
 				for (const w of parsed.workflows) {
 					const candidates = data.workflows.filter((target) => target.name === w.name);
 					if (
+						candidates.some((target) => target.is_system) ||
 						candidates.length > 1 ||
 						(candidates.length > 0 &&
 							parsed.workflows.filter((other) => other.name === w.name).length > 1)
