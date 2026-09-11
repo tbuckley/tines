@@ -250,3 +250,9 @@ else in the non-goals list (membership, per-project labels, nesting) stands.
    affected-row count (which includes the address trigger). Human web and CLI
    reviews show retained guidance, effective repositories and overridden
    candidates, checkout conflicts, and both routing explanations before commit.
+   Every ordinary routing remedy is actionable there: the web links to its
+   supplied destination or shows its command, while the CLI prints the exact
+   executable command. Checkout conflicts are identified by their exact
+   directory plus sorted effective repository IDs, classified as retained,
+   resolved or introduced, and name every participant with its side-specific
+   scope (falling back to an unresolved ID).
