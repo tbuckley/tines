@@ -1151,8 +1151,7 @@ export async function updateIssue(
 			...(description !== current.description ? { description } : {}),
 			...(workflowChanged ? { workflow_id: workflow.id } : {}),
 			...(stateChanged || workflowChanged ? { state_id: nextState.id } : {}),
-			...(pinnedRunnerId !== current.pinned_runner_id ? { pinned_runner_id: pinnedRunnerId } : {}),
-			...(pinnedTier !== current.pinned_tier ? { pinned_tier: pinnedTier } : {}),
+			...(pinChanged ? { pinned_runner_id: pinnedRunnerId, pinned_tier: pinnedTier } : {}),
 			updated_at: now,
 			// Every path that changes state_id stamps state_entered_at — the
 			// timestamp artifact freshness is measured against. A workflow

@@ -328,6 +328,21 @@ describe('updateIssue sparse patch concurrency', () => {
 		expect(pinEvents).toHaveLength(2);
 		expect(pinEvents.at(-1)).toMatchObject({ pinned_runner_id: null, pinned_tier: null });
 	});
+
+	it('keeps pin fields coupled when an unpin races a tier update', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const id = addIssue(t);
+		const runnerId = addRunner(t, { id: 'rnr_pin_race', name: 'pin race' });
+		await updateIssue(t.db, t.env, actor, id, { pinned_runner_id: runnerId });
+		const env = beforeBatch(t, () =>
+			updateIssue(t.db, t.env, actor, id, { pinned_tier: 'smartest' })
+		);
+
+		const unpinned = await updateIssue(t.db, env, actor, id, { pinned_runner_id: null });
+
+		expect(unpinned).toMatchObject({ pinned_runner_id: null, pinned_tier: null });
+	});
 });
 
 describe('listIssues search', () => {
