@@ -1,7 +1,8 @@
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { expect, test } from '@playwright/test';
 import type {
 	PrepareWorkflowPackageResponse,
@@ -10,22 +11,20 @@ import type {
 } from '@tines/shared';
 import { ALICE, BASE_URL } from './constants.mjs';
 
-const CLI = resolve('../../packages/cli/dist/index.js');
+const CLI_DIR = fileURLToPath(new URL('../../../packages/cli', import.meta.url));
+const TSX = join(CLI_DIR, 'node_modules', '.bin', 'tsx');
+const CLI = join(CLI_DIR, 'src', 'index.ts');
 
 function cli(args: string[]): string {
-	return execFileSync(
-		process.execPath,
-		[CLI, ...args, '--url', BASE_URL, '--api-key', ALICE.apiKey],
-		{
-			encoding: 'utf8',
-			env: {
-				...process.env,
-				// This intentionally disagrees with the isolated worker. Every command
-				// must remain pinned by its explicit --url and never reach production.
-				TINES_API_URL: 'https://ambient-must-not-be-used.invalid'
-			}
+	return execFileSync(TSX, [CLI, ...args, '--url', BASE_URL, '--api-key', ALICE.apiKey], {
+		encoding: 'utf8',
+		env: {
+			...process.env,
+			// This intentionally disagrees with the isolated worker. Every command
+			// must remain pinned by its explicit --url and never reach production.
+			TINES_API_URL: 'https://ambient-must-not-be-used.invalid'
 		}
-	);
+	});
 }
 
 test('CLI export, preview, install, and same-plan receipt retry use the real local API', () => {
