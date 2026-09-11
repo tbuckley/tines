@@ -126,7 +126,16 @@ export async function installWorkflowPackage(
 		return parseReceipt(selected.receipt_json);
 	} catch (error) {
 		if (error instanceof ApiFail) throw error;
-		const committed = await receiptRow(db, actor.userId, payload.id);
+		let committed: StoredReceipt | undefined;
+		try {
+			committed = await receiptRow(db, actor.userId, payload.id);
+		} catch {
+			throw new ApiFail(
+				503,
+				'install_outcome_unknown',
+				'Installation outcome is unknown; retry this same signed plan or check its receipt'
+			);
+		}
 		if (committed) {
 			assertMatchingReceipt(committed, payload, actorKey, requestDigest);
 			return parseReceipt(committed.receipt_json);

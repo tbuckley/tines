@@ -2288,6 +2288,22 @@ export interface AgentRun {
 	ended_at: number | null;
 }
 
+/** Historical as-of evidence for a run that had not ended at the reporting cutoff. */
+export interface UsagePendingRun {
+	id: string;
+	issue_id: string;
+	issue_ref: IssueRef | null;
+	runner_id: string;
+	runner_name: string;
+	tier: ModelTier;
+	state_id_at_start: string;
+	state_at_start_name: string | null;
+	created_at: number;
+	pending_at: number;
+	usage_dimensions: null;
+	accounting_status: 'pending';
+}
+
 /** Detail read: adds the captured log tail. */
 export interface AgentRunDetail extends AgentRun {
 	log: string;
@@ -2312,6 +2328,18 @@ export interface RunFilters {
 	runner?: string;
 	/** Only runs holding a claim (assigned/launching/running). */
 	active?: boolean;
+	/** Usage evidence population; requires from/to. */
+	population?: 'finalized' | 'pending';
+	/** Inclusive finalized end bound, ISO UTC/offset timestamp. */
+	from?: string;
+	/** Exclusive cutoff, ISO UTC/offset timestamp. */
+	to?: string;
+	project?: string;
+	workflow?: string;
+	state?: string;
+	tier?: string;
+	outcome?: RunEndOutcome | 'unknown';
+	accounting_status?: 'priced' | 'unpriced' | 'unreported';
 }
 
 /**
@@ -2745,6 +2773,14 @@ export interface ListResponse<T> {
 	items: T[];
 	/** Pass back as `?cursor=` to fetch the next page; null = no more. */
 	next_cursor: string | null;
+	/** Present on stable period-run evidence pages. */
+	usage_window?: {
+		from: number;
+		to: number;
+		timezone: string;
+		population: 'finalized' | 'pending';
+		cursor_version: 'usage-runs-v1';
+	};
 }
 
 export interface PageParams {
@@ -2895,6 +2931,8 @@ export interface ImportPlanEntry {
 	/** Stable source identity for v3 reports. */
 	local_id?: string;
 	target_id?: string;
+	/** Resolved destination name, present for successful v3 workflow plans and receipts. */
+	target_name?: string;
 	/** Human-readable identity, e.g. `prompt "instructions" (state Engineering / Research)`. */
 	ref: string;
 	action: ImportAction;

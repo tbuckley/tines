@@ -38,6 +38,10 @@ Both kinds orient the same way (source → target) and live in one directed grap
 
 Reads stay defensive anyway: every traversal (duplicate resolution, readiness, cycle check itself) keeps a visited set and a depth cap, so even a cycle racing in through concurrent writes degrades to "resolution stops at the repeat" rather than a hung query. With a single-user tracker this is a belt-and-suspenders guard, not an expected path.
 
+#### 2026-09-11 concurrency amendment (Tines/453)
+
+The preceding tolerance for a theoretical concurrent-write race is superseded. Acyclicity is a commit-time invariant for API-created links, including concurrent additions with disjoint endpoint pairs. The authoritative `INSERT` performs account-scoped recursive reachability inside the same D1 batch as the link and its two events. Events are conditional on that request's fresh link ID. A skipped insert is classified from an in-batch receipt; cycle diagnostics use an in-batch edge/ref snapshot, so the losing request reports the canonical closed path even if a later removal changes the graph. Concurrent additions whose union remains acyclic both commit; no graph revision or logical retry is involved. Defensive read caps and visited sets remain for legacy or out-of-band corruption.
+
 ### Effective state (duplicate passthrough)
 
 An issue's **effective state** is its own state unless it has a `duplicate_of` edge, in which case it is the effective state of its canonical issue — i.e. the state of the duplicate chain's terminus. Because chains are acyclic and each issue has at most one outgoing duplicate edge, the terminus is unique.
@@ -82,7 +86,7 @@ issue_link  id, source_issue_id, target_issue_id, kind, created_at
 Notes:
 
 - The partial unique index is what enforces "one canonical issue per duplicate" at the storage layer; the API turns that violation into a 422 telling you to unmark the existing duplicate first (the generic UNIQUE→409 path covers double-adding the same link).
-- Cycle check + insert + both event rows commit together via `runAtomic`. The cycle check reads in the same request; see the defensive-traversal note above for the (theoretical) race.
+- Guarded cycle check + insert + both event rows, receipt and diagnostic snapshot execute sequentially in one transactional D1 `batch` via `runAtomic`. This is the commit-time concurrency boundary described in the 2026-09-11 amendment above.
 - Effective state and readiness are computed per query with a recursive CTE over `issue_link` (depth-capped), hung off the existing `issueQuery` base so user-scoping stays in one place. No denormalized "blocked" flag — D1 volumes here are small and the CTE keeps reads consistent by construction.
 - Issues are not deletable today; `ON DELETE CASCADE` future-proofs the links if that changes.
 

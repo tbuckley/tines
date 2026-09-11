@@ -71,6 +71,7 @@ describe('command tree', () => {
 				'schedules',
 				'supervisor',
 				'time',
+				'usage',
 				'workflows'
 			].sort()
 		);

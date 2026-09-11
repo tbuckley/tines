@@ -4,6 +4,7 @@ import type {
 	IssueTransferPreview,
 	IssueTransferResult
 } from '@tines/shared';
+import { deriveTransferConflictDeltas } from '@tines/shared';
 
 const CHANGE_LABEL: Record<IssueTransferContextChange['change'], string> = {
 	added: 'added by destination',
@@ -51,6 +52,7 @@ function routingLines(preview: IssueTransferPreview): string[] {
 			lines.push(
 				`           ${check.ok ? 'pass' : 'FAIL'} ${check.name}: ${check.detail}${check.action?.label ? ` (${check.action.label})` : ''}`
 			);
+			if (check.action?.cli) lines.push(`             fix: ${check.action.cli}`);
 		}
 		if (explainer.matched_rule)
 			lines.push(`           matched rule ${explainer.matched_rule.scope_label}`);
@@ -111,20 +113,18 @@ function effectiveRepositoryLines(preview: IssueTransferPreview): string[] {
 
 function conflictLines(preview: IssueTransferPreview): string[] {
 	const lines = ['', 'Repository checkout conflicts:'];
-	for (const [label, context] of [
-		['  before', preview.context.before],
-		['  after ', preview.context.after]
-	] as const) {
-		if (!context.conflicts.length) lines.push(`${label}: none`);
-		for (const conflict of context.conflicts) {
-			const participants = conflict.item_ids
-				.map((id) => {
-					const repo = context.repos.find((item) => item.item_id === id);
-					return repo ? `${repo.name} (${repo.scope.label})` : id;
-				})
-				.join(', ');
-			lines.push(`${label}: ${conflict.dir} — ${participants}`);
-		}
+	const deltas = deriveTransferConflictDeltas(preview.context.before, preview.context.after);
+	if (!deltas.length) return [...lines, '  none'];
+	const participants = (items: (typeof deltas)[number]['before']) =>
+		items
+			.map((item) =>
+				item.name && item.scope_label ? `${item.name} (${item.scope_label})` : item.item_id
+			)
+			.join(', ');
+	for (const delta of deltas) {
+		lines.push(`  ${delta.change[0].toUpperCase()}${delta.change.slice(1)} — ${delta.dir}`);
+		if (delta.before.length) lines.push(`    Before: ${participants(delta.before)}`);
+		if (delta.after.length) lines.push(`    After: ${participants(delta.after)}`);
 	}
 	return lines;
 }
