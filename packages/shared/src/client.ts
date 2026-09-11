@@ -571,6 +571,16 @@ export function createApiClient(options: ApiClientOptions) {
 				'/api/v1/library/prepare',
 				body
 			),
+		installWorkflowPackage: (body: import('./library/types.js').WorkflowPackageInstallRequest) =>
+			request<import('./library/types.js').WorkflowPackageReceipt>(
+				'POST',
+				'/api/v1/library/install',
+				body
+			),
+		getWorkflowPackageReceipt: (planId: string) =>
+			get<import('./library/types.js').WorkflowPackageReceipt>(
+				`/api/v1/library/installs/${encodeURIComponent(planId)}`
+			),
 
 		validateLibrary: (body: import('./library/types.js').ValidateLibraryRequest) =>
 			request<import('./library/types.js').ValidateLibraryResponse>(

@@ -296,3 +296,25 @@ export interface PackageOperation {
 	href: string | null;
 	relationship?: 'main' | 'dependency';
 }
+
+export interface WorkflowPackageInstallRequest {
+	document_json: string;
+	plan_token: string;
+	confirmation: { plan_digest: string };
+}
+
+export interface WorkflowPackageReceipt {
+	id: string;
+	document_digest: string;
+	plan_digest: string;
+	committed_at: number;
+	objects: Array<{
+		kind: string;
+		local_id: string;
+		id: string;
+		name: string;
+		href: string;
+		relationship?: 'main' | 'dependency';
+	}>;
+	reused_inputs: Array<{ input_id: string; type: string; id: string; name: string }>;
+}

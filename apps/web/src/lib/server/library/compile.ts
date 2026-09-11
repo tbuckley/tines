@@ -177,7 +177,7 @@ export function compilePackageObjects(
 		queries.push(
 			...routingRuleInsertQueries(db, actor, {
 				id: rule.id,
-				scope: { projectId: rule.project_id, workflowStateId: rule.state_id, labelId: null },
+				scope: { projectId: rule.project_id, workflowStateId: state.id, labelId: null },
 				label,
 				targets: [{ runner_id: '*', tier: rule.tier }],
 				runnersById: new Map(),
