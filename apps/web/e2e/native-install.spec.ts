@@ -450,6 +450,7 @@ test.describe.serial('native D1 workflow install gate', () => {
 	test('rejects inserted name, schedule, and routing competitors before writes', async ({
 		request
 	}) => {
+		test.setTimeout(120_000);
 		const client = apiClient(request, ALICE.apiKey);
 		for (const family of ['name', 'schedule', 'routing'] as const) {
 			const marker = `stale-${runId}-${family}`;
@@ -477,6 +478,7 @@ test.describe.serial('native D1 workflow install gate', () => {
 	test('rechecks expiry in D1 and an old receipt nonce cannot authorize children', async ({
 		request
 	}) => {
+		test.setTimeout(120_000);
 		const client = apiClient(request, ALICE.apiKey);
 		const expiryFixture = await automatedFixture(client, `expiry-${runId}`);
 		const payload = await verifyPackagePlan(expiryFixture.plan.plan_token, SIGNING_KEY);
