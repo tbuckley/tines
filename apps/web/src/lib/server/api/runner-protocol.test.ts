@@ -216,6 +216,53 @@ describe('pollRunner', () => {
 		});
 	});
 
+	it('rolls replacement history and ownership back together when admission fails', async () => {
+		const t = world();
+		const id = addRunner(t);
+		await pollRunner(t.db, t.env, await runnerRow(t, id), {
+			instance_id: 'daemon_A',
+			owned_runs: []
+		});
+
+		const d1 = t.env.DB;
+		const realBatch = d1.batch.bind(d1);
+		d1.batch = async (statements) => {
+			// The replacement event is statement 0. Make the following ownership
+			// write fail inside the same native batch: D1 must retain neither one.
+			const failure = d1.prepare('INSERT INTO no_such_table DEFAULT VALUES');
+			if (statements.length === 1) return realBatch(statements);
+			const eventOffset = statements.length === 3 ? 1 : 0;
+			return realBatch([
+				...statements.slice(0, eventOffset),
+				failure,
+				...statements.slice(eventOffset + 1)
+			]);
+		};
+		await expect(
+			pollRunner(t.db, t.env, await runnerRow(t, id), {
+				instance_id: 'daemon_B',
+				owned_runs: []
+			})
+		).rejects.toThrow();
+		expect(runnerById(t, id)).toMatchObject({
+			daemon_instance_id: 'daemon_A',
+			fenced_instance_id: null
+		});
+		expect(eventsOfType(t, 'runner.daemon_replaced')).toHaveLength(0);
+
+		// Restore the real binding and prove the same takeover succeeds cleanly.
+		d1.batch = realBatch;
+		await pollRunner(t.db, t.env, await runnerRow(t, id), {
+			instance_id: 'daemon_B',
+			owned_runs: []
+		});
+		expect(runnerById(t, id)).toMatchObject({
+			daemon_instance_id: 'daemon_B',
+			fenced_instance_id: 'daemon_A'
+		});
+		expect(eventsOfType(t, 'runner.daemon_replaced')).toHaveLength(1);
+	});
+
 	it('rejects a fenced instance before any poll side effect, even with a stale auth snapshot', async () => {
 		const t = world();
 		const id = addRunner(t, { maxConcurrent: 1 });
