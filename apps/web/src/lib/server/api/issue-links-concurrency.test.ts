@@ -19,13 +19,12 @@ function delayedBy(
 ): Env {
 	const delayedEnv = { ...t.env, DB: Object.create(t.env.DB) } as Env;
 	let injected = false;
-	const realBatch = t.env.DB.batch.bind(t.env.DB);
-	delayedEnv.DB.batch = async (statements) => {
+	delayedEnv.DB.batch = async <T = unknown>(statements: Parameters<Env['DB']['batch']>[0]) => {
 		if (!injected) {
 			injected = true;
 			await competing();
 		}
-		const result = await realBatch(statements);
+		const result = await t.env.DB.batch<T>(statements);
 		await afterBatch?.();
 		return result;
 	};
@@ -176,11 +175,10 @@ describe('commit-time issue-link graph guard', () => {
 			INSERT INTO issue_link VALUES ('legacy_ba', '${b}', '${a}', 'blocks', 1);
 		`);
 		const seen: { sqlText: string; params: unknown[] }[] = [];
-		const realBatch = t.env.DB.batch.bind(t.env.DB);
 		const env = { ...t.env, DB: Object.create(t.env.DB) } as Env;
-		env.DB.batch = async (statements) => {
+		env.DB.batch = async <T = unknown>(statements: Parameters<Env['DB']['batch']>[0]) => {
 			seen.push(...(statements as unknown as { sqlText: string; params: unknown[] }[]));
-			return realBatch(statements);
+			return t.env.DB.batch<T>(statements);
 		};
 		await addIssueLink(t.db, env, actor, c, { kind: 'blocks', issue_id: a });
 		expect(seen).toHaveLength(5);
