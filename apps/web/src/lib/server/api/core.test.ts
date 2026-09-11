@@ -27,6 +27,16 @@ function requestEvent(): RequestEvent {
 }
 
 describe('request dispatch effects', () => {
+	it('does not schedule without a signal', async () => {
+		queued.mockClear();
+		const response = await api((event) => {
+			requestDispatchEffects(event, 'usr_one');
+			return new Response('quiet');
+		})(requestEvent());
+		expect(await response.text()).toBe('quiet');
+		expect(queued).not.toHaveBeenCalled();
+	});
+
 	it('coalesces repeated signals and binds them to the authenticated owner', async () => {
 		queued.mockClear();
 		const event = requestEvent();
@@ -50,6 +60,67 @@ describe('request dispatch effects', () => {
 		})(requestEvent());
 		expect(response.status).toBe(422);
 		expect(queued).toHaveBeenCalledOnce();
+	});
+
+	it('isolates concurrent requests by owner', async () => {
+		queued.mockClear();
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => (release = resolve));
+		const firstEvent = requestEvent();
+		const first = api(async (event) => {
+			requestDispatchEffects(event, 'usr_one').signalDispatch();
+			await gate;
+			return new Response('one');
+		})(firstEvent);
+		const secondEvent = requestEvent();
+		const second = await api((event) => {
+			requestDispatchEffects(event, 'usr_two').signalDispatch();
+			return new Response('two');
+		})(secondEvent);
+		expect(second.status).toBe(200);
+		expect(queued).toHaveBeenCalledWith(secondEvent.platform, 'usr_two');
+		release();
+		await first;
+		expect(queued).toHaveBeenCalledWith(firstEvent.platform, 'usr_one');
+		expect(queued).toHaveBeenCalledTimes(2);
+	});
+
+	it('closes and removes the collector after success and unexpected failure', async () => {
+		queued.mockClear();
+		let captured!: ReturnType<typeof requestDispatchEffects>;
+		const event = requestEvent();
+		const ok = await api((wrapped) => {
+			captured = requestDispatchEffects(wrapped, 'usr_one');
+			return new Response('ok');
+		})(event);
+		expect(ok.status).toBe(200);
+		captured.signalDispatch();
+		expect(queued).not.toHaveBeenCalled();
+		expect(() => requestDispatchEffects(event, 'usr_one')).toThrow(
+			'Dispatch effects requested outside api()'
+		);
+
+		const failed = await api((wrapped) => {
+			requestDispatchEffects(wrapped, 'usr_two').signalDispatch();
+			throw new Error('boom');
+		})(requestEvent());
+		expect(failed.status).toBe(500);
+		expect(queued).toHaveBeenCalledOnce();
+	});
+
+	it('does not let a scheduling failure replace the handler response', async () => {
+		queued.mockImplementationOnce(() => {
+			throw new Error('waitUntil failed');
+		});
+		const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+		const response = await api((event) => {
+			requestDispatchEffects(event, 'usr_one').signalDispatch();
+			return new Response('preserved', { status: 201 });
+		})(requestEvent());
+		expect(response.status).toBe(201);
+		expect(await response.text()).toBe('preserved');
+		expect(error).toHaveBeenCalledWith('Failed to schedule dispatch pass:', expect.any(Error));
+		error.mockRestore();
 	});
 
 	it('rejects owner rebinding and use outside the wrapper', async () => {

@@ -20,4 +20,41 @@ describe('dispatch trigger ownership', () => {
 		expect(sources).not.toMatch(/supervisor\/engine/);
 		expect(sources).not.toMatch(/\b(?:queue|run)DispatchPass\b/);
 	});
+
+	it.each([
+		['issues.ts', 'createIssue'],
+		['issues.ts', 'updateIssue'],
+		['issues.ts', 'transitionIssue'],
+		['issues.ts', 'resumeIssue'],
+		['issue-links.ts', 'addIssueLink'],
+		['issue-links.ts', 'removeIssueLink'],
+		['labels.ts', 'deleteLabel'],
+		['labels.ts', 'addIssueLabels'],
+		['labels.ts', 'removeIssueLabel'],
+		['routing.ts', 'createRoutingRule'],
+		['routing.ts', 'updateRoutingRule'],
+		['routing.ts', 'deleteRoutingRule'],
+		['runners.ts', 'createRunner'],
+		['runners.ts', 'updateRunner'],
+		['runners.ts', 'registerRunner'],
+		['runners.ts', 'deleteRunner'],
+		['supervisor.ts', 'updateSupervisorSettings'],
+		['runner-protocol.ts', 'pollRunner'],
+		['runner-protocol.ts', 'finishRun'],
+		['runs.ts', 'cancelRunForRequest'],
+		['schedules.ts', 'runScheduleNow'],
+		['projects.ts', 'unarchiveProject'],
+		['issue-transfer.ts', 'commitIssueTransfer'],
+		['workflows.ts', 'updateWorkflow']
+	])('%s %s requires and consumes the dispatch capability', (file, name) => {
+		const source = readFileSync(new URL(`./${file}`, import.meta.url), 'utf8');
+		const start = source.indexOf(`export async function ${name}(`);
+		expect(start).toBeGreaterThanOrEqual(0);
+		const nextExport = source.indexOf('\nexport ', start + 1);
+		const body = source.slice(start, nextExport < 0 ? undefined : nextExport);
+		expect(body).toMatch(/(?:actor|runner): ActorContext|runner: RunnerRow/);
+		expect(body).toMatch(/effects: DispatchEffects/);
+		expect(body).not.toMatch(/effects\?: DispatchEffects|effects\?\./);
+		expect(body).toMatch(/effects\.signalDispatch\(\)/);
+	});
 });

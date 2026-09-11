@@ -1,4 +1,7 @@
-import { TEST_NOOP_DISPATCH_EFFECTS } from '$lib/server/api/test-dispatch-effects';
+import {
+	recordDispatchEffects,
+	TEST_NOOP_DISPATCH_EFFECTS
+} from '$lib/server/api/test-dispatch-effects';
 import { RUN_LOG_MAX_BYTES } from '@tines/shared';
 import { describe, expect, it } from 'vitest';
 import {
@@ -205,28 +208,54 @@ describe('pollRunner', () => {
 	it('bumps last_seen_at and reports coming online', async () => {
 		const t = world();
 		const id = addRunner(t, { lastSeen: null });
+		const effects = recordDispatchEffects();
 		const later = NOW + 60_000;
 		const { cameOnline, response } = await pollRunner(
 			t.db,
 			t.env,
 			await runnerRow(t, id),
-			TEST_NOOP_DISPATCH_EFFECTS,
+			effects,
 			{ owned_runs: [] },
 			later
 		);
 		expect(cameOnline).toBe(true);
 		expect(response).toEqual({ assignments: [], cancels: [] });
 		expect(runnerById(t, id).last_seen_at).toBe(later);
+		expect(effects.count()).toBe(1);
 		// A fresh poll from an online runner is not "coming online".
 		const again = await pollRunner(
 			t.db,
 			t.env,
 			await runnerRow(t, id),
-			TEST_NOOP_DISPATCH_EFFECTS,
+			effects,
 			{ owned_runs: [] },
 			later + 1000
 		);
 		expect(again.cameOnline).toBe(false);
+		expect(effects.count()).toBe(1);
+	});
+
+	it('signals immediately after the heartbeat commit, before later reads can fail', async () => {
+		const t = world();
+		const id = addRunner(t, { lastSeen: null });
+		let signals = 0;
+		await expect(
+			pollRunner(
+				t.db,
+				t.env,
+				await runnerRow(t, id),
+				{
+					signalDispatch() {
+						signals++;
+						t.sqlite.exec('DROP TABLE agent_run');
+					}
+				},
+				{ owned_runs: [] },
+				NOW + 1
+			)
+		).rejects.toThrow();
+		expect(signals).toBe(1);
+		expect(runnerById(t, id).last_seen_at).toBe(NOW + 1);
 	});
 
 	it("adopts the daemon's max_concurrent: row updated, event recorded, capRaised on an increase", async () => {
@@ -601,11 +630,12 @@ describe('pollRunner', () => {
 			status: 'running',
 			startedAt: NOW
 		});
+		const effects = recordDispatchEffects();
 		const { reconciled } = await pollRunner(
 			t.db,
 			t.env,
 			await runnerRow(t, runnerId),
-			TEST_NOOP_DISPATCH_EFFECTS,
+			effects,
 			{ owned_runs: [] },
 			NOW + 1
 		);
@@ -618,6 +648,7 @@ describe('pollRunner', () => {
 		expect(eventsOfType(t, 'runner.errored')).toHaveLength(1);
 		// The freed claims are dispatchable now, not at the next cron.
 		expect(reconciled).toBe(true);
+		expect(effects.count()).toBe(2);
 	});
 
 	it('cancels lists owned runs the supervisor already settled (kill, do not finish)', async () => {
