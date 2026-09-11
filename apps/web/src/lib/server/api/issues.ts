@@ -1144,12 +1144,15 @@ export async function updateIssue(
 	let update = db
 		.updateTable('issue')
 		.set({
-			title,
-			description,
-			workflow_id: workflow.id,
-			state_id: nextState.id,
-			pinned_runner_id: pinnedRunnerId,
-			pinned_tier: pinnedTier,
+			// This is a merge patch: only assign values that this request actually
+			// changed. Writing snapshot values for omitted fields lets an unrelated
+			// concurrent update get silently reverted.
+			...(title !== current.title ? { title } : {}),
+			...(description !== current.description ? { description } : {}),
+			...(workflowChanged ? { workflow_id: workflow.id } : {}),
+			...(stateChanged || workflowChanged ? { state_id: nextState.id } : {}),
+			...(pinnedRunnerId !== current.pinned_runner_id ? { pinned_runner_id: pinnedRunnerId } : {}),
+			...(pinnedTier !== current.pinned_tier ? { pinned_tier: pinnedTier } : {}),
 			updated_at: now,
 			// Every path that changes state_id stamps state_entered_at — the
 			// timestamp artifact freshness is measured against. A workflow
