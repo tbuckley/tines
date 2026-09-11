@@ -90,6 +90,7 @@ import type {
 	UserPreferences,
 	WorkflowResponse
 } from './types.js';
+import type { ResolvedUsageFilters, UsageBy, UsageReport, UsageWindow } from './usage.js';
 
 export interface TimeResponse {
 	/** ISO 8601 timestamp (UTC). */
@@ -507,6 +508,14 @@ export function createApiClient(options: ApiClientOptions) {
 		// Agent runs
 		listRuns: (filters: RunFilters & PageParams = {}) =>
 			get<ListResponse<AgentRun>>(`/api/v1/runs${query(filters)}`),
+		getUsage: (
+			filters: ResolvedUsageFilters & {
+				window?: UsageWindow;
+				from?: string;
+				to?: string;
+				by?: UsageBy;
+			} = {}
+		) => get<UsageReport>(`/api/v1/usage${query(filters)}`),
 		getRun: (id: string) => get<AgentRunDetail>(`/api/v1/runs/${id}`),
 		/**
 		 * The run's complete log (not the 256 KB tail `getRun` returns) as a
