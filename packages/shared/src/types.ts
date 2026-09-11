@@ -2931,6 +2931,8 @@ export interface ImportPlanEntry {
 	/** Stable source identity for v3 reports. */
 	local_id?: string;
 	target_id?: string;
+	/** Resolved destination name, present for successful v3 workflow plans and receipts. */
+	target_name?: string;
 	/** Human-readable identity, e.g. `prompt "instructions" (state Engineering / Research)`. */
 	ref: string;
 	action: ImportAction;

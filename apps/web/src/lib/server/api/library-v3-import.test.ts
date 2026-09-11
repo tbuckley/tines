@@ -58,10 +58,16 @@ describe('ID-addressed whole-library import', () => {
 		const preview = await applyImport(dest.db, dest.env, actor, { document, dry_run: true });
 		expect(dest.sqlite.prepare('SELECT count(*) n FROM event').get()).toEqual(before);
 		expect(workflowEntries(preview).map((e) => e.action)).toEqual(['create', 'create']);
+		expect(workflowEntries(preview).map((e) => [e.target_name, e.target_id])).toEqual([
+			['Same / name', undefined],
+			['Same / name', undefined]
+		]);
 		const result = await applyImport(dest.db, dest.env, actor, { document });
 		expect(result.counts.error).toBe(0);
 		expect(result.counts.refuse).toBe(0);
 		expect(workflowEntries(result).map((e) => e.action)).toEqual(['create', 'create']);
+		expect(workflowEntries(result).every((e) => e.target_name === 'Same / name')).toBe(true);
+		expect(workflowEntries(result).every((e) => e.target_id?.startsWith('wf_'))).toBe(true);
 		const exported = await buildLibraryV3Document(dest.db, USER);
 		expect(exported.workflows.map((w) => w.name)).toEqual(['Same / name', 'Same / name']);
 		for (const source of document.context) {
@@ -85,6 +91,25 @@ describe('ID-addressed whole-library import', () => {
 			document.workflows[0].states[0].id
 		);
 	});
+	it('removes destination identities when a created workflow fails during later application', async () => {
+		const { document } = await fixture();
+		const dest = setup();
+		dest.sqlite.exec(
+			`CREATE TRIGGER fail_library_state_update BEFORE UPDATE OF name ON workflow_state BEGIN SELECT RAISE(ABORT, 'injected state update failure'); END`
+		);
+
+		const result = await applyImport(dest.db, dest.env, actor, { document });
+
+		expect(workflowEntries(result)).toHaveLength(2);
+		for (const entry of workflowEntries(result)) {
+			expect(entry.action).toBe('error');
+			expect(entry).not.toHaveProperty('target_id');
+			expect(entry).not.toHaveProperty('target_name');
+		}
+		expect(
+			(await loadWorkflows(dest.db, USER)).filter((workflow) => !workflow.is_system)
+		).toHaveLength(2);
+	});
 	it('requires collision mappings and accepts independent collision-safe creates', async () => {
 		const { document } = await fixture();
 		const dest = setup();
@@ -96,12 +121,14 @@ describe('ID-addressed whole-library import', () => {
 		});
 		const preview = await applyImport(dest.db, dest.env, actor, { document, dry_run: true });
 		expect(workflowEntries(preview).every((e) => e.action === 'refuse')).toBe(true);
+		expect(workflowEntries(preview).every((e) => e.target_name === undefined)).toBe(true);
 		const workflow_targets = Object.fromEntries(
 			document.workflows.map((w, i) => [w.id, { kind: 'create' as const, name: `Copy ${i}` }])
 		);
 		const result = await applyImport(dest.db, dest.env, actor, { document, workflow_targets });
 		expect(result.counts.error).toBe(0);
 		expect(result.counts.refuse).toBe(0);
+		expect(workflowEntries(result).map((e) => e.target_name)).toEqual(['Copy 0', 'Copy 1']);
 		expect(
 			(await loadWorkflows(dest.db, USER))
 				.filter((w) => !w.is_system)
@@ -294,7 +321,18 @@ it('refused overwrite retains target states for independent context and inherita
 	};
 	const preview = await applyImport(t.db, t.env, actor, { ...request, dry_run: true });
 	const result = await applyImport(t.db, t.env, actor, request);
-	expect(workflowEntries(preview).find((e) => e.local_id === sourceBase.id)?.action).toBe('refuse');
+	const previewRefusal = workflowEntries(preview).find((e) => e.local_id === sourceBase.id);
+	const resultRefusal = workflowEntries(result).find((e) => e.local_id === sourceBase.id);
+	expect(previewRefusal).toMatchObject({
+		action: 'refuse',
+		target_id: first.id
+	});
+	expect(previewRefusal).not.toHaveProperty('target_name');
+	expect(resultRefusal).toMatchObject({
+		action: 'refuse',
+		target_id: first.id
+	});
+	expect(resultRefusal).not.toHaveProperty('target_name');
 	expect(result.entries.map((e) => [e.local_id, e.action])).toEqual(
 		preview.entries.map((e) => [e.local_id, e.action])
 	);
