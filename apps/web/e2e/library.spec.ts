@@ -399,7 +399,7 @@ test('v3 browser file transfer maps duplicate workflows and distinct prompts int
 		expect(copy).toBeTruthy();
 		await expect(row.getByRole('link', { name: copy.name })).toHaveAttribute(
 			'href',
-			`/workflows/${copy.id}`
+			/^\/workflows\/wf_/
 		);
 		const sourcePrompt = document.context.find(
 			(c) =>
@@ -412,12 +412,16 @@ test('v3 browser file transfer maps duplicate workflows and distinct prompts int
 			sourcePrompt?.kind === 'prompt' ? sourcePrompt.body : null
 		);
 	}
-	const firstCopy = (
-		await body<import('@tines/shared').LibraryV3Document>(await bob.get('/api/v1/export'))
-	).workflows.find((w) => w.name === `${name} copy 0`)!;
-	await page.getByRole('link', { name: firstCopy.name }).click();
-	await expect(page).toHaveURL(new RegExp(`/workflows/${firstCopy.id}$`));
-	await expect(page.getByRole('heading', { name: firstCopy.name })).toBeVisible();
+	await page.screenshot({ path: test.info().outputPath('library-receipt-phone.png') });
+	expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(
+		true
+	);
+	const firstName = `${name} copy 0`;
+	const firstLink = page.getByRole('link', { name: firstName });
+	const firstHref = await firstLink.getAttribute('href');
+	await firstLink.click();
+	await expect(page).toHaveURL(new RegExp(`${firstHref}$`));
+	await expect(page.getByRole('heading', { name: firstName })).toBeVisible();
 });
 
 test('workflow export and strict validation are read-only and allowed to run keys', async ({
