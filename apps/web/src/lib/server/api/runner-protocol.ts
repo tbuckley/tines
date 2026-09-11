@@ -14,6 +14,7 @@ import {
 	RUN_LOG_RAW_MAX_BYTES,
 	type AgentRun,
 	type AgentRunUsage,
+	type CodexPricingEvidenceV1,
 	type AppendRunLogResponse,
 	type FinishRunRequest,
 	type Runner,
@@ -48,6 +49,7 @@ import {
 	retainResumeResource
 } from '$lib/server/supervisor/resume';
 import { effectiveAutomationEnabled } from '$lib/server/supervisor/settings';
+import { priceCodexUsage } from '$lib/server/supervisor/codex-pricing';
 import { listArtifacts } from './artifacts';
 import { listLabels } from './labels';
 import { buildLaunchPrompt, buildResumePrompt, effectiveContextForIssue } from './context';
@@ -757,6 +759,118 @@ function validateUsage(value: unknown): AgentRunUsage | undefined {
 	return usage;
 }
 
+function validatePricingEvidence(value: unknown): {
+	evidence?: CodexPricingEvidenceV1;
+	valid: boolean;
+} {
+	if (value === undefined || value === null) return { valid: true };
+	if (typeof value !== 'object' || Array.isArray(value)) {
+		throw new ApiFail(422, 'invalid_field', '"pricing_evidence" must be an object', {
+			field: 'pricing_evidence'
+		});
+	}
+	const raw = value as Record<string, unknown>;
+	const short = (field: string, max: number, nullable = false): string | null => {
+		const item = raw[field];
+		if (nullable && item === null) return null;
+		if (
+			typeof item !== 'string' ||
+			item.length < 1 ||
+			item.length > max ||
+			/[\x00-\x1f\x7f]/.test(item)
+		) {
+			throw new ApiFail(
+				422,
+				'invalid_field',
+				`"pricing_evidence.${field}" must be a short string`,
+				{ field: `pricing_evidence.${field}` }
+			);
+		}
+		return item;
+	};
+	const model = short('model', 255, true);
+	const daemonVersion =
+		raw.daemon_version === undefined ? undefined : (short('daemon_version', 100) as string);
+	let rawUsage: CodexPricingEvidenceV1['raw_usage'];
+	if (raw.raw_usage !== undefined) {
+		if (
+			raw.raw_usage === null ||
+			typeof raw.raw_usage !== 'object' ||
+			Array.isArray(raw.raw_usage)
+		) {
+			throw new ApiFail(422, 'invalid_field', '"pricing_evidence.raw_usage" must be an object', {
+				field: 'pricing_evidence.raw_usage'
+			});
+		}
+		rawUsage = {};
+		for (const field of [
+			'input_tokens',
+			'cached_input_tokens',
+			'cache_write_input_tokens',
+			'output_tokens'
+		] as const) {
+			const metric = (raw.raw_usage as Record<string, unknown>)[field];
+			if (metric === undefined) continue;
+			if (!Number.isSafeInteger(metric) || (metric as number) < 0) {
+				throw new ApiFail(
+					422,
+					'invalid_field',
+					`"pricing_evidence.raw_usage.${field}" must be a non-negative safe integer`,
+					{ field: `pricing_evidence.raw_usage.${field}` }
+				);
+			}
+			rawUsage[field] = metric as number;
+		}
+	}
+	if (!Number.isSafeInteger(raw.terminal_snapshots) || (raw.terminal_snapshots as number) < 0) {
+		throw new ApiFail(
+			422,
+			'invalid_field',
+			'"pricing_evidence.terminal_snapshots" must be a non-negative safe integer',
+			{ field: 'pricing_evidence.terminal_snapshots' }
+		);
+	}
+	if (typeof raw.model_rerouted !== 'boolean') {
+		throw new ApiFail(422, 'invalid_field', '"pricing_evidence.model_rerouted" must be boolean', {
+			field: 'pricing_evidence.model_rerouted'
+		});
+	}
+	const measurements = [
+		'complete',
+		'missing',
+		'invalid',
+		'nonmonotonic',
+		'incomplete_attempt',
+		'multiple_threads'
+	] as const;
+	const valid =
+		raw.version === 1 &&
+		raw.harness === 'codex' &&
+		raw.identity_source === 'launch_argument' &&
+		raw.usage_scope === 'thread_total' &&
+		['cold', 'resumed'].includes(raw.session_mode as string) &&
+		raw.normalization === 'codex-jsonl-v1' &&
+		measurements.includes(raw.measurement_status as (typeof measurements)[number]);
+	if (!valid) return { valid: false };
+	return {
+		valid: true,
+		evidence: {
+			version: 1,
+			harness: 'codex',
+			model,
+			identity_source: 'launch_argument',
+			usage_scope: 'thread_total',
+			session_mode: raw.session_mode as 'cold' | 'resumed',
+			normalization: 'codex-jsonl-v1',
+			...(rawUsage ? { raw_usage: rawUsage } : {}),
+			model_rerouted: raw.model_rerouted,
+			measurement_status: raw.measurement_status as CodexPricingEvidenceV1['measurement_status'],
+			terminal_snapshots: raw.terminal_snapshots as number,
+			...(daemonVersion ? { daemon_version: daemonVersion } : {})
+		}
+	};
+}
+
 function validateProviderSessionId(value: unknown): string | undefined {
 	if (value === undefined) return undefined;
 	if (
@@ -861,8 +975,23 @@ export async function finishRun(
 		});
 	}
 	const error = optionalString(body.error, 'error', { max: 10_000 });
-	const usage = validateUsage(body.usage);
+	let usage = validateUsage(body.usage);
+	const pricingEvidence = validatePricingEvidence(body.pricing_evidence);
 	const providerSessionId = validateProviderSessionId(body.provider_session_id);
+	const turnCount = validateTurnCount(body.turn_count, 'turn_count');
+	const conversationTurnCount = validateTurnCount(
+		body.conversation_turn_count,
+		'conversation_turn_count'
+	);
+	const workspacePath = optionalString(body.workspace_path, 'workspace_path', { max: 1024 });
+	if (
+		body.resume_at !== undefined &&
+		(typeof body.resume_at !== 'number' || !Number.isFinite(body.resume_at))
+	) {
+		throw new ApiFail(422, 'invalid_field', '"resume_at" must be a number (epoch ms)', {
+			field: 'resume_at'
+		});
+	}
 
 	const run = await loadRunnerRun(db, runner, runId);
 	if (run.status === 'assigned') {
@@ -882,39 +1011,24 @@ export async function finishRun(
 	if (run.status === 'launching') {
 		await markRunRunning(db, env, run, now);
 	}
-	const turnCount = validateTurnCount(body.turn_count, 'turn_count');
-	const conversationTurnCount = validateTurnCount(
-		body.conversation_turn_count,
-		'conversation_turn_count'
-	);
-	const workspacePath = optionalString(body.workspace_path, 'workspace_path', { max: 1024 });
-	if (
-		usage ||
-		providerSessionId ||
-		turnCount !== undefined ||
-		conversationTurnCount !== undefined ||
-		workspacePath
-	) {
-		await runAtomic(env, [
-			db
-				.updateTable('agent_run')
-				.set({
-					...(usage ? { usage: JSON.stringify(usage) } : {}),
-					...(providerSessionId ? { provider_session_id: providerSessionId } : {}),
-					...(turnCount !== undefined ? { turn_count: turnCount } : {}),
-					// A daemon that reports only its own turn count is not resuming
-					// anything, so the two are the same number.
-					...(conversationTurnCount !== undefined
-						? { conversation_turn_count: conversationTurnCount }
-						: turnCount !== undefined
-							? { conversation_turn_count: turnCount }
-							: {}),
-					...(workspacePath ? { workspace_path: workspacePath } : {})
-				})
-				.where('id', '=', runId)
-				.compile()
-		]);
-	}
+	if (usage && (pricingEvidence.evidence || body.pricing_evidence !== undefined)) {
+		usage =
+			!pricingEvidence.valid && usage.cost_source === 'provider' && usage.cost_usd !== undefined
+				? { ...usage, pricing: { version: 1, evaluated_at: now, status: 'provider_authoritative' } }
+				: pricingEvidence.valid
+					? priceCodexUsage({ run, usage, evidence: pricingEvidence.evidence, now })
+					: {
+							...usage,
+							cost_usd: undefined,
+							cost_source: 'priced',
+							pricing: {
+								version: 1,
+								evaluated_at: now,
+								status: 'unpriced',
+								reason: 'invalid_pricing_evidence'
+							}
+						};
+	} else if (usage) usage = priceCodexUsage({ run, usage, now });
 	// The daemon marks the ends it knows were its own fault — a shutdown, an
 	// orphan killed after a restart — as interruptions. Honoured only on a
 	// failure, and only for that exact value: everything else (a harness
@@ -930,20 +1044,23 @@ export async function finishRun(
 		(body.judgment === 'interrupted' || body.judgment === 'rate_limited')
 			? body.judgment
 			: undefined;
-	if (
-		body.resume_at !== undefined &&
-		(typeof body.resume_at !== 'number' || !Number.isFinite(body.resume_at))
-	) {
-		throw new ApiFail(422, 'invalid_field', '"resume_at" must be a number (epoch ms)', {
-			field: 'resume_at'
-		});
-	}
 	const endable = await loadEndableRun(db, run.user_id, runId);
 	if (endable) {
 		const ended = await endRun(db, env, endable, {
 			status: body.status,
 			error: error ?? null,
 			...(judgment ? { judgment: 'interrupted' as const } : {}),
+			finalReport: {
+				...(usage ? { usage: JSON.stringify(usage) } : {}),
+				...(providerSessionId ? { provider_session_id: providerSessionId } : {}),
+				...(turnCount !== undefined ? { turn_count: turnCount } : {}),
+				...(conversationTurnCount !== undefined
+					? { conversation_turn_count: conversationTurnCount }
+					: turnCount !== undefined
+						? { conversation_turn_count: turnCount }
+						: {}),
+				...(workspacePath ? { workspace_path: workspacePath } : {})
+			},
 			now
 		});
 		if (judgment === 'rate_limited' && ended.ended) {

@@ -972,7 +972,17 @@ describe('finishRun', () => {
 			NOW + 30
 		);
 		expect(run.provider_session_id).toBe(session);
-		expect(run.usage).toEqual({ input_tokens: 4, cache_read_tokens: 6, output_tokens: 1 });
+		expect(run.usage).toEqual({
+			input_tokens: 4,
+			cache_read_tokens: 6,
+			output_tokens: 1,
+			pricing: {
+				version: 1,
+				evaluated_at: NOW + 30,
+				status: 'unpriced',
+				reason: 'pricing_evidence_missing'
+			}
+		});
 	});
 
 	it('an older daemon omitting accounting preserves fields already on the run', async () => {

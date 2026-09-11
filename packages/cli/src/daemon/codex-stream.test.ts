@@ -17,17 +17,28 @@ describe('CodexStreamRenderer', () => {
 			{ type: 'item.completed', item: { type: 'agent_message', text: 'Done.' } },
 			{
 				type: 'turn.completed',
-				usage: { input_tokens: 1000, cached_input_tokens: 600, output_tokens: 100 }
+				usage: {
+					input_tokens: 1000,
+					cached_input_tokens: 600,
+					cache_write_input_tokens: 100,
+					output_tokens: 100
+				}
 			}
 		]);
 		expect(result.log).toContain('[agent] Done.');
-		expect(result.summary).toEqual({
+		expect(result.summary).toMatchObject({
 			providerSessionId: 'thread_123',
-			usage: { input_tokens: 400, cache_read_tokens: 600, output_tokens: 100 }
+			usage: {
+				input_tokens: 300,
+				cache_read_tokens: 600,
+				cache_write_tokens: 100,
+				output_tokens: 100
+			},
+			pricingEvidence: { measurement_status: 'complete', terminal_snapshots: 1 }
 		});
 	});
 
-	it('clamps cache to total input and keeps independently valid counters', () => {
+	it('rejects overlapping cache classes and keeps independently valid counters', () => {
 		expect(
 			collect([
 				{
@@ -35,7 +46,7 @@ describe('CodexStreamRenderer', () => {
 					usage: { input_tokens: 5, cached_input_tokens: 9, output_tokens: -1 }
 				}
 			]).summary.usage
-		).toEqual({ input_tokens: 0, cache_read_tokens: 5 });
+		).toEqual({ cache_read_tokens: 9 });
 		expect(
 			collect([{ type: 'turn.completed', usage: { cached_input_tokens: 3 } }]).summary.usage
 		).toEqual({ cache_read_tokens: 3 });
@@ -49,18 +60,74 @@ describe('CodexStreamRenderer', () => {
 		const first = renderer.summary();
 		first.usage!.output_tokens = 99;
 		expect(renderer.summary().usage).toEqual({ output_tokens: 2 });
-		renderer.write('{"type":"turn.completed","usage":{"input_tokens":4}}\n');
-		expect(renderer.summary().usage).toEqual({ input_tokens: 4 });
+		renderer.write(
+			'{"type":"turn.completed","usage":{"input_tokens":4,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":3}}\n'
+		);
+		expect(renderer.summary().usage).toEqual({
+			input_tokens: 4,
+			cache_read_tokens: 0,
+			cache_write_tokens: 0,
+			output_tokens: 3
+		});
 	});
 
 	it('keeps prose, ignores unknown JSON, and tolerates incomplete errors', () => {
 		const result = collect([{ type: 'unknown' }, { type: 'error' }]);
 		expect(result.log).toBe('[error] unknown error\n');
-		expect(result.summary).toEqual({});
+		expect(result.summary.pricingEvidence).toMatchObject({
+			measurement_status: 'missing',
+			terminal_snapshots: 0
+		});
 		const lines: string[] = [];
 		const renderer = new CodexStreamRenderer((line) => lines.push(line));
 		renderer.write('not json\n');
 		expect(lines).toEqual(['not json\n']);
+	});
+
+	it('replaces cumulative totals and makes nonmonotonic, reroute, and unfinished work sticky', () => {
+		const result = collect([
+			{ type: 'thread.started', thread_id: 'a' },
+			{
+				type: 'turn.completed',
+				usage: {
+					input_tokens: 10,
+					cached_input_tokens: 2,
+					cache_write_input_tokens: 1,
+					output_tokens: 4
+				}
+			},
+			{
+				type: 'turn.completed',
+				usage: {
+					input_tokens: 20,
+					cached_input_tokens: 3,
+					cache_write_input_tokens: 2,
+					output_tokens: 6
+				}
+			},
+			{
+				type: 'turn.completed',
+				usage: {
+					input_tokens: 19,
+					cached_input_tokens: 3,
+					cache_write_input_tokens: 2,
+					output_tokens: 6
+				}
+			},
+			{ type: 'item.completed', item: { type: 'error', message: 'model rerouted: overloaded' } },
+			{ type: 'turn.started' }
+		]);
+		expect(result.summary.usage).toEqual({
+			input_tokens: 14,
+			cache_read_tokens: 3,
+			cache_write_tokens: 2,
+			output_tokens: 6
+		});
+		expect(result.summary.pricingEvidence).toMatchObject({
+			measurement_status: 'nonmonotonic',
+			model_rerouted: true,
+			terminal_snapshots: 3
+		});
 	});
 });
 

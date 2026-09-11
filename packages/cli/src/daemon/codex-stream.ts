@@ -64,8 +64,24 @@ export function renderCodexEvent(event: JsonObject): string[] {
 
 export class CodexStreamRenderer implements RunStreamRenderer {
 	private pending = '';
-	private collected: StreamSummary = {};
+	private collected: StreamSummary = {
+		pricingEvidence: {
+			version: 1,
+			harness: 'codex',
+			model: null,
+			identity_source: 'launch_argument',
+			usage_scope: 'thread_total',
+			session_mode: 'cold',
+			normalization: 'codex-jsonl-v1',
+			model_rerouted: false,
+			measurement_status: 'missing',
+			terminal_snapshots: 0
+		}
+	};
 	private finished = false;
+	private threadId?: string;
+	private stickyStatus?: 'nonmonotonic' | 'multiple_threads';
+	private awaitingTerminal = false;
 
 	constructor(private readonly emit: (line: string) => void) {}
 
@@ -108,27 +124,93 @@ export class CodexStreamRenderer implements RunStreamRenderer {
 	}
 
 	private collect(event: JsonObject): void {
-		if (
-			event.type === 'thread.started' &&
-			!this.collected.providerSessionId &&
-			validProviderSessionId(event.thread_id)
-		) {
-			this.collected.providerSessionId = event.thread_id;
+		if (event.type === 'thread.started' && validProviderSessionId(event.thread_id)) {
+			if (this.threadId && this.threadId !== event.thread_id)
+				this.stickyStatus = 'multiple_threads';
+			this.threadId ??= event.thread_id;
+			this.collected.providerSessionId ??= event.thread_id;
+		}
+		if (event.type === 'turn.started') {
+			this.awaitingTerminal = true;
+			this.updateEvidence('incomplete_attempt');
+			return;
+		}
+		if (event.type === 'item.completed') {
+			const item = object(event.item);
+			if (item?.type === 'error' && /^model rerouted:/.test(text(item.message) ?? '')) {
+				this.updateEvidence(undefined, true);
+			}
+			return;
 		}
 		if (event.type !== 'turn.completed') return;
+		this.awaitingTerminal = false;
 		const raw = object(event.usage);
-		if (!raw) return;
-		const totalInput = validMetric(raw.input_tokens) ? raw.input_tokens : undefined;
-		const rawCached = validMetric(raw.cached_input_tokens) ? raw.cached_input_tokens : undefined;
-		const output = validMetric(raw.output_tokens) ? raw.output_tokens : undefined;
-		if (totalInput === undefined && rawCached === undefined && output === undefined) return;
+		const previous = this.collected.pricingEvidence?.raw_usage;
+		const metric = (value: unknown) =>
+			Number.isSafeInteger(value) && (value as number) >= 0 ? (value as number) : undefined;
+		const totalInput = metric(raw?.input_tokens);
+		const rawCached = metric(raw?.cached_input_tokens);
+		const rawWrite = metric(raw?.cache_write_input_tokens);
+		const output = metric(raw?.output_tokens);
+		const rawUsage = {
+			...(totalInput !== undefined ? { input_tokens: totalInput } : {}),
+			...(rawCached !== undefined ? { cached_input_tokens: rawCached } : {}),
+			...(rawWrite !== undefined ? { cache_write_input_tokens: rawWrite } : {}),
+			...(output !== undefined ? { output_tokens: output } : {})
+		};
+		const supplied = raw
+			? ['input_tokens', 'cached_input_tokens', 'cache_write_input_tokens', 'output_tokens'].filter(
+					(key) => raw[key] !== undefined
+				).length
+			: 0;
+		const complete =
+			supplied === 4 && Object.keys(rawUsage).length === 4 && rawCached! + rawWrite! <= totalInput!;
+		let status: NonNullable<StreamSummary['pricingEvidence']>['measurement_status'] = complete
+			? 'complete'
+			: supplied < 4
+				? 'missing'
+				: 'invalid';
+		if (
+			complete &&
+			previous &&
+			['input_tokens', 'cached_input_tokens', 'cache_write_input_tokens', 'output_tokens'].some(
+				(key) => (rawUsage as JsonObject)[key]! < (previous as JsonObject)[key]!
+			)
+		) {
+			this.stickyStatus = 'nonmonotonic';
+		}
+		status = this.stickyStatus ?? status;
 		const usage: AgentRunUsage = {};
-		if (totalInput !== undefined) {
-			const cached = rawCached === undefined ? undefined : Math.min(rawCached, totalInput);
-			usage.input_tokens = totalInput - (cached ?? 0);
-			if (cached !== undefined) usage.cache_read_tokens = cached;
-		} else if (rawCached !== undefined) usage.cache_read_tokens = rawCached;
+		if (complete) usage.input_tokens = totalInput! - rawCached! - rawWrite!;
+		if (rawCached !== undefined) usage.cache_read_tokens = rawCached;
+		if (rawWrite !== undefined) usage.cache_write_tokens = rawWrite;
 		if (output !== undefined) usage.output_tokens = output;
 		this.collected.usage = usage;
+		this.updateEvidence(status, undefined, rawUsage);
+	}
+
+	private updateEvidence(
+		status?: NonNullable<StreamSummary['pricingEvidence']>['measurement_status'],
+		rerouted?: boolean,
+		rawUsage?: NonNullable<StreamSummary['pricingEvidence']>['raw_usage']
+	): void {
+		const old = this.collected.pricingEvidence;
+		this.collected.pricingEvidence = {
+			version: 1,
+			harness: 'codex',
+			model: null,
+			identity_source: 'launch_argument',
+			usage_scope: 'thread_total',
+			session_mode: 'cold',
+			normalization: 'codex-jsonl-v1',
+			...(rawUsage ? { raw_usage: rawUsage } : old?.raw_usage ? { raw_usage: old.raw_usage } : {}),
+			model_rerouted: rerouted || old?.model_rerouted || false,
+			measurement_status:
+				this.stickyStatus ??
+				status ??
+				old?.measurement_status ??
+				(this.awaitingTerminal ? 'incomplete_attempt' : 'missing'),
+			terminal_snapshots: (old?.terminal_snapshots ?? 0) + (rawUsage ? 1 : 0)
+		};
 	}
 }
