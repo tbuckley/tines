@@ -203,9 +203,10 @@ written by the daemon and by the harness, in this order:
 	 back, by which time the run's log is closed.
 
 When a structured harness finishes, its terminal report is also saved on the run. Claude
-Code supplies provider cost, input/output/cache tokens, and its session id. Codex supplies
-input/output/cache-read tokens and its thread id but no dollar cost, so its token total is
-shown without pretending it has been priced. Custom harnesses and processes that stop before
+Code supplies a provider-reported cost, input/output/cache tokens, and its session id. Codex supplies
+complete cumulative input/output/cache-read/cache-write evidence and its thread id; the server
+calculates supported models using the immutable policy in [Codex run pricing](codex-pricing.md).
+Unsupported or incomplete evidence remains visibly Unpriced. Custom harnesses and processes that stop before
 a terminal usage event are marked `unreported`. Usage already emitted is retained even when
 the harness exits unsuccessfully. The session/thread id is shown on the run row and by
 `tines runs show`, and is what a resumed launch continues.

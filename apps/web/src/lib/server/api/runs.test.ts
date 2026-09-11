@@ -9,7 +9,7 @@ import {
 	USER
 } from '../supervisor/test-fixtures';
 import { createTestDb } from './test-db';
-import { listRuns } from './runs';
+import { getRun, listRuns } from './runs';
 
 describe('listRuns project scope', () => {
 	it('filters before the page limit so newer runs from another project cannot hide a focused run', async () => {
@@ -83,5 +83,44 @@ describe('run continuation fields', () => {
 			resume_fallback_reason: 'unavailable'
 		});
 		expect(JSON.stringify(run)).not.toContain('/private/workspace');
+	});
+});
+
+describe('run pricing serialization', () => {
+	it('preserves immutable nested evidence and decimal rate strings in list and detail reads', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const runner = addRunner(t);
+		const issue = addIssue(t);
+		const usage = {
+			input_tokens: 3,
+			cache_read_tokens: 6,
+			cache_write_tokens: 1,
+			output_tokens: 1,
+			cost_usd: 0.0000394,
+			cost_source: 'priced',
+			pricing: {
+				version: 1,
+				evaluated_at: NOW,
+				status: 'calculated',
+				evidence: { version: 1, model: 'gpt-5.6-sol', raw_usage: { input_tokens: 10 } },
+				basis: {
+					model: 'gpt-5.6-sol',
+					rate_id: 'sol-v1',
+					rates: {
+						input_tokens: '4',
+						cache_read_tokens: '0.4',
+						cache_write_tokens: '5',
+						output_tokens: '20'
+					},
+					cost_usd_exact: '0.0000394'
+				}
+			}
+		};
+		addRun(t, { id: 'run_priced', issueId: issue, runnerId: runner, usage: JSON.stringify(usage) });
+
+		const listed = await listRuns(t.db, USER, { issue }, { cursor: null, limit: 50 });
+		expect(listed.items[0]?.usage).toEqual(usage);
+		expect((await getRun(t.db, USER, 'run_priced')).usage).toEqual(usage);
 	});
 });

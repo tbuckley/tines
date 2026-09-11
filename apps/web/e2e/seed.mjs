@@ -22,6 +22,7 @@ import {
 	MANAGED_SETTINGS,
 	PAGINATION,
 	RUNROW,
+	RUNROW_ESTIMATED,
 	RUNROW_FAILED,
 	SCHED,
 	STOPPED_FIRST_RUN
@@ -110,6 +111,63 @@ statements.push(
 // unreachable through the API (only an adapter writes it, at launch), so the
 // row is seeded here — see RUNROW in constants.mjs for why it is `completed`.
 const runStart = nowMs - 120_000;
+const estimatedUsage = JSON.stringify({
+	input_tokens: 300,
+	cache_read_tokens: 600,
+	cache_write_tokens: 100,
+	output_tokens: 100,
+	cost_usd: 0.00394,
+	cost_source: 'priced',
+	pricing: {
+		version: 1,
+		evaluated_at: nowMs,
+		status: 'calculated',
+		evidence: {
+			version: 1,
+			harness: 'codex',
+			model: 'gpt-5.6-sol',
+			identity_source: 'launch_argument',
+			usage_scope: 'thread_total',
+			session_mode: 'cold',
+			normalization: 'codex-jsonl-v1',
+			raw_usage: {
+				input_tokens: 1000,
+				cached_input_tokens: 600,
+				cache_write_input_tokens: 100,
+				output_tokens: 100
+			},
+			model_rerouted: false,
+			measurement_status: 'complete',
+			terminal_snapshots: 1,
+			daemon_version: '0.0.1'
+		},
+		basis: {
+			calculation_version: 'tokens-times-usd-per-million-v1',
+			provider: 'openai',
+			model: 'gpt-5.6-sol',
+			model_identity: 'requested_launch_no_observed_reroute',
+			usage_scope: 'attempt',
+			plan: 'api_standard',
+			context_band: 'short',
+			rate_id: 'openai-api-standard:gpt-5.6-sol:2026-09-11:v1',
+			rate_version: 1,
+			rate_adopted_at: 1789097400000,
+			rate_valid_to: null,
+			rate_selected_at: 1789097400000,
+			source_url: 'https://developers.openai.com/api/docs/pricing',
+			source_checked_at: '2026-09-11',
+			source_effective_at: null,
+			unit_tokens: 1000000,
+			rates: {
+				input_tokens: '4',
+				cache_read_tokens: '0.4',
+				cache_write_tokens: '5',
+				output_tokens: '20'
+			},
+			cost_usd_exact: '0.00394'
+		}
+	}
+});
 statements.push(
 	`INSERT INTO project (id, user_id, name, description, created_at, updated_at)
 	 VALUES ('${RUNROW.projectId}', '${ALICE.id}', '${RUNROW.projectName}', '', ${nowMs}, ${nowMs});`,
@@ -155,7 +213,13 @@ statements.push(
 	`INSERT INTO api_key (id, user_id, name, key_hash, key_prefix, created_at, agent_run_id, expires_at, revoked_at)
 	 VALUES ('key_e2e_runrow_failed', '${ALICE.id}', '${RUNROW_FAILED.runKeyName}',
 	   '${sha256Hex(RUNROW_FAILED.runKey)}', '${RUNROW_FAILED.runKey.slice(0, 14)}', ${runStart},
-	   '${RUNROW_FAILED.runId}', ${Date.parse(expires)}, ${nowMs});`
+	   '${RUNROW_FAILED.runId}', ${Date.parse(expires)}, ${nowMs});`,
+	`INSERT INTO runner (id, user_id, type, name, status, max_concurrent, max_run_minutes, default_tier, config, created_at, updated_at)
+	 VALUES ('${RUNROW_ESTIMATED.runnerId}', '${ALICE.id}', 'local', '${RUNROW_ESTIMATED.runnerName}', 'paused', 1, 30, 'balanced', '{}', ${nowMs}, ${nowMs});`,
+	`INSERT INTO issue (id, project_id, number, title, description, workflow_id, state_id, created_at, updated_at)
+	 VALUES ('${RUNROW_ESTIMATED.issueId}', '${RUNROW.projectId}', ${RUNROW_ESTIMATED.issueNumber}, 'Estimated Codex run', '', 'wf_standard', 'wfs_std_open', ${nowMs}, ${nowMs});`,
+	`INSERT INTO agent_run (id, user_id, issue_id, runner_id, status, outcome, tier, model, usage, state_id_at_start, state_id_at_end, log, created_at, started_at, ended_at)
+	 VALUES ('${RUNROW_ESTIMATED.runId}', '${ALICE.id}', '${RUNROW_ESTIMATED.issueId}', '${RUNROW_ESTIMATED.runnerId}', 'completed', 'advanced', 'balanced', 'gpt-5.6-sol', '${estimatedUsage}', 'wfs_std_open', 'wfs_std_open', 'priced log', ${runStart + 1}, ${runStart + 1}, ${nowMs});`
 );
 
 const sqlFile = join(mkdtempSync(join(tmpdir(), 'tines-e2e-')), 'seed.sql');

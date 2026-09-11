@@ -726,6 +726,134 @@ describe('finishRun', () => {
 		expect(ended[ended.length - 1].payload.outcome).toBe('stalled');
 	});
 
+	it('atomically stores and emits a reproducible Codex estimate', async () => {
+		const t = world();
+		const runnerId = addRunner(t);
+		const issue = addIssue(t);
+		const runId = await delivered(t, { runnerId, issueId: issue });
+		const claimed = Date.parse('2026-09-11T03:30:00Z');
+		t.sqlite
+			.prepare('UPDATE agent_run SET model = ?, created_at = ? WHERE id = ?')
+			.run('gpt-5.6-sol', claimed, runId);
+		await appendRunLog(t.db, t.env, await runnerRow(t, runnerId), runId, 'working\n', claimed + 1);
+		const run = await finishRun(
+			t.db,
+			t.env,
+			await runnerRow(t, runnerId),
+			runId,
+			{
+				status: 'completed',
+				usage: {
+					input_tokens: 300,
+					cache_read_tokens: 600,
+					cache_write_tokens: 100,
+					output_tokens: 100
+				},
+				pricing_evidence: {
+					version: 1,
+					harness: 'codex',
+					model: 'gpt-5.6-sol',
+					identity_source: 'launch_argument',
+					usage_scope: 'thread_total',
+					session_mode: 'cold',
+					normalization: 'codex-jsonl-v1',
+					raw_usage: {
+						input_tokens: 1000,
+						cached_input_tokens: 600,
+						cache_write_input_tokens: 100,
+						output_tokens: 100
+					},
+					model_rerouted: false,
+					measurement_status: 'complete',
+					terminal_snapshots: 1,
+					daemon_version: '0.0.1'
+				}
+			},
+			claimed + 2
+		);
+		expect(run.usage).toMatchObject({
+			cost_usd: 0.00394,
+			cost_source: 'priced',
+			pricing: { status: 'calculated', basis: { cost_usd_exact: '0.00394' } }
+		});
+		const ended = eventsOfType(t, 'agent_run.ended').at(-1)!;
+		expect(ended.payload.usage).toEqual(run.usage);
+	});
+
+	it('accounts cold retry attempts independently and refuses a synthetic resumed total', async () => {
+		const t = world();
+		const runnerId = addRunner(t, { maxConcurrent: 3 });
+		const issue = addIssue(t);
+		const claimed = Date.parse('2026-09-11T03:30:00Z');
+		const finish = (runId: string, total: number, resumed = false) => {
+			const read = Math.floor(total / 2);
+			const write = 0;
+			const input = total - read;
+			if (resumed)
+				t.sqlite
+					.prepare('UPDATE agent_run SET resumed_from_run_id = ? WHERE id = ?')
+					.run(ids[0]!, runId);
+			return finishRun(
+				t.db,
+				t.env,
+				awaitRunner,
+				runId,
+				{
+					status: 'completed',
+					usage: {
+						input_tokens: input,
+						cache_read_tokens: read,
+						cache_write_tokens: write,
+						output_tokens: 1
+					},
+					pricing_evidence: {
+						version: 1,
+						harness: 'codex',
+						model: 'gpt-5.6-sol',
+						identity_source: 'launch_argument',
+						usage_scope: 'thread_total',
+						session_mode: resumed ? 'resumed' : 'cold',
+						normalization: 'codex-jsonl-v1',
+						raw_usage: {
+							input_tokens: total,
+							cached_input_tokens: read,
+							cache_write_input_tokens: write,
+							output_tokens: 1
+						},
+						model_rerouted: false,
+						measurement_status: 'complete',
+						terminal_snapshots: 1
+					}
+				},
+				claimed + total
+			);
+		};
+		const awaitRunner = await runnerRow(t, runnerId);
+		const ids = [10, 20, 30].map((total) =>
+			addRun(t, {
+				id: `arun_attempt_${total}`,
+				issueId: issue,
+				runnerId,
+				status: 'running',
+				model: 'gpt-5.6-sol',
+				createdAt: claimed,
+				startedAt: claimed
+			})
+		);
+
+		const first = await finish(ids[0]!, 10);
+		const retry = await finish(ids[1]!, 20);
+		const resumed = await finish(ids[2]!, 30, true);
+		expect(first.usage?.pricing).toMatchObject({ status: 'calculated' });
+		expect(retry.usage?.pricing).toMatchObject({ status: 'calculated' });
+		expect(first.usage?.cost_usd).not.toBe(retry.usage?.cost_usd);
+		expect(resumed.usage?.pricing).toMatchObject({
+			status: 'unpriced',
+			reason: 'attempt_scope_unknown'
+		});
+		expect(eventsOfType(t, 'agent_run.ended')).toHaveLength(3);
+	});
+
 	it('a daemon reporting its own shutdown is interrupted: no strike, runner backs off', async () => {
 		const t = world();
 		const runnerId = addRunner(t);
@@ -972,7 +1100,17 @@ describe('finishRun', () => {
 			NOW + 30
 		);
 		expect(run.provider_session_id).toBe(session);
-		expect(run.usage).toEqual({ input_tokens: 4, cache_read_tokens: 6, output_tokens: 1 });
+		expect(run.usage).toEqual({
+			input_tokens: 4,
+			cache_read_tokens: 6,
+			output_tokens: 1,
+			pricing: {
+				version: 1,
+				evaluated_at: NOW + 30,
+				status: 'unpriced',
+				reason: 'pricing_evidence_missing'
+			}
+		});
 	});
 
 	it('an older daemon omitting accounting preserves fields already on the run', async () => {

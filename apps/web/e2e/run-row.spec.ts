@@ -12,7 +12,7 @@
  */
 import type { Workflow } from '@tines/shared';
 import { expect, test, type Page } from '@playwright/test';
-import { ALICE, RUNROW, RUNROW_FAILED } from './constants.mjs';
+import { ALICE, RUNROW, RUNROW_ESTIMATED, RUNROW_FAILED } from './constants.mjs';
 import { apiClient, body, gotoHydrated, resetFocus, runId, signIn } from './helpers';
 
 test.describe('shared run row', () => {
@@ -70,6 +70,44 @@ test.describe('shared run row', () => {
 		await expect(row).toContainText(`session: ${RUNROW_FAILED.providerSessionId}`);
 		await expect(row).toContainText(`resumed run ${RUNROW_FAILED.resumedFromRunId}`);
 		await expect(row.getByRole('link', { name: /resumed run/ })).toHaveCount(0);
+	});
+
+	test('discloses persisted estimate evidence and restores focus without closing logs', async ({
+		page
+	}) => {
+		await gotoHydrated(
+			page,
+			`/issues/${encodeURIComponent(RUNROW.projectName)}/${RUNROW_ESTIMATED.issueNumber}`
+		);
+		const row = page.locator('li:not([inert])', { hasText: RUNROW_ESTIMATED.runnerName });
+		const estimate = row.getByRole('button', { name: /Estimated/ });
+		await expect(estimate).toHaveText('<$0.01 Estimated');
+		await row.getByRole('button', { name: 'Logs' }).click();
+		await estimate.click();
+		const dialog = page.getByRole('dialog', { name: 'Cost evidence' });
+		await expect(dialog).toContainText('gpt-5.6-sol');
+		await expect(dialog).toContainText('0.00394');
+		await expect(dialog).toContainText('not an invoice or subscription usage');
+		await expect(dialog.getByRole('link', { name: /Official pricing source/ })).toHaveAttribute(
+			'href',
+			'https://developers.openai.com/api/docs/pricing'
+		);
+		await page.keyboard.press('Escape');
+		await expect(estimate).toBeFocused();
+		await expect(row.getByRole('button', { name: 'Hide logs' })).toBeVisible();
+	});
+
+	test('keeps the cost-evidence heading visible inside a phone fold', async ({ page }) => {
+		await page.setViewportSize({ width: 390, height: 844 });
+		await gotoHydrated(
+			page,
+			`/issues/${encodeURIComponent(RUNROW.projectName)}/${RUNROW_ESTIMATED.issueNumber}`
+		);
+		await page.getByRole('button', { name: /^Agent activity/ }).click();
+		const row = page.locator('li:not([inert])', { hasText: RUNROW_ESTIMATED.runnerName });
+		await row.getByRole('button', { name: /Estimated/ }).click();
+		const dialog = page.getByRole('dialog', { name: 'Cost evidence' });
+		await expect(dialog.getByRole('heading', { name: 'Cost evidence', level: 2 })).toBeVisible();
 	});
 });
 

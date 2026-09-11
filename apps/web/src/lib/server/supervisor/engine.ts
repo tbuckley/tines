@@ -960,6 +960,14 @@ export async function endRun(
 		/** 'interrupted' = the pipe died, not the work: no strike, no reset. */
 		judgment?: 'strike' | 'interrupted';
 		now?: number;
+		/** Validated local-daemon report, committed by the same CAS as the end. */
+		finalReport?: {
+			usage?: string;
+			provider_session_id?: string;
+			turn_count?: number;
+			conversation_turn_count?: number;
+			workspace_path?: string;
+		};
 	}
 ): Promise<EndRunOutcome> {
 	const now = input.now ?? Date.now();
@@ -1002,6 +1010,11 @@ export async function endRun(
 		sql`
 			UPDATE agent_run SET status = ${input.status}, error = ${input.error ?? null}, ended_at = ${now},
 				outcome = ${outcome},
+				${input.finalReport?.usage !== undefined ? sql`usage = ${input.finalReport.usage},` : sql``}
+				${input.finalReport?.provider_session_id !== undefined ? sql`provider_session_id = ${input.finalReport.provider_session_id},` : sql``}
+				${input.finalReport?.turn_count !== undefined ? sql`turn_count = ${input.finalReport.turn_count},` : sql``}
+				${input.finalReport?.conversation_turn_count !== undefined ? sql`conversation_turn_count = ${input.finalReport.conversation_turn_count},` : sql``}
+				${input.finalReport?.workspace_path !== undefined ? sql`workspace_path = ${input.finalReport.workspace_path},` : sql``}
 				state_id_at_end = (SELECT state_id FROM issue WHERE id = ${run.issue_id})
 			WHERE id = ${run.id} AND status IN (${sql.join(ACTIVE)})`.compile(db)
 	]);
@@ -1068,7 +1081,11 @@ export async function endRun(
 					...(outcome ? { outcome } : {}),
 					state_id_at_start: run.state_id_at_start,
 					state_id_at_end: issue?.state_id ?? null,
-					...(run.usage ? { usage: JSON.parse(run.usage) as Record<string, unknown> } : {}),
+					...(input.finalReport?.usage || run.usage
+						? {
+								usage: JSON.parse(input.finalReport?.usage ?? run.usage!) as Record<string, unknown>
+							}
+						: {}),
 					...(input.error ? { error: input.error } : {})
 				}
 			},

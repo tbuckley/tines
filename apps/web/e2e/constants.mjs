@@ -106,6 +106,14 @@ export const RUNROW_FAILED = {
 	runKeyName: 'run:runrow-failed'
 };
 
+export const RUNROW_ESTIMATED = {
+	runnerId: 'rnr_e2e_runrow_estimated',
+	runnerName: 'runrow-codex-priced',
+	runId: 'run_e2e_runrow_estimated',
+	issueId: 'iss_e2e_runrow_estimated',
+	issueNumber: 2
+};
+
 /**
  * A third account with **no projects of its own**, for the "hidden below two
  * projects" half of the project switcher (Tines/259). Bob cannot serve: the

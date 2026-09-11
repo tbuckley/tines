@@ -125,6 +125,9 @@ interface ActiveRun extends ManagedRun {
 	priorTurns: number;
 	/** Set from the finish response: the server retained this workspace. */
 	keepForResume: boolean;
+	/** Immutable facts used to qualify Codex's requested-model estimate. */
+	pricingModel?: string | null;
+	pricingSessionMode?: 'cold' | 'resumed';
 }
 
 /**
@@ -352,6 +355,16 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 					...(error ? { error } : {}),
 					...judgment,
 					usage: summary?.usage ?? { cost_source: 'none' },
+					...(summary?.pricingEvidence
+						? {
+								pricing_evidence: {
+									...summary.pricingEvidence,
+									model: run.pricingModel ?? null,
+									session_mode: run.pricingSessionMode ?? 'cold',
+									daemon_version: DAEMON_VERSION
+								}
+							}
+						: {}),
 					...(summary?.providerSessionId ? { provider_session_id: summary.providerSessionId } : {}),
 					...(summary?.numTurns !== undefined ? { turn_count: summary.numTurns } : {}),
 					// The whole conversation's turns, which for a resumed run is
@@ -587,6 +600,10 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 				{ harness: opts.harness, command: opts.command },
 				harnessInput
 			);
+			if (opts.harness === 'codex') {
+				run.pricingModel = harnessInput.model;
+				run.pricingSessionMode = resume ? 'resumed' : 'cold';
+			}
 			// What we are about to run, in the log itself: a failed run is read
 			// long after the daemon's console scrolled away (or was swallowed by
 			// launchd), and "which model / which timeout / which expanded
