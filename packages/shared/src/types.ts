@@ -1956,6 +1956,8 @@ export interface RunnerTokenResponse {
 
 /** `POST /api/v1/runners/:id/poll` — runner-token auth. */
 export interface RunnerPollRequest {
+	/** Stable for one daemon boot. Absent only for legacy clients. */
+	instance_id?: string;
 	/** Run ids the daemon is actually executing right now. */
 	owned_runs: string[];
 	/**
@@ -2687,6 +2689,7 @@ export const EVENT_TYPES = [
 	'context.deleted',
 	'runner.registered',
 	'runner.updated',
+	'runner.daemon_replaced',
 	'runner.removed',
 	'runner.errored',
 	'runner.rate_limited',
