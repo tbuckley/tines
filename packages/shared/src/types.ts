@@ -2312,6 +2312,18 @@ export interface RunFilters {
 	runner?: string;
 	/** Only runs holding a claim (assigned/launching/running). */
 	active?: boolean;
+	/** Usage evidence population; requires from/to. */
+	population?: 'finalized' | 'pending';
+	/** Inclusive finalized end bound, ISO UTC/offset timestamp. */
+	from?: string;
+	/** Exclusive cutoff, ISO UTC/offset timestamp. */
+	to?: string;
+	project?: string;
+	workflow?: string;
+	state?: string;
+	tier?: string;
+	outcome?: RunEndOutcome | 'unknown';
+	accounting_status?: 'priced' | 'unpriced' | 'unreported';
 }
 
 /**

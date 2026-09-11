@@ -384,6 +384,16 @@ export function aggregateUsage(values: unknown[]): UsageAggregate {
 			{ count: 0, exact: { coefficient: 0n, scale: 0 } }
 		])
 	) as Record<string, { count: number; exact: Decimal }>;
+	const rates = new Map<
+		string,
+		{
+			basis: UsageRatePortion['basis'];
+			count: number;
+			exact: Decimal;
+			min: number | null;
+			max: number | null;
+		}
+	>();
 	for (const item of classifications) {
 		for (const key of Object.keys(diagnostics) as (keyof UsageDiagnostics)[])
 			diagnostics[key] += item.diagnostics[key];
@@ -401,6 +411,32 @@ export function aggregateUsage(values: unknown[]): UsageAggregate {
 			exact = addDecimal(exact, d);
 			portionState[item.source].count++;
 			portionState[item.source].exact = addDecimal(portionState[item.source].exact, d);
+			if (item.source === 'calculated') {
+				const basis = item.basis;
+				const identity = basis
+					? (Object.fromEntries(
+							Object.entries(basis).filter(
+								([key]) => key !== 'cost_usd_exact' && key !== 'rate_selected_at'
+							)
+						) as UsageRatePortion['basis'])
+					: null;
+				const key = JSON.stringify(identity);
+				const selected = basis?.rate_selected_at ?? null;
+				const rate = rates.get(key) ?? {
+					basis: identity,
+					count: 0,
+					exact: { coefficient: 0n, scale: 0 },
+					min: selected,
+					max: selected
+				};
+				rate.count++;
+				rate.exact = addDecimal(rate.exact, d);
+				if (selected !== null) {
+					rate.min = rate.min === null ? selected : Math.min(rate.min, selected);
+					rate.max = rate.max === null ? selected : Math.max(rate.max, selected);
+				}
+				rates.set(key, rate);
+			}
 			samples.push(item.cost);
 		}
 	}
@@ -440,7 +476,17 @@ export function aggregateUsage(values: unknown[]): UsageAggregate {
 		tokens: tokenSums,
 		diagnostics,
 		pricing_reasons,
-		rate_portions: [],
+		rate_portions: [...rates.values()].map((rate) => {
+			const cost_usd_exact = decimalString(rate.exact);
+			return {
+				basis: rate.basis,
+				priced_run_count: rate.count,
+				cost_usd_exact,
+				cost_usd: Number(cost_usd_exact),
+				rate_selected_at_min: rate.min,
+				rate_selected_at_max: rate.max
+			};
+		}),
 		distribution: {
 			subset: 'priced_finalized_runs',
 			sample_count: n,

@@ -124,3 +124,58 @@ describe('run pricing serialization', () => {
 		expect((await getRun(t.db, USER, 'run_priced')).usage).toEqual(usage);
 	});
 });
+
+describe('period usage evidence', () => {
+	it('uses finalized end-time bounds and accounting filters before pagination', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const runner = addRunner(t);
+		const issue = addIssue(t);
+		addRun(t, {
+			id: 'before',
+			issueId: issue,
+			runnerId: runner,
+			status: 'completed',
+			endedAt: NOW - 1,
+			usage: JSON.stringify({ cost_usd: 1 })
+		});
+		addRun(t, {
+			id: 'at-from',
+			issueId: issue,
+			runnerId: runner,
+			status: 'failed',
+			endedAt: NOW,
+			usage: JSON.stringify({ input_tokens: 0 })
+		});
+		addRun(t, {
+			id: 'priced',
+			issueId: issue,
+			runnerId: runner,
+			status: 'canceled',
+			endedAt: NOW + 1,
+			usage: JSON.stringify({ cost_usd: 0 })
+		});
+		addRun(t, {
+			id: 'at-to',
+			issueId: issue,
+			runnerId: runner,
+			status: 'timed_out',
+			endedAt: NOW + 2,
+			usage: JSON.stringify({ cost_usd: 2 })
+		});
+		const all = await listRuns(
+			t.db,
+			USER,
+			{ population: 'finalized', from: NOW, to: NOW + 2 },
+			{ cursor: null, limit: 10 }
+		);
+		expect(all.items.map((r) => r.id)).toEqual(['priced', 'at-from']);
+		const priced = await listRuns(
+			t.db,
+			USER,
+			{ population: 'finalized', from: NOW, to: NOW + 2, accountingStatus: 'priced' },
+			{ cursor: null, limit: 10 }
+		);
+		expect(priced.items.map((r) => r.id)).toEqual(['priced']);
+	});
+});

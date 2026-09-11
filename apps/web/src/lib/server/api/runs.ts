@@ -5,7 +5,8 @@ import {
 	type AgentRunUsage,
 	type ModelTier,
 	type RunEndOutcome,
-	type RunStatus
+	type RunStatus,
+	classifyUsage
 } from '@tines/shared';
 import type { Kysely } from 'kysely';
 import type { Database } from '$lib/server/db';
@@ -104,6 +105,14 @@ export interface RunListFilters {
 	runner?: string;
 	/** Only runs holding a claim (assigned/launching/running). */
 	active?: boolean;
+	population?: 'finalized' | 'pending';
+	from?: number;
+	to?: number;
+	workflow?: string;
+	state?: string;
+	tier?: string;
+	outcome?: RunEndOutcome | 'unknown';
+	accountingStatus?: 'priced' | 'unpriced' | 'unreported';
 }
 
 /**
@@ -131,21 +140,46 @@ export async function listRuns(
 	if (filters.projectId) q = q.where('issue.project_id', '=', filters.projectId);
 	if (filters.issue) q = q.where('agent_run.issue_id', '=', filters.issue);
 	if (filters.runner) q = q.where('agent_run.runner_id', '=', filters.runner);
+	if (filters.workflow) q = q.where('issue.workflow_id', '=', filters.workflow);
+	if (filters.state) q = q.where('agent_run.state_id_at_start', '=', filters.state);
+	if (filters.tier) q = q.where('agent_run.tier', '=', filters.tier);
+	if (filters.outcome === 'unknown') q = q.where('agent_run.outcome', 'is', null);
+	else if (filters.outcome) q = q.where('agent_run.outcome', '=', filters.outcome);
 	if (filters.active) q = q.where('agent_run.status', 'in', [...ACTIVE_RUN_STATUSES]);
+	if (filters.population === 'finalized') {
+		q = q.where('agent_run.ended_at', 'is not', null);
+		if (filters.from !== undefined) q = q.where('agent_run.ended_at', '>=', filters.from);
+		if (filters.to !== undefined) q = q.where('agent_run.ended_at', '<', filters.to);
+	}
+	if (filters.population === 'pending') {
+		if (filters.to !== undefined) {
+			q = q
+				.where('agent_run.created_at', '<', filters.to)
+				.where((eb) =>
+					eb.or([eb('agent_run.ended_at', 'is', null), eb('agent_run.ended_at', '>=', filters.to!)])
+				);
+		} else q = q.where('agent_run.ended_at', 'is', null);
+	}
 	if (page.cursor) {
 		const { createdAt, id } = page.cursor;
+		const cursorColumn =
+			filters.population === 'finalized' ? 'agent_run.ended_at' : 'agent_run.created_at';
 		q = q.where((eb) =>
 			eb.or([
-				eb('agent_run.created_at', '<', createdAt),
-				eb.and([eb('agent_run.created_at', '=', createdAt), eb('agent_run.id', '<', id)])
+				eb(cursorColumn, '<', createdAt),
+				eb.and([eb(cursorColumn, '=', createdAt), eb('agent_run.id', '<', id)])
 			])
 		);
 	}
-	const rows = await q
-		.orderBy('agent_run.created_at desc')
+	let rows = await q
+		.orderBy(
+			filters.population === 'finalized' ? 'agent_run.ended_at desc' : 'agent_run.created_at desc'
+		)
 		.orderBy('agent_run.id desc')
-		.limit(page.limit + 1)
+		.limit(filters.accountingStatus ? 10_001 : page.limit + 1)
 		.execute();
+	if (filters.accountingStatus)
+		rows = rows.filter((row) => classifyUsage(row.usage).status === filters.accountingStatus);
 	return { items: rows.slice(0, page.limit).map(serializeRun), hasMore: rows.length > page.limit };
 }
 
