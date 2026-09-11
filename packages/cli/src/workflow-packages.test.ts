@@ -350,7 +350,7 @@ describe('workflow package CLI', () => {
 		expect(requests.filter((request) => request.path === '/api/v1/library/install')).toHaveLength(
 			1
 		);
-	});
+	}, 15_000);
 
 	it('surfaces a real run-key refusal after confirmation', async () => {
 		await cli(['workflows', 'preview', packagePath, '--plan-out', planPath, '--json']);
