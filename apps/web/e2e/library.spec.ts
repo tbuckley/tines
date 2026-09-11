@@ -372,6 +372,11 @@ test('v3 browser file transfer maps duplicate workflows and distinct prompts int
 		await expect(page.getByRole('button', { name: 'Import', exact: true })).toHaveCount(0);
 		await input.blur();
 		await expect(page.getByTestId('import-summary')).toContainText('Nothing has been written yet');
+		const previewRow = page
+			.getByTestId('import-row')
+			.filter({ hasText: `workflow "${name}" [${workflow.id}]` });
+		await expect(previewRow).toContainText(`→ ${name} copy ${index}`);
+		await expect(previewRow.getByRole('link')).toHaveCount(0);
 	}
 	await page.setViewportSize({ width: 1440, height: 900 });
 	await page.screenshot({ path: test.info().outputPath('library-mappings-desktop.png') });
@@ -395,11 +400,16 @@ test('v3 browser file transfer maps duplicate workflows and distinct prompts int
 			.getByTestId('import-row')
 			.filter({ hasText: `workflow "${name}" [${workflow.id}]` });
 		await expect(row).toContainText('create');
+		await expect(row).toContainText(`→ ${name} copy ${index}`);
 		const exported = await body<import('@tines/shared').LibraryV3Document>(
 			await bob.get('/api/v1/export')
 		);
 		const copy = exported.workflows.find((w) => w.name === `${name} copy ${index}`)!;
 		expect(copy).toBeTruthy();
+		await expect(row.getByRole('link', { name: copy.name })).toHaveAttribute(
+			'href',
+			/^\/workflows\/wf_/
+		);
 		const sourcePrompt = document.context.find(
 			(c) =>
 				c.scope.state?.kind === 'bundled_state' && c.scope.state.state_id === workflow.states[0].id
@@ -411,6 +421,18 @@ test('v3 browser file transfer maps duplicate workflows and distinct prompts int
 			sourcePrompt?.kind === 'prompt' ? sourcePrompt.body : null
 		);
 	}
+	await page.screenshot({ path: test.info().outputPath('library-receipt-phone.png') });
+	expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(
+		true
+	);
+	const firstName = `${name} copy 0`;
+	const firstLink = page.getByRole('link', { name: firstName });
+	const firstHref = await firstLink.getAttribute('href');
+	// The 200-character boundary fixture makes the inline link taller than the
+	// mobile receipt scroller, so click a visible point instead of its obscured center.
+	await firstLink.click({ position: { x: 2, y: 2 } });
+	await expect(page).toHaveURL(new RegExp(`${firstHref}$`));
+	await expect(page.getByRole('heading', { name: firstName })).toBeVisible();
 });
 
 test('workflow export and strict validation are read-only and allowed to run keys', async ({

@@ -88,3 +88,52 @@ it('preserves ordinary local repository declarations in whole-library backups', 
 	);
 	expect(await parseLibraryV3Document(JSON.stringify(document))).toEqual(document);
 });
+
+it.each([100, 101, 181])('exports %i skills with ordered file contents', async (count) => {
+	const t = createTestDb();
+	seedBase(t);
+	const actor = {
+		userId: USER,
+		userName: 'Alice',
+		apiKeyId: null,
+		apiKeyName: null,
+		viaSession: true
+	};
+	for (let index = 0; index < count; index++) {
+		await createContextItem(t.db, t.env, actor, {
+			kind: 'skill',
+			name: `skill-${index.toString().padStart(3, '0')}`,
+			files: [
+				{ path: 'z.txt', content: `last-${index}` },
+				{ path: 'SKILL.md', content: `first-${index}` }
+			]
+		});
+	}
+	t.sqlite.exec(`
+		INSERT INTO user (id, name, email, emailVerified, createdAt, updatedAt)
+			VALUES ('u2', 'bob', 'b@example.com', 1, 0, 0);
+		INSERT INTO context_item
+			(id, user_id, kind, name, description, position, version, created_at, updated_at)
+			VALUES ('ctx_foreign', 'u2', 'skill', 'foreign', '', 0, 1, 0, 0);
+		INSERT INTO context_item_file
+			(id, context_item_id, path, content, created_at, updated_at)
+			VALUES ('ctf_foreign', 'ctx_foreign', 'SKILL.md', 'foreign', 0, 0);
+	`);
+
+	const document = await buildLibraryV3Document(t.db, USER);
+	expect(document.context).toHaveLength(count);
+	expect(document.context.map((item) => item.name)).toEqual(
+		Array.from({ length: count }, (_, index) => `skill-${index.toString().padStart(3, '0')}`)
+	);
+	for (const index of [0, Math.min(89, count - 1), count - 1]) {
+		const item = document.context[index];
+		expect(item.kind).toBe('skill');
+		if (item.kind !== 'skill') continue;
+		expect(item.files).toEqual([
+			{ id: expect.any(String), path: 'SKILL.md', content: `first-${index}` },
+			{ id: expect.any(String), path: 'z.txt', content: `last-${index}` }
+		]);
+	}
+	expect(document.context.some((item) => item.name === 'foreign')).toBe(false);
+	expect(await parseLibraryV3Document(JSON.stringify(document))).toEqual(document);
+});

@@ -407,6 +407,9 @@ export async function planLibraryV3Import(
 			report.reason = message(error);
 		}
 	}
+	for (const step of plan.workflows)
+		if (step.entry.action !== 'error' && step.entry.action !== 'refuse')
+			step.entry.target_name = step.existing?.name ?? step.definition.name;
 	return plan;
 }
 
@@ -446,6 +449,8 @@ export async function applyLibraryV3Import(
 		} catch (error) {
 			entry.action = 'error';
 			entry.reason = message(error);
+			delete entry.target_id;
+			delete entry.target_name;
 		}
 	};
 	// Drop planning placeholders: a failed create must never become a real scope/reference.
@@ -462,6 +467,7 @@ export async function applyLibraryV3Import(
 			written.set(step.source.id, created);
 			plan.workflowIds.set(step.source.id, created.id);
 			step.entry.target_id = created.id;
+			step.entry.target_name = created.name;
 			for (const state of step.source.states)
 				plan.states.set(state.id, created.states.find((s) => s.name === state.name)!.id);
 		});

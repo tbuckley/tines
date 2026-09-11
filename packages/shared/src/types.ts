@@ -861,7 +861,7 @@ export interface IssueFilters {
 	hide_done?: boolean;
 	/** Only issues that are not done, not duplicates, and have all blockers effectively done. */
 	ready?: boolean;
-	/** Title/description substring search. */
+	/** Literal title/description substring search, case-insensitive for ASCII. */
 	q?: string;
 	/** Label names or ids; repeated labels narrow (AND). */
 	label?: string[];
@@ -1043,7 +1043,7 @@ export interface ContextListFilters {
 	issue?: string;
 	/** Label id or name. */
 	label?: string;
-	/** Name/description search. */
+	/** Literal name/description substring search, case-insensitive for ASCII. */
 	q?: string;
 	exact?: boolean;
 	/** Without a project filter, items scoped to archived projects are hidden by default. */
@@ -2931,6 +2931,8 @@ export interface ImportPlanEntry {
 	/** Stable source identity for v3 reports. */
 	local_id?: string;
 	target_id?: string;
+	/** Resolved destination name, present for successful v3 workflow plans and receipts. */
+	target_name?: string;
 	/** Human-readable identity, e.g. `prompt "instructions" (state Engineering / Research)`. */
 	ref: string;
 	action: ImportAction;
