@@ -428,7 +428,9 @@ test('v3 browser file transfer maps duplicate workflows and distinct prompts int
 	const firstName = `${name} copy 0`;
 	const firstLink = page.getByRole('link', { name: firstName });
 	const firstHref = await firstLink.getAttribute('href');
-	await firstLink.click();
+	// The 200-character boundary fixture makes the inline link taller than the
+	// mobile receipt scroller, so click a visible point instead of its obscured center.
+	await firstLink.click({ position: { x: 2, y: 2 } });
 	await expect(page).toHaveURL(new RegExp(`${firstHref}$`));
 	await expect(page.getByRole('heading', { name: firstName })).toBeVisible();
 });
