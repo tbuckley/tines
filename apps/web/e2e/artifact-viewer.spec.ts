@@ -14,6 +14,7 @@ import { apiClient, body, gotoHydrated, readSettled, runId, signIn } from './hel
 const projectName = `viewer-${runId}`;
 let project: Project;
 let issue: IssueDetail;
+let otherIssue: IssueDetail;
 
 const PHONE = { width: 390, height: 844 };
 
@@ -28,6 +29,35 @@ test.beforeAll(async ({ playwright }) => {
 	issue = await body<IssueDetail>(
 		await api.post(`/api/v1/projects/${project.id}/issues`, { title: `Viewer ${runId}` })
 	);
+	otherIssue = await body<IssueDetail>(
+		await api.post(`/api/v1/projects/${project.id}/issues`, { title: `Other viewer ${runId}` })
+	);
+
+	for (const [target, marker] of [
+		[issue, 'IDENTITY ISSUE A'],
+		[otherIssue, 'IDENTITY ISSUE B']
+	] as const) {
+		const put = await api.put(`/api/v1/issues/${target.id}/artifacts/identity-doc`, {
+			type: 'text',
+			content: marker,
+			content_type: 'text/plain'
+		});
+		expect(put.status(), await put.text()).toBe(200);
+	}
+	for (const [name, content] of [
+		['replace-me', 'ORIGINAL ARTIFACT'],
+		['race-doc', 'VERSION ONE']
+	] as const) {
+		const put = await api.put(`/api/v1/issues/${issue.id}/artifacts/${name}`, {
+			type: 'text',
+			content,
+			content_type: 'text/plain'
+		});
+		expect(put.status(), await put.text()).toBe(200);
+	}
+	await api.post(`/api/v1/issues/${issue.id}/comments`, {
+		body: `[Open the other identity issue](/issues/${encodeURIComponent(projectName)}/${otherIssue.number})`
+	});
 
 	// Far taller than any viewport: ~400 paragraphs of markdown.
 	const paragraphs = Array.from(
@@ -94,6 +124,73 @@ async function unfoldArtifacts(page: Page): Promise<void> {
 }
 
 const issueUrl = () => `/issues/${encodeURIComponent(projectName)}/${issue.number}`;
+
+test('text cache identity survives client navigation without crossing issues', async ({ page }) => {
+	await gotoHydrated(page, issueUrl());
+	const dialog = page.getByRole('dialog', { name: 'Artifact viewer' });
+	await openViewer(page.getByRole('button', { name: /^View identity-doc/ }), dialog);
+	await expect(dialog.getByText('IDENTITY ISSUE A')).toBeVisible();
+	await dialog.getByRole('button', { name: 'Close' }).click();
+
+	await page.evaluate(() => Object.assign(window, { __artifactIdentitySentinel: 'kept' }));
+	await page.getByRole('link', { name: 'Open the other identity issue' }).click();
+	await expect(page).toHaveURL(new RegExp(`/${otherIssue.number}$`));
+	expect(await page.evaluate(() => Reflect.get(window, '__artifactIdentitySentinel'))).toBe('kept');
+
+	await openViewer(page.getByRole('button', { name: /^View identity-doc/ }), dialog);
+	await expect(dialog.getByText('IDENTITY ISSUE B')).toBeVisible();
+	await expect(dialog.getByText('IDENTITY ISSUE A')).toHaveCount(0);
+});
+
+test('delete and recreate cannot reuse text cached under the old artifact id', async ({ page }) => {
+	await gotoHydrated(page, issueUrl());
+	const dialog = page.getByRole('dialog', { name: 'Artifact viewer' });
+	await openViewer(page.getByRole('button', { name: /^View replace-me/ }), dialog);
+	await expect(dialog.getByText('ORIGINAL ARTIFACT')).toBeVisible();
+	await dialog.getByRole('button', { name: 'Close' }).click();
+
+	const headers = { authorization: `Bearer ${ALICE.apiKey}` };
+	const removed = await page.request.delete(`/api/v1/issues/${issue.id}/artifacts/replace-me`, {
+		headers
+	});
+	expect(removed.status(), await removed.text()).toBe(204);
+	const recreated = await page.request.put(`/api/v1/issues/${issue.id}/artifacts/replace-me`, {
+		headers,
+		data: { type: 'text', content: 'RECREATED ARTIFACT', content_type: 'text/plain' }
+	});
+	expect(recreated.status(), await recreated.text()).toBe(200);
+
+	await openViewer(page.getByRole('button', { name: /^View replace-me/ }), dialog);
+	await expect(dialog.getByText('RECREATED ARTIFACT')).toBeVisible();
+	await expect(dialog.getByText('ORIGINAL ARTIFACT')).toHaveCount(0);
+});
+
+test('current stays pinned when a newer version lands after metadata resolves', async ({
+	page
+}) => {
+	await page.route(`**/api/v1/issues/${issue.id}/artifacts/race-doc`, async (route) => {
+		const v1Detail = await route.fetch();
+		const appended = await page.request.put(`/api/v1/issues/${issue.id}/artifacts/race-doc`, {
+			headers: { authorization: `Bearer ${ALICE.apiKey}` },
+			data: { content: 'VERSION TWO', content_type: 'text/plain' }
+		});
+		expect(appended.status(), await appended.text()).toBe(200);
+		await route.fulfill({ response: v1Detail });
+	});
+
+	await gotoHydrated(page, issueUrl());
+	const dialog = page.getByRole('dialog', { name: 'Artifact viewer' });
+	await openViewer(page.getByRole('button', { name: /^View race-doc/ }), dialog);
+	await expect(dialog.getByText('VERSION ONE')).toBeVisible();
+	const download = dialog.getByRole('link', { name: 'Download', exact: true });
+	const href = await download.getAttribute('href');
+	expect(href).not.toBeNull();
+	expect(new URL(href!, 'http://local').searchParams.get('version')).toBe('1');
+	expect(await (await page.request.get(href!)).text()).toBe('VERSION ONE');
+	expect(
+		await (await page.request.get(`/api/v1/issues/${issue.id}/artifacts/race-doc/content`)).text()
+	).toBe('VERSION TWO');
+});
 
 /**
  * Click that survives the SSR-to-hydration window (same shape as

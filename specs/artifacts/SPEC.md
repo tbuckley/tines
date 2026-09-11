@@ -778,6 +778,17 @@ with a Phone / Tablet / Full width switcher — the reader is usually going to
 be on a phone — an **Open full page** link, and *Files* / *Source* escapes
 back to the ordinary folder and text views.
 
+The viewer resolves **current** to the concrete version returned by its metadata
+read and pins every source, frame, image, PDF, folder entry, download and site
+link to that snapshot. Reopening performs a fresh metadata read; an already-open
+viewer does not live-advance. Immutable text caching is scoped by stable artifact
+id, version and exact folder path, so it cannot cross issues or a delete/recreate
+boundary. Metadata, text failures and site links are rendered only while their
+open selection still owns the request; a superseded response cannot replace the
+active preview. Panel thumbnails likewise use the concrete current version from
+their own artifact row. The public content API remains current-by-default when a
+general caller omits `version`.
+
 ### Transitions
 
 Transition buttons in the *State & transitions* section show their
@@ -941,6 +952,12 @@ From the folders/viewer review:
   version picker); inline expansion had unbounded Markdown height inside the
   issue column and could never host PDFs. The one inline survivor is the
   image thumbnail — the genuinely glanceable case.
+- **Resolved previews are immutable UI snapshots** — "current" is resolved by
+  the metadata read and every downstream URL/request carries that numbered
+  version. Cache identity includes stable artifact id and exact path; reopening
+  is the refresh boundary, and late responses from older selections are ignored.
+  This tightens viewer/panel behavior without changing the API's intentional
+  current-by-default contract for unresolved callers.
 - **Screenshots are a folder, not sibling files** — because workflows are
   generic over issues: a requirement names one fixed slot (`screenshots`),
   while each issue's surfaces differ, so per-screen slot names are invisible
