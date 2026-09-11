@@ -3,7 +3,8 @@
  * (node:sqlite), exposed both as a Kysely instance (for the modules' reads)
  * and as a fake `Env` whose `DB.batch` runs statements in one transaction —
  * the shape runAtomic expects — so tests can exercise actual batch order,
- * guards, and foreign keys instead of mocking them away.
+ * guards, foreign keys, and D1's per-statement parameter budget instead of
+ * mocking them away.
  *
  * Test-only: nothing in the app imports this module.
  */
@@ -34,11 +35,18 @@ const isReader = (sqlText: string) => /^\s*(select|with|pragma)\b/i.test(sqlText
 /** Everything this codebase binds: strings, numbers, and NULLs. */
 type SqlParam = string | number | bigint | null;
 
+const D1_MAX_BOUND_PARAMETERS = 100;
+
 function runStatement<R>(
 	sqlite: DatabaseSync,
 	sqlText: string,
 	params: readonly unknown[]
 ): QueryResult<R> {
+	if (params.length > D1_MAX_BOUND_PARAMETERS) {
+		throw new Error(
+			`D1 parameter limit exceeded: ${params.length} bound parameters (maximum ${D1_MAX_BOUND_PARAMETERS})`
+		);
+	}
 	const stmt = sqlite.prepare(sqlText);
 	if (isReader(sqlText)) return { rows: stmt.all(...(params as SqlParam[])) as R[] };
 	const info = stmt.run(...(params as SqlParam[]));
