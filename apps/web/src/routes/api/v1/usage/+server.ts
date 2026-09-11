@@ -37,6 +37,9 @@ export const GET: RequestHandler = api(async (event) => {
 		throw new ApiFail(422, 'invalid_field', 'Invalid accounting status', {
 			field: 'accounting_status'
 		});
+	const tier = params.get('tier') ?? undefined;
+	if (tier && !['smartest', 'balanced', 'cheapest', 'unknown'].includes(tier))
+		throw new ApiFail(422, 'invalid_field', 'Invalid tier', { field: 'tier' });
 	if (params.has('state') && !params.has('workflow'))
 		throw new ApiFail(422, 'invalid_field', 'state requires workflow qualification', {
 			field: 'state'
