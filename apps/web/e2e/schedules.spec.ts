@@ -445,7 +445,7 @@ test.describe('schedules in the web UI', () => {
 		const gatedRow = page.locator(`#schedule-${SCHED.gatedId}`);
 		await plainRow.scrollIntoViewIfNeeded();
 		await expect(
-			plainRow.getByText(`${before.open_instances} open`, { exact: true })
+			plainRow.locator('p').filter({ hasText: new RegExp(`${before.open_instances} open$`) })
 		).toBeVisible();
 		await expect(plainRow.locator('p', { hasText: /overdue|due now|^next in/ })).toBeVisible();
 		await expect(gatedRow.getByText('Waiting for 1 open issue', { exact: true })).toBeVisible();
@@ -474,10 +474,13 @@ test.describe('schedules in the web UI', () => {
 			`/issues/${encodeURIComponent(created.project_name)}/${created.number}`
 		);
 		await expect(
-			plainRow.getByText(`${before.open_instances + 1} open`, { exact: true })
+			plainRow.locator('p').filter({ hasText: new RegExp(`${before.open_instances + 1} open$`) })
 		).toBeVisible();
 		await expect(plainRow.getByText(/^last /)).toBeVisible();
 		await expect(gatedRow.getByRole('status')).toBeEmpty();
+		await page.setViewportSize({ width: 1440, height: 900 });
+		await expect(link).toBeVisible();
+		await page.setViewportSize({ width: 390, height: 844 });
 
 		const [blockedResponse] = await Promise.all([
 			page.waitForResponse(
@@ -496,11 +499,55 @@ test.describe('schedules in the web UI', () => {
 			gatedRow.getByRole('button', { name: `Run schedule ${SCHED.gatedName} now` })
 		).toBeEnabled();
 
-		await link.click();
+		const toggle = plainRow.getByRole('switch', { name: `Pause schedule ${SCHED.plainName}` });
+		await toggle.click();
+		await expect(plainRow.getByText('paused', { exact: true })).toBeVisible();
+		const [secondResponse] = await Promise.all([
+			page.waitForResponse(
+				(response) =>
+					response.request().method() === 'POST' &&
+					new URL(response.url()).pathname === `/api/v1/schedules/${SCHED.plainId}/run`
+			),
+			plainRow.getByRole('button', { name: `Run schedule ${SCHED.plainName} now` }).click()
+		]);
+		const secondCreated = (await secondResponse.json()) as IssueDetail;
+		const secondLink = receipt.getByRole('link', {
+			name: `Created ${secondCreated.project_name}/#${secondCreated.number}`
+		});
+		await expect(secondLink).toBeVisible();
+		await expect(link).toHaveCount(0);
+		await plainRow.getByRole('switch', { name: `Resume schedule ${SCHED.plainName}` }).click();
+		await expect(plainRow.getByText('paused', { exact: true })).toHaveCount(0);
+
+		await secondLink.click();
 		await expect(page).toHaveURL(
-			new RegExp(`/issues/${encodeURIComponent(created.project_name)}/${created.number}$`)
+			new RegExp(
+				`/issues/${encodeURIComponent(secondCreated.project_name)}/${secondCreated.number}$`
+			)
 		);
-		await expect(page.getByRole('heading', { name: created.title })).toBeVisible();
+		await expect(page.getByRole('heading', { name: secondCreated.title })).toBeVisible();
+		await gotoHydrated(page, `/projects/${SCHED.projectId}`);
+		await expect(page.locator(`#schedule-${SCHED.plainId}`).getByRole('status')).toBeEmpty();
+
+		await context.close();
+	});
+
+	test('keeps a Run now network failure local to its schedule', async ({ browser }) => {
+		const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+		await signIn(context, ALICE.sessionToken);
+		const page = await context.newPage();
+		await gotoHydrated(page, `/projects/${SCHED.projectId}`);
+		const row = page.locator(`#schedule-${SCHED.plainId}`);
+		const runButton = row.getByRole('button', { name: `Run schedule ${SCHED.plainName} now` });
+		const runPattern = `**/api/v1/schedules/${SCHED.plainId}/run`;
+
+		await page.route(runPattern, (route) => route.abort('failed'));
+		await runButton.click();
+		await expect(row.getByRole('alert')).toHaveText('Something went wrong — try again.');
+		await expect(page.getByText('Something went wrong — try again.', { exact: true })).toHaveCount(
+			1
+		);
+		await expect(runButton).toBeEnabled();
 
 		await context.close();
 	});
