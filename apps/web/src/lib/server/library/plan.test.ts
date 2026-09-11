@@ -227,13 +227,14 @@ describe('signed workflow package preparation and reconstruction', () => {
 		const f = await fixture();
 		const preview = await f.prepare();
 		const payload = await verifyPackagePlan(preview.plan_token, env.BETTER_AUTH_SECRET);
+		const original = await reconstructPackagePlan(f.t.db, actor, f.raw, payload);
 		const changed = structuredClone(payload);
 		changed.allocation.records.unknown = {
 			id: 'wf_0123456789abcdef',
 			event_id: 'evt_0123456789abcdef'
 		};
 		const { plan_digest: _oldDigest, ...unsigned } = changed;
-		changed.plan_digest = await packagePlanDigest(unsigned, preview.resolved);
+		changed.plan_digest = await packagePlanDigest(unsigned, original.resolved);
 		const token = await signPackagePlan(changed, env.BETTER_AUTH_SECRET);
 		const verified = await verifyPackagePlan(token, env.BETTER_AUTH_SECRET);
 		await expect(reconstructPackagePlan(f.t.db, actor, f.raw, verified)).rejects.toMatchObject({
