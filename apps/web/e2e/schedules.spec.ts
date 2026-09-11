@@ -431,6 +431,80 @@ test.describe('schedules in the web UI', () => {
 		await context.close();
 	});
 
+	test('keeps lifecycle and Run now outcomes beside each schedule on phones', async ({
+		browser
+	}) => {
+		const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+		await signIn(context, ALICE.sessionToken);
+		const page = await context.newPage();
+		const api = apiClient(page.request, ALICE.apiKey);
+		const before = await body<Schedule>(await api.get(`/api/v1/schedules/${SCHED.plainId}`));
+
+		await gotoHydrated(page, `/projects/${SCHED.projectId}`);
+		const plainRow = page.locator(`#schedule-${SCHED.plainId}`);
+		const gatedRow = page.locator(`#schedule-${SCHED.gatedId}`);
+		await plainRow.scrollIntoViewIfNeeded();
+		await expect(
+			plainRow.getByText(`${before.open_instances} open`, { exact: true })
+		).toBeVisible();
+		await expect(plainRow.locator('p', { hasText: /overdue|due now|^next in/ })).toBeVisible();
+		await expect(gatedRow.getByText('Waiting for 1 open issue', { exact: true })).toBeVisible();
+		await expect(plainRow.getByText(/Waiting for \d+ open issues?/)).toHaveCount(0);
+		expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
+			390
+		);
+
+		const [createdResponse] = await Promise.all([
+			page.waitForResponse(
+				(response) =>
+					response.request().method() === 'POST' &&
+					new URL(response.url()).pathname === `/api/v1/schedules/${SCHED.plainId}/run`
+			),
+			plainRow.getByRole('button', { name: `Run schedule ${SCHED.plainName} now` }).click()
+		]);
+		expect(createdResponse.status()).toBe(201);
+		const created = (await createdResponse.json()) as IssueDetail;
+		const receipt = plainRow.getByRole('status');
+		const link = receipt.getByRole('link', {
+			name: `Created ${created.project_name}/#${created.number}`
+		});
+		await expect(link).toBeVisible();
+		await expect(link).toHaveAttribute(
+			'href',
+			`/issues/${encodeURIComponent(created.project_name)}/${created.number}`
+		);
+		await expect(
+			plainRow.getByText(`${before.open_instances + 1} open`, { exact: true })
+		).toBeVisible();
+		await expect(plainRow.getByText(/^last /)).toBeVisible();
+		await expect(gatedRow.getByRole('status')).toBeEmpty();
+
+		const [blockedResponse] = await Promise.all([
+			page.waitForResponse(
+				(response) =>
+					response.request().method() === 'POST' &&
+					new URL(response.url()).pathname === `/api/v1/schedules/${SCHED.gatedId}/run`
+			),
+			gatedRow.getByRole('button', { name: `Run schedule ${SCHED.gatedName} now` }).click()
+		]);
+		expect(blockedResponse.status()).toBe(422);
+		const blocked = (await blockedResponse.json()) as { error: { message: string } };
+		await expect(gatedRow.getByRole('alert')).toHaveText(blocked.error.message);
+		await expect(link).toBeVisible();
+		await expect(page.getByText(blocked.error.message, { exact: true })).toHaveCount(1);
+		await expect(
+			gatedRow.getByRole('button', { name: `Run schedule ${SCHED.gatedName} now` })
+		).toBeEnabled();
+
+		await link.click();
+		await expect(page).toHaveURL(
+			new RegExp(`/issues/${encodeURIComponent(created.project_name)}/${created.number}$`)
+		);
+		await expect(page.getByRole('heading', { name: created.title })).toBeVisible();
+
+		await context.close();
+	});
+
 	test('the New Issue modal shows the Repeat section with a live summary', async ({ browser }) => {
 		const context = await browser.newContext();
 		await signIn(context, ALICE.sessionToken);
