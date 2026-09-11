@@ -16,6 +16,7 @@ import { register as registerRunners } from './commands/runners.js';
 import { register as registerSchedules } from './commands/schedules.js';
 import { register as registerSupervisor } from './commands/supervisor.js';
 import { register as registerWorkflows } from './commands/workflows.js';
+import { register as registerUsage } from './commands/usage.js';
 import { reportError } from './common.js';
 import { cliVersion } from './version.js';
 
@@ -37,6 +38,7 @@ registerSchedules(program);
 registerRunners(program);
 registerRouting(program);
 registerSupervisor(program);
+registerUsage(program);
 registerEvents(program);
 
 export { program, reportError };
