@@ -2,6 +2,7 @@ import { createInterface } from 'node:readline/promises';
 import { readFileSync } from 'node:fs';
 import {
 	ApiError,
+	ApiNetworkError,
 	canonicalizeLibraryValue,
 	diagnosticOf,
 	parseLibraryV3Document,
@@ -15,6 +16,7 @@ import {
 import { writeJsonFile } from './config.js';
 
 export const PACKAGE_STDIN = '-';
+const MAX_LOCAL_JSON_BYTES = 32 * 1024 * 1024;
 
 export interface SavedWorkflowPackagePlan {
 	format: 'tines.workflow-install-plan';
@@ -26,7 +28,10 @@ export interface SavedWorkflowPackagePlan {
 
 export function readPackageSource(path: string): string {
 	try {
-		return readFileSync(path === PACKAGE_STDIN ? 0 : path, 'utf8');
+		const bytes = readFileSync(path === PACKAGE_STDIN ? 0 : path);
+		if (bytes.byteLength > MAX_LOCAL_JSON_BYTES)
+			throw new Error(`input exceeds ${MAX_LOCAL_JSON_BYTES} bytes`);
+		return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
 	} catch (error) {
 		throw new Error(
 			`cannot read ${path === PACKAGE_STDIN ? 'stdin' : path}: ${error instanceof Error ? error.message : String(error)}`
@@ -246,6 +251,9 @@ export async function recoverOrInstall(
 	try {
 		return await api.installWorkflowPackage(request);
 	} catch (first) {
+		// A structured server refusal is certain and retrying it can never help.
+		// Only a transport failure leaves the commit outcome unknown.
+		if (!(first instanceof ApiNetworkError)) throw first;
 		try {
 			return await api.getWorkflowPackageReceipt(plan.plan_id);
 		} catch (recovery) {

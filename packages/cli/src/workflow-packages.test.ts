@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
 	ApiError,
+	ApiNetworkError,
 	withLibraryDocumentDigest,
 	type PrepareWorkflowPackageResponse,
 	type WorkflowPackageDocument
@@ -288,10 +289,34 @@ describe('workflow package helpers', () => {
 			},
 			installWorkflowPackage: async () => {
 				installs++;
-				throw new TypeError('lost response');
+				throw new ApiNetworkError(
+					'POST',
+					'/api/v1/library/install',
+					baseUrl,
+					new TypeError('lost response')
+				);
 			}
 		};
 		expect(await recoverOrInstall(api, JSON.stringify(document), plan)).toBe(receipt);
 		expect({ installs, gets }).toEqual({ installs: 1, gets: 2 });
+	});
+
+	it('does not retry a deterministic expired, stale, or tampered rejection', async () => {
+		for (const code of ['plan_expired', 'plan_stale', 'invalid_plan_token']) {
+			let installs = 0;
+			const api = {
+				getWorkflowPackageReceipt: async () => {
+					throw new ApiError(404, { code: 'not_found', message: 'missing' }, 'missing');
+				},
+				installWorkflowPackage: async () => {
+					installs++;
+					throw new ApiError(409, { code, message: code }, code);
+				}
+			};
+			await expect(recoverOrInstall(api, JSON.stringify(document), plan)).rejects.toMatchObject({
+				code
+			});
+			expect(installs).toBe(1);
+		}
 	});
 });
