@@ -9,14 +9,14 @@ import type {
 	WorkflowPackageDocument,
 	WorkflowPackageReceipt
 } from '@tines/shared';
-import { ALICE, BASE_URL } from './constants.mjs';
+import { ALICE, BASE_URL, RUNROW } from './constants.mjs';
 
 const CLI_DIR = fileURLToPath(new URL('../../../packages/cli', import.meta.url));
 const TSX = join(CLI_DIR, 'node_modules', '.bin', 'tsx');
 const CLI = join(CLI_DIR, 'src', 'index.ts');
 
-function cli(args: string[]): string {
-	return execFileSync(TSX, [CLI, ...args, '--url', BASE_URL, '--api-key', ALICE.apiKey], {
+function cli(args: string[], apiKey = ALICE.apiKey): string {
+	return execFileSync(TSX, [CLI, ...args, '--url', BASE_URL, '--api-key', apiKey], {
 		encoding: 'utf8',
 		env: {
 			...process.env,
@@ -87,4 +87,48 @@ test('CLI export, preview, install, and same-plan receipt retry use the real loc
 	expect(retry).toEqual(receipt);
 	expect(receipt.plan_digest).toBe(plan.plan_digest);
 	expect(receipt.objects.some((object) => object.relationship === 'main')).toBe(true);
+
+	const runPlanPath = join(directory, 'run-plan.json');
+	const runChoicesPath = join(directory, 'run-choices.json');
+	writeFileSync(
+		runChoicesPath,
+		JSON.stringify({
+			workflow_names: Object.fromEntries(
+				document.workflows.map((workflow, index) => [
+					workflow.id,
+					`CLI denied run ${Date.now()} ${index}`
+				])
+			)
+		})
+	);
+	const runPlan = JSON.parse(
+		cli(
+			[
+				'workflows',
+				'preview',
+				packagePath,
+				'--choices',
+				runChoicesPath,
+				'--plan-out',
+				runPlanPath,
+				'--json'
+			],
+			RUNROW.runKey
+		)
+	) as PrepareWorkflowPackageResponse;
+	expect(() =>
+		cli(
+			[
+				'workflows',
+				'install',
+				packagePath,
+				'--plan',
+				runPlanPath,
+				'--confirm',
+				runPlan.plan_digest,
+				'--json'
+			],
+			RUNROW.runKey
+		)
+	).toThrow(/run_key_forbidden/);
 });
