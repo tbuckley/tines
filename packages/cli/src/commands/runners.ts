@@ -8,7 +8,9 @@ import {
 	printList,
 	resolveApiKey,
 	resolveIssue,
+	resolveProject,
 	resolveRunner,
+	resolveWorkflow,
 	resolveUrl,
 	table,
 	withCommon,
@@ -44,9 +46,10 @@ import {
 	runDurationLabel,
 	type ModelTier,
 	type Runner,
+	type UsagePendingRun,
 	type UpdateRunnerRequest
 } from '@tines/shared';
-import { InvalidArgumentError, type Command } from 'commander';
+import { InvalidArgumentError, Option, type Command } from 'commander';
 
 function parseBoolean(value: string): boolean {
 	if (value === 'true') return true;
@@ -597,20 +600,92 @@ export function register(program: Command): void {
 			.option('-i, --issue <ref>', 'filter to one issue (<project>/<number>)')
 			.option('-r, --runner <name>', 'filter by runner name')
 			.option('--active', 'only runs holding a claim (assigned/launching/running)')
+			.addOption(
+				new Option('--population <mode>', 'period evidence population').choices([
+					'finalized',
+					'pending'
+				])
+			)
+			.option('--from <timestamp>', 'inclusive period start')
+			.option('--to <timestamp>', 'exclusive period cutoff')
+			.option('--project <name-or-id>', 'project, including archived')
+			.option('--workflow <name-or-id>', 'workflow')
+			.option('--state <id>', 'starting state id')
+			.option('--tier <tier>', 'model tier')
+			.addOption(
+				new Option('--outcome <outcome>', 'recorded outcome').choices([
+					'advanced',
+					'stalled',
+					'interrupted',
+					'unknown'
+				])
+			)
+			.addOption(
+				new Option('--accounting-status <status>', 'usage accounting status').choices([
+					'priced',
+					'unpriced',
+					'unreported'
+				])
+			)
 	).action(async (opts: ListOpts & { issue?: string; runner?: string; active?: boolean }) => {
 		const api = client(opts);
+		const evidence = opts as ListOpts & {
+			population?: 'finalized' | 'pending';
+			from?: string;
+			to?: string;
+			project?: string;
+			workflow?: string;
+			state?: string;
+			tier?: string;
+			outcome?: string;
+			accountingStatus?: string;
+		};
+		if ((evidence.from === undefined) !== (evidence.to === undefined))
+			die('--from and --to are required together');
+		if ((evidence.from || evidence.to) && !evidence.population)
+			die('period filters require --population');
 		const issueId = opts.issue ? (await resolveIssue(api, opts.issue)).id : undefined;
 		const runnerId = opts.runner ? (await resolveRunner(api, opts.runner)).id : undefined;
+		const projectId = evidence.project
+			? (await resolveProject(api, evidence.project)).id
+			: undefined;
+		const workflowId = evidence.workflow
+			? (await resolveWorkflow(api, evidence.workflow)).id
+			: undefined;
 		const res = await fetchList(opts, (page) =>
 			api.listRuns({
 				issue: issueId,
 				runner: runnerId,
 				active: opts.active ? true : undefined,
+				population: evidence.population,
+				from: evidence.from,
+				to: evidence.to,
+				project: projectId,
+				workflow: workflowId,
+				state: evidence.state,
+				tier: evidence.tier,
+				outcome: evidence.outcome as never,
+				accounting_status: evidence.accountingStatus as never,
 				...page
 			})
 		);
 		printList(res, opts, (items) => {
 			if (items.length === 0) return console.log(opts.active ? 'no active runs' : 'no runs');
+			if (evidence.population === 'pending') {
+				table([
+					['ID', 'ISSUE', 'RUNNER', 'TIER', 'STATUS', 'COST', 'CREATED'],
+					...(items as unknown as UsagePendingRun[]).map((run) => [
+						run.id,
+						run.issue_ref ? `${run.issue_ref.project_name}/${run.issue_ref.number}` : run.issue_id,
+						run.runner_name,
+						run.tier,
+						'Pending at cutoff',
+						'—',
+						timestamp(run.created_at)
+					])
+				]);
+				return;
+			}
 			table([
 				['ID', 'ISSUE', 'RUNNER', 'TIER', 'STATUS', 'DURATION', 'COST', 'CREATED'],
 				...items.map(runRow)

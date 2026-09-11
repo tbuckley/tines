@@ -49,6 +49,7 @@
 	import RoutingRuleRow from '$lib/components/RoutingRuleRow.svelte';
 	import RunRow from '$lib/components/RunRow.svelte';
 	import StateBadge from '$lib/components/StateBadge.svelte';
+	import SpendPanel from '$lib/components/SpendPanel.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { Select } from '$lib/components/ui/select/index.js';
@@ -57,6 +58,15 @@
 	import { addRunnerToGlobalRule, findGlobalRule } from '$lib/routing';
 
 	let { data } = $props();
+	const agentsView = $derived(
+		page.url.searchParams.get('agents_view') === 'spend' ? 'spend' : 'now'
+	);
+	function chooseAgentsView(view: 'now' | 'spend') {
+		const url = new URL(page.url);
+		if (view === 'now') url.searchParams.delete('agents_view');
+		else url.searchParams.set('agents_view', view);
+		replaceState(url, {});
+	}
 
 	const dur = () => (prefersReducedMotion() ? 0 : 180);
 
@@ -1009,496 +1019,523 @@
 	</div>
 </div>
 
-{#if errorMessage}
-	<div
-		class="border-destructive/40 bg-destructive/10 text-destructive mb-4 rounded-md border px-4 py-2.5 text-sm"
-		transition:slide={{ duration: dur() }}
+<nav class="mb-6 flex gap-2" aria-label="Agents view">
+	<Button
+		variant={agentsView === 'now' ? 'secondary' : 'ghost'}
+		aria-current={agentsView === 'now' ? 'page' : undefined}
+		onclick={() => chooseAgentsView('now')}>Now</Button
 	>
-		{errorMessage}
-	</div>
-{/if}
+	<Button
+		variant={agentsView === 'spend' ? 'secondary' : 'ghost'}
+		aria-current={agentsView === 'spend' ? 'page' : undefined}
+		onclick={() => chooseAgentsView('spend')}>Spend</Button
+	>
+</nav>
 
-<!-- Before the first run the checklist includes automation readiness as one of six steps. -->
-{#if checklistVisible}
-	<FirstRunChecklist
-		inputs={checklistInputs}
-		oncreateissue={() => (newIssueOpen = true)}
-		onaddrunner={() => (addRunnerOpen = true)}
-		onroute={routeToSoleRunner}
-		onenable={() => setEnabled(true)}
-		onerror={showError}
+{#if agentsView === 'spend'}
+	<SpendPanel
+		projects={data.projects}
+		archivedProjects={data.archivedProjects}
+		focusId={data.focusId}
 	/>
-	<NewIssueModal bind:open={newIssueOpen} projects={data.projects} workflows={data.workflows} />
-{:else if !data.settings.enabled}
-	<!-- kill-switch off-state banner: persistent while automation is disabled -->
-	<div
-		class="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-800 dark:text-amber-300"
-	>
-		<span class="flex items-center gap-2">
-			<IconAlertTriangle size={16} stroke={1.75} />
-			Automation is off — nothing dispatches until you turn it on.
-		</span>
-		<Button size="sm" onclick={() => setEnabled(true)} disabled={togglingEnabled}
-			>Resume automation</Button
+{:else}
+	{#if errorMessage}
+		<div
+			class="border-destructive/40 bg-destructive/10 text-destructive mb-4 rounded-md border px-4 py-2.5 text-sm"
+			transition:slide={{ duration: dur() }}
 		>
-	</div>
-{/if}
-
-<!-- Now row: what is waiting, and why (Tines/256) -->
-<FleetQueuePanel
-	queue={data.queue}
-	runners={data.runners}
-	now={data.queue.generated_at}
-	onraisecap={(runner) => {
-		editFocusCap = true;
-		openRunnerEdit(runner);
-	}}
-	onquota={focusQuota}
-	onswitchtoroster={switchToRoster}
-	onaddrule={(stateId) => openRuleCreate({ stateId })}
-	oneditrule={(ruleId) => {
-		const rule = data.rules.find((r) => r.id === ruleId);
-		if (rule) openRuleEdit(rule);
-	}}
-	onresumerunner={(runner) => setRunnerStatus(runner, 'active')}
-	onresume={resumeParked}
-	onenable={() => setEnabled(true)}
-/>
-
-<!-- Runners -->
-<div class="mb-10">
-	<div class="mb-3 flex items-center justify-between">
-		<h2 class="text-sm font-semibold">Runners</h2>
-		<Button size="sm" variant="ghost" onclick={() => (addRunnerOpen = true)}>
-			<IconPlus size={14} /> Add runner
-		</Button>
-	</div>
-	{#if data.runners.length === 0}
-		<div class="text-muted-foreground rounded-lg border border-dashed p-8 text-center text-sm">
-			No runners yet. Add a local runner for this machine, or a Claude managed runner that works
-			issues in the cloud (Gemini arrives in a later milestone).
-			<div class="mt-3">
-				<Button size="sm" variant="outline" onclick={() => (addRunnerOpen = true)}>
-					<IconPlus size={14} /> Add runner
-				</Button>
-			</div>
+			{errorMessage}
 		</div>
-	{:else}
-		<div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-			{#each data.runners as runner (runner.id)}
-				<div class="rounded-lg border p-4">
-					<div class="mb-2 flex items-center gap-2">
-						<span
-							class="bg-muted text-muted-foreground flex size-8 items-center justify-center rounded-md"
-						>
-							{#if runner.type === 'local'}
-								<IconDeviceLaptop size={18} stroke={1.75} />
-							{:else}
-								<IconCloud size={18} stroke={1.75} />
-							{/if}
-						</span>
-						<div class="min-w-0">
-							<p class="truncate text-sm font-medium">{runner.name}</p>
-							<p class="text-muted-foreground flex items-center gap-1.5 text-xs">
-								<span class="size-1.5 rounded-full {statusDotClass(runner)}"></span>
-								{runnerStatusLabel(runner)}
-								{#if runner.last_seen_at}
-									· seen {relativeTime(runner.last_seen_at)}
+	{/if}
+
+	<!-- Before the first run the checklist includes automation readiness as one of six steps. -->
+	{#if checklistVisible}
+		<FirstRunChecklist
+			inputs={checklistInputs}
+			oncreateissue={() => (newIssueOpen = true)}
+			onaddrunner={() => (addRunnerOpen = true)}
+			onroute={routeToSoleRunner}
+			onenable={() => setEnabled(true)}
+			onerror={showError}
+		/>
+		<NewIssueModal bind:open={newIssueOpen} projects={data.projects} workflows={data.workflows} />
+	{:else if !data.settings.enabled}
+		<!-- kill-switch off-state banner: persistent while automation is disabled -->
+		<div
+			class="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-800 dark:text-amber-300"
+		>
+			<span class="flex items-center gap-2">
+				<IconAlertTriangle size={16} stroke={1.75} />
+				Automation is off — nothing dispatches until you turn it on.
+			</span>
+			<Button size="sm" onclick={() => setEnabled(true)} disabled={togglingEnabled}
+				>Resume automation</Button
+			>
+		</div>
+	{/if}
+
+	<!-- Now row: what is waiting, and why (Tines/256) -->
+	<FleetQueuePanel
+		queue={data.queue}
+		runners={data.runners}
+		now={data.queue.generated_at}
+		onraisecap={(runner) => {
+			editFocusCap = true;
+			openRunnerEdit(runner);
+		}}
+		onquota={focusQuota}
+		onswitchtoroster={switchToRoster}
+		onaddrule={(stateId) => openRuleCreate({ stateId })}
+		oneditrule={(ruleId) => {
+			const rule = data.rules.find((r) => r.id === ruleId);
+			if (rule) openRuleEdit(rule);
+		}}
+		onresumerunner={(runner) => setRunnerStatus(runner, 'active')}
+		onresume={resumeParked}
+		onenable={() => setEnabled(true)}
+	/>
+
+	<!-- Runners -->
+	<div class="mb-10">
+		<div class="mb-3 flex items-center justify-between">
+			<h2 class="text-sm font-semibold">Runners</h2>
+			<Button size="sm" variant="ghost" onclick={() => (addRunnerOpen = true)}>
+				<IconPlus size={14} /> Add runner
+			</Button>
+		</div>
+		{#if data.runners.length === 0}
+			<div class="text-muted-foreground rounded-lg border border-dashed p-8 text-center text-sm">
+				No runners yet. Add a local runner for this machine, or a Claude managed runner that works
+				issues in the cloud (Gemini arrives in a later milestone).
+				<div class="mt-3">
+					<Button size="sm" variant="outline" onclick={() => (addRunnerOpen = true)}>
+						<IconPlus size={14} /> Add runner
+					</Button>
+				</div>
+			</div>
+		{:else}
+			<div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+				{#each data.runners as runner (runner.id)}
+					<div class="rounded-lg border p-4">
+						<div class="mb-2 flex items-center gap-2">
+							<span
+								class="bg-muted text-muted-foreground flex size-8 items-center justify-center rounded-md"
+							>
+								{#if runner.type === 'local'}
+									<IconDeviceLaptop size={18} stroke={1.75} />
+								{:else}
+									<IconCloud size={18} stroke={1.75} />
 								{/if}
-							</p>
+							</span>
+							<div class="min-w-0">
+								<p class="truncate text-sm font-medium">{runner.name}</p>
+								<p class="text-muted-foreground flex items-center gap-1.5 text-xs">
+									<span class="size-1.5 rounded-full {statusDotClass(runner)}"></span>
+									{runnerStatusLabel(runner)}
+									{#if runner.last_seen_at}
+										· seen {relativeTime(runner.last_seen_at)}
+									{/if}
+								</p>
+							</div>
 						</div>
-					</div>
-					<p class="text-muted-foreground mb-3 text-xs">
-						{runner.active_runs}/{runner.max_concurrent} runs · {runner.max_run_minutes}m timeout ·
-						default tier {runner.default_tier}
-						{#if waitingByRunner.has(runner.id)}
-							{@const runnerWaiting = waitingByRunner.get(runner.id)!}
-							·
-							<a
-								class="text-amber-700 underline underline-offset-2 dark:text-amber-400"
-								href={runnerWaiting.href}
-							>
-								{runnerWaiting.count} waiting
-							</a>
-						{/if}
-						{#if runner.budget?.max_run_cost_usd !== undefined}
-							· ${runner.budget.max_run_cost_usd}/run
-						{/if}
-						{#if rateLimited(runner, now)}
-							<span class="text-amber-600 dark:text-amber-400"
-								>· usage limit — resumes {new Date(
-									runner.backoff_until as number
-								).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</span
-							>
-						{/if}
-						{#if runner.launch_failures > 0}
-							<span class="text-amber-600 dark:text-amber-400"
-								>· {runner.launch_failures} consecutive failures</span
-							>
-						{/if}
-					</p>
-					<div class="flex flex-wrap gap-2">
-						{#if runner.status === 'paused'}
-							<Button size="sm" variant="outline" onclick={() => setRunnerStatus(runner, 'active')}
-								>Resume</Button
-							>
-						{:else}
-							<Button size="sm" variant="outline" onclick={() => setRunnerStatus(runner, 'paused')}
-								>Pause</Button
-							>
-						{/if}
-						<Button size="sm" variant="ghost" onclick={() => openRunnerEdit(runner)}>Edit</Button>
-						{#if runner.type === 'local'}
+						<p class="text-muted-foreground mb-3 text-xs">
+							{runner.active_runs}/{runner.max_concurrent} runs · {runner.max_run_minutes}m timeout
+							· default tier {runner.default_tier}
+							{#if waitingByRunner.has(runner.id)}
+								{@const runnerWaiting = waitingByRunner.get(runner.id)!}
+								·
+								<a
+									class="text-amber-700 underline underline-offset-2 dark:text-amber-400"
+									href={runnerWaiting.href}
+								>
+									{runnerWaiting.count} waiting
+								</a>
+							{/if}
+							{#if runner.budget?.max_run_cost_usd !== undefined}
+								· ${runner.budget.max_run_cost_usd}/run
+							{/if}
+							{#if rateLimited(runner, now)}
+								<span class="text-amber-600 dark:text-amber-400"
+									>· usage limit — resumes {new Date(
+										runner.backoff_until as number
+									).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</span
+								>
+							{/if}
+							{#if runner.launch_failures > 0}
+								<span class="text-amber-600 dark:text-amber-400"
+									>· {runner.launch_failures} consecutive failures</span
+								>
+							{/if}
+						</p>
+						<div class="flex flex-wrap gap-2">
+							{#if runner.status === 'paused'}
+								<Button
+									size="sm"
+									variant="outline"
+									onclick={() => setRunnerStatus(runner, 'active')}>Resume</Button
+								>
+							{:else}
+								<Button
+									size="sm"
+									variant="outline"
+									onclick={() => setRunnerStatus(runner, 'paused')}>Pause</Button
+								>
+							{/if}
+							<Button size="sm" variant="ghost" onclick={() => openRunnerEdit(runner)}>Edit</Button>
+							{#if runner.type === 'local'}
+								<Button
+									size="sm"
+									variant="ghost"
+									disabled={rotatingRunnerId === runner.id}
+									title="Invalidate the runner token and mint a fresh one (shown once)"
+									onclick={() => (rotateTarget = runner)}
+								>
+									<IconKey size={14} /> Rotate token
+								</Button>
+							{/if}
 							<Button
 								size="sm"
 								variant="ghost"
-								disabled={rotatingRunnerId === runner.id}
-								title="Invalidate the runner token and mint a fresh one (shown once)"
-								onclick={() => (rotateTarget = runner)}
+								class="text-destructive"
+								onclick={() => removeRunner(runner)}
 							>
-								<IconKey size={14} /> Rotate token
+								<IconTrash size={14} /> Remove
 							</Button>
-						{/if}
-						<Button
-							size="sm"
-							variant="ghost"
-							class="text-destructive"
-							onclick={() => removeRunner(runner)}
-						>
-							<IconTrash size={14} /> Remove
-						</Button>
+						</div>
 					</div>
+				{/each}
+			</div>
+		{/if}
+	</div>
+
+	<!-- Runs -->
+	<div class="mb-10">
+		<div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+			<h2 class="text-sm font-semibold">
+				Runs
+				<span class="text-muted-foreground font-normal">— {utilization}</span>
+			</h2>
+			<label class="text-muted-foreground flex items-center gap-2 text-xs">
+				<input type="checkbox" bind:checked={showAllRuns} class="accent-primary" />
+				Show ended runs
+			</label>
+		</div>
+		{#if visibleRuns.length === 0}
+			<div class="text-muted-foreground rounded-lg border border-dashed p-8 text-center text-sm">
+				{showAllRuns
+					? 'No runs yet — they appear here as soon as the supervisor dispatches an eligible issue.'
+					: 'No active runs.'}
+			</div>
+		{:else}
+			<ul class="divide-y rounded-lg border">
+				{#each visibleRuns as run (run.id)}
+					<RunRow {run} showIssueRef oncancel={(r) => (cancelTarget = r)} />
+				{/each}
+			</ul>
+		{/if}
+	</div>
+
+	<!-- Routing -->
+	<div class="mb-10" id="routing">
+		<div class="mb-3 flex items-start justify-between gap-3">
+			<div>
+				<h2 class="text-sm font-semibold">Routing</h2>
+				<p class="text-muted-foreground mt-0.5 text-xs">
+					Most specific matching rule wins — label beats project beats state; a global rule is the
+					fallback. Listed most specific first.
+				</p>
+			</div>
+			<Button size="sm" variant="ghost" class="shrink-0" onclick={() => openRuleCreate()}>
+				<IconPlus size={14} /> Add rule
+			</Button>
+		</div>
+		{#if data.runners.length > 0 && data.rules.length === 0}
+			<div
+				class="mb-3 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-300"
+			>
+				You have a runner but no routing rules — nothing will dispatch. Add a global rule to route
+				everything.
+			</div>
+		{/if}
+		{#if ruleWarnings.length > 0}
+			<div
+				class="mb-3 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-300"
+				transition:slide={{ duration: dur() }}
+			>
+				<div class="flex items-start justify-between gap-2">
+					<ul class="space-y-0.5">
+						{#each ruleWarnings as warning (warning.rule_id + warning.message)}
+							<li>{warning.message}</li>
+						{/each}
+					</ul>
+					<button
+						type="button"
+						class="shrink-0"
+						aria-label="Dismiss"
+						onclick={() => (ruleWarnings = [])}
+					>
+						<IconX size={14} />
+					</button>
 				</div>
-			{/each}
-		</div>
-	{/if}
-</div>
-
-<!-- Runs -->
-<div class="mb-10">
-	<div class="mb-3 flex flex-wrap items-center justify-between gap-2">
-		<h2 class="text-sm font-semibold">
-			Runs
-			<span class="text-muted-foreground font-normal">— {utilization}</span>
-		</h2>
-		<label class="text-muted-foreground flex items-center gap-2 text-xs">
-			<input type="checkbox" bind:checked={showAllRuns} class="accent-primary" />
-			Show ended runs
-		</label>
+			</div>
+		{/if}
+		{#if data.displayRules.length === 0}
+			<div class="text-muted-foreground rounded-lg border border-dashed p-8 text-center text-sm">
+				No routing rules. A rule is an ordered runner preference list at a scope — add one to start
+				dispatching issues to agents.
+				<div class="mt-3">
+					{#if data.runners.length === 0}
+						<Button size="sm" variant="outline" onclick={() => (addRunnerOpen = true)}>
+							<IconPlus size={14} /> Add a runner first
+						</Button>
+					{:else}
+						<Button size="sm" variant="outline" onclick={() => openRuleCreate({ projectId: '' })}>
+							<IconPlus size={14} /> Add a global rule
+						</Button>
+					{/if}
+				</div>
+			</div>
+		{:else}
+			<ul class="divide-y rounded-lg border" aria-label="Routing rules">
+				{#each data.displayRules as rule (rule.id)}
+					<RoutingRuleRow
+						{rule}
+						{activeStateIds}
+						projectArchived={rule.scope.project_id !== null &&
+							archivedProjectIds.has(rule.scope.project_id)}
+						waiting={waitingByRule.get(rule.id)}
+						onedit={openRuleEdit}
+						ondelete={deleteRule}
+					/>
+				{/each}
+			</ul>
+		{/if}
 	</div>
-	{#if visibleRuns.length === 0}
-		<div class="text-muted-foreground rounded-lg border border-dashed p-8 text-center text-sm">
-			{showAllRuns
-				? 'No runs yet — they appear here as soon as the supervisor dispatches an eligible issue.'
-				: 'No active runs.'}
-		</div>
-	{:else}
-		<ul class="divide-y rounded-lg border">
-			{#each visibleRuns as run (run.id)}
-				<RunRow {run} showIssueRef oncancel={(r) => (cancelTarget = r)} />
-			{/each}
-		</ul>
-	{/if}
-</div>
 
-<!-- Routing -->
-<div class="mb-10" id="routing">
-	<div class="mb-3 flex items-start justify-between gap-3">
-		<div>
-			<h2 class="text-sm font-semibold">Routing</h2>
-			<p class="text-muted-foreground mt-0.5 text-xs">
-				Most specific matching rule wins — label beats project beats state; a global rule is the
-				fallback. Listed most specific first.
-			</p>
-		</div>
-		<Button size="sm" variant="ghost" class="shrink-0" onclick={() => openRuleCreate()}>
-			<IconPlus size={14} /> Add rule
-		</Button>
-	</div>
-	{#if data.runners.length > 0 && data.rules.length === 0}
-		<div
-			class="mb-3 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-300"
-		>
-			You have a runner but no routing rules — nothing will dispatch. Add a global rule to route
-			everything.
-		</div>
-	{/if}
-	{#if ruleWarnings.length > 0}
-		<div
-			class="mb-3 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-300"
-			transition:slide={{ duration: dur() }}
-		>
-			<div class="flex items-start justify-between gap-2">
-				<ul class="space-y-0.5">
-					{#each ruleWarnings as warning (warning.rule_id + warning.message)}
-						<li>{warning.message}</li>
-					{/each}
-				</ul>
+	<!-- Automation settings -->
+	<div class="mb-10 max-w-2xl">
+		<h2 class="mb-3 text-sm font-semibold">Automation settings</h2>
+		<div class="space-y-6 rounded-lg border p-5">
+			<!-- the kill switch, prominent -->
+			<div class="flex items-center justify-between gap-4">
+				<div>
+					<p class="flex items-center gap-1.5 text-sm font-medium">
+						<IconRobot size={16} stroke={1.75} /> Automation
+					</p>
+					<p class="text-muted-foreground mt-0.5 text-xs">
+						The kill switch: while off, no issue is dispatched to any runner.
+					</p>
+				</div>
 				<button
 					type="button"
-					class="shrink-0"
-					aria-label="Dismiss"
-					onclick={() => (ruleWarnings = [])}
+					role="switch"
+					aria-checked={data.settings.enabled}
+					aria-label="Automation kill switch"
+					disabled={togglingEnabled}
+					onclick={() => (data.settings.enabled ? requestDisable() : setEnabled(true))}
+					class="relative h-6 w-11 shrink-0 rounded-full transition-colors {data.settings.enabled
+						? 'bg-emerald-500'
+						: 'bg-muted-foreground/30'}"
 				>
-					<IconX size={14} />
+					<span
+						class="bg-background absolute top-0.5 left-0.5 size-5 rounded-full shadow transition-transform {data
+							.settings.enabled
+							? 'translate-x-5'
+							: ''}"
+					></span>
 				</button>
 			</div>
-		</div>
-	{/if}
-	{#if data.displayRules.length === 0}
-		<div class="text-muted-foreground rounded-lg border border-dashed p-8 text-center text-sm">
-			No routing rules. A rule is an ordered runner preference list at a scope — add one to start
-			dispatching issues to agents.
-			<div class="mt-3">
-				{#if data.runners.length === 0}
-					<Button size="sm" variant="outline" onclick={() => (addRunnerOpen = true)}>
-						<IconPlus size={14} /> Add a runner first
-					</Button>
-				{:else}
-					<Button size="sm" variant="outline" onclick={() => openRuleCreate({ projectId: '' })}>
-						<IconPlus size={14} /> Add a global rule
-					</Button>
-				{/if}
-			</div>
-		</div>
-	{:else}
-		<ul class="divide-y rounded-lg border" aria-label="Routing rules">
-			{#each data.displayRules as rule (rule.id)}
-				<RoutingRuleRow
-					{rule}
-					{activeStateIds}
-					projectArchived={rule.scope.project_id !== null &&
-						archivedProjectIds.has(rule.scope.project_id)}
-					waiting={waitingByRule.get(rule.id)}
-					onedit={openRuleEdit}
-					ondelete={deleteRule}
-				/>
-			{/each}
-		</ul>
-	{/if}
-</div>
 
-<!-- Automation settings -->
-<div class="mb-10 max-w-2xl">
-	<h2 class="mb-3 text-sm font-semibold">Automation settings</h2>
-	<div class="space-y-6 rounded-lg border p-5">
-		<!-- the kill switch, prominent -->
-		<div class="flex items-center justify-between gap-4">
-			<div>
-				<p class="flex items-center gap-1.5 text-sm font-medium">
-					<IconRobot size={16} stroke={1.75} /> Automation
-				</p>
-				<p class="text-muted-foreground mt-0.5 text-xs">
-					The kill switch: while off, no issue is dispatched to any runner.
-				</p>
-			</div>
-			<button
-				type="button"
-				role="switch"
-				aria-checked={data.settings.enabled}
-				aria-label="Automation kill switch"
-				disabled={togglingEnabled}
-				onclick={() => (data.settings.enabled ? requestDisable() : setEnabled(true))}
-				class="relative h-6 w-11 shrink-0 rounded-full transition-colors {data.settings.enabled
-					? 'bg-emerald-500'
-					: 'bg-muted-foreground/30'}"
-			>
-				<span
-					class="bg-background absolute top-0.5 left-0.5 size-5 rounded-full shadow transition-transform {data
-						.settings.enabled
-						? 'translate-x-5'
-						: ''}"
-				></span>
-			</button>
-		</div>
-
-		<form onsubmit={saveSettings} class="space-y-5">
-			<div class="space-y-2">
-				<p class="text-sm font-medium" id="quota-policy">Quota policy</p>
-				<!-- segmented control -->
-				<div class="bg-muted inline-flex rounded-md p-0.5 text-sm">
-					<button
-						type="button"
-						class="rounded px-3 py-1 {quotaType === 'global_cap'
-							? 'bg-background font-medium shadow-xs'
-							: 'text-muted-foreground'}"
-						onclick={() => (quotaType = 'global_cap')}
-					>
-						Global cap
-					</button>
-					<button
-						type="button"
-						class="rounded px-3 py-1 {quotaType === 'state_roster'
-							? 'bg-background font-medium shadow-xs'
-							: 'text-muted-foreground'}"
-						onclick={() => (quotaType = 'state_roster')}
-					>
-						Per-state roster
-					</button>
+			<form onsubmit={saveSettings} class="space-y-5">
+				<div class="space-y-2">
+					<p class="text-sm font-medium" id="quota-policy">Quota policy</p>
+					<!-- segmented control -->
+					<div class="bg-muted inline-flex rounded-md p-0.5 text-sm">
+						<button
+							type="button"
+							class="rounded px-3 py-1 {quotaType === 'global_cap'
+								? 'bg-background font-medium shadow-xs'
+								: 'text-muted-foreground'}"
+							onclick={() => (quotaType = 'global_cap')}
+						>
+							Global cap
+						</button>
+						<button
+							type="button"
+							class="rounded px-3 py-1 {quotaType === 'state_roster'
+								? 'bg-background font-medium shadow-xs'
+								: 'text-muted-foreground'}"
+							onclick={() => (quotaType = 'state_roster')}
+						>
+							Per-state roster
+						</button>
+					</div>
+					{#if quotaType === 'global_cap'}
+						<div class="flex items-center gap-2" transition:slide={{ duration: dur() }}>
+							<label class="text-muted-foreground text-sm" for="global-limit">At most</label>
+							<Input
+								id="global-limit"
+								type="number"
+								min="1"
+								max="100"
+								class="w-20"
+								value={globalLimit}
+								oninput={(e) => (globalLimit = Number.parseInt(e.currentTarget.value, 10) || 1)}
+							/>
+							<span class="text-muted-foreground text-sm">concurrent runs across everything</span>
+						</div>
+					{:else}
+						<div class="space-y-3" transition:slide={{ duration: dur() }}>
+							<div class="flex items-center gap-2">
+								<label class="text-muted-foreground text-sm" for="roster-default">Default</label>
+								<Input
+									id="roster-default"
+									type="number"
+									min="0"
+									max="100"
+									class="w-20"
+									value={rosterDefault}
+									oninput={(e) => (rosterDefault = Number.parseInt(e.currentTarget.value, 10) || 0)}
+								/>
+								<span class="text-muted-foreground text-sm">concurrent runs per state</span>
+							</div>
+							<p class="text-muted-foreground text-xs">
+								Counted by the state a run started in. Leave a state blank to inherit the default; 0
+								means no agents work that stage.
+							</p>
+							<!-- every state, grouped by workflow, inherited default shown -->
+							<div class="max-h-72 space-y-3 overflow-y-auto rounded-md border p-3">
+								{#each data.workflows as workflow (workflow.id)}
+									<div>
+										<p class="text-muted-foreground mb-1.5 text-xs font-semibold">
+											{workflow.name}
+										</p>
+										<div class="space-y-1.5">
+											{#each workflow.states as state (state.id)}
+												{@const waiting = waitingByState.get(state.id)}
+												<div
+													class="flex items-center justify-between gap-2 rounded-md {highlightStateId ===
+													state.id
+														? 'ring-2 ring-amber-400'
+														: ''}"
+												>
+													<span class="flex min-w-0 items-center gap-2">
+														<StateBadge {state} />
+														{#if waiting}
+															<a
+																class="text-xs text-amber-700 underline underline-offset-2 dark:text-amber-400"
+																href={waiting.href}
+															>
+																{waiting.count} waiting · oldest {queueAge(
+																	waiting.oldest,
+																	waiting.now
+																)}
+															</a>
+														{/if}
+													</span>
+													<span class="flex items-center gap-2">
+														{#if (rosterOverrides[state.id] ?? '') === ''}
+															<span class="text-muted-foreground text-xs"
+																>inherits {rosterDefault}</span
+															>
+														{/if}
+														<Input
+															id="roster-limit-{state.id}"
+															type="number"
+															min="0"
+															max="100"
+															class="w-20"
+															placeholder={String(rosterDefault)}
+															aria-label={`Limit for ${workflow.name} / ${state.name}`}
+															value={rosterOverrides[state.id] ?? ''}
+															oninput={(e) =>
+																(rosterOverrides = {
+																	...rosterOverrides,
+																	[state.id]: e.currentTarget.value
+																})}
+														/>
+													</span>
+												</div>
+											{/each}
+										</div>
+									</div>
+								{/each}
+							</div>
+						</div>
+					{/if}
 				</div>
-				{#if quotaType === 'global_cap'}
-					<div class="flex items-center gap-2" transition:slide={{ duration: dur() }}>
-						<label class="text-muted-foreground text-sm" for="global-limit">At most</label>
+
+				<div class="space-y-1.5">
+					<label class="text-sm font-medium" for="attempt-limit">Attempt limit</label>
+					<div class="flex items-center gap-2">
 						<Input
-							id="global-limit"
+							id="attempt-limit"
 							type="number"
 							min="1"
 							max="100"
 							class="w-20"
-							value={globalLimit}
-							oninput={(e) => (globalLimit = Number.parseInt(e.currentTarget.value, 10) || 1)}
+							value={attemptLimit}
+							oninput={(e) => (attemptLimit = Number.parseInt(e.currentTarget.value, 10) || 1)}
 						/>
-						<span class="text-muted-foreground text-sm">concurrent runs across everything</span>
+						<span class="text-muted-foreground text-sm">
+							strikes (runs that end without moving the issue) before it parks for a human
+						</span>
 					</div>
-				{:else}
-					<div class="space-y-3" transition:slide={{ duration: dur() }}>
-						<div class="flex items-center gap-2">
-							<label class="text-muted-foreground text-sm" for="roster-default">Default</label>
-							<Input
-								id="roster-default"
-								type="number"
-								min="0"
-								max="100"
-								class="w-20"
-								value={rosterDefault}
-								oninput={(e) => (rosterDefault = Number.parseInt(e.currentTarget.value, 10) || 0)}
-							/>
-							<span class="text-muted-foreground text-sm">concurrent runs per state</span>
-						</div>
-						<p class="text-muted-foreground text-xs">
-							Counted by the state a run started in. Leave a state blank to inherit the default; 0
-							means no agents work that stage.
-						</p>
-						<!-- every state, grouped by workflow, inherited default shown -->
-						<div class="max-h-72 space-y-3 overflow-y-auto rounded-md border p-3">
-							{#each data.workflows as workflow (workflow.id)}
-								<div>
-									<p class="text-muted-foreground mb-1.5 text-xs font-semibold">{workflow.name}</p>
-									<div class="space-y-1.5">
-										{#each workflow.states as state (state.id)}
-											{@const waiting = waitingByState.get(state.id)}
-											<div
-												class="flex items-center justify-between gap-2 rounded-md {highlightStateId ===
-												state.id
-													? 'ring-2 ring-amber-400'
-													: ''}"
-											>
-												<span class="flex min-w-0 items-center gap-2">
-													<StateBadge {state} />
-													{#if waiting}
-														<a
-															class="text-xs text-amber-700 underline underline-offset-2 dark:text-amber-400"
-															href={waiting.href}
-														>
-															{waiting.count} waiting · oldest {queueAge(
-																waiting.oldest,
-																waiting.now
-															)}
-														</a>
-													{/if}
-												</span>
-												<span class="flex items-center gap-2">
-													{#if (rosterOverrides[state.id] ?? '') === ''}
-														<span class="text-muted-foreground text-xs"
-															>inherits {rosterDefault}</span
-														>
-													{/if}
-													<Input
-														id="roster-limit-{state.id}"
-														type="number"
-														min="0"
-														max="100"
-														class="w-20"
-														placeholder={String(rosterDefault)}
-														aria-label={`Limit for ${workflow.name} / ${state.name}`}
-														value={rosterOverrides[state.id] ?? ''}
-														oninput={(e) =>
-															(rosterOverrides = {
-																...rosterOverrides,
-																[state.id]: e.currentTarget.value
-															})}
-													/>
-												</span>
-											</div>
-										{/each}
-									</div>
-								</div>
-							{/each}
-						</div>
-					</div>
-				{/if}
-			</div>
+				</div>
 
-			<div class="space-y-1.5">
-				<label class="text-sm font-medium" for="attempt-limit">Attempt limit</label>
+				<div class="flex justify-end">
+					<Button type="submit" disabled={savingSettings}>
+						{savingSettings ? 'Saving…' : 'Save settings'}
+					</Button>
+				</div>
+			</form>
+
+			<!-- GitHub PAT: one credential shared across managed runners, write-only -->
+			<form onsubmit={savePat} class="space-y-1.5 border-t pt-5">
+				<p class="text-sm font-medium">GitHub access</p>
+				{#if data.settings.github_pat_hint}
+					<p class="text-muted-foreground text-xs">
+						A personal access token is stored ({data.settings.github_pat_hint}) — write-only; paste
+						a new one to replace it.
+					</p>
+				{:else}
+					<p class="text-muted-foreground text-xs">
+						No token stored. Managed runners clone repositories with this token; without one, their
+						runs fail at clone time.
+					</p>
+				{/if}
 				<div class="flex items-center gap-2">
 					<Input
-						id="attempt-limit"
-						type="number"
-						min="1"
-						max="100"
-						class="w-20"
-						value={attemptLimit}
-						oninput={(e) => (attemptLimit = Number.parseInt(e.currentTarget.value, 10) || 1)}
+						type="password"
+						class="flex-1"
+						placeholder={data.settings.github_pat_hint
+							? 'Paste a new fine-grained PAT'
+							: 'github_pat_…'}
+						aria-label="GitHub personal access token"
+						bind:value={patInput}
 					/>
-					<span class="text-muted-foreground text-sm">
-						strikes (runs that end without moving the issue) before it parks for a human
-					</span>
+					<Button type="submit" variant="outline" disabled={savingPat || patInput.trim() === ''}>
+						{savingPat ? 'Saving…' : data.settings.github_pat_hint ? 'Replace' : 'Save token'}
+					</Button>
 				</div>
-			</div>
-
-			<div class="flex justify-end">
-				<Button type="submit" disabled={savingSettings}>
-					{savingSettings ? 'Saving…' : 'Save settings'}
-				</Button>
-			</div>
-		</form>
-
-		<!-- GitHub PAT: one credential shared across managed runners, write-only -->
-		<form onsubmit={savePat} class="space-y-1.5 border-t pt-5">
-			<p class="text-sm font-medium">GitHub access</p>
-			{#if data.settings.github_pat_hint}
+				{#if patReplacedNote}
+					<p
+						class="text-xs text-emerald-700 dark:text-emerald-400"
+						transition:slide={{ duration: dur() }}
+					>
+						{patReplacedNote}
+					</p>
+				{/if}
 				<p class="text-muted-foreground text-xs">
-					A personal access token is stored ({data.settings.github_pat_hint}) — write-only; paste a
-					new one to replace it.
+					Use a fine-grained token scoped to exactly the repos your context items point at — the
+					token never enters an agent's sandbox, but every run wields its full authority, so that
+					repo set is the blast radius of a compromised run.
 				</p>
-			{:else}
-				<p class="text-muted-foreground text-xs">
-					No token stored. Managed runners clone repositories with this token; without one, their
-					runs fail at clone time.
-				</p>
-			{/if}
-			<div class="flex items-center gap-2">
-				<Input
-					type="password"
-					class="flex-1"
-					placeholder={data.settings.github_pat_hint
-						? 'Paste a new fine-grained PAT'
-						: 'github_pat_…'}
-					aria-label="GitHub personal access token"
-					bind:value={patInput}
-				/>
-				<Button type="submit" variant="outline" disabled={savingPat || patInput.trim() === ''}>
-					{savingPat ? 'Saving…' : data.settings.github_pat_hint ? 'Replace' : 'Save token'}
-				</Button>
-			</div>
-			{#if patReplacedNote}
-				<p
-					class="text-xs text-emerald-700 dark:text-emerald-400"
-					transition:slide={{ duration: dur() }}
-				>
-					{patReplacedNote}
-				</p>
-			{/if}
-			<p class="text-muted-foreground text-xs">
-				Use a fine-grained token scoped to exactly the repos your context items point at — the token
-				never enters an agent's sandbox, but every run wields its full authority, so that repo set
-				is the blast radius of a compromised run.
-			</p>
-			<PatInstructions repoUrls={data.contextRepoUrls} />
-		</form>
+				<PatInstructions repoUrls={data.contextRepoUrls} />
+			</form>
+		</div>
 	</div>
-</div>
+{/if}
 
 <!-- add runner: local shows the daemon bootstrap (the daemon registers itself);
      Claude managed creates the runner here with a ping-validated key -->

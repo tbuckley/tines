@@ -124,3 +124,128 @@ describe('run pricing serialization', () => {
 		expect((await getRun(t.db, USER, 'run_priced')).usage).toEqual(usage);
 	});
 });
+
+describe('period usage evidence', () => {
+	it('uses finalized end-time bounds and accounting filters before pagination', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const runner = addRunner(t);
+		const issue = addIssue(t);
+		addRun(t, {
+			id: 'before',
+			issueId: issue,
+			runnerId: runner,
+			status: 'completed',
+			endedAt: NOW - 1,
+			usage: JSON.stringify({ cost_usd: 1 })
+		});
+		addRun(t, {
+			id: 'at-from',
+			issueId: issue,
+			runnerId: runner,
+			status: 'failed',
+			endedAt: NOW,
+			usage: JSON.stringify({ input_tokens: 0 })
+		});
+		addRun(t, {
+			id: 'priced',
+			issueId: issue,
+			runnerId: runner,
+			status: 'canceled',
+			endedAt: NOW + 1,
+			usage: JSON.stringify({ cost_usd: 0 })
+		});
+		addRun(t, {
+			id: 'at-to',
+			issueId: issue,
+			runnerId: runner,
+			status: 'timed_out',
+			endedAt: NOW + 2,
+			usage: JSON.stringify({ cost_usd: 2 })
+		});
+		const all = await listRuns(
+			t.db,
+			USER,
+			{ population: 'finalized', from: NOW, to: NOW + 2 },
+			{ cursor: null, limit: 10 }
+		);
+		expect(all.items.map((r) => r.id)).toEqual(['priced', 'at-from']);
+		const priced = await listRuns(
+			t.db,
+			USER,
+			{ population: 'finalized', from: NOW, to: NOW + 2, accountingStatus: 'priced' },
+			{ cursor: null, limit: 10 }
+		);
+		expect(priced.items.map((r) => r.id)).toEqual(['priced']);
+	});
+
+	it('redacts facts learned after the pending cutoff', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const runner = addRunner(t);
+		const issue = addIssue(t);
+		addRun(t, {
+			id: 'later-ended',
+			issueId: issue,
+			runnerId: runner,
+			status: 'completed',
+			outcome: 'advanced',
+			createdAt: NOW - 10,
+			endedAt: NOW + 10,
+			usage: JSON.stringify({ cost_usd: 42, cost_source: 'provider' })
+		});
+		const result = await listRuns(
+			t.db,
+			USER,
+			{ population: 'pending', from: NOW - 100, to: NOW },
+			{ cursor: null, limit: 10 }
+		);
+		expect(result.items).toEqual([
+			expect.objectContaining({
+				id: 'later-ended',
+				pending_at: NOW,
+				accounting_status: 'pending'
+			})
+		]);
+		const wire = JSON.stringify(result.items[0]);
+		for (const forbidden of ['usage', 'outcome', 'ended_at', 'status', 'error'])
+			expect(wire).not.toContain(`"${forbidden}"`);
+	});
+
+	it('scans past sparse accounting misses without terminating pagination', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const runner = addRunner(t);
+		const issue = addIssue(t);
+		for (let i = 0; i < 1001; i++)
+			addRun(t, {
+				id: `unpriced_${i}`,
+				issueId: issue,
+				runnerId: runner,
+				status: 'completed',
+				endedAt: NOW + i,
+				usage: JSON.stringify({ input_tokens: 1 })
+			});
+		addRun(t, {
+			id: 'priced-oldest',
+			issueId: issue,
+			runnerId: runner,
+			status: 'completed',
+			endedAt: NOW - 1,
+			usage: JSON.stringify({ cost_usd: 1.23, cost_source: 'provider' })
+		});
+		const result = await listRuns(
+			t.db,
+			USER,
+			{
+				population: 'finalized',
+				from: NOW - 2,
+				to: NOW + 2000,
+				accountingStatus: 'priced'
+			},
+			{ cursor: null, limit: 10 }
+		);
+		expect(result.items.map((run) => run.id)).toEqual(['priced-oldest']);
+		expect(result.hasMore).toBe(false);
+	});
+});
