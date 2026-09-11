@@ -63,12 +63,24 @@
 		page.url.searchParams.get('agents_view') === 'spend' ? 'spend' : 'now'
 	);
 	let pendingAgentsUrl: URL | null = null;
+	let failedAgentsUrl = $state<URL | null>(null);
+	let navigationError = $state<string | null>(null);
 	let navigationGeneration = 0;
 	async function navigateAgents(url: URL, replaceState = false) {
 		const generation = ++navigationGeneration;
 		pendingAgentsUrl = url;
 		try {
 			await goto(url, { keepFocus: true, noScroll: true, replaceState, state: page.state });
+			if (generation === navigationGeneration) {
+				failedAgentsUrl = null;
+				navigationError = null;
+			}
+		} catch (error) {
+			if (generation === navigationGeneration) {
+				failedAgentsUrl = url;
+				navigationError =
+					error instanceof Error ? error.message : 'The requested Agents view could not be opened.';
+			}
 		} finally {
 			if (generation === navigationGeneration) pendingAgentsUrl = null;
 		}
@@ -1050,6 +1062,19 @@
 		onclick={() => chooseAgentsView('spend')}>Spend</Button
 	>
 </nav>
+
+{#if navigationError}
+	<p
+		class="border-destructive/40 bg-destructive/10 text-destructive mb-4 rounded-md border px-4 py-2.5 text-sm"
+	>
+		Navigation failed: {navigationError}
+		{#if failedAgentsUrl}<button
+				type="button"
+				class="ml-2 underline"
+				onclick={() => void navigateAgents(failedAgentsUrl!)}>Retry</button
+			>{/if}
+	</p>
+{/if}
 
 {#if agentsView === 'spend'}
 	<SpendPanel

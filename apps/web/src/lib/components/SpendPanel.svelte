@@ -46,6 +46,12 @@
 	const appliedCustomSignature = $derived(
 		selection.window === 'custom' ? `${selection.from}\u0000${selection.to}` : ''
 	);
+	const requestKey = $derived(selection.requestKey);
+	const customDirty = $derived(
+		selection.window === 'custom' &&
+			selection.ready &&
+			(customFrom.trim() !== selection.from || customTo.trim() !== selection.to)
+	);
 	let synchronizedCustomSignature = '';
 
 	function update(values: Record<string, string | null>, replace = false) {
@@ -59,9 +65,8 @@
 			: 'Unable to load usage';
 	}
 
-	async function load(refresh = false) {
+	async function load(refresh = false, captured = selection) {
 		const id = ++requestId;
-		const captured = selection;
 		if (!captured.ready) {
 			status = 'invalid';
 			envelope = null;
@@ -91,14 +96,14 @@
 	}
 
 	$effect(() => {
-		const signature = selection.requestKey;
+		const signature = requestKey;
 		const routerReady = canonical;
 		void signature;
 		if (!routerReady) {
 			status = 'loading';
 			return;
 		}
-		untrack(() => void load());
+		untrack(() => void load(false, selection));
 		return () => {
 			requestId++;
 		};
@@ -156,6 +161,14 @@
 						document.getElementById(!customFrom.trim() ? 'spend-from' : 'spend-to')?.focus();
 						return;
 					}
+					if (
+						customFrom.trim() === selection.from &&
+						customTo.trim() === selection.to &&
+						status === 'error'
+					) {
+						void load();
+						return;
+					}
 					update({ spend_from: customFrom.trim(), spend_to: customTo.trim() });
 				}}
 			>
@@ -184,8 +197,11 @@
 				>
 					{customSubmitted && (!customFrom.trim() || !customTo.trim())
 						? 'Enter both From and To, then Apply.'
-						: 'Use YYYY-MM-DD or ISO with an offset.'}
+						: customDirty
+							? 'Unapplied changes — Apply to update.'
+							: 'Use YYYY-MM-DD or ISO with an offset.'}
 				</p>
+				{#if status === 'error' && error}<p class="error">{error}</p>{/if}
 			</form>{/if}
 		<div class="views" aria-label="Breakdown">
 			{#each [['workflow', 'Workflow'], ['state', 'Starting state'], ['outcome', 'Outcome']] as choice}
@@ -230,8 +246,8 @@
 				</div>
 				<p>
 					{report.scope_total.coverage} · {report.scope_total.finalized_run_count} finalized · {report
-						.scope_total.priced_run_count} priced · {report.scope_total.unpriced_run_count +
-						report.scope_total.unreported_run_count} without price
+						.scope_total.priced_run_count} priced · {report.scope_total.unpriced_run_count} unpriced ·
+					{report.scope_total.unreported_run_count} unreported
 				</p>
 				<small
 					>{new Date(report.from).toISOString()} — {new Date(report.to).toISOString()} · {report.timezone}
@@ -295,8 +311,9 @@
 								}}
 								><span>{group.dimension.name}</span><small
 									>{group.aggregate.finalized_run_count} finalized · {group.aggregate
-										.priced_run_count} priced · {group.aggregate.unpriced_run_count +
-										group.aggregate.unreported_run_count} without price</small
+										.priced_run_count} priced · {group.aggregate.unpriced_run_count} unpriced · {group
+										.aggregate.unreported_run_count}
+									unreported</small
 								></button
 							>
 							<UsageCostCell aggregate={group.aggregate} />

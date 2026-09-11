@@ -50,4 +50,21 @@ describe('spend selection', () => {
 		);
 		expect(selection.ready).toBe(false);
 	});
+
+	it('requests a complete custom range and includes both bounds in its stable key', () => {
+		const selection = parseSpendSelection(
+			new URL(
+				'https://example.test/agents?spend_window=custom&spend_from=2026-09-01&spend_to=2026-09-08'
+			),
+			null
+		);
+		expect(selection.ready).toBe(true);
+		expect(spendRequest(selection)).toEqual({
+			from: '2026-09-01',
+			to: '2026-09-08',
+			by: 'workflow'
+		});
+		expect(selection.requestKey).toContain('2026-09-01');
+		expect(selection.requestKey).toContain('2026-09-08');
+	});
 });
