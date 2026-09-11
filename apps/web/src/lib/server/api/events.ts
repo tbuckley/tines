@@ -1,9 +1,13 @@
 import type { Actor, ActorRun, TinesEvent } from '@tines/shared';
 import { sql, type CompiledQuery, type Kysely } from 'kysely';
 import { newId, type Database } from '$lib/server/db';
+import type { QueryGuard } from './query-guard';
 import type { ActorContext } from './core';
 
 export interface EventInput {
+	/** Stable batch allocation; ordinary callers omit these. */
+	id?: string;
+	createdAt?: number;
 	type: string;
 	issueId?: string | null;
 	projectId?: string | null;
@@ -29,17 +33,17 @@ export function eventInsert(
 	db: Kysely<Database>,
 	actor: ActorContext,
 	input: EventInput,
-	guard?: EventGuard
+	guard?: EventGuard | QueryGuard
 ): CompiledQuery {
 	const values = {
-		id: newId('evt'),
+		id: input.id ?? newId('evt'),
 		user_id: actor.userId,
 		type: input.type,
 		actor_user_id: actor.userId,
 		actor_api_key_id: actor.apiKeyId,
 		issue_id: input.issueId ?? null,
 		payload: JSON.stringify(input.payload ?? {}),
-		created_at: Date.now()
+		created_at: input.createdAt ?? Date.now()
 	};
 	// Issue-scoped attribution belongs to the issue's project at the instant the
 	// event commits. Resolving it here avoids a read-before-transfer writer
@@ -52,6 +56,12 @@ export function eventInsert(
 			INSERT INTO event (id, user_id, type, actor_user_id, actor_api_key_id, issue_id, project_id, payload, created_at)
 			VALUES (${values.id}, ${values.user_id}, ${values.type}, ${values.actor_user_id}, ${values.actor_api_key_id},
 				${values.issue_id}, ${projectId}, ${values.payload}, ${values.created_at})`.compile(db);
+	if ('predicate' in guard)
+		return sql`
+			INSERT INTO event (id, user_id, type, actor_user_id, actor_api_key_id, issue_id, project_id, payload, created_at)
+			SELECT ${values.id}, ${values.user_id}, ${values.type}, ${values.actor_user_id}, ${values.actor_api_key_id},
+				${values.issue_id}, ${projectId}, ${values.payload}, ${values.created_at}
+			WHERE ${guard.predicate}`.compile(db);
 	return sql`
 		INSERT INTO event (id, user_id, type, actor_user_id, actor_api_key_id, issue_id, project_id, payload, created_at)
 		SELECT ${values.id}, ${values.user_id}, ${values.type}, ${values.actor_user_id}, ${values.actor_api_key_id},

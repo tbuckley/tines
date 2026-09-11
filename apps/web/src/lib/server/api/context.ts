@@ -36,6 +36,7 @@ import {
 	type RepoDirConflict,
 	type UpdateContextItemRequest
 } from '@tines/shared';
+import { insertValues, type QueryGuard } from './query-guard';
 import type { D1Result } from '@cloudflare/workers-types';
 import { sql, type CompiledQuery, type Kysely } from 'kysely';
 import { artifactKeyPrefix, getArtifactStore } from '$lib/server/artifact-store';
@@ -2249,6 +2250,9 @@ export function seedPromptQueries(
 	db: Kysely<Database>,
 	actor: ActorContext,
 	opts: {
+		id?: string;
+		eventId?: string;
+		guard?: QueryGuard;
 		name: string;
 		body: string;
 		projectId?: string;
@@ -2261,15 +2265,16 @@ export function seedPromptQueries(
 	}
 ): { id: string; queries: CompiledQuery[] } {
 	validatePromptBody(opts.body);
-	const id = newId('ctx');
+	const id = opts.id ?? newId('ctx');
 	const projectId = opts.projectId ?? null;
 	const workflowStateId = opts.workflowStateId ?? null;
 	return {
 		id,
 		queries: [
-			db
-				.insertInto('context_item')
-				.values({
+			insertValues(
+				db,
+				'context_item',
+				{
 					id,
 					user_id: actor.userId,
 					kind: 'prompt',
@@ -2287,23 +2292,31 @@ export function seedPromptQueries(
 					version: 1,
 					created_at: opts.now,
 					updated_at: opts.now
-				})
-				.compile(),
-			eventInsert(db, actor, {
-				type: 'context.created',
-				projectId,
-				payload: {
-					context_id: id,
-					kind: 'prompt',
-					name: opts.name,
-					scope: {
-						project_id: projectId,
-						workflow_state_id: workflowStateId,
-						issue_id: null,
-						label: opts.label
+				},
+				opts.guard
+			),
+			eventInsert(
+				db,
+				actor,
+				{
+					id: opts.eventId,
+					createdAt: opts.now,
+					type: 'context.created',
+					projectId,
+					payload: {
+						context_id: id,
+						kind: 'prompt',
+						name: opts.name,
+						scope: {
+							project_id: projectId,
+							workflow_state_id: workflowStateId,
+							issue_id: null,
+							label: opts.label
+						}
 					}
-				}
-			})
+				},
+				opts.guard
+			)
 		]
 	};
 }
