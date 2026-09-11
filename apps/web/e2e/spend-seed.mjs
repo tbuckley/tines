@@ -26,8 +26,8 @@ export function spendStatements(nowMs) {
 		 ('wfs_e2e_spend_implementation', '${w.build.id}', 'Implementation', 'active', 1, ${nowMs}),
 		 ('wfs_e2e_spend_review', '${w.ship.id}', 'Review', 'active', 0, ${nowMs}),
 		 ('wfs_e2e_spend_open', '${w.unknown.id}', 'Open', 'active', 0, ${nowMs});`,
-		`INSERT INTO runner (id, user_id, type, name, status, max_concurrent, max_run_minutes, default_tier, config, created_at, updated_at)
-		 VALUES ('rnr_e2e_spend', '${SPEND.id}', 'local', 'spend-paused', 'paused', 1, 30, 'balanced', '{}', ${nowMs}, ${nowMs});`
+		`INSERT INTO runner (id, user_id, type, name, status, max_concurrent, max_run_minutes, default_tier, config, created_at, updated_at, last_seen_at)
+		 VALUES ('rnr_e2e_spend', '${SPEND.id}', 'local', 'spend-paused', 'paused', 1, 1440, 'balanced', '{}', ${nowMs}, ${nowMs}, ${nowMs});`
 	];
 	const projects = Object.values(p);
 	statements.push(
@@ -126,11 +126,18 @@ export function spendStatements(nowMs) {
 			 VALUES ('run_e2e_spend_${name}', '${SPEND.id}', 'iss_e2e_spend_${name}', 'rnr_e2e_spend', 'completed', ${outcome ? `'${outcome}'` : 'NULL'}, 'balanced', NULL, ${usage ? `'${json(usage)}'` : 'NULL'}, '${stateId}', '${stateId}', '', ${endedAt}, ${endedAt}, ${endedAt});`
 		);
 	}
+	// The pending fixture is the one row the ordinary supervisor sweep can
+	// consume: a `running` run is finalized once `started_at +
+	// max_run_minutes` passes, or as soon as its local runner has been unseen
+	// for five minutes. Seeding it at `nowMs` against a fresh `last_seen_at`
+	// (and a 24h ceiling) survives a sweep near seed time; `armPendingRun` in
+	// spend.spec.ts re-arms both clocks immediately before the assertion, so
+	// the case does not depend on when the suite happens to sweep.
 	statements.push(
 		`INSERT INTO issue (id, project_id, number, title, description, workflow_id, state_id, created_at, updated_at)
-		 VALUES ('iss_e2e_spend_pending', '${p.pending.id}', 1, 'Spend pending', '', '${w.build.id}', 'wfs_e2e_spend_design', ${today}, ${today});`,
+		 VALUES ('iss_e2e_spend_pending', '${p.pending.id}', 1, 'Spend pending', '', '${w.build.id}', 'wfs_e2e_spend_design', ${nowMs}, ${nowMs});`,
 		`INSERT INTO agent_run (id, user_id, issue_id, runner_id, status, outcome, tier, model, usage, state_id_at_start, log, created_at, started_at, ended_at)
-		 VALUES ('run_e2e_spend_pending', '${SPEND.id}', 'iss_e2e_spend_pending', 'rnr_e2e_spend', 'running', NULL, 'balanced', NULL, NULL, 'wfs_e2e_spend_design', '', ${today}, ${today}, NULL);`
+		 VALUES ('run_e2e_spend_pending', '${SPEND.id}', 'iss_e2e_spend_pending', 'rnr_e2e_spend', 'running', NULL, 'balanced', NULL, NULL, 'wfs_e2e_spend_design', '', ${nowMs}, ${nowMs}, NULL);`
 	);
 	return statements;
 }

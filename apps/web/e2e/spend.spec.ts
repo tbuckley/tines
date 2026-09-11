@@ -1,6 +1,21 @@
 import { expect, test, type Page } from '@playwright/test';
 import { SPEND } from './constants.mjs';
+import { d1 } from './d1';
 import { gotoHydrated, signIn } from './helpers';
+
+/**
+ * The pending fixture is the only seeded row the ordinary supervisor sweep can
+ * finalize — any other spec firing `/__scheduled` times it out or fails it as
+ * an offline local runner's — so the case re-arms both clocks immediately
+ * before asserting rather than trusting seed-time timestamps.
+ */
+function armPendingRun() {
+	const now = Date.now();
+	d1(`UPDATE runner SET last_seen_at = ${now} WHERE id = 'rnr_e2e_spend'`);
+	d1(
+		`UPDATE agent_run SET status = 'running', outcome = NULL, ended_at = NULL, started_at = ${now}, created_at = ${now} WHERE id = 'run_e2e_spend_pending'`
+	);
+}
 
 function utcDate(offsetDays: number) {
 	const date = new Date();
@@ -141,6 +156,7 @@ test.describe('Agents Spend real ledger', () => {
 			`/agents?agents_view=spend&spend_project=${SPEND.projects.empty.id}&spend_window=today&spend_view=workflow&spend_sort=desc&spend_workflow=all`
 		);
 		await expect(page.getByText(/No runs — no finalized runs/)).toBeVisible();
+		armPendingRun();
 		await selectProject(page, SPEND.projects.pending.name);
 		await expect(page.getByText(/No finalized runs yet — 1 pending/)).toBeVisible();
 		await selectProject(page, SPEND.projects.unreported.name);

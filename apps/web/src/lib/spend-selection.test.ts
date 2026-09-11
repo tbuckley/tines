@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+	agentsNavigationMessage,
 	canonicalSpendChanges,
 	parseSpendSelection,
 	patchSpendUrl,
@@ -66,5 +67,15 @@ describe('spend selection', () => {
 		});
 		expect(selection.requestKey).toContain('2026-09-01');
 		expect(selection.requestKey).toContain('2026-09-08');
+	});
+});
+
+describe('agents navigation failure message', () => {
+	it('reports the failure reason and falls back for non-errors', () => {
+		expect(agentsNavigationMessage(new Error('data request failed'))).toBe('data request failed');
+		expect(agentsNavigationMessage(new Error(''))).toBe(
+			'The requested Agents view could not be opened.'
+		);
+		expect(agentsNavigationMessage('boom')).toBe('The requested Agents view could not be opened.');
 	});
 });

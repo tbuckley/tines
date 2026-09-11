@@ -56,7 +56,11 @@
 	import type { FirstRunInputs } from '$lib/first-run';
 	import { prefersReducedMotion, queueAge, relativeTime } from '$lib/format';
 	import { addRunnerToGlobalRule, findGlobalRule } from '$lib/routing';
-	import { canonicalSpendChanges, patchSpendUrl } from '$lib/spend-selection';
+	import {
+		agentsNavigationMessage,
+		canonicalSpendChanges,
+		patchSpendUrl
+	} from '$lib/spend-selection';
 
 	let { data } = $props();
 	const agentsView = $derived(
@@ -78,8 +82,7 @@
 		} catch (error) {
 			if (generation === navigationGeneration) {
 				failedAgentsUrl = url;
-				navigationError =
-					error instanceof Error ? error.message : 'The requested Agents view could not be opened.';
+				navigationError = agentsNavigationMessage(error);
 			}
 		} finally {
 			if (generation === navigationGeneration) pendingAgentsUrl = null;

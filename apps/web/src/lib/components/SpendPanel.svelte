@@ -203,6 +203,24 @@
 				</p>
 				{#if status === 'error' && error}<p class="error">{error}</p>{/if}
 			</form>{/if}
+		<label
+			>Workflow narrowing<select
+				value={selection.workflow}
+				onchange={(e) => update({ spend_workflow: e.currentTarget.value })}
+			>
+				<option value="all">All workflows</option>
+				{#if missingWorkflow}
+					<option value={selection.workflow}
+						>{report
+							? `Unavailable workflow (${selection.workflow})`
+							: `Selected workflow (${selection.workflow})`}</option
+					>
+				{/if}
+				{#each report?.workflow_options ?? [] as option}
+					<option value={option.id ?? 'unknown'}>{option.name}</option>
+				{/each}
+			</select></label
+		>
 		<div class="views" aria-label="Breakdown">
 			{#each [['workflow', 'Workflow'], ['state', 'Starting state'], ['outcome', 'Outcome']] as choice}
 				<button
@@ -260,21 +278,6 @@
 						report.matching_total.finalized_run_count
 					)} · {report.matching_total.coverage}
 				</p>{/if}
-			<label>
-				Workflow narrowing
-				<select
-					value={selection.workflow}
-					onchange={(e) => update({ spend_workflow: e.currentTarget.value })}
-				>
-					<option value="all">All workflows</option>
-					{#if missingWorkflow}
-						<option value={selection.workflow}>Unavailable workflow ({selection.workflow})</option>
-					{/if}
-					{#each report.workflow_options as option}
-						<option value={option.id ?? 'unknown'}>{option.name}</option>
-					{/each}
-				</select>
-			</label>
 			<div class="sort">
 				<button
 					type="button"

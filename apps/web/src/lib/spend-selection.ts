@@ -76,3 +76,16 @@ export function spendRequest(selection: SpendSelection) {
 		by: selection.view
 	};
 }
+
+/**
+ * A rejected `goto` leaves the address bar and the rendered view disagreeing,
+ * so the Agents owner reports it with a Retry rather than swallowing it. The
+ * current Agents loader does not read `url`, so a Spend query change makes no
+ * `__data.json` request and cannot be failed from a browser test; this mapping
+ * is therefore pinned here, and the assignment it feeds is covered by review.
+ */
+export function agentsNavigationMessage(error: unknown): string {
+	return error instanceof Error && error.message
+		? error.message
+		: 'The requested Agents view could not be opened.';
+}
