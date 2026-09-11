@@ -475,7 +475,7 @@ describe('the run log a local run leaves behind', () => {
 				model: 'claude-sonnet-5',
 				measurement_status: 'complete',
 				terminal_snapshots: 1,
-				daemon_version: '0.0.1'
+				daemon_version: cliVersion()
 			}
 		});
 		expect(harvest.log).toContain('[agent] Codex finished.');
