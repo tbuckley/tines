@@ -322,7 +322,10 @@ function suite(label: string, viewport: { width: number; height: number }) {
 			await page.close();
 		});
 
-		test('reviews, inspects and cancels without writing anything', async ({ browser, request }) => {
+		test('reviews, inspects and cancels without writing anything', async ({
+			browser,
+			request
+		}, testInfo) => {
 			const page = await open(browser, `/issues/${sourceName}/${sourceNumber}`);
 			const modal = page.getByRole('dialog');
 			await clickToOpen(page.getByTestId('move-to-project'), modal);
@@ -397,6 +400,10 @@ function suite(label: string, viewport: { width: number; height: number }) {
 			expect(await review.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(
 				true
 			);
+			await testInfo.attach(`populated-transfer-review-${label}`, {
+				body: await review.screenshot(),
+				contentType: 'image/png'
+			});
 
 			// Each guidance item is inspectable in place: opening one shows the
 			// scope it moves between rather than a bare name.
