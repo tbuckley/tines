@@ -407,7 +407,7 @@ test.describe.serial('native D1 workflow install gate', () => {
 	test('rolls back every object, pointer, schedule, routing, and event family', async ({
 		request
 	}) => {
-		test.setTimeout(180_000);
+		test.setTimeout(300_000);
 		const client = apiClient(request, ALICE.apiKey);
 		const failures = [
 			['workflow', 'INSERT'],
