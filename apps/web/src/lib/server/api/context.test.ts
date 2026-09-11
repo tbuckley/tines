@@ -630,6 +630,69 @@ describe('listContextItems workflow filter', () => {
 	});
 });
 
+describe('listContextItems search', () => {
+	const page = { cursor: null, limit: 50 };
+
+	function seed(): TestDb {
+		const t = createTestDb();
+		const long = 'a'.repeat(49) + 'needle' + 'b'.repeat(145);
+		t.sqlite.exec(`
+			INSERT INTO user (id, name, email, emailVerified, createdAt, updatedAt) VALUES
+				('u1', 'alice', 'a@example.com', 1, 0, 0),
+				('u2', 'bob', 'b@example.com', 1, 0, 0);
+			INSERT INTO project (id, user_id, name, created_at, updated_at) VALUES
+				('p1', 'u1', 'one', 0, 0), ('p2', 'u1', 'two', 0, 0), ('p3', 'u2', 'private', 0, 0);
+		`);
+		const insert = t.sqlite.prepare(`INSERT INTO context_item
+			(id, user_id, kind, name, description, project_id, workflow_state_id, issue_id, body,
+			 position, version, created_at, updated_at) VALUES (?, ?, 'prompt', ?, ?, ?, NULL, NULL, '', 0, 1, 0, ?)`);
+		insert.run('by-name', 'u1', `prefix ${'a'.repeat(49)}needle`, '', 'p1', 8);
+		insert.run('by-description', 'u1', 'description', long, 'p1', 7);
+		insert.run('truncation-decoy', 'u1', `${long.slice(0, 48)}x`, '', 'p1', 6);
+		insert.run('literal', 'u1', `literal % _ \\ [x] O'Reilly`, '', 'p1', 5);
+		insert.run('other-project', 'u1', `prefix ${'a'.repeat(49)}needle`, '', 'p2', 4);
+		insert.run('other-user', 'u2', `prefix ${'a'.repeat(49)}needle`, '', 'p3', 3);
+		insert.run('unicode-upper', 'u1', 'Ärger', '', 'p1', 2);
+		insert.run('unicode-lower', 'u1', 'ärger', '', 'p1', 1);
+		return t;
+	}
+
+	it('matches complete long terms across both columns and composes before pagination', async () => {
+		const t = seed();
+		const q = 'a'.repeat(49) + 'needle';
+		const result = await listContextItems(t.db, 'u1', { q, project: 'p1' }, { ...page, limit: 1 });
+		expect(result.items.map((item) => item.id)).toEqual(['by-name']);
+		expect(result.hasMore).toBe(true);
+		expect(
+			(await listContextItems(t.db, 'u1', { q, project: 'p1' }, page)).items.map((item) => item.id)
+		).toEqual(['by-name', 'by-description']);
+	});
+
+	it('treats pattern and SQL characters literally and remains tenant-isolated', async () => {
+		const t = seed();
+		for (const q of ['%', '_', '\\', '[x]', "O'Reilly"]) {
+			expect(
+				(await listContextItems(t.db, 'u1', { q }, page)).items.map((item) => item.id),
+				q
+			).toEqual(['literal']);
+		}
+		expect(
+			(await listContextItems(t.db, 'u2', { q: 'needle' }, page)).items.map((i) => i.id)
+		).toEqual(['other-user']);
+	});
+
+	it('is ASCII-case-insensitive but does not promise Unicode folding', async () => {
+		const t = seed();
+		expect((await listContextItems(t.db, 'u1', { q: 'NEEDLE' }, page)).items).toHaveLength(3);
+		expect(
+			(await listContextItems(t.db, 'u1', { q: 'ÄRGER' }, page)).items.map((i) => i.id)
+		).toEqual(['unicode-upper']);
+		expect(
+			(await listContextItems(t.db, 'u1', { q: 'ärger' }, page)).items.map((i) => i.id)
+		).toEqual(['unicode-lower']);
+	});
+});
+
 describe('focused Context presentation', () => {
 	it('includes direct and issue anchors once, and counts only global/state shared items', async () => {
 		const t = createTestDb();
