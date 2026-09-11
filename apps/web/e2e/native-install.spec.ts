@@ -94,11 +94,9 @@ test.describe.serial('native D1 workflow install gate', () => {
 		).toEqual([{ n: 390 }]);
 
 		const over = structuredClone(document);
-		over.context.push({
-			...source,
-			id: `native-context-${runId}-over`,
-			name: `native-${runId}-over`
-		});
+		const skill = over.context.find((context) => context.kind === 'skill');
+		if (!skill || skill.kind !== 'skill') throw new Error('expected skill fixture');
+		skill.files.push({ id: `native-file-${runId}-over`, path: 'OVER.md', content: 'one over' });
 		const rejected = await client.post('/api/v1/library/prepare', {
 			document_json: await seal(over),
 			choices: {
@@ -109,7 +107,7 @@ test.describe.serial('native D1 workflow install gate', () => {
 		});
 		expect(rejected.status()).toBe(422);
 		expect(await errorBody(rejected)).toMatchObject({
-			error: { code: 'package_too_large', details: { field: 'statements', actual: 802 } }
+			error: { code: 'package_too_large', details: { field: 'statements', actual: 801 } }
 		});
 		expect(d1(`SELECT COUNT(*) AS n FROM label WHERE name='native-over-${runId}'`)).toEqual([
 			{ n: 0 }

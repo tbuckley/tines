@@ -89,7 +89,7 @@ E2E_PORT=8791 pnpm --filter web exec playwright test e2e/native-install.spec.ts
 ```
 
 The gate submits the complete 800-statement compiled batch and proves its
-single receipt/object copies. The 801+ case is rejected by preparation before
+single receipt/object copies. The 801-statement case is rejected by preparation before
 any write. It also injects native failures into workflow, state, transition,
 context, file, inherited-pointer, label, and event phases and verifies full
 rollback, then exercises discarded-response recovery and concurrent retries.
