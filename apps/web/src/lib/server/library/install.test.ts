@@ -278,7 +278,7 @@ describe('atomic workflow package install', () => {
 					...t.env.DB,
 					batch: (statements: Parameters<typeof realBatch>[0]) => {
 						if (family === 'schedule') {
-							const workflow = t.all('SELECT id FROM workflow LIMIT 1')[0].id;
+							const workflow = t.all('SELECT id FROM workflow LIMIT 1')[0].id as string;
 							t.sqlite
 								.prepare(
 									`INSERT INTO scheduled_task(id,project_id,name,title_template,description_template,workflow_id,cron,timezone,next_run_at,created_at,updated_at)
