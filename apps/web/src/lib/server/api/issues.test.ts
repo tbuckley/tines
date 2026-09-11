@@ -1,6 +1,15 @@
 import type { WorkflowResponse } from '@tines/shared';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { CLOSED, PROJECT, USER, addIssue, seedBase } from '../supervisor/test-fixtures';
+import {
+	CLOSED,
+	OPEN,
+	PROJECT,
+	REVIEW,
+	USER,
+	addIssue,
+	addRunner,
+	seedBase
+} from '../supervisor/test-fixtures';
 import { ApiFail, type ActorContext } from './core';
 import {
 	allowedTransitions,
@@ -11,7 +20,9 @@ import {
 	getIssueDetail,
 	listIssues,
 	loadIssue,
-	resolveStateRef
+	resolveStateRef,
+	transitionIssue,
+	updateIssue
 } from './issues';
 import { createLabel, listLabels } from './labels';
 import { listArtifacts } from './artifacts';
@@ -127,6 +138,213 @@ describe('assertPinFieldsAllowed', () => {
 	});
 });
 
+describe('updateIssue sparse patch concurrency', () => {
+	const actor: ActorContext = {
+		userId: USER,
+		userName: 'alice',
+		apiKeyId: null,
+		apiKeyName: null,
+		viaSession: true
+	};
+
+	function beforeBatch(
+		t: TestDb,
+		interleave: () => Promise<unknown>,
+		inspectUpdate?: (sql: string) => void
+	): Env {
+		const batch = t.env.DB.batch.bind(t.env.DB);
+		return {
+			...t.env,
+			DB: {
+				...t.env.DB,
+				batch: async (statements: Parameters<typeof batch>[0]) => {
+					inspectUpdate?.((statements[0] as unknown as { sqlText: string }).sqlText);
+					await interleave();
+					return batch(statements);
+				}
+			}
+		} as Env;
+	}
+
+	it('preserves a concurrent transition during a title-only patch', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const id = addIssue(t, { title: 'Original', description: 'Original description' });
+		let winnerStateEnteredAt = 0;
+		const env = beforeBatch(t, async () => {
+			const winner = await transitionIssue(t.db, t.env, actor, id, {
+				action: 'Submit for review'
+			});
+			expect(winner.state.id).toBe(REVIEW);
+			winnerStateEnteredAt = winner.state_entered_at;
+		});
+
+		const result = await updateIssue(t.db, env, actor, id, { title: 'Renamed' });
+
+		expect(result).toMatchObject({ title: 'Renamed', state: { id: REVIEW } });
+		expect(result.state_entered_at).toBe(winnerStateEnteredAt);
+		const transitions = t.all(
+			`SELECT payload FROM event WHERE issue_id = ? AND type = 'issue.transitioned'`,
+			id
+		);
+		expect(transitions).toHaveLength(1);
+		expect(JSON.parse(transitions[0].payload as string)).toMatchObject({
+			from_state_id: OPEN,
+			to_state_id: REVIEW
+		});
+	});
+
+	it.each([
+		{
+			name: 'title patch commits last',
+			outer: { title: 'Renamed' },
+			concurrent: { description: 'New instructions' }
+		},
+		{
+			name: 'description patch commits last',
+			outer: { description: 'New instructions' },
+			concurrent: { title: 'Renamed' }
+		}
+	])('preserves distinct concurrent text changes when $name', async ({ outer, concurrent }) => {
+		const t = createTestDb();
+		seedBase(t);
+		const id = addIssue(t, { title: 'Original', description: 'Original description' });
+		const env = beforeBatch(t, () => updateIssue(t.db, t.env, actor, id, concurrent));
+
+		const result = await updateIssue(t.db, env, actor, id, outer);
+
+		expect(result).toMatchObject({ title: 'Renamed', description: 'New instructions' });
+	});
+
+	it('preserves a concurrent pin and omits unrelated columns from a text update', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const id = addIssue(t, { title: 'Original', description: 'Original description' });
+		const runnerId = addRunner(t, { id: 'rnr_sparse', name: 'sparse' });
+		let updateSql = '';
+		const env = beforeBatch(
+			t,
+			() =>
+				updateIssue(t.db, t.env, actor, id, {
+					pinned_runner_id: runnerId,
+					pinned_tier: 'smartest'
+				}),
+			(sql) => {
+				updateSql = sql;
+			}
+		);
+
+		const result = await updateIssue(t.db, env, actor, id, { title: 'Renamed' });
+
+		expect(result).toMatchObject({
+			title: 'Renamed',
+			pinned_runner_id: runnerId,
+			pinned_tier: 'smartest'
+		});
+		const assignments = updateSql.slice(0, updateSql.indexOf(' where '));
+		expect(assignments).toContain('"title"');
+		expect(assignments).toContain('"updated_at"');
+		expect(assignments).not.toMatch(
+			/"description"|"workflow_id"|"state_id"|"pinned_runner_id"|"pinned_tier"/
+		);
+	});
+
+	it('keeps state CAS conflict handling and guarded events for explicit moves', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const id = addIssue(t);
+		const env = beforeBatch(t, async () => {
+			await transitionIssue(t.db, t.env, actor, id, { action: 'Submit for review' });
+			// Keep the event guard's timestamp witness distinct even when both
+			// requests happen within the same millisecond in this in-memory test.
+			t.sqlite.prepare('UPDATE issue SET updated_at = updated_at + 1 WHERE id = ?').run(id);
+		});
+
+		await expect(updateIssue(t.db, env, actor, id, { state: REVIEW })).rejects.toMatchObject({
+			status: 409,
+			code: 'conflict'
+		});
+		expect((await getIssueDetail(t.db, USER, { id })).state.id).toBe(REVIEW);
+		expect(
+			t.all(`SELECT id FROM event WHERE issue_id = ? AND type = 'issue.transitioned'`, id)
+		).toHaveLength(1);
+	});
+
+	it('keeps workflow moves coupled to their initial state and manual-move reset', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const id = addIssue(t);
+		t.sqlite.exec(`
+			INSERT INTO workflow (id, user_id, name, description, initial_state_id, created_at, updated_at)
+				VALUES ('wf_sparse', '${USER}', 'Sparse', '', 'wfs_sparse_start', 0, 0);
+			INSERT INTO workflow_state (id, workflow_id, name, category, position, created_at)
+				VALUES ('wfs_sparse_start', 'wf_sparse', 'Start', 'active', 0, 0);
+			UPDATE issue SET attempt_count = 2, needs_attention = 1 WHERE id = '${id}';
+		`);
+
+		const moved = await updateIssue(t.db, t.env, actor, id, { workflow_id: 'wf_sparse' });
+
+		expect(moved).toMatchObject({
+			workflow: { id: 'wf_sparse' },
+			state: { id: 'wfs_sparse_start' },
+			attempt_count: 0,
+			needs_attention: false
+		});
+		expect(moved.state_entered_at).toBeGreaterThan(0);
+		const updates = t.all(
+			`SELECT payload FROM event WHERE issue_id = ? AND type = 'issue.updated'`,
+			id
+		);
+		expect(updates).toHaveLength(1);
+		expect(JSON.parse(updates[0].payload as string)).toMatchObject({
+			changed: ['workflow'],
+			workflow_from_id: 'wf_standard',
+			workflow_to_id: 'wf_sparse',
+			to_state_name: 'Start'
+		});
+	});
+
+	it('retains pin and tier coupling when explicitly setting and clearing a pin', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const id = addIssue(t);
+		const runnerId = addRunner(t, { id: 'rnr_pin', name: 'pinned' });
+
+		const pinned = await updateIssue(t.db, t.env, actor, id, {
+			pinned_runner_id: runnerId,
+			pinned_tier: 'cheapest'
+		});
+		expect(pinned).toMatchObject({
+			pinned_runner_id: runnerId,
+			pinned_runner_name: 'pinned',
+			pinned_tier: 'cheapest'
+		});
+		const unpinned = await updateIssue(t.db, t.env, actor, id, { pinned_runner_id: null });
+		expect(unpinned).toMatchObject({ pinned_runner_id: null, pinned_tier: null });
+		const pinEvents = t
+			.all(`SELECT payload FROM event WHERE issue_id = ? AND type = 'issue.updated'`, id)
+			.map((row) => JSON.parse(row.payload as string))
+			.filter((payload) => payload.changed.includes('pin'));
+		expect(pinEvents).toHaveLength(2);
+		expect(pinEvents.at(-1)).toMatchObject({ pinned_runner_id: null, pinned_tier: null });
+	});
+
+	it('keeps pin fields coupled when an unpin races a tier update', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const id = addIssue(t);
+		const runnerId = addRunner(t, { id: 'rnr_pin_race', name: 'pin race' });
+		await updateIssue(t.db, t.env, actor, id, { pinned_runner_id: runnerId });
+		const env = beforeBatch(t, () =>
+			updateIssue(t.db, t.env, actor, id, { pinned_tier: 'smartest' })
+		);
+
+		const unpinned = await updateIssue(t.db, env, actor, id, { pinned_runner_id: null });
+
+		expect(unpinned).toMatchObject({ pinned_runner_id: null, pinned_tier: null });
+	});
+});
+
 describe('listIssues search', () => {
 	const PROJECT2 = 'prj_2';
 	let t: TestDb;
@@ -165,6 +383,40 @@ describe('listIssues search', () => {
 	it('is case-insensitive for ASCII', async () => {
 		const { items } = await search({ q: 'IDEA' });
 		expect(items.map((i) => i.id).sort()).toEqual([ids.byTitle, ids.done, ids.elsewhere].sort());
+	});
+
+	it('matches complete long and multibyte substrings without truncating or chunking', async () => {
+		const long = 'a'.repeat(49) + 'needle' + 'b'.repeat(145);
+		const japanese = 'あ'.repeat(49);
+		const longTitle = addIssue(t, { title: `prefix ${long} suffix` });
+		const longDescription = addIssue(t, { title: 'Long description', description: long });
+		const multibyte = addIssue(t, { title: japanese });
+		addIssue(t, { title: `${long.slice(0, 48)}x${long.slice(49)}` });
+		addIssue(t, { title: `${long.slice(100)} -- ${long.slice(0, 100)}` });
+
+		expect((await search({ q: long })).items.map((i) => i.id).sort()).toEqual(
+			[longTitle, longDescription].sort()
+		);
+		expect((await search({ q: japanese })).items.map((i) => i.id)).toEqual([multibyte]);
+	});
+
+	it('treats LIKE and SQL syntax characters literally', async () => {
+		const literal = addIssue(t, { title: `literal % _ \\ [x] O'Reilly -- drop table` });
+		addIssue(t, { title: 'ordinary wildcard decoy' });
+		for (const term of ['%', '_', '\\', '[x]', "O'Reilly -- drop table"]) {
+			expect(
+				(await search({ q: term })).items.map((i) => i.id),
+				term
+			).toEqual([literal]);
+		}
+	});
+
+	it('keeps SQLite ASCII-only case folding and treats empty q as absent', async () => {
+		const upperUnicode = addIssue(t, { title: 'Ärger' });
+		const lowerUnicode = addIssue(t, { title: 'ärger' });
+		expect((await search({ q: 'ÄRGER' })).items.map((i) => i.id)).toEqual([upperUnicode]);
+		expect((await search({ q: 'ärger' })).items.map((i) => i.id)).toEqual([lowerUnicode]);
+		expect((await search({ q: '' })).items).toHaveLength(7);
 	});
 
 	it('returns nothing when no issue matches', async () => {
@@ -236,6 +488,16 @@ describe('countIssuesByCategory', () => {
 		expect(
 			await countIssuesByCategory(t.db, USER, { category: 'done', hideDone: true })
 		).toMatchObject({ active: 3, done: 1 });
+	});
+
+	it('uses literal long search semantics for category counts', async () => {
+		const term = `%_${'x'.repeat(60)}`;
+		addIssue(t, { title: term });
+		addIssue(t, { title: term, state: CLOSED });
+		expect(await countIssuesByCategory(t.db, USER, { q: term })).toMatchObject({
+			active: 1,
+			done: 1
+		});
 	});
 });
 

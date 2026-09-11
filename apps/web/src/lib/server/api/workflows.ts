@@ -15,7 +15,7 @@ import {
 	type WorkflowTransitionInput
 } from '@tines/shared';
 import { sql, type CompiledQuery, type Kysely } from 'kysely';
-import { newId, type Database, type WorkflowStateTable } from '$lib/server/db';
+import { idChunks, newId, type Database, type WorkflowStateTable } from '$lib/server/db';
 import { findAttachedContext, seedPromptQueries, sweepAttachedContext } from './context';
 import {
 	MAX_INHERITANCE_CHAIN,
@@ -703,15 +703,26 @@ export async function loadWorkflows(
 	if (rows.length === 0) return [];
 
 	const ids = rows.map((r) => r.id);
-	const [states, transitions] = await Promise.all([
-		db
-			.selectFrom('workflow_state')
-			.selectAll()
-			.where('workflow_id', 'in', ids)
-			.orderBy('position asc')
-			.execute(),
-		db.selectFrom('workflow_transition').selectAll().where('workflow_id', 'in', ids).execute()
+	const chunks = idChunks(ids);
+	const [stateChunks, transitionChunks] = await Promise.all([
+		Promise.all(
+			chunks.map((chunk) =>
+				db
+					.selectFrom('workflow_state')
+					.selectAll()
+					.where('workflow_id', 'in', chunk)
+					.orderBy('position asc')
+					.execute()
+			)
+		),
+		Promise.all(
+			chunks.map((chunk) =>
+				db.selectFrom('workflow_transition').selectAll().where('workflow_id', 'in', chunk).execute()
+			)
+		)
 	]);
+	const states = stateChunks.flat();
+	const transitions = transitionChunks.flat();
 
 	return rows.map((row) => {
 		const wfStates = states.filter((s) => s.workflow_id === row.id);

@@ -861,7 +861,7 @@ export interface IssueFilters {
 	hide_done?: boolean;
 	/** Only issues that are not done, not duplicates, and have all blockers effectively done. */
 	ready?: boolean;
-	/** Title/description substring search. */
+	/** Literal title/description substring search, case-insensitive for ASCII. */
 	q?: string;
 	/** Label names or ids; repeated labels narrow (AND). */
 	label?: string[];
@@ -1043,7 +1043,7 @@ export interface ContextListFilters {
 	issue?: string;
 	/** Label id or name. */
 	label?: string;
-	/** Name/description search. */
+	/** Literal name/description substring search, case-insensitive for ASCII. */
 	q?: string;
 	exact?: boolean;
 	/** Without a project filter, items scoped to archived projects are hidden by default. */
@@ -1956,6 +1956,8 @@ export interface RunnerTokenResponse {
 
 /** `POST /api/v1/runners/:id/poll` — runner-token auth. */
 export interface RunnerPollRequest {
+	/** Stable for one daemon boot. Absent only for legacy clients. */
+	instance_id?: string;
 	/** Run ids the daemon is actually executing right now. */
 	owned_runs: string[];
 	/**
@@ -2687,6 +2689,7 @@ export const EVENT_TYPES = [
 	'context.deleted',
 	'runner.registered',
 	'runner.updated',
+	'runner.daemon_replaced',
 	'runner.removed',
 	'runner.errored',
 	'runner.rate_limited',
