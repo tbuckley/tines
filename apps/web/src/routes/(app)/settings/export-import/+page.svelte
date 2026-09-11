@@ -353,7 +353,21 @@
 				<tbody class="divide-y">
 					{#each report.entries as entry, i (entry.section + entry.ref + i)}
 						<tr data-testid="import-row">
-							<td class="px-3 py-1.5">{entry.ref}</td>
+							<td class="min-w-0 px-3 py-1.5 break-words whitespace-normal">
+								<span>{entry.ref}</span>
+								{#if entry.section === 'workflow' && entry.target_name}
+									<span aria-hidden="true"> → </span>
+									{#if entry.target_id}
+										<a
+											href="/workflows/{entry.target_id}"
+											class="text-primary font-medium underline-offset-4 hover:underline"
+											>{entry.target_name}</a
+										>
+									{:else}
+										<span class="font-medium">{entry.target_name}</span>
+									{/if}
+								{/if}
+							</td>
 							<td
 								class="px-3 py-1.5 font-medium {entry.action === 'error' ||
 								entry.action === 'refuse'

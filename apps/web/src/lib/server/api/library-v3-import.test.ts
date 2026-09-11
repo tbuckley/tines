@@ -58,10 +58,16 @@ describe('ID-addressed whole-library import', () => {
 		const preview = await applyImport(dest.db, dest.env, actor, { document, dry_run: true });
 		expect(dest.sqlite.prepare('SELECT count(*) n FROM event').get()).toEqual(before);
 		expect(workflowEntries(preview).map((e) => e.action)).toEqual(['create', 'create']);
+		expect(workflowEntries(preview).map((e) => [e.target_name, e.target_id])).toEqual([
+			['Same / name', undefined],
+			['Same / name', undefined]
+		]);
 		const result = await applyImport(dest.db, dest.env, actor, { document });
 		expect(result.counts.error).toBe(0);
 		expect(result.counts.refuse).toBe(0);
 		expect(workflowEntries(result).map((e) => e.action)).toEqual(['create', 'create']);
+		expect(workflowEntries(result).every((e) => e.target_name === 'Same / name')).toBe(true);
+		expect(workflowEntries(result).every((e) => e.target_id?.startsWith('wf_'))).toBe(true);
 		const exported = await buildLibraryV3Document(dest.db, USER);
 		expect(exported.workflows.map((w) => w.name)).toEqual(['Same / name', 'Same / name']);
 		for (const source of document.context) {
@@ -96,12 +102,14 @@ describe('ID-addressed whole-library import', () => {
 		});
 		const preview = await applyImport(dest.db, dest.env, actor, { document, dry_run: true });
 		expect(workflowEntries(preview).every((e) => e.action === 'refuse')).toBe(true);
+		expect(workflowEntries(preview).every((e) => e.target_name === undefined)).toBe(true);
 		const workflow_targets = Object.fromEntries(
 			document.workflows.map((w, i) => [w.id, { kind: 'create' as const, name: `Copy ${i}` }])
 		);
 		const result = await applyImport(dest.db, dest.env, actor, { document, workflow_targets });
 		expect(result.counts.error).toBe(0);
 		expect(result.counts.refuse).toBe(0);
+		expect(workflowEntries(result).map((e) => e.target_name)).toEqual(['Copy 0', 'Copy 1']);
 		expect(
 			(await loadWorkflows(dest.db, USER))
 				.filter((w) => !w.is_system)

@@ -369,6 +369,11 @@ test('v3 browser file transfer maps duplicate workflows and distinct prompts int
 		await expect(page.getByRole('button', { name: 'Import', exact: true })).toHaveCount(0);
 		await input.blur();
 		await expect(page.getByTestId('import-summary')).toContainText('Nothing has been written yet');
+		const previewRow = page
+			.getByTestId('import-row')
+			.filter({ hasText: `workflow "${name}" [${workflow.id}]` });
+		await expect(previewRow).toContainText(`→ ${name} copy ${index}`);
+		await expect(previewRow.getByRole('link')).toHaveCount(0);
 	}
 	await page.setViewportSize({ width: 1440, height: 900 });
 	await page.screenshot({ path: test.info().outputPath('library-mappings-desktop.png') });
@@ -386,11 +391,16 @@ test('v3 browser file transfer maps duplicate workflows and distinct prompts int
 			.getByTestId('import-row')
 			.filter({ hasText: `workflow "${name}" [${workflow.id}]` });
 		await expect(row).toContainText('create');
+		await expect(row).toContainText(`→ ${name} copy ${index}`);
 		const exported = await body<import('@tines/shared').LibraryV3Document>(
 			await bob.get('/api/v1/export')
 		);
 		const copy = exported.workflows.find((w) => w.name === `${name} copy ${index}`)!;
 		expect(copy).toBeTruthy();
+		await expect(row.getByRole('link', { name: copy.name })).toHaveAttribute(
+			'href',
+			`/workflows/${copy.id}`
+		);
 		const sourcePrompt = document.context.find(
 			(c) =>
 				c.scope.state?.kind === 'bundled_state' && c.scope.state.state_id === workflow.states[0].id
@@ -402,6 +412,12 @@ test('v3 browser file transfer maps duplicate workflows and distinct prompts int
 			sourcePrompt?.kind === 'prompt' ? sourcePrompt.body : null
 		);
 	}
+	const firstCopy = (
+		await body<import('@tines/shared').LibraryV3Document>(await bob.get('/api/v1/export'))
+	).workflows.find((w) => w.name === `${name} copy 0`)!;
+	await page.getByRole('link', { name: firstCopy.name }).click();
+	await expect(page).toHaveURL(new RegExp(`/workflows/${firstCopy.id}$`));
+	await expect(page.getByRole('heading', { name: firstCopy.name })).toBeVisible();
 });
 
 test('workflow export and strict validation are read-only and allowed to run keys', async ({
