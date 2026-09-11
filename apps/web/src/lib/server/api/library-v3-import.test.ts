@@ -91,6 +91,25 @@ describe('ID-addressed whole-library import', () => {
 			document.workflows[0].states[0].id
 		);
 	});
+	it('removes destination identities when a created workflow fails during later application', async () => {
+		const { document } = await fixture();
+		const dest = setup();
+		dest.sqlite.exec(
+			`CREATE TRIGGER fail_library_state_update BEFORE UPDATE OF name ON workflow_state BEGIN SELECT RAISE(ABORT, 'injected state update failure'); END`
+		);
+
+		const result = await applyImport(dest.db, dest.env, actor, { document });
+
+		expect(workflowEntries(result)).toHaveLength(2);
+		for (const entry of workflowEntries(result)) {
+			expect(entry.action).toBe('error');
+			expect(entry).not.toHaveProperty('target_id');
+			expect(entry).not.toHaveProperty('target_name');
+		}
+		expect(
+			(await loadWorkflows(dest.db, USER)).filter((workflow) => !workflow.is_system)
+		).toHaveLength(2);
+	});
 	it('requires collision mappings and accepts independent collision-safe creates', async () => {
 		const { document } = await fixture();
 		const dest = setup();
@@ -302,7 +321,18 @@ it('refused overwrite retains target states for independent context and inherita
 	};
 	const preview = await applyImport(t.db, t.env, actor, { ...request, dry_run: true });
 	const result = await applyImport(t.db, t.env, actor, request);
-	expect(workflowEntries(preview).find((e) => e.local_id === sourceBase.id)?.action).toBe('refuse');
+	const previewRefusal = workflowEntries(preview).find((e) => e.local_id === sourceBase.id);
+	const resultRefusal = workflowEntries(result).find((e) => e.local_id === sourceBase.id);
+	expect(previewRefusal).toMatchObject({
+		action: 'refuse',
+		target_id: first.id
+	});
+	expect(previewRefusal).not.toHaveProperty('target_name');
+	expect(resultRefusal).toMatchObject({
+		action: 'refuse',
+		target_id: first.id
+	});
+	expect(resultRefusal).not.toHaveProperty('target_name');
 	expect(result.entries.map((e) => [e.local_id, e.action])).toEqual(
 		preview.entries.map((e) => [e.local_id, e.action])
 	);
