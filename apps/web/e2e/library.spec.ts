@@ -306,7 +306,10 @@ test('v3 browser file transfer maps duplicate workflows and distinct prompts int
 }) => {
 	const alice = apiClient(request, ALICE.apiKey);
 	const bob = apiClient(request, BOB.apiKey);
-	const name = `Duplicate file ${runId}`;
+	// Workflow names may legally be 200 characters. Keep this one unbroken so
+	// the mobile journey guards both the destination labels and preview cells
+	// against expanding the document to their min-content width.
+	const name = 'w'.repeat(190);
 	for (const text of ['First instructions', 'Second instructions']) {
 		const response = await alice.post('/api/v1/workflows', {
 			name,
@@ -374,6 +377,12 @@ test('v3 browser file transfer maps duplicate workflows and distinct prompts int
 	await page.screenshot({ path: test.info().outputPath('library-mappings-desktop.png') });
 	await page.setViewportSize({ width: 390, height: 844 });
 	await page.screenshot({ path: test.info().outputPath('library-mappings-phone.png') });
+	for (const region of [
+		page.getByTestId('workflow-mapping').first(),
+		page.getByTestId('import-preview')
+	]) {
+		expect(await region.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+	}
 	expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(
 		true
 	);
