@@ -929,9 +929,9 @@ export async function createIssue(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
+	effects: DispatchEffects,
 	projectId: string,
-	body: CreateIssueRequest,
-	effects?: DispatchEffects
+	body: CreateIssueRequest
 ): Promise<CreateIssueResponse> {
 	const project = await db
 		.selectFrom('project')
@@ -1017,7 +1017,7 @@ export async function createIssue(
 		);
 	}
 	await runAtomic(env, queries);
-	effects?.signalDispatch();
+	effects.signalDispatch();
 
 	const issue = await getIssueDetail(db, actor.userId, { id });
 	if (!schedule) return issue;
@@ -1055,9 +1055,9 @@ export async function updateIssue(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
+	effects: DispatchEffects,
 	id: string,
-	body: UpdateIssueRequest,
-	effects?: DispatchEffects
+	body: UpdateIssueRequest
 ): Promise<IssueDetail> {
 	assertPinFieldsAllowed(actor, body);
 	const current = await getIssueDetail(db, actor.userId, { id });
@@ -1139,7 +1139,7 @@ export async function updateIssue(
 	if (workflowChanged) changed.push('workflow');
 	if (pinChanged) changed.push('pin');
 	if (changed.length === 0 && !stateChanged) {
-		effects?.signalDispatch();
+		effects.signalDispatch();
 		return current;
 	}
 
@@ -1227,7 +1227,7 @@ export async function updateIssue(
 			{ current_state: fresh.state, allowed_transitions: fresh.allowed_transitions }
 		);
 	}
-	effects?.signalDispatch();
+	effects.signalDispatch();
 	return getIssueDetail(db, actor.userId, { id });
 }
 
@@ -1282,9 +1282,9 @@ export async function transitionIssue(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
+	effects: DispatchEffects,
 	id: string,
-	body: TransitionIssueRequest,
-	effects?: DispatchEffects
+	body: TransitionIssueRequest
 ): Promise<IssueDetail> {
 	const current = await getIssueDetail(db, actor.userId, { id });
 	await assertWritable(db, actor, issueProject(current), { issueId: current.id });
@@ -1376,7 +1376,7 @@ export async function transitionIssue(
 			{ current_state: fresh.state, allowed_transitions: fresh.allowed_transitions }
 		);
 	}
-	effects?.signalDispatch();
+	effects.signalDispatch();
 	return getIssueDetail(db, actor.userId, { id });
 }
 
@@ -1390,13 +1390,13 @@ export async function resumeIssue(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
-	id: string,
-	effects?: DispatchEffects
+	effects: DispatchEffects,
+	id: string
 ): Promise<IssueDetail> {
 	const current = await getIssueDetail(db, actor.userId, { id });
 	await assertWritable(db, actor, issueProject(current), { issueId: current.id });
 	if (!current.needs_attention && current.attempt_count === 0) {
-		effects?.signalDispatch();
+		effects.signalDispatch();
 		return current;
 	}
 	await runAtomic(env, [
@@ -1412,7 +1412,7 @@ export async function resumeIssue(
 			payload: { was_parked: current.needs_attention, attempt_count_was: current.attempt_count }
 		})
 	]);
-	effects?.signalDispatch();
+	effects.signalDispatch();
 	return getIssueDetail(db, actor.userId, { id });
 }
 

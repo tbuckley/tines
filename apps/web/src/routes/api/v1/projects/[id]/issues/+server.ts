@@ -39,6 +39,6 @@ export const GET: RequestHandler = api(async (event) => {
 export const POST: RequestHandler = api(async (event) => {
 	const { db, env, actor, effects } = await apiContext(event);
 	const body = await readJson<CreateIssueRequest>(event);
-	const issue = await createIssue(db, env, actor, event.params.id, body, effects);
+	const issue = await createIssue(db, env, actor, effects, event.params.id, body);
 	return json(issue, { status: 201 });
 });

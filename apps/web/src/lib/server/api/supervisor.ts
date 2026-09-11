@@ -193,8 +193,8 @@ export async function updateSupervisorSettings(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
-	body: UpdateSupervisorSettingsRequest,
-	effects?: DispatchEffects
+	effects: DispatchEffects,
+	body: UpdateSupervisorSettingsRequest
 ): Promise<SupervisorSettingsResponse> {
 	const current = await getSupervisorSettings(db, actor.userId);
 
@@ -337,7 +337,7 @@ export async function updateSupervisorSettings(
 		}
 	}
 
-	effects?.signalDispatch();
+	effects.signalDispatch();
 	const settings: SupervisorSettingsResponse = await getSupervisorSettings(db, actor.userId);
 	if (canceledRuns > 0) settings.canceled_runs = canceledRuns;
 	return settings;

@@ -360,11 +360,11 @@ export async function cancelRunForRequest(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
-	runId: string,
-	effects?: DispatchEffects
+	effects: DispatchEffects,
+	runId: string
 ): Promise<AgentRunDetail> {
 	const result = await cancelRun(db, env, actor.userId, runId);
 	assertCancelable(result.kind);
-	effects?.signalDispatch();
+	effects.signalDispatch();
 	return getRun(db, actor.userId, runId);
 }

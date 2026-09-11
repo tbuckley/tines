@@ -5,5 +5,5 @@ import type { RequestHandler } from './$types';
 
 export const POST: RequestHandler = api(async (event) => {
 	const { db, env, actor, effects } = await apiContext(event);
-	return json(await cancelRunForRequest(db, env, actor, event.params.id, effects));
+	return json(await cancelRunForRequest(db, env, actor, effects, event.params.id));
 });

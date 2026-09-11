@@ -982,9 +982,9 @@ export async function updateWorkflow(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
+	effects: DispatchEffects,
 	id: string,
-	body: UpdateWorkflowRequest,
-	effects?: DispatchEffects
+	body: UpdateWorkflowRequest
 ): Promise<WorkflowResponse> {
 	const current = await loadWorkflow(db, actor.userId, id);
 	if (current.is_system) {
@@ -1278,7 +1278,7 @@ export async function updateWorkflow(
 		eventInsert(db, actor, { type: 'workflow.updated', payload })
 	);
 	await runAtomic(env, queries);
-	if (categoriesChanged.some((change) => change.to === 'active')) effects?.signalDispatch();
+	if (categoriesChanged.some((change) => change.to === 'active')) effects.signalDispatch();
 	const updated = await loadWorkflow(db, actor.userId, id);
 	if (contextSweep.deleted.length > 0) updated.deleted_context = contextSweep.deleted;
 	if (clearedInheritance.length > 0) updated.cleared_inheritance = clearedInheritance;

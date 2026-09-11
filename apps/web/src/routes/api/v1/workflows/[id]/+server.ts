@@ -12,7 +12,7 @@ export const GET: RequestHandler = api(async (event) => {
 export const PATCH: RequestHandler = api(async (event) => {
 	const { db, env, actor, effects } = await apiContext(event);
 	const body = await readJson<UpdateWorkflowRequest>(event);
-	return json(await updateWorkflow(db, env, actor, event.params.id, body, effects));
+	return json(await updateWorkflow(db, env, actor, effects, event.params.id, body));
 });
 
 export const DELETE: RequestHandler = api(async (event) => {

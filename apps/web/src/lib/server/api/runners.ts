@@ -442,9 +442,9 @@ export async function createRunner(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
+	effects: DispatchEffects,
 	body: CreateRunnerRequest,
-	ping: ProviderKeyPing = defaultPing,
-	effects?: DispatchEffects
+	ping: ProviderKeyPing = defaultPing
 ): Promise<Runner> {
 	if (typeof body.type !== 'string' || !(RUNNER_TYPES as readonly string[]).includes(body.type)) {
 		throw new ApiFail(
@@ -583,7 +583,7 @@ export async function createRunner(
 			payload: { runner_id: id, name, runner_type: body.type }
 		})
 	]);
-	effects?.signalDispatch();
+	effects.signalDispatch();
 	return getRunner(db, actor.userId, id);
 }
 
@@ -591,10 +591,10 @@ export async function updateRunner(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
+	effects: DispatchEffects,
 	id: string,
 	body: UpdateRunnerRequest,
-	ping: ProviderKeyPing = defaultPing,
-	effects?: DispatchEffects
+	ping: ProviderKeyPing = defaultPing
 ): Promise<Runner> {
 	const row = await runnerQuery(db, actor.userId).where('runner.id', '=', id).executeTakeFirst();
 	if (!row) throw notFound();
@@ -743,7 +743,7 @@ export async function updateRunner(
 	);
 
 	if (changed.length === 0) {
-		effects?.signalDispatch();
+		effects.signalDispatch();
 		return serializeRunner(row);
 	}
 
@@ -776,7 +776,7 @@ export async function updateRunner(
 	if (patch.status === 'paused') {
 		await cancelAssignedRuns(db, env, { userId: actor.userId, runnerId: id }, 'runner paused');
 	}
-	effects?.signalDispatch();
+	effects.signalDispatch();
 	return getRunner(db, actor.userId, id);
 }
 
@@ -800,8 +800,8 @@ export async function registerRunner(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
-	body: RegisterRunnerRequest,
-	effects?: DispatchEffects
+	effects: DispatchEffects,
+	body: RegisterRunnerRequest
 ): Promise<RunnerTokenResponse> {
 	const name = validateRunnerName(body.name);
 	const token = generateRunnerToken();
@@ -892,7 +892,7 @@ export async function registerRunner(
 				payload: { runner_id: existing.id, name, changed, reconnected: true }
 			})
 		]);
-		effects?.signalDispatch();
+		effects.signalDispatch();
 		return { runner: await getRunner(db, actor.userId, existing.id), runner_token: token };
 	}
 
@@ -951,7 +951,7 @@ export async function registerRunner(
 			payload: { runner_id: id, name, runner_type: 'local' }
 		})
 	]);
-	effects?.signalDispatch();
+	effects.signalDispatch();
 	return { runner: await getRunner(db, actor.userId, id), runner_token: token };
 }
 
@@ -1069,9 +1069,9 @@ export async function deleteRunner(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
+	effects: DispatchEffects,
 	id: string,
-	force: boolean,
-	effects?: DispatchEffects
+	force: boolean
 ): Promise<void> {
 	const runner = await db
 		.selectFrom('runner')
@@ -1277,5 +1277,5 @@ export async function deleteRunner(
 			console.error(`deleting run-log objects for run ${run.id} failed:`, e)
 		);
 	}
-	effects?.signalDispatch();
+	effects.signalDispatch();
 }

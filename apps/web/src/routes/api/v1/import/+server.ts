@@ -28,6 +28,6 @@ export const POST: RequestHandler = api(async (event) => {
 		throw new ApiFail(422, 'document_too_large', `Document exceeds ${LIBRARY_MAX_BYTES} bytes`, {
 			max_bytes: LIBRARY_MAX_BYTES
 		});
-	const result = await applyImport(db, env, actor, body, effects);
+	const result = await applyImport(db, env, actor, effects, body);
 	return json(result);
 });

@@ -971,11 +971,11 @@ export async function applyImport(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
-	request: ImportLibraryRequest,
-	effects?: DispatchEffects
+	effects: DispatchEffects,
+	request: ImportLibraryRequest
 ): Promise<ImportLibraryResponse> {
 	if (request.document?.version === 3)
-		return applyLibraryV3Import(db, env, actor, request, effects);
+		return applyLibraryV3Import(db, env, actor, effects, request);
 	const plan = await planImport(db, actor.userId, request);
 	if (request.dry_run) {
 		const entries = plan.steps.map((s) => s.entry);
@@ -1018,11 +1018,11 @@ export async function applyImport(
 							db,
 							env,
 							actor,
+							effects,
 							step.existing,
 							step.workflow,
 							stateIds,
-							deferred,
-							effects
+							deferred
 						)
 					: await createWorkflow(
 							db,
@@ -1059,11 +1059,11 @@ export async function applyImport(
 		db,
 		env,
 		actor,
+		effects,
 		ordered,
 		createdWorkflows,
 		stateIds,
-		deferred,
-		effects
+		deferred
 	);
 
 	const entries = plan.steps.map((s) => s.entry);
@@ -1131,11 +1131,11 @@ async function overwritePointers(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
+	effects: DispatchEffects,
 	existing: WorkflowResponse,
 	workflow: CreateWorkflowRequest,
 	stateIds: Map<string, string>,
-	deferred: DeferredPointer[],
-	effects?: DispatchEffects
+	deferred: DeferredPointer[]
 ): Promise<WorkflowResponse> {
 	const want = documentPointers(workflow);
 	const idByName = new Map(existing.states.map((s) => [s.name, s.id]));
@@ -1157,7 +1157,7 @@ async function overwritePointers(
 		}
 		states.push({ ...base, inherits_from: resolved });
 	}
-	return updateWorkflow(db, env, actor, existing.id, { states }, effects);
+	return updateWorkflow(db, env, actor, effects, existing.id, { states });
 }
 
 /** A `<workflow>/<state>` ref as a state id: created in this pass, else stored here. */
@@ -1187,11 +1187,11 @@ async function applyDeferredPointers(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
+	effects: DispatchEffects,
 	steps: PlannedStep[],
 	createdWorkflows: Map<string, WorkflowResponse>,
 	stateIds: Map<string, string>,
-	deferred: DeferredPointer[],
-	effects?: DispatchEffects
+	deferred: DeferredPointer[]
 ): Promise<void> {
 	if (deferred.length === 0) return;
 	for (const [workflowName, pointers] of groupByWorkflow(deferred)) {
@@ -1217,7 +1217,7 @@ async function applyDeferredPointers(
 					category: s.category,
 					...(bases.has(s.name) ? { inherits_from: bases.get(s.name)! } : {})
 				}));
-			await updateWorkflow(db, env, actor, created.id, { states }, effects);
+			await updateWorkflow(db, env, actor, effects, created.id, { states });
 		} catch (e) {
 			if (step) {
 				step.entry.action = 'error';

@@ -6,6 +6,7 @@
  * addresses it leaves behind keep working, keep their history, and are never
  * handed to another issue.
  */
+import { TEST_NOOP_DISPATCH_EFFECTS } from '$lib/server/api/test-dispatch-effects';
 import { describe, expect, it } from 'vitest';
 import {
 	NOW,
@@ -45,6 +46,7 @@ async function transfer(t: TestDb, issueId: string, destination: string, now: nu
 	const result = await commitIssueTransfer(
 		t.env,
 		actor,
+		TEST_NOOP_DISPATCH_EFFECTS,
 		issueId,
 		destination,
 		preview.preview_token!,
@@ -265,14 +267,22 @@ describe('populated issue transfer journey', () => {
 
 		await transfer(t, issueId, B, NOW + 10);
 
-		const created = await createIssue(t.db, t.env, actor, PROJECT, { title: 'after the move' });
+		const created = await createIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, PROJECT, {
+			title: 'after the move'
+		});
 		expect(created.number).toBeGreaterThan(startNumber);
 
 		// The schedule's own creation path allocates from the same ledger.
 		t.sqlite.exec(
 			`UPDATE issue SET state_id = 'wfs_std_closed' WHERE scheduled_task_id = 'sch_origin'`
 		);
-		const instanceId = await runScheduleNow(t.db, t.env, actor, 'sch_origin');
+		const instanceId = await runScheduleNow(
+			t.db,
+			t.env,
+			actor,
+			TEST_NOOP_DISPATCH_EFFECTS,
+			'sch_origin'
+		);
 		const instance = t.all('SELECT project_id, number FROM issue WHERE id = ?', instanceId)[0];
 		expect(instance.project_id).toBe(PROJECT);
 		expect(Number(instance.number)).toBeGreaterThan(created.number);
@@ -289,9 +299,16 @@ describe('populated issue transfer journey', () => {
 		await transfer(t, issueId, B, NOW + 10);
 		await archiveProject(t.db, t.env, actor, PROJECT, NOW + 11);
 		const throughAlias = await loadIssue(t.db, USER, { projectId: PROJECT, number: oldNumber });
-		const updated = await updateIssue(t.db, t.env, actor, throughAlias.id, {
-			title: 'written through the archived alias'
-		});
+		const updated = await updateIssue(
+			t.db,
+			t.env,
+			actor,
+			TEST_NOOP_DISPATCH_EFFECTS,
+			throughAlias.id,
+			{
+				title: 'written through the archived alias'
+			}
+		);
 		expect(updated).toMatchObject({
 			id: issueId,
 			project_id: B,
@@ -366,12 +383,16 @@ describe('populated issue transfer journey', () => {
 		expect(
 			t.all('SELECT scheduled_task_id FROM issue WHERE id = ?', issueId)[0].scheduled_task_id
 		).toBe('sch_origin');
-		await expect(runScheduleNow(t.db, t.env, actor, 'sch_origin')).rejects.toMatchObject({
+		await expect(
+			runScheduleNow(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, 'sch_origin')
+		).rejects.toMatchObject({
 			status: 422,
 			code: 'schedule_blocked'
 		});
 		// The blocker names the address the instance has now, not the one it had.
-		await expect(runScheduleNow(t.db, t.env, actor, 'sch_origin')).rejects.toMatchObject({
+		await expect(
+			runScheduleNow(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, 'sch_origin')
+		).rejects.toMatchObject({
 			details: {
 				open_instances: [
 					expect.objectContaining({ project_name: 'beta', number: moved.new_ref.number })
@@ -380,7 +401,13 @@ describe('populated issue transfer journey', () => {
 		});
 
 		t.sqlite.exec(`UPDATE issue SET state_id = 'wfs_std_closed' WHERE id = '${issueId}'`);
-		const nextId = await runScheduleNow(t.db, t.env, actor, 'sch_origin');
+		const nextId = await runScheduleNow(
+			t.db,
+			t.env,
+			actor,
+			TEST_NOOP_DISPATCH_EFFECTS,
+			'sch_origin'
+		);
 		// The next instance belongs to the schedule's own project, not the one
 		// its predecessor wandered into.
 		expect(t.all('SELECT project_id FROM issue WHERE id = ?', nextId)[0].project_id).toBe(PROJECT);

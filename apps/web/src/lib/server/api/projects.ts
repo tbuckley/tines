@@ -423,13 +423,13 @@ export async function unarchiveProject(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
+	effects: DispatchEffects,
 	id: string,
-	now = Date.now(),
-	effects?: DispatchEffects
+	now = Date.now()
 ): Promise<UnarchiveProjectResponse> {
 	const project = await getProject(db, actor.userId, id);
 	if (project.archived_at === null) {
-		effects?.signalDispatch();
+		effects.signalDispatch();
 		return { project, schedules_resumed: 0 };
 	}
 	// Enabled schedules resume from their next future occurrence: a project
@@ -454,7 +454,7 @@ export async function unarchiveProject(
 			payload: { name: project.name, schedules_resumed: rearm.queries.length }
 		})
 	]);
-	effects?.signalDispatch();
+	effects.signalDispatch();
 	return {
 		project: await getProject(db, actor.userId, id),
 		schedules_resumed: rearm.queries.length

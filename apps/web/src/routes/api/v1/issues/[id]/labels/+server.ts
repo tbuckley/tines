@@ -8,6 +8,6 @@ import type { RequestHandler } from './$types';
 export const POST: RequestHandler = api(async (event) => {
 	const { db, env, actor, effects } = await apiContext(event);
 	const body = await readJson<AddIssueLabelsRequest>(event);
-	const result = await addIssueLabels(db, env, actor, event.params.id, body.labels, effects);
+	const result = await addIssueLabels(db, env, actor, effects, event.params.id, body.labels);
 	return json(result);
 });

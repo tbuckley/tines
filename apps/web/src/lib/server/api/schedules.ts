@@ -638,8 +638,8 @@ export async function runScheduleNow(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
-	id: string,
-	effects?: DispatchEffects
+	effects: DispatchEffects,
+	id: string
 ): Promise<string> {
 	const schedule = await getScheduleExecRow(db, actor.userId, id);
 	await assertWritable(db, actor, {
@@ -676,7 +676,7 @@ export async function runScheduleNow(
 		actor: { userId: actor.userId, apiKeyId: actor.apiKeyId }
 	});
 	await runAtomic(env, queries);
-	effects?.signalDispatch();
+	effects.signalDispatch();
 	return issueId;
 }
 

@@ -1,3 +1,4 @@
+import { TEST_NOOP_DISPATCH_EFFECTS } from '$lib/server/api/test-dispatch-effects';
 import { RUN_LOG_MAX_BYTES } from '@tines/shared';
 import { describe, expect, it } from 'vitest';
 import {
@@ -70,12 +71,18 @@ function expectFail(fn: () => Promise<unknown>, code: string): Promise<void> {
 describe('registerRunner', () => {
 	it('creates a local runner with a hashed token, shown once', async () => {
 		const t = world();
-		const { runner, runner_token } = await registerRunner(t.db, t.env, actor, {
-			name: 'laptop-m4',
-			harness: 'claude_code',
-			hostname: 'mbp.local',
-			platform: 'darwin'
-		});
+		const { runner, runner_token } = await registerRunner(
+			t.db,
+			t.env,
+			actor,
+			TEST_NOOP_DISPATCH_EFFECTS,
+			{
+				name: 'laptop-m4',
+				harness: 'claude_code',
+				hostname: 'mbp.local',
+				platform: 'darwin'
+			}
+		);
 		expect(runner.type).toBe('local');
 		expect(runner.online).toBe(true); // registration counts as a heartbeat
 		expect(runner_token).toMatch(/^tines_rt_/);
@@ -91,8 +98,12 @@ describe('registerRunner', () => {
 
 	it('reconnects an existing local runner by name: same row, fresh token, old one dead', async () => {
 		const t = world();
-		const first = await registerRunner(t.db, t.env, actor, { name: 'laptop-m4' });
-		const second = await registerRunner(t.db, t.env, actor, { name: 'laptop-m4' });
+		const first = await registerRunner(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+			name: 'laptop-m4'
+		});
+		const second = await registerRunner(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+			name: 'laptop-m4'
+		});
 		expect(second.runner.id).toBe(first.runner.id);
 		expect(second.runner_token).not.toBe(first.runner_token);
 		expect(await authenticateRunnerToken(t.db, first.runner_token)).toBeUndefined();
@@ -102,16 +113,16 @@ describe('registerRunner', () => {
 
 	it('reconnect updates only the fields the daemon sent — server-side edits survive', async () => {
 		const t = world();
-		const first = await registerRunner(t.db, t.env, actor, {
+		const first = await registerRunner(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
 			name: 'laptop-m4',
 			max_concurrent: 2
 		});
 		// The user tuned these in the UI; the daemon never sends them.
-		await updateRunner(t.db, t.env, actor, first.runner.id, {
+		await updateRunner(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, first.runner.id, {
 			max_run_minutes: 90,
 			default_tier: 'smartest'
 		});
-		const second = await registerRunner(t.db, t.env, actor, {
+		const second = await registerRunner(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
 			name: 'laptop-m4',
 			max_concurrent: 3,
 			hostname: 'mbp.local'
@@ -125,13 +136,13 @@ describe('registerRunner', () => {
 
 	it('reconnect away from the custom harness drops the stored command template', async () => {
 		const t = world();
-		const first = await registerRunner(t.db, t.env, actor, {
+		const first = await registerRunner(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
 			name: 'laptop-m4',
 			harness: 'custom',
 			command: 'run {prompt_file}'
 		});
 		expect(first.runner.config.command).toBe('run {prompt_file}');
-		const second = await registerRunner(t.db, t.env, actor, {
+		const second = await registerRunner(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
 			name: 'laptop-m4',
 			harness: 'claude_code'
 		});
@@ -142,14 +153,18 @@ describe('registerRunner', () => {
 	it('rejects a custom harness without a command, and unknown-tier registrations', async () => {
 		const t = world();
 		await expectFail(
-			() => registerRunner(t.db, t.env, actor, { name: 'x', harness: 'custom' }),
+			() =>
+				registerRunner(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+					name: 'x',
+					harness: 'custom'
+				}),
 			'invalid_field'
 		);
 	});
 
 	it('an API key is not a runner token (and vice versa: the inverse fence)', async () => {
 		const t = world();
-		await registerRunner(t.db, t.env, actor, { name: 'laptop-m4' });
+		await registerRunner(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, { name: 'laptop-m4' });
 		// A run key (an api_key row) never authenticates the protocol.
 		expect(await authenticateRunnerToken(t.db, 'tines_someapikeysecret')).toBeUndefined();
 	});
@@ -158,9 +173,15 @@ describe('registerRunner', () => {
 describe('rotateRunnerToken', () => {
 	it('invalidates the old token, returns the new one once, keeps identity', async () => {
 		const t = world();
-		const { runner, runner_token } = await registerRunner(t.db, t.env, actor, {
-			name: 'laptop-m4'
-		});
+		const { runner, runner_token } = await registerRunner(
+			t.db,
+			t.env,
+			actor,
+			TEST_NOOP_DISPATCH_EFFECTS,
+			{
+				name: 'laptop-m4'
+			}
+		);
 		const rotated = await rotateRunnerToken(t.db, t.env, actor, runner.id);
 		expect(rotated.runner.id).toBe(runner.id);
 		expect(rotated.runner_token).not.toBe(runner_token);
@@ -189,6 +210,7 @@ describe('pollRunner', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, id),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			{ owned_runs: [] },
 			later
 		);
@@ -200,6 +222,7 @@ describe('pollRunner', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, id),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			{ owned_runs: [] },
 			later + 1000
 		);
@@ -213,6 +236,7 @@ describe('pollRunner', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, id),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			{ owned_runs: [], max_concurrent: 3 },
 			NOW + 1
 		);
@@ -227,6 +251,7 @@ describe('pollRunner', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, id),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			{ owned_runs: [], max_concurrent: 3 },
 			NOW + 2
 		);
@@ -238,12 +263,20 @@ describe('pollRunner', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, id),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			{ owned_runs: [], max_concurrent: 2 },
 			NOW + 3
 		);
 		expect(lowered.capRaised).toBe(false);
 		expect(runnerById(t, id).max_concurrent).toBe(2);
-		await pollRunner(t.db, t.env, await runnerRow(t, id), { owned_runs: [] }, NOW + 4);
+		await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, id),
+			TEST_NOOP_DISPATCH_EFFECTS,
+			{ owned_runs: [] },
+			NOW + 4
+		);
 		expect(runnerById(t, id).max_concurrent).toBe(2);
 	});
 
@@ -254,6 +287,7 @@ describe('pollRunner', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, id),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			{ owned_runs: [], draining: true },
 			NOW + 1
 		);
@@ -267,6 +301,7 @@ describe('pollRunner', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, id),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			{ owned_runs: [], draining: true },
 			NOW + 2
 		);
@@ -278,6 +313,7 @@ describe('pollRunner', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, id),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			{ owned_runs: [] },
 			NOW + 3
 		);
@@ -290,6 +326,7 @@ describe('pollRunner', () => {
 					t.db,
 					t.env,
 					await runnerRow(t, id),
+					TEST_NOOP_DISPATCH_EFFECTS,
 					{ owned_runs: [], draining: 'yes' as unknown as boolean },
 					NOW + 4
 				),
@@ -306,6 +343,7 @@ describe('pollRunner', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			{ owned_runs: [], draining: true },
 			NOW + 1
 		);
@@ -322,6 +360,7 @@ describe('pollRunner', () => {
 					t.db,
 					t.env,
 					await runnerRow(t, id),
+					TEST_NOOP_DISPATCH_EFFECTS,
 					{ owned_runs: [], max_concurrent: 0 },
 					NOW + 1
 				),
@@ -333,6 +372,7 @@ describe('pollRunner', () => {
 					t.db,
 					t.env,
 					await runnerRow(t, id),
+					TEST_NOOP_DISPATCH_EFFECTS,
 					{ owned_runs: [], max_concurrent: 101 },
 					NOW + 1
 				),
@@ -350,6 +390,7 @@ describe('pollRunner', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			{ owned_runs: [] },
 			NOW + 1
 		);
@@ -376,6 +417,7 @@ describe('pollRunner', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			{ owned_runs: [] },
 			NOW + 2
 		);
@@ -411,6 +453,7 @@ describe('pollRunner', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			{ owned_runs: [] },
 			NOW + 1
 		);
@@ -435,6 +478,7 @@ describe('pollRunner', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			{ owned_runs: [] },
 			NOW + 1
 		);
@@ -453,6 +497,7 @@ describe('pollRunner', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			{ owned_runs: [] },
 			NOW + 1
 		);
@@ -476,6 +521,7 @@ describe('pollRunner', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			{ owned_runs: [] },
 			NOW + 1
 		);
@@ -489,6 +535,7 @@ describe('pollRunner', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			{ owned_runs: [] },
 			NOW + 2
 		);
@@ -505,6 +552,7 @@ describe('pollRunner', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			{ owned_runs: [] },
 			NOW + 1
 		);
@@ -523,6 +571,7 @@ describe('pollRunner', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			{ owned_runs: [kept] },
 			NOW + 1
 		);
@@ -556,6 +605,7 @@ describe('pollRunner', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			{ owned_runs: [] },
 			NOW + 1
 		);
@@ -581,6 +631,7 @@ describe('pollRunner', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			{ owned_runs: [settled, live, 'arun_unknown'] },
 			NOW + 1
 		);
@@ -675,6 +726,7 @@ describe('finishRun', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, opts.runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			{ owned_runs: [] },
 			NOW + 1
 		);
@@ -695,6 +747,7 @@ describe('finishRun', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			runId,
 			{ status: 'completed' },
 			NOW + 30
@@ -716,6 +769,7 @@ describe('finishRun', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			runId,
 			{ status: 'completed' },
 			NOW + 30
@@ -740,6 +794,7 @@ describe('finishRun', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			runId,
 			{
 				status: 'completed',
@@ -797,6 +852,7 @@ describe('finishRun', () => {
 				t.db,
 				t.env,
 				awaitRunner,
+				TEST_NOOP_DISPATCH_EFFECTS,
 				runId,
 				{
 					status: 'completed',
@@ -865,6 +921,7 @@ describe('finishRun', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			runId,
 			{ status: 'failed', error: 'daemon shut down', judgment: 'interrupted' },
 			NOW + 30
@@ -893,6 +950,7 @@ describe('finishRun', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			runId,
 			{
 				status: 'failed',
@@ -925,6 +983,7 @@ describe('finishRun', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			runId,
 			{
 				status: 'failed',
@@ -948,6 +1007,7 @@ describe('finishRun', () => {
 				t.db,
 				t.env,
 				await runnerRow(t, runnerId),
+				TEST_NOOP_DISPATCH_EFFECTS,
 				runId,
 				{
 					status: 'failed',
@@ -972,6 +1032,7 @@ describe('finishRun', () => {
 				t.db,
 				t.env,
 				await runnerRow(t, runnerId),
+				TEST_NOOP_DISPATCH_EFFECTS,
 				runId,
 				{ status: 'failed', judgment: 'rate_limited', resume_at: 'soon' } as never,
 				NOW + 30
@@ -982,6 +1043,7 @@ describe('finishRun', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			runId,
 			{ status: 'completed', judgment: 'rate_limited', resume_at: NOW + 600_000 } as never,
 			NOW + 30
@@ -1002,6 +1064,7 @@ describe('finishRun', () => {
 				t.db,
 				t.env,
 				await runnerRow(t, runnerId),
+				TEST_NOOP_DISPATCH_EFFECTS,
 				runId,
 				{ status: 'failed', error: 'daemon shut down', judgment: 'interrupted' },
 				NOW + 30
@@ -1026,6 +1089,7 @@ describe('finishRun', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			runId,
 			{ status: 'failed', error: 'workspace setup failed: git clone exited 128' },
 			NOW + 30
@@ -1046,6 +1110,7 @@ describe('finishRun', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			runId,
 			{ status: 'completed', judgment: 'interrupted' },
 			NOW + 30
@@ -1064,6 +1129,7 @@ describe('finishRun', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			runId,
 			{
 				status: 'failed',
@@ -1091,6 +1157,7 @@ describe('finishRun', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			runId,
 			{
 				status: 'completed',
@@ -1124,6 +1191,7 @@ describe('finishRun', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			runId,
 			{ status: 'completed' },
 			NOW + 30
@@ -1142,6 +1210,7 @@ describe('finishRun', () => {
 					t.db,
 					t.env,
 					await runnerRow(t, runnerId),
+					TEST_NOOP_DISPATCH_EFFECTS,
 					runId,
 					{
 						status: 'completed',
@@ -1170,6 +1239,7 @@ describe('finishRun', () => {
 						t.db,
 						t.env,
 						await runnerRow(t, runnerId),
+						TEST_NOOP_DISPATCH_EFFECTS,
 						runId,
 						{
 							status: 'completed',
@@ -1194,7 +1264,16 @@ describe('finishRun', () => {
 		const runId = addRun(t, { issueId: issue, runnerId, status: 'canceled' });
 		const row = await runnerRow(t, runnerId);
 		await expectFail(
-			() => finishRun(t.db, t.env, row, runId, { status: 'completed' }, NOW),
+			() =>
+				finishRun(
+					t.db,
+					t.env,
+					row,
+					TEST_NOOP_DISPATCH_EFFECTS,
+					runId,
+					{ status: 'completed' },
+					NOW
+				),
 			'run_already_ended'
 		);
 	});
@@ -1213,7 +1292,9 @@ describe('pause and kill-switch cancels', () => {
 			status: 'running',
 			startedAt: NOW
 		});
-		await updateRunner(t.db, t.env, actor, runnerId, { status: 'paused' });
+		await updateRunner(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, runnerId, {
+			status: 'paused'
+		});
 		expect(runById(t, assigned)?.status).toBe('canceled');
 		expect(runById(t, assigned)?.error).toBe('runner paused');
 		expect(runById(t, running)?.status).toBe('running');
@@ -1233,7 +1314,9 @@ describe('pause and kill-switch cancels', () => {
 			startedAt: NOW
 		});
 
-		const off = await updateSupervisorSettings(t.db, t.env, actor, { enabled: false });
+		const off = await updateSupervisorSettings(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+			enabled: false
+		});
 		expect(off.enabled).toBe(false);
 		expect(off.canceled_runs).toBe(2);
 		expect(runById(t, assignedA)?.status).toBe('canceled');
@@ -1241,7 +1324,7 @@ describe('pause and kill-switch cancels', () => {
 		expect(runById(t, running)?.status).toBe('running');
 
 		// The bulk-cancel option: plain individual cancels, strikes and all.
-		const bulk = await updateSupervisorSettings(t.db, t.env, actor, {
+		const bulk = await updateSupervisorSettings(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
 			enabled: false,
 			cancel_in_flight: true
 		});
@@ -1253,7 +1336,11 @@ describe('pause and kill-switch cancels', () => {
 	it('cancel_in_flight is rejected while enabling', async () => {
 		const t = world();
 		await expectFail(
-			() => updateSupervisorSettings(t.db, t.env, actor, { enabled: true, cancel_in_flight: true }),
+			() =>
+				updateSupervisorSettings(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+					enabled: true,
+					cancel_in_flight: true
+				}),
 			'invalid_field'
 		);
 	});
@@ -1278,6 +1365,7 @@ describe('resume (retention and delivery)', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			{ owned_runs: [] },
 			now
 		);
@@ -1303,6 +1391,7 @@ describe('resume (retention and delivery)', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			runId,
 			{
 				status: 'completed',
@@ -1311,7 +1400,7 @@ describe('resume (retention and delivery)', () => {
 				turn_count: 12,
 				conversation_turn_count: 12,
 				...body
-			} as Parameters<typeof finishRun>[4],
+			} as Parameters<typeof finishRun>[5],
 			NOW + 30
 		);
 	}
@@ -1356,12 +1445,13 @@ describe('resume (retention and delivery)', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			stalled.runId,
 			{
 				status: 'completed',
 				provider_session_id: 'sess-stalled',
 				workspace_path: '/tmp/ws/stalled'
-			} as Parameters<typeof finishRun>[4],
+			} as Parameters<typeof finishRun>[5],
 			NOW + 30
 		);
 		expect(resources(t)).toHaveLength(0);
@@ -1376,7 +1466,14 @@ describe('resume (retention and delivery)', () => {
 		const offIssue = addIssue(t);
 		const offRunner = addRunner(t, { name: 'no-resume' });
 		const offRun = addRun(t, { issueId: offIssue, runnerId: offRunner });
-		await pollRunner(t.db, t.env, await runnerRow(t, offRunner), { owned_runs: [] }, NOW + 1);
+		await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, offRunner),
+			TEST_NOOP_DISPATCH_EFFECTS,
+			{ owned_runs: [] },
+			NOW + 1
+		);
 		await finishAdvanced(t, offRunner, offIssue, offRun);
 		expect(resources(t)).toHaveLength(0);
 	});
@@ -1397,12 +1494,13 @@ describe('resume (retention and delivery)', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			runId,
 			{
 				status: 'completed',
 				provider_session_id: 'sess-abc',
 				workspace_path: '/tmp/ws/run1'
-			} as Parameters<typeof finishRun>[4],
+			} as Parameters<typeof finishRun>[5],
 			NOW + 30
 		);
 		expect(run.outcome).not.toBe('advanced');
@@ -1424,13 +1522,14 @@ describe('resume (retention and delivery)', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			runId,
 			{
 				status: 'failed',
 				error: 'usage limit reached',
 				judgment: 'rate_limited',
 				resume_at: NOW + 60 * 60 * 1000
-			} as Parameters<typeof finishRun>[4],
+			} as Parameters<typeof finishRun>[5],
 			NOW + 30
 		);
 		const runner = await runnerRow(t, runnerId);
@@ -1488,6 +1587,7 @@ describe('resume (retention and delivery)', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			{ owned_runs: [] },
 			NOW + 30 + 2 * 60 * 60 * 1000
 		);
@@ -1511,6 +1611,7 @@ describe('resume (retention and delivery)', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			{ owned_runs: [] },
 			NOW + 40
 		);

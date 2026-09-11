@@ -282,9 +282,9 @@ export async function deleteLabel(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
+	effects: DispatchEffects,
 	labelRef: string,
-	options: { force?: boolean } = {},
-	effects?: DispatchEffects
+	options: { force?: boolean } = {}
 ): Promise<DeleteLabelResponse> {
 	const label = await resolveLabelRef(db, actor.userId, labelRef);
 	if (!label) throw notFound();
@@ -362,7 +362,7 @@ export async function deleteLabel(
 			}
 		})
 	]);
-	if (scopedRules.length > 0) effects?.signalDispatch();
+	if (scopedRules.length > 0) effects.signalDispatch();
 	return {
 		deleted: true,
 		issue_count: issueCount,
@@ -576,9 +576,9 @@ export async function addIssueLabels(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
+	effects: DispatchEffects,
 	issueRef: string,
-	refs: unknown,
-	effects?: DispatchEffects
+	refs: unknown
 ): Promise<AddIssueLabelsResponse> {
 	const issue = await requireIssue(db, actor.userId, issueRef);
 	await assertWritable(db, actor, issueProject(issue), { issueId: issue.id });
@@ -600,7 +600,7 @@ export async function addIssueLabels(
 	// in which case the id in hand was ignored and the winner's is live.
 	const byName = new Map(final.map((l) => [l.name.toLowerCase(), l]));
 	const landed = (l: Label) => byName.get(l.name.toLowerCase()) ?? chip(l);
-	effects?.signalDispatch();
+	effects.signalDispatch();
 	return {
 		labels: final,
 		added: added.map(landed),
@@ -612,9 +612,9 @@ export async function removeIssueLabel(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
+	effects: DispatchEffects,
 	issueRef: string,
-	labelRef: string,
-	effects?: DispatchEffects
+	labelRef: string
 ): Promise<void> {
 	const issue = await requireIssue(db, actor.userId, issueRef);
 	await assertWritable(db, actor, issueProject(issue), { issueId: issue.id });
@@ -650,5 +650,5 @@ export async function removeIssueLabel(
 			payload: { label_id: label.id, name: label.name, color: label.color }
 		})
 	]);
-	effects?.signalDispatch();
+	effects.signalDispatch();
 }

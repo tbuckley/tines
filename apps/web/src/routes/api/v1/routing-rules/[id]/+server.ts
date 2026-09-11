@@ -7,12 +7,12 @@ import type { RequestHandler } from './$types';
 export const PATCH: RequestHandler = api(async (event) => {
 	const { db, env, actor, effects } = await apiContext(event);
 	const body = await readJson<UpdateRoutingRuleRequest>(event);
-	const rule = await updateRoutingRule(db, env, actor, event.params.id, body, effects);
+	const rule = await updateRoutingRule(db, env, actor, effects, event.params.id, body);
 	return json(rule);
 });
 
 export const DELETE: RequestHandler = api(async (event) => {
 	const { db, env, actor, effects } = await apiContext(event);
-	await deleteRoutingRule(db, env, actor, event.params.id, effects);
+	await deleteRoutingRule(db, env, actor, effects, event.params.id);
 	return new Response(null, { status: 204 });
 });

@@ -1,3 +1,4 @@
+import { TEST_NOOP_DISPATCH_EFFECTS } from '$lib/server/api/test-dispatch-effects';
 import {
 	ARTIFACT_FILE_MAX_BYTES,
 	ARTIFACT_TEXT_MAX_BYTES,
@@ -90,7 +91,10 @@ describe('issue artifacts', () => {
 
 	async function gatedIssue(): Promise<IssueDetail> {
 		const wf = await createWorkflow(t.db, t.env, actor, GATED_WORKFLOW);
-		return createIssue(t.db, t.env, actor, PROJECT, { title: 'Ship it', workflow_id: wf.id });
+		return createIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, PROJECT, {
+			title: 'Ship it',
+			workflow_id: wf.id
+		});
 	}
 
 	const attachDoc = (issueId: string, content = '# Design') =>
@@ -115,7 +119,9 @@ describe('issue artifacts', () => {
 
 		// A PATCH that doesn't resend transitions still re-creates the rows
 		// wholesale — the requirements must survive the round-trip.
-		const patched = await updateWorkflow(t.db, t.env, actor, wf.id, { description: 'gated' });
+		const patched = await updateWorkflow(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, wf.id, {
+			description: 'gated'
+		});
 		expect(patched.transitions.find((tr) => tr.name === 'approve')!.requires).toHaveLength(1);
 	});
 
@@ -163,9 +169,9 @@ describe('issue artifacts', () => {
 
 		// 1. Blocked while the slot is empty, with self-correction details.
 		let error: ApiFail | undefined;
-		await transitionIssue(t.db, t.env, actor, issue.id, { action: 'approve' }).catch(
-			(e) => (error = e)
-		);
+		await transitionIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, issue.id, {
+			action: 'approve'
+		}).catch((e) => (error = e));
 		expect(error).toMatchObject({ status: 422, code: 'transition_requirements_unmet' });
 		expect(error!.message).toContain('design-doc');
 		const unmet = error!.details!.unmet as Record<string, unknown>[];
@@ -185,19 +191,23 @@ describe('issue artifacts', () => {
 		// 2. Attaching the doc satisfies the gate.
 		tick();
 		await attachDoc(issue.id);
-		const moved = await transitionIssue(t.db, t.env, actor, issue.id, { action: 'approve' });
+		const moved = await transitionIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, issue.id, {
+			action: 'approve'
+		});
 		expect(moved.state.name).toBe('Implementation');
 		expect(moved.state_entered_at).toBe(clock);
 
 		// 3. Sending back makes the old doc stale (freshness is derived, not
 		// mutated: nothing touched the artifact rows).
 		tick();
-		await transitionIssue(t.db, t.env, actor, issue.id, { action: 'send back' });
+		await transitionIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, issue.id, {
+			action: 'send back'
+		});
 		const [stale] = await listArtifacts(t.db, USER, issue.id);
 		expect(stale.fresh).toBe(false);
-		await transitionIssue(t.db, t.env, actor, issue.id, { action: 'approve' }).catch(
-			(e) => (error = e)
-		);
+		await transitionIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, issue.id, {
+			action: 'approve'
+		}).catch((e) => (error = e));
 		expect((error!.details!.unmet as Record<string, unknown>[])[0]).toMatchObject({
 			status: 'stale',
 			current_version: { version: 1 }
@@ -208,16 +218,22 @@ describe('issue artifacts', () => {
 		await attachDoc(issue.id, '# Design v2');
 		const detail = await getArtifactDetail(t.db, USER, issue.id, 'design-doc');
 		expect(detail.versions.map((v) => v.version)).toEqual([1, 2]);
-		await transitionIssue(t.db, t.env, actor, issue.id, { action: 'approve' });
+		await transitionIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, issue.id, {
+			action: 'approve'
+		});
 
 		// 5. Back once more; reaffirming blesses v2's content as v3.
 		tick();
-		await transitionIssue(t.db, t.env, actor, issue.id, { action: 'send back' });
+		await transitionIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, issue.id, {
+			action: 'send back'
+		});
 		tick();
 		const reaffirmed = await reaffirmArtifact(t.db, t.env, actor, issue.id, 'design-doc');
 		expect(reaffirmed.current_version).toMatchObject({ version: 3, reaffirmed_from: 2 });
 		expect(reaffirmed.fresh).toBe(true);
-		const after = await transitionIssue(t.db, t.env, actor, issue.id, { action: 'approve' });
+		const after = await transitionIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, issue.id, {
+			action: 'approve'
+		});
 		expect(after.state.name).toBe('Implementation');
 
 		// v3 served v2's exact content.
@@ -282,7 +298,7 @@ describe('issue artifacts', () => {
 				}
 			]
 		});
-		const issue = await createIssue(t.db, t.env, actor, PROJECT, {
+		const issue = await createIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, PROJECT, {
 			title: 'Fixes',
 			workflow_id: wf.id
 		});
@@ -290,9 +306,9 @@ describe('issue artifacts', () => {
 		// notes: attached as text, then made stale by re-entering the state.
 		await upsertArtifact(t.db, t.env, actor, issue.id, 'notes', { type: 'text', content: 'n' });
 		tick();
-		await updateIssue(t.db, t.env, actor, issue.id, { state: 'B' });
+		await updateIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, issue.id, { state: 'B' });
 		tick();
-		await updateIssue(t.db, t.env, actor, issue.id, { state: 'A' });
+		await updateIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, issue.id, { state: 'A' });
 		// spec: the slot holds a link — the wrong immutable type for the text requirement.
 		tick();
 		await upsertArtifact(t.db, t.env, actor, issue.id, 'spec', {
@@ -307,7 +323,9 @@ describe('issue artifacts', () => {
 		});
 
 		let error: ApiFail | undefined;
-		await transitionIssue(t.db, t.env, actor, issue.id, { action: 'go' }).catch((e) => (error = e));
+		await transitionIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, issue.id, {
+			action: 'go'
+		}).catch((e) => (error = e));
 		expect(error).toMatchObject({ status: 422, code: 'transition_requirements_unmet' });
 		const unmet = new Map(
 			(error!.details!.unmet as (Record<string, unknown> & { artifact: string })[]).map((r) => [
@@ -368,9 +386,9 @@ describe('issue artifacts', () => {
 			url: 'https://x.test/doc'
 		});
 		let error: ApiFail | undefined;
-		await transitionIssue(t.db, t.env, actor, issue.id, { action: 'approve' }).catch(
-			(e) => (error = e)
-		);
+		await transitionIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, issue.id, {
+			action: 'approve'
+		}).catch((e) => (error = e));
 		expect(error).toMatchObject({ status: 422, code: 'transition_requirements_unmet' });
 		// The generic "attach a new version" advice would send an agent round
 		// the same 422: artifact type is immutable, so the slot has to go.
@@ -402,7 +420,7 @@ describe('issue artifacts', () => {
 			],
 			transitions: [{ name: 'go', from: 'A', to: 'B', requires: [{ artifact: 'notes' }] }]
 		});
-		const issue = await createIssue(t.db, t.env, actor, PROJECT, {
+		const issue = await createIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, PROJECT, {
 			title: 'Untyped',
 			workflow_id: wf.id
 		});
@@ -420,9 +438,9 @@ describe('issue artifacts', () => {
 			url: 'https://x.test/notes'
 		});
 		tick();
-		await updateIssue(t.db, t.env, actor, issue.id, { state: 'B' });
+		await updateIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, issue.id, { state: 'B' });
 		tick();
-		await updateIssue(t.db, t.env, actor, issue.id, { state: 'A' });
+		await updateIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, issue.id, { state: 'A' });
 		const stale = (await getIssueDetail(t.db, USER, { id: issue.id })).allowed_transitions.find(
 			(tr) => tr.name === 'go'
 		)!.requires![0];
@@ -474,9 +492,13 @@ describe('issue artifacts', () => {
 		await attachDoc(issue.id);
 		// Force elsewhere and back: state_entered_at advances past the attach.
 		tick();
-		await updateIssue(t.db, t.env, actor, issue.id, { state: 'Implementation' });
+		await updateIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, issue.id, {
+			state: 'Implementation'
+		});
 		tick();
-		await updateIssue(t.db, t.env, actor, issue.id, { state: 'Design' });
+		await updateIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, issue.id, {
+			state: 'Design'
+		});
 		const [detail, context, artifacts] = [
 			await getIssueDetail(t.db, USER, { id: issue.id }),
 			await effectiveContextForIssue(t.db, USER, issue.id),
@@ -498,9 +520,13 @@ describe('issue artifacts', () => {
 		await attachDoc(issue.id);
 		// Force elsewhere and back: state_entered_at advances past the attach.
 		tick();
-		await updateIssue(t.db, t.env, actor, issue.id, { state: 'Implementation' });
+		await updateIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, issue.id, {
+			state: 'Implementation'
+		});
 		tick();
-		await updateIssue(t.db, t.env, actor, issue.id, { state: 'Design' });
+		await updateIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, issue.id, {
+			state: 'Design'
+		});
 		const detail = await getIssueDetail(t.db, USER, { id: issue.id });
 		expect(detail.state_entered_at).toBe(clock);
 		expect(
@@ -513,20 +539,26 @@ describe('issue artifacts', () => {
 
 	it('lets a human force-set the state past a gate, but 403s a run key', async () => {
 		const issue = await gatedIssue();
-		const forced = await updateIssue(t.db, t.env, actor, issue.id, { state: 'Implementation' });
+		const forced = await updateIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, issue.id, {
+			state: 'Implementation'
+		});
 		expect(forced.state.name).toBe('Implementation');
 
 		// agentRunId alone marks the run key; no api_key row is needed for the
 		// fence (the guard never reaches a write).
 		const runActor: ActorContext = { ...actor, agentRunId: 'arun_1' };
 		await expect(
-			updateIssue(t.db, t.env, runActor, issue.id, { state: 'Design' })
+			updateIssue(t.db, t.env, runActor, TEST_NOOP_DISPATCH_EFFECTS, issue.id, { state: 'Design' })
 		).rejects.toMatchObject({ status: 403, code: 'run_key_forbidden' });
 		await expect(
-			updateIssue(t.db, t.env, runActor, issue.id, { workflow_id: 'wf_standard' })
+			updateIssue(t.db, t.env, runActor, TEST_NOOP_DISPATCH_EFFECTS, issue.id, {
+				workflow_id: 'wf_standard'
+			})
 		).rejects.toMatchObject({ status: 403 });
 		// Non-fenced fields stay run-key-legal.
-		const titled = await updateIssue(t.db, t.env, runActor, issue.id, { title: 'Renamed' });
+		const titled = await updateIssue(t.db, t.env, runActor, TEST_NOOP_DISPATCH_EFFECTS, issue.id, {
+			title: 'Renamed'
+		});
 		expect(titled.title).toBe('Renamed');
 	});
 
@@ -534,7 +566,9 @@ describe('issue artifacts', () => {
 	// Upserts, versions, payload validation
 
 	it('upserts per type, validates payloads, and enforces caps', async () => {
-		const issue = await createIssue(t.db, t.env, actor, PROJECT, { title: 'Plain' });
+		const issue = await createIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, PROJECT, {
+			title: 'Plain'
+		});
 
 		// Type is immutable per slot.
 		await attachDoc(issue.id);
@@ -604,7 +638,9 @@ describe('issue artifacts', () => {
 	});
 
 	it('stores file uploads in the artifact store and reuses objects on reaffirm', async () => {
-		const issue = await createIssue(t.db, t.env, actor, PROJECT, { title: 'Files' });
+		const issue = await createIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, PROJECT, {
+			title: 'Files'
+		});
 		const bytes = new TextEncoder().encode('PNGDATA');
 		const uploaded = await uploadArtifactFile(t.db, t.env, actor, issue.id, 'feature-screenshot', {
 			filename: 'shot.png',
@@ -653,7 +689,9 @@ describe('issue artifacts', () => {
 	const enc = (s: string) => new TextEncoder().encode(s);
 
 	it('uploads a mixed tree as one snapshot and serves it per path', async () => {
-		const issue = await createIssue(t.db, t.env, actor, PROJECT, { title: 'Shots' });
+		const issue = await createIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, PROJECT, {
+			title: 'Shots'
+		});
 		const uploaded = await uploadArtifactFolder(t.db, t.env, actor, issue.id, 'screenshots', [
 			{ path: 'login.png', contentType: 'image/png', bytes: enc('PNG1') },
 			{ path: 'settings/billing.png', contentType: 'image/png', bytes: enc('PNG2') },
@@ -737,7 +775,9 @@ describe('issue artifacts', () => {
 	});
 
 	it('validates folder snapshots: paths, duplicates, and caps', async () => {
-		const issue = await createIssue(t.db, t.env, actor, PROJECT, { title: 'Bad folders' });
+		const issue = await createIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, PROJECT, {
+			title: 'Bad folders'
+		});
 		const upload = (files: { path: string; contentType: string; bytes: Uint8Array }[]) =>
 			uploadArtifactFolder(t.db, t.env, actor, issue.id, 'bundle', files);
 		await expect(upload([])).rejects.toMatchObject({ status: 422 });
@@ -788,14 +828,14 @@ describe('issue artifacts', () => {
 				}
 			]
 		});
-		const issue = await createIssue(t.db, t.env, actor, PROJECT, {
+		const issue = await createIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, PROJECT, {
 			title: 'Any feature',
 			workflow_id: wf.id
 		});
 		let error: ApiFail | undefined;
-		await transitionIssue(t.db, t.env, actor, issue.id, { action: 'submit' }).catch(
-			(e) => (error = e)
-		);
+		await transitionIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, issue.id, {
+			action: 'submit'
+		}).catch((e) => (error = e));
 		expect((error!.details!.unmet as Record<string, unknown>[])[0].fix).toContain(
 			'attach demo/1 screenshots <dir>'
 		);
@@ -808,7 +848,9 @@ describe('issue artifacts', () => {
 			bytes: enc('x')
 		});
 		await expect(
-			transitionIssue(t.db, t.env, actor, issue.id, { action: 'submit' })
+			transitionIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, issue.id, {
+				action: 'submit'
+			})
 		).rejects.toMatchObject({ code: 'transition_requirements_unmet' });
 
 		// …but any folder snapshot under the slot name does.
@@ -816,7 +858,9 @@ describe('issue artifacts', () => {
 		await uploadArtifactFolder(t.db, t.env, actor, issue.id, 'screenshots', [
 			{ path: 'whatever-this-feature-has.png', contentType: 'image/png', bytes: enc('x') }
 		]);
-		const moved = await transitionIssue(t.db, t.env, actor, issue.id, { action: 'submit' });
+		const moved = await transitionIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, issue.id, {
+			action: 'submit'
+		});
 		expect(moved.state.name).toBe('Review');
 	});
 
@@ -824,7 +868,9 @@ describe('issue artifacts', () => {
 	// Write races and read scale
 
 	it('retries a lost version-slot race instead of surfacing the raw constraint error', async () => {
-		const issue = await createIssue(t.db, t.env, actor, PROJECT, { title: 'Race' });
+		const issue = await createIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, PROJECT, {
+			title: 'Race'
+		});
 		await attachDoc(issue.id, '# v1');
 
 		// Simulate a concurrent attach winning `version = last + 1`: just before
@@ -855,7 +901,9 @@ describe('issue artifacts', () => {
 	});
 
 	it('loads artifact lists past the per-query bound-parameter chunk size intact', async () => {
-		const issue = await createIssue(t.db, t.env, actor, PROJECT, { title: 'Many' });
+		const issue = await createIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, PROJECT, {
+			title: 'Many'
+		});
 		// 95 artifacts (> one 90-id chunk), a couple with a second version so
 		// per-item ordering across the reassembled chunks is observable.
 		for (let i = 0; i < 95; i++) {
@@ -883,7 +931,9 @@ describe('issue artifacts', () => {
 	// Content serving
 
 	it('serves content attachment-by-default, inline only for the allowlist (sandboxed)', async () => {
-		const issue = await createIssue(t.db, t.env, actor, PROJECT, { title: 'Serve' });
+		const issue = await createIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, PROJECT, {
+			title: 'Serve'
+		});
 		await uploadArtifactFile(t.db, t.env, actor, issue.id, 'shot', {
 			filename: 'shot.png',
 			contentType: 'image/png',
@@ -933,7 +983,9 @@ describe('issue artifacts', () => {
 	// Context-system integration
 
 	it('is a context kind with its own creation path and a fenced generic surface', async () => {
-		const issue = await createIssue(t.db, t.env, actor, PROJECT, { title: 'Ctx' });
+		const issue = await createIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, PROJECT, {
+			title: 'Ctx'
+		});
 		const fenced = await createContextItem(t.db, t.env, actor, {
 			kind: 'artifact',
 			name: 'x',
@@ -993,7 +1045,9 @@ describe('issue artifacts', () => {
 	});
 
 	it('emits context events with artifact summaries', async () => {
-		const issue = await createIssue(t.db, t.env, actor, PROJECT, { title: 'Events' });
+		const issue = await createIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, PROJECT, {
+			title: 'Events'
+		});
 		await attachDoc(issue.id);
 		tick();
 		await attachDoc(issue.id, 'v2');
@@ -1060,7 +1114,9 @@ describe('issue artifacts', () => {
 		expect(block2).not.toContain('Secret design'); // a listing, never contents
 
 		// Empty case.
-		const empty = await createIssue(t.db, t.env, actor, PROJECT, { title: 'Empty' });
+		const empty = await createIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, PROJECT, {
+			title: 'Empty'
+		});
 		const emptyBlock = issueBlock(
 			await getIssueDetail(t.db, USER, { id: empty.id }),
 			await effectiveContextForIssue(t.db, USER, empty.id),
@@ -1118,7 +1174,9 @@ describe('issue artifacts', () => {
 		};
 
 		async function htmlIssue(env = siteEnv()) {
-			const issue = await createIssue(t.db, t.env, actor, PROJECT, { title: 'Prototype' });
+			const issue = await createIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, PROJECT, {
+				title: 'Prototype'
+			});
 			await uploadArtifactFile(t.db, t.env, actor, issue.id, 'proto', {
 				filename: 'proto.html',
 				contentType: 'text/html',
@@ -1201,7 +1259,9 @@ describe('issue artifacts', () => {
 		});
 
 		it('serves a text artifact and pins the link to a version', async () => {
-			const issue = await createIssue(t.db, t.env, actor, PROJECT, { title: 'Text site' });
+			const issue = await createIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, PROJECT, {
+				title: 'Text site'
+			});
 			await upsertArtifact(t.db, t.env, actor, issue.id, 'prd', {
 				type: 'text',
 				content: '<h1>v1</h1>',
@@ -1224,7 +1284,9 @@ describe('issue artifacts', () => {
 		});
 
 		it('serves a folder site: entry, siblings, directory redirect and 404', async () => {
-			const issue = await createIssue(t.db, t.env, actor, PROJECT, { title: 'Folder site' });
+			const issue = await createIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, PROJECT, {
+				title: 'Folder site'
+			});
 			await uploadArtifactFolder(t.db, t.env, actor, issue.id, 'app', [
 				{ path: 'index.html', contentType: 'text/html', bytes: bytes('<script src="app.js">') },
 				{ path: 'app.js', contentType: 'text/javascript', bytes: bytes('console.log(1)') },
@@ -1244,7 +1306,9 @@ describe('issue artifacts', () => {
 		});
 
 		it('422s artifacts that are not sites', async () => {
-			const issue = await createIssue(t.db, t.env, actor, PROJECT, { title: 'Not sites' });
+			const issue = await createIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, PROJECT, {
+				title: 'Not sites'
+			});
 			await uploadArtifactFile(t.db, t.env, actor, issue.id, 'shot', {
 				filename: 'shot.png',
 				contentType: 'image/png',
@@ -1271,7 +1335,9 @@ describe('issue artifacts', () => {
 		it('503s when the server has no secret to sign with', async () => {
 			delete t.env.BETTER_AUTH_SECRET;
 			delete t.env.SECRET_ENCRYPTION_KEY;
-			const issue = await createIssue(t.db, t.env, actor, PROJECT, { title: 'No secret' });
+			const issue = await createIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, PROJECT, {
+				title: 'No secret'
+			});
 			await uploadArtifactFile(t.db, t.env, actor, issue.id, 'proto', {
 				filename: 'proto.html',
 				contentType: 'text/html',

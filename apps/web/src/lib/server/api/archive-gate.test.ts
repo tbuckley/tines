@@ -8,6 +8,7 @@
  *
  * Reads are never gated; the last block pins that.
  */
+import { TEST_NOOP_DISPATCH_EFFECTS } from '$lib/server/api/test-dispatch-effects';
 import { describe, expect, it, beforeEach } from 'vitest';
 import { NOW, OPEN, PROJECT, USER, addRun, addRunner, seedBase } from '../supervisor/test-fixtures';
 import { explainDispatch } from '../supervisor/explain';
@@ -73,23 +74,35 @@ beforeEach(async () => {
 			VALUES ('prj_2', '${USER}', 'live', ${NOW}, ${NOW});
 	`);
 
-	const created = await createIssue(t.db, t.env, session, PROJECT, {
+	const created = await createIssue(t.db, t.env, session, TEST_NOOP_DISPATCH_EFFECTS, PROJECT, {
 		title: 'Draining issue',
 		schedule: { preset: { kind: 'daily', time: '09:00' } }
 	});
 	own = created.id;
 	scheduleId = created.schedule!.id;
-	other = (await createIssue(t.db, t.env, session, PROJECT, { title: 'Second issue' })).id;
+	other = (
+		await createIssue(t.db, t.env, session, TEST_NOOP_DISPATCH_EFFECTS, PROJECT, {
+			title: 'Second issue'
+		})
+	).id;
 
 	await upsertArtifact(t.db, t.env, session, own, 'notes', { type: 'text', content: 'seeded' });
 	await createLabel(t.db, t.env, session, { name: 'docs' });
 	await createLabel(t.db, t.env, session, { name: 'qa' });
-	liveIssue = (await createIssue(t.db, t.env, session, 'prj_2', { title: 'Live issue' })).id;
+	liveIssue = (
+		await createIssue(t.db, t.env, session, TEST_NOOP_DISPATCH_EFFECTS, 'prj_2', {
+			title: 'Live issue'
+		})
+	).id;
 	// The removable link points at the live project: with the archived end
 	// exempt for the run, only its own end is under test here.
-	linkId = (await addIssueLink(t.db, t.env, session, own, { kind: 'blocks', issue_id: liveIssue }))
-		.id;
-	await addIssueLabels(t.db, t.env, session, own, ['docs']);
+	linkId = (
+		await addIssueLink(t.db, t.env, session, TEST_NOOP_DISPATCH_EFFECTS, own, {
+			kind: 'blocks',
+			issue_id: liveIssue
+		})
+	).id;
+	await addIssueLabels(t.db, t.env, session, TEST_NOOP_DISPATCH_EFFECTS, own, ['docs']);
 	projectItem = (
 		await createContextItem(t.db, t.env, session, {
 			kind: 'prompt',
@@ -162,20 +175,29 @@ interface Row {
 const rows = (): Row[] => [
 	{
 		name: 'create issue',
-		write: (a) => createIssue(t.db, t.env, a, PROJECT, { title: 'New' }),
+		write: (a) =>
+			createIssue(t.db, t.env, a, TEST_NOOP_DISPATCH_EFFECTS, PROJECT, { title: 'New' }),
 		drains: false
 	},
 	{
 		name: 'update issue',
-		write: (a) => updateIssue(t.db, t.env, a, own, { title: 'Renamed' }),
+		write: (a) =>
+			updateIssue(t.db, t.env, a, TEST_NOOP_DISPATCH_EFFECTS, own, { title: 'Renamed' }),
 		drains: true
 	},
 	{
 		name: 'transition issue',
-		write: (a) => transitionIssue(t.db, t.env, a, own, { action: 'Submit for review' }),
+		write: (a) =>
+			transitionIssue(t.db, t.env, a, TEST_NOOP_DISPATCH_EFFECTS, own, {
+				action: 'Submit for review'
+			}),
 		drains: true
 	},
-	{ name: 'resume issue', write: (a) => resumeIssue(t.db, t.env, a, own), drains: true },
+	{
+		name: 'resume issue',
+		write: (a) => resumeIssue(t.db, t.env, a, TEST_NOOP_DISPATCH_EFFECTS, own),
+		drains: true
+	},
 	{
 		name: 'create comment',
 		write: (a) => createComment(t.db, t.env, a, own, { body: 'hello' }),
@@ -208,21 +230,29 @@ const rows = (): Row[] => [
 	},
 	{
 		name: 'add label',
-		write: (a) => addIssueLabels(t.db, t.env, a, own, ['qa']),
+		write: (a) => addIssueLabels(t.db, t.env, a, TEST_NOOP_DISPATCH_EFFECTS, own, ['qa']),
 		drains: true
 	},
 	{
 		name: 'remove label',
-		write: (a) => removeIssueLabel(t.db, t.env, a, own, 'docs'),
+		write: (a) => removeIssueLabel(t.db, t.env, a, TEST_NOOP_DISPATCH_EFFECTS, own, 'docs'),
 		drains: true
 	},
 	{
 		// The far end is live, so only the run's own (archived) end is in play.
 		name: 'add link',
-		write: (a) => addIssueLink(t.db, t.env, a, own, { kind: 'duplicate_of', issue_id: liveIssue }),
+		write: (a) =>
+			addIssueLink(t.db, t.env, a, TEST_NOOP_DISPATCH_EFFECTS, own, {
+				kind: 'duplicate_of',
+				issue_id: liveIssue
+			}),
 		drains: true
 	},
-	{ name: 'remove link', write: (a) => removeIssueLink(t.db, t.env, a, own, linkId), drains: true },
+	{
+		name: 'remove link',
+		write: (a) => removeIssueLink(t.db, t.env, a, TEST_NOOP_DISPATCH_EFFECTS, own, linkId),
+		drains: true
+	},
 	{
 		name: 'create project-scoped context',
 		write: (a) =>
@@ -262,7 +292,7 @@ const rows = (): Row[] => [
 	},
 	{
 		name: 'run schedule now',
-		write: (a) => runScheduleNow(t.db, t.env, a, scheduleId),
+		write: (a) => runScheduleNow(t.db, t.env, a, TEST_NOOP_DISPATCH_EFFECTS, scheduleId),
 		drains: false
 	},
 	{
@@ -302,7 +332,10 @@ describe('a run already draining finishes its own issue', () => {
 		// The addressed issue is live and not the run's, so nothing exempts the
 		// far end: both ends are gated, not just the one in the URL.
 		await refused(() =>
-			addIssueLink(t.db, t.env, draining, liveIssue, { kind: 'blocks', issue_id: other })
+			addIssueLink(t.db, t.env, draining, TEST_NOOP_DISPATCH_EFFECTS, liveIssue, {
+				kind: 'blocks',
+				issue_id: other
+			})
 		);
 	});
 });

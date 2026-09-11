@@ -427,8 +427,8 @@ export async function applyLibraryV3Import(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
-	request: ImportLibraryRequest,
-	effects?: DispatchEffects
+	effects: DispatchEffects,
+	request: ImportLibraryRequest
 ): Promise<ImportLibraryResponse> {
 	const plan = await planLibraryV3Import(db, actor.userId, request);
 	const report = () => {
@@ -490,28 +490,21 @@ export async function applyLibraryV3Import(
 					inherits_from: target === old.inherits_from ? target : null
 				};
 			});
-			await updateWorkflow(db, env, actor, step.existing!.id, { states }, effects);
+			await updateWorkflow(db, env, actor, effects, step.existing!.id, { states });
 		});
 	// Every bundled state exists before pointers are applied, including interleaved workflow-level cycles.
 	for (const step of plan.workflows)
 		await attempt(step.entry, async () => {
 			const workflow = written.get(step.source.id);
 			if (!workflow) throw Error('Workflow was not created');
-			await updateWorkflow(
-				db,
-				env,
-				actor,
-				workflow.id,
-				{
-					states: step.source.states.map((s) => ({
-						id: plan.states.get(s.id)!,
-						name: s.name,
-						category: s.category,
-						inherits_from: s.inherits_from ? resolveState(s.inherits_from) : null
-					}))
-				},
-				effects
-			);
+			await updateWorkflow(db, env, actor, effects, workflow.id, {
+				states: step.source.states.map((s) => ({
+					id: plan.states.get(s.id)!,
+					name: s.name,
+					category: s.category,
+					inherits_from: s.inherits_from ? resolveState(s.inherits_from) : null
+				}))
+			});
 		});
 	for (const project of plan.document.projects)
 		await attempt(entries.get(project.id)!, async () => {

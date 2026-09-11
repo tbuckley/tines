@@ -171,9 +171,9 @@ export async function pollRunner(
 	db: Kysely<Database>,
 	env: Env,
 	runner: RunnerRow,
+	effects: DispatchEffects,
 	body: RunnerPollRequest,
-	now: number = Date.now(),
-	effects?: DispatchEffects
+	now: number = Date.now()
 ): Promise<PollOutcome> {
 	const owned = new Set(validateOwnedRuns(body));
 	const cap =
@@ -218,6 +218,7 @@ export async function pollRunner(
 				]
 			: [])
 	]);
+	if (cameOnline || capRaised) effects.signalDispatch();
 	runner.max_concurrent = cap;
 	runner.draining = draining;
 
@@ -248,7 +249,10 @@ export async function pollRunner(
 			judgment: 'interrupted',
 			now
 		});
-		if (ended.outcome === 'interrupted') reconciled = true;
+		if (ended.outcome === 'interrupted') {
+			reconciled = true;
+			effects.signalDispatch();
+		}
 	}
 	// One incident, one increment: a daemon that came back having dropped
 	// five runs is one failure, not five (noteInterruption's backoff window
@@ -283,7 +287,6 @@ export async function pollRunner(
 		}
 	}
 
-	if (cameOnline || capRaised || reconciled) effects?.signalDispatch();
 	return { response: { assignments, cancels }, cameOnline, capRaised, reconciled };
 }
 
@@ -974,10 +977,10 @@ export async function finishRun(
 	db: Kysely<Database>,
 	env: Env,
 	runner: RunnerRow,
+	effects: DispatchEffects,
 	runId: string,
 	body: FinishRunRequest,
-	now: number = Date.now(),
-	effects?: DispatchEffects
+	now: number = Date.now()
 ): Promise<AgentRun> {
 	if (!REPORTABLE.includes(body.status)) {
 		throw new ApiFail(422, 'invalid_field', '"status" must be "completed" or "failed"', {
@@ -1073,7 +1076,7 @@ export async function finishRun(
 			},
 			now
 		});
-		if (ended.ended) effects?.signalDispatch();
+		if (ended.ended) effects.signalDispatch();
 		if (judgment === 'rate_limited' && ended.ended) {
 			// On `ended`, not on the outcome: an agent that transitioned the
 			// issue before hitting the wall leaves an `advanced` run, and the

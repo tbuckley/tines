@@ -12,6 +12,6 @@ import type { RequestHandler } from './$types';
 export const POST: RequestHandler = api(async (event) => {
 	const { db, env, actor, effects } = await apiContext(event);
 	const body = await readJson<RegisterRunnerRequest>(event);
-	const runner = await registerRunner(db, env, actor, body, effects);
+	const runner = await registerRunner(db, env, actor, effects, body);
 	return json(runner, { status: 201 });
 });

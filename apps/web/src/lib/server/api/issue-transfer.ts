@@ -516,11 +516,11 @@ export function transferIssueQueries(
 export async function commitIssueTransfer(
 	env: Env,
 	actor: ActorContext,
+	effects: DispatchEffects,
 	issueId: string,
 	destinationId: string,
 	previewToken: string,
-	now = Date.now(),
-	effects?: DispatchEffects
+	now = Date.now()
 ): Promise<IssueTransferResult> {
 	if (actor.agentRunId) {
 		throw new ApiFail(
@@ -645,7 +645,7 @@ export async function commitIssueTransfer(
 	) {
 		throw new Error('Issue transfer committed with a malformed receipt');
 	}
-	effects?.signalDispatch();
+	effects.signalDispatch();
 	const newRef = transferRef(
 		{ ...section.destination, name: receipt.project_name },
 		receipt.number as number

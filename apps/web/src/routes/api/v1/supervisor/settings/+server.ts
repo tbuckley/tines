@@ -17,6 +17,6 @@ export const GET: RequestHandler = api(async (event) => {
 export const PUT: RequestHandler = api(async (event) => {
 	const { db, env, actor, effects } = await apiContext(event);
 	const body = await readJson<UpdateSupervisorSettingsRequest>(event);
-	const settings = await updateSupervisorSettings(db, env, actor, body, effects);
+	const settings = await updateSupervisorSettings(db, env, actor, effects, body);
 	return json(settings);
 });

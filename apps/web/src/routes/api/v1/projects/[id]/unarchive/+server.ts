@@ -5,6 +5,6 @@ import type { RequestHandler } from './$types';
 
 export const POST: RequestHandler = api(async (event) => {
 	const { db, env, actor, effects } = await apiContext(event);
-	const result = await unarchiveProject(db, env, actor, event.params.id, undefined, effects);
+	const result = await unarchiveProject(db, env, actor, effects, event.params.id);
 	return json(result);
 });

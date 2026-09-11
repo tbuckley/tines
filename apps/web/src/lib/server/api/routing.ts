@@ -514,8 +514,8 @@ export async function createRoutingRule(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
-	body: CreateRoutingRuleRequest,
-	effects?: DispatchEffects
+	effects: DispatchEffects,
+	body: CreateRoutingRuleRequest
 ): Promise<RoutingRuleWithWarnings> {
 	const scope: RuleScopeIds = {
 		projectId: body.project_id ?? null,
@@ -552,7 +552,7 @@ export async function createRoutingRule(
 			now
 		})
 	);
-	effects?.signalDispatch();
+	effects.signalDispatch();
 	return {
 		...(await getRoutingRule(db, actor.userId, id)),
 		warnings: shadowWarnings({ ...scope, id }, rules)
@@ -563,9 +563,9 @@ export async function updateRoutingRule(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
+	effects: DispatchEffects,
 	id: string,
-	body: UpdateRoutingRuleRequest,
-	effects?: DispatchEffects
+	body: UpdateRoutingRuleRequest
 ): Promise<RoutingRuleWithWarnings> {
 	const row = await ruleQuery(db, actor.userId)
 		.where('routing_rule.id', '=', id)
@@ -605,7 +605,7 @@ export async function updateRoutingRule(
 	assertTierOnlyScope(scope, targets);
 
 	if (!scopeChanged && JSON.stringify(targets) === row.targets) {
-		effects?.signalDispatch();
+		effects.signalDispatch();
 		return {
 			...serializeRule(row, runnersById),
 			warnings: shadowWarnings({ ...scope, id }, rules)
@@ -640,7 +640,7 @@ export async function updateRoutingRule(
 			}
 		})
 	]);
-	effects?.signalDispatch();
+	effects.signalDispatch();
 	return {
 		...(await getRoutingRule(db, actor.userId, id)),
 		warnings: shadowWarnings({ ...scope, id }, rules)
@@ -689,8 +689,8 @@ export async function deleteRoutingRule(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
-	id: string,
-	effects?: DispatchEffects
+	effects: DispatchEffects,
+	id: string
 ): Promise<void> {
 	const row = await ruleQuery(db, actor.userId)
 		.where('routing_rule.id', '=', id)
@@ -704,5 +704,5 @@ export async function deleteRoutingRule(
 			payload: { rule_id: id, scope_label: rowScope(row).label }
 		})
 	]);
-	effects?.signalDispatch();
+	effects.signalDispatch();
 }

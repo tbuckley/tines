@@ -8,6 +8,7 @@
  * `FOREIGN KEY constraint failed`, so they are exercised here against the real
  * schema (`createTestDb`, actual migrations, foreign keys ON).
  */
+import { TEST_NOOP_DISPATCH_EFFECTS } from '$lib/server/api/test-dispatch-effects';
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { WorkflowStateInput } from '@tines/shared';
 import { NOW, USER, addIssue, eventsOfType, seedBase } from '../supervisor/test-fixtures';
@@ -82,28 +83,14 @@ describe('workflow dispatch effects', () => {
 	it('signals only when an existing state changes to active', async () => {
 		const workflow = await makeWorkflow('Dispatch categories', ['Waiting']);
 		let signals = 0;
-		await updateWorkflow(
-			t.db,
-			t.env,
-			session,
-			workflow.id,
-			{
-				states: [{ id: workflow.states[0].id, name: 'Waiting', category: 'active' }]
-			},
-			{ signalDispatch: () => signals++ }
-		);
+		await updateWorkflow(t.db, t.env, session, { signalDispatch: () => signals++ }, workflow.id, {
+			states: [{ id: workflow.states[0].id, name: 'Waiting', category: 'active' }]
+		});
 		expect(signals).toBe(1);
 
-		await updateWorkflow(
-			t.db,
-			t.env,
-			session,
-			workflow.id,
-			{
-				states: [{ id: workflow.states[0].id, name: 'Waiting', category: 'backlog' }]
-			},
-			{ signalDispatch: () => signals++ }
-		);
+		await updateWorkflow(t.db, t.env, session, { signalDispatch: () => signals++ }, workflow.id, {
+			states: [{ id: workflow.states[0].id, name: 'Waiting', category: 'backlog' }]
+		});
 		expect(signals).toBe(1);
 	});
 });
@@ -244,7 +231,7 @@ describe('updateWorkflow pointers', () => {
 		base = stateNamed(wf, 'Base');
 		child = stateNamed(wf, 'Child');
 		spare = stateNamed(wf, 'Spare');
-		await updateWorkflow(t.db, t.env, session, wfId, {
+		await updateWorkflow(t.db, t.env, session, TEST_NOOP_DISPATCH_EFFECTS, wfId, {
 			states: [
 				{ id: base, name: 'Base', category: 'backlog' },
 				{ id: child, name: 'Child', category: 'backlog', inherits_from: base },
@@ -276,7 +263,7 @@ describe('updateWorkflow pointers', () => {
 	});
 
 	it('keeps the pointer through a PATCH that only renames the workflow', async () => {
-		await updateWorkflow(t.db, t.env, session, wfId, { name: 'Eng' });
+		await updateWorkflow(t.db, t.env, session, TEST_NOOP_DISPATCH_EFFECTS, wfId, { name: 'Eng' });
 		expect(storedPointer(child)).toBe(base);
 	});
 
@@ -284,7 +271,9 @@ describe('updateWorkflow pointers', () => {
 		// Absent means unchanged: three callers rebuild the array as
 		// `{id, name, category}`, and replace semantics would silently wipe
 		// every pointer on the first unrelated save.
-		await updateWorkflow(t.db, t.env, session, wfId, { states: editorShaped() });
+		await updateWorkflow(t.db, t.env, session, TEST_NOOP_DISPATCH_EFFECTS, wfId, {
+			states: editorShaped()
+		});
 		expect(storedPointer(child)).toBe(base);
 		// Only the setup's event carries a change; this one moved nothing.
 		expect(updateChanges().filter((c) => c !== undefined)).toHaveLength(1);
@@ -293,7 +282,7 @@ describe('updateWorkflow pointers', () => {
 	it('clears the pointer on an explicit null', async () => {
 		const states = editorShaped();
 		states[1].inherits_from = null;
-		await updateWorkflow(t.db, t.env, session, wfId, { states });
+		await updateWorkflow(t.db, t.env, session, TEST_NOOP_DISPATCH_EFFECTS, wfId, { states });
 		expect(storedPointer(child)).toBeNull();
 		expect(updateChanges()).toContainEqual([
 			{ workflow: 'Engineering', state: 'Child', from: 'Engineering / Base', to: null }
@@ -303,7 +292,7 @@ describe('updateWorkflow pointers', () => {
 	it('re-points the pointer at another state', async () => {
 		const states = editorShaped();
 		states[1].inherits_from = spare;
-		await updateWorkflow(t.db, t.env, session, wfId, { states });
+		await updateWorkflow(t.db, t.env, session, TEST_NOOP_DISPATCH_EFFECTS, wfId, { states });
 		expect(storedPointer(child)).toBe(spare);
 		expect(updateChanges()).toContainEqual([
 			{
@@ -319,12 +308,14 @@ describe('updateWorkflow pointers', () => {
 		const other = await makeWorkflow('Other', ['Far']);
 		const far = stateNamed(other, 'Far');
 		// Far → Child is fine; Base → Far then closes Base → Far → Child → Base.
-		await updateWorkflow(t.db, t.env, session, other.id, {
+		await updateWorkflow(t.db, t.env, session, TEST_NOOP_DISPATCH_EFFECTS, other.id, {
 			states: [{ id: far, name: 'Far', category: 'backlog', inherits_from: child }]
 		});
 		const states = editorShaped();
 		states[0].inherits_from = far;
-		const fail = await failure(() => updateWorkflow(t.db, t.env, session, wfId, { states }));
+		const fail = await failure(() =>
+			updateWorkflow(t.db, t.env, session, TEST_NOOP_DISPATCH_EFFECTS, wfId, { states })
+		);
 		expect(fail.status).toBe(422);
 		expect(fail.code).toBe('inheritance_cycle');
 		expect(fail.message).toContain('Engineering / Base');
@@ -338,7 +329,7 @@ describe('updateWorkflow pointers', () => {
 		const below = await makeWorkflow('Below', ['L1', 'L2']);
 		const l1 = stateNamed(below, 'L1');
 		const l2 = stateNamed(below, 'L2');
-		await updateWorkflow(t.db, t.env, session, below.id, {
+		await updateWorkflow(t.db, t.env, session, TEST_NOOP_DISPATCH_EFFECTS, below.id, {
 			states: [
 				{ id: l1, name: 'L1', category: 'backlog', inherits_from: child },
 				{ id: l2, name: 'L2', category: 'backlog' }
@@ -346,7 +337,9 @@ describe('updateWorkflow pointers', () => {
 		});
 		const states = editorShaped();
 		states[0].inherits_from = spare;
-		const fail = await failure(() => updateWorkflow(t.db, t.env, session, wfId, { states }));
+		const fail = await failure(() =>
+			updateWorkflow(t.db, t.env, session, TEST_NOOP_DISPATCH_EFFECTS, wfId, { states })
+		);
 		expect(fail.code).toBe('inheritance_too_deep');
 		expect(fail.message).toContain('Below / L1');
 		expect(storedPointer(base)).toBeNull();
@@ -354,7 +347,7 @@ describe('updateWorkflow pointers', () => {
 
 	it('refuses to remove a state other states inherit from, then clears on force', async () => {
 		const fail = await failure(() =>
-			updateWorkflow(t.db, t.env, session, wfId, {
+			updateWorkflow(t.db, t.env, session, TEST_NOOP_DISPATCH_EFFECTS, wfId, {
 				states: [
 					{ id: child, name: 'Child', category: 'backlog' },
 					{ id: spare, name: 'Spare', category: 'backlog' }
@@ -368,7 +361,7 @@ describe('updateWorkflow pointers', () => {
 		expect(fail.message).toContain('1 state inherits context from it: Engineering / Child');
 		expect(storedPointer(child)).toBe(base);
 
-		const forced = await updateWorkflow(t.db, t.env, session, wfId, {
+		const forced = await updateWorkflow(t.db, t.env, session, TEST_NOOP_DISPATCH_EFFECTS, wfId, {
 			states: [
 				{ id: child, name: 'Child', category: 'backlog' },
 				{ id: spare, name: 'Spare', category: 'backlog' }
@@ -393,7 +386,7 @@ describe('updateWorkflow pointers', () => {
 	});
 
 	it('needs no force when the same PATCH re-points the child away', async () => {
-		await updateWorkflow(t.db, t.env, session, wfId, {
+		await updateWorkflow(t.db, t.env, session, TEST_NOOP_DISPATCH_EFFECTS, wfId, {
 			states: [
 				{ id: child, name: 'Child', category: 'backlog', inherits_from: null },
 				{ id: spare, name: 'Spare', category: 'backlog' }
@@ -408,7 +401,7 @@ describe('updateWorkflow pointers', () => {
 		// The doomed base is still stored when validation runs, so without an
 		// explicit check this reaches the batch and dies on the FK as a 500.
 		const fail = await failure(() =>
-			updateWorkflow(t.db, t.env, session, wfId, {
+			updateWorkflow(t.db, t.env, session, TEST_NOOP_DISPATCH_EFFECTS, wfId, {
 				states: [
 					{ id: base, name: 'Base', category: 'backlog' },
 					{ id: child, name: 'Child', category: 'backlog', inherits_from: spare }
@@ -445,7 +438,7 @@ describe('deleteWorkflow', () => {
 		const merging = stateNamed(baseWf, 'Merging');
 		const childWf = await makeWorkflow('Engineering', ['Review']);
 		const review = stateNamed(childWf, 'Review');
-		await updateWorkflow(t.db, t.env, session, childWf.id, {
+		await updateWorkflow(t.db, t.env, session, TEST_NOOP_DISPATCH_EFFECTS, childWf.id, {
 			states: [{ id: review, name: 'Review', category: 'backlog', inherits_from: merging }]
 		});
 

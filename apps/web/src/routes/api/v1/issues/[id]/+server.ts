@@ -12,6 +12,6 @@ export const GET: RequestHandler = api(async (event) => {
 export const PATCH: RequestHandler = api(async (event) => {
 	const { db, env, actor, effects } = await apiContext(event);
 	const body = await readJson<UpdateIssueRequest>(event);
-	const issue = await updateIssue(db, env, actor, event.params.id, body, effects);
+	const issue = await updateIssue(db, env, actor, effects, event.params.id, body);
 	return json(issue);
 });

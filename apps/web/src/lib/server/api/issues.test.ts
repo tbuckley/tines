@@ -1,3 +1,4 @@
+import { TEST_NOOP_DISPATCH_EFFECTS } from '$lib/server/api/test-dispatch-effects';
 import type { WorkflowResponse } from '@tines/shared';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { CLOSED, PROJECT, USER, addIssue, seedBase } from '../supervisor/test-fixtures';
@@ -277,7 +278,10 @@ describe('createIssue with labels', () => {
 	const runKey: ActorContext = { ...human, viaSession: false, agentRunId: 'arun_1' };
 
 	const create = (actor: ActorContext, labels: string[]) =>
-		createIssue(t.db, t.env, actor, PROJECT, { title: 'Labelled', labels });
+		createIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, PROJECT, {
+			title: 'Labelled',
+			labels
+		});
 	const issueCount = () =>
 		Number((t.sqlite.prepare('SELECT COUNT(*) AS n FROM issue').get() as { n: number }).n);
 
@@ -321,7 +325,7 @@ describe('createIssue with labels', () => {
 
 	it('filters on a label applied at creation time', async () => {
 		const labelled = await create(human, ['bug']);
-		await createIssue(t.db, t.env, human, PROJECT, { title: 'Plain' });
+		await createIssue(t.db, t.env, human, TEST_NOOP_DISPATCH_EFFECTS, PROJECT, { title: 'Plain' });
 		const { items } = await listIssues(
 			t.db,
 			USER,

@@ -1,3 +1,4 @@
+import { TEST_NOOP_DISPATCH_EFFECTS } from '$lib/server/api/test-dispatch-effects';
 import { describe, expect, it } from 'vitest';
 import { addLabel, addRunner, OPEN, PROJECT, seedBase, USER } from '../supervisor/test-fixtures';
 import { api, ApiFail, runAtomic, type ActorContext } from './core';
@@ -324,7 +325,7 @@ describe('rule scope state category', () => {
 		// (done), plus the backlog state added above.
 		for (const stateId of ['wfs_std_review', 'wfs_std_closed', 'wfs_std_icebox']) {
 			await expect(
-				createRoutingRule(t.db, t.env, actor, {
+				createRoutingRule(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
 					workflow_state_id: stateId,
 					targets: [{ runner_id: 'rnr_1' }]
 				})
@@ -335,7 +336,7 @@ describe('rule scope state category', () => {
 
 	it('accepts an active-category state', async () => {
 		const t = seed();
-		const rule = await createRoutingRule(t.db, t.env, actor, {
+		const rule = await createRoutingRule(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
 			workflow_state_id: 'wfs_std_open',
 			targets: [{ runner_id: 'rnr_1' }]
 		});
@@ -346,11 +347,11 @@ describe('rule scope state category', () => {
 	it('accepts a scoped tier-only rule, serializes its sentinel, and rejects a global one', async () => {
 		const t = seed();
 		await expect(
-			createRoutingRule(t.db, t.env, actor, {
+			createRoutingRule(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
 				targets: [{ runner_id: '*', tier: 'smartest' }]
 			})
 		).rejects.toMatchObject({ status: 422, code: 'invalid_field' });
-		const rule = await createRoutingRule(t.db, t.env, actor, {
+		const rule = await createRoutingRule(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
 			workflow_state_id: 'wfs_std_open',
 			targets: [{ runner_id: '*', tier: 'smartest' }]
 		});
@@ -361,12 +362,14 @@ describe('rule scope state category', () => {
 
 	it('rejects an update that makes a tier-only rule global', async () => {
 		const t = seed();
-		const rule = await createRoutingRule(t.db, t.env, actor, {
+		const rule = await createRoutingRule(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
 			workflow_state_id: 'wfs_std_open',
 			targets: [{ runner_id: '*', tier: 'smartest' }]
 		});
 		await expect(
-			updateRoutingRule(t.db, t.env, actor, rule.id, { workflow_state_id: null })
+			updateRoutingRule(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, rule.id, {
+				workflow_state_id: null
+			})
 		).rejects.toMatchObject({ status: 422, code: 'invalid_field' });
 		expect((await listRoutingRules(t.db, actor.userId))[0].scope.workflow_state_id).toBe(
 			'wfs_std_open'
@@ -434,16 +437,28 @@ describe('listRoutingRules', () => {
 		const docs = addLabel(t, 'docs');
 		const targets = [{ runner_id: 'rnr_1' }];
 		const ids: Record<string, string> = {};
-		ids.global = (await createRoutingRule(t.db, t.env, actor, { targets })).id;
+		ids.global = (
+			await createRoutingRule(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, { targets })
+		).id;
 		ids.combo = (
-			await createRoutingRule(t.db, t.env, actor, {
+			await createRoutingRule(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
 				project_id: PROJECT,
 				workflow_state_id: OPEN,
 				targets
 			})
 		).id;
-		ids.design = (await createRoutingRule(t.db, t.env, actor, { label_id: design, targets })).id;
-		ids.docs = (await createRoutingRule(t.db, t.env, actor, { label_id: docs, targets })).id;
+		ids.design = (
+			await createRoutingRule(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+				label_id: design,
+				targets
+			})
+		).id;
+		ids.docs = (
+			await createRoutingRule(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+				label_id: docs,
+				targets
+			})
+		).id;
 		return ids;
 	}
 
@@ -503,7 +518,9 @@ describe('listRoutingRules', () => {
 		const t = createTestDb();
 		seedBase(t);
 		addRunner(t, { id: 'rnr_1', name: 'laptop' });
-		await createRoutingRule(t.db, t.env, actor, { targets: [{ runner_id: 'rnr_1' }] });
+		await createRoutingRule(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+			targets: [{ runner_id: 'rnr_1' }]
+		});
 		expect((await listRoutingRules(t.db, USER))[0].warnings).toEqual([]);
 	});
 
@@ -516,10 +533,19 @@ describe('listRoutingRules', () => {
 		`);
 		addRunner(t, { id: 'rnr_1', name: 'laptop' });
 		const targets = [{ runner_id: 'rnr_1' }];
-		const global = (await createRoutingRule(t.db, t.env, actor, { targets })).id;
-		const matching = (await createRoutingRule(t.db, t.env, actor, { project_id: PROJECT, targets }))
-			.id;
-		await createRoutingRule(t.db, t.env, actor, { project_id: 'prj_other', targets });
+		const global = (
+			await createRoutingRule(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, { targets })
+		).id;
+		const matching = (
+			await createRoutingRule(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+				project_id: PROJECT,
+				targets
+			})
+		).id;
+		await createRoutingRule(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+			project_id: 'prj_other',
+			targets
+		});
 
 		expect(
 			routingRulesForProject(await listRoutingRules(t.db, USER), PROJECT).map((rule) => rule.id)

@@ -30,7 +30,5 @@ export const POST: RequestHandler = api(async (event) => {
 	const body = await readJson<IssueTransferRequest>(event);
 	const destination = requireString(body.project_id, 'project_id', { max: 64 });
 	const token = requireString(body.preview_token, 'preview_token', { max: 4096 });
-	return json(
-		await commitIssueTransfer(env, actor, event.params.id, destination, token, Date.now(), effects)
-	);
+	return json(await commitIssueTransfer(env, actor, effects, event.params.id, destination, token));
 });

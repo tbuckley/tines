@@ -17,6 +17,6 @@ export const GET: RequestHandler = api(async (event) => {
 export const POST: RequestHandler = api(async (event) => {
 	const { db, env, actor, effects } = await apiContext(event);
 	const body = await readJson<CreateRoutingRuleRequest>(event);
-	const rule = await createRoutingRule(db, env, actor, body, effects);
+	const rule = await createRoutingRule(db, env, actor, effects, body);
 	return json(rule, { status: 201 });
 });

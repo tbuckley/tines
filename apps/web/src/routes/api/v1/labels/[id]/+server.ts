@@ -13,13 +13,8 @@ export const PATCH: RequestHandler = api(async (event) => {
 export const DELETE: RequestHandler = api(async (event) => {
 	const { db, env, actor, effects } = await apiContext(event);
 	const body = await readOptionalJson<DeleteLabelRequest>(event);
-	const result = await deleteLabel(
-		db,
-		env,
-		actor,
-		event.params.id,
-		{ force: body.force === true },
-		effects
-	);
+	const result = await deleteLabel(db, env, actor, effects, event.params.id, {
+		force: body.force === true
+	});
 	return json(result);
 });

@@ -13,6 +13,6 @@ export const POST: RequestHandler = api(async (event) => {
 	// The token is the credential; the path must name the same runner.
 	if (runner.id !== event.params.id) throw notFound();
 	const body = await readJson<RunnerPollRequest>(event);
-	const { response } = await pollRunner(db, env, runner, body, undefined, effects);
+	const { response } = await pollRunner(db, env, runner, effects, body);
 	return json(response);
 });

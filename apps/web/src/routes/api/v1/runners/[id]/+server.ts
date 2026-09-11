@@ -12,13 +12,13 @@ export const GET: RequestHandler = api(async (event) => {
 export const PATCH: RequestHandler = api(async (event) => {
 	const { db, env, actor, effects } = await apiContext(event);
 	const body = await readJson<UpdateRunnerRequest>(event);
-	const runner = await updateRunner(db, env, actor, event.params.id, body, undefined, effects);
+	const runner = await updateRunner(db, env, actor, effects, event.params.id, body);
 	return json(runner);
 });
 
 export const DELETE: RequestHandler = api(async (event) => {
 	const { db, env, actor, effects } = await apiContext(event);
 	const body = await readOptionalJson<DeleteRunnerRequest>(event);
-	await deleteRunner(db, env, actor, event.params.id, body.force === true, effects);
+	await deleteRunner(db, env, actor, effects, event.params.id, body.force === true);
 	return new Response(null, { status: 204 });
 });

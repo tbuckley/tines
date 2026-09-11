@@ -17,6 +17,6 @@ export const GET: RequestHandler = api(async (event) => {
 export const POST: RequestHandler = api(async (event) => {
 	const { db, env, actor, effects } = await apiContext(event);
 	const body = await readJson<CreateRunnerRequest>(event);
-	const runner = await createRunner(db, env, actor, body, undefined, effects);
+	const runner = await createRunner(db, env, actor, effects, body);
 	return json(runner, { status: 201 });
 });
