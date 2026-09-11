@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { IssueDetail, Project } from '@tines/shared';
+import type { EffectiveContext, IssueDetail, IssueTransferPreview, Project } from '@tines/shared';
 import { expect, test, type Browser, type Page } from '@playwright/test';
 import { ALICE, BASE_URL } from './constants.mjs';
 import { apiClient, body, clickToOpen, gotoHydrated, resetFocus, runId, signIn } from './helpers';
@@ -338,7 +338,7 @@ function suite(label: string, viewport: { width: number; height: number }) {
 				),
 				modal.getByRole('button', { name: 'Review move' }).click()
 			]);
-			const preview = await previewResponse.json();
+			const preview = (await previewResponse.json()) as IssueTransferPreview;
 			const review = page.getByTestId('transfer-review');
 			await expect(review).toBeVisible();
 			expect(preview.context.before.conflicts).toEqual(
@@ -379,21 +379,61 @@ function suite(label: string, viewport: { width: number; height: number }) {
 			await expect(review).toContainText('branch research; directory app');
 			await expect(review).toContainText('https://example.test/source.git');
 			await expect(review).toContainText('https://example.test/destination.git');
-			for (const expected of [
-				`Retained — retained-checkout`,
-				`retained-api-${label}`,
-				`retained-worker-${label}`,
-				`Resolved — source-checkout`,
-				`source-api-${label}`,
-				`source-worker-${label}`,
-				`Introduced — destination-checkout`,
-				`destination-api-${label}`,
-				`destination-worker-${label}`,
-				`project ${sourceName}`,
-				`project ${destinationName}`
-			]) {
-				await expect(review).toContainText(expected);
-			}
+
+			const participantLine = (
+				prefix: 'Before' | 'After',
+				context: EffectiveContext,
+				keys: string[]
+			) => {
+				const participants = keys
+					.map((key) => conflictIds[key])
+					.sort()
+					.map((itemId) => {
+						const repository = context.repos.find((repo) => repo.item_id === itemId);
+						expect(repository, `effective repository ${itemId} is present`).toBeTruthy();
+						return `${repository!.name} (${repository!.scope.label})`;
+					});
+				return `${prefix}: ${participants.join(', ')}`;
+			};
+			const conflictRow = (classification: string, directory: string) =>
+				review
+					.getByTestId('transfer-conflict-row')
+					.filter({ hasText: `${classification} — ${directory}` });
+
+			const retained = conflictRow('Retained', 'retained-checkout');
+			await expect(retained).toHaveCount(1);
+			await expect(
+				retained.getByText(
+					participantLine('Before', preview.context.before, ['retainedA', 'retainedB']),
+					{ exact: true }
+				)
+			).toBeVisible();
+			await expect(
+				retained.getByText(
+					participantLine('After', preview.context.after, ['retainedA', 'retainedB']),
+					{ exact: true }
+				)
+			).toBeVisible();
+
+			const resolved = conflictRow('Resolved', 'source-checkout');
+			await expect(resolved).toHaveCount(1);
+			await expect(
+				resolved.getByText(
+					participantLine('Before', preview.context.before, ['sourceA', 'sourceB']),
+					{ exact: true }
+				)
+			).toBeVisible();
+			await expect(resolved.getByText(/^After:/)).toHaveCount(0);
+
+			const introduced = conflictRow('Introduced', 'destination-checkout');
+			await expect(introduced).toHaveCount(1);
+			await expect(
+				introduced.getByText(
+					participantLine('After', preview.context.after, ['destinationA', 'destinationB']),
+					{ exact: true }
+				)
+			).toBeVisible();
+			await expect(introduced.getByText(/^Before:/)).toHaveCount(0);
 			expect(await modal.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(
 				true
 			);
