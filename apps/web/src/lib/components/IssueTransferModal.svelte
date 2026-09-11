@@ -156,6 +156,8 @@
 					: participant.item_id
 			)
 			.join(', ');
+	const conflictChange = (change: 'retained' | 'resolved' | 'introduced') =>
+		`${change[0].toUpperCase()}${change.slice(1)}`;
 
 	function itemContent(context: EffectiveContext, itemId: string): string[] {
 		const prompt = context.prompt.parts.find((item) => item.item_id === itemId);
@@ -326,7 +328,7 @@
 					<ul class="space-y-2">
 						{#each conflictDeltas as delta (delta.key + delta.change)}
 							<li class="min-w-0 text-xs wrap-anywhere" data-testid="transfer-conflict-row">
-								<p class="font-medium capitalize">{delta.change} — {delta.dir}</p>
+								<p class="font-medium">{conflictChange(delta.change)} — {delta.dir}</p>
 								{#if delta.before.length}<p>Before: {conflictParticipants(delta.before)}</p>{/if}
 								{#if delta.after.length}<p>After: {conflictParticipants(delta.after)}</p>{/if}
 							</li>
