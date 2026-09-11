@@ -88,12 +88,24 @@ Run it from the repository root:
 E2E_PORT=8791 pnpm --filter web exec playwright test e2e/native-install.spec.ts
 ```
 
-The gate submits the complete 800-statement compiled batch and proves its
-single receipt/object copies. The 801-statement case is rejected by preparation before
-any write. It also injects native failures into workflow, state, transition,
-context, file, inherited-pointer, label, and event phases and verifies full
-rollback, then exercises discarded-response recovery and concurrent retries.
-The application limits remain 800 statements, 90 bound parameters and 90 KiB
-of UTF-8 SQL per statement, 1 MiB per stored value, 5 MiB per document, and
-1,000 portable records. The smaller document, prompt, skill, and field limits
-still apply before compilation.
+The gate submits the complete 800-statement compiled batch and proves exact
+receipt-to-row mappings and one-copy counts for every object and event family.
+The 801-statement case is rejected by preparation before any write. It injects
+native failures into workflow, state, transition, context, file,
+inherited-pointer, label, schedule, routing, and event phases and verifies full
+rollback and unchanged issues/project defaults. It also exercises stale
+destination guards, transaction-time expiry, old-nonce child guards, a truly
+concurrent first commit, socket-level discarded-response recovery, and
+sequential retries.
+
+A separate test-only Wrangler Worker probes the D1 binding without going
+through application validation. Wrangler's local D1 enforces 100 parameters
+and 100,000 UTF-8 SQL bytes per statement; 101 and 100,001 are rejected. It
+accepts the application's 1 MiB value boundary and one byte beyond. Local
+Workerd does not currently reproduce hosted D1's documented 2,000,000-byte
+row/value rejection (it accepted 2,000,001 bytes), so the hosted limit remains
+normative rather than being mislabeled as locally observed. The conservative
+application limits remain 800 statements, 90 bound parameters and 90 KiB of
+UTF-8 SQL per statement, 1 MiB per stored value, 5 MiB per document, and 1,000
+portable records. The smaller document, prompt, skill, and field limits still
+apply before compilation.
