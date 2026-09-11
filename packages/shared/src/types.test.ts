@@ -15,13 +15,13 @@ describe('runCostLabel', () => {
 	const label = (usage: AgentRunUsage | null) => runCostLabel({ usage });
 
 	it('prefers dollars whenever a cost is known', () => {
-		expect(label({ cost_usd: 1.2, cost_source: 'provider' })).toBe('$1.20');
+		expect(label({ cost_usd: 1.2, cost_source: 'provider' })).toBe('$1.20 Reported');
 		// tokens present too — dollars still win
-		expect(label({ cost_usd: 0, input_tokens: 500, output_tokens: 10 })).toBe('$0.00');
+		expect(label({ cost_usd: 0, input_tokens: 500, output_tokens: 10 })).toBe('$0 Recorded');
 	});
 
 	it('says so when the provider reports no cost at all', () => {
-		expect(label({ cost_source: 'none', input_tokens: 10, output_tokens: 20 })).toBe('unreported');
+		expect(label({ cost_source: 'none', input_tokens: 10, output_tokens: 20 })).toBe('Unreported');
 	});
 
 	it('falls back to summed tokens when only they are known', () => {

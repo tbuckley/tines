@@ -88,7 +88,7 @@ describe('runRow', () => {
 	});
 
 	it('renders dollars when the cost is known', () => {
-		expect(runRow({ ...base, usage: { cost_usd: 1.5 } } as never)).toContain('$1.50');
+		expect(runRow({ ...base, usage: { cost_usd: 1.5 } } as never)).toContain('$1.50 Recorded');
 	});
 
 	it('shows confirmed resume lineage in the status cell', () => {

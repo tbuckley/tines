@@ -40,6 +40,7 @@ import {
 	DEFAULT_RESUME_WINDOW_HOURS,
 	isStaleTierOverride,
 	MODEL_TIERS,
+	runCostLabel,
 	runDurationLabel,
 	type ModelTier,
 	type Runner,
@@ -642,16 +643,35 @@ export function register(program: Command): void {
 			);
 			if (run.usage) {
 				const u = run.usage;
-				const parts: string[] = [];
-				if (u.input_tokens !== undefined || u.output_tokens !== undefined) {
-					parts.push(
-						`${(u.input_tokens ?? 0).toLocaleString()} in / ${(u.output_tokens ?? 0).toLocaleString()} out tokens`
+				const metric = (value: number | undefined) =>
+					value === undefined ? 'unknown' : value.toLocaleString();
+				console.log(
+					`usage: input ${metric(u.input_tokens)}  cache-read ${metric(u.cache_read_tokens)}  cache-write ${metric(u.cache_write_tokens)}  output ${metric(u.output_tokens)}`
+				);
+				if (u.cost_usd !== undefined)
+					console.log(
+						`cost: ${runCostLabel(run)}${u.cost_source === undefined ? ' · source unavailable' : ''}`
 					);
+				const pricing = u.pricing;
+				if (pricing?.status === 'provider_authoritative')
+					console.log('cost provenance: provider-reported amount is authoritative');
+				if (pricing?.status === 'unpriced') console.log(`cost: Unpriced (${pricing.reason})`);
+				if (pricing?.status === 'calculated') {
+					const b = pricing.basis;
+					console.log(`cost provenance: Estimated standard API list-price equivalent`);
+					console.log(`  model: ${b.model} (${b.model_identity})`);
+					console.log(
+						`  rate: ${b.rate_id} v${b.rate_version}; adopted ${new Date(b.rate_adopted_at).toISOString()}`
+					);
+					console.log(
+						`  source: ${b.source_url} (checked ${b.source_checked_at}${b.source_effective_at ? `; effective ${b.source_effective_at}` : ''})`
+					);
+					console.log(
+						`  rates USD/1M: input ${b.rates.input_tokens}  cache-read ${b.rates.cache_read_tokens}  cache-write ${b.rates.cache_write_tokens ?? 'unpublished'}  output ${b.rates.output_tokens}`
+					);
+					console.log(`  exact estimated USD: ${b.cost_usd_exact}`);
+					console.log('  Standard API list-price estimate; not an invoice or subscription usage.');
 				}
-				if (u.cost_usd !== undefined) parts.push(`$${u.cost_usd.toFixed(2)}`);
-				if (u.cost_source)
-					parts.push(`(${u.cost_source === 'provider' ? 'provider-reported' : u.cost_source})`);
-				if (parts.length > 0) console.log(`usage: ${parts.join('  ')}`);
 			}
 			if (run.provider_session_id) console.log(`provider session: ${run.provider_session_id}`);
 			if (run.provider_url) console.log(`provider console: ${run.provider_url}`);

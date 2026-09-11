@@ -726,6 +726,60 @@ describe('finishRun', () => {
 		expect(ended[ended.length - 1].payload.outcome).toBe('stalled');
 	});
 
+	it('atomically stores and emits a reproducible Codex estimate', async () => {
+		const t = world();
+		const runnerId = addRunner(t);
+		const issue = addIssue(t);
+		const runId = await delivered(t, { runnerId, issueId: issue });
+		const claimed = Date.parse('2026-09-11T03:30:00Z');
+		t.sqlite
+			.prepare('UPDATE agent_run SET model = ?, created_at = ? WHERE id = ?')
+			.run('gpt-5.6-sol', claimed, runId);
+		await appendRunLog(t.db, t.env, await runnerRow(t, runnerId), runId, 'working\n', claimed + 1);
+		const run = await finishRun(
+			t.db,
+			t.env,
+			await runnerRow(t, runnerId),
+			runId,
+			{
+				status: 'completed',
+				usage: {
+					input_tokens: 300,
+					cache_read_tokens: 600,
+					cache_write_tokens: 100,
+					output_tokens: 100
+				},
+				pricing_evidence: {
+					version: 1,
+					harness: 'codex',
+					model: 'gpt-5.6-sol',
+					identity_source: 'launch_argument',
+					usage_scope: 'thread_total',
+					session_mode: 'cold',
+					normalization: 'codex-jsonl-v1',
+					raw_usage: {
+						input_tokens: 1000,
+						cached_input_tokens: 600,
+						cache_write_input_tokens: 100,
+						output_tokens: 100
+					},
+					model_rerouted: false,
+					measurement_status: 'complete',
+					terminal_snapshots: 1,
+					daemon_version: '0.0.1'
+				}
+			},
+			claimed + 2
+		);
+		expect(run.usage).toMatchObject({
+			cost_usd: 0.00394,
+			cost_source: 'priced',
+			pricing: { status: 'calculated', basis: { cost_usd_exact: '0.00394' } }
+		});
+		const ended = eventsOfType(t, 'agent_run.ended').at(-1)!;
+		expect(ended.payload.usage).toEqual(run.usage);
+	});
+
 	it('a daemon reporting its own shutdown is interrupted: no strike, runner backs off', async () => {
 		const t = world();
 		const runnerId = addRunner(t);
