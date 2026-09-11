@@ -110,15 +110,20 @@ async function race(
 
 function audit(ids: string[]) {
 	const inList = ids.map(literal).join(',');
-	return d1(`
-		SELECT 'link' AS row_type, id, source_issue_id AS source, target_issue_id AS target,
-			kind, NULL AS issue_id, NULL AS project_id, NULL AS actor_api_key_id, NULL AS payload
-		FROM issue_link WHERE source_issue_id IN (${inList}) AND target_issue_id IN (${inList})
-		UNION ALL
-		SELECT 'event', json_extract(payload, '$.link_id'), NULL, NULL, NULL, issue_id,
-			project_id, actor_api_key_id, payload
-		FROM event WHERE type = 'issue.link_added' AND issue_id IN (${inList})
-	`);
+	let rows: Array<Record<string, unknown>> = [];
+	for (let attempt = 0; attempt < 3; attempt++) {
+		rows = d1(`
+			SELECT 'link' AS row_type, id, source_issue_id AS source, target_issue_id AS target,
+				kind, NULL AS issue_id, NULL AS project_id, NULL AS actor_api_key_id, NULL AS payload
+			FROM issue_link WHERE source_issue_id IN (${inList}) AND target_issue_id IN (${inList})
+			UNION ALL
+			SELECT 'event', json_extract(payload, '$.link_id'), NULL, NULL, NULL, issue_id,
+				project_id, actor_api_key_id, payload
+			FROM event WHERE type = 'issue.link_added' AND issue_id IN (${inList})
+		`);
+		if (rows.length > 0) break;
+	}
+	return rows;
 }
 
 function expectAcyclic(rows: Array<Record<string, unknown>>) {
