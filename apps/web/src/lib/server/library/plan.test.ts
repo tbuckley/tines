@@ -1,0 +1,216 @@
+import { describe, expect, it } from 'vitest';
+import { withLibraryDocumentDigest } from '@tines/shared';
+import { inheritedPackage } from '../../../../../../packages/shared/src/library/fixtures';
+import { createTestDb } from '../api/test-db';
+import { USER, PROJECT, seedBase } from '../supervisor/test-fixtures';
+import { prepareWorkflowPackage, reconstructPackagePlan } from './plan';
+import { verifyPackagePlan, signPackagePlan, PACKAGE_PLAN_TTL_MS } from './token';
+import { readPackageDestination } from './destination';
+
+const actor = {
+	userId: USER,
+	userName: 'Alice',
+	apiKeyId: null,
+	apiKeyName: null,
+	viaSession: true
+};
+const env = { BETTER_AUTH_SECRET: 'unit-test-signing-material' };
+async function fixture() {
+	const t = createTestDb();
+	seedBase(t);
+	const document = await withLibraryDocumentDigest(inheritedPackage());
+	const raw = JSON.stringify(document);
+	const choices = { inputs: { 'input:1': { mode: 'create', name: 'qa', color: 'blue' } } };
+	return {
+		t,
+		document,
+		raw,
+		choices,
+		prepare: () => prepareWorkflowPackage(t.db, env, actor, raw, choices)
+	};
+}
+describe('signed workflow package preparation and reconstruction', () => {
+	it('is read-only, returns complete content, budgets the receipt and signs a 15-minute replayable plan', async () => {
+		const f = await fixture();
+		const before = await readPackageDestination(f.t.db, USER);
+		const preview = await f.prepare();
+		const payload = await verifyPackagePlan(preview.plan_token, env.BETTER_AUTH_SECRET);
+		expect(payload.expires_at - payload.issued_at).toBe(PACKAGE_PLAN_TTL_MS);
+		expect(payload.actor_key).toBe(`session:${USER}`);
+		expect(preview.document).toEqual(f.document);
+		expect(preview.resolved.context).toHaveLength(3);
+		expect(preview.budget.statements).toBe(20);
+		expect((await readPackageDestination(f.t.db, USER)).raw).toBe(before.raw);
+		expect(await f.t.db.selectFrom('event').selectAll().execute()).toEqual([]);
+		const replay = await reconstructPackagePlan(f.t.db, actor, f.raw, payload);
+		expect(replay.resolved).toEqual(preview.resolved);
+	});
+	it('preserves explicit/proposed name combinations across canonical key ordering', async () => {
+		const f = await fixture();
+		const preview = await prepareWorkflowPackage(f.t.db, env, actor, f.raw, {
+			...f.choices,
+			workflow_names: { 'workflow:2': 'Reviewer' }
+		});
+		const payload = await verifyPackagePlan(preview.plan_token, env.BETTER_AUTH_SECRET);
+		expect((await reconstructPackagePlan(f.t.db, actor, f.raw, payload)).resolved).toEqual(
+			preview.resolved
+		);
+	});
+	it('binds account and exact actor identity; run keys may prepare but another actor must reprepare', async () => {
+		const f = await fixture();
+		const runActor = { ...actor, viaSession: false, apiKeyId: 'run-key', agentRunId: 'run' };
+		const preview = await prepareWorkflowPackage(f.t.db, env, runActor, f.raw, f.choices);
+		const payload = await verifyPackagePlan(preview.plan_token, env.BETTER_AUTH_SECRET);
+		await expect(reconstructPackagePlan(f.t.db, actor, f.raw, payload)).rejects.toMatchObject({
+			status: 403
+		});
+		await expect(
+			reconstructPackagePlan(f.t.db, { ...runActor, userId: 'other' }, f.raw, payload)
+		).rejects.toMatchObject({ status: 403 });
+		expect(
+			(await reconstructPackagePlan(f.t.db, runActor, f.raw, payload)).resolved.inputs[0].mode
+		).toBe('create');
+	});
+	it('stales on phantom workflow or label names even though workflow names have no uniqueness constraint', async () => {
+		for (const kind of ['workflow', 'label']) {
+			const f = await fixture();
+			const preview = await f.prepare();
+			const payload = await verifyPackagePlan(preview.plan_token, env.BETTER_AUTH_SECRET);
+			if (kind === 'workflow')
+				f.t.sqlite.exec(
+					`INSERT INTO workflow(id,user_id,name,description,initial_state_id,created_at,updated_at) VALUES('competitor','${USER}','Reviewer','','wfs_std_open',1,1)`
+				);
+			else
+				f.t.sqlite.exec(
+					`INSERT INTO label(id,user_id,name,color,description,created_at,updated_at) VALUES('competitor','${USER}','QA','blue','',1,1)`
+				);
+			await expect(reconstructPackagePlan(f.t.db, actor, f.raw, payload)).rejects.toMatchObject({
+				status: 409,
+				code: 'plan_stale'
+			});
+		}
+	});
+	it('ignores unrelated project, label and workflow edits', async () => {
+		const f = await fixture();
+		const preview = await f.prepare();
+		const payload = await verifyPackagePlan(preview.plan_token, env.BETTER_AUTH_SECRET);
+		f.t.sqlite.exec(
+			`UPDATE project SET name='Renamed' WHERE id='${PROJECT}'; INSERT INTO label(id,user_id,name,color,description,created_at,updated_at) VALUES('other','${USER}','unrelated','blue','',1,1); UPDATE workflow SET description='Different system text' WHERE id='wf_standard'`
+		);
+		expect((await reconstructPackagePlan(f.t.db, actor, f.raw, payload)).resolved).toEqual(
+			preview.resolved
+		);
+	});
+	it('binds the file while ignoring authoritative-source edits and JSON key order', async () => {
+		const f = await fixture();
+		const preview = await f.prepare();
+		const payload = await verifyPackagePlan(preview.plan_token, env.BETTER_AUTH_SECRET);
+		const pretty = JSON.stringify(f.document, null, 2);
+		expect((await reconstructPackagePlan(f.t.db, actor, pretty, payload)).document.digest).toBe(
+			f.document.digest
+		);
+		const changed = structuredClone(f.document);
+		changed.workflows[0].description += ' Changed';
+		const changedRaw = JSON.stringify(await withLibraryDocumentDigest(changed));
+		await expect(reconstructPackagePlan(f.t.db, actor, changedRaw, payload)).rejects.toMatchObject({
+			code: 'package_changed'
+		});
+	});
+	it('rejects expired or incompatible plans on replay but permits verified expiry for later receipt recovery', async () => {
+		const f = await fixture();
+		const preview = await f.prepare();
+		const payload = await verifyPackagePlan(preview.plan_token, env.BETTER_AUTH_SECRET);
+		payload.issued_at = 1;
+		payload.expires_at = 1 + PACKAGE_PLAN_TTL_MS;
+		const expired = await signPackagePlan(payload, env.BETTER_AUTH_SECRET);
+		expect((await verifyPackagePlan(expired, env.BETTER_AUTH_SECRET)).expires_at).toBe(
+			payload.expires_at
+		);
+		await expect(reconstructPackagePlan(f.t.db, actor, f.raw, payload)).rejects.toMatchObject({
+			code: 'plan_stale'
+		});
+	});
+	it('refuses altered signatures, keys, versions, oversized tokens and unavailable signing material', async () => {
+		const f = await fixture();
+		const preview = await f.prepare();
+		const [prefix, body, signature] = preview.plan_token.split('.');
+		for (const token of [
+			`${prefix}.${body}x.${signature}`,
+			`${prefix}.${body}.${signature.slice(1)}`,
+			`other.${body}.${signature}`,
+			'x'.repeat(800000)
+		])
+			await expect(verifyPackagePlan(token, env.BETTER_AUTH_SECRET)).rejects.toMatchObject({
+				code: 'invalid_plan_token'
+			});
+		await expect(verifyPackagePlan(preview.plan_token, 'wrong-key')).rejects.toMatchObject({
+			code: 'invalid_plan_token'
+		});
+		await expect(prepareWorkflowPackage(f.t.db, {}, actor, f.raw, f.choices)).rejects.toMatchObject(
+			{ status: 503 }
+		);
+	});
+	it('detects a changed resolved choice even if an internal caller signs it without recomputing the plan digest', async () => {
+		const f = await fixture();
+		const preview = await f.prepare();
+		const payload = await verifyPackagePlan(preview.plan_token, env.BETTER_AUTH_SECRET);
+		payload.choices.inputs!['input:1'] = { mode: 'create', name: 'different', color: 'red' };
+		await expect(reconstructPackagePlan(f.t.db, actor, f.raw, payload)).rejects.toMatchObject({
+			code: 'plan_stale'
+		});
+	});
+});
+
+it('bounds coherent-read retries when a reviewed label changes between every snapshot', async () => {
+	const f = await fixture();
+	f.t.sqlite.exec(
+		`INSERT INTO label(id,user_id,name,color,description,created_at,updated_at) VALUES('qa','${USER}','qa','blue','',1,1)`
+	);
+	let reads = 0;
+	const db = f.t.db.withPlugin({
+		transformQuery: (args) => args.node,
+		transformResult: async (args) => {
+			if (args.result.rows.some((r) => Object.hasOwn(r as object, 'projection'))) {
+				reads++;
+				f.t.sqlite.exec(`UPDATE label SET color='${reads % 2 ? 'red' : 'blue'}' WHERE id='qa'`);
+			}
+			return args.result;
+		}
+	});
+	await expect(prepareWorkflowPackage(db, env, actor, f.raw, {})).rejects.toMatchObject({
+		code: 'destination_unstable'
+	});
+	expect(reads).toBe(6);
+});
+
+it('witnesses a reused label color and all required workflow state definitions', async () => {
+	for (const kind of ['label', 'workflow']) {
+		const f = await fixture();
+		let choices: unknown = f.choices;
+		if (kind === 'label') {
+			f.t.sqlite.exec(
+				`INSERT INTO label(id,user_id,name,color,description,created_at,updated_at) VALUES('qa','${USER}','qa','blue','',1,1)`
+			);
+			choices = {};
+		} else {
+			f.document.inputs.push({
+				id: 'required',
+				key: 'required',
+				type: 'workflow',
+				label: 'Required workflow',
+				description: '',
+				default: 'Standard',
+				required: true,
+				required_states: ['Open']
+			});
+			f.raw = JSON.stringify(await withLibraryDocumentDigest(f.document));
+		}
+		const preview = await prepareWorkflowPackage(f.t.db, env, actor, f.raw, choices);
+		const payload = await verifyPackagePlan(preview.plan_token, env.BETTER_AUTH_SECRET);
+		if (kind === 'label') f.t.sqlite.exec("UPDATE label SET color='red' WHERE id='qa'");
+		else f.t.sqlite.exec("UPDATE workflow_state SET category='done' WHERE id='wfs_std_open'");
+		await expect(reconstructPackagePlan(f.t.db, actor, f.raw, payload)).rejects.toMatchObject({
+			code: 'plan_stale'
+		});
+	}
+});

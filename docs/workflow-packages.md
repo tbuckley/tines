@@ -1,6 +1,6 @@
 # Workflow package files
 
-Implementation status: the v3 whole-library transfer, workflow closure exporter, and file-validation API are available on the Tines/435 draft branch. Signed prepare/install, workflow CLI commands, browser package authoring/install, and real-run acceptance are still being implemented. Whole-library import remains best effort; it is not an atomic workflow installation.
+Implementation status: the v3 whole-library transfer, workflow closure exporter, file-validation API, and signed destination preparation are available on the Tines/435 draft branch. Atomic install/receipt recovery, workflow CLI commands, browser package authoring/install, and real-run acceptance are still being implemented. Whole-library import remains best effort; it is not an atomic workflow installation.
 
 ## Export and validate a workflow
 
@@ -19,3 +19,40 @@ Export accepts `source_project_id=<owned ID>`, repeated `schedule_id=<ID>`, and 
 Settings → Export / import downloads v3 `profile:library` files. These also contain ambient scopes, projects, labels and optional journals. Review sensitive prompt and skill contents before sharing. On import, every workflow has a local-ID mapping row. Choose an existing workflow by destination ID or create an independently named workflow. Duplicate source names remain distinct in an empty destination; collisions with ambiguous existing names require explicit choices. Settings proposes unused renamed creates. The preview resets whenever a choice changes.
 
 The whole-library endpoint retains v1/v2 readers; `GET /api/v1/export?version=2` explicitly requests a compatibility export for an older deployment. Older name-based files cannot disambiguate duplicate workflows or ambiguous slash-based state references and are refused truthfully. Compatible inheritance updates require overwrite; v1 files never compare or clear a destination pointer. A refused structural overwrite leaves existing target states available. Import is best effort and reports each create/skip/overwrite/refusal/error. Existing project defaults and existing label colors stay unchanged.
+
+## Prepare a destination review
+
+Send the original digest-bearing file text to `POST /api/v1/library/prepare`:
+
+```json
+{
+  "document_json": "<the original file text>",
+  "choices": {
+    "workflow_names": { "workflow:1": "My review workflow" },
+    "inputs": { "input:1": { "mode": "create", "name": "qa", "color": "blue" } },
+    "schedule_ids": [],
+    "routing": {}
+  }
+}
+```
+
+All maps use document-local IDs. Text choices use `{value:"..."}`; existing
+workflow/project/label choices use `{mode:"reuse",id:"<destination ID>"}`.
+Only labels allow explicit create choices. Object defaults are name suggestions;
+an ambiguous default requires an explicit destination ID. Dependencies always
+become independent copies. Missing workflow collision choices receive deterministic
+`(imported)` suffix proposals; explicit colliding names fail. `schedule_names`
+selects final names per selected schedule. `routing` maps selected preference IDs
+to actual destination tiers. Unselected schedules/routing are reported as skipped;
+no project is required for omitted project-bound automation.
+
+The result includes the complete original document, resolved definitions and
+inputs, original/rendered field patches, IDs, skipped optional records, destination
+runner/model/configuration review, and exact compiled-batch sizes. Its 15-minute
+`plan_token` binds the actor, file digest, choices, allocation and relevant durable
+destination data. Changing anything requires a fresh review. Runner heartbeats and
+unrelated account edits do not stale a plan. Preparation creates no objects,
+schedules, issues or receipt. Run keys may prepare, but the eventual installer
+requires a human session or named key to re-prepare as that actor. The install and
+receipt-recovery APIs remain pending on the draft branch; do not treat a token as
+a completed installation or actual-run evidence.

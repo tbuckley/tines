@@ -1,5 +1,5 @@
 import type { SchedulePreset } from '../schedule.js';
-import type { ArtifactRequirement, LabelColor, ModelTier, StateCategory } from '../types.js';
+import type { ArtifactRequirement, Label, LabelColor, ModelTier, StateCategory } from '../types.js';
 
 export const LIBRARY_V3_VERSION = 3 as const;
 export const LIBRARY_V3_MAX_DEPTH = 64;
@@ -224,4 +224,75 @@ export interface PackageAllocation {
 	records: Record<LocalId, PackageObjectAllocation>;
 	/** New labels are allocated separately from document record identities. */
 	labels: Record<LocalId, PackageObjectAllocation>;
+}
+
+export interface PackageRoutingResolution {
+	local_id: string;
+	id: string;
+	project_id: string | null;
+	state_id: string;
+	tier: ModelTier;
+	runner_rule_id: string;
+	winning_rule_id: string;
+	targets: {
+		runner_id: string;
+		name: string;
+		type: string;
+		status: string;
+		model: string | null;
+		config: string;
+		supported: boolean;
+	}[];
+	warnings: string[];
+}
+export interface WorkflowPackageReview {
+	choices: WorkflowPackageChoices;
+	names: Record<string, string>;
+	inputs: ResolvedPackageInput[];
+	labels: Label[];
+	workflows: WorkflowPackageDocument['workflows'];
+	context: WorkflowPackageDocument['context'];
+	schedules: {
+		local_id: string;
+		project_id: string;
+		definition: WorkflowPackageDocument['schedules'][number];
+	}[];
+	routing: PackageRoutingResolution[];
+	patches: import('./render.js').RenderedPackageField[];
+	skipped: { kind: 'schedule' | 'routing'; local_id: string }[];
+}
+
+export interface PrepareWorkflowPackageRequest {
+	document_json: string;
+	choices?: WorkflowPackageChoices;
+}
+export interface PrepareWorkflowPackageResponse {
+	operations: PackageOperation[];
+	document: WorkflowPackageDocument;
+	resolved: WorkflowPackageReview;
+	allocation: PackageAllocation;
+	plan_id: string;
+	plan_digest: string;
+	document_digest: string;
+	issued_at: number;
+	expires_at: number;
+	actor_key: string;
+	compiler_version: number;
+	plan_token: string;
+	budget: {
+		statements: number;
+		max_parameters: number;
+		max_sql_bytes: number;
+		max_value_bytes: number;
+	};
+}
+
+export interface PackageOperation {
+	action: 'create' | 'reuse' | 'skip';
+	kind: string;
+	local_id: string;
+	id: string | null;
+	name: string;
+	href: string | null;
+	relationship?: 'main' | 'dependency';
 }

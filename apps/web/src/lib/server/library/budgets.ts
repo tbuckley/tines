@@ -74,3 +74,23 @@ export function validatePackageBatch(queries: readonly CompiledQuery[]): Package
 	});
 	return size;
 }
+
+/** Minimum unavoidable statements: optional automation and possibly reused inputs are excluded. */
+export function validatePackageStructure(
+	document: import('@tines/shared').WorkflowPackageDocument
+): number {
+	const statements =
+		2 +
+		document.workflows.reduce(
+			(sum, w) =>
+				sum +
+				2 +
+				w.states.length +
+				w.transitions.length +
+				w.states.filter((s) => s.inherits_from !== null).length,
+			0
+		) +
+		document.context.reduce((sum, c) => sum + 2 + (c.kind === 'skill' ? c.files.length : 0), 0);
+	assertLimit(statements, PACKAGE_BATCH_LIMITS.statements, 'minimum_statements');
+	return statements;
+}

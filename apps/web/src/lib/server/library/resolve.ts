@@ -7,7 +7,8 @@ import {
 	type ResolvedPackageInput,
 	type PackageInputChoice,
 	type Label,
-	type ModelTier
+	type PackageRoutingResolution,
+	type WorkflowPackageReview
 } from '@tines/shared';
 import { newId } from '$lib/server/db';
 import { ApiFail } from '../api/core';
@@ -81,41 +82,8 @@ export function allocatePackageObjects(document: WorkflowPackageDocument): Packa
 	return { records, labels };
 }
 
-export interface PackageRoutingResolution {
-	local_id: string;
-	id: string;
-	project_id: string | null;
-	state_id: string;
-	tier: ModelTier;
-	runner_rule_id: string;
-	winning_rule_id: string;
-	targets: {
-		runner_id: string;
-		name: string;
-		type: string;
-		status: string;
-		model: string | null;
-		config: string;
-		supported: boolean;
-	}[];
-	warnings: string[];
-}
-export interface ResolvedPackage {
-	choices: WorkflowPackageChoices;
-	names: Record<string, string>;
-	inputs: ResolvedPackageInput[];
-	labels: Label[];
-	workflows: WorkflowPackageDocument['workflows'];
-	context: WorkflowPackageDocument['context'];
-	schedules: {
-		local_id: string;
-		project_id: string;
-		definition: WorkflowPackageDocument['schedules'][number];
-	}[];
-	routing: PackageRoutingResolution[];
-	patches: ReturnType<typeof renderPackageFields>;
+export interface ResolvedPackage extends WorkflowPackageReview {
 	selection: DestinationSelection;
-	skipped: { kind: 'schedule' | 'routing'; local_id: string }[];
 }
 
 /** Pure resolution from a single coherent destination snapshot; no reads or writes. */
@@ -420,6 +388,15 @@ export function resolvePackageDestination(
 		routing_scopes: routingScopes,
 		runner_ids: runnerIds
 	};
+	// Set-shaped witness selectors must replay independently of choice-map key order.
+	selection.workflow_ids.sort();
+	selection.workflow_names.sort();
+	selection.project_ids.sort();
+	selection.label_ids.sort();
+	selection.label_names.sort();
+	selection.runner_ids.sort();
+	selection.schedules.sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+	selection.routing_scopes.sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
 	return {
 		choices: {
 			workflow_names: names,

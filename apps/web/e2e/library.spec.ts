@@ -418,6 +418,26 @@ test('workflow export and strict validation are read-only and allowed to run key
 	});
 	expect(validated.ok()).toBe(true);
 	expect(await body(validated)).toMatchObject({ valid: true, digest: document.digest, document });
+
+	for (const client of [run, apiClient(request, ALICE.apiKey), apiClient(request, BOB.apiKey)]) {
+		const before = await client.get('/api/v1/workflows');
+		const beforeRows = await body(before);
+		const prepared = await client.post('/api/v1/library/prepare', {
+			document_json: JSON.stringify(document)
+		});
+		expect(prepared.status()).toBe(200);
+		const plan = await body<import('@tines/shared').PrepareWorkflowPackageResponse>(prepared);
+		expect(plan.document_digest).toBe(document.digest);
+		expect(plan.resolved.workflows[0].name).toBe('Standard (imported)');
+		expect(plan.resolved.schedules).toEqual([]);
+		expect(
+			plan.operations.some(
+				(operation) => operation.action === 'create' && operation.kind === 'state'
+			)
+		).toBe(true);
+		expect(plan.plan_token).toMatch(/^wip1\./);
+		expect(await body(await client.get('/api/v1/workflows'))).toEqual(beforeRows);
+	}
 	const malformed = await run.post('/api/v1/library/validate', {
 		document_json: '{"version":3,"version":2}'
 	});

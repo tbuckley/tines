@@ -1,3 +1,4 @@
+import { validatePackageStructure } from './budgets';
 import {
 	parseLibraryV3Document,
 	diagnosticOf,
@@ -23,6 +24,7 @@ export async function validatePortableLibrary(
 	};
 	try {
 		const document = await parseLibraryV3Document(documentJson, { allowMissingDigest: true });
+		if (document.profile === 'workflow') validatePackageStructure(document);
 		for (const workflow of document.workflows) {
 			const names = new Map(workflow.states.map((s) => [s.id, s.name]));
 			validateWorkflowCreateFields({

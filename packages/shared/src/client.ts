@@ -565,6 +565,13 @@ export function createApiClient(options: ApiClientOptions) {
 				`/api/v1/workflows/${encodeURIComponent(id)}/export${params.size ? '?' + params : ''}`
 			);
 		},
+		prepareWorkflowPackage: (body: import('./library/types.js').PrepareWorkflowPackageRequest) =>
+			request<import('./library/types.js').PrepareWorkflowPackageResponse>(
+				'POST',
+				'/api/v1/library/prepare',
+				body
+			),
+
 		validateLibrary: (body: import('./library/types.js').ValidateLibraryRequest) =>
 			request<import('./library/types.js').ValidateLibraryResponse>(
 				'POST',
