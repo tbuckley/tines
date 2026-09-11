@@ -101,7 +101,7 @@ test.describe('Agents Spend', () => {
 		await expect(page.getByText('Project total · all workflows')).toBeVisible();
 		await expect(page.getByRole('button', { name: /Engineering 2 finalized/ })).toBeVisible();
 		await page.getByRole('button', { name: 'Refresh' }).click();
-		await expect(page.getByText(/Refresh failed · showing previous report/)).toBeVisible();
+		await expect(page.getByText(/Refresh failed/)).toBeVisible();
 		await expect(page.getByRole('button', { name: /Engineering 2 finalized/ })).toBeVisible();
 
 		const trigger = page.getByRole('button', { name: 'Estimated' });
@@ -112,6 +112,57 @@ test.describe('Agents Spend', () => {
 		await page.keyboard.press('Escape');
 		await expect(dialog).toBeHidden();
 		await expect(trigger).toBeFocused();
+	});
+
+	test('enters Spend from Now and keeps tabs, URL, filters and results synchronized', async ({
+		page
+	}) => {
+		const requests: URL[] = [];
+		const errors: Error[] = [];
+		page.on('pageerror', (error) => errors.push(error));
+		await page.route('**/api/v1/usage?**', async (route) => {
+			requests.push(new URL(route.request().url()));
+			await route.fulfill({ json: report });
+		});
+
+		await gotoHydrated(page, '/agents?unrelated=keep');
+		await expect(page.getByRole('button', { name: 'Now', exact: true })).toHaveAttribute(
+			'aria-current',
+			'page'
+		);
+		await page.getByRole('button', { name: 'Spend', exact: true }).click();
+		await expect(page.getByRole('heading', { name: 'Spend' })).toBeVisible();
+		await expect(page.getByRole('button', { name: 'Spend', exact: true })).toHaveAttribute(
+			'aria-current',
+			'page'
+		);
+		await expect(page).toHaveURL(/agents_view=spend/);
+		await expect(page).toHaveURL(/unrelated=keep/);
+		await expect(page.getByText('Project total · all workflows')).toBeVisible();
+		expect(requests).toHaveLength(1);
+		expect(requests[0]?.searchParams.get('window')).toBe('7d');
+		expect(requests[0]?.searchParams.get('by')).toBe('workflow');
+
+		await page.getByRole('button', { name: 'Today' }).click();
+		await expect(page.getByRole('button', { name: 'Today' })).toHaveAttribute(
+			'aria-pressed',
+			'true'
+		);
+		await expect.poll(() => requests.length).toBe(2);
+		expect(requests[1]?.searchParams.get('window')).toBe('today');
+
+		await page.getByRole('button', { name: 'Now', exact: true }).click();
+		await expect(page.getByRole('button', { name: 'Now', exact: true })).toHaveAttribute(
+			'aria-current',
+			'page'
+		);
+		await expect(page.getByRole('heading', { name: 'Spend' })).toBeHidden();
+		await page.getByRole('button', { name: 'Spend', exact: true }).click();
+		await expect(page.getByRole('button', { name: 'Today' })).toHaveAttribute(
+			'aria-pressed',
+			'true'
+		);
+		expect(errors).toEqual([]);
 	});
 
 	test('restores custom bounds from the URL without fetching an empty range', async ({ page }) => {

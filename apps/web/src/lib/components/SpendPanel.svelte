@@ -1,117 +1,130 @@
 <script lang="ts">
-	import {
-		usageCostLabel,
-		type Project,
-		type UsageBy,
-		type UsageReport,
-		type UsageWindow
-	} from '@tines/shared';
+	import { usageCostLabel, ApiError, type Project, type UsageReport } from '@tines/shared';
+	import { untrack } from 'svelte';
 	import { page } from '$app/state';
-	import { pushState, replaceState } from '$app/navigation';
 	import { api } from '$lib/api';
+	import { canonicalSpendChanges, parseSpendSelection, spendRequest } from '$lib/spend-selection';
 	import { sortUsageGroups } from '$lib/usage-view';
 	import UsageCostCell from './UsageCostCell.svelte';
 
 	let {
 		projects,
 		archivedProjects,
-		focusId
-	}: { projects: Project[]; archivedProjects: Project[]; focusId: string | null } = $props();
-	let report = $state<UsageReport | null>(null);
-	let loading = $state(true),
-		refreshing = $state(false),
-		error = $state<string | null>(null);
+		focusId,
+		navigate
+	}: {
+		projects: Project[];
+		archivedProjects: Project[];
+		focusId: string | null;
+		navigate: (changes: Record<string, string | null>, replace?: boolean) => Promise<void>;
+	} = $props();
+	type RequestStatus = 'invalid' | 'loading' | 'ready' | 'refreshing' | 'error' | 'refresh-error';
+	type ReportEnvelope = { key: string; report: UsageReport };
+	let status = $state<RequestStatus>('loading');
+	let envelope = $state<ReportEnvelope | null>(null);
+	let error = $state<string | null>(null);
 	let requestId = 0;
 	let expanded = $state(new Set<string>());
-	let customFrom = $state(page.url.searchParams.get('spend_from') ?? ''),
-		customTo = $state(page.url.searchParams.get('spend_to') ?? '');
-	const selectedProject = $derived(page.url.searchParams.get('spend_project') ?? focusId ?? 'all');
-	const window = $derived(
-		(page.url.searchParams.get('spend_window') ?? '7d') as UsageWindow | 'custom'
-	);
-	const view = $derived((page.url.searchParams.get('spend_view') ?? 'workflow') as UsageBy);
-	const workflow = $derived(page.url.searchParams.get('spend_workflow') ?? 'all');
-	const sort = $derived((page.url.searchParams.get('spend_sort') ?? 'desc') as 'asc' | 'desc');
-	const sorted = $derived(report ? sortUsageGroups(report.groups, sort) : []);
+	let customFrom = $state(''),
+		customTo = $state(''),
+		customSubmitted = $state(false);
+	const selection = $derived(parseSpendSelection(page.url, focusId));
+	const canonical = $derived(Object.keys(canonicalSpendChanges(page.url, focusId)).length === 0);
+	const report = $derived(envelope?.report ?? null);
+	const sorted = $derived(report ? sortUsageGroups(report.groups, selection.sort) : []);
 	const allProjects = $derived([...projects, ...archivedProjects]);
+	const selectedProjectName = $derived(
+		selection.project === 'all'
+			? 'All projects (includes archived)'
+			: (allProjects.find((project) => project.id === selection.project)?.name ??
+					`Unavailable project (${selection.project})`)
+	);
+	const missingWorkflow = $derived(
+		selection.workflow !== 'all' &&
+			!report?.workflow_options.some((option) => (option.id ?? 'unknown') === selection.workflow)
+	);
+	const appliedCustomSignature = $derived(
+		selection.window === 'custom' ? `${selection.from}\u0000${selection.to}` : ''
+	);
+	let synchronizedCustomSignature = '';
 
 	function update(values: Record<string, string | null>, replace = false) {
-		const url = new URL(page.url);
-		for (const [key, value] of Object.entries(values))
-			value === null ? url.searchParams.delete(key) : url.searchParams.set(key, value);
-		(replace ? replaceState : pushState)(url, {});
+		void navigate(values, replace);
 		expanded = new Set();
 	}
 
+	function errorMessage(value: unknown) {
+		return value instanceof ApiError || value instanceof Error
+			? value.message
+			: 'Unable to load usage';
+	}
+
 	async function load(refresh = false) {
-		if (
-			window === 'custom' &&
-			(!page.url.searchParams.get('spend_from') || !page.url.searchParams.get('spend_to'))
-		)
-			return;
 		const id = ++requestId;
-		if (refresh && report) refreshing = true;
-		else {
-			loading = true;
-			report = null;
+		const captured = selection;
+		if (!captured.ready) {
+			status = 'invalid';
+			envelope = null;
+			error = null;
+			return;
 		}
+		const retained = refresh && envelope?.key === captured.requestKey ? envelope : null;
+		status = retained ? 'refreshing' : 'loading';
+		if (!retained) envelope = null;
 		error = null;
+		let timer: ReturnType<typeof setTimeout> | undefined;
 		try {
-			const next = await api.getUsage({
-				...(window === 'custom'
-					? {
-							from: page.url.searchParams.get('spend_from') ?? '',
-							to: page.url.searchParams.get('spend_to') ?? ''
-						}
-					: { window }),
-				project: selectedProject === 'all' ? undefined : selectedProject,
-				workflow: workflow === 'all' ? undefined : workflow,
-				by: view
+			const timeout = new Promise<never>((_, reject) => {
+				timer = setTimeout(() => reject(new Error('The spend request timed out.')), 30_000);
 			});
-			if (id === requestId) report = next;
+			const next = await Promise.race([api.getUsage(spendRequest(captured)), timeout]);
+			if (id !== requestId || captured.requestKey !== selection.requestKey) return;
+			envelope = { key: captured.requestKey, report: next };
+			status = 'ready';
 		} catch (e) {
-			if (id === requestId) error = e instanceof Error ? e.message : 'Unable to load usage';
+			if (id !== requestId || captured.requestKey !== selection.requestKey) return;
+			error = errorMessage(e);
+			status = retained ? 'refresh-error' : 'error';
 		} finally {
-			if (id === requestId) {
-				loading = false;
-				refreshing = false;
-			}
+			if (timer) clearTimeout(timer);
 		}
 	}
 
 	$effect(() => {
-		const signature = [
-			selectedProject,
-			window,
-			view,
-			workflow,
-			page.url.searchParams.get('spend_from'),
-			page.url.searchParams.get('spend_to')
-		].join('|');
+		const signature = selection.requestKey;
+		const routerReady = canonical;
 		void signature;
-		void load();
+		if (!routerReady) {
+			status = 'loading';
+			return;
+		}
+		untrack(() => void load());
+		return () => {
+			requestId++;
+		};
 	});
 	$effect(() => {
-		if (!page.url.searchParams.has('spend_project'))
-			update(
-				{
-					spend_project: selectedProject,
-					spend_window: window,
-					spend_view: view,
-					spend_sort: sort
-				},
-				true
-			);
+		const signature = appliedCustomSignature;
+		if (signature !== synchronizedCustomSignature) {
+			synchronizedCustomSignature = signature;
+			customFrom = selection.window === 'custom' ? selection.from : '';
+			customTo = selection.window === 'custom' ? selection.to : '';
+			customSubmitted = false;
+		}
 	});
 	const stat = (value: number | null) => usageCostLabel(value);
 </script>
 
 <section class="spend" aria-labelledby="spend-heading">
+	<h2 id="spend-heading">Spend</h2>
+	<p class="scope">
+		{selectedProjectName} · {selection.window === 'custom' ? 'Custom range' : selection.window}
+	</p>
 	<div class="toolbar">
 		<label
 			>Spend project<select
-				value={selectedProject}
-				onchange={(e) => update({ spend_project: e.currentTarget.value })}
+				value={selection.project}
+				onchange={(e) => update({ spend_project: e.currentTarget.value, spend_workflow: null })}
 			>
 				<option value="all">All projects (includes archived)</option>
 				{#each allProjects as project}<option value={project.id}
@@ -123,51 +136,91 @@
 			{#each [['today', 'Today'], ['7d', 'Last 7 days'], ['30d', 'Last 30 days']] as choice}
 				<button
 					type="button"
-					aria-pressed={window === choice[0]}
+					aria-pressed={selection.window === choice[0]}
 					onclick={() => update({ spend_window: choice[0], spend_from: null, spend_to: null })}
 					>{choice[1]}</button
 				>
 			{/each}
 			<button
 				type="button"
-				aria-pressed={window === 'custom'}
+				aria-pressed={selection.window === 'custom'}
 				onclick={() => update({ spend_window: 'custom' })}>Custom</button
 			>
 		</div>
-		{#if window === 'custom'}<form
+		{#if selection.window === 'custom'}<form
 				class="custom"
 				onsubmit={(e) => {
 					e.preventDefault();
-					update({ spend_from: customFrom, spend_to: customTo });
+					customSubmitted = true;
+					if (!customFrom.trim() || !customTo.trim()) {
+						document.getElementById(!customFrom.trim() ? 'spend-from' : 'spend-to')?.focus();
+						return;
+					}
+					update({ spend_from: customFrom.trim(), spend_to: customTo.trim() });
 				}}
 			>
-				<label>From<input bind:value={customFrom} placeholder="2026-09-01 or ISO + offset" /></label
+				<label
+					>From<input
+						id="spend-from"
+						bind:value={customFrom}
+						aria-invalid={customSubmitted && !customFrom.trim() ? 'true' : undefined}
+						aria-describedby="custom-help"
+						placeholder="2026-09-01 or ISO + offset"
+					/></label
 				>
-				<label>To<input bind:value={customTo} placeholder="2026-09-08 or ISO + offset" /></label
+				<label
+					>To (exclusive)<input
+						id="spend-to"
+						bind:value={customTo}
+						aria-label="To"
+						aria-invalid={customSubmitted && !customTo.trim() ? 'true' : undefined}
+						aria-describedby="custom-help"
+						placeholder="2026-09-08 or ISO + offset"
+					/></label
 				><button>Apply</button>
+				<p
+					id="custom-help"
+					class:invalid={customSubmitted && (!customFrom.trim() || !customTo.trim())}
+				>
+					{customSubmitted && (!customFrom.trim() || !customTo.trim())
+						? 'Enter both From and To, then Apply.'
+						: 'Use YYYY-MM-DD or ISO with an offset.'}
+				</p>
 			</form>{/if}
 		<div class="views" aria-label="Breakdown">
 			{#each [['workflow', 'Workflow'], ['state', 'Starting state'], ['outcome', 'Outcome']] as choice}
 				<button
 					type="button"
-					aria-pressed={view === choice[0]}
+					aria-pressed={selection.view === choice[0]}
 					onclick={() => update({ spend_view: choice[0] })}>{choice[1]}</button
 				>
 			{/each}
 		</div>
-		<button type="button" onclick={() => load(true)}
-			>{refreshing ? 'Refreshing…' : 'Refresh'}</button
+		<button
+			type="button"
+			disabled={status === 'loading' || status === 'refreshing'}
+			onclick={() => load(true)}>{status === 'refreshing' ? 'Refreshing…' : 'Refresh'}</button
 		>
 	</div>
 
-	<div aria-live="polite">
-		{#if loading}<p>Loading spend…</p>
-		{:else if error && !report}<p class="error">Spend unavailable: {error}</p>
+	<div aria-live="polite" aria-busy={status === 'loading' || status === 'refreshing'}>
+		{#if status === 'invalid'}<p class="error">Enter both From and To, then Apply.</p>
+		{:else if status === 'loading'}<p>Loading spend…</p>
+		{:else if status === 'error'}<p class="error">
+				Spend unavailable: {error} <button type="button" onclick={() => load()}>Retry</button>
+			</p>
 		{:else if report}
-			{#if error}<p class="error">Refresh failed · showing previous report: {error}</p>{/if}
+			{#if status === 'refresh-error'}<p class="error">
+					Refresh failed — showing the report generated {new Date(
+						report.generated_at
+					).toISOString()} for {new Date(report.from).toISOString()} — {new Date(
+						report.to
+					).toISOString()}: {error}
+					<button type="button" onclick={() => load(true)}>Retry refresh</button>
+				</p>{/if}
 			<header class="statement">
 				<div>
-					<p id="spend-heading">Project total · all workflows</p>
+					<p>Project total · all workflows</p>
 					<strong
 						>{usageCostLabel(
 							report.scope_total.cost_usd,
@@ -185,30 +238,49 @@
 					· generated {new Date(report.generated_at).toISOString()}</small
 				>
 			</header>
-			{#if workflow !== 'all'}<p class="subtotal">
+			{#if selection.workflow !== 'all'}<p class="subtotal">
 					Matching subtotal: {usageCostLabel(
 						report.matching_total.cost_usd,
 						report.matching_total.finalized_run_count
 					)} · {report.matching_total.coverage}
 				</p>{/if}
-			<label
-				>Workflow narrowing<select
-					value={workflow}
+			<label>
+				Workflow narrowing
+				<select
+					value={selection.workflow}
 					onchange={(e) => update({ spend_workflow: e.currentTarget.value })}
-					><option value="all">All workflows</option
-					>{#each report.workflow_options as option}<option value={option.id ?? 'unknown'}
-							>{option.name}</option
-						>{/each}</select
-				></label
-			>
+				>
+					<option value="all">All workflows</option>
+					{#if missingWorkflow}
+						<option value={selection.workflow}>Unavailable workflow ({selection.workflow})</option>
+					{/if}
+					{#each report.workflow_options as option}
+						<option value={option.id ?? 'unknown'}>{option.name}</option>
+					{/each}
+				</select>
+			</label>
 			<div class="sort">
 				<button
 					type="button"
-					onclick={() => update({ spend_sort: sort === 'desc' ? 'asc' : 'desc' })}
-					>Cost {sort === 'desc' ? 'descending' : 'ascending'}</button
+					onclick={() => update({ spend_sort: selection.sort === 'desc' ? 'asc' : 'desc' })}
+					>Cost {selection.sort === 'desc' ? 'descending' : 'ascending'}</button
 				>
 			</div>
-			{#if sorted.length === 0}<p>No finalized runs</p>{/if}
+			{#if report.scope_total.finalized_run_count === 0 && report.pending.scope_count === 0}<p>
+					No runs — no finalized runs ended in this period.
+				</p>
+			{:else if report.scope_total.finalized_run_count === 0}<p>
+					No finalized runs yet — {report.pending.scope_count} pending at cutoff.
+				</p>
+			{:else if report.scope_total.priced_run_count === 0 && report.scope_total.unpriced_run_count === 0}<p
+				>
+					Unknown — {report.scope_total.unreported_run_count} unreported; no usage reported.
+				</p>
+			{:else if report.scope_total.priced_run_count === 0}<p>
+					Unknown dollars — {report.scope_total.unpriced_run_count} unpriced and {report.scope_total
+						.unreported_run_count} unreported.
+				</p>
+			{:else if sorted.length === 0}<p>No finalized runs match this workflow and period.</p>{/if}
 			<div class="groups">
 				{#each sorted as group (group.key)}
 					<article>
