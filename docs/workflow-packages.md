@@ -53,6 +53,6 @@ runner/model/configuration review, and exact compiled-batch sizes. Its 15-minute
 destination data. Changing anything requires a fresh review. Runner heartbeats and
 unrelated account edits do not stale a plan. Preparation creates no objects,
 schedules, issues or receipt. Run keys may prepare, but the eventual installer
-requires a human session or named key to re-prepare as that actor. The install and
-receipt-recovery APIs remain pending on the draft branch; do not treat a token as
-a completed installation or actual-run evidence.
+requires a human session or named key to re-prepare as that actor. Install and
+receipt recovery are planned successor work; do not treat a token as a completed
+installation or actual-run evidence.

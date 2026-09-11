@@ -6,8 +6,13 @@ import {
 } from '../../../../../../packages/shared/src/library/fixtures';
 import { createTestDb } from '../api/test-db';
 import { USER, PROJECT, seedBase, addRunner } from '../supervisor/test-fixtures';
-import { prepareWorkflowPackage, reconstructPackagePlan } from './plan';
-import { verifyPackagePlan, signPackagePlan, PACKAGE_PLAN_TTL_MS } from './token';
+import { packagePlanDigest, prepareWorkflowPackage, reconstructPackagePlan } from './plan';
+import {
+	verifyPackagePlan,
+	signPackagePlan,
+	validatePackageAllocation,
+	PACKAGE_PLAN_TTL_MS
+} from './token';
 import { readPackageDestination } from './destination';
 
 const actor = {
@@ -188,23 +193,66 @@ describe('signed workflow package preparation and reconstruction', () => {
 			code: 'plan_stale'
 		});
 	});
-	it('rejects deep token schema errors and document-mismatched allocations', async () => {
+	it('rejects malformed nested choices and allocations before signing', async () => {
 		const f = await fixture();
 		const preview = await f.prepare();
 		const payload = await verifyPackagePlan(preview.plan_token, env.BETTER_AUTH_SECRET);
-		const malformed = structuredClone(payload) as unknown as Record<string, any>;
-		malformed.selection.schedules = [{ project_id: PROJECT, name: 'Daily', extra: true }];
-		await expect(signPackagePlan(malformed as never, env.BETTER_AUTH_SECRET)).rejects.toMatchObject(
-			{
-				code: 'invalid_plan'
+		for (const mutate of [
+			(p: Record<string, any>) => {
+				p.choices.inputs['input:1'] = { mode: 'create', name: 'qa', color: 'blue', extra: true };
+			},
+			(p: Record<string, any>) => {
+				p.choices.schedule_ids = ['schedule:1', 'schedule:1'];
+			},
+			(p: Record<string, any>) => {
+				p.allocation.records['state:1'].event_id = 42;
+			},
+			(p: Record<string, any>) => {
+				p.allocation.labels['input:1'].extra = true;
+			},
+			(p: Record<string, any>) => {
+				p.selection.schedules = [{ project_id: PROJECT, name: 'Daily', extra: true }];
 			}
-		);
+		]) {
+			const malformed = structuredClone(payload) as unknown as Record<string, any>;
+			mutate(malformed);
+			await expect(
+				signPackagePlan(malformed as never, env.BETTER_AUTH_SECRET)
+			).rejects.toMatchObject({
+				code: 'invalid_plan'
+			});
+		}
+	});
+	it('rejects document-mismatched allocations independently of the plan digest', async () => {
+		const f = await fixture();
+		const preview = await f.prepare();
+		const payload = await verifyPackagePlan(preview.plan_token, env.BETTER_AUTH_SECRET);
+		const changed = structuredClone(payload);
+		changed.allocation.records.unknown = {
+			id: 'wf_0123456789abcdef',
+			event_id: 'evt_0123456789abcdef'
+		};
+		const { plan_digest: _oldDigest, ...unsigned } = changed;
+		changed.plan_digest = await packagePlanDigest(unsigned, preview.resolved);
+		const token = await signPackagePlan(changed, env.BETTER_AUTH_SECRET);
+		const verified = await verifyPackagePlan(token, env.BETTER_AUTH_SECRET);
+		await expect(reconstructPackagePlan(f.t.db, actor, f.raw, verified)).rejects.toMatchObject({
+			code: 'invalid_plan_token'
+		});
+	});
+	it('rejects unknown, missing, wrong-kind, mismatched-event and duplicate allocations', async () => {
+		const f = await fixture();
+		const preview = await f.prepare();
+		const payload = await verifyPackagePlan(preview.plan_token, env.BETTER_AUTH_SECRET);
 		for (const mutate of [
 			(p: typeof payload) => {
 				p.allocation.records.unknown = {
 					id: 'wf_0123456789abcdef',
 					event_id: 'evt_0123456789abcdef'
 				};
+			},
+			(p: typeof payload) => {
+				delete p.allocation.records['state:1'];
 			},
 			(p: typeof payload) => {
 				p.allocation.records['state:1'].event_id = 'evt_0123456789abcdef';
@@ -218,11 +266,11 @@ describe('signed workflow package preparation and reconstruction', () => {
 		]) {
 			const changed = structuredClone(payload);
 			mutate(changed);
-			const token = await signPackagePlan(changed, env.BETTER_AUTH_SECRET);
-			const verified = await verifyPackagePlan(token, env.BETTER_AUTH_SECRET);
-			await expect(reconstructPackagePlan(f.t.db, actor, f.raw, verified)).rejects.toMatchObject({
-				code: 'invalid_plan_token'
-			});
+			expect(() => validatePackageAllocation(f.document, changed.allocation)).toThrowError(
+				expect.objectContaining({
+					code: 'invalid_plan_token'
+				})
+			);
 		}
 	});
 });
