@@ -50,7 +50,14 @@
 	<div class="space-y-4 p-5">
 		<div class="flex items-start justify-between gap-4">
 			<div>
-				<h2 id="run-cost-title-{run.id}" class="text-base font-semibold">Cost evidence</h2>
+				<div
+					id="run-cost-title-{run.id}"
+					role="heading"
+					aria-level="2"
+					class="text-base font-semibold"
+				>
+					Cost evidence
+				</div>
 				<p class="text-muted-foreground mt-1 text-xs">Run {run.id}</p>
 			</div>
 			<Button size="sm" variant="ghost" class="h-7" onclick={() => dialog.close()}>Close</Button>

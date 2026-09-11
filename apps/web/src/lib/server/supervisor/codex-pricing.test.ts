@@ -39,6 +39,123 @@ const price = (
 ) => priceCodexUsage({ run, usage: u, evidence: e, now: created_at + 1000 }, catalog);
 
 describe('priceCodexUsage', () => {
+	it('pins every supported exact model and all four reviewed rate dimensions', () => {
+		expect(
+			CODEX_RATES.map(({ model, context_band, rates }) => ({ model, context_band, rates }))
+		).toEqual([
+			{
+				model: 'gpt-6-astra',
+				context_band: 'short',
+				rates: {
+					input_tokens: '10',
+					cache_read_tokens: '1',
+					cache_write_tokens: '12.5',
+					output_tokens: '50'
+				}
+			},
+			{
+				model: 'gpt-5.6-sol',
+				context_band: 'short',
+				rates: {
+					input_tokens: '4',
+					cache_read_tokens: '0.4',
+					cache_write_tokens: '5',
+					output_tokens: '20'
+				}
+			},
+			{
+				model: 'gpt-5.6-terra',
+				context_band: 'short',
+				rates: {
+					input_tokens: '2',
+					cache_read_tokens: '0.2',
+					cache_write_tokens: '2.5',
+					output_tokens: '12'
+				}
+			},
+			{
+				model: 'gpt-5.6-luna',
+				context_band: 'short',
+				rates: {
+					input_tokens: '0.2',
+					cache_read_tokens: '0.02',
+					cache_write_tokens: '0.25',
+					output_tokens: '1.2'
+				}
+			},
+			{
+				model: 'gpt-5-codex',
+				context_band: 'published',
+				rates: {
+					input_tokens: '1.25',
+					cache_read_tokens: '0.125',
+					cache_write_tokens: null,
+					output_tokens: '10'
+				}
+			},
+			{
+				model: 'gpt-5.1-codex',
+				context_band: 'published',
+				rates: {
+					input_tokens: '1.25',
+					cache_read_tokens: '0.125',
+					cache_write_tokens: null,
+					output_tokens: '10'
+				}
+			},
+			{
+				model: 'gpt-5.1-codex-max',
+				context_band: 'published',
+				rates: {
+					input_tokens: '1.25',
+					cache_read_tokens: '0.125',
+					cache_write_tokens: null,
+					output_tokens: '10'
+				}
+			},
+			{
+				model: 'gpt-5.1-codex-mini',
+				context_band: 'published',
+				rates: {
+					input_tokens: '0.25',
+					cache_read_tokens: '0.025',
+					cache_write_tokens: null,
+					output_tokens: '2'
+				}
+			},
+			{
+				model: 'gpt-5.2-codex',
+				context_band: 'published',
+				rates: {
+					input_tokens: '1.75',
+					cache_read_tokens: '0.175',
+					cache_write_tokens: null,
+					output_tokens: '14'
+				}
+			},
+			{
+				model: 'gpt-5.3-codex',
+				context_band: 'published',
+				rates: {
+					input_tokens: '1.75',
+					cache_read_tokens: '0.175',
+					cache_write_tokens: null,
+					output_tokens: '14'
+				}
+			},
+			{
+				model: 'codex-mini-latest',
+				context_band: 'published',
+				rates: {
+					input_tokens: '1.5',
+					cache_read_tokens: '0.375',
+					cache_write_tokens: null,
+					output_tokens: '6'
+				}
+			}
+		]);
+	});
+
 	it('prices the four non-overlapping Sol classes exactly and persists the rate basis', () => {
 		const result = price();
 		expect(result).toMatchObject({
@@ -111,6 +228,16 @@ describe('priceCodexUsage', () => {
 			output_tokens: raw.output_tokens!
 		};
 		expect(price(operands, e, run).pricing).toMatchObject({ status: 'unpriced', reason });
+	});
+
+	it('does not price a linked resumed run even if the producer claims a cold session', () => {
+		expect(
+			price(usage, evidence(), {
+				model: 'gpt-5.6-sol',
+				created_at,
+				resumed_from_run_id: 'arun_previous'
+			}).pricing
+		).toMatchObject({ status: 'unpriced', reason: 'attempt_scope_unknown' });
 	});
 
 	it('requires explicit zero for an unpublished cache-write rate', () => {

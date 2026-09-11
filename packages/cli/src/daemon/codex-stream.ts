@@ -165,23 +165,34 @@ export class CodexStreamRenderer implements RunStreamRenderer {
 			: 0;
 		const complete =
 			supplied === 4 && Object.keys(rawUsage).length === 4 && rawCached! + rawWrite! <= totalInput!;
+		const previousInput = previous
+			? metric(previous.input_tokens) !== undefined &&
+				metric(previous.cached_input_tokens) !== undefined &&
+				metric(previous.cache_write_input_tokens) !== undefined
+				? previous.input_tokens! -
+					previous.cached_input_tokens! -
+					previous.cache_write_input_tokens!
+				: undefined
+			: undefined;
+		const input = complete ? totalInput! - rawCached! - rawWrite! : undefined;
 		let status: NonNullable<StreamSummary['pricingEvidence']>['measurement_status'] = complete
 			? 'complete'
 			: supplied < 4
 				? 'missing'
 				: 'invalid';
 		if (
-			complete &&
-			previous &&
-			['input_tokens', 'cached_input_tokens', 'cache_write_input_tokens', 'output_tokens'].some(
-				(key) => (rawUsage as JsonObject)[key]! < (previous as JsonObject)[key]!
-			)
+			(complete &&
+				previous &&
+				['input_tokens', 'cached_input_tokens', 'cache_write_input_tokens', 'output_tokens'].some(
+					(key) => (rawUsage as JsonObject)[key]! < (previous as JsonObject)[key]!
+				)) ||
+			(input !== undefined && previousInput !== undefined && input < previousInput)
 		) {
 			this.stickyStatus = 'nonmonotonic';
 		}
 		status = this.stickyStatus ?? status;
 		const usage: AgentRunUsage = {};
-		if (complete) usage.input_tokens = totalInput! - rawCached! - rawWrite!;
+		if (complete) usage.input_tokens = input!;
 		if (rawCached !== undefined) usage.cache_read_tokens = rawCached;
 		if (rawWrite !== undefined) usage.cache_write_tokens = rawWrite;
 		if (output !== undefined) usage.output_tokens = output;

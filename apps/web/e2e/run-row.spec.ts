@@ -96,6 +96,19 @@ test.describe('shared run row', () => {
 		await expect(estimate).toBeFocused();
 		await expect(row.getByRole('button', { name: 'Hide logs' })).toBeVisible();
 	});
+
+	test('keeps the cost-evidence heading visible inside a phone fold', async ({ page }) => {
+		await page.setViewportSize({ width: 390, height: 844 });
+		await gotoHydrated(
+			page,
+			`/issues/${encodeURIComponent(RUNROW.projectName)}/${RUNROW_ESTIMATED.issueNumber}`
+		);
+		await page.getByRole('button', { name: /^Agent activity/ }).click();
+		const row = page.locator('li:not([inert])', { hasText: RUNROW_ESTIMATED.runnerName });
+		await row.getByRole('button', { name: /Estimated/ }).click();
+		const dialog = page.getByRole('dialog', { name: 'Cost evidence' });
+		await expect(dialog.getByRole('heading', { name: 'Cost evidence', level: 2 })).toBeVisible();
+	});
 });
 
 test.describe('shared routing-rule row', () => {

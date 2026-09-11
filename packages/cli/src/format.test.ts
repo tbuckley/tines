@@ -89,6 +89,19 @@ describe('runRow', () => {
 
 	it('renders dollars when the cost is known', () => {
 		expect(runRow({ ...base, usage: { cost_usd: 1.5 } } as never)).toContain('$1.50 Recorded');
+		expect(runRow({ ...base, usage: { cost_usd: 0, cost_source: 'provider' } } as never)).toContain(
+			'$0 Reported'
+		);
+		expect(
+			runRow({ ...base, usage: { cost_usd: 0.001, cost_source: 'priced' } } as never)
+		).toContain('<$0.01 Estimated');
+	});
+
+	it('keeps unknown and explicit-zero token states honest', () => {
+		expect(runRow({ ...base, usage: { cost_source: 'none' } } as never)).toContain('Unreported');
+		expect(runRow({ ...base, usage: { input_tokens: 0, output_tokens: 0 } } as never)).toContain(
+			'Unpriced'
+		);
 	});
 
 	it('shows confirmed resume lineage in the status cell', () => {

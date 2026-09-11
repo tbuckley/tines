@@ -129,6 +129,42 @@ describe('CodexStreamRenderer', () => {
 			terminal_snapshots: 3
 		});
 	});
+
+	it('rejects a decrease in derived uncached input even when every raw counter increases', () => {
+		const result = collect([
+			{
+				type: 'turn.completed',
+				usage: {
+					input_tokens: 10,
+					cached_input_tokens: 2,
+					cache_write_input_tokens: 1,
+					output_tokens: 4
+				}
+			},
+			{
+				type: 'turn.completed',
+				usage: {
+					input_tokens: 11,
+					cached_input_tokens: 4,
+					cache_write_input_tokens: 1,
+					output_tokens: 5
+				}
+			}
+		]);
+		expect(result.summary.usage?.input_tokens).toBe(6);
+		expect(result.summary.pricingEvidence?.measurement_status).toBe('nonmonotonic');
+	});
+
+	it('only accepts a structured error item as reroute evidence', () => {
+		const result = collect([
+			{ type: 'item.completed', item: { type: 'agent_message', text: 'model rerouted: prose' } },
+			{
+				type: 'item.completed',
+				item: { type: 'command_execution', aggregated_output: 'model rerouted: tool output' }
+			}
+		]);
+		expect(result.summary.pricingEvidence?.model_rerouted).toBe(false);
+	});
 });
 
 describe('renderCodexEvent', () => {

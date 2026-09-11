@@ -912,37 +912,41 @@ describe('end judgment', () => {
 		expect((await pass(t)).claimed).toBe(0);
 	});
 
-	it('a double end applies exactly once (the flip is the CAS)', async () => {
+	it('concurrent finish and cancel reports apply exactly one final report (the flip is the CAS)', async () => {
 		const t = world();
 		const { issue, runId } = await runningRun(t);
 		const run = await loadEndableRun(t.db, USER, runId);
 		const winnerUsage = JSON.stringify({ cost_usd: 1, cost_source: 'priced' });
-		expect(
-			(
-				await endRun(t.db, t.env, run!, {
-					status: 'completed',
-					now: NOW + 1000,
-					finalReport: { usage: winnerUsage, provider_session_id: 'winner' }
-				})
-			).ended
-		).toBe(true);
-		expect(
-			(
-				await endRun(t.db, t.env, run!, {
-					status: 'canceled',
-					now: NOW + 2000,
-					finalReport: {
-						usage: JSON.stringify({ cost_usd: 99 }),
-						provider_session_id: 'loser'
-					}
-				})
-			).ended
-		).toBe(false);
-		expect(runById(t, runId)).toMatchObject({ usage: winnerUsage, provider_session_id: 'winner' });
+		const [first, second] = await Promise.all([
+			endRun(t.db, t.env, run!, {
+				status: 'completed',
+				now: NOW + 1000,
+				finalReport: { usage: winnerUsage, provider_session_id: 'winner' }
+			}),
+			endRun(t.db, t.env, run!, {
+				status: 'canceled',
+				now: NOW + 2000,
+				finalReport: {
+					usage: JSON.stringify({ cost_usd: 99 }),
+					provider_session_id: 'loser'
+				}
+			})
+		]);
+		expect([first.ended, second.ended].sort()).toEqual([false, true]);
+		const stored = runById(t, runId)!;
+		if (stored.status === 'completed') {
+			expect(stored).toMatchObject({ usage: winnerUsage, provider_session_id: 'winner' });
+		} else {
+			expect(stored).toMatchObject({
+				status: 'canceled',
+				usage: JSON.stringify({ cost_usd: 99 }),
+				provider_session_id: 'loser'
+			});
+		}
 		expect(issueById(t, issue).attempt_count).toBe(1);
 		const events = eventsOfType(t, 'agent_run.ended');
 		expect(events).toHaveLength(1);
-		expect(events[0].payload.usage).toEqual({ cost_usd: 1, cost_source: 'priced' });
+		expect(events[0].payload.usage).toEqual(JSON.parse(stored.usage as string));
 	});
 
 	it('two ends with identical status and clock still apply exactly once', async () => {

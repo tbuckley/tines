@@ -2364,12 +2364,18 @@ export function runCostLabel(run: Pick<AgentRun, 'usage'>): string | null {
 	}
 	if (usage.pricing?.status === 'unpriced') return 'Unpriced';
 	if (usage.cost_source === 'none') return 'Unreported';
+	const measured = [
+		usage.input_tokens,
+		usage.output_tokens,
+		usage.cache_read_tokens,
+		usage.cache_write_tokens
+	].some((value) => value !== undefined);
 	const tokens =
 		(usage.input_tokens ?? 0) +
 		(usage.output_tokens ?? 0) +
 		(usage.cache_read_tokens ?? 0) +
 		(usage.cache_write_tokens ?? 0);
-	return tokens > 0 ? `${tokens.toLocaleString()} tok` : null;
+	return tokens > 0 ? `${tokens.toLocaleString()} tok` : measured ? 'Unpriced' : null;
 }
 
 /** Whether a run still holds its issue's exclusive claim (and counts toward caps). */

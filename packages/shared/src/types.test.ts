@@ -38,10 +38,13 @@ describe('runCostLabel', () => {
 		expect(label({ cache_read_tokens: 600 })).toBe('600 tok');
 	});
 
-	it('renders nothing rather than a misleading zero', () => {
+	it('keeps explicit legacy zero measurements visibly unpriced', () => {
 		expect(label(null)).toBeNull();
 		expect(label({})).toBeNull();
-		expect(label({ input_tokens: 0, output_tokens: 0 })).toBeNull();
+		expect(label({ input_tokens: 0, output_tokens: 0 })).toBe('Unpriced');
+		expect(
+			label({ input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0 })
+		).toBe('Unpriced');
 	});
 });
 

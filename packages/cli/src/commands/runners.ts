@@ -643,6 +643,7 @@ export function register(program: Command): void {
 			);
 			if (run.usage) {
 				const u = run.usage;
+				const costLabel = runCostLabel(run);
 				const metric = (value: number | undefined) =>
 					value === undefined ? 'unknown' : value.toLocaleString();
 				console.log(
@@ -656,6 +657,8 @@ export function register(program: Command): void {
 				if (pricing?.status === 'provider_authoritative')
 					console.log('cost provenance: provider-reported amount is authoritative');
 				if (pricing?.status === 'unpriced') console.log(`cost: Unpriced (${pricing.reason})`);
+				else if (u.cost_usd === undefined && costLabel === 'Unpriced')
+					console.log('cost: Unpriced');
 				if (pricing?.status === 'calculated') {
 					const b = pricing.basis;
 					console.log(`cost provenance: Estimated standard API list-price equivalent`);
