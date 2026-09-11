@@ -181,6 +181,7 @@ const DESCRIBERS: Record<KnownEventType, Describer> = {
 	'context.deleted': (ev, p) => contextSegments(ev, p),
 	'runner.registered': (ev, p) => [text(`${action(ev.type)} runner`), name(p.name)],
 	'runner.updated': (ev, p) => [text(`${action(ev.type)} runner`), name(p.name)],
+	'runner.daemon_replaced': (_ev, p) => [text('replaced daemon for runner'), name(p.name)],
 	'runner.removed': (ev, p) => [text(`${action(ev.type)} runner`), name(p.name)],
 	'runner.errored': (_ev, p) => [
 		text('saw runner'),
