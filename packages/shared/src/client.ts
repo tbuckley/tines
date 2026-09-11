@@ -552,6 +552,26 @@ export function createApiClient(options: ApiClientOptions) {
 			request<ApiKeyCreated>('POST', '/api/v1/api-keys', body),
 		revokeApiKey: (id: string) => request<void>('DELETE', `/api/v1/api-keys/${id}`),
 
+		exportWorkflowPackage: (
+			id: string,
+			opts: import('./library/types.js').ExportWorkflowPackageOptions = {}
+		) => {
+			const params = new URLSearchParams();
+			if (opts.source_project_id) params.set('source_project_id', opts.source_project_id);
+			for (const id of opts.schedule_ids ?? []) params.append('schedule_id', id);
+			for (const tier of opts.tiers ?? []) params.append('tier', JSON.stringify(tier));
+			if (opts.authoring) params.set('authoring', JSON.stringify(opts.authoring));
+			return get<import('./library/types.js').WorkflowPackageDocument>(
+				`/api/v1/workflows/${encodeURIComponent(id)}/export${params.size ? '?' + params : ''}`
+			);
+		},
+		validateLibrary: (body: import('./library/types.js').ValidateLibraryRequest) =>
+			request<import('./library/types.js').ValidateLibraryResponse>(
+				'POST',
+				'/api/v1/library/validate',
+				body
+			),
+
 		// Library export / import (workflows + context; no tracker data, no secrets)
 		exportLibrary: (opts: ExportLibraryOptions = {}) =>
 			get<LibraryDocument | import('./library/types.js').LibraryV3Document>(

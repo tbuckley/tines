@@ -7,7 +7,7 @@
  */
 import type { ImportLibraryResponse, LibraryDocument } from '@tines/shared';
 import { expect, test, type Locator, type Page } from '@playwright/test';
-import { ALICE, BOB } from './constants.mjs';
+import { ALICE, BOB, RUNROW } from './constants.mjs';
 import { apiClient, body, errorBody, gotoHydrated, runId, signIn } from './helpers';
 
 /** Everything but the per-export timestamp. */
@@ -402,4 +402,30 @@ test('v3 browser file transfer maps duplicate workflows and distinct prompts int
 			sourcePrompt?.kind === 'prompt' ? sourcePrompt.body : null
 		);
 	}
+});
+
+test('workflow export and strict validation are read-only and allowed to run keys', async ({
+	request
+}) => {
+	const run = apiClient(request, RUNROW.runKey);
+	const response = await run.get('/api/v1/workflows/wf_standard/export');
+	expect(response.ok()).toBe(true);
+	const document = await body<import('@tines/shared').WorkflowPackageDocument>(response);
+	expect(document.profile).toBe('workflow');
+	expect(document.workflows[0].name).toBe('Standard');
+	const validated = await run.post('/api/v1/library/validate', {
+		document_json: JSON.stringify(document)
+	});
+	expect(validated.ok()).toBe(true);
+	expect(await body(validated)).toMatchObject({ valid: true, digest: document.digest, document });
+	const malformed = await run.post('/api/v1/library/validate', {
+		document_json: '{"version":3,"version":2}'
+	});
+	expect(malformed.ok()).toBe(true);
+	expect(await body(malformed)).toMatchObject({
+		valid: false,
+		diagnostics: [{ code: 'duplicate_key' }]
+	});
+	const foreign = await run.get('/api/v1/workflows/nonexistent/export');
+	expect(foreign.status()).toBe(404);
 });

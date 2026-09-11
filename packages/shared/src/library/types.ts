@@ -174,3 +174,22 @@ export class LibraryValidationError extends Error {
 		this.name = 'LibraryValidationError';
 	}
 }
+
+/** Source IDs are request-only selectors; none are serialized into the portable document. */
+export interface ExportWorkflowPackageOptions {
+	source_project_id?: string;
+	schedule_ids?: string[];
+	tiers?: Array<{ state_id: string; tier: ModelTier; project_scoped?: boolean }>;
+	authoring?: { inputs: PackageInput[]; text_uses: TextUse[] };
+}
+
+export interface ValidateLibraryRequest {
+	document_json: string;
+}
+export interface ValidateLibraryResponse {
+	valid: boolean;
+	digest: string | null;
+	document?: PortableLibraryV3Document;
+	diagnostics: LibraryDiagnostic[];
+	limits: { max_document_bytes: number; max_records: number; max_depth: number };
+}
