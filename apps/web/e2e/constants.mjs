@@ -23,6 +23,13 @@ export const ALICE = {
 	sessionToken: 'e2e-session-alice'
 };
 
+/** A second independently attributed writer for native concurrency races. */
+export const ALICE_AGENT = {
+	id: 'key_e2e_alice_agent',
+	apiKey: 'tines_e2ealiceagent00000000000000000000000000000',
+	apiKeyName: 'alice-agent-key'
+};
+
 /**
  * Seeded scheduled-task fixtures (Alice's): the sweep can only be tested
  * deterministically with `next_run_at` already in the past, which the API
