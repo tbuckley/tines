@@ -169,4 +169,33 @@ describe('atomic workflow package install', () => {
 		expect(f.t.all('SELECT * FROM workflow WHERE user_id IS NOT NULL')).toEqual([]);
 		expect(f.t.all('SELECT * FROM event')).toEqual([]);
 	});
+
+	it('recovers a lost first response and makes sequential/concurrent retries idempotent', async () => {
+		const f = await fixture();
+		const realBatch = f.t.env.DB.batch.bind(f.t.env.DB);
+		let lose = true;
+		const lossyEnv = {
+			...f.t.env,
+			...signing,
+			DB: {
+				...f.t.env.DB,
+				batch: async (statements: Parameters<typeof realBatch>[0]) => {
+					const result = await realBatch(statements);
+					if (lose) {
+						lose = false;
+						throw new TypeError('connection reset after commit');
+					}
+					return result;
+				}
+			}
+		} as Env;
+		const recovered = await installWorkflowPackage(f.t.db, lossyEnv, actor, f.request);
+		const retries = await Promise.all([
+			installWorkflowPackage(f.t.db, lossyEnv, actor, f.request),
+			installWorkflowPackage(f.t.db, lossyEnv, actor, f.request)
+		]);
+		expect(retries).toEqual([recovered, recovered]);
+		expect(f.t.all('SELECT * FROM library_install')).toHaveLength(1);
+		expect(f.t.all('SELECT * FROM workflow WHERE user_id IS NOT NULL')).toHaveLength(2);
+	});
 });
