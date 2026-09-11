@@ -550,8 +550,67 @@ pnpm run build && pnpm wrangler deploy --env preview   # creates the preview wor
 ```
 
 All PRs share the one preview database, and each PR applies its own pending
-migrations to it. If PRs with conflicting migrations leave it in a bad state,
-throw it away and start over — it holds nothing precious:
+migrations to it.
+
+#### Recover an exactly renamed migration without resetting data
+
+Deleting and recreating the preview database is still the right recovery for
+disposable, genuinely divergent state, but it destroys all preview data. A
+narrower recovery is possible when an applied migration was only renamed and
+the old and new files are byte-for-byte identical. Do not use this procedure to
+hide unknown or partial schema drift.
+
+First, stop concurrent Preview migration runs. From the repository root, prove
+the old and new revisions resolve to the same Git blob, then from `apps/web`
+inspect the remote ledger, the full schema and data invariants established by
+the migration, and the pending list. Continue only if the old filename occurs
+exactly once, the new filename is absent, every expected schema object and
+backfill is present, and `PRAGMA foreign_key_check` returns no rows. For the
+`0026_issue_addresses.sql` to `0027_issue_addresses.sql` incident, for example:
+
+```sh
+git rev-parse <old-revision>:apps/web/migrations/0026_issue_addresses.sql \
+  <new-revision>:apps/web/migrations/0027_issue_addresses.sql
+
+cd apps/web
+pnpm exec wrangler d1 execute tines-preview --remote --env preview --json \
+  --command "SELECT id, name, applied_at FROM d1_migrations ORDER BY id"
+pnpm exec wrangler d1 migrations list tines-preview --remote --env preview
+```
+
+Record a [Time Travel](https://developers.cloudflare.com/d1/reference/time-travel/)
+bookmark immediately before the repair. A secure full export is optional; it
+briefly blocks requests and can contain sensitive preview data.
+
+```sh
+pnpm exec wrangler d1 time-travel info tines-preview --env preview --json
+pnpm exec wrangler d1 execute tines-preview --remote --env preview --json \
+  --command "UPDATE d1_migrations
+    SET name = '0027_issue_addresses.sql'
+    WHERE name = '0026_issue_addresses.sql'
+      AND NOT EXISTS (
+        SELECT 1 FROM d1_migrations
+        WHERE name = '0027_issue_addresses.sql'
+      )"
+```
+
+Require a successful result with exactly one changed row. Re-read the ledger
+and confirm the new filename retained the old row's `id` and `applied_at`, then
+repeat all schema, data, and foreign-key checks. The renamed migration must
+disappear from `wrangler d1 migrations list`. Finally, run Preview from a
+current same-repository PR and require both the migration step and preview
+upload to succeed; confirm the pending list is empty afterward. If either
+filename is duplicated or missing, the blobs differ, any schema/data check
+fails, or the update changes anything other than one row, stop and investigate
+instead of inserting a ledger row, rerunning the migration, or resetting the
+database. See Cloudflare's [D1 migration
+ledger](https://developers.cloudflare.com/d1/reference/migrations/) and [Time
+Travel restore](https://developers.cloudflare.com/d1/reference/time-travel/)
+documentation; a restore replaces the whole database and discards writes made
+after the bookmark.
+
+For a disposable preview database whose state genuinely diverged, delete and
+recreate it:
 
 ```sh
 pnpm wrangler d1 delete tines-preview
