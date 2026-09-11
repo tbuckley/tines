@@ -2,8 +2,8 @@ import { expect, test, type Page } from '@playwright/test';
 import { SPEND } from './constants.mjs';
 import { gotoHydrated, signIn } from './helpers';
 
-const spendUrl = (extra = '') =>
-	`/agents?agents_view=spend&spend_project=${SPEND.projects.alpha.id}&spend_window=7d&spend_view=workflow&spend_sort=desc&spend_workflow=all${extra}`;
+const spendUrl = (workflow = 'all') =>
+	`/agents?agents_view=spend&spend_project=${SPEND.projects.alpha.id}&spend_window=7d&spend_view=workflow&spend_sort=desc&spend_workflow=${workflow}`;
 const projectTotal = (page: Page) => page.locator('.statement strong').first();
 const usageProject = (url: string) => new URL(url).searchParams.get('project');
 
@@ -53,7 +53,7 @@ test.describe('Agents Spend recovery', () => {
 				await route.fulfill({ status: 500, json: { error: { message: 'controlled failure' } } });
 			else await route.continue();
 		});
-		await gotoHydrated(page, spendUrl(`&spend_workflow=${SPEND.workflows.build.id}`));
+		await gotoHydrated(page, spendUrl(SPEND.workflows.build.id));
 		await expect(page.getByText(/Spend unavailable: controlled failure/)).toBeVisible();
 		// The scope that failed must stay visible and changeable without a reload.
 		const narrowing = page.getByLabel('Workflow narrowing');

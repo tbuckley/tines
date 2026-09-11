@@ -43,6 +43,29 @@
 		selection.workflow !== 'all' &&
 			!report?.workflow_options.some((option) => (option.id ?? 'unknown') === selection.workflow)
 	);
+	/**
+	 * One list, so the selected option exists in the same update that applies
+	 * the select's value: an explicit workflow rendered from a separate `{#if}`
+	 * arrives after the value is set, and the control silently falls back to
+	 * All — which is exactly the correction a failed or loading scope needs.
+	 */
+	const workflowChoices = $derived([
+		{ value: 'all', label: 'All workflows' },
+		...(missingWorkflow
+			? [
+					{
+						value: selection.workflow,
+						label: report
+							? `Unavailable workflow (${selection.workflow})`
+							: `Selected workflow (${selection.workflow})`
+					}
+				]
+			: []),
+		...(report?.workflow_options ?? []).map((option) => ({
+			value: option.id ?? 'unknown',
+			label: option.name
+		}))
+	]);
 	const appliedCustomSignature = $derived(
 		selection.window === 'custom' ? `${selection.from}\u0000${selection.to}` : ''
 	);
@@ -208,16 +231,8 @@
 				value={selection.workflow}
 				onchange={(e) => update({ spend_workflow: e.currentTarget.value })}
 			>
-				<option value="all">All workflows</option>
-				{#if missingWorkflow}
-					<option value={selection.workflow}
-						>{report
-							? `Unavailable workflow (${selection.workflow})`
-							: `Selected workflow (${selection.workflow})`}</option
-					>
-				{/if}
-				{#each report?.workflow_options ?? [] as option}
-					<option value={option.id ?? 'unknown'}>{option.name}</option>
+				{#each workflowChoices as choice (choice.value)}
+					<option value={choice.value}>{choice.label}</option>
 				{/each}
 			</select></label
 		>
