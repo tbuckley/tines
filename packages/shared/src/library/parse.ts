@@ -278,3 +278,8 @@ export function diagnosticOf(error: unknown): LibraryDiagnostic[] {
 				}
 			];
 }
+
+/** Strict JSON boundary for transport envelopes; callers must enforce their byte cap first. */
+export function parseStrictLibraryJson(source: string): unknown {
+	return new StrictJsonParser(source).parse();
+}

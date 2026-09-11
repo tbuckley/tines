@@ -554,7 +554,9 @@ export function createApiClient(options: ApiClientOptions) {
 
 		// Library export / import (workflows + context; no tracker data, no secrets)
 		exportLibrary: (opts: ExportLibraryOptions = {}) =>
-			get<LibraryDocument>(`/api/v1/export${opts.journals === false ? '?journals=false' : ''}`),
+			get<LibraryDocument | import('./library/types.js').LibraryV3Document>(
+				`/api/v1/export${query(opts)}`
+			),
 		/** Plan-then-apply; `dry_run: true` returns the preview the apply follows. */
 		importLibrary: (body: ImportLibraryRequest) =>
 			request<ImportLibraryResponse>('POST', '/api/v1/import', body)

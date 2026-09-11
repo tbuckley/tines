@@ -18,6 +18,7 @@ import {
 	type WorkflowStateInput,
 	type WorkflowTransitionInput
 } from '@tines/shared';
+import { applyLibraryV3Import, planLibraryV3Import } from './library-v3-import';
 import type { Kysely } from 'kysely';
 import type { Database } from '$lib/server/db';
 import { ApiFail, requireString, type ActorContext } from './core';
@@ -386,7 +387,8 @@ export async function planImport(
 	userId: string,
 	request: ImportLibraryRequest
 ): Promise<ImportPlan> {
-	const doc = assertImportableDocument(request.document);
+	if (request.document?.version === 3) return planLibraryV3Import(db, userId, request);
+	const doc = assertImportableDocument(request.document as LibraryDocument);
 	const overwrite = request.on_collision === 'overwrite';
 	const createProjects = request.create_projects !== false;
 	const includeJournals = request.include_journals !== false;
@@ -970,6 +972,7 @@ export async function applyImport(
 	actor: ActorContext,
 	request: ImportLibraryRequest
 ): Promise<ImportLibraryResponse> {
+	if (request.document?.version === 3) return applyLibraryV3Import(db, env, actor, request);
 	const plan = await planImport(db, actor.userId, request);
 	if (request.dry_run) {
 		const entries = plan.steps.map((s) => s.entry);

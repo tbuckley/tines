@@ -104,3 +104,11 @@ proceeds, so re-running a partial import converges.
 
 Starters (`specs/starters/SPEC.md`) are library documents with typed inputs
 bolted on; they apply through their own single-batch path, not through import.
+
+## Decision update — Tines/435 whole-library v3
+
+Whole-library export now defaults to the ID-addressed v3 `profile: library` contract in [FORMAT_V3.md](FORMAT_V3.md). `GET /api/v1/export?version=2` remains an explicit compatibility export, and v1/v2 imports retain their best-effort behavior. The older name-based design above remains the historical v1/v2 record.
+
+V3 import maps document-local workflow IDs independently. With no destination collision, duplicate source names remain distinct workflows. Unique-name collisions retain skip/compatible-inheritance-overwrite behavior. Ambiguous collisions require `workflow_targets[local_id] = {kind:"target",workflow_id}` or `{kind:"create",name}`. Settings proposes independently renamed creates and displays each source ID and its states; target choices display destination IDs and states. Multiple source workflows cannot target one destination. All state pointers, prompts and project defaults follow the chosen IDs. Structure mismatches refuse replacement while preserving existing target states for scoped context. Label records preserve colors on creation; existing labels and project defaults stay unchanged.
+
+Preview and apply share one planner and ordinary validators. Edits invalidate the browser preview. Whole-library transfer remains best effort, with per-entry failures; it does not offer the separately specified workflow-package atomic install guarantee. Raw JSON envelope decoding rejects duplicate keys and invalid UTF-8 before conversion to objects. The request is bounded to 32 MiB, and its document independently to 5 MiB.
