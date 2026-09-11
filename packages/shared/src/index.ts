@@ -8,4 +8,5 @@ export * from './client.js';
 export * from './schedule.js';
 export * from './paginate.js';
 export * from './routing.js';
+export * from './issue-transfer.js';
 export * from './library/index.js';

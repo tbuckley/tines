@@ -4,8 +4,10 @@
 		EffectiveContext,
 		IssueTransferPreview,
 		IssueTransferResult,
-		Project
+		Project,
+		TransferConflictParticipant
 	} from '@tines/shared';
+	import { deriveTransferConflictDeltas } from '@tines/shared';
 	import { tick } from 'svelte';
 	import { api } from '$lib/api';
 	import Modal from '$lib/components/Modal.svelte';
@@ -141,6 +143,19 @@
 			{ label: 'Before', routing: value.routing.before },
 			{ label: 'After', routing: value.routing.after }
 		] satisfies { label: string; routing: DispatchExplainer | null }[];
+
+	const conflictDeltas = $derived(
+		preview ? deriveTransferConflictDeltas(preview.context.before, preview.context.after) : []
+	);
+
+	const conflictParticipants = (participants: TransferConflictParticipant[]) =>
+		participants
+			.map((participant) =>
+				participant.name && participant.scope_label
+					? `${participant.name} (${participant.scope_label})`
+					: participant.item_id
+			)
+			.join(', ');
 
 	function itemContent(context: EffectiveContext, itemId: string): string[] {
 		const prompt = context.prompt.parts.find((item) => item.item_id === itemId);
@@ -298,14 +313,26 @@
 									</p>
 								{/each}
 							{/each}
-							{#each side.context.conflicts as conflict (conflict.dir)}
-								<p class="text-xs wrap-anywhere">
-									Checkout conflict at “{conflict.dir}”: {conflict.item_ids.join(', ')}
-								</p>
-							{/each}
 						</div>
 					{/each}
 				</div>
+			</section>
+
+			<section class="space-y-1">
+				<h4 class="font-medium">Repository checkout conflicts</h4>
+				{#if conflictDeltas.length === 0}
+					<p class="text-muted-foreground text-xs">None.</p>
+				{:else}
+					<ul class="space-y-2">
+						{#each conflictDeltas as delta (delta.key + delta.change)}
+							<li class="min-w-0 text-xs wrap-anywhere" data-testid="transfer-conflict-row">
+								<p class="font-medium capitalize">{delta.change} — {delta.dir}</p>
+								{#if delta.before.length}<p>Before: {conflictParticipants(delta.before)}</p>{/if}
+								{#if delta.after.length}<p>After: {conflictParticipants(delta.after)}</p>{/if}
+							</li>
+						{/each}
+					</ul>
+				{/if}
 			</section>
 
 			<section class="space-y-2">
@@ -323,10 +350,18 @@
 											.routing.pin.tier ?? 'default'}
 									</p>{/if}
 								{#each side.routing.checks as check (check.name)}
-									<p class="text-xs">
-										<strong>{check.ok ? 'Pass' : 'Failed'} {check.name}:</strong>
-										{check.detail}
-									</p>
+									<div class="min-w-0 text-xs wrap-anywhere">
+										<p>
+											<strong>{check.ok ? 'Pass' : 'Failed'} {check.name}:</strong>
+											{check.detail}
+										</p>
+										{#if check.action?.href}
+											<a class="underline" href={check.action.href}>{check.action.label}</a>
+										{:else if check.action?.cli}
+											<code class="block wrap-anywhere whitespace-pre-wrap">{check.action.cli}</code
+											>
+										{/if}
+									</div>
 								{/each}
 								{#if side.routing.matched_rule}<p class="text-xs">
 										Matched rule: {side.routing.matched_rule.scope_label}
