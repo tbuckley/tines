@@ -54,6 +54,7 @@ import {
 import { artifactTypeOf } from './artifacts';
 import { assertScopeWritable } from './archive';
 import { eventInsert } from './events';
+import { substringMatch } from './search';
 import {
 	resolveScope,
 	scopeLabel,
@@ -357,7 +358,7 @@ export interface ContextItemFilters {
 	issue?: string;
 	/** Label id or name. */
 	label?: string;
-	/** Name/description substring search. */
+	/** Literal name/description substring search, case-insensitive for ASCII. */
 	q?: string;
 	/** Restrict to items whose scope sets only the given dimensions. */
 	exact?: boolean;
@@ -455,11 +456,12 @@ export async function listContextItems(
 		}
 	}
 	if (filters.q) {
-		// Plain substring search; % and _ act as wildcards, which is harmless
-		// (and occasionally useful) for a search box.
-		const like = `%${filters.q}%`;
+		const term = filters.q;
 		q = q.where((eb) =>
-			eb.or([eb('context_item.name', 'like', like), eb('context_item.description', 'like', like)])
+			eb.or([
+				substringMatch(eb.ref('context_item.name'), term),
+				substringMatch(eb.ref('context_item.description'), term)
+			])
 		);
 	}
 	if (page.cursor) {

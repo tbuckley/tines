@@ -167,6 +167,40 @@ describe('listIssues search', () => {
 		expect(items.map((i) => i.id).sort()).toEqual([ids.byTitle, ids.done, ids.elsewhere].sort());
 	});
 
+	it('matches complete long and multibyte substrings without truncating or chunking', async () => {
+		const long = 'a'.repeat(49) + 'needle' + 'b'.repeat(145);
+		const japanese = 'あ'.repeat(49);
+		const longTitle = addIssue(t, { title: `prefix ${long} suffix` });
+		const longDescription = addIssue(t, { title: 'Long description', description: long });
+		const multibyte = addIssue(t, { title: japanese });
+		addIssue(t, { title: `${long.slice(0, 48)}x${long.slice(49)}` });
+		addIssue(t, { title: `${long.slice(100)} -- ${long.slice(0, 100)}` });
+
+		expect((await search({ q: long })).items.map((i) => i.id).sort()).toEqual(
+			[longTitle, longDescription].sort()
+		);
+		expect((await search({ q: japanese })).items.map((i) => i.id)).toEqual([multibyte]);
+	});
+
+	it('treats LIKE and SQL syntax characters literally', async () => {
+		const literal = addIssue(t, { title: `literal % _ \\ [x] O'Reilly -- drop table` });
+		addIssue(t, { title: 'ordinary wildcard decoy' });
+		for (const term of ['%', '_', '\\', '[x]', "O'Reilly -- drop table"]) {
+			expect(
+				(await search({ q: term })).items.map((i) => i.id),
+				term
+			).toEqual([literal]);
+		}
+	});
+
+	it('keeps SQLite ASCII-only case folding and treats empty q as absent', async () => {
+		const upperUnicode = addIssue(t, { title: 'Ärger' });
+		const lowerUnicode = addIssue(t, { title: 'ärger' });
+		expect((await search({ q: 'ÄRGER' })).items.map((i) => i.id)).toEqual([upperUnicode]);
+		expect((await search({ q: 'ärger' })).items.map((i) => i.id)).toEqual([lowerUnicode]);
+		expect((await search({ q: '' })).items).toHaveLength(7);
+	});
+
 	it('returns nothing when no issue matches', async () => {
 		expect((await search({ q: 'zzz' })).items).toEqual([]);
 	});
@@ -236,6 +270,16 @@ describe('countIssuesByCategory', () => {
 		expect(
 			await countIssuesByCategory(t.db, USER, { category: 'done', hideDone: true })
 		).toMatchObject({ active: 3, done: 1 });
+	});
+
+	it('uses literal long search semantics for category counts', async () => {
+		const term = `%_${'x'.repeat(60)}`;
+		addIssue(t, { title: term });
+		addIssue(t, { title: term, state: CLOSED });
+		expect(await countIssuesByCategory(t.db, USER, { q: term })).toMatchObject({
+			active: 1,
+			done: 1
+		});
 	});
 });
 

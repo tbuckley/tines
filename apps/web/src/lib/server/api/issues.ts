@@ -55,6 +55,7 @@ import { issueLabelInserts, labelInserts, resolveOrCreateLabels } from './labels
 import { runQuery, serializeRun } from './runs';
 import { requireTier } from './runners';
 import { getSchedule, prepareSchedule, scheduleInsertQueries } from './schedules';
+import { substringMatch } from './search';
 import { loadWorkflow, loadWorkflows } from './workflows';
 import { nextIssueNumber } from '../issue-address';
 
@@ -319,7 +320,7 @@ export interface IssueListFilters {
 	ready?: boolean;
 	/** Restrict to one project id (the nested per-project route). */
 	projectId?: string;
-	/** Title/description substring search. */
+	/** Literal title/description substring search, case-insensitive for ASCII. */
 	q?: string;
 	/** Label names or ids; every one must be present (AND). */
 	labels?: string[];
@@ -401,11 +402,12 @@ function applyScopeFilters(q: IssueQuery, userId: string, filters: IssueListFilt
 		);
 	}
 	if (filters.q) {
-		// Plain substring search; % and _ act as wildcards, which is harmless
-		// (and occasionally useful) for a search box.
-		const like = `%${filters.q}%`;
+		const term = filters.q;
 		q = q.where((eb) =>
-			eb.or([eb('issue.title', 'like', like), eb('issue.description', 'like', like)])
+			eb.or([
+				substringMatch(eb.ref('issue.title'), term),
+				substringMatch(eb.ref('issue.description'), term)
+			])
 		);
 	}
 	return q;
