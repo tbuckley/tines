@@ -1,6 +1,14 @@
 import { json } from '@sveltejs/kit';
 import type { AgentRun, ListResponse, UsagePendingRun } from '@tines/shared';
-import { api, apiContext, ApiFail, encodeCursor, readPage, type Page } from '$lib/server/api/core';
+import {
+	api,
+	apiContext,
+	ApiFail,
+	encodeCursor,
+	notFound,
+	readPage,
+	type Page
+} from '$lib/server/api/core';
 import { listRuns } from '$lib/server/api/runs';
 import type { RequestHandler } from './$types';
 
@@ -74,7 +82,11 @@ export const GET: RequestHandler = api(async (event) => {
 		throw new ApiFail(422, 'invalid_field', 'population requires from and to');
 	const fromMs = from ? Date.parse(from) : undefined;
 	const toMs = to ? Date.parse(to) : undefined;
+	const explicitOffset =
+		/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?(?:Z|[+-]\d{2}:\d{2})$/;
 	if (
+		(from !== null && !explicitOffset.test(from)) ||
+		(to !== null && !explicitOffset.test(to)) ||
 		(fromMs !== undefined && !Number.isFinite(fromMs)) ||
 		(toMs !== undefined && !Number.isFinite(toMs))
 	)
@@ -101,6 +113,56 @@ export const GET: RequestHandler = api(async (event) => {
 		throw new ApiFail(422, 'invalid_field', 'accounting_status requires finalized population');
 	if (params.has('state') && !params.has('workflow'))
 		throw new ApiFail(422, 'invalid_field', 'state requires workflow qualification');
+	const tier = params.get('tier');
+	if (tier && !['smartest', 'balanced', 'cheapest', 'unknown'].includes(tier))
+		throw new ApiFail(422, 'invalid_field', 'Invalid tier', { field: 'tier' });
+	const owned = async (
+		table: 'project' | 'runner' | 'workflow',
+		id: string | null,
+		allowBuiltIn = false
+	) => {
+		if (!id || id === 'unknown') return;
+		const row = await db
+			.selectFrom(table)
+			.select('id')
+			.where('id', '=', id)
+			.where((eb) =>
+				allowBuiltIn
+					? eb.or([eb('user_id', '=', actor.userId), eb('user_id', 'is', null)])
+					: eb('user_id', '=', actor.userId)
+			)
+			.executeTakeFirst();
+		if (!row) throw notFound();
+	};
+	await owned('project', params.get('project'));
+	await owned('runner', params.get('runner'));
+	await owned('workflow', params.get('workflow'), true);
+	const issue = params.get('issue');
+	if (issue) {
+		const row = await db
+			.selectFrom('issue')
+			.innerJoin('project', 'project.id', 'issue.project_id')
+			.select('issue.id')
+			.where('issue.id', '=', issue)
+			.where('project.user_id', '=', actor.userId)
+			.executeTakeFirst();
+		if (!row) throw notFound();
+	}
+	const state = params.get('state');
+	const workflow = params.get('workflow');
+	if (state && state !== 'unknown') {
+		const row = await db
+			.selectFrom('workflow_state')
+			.innerJoin('workflow', 'workflow.id', 'workflow_state.workflow_id')
+			.select('workflow_state.id')
+			.where('workflow_state.id', '=', state)
+			.where('workflow_state.workflow_id', '=', workflow!)
+			.where((eb) =>
+				eb.or([eb('workflow.user_id', '=', actor.userId), eb('workflow.user_id', 'is', null)])
+			)
+			.executeTakeFirst();
+		if (!row) throw notFound();
+	}
 	const filterIdentity = JSON.stringify(
 		['issue', 'runner', 'project', 'workflow', 'state', 'tier', 'outcome', 'accounting_status'].map(
 			(name) => [name, params.get(name)]

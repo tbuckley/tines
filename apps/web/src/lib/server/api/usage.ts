@@ -216,8 +216,20 @@ export async function getUsage(
 	if (filters.project && filters.project !== 'unknown')
 		pendingQ = pendingQ.where('project.id', '=', filters.project);
 	if (filters.project === 'unknown') pendingQ = pendingQ.where('project.id', 'is', null);
-	const pendingRows = await scanAll(pendingQ, 'agent_run.created_at');
 	const pendingFilters = { ...filters, outcome: undefined, accounting_status: undefined };
+	const pendingScope = await pendingQ
+		.clearSelect()
+		.select(({ fn }) => fn.countAll<number>().as('count'))
+		.executeTakeFirstOrThrow();
+	const hasPendingAnalyticalFilters = Boolean(
+		pendingFilters.workflow || pendingFilters.state || pendingFilters.runner || pendingFilters.tier
+	);
+	const pendingRows = hasPendingAnalyticalFilters
+		? await scanAll(pendingQ, 'agent_run.created_at')
+		: [];
+	const pendingMatchingCount = hasPendingAnalyticalFilters
+		? pendingRows.filter((r) => matches(r, { ...pendingFilters, project: undefined }, false)).length
+		: Number(pendingScope.count);
 	const workflowOptions = new Map<string | null, UsageDimension>();
 	for (const row of scopeRows)
 		workflowOptions.set(dimensions(row).workflow.id, dimensions(row).workflow);
@@ -232,10 +244,8 @@ export async function getUsage(
 		groups,
 		workflow_options: [...workflowOptions.values()],
 		pending: {
-			scope_count: pendingRows.length,
-			matching_count: pendingRows.filter((r) =>
-				matches(r, { ...pendingFilters, project: undefined }, false)
-			).length,
+			scope_count: Number(pendingScope.count),
+			matching_count: pendingMatchingCount,
 			basis: 'created_before_cutoff_not_ended_before_cutoff',
 			unapplied_filters: [
 				...(filters.outcome ? ['outcome' as const] : []),

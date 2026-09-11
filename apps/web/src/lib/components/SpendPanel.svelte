@@ -23,9 +23,8 @@
 		error = $state<string | null>(null);
 	let requestId = 0;
 	let expanded = $state(new Set<string>());
-	let customFrom = $state(''),
-		customTo = $state('');
-	let customInitialized = $state(false);
+	let customFrom = $state(page.url.searchParams.get('spend_from') ?? ''),
+		customTo = $state(page.url.searchParams.get('spend_to') ?? '');
 	const selectedProject = $derived(page.url.searchParams.get('spend_project') ?? focusId ?? 'all');
 	const window = $derived(
 		(page.url.searchParams.get('spend_window') ?? '7d') as UsageWindow | 'custom'
@@ -81,11 +80,6 @@
 	}
 
 	$effect(() => {
-		if (window === 'custom' && !customInitialized) {
-			customFrom = page.url.searchParams.get('spend_from') ?? '';
-			customTo = page.url.searchParams.get('spend_to') ?? '';
-			customInitialized = true;
-		}
 		const signature = [
 			selectedProject,
 			window,
