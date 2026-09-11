@@ -226,7 +226,7 @@ export function validateTimezone(tz: string): string {
 	}
 }
 
-interface WallTime {
+export interface WallTime {
 	year: number;
 	month: number; // 1-12
 	day: number; // 1-31
@@ -255,7 +255,7 @@ function tzFormatter(tz: string): Intl.DateTimeFormat {
 }
 
 /** The wall-clock reading of a UTC instant in tz (seconds truncated). */
-function wallTimeOf(utcMs: number, tz: string): WallTime {
+export function wallTimeOf(utcMs: number, tz: string): WallTime {
 	const parts: Record<string, number> = {};
 	for (const p of tzFormatter(tz).formatToParts(utcMs)) {
 		if (p.type !== 'literal') parts[p.type] = Number.parseInt(p.value, 10);
@@ -271,7 +271,7 @@ function wallTimeOf(utcMs: number, tz: string): WallTime {
 }
 
 /** The instants (0, 1, or 2 of them, ascending) whose wall clock in tz reads w. */
-function instantsOfWallTime(w: WallTime, tz: string): number[] {
+export function instantsOfWallTime(w: WallTime, tz: string): number[] {
 	const asUtc = Date.UTC(w.year, w.month - 1, w.day, w.hour, w.minute);
 	// Probe the UTC offset a day either side of the target: any DST transition
 	// near it yields two distinct offsets, giving both fall-back candidates.

@@ -171,7 +171,10 @@ describe('atomic workflow package install', () => {
 		expect(t.all('SELECT enabled,run_count FROM scheduled_task')).toEqual([
 			{ enabled: 0, run_count: 0 }
 		]);
-		const rule = t.all("SELECT workflow_state_id,targets FROM routing_rule WHERE id!='global'")[0];
+		const schedule = t.all('SELECT id,project_id,name FROM scheduled_task')[0];
+		const rule = t.all(
+			"SELECT id,workflow_state_id,targets FROM routing_rule WHERE id!='global'"
+		)[0];
 		expect(
 			t.all('SELECT id FROM workflow_state').some((row) => row.id === rule.workflow_state_id)
 		).toBe(true);
@@ -180,8 +183,20 @@ describe('atomic workflow package install', () => {
 			beforeDefault
 		);
 		expect(t.all('SELECT * FROM issue')).toEqual([]);
-		expect(receipt.objects.some((object) => object.kind === 'schedule')).toBe(true);
-		expect(receipt.objects.some((object) => object.kind === 'routing')).toBe(true);
+		expect(receipt.objects.find((object) => object.kind === 'schedule')).toEqual({
+			kind: 'schedule',
+			local_id: 'schedule:1',
+			id: schedule.id,
+			name: schedule.name,
+			href: `/projects/${schedule.project_id}?schedule=${schedule.id}`
+		});
+		expect(receipt.objects.find((object) => object.kind === 'routing')).toEqual({
+			kind: 'routing',
+			local_id: 'routing:1',
+			id: rule.id,
+			name: 'balanced',
+			href: '/agents#routing'
+		});
 	});
 
 	it('rechecks the destination inside the transaction and leaves no partial rows on a race', async () => {
@@ -421,5 +436,27 @@ describe('atomic workflow package install', () => {
 		expect(raced.id).toBe(duplicate.preview.plan_id);
 		expect(duplicate.t.all('SELECT * FROM library_install')).toHaveLength(1);
 		expect(duplicate.t.all('SELECT * FROM workflow WHERE user_id IS NOT NULL')).toHaveLength(2);
+	});
+
+	it('reports an unknown outcome when both the atomic transport and receipt recovery fail', async () => {
+		const f = await fixture();
+		const receiptFailure = vi.spyOn(f.t.db, 'selectFrom');
+		const unavailable = vi.fn(async () => {
+			receiptFailure.mockImplementation(() => {
+				throw new TypeError('receipt database unavailable');
+			});
+			throw new TypeError('database transport unavailable');
+		});
+		const env = {
+			...f.t.env,
+			...signing,
+			DB: { ...f.t.env.DB, batch: unavailable }
+		} as unknown as Env;
+		await expect(installWorkflowPackage(f.t.db, env, actor, f.request)).rejects.toMatchObject({
+			status: 503,
+			code: 'install_outcome_unknown'
+		});
+		expect(unavailable).toHaveBeenCalledOnce();
+		expect(receiptFailure).toHaveBeenCalled();
 	});
 });
