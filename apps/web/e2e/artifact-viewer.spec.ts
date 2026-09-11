@@ -49,7 +49,9 @@ test.beforeAll(async ({ playwright }) => {
 		['race-doc', 'VERSION ONE'],
 		['pending-doc', 'RETRIED CONTENT'],
 		['delayed-meta', 'STALE METADATA CONTENT'],
-		['fresh-doc', 'FRESH CONTENT']
+		['fresh-doc', 'FRESH CONTENT'],
+		['meta-reopen-success', 'METADATA VERSION ONE'],
+		['meta-reopen-failure', 'METADATA FAILURE CONTROL']
 	] as const) {
 		const put = await api.put(`/api/v1/issues/${issue.id}/artifacts/${name}`, {
 			type: 'text',
@@ -210,6 +212,49 @@ test('superseded metadata success and failure cannot replace a newer selection',
 		await expect(dialog.getByText('STALE METADATA CONTENT')).toHaveCount(0);
 		await expect(dialog.getByText('Couldn’t load this artifact — close and retry.')).toHaveCount(0);
 		await page.unroute(`**/artifacts/delayed-meta`);
+	}
+});
+
+test('reopen owns delayed metadata success and failure for the same selection', async ({
+	page
+}) => {
+	for (const outcome of ['success', 'failure'] as const) {
+		const name = `meta-reopen-${outcome}`;
+		const first = barrier();
+		const second = barrier();
+		let requests = 0;
+		const detailUrl = `**/api/v1/issues/${issue.id}/artifacts/${name}`;
+		await page.route(detailUrl, async (route) => {
+			requests++;
+			const response = outcome === 'success' || requests === 2 ? await route.fetch() : null;
+			await (requests === 1 ? first.promise : second.promise);
+			if (response) await route.fulfill({ response });
+			else await route.abort('failed');
+		});
+
+		await gotoHydrated(page, issueUrl());
+		const dialog = page.getByRole('dialog', { name: 'Artifact viewer' });
+		await openViewer(page.getByRole('button', { name: new RegExp(`^View ${name}`) }), dialog);
+		await expect.poll(() => requests).toBe(1);
+		if (outcome === 'success') {
+			const appended = await page.request.put(`/api/v1/issues/${issue.id}/artifacts/${name}`, {
+				headers: { authorization: `Bearer ${ALICE.apiKey}` },
+				data: { type: 'text', content: 'METADATA VERSION TWO', content_type: 'text/plain' }
+			});
+			expect(appended.status(), await appended.text()).toBe(200);
+		}
+		await dialog.getByRole('button', { name: 'Close' }).click();
+		await openViewer(page.getByRole('button', { name: new RegExp(`^View ${name}`) }), dialog);
+		await expect.poll(() => requests).toBe(2);
+		first.release();
+		await expect(dialog.getByText('Loading…')).toBeVisible();
+		await expect(dialog.getByText('Couldn’t load this artifact — close and retry.')).toHaveCount(0);
+		await expect(dialog.getByText('METADATA VERSION ONE')).toHaveCount(0);
+		second.release();
+		await expect(
+			dialog.getByText(outcome === 'success' ? 'METADATA VERSION TWO' : 'METADATA FAILURE CONTROL')
+		).toBeVisible();
+		await page.unroute(detailUrl);
 	}
 });
 
