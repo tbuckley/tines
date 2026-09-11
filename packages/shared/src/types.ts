@@ -2079,6 +2079,8 @@ export interface FinishRunRequest {
 	workspace_path?: string;
 	/** Whatever the harness reported (Claude Code JSON output, etc.). */
 	usage?: AgentRunUsage;
+	/** Codex invocation and JSONL measurement evidence; rates remain server-owned. */
+	pricing_evidence?: CodexPricingEvidenceV1;
 }
 
 /** One entry of a rule's ordered preference list, as stored/sent. */
@@ -2154,6 +2156,81 @@ export interface UpdateRoutingRuleRequest {
 // ---------------------------------------------------------------------------
 // Agent runs
 
+export interface CodexRawUsageV1 {
+	input_tokens?: number;
+	cached_input_tokens?: number;
+	cache_write_input_tokens?: number;
+	output_tokens?: number;
+}
+
+/** Bounded producer evidence for the Codex JSONL accounting contract. */
+export interface CodexPricingEvidenceV1 {
+	version: 1;
+	harness: 'codex';
+	model: string | null;
+	identity_source: 'launch_argument';
+	usage_scope: 'thread_total';
+	session_mode: 'cold' | 'resumed';
+	normalization: 'codex-jsonl-v1';
+	raw_usage?: CodexRawUsageV1;
+	model_rerouted: boolean;
+	measurement_status:
+		'complete' | 'missing' | 'invalid' | 'nonmonotonic' | 'incomplete_attempt' | 'multiple_threads';
+	terminal_snapshots: number;
+	daemon_version?: string;
+}
+
+export type RunPricingReason =
+	| 'pricing_evidence_missing'
+	| 'invalid_pricing_evidence'
+	| 'model_missing'
+	| 'model_mismatch'
+	| 'model_rerouted'
+	| 'unsupported_model'
+	| 'missing_rate'
+	| 'missing_token_dimension'
+	| 'invalid_token_dimension'
+	| 'long_context_band_unknown'
+	| 'attempt_scope_unknown'
+	| 'incomplete_attempt'
+	| 'nonmonotonic_usage'
+	| 'multiple_threads'
+	| 'cost_out_of_range';
+
+export interface RunPricingBasisV1 {
+	calculation_version: 'tokens-times-usd-per-million-v1';
+	provider: 'openai';
+	model: string;
+	model_identity: 'requested_launch_no_observed_reroute';
+	usage_scope: 'attempt';
+	plan: 'api_standard';
+	context_band: 'short' | 'published';
+	rate_id: string;
+	rate_version: number;
+	rate_adopted_at: number;
+	rate_valid_to: number | null;
+	rate_selected_at: number;
+	source_url: string;
+	source_checked_at: string;
+	source_effective_at: string | null;
+	unit_tokens: 1000000;
+	rates: Record<
+		'input_tokens' | 'cache_read_tokens' | 'cache_write_tokens' | 'output_tokens',
+		string | null
+	>;
+	cost_usd_exact: string;
+}
+
+export type RunPricingV1 = {
+	version: 1;
+	evidence?: CodexPricingEvidenceV1;
+	evaluated_at: number;
+} & (
+	| { status: 'calculated'; basis: RunPricingBasisV1 }
+	| { status: 'unpriced'; reason: RunPricingReason }
+	| { status: 'provider_authoritative' }
+);
+
 /** Per-run usage record; fields land as providers report them. */
 export interface AgentRunUsage {
 	input_tokens?: number;
@@ -2162,6 +2239,8 @@ export interface AgentRunUsage {
 	cache_write_tokens?: number;
 	cost_usd?: number;
 	cost_source?: 'provider' | 'priced' | 'none';
+	/** Server-owned immutable pricing decision and its reproducing evidence. */
+	pricing?: RunPricingV1;
 }
 
 /** One attempt at one issue by one runner. */
@@ -2268,14 +2347,35 @@ export function runDurationLabel(
 export function runCostLabel(run: Pick<AgentRun, 'usage'>): string | null {
 	const usage = run.usage;
 	if (!usage) return null;
-	if (usage.cost_usd !== undefined) return `$${usage.cost_usd.toFixed(2)}`;
-	if (usage.cost_source === 'none') return 'unreported';
+	if (usage.cost_usd !== undefined) {
+		const dollars =
+			usage.cost_usd === 0
+				? '$0'
+				: usage.cost_usd < 0.01
+					? '<$0.01'
+					: `$${usage.cost_usd.toFixed(2)}`;
+		const source =
+			usage.cost_source === 'provider'
+				? 'Reported'
+				: usage.cost_source === 'priced'
+					? 'Estimated'
+					: 'Recorded';
+		return `${dollars} ${source}`;
+	}
+	if (usage.pricing?.status === 'unpriced') return 'Unpriced';
+	if (usage.cost_source === 'none') return 'Unreported';
+	const measured = [
+		usage.input_tokens,
+		usage.output_tokens,
+		usage.cache_read_tokens,
+		usage.cache_write_tokens
+	].some((value) => value !== undefined);
 	const tokens =
 		(usage.input_tokens ?? 0) +
 		(usage.output_tokens ?? 0) +
 		(usage.cache_read_tokens ?? 0) +
 		(usage.cache_write_tokens ?? 0);
-	return tokens > 0 ? `${tokens.toLocaleString()} tok` : null;
+	return tokens > 0 ? `${tokens.toLocaleString()} tok` : measured ? 'Unpriced' : null;
 }
 
 /** Whether a run still holds its issue's exclusive claim (and counts toward caps). */

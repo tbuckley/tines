@@ -1,8 +1,9 @@
 <script lang="ts">
 	import type { AgentRun, RunEndOutcome } from '@tines/shared';
-	import { isActiveRun, runCostLabel, runDurationLabel } from '@tines/shared';
+	import { isActiveRun, runDurationLabel } from '@tines/shared';
 	import { slide } from 'svelte/transition';
 	import RunLogViewer from '$lib/components/RunLogViewer.svelte';
+	import RunCostCell from '$lib/components/RunCostCell.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { prefersReducedMotion, relativeTime, runStatusClass } from '$lib/format';
 
@@ -30,8 +31,6 @@
 
 	/** Log-tail viewer expansion — nothing outside the row reads it. */
 	let expanded = $state(false);
-
-	const cost = $derived(runCostLabel(run));
 
 	/** What each judgment meant for the issue's attempt budget. */
 	function outcomeTitle(outcome: RunEndOutcome): string {
@@ -79,9 +78,7 @@
 			resumed run {run.resumed_from_run_id}
 		</span>
 	{/if}
-	{#if cost}
-		<span class="text-muted-foreground text-xs">{cost}</span>
-	{/if}
+	<RunCostCell {run} />
 	{#if run.provider_session_id}
 		<span class="text-muted-foreground max-w-full font-mono text-xs break-all select-text">
 			session: {run.provider_session_id}

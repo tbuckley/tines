@@ -184,7 +184,12 @@ function fakeCodex(dir: string): string {
 	});
 	const completed = JSON.stringify({
 		type: 'turn.completed',
-		usage: { input_tokens: 1000, cached_input_tokens: 600, output_tokens: 100 }
+		usage: {
+			input_tokens: 1000,
+			cached_input_tokens: 600,
+			cache_write_input_tokens: 100,
+			output_tokens: 100
+		}
 	});
 	writeFileSync(
 		join(bin, 'codex'),
@@ -456,11 +461,22 @@ describe('the run log a local run leaves behind', () => {
 
 		child = startDaemon(port, configDir, { fakeCodexDir: fakeCodex(configDir) });
 		const harvest = await done;
-		expect(harvest.finish).toEqual({
+		expect(harvest.finish).toMatchObject({
 			workspace_path: expect.any(String),
 			status: 'completed',
-			usage: { input_tokens: 400, cache_read_tokens: 600, output_tokens: 100 },
-			provider_session_id: 'thread_local'
+			usage: {
+				input_tokens: 300,
+				cache_read_tokens: 600,
+				cache_write_tokens: 100,
+				output_tokens: 100
+			},
+			provider_session_id: 'thread_local',
+			pricing_evidence: {
+				model: 'claude-sonnet-5',
+				measurement_status: 'complete',
+				terminal_snapshots: 1,
+				daemon_version: '0.0.1'
+			}
 		});
 		expect(harvest.log).toContain('[agent] Codex finished.');
 		expect(harvest.log).not.toContain('"thread.started"');
