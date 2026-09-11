@@ -155,6 +155,36 @@ describe('CodexStreamRenderer', () => {
 		expect(result.summary.pricingEvidence?.measurement_status).toBe('nonmonotonic');
 	});
 
+	it('accepts equal derived uncached input when cumulative cache and output counters increase', () => {
+		const result = collect([
+			{
+				type: 'turn.completed',
+				usage: {
+					input_tokens: 10,
+					cached_input_tokens: 2,
+					cache_write_input_tokens: 1,
+					output_tokens: 4
+				}
+			},
+			{
+				type: 'turn.completed',
+				usage: {
+					input_tokens: 12,
+					cached_input_tokens: 4,
+					cache_write_input_tokens: 1,
+					output_tokens: 5
+				}
+			}
+		]);
+		expect(result.summary.usage).toEqual({
+			input_tokens: 7,
+			cache_read_tokens: 4,
+			cache_write_tokens: 1,
+			output_tokens: 5
+		});
+		expect(result.summary.pricingEvidence?.measurement_status).toBe('complete');
+	});
+
 	it('only accepts a structured error item as reroute evidence', () => {
 		const result = collect([
 			{ type: 'item.completed', item: { type: 'agent_message', text: 'model rerouted: prose' } },
