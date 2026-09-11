@@ -120,6 +120,22 @@ const preview = {
 					url: 'https://example.test/docs.git',
 					branch: null,
 					dir: 'app'
+				},
+				{
+					item_id: 'ctx_retained_a',
+					name: 'retained-api',
+					scope: issueScope,
+					url: 'https://example.test/retained-api.git',
+					branch: null,
+					dir: 'retained-checkout'
+				},
+				{
+					item_id: 'ctx_retained_b',
+					name: 'retained-worker',
+					scope: issueScope,
+					url: 'https://example.test/retained-worker.git',
+					branch: null,
+					dir: 'retained-checkout'
 				}
 			],
 			overridden: [
@@ -132,7 +148,10 @@ const preview = {
 					repo: { url: 'https://example.test/source.git', branch: null, dir: 'app' }
 				}
 			],
-			conflicts: [{ dir: 'app', item_ids: ['ctx_issue_repo', 'ctx_docs_repo'] }]
+			conflicts: [
+				{ dir: 'app', item_ids: ['ctx_issue_repo', 'ctx_docs_repo'] },
+				{ dir: 'retained-checkout', item_ids: ['ctx_retained_b', 'ctx_retained_a'] }
+			]
 		},
 		after: {
 			prompt: {
@@ -188,6 +207,22 @@ const preview = {
 					url: 'https://example.test/ops.git',
 					branch: null,
 					dir: 'app'
+				},
+				{
+					item_id: 'ctx_retained_a',
+					name: 'retained-api',
+					scope: issueScope,
+					url: 'https://example.test/retained-api.git',
+					branch: null,
+					dir: 'retained-checkout'
+				},
+				{
+					item_id: 'ctx_retained_b',
+					name: 'retained-worker',
+					scope: issueScope,
+					url: 'https://example.test/retained-worker.git',
+					branch: null,
+					dir: 'retained-checkout'
 				}
 			],
 			overridden: [
@@ -200,7 +235,10 @@ const preview = {
 					repo: { url: 'https://example.test/destination.git', branch: 'main', dir: 'app' }
 				}
 			],
-			conflicts: [{ dir: 'app', item_ids: ['ctx_issue_repo', 'ctx_ops_repo'] }]
+			conflicts: [
+				{ dir: 'app', item_ids: ['ctx_issue_repo', 'ctx_ops_repo'] },
+				{ dir: 'retained-checkout', item_ids: ['ctx_retained_a', 'ctx_retained_b'] }
+			]
 		},
 		changes: [
 			{
@@ -295,7 +333,11 @@ const preview = {
 					name: 'routed',
 					ok: false,
 					detail: 'No routing rule matches this issue.',
-					action: { label: 'Add a rule', cli: 'tines routing-rules create' }
+					action: {
+						label: 'Add a rule',
+						href: '/routing',
+						cli: 'tines routing set --project "demo" --runner local'
+					}
 				}
 			],
 			pin: { runner_id: 'rnr_missing', runner_name: null, tier: 'premium' },
@@ -325,7 +367,17 @@ const preview = {
 		after: {
 			eligible: false,
 			verdict: 'A matching rule is tied.',
-			checks: [{ name: 'routed', ok: false, detail: 'Two equally specific routing rules match.' }],
+			checks: [
+				{
+					name: 'routed',
+					ok: false,
+					detail: 'Two equally specific routing rules match.',
+					action: {
+						label: 'Choose a rule',
+						cli: 'tines routing set --project "platform" --runner local'
+					}
+				}
+			],
 			pin: { runner_id: 'rnr_missing', runner_name: null, tier: 'premium' },
 			matched_rule: null,
 			runner_rule: { rule_id: 'rrl_runner', scope_label: 'project platform' },
@@ -504,8 +556,16 @@ describe('tines issues transfer', () => {
 		expect(res.stdout).toContain('https://example.test/source.git');
 		expect(res.stdout).toContain('https://example.test/destination.git');
 		expect(res.stdout).toContain('Repository checkout conflicts:');
+		expect(res.stdout).toContain('Retained — retained-checkout');
+		expect(res.stdout).toContain('retained-api (issue demo/4), retained-worker (issue demo/4)');
+		expect(res.stdout).toContain('Resolved — app');
+		expect(res.stdout).toContain('docs (project demo), app (issue demo/4)');
+		expect(res.stdout).toContain('Introduced — app');
+		expect(res.stdout).toContain('app (issue demo/4), ops (project platform)');
 		expect(res.stdout).toContain('Automation is off.');
 		expect(res.stdout).toContain('No routing rule matches this issue.');
+		expect(res.stdout).toContain('fix: tines routing set --project "demo" --runner local');
+		expect(res.stdout).toContain('fix: tines routing set --project "platform" --runner local');
 		expect(res.stdout).toContain('tied rule label urgent');
 		expect(res.stdout).toContain('Unavailable runner');
 		expect(res.stdout).toContain('tier override premium');
@@ -533,20 +593,53 @@ describe('tines issues transfer', () => {
 		expect(parsed.old_ref.ref).toBe('demo/4');
 	}, 60_000);
 
-	it('prints one reviewed item in full', async () => {
-		const res = await cli([
-			'issues',
-			'transfer',
-			'demo/4',
-			'--project',
-			'platform',
-			'--inspect',
-			'0'
-		]);
-		expect(res.code).toBe(0);
-		expect(res.stdout).toContain('Retained instructions');
-		expect(posts()).toHaveLength(0);
-	}, 60_000);
+	for (const inspected of [
+		{
+			index: '0',
+			expected: ['Retained instructions']
+		},
+		{
+			index: '1',
+			expected: [
+				'release-skill (skill, issue demo/4)',
+				'--- SKILL.md\nRelease safely',
+				'--- checklist.md\nVerify rollback'
+			]
+		},
+		{
+			index: '3',
+			expected: [
+				'app (overridden repo candidate, project demo)',
+				'https://example.test/source.git',
+				'branch repository default branch',
+				'directory app'
+			]
+		},
+		{
+			index: '4',
+			expected: [
+				'app (overridden repo candidate, project platform)',
+				'https://example.test/destination.git',
+				'branch main',
+				'directory app'
+			]
+		}
+	] as const) {
+		it(`prints reviewed item ${inspected.index} in full`, async () => {
+			const res = await cli([
+				'issues',
+				'transfer',
+				'demo/4',
+				'--project',
+				'platform',
+				'--inspect',
+				inspected.index
+			]);
+			expect(res.code).toBe(0);
+			for (const expected of inspected.expected) expect(res.stdout).toContain(expected);
+			expect(posts()).toHaveLength(0);
+		}, 60_000);
+	}
 
 	it('refuses to commit noninteractively without --yes and writes nothing', async () => {
 		const res = await cli(['issues', 'transfer', 'demo/4', '--project', 'platform']);

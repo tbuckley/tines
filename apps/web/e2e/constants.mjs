@@ -186,6 +186,25 @@ export const MANAGED_SETTINGS = {
 	sessionToken: 'e2e-session-managed-settings'
 };
 
+/** Isolated real-D1 fixtures for project-transfer dispatch acceptance. */
+export const TRANSFER_RUNTIME = {
+	id: 'usr_e2e_transfer_runtime',
+	name: 'Transfer Runtime E2E',
+	email: 'transfer-runtime@e2e.test',
+	apiKey: 'tines_e2etransferruntime00000000000000000000000000',
+	apiKeyName: 'transfer-runtime-key',
+	sessionToken: 'e2e-session-transfer-runtime',
+	sourceId: 'prj_e2e_transfer_source',
+	sourceName: 'transfer-runtime-source',
+	destinationId: 'prj_e2e_transfer_destination',
+	destinationName: 'transfer-runtime-destination',
+	noopIssueId: 'iss_e2e_transfer_noop',
+	claimIssueId: 'iss_e2e_transfer_claim',
+	runnerId: 'rnr_e2e_transfer',
+	runnerName: 'transfer-runtime-local',
+	ruleId: 'rrl_e2e_transfer_destination'
+};
+
 /** Isolated 205-row population for issue-list pagination. */
 export const PAGINATION = {
 	user: {

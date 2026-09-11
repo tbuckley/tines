@@ -32,6 +32,7 @@ Commands:
   routing           Scoped routing rules: which runner takes which issues (most
                     specific scope wins)
   supervisor        The automation kill switch, quota policy, and attempt limit
+  usage [options]   Compare finalized run spend for a period
   events            Read the activity log
   help [command]    display help for command
 ",
@@ -1261,18 +1262,34 @@ Options:
 List runs, newest first
 
 Options:
-  -i, --issue <ref>    filter to one issue (<project>/<number>)
-  -r, --runner <name>  filter by runner name
-  --active             only runs holding a claim (assigned/launching/running)
-  --limit <n>          maximum items to return (page size under --all-pages)
-  --cursor <cursor>    resume from the next_cursor of a previous page
-  --all-pages          fetch every page, not just the first (slower on large
-                       lists)
-  -u, --url <url>      base URL of the Tines API (or set TINES_API_URL, or run
-                       \`tines login\`; default https://tines.tbuckley.dev)
-  --api-key <key>      API key (or set TINES_API_KEY, or run \`tines login\`)
-  --json               output the raw JSON response
-  -h, --help           display help for command
+  -i, --issue <ref>             filter to one issue (<project>/<number>)
+  -r, --runner <name>           filter by runner name
+  --active                      only runs holding a claim
+                                (assigned/launching/running)
+  --population <mode>           period evidence population (choices:
+                                "finalized", "pending")
+  --from <timestamp>            inclusive period start
+  --to <timestamp>              exclusive period cutoff
+  --project <name-or-id>        project, including archived
+  --workflow <name-or-id>       workflow
+  --state <id>                  starting state id
+  --tier <tier>                 model tier
+  --outcome <outcome>           recorded outcome (choices: "advanced",
+                                "stalled", "interrupted", "unknown")
+  --accounting-status <status>  usage accounting status (choices: "priced",
+                                "unpriced", "unreported")
+  --limit <n>                   maximum items to return (page size under
+                                --all-pages)
+  --cursor <cursor>             resume from the next_cursor of a previous page
+  --all-pages                   fetch every page, not just the first (slower on
+                                large lists)
+  -u, --url <url>               base URL of the Tines API (or set TINES_API_URL,
+                                or run \`tines login\`; default
+                                https://tines.tbuckley.dev)
+  --api-key <key>               API key (or set TINES_API_KEY, or run \`tines
+                                login\`)
+  --json                        output the raw JSON response
+  -h, --help                    display help for command
 ",
   "tines runs show": "Usage: tines runs show [options] <id>
 
@@ -1518,6 +1535,36 @@ Options:
   --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
   --json           output the raw JSON response
   -h, --help       display help for command
+",
+  "tines usage": "Usage: tines usage [options]
+
+Compare finalized run spend for a period
+
+Options:
+  --window <window>             today, 7d, or 30d (choices: "today", "7d",
+                                "30d")
+  --from <bound>                custom inclusive start (date or offset
+                                timestamp)
+  --to <bound>                  custom exclusive end (date or offset timestamp)
+  --project <name-or-id>        project scope (including archived), or unknown
+  --workflow <name-or-id>       workflow filter, or unknown
+  --state <id>                  starting state id (requires --workflow)
+  --runner <name-or-id>         runner filter, or unknown
+  --tier <tier>                 tier filter
+  --outcome <outcome>           recorded outcome (choices: "advanced",
+                                "stalled", "interrupted", "unknown")
+  --accounting-status <status>  price coverage (choices: "priced", "unpriced",
+                                "unreported")
+  --by <dimension>              group dimension (choices: "project", "workflow",
+                                "state", "outcome", "runner", "tier", default:
+                                "workflow")
+  -u, --url <url>               base URL of the Tines API (or set TINES_API_URL,
+                                or run \`tines login\`; default
+                                https://tines.tbuckley.dev)
+  --api-key <key>               API key (or set TINES_API_KEY, or run \`tines
+                                login\`)
+  --json                        output the raw JSON response
+  -h, --help                    display help for command
 ",
   "tines workflows": "Usage: tines workflows [options] [command]
 
