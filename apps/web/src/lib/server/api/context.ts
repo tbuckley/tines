@@ -40,7 +40,7 @@ import { insertValues, type QueryGuard } from './query-guard';
 import type { D1Result } from '@cloudflare/workers-types';
 import { sql, type CompiledQuery, type Kysely } from 'kysely';
 import { artifactKeyPrefix, getArtifactStore } from '$lib/server/artifact-store';
-import { newId, type Database } from '$lib/server/db';
+import { idChunks, newId, type Database } from '$lib/server/db';
 import {
 	ApiFail,
 	MAX_INHERITANCE_CHAIN,
@@ -304,12 +304,19 @@ export async function loadFiles(
 ): Promise<Map<string, ContextFile[]>> {
 	const map = new Map<string, ContextFile[]>();
 	if (itemIds.length === 0) return map;
-	const rows = await db
-		.selectFrom('context_item_file')
-		.select(['context_item_id', 'path', 'content'])
-		.where('context_item_id', 'in', itemIds)
-		.orderBy('path asc')
-		.execute();
+	const chunks = idChunks([...new Set(itemIds)]);
+	const rows = (
+		await Promise.all(
+			chunks.map((chunk) =>
+				db
+					.selectFrom('context_item_file')
+					.select(['context_item_id', 'path', 'content'])
+					.where('context_item_id', 'in', chunk)
+					.orderBy('path asc')
+					.execute()
+			)
+		)
+	).flat();
 	for (const row of rows) {
 		const list = map.get(row.context_item_id) ?? [];
 		list.push({ path: row.path, content: row.content });
