@@ -552,6 +552,64 @@ test.describe('schedules in the web UI', () => {
 		await context.close();
 	});
 
+	for (const refreshFailure of ['transport abort', 'HTTP error'] as const) {
+		test(`keeps the created issue receipt when refresh has a ${refreshFailure}`, async ({
+			browser
+		}) => {
+			const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+			await signIn(context, ALICE.sessionToken);
+			const page = await context.newPage();
+			await gotoHydrated(page, `/projects/${SCHED.projectId}`);
+
+			let postCount = 0;
+			page.on('request', (request) => {
+				if (
+					request.method() === 'POST' &&
+					new URL(request.url()).pathname === `/api/v1/schedules/${SCHED.plainId}/run`
+				)
+					postCount += 1;
+			});
+
+			let dataRequestCount = 0;
+			await page.route(`**/projects/${SCHED.projectId}/__data.json*`, async (route) => {
+				dataRequestCount += 1;
+				if (dataRequestCount > 1) return route.continue();
+				if (refreshFailure === 'transport abort') return route.abort('failed');
+				return route.fulfill({ status: 500, contentType: 'text/plain', body: 'refresh failed' });
+			});
+
+			const [createdResponse] = await Promise.all([
+				page.waitForResponse(
+					(response) =>
+						response.request().method() === 'POST' &&
+						new URL(response.url()).pathname === `/api/v1/schedules/${SCHED.plainId}/run`
+				),
+				page
+					.locator(`#schedule-${SCHED.plainId}`)
+					.getByRole('button', { name: `Run schedule ${SCHED.plainName} now` })
+					.click()
+			]);
+			expect(createdResponse.status()).toBe(201);
+			const created = (await createdResponse.json()) as IssueDetail;
+
+			const row = page.locator(`#schedule-${SCHED.plainId}`);
+			await expect(
+				row.getByRole('link', { name: `Created ${created.project_name}/#${created.number}` })
+			).toBeVisible();
+			await expect(row.getByRole('alert')).toHaveText(
+				'Issue created, but the list could not refresh. Reload the page to update it.'
+			);
+			expect(postCount).toBe(1);
+			expect(dataRequestCount).toBeGreaterThanOrEqual(1);
+			await gotoHydrated(page, `/projects/${SCHED.projectId}`);
+			await expect(page.locator(`#schedule-${SCHED.plainId}`).getByRole('status')).toBeEmpty();
+			await expect(page.locator(`#schedule-${SCHED.plainId}`).getByRole('alert')).toHaveCount(0);
+			expect(postCount).toBe(1);
+
+			await context.close();
+		});
+	}
+
 	test('the New Issue modal shows the Repeat section with a live summary', async ({ browser }) => {
 		const context = await browser.newContext();
 		await signIn(context, ALICE.sessionToken);

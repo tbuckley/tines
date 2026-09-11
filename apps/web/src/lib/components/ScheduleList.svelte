@@ -10,6 +10,7 @@
 	import { onMount } from 'svelte';
 	import { fade, slide } from 'svelte/transition';
 	import { invalidateAll } from '$app/navigation';
+	import { page } from '$app/state';
 	import { api } from '$lib/api';
 	import { confirmDialog } from '$lib/components/dialogs.svelte';
 	import Modal from '$lib/components/Modal.svelte';
@@ -64,6 +65,56 @@
 		| { kind: 'success'; projectName: string; number: number; refreshError?: string }
 		| { kind: 'error'; message: string };
 	let runResults = $state<Record<string, RunResult | undefined>>({});
+	const refreshError =
+		'Issue created, but the list could not refresh. Reload the page to update it.';
+	const runRecoveryKey = 'tines:schedule-run-recovery';
+	type RunRecovery = {
+		scheduleId: string;
+		projectName: string;
+		number: number;
+		pathname: string;
+		createdAt: number;
+	};
+
+	function stageRunRecovery(recovery: RunRecovery) {
+		try {
+			sessionStorage.setItem(runRecoveryKey, JSON.stringify(recovery));
+		} catch {
+			// The in-memory receipt still works when storage is unavailable. Storage
+			// only bridges SvelteKit's native-reload fallback after a failed refresh.
+		}
+	}
+
+	function clearRunRecovery() {
+		try {
+			sessionStorage.removeItem(runRecoveryKey);
+		} catch {
+			// See stageRunRecovery: storage can be unavailable without blocking Run now.
+		}
+	}
+
+	onMount(() => {
+		let recovery: RunRecovery | undefined;
+		try {
+			recovery = JSON.parse(sessionStorage.getItem(runRecoveryKey) ?? '') as RunRecovery;
+		} catch {
+			// Missing, unavailable, or malformed recovery state is simply discarded.
+		}
+		clearRunRecovery();
+		if (
+			!recovery ||
+			recovery.pathname !== location.pathname ||
+			Date.now() - recovery.createdAt > 30_000 ||
+			!schedules.some((schedule) => schedule.id === recovery.scheduleId)
+		)
+			return;
+		runResults[recovery.scheduleId] = {
+			kind: 'success',
+			projectName: recovery.projectName,
+			number: recovery.number,
+			refreshError
+		};
+	});
 
 	async function mutate(id: string, fn: () => Promise<unknown>) {
 		if (busyId) return;
@@ -102,15 +153,31 @@
 				projectName: issue.project_name,
 				number: issue.number
 			};
+			stageRunRecovery({
+				scheduleId: s.id,
+				projectName: issue.project_name,
+				number: issue.number,
+				pathname: location.pathname,
+				createdAt: Date.now()
+			});
 			try {
 				await invalidateAll();
+				// SvelteKit resolves invalidation after replacing this page with its
+				// error boundary, so a catch alone cannot distinguish a failed refresh.
+				// Reload the unchanged URL; onMount consumes the staged receipt and
+				// explains that creation succeeded even though this refresh did not.
+				if (page.status >= 400) {
+					location.reload();
+					return;
+				}
+				clearRunRecovery();
 			} catch {
+				clearRunRecovery();
 				runResults[s.id] = {
 					kind: 'success',
 					projectName: issue.project_name,
 					number: issue.number,
-					refreshError:
-						'Issue created, but the list could not refresh. Reload the page to update it.'
+					refreshError
 				};
 			}
 		} finally {
