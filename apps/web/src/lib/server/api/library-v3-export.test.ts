@@ -62,3 +62,29 @@ it('exports duplicate workflow names and state prompts by distinct local IDs wit
 	expect(await parseLibraryV3Document(JSON.stringify(document))).toEqual(document);
 	expect(await t.db.selectFrom('event').selectAll().execute()).toEqual(before);
 });
+
+it('preserves ordinary local repository declarations in whole-library backups', async () => {
+	const t = createTestDb();
+	seedBase(t);
+	const actor = {
+		userId: USER,
+		userName: 'Alice',
+		apiKeyId: null,
+		apiKeyName: null,
+		viaSession: true
+	};
+	await createContextItem(t.db, t.env, actor, {
+		kind: 'repo',
+		name: 'local-runner-source',
+		repo_url: 'file:///tmp/local-runner-source'
+	});
+	const document = await buildLibraryV3Document(t.db, USER);
+	expect(document.context).toContainEqual(
+		expect.objectContaining({
+			kind: 'repo',
+			name: 'local-runner-source',
+			repo_url: 'file:///tmp/local-runner-source'
+		})
+	);
+	expect(await parseLibraryV3Document(JSON.stringify(document))).toEqual(document);
+});

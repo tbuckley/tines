@@ -56,7 +56,7 @@ Schedules reference a bundled workflow and an input project. They preserve recur
 
 Routing entries target a bundled state with an optional input project and contain a portable tier, never a publisher runner ID. Preparation checks the destination's actual eligible capabilities and ordinary routing specificity.
 
-## Confirmation and installation
+## Confirmation and installation (planned; not implemented by the foundation)
 
 Preparation is read-only and returns the complete rendered content, operations, destination choices, signed 15-minute plan, document digest, and plan digest. The plan binds actor, owner, destination witnesses, names, values, schedules, routing, allocated IDs, and compiler version. Editing any bound choice requires a new plan and confirmation.
 
@@ -93,7 +93,7 @@ Package context has `state_id` only. Library context has `scope:{project_id?,sta
 
 A schedule recurrence is `{kind:cron,cron}` (at most 100 characters) or `{kind:preset,preset}`. Presets are exact objects: hourly `{kind:hourly,every_hours,minute?}`, daily `{kind:daily,time}`, weekly `{kind:weekly,time,weekday}`, monthly `{kind:monthly,time,day_of_month}`. Numeric fields are safe nonnegative integers; ordinary recurrence validation enforces every_hours 1–23, minute 0–59, weekday 0–6, day_of_month 1–31 and valid time. Cron must pass the ordinary five-field, at-most-hourly validator. Preset intent is preserved; no contradictory compiled cron may accompany it.
 
-Paths use forward slashes, are relative, and contain no empty, `.` or `..` segments or equals signs. Repository URLs must be GitHub HTTPS repository URLs accepted by the ordinary canonicalizer, without userinfo/query/fragment; no network resolution or fetch occurs. Branches are nullable nonempty text; a value is not a shell command.
+Paths use forward slashes, are relative, and contain no empty, `.` or `..` segments or equals signs. Workflow-package repository URLs must be GitHub HTTPS repository URLs accepted by the canonicalizer, without userinfo/query/fragment; no network resolution or fetch occurs. Whole-library backups preserve ordinary repository declarations, including local URLs used by managed runners. Branches are nullable nonempty text; a value is not a shell command.
 
 State names are unique within each workflow after ordinary trimming. Initial states are backlog/active; no self transitions; action names are unique case-insensitively per source state. Requirement artifact names are unique per transition. Context kind/name is unique at an exact scope; filenames and input keys are unique in their enclosing groups. Workflow names may repeat with distinct IDs. Library project names and case-insensitive label names are unique. Each routing scope has at most one preference. Every reference is checked by record kind; start states belong to their scheduled workflow. A file record cannot satisfy a state or input reference. The 1,000-record total includes workflows, states, transitions, context, files, inputs, text uses, schedules and routing (and library projects/labels), not just each array separately.
 
@@ -129,4 +129,4 @@ Without a collision, duplicate source names remain separate objects. A unique de
 
 ### Builder checkpoint
 
-The ordinary workflow builder accepts a typed transaction predicate and separate `shells`/`inheritance` phases, plus preallocated workflow-event and inline prompt/event IDs. Guarded INSERTs are composed as INSERT SELECT before SQL compilation. Every workflow/state/transition/inline-prompt/event INSERT and inheritance UPDATE carries the predicate. Standalone callers omit these options and retain ordinary creation behavior. This checkpoint does not implement the remaining full context/file/version, label, paused-schedule or routing builders, receipt predicate, installer budgets, or native-D1 install proof.
+The ordinary workflow, context/file/version, label, paused-schedule and routing builders accept typed transaction predicates and preallocated object/event IDs. Workflow creation has separate `shells`/`inheritance` phases. Guarded INSERTs are composed as INSERT SELECT before SQL compilation, and standalone callers omit these options to retain ordinary creation behavior. The foundation compiles and budgets a future guarded receipt batch, but does not ship a receipt table, install/recovery service or endpoint, or native-D1 install proof.

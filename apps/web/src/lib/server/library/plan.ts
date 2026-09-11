@@ -20,6 +20,7 @@ import {
 	packageActorKey,
 	packageKeyMaterial,
 	signPackagePlan,
+	validatePackageAllocation,
 	type PackagePlanPayload
 } from './token';
 
@@ -207,6 +208,7 @@ export async function reconstructPackagePlan(
 	const document = await requireWorkflowDocument(documentJson);
 	if (document.digest !== payload.document_digest)
 		throw new ApiFail(409, 'package_changed', 'The package changed after preparation');
+	validatePackageAllocation(document, payload.allocation);
 	if (payload.compiler_version !== PACKAGE_COMPILER_VERSION || payload.expires_at <= Date.now())
 		throw new ApiFail(
 			409,

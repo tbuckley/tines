@@ -1,6 +1,6 @@
 # Workflow package files
 
-Implementation status: the v3 whole-library transfer, workflow closure exporter, file-validation API, and signed destination preparation are available on the Tines/435 draft branch. Atomic install/receipt recovery, workflow CLI commands, browser package authoring/install, and real-run acceptance are still being implemented. Whole-library import remains best effort; it is not an atomic workflow installation.
+Implementation status: the foundation provides v3 whole-library transfer, workflow closure export, file validation, and signed read-only destination preparation. Atomic install/receipt recovery, workflow CLI commands, browser package authoring/install, and real-run acceptance are planned successor work. Whole-library import remains best effort; it is not an atomic workflow installation.
 
 ## Export and validate a workflow
 

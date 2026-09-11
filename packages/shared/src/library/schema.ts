@@ -251,7 +251,9 @@ const context = (library: boolean): Check => {
 			repo: shape({
 				...common,
 				kind: oneOf(['repo']),
-				repo_url: repoUrl,
+				// Whole-library transfer preserves ordinary repo declarations, including
+				// local/file URLs. Workflow packages are shareable and stay GitHub-only.
+				repo_url: library ? text(1000, true) : repoUrl,
 				repo_branch: nullable(text(200, true)),
 				repo_dir: nullable(workspacePath)
 			})

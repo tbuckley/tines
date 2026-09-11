@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { withLibraryDocumentDigest } from '@tines/shared';
-import { inheritedPackage } from '../../../../../../packages/shared/src/library/fixtures';
+import {
+	automatedPackage,
+	inheritedPackage
+} from '../../../../../../packages/shared/src/library/fixtures';
 import { createTestDb } from '../api/test-db';
-import { USER, PROJECT, seedBase } from '../supervisor/test-fixtures';
+import { USER, PROJECT, seedBase, addRunner } from '../supervisor/test-fixtures';
 import { prepareWorkflowPackage, reconstructPackagePlan } from './plan';
 import { verifyPackagePlan, signPackagePlan, PACKAGE_PLAN_TTL_MS } from './token';
 import { readPackageDestination } from './destination';
@@ -23,6 +26,32 @@ async function fixture() {
 	const choices = { inputs: { 'input:1': { mode: 'create', name: 'qa', color: 'blue' } } };
 	return {
 		t,
+		document,
+		raw,
+		choices,
+		prepare: () => prepareWorkflowPackage(t.db, env, actor, raw, choices)
+	};
+}
+async function automatedFixture() {
+	const t = createTestDb();
+	seedBase(t);
+	const runner = addRunner(t, { type: 'local', config: { harness: 'codex' } });
+	t.sqlite
+		.prepare('INSERT INTO routing_rule(id,user_id,targets,created_at,updated_at) VALUES(?,?,?,1,1)')
+		.run('global', USER, JSON.stringify([{ runner_id: runner }]));
+	const document = await withLibraryDocumentDigest(automatedPackage());
+	const raw = JSON.stringify(document);
+	const choices = {
+		inputs: {
+			'input:1': { mode: 'create' as const, name: 'qa', color: 'blue' as const },
+			'input:2': { mode: 'reuse' as const, id: PROJECT }
+		},
+		schedule_ids: ['schedule:1'],
+		routing: { 'routing:1': 'balanced' as const }
+	};
+	return {
+		t,
+		runner,
 		document,
 		raw,
 		choices,
@@ -159,6 +188,43 @@ describe('signed workflow package preparation and reconstruction', () => {
 			code: 'plan_stale'
 		});
 	});
+	it('rejects deep token schema errors and document-mismatched allocations', async () => {
+		const f = await fixture();
+		const preview = await f.prepare();
+		const payload = await verifyPackagePlan(preview.plan_token, env.BETTER_AUTH_SECRET);
+		const malformed = structuredClone(payload) as unknown as Record<string, any>;
+		malformed.selection.schedules = [{ project_id: PROJECT, name: 'Daily', extra: true }];
+		await expect(signPackagePlan(malformed as never, env.BETTER_AUTH_SECRET)).rejects.toMatchObject(
+			{
+				code: 'invalid_plan'
+			}
+		);
+		for (const mutate of [
+			(p: typeof payload) => {
+				p.allocation.records.unknown = {
+					id: 'wf_0123456789abcdef',
+					event_id: 'evt_0123456789abcdef'
+				};
+			},
+			(p: typeof payload) => {
+				p.allocation.records['state:1'].event_id = 'evt_0123456789abcdef';
+			},
+			(p: typeof payload) => {
+				p.allocation.records['state:1'].id = p.allocation.records['state:2'].id;
+			},
+			(p: typeof payload) => {
+				p.allocation.labels['input:1'].id = 'wf_0123456789abcdef';
+			}
+		]) {
+			const changed = structuredClone(payload);
+			mutate(changed);
+			const token = await signPackagePlan(changed, env.BETTER_AUTH_SECRET);
+			const verified = await verifyPackagePlan(token, env.BETTER_AUTH_SECRET);
+			await expect(reconstructPackagePlan(f.t.db, actor, f.raw, verified)).rejects.toMatchObject({
+				code: 'invalid_plan_token'
+			});
+		}
+	});
 });
 
 it('bounds coherent-read retries when a reviewed label changes between every snapshot', async () => {
@@ -213,4 +279,49 @@ it('witnesses a reused label color and all required workflow state definitions',
 			code: 'plan_stale'
 		});
 	}
+});
+
+it('witnesses absent schedule names and matching routing-rule insertions', async () => {
+	for (const kind of ['schedule', 'routing'] as const) {
+		const f = await automatedFixture();
+		const preview = await f.prepare();
+		const payload = await verifyPackagePlan(preview.plan_token, env.BETTER_AUTH_SECRET);
+		if (kind === 'schedule')
+			f.t.sqlite.exec(`
+				INSERT INTO scheduled_task
+					(id,project_id,name,title_template,description_template,workflow_id,cron,timezone,
+					 require_all_closed,enabled,next_run_at,run_count,created_at,updated_at)
+				VALUES ('phantom','${PROJECT}','Weekly review','','','wf_standard','0 9 * * 1','UTC',
+					1,0,1,0,1,1)`);
+		else
+			f.t.sqlite
+				.prepare(
+					'INSERT INTO routing_rule(id,user_id,project_id,targets,created_at,updated_at) VALUES(?,?,?,?,1,1)'
+				)
+				.run('phantom', USER, PROJECT, JSON.stringify([{ runner_id: f.runner }]));
+		await expect(reconstructPackagePlan(f.t.db, actor, f.raw, payload)).rejects.toMatchObject({
+			code: 'plan_stale'
+		});
+	}
+});
+
+it('does not stale selected automation when unrelated schedules, rules or runners change', async () => {
+	const f = await automatedFixture();
+	const preview = await f.prepare();
+	const payload = await verifyPackagePlan(preview.plan_token, env.BETTER_AUTH_SECRET);
+	f.t.sqlite.exec(`
+		INSERT INTO scheduled_task
+			(id,project_id,name,title_template,description_template,workflow_id,cron,timezone,
+			 require_all_closed,enabled,next_run_at,run_count,created_at,updated_at)
+		VALUES ('other-schedule','${PROJECT}','Other schedule','','','wf_standard','0 10 * * 1','UTC',
+			1,0,1,0,1,1);
+		INSERT INTO label(id,user_id,name,color,description,created_at,updated_at)
+		VALUES('other-label','${USER}','Other label','blue','',1,1);
+		INSERT INTO routing_rule(id,user_id,label_id,targets,created_at,updated_at)
+		VALUES('other-rule','${USER}','other-label','[]',1,1);
+	`);
+	addRunner(f.t, { id: 'other-runner', name: 'Other runner', type: 'local' });
+	expect((await reconstructPackagePlan(f.t.db, actor, f.raw, payload)).resolved).toEqual(
+		preview.resolved
+	);
 });
