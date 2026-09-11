@@ -1,6 +1,6 @@
 import type { IssueDetail, Project } from '@tines/shared';
 import { expect, test, type Locator, type Page } from '@playwright/test';
-import { ALICE } from './constants.mjs';
+import { ALICE, BASE_URL } from './constants.mjs';
 import { apiClient, body, gotoHydrated, readSettled, runId, signIn } from './helpers';
 
 /**
@@ -46,7 +46,10 @@ test.beforeAll(async ({ playwright }) => {
 	}
 	for (const [name, content] of [
 		['replace-me', 'ORIGINAL ARTIFACT'],
-		['race-doc', 'VERSION ONE']
+		['race-doc', 'VERSION ONE'],
+		['pending-doc', 'RETRIED CONTENT'],
+		['delayed-meta', 'STALE METADATA CONTENT'],
+		['fresh-doc', 'FRESH CONTENT']
 	] as const) {
 		const put = await api.put(`/api/v1/issues/${issue.id}/artifacts/${name}`, {
 			type: 'text',
@@ -96,6 +99,27 @@ test.beforeAll(async ({ playwright }) => {
 			readme: { name: 'README.md', mimeType: 'text/markdown', buffer: Buffer.from('# Read me') }
 		}
 	});
+	for (const [name, filename, contentType, bytes] of [
+		['race-image', 'snapshot.png', 'image/png', 'IMAGE VERSION ONE'],
+		['race-pdf', 'snapshot.pdf', 'application/pdf', 'PDF VERSION ONE']
+	] as const) {
+		const uploaded = await request.put(
+			`/api/v1/issues/${issue.id}/artifacts/${name}/file?filename=${filename}`,
+			{
+				headers: { authorization: `Bearer ${ALICE.apiKey}`, 'content-type': contentType },
+				data: Buffer.from(bytes)
+			}
+		);
+		expect(uploaded.status(), await uploaded.text()).toBe(200);
+	}
+	const raceFolder = await request.put(`/api/v1/issues/${issue.id}/artifacts/race-folder/folder`, {
+		headers: { authorization: `Bearer ${ALICE.apiKey}` },
+		multipart: {
+			first: { name: 'first.png', mimeType: 'image/png', buffer: Buffer.from('FOLDER ONE A') },
+			second: { name: 'second.png', mimeType: 'image/png', buffer: Buffer.from('FOLDER ONE B') }
+		}
+	});
+	expect(raceFolder.status(), await raceFolder.text()).toBe(200);
 	// The page behind has to be taller than the phone viewport for the scroll
 	// lock assertions below to mean anything.
 	await api.post(`/api/v1/issues/${issue.id}/comments`, {
@@ -124,6 +148,70 @@ async function unfoldArtifacts(page: Page): Promise<void> {
 }
 
 const issueUrl = () => `/issues/${encodeURIComponent(projectName)}/${issue.number}`;
+
+function barrier() {
+	let release!: () => void;
+	const promise = new Promise<void>((resolve) => (release = resolve));
+	return { promise, release };
+}
+
+test('reopening retries after an obsolete pending text request fails', async ({ page }) => {
+	const first = barrier();
+	const second = barrier();
+	let requests = 0;
+	await page.route(`**/artifacts/pending-doc/content?version=1`, async (route) => {
+		requests++;
+		if (requests === 1) {
+			await first.promise;
+			await route.abort('failed');
+		} else {
+			await second.promise;
+			await route.continue();
+		}
+	});
+
+	await gotoHydrated(page, issueUrl());
+	const dialog = page.getByRole('dialog', { name: 'Artifact viewer' });
+	await openViewer(page.getByRole('button', { name: /^View pending-doc/ }), dialog);
+	await expect.poll(() => requests).toBe(1);
+	await dialog.getByRole('button', { name: 'Close' }).click();
+	await openViewer(page.getByRole('button', { name: /^View pending-doc/ }), dialog);
+	first.release();
+	await expect.poll(() => requests).toBe(2);
+	await expect(dialog.getByText('(failed to load content)')).toHaveCount(0);
+	second.release();
+	await expect(dialog.getByText('RETRIED CONTENT')).toBeVisible();
+	await expect(dialog.getByText('(failed to load content)')).toHaveCount(0);
+});
+
+test('superseded metadata success and failure cannot replace a newer selection', async ({
+	page
+}) => {
+	for (const outcome of ['success', 'failure'] as const) {
+		const held = barrier();
+		let intercepted = false;
+		await page.route(`**/artifacts/delayed-meta`, async (route) => {
+			intercepted = true;
+			await held.promise;
+			if (outcome === 'success') await route.continue();
+			else await route.abort('failed');
+		});
+
+		await gotoHydrated(page, issueUrl());
+		const dialog = page.getByRole('dialog', { name: 'Artifact viewer' });
+		await openViewer(page.getByRole('button', { name: /^View delayed-meta/ }), dialog);
+		await expect.poll(() => intercepted).toBe(true);
+		await dialog.getByRole('button', { name: 'Close' }).click();
+		await openViewer(page.getByRole('button', { name: /^View fresh-doc/ }), dialog);
+		await expect(dialog.getByText('FRESH CONTENT')).toBeVisible();
+		held.release();
+		await page.waitForTimeout(100);
+		await expect(dialog.getByText('FRESH CONTENT')).toBeVisible();
+		await expect(dialog.getByText('STALE METADATA CONTENT')).toHaveCount(0);
+		await expect(dialog.getByText('Couldn’t load this artifact — close and retry.')).toHaveCount(0);
+		await page.unroute(`**/artifacts/delayed-meta`);
+	}
+});
 
 test('text cache identity survives client navigation without crossing issues', async ({ page }) => {
 	await gotoHydrated(page, issueUrl());
@@ -190,6 +278,78 @@ test('current stays pinned when a newer version lands after metadata resolves', 
 	expect(
 		await (await page.request.get(`/api/v1/issues/${issue.id}/artifacts/race-doc/content`)).text()
 	).toBe('VERSION TWO');
+});
+
+test('image and PDF preview URLs stay pinned to captured metadata', async ({ page }) => {
+	for (const [name, filename, contentType, oldBytes, newBytes, selector] of [
+		['race-image', 'snapshot.png', 'image/png', 'IMAGE VERSION ONE', 'IMAGE VERSION TWO', 'img'],
+		['race-pdf', 'snapshot.pdf', 'application/pdf', 'PDF VERSION ONE', 'PDF VERSION TWO', 'iframe']
+	] as const) {
+		const detailUrl = `**/api/v1/issues/${issue.id}/artifacts/${name}`;
+		await page.route(detailUrl, async (route) => {
+			const v1Detail = await route.fetch();
+			const appended = await page.request.put(
+				`/api/v1/issues/${issue.id}/artifacts/${name}/file?filename=${filename}`,
+				{
+					headers: { authorization: `Bearer ${ALICE.apiKey}`, 'content-type': contentType },
+					data: Buffer.from(newBytes)
+				}
+			);
+			expect(appended.status(), await appended.text()).toBe(200);
+			await route.fulfill({ response: v1Detail });
+		});
+		await gotoHydrated(page, issueUrl());
+		const dialog = page.getByRole('dialog', { name: 'Artifact viewer' });
+		await openViewer(
+			page.getByRole('button', { name: new RegExp(`^View ${name}`) }).first(),
+			dialog
+		);
+		const previewUrl = await dialog.locator(selector).last().getAttribute('src');
+		expect(new URL(previewUrl!, 'http://local').searchParams.get('version')).toBe('1');
+		expect(await (await page.request.get(previewUrl!)).text()).toBe(oldBytes);
+		expect(
+			await (await page.request.get(`/api/v1/issues/${issue.id}/artifacts/${name}/content`)).text()
+		).toBe(newBytes);
+		await page.unroute(detailUrl);
+	}
+});
+
+test('folder gallery and downloads stay pinned to the panel and viewer snapshot', async ({
+	page
+}) => {
+	const detailUrl = `**/api/v1/issues/${issue.id}/artifacts/race-folder`;
+	await page.route(detailUrl, async (route) => {
+		const v1Detail = await route.fetch();
+		const appended = await page.request.put(
+			`/api/v1/issues/${issue.id}/artifacts/race-folder/folder`,
+			{
+				headers: { authorization: `Bearer ${ALICE.apiKey}`, origin: BASE_URL },
+				multipart: {
+					first: {
+						name: 'first.png',
+						mimeType: 'image/png',
+						buffer: Buffer.from('FOLDER TWO')
+					}
+				}
+			}
+		);
+		expect(appended.status(), await appended.text()).toBe(200);
+		await route.fulfill({ response: v1Detail });
+	});
+	await gotoHydrated(page, issueUrl());
+	await expect(page.locator('img[alt="first.png"]').first()).toHaveAttribute(
+		'src',
+		/[?&]version=1(?:&|$)/
+	);
+	const dialog = page.getByRole('dialog', { name: 'Artifact viewer' });
+	await openViewer(page.getByRole('button', { name: /^View race-folder/ }).first(), dialog);
+	const gallery = dialog.locator('img[alt="first.png"]');
+	await expect(gallery).toHaveAttribute('src', /[?&]version=1(?:&|$)/);
+	await dialog.locator('button[title="View first.png"]').click();
+	const download = dialog.getByRole('link', { name: 'Download', exact: true }).last();
+	const href = await download.getAttribute('href');
+	expect(new URL(href!, 'http://local').searchParams.get('version')).toBe('1');
+	expect(await (await page.request.get(href!)).text()).toBe('FOLDER ONE A');
 });
 
 /**

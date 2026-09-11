@@ -170,15 +170,13 @@
 			: null
 	);
 	let textToken = 0;
-	const textRequests = new Set<string>();
 	$effect(() => {
 		const key = textKey;
 		const activePreview = resolved;
 		const path = preview?.path;
 		const token = ++textToken;
 		textError = null;
-		if (!key || !activePreview || textCache[key] !== undefined || textRequests.has(key)) return;
-		textRequests.add(key);
+		if (!key || !activePreview || textCache[key] !== undefined) return;
 		api
 			.getArtifactContent(activePreview.issueId, activePreview.name, {
 				version: activePreview.version,
@@ -191,9 +189,6 @@
 				if (token === textToken && textKey === key) {
 					textError = { key, message: '(failed to load content)' };
 				}
-			})
-			.finally(() => {
-				textRequests.delete(key);
 			});
 		return () => {
 			if (token === textToken) textToken++;
