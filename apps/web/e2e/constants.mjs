@@ -23,6 +23,13 @@ export const ALICE = {
 	sessionToken: 'e2e-session-alice'
 };
 
+/** A second independently attributed writer for native concurrency races. */
+export const ALICE_AGENT = {
+	id: 'key_e2e_alice_agent',
+	apiKey: 'tines_e2ealiceagent00000000000000000000000000000',
+	apiKeyName: 'alice-agent-key'
+};
+
 /**
  * Seeded scheduled-task fixtures (Alice's): the sweep can only be tested
  * deterministically with `next_run_at` already in the past, which the API
@@ -177,6 +184,25 @@ export const MANAGED_SETTINGS = {
 	apiKey: 'tines_e2emanagedsettings0000000000000000000000000000',
 	apiKeyName: 'managed-settings-key',
 	sessionToken: 'e2e-session-managed-settings'
+};
+
+/** Isolated real-D1 fixtures for project-transfer dispatch acceptance. */
+export const TRANSFER_RUNTIME = {
+	id: 'usr_e2e_transfer_runtime',
+	name: 'Transfer Runtime E2E',
+	email: 'transfer-runtime@e2e.test',
+	apiKey: 'tines_e2etransferruntime00000000000000000000000000',
+	apiKeyName: 'transfer-runtime-key',
+	sessionToken: 'e2e-session-transfer-runtime',
+	sourceId: 'prj_e2e_transfer_source',
+	sourceName: 'transfer-runtime-source',
+	destinationId: 'prj_e2e_transfer_destination',
+	destinationName: 'transfer-runtime-destination',
+	noopIssueId: 'iss_e2e_transfer_noop',
+	claimIssueId: 'iss_e2e_transfer_claim',
+	runnerId: 'rnr_e2e_transfer',
+	runnerName: 'transfer-runtime-local',
+	ruleId: 'rrl_e2e_transfer_destination'
 };
 
 /** Isolated 205-row population for issue-list pagination. */

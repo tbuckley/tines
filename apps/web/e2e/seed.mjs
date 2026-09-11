@@ -14,6 +14,7 @@ import { join } from 'node:path';
 import {
 	AGENTS_FIRST_RUN,
 	ALICE,
+	ALICE_AGENT,
 	API_ISOLATION,
 	BOB,
 	CAROL,
@@ -25,7 +26,8 @@ import {
 	RUNROW_ESTIMATED,
 	RUNROW_FAILED,
 	SCHED,
-	STOPPED_FIRST_RUN
+	STOPPED_FIRST_RUN,
+	TRANSFER_RUNTIME
 } from './constants.mjs';
 
 const sha256Hex = (s) => createHash('sha256').update(s).digest('hex');
@@ -45,6 +47,7 @@ for (const user of [
 	EXPLAINER_REMEDIES,
 	STOPPED_FIRST_RUN,
 	MANAGED_SETTINGS,
+	TRANSFER_RUNTIME,
 	PAGINATION.user
 ]) {
 	statements.push(
@@ -57,6 +60,11 @@ for (const user of [
 	);
 }
 
+statements.push(
+	`INSERT INTO api_key (id, user_id, name, key_hash, key_prefix, created_at)
+	 VALUES ('${ALICE_AGENT.id}', '${ALICE.id}', '${ALICE_AGENT.apiKeyName}', '${sha256Hex(ALICE_AGENT.apiKey)}', '${ALICE_AGENT.apiKey.slice(0, 14)}', ${nowMs});`
+);
+
 // Alice's seeded active managed runner is display-only. Keep the broad shared
 // fixture inert when unrelated specs create eligible issues or routing rules.
 statements.push(
@@ -66,6 +74,27 @@ statements.push(
 statements.push(
 	`INSERT INTO supervisor_settings (user_id, enabled, quota, attempt_limit, updated_at)
 	 VALUES ('${STOPPED_FIRST_RUN.id}', 0, '{"type":"global_cap","limit":3}', 3, ${nowMs});`
+);
+
+statements.push(
+	`INSERT INTO supervisor_settings (user_id, enabled, quota, attempt_limit, updated_at)
+	 VALUES ('${TRANSFER_RUNTIME.id}', 1, '{"type":"global_cap","limit":3}', 3, ${nowMs});`,
+	`INSERT INTO project (id, user_id, name, description, created_at, updated_at) VALUES
+	 ('${TRANSFER_RUNTIME.sourceId}', '${TRANSFER_RUNTIME.id}', '${TRANSFER_RUNTIME.sourceName}', '', ${nowMs}, ${nowMs}),
+	 ('${TRANSFER_RUNTIME.destinationId}', '${TRANSFER_RUNTIME.id}', '${TRANSFER_RUNTIME.destinationName}', '', ${nowMs}, ${nowMs});`,
+	`INSERT INTO issue (id, project_id, number, title, description, workflow_id, state_id,
+	   project_assignment_token, created_at, updated_at) VALUES
+	 ('${TRANSFER_RUNTIME.noopIssueId}', '${TRANSFER_RUNTIME.sourceId}', 1, 'No-op transfer', '',
+	  'wf_standard', 'wfs_std_open', 'noop-assignment', ${nowMs}, ${nowMs}),
+	 ('${TRANSFER_RUNTIME.claimIssueId}', '${TRANSFER_RUNTIME.sourceId}', 2, 'Destination claim', '',
+	  'wf_standard', 'wfs_std_open', 'claim-before-transfer', ${nowMs}, ${nowMs});`,
+	`INSERT INTO runner (id, user_id, type, name, status, max_concurrent, max_run_minutes,
+	   default_tier, config, last_seen_at, created_at, updated_at)
+	 VALUES ('${TRANSFER_RUNTIME.runnerId}', '${TRANSFER_RUNTIME.id}', 'local',
+	  '${TRANSFER_RUNTIME.runnerName}', 'active', 1, 30, 'balanced', '{}', ${nowMs}, ${nowMs}, ${nowMs});`,
+	`INSERT INTO routing_rule (id, user_id, project_id, targets, created_at, updated_at)
+	 VALUES ('${TRANSFER_RUNTIME.ruleId}', '${TRANSFER_RUNTIME.id}', '${TRANSFER_RUNTIME.destinationId}',
+	  '[{"runner_id":"${TRANSFER_RUNTIME.runnerId}"}]', ${nowMs}, ${nowMs});`
 );
 
 // A separate account keeps these 205 rows from slowing or changing every
