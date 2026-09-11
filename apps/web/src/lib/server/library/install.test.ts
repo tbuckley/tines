@@ -1,13 +1,17 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { withLibraryDocumentDigest } from '@tines/shared';
-import { inheritedPackage } from '../../../../../../packages/shared/src/library/fixtures';
+import {
+	automatedPackage,
+	inheritedPackage
+} from '../../../../../../packages/shared/src/library/fixtures';
 import { createTestDb } from '../api/test-db';
-import { USER, seedBase } from '../supervisor/test-fixtures';
+import type { ActorContext } from '../api/core';
+import { PROJECT, USER, addRunner, seedBase } from '../supervisor/test-fixtures';
 import { getWorkflowPackageReceipt, installWorkflowPackage } from './install';
 import { prepareWorkflowPackage } from './plan';
 import { PACKAGE_PLAN_TTL_MS } from './token';
 
-const actor = {
+const actor: ActorContext = {
 	userId: USER,
 	userName: 'Alice',
 	apiKeyId: null,
@@ -98,5 +102,71 @@ describe('atomic workflow package install', () => {
 		await expect(
 			installWorkflowPackage(f.t.db, { ...f.t.env, ...signing }, rotated, f.request)
 		).rejects.toMatchObject({ status: 403, code: 'plan_actor_mismatch' });
+	});
+
+	it('installs selected schedules paused and tier rules against allocated states', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const runner = addRunner(t, { type: 'local', config: { harness: 'codex' } });
+		t.sqlite
+			.prepare(
+				'INSERT INTO routing_rule(id,user_id,targets,created_at,updated_at) VALUES(?,?,?,1,1)'
+			)
+			.run('global', USER, JSON.stringify([{ runner_id: runner }]));
+		const document = await withLibraryDocumentDigest(automatedPackage());
+		const document_json = JSON.stringify(document);
+		const beforeDefault = t.all('SELECT default_workflow_id FROM project WHERE id=?', PROJECT)[0];
+		const plan = await prepareWorkflowPackage(t.db, signing, actor, document_json, {
+			inputs: {
+				'input:1': { mode: 'create', name: 'qa', color: 'blue' },
+				'input:2': { mode: 'reuse', id: PROJECT }
+			},
+			schedule_ids: ['schedule:1'],
+			routing: { 'routing:1': 'balanced' }
+		});
+		const receipt = await installWorkflowPackage(t.db, { ...t.env, ...signing }, actor, {
+			document_json,
+			plan_token: plan.plan_token,
+			confirmation: { plan_digest: plan.plan_digest }
+		});
+		expect(t.all('SELECT enabled,run_count FROM scheduled_task')).toEqual([
+			{ enabled: 0, run_count: 0 }
+		]);
+		const rule = t.all("SELECT workflow_state_id,targets FROM routing_rule WHERE id!='global'")[0];
+		expect(
+			t.all('SELECT id FROM workflow_state').some((row) => row.id === rule.workflow_state_id)
+		).toBe(true);
+		expect(rule.targets).toContain('balanced');
+		expect(t.all('SELECT default_workflow_id FROM project WHERE id=?', PROJECT)[0]).toEqual(
+			beforeDefault
+		);
+		expect(t.all('SELECT * FROM issue')).toEqual([]);
+		expect(receipt.objects.some((object) => object.kind === 'schedule')).toBe(true);
+		expect(receipt.objects.some((object) => object.kind === 'routing')).toBe(true);
+	});
+
+	it('rechecks the destination inside the transaction and leaves no partial rows on a race', async () => {
+		const f = await fixture();
+		const realBatch = f.t.env.DB.batch.bind(f.t.env.DB);
+		const racedEnv = {
+			...f.t.env,
+			...signing,
+			DB: {
+				...f.t.env.DB,
+				batch: async (statements: Parameters<typeof realBatch>[0]) => {
+					f.t.sqlite.exec(
+						`INSERT INTO label(id,user_id,name,color,description,created_at,updated_at) VALUES('racer','${USER}','QA','blue','',1,1)`
+					);
+					return realBatch(statements);
+				}
+			}
+		} as Env;
+		await expect(installWorkflowPackage(f.t.db, racedEnv, actor, f.request)).rejects.toMatchObject({
+			status: 409,
+			code: 'plan_stale'
+		});
+		expect(f.t.all('SELECT * FROM library_install')).toEqual([]);
+		expect(f.t.all('SELECT * FROM workflow WHERE user_id IS NOT NULL')).toEqual([]);
+		expect(f.t.all('SELECT * FROM event')).toEqual([]);
 	});
 });

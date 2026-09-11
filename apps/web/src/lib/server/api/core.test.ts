@@ -193,7 +193,8 @@ describe('assertRunKeyAllowed', () => {
 			['/api/v1/supervisor/settings', 'PUT'],
 			['/api/v1/issues/iss_1/resume', 'POST'],
 			['/api/v1/api-keys', 'GET'],
-			['/api/v1/labels', 'POST']
+			['/api/v1/labels', 'POST'],
+			['/api/v1/library/install', 'POST']
 		]) {
 			try {
 				assertRunKeyAllowed(runKey, path, method, now);

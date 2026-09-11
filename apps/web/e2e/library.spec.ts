@@ -449,3 +449,45 @@ test('workflow export and strict validation are read-only and allowed to run key
 	const foreign = await run.get('/api/v1/workflows/nonexistent/export');
 	expect(foreign.status()).toBe(404);
 });
+
+test('workflow install commits once, recovers its receipt, and denies run keys', async ({
+	request
+}) => {
+	const alice = apiClient(request, ALICE.apiKey);
+	const run = apiClient(request, RUNROW.runKey);
+	const document = await body<import('@tines/shared').WorkflowPackageDocument>(
+		await alice.get('/api/v1/workflows/wf_standard/export')
+	);
+	const raw = JSON.stringify(document);
+	const prepared = await body<import('@tines/shared').PrepareWorkflowPackageResponse>(
+		await alice.post('/api/v1/library/prepare', {
+			document_json: raw,
+			choices: { workflow_names: { 'workflow:1': `Installed ${runId}` } }
+		})
+	);
+	const requestBody: import('@tines/shared').WorkflowPackageInstallRequest = {
+		document_json: raw,
+		plan_token: prepared.plan_token,
+		confirmation: { plan_digest: prepared.plan_digest }
+	};
+	const installed = await alice.post('/api/v1/library/install', requestBody);
+	expect(installed.status()).toBe(200);
+	const receipt = await body<import('@tines/shared').WorkflowPackageReceipt>(installed);
+	expect(receipt.id).toBe(prepared.plan_id);
+	expect(receipt.objects.find((object) => object.relationship === 'main')?.name).toBe(
+		`Installed ${runId}`
+	);
+	expect(await body(await alice.post('/api/v1/library/install', requestBody))).toEqual(receipt);
+	expect(await body(await run.get(`/api/v1/library/installs/${receipt.id}`))).toEqual(receipt);
+
+	const runPrepared = await body<import('@tines/shared').PrepareWorkflowPackageResponse>(
+		await run.post('/api/v1/library/prepare', { document_json: raw })
+	);
+	const denied = await run.post('/api/v1/library/install', {
+		document_json: raw,
+		plan_token: runPrepared.plan_token,
+		confirmation: { plan_digest: runPrepared.plan_digest }
+	});
+	expect(denied.status()).toBe(403);
+	expect((await errorBody(denied)).error.code).toBe('run_key_forbidden');
+});
