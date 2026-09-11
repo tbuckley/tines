@@ -210,6 +210,8 @@ Under `/api/v1/*` with the existing auth and conventions (cursor pagination, str
 | `GET /api/v1/issues/:id/context` | **Effective context** — see response shape below. |
 | `GET /api/v1/issues/:id/prompt` | **Launch prompt** — `{ "text": "…" }`, the stitched context plus the generated issue block. A pure formatter over the context response and the issue read; consumers needing structure use those endpoints. |
 
+Context `q` is a complete literal substring match over name and description, case-insensitive for ASCII. Characters such as `%` and `_` have no wildcard meaning, and ordinary queries longer than 48 characters are supported. It uses the same server predicate as issue search.
+
 **List filter semantics — "scope includes".** `project=X` matches every item whose scope includes project X (project-only, `project ∧ state`, `issue ∧ project`, …); likewise `state=`, `label=` (by label id or name) and `issue=`. Multiple dimension filters AND together. Adding **`exact=true`** restricts to items whose scope sets *only* the given dimensions — the editor's "items scoped exactly here" views. There is no separate `scoped_to` parameter.
 
 **PATCH semantics.** Merge-patch style: omitted fields are unchanged; an explicit `null` unsets a nullable field (this is how a scope dimension is removed — subject to the ≥1-dimension rule). Payload, name, description, scope, and `position` are updatable; `kind` is not. Re-scoping re-runs coherence validation and the name-uniqueness check against the **target** scope, and re-appends the item at the end of the target scope's position sequence.

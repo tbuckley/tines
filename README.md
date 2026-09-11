@@ -6,6 +6,8 @@ The core of Tines is an issue tracker, which makes work legible to both humans a
 
 Tines acts as a supervisor, assigning tasks to agents across managed services (using your own API keys) as well as local devices (using your own subscriptions). See [Running agents](#running-agents) for how that side works.
 
+Operators can reconcile finalized run spend with the [period usage ledger](docs/usage.md).
+
 ## Repository layout
 
 This is a pnpm workspace:
