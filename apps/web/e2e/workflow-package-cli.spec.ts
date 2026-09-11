@@ -1,0 +1,84 @@
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { expect, test } from '@playwright/test';
+import type {
+	PrepareWorkflowPackageResponse,
+	WorkflowPackageDocument,
+	WorkflowPackageReceipt
+} from '@tines/shared';
+import { ALICE, BASE_URL } from './constants.mjs';
+
+const CLI = resolve('../../packages/cli/dist/index.js');
+
+function cli(args: string[]): string {
+	return execFileSync(
+		process.execPath,
+		[CLI, ...args, '--url', BASE_URL, '--api-key', ALICE.apiKey],
+		{
+			encoding: 'utf8',
+			env: {
+				...process.env,
+				// This intentionally disagrees with the isolated worker. Every command
+				// must remain pinned by its explicit --url and never reach production.
+				TINES_API_URL: 'https://ambient-must-not-be-used.invalid'
+			}
+		}
+	);
+}
+
+test('CLI export, preview, install, and same-plan receipt retry use the real local API', () => {
+	const directory = mkdtempSync(join(tmpdir(), 'tines-cli-real-api-'));
+	const packagePath = join(directory, 'package.json');
+	const choicesPath = join(directory, 'choices.json');
+	const planPath = join(directory, 'plan.json');
+
+	const exported = cli(['workflows', 'export', 'wf_standard']);
+	const document = JSON.parse(exported) as WorkflowPackageDocument;
+	expect(document.profile).toBe('workflow');
+	expect(document.digest).toMatch(/^sha256:[0-9a-f]{64}$/);
+	writeFileSync(packagePath, exported);
+	writeFileSync(
+		choicesPath,
+		JSON.stringify({
+			workflow_names: Object.fromEntries(
+				document.workflows.map((workflow, index) => [
+					workflow.id,
+					`CLI real API ${Date.now()} ${index}`
+				])
+			)
+		})
+	);
+
+	const plan = JSON.parse(
+		cli([
+			'workflows',
+			'preview',
+			packagePath,
+			'--choices',
+			choicesPath,
+			'--plan-out',
+			planPath,
+			'--json'
+		])
+	) as PrepareWorkflowPackageResponse;
+	expect(plan.document_digest).toBe(document.digest);
+	expect(plan.operations.some((operation) => operation.action === 'create')).toBe(true);
+
+	const installArgs = [
+		'workflows',
+		'install',
+		packagePath,
+		'--plan',
+		planPath,
+		'--confirm',
+		plan.plan_digest,
+		'--json'
+	];
+	const receipt = JSON.parse(cli(installArgs)) as WorkflowPackageReceipt;
+	const retry = JSON.parse(cli(installArgs)) as WorkflowPackageReceipt;
+	expect(retry).toEqual(receipt);
+	expect(receipt.plan_digest).toBe(plan.plan_digest);
+	expect(receipt.objects.some((object) => object.relationship === 'main')).toBe(true);
+});
