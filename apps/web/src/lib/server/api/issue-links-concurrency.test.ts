@@ -1,15 +1,21 @@
 import { describe, expect, it } from 'vitest';
 import { addIssue, seedBase, USER } from '../supervisor/test-fixtures';
-import { addIssueLink } from './issue-links';
+import { addIssueLink, removeIssueLink } from './issue-links';
 import { createTestDb, type TestDb } from './test-db';
 import type { ActorContext } from './core';
 
 const actor: ActorContext = {
 	userId: USER,
 	userName: 'Alice',
-	apiKeyId: null,
-	apiKeyName: null,
-	viaSession: true
+	apiKeyId: 'key_first',
+	apiKeyName: 'first-agent',
+	viaSession: false
+};
+
+const competingActor: ActorContext = {
+	...actor,
+	apiKeyId: 'key_second',
+	apiKeyName: 'second-agent'
 };
 
 function delayedBy(
@@ -38,7 +44,78 @@ function edges(t: TestDb) {
 }
 
 function linkEvents(t: TestDb) {
-	return t.all("SELECT issue_id, payload FROM event WHERE type = 'issue.link_added'");
+	return t.all(
+		"SELECT issue_id, project_id, actor_user_id, actor_api_key_id, payload FROM event WHERE type = 'issue.link_added' ORDER BY issue_id"
+	);
+}
+
+function expectWinnerEvents(
+	t: TestDb,
+	input: {
+		source: string;
+		target: string;
+		linkId: string;
+		kind?: 'blocks' | 'duplicate_of';
+		actorId?: string;
+		sourceProject?: string;
+		targetProject?: string;
+		peerProjectNames?: Partial<Record<'source' | 'target', string>>;
+	}
+) {
+	const rows = linkEvents(t).filter((row) => {
+		const payload = JSON.parse(row.payload as string) as { link_id: string };
+		return payload.link_id === input.linkId;
+	});
+	expect(rows).toHaveLength(2);
+	const byIssue = new Map(rows.map((row) => [row.issue_id, row]));
+	for (const [self, peer, role, project] of [
+		[input.source, input.target, 'source', input.sourceProject ?? 'prj_1'],
+		[input.target, input.source, 'target', input.targetProject ?? 'prj_1']
+	] as const) {
+		const row = byIssue.get(self)!;
+		expect(row).toMatchObject({
+			issue_id: self,
+			project_id: project,
+			actor_user_id: USER,
+			actor_api_key_id: input.actorId ?? actor.apiKeyId
+		});
+		const payload = JSON.parse(row.payload as string);
+		const peerRow = t.all(
+			`SELECT issue.id, issue.number, issue.title, project.name AS project_name
+			 FROM issue JOIN project ON project.id = issue.project_id WHERE issue.id = ?`,
+			peer
+		)[0];
+		expect(payload).toEqual({
+			link_id: input.linkId,
+			kind: input.kind ?? 'blocks',
+			role,
+			other_issue_id: peer,
+			other_project_name: input.peerProjectNames?.[role] ?? peerRow.project_name,
+			other_number: peerRow.number,
+			other_title: peerRow.title
+		});
+	}
+}
+
+function expectAcyclic(t: TestDb) {
+	const graph = new Map<string, string[]>();
+	for (const row of edges(t)) {
+		const outgoing = graph.get(row.source as string) ?? [];
+		outgoing.push(row.target as string);
+		graph.set(row.source as string, outgoing);
+	}
+	const visiting = new Set<string>();
+	const visited = new Set<string>();
+	const visit = (node: string): boolean => {
+		if (visiting.has(node)) return false;
+		if (visited.has(node)) return true;
+		visiting.add(node);
+		for (const target of graph.get(node) ?? []) if (!visit(target)) return false;
+		visiting.delete(node);
+		visited.add(node);
+		return true;
+	};
+	for (const node of graph.keys()) expect(visit(node), `cycle through ${node}`).toBe(true);
 }
 
 async function expectCycle(promise: Promise<unknown>, refs: string[]) {
@@ -57,6 +134,13 @@ async function expectCycle(promise: Promise<unknown>, refs: string[]) {
 function fixture() {
 	const t = createTestDb();
 	seedBase(t);
+	t.sqlite.exec(`
+		INSERT INTO api_key (id, user_id, name, key_hash, key_prefix, created_at) VALUES
+			('key_first', '${USER}', 'first-agent', 'hash-1', 'first', 1),
+			('key_second', '${USER}', 'second-agent', 'hash-2', 'second', 1);
+		INSERT INTO project (id, user_id, name, created_at, updated_at)
+		VALUES ('prj_2', '${USER}', 'other-project', 1, 1);
+	`);
 	const ids = Object.fromEntries(
 		['a', 'b', 'c', 'd', 'e'].map((name) => [
 			name,
@@ -84,13 +168,39 @@ describe('commit-time issue-link graph guard', () => {
 			{ kind: 'duplicate_of', issue_id: 'iss_a' }
 		]
 	] as const) {
-		it(`rejects the delayed half of ${name}`, async () => {
-			const { t, a, b } = fixture();
-			const env = delayedBy(t, () => addIssueLink(t.db, t.env, actor, b, second));
-			await expectCycle(addIssueLink(t.db, env, actor, a, first), ['demo/']);
-			expect(edges(t)).toHaveLength(1);
-			expect(linkEvents(t)).toHaveLength(2);
-		});
+		for (const reverse of [false, true]) {
+			it(`rejects the delayed half of ${name} (${reverse ? 'reverse' : 'forward'} winner)`, async () => {
+				const { t, a, b } = fixture();
+				let winner: Awaited<ReturnType<typeof addIssueLink>> | undefined;
+				const immediate = reverse
+					? { actor: competingActor, issue: a, body: first }
+					: { actor: competingActor, issue: b, body: second };
+				const delayed = reverse
+					? { actor, issue: b, body: second }
+					: { actor, issue: a, body: first };
+				const env = delayedBy(t, async () => {
+					winner = await addIssueLink(
+						t.db,
+						t.env,
+						immediate.actor,
+						immediate.issue,
+						immediate.body
+					);
+				});
+				await expectCycle(addIssueLink(t.db, env, delayed.actor, delayed.issue, delayed.body), [
+					'demo/'
+				]);
+				expect(edges(t)).toHaveLength(1);
+				expectAcyclic(t);
+				expectWinnerEvents(t, {
+					source: winner!.source_issue_id,
+					target: winner!.target_issue_id,
+					linkId: winner!.id,
+					kind: winner!.kind,
+					actorId: competingActor.apiKeyId!
+				});
+			});
+		}
 	}
 
 	it('rejects a four-node cycle across disjoint competing endpoint pairs', async () => {
@@ -109,12 +219,52 @@ describe('commit-time issue-link graph guard', () => {
 
 	it('accepts concurrent additions whose union is acyclic', async () => {
 		const { t, a, b, c, d } = fixture();
-		const env = delayedBy(t, () =>
-			addIssueLink(t.db, t.env, actor, c, { kind: 'blocks', issue_id: d })
-		);
-		await addIssueLink(t.db, env, actor, a, { kind: 'blocks', issue_id: b });
+		let first: Awaited<ReturnType<typeof addIssueLink>> | undefined;
+		const env = delayedBy(t, async () => {
+			first = await addIssueLink(t.db, t.env, competingActor, c, {
+				kind: 'blocks',
+				issue_id: d
+			});
+		});
+		const second = await addIssueLink(t.db, env, actor, a, { kind: 'blocks', issue_id: b });
 		expect(edges(t)).toHaveLength(2);
-		expect(linkEvents(t)).toHaveLength(4);
+		expectAcyclic(t);
+		expectWinnerEvents(t, {
+			source: c,
+			target: d,
+			linkId: first!.id,
+			actorId: competingActor.apiKeyId!
+		});
+		expectWinnerEvents(t, { source: a, target: b, linkId: second.id });
+	});
+
+	it('accepts shared-node and cross-project concurrent additions', async () => {
+		const { t, a, b, c } = fixture();
+		t.sqlite.prepare("UPDATE issue SET project_id = 'prj_2' WHERE id = ?").run(c);
+		let first: Awaited<ReturnType<typeof addIssueLink>> | undefined;
+		const env = delayedBy(t, async () => {
+			first = await addIssueLink(t.db, t.env, competingActor, a, {
+				kind: 'blocks',
+				issue_id: b
+			});
+		});
+		const second = await addIssueLink(t.db, env, actor, b, {
+			kind: 'blocks',
+			issue_id: c
+		});
+		expectAcyclic(t);
+		expectWinnerEvents(t, {
+			source: a,
+			target: b,
+			linkId: first!.id,
+			actorId: competingActor.apiKeyId!
+		});
+		expectWinnerEvents(t, {
+			source: b,
+			target: c,
+			linkId: second.id,
+			targetProject: 'prj_2'
+		});
 	});
 
 	it('normalizes blocked_by before applying the same guard', async () => {
@@ -157,14 +307,57 @@ describe('commit-time issue-link graph guard', () => {
 		const env = delayedBy(
 			t,
 			async () => {},
-			async () => {
-				t.sqlite.prepare('DELETE FROM issue_link WHERE id = ?').run(link.id);
-			}
+			() => removeIssueLink(t.db, t.env, competingActor, a, link.id)
 		);
 		await expectCycle(addIssueLink(t.db, env, actor, b, { kind: 'blocks', issue_id: a }), [
 			'demo/'
 		]);
 		expect(edges(t)).toEqual([]);
+		expect(linkEvents(t)).toHaveLength(2);
+		expect(t.all("SELECT * FROM event WHERE type = 'issue.link_removed'")).toHaveLength(2);
+	});
+
+	it('accepts an addition when a competing removal commits first', async () => {
+		const { t, a, b } = fixture();
+		const old = await addIssueLink(t.db, t.env, competingActor, a, {
+			kind: 'blocks',
+			issue_id: b
+		});
+		const env = delayedBy(t, () => removeIssueLink(t.db, t.env, competingActor, a, old.id));
+		const replacement = await addIssueLink(t.db, env, actor, b, {
+			kind: 'blocks',
+			issue_id: a
+		});
+		expect(edges(t)).toEqual([{ source: b, target: a, kind: 'blocks' }]);
+		expectAcyclic(t);
+		expectWinnerEvents(t, { source: b, target: a, linkId: replacement.id });
+	});
+
+	it('uses transferred endpoint projects for event ownership and cycle diagnostics', async () => {
+		const { t, a, b } = fixture();
+		const env = delayedBy(t, async () => {
+			t.sqlite.prepare("UPDATE issue SET project_id = 'prj_2' WHERE id = ?").run(b);
+		});
+		const link = await addIssueLink(t.db, env, actor, a, {
+			kind: 'blocks',
+			issue_id: b
+		});
+		expectWinnerEvents(t, {
+			source: a,
+			target: b,
+			linkId: link.id,
+			targetProject: 'prj_2',
+			peerProjectNames: { source: 'demo' }
+		});
+
+		const diagnosticEnv = delayedBy(t, async () => {
+			t.sqlite.prepare("UPDATE issue SET project_id = 'prj_2' WHERE id = ?").run(a);
+		});
+		await expectCycle(
+			addIssueLink(t.db, diagnosticEnv, actor, b, { kind: 'blocks', issue_id: a }),
+			['other-project/']
+		);
+		expect(edges(t)).toHaveLength(1);
 		expect(linkEvents(t)).toHaveLength(2);
 	});
 
@@ -231,6 +424,39 @@ describe('commit-time issue-link graph guard', () => {
 			).rejects.toThrow('injected event failure');
 			expect(edges(t)).toEqual([]);
 			expect(linkEvents(t)).toEqual([]);
+		});
+	}
+
+	it('rolls back the link and events when the final diagnostic statement fails', async () => {
+		const { t, a, b } = fixture();
+		const env = { ...t.env, DB: Object.create(t.env.DB) } as Env;
+		env.DB.batch = async <T = unknown>(statements: Parameters<Env['DB']['batch']>[0]) => {
+			const broken = [...statements];
+			broken[broken.length - 1] = t.env.DB.prepare('SELECT missing_column FROM issue');
+			return t.env.DB.batch<T>(broken);
+		};
+		await expect(
+			addIssueLink(t.db, env, actor, a, { kind: 'blocks', issue_id: b })
+		).rejects.toThrow();
+		expect(edges(t)).toEqual([]);
+		expect(linkEvents(t)).toEqual([]);
+	});
+
+	for (const corruption of ['missing', 'malformed'] as const) {
+		it(`never reports success for a ${corruption} batch receipt`, async () => {
+			const { t, a, b } = fixture();
+			const env = { ...t.env, DB: Object.create(t.env.DB) } as Env;
+			env.DB.batch = async <T = unknown>(statements: Parameters<Env['DB']['batch']>[0]) => {
+				const results = await t.env.DB.batch<T>(statements);
+				const receipt = results[3] as { results: unknown[] };
+				receipt.results = corruption === 'missing' ? [] : [{ inserted: 9 }];
+				return results;
+			};
+			await expect(
+				addIssueLink(t.db, env, actor, a, { kind: 'blocks', issue_id: b })
+			).rejects.toThrow(/receipt/);
+			expect(edges(t)).toHaveLength(1);
+			expect(linkEvents(t)).toHaveLength(2);
 		});
 	}
 
