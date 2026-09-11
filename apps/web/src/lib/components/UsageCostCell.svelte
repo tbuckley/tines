@@ -2,7 +2,12 @@
 	import { usageCostLabel, type UsageAggregate } from '@tines/shared';
 	let { aggregate }: { aggregate: UsageAggregate } = $props();
 	let open = $state(false);
+	let dialog = $state<HTMLDialogElement>();
 	const estimated = $derived(aggregate.portions.calculated.priced_run_count > 0);
+	$effect(() => {
+		if (open && dialog && !dialog.open) dialog.showModal();
+		if (!open && dialog?.open) dialog.close();
+	});
 </script>
 
 <div class="cost-cell">
@@ -11,7 +16,7 @@
 </div>
 
 {#if open}
-	<dialog open aria-label="Estimate basis" oncancel={() => (open = false)}>
+	<dialog bind:this={dialog} aria-label="Estimate basis" onclose={() => (open = false)}>
 		<h3>Estimate basis</h3>
 		<p>Standard API list-price estimates; not an invoice or subscription allowance.</p>
 		{#if aggregate.rate_portions.length}

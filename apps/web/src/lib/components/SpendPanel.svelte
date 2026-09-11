@@ -25,6 +25,7 @@
 	let expanded = $state(new Set<string>());
 	let customFrom = $state(''),
 		customTo = $state('');
+	let customInitialized = $state(false);
 	const selectedProject = $derived(page.url.searchParams.get('spend_project') ?? focusId ?? 'all');
 	const window = $derived(
 		(page.url.searchParams.get('spend_window') ?? '7d') as UsageWindow | 'custom'
@@ -44,6 +45,11 @@
 	}
 
 	async function load(refresh = false) {
+		if (
+			window === 'custom' &&
+			(!page.url.searchParams.get('spend_from') || !page.url.searchParams.get('spend_to'))
+		)
+			return;
 		const id = ++requestId;
 		if (refresh && report) refreshing = true;
 		else {
@@ -75,6 +81,11 @@
 	}
 
 	$effect(() => {
+		if (window === 'custom' && !customInitialized) {
+			customFrom = page.url.searchParams.get('spend_from') ?? '';
+			customTo = page.url.searchParams.get('spend_to') ?? '';
+			customInitialized = true;
+		}
 		const signature = [
 			selectedProject,
 			window,
@@ -157,12 +168,9 @@
 
 	<div aria-live="polite">
 		{#if loading}<p>Loading spend…</p>
-		{:else if error}<p class="error">
-				{report
-					? `Refresh failed · showing previous report: ${error}`
-					: `Spend unavailable: ${error}`}
-			</p>
+		{:else if error && !report}<p class="error">Spend unavailable: {error}</p>
 		{:else if report}
+			{#if error}<p class="error">Refresh failed · showing previous report: {error}</p>{/if}
 			<header class="statement">
 				<div>
 					<p id="spend-heading">Project total · all workflows</p>

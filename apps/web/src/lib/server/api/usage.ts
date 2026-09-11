@@ -70,6 +70,36 @@ function scanQuery(db: Kysely<Database>, userId: string) {
 
 type UsageRow = Awaited<ReturnType<ReturnType<typeof scanQuery>['execute']>>[number];
 
+async function scanAll(
+	query: ReturnType<typeof scanQuery>,
+	orderColumn: 'agent_run.ended_at' | 'agent_run.created_at'
+): Promise<UsageRow[]> {
+	const result: UsageRow[] = [];
+	let boundary: { at: number; id: string } | null = null;
+	for (;;) {
+		let page = query;
+		if (boundary)
+			page = page.where((eb) =>
+				eb.or([
+					eb(orderColumn, '<', boundary!.at),
+					eb.and([eb(orderColumn, '=', boundary!.at), eb('agent_run.id', '<', boundary!.id)])
+				])
+			);
+		const rows = await page
+			.orderBy(`${orderColumn} desc`)
+			.orderBy('agent_run.id desc')
+			.limit(10_000)
+			.execute();
+		result.push(...rows);
+		if (rows.length < 10_000) return result;
+		const last = rows.at(-1)!;
+		boundary = {
+			at: (orderColumn === 'agent_run.ended_at' ? last.ended_at : last.created_at)!,
+			id: last.id
+		};
+	}
+}
+
 function dimensions(row: UsageRow) {
 	const workflowId = row.start_workflow_id ?? row.issue_workflow_id ?? null;
 	const workflowName =
@@ -159,10 +189,7 @@ export async function getUsage(
 	if (filters.project && filters.project !== 'unknown')
 		q = q.where('project.id', '=', filters.project);
 	if (filters.project === 'unknown') q = q.where('project.id', 'is', null);
-	const scopeRows = await q
-		.orderBy('agent_run.ended_at desc')
-		.orderBy('agent_run.id desc')
-		.execute();
+	const scopeRows = await scanAll(q, 'agent_run.ended_at');
 	const matchingRows = scopeRows.filter((row) => matches(row, { ...filters, project: undefined }));
 	const grouped = new Map<string, { dimension: UsageDimension; usages: unknown[] }>();
 	for (const row of matchingRows) {
@@ -189,7 +216,7 @@ export async function getUsage(
 	if (filters.project && filters.project !== 'unknown')
 		pendingQ = pendingQ.where('project.id', '=', filters.project);
 	if (filters.project === 'unknown') pendingQ = pendingQ.where('project.id', 'is', null);
-	const pendingRows = await pendingQ.execute();
+	const pendingRows = await scanAll(pendingQ, 'agent_run.created_at');
 	const pendingFilters = { ...filters, outcome: undefined, accounting_status: undefined };
 	const workflowOptions = new Map<string | null, UsageDimension>();
 	for (const row of scopeRows)

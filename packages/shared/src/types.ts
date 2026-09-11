@@ -2288,6 +2288,22 @@ export interface AgentRun {
 	ended_at: number | null;
 }
 
+/** Historical as-of evidence for a run that had not ended at the reporting cutoff. */
+export interface UsagePendingRun {
+	id: string;
+	issue_id: string;
+	issue_ref: IssueRef | null;
+	runner_id: string;
+	runner_name: string;
+	tier: ModelTier;
+	state_id_at_start: string;
+	state_at_start_name: string | null;
+	created_at: number;
+	pending_at: number;
+	usage_dimensions: null;
+	accounting_status: 'pending';
+}
+
 /** Detail read: adds the captured log tail. */
 export interface AgentRunDetail extends AgentRun {
 	log: string;

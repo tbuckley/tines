@@ -35,9 +35,9 @@ function printReport(report: UsageReport): void {
 	console.log(
 		`generated ${new Date(report.generated_at).toISOString()} · ${report.accounting_basis}`
 	);
-	const total = report.scope_total;
+	const scope = report.scope_total;
 	console.log(
-		`Scope total: ${money(total.cost_usd)} · ${total.coverage} · ${total.finalized_run_count} finalized · ${total.priced_run_count} priced · ${total.unpriced_run_count + total.unreported_run_count} without price`
+		`Scope total: ${money(scope.cost_usd)} · ${scope.coverage} · ${scope.finalized_run_count} finalized · ${scope.priced_run_count} priced · ${scope.unpriced_run_count + scope.unreported_run_count} without price`
 	);
 	if (
 		JSON.stringify(report.filters) !==
@@ -48,6 +48,7 @@ function printReport(report: UsageReport): void {
 			`Matching subtotal: ${money(matching.cost_usd)} · ${matching.coverage} · ${matching.finalized_run_count} finalized`
 		);
 	}
+	const total = report.matching_total;
 	console.log(
 		`Pending at cutoff: ${report.pending.matching_count}${report.pending.unapplied_filters.length ? ` (before ${report.pending.unapplied_filters.join('/')} filters)` : ''}`
 	);
@@ -71,7 +72,7 @@ function printReport(report: UsageReport): void {
 	if (report.groups.some((g) => g.aggregate.distribution.low_sample))
 		console.log('Small samples (under 20): p95 equals maximum.');
 	console.log(
-		`Tokens: ${Object.entries(total.tokens)
+		`Matching tokens: ${Object.entries(total.tokens)
 			.map(
 				([name, t]) =>
 					`${name} ${t.value ?? 'unknown'} (${t.reported_runs}/${total.finalized_run_count} runs)`
@@ -79,8 +80,16 @@ function printReport(report: UsageReport): void {
 			.join(' · ')}`
 	);
 	console.log(
-		`Sources: provider ${total.portions.provider.cost_usd_exact} · calculated ${total.portions.calculated.cost_usd_exact} · unknown ${total.portions.unknown_source.cost_usd_exact}`
+		`Matching sources: provider ${total.portions.provider.cost_usd_exact} · calculated ${total.portions.calculated.cost_usd_exact} · unknown ${total.portions.unknown_source.cost_usd_exact}`
 	);
+	for (const portion of total.rate_portions) {
+		const basis = portion.basis;
+		console.log(
+			basis
+				? `Rate: ${basis.rate_id} v${basis.rate_version} · ${basis.model} · ${basis.source_url}`
+				: `Rate: historical calculated amount · basis unavailable`
+		);
+	}
 }
 
 export function register(program: Command): void {
