@@ -14,23 +14,56 @@ export function packageReceipt(
 	now: number
 ): WorkflowPackageReceipt {
 	const objects: WorkflowPackageReceipt['objects'] = [];
-	for (const w of resolved.workflows)
+	for (const w of resolved.workflows) {
+		const workflowId = plan.allocation.records[w.id].id;
 		objects.push({
 			kind: 'workflow',
 			local_id: w.id,
-			id: plan.allocation.records[w.id].id,
+			id: workflowId,
 			name: w.name,
-			href: `/workflows/${plan.allocation.records[w.id].id}`,
+			href: `/workflows/${workflowId}`,
 			relationship: w.id === mainId ? 'main' : 'dependency'
 		});
-	for (const c of resolved.context)
+		for (const state of w.states)
+			objects.push({
+				kind: 'state',
+				local_id: state.id,
+				id: plan.allocation.records[state.id].id,
+				name: state.name,
+				href: `/workflows/${workflowId}#state-${plan.allocation.records[state.id].id}`
+			});
+		for (const transition of w.transitions)
+			objects.push({
+				kind: 'transition',
+				local_id: transition.id,
+				id: plan.allocation.records[transition.id].id,
+				name: transition.name,
+				href: `/workflows/${workflowId}`
+			});
+	}
+	for (const c of resolved.context) {
+		const workflowId =
+			plan.allocation.records[
+				resolved.workflows.find((w) => w.states.some((s) => s.id === c.state_id))!.id
+			].id;
+		const href = `/context?workflow=${workflowId}&q=${encodeURIComponent(c.name)}`;
 		objects.push({
 			kind: c.kind,
 			local_id: c.id,
 			id: plan.allocation.records[c.id].id,
 			name: c.name,
-			href: `/context?workflow=${plan.allocation.records[resolved.workflows.find((w) => w.states.some((s) => s.id === c.state_id))!.id].id}&q=${encodeURIComponent(c.name)}`
+			href
 		});
+		if (c.kind === 'skill')
+			for (const file of c.files)
+				objects.push({
+					kind: 'file',
+					local_id: file.id,
+					id: plan.allocation.records[file.id].id,
+					name: file.path,
+					href
+				});
+	}
 	for (const input of resolved.inputs)
 		if (input.mode === 'create')
 			objects.push({
