@@ -1,6 +1,6 @@
 # Workflow package files
 
-Implementation status: the foundation provides v3 whole-library transfer, workflow closure export, file validation, and signed read-only destination preparation. Atomic install/receipt recovery, workflow CLI commands, browser package authoring/install, and real-run acceptance are planned successor work. Whole-library import remains best effort; it is not an atomic workflow installation.
+Implementation status: the foundation provides v3 whole-library transfer, workflow closure export, file validation, signed destination preparation, atomic install, and durable receipt recovery. The CLI, browser package authoring/install, and integrated real-run acceptance remain successor work. Whole-library import remains best effort; it is not an atomic workflow installation.
 
 ## Export and validate a workflow
 
@@ -72,3 +72,28 @@ expiry. Recover it separately with `GET /api/v1/library/installs/<plan_id>`;
 owner access survives API-key rotation. A missing receipt after a possibly lost
 response is not proof of rollback—retry the same signed request. Run keys may
 read an owner receipt but cannot commit an installation.
+
+## Native D1 verification
+
+`apps/web/e2e/native-install.spec.ts` is the release gate for behavior that a
+Node SQLite fixture cannot prove. It boots the built Worker against a fresh
+Wrangler D1 database, applies the repository migrations and triggers, drives
+the public prepare/install/recovery endpoints, and audits durable rows with
+Wrangler. Temporary database triggers inject failures without exposing any
+test-only application endpoint or production switch.
+
+Run it from the repository root:
+
+```sh
+E2E_PORT=8791 pnpm --filter web exec playwright test e2e/native-install.spec.ts
+```
+
+The gate submits the complete 800-statement compiled batch and proves its
+single receipt/object copies. The 801+ case is rejected by preparation before
+any write. It also injects native failures into workflow, state, transition,
+context, file, inherited-pointer, label, and event phases and verifies full
+rollback, then exercises discarded-response recovery and concurrent retries.
+The application limits remain 800 statements, 90 bound parameters and 90 KiB
+of UTF-8 SQL per statement, 1 MiB per stored value, 5 MiB per document, and
+1,000 portable records. The smaller document, prompt, skill, and field limits
+still apply before compilation.
