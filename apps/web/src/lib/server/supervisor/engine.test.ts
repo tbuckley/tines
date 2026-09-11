@@ -916,14 +916,33 @@ describe('end judgment', () => {
 		const t = world();
 		const { issue, runId } = await runningRun(t);
 		const run = await loadEndableRun(t.db, USER, runId);
-		expect((await endRun(t.db, t.env, run!, { status: 'completed', now: NOW + 1000 })).ended).toBe(
-			true
-		);
-		expect((await endRun(t.db, t.env, run!, { status: 'canceled', now: NOW + 2000 })).ended).toBe(
-			false
-		);
+		const winnerUsage = JSON.stringify({ cost_usd: 1, cost_source: 'priced' });
+		expect(
+			(
+				await endRun(t.db, t.env, run!, {
+					status: 'completed',
+					now: NOW + 1000,
+					finalReport: { usage: winnerUsage, provider_session_id: 'winner' }
+				})
+			).ended
+		).toBe(true);
+		expect(
+			(
+				await endRun(t.db, t.env, run!, {
+					status: 'canceled',
+					now: NOW + 2000,
+					finalReport: {
+						usage: JSON.stringify({ cost_usd: 99 }),
+						provider_session_id: 'loser'
+					}
+				})
+			).ended
+		).toBe(false);
+		expect(runById(t, runId)).toMatchObject({ usage: winnerUsage, provider_session_id: 'winner' });
 		expect(issueById(t, issue).attempt_count).toBe(1);
-		expect(eventsOfType(t, 'agent_run.ended')).toHaveLength(1);
+		const events = eventsOfType(t, 'agent_run.ended');
+		expect(events).toHaveLength(1);
+		expect(events[0].payload.usage).toEqual({ cost_usd: 1, cost_source: 'priced' });
 	});
 
 	it('two ends with identical status and clock still apply exactly once', async () => {
