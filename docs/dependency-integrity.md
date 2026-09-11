@@ -38,4 +38,16 @@ If an audit finds a legacy cycle, attach the complete report and open an operato
 
 ## Native verification
 
-Before release, run the isolated migration-backed concurrency suite and the real local Wrangler/D1 request suite. Record Wrangler and workerd versions, reciprocal blocking, duplicate-only, mixed, disjoint four-node, alias, acyclic, exact-duplicate and second-canonical outcomes. Inspect the resulting links and `issue.link_added` events, and run `EXPLAIN QUERY PLAN` for the compiled guard; the source-led unique index should serve recursive expansion. Exercise at least a 1,000-node chain and converging fan-out, both valid insertion and cycle rejection, and record elapsed time and diagnostic size. A later-statement failure must leave no link or event. Failure of these native gates requires redesign rather than weakening or capping the traversal.
+The implementation gate was run on 2026-09-11 on arm64 macOS with Node 26.2.0, Wrangler 4.130.0, Miniflare 5.20260908.0-alpha and workerd 1.20260908.1. The command is:
+
+```sh
+pnpm --filter @tines/web exec playwright test e2e/native-links.spec.ts
+```
+
+The native suite sends requests through the built worker and inspects the local D1 store independently with `wrangler d1 execute --local --persist-to .wrangler-e2e`. It runs 20 fresh pairs for each reciprocal-block, duplicate-only, mixed, and `blocked_by` alias race, alternating which of two API keys launches first. Each iteration requires one `201`, one `422 link_cycle`, an acyclic one-edge graph, no losing event, and two winning events with the same link ID, opposing roles, correct peer metadata/project, and the winning API-key actor. Both sequential orders are controls. Separate cases cover the disjoint four-node closure, two concurrent valid additions, exact duplicates, second-canonical duplicates, and direct graph/event/actor audits.
+
+The real POST route was also run with a local D1 trigger forcing the target event statement to fail. D1 returned `SQLITE_CONSTRAINT_TRIGGER`; the independently read store contained neither the earlier inserted link nor either event, proving later-statement rollback for the real five-statement builder.
+
+The large-graph gate seeds a 1,001-node/1,000-edge chain and a 1,002-node/2,000-edge converging fan-out. It exercises both a valid insertion and a rejected cycle through the real API for each graph, requires the complete 1,002-step chain diagnostic and four-step fan-out diagnostic, and prints request timings and diagnostic sizes in the test output. On the environment above the whole four-request/plan test completed in 1.6 seconds. `EXPLAIN QUERY PLAN` reported `SEARCH link USING COVERING INDEX sqlite_autoindex_issue_link_2 (source_issue_id=?)` for the recursive expansion. Each builder statement has a graph-size-independent binding count below D1's 100-parameter limit and SQL text below 100,000 bytes; large fixture setup is deliberately chunked because these platform statement limits also apply to test seeding.
+
+Run this gate before release and retain its printed evidence in CI. A later-statement failure must leave no link or event. Failure of the native race, traversal, plan, or rollback checks requires redesign rather than weakening or capping the traversal.

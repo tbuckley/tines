@@ -14,6 +14,7 @@ import { join } from 'node:path';
 import {
 	AGENTS_FIRST_RUN,
 	ALICE,
+	ALICE_AGENT,
 	API_ISOLATION,
 	BOB,
 	CAROL,
@@ -56,6 +57,11 @@ for (const user of [
 		 VALUES ('key_${user.id}', '${user.id}', '${user.apiKeyName}', '${sha256Hex(user.apiKey)}', '${user.apiKey.slice(0, 14)}', ${nowMs});`
 	);
 }
+
+statements.push(
+	`INSERT INTO api_key (id, user_id, name, key_hash, key_prefix, created_at)
+	 VALUES ('${ALICE_AGENT.id}', '${ALICE.id}', '${ALICE_AGENT.apiKeyName}', '${sha256Hex(ALICE_AGENT.apiKey)}', '${ALICE_AGENT.apiKey.slice(0, 14)}', ${nowMs});`
+);
 
 // Alice's seeded active managed runner is display-only. Keep the broad shared
 // fixture inert when unrelated specs create eligible issues or routing rules.
