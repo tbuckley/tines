@@ -64,6 +64,13 @@ test('CLI export, preview, install, and same-plan receipt retry use the real loc
 	) as PrepareWorkflowPackageResponse;
 	expect(plan.document_digest).toBe(document.digest);
 	expect(plan.operations.some((operation) => operation.action === 'create')).toBe(true);
+	expect(
+		new Set(
+			plan.operations.map(
+				(operation) => `${operation.action}:${operation.kind}:${operation.local_id}`
+			)
+		).size
+	).toBe(plan.operations.length);
 
 	const installArgs = [
 		'workflows',

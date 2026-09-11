@@ -2,6 +2,7 @@ import {
 	canonicalizeLibraryValue,
 	LABEL_COLORS,
 	type PackageAllocation,
+	type WorkflowPackageBudget,
 	type WorkflowPackageChoices,
 	type WorkflowPackageDocument
 } from '@tines/shared';
@@ -27,6 +28,7 @@ export interface PackagePlanPayload {
 	allocation: PackageAllocation;
 	selection: DestinationSelection;
 	witness_hash: string;
+	budget: WorkflowPackageBudget;
 }
 export function packageActorKey(actor: ActorContext): string {
 	if (actor.viaSession) return `session:${actor.userId}`;
@@ -82,7 +84,8 @@ function payloadShape(value: unknown): value is PackagePlanPayload {
 		'choices',
 		'allocation',
 		'selection',
-		'witness_hash'
+		'witness_hash',
+		'budget'
 	];
 	if (Object.keys(p).length !== required.length || !required.every((k) => Object.hasOwn(p, k)))
 		return false;
@@ -109,7 +112,23 @@ function payloadShape(value: unknown): value is PackagePlanPayload {
 		if (typeof p[field] !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(p[field] as string))
 			return false;
 	if (typeof p.witness_hash !== 'string' || !/^[0-9a-f]{64}$/.test(p.witness_hash)) return false;
-	return choicesShape(p.choices) && allocationShape(p.allocation) && selectionShape(p.selection);
+	return (
+		choicesShape(p.choices) &&
+		allocationShape(p.allocation) &&
+		selectionShape(p.selection) &&
+		budgetShape(p.budget)
+	);
+}
+
+function budgetShape(value: unknown): boolean {
+	if (
+		!plain(value) ||
+		!exactKeys(value, ['statements', 'max_parameters', 'max_sql_bytes', 'max_value_bytes'])
+	)
+		return false;
+	return Object.values(value).every(
+		(entry) => Number.isSafeInteger(entry) && (entry as number) >= 0
+	);
 }
 
 const plain = (value: unknown): value is Record<string, unknown> =>

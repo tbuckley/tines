@@ -7,7 +7,6 @@ import {
 	pickWorkflow,
 	printJson,
 	printList,
-	resolveApiKey,
 	resolveProject,
 	resolveUrl,
 	resolveWorkflow,
@@ -581,7 +580,8 @@ function registerPackageCommands(workflows: Command): void {
 					die(`plan belongs to ${saved.api_base}, not ${apiBase}`);
 				if (
 					saved.document_digest !== document.digest ||
-					saved.plan.document_digest !== document.digest
+					saved.plan.document_digest !== document.digest ||
+					canonicalWorkflowPackage(saved.plan.document) !== canonicalWorkflowPackage(document)
 				)
 					die(
 						`package digest ${document.digest} does not match saved plan ${saved.document_digest}`
@@ -607,9 +607,6 @@ function registerPackageCommands(workflows: Command): void {
 				process.stderr.write(`${formatWorkflowPackageReview(plan)}\n`);
 			}
 
-			const key = resolveApiKey(opts);
-			if (key?.startsWith('trk_'))
-				die('run keys cannot install workflow packages; use a named API key or browser session');
 			const receipt = await recoverOrInstall(api, raw, plan);
 			if (opts.json) printJson(receipt);
 			else {

@@ -1,4 +1,5 @@
 import { createInterface } from 'node:readline/promises';
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import {
 	ApiError,
@@ -69,7 +70,25 @@ export function saveWorkflowPackagePlan(
 
 export function readWorkflowPackagePlan(path: string): SavedWorkflowPackagePlan {
 	const saved = readStrictObject<Record<string, unknown>>(path, 'plan file');
+	const outerKeys = ['format', 'version', 'api_base', 'document_digest', 'plan'];
+	const planKeys = [
+		'operations',
+		'document',
+		'resolved',
+		'allocation',
+		'plan_id',
+		'plan_digest',
+		'document_digest',
+		'issued_at',
+		'expires_at',
+		'actor_key',
+		'compiler_version',
+		'plan_token',
+		'budget'
+	];
 	if (
+		Object.keys(saved).length !== outerKeys.length ||
+		!Object.keys(saved).every((key) => outerKeys.includes(key)) ||
 		saved.format !== 'tines.workflow-install-plan' ||
 		saved.version !== 1 ||
 		typeof saved.api_base !== 'string' ||
@@ -77,11 +96,163 @@ export function readWorkflowPackagePlan(path: string): SavedWorkflowPackagePlan 
 		!saved.plan ||
 		typeof saved.plan !== 'object' ||
 		typeof (saved.plan as Record<string, unknown>).plan_token !== 'string' ||
-		typeof (saved.plan as Record<string, unknown>).plan_digest !== 'string'
+		typeof (saved.plan as Record<string, unknown>).plan_digest !== 'string' ||
+		Object.keys(saved.plan as Record<string, unknown>).length !== planKeys.length ||
+		!Object.keys(saved.plan as Record<string, unknown>).every((key) => planKeys.includes(key))
 	) {
 		throw new Error('invalid workflow package plan file');
 	}
-	return saved as unknown as SavedWorkflowPackagePlan;
+	const result = saved as unknown as SavedWorkflowPackagePlan;
+	assertPlanBinding(result.plan);
+	return result;
+}
+
+function tokenPayload(token: string): Record<string, unknown> {
+	const parts = token.split('.');
+	if (
+		token.length > 700_000 ||
+		parts.length !== 3 ||
+		parts[0] !== 'wip1' ||
+		!parts.slice(1).every((part) => /^[A-Za-z0-9_-]+$/.test(part))
+	)
+		throw new Error('invalid workflow package plan token');
+	try {
+		const bytes = Buffer.from(parts[1], 'base64url');
+		if (bytes.toString('base64url') !== parts[1]) throw new Error();
+		const value: unknown = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
+		if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error();
+		return value as Record<string, unknown>;
+	} catch {
+		throw new Error('invalid workflow package plan token');
+	}
+}
+
+export function expectedWorkflowPackageOperations(plan: PrepareWorkflowPackageResponse) {
+	const operations = [];
+	for (const workflow of plan.resolved.workflows) {
+		const workflowId = plan.allocation.records[workflow.id]?.id;
+		const href = `/workflows/${workflowId}`;
+		operations.push({
+			action: 'create',
+			kind: 'workflow',
+			local_id: workflow.id,
+			id: workflowId,
+			name: workflow.name,
+			href,
+			relationship: workflow.id === plan.document.main_workflow_id ? 'main' : 'dependency'
+		});
+		for (const state of workflow.states)
+			operations.push({
+				action: 'create',
+				kind: 'state',
+				local_id: state.id,
+				id: plan.allocation.records[state.id]?.id,
+				name: state.name,
+				href: `${href}#state-${plan.allocation.records[state.id]?.id}`
+			});
+		for (const transition of workflow.transitions)
+			operations.push({
+				action: 'create',
+				kind: 'transition',
+				local_id: transition.id,
+				id: plan.allocation.records[transition.id]?.id,
+				name: transition.name,
+				href
+			});
+	}
+	for (const item of plan.resolved.context) {
+		const workflow = plan.resolved.workflows.find((candidate) =>
+			candidate.states.some((state) => state.id === item.state_id)
+		);
+		const href = `/context?workflow=${plan.allocation.records[workflow?.id ?? '']?.id}&q=${encodeURIComponent(item.name)}`;
+		operations.push({
+			action: 'create',
+			kind: item.kind,
+			local_id: item.id,
+			id: plan.allocation.records[item.id]?.id,
+			name: item.name,
+			href
+		});
+		if (item.kind === 'skill')
+			for (const file of item.files)
+				operations.push({
+					action: 'create',
+					kind: 'file',
+					local_id: file.id,
+					id: plan.allocation.records[file.id]?.id,
+					name: file.path,
+					href
+				});
+	}
+	for (const input of plan.resolved.inputs) {
+		if (input.mode === 'create')
+			operations.push({
+				action: 'create',
+				kind: 'label',
+				local_id: input.input_id,
+				id: input.id,
+				name: input.value,
+				href: '/labels'
+			});
+		if (input.mode === 'reuse')
+			operations.push({
+				action: 'reuse',
+				kind: input.type,
+				local_id: input.input_id,
+				id: input.id,
+				name: input.value,
+				href:
+					input.type === 'workflow'
+						? `/workflows/${input.id}`
+						: input.type === 'project'
+							? `/projects/${input.id}`
+							: '/labels'
+			});
+	}
+	for (const skip of plan.resolved.skipped)
+		operations.push({
+			action: 'skip',
+			kind: skip.kind,
+			local_id: skip.local_id,
+			id: null,
+			name:
+				skip.kind === 'schedule'
+					? plan.document.schedules.find((item) => item.id === skip.local_id)?.name
+					: plan.document.routing.find((item) => item.id === skip.local_id)?.tier,
+			href: null
+		});
+	return operations;
+}
+
+export function assertPlanBinding(plan: PrepareWorkflowPackageResponse): void {
+	const payload = tokenPayload(plan.plan_token);
+	const { plan_digest: signedDigest, ...unsigned } = payload;
+	const digest = `sha256:${createHash('sha256')
+		.update(canonicalizeLibraryValue({ plan: unsigned, resolved: plan.resolved }))
+		.digest('hex')}`;
+	const mirrors = {
+		id: plan.plan_id,
+		plan_digest: plan.plan_digest,
+		document_digest: plan.document_digest,
+		issued_at: plan.issued_at,
+		expires_at: plan.expires_at,
+		actor_key: plan.actor_key,
+		compiler_version: plan.compiler_version,
+		allocation: plan.allocation,
+		budget: plan.budget
+	};
+	for (const [field, value] of Object.entries(mirrors)) {
+		const signedField = field === 'id' ? 'id' : field;
+		if (canonicalizeLibraryValue(payload[signedField]) !== canonicalizeLibraryValue(value))
+			throw new Error(`saved workflow package plan has modified ${field}`);
+	}
+	if (signedDigest !== digest || plan.plan_digest !== digest)
+		throw new Error('saved workflow package plan digest does not bind its review');
+	if (
+		canonicalizeLibraryValue(plan.operations) !==
+		canonicalizeLibraryValue(expectedWorkflowPackageOperations(plan))
+	)
+		throw new Error('saved workflow package plan has modified operations');
 }
 
 const lines = (heading: string, values: string[]) =>
@@ -120,17 +291,17 @@ export function formatWorkflowPackageReview(plan: PrepareWorkflowPackageResponse
 		'',
 		...lines(
 			'Inputs:',
-			resolved.inputs.map(
-				(input) =>
-					`${input.input_id} (${input.type}, ${input.mode}): ${input.value}${input.id ? ` [${input.id}]` : ''}`
-			)
+			document.inputs.map((declaration) => {
+				const input = resolved.inputs.find((candidate) => candidate.input_id === declaration.id);
+				return `${declaration.id} ${declaration.key}: ${declaration.label} — ${declaration.description}\n    type: ${declaration.type}; required: ${declaration.required ? 'yes' : 'no'}; default: ${declaration.default ?? 'none'}; required states: ${declaration.required_states?.join(', ') || 'none'}\n    resolution: ${input?.mode ?? 'missing'}; value: ${input?.value ?? 'missing'}${input?.id ? ` [${input.id}]` : ''}`;
+			})
 		),
 		'',
 		...lines(
 			'Original and rendered text:',
 			resolved.patches.map(
 				(patch) =>
-					`${patch.record_id}.${patch.field}\n    original: ${patch.original}\n    rendered: ${patch.rendered}`
+					`${patch.record_id}.${patch.field}\n    original: ${patch.original}\n    rendered: ${patch.rendered}\n    uses: ${patch.uses.length ? patch.uses.map((use) => `${use.id} -> ${use.input_id} (${use.count} occurrence${use.count === 1 ? '' : 's'})`).join(', ') : 'none'}`
 			)
 		),
 		'',
@@ -238,8 +409,17 @@ export async function recoverOrInstall(
 	raw: string,
 	plan: PrepareWorkflowPackageResponse
 ): Promise<WorkflowPackageReceipt> {
+	const checked = (receipt: WorkflowPackageReceipt) => {
+		if (
+			receipt.id !== plan.plan_id ||
+			receipt.document_digest !== plan.document_digest ||
+			receipt.plan_digest !== plan.plan_digest
+		)
+			throw new Error('recovered workflow package receipt does not match the saved plan');
+		return receipt;
+	};
 	try {
-		return await api.getWorkflowPackageReceipt(plan.plan_id);
+		return checked(await api.getWorkflowPackageReceipt(plan.plan_id));
 	} catch (error) {
 		if (!(error instanceof ApiError) || error.status !== 404) throw error;
 	}
@@ -249,17 +429,17 @@ export async function recoverOrInstall(
 		confirmation: { plan_digest: plan.plan_digest }
 	};
 	try {
-		return await api.installWorkflowPackage(request);
+		return checked(await api.installWorkflowPackage(request));
 	} catch (first) {
 		// A structured server refusal is certain and retrying it can never help.
 		// Only a transport failure leaves the commit outcome unknown.
 		if (!(first instanceof ApiNetworkError)) throw first;
 		try {
-			return await api.getWorkflowPackageReceipt(plan.plan_id);
+			return checked(await api.getWorkflowPackageReceipt(plan.plan_id));
 		} catch (recovery) {
 			if (!(recovery instanceof ApiError) || recovery.status !== 404) throw first;
 		}
-		return api.installWorkflowPackage(request);
+		return checked(await api.installWorkflowPackage(request));
 	}
 }
 
