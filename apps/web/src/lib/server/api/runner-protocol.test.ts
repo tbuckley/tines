@@ -306,7 +306,7 @@ describe('pollRunner', () => {
 			const id = addRunner(t);
 			await expectFail(
 				() =>
-					pollRunner(t.db, t.env, runnerById(t, id) as RunnerRow, {
+					pollRunner(t.db, t.env, runnerById(t, id) as unknown as RunnerRow, {
 						instance_id: instance_id as string,
 						owned_runs: []
 					}),

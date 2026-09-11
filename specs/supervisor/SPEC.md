@@ -243,7 +243,7 @@ Two triggers, one code path:
 
 ```
 POST /api/v1/runners/register     user API key auth → { runner, runner_token }   (token shown once)
-POST /api/v1/runners/:id/poll     runner-token auth; heartbeat + { owned_runs: [run_id, …] } →
+POST /api/v1/runners/:id/poll     runner-token auth; heartbeat + { instance_id?, owned_runs: [run_id, …] } →
                                   { assignments: [ { run, prompt, bundle, run_key, timeout } ],
                                     cancels: [run_id, …] }
 POST /api/v1/runs/:id/logs        runner-token auth; { chunk, seq? } appended
@@ -253,8 +253,9 @@ POST /api/v1/runs/:id/finish      runner-token auth; { status: 'completed'|'fail
 
 Protocol semantics that make daemon failures survivable:
 
-- **Delivery is one-shot.** Handing an assignment to a poll response is the same guarded `assigned → launching` state flip as everything else — a run is delivered exactly once, so two daemons mistakenly sharing one runner token cannot both execute it (the config-copied-to-two-terminals case). Sharing a token is still wrong — the daemons fight over heartbeat and assignments interleave arbitrarily (last-poller-wins) — but it degrades to confusion, not duplicate work.
-- **`owned_runs` reconciles reality.** Each poll reports the run ids the daemon is actually executing; the supervisor fails any of that runner's `running` runs *not* in the list (the daemon restarted and lost them) rather than waiting for the timeout.
+- **Daemon boots are fenced before poll effects.** A current daemon sends one random `instance_id` for its lifetime. A previously unseen id atomically becomes current (database commit order defines the newest boot), remembers the immediately previous id as fenced, and records `runner.daemon_replaced`; a poll from that fenced id gets `409 runner_conflict` before heartbeat, reconciliation, or delivery and exits. Initial ownership is silent. Legacy daemons that omit the optional id remain unfenced, and the two-column fence remembers only one predecessor. A poll admitted before a takeover may still finish, and log/finish endpoints remain runner-token authenticated rather than instance-fenced.
+- **Delivery is one-shot.** Handing an assignment to a poll response is the same guarded `assigned → launching` state flip as everything else — a run is delivered exactly once. Instance fencing additionally makes two current daemons mistakenly sharing one runner token converge: the newest admitted boot wins and the superseded boot exits.
+- **`owned_runs` reconciles reality only for an admitted current instance (or a legacy poll).** Each trusted poll reports the run ids the daemon is actually executing; the supervisor fails any of that runner's `running` runs *not* in the list (the daemon restarted and lost them) rather than waiting for the timeout. A fenced poll is rejected before this comparison.
 - **`cancels` means kill, not finish.** A run id in a poll response's `cancels` list tells the daemon the supervisor has already settled that run's fate (cancel, timeout, the offline sweep): kill the process now and do **not** `finish`-report it — a suspended-then-woken harness whose run was failed while the machine slept is killed without being re-reported as a fresh failure.
 - **The daemon persists a state file** (run id → PID, workspace path, run key fingerprint) in its config dir. On startup it kills orphaned harness processes from a previous life, `finish`-fails their runs, and removes their workspaces — a crashed daemon must not leave a zombie Claude Code spending against a still-valid key.
 
@@ -269,6 +270,7 @@ runner            id, user_id, type, name, status, max_concurrent, max_run_minut
                   config(JSON),            -- non-secret config (harness, per-tier agent ids, vault id, hostname)
                   secret_enc?,             -- encrypted provider API key (managed types)
                   runner_token_hash?,      -- local type
+                  daemon_instance_id?, fenced_instance_id?, -- current boot + immediate predecessor
                   last_seen_at?, launch_failures, backoff_until?, backoff_reason?, created_at, updated_at
                   -- unique (user_id, name)
 
@@ -297,7 +299,7 @@ issue             + pinned_runner_id?, pinned_tier?, attempt_count, needs_attent
 api_key           + agent_run_id?, expires_at?      -- run keys; NULL for ordinary keys
 ```
 
-Events (open string types, named after their table like `scheduled_task.*`): `runner.registered`, `runner.updated`, `runner.removed`, `runner.errored`, `runner.unpriced_usage`, `agent_run.started` (payload includes tier and resolved model), `agent_run.ended` (payload: status, outcome `advanced`/`stalled`, runner name, states, final usage), `issue.parked`, `issue.resumed`, `settings.updated` (supervisor settings, secrets elided). Supervisor-initiated events are attributed to the owning user with the run identified in the payload, rendered "via *runner* · run …" — the schedules-sweep pattern.
+Events (open string types, named after their table like `scheduled_task.*`): `runner.registered`, `runner.updated`, `runner.daemon_replaced`, `runner.removed`, `runner.errored`, `runner.unpriced_usage`, `agent_run.started` (payload includes tier and resolved model), `agent_run.ended` (payload: status, outcome `advanced`/`stalled`, runner name, states, final usage), `issue.parked`, `issue.resumed`, `settings.updated` (supervisor settings, secrets elided). Supervisor-initiated events are attributed to the owning user with the run identified in the payload, rendered "via *runner* · run …" — the schedules-sweep pattern.
 
 ## API
 
