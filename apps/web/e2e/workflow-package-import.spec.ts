@@ -216,6 +216,49 @@ test('retains exact-plan recovery for an explicit unknown outcome across reload'
 	await expect(page.getByRole('button', { name: 'Prepare installation' })).toHaveCount(0);
 });
 
+test('installs selected schedules paused into two independent destination projects', async ({
+	page,
+	request
+}) => {
+	const api = apiClient(request, BOB.apiKey);
+	for (const project of projects) {
+		const beforeIssues = await body<{ items: unknown[] }>(
+			await api.get(`/api/v1/issues?project=${project.id}`)
+		);
+		const beforeSchedules = await body<{ items: unknown[] }>(
+			await api.get(`/api/v1/projects/${project.id}/schedules`)
+		);
+		expect(beforeIssues.items).toEqual([]);
+		expect(beforeSchedules.items).toEqual([]);
+		expect(project.default_workflow_id).toBeNull();
+
+		await gotoHydrated(page, '/workflows/import');
+		await page.getByLabel('Workflow package file').setInputFiles(packagePath);
+		await page.getByLabel('Destination project').selectOption(project.id);
+		await page.getByRole('checkbox', { name: 'Weekly review' }).check();
+		await page.getByRole('button', { name: 'Prepare installation' }).click();
+		await expect(page.getByRole('heading', { name: 'Complete installation plan' })).toBeVisible();
+		for (const checkbox of await page.getByRole('checkbox', { name: /I reviewed/ }).all())
+			await checkbox.check();
+		await page.getByRole('checkbox', { name: /I confirm exact plan/ }).check();
+		await page.getByRole('button', { name: 'Install package' }).click();
+		await expect(page.locator('[data-package-receipt]')).toBeFocused();
+		await expect(page.getByText('paused', { exact: false })).toBeVisible();
+
+		const afterIssues = await body<{ items: unknown[] }>(
+			await api.get(`/api/v1/issues?project=${project.id}`)
+		);
+		const afterSchedules = await body<{ items: Array<{ enabled: boolean }> }>(
+			await api.get(`/api/v1/projects/${project.id}/schedules`)
+		);
+		const afterProject = await body<Project>(await api.get(`/api/v1/projects/${project.id}`));
+		expect(afterIssues.items).toEqual([]);
+		expect(afterSchedules.items).toHaveLength(1);
+		expect(afterSchedules.items[0].enabled).toBe(false);
+		expect(afterProject.default_workflow_id).toBeNull();
+	}
+});
+
 test('links field and capability failures to their normal destination pages', async ({ page }) => {
 	await gotoHydrated(page, '/workflows/import');
 	await page.getByLabel('Workflow package file').setInputFiles(missingWorkflowPath);
@@ -232,6 +275,19 @@ test('links field and capability failures to their normal destination pages', as
 		.locator('select')
 		.first();
 	await tier.selectOption({ index: 1 });
+	await page.route('**/api/v1/library/prepare', async (route) =>
+		route.fulfill({
+			status: 422,
+			contentType: 'application/json',
+			body: JSON.stringify({
+				error: {
+					code: 'routing_unavailable',
+					message: 'No active supported destination runner supplies this tier',
+					details: { record_id: 'routing:1' }
+				}
+			})
+		})
+	);
 	await page.getByRole('button', { name: 'Prepare installation' }).click();
 	await expect(page.getByRole('link', { name: 'Configure destination runners' })).toHaveAttribute(
 		'href',
