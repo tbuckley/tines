@@ -1,4 +1,7 @@
-import { TEST_NOOP_DISPATCH_EFFECTS } from '$lib/server/api/test-dispatch-effects';
+import {
+	recordDispatchEffects,
+	TEST_NOOP_DISPATCH_EFFECTS
+} from '$lib/server/api/test-dispatch-effects';
 import { describe, expect, it } from 'vitest';
 import { sweepSchedules } from '../schedule-sweep';
 import type { ActorContext } from './core';
@@ -49,6 +52,19 @@ async function createSchedule(t: TestDb, extra: { state?: string } = {}) {
 }
 
 describe('schedule start state', () => {
+	it('dispatch effects: runScheduleNow signals a committed instance, not a rejected lookup', async () => {
+		const t = createTestDb();
+		seed(t);
+		const schedule = await createSchedule(t);
+		const effects = recordDispatchEffects();
+		await runScheduleNow(t.db, t.env, actor, effects, schedule.id);
+		expect(effects.count()).toBe(1);
+		await expect(runScheduleNow(t.db, t.env, actor, effects, 'tsk_missing')).rejects.toMatchObject({
+			status: 404
+		});
+		expect(effects.count()).toBe(1);
+	});
+
 	it('defaults to the workflow initial state, stored as NULL ("follow the workflow")', async () => {
 		const t = createTestDb();
 		seed(t);

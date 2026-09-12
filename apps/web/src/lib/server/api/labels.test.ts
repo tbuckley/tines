@@ -279,6 +279,20 @@ describe('applying labels to an issue', () => {
 		expect(res.created).toEqual([]);
 	});
 
+	it('dispatch effects: removeIssueLabel signals a removal and not a missing label', async () => {
+		const issue = addIssue(t, { title: 'a' });
+		await addIssueLabels(t.db, t.env, human, TEST_NOOP_DISPATCH_EFFECTS, issue, ['bug']);
+		const effects = recordDispatchEffects();
+		await removeIssueLabel(t.db, t.env, human, effects, issue, 'bug');
+		expect(effects.count()).toBe(1);
+		await expect(removeIssueLabel(t.db, t.env, human, effects, issue, 'bug')).rejects.toMatchObject(
+			{
+				code: 'label_not_on_issue'
+			}
+		);
+		expect(effects.count()).toBe(1);
+	});
+
 	it('creates names that merely look like an id: the shape test is exact', async () => {
 		const issue = addIssue(t, { title: 'a' });
 		const nearly = ['lbl_short', 'lbl_' + 'a'.repeat(17), 'lbl_' + 'a'.repeat(15)];

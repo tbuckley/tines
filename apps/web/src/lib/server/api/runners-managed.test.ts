@@ -43,11 +43,12 @@ const badPing: ProviderKeyPing = () => Promise.resolve('Anthropic rejected the A
 describe('createRunner (claude_managed)', () => {
 	it('pings, encrypts, defaults the $5 cap and managed concurrency', async () => {
 		const t = world();
+		const effects = recordDispatchEffects();
 		const runner = await createRunner(
 			t.db,
 			t.env,
 			actor,
-			TEST_NOOP_DISPATCH_EFFECTS,
+			effects,
 			{ type: 'claude_managed', name: 'claude-cloud', api_key: 'sk-ant-key' },
 			okPing
 		);
@@ -70,6 +71,7 @@ describe('createRunner (claude_managed)', () => {
 		expect(await decryptSecret(row.secret_enc, ENC_KEY)).toBe('sk-ant-key');
 		expect(JSON.stringify(runner)).not.toContain('sk-ant-key');
 		expect(JSON.stringify(runner)).not.toContain(row.secret_enc);
+		expect(effects.count()).toBe(1);
 	});
 
 	it('stores staged resume thresholds default-off and validates absence, null, and bounds', async () => {

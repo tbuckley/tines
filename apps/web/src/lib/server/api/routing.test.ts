@@ -1,10 +1,14 @@
-import { TEST_NOOP_DISPATCH_EFFECTS } from '$lib/server/api/test-dispatch-effects';
+import {
+	recordDispatchEffects,
+	TEST_NOOP_DISPATCH_EFFECTS
+} from '$lib/server/api/test-dispatch-effects';
 import { describe, expect, it } from 'vitest';
 import { addLabel, addRunner, OPEN, PROJECT, seedBase, USER } from '../supervisor/test-fixtures';
 import { api, ApiFail, runAtomic, type ActorContext } from './core';
 import { createTestDb, type TestDb } from './test-db';
 import {
 	createRoutingRule,
+	deleteRoutingRule,
 	findScopeCollision,
 	listRoutingRules,
 	routingRulesForProject,
@@ -342,6 +346,26 @@ describe('rule scope state category', () => {
 		});
 		expect(rule.scope.workflow_state_id).toBe('wfs_std_open');
 		expect(rule.scope.label).toBe('state Open');
+	});
+
+	it('dispatch effects: routing owners signal successes and keep rejections silent', async () => {
+		const t = seed();
+		const effects = recordDispatchEffects();
+		const rule = await createRoutingRule(t.db, t.env, actor, effects, {
+			workflow_state_id: 'wfs_std_open',
+			targets: [{ runner_id: 'rnr_1' }]
+		});
+		expect(effects.count()).toBe(1);
+		await updateRoutingRule(t.db, t.env, actor, effects, rule.id, {
+			targets: [{ runner_id: 'rnr_1' }]
+		});
+		expect(effects.count()).toBe(2);
+		await expect(
+			deleteRoutingRule(t.db, t.env, actor, effects, 'rul_missing')
+		).rejects.toMatchObject({ status: 404 });
+		expect(effects.count()).toBe(2);
+		await deleteRoutingRule(t.db, t.env, actor, effects, rule.id);
+		expect(effects.count()).toBe(3);
 	});
 
 	it('accepts a scoped tier-only rule, serializes its sentinel, and rejects a global one', async () => {

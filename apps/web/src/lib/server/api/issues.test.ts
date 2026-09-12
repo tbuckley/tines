@@ -24,6 +24,7 @@ import {
 	getIssueDetail,
 	listIssues,
 	loadIssue,
+	resumeIssue,
 	resolveStateRef,
 	transitionIssue,
 	updateIssue
@@ -366,6 +367,39 @@ describe('updateIssue sparse patch concurrency', () => {
 		});
 
 		expect(unpinned).toMatchObject({ pinned_runner_id: null, pinned_tier: null });
+	});
+});
+
+describe('dispatch effects: issue mutation owners', () => {
+	it('records successful changes and approved no-ops, but not rejected lookups', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const actor: ActorContext = {
+			userId: USER,
+			userName: 'alice',
+			apiKeyId: null,
+			apiKeyName: null,
+			viaSession: true
+		};
+		const effects = recordDispatchEffects();
+		const issue = addIssue(t, { title: 'Original' });
+
+		await updateIssue(t.db, t.env, actor, effects, issue, { title: 'Changed' });
+		await updateIssue(t.db, t.env, actor, effects, issue, { title: 'Changed' });
+		expect(effects.count()).toBe(2);
+
+		await transitionIssue(t.db, t.env, actor, effects, issue, { action: 'Submit for review' });
+		expect(effects.count()).toBe(3);
+
+		const parked = addIssue(t, { needsAttention: true, attemptCount: 3 });
+		await resumeIssue(t.db, t.env, actor, effects, parked);
+		await resumeIssue(t.db, t.env, actor, effects, parked);
+		expect(effects.count()).toBe(5);
+
+		await expect(resumeIssue(t.db, t.env, actor, effects, 'iss_missing')).rejects.toMatchObject({
+			status: 404
+		});
+		expect(effects.count()).toBe(5);
 	});
 });
 

@@ -74,18 +74,13 @@ function expectFail(fn: () => Promise<unknown>, code: string): Promise<void> {
 describe('registerRunner', () => {
 	it('creates a local runner with a hashed token, shown once', async () => {
 		const t = world();
-		const { runner, runner_token } = await registerRunner(
-			t.db,
-			t.env,
-			actor,
-			TEST_NOOP_DISPATCH_EFFECTS,
-			{
-				name: 'laptop-m4',
-				harness: 'claude_code',
-				hostname: 'mbp.local',
-				platform: 'darwin'
-			}
-		);
+		const effects = recordDispatchEffects();
+		const { runner, runner_token } = await registerRunner(t.db, t.env, actor, effects, {
+			name: 'laptop-m4',
+			harness: 'claude_code',
+			hostname: 'mbp.local',
+			platform: 'darwin'
+		});
 		expect(runner.type).toBe('local');
 		expect(runner.online).toBe(true); // registration counts as a heartbeat
 		expect(runner_token).toMatch(/^tines_rt_/);
@@ -94,6 +89,7 @@ describe('registerRunner', () => {
 		// The token never appears in the serialized runner.
 		expect(JSON.stringify(runner)).not.toContain(runner_token);
 		expect(eventsOfType(t, 'runner.registered')).toHaveLength(1);
+		expect(effects.count()).toBe(1);
 
 		const authed = await authenticateRunnerToken(t.db, runner_token);
 		expect(authed?.id).toBe(runner.id);
@@ -101,10 +97,11 @@ describe('registerRunner', () => {
 
 	it('reconnects an existing local runner by name: same row, fresh token, old one dead', async () => {
 		const t = world();
-		const first = await registerRunner(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+		const effects = recordDispatchEffects();
+		const first = await registerRunner(t.db, t.env, actor, effects, {
 			name: 'laptop-m4'
 		});
-		const second = await registerRunner(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+		const second = await registerRunner(t.db, t.env, actor, effects, {
 			name: 'laptop-m4'
 		});
 		expect(second.runner.id).toBe(first.runner.id);
@@ -112,6 +109,7 @@ describe('registerRunner', () => {
 		expect(await authenticateRunnerToken(t.db, first.runner_token)).toBeUndefined();
 		expect((await authenticateRunnerToken(t.db, second.runner_token))?.id).toBe(first.runner.id);
 		expect(runnerById(t, first.runner.id).resume_config_revision).toBe(0);
+		expect(effects.count()).toBe(2);
 	});
 
 	it('reconnect updates only the fields the daemon sent — server-side edits survive', async () => {
@@ -155,14 +153,16 @@ describe('registerRunner', () => {
 
 	it('rejects a custom harness without a command, and unknown-tier registrations', async () => {
 		const t = world();
+		const effects = recordDispatchEffects();
 		await expectFail(
 			() =>
-				registerRunner(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+				registerRunner(t.db, t.env, actor, effects, {
 					name: 'x',
 					harness: 'custom'
 				}),
 			'invalid_field'
 		);
+		expect(effects.count()).toBe(0);
 	});
 
 	it('an API key is not a runner token (and vice versa: the inverse fence)', async () => {
@@ -209,7 +209,7 @@ describe('pollRunner', () => {
 		const t = world();
 		const id = addRunner(t);
 
-		await pollRunner(t.db, t.env, await runnerRow(t, id), {
+		await pollRunner(t.db, t.env, await runnerRow(t, id), TEST_NOOP_DISPATCH_EFFECTS, {
 			instance_id: 'daemon_A',
 			owned_runs: []
 		});
@@ -219,11 +219,11 @@ describe('pollRunner', () => {
 		});
 		expect(eventsOfType(t, 'runner.daemon_replaced')).toHaveLength(0);
 
-		await pollRunner(t.db, t.env, await runnerRow(t, id), {
+		await pollRunner(t.db, t.env, await runnerRow(t, id), TEST_NOOP_DISPATCH_EFFECTS, {
 			instance_id: 'daemon_B',
 			owned_runs: []
 		});
-		await pollRunner(t.db, t.env, await runnerRow(t, id), {
+		await pollRunner(t.db, t.env, await runnerRow(t, id), TEST_NOOP_DISPATCH_EFFECTS, {
 			instance_id: 'daemon_B',
 			owned_runs: []
 		});
@@ -243,7 +243,7 @@ describe('pollRunner', () => {
 	it('rolls replacement history and ownership back together when admission fails', async () => {
 		const t = world();
 		const id = addRunner(t);
-		await pollRunner(t.db, t.env, await runnerRow(t, id), {
+		await pollRunner(t.db, t.env, await runnerRow(t, id), TEST_NOOP_DISPATCH_EFFECTS, {
 			instance_id: 'daemon_A',
 			owned_runs: []
 		});
@@ -263,7 +263,7 @@ describe('pollRunner', () => {
 			]);
 		};
 		await expect(
-			pollRunner(t.db, t.env, await runnerRow(t, id), {
+			pollRunner(t.db, t.env, await runnerRow(t, id), TEST_NOOP_DISPATCH_EFFECTS, {
 				instance_id: 'daemon_B',
 				owned_runs: []
 			})
@@ -276,7 +276,7 @@ describe('pollRunner', () => {
 
 		// Restore the real binding and prove the same takeover succeeds cleanly.
 		d1.batch = realBatch;
-		await pollRunner(t.db, t.env, await runnerRow(t, id), {
+		await pollRunner(t.db, t.env, await runnerRow(t, id), TEST_NOOP_DISPATCH_EFFECTS, {
 			instance_id: 'daemon_B',
 			owned_runs: []
 		});
@@ -290,12 +290,12 @@ describe('pollRunner', () => {
 	it('rejects a fenced instance before any poll side effect, even with a stale auth snapshot', async () => {
 		const t = world();
 		const id = addRunner(t, { maxConcurrent: 1 });
-		await pollRunner(t.db, t.env, await runnerRow(t, id), {
+		await pollRunner(t.db, t.env, await runnerRow(t, id), TEST_NOOP_DISPATCH_EFFECTS, {
 			instance_id: 'daemon_A',
 			owned_runs: []
 		});
 		const staleA = await runnerRow(t, id);
-		await pollRunner(t.db, t.env, await runnerRow(t, id), {
+		await pollRunner(t.db, t.env, await runnerRow(t, id), TEST_NOOP_DISPATCH_EFFECTS, {
 			instance_id: 'daemon_B',
 			owned_runs: []
 		});
@@ -315,6 +315,7 @@ describe('pollRunner', () => {
 				t.db,
 				t.env,
 				staleA,
+				TEST_NOOP_DISPATCH_EFFECTS,
 				{ instance_id: 'daemon_A', owned_runs: [], max_concurrent: 7, draining: true },
 				NOW + 99
 			);
@@ -337,7 +338,10 @@ describe('pollRunner', () => {
 		const t = world();
 		const id = addRunner(t, { maxConcurrent: 1 });
 		for (const instance_id of ['daemon_A', 'daemon_B', 'daemon_C']) {
-			await pollRunner(t.db, t.env, await runnerRow(t, id), { instance_id, owned_runs: [] });
+			await pollRunner(t.db, t.env, await runnerRow(t, id), TEST_NOOP_DISPATCH_EFFECTS, {
+				instance_id,
+				owned_runs: []
+			});
 		}
 		expect(runnerById(t, id)).toMatchObject({
 			daemon_instance_id: 'daemon_C',
@@ -348,6 +352,7 @@ describe('pollRunner', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, id),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			{ owned_runs: [], max_concurrent: 4, draining: true },
 			NOW + 10
 		);
@@ -360,7 +365,7 @@ describe('pollRunner', () => {
 		});
 
 		// A is no longer the remembered predecessor and can take over again.
-		await pollRunner(t.db, t.env, await runnerRow(t, id), {
+		await pollRunner(t.db, t.env, await runnerRow(t, id), TEST_NOOP_DISPATCH_EFFECTS, {
 			instance_id: 'daemon_A',
 			owned_runs: []
 		});
@@ -377,10 +382,16 @@ describe('pollRunner', () => {
 			const id = addRunner(t);
 			await expectFail(
 				() =>
-					pollRunner(t.db, t.env, runnerById(t, id) as unknown as RunnerRow, {
-						instance_id: instance_id as string,
-						owned_runs: []
-					}),
+					pollRunner(
+						t.db,
+						t.env,
+						runnerById(t, id) as unknown as RunnerRow,
+						TEST_NOOP_DISPATCH_EFFECTS,
+						{
+							instance_id: instance_id as string,
+							owned_runs: []
+						}
+					),
 				'invalid_field'
 			);
 			expect(runnerById(t, id)).toMatchObject({
