@@ -24,6 +24,7 @@ import {
 	type ActorContext
 } from './core';
 import { assertWritable, issueProject } from './archive';
+import type { DispatchEffects } from '$lib/server/dispatch-effects';
 import { contextItemQuery, deleteContextItem } from './context';
 import { routingRuleDeletes, rulesScopedToLabel } from './routing';
 import { eventInsert } from './events';
@@ -281,6 +282,7 @@ export async function deleteLabel(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
+	effects: DispatchEffects,
 	labelRef: string,
 	options: { force?: boolean } = {}
 ): Promise<DeleteLabelResponse> {
@@ -360,6 +362,7 @@ export async function deleteLabel(
 			}
 		})
 	]);
+	if (scopedRules.length > 0) effects.signalDispatch();
 	return {
 		deleted: true,
 		issue_count: issueCount,
@@ -573,6 +576,7 @@ export async function addIssueLabels(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
+	effects: DispatchEffects,
 	issueRef: string,
 	refs: unknown
 ): Promise<AddIssueLabelsResponse> {
@@ -596,6 +600,7 @@ export async function addIssueLabels(
 	// in which case the id in hand was ignored and the winner's is live.
 	const byName = new Map(final.map((l) => [l.name.toLowerCase(), l]));
 	const landed = (l: Label) => byName.get(l.name.toLowerCase()) ?? chip(l);
+	effects.signalDispatch();
 	return {
 		labels: final,
 		added: added.map(landed),
@@ -607,6 +612,7 @@ export async function removeIssueLabel(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
+	effects: DispatchEffects,
 	issueRef: string,
 	labelRef: string
 ): Promise<void> {
@@ -644,4 +650,5 @@ export async function removeIssueLabel(
 			payload: { label_id: label.id, name: label.name, color: label.color }
 		})
 	]);
+	effects.signalDispatch();
 }

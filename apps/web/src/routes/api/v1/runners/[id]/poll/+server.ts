@@ -2,7 +2,6 @@ import { json } from '@sveltejs/kit';
 import type { RunnerPollRequest } from '@tines/shared';
 import { api, notFound, readJson } from '$lib/server/api/core';
 import { pollRunner, runnerProtocolContext } from '$lib/server/api/runner-protocol';
-import { queueDispatchPass } from '$lib/server/supervisor/engine';
 import type { RequestHandler } from './$types';
 
 /**
@@ -10,19 +9,10 @@ import type { RequestHandler } from './$types';
  * assignment delivery, and the `cancels` list. Runner-token auth only.
  */
 export const POST: RequestHandler = api(async (event) => {
-	const { db, env, runner } = await runnerProtocolContext(event);
+	const { db, env, runner, effects } = await runnerProtocolContext(event);
 	// The token is the credential; the path must name the same runner.
 	if (runner.id !== event.params.id) throw notFound();
 	const body = await readJson<RunnerPollRequest>(event);
-	const { response, cameOnline, capRaised, reconciled } = await pollRunner(db, env, runner, body);
-	// A poll bringing an offline runner back — or raising its cap — is
-	// capacity coming online: queue the opportunistic pass so its next poll
-	// finds work waiting. So is one that freed claims by reconciling runs a
-	// restarted daemon lost: those issues took no strike and are eligible
-	// again this instant, and waiting out the `*/5` cron would be the whole
-	// visible cost of a daemon restart.
-	if (cameOnline || capRaised || reconciled) {
-		queueDispatchPass({ env, ctx: event.platform?.ctx }, runner.user_id);
-	}
+	const { response } = await pollRunner(db, env, runner, effects, body);
 	return json(response);
 });

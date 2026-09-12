@@ -4,6 +4,7 @@
  * the workflow it already created, every rejection happens before the first
  * write, and a failure midway leaves nothing behind.
  */
+import { TEST_NOOP_DISPATCH_EFFECTS } from '$lib/server/api/test-dispatch-effects';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PROJECT_PROMPT_NAME, STARTER_IDS, STATE_PROMPT_NAME } from '@tines/shared';
 import { NOW, USER, seedBase } from '../supervisor/test-fixtures';
@@ -501,37 +502,59 @@ describe('Plan journey content and compatibility limits', () => {
 			}
 		]);
 
-		const missing = await createIssue(t.db, t.env, actor, created.id, {
+		const missing = await createIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, created.id, {
 			title: 'Missing proposal',
 			workflow_id: idea.id
 		});
 		await expect(
-			transitionIssue(t.db, t.env, actor, missing.id, { action: 'Propose' })
+			transitionIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, missing.id, {
+				action: 'Propose'
+			})
 		).rejects.toMatchObject({ code: 'transition_requirements_unmet' });
 
-		const wrongType = await createIssue(t.db, t.env, actor, created.id, {
-			title: 'Wrong proposal',
-			workflow_id: idea.id
-		});
+		const wrongType = await createIssue(
+			t.db,
+			t.env,
+			actor,
+			TEST_NOOP_DISPATCH_EFFECTS,
+			created.id,
+			{
+				title: 'Wrong proposal',
+				workflow_id: idea.id
+			}
+		);
 		await upsertArtifact(t.db, t.env, actor, wrongType.id, 'proposal', {
 			type: 'link',
 			url: 'https://example.test/candidate'
 		});
 		await expect(
-			transitionIssue(t.db, t.env, actor, wrongType.id, { action: 'Propose' })
+			transitionIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, wrongType.id, {
+				action: 'Propose'
+			})
 		).rejects.toMatchObject({ code: 'transition_requirements_unmet' });
 
-		const candidate = await createIssue(t.db, t.env, actor, created.id, {
-			title: 'Botanical garden',
-			workflow_id: idea.id
-		});
+		const candidate = await createIssue(
+			t.db,
+			t.env,
+			actor,
+			TEST_NOOP_DISPATCH_EFFECTS,
+			created.id,
+			{
+				title: 'Botanical garden',
+				workflow_id: idea.id
+			}
+		);
 		clock += 1_000;
 		await upsertArtifact(t.db, t.env, actor, candidate.id, 'proposal', {
 			type: 'text',
 			content: '# Proposal v1'
 		});
 		expect(
-			(await transitionIssue(t.db, t.env, actor, candidate.id, { action: 'Propose' })).state.name
+			(
+				await transitionIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, candidate.id, {
+					action: 'Propose'
+				})
+			).state.name
 		).toBe('Proposed');
 		clock += 1_000;
 		await createComment(t.db, t.env, actor, candidate.id, {
@@ -539,10 +562,16 @@ describe('Plan journey content and compatibility limits', () => {
 		});
 		clock += 1_000;
 		expect(
-			(await transitionIssue(t.db, t.env, actor, candidate.id, { action: 'Send back' })).state.name
+			(
+				await transitionIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, candidate.id, {
+					action: 'Send back'
+				})
+			).state.name
 		).toBe('Reworking');
 		await expect(
-			transitionIssue(t.db, t.env, actor, candidate.id, { action: 'Re-propose' })
+			transitionIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, candidate.id, {
+				action: 'Re-propose'
+			})
 		).rejects.toMatchObject({
 			code: 'transition_requirements_unmet',
 			details: { unmet: [expect.objectContaining({ artifact: 'proposal', status: 'stale' })] }
@@ -553,7 +582,11 @@ describe('Plan journey content and compatibility limits', () => {
 			content: '# Proposal v2\n\nRainy-day access verified.'
 		});
 		expect(
-			(await transitionIssue(t.db, t.env, actor, candidate.id, { action: 'Re-propose' })).state.name
+			(
+				await transitionIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, candidate.id, {
+					action: 'Re-propose'
+				})
+			).state.name
 		).toBe('Proposed');
 	});
 

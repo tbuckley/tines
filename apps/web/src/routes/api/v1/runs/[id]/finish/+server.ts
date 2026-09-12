@@ -2,7 +2,6 @@ import { json } from '@sveltejs/kit';
 import type { FinishRunRequest } from '@tines/shared';
 import { api, readJson } from '$lib/server/api/core';
 import { finishRun, runnerProtocolContext } from '$lib/server/api/runner-protocol';
-import { queueDispatchPass } from '$lib/server/supervisor/engine';
 import type { RequestHandler } from './$types';
 
 /**
@@ -10,10 +9,8 @@ import type { RequestHandler } from './$types';
  * runner): endRun with the usual judgment and immediate key revocation.
  */
 export const POST: RequestHandler = api(async (event) => {
-	const { db, env, runner } = await runnerProtocolContext(event);
+	const { db, env, runner, effects } = await runnerProtocolContext(event);
 	const body = await readJson<FinishRunRequest>(event);
-	const run = await finishRun(db, env, runner, event.params.id, body);
-	// A run end frees capacity: the freed slot can dispatch in seconds.
-	queueDispatchPass({ env, ctx: event.platform?.ctx }, runner.user_id);
+	const run = await finishRun(db, env, runner, effects, event.params.id, body);
 	return json(run);
 });

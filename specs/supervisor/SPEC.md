@@ -84,6 +84,8 @@ On top of category, the supervisor dispatches an issue only when **all** of:
 
 Eligible issues dispatch oldest-`updated_at` first, so long-untouched work gets attention before freshly churning work.
 
+Eligibility-changing API services own a request-scoped dispatch effect. After a durable write they signal the effect; the `api()` boundary coalesces all signals in that request and schedules one best-effort pass for the authenticated owner after the handler settles. The collector is shared by user/API-key and runner-token contexts, drains after success or error (a write may have committed before later response work failed), and never lets scheduling failure replace the HTTP response. Routes do not import the supervisor engine. The five-minute sweep remains the reliability backstop. Workflow edits signal only when an existing state's category changes to `active`; link additions conservatively signal as well as removals.
+
 ### Routing rules
 
 A routing rule answers "which runner should take this?" and reuses the context system's scope model: nullable `project_id`, `workflow_state_id` and `label_id` dimensions, AND semantics, at most **one rule per exact scope**. Eight scopes exist (global, `project`, `state`, `project ∧ state`, and each of those with a `label`); issues are not a rule dimension — a per-issue **pin** (below) covers that case. `label` is the dimension the context spec's "one more nullable column" hedge anticipated (Tines/168), and the first one whose target holds a **set** of values: an issue carries any number of labels, which is what makes the tie rule below necessary.
@@ -438,5 +440,6 @@ win. `GET /api/v1/issues/:id/transfer` is readable by a run key (it is the
 review an agent can put in front of its owner); the POST is control-plane
 fenced.
 After the guarded transfer batch returns its request-specific assignment/event
-receipt, dispatch is queued opportunistically. Queue failure cannot turn an
-already committed move into a refusal; the periodic sweep remains authoritative.
+receipt, the service raises the request dispatch effect. The API boundary queues
+the coalesced pass; scheduling failure cannot turn an already committed move into
+a refusal, and the periodic sweep remains authoritative.
