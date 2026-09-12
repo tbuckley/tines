@@ -51,7 +51,11 @@ timezone, workflow and start-state identities, and prior-issue gate before downl
 The input editor adds typed declarations and registers an exact token at the selected range of one
 editable candidate field. It never searches and replaces matching prose, edits the private source,
 or recursively expands a destination value. Token buttons return to their declaration and Escape
-returns focus to the passage. Required skill and repository declarations must each be reviewed
+returns focus to the passage. Prompts and Markdown files render as inert Markdown: images become
+labelled placeholders that are never fetched, and an escaped literal such as `\{{key:default}}`
+renders as ordinary text rather than a substitutable use, so the proof marks exactly the
+occurrences that installation replaces. Rebuilding from source drops any candidate-only input
+selection. Required skill and repository declarations must each be reviewed
 again after a candidate change. **Validate & download** sends the exact candidate through the
 shared validator and downloads the same canonical JSON bytes emitted by the CLI. The page fetches
 neither repositories nor other external package dependencies, and download does not install or

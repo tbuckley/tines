@@ -124,6 +124,7 @@
 		return fields;
 	});
 	const selectedField = $derived(editableFields.find((field) => field.key === selectedTarget));
+	const selectedInput = $derived(candidate.inputs.find((input) => input.id === selectedInputId));
 	const diagnosticFieldKeys = $derived(
 		new Set(
 			diagnostics
@@ -183,6 +184,7 @@
 				tiers
 			});
 			dirty = false;
+			if (!candidate.inputs.some((input) => input.id === selectedInputId)) selectedInputId = '';
 			resetReview('Candidate rebuilt from source.');
 		} catch (error) {
 			status = message(error);
@@ -254,16 +256,16 @@
 	}
 	async function saveCandidateField(addUse = false) {
 		if (!selectedField || !fieldEditor) return;
+		const input = addUse ? selectedInput : undefined;
+		if (addUse && !input) {
+			status = 'Choose an input declaration first.';
+			return;
+		}
 		const next = JSON.parse(JSON.stringify(candidate)) as WorkflowPackageDocument;
 		candidateGeneration += 1;
 		candidateUpdating = true;
 		let value = fieldEditor.value;
-		if (addUse) {
-			const input = next.inputs.find((item) => item.id === selectedInputId);
-			if (!input) {
-				status = 'Choose an input declaration first.';
-				return;
-			}
+		if (input) {
 			const token = inputToken(input.key, input.default);
 			const start = fieldEditor.selectionStart;
 			const end = fieldEditor.selectionEnd;
@@ -600,7 +602,7 @@
 				><Button
 					size="sm"
 					onclick={() => saveCandidateField(true)}
-					disabled={!selectedInputId || candidateUpdating}
+					disabled={!selectedInput || candidateUpdating}
 					>Replace selection with declared token</Button
 				><a
 					class="text-primary inline-flex min-h-9 items-center px-2 text-xs underline"

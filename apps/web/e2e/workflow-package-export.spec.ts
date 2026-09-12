@@ -22,7 +22,10 @@ const projectName = `Browser package project ${runId}`;
 const scheduleName = `Browser package schedule ${runId}`;
 const literal = 'The ordinary prose marker stays exactly unchanged.';
 const markdownTail = 'The final Markdown passage is visible only after expansion.';
+const imageUrl = 'https://example.invalid/auto-fetch.png';
 const longMarkdown = `# Long guidance
+
+![remote pixel](${imageUrl})
 
 ${Array.from({ length: 92 }, (_, index) => `guidance${index + 1}`).join(' ')}
 
@@ -112,7 +115,7 @@ test.beforeAll(async ({ playwright }) => {
 			kind: 'prompt',
 			name: 'instructions',
 			workflow_state_id: draft.id,
-			body: `Replace TARGET only. Another TARGET remains ordinary prose. ${literal} Literal token-like text {{not_declared:value}} also stays.`
+			body: `Replace TARGET only. Another TARGET remains ordinary prose. ${literal} Literal token-like text {{not_declared:value}} also stays. Escaped literal \\{{target_name:TARGET}} stays.`
 		})
 	);
 	await body(
@@ -198,12 +201,13 @@ test('authors an exact declared use and downloads the reviewed canonical package
 		node.setSelectionRange(start, start + 'TARGET'.length);
 	});
 	await page.getByRole('button', { name: 'Replace selection with declared token' }).click();
-	await expect(
-		page.getByRole('button', { name: /Show declaration for \{\{target_name:TARGET\}\}/ })
-	).toBeVisible();
 	const token = page.getByRole('button', {
 		name: /Show declaration for \{\{target_name:TARGET\}\}/
 	});
+	await expect(token).toBeVisible();
+	// The escaped literal renders as ordinary text: exactly one substitutable use.
+	await expect(token).toHaveCount(1);
+	await expect(page.getByText('Escaped literal {{target_name:TARGET}} stays.')).toBeVisible();
 	await token.click();
 	await expect(page.getByRole('button', { name: 'Back to passage' })).toBeVisible();
 	await page.keyboard.press('Escape');
@@ -228,6 +232,9 @@ test('authors an exact declared use and downloads the reviewed canonical package
 	);
 	expect(prompt?.kind === 'prompt' ? prompt.body : '').toContain(literal);
 	expect(prompt?.kind === 'prompt' ? prompt.body : '').toContain('{{not_declared:value}}');
+	expect(prompt?.kind === 'prompt' ? prompt.body : '').toContain(
+		'Escaped literal \\{{target_name:TARGET}} stays.'
+	);
 
 	// The browser download is the CLI's input without conversion. Install it into
 	// the independent Bob account and inspect the copied prompt, proving that only
@@ -281,6 +288,8 @@ test('authors an exact declared use and downloads the reviewed canonical package
 	expect(copied.body).toContain('Another TARGET remains ordinary prose.');
 	expect(copied.body).toContain(literal);
 	expect(copied.body).toContain('{{not_declared:value}}');
+	expect(copied.body).toContain('Escaped literal {{target_name:TARGET}} stays.');
+	expect(copied.body).not.toContain('DESTINATION}}');
 	expect(externalRequests).toEqual([]);
 	await page.screenshot({
 		path: test.info().outputPath('workflow-package-desktop.png'),
@@ -321,6 +330,10 @@ test('reviews inheritance plus long Markdown and plain-text files without remote
 		.locator('..')
 		.locator('..');
 	await expect(markdownSection.getByRole('heading', { name: 'Long guidance' })).toBeVisible();
+	await expect(markdownSection.locator('img')).toHaveCount(0);
+	await expect(
+		markdownSection.getByRole('img', { name: `Image not loaded: remote pixel — ${imageUrl}` })
+	).toHaveText(`Image (not loaded): remote pixel — ${imageUrl}`);
 	await expect(markdownSection.getByText(markdownTail)).toBeHidden();
 	await expect(markdownSection.locator('pre code')).toContainText('fenced24');
 	const expandMarkdown = markdownSection.getByRole('button', { name: /Show all \d+ words/ });
@@ -389,6 +402,27 @@ test('reviews optional schedule and tier configuration and repairs project scope
 	await expect(proof).toContainText('Scheduled description');
 	await expect(page.getByText('Balanced for Draft in destination project')).toBeVisible();
 	await expect(page.getByText(scheduleId)).toHaveCount(0);
+});
+
+test('clears a stale author input selection when the candidate is rebuilt', async ({ page }) => {
+	await openExport(page);
+	await page.getByLabel('Key').fill('stale_key');
+	await page.getByRole('button', { name: 'Add typed declaration' }).click();
+	await expect(page.getByRole('button', { name: /stale_key · text/ })).toBeVisible();
+	await page
+		.getByLabel('Exact candidate field')
+		.selectOption({ label: 'instructions — prompt body' });
+	const replace = page.getByRole('button', { name: 'Replace selection with declared token' });
+	await expect(replace).toBeEnabled();
+	page.once('dialog', (dialog) => dialog.accept());
+	await page.getByRole('button', { name: 'Rebuild from source' }).click();
+	await expect(page.getByText('Candidate rebuilt from source.')).toBeVisible();
+	await expect(page.getByRole('button', { name: /stale_key · text/ })).toHaveCount(0);
+	await expect(replace).toBeDisabled();
+	await expect(page.getByRole('button', { name: 'Save candidate text' })).toBeEnabled();
+	await page.getByRole('button', { name: 'Validate', exact: true }).click();
+	await expect(page.getByText(/^Validated sha256:/)).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Add typed declaration' })).toBeEnabled();
 });
 
 test('discards a delayed validation result when candidate review changes', async ({ page }) => {

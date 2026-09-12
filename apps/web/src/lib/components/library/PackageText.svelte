@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { tick } from 'svelte';
 	import Markdown from '$lib/components/Markdown.svelte';
+	import { declaredOccurrences, markDeclaredOccurrences, splitMarkers } from './package-text';
 
 	let {
 		text,
@@ -32,22 +33,9 @@
 		return text.slice(0, offset);
 	});
 	const pieces = $derived.by(() => {
-		const matches: { start: number; end: number; token: string; inputId: string }[] = [];
-		for (const item of tokens) {
-			let from = 0;
-			while (from < shown.length) {
-				const start = shown.indexOf(item.token, from);
-				if (start < 0) break;
-				if (start === 0 || shown[start - 1] !== '\\')
-					matches.push({ start, end: start + item.token.length, ...item });
-				from = start + item.token.length;
-			}
-		}
-		matches.sort((a, b) => a.start - b.start);
 		const result: Array<{ text: string; inputId?: string }> = [];
 		let at = 0;
-		for (const match of matches) {
-			if (match.start < at) continue;
+		for (const match of declaredOccurrences(shown, tokens)) {
 			result.push({ text: shown.slice(at, match.start) });
 			result.push({ text: match.token, inputId: match.inputId });
 			at = match.end;
@@ -55,6 +43,10 @@
 		result.push({ text: shown.slice(at) });
 		return result;
 	});
+	// Substitutable occurrences become indexed markers before Markdown parsing, so
+	// escaped literals (`\{{…}}`) render as ordinary text and a token's own
+	// characters never reach the parser.
+	const marked = $derived(markDeclaredOccurrences(shown, tokens));
 
 	function renderedWordCount(value: string, kind: 'markdown' | 'text') {
 		const visible =
@@ -102,47 +94,39 @@
 	}
 
 	function decorateMarkdown() {
-		if (!markdownRoot || !onToken || tokens.length === 0) return;
+		if (!markdownRoot || marked.occurrences.length === 0) return;
 		const walker = document.createTreeWalker(markdownRoot, NodeFilter.SHOW_TEXT);
 		const nodes: Text[] = [];
 		while (walker.nextNode()) nodes.push(walker.currentNode as Text);
 		for (const node of nodes) {
-			if (node.parentElement?.closest('button')) continue;
-			const value = node.data;
-			const matches: { start: number; token: string; inputId: string }[] = [];
-			for (const item of tokens) {
-				let from = 0;
-				while (from < value.length) {
-					const start = value.indexOf(item.token, from);
-					if (start < 0) break;
-					matches.push({ start, ...item });
-					from = start + item.token.length;
-				}
-			}
-			matches.sort((a, b) => a.start - b.start);
-			if (!matches.length) continue;
+			const pieces = splitMarkers(node.data);
+			if (!pieces.some((piece) => 'index' in piece)) continue;
 			const fragment = document.createDocumentFragment();
-			let at = 0;
-			for (const match of matches) {
-				if (match.start < at) continue;
-				fragment.append(value.slice(at, match.start));
+			for (const piece of pieces) {
+				if ('text' in piece) {
+					fragment.append(piece.text);
+					continue;
+				}
+				const occurrence = marked.occurrences[piece.index];
+				if (!occurrence) continue;
+				if (!onToken) {
+					fragment.append(occurrence.token);
+					continue;
+				}
 				const button = document.createElement('button');
 				button.type = 'button';
 				button.className = 'package-token';
-				button.textContent = match.token;
-				button.setAttribute('aria-label', `Show declaration for ${match.token}`);
-				button.addEventListener('click', () => onToken(match.inputId, button));
+				button.textContent = occurrence.token;
+				button.setAttribute('aria-label', `Show declaration for ${occurrence.token}`);
+				button.addEventListener('click', () => onToken(occurrence.inputId, button));
 				fragment.append(button);
-				at = match.start + match.token.length;
 			}
-			fragment.append(value.slice(at));
 			node.replaceWith(fragment);
 		}
 	}
 
 	$effect(() => {
-		shown;
-		tokens;
+		marked;
 		queueMicrotask(decorateMarkdown);
 	});
 </script>
@@ -150,7 +134,7 @@
 <div class="bg-muted/20 rounded-md border">
 	{#if format === 'markdown'}
 		<div class="package-markdown min-w-0 p-3 text-sm wrap-break-word" bind:this={markdownRoot}>
-			<Markdown source={shown} />
+			<Markdown source={marked.source} inertImages />
 			{#if words > 115 && !expanded && !forceExpanded}<span aria-hidden="true">…</span>{/if}
 		</div>
 	{:else}
@@ -182,6 +166,14 @@
 		font-family: var(--font-mono);
 		text-decoration: underline;
 		text-underline-offset: 2px;
+	}
+	:global(.markdown-inert-image) {
+		border: 1px dashed var(--border);
+		border-radius: 0.25rem;
+		padding: 0 0.25rem;
+		font-family: var(--font-mono);
+		font-size: 0.75rem;
+		overflow-wrap: anywhere;
 	}
 	:global(.package-markdown pre),
 	:global(.package-markdown code) {
