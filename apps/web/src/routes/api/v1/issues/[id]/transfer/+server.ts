@@ -26,14 +26,9 @@ export const GET: RequestHandler = api(async (event) => {
 
 /** Commit the reviewed move. The token must come from a fresh preview. */
 export const POST: RequestHandler = api(async (event) => {
-	const { env, actor } = await apiContext(event);
+	const { env, actor, effects } = await apiContext(event);
 	const body = await readJson<IssueTransferRequest>(event);
 	const destination = requireString(body.project_id, 'project_id', { max: 64 });
 	const token = requireString(body.preview_token, 'preview_token', { max: 4096 });
-	return json(
-		await commitIssueTransfer(env, actor, event.params.id, destination, token, Date.now(), {
-			env,
-			ctx: event.platform?.ctx
-		})
-	);
+	return json(await commitIssueTransfer(env, actor, effects, event.params.id, destination, token));
 });

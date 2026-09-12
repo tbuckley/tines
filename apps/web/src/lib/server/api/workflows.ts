@@ -16,6 +16,7 @@ import {
 } from '@tines/shared';
 import { sql, type CompiledQuery, type Kysely } from 'kysely';
 import { idChunks, newId, type Database, type WorkflowStateTable } from '$lib/server/db';
+import type { DispatchEffects } from '$lib/server/dispatch-effects';
 import { findAttachedContext, seedPromptQueries, sweepAttachedContext } from './context';
 import {
 	MAX_INHERITANCE_CHAIN,
@@ -992,6 +993,7 @@ export async function updateWorkflow(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
+	effects: DispatchEffects,
 	id: string,
 	body: UpdateWorkflowRequest
 ): Promise<WorkflowResponse> {
@@ -1287,6 +1289,7 @@ export async function updateWorkflow(
 		eventInsert(db, actor, { type: 'workflow.updated', payload })
 	);
 	await runAtomic(env, queries);
+	if (categoriesChanged.some((change) => change.to === 'active')) effects.signalDispatch();
 	const updated = await loadWorkflow(db, actor.userId, id);
 	if (contextSweep.deleted.length > 0) updated.deleted_context = contextSweep.deleted;
 	if (clearedInheritance.length > 0) updated.cleared_inheritance = clearedInheritance;

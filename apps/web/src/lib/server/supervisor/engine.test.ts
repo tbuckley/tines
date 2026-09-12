@@ -1,3 +1,4 @@
+import { TEST_NOOP_DISPATCH_EFFECTS } from '$lib/server/api/test-dispatch-effects';
 import { describe, expect, it } from 'vitest';
 import type { ActorContext } from '../api/core';
 import { listIssues, resumeIssue, transitionIssue } from '../api/issues';
@@ -1024,19 +1025,21 @@ describe('resume and manual transitions', () => {
 	it('resume clears parking, resets the count, fires issue.resumed', async () => {
 		const t = world();
 		const issue = addIssue(t, { needsAttention: true, attemptCount: 3 });
-		const detail = await resumeIssue(t.db, t.env, sessionActor, issue);
+		const detail = await resumeIssue(t.db, t.env, sessionActor, TEST_NOOP_DISPATCH_EFFECTS, issue);
 		expect(detail.needs_attention).toBe(false);
 		expect(detail.attempt_count).toBe(0);
 		expect(eventsOfType(t, 'issue.resumed')).toHaveLength(1);
 		// Idempotent: resuming again records nothing new.
-		await resumeIssue(t.db, t.env, sessionActor, issue);
+		await resumeIssue(t.db, t.env, sessionActor, TEST_NOOP_DISPATCH_EFFECTS, issue);
 		expect(eventsOfType(t, 'issue.resumed')).toHaveLength(1);
 	});
 
 	it('any non-run-key transition un-parks and resets the count', async () => {
 		const t = world();
 		const issue = addIssue(t, { needsAttention: true, attemptCount: 3 });
-		await transitionIssue(t.db, t.env, sessionActor, issue, { action: 'Submit for review' });
+		await transitionIssue(t.db, t.env, sessionActor, TEST_NOOP_DISPATCH_EFFECTS, issue, {
+			action: 'Submit for review'
+		});
 		const row = issueById(t, issue);
 		expect(row.needs_attention).toBe(0);
 		expect(row.attempt_count).toBe(0);
@@ -1059,7 +1062,9 @@ describe('resume and manual transitions', () => {
 			apiKeyName: 'run key',
 			agentRunId: runs(t)[0].id as string
 		};
-		await transitionIssue(t.db, t.env, runKeyActor, issue, { action: 'Submit for review' });
+		await transitionIssue(t.db, t.env, runKeyActor, TEST_NOOP_DISPATCH_EFFECTS, issue, {
+			action: 'Submit for review'
+		});
 		expect(issueById(t, issue).attempt_count).toBe(2);
 		expect(issueById(t, other).attempt_count).toBe(0);
 	});

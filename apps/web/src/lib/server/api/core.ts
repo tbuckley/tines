@@ -4,6 +4,48 @@ import { json, type RequestEvent } from '@sveltejs/kit';
 import type { CompiledQuery } from 'kysely';
 import { sha256Hex } from '$lib/server/crypto';
 import { getDb } from '$lib/server/db';
+import type { DispatchEffects } from '$lib/server/dispatch-effects';
+
+interface DispatchCollector {
+	ownerId?: string;
+	pending: boolean;
+	closed: boolean;
+	effects?: DispatchEffects;
+}
+
+const dispatchCollectors = new WeakMap<RequestEvent, DispatchCollector>();
+
+export function requestDispatchEffects(
+	event: RequestEvent,
+	authenticatedUserId: string
+): DispatchEffects {
+	const collector = dispatchCollectors.get(event);
+	if (!collector) throw new Error('Dispatch effects requested outside api()');
+	if (collector.ownerId !== undefined && collector.ownerId !== authenticatedUserId) {
+		throw new Error('Dispatch effects owner mismatch');
+	}
+	collector.ownerId = authenticatedUserId;
+	return (collector.effects ??= {
+		signalDispatch() {
+			if (!collector.closed) collector.pending = true;
+		}
+	});
+}
+
+async function drainDispatchEffects(
+	event: RequestEvent,
+	collector: DispatchCollector
+): Promise<void> {
+	collector.closed = true;
+	dispatchCollectors.delete(event);
+	if (!collector.pending || !collector.ownerId) return;
+	try {
+		const { queueDispatchPass } = await import('$lib/server/supervisor/engine');
+		queueDispatchPass(event.platform, collector.ownerId);
+	} catch (error) {
+		console.error('Failed to schedule dispatch pass:', error);
+	}
+}
 
 /** Thrown by handlers/services; converted to a structured error response. */
 export class ApiFail extends Error {
@@ -61,6 +103,8 @@ export function api<E extends RequestEvent>(
 	handler: (event: E) => Promise<Response> | Response
 ): (event: E) => Promise<Response> {
 	return async (event) => {
+		const collector: DispatchCollector = { pending: false, closed: false };
+		dispatchCollectors.set(event, collector);
 		try {
 			return await handler(event);
 		} catch (e) {
@@ -75,6 +119,8 @@ export function api<E extends RequestEvent>(
 			}
 			console.error('API error:', e);
 			return errorResponse(new ApiFail(500, 'internal', 'Internal error'));
+		} finally {
+			await drainDispatchEffects(event, collector);
 		}
 	};
 }
@@ -339,7 +385,12 @@ export { sha256Hex };
 export async function apiContext(event: RequestEvent, { sessionOnly = false } = {}) {
 	if (!event.platform) throw new ApiFail(500, 'no_platform', 'Platform bindings unavailable');
 	const actor = sessionOnly ? await requireSessionActor(event) : await requireActor(event);
-	return { db: getDb(event.platform.env), env: event.platform.env, actor };
+	return {
+		db: getDb(event.platform.env),
+		env: event.platform.env,
+		actor,
+		effects: requestDispatchEffects(event, actor.userId)
+	};
 }
 
 /**

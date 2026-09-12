@@ -32,6 +32,7 @@ import {
 } from './context';
 import { createLabel, resolveLabelRef, normalizeLabelName } from './labels';
 import { createProject, validateProjectFields } from './projects';
+import type { DispatchEffects } from '$lib/server/dispatch-effects';
 import { projectArchivedError } from './archive';
 import {
 	createWorkflow,
@@ -970,9 +971,11 @@ export async function applyImport(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
+	effects: DispatchEffects,
 	request: ImportLibraryRequest
 ): Promise<ImportLibraryResponse> {
-	if (request.document?.version === 3) return applyLibraryV3Import(db, env, actor, request);
+	if (request.document?.version === 3)
+		return applyLibraryV3Import(db, env, actor, effects, request);
 	const plan = await planImport(db, actor.userId, request);
 	if (request.dry_run) {
 		const entries = plan.steps.map((s) => s.entry);
@@ -1015,6 +1018,7 @@ export async function applyImport(
 							db,
 							env,
 							actor,
+							effects,
 							step.existing,
 							step.workflow,
 							stateIds,
@@ -1051,7 +1055,16 @@ export async function applyImport(
 		}
 	}
 
-	await applyDeferredPointers(db, env, actor, ordered, createdWorkflows, stateIds, deferred);
+	await applyDeferredPointers(
+		db,
+		env,
+		actor,
+		effects,
+		ordered,
+		createdWorkflows,
+		stateIds,
+		deferred
+	);
 
 	const entries = plan.steps.map((s) => s.entry);
 	return { applied: true, entries, counts: tally(entries) };
@@ -1118,6 +1131,7 @@ async function overwritePointers(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
+	effects: DispatchEffects,
 	existing: WorkflowResponse,
 	workflow: CreateWorkflowRequest,
 	stateIds: Map<string, string>,
@@ -1143,7 +1157,7 @@ async function overwritePointers(
 		}
 		states.push({ ...base, inherits_from: resolved });
 	}
-	return updateWorkflow(db, env, actor, existing.id, { states });
+	return updateWorkflow(db, env, actor, effects, existing.id, { states });
 }
 
 /** A `<workflow>/<state>` ref as a state id: created in this pass, else stored here. */
@@ -1173,6 +1187,7 @@ async function applyDeferredPointers(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
+	effects: DispatchEffects,
 	steps: PlannedStep[],
 	createdWorkflows: Map<string, WorkflowResponse>,
 	stateIds: Map<string, string>,
@@ -1202,7 +1217,7 @@ async function applyDeferredPointers(
 					category: s.category,
 					...(bases.has(s.name) ? { inherits_from: bases.get(s.name)! } : {})
 				}));
-			await updateWorkflow(db, env, actor, created.id, { states });
+			await updateWorkflow(db, env, actor, effects, created.id, { states });
 		} catch (e) {
 			if (step) {
 				step.entry.action = 'error';

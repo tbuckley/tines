@@ -891,9 +891,9 @@ export async function runDispatchPass(
 }
 
 /**
- * Schedules an opportunistic pass on the platform's waitUntil — the fast
- * path after any eligibility-changing write. Failures are invisible by
- * design; the sweep is the reliability guarantee.
+ * Schedules the centralized request collector's opportunistic pass on
+ * waitUntil. Setup and pass failures are best-effort; the periodic sweep is
+ * the reliability guarantee.
  */
 export function queueDispatchPass(
 	platform: { env: Env; ctx?: { waitUntil(promise: Promise<unknown>): void } } | undefined,

@@ -3,6 +3,7 @@
  * only the fingerprint hint readable, rotation on the record with the value
  * elided by construction.
  */
+import { TEST_NOOP_DISPATCH_EFFECTS } from '$lib/server/api/test-dispatch-effects';
 import { describe, expect, it } from 'vitest';
 import { decryptSecret } from '$lib/server/crypto';
 import type { ActorContext } from './core';
@@ -33,22 +34,30 @@ describe('the GitHub PAT', () => {
 		t.sqlite.exec(`DELETE FROM supervisor_settings WHERE user_id = '${USER}'`);
 		expect((await getSupervisorSettings(t.db, USER)).enabled).toBe(true);
 
-		await updateSupervisorSettings(t.db, t.env, actor, { attempt_limit: 5 });
+		await updateSupervisorSettings(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+			attempt_limit: 5
+		});
 		expect(t.all('SELECT enabled FROM supervisor_settings')[0].enabled).toBe(1);
 	});
 
 	it('preserves a saved stop through unrelated partial and empty writes', async () => {
 		const t = world();
-		await updateSupervisorSettings(t.db, t.env, actor, { enabled: false });
-		await updateSupervisorSettings(t.db, t.env, actor, { attempt_limit: 5 });
-		await updateSupervisorSettings(t.db, t.env, actor, {});
+		await updateSupervisorSettings(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+			enabled: false
+		});
+		await updateSupervisorSettings(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+			attempt_limit: 5
+		});
+		await updateSupervisorSettings(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {});
 		expect((await getSupervisorSettings(t.db, USER)).enabled).toBe(false);
 		expect(t.all('SELECT enabled FROM supervisor_settings')[0].enabled).toBe(0);
 	});
 
 	it('preserves a stop saved after an unrelated writer reads settings', async () => {
 		const t = world();
-		await updateSupervisorSettings(t.db, t.env, actor, { enabled: true });
+		await updateSupervisorSettings(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+			enabled: true
+		});
 		const d1 = t.env.DB as unknown as { batch: (statements: unknown[]) => Promise<unknown[]> };
 		const realBatch = d1.batch.bind(d1);
 		let intercepted = false;
@@ -62,13 +71,15 @@ describe('the GitHub PAT', () => {
 			return realBatch(statements as never[]);
 		};
 
-		await updateSupervisorSettings(t.db, t.env, actor, { attempt_limit: 5 });
+		await updateSupervisorSettings(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+			attempt_limit: 5
+		});
 		expect((await getSupervisorSettings(t.db, USER)).enabled).toBe(false);
 	});
 
 	it('stores encrypted, reads back only the hint, and clears with null', async () => {
 		const t = world();
-		const saved = await updateSupervisorSettings(t.db, t.env, actor, {
+		const saved = await updateSupervisorSettings(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
 			github_pat: 'github_pat_11AAAA0abcdefghijklmn'
 		});
 		expect(saved.github_pat_hint).toBe('github_p…klmn');
@@ -93,7 +104,9 @@ describe('the GitHub PAT', () => {
 		expect(JSON.parse(events[0].payload)).toMatchObject({ changed: ['github_pat'] });
 		expect(events[0].payload).not.toContain('github_pat_11AAAA');
 
-		const cleared = await updateSupervisorSettings(t.db, t.env, actor, { github_pat: null });
+		const cleared = await updateSupervisorSettings(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+			github_pat: null
+		});
 		expect(cleared.github_pat_hint).toBeNull();
 		const after = t.all('SELECT github_pat_enc FROM supervisor_settings')[0] as {
 			github_pat_enc: string | null;
@@ -106,8 +119,11 @@ describe('the GitHub PAT', () => {
 
 	it('replacing the PAT does not disturb the plain settings fields', async () => {
 		const t = world();
-		await updateSupervisorSettings(t.db, t.env, actor, { enabled: true, attempt_limit: 5 });
-		await updateSupervisorSettings(t.db, t.env, actor, {
+		await updateSupervisorSettings(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+			enabled: true,
+			attempt_limit: 5
+		});
+		await updateSupervisorSettings(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
 			github_pat: 'github_pat_11BBBB0abcdefghij'
 		});
 		const settings = await getSupervisorSettings(t.db, USER);
