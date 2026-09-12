@@ -3,6 +3,7 @@
 	let { aggregate }: { aggregate: UsageAggregate } = $props();
 	let open = $state(false);
 	let dialog = $state<HTMLDialogElement>();
+	let invoker: HTMLButtonElement | undefined;
 	const estimated = $derived(aggregate.portions.calculated.priced_run_count > 0);
 	const shown = (value: unknown) =>
 		typeof value === 'string' || typeof value === 'number' ? String(value) : 'unavailable';
@@ -17,15 +18,25 @@
 		if (open && dialog && !dialog.open) dialog.showModal();
 		if (!open && dialog?.open) dialog.close();
 	});
+	function closed() {
+		open = false;
+		queueMicrotask(() => invoker?.focus());
+	}
 </script>
 
 <div class="cost-cell">
 	<strong>{usageCostLabel(aggregate.cost_usd, aggregate.finalized_run_count)}</strong>
-	{#if estimated}<button type="button" onclick={() => (open = true)}>Estimated</button>{/if}
+	{#if estimated}<button
+			type="button"
+			onclick={(event) => {
+				invoker = event.currentTarget;
+				open = true;
+			}}>Estimated</button
+		>{/if}
 </div>
 
 {#if open}
-	<dialog bind:this={dialog} aria-label="Estimate basis" onclose={() => (open = false)}>
+	<dialog bind:this={dialog} aria-label="Estimate basis" onclose={closed}>
 		<h3>Estimate basis</h3>
 		<p>Standard API list-price estimates; not an invoice or subscription allowance.</p>
 		<p>
@@ -73,7 +84,7 @@
 				</section>
 			{/each}
 		{:else}<p>Historical calculated amount; detailed rate basis unavailable.</p>{/if}
-		<button type="button" onclick={() => (open = false)}>Close</button>
+		<button type="button" onclick={() => dialog?.close()}>Close</button>
 	</dialog>
 {/if}
 

@@ -83,7 +83,36 @@ export function spendStatements(nowMs) {
 			w.build.id,
 			'wfs_e2e_spend_design',
 			'advanced',
-			{ cost_usd: 2, cost_source: 'provider', input_tokens: 20 }
+			{
+				cost_usd: 2,
+				cost_source: 'priced',
+				input_tokens: 20,
+				pricing: {
+					version: 1,
+					evaluated_at: nowMs,
+					status: 'calculated',
+					basis: {
+						calculation_version: 'tokens-times-usd-per-million-v1',
+						provider: 'openai',
+						model: 'gpt-5.6-sol',
+						model_identity: 'requested_launch_no_observed_reroute',
+						usage_scope: 'attempt',
+						plan: 'api_standard',
+						context_band: 'short',
+						rate_id: 'spend-e2e-rate',
+						rate_version: 7,
+						rate_adopted_at: nowMs - 1_000,
+						rate_valid_to: null,
+						rate_selected_at: nowMs,
+						source_url: 'https://example.test/pricing',
+						source_checked_at: '2026-09-12',
+						source_effective_at: '2026-09-01',
+						unit_tokens: 1_000_000,
+						rates: { input_tokens: '100000' },
+						cost_usd_exact: '2'
+					}
+				}
+			}
 		],
 		[
 			'alpha_2d',
