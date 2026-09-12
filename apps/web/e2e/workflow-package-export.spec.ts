@@ -206,7 +206,13 @@ test('authors an exact declared use and downloads the reviewed canonical package
 	await draftTier.locator('select').selectOption('balanced');
 	await draftTier.getByRole('checkbox', { name: 'Project-scoped' }).check();
 	await page.getByRole('button', { name: 'Rebuild from source' }).click();
+	await page.getByLabel('Key').fill('target_workflow');
+	await page.getByLabel('Type').selectOption('workflow');
+	await page.getByLabel('Default').fill('Standard');
+	await page.getByRole('textbox', { name: 'Label', exact: true }).fill('Target workflow');
+	await page.getByRole('button', { name: 'Add typed declaration' }).click();
 	await page.getByLabel('Key').fill('target_name');
+	await page.getByLabel('Type').selectOption('text');
 	await page.getByLabel('Default').fill('TARGET');
 	await page.getByRole('textbox', { name: 'Label', exact: true }).fill('Target name');
 	await page.getByRole('button', { name: 'Add typed declaration' }).click();
@@ -262,6 +268,7 @@ test('authors an exact declared use and downloads the reviewed canonical package
 	await signIn(page.context(), BOB.sessionToken);
 	await gotoHydrated(page, '/workflows/import');
 	await page.getByLabel('Workflow package file').setInputFiles(packagePath);
+	await page.getByLabel('Target workflow').selectOption({ label: 'Standard' });
 	await page.getByLabel('Target name').fill('DESTINATION');
 	await page.getByLabel(`Main · ${name}`).fill(`${name} installed`);
 	await page.getByRole('button', { name: 'Prepare installation' }).click();
@@ -454,6 +461,7 @@ test('authors an exact declared use and downloads the reviewed canonical package
 		VALUES(${sqlLiteral(routingId)},${sqlLiteral(BOB.id)},${sqlLiteral(inspectionProject.id)},NULL,NULL,${sqlLiteral(JSON.stringify([{ runner_id: runnerId }]))},${now},${now})`);
 	await gotoHydrated(page, '/workflows/import');
 	await page.getByLabel('Workflow package file').setInputFiles(packagePath);
+	await page.getByLabel('Target workflow').selectOption({ label: 'Standard' });
 	await page.getByLabel('Destination project').selectOption(inspectionProject.id);
 	await page
 		.getByRole('group', { name: 'Optional paused schedules' })
@@ -476,7 +484,14 @@ test('authors an exact declared use and downloads the reviewed canonical package
 	await page.getByRole('button', { name: 'Install package' }).click();
 	const secondReceipt = (await (await installResponse).json()) as {
 		objects: Array<{ kind: string; relationship?: string; id: string }>;
+		reused_inputs: Array<{ input_id: string; type: string; name: string }>;
 	};
+	expect(secondReceipt.reused_inputs).toEqual(
+		expect.arrayContaining([
+			expect.objectContaining({ type: 'workflow', name: 'Standard' }),
+			expect.objectContaining({ type: 'project', name: inspectionProject.name })
+		])
+	);
 	const secondMainId = secondReceipt.objects.find(
 		(object) => object.kind === 'workflow' && object.relationship === 'main'
 	)!.id;

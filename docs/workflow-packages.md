@@ -235,11 +235,13 @@ They cover expiry (a real preparation backdated with the local test signing key)
 a late D1 skill-file failure with all allocated rows rolled back, and recovery across reload/404,
 same-plan retry, dropped committed response, and receipt lookup. Only fault injection is intercepted;
 the retry, expiry rejection, transaction, and receipt reads use the real backend. These browser
-checks do not stand in for the actual runner acceptance owned by the successor issue.
+checks are synthetic/local evidence; the release acceptance record must separately identify a
+post-install activation performed by a configured runner, with its run, logs, gate artifact, and
+handoff identifiers.
 
 The export journey is also the integrated two-account/two-destination-project file exercise. It
 exports a QA-style main plus inherited dependency, two skills with exact file bytes, ordered prompts,
-a repository declaration, artifact gate, label substitution, and optional daily schedule/project-tier
+a repository declaration, artifact gate, declared target workflow, label substitution, and optional daily schedule/project-tier
 configuration. The destination starts with colliding workflow names. The first independent copy omits
 automation and is inspected through ordinary workflow/context APIs from two projects. A second renamed
 copy selects the paused schedule and a supported local-runner tier for one project. The journey pins
