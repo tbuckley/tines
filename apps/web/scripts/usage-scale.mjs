@@ -8,6 +8,8 @@ const persist = '.wrangler-usage-scale';
 const sizeArg = process.argv.find((arg) => arg.startsWith('--size='));
 const size = Number(sizeArg?.slice(7) ?? 10_000);
 const allPriced = process.argv.includes('--all-priced');
+const noPriced = process.argv.includes('--no-priced');
+if (allPriced && noPriced) throw new Error('--all-priced and --no-priced are mutually exclusive');
 if (!Number.isSafeInteger(size) || size < 10_000 || size > 250_000)
 	throw new Error('--size must be an integer from 10000 through 250000');
 const fromMs = 1_700_000_000_000;
@@ -67,7 +69,7 @@ execute(`
 		CASE n%4 WHEN 0 THEN 'advanced' WHEN 1 THEN 'stalled' ELSE NULL END,
 		CASE n%3 WHEN 0 THEN 'smartest' WHEN 1 THEN 'balanced' ELSE 'cheapest' END,
 		CASE WHEN ${allPriced ? '1=1' : '0=1'} THEN json_object('cost_usd', n/100000.0, 'cost_source', 'provider')
-			WHEN n=100001 THEN '{"cost_usd":1,"cost_source":"provider"}'
+			WHEN ${noPriced ? '0=1' : '1=1'} AND n=100001 THEN '{"cost_usd":1,"cost_source":"provider"}'
 			WHEN n%4=0 THEN '{"input_tokens":1}' ELSE NULL END,
 		'wfs_std_open','',1700000000000-n,1700000000000-n,${toMs - 1}-CAST(n/10 AS INTEGER)
 	FROM seq;
@@ -199,6 +201,28 @@ try {
 		);
 	if (body.pending.scope_count !== 100)
 		throw new Error(`worker pending mismatch: ${body.pending.scope_count} != 100`);
+	const evidenceQuery = new URLSearchParams({
+		population: 'finalized',
+		from: new Date(fromMs).toISOString(),
+		to: new Date(toMs).toISOString(),
+		accounting_status: 'priced',
+		limit: '50'
+	});
+	const evidencePages = [];
+	for (let page = 0; page < 2; page++) {
+		const evidenceResponse = await fetch(`${baseUrl}/api/v1/runs?${evidenceQuery}`, {
+			headers: { authorization: `Bearer ${apiKey}` }
+		});
+		const evidence = await evidenceResponse.json();
+		if (!evidenceResponse.ok) throw new Error(JSON.stringify(evidence));
+		evidencePages.push({
+			items: evidence.items.map((item) => item.id),
+			scan_complete: evidence.usage_window.scan_complete,
+			has_cursor: Boolean(evidence.next_cursor)
+		});
+		if (!evidence.next_cursor) break;
+		evidenceQuery.set('cursor', evidence.next_cursor);
+	}
 	const cliRaw = execFileSync(
 		'node',
 		[
@@ -234,6 +258,7 @@ try {
 		priced: body.scope_total.priced_run_count,
 		pending: body.pending.scope_count,
 		groups: body.groups.length,
+		evidence_pages: evidencePages,
 		source_cli_exact_match: true
 	};
 } finally {
@@ -246,6 +271,7 @@ const receipt = {
 	dataset: {
 		finalized: size,
 		all_priced: allPriced,
+		no_priced: noPriced,
 		groups: 1,
 		retained_rates: allPriced ? 0 : priced ? 1 : 0,
 		equal_time_fanout: 10
