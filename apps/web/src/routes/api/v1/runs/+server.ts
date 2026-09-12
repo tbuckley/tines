@@ -16,7 +16,7 @@ import {
 	type Page
 } from '$lib/server/api/core';
 import { listRuns } from '$lib/server/api/runs';
-import { ownsUsageIdentity } from '$lib/server/api/usage-ledger';
+import { authorizeUsageFilters } from '$lib/server/api/usage-ledger';
 import type { RequestHandler } from './$types';
 
 interface UsageRunsCursor {
@@ -168,24 +168,20 @@ export const GET: RequestHandler = api(async (event) => {
 	const tier = params.get('tier');
 	if (tier && !['smartest', 'balanced', 'cheapest', 'unknown'].includes(tier))
 		throw new ApiFail(422, 'invalid_field', 'Invalid tier', { field: 'tier' });
-	for (const kind of ['project', 'runner', 'workflow'] as const)
-		if (!(await ownsUsageIdentity(db, actor.userId, kind, params.get(kind)))) throw notFound();
 	const issue = params.get('issue');
-	if (issue) {
-		const row = await db
-			.selectFrom('issue')
-			.innerJoin('project', 'project.id', 'issue.project_id')
-			.select('issue.id')
-			.where('issue.id', '=', issue)
-			.where('project.user_id', '=', actor.userId)
-			.executeTakeFirst();
-		if (!row) throw notFound();
-	}
 	const state = params.get('state');
 	const workflow = params.get('workflow');
-	if (state && state !== 'unknown') {
-		if (!(await ownsUsageIdentity(db, actor.userId, 'state', state, workflow))) throw notFound();
-	}
+	if (
+		population &&
+		!(await authorizeUsageFilters(db, actor.userId, {
+			issue,
+			project: params.get('project'),
+			runner: params.get('runner'),
+			workflow,
+			state
+		}))
+	)
+		throw notFound();
 	const filterIdentity = JSON.stringify(
 		['issue', 'runner', 'project', 'workflow', 'state', 'tier', 'outcome', 'accounting_status'].map(
 			(name) => [name, params.get(name)]

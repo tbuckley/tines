@@ -2,7 +2,7 @@ import { json } from '@sveltejs/kit';
 import { UsageInputError, type UsageAccountingStatus, type UsageBy } from '@tines/shared';
 import { api, apiContext, ApiFail, notFound } from '$lib/server/api/core';
 import { getUsage } from '$lib/server/api/usage';
-import { ownsUsageIdentity } from '$lib/server/api/usage-ledger';
+import { authorizeUsageFilters } from '$lib/server/api/usage-ledger';
 import type { RequestHandler } from './$types';
 
 const recognized = [
@@ -45,13 +45,17 @@ export const GET: RequestHandler = api(async (event) => {
 		throw new ApiFail(422, 'invalid_field', 'state requires workflow qualification', {
 			field: 'state'
 		});
-	for (const kind of ['project', 'runner', 'workflow'] as const)
-		if (!(await ownsUsageIdentity(db, actor.userId, kind, params.get(kind)))) throw notFound();
 	const state = params.get('state');
 	const workflow = params.get('workflow');
-	if (state && state !== 'unknown') {
-		if (!(await ownsUsageIdentity(db, actor.userId, 'state', state, workflow))) throw notFound();
-	}
+	if (
+		!(await authorizeUsageFilters(db, actor.userId, {
+			project: params.get('project'),
+			runner: params.get('runner'),
+			workflow,
+			state
+		}))
+	)
+		throw notFound();
 	try {
 		const report = await getUsage(db, actor.userId, {
 			window: (params.get('window') ?? undefined) as 'today' | '7d' | '30d' | undefined,

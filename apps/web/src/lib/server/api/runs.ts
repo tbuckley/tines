@@ -72,6 +72,41 @@ export function runQuery(db: Kysely<Database>, userId: string) {
 
 type RunRow = Awaited<ReturnType<ReturnType<typeof runQuery>['execute']>>[number];
 
+const evidenceRunSelection = [
+	'agent_run.id',
+	'agent_run.issue_id',
+	'agent_run.runner_id',
+	'agent_run.status',
+	'agent_run.outcome',
+	'agent_run.tier',
+	'agent_run.model',
+	'agent_run.usage',
+	'agent_run.state_id_at_start',
+	'agent_run.state_id_at_end',
+	'agent_run.provider_session_id',
+	'agent_run.provider_url',
+	'agent_run.turn_count',
+	'agent_run.conversation_turn_count',
+	'agent_run.resumed_from_run_id',
+	'agent_run.resume_expires_at',
+	'agent_run.resume_fallback_reason',
+	'agent_run.error',
+	'agent_run.created_at',
+	'agent_run.started_at',
+	'agent_run.ended_at',
+	'runner.name as runner_name',
+	'issue.number as issue_number',
+	'issue.title as issue_title',
+	'project.name as project_name',
+	'issue.project_id as project_id',
+	'start_state.name as start_state_name',
+	'start_state.workflow_id as start_workflow_id',
+	'issue.workflow_id as issue_workflow_id',
+	'start_workflow.name as start_workflow_name',
+	'issue_workflow.name as issue_workflow_name',
+	'end_state.name as end_state_name'
+] as const;
+
 function usageDimensions(row: RunRow): UsageDimensions {
 	const workflowId = row.start_workflow_id ?? row.issue_workflow_id ?? null;
 	const workflowName = row.start_workflow_name ?? row.issue_workflow_name ?? null;
@@ -339,7 +374,13 @@ export async function listRuns(
 	for (let offset = 0; offset < selectedCandidates.length; offset += 80) {
 		const ids = selectedCandidates.slice(offset, offset + 80).map((row) => row.id);
 		if (ids.length)
-			hydrated.push(...(await runQuery(db, userId).where('agent_run.id', 'in', ids).execute()));
+			hydrated.push(
+				...((await runQuery(db, userId)
+					.clearSelect()
+					.select(evidenceRunSelection)
+					.where('agent_run.id', 'in', ids)
+					.execute()) as RunRow[])
+			);
 	}
 	const byId = new Map(hydrated.map((row) => [row.id, row]));
 	const selected = selectedCandidates
