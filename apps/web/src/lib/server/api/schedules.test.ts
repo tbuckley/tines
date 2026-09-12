@@ -52,17 +52,32 @@ async function createSchedule(t: TestDb, extra: { state?: string } = {}) {
 }
 
 describe('schedule start state', () => {
-	it('dispatch effects: runScheduleNow signals a committed instance, not a rejected lookup', async () => {
+	it('dispatch effects: runScheduleNow signals only after its instance batch commits', async () => {
 		const t = createTestDb();
 		seed(t);
 		const schedule = await createSchedule(t);
 		const effects = recordDispatchEffects();
-		await runScheduleNow(t.db, t.env, actor, effects, schedule.id);
+		const issueId = await runScheduleNow(t.db, t.env, actor, effects, schedule.id);
 		expect(effects.count()).toBe(1);
+		expect(t.all('SELECT id FROM issue WHERE id = ?', issueId)).toHaveLength(1);
 		await expect(runScheduleNow(t.db, t.env, actor, effects, 'tsk_missing')).rejects.toMatchObject({
 			status: 404
 		});
 		expect(effects.count()).toBe(1);
+
+		const beforeIssues = t.all('SELECT id FROM issue').length;
+		const beforeEvents = t.all("SELECT id FROM event WHERE type = 'issue.created'").length;
+		const realBatch = t.env.DB.batch.bind(t.env.DB);
+		t.env.DB.batch = async () => {
+			throw new Error('injected schedule instance batch failure');
+		};
+		await expect(runScheduleNow(t.db, t.env, actor, effects, schedule.id)).rejects.toThrow(
+			'injected schedule instance batch failure'
+		);
+		t.env.DB.batch = realBatch;
+		expect(effects.count()).toBe(1);
+		expect(t.all('SELECT id FROM issue')).toHaveLength(beforeIssues);
+		expect(t.all("SELECT id FROM event WHERE type = 'issue.created'")).toHaveLength(beforeEvents);
 	});
 
 	it('defaults to the workflow initial state, stored as NULL ("follow the workflow")', async () => {

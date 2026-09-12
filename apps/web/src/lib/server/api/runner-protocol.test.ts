@@ -33,7 +33,7 @@ import {
 	type RunnerRow
 } from './runner-protocol';
 import { registerRunner, rotateRunnerToken, updateRunner } from './runners';
-import { updateSupervisorSettings } from './supervisor';
+import { getSupervisorSettings, updateSupervisorSettings } from './supervisor';
 import { createTestDb, type TestDb } from './test-db';
 
 const actor: ActorContext = {
@@ -1510,6 +1510,29 @@ describe('finishRun', () => {
 // ---------------------------------------------------------------------------
 
 describe('pause and kill-switch cancels', () => {
+	it('keeps the runner-write signal when the first pause cancellation fails', async () => {
+		const t = world();
+		const runnerId = addRunner(t);
+		const runId = addRun(t, { issueId: addIssue(t), runnerId });
+		const realBatch = t.env.DB.batch.bind(t.env.DB);
+		let batches = 0;
+		t.env.DB.batch = async (statements) => {
+			batches += 1;
+			if (batches === 2) throw new Error('injected first pause cancellation failure');
+			return realBatch(statements);
+		};
+		const effects = recordDispatchEffects();
+
+		await expect(
+			updateRunner(t.db, t.env, actor, effects, runnerId, { status: 'paused' })
+		).rejects.toThrow('injected first pause cancellation failure');
+
+		expect(runnerById(t, runnerId).status).toBe('paused');
+		expect(runById(t, runId)?.status).toBe('assigned');
+		expect(eventsOfType(t, 'runner.updated')).toHaveLength(1);
+		expect(effects.count()).toBe(1);
+	});
+
 	it('pausing a runner cancels its assigned runs; launching/running finish', async () => {
 		const t = world();
 		const runnerId = addRunner(t, { maxConcurrent: 3 });
@@ -1529,6 +1552,57 @@ describe('pause and kill-switch cancels', () => {
 		expect(runById(t, running)?.status).toBe('running');
 		// The runner write and each cancellation are distinct domain wins.
 		expect(effects.count()).toBe(2);
+	});
+
+	it('keeps settings and prior cancellation signals when a later assigned cancellation fails', async () => {
+		const t = world();
+		const runnerId = addRunner(t, { maxConcurrent: 3 });
+		const first = addRun(t, { issueId: addIssue(t), runnerId });
+		const second = addRun(t, { issueId: addIssue(t), runnerId });
+		const realBatch = t.env.DB.batch.bind(t.env.DB);
+		let batches = 0;
+		t.env.DB.batch = async (statements) => {
+			batches += 1;
+			// Settings = 1; first endRun flip/dependents = 2/3; fail the next flip.
+			if (batches === 4) throw new Error('injected later settings cancellation failure');
+			return realBatch(statements);
+		};
+		const effects = recordDispatchEffects();
+
+		await expect(
+			updateSupervisorSettings(t.db, t.env, actor, effects, { enabled: false })
+		).rejects.toThrow('injected later settings cancellation failure');
+
+		expect((await getSupervisorSettings(t.db, USER)).enabled).toBe(false);
+		expect(eventsOfType(t, 'settings.updated')).toHaveLength(1);
+		expect([runById(t, first)?.status, runById(t, second)?.status].sort()).toEqual([
+			'assigned',
+			'canceled'
+		]);
+		expect(effects.count()).toBe(2);
+	});
+
+	it('keeps the settings-write signal when the first assigned cancellation fails', async () => {
+		const t = world();
+		const runnerId = addRunner(t);
+		const runId = addRun(t, { issueId: addIssue(t), runnerId });
+		const realBatch = t.env.DB.batch.bind(t.env.DB);
+		let batches = 0;
+		t.env.DB.batch = async (statements) => {
+			batches += 1;
+			if (batches === 2) throw new Error('injected first settings cancellation failure');
+			return realBatch(statements);
+		};
+		const effects = recordDispatchEffects();
+
+		await expect(
+			updateSupervisorSettings(t.db, t.env, actor, effects, { enabled: false })
+		).rejects.toThrow('injected first settings cancellation failure');
+
+		expect((await getSupervisorSettings(t.db, USER)).enabled).toBe(false);
+		expect(runById(t, runId)?.status).toBe('assigned');
+		expect(eventsOfType(t, 'settings.updated')).toHaveLength(1);
+		expect(effects.count()).toBe(1);
 	});
 
 	it('the kill switch off cancels assigned runs fleet-wide; bulk cancel takes the rest', async () => {
