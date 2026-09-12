@@ -1,6 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 import { SPEND } from './constants.mjs';
 import { d1 } from './d1';
+import { spendRearmStatement } from './spend-seed.mjs';
 import { gotoHydrated, signIn } from './helpers';
 
 /**
@@ -17,8 +18,31 @@ function armPendingRun() {
 	);
 }
 
-function utcDate(offsetDays: number) {
-	const date = new Date();
+/**
+ * The day-relative ledger rows are seeded against the UTC day at *seed* time,
+ * but every assertion below names a day relative to the clock at *assertion*
+ * time, and the API resolves `window=today` against the request clock. A suite
+ * that crosses UTC midnight between the two makes them disagree by a day —
+ * which is exactly how CI run 34659806292 went red. `armLedgerDays` puts both
+ * on one anchor: it first steps past an imminent rollover (so the anchor
+ * cannot expire mid-test), rewrites the rows from that anchor, and returns it
+ * for `utcDate` to name days from.
+ */
+const ROLLOVER_MARGIN_MS = 3 * 60 * 1000;
+
+async function armLedgerDays(): Promise<number> {
+	const untilMidnight = 86_400_000 - (Date.now() % 86_400_000);
+	if (untilMidnight < ROLLOVER_MARGIN_MS) {
+		test.setTimeout(untilMidnight + 90_000);
+		await new Promise((resolve) => setTimeout(resolve, untilMidnight + 1_000));
+	}
+	const anchor = Date.now();
+	d1(spendRearmStatement(anchor));
+	return anchor;
+}
+
+function utcDate(offsetDays: number, anchor = Date.now()) {
+	const date = new Date(anchor);
 	date.setUTCHours(0, 0, 0, 0);
 	date.setUTCDate(date.getUTCDate() + offsetDays);
 	return date.toISOString().slice(0, 10);
@@ -38,6 +62,7 @@ test.describe('Agents Spend real ledger', () => {
 	test('enters from Now and keeps tabs, primary filters, URL and real totals synchronized', async ({
 		page
 	}) => {
+		await armLedgerDays();
 		const requests: URL[] = [];
 		const errors: Error[] = [];
 		page.on('pageerror', (error) => errors.push(error));
@@ -85,6 +110,7 @@ test.describe('Agents Spend real ledger', () => {
 	test('applies Custom ranges, marks drafts dirty, and restores bounds through history', async ({
 		page
 	}) => {
+		const anchor = await armLedgerDays();
 		const requests: URL[] = [];
 		page.on('request', (request) => {
 			if (request.url().includes('/api/v1/usage?')) requests.push(new URL(request.url()));
@@ -97,28 +123,28 @@ test.describe('Agents Spend real ledger', () => {
 		await page.getByRole('button', { name: 'Custom' }).click();
 		await expect(page.getByText('Enter both From and To, then Apply.')).toBeVisible();
 		const beforeApply = requests.length;
-		await page.getByLabel('From').fill(utcDate(-2));
-		await page.getByRole('textbox', { name: 'To', exact: true }).fill(utcDate(-1));
+		await page.getByLabel('From').fill(utcDate(-2, anchor));
+		await page.getByRole('textbox', { name: 'To', exact: true }).fill(utcDate(-1, anchor));
 		expect(requests).toHaveLength(beforeApply);
 		await page.getByRole('button', { name: 'Apply' }).click();
 		await expect(projectTotal(page)).toHaveText('$3.00');
-		expect(requests.at(-1)?.searchParams.get('from')).toBe(utcDate(-2));
-		expect(requests.at(-1)?.searchParams.get('to')).toBe(utcDate(-1));
+		expect(requests.at(-1)?.searchParams.get('from')).toBe(utcDate(-2, anchor));
+		expect(requests.at(-1)?.searchParams.get('to')).toBe(utcDate(-1, anchor));
 
-		await page.getByLabel('From').fill(utcDate(-10));
+		await page.getByLabel('From').fill(utcDate(-10, anchor));
 		await expect(page.getByText('Unapplied changes — Apply to update.')).toBeVisible();
 		await expect(projectTotal(page)).toHaveText('$3.00');
-		await page.getByRole('textbox', { name: 'To', exact: true }).fill(utcDate(-9));
+		await page.getByRole('textbox', { name: 'To', exact: true }).fill(utcDate(-9, anchor));
 		await page.getByRole('button', { name: 'Apply' }).click();
 		await expect(projectTotal(page)).toHaveText('$7.00');
 		await page.goBack();
-		await expect(page.getByLabel('From')).toHaveValue(utcDate(-2));
+		await expect(page.getByLabel('From')).toHaveValue(utcDate(-2, anchor));
 		await expect(projectTotal(page)).toHaveText('$3.00');
 		await page.goForward();
-		await expect(page.getByLabel('From')).toHaveValue(utcDate(-10));
+		await expect(page.getByLabel('From')).toHaveValue(utcDate(-10, anchor));
 		await expect(projectTotal(page)).toHaveText('$7.00');
-		await page.getByLabel('From').fill(utcDate(1));
-		await page.getByRole('textbox', { name: 'To', exact: true }).fill(utcDate(0));
+		await page.getByLabel('From').fill(utcDate(1, anchor));
+		await page.getByRole('textbox', { name: 'To', exact: true }).fill(utcDate(0, anchor));
 		await page.getByRole('button', { name: 'Apply' }).click();
 		await expect(page.getByText(/Spend unavailable:/)).toBeVisible();
 		await expect(page.locator('.custom .error')).toContainText(/From must be before To|future/i);
@@ -126,6 +152,7 @@ test.describe('Agents Spend real ledger', () => {
 	});
 
 	test('sorts unknown last without refetch and refreshes exactly once', async ({ page }) => {
+		await armLedgerDays();
 		const requests: URL[] = [];
 		page.on('request', (request) => {
 			if (request.url().includes('/api/v1/usage?')) requests.push(new URL(request.url()));
@@ -151,6 +178,7 @@ test.describe('Agents Spend real ledger', () => {
 	test('renders empty, pending, unreported, token-only, measured-zero and partial states', async ({
 		page
 	}) => {
+		await armLedgerDays();
 		await gotoHydrated(
 			page,
 			`/agents?agents_view=spend&spend_project=${SPEND.projects.empty.id}&spend_window=today&spend_view=workflow&spend_sort=desc&spend_workflow=all`

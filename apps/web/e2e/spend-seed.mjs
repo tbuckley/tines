@@ -2,16 +2,50 @@ import { SPEND } from './constants.mjs';
 
 const json = (value) => JSON.stringify(value).replaceAll("'", "''");
 
-/** Deterministic real-D1 ledger rows; totals are independent browser-test oracles. */
-export function spendStatements(nowMs) {
-	const midnight = Date.UTC(
-		new Date(nowMs).getUTCFullYear(),
-		new Date(nowMs).getUTCMonth(),
-		new Date(nowMs).getUTCDate()
-	);
+/**
+ * Day-relative fixture instants, derived from one anchor. The seed and the
+ * spec share this function so a suite that crosses UTC midnight cannot assert
+ * against a day the rows no longer sit in: `armLedgerDays` in spend.spec.ts
+ * re-derives these from a fresh anchor and rewrites the rows in place.
+ */
+export function spendLedgerTimes(nowMs) {
+	const anchor = new Date(nowMs);
+	const midnight = Date.UTC(anchor.getUTCFullYear(), anchor.getUTCMonth(), anchor.getUTCDate());
 	const today = Math.floor((midnight + nowMs) / 2);
 	const twoDaysAgo = midnight - 36 * 60 * 60 * 1000;
 	const tenDaysAgo = midnight - 9.5 * 24 * 60 * 60 * 1000;
+	return {
+		alpha_today: today,
+		alpha_2d: twoDaysAgo,
+		alpha_10d: tenDaysAgo,
+		alpha_unknown: today + 1,
+		beta_today: today + 2,
+		beta_10d: tenDaysAgo + 2,
+		unreported: today + 3,
+		tokens: today + 4,
+		zero: today + 5,
+		archived: today + 6
+	};
+}
+
+/**
+ * One statement that moves every day-relative ledger row onto a fresh anchor's
+ * UTC day, so seed time and assertion time cannot disagree about "today".
+ */
+export function spendRearmStatement(nowMs) {
+	const times = spendLedgerTimes(nowMs);
+	const cases = Object.entries(times)
+		.map(([name, ms]) => `WHEN 'run_e2e_spend_${name}' THEN ${ms}`)
+		.join(' ');
+	const ids = Object.keys(times)
+		.map((name) => `'run_e2e_spend_${name}'`)
+		.join(', ');
+	return `UPDATE agent_run SET created_at = CASE id ${cases} END, started_at = CASE id ${cases} END, ended_at = CASE id ${cases} END WHERE id IN (${ids})`;
+}
+
+/** Deterministic real-D1 ledger rows; totals are independent browser-test oracles. */
+export function spendStatements(nowMs) {
+	const times = spendLedgerTimes(nowMs);
 	const p = SPEND.projects;
 	const w = SPEND.workflows;
 	const statements = [
@@ -46,7 +80,6 @@ export function spendStatements(nowMs) {
 			w.build.id,
 			'wfs_e2e_spend_design',
 			'advanced',
-			today,
 			{ cost_usd: 2, cost_source: 'provider', input_tokens: 20 }
 		],
 		[
@@ -55,7 +88,6 @@ export function spendStatements(nowMs) {
 			w.build.id,
 			'wfs_e2e_spend_implementation',
 			'stalled',
-			twoDaysAgo,
 			{ cost_usd: 3, cost_source: 'provider', input_tokens: 30 }
 		],
 		[
@@ -64,17 +96,15 @@ export function spendStatements(nowMs) {
 			w.ship.id,
 			'wfs_e2e_spend_review',
 			'interrupted',
-			tenDaysAgo,
 			{ cost_usd: 7, cost_source: 'provider', input_tokens: 70 }
 		],
-		['alpha_unknown', p.alpha.id, w.unknown.id, 'wfs_e2e_spend_open', null, today + 1, null],
+		['alpha_unknown', p.alpha.id, w.unknown.id, 'wfs_e2e_spend_open', null, null],
 		[
 			'beta_today',
 			p.beta.id,
 			w.ship.id,
 			'wfs_e2e_spend_review',
 			'advanced',
-			today + 2,
 			{ cost_usd: 11, cost_source: 'provider' }
 		],
 		[
@@ -83,17 +113,15 @@ export function spendStatements(nowMs) {
 			w.ship.id,
 			'wfs_e2e_spend_review',
 			'stalled',
-			tenDaysAgo + 2,
 			{ cost_usd: 13, cost_source: 'provider' }
 		],
-		['unreported', p.unreported.id, w.build.id, 'wfs_e2e_spend_design', null, today + 3, null],
+		['unreported', p.unreported.id, w.build.id, 'wfs_e2e_spend_design', null, null],
 		[
 			'tokens',
 			p.tokens.id,
 			w.build.id,
 			'wfs_e2e_spend_design',
 			null,
-			today + 4,
 			{ input_tokens: 100, output_tokens: 25 }
 		],
 		[
@@ -102,7 +130,6 @@ export function spendStatements(nowMs) {
 			w.build.id,
 			'wfs_e2e_spend_design',
 			'advanced',
-			today + 5,
 			{ cost_usd: 0, cost_source: 'provider' }
 		],
 		[
@@ -111,12 +138,12 @@ export function spendStatements(nowMs) {
 			w.ship.id,
 			'wfs_e2e_spend_review',
 			'advanced',
-			today + 6,
 			{ cost_usd: 17, cost_source: 'provider' }
 		]
 	];
 	const issueNumbers = new Map();
-	for (const [name, projectId, workflowId, stateId, outcome, endedAt, usage] of fixtures) {
+	for (const [name, projectId, workflowId, stateId, outcome, usage] of fixtures) {
+		const endedAt = times[name];
 		const issueNumber = (issueNumbers.get(projectId) ?? 0) + 1;
 		issueNumbers.set(projectId, issueNumber);
 		statements.push(
