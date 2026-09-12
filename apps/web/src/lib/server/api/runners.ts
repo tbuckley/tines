@@ -776,10 +776,9 @@ export async function updateRunner(
 	// runs finish (SPEC.md "Pausing a runner").
 	if (patch.status === 'paused') {
 		await cancelAssignedRuns(db, env, { userId: actor.userId, runnerId: id }, 'runner paused', () =>
-			effects.signalDispatch()
+			 effects.signalDispatch()
 		);
 	}
-	effects.signalDispatch();
 	return getRunner(db, actor.userId, id);
 }
 
