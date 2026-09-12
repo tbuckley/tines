@@ -779,6 +779,7 @@ export async function updateRunner(
 			effects.signalDispatch()
 		);
 	}
+	effects.signalDispatch();
 	return getRunner(db, actor.userId, id);
 }
 
