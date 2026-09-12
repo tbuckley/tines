@@ -15,6 +15,11 @@
 	import IconFile from '@tabler/icons-svelte/icons/file';
 	import IconFolder from '@tabler/icons-svelte/icons/folder';
 	import { api } from '$lib/api';
+	import {
+		artifactPreviewKey,
+		artifactPreviewUrl,
+		resolveArtifactPreview
+	} from '$lib/artifact-preview';
 	import Markdown from '$lib/components/Markdown.svelte';
 	import Modal from '$lib/components/Modal.svelte';
 	import { Select } from '$lib/components/ui/select/index.js';
@@ -35,17 +40,18 @@
 
 	// The viewer is a reader over the detail read (versions incl. folder file
 	// lists); everything below derives from `detail` + the two selections.
-	let detail = $state<ArtifactDetail | null>(null);
+	let loadedDetail = $state<ArtifactDetail | null>(null);
 	let loadError = $state<string | null>(null);
 	/** null = the current version. */
 	let versionPick = $state<number | null>(null);
 	/** Folder-only: the file being previewed. */
 	let pathPick = $state<string | null>(null);
-	/** Fetched text contents, keyed by name@version[/path]. */
+	/** Fetched immutable text contents, keyed by artifact id, version and path. */
 	let textCache = $state<Record<string, string>>({});
+	let textError = $state<{ key: string; message: string } | null>(null);
 	/** Site view: the minted link, and the two ways out of the rendered page. */
-	let siteLink = $state<ArtifactSiteLink | null>(null);
-	let siteError = $state<string | null>(null);
+	let siteResult = $state<{ key: string; link: ArtifactSiteLink } | null>(null);
+	let siteFailure = $state<{ key: string; message: string } | null>(null);
 	let showSource = $state(false);
 	let showFiles = $state(false);
 	/** Simulated device width for the frame; `null` fills the dialog. */
@@ -53,30 +59,50 @@
 
 	let loadToken = 0;
 	$effect(() => {
-		if (!open || !selectedName) return;
+		const activeIssueId = issueId;
 		const name = selectedName;
 		const token = ++loadToken;
-		detail = null;
+		loadedDetail = null;
 		loadError = null;
 		versionPick = null;
 		pathPick = null;
 		showSource = false;
 		showFiles = false;
+		if (!open || !name) return;
 		api
-			.getArtifact(issueId, name)
+			.getArtifact(activeIssueId, name)
 			.then((full) => {
-				if (token === loadToken && open) detail = full;
+				if (token !== loadToken || !open || issueId !== activeIssueId || selectedName !== name)
+					return;
+				if (full.issue_id !== activeIssueId || full.name !== name) {
+					loadError = 'Couldn’t load this artifact — close and retry.';
+					return;
+				}
+				loadedDetail = full;
 			})
 			.catch(() => {
-				if (token === loadToken) loadError = 'Couldn’t load this artifact — close and retry.';
+				if (token === loadToken && open && issueId === activeIssueId && selectedName === name)
+					loadError = 'Couldn’t load this artifact — close and retry.';
 			});
+		return () => {
+			if (token === loadToken) loadToken++;
+		};
 	});
+
+	// A prop change can render before its effect cleanup. Never combine an old
+	// detail response with the new issue/name during that interval.
+	const detail = $derived(
+		open && loadedDetail?.issue_id === issueId && loadedDetail.name === selectedName
+			? loadedDetail
+			: null
+	);
 
 	const version = $derived.by((): ArtifactVersion | null => {
 		if (!detail) return null;
 		if (versionPick === null) return detail.current_version;
 		return detail.versions.find((v) => v.version === versionPick) ?? detail.current_version;
 	});
+	const resolved = $derived(detail && version ? resolveArtifactPreview(detail, version) : null);
 
 	// Stepping through a folder is just moving `pathPick` along the version's
 	// file list, which the API already returns in `path asc` order: every
@@ -96,15 +122,6 @@
 		if (!next) return; // the ends stop rather than wrap
 		pathPick = next.path;
 	}
-
-	const contentUrl = (opts: { path?: string; inline?: boolean; download?: boolean } = {}) => {
-		const params = new URLSearchParams();
-		if (versionPick !== null) params.set('version', String(versionPick));
-		if (opts.path !== undefined) params.set('path', opts.path);
-		if (opts.inline) params.set('inline', '1');
-		const q = params.toString();
-		return `/api/v1/issues/${issueId}/artifacts/${encodeURIComponent(selectedName ?? '')}/content${q ? `?${q}` : ''}`;
-	};
 
 	/**
 	 * The entry document when this version is a site (HTML file/text, or a
@@ -131,7 +148,7 @@
 	/** The one thing being rendered: the version payload, or a folder entry. */
 	const preview = $derived.by(
 		(): { kind: ViewKind; path?: string; contentType: string | null } | null => {
-			if (!detail || !version) return null;
+			if (!detail || !version || !resolved) return null;
 			if (isSite) return { kind: 'site', contentType: version.content_type };
 			if (detail.artifact_type === 'folder') {
 				if (pathPick === null) return null;
@@ -148,46 +165,68 @@
 	);
 
 	const textKey = $derived(
-		preview && (preview.kind === 'markdown' || preview.kind === 'text')
-			? `${selectedName}@${version?.version}${preview.path ? `/${preview.path}` : ''}`
+		resolved && preview && (preview.kind === 'markdown' || preview.kind === 'text')
+			? artifactPreviewKey(resolved, preview.path)
 			: null
 	);
+	let textToken = 0;
 	$effect(() => {
 		const key = textKey;
-		if (!key || textCache[key] !== undefined || !selectedName) return;
-		const opts = { version: version?.version, path: preview?.path };
+		const activePreview = resolved;
+		const path = preview?.path;
+		const token = ++textToken;
+		textError = null;
+		if (!key || !activePreview || textCache[key] !== undefined) return;
 		api
-			.getArtifactContent(issueId, selectedName, opts)
+			.getArtifactContent(activePreview.issueId, activePreview.name, {
+				version: activePreview.version,
+				path
+			})
 			.then((content) => {
 				textCache = { ...textCache, [key]: new TextDecoder().decode(content.bytes) };
 			})
 			.catch(() => {
-				textCache = { ...textCache, [key]: '(failed to load content)' };
+				if (token === textToken && textKey === key) {
+					textError = { key, message: '(failed to load content)' };
+				}
 			});
+		return () => {
+			if (token === textToken) textToken++;
+		};
 	});
 
 	// One mint per artifact+version entering the site view: the link is a
 	// capability with an hour's life, so it is re-minted whenever the version
 	// pick changes or the viewer is reopened.
 	let siteToken = 0;
+	const siteKey = $derived(isSite && resolved ? artifactPreviewKey(resolved) : null);
 	$effect(() => {
-		if (!isSite || !selectedName || !version) {
-			return;
-		}
-		const name = selectedName;
-		const pinned = version.version;
+		const activePreview = resolved;
+		const key = siteKey;
 		const token = ++siteToken;
-		siteLink = null;
-		siteError = null;
+		siteResult = null;
+		siteFailure = null;
+		if (!key || !activePreview) return;
 		api
-			.createArtifactSiteLink(issueId, name, { version: pinned })
+			.createArtifactSiteLink(activePreview.issueId, activePreview.name, {
+				version: activePreview.version
+			})
 			.then((link) => {
-				if (token === siteToken) siteLink = link;
+				if (token === siteToken && siteKey === key && link.version === activePreview.version) {
+					siteResult = { key, link };
+				}
 			})
 			.catch(() => {
-				if (token === siteToken) siteError = 'Couldn’t open this preview — close and retry.';
+				if (token === siteToken && siteKey === key) {
+					siteFailure = { key, message: 'Couldn’t open this preview — close and retry.' };
+				}
 			});
+		return () => {
+			if (token === siteToken) siteToken++;
+		};
 	});
+	const siteLink = $derived(siteResult?.key === siteKey ? siteResult.link : null);
+	const siteError = $derived(siteFailure?.key === siteKey ? siteFailure.message : null);
 
 	/**
 	 * `allow-same-origin` is only safe on the dedicated sandbox host, where the
@@ -250,7 +289,7 @@
 				<option value={artifact.name}>{artifact.name} ({artifact.artifact_type})</option>
 			{/each}
 		</Select>
-		{#if detail}
+		{#if detail && resolved}
 			<Select
 				bind:value={
 					() => (versionPick === null ? 'current' : String(versionPick)),
@@ -271,7 +310,7 @@
 			</Select>
 			{#if detail.artifact_type === 'file' || detail.artifact_type === 'text'}
 				<a
-					href={contentUrl()}
+					href={artifactPreviewUrl(resolved)}
 					class="text-muted-foreground hover:text-foreground ml-auto inline-flex items-center gap-1 text-xs"
 				>
 					<IconDownload size={14} /> Download
@@ -280,7 +319,7 @@
 		{/if}
 	</div>
 
-	{#if detail && version}
+	{#if detail && version && resolved}
 		<!-- metadata line -->
 		<p class="text-muted-foreground mb-3 text-xs">
 			{detail.artifact_type}{version.content_type
@@ -341,7 +380,7 @@
 							title={`View ${file.path}`}
 						>
 							<img
-								src={contentUrl({ path: file.path, inline: true })}
+								src={artifactPreviewUrl(resolved, { path: file.path, inline: true })}
 								alt={file.path}
 								loading="lazy"
 								class="h-36 w-full rounded object-cover"
@@ -377,7 +416,7 @@
 								</span>
 							</div>
 							<a
-								href={contentUrl({ path: file.path })}
+								href={artifactPreviewUrl(resolved, { path: file.path })}
 								class="text-muted-foreground hover:text-foreground shrink-0 self-center"
 								aria-label={`Download ${file.path}`}
 							>
@@ -425,7 +464,7 @@
 							Next <IconChevronRight size={14} />
 						</button>
 						<a
-							href={contentUrl({ path: pathPick })}
+							href={artifactPreviewUrl(resolved, { path: pathPick })}
 							class="text-muted-foreground hover:text-foreground ml-1 inline-flex h-8 items-center gap-1 px-1"
 						>
 							<IconDownload size={13} /> Download
@@ -462,7 +501,7 @@
 </Modal>
 
 {#snippet fileBody()}
-	{#if preview}
+	{#if preview && resolved}
 		{#if preview.kind === 'site'}
 			<div class="space-y-2">
 				<div class="flex flex-wrap items-center gap-2">
@@ -545,34 +584,38 @@
 			</div>
 		{:else if preview.kind === 'image'}
 			<img
-				src={contentUrl({ path: preview.path, inline: true })}
+				src={artifactPreviewUrl(resolved, { path: preview.path, inline: true })}
 				alt={preview.path ?? selectedName}
 				class="max-h-[70dvh] w-auto rounded-md border"
 			/>
 		{:else if preview.kind === 'pdf'}
 			<!-- the sandboxed inline URL is what makes PDF preview possible -->
 			<iframe
-				src={contentUrl({ path: preview.path, inline: true })}
+				src={artifactPreviewUrl(resolved, { path: preview.path, inline: true })}
 				title={preview.path ?? selectedName}
 				class="h-[70dvh] w-full rounded-md border"
 			></iframe>
 		{:else if preview.kind === 'markdown'}
 			<div class="rounded-md border p-4">
-				{#if textKey && textCache[textKey] !== undefined}
+				{#if textKey && textError?.key === textKey}
+					<p class="text-destructive text-xs">{textError.message}</p>
+				{:else if textKey && textCache[textKey] !== undefined}
 					<Markdown source={textCache[textKey]} class="text-sm" />
 				{:else}
 					<p class="text-muted-foreground text-xs">Loading…</p>
 				{/if}
 			</div>
 		{:else if preview.kind === 'text'}
-			{#if textKey && textCache[textKey] !== undefined}
+			{#if textKey && textError?.key === textKey}
+				<p class="text-destructive text-xs">{textError.message}</p>
+			{:else if textKey && textCache[textKey] !== undefined}
 				<pre class="overflow-x-auto rounded-md border p-4 text-xs">{textCache[textKey]}</pre>
 			{:else}
 				<p class="text-muted-foreground text-xs">Loading…</p>
 			{/if}
 		{:else}
 			<a
-				href={contentUrl({ path: preview.path })}
+				href={artifactPreviewUrl(resolved, { path: preview.path })}
 				class="text-muted-foreground hover:text-foreground inline-flex items-center gap-1 rounded-md border p-4 text-sm"
 			>
 				<IconDownload size={14} />

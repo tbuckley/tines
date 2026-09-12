@@ -116,3 +116,7 @@ Preview and apply share one planner and ordinary validators. Edits invalidate th
 ## Decision update — Tines/440 workflow-package commit
 
 Workflow-profile v3 files use a signed prepare → install protocol. `POST /api/v1/library/install` confirms the exact plan digest and commits one guarded D1 batch whose first row is an immutable owner receipt; every child write and event is gated by that attempt's fresh execution nonce. Identical retries recover the committed receipt before expiry/compiler checks, while actor, file, confirmation and request mismatches never replay it. `GET /api/v1/library/installs/:planId` is owner-scoped and remains usable after API-key rotation. Run keys retain export, validation, preparation and receipt reads but are denied installation at both the route fence and service boundary. Schedules install paused, and the commit creates no initial issue, dispatch, or project-default mutation. Native-D1 capacity and concurrency boundary evidence remains the responsibility of Tines/441.
+
+## Decision update — Tines/101 request dispatch effects
+
+Whole-library imports carry the API request's dispatch effect through workflow overwrites, so changing an existing state category to `active` schedules one coalesced pass even when other import entries fail. Legacy imports carry the same capability through their workflow update helpers, while preserving their existing category behavior. Signed workflow-package installation is intentionally unchanged: it creates new objects, no initial issue, and no dispatch signal.

@@ -3,6 +3,7 @@
  * key encrypted at rest and never serialized, the $5 default per-run cap,
  * and tier-override / budget validation.
  */
+import { TEST_NOOP_DISPATCH_EFFECTS } from '$lib/server/api/test-dispatch-effects';
 import { describe, expect, it } from 'vitest';
 import { decryptSecret } from '$lib/server/crypto';
 import { ApiFail, type ActorContext } from './core';
@@ -43,6 +44,7 @@ describe('createRunner (claude_managed)', () => {
 			t.db,
 			t.env,
 			actor,
+			TEST_NOOP_DISPATCH_EFFECTS,
 			{ type: 'claude_managed', name: 'claude-cloud', api_key: 'sk-ant-key' },
 			okPing
 		);
@@ -73,6 +75,7 @@ describe('createRunner (claude_managed)', () => {
 			t.db,
 			t.env,
 			actor,
+			TEST_NOOP_DISPATCH_EFFECTS,
 			{
 				type: 'claude_managed',
 				name: 'resume-cloud',
@@ -96,6 +99,7 @@ describe('createRunner (claude_managed)', () => {
 				t.db,
 				t.env,
 				actor,
+				TEST_NOOP_DISPATCH_EFFECTS,
 				{
 					type: 'claude_managed',
 					name: 'null-create',
@@ -106,7 +110,9 @@ describe('createRunner (claude_managed)', () => {
 			)
 		).rejects.toMatchObject({ code: 'invalid_field', details: { field: 'resume_enabled' } });
 		await expect(
-			updateRunner(t.db, t.env, actor, runner.id, { resume_enabled: null } as never)
+			updateRunner(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, runner.id, {
+				resume_enabled: null
+			} as never)
 		).rejects.toMatchObject({ code: 'invalid_field', details: { field: 'resume_enabled' } });
 
 		for (const patch of [
@@ -117,7 +123,9 @@ describe('createRunner (claude_managed)', () => {
 			{ resume_max_cost_usd: 0 },
 			{ resume_max_cost_usd: Number.NaN }
 		]) {
-			await expect(updateRunner(t.db, t.env, actor, runner.id, patch)).rejects.toMatchObject({
+			await expect(
+				updateRunner(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, runner.id, patch)
+			).rejects.toMatchObject({
 				code: 'invalid_field'
 			});
 		}
@@ -130,6 +138,7 @@ describe('createRunner (claude_managed)', () => {
 				t.db,
 				t.env,
 				actor,
+				TEST_NOOP_DISPATCH_EFFECTS,
 				{ type: 'claude_managed', name: 'c', api_key: 'bad' },
 				badPing
 			)
@@ -140,13 +149,21 @@ describe('createRunner (claude_managed)', () => {
 	it('requires the key, rejects user config, and lets an explicit {} budget mean uncapped', async () => {
 		const t = world();
 		await expect(
-			createRunner(t.db, t.env, actor, { type: 'claude_managed', name: 'c' }, okPing)
+			createRunner(
+				t.db,
+				t.env,
+				actor,
+				TEST_NOOP_DISPATCH_EFFECTS,
+				{ type: 'claude_managed', name: 'c' },
+				okPing
+			)
 		).rejects.toMatchObject({ code: 'invalid_field', details: { field: 'api_key' } });
 		await expect(
 			createRunner(
 				t.db,
 				t.env,
 				actor,
+				TEST_NOOP_DISPATCH_EFFECTS,
 				{ type: 'claude_managed', name: 'c', api_key: 'k', config: { anything: 1 } },
 				okPing
 			)
@@ -155,6 +172,7 @@ describe('createRunner (claude_managed)', () => {
 			t.db,
 			t.env,
 			actor,
+			TEST_NOOP_DISPATCH_EFFECTS,
 			{ type: 'claude_managed', name: 'c', api_key: 'k', budget: {} },
 			okPing
 		);
@@ -164,7 +182,14 @@ describe('createRunner (claude_managed)', () => {
 	it('gemini stays gated behind its milestone', async () => {
 		const t = world();
 		await expect(
-			createRunner(t.db, t.env, actor, { type: 'gemini_managed', name: 'g', api_key: 'k' }, okPing)
+			createRunner(
+				t.db,
+				t.env,
+				actor,
+				TEST_NOOP_DISPATCH_EFFECTS,
+				{ type: 'gemini_managed', name: 'g', api_key: 'k' },
+				okPing
+			)
 		).rejects.toMatchObject({ code: 'managed_runner_unavailable' });
 	});
 });
@@ -175,6 +200,7 @@ describe('updateRunner (managed credentials, tiers, budget)', () => {
 			t.db,
 			t.env,
 			actor,
+			TEST_NOOP_DISPATCH_EFFECTS,
 			{ type: 'claude_managed', name: 'claude-cloud', api_key: 'sk-old' },
 			okPing
 		);
@@ -184,12 +210,28 @@ describe('updateRunner (managed credentials, tiers, budget)', () => {
 		const t = world();
 		const runner = await withRunner(t);
 		await expect(
-			updateRunner(t.db, t.env, actor, runner.id, { api_key: 'sk-bad' }, badPing)
+			updateRunner(
+				t.db,
+				t.env,
+				actor,
+				TEST_NOOP_DISPATCH_EFFECTS,
+				runner.id,
+				{ api_key: 'sk-bad' },
+				badPing
+			)
 		).rejects.toMatchObject({ code: 'invalid_api_key' });
 		const before = t.all('SELECT secret_enc FROM runner')[0] as { secret_enc: string };
 		expect(await decryptSecret(before.secret_enc, ENC_KEY)).toBe('sk-old');
 
-		await updateRunner(t.db, t.env, actor, runner.id, { api_key: 'sk-new' }, okPing);
+		await updateRunner(
+			t.db,
+			t.env,
+			actor,
+			TEST_NOOP_DISPATCH_EFFECTS,
+			runner.id,
+			{ api_key: 'sk-new' },
+			okPing
+		);
 		const after = t.all('SELECT secret_enc FROM runner')[0] as { secret_enc: string };
 		expect(await decryptSecret(after.secret_enc, ENC_KEY)).toBe('sk-new');
 		// The rotation is on record; the value is not.
@@ -220,8 +262,24 @@ describe('updateRunner (managed credentials, tiers, budget)', () => {
 			return null;
 		};
 		await Promise.all([
-			updateRunner(t.db, t.env, actor, runner.id, { api_key: 'sk-a' }, ping),
-			updateRunner(t.db, t.env, actor, runner.id, { api_key: 'sk-b' }, ping)
+			updateRunner(
+				t.db,
+				t.env,
+				actor,
+				TEST_NOOP_DISPATCH_EFFECTS,
+				runner.id,
+				{ api_key: 'sk-a' },
+				ping
+			),
+			updateRunner(
+				t.db,
+				t.env,
+				actor,
+				TEST_NOOP_DISPATCH_EFFECTS,
+				runner.id,
+				{ api_key: 'sk-b' },
+				ping
+			)
 		]);
 		expect(t.all('SELECT resume_config_revision FROM runner')).toEqual([
 			{ resume_config_revision: 2 }
@@ -231,29 +289,47 @@ describe('updateRunner (managed credentials, tiers, budget)', () => {
 	it('patches tier overrides and budget wholesale, null clearing them', async () => {
 		const t = world();
 		const runner = await withRunner(t);
-		let updated = await updateRunner(t.db, t.env, actor, runner.id, {
+		let updated = await updateRunner(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, runner.id, {
 			tiers: { smartest: { model: 'claude-opus-5', effort: 'high' } },
 			budget: { max_run_cost_usd: 2, max_run_tokens: 500000 }
 		});
 		expect(updated.tiers).toEqual({ smartest: { model: 'claude-opus-5', effort: 'high' } });
 		expect(updated.budget).toEqual({ max_run_cost_usd: 2, max_run_tokens: 500000 });
-		updated = await updateRunner(t.db, t.env, actor, runner.id, { tiers: null, budget: null });
+		updated = await updateRunner(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, runner.id, {
+			tiers: null,
+			budget: null
+		});
 		expect(updated.tiers).toBeNull();
 		expect(updated.budget).toBeNull();
 	});
 
 	it('local runners reject api_key', async () => {
 		const t = world();
-		const local = await createRunner(t.db, t.env, actor, { type: 'local', name: 'laptop' }, okPing);
+		const local = await createRunner(
+			t.db,
+			t.env,
+			actor,
+			TEST_NOOP_DISPATCH_EFFECTS,
+			{ type: 'local', name: 'laptop' },
+			okPing
+		);
 		await expect(
-			updateRunner(t.db, t.env, actor, local.id, { api_key: 'sk-x' }, okPing)
+			updateRunner(
+				t.db,
+				t.env,
+				actor,
+				TEST_NOOP_DISPATCH_EFFECTS,
+				local.id,
+				{ api_key: 'sk-x' },
+				okPing
+			)
 		).rejects.toMatchObject({ code: 'invalid_field', details: { field: 'api_key' } });
 	});
 
 	it('rejects unsupported harnesses separately from providers whose rollout is still closed', async () => {
 		const t = world();
 		await expect(
-			createRunner(t.db, t.env, actor, {
+			createRunner(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
 				type: 'local',
 				name: 'codex',
 				config: { harness: 'codex' },
@@ -261,22 +337,26 @@ describe('updateRunner (managed credentials, tiers, budget)', () => {
 			})
 		).rejects.toMatchObject({ code: 'resume_unsupported' });
 
-		const local = await createRunner(t.db, t.env, actor, {
+		const local = await createRunner(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
 			type: 'local',
 			name: 'claude'
 		});
 		// A Claude Code local runner may now opt in: this is the shipped path.
 		await expect(
-			updateRunner(t.db, t.env, actor, local.id, { resume_enabled: true })
+			updateRunner(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, local.id, {
+				resume_enabled: true
+			})
 		).resolves.toMatchObject({ resume_enabled: true });
 		await expect(
-			updateRunner(t.db, t.env, actor, local.id, {
+			updateRunner(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, local.id, {
 				config: { harness: 'codex' },
 				resume_enabled: true
 			})
 		).rejects.toMatchObject({ code: 'resume_unsupported' });
 		await expect(
-			updateRunner(t.db, t.env, actor, local.id, { resume_enabled: false })
+			updateRunner(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, local.id, {
+				resume_enabled: false
+			})
 		).resolves.toMatchObject({ resume_enabled: false });
 	});
 
@@ -288,10 +368,14 @@ describe('updateRunner (managed credentials, tiers, budget)', () => {
 		const t = world();
 		const runner = await withRunner(t);
 		await expect(
-			updateRunner(t.db, t.env, actor, runner.id, { resume_enabled: true })
+			updateRunner(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, runner.id, {
+				resume_enabled: true
+			})
 		).resolves.toMatchObject({ resume_enabled: true });
 		await expect(
-			updateRunner(t.db, t.env, actor, runner.id, { resume_window_hours: 24 })
+			updateRunner(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, runner.id, {
+				resume_window_hours: 24
+			})
 		).resolves.toMatchObject({ resume_enabled: true, resume_window_hours: 24 });
 	});
 });

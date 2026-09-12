@@ -24,7 +24,7 @@ import {
 	type RunnerPollResponse
 } from '@tines/shared';
 import type { RequestEvent } from '@sveltejs/kit';
-import type { Kysely } from 'kysely';
+import { sql, type Kysely } from 'kysely';
 import { sha256Hex } from '$lib/server/crypto';
 import { getDb, newId, type Database } from '$lib/server/db';
 import {
@@ -54,6 +54,8 @@ import { listArtifacts } from './artifacts';
 import { listLabels } from './labels';
 import { buildLaunchPrompt, buildResumePrompt, effectiveContextForIssue } from './context';
 import { ApiFail, notFound, optionalString, runAtomic } from './core';
+import { requestDispatchEffects } from './core';
+import type { DispatchEffects } from '$lib/server/dispatch-effects';
 import { getIssueDetail } from './issues';
 import { validateBoundedInt } from './runners';
 import { runQuery, serializeRun } from './runs';
@@ -95,7 +97,7 @@ export function runnerTokenUnauthorized(): ApiFail {
  */
 export async function runnerProtocolContext(
 	event: RequestEvent
-): Promise<{ db: Kysely<Database>; env: Env; runner: RunnerRow }> {
+): Promise<{ db: Kysely<Database>; env: Env; runner: RunnerRow; effects: DispatchEffects }> {
 	if (!event.platform) throw new ApiFail(500, 'no_platform', 'Platform bindings unavailable');
 	const header = event.request.headers.get('authorization');
 	const token = header?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim();
@@ -109,7 +111,12 @@ export async function runnerProtocolContext(
 	const db = getDb(event.platform.env);
 	const runner = await authenticateRunnerToken(db, token);
 	if (!runner) throw runnerTokenUnauthorized();
-	return { db, env: event.platform.env, runner };
+	return {
+		db,
+		env: event.platform.env,
+		runner,
+		effects: requestDispatchEffects(event, runner.user_id)
+	};
 }
 
 async function serializedRun(
@@ -150,6 +157,84 @@ function validateOwnedRuns(body: RunnerPollRequest): string[] {
 	return owned;
 }
 
+function validateInstanceId(body: RunnerPollRequest): string | undefined {
+	const instanceId = body.instance_id;
+	if (instanceId === undefined) return undefined;
+	if (
+		typeof instanceId !== 'string' ||
+		instanceId.length < 1 ||
+		instanceId.length > 128 ||
+		!/^[A-Za-z0-9_-]+$/.test(instanceId)
+	) {
+		throw new ApiFail(
+			422,
+			'invalid_field',
+			'"instance_id" must be 1–128 ASCII letters, digits, underscores, or hyphens',
+			{ field: 'instance_id' }
+		);
+	}
+	return instanceId;
+}
+
+async function admitDaemonInstance(
+	db: Kysely<Database>,
+	env: Env,
+	runner: RunnerRow,
+	instanceId: string,
+	now: number
+): Promise<RunnerRow> {
+	const mayReplace = sql<boolean>`EXISTS (
+		SELECT 1 FROM runner
+		WHERE id = ${runner.id}
+			AND daemon_instance_id IS NOT NULL
+			AND daemon_instance_id IS NOT ${instanceId}
+			AND fenced_instance_id IS NOT ${instanceId}
+	)`;
+	const results = await runAtomic(env, [
+		supervisorEvent(
+			db,
+			runner.user_id,
+			{
+				type: 'runner.daemon_replaced',
+				payload: { runner_id: runner.id, name: runner.name }
+			},
+			now,
+			mayReplace
+		),
+		db
+			.updateTable('runner')
+			.set({
+				fenced_instance_id: sql<string | null>`CASE
+					WHEN daemon_instance_id IS NOT ${instanceId} THEN daemon_instance_id
+					ELSE fenced_instance_id
+				END`,
+				daemon_instance_id: instanceId
+			})
+			.where('id', '=', runner.id)
+			.where(sql<boolean>`fenced_instance_id IS NOT ${instanceId}`)
+			.compile(),
+		db
+			.selectFrom('runner')
+			.selectAll()
+			.where('id', '=', runner.id)
+			.where('daemon_instance_id', '=', instanceId)
+			.compile()
+	]);
+	const admitted = results[2]?.results?.[0] as RunnerRow | undefined;
+	if (admitted) return admitted;
+	const exists = await db
+		.selectFrom('runner')
+		.select('id')
+		.where('id', '=', runner.id)
+		.executeTakeFirst();
+	if (!exists) throw notFound();
+	throw new ApiFail(
+		409,
+		'runner_conflict',
+		'another daemon instance is serving this runner; this one has been superseded'
+	);
+}
+
 /**
  * One poll: bump `last_seen_at`, adopt the daemon's `max_concurrent` (the
  * flag is authoritative for the daemon's own cap, so a restart with a new
@@ -164,18 +249,23 @@ export async function pollRunner(
 	db: Kysely<Database>,
 	env: Env,
 	runner: RunnerRow,
+	effects: DispatchEffects,
 	body: RunnerPollRequest,
 	now: number = Date.now()
 ): Promise<PollOutcome> {
 	const owned = new Set(validateOwnedRuns(body));
-	const cap =
+	const instanceId = validateInstanceId(body);
+	const requestedCap =
 		body.max_concurrent === undefined
-			? runner.max_concurrent
+			? undefined
 			: validateBoundedInt(body.max_concurrent, 'max_concurrent', 1, 100);
-	const capChanged = cap !== runner.max_concurrent;
 	if (body.draining !== undefined && typeof body.draining !== 'boolean') {
 		throw new ApiFail(422, 'invalid_field', '"draining" must be a boolean', { field: 'draining' });
 	}
+	if (instanceId !== undefined)
+		runner = await admitDaemonInstance(db, env, runner, instanceId, now);
+	const cap = requestedCap === undefined ? runner.max_concurrent : requestedCap;
+	const capChanged = cap !== runner.max_concurrent;
 	// Every poll states the flag, so a daemon that died mid-drain cannot pin
 	// the runner shut: its relaunch (or any older daemon) polls without it.
 	const draining = body.draining === true ? 1 : 0;
@@ -210,6 +300,7 @@ export async function pollRunner(
 				]
 			: [])
 	]);
+	if (cameOnline || capRaised) effects.signalDispatch();
 	runner.max_concurrent = cap;
 	runner.draining = draining;
 
@@ -240,7 +331,10 @@ export async function pollRunner(
 			judgment: 'interrupted',
 			now
 		});
-		if (ended.outcome === 'interrupted') reconciled = true;
+		if (ended.outcome === 'interrupted') {
+			reconciled = true;
+			effects.signalDispatch();
+		}
 	}
 	// One incident, one increment: a daemon that came back having dropped
 	// five runs is one failure, not five (noteInterruption's backoff window
@@ -965,6 +1059,7 @@ export async function finishRun(
 	db: Kysely<Database>,
 	env: Env,
 	runner: RunnerRow,
+	effects: DispatchEffects,
 	runId: string,
 	body: FinishRunRequest,
 	now: number = Date.now()
@@ -1063,6 +1158,7 @@ export async function finishRun(
 			},
 			now
 		});
+		if (ended.ended) effects.signalDispatch();
 		if (judgment === 'rate_limited' && ended.ended) {
 			// On `ended`, not on the outcome: an agent that transitioned the
 			// issue before hitting the wall leaves an `advanced` run, and the

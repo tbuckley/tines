@@ -27,6 +27,7 @@
 		effectiveContentType,
 		gatesForName
 	} from '$lib/artifact-gates';
+	import { artifactPreviewUrl, resolveArtifactPreview } from '$lib/artifact-preview';
 	import ArtifactViewerDialog from '$lib/components/ArtifactViewerDialog.svelte';
 	import { confirmDialog } from '$lib/components/dialogs.svelte';
 	import Modal from '$lib/components/Modal.svelte';
@@ -71,12 +72,6 @@
 	const requiredSlots = $derived(
 		new Set(allowedTransitions.flatMap((t) => (t.requires ?? []).map((r) => r.artifact)))
 	);
-
-	const contentUrl = (name: string, opts: { path?: string } = {}) => {
-		const params = new URLSearchParams({ inline: '1' });
-		if (opts.path !== undefined) params.set('path', opts.path);
-		return `/api/v1/issues/${issueId}/artifacts/${encodeURIComponent(name)}/content?${params.toString()}`;
-	};
 
 	const prUrl = (a: Artifact) =>
 		`${a.current_version.pr_repo_url}/pull/${a.current_version.pr_number}`;
@@ -400,6 +395,7 @@
 					{@const TypeIcon = typeIcons[artifact.artifact_type]}
 					{@const stale = !artifact.fresh && requiredSlots.has(artifact.name)}
 					{@const cv = artifact.current_version}
+					{@const resolved = resolveArtifactPreview(artifact, cv)}
 					{@const thumbs = thumbnails(artifact)}
 					<!-- Wraps rather than crushing the text column: the icon, thumbnails and
 					     actions cannot shrink, so on a phone the text was the only thing left to
@@ -422,7 +418,7 @@
 							>
 								{#each thumbs as thumb, i (thumb.path ?? '')}
 									<img
-										src={contentUrl(artifact.name, { path: thumb.path })}
+										src={artifactPreviewUrl(resolved, { path: thumb.path, inline: true })}
 										alt={thumb.path ?? artifact.name}
 										loading="lazy"
 										class="h-10 w-10 rounded border object-cover {i > 0 ? 'hidden sm:block' : ''}"

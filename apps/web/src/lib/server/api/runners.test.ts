@@ -1,3 +1,4 @@
+import { TEST_NOOP_DISPATCH_EFFECTS } from '$lib/server/api/test-dispatch-effects';
 import { describe, expect, it } from 'vitest';
 import { ApiFail, type ActorContext } from './core';
 import {
@@ -153,7 +154,7 @@ describe('deleteRunner (db batch)', () => {
 		const t = createTestDb();
 		seedRemovalFixture(t);
 
-		await deleteRunner(t.db, t.env, actor, 'rnr_1', true);
+		await deleteRunner(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, 'rnr_1', true);
 
 		// Runner gone; the other survives.
 		expect(t.all(`SELECT id FROM runner`).map((r) => r.id)).toEqual(['rnr_2']);
@@ -187,7 +188,9 @@ describe('deleteRunner (db batch)', () => {
 	it('refuses without force, and the db is untouched', async () => {
 		const t = createTestDb();
 		seedRemovalFixture(t);
-		await expect(deleteRunner(t.db, t.env, actor, 'rnr_1', false)).rejects.toMatchObject({
+		await expect(
+			deleteRunner(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, 'rnr_1', false)
+		).rejects.toMatchObject({
 			code: 'runner_referenced',
 			// The referenced rules are named with the canonical scope label.
 			details: {
@@ -218,7 +221,9 @@ describe('deleteRunner (db batch)', () => {
 			return realBatch(statements);
 		};
 
-		await expect(deleteRunner(t.db, t.env, actor, 'rnr_1', true)).rejects.toMatchObject({
+		await expect(
+			deleteRunner(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, 'rnr_1', true)
+		).rejects.toMatchObject({
 			code: 'runner_busy'
 		});
 		// The in-batch guards made every statement a no-op: nothing stripped,

@@ -1,3 +1,4 @@
+import { TEST_NOOP_DISPATCH_EFFECTS } from '$lib/server/api/test-dispatch-effects';
 import { compareLabelNames, defaultLabelColor, LABEL_COLORS } from '@tines/shared';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { PROJECT, USER, addIssue, addRunner, seedBase } from '../supervisor/test-fixtures';
@@ -126,8 +127,8 @@ describe('the label library', () => {
 
 	it('deletes an in-use label, detaching it and reporting the count', async () => {
 		const issue = addIssue(t, { title: 'a' });
-		await addIssueLabels(t.db, t.env, human, issue, ['bug']);
-		const res = await deleteLabel(t.db, t.env, human, 'bug');
+		await addIssueLabels(t.db, t.env, human, TEST_NOOP_DISPATCH_EFFECTS, issue, ['bug']);
+		const res = await deleteLabel(t.db, t.env, human, TEST_NOOP_DISPATCH_EFFECTS, 'bug');
 		expect(res).toEqual({
 			deleted: true,
 			issue_count: 1,
@@ -140,7 +141,9 @@ describe('the label library', () => {
 	});
 
 	it('404s on an unknown label', async () => {
-		await expect(deleteLabel(t.db, t.env, human, 'nope')).rejects.toMatchObject({ status: 404 });
+		await expect(
+			deleteLabel(t.db, t.env, human, TEST_NOOP_DISPATCH_EFFECTS, 'nope')
+		).rejects.toMatchObject({ status: 404 });
 	});
 });
 
@@ -157,7 +160,10 @@ describe('label order', () => {
 describe('applying labels to an issue', () => {
 	it('creates unknown labels for a human and attaches them', async () => {
 		const issue = addIssue(t, { title: 'a' });
-		const res = await addIssueLabels(t.db, t.env, human, issue, ['bug', 'p1']);
+		const res = await addIssueLabels(t.db, t.env, human, TEST_NOOP_DISPATCH_EFFECTS, issue, [
+			'bug',
+			'p1'
+		]);
 		expect(res.added.map((l) => l.name)).toEqual(['bug', 'p1']);
 		expect(res.created.map((l) => l.name)).toEqual(['bug', 'p1']);
 		expect(res.labels.map((l) => l.name)).toEqual(['bug', 'p1']);
@@ -165,8 +171,10 @@ describe('applying labels to an issue', () => {
 
 	it('is idempotent: re-adding attaches nothing and does not error', async () => {
 		const issue = addIssue(t, { title: 'a' });
-		await addIssueLabels(t.db, t.env, human, issue, ['bug']);
-		const again = await addIssueLabels(t.db, t.env, human, issue, ['BUG']);
+		await addIssueLabels(t.db, t.env, human, TEST_NOOP_DISPATCH_EFFECTS, issue, ['bug']);
+		const again = await addIssueLabels(t.db, t.env, human, TEST_NOOP_DISPATCH_EFFECTS, issue, [
+			'BUG'
+		]);
 		expect(again.added).toEqual([]);
 		expect(again.created).toEqual([]);
 		expect(again.labels.map((l) => l.name)).toEqual(['bug']);
@@ -174,7 +182,10 @@ describe('applying labels to an issue', () => {
 
 	it('dedupes within one request', async () => {
 		const issue = addIssue(t, { title: 'a' });
-		const res = await addIssueLabels(t.db, t.env, human, issue, ['bug', 'Bug']);
+		const res = await addIssueLabels(t.db, t.env, human, TEST_NOOP_DISPATCH_EFFECTS, issue, [
+			'bug',
+			'Bug'
+		]);
 		expect(res.added).toHaveLength(1);
 	});
 
@@ -183,12 +194,21 @@ describe('applying labels to an issue', () => {
 		const { number } = t.sqlite.prepare('SELECT number FROM issue WHERE id = ?').get(id) as {
 			number: number;
 		};
-		const res = await addIssueLabels(t.db, t.env, human, `demo/${number}`, ['bug']);
+		const res = await addIssueLabels(
+			t.db,
+			t.env,
+			human,
+			TEST_NOOP_DISPATCH_EFFECTS,
+			`demo/${number}`,
+			['bug']
+		);
 		expect(res.labels.map((l) => l.name)).toEqual(['bug']);
 	});
 
 	it('404s on an unknown issue', async () => {
-		await expect(addIssueLabels(t.db, t.env, human, 'iss_nope', ['bug'])).rejects.toMatchObject({
+		await expect(
+			addIssueLabels(t.db, t.env, human, TEST_NOOP_DISPATCH_EFFECTS, 'iss_nope', ['bug'])
+		).rejects.toMatchObject({
 			status: 404
 		});
 	});
@@ -199,14 +219,16 @@ describe('applying labels to an issue', () => {
 
 	it('422s on a stale label id rather than minting a label named after it', async () => {
 		const issue = addIssue(t, { title: 'a' });
-		await expect(addIssueLabels(t.db, t.env, human, issue, [staleId])).rejects.toMatchObject({
+		await expect(
+			addIssueLabels(t.db, t.env, human, TEST_NOOP_DISPATCH_EFFECTS, issue, [staleId])
+		).rejects.toMatchObject({
 			status: 422,
 			code: 'unknown_label',
 			details: { unknown: [staleId] }
 		});
-		await expect(addIssueLabels(t.db, t.env, human, issue, [staleId])).rejects.toThrowError(
-			/deleted/
-		);
+		await expect(
+			addIssueLabels(t.db, t.env, human, TEST_NOOP_DISPATCH_EFFECTS, issue, [staleId])
+		).rejects.toThrowError(/deleted/);
 		expect(await names()).toEqual([]);
 		const { items } = await listIssues(t.db, USER, {}, { cursor: null, limit: 10 });
 		expect(items[0].labels).toEqual([]);
@@ -214,16 +236,18 @@ describe('applying labels to an issue', () => {
 
 	it('applies nothing when a stale id rides along with a good name', async () => {
 		const issue = addIssue(t, { title: 'a' });
-		await expect(addIssueLabels(t.db, t.env, human, issue, ['bug', staleId])).rejects.toMatchObject(
-			{ status: 422, code: 'unknown_label' }
-		);
+		await expect(
+			addIssueLabels(t.db, t.env, human, TEST_NOOP_DISPATCH_EFFECTS, issue, ['bug', staleId])
+		).rejects.toMatchObject({ status: 422, code: 'unknown_label' });
 		expect(await names()).toEqual([]);
 	});
 
 	it('still resolves a real label id', async () => {
 		const issue = addIssue(t, { title: 'a' });
 		const bug = await createLabel(t.db, t.env, human, { name: 'bug' });
-		const res = await addIssueLabels(t.db, t.env, human, issue, [bug.id]);
+		const res = await addIssueLabels(t.db, t.env, human, TEST_NOOP_DISPATCH_EFFECTS, issue, [
+			bug.id
+		]);
 		expect(res.added.map((l) => l.name)).toEqual(['bug']);
 		expect(res.created).toEqual([]);
 	});
@@ -231,17 +255,19 @@ describe('applying labels to an issue', () => {
 	it('creates names that merely look like an id: the shape test is exact', async () => {
 		const issue = addIssue(t, { title: 'a' });
 		const nearly = ['lbl_short', 'lbl_' + 'a'.repeat(17), 'lbl_' + 'a'.repeat(15)];
-		const res = await addIssueLabels(t.db, t.env, human, issue, nearly);
+		const res = await addIssueLabels(t.db, t.env, human, TEST_NOOP_DISPATCH_EFFECTS, issue, nearly);
 		expect(res.created.map((l) => l.name)).toEqual(nearly);
 	});
 
 	it('removes a label by name, and 404s when it is not attached', async () => {
 		const issue = addIssue(t, { title: 'a' });
-		await addIssueLabels(t.db, t.env, human, issue, ['bug', 'p1']);
-		await removeIssueLabel(t.db, t.env, human, issue, 'BUG');
+		await addIssueLabels(t.db, t.env, human, TEST_NOOP_DISPATCH_EFFECTS, issue, ['bug', 'p1']);
+		await removeIssueLabel(t.db, t.env, human, TEST_NOOP_DISPATCH_EFFECTS, issue, 'BUG');
 		const { items } = await listIssues(t.db, USER, {}, { cursor: null, limit: 10 });
 		expect(items[0].labels.map((l) => l.name)).toEqual(['p1']);
-		await expect(removeIssueLabel(t.db, t.env, human, issue, 'bug')).rejects.toMatchObject({
+		await expect(
+			removeIssueLabel(t.db, t.env, human, TEST_NOOP_DISPATCH_EFFECTS, issue, 'bug')
+		).rejects.toMatchObject({
 			status: 404,
 			code: 'label_not_on_issue'
 		});
@@ -260,7 +286,7 @@ describe('deleting a label that scopes context or routing', () => {
 			project_id: PROJECT,
 			label_id: label.id
 		});
-		await createRoutingRule(t.db, t.env, human, {
+		await createRoutingRule(t.db, t.env, human, TEST_NOOP_DISPATCH_EFFECTS, {
 			label_id: label.id,
 			targets: [{ runner_id: runner }]
 		});
@@ -269,7 +295,9 @@ describe('deleting a label that scopes context or routing', () => {
 
 	it('422s naming both the items and the rules it scopes', async () => {
 		await scoped();
-		await expect(deleteLabel(t.db, t.env, human, 'docs')).rejects.toMatchObject({
+		await expect(
+			deleteLabel(t.db, t.env, human, TEST_NOOP_DISPATCH_EFFECTS, 'docs')
+		).rejects.toMatchObject({
 			status: 422,
 			code: 'label_in_use',
 			details: {
@@ -285,7 +313,9 @@ describe('deleting a label that scopes context or routing', () => {
 
 	it('force deletes the rule with the label rather than broadening it', async () => {
 		await scoped();
-		const res = await deleteLabel(t.db, t.env, human, 'docs', { force: true });
+		const res = await deleteLabel(t.db, t.env, human, TEST_NOOP_DISPATCH_EFFECTS, 'docs', {
+			force: true
+		});
 		expect(res.context_items_deleted.map((i) => i.name)).toEqual(['docs-audit']);
 		expect(res.routing_rules_deleted.map((r) => r.scope_label)).toEqual(['label docs']);
 		expect(await names()).toEqual([]);
@@ -298,7 +328,9 @@ describe('deleting a label that scopes context or routing', () => {
 
 	it('a label nothing scopes still deletes without force', async () => {
 		await createLabel(t.db, t.env, human, { name: 'spare' });
-		expect((await deleteLabel(t.db, t.env, human, 'spare')).deleted).toBe(true);
+		expect(
+			(await deleteLabel(t.db, t.env, human, TEST_NOOP_DISPATCH_EFFECTS, 'spare')).deleted
+		).toBe(true);
 	});
 });
 
@@ -306,7 +338,7 @@ describe('run keys and labels a routing rule is scoped to (D4)', () => {
 	async function routedLabel(): Promise<string> {
 		const label = await createLabel(t.db, t.env, human, { name: 'docs' });
 		const runner = addRunner(t);
-		await createRoutingRule(t.db, t.env, human, {
+		await createRoutingRule(t.db, t.env, human, TEST_NOOP_DISPATCH_EFFECTS, {
 			label_id: label.id,
 			targets: [{ runner_id: runner }]
 		});
@@ -316,7 +348,9 @@ describe('run keys and labels a routing rule is scoped to (D4)', () => {
 	it('refuses to let a run key apply one, and writes nothing', async () => {
 		await routedLabel();
 		const issue = addIssue(t, { title: 'a' });
-		await expect(addIssueLabels(t.db, t.env, runKey, issue, ['docs'])).rejects.toMatchObject({
+		await expect(
+			addIssueLabels(t.db, t.env, runKey, TEST_NOOP_DISPATCH_EFFECTS, issue, ['docs'])
+		).rejects.toMatchObject({
 			status: 403,
 			code: 'run_key_forbidden',
 			details: { reason: 'routing_label', labels: ['docs'] }
@@ -328,8 +362,10 @@ describe('run keys and labels a routing rule is scoped to (D4)', () => {
 	it('refuses to let a run key remove one', async () => {
 		await routedLabel();
 		const issue = addIssue(t, { title: 'a' });
-		await addIssueLabels(t.db, t.env, human, issue, ['docs']);
-		await expect(removeIssueLabel(t.db, t.env, runKey, issue, 'docs')).rejects.toMatchObject({
+		await addIssueLabels(t.db, t.env, human, TEST_NOOP_DISPATCH_EFFECTS, issue, ['docs']);
+		await expect(
+			removeIssueLabel(t.db, t.env, runKey, TEST_NOOP_DISPATCH_EFFECTS, issue, 'docs')
+		).rejects.toMatchObject({
 			status: 403,
 			details: { reason: 'routing_label' }
 		});
@@ -341,15 +377,19 @@ describe('run keys and labels a routing rule is scoped to (D4)', () => {
 		await routedLabel();
 		await createLabel(t.db, t.env, human, { name: 'flaky' });
 		const issue = addIssue(t, { title: 'a' });
-		const res = await addIssueLabels(t.db, t.env, runKey, issue, ['flaky']);
+		const res = await addIssueLabels(t.db, t.env, runKey, TEST_NOOP_DISPATCH_EFFECTS, issue, [
+			'flaky'
+		]);
 		expect(res.added.map((l) => l.name)).toEqual(['flaky']);
-		await removeIssueLabel(t.db, t.env, runKey, issue, 'flaky');
+		await removeIssueLabel(t.db, t.env, runKey, TEST_NOOP_DISPATCH_EFFECTS, issue, 'flaky');
 	});
 
 	it('does not fence a human or a named key', async () => {
 		await routedLabel();
 		const issue = addIssue(t, { title: 'a' });
-		const res = await addIssueLabels(t.db, t.env, human, issue, ['docs']);
+		const res = await addIssueLabels(t.db, t.env, human, TEST_NOOP_DISPATCH_EFFECTS, issue, [
+			'docs'
+		]);
 		expect(res.added.map((l) => l.name)).toEqual(['docs']);
 	});
 });
@@ -358,7 +398,9 @@ describe('the run-key vocabulary fence', () => {
 	it('lets a run key apply a label that already exists', async () => {
 		const issue = addIssue(t, { title: 'a' });
 		await createLabel(t.db, t.env, human, { name: 'bug' });
-		const res = await addIssueLabels(t.db, t.env, runKey, issue, ['BUG']);
+		const res = await addIssueLabels(t.db, t.env, runKey, TEST_NOOP_DISPATCH_EFFECTS, issue, [
+			'BUG'
+		]);
 		expect(res.added.map((l) => l.name)).toEqual(['bug']);
 		expect(res.created).toEqual([]);
 	});
@@ -367,7 +409,7 @@ describe('the run-key vocabulary fence', () => {
 		const issue = addIssue(t, { title: 'a' });
 		await createLabel(t.db, t.env, human, { name: 'bug' });
 		await expect(
-			addIssueLabels(t.db, t.env, runKey, issue, ['bug', 'invented'])
+			addIssueLabels(t.db, t.env, runKey, TEST_NOOP_DISPATCH_EFFECTS, issue, ['bug', 'invented'])
 		).rejects.toMatchObject({
 			status: 422,
 			code: 'unknown_label',
@@ -378,14 +420,18 @@ describe('the run-key vocabulary fence', () => {
 	it('keeps the run-key wording on a stale id, not the human one', async () => {
 		const issue = addIssue(t, { title: 'a' });
 		await expect(
-			addIssueLabels(t.db, t.env, runKey, issue, ['lbl_' + 'a'.repeat(16)])
+			addIssueLabels(t.db, t.env, runKey, TEST_NOOP_DISPATCH_EFFECTS, issue, [
+				'lbl_' + 'a'.repeat(16)
+			])
 		).rejects.toThrowError(/Run keys can apply existing labels only/);
 	});
 
 	it('applies nothing at all when any name is unknown', async () => {
 		const issue = addIssue(t, { title: 'a' });
 		await createLabel(t.db, t.env, human, { name: 'bug' });
-		await addIssueLabels(t.db, t.env, runKey, issue, ['invented']).catch(() => {});
+		await addIssueLabels(t.db, t.env, runKey, TEST_NOOP_DISPATCH_EFFECTS, issue, [
+			'invented'
+		]).catch(() => {});
 		const { items } = await listIssues(t.db, USER, {}, { cursor: null, limit: 10 });
 		expect(items[0].labels).toEqual([]);
 		expect(await names()).toEqual(['bug']);
@@ -421,8 +467,8 @@ describe('reading and filtering by label', () => {
 			bugOnly: addIssue(t, { title: 'bug only' }),
 			none: addIssue(t, { title: 'none' })
 		};
-		await addIssueLabels(t.db, t.env, human, ids.both, ['bug', 'p1']);
-		await addIssueLabels(t.db, t.env, human, ids.bugOnly, ['bug']);
+		await addIssueLabels(t.db, t.env, human, TEST_NOOP_DISPATCH_EFFECTS, ids.both, ['bug', 'p1']);
+		await addIssueLabels(t.db, t.env, human, TEST_NOOP_DISPATCH_EFFECTS, ids.bugOnly, ['bug']);
 	});
 
 	const search = async (labels?: string[]) =>
@@ -501,7 +547,7 @@ describe('label reads are scoped to the owner', () => {
 	 */
 	it('ignores a cross-user issue_label row on both the read and the filter', async () => {
 		const issue = addIssue(t, { title: 'a' });
-		await addIssueLabels(t.db, t.env, human, issue, ['bug']);
+		await addIssueLabels(t.db, t.env, human, TEST_NOOP_DISPATCH_EFFECTS, issue, ['bug']);
 		t.sqlite.exec(`
 			INSERT INTO user (id, name, email, emailVerified, createdAt, updatedAt)
 				VALUES ('u2', 'bob', 'b@example.com', 1, 0, 0);
