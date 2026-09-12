@@ -1018,19 +1018,31 @@ Options:
 The local runner daemon
 
 Options:
-  -h, --help            display help for command
+  -h, --help                  display help for command
 
 Commands:
-  daemon [options]      Run the local runner daemon: register/reconnect, poll
-                        for assigned runs, execute them
-  workspaces [options]  List run workspaces the daemon kept for debugging
-                        (--keep-workspaces)
-  help [command]        display help for command
+  daemon [options]            Run the local runner daemon in the foreground:
+                              register/reconnect, poll for assigned runs,
+                              execute them (\`tines runner install\` runs it as a
+                              service instead)
+  install [options]           Register this machine as a runner and install the
+                              daemon as a launchd/systemd service that keeps
+                              itself updated
+  restart [options] [name]    Relaunch an installed runner service (interrupts
+                              runs in flight: pause the runner and wait for 0
+                              active runs first if that matters)
+  uninstall [options] [name]  Stop and remove a runner's service unit (the
+                              stored runner token is kept, so a later install
+                              reconnects)
+  workspaces [options]        List run workspaces the daemon kept for debugging
+                              (--keep-workspaces)
+  help [command]              display help for command
 ",
   "tines runner daemon": "Usage: tines runner daemon [options]
 
-Run the local runner daemon: register/reconnect, poll for assigned runs, execute
-them
+Run the local runner daemon in the foreground: register/reconnect, poll for
+assigned runs, execute them (\`tines runner install\` runs it as a service
+instead)
 
 Options:
   --name <name>                  runner name, unique per user; name it
@@ -1042,17 +1054,17 @@ Options:
                                  {workspace}, {model})
   --max-concurrent <n>           maximum simultaneous runs (default: 1)
   --poll-interval <seconds>      seconds between polls (default: 15)
-  --no-cli-refresh               do not install/refresh the agent-facing tines
-                                 CLI from npm (harnesses use the ambient PATH)
-  --no-self-update               do not exit for the service manager to relaunch
-                                 a newer daemon (only applies when launched from
-                                 the daemon-managed prefix)
   --keep-workspaces <mode>       keep settled runs' workspaces for debugging:
                                  never | failed | always (default: "never")
   --keep-workspaces-for <hours>  delete kept workspaces older than this
                                  (default: 72)
   --keep-workspaces-max <n>      keep at most this many workspaces (oldest
                                  removed first) (default: 20)
+  --no-cli-refresh               do not install/refresh the agent-facing tines
+                                 CLI from npm (harnesses use the ambient PATH)
+  --no-self-update               do not exit for the service manager to relaunch
+                                 a newer daemon (only applies when launched from
+                                 the daemon-managed prefix)
   -u, --url <url>                base URL of the Tines API (or set
                                  TINES_API_URL, or run \`tines login\`; default
                                  https://tines.tbuckley.dev)
@@ -1060,6 +1072,57 @@ Options:
                                  login\`)
   --json                         output the raw JSON response
   -h, --help                     display help for command
+",
+  "tines runner install": "Usage: tines runner install [options]
+
+Register this machine as a runner and install the daemon as a launchd/systemd
+service that keeps itself updated
+
+Options:
+  --name <name>                  runner name, unique per user; name it
+                                 machine-plus-harness, e.g. macbook-claude
+                                 (default: this hostname)
+  --harness <harness>            claude-code | codex | custom (default:
+                                 "claude-code")
+  --command <template>           custom harness command template ({prompt_file},
+                                 {workspace}, {model})
+  --max-concurrent <n>           maximum simultaneous runs (default: 1)
+  --poll-interval <seconds>      seconds between polls (default: 15)
+  --keep-workspaces <mode>       keep settled runs' workspaces for debugging:
+                                 never | failed | always (default: "never")
+  --keep-workspaces-for <hours>  delete kept workspaces older than this
+                                 (default: 72)
+  --keep-workspaces-max <n>      keep at most this many workspaces (oldest
+                                 removed first) (default: 20)
+  --service-manager <kind>       launchd | systemd (default: the one this OS
+                                 ships)
+  -u, --url <url>                base URL of the Tines API (or set
+                                 TINES_API_URL, or run \`tines login\`; default
+                                 https://tines.tbuckley.dev)
+  --api-key <key>                API key (or set TINES_API_KEY, or run \`tines
+                                 login\`)
+  --json                         output the raw JSON response
+  -h, --help                     display help for command
+",
+  "tines runner restart": "Usage: tines runner restart [options] [name]
+
+Relaunch an installed runner service (interrupts runs in flight: pause the
+runner and wait for 0 active runs first if that matters)
+
+Options:
+  --service-manager <kind>  launchd | systemd (default: the one this OS ships)
+  --json                    print JSON instead of a message
+  -h, --help                display help for command
+",
+  "tines runner uninstall": "Usage: tines runner uninstall [options] [name]
+
+Stop and remove a runner's service unit (the stored runner token is kept, so a
+later install reconnects)
+
+Options:
+  --service-manager <kind>  launchd | systemd (default: the one this OS ships)
+  --json                    print JSON instead of a message
+  -h, --help                display help for command
 ",
   "tines runner workspaces": "Usage: tines runner workspaces [options] [command]
 

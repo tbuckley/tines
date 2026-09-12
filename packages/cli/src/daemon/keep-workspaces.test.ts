@@ -195,7 +195,8 @@ describe('--keep-workspaces', () => {
 		});
 		expect(Number.isFinite(Date.parse(marker.kept_at))).toBe(true);
 		// And the path is discoverable from the run's own log tail.
-		expect(harvest.log.trimEnd().endsWith(`workspace kept at ${ws}`)).toBe(true);
+		expect(harvest.log).toContain(`workspace kept at ${ws}\n`);
+		expect(harvest.log).toContain('[usage] ');
 	}, 30_000);
 
 	it('failed: a completed run is still removed', async () => {

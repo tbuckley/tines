@@ -1053,10 +1053,10 @@ describe('finishRun', () => {
 			{
 				status: 'completed',
 				usage: {
-					input_tokens: 300,
-					cache_read_tokens: 600,
-					cache_write_tokens: 100,
-					output_tokens: 100
+					input_tokens: 80_000,
+					cache_read_tokens: 210_000,
+					cache_write_tokens: 10_000,
+					output_tokens: 3_000
 				},
 				pricing_evidence: {
 					version: 1,
@@ -1067,26 +1067,59 @@ describe('finishRun', () => {
 					session_mode: 'cold',
 					normalization: 'codex-jsonl-v1',
 					raw_usage: {
-						input_tokens: 1000,
-						cached_input_tokens: 600,
-						cache_write_input_tokens: 100,
-						output_tokens: 100
+						input_tokens: 300_000,
+						cached_input_tokens: 210_000,
+						cache_write_input_tokens: 10_000,
+						output_tokens: 3_000
 					},
 					model_rerouted: false,
 					measurement_status: 'complete',
 					terminal_snapshots: 1,
-					daemon_version: '0.0.1'
+					daemon_version: '0.0.1',
+					request_context: {
+						version: 1,
+						normalization: 'codex-rollout-delta-v1',
+						harness_version: '0.153.4',
+						status: 'complete',
+						request_count: 2,
+						max_request_input_tokens: 150_000,
+						reconciled_usage: {
+							input_tokens: 300_000,
+							cached_input_tokens: 210_000,
+							cache_write_input_tokens: 10_000,
+							output_tokens: 3_000
+						}
+					}
 				}
 			},
 			claimed + 2
 		);
 		expect(run.usage).toMatchObject({
-			cost_usd: 0.00394,
+			cost_usd: 0.514,
 			cost_source: 'priced',
-			pricing: { status: 'calculated', basis: { cost_usd_exact: '0.00394' } }
+			pricing: {
+				status: 'calculated',
+				evidence: { request_context: { status: 'complete', request_count: 2 } },
+				basis: { cost_usd_exact: '0.514' }
+			}
 		});
 		const ended = eventsOfType(t, 'agent_run.ended').at(-1)!;
 		expect(ended.payload.usage).toEqual(run.usage);
+		const sameRunner = await runnerRow(t, runnerId);
+		await expectFail(
+			() =>
+				finishRun(
+					t.db,
+					t.env,
+					sameRunner,
+					TEST_NOOP_DISPATCH_EFFECTS,
+					runId,
+					{ status: 'completed', usage: { cost_usd: 99, cost_source: 'provider' } },
+					claimed + 3
+				),
+			'run_already_ended'
+		);
+		expect(JSON.parse(runById(t, runId)?.usage as string)).toEqual(run.usage);
 	});
 
 	it('accounts cold retry attempts independently and refuses a synthetic resumed total', async () => {

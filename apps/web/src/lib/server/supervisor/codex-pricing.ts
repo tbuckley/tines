@@ -76,6 +76,43 @@ const CLASSES = [
 	'output_tokens'
 ] as const;
 type TokenClass = (typeof CLASSES)[number];
+const RAW_CLASSES = [
+	'input_tokens',
+	'cached_input_tokens',
+	'cache_write_input_tokens',
+	'output_tokens'
+] as const;
+
+function validCompleteRequestContext(evidence: CodexPricingEvidenceV1): boolean {
+	const proof = evidence.request_context;
+	if (!proof || proof.status !== 'complete') return false;
+	if (
+		proof.version !== 1 ||
+		proof.normalization !== 'codex-rollout-delta-v1' ||
+		proof.harness_version !== '0.153.4' ||
+		!Number.isSafeInteger(proof.request_count) ||
+		proof.request_count < 0 ||
+		proof.request_count > 10_000 ||
+		!Number.isSafeInteger(proof.max_request_input_tokens) ||
+		proof.max_request_input_tokens < 0
+	)
+		return false;
+	const values = RAW_CLASSES.map((field) => proof.reconciled_usage[field]);
+	if (values.some((value) => !Number.isSafeInteger(value) || value < 0)) return false;
+	const [total, read, write, output] = values;
+	if (
+		read + write > total ||
+		RAW_CLASSES.some((field) => proof.reconciled_usage[field] !== evidence.raw_usage?.[field])
+	)
+		return false;
+	if (proof.request_count === 0)
+		return proof.max_request_input_tokens === 0 && values.every((value) => value === 0);
+	if (values.some((value) => value > 0) && proof.request_count === 0) return false;
+	return (
+		proof.max_request_input_tokens <= total &&
+		BigInt(total) <= BigInt(proof.request_count) * BigInt(proof.max_request_input_tokens)
+	);
+}
 
 function unpriced(
 	usage: AgentRunUsage,
@@ -195,7 +232,21 @@ export function priceCodexUsage(
 	const selectedIndex = candidates.findLastIndex((entry) => entry.adopted_at <= run.created_at);
 	if (selectedIndex < 0) return unpriced({ ...usage, ...tokens }, evidence, now, 'missing_rate');
 	const selected = candidates[selectedIndex]!;
-	if (selected.context_band === 'short' && total > 272_000)
+	const requestContext = evidence.request_context;
+	if (selected.context_band === 'short' && requestContext) {
+		if (
+			requestContext.status === 'invalid' ||
+			(requestContext.status === 'complete' && !validCompleteRequestContext(evidence))
+		)
+			return unpriced({ ...usage, ...tokens }, evidence, now, 'request_context_invalid');
+		if (requestContext.status === 'complete' && requestContext.max_request_input_tokens > 272_000)
+			return unpriced({ ...usage, ...tokens }, evidence, now, 'long_context_rate_unsupported');
+	}
+	if (
+		selected.context_band === 'short' &&
+		total > 272_000 &&
+		!(requestContext?.status === 'complete' && validCompleteRequestContext(evidence))
+	)
 		return unpriced({ ...usage, ...tokens }, evidence, now, 'long_context_band_unknown');
 	if (selected.rates.cache_write_tokens === null && write !== 0)
 		return unpriced({ ...usage, ...tokens }, evidence, now, 'missing_rate');

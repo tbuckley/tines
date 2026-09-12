@@ -203,8 +203,11 @@
 							</p>
 							{#if block.verdict === 'offline'}
 								<p class="text-muted-foreground mt-1 text-xs">
-									Start the daemon on the machine that registered {block.runnerName ?? 'it'}:
-									<code class="bg-muted rounded px-1 py-0.5">tines runner daemon</code>
+									Start it on the machine that registered {block.runnerName ?? 'it'}:
+									<code class="bg-muted rounded px-1 py-0.5"
+										>tines runner install --name {block.runnerName ?? '<name>'}</code
+									>
+									(reconnects with the stored token and loads the service)
 									{#if runner?.last_seen_at}
 										· last seen {relativeTime(runner.last_seen_at, now)}
 									{/if}

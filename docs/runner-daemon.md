@@ -1,9 +1,10 @@
 # The local runner daemon
 
-`tines runner daemon` turns a machine into a **local runner**: it polls Tines for issues the
+The runner daemon turns a machine into a **local runner**: it polls Tines for issues the
 supervisor assigned to it, materializes a per-run workspace, launches your harness (Claude
 Code, codex, or a custom command), streams the output back as the run's log, and reports the
-finish. No inbound connection to the machine is ever needed.
+finish. No inbound connection to the machine is ever needed. `tines runner install` sets it
+up as a service (the normal way); `tines runner daemon` runs it in the foreground.
 
 ## First start
 
@@ -19,19 +20,21 @@ Four setup steps from nothing to an agent working an issue. The hosted app is
 2. **Key** — Settings → API keys on the app, or click **Create key** in the Agents tab's
    *Add runner → Local* dialog, which also fills it into the command in step 3.
 
-3. **Runner** — start the daemon (or paste the block the dialog shows):
+3. **Runner** — install the daemon as a service (or paste the block the dialog shows):
 
    ```sh
-   TINES_API_KEY=tines_… tines runner daemon \
+   TINES_API_KEY=tines_… tines runner install \
      --url https://tines.tbuckley.dev \
      --name macbook-claude \
      --harness claude-code
    ```
 
    Name it **machine-plus-harness** — `macbook-claude`. It is what every agent comment says
-   ("you via macbook-claude") and what routing rules address. The daemon prints `registered
-   runner "macbook-claude"` followed by the remaining steps, and the Agents tab shows it
-   online within seconds — no reload.
+   ("you via macbook-claude") and what routing rules address. The command registers the
+   runner, writes a launchd (macOS) or systemd user (Linux) unit, loads it, and waits for the
+   daemon to report in; the Agents tab shows it online within seconds — no reload. See
+   "Keep it running" for what it wrote and why. To run the daemon in the foreground instead,
+   use `tines runner daemon` with the same flags.
 
 4. **Rule** — a registered runner takes no work until something routes to it. Click
    **Route everything to macbook-claude** in the same dialog, or run
@@ -44,12 +47,13 @@ If automation was explicitly stopped, it remains stopped across runner registrat
 other settings changes; resume it on Agents or with `tines supervisor enable`.
 
 The first start **registers** the runner and stores its long-lived runner token in the CLI
-config directory (`~/.config/tines`, or `$TINES_CONFIG_DIR`). Subsequent starts reconnect as
-the same runner using the stored token — `TINES_API_KEY` is only needed for registration.
-Both values can also come from `tines login` (the same directory's `config.json`) instead of
-the environment; the env vars take precedence when set.
+config directory (`~/.config/tines`, or `$TINES_CONFIG_DIR`). Subsequent starts — the
+service's included — reconnect as the same runner using the stored token, so `TINES_API_KEY`
+is only needed for registration and never appears in a service unit. Both values can also
+come from `tines login` (the same directory's `config.json`) instead of the environment; the
+env vars take precedence when set.
 
-Flags:
+Flags (shared by `install` and `daemon`; `install` writes the ones you give into the unit):
 
 | Flag | Meaning | Default |
 | --- | --- | --- |
@@ -128,6 +132,8 @@ up until someone restarts it. The daemon cannot replace itself while it runs, so
 mechanism is the classic one: it notices, drains, and exits, and the service manager brings
 it back.
 
+When replacing an older source-launched daemon, first identify its controlling service and verify both local and supervisor active-run inventories are empty. Stop that launcher so it cannot respawn, then start the same runner name, harness, concurrency and configuration from the managed prefix under launchd/systemd. Recheck idleness immediately before stopping: an earlier read is not a dispatch lock. Confirm exactly one process reconnects and that a newly completed run's launch banner reports the new daemon version. Refreshing the child `tines` CLI does not upgrade the long-running daemon, and package publication alone is not adoption proof.
+
 Concretely, when the daemon was launched **from the managed prefix** —
 
 ```sh
@@ -147,9 +153,10 @@ is running. Notes:
   an exit would relaunch the same old binary, so the daemon logs once at startup that
   self-update is off and where to launch it from instead. Its own version is stamped in
   every run's launch banner (`cli=…`), which is how you tell which daemon ran a run.
-- **The prefix exists after the first run with the refresh on.** Register and run the
-  daemon interactively once (which also stores the token), then point the unit at the
-  prefix path. `~` does not expand in a plist: write the absolute path.
+- **`tines runner install` does all of this for you.** It builds the prefix if it is
+  missing, registers (or reconnects) the runner, and writes a unit that launches the daemon
+  from the prefix path — see "Keep it running". The rest of this list is what that unit
+  encodes, for when you need to write one by hand.
 - **It exits deliberately, so run it under a service manager.** Started by hand in a
   terminal from the prefix, the daemon stops instead of restarting; pass
   `--no-self-update` for that, or just relaunch it. `--no-cli-refresh` implies it.
@@ -236,82 +243,57 @@ required for correctness — it is only the clone and the re-exploration that ar
 
 ## Keep it running
 
-The runner is infrastructure: run it under your OS's service manager so it survives logouts
-and reboots. Both units below launch the daemon from the managed prefix, which is what lets
-it update itself (see "Keeping the daemon itself current"); the prefix exists once the
-daemon has run interactively once. The npm shim there starts with `#!/usr/bin/env node`,
-and a service manager's `PATH` is minimal, so the units name the directory `node` lives in.
-
-### macOS (launchd)
-
-Save as `~/Library/LaunchAgents/dev.tines.runner.plist` (adjust the paths, name, and URL —
-`~` does not expand here, and `/opt/homebrew/bin` is where Homebrew's `node` lives on Apple
-silicon; check `dirname "$(which node)"`):
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
-  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key><string>dev.tines.runner</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>/Users/you/.config/tines/cli/node_modules/.bin/tines</string>
-    <string>runner</string>
-    <string>daemon</string>
-    <string>--name</string><string>macbook-claude</string>
-    <string>--harness</string><string>claude-code</string>
-  </array>
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>TINES_API_URL</key><string>https://your-tines.example</string>
-    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
-  </dict>
-  <key>RunAtLoad</key><true/>
-  <!-- Relaunches after any exit — a crash, and the daemon's own exit for a self-update. -->
-  <key>KeepAlive</key><true/>
-  <key>StandardOutPath</key><string>/tmp/tines-runner.log</string>
-  <key>StandardErrorPath</key><string>/tmp/tines-runner.log</string>
-</dict>
-</plist>
-```
-
-Register once interactively first (so the token is stored), then:
+The runner is infrastructure: it runs under your OS's service manager so it survives logouts
+and reboots, and it is launched from the managed prefix, which is what lets it update itself
+(see "Keeping the daemon itself current"). `tines runner install` sets both up:
 
 ```sh
-launchctl load ~/Library/LaunchAgents/dev.tines.runner.plist
+TINES_API_KEY=tines_… tines runner install --name macbook-claude --harness claude-code
 ```
 
-To restart it by hand (after changing a flag, say): `launchctl kickstart -k
-gui/$(id -u)/dev.tines.runner`.
+In order, it:
 
-### Linux (systemd user unit)
+1. **Refuses if a daemon for that name is already running** — one started in a terminal,
+   from a global install, from a source checkout, or by the service itself. Loading a
+   service beside it would run the runner twice, and the old process would keep its stale
+   binary. Pause the runner (`tines runners pause macbook-claude`), wait for `0/N` active
+   runs, stop that process, and run install again; it reconnects with the stored token, so
+   no key is needed the second time.
+2. **Builds the managed prefix** (`~/.config/tines/cli`) when it is missing, with the same
+   npm install the refresh uses.
+3. **Registers or reconnects** the runner: the stored token when there is one, otherwise a
+   registration with `TINES_API_KEY`, whose token is then stored. The key goes no further.
+4. **Writes the unit** — `~/Library/LaunchAgents/dev.tines.runner.<name>.plist` on macOS,
+   `~/.config/systemd/user/tines-runner-<name>.service` on Linux. It launches
+   `~/.config/tines/cli/node_modules/.bin/tines runner daemon` with the flags you gave, a
+   `PATH` naming the directories `node`, the harness binary (`claude`/`codex`) and `git` were
+   found in, `KeepAlive` / `Restart=always` (the daemon exits 0 on purpose to pick up a
+   self-update), and the daemon's console output appended to
+   `~/.config/tines/logs/runner-<name>.log`. There is no credential in it. A harness binary
+   that is not on your PATH is a warning: install it and run install again to pick up its
+   directory.
+5. **Loads it** (`launchctl bootstrap gui/$UID …`, or `systemctl --user enable --now` plus
+   `loginctl enable-linger` so it runs while nobody is logged in) and **waits up to 30 s**
+   for the daemon's own `reconnecting as runner "…"` line in that log. A daemon that never
+   reports in is a failure, with the log path to read; a wrong `node` on the service PATH or
+   a rejected token shows there.
 
-Save as `~/.config/systemd/user/tines-runner.service`:
+Afterwards:
 
-```ini
-[Unit]
-Description=Tines local runner daemon
-After=network-online.target
+- `tines runner restart macbook-claude` relaunches the service (`launchctl kickstart -k` /
+  `systemctl --user restart`). It interrupts runs in flight — pause the runner and wait for
+  zero active runs first when that matters. A newer release does not need it: the daemon
+  drains and restarts itself.
+- `tines runner uninstall macbook-claude` stops the service and removes the unit. The stored
+  token stays, so a later install reconnects without a key.
+- Changing flags means `uninstall`, then `install` with the new ones (install refuses to
+  replace a running service, per step 1).
+- `--service-manager launchd|systemd` overrides the platform default, which is only useful
+  for testing the unit text.
 
-[Service]
-ExecStart=%h/.config/tines/cli/node_modules/.bin/tines runner daemon --name macbook-claude --harness claude-code
-Environment=TINES_API_URL=https://your-tines.example
-Environment=PATH=/usr/local/bin:/usr/bin:/bin
-# always, not on-failure: the daemon exits 0 on purpose to pick up a self-update.
-Restart=always
-RestartSec=10
-
-[Install]
-WantedBy=default.target
-```
-
-```sh
-systemctl --user daemon-reload
-systemctl --user enable --now tines-runner
-loginctl enable-linger "$USER"   # keep it running while logged out
-```
+`launchctl print gui/$(id -u)/dev.tines.runner.macbook-claude` (macOS) or
+`systemctl --user status tines-runner-macbook-claude` (Linux) shows what the service manager
+thinks; every run's launch banner shows which daemon binary actually ran it (`cli=…`).
 
 ## Failure behavior
 
