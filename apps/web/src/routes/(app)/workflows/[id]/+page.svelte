@@ -4,6 +4,7 @@
 	import IconBooks from '@tabler/icons-svelte/icons/books';
 	import IconChevronLeft from '@tabler/icons-svelte/icons/chevron-left';
 	import IconCopy from '@tabler/icons-svelte/icons/copy';
+	import IconDownload from '@tabler/icons-svelte/icons/download';
 	import IconLock from '@tabler/icons-svelte/icons/lock';
 	import IconPlus from '@tabler/icons-svelte/icons/plus';
 	import { slide } from 'svelte/transition';
@@ -193,13 +194,16 @@
 			</p>
 		{/if}
 	</div>
-	{#if data.workflow.is_system}
-		<div class="flex gap-2">
+	<div class="flex gap-2">
+		<Button variant="outline" href="/workflows/{data.workflow.id}/export">
+			<IconDownload size={16} /> Export package
+		</Button>
+		{#if data.workflow.is_system}
 			<Button variant="outline" onclick={copyToLibrary}>
 				<IconCopy size={16} /> Copy to library
 			</Button>
-		</div>
-	{/if}
+		{/if}
+	</div>
 </div>
 
 {#if errorMessage}
