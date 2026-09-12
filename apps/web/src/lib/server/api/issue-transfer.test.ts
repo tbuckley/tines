@@ -1,3 +1,7 @@
+import {
+	recordDispatchEffects,
+	TEST_NOOP_DISPATCH_EFFECTS
+} from '$lib/server/api/test-dispatch-effects';
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
 	NOW,
@@ -11,7 +15,7 @@ import {
 	seedBase,
 	setSettings
 } from '../supervisor/test-fixtures';
-import { claimRun } from '../supervisor/engine';
+import { claimRun, queueDispatchPass } from '../supervisor/engine';
 import type { ActorContext } from './core';
 import { commitIssueTransfer, previewIssueTransfer } from './issue-transfer';
 import { loadIssue } from './issues';
@@ -96,7 +100,15 @@ describe('private issue transfer path', () => {
 				'arrived after the review', 1, 1, ${NOW}, ${NOW});
 		`);
 		await expect(
-			commitIssueTransfer(t.env, actor, issueId, DESTINATION, preview.preview_token!, NOW + 200)
+			commitIssueTransfer(
+				t.env,
+				actor,
+				TEST_NOOP_DISPATCH_EFFECTS,
+				issueId,
+				DESTINATION,
+				preview.preview_token!,
+				NOW + 200
+			)
 		).rejects.toMatchObject({ code: 'transfer_preview_stale' });
 		expect(t.all(`SELECT * FROM event WHERE type = 'issue.transferred'`)).toHaveLength(0);
 
@@ -110,14 +122,30 @@ describe('private issue transfer path', () => {
 			VALUES ('${issueId}', 'lbl_late', ${NOW});
 		`);
 		await expect(
-			commitIssueTransfer(t.env, actor, issueId, DESTINATION, fresh.preview_token!, NOW + 400)
+			commitIssueTransfer(
+				t.env,
+				actor,
+				TEST_NOOP_DISPATCH_EFFECTS,
+				issueId,
+				DESTINATION,
+				fresh.preview_token!,
+				NOW + 400
+			)
 		).rejects.toMatchObject({ code: 'transfer_preview_stale' });
 
 		// Names are displayed in the preservation review, not merely their IDs.
 		const named = await previewIssueTransfer(t.env, actor, issueId, DESTINATION, NOW + 500);
 		t.sqlite.exec(`UPDATE label SET name = 'renamed' WHERE id = 'lbl_late'`);
 		await expect(
-			commitIssueTransfer(t.env, actor, issueId, DESTINATION, named.preview_token!, NOW + 501)
+			commitIssueTransfer(
+				t.env,
+				actor,
+				TEST_NOOP_DISPATCH_EFFECTS,
+				issueId,
+				DESTINATION,
+				named.preview_token!,
+				NOW + 501
+			)
 		).rejects.toMatchObject({ code: 'transfer_preview_stale' });
 	});
 
@@ -125,7 +153,15 @@ describe('private issue transfer path', () => {
 		const inheritance = await previewIssueTransfer(t.env, actor, issueId, DESTINATION, NOW);
 		t.sqlite.exec(`UPDATE workflow_state SET name = 'Renamed state' WHERE id = '${OPEN}'`);
 		await expect(
-			commitIssueTransfer(t.env, actor, issueId, DESTINATION, inheritance.preview_token!, NOW + 1)
+			commitIssueTransfer(
+				t.env,
+				actor,
+				TEST_NOOP_DISPATCH_EFFECTS,
+				issueId,
+				DESTINATION,
+				inheritance.preview_token!,
+				NOW + 1
+			)
 		).rejects.toMatchObject({ code: 'transfer_preview_stale' });
 
 		const other = addIssue(t, { id: 'iss_linked' });
@@ -135,7 +171,15 @@ describe('private issue transfer path', () => {
 			VALUES ('lnk_late', '${other}', '${issueId}', 'blocks', ${NOW})
 		`);
 		await expect(
-			commitIssueTransfer(t.env, actor, issueId, DESTINATION, readiness.preview_token!, NOW + 3)
+			commitIssueTransfer(
+				t.env,
+				actor,
+				TEST_NOOP_DISPATCH_EFFECTS,
+				issueId,
+				DESTINATION,
+				readiness.preview_token!,
+				NOW + 3
+			)
 		).rejects.toMatchObject({ code: 'transfer_preview_stale' });
 
 		const linkedState = await previewIssueTransfer(t.env, actor, issueId, DESTINATION, NOW + 4);
@@ -143,7 +187,15 @@ describe('private issue transfer path', () => {
 			`UPDATE issue SET state_id = 'wfs_std_closed', updated_at = ${NOW + 5} WHERE id = '${other}'`
 		);
 		await expect(
-			commitIssueTransfer(t.env, actor, issueId, DESTINATION, linkedState.preview_token!, NOW + 5)
+			commitIssueTransfer(
+				t.env,
+				actor,
+				TEST_NOOP_DISPATCH_EFFECTS,
+				issueId,
+				DESTINATION,
+				linkedState.preview_token!,
+				NOW + 5
+			)
 		).rejects.toMatchObject({ code: 'transfer_preview_stale' });
 
 		const artifact = await previewIssueTransfer(t.env, actor, issueId, DESTINATION, NOW + 6);
@@ -157,7 +209,15 @@ describe('private issue transfer path', () => {
 			VALUES ('av_gate', 'ctx_gate', 1, 'ready', 'text/markdown', 5, '${USER}', ${NOW});
 		`);
 		await expect(
-			commitIssueTransfer(t.env, actor, issueId, DESTINATION, artifact.preview_token!, NOW + 7)
+			commitIssueTransfer(
+				t.env,
+				actor,
+				TEST_NOOP_DISPATCH_EFFECTS,
+				issueId,
+				DESTINATION,
+				artifact.preview_token!,
+				NOW + 7
+			)
 		).rejects.toMatchObject({ code: 'transfer_preview_stale' });
 	});
 
@@ -175,7 +235,15 @@ describe('private issue transfer path', () => {
 				'[{"runner_id":"${runnerId}"}]', ${NOW}, ${NOW});
 		`);
 		await expect(
-			commitIssueTransfer(t.env, actor, issueId, DESTINATION, stale.preview_token!, NOW + 1)
+			commitIssueTransfer(
+				t.env,
+				actor,
+				TEST_NOOP_DISPATCH_EFFECTS,
+				issueId,
+				DESTINATION,
+				stale.preview_token!,
+				NOW + 1
+			)
 		).rejects.toMatchObject({ code: 'transfer_preview_stale' });
 		expect(t.all(`SELECT * FROM event WHERE type = 'issue.transferred'`)).toHaveLength(0);
 
@@ -188,7 +256,15 @@ describe('private issue transfer path', () => {
 			const fresh = await previewIssueTransfer(t.env, actor, issueId, DESTINATION, NOW + 10);
 			t.sqlite.exec(change);
 			await expect(
-				commitIssueTransfer(t.env, actor, issueId, DESTINATION, fresh.preview_token!, NOW + 11)
+				commitIssueTransfer(
+					t.env,
+					actor,
+					TEST_NOOP_DISPATCH_EFFECTS,
+					issueId,
+					DESTINATION,
+					fresh.preview_token!,
+					NOW + 11
+				)
 			).rejects.toMatchObject({ code: 'transfer_preview_stale' });
 		}
 
@@ -205,6 +281,7 @@ describe('private issue transfer path', () => {
 		const result = await commitIssueTransfer(
 			t.env,
 			actor,
+			TEST_NOOP_DISPATCH_EFFECTS,
 			issueId,
 			DESTINATION,
 			live.preview_token!,
@@ -279,6 +356,7 @@ describe('private issue transfer path', () => {
 		await commitIssueTransfer(
 			t.env,
 			actor,
+			TEST_NOOP_DISPATCH_EFFECTS,
 			issueId,
 			DESTINATION,
 			preview.preview_token!,
@@ -313,6 +391,7 @@ describe('private issue transfer path', () => {
 		const result = await commitIssueTransfer(
 			t.env,
 			actor,
+			TEST_NOOP_DISPATCH_EFFECTS,
 			issueId,
 			DESTINATION,
 			preview.preview_token!,
@@ -328,8 +407,24 @@ describe('private issue transfer path', () => {
 			previewIssueTransfer(t.env, actor, second, DESTINATION, NOW)
 		]);
 		const results = await Promise.all([
-			commitIssueTransfer(t.env, actor, issueId, DESTINATION, firstPreview.preview_token!, NOW + 1),
-			commitIssueTransfer(t.env, actor, second, DESTINATION, secondPreview.preview_token!, NOW + 1)
+			commitIssueTransfer(
+				t.env,
+				actor,
+				TEST_NOOP_DISPATCH_EFFECTS,
+				issueId,
+				DESTINATION,
+				firstPreview.preview_token!,
+				NOW + 1
+			),
+			commitIssueTransfer(
+				t.env,
+				actor,
+				TEST_NOOP_DISPATCH_EFFECTS,
+				second,
+				DESTINATION,
+				secondPreview.preview_token!,
+				NOW + 1
+			)
 		]);
 		expect(new Set(results.map((result) => result.new_ref.number)).size).toBe(2);
 	});
@@ -355,6 +450,7 @@ describe('private issue transfer path', () => {
 		const result = await commitIssueTransfer(
 			t.env,
 			actor,
+			TEST_NOOP_DISPATCH_EFFECTS,
 			issueId,
 			DESTINATION,
 			preview.preview_token!,
@@ -429,6 +525,7 @@ describe('private issue transfer path', () => {
 		const result = await commitIssueTransfer(
 			t.env,
 			actor,
+			TEST_NOOP_DISPATCH_EFFECTS,
 			issueId,
 			DESTINATION,
 			preview.preview_token!,
@@ -454,7 +551,15 @@ describe('private issue transfer path', () => {
 			return results;
 		};
 		await expect(
-			commitIssueTransfer(t.env, actor, issueId, DESTINATION, preview.preview_token!, NOW + 1)
+			commitIssueTransfer(
+				t.env,
+				actor,
+				TEST_NOOP_DISPATCH_EFFECTS,
+				issueId,
+				DESTINATION,
+				preview.preview_token!,
+				NOW + 1
+			)
 		).rejects.toThrow('malformed receipt');
 		expect(t.all(`SELECT * FROM event WHERE type = 'issue.transferred'`)).toHaveLength(1);
 	});
@@ -468,6 +573,7 @@ describe('private issue transfer path', () => {
 		const result = await commitIssueTransfer(
 			t.env,
 			actor,
+			TEST_NOOP_DISPATCH_EFFECTS,
 			issueId,
 			PROJECT,
 			preview.preview_token!,
@@ -495,7 +601,15 @@ describe('private issue transfer path', () => {
 			blockers: [{ code: 'run_key_forbidden' }]
 		});
 		await expect(
-			commitIssueTransfer(t.env, runActor, issueId, DESTINATION, 'anything', NOW)
+			commitIssueTransfer(
+				t.env,
+				runActor,
+				TEST_NOOP_DISPATCH_EFFECTS,
+				issueId,
+				DESTINATION,
+				'anything',
+				NOW
+			)
 		).rejects.toMatchObject({ status: 403, code: 'run_key_forbidden' });
 	});
 
@@ -535,7 +649,15 @@ describe('private issue transfer path', () => {
 			const preview = await previewIssueTransfer(t.env, actor, issueId, DESTINATION, NOW);
 			addRun(t, { id: `arun_${status}`, issueId, runnerId, status });
 			await expect(
-				commitIssueTransfer(t.env, actor, issueId, DESTINATION, preview.preview_token!, NOW + 1)
+				commitIssueTransfer(
+					t.env,
+					actor,
+					TEST_NOOP_DISPATCH_EFFECTS,
+					issueId,
+					DESTINATION,
+					preview.preview_token!,
+					NOW + 1
+				)
 			).rejects.toMatchObject({ status: 409, code: 'issue_busy' });
 			expect(t.all(`SELECT status FROM agent_run WHERE id = ?`, `arun_${status}`)[0]).toEqual({
 				status
@@ -553,15 +675,39 @@ describe('private issue transfer path', () => {
 		tokenParts[2] = `${tokenParts[2][0] === 'A' ? 'B' : 'A'}${tokenParts[2].slice(1)}`;
 		const tampered = tokenParts.join('.');
 		await expect(
-			commitIssueTransfer(t.env, actor, issueId, DESTINATION, tampered, NOW + 1)
+			commitIssueTransfer(
+				t.env,
+				actor,
+				TEST_NOOP_DISPATCH_EFFECTS,
+				issueId,
+				DESTINATION,
+				tampered,
+				NOW + 1
+			)
 		).rejects.toMatchObject({ status: 422, code: 'invalid_preview_token' });
 		await expect(
-			commitIssueTransfer(t.env, actor, issueId, DESTINATION, token, NOW + 15 * 60_000)
+			commitIssueTransfer(
+				t.env,
+				actor,
+				TEST_NOOP_DISPATCH_EFFECTS,
+				issueId,
+				DESTINATION,
+				token,
+				NOW + 15 * 60_000
+			)
 		).rejects.toMatchObject({ status: 409, code: 'transfer_preview_stale' });
 
 		t.sqlite.exec(`UPDATE issue SET title = 'changed after preview' WHERE id = '${issueId}'`);
 		await expect(
-			commitIssueTransfer(t.env, actor, issueId, DESTINATION, token, NOW + 1)
+			commitIssueTransfer(
+				t.env,
+				actor,
+				TEST_NOOP_DISPATCH_EFFECTS,
+				issueId,
+				DESTINATION,
+				token,
+				NOW + 1
+			)
 		).rejects.toMatchObject({ status: 409, code: 'transfer_preview_stale' });
 		expect(t.all(`SELECT project_id FROM issue WHERE id = ?`, issueId)[0]).toEqual({
 			project_id: PROJECT
@@ -571,12 +717,36 @@ describe('private issue transfer path', () => {
 
 	it('rejects replay after A to B to A, so ABA cannot revive an old confirmation', async () => {
 		const first = await previewIssueTransfer(t.env, actor, issueId, DESTINATION, NOW);
-		await commitIssueTransfer(t.env, actor, issueId, DESTINATION, first.preview_token!, NOW + 1);
+		await commitIssueTransfer(
+			t.env,
+			actor,
+			TEST_NOOP_DISPATCH_EFFECTS,
+			issueId,
+			DESTINATION,
+			first.preview_token!,
+			NOW + 1
+		);
 		const back = await previewIssueTransfer(t.env, actor, issueId, PROJECT, NOW + 2);
-		await commitIssueTransfer(t.env, actor, issueId, PROJECT, back.preview_token!, NOW + 3);
+		await commitIssueTransfer(
+			t.env,
+			actor,
+			TEST_NOOP_DISPATCH_EFFECTS,
+			issueId,
+			PROJECT,
+			back.preview_token!,
+			NOW + 3
+		);
 
 		await expect(
-			commitIssueTransfer(t.env, actor, issueId, DESTINATION, first.preview_token!, NOW + 4)
+			commitIssueTransfer(
+				t.env,
+				actor,
+				TEST_NOOP_DISPATCH_EFFECTS,
+				issueId,
+				DESTINATION,
+				first.preview_token!,
+				NOW + 4
+			)
 		).rejects.toMatchObject({ status: 409, code: 'transfer_conflict' });
 		expect(t.all(`SELECT * FROM event WHERE type = 'issue.transferred'`)).toHaveLength(2);
 	});
@@ -607,7 +777,15 @@ describe('private issue transfer path', () => {
 		).toBe(true);
 
 		await expect(
-			commitIssueTransfer(t.env, actor, issueId, DESTINATION, preview.preview_token!, NOW + 1)
+			commitIssueTransfer(
+				t.env,
+				actor,
+				TEST_NOOP_DISPATCH_EFFECTS,
+				issueId,
+				DESTINATION,
+				preview.preview_token!,
+				NOW + 1
+			)
 		).rejects.toMatchObject({ status: 409, code: 'issue_busy' });
 		expect(t.all(`SELECT status FROM agent_run WHERE issue_id = ?`, issueId)).toEqual([
 			{ status: 'assigned' }
@@ -633,6 +811,7 @@ describe('private issue transfer path', () => {
 		await commitIssueTransfer(
 			t.env,
 			actor,
+			TEST_NOOP_DISPATCH_EFFECTS,
 			issueId,
 			DESTINATION,
 			toDestination.preview_token!,
@@ -641,7 +820,15 @@ describe('private issue transfer path', () => {
 		expect(await claimRun(t.db, t.env, staleSourceClaim)).toBe(false);
 
 		const back = await previewIssueTransfer(t.env, actor, issueId, PROJECT, NOW + 2);
-		await commitIssueTransfer(t.env, actor, issueId, PROJECT, back.preview_token!, NOW + 3);
+		await commitIssueTransfer(
+			t.env,
+			actor,
+			TEST_NOOP_DISPATCH_EFFECTS,
+			issueId,
+			PROJECT,
+			back.preview_token!,
+			NOW + 3
+		);
 		expect(await claimRun(t.db, t.env, staleSourceClaim)).toBe(false);
 
 		const current = t.all(
@@ -681,9 +868,18 @@ describe('private issue transfer path', () => {
 			events: t.all(`SELECT * FROM event WHERE issue_id = ?`, issueId)
 		};
 		t.sqlite.exec(trigger);
+		const effects = recordDispatchEffects();
 
 		await expect(
-			commitIssueTransfer(t.env, actor, issueId, DESTINATION, preview.preview_token!, NOW + 1)
+			commitIssueTransfer(
+				t.env,
+				actor,
+				effects,
+				issueId,
+				DESTINATION,
+				preview.preview_token!,
+				NOW + 1
+			)
 		).rejects.toThrow(/injected/);
 		expect(t.all(`SELECT * FROM issue WHERE id = ?`, issueId)).toEqual(before.issue);
 		expect(t.all(`SELECT * FROM issue_address WHERE issue_id = ?`, issueId)).toEqual(
@@ -691,9 +887,10 @@ describe('private issue transfer path', () => {
 		);
 		expect(t.all(`SELECT * FROM context_item WHERE issue_id = ?`, issueId)).toEqual(before.context);
 		expect(t.all(`SELECT * FROM event WHERE issue_id = ?`, issueId)).toEqual(before.events);
+		expect(effects.count()).toBe(0);
 	});
 
-	it('does not enqueue when the guarded update loses, but enqueue failure cannot undo a move', async () => {
+	it('does not signal when the guarded update loses, but signals after a committed move', async () => {
 		const stale = await previewIssueTransfer(t.env, actor, issueId, DESTINATION, NOW);
 		const realBatch = t.env.DB.batch.bind(t.env.DB);
 		let first = true;
@@ -704,29 +901,34 @@ describe('private issue transfer path', () => {
 			}
 			return realBatch(statements);
 		};
-		const waits: Promise<unknown>[] = [];
+		let signals = 0;
 		await expect(
-			commitIssueTransfer(t.env, actor, issueId, DESTINATION, stale.preview_token!, NOW + 1, {
-				env: t.env,
-				ctx: { waitUntil: (promise) => waits.push(promise) }
-			})
+			commitIssueTransfer(
+				t.env,
+				actor,
+				{
+					signalDispatch: () => signals++
+				},
+				issueId,
+				DESTINATION,
+				stale.preview_token!,
+				NOW + 1
+			)
 		).rejects.toMatchObject({ status: 409, code: 'transfer_preview_stale' });
-		expect(waits).toHaveLength(0);
+		expect(signals).toBe(0);
 
 		const fresh = await previewIssueTransfer(t.env, actor, issueId, DESTINATION, NOW + 2);
 		const result = await commitIssueTransfer(
 			t.env,
 			actor,
+			{ signalDispatch: () => signals++ },
 			issueId,
 			DESTINATION,
 			fresh.preview_token!,
-			NOW + 3,
-			{
-				env: { DB: null } as unknown as Env,
-				ctx: { waitUntil: (promise) => waits.push(promise) }
-			}
+			NOW + 3
 		);
 		expect(result.status).toBe('transferred');
+		expect(signals).toBe(1);
 		expect(t.all(`SELECT project_id FROM issue WHERE id = ?`, issueId)[0].project_id).toBe(
 			DESTINATION
 		);
@@ -751,11 +953,17 @@ describe('private issue transfer path', () => {
 		const result = await commitIssueTransfer(
 			t.env,
 			actor,
+			{
+				signalDispatch: () =>
+					queueDispatchPass(
+						{ env: t.env, ctx: { waitUntil: (promise) => waits.push(promise) } },
+						USER
+					)
+			},
 			issueId,
 			DESTINATION,
 			preview.preview_token!,
-			wallNow + 1,
-			{ env: t.env, ctx: { waitUntil: (promise) => waits.push(promise) } }
+			wallNow + 1
 		);
 		expect(result.status).toBe('transferred');
 		expect(waits).toHaveLength(1);

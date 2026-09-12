@@ -25,6 +25,7 @@ import { sql, type CompiledQuery, type Kysely } from 'kysely';
 import { encryptSecret, sha256Hex } from '$lib/server/crypto';
 import { deleteRunLogObjects } from '$lib/server/supervisor/run-log';
 import { newId, randomString, type Database } from '$lib/server/db';
+import type { DispatchEffects } from '$lib/server/dispatch-effects';
 import { pingAnthropicKey } from '$lib/server/supervisor/claude-adapter';
 import { cancelAssignedRuns } from '$lib/server/supervisor/engine';
 import { builtinTierModels } from '$lib/server/supervisor/logic';
@@ -441,6 +442,7 @@ export async function createRunner(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
+	effects: DispatchEffects,
 	body: CreateRunnerRequest,
 	ping: ProviderKeyPing = defaultPing
 ): Promise<Runner> {
@@ -581,6 +583,7 @@ export async function createRunner(
 			payload: { runner_id: id, name, runner_type: body.type }
 		})
 	]);
+	effects.signalDispatch();
 	return getRunner(db, actor.userId, id);
 }
 
@@ -588,6 +591,7 @@ export async function updateRunner(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
+	effects: DispatchEffects,
 	id: string,
 	body: UpdateRunnerRequest,
 	ping: ProviderKeyPing = defaultPing
@@ -738,7 +742,10 @@ export async function updateRunner(
 			field === 'api_key' || field === 'config' || field === 'tiers' || field === 'default_tier'
 	);
 
-	if (changed.length === 0) return serializeRunner(row);
+	if (changed.length === 0) {
+		effects.signalDispatch();
+		return serializeRunner(row);
+	}
 
 	await runAtomic(env, [
 		db
@@ -762,12 +769,15 @@ export async function updateRunner(
 			}
 		})
 	]);
+	effects.signalDispatch();
 	// Pausing stops new assignments immediately AND cancels the runner's
 	// not-yet-acknowledged `assigned` runs — nothing is running yet, so the
 	// cancel is free and the issues return to the pool. `launching`/`running`
 	// runs finish (SPEC.md "Pausing a runner").
 	if (patch.status === 'paused') {
-		await cancelAssignedRuns(db, env, { userId: actor.userId, runnerId: id }, 'runner paused');
+		await cancelAssignedRuns(db, env, { userId: actor.userId, runnerId: id }, 'runner paused', () =>
+			effects.signalDispatch()
+		);
 	}
 	return getRunner(db, actor.userId, id);
 }
@@ -792,6 +802,7 @@ export async function registerRunner(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
+	effects: DispatchEffects,
 	body: RegisterRunnerRequest
 ): Promise<RunnerTokenResponse> {
 	const name = validateRunnerName(body.name);
@@ -883,6 +894,7 @@ export async function registerRunner(
 				payload: { runner_id: existing.id, name, changed, reconnected: true }
 			})
 		]);
+		effects.signalDispatch();
 		return { runner: await getRunner(db, actor.userId, existing.id), runner_token: token };
 	}
 
@@ -941,6 +953,7 @@ export async function registerRunner(
 			payload: { runner_id: id, name, runner_type: 'local' }
 		})
 	]);
+	effects.signalDispatch();
 	return { runner: await getRunner(db, actor.userId, id), runner_token: token };
 }
 
@@ -1058,6 +1071,7 @@ export async function deleteRunner(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
+	effects: DispatchEffects,
 	id: string,
 	force: boolean
 ): Promise<void> {
@@ -1265,4 +1279,5 @@ export async function deleteRunner(
 			console.error(`deleting run-log objects for run ${run.id} failed:`, e)
 		);
 	}
+	effects.signalDispatch();
 }

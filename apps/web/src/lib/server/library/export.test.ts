@@ -1,3 +1,4 @@
+import { TEST_NOOP_DISPATCH_EFFECTS } from '$lib/server/api/test-dispatch-effects';
 import { describe, expect, it } from 'vitest';
 import { parseLibraryV3Document } from '@tines/shared';
 import { USER, PROJECT, seedBase } from '../supervisor/test-fixtures';
@@ -135,7 +136,7 @@ describe('workflow package closure export', () => {
 			document
 		});
 		expect(await t.db.selectFrom('event').selectAll().execute()).toEqual(events);
-		await updateWorkflow(t.db, t.env, actor, main.id, {
+		await updateWorkflow(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, main.id, {
 			description: 'Changed after the file was saved'
 		});
 		expect((await validatePortableLibrary(bytes)).digest).toBe(document.digest);
@@ -212,7 +213,7 @@ describe('workflow package closure export', () => {
 			required: true,
 			default: 'review'
 		};
-		await updateWorkflow(t.db, t.env, actor, main.id, {
+		await updateWorkflow(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, main.id, {
 			description: 'File under {{filing:review}}'
 		});
 		const authoring = {

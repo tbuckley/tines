@@ -15,7 +15,7 @@ import { ApiFail, notFound, runAtomic, type ActorContext } from './core';
 import { loadIssue } from './issues';
 import { effectiveContextForTarget, issueMatchTarget } from './context';
 import { explainDispatch } from '$lib/server/supervisor/explain';
-import { queueDispatchPass } from '$lib/server/supervisor/engine';
+import type { DispatchEffects } from '$lib/server/dispatch-effects';
 import type {
 	ContextScope,
 	DispatchExplainer,
@@ -516,11 +516,11 @@ export function transferIssueQueries(
 export async function commitIssueTransfer(
 	env: Env,
 	actor: ActorContext,
+	effects: DispatchEffects,
 	issueId: string,
 	destinationId: string,
 	previewToken: string,
-	now = Date.now(),
-	platform?: { env: Env; ctx?: { waitUntil(promise: Promise<unknown>): void } }
+	now = Date.now()
 ): Promise<IssueTransferResult> {
 	if (actor.agentRunId) {
 		throw new ApiFail(
@@ -645,14 +645,7 @@ export async function commitIssueTransfer(
 	) {
 		throw new Error('Issue transfer committed with a malformed receipt');
 	}
-	// Transfer has committed at this point. Opportunistic dispatch is best-effort:
-	// the periodic sweep remains authoritative, so queue failures must never make
-	// the caller believe the already-durable move failed.
-	try {
-		queueDispatchPass(platform, actor.userId);
-	} catch (e) {
-		console.error('could not queue dispatch after issue transfer:', e);
-	}
+	effects.signalDispatch();
 	const newRef = transferRef(
 		{ ...section.destination, name: receipt.project_name },
 		receipt.number as number

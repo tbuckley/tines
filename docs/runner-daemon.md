@@ -305,6 +305,15 @@ thinks; every run's launch banner shows which daemon binary actually ran it (`cl
   dispatched to it, its card reads "restarting to update") and exits only once idle, for
   the service manager to relaunch. A daemon that dies mid-drain does not leave its runner
   shut: `draining` is stated on every poll, so the next poll from any daemon clears it.
+- **Duplicate daemon / copied token**: the most recently admitted daemon boot becomes the
+  runner's current instance. The superseded daemon's next poll is rejected before it can
+  update the heartbeat, reconcile `owned_runs`, or receive work; it logs the runner name,
+  finish-reports local runs as interrupted, and exits. The compatibility fence remembers
+  only the immediately previous modern boot; old daemons that omit an instance id are not
+  fenced. An already-admitted poll may overlap the takeover, and run log/finish requests
+  still use the shared runner token. If `KeepAlive` or `Restart=always` keeps relaunching a
+  duplicate service, stop and disable that service or register it under a different runner
+  name — otherwise the two service managers can keep creating new boots and taking over.
 - **Cancel / timeout from the supervisor**: the next poll's `cancels` list makes the daemon
   kill the process without reporting — the supervisor already settled the run. The daemon
   also enforces the run timeout locally. Both count as failures for `--keep-workspaces`.

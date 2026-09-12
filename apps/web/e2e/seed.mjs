@@ -25,10 +25,12 @@ import {
 	RUNROW,
 	RUNROW_ESTIMATED,
 	RUNROW_FAILED,
+	SPEND,
 	SCHED,
 	STOPPED_FIRST_RUN,
 	TRANSFER_RUNTIME
 } from './constants.mjs';
+import { spendStatements } from './spend-seed.mjs';
 
 const sha256Hex = (s) => createHash('sha256').update(s).digest('hex');
 
@@ -48,7 +50,8 @@ for (const user of [
 	STOPPED_FIRST_RUN,
 	MANAGED_SETTINGS,
 	TRANSFER_RUNTIME,
-	PAGINATION.user
+	PAGINATION.user,
+	SPEND
 ]) {
 	statements.push(
 		`INSERT INTO user (id, name, email, emailVerified, createdAt, updatedAt)
@@ -64,6 +67,8 @@ statements.push(
 	`INSERT INTO api_key (id, user_id, name, key_hash, key_prefix, created_at)
 	 VALUES ('${ALICE_AGENT.id}', '${ALICE.id}', '${ALICE_AGENT.apiKeyName}', '${sha256Hex(ALICE_AGENT.apiKey)}', '${ALICE_AGENT.apiKey.slice(0, 14)}', ${nowMs});`
 );
+
+statements.push(...spendStatements(nowMs));
 
 // Alice's seeded active managed runner is display-only. Keep the broad shared
 // fixture inert when unrelated specs create eligible issues or routing rules.

@@ -13,7 +13,9 @@ import type { Kysely } from 'kysely';
 import type { Database } from '$lib/server/db';
 import { getRunLogStore, runLogRawKey } from '$lib/server/run-log-store';
 import { readRunLog } from '$lib/server/supervisor/run-log';
-import { ApiFail, notFound, type Page } from './core';
+import { cancelRun } from '$lib/server/supervisor/engine';
+import type { DispatchEffects } from '$lib/server/dispatch-effects';
+import { ApiFail, notFound, type ActorContext, type Page } from './core';
 
 export function runQuery(db: Kysely<Database>, userId: string) {
 	return (
@@ -352,4 +354,17 @@ export function assertCancelable(kind: 'not_found' | 'already_ended' | 'canceled
 	if (kind === 'already_ended') {
 		throw new ApiFail(422, 'run_already_ended', 'This run has already ended; nothing to cancel');
 	}
+}
+
+export async function cancelRunForRequest(
+	db: Kysely<Database>,
+	env: Env,
+	actor: ActorContext,
+	effects: DispatchEffects,
+	runId: string
+): Promise<AgentRunDetail> {
+	const result = await cancelRun(db, env, actor.userId, runId);
+	assertCancelable(result.kind);
+	effects.signalDispatch();
+	return getRun(db, actor.userId, runId);
 }

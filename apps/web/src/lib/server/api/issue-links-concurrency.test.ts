@@ -1,3 +1,7 @@
+import {
+	recordDispatchEffects,
+	TEST_NOOP_DISPATCH_EFFECTS
+} from '$lib/server/api/test-dispatch-effects';
 import { describe, expect, it } from 'vitest';
 import { addIssue, seedBase, USER } from '../supervisor/test-fixtures';
 import { addIssueLink, removeIssueLink } from './issue-links';
@@ -150,6 +154,75 @@ function fixture() {
 	return { t, ...ids };
 }
 
+describe('dispatch effects: issue-link owners', () => {
+	it.each(['add', 'remove'] as const)(
+		'signals a committed %s and not a rejected batch',
+		async (owner) => {
+			const success = fixture();
+			const successEffects = recordDispatchEffects();
+			const link = await addIssueLink(
+				success.t.db,
+				success.t.env,
+				actor,
+				successEffects,
+				success.a,
+				{
+					kind: 'blocks',
+					issue_id: success.b
+				}
+			);
+			if (owner === 'remove') {
+				await removeIssueLink(
+					success.t.db,
+					success.t.env,
+					actor,
+					successEffects,
+					success.a,
+					link.id
+				);
+			}
+			expect(successEffects.count()).toBe(owner === 'add' ? 1 : 2);
+
+			const rejected = fixture();
+			const existing =
+				owner === 'remove'
+					? await addIssueLink(
+							rejected.t.db,
+							rejected.t.env,
+							actor,
+							TEST_NOOP_DISPATCH_EFFECTS,
+							rejected.a,
+							{ kind: 'blocks', issue_id: rejected.b }
+						)
+					: null;
+			const beforeEdges = edges(rejected.t);
+			const beforeEvents = linkEvents(rejected.t);
+			const rejectedEffects = recordDispatchEffects();
+			rejected.t.env.DB.batch = async () => {
+				throw new Error(`injected link ${owner} batch failure`);
+			};
+			const call =
+				owner === 'add'
+					? addIssueLink(rejected.t.db, rejected.t.env, actor, rejectedEffects, rejected.a, {
+							kind: 'blocks',
+							issue_id: rejected.b
+						})
+					: removeIssueLink(
+							rejected.t.db,
+							rejected.t.env,
+							actor,
+							rejectedEffects,
+							rejected.a,
+							existing!.id
+						);
+			await expect(call).rejects.toThrow(`injected link ${owner} batch failure`);
+			expect(rejectedEffects.count()).toBe(0);
+			expect(edges(rejected.t)).toEqual(beforeEdges);
+			expect(linkEvents(rejected.t)).toEqual(beforeEvents);
+		}
+	);
+});
+
 describe('commit-time issue-link graph guard', () => {
 	for (const [name, first, second] of [
 		[
@@ -183,13 +256,22 @@ describe('commit-time issue-link graph guard', () => {
 						t.db,
 						t.env,
 						immediate.actor,
+						TEST_NOOP_DISPATCH_EFFECTS,
 						immediate.issue,
 						immediate.body
 					);
 				});
-				await expectCycle(addIssueLink(t.db, env, delayed.actor, delayed.issue, delayed.body), [
-					'demo/'
-				]);
+				await expectCycle(
+					addIssueLink(
+						t.db,
+						env,
+						delayed.actor,
+						TEST_NOOP_DISPATCH_EFFECTS,
+						delayed.issue,
+						delayed.body
+					),
+					['demo/']
+				);
 				expect(edges(t)).toHaveLength(1);
 				expectAcyclic(t);
 				expectWinnerEvents(t, {
@@ -205,14 +287,27 @@ describe('commit-time issue-link graph guard', () => {
 
 	it('rejects a four-node cycle across disjoint competing endpoint pairs', async () => {
 		const { t, a, b, c, d } = fixture();
-		await addIssueLink(t.db, t.env, actor, a, { kind: 'blocks', issue_id: b });
-		await addIssueLink(t.db, t.env, actor, c, { kind: 'blocks', issue_id: d });
+		await addIssueLink(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, a, {
+			kind: 'blocks',
+			issue_id: b
+		});
+		await addIssueLink(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, c, {
+			kind: 'blocks',
+			issue_id: d
+		});
 		const env = delayedBy(t, () =>
-			addIssueLink(t.db, t.env, actor, d, { kind: 'blocks', issue_id: a })
+			addIssueLink(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, d, {
+				kind: 'blocks',
+				issue_id: a
+			})
 		);
-		await expectCycle(addIssueLink(t.db, env, actor, b, { kind: 'blocks', issue_id: c }), [
-			'demo/'
-		]);
+		await expectCycle(
+			addIssueLink(t.db, env, actor, TEST_NOOP_DISPATCH_EFFECTS, b, {
+				kind: 'blocks',
+				issue_id: c
+			}),
+			['demo/']
+		);
 		expect(edges(t)).toHaveLength(3);
 		expect(linkEvents(t)).toHaveLength(6);
 	});
@@ -221,12 +316,15 @@ describe('commit-time issue-link graph guard', () => {
 		const { t, a, b, c, d } = fixture();
 		let first: Awaited<ReturnType<typeof addIssueLink>> | undefined;
 		const env = delayedBy(t, async () => {
-			first = await addIssueLink(t.db, t.env, competingActor, c, {
+			first = await addIssueLink(t.db, t.env, competingActor, TEST_NOOP_DISPATCH_EFFECTS, c, {
 				kind: 'blocks',
 				issue_id: d
 			});
 		});
-		const second = await addIssueLink(t.db, env, actor, a, { kind: 'blocks', issue_id: b });
+		const second = await addIssueLink(t.db, env, actor, TEST_NOOP_DISPATCH_EFFECTS, a, {
+			kind: 'blocks',
+			issue_id: b
+		});
 		expect(edges(t)).toHaveLength(2);
 		expectAcyclic(t);
 		expectWinnerEvents(t, {
@@ -243,12 +341,12 @@ describe('commit-time issue-link graph guard', () => {
 		t.sqlite.prepare("UPDATE issue SET project_id = 'prj_2' WHERE id = ?").run(c);
 		let first: Awaited<ReturnType<typeof addIssueLink>> | undefined;
 		const env = delayedBy(t, async () => {
-			first = await addIssueLink(t.db, t.env, competingActor, a, {
+			first = await addIssueLink(t.db, t.env, competingActor, TEST_NOOP_DISPATCH_EFFECTS, a, {
 				kind: 'blocks',
 				issue_id: b
 			});
 		});
-		const second = await addIssueLink(t.db, env, actor, b, {
+		const second = await addIssueLink(t.db, env, actor, TEST_NOOP_DISPATCH_EFFECTS, b, {
 			kind: 'blocks',
 			issue_id: c
 		});
@@ -270,28 +368,44 @@ describe('commit-time issue-link graph guard', () => {
 	it('normalizes blocked_by before applying the same guard', async () => {
 		const { t, a, b } = fixture();
 		const env = delayedBy(t, () =>
-			addIssueLink(t.db, t.env, actor, b, { kind: 'blocked_by', issue_id: a })
+			addIssueLink(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, b, {
+				kind: 'blocked_by',
+				issue_id: a
+			})
 		);
-		await expectCycle(addIssueLink(t.db, env, actor, a, { kind: 'blocked_by', issue_id: b }), [
-			'demo/'
-		]);
+		await expectCycle(
+			addIssueLink(t.db, env, actor, TEST_NOOP_DISPATCH_EFFECTS, a, {
+				kind: 'blocked_by',
+				issue_id: b
+			}),
+			['demo/']
+		);
 		expect(edges(t)).toEqual([{ source: a, target: b, kind: 'blocks' }]);
 	});
 
 	it('preserves exact-link and one-canonical-duplicate error precedence under a race', async () => {
 		const { t, a, b, c } = fixture();
 		let env = delayedBy(t, () =>
-			addIssueLink(t.db, t.env, actor, a, { kind: 'blocks', issue_id: b })
+			addIssueLink(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, a, {
+				kind: 'blocks',
+				issue_id: b
+			})
 		);
 		await expect(
-			addIssueLink(t.db, env, actor, a, { kind: 'blocks', issue_id: b })
+			addIssueLink(t.db, env, actor, TEST_NOOP_DISPATCH_EFFECTS, a, { kind: 'blocks', issue_id: b })
 		).rejects.toMatchObject({ status: 409, code: 'conflict' });
 
 		env = delayedBy(t, () =>
-			addIssueLink(t.db, t.env, actor, c, { kind: 'duplicate_of', issue_id: a })
+			addIssueLink(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, c, {
+				kind: 'duplicate_of',
+				issue_id: a
+			})
 		);
 		await expect(
-			addIssueLink(t.db, env, actor, c, { kind: 'duplicate_of', issue_id: b })
+			addIssueLink(t.db, env, actor, TEST_NOOP_DISPATCH_EFFECTS, c, {
+				kind: 'duplicate_of',
+				issue_id: b
+			})
 		).rejects.toMatchObject({
 			status: 422,
 			code: 'already_duplicate',
@@ -304,10 +418,16 @@ describe('commit-time issue-link graph guard', () => {
 	it('preserves the exact duplicate_of conflict under a race', async () => {
 		const { t, a, b } = fixture();
 		const env = delayedBy(t, () =>
-			addIssueLink(t.db, t.env, competingActor, a, { kind: 'duplicate_of', issue_id: b })
+			addIssueLink(t.db, t.env, competingActor, TEST_NOOP_DISPATCH_EFFECTS, a, {
+				kind: 'duplicate_of',
+				issue_id: b
+			})
 		);
 		await expect(
-			addIssueLink(t.db, env, actor, a, { kind: 'duplicate_of', issue_id: b })
+			addIssueLink(t.db, env, actor, TEST_NOOP_DISPATCH_EFFECTS, a, {
+				kind: 'duplicate_of',
+				issue_id: b
+			})
 		).rejects.toMatchObject({ status: 422, code: 'already_duplicate' });
 		expect(edges(t)).toEqual([{ source: a, target: b, kind: 'duplicate_of' }]);
 		expect(linkEvents(t)).toHaveLength(2);
@@ -315,15 +435,22 @@ describe('commit-time issue-link graph guard', () => {
 
 	it('returns the transaction-time cycle path even if that path is removed before formatting', async () => {
 		const { t, a, b } = fixture();
-		const link = await addIssueLink(t.db, t.env, actor, a, { kind: 'blocks', issue_id: b });
+		const link = await addIssueLink(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, a, {
+			kind: 'blocks',
+			issue_id: b
+		});
 		const env = delayedBy(
 			t,
 			async () => {},
-			() => removeIssueLink(t.db, t.env, competingActor, a, link.id)
+			() => removeIssueLink(t.db, t.env, competingActor, TEST_NOOP_DISPATCH_EFFECTS, a, link.id)
 		);
-		await expectCycle(addIssueLink(t.db, env, actor, b, { kind: 'blocks', issue_id: a }), [
-			'demo/'
-		]);
+		await expectCycle(
+			addIssueLink(t.db, env, actor, TEST_NOOP_DISPATCH_EFFECTS, b, {
+				kind: 'blocks',
+				issue_id: a
+			}),
+			['demo/']
+		);
 		expect(edges(t)).toEqual([]);
 		expect(linkEvents(t)).toHaveLength(2);
 		expect(t.all("SELECT * FROM event WHERE type = 'issue.link_removed'")).toHaveLength(2);
@@ -331,12 +458,14 @@ describe('commit-time issue-link graph guard', () => {
 
 	it('accepts an addition when a competing removal commits first', async () => {
 		const { t, a, b } = fixture();
-		const old = await addIssueLink(t.db, t.env, competingActor, a, {
+		const old = await addIssueLink(t.db, t.env, competingActor, TEST_NOOP_DISPATCH_EFFECTS, a, {
 			kind: 'blocks',
 			issue_id: b
 		});
-		const env = delayedBy(t, () => removeIssueLink(t.db, t.env, competingActor, a, old.id));
-		const replacement = await addIssueLink(t.db, env, actor, b, {
+		const env = delayedBy(t, () =>
+			removeIssueLink(t.db, t.env, competingActor, TEST_NOOP_DISPATCH_EFFECTS, a, old.id)
+		);
+		const replacement = await addIssueLink(t.db, env, actor, TEST_NOOP_DISPATCH_EFFECTS, b, {
 			kind: 'blocks',
 			issue_id: a
 		});
@@ -350,7 +479,7 @@ describe('commit-time issue-link graph guard', () => {
 		const env = delayedBy(t, async () => {
 			t.sqlite.prepare("UPDATE issue SET project_id = 'prj_2' WHERE id = ?").run(b);
 		});
-		const link = await addIssueLink(t.db, env, actor, a, {
+		const link = await addIssueLink(t.db, env, actor, TEST_NOOP_DISPATCH_EFFECTS, a, {
 			kind: 'blocks',
 			issue_id: b
 		});
@@ -366,7 +495,10 @@ describe('commit-time issue-link graph guard', () => {
 			t.sqlite.prepare("UPDATE issue SET project_id = 'prj_2' WHERE id = ?").run(a);
 		});
 		await expectCycle(
-			addIssueLink(t.db, diagnosticEnv, actor, b, { kind: 'blocks', issue_id: a }),
+			addIssueLink(t.db, diagnosticEnv, actor, TEST_NOOP_DISPATCH_EFFECTS, b, {
+				kind: 'blocks',
+				issue_id: a
+			}),
 			['other-project/']
 		);
 		expect(edges(t)).toHaveLength(1);
@@ -385,7 +517,10 @@ describe('commit-time issue-link graph guard', () => {
 			seen.push(...(statements as unknown as { sqlText: string; params: unknown[] }[]));
 			return t.env.DB.batch<T>(statements);
 		};
-		await addIssueLink(t.db, env, actor, c, { kind: 'blocks', issue_id: a });
+		await addIssueLink(t.db, env, actor, TEST_NOOP_DISPATCH_EFFECTS, c, {
+			kind: 'blocks',
+			issue_id: a
+		});
 		expect(seen).toHaveLength(5);
 		for (const statement of seen) {
 			expect(statement.params.length).toBeLessThanOrEqual(100);
@@ -406,7 +541,7 @@ describe('commit-time issue-link graph guard', () => {
 			insert.run(`lnk_chain_${index}`, chain[index], chain[index + 1], 'blocks', index);
 		}
 		try {
-			await addIssueLink(t.db, t.env, actor, chain.at(-1)!, {
+			await addIssueLink(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, chain.at(-1)!, {
 				kind: 'blocks',
 				issue_id: chain[0]
 			});
@@ -432,7 +567,10 @@ describe('commit-time issue-link graph guard', () => {
 				BEGIN SELECT RAISE(ABORT, 'injected event failure'); END;
 			`);
 			await expect(
-				addIssueLink(t.db, t.env, actor, a, { kind: 'blocks', issue_id: b })
+				addIssueLink(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, a, {
+					kind: 'blocks',
+					issue_id: b
+				})
 			).rejects.toThrow('injected event failure');
 			expect(edges(t)).toEqual([]);
 			expect(linkEvents(t)).toEqual([]);
@@ -448,7 +586,7 @@ describe('commit-time issue-link graph guard', () => {
 			return t.env.DB.batch<T>(broken);
 		};
 		await expect(
-			addIssueLink(t.db, env, actor, a, { kind: 'blocks', issue_id: b })
+			addIssueLink(t.db, env, actor, TEST_NOOP_DISPATCH_EFFECTS, a, { kind: 'blocks', issue_id: b })
 		).rejects.toThrow();
 		expect(edges(t)).toEqual([]);
 		expect(linkEvents(t)).toEqual([]);
@@ -465,7 +603,10 @@ describe('commit-time issue-link graph guard', () => {
 				return results;
 			};
 			await expect(
-				addIssueLink(t.db, env, actor, a, { kind: 'blocks', issue_id: b })
+				addIssueLink(t.db, env, actor, TEST_NOOP_DISPATCH_EFFECTS, a, {
+					kind: 'blocks',
+					issue_id: b
+				})
 			).rejects.toThrow(/receipt/);
 			expect(edges(t)).toHaveLength(1);
 			expect(linkEvents(t)).toHaveLength(2);
@@ -474,7 +615,10 @@ describe('commit-time issue-link graph guard', () => {
 
 	it('never reports a cycle rejection from a missing diagnostic receipt', async () => {
 		const { t, a, b } = fixture();
-		await addIssueLink(t.db, t.env, competingActor, a, { kind: 'blocks', issue_id: b });
+		await addIssueLink(t.db, t.env, competingActor, TEST_NOOP_DISPATCH_EFFECTS, a, {
+			kind: 'blocks',
+			issue_id: b
+		});
 		const env = { ...t.env, DB: Object.create(t.env.DB) } as Env;
 		env.DB.batch = async <T = unknown>(statements: Parameters<Env['DB']['batch']>[0]) => {
 			const results = await t.env.DB.batch<T>(statements);
@@ -482,7 +626,7 @@ describe('commit-time issue-link graph guard', () => {
 			return results;
 		};
 		await expect(
-			addIssueLink(t.db, env, actor, b, { kind: 'blocks', issue_id: a })
+			addIssueLink(t.db, env, actor, TEST_NOOP_DISPATCH_EFFECTS, b, { kind: 'blocks', issue_id: a })
 		).rejects.toThrow(/diagnostic/);
 		expect(edges(t)).toEqual([{ source: a, target: b, kind: 'blocks' }]);
 		expect(linkEvents(t)).toHaveLength(2);
@@ -500,7 +644,7 @@ describe('commit-time issue-link graph guard', () => {
 			t.sqlite.prepare("UPDATE issue SET project_id = 'prj_other' WHERE id = ?").run(b);
 		});
 		await expect(
-			addIssueLink(t.db, env, actor, a, { kind: 'blocks', issue_id: b })
+			addIssueLink(t.db, env, actor, TEST_NOOP_DISPATCH_EFFECTS, a, { kind: 'blocks', issue_id: b })
 		).rejects.toMatchObject({ status: 404 });
 		expect(edges(t)).toEqual([]);
 		expect(linkEvents(t)).toEqual([]);

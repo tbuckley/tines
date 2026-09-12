@@ -53,6 +53,33 @@ for the whole list — and every command takes `--json` for machine-readable out
 `tines <noun> --help` lists the rest: `workflows`, `context`, `journal`, `schedules`,
 `runners`, `runs`, `routing`, `supervisor`.
 
+## Workflow package files
+
+Export a workflow and its inheritance/context closure as canonical JSON, validate an edited
+file, then prepare a destination-specific review and save its signed plan:
+
+```sh
+tines workflows export <workflow-id> > review.json
+tines workflows validate review.json
+tines workflows preview review.json --choices choices.json --plan-out review.plan.json
+tines workflows install review.json --plan review.plan.json --confirm sha256:<plan-digest>
+```
+
+Workflow names are accepted only when unique; use the ID when duplicate names exist. Export
+selection is explicit: `--project`, repeatable `--schedule`, repeatable
+`--tier '<state-id>=balanced'`, `--project-routing`, and `--inputs declarations.json` add
+optional source configuration. Package and validation input may be `-` for stdin. Choices use
+the shared document-local-ID maps described in
+[`docs/workflow-packages.md`](https://github.com/tbuckley/tines/blob/main/docs/workflow-packages.md).
+
+An interactive install prepares and displays the full review, atomically writes a sibling
+`<package>.plan.json`, and asks for `yes`. A non-interactive install cannot prepare and commit
+in one invocation: it requires a plan from a prior preview and the exact plan digest. There is
+no blanket `--yes`. A retry checks the durable receipt first and reuses the same signed plan;
+keep the package and plan together until the receipt is returned. Plan files contain the API
+base, reviewed response, and signed token, but never the API key; protect them like temporary
+authorization material.
+
 ## Running agents on your own machine
 
 ```sh

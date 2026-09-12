@@ -119,6 +119,7 @@ const PAYLOADS: Record<KnownEventType, Record<string, unknown>> = {
 	},
 	'runner.registered': { name: 'macbook-claude' },
 	'runner.updated': { name: 'macbook-claude' },
+	'runner.daemon_replaced': { runner_id: 'rnr_1', name: 'macbook-claude' },
 	'runner.removed': { name: 'macbook-claude' },
 	'runner.errored': {
 		runner_name: 'macbook-claude',

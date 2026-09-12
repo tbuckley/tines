@@ -35,6 +35,7 @@ import {
 	type TargetVerdictResult
 } from '$lib/server/supervisor/logic';
 import { ApiFail, requireString, runAtomic, type ActorContext } from './core';
+import type { DispatchEffects } from '$lib/server/dispatch-effects';
 import { eventInsert } from './events';
 import { effectiveAutomationEnabled } from '../supervisor/settings';
 
@@ -192,6 +193,7 @@ export async function updateSupervisorSettings(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
+	effects: DispatchEffects,
 	body: UpdateSupervisorSettingsRequest
 ): Promise<SupervisorSettingsResponse> {
 	const current = await getSupervisorSettings(db, actor.userId);
@@ -255,6 +257,11 @@ export async function updateSupervisorSettings(
 	if (patEnc !== undefined) changed.push('github_pat');
 
 	const now = Date.now();
+	let signaled = false;
+	const signalDispatch = () => {
+		effects.signalDispatch();
+		signaled = true;
+	};
 	if (changed.length > 0 || current.updated_at === null) {
 		await runAtomic(env, [
 			// Upsert: the row is created lazily on first write. On conflict an
@@ -303,6 +310,7 @@ export async function updateSupervisorSettings(
 				}
 			})
 		]);
+		signalDispatch();
 	}
 
 	// The kill switch turning off behaves like pausing every runner at once:
@@ -316,6 +324,7 @@ export async function updateSupervisorSettings(
 			env,
 			{ userId: actor.userId },
 			'automation disabled',
+			signalDispatch,
 			now
 		);
 	}
@@ -331,10 +340,14 @@ export async function updateSupervisorSettings(
 			.execute();
 		for (const run of inFlight) {
 			const result = await cancelRun(db, env, actor.userId, run.id);
-			if (result.kind === 'canceled') canceledRuns += 1;
+			if (result.kind === 'canceled') {
+				signalDispatch();
+				canceledRuns += 1;
+			}
 		}
 	}
 
+	if (!signaled) signalDispatch();
 	const settings: SupervisorSettingsResponse = await getSupervisorSettings(db, actor.userId);
 	if (canceledRuns > 0) settings.canceled_runs = canceledRuns;
 	return settings;

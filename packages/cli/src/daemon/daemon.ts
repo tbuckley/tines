@@ -23,6 +23,7 @@ import {
 	writeFileSync,
 	type WriteStream
 } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import {
@@ -205,6 +206,7 @@ function pidAlive(pid: number): boolean {
 }
 
 export async function runDaemon(opts: DaemonOptions): Promise<void> {
+	const instanceId = randomUUID();
 	const baseUrl = opts.url.replace(/\/+$/, '');
 	mkdirSync(opts.configDir, { recursive: true });
 	// A workspace holds cloned repositories and whatever the agent wrote, so
@@ -771,6 +773,7 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 			// a restart with a new --max-concurrent takes effect without
 			// re-registering.
 			const res = await client.pollRunner(creds.runner_id, {
+				instance_id: instanceId,
 				owned_runs: table.ids(),
 				max_concurrent: opts.maxConcurrent,
 				// Stated on every poll while pending; absent otherwise, which
@@ -810,6 +813,13 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 				process.exit(0);
 			}
 		} catch (err) {
+			if (err instanceof ApiError && err.status === 409 && err.code === 'runner_conflict') {
+				console.error(
+					`runner ${opts.name} was superseded by another daemon instance; this daemon is exiting`
+				);
+				await shutdown();
+				return;
+			}
 			if (err instanceof ApiError && err.status === 401) {
 				// The token was rotated (or the runner removed): exit with clear
 				// instructions rather than spinning. Any in-flight harnesses are

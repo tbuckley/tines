@@ -23,6 +23,25 @@ const CLI_DIR = fileURLToPath(new URL('../../../packages/cli', import.meta.url))
 const TSX = join(CLI_DIR, 'node_modules', '.bin', 'tsx');
 const CLI_ENTRY = join(CLI_DIR, 'src', 'index.ts');
 
+/** POSIX single-quote escaping for values interpolated into a custom harness. */
+function shellQuote(value: string): string {
+	return `'${value.replaceAll("'", `'\\''`)}'`;
+}
+
+/**
+ * A productive harness for standard-workflow fixtures. The delivered run key
+ * remains in the daemon-built environment, so the transition is attributed to
+ * the run and its successful exit settles as `advanced` rather than `stalled`.
+ */
+export function transitionHarnessCommand(action: string): string {
+	return [
+		'set -eu',
+		`REF=$(sed -n 's/^This is run .* for issue \\([^;]*\\);.*/\\1/p' {prompt_file} | head -n 1)`,
+		'if [ -z "$REF" ]; then echo "could not find issue ref in prompt" >&2; exit 1; fi',
+		`${shellQuote(TSX)} ${shellQuote(CLI_ENTRY)} issues move "$REF" ${shellQuote(action)} --url ${shellQuote(BASE_URL)}`
+	].join('\n');
+}
+
 export type Daemon = {
 	proc: ChildProcess;
 	/** Everything the daemon has written to stdout/stderr so far. */
@@ -33,8 +52,9 @@ export type Daemon = {
 
 /**
  * Start a daemon that registers `name` against the account owning `apiKey`.
- * The default harness exits immediately: enough to make the runner appear
- * online and to claim a run, which is all the checklist watches.
+ * The default harness exits immediately. It is useful when a test only needs
+ * registration, but claimed work then settles as stalled and retries; tests
+ * asserting successful work or run counts must pass a productive command.
  */
 export function spawnDaemon({
 	apiKey,
@@ -43,7 +63,7 @@ export function spawnDaemon({
 }: {
 	apiKey: string;
 	name: string;
-	/** The `custom` harness command. Defaults to a no-op that exits 0. */
+	/** The `custom` harness command. A no-op completion causes stalled retries. */
 	command?: string;
 }): Daemon {
 	const configDir = mkdtempSync(join(tmpdir(), 'tines-e2e-daemon-'));
@@ -64,7 +84,8 @@ export function spawnDaemon({
 			'--poll-interval',
 			'1',
 			// CI must not depend on the npm registry (or pay its latency) for the
-			// daemon-managed agent CLI; a script harness never runs `tines`.
+			// daemon-managed agent CLI; productive test harnesses invoke this
+			// repository's CLI source directly.
 			'--no-cli-refresh'
 		],
 		{

@@ -1,3 +1,7 @@
+import {
+	recordDispatchEffects,
+	TEST_NOOP_DISPATCH_EFFECTS
+} from '$lib/server/api/test-dispatch-effects';
 import type { WorkflowResponse } from '@tines/shared';
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
@@ -20,6 +24,7 @@ import {
 	getIssueDetail,
 	listIssues,
 	loadIssue,
+	resumeIssue,
 	resolveStateRef,
 	transitionIssue,
 	updateIssue
@@ -172,14 +177,16 @@ describe('updateIssue sparse patch concurrency', () => {
 		const id = addIssue(t, { title: 'Original', description: 'Original description' });
 		let winnerStateEnteredAt = 0;
 		const env = beforeBatch(t, async () => {
-			const winner = await transitionIssue(t.db, t.env, actor, id, {
+			const winner = await transitionIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, id, {
 				action: 'Submit for review'
 			});
 			expect(winner.state.id).toBe(REVIEW);
 			winnerStateEnteredAt = winner.state_entered_at;
 		});
 
-		const result = await updateIssue(t.db, env, actor, id, { title: 'Renamed' });
+		const result = await updateIssue(t.db, env, actor, TEST_NOOP_DISPATCH_EFFECTS, id, {
+			title: 'Renamed'
+		});
 
 		expect(result).toMatchObject({ title: 'Renamed', state: { id: REVIEW } });
 		expect(result.state_entered_at).toBe(winnerStateEnteredAt);
@@ -209,9 +216,11 @@ describe('updateIssue sparse patch concurrency', () => {
 		const t = createTestDb();
 		seedBase(t);
 		const id = addIssue(t, { title: 'Original', description: 'Original description' });
-		const env = beforeBatch(t, () => updateIssue(t.db, t.env, actor, id, concurrent));
+		const env = beforeBatch(t, () =>
+			updateIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, id, concurrent)
+		);
 
-		const result = await updateIssue(t.db, env, actor, id, outer);
+		const result = await updateIssue(t.db, env, actor, TEST_NOOP_DISPATCH_EFFECTS, id, outer);
 
 		expect(result).toMatchObject({ title: 'Renamed', description: 'New instructions' });
 	});
@@ -225,7 +234,7 @@ describe('updateIssue sparse patch concurrency', () => {
 		const env = beforeBatch(
 			t,
 			() =>
-				updateIssue(t.db, t.env, actor, id, {
+				updateIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, id, {
 					pinned_runner_id: runnerId,
 					pinned_tier: 'smartest'
 				}),
@@ -234,7 +243,9 @@ describe('updateIssue sparse patch concurrency', () => {
 			}
 		);
 
-		const result = await updateIssue(t.db, env, actor, id, { title: 'Renamed' });
+		const result = await updateIssue(t.db, env, actor, TEST_NOOP_DISPATCH_EFFECTS, id, {
+			title: 'Renamed'
+		});
 
 		expect(result).toMatchObject({
 			title: 'Renamed',
@@ -254,13 +265,17 @@ describe('updateIssue sparse patch concurrency', () => {
 		seedBase(t);
 		const id = addIssue(t);
 		const env = beforeBatch(t, async () => {
-			await transitionIssue(t.db, t.env, actor, id, { action: 'Submit for review' });
+			await transitionIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, id, {
+				action: 'Submit for review'
+			});
 			// Keep the event guard's timestamp witness distinct even when both
 			// requests happen within the same millisecond in this in-memory test.
 			t.sqlite.prepare('UPDATE issue SET updated_at = updated_at + 1 WHERE id = ?').run(id);
 		});
 
-		await expect(updateIssue(t.db, env, actor, id, { state: REVIEW })).rejects.toMatchObject({
+		await expect(
+			updateIssue(t.db, env, actor, TEST_NOOP_DISPATCH_EFFECTS, id, { state: REVIEW })
+		).rejects.toMatchObject({
 			status: 409,
 			code: 'conflict'
 		});
@@ -282,7 +297,9 @@ describe('updateIssue sparse patch concurrency', () => {
 			UPDATE issue SET attempt_count = 2, needs_attention = 1 WHERE id = '${id}';
 		`);
 
-		const moved = await updateIssue(t.db, t.env, actor, id, { workflow_id: 'wf_sparse' });
+		const moved = await updateIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, id, {
+			workflow_id: 'wf_sparse'
+		});
 
 		expect(moved).toMatchObject({
 			workflow: { id: 'wf_sparse' },
@@ -310,7 +327,7 @@ describe('updateIssue sparse patch concurrency', () => {
 		const id = addIssue(t);
 		const runnerId = addRunner(t, { id: 'rnr_pin', name: 'pinned' });
 
-		const pinned = await updateIssue(t.db, t.env, actor, id, {
+		const pinned = await updateIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, id, {
 			pinned_runner_id: runnerId,
 			pinned_tier: 'cheapest'
 		});
@@ -319,7 +336,9 @@ describe('updateIssue sparse patch concurrency', () => {
 			pinned_runner_name: 'pinned',
 			pinned_tier: 'cheapest'
 		});
-		const unpinned = await updateIssue(t.db, t.env, actor, id, { pinned_runner_id: null });
+		const unpinned = await updateIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, id, {
+			pinned_runner_id: null
+		});
 		expect(unpinned).toMatchObject({ pinned_runner_id: null, pinned_tier: null });
 		const pinEvents = t
 			.all(`SELECT payload FROM event WHERE issue_id = ? AND type = 'issue.updated'`, id)
@@ -334,15 +353,92 @@ describe('updateIssue sparse patch concurrency', () => {
 		seedBase(t);
 		const id = addIssue(t);
 		const runnerId = addRunner(t, { id: 'rnr_pin_race', name: 'pin race' });
-		await updateIssue(t.db, t.env, actor, id, { pinned_runner_id: runnerId });
+		await updateIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, id, {
+			pinned_runner_id: runnerId
+		});
 		const env = beforeBatch(t, () =>
-			updateIssue(t.db, t.env, actor, id, { pinned_tier: 'smartest' })
+			updateIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, id, {
+				pinned_tier: 'smartest'
+			})
 		);
 
-		const unpinned = await updateIssue(t.db, env, actor, id, { pinned_runner_id: null });
+		const unpinned = await updateIssue(t.db, env, actor, TEST_NOOP_DISPATCH_EFFECTS, id, {
+			pinned_runner_id: null
+		});
 
 		expect(unpinned).toMatchObject({ pinned_runner_id: null, pinned_tier: null });
 	});
+});
+
+describe('dispatch effects: issue mutation owners', () => {
+	it('records successful changes and approved no-ops, but not rejected lookups', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const actor: ActorContext = {
+			userId: USER,
+			userName: 'alice',
+			apiKeyId: null,
+			apiKeyName: null,
+			viaSession: true
+		};
+		const effects = recordDispatchEffects();
+		const issue = addIssue(t, { title: 'Original' });
+
+		await updateIssue(t.db, t.env, actor, effects, issue, { title: 'Changed' });
+		await updateIssue(t.db, t.env, actor, effects, issue, { title: 'Changed' });
+		expect(effects.count()).toBe(2);
+
+		await transitionIssue(t.db, t.env, actor, effects, issue, { action: 'Submit for review' });
+		expect(effects.count()).toBe(3);
+
+		const parked = addIssue(t, { needsAttention: true, attemptCount: 3 });
+		await resumeIssue(t.db, t.env, actor, effects, parked);
+		await resumeIssue(t.db, t.env, actor, effects, parked);
+		expect(effects.count()).toBe(5);
+
+		await expect(resumeIssue(t.db, t.env, actor, effects, 'iss_missing')).rejects.toMatchObject({
+			status: 404
+		});
+		expect(effects.count()).toBe(5);
+	});
+
+	it.each(['update', 'transition', 'resume'] as const)(
+		'keeps %s silent when its durable batch rejects',
+		async (owner) => {
+			const t = createTestDb();
+			seedBase(t);
+			const actor: ActorContext = {
+				userId: USER,
+				userName: 'alice',
+				apiKeyId: null,
+				apiKeyName: null,
+				viaSession: true
+			};
+			const issue = addIssue(t, {
+				title: 'Original',
+				...(owner === 'resume' ? { needsAttention: true, attemptCount: 3 } : {})
+			});
+			const effects = recordDispatchEffects();
+			t.env.DB.batch = async () => {
+				throw new Error(`injected ${owner} batch failure`);
+			};
+			const call =
+				owner === 'update'
+					? updateIssue(t.db, t.env, actor, effects, issue, { title: 'Changed' })
+					: owner === 'transition'
+						? transitionIssue(t.db, t.env, actor, effects, issue, {
+								action: 'Submit for review'
+							})
+						: resumeIssue(t.db, t.env, actor, effects, issue);
+			await expect(call).rejects.toThrow(`injected ${owner} batch failure`);
+			expect(effects.count()).toBe(0);
+			expect(
+				t.all('SELECT title, state_id, needs_attention FROM issue WHERE id = ?', issue)
+			).toEqual([
+				{ title: 'Original', state_id: OPEN, needs_attention: owner === 'resume' ? 1 : 0 }
+			]);
+		}
+	);
 });
 
 describe('listIssues search', () => {
@@ -539,7 +635,10 @@ describe('createIssue with labels', () => {
 	const runKey: ActorContext = { ...human, viaSession: false, agentRunId: 'arun_1' };
 
 	const create = (actor: ActorContext, labels: string[]) =>
-		createIssue(t.db, t.env, actor, PROJECT, { title: 'Labelled', labels });
+		createIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, PROJECT, {
+			title: 'Labelled',
+			labels
+		});
 	const issueCount = () =>
 		Number((t.sqlite.prepare('SELECT COUNT(*) AS n FROM issue').get() as { n: number }).n);
 
@@ -568,6 +667,21 @@ describe('createIssue with labels', () => {
 		expect(await listLabels(t.db, USER)).toEqual([]);
 	});
 
+	it('dispatch effects: createIssue stays silent when the durable batch rejects', async () => {
+		const effects = recordDispatchEffects();
+		const realBatch = t.env.DB.batch.bind(t.env.DB);
+		t.env.DB.batch = async () => {
+			throw new Error('injected issue batch failure');
+		};
+		await expect(
+			createIssue(t.db, t.env, human, effects, PROJECT, { title: 'Rejected at commit' })
+		).rejects.toThrow('injected issue batch failure');
+		t.env.DB.batch = realBatch;
+		expect(effects.count()).toBe(0);
+		expect(issueCount()).toBe(0);
+		expect(t.all("SELECT id FROM event WHERE type = 'issue.created'")).toEqual([]);
+	});
+
 	it('lets a run key attach an existing label, matched case-insensitively', async () => {
 		await createLabel(t.db, t.env, human, { name: 'bug' });
 		const issue = await create(runKey, ['BUG']);
@@ -583,7 +697,7 @@ describe('createIssue with labels', () => {
 
 	it('filters on a label applied at creation time', async () => {
 		const labelled = await create(human, ['bug']);
-		await createIssue(t.db, t.env, human, PROJECT, { title: 'Plain' });
+		await createIssue(t.db, t.env, human, TEST_NOOP_DISPATCH_EFFECTS, PROJECT, { title: 'Plain' });
 		const { items } = await listIssues(
 			t.db,
 			USER,

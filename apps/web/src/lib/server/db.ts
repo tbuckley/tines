@@ -276,6 +276,10 @@ export interface RunnerTable {
 	secret_enc: string | null;
 	/** Hashed daemon token (local type); never serialized. */
 	runner_token_hash: string | null;
+	/** Current local-daemon boot admitted to mutate this runner through poll. */
+	daemon_instance_id: string | null;
+	/** Immediately preceding daemon boot, rejected if it polls again. */
+	fenced_instance_id: string | null;
 	last_seen_at: number | null;
 	launch_failures: number;
 	backoff_until: number | null;

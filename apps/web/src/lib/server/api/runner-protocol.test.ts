@@ -1,3 +1,7 @@
+import {
+	recordDispatchEffects,
+	TEST_NOOP_DISPATCH_EFFECTS
+} from '$lib/server/api/test-dispatch-effects';
 import { RUN_LOG_MAX_BYTES } from '@tines/shared';
 import { describe, expect, it } from 'vitest';
 import {
@@ -29,7 +33,7 @@ import {
 	type RunnerRow
 } from './runner-protocol';
 import { registerRunner, rotateRunnerToken, updateRunner } from './runners';
-import { updateSupervisorSettings } from './supervisor';
+import { getSupervisorSettings, updateSupervisorSettings } from './supervisor';
 import { createTestDb, type TestDb } from './test-db';
 
 const actor: ActorContext = {
@@ -70,7 +74,8 @@ function expectFail(fn: () => Promise<unknown>, code: string): Promise<void> {
 describe('registerRunner', () => {
 	it('creates a local runner with a hashed token, shown once', async () => {
 		const t = world();
-		const { runner, runner_token } = await registerRunner(t.db, t.env, actor, {
+		const effects = recordDispatchEffects();
+		const { runner, runner_token } = await registerRunner(t.db, t.env, actor, effects, {
 			name: 'laptop-m4',
 			harness: 'claude_code',
 			hostname: 'mbp.local',
@@ -84,6 +89,7 @@ describe('registerRunner', () => {
 		// The token never appears in the serialized runner.
 		expect(JSON.stringify(runner)).not.toContain(runner_token);
 		expect(eventsOfType(t, 'runner.registered')).toHaveLength(1);
+		expect(effects.count()).toBe(1);
 
 		const authed = await authenticateRunnerToken(t.db, runner_token);
 		expect(authed?.id).toBe(runner.id);
@@ -91,27 +97,59 @@ describe('registerRunner', () => {
 
 	it('reconnects an existing local runner by name: same row, fresh token, old one dead', async () => {
 		const t = world();
-		const first = await registerRunner(t.db, t.env, actor, { name: 'laptop-m4' });
-		const second = await registerRunner(t.db, t.env, actor, { name: 'laptop-m4' });
+		const effects = recordDispatchEffects();
+		const first = await registerRunner(t.db, t.env, actor, effects, {
+			name: 'laptop-m4'
+		});
+		const second = await registerRunner(t.db, t.env, actor, effects, {
+			name: 'laptop-m4'
+		});
 		expect(second.runner.id).toBe(first.runner.id);
 		expect(second.runner_token).not.toBe(first.runner_token);
 		expect(await authenticateRunnerToken(t.db, first.runner_token)).toBeUndefined();
 		expect((await authenticateRunnerToken(t.db, second.runner_token))?.id).toBe(first.runner.id);
 		expect(runnerById(t, first.runner.id).resume_config_revision).toBe(0);
+		expect(effects.count()).toBe(2);
 	});
+
+	it.each(['new', 'reconnect'] as const)(
+		'keeps a %s registration silent when its batch rejects',
+		async (branch) => {
+			const t = world();
+			if (branch === 'reconnect') {
+				await registerRunner(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+					name: 'laptop-m4'
+				});
+			}
+			const beforeEvents = t.all(
+				"SELECT id FROM event WHERE type IN ('runner.registered', 'runner.updated')"
+			);
+			const effects = recordDispatchEffects();
+			t.env.DB.batch = async () => {
+				throw new Error('injected registration batch failure');
+			};
+			await expect(
+				registerRunner(t.db, t.env, actor, effects, { name: 'laptop-m4' })
+			).rejects.toThrow('injected registration batch failure');
+			expect(effects.count()).toBe(0);
+			expect(
+				t.all("SELECT id FROM event WHERE type IN ('runner.registered', 'runner.updated')")
+			).toEqual(beforeEvents);
+		}
+	);
 
 	it('reconnect updates only the fields the daemon sent — server-side edits survive', async () => {
 		const t = world();
-		const first = await registerRunner(t.db, t.env, actor, {
+		const first = await registerRunner(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
 			name: 'laptop-m4',
 			max_concurrent: 2
 		});
 		// The user tuned these in the UI; the daemon never sends them.
-		await updateRunner(t.db, t.env, actor, first.runner.id, {
+		await updateRunner(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, first.runner.id, {
 			max_run_minutes: 90,
 			default_tier: 'smartest'
 		});
-		const second = await registerRunner(t.db, t.env, actor, {
+		const second = await registerRunner(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
 			name: 'laptop-m4',
 			max_concurrent: 3,
 			hostname: 'mbp.local'
@@ -125,13 +163,13 @@ describe('registerRunner', () => {
 
 	it('reconnect away from the custom harness drops the stored command template', async () => {
 		const t = world();
-		const first = await registerRunner(t.db, t.env, actor, {
+		const first = await registerRunner(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
 			name: 'laptop-m4',
 			harness: 'custom',
 			command: 'run {prompt_file}'
 		});
 		expect(first.runner.config.command).toBe('run {prompt_file}');
-		const second = await registerRunner(t.db, t.env, actor, {
+		const second = await registerRunner(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
 			name: 'laptop-m4',
 			harness: 'claude_code'
 		});
@@ -141,15 +179,21 @@ describe('registerRunner', () => {
 
 	it('rejects a custom harness without a command, and unknown-tier registrations', async () => {
 		const t = world();
+		const effects = recordDispatchEffects();
 		await expectFail(
-			() => registerRunner(t.db, t.env, actor, { name: 'x', harness: 'custom' }),
+			() =>
+				registerRunner(t.db, t.env, actor, effects, {
+					name: 'x',
+					harness: 'custom'
+				}),
 			'invalid_field'
 		);
+		expect(effects.count()).toBe(0);
 	});
 
 	it('an API key is not a runner token (and vice versa: the inverse fence)', async () => {
 		const t = world();
-		await registerRunner(t.db, t.env, actor, { name: 'laptop-m4' });
+		await registerRunner(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, { name: 'laptop-m4' });
 		// A run key (an api_key row) never authenticates the protocol.
 		expect(await authenticateRunnerToken(t.db, 'tines_someapikeysecret')).toBeUndefined();
 	});
@@ -158,9 +202,15 @@ describe('registerRunner', () => {
 describe('rotateRunnerToken', () => {
 	it('invalidates the old token, returns the new one once, keeps identity', async () => {
 		const t = world();
-		const { runner, runner_token } = await registerRunner(t.db, t.env, actor, {
-			name: 'laptop-m4'
-		});
+		const { runner, runner_token } = await registerRunner(
+			t.db,
+			t.env,
+			actor,
+			TEST_NOOP_DISPATCH_EFFECTS,
+			{
+				name: 'laptop-m4'
+			}
+		);
 		const rotated = await rotateRunnerToken(t.db, t.env, actor, runner.id);
 		expect(rotated.runner.id).toBe(runner.id);
 		expect(rotated.runner_token).not.toBe(runner_token);
@@ -181,29 +231,254 @@ describe('rotateRunnerToken', () => {
 // ---------------------------------------------------------------------------
 
 describe('pollRunner', () => {
+	it('claims an instance silently, then atomically replaces and fences it once', async () => {
+		const t = world();
+		const id = addRunner(t);
+
+		await pollRunner(t.db, t.env, await runnerRow(t, id), TEST_NOOP_DISPATCH_EFFECTS, {
+			instance_id: 'daemon_A',
+			owned_runs: []
+		});
+		expect(runnerById(t, id)).toMatchObject({
+			daemon_instance_id: 'daemon_A',
+			fenced_instance_id: null
+		});
+		expect(eventsOfType(t, 'runner.daemon_replaced')).toHaveLength(0);
+
+		await pollRunner(t.db, t.env, await runnerRow(t, id), TEST_NOOP_DISPATCH_EFFECTS, {
+			instance_id: 'daemon_B',
+			owned_runs: []
+		});
+		await pollRunner(t.db, t.env, await runnerRow(t, id), TEST_NOOP_DISPATCH_EFFECTS, {
+			instance_id: 'daemon_B',
+			owned_runs: []
+		});
+		expect(runnerById(t, id)).toMatchObject({
+			daemon_instance_id: 'daemon_B',
+			fenced_instance_id: 'daemon_A'
+		});
+		const replacements = eventsOfType(t, 'runner.daemon_replaced');
+		expect(replacements).toHaveLength(1);
+		expect(replacements[0]).toMatchObject({
+			actor_user_id: USER,
+			actor_api_key_id: null,
+			payload: { runner_id: id, name: id }
+		});
+	});
+
+	it('rolls replacement history and ownership back together when admission fails', async () => {
+		const t = world();
+		const id = addRunner(t);
+		await pollRunner(t.db, t.env, await runnerRow(t, id), TEST_NOOP_DISPATCH_EFFECTS, {
+			instance_id: 'daemon_A',
+			owned_runs: []
+		});
+
+		const d1 = t.env.DB;
+		const realBatch = d1.batch.bind(d1);
+		d1.batch = async (statements) => {
+			// The replacement event is statement 0. Make the following ownership
+			// write fail inside the same native batch: D1 must retain neither one.
+			const failure = d1.prepare('INSERT INTO no_such_table DEFAULT VALUES');
+			if (statements.length === 1) return realBatch(statements);
+			const eventOffset = statements.length === 3 ? 1 : 0;
+			return realBatch([
+				...statements.slice(0, eventOffset),
+				failure,
+				...statements.slice(eventOffset + 1)
+			]);
+		};
+		await expect(
+			pollRunner(t.db, t.env, await runnerRow(t, id), TEST_NOOP_DISPATCH_EFFECTS, {
+				instance_id: 'daemon_B',
+				owned_runs: []
+			})
+		).rejects.toThrow();
+		expect(runnerById(t, id)).toMatchObject({
+			daemon_instance_id: 'daemon_A',
+			fenced_instance_id: null
+		});
+		expect(eventsOfType(t, 'runner.daemon_replaced')).toHaveLength(0);
+
+		// Restore the real binding and prove the same takeover succeeds cleanly.
+		d1.batch = realBatch;
+		await pollRunner(t.db, t.env, await runnerRow(t, id), TEST_NOOP_DISPATCH_EFFECTS, {
+			instance_id: 'daemon_B',
+			owned_runs: []
+		});
+		expect(runnerById(t, id)).toMatchObject({
+			daemon_instance_id: 'daemon_B',
+			fenced_instance_id: 'daemon_A'
+		});
+		expect(eventsOfType(t, 'runner.daemon_replaced')).toHaveLength(1);
+	});
+
+	it('rejects a fenced instance before any poll side effect, even with a stale auth snapshot', async () => {
+		const t = world();
+		const id = addRunner(t, { maxConcurrent: 1 });
+		await pollRunner(t.db, t.env, await runnerRow(t, id), TEST_NOOP_DISPATCH_EFFECTS, {
+			instance_id: 'daemon_A',
+			owned_runs: []
+		});
+		const staleA = await runnerRow(t, id);
+		await pollRunner(t.db, t.env, await runnerRow(t, id), TEST_NOOP_DISPATCH_EFFECTS, {
+			instance_id: 'daemon_B',
+			owned_runs: []
+		});
+		const runningIssue = addIssue(t);
+		const assignedIssue = addIssue(t);
+		const running = addRun(t, { issueId: runningIssue, runnerId: id, status: 'running' });
+		const assigned = addRun(t, { issueId: assignedIssue, runnerId: id, status: 'assigned' });
+		const before = {
+			runner: runnerById(t, id),
+			runs: t.all('SELECT * FROM agent_run ORDER BY id'),
+			events: t.all('SELECT * FROM event ORDER BY id'),
+			keys: t.all('SELECT * FROM api_key ORDER BY id')
+		};
+
+		try {
+			await pollRunner(
+				t.db,
+				t.env,
+				staleA,
+				TEST_NOOP_DISPATCH_EFFECTS,
+				{ instance_id: 'daemon_A', owned_runs: [], max_concurrent: 7, draining: true },
+				NOW + 99
+			);
+			throw new Error('expected runner conflict');
+		} catch (error) {
+			expect(error).toBeInstanceOf(ApiFail);
+			expect(error).toMatchObject({ status: 409, code: 'runner_conflict' });
+			expect((error as Error).message).toContain('superseded');
+		}
+		expect(runnerById(t, id)).toEqual(before.runner);
+		expect(t.all('SELECT * FROM agent_run ORDER BY id')).toEqual(before.runs);
+		expect(t.all('SELECT * FROM event ORDER BY id')).toEqual(before.events);
+		expect(t.all('SELECT * FROM api_key ORDER BY id')).toEqual(before.keys);
+		expect(runById(t, running)?.status).toBe('running');
+		expect(runById(t, assigned)?.status).toBe('assigned');
+		expect(keyForRun(t, assigned)).toBeUndefined();
+	});
+
+	it('leaves modern ownership untouched for legacy polls and remembers only one predecessor', async () => {
+		const t = world();
+		const id = addRunner(t, { maxConcurrent: 1 });
+		for (const instance_id of ['daemon_A', 'daemon_B', 'daemon_C']) {
+			await pollRunner(t.db, t.env, await runnerRow(t, id), TEST_NOOP_DISPATCH_EFFECTS, {
+				instance_id,
+				owned_runs: []
+			});
+		}
+		expect(runnerById(t, id)).toMatchObject({
+			daemon_instance_id: 'daemon_C',
+			fenced_instance_id: 'daemon_B'
+		});
+
+		await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, id),
+			TEST_NOOP_DISPATCH_EFFECTS,
+			{ owned_runs: [], max_concurrent: 4, draining: true },
+			NOW + 10
+		);
+		expect(runnerById(t, id)).toMatchObject({
+			daemon_instance_id: 'daemon_C',
+			fenced_instance_id: 'daemon_B',
+			max_concurrent: 4,
+			draining: 1,
+			last_seen_at: NOW + 10
+		});
+
+		// A is no longer the remembered predecessor and can take over again.
+		await pollRunner(t.db, t.env, await runnerRow(t, id), TEST_NOOP_DISPATCH_EFFECTS, {
+			instance_id: 'daemon_A',
+			owned_runs: []
+		});
+		expect(runnerById(t, id)).toMatchObject({
+			daemon_instance_id: 'daemon_A',
+			fenced_instance_id: 'daemon_C'
+		});
+	});
+
+	it.each([null, '', ' ', 'bad.id', 7, [], 'x'.repeat(129)])(
+		'rejects invalid instance id %j before taking ownership',
+		async (instance_id) => {
+			const t = world();
+			const id = addRunner(t);
+			await expectFail(
+				() =>
+					pollRunner(
+						t.db,
+						t.env,
+						runnerById(t, id) as unknown as RunnerRow,
+						TEST_NOOP_DISPATCH_EFFECTS,
+						{
+							instance_id: instance_id as string,
+							owned_runs: []
+						}
+					),
+				'invalid_field'
+			);
+			expect(runnerById(t, id)).toMatchObject({
+				daemon_instance_id: null,
+				fenced_instance_id: null
+			});
+			expect(eventsOfType(t, 'runner.daemon_replaced')).toHaveLength(0);
+		}
+	);
+
 	it('bumps last_seen_at and reports coming online', async () => {
 		const t = world();
 		const id = addRunner(t, { lastSeen: null });
+		const effects = recordDispatchEffects();
 		const later = NOW + 60_000;
 		const { cameOnline, response } = await pollRunner(
 			t.db,
 			t.env,
 			await runnerRow(t, id),
+			effects,
 			{ owned_runs: [] },
 			later
 		);
 		expect(cameOnline).toBe(true);
 		expect(response).toEqual({ assignments: [], cancels: [] });
 		expect(runnerById(t, id).last_seen_at).toBe(later);
+		expect(effects.count()).toBe(1);
 		// A fresh poll from an online runner is not "coming online".
 		const again = await pollRunner(
 			t.db,
 			t.env,
 			await runnerRow(t, id),
+			effects,
 			{ owned_runs: [] },
 			later + 1000
 		);
 		expect(again.cameOnline).toBe(false);
+		expect(effects.count()).toBe(1);
+	});
+
+	it('signals immediately after the heartbeat commit, before later reads can fail', async () => {
+		const t = world();
+		const id = addRunner(t, { lastSeen: null });
+		let signals = 0;
+		await expect(
+			pollRunner(
+				t.db,
+				t.env,
+				await runnerRow(t, id),
+				{
+					signalDispatch() {
+						signals++;
+						t.sqlite.exec('DROP TABLE agent_run');
+					}
+				},
+				{ owned_runs: [] },
+				NOW + 1
+			)
+		).rejects.toThrow();
+		expect(signals).toBe(1);
+		expect(runnerById(t, id).last_seen_at).toBe(NOW + 1);
 	});
 
 	it("adopts the daemon's max_concurrent: row updated, event recorded, capRaised on an increase", async () => {
@@ -213,6 +488,7 @@ describe('pollRunner', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, id),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			{ owned_runs: [], max_concurrent: 3 },
 			NOW + 1
 		);
@@ -227,6 +503,7 @@ describe('pollRunner', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, id),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			{ owned_runs: [], max_concurrent: 3 },
 			NOW + 2
 		);
@@ -238,12 +515,20 @@ describe('pollRunner', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, id),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			{ owned_runs: [], max_concurrent: 2 },
 			NOW + 3
 		);
 		expect(lowered.capRaised).toBe(false);
 		expect(runnerById(t, id).max_concurrent).toBe(2);
-		await pollRunner(t.db, t.env, await runnerRow(t, id), { owned_runs: [] }, NOW + 4);
+		await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, id),
+			TEST_NOOP_DISPATCH_EFFECTS,
+			{ owned_runs: [] },
+			NOW + 4
+		);
 		expect(runnerById(t, id).max_concurrent).toBe(2);
 	});
 
@@ -254,6 +539,7 @@ describe('pollRunner', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, id),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			{ owned_runs: [], draining: true },
 			NOW + 1
 		);
@@ -267,6 +553,7 @@ describe('pollRunner', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, id),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			{ owned_runs: [], draining: true },
 			NOW + 2
 		);
@@ -278,6 +565,7 @@ describe('pollRunner', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, id),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			{ owned_runs: [] },
 			NOW + 3
 		);
@@ -290,6 +578,7 @@ describe('pollRunner', () => {
 					t.db,
 					t.env,
 					await runnerRow(t, id),
+					TEST_NOOP_DISPATCH_EFFECTS,
 					{ owned_runs: [], draining: 'yes' as unknown as boolean },
 					NOW + 4
 				),
@@ -306,6 +595,7 @@ describe('pollRunner', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			{ owned_runs: [], draining: true },
 			NOW + 1
 		);
@@ -322,6 +612,7 @@ describe('pollRunner', () => {
 					t.db,
 					t.env,
 					await runnerRow(t, id),
+					TEST_NOOP_DISPATCH_EFFECTS,
 					{ owned_runs: [], max_concurrent: 0 },
 					NOW + 1
 				),
@@ -333,6 +624,7 @@ describe('pollRunner', () => {
 					t.db,
 					t.env,
 					await runnerRow(t, id),
+					TEST_NOOP_DISPATCH_EFFECTS,
 					{ owned_runs: [], max_concurrent: 101 },
 					NOW + 1
 				),
@@ -350,6 +642,7 @@ describe('pollRunner', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			{ owned_runs: [] },
 			NOW + 1
 		);
@@ -376,6 +669,7 @@ describe('pollRunner', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			{ owned_runs: [] },
 			NOW + 2
 		);
@@ -411,6 +705,7 @@ describe('pollRunner', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			{ owned_runs: [] },
 			NOW + 1
 		);
@@ -435,6 +730,7 @@ describe('pollRunner', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			{ owned_runs: [] },
 			NOW + 1
 		);
@@ -453,6 +749,7 @@ describe('pollRunner', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			{ owned_runs: [] },
 			NOW + 1
 		);
@@ -476,6 +773,7 @@ describe('pollRunner', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			{ owned_runs: [] },
 			NOW + 1
 		);
@@ -489,6 +787,7 @@ describe('pollRunner', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			{ owned_runs: [] },
 			NOW + 2
 		);
@@ -505,6 +804,7 @@ describe('pollRunner', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			{ owned_runs: [] },
 			NOW + 1
 		);
@@ -523,6 +823,7 @@ describe('pollRunner', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			{ owned_runs: [kept] },
 			NOW + 1
 		);
@@ -552,10 +853,12 @@ describe('pollRunner', () => {
 			status: 'running',
 			startedAt: NOW
 		});
+		const effects = recordDispatchEffects();
 		const { reconciled } = await pollRunner(
 			t.db,
 			t.env,
 			await runnerRow(t, runnerId),
+			effects,
 			{ owned_runs: [] },
 			NOW + 1
 		);
@@ -568,6 +871,7 @@ describe('pollRunner', () => {
 		expect(eventsOfType(t, 'runner.errored')).toHaveLength(1);
 		// The freed claims are dispatchable now, not at the next cron.
 		expect(reconciled).toBe(true);
+		expect(effects.count()).toBe(2);
 	});
 
 	it('cancels lists owned runs the supervisor already settled (kill, do not finish)', async () => {
@@ -581,6 +885,7 @@ describe('pollRunner', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			{ owned_runs: [settled, live, 'arun_unknown'] },
 			NOW + 1
 		);
@@ -675,6 +980,7 @@ describe('finishRun', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, opts.runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			{ owned_runs: [] },
 			NOW + 1
 		);
@@ -695,6 +1001,7 @@ describe('finishRun', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			runId,
 			{ status: 'completed' },
 			NOW + 30
@@ -716,6 +1023,7 @@ describe('finishRun', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			runId,
 			{ status: 'completed' },
 			NOW + 30
@@ -740,6 +1048,7 @@ describe('finishRun', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			runId,
 			{
 				status: 'completed',
@@ -797,6 +1106,7 @@ describe('finishRun', () => {
 				t.db,
 				t.env,
 				awaitRunner,
+				TEST_NOOP_DISPATCH_EFFECTS,
 				runId,
 				{
 					status: 'completed',
@@ -865,6 +1175,7 @@ describe('finishRun', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			runId,
 			{ status: 'failed', error: 'daemon shut down', judgment: 'interrupted' },
 			NOW + 30
@@ -893,6 +1204,7 @@ describe('finishRun', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			runId,
 			{
 				status: 'failed',
@@ -925,6 +1237,7 @@ describe('finishRun', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			runId,
 			{
 				status: 'failed',
@@ -948,6 +1261,7 @@ describe('finishRun', () => {
 				t.db,
 				t.env,
 				await runnerRow(t, runnerId),
+				TEST_NOOP_DISPATCH_EFFECTS,
 				runId,
 				{
 					status: 'failed',
@@ -972,6 +1286,7 @@ describe('finishRun', () => {
 				t.db,
 				t.env,
 				await runnerRow(t, runnerId),
+				TEST_NOOP_DISPATCH_EFFECTS,
 				runId,
 				{ status: 'failed', judgment: 'rate_limited', resume_at: 'soon' } as never,
 				NOW + 30
@@ -982,6 +1297,7 @@ describe('finishRun', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			runId,
 			{ status: 'completed', judgment: 'rate_limited', resume_at: NOW + 600_000 } as never,
 			NOW + 30
@@ -1002,6 +1318,7 @@ describe('finishRun', () => {
 				t.db,
 				t.env,
 				await runnerRow(t, runnerId),
+				TEST_NOOP_DISPATCH_EFFECTS,
 				runId,
 				{ status: 'failed', error: 'daemon shut down', judgment: 'interrupted' },
 				NOW + 30
@@ -1026,6 +1343,7 @@ describe('finishRun', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			runId,
 			{ status: 'failed', error: 'workspace setup failed: git clone exited 128' },
 			NOW + 30
@@ -1046,6 +1364,7 @@ describe('finishRun', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			runId,
 			{ status: 'completed', judgment: 'interrupted' },
 			NOW + 30
@@ -1064,6 +1383,7 @@ describe('finishRun', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			runId,
 			{
 				status: 'failed',
@@ -1091,6 +1411,7 @@ describe('finishRun', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			runId,
 			{
 				status: 'completed',
@@ -1124,6 +1445,7 @@ describe('finishRun', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			runId,
 			{ status: 'completed' },
 			NOW + 30
@@ -1142,6 +1464,7 @@ describe('finishRun', () => {
 					t.db,
 					t.env,
 					await runnerRow(t, runnerId),
+					TEST_NOOP_DISPATCH_EFFECTS,
 					runId,
 					{
 						status: 'completed',
@@ -1170,6 +1493,7 @@ describe('finishRun', () => {
 						t.db,
 						t.env,
 						await runnerRow(t, runnerId),
+						TEST_NOOP_DISPATCH_EFFECTS,
 						runId,
 						{
 							status: 'completed',
@@ -1194,7 +1518,16 @@ describe('finishRun', () => {
 		const runId = addRun(t, { issueId: issue, runnerId, status: 'canceled' });
 		const row = await runnerRow(t, runnerId);
 		await expectFail(
-			() => finishRun(t.db, t.env, row, runId, { status: 'completed' }, NOW),
+			() =>
+				finishRun(
+					t.db,
+					t.env,
+					row,
+					TEST_NOOP_DISPATCH_EFFECTS,
+					runId,
+					{ status: 'completed' },
+					NOW
+				),
 			'run_already_ended'
 		);
 	});
@@ -1203,6 +1536,59 @@ describe('finishRun', () => {
 // ---------------------------------------------------------------------------
 
 describe('pause and kill-switch cancels', () => {
+	it('keeps the runner-write signal when the first pause cancellation fails', async () => {
+		const t = world();
+		const runnerId = addRunner(t);
+		const runId = addRun(t, { issueId: addIssue(t), runnerId });
+		const realBatch = t.env.DB.batch.bind(t.env.DB);
+		let batches = 0;
+		t.env.DB.batch = async (statements) => {
+			batches += 1;
+			if (batches === 2) throw new Error('injected first pause cancellation failure');
+			return realBatch(statements);
+		};
+		const effects = recordDispatchEffects();
+
+		await expect(
+			updateRunner(t.db, t.env, actor, effects, runnerId, { status: 'paused' })
+		).rejects.toThrow('injected first pause cancellation failure');
+
+		expect(runnerById(t, runnerId).status).toBe('paused');
+		expect(runById(t, runId)?.status).toBe('assigned');
+		expect(eventsOfType(t, 'runner.updated')).toHaveLength(1);
+		expect(effects.count()).toBe(1);
+	});
+
+	it('keeps a prior pause cancellation signal when a later cancellation fails', async () => {
+		const t = world();
+		const runnerId = addRunner(t, { maxConcurrent: 2 });
+		const first = addRun(t, { issueId: addIssue(t), runnerId });
+		const second = addRun(t, { issueId: addIssue(t), runnerId });
+		const realBatch = t.env.DB.batch.bind(t.env.DB);
+		let batches = 0;
+		t.env.DB.batch = async (statements) => {
+			batches += 1;
+			// Runner = 1; first endRun flip/dependents = 2/3; fail the next flip.
+			if (batches === 4) throw new Error('injected later pause cancellation failure');
+			return realBatch(statements);
+		};
+		const effects = recordDispatchEffects();
+
+		await expect(
+			updateRunner(t.db, t.env, actor, effects, runnerId, { status: 'paused' })
+		).rejects.toThrow('injected later pause cancellation failure');
+
+		expect(runnerById(t, runnerId).status).toBe('paused');
+		expect([runById(t, first)?.status, runById(t, second)?.status].sort()).toEqual([
+			'assigned',
+			'canceled'
+		]);
+		expect(eventsOfType(t, 'runner.updated')).toHaveLength(1);
+		expect(eventsOfType(t, 'agent_run.ended')).toHaveLength(1);
+		// The runner write and the independently committed cancellation both signal.
+		expect(effects.count()).toBe(2);
+	});
+
 	it('pausing a runner cancels its assigned runs; launching/running finish', async () => {
 		const t = world();
 		const runnerId = addRunner(t, { maxConcurrent: 3 });
@@ -1213,10 +1599,110 @@ describe('pause and kill-switch cancels', () => {
 			status: 'running',
 			startedAt: NOW
 		});
-		await updateRunner(t.db, t.env, actor, runnerId, { status: 'paused' });
+		const effects = recordDispatchEffects();
+		await updateRunner(t.db, t.env, actor, effects, runnerId, {
+			status: 'paused'
+		});
 		expect(runById(t, assigned)?.status).toBe('canceled');
 		expect(runById(t, assigned)?.error).toBe('runner paused');
 		expect(runById(t, running)?.status).toBe('running');
+		// The runner write and each cancellation are distinct domain wins.
+		expect(effects.count()).toBe(2);
+	});
+
+	it('keeps settings and prior cancellation signals when a later assigned cancellation fails', async () => {
+		const t = world();
+		const runnerId = addRunner(t, { maxConcurrent: 3 });
+		const first = addRun(t, { issueId: addIssue(t), runnerId });
+		const second = addRun(t, { issueId: addIssue(t), runnerId });
+		const realBatch = t.env.DB.batch.bind(t.env.DB);
+		let batches = 0;
+		t.env.DB.batch = async (statements) => {
+			batches += 1;
+			// Settings = 1; first endRun flip/dependents = 2/3; fail the next flip.
+			if (batches === 4) throw new Error('injected later settings cancellation failure');
+			return realBatch(statements);
+		};
+		const effects = recordDispatchEffects();
+
+		await expect(
+			updateSupervisorSettings(t.db, t.env, actor, effects, { enabled: false })
+		).rejects.toThrow('injected later settings cancellation failure');
+
+		expect((await getSupervisorSettings(t.db, USER)).enabled).toBe(false);
+		expect(eventsOfType(t, 'settings.updated')).toHaveLength(1);
+		expect([runById(t, first)?.status, runById(t, second)?.status].sort()).toEqual([
+			'assigned',
+			'canceled'
+		]);
+		expect(effects.count()).toBe(2);
+	});
+
+	it('keeps the settings-write signal when the first assigned cancellation fails', async () => {
+		const t = world();
+		const runnerId = addRunner(t);
+		const runId = addRun(t, { issueId: addIssue(t), runnerId });
+		const realBatch = t.env.DB.batch.bind(t.env.DB);
+		let batches = 0;
+		t.env.DB.batch = async (statements) => {
+			batches += 1;
+			if (batches === 2) throw new Error('injected first settings cancellation failure');
+			return realBatch(statements);
+		};
+		const effects = recordDispatchEffects();
+
+		await expect(
+			updateSupervisorSettings(t.db, t.env, actor, effects, { enabled: false })
+		).rejects.toThrow('injected first settings cancellation failure');
+
+		expect((await getSupervisorSettings(t.db, USER)).enabled).toBe(false);
+		expect(runById(t, runId)?.status).toBe('assigned');
+		expect(eventsOfType(t, 'settings.updated')).toHaveLength(1);
+		expect(effects.count()).toBe(1);
+	});
+
+	it('keeps a direct in-flight cancellation signal when a later cancellation fails', async () => {
+		const t = world();
+		t.sqlite.prepare('UPDATE supervisor_settings SET enabled = 0 WHERE user_id = ?').run(USER);
+		const runnerId = addRunner(t, { maxConcurrent: 2 });
+		const first = addRun(t, {
+			issueId: addIssue(t),
+			runnerId,
+			status: 'running',
+			startedAt: NOW
+		});
+		const second = addRun(t, {
+			issueId: addIssue(t),
+			runnerId,
+			status: 'running',
+			startedAt: NOW
+		});
+		const realBatch = t.env.DB.batch.bind(t.env.DB);
+		let batches = 0;
+		t.env.DB.batch = async (statements) => {
+			batches += 1;
+			// First endRun flip/dependents = 1/2; fail the next run's flip.
+			if (batches === 3) throw new Error('injected later in-flight cancellation failure');
+			return realBatch(statements);
+		};
+		const effects = recordDispatchEffects();
+
+		await expect(
+			updateSupervisorSettings(t.db, t.env, actor, effects, {
+				enabled: false,
+				cancel_in_flight: true
+			})
+		).rejects.toThrow('injected later in-flight cancellation failure');
+
+		expect((await getSupervisorSettings(t.db, USER)).enabled).toBe(false);
+		expect(eventsOfType(t, 'settings.updated')).toHaveLength(0);
+		expect([runById(t, first)?.status, runById(t, second)?.status].sort()).toEqual([
+			'canceled',
+			'running'
+		]);
+		expect(eventsOfType(t, 'agent_run.ended')).toHaveLength(1);
+		// No settings write occurred, so this can only be the committed cancellation's signal.
+		expect(effects.count()).toBe(1);
 	});
 
 	it('the kill switch off cancels assigned runs fleet-wide; bulk cancel takes the rest', async () => {
@@ -1233,27 +1719,36 @@ describe('pause and kill-switch cancels', () => {
 			startedAt: NOW
 		});
 
-		const off = await updateSupervisorSettings(t.db, t.env, actor, { enabled: false });
+		const effects = recordDispatchEffects();
+		const off = await updateSupervisorSettings(t.db, t.env, actor, effects, {
+			enabled: false
+		});
 		expect(off.enabled).toBe(false);
 		expect(off.canceled_runs).toBe(2);
 		expect(runById(t, assignedA)?.status).toBe('canceled');
 		expect(runById(t, assignedB)?.status).toBe('canceled');
 		expect(runById(t, running)?.status).toBe('running');
+		expect(effects.count()).toBe(3);
 
 		// The bulk-cancel option: plain individual cancels, strikes and all.
-		const bulk = await updateSupervisorSettings(t.db, t.env, actor, {
+		const bulk = await updateSupervisorSettings(t.db, t.env, actor, effects, {
 			enabled: false,
 			cancel_in_flight: true
 		});
 		expect(bulk.canceled_runs).toBe(1);
 		expect(runById(t, running)?.status).toBe('canceled');
 		expect(issueById(t, runningIssue).attempt_count).toBe(1);
+		expect(effects.count()).toBe(4);
 	});
 
 	it('cancel_in_flight is rejected while enabling', async () => {
 		const t = world();
 		await expectFail(
-			() => updateSupervisorSettings(t.db, t.env, actor, { enabled: true, cancel_in_flight: true }),
+			() =>
+				updateSupervisorSettings(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+					enabled: true,
+					cancel_in_flight: true
+				}),
 			'invalid_field'
 		);
 	});
@@ -1278,6 +1773,7 @@ describe('resume (retention and delivery)', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			{ owned_runs: [] },
 			now
 		);
@@ -1303,6 +1799,7 @@ describe('resume (retention and delivery)', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			runId,
 			{
 				status: 'completed',
@@ -1311,7 +1808,7 @@ describe('resume (retention and delivery)', () => {
 				turn_count: 12,
 				conversation_turn_count: 12,
 				...body
-			} as Parameters<typeof finishRun>[4],
+			} as Parameters<typeof finishRun>[5],
 			NOW + 30
 		);
 	}
@@ -1356,12 +1853,13 @@ describe('resume (retention and delivery)', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			stalled.runId,
 			{
 				status: 'completed',
 				provider_session_id: 'sess-stalled',
 				workspace_path: '/tmp/ws/stalled'
-			} as Parameters<typeof finishRun>[4],
+			} as Parameters<typeof finishRun>[5],
 			NOW + 30
 		);
 		expect(resources(t)).toHaveLength(0);
@@ -1376,7 +1874,14 @@ describe('resume (retention and delivery)', () => {
 		const offIssue = addIssue(t);
 		const offRunner = addRunner(t, { name: 'no-resume' });
 		const offRun = addRun(t, { issueId: offIssue, runnerId: offRunner });
-		await pollRunner(t.db, t.env, await runnerRow(t, offRunner), { owned_runs: [] }, NOW + 1);
+		await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, offRunner),
+			TEST_NOOP_DISPATCH_EFFECTS,
+			{ owned_runs: [] },
+			NOW + 1
+		);
 		await finishAdvanced(t, offRunner, offIssue, offRun);
 		expect(resources(t)).toHaveLength(0);
 	});
@@ -1397,12 +1902,13 @@ describe('resume (retention and delivery)', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			runId,
 			{
 				status: 'completed',
 				provider_session_id: 'sess-abc',
 				workspace_path: '/tmp/ws/run1'
-			} as Parameters<typeof finishRun>[4],
+			} as Parameters<typeof finishRun>[5],
 			NOW + 30
 		);
 		expect(run.outcome).not.toBe('advanced');
@@ -1424,13 +1930,14 @@ describe('resume (retention and delivery)', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			runId,
 			{
 				status: 'failed',
 				error: 'usage limit reached',
 				judgment: 'rate_limited',
 				resume_at: NOW + 60 * 60 * 1000
-			} as Parameters<typeof finishRun>[4],
+			} as Parameters<typeof finishRun>[5],
 			NOW + 30
 		);
 		const runner = await runnerRow(t, runnerId);
@@ -1488,6 +1995,7 @@ describe('resume (retention and delivery)', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			{ owned_runs: [] },
 			NOW + 30 + 2 * 60 * 60 * 1000
 		);
@@ -1511,6 +2019,7 @@ describe('resume (retention and delivery)', () => {
 			t.db,
 			t.env,
 			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
 			{ owned_runs: [] },
 			NOW + 40
 		);

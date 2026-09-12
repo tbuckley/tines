@@ -1,3 +1,4 @@
+import { TEST_NOOP_DISPATCH_EFFECTS } from '$lib/server/api/test-dispatch-effects';
 import { describe, expect, it } from 'vitest';
 import type { ActorContext } from '../api/core';
 import { listIssues, resumeIssue, transitionIssue } from '../api/issues';
@@ -5,6 +6,7 @@ import { createTestDb, type TestDb } from '../api/test-db';
 import { localAdapter } from './adapter';
 import {
 	cancelRun,
+	cancelAssignedRuns,
 	claimRun,
 	endRun,
 	launchClaimedRun,
@@ -999,6 +1001,54 @@ describe('end judgment', () => {
 });
 
 describe('cancel', () => {
+	it('reports each durable assigned-run cancellation before a later failure', async () => {
+		const t = world();
+		const runner = addRunner(t);
+		addRun(t, { issueId: addIssue(t), runnerId: runner, status: 'assigned' });
+		addRun(t, { issueId: addIssue(t), runnerId: runner, status: 'assigned' });
+		const realBatch = t.env.DB.batch.bind(t.env.DB);
+		let batches = 0;
+		t.env.DB.batch = async (statements) => {
+			batches += 1;
+			// endRun owns one flip batch and one dependent-write batch. Fail the
+			// next run's flip, after the first win has returned and notified.
+			if (batches === 3) throw new Error('injected later cancellation failure');
+			return realBatch(statements);
+		};
+		let notifications = 0;
+		await expect(
+			cancelAssignedRuns(
+				t.db,
+				t.env,
+				{ userId: USER, runnerId: runner },
+				'runner paused',
+				() => notifications++,
+				NOW
+			)
+		).rejects.toThrow('injected later cancellation failure');
+		expect(notifications).toBe(1);
+		expect(runs(t).filter((run) => run.status === 'canceled')).toHaveLength(1);
+	});
+
+	it('reports no cancellation for zero matches or a lost terminal guard', async () => {
+		const t = world();
+		const runner = addRunner(t);
+		const issue = addIssue(t);
+		addRun(t, { issueId: issue, runnerId: runner, status: 'running', startedAt: NOW });
+		let notifications = 0;
+		expect(
+			await cancelAssignedRuns(
+				t.db,
+				t.env,
+				{ userId: USER, runnerId: runner },
+				'runner paused',
+				() => notifications++,
+				NOW
+			)
+		).toBe(0);
+		expect(notifications).toBe(0);
+	});
+
 	it('cancels a running run through the adapter and judges it like any end', async () => {
 		const t = world();
 		const fake = createFakeAdapter();
@@ -1024,19 +1074,21 @@ describe('resume and manual transitions', () => {
 	it('resume clears parking, resets the count, fires issue.resumed', async () => {
 		const t = world();
 		const issue = addIssue(t, { needsAttention: true, attemptCount: 3 });
-		const detail = await resumeIssue(t.db, t.env, sessionActor, issue);
+		const detail = await resumeIssue(t.db, t.env, sessionActor, TEST_NOOP_DISPATCH_EFFECTS, issue);
 		expect(detail.needs_attention).toBe(false);
 		expect(detail.attempt_count).toBe(0);
 		expect(eventsOfType(t, 'issue.resumed')).toHaveLength(1);
 		// Idempotent: resuming again records nothing new.
-		await resumeIssue(t.db, t.env, sessionActor, issue);
+		await resumeIssue(t.db, t.env, sessionActor, TEST_NOOP_DISPATCH_EFFECTS, issue);
 		expect(eventsOfType(t, 'issue.resumed')).toHaveLength(1);
 	});
 
 	it('any non-run-key transition un-parks and resets the count', async () => {
 		const t = world();
 		const issue = addIssue(t, { needsAttention: true, attemptCount: 3 });
-		await transitionIssue(t.db, t.env, sessionActor, issue, { action: 'Submit for review' });
+		await transitionIssue(t.db, t.env, sessionActor, TEST_NOOP_DISPATCH_EFFECTS, issue, {
+			action: 'Submit for review'
+		});
 		const row = issueById(t, issue);
 		expect(row.needs_attention).toBe(0);
 		expect(row.attempt_count).toBe(0);
@@ -1059,7 +1111,9 @@ describe('resume and manual transitions', () => {
 			apiKeyName: 'run key',
 			agentRunId: runs(t)[0].id as string
 		};
-		await transitionIssue(t.db, t.env, runKeyActor, issue, { action: 'Submit for review' });
+		await transitionIssue(t.db, t.env, runKeyActor, TEST_NOOP_DISPATCH_EFFECTS, issue, {
+			action: 'Submit for review'
+		});
 		expect(issueById(t, issue).attempt_count).toBe(2);
 		expect(issueById(t, other).attempt_count).toBe(0);
 	});

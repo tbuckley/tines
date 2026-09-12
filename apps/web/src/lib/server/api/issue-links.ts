@@ -1,6 +1,7 @@
 import type { AddIssueLinkRequest, IssueLink, IssueLinkKind } from '@tines/shared';
 import { sql, type CompiledQuery, type Kysely } from 'kysely';
 import { newId, type Database } from '$lib/server/db';
+import type { DispatchEffects } from '$lib/server/dispatch-effects';
 import { ApiFail, notFound, requireString, runAtomic, type ActorContext } from './core';
 import { assertWritable, issueProject } from './archive';
 import { eventInsert } from './events';
@@ -225,6 +226,7 @@ export async function addIssueLink(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
+	effects: DispatchEffects,
 	issueId: string,
 	body: AddIssueLinkRequest
 ): Promise<IssueLink> {
@@ -289,6 +291,7 @@ export async function addIssueLink(
 		throw new Error('Issue link batch returned a malformed receipt');
 	}
 	if (receipt.inserted === 1) {
+		effects.signalDispatch();
 		return { id, kind, source_issue_id: source.id, target_issue_id: target.id, created_at: now };
 	}
 	if (receipt.endpoints_owned !== 1) throw notFound();
@@ -363,6 +366,7 @@ export async function removeIssueLink(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
+	effects: DispatchEffects,
 	issueId: string,
 	linkId: string
 ): Promise<void> {
@@ -459,4 +463,5 @@ export async function removeIssueLink(
 			title: link.source_title
 		})
 	]);
+	effects.signalDispatch();
 }

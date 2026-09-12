@@ -7,6 +7,8 @@ import {
 	pickWorkflow,
 	printJson,
 	printList,
+	resolveProject,
+	resolveUrl,
 	resolveWorkflow,
 	table,
 	withCommon,
@@ -25,6 +27,19 @@ import {
 	type WorkflowState
 } from '@tines/shared';
 import type { Command } from 'commander';
+import {
+	askToInstall,
+	canonicalWorkflowPackage,
+	formatValidation,
+	formatWorkflowPackageReview,
+	localDocument,
+	readPackageSource,
+	readStrictObject,
+	readWorkflowPackagePlan,
+	recoverOrInstall,
+	saveWorkflowPackagePlan,
+	type WorkflowPackageChoices
+} from '../workflow-packages.js';
 
 // ---------------------------------------------------------------------------
 // JSON body input (inline argument, --file <path>, --file -, or piped stdin)
@@ -271,6 +286,7 @@ function printWorkflowDetail(wf: WorkflowResponse, lib: Library): void {
 
 export function register(program: Command): void {
 	const workflows = program.command('workflows').description('Manage the workflow library');
+	registerPackageCommands(workflows);
 
 	withList(workflows.command('list').description('List the workflow library')).action(
 		async (opts: ListOpts) => {
@@ -420,4 +436,193 @@ export function register(program: Command): void {
 		await api.deleteWorkflow(wf.id);
 		console.log(`deleted workflow "${wf.name}" (${wf.id})`);
 	});
+}
+
+const collect = (value: string, previous: string[]) => [...previous, value];
+
+async function resolveExportState(api: ApiClient, ref: string): Promise<string> {
+	const all = await listAll((page) => api.listWorkflows(page));
+	const exact = all.flatMap((workflow) => workflow.states).find((state) => state.id === ref);
+	if (exact) return exact.id;
+	if (ref.includes('/')) {
+		const separator = ref.indexOf('/');
+		const workflow = pickWorkflow(all, ref.slice(0, separator).trim());
+		const states = workflow.states.filter(
+			(state) => state.name === ref.slice(separator + 1).trim()
+		);
+		if (states.length === 1) return states[0].id;
+	}
+	const named = all.flatMap((workflow) => workflow.states).filter((state) => state.name === ref);
+	if (named.length === 1) return named[0].id;
+	if (named.length > 1) die(`state name "${ref}" is ambiguous; use an id`);
+	die(`no state named "${ref}"; use a state id or <workflow>/<state>`);
+}
+
+function registerPackageCommands(workflows: Command): void {
+	withCommon(
+		workflows
+			.command('export <workflow-id-or-unambiguous-name>')
+			.description('Export a canonical workflow package JSON document')
+			.option('--project <id-or-name>', 'source project for selected project-bound configuration')
+			.option('--schedule <id>', 'include this source schedule ID (repeatable)', collect, [])
+			.option(
+				'--tier <state-ref=tier>',
+				'include a state tier preference (repeatable)',
+				collect,
+				[]
+			)
+			.option('--project-routing', 'make every --tier selector project scoped')
+			.option('--inputs <file>', 'JSON object containing input declarations and text uses')
+	).action(
+		async (
+			ref: string,
+			opts: CommonOpts & {
+				project?: string;
+				schedule: string[];
+				tier: string[];
+				projectRouting?: boolean;
+				inputs?: string;
+			}
+		) => {
+			const api = client(opts);
+			const all = await listAll((page) => api.listWorkflows(page));
+			const workflow = pickWorkflow(all, ref);
+			const sourceProject = opts.project ? await resolveProject(api, opts.project) : undefined;
+			if ((opts.schedule.length || opts.projectRouting) && !sourceProject)
+				die('--project is required with --schedule or --project-routing');
+			const tiers = [];
+			for (const selector of opts.tier) {
+				const separator = selector.lastIndexOf('=');
+				if (separator < 1) die(`invalid --tier "${selector}"; expected <state-ref>=<tier>`);
+				const tier = selector.slice(separator + 1);
+				if (!['smartest', 'balanced', 'cheapest'].includes(tier))
+					die(`invalid tier "${tier}"; expected smartest, balanced, or cheapest`);
+				tiers.push({
+					state_id: await resolveExportState(api, selector.slice(0, separator)),
+					tier: tier as 'smartest' | 'balanced' | 'cheapest',
+					project_scoped: Boolean(opts.projectRouting)
+				});
+			}
+			const authoring = opts.inputs
+				? readStrictObject<{ inputs: never[]; text_uses: never[] }>(opts.inputs, 'inputs file')
+				: undefined;
+			const document = await api.exportWorkflowPackage(workflow.id, {
+				source_project_id: sourceProject?.id,
+				schedule_ids: opts.schedule,
+				tiers,
+				authoring
+			});
+			process.stdout.write(`${canonicalWorkflowPackage(document)}\n`);
+		}
+	);
+
+	withCommon(
+		workflows
+			.command('validate <file>')
+			.description('Validate a workflow package file (use - for stdin)')
+	).action(async (path: string, opts: CommonOpts) => {
+		const result = await client(opts).validateLibrary({ document_json: readPackageSource(path) });
+		if (opts.json) printJson(result);
+		else console.log(formatValidation(result));
+		if (!result.valid) process.exitCode = 1;
+	});
+
+	withCommon(
+		workflows
+			.command('preview <file>')
+			.description('Prepare and fully review a destination workflow package plan')
+			.option('--choices <file>', 'destination choices JSON file')
+			.option('--plan-out <file>', 'atomically save the signed plan for a later install')
+	).action(async (path: string, opts: CommonOpts & { choices?: string; planOut?: string }) => {
+		const raw = readPackageSource(path);
+		const choices = opts.choices
+			? readStrictObject<WorkflowPackageChoices>(opts.choices, 'choices file')
+			: undefined;
+		const plan = await client(opts).prepareWorkflowPackage({ document_json: raw, choices });
+		if (opts.planOut) saveWorkflowPackagePlan(opts.planOut, resolveUrl(opts), plan);
+		if (opts.json) printJson(plan);
+		else console.log(formatWorkflowPackageReview(plan));
+	});
+
+	withCommon(
+		workflows
+			.command('install <file>')
+			.description('Install one exactly reviewed workflow package plan')
+			.option('--choices <file>', 'destination choices JSON file (interactive preparation only)')
+			.option('--plan <file>', 'signed plan saved by workflows preview')
+			.option('--confirm <plan-digest>', 'exact reviewed plan digest (required outside a TTY)')
+	).action(
+		async (
+			path: string,
+			opts: CommonOpts & { choices?: string; plan?: string; confirm?: string }
+		) => {
+			if (path === '-' && process.stdin.isTTY)
+				die('"-" reads the package from stdin, but stdin is a terminal');
+			if (!opts.plan && !process.stdin.isTTY)
+				die(
+					'non-interactive install requires a separate prior preview with --plan-out, then --plan and --confirm'
+				);
+			if (opts.plan && opts.choices)
+				die('--choices cannot be used with --plan; the saved choices are authoritative');
+			if (path === '-' && !opts.plan)
+				die(
+					'stdin package input cannot also provide interactive confirmation; use preview --plan-out first'
+				);
+
+			const { raw, document } = await localDocument(path);
+			const apiBase = normalizeUrl(resolveUrl(opts));
+			const api = client(opts);
+			let plan;
+			let planPath = opts.plan;
+			if (planPath) {
+				const saved = readWorkflowPackagePlan(planPath);
+				if (normalizeUrl(saved.api_base) !== apiBase)
+					die(`plan belongs to ${saved.api_base}, not ${apiBase}`);
+				if (
+					saved.document_digest !== document.digest ||
+					saved.plan.document_digest !== document.digest ||
+					canonicalWorkflowPackage(saved.plan.document) !== canonicalWorkflowPackage(document)
+				)
+					die(
+						`package digest ${document.digest} does not match saved plan ${saved.document_digest}`
+					);
+				plan = saved.plan;
+			} else {
+				const choices = opts.choices
+					? readStrictObject<WorkflowPackageChoices>(opts.choices, 'choices file')
+					: undefined;
+				plan = await api.prepareWorkflowPackage({ document_json: raw, choices });
+				planPath = `${path}.plan.json`;
+				saveWorkflowPackagePlan(planPath, apiBase, plan);
+				console.error(`saved retryable signed plan to ${planPath}`);
+			}
+
+			if (opts.confirm !== undefined && opts.confirm !== plan.plan_digest)
+				die(`confirmation digest does not match reviewed plan ${plan.plan_digest}`);
+			if (!process.stdin.isTTY && opts.confirm !== plan.plan_digest)
+				die(`non-interactive install requires --confirm ${plan.plan_digest}`);
+			if (process.stdin.isTTY && opts.confirm === undefined) {
+				if (!(await askToInstall(plan))) die('installation declined');
+			} else {
+				process.stderr.write(`${formatWorkflowPackageReview(plan)}\n`);
+			}
+
+			const receipt = await recoverOrInstall(api, raw, plan);
+			if (opts.json) printJson(receipt);
+			else {
+				console.log(`installed workflow package (${receipt.id})`);
+				console.log(`plan: ${receipt.plan_digest}`);
+				for (const object of receipt.objects)
+					console.log(`  ${object.kind}: ${object.name} — ${object.href}`);
+			}
+		}
+	);
+}
+
+function normalizeUrl(value: string): string {
+	try {
+		return new URL(value).toString().replace(/\/$/, '');
+	} catch {
+		die(`invalid API base URL: ${value}`);
+	}
 }

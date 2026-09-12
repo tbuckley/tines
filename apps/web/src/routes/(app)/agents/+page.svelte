@@ -35,7 +35,7 @@
 	import IconX from '@tabler/icons-svelte/icons/x';
 	import { untrack } from 'svelte';
 	import { slide } from 'svelte/transition';
-	import { afterNavigate, invalidateAll, replaceState } from '$app/navigation';
+	import { afterNavigate, goto, invalidateAll } from '$app/navigation';
 	import { page } from '$app/state';
 	import { api } from '$lib/api';
 	import CancelRunDialog from '$lib/components/CancelRunDialog.svelte';
@@ -56,16 +56,44 @@
 	import type { FirstRunInputs } from '$lib/first-run';
 	import { prefersReducedMotion, queueAge, relativeTime } from '$lib/format';
 	import { addRunnerToGlobalRule, findGlobalRule } from '$lib/routing';
+	import {
+		agentsNavigationMessage,
+		canonicalSpendChanges,
+		patchSpendUrl
+	} from '$lib/spend-selection';
 
 	let { data } = $props();
 	const agentsView = $derived(
 		page.url.searchParams.get('agents_view') === 'spend' ? 'spend' : 'now'
 	);
+	let pendingAgentsUrl: URL | null = null;
+	let failedAgentsUrl = $state<URL | null>(null);
+	let navigationError = $state<string | null>(null);
+	let navigationGeneration = 0;
+	async function navigateAgents(url: URL, replaceState = false) {
+		const generation = ++navigationGeneration;
+		pendingAgentsUrl = url;
+		try {
+			await goto(url, { keepFocus: true, noScroll: true, replaceState, state: page.state });
+			if (generation === navigationGeneration) {
+				failedAgentsUrl = null;
+				navigationError = null;
+			}
+		} catch (error) {
+			if (generation === navigationGeneration) {
+				failedAgentsUrl = url;
+				navigationError = agentsNavigationMessage(error);
+			}
+		} finally {
+			if (generation === navigationGeneration) pendingAgentsUrl = null;
+		}
+	}
+	function patchAgents(values: Record<string, string | null>, replaceState = false) {
+		return navigateAgents(patchSpendUrl(pendingAgentsUrl ?? page.url, values), replaceState);
+	}
 	function chooseAgentsView(view: 'now' | 'spend') {
-		const url = new URL(page.url);
-		if (view === 'now') url.searchParams.delete('agents_view');
-		else url.searchParams.set('agents_view', view);
-		replaceState(url, {});
+		if (view === agentsView) return;
+		void patchAgents({ agents_view: view === 'now' ? null : 'spend' });
 	}
 
 	const dur = () => (prefersReducedMotion() ? 0 : 180);
@@ -829,23 +857,29 @@
 	let handledRuleUrl = '';
 	afterNavigate(() => {
 		const key = page.url.href;
-		if (key === handledRuleUrl || page.url.searchParams.get('new') !== 'rule') return;
-		handledRuleUrl = key;
-		const projectId = page.url.searchParams.get('project');
-		const project = projectId
-			? data.projects.find((candidate) => candidate.id === projectId)
-			: null;
-		// `new` and `project` are one-shot instructions, including when invalid.
-		// Consume them before either outcome so refresh never replays an error.
 		const clean = new URL(page.url);
-		clean.searchParams.delete('new');
-		clean.searchParams.delete('project');
-		replaceState(clean, page.state);
-		if (!project) {
-			errorMessage = 'That project is unavailable for routing.';
-			return;
+		let changed = false;
+		if (key !== handledRuleUrl && page.url.searchParams.get('new') === 'rule') {
+			handledRuleUrl = key;
+			const projectId = page.url.searchParams.get('project');
+			const project = projectId
+				? data.projects.find((candidate) => candidate.id === projectId)
+				: null;
+			// `new` and `project` are one-shot instructions, including when invalid.
+			clean.searchParams.delete('new');
+			clean.searchParams.delete('project');
+			changed = true;
+			if (project) openRuleCreate({ projectId: project.id });
+			else errorMessage = 'That project is unavailable for routing.';
 		}
-		openRuleCreate({ projectId: project.id });
+		if (agentsView === 'spend') {
+			const defaults = canonicalSpendChanges(clean, data.focusId);
+			for (const [name, value] of Object.entries(defaults)) {
+				clean.searchParams.set(name, value as string);
+				changed = true;
+			}
+		}
+		if (changed) void navigateAgents(clean, true);
 	});
 
 	function openRuleEdit(rule: RoutingRuleWithWarnings) {
@@ -1036,11 +1070,25 @@
 	>
 </nav>
 
+{#if navigationError}
+	<p
+		class="border-destructive/40 bg-destructive/10 text-destructive mb-4 rounded-md border px-4 py-2.5 text-sm"
+	>
+		Navigation failed: {navigationError}
+		{#if failedAgentsUrl}<button
+				type="button"
+				class="ml-2 underline"
+				onclick={() => void navigateAgents(failedAgentsUrl!)}>Retry</button
+			>{/if}
+	</p>
+{/if}
+
 {#if agentsView === 'spend'}
 	<SpendPanel
 		projects={data.projects}
 		archivedProjects={data.archivedProjects}
 		focusId={data.focusId}
+		navigate={patchAgents}
 	/>
 {:else}
 	{#if errorMessage}
