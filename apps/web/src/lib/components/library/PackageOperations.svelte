@@ -2,7 +2,13 @@
 	import type { PrepareWorkflowPackageResponse } from '@tines/shared';
 	import PackageText from './PackageText.svelte';
 
-	let { plan }: { plan: PrepareWorkflowPackageResponse } = $props();
+	let {
+		plan,
+		onToken
+	}: {
+		plan: PrepareWorkflowPackageResponse;
+		onToken: (id: string, trigger: HTMLElement) => void;
+	} = $props();
 	const patchTitle = (recordId: string, field: string) =>
 		`${plan.resolved.names[recordId] ?? recordId} · ${field.replaceAll('_', ' ')}`;
 	const occurrenceCount = (patch: (typeof plan.resolved.patches)[number]) =>
@@ -50,6 +56,16 @@
 							<p class="text-muted-foreground mb-1 text-xs font-medium">Installed value</p>
 							<PackageText text={patch.rendered} format="text" />
 						</div>
+					</div>
+					<div class="mt-2 flex flex-wrap gap-2">
+						{#each patch.uses as use (use.id)}
+							<button
+								type="button"
+								class="text-primary min-h-10 text-xs underline"
+								onclick={(event) => onToken(use.input_id, event.currentTarget)}
+								>Show destination input for exact use {use.id}</button
+							>
+						{/each}
 					</div>
 				</article>
 			{/each}

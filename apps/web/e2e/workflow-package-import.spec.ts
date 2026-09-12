@@ -121,7 +121,9 @@ test('reviews, confirms and installs an independent project-free package through
 	await expect(page.getByText('Original', { exact: true }).first()).toBeVisible();
 	await expect(page.getByText('Installed value', { exact: true }).first()).toBeVisible();
 	await expect(page.getByRole('button', { name: 'Edit candidate text' })).toHaveCount(0);
-	const exactUse = page.getByRole('button', { name: /Show declaration for/ }).first();
+	const exactUse = page
+		.getByRole('button', { name: /Show destination input for exact use/ })
+		.first();
 	await exactUse.click();
 	await expect(page.getByRole('button', { name: 'Back to exact use' })).toBeVisible();
 	await page.keyboard.press('Escape');
@@ -180,6 +182,7 @@ test('retains exact-plan recovery for an explicit unknown outcome across reload'
 	await gotoHydrated(page, '/workflows/import');
 	await page.getByLabel('Workflow package file').setInputFiles(packagePath);
 	await page.getByRole('button', { name: 'Prepare installation' }).click();
+	await expect(page.getByRole('heading', { name: 'Complete installation plan' })).toBeVisible();
 	for (const checkbox of await page.getByRole('checkbox', { name: /I reviewed/ }).all())
 		await checkbox.check();
 	await page.getByRole('checkbox', { name: /I confirm exact plan/ }).check();
@@ -216,6 +219,7 @@ test('retains exact-plan recovery for an explicit unknown outcome across reload'
 test('links field and capability failures to their normal destination pages', async ({ page }) => {
 	await gotoHydrated(page, '/workflows/import');
 	await page.getByLabel('Workflow package file').setInputFiles(missingWorkflowPath);
+	await page.getByLabel('Filing label').selectOption({ label: 'Create “qa”' });
 	await page.getByRole('button', { name: 'Prepare installation' }).click();
 	await expect(page.getByRole('link', { name: 'Create a destination workflow' })).toHaveAttribute(
 		'href',

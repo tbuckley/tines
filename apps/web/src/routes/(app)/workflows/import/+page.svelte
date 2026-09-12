@@ -417,7 +417,7 @@
 						reviewed = next;
 					}}
 					onToken={focusInput}
-				/><PackageOperations {plan} />{/if}
+				/><PackageOperations {plan} onToken={focusInput} />{/if}
 			<PackageInputs
 				document={document_}
 				{choices}
