@@ -23,7 +23,10 @@
 	import { Textarea } from '$lib/components/ui/textarea/index.js';
 
 	let { data } = $props();
-	let candidate = $state<WorkflowPackageDocument>(structuredClone(data.candidate));
+	function initialCandidate(): WorkflowPackageDocument {
+		return structuredClone(data.candidate);
+	}
+	let candidate = $state<WorkflowPackageDocument>(initialCandidate());
 	let sourceProjectId = $state('');
 	let selectedSchedules = $state<string[]>([]);
 	let tierSelections = $state<Record<string, '' | ModelTier>>({});
