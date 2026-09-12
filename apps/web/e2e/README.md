@@ -207,3 +207,19 @@ one exists, so the walk is **one-way**: no other spec may depend on Dana being
 run-free, and new cases in that file must sort after the walk. Alice always has
 seeded runs and Bob is run-free but is used by the explainer specs, which is why
 the walk gets an account of its own.
+
+The Dana daemon must use a productive harness for any work whose success or run count is
+asserted. A custom harness that only exits zero still leaves the issue eligible: the
+supervisor correctly judges it stalled and retries it up to the attempt limit.
+`first-run-checklist.spec.ts` therefore moves each issue with the delivered run key and
+waits for one terminal `completed` / `advanced` run before continuing the serial walk.
+
+Stress this one-way journey with fresh seeded servers, not `--repeat-each`:
+
+```sh
+CI=1 pnpm test:e2e first-run-checklist.spec.ts
+for iteration in $(seq 1 10); do
+	CI=1 E2E_SKIP_BUILD=1 pnpm test:e2e first-run-checklist.spec.ts \
+		> "first-run-stress-${iteration}.log" 2>&1 || exit 1
+done
+```
