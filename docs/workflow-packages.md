@@ -1,6 +1,28 @@
 # Workflow package files
 
-Implementation status: the foundation and CLI provide v3 whole-library transfer, workflow closure export, file validation, signed destination preparation, atomic install, durable receipt recovery, and the `tines workflows export|validate|preview|install` file workflow. The browser now authors, reviews, validates, and downloads workflow packages; browser file installation and integrated real-run acceptance remain successor work. Whole-library import remains best effort; it is not an atomic workflow installation.
+Implementation status: the foundation and CLI provide v3 whole-library transfer, workflow closure export, file validation, signed destination preparation, atomic install, durable receipt recovery, and the `tines workflows export|validate|preview|install` file workflow. The browser authors, reviews, validates, downloads, installs, and recovers workflow packages. Integrated real-run acceptance remains successor work. Whole-library import remains best effort; it is not an atomic workflow installation.
+
+## Install a package in the browser
+
+Open **Workflows → Install package** (also linked from **Settings → Export / import**) and choose
+the downloaded JSON file. Tines validates local bytes first. Legacy and whole-library files are
+directed to the existing best-effort library importer; workflow-profile files use the atomic flow.
+
+Resolve each declared destination value, edit the proposed names for the independent main and
+dependency copies, and opt into any schedules or routing rules. Schedules are unchecked by default
+and install paused. A destination project is only required by selected project-bound automation or
+a declared text value that is actually used. Preparation shows the full resolved package, exact
+before/after substitutions, every create/reuse/skip operation, and destination runner/model support.
+
+Review every included skill and repository declaration, then confirm the exact prepared plan digest.
+Changing any value invalidates that plan and requires a new preparation and confirmation. A stale or
+expired plan creates nothing. A definite server failure keeps the same plan available to retry; a
+lost response is different: use **Check result** first. Recovery is kept per browser tab and scoped to
+the account, destination, and plan. A missing receipt may mean the request is still in flight, so it
+is never treated as proof of rollback or used to prepare a replacement automatically.
+
+The receipt links every created object. Installed workflows are independent copies, selected
+schedules remain paused with zero runs, no issue is launched, and project defaults are unchanged.
 
 ## Export and validate a workflow
 
