@@ -45,9 +45,11 @@
 	);
 	/**
 	 * One list, so the selected option exists in the same update that applies
-	 * the select's value: an explicit workflow rendered from a separate `{#if}`
-	 * arrives after the value is set, and the control silently falls back to
-	 * All — which is exactly the correction a failed or loading scope needs.
+	 * the select's value. This is defence, not a repair a test pins: reverting
+	 * it to a separate `{#if}` option leaves the Spend specs green, but the
+	 * fallback-to-All failure mode it guards against is silent when it happens,
+	 * and a loading or failed scope is exactly where the control must hold the
+	 * selection the operator has to correct.
 	 */
 	const workflowChoices = $derived([
 		{ value: 'all', label: 'All workflows' },
@@ -127,6 +129,11 @@
 			return;
 		}
 		untrack(() => void load(false, selection));
+		// Deliberate defence with no browser-observable effect: a remounted
+		// panel starts from `requestId = 0` and refetches anyway, so a held
+		// response from the destroyed instance cannot win. Bumping the
+		// generation on teardown keeps that true if the component ever gains
+		// shared or reused state.
 		return () => {
 			requestId++;
 		};
