@@ -174,7 +174,9 @@ const worker = spawn(
 		'--var',
 		`BETTER_AUTH_URL:${baseUrl}`,
 		'--var',
-		'SECRET_ENCRYPTION_KEY:usage-scale-local-only'
+		'SECRET_ENCRYPTION_KEY:usage-scale-local-only',
+		'--var',
+		'USAGE_SCALE_SQL_TRACE:1'
 	],
 	{ cwd: webDir, stdio: ['ignore', 'pipe', 'pipe'] }
 );
@@ -184,16 +186,24 @@ worker.stderr.on('data', (chunk) => (workerLog += chunk));
 let workerEvidence;
 try {
 	await waitForWorker(baseUrl, worker);
+	const countQueriesSince = async (start) => {
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		return (workerLog.slice(start).match(/\[USAGE_SCALE_SQL\]/g) ?? []).length;
+	};
 	const query = new URLSearchParams({
 		from: new Date(fromMs).toISOString(),
 		to: new Date(toMs).toISOString(),
 		by: 'tier'
 	});
 	const started = performance.now();
+	const aggregateTraceStart = workerLog.length;
 	const response = await fetch(`${baseUrl}/api/v1/usage?${query}`, {
 		headers: { authorization: `Bearer ${apiKey}` }
 	});
 	const body = await response.json();
+	const aggregateWorkerQueries = await countQueriesSince(aggregateTraceStart);
+	if (aggregateWorkerQueries > 49)
+		throw new Error(`worker aggregate query bound exceeded: ${aggregateWorkerQueries} > 49`);
 	if (!response.ok) throw new Error(JSON.stringify(body));
 	if (body.scope_total.finalized_run_count !== size)
 		throw new Error(
@@ -251,11 +261,17 @@ try {
 		limit: '50'
 	});
 	const evidencePages = [];
+	const evidenceWorkerQueries = [];
 	for (let page = 0; page < 2; page++) {
+		const evidenceTraceStart = workerLog.length;
 		const evidenceResponse = await fetch(`${baseUrl}/api/v1/runs?${evidenceQuery}`, {
 			headers: { authorization: `Bearer ${apiKey}` }
 		});
 		const evidence = await evidenceResponse.json();
+		const evidenceQueryCount = await countQueriesSince(evidenceTraceStart);
+		if (evidenceQueryCount > 30)
+			throw new Error(`worker evidence query bound exceeded: ${evidenceQueryCount} > 30`);
+		evidenceWorkerQueries.push(evidenceQueryCount);
 		if (!evidenceResponse.ok) throw new Error(JSON.stringify(evidence));
 		evidencePages.push({
 			items: evidence.items.map((item) => item.id),
@@ -357,6 +373,10 @@ try {
 			max_cost_usd: expectedMax
 		},
 		groups_reconciled: true,
+		measured_worker_queries: {
+			aggregate: aggregateWorkerQueries,
+			evidence_pages: evidenceWorkerQueries
+		},
 		source_cli_exact_match: true,
 		source_cli_evidence_items: cliEvidenceItems,
 		source_cli_evidence_resummed_cost: cliEvidenceCost,

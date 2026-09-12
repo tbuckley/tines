@@ -526,7 +526,16 @@ const dbs = new WeakMap<object, Kysely<Database>>();
 export function getDb(env: Env): Kysely<Database> {
 	let db = dbs.get(env.DB);
 	if (!db) {
-		db = new Kysely<Database>({ dialect: new ConcurrentD1Dialect({ database: env.DB }) });
+		db = new Kysely<Database>({
+			dialect: new ConcurrentD1Dialect({ database: env.DB }),
+			...(env.USAGE_SCALE_SQL_TRACE === '1'
+				? {
+						log(event) {
+							if (event.level === 'query') console.log('[USAGE_SCALE_SQL]');
+						}
+					}
+				: {})
+		});
 		dbs.set(env.DB, db);
 	}
 	return db;
