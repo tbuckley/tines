@@ -13,7 +13,7 @@ import {
 	type UsagePeriodInput,
 	type UsageReport
 } from '@tines/shared';
-import type { Kysely } from 'kysely';
+import { sql, type Kysely, type RawBuilder } from 'kysely';
 import type { Database } from '$lib/server/db';
 
 export interface UsageRequest extends UsagePeriodInput, ResolvedUsageFilters {
@@ -143,6 +143,23 @@ function filterValue(actual: string | null, requested: string | undefined): bool
 	);
 }
 
+function pendingMatchPredicate(filters: ResolvedUsageFilters): RawBuilder<boolean> {
+	const conditions: RawBuilder<boolean>[] = [];
+	const identity = (column: RawBuilder<unknown>, requested: string | undefined) => {
+		if (requested === undefined) return;
+		conditions.push(
+			requested === 'unknown'
+				? sql<boolean>`${column} IS NULL`
+				: sql<boolean>`${column} = ${requested}`
+		);
+	};
+	identity(sql`COALESCE(start_workflow.id, issue.workflow_id)`, filters.workflow);
+	identity(sql`agent_run.state_id_at_start`, filters.state);
+	identity(sql`agent_run.runner_id`, filters.runner);
+	identity(sql`agent_run.tier`, filters.tier);
+	return conditions.length ? sql<boolean>`(${sql.join(conditions, sql` AND `)})` : sql<boolean>`1`;
+}
+
 function matches(
 	row: UsageRow,
 	filters: ResolvedUsageFilters,
@@ -195,8 +212,8 @@ export async function getUsage(
 		.where('agent_run.ended_at', '>=', period.from)
 		.where('agent_run.ended_at', '<', period.to);
 	if (filters.project && filters.project !== 'unknown')
-		q = q.where('project.id', '=', filters.project);
-	if (filters.project === 'unknown') q = q.where('project.id', 'is', null);
+		q = q.where('issue.project_id', '=', filters.project);
+	if (filters.project === 'unknown') q = q.where('issue.project_id', 'is', null);
 	const scope = createUsageAccumulator();
 	const grouped = new Map<
 		string,
@@ -230,24 +247,18 @@ export async function getUsage(
 			eb.or([eb('agent_run.ended_at', 'is', null), eb('agent_run.ended_at', '>=', period.to)])
 		);
 	if (filters.project && filters.project !== 'unknown')
-		pendingQ = pendingQ.where('project.id', '=', filters.project);
-	if (filters.project === 'unknown') pendingQ = pendingQ.where('project.id', 'is', null);
+		pendingQ = pendingQ.where('issue.project_id', '=', filters.project);
+	if (filters.project === 'unknown') pendingQ = pendingQ.where('issue.project_id', 'is', null);
 	const pendingFilters = { ...filters, outcome: undefined, accounting_status: undefined };
-	const pendingScope = await pendingQ
+	const pendingCounts = await pendingQ
 		.clearSelect()
-		.select(({ fn }) => fn.countAll<number>().as('count'))
+		.select(({ fn }) => [
+			fn.countAll<number>().as('scope_count'),
+			sql<number>`COALESCE(SUM(CASE WHEN ${pendingMatchPredicate(pendingFilters)} THEN 1 ELSE 0 END), 0)`.as(
+				'matching_count'
+			)
+		])
 		.executeTakeFirstOrThrow();
-	const hasPendingAnalyticalFilters = Boolean(
-		pendingFilters.workflow || pendingFilters.state || pendingFilters.runner || pendingFilters.tier
-	);
-	let pendingMatchingCount = Number(pendingScope.count);
-	if (hasPendingAnalyticalFilters) {
-		pendingMatchingCount = 0;
-		await scanAll(pendingQ, 'agent_run.created_at', (row) => {
-			if (matches(row, { ...pendingFilters, project: undefined }, undefined))
-				pendingMatchingCount++;
-		});
-	}
 	const matching = createUsageAccumulator();
 	for (const group of grouped.values()) mergeUsageCounters(matching, group.accumulator);
 	return {
@@ -264,8 +275,8 @@ export async function getUsage(
 		groups,
 		workflow_options: [...workflowOptions.values()],
 		pending: {
-			scope_count: Number(pendingScope.count),
-			matching_count: pendingMatchingCount,
+			scope_count: Number(pendingCounts.scope_count),
+			matching_count: Number(pendingCounts.matching_count),
 			basis: 'created_before_cutoff_not_ended_before_cutoff',
 			unapplied_filters: [
 				...(filters.outcome ? ['outcome' as const] : []),
