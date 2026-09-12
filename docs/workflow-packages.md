@@ -1,6 +1,6 @@
 # Workflow package files
 
-Implementation status: the foundation and CLI provide v3 whole-library transfer, workflow closure export, file validation, signed destination preparation, atomic install, durable receipt recovery, and the `tines workflows export|validate|preview|install` file workflow. Browser package authoring/install and integrated real-run acceptance remain successor work. Whole-library import remains best effort; it is not an atomic workflow installation.
+Implementation status: the foundation and CLI provide v3 whole-library transfer, workflow closure export, file validation, signed destination preparation, atomic install, durable receipt recovery, and the `tines workflows export|validate|preview|install` file workflow. The browser now authors, reviews, validates, and downloads workflow packages; browser file installation and integrated real-run acceptance remain successor work. Whole-library import remains best effort; it is not an atomic workflow installation.
 
 ## Export and validate a workflow
 
@@ -38,6 +38,29 @@ input substitution; destination values belong in a choices file used at preview 
 Export accepts `source_project_id=<owned ID>`, repeated `schedule_id=<ID>`, and repeated `tier=<JSON>`. Each tier selector is `{state_id:<source state ID>,tier:"smartest"|"balanced"|"cheapest",project_scoped?:boolean}`. The source project is required for selected schedules or project-scoped tiers; schedules must belong to that project and a bundled workflow. Merely selecting a project exports no schedules. Source runner IDs and live scheduling state never travel. Recurrence retains preset-or-cron intent, timezone, and follow-initial versus explicit starting state. Selected project-bound configuration automatically declares a `destination_project` input with no default. Destination selection and optional activation are separate installation concerns.
 
 `authoring=<JSON>` can supply `{inputs:[...],text_uses:[...]}` for already-tokenized source fields. IDs in text uses refer to the exported candidate's local records, so inspect a first export before authoring declarations. `workflow:1` is the main workflow. Declared inputs substitute only the exact registered token in the exact registered field; arbitrary prose and schedule runtime tokens remain literal. For browser-local content editing and CLI file authoring, use the same portable contract rather than mutating the source workflow. See [FORMAT_V3](../specs/library/FORMAT_V3.md) and its executable examples for exact shapes, escaping and limits.
+
+### Browser authoring and review
+
+Open a workflow and choose **Export package**. The browser route shows the complete main and
+inheritance workflow graph, gates, ordered state-scoped context, every skill file and repository
+declaration, destination prerequisites, and explicitly selected automation. Source project,
+schedule, and tier preferences are opt-in. Rebuilding from source warns before discarding any
+candidate-only edits. Eligible and selected schedules expose their complete templates, recurrence,
+timezone, workflow and start-state identities, and prior-issue gate before download.
+
+The input editor adds typed declarations and registers an exact token at the selected range of one
+editable candidate field. It never searches and replaces matching prose, edits the private source,
+or recursively expands a destination value. Token buttons return to their declaration and Escape
+returns focus to the passage. Prompts and Markdown files render as inert Markdown: images become
+labelled placeholders that are never fetched, and an escaped literal such as `\{{key:default}}`
+renders as ordinary text rather than a substitutable use, so the proof marks exactly the
+occurrences that installation replaces. Rebuilding from source drops any candidate-only input
+selection. Required skill and repository declarations must each be reviewed
+again after a candidate change. **Validate & download** sends the exact candidate through the
+shared validator and downloads the same canonical JSON bytes emitted by the CLI. The page fetches
+neither repositories nor other external package dependencies, and download does not install or
+publish anything. If the candidate or a required review changes while validation is pending, the
+older result is discarded and no file is downloaded.
 
 ## Whole-library backups and transfer
 
