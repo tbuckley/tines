@@ -1,15 +1,32 @@
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
 	canonicalizeLibraryValue,
 	parseLibraryV3Document,
+	type ContextItem,
+	type PrepareWorkflowPackageResponse,
 	type WorkflowPackageDocument
 } from '@tines/shared';
 import { expect, test } from '@playwright/test';
-import { ALICE } from './constants.mjs';
+import { ALICE, BASE_URL, BOB } from './constants.mjs';
 import { apiClient, body, DESKTOP, gotoHydrated, PHONE, runId, signIn } from './helpers';
 
 const name = `Browser package ${runId}`;
 const literal = 'The ordinary prose marker stays exactly unchanged.';
 let workflowId: string;
+const CLI_DIR = fileURLToPath(new URL('../../../packages/cli', import.meta.url));
+const TSX = join(CLI_DIR, 'node_modules', '.bin', 'tsx');
+const CLI = join(CLI_DIR, 'src', 'index.ts');
+
+function cli(args: string[]): string {
+	return execFileSync(TSX, [CLI, ...args, '--url', BASE_URL, '--api-key', BOB.apiKey], {
+		encoding: 'utf8',
+		env: { ...process.env, TINES_API_URL: 'https://ambient-must-not-be-used.invalid' }
+	});
+}
 
 test.beforeAll(async ({ playwright }) => {
 	const request = await playwright.request.newContext({ baseURL: test.info().project.use.baseURL });
@@ -67,7 +84,8 @@ test.beforeAll(async ({ playwright }) => {
 test.beforeEach(async ({ context }) => signIn(context, ALICE.sessionToken));
 
 test('authors an exact declared use and downloads the reviewed canonical package', async ({
-	page
+	page,
+	request
 }) => {
 	await page.setViewportSize(DESKTOP);
 	const external = new URL('https://github.com/tbuckley/tines').host;
@@ -122,6 +140,51 @@ test('authors an exact declared use and downloads the reviewed canonical package
 	);
 	expect(prompt?.kind === 'prompt' ? prompt.body : '').toContain(literal);
 	expect(prompt?.kind === 'prompt' ? prompt.body : '').toContain('{{not_declared:value}}');
+
+	// The browser download is the CLI's input without conversion. Install it into
+	// the independent Bob account and inspect the copied prompt, proving that only
+	// the declared exact use is resolved.
+	const directory = mkdtempSync(join(tmpdir(), 'tines-browser-package-'));
+	const packagePath = join(directory, 'package.json');
+	const choicesPath = join(directory, 'choices.json');
+	const planPath = join(directory, 'plan.json');
+	writeFileSync(packagePath, source);
+	writeFileSync(
+		choicesPath,
+		JSON.stringify({ workflow_names: { [document.main_workflow_id]: `${name} installed` } })
+	);
+	const plan = JSON.parse(
+		cli([
+			'workflows',
+			'preview',
+			packagePath,
+			'--choices',
+			choicesPath,
+			'--plan-out',
+			planPath,
+			'--json'
+		])
+	) as PrepareWorkflowPackageResponse;
+	cli([
+		'workflows',
+		'install',
+		packagePath,
+		'--plan',
+		planPath,
+		'--confirm',
+		plan.plan_digest,
+		'--json'
+	]);
+	const installedPrompt = plan.operations.find(
+		(operation) => operation.kind === 'prompt' && operation.name === 'instructions'
+	);
+	expect(installedPrompt?.id).toBeTruthy();
+	const copied = await body<ContextItem>(
+		await apiClient(request, BOB.apiKey).get(`/api/v1/context/${installedPrompt!.id}`)
+	);
+	expect(copied.body).toContain('Replace TARGET only.');
+	expect(copied.body).toContain(literal);
+	expect(copied.body).toContain('{{not_declared:value}}');
 	expect(externalRequests).toEqual([]);
 	await page.screenshot({
 		path: test.info().outputPath('workflow-package-desktop.png'),
