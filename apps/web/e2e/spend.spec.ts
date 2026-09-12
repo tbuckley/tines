@@ -1,8 +1,8 @@
 import { expect, test, type Page } from '@playwright/test';
 import { SPEND } from './constants.mjs';
 import { d1 } from './d1';
-import { spendRearmStatement } from './spend-seed.mjs';
 import { gotoHydrated, signIn } from './helpers';
+import { armLedgerDays, utcDate } from './spend-arm';
 
 /**
  * The pending fixture is the only seeded row the ordinary supervisor sweep can
@@ -16,36 +16,6 @@ function armPendingRun() {
 	d1(
 		`UPDATE agent_run SET status = 'running', outcome = NULL, ended_at = NULL, started_at = ${now}, created_at = ${now} WHERE id = 'run_e2e_spend_pending'`
 	);
-}
-
-/**
- * The day-relative ledger rows are seeded against the UTC day at *seed* time,
- * but every assertion below names a day relative to the clock at *assertion*
- * time, and the API resolves `window=today` against the request clock. A suite
- * that crosses UTC midnight between the two makes them disagree by a day —
- * which is exactly how CI run 34659806292 went red. `armLedgerDays` puts both
- * on one anchor: it first steps past an imminent rollover (so the anchor
- * cannot expire mid-test), rewrites the rows from that anchor, and returns it
- * for `utcDate` to name days from.
- */
-const ROLLOVER_MARGIN_MS = 3 * 60 * 1000;
-
-async function armLedgerDays(): Promise<number> {
-	const untilMidnight = 86_400_000 - (Date.now() % 86_400_000);
-	if (untilMidnight < ROLLOVER_MARGIN_MS) {
-		test.setTimeout(untilMidnight + 90_000);
-		await new Promise((resolve) => setTimeout(resolve, untilMidnight + 1_000));
-	}
-	const anchor = Date.now();
-	d1(spendRearmStatement(anchor));
-	return anchor;
-}
-
-function utcDate(offsetDays: number, anchor = Date.now()) {
-	const date = new Date(anchor);
-	date.setUTCHours(0, 0, 0, 0);
-	date.setUTCDate(date.getUTCDate() + offsetDays);
-	return date.toISOString().slice(0, 10);
 }
 
 async function selectProject(page: Page, name: string) {

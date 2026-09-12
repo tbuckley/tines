@@ -1,22 +1,7 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import { SPEND } from './constants.mjs';
-import { d1 } from './d1';
-import { spendRearmStatement } from './spend-seed.mjs';
 import { gotoHydrated, signIn } from './helpers';
-
-/** Seed and assertion share one anchor; see spend.spec.ts for why. */
-function armLedgerDays(): number {
-	const anchor = Date.now();
-	d1(spendRearmStatement(anchor));
-	return anchor;
-}
-
-function utcDate(offsetDays: number, anchor: number) {
-	const date = new Date(anchor);
-	date.setUTCHours(0, 0, 0, 0);
-	date.setUTCDate(date.getUTCDate() + offsetDays);
-	return date.toISOString().slice(0, 10);
-}
+import { armLedgerDays, utcDate } from './spend-arm';
 
 const projectTotal = (page: Page) => page.locator('.statement strong').first();
 
@@ -43,13 +28,42 @@ async function tabTo(page: Page, locator: Locator, max = 60) {
 	throw new Error(`Tab order never reached ${locator}`);
 }
 
+/**
+ * Selects a `<select>` option by typing its label, with focus already on the
+ * control. Arrow keys cannot do this portably: on Linux/Windows Chromium
+ * ArrowDown moves a focused select's selection, but on macOS it is popup-only
+ * and leaves the value untouched — which is how the earlier version of the
+ * project step passed vacuously on macOS while failing on CI's Linux. Blink's
+ * type-ahead is the one keyboard gesture both platforms treat as a direct
+ * selection (the space in "Spend Beta" is consumed by the search rather than
+ * opening the popup, because the buffer is already non-empty). That buffer
+ * only clears after about a second of idle, so a second selection waits it out
+ * first; the target must differ from the current value, so the step can never
+ * assert what is already true.
+ */
+const TYPEAHEAD_RESET_MS = 1_200;
+
+async function typeAheadSelect(page: Page, select: Locator, option: { id: string; name: string }) {
+	expect(await select.inputValue()).not.toBe(option.id);
+	for (let attempt = 0; ; attempt++) {
+		await page.waitForTimeout(TYPEAHEAD_RESET_MS);
+		await page.keyboard.type(option.name);
+		try {
+			await expect(select).toHaveValue(option.id, { timeout: 2_000 });
+			return;
+		} catch (error) {
+			if (attempt > 0) throw error;
+		}
+	}
+}
+
 test.describe('Agents Spend keyboard and layout', () => {
 	test.beforeEach(async ({ context }) => signIn(context, SPEND.sessionToken));
 
 	test('drives tabs, filters, Apply, sort, Refresh and expansion from the keyboard', async ({
 		page
 	}) => {
-		const anchor = armLedgerDays();
+		const anchor = await armLedgerDays();
 		const requests: URL[] = [];
 		page.on('request', (request) => {
 			if (request.url().includes('/api/v1/usage?')) requests.push(new URL(request.url()));
@@ -65,14 +79,23 @@ test.describe('Agents Spend keyboard and layout', () => {
 		await expect(projectTotal(page)).toHaveText('$5.00');
 
 		// Project select: keyboard only, and the change must reach the request.
+		// Both directions are driven to a *different* project than the one already
+		// selected, with independently expected totals (Beta's 7d ledger is its
+		// single $11 run; its $13 run is ten days old), so neither step can pass
+		// without a keyboard-driven change reaching the wire.
 		const project = page.getByLabel('Spend project');
 		await tabTo(page, project);
-		const next = await project.evaluate((el) => (el as HTMLSelectElement).options[1].value);
-		await page.keyboard.press('ArrowDown');
-		await expect(project).toHaveValue(next);
-		await expect.poll(() => requests.at(-1)?.searchParams.get('project')).toBe(next);
-		await page.keyboard.press('ArrowUp');
-		await expect(project).toHaveValue(SPEND.projects.alpha.id);
+		const beforeBeta = requests.length;
+		await typeAheadSelect(page, project, SPEND.projects.beta);
+		await expect.poll(() => requests.length).toBeGreaterThan(beforeBeta);
+		await expect
+			.poll(() => requests.at(-1)?.searchParams.get('project'))
+			.toBe(SPEND.projects.beta.id);
+		await expect(projectTotal(page)).toHaveText('$11.00');
+		await typeAheadSelect(page, project, SPEND.projects.alpha);
+		await expect
+			.poll(() => requests.at(-1)?.searchParams.get('project'))
+			.toBe(SPEND.projects.alpha.id);
 		await expect(projectTotal(page)).toHaveText('$5.00');
 
 		// Period, and focus is restored to the control that was activated.
@@ -127,7 +150,7 @@ test.describe('Agents Spend keyboard and layout', () => {
 	});
 
 	test('retries a failed load from the keyboard', async ({ page }) => {
-		armLedgerDays();
+		await armLedgerDays();
 		let calls = 0;
 		await page.route('**/api/v1/usage?**', async (route) => {
 			if (++calls === 1)
@@ -148,7 +171,7 @@ test.describe('Agents Spend keyboard and layout', () => {
 		{ name: 'narrow', width: 320, height: 700 }
 	]) {
 		test(`stays usable and unclipped at ${viewport.width}px`, async ({ page }) => {
-			const anchor = armLedgerDays();
+			const anchor = await armLedgerDays();
 			await page.setViewportSize({ width: viewport.width, height: viewport.height });
 			await gotoHydrated(page, nowUrlWithSpendScope({ agents_view: 'spend', spend_window: '30d' }));
 			await expect(projectTotal(page)).toHaveText('$12.00');
@@ -206,7 +229,7 @@ test.describe('Agents Spend under normal motion', () => {
 	test.beforeEach(async ({ context }) => signIn(context, SPEND.sessionToken));
 
 	test('sorts with Unknown last while transitions run', async ({ page }) => {
-		armLedgerDays();
+		await armLedgerDays();
 		await gotoHydrated(page, nowUrlWithSpendScope({ agents_view: 'spend', spend_window: '30d' }));
 		const rows = page.locator('.groups article');
 		await expect(rows.nth(0)).toContainText('Ship');

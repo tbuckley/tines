@@ -1,22 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 import { SPEND } from './constants.mjs';
-import { d1 } from './d1';
-import { spendRearmStatement } from './spend-seed.mjs';
 import { gotoHydrated, signIn } from './helpers';
-
-/** Seed and assertion share one anchor; see spend.spec.ts for why. */
-function armLedgerDays(): number {
-	const anchor = Date.now();
-	d1(spendRearmStatement(anchor));
-	return anchor;
-}
-
-function utcDate(offsetDays: number, anchor: number) {
-	const date = new Date(anchor);
-	date.setUTCHours(0, 0, 0, 0);
-	date.setUTCDate(date.getUTCDate() + offsetDays);
-	return date.toISOString().slice(0, 10);
-}
+import { armLedgerDays, utcDate } from './spend-arm';
 
 const projectTotal = (page: Page) => page.locator('.statement strong').first();
 
@@ -47,7 +32,7 @@ test.describe('Agents Spend selection matrix', () => {
 	test('reloads an incomplete Custom URL without a request and accepts a correction', async ({
 		page
 	}) => {
-		const anchor = armLedgerDays();
+		const anchor = await armLedgerDays();
 		const requests = usageRequests(page);
 		await gotoHydrated(page, spendUrl({ spend_window: 'custom', spend_from: utcDate(-2, anchor) }));
 		await expect(page.locator('.spend .error')).toContainText(
@@ -64,7 +49,7 @@ test.describe('Agents Spend selection matrix', () => {
 	});
 
 	test('clears applied Custom bounds when a preset is chosen', async ({ page }) => {
-		const anchor = armLedgerDays();
+		const anchor = await armLedgerDays();
 		const requests = usageRequests(page);
 		await gotoHydrated(
 			page,
@@ -88,7 +73,7 @@ test.describe('Agents Spend selection matrix', () => {
 	});
 
 	test('restores sort direction through history without refetching', async ({ page }) => {
-		armLedgerDays();
+		await armLedgerDays();
 		const requests = usageRequests(page);
 		await gotoHydrated(page, spendUrl({ spend_window: '30d' }));
 		await expect(projectTotal(page)).toHaveText('$12.00');
@@ -110,7 +95,7 @@ test.describe('Agents Spend selection matrix', () => {
 	});
 
 	test('keeps an unrelated hash and query across filter changes', async ({ page }) => {
-		armLedgerDays();
+		await armLedgerDays();
 		await gotoHydrated(page, `${spendUrl({ unrelated: 'keep' })}#queue`);
 		await expect(projectTotal(page)).toHaveText('$5.00');
 		await page.getByRole('button', { name: 'Last 30 days' }).click();
@@ -124,7 +109,7 @@ test.describe('Agents Spend selection matrix', () => {
 	});
 
 	test('holds explicit archived and All scope across a global focus change', async ({ page }) => {
-		armLedgerDays();
+		await armLedgerDays();
 		const requests = usageRequests(page);
 		await gotoHydrated(
 			page,
@@ -144,7 +129,7 @@ test.describe('Agents Spend selection matrix', () => {
 	});
 
 	test('settles on the latest of two rapid different-key changes', async ({ page }) => {
-		armLedgerDays();
+		await armLedgerDays();
 		const requests = usageRequests(page);
 		await gotoHydrated(page, spendUrl({ spend_window: '30d' }));
 		await expect(projectTotal(page)).toHaveText('$12.00');
