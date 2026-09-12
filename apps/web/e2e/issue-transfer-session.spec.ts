@@ -121,6 +121,42 @@ test('review Cancel opens a fresh chooser for the next session', async ({ page, 
 	expect(transferPosts).toBe(0);
 });
 
+test('changing destination abandons the held preview without leaving loading stuck', async ({
+	page,
+	request
+}) => {
+	const { source, destinationA, destinationB, issue } = await seed(request, 'destination-change');
+	await gotoHydrated(page, `/issues/${source.name}/${issue.number}`);
+	let release!: () => void;
+	const gate = new Promise<void>((resolve) => (release = resolve));
+	let captured!: () => void;
+	const ready = new Promise<void>((resolve) => (captured = resolve));
+	await page.route('**/api/v1/issues/*/transfer?*', async (route) => {
+		const response = await route.fetch();
+		captured();
+		await gate;
+		await route.fulfill({ response });
+	});
+
+	const modal = page.getByRole('dialog');
+	await clickToOpen(page.getByTestId('move-to-project'), modal);
+	const chooser = modal.getByTestId('transfer-destination');
+	await chooser.selectOption(destinationA.id);
+	const obsoleteFinished = page.waitForEvent('requestfinished', (candidate) =>
+		candidate.url().includes('/transfer?')
+	);
+	await modal.getByRole('button', { name: 'Review move', exact: true }).click();
+	await ready;
+	await chooser.selectOption(destinationB.id);
+	await expect(modal.getByRole('button', { name: 'Review move', exact: true })).toBeEnabled();
+	release();
+	await obsoleteFinished;
+	await settleBrowser(page);
+	await expect(chooser).toHaveValue(destinationB.id);
+	await expect(modal.getByTestId('transfer-review')).toHaveCount(0);
+	await expect(modal.getByRole('button', { name: 'Review move', exact: true })).toBeEnabled();
+});
+
 test('the current held preview is accepted and focused', async ({ page, request }) => {
 	const { source, destinationA, issue } = await seed(request, 'current');
 	await gotoHydrated(page, `/issues/${source.name}/${issue.number}`);

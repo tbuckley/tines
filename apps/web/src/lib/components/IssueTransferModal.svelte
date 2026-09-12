@@ -77,6 +77,14 @@
 		stale = false;
 	}
 
+	function destinationChanged() {
+		reviewController.supersedeRequest();
+		preview = null;
+		error = null;
+		stale = false;
+		loading = false;
+	}
+
 	// A host can bind the dialog closed or replace the issue without going
 	// through one of our buttons. Treat both as the same session boundary.
 	$effect(() => {
@@ -252,6 +260,7 @@
 					<select
 						bind:this={destinationSelect}
 						bind:value={destination}
+						onchange={destinationChanged}
 						class="border-input bg-background w-full rounded-md border px-3 py-2 text-sm"
 						data-testid="transfer-destination"
 					>
