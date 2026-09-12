@@ -1,4 +1,7 @@
-import { TEST_NOOP_DISPATCH_EFFECTS } from '$lib/server/api/test-dispatch-effects';
+import {
+	recordDispatchEffects,
+	TEST_NOOP_DISPATCH_EFFECTS
+} from '$lib/server/api/test-dispatch-effects';
 import type { WorkflowResponse } from '@tines/shared';
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
@@ -21,6 +24,7 @@ import {
 	getIssueDetail,
 	listIssues,
 	loadIssue,
+	resumeIssue,
 	resolveStateRef,
 	transitionIssue,
 	updateIssue
@@ -366,6 +370,77 @@ describe('updateIssue sparse patch concurrency', () => {
 	});
 });
 
+describe('dispatch effects: issue mutation owners', () => {
+	it('records successful changes and approved no-ops, but not rejected lookups', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const actor: ActorContext = {
+			userId: USER,
+			userName: 'alice',
+			apiKeyId: null,
+			apiKeyName: null,
+			viaSession: true
+		};
+		const effects = recordDispatchEffects();
+		const issue = addIssue(t, { title: 'Original' });
+
+		await updateIssue(t.db, t.env, actor, effects, issue, { title: 'Changed' });
+		await updateIssue(t.db, t.env, actor, effects, issue, { title: 'Changed' });
+		expect(effects.count()).toBe(2);
+
+		await transitionIssue(t.db, t.env, actor, effects, issue, { action: 'Submit for review' });
+		expect(effects.count()).toBe(3);
+
+		const parked = addIssue(t, { needsAttention: true, attemptCount: 3 });
+		await resumeIssue(t.db, t.env, actor, effects, parked);
+		await resumeIssue(t.db, t.env, actor, effects, parked);
+		expect(effects.count()).toBe(5);
+
+		await expect(resumeIssue(t.db, t.env, actor, effects, 'iss_missing')).rejects.toMatchObject({
+			status: 404
+		});
+		expect(effects.count()).toBe(5);
+	});
+
+	it.each(['update', 'transition', 'resume'] as const)(
+		'keeps %s silent when its durable batch rejects',
+		async (owner) => {
+			const t = createTestDb();
+			seedBase(t);
+			const actor: ActorContext = {
+				userId: USER,
+				userName: 'alice',
+				apiKeyId: null,
+				apiKeyName: null,
+				viaSession: true
+			};
+			const issue = addIssue(t, {
+				title: 'Original',
+				...(owner === 'resume' ? { needsAttention: true, attemptCount: 3 } : {})
+			});
+			const effects = recordDispatchEffects();
+			t.env.DB.batch = async () => {
+				throw new Error(`injected ${owner} batch failure`);
+			};
+			const call =
+				owner === 'update'
+					? updateIssue(t.db, t.env, actor, effects, issue, { title: 'Changed' })
+					: owner === 'transition'
+						? transitionIssue(t.db, t.env, actor, effects, issue, {
+								action: 'Submit for review'
+							})
+						: resumeIssue(t.db, t.env, actor, effects, issue);
+			await expect(call).rejects.toThrow(`injected ${owner} batch failure`);
+			expect(effects.count()).toBe(0);
+			expect(
+				t.all('SELECT title, state_id, needs_attention FROM issue WHERE id = ?', issue)
+			).toEqual([
+				{ title: 'Original', state_id: OPEN, needs_attention: owner === 'resume' ? 1 : 0 }
+			]);
+		}
+	);
+});
+
 describe('listIssues search', () => {
 	const PROJECT2 = 'prj_2';
 	let t: TestDb;
@@ -590,6 +665,21 @@ describe('createIssue with labels', () => {
 		// The whole point of resolving before the batch: no half-created issue.
 		expect(issueCount()).toBe(0);
 		expect(await listLabels(t.db, USER)).toEqual([]);
+	});
+
+	it('dispatch effects: createIssue stays silent when the durable batch rejects', async () => {
+		const effects = recordDispatchEffects();
+		const realBatch = t.env.DB.batch.bind(t.env.DB);
+		t.env.DB.batch = async () => {
+			throw new Error('injected issue batch failure');
+		};
+		await expect(
+			createIssue(t.db, t.env, human, effects, PROJECT, { title: 'Rejected at commit' })
+		).rejects.toThrow('injected issue batch failure');
+		t.env.DB.batch = realBatch;
+		expect(effects.count()).toBe(0);
+		expect(issueCount()).toBe(0);
+		expect(t.all("SELECT id FROM event WHERE type = 'issue.created'")).toEqual([]);
 	});
 
 	it('lets a run key attach an existing label, matched case-insensitively', async () => {

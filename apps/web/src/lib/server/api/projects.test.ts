@@ -3,7 +3,10 @@
  * resume from *now* rather than replaying, and the list default that hides
  * archived projects from every picker.
  */
-import { TEST_NOOP_DISPATCH_EFFECTS } from '$lib/server/api/test-dispatch-effects';
+import {
+	recordDispatchEffects,
+	TEST_NOOP_DISPATCH_EFFECTS
+} from '$lib/server/api/test-dispatch-effects';
 import { describe, expect, it, beforeEach } from 'vitest';
 import {
 	NOW,
@@ -142,14 +145,8 @@ describe('unarchiveProject', () => {
 		t.sqlite.exec(`UPDATE scheduled_task SET next_run_at = ${stale}`);
 
 		const later = Date.parse('2026-09-05T12:00:00Z');
-		const res = await unarchiveProject(
-			t.db,
-			t.env,
-			actor,
-			TEST_NOOP_DISPATCH_EFFECTS,
-			PROJECT,
-			later
-		);
+		const effects = recordDispatchEffects();
+		const res = await unarchiveProject(t.db, t.env, actor, effects, PROJECT, later);
 
 		expect(res.project.archived_at).toBeNull();
 		expect(res.schedules_resumed).toBe(1);
@@ -161,19 +158,28 @@ describe('unarchiveProject', () => {
 		expect(events().filter((e) => e.type === 'project.unarchived')).toEqual([
 			{ type: 'project.unarchived', payload: { name: 'demo', schedules_resumed: 1 } }
 		]);
+		expect(effects.count()).toBe(1);
 	});
 
 	it('is a no-op on a live project', async () => {
-		const res = await unarchiveProject(
-			t.db,
-			t.env,
-			actor,
-			TEST_NOOP_DISPATCH_EFFECTS,
-			PROJECT,
-			NOW
-		);
+		const effects = recordDispatchEffects();
+		const res = await unarchiveProject(t.db, t.env, actor, effects, PROJECT, NOW);
 		expect(res.schedules_resumed).toBe(0);
 		expect(events().filter((e) => e.type === 'project.unarchived')).toEqual([]);
+		expect(effects.count()).toBe(1);
+	});
+
+	it('stays silent when the unarchive batch rejects', async () => {
+		await archiveProject(t.db, t.env, actor, PROJECT, NOW);
+		const effects = recordDispatchEffects();
+		t.env.DB.batch = async () => {
+			throw new Error('injected unarchive batch failure');
+		};
+		await expect(unarchiveProject(t.db, t.env, actor, effects, PROJECT, NOW + 1)).rejects.toThrow(
+			'injected unarchive batch failure'
+		);
+		expect(effects.count()).toBe(0);
+		expect(archivedAt()).toBe(NOW);
 	});
 });
 

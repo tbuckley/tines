@@ -1,4 +1,7 @@
-import { TEST_NOOP_DISPATCH_EFFECTS } from '$lib/server/api/test-dispatch-effects';
+import {
+	recordDispatchEffects,
+	TEST_NOOP_DISPATCH_EFFECTS
+} from '$lib/server/api/test-dispatch-effects';
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
 	NOW,
@@ -865,12 +868,13 @@ describe('private issue transfer path', () => {
 			events: t.all(`SELECT * FROM event WHERE issue_id = ?`, issueId)
 		};
 		t.sqlite.exec(trigger);
+		const effects = recordDispatchEffects();
 
 		await expect(
 			commitIssueTransfer(
 				t.env,
 				actor,
-				TEST_NOOP_DISPATCH_EFFECTS,
+				effects,
 				issueId,
 				DESTINATION,
 				preview.preview_token!,
@@ -883,6 +887,7 @@ describe('private issue transfer path', () => {
 		);
 		expect(t.all(`SELECT * FROM context_item WHERE issue_id = ?`, issueId)).toEqual(before.context);
 		expect(t.all(`SELECT * FROM event WHERE issue_id = ?`, issueId)).toEqual(before.events);
+		expect(effects.count()).toBe(0);
 	});
 
 	it('does not signal when the guarded update loses, but signals after a committed move', async () => {

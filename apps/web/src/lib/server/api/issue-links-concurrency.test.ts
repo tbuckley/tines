@@ -1,4 +1,7 @@
-import { TEST_NOOP_DISPATCH_EFFECTS } from '$lib/server/api/test-dispatch-effects';
+import {
+	recordDispatchEffects,
+	TEST_NOOP_DISPATCH_EFFECTS
+} from '$lib/server/api/test-dispatch-effects';
 import { describe, expect, it } from 'vitest';
 import { addIssue, seedBase, USER } from '../supervisor/test-fixtures';
 import { addIssueLink, removeIssueLink } from './issue-links';
@@ -150,6 +153,75 @@ function fixture() {
 	) as Record<'a' | 'b' | 'c' | 'd' | 'e', string>;
 	return { t, ...ids };
 }
+
+describe('dispatch effects: issue-link owners', () => {
+	it.each(['add', 'remove'] as const)(
+		'signals a committed %s and not a rejected batch',
+		async (owner) => {
+			const success = fixture();
+			const successEffects = recordDispatchEffects();
+			const link = await addIssueLink(
+				success.t.db,
+				success.t.env,
+				actor,
+				successEffects,
+				success.a,
+				{
+					kind: 'blocks',
+					issue_id: success.b
+				}
+			);
+			if (owner === 'remove') {
+				await removeIssueLink(
+					success.t.db,
+					success.t.env,
+					actor,
+					successEffects,
+					success.a,
+					link.id
+				);
+			}
+			expect(successEffects.count()).toBe(owner === 'add' ? 1 : 2);
+
+			const rejected = fixture();
+			const existing =
+				owner === 'remove'
+					? await addIssueLink(
+							rejected.t.db,
+							rejected.t.env,
+							actor,
+							TEST_NOOP_DISPATCH_EFFECTS,
+							rejected.a,
+							{ kind: 'blocks', issue_id: rejected.b }
+						)
+					: null;
+			const beforeEdges = edges(rejected.t);
+			const beforeEvents = linkEvents(rejected.t);
+			const rejectedEffects = recordDispatchEffects();
+			rejected.t.env.DB.batch = async () => {
+				throw new Error(`injected link ${owner} batch failure`);
+			};
+			const call =
+				owner === 'add'
+					? addIssueLink(rejected.t.db, rejected.t.env, actor, rejectedEffects, rejected.a, {
+							kind: 'blocks',
+							issue_id: rejected.b
+						})
+					: removeIssueLink(
+							rejected.t.db,
+							rejected.t.env,
+							actor,
+							rejectedEffects,
+							rejected.a,
+							existing!.id
+						);
+			await expect(call).rejects.toThrow(`injected link ${owner} batch failure`);
+			expect(rejectedEffects.count()).toBe(0);
+			expect(edges(rejected.t)).toEqual(beforeEdges);
+			expect(linkEvents(rejected.t)).toEqual(beforeEvents);
+		}
+	);
+});
 
 describe('commit-time issue-link graph guard', () => {
 	for (const [name, first, second] of [

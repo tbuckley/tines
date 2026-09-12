@@ -33,7 +33,7 @@ import {
 	type RunnerRow
 } from './runner-protocol';
 import { registerRunner, rotateRunnerToken, updateRunner } from './runners';
-import { updateSupervisorSettings } from './supervisor';
+import { getSupervisorSettings, updateSupervisorSettings } from './supervisor';
 import { createTestDb, type TestDb } from './test-db';
 
 const actor: ActorContext = {
@@ -74,18 +74,13 @@ function expectFail(fn: () => Promise<unknown>, code: string): Promise<void> {
 describe('registerRunner', () => {
 	it('creates a local runner with a hashed token, shown once', async () => {
 		const t = world();
-		const { runner, runner_token } = await registerRunner(
-			t.db,
-			t.env,
-			actor,
-			TEST_NOOP_DISPATCH_EFFECTS,
-			{
-				name: 'laptop-m4',
-				harness: 'claude_code',
-				hostname: 'mbp.local',
-				platform: 'darwin'
-			}
-		);
+		const effects = recordDispatchEffects();
+		const { runner, runner_token } = await registerRunner(t.db, t.env, actor, effects, {
+			name: 'laptop-m4',
+			harness: 'claude_code',
+			hostname: 'mbp.local',
+			platform: 'darwin'
+		});
 		expect(runner.type).toBe('local');
 		expect(runner.online).toBe(true); // registration counts as a heartbeat
 		expect(runner_token).toMatch(/^tines_rt_/);
@@ -94,6 +89,7 @@ describe('registerRunner', () => {
 		// The token never appears in the serialized runner.
 		expect(JSON.stringify(runner)).not.toContain(runner_token);
 		expect(eventsOfType(t, 'runner.registered')).toHaveLength(1);
+		expect(effects.count()).toBe(1);
 
 		const authed = await authenticateRunnerToken(t.db, runner_token);
 		expect(authed?.id).toBe(runner.id);
@@ -101,10 +97,11 @@ describe('registerRunner', () => {
 
 	it('reconnects an existing local runner by name: same row, fresh token, old one dead', async () => {
 		const t = world();
-		const first = await registerRunner(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+		const effects = recordDispatchEffects();
+		const first = await registerRunner(t.db, t.env, actor, effects, {
 			name: 'laptop-m4'
 		});
-		const second = await registerRunner(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+		const second = await registerRunner(t.db, t.env, actor, effects, {
 			name: 'laptop-m4'
 		});
 		expect(second.runner.id).toBe(first.runner.id);
@@ -112,7 +109,34 @@ describe('registerRunner', () => {
 		expect(await authenticateRunnerToken(t.db, first.runner_token)).toBeUndefined();
 		expect((await authenticateRunnerToken(t.db, second.runner_token))?.id).toBe(first.runner.id);
 		expect(runnerById(t, first.runner.id).resume_config_revision).toBe(0);
+		expect(effects.count()).toBe(2);
 	});
+
+	it.each(['new', 'reconnect'] as const)(
+		'keeps a %s registration silent when its batch rejects',
+		async (branch) => {
+			const t = world();
+			if (branch === 'reconnect') {
+				await registerRunner(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+					name: 'laptop-m4'
+				});
+			}
+			const beforeEvents = t.all(
+				"SELECT id FROM event WHERE type IN ('runner.registered', 'runner.updated')"
+			);
+			const effects = recordDispatchEffects();
+			t.env.DB.batch = async () => {
+				throw new Error('injected registration batch failure');
+			};
+			await expect(
+				registerRunner(t.db, t.env, actor, effects, { name: 'laptop-m4' })
+			).rejects.toThrow('injected registration batch failure');
+			expect(effects.count()).toBe(0);
+			expect(
+				t.all("SELECT id FROM event WHERE type IN ('runner.registered', 'runner.updated')")
+			).toEqual(beforeEvents);
+		}
+	);
 
 	it('reconnect updates only the fields the daemon sent — server-side edits survive', async () => {
 		const t = world();
@@ -155,14 +179,16 @@ describe('registerRunner', () => {
 
 	it('rejects a custom harness without a command, and unknown-tier registrations', async () => {
 		const t = world();
+		const effects = recordDispatchEffects();
 		await expectFail(
 			() =>
-				registerRunner(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+				registerRunner(t.db, t.env, actor, effects, {
 					name: 'x',
 					harness: 'custom'
 				}),
 			'invalid_field'
 		);
+		expect(effects.count()).toBe(0);
 	});
 
 	it('an API key is not a runner token (and vice versa: the inverse fence)', async () => {
@@ -1510,6 +1536,59 @@ describe('finishRun', () => {
 // ---------------------------------------------------------------------------
 
 describe('pause and kill-switch cancels', () => {
+	it('keeps the runner-write signal when the first pause cancellation fails', async () => {
+		const t = world();
+		const runnerId = addRunner(t);
+		const runId = addRun(t, { issueId: addIssue(t), runnerId });
+		const realBatch = t.env.DB.batch.bind(t.env.DB);
+		let batches = 0;
+		t.env.DB.batch = async (statements) => {
+			batches += 1;
+			if (batches === 2) throw new Error('injected first pause cancellation failure');
+			return realBatch(statements);
+		};
+		const effects = recordDispatchEffects();
+
+		await expect(
+			updateRunner(t.db, t.env, actor, effects, runnerId, { status: 'paused' })
+		).rejects.toThrow('injected first pause cancellation failure');
+
+		expect(runnerById(t, runnerId).status).toBe('paused');
+		expect(runById(t, runId)?.status).toBe('assigned');
+		expect(eventsOfType(t, 'runner.updated')).toHaveLength(1);
+		expect(effects.count()).toBe(1);
+	});
+
+	it('keeps a prior pause cancellation signal when a later cancellation fails', async () => {
+		const t = world();
+		const runnerId = addRunner(t, { maxConcurrent: 2 });
+		const first = addRun(t, { issueId: addIssue(t), runnerId });
+		const second = addRun(t, { issueId: addIssue(t), runnerId });
+		const realBatch = t.env.DB.batch.bind(t.env.DB);
+		let batches = 0;
+		t.env.DB.batch = async (statements) => {
+			batches += 1;
+			// Runner = 1; first endRun flip/dependents = 2/3; fail the next flip.
+			if (batches === 4) throw new Error('injected later pause cancellation failure');
+			return realBatch(statements);
+		};
+		const effects = recordDispatchEffects();
+
+		await expect(
+			updateRunner(t.db, t.env, actor, effects, runnerId, { status: 'paused' })
+		).rejects.toThrow('injected later pause cancellation failure');
+
+		expect(runnerById(t, runnerId).status).toBe('paused');
+		expect([runById(t, first)?.status, runById(t, second)?.status].sort()).toEqual([
+			'assigned',
+			'canceled'
+		]);
+		expect(eventsOfType(t, 'runner.updated')).toHaveLength(1);
+		expect(eventsOfType(t, 'agent_run.ended')).toHaveLength(1);
+		// The runner write and the independently committed cancellation both signal.
+		expect(effects.count()).toBe(2);
+	});
+
 	it('pausing a runner cancels its assigned runs; launching/running finish', async () => {
 		const t = world();
 		const runnerId = addRunner(t, { maxConcurrent: 3 });
@@ -1520,12 +1599,110 @@ describe('pause and kill-switch cancels', () => {
 			status: 'running',
 			startedAt: NOW
 		});
-		await updateRunner(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, runnerId, {
+		const effects = recordDispatchEffects();
+		await updateRunner(t.db, t.env, actor, effects, runnerId, {
 			status: 'paused'
 		});
 		expect(runById(t, assigned)?.status).toBe('canceled');
 		expect(runById(t, assigned)?.error).toBe('runner paused');
 		expect(runById(t, running)?.status).toBe('running');
+		// The runner write and each cancellation are distinct domain wins.
+		expect(effects.count()).toBe(2);
+	});
+
+	it('keeps settings and prior cancellation signals when a later assigned cancellation fails', async () => {
+		const t = world();
+		const runnerId = addRunner(t, { maxConcurrent: 3 });
+		const first = addRun(t, { issueId: addIssue(t), runnerId });
+		const second = addRun(t, { issueId: addIssue(t), runnerId });
+		const realBatch = t.env.DB.batch.bind(t.env.DB);
+		let batches = 0;
+		t.env.DB.batch = async (statements) => {
+			batches += 1;
+			// Settings = 1; first endRun flip/dependents = 2/3; fail the next flip.
+			if (batches === 4) throw new Error('injected later settings cancellation failure');
+			return realBatch(statements);
+		};
+		const effects = recordDispatchEffects();
+
+		await expect(
+			updateSupervisorSettings(t.db, t.env, actor, effects, { enabled: false })
+		).rejects.toThrow('injected later settings cancellation failure');
+
+		expect((await getSupervisorSettings(t.db, USER)).enabled).toBe(false);
+		expect(eventsOfType(t, 'settings.updated')).toHaveLength(1);
+		expect([runById(t, first)?.status, runById(t, second)?.status].sort()).toEqual([
+			'assigned',
+			'canceled'
+		]);
+		expect(effects.count()).toBe(2);
+	});
+
+	it('keeps the settings-write signal when the first assigned cancellation fails', async () => {
+		const t = world();
+		const runnerId = addRunner(t);
+		const runId = addRun(t, { issueId: addIssue(t), runnerId });
+		const realBatch = t.env.DB.batch.bind(t.env.DB);
+		let batches = 0;
+		t.env.DB.batch = async (statements) => {
+			batches += 1;
+			if (batches === 2) throw new Error('injected first settings cancellation failure');
+			return realBatch(statements);
+		};
+		const effects = recordDispatchEffects();
+
+		await expect(
+			updateSupervisorSettings(t.db, t.env, actor, effects, { enabled: false })
+		).rejects.toThrow('injected first settings cancellation failure');
+
+		expect((await getSupervisorSettings(t.db, USER)).enabled).toBe(false);
+		expect(runById(t, runId)?.status).toBe('assigned');
+		expect(eventsOfType(t, 'settings.updated')).toHaveLength(1);
+		expect(effects.count()).toBe(1);
+	});
+
+	it('keeps a direct in-flight cancellation signal when a later cancellation fails', async () => {
+		const t = world();
+		t.sqlite.prepare('UPDATE supervisor_settings SET enabled = 0 WHERE user_id = ?').run(USER);
+		const runnerId = addRunner(t, { maxConcurrent: 2 });
+		const first = addRun(t, {
+			issueId: addIssue(t),
+			runnerId,
+			status: 'running',
+			startedAt: NOW
+		});
+		const second = addRun(t, {
+			issueId: addIssue(t),
+			runnerId,
+			status: 'running',
+			startedAt: NOW
+		});
+		const realBatch = t.env.DB.batch.bind(t.env.DB);
+		let batches = 0;
+		t.env.DB.batch = async (statements) => {
+			batches += 1;
+			// First endRun flip/dependents = 1/2; fail the next run's flip.
+			if (batches === 3) throw new Error('injected later in-flight cancellation failure');
+			return realBatch(statements);
+		};
+		const effects = recordDispatchEffects();
+
+		await expect(
+			updateSupervisorSettings(t.db, t.env, actor, effects, {
+				enabled: false,
+				cancel_in_flight: true
+			})
+		).rejects.toThrow('injected later in-flight cancellation failure');
+
+		expect((await getSupervisorSettings(t.db, USER)).enabled).toBe(false);
+		expect(eventsOfType(t, 'settings.updated')).toHaveLength(0);
+		expect([runById(t, first)?.status, runById(t, second)?.status].sort()).toEqual([
+			'canceled',
+			'running'
+		]);
+		expect(eventsOfType(t, 'agent_run.ended')).toHaveLength(1);
+		// No settings write occurred, so this can only be the committed cancellation's signal.
+		expect(effects.count()).toBe(1);
 	});
 
 	it('the kill switch off cancels assigned runs fleet-wide; bulk cancel takes the rest', async () => {
@@ -1542,7 +1719,8 @@ describe('pause and kill-switch cancels', () => {
 			startedAt: NOW
 		});
 
-		const off = await updateSupervisorSettings(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+		const effects = recordDispatchEffects();
+		const off = await updateSupervisorSettings(t.db, t.env, actor, effects, {
 			enabled: false
 		});
 		expect(off.enabled).toBe(false);
@@ -1550,15 +1728,17 @@ describe('pause and kill-switch cancels', () => {
 		expect(runById(t, assignedA)?.status).toBe('canceled');
 		expect(runById(t, assignedB)?.status).toBe('canceled');
 		expect(runById(t, running)?.status).toBe('running');
+		expect(effects.count()).toBe(3);
 
 		// The bulk-cancel option: plain individual cancels, strikes and all.
-		const bulk = await updateSupervisorSettings(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+		const bulk = await updateSupervisorSettings(t.db, t.env, actor, effects, {
 			enabled: false,
 			cancel_in_flight: true
 		});
 		expect(bulk.canceled_runs).toBe(1);
 		expect(runById(t, running)?.status).toBe('canceled');
 		expect(issueById(t, runningIssue).attempt_count).toBe(1);
+		expect(effects.count()).toBe(4);
 	});
 
 	it('cancel_in_flight is rejected while enabling', async () => {
