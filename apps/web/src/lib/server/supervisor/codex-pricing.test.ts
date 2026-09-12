@@ -106,6 +106,31 @@ describe('priceCodexUsage', () => {
 			).pricing
 		).toMatchObject({ status: 'unpriced', reason });
 	});
+
+	it('ignores additive proof failures for published-band catalog rows', () => {
+		const publishedEvidence = evidence({
+			model: 'gpt-5.3-codex',
+			raw_usage: {
+				input_tokens: 1000,
+				cached_input_tokens: 600,
+				cache_write_input_tokens: 0,
+				output_tokens: 100
+			},
+			request_context: {
+				version: 1,
+				normalization: 'codex-rollout-delta-v1',
+				status: 'invalid',
+				reason: 'malformed'
+			}
+		});
+		expect(
+			price(
+				{ input_tokens: 400, cache_read_tokens: 600, cache_write_tokens: 0, output_tokens: 100 },
+				publishedEvidence,
+				{ model: 'gpt-5.3-codex', created_at }
+			).pricing
+		).toMatchObject({ status: 'calculated', basis: { context_band: 'published' } });
+	});
 	it('pins every supported exact model and all four reviewed rate dimensions', () => {
 		expect(
 			CODEX_RATES.map(({ model, context_band, rates }) => ({ model, context_band, rates }))

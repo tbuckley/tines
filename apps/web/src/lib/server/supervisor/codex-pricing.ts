@@ -233,17 +233,13 @@ export function priceCodexUsage(
 	if (selectedIndex < 0) return unpriced({ ...usage, ...tokens }, evidence, now, 'missing_rate');
 	const selected = candidates[selectedIndex]!;
 	const requestContext = evidence.request_context;
-	if (requestContext) {
+	if (selected.context_band === 'short' && requestContext) {
 		if (
 			requestContext.status === 'invalid' ||
 			(requestContext.status === 'complete' && !validCompleteRequestContext(evidence))
 		)
 			return unpriced({ ...usage, ...tokens }, evidence, now, 'request_context_invalid');
-		if (
-			selected.context_band === 'short' &&
-			requestContext.status === 'complete' &&
-			requestContext.max_request_input_tokens > 272_000
-		)
+		if (requestContext.status === 'complete' && requestContext.max_request_input_tokens > 272_000)
 			return unpriced({ ...usage, ...tokens }, evidence, now, 'long_context_rate_unsupported');
 	}
 	if (

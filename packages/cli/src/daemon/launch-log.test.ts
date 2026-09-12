@@ -20,13 +20,13 @@ const RUN_ID = 'run_stub1';
 const RUN_KEY = 'trk_stub_run_key_never_logged';
 
 /** The assignment the stub hands out once: no repos, no skills, one run. */
-function assignment(timeoutMinutes: number): unknown {
+function assignment(timeoutMinutes: number, model: string): unknown {
 	return {
 		run: {
 			id: RUN_ID,
 			issue_id: 'iss_1',
 			issue_ref: { project_name: 'Stub', number: 1 },
-			model: 'claude-sonnet-5',
+			model,
 			status: 'launching'
 		},
 		prompt: 'PROMPT BODY',
@@ -46,7 +46,10 @@ interface Harvest {
  * daemon finish-reports it (by which point every log chunk has been flushed —
  * finishAndCleanup flushes before it reports).
  */
-function stubSupervisor(timeoutMinutes = 30): {
+function stubSupervisor(
+	timeoutMinutes = 30,
+	model = 'claude-sonnet-5'
+): {
 	server: Server;
 	done: Promise<Harvest>;
 	/** Live view, for tests that must act while the run is still going. */
@@ -70,7 +73,7 @@ function stubSupervisor(timeoutMinutes = 30): {
 				return reply({ runner: { id: 'rnr_stub', name: 'stub' }, runner_token: 'rt_stub' });
 			}
 			if (url === '/api/v1/runners/rnr_stub/poll') {
-				const assignments = handedOut ? [] : [assignment(timeoutMinutes)];
+				const assignments = handedOut ? [] : [assignment(timeoutMinutes, model)];
 				handedOut = true;
 				return reply({ assignments, cancels: [] });
 			}
@@ -174,10 +177,11 @@ exit 0
 	return bin;
 }
 
-function fakeCodex(dir: string): string {
+function fakeCodex(dir: string, exitCode = 0): string {
 	const bin = join(dir, 'fakebin');
 	mkdirSync(bin, { recursive: true });
-	const started = JSON.stringify({ type: 'thread.started', thread_id: 'thread_local' });
+	const threadId = '01a09350-f9cc-7160-8a73-60d458864a7e';
+	const started = JSON.stringify({ type: 'thread.started', thread_id: threadId });
 	const message = JSON.stringify({
 		type: 'item.completed',
 		item: { type: 'agent_message', text: 'Codex finished.' }
@@ -185,15 +189,48 @@ function fakeCodex(dir: string): string {
 	const completed = JSON.stringify({
 		type: 'turn.completed',
 		usage: {
-			input_tokens: 1000,
-			cached_input_tokens: 600,
-			cache_write_input_tokens: 100,
-			output_tokens: 100
+			input_tokens: 300_000,
+			cached_input_tokens: 210_000,
+			cache_write_input_tokens: 10_000,
+			output_tokens: 3_000
 		}
 	});
+	const meta = JSON.stringify({
+		type: 'session_meta',
+		payload: { id: threadId, source: 'exec', originator: 'codex_exec', cli_version: '0.153.4' }
+	});
+	const count = (total: unknown, last: unknown) =>
+		JSON.stringify({
+			type: 'event_msg',
+			payload: { type: 'token_count', info: { total_token_usage: total, last_token_usage: last } }
+		});
+	const first = {
+		input_tokens: 150_000,
+		cached_input_tokens: 100_000,
+		cache_write_input_tokens: 0,
+		output_tokens: 1_000
+	};
+	const total = {
+		input_tokens: 300_000,
+		cached_input_tokens: 210_000,
+		cache_write_input_tokens: 10_000,
+		output_tokens: 3_000
+	};
+	const last = {
+		input_tokens: 150_000,
+		cached_input_tokens: 110_000,
+		cache_write_input_tokens: 10_000,
+		output_tokens: 2_000
+	};
 	writeFileSync(
 		join(bin, 'codex'),
-		`#!/bin/sh\nprintf '%s\\n' '${started}' '${message}' '${completed}'\n`,
+		`#!/bin/sh
+day="$(date -u +%Y/%m/%d)"
+mkdir -p "$CODEX_HOME/sessions/$day"
+printf '%s\\n' '${meta}' '${count(first, first)}' '${count(first, first)}' '${count(total, last)}' > "$CODEX_HOME/sessions/$day/rollout-test-${threadId}.jsonl"
+printf '%s\\n' '${started}' '${message}' '${completed}'
+exit ${exitCode}
+`,
 		{ mode: 0o755 }
 	);
 	return bin;
@@ -230,6 +267,7 @@ function startDaemon(
 	} else {
 		args.push('--harness', 'codex');
 		env.PATH = `${harness.fakeCodexDir}${delimiter}${process.env.PATH ?? ''}`;
+		env.CODEX_HOME = join(dir, 'codex-home');
 	}
 	return spawn(NODE, args, { env, stdio: ['ignore', 'pipe', 'pipe'] });
 }
@@ -455,7 +493,7 @@ describe('the run log a local run leaves behind', () => {
 	}, 30_000);
 
 	it('reports local Codex tokens and thread id while keeping logs readable', async () => {
-		const { server: stub, done } = stubSupervisor();
+		const { server: stub, done } = stubSupervisor(30, 'gpt-5.6-sol');
 		server = stub;
 		await new Promise<void>((r) => stub.listen(0, '127.0.0.1', r));
 		const port = (stub.address() as AddressInfo).port;
@@ -467,20 +505,65 @@ describe('the run log a local run leaves behind', () => {
 			workspace_path: expect.any(String),
 			status: 'completed',
 			usage: {
-				input_tokens: 300,
-				cache_read_tokens: 600,
-				cache_write_tokens: 100,
-				output_tokens: 100
+				input_tokens: 80_000,
+				cache_read_tokens: 210_000,
+				cache_write_tokens: 10_000,
+				output_tokens: 3_000
 			},
-			provider_session_id: 'thread_local',
+			provider_session_id: '01a09350-f9cc-7160-8a73-60d458864a7e',
 			pricing_evidence: {
-				model: 'claude-sonnet-5',
+				model: 'gpt-5.6-sol',
 				measurement_status: 'complete',
 				terminal_snapshots: 1,
-				daemon_version: cliVersion()
+				daemon_version: cliVersion(),
+				request_context: {
+					status: 'complete',
+					request_count: 2,
+					max_request_input_tokens: 150_000,
+					reconciled_usage: {
+						input_tokens: 300_000,
+						cached_input_tokens: 210_000,
+						cache_write_input_tokens: 10_000,
+						output_tokens: 3_000
+					}
+				}
+			}
+		});
+		const accounting = harvest.log
+			.trimEnd()
+			.split('\n')
+			.find((line) => line.startsWith('[usage] '));
+		expect(JSON.parse(accounting!.slice('[usage] '.length))).toMatchObject({
+			pricing_evidence: {
+				raw_usage: harvest.finish!.pricing_evidence!.raw_usage,
+				request_context: harvest.finish!.pricing_evidence!.request_context
 			}
 		});
 		expect(harvest.log).toContain('[agent] Codex finished.');
 		expect(harvest.log).not.toContain('"thread.started"');
+	}, 30_000);
+
+	it('does not use rollout proof for a failed Codex attempt', async () => {
+		const { server: stub, done } = stubSupervisor(30, 'gpt-5.6-sol');
+		server = stub;
+		await new Promise<void>((r) => stub.listen(0, '127.0.0.1', r));
+		const port = (stub.address() as AddressInfo).port;
+		configDir = mkdtempSync(join(tmpdir(), 'tines-daemon-'));
+
+		child = startDaemon(port, configDir, { fakeCodexDir: fakeCodex(configDir, 1) });
+		const harvest = await done;
+		expect(harvest.finish).toMatchObject({
+			status: 'failed',
+			usage: {
+				input_tokens: 80_000,
+				cache_read_tokens: 210_000,
+				cache_write_tokens: 10_000,
+				output_tokens: 3_000
+			},
+			pricing_evidence: {
+				measurement_status: 'complete',
+				request_context: { status: 'unavailable', reason: 'not_applicable' }
+			}
+		});
 	}, 30_000);
 });

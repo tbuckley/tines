@@ -1,6 +1,8 @@
 import { open, opendir, realpath, stat } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { homedir } from 'node:os';
+import { StringDecoder } from 'node:string_decoder';
+import type { Readable } from 'node:stream';
 import type { CodexRawUsageV1, CodexRequestContextV1 } from '@tines/shared';
 
 export const CODEX_ROLLOUT_MAX_BYTES = 128 * 1024 * 1024;
@@ -53,7 +55,7 @@ function object(value: unknown): Record<string, unknown> | undefined {
 		: undefined;
 }
 
-function usage(value: unknown): Usage | undefined {
+function usage(value: unknown, validateClasses = true): Usage | undefined {
 	const raw = object(value);
 	if (!raw) return;
 	const out = {} as Usage;
@@ -62,7 +64,11 @@ function usage(value: unknown): Usage | undefined {
 		if (!Number.isSafeInteger(metric) || (metric as number) < 0) return;
 		out[field] = metric as number;
 	}
-	if (out.cached_input_tokens + out.cache_write_input_tokens > out.input_tokens) return;
+	if (
+		validateClasses &&
+		out.cached_input_tokens + out.cache_write_input_tokens > out.input_tokens
+	)
+		return;
 	return out;
 }
 
@@ -113,7 +119,7 @@ export function reconcileCodexRollout(
 		const info = object(payload.info);
 		if (!info) continue;
 		const total = usage(info.total_token_usage);
-		const last = usage(info.last_token_usage);
+		const last = usage(info.last_token_usage, false);
 		if (!total || !last) return invalid('missing_dimension', harnessVersion);
 		observed = true;
 		if (equal(total, previous)) {
@@ -183,6 +189,66 @@ function dateDirectories(startedAt: number, endedAt: number): string[] | null {
 	return result;
 }
 
+type BoundedRead =
+	{ records: unknown[] } | { reason: 'limit_exceeded' | 'malformed' | 'read_failed' };
+
+/** Incremental JSONL reader: the deadline also destroys a stalled filesystem stream. */
+export async function readCodexRolloutRecords(
+	stream: Readable,
+	timeoutMs: number
+): Promise<BoundedRead> {
+	let timedOut = false;
+	const timer = setTimeout(
+		() => {
+			timedOut = true;
+			stream.destroy(new Error('Codex rollout read deadline exceeded'));
+		},
+		Math.max(0, timeoutMs)
+	);
+	const decoder = new StringDecoder('utf8');
+	let pending = '';
+	let bytes = 0;
+	let lines = 0;
+	const records: unknown[] = [];
+	const consume = (line: string): BoundedRead | undefined => {
+		if (++lines > CODEX_ROLLOUT_MAX_LINES || Buffer.byteLength(line) > CODEX_ROLLOUT_MAX_LINE_BYTES)
+			return { reason: 'limit_exceeded' };
+		if (!line.trim()) return;
+		try {
+			records.push(JSON.parse(line));
+		} catch {
+			return { reason: 'malformed' };
+		}
+	};
+	try {
+		for await (const value of stream) {
+			const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value as Uint8Array);
+			bytes += chunk.length;
+			if (bytes > CODEX_ROLLOUT_MAX_BYTES) return { reason: 'limit_exceeded' };
+			pending += decoder.write(chunk);
+			let newline: number;
+			while ((newline = pending.indexOf('\n')) >= 0) {
+				const failure = consume(pending.slice(0, newline));
+				if (failure) return failure;
+				pending = pending.slice(newline + 1);
+			}
+			if (Buffer.byteLength(pending) > CODEX_ROLLOUT_MAX_LINE_BYTES)
+				return { reason: 'limit_exceeded' };
+		}
+		pending += decoder.end();
+		if (pending.length) {
+			const failure = consume(pending);
+			if (failure) return failure;
+		}
+		return { records };
+	} catch {
+		return { reason: timedOut ? 'limit_exceeded' : 'read_failed' };
+	} finally {
+		clearTimeout(timer);
+		stream.destroy();
+	}
+}
+
 export async function collectCodexRequestContext(input: {
 	codexHome: string;
 	threadId: string;
@@ -217,7 +283,7 @@ export async function collectCodexRequestContext(input: {
 			for await (const entry of stream) {
 				if (++entries > 20_000 || Date.now() > deadline) return unavailable('limit_exceeded');
 				if (
-					entry.isFile() &&
+					(entry.isFile() || entry.isSymbolicLink()) &&
 					entry.name.startsWith('rollout-') &&
 					entry.name.endsWith(`-${input.threadId}.jsonl`)
 				)
@@ -234,34 +300,18 @@ export async function collectCodexRequestContext(input: {
 		if (!before.isFile() || before.size > CODEX_ROLLOUT_MAX_BYTES)
 			return unavailable('limit_exceeded');
 		const handle = await open(candidate, 'r');
-		try {
-			const bytes = await handle.readFile();
-			const after = await handle.stat();
-			if (
-				before.dev !== after.dev ||
-				before.ino !== after.ino ||
-				before.size !== after.size ||
-				before.mtimeMs !== after.mtimeMs
-			)
-				return invalid('read_failed');
-			if (Date.now() > deadline) return unavailable('limit_exceeded');
-			const lines = bytes.toString('utf8').split('\n');
-			if (lines.length > CODEX_ROLLOUT_MAX_LINES) return unavailable('limit_exceeded');
-			const records: unknown[] = [];
-			for (const line of lines) {
-				if (Buffer.byteLength(line) > CODEX_ROLLOUT_MAX_LINE_BYTES)
-					return unavailable('limit_exceeded');
-				if (!line.trim()) continue;
-				try {
-					records.push(JSON.parse(line));
-				} catch {
-					return invalid('malformed');
-				}
-			}
-			return reconcileCodexRollout(records, input);
-		} finally {
-			await handle.close();
-		}
+		const read = await readCodexRolloutRecords(handle.createReadStream(), deadline - Date.now());
+		if ('reason' in read)
+			return read.reason === 'malformed' ? invalid('malformed') : unavailable(read.reason);
+		const after = await stat(candidate);
+		if (
+			before.dev !== after.dev ||
+			before.ino !== after.ino ||
+			before.size !== after.size ||
+			before.mtimeMs !== after.mtimeMs
+		)
+			return invalid('read_failed');
+		return reconcileCodexRollout(read.records, input);
 	} catch {
 		return unavailable('read_failed');
 	}
