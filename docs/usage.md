@@ -34,3 +34,11 @@ Finalized evidence adds `usage_dimensions` and `usage_accounting`. Sum `cost_exa
 Aggregation processes finalized facts in 5,000-row pages and retains only exact priced samples; sparse accounting evidence examines at most 20 pages of 10,000 lean candidates per request, returning a continuation rather than spending an unbounded request budget. The supported and gated target is 100,000 period rows with ordinary low-cardinality dimensions. Work remains linear above that, while an unpaginated response is inherently proportional to distinct groups and historical rate identities; groups are never silently truncated.
 
 Reproduce the native local D1 query plans, page sizes, equal-time keyset walk, authenticated built-worker totals/evidence, pending count, and exact source-CLI/HTTP reconciliation with `pnpm --filter web perf:usage --size=100000`. Add `--all-priced` for the 100,000-priced-run distribution path; use `--size=120001` without it for the unique priced match beyond 100,000 candidates, or `--size=210001 --no-priced` for an allowance-limited empty evidence continuation and sparse exhaustion. The script creates and replaces only `apps/web/.wrangler-usage-scale`, applies the shipped migrations, and prints a JSON receipt; it never addresses a remote database or inherits `TINES_API_URL`. Its direct SQL wall time includes Wrangler startup, while `authenticated_worker.elapsed_ms` measures the shipping request path. Wrangler local does not expose production `rows_read`, and the memory figure is the documented conservative typed-sample bound rather than an isolate-inspector measurement.
+
+The independent mixed ledger acceptance gate is `pnpm --filter web test:usage-mixed`.
+It builds the local Worker, seeds only `.wrangler-usage-mixed`, and executes the CLI
+from TypeScript source against an explicit localhost URL. Its shared manifest also
+runs through the GET-handler unit tests. It covers full finalized and pending
+paging, retained/deleted/unknown dimensions, accounting diagnostics and rate
+portions, API/run-key isolation, and CLI JSON/text reconciliation. The fixture's
+orphan references model historical storage; normal deletion may cascade instead.

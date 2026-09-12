@@ -117,7 +117,9 @@ const evidenceRunSelection = [
 	retainedIssueWorkflow.as('issue_workflow_id'),
 	'start_workflow.name as start_workflow_name',
 	'issue_workflow.name as issue_workflow_name',
-	'end_state.name as end_state_name'
+	sql<string | null>`CASE WHEN end_workflow.id IS NOT NULL THEN end_state.name END`.as(
+		'end_state_name'
+	)
 ] as const;
 
 // Pending-at-cutoff evidence must not even read facts learned after the cutoff.
@@ -432,6 +434,16 @@ export async function listRuns(
 							.where('agent_run.id', 'in', ids)
 							.execute()
 					: await runQuery(db, userId)
+							.leftJoin('workflow as end_workflow', (join) =>
+								join
+									.onRef('end_workflow.id', '=', 'end_state.workflow_id')
+									.on((eb) =>
+										eb.or([
+											eb('end_workflow.user_id', '=', userId),
+											eb('end_workflow.user_id', 'is', null)
+										])
+									)
+							)
 							.clearSelect()
 							.select(evidenceRunSelection)
 							.where('agent_run.id', 'in', ids)

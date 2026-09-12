@@ -150,7 +150,8 @@ function waitForWorker(url, child) {
 	});
 }
 
-execFileSync('pnpm', ['build'], { cwd: webDir, stdio: 'inherit' });
+if (!process.argv.includes('--skip-build'))
+	execFileSync('pnpm', ['build'], { cwd: webDir, stdio: 'inherit' });
 execFileSync('pnpm', ['--dir', '../..', '--filter', 'tines', 'build'], {
 	cwd: webDir,
 	stdio: 'inherit'
@@ -205,8 +206,8 @@ try {
 	});
 	const body = await response.json();
 	const aggregateWorkerQueries = await countQueriesSince(aggregateTraceStart);
-	// Two bearer queries, two period/settings queries, one pending count and
-	// ceil(N/5000) data pages: settings are read twice, totaling four fixed queries.
+	// Two bearer queries, one settings read, one pending count, and
+	// ceil(N/5000) data pages: four fixed queries on this unfiltered dataset.
 	const expectedAggregateQueries = Math.ceil(size / 5000) + 4;
 	if (aggregateWorkerQueries !== expectedAggregateQueries)
 		throw new Error(
@@ -403,8 +404,9 @@ const receipt = {
 		finalized: size,
 		all_priced: allPriced,
 		no_priced: noPriced,
-		groups: 1,
-		retained_rates: allPriced ? 0 : priced ? 1 : 0,
+		groups: 3,
+		pending: 100,
+		retained_rates: 0,
 		equal_time_fanout: 10
 	},
 	aggregate: {

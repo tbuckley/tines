@@ -120,7 +120,7 @@ let cliCalls = 0;
 try {
 	for (let attempt = 0; ; attempt++) {
 		try {
-			await fetch(baseUrl);
+			await fetch(baseUrl, { headers: { connection: 'close' } });
 			break;
 		} catch {
 			if (attempt > 300 || worker.exitCode !== null) throw new Error(logs);
@@ -129,7 +129,8 @@ try {
 	}
 	const request = async (path, query, key = localKey, expected = 200) => {
 		const response = await fetch(`${baseUrl}/api/v1${path}?${new URLSearchParams(query)}`, {
-			headers: { authorization: `Bearer ${key}` }
+			// Synchronous source-CLI probes can outlive a pooled socket's idle timeout.
+			headers: { authorization: `Bearer ${key}`, connection: 'close' }
 		});
 		const body = await response.json();
 		assert.equal(response.status, expected, JSON.stringify(body));
@@ -144,6 +145,21 @@ try {
 		assert.ok(text.includes(`${report.scope_total.finalized_run_count} finalized`));
 		assert.ok(text.includes('Scope sources:'));
 		assert.ok(text.includes('Matching diagnostics:'));
+		for (const [label, aggregate] of [
+			['Scope', report.scope_total],
+			['Matching', report.matching_total]
+		]) {
+			const portions = aggregate.portions;
+			assert.ok(
+				text.includes(
+					`${label} sources: provider ${portions.provider.cost_usd_exact} (${portions.provider.priced_run_count}) · calculated ${portions.calculated.cost_usd_exact} (${portions.calculated.priced_run_count}) · unknown ${portions.unknown_source.cost_usd_exact} (${portions.unknown_source.priced_run_count})`
+				)
+			);
+			const line = text.split('\n').find((line) => line.startsWith(`${label} diagnostics:`));
+			for (const [diagnostic, count] of Object.entries(aggregate.diagnostics))
+				if (count) assert.ok(line.includes(`${diagnostic}=${count}`));
+		}
+
 		for (const [population, items] of Object.entries(populations)) {
 			const query = {
 				...(population === 'pending'
@@ -158,7 +174,28 @@ try {
 			assert.deepEqual(output.items, items);
 			const rendered = cli(command, query, false);
 			cliCalls++;
-			if (items.length && population === 'finalized') assert.ok(rendered.includes('Accounting'));
+			if (population === 'finalized')
+				for (const item of items) {
+					const dimensionLine = rendered
+						.split('\n')
+						.find((line) => line.startsWith(`Evidence ${item.id}:`));
+					assert.ok(dimensionLine, item.id);
+					for (const [name, dimension] of Object.entries(item.usage_dimensions))
+						assert.ok(
+							dimensionLine.includes(`${name}=${dimension.name} [${dimension.id ?? 'unknown'}]`)
+						);
+					const a = item.usage_accounting;
+					assert.ok(
+						rendered.includes(
+							`Accounting ${item.id}: ${a.status} · source ${a.source ?? 'unavailable'} · exact cost ${a.cost_exact ?? 'unavailable'}`
+						)
+					);
+					if (a.source === 'calculated' && !a.basis)
+						assert.ok(
+							rendered.includes(`Rate ${item.id}: historical calculated amount · basis unavailable`)
+						);
+				}
+
 			if (population === 'pending') assert.ok(!rendered.includes('future-secret'));
 			if (
 				population === 'finalized' &&
@@ -178,22 +215,24 @@ try {
 	const first = JSON.parse(cli(['runs', 'list'], { ...bounds, population: 'finalized' }));
 	assert.equal(first.items.length, 50);
 	assert.ok(first.next_cursor);
-	const manual = [];
-	let cursor;
-	do {
-		const page = JSON.parse(
-			cli(['runs', 'list'], {
-				...bounds,
-				population: 'pending',
-				limit: '19',
-				...(cursor ? { cursor } : {})
-			})
-		);
-		manual.push(...page.items);
-		cursor = page.next_cursor;
-	} while (cursor);
-	assert.equal(manual.length, 107);
-	assert.equal(new Set(manual.map((r) => r.id)).size, 107);
+	for (const population of ['finalized', 'pending']) {
+		const manual = [];
+		let cursor;
+		do {
+			const page = JSON.parse(
+				cli(['runs', 'list'], { ...bounds, population, limit: '19', ...(cursor ? { cursor } : {}) })
+			);
+			manual.push(...page.items);
+			cursor = page.next_cursor;
+		} while (cursor);
+		const expected = selected({}, population === 'pending');
+		assert.deepEqual(manual.map((row) => row.id).sort(), expected.map((row) => row.id).sort());
+		assert.equal(new Set(manual.map((row) => row.id)).size, expected.length);
+	}
+	const archivedName = JSON.parse(cli(['usage'], { ...bounds, project: 'Mixed archived' }));
+	assertAggregate(archivedName.scope_total, selected({ project: 'prj_mixedb' }));
+	const systemName = JSON.parse(cli(['usage'], { ...bounds, workflow: 'Standard' }));
+	assertAggregate(systemName.matching_total, selected({ workflow: 'wf_standard' }));
 	const defaultUsage = JSON.parse(cli(['usage']));
 	assert.equal(defaultUsage.by, 'workflow');
 	assert.equal(defaultUsage.timezone, 'UTC');
@@ -241,6 +280,7 @@ try {
 				...receipt,
 				source_cli_invocations: cliCalls,
 				manual_pending_pages: 6,
+				manual_finalized_pages: 8,
 				default_limit: 50,
 				account_and_run_key_isolation: true,
 				source_cli: 'node --import tsx src/index.ts',

@@ -1,0 +1,114 @@
+{
+	"generated_at": "2026-09-12T15:24:42.994Z",
+	"wrangler": "4.130.0",
+	"dataset": {
+		"finalized": 120001,
+		"all_priced": false,
+		"no_priced": false,
+		"groups": 3,
+		"retained_rates": 0,
+		"equal_time_fanout": 10,
+		"pending": 100
+	},
+	"aggregate": {
+		"queries": 25,
+		"returned_rows_including_lookahead": 120025,
+		"max_response_bytes": 2051817,
+		"elapsed_ms": 32994.3,
+		"plan": [
+			{
+				"id": 9,
+				"parent": 0,
+				"notused": 48,
+				"detail": "SEARCH agent_run USING INDEX agent_run_user_ended_idx (user_id=? AND ended_at>? AND ended_at<?)"
+			},
+			{
+				"id": 16,
+				"parent": 0,
+				"notused": 46,
+				"detail": "SEARCH issue USING INDEX sqlite_autoindex_issue_1 (id=?) LEFT-JOIN"
+			},
+			{
+				"id": 23,
+				"parent": 0,
+				"notused": 46,
+				"detail": "SEARCH start_state USING INDEX sqlite_autoindex_workflow_state_1 (id=?) LEFT-JOIN"
+			}
+		]
+	},
+	"sparse_evidence": {
+		"queries": 11,
+		"examined_rows": 110000,
+		"found": "scale_100001",
+		"max_response_bytes": 1455298,
+		"elapsed_ms": 10810.8,
+		"plan": [
+			{
+				"id": 5,
+				"parent": 0,
+				"notused": 48,
+				"detail": "SEARCH agent_run USING INDEX agent_run_user_ended_idx (user_id=? AND ended_at>? AND ended_at<?)"
+			}
+		]
+	},
+	"pending_plan": [
+		{
+			"id": 4,
+			"parent": 0,
+			"notused": 50,
+			"detail": "SEARCH agent_run USING INDEX agent_run_user_time_idx (user_id=? AND created_at<?)"
+		}
+	],
+	"authenticated_worker": {
+		"status": 200,
+		"elapsed_ms": 2818.4,
+		"response_bytes": 7203,
+		"finalized": 120001,
+		"priced": 1,
+		"pending": 100,
+		"groups": 3,
+		"evidence_pages": [
+			{
+				"items": ["scale_100001"],
+				"scan_complete": true,
+				"has_cursor": false
+			}
+		],
+		"independent_oracle": {
+			"finalized_run_count": 120001,
+			"priced_run_count": 1,
+			"unpriced_run_count": 30000,
+			"unreported_run_count": 90000,
+			"cost_usd": 1
+		},
+		"distribution_oracle": {
+			"median_cost_usd": 1,
+			"p95_cost_usd": 1,
+			"max_cost_usd": 1
+		},
+		"groups_reconciled": true,
+		"measured_worker_queries": {
+			"aggregate": 29,
+			"evidence_pages": [17]
+		},
+		"source_cli_exact_match": true,
+		"source_cli_evidence_items": 1,
+		"source_cli_evidence_resummed_cost": 1,
+		"source_cli_text_disclosure": true
+	},
+	"bounds": {
+		"service_queries_at_100k": 27,
+		"invocation_queries_with_bearer_auth_at_100k": 29,
+		"sparse_invocation_queries_max": 30,
+		"free_query_limit": 50,
+		"worker_isolate_limit_mb": 128,
+		"priced_sample_capacity_mb_at_100k": 3.2,
+		"all_growth_allocations_mb_at_100k": 6.4
+	},
+	"limitations": [
+		"Wrangler CLI elapsed time includes process startup; D1 meta is emitted by the local emulator.",
+		"Wrangler local exposes duration but not D1 rows_read; indexed plans and returned-row counts are recorded instead.",
+		"Worker heap is a conservative bound, not an isolate inspector measurement; whole-process RSS is intentionally not presented as isolate heap.",
+		"Run with --size=120001 to place the unique priced evidence match beyond 100k candidates."
+	]
+}

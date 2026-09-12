@@ -304,7 +304,7 @@ export function seedMixed(sqlite) {
 			r.pending ? 'future-secret-end' : null
 		);
 	sqlite.exec(
-		`INSERT INTO agent_run (id,user_id,issue_id,runner_id,status,outcome,tier,usage,state_id_at_start,created_at,ended_at) VALUES ('arun_mixed_foreign','${foreignUser}','iss_mixed_foreign','rnr_mixedforeign','completed','advanced','smartest','{"cost_usd":900000}','wfs_mixed_foreign',${from - 1},${from + 1}); PRAGMA foreign_keys=ON;`
+		`UPDATE agent_run SET state_id_at_end = 'wfs_mixed_foreign' WHERE id = 'arun_mixed_000'; INSERT INTO agent_run (id,user_id,issue_id,runner_id,status,outcome,tier,usage,state_id_at_start,created_at,ended_at) VALUES ('arun_mixed_foreign','${foreignUser}','iss_mixed_foreign','rnr_mixedforeign','completed','advanced','smartest','{"cost_usd":900000}','wfs_mixed_foreign',${from - 1},${from + 1}); PRAGMA foreign_keys=ON;`
 	);
 }
 /** @type {Array<Record<string,string>>} */
@@ -517,6 +517,10 @@ export async function verifyMixed(request, onCase = async () => {}) {
 			);
 			assert.deepEqual(items.map((r) => r.id).sort(), rows.map((r) => r.id).sort());
 			for (const item of items) {
+				assert.ok(
+					!JSON.stringify(item).includes('Foreign secret'),
+					'foreign metadata in owned evidence'
+				);
 				const row = rows.find((r) => r.id === item.id),
 					dimensions = { ...row.dimensions };
 				if (pending) {
