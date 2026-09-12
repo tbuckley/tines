@@ -192,6 +192,17 @@
 </p>
 
 <section class="mb-8 rounded-lg border p-4">
+	<h2 class="mb-1 text-lg font-medium">Workflow packages</h2>
+	<p class="text-muted-foreground mb-3 max-w-2xl text-sm">
+		Install one reviewed workflow and its required dependencies as an atomic, independent copy.
+		Destination values and optional paused automation are confirmed before anything is created.
+	</p>
+	<a class={buttonVariants({ variant: 'outline' })} href="/workflows/import">
+		<IconUpload size={16} /> Install workflow package
+	</a>
+</section>
+
+<section class="mb-8 rounded-lg border p-4">
 	<h2 class="mb-1 text-lg font-medium">Export</h2>
 	<p class="text-muted-foreground mb-3 max-w-2xl text-sm">
 		Downloads one JSON file with every workflow you own and every context item that is not tied to a
