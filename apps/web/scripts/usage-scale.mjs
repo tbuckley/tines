@@ -337,7 +337,7 @@ try {
 		});
 		cliTextDisclosure =
 			!expectedPriced ||
-			(cliEvidenceText.includes('Accounting') && cliEvidenceText.includes('Rate'));
+			(cliEvidenceText.includes('Accounting') && cliEvidenceText.includes('source provider'));
 		if (!cliTextDisclosure)
 			throw new Error('source CLI text omitted accounting or rate disclosure');
 	}
