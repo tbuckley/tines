@@ -23,7 +23,6 @@ import {
 	writeFileSync,
 	type WriteStream
 } from 'node:fs';
-import { hostname, platform, arch } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
@@ -40,15 +39,14 @@ import { collectCodexRequestContext, resolveCodexHome } from './codex-rollout.js
 import type { RunStreamRenderer } from './stream-summary.js';
 import { RateLimitDetector } from './rate-limit';
 import { agentCliPrefix, installAgentCli } from './cli-refresh.js';
+import { ensureRunnerCredentials, nextStepsMessage } from './register.js';
 import {
 	clearRunnerCredentials,
 	daemonStatePath,
 	loadDaemonState,
-	loadRunnerCredentials,
 	processStartTimeMs,
 	pruneKeptWorkspaces,
 	saveDaemonState,
-	saveRunnerCredentials,
 	workspacesDir,
 	writeKeptMarker,
 	type DaemonStateEntry,
@@ -265,31 +263,23 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 	};
 
 	// -- registration / reconnect ---------------------------------------------
-	let creds: RunnerCredentials | null = loadRunnerCredentials(opts.configDir, baseUrl, opts.name);
-	if (creds) {
+	// Shared with `tines runner install` (register.ts), so the service unit
+	// and a foreground start resolve exactly the same identity.
+	const ensured = await ensureRunnerCredentials({
+		configDir: opts.configDir,
+		baseUrl,
+		name: opts.name,
+		harness: opts.harness,
+		...(opts.command !== undefined ? { command: opts.command } : {}),
+		maxConcurrent: opts.maxConcurrent,
+		...(opts.apiKey !== undefined ? { apiKey: opts.apiKey } : {}),
+		log
+	});
+	const creds: RunnerCredentials = ensured.creds;
+	if (ensured.registered) {
+		log(nextStepsMessage(opts.name, baseUrl));
 		log(
-			`reconnecting as runner "${opts.name}" (${creds.runner_id}) — token from ${opts.configDir}`
-		);
-	} else {
-		if (!opts.apiKey) {
-			throw new Error(
-				`no stored runner token for "${opts.name}" at ${baseUrl} — set TINES_API_KEY (a user API key) to register`
-			);
-		}
-		const userClient = createApiClient({ baseUrl, apiKey: opts.apiKey });
-		const registered = await userClient.registerRunner({
-			name: opts.name,
-			harness: opts.harness,
-			...(opts.command !== undefined ? { command: opts.command } : {}),
-			max_concurrent: opts.maxConcurrent,
-			hostname: hostname(),
-			platform: `${platform()} ${arch()}`
-		});
-		creds = { runner_id: registered.runner.id, token: registered.runner_token };
-		saveRunnerCredentials(opts.configDir, baseUrl, opts.name, creds);
-		log(`registered runner "${opts.name}" (${creds.runner_id}); token stored in ${opts.configDir}`);
-		log(
-			`next: route work to "${opts.name}" — ${baseUrl}/agents (or: tines routing set ${opts.name}). Eligible work starts when this runner is available and routing matches. If automation is stopped, resume it in Agents or with tines supervisor enable.`
+			`keep it running: \`tines runner install --name ${opts.name} --harness ${opts.harness.replaceAll('_', '-')}\` installs this runner as a launchd/systemd service that keeps itself updated (docs/runner-daemon.md)`
 		);
 	}
 
@@ -326,7 +316,7 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 		log(
 			managedInstall
 				? `self-update: on — this daemon (tines ${DAEMON_VERSION}) runs from ${prefix} and will restart once idle after a newer release is installed there`
-				: `self-update: off — this daemon (tines ${DAEMON_VERSION}) runs from ${selfPath ?? process.argv[1] ?? '?'}, not ${prefix}; launch it from ${join(prefix, 'node_modules', '.bin', 'tines')} to have refreshes apply on restart (docs/runner-daemon.md)`
+				: `self-update: off — this daemon (tines ${DAEMON_VERSION}) runs from ${selfPath ?? process.argv[1] ?? '?'}, not ${prefix}; launch it from ${join(prefix, 'node_modules', '.bin', 'tines')} to have refreshes apply on restart — \`tines runner install --name ${opts.name} --harness ${opts.harness.replaceAll('_', '-')}\` sets that up as a service (docs/runner-daemon.md)`
 		);
 	}
 	let pendingUpdate: string | null = null;

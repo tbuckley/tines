@@ -1,5 +1,4 @@
 /** `tines runners` / `runner` / `runs` — the runner registry, the local daemon, and agent runs. */
-import { hostname } from 'node:os';
 import {
 	client,
 	die,
@@ -28,12 +27,8 @@ import {
 	saveRunnerCredentials,
 	workspacesDir
 } from '../daemon/store.js';
-import {
-	HARNESS_KINDS,
-	KEEP_WORKSPACES_MODES,
-	type HarnessKind,
-	type KeepWorkspacesMode
-} from '../daemon/support.js';
+import { parseDaemonFlags, withDaemonFlags, type DaemonFlagValues } from './daemon-flags.js';
+import { registerServiceCommands } from './runner-service.js';
 import { issueRef, keptWorkspaceRow, runRow, runnerStatusLabel, timestamp } from '../format.js';
 import {
 	DEFAULT_RESUME_MAX_COST_USD,
@@ -426,27 +421,13 @@ export function register(program: Command): void {
 	const runnerCmd = program.command('runner').description('The local runner daemon');
 
 	withCommon(
-		runnerCmd
-			.command('daemon')
-			.description(
-				'Run the local runner daemon: register/reconnect, poll for assigned runs, execute them'
-			)
-			.option(
-				'--name <name>',
-				'runner name, unique per user; name it machine-plus-harness, e.g. macbook-claude (default: this hostname)'
-			)
-			.option('--harness <harness>', 'claude-code | codex | custom', 'claude-code')
-			.option(
-				'--command <template>',
-				'custom harness command template ({prompt_file}, {workspace}, {model})'
-			)
-			.option('--max-concurrent <n>', 'maximum simultaneous runs', (v) => Number.parseInt(v, 10), 1)
-			.option(
-				'--poll-interval <seconds>',
-				'seconds between polls',
-				(v) => Number.parseInt(v, 10),
-				15
-			)
+		withDaemonFlags(
+			runnerCmd
+				.command('daemon')
+				.description(
+					'Run the local runner daemon in the foreground: register/reconnect, poll for assigned runs, execute them (`tines runner install` runs it as a service instead)'
+				)
+		)
 			.option(
 				'--no-cli-refresh',
 				'do not install/refresh the agent-facing tines CLI from npm (harnesses use the ambient PATH)'
@@ -455,87 +436,29 @@ export function register(program: Command): void {
 				'--no-self-update',
 				'do not exit for the service manager to relaunch a newer daemon (only applies when launched from the daemon-managed prefix)'
 			)
-			.option(
-				'--keep-workspaces <mode>',
-				"keep settled runs' workspaces for debugging: never | failed | always",
-				'never'
-			)
-			.option(
-				'--keep-workspaces-for <hours>',
-				'delete kept workspaces older than this',
-				(v) => Number(v),
-				72
-			)
-			.option(
-				'--keep-workspaces-max <n>',
-				'keep at most this many workspaces (oldest removed first)',
-				(v) => Number.parseInt(v, 10),
-				20
-			)
 	).action(
-		async (
-			opts: CommonOpts & {
-				name?: string;
-				harness: string;
-				command?: string;
-				maxConcurrent: number;
-				pollInterval: number;
-				cliRefresh: boolean;
-				selfUpdate: boolean;
-				keepWorkspaces: string;
-				keepWorkspacesFor: number;
-				keepWorkspacesMax: number;
-			}
-		) => {
-			const harness = opts.harness.replaceAll('-', '_') as HarnessKind;
-			if (!HARNESS_KINDS.includes(harness)) {
-				die(`--harness must be claude-code, codex, or custom, got "${opts.harness}"`);
-			}
-			if (harness === 'custom' && !opts.command) {
-				die(
-					'the custom harness needs --command "<template>" ({prompt_file}, {workspace}, {model})'
-				);
-			}
-			if (harness !== 'custom' && opts.command) die('--command only applies to --harness custom');
-			if (
-				!Number.isInteger(opts.maxConcurrent) ||
-				opts.maxConcurrent < 1 ||
-				opts.maxConcurrent > 100
-			) {
-				die('--max-concurrent must be an integer between 1 and 100');
-			}
-			if (!Number.isInteger(opts.pollInterval) || opts.pollInterval < 1) {
-				die('--poll-interval must be a positive number of seconds');
-			}
-			const keepWorkspaces = opts.keepWorkspaces as KeepWorkspacesMode;
-			if (!KEEP_WORKSPACES_MODES.includes(keepWorkspaces)) {
-				die(
-					`--keep-workspaces must be ${KEEP_WORKSPACES_MODES.join(', ')}, got "${opts.keepWorkspaces}"`
-				);
-			}
-			if (!Number.isFinite(opts.keepWorkspacesFor) || opts.keepWorkspacesFor <= 0) {
-				die('--keep-workspaces-for must be a positive number of hours');
-			}
-			if (!Number.isInteger(opts.keepWorkspacesMax) || opts.keepWorkspacesMax < 1) {
-				die('--keep-workspaces-max must be a positive integer');
-			}
+		async (opts: CommonOpts & DaemonFlagValues & { cliRefresh: boolean; selfUpdate: boolean }) => {
+			const settings = parseDaemonFlags(opts);
 			await runDaemon({
 				url: resolveUrl(opts).replace(/\/+$/, ''),
 				apiKey: resolveApiKey(opts),
-				name: opts.name ?? hostname(),
-				harness,
-				command: opts.command,
-				maxConcurrent: opts.maxConcurrent,
-				pollIntervalMs: opts.pollInterval * 1000,
+				name: settings.name,
+				harness: settings.harness,
+				command: settings.command,
+				maxConcurrent: settings.maxConcurrent,
+				pollIntervalMs: settings.pollIntervalSeconds * 1000,
 				configDir: defaultConfigDir(),
 				cliRefresh: opts.cliRefresh,
 				selfUpdate: opts.selfUpdate,
-				keepWorkspaces,
-				keepWorkspacesForHours: opts.keepWorkspacesFor,
-				keepWorkspacesMax: opts.keepWorkspacesMax
+				keepWorkspaces: settings.keepWorkspaces,
+				keepWorkspacesForHours: settings.keepWorkspacesForHours,
+				keepWorkspacesMax: settings.keepWorkspacesMax
 			});
 		}
 	);
+
+	// --- runner as a service ------------------------------------------------------
+	registerServiceCommands(runnerCmd);
 
 	// --- kept workspaces ---------------------------------------------------------
 	// Pure filesystem, no API: these read the same config dir the daemon writes,
