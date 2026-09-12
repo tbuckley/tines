@@ -1,34 +1,36 @@
 # Period usage native scale receipt — 2026-09-12
 
-Measured on macOS with Wrangler 4.130.0 local D1, the shipped migrations, and `apps/web/scripts/usage-scale.mjs`. Wall time includes a fresh Wrangler CLI process per query, so it is deliberately conservative and is not Worker CPU time.
+The current receipt measures the authenticated built Worker through Wrangler 4.130.0 local D1. `usage-scale.mjs` captures native `meta.rows_read` before kysely-d1 discards it, together with the actual compiled SQL and positional bindings. Earlier literal-SQL probes were not representative of the shipping planner and have been removed. The Worker binding **does** expose rows read; the Wrangler CLI's rendered output omits that metric.
 
-| Dataset/path | Queries | Returned/examined rows | Max JSON page | Wall time |
+| Dataset | Aggregate / evidence queries | Aggregate scan rows read | Evidence candidate rows read | Aggregate / evidence wall ms |
 | --- | ---: | ---: | ---: | ---: |
-| 10k aggregate | 2 | 10,001 including lookahead | 2,051,755 B | 1.61 s |
-| 10k sparse exhaustion | 1 | 10,000 | 1,455,096 B | 0.81 s |
-| 100k aggregate | 20 | 100,019 including lookahead | 2,051,774 B | 16.70 s |
-| 100k sparse exhaustion | 10 | 100,000 | 1,455,255 B | 8.59 s |
-| 120,001 sparse match | 11 | 110,000 | 1,455,298 B | 9.67 s |
+| 10k sparse exhaustion | 6 / 4 | 70,008 | 10,000 | 208 / 131 |
+| 100k all priced | 24 / 5 → 4 | 700,152 | 20,003 (two requested pages) | 781 / 145 → 155 |
+| 100k all at one timestamp, no priced | 24 / 13 | 700,152 | 100,018 | 694 / 264 |
+| 120,001, unique match beyond candidate 100k | 29 / 17 | 840,199 | 120,025 | 793 / 291 |
+| 210,001, no match, bounded continuation | 47 / 23 → 4 | 1,470,343 | 210,043 | 1,257 / 392 → 133 |
 
-The final instrumented built-Worker rerun measured the actual Kysely executions, including bearer authentication and period metadata: 6 aggregate / 4 evidence queries at 10k, 24 aggregate / 5 then 4 evidence queries at 100k all-priced, and 29 aggregate / 17 evidence queries for the candidate-100,001 sparse match. The 210,001 no-priced stress case measured 47 aggregate queries and two bounded evidence requests of 23 then 4 queries; the first returned an empty continuation and the second proved exhaustion without duplicates or skips. The harness enables this counter only through its local `USAGE_SCALE_SQL_TRACE=1` Worker variable and fails above 49 aggregate or 30 evidence queries; production does not set the variable. These measured shipping-path counts replace the earlier inferred-only query accounting.
+Query counts include authentication, settings, pending count, and selected evidence hydration. The aggregate scan reads include metadata joins. Total **request** rows read (including all those extra queries) are recorded separately: 80,711 at 10k and 800,855 at 100k for aggregation; the two all-priced evidence requests read 110,404 and 110,405 respectively, including selected-row hydration. These complete totals must not be confused with candidate scan counts. Local wall times include telemetry/hash work and a 100ms log drain; they are observations, not production CPU measurements.
 
-The unique priced row in the last case was `scale_100001`, proving a match beyond 100,000 descending candidates without a skipped equal-time row. Aggregate paging used 10 equal-time rows per timestamp. The 100k service bound is 27 queries, 29 including bearer authentication, leaving 21 below D1 Free's 50-query invocation limit. Sparse evidence is capped at 30 including authentication/hydration/metadata. The 120,001 aggregate walk is intentionally outside the supported 100k invocation gate and took 25 data pages.
+For 100k, the first aggregate page reads 35,007 rows and the last 35,001; the single-timestamp fixture gives the same result. Sparse first/last pages each read 10,001. Compare review v4's old 1,650,133 aggregate / 550,009 sparse scan reads: the new 700,152 / 100,018 totals eliminate growing prefix rescans. Every continuation replaces the original upper window bound with one `(timestamp, id) < (?, ?)` index seek, retaining the lower period bound, account fence, and pending-at-cutoff end predicate. Both public and internal sparse cursors use it.
 
-The harness now also boots the built authenticated Worker and compares it with an oracle derived directly from the generated row numbers—not from either API response. It asserts finalized/priced/unpriced/unreported counts, exact cost, median, nearest-rank p95, max, pending count, and the sum of every tier group. On sparse datasets it additionally spawns the built source CLI for both JSON and text `runs list --all-pages`, independently re-sums every evidence item's accounting cost, requires cursor exhaustion, and verifies the accounting/rate disclosure. The all-priced 100k case deliberately does not serialize all 100k evidence rows through one invocation; that case is the aggregate/distribution and memory-bound gate, while the sparse datasets are the complete evidence/CLI gate.
+The gate checks each actual aggregate page against `7 * (returned_rows + 2)` and each lean candidate page against `returned_rows + 2` on this fixed-metadata fixture. Thus a full N-row aggregate walk is bounded by `7 * (N + 3 * ceil(N/5000))` scan reads; a complete sparse walk by `N + 3 * ceil(N/10000)`. Complete unfiltered request reads are also capped at `8N + 1000` for aggregation and `N + candidate_reads + 1000` for each evidence request in this fixture, including hydration and authentication. It additionally checks exact query counts, sparse exhaustion, and a SHA-256 digest of **every ordered page's IDs** against an independently generated fixture order, including lookahead rows. The same 100k single-timestamp gate runs in CI. Missing query telemetry or missing/non-numeric rows-read metadata fails closed.
 
-Both aggregate and evidence plans used `agent_run_user_ended_idx (user_id=? AND ended_at>? AND ended_at<?)`; joined issue and starting-state metadata used primary-key indexes. Pending used `agent_run_user_time_idx (user_id=? AND created_at<?)`. Every individual query remained far below D1's 30-second duration limit.
+EXPLAIN runs in a separate, loopback-only local sidecar **after** measured requests. It prepares the exact captured SQL with the exact positional bindings for first and last aggregate/evidence pages and requires the shipped `agent_run_user_ended_idx`; no literal substitution or extra measurement SQL is injected into service requests. Plans and per-page native metadata are in the machine-readable receipts. Each statement remains below D1's 30-second duration limit. The 100k design allowance remains <=29 aggregate / <=30 sparse invocation queries against D1 Free's 50-query limit; larger stress fixtures are explicitly outside the supported 100k invocation gate.
 
-Wrangler local emitted `meta.duration` but not production D1's `meta.rows_read`, so this receipt does not invent a rows-read figure: returned rows and native indexed plans are the available local evidence. Worker isolate heap was likewise unavailable. The conservative 100k all-priced accumulator bound is 3.2 MB reachable typed-sample capacity and 6.4 MB across all geometric allocations before collection, verified separately by the 100k shared test; raw page JSON peaked at 2.06 MB. Even adding parsed strings, dictionaries, response serialization, and sort workspace leaves substantial headroom under the 128 MB isolate limit for the supported ordinary low-cardinality dataset, but this is a justified bound rather than an inspector measurement.
+Raw aggregate page JSON peaks at 2.34 MB on the all-priced fixture; sparse pages at 1.36 MB. Worker isolate heap remains a justified bound, not an inspector measurement: 100k all-priced typed samples have at most 3.2 MB reachable capacity / 6.4 MB across geometric allocations before collection. Those bounds are tested independently. Unpaginated group/rate identities still grow with historical cardinality; production has no scale tracing, per-page hashing, or retained trace logs.
 
-Reproduce:
+Reproduce from the repository root (the script replaces only `apps/web/.wrangler-usage-scale`, never a remote database):
 
 ```sh
 pnpm --filter web perf:usage --size=10000
-pnpm --filter web perf:usage --size=100000
+pnpm --filter web perf:usage --size=100000 --all-priced
+pnpm --filter web perf:usage --size=100000 --equal-time --no-priced
 pnpm --filter web perf:usage --size=120001
+pnpm --filter web perf:usage --size=210001 --no-priced
 ```
 
-The script replaces only `apps/web/.wrangler-usage-scale`, applies shipped migrations, never selects a remote database, and prints the complete JSON receipt including EXPLAIN rows and authenticated oracle results. Unpaginated groups/rate identities remain proportional to their historical cardinality and are not silently capped.
+`--skip-build` is safe only when the built Worker already contains the source being measured. Each receipt includes compiled statements, bindings, ordered-ID hashes, native rows read/duration, EXPLAIN plans, query counts, response sizes, independent accounting/distribution oracles, and CLI reconciliation. The unique sparse result is `scale_100001`; the 210,001 no-match case exhausts in two requests with no skipped or duplicate rows. See [`receipts/usage-473/`](receipts/usage-473/).
 
 ## Human-review return: independent mixed acceptance and fail-closed telemetry
 
@@ -47,3 +49,11 @@ Machine-readable receipts are committed in [`receipts/usage-473/`](receipts/usag
 The final isolation extension also plants a foreign end-state reference in an owned finalized fact. It reproduced a leaked foreign label; finalized hydration now fences that metadata through its owning/system workflow. The exact pending allowlist still excludes all end-state facts. The final 100k all-priced receipt includes this additional joined fence; it adds no D1 execution.
 
 Final local gates on the current-main merge tree: `pnpm check`, `pnpm test` (270 shared / 574 CLI / 1,675 web), `pnpm format:check`, native Worker build, and navigation performance pass. Each spend browser file passed independently: a11y 7, recovery 8, selection matrix 6, real ledger 4; a11y and real ledger were repeated after the end-state fence. The unsharded full-browser attempt was stopped after 228 cases following the same unrelated `dialog-pending.spec.ts` animation failure recorded by review v3. All three CI browser shards passed on implementation commit `bac1583`; final-head CI is a separate run and is not represented here as already passed.
+
+## Final cursor-seek verification
+
+Restoring the pre-fix aggregate service fails the native 10k gate at **40,000 rows read for 5,000 returned**. Restoring the pre-fix evidence service fails the 100k single-timestamp gate at **20,001 for 10,001**. Removing `rows_read` from the actual Worker trace fails with `Worker rows_read telemetry absent or invalid`. All mutations were restored, followed by a rebuilt 10k control and the full equal-time CI command; machine-readable mutation results are alongside the receipts.
+
+Fresh final-source gates pass: `pnpm check`, full `pnpm test` (270 shared / 574 CLI / 1,676 web), formatting, built Worker/CLI, navigation performance, the 38-case real-worker/source-CLI mixed matrix, and all five scale datasets above. The new 10,003-row unit regression independently pins large timestamp ties, exact totals, sparse matching beyond an internal page, public cursor order, both period edges, and pending-at-cutoff inclusion. The journal's incorrect rows-read limitation was corrected to distinguish the CLI formatter from the native Worker binding.
+
+Each existing spend browser spec also passes independently on the final source against the real local API: `spend-a11y.spec.ts` 7 cases at 1440/390/320 with keyboard/modal assertions, `spend-recovery.spec.ts` 8, `spend-matrix.spec.ts` 6, and `spend.spec.ts` 4. Final root `pnpm build` passes. CI independently runs all browser shards, the mixed matrix, and the new single-timestamp scale gate.

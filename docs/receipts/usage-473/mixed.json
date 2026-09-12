@@ -10,5 +10,5 @@
 	"default_limit": 50,
 	"account_and_run_key_isolation": true,
 	"source_cli": "node --import tsx src/index.ts",
-	"generated_at": "2026-09-12T15:33:43.256Z"
+	"generated_at": "2026-09-12T17:01:30.131Z"
 }

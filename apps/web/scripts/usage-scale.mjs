@@ -198,6 +198,8 @@ try {
 	const body = await response.json();
 	const aggregateTraces = await tracesSince(aggregateTraceStart);
 	const aggregateWorkerQueries = aggregateTraces.length;
+	if (aggregateTraces.reduce((sum, t) => sum + t.rows_read, 0) > 8 * size + 1000)
+		throw new Error('Worker complete aggregate request rows_read bound exceeded');
 	const aggregateScan = scanReceipt(pageTraces(aggregateTraces), 7, 5000);
 	verifyPageIds(aggregateScan.pages, 5000);
 	const aggregateElapsed = Number((performance.now() - started).toFixed(1));
@@ -279,6 +281,11 @@ try {
 		const evidence = await evidenceResponse.json();
 		const traces = await tracesSince(evidenceTraceStart);
 		evidenceTraces.push(traces);
+		if (
+			traces.reduce((sum, t) => sum + t.rows_read, 0) >
+			size + pageTraces(traces).reduce((sum, t) => sum + t.rows_read, 0) + 1000
+		)
+			throw new Error('Worker complete evidence request rows_read bound exceeded');
 		evidenceElapsed.push(Number((performance.now() - evidenceStarted).toFixed(1)));
 		const evidenceQueryCount = traces.length;
 		scanReceipt(pageTraces(traces), 1, 10000);
