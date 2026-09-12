@@ -373,7 +373,7 @@ esac
 
 		await name.fill('laptop-e2e');
 		await expect(dialog).toContainText('npm install -g tines');
-		await expect(dialog).toContainText('tines runner daemon');
+		await expect(dialog).toContainText('tines runner install');
 		await expect(dialog).toContainText('--name laptop-e2e');
 		await expect(dialog).toContainText('registers');
 		await expect(dialog).toContainText('launchd/systemd');
@@ -422,7 +422,7 @@ esac
 		await dialog.getByRole('button', { name: 'Copy the bootstrap command' }).click();
 		const clip = await page.evaluate(() => navigator.clipboard.readText());
 		expect(clip).toContain('npm install -g tines');
-		expect(clip).toContain('tines runner daemon');
+		expect(clip).toContain('tines runner install');
 		expect(clip).toContain(`--name ${keyRunner}`);
 		expect(clip).toMatch(/TINES_API_KEY=tines_[A-Za-z0-9._-]+/);
 

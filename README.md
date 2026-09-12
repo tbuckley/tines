@@ -299,15 +299,17 @@ Install → key → runner → rule → observe. Automation needs no separate ar
 1. **Install** the CLI on the machine that will do the work: `npm install -g tines`.
 2. **Key** — Settings → API keys, or **Create key** inside the Agents tab's *Add runner →
    Local* dialog, which fills it into the command below for you.
-3. **Runner** — start the daemon, naming it machine-plus-harness:
+3. **Runner** — install the daemon as a service, naming it machine-plus-harness:
 
    ```sh
-   TINES_API_KEY=tines_… tines runner daemon \
+   TINES_API_KEY=tines_… tines runner install \
      --url https://tines.tbuckley.dev \
      --name macbook-claude \
      --harness claude-code
    ```
 
+   One command registers the runner, stores its token, and loads the daemon under
+   launchd/systemd, where it survives reboots and restarts itself onto each new release.
    `macbook-claude` is what every agent comment will say ("you via macbook-claude") and what
    routing rules address. It appears on the Agents tab, online, within seconds.
 4. **Rule** — a runner takes no work until something routes to it: click **Route everything
@@ -325,7 +327,7 @@ the finish. It also keeps its own copy of the `tines` CLI current from npm and p
 the harness's PATH, so agents run the CLI that matches the prompt they were given rather
 than whatever was last installed on the machine. **[docs/runner-daemon.md](docs/runner-daemon.md)**
 covers registration, the flags, token rotation, the managed CLI, failure behaviour, and
-launchd/systemd units for keeping it running.
+the service `tines runner install` sets up.
 
 Managed runners hold an Anthropic API key encrypted at rest with `SECRET_ENCRYPTION_KEY`
 (a Workers secret — see Deploying below); it is write-only after saving. They clone repos
