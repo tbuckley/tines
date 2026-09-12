@@ -1,17 +1,25 @@
 <script lang="ts">
+	import { tick } from 'svelte';
+	import Markdown from '$lib/components/Markdown.svelte';
+
 	let {
 		text,
 		tokens = [],
-		onToken
+		onToken,
+		format = 'text',
+		forceExpanded = false
 	}: {
 		text: string;
 		tokens?: { token: string; inputId: string }[];
 		onToken?: (id: string, trigger: HTMLElement) => void;
+		format?: 'markdown' | 'text';
+		forceExpanded?: boolean;
 	} = $props();
 	let expanded = $state(false);
-	const words = $derived(text.trim() ? text.trim().split(/\s+/).length : 0);
+	let markdownRoot = $state<HTMLElement | null>(null);
+	const words = $derived(renderedWordCount(text, format));
 	const shown = $derived.by(() => {
-		if (expanded || words <= 115) return text;
+		if (expanded || forceExpanded || words <= 115) return text;
 		const matches = [...text.matchAll(/\S+/g)];
 		const end = matches[Math.min(99, matches.length - 1)];
 		let offset = (end?.index ?? 0) + (end?.[0].length ?? 0);
@@ -20,6 +28,7 @@
 			if (start >= 0 && start < offset && start + item.token.length > offset)
 				offset = start + item.token.length;
 		}
+		if (format === 'markdown') offset = balancedMarkdownEnd(text, offset);
 		return text.slice(0, offset);
 	});
 	const pieces = $derived.by(() => {
@@ -46,24 +55,138 @@
 		result.push({ text: shown.slice(at) });
 		return result;
 	});
+
+	function renderedWordCount(value: string, kind: 'markdown' | 'text') {
+		const visible =
+			kind === 'text'
+				? value
+				: value
+						.replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
+						.replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+						.replace(/^\s{0,3}(?:#{1,6}|>|[-+*]|\d+[.)])\s+/gm, '')
+						.replace(/[`*_~]/g, '');
+		return visible.trim() ? visible.trim().split(/\s+/).length : 0;
+	}
+
+	function balancedMarkdownEnd(value: string, initial: number) {
+		let end = initial;
+		const before = value.slice(0, end);
+		const fences = [...before.matchAll(/^\s{0,3}(```+|~~~+)/gm)];
+		if (fences.length % 2 === 1) {
+			const marker = fences.at(-1)![1][0];
+			const closing = new RegExp(`^\\s{0,3}${marker}{3,}\\s*$`, 'gm');
+			closing.lastIndex = end;
+			const match = closing.exec(value);
+			if (match) end = match.index + match[0].length;
+		}
+		const codeRuns = [...value.slice(0, end).matchAll(/`+/g)];
+		if (codeRuns.length % 2 === 1) {
+			const run = codeRuns.at(-1)![0];
+			const close = value.indexOf(run, end);
+			if (close >= 0) end = close + run.length;
+		}
+		const openLink = value.lastIndexOf('[', end);
+		const closedLabel = value.lastIndexOf('](', end);
+		const closedLink = value.lastIndexOf(')', end);
+		if (openLink > value.lastIndexOf(']', end) || closedLabel > closedLink) {
+			const close = value.indexOf(')', end);
+			if (close >= 0) end = close + 1;
+		}
+		return end;
+	}
+
+	async function toggle() {
+		expanded = !expanded;
+		await tick();
+		(document.activeElement as HTMLElement | null)?.scrollIntoView({ block: 'nearest' });
+	}
+
+	function decorateMarkdown() {
+		if (!markdownRoot || !onToken || tokens.length === 0) return;
+		const walker = document.createTreeWalker(markdownRoot, NodeFilter.SHOW_TEXT);
+		const nodes: Text[] = [];
+		while (walker.nextNode()) nodes.push(walker.currentNode as Text);
+		for (const node of nodes) {
+			if (node.parentElement?.closest('button')) continue;
+			const value = node.data;
+			const matches: { start: number; token: string; inputId: string }[] = [];
+			for (const item of tokens) {
+				let from = 0;
+				while (from < value.length) {
+					const start = value.indexOf(item.token, from);
+					if (start < 0) break;
+					matches.push({ start, ...item });
+					from = start + item.token.length;
+				}
+			}
+			matches.sort((a, b) => a.start - b.start);
+			if (!matches.length) continue;
+			const fragment = document.createDocumentFragment();
+			let at = 0;
+			for (const match of matches) {
+				if (match.start < at) continue;
+				fragment.append(value.slice(at, match.start));
+				const button = document.createElement('button');
+				button.type = 'button';
+				button.className = 'package-token';
+				button.textContent = match.token;
+				button.setAttribute('aria-label', `Show declaration for ${match.token}`);
+				button.addEventListener('click', () => onToken(match.inputId, button));
+				fragment.append(button);
+				at = match.start + match.token.length;
+			}
+			fragment.append(value.slice(at));
+			node.replaceWith(fragment);
+		}
+	}
+
+	$effect(() => {
+		shown;
+		tokens;
+		queueMicrotask(decorateMarkdown);
+	});
 </script>
 
 <div class="bg-muted/20 rounded-md border">
-	<pre
-		class="max-w-full p-3 font-mono text-xs leading-5 break-words whitespace-pre-wrap">{#each pieces as piece}{#if piece.inputId}<button
-					type="button"
-					class="bg-primary/10 text-primary rounded px-0.5 font-mono underline underline-offset-2"
-					onclick={(event) => onToken?.(piece.inputId!, event.currentTarget)}
-					aria-label="Show declaration for {piece.text}">{piece.text}</button
-				>{:else}{piece.text}{/if}{/each}{#if words > 115 && !expanded}<span aria-hidden="true"
-				>…</span
-			>{/if}</pre>
-	{#if words > 115}
+	{#if format === 'markdown'}
+		<div class="package-markdown min-w-0 p-3 text-sm wrap-break-word" bind:this={markdownRoot}>
+			<Markdown source={shown} />
+			{#if words > 115 && !expanded && !forceExpanded}<span aria-hidden="true">…</span>{/if}
+		</div>
+	{:else}
+		<pre
+			class="max-w-full p-3 font-mono text-xs leading-5 break-words whitespace-pre-wrap">{#each pieces as piece}{#if piece.inputId}<button
+						type="button"
+						class="bg-primary/10 text-primary rounded px-0.5 font-mono underline underline-offset-2"
+						onclick={(event) => onToken?.(piece.inputId!, event.currentTarget)}
+						aria-label="Show declaration for {piece.text}">{piece.text}</button
+					>{:else}{piece.text}{/if}{/each}{#if words > 115 && !expanded && !forceExpanded}<span
+					aria-hidden="true">…</span
+				>{/if}</pre>
+	{/if}
+	{#if words > 115 && !forceExpanded}
 		<button
 			type="button"
 			class="text-primary min-h-10 border-t px-3 text-xs font-medium hover:underline"
-			onclick={() => (expanded = !expanded)}
-			>{expanded ? 'Show snippet' : `Show all ${words} words`}</button
+			onclick={toggle}
+			>{expanded || forceExpanded ? 'Show snippet' : `Show all ${words} words`}</button
 		>
 	{/if}
 </div>
+
+<style>
+	:global(.package-token) {
+		border-radius: 0.25rem;
+		background: color-mix(in oklab, var(--primary) 10%, transparent);
+		color: var(--primary);
+		font-family: var(--font-mono);
+		text-decoration: underline;
+		text-underline-offset: 2px;
+	}
+	:global(.package-markdown pre),
+	:global(.package-markdown code) {
+		max-width: 100%;
+		overflow-wrap: anywhere;
+		white-space: pre-wrap;
+	}
+</style>

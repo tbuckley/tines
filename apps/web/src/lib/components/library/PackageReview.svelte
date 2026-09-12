@@ -9,13 +9,15 @@
 		reviewed,
 		onReview,
 		onToken,
-		onEdit
+		onEdit,
+		expandedFields = new Set()
 	}: {
 		document: WorkflowPackageDocument;
 		reviewed: Set<string>;
 		onReview: (id: string, checked: boolean) => void;
 		onToken: (id: string, trigger: HTMLElement) => void;
 		onEdit: (recordId: string, field: string) => void;
+		expandedFields?: Set<string>;
 	} = $props();
 
 	const workflowByState = $derived.by(() => {
@@ -35,6 +37,12 @@
 			.filter((use) => use.target.record_id === recordId && use.target.field === field)
 			.map((use) => ({ token: use.token, inputId: use.input_id }));
 	}
+	function fieldKey(recordId: string, field: string) {
+		return `${recordId}:${field}`;
+	}
+	function stateName(id: string) {
+		return workflowByState.get(id)?.states.find((state) => state.id === id)?.name ?? id;
+	}
 </script>
 
 <div class="space-y-8" data-testid="package-review">
@@ -52,7 +60,9 @@
 					{#if workflow.description}
 						<PackageText
 							text={workflow.description}
+							format="markdown"
 							tokens={tokens(workflow.id, 'description')}
+							forceExpanded={expandedFields.has(fieldKey(workflow.id, 'description'))}
 							{onToken}
 						/>
 					{/if}
@@ -132,7 +142,13 @@
 											{item.description}
 										</p>{/if}
 									{#if item.kind === 'prompt'}
-										<PackageText text={item.body} tokens={tokens(item.id, 'body')} {onToken} />
+										<PackageText
+											text={item.body}
+											format="markdown"
+											tokens={tokens(item.id, 'body')}
+											forceExpanded={expandedFields.has(fieldKey(item.id, 'body'))}
+											{onToken}
+										/>
 									{:else if item.kind === 'skill'}
 										{#each item.files as file (file.id)}
 											<div class="mt-3">
@@ -145,7 +161,9 @@
 												</div>
 												<PackageText
 													text={file.content}
+													format={file.path.toLowerCase().endsWith('.md') ? 'markdown' : 'text'}
 													tokens={tokens(file.id, 'content')}
+													forceExpanded={expandedFields.has(fieldKey(file.id, 'content'))}
 													{onToken}
 												/>
 											</div>
@@ -206,11 +224,60 @@
 				{document.schedules.length} schedule{document.schedules.length === 1 ? '' : 's'} and {document
 					.routing.length} tier preference{document.routing.length === 1 ? '' : 's'} selected.
 			</p>
-			{#each document.schedules as schedule}<p class="mt-2 text-xs">
-					<b>{schedule.name}</b> · {schedule.timezone} · {schedule.recurrence.kind === 'cron'
-						? schedule.recurrence.cron
-						: schedule.recurrence.preset.kind} · installs paused
-				</p>{/each}{#each document.routing as route}<p class="mt-2 text-xs">
+			{#each document.schedules as schedule}
+				{@const scheduleWorkflow = document.workflows.find(
+					(workflow) => workflow.id === schedule.workflow.workflow_id
+				)}
+				{@const startStateId = schedule.start_state?.state_id ?? scheduleWorkflow?.initial_state_id}
+				<article class="mt-3 min-w-0 rounded-md border p-3 text-xs" id="review-{schedule.id}">
+					<h3 class="font-semibold">{schedule.name} · installs paused</h3>
+					<dl class="mt-2 grid grid-cols-[7rem_minmax(0,1fr)] gap-1">
+						<dt>Workflow</dt>
+						<dd>
+							{scheduleWorkflow?.name ?? schedule.workflow.workflow_id}
+							<code>({schedule.workflow.workflow_id})</code>
+						</dd>
+						<dt>Start state</dt>
+						<dd>
+							{schedule.start_state ? 'Explicit' : 'Follow workflow initial'}: {startStateId
+								? stateName(startStateId)
+								: 'missing'}
+							{#if startStateId}<code>({startStateId})</code>{/if}
+						</dd>
+						<dt>Recurrence</dt>
+						<dd>
+							{schedule.recurrence.kind === 'cron'
+								? schedule.recurrence.cron
+								: JSON.stringify(schedule.recurrence.preset)}
+						</dd>
+						<dt>Timezone</dt>
+						<dd>{schedule.timezone}</dd>
+						<dt>Gate</dt>
+						<dd>
+							{schedule.require_all_closed
+								? 'Require every prior scheduled issue to be closed'
+								: 'May create while prior scheduled issues remain open'}
+						</dd>
+					</dl>
+					<div class="mt-3">
+						<b>Title template</b><PackageText
+							text={schedule.title_template}
+							tokens={tokens(schedule.id, 'title_template')}
+							forceExpanded={expandedFields.has(fieldKey(schedule.id, 'title_template'))}
+							{onToken}
+						/>
+					</div>
+					<div class="mt-3">
+						<b>Description template</b><PackageText
+							text={schedule.description_template}
+							format="markdown"
+							tokens={tokens(schedule.id, 'description_template')}
+							forceExpanded={expandedFields.has(fieldKey(schedule.id, 'description_template'))}
+							{onToken}
+						/>
+					</div>
+				</article>
+			{/each}{#each document.routing as route}<p class="mt-2 text-xs">
 					<b>{route.tier}</b> for {workflowByState
 						.get(route.scope.state_id)
 						?.states.find((state) => state.id === route.scope.state_id)?.name}{route.scope.project

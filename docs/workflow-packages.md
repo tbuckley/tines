@@ -45,7 +45,8 @@ Open a workflow and choose **Export package**. The browser route shows the compl
 inheritance workflow graph, gates, ordered state-scoped context, every skill file and repository
 declaration, destination prerequisites, and explicitly selected automation. Source project,
 schedule, and tier preferences are opt-in. Rebuilding from source warns before discarding any
-candidate-only edits.
+candidate-only edits. Eligible and selected schedules expose their complete templates, recurrence,
+timezone, workflow and start-state identities, and prior-issue gate before download.
 
 The input editor adds typed declarations and registers an exact token at the selected range of one
 editable candidate field. It never searches and replaces matching prose, edits the private source,
@@ -54,7 +55,8 @@ returns focus to the passage. Required skill and repository declarations must ea
 again after a candidate change. **Validate & download** sends the exact candidate through the
 shared validator and downloads the same canonical JSON bytes emitted by the CLI. The page fetches
 neither repositories nor other external package dependencies, and download does not install or
-publish anything.
+publish anything. If the candidate or a required review changes while validation is pending, the
+older result is discarded and no file is downloaded.
 
 ## Whole-library backups and transfer
 

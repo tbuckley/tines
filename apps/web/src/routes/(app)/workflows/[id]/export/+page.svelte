@@ -35,8 +35,10 @@
 	let diagnostics = $state<LibraryDiagnostic[]>([]);
 	let validatedDigest = $state<string | null>(null);
 	let busy = $state(false);
+	let candidateUpdating = $state(false);
 	let dirty = $state(false);
 	let status = $state('');
+	let candidateGeneration = $state(0);
 
 	let draftKey = $state('');
 	let draftType = $state<PackageInput['type']>('text');
@@ -49,6 +51,7 @@
 	let fieldEditor = $state<HTMLTextAreaElement | null>(null);
 	let inputPanel = $state<HTMLElement | null>(null);
 	let tokenInvoker = $state<HTMLElement | null>(null);
+	let diagnosticsPanel = $state<HTMLElement | null>(null);
 
 	const requiredReviews = $derived(
 		candidate.context
@@ -121,6 +124,13 @@
 		return fields;
 	});
 	const selectedField = $derived(editableFields.find((field) => field.key === selectedTarget));
+	const diagnosticFieldKeys = $derived(
+		new Set(
+			diagnostics
+				.map((diagnostic) => diagnosticField(diagnostic.path)?.key)
+				.filter((key): key is string => Boolean(key))
+		)
+	);
 
 	function message(error: unknown) {
 		return error instanceof ApiError
@@ -130,12 +140,14 @@
 				: 'Something went wrong.';
 	}
 	function resetReview(note: string) {
+		candidateGeneration += 1;
 		reviewed = new Set();
 		validatedDigest = null;
 		diagnostics = [];
 		status = `${note} Required skill and repository review was reset.`;
 	}
 	function setReviewed(id: string, checked: boolean) {
+		candidateGeneration += 1;
 		const next = new Set(reviewed);
 		if (checked) next.add(id);
 		else next.delete(id);
@@ -180,10 +192,17 @@
 	}
 	async function addInput() {
 		const key = draftKey.trim();
-		if (!key || candidate.inputs.some((input) => input.key === key)) {
-			status = key ? `Input key “${key}” already exists.` : 'Enter an input key.';
+		if (
+			!/^[a-z][a-z0-9_]{0,63}$/.test(key) ||
+			candidate.inputs.some((input) => input.key === key)
+		) {
+			status = candidate.inputs.some((input) => input.key === key)
+				? `Input key “${key}” already exists.`
+				: 'Use a lowercase input key beginning with a letter and containing only letters, numbers, or underscores.';
 			return;
 		}
+		candidateGeneration += 1;
+		candidateUpdating = true;
 		const id = `input:author:${candidate.inputs.length + 1}`;
 		const next = {
 			...candidate,
@@ -205,6 +224,8 @@
 		} catch (error) {
 			status = message(error);
 			return;
+		} finally {
+			candidateUpdating = false;
 		}
 		selectedInputId = id;
 		dirty = true;
@@ -234,6 +255,8 @@
 	async function saveCandidateField(addUse = false) {
 		if (!selectedField || !fieldEditor) return;
 		const next = JSON.parse(JSON.stringify(candidate)) as WorkflowPackageDocument;
+		candidateGeneration += 1;
+		candidateUpdating = true;
 		let value = fieldEditor.value;
 		if (addUse) {
 			const input = next.inputs.find((item) => item.id === selectedInputId);
@@ -265,19 +288,64 @@
 			if (fieldEditor) fieldEditor.value = value;
 		} catch (error) {
 			status = message(error);
+		} finally {
+			candidateUpdating = false;
 		}
 	}
-	async function validate() {
+	function diagnosticField(path: string) {
+		const parts = path.split('/').slice(1);
+		let recordId: string | undefined;
+		let field: TextUseField | undefined;
+		if (parts[0] === 'workflows') {
+			recordId = candidate.workflows[Number(parts[1])]?.id;
+			if (parts[2] === 'description') field = 'description';
+		} else if (parts[0] === 'context') {
+			const item = candidate.context[Number(parts[1])];
+			if (parts[2] === 'files') {
+				recordId = item?.kind === 'skill' ? item.files[Number(parts[3])]?.id : undefined;
+				if (parts[4] === 'content') field = 'content';
+			} else {
+				recordId = item?.id;
+				if (parts[2] === 'description') field = 'description';
+				if (parts[2] === 'body') field = 'body';
+			}
+		} else if (parts[0] === 'schedules') {
+			recordId = candidate.schedules[Number(parts[1])]?.id;
+			if (parts[2] === 'title_template') field = 'title_template';
+			if (parts[2] === 'description_template') field = 'description_template';
+		}
+		if (!recordId || !field) return null;
+		const key = `${recordId}:${field}`;
+		return editableFields.find((item) => item.key === key) ?? null;
+	}
+	async function validate(expectedGeneration = candidateGeneration) {
+		if (candidateUpdating) {
+			status = 'Wait for the candidate edit to finish before validating.';
+			return null;
+		}
+		const snapshot = canonicalizeLibraryValue(candidate);
 		busy = true;
 		try {
 			const result = await api.validateLibrary({
-				document_json: canonicalizeLibraryValue(candidate)
+				document_json: snapshot
 			});
+			if (
+				candidateGeneration !== expectedGeneration ||
+				canonicalizeLibraryValue(candidate) !== snapshot
+			) {
+				status =
+					'The candidate or its review changed during validation. The older result was discarded.';
+				return null;
+			}
 			diagnostics = result.diagnostics;
 			validatedDigest = result.valid ? result.digest : null;
 			status = result.valid
 				? `Validated ${result.digest}.`
 				: 'Validation found fields that need attention.';
+			if (!result.valid) {
+				await tick();
+				diagnosticsPanel?.focus();
+			}
 			return result;
 		} catch (error) {
 			status = message(error);
@@ -291,8 +359,19 @@
 			status = 'Review every required skill and repository declaration before downloading.';
 			return;
 		}
-		const result = await validate();
+		const expectedGeneration = candidateGeneration;
+		const snapshot = canonicalizeLibraryValue(candidate);
+		const result = await validate(expectedGeneration);
 		if (!result?.valid || !result.document || result.document.profile !== 'workflow') return;
+		if (
+			candidateGeneration !== expectedGeneration ||
+			!reviewComplete ||
+			canonicalizeLibraryValue(candidate) !== snapshot
+		) {
+			status =
+				'The candidate or its required review changed during validation. Review it again before downloading.';
+			return;
+		}
 		candidate = result.document;
 		const bytes = `${canonicalizeLibraryValue(result.document)}\n`;
 		const url = URL.createObjectURL(new Blob([bytes], { type: 'application/json' }));
@@ -319,9 +398,10 @@
 		tokenInvoker?.focus();
 		tokenInvoker = null;
 	}
-	function beginEdit(recordId: string, field: string) {
+	async function beginEdit(recordId: string, field: string) {
 		selectedTarget = `${recordId}:${field}`;
-		setTimeout(() => fieldEditor?.focus());
+		await tick();
+		fieldEditor?.focus();
 	}
 </script>
 
@@ -346,7 +426,7 @@
 			fetched or changed in the source.
 		</p>
 	</div>
-	<Button onclick={download} disabled={busy || !reviewComplete}
+	<Button onclick={download} disabled={busy || candidateUpdating || !reviewComplete}
 		><IconDownload size={16} /> Validate & download</Button
 	>
 </div>
@@ -364,6 +444,7 @@
 				bind:value={sourceProjectId}
 				onchange={() => {
 					selectedSchedules = [];
+					if (!sourceProjectId) projectScoped = {};
 				}}
 				><option value="">None — workflow only</option>{#each data.projects as project}<option
 						value={project.id}>{project.name}</option
@@ -373,13 +454,39 @@
 		<div>
 			<span class="text-sm">Schedules</span
 			>{#if sourceProjectId && availableSchedules.length}{#each availableSchedules as schedule}<label
-						class="mt-1 flex min-h-10 items-center gap-2 text-sm"
-						><input
-							type="checkbox"
-							checked={selectedSchedules.includes(schedule.id)}
-							onchange={(event) => scheduleChanged(schedule.id, event.currentTarget.checked)}
-						/>
-						{schedule.name} · {schedule.workflow_name}</label
+						class="mt-2 block min-w-0 rounded-md border p-3 text-xs"
+						><span class="flex min-h-10 items-center gap-2 text-sm font-medium"
+							><input
+								type="checkbox"
+								checked={selectedSchedules.includes(schedule.id)}
+								onchange={(event) => scheduleChanged(schedule.id, event.currentTarget.checked)}
+							/>
+							{schedule.name}</span
+						>
+						<dl class="grid grid-cols-[6rem_minmax(0,1fr)] gap-1 pl-6 break-words">
+							<dt>Workflow</dt>
+							<dd>{schedule.workflow_name} <code>({schedule.workflow_id})</code></dd>
+							<dt>Start state</dt>
+							<dd>
+								{schedule.state_id
+									? `Explicit: ${schedule.state_name} (${schedule.state_id})`
+									: 'Follow workflow initial state'}
+							</dd>
+							<dt>Recurrence</dt>
+							<dd>{schedule.preset ? JSON.stringify(schedule.preset) : schedule.cron}</dd>
+							<dt>Timezone</dt>
+							<dd>{schedule.timezone}</dd>
+							<dt>Gate</dt>
+							<dd>
+								{schedule.require_all_closed
+									? 'Require all prior scheduled issues closed'
+									: 'No prior-issue closure gate'}
+							</dd>
+							<dt>Title</dt>
+							<dd class="whitespace-pre-wrap">{schedule.title_template}</dd>
+							<dt>Description</dt>
+							<dd class="whitespace-pre-wrap">{schedule.description_template}</dd>
+						</dl></label
 					>{/each}{:else}<p class="text-muted-foreground mt-2 text-xs">
 					{sourceProjectId
 						? 'No schedules belong to a bundled workflow in this project.'
@@ -435,7 +542,7 @@
 	</div>
 	<div class="mt-4 grid gap-3 md:grid-cols-3">
 		<label class="text-xs"
-			>Key<Input class="mt-1" bind:value={draftKey} placeholder="bug_label" /></label
+			>Key<Input class="mt-1" bind:value={draftKey} maxlength={64} placeholder="bug_label" /></label
 		><label class="text-xs"
 			>Type<Select class="mt-1" bind:value={draftType}
 				><option value="text">Text</option><option value="workflow">Workflow</option><option
@@ -443,15 +550,23 @@
 				><option value="project">Project</option></Select
 			></label
 		><label class="text-xs"
-			>Default<Input class="mt-1" bind:value={draftDefault} placeholder="No default" /></label
-		><label class="text-xs">Label<Input class="mt-1" bind:value={draftLabel} /></label><label
-			class="text-xs md:col-span-2"
-			>Description<Input class="mt-1" bind:value={draftDescription} /></label
+			>Default<Input
+				class="mt-1"
+				bind:value={draftDefault}
+				maxlength={10000}
+				placeholder="No default"
+			/></label
+		><label class="text-xs"
+			>Label<Input class="mt-1" bind:value={draftLabel} maxlength={200} /></label
+		><label class="text-xs md:col-span-2"
+			>Description<Input class="mt-1" bind:value={draftDescription} maxlength={1000} /></label
 		>
 	</div>
 	<label class="mt-2 flex min-h-10 items-center gap-2 text-sm"
 		><input type="checkbox" bind:checked={draftRequired} /> Required</label
-	><Button size="sm" variant="outline" onclick={addInput}>Add typed declaration</Button>
+	><Button size="sm" variant="outline" onclick={addInput} disabled={candidateUpdating}
+		>Add typed declaration</Button
+	>
 	{#if candidate.inputs.length}<div class="mt-4 grid gap-2 sm:grid-cols-2">
 			{#each candidate.inputs as input}<button
 					id="input-{input.id}"
@@ -477,9 +592,15 @@
 				value={selectedField.value}
 			></Textarea>
 			<div class="mt-2 flex flex-wrap gap-2">
-				<Button size="sm" variant="outline" onclick={() => saveCandidateField(false)}
-					>Save candidate text</Button
-				><Button size="sm" onclick={() => saveCandidateField(true)} disabled={!selectedInputId}
+				<Button
+					size="sm"
+					variant="outline"
+					onclick={() => saveCandidateField(false)}
+					disabled={candidateUpdating}>Save candidate text</Button
+				><Button
+					size="sm"
+					onclick={() => saveCandidateField(true)}
+					disabled={!selectedInputId || candidateUpdating}
 					>Replace selection with declared token</Button
 				><a
 					class="text-primary inline-flex min-h-9 items-center px-2 text-xs underline"
@@ -508,12 +629,22 @@
 {#if diagnostics.length}<div
 		class="border-destructive/40 bg-destructive/5 text-destructive mb-6 rounded-lg border p-4"
 		role="alert"
+		tabindex="-1"
+		bind:this={diagnosticsPanel}
 	>
 		<h2 class="font-semibold">Fields to fix</h2>
 		<ul class="mt-2 list-disc pl-5 text-sm">
-			{#each diagnostics as diagnostic}<li>
+			{#each diagnostics as diagnostic}
+				{@const repair = diagnosticField(diagnostic.path)}
+				<li>
 					<code>{diagnostic.path || '/'}</code>: {diagnostic.message}
-				</li>{/each}
+					{#if repair}<button
+							type="button"
+							class="ml-2 underline underline-offset-2"
+							onclick={() => beginEdit(repair.recordId, repair.field)}>Repair {repair.label}</button
+						>{/if}
+				</li>
+			{/each}
 		</ul>
 	</div>{/if}
 
@@ -523,10 +654,11 @@
 	onReview={setReviewed}
 	onToken={focusInput}
 	onEdit={beginEdit}
+	expandedFields={diagnosticFieldKeys}
 />
 
 <div
-	class="bg-background/95 sticky bottom-3 mt-8 flex flex-wrap items-center justify-between gap-3 rounded-lg border p-3 shadow-lg backdrop-blur"
+	class="bg-background/95 sticky bottom-[4.75rem] mt-8 flex flex-wrap items-center justify-between gap-3 rounded-lg border p-3 shadow-lg backdrop-blur sm:bottom-3"
 >
 	<p class="min-w-0 text-xs break-all">
 		{reviewComplete
@@ -535,9 +667,10 @@
 			/>Validated {validatedDigest}{/if}
 	</p>
 	<div class="flex gap-2">
-		<Button variant="outline" onclick={validate} disabled={busy}>Validate</Button><Button
-			onclick={download}
-			disabled={busy || !reviewComplete}><IconDownload size={16} /> Download package</Button
+		<Button variant="outline" onclick={() => validate()} disabled={busy || candidateUpdating}
+			>Validate</Button
+		><Button onclick={download} disabled={busy || candidateUpdating || !reviewComplete}
+			><IconDownload size={16} /> Download package</Button
 		>
 	</div>
 </div>
