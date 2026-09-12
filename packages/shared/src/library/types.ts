@@ -279,12 +279,14 @@ export interface PrepareWorkflowPackageResponse {
 	actor_key: string;
 	compiler_version: number;
 	plan_token: string;
-	budget: {
-		statements: number;
-		max_parameters: number;
-		max_sql_bytes: number;
-		max_value_bytes: number;
-	};
+	budget: WorkflowPackageBudget;
+}
+
+export interface WorkflowPackageBudget {
+	statements: number;
+	max_parameters: number;
+	max_sql_bytes: number;
+	max_value_bytes: number;
 }
 
 export interface PackageOperation {

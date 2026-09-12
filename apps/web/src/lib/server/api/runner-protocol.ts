@@ -24,7 +24,7 @@ import {
 	type RunnerPollResponse
 } from '@tines/shared';
 import type { RequestEvent } from '@sveltejs/kit';
-import type { Kysely } from 'kysely';
+import { sql, type Kysely } from 'kysely';
 import { sha256Hex } from '$lib/server/crypto';
 import { getDb, newId, type Database } from '$lib/server/db';
 import {
@@ -157,6 +157,84 @@ function validateOwnedRuns(body: RunnerPollRequest): string[] {
 	return owned;
 }
 
+function validateInstanceId(body: RunnerPollRequest): string | undefined {
+	const instanceId = body.instance_id;
+	if (instanceId === undefined) return undefined;
+	if (
+		typeof instanceId !== 'string' ||
+		instanceId.length < 1 ||
+		instanceId.length > 128 ||
+		!/^[A-Za-z0-9_-]+$/.test(instanceId)
+	) {
+		throw new ApiFail(
+			422,
+			'invalid_field',
+			'"instance_id" must be 1–128 ASCII letters, digits, underscores, or hyphens',
+			{ field: 'instance_id' }
+		);
+	}
+	return instanceId;
+}
+
+async function admitDaemonInstance(
+	db: Kysely<Database>,
+	env: Env,
+	runner: RunnerRow,
+	instanceId: string,
+	now: number
+): Promise<RunnerRow> {
+	const mayReplace = sql<boolean>`EXISTS (
+		SELECT 1 FROM runner
+		WHERE id = ${runner.id}
+			AND daemon_instance_id IS NOT NULL
+			AND daemon_instance_id IS NOT ${instanceId}
+			AND fenced_instance_id IS NOT ${instanceId}
+	)`;
+	const results = await runAtomic(env, [
+		supervisorEvent(
+			db,
+			runner.user_id,
+			{
+				type: 'runner.daemon_replaced',
+				payload: { runner_id: runner.id, name: runner.name }
+			},
+			now,
+			mayReplace
+		),
+		db
+			.updateTable('runner')
+			.set({
+				fenced_instance_id: sql<string | null>`CASE
+					WHEN daemon_instance_id IS NOT ${instanceId} THEN daemon_instance_id
+					ELSE fenced_instance_id
+				END`,
+				daemon_instance_id: instanceId
+			})
+			.where('id', '=', runner.id)
+			.where(sql<boolean>`fenced_instance_id IS NOT ${instanceId}`)
+			.compile(),
+		db
+			.selectFrom('runner')
+			.selectAll()
+			.where('id', '=', runner.id)
+			.where('daemon_instance_id', '=', instanceId)
+			.compile()
+	]);
+	const admitted = results[2]?.results?.[0] as RunnerRow | undefined;
+	if (admitted) return admitted;
+	const exists = await db
+		.selectFrom('runner')
+		.select('id')
+		.where('id', '=', runner.id)
+		.executeTakeFirst();
+	if (!exists) throw notFound();
+	throw new ApiFail(
+		409,
+		'runner_conflict',
+		'another daemon instance is serving this runner; this one has been superseded'
+	);
+}
+
 /**
  * One poll: bump `last_seen_at`, adopt the daemon's `max_concurrent` (the
  * flag is authoritative for the daemon's own cap, so a restart with a new
@@ -176,14 +254,18 @@ export async function pollRunner(
 	now: number = Date.now()
 ): Promise<PollOutcome> {
 	const owned = new Set(validateOwnedRuns(body));
-	const cap =
+	const instanceId = validateInstanceId(body);
+	const requestedCap =
 		body.max_concurrent === undefined
-			? runner.max_concurrent
+			? undefined
 			: validateBoundedInt(body.max_concurrent, 'max_concurrent', 1, 100);
-	const capChanged = cap !== runner.max_concurrent;
 	if (body.draining !== undefined && typeof body.draining !== 'boolean') {
 		throw new ApiFail(422, 'invalid_field', '"draining" must be a boolean', { field: 'draining' });
 	}
+	if (instanceId !== undefined)
+		runner = await admitDaemonInstance(db, env, runner, instanceId, now);
+	const cap = requestedCap === undefined ? runner.max_concurrent : requestedCap;
+	const capChanged = cap !== runner.max_concurrent;
 	// Every poll states the flag, so a daemon that died mid-drain cannot pin
 	// the runner shut: its relaunch (or any older daemon) polls without it.
 	const draining = body.draining === true ? 1 : 0;
