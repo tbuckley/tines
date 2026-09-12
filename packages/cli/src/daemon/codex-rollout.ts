@@ -64,10 +64,7 @@ function usage(value: unknown, validateClasses = true): Usage | undefined {
 		if (!Number.isSafeInteger(metric) || (metric as number) < 0) return;
 		out[field] = metric as number;
 	}
-	if (
-		validateClasses &&
-		out.cached_input_tokens + out.cache_write_input_tokens > out.input_tokens
-	)
+	if (validateClasses && out.cached_input_tokens + out.cache_write_input_tokens > out.input_tokens)
 		return;
 	return out;
 }

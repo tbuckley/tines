@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, symlink, truncate, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough, Readable } from 'node:stream';
 import {
 	CODEX_ROLLOUT_MAX_LINE_BYTES,
+	CODEX_ROLLOUT_MAX_BYTES,
+	CODEX_ROLLOUT_MAX_REQUESTS,
 	collectCodexRequestContext,
 	readCodexRolloutRecords,
 	reconcileCodexRollout,
@@ -184,6 +186,21 @@ describe('reconcileCodexRollout', () => {
 		).toMatchObject({ status: 'invalid', reason: 'delta_mismatch' });
 	});
 
+	it('bounds the number of advancing request snapshots', () => {
+		const records: unknown[] = [meta()];
+		for (let i = 1; i <= CODEX_ROLLOUT_MAX_REQUESTS + 1; i++) {
+			const total = { ...zero, input_tokens: i };
+			records.push(count(total, { ...zero, input_tokens: 1 }));
+		}
+		expect(
+			reconcileCodexRollout(records, {
+				threadId,
+				model: 'gpt-5.6-sol',
+				terminalUsage: { ...zero, input_tokens: CODEX_ROLLOUT_MAX_REQUESTS + 1 }
+			})
+		).toMatchObject({ status: 'invalid', reason: 'limit_exceeded' });
+	});
+
 	it.each([
 		[
 			[meta(), count({ ...total1, output_tokens: undefined } as never, total1)],
@@ -300,6 +317,26 @@ describe('collectCodexRequestContext', () => {
 				threadId,
 				startedAt: Date.parse('2026-01-01T00:00:00Z'),
 				endedAt: Date.parse('2026-02-01T00:00:00Z')
+			})
+		).resolves.toMatchObject({ reason: 'limit_exceeded' });
+	});
+
+	it('rejects an oversized rollout before reading it', async () => {
+		const root = await mkdtemp(join(tmpdir(), 'codex-rollout-'));
+		roots.push(root);
+		const directory = join(root, 'sessions', '2026', '09', '12');
+		await mkdir(directory, { recursive: true });
+		const file = join(directory, `rollout-large-${threadId}.jsonl`);
+		await writeFile(file, '');
+		await truncate(file, CODEX_ROLLOUT_MAX_BYTES + 1);
+		await expect(
+			collectCodexRequestContext({
+				codexHome: root,
+				threadId,
+				model: 'gpt-5.6-sol',
+				startedAt: Date.parse('2026-09-12T10:00:00Z'),
+				endedAt: Date.parse('2026-09-12T10:01:00Z'),
+				terminalUsage: zero
 			})
 		).resolves.toMatchObject({ reason: 'limit_exceeded' });
 	});
