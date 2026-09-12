@@ -50,7 +50,9 @@ test.describe('Agents Spend selection matrix', () => {
 		const anchor = armLedgerDays();
 		const requests = usageRequests(page);
 		await gotoHydrated(page, spendUrl({ spend_window: 'custom', spend_from: utcDate(-2, anchor) }));
-		await expect(page.locator('.spend .error')).toContainText('Enter both From and To, then Apply.');
+		await expect(page.locator('.spend .error')).toContainText(
+			'Enter both From and To, then Apply.'
+		);
 		await expect(page.locator('.statement')).toBeHidden();
 		await expect(page.getByText('Loading spend…')).toBeHidden();
 		expect(requests).toHaveLength(0);
