@@ -361,6 +361,8 @@ test('reviews optional schedule and tier configuration and repairs project scope
 	await expect(schedule).toContainText('Require all prior scheduled issues closed');
 	await expect(schedule).toContainText('Scheduled title {{count}}');
 	await expect(schedule).toContainText('**Scheduled description**');
+	await expect(page.getByText(workflowId, { exact: true })).toHaveCount(0);
+	await expect(page.getByText(scheduleId, { exact: true })).toHaveCount(0);
 
 	await page.getByText('Tier preferences (explicit, optional)').click();
 	const draftTier = page
@@ -445,10 +447,13 @@ test('focuses validation errors and keeps the mobile action above navigation', a
 
 	await page.getByRole('button', { name: 'Download package' }).scrollIntoViewIfNeeded();
 	const action = await page.getByRole('button', { name: 'Download package' }).boundingBox();
+	const actionBar = await page.getByTestId('package-actions').boundingBox();
 	const navigation = await page.getByRole('navigation', { name: 'Primary' }).boundingBox();
 	expect(action).not.toBeNull();
+	expect(actionBar).not.toBeNull();
 	expect(navigation).not.toBeNull();
 	expect(action!.y + action!.height).toBeLessThanOrEqual(navigation!.y);
+	expect(actionBar!.height).toBeLessThanOrEqual(48);
 	const overflow = await page.evaluate(() =>
 		[...document.querySelectorAll<HTMLElement>('*')]
 			.filter((element) => element.getBoundingClientRect().right > window.innerWidth + 1)

@@ -465,11 +465,11 @@
 						>
 						<dl class="grid grid-cols-[6rem_minmax(0,1fr)] gap-1 pl-6 break-words">
 							<dt>Workflow</dt>
-							<dd>{schedule.workflow_name} <code>({schedule.workflow_id})</code></dd>
+							<dd>{schedule.workflow_name}</dd>
 							<dt>Start state</dt>
 							<dd>
 								{schedule.state_id
-									? `Explicit: ${schedule.state_name} (${schedule.state_id})`
+									? `Explicit: ${schedule.state_name}`
 									: 'Follow workflow initial state'}
 							</dd>
 							<dt>Recurrence</dt>
@@ -658,13 +658,21 @@
 />
 
 <div
-	class="bg-background/95 sticky bottom-[4.75rem] mt-8 flex flex-wrap items-center justify-between gap-3 rounded-lg border p-3 shadow-lg backdrop-blur sm:bottom-3"
+	class="bg-background/95 sticky bottom-[4.75rem] mt-8 flex items-center justify-between gap-2 rounded-lg border px-2 py-1 shadow-lg backdrop-blur sm:bottom-3 sm:gap-3 sm:p-3"
+	data-testid="package-actions"
 >
-	<p class="min-w-0 text-xs break-all">
-		{reviewComplete
-			? 'All required skill and repository declarations reviewed.'
-			: `${requiredReviews.filter((id) => !reviewed.has(id)).length} required declaration review(s) remain.`}{#if validatedDigest}<br
-			/>Validated {validatedDigest}{/if}
+	<p class="min-w-0 text-xs sm:break-all">
+		<span class="sm:hidden">
+			{reviewComplete
+				? 'Ready'
+				: `${requiredReviews.filter((id) => !reviewed.has(id)).length} left`}
+		</span>
+		<span class="hidden sm:inline">
+			{reviewComplete
+				? 'All required skill and repository declarations reviewed.'
+				: `${requiredReviews.filter((id) => !reviewed.has(id)).length} required declaration review(s) remain.`}{#if validatedDigest}<br
+				/>Validated {validatedDigest}{/if}
+		</span>
 	</p>
 	<div class="flex gap-2">
 		<Button variant="outline" onclick={() => validate()} disabled={busy || candidateUpdating}
