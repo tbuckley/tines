@@ -205,7 +205,8 @@ it('prints complete aggregate diagnostics and historical rate references', async
 	expect(text).toContain('selected 1970-01-01T00:00:00.002Z — 1970-01-01T00:00:00.003Z');
 });
 
-it('prints finalized run dimensions, accounting diagnostics, and rate references', async () => {
+const rateDateFields = [null, 'rate_adopted_at', 'rate_valid_to', 'rate_selected_at'] as const;
+it.each(rateDateFields)('prints rate evidence with malformed date %s', async (invalidField) => {
 	vi.stubEnv('TINES_API_URL', 'https://usage.example.test');
 	vi.stubEnv('TINES_API_KEY', 'test-key');
 	const response = {
@@ -281,6 +282,8 @@ it('prints finalized run dimensions, accounting diagnostics, and rate references
 		],
 		next_cursor: null
 	};
+	if (invalidField)
+		(response.items[0].usage_accounting.basis as Record<string, unknown>)[invalidField] = 1e20;
 	vi.stubGlobal(
 		'fetch',
 		vi.fn(async () =>
@@ -308,9 +311,17 @@ it('prints finalized run dimensions, accounting diagnostics, and rate references
 		'2026-01-02T00:00:00Z'
 	]);
 	const text = log.mock.calls.map(([line]) => String(line)).join('\n');
+	if (invalidField)
+		expect(text).toContain(
+			`${invalidField === 'rate_adopted_at' ? 'adopted' : invalidField === 'rate_valid_to' ? 'valid to' : 'selected'} unavailable`
+		);
 	expect(text).toContain('project=project label [project_id]');
 	expect(text).toContain('exact cost 0.25');
 	expect(text).toContain('invalid_token_fields=1');
 	expect(text).toContain('id rate-evidence · version 4');
 	expect(text).toContain('effective unavailable');
+	if (!invalidField) {
+		expect(text).toContain('adopted 1970-01-01T00:00:00.001Z');
+		expect(text).toContain('selected 1970-01-01T00:00:00.002Z');
+	}
 });

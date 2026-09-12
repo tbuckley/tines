@@ -8,10 +8,11 @@ import type {
 const present = (value: unknown): string =>
 	value === null || value === undefined || value === '' ? 'unavailable' : String(value);
 
-const instant = (value: unknown): string =>
-	typeof value === 'number' && Number.isFinite(value)
-		? new Date(value).toISOString()
-		: present(value);
+const instant = (value: unknown): string => {
+	if (typeof value !== 'number') return present(value);
+	const parsed = new Date(value);
+	return Number.isFinite(parsed.getTime()) ? parsed.toISOString() : 'unavailable';
+};
 
 function basisLine(
 	basis: Partial<RunPricingBasisV1> | null,
