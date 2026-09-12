@@ -61,16 +61,24 @@
 			.map((item) => item.id) ?? []
 	);
 	const reviewComplete = $derived(requiredReviewIds.every((id) => reviewed.has(id)));
-	const resolvedDocument = $derived(
-		plan
-			? {
-					...plan.document,
-					workflows: plan.resolved.workflows,
-					context: plan.resolved.context,
-					schedules: plan.resolved.schedules.map((s) => s.definition)
-				}
-			: null
-	);
+	const resolvedDocument = $derived.by(() => {
+		if (!plan) return null;
+		const current = plan;
+		return {
+			...current.document,
+			workflows: current.resolved.workflows,
+			context: current.resolved.context,
+			schedules: current.resolved.schedules.map((schedule) => schedule.definition),
+			routing: current.document.routing
+				.filter((route) =>
+					current.resolved.routing.some((resolved) => resolved.local_id === route.id)
+				)
+				.map((route) => ({
+					...route,
+					tier: current.resolved.routing.find((resolved) => resolved.local_id === route.id)!.tier
+				}))
+		};
+	});
 
 	function clearRecovery() {
 		recovery = null;
@@ -302,7 +310,7 @@
 		<span class="text-muted-foreground min-w-0 text-sm break-all"
 			>{fileName ?? 'No file chosen'}</span
 		>
-		{#if document_}<span class="text-muted-foreground text-xs"><code>{document_.digest}</code></span
+		{#if document_}<span class="text-muted-foreground min-w-0 max-w-full break-all text-xs sm:w-auto"><code>{document_.digest}</code></span
 			>{/if}
 	</div>
 

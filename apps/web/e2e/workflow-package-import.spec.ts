@@ -2,11 +2,11 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-	automatedPackage,
 	type Project,
 	type ValidateLibraryResponse,
 	type WorkflowPackageDocument
 } from '@tines/shared';
+import { automatedPackage } from '../../../packages/shared/src/library/fixtures.js';
 import { expect, test } from '@playwright/test';
 import { BOB } from './constants.mjs';
 import { apiClient, body, DESKTOP, gotoHydrated, PHONE, runId, signIn } from './helpers';
@@ -21,6 +21,7 @@ test.beforeAll(async ({ playwright }) => {
 	const request = await playwright.request.newContext({ baseURL: test.info().project.use.baseURL });
 	const api = apiClient(request, BOB.apiKey);
 	const candidate = automatedPackage();
+	(candidate as { digest?: string }).digest = undefined;
 	mainName = `Reviewer${suffix}`;
 	dependencyName = `Shared${suffix}`;
 	candidate.workflows[0].name = mainName;
@@ -72,8 +73,11 @@ test('reviews, confirms and installs an independent project-free package through
 }) => {
 	await page.setViewportSize(DESKTOP);
 	await gotoHydrated(page, '/workflows');
-	await page.getByRole('link', { name: 'Install package' }).click();
-	await expect(page).toHaveURL('/workflows/import');
+	await expect(page.getByRole('link', { name: 'Install package' })).toHaveAttribute(
+		'href',
+		'/workflows/import'
+	);
+	await gotoHydrated(page, '/workflows/import');
 	await page.getByLabel('Workflow package file').setInputFiles(packagePath);
 	await expect(page.getByRole('heading', { name: 'Destination values' })).toBeVisible();
 	for (const schedule of await page
@@ -85,8 +89,12 @@ test('reviews, confirms and installs an independent project-free package through
 
 	await page.getByRole('button', { name: 'Prepare installation' }).click();
 	await expect(page.getByRole('heading', { name: 'Complete installation plan' })).toBeVisible();
-	await expect(page.getByText(`${mainName} (imported)`, { exact: false })).toBeVisible();
-	await expect(page.getByText(`${dependencyName} (imported)`, { exact: false })).toBeVisible();
+	await expect(
+		page.getByRole('heading', { name: `${mainName} (imported)`, exact: true })
+	).toBeVisible();
+	await expect(
+		page.getByRole('heading', { name: `${dependencyName} (imported)`, exact: true })
+	).toBeVisible();
 	await expect(page.getByText('Exact declared substitutions')).toBeVisible();
 	await expect(page.getByText('Original', { exact: true }).first()).toBeVisible();
 	await expect(page.getByText('Installed value', { exact: true }).first()).toBeVisible();
@@ -122,8 +130,11 @@ test('links the settings entry point and routes whole-library files without prep
 	page
 }) => {
 	await gotoHydrated(page, '/settings/export-import');
-	await page.getByRole('link', { name: 'Install workflow package' }).click();
-	await expect(page).toHaveURL('/workflows/import');
+	await expect(page.getByRole('link', { name: 'Install workflow package' })).toHaveAttribute(
+		'href',
+		'/workflows/import'
+	);
+	await gotoHydrated(page, '/workflows/import');
 	const legacy = join(mkdtempSync(join(tmpdir(), 'tines-library-import-')), 'library.json');
 	writeFileSync(
 		legacy,
