@@ -62,6 +62,7 @@
 			.filter((item) => item.kind === 'skill' || item.kind === 'repo')
 			.map((item) => item.id) ?? []
 	);
+	const canRetry = $derived(!!recovery && document_?.digest === recovery.documentDigest);
 	const reviewComplete = $derived(requiredReviewIds.every((id) => reviewed.has(id)));
 	const errorAction = $derived.by(() => {
 		if (errorCode === 'routing_unavailable')
@@ -164,6 +165,8 @@
 		confirmed = false;
 		reviewed = new Set();
 		fileName = file.name;
+		document_ = null;
+		documentJson = '';
 		try {
 			documentJson = await file.text();
 			const loose = parseStrictLibraryJson(documentJson) as {
@@ -171,9 +174,13 @@
 				profile?: unknown;
 			};
 			if (loose.version !== 3 || loose.profile !== 'workflow') {
-				legacyFile = true;
-				document_ = null;
-				stage = 'values';
+				legacyFile = !recovery;
+				stage = recovery ? 'unknown' : 'values';
+				if (recovery) {
+					error =
+						'Choose the original workflow package to retry the installation awaiting recovery.';
+					await focusError();
+				}
 				return;
 			}
 			const result = await api.validateLibrary({ document_json: documentJson });
@@ -181,28 +188,28 @@
 				error =
 					result.diagnostics.map((d) => `${d.path || '/'}: ${d.message}`).join('\n') ||
 					'This workflow package is invalid.';
-				stage = 'values';
+				stage = recovery ? 'unknown' : 'values';
 				await focusError();
 				return;
 			}
-			document_ = result.document;
-			choices = { schedule_ids: [] };
-			if (recovery && recovery.documentDigest !== document_.digest) {
+			if (recovery && recovery.documentDigest !== result.document.digest) {
 				error = 'This file does not match the installation awaiting recovery.';
 				stage = 'unknown';
 				await focusError();
 				return;
 			}
+			document_ = result.document;
+			choices = { schedule_ids: [] };
 			stage = recovery ? 'unknown' : 'values';
 		} catch (err) {
 			error = describe(err, 'That file is not valid Tines library JSON.');
-			stage = 'values';
+			stage = recovery ? 'unknown' : 'values';
 			await focusError();
 		}
 	}
 
 	async function prepare() {
-		if (!document_) return;
+		if (!document_ || recovery) return;
 		stage = 'preparing';
 		error = null;
 		errorCode = null;
@@ -221,18 +228,28 @@
 
 	async function installExact(token: string, digest: string, planId: string) {
 		if (!document_) return;
+		if (
+			recovery &&
+			(!canRetry ||
+				recovery.planId !== planId ||
+				recovery.planDigest !== digest ||
+				recovery.planToken !== token)
+		)
+			return;
+		const retryingUnknown = stage === 'unknown';
 		stage = 'installing';
 		error = null;
 		errorCode = null;
-		saveRecovery({
-			actorId: data.user.id,
-			destination: location.origin,
-			planId,
-			planDigest: digest,
-			documentDigest: document_.digest,
-			planToken: token,
-			createdAt: Date.now()
-		});
+		if (!recovery)
+			saveRecovery({
+				actorId: data.user.id,
+				destination: location.origin,
+				planId,
+				planDigest: digest,
+				documentDigest: document_.digest,
+				planToken: token,
+				createdAt: Date.now()
+			});
 		try {
 			receipt = await api.installWorkflowPackage({
 				document_json: documentJson,
@@ -252,6 +269,10 @@
 				errorCode = 'install_outcome_unknown';
 				error =
 					'Installation result unknown. The request may still have committed; check the durable receipt before retrying.';
+			} else if (retryingUnknown) {
+				// Rejection of a retry says nothing about the original uncertain request.
+				stage = 'unknown';
+				error = `${describe(err, 'The retry failed.')} The original installation result is still unknown. Check result before taking further action.`;
 			} else if (
 				err instanceof ApiError &&
 				(err.code === 'plan_stale' ||
@@ -265,6 +286,7 @@
 				error = `${err.message}. Nothing was created by this rejected attempt. Prepare and confirm a fresh plan.`;
 				errorCode = err.code;
 			} else {
+				clearRecovery();
 				stage = 'prepared';
 				error = describe(
 					err,
@@ -392,7 +414,8 @@
 			</p>
 			<div class="flex flex-wrap gap-2">
 				<Button onclick={checkResult}><IconRefresh size={16} /> Check result</Button
-				>{#if document_ && recovery}<Button
+				>{#if recovery}<Button
+						disabled={!canRetry}
 						variant="outline"
 						onclick={() =>
 							installExact(recovery!.planToken, recovery!.planDigest, recovery!.planId)}

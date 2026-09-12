@@ -298,6 +298,107 @@ test('retries the exact plan after reload and real 404, then recovers a lost com
 	).toBeNull();
 });
 
+test('preserves a committed recovery across wrong, invalid and legacy files', async ({ page }) => {
+	const requests: unknown[] = [];
+	let committed: WorkflowPackageReceipt;
+	let prepares = 0;
+	page.on('request', (request) => {
+		if (request.url().endsWith('/api/v1/library/prepare')) prepares++;
+	});
+	await gotoHydrated(page, '/workflows/import');
+	await page.getByLabel('Workflow package file').setInputFiles(packagePath);
+	await page.getByRole('button', { name: 'Prepare installation' }).click();
+	await approve(page);
+	await page.route('**/api/v1/library/install', async (route) => {
+		requests.push(route.request().postDataJSON());
+		const response = await route.fetch();
+		expect(response.ok()).toBe(true);
+		committed = await response.json();
+		await route.abort('connectionreset');
+	});
+	await page.getByRole('button', { name: 'Install package' }).click();
+	await expect(page.getByRole('heading', { name: 'Installation result unknown' })).toBeVisible();
+	const savedRecovery = () =>
+		page.evaluate(() => sessionStorage.getItem('tines:workflow-package-install-recovery:v1'));
+	const saved = await savedRecovery();
+	expect(JSON.parse(saved!).planId).toBe(committed!.id);
+	await page.reload({ waitUntil: 'networkidle' });
+	const retry = page.getByRole('button', { name: 'Retry same plan safely' });
+	await expect(retry).toBeDisabled();
+	const rejectedFiles = [
+		{ file: missingWorkflowPath, message: /This file does not match/ },
+		{
+			file: { name: 'broken.json', mimeType: 'application/json', buffer: Buffer.from('{') },
+			message: /not valid Tines library JSON/
+		},
+		{
+			file: {
+				name: 'invalid.json',
+				mimeType: 'application/json',
+				buffer: Buffer.from(JSON.stringify({ version: 3, profile: 'workflow' }))
+			},
+			message: /.+/
+		},
+		{
+			file: {
+				name: 'legacy.json',
+				mimeType: 'application/json',
+				buffer: Buffer.from(JSON.stringify({ version: 2 }))
+			},
+			message: /Choose the original workflow package/
+		}
+	];
+	for (const [index, rejected] of rejectedFiles.entries()) {
+		await page.setViewportSize(index % 2 ? PHONE : DESKTOP);
+		// Begin with an accepted document: each rejected selection must revoke it.
+		await page.getByLabel('Workflow package file').setInputFiles(packagePath);
+		await expect(retry).toBeEnabled();
+		await page.getByLabel('Workflow package file').setInputFiles(rejected.file);
+		await expect(page.getByRole('alert')).toContainText(rejected.message);
+		await expect(page.getByRole('heading', { name: 'Installation result unknown' })).toBeVisible();
+		await expect(retry).toBeDisabled();
+		await expect(page.getByRole('button', { name: 'Check result' })).toBeVisible();
+		await expect(page.getByRole('button', { name: 'Prepare installation' })).toHaveCount(0);
+		// Dispatch bypasses native disabled handling and pins the handler's fence.
+		await retry.dispatchEvent('click');
+		await page.evaluate(
+			() =>
+				new Promise<void>((resolve) =>
+					requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+				)
+		);
+		expect(requests).toHaveLength(1);
+		expect(await savedRecovery()).toBe(saved);
+	}
+	// Even a rejected retry of the matching file cannot establish the original outcome.
+	await page.getByLabel('Workflow package file').setInputFiles(packagePath);
+	await expect(retry).toBeEnabled();
+	await page.unroute('**/api/v1/library/install');
+	await page.route('**/api/v1/library/install', async (route) => {
+		requests.push(route.request().postDataJSON());
+		await route.fulfill({
+			status: 409,
+			contentType: 'application/json',
+			body: JSON.stringify({ error: { code: 'package_changed', message: 'Retry rejected' } })
+		});
+	});
+	await retry.click();
+	await expect(page.getByRole('alert')).toContainText(
+		'original installation result is still unknown'
+	);
+	expect(requests).toHaveLength(2);
+	expect(requests[1]).toEqual(requests[0]);
+	expect(await savedRecovery()).toBe(saved);
+	await page.reload({ waitUntil: 'networkidle' });
+	await page.getByRole('button', { name: 'Check result' }).click();
+	await expect(page.locator('[data-package-receipt]')).toBeFocused();
+	expect(prepares).toBe(1);
+	expect(await savedRecovery()).toBeNull();
+	expect(d1(`SELECT id FROM library_install WHERE id=${sqlLiteral(committed!.id)}`)).toEqual([
+		{ id: committed!.id }
+	]);
+});
+
 test('rejects an expired signed plan and requires fresh preparation and confirmation', async ({
 	page
 }) => {

@@ -23,6 +23,7 @@ is never treated as proof of rollback or used to prepare a replacement automatic
 choose the exact same file again to enable **Retry same plan safely**; this reuses the saved signed
 plan and confirmation, without preparing another copy. If the retry committed but its response was
 lost, **Check result** recovers that same receipt.
+During uncertain-result recovery, choosing a different, invalid, or whole-library file preserves Check result and the original saved installation identity. Same-plan retry stays disabled until the original workflow file validates with the saved digest. A failed retry does not prove the original request rolled back; Check result remains available.
 
 The receipt links every created object. Installed workflows are independent copies, selected
 schedules remain paused with zero runs, no issue is launched, and project defaults are unchanged.
