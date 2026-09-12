@@ -1559,6 +1559,36 @@ describe('pause and kill-switch cancels', () => {
 		expect(effects.count()).toBe(1);
 	});
 
+	it('keeps a prior pause cancellation signal when a later cancellation fails', async () => {
+		const t = world();
+		const runnerId = addRunner(t, { maxConcurrent: 2 });
+		const first = addRun(t, { issueId: addIssue(t), runnerId });
+		const second = addRun(t, { issueId: addIssue(t), runnerId });
+		const realBatch = t.env.DB.batch.bind(t.env.DB);
+		let batches = 0;
+		t.env.DB.batch = async (statements) => {
+			batches += 1;
+			// Runner = 1; first endRun flip/dependents = 2/3; fail the next flip.
+			if (batches === 4) throw new Error('injected later pause cancellation failure');
+			return realBatch(statements);
+		};
+		const effects = recordDispatchEffects();
+
+		await expect(
+			updateRunner(t.db, t.env, actor, effects, runnerId, { status: 'paused' })
+		).rejects.toThrow('injected later pause cancellation failure');
+
+		expect(runnerById(t, runnerId).status).toBe('paused');
+		expect([runById(t, first)?.status, runById(t, second)?.status].sort()).toEqual([
+			'assigned',
+			'canceled'
+		]);
+		expect(eventsOfType(t, 'runner.updated')).toHaveLength(1);
+		expect(eventsOfType(t, 'agent_run.ended')).toHaveLength(1);
+		// The runner write and the independently committed cancellation both signal.
+		expect(effects.count()).toBe(2);
+	});
+
 	it('pausing a runner cancels its assigned runs; launching/running finish', async () => {
 		const t = world();
 		const runnerId = addRunner(t, { maxConcurrent: 3 });
@@ -1628,6 +1658,50 @@ describe('pause and kill-switch cancels', () => {
 		expect((await getSupervisorSettings(t.db, USER)).enabled).toBe(false);
 		expect(runById(t, runId)?.status).toBe('assigned');
 		expect(eventsOfType(t, 'settings.updated')).toHaveLength(1);
+		expect(effects.count()).toBe(1);
+	});
+
+	it('keeps a direct in-flight cancellation signal when a later cancellation fails', async () => {
+		const t = world();
+		t.sqlite.prepare('UPDATE supervisor_settings SET enabled = 0 WHERE user_id = ?').run(USER);
+		const runnerId = addRunner(t, { maxConcurrent: 2 });
+		const first = addRun(t, {
+			issueId: addIssue(t),
+			runnerId,
+			status: 'running',
+			startedAt: NOW
+		});
+		const second = addRun(t, {
+			issueId: addIssue(t),
+			runnerId,
+			status: 'running',
+			startedAt: NOW
+		});
+		const realBatch = t.env.DB.batch.bind(t.env.DB);
+		let batches = 0;
+		t.env.DB.batch = async (statements) => {
+			batches += 1;
+			// First endRun flip/dependents = 1/2; fail the next run's flip.
+			if (batches === 3) throw new Error('injected later in-flight cancellation failure');
+			return realBatch(statements);
+		};
+		const effects = recordDispatchEffects();
+
+		await expect(
+			updateSupervisorSettings(t.db, t.env, actor, effects, {
+				enabled: false,
+				cancel_in_flight: true
+			})
+		).rejects.toThrow('injected later in-flight cancellation failure');
+
+		expect((await getSupervisorSettings(t.db, USER)).enabled).toBe(false);
+		expect(eventsOfType(t, 'settings.updated')).toHaveLength(0);
+		expect([runById(t, first)?.status, runById(t, second)?.status].sort()).toEqual([
+			'canceled',
+			'running'
+		]);
+		expect(eventsOfType(t, 'agent_run.ended')).toHaveLength(1);
+		// No settings write occurred, so this can only be the committed cancellation's signal.
 		expect(effects.count()).toBe(1);
 	});
 
