@@ -54,6 +54,13 @@ jobs:
       # It gates execution and the zero-duplicates rule, never timings.
       - run: pnpm --filter web perf:nav
 
+      # Independent persisted accounting oracle against local D1, HTTP, and
+      # TypeScript-source CLI (including complete finalized/pending paging).
+      - run: pnpm --filter web test:usage-mixed
+
+      # Actual bound-query rows read, including a 100k single-timestamp seek.
+      - run: pnpm --filter web perf:usage --size=100000 --equal-time --no-priced --skip-build
+
   e2e-shard:
     name: Playwright e2e
     runs-on: ubuntu-latest

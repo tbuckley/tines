@@ -25,5 +25,7 @@ vite.config.ts.timestamp-*
 # e2e
 .wrangler-e2e
 .wrangler-native-probe
+.wrangler-usage-scale
+.wrangler-usage-mixed
 /test-results
 /playwright-report

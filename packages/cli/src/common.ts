@@ -66,8 +66,10 @@ export function withCommon(cmd: Command): Command {
 export function withList(cmd: Command): Command {
 	return withCommon(
 		cmd
-			.option('--limit <n>', 'maximum items to return (page size under --all-pages)', (v) =>
-				Number.parseInt(v, 10)
+			.option(
+				'--limit <n>',
+				'maximum items to return (page size under --all-pages)',
+				parsePositiveInteger
 			)
 			.option('--cursor <cursor>', 'resume from the next_cursor of a previous page')
 			.addOption(
@@ -77,6 +79,18 @@ export function withList(cmd: Command): Command {
 				).conflicts('cursor')
 			)
 	);
+}
+
+export function parsePositiveInteger(value: string): number {
+	if (!/^[1-9]\d*$/.test(value)) throw new Error('limit must be a positive integer');
+	const result = Number(value);
+	if (!Number.isSafeInteger(result)) throw new Error('limit must be a positive safe integer');
+	return result;
+}
+
+/** Historical usage filters may name owned retained IDs whose metadata was deleted. */
+export function isUsageIdentity(value: string, prefix: 'prj' | 'wf' | 'wfs' | 'rnr'): boolean {
+	return value === 'unknown' || new RegExp(`^${prefix}_[A-Za-z0-9]+$`).test(value);
 }
 
 /** Where a resolved setting came from, in precedence order. */

@@ -32,6 +32,9 @@
 	const canonical = $derived(Object.keys(canonicalSpendChanges(page.url, focusId)).length === 0);
 	const report = $derived(envelope?.report ?? null);
 	const sorted = $derived(report ? sortUsageGroups(report.groups, selection.sort) : []);
+	const allExpanded = $derived(
+		sorted.length > 0 && sorted.every((group) => expanded.has(group.key))
+	);
 	const allProjects = $derived([...projects, ...archivedProjects]);
 	const selectedProjectName = $derived(
 		selection.project === 'all'
@@ -306,6 +309,12 @@
 					onclick={() => update({ spend_sort: selection.sort === 'desc' ? 'asc' : 'desc' })}
 					>Cost {selection.sort === 'desc' ? 'descending' : 'ascending'}</button
 				>
+				{#if sorted.length > 0}<button
+						type="button"
+						onclick={() => {
+							expanded = allExpanded ? new Set() : new Set(sorted.map((group) => group.key));
+						}}>{allExpanded ? 'Collapse all' : 'Expand all'}</button
+					>{/if}
 			</div>
 			{#if report.scope_total.finalized_run_count === 0 && report.pending.scope_count === 0}<p>
 					No runs — no finalized runs ended in this period.
@@ -359,6 +368,24 @@
 										? ' · Small sample; p95 equals maximum'
 										: ''}
 								</p>
+								<p>
+									Sources: provider {group.aggregate.portions.provider.cost_usd_exact} ({group
+										.aggregate.portions.provider.priced_run_count}) · calculated {group.aggregate
+										.portions.calculated.cost_usd_exact} ({group.aggregate.portions.calculated
+										.priced_run_count}) · unknown {group.aggregate.portions.unknown_source
+										.cost_usd_exact} ({group.aggregate.portions.unknown_source.priced_run_count})
+								</p>
+								{#if Object.values(group.aggregate.diagnostics).some(Boolean)}<p>
+										Diagnostics: {Object.entries(group.aggregate.diagnostics)
+											.filter(([, count]) => count > 0)
+											.map(([name, count]) => `${name.replaceAll('_', ' ')} ${count}`)
+											.join(' · ')}
+									</p>{/if}
+								{#if Object.keys(group.aggregate.pricing_reasons).length}<p>
+										Pricing: {Object.entries(group.aggregate.pricing_reasons)
+											.map(([name, count]) => `${name.replaceAll('_', ' ')} ${count}`)
+											.join(' · ')}
+									</p>{/if}
 								<p>
 									Tokens: {Object.entries(group.aggregate.tokens)
 										.map(

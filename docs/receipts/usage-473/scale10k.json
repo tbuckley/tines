@@ -1,0 +1,299 @@
+{
+	"generated_at": "2026-09-12T16:56:05.677Z",
+	"wrangler": "4.130.0",
+	"dataset": {
+		"finalized": 10000,
+		"all_priced": false,
+		"no_priced": false,
+		"groups": 3,
+		"pending": 100,
+		"retained_rates": 0,
+		"equal_time_fanout": 10
+	},
+	"authenticated_worker": {
+		"status": 200,
+		"elapsed_ms": 207.9,
+		"evidence_elapsed_ms": [131.3],
+		"native_scan": {
+			"aggregate": {
+				"total_rows_read": 70008,
+				"first_page_rows_read": 35007,
+				"last_page_rows_read": 35001,
+				"max_response_bytes": 2116672,
+				"pages": [
+					{
+						"rows_read": 35007,
+						"ids_sha256": "5e1967ec4bb87c246f958dd6909a0cf449a54502890847dfe4f655f9f0540770",
+						"duration_ms": 13,
+						"returned_rows": 5001,
+						"sql": "select \"agent_run\".\"id\", \"agent_run\".\"usage\", \"agent_run\".\"outcome\", \"agent_run\".\"tier\", \"agent_run\".\"runner_id\", \"agent_run\".\"state_id_at_start\", \"agent_run\".\"created_at\", \"agent_run\".\"ended_at\", \"runner\".\"name\" as \"runner_name\", \"issue\".\"project_id\" as \"project_id\", \"project\".\"name\" as \"project_name\", CASE WHEN start_workflow.id IS NOT NULL THEN start_state.name END as \"start_state_name\", CASE\n WHEN start_workflow.id IS NOT NULL OR NOT EXISTS\n (SELECT 1 FROM workflow WHERE workflow.id = start_state.workflow_id)\n THEN start_state.workflow_id ELSE NULL END as \"start_workflow_id\", \"start_workflow\".\"name\" as \"start_workflow_name\", CASE\n WHEN issue_workflow.id IS NOT NULL OR NOT EXISTS\n (SELECT 1 FROM workflow WHERE workflow.id = issue.workflow_id)\n THEN issue.workflow_id ELSE NULL END as \"issue_workflow_id\", \"issue_workflow\".\"name\" as \"issue_workflow_name\" from \"agent_run\" left join \"runner\" on \"runner\".\"id\" = \"agent_run\".\"runner_id\" and \"runner\".\"user_id\" = ? left join \"issue\" on \"issue\".\"id\" = \"agent_run\".\"issue_id\" left join \"project\" on \"project\".\"id\" = \"issue\".\"project_id\" and \"project\".\"user_id\" = ? left join \"workflow_state\" as \"start_state\" on \"start_state\".\"id\" = \"agent_run\".\"state_id_at_start\" left join \"workflow\" as \"start_workflow\" on \"start_workflow\".\"id\" = \"start_state\".\"workflow_id\" and (\"start_workflow\".\"user_id\" = ? or \"start_workflow\".\"user_id\" is null) left join \"workflow\" as \"issue_workflow\" on \"issue_workflow\".\"id\" = \"issue\".\"workflow_id\" and (\"issue_workflow\".\"user_id\" = ? or \"issue_workflow\".\"user_id\" is null) where \"agent_run\".\"user_id\" = ? and \"agent_run\".\"ended_at\" >= ? and \"agent_run\".\"ended_at\" < ? order by \"agent_run\".\"ended_at\" desc, \"agent_run\".\"id\" desc limit ?",
+						"parameters": [
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							1700000000000,
+							1701000000001,
+							5001
+						],
+						"response_bytes": 2116672
+					},
+					{
+						"rows_read": 35001,
+						"ids_sha256": "5b8ece4c4130130a058b61412608e47d5e2236bd3b308fbe8a1e7c111486f15f",
+						"duration_ms": 10,
+						"returned_rows": 5000,
+						"sql": "select \"agent_run\".\"id\", \"agent_run\".\"usage\", \"agent_run\".\"outcome\", \"agent_run\".\"tier\", \"agent_run\".\"runner_id\", \"agent_run\".\"state_id_at_start\", \"agent_run\".\"created_at\", \"agent_run\".\"ended_at\", \"runner\".\"name\" as \"runner_name\", \"issue\".\"project_id\" as \"project_id\", \"project\".\"name\" as \"project_name\", CASE WHEN start_workflow.id IS NOT NULL THEN start_state.name END as \"start_state_name\", CASE\n WHEN start_workflow.id IS NOT NULL OR NOT EXISTS\n (SELECT 1 FROM workflow WHERE workflow.id = start_state.workflow_id)\n THEN start_state.workflow_id ELSE NULL END as \"start_workflow_id\", \"start_workflow\".\"name\" as \"start_workflow_name\", CASE\n WHEN issue_workflow.id IS NOT NULL OR NOT EXISTS\n (SELECT 1 FROM workflow WHERE workflow.id = issue.workflow_id)\n THEN issue.workflow_id ELSE NULL END as \"issue_workflow_id\", \"issue_workflow\".\"name\" as \"issue_workflow_name\" from \"agent_run\" left join \"runner\" on \"runner\".\"id\" = \"agent_run\".\"runner_id\" and \"runner\".\"user_id\" = ? left join \"issue\" on \"issue\".\"id\" = \"agent_run\".\"issue_id\" left join \"project\" on \"project\".\"id\" = \"issue\".\"project_id\" and \"project\".\"user_id\" = ? left join \"workflow_state\" as \"start_state\" on \"start_state\".\"id\" = \"agent_run\".\"state_id_at_start\" left join \"workflow\" as \"start_workflow\" on \"start_workflow\".\"id\" = \"start_state\".\"workflow_id\" and (\"start_workflow\".\"user_id\" = ? or \"start_workflow\".\"user_id\" is null) left join \"workflow\" as \"issue_workflow\" on \"issue_workflow\".\"id\" = \"issue\".\"workflow_id\" and (\"issue_workflow\".\"user_id\" = ? or \"issue_workflow\".\"user_id\" is null) where \"agent_run\".\"user_id\" = ? and \"agent_run\".\"ended_at\" >= ? and (\"agent_run\".\"ended_at\", agent_run.id) < (?, ?) order by \"agent_run\".\"ended_at\" desc, \"agent_run\".\"id\" desc limit ?",
+						"parameters": [
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							1700000000000,
+							1700999999500,
+							"scale_005009",
+							5001
+						],
+						"response_bytes": 2116270
+					}
+				],
+				"bound_query_plans": [
+					[
+						{
+							"id": 19,
+							"parent": 0,
+							"notused": 48,
+							"detail": "SEARCH agent_run USING INDEX agent_run_user_ended_idx (user_id=? AND ended_at>? AND ended_at<?)"
+						},
+						{
+							"id": 31,
+							"parent": 0,
+							"notused": 46,
+							"detail": "SEARCH runner USING INDEX sqlite_autoindex_runner_1 (id=?) LEFT-JOIN"
+						},
+						{
+							"id": 41,
+							"parent": 0,
+							"notused": 46,
+							"detail": "SEARCH issue USING INDEX sqlite_autoindex_issue_1 (id=?) LEFT-JOIN"
+						},
+						{
+							"id": 48,
+							"parent": 0,
+							"notused": 46,
+							"detail": "SEARCH project USING INDEX sqlite_autoindex_project_1 (id=?) LEFT-JOIN"
+						},
+						{
+							"id": 59,
+							"parent": 0,
+							"notused": 46,
+							"detail": "SEARCH start_state USING INDEX sqlite_autoindex_workflow_state_1 (id=?) LEFT-JOIN"
+						},
+						{
+							"id": 66,
+							"parent": 0,
+							"notused": 46,
+							"detail": "SEARCH start_workflow USING INDEX sqlite_autoindex_workflow_1 (id=?) LEFT-JOIN"
+						},
+						{
+							"id": 79,
+							"parent": 0,
+							"notused": 46,
+							"detail": "SEARCH issue_workflow USING INDEX sqlite_autoindex_workflow_1 (id=?) LEFT-JOIN"
+						},
+						{
+							"id": 111,
+							"parent": 0,
+							"notused": 0,
+							"detail": "CORRELATED SCALAR SUBQUERY 1"
+						},
+						{
+							"id": 115,
+							"parent": 111,
+							"notused": 39,
+							"detail": "SEARCH workflow USING COVERING INDEX sqlite_autoindex_workflow_1 (id=?)"
+						},
+						{
+							"id": 131,
+							"parent": 0,
+							"notused": 0,
+							"detail": "CORRELATED SCALAR SUBQUERY 2"
+						},
+						{
+							"id": 135,
+							"parent": 131,
+							"notused": 39,
+							"detail": "SEARCH workflow USING COVERING INDEX sqlite_autoindex_workflow_1 (id=?)"
+						}
+					],
+					[
+						{
+							"id": 19,
+							"parent": 0,
+							"notused": 48,
+							"detail": "SEARCH agent_run USING INDEX agent_run_user_ended_idx (user_id=? AND ended_at>? AND (ended_at,id)<(?,?))"
+						},
+						{
+							"id": 42,
+							"parent": 0,
+							"notused": 46,
+							"detail": "SEARCH runner USING INDEX sqlite_autoindex_runner_1 (id=?) LEFT-JOIN"
+						},
+						{
+							"id": 52,
+							"parent": 0,
+							"notused": 46,
+							"detail": "SEARCH issue USING INDEX sqlite_autoindex_issue_1 (id=?) LEFT-JOIN"
+						},
+						{
+							"id": 59,
+							"parent": 0,
+							"notused": 46,
+							"detail": "SEARCH project USING INDEX sqlite_autoindex_project_1 (id=?) LEFT-JOIN"
+						},
+						{
+							"id": 70,
+							"parent": 0,
+							"notused": 46,
+							"detail": "SEARCH start_state USING INDEX sqlite_autoindex_workflow_state_1 (id=?) LEFT-JOIN"
+						},
+						{
+							"id": 77,
+							"parent": 0,
+							"notused": 46,
+							"detail": "SEARCH start_workflow USING INDEX sqlite_autoindex_workflow_1 (id=?) LEFT-JOIN"
+						},
+						{
+							"id": 90,
+							"parent": 0,
+							"notused": 46,
+							"detail": "SEARCH issue_workflow USING INDEX sqlite_autoindex_workflow_1 (id=?) LEFT-JOIN"
+						},
+						{
+							"id": 122,
+							"parent": 0,
+							"notused": 0,
+							"detail": "CORRELATED SCALAR SUBQUERY 1"
+						},
+						{
+							"id": 126,
+							"parent": 122,
+							"notused": 39,
+							"detail": "SEARCH workflow USING COVERING INDEX sqlite_autoindex_workflow_1 (id=?)"
+						},
+						{
+							"id": 142,
+							"parent": 0,
+							"notused": 0,
+							"detail": "CORRELATED SCALAR SUBQUERY 2"
+						},
+						{
+							"id": 146,
+							"parent": 142,
+							"notused": 39,
+							"detail": "SEARCH workflow USING COVERING INDEX sqlite_autoindex_workflow_1 (id=?)"
+						}
+					]
+				]
+			},
+			"evidence": {
+				"total_rows_read": 10000,
+				"first_page_rows_read": 10000,
+				"last_page_rows_read": 10000,
+				"max_response_bytes": 915001,
+				"pages": [
+					{
+						"rows_read": 10000,
+						"ids_sha256": "98146a47fc3d12b810d65a821f774101e6ad42bc469a1b906c04813fcad37c1a",
+						"duration_ms": 11,
+						"returned_rows": 10000,
+						"sql": "select \"agent_run\".\"id\", \"agent_run\".\"usage\", \"agent_run\".\"ended_at\", \"agent_run\".\"created_at\" from \"agent_run\" left join \"runner\" on \"runner\".\"id\" = \"agent_run\".\"runner_id\" and \"runner\".\"user_id\" = ? left join \"issue\" on \"issue\".\"id\" = \"agent_run\".\"issue_id\" left join \"project\" on \"project\".\"id\" = \"issue\".\"project_id\" and \"project\".\"user_id\" = ? left join \"workflow_state\" as \"start_state\" on \"start_state\".\"id\" = \"agent_run\".\"state_id_at_start\" left join \"workflow\" as \"start_workflow\" on \"start_workflow\".\"id\" = \"start_state\".\"workflow_id\" and (\"start_workflow\".\"user_id\" = ? or \"start_workflow\".\"user_id\" is null) left join \"workflow\" as \"issue_workflow\" on \"issue_workflow\".\"id\" = \"issue\".\"workflow_id\" and (\"issue_workflow\".\"user_id\" = ? or \"issue_workflow\".\"user_id\" is null) left join \"workflow_state\" as \"end_state\" on \"end_state\".\"id\" = \"agent_run\".\"state_id_at_end\" where \"agent_run\".\"user_id\" = ? and \"agent_run\".\"ended_at\" is not null and \"agent_run\".\"ended_at\" >= ? and \"agent_run\".\"ended_at\" < ? order by \"agent_run\".\"ended_at\" desc, \"agent_run\".\"id\" desc limit ?",
+						"parameters": [
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							1700000000000,
+							1701000000001,
+							10001
+						],
+						"response_bytes": 915001
+					}
+				],
+				"bound_query_plans": [
+					[
+						{
+							"id": 7,
+							"parent": 0,
+							"notused": 48,
+							"detail": "SEARCH agent_run USING INDEX agent_run_user_ended_idx (user_id=? AND ended_at>? AND ended_at<?)"
+						}
+					],
+					[
+						{
+							"id": 7,
+							"parent": 0,
+							"notused": 48,
+							"detail": "SEARCH agent_run USING INDEX agent_run_user_ended_idx (user_id=? AND ended_at>? AND ended_at<?)"
+						}
+					]
+				]
+			}
+		},
+		"total_request_rows_read": {
+			"aggregate": 80711,
+			"evidence": [10003]
+		},
+		"response_bytes": 7202,
+		"finalized": 10000,
+		"priced": 0,
+		"pending": 100,
+		"groups": 3,
+		"evidence_pages": [
+			{
+				"items": [],
+				"scan_complete": true,
+				"has_cursor": false
+			}
+		],
+		"independent_oracle": {
+			"finalized_run_count": 10000,
+			"priced_run_count": 0,
+			"unpriced_run_count": 2500,
+			"unreported_run_count": 7500,
+			"cost_usd": null
+		},
+		"distribution_oracle": {
+			"median_cost_usd": null,
+			"p95_cost_usd": null,
+			"max_cost_usd": null
+		},
+		"groups_reconciled": true,
+		"measured_worker_queries": {
+			"aggregate": 6,
+			"evidence_pages": [4]
+		},
+		"source_cli_exact_match": true,
+		"source_cli_evidence_items": 0,
+		"source_cli_evidence_resummed_cost": 0,
+		"source_cli_text_disclosure": true
+	},
+	"bounds": {
+		"service_queries_at_100k": 27,
+		"invocation_queries_with_bearer_auth_at_100k": 29,
+		"sparse_invocation_queries_max": 30,
+		"free_query_limit": 50,
+		"worker_isolate_limit_mb": 128,
+		"priced_sample_capacity_mb_at_100k": 3.2,
+		"all_growth_allocations_mb_at_100k": 6.4
+	},
+	"limitations": [
+		"Wrangler CLI elapsed time includes process startup; D1 meta is emitted by the local emulator.",
+		"Native rows_read includes joined metadata reads; telemetry uses actual parameterized shipping statements, not literal replays.",
+		"Worker heap is a conservative bound, not an isolate inspector measurement; whole-process RSS is intentionally not presented as isolate heap.",
+		"Run with --size=120001 to place the unique priced evidence match beyond 100k candidates."
+	]
+}

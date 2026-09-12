@@ -3,6 +3,7 @@ import {
 	client,
 	die,
 	fetchList,
+	isUsageIdentity,
 	printJson,
 	printList,
 	resolveApiKey,
@@ -45,6 +46,7 @@ import {
 	type UpdateRunnerRequest
 } from '@tines/shared';
 import { InvalidArgumentError, Option, type Command } from 'commander';
+import { usageEvidenceLines } from '../usage-format.js';
 
 function parseBoolean(value: string): boolean {
 	if (value === 'true') return true;
@@ -531,6 +533,8 @@ export function register(program: Command): void {
 			)
 			.option('--from <timestamp>', 'inclusive period start')
 			.option('--to <timestamp>', 'exclusive period cutoff')
+			.option('--timezone <iana>', 'period display timezone (with --timezone-source)')
+			.option('--timezone-source <source>', 'supervisor_budget or utc_fallback')
 			.option('--project <name-or-id>', 'project, including archived')
 			.option('--workflow <name-or-id>', 'workflow')
 			.option('--state <id>', 'starting state id')
@@ -562,18 +566,32 @@ export function register(program: Command): void {
 			tier?: string;
 			outcome?: string;
 			accountingStatus?: string;
+			timezone?: string;
+			timezoneSource?: 'supervisor_budget' | 'utc_fallback';
 		};
 		if ((evidence.from === undefined) !== (evidence.to === undefined))
 			die('--from and --to are required together');
 		if ((evidence.from || evidence.to) && !evidence.population)
 			die('period filters require --population');
+		if ((evidence.timezone === undefined) !== (evidence.timezoneSource === undefined))
+			die('--timezone and --timezone-source are required together');
+		if (evidence.population && opts.limit !== undefined && opts.limit > 100)
+			die('period evidence --limit must be at most 100');
 		const issueId = opts.issue ? (await resolveIssue(api, opts.issue)).id : undefined;
-		const runnerId = opts.runner ? (await resolveRunner(api, opts.runner)).id : undefined;
+		const runnerId = opts.runner
+			? evidence.population && isUsageIdentity(opts.runner, 'rnr')
+				? opts.runner
+				: (await resolveRunner(api, opts.runner)).id
+			: undefined;
 		const projectId = evidence.project
-			? (await resolveProject(api, evidence.project)).id
+			? evidence.population && isUsageIdentity(evidence.project, 'prj')
+				? evidence.project
+				: (await resolveProject(api, evidence.project)).id
 			: undefined;
 		const workflowId = evidence.workflow
-			? (await resolveWorkflow(api, evidence.workflow)).id
+			? evidence.population && isUsageIdentity(evidence.workflow, 'wf')
+				? evidence.workflow
+				: (await resolveWorkflow(api, evidence.workflow)).id
 			: undefined;
 		const res = await fetchList(opts, (page) =>
 			api.listRuns({
@@ -589,6 +607,8 @@ export function register(program: Command): void {
 				tier: evidence.tier,
 				outcome: evidence.outcome as never,
 				accounting_status: evidence.accountingStatus as never,
+				timezone: evidence.timezone,
+				timezone_source: evidence.timezoneSource,
 				...page
 			})
 		);
@@ -613,6 +633,15 @@ export function register(program: Command): void {
 				['ID', 'ISSUE', 'RUNNER', 'TIER', 'STATUS', 'DURATION', 'COST', 'CREATED'],
 				...items.map(runRow)
 			]);
+			if (evidence.population === 'finalized')
+				for (const run of items)
+					if (run.usage_dimensions && run.usage_accounting)
+						for (const line of usageEvidenceLines(
+							run.id,
+							run.usage_dimensions,
+							run.usage_accounting
+						))
+							console.log(line);
 		});
 	});
 
