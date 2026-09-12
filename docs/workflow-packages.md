@@ -1,6 +1,34 @@
 # Workflow package files
 
-Implementation status: the foundation and CLI provide v3 whole-library transfer, workflow closure export, file validation, signed destination preparation, atomic install, durable receipt recovery, and the `tines workflows export|validate|preview|install` file workflow. The browser now authors, reviews, validates, and downloads workflow packages; browser file installation and integrated real-run acceptance remain successor work. Whole-library import remains best effort; it is not an atomic workflow installation.
+Implementation status: the foundation and CLI provide v3 whole-library transfer, workflow closure export, file validation, signed destination preparation, atomic install, durable receipt recovery, and the `tines workflows export|validate|preview|install` file workflow. The browser authors, reviews, validates, downloads, installs, and recovers workflow packages. Integrated real-run acceptance remains successor work. Whole-library import remains best effort; it is not an atomic workflow installation.
+
+## Install a package in the browser
+
+Open **Workflows → Install package** (also linked from **Settings → Export / import**) and choose
+the downloaded JSON file. Tines parses local bytes first, then sends workflow files to this Tines
+instance for server validation. Nothing is installed until you confirm a prepared plan. Legacy and whole-library files are
+directed to the existing best-effort library importer; workflow-profile files use the atomic flow.
+
+Resolve each declared destination value, edit the proposed names for the independent main and
+dependency copies, and opt into any schedules or routing rules. Main/dependency roles follow the
+file’s `main_workflow_id`, regardless of workflow array order. Schedules are unchecked by default
+and install paused. A destination project is only required by selected project-bound automation or
+a declared text value that is actually used. Preparation shows the full resolved package, exact
+before/after substitutions, every create/reuse/skip operation, and destination runner/model support.
+
+Review every included skill and repository declaration, then confirm the exact prepared plan digest.
+Changing any value invalidates that plan and requires a new preparation and confirmation. A stale or
+expired plan creates nothing. A definite server failure keeps the same plan available to retry; a
+lost response is different: use **Check result** first. Recovery is kept per browser tab and scoped to
+the account, destination, and plan. A missing receipt may mean the request is still in flight, so it
+is never treated as proof of rollback or used to prepare a replacement automatically. After a reload,
+choose the exact same file again to enable **Retry same plan safely**; this reuses the saved signed
+plan and confirmation, without preparing another copy. If the retry committed but its response was
+lost, **Check result** recovers that same receipt.
+During uncertain-result recovery, choosing a different, invalid, or whole-library file preserves Check result and the original saved installation identity. Same-plan retry stays disabled until the original workflow file validates with the saved digest. A failed retry does not prove the original request rolled back; Check result remains available.
+
+The receipt links every created object. Installed workflows are independent copies, selected
+schedules remain paused with zero runs, no issue is launched, and project defaults are unchanged.
 
 ## Export and validate a workflow
 
@@ -192,3 +220,19 @@ application limits remain 800 statements, 90 bound parameters and 90 KiB of
 UTF-8 SQL per statement, 1 MiB per stored value, 5 MiB per document, and 1,000
 portable records. The smaller document, prompt, skill, and field limits still
 apply before compilation.
+
+## Browser integration verification
+
+Run `E2E_PORT=8799 pnpm test:e2e workflow-package-import.spec.ts workflow-package-export.spec.ts`
+against the isolated local Wrangler backend. The export journey passes Alice's browser download
+to Bob, then reads installed inheritance, ordered effective prompt parts, artifact gates, and exact
+skill files through the ordinary API. It proves zero automatic issues/schedules before explicitly
+creating an inspection issue for the effective-context read.
+
+The import cases also validate a dependency-first file and check ID-based rename and prepared graph
+roles at desktop and phone widths, preserving the validated source document through preparation.
+They cover expiry (a real preparation backdated with the local test signing key),
+a late D1 skill-file failure with all allocated rows rolled back, and recovery across reload/404,
+same-plan retry, dropped committed response, and receipt lookup. Only fault injection is intercepted;
+the retry, expiry rejection, transaction, and receipt reads use the real backend. These browser
+checks do not stand in for the actual runner acceptance owned by the successor issue.
