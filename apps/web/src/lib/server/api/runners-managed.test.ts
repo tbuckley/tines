@@ -3,7 +3,10 @@
  * key encrypted at rest and never serialized, the $5 default per-run cap,
  * and tier-override / budget validation.
  */
-import { TEST_NOOP_DISPATCH_EFFECTS } from '$lib/server/api/test-dispatch-effects';
+import {
+	recordDispatchEffects,
+	TEST_NOOP_DISPATCH_EFFECTS
+} from '$lib/server/api/test-dispatch-effects';
 import { describe, expect, it } from 'vitest';
 import { decryptSecret } from '$lib/server/crypto';
 import { ApiFail, type ActorContext } from './core';
@@ -40,11 +43,12 @@ const badPing: ProviderKeyPing = () => Promise.resolve('Anthropic rejected the A
 describe('createRunner (claude_managed)', () => {
 	it('pings, encrypts, defaults the $5 cap and managed concurrency', async () => {
 		const t = world();
+		const effects = recordDispatchEffects();
 		const runner = await createRunner(
 			t.db,
 			t.env,
 			actor,
-			TEST_NOOP_DISPATCH_EFFECTS,
+			effects,
 			{ type: 'claude_managed', name: 'claude-cloud', api_key: 'sk-ant-key' },
 			okPing
 		);
@@ -67,6 +71,27 @@ describe('createRunner (claude_managed)', () => {
 		expect(await decryptSecret(row.secret_enc, ENC_KEY)).toBe('sk-ant-key');
 		expect(JSON.stringify(runner)).not.toContain('sk-ant-key');
 		expect(JSON.stringify(runner)).not.toContain(row.secret_enc);
+		expect(effects.count()).toBe(1);
+	});
+
+	it('dispatch effects: createRunner stays silent when its batch rejects', async () => {
+		const t = world();
+		const effects = recordDispatchEffects();
+		t.env.DB.batch = async () => {
+			throw new Error('injected runner-create batch failure');
+		};
+		await expect(
+			createRunner(
+				t.db,
+				t.env,
+				actor,
+				effects,
+				{ type: 'claude_managed', name: 'rejected', api_key: 'sk-ant-key' },
+				okPing
+			)
+		).rejects.toThrow('injected runner-create batch failure');
+		expect(effects.count()).toBe(0);
+		expect(t.all("SELECT id FROM runner WHERE name = 'rejected'")).toEqual([]);
 	});
 
 	it('stores staged resume thresholds default-off and validates absence, null, and bounds', async () => {
@@ -246,6 +271,51 @@ describe('updateRunner (managed credentials, tiers, budget)', () => {
 		expect(events.every((e) => !e.payload.includes('sk-new'))).toBe(true);
 		expect(t.all('SELECT resume_config_revision FROM runner')).toEqual([
 			{ resume_config_revision: 1 }
+		]);
+	});
+
+	it('dispatch effects: updateRunner signals after its batch and before final hydration', async () => {
+		const t = world();
+		const runner = await withRunner(t);
+		const effects = recordDispatchEffects();
+		await expect(
+			updateRunner(
+				t.db,
+				t.env,
+				actor,
+				{
+					...effects,
+					signalDispatch() {
+						effects.signalDispatch();
+						t.sqlite.exec('ALTER TABLE runner RENAME TO runner_after_commit');
+					}
+				},
+				runner.id,
+				{ name: 'renamed' }
+			)
+		).rejects.toThrow();
+		expect(effects.count()).toBe(1);
+		expect(t.all('SELECT name FROM runner_after_commit WHERE id = ?', runner.id)).toEqual([
+			{ name: 'renamed' }
+		]);
+		expect(t.all("SELECT type FROM event WHERE type = 'runner.updated'")).toHaveLength(1);
+	});
+
+	it('dispatch effects: updateRunner stays silent when its batch rejects', async () => {
+		const t = world();
+		const runner = await withRunner(t);
+		const effects = recordDispatchEffects();
+		const realBatch = t.env.DB.batch.bind(t.env.DB);
+		t.env.DB.batch = async () => {
+			throw new Error('injected runner batch failure');
+		};
+		await expect(
+			updateRunner(t.db, t.env, actor, effects, runner.id, { name: 'rejected' })
+		).rejects.toThrow('injected runner batch failure');
+		t.env.DB.batch = realBatch;
+		expect(effects.count()).toBe(0);
+		expect(t.all('SELECT name FROM runner WHERE id = ?', runner.id)).toEqual([
+			{ name: 'claude-cloud' }
 		]);
 	});
 

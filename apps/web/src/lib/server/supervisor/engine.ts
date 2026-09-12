@@ -1205,13 +1205,15 @@ export async function cancelRun(
  * Cancels not-yet-acknowledged `assigned` runs — free cancels: nothing is
  * running yet, so no judgment applies and the issues return to the pool.
  * Runner pause cancels its own; the kill switch turning off cancels
- * fleet-wide (SPEC.md "Pausing a runner").
+ * fleet-wide (SPEC.md "Pausing a runner"). `onCanceled` is a required,
+ * synchronous, non-throwing notification at each durable cancellation win.
  */
 export async function cancelAssignedRuns(
 	db: Kysely<Database>,
 	env: Env,
 	scope: { userId: string; runnerId?: string },
 	reason: string,
+	onCanceled: () => void,
 	now: number = Date.now()
 ): Promise<number> {
 	let q = db
@@ -1227,7 +1229,10 @@ export async function cancelAssignedRuns(
 		// Delivered (or settled) in the meantime: no longer a free cancel.
 		if (!run || run.status !== 'assigned') continue;
 		const outcome = await endRun(db, env, run, { status: 'canceled', error: reason, now });
-		if (outcome.ended) canceled += 1;
+		if (outcome.ended) {
+			onCanceled();
+			canceled += 1;
+		}
 	}
 	return canceled;
 }

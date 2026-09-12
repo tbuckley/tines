@@ -3,7 +3,10 @@
  * only the fingerprint hint readable, rotation on the record with the value
  * elided by construction.
  */
-import { TEST_NOOP_DISPATCH_EFFECTS } from '$lib/server/api/test-dispatch-effects';
+import {
+	recordDispatchEffects,
+	TEST_NOOP_DISPATCH_EFFECTS
+} from '$lib/server/api/test-dispatch-effects';
 import { describe, expect, it } from 'vitest';
 import { decryptSecret } from '$lib/server/crypto';
 import type { ActorContext } from './core';
@@ -29,6 +32,54 @@ function world(): TestDb {
 }
 
 describe('the GitHub PAT', () => {
+	it('dispatch effects: settings write signals before final hydration', async () => {
+		const t = world();
+		const effects = recordDispatchEffects();
+		await expect(
+			updateSupervisorSettings(
+				t.db,
+				t.env,
+				actor,
+				{
+					...effects,
+					signalDispatch() {
+						effects.signalDispatch();
+						t.sqlite.exec(
+							'ALTER TABLE supervisor_settings RENAME TO supervisor_settings_after_commit'
+						);
+					}
+				},
+				{ attempt_limit: 5 }
+			)
+		).rejects.toThrow();
+		expect(effects.count()).toBe(1);
+		expect(t.all('SELECT attempt_limit FROM supervisor_settings_after_commit')).toEqual([
+			{ attempt_limit: 5 }
+		]);
+		expect(t.all("SELECT type FROM event WHERE type = 'settings.updated'")).toHaveLength(1);
+	});
+
+	it('dispatch effects: settings rejected batches stay silent and successful no-ops signal', async () => {
+		const rejected = world();
+		const rejectedEffects = recordDispatchEffects();
+		const realBatch = rejected.env.DB.batch.bind(rejected.env.DB);
+		rejected.env.DB.batch = async () => {
+			throw new Error('injected settings batch failure');
+		};
+		await expect(
+			updateSupervisorSettings(rejected.db, rejected.env, actor, rejectedEffects, {
+				attempt_limit: 5
+			})
+		).rejects.toThrow('injected settings batch failure');
+		rejected.env.DB.batch = realBatch;
+		expect(rejectedEffects.count()).toBe(0);
+
+		const noOp = world();
+		const noOpEffects = recordDispatchEffects();
+		await updateSupervisorSettings(noOp.db, noOp.env, actor, noOpEffects, {});
+		expect(noOpEffects.count()).toBe(1);
+	});
+
 	it('reads a missing row as enabled and creates partial settings enabled', async () => {
 		const t = world();
 		t.sqlite.exec(`DELETE FROM supervisor_settings WHERE user_id = '${USER}'`);

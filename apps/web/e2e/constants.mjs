@@ -30,6 +30,31 @@ export const ALICE_AGENT = {
 	apiKeyName: 'alice-agent-key'
 };
 
+/** Dedicated real-ledger account for the Agents Spend journeys. */
+export const SPEND = {
+	id: 'usr_e2e_spend',
+	name: 'Spend E2E',
+	email: 'spend@e2e.test',
+	apiKey: 'tines_e2espend00000000000000000000000000000000000',
+	apiKeyName: 'spend-key',
+	sessionToken: 'e2e-session-spend',
+	projects: {
+		alpha: { id: 'prj_e2e_spend_alpha', name: 'Spend Alpha' },
+		beta: { id: 'prj_e2e_spend_beta', name: 'Spend Beta' },
+		empty: { id: 'prj_e2e_spend_empty', name: 'Spend Empty' },
+		pending: { id: 'prj_e2e_spend_pending', name: 'Spend Pending' },
+		unreported: { id: 'prj_e2e_spend_unreported', name: 'Spend Unreported' },
+		tokens: { id: 'prj_e2e_spend_tokens', name: 'Spend Tokens' },
+		zero: { id: 'prj_e2e_spend_zero', name: 'Spend Zero' },
+		archived: { id: 'prj_e2e_spend_archived', name: 'Spend Archived' }
+	},
+	workflows: {
+		build: { id: 'wf_e2e_spend_build', name: 'Build' },
+		ship: { id: 'wf_e2e_spend_ship', name: 'Ship' },
+		unknown: { id: 'wf_e2e_spend_unknown', name: 'Unknown cost' }
+	}
+};
+
 /**
  * Seeded scheduled-task fixtures (Alice's): the sweep can only be tested
  * deterministically with `next_run_at` already in the past, which the API

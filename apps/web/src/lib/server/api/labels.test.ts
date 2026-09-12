@@ -1,4 +1,7 @@
-import { TEST_NOOP_DISPATCH_EFFECTS } from '$lib/server/api/test-dispatch-effects';
+import {
+	recordDispatchEffects,
+	TEST_NOOP_DISPATCH_EFFECTS
+} from '$lib/server/api/test-dispatch-effects';
 import { compareLabelNames, defaultLabelColor, LABEL_COLORS } from '@tines/shared';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { PROJECT, USER, addIssue, addRunner, seedBase } from '../supervisor/test-fixtures';
@@ -171,13 +174,51 @@ describe('applying labels to an issue', () => {
 
 	it('is idempotent: re-adding attaches nothing and does not error', async () => {
 		const issue = addIssue(t, { title: 'a' });
-		await addIssueLabels(t.db, t.env, human, TEST_NOOP_DISPATCH_EFFECTS, issue, ['bug']);
-		const again = await addIssueLabels(t.db, t.env, human, TEST_NOOP_DISPATCH_EFFECTS, issue, [
-			'BUG'
-		]);
+		const effects = recordDispatchEffects();
+		await addIssueLabels(t.db, t.env, human, effects, issue, ['bug']);
+		const again = await addIssueLabels(t.db, t.env, human, effects, issue, ['BUG']);
 		expect(again.added).toEqual([]);
 		expect(again.created).toEqual([]);
 		expect(again.labels.map((l) => l.name)).toEqual(['bug']);
+		expect(effects.count()).toBe(2);
+	});
+
+	it('dispatch effects: addIssueLabels signals before post-commit hydration', async () => {
+		const issue = addIssue(t, { title: 'a' });
+		const effects = recordDispatchEffects();
+		await expect(
+			addIssueLabels(
+				t.db,
+				t.env,
+				human,
+				{
+					...effects,
+					signalDispatch() {
+						effects.signalDispatch();
+						t.sqlite.exec('ALTER TABLE label RENAME TO label_after_commit');
+					}
+				},
+				issue,
+				['bug']
+			)
+		).rejects.toThrow();
+		expect(effects.count()).toBe(1);
+		expect(t.all('SELECT issue_id FROM issue_label')).toEqual([{ issue_id: issue }]);
+		expect(t.all("SELECT type FROM event WHERE type = 'issue.labeled'")).toHaveLength(1);
+	});
+
+	it('dispatch effects: addIssueLabels stays silent when its batch rejects', async () => {
+		const issue = addIssue(t, { title: 'a' });
+		const effects = recordDispatchEffects();
+		t.env.DB.batch = async () => {
+			throw new Error('injected label-add batch failure');
+		};
+		await expect(addIssueLabels(t.db, t.env, human, effects, issue, ['bug'])).rejects.toThrow(
+			'injected label-add batch failure'
+		);
+		expect(effects.count()).toBe(0);
+		expect(t.all('SELECT id FROM label')).toEqual([]);
+		expect(t.all('SELECT issue_id FROM issue_label')).toEqual([]);
 	});
 
 	it('dedupes within one request', async () => {
@@ -252,6 +293,34 @@ describe('applying labels to an issue', () => {
 		expect(res.created).toEqual([]);
 	});
 
+	it('dispatch effects: removeIssueLabel signals a removal and not a missing label', async () => {
+		const issue = addIssue(t, { title: 'a' });
+		await addIssueLabels(t.db, t.env, human, TEST_NOOP_DISPATCH_EFFECTS, issue, ['bug']);
+		const effects = recordDispatchEffects();
+		await removeIssueLabel(t.db, t.env, human, effects, issue, 'bug');
+		expect(effects.count()).toBe(1);
+		await expect(removeIssueLabel(t.db, t.env, human, effects, issue, 'bug')).rejects.toMatchObject(
+			{
+				code: 'label_not_on_issue'
+			}
+		);
+		expect(effects.count()).toBe(1);
+	});
+
+	it('dispatch effects: removeIssueLabel stays silent when its batch rejects', async () => {
+		const issue = addIssue(t, { title: 'a' });
+		await addIssueLabels(t.db, t.env, human, TEST_NOOP_DISPATCH_EFFECTS, issue, ['bug']);
+		const effects = recordDispatchEffects();
+		t.env.DB.batch = async () => {
+			throw new Error('injected label-remove batch failure');
+		};
+		await expect(removeIssueLabel(t.db, t.env, human, effects, issue, 'bug')).rejects.toThrow(
+			'injected label-remove batch failure'
+		);
+		expect(effects.count()).toBe(0);
+		expect(t.all('SELECT issue_id FROM issue_label')).toEqual([{ issue_id: issue }]);
+	});
+
 	it('creates names that merely look like an id: the shape test is exact', async () => {
 		const issue = addIssue(t, { title: 'a' });
 		const nearly = ['lbl_short', 'lbl_' + 'a'.repeat(17), 'lbl_' + 'a'.repeat(15)];
@@ -313,7 +382,8 @@ describe('deleting a label that scopes context or routing', () => {
 
 	it('force deletes the rule with the label rather than broadening it', async () => {
 		await scoped();
-		const res = await deleteLabel(t.db, t.env, human, TEST_NOOP_DISPATCH_EFFECTS, 'docs', {
+		const effects = recordDispatchEffects();
+		const res = await deleteLabel(t.db, t.env, human, effects, 'docs', {
 			force: true
 		});
 		expect(res.context_items_deleted.map((i) => i.name)).toEqual(['docs-audit']);
@@ -324,13 +394,28 @@ describe('deleting a label that scopes context or routing', () => {
 		// everything the label used to narrow.
 		expect(await listRoutingRules(t.db, USER)).toEqual([]);
 		expect(t.all(`SELECT type FROM event WHERE type = 'routing_rule.deleted'`)).toHaveLength(1);
+		expect(effects.count()).toBe(1);
+	});
+
+	it('keeps deleteLabel silent when its forced deletion batch rejects', async () => {
+		await scoped();
+		const effects = recordDispatchEffects();
+		t.env.DB.batch = async () => {
+			throw new Error('injected label-delete batch failure');
+		};
+		await expect(deleteLabel(t.db, t.env, human, effects, 'docs', { force: true })).rejects.toThrow(
+			'injected label-delete batch failure'
+		);
+		expect(effects.count()).toBe(0);
+		expect(await names()).toEqual(['docs']);
+		expect(await listRoutingRules(t.db, USER)).toHaveLength(1);
 	});
 
 	it('a label nothing scopes still deletes without force', async () => {
 		await createLabel(t.db, t.env, human, { name: 'spare' });
-		expect(
-			(await deleteLabel(t.db, t.env, human, TEST_NOOP_DISPATCH_EFFECTS, 'spare')).deleted
-		).toBe(true);
+		const effects = recordDispatchEffects();
+		expect((await deleteLabel(t.db, t.env, human, effects, 'spare')).deleted).toBe(true);
+		expect(effects.count()).toBe(0);
 	});
 });
 

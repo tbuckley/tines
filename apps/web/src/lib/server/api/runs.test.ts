@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { recordDispatchEffects } from './test-dispatch-effects';
 import {
 	addIssue,
 	addRun,
@@ -9,7 +10,50 @@ import {
 	USER
 } from '../supervisor/test-fixtures';
 import { createTestDb } from './test-db';
-import { getRun, listRuns } from './runs';
+import { cancelRunForRequest, getRun, listRuns } from './runs';
+import type { ActorContext } from './core';
+
+const actor: ActorContext = {
+	userId: USER,
+	userName: 'alice',
+	apiKeyId: null,
+	apiKeyName: null,
+	viaSession: true
+};
+
+describe('dispatch effects: cancelRunForRequest', () => {
+	it('signals only for a winning cancellation', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const runner = addRunner(t);
+		const run = addRun(t, { issueId: addIssue(t), runnerId: runner });
+		const effects = recordDispatchEffects();
+		await cancelRunForRequest(t.db, t.env, actor, effects, run);
+		expect(effects.count()).toBe(1);
+		await expect(cancelRunForRequest(t.db, t.env, actor, effects, run)).rejects.toMatchObject({
+			code: 'run_already_ended'
+		});
+		expect(effects.count()).toBe(1);
+	});
+
+	it('stays silent when the terminal flip batch rejects', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const runner = addRunner(t);
+		const run = addRun(t, { issueId: addIssue(t), runnerId: runner });
+		const effects = recordDispatchEffects();
+		t.env.DB.batch = async () => {
+			throw new Error('injected cancellation batch failure');
+		};
+		await expect(cancelRunForRequest(t.db, t.env, actor, effects, run)).rejects.toThrow(
+			'injected cancellation batch failure'
+		);
+		expect(effects.count()).toBe(0);
+		expect(t.all('SELECT status FROM agent_run WHERE id = ?', run)).toEqual([
+			{ status: 'assigned' }
+		]);
+	});
+});
 
 describe('listRuns project scope', () => {
 	it('filters before the page limit so newer runs from another project cannot hide a focused run', async () => {

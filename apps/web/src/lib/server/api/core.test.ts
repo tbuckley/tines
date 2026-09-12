@@ -55,7 +55,10 @@ describe('request dispatch effects', () => {
 	it('drains a committed signal even when the handler later fails', async () => {
 		queued.mockClear();
 		const response = await api((event) => {
-			requestDispatchEffects(event, 'usr_one').signalDispatch();
+			const effects = requestDispatchEffects(event, 'usr_one');
+			effects.signalDispatch();
+			effects.signalDispatch();
+			effects.signalDispatch();
 			throw new ApiFail(422, 'later_failure', 'later failure');
 		})(requestEvent());
 		expect(response.status).toBe(422);
