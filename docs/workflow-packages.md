@@ -1,6 +1,6 @@
 # Workflow package files
 
-Implementation status: the foundation and CLI provide v3 whole-library transfer, workflow closure export, file validation, signed destination preparation, atomic install, durable receipt recovery, and the `tines workflows export|validate|preview|install` file workflow. The browser authors, reviews, validates, downloads, installs, and recovers workflow packages. Integrated real-run acceptance remains successor work. Whole-library import remains best effort; it is not an atomic workflow installation.
+Implementation status: v3 whole-library transfer and workflow packages are implemented across the shared contract, API, CLI, and browser. The package path includes workflow closure export, file validation, signed destination preparation, atomic install, durable receipt recovery, and the `tines workflows export|validate|preview|install` commands. Whole-library import remains best effort; it is not an atomic workflow installation. Public discovery and dependency fetching remain intentionally out of scope.
 
 ## Install a package in the browser
 
@@ -236,3 +236,12 @@ a late D1 skill-file failure with all allocated rows rolled back, and recovery a
 same-plan retry, dropped committed response, and receipt lookup. Only fault injection is intercepted;
 the retry, expiry rejection, transaction, and receipt reads use the real backend. These browser
 checks do not stand in for the actual runner acceptance owned by the successor issue.
+
+The export journey is also the integrated two-account/two-destination-project file exercise. It
+exports a QA-style main plus inherited dependency, two skills with exact file bytes, ordered prompts,
+a repository declaration, artifact gate, label substitution, and optional daily schedule/project-tier
+configuration. The destination starts with colliding workflow names. The first independent copy omits
+automation and is inspected through ordinary workflow/context APIs from two projects. A second renamed
+copy selects the paused schedule and a supported local-runner tier for one project. The journey pins
+zero automatic issues, `run_count=0`, unchanged project defaults, exact substitutions and inherited
+order, then edits one dependency copy and proves the source and sibling copy remain unchanged.
