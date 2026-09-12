@@ -1509,12 +1509,15 @@ describe('pause and kill-switch cancels', () => {
 			status: 'running',
 			startedAt: NOW
 		});
-		await updateRunner(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, runnerId, {
+		const effects = recordDispatchEffects();
+		await updateRunner(t.db, t.env, actor, effects, runnerId, {
 			status: 'paused'
 		});
 		expect(runById(t, assigned)?.status).toBe('canceled');
 		expect(runById(t, assigned)?.error).toBe('runner paused');
 		expect(runById(t, running)?.status).toBe('running');
+		// The runner write and each cancellation are distinct domain wins.
+		expect(effects.count()).toBe(2);
 	});
 
 	it('the kill switch off cancels assigned runs fleet-wide; bulk cancel takes the rest', async () => {
@@ -1531,7 +1534,8 @@ describe('pause and kill-switch cancels', () => {
 			startedAt: NOW
 		});
 
-		const off = await updateSupervisorSettings(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+		const effects = recordDispatchEffects();
+		const off = await updateSupervisorSettings(t.db, t.env, actor, effects, {
 			enabled: false
 		});
 		expect(off.enabled).toBe(false);
@@ -1539,15 +1543,17 @@ describe('pause and kill-switch cancels', () => {
 		expect(runById(t, assignedA)?.status).toBe('canceled');
 		expect(runById(t, assignedB)?.status).toBe('canceled');
 		expect(runById(t, running)?.status).toBe('running');
+		expect(effects.count()).toBe(3);
 
 		// The bulk-cancel option: plain individual cancels, strikes and all.
-		const bulk = await updateSupervisorSettings(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+		const bulk = await updateSupervisorSettings(t.db, t.env, actor, effects, {
 			enabled: false,
 			cancel_in_flight: true
 		});
 		expect(bulk.canceled_runs).toBe(1);
 		expect(runById(t, running)?.status).toBe('canceled');
 		expect(issueById(t, runningIssue).attempt_count).toBe(1);
+		expect(effects.count()).toBe(4);
 	});
 
 	it('cancel_in_flight is rejected while enabling', async () => {

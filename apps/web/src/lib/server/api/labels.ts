@@ -593,6 +593,7 @@ export async function addIssueLabels(
 			...labelInserts(db, actor, toCreate),
 			...issueLabelInserts(db, actor, issue, added, now)
 		]);
+		effects.signalDispatch();
 	}
 	const final = await loadIssueLabels(db, issue.id);
 	// Report the chips that actually landed: a label created on the fly may
@@ -600,7 +601,7 @@ export async function addIssueLabels(
 	// in which case the id in hand was ignored and the winner's is live.
 	const byName = new Map(final.map((l) => [l.name.toLowerCase(), l]));
 	const landed = (l: Label) => byName.get(l.name.toLowerCase()) ?? chip(l);
-	effects.signalDispatch();
+	if (added.length === 0) effects.signalDispatch();
 	return {
 		labels: final,
 		added: added.map(landed),

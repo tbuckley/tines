@@ -1,4 +1,7 @@
-import { TEST_NOOP_DISPATCH_EFFECTS } from '$lib/server/api/test-dispatch-effects';
+import {
+	recordDispatchEffects,
+	TEST_NOOP_DISPATCH_EFFECTS
+} from '$lib/server/api/test-dispatch-effects';
 import type { WorkflowResponse } from '@tines/shared';
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
@@ -590,6 +593,21 @@ describe('createIssue with labels', () => {
 		// The whole point of resolving before the batch: no half-created issue.
 		expect(issueCount()).toBe(0);
 		expect(await listLabels(t.db, USER)).toEqual([]);
+	});
+
+	it('dispatch effects: createIssue stays silent when the durable batch rejects', async () => {
+		const effects = recordDispatchEffects();
+		const realBatch = t.env.DB.batch.bind(t.env.DB);
+		t.env.DB.batch = async () => {
+			throw new Error('injected issue batch failure');
+		};
+		await expect(
+			createIssue(t.db, t.env, human, effects, PROJECT, { title: 'Rejected at commit' })
+		).rejects.toThrow('injected issue batch failure');
+		t.env.DB.batch = realBatch;
+		expect(effects.count()).toBe(0);
+		expect(issueCount()).toBe(0);
+		expect(t.all("SELECT id FROM event WHERE type = 'issue.created'")).toEqual([]);
 	});
 
 	it('lets a run key attach an existing label, matched case-insensitively', async () => {

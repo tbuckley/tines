@@ -769,14 +769,16 @@ export async function updateRunner(
 			}
 		})
 	]);
+	effects.signalDispatch();
 	// Pausing stops new assignments immediately AND cancels the runner's
 	// not-yet-acknowledged `assigned` runs — nothing is running yet, so the
 	// cancel is free and the issues return to the pool. `launching`/`running`
 	// runs finish (SPEC.md "Pausing a runner").
 	if (patch.status === 'paused') {
-		await cancelAssignedRuns(db, env, { userId: actor.userId, runnerId: id }, 'runner paused');
+		await cancelAssignedRuns(db, env, { userId: actor.userId, runnerId: id }, 'runner paused', () =>
+			effects.signalDispatch()
+		);
 	}
-	effects.signalDispatch();
 	return getRunner(db, actor.userId, id);
 }
 

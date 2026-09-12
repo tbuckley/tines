@@ -6,6 +6,7 @@ import { createTestDb, type TestDb } from '../api/test-db';
 import { localAdapter } from './adapter';
 import {
 	cancelRun,
+	cancelAssignedRuns,
 	claimRun,
 	endRun,
 	launchClaimedRun,
@@ -1000,6 +1001,54 @@ describe('end judgment', () => {
 });
 
 describe('cancel', () => {
+	it('reports each durable assigned-run cancellation before a later failure', async () => {
+		const t = world();
+		const runner = addRunner(t);
+		addRun(t, { issueId: addIssue(t), runnerId: runner, status: 'assigned' });
+		addRun(t, { issueId: addIssue(t), runnerId: runner, status: 'assigned' });
+		const realBatch = t.env.DB.batch.bind(t.env.DB);
+		let batches = 0;
+		t.env.DB.batch = async (statements) => {
+			batches += 1;
+			// endRun owns one flip batch and one dependent-write batch. Fail the
+			// next run's flip, after the first win has returned and notified.
+			if (batches === 3) throw new Error('injected later cancellation failure');
+			return realBatch(statements);
+		};
+		let notifications = 0;
+		await expect(
+			cancelAssignedRuns(
+				t.db,
+				t.env,
+				{ userId: USER, runnerId: runner },
+				'runner paused',
+				() => notifications++,
+				NOW
+			)
+		).rejects.toThrow('injected later cancellation failure');
+		expect(notifications).toBe(1);
+		expect(runs(t).filter((run) => run.status === 'canceled')).toHaveLength(1);
+	});
+
+	it('reports no cancellation for zero matches or a lost terminal guard', async () => {
+		const t = world();
+		const runner = addRunner(t);
+		const issue = addIssue(t);
+		addRun(t, { issueId: issue, runnerId: runner, status: 'running', startedAt: NOW });
+		let notifications = 0;
+		expect(
+			await cancelAssignedRuns(
+				t.db,
+				t.env,
+				{ userId: USER, runnerId: runner },
+				'runner paused',
+				() => notifications++,
+				NOW
+			)
+		).toBe(0);
+		expect(notifications).toBe(0);
+	});
+
 	it('cancels a running run through the adapter and judges it like any end', async () => {
 		const t = world();
 		const fake = createFakeAdapter();
