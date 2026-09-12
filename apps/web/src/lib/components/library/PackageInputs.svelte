@@ -158,9 +158,11 @@
 	{#if document.workflows.length}
 		<fieldset class="space-y-2 rounded-lg border p-3" {disabled}>
 			<legend class="px-1 text-sm font-medium">Independent workflow copies</legend>
-			{#each document.workflows as workflow, index (workflow.id)}
+			{#each document.workflows as workflow (workflow.id)}
 				<label class="grid gap-1 sm:grid-cols-[12rem_1fr] sm:items-center" for="name-{workflow.id}">
-					<span class="text-sm">{index === 0 ? 'Main' : 'Dependency'} · {workflow.name}</span>
+					<span class="text-sm"
+						>{workflow.id === document.main_workflow_id ? 'Main' : 'Dependency'} · {workflow.name}</span
+					>
 					<Input
 						id="name-{workflow.id}"
 						value={choices.workflow_names?.[workflow.id] ?? workflow.name}

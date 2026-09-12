@@ -5,11 +5,13 @@ Implementation status: the foundation and CLI provide v3 whole-library transfer,
 ## Install a package in the browser
 
 Open **Workflows → Install package** (also linked from **Settings → Export / import**) and choose
-the downloaded JSON file. Tines validates local bytes first. Legacy and whole-library files are
+the downloaded JSON file. Tines parses local bytes first, then sends workflow files to this Tines
+instance for server validation. Nothing is installed until you confirm a prepared plan. Legacy and whole-library files are
 directed to the existing best-effort library importer; workflow-profile files use the atomic flow.
 
 Resolve each declared destination value, edit the proposed names for the independent main and
-dependency copies, and opt into any schedules or routing rules. Schedules are unchecked by default
+dependency copies, and opt into any schedules or routing rules. Main/dependency roles follow the
+file’s `main_workflow_id`, regardless of workflow array order. Schedules are unchecked by default
 and install paused. A destination project is only required by selected project-bound automation or
 a declared text value that is actually used. Preparation shows the full resolved package, exact
 before/after substitutions, every create/reuse/skip operation, and destination runner/model support.
@@ -227,7 +229,9 @@ to Bob, then reads installed inheritance, ordered effective prompt parts, artifa
 skill files through the ordinary API. It proves zero automatic issues/schedules before explicitly
 creating an inspection issue for the effective-context read.
 
-The import cases cover expiry (a real preparation backdated with the local test signing key),
+The import cases also validate a dependency-first file and check ID-based rename and prepared graph
+roles at desktop and phone widths, preserving the validated source document through preparation.
+They cover expiry (a real preparation backdated with the local test signing key),
 a late D1 skill-file failure with all allocated rows rolled back, and recovery across reload/404,
 same-plan retry, dropped committed response, and receipt lookup. Only fault injection is intercepted;
 the retry, expiry rejection, transaction, and receipt reads use the real backend. These browser

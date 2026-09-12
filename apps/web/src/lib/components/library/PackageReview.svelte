@@ -49,12 +49,14 @@
 	<section aria-labelledby="package-graph-title">
 		<h2 id="package-graph-title" class="mb-3 text-lg font-semibold">Workflow graph and gates</h2>
 		<div class="space-y-5">
-			{#each document.workflows as workflow, index (workflow.id)}
+			{#each document.workflows as workflow (workflow.id)}
 				<article class="rounded-lg border p-4" id="review-{workflow.id}">
 					<div class="mb-3 flex flex-wrap items-baseline justify-between gap-2">
 						<h3 class="font-semibold">{workflow.name}</h3>
 						<span class="text-muted-foreground text-xs"
-							>{index === 0 ? 'Main workflow' : 'Required inheritance dependency'}</span
+							>{workflow.id === document.main_workflow_id
+								? 'Main workflow'
+								: 'Required inheritance dependency'}</span
 						>
 					</div>
 					{#if workflow.description}
@@ -119,7 +121,7 @@
 						<h3 class="font-semibold">{workflow.name} › {state.name}</h3>
 						<p class="text-muted-foreground mb-3 text-xs">
 							{state.inherits_from
-								? 'Local entries below; inherited entries are shown under their owning dependency state above.'
+								? 'Local entries below; inherited entries are shown under their owning dependency state.'
 								: 'Local entries in applied order.'}
 						</p>
 						{#if items.length === 0}<p class="text-muted-foreground text-sm">

@@ -400,8 +400,8 @@
 		</section>
 	{:else if stage === 'empty'}
 		<p class="text-muted-foreground rounded-lg border border-dashed p-8 text-center text-sm">
-			Choose a local JSON package to validate it. Nothing is uploaded or installed until you confirm
-			a prepared plan.
+			Choose a local JSON package to send it to this Tines instance for validation. Nothing is
+			installed until you confirm a prepared plan.
 		</p>
 	{:else if stage === 'reading'}
 		<p role="status" class="text-muted-foreground text-sm">Reading and validating package…</p>

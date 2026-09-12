@@ -61,6 +61,8 @@ async function approve(page: Page) {
 const suffix = ` browser import ${runId}`;
 let packagePath: string;
 let missingWorkflowPath: string;
+let dependencyFirstPath: string;
+let dependencyFirstDocument: WorkflowPackageDocument;
 let mainName: string;
 let dependencyName: string;
 let candidateInputId: string;
@@ -112,6 +114,25 @@ test.beforeAll(async ({ playwright }) => {
 	const document = validation.document as WorkflowPackageDocument;
 	packagePath = join(mkdtempSync(join(tmpdir(), 'tines-browser-import-')), 'package.json');
 	writeFileSync(packagePath, JSON.stringify(document));
+	// Array order is not workflow identity: validate an otherwise unchanged dependency-first file.
+	const reordered = {
+		...document,
+		workflows: [...document.workflows].reverse(),
+		digest: undefined
+	};
+	const reorderedValidation = await body<ValidateLibraryResponse>(
+		await api.post('/api/v1/library/validate', { document_json: JSON.stringify(reordered) })
+	);
+	expect(reorderedValidation.valid).toBe(true);
+	dependencyFirstDocument = reorderedValidation.document as WorkflowPackageDocument;
+	expect(dependencyFirstDocument.workflows[0].id).not.toBe(
+		dependencyFirstDocument.main_workflow_id
+	);
+	dependencyFirstPath = join(
+		mkdtempSync(join(tmpdir(), 'tines-dependency-first-')),
+		'package.json'
+	);
+	writeFileSync(dependencyFirstPath, JSON.stringify(dependencyFirstDocument));
 	const missingWorkflow = automatedPackage();
 	(missingWorkflow as { digest?: string }).digest = undefined;
 	missingWorkflow.inputs.push({
@@ -225,6 +246,58 @@ test('reviews, confirms and installs an independent project-free package through
 			await api.get(`/api/v1/projects/${project.id}/schedules`)
 		);
 		expect(schedules.items).toEqual([]);
+	}
+});
+
+test('identifies main and dependency by ID in dependency-first files before confirmation', async ({
+	page
+}) => {
+	const main = dependencyFirstDocument.workflows.find(
+		(workflow) => workflow.id === dependencyFirstDocument.main_workflow_id
+	)!;
+	const dependency = dependencyFirstDocument.workflows.find((workflow) => workflow.id !== main.id)!;
+	for (const viewport of [DESKTOP, PHONE]) {
+		await page.setViewportSize(viewport);
+		await gotoHydrated(page, '/workflows/import');
+		await page.getByLabel('Workflow package file').setInputFiles(dependencyFirstPath);
+		const mainInput = page.getByRole('textbox', { name: `Main · ${main.name}`, exact: true });
+		const dependencyInput = page.getByRole('textbox', {
+			name: `Dependency · ${dependency.name}`,
+			exact: true
+		});
+		await expect(mainInput).toHaveAttribute('id', `name-${main.id}`);
+		await expect(dependencyInput).toHaveAttribute('id', `name-${dependency.id}`);
+		const renamedMain = `${main.name} main ${viewport.width}`;
+		const renamedDependency = `${dependency.name} dependency ${viewport.width}`;
+		await mainInput.fill(renamedMain);
+		await dependencyInput.fill(renamedDependency);
+		const preparing = page.waitForResponse('**/api/v1/library/prepare');
+		await page.getByRole('button', { name: 'Prepare installation' }).click();
+		const response = await preparing;
+		expect(response.ok()).toBe(true);
+		// The browser must preserve the validated source bytes/digest and send names keyed by ID.
+		const request = response.request().postDataJSON();
+		expect(JSON.parse(request.document_json)).toEqual(dependencyFirstDocument);
+		expect(request.choices.workflow_names).toMatchObject({
+			[main.id]: renamedMain,
+			[dependency.id]: renamedDependency
+		});
+		const review = page.getByTestId('package-review');
+		const mainCard = review.locator(`article[id="review-${main.id}"]`);
+		const dependencyCard = review.locator(`article[id="review-${dependency.id}"]`);
+		await expect(mainCard.getByRole('heading', { name: renamedMain, exact: true })).toBeVisible();
+		await expect(mainCard.getByText('Main workflow', { exact: true })).toBeVisible();
+		await expect(
+			dependencyCard.getByRole('heading', { name: renamedDependency, exact: true })
+		).toBeVisible();
+		await expect(
+			dependencyCard.getByText('Required inheritance dependency', { exact: true })
+		).toBeVisible();
+		await expect(page.getByRole('checkbox', { name: /I confirm exact plan/ })).not.toBeChecked();
+		await expect(page.getByRole('button', { name: 'Install package' })).toBeDisabled();
+		expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
+			viewport.width
+		);
 	}
 });
 
