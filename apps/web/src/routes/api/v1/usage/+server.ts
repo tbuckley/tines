@@ -73,7 +73,8 @@ export const GET: RequestHandler = api(async (event) => {
 		if (error instanceof UsageInputError)
 			throw new ApiFail(422, 'invalid_usage_period', error.message, {
 				field: error.field ?? 'from/to',
-				...(error.remedy ? { remedy: error.remedy } : {})
+				accepted: 'Today, 7d, 30d, YYYY-MM-DD, or ISO timestamp with explicit offset',
+				remedy: error.remedy ?? 'use a named window or supply valid from/to bounds and retry'
 			});
 		throw error;
 	}
@@ -105,7 +106,8 @@ export const GET: RequestHandler = api(async (event) => {
 		if (error instanceof UsageInputError)
 			throw new ApiFail(422, 'invalid_usage_period', error.message, {
 				field: error.field ?? 'from/to',
-				...(error.remedy ? { remedy: error.remedy } : {})
+				accepted: 'Today, 7d, 30d, YYYY-MM-DD, or ISO timestamp with explicit offset',
+				remedy: error.remedy ?? 'use a named window or supply valid from/to bounds and retry'
 			});
 		throw error;
 	}
