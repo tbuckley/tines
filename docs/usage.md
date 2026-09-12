@@ -2,6 +2,10 @@
 
 `GET /api/v1/usage` and `tines usage` report retained, finalized run cost for a period. The web view is under **Agents → Spend** and defaults to the last seven days; the API and CLI default to Today.
 
+The Now view is operational and does not depend on usage accumulating. Spend keeps its project scope independent from the global project focus and records project, workflow, breakdown, period, Custom bounds, and sort in the URL, so reload and browser Back/Forward restore the same report selection. Changing project resets workflow narrowing to All; changing sort only reorders the current groups. Custom ranges require both From and exclusive To before a request is made.
+
+An initial failure replaces the report with a Retry action. A failed manual refresh may retain only the report for the same selection and labels it with that report's original generated time and resolved bounds. Missing usage is shown as Unknown or Partial—not `$0`—and waiting cannot repair a navigation or request failure.
+
 ## Accounting contract
 
 Membership is `ended_at >= from AND ended_at < to`. Completed, failed, canceled, timed-out, and never-started failed attempts count when finalized. Runs pending at the exclusive cutoff are counted separately and contribute no usage. Today begins at midnight in `supervisor_settings.budget.timezone`, with UTC fallback; 7d and 30d are rolling 168- and 720-hour windows. Responses contain resolved UTC bounds, timezone/source, generation time, `finalized_by_ended_at_v1`, and the current-metadata attribution basis.
