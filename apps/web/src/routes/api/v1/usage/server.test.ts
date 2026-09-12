@@ -96,7 +96,7 @@ describe('GET /api/v1/usage validation and authorization', () => {
 			}
 		});
 
-		const ids: string[] = [];
+		const evidence: Record<string, any>[] = [];
 		let cursor: string | null = null;
 		do {
 			const page = await getRuns(
@@ -104,10 +104,41 @@ describe('GET /api/v1/usage validation and authorization', () => {
 				`?population=finalized&from=${from}&to=${to}&limit=17${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`
 			);
 			expect(page.response.status).toBe(200);
-			ids.push(...(page.body.items as { id: string }[]).map((run) => run.id));
+			evidence.push(...(page.body.items as Record<string, any>[]));
 			cursor = page.body.next_cursor as string | null;
 		} while (cursor);
-		expect(ids).toHaveLength(137);
-		expect(new Set(ids).size).toBe(137);
+		expect(evidence).toHaveLength(137);
+		expect(new Set(evidence.map((run) => run.id)).size).toBe(137);
+		const independentlySummed = evidence.reduce(
+			(total, run) => {
+				const index = Number(run.id.slice('mixed_'.length));
+				const expectedStatus =
+					index % 3 === 0 ? 'priced' : index % 3 === 1 ? 'unpriced' : 'unreported';
+				expect(run.usage_accounting.status).toBe(expectedStatus);
+				expect(run.usage_dimensions).toMatchObject({
+					project: { id: 'prj_1', name: 'demo' },
+					workflow: { id: 'wf_standard', name: 'Standard' },
+					state: { id: 'wfs_std_open', workflow_id: 'wf_standard' },
+					outcome: { id: index % 2 ? 'advanced' : 'stalled' }
+				});
+				total[expectedStatus]++;
+				if (run.usage_accounting.cost_exact !== null)
+					total.costCents += Math.round(Number(run.usage_accounting.cost_exact) * 100);
+				return total;
+			},
+			{ priced: 0, unpriced: 0, unreported: 0, costCents: 0 }
+		);
+		expect(independentlySummed).toEqual({
+			priced: 46,
+			unpriced: 46,
+			unreported: 45,
+			costCents: expectedExact
+		});
+		expect(report.body.scope_total).toMatchObject({
+			priced_run_count: independentlySummed.priced,
+			unpriced_run_count: independentlySummed.unpriced,
+			unreported_run_count: independentlySummed.unreported,
+			cost_usd_exact: String(independentlySummed.costCents / 100)
+		});
 	});
 });

@@ -201,6 +201,48 @@ try {
 		);
 	if (body.pending.scope_count !== 100)
 		throw new Error(`worker pending mismatch: ${body.pending.scope_count} != 100`);
+	const expectedPriced = allPriced ? size : !noPriced && size >= 100_001 ? 1 : 0;
+	const expectedUnpriced = allPriced ? 0 : Math.floor(size / 4);
+	const expectedUnreported = size - expectedPriced - expectedUnpriced;
+	const expectedCost = allPriced ? (size * (size + 1)) / 200_000 : expectedPriced ? 1 : null;
+	const expectedMedian = allPriced
+		? size % 2
+			? (size + 1) / 2 / 100_000
+			: (size / 2 + (size / 2 + 1)) / 2 / 100_000
+		: expectedPriced
+			? 1
+			: null;
+	const expectedP95 = allPriced ? Math.ceil(size * 0.95) / 100_000 : expectedPriced ? 1 : null;
+	const expectedMax = allPriced ? size / 100_000 : expectedPriced ? 1 : null;
+	const oracle = {
+		finalized_run_count: size,
+		priced_run_count: expectedPriced,
+		unpriced_run_count: expectedUnpriced,
+		unreported_run_count: expectedUnreported,
+		cost_usd: expectedCost
+	};
+	for (const [field, expected] of Object.entries(oracle))
+		if (body.scope_total[field] !== expected)
+			throw new Error(`worker ${field} mismatch: ${body.scope_total[field]} != ${expected}`);
+	for (const [field, expected] of Object.entries({
+		median_cost_usd: expectedMedian,
+		p95_cost_usd: expectedP95,
+		max_cost_usd: expectedMax
+	}))
+		if (body.scope_total.distribution[field] !== expected)
+			throw new Error(
+				`worker distribution ${field} mismatch: ${body.scope_total.distribution[field]} != ${expected}`
+			);
+	const groupedCounts = body.groups.reduce(
+		(total, group) => total + group.aggregate.finalized_run_count,
+		0
+	);
+	const groupedCost = body.groups.reduce(
+		(total, group) => total + (group.aggregate.cost_usd ?? 0),
+		0
+	);
+	if (groupedCounts !== size || Math.abs(groupedCost - (expectedCost ?? 0)) > 1e-9)
+		throw new Error('worker tier groups do not independently reconcile to the known dataset');
 	const evidenceQuery = new URLSearchParams({
 		population: 'finalized',
 		from: new Date(fromMs).toISOString(),
@@ -250,6 +292,55 @@ try {
 	};
 	if (JSON.stringify(comparable(cli)) !== JSON.stringify(comparable(body)))
 		throw new Error('source CLI and HTTP accounting differ');
+	const runsArgs = [
+		fileURLToPath(new URL('../../../packages/cli/dist/index.js', import.meta.url)),
+		'runs',
+		'list',
+		'--url',
+		baseUrl,
+		'--api-key',
+		apiKey,
+		'--population',
+		'finalized',
+		'--from',
+		new Date(fromMs).toISOString(),
+		'--to',
+		new Date(toMs).toISOString(),
+		'--accounting-status',
+		'priced',
+		'--all-pages'
+	];
+	let cliEvidenceItems = null;
+	let cliEvidenceCost = null;
+	let cliTextDisclosure = null;
+	// The sparse datasets are the complete spawned-CLI evidence gate. Avoid asking a
+	// single Worker invocation to enumerate the deliberately all-priced 100k load case.
+	if (expectedPriced <= 100) {
+		const cliEvidence = JSON.parse(
+			execFileSync('node', [...runsArgs, '--json'], {
+				encoding: 'utf8',
+				maxBuffer: 64 * 1024 * 1024
+			})
+		);
+		if (cliEvidence.items.length !== expectedPriced || cliEvidence.next_cursor !== null)
+			throw new Error('source CLI complete priced evidence does not match the independent oracle');
+		cliEvidenceItems = cliEvidence.items.length;
+		cliEvidenceCost = cliEvidence.items.reduce(
+			(total, item) => total + (item.usage_accounting.cost ?? 0),
+			0
+		);
+		if (Math.abs(cliEvidenceCost - (expectedCost ?? 0)) > 1e-9)
+			throw new Error('source CLI evidence does not independently re-sum to the aggregate');
+		const cliEvidenceText = execFileSync('node', runsArgs, {
+			encoding: 'utf8',
+			maxBuffer: 64 * 1024 * 1024
+		});
+		cliTextDisclosure =
+			!expectedPriced ||
+			(cliEvidenceText.includes('Accounting') && cliEvidenceText.includes('Rate'));
+		if (!cliTextDisclosure)
+			throw new Error('source CLI text omitted accounting or rate disclosure');
+	}
 	workerEvidence = {
 		status: response.status,
 		elapsed_ms: Number((performance.now() - started).toFixed(1)),
@@ -259,7 +350,17 @@ try {
 		pending: body.pending.scope_count,
 		groups: body.groups.length,
 		evidence_pages: evidencePages,
-		source_cli_exact_match: true
+		independent_oracle: oracle,
+		distribution_oracle: {
+			median_cost_usd: expectedMedian,
+			p95_cost_usd: expectedP95,
+			max_cost_usd: expectedMax
+		},
+		groups_reconciled: true,
+		source_cli_exact_match: true,
+		source_cli_evidence_items: cliEvidenceItems,
+		source_cli_evidence_resummed_cost: cliEvidenceCost,
+		source_cli_text_disclosure: cliTextDisclosure
 	};
 } finally {
 	worker.kill('SIGTERM');
