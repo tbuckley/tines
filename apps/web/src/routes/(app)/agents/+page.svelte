@@ -577,7 +577,7 @@
 		const origin = typeof location !== 'undefined' ? location.origin : '<tines-url>';
 		const parts = [
 			`TINES_API_KEY=${createdKey?.key ?? '<your-api-key>'}`,
-			'tines runner daemon',
+			'tines runner install',
 			`--url ${origin}`,
 			`--name ${runnerName.trim() || '<name>'}`,
 			`--harness ${runnerHarness}`
@@ -646,7 +646,11 @@
 		};
 	});
 
-	/** What the user actually needs on a fresh machine: install, then run. */
+	/**
+	 * What the user actually needs on a fresh machine: the CLI, then one
+	 * command that registers the runner and installs the daemon as a
+	 * launchd/systemd service (which is what keeps it updated).
+	 */
 	const bootstrapBlock = $derived(`npm install -g tines\n${bootstrapCommand}`);
 
 	async function copyBootstrapCommand() {
@@ -1869,14 +1873,18 @@
 						{:else}
 							<p class="text-muted-foreground pt-1 text-xs">
 								Waiting for <span class="font-medium">{trimmedName || 'the runner'}</span> — the
-								first start <span class="font-medium">registers</span> it with your API key and stores
-								its own long-lived runner token on the machine; it appears here, online, within seconds.
-								Later starts reconnect with the stored token — the API key is only needed once.
+								install <span class="font-medium">registers</span> it with your API key, stores its own
+								long-lived runner token on the machine, and loads the daemon as a service; it appears
+								here, online, within seconds. The service reconnects with the stored token — the API key
+								is only needed once.
 							</p>
 						{/if}
 						<p class="text-muted-foreground text-xs">
-							Keep it running: the runner is infrastructure — put the daemon under launchd/systemd
-							so it survives logouts and reboots (service snippets in
+							Keep it running: the install puts the daemon under launchd/systemd, so it survives
+							logouts and reboots and restarts itself onto each new release. To run it in the
+							foreground instead, use
+							<code class="bg-muted rounded px-1 py-0.5">tines runner daemon</code> with the same
+							flags (details in
 							<code class="bg-muted rounded px-1 py-0.5">docs/runner-daemon.md</code>).
 						</p>
 					</div>

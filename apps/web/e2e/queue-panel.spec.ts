@@ -97,7 +97,7 @@ test.describe.serial('the Now row', () => {
 		await expect(panel).toContainText(`${RUNNER_NAME} offline`);
 		await expect(panel).toContainText('3 issues');
 		// Flow 18's remedy, rendered in place rather than linked away.
-		await expect(panel).toContainText('tines runner daemon');
+		await expect(panel).toContainText('tines runner install');
 
 		// Part 3: the annotations, on the runner card and the rule row.
 		await expect(page.getByRole('link', { name: '3 waiting', exact: true })).toBeVisible();

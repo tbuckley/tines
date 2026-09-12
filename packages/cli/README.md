@@ -56,9 +56,11 @@ for the whole list — and every command takes `--json` for machine-readable out
 ## Running agents on your own machine
 
 ```sh
-tines runner daemon --name laptop --harness claude-code
+TINES_API_KEY=tines_… tines runner install --name laptop --harness claude-code
 ```
 
-registers this machine as a local runner and polls for work. See
+registers this machine as a local runner and installs the daemon as a launchd/systemd
+service that polls for work and keeps itself updated (`tines runner daemon` with the same
+flags runs it in the foreground instead). See
 [docs/runner-daemon.md](https://github.com/tbuckley/tines/blob/main/docs/runner-daemon.md)
-for the flags, token rotation, and keeping it running under launchd or systemd.
+for the flags, token rotation, and what the service does.
