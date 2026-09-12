@@ -1,5 +1,4 @@
 import { request as httpRequest } from 'node:http';
-import { execFileSync } from 'node:child_process';
 import { expect, test } from '@playwright/test';
 import { unstable_dev, type Unstable_DevWorker } from 'wrangler';
 import {
@@ -16,34 +15,11 @@ import {
 } from '../../../packages/shared/src/library/fixtures';
 import { signPackagePlan, verifyPackagePlan } from '../src/lib/server/library/token';
 import { ALICE, BASE_URL } from './constants.mjs';
+import { d1, sqlLiteral as literal } from './d1';
 import { apiClient, body, errorBody, runId } from './helpers';
 
 const SIGNING_KEY = 'e2e-only-secret-encryption-key';
 
-/** Execute against the isolated database used by e2e/server.sh. */
-function d1(sql: string): Array<Record<string, unknown>> {
-	const output = execFileSync(
-		'pnpm',
-		[
-			'exec',
-			'wrangler',
-			'd1',
-			'execute',
-			'tines',
-			'--local',
-			'--persist-to',
-			'.wrangler-e2e',
-			'--command',
-			sql,
-			'--json'
-		],
-		{ encoding: 'utf8' }
-	);
-	const result = JSON.parse(output) as Array<{ results?: Array<Record<string, unknown>> }>;
-	return result[0]?.results ?? [];
-}
-
-const literal = (value: string) => `'${value.replaceAll("'", "''")}'`;
 const ids = (values: string[]) => values.map(literal).join(',');
 
 async function seal(document: WorkflowPackageDocument) {

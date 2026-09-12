@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import { getDb } from '$lib/server/db';
+import { USER, seedBase } from '../supervisor/test-fixtures';
 import type {
 	ArtifactRequirement,
 	CreateWorkflowRequest,
@@ -6,7 +8,15 @@ import type {
 	WorkflowTransitionInput
 } from '@tines/shared';
 import { ApiFail } from './core';
-import { deadEndWarnings, diffTransitions, resolveDef, workflowFingerprint } from './workflows';
+import { createTestDb } from './test-db';
+import {
+	createWorkflow,
+	deadEndWarnings,
+	diffTransitions,
+	loadWorkflows,
+	resolveDef,
+	workflowFingerprint
+} from './workflows';
 
 const states: WorkflowStateInput[] = [
 	{ name: 'Open', category: 'active' },
@@ -462,5 +472,64 @@ describe('workflowFingerprint', () => {
 			]
 		});
 		expect(fp(omitted)).toBe(fp(blank));
+	});
+});
+
+describe('loadWorkflows D1 parameter budget', () => {
+	it.each([99, 100, 180])('hydrates %i owned workflows plus Standard', async (ownedCount) => {
+		const t = createTestDb();
+		seedBase(t);
+		const actor = {
+			userId: USER,
+			userName: 'Alice',
+			apiKeyId: null,
+			apiKeyName: null,
+			viaSession: true
+		};
+		const created = [];
+		for (let i = 0; i < ownedCount; i++) {
+			const workflow = await createWorkflow(t.db, t.env, actor, {
+				name: `Workflow ${i.toString().padStart(3, '0')}`,
+				initial_state: 'Second',
+				states: [
+					{ name: 'First', category: 'backlog' },
+					{ name: 'Second', category: 'active', inherits_from: 'First' },
+					{ name: 'Done', category: 'done' }
+				],
+				transitions: [
+					{
+						name: 'Finish',
+						from: 'Second',
+						to: 'Done',
+						requires: [{ artifact: 'impl-pr', type: 'pr', description: `PR ${i}` }]
+					}
+				]
+			});
+			await t.db
+				.updateTable('workflow')
+				.set({ created_at: i + 1 })
+				.where('id', '=', workflow.id)
+				.execute();
+			created.push(workflow);
+		}
+
+		const workflows = await loadWorkflows(getDb(t.env), USER);
+		expect(workflows.map((workflow) => workflow.id)).toEqual([
+			'wf_standard',
+			...created.map((workflow) => workflow.id)
+		]);
+		expect(workflows).toHaveLength(ownedCount + 1);
+		for (const index of [0, Math.min(89, ownedCount - 1), ownedCount - 1]) {
+			if (index < 0) continue;
+			const actual = workflows[index + 1];
+			const expected = created[index];
+			expect(actual.states.map((state) => state.name)).toEqual(['First', 'Second', 'Done']);
+			expect(actual.initial_state_id).toBe(expected.initial_state_id);
+			expect(actual.states[1].inherits_from).toBe(actual.states[0].id);
+			expect(actual.transitions).toEqual(expected.transitions);
+		}
+
+		expect(await loadWorkflows(getDb(t.env), USER, created.at(-1)?.id)).toHaveLength(1);
+		expect(await loadWorkflows(getDb(t.env), USER, 'wf_missing')).toEqual([]);
 	});
 });

@@ -1,10 +1,10 @@
 import type { AddIssueLinkRequest, IssueLink, IssueLinkKind } from '@tines/shared';
-import type { Kysely } from 'kysely';
+import { sql, type CompiledQuery, type Kysely } from 'kysely';
 import { newId, type Database } from '$lib/server/db';
 import { ApiFail, notFound, requireString, runAtomic, type ActorContext } from './core';
 import { assertWritable, issueProject } from './archive';
 import { eventInsert } from './events';
-import { issueQuery, serializeIssue } from './issues';
+import { issueQuery } from './issues';
 
 export interface LinkEdge {
 	source: string;
@@ -14,7 +14,7 @@ export interface LinkEdge {
 /**
  * Shortest-hop path `from → … → to` over the directed link graph (both
  * kinds), as issue ids, or null when `to` is unreachable. BFS with a visited
- * set, so it terminates even on a cycle that raced past write-time checks.
+ * set, so it terminates even when reading legacy corruption.
  */
 export function findLinkPath(edges: LinkEdge[], from: string, to: string): string[] | null {
 	const adjacency = new Map<string, string[]>();
@@ -43,17 +43,182 @@ export function findLinkPath(edges: LinkEdge[], from: string, to: string): strin
 }
 
 const LINK_KINDS = ['blocks', 'blocked_by', 'duplicate_of'] as const;
+const STORED_GRAPH_KINDS = ['blocks', 'duplicate_of'] as const;
 
-/** All directed edges in the user's link graph (both kinds). */
-async function loadUserEdges(db: Kysely<Database>, userId: string): Promise<LinkEdge[]> {
-	const rows = await db
-		.selectFrom('issue_link')
-		.innerJoin('issue', 'issue.id', 'issue_link.source_issue_id')
-		.innerJoin('project', 'project.id', 'issue.project_id')
-		.select(['issue_link.source_issue_id as source', 'issue_link.target_issue_id as target'])
-		.where('project.user_id', '=', userId)
-		.execute();
-	return rows;
+interface LinkEndpoint {
+	id: string;
+	project_id: string;
+	project_name: string;
+	number: number;
+	title: string;
+}
+
+interface LinkReceipt {
+	inserted: number;
+	endpoints_owned: number;
+	exact_exists: number;
+	duplicate_link_id: string | null;
+	duplicate_project_name: string | null;
+	duplicate_number: number | null;
+	duplicate_title: string | null;
+	source_project_name: string | null;
+	source_number: number | null;
+	source_title: string | null;
+	target_project_name: string | null;
+	target_number: number | null;
+	target_title: string | null;
+}
+
+interface DiagnosticEdge extends LinkEdge {
+	source_project_name: string;
+	source_number: number;
+	source_title: string;
+	target_project_name: string;
+	target_number: number;
+	target_title: string;
+}
+
+/**
+ * The authoritative link write. Exported only so the native-D1 probe can run
+ * this exact batch; callers should normally use addIssueLink.
+ */
+export function addIssueLinkQueries(
+	db: Kysely<Database>,
+	actor: ActorContext,
+	source: LinkEndpoint,
+	target: LinkEndpoint,
+	kind: IssueLinkKind,
+	id: string,
+	now: number
+): { queries: CompiledQuery[]; receiptIndex: number; diagnosticIndex: number } {
+	const ownedEndpoints = sql<boolean>`EXISTS (
+		SELECT 1
+		FROM issue current_source
+		JOIN project source_project ON source_project.id = current_source.project_id
+		JOIN issue current_target ON current_target.id = ${target.id}
+		JOIN project target_project ON target_project.id = current_target.project_id
+		WHERE current_source.id = ${source.id}
+			AND source_project.user_id = ${actor.userId}
+			AND target_project.user_id = ${actor.userId}
+	)`;
+	const exactLink = sql<boolean>`EXISTS (
+		SELECT 1 FROM issue_link
+		WHERE source_issue_id = ${source.id} AND target_issue_id = ${target.id} AND kind = ${kind}
+	)`;
+	const outgoingDuplicate = sql<boolean>`EXISTS (
+		SELECT 1 FROM issue_link
+		WHERE source_issue_id = ${source.id} AND kind = 'duplicate_of'
+	)`;
+	const freshLink = sql<boolean>`EXISTS (SELECT 1 FROM issue_link WHERE id = ${id})`;
+	const reachable = sql`
+		WITH RECURSIVE reachable(issue_id) AS (
+			SELECT ${target.id}
+			UNION
+			SELECT link.target_issue_id
+			FROM reachable
+			JOIN issue_link link ON link.source_issue_id = reachable.issue_id
+			JOIN issue link_source ON link_source.id = link.source_issue_id
+			JOIN project link_source_project ON link_source_project.id = link_source.project_id
+			JOIN issue link_target ON link_target.id = link.target_issue_id
+			JOIN project link_target_project ON link_target_project.id = link_target.project_id
+			WHERE link.kind IN (${sql.join(STORED_GRAPH_KINDS)})
+				AND link_source_project.user_id = ${actor.userId}
+				AND link_target_project.user_id = ${actor.userId}
+		)`;
+
+	const insert = sql`
+		${reachable}
+		INSERT INTO issue_link (id, source_issue_id, target_issue_id, kind, created_at)
+		SELECT ${id}, ${source.id}, ${target.id}, ${kind}, ${now}
+		WHERE ${ownedEndpoints}
+			AND NOT ${exactLink}
+			AND (${kind} <> 'duplicate_of' OR NOT ${outgoingDuplicate})
+			AND NOT EXISTS (SELECT 1 FROM reachable WHERE issue_id = ${source.id})
+	`.compile(db);
+
+	const eventFor = (self: LinkEndpoint, peer: LinkEndpoint, role: 'source' | 'target') =>
+		eventInsert(
+			db,
+			actor,
+			{
+				type: 'issue.link_added',
+				issueId: self.id,
+				projectId: self.project_id,
+				payload: {
+					link_id: id,
+					kind,
+					role,
+					other_issue_id: peer.id,
+					other_project_name: peer.project_name,
+					other_number: peer.number,
+					other_title: peer.title
+				},
+				createdAt: now
+			},
+			{ predicate: freshLink }
+		);
+
+	const receipt = sql<LinkReceipt>`
+		SELECT
+			${freshLink} AS inserted,
+			${ownedEndpoints} AS endpoints_owned,
+			${exactLink} AS exact_exists,
+			duplicate_link.id AS duplicate_link_id,
+			duplicate_project.name AS duplicate_project_name,
+			duplicate_issue.number AS duplicate_number,
+			duplicate_issue.title AS duplicate_title,
+			source_project.name AS source_project_name,
+			current_source.number AS source_number,
+			current_source.title AS source_title,
+			target_project.name AS target_project_name,
+			current_target.number AS target_number,
+			current_target.title AS target_title
+		FROM (SELECT 1) singleton
+		LEFT JOIN issue current_source ON current_source.id = ${source.id}
+		LEFT JOIN project source_project ON source_project.id = current_source.project_id
+		LEFT JOIN issue current_target ON current_target.id = ${target.id}
+		LEFT JOIN project target_project ON target_project.id = current_target.project_id
+		LEFT JOIN issue_link duplicate_link
+			ON duplicate_link.source_issue_id = ${source.id} AND duplicate_link.kind = 'duplicate_of'
+		LEFT JOIN issue duplicate_issue ON duplicate_issue.id = duplicate_link.target_issue_id
+		LEFT JOIN project duplicate_project ON duplicate_project.id = duplicate_issue.project_id
+	`.compile(db);
+
+	const diagnostic = sql<DiagnosticEdge>`
+		${reachable}
+		SELECT
+			link.source_issue_id AS source,
+			link.target_issue_id AS target,
+			link_source_project.name AS source_project_name,
+			link_source.number AS source_number,
+			link_source.title AS source_title,
+			link_target_project.name AS target_project_name,
+			link_target.number AS target_number,
+			link_target.title AS target_title
+		FROM reachable
+		JOIN issue_link link ON link.source_issue_id = reachable.issue_id
+		JOIN issue link_source ON link_source.id = link.source_issue_id
+		JOIN project link_source_project ON link_source_project.id = link_source.project_id
+		JOIN issue link_target ON link_target.id = link.target_issue_id
+		JOIN project link_target_project ON link_target_project.id = link_target.project_id
+		WHERE link.kind IN (${sql.join(STORED_GRAPH_KINDS)})
+			AND link_source_project.user_id = ${actor.userId}
+			AND link_target_project.user_id = ${actor.userId}
+			AND NOT ${freshLink}
+			AND ${ownedEndpoints}
+			AND NOT ${exactLink}
+			AND (${kind} <> 'duplicate_of' OR NOT ${outgoingDuplicate})
+			AND EXISTS (SELECT 1 FROM reachable WHERE issue_id = ${source.id})
+	`.compile(db);
+
+	const queries = [
+		insert,
+		eventFor(source, target, 'source'),
+		eventFor(target, source, 'target'),
+		receipt,
+		diagnostic
+	];
+	return { queries, receiptIndex: 3, diagnosticIndex: 4 };
 }
 
 export async function addIssueLink(
@@ -96,92 +261,102 @@ export async function addIssueLink(
 	const source = kindInput === 'blocked_by' ? other : issue;
 	const target = kindInput === 'blocked_by' ? issue : other;
 
-	const refOf = (r: typeof issue) => `${r!.project_name}/${r!.number}`;
-
-	if (kind === 'duplicate_of') {
-		const existing = serializeIssue(source).duplicate_of;
-		if (existing) {
-			throw new ApiFail(
-				422,
-				'already_duplicate',
-				`${refOf(source)} is already a duplicate of ${existing.project_name}/${existing.number} — remove that link first`,
-				{ duplicate_of: existing }
-			);
-		}
+	const id = newId('lnk');
+	const now = Date.now();
+	const batch = addIssueLinkQueries(db, actor, source, target, kind, id, now);
+	const results = await runAtomic(env, batch.queries);
+	const receiptRows = results[batch.receiptIndex]?.results;
+	if (!Array.isArray(receiptRows) || receiptRows.length !== 1) {
+		throw new Error('Issue link batch returned no receipt result');
 	}
+	const receipt = receiptRows[0] as Partial<LinkReceipt>;
+	if (
+		![0, 1].includes(receipt.inserted as number) ||
+		![0, 1].includes(receipt.endpoints_owned as number) ||
+		![0, 1].includes(receipt.exact_exists as number) ||
+		(receipt.endpoints_owned === 1 &&
+			(typeof receipt.source_project_name !== 'string' ||
+				!Number.isInteger(receipt.source_number) ||
+				typeof receipt.source_title !== 'string' ||
+				typeof receipt.target_project_name !== 'string' ||
+				!Number.isInteger(receipt.target_number) ||
+				typeof receipt.target_title !== 'string')) ||
+		(receipt.duplicate_link_id != null &&
+			(typeof receipt.duplicate_project_name !== 'string' ||
+				!Number.isInteger(receipt.duplicate_number) ||
+				typeof receipt.duplicate_title !== 'string'))
+	) {
+		throw new Error('Issue link batch returned a malformed receipt');
+	}
+	if (receipt.inserted === 1) {
+		return { id, kind, source_issue_id: source.id, target_issue_id: target.id, created_at: now };
+	}
+	if (receipt.endpoints_owned !== 1) throw notFound();
 
-	const duplicateLink = await db
-		.selectFrom('issue_link')
-		.select('id')
-		.where('source_issue_id', '=', source.id)
-		.where('target_issue_id', '=', target.id)
-		.where('kind', '=', kind)
-		.executeTakeFirst();
-	if (duplicateLink) {
+	const sourceRef = `${receipt.source_project_name}/${receipt.source_number}`;
+	const targetRef = `${receipt.target_project_name}/${receipt.target_number}`;
+	if (kind === 'duplicate_of' && receipt.duplicate_link_id) {
+		const duplicateOf = {
+			project_name: receipt.duplicate_project_name!,
+			number: receipt.duplicate_number!,
+			title: receipt.duplicate_title!
+		};
+		throw new ApiFail(
+			422,
+			'already_duplicate',
+			`${sourceRef} is already a duplicate of ${duplicateOf.project_name}/${duplicateOf.number} — remove that link first`,
+			{ duplicate_of: duplicateOf }
+		);
+	}
+	if (receipt.exact_exists === 1) {
 		throw new ApiFail(
 			409,
 			'conflict',
-			`${refOf(source)} already ${kind === 'blocks' ? 'blocks' : 'duplicates'} ${refOf(target)}`
+			`${sourceRef} already ${kind === 'blocks' ? 'blocks' : 'duplicates'} ${targetRef}`
 		);
 	}
 
-	// Cycle check over the combined graph: the new source→target edge closes
-	// a cycle exactly when target already reaches source.
-	const edges = await loadUserEdges(db, actor.userId);
-	const backPath = findLinkPath(edges, target.id, source.id);
+	const diagnosticRows = results[batch.diagnosticIndex]?.results;
+	if (!Array.isArray(diagnosticRows)) {
+		throw new Error('Issue link batch returned no diagnostic result');
+	}
+	const diagnostic = diagnosticRows as unknown as DiagnosticEdge[];
+	const backPath = findLinkPath(diagnostic, target.id, source.id);
 	if (backPath) {
-		const cycleIds = [source.id, ...backPath];
-		const refRows = await issueQuery(db, actor.userId)
-			.where('issue.id', 'in', [...new Set(cycleIds)])
-			.execute();
-		const byId = new Map(refRows.map((r) => [r.id, r]));
-		const path = cycleIds.map((id) => {
-			const r = byId.get(id);
-			return r
-				? { issue_id: id, project_name: r.project_name, number: r.number, title: r.title }
-				: { issue_id: id };
+		const details = new Map<
+			string,
+			{ issue_id: string; project_name: string; number: number; title: string }
+		>();
+		for (const edge of diagnostic) {
+			details.set(edge.source, {
+				issue_id: edge.source,
+				project_name: edge.source_project_name,
+				number: edge.source_number,
+				title: edge.source_title
+			});
+			details.set(edge.target, {
+				issue_id: edge.target,
+				project_name: edge.target_project_name,
+				number: edge.target_number,
+				title: edge.target_title
+			});
+		}
+		const path = [source.id, ...backPath].map((issue_id) => {
+			if (issue_id === source.id)
+				return {
+					issue_id,
+					project_name: receipt.source_project_name!,
+					number: receipt.source_number!,
+					title: receipt.source_title!
+				};
+			return details.get(issue_id)!;
 		});
-		const pretty = path
-			.map((p) => ('number' in p ? `${p.project_name}/${p.number}` : p.issue_id))
-			.join(' → ');
+		const pretty = path.map((p) => `${p.project_name}/${p.number}`).join(' → ');
 		throw new ApiFail(422, 'link_cycle', `Adding this link would create a cycle: ${pretty}`, {
 			path
 		});
 	}
-
-	const id = newId('lnk');
-	const now = Date.now();
-	const eventFor = (self: typeof issue, peer: typeof issue, role: 'source' | 'target') =>
-		eventInsert(db, actor, {
-			type: 'issue.link_added',
-			issueId: self!.id,
-			projectId: self!.project_id,
-			payload: {
-				link_id: id,
-				kind,
-				role,
-				other_issue_id: peer!.id,
-				other_project_name: peer!.project_name,
-				other_number: peer!.number,
-				other_title: peer!.title
-			}
-		});
-	await runAtomic(env, [
-		db
-			.insertInto('issue_link')
-			.values({
-				id,
-				source_issue_id: source.id,
-				target_issue_id: target.id,
-				kind,
-				created_at: now
-			})
-			.compile(),
-		eventFor(source, target, 'source'),
-		eventFor(target, source, 'target')
-	]);
-
-	return { id, kind, source_issue_id: source.id, target_issue_id: target.id, created_at: now };
+	throw new Error('Issue link batch skipped insertion without a recognized reason');
 }
 
 export async function removeIssueLink(

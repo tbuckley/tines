@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { IssueDetail, Project } from '@tines/shared';
+import type { EffectiveContext, IssueDetail, IssueTransferPreview, Project } from '@tines/shared';
 import { expect, test, type Browser, type Page } from '@playwright/test';
 import { ALICE, BASE_URL } from './constants.mjs';
 import { apiClient, body, clickToOpen, gotoHydrated, resetFocus, runId, signIn } from './helpers';
@@ -34,6 +34,7 @@ function suite(label: string, viewport: { width: number; height: number }) {
 		let sourceId: string;
 		let sourceNumber: number;
 		let longId: string;
+		let conflictIds: Record<string, string>;
 
 		async function open(browser: Browser, path: string): Promise<Page> {
 			const context = await browser.newContext({ viewport });
@@ -117,6 +118,57 @@ function suite(label: string, viewport: { width: number; height: number }) {
 				repo_branch: 'research',
 				repo_dir: 'app'
 			});
+			conflictIds = {};
+			for (const fixture of [
+				{
+					key: 'retainedA',
+					name: `retained-api-${label}`,
+					issue_id: issue.id,
+					dir: 'retained-checkout'
+				},
+				{
+					key: 'retainedB',
+					name: `retained-worker-${label}`,
+					issue_id: issue.id,
+					dir: 'retained-checkout'
+				},
+				{
+					key: 'sourceA',
+					name: `source-api-${label}`,
+					project_id: source.id,
+					dir: 'source-checkout'
+				},
+				{
+					key: 'sourceB',
+					name: `source-worker-${label}`,
+					project_id: source.id,
+					dir: 'source-checkout'
+				},
+				{
+					key: 'destinationA',
+					name: `destination-api-${label}`,
+					project_id: destination.id,
+					dir: 'destination-checkout'
+				},
+				{
+					key: 'destinationB',
+					name: `destination-worker-${label}`,
+					project_id: destination.id,
+					dir: 'destination-checkout'
+				}
+			]) {
+				const created = await body<{ id: string }>(
+					await api.post('/api/v1/context', {
+						kind: 'repo',
+						name: fixture.name,
+						issue_id: fixture.issue_id,
+						project_id: fixture.project_id,
+						repo_url: `https://example.test/${fixture.name}.git`,
+						repo_dir: fixture.dir
+					})
+				);
+				conflictIds[fixture.key] = created.id;
+			}
 			await api.post(`/api/v1/issues/${issue.id}/comments`, { body: 'a comment that survives' });
 		});
 
@@ -180,10 +232,22 @@ function suite(label: string, viewport: { width: number; height: number }) {
 			await page.route('**/api/v1/issues/*/transfer?*', async (route) => {
 				const response = await route.fetch();
 				const preview = await response.json();
-				const side = {
+				const before = {
 					eligible: false,
 					verdict: 'Automation is off.',
-					checks: [{ name: 'routed', ok: false, detail: 'No routing rule matches this issue.' }],
+					checks: [
+						{ name: 'automation_enabled', ok: false, detail: 'Automation is disabled.' },
+						{
+							name: 'routed',
+							ok: false,
+							detail: 'No routing rule matches this issue.',
+							action: {
+								label: 'Open routing settings',
+								href: '/routing?scope=source',
+								cli: 'tines routing set --project "source" --runner local'
+							}
+						}
+					],
 					pin: { runner_id: 'rnr_missing', runner_name: null, tier: 'premium' },
 					matched_rule: null,
 					runner_rule: { rule_id: 'rrl_runner', scope_label: 'destination runner rule' },
@@ -205,6 +269,20 @@ function suite(label: string, viewport: { width: number; height: number }) {
 					active_run: { id: 'arun_existing', runner_name: 'Unavailable runner', status: 'running' },
 					queue_position: 2
 				};
+				const after = {
+					...before,
+					checks: [
+						{
+							name: 'routed',
+							ok: false,
+							detail: 'Destination needs a rule.',
+							action: {
+								label: 'Add destination rule',
+								cli: 'tines routing set --project "destination" --runner local'
+							}
+						}
+					]
+				};
 				await route.fulfill({
 					response,
 					json: {
@@ -216,7 +294,7 @@ function suite(label: string, viewport: { width: number; height: number }) {
 							attempt_count: 3,
 							parked: true
 						},
-						routing: { before: side, after: side }
+						routing: { before, after }
 					}
 				});
 			});
@@ -228,6 +306,12 @@ function suite(label: string, viewport: { width: number; height: number }) {
 			await expect(review).toContainText('Runner pin: rnr_missing; tier pin: premium');
 			await expect(review).toContainText('Automation is off.');
 			await expect(review).toContainText('No routing rule matches this issue.');
+			const remedy = review.getByRole('link', { name: 'Open routing settings' });
+			await expect(remedy).toHaveAttribute('href', '/routing?scope=source');
+			await expect(review).not.toContainText('tines routing set --project "source" --runner local');
+			await expect(review).toContainText(
+				'tines routing set --project "destination" --runner local'
+			);
 			await expect(review).toContainText('Runner source rule: destination runner rule');
 			await expect(review).toContainText('Tier override: premium');
 			await expect(review).toContainText('Tied rule: tied urgent rule');
@@ -238,15 +322,49 @@ function suite(label: string, viewport: { width: number; height: number }) {
 			await page.close();
 		});
 
-		test('reviews, inspects and cancels without writing anything', async ({ browser, request }) => {
+		test('reviews, inspects and cancels without writing anything', async ({
+			browser,
+			request
+		}, testInfo) => {
 			const page = await open(browser, `/issues/${sourceName}/${sourceNumber}`);
 			const modal = page.getByRole('dialog');
 			await clickToOpen(page.getByTestId('move-to-project'), modal);
 
 			await modal.getByTestId('transfer-destination').selectOption({ label: destinationName });
-			await modal.getByRole('button', { name: 'Review move' }).click();
+			const [previewResponse] = await Promise.all([
+				page.waitForResponse(
+					(response) =>
+						response.request().method() === 'GET' && response.url().includes('/transfer?')
+				),
+				modal.getByRole('button', { name: 'Review move' }).click()
+			]);
+			const preview = (await previewResponse.json()) as IssueTransferPreview;
 			const review = page.getByTestId('transfer-review');
 			await expect(review).toBeVisible();
+			expect(preview.context.before.conflicts).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({
+						dir: 'retained-checkout',
+						item_ids: expect.arrayContaining([conflictIds.retainedA, conflictIds.retainedB])
+					}),
+					expect.objectContaining({
+						dir: 'source-checkout',
+						item_ids: expect.arrayContaining([conflictIds.sourceA, conflictIds.sourceB])
+					})
+				])
+			);
+			expect(preview.context.after.conflicts).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({
+						dir: 'retained-checkout',
+						item_ids: expect.arrayContaining([conflictIds.retainedA, conflictIds.retainedB])
+					}),
+					expect.objectContaining({
+						dir: 'destination-checkout',
+						item_ids: expect.arrayContaining([conflictIds.destinationA, conflictIds.destinationB])
+					})
+				])
+			);
 
 			// The review names both addresses, the record it preserves, and the
 			// guidance each side of the move.
@@ -261,6 +379,71 @@ function suite(label: string, viewport: { width: number; height: number }) {
 			await expect(review).toContainText('branch research; directory app');
 			await expect(review).toContainText('https://example.test/source.git');
 			await expect(review).toContainText('https://example.test/destination.git');
+
+			const participantLine = (
+				prefix: 'Before' | 'After',
+				context: EffectiveContext,
+				keys: string[]
+			) => {
+				const participants = keys
+					.map((key) => conflictIds[key])
+					.sort()
+					.map((itemId) => {
+						const repository = context.repos.find((repo) => repo.item_id === itemId);
+						expect(repository, `effective repository ${itemId} is present`).toBeTruthy();
+						return `${repository!.name} (${repository!.scope.label})`;
+					});
+				return `${prefix}: ${participants.join(', ')}`;
+			};
+			const conflictRow = (classification: string, directory: string) =>
+				review
+					.getByTestId('transfer-conflict-row')
+					.filter({ hasText: `${classification} — ${directory}` });
+
+			const retained = conflictRow('Retained', 'retained-checkout');
+			await expect(retained).toHaveCount(1);
+			await expect(
+				retained.getByText(
+					participantLine('Before', preview.context.before, ['retainedA', 'retainedB']),
+					{ exact: true }
+				)
+			).toBeVisible();
+			await expect(
+				retained.getByText(
+					participantLine('After', preview.context.after, ['retainedA', 'retainedB']),
+					{ exact: true }
+				)
+			).toBeVisible();
+
+			const resolved = conflictRow('Resolved', 'source-checkout');
+			await expect(resolved).toHaveCount(1);
+			await expect(
+				resolved.getByText(
+					participantLine('Before', preview.context.before, ['sourceA', 'sourceB']),
+					{ exact: true }
+				)
+			).toBeVisible();
+			await expect(resolved.getByText(/^After:/)).toHaveCount(0);
+
+			const introduced = conflictRow('Introduced', 'destination-checkout');
+			await expect(introduced).toHaveCount(1);
+			await expect(
+				introduced.getByText(
+					participantLine('After', preview.context.after, ['destinationA', 'destinationB']),
+					{ exact: true }
+				)
+			).toBeVisible();
+			await expect(introduced.getByText(/^Before:/)).toHaveCount(0);
+			expect(await modal.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(
+				true
+			);
+			expect(await review.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(
+				true
+			);
+			await testInfo.attach(`populated-transfer-review-${label}`, {
+				body: await review.screenshot(),
+				contentType: 'image/png'
+			});
 
 			// Each guidance item is inspectable in place: opening one shows the
 			// scope it moves between rather than a bare name.

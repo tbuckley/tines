@@ -8,7 +8,7 @@ import type {
 } from '@tines/shared';
 import { expect, test } from '@playwright/test';
 import { ALICE, BOB } from './constants.mjs';
-import { apiClient, body, errorBody, runId } from './helpers';
+import { apiClient, body, errorBody, gotoHydrated, runId, signIn } from './helpers';
 
 /**
  * Dependencies & duplicates (specs/issue_dependencies/SPEC.md): blocking
@@ -262,5 +262,97 @@ test.describe.serial('issue links', () => {
 		await closeIssue(api, b);
 		const bDetail = await body<IssueDetail>(await api.get(`/api/v1/issues/${b.id}`));
 		expect(bDetail.state.category).toBe('done');
+	});
+
+	test('RelationsCard recovers from cycle and second-duplicate diagnostics', async ({
+		request,
+		context,
+		page
+	}) => {
+		const api = apiClient(request, ALICE.apiKey);
+		const project = await body<Project>(
+			await api.post('/api/v1/projects', { name: `link-form-${runId}` })
+		);
+		const [source, middle, current, valid, canonical, competing] = await Promise.all(
+			[
+				'Cycle source',
+				'Cycle middle',
+				'Current issue',
+				'Valid target',
+				'Canonical issue',
+				'Competing target'
+			].map(async (title) =>
+				body<IssueDetail>(await api.post(`/api/v1/projects/${project.id}/issues`, { title }))
+			)
+		);
+		expect(
+			(
+				await api.post(`/api/v1/issues/${source.id}/links`, {
+					kind: 'blocks',
+					issue_id: middle.id
+				})
+			).status()
+		).toBe(201);
+		expect(
+			(
+				await api.post(`/api/v1/issues/${middle.id}/links`, {
+					kind: 'blocks',
+					issue_id: current.id
+				})
+			).status()
+		).toBe(201);
+
+		await signIn(context, ALICE.sessionToken);
+		await gotoHydrated(page, `/issues/${encodeURIComponent(project.name)}/${current.number}`);
+		const card = page.locator('#relations');
+		await card.getByRole('button', { name: 'Add' }).click();
+		const kind = card.getByRole('combobox', { name: 'Link kind' });
+		const picker = card.getByRole('combobox', { name: 'Issue to link' });
+
+		await kind.selectOption('blocks');
+		await picker.fill(source.title);
+		await card.getByRole('button', { name: new RegExp(source.title) }).click();
+		const cycle = card.getByText('Adding this link would create a cycle:');
+		await expect(cycle).toBeVisible();
+		await expect(cycle.getByRole('link')).toHaveCount(4);
+		await expect(cycle).toContainText(`${project.name}/#${current.number}`);
+		await expect(cycle).toContainText(`${project.name}/#${source.number}`);
+		await expect(picker).toBeVisible();
+		await expect(card.getByText(source.title, { exact: true })).toHaveCount(1);
+
+		await picker.fill(valid.title);
+		await card.getByRole('button', { name: new RegExp(valid.title) }).click();
+		await expect(cycle).toHaveCount(0);
+		await expect(card.getByText(valid.title, { exact: true })).toBeVisible();
+
+		await page.route(
+			`**/api/v1/issues/${current.id}/links`,
+			async (route) => {
+				expect(
+					(
+						await api.post(`/api/v1/issues/${current.id}/links`, {
+							kind: 'duplicate_of',
+							issue_id: canonical.id
+						})
+					).status()
+				).toBe(201);
+				await route.continue();
+			},
+			{ times: 1 }
+		);
+		await kind.selectOption('duplicate_of');
+		await picker.fill(competing.title);
+		await card.getByRole('button', { name: new RegExp(competing.title) }).click();
+		const duplicate = card.getByText('Already a duplicate of');
+		await expect(duplicate).toBeVisible();
+		await expect(duplicate).toContainText(`${project.name}/#${canonical.number}`);
+		await expect(duplicate.getByRole('link')).toHaveAttribute(
+			'href',
+			`/issues/${project.name}/${canonical.number}`
+		);
+		await expect(picker).toBeVisible();
+		await expect(card.getByRole('button', { name: new RegExp(competing.title) })).toBeVisible();
+		const detail = await body<IssueDetail>(await api.get(`/api/v1/issues/${current.id}`));
+		expect(detail.links.duplicate_of?.issue_id).toBe(canonical.id);
 	});
 });
