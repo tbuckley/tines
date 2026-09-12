@@ -18,7 +18,8 @@
 		"test": "vitest run",
 		"perf:nav": "f=\"${NAVPERF_OUT:-/tmp/navperf.txt}\"; rm -f \"$f\"; NAVPERF=1 vitest run src/lib/server/api/nav-perf.test.ts; s=$?; [ -f \"$f\" ] && cat \"$f\"; exit $s",
 		"perf:usage": "node scripts/usage-scale.mjs",
-		"test:e2e": "playwright test"
+		"test:e2e": "playwright test",
+		"test:usage-mixed": "node scripts/usage-mixed.mjs"
 	},
 	"devDependencies": {
 		"@cloudflare/workers-types": "^5.20260822.1",

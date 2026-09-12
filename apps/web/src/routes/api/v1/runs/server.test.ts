@@ -142,6 +142,20 @@ describe('GET /api/v1/runs usage evidence', () => {
 		);
 		expect(mismatch.response.status).toBe(422);
 		expect(mismatch.body).toMatchObject({ error: { code: 'cursor_mismatch' } });
+		const queries = t.spyOnQueries();
+		const unauthorizedMismatch = await get(
+			t,
+			`?${bounds}&runner=rnr_missing&cursor=${encodeURIComponent(cursor)}`
+		);
+		expect(unauthorizedMismatch.response.status).toBe(422);
+		expect(unauthorizedMismatch.body).toMatchObject({
+			error: {
+				code: 'cursor_mismatch',
+				details: { field: 'cursor', remedy: expect.stringContaining('restart') }
+			}
+		});
+		// No retained/live identity query may precede semantic cursor validation.
+		expect(queries()).toEqual([]);
 	});
 
 	it('does not expose state metadata from another account through corrupted retained facts', async () => {
@@ -191,6 +205,16 @@ describe('GET /api/v1/runs usage evidence', () => {
 			`?population=finalized&from=${new Date(NOW - 100).toISOString()}&to=${new Date(NOW).toISOString()}&workflow=wf_foreign`
 		);
 		expect(unauthorized.response.status).toBe(404);
+		// Corrupt both sources: a raw foreign issue workflow must not revive
+		// a dimension rejected by the owner-fenced starting-state join.
+		t.sqlite.prepare('UPDATE issue SET workflow_id = ? WHERE id = ?').run('wf_foreign', issue);
+		const fenced = await get(
+			t,
+			`?population=finalized&from=${new Date(NOW - 100).toISOString()}&to=${new Date(NOW).toISOString()}`
+		);
+		expect(fenced.response.status).toBe(200);
+		expect(JSON.stringify(fenced.body)).not.toContain('wf_foreign');
+		expect((fenced.body.items as any[])[0].usage_dimensions.workflow.id).toBeNull();
 	});
 
 	it('validates evidence syntax before retained identity authorization', async () => {

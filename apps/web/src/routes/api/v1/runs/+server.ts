@@ -231,17 +231,6 @@ export const GET: RequestHandler = api(async (event) => {
 	const issue = params.get('issue');
 	const state = params.get('state');
 	const workflow = params.get('workflow');
-	if (
-		population &&
-		!(await authorizeUsageFilters(db, actor.userId, {
-			issue,
-			project: params.get('project'),
-			runner: params.get('runner'),
-			workflow,
-			state
-		}))
-	)
-		throw notFound();
 	const filterIdentity = JSON.stringify(
 		['issue', 'runner', 'project', 'workflow', 'state', 'tier', 'outcome', 'accounting_status'].map(
 			(name) => [name, params.get(name)]
@@ -291,6 +280,17 @@ export const GET: RequestHandler = api(async (event) => {
 			cursor: evidenceCursor ? { createdAt: evidenceCursor.at, id: evidenceCursor.id } : null
 		};
 	} else page = readPage(event);
+	if (
+		population &&
+		!(await authorizeUsageFilters(db, actor.userId, {
+			issue,
+			project: params.get('project'),
+			runner: params.get('runner'),
+			workflow,
+			state
+		}))
+	)
+		throw notFound();
 	const { items, hasMore, nextBoundary, scanComplete } = await listRuns(
 		db,
 		actor.userId,

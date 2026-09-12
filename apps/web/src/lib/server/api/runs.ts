@@ -16,6 +16,7 @@ import { getRunLogStore, runLogRawKey } from '$lib/server/run-log-store';
 import { readRunLog } from '$lib/server/supervisor/run-log';
 import { cancelRun } from '$lib/server/supervisor/engine';
 import type { DispatchEffects } from '$lib/server/dispatch-effects';
+import { retainedStartWorkflow, retainedIssueWorkflow, retainedWorkflow } from './usage-ledger';
 import { ApiFail, notFound, type ActorContext, type Page } from './core';
 
 function evidenceBaseQuery(db: Kysely<Database>, userId: string) {
@@ -112,8 +113,8 @@ const evidenceRunSelection = [
 	>`case when ${sql.ref('start_workflow.id')} is not null then ${sql.ref('start_state.name')} else null end`.as(
 		'start_state_name'
 	),
-	'start_workflow.id as start_workflow_id',
-	'issue.workflow_id as issue_workflow_id',
+	retainedStartWorkflow.as('start_workflow_id'),
+	retainedIssueWorkflow.as('issue_workflow_id'),
 	'start_workflow.name as start_workflow_name',
 	'issue_workflow.name as issue_workflow_name',
 	'end_state.name as end_state_name'
@@ -139,15 +140,17 @@ const pendingEvidenceSelection = [
 	>`case when ${sql.ref('start_workflow.id')} is not null then ${sql.ref('start_state.name')} else null end`.as(
 		'start_state_name'
 	),
-	'start_workflow.id as start_workflow_id',
-	'issue.workflow_id as issue_workflow_id',
+	retainedStartWorkflow.as('start_workflow_id'),
+	retainedIssueWorkflow.as('issue_workflow_id'),
 	'start_workflow.name as start_workflow_name',
 	'issue_workflow.name as issue_workflow_name'
 ] as const;
 
 function usageDimensions(row: RunRow): UsageDimensions {
 	const workflowId = row.start_workflow_id ?? row.issue_workflow_id ?? null;
-	const workflowName = row.start_workflow_name ?? row.issue_workflow_name ?? null;
+	const workflowName =
+		(row.start_workflow_id ? row.start_workflow_name : row.issue_workflow_name) ??
+		`Unknown/deleted workflow${workflowId ? ` (${workflowId})` : ''}`;
 	return {
 		project: {
 			id: row.project_id,
@@ -298,24 +301,34 @@ export async function listRuns(
 	page: Page
 ): Promise<RunListResult<AgentRun | UsagePendingRun>> {
 	let q = runQuery(db, userId);
-	if (filters.projectId === 'unknown') q = q.where('project.id', 'is', null);
+	if (filters.projectId === 'unknown')
+		q = q.where(filters.population ? 'issue.project_id' : 'project.id', 'is', null);
 	else if (filters.projectId) q = q.where('issue.project_id', '=', filters.projectId);
 	if (filters.issue) q = q.where('agent_run.issue_id', '=', filters.issue);
-	if (filters.runner === 'unknown') q = q.where('runner.id', 'is', null);
+	if (filters.runner === 'unknown')
+		q = q.where(filters.population ? 'agent_run.runner_id' : 'runner.id', 'is', null);
 	else if (filters.runner) q = q.where('agent_run.runner_id', '=', filters.runner);
-	if (filters.workflow === 'unknown')
-		q = q.where('start_workflow.id', 'is', null).where('issue.workflow_id', 'is', null);
-	else if (filters.workflow)
-		q = q.where((eb) =>
-			eb.or([
-				eb('start_workflow.id', '=', filters.workflow!),
-				eb.and([
-					eb('start_workflow.id', 'is', null),
-					eb('issue.workflow_id', '=', filters.workflow!)
+	if (filters.population && filters.workflow) {
+		q =
+			filters.workflow === 'unknown'
+				? q.where(retainedWorkflow, 'is', null)
+				: q.where(retainedWorkflow, '=', filters.workflow);
+	} else {
+		if (filters.workflow === 'unknown')
+			q = q.where('start_workflow.id', 'is', null).where('issue.workflow_id', 'is', null);
+		else if (filters.workflow)
+			q = q.where((eb) =>
+				eb.or([
+					eb('start_workflow.id', '=', filters.workflow!),
+					eb.and([
+						eb('start_workflow.id', 'is', null),
+						eb('issue.workflow_id', '=', filters.workflow!)
+					])
 				])
-			])
-		);
-	if (filters.state === 'unknown') q = q.where('start_state.id', 'is', null);
+			);
+	}
+	if (filters.state === 'unknown')
+		q = q.where(filters.population ? 'agent_run.state_id_at_start' : 'start_state.id', 'is', null);
 	else if (filters.state) q = q.where('agent_run.state_id_at_start', '=', filters.state);
 	if (filters.tier === 'unknown') q = q.where('agent_run.tier', 'is', null);
 	else if (filters.tier) q = q.where('agent_run.tier', '=', filters.tier);

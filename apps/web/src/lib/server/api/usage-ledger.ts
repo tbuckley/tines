@@ -77,13 +77,12 @@ export async function authorizeUsageFilters(
 		if (kind === 'project') predicate = sql<boolean>`issue.project_id = ${id}`;
 		else if (kind === 'runner') predicate = sql<boolean>`agent_run.runner_id = ${id}`;
 		else if (kind === 'issue') predicate = sql<boolean>`agent_run.issue_id = ${id}`;
-		else if (kind === 'workflow')
-			predicate = sql<boolean>`COALESCE(start_workflow.id, issue_workflow.id) = ${id}`;
+		else if (kind === 'workflow') predicate = sql<boolean>`${retainedWorkflow} = ${id}`;
 		else
 			predicate = sql<boolean>`agent_run.state_id_at_start = ${id} AND ${
 				filters.workflow === 'unknown'
-					? sql<boolean>`start_workflow.id IS NULL AND issue_workflow.id IS NULL`
-					: sql<boolean>`COALESCE(start_workflow.id, issue_workflow.id) = ${filters.workflow}`
+					? sql<boolean>`${retainedWorkflow} IS NULL`
+					: sql<boolean>`${retainedWorkflow} = ${filters.workflow}`
 			}`;
 		return sql<number>`MAX(CASE WHEN ${predicate} THEN 1 ELSE 0 END)`.as(kind);
 	});
@@ -116,3 +115,17 @@ export async function authorizeUsageFilters(
 		.executeTakeFirstOrThrow();
 	return unresolved.every(([kind]) => Number(retained[kind]) === 1);
 }
+
+// The joins are owner-fenced. Preserve an owned fact's raw workflow ID only if
+// its metadata is genuinely absent; a live foreign workflow must not be revived.
+export const retainedStartWorkflow = sql<string | null>`CASE
+ WHEN start_workflow.id IS NOT NULL OR NOT EXISTS
+ (SELECT 1 FROM workflow WHERE workflow.id = start_state.workflow_id)
+ THEN start_state.workflow_id ELSE NULL END`;
+export const retainedIssueWorkflow = sql<string | null>`CASE
+ WHEN issue_workflow.id IS NOT NULL OR NOT EXISTS
+ (SELECT 1 FROM workflow WHERE workflow.id = issue.workflow_id)
+ THEN issue.workflow_id ELSE NULL END`;
+export const retainedWorkflow = sql<
+	string | null
+>`COALESCE(${retainedStartWorkflow}, ${retainedIssueWorkflow})`;

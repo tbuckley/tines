@@ -188,7 +188,10 @@ try {
 	await waitForWorker(baseUrl, worker);
 	const countQueriesSince = async (start) => {
 		await new Promise((resolve) => setTimeout(resolve, 50));
-		return (workerLog.slice(start).match(/\[USAGE_SCALE_SQL\]/g) ?? []).length;
+		const count = (workerLog.slice(start).match(/\[USAGE_SCALE_SQL\]/g) ?? []).length;
+		if (count === 0)
+			throw new Error('Worker SQL telemetry absent: refusing to certify query bounds');
+		return count;
 	};
 	const query = new URLSearchParams({
 		from: new Date(fromMs).toISOString(),
@@ -202,6 +205,13 @@ try {
 	});
 	const body = await response.json();
 	const aggregateWorkerQueries = await countQueriesSince(aggregateTraceStart);
+	// Two bearer queries, two period/settings queries, one pending count and
+	// ceil(N/5000) data pages: settings are read twice, totaling four fixed queries.
+	const expectedAggregateQueries = Math.ceil(size / 5000) + 4;
+	if (aggregateWorkerQueries !== expectedAggregateQueries)
+		throw new Error(
+			`worker aggregate telemetry mismatch: ${aggregateWorkerQueries} != ${expectedAggregateQueries}`
+		);
 	if (aggregateWorkerQueries > 49)
 		throw new Error(`worker aggregate query bound exceeded: ${aggregateWorkerQueries} > 49`);
 	if (!response.ok) throw new Error(JSON.stringify(body));
@@ -269,8 +279,8 @@ try {
 		});
 		const evidence = await evidenceResponse.json();
 		const evidenceQueryCount = await countQueriesSince(evidenceTraceStart);
-		if (evidenceQueryCount > 30)
-			throw new Error(`worker evidence query bound exceeded: ${evidenceQueryCount} > 30`);
+		if (evidenceQueryCount < 3 || evidenceQueryCount > 30)
+			throw new Error(`worker evidence query bound exceeded: ${evidenceQueryCount} outside 3..30`);
 		evidenceWorkerQueries.push(evidenceQueryCount);
 		if (!evidenceResponse.ok) throw new Error(JSON.stringify(evidence));
 		evidencePages.push({

@@ -15,6 +15,7 @@ import {
 } from '@tines/shared';
 import { sql, type Kysely, type RawBuilder } from 'kysely';
 import type { Database } from '$lib/server/db';
+import { retainedStartWorkflow, retainedIssueWorkflow, retainedWorkflow } from './usage-ledger';
 
 export interface UsageRequest extends UsagePeriodInput, ResolvedUsageFilters {
 	by?: UsageBy;
@@ -63,10 +64,12 @@ function scanQuery(db: Kysely<Database>, userId: string) {
 			'runner.name as runner_name',
 			'issue.project_id as project_id',
 			'project.name as project_name',
-			'start_state.name as start_state_name',
-			'start_workflow.id as start_workflow_id',
+			sql<string | null>`CASE WHEN start_workflow.id IS NOT NULL THEN start_state.name END`.as(
+				'start_state_name'
+			),
+			retainedStartWorkflow.as('start_workflow_id'),
 			'start_workflow.name as start_workflow_name',
-			'issue.workflow_id as issue_workflow_id',
+			retainedIssueWorkflow.as('issue_workflow_id'),
 			'issue_workflow.name as issue_workflow_name'
 		])
 		.where('agent_run.user_id', '=', userId);
@@ -108,7 +111,8 @@ async function scanAll(
 function dimensions(row: UsageRow) {
 	const workflowId = row.start_workflow_id ?? row.issue_workflow_id ?? null;
 	const workflowName =
-		row.start_workflow_name ?? row.issue_workflow_name ?? 'Unknown/deleted workflow';
+		(row.start_workflow_id ? row.start_workflow_name : row.issue_workflow_name) ??
+		`Unknown/deleted workflow${workflowId ? ` (${workflowId})` : ''}`;
 	return {
 		project: {
 			id: row.project_id,
@@ -153,7 +157,7 @@ function pendingMatchPredicate(filters: ResolvedUsageFilters): RawBuilder<boolea
 				: sql<boolean>`${column} = ${requested}`
 		);
 	};
-	identity(sql`COALESCE(start_workflow.id, issue.workflow_id)`, filters.workflow);
+	identity(retainedWorkflow, filters.workflow);
 	identity(sql`agent_run.state_id_at_start`, filters.state);
 	identity(sql`agent_run.runner_id`, filters.runner);
 	identity(sql`agent_run.tier`, filters.tier);
