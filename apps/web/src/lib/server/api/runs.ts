@@ -276,14 +276,20 @@ export async function listRuns(
 	}
 	const cursorColumn =
 		filters.population === 'finalized' ? 'agent_run.ended_at' : 'agent_run.created_at';
-	let scan = q;
 	let boundary = page.cursor;
-	const matched: RunRow[] = [];
+	const matched: {
+		id: string;
+		usage: string | null;
+		ended_at: number | null;
+		created_at: number;
+	}[] = [];
 	let exhausted = false;
 	let scanQueries = 0;
 	do {
 		scanQueries++;
-		let batchQuery = scan;
+		let batchQuery = q
+			.clearSelect()
+			.select(['agent_run.id', 'agent_run.usage', 'agent_run.ended_at', 'agent_run.created_at']);
 		if (boundary)
 			batchQuery = batchQuery.where((eb) =>
 				eb.or([
@@ -297,9 +303,10 @@ export async function listRuns(
 		const rows = await batchQuery
 			.orderBy(`${cursorColumn} desc`)
 			.orderBy('agent_run.id desc')
-			.limit(filters.accountingStatus ? 1000 : page.limit + 1)
+			.limit(filters.accountingStatus ? 10_001 : page.limit + 1)
 			.execute();
-		for (const row of rows) {
+		const examined = filters.accountingStatus ? rows.slice(0, 10_000) : rows;
+		for (const row of examined) {
 			boundary = {
 				createdAt: (filters.population === 'finalized' ? row.ended_at : row.created_at)!,
 				id: row.id
@@ -308,7 +315,7 @@ export async function listRuns(
 				matched.push(row);
 			if (matched.length > page.limit) break;
 		}
-		exhausted = rows.length < (filters.accountingStatus ? 1000 : page.limit + 1);
+		exhausted = rows.length <= (filters.accountingStatus ? 10_000 : page.limit);
 	} while (
 		filters.accountingStatus &&
 		matched.length <= page.limit &&
@@ -317,17 +324,27 @@ export async function listRuns(
 	);
 	const scanComplete = exhausted || matched.length > page.limit || !filters.accountingStatus;
 	const hasMore = matched.length > page.limit || !exhausted;
-	const selected = matched.slice(0, page.limit);
+	const selectedCandidates = matched.slice(0, page.limit);
 	const nextBoundary = hasMore
 		? matched.length > page.limit
 			? {
 					createdAt: (filters.population === 'finalized'
-						? selected.at(-1)!.ended_at
-						: selected.at(-1)!.created_at)!,
-					id: selected.at(-1)!.id
+						? selectedCandidates.at(-1)!.ended_at
+						: selectedCandidates.at(-1)!.created_at)!,
+					id: selectedCandidates.at(-1)!.id
 				}
 			: boundary
 		: null;
+	const hydrated: RunRow[] = [];
+	for (let offset = 0; offset < selectedCandidates.length; offset += 80) {
+		const ids = selectedCandidates.slice(offset, offset + 80).map((row) => row.id);
+		if (ids.length)
+			hydrated.push(...(await runQuery(db, userId).where('agent_run.id', 'in', ids).execute()));
+	}
+	const byId = new Map(hydrated.map((row) => [row.id, row]));
+	const selected = selectedCandidates
+		.map((candidate) => byId.get(candidate.id))
+		.filter((row): row is RunRow => Boolean(row));
 	const items = selected.map((row) =>
 		filters.population === 'pending'
 			? ({
