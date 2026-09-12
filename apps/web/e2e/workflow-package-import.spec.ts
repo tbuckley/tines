@@ -1,7 +1,9 @@
 import { mkdtempSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+	canonicalizeLibraryValue,
 	type Project,
 	type PrepareWorkflowPackageResponse,
 	type WorkflowPackageReceipt,
@@ -308,11 +310,26 @@ test('rejects an expired signed plan and requires fresh preparation and confirma
 		expect(response.ok()).toBe(true);
 		expiredPlan = await response.json();
 		const payload = await verifyPackagePlan(expiredPlan.plan_token, signingKey);
+		const { plan_digest, ...unsigned } = payload;
+		const digest = (plan: typeof unsigned) =>
+			`sha256:${createHash('sha256')
+				.update(canonicalizeLibraryValue({ plan, resolved: expiredPlan.resolved }))
+				.digest('hex')}`;
+		// Verify the complete digest input before backdating it. Expiry must be the
+		// only invalid property, not an accidentally stale digest or bad signature.
+		expect(digest(unsigned)).toBe(plan_digest);
 		const expiresAt = Date.now() - 1000;
+		const backdated = {
+			...unsigned,
+			issued_at: expiresAt - PACKAGE_PLAN_TTL_MS,
+			expires_at: expiresAt
+		};
+		expiredPlan.plan_digest = digest(backdated);
 		expiredPlan.plan_token = await signPackagePlan(
-			{ ...payload, issued_at: expiresAt - PACKAGE_PLAN_TTL_MS, expires_at: expiresAt },
+			{ ...backdated, plan_digest: expiredPlan.plan_digest },
 			signingKey
 		);
+		expiredPlan.issued_at = backdated.issued_at;
 		expiredPlan.expires_at = expiresAt;
 		await route.fulfill({ response, json: expiredPlan });
 	});

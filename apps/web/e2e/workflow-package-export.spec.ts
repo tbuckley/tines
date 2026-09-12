@@ -38,6 +38,8 @@ const longText = `alpha    beta
 line two
 ${Array.from({ length: 125 }, (_, index) => `plain${index + 1}`).join(' ')}`;
 let workflowId: string;
+let sourceDependencyId: string;
+let sourceConventionsId: string;
 let projectId: string;
 let scheduleId: string;
 async function openExport(page: Page) {
@@ -68,6 +70,8 @@ test.beforeAll(async ({ playwright }) => {
 		})
 	);
 	const conventions = dependency.states.find((state) => state.name === 'Conventions')!;
+	sourceDependencyId = dependency.id;
+	sourceConventionsId = conventions.id;
 	await body(
 		await api.post('/api/v1/context', {
 			kind: 'prompt',
@@ -319,9 +323,9 @@ test('authors an exact declared use and downloads the reviewed canonical package
 		(state) => state.name === 'Conventions'
 	)!;
 	expect(installedDraft.inherits_from).toBe(installedConventions.id);
-	expect(installedConventions.id).not.toBe(
-		document.workflows.find((w) => w.id !== document.main_workflow_id)!.states[0].id
-	);
+	expect(installedWorkflow.id).not.toBe(workflowId);
+	expect(installedDependency.id).not.toBe(sourceDependencyId);
+	expect(installedConventions.id).not.toBe(sourceConventionsId);
 	const finish = installedWorkflow.transitions.find((transition) => transition.name === 'Finish')!;
 	expect(finish).toMatchObject({
 		from_state_id: installedDraft.id,
@@ -377,6 +381,7 @@ test('authors an exact declared use and downloads the reviewed canonical package
 	// Ordinary receipt links remain navigable after the read-back inspection.
 	expect((await bobApi.get(`/api/v1/context/${copiedSkill.id}`)).ok()).toBe(true);
 	expect(externalRequests).toEqual([]);
+	await page.evaluate(() => globalThis.scrollTo(0, 0));
 	await page.screenshot({
 		path: test.info().outputPath('workflow-package-desktop.png'),
 		fullPage: true
@@ -389,6 +394,7 @@ test('authors an exact declared use and downloads the reviewed canonical package
 			.map((element) => `${element.tagName}.${element.className}`)
 	);
 	expect(overflow).toEqual([]);
+	await page.evaluate(() => globalThis.scrollTo(0, 0));
 	await page.screenshot({
 		path: test.info().outputPath('workflow-package-phone.png'),
 		fullPage: true
