@@ -62,6 +62,17 @@ describe('TransferReviewController', () => {
 		expect(h.settled).not.toHaveBeenCalled();
 	});
 
+	it('makes invalidation authoritative before reactive identity catches up', async () => {
+		const h = harness();
+		const pending = deferred<string>();
+		const request = h.run(() => pending.promise);
+		h.controller.invalidate();
+		pending.resolve('closed preview');
+		await request;
+		expect(h.success).not.toHaveBeenCalled();
+		expect(h.settled).not.toHaveBeenCalled();
+	});
+
 	it('rejects callbacks after the issue or destination changes', async () => {
 		for (const change of [
 			(identity: TransferReviewIdentity) => (identity.issueId = 'iss_b'),
