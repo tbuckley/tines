@@ -1,4 +1,5 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { rmSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
@@ -8,6 +9,10 @@ const sizeArg = process.argv.find((arg) => arg.startsWith('--size='));
 const size = Number(sizeArg?.slice(7) ?? 10_000);
 if (!Number.isSafeInteger(size) || size < 10_000 || size > 250_000)
 	throw new Error('--size must be an integer from 10000 through 250000');
+const fromMs = 1_700_000_000_000;
+const toMs = 1_701_000_000_001;
+const apiKey = 'tines_usage_scale_local_only_000000000000000000000';
+const keyHash = createHash('sha256').update(apiKey).digest('hex');
 
 function wrangler(args) {
 	return execFileSync('pnpm', ['exec', 'wrangler', ...args], {
@@ -53,6 +58,8 @@ execute(`
 	VALUES ('scale_issue','scale_project',1,'Scale','','wf_standard','wfs_std_open',1700000000000,1700000000000);
 	INSERT INTO runner (id,user_id,type,name,status,max_concurrent,max_run_minutes,default_tier,config,created_at,updated_at)
 	VALUES ('scale_runner','scale_user','local','Scale','paused',1,30,'balanced','{}',1700000000000,1700000000000);
+	INSERT INTO api_key (id,user_id,name,key_hash,key_prefix,created_at)
+	VALUES ('scale_key','scale_user','scale-local','${keyHash}','tines_usage_',1700000000000);
 	WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM seq WHERE n < ${size})
 	INSERT INTO agent_run (id,user_id,issue_id,runner_id,status,outcome,tier,usage,state_id_at_start,log,created_at,started_at,ended_at)
 	SELECT printf('scale_%06d',n),'scale_user','scale_issue','scale_runner','completed',
@@ -60,8 +67,12 @@ execute(`
 		CASE n%3 WHEN 0 THEN 'smartest' WHEN 1 THEN 'balanced' ELSE 'cheapest' END,
 		CASE WHEN n=100001 THEN '{"cost_usd":1,"cost_source":"provider"}'
 			WHEN n%4=0 THEN '{"input_tokens":1}' ELSE NULL END,
-		'wfs_std_open','',1700000000000-n,1700000000000-n,1800000000000-CAST(n/10 AS INTEGER)
+		'wfs_std_open','',1700000000000-n,1700000000000-n,${toMs - 1}-CAST(n/10 AS INTEGER)
 	FROM seq;
+	WITH RECURSIVE pending(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM pending WHERE n < 100)
+	INSERT INTO agent_run (id,user_id,issue_id,runner_id,status,tier,state_id_at_start,log,created_at)
+	SELECT printf('pending_%03d',n),'scale_user','scale_issue','scale_runner','running','balanced',
+		'wfs_std_open','',${toMs - 1000}-n FROM pending;
 `);
 
 const aggregateSql = (boundary) => `
@@ -71,8 +82,8 @@ const aggregateSql = (boundary) => `
 	FROM agent_run
 	LEFT JOIN issue ON issue.id=agent_run.issue_id
 	LEFT JOIN workflow_state AS start_state ON start_state.id=agent_run.state_id_at_start
-	WHERE agent_run.user_id='scale_user' AND agent_run.ended_at>=1700000000000
-		AND agent_run.ended_at<1800000000001 ${boundary ? `AND (agent_run.ended_at<${boundary.at} OR (agent_run.ended_at=${boundary.at} AND agent_run.id<'${boundary.id}'))` : ''}
+	WHERE agent_run.user_id='scale_user' AND agent_run.ended_at>=${fromMs}
+		AND agent_run.ended_at<${toMs} ${boundary ? `AND (agent_run.ended_at<${boundary.at} OR (agent_run.ended_at=${boundary.at} AND agent_run.id<'${boundary.id}'))` : ''}
 	ORDER BY agent_run.ended_at DESC,agent_run.id DESC LIMIT 5001`;
 
 let aggregateQueries = 0;
@@ -93,8 +104,8 @@ for (;;) {
 
 const candidateSql = (boundary) => `
 	SELECT agent_run.id,agent_run.usage,agent_run.ended_at,agent_run.created_at
-	FROM agent_run WHERE agent_run.user_id='scale_user' AND agent_run.ended_at>=1700000000000
-		AND agent_run.ended_at<1800000000001 ${boundary ? `AND (agent_run.ended_at<${boundary.at} OR (agent_run.ended_at=${boundary.at} AND agent_run.id<'${boundary.id}'))` : ''}
+	FROM agent_run WHERE agent_run.user_id='scale_user' AND agent_run.ended_at>=${fromMs}
+		AND agent_run.ended_at<${toMs} ${boundary ? `AND (agent_run.ended_at<${boundary.at} OR (agent_run.ended_at=${boundary.at} AND agent_run.id<'${boundary.id}'))` : ''}
 	ORDER BY agent_run.ended_at DESC,agent_run.id DESC LIMIT 10001`;
 let candidateQueries = 0;
 let candidateRows = 0;
@@ -115,9 +126,112 @@ while (candidateQueries < 20 && !priced) {
 }
 
 const pending = execute(`EXPLAIN QUERY PLAN SELECT COUNT(*) FROM agent_run
-	WHERE user_id='scale_user' AND created_at<1800000000001 AND (ended_at IS NULL OR ended_at>=1800000000001)`);
+	WHERE user_id='scale_user' AND created_at<${toMs} AND (ended_at IS NULL OR ended_at>=${toMs})`);
 const aggregatePlan = execute(`EXPLAIN QUERY PLAN ${aggregateSql(null)}`);
 const candidatePlan = execute(`EXPLAIN QUERY PLAN ${candidateSql(null)}`);
+function waitForWorker(url, child) {
+	return new Promise((resolve, reject) => {
+		const deadline = Date.now() + 30_000;
+		const poll = async () => {
+			if (child.exitCode !== null) return reject(new Error(`worker exited ${child.exitCode}`));
+			try {
+				await fetch(url);
+				return resolve();
+			} catch (error) {
+				if (Date.now() >= deadline) return reject(error);
+				setTimeout(poll, 100);
+			}
+		};
+		poll();
+	});
+}
+
+execFileSync('pnpm', ['build'], { cwd: webDir, stdio: 'inherit' });
+execFileSync('pnpm', ['--dir', '../..', '--filter', 'tines', 'build'], {
+	cwd: webDir,
+	stdio: 'inherit'
+});
+const port = 18_000 + (process.pid % 1_000);
+const baseUrl = `http://127.0.0.1:${port}`;
+const worker = spawn(
+	'pnpm',
+	[
+		'exec',
+		'wrangler',
+		'dev',
+		'--port',
+		String(port),
+		'--host',
+		`127.0.0.1:${port}`,
+		'--persist-to',
+		persist,
+		'--var',
+		'BETTER_AUTH_SECRET:usage-scale-local-secret-00000000000000000000',
+		'--var',
+		`BETTER_AUTH_URL:${baseUrl}`,
+		'--var',
+		'SECRET_ENCRYPTION_KEY:usage-scale-local-only'
+	],
+	{ cwd: webDir, stdio: ['ignore', 'pipe', 'pipe'] }
+);
+let workerLog = '';
+worker.stdout.on('data', (chunk) => (workerLog += chunk));
+worker.stderr.on('data', (chunk) => (workerLog += chunk));
+let workerEvidence;
+try {
+	await waitForWorker(baseUrl, worker);
+	const query = new URLSearchParams({
+		from: new Date(fromMs).toISOString(),
+		to: new Date(toMs).toISOString(),
+		by: 'tier'
+	});
+	const started = performance.now();
+	const response = await fetch(`${baseUrl}/api/v1/usage?${query}`, {
+		headers: { authorization: `Bearer ${apiKey}` }
+	});
+	const body = await response.json();
+	if (!response.ok) throw new Error(JSON.stringify(body));
+	if (body.scope_total.finalized_run_count !== size)
+		throw new Error(
+			`worker finalized mismatch: ${body.scope_total.finalized_run_count} != ${size}`
+		);
+	if (body.pending.scope_count !== 100)
+		throw new Error(`worker pending mismatch: ${body.pending.scope_count} != 100`);
+	const cliRaw = execFileSync(
+		'node',
+		[
+			fileURLToPath(new URL('../../../packages/cli/dist/index.js', import.meta.url)),
+			'usage',
+			'--url',
+			baseUrl,
+			'--api-key',
+			apiKey,
+			'--from',
+			new Date(fromMs).toISOString(),
+			'--to',
+			new Date(toMs).toISOString(),
+			'--by',
+			'tier',
+			'--json'
+		],
+		{ encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 }
+	);
+	const cli = JSON.parse(cliRaw);
+	if (JSON.stringify(cli) !== JSON.stringify(body)) throw new Error('source CLI and HTTP differ');
+	workerEvidence = {
+		status: response.status,
+		elapsed_ms: Number((performance.now() - started).toFixed(1)),
+		response_bytes: Buffer.byteLength(JSON.stringify(body)),
+		finalized: body.scope_total.finalized_run_count,
+		priced: body.scope_total.priced_run_count,
+		pending: body.pending.scope_count,
+		groups: body.groups.length,
+		source_cli_exact_match: true
+	};
+} finally {
+	worker.kill('SIGTERM');
+}
+
 const receipt = {
 	generated_at: new Date().toISOString(),
 	wrangler: wrangler(['--version']).trim(),
@@ -138,6 +252,7 @@ const receipt = {
 		plan: candidatePlan.rows
 	},
 	pending_plan: pending.rows,
+	authenticated_worker: workerEvidence,
 	bounds: {
 		service_queries_at_100k: 27,
 		invocation_queries_with_bearer_auth_at_100k: 29,
@@ -150,7 +265,7 @@ const receipt = {
 	limitations: [
 		'Wrangler CLI elapsed time includes process startup; D1 meta is emitted by the local emulator.',
 		'Wrangler local exposes duration but not D1 rows_read; indexed plans and returned-row counts are recorded instead.',
-		'Worker heap is a conservative bound, not an isolate inspector measurement.',
+		'Worker heap is a conservative bound, not an isolate inspector measurement; whole-process RSS is intentionally not presented as isolate heap.',
 		'Run with --size=120001 to place the unique priced evidence match beyond 100k candidates.'
 	]
 };

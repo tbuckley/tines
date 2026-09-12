@@ -46,6 +46,8 @@ function decodeUsageCursor(raw: string): UsageRunsCursor {
 				{ field: 'cursor', remedy: 'restart without cursor using the same bounds and filters' }
 			);
 		if (
+			Object.keys(value).sort().join(',') !==
+				'filters,from,id,mode,timezone,timezone_source,to,v,at'.split(',').sort().join(',') ||
 			value.v !== 'usage-runs-v2' ||
 			!['finalized', 'pending'].includes(value.mode) ||
 			!Number.isFinite(value.from) ||
@@ -54,9 +56,15 @@ function decodeUsageCursor(raw: string): UsageRunsCursor {
 			!Number.isSafeInteger(value.to) ||
 			!Number.isSafeInteger(value.at) ||
 			typeof value.filters !== 'string' ||
-			!value.id ||
+			typeof value.id !== 'string' ||
+			value.id.length === 0 ||
+			typeof value.timezone !== 'string' ||
 			!['supervisor_budget', 'utc_fallback'].includes(value.timezone_source) ||
-			validateTimezone(value.timezone) !== value.timezone
+			validateTimezone(value.timezone) !== value.timezone ||
+			value.from >= value.to ||
+			(value.mode === 'finalized' && (value.at < value.from || value.at >= value.to)) ||
+			(value.mode === 'pending' && value.at >= value.to) ||
+			encodeUsageCursor(value) !== raw
 		)
 			throw new Error('invalid');
 		return value;
@@ -111,6 +119,14 @@ export const GET: RequestHandler = api(async (event) => {
 		'timezone',
 		'timezone_source'
 	];
+	const populationRequested = params.has('population');
+	if (populationRequested)
+		for (const name of params.keys())
+			if (!recognized.includes(name))
+				throw new ApiFail(422, 'invalid_field', `Unsupported period evidence parameter "${name}"`, {
+					field: name,
+					remedy: 'remove unsupported parameters'
+				});
 	for (const name of recognized) {
 		if (params.getAll(name).length > 1)
 			throw new ApiFail(422, 'invalid_field', `Duplicate "${name}" parameter`, { field: name });
@@ -126,6 +142,8 @@ export const GET: RequestHandler = api(async (event) => {
 		throw new ApiFail(422, 'invalid_field', 'population must be finalized or pending');
 	if ((from || to) && !population)
 		throw new ApiFail(422, 'invalid_field', 'period filters require population');
+	if ((params.has('timezone') || params.has('timezone_source')) && !population)
+		throw new ApiFail(422, 'invalid_field', 'timezone metadata requires population');
 	if (population && (from === null || to === null))
 		throw new ApiFail(422, 'invalid_field', 'population requires from and to');
 	let fromMs: number | undefined;

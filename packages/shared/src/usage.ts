@@ -580,16 +580,29 @@ export function mergeUsageCounters(target: UsageAccumulator, source: UsageAccumu
 export function* mergeSortedUsageSamples(buffers: Iterable<UsageSampleBuffer>): Iterable<number> {
 	const arrays = [...buffers].map((buffer) => buffer.sorted());
 	const positions = arrays.map(() => 0);
-	for (;;) {
-		let selected = -1;
-		for (let i = 0; i < arrays.length; i++)
-			if (
-				positions[i] < arrays[i].length &&
-				(selected < 0 || arrays[i][positions[i]] < arrays[selected][positions[selected]])
-			)
-				selected = i;
-		if (selected < 0) return;
+	const heap = arrays.flatMap((array, index) => (array.length ? [index] : []));
+	const less = (left: number, right: number) =>
+		arrays[left][positions[left]] < arrays[right][positions[right]];
+	const down = (root: number) => {
+		for (;;) {
+			const left = root * 2 + 1;
+			if (left >= heap.length) return;
+			const right = left + 1;
+			const child = right < heap.length && less(heap[right], heap[left]) ? right : left;
+			if (!less(heap[child], heap[root])) return;
+			[heap[root], heap[child]] = [heap[child], heap[root]];
+			root = child;
+		}
+	};
+	for (let i = Math.floor(heap.length / 2) - 1; i >= 0; i--) down(i);
+	while (heap.length) {
+		const selected = heap[0];
 		yield arrays[selected][positions[selected]++];
+		if (positions[selected] === arrays[selected].length) {
+			heap[0] = heap.at(-1)!;
+			heap.pop();
+		}
+		if (heap.length) down(0);
 	}
 }
 
@@ -597,8 +610,6 @@ export function finalizeUsage(
 	acc: UsageAccumulator,
 	sortedSamples: Iterable<number> = acc.samples.sorted()
 ): UsageAggregate {
-	const samples = [...sortedSamples];
-	if (samples.length !== acc.priced) throw new Error('usage_sample_count_mismatch');
 	const tokens = structuredClone(acc.tokens);
 	for (const field of USAGE_TOKEN_FIELDS)
 		if (tokens[field].reported_runs === 0) tokens[field].value = null;
@@ -606,8 +617,24 @@ export function finalizeUsage(
 	const exactString = decimalString(acc.exact);
 	const projected = Number(exactString);
 	if (!Number.isFinite(projected)) throw new Error('usage_value_out_of_range');
+	const lowerMedianRank = n === 0 ? -1 : Math.floor((n - 1) / 2);
+	const upperMedianRank = n === 0 ? -1 : Math.floor(n / 2);
+	const p95Rank = n === 0 ? -1 : Math.ceil(0.95 * n) - 1;
+	let lowerMedian: number | null = null;
+	let upperMedian: number | null = null;
+	let p95: number | null = null;
+	let max: number | null = null;
+	let sampleCount = 0;
+	for (const sample of sortedSamples) {
+		if (sampleCount === lowerMedianRank) lowerMedian = sample;
+		if (sampleCount === upperMedianRank) upperMedian = sample;
+		if (sampleCount === p95Rank) p95 = sample;
+		max = sample;
+		sampleCount++;
+	}
+	if (sampleCount !== n) throw new Error('usage_sample_count_mismatch');
 	const median =
-		n === 0 ? null : n % 2 ? samples[(n - 1) / 2] : samples[n / 2 - 1] / 2 + samples[n / 2] / 2;
+		lowerMedian === null || upperMedian === null ? null : lowerMedian / 2 + upperMedian / 2;
 	const portions = Object.fromEntries(
 		Object.entries(acc.portions).map(([key, p]) => {
 			const cost_usd_exact = decimalString(p.exact);
@@ -650,8 +677,8 @@ export function finalizeUsage(
 			missing_price_count: acc.finalized - n,
 			mean_cost_usd: n ? projected / n : null,
 			median_cost_usd: median,
-			p95_cost_usd: n ? samples[Math.ceil(0.95 * n) - 1] : null,
-			max_cost_usd: n ? samples[n - 1] : null,
+			p95_cost_usd: p95,
+			max_cost_usd: max,
 			percentile_rule: 'nearest_rank',
 			low_sample: n > 0 && n < 20
 		}

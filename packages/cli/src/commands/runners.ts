@@ -51,6 +51,7 @@ import {
 	type UpdateRunnerRequest
 } from '@tines/shared';
 import { InvalidArgumentError, Option, type Command } from 'commander';
+import { usageEvidenceLines } from '../usage-format.js';
 
 function parseBoolean(value: string): boolean {
 	if (value === 'true') return true;
@@ -709,6 +710,15 @@ export function register(program: Command): void {
 				['ID', 'ISSUE', 'RUNNER', 'TIER', 'STATUS', 'DURATION', 'COST', 'CREATED'],
 				...items.map(runRow)
 			]);
+			if (evidence.population === 'finalized')
+				for (const run of items)
+					if (run.usage_dimensions && run.usage_accounting)
+						for (const line of usageEvidenceLines(
+							run.id,
+							run.usage_dimensions,
+							run.usage_accounting
+						))
+							console.log(line);
 		});
 	});
 

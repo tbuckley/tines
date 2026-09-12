@@ -109,6 +109,25 @@ describe('usage accounting', () => {
 		});
 	});
 
+	it('merges a high-cardinality priced distribution with bounded heap state', () => {
+		const groups = Array.from({ length: 10_000 }, (_, i) => {
+			const acc = createUsageAccumulator();
+			addUsage(acc, { cost_usd: (10_000 - i) / 10_000, cost_source: 'provider' });
+			return acc;
+		});
+		const total = createUsageAccumulator();
+		for (const group of groups) mergeUsageCounters(total, group);
+		expect(
+			finalizeUsage(total, mergeSortedUsageSamples(groups.map((group) => group.samples)))
+				.distribution
+		).toMatchObject({
+			sample_count: 10_000,
+			median_cost_usd: 0.50005,
+			p95_cost_usd: 0.95,
+			max_cost_usd: 1
+		});
+	});
+
 	it('renders zero, sub-cent, missing, and empty honestly', () => {
 		expect(usageCostLabel(0)).toBe('$0');
 		expect(usageCostLabel(0.001)).toBe('<$0.01');

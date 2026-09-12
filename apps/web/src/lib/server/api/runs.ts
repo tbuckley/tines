@@ -10,7 +10,7 @@ import {
 	classifyUsage,
 	type UsageDimensions
 } from '@tines/shared';
-import type { Kysely } from 'kysely';
+import { sql, type Kysely } from 'kysely';
 import type { Database } from '$lib/server/db';
 import { getRunLogStore, runLogRawKey } from '$lib/server/run-log-store';
 import { readRunLog } from '$lib/server/supervisor/run-log';
@@ -59,8 +59,12 @@ export function runQuery(db: Kysely<Database>, userId: string) {
 				'issue.title as issue_title',
 				'project.name as project_name',
 				'issue.project_id as project_id',
-				'start_state.name as start_state_name',
-				'start_state.workflow_id as start_workflow_id',
+				sql<
+					string | null
+				>`case when ${sql.ref('start_workflow.id')} is not null then ${sql.ref('start_state.name')} else null end`.as(
+					'start_state_name'
+				),
+				'start_workflow.id as start_workflow_id',
 				'issue.workflow_id as issue_workflow_id',
 				'start_workflow.name as start_workflow_name',
 				'issue_workflow.name as issue_workflow_name',
@@ -99,8 +103,12 @@ const evidenceRunSelection = [
 	'issue.title as issue_title',
 	'project.name as project_name',
 	'issue.project_id as project_id',
-	'start_state.name as start_state_name',
-	'start_state.workflow_id as start_workflow_id',
+	sql<
+		string | null
+	>`case when ${sql.ref('start_workflow.id')} is not null then ${sql.ref('start_state.name')} else null end`.as(
+		'start_state_name'
+	),
+	'start_workflow.id as start_workflow_id',
 	'issue.workflow_id as issue_workflow_id',
 	'start_workflow.name as start_workflow_name',
 	'issue_workflow.name as issue_workflow_name',

@@ -11,6 +11,7 @@ import {
 } from '../common.js';
 import { usageCostLabel, type UsageBy, type UsageReport, type UsageWindow } from '@tines/shared';
 import { Option, type Command } from 'commander';
+import { usageAggregateLines } from '../usage-format.js';
 
 interface UsageOpts extends CommonOpts {
 	window?: UsageWindow;
@@ -53,22 +54,23 @@ function printReport(report: UsageReport): void {
 	console.log(
 		`Pending at cutoff: ${report.pending.matching_count}${report.pending.unapplied_filters.length ? ` (before ${report.pending.unapplied_filters.join('/')} filters)` : ''}`
 	);
-	if (report.groups.length === 0) return console.log('no finalized runs');
-	table([
-		['GROUP', 'SPEND', 'COVERAGE', 'FINAL', 'PRICED', 'MISSING', 'MEDIAN', 'P95', 'MAX', 'MEAN'],
-		...report.groups.map(({ dimension, aggregate: a }) => [
-			dimension.name,
-			money(a.cost_usd),
-			a.coverage,
-			String(a.finalized_run_count),
-			String(a.priced_run_count),
-			String(a.unpriced_run_count + a.unreported_run_count),
-			money(a.distribution.median_cost_usd),
-			money(a.distribution.p95_cost_usd),
-			money(a.distribution.max_cost_usd),
-			money(a.distribution.mean_cost_usd)
-		])
-	]);
+	if (report.groups.length === 0) console.log('no finalized runs');
+	else
+		table([
+			['GROUP', 'SPEND', 'COVERAGE', 'FINAL', 'PRICED', 'MISSING', 'MEDIAN', 'P95', 'MAX', 'MEAN'],
+			...report.groups.map(({ dimension, aggregate: a }) => [
+				dimension.name,
+				money(a.cost_usd),
+				a.coverage,
+				String(a.finalized_run_count),
+				String(a.priced_run_count),
+				String(a.unpriced_run_count + a.unreported_run_count),
+				money(a.distribution.median_cost_usd),
+				money(a.distribution.p95_cost_usd),
+				money(a.distribution.max_cost_usd),
+				money(a.distribution.mean_cost_usd)
+			])
+		]);
 	console.log('Per-run cost · priced subset; p95 uses nearest rank.');
 	if (report.groups.some((g) => g.aggregate.distribution.low_sample))
 		console.log('Small samples (under 20): p95 equals maximum.');
@@ -83,14 +85,8 @@ function printReport(report: UsageReport): void {
 	console.log(
 		`Matching sources: provider ${total.portions.provider.cost_usd_exact} · calculated ${total.portions.calculated.cost_usd_exact} · unknown ${total.portions.unknown_source.cost_usd_exact}`
 	);
-	for (const portion of total.rate_portions) {
-		const basis = portion.basis;
-		console.log(
-			basis
-				? `Rate: ${basis.rate_id} v${basis.rate_version} · ${basis.model} · ${basis.source_url}`
-				: `Rate: historical calculated amount · basis unavailable`
-		);
-	}
+	for (const line of usageAggregateLines('Scope', scope)) console.log(line);
+	for (const line of usageAggregateLines('Matching', total)) console.log(line);
 }
 
 export function register(program: Command): void {

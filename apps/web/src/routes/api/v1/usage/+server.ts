@@ -1,5 +1,10 @@
 import { json } from '@sveltejs/kit';
-import { UsageInputError, type UsageAccountingStatus, type UsageBy } from '@tines/shared';
+import {
+	resolveUsagePeriod,
+	UsageInputError,
+	type UsageAccountingStatus,
+	type UsageBy
+} from '@tines/shared';
 import { api, apiContext, ApiFail, notFound } from '$lib/server/api/core';
 import { getUsage } from '$lib/server/api/usage';
 import { authorizeUsageFilters } from '$lib/server/api/usage-ledger';
@@ -22,6 +27,12 @@ const recognized = [
 export const GET: RequestHandler = api(async (event) => {
 	const { db, actor } = await apiContext(event);
 	const params = event.url.searchParams;
+	for (const name of params.keys())
+		if (!recognized.includes(name))
+			throw new ApiFail(422, 'invalid_field', `Unsupported usage parameter "${name}"`, {
+				field: name,
+				remedy: 'remove unsupported parameters'
+			});
 	for (const name of recognized)
 		if (params.getAll(name).length > 1)
 			throw new ApiFail(422, 'invalid_field', `Duplicate "${name}" parameter`, { field: name });
@@ -47,6 +58,25 @@ export const GET: RequestHandler = api(async (event) => {
 		});
 	const state = params.get('state');
 	const workflow = params.get('workflow');
+	try {
+		// Period syntax and contradictions must win over retained-identity lookups.
+		// The service resolves the same valid input again using the configured timezone.
+		resolveUsagePeriod(
+			{
+				window: (params.get('window') ?? undefined) as 'today' | '7d' | '30d' | undefined,
+				from: params.get('from') ?? undefined,
+				to: params.get('to') ?? undefined
+			},
+			'UTC'
+		);
+	} catch (error) {
+		if (error instanceof UsageInputError)
+			throw new ApiFail(422, 'invalid_usage_period', error.message, {
+				field: error.field ?? 'from/to',
+				...(error.remedy ? { remedy: error.remedy } : {})
+			});
+		throw error;
+	}
 	if (
 		!(await authorizeUsageFilters(db, actor.userId, {
 			project: params.get('project'),
@@ -73,7 +103,10 @@ export const GET: RequestHandler = api(async (event) => {
 		return json(report, { headers: { 'cache-control': 'private, no-store' } });
 	} catch (error) {
 		if (error instanceof UsageInputError)
-			throw new ApiFail(422, 'invalid_usage_period', error.message);
+			throw new ApiFail(422, 'invalid_usage_period', error.message, {
+				field: error.field ?? 'from/to',
+				...(error.remedy ? { remedy: error.remedy } : {})
+			});
 		throw error;
 	}
 });
