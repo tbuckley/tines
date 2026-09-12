@@ -52,8 +52,10 @@
 	let reviewed = $state(new Set<string>());
 	let error = $state<string | null>(null);
 	let errorCode = $state<string | null>(null);
+	let errorTarget = $state<string | null>(null);
 	let legacyFile = $state(false);
 	let alertEl = $state<HTMLElement | null>(null);
+	let tokenInvoker = $state<HTMLElement | null>(null);
 
 	const requiredReviewIds = $derived(
 		document_?.context
@@ -61,6 +63,17 @@
 			.map((item) => item.id) ?? []
 	);
 	const reviewComplete = $derived(requiredReviewIds.every((id) => reviewed.has(id)));
+	const errorAction = $derived.by(() => {
+		if (errorCode === 'routing_unavailable')
+			return { href: '/agents#routing', label: 'Configure destination runners' };
+		const input = document_?.inputs.find((item) => item.id === errorTarget);
+		if (
+			input?.type === 'workflow' &&
+			['missing_input', 'not_found', 'missing_required_states'].includes(errorCode ?? '')
+		)
+			return { href: '/workflows/new', label: 'Create a destination workflow' };
+		return null;
+	});
 	const resolvedDocument = $derived.by(() => {
 		if (!plan) return null;
 		const current = plan;
@@ -104,6 +117,7 @@
 		if (err instanceof ApiError) {
 			errorCode = err.code;
 			const target = String(err.details?.input_id ?? err.details?.record_id ?? '');
+			errorTarget = target || null;
 			if (target)
 				setTimeout(
 					() => document.getElementById(`input-${target}`)?.scrollIntoView({ block: 'center' }),
@@ -112,15 +126,29 @@
 			return err.message;
 		}
 		errorCode = null;
+		errorTarget = null;
 		return fallback;
 	}
 	function invalidatePlan(next: WorkflowPackageChoices) {
 		choices = next;
 		plan = null;
 		confirmed = false;
+		reviewed = new Set();
 		error = null;
 		errorCode = null;
+		errorTarget = null;
 		stage = 'values';
+	}
+	async function focusInput(id: string, trigger: HTMLElement) {
+		tokenInvoker = trigger;
+		await tick();
+		const input = document.getElementById(`value-${id}`);
+		input?.focus();
+		input?.scrollIntoView({ block: 'center' });
+	}
+	function backToToken() {
+		tokenInvoker?.focus();
+		tokenInvoker = null;
 	}
 
 	async function chooseFile(event: Event) {
@@ -129,6 +157,7 @@
 		stage = 'reading';
 		error = null;
 		errorCode = null;
+		errorTarget = null;
 		legacyFile = false;
 		receipt = null;
 		plan = null;
@@ -177,6 +206,7 @@
 		stage = 'preparing';
 		error = null;
 		errorCode = null;
+		errorTarget = null;
 		confirmed = false;
 		try {
 			plan = await api.prepareWorkflowPackage({ document_json: documentJson, choices });
@@ -214,8 +244,12 @@
 			await tick();
 			document.querySelector<HTMLElement>('[data-package-receipt]')?.focus();
 		} catch (err) {
-			if (err instanceof ApiNetworkError) {
+			if (
+				err instanceof ApiNetworkError ||
+				(err instanceof ApiError && err.code === 'install_outcome_unknown')
+			) {
 				stage = 'unknown';
+				errorCode = 'install_outcome_unknown';
 				error =
 					'Installation result unknown. The request may still have committed; check the durable receipt before retrying.';
 			} else if (
@@ -276,6 +310,12 @@
 	});
 </script>
 
+<svelte:window
+	onkeydown={(event) => {
+		if (event.key === 'Escape' && tokenInvoker) backToToken();
+	}}
+/>
+
 <svelte:head><title>Install workflow package · Tines</title></svelte:head>
 
 <div class="mx-auto max-w-[68rem] min-w-0 pb-20">
@@ -310,7 +350,9 @@
 		<span class="text-muted-foreground min-w-0 text-sm break-all"
 			>{fileName ?? 'No file chosen'}</span
 		>
-		{#if document_}<span class="text-muted-foreground min-w-0 max-w-full break-all text-xs sm:w-auto"><code>{document_.digest}</code></span
+		{#if document_}<span
+				class="text-muted-foreground max-w-full min-w-0 text-xs break-all sm:w-auto"
+				><code>{document_.digest}</code></span
 			>{/if}
 	</div>
 
@@ -321,6 +363,8 @@
 			class="border-destructive/40 bg-destructive/5 text-destructive mb-5 rounded-lg border p-3 text-sm whitespace-pre-wrap"
 		>
 			<b>{errorCode ? `${errorCode}: ` : ''}</b>{error}
+			{#if errorAction}<a class="ml-2 underline" href={errorAction.href}>{errorAction.label}</a
+				>{/if}
 		</div>{/if}
 
 	{#if legacyFile}
@@ -372,8 +416,7 @@
 						checked ? next.add(id) : next.delete(id);
 						reviewed = next;
 					}}
-					onToken={() => {}}
-					onEdit={() => {}}
+					onToken={focusInput}
 				/><PackageOperations {plan} />{/if}
 			<PackageInputs
 				document={document_}
@@ -384,6 +427,9 @@
 				disabled={stage === 'preparing' || stage === 'installing'}
 				onchange={invalidatePlan}
 			/>
+			{#if tokenInvoker}<div class="flex justify-end">
+					<Button size="sm" variant="outline" onclick={backToToken}>Back to exact use</Button>
+				</div>{/if}
 			{#if !plan}<Button onclick={prepare} disabled={stage === 'preparing'}
 					>{stage === 'preparing' ? 'Preparing exact plan…' : 'Prepare installation'}</Button
 				>{/if}

@@ -16,7 +16,7 @@
 		reviewed: Set<string>;
 		onReview: (id: string, checked: boolean) => void;
 		onToken: (id: string, trigger: HTMLElement) => void;
-		onEdit: (recordId: string, field: string) => void;
+		onEdit?: (recordId: string, field: string) => void;
 		expandedFields?: Set<string>;
 	} = $props();
 
@@ -132,10 +132,10 @@
 										<h4 class="font-medium">
 											{item.name} <span class="text-muted-foreground text-xs">· {item.kind}</span>
 										</h4>
-										{#if item.kind === 'prompt'}<button
+										{#if item.kind === 'prompt' && onEdit}<button
 												class="text-primary text-xs underline"
 												type="button"
-												onclick={() => onEdit(item.id, 'body')}>Edit candidate text</button
+												onclick={() => onEdit?.(item.id, 'body')}>Edit candidate text</button
 											>{/if}
 									</div>
 									{#if item.description}<p class="text-muted-foreground my-2 text-xs">
@@ -153,11 +153,12 @@
 										{#each item.files as file (file.id)}
 											<div class="mt-3">
 												<div class="mb-1 flex justify-between gap-2 text-xs">
-													<code>{file.path}</code><button
-														class="text-primary underline"
-														type="button"
-														onclick={() => onEdit(file.id, 'content')}>Edit candidate text</button
-													>
+													<code>{file.path}</code>{#if onEdit}<button
+															class="text-primary underline"
+															type="button"
+															onclick={() => onEdit?.(file.id, 'content')}
+															>Edit candidate text</button
+														>{/if}
 												</div>
 												<PackageText
 													text={file.content}
