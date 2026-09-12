@@ -5,12 +5,14 @@ import {
 	canonicalizeLibraryValue,
 	parseLibraryV3Document,
 	type ContextItem,
+	type EffectiveContext,
 	type CreateIssueResponse,
 	type Project,
 	type WorkflowPackageDocument,
 	type WorkflowResponse
 } from '@tines/shared';
 import { expect, test, type Page } from '@playwright/test';
+import { d1, sqlLiteral } from './d1';
 import { ALICE, BASE_URL, BOB } from './constants.mjs';
 import { apiClient, body, DESKTOP, gotoHydrated, PHONE, runId, signIn } from './helpers';
 
@@ -303,6 +305,77 @@ test('authors an exact declared use and downloads the reviewed canonical package
 	expect(copied!.body).toContain('{{not_declared:value}}');
 	expect(copied!.body).toContain('Escaped literal {{target_name:TARGET}} stays.');
 	expect(copied!.body).not.toContain('DESTINATION}}');
+	// Inspect the installed graph and exact gate, not merely Alice's source proof.
+	const installedDraft = installedWorkflow.states.find((state) => state.name === 'Draft')!;
+	const dependencyHref = await page
+		.getByText(`workflow · ${dependencyName} · dependency`, { exact: true })
+		.locator('..')
+		.getByRole('link')
+		.getAttribute('href');
+	const installedDependency = await body<WorkflowResponse>(
+		await bobApi.get(`/api/v1${dependencyHref}`)
+	);
+	const installedConventions = installedDependency.states.find(
+		(state) => state.name === 'Conventions'
+	)!;
+	expect(installedDraft.inherits_from).toBe(installedConventions.id);
+	expect(installedConventions.id).not.toBe(
+		document.workflows.find((w) => w.id !== document.main_workflow_id)!.states[0].id
+	);
+	const finish = installedWorkflow.transitions.find((transition) => transition.name === 'Finish')!;
+	expect(finish).toMatchObject({
+		from_state_id: installedDraft.id,
+		to_state_id: installedWorkflow.states.find((state) => state.name === 'Done')!.id,
+		requires: [{ artifact: 'report', type: 'text', content_type: 'text/markdown' }]
+	});
+	const copiedSkill = installedContexts.find((item) => item.name === 'browser-check')!;
+	const skill = await body<ContextItem>(await bobApi.get(`/api/v1/context/${copiedSkill.id}`));
+	expect(skill.files).toEqual([
+		{ path: 'SKILL.md', content: '# Browser check\n\nUse the exact viewport.' },
+		{ path: 'notes.txt', content: longText }
+	]);
+	const localPrompts = installedContexts
+		.filter((item) => ['instructions', 'long-guide'].includes(item.name))
+		.sort((a, b) => a.position - b.position);
+	expect(localPrompts.map((item) => item.name)).toEqual(['instructions', 'long-guide']);
+	expect(localPrompts[0].position).toBeLessThan(localPrompts[1].position);
+	// First prove install created no issues/schedules. Only then explicitly create an
+	// inspection issue, so the ordinary effective-context API can assemble inheritance.
+	const workflowIds = [installedWorkflow.id, installedDependency.id].map(sqlLiteral).join(',');
+	expect(d1(`SELECT id FROM issue WHERE workflow_id IN (${workflowIds})`)).toEqual([]);
+	expect(d1(`SELECT id FROM scheduled_task WHERE workflow_id IN (${workflowIds})`)).toEqual([]);
+	const inspectionProject = await body<Project>(
+		await bobApi.post('/api/v1/projects', { name: `Installed context inspection ${runId}` })
+	);
+	const inspectionIssue = await body<CreateIssueResponse>(
+		await bobApi.post(`/api/v1/projects/${inspectionProject.id}/issues`, {
+			title: 'Explicit context inspection',
+			workflow_id: installedWorkflow.id,
+			state: installedDraft.id
+		})
+	);
+	const effective = await body<EffectiveContext>(
+		await bobApi.get(`/api/v1/issues/${inspectionIssue.id}/context`)
+	);
+	const parts = effective.prompt.parts.filter((part) =>
+		['inherited-first', 'instructions', 'long-guide'].includes(part.name)
+	);
+	expect(parts.map((part) => part.name)).toEqual(['inherited-first', 'instructions', 'long-guide']);
+	expect(parts[0]).toMatchObject({
+		body: 'Read this inherited dependency before the local browser instructions.',
+		inherited_from: { state_id: installedConventions.id, workflow_id: installedDependency.id }
+	});
+	expect(parts[1].body).toBe(copied!.body);
+	expect(parts[2].body).toBe(longMarkdown);
+	expect(effective.skills.find((item) => item.name === 'browser-check')?.files).toEqual(
+		skill.files
+	);
+	expect(effective.repos.find((item) => item.name === 'source')).toMatchObject({
+		url: 'https://github.com/tbuckley/tines',
+		branch: 'main'
+	});
+	// Ordinary receipt links remain navigable after the read-back inspection.
+	expect((await bobApi.get(`/api/v1/context/${copiedSkill.id}`)).ok()).toBe(true);
 	expect(externalRequests).toEqual([]);
 	await page.screenshot({
 		path: test.info().outputPath('workflow-package-desktop.png'),
@@ -311,7 +384,7 @@ test('authors an exact declared use and downloads the reviewed canonical package
 	await page.setViewportSize(PHONE);
 	await page.emulateMedia({ reducedMotion: 'reduce' });
 	const overflow = await page.evaluate(() =>
-		[...document.querySelectorAll<HTMLElement>('*')]
+		[...globalThis.document.querySelectorAll<HTMLElement>('*')]
 			.filter((element) => element.getBoundingClientRect().right > window.innerWidth + 1)
 			.map((element) => `${element.tagName}.${element.className}`)
 	);
@@ -502,7 +575,7 @@ test('focuses validation errors and keeps the mobile action above navigation', a
 	expect(action!.y + action!.height).toBeLessThanOrEqual(navigation!.y);
 	expect(actionBar!.height).toBeLessThanOrEqual(48);
 	const overflow = await page.evaluate(() =>
-		[...document.querySelectorAll<HTMLElement>('*')]
+		[...globalThis.document.querySelectorAll<HTMLElement>('*')]
 			.filter((element) => element.getBoundingClientRect().right > window.innerWidth + 1)
 			.map((element) => `${element.tagName}.${element.className}`)
 	);

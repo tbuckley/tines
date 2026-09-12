@@ -3,13 +3,58 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
 	type Project,
+	type PrepareWorkflowPackageResponse,
+	type WorkflowPackageReceipt,
 	type ValidateLibraryResponse,
 	type WorkflowPackageDocument
 } from '@tines/shared';
 import { automatedPackage } from '../../../packages/shared/src/library/fixtures.js';
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
+import {
+	signPackagePlan,
+	verifyPackagePlan,
+	PACKAGE_PLAN_TTL_MS
+} from '../src/lib/server/library/token';
+import { d1, sqlLiteral } from './d1';
 import { BOB } from './constants.mjs';
 import { apiClient, body, DESKTOP, gotoHydrated, PHONE, runId, signIn } from './helpers';
+
+// Check all allocated object/event families, including rows written before a late failure.
+function allocatedRows(plan: PrepareWorkflowPackageResponse) {
+	const ids = [
+		plan.plan_id,
+		...Object.values(plan.allocation.records).flatMap((r) => [r.id, r.event_id]),
+		...Object.values(plan.allocation.labels).flatMap((r) => [r.id, r.event_id])
+	]
+		.filter((id): id is string => !!id)
+		.map(sqlLiteral)
+		.join(',');
+	const counts = d1<Record<string, number>>(
+		'SELECT ' +
+			[
+				'library_install',
+				'workflow',
+				'workflow_state',
+				'workflow_transition',
+				'context_item',
+				'context_item_file',
+				'label',
+				'scheduled_task',
+				'routing_rule',
+				'event'
+			]
+				.map((table) => `(SELECT COUNT(*) FROM ${table} WHERE id IN (${ids})) AS ${table}`)
+				.join(', ')
+	)[0];
+	return Object.entries(counts).filter(([, count]) => count !== 0);
+}
+
+async function approve(page: Page) {
+	await expect(page.getByRole('heading', { name: 'Complete installation plan' })).toBeVisible();
+	for (const checkbox of await page.getByRole('checkbox', { name: /I reviewed/ }).all())
+		await checkbox.check();
+	await page.getByRole('checkbox', { name: /I confirm exact plan/ }).check();
+}
 
 const suffix = ` browser import ${runId}`;
 let packagePath: string;
@@ -181,9 +226,15 @@ test('reviews, confirms and installs an independent project-free package through
 	}
 });
 
-test('retains exact-plan recovery for an explicit unknown outcome across reload', async ({
+test('retries the exact plan after reload and real 404, then recovers a lost committed response', async ({
 	page
 }) => {
+	const requests: unknown[] = [];
+	let committed: WorkflowPackageReceipt | undefined;
+	let prepares = 0;
+	page.on('request', (request) => {
+		if (request.url().endsWith('/api/v1/library/prepare')) prepares++;
+	});
 	await gotoHydrated(page, '/workflows/import');
 	await page.getByLabel('Workflow package file').setInputFiles(packagePath);
 	await page.getByRole('button', { name: 'Prepare installation' }).click();
@@ -191,8 +242,16 @@ test('retains exact-plan recovery for an explicit unknown outcome across reload'
 	for (const checkbox of await page.getByRole('checkbox', { name: /I reviewed/ }).all())
 		await checkbox.check();
 	await page.getByRole('checkbox', { name: /I confirm exact plan/ }).check();
-	await page.route('**/api/v1/library/install', async (route) =>
-		route.fulfill({
+	await page.route('**/api/v1/library/install', async (route) => {
+		requests.push(route.request().postDataJSON());
+		if (requests.length > 1) {
+			const response = await route.fetch();
+			expect(response.ok()).toBe(true);
+			committed = await response.json();
+			await route.abort('connectionreset');
+			return;
+		}
+		return route.fulfill({
 			status: 503,
 			contentType: 'application/json',
 			body: JSON.stringify({
@@ -202,8 +261,8 @@ test('retains exact-plan recovery for an explicit unknown outcome across reload'
 					details: null
 				}
 			})
-		})
-	);
+		});
+	});
 	await page.getByRole('button', { name: 'Install package' }).click();
 	await expect(page.getByRole('heading', { name: 'Installation result unknown' })).toBeVisible();
 	await expect(page.getByRole('button', { name: 'Check result' })).toBeVisible();
@@ -219,6 +278,109 @@ test('retains exact-plan recovery for an explicit unknown outcome across reload'
 	await page.getByRole('button', { name: 'Check result' }).click();
 	await expect(page.getByText('this is not proof of rollback', { exact: false })).toBeVisible();
 	await expect(page.getByRole('button', { name: 'Prepare installation' })).toHaveCount(0);
+	await page.getByLabel('Workflow package file').setInputFiles(packagePath);
+	await page.getByRole('button', { name: 'Retry same plan safely' }).click();
+	await expect(page.getByRole('heading', { name: 'Installation result unknown' })).toBeVisible();
+	expect(requests).toHaveLength(2);
+	expect(requests[1]).toEqual(requests[0]);
+	expect(committed?.id).toBe(saved.planId);
+	await page.reload({ waitUntil: 'networkidle' });
+	await page.getByRole('button', { name: 'Check result' }).click();
+	await expect(page.locator('[data-package-receipt]')).toBeFocused();
+	expect(prepares).toBe(1);
+	expect(d1(`SELECT id FROM library_install WHERE id=${sqlLiteral(saved.planId)}`)).toEqual([
+		{ id: saved.planId }
+	]);
+	expect(
+		await page.evaluate(() => sessionStorage.getItem('tines:workflow-package-install-recovery:v1'))
+	).toBeNull();
+});
+
+test('rejects an expired signed plan and requires fresh preparation and confirmation', async ({
+	page
+}) => {
+	const signingKey = 'e2e-only-secret-encryption-key';
+	let expiredPlan: PrepareWorkflowPackageResponse;
+	// Backdate only this real server preparation with the local test signing key.
+	// The browser still submits it to the real worker's signature/expiry checks.
+	await page.route('**/api/v1/library/prepare', async (route) => {
+		const response = await route.fetch();
+		expect(response.ok()).toBe(true);
+		expiredPlan = await response.json();
+		const payload = await verifyPackagePlan(expiredPlan.plan_token, signingKey);
+		const expiresAt = Date.now() - 1000;
+		expiredPlan.plan_token = await signPackagePlan(
+			{ ...payload, issued_at: expiresAt - PACKAGE_PLAN_TTL_MS, expires_at: expiresAt },
+			signingKey
+		);
+		expiredPlan.expires_at = expiresAt;
+		await route.fulfill({ response, json: expiredPlan });
+	});
+	await gotoHydrated(page, '/workflows/import');
+	await page.getByLabel('Workflow package file').setInputFiles(packagePath);
+	await page.getByLabel(`Main · ${mainName}`).fill(`${mainName} expiry`);
+	await page.getByRole('button', { name: 'Prepare installation' }).click();
+	await approve(page);
+	const rejected = page.waitForResponse((r) => r.url().endsWith('/api/v1/library/install'));
+	await page.getByRole('button', { name: 'Install package' }).click();
+	expect((await rejected).status()).toBe(409);
+	await expect(page.getByRole('alert')).toContainText('expired');
+	await expect(page.getByRole('alert')).toContainText('Prepare and confirm a fresh plan');
+	expect(allocatedRows(expiredPlan!)).toEqual([]);
+	await expect(page.getByLabel(`Main · ${mainName}`)).toHaveValue(`${mainName} expiry`);
+	await expect(page.getByRole('checkbox', { name: /I confirm exact plan/ })).toHaveCount(0);
+	await page.unroute('**/api/v1/library/prepare');
+	const prepared = page.waitForResponse((r) => r.url().endsWith('/api/v1/library/prepare'));
+	await page.getByRole('button', { name: 'Prepare installation' }).click();
+	const fresh = (await (await prepared).json()) as PrepareWorkflowPackageResponse;
+	expect(fresh.plan_id).not.toBe(expiredPlan!.plan_id);
+	expect(fresh.plan_digest).not.toBe(expiredPlan!.plan_digest);
+	await expect(page.getByRole('checkbox', { name: /I confirm exact plan/ })).not.toBeChecked();
+	await expect(page.getByRole('button', { name: 'Install package' })).toBeDisabled();
+	await approve(page);
+	await page.getByRole('button', { name: 'Install package' }).click();
+	await expect(page.locator('[data-package-receipt]')).toBeFocused();
+});
+
+test('a late native D1 failure rolls back every allocated row and permits the same confirmed plan retry', async ({
+	page
+}) => {
+	test.setTimeout(60_000);
+	await gotoHydrated(page, '/workflows/import');
+	await page.getByLabel('Workflow package file').setInputFiles(packagePath);
+	const prepared = page.waitForResponse((r) => r.url().endsWith('/api/v1/library/prepare'));
+	await page.getByRole('button', { name: 'Prepare installation' }).click();
+	const plan = (await (await prepared).json()) as PrepareWorkflowPackageResponse;
+	await approve(page);
+	const file = plan.document.context.flatMap((item) =>
+		item.kind === 'skill' ? item.files : []
+	)[0];
+	const fileId = plan.allocation.records[file.id].id;
+	const attempts: unknown[] = [];
+	page.on('request', (request) => {
+		if (request.url().endsWith('/api/v1/library/install')) attempts.push(request.postDataJSON());
+	});
+	d1(
+		`CREATE TRIGGER browser_install_failure BEFORE INSERT ON context_item_file WHEN NEW.id=${sqlLiteral(fileId)} BEGIN SELECT RAISE(ABORT, 'browser install injection'); END`
+	);
+	try {
+		const failed = page.waitForResponse((r) => r.url().endsWith('/api/v1/library/install'));
+		await page.getByRole('button', { name: 'Install package' }).click();
+		expect((await failed).status()).toBe(500);
+		await expect(page.getByRole('alert')).toBeFocused();
+		await expect(page.getByRole('heading', { name: 'Installation result unknown' })).toHaveCount(0);
+		await expect(page.getByRole('button', { name: 'Install package' })).toBeEnabled();
+		expect(allocatedRows(plan)).toEqual([]);
+	} finally {
+		d1('DROP TRIGGER IF EXISTS browser_install_failure');
+	}
+	await page.getByRole('button', { name: 'Install package' }).click();
+	await expect(page.locator('[data-package-receipt]')).toBeFocused();
+	expect(attempts).toHaveLength(2);
+	expect(attempts[1]).toEqual(attempts[0]);
+	expect(d1(`SELECT id FROM library_install WHERE id=${sqlLiteral(plan.plan_id)}`)).toEqual([
+		{ id: plan.plan_id }
+	]);
 });
 
 test('installs selected schedules paused into two independent destination projects', async ({
@@ -253,13 +415,17 @@ test('installs selected schedules paused into two independent destination projec
 		const afterIssues = await body<{ items: unknown[] }>(
 			await api.get(`/api/v1/issues?project=${project.id}`)
 		);
-		const afterSchedules = await body<{ items: Array<{ enabled: boolean }> }>(
-			await api.get(`/api/v1/projects/${project.id}/schedules`)
-		);
+		const afterSchedules = await body<{
+			items: Array<{ enabled: boolean; run_count: number; last_run_at: number | null }>;
+		}>(await api.get(`/api/v1/projects/${project.id}/schedules`));
 		const afterProject = await body<Project>(await api.get(`/api/v1/projects/${project.id}`));
 		expect(afterIssues.items).toEqual([]);
 		expect(afterSchedules.items).toHaveLength(1);
-		expect(afterSchedules.items[0].enabled).toBe(false);
+		expect(afterSchedules.items[0]).toMatchObject({
+			enabled: false,
+			run_count: 0,
+			last_run_at: null
+		});
 		expect(afterProject.default_workflow_id).toBeNull();
 	}
 });

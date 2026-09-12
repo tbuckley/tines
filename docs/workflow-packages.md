@@ -19,7 +19,10 @@ Changing any value invalidates that plan and requires a new preparation and conf
 expired plan creates nothing. A definite server failure keeps the same plan available to retry; a
 lost response is different: use **Check result** first. Recovery is kept per browser tab and scoped to
 the account, destination, and plan. A missing receipt may mean the request is still in flight, so it
-is never treated as proof of rollback or used to prepare a replacement automatically.
+is never treated as proof of rollback or used to prepare a replacement automatically. After a reload,
+choose the exact same file again to enable **Retry same plan safely**; this reuses the saved signed
+plan and confirmation, without preparing another copy. If the retry committed but its response was
+lost, **Check result** recovers that same receipt.
 
 The receipt links every created object. Installed workflows are independent copies, selected
 schedules remain paused with zero runs, no issue is launched, and project defaults are unchanged.
@@ -214,3 +217,17 @@ application limits remain 800 statements, 90 bound parameters and 90 KiB of
 UTF-8 SQL per statement, 1 MiB per stored value, 5 MiB per document, and 1,000
 portable records. The smaller document, prompt, skill, and field limits still
 apply before compilation.
+
+## Browser integration verification
+
+Run `E2E_PORT=8799 pnpm test:e2e workflow-package-import.spec.ts workflow-package-export.spec.ts`
+against the isolated local Wrangler backend. The export journey passes Alice's browser download
+to Bob, then reads installed inheritance, ordered effective prompt parts, artifact gates, and exact
+skill files through the ordinary API. It proves zero automatic issues/schedules before explicitly
+creating an inspection issue for the effective-context read.
+
+The import cases cover expiry (a real preparation backdated with the local test signing key),
+a late D1 skill-file failure with all allocated rows rolled back, and recovery across reload/404,
+same-plan retry, dropped committed response, and receipt lookup. Only fault injection is intercepted;
+the retry, expiry rejection, transaction, and receipt reads use the real backend. These browser
+checks do not stand in for the actual runner acceptance owned by the successor issue.
