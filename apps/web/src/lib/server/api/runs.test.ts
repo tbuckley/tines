@@ -35,6 +35,24 @@ describe('dispatch effects: cancelRunForRequest', () => {
 		});
 		expect(effects.count()).toBe(1);
 	});
+
+	it('stays silent when the terminal flip batch rejects', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const runner = addRunner(t);
+		const run = addRun(t, { issueId: addIssue(t), runnerId: runner });
+		const effects = recordDispatchEffects();
+		t.env.DB.batch = async () => {
+			throw new Error('injected cancellation batch failure');
+		};
+		await expect(cancelRunForRequest(t.db, t.env, actor, effects, run)).rejects.toThrow(
+			'injected cancellation batch failure'
+		);
+		expect(effects.count()).toBe(0);
+		expect(t.all('SELECT status FROM agent_run WHERE id = ?', run)).toEqual([
+			{ status: 'assigned' }
+		]);
+	});
 });
 
 describe('listRuns project scope', () => {

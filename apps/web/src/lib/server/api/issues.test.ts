@@ -401,6 +401,44 @@ describe('dispatch effects: issue mutation owners', () => {
 		});
 		expect(effects.count()).toBe(5);
 	});
+
+	it.each(['update', 'transition', 'resume'] as const)(
+		'keeps %s silent when its durable batch rejects',
+		async (owner) => {
+			const t = createTestDb();
+			seedBase(t);
+			const actor: ActorContext = {
+				userId: USER,
+				userName: 'alice',
+				apiKeyId: null,
+				apiKeyName: null,
+				viaSession: true
+			};
+			const issue = addIssue(t, {
+				title: 'Original',
+				...(owner === 'resume' ? { needsAttention: true, attemptCount: 3 } : {})
+			});
+			const effects = recordDispatchEffects();
+			t.env.DB.batch = async () => {
+				throw new Error(`injected ${owner} batch failure`);
+			};
+			const call =
+				owner === 'update'
+					? updateIssue(t.db, t.env, actor, effects, issue, { title: 'Changed' })
+					: owner === 'transition'
+						? transitionIssue(t.db, t.env, actor, effects, issue, {
+								action: 'Submit for review'
+							})
+						: resumeIssue(t.db, t.env, actor, effects, issue);
+			await expect(call).rejects.toThrow(`injected ${owner} batch failure`);
+			expect(effects.count()).toBe(0);
+			expect(
+				t.all('SELECT title, state_id, needs_attention FROM issue WHERE id = ?', issue)
+			).toEqual([
+				{ title: 'Original', state_id: OPEN, needs_attention: owner === 'resume' ? 1 : 0 }
+			]);
+		}
+	);
 });
 
 describe('listIssues search', () => {

@@ -112,6 +112,32 @@ describe('registerRunner', () => {
 		expect(effects.count()).toBe(2);
 	});
 
+	it.each(['new', 'reconnect'] as const)(
+		'keeps a %s registration silent when its batch rejects',
+		async (branch) => {
+			const t = world();
+			if (branch === 'reconnect') {
+				await registerRunner(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+					name: 'laptop-m4'
+				});
+			}
+			const beforeEvents = t.all(
+				"SELECT id FROM event WHERE type IN ('runner.registered', 'runner.updated')"
+			);
+			const effects = recordDispatchEffects();
+			t.env.DB.batch = async () => {
+				throw new Error('injected registration batch failure');
+			};
+			await expect(
+				registerRunner(t.db, t.env, actor, effects, { name: 'laptop-m4' })
+			).rejects.toThrow('injected registration batch failure');
+			expect(effects.count()).toBe(0);
+			expect(
+				t.all("SELECT id FROM event WHERE type IN ('runner.registered', 'runner.updated')")
+			).toEqual(beforeEvents);
+		}
+	);
+
 	it('reconnect updates only the fields the daemon sent — server-side edits survive', async () => {
 		const t = world();
 		const first = await registerRunner(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {

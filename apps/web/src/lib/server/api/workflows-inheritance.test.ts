@@ -8,7 +8,10 @@
  * `FOREIGN KEY constraint failed`, so they are exercised here against the real
  * schema (`createTestDb`, actual migrations, foreign keys ON).
  */
-import { TEST_NOOP_DISPATCH_EFFECTS } from '$lib/server/api/test-dispatch-effects';
+import {
+	recordDispatchEffects,
+	TEST_NOOP_DISPATCH_EFFECTS
+} from '$lib/server/api/test-dispatch-effects';
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { WorkflowStateInput } from '@tines/shared';
 import { NOW, USER, addIssue, eventsOfType, seedBase } from '../supervisor/test-fixtures';
@@ -92,6 +95,23 @@ describe('workflow dispatch effects', () => {
 			states: [{ id: workflow.states[0].id, name: 'Waiting', category: 'backlog' }]
 		});
 		expect(signals).toBe(1);
+	});
+
+	it('stays silent when an activating update batch rejects', async () => {
+		const workflow = await makeWorkflow('Rejected activation', ['Waiting']);
+		const effects = recordDispatchEffects();
+		t.env.DB.batch = async () => {
+			throw new Error('injected workflow update batch failure');
+		};
+		await expect(
+			updateWorkflow(t.db, t.env, session, effects, workflow.id, {
+				states: [{ id: workflow.states[0].id, name: 'Waiting', category: 'active' }]
+			})
+		).rejects.toThrow('injected workflow update batch failure');
+		expect(effects.count()).toBe(0);
+		expect(
+			t.all('SELECT category FROM workflow_state WHERE id = ?', workflow.states[0].id)
+		).toEqual([{ category: 'backlog' }]);
 	});
 });
 

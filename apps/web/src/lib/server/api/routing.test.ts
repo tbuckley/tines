@@ -368,6 +368,38 @@ describe('rule scope state category', () => {
 		expect(effects.count()).toBe(3);
 	});
 
+	it.each(['create', 'update', 'delete'] as const)(
+		'dispatch effects: %sRoutingRule stays silent when its batch rejects',
+		async (owner) => {
+			const t = seed();
+			const existing =
+				owner === 'create'
+					? null
+					: await createRoutingRule(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+							workflow_state_id: 'wfs_std_open',
+							targets: [{ runner_id: 'rnr_1' }]
+						});
+			const effects = recordDispatchEffects();
+			t.env.DB.batch = async () => {
+				throw new Error(`injected routing ${owner} batch failure`);
+			};
+			const call =
+				owner === 'create'
+					? createRoutingRule(t.db, t.env, actor, effects, {
+							workflow_state_id: 'wfs_std_open',
+							targets: [{ runner_id: 'rnr_1' }]
+						})
+					: owner === 'update'
+						? updateRoutingRule(t.db, t.env, actor, effects, existing!.id, {
+								targets: [{ runner_id: 'rnr_1', tier: 'smartest' }]
+							})
+						: deleteRoutingRule(t.db, t.env, actor, effects, existing!.id);
+			await expect(call).rejects.toThrow(`injected routing ${owner} batch failure`);
+			expect(effects.count()).toBe(0);
+			expect(await listRoutingRules(t.db, actor.userId)).toHaveLength(owner === 'create' ? 0 : 1);
+		}
+	);
+
 	it('accepts a scoped tier-only rule, serializes its sentinel, and rejects a global one', async () => {
 		const t = seed();
 		await expect(

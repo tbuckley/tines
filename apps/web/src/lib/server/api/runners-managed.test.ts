@@ -74,6 +74,26 @@ describe('createRunner (claude_managed)', () => {
 		expect(effects.count()).toBe(1);
 	});
 
+	it('dispatch effects: createRunner stays silent when its batch rejects', async () => {
+		const t = world();
+		const effects = recordDispatchEffects();
+		t.env.DB.batch = async () => {
+			throw new Error('injected runner-create batch failure');
+		};
+		await expect(
+			createRunner(
+				t.db,
+				t.env,
+				actor,
+				effects,
+				{ type: 'claude_managed', name: 'rejected', api_key: 'sk-ant-key' },
+				okPing
+			)
+		).rejects.toThrow('injected runner-create batch failure');
+		expect(effects.count()).toBe(0);
+		expect(t.all("SELECT id FROM runner WHERE name = 'rejected'")).toEqual([]);
+	});
+
 	it('stores staged resume thresholds default-off and validates absence, null, and bounds', async () => {
 		const t = world();
 		const runner = await createRunner(

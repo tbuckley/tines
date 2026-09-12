@@ -250,4 +250,19 @@ describe('deleteRunner (db batch)', () => {
 		]);
 		expect(t.all(`SELECT type FROM event`)).toEqual([]);
 	});
+
+	it('stays silent and preserves the runner when its deletion batch rejects', async () => {
+		const t = createTestDb();
+		seedRemovalFixture(t);
+		const effects = recordDispatchEffects();
+		t.env.DB.batch = async () => {
+			throw new Error('injected runner deletion batch failure');
+		};
+		await expect(deleteRunner(t.db, t.env, actor, effects, 'rnr_1', true)).rejects.toThrow(
+			'injected runner deletion batch failure'
+		);
+		expect(effects.count()).toBe(0);
+		expect(t.all("SELECT id FROM runner WHERE id = 'rnr_1'")).toEqual([{ id: 'rnr_1' }]);
+		expect(t.all('SELECT type FROM event')).toEqual([]);
+	});
 });

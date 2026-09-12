@@ -168,6 +168,19 @@ describe('unarchiveProject', () => {
 		expect(events().filter((e) => e.type === 'project.unarchived')).toEqual([]);
 		expect(effects.count()).toBe(1);
 	});
+
+	it('stays silent when the unarchive batch rejects', async () => {
+		await archiveProject(t.db, t.env, actor, PROJECT, NOW);
+		const effects = recordDispatchEffects();
+		t.env.DB.batch = async () => {
+			throw new Error('injected unarchive batch failure');
+		};
+		await expect(unarchiveProject(t.db, t.env, actor, effects, PROJECT, NOW + 1)).rejects.toThrow(
+			'injected unarchive batch failure'
+		);
+		expect(effects.count()).toBe(0);
+		expect(archivedAt()).toBe(NOW);
+	});
 });
 
 describe('an archived project is read-only', () => {
