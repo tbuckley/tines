@@ -125,6 +125,11 @@ test('authors an exact declared use and downloads the reviewed canonical package
 	await expect(token).toBeFocused();
 	await page.getByLabel('I reviewed every file in this required skill').check();
 	await page.getByLabel('I reviewed this required repository declaration').check();
+	await page.getByRole('button', { name: 'Save candidate text' }).click();
+	await expect(page.getByRole('button', { name: 'Download package' })).toBeDisabled();
+	await expect(page.getByText('Required skill and repository review was reset.')).toBeVisible();
+	await page.getByLabel('I reviewed every file in this required skill').check();
+	await page.getByLabel('I reviewed this required repository declaration').check();
 	const downloadPromise = page.waitForEvent('download');
 	await page.getByRole('button', { name: 'Download package' }).click();
 	const download = await downloadPromise;
