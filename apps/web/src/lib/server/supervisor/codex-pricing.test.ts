@@ -39,6 +39,73 @@ const price = (
 ) => priceCodexUsage({ run, usage: u, evidence: e, now: created_at + 1000 }, catalog);
 
 describe('priceCodexUsage', () => {
+	it('prices an all-short request proof whose cumulative total exceeds 272k', () => {
+		const raw = {
+			input_tokens: 300_000,
+			cached_input_tokens: 210_000,
+			cache_write_input_tokens: 10_000,
+			output_tokens: 3_000
+		};
+		const result = price(
+			{
+				input_tokens: 80_000,
+				cache_read_tokens: 210_000,
+				cache_write_tokens: 10_000,
+				output_tokens: 3_000
+			},
+			evidence({
+				raw_usage: raw,
+				request_context: {
+					version: 1,
+					normalization: 'codex-rollout-delta-v1',
+					harness_version: '0.153.4',
+					status: 'complete',
+					request_count: 2,
+					max_request_input_tokens: 150_000,
+					reconciled_usage: raw
+				}
+			})
+		);
+		expect(result.pricing).toMatchObject({
+			status: 'calculated',
+			basis: { cost_usd_exact: '0.514' }
+		});
+	});
+
+	it.each([
+		[272_001, 'long_context_rate_unsupported'],
+		[150_000, 'request_context_invalid']
+	] as const)('rejects an unusable request proof (%s)', (max, reason) => {
+		const raw = {
+			input_tokens: 300_000,
+			cached_input_tokens: 0,
+			cache_write_input_tokens: 0,
+			output_tokens: 0
+		};
+		const proof =
+			max === 150_000
+				? {
+						version: 1 as const,
+						normalization: 'codex-rollout-delta-v1' as const,
+						status: 'invalid' as const,
+						reason: 'delta_mismatch' as const
+					}
+				: {
+						version: 1 as const,
+						normalization: 'codex-rollout-delta-v1' as const,
+						harness_version: '0.153.4' as const,
+						status: 'complete' as const,
+						request_count: 2,
+						max_request_input_tokens: max,
+						reconciled_usage: raw
+					};
+		expect(
+			price(
+				{ input_tokens: 300_000, cache_read_tokens: 0, cache_write_tokens: 0, output_tokens: 0 },
+				evidence({ raw_usage: raw, request_context: proof })
+			).pricing
+		).toMatchObject({ status: 'unpriced', reason });
+	});
 	it('pins every supported exact model and all four reviewed rate dimensions', () => {
 		expect(
 			CODEX_RATES.map(({ model, context_band, rates }) => ({ model, context_band, rates }))

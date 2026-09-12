@@ -292,7 +292,8 @@ describe('the run log a local run leaves behind', () => {
 		);
 		// The harness's own output sits between the banner and the exit line.
 		expect(lines[3]).toBe('PROMPT BODY');
-		expect(lines.at(-1)).toMatch(/^# tines runner: exit code=0 after \d+m\d+s$/);
+		expect(lines.at(-2)).toMatch(/^# tines runner: exit code=0 after \d+m\d+s$/);
+		expect(lines.at(-1)).toMatch(/^\[usage\] /);
 		// The run key rides in the environment, never in the log.
 		expect(harvest.log).not.toContain(RUN_KEY);
 	}, 30_000);
@@ -313,7 +314,7 @@ describe('the run log a local run leaves behind', () => {
 		expect(harvest.finish?.status).toBe('failed');
 		expect(harvest.finish?.error).toMatch(/timeout/);
 		expect(lines[1]).toBe('$ sleep 30');
-		expect(lines.at(-1)).toMatch(
+		expect(lines.at(-2)).toMatch(
 			/^# tines runner: exit signal=SIGTERM \(timed out\) after \d+m\d+s$/
 		);
 	}, 30_000);
@@ -362,10 +363,11 @@ describe('the run log a local run leaves behind', () => {
 		// The renderer holds a partial line until its newline; SIGTERM means it
 		// never comes, so the daemon drains it — before the closing line, or
 		// the log would not end with the line that says how the run ended.
-		expect(lines.at(-2)).toBe('[agent] cut off mid-line');
-		expect(lines.at(-1)).toMatch(
+		expect(lines.at(-3)).toBe('[agent] cut off mid-line');
+		expect(lines.at(-2)).toMatch(
 			/^# tines runner: exit signal=SIGTERM \(timed out\) after \d+m\d+s$/
 		);
+		expect(lines.at(-1)).toMatch(/^\[usage\] /);
 	}, 30_000);
 
 	it('a provider outage is reported as interrupted instead of striking the issue', async () => {

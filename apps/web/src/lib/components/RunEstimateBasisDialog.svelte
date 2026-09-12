@@ -30,6 +30,10 @@
 			'The token dimensions were invalid or did not reproduce the normalized totals.',
 		long_context_band_unknown:
 			'The aggregate input exceeded the range whose rate can be selected safely.',
+		request_context_invalid:
+			'The reported request-level context evidence was invalid or contradictory.',
+		long_context_rate_unsupported:
+			'At least one verified request used a context band whose rate is not adopted.',
 		attempt_scope_unknown: 'A resumed cumulative total cannot yet be isolated to this attempt.',
 		incomplete_attempt: 'A later turn started without a final cumulative usage snapshot.',
 		nonmonotonic_usage: 'Cumulative usage decreased during the attempt.',
@@ -122,6 +126,19 @@
 			</p>
 		{:else}
 			<p class="text-sm">No cost was reported for this run.</p>
+		{/if}
+		{#if evidence?.request_context?.status === 'complete'}
+			<p class="text-muted-foreground text-xs">
+				Short-context requests verified: {count(evidence.request_context.request_count)}; largest
+				inclusive input {count(evidence.request_context.max_request_input_tokens)}; Codex
+				{evidence.request_context.harness_version}; {evidence.request_context.normalization}.
+			</p>
+		{:else if evidence?.request_context}
+			<p class="text-muted-foreground text-xs">
+				Request-context evidence: {evidence.request_context.status} ({evidence.request_context
+					.reason});
+				{evidence.request_context.normalization}.
+			</p>
 		{/if}
 	</div>
 </dialog>

@@ -864,6 +864,99 @@ function validatePricingEvidence(value: unknown): {
 		});
 	}
 	const raw = value as Record<string, unknown>;
+	const malformedRequestContext = (): NonNullable<CodexPricingEvidenceV1['request_context']> => ({
+		version: 1,
+		normalization: 'codex-rollout-delta-v1',
+		status: 'invalid',
+		reason: 'malformed'
+	});
+	const sanitizeRequestContext = (
+		value: unknown
+	): CodexPricingEvidenceV1['request_context'] | undefined => {
+		if (value === undefined) return;
+		if (!value || typeof value !== 'object' || Array.isArray(value))
+			return malformedRequestContext();
+		const item = value as Record<string, unknown>;
+		const harnessVersion =
+			typeof item.harness_version === 'string' &&
+			item.harness_version.length > 0 &&
+			item.harness_version.length <= 100 &&
+			!/[\x00-\x1f\x7f]/.test(item.harness_version)
+				? item.harness_version
+				: undefined;
+		if (item.version !== 1)
+			return {
+				version: 1,
+				normalization: 'codex-rollout-delta-v1',
+				...(harnessVersion ? { harness_version: harnessVersion } : {}),
+				status: 'unsupported',
+				reason: 'unsupported_version'
+			};
+		if (item.normalization !== 'codex-rollout-delta-v1') return malformedRequestContext();
+		if (item.status === 'complete') {
+			if (
+				harnessVersion !== '0.153.4' ||
+				!Number.isSafeInteger(item.request_count) ||
+				(item.request_count as number) < 0 ||
+				!Number.isSafeInteger(item.max_request_input_tokens) ||
+				(item.max_request_input_tokens as number) < 0 ||
+				!item.reconciled_usage ||
+				typeof item.reconciled_usage !== 'object' ||
+				Array.isArray(item.reconciled_usage)
+			)
+				return malformedRequestContext();
+			const reconciled = item.reconciled_usage as Record<string, unknown>;
+			const copied = {} as Required<NonNullable<CodexPricingEvidenceV1['raw_usage']>>;
+			for (const field of [
+				'input_tokens',
+				'cached_input_tokens',
+				'cache_write_input_tokens',
+				'output_tokens'
+			] as const) {
+				if (!Number.isSafeInteger(reconciled[field]) || (reconciled[field] as number) < 0)
+					return malformedRequestContext();
+				copied[field] = reconciled[field] as number;
+			}
+			return {
+				version: 1,
+				normalization: 'codex-rollout-delta-v1',
+				harness_version: '0.153.4',
+				status: 'complete',
+				request_count: item.request_count as number,
+				max_request_input_tokens: item.max_request_input_tokens as number,
+				reconciled_usage: copied
+			};
+		}
+		const reasons = [
+			'not_applicable',
+			'thread_id_missing',
+			'rollout_missing',
+			'rollout_ambiguous',
+			'unsafe_path',
+			'read_failed',
+			'limit_exceeded',
+			'unsupported_version',
+			'metadata_mismatch',
+			'malformed',
+			'missing_dimension',
+			'nonmonotonic',
+			'delta_mismatch',
+			'terminal_mismatch',
+			'model_mismatch'
+		] as const;
+		if (
+			!['unavailable', 'unsupported', 'invalid'].includes(item.status as string) ||
+			!reasons.includes(item.reason as (typeof reasons)[number])
+		)
+			return malformedRequestContext();
+		return {
+			version: 1,
+			normalization: 'codex-rollout-delta-v1',
+			...(harnessVersion ? { harness_version: harnessVersion } : {}),
+			status: item.status as 'unavailable' | 'unsupported' | 'invalid',
+			reason: item.reason as (typeof reasons)[number]
+		};
+	};
 	const short = (field: string, max: number, nullable = false): string | null => {
 		const item = raw[field];
 		if (nullable && item === null) return null;
@@ -885,6 +978,7 @@ function validatePricingEvidence(value: unknown): {
 	const model = short('model', 255, true);
 	const daemonVersion =
 		raw.daemon_version === undefined ? undefined : (short('daemon_version', 100) as string);
+	const requestContext = sanitizeRequestContext(raw.request_context);
 	let rawUsage: CodexPricingEvidenceV1['raw_usage'];
 	if (raw.raw_usage !== undefined) {
 		if (
@@ -960,7 +1054,8 @@ function validatePricingEvidence(value: unknown): {
 			model_rerouted: raw.model_rerouted,
 			measurement_status: raw.measurement_status as CodexPricingEvidenceV1['measurement_status'],
 			terminal_snapshots: raw.terminal_snapshots as number,
-			...(daemonVersion ? { daemon_version: daemonVersion } : {})
+			...(daemonVersion ? { daemon_version: daemonVersion } : {}),
+			...(requestContext ? { request_context: requestContext } : {})
 		}
 	};
 }
