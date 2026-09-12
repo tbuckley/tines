@@ -35,6 +35,7 @@ import {
 import { cliVersion } from '../version.js';
 import { ClaudeStreamRenderer } from './claude-stream';
 import { CodexStreamRenderer } from './codex-stream.js';
+import { collectCodexRequestContext, resolveCodexHome } from './codex-rollout.js';
 import type { RunStreamRenderer } from './stream-summary.js';
 import { RateLimitDetector } from './rate-limit';
 import { agentCliPrefix, installAgentCli } from './cli-refresh.js';
@@ -127,6 +128,7 @@ interface ActiveRun extends ManagedRun {
 	/** Immutable facts used to qualify Codex's requested-model estimate. */
 	pricingModel?: string | null;
 	pricingSessionMode?: 'cold' | 'resumed';
+	codexHome?: string;
 }
 
 /**
@@ -342,11 +344,61 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 		{
 			finish: async (run, status, error, judgment) => {
 				const summary = run.renderer?.summary();
+				if (summary?.pricingEvidence && opts.harness === 'codex') {
+					const raw = summary.pricingEvidence.raw_usage;
+					const completeRaw =
+						raw &&
+						[
+							'input_tokens',
+							'cached_input_tokens',
+							'cache_write_input_tokens',
+							'output_tokens'
+						].every((field) => raw[field as keyof typeof raw] !== undefined);
+					if (
+						status === 'completed' &&
+						run.pricingSessionMode === 'cold' &&
+						summary.pricingEvidence.measurement_status === 'complete' &&
+						completeRaw &&
+						summary.providerSessionId &&
+						run.codexHome &&
+						run.spawnedAt
+					) {
+						summary.pricingEvidence.request_context = await collectCodexRequestContext({
+							codexHome: run.codexHome,
+							threadId: summary.providerSessionId,
+							model: run.pricingModel ?? null,
+							startedAt: run.spawnedAt,
+							endedAt: Date.now(),
+							terminalUsage: raw as Required<typeof raw>
+						});
+						if (
+							'reason' in summary.pricingEvidence.request_context &&
+							summary.pricingEvidence.request_context.reason === 'model_mismatch'
+						)
+							summary.pricingEvidence.model_rerouted = true;
+					} else {
+						summary.pricingEvidence.request_context = {
+							version: 1,
+							normalization: 'codex-rollout-delta-v1',
+							status: 'unavailable',
+							reason: 'not_applicable'
+						};
+					}
+				}
+				const accounting = {
+					usage: summary?.usage ?? { cost_source: 'none' as const },
+					...(summary?.pricingEvidence ? { pricing_evidence: summary.pricingEvidence } : {}),
+					...(summary?.providerSessionId ? { provider_session_id: summary.providerSessionId } : {}),
+					daemon_version: DAEMON_VERSION,
+					status
+				};
+				run.batcher.append(`[usage] ${JSON.stringify(accounting)}\n`);
+				await run.batcher.flush();
 				const ended = await client.finishRun(run.runId, {
 					status,
 					...(error ? { error } : {}),
 					...judgment,
-					usage: summary?.usage ?? { cost_source: 'none' },
+					usage: accounting.usage,
 					...(summary?.pricingEvidence
 						? {
 								pricing_evidence: {
@@ -608,13 +660,15 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 					...(resume ? { resumedFromRunId: resume.previous_run_id } : {})
 				})
 			);
+			const spawnEnv = buildSpawnEnv(process.env, {
+				binDir: cli.binDir,
+				apiKey: assignment.run_key,
+				apiUrl: baseUrl
+			});
+			if (opts.harness === 'codex') run.codexHome = resolveCodexHome(spawnEnv, workspace);
 			const child = spawn(invocation.file, invocation.args, {
 				cwd: workspace,
-				env: buildSpawnEnv(process.env, {
-					binDir: cli.binDir,
-					apiKey: assignment.run_key,
-					apiUrl: baseUrl
-				}),
+				env: spawnEnv,
 				stdio: ['ignore', 'pipe', 'pipe'],
 				detached: true
 			});

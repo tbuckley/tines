@@ -38,6 +38,20 @@ export function copySummary(value: StreamSummary): StreamSummary {
 						...value.pricingEvidence,
 						...(value.pricingEvidence.raw_usage
 							? { raw_usage: { ...value.pricingEvidence.raw_usage } }
+							: {}),
+						...(value.pricingEvidence.request_context
+							? {
+									request_context: {
+										...value.pricingEvidence.request_context,
+										...(value.pricingEvidence.request_context.status === 'complete'
+											? {
+													reconciled_usage: {
+														...value.pricingEvidence.request_context.reconciled_usage
+													}
+												}
+											: {})
+									}
+								}
 							: {})
 					}
 				}

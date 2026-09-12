@@ -2165,6 +2165,39 @@ export interface CodexRawUsageV1 {
 	output_tokens?: number;
 }
 
+export type CodexRequestContextV1 = {
+	version: 1;
+	normalization: 'codex-rollout-delta-v1';
+	harness_version?: string;
+} & (
+	| {
+			status: 'complete';
+			harness_version: '0.153.4';
+			request_count: number;
+			max_request_input_tokens: number;
+			reconciled_usage: Required<CodexRawUsageV1>;
+	  }
+	| {
+			status: 'unavailable' | 'unsupported' | 'invalid';
+			reason:
+				| 'not_applicable'
+				| 'thread_id_missing'
+				| 'rollout_missing'
+				| 'rollout_ambiguous'
+				| 'unsafe_path'
+				| 'read_failed'
+				| 'limit_exceeded'
+				| 'unsupported_version'
+				| 'metadata_mismatch'
+				| 'malformed'
+				| 'missing_dimension'
+				| 'nonmonotonic'
+				| 'delta_mismatch'
+				| 'terminal_mismatch'
+				| 'model_mismatch';
+	  }
+);
+
 /** Bounded producer evidence for the Codex JSONL accounting contract. */
 export interface CodexPricingEvidenceV1 {
 	version: 1;
@@ -2180,6 +2213,7 @@ export interface CodexPricingEvidenceV1 {
 		'complete' | 'missing' | 'invalid' | 'nonmonotonic' | 'incomplete_attempt' | 'multiple_threads';
 	terminal_snapshots: number;
 	daemon_version?: string;
+	request_context?: CodexRequestContextV1;
 }
 
 export type RunPricingReason =
@@ -2193,6 +2227,8 @@ export type RunPricingReason =
 	| 'missing_token_dimension'
 	| 'invalid_token_dimension'
 	| 'long_context_band_unknown'
+	| 'request_context_invalid'
+	| 'long_context_rate_unsupported'
 	| 'attempt_scope_unknown'
 	| 'incomplete_attempt'
 	| 'nonmonotonic_usage'

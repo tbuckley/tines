@@ -126,6 +126,8 @@ Provider-side limits (e.g. Gemini's plan concurrency) are not modeled; hitting o
 
 > **Shipped Codex pricing decision (2026-09-11):** [immutable attempt-level estimates](CODEX_PRICING_2026-09-11.md) supersede this historical section's Codex-unpriced, editable-override, retroactive-repricing, and enforcement assumptions for the run-level deliverable.
 
+> **Local producer proof amendment (2026-09-12):** [request-level rollout evidence and Claude producer adoption](LOCAL_PRODUCER_PROOF_2026-09-12.md) define the conservative exception to the cumulative Codex context guard and the operational correction boundary.
+
 **The usage ledger.** Every run records usage — `input_tokens`, `output_tokens`, `cost_usd?`, and a `cost_source` (`provider` | `priced` | `none`):
 
 - `claude_managed`: the session's cumulative `usage` — token counts and `list_cost`, a native dollar figure at list rates — polled each sweep and finalized at run end (`cost_source: provider`).
