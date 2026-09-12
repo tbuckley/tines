@@ -4,6 +4,7 @@
  * another that shares none of its ids — and re-importing must be a no-op
  * rather than a duplicator.
  */
+import { TEST_NOOP_DISPATCH_EFFECTS } from '$lib/server/api/test-dispatch-effects';
 import { LIBRARY_FORMAT, LIBRARY_VERSION, type LibraryDocument } from '@tines/shared';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { PROJECT, USER, addIssue, seedBase } from '../supervisor/test-fixtures';
@@ -350,7 +351,9 @@ describe('applyImport', () => {
 		const source = await buildLibraryDocument(t.db, USER);
 		const target = freshDeployment();
 
-		const result = await applyImport(target.db, target.env, actor, { document: source });
+		const result = await applyImport(target.db, target.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+			document: source
+		});
 		expect(result.applied).toBe(true);
 		expect(result.counts.error).toBe(0);
 		expect(result.counts.refuse).toBe(0);
@@ -373,7 +376,9 @@ describe('applyImport', () => {
 		});
 
 		const target = freshDeployment();
-		const result = await applyImport(target.db, target.env, actor, { document: source });
+		const result = await applyImport(target.db, target.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+			document: source
+		});
 		expect(result.counts.error).toBe(0);
 		// The label did not exist on the target: unlike a project or a
 		// workflow, it is created rather than costing the item its scope.
@@ -396,7 +401,9 @@ describe('applyImport', () => {
 		}
 		const document = await buildLibraryDocument(t.db, USER);
 		const target = freshDeployment();
-		const result = await applyImport(target.db, target.env, actor, { document });
+		const result = await applyImport(target.db, target.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+			document
+		});
 		expect(result.counts.error).toBe(0);
 		const rebuilt = await buildLibraryDocument(target.db, USER);
 		// Both survive: `contextKey` includes the label, so the second is not
@@ -413,8 +420,10 @@ describe('applyImport', () => {
 		await seedLibrary();
 		const document = await buildLibraryDocument(t.db, USER);
 		const target = freshDeployment();
-		await applyImport(target.db, target.env, actor, { document });
-		const again = await applyImport(target.db, target.env, actor, { document });
+		await applyImport(target.db, target.env, actor, TEST_NOOP_DISPATCH_EFFECTS, { document });
+		const again = await applyImport(target.db, target.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+			document
+		});
 		expect(again.counts.create).toBe(0);
 		expect(again.counts.error).toBe(0);
 		expect(again.counts.skip).toBe(document.context.length + document.workflows.length + 1);
@@ -425,11 +434,16 @@ describe('applyImport', () => {
 		const document = await buildLibraryDocument(t.db, USER);
 		const target = freshDeployment();
 
-		const preview = await applyImport(target.db, target.env, actor, { document, dry_run: true });
+		const preview = await applyImport(target.db, target.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+			document,
+			dry_run: true
+		});
 		expect(preview.applied).toBe(false);
 		expect((await buildLibraryDocument(target.db, USER)).context).toHaveLength(0);
 
-		const applied = await applyImport(target.db, target.env, actor, { document });
+		const applied = await applyImport(target.db, target.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+			document
+		});
 		expect(applied.entries.map((e) => `${e.ref} ${e.action}`)).toEqual(
 			preview.entries.map((e) => `${e.ref} ${e.action}`)
 		);
@@ -445,7 +459,9 @@ describe('applyImport', () => {
 		});
 		const document = await buildLibraryDocument(t.db, USER);
 		const target = freshDeployment();
-		const result = await applyImport(target.db, target.env, actor, { document });
+		const result = await applyImport(target.db, target.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+			document
+		});
 		expect(result.counts.error).toBe(0);
 
 		const rebuilt = await buildLibraryDocument(target.db, USER);
@@ -458,7 +474,7 @@ describe('applyImport', () => {
 		await seedLibrary();
 		const document = await buildLibraryDocument(t.db, USER);
 		const target = freshDeployment();
-		await applyImport(target.db, target.env, actor, { document });
+		await applyImport(target.db, target.env, actor, TEST_NOOP_DISPATCH_EFFECTS, { document });
 
 		// Same names and scopes, changed bodies: overwrite must land the new
 		// text on the items already there.
@@ -468,7 +484,7 @@ describe('applyImport', () => {
 				c.kind === 'prompt' ? { ...c, body: `${c.body} (updated)` } : c
 			)
 		};
-		const result = await applyImport(target.db, target.env, actor, {
+		const result = await applyImport(target.db, target.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
 			document: edited,
 			on_collision: 'overwrite'
 		});
@@ -491,7 +507,9 @@ describe('applyImport', () => {
 		document.context = document.context.map((c) =>
 			c.scope.project ? { ...c, scope: { ...c.scope, project: 'Elsewhere' } } : c
 		);
-		const result = await applyImport(target.db, target.env, actor, { document });
+		const result = await applyImport(target.db, target.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+			document
+		});
 		expect(result.counts.error).toBe(0);
 
 		const project = await target.db
@@ -526,7 +544,9 @@ describe('applyImport', () => {
 		);
 
 		const target = freshDeployment();
-		const result = await applyImport(target.db, target.env, actor, { document });
+		const result = await applyImport(target.db, target.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+			document
+		});
 		expect(result.counts.error).toBe(0);
 
 		const rebuilt = await buildLibraryDocument(target.db, USER);
@@ -540,7 +560,9 @@ describe('applyImport', () => {
 		const document = await buildLibraryDocument(t.db, USER);
 		document.projects = [{ name: 'Elsewhere', default_workflow: 'Ghost' }];
 		const target = freshDeployment();
-		const result = await applyImport(target.db, target.env, actor, { document });
+		const result = await applyImport(target.db, target.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+			document
+		});
 		expect(result.counts.error).toBe(0);
 
 		const rebuilt = await buildLibraryDocument(target.db, USER);
@@ -555,7 +577,9 @@ describe('applyImport', () => {
 			c.kind === 'repo' ? { ...c, repo_url: '' } : c
 		);
 		const target = freshDeployment();
-		const result = await applyImport(target.db, target.env, actor, { document });
+		const result = await applyImport(target.db, target.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+			document
+		});
 		expect(result.counts.error).toBe(1);
 		expect(result.counts.create).toBe(document.context.length - 1 + document.workflows.length);
 		expect(result.entries.find((e) => e.action === 'error')?.ref).toMatch(/tines-github/);
@@ -651,7 +675,9 @@ describe('inheritance pointers', () => {
 		const document = await buildLibraryDocument(t.db, USER);
 		const target = freshDeployment();
 
-		const result = await applyImport(target.db, target.env, actor, { document });
+		const result = await applyImport(target.db, target.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+			document
+		});
 		expect(result.counts.error).toBe(0);
 		expect(result.counts.refuse).toBe(0);
 
@@ -672,7 +698,9 @@ describe('inheritance pointers', () => {
 		expect(document.workflows.at(-1)?.name).toBe('Base');
 
 		const target = freshDeployment();
-		const result = await applyImport(target.db, target.env, actor, { document });
+		const result = await applyImport(target.db, target.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+			document
+		});
 		expect(result.counts.error).toBe(0);
 		const rebuilt = await buildLibraryDocument(target.db, USER);
 		expect(pointers(rebuilt)).toEqual(pointers(document));
@@ -698,7 +726,9 @@ describe('inheritance pointers', () => {
 		// The standard workflow is never exported: the target's own copy,
 		// seeded by the migration, is what the name resolves against.
 		const target = freshDeployment();
-		const result = await applyImport(target.db, target.env, actor, { document });
+		const result = await applyImport(target.db, target.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+			document
+		});
 		expect(result.counts.error).toBe(0);
 		expect(pointers(await buildLibraryDocument(target.db, USER))).toEqual([
 			'Alpha/Design -> Standard/Open'
@@ -712,12 +742,17 @@ describe('inheritance pointers', () => {
 		document.workflows = document.workflows.filter((wf) => wf.name !== 'Base');
 		const target = freshDeployment();
 
-		const preview = await applyImport(target.db, target.env, actor, { document, dry_run: true });
+		const preview = await applyImport(target.db, target.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+			document,
+			dry_run: true
+		});
 		const refused = preview.entries.filter((e) => e.action === 'refuse');
 		expect(refused.map((e) => e.ref).sort()).toEqual(['workflow "Alpha"', 'workflow "Beta"']);
 		for (const entry of refused) expect(entry.reason).toMatch(/Base \/ Shared/);
 
-		const result = await applyImport(target.db, target.env, actor, { document });
+		const result = await applyImport(target.db, target.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+			document
+		});
 		expect(result.counts.error).toBe(0);
 		expect(result.counts.refuse).toBe(2);
 		expect((await buildLibraryDocument(target.db, USER)).workflows).toEqual([]);
@@ -764,7 +799,9 @@ describe('inheritance pointers', () => {
 			}))
 		};
 		const target = freshDeployment();
-		const seeded = await applyImport(target.db, target.env, actor, { document: stripped });
+		const seeded = await applyImport(target.db, target.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+			document: stripped
+		});
 		expect(seeded.counts.error + seeded.counts.refuse).toBe(0);
 		expect(pointers(await buildLibraryDocument(target.db, USER))).toEqual([]);
 		return { target, document: source };
@@ -774,7 +811,9 @@ describe('inheritance pointers', () => {
 		await seedInheritance();
 		const { target, document } = await targetHoldingTheVersionOneExport();
 
-		const result = await applyImport(target.db, target.env, actor, { document });
+		const result = await applyImport(target.db, target.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+			document
+		});
 		const entries = result.entries.filter((e) => e.section === 'workflow');
 		expect(entries.map((e) => `${e.ref} ${e.action}`).sort()).toEqual([
 			'workflow "Alpha" refuse',
@@ -792,7 +831,7 @@ describe('inheritance pointers', () => {
 		await seedInheritance();
 		const { target, document } = await targetHoldingTheVersionOneExport();
 
-		const preview = await applyImport(target.db, target.env, actor, {
+		const preview = await applyImport(target.db, target.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
 			document,
 			on_collision: 'overwrite',
 			dry_run: true
@@ -805,7 +844,7 @@ describe('inheritance pointers', () => {
 		).toEqual(['overwrite', 'overwrite', 'skip']);
 		expect(pointers(await buildLibraryDocument(target.db, USER))).toEqual([]);
 
-		const result = await applyImport(target.db, target.env, actor, {
+		const result = await applyImport(target.db, target.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
 			document,
 			on_collision: 'overwrite'
 		});
@@ -819,7 +858,7 @@ describe('inheritance pointers', () => {
 			document.workflows.find((wf) => wf.name === 'Alpha')!.transitions
 		);
 		// And it converges: a second run has nothing left to do.
-		const again = await applyImport(target.db, target.env, actor, {
+		const again = await applyImport(target.db, target.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
 			document,
 			on_collision: 'overwrite'
 		});
@@ -831,7 +870,9 @@ describe('inheritance pointers', () => {
 		await seedInheritance();
 		const source = await buildLibraryDocument(t.db, USER);
 		const target = freshDeployment();
-		await applyImport(target.db, target.env, actor, { document: source });
+		await applyImport(target.db, target.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+			document: source
+		});
 		expect(pointers(await buildLibraryDocument(target.db, USER))).toEqual(pointers(source));
 
 		// Beta stops inheriting; everything else stays as it is.
@@ -843,7 +884,7 @@ describe('inheritance pointers', () => {
 					: wf
 			)
 		};
-		const result = await applyImport(target.db, target.env, actor, {
+		const result = await applyImport(target.db, target.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
 			document,
 			on_collision: 'overwrite'
 		});
@@ -858,7 +899,9 @@ describe('inheritance pointers', () => {
 		await seedLibrary();
 		const document: LibraryDocument = { ...(await buildLibraryDocument(t.db, USER)), version: 1 };
 		const target = freshDeployment();
-		const result = await applyImport(target.db, target.env, actor, { document });
+		const result = await applyImport(target.db, target.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+			document
+		});
 		expect(result.counts.error).toBe(0);
 		expect(result.counts.refuse).toBe(0);
 
@@ -906,7 +949,7 @@ describe('inheritance pointers', () => {
 				)
 			};
 
-			const preview = await applyImport(t.db, t.env, actor, {
+			const preview = await applyImport(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
 				document,
 				on_collision,
 				dry_run: true
@@ -914,7 +957,10 @@ describe('inheritance pointers', () => {
 			expect(
 				preview.entries.filter((entry) => entry.section === 'workflow').map((entry) => entry.action)
 			).toEqual(['skip', 'skip']);
-			const applied = await applyImport(t.db, t.env, actor, { document, on_collision });
+			const applied = await applyImport(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+				document,
+				on_collision
+			});
 			expect(applied.counts.overwrite).toBe(0);
 			expect(pointers(await buildLibraryDocument(t.db, USER))).toEqual([
 				'Child/Ready -> Base/Shared'
@@ -934,7 +980,9 @@ describe('inheritance pointers', () => {
 			transitions: []
 		});
 		const target = freshDeployment();
-		const result = await applyImport(target.db, target.env, actor, { document });
+		const result = await applyImport(target.db, target.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+			document
+		});
 		const gamma = result.entries.find((e) => e.ref.includes('Gamma'))!;
 		expect(gamma.action).toBe('error');
 		expect(gamma.reason).toMatch(/chain/i);
@@ -954,7 +1002,10 @@ describe('project validation parity', () => {
 			context: []
 		};
 		for (const dry_run of [true, false]) {
-			const result = await applyImport(t.db, t.env, actor, { document, dry_run });
+			const result = await applyImport(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+				document,
+				dry_run
+			});
 			expect(result.entries).toHaveLength(1);
 			expect(result.entries[0]).toMatchObject({ section: 'project', action: 'error' });
 			expect(result.entries[0].reason).toMatch(/at most 200/);
@@ -1052,7 +1103,7 @@ describe('applyImport — structural identity', () => {
 
 			// Preview and apply plan alike: neither may call these identical.
 			for (const dry_run of [true, false]) {
-				const result = await applyImport(target.db, target.env, actor, {
+				const result = await applyImport(target.db, target.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
 					document,
 					dry_run,
 					...opts
@@ -1114,12 +1165,15 @@ describe('legacy ambiguity and retained-state planning', () => {
 					{ kind: 'prompt', name: 'global', body: 'Unrelated', scope: {} }
 				]
 			);
-			const preview = await applyImport(t.db, t.env, actor, {
+			const preview = await applyImport(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
 				document: doc,
 				on_collision,
 				dry_run: true
 			});
-			const result = await applyImport(t.db, t.env, actor, { document: doc, on_collision });
+			const result = await applyImport(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+				document: doc,
+				on_collision
+			});
 			expect(result.entries).toEqual(preview.entries);
 			expect(result.counts).toMatchObject({ refuse: 3, create: 2, error: 0 });
 			expect(
@@ -1147,12 +1201,12 @@ describe('legacy ambiguity and retained-state planning', () => {
 			]
 		);
 		doc.projects.push({ name: 'Ambiguous default', default_workflow: 'Same' });
-		const preview = await applyImport(t.db, t.env, actor, {
+		const preview = await applyImport(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
 			document: doc,
 			dry_run: true,
 			on_collision: 'overwrite'
 		});
-		const result = await applyImport(t.db, t.env, actor, {
+		const result = await applyImport(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
 			document: doc,
 			on_collision: 'overwrite'
 		});
@@ -1171,7 +1225,10 @@ describe('legacy ambiguity and retained-state planning', () => {
 		};
 		const doc = document([child]);
 		for (const dry_run of [true, false]) {
-			const result = await applyImport(t.db, t.env, actor, { document: doc, dry_run });
+			const result = await applyImport(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+				document: doc,
+				dry_run
+			});
 			expect(result.entries[0]).toMatchObject({
 				action: 'refuse',
 				reason: expect.stringMatching(/ambiguous.*slash/i)
@@ -1203,14 +1260,14 @@ describe('legacy ambiguity and retained-state planning', () => {
 				}
 			]
 		);
-		const preview = await applyImport(t.db, t.env, actor, {
+		const preview = await applyImport(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
 			document: doc,
 			on_collision: 'overwrite',
 			dry_run: true
 		});
 		expect(preview.entries.map((e) => e.action)).toEqual(['refuse', 'create', 'create']);
 		expect(preview.entries[0].reason).toMatch(/Missing \/ Base/);
-		const result = await applyImport(t.db, t.env, actor, {
+		const result = await applyImport(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
 			document: doc,
 			on_collision: 'overwrite'
 		});
@@ -1233,12 +1290,17 @@ describe('legacy ambiguity and retained-state planning', () => {
 			}
 		]);
 		doc.projects.push({ name: 'Fresh project', default_workflow: 'Unavailable' });
-		const preview = await applyImport(t.db, t.env, actor, { document: doc, dry_run: true });
+		const preview = await applyImport(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+			document: doc,
+			dry_run: true
+		});
 		expect(preview.entries[0]).toMatchObject({
 			action: 'create',
 			reason: expect.stringMatching(/system default/)
 		});
-		const result = await applyImport(t.db, t.env, actor, { document: doc });
+		const result = await applyImport(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+			document: doc
+		});
 		expect(result.entries).toEqual(preview.entries);
 		const project = await t.db
 			.selectFrom('project')
@@ -1253,8 +1315,13 @@ describe('legacy ambiguity and retained-state planning', () => {
 			[{ kind: 'prompt', name: 'instructions', body: 'Scoped', scope: { project: 'Trimmed' } }]
 		);
 		doc.projects.push({ name: '  Trimmed  ' });
-		const preview = await applyImport(t.db, t.env, actor, { document: doc, dry_run: true });
-		const applied = await applyImport(t.db, t.env, actor, { document: doc });
+		const preview = await applyImport(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+			document: doc,
+			dry_run: true
+		});
+		const applied = await applyImport(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+			document: doc
+		});
 		expect(applied.entries).toEqual(preview.entries);
 		expect(applied.counts.create).toBe(2);
 	});
@@ -1294,8 +1361,11 @@ describe('ordinary payload validation parity', () => {
 		}
 	])('rejects invalid workflow fields in preview and apply: %j', async (patch) => {
 		const document = doc({ workflows: [{ ...ENGINEERING, ...patch } as never] });
-		const preview = await applyImport(t.db, t.env, actor, { document, dry_run: true });
-		const applied = await applyImport(t.db, t.env, actor, { document });
+		const preview = await applyImport(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+			document,
+			dry_run: true
+		});
+		const applied = await applyImport(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, { document });
 		expect(preview.entries[0].action).toBe('error');
 		expect(applied.entries).toEqual(preview.entries);
 		expect(
@@ -1330,8 +1400,11 @@ describe('ordinary payload validation parity', () => {
 			...patch
 		};
 		const document = doc({ context: [entry as never] });
-		const preview = await applyImport(t.db, t.env, actor, { document, dry_run: true });
-		const applied = await applyImport(t.db, t.env, actor, { document });
+		const preview = await applyImport(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+			document,
+			dry_run: true
+		});
+		const applied = await applyImport(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, { document });
 		expect(preview.entries[0].action).toBe('error');
 		expect(applied.entries).toEqual(preview.entries);
 		expect(await t.db.selectFrom('context_item').selectAll().execute()).toHaveLength(0);
@@ -1347,8 +1420,11 @@ describe('ordinary payload validation parity', () => {
 		const document = doc({
 			workflows: [workflow('A', 'B/Work'), workflow('B', 'A/Work'), workflow('Independent', null)]
 		});
-		const preview = await applyImport(t.db, t.env, actor, { document, dry_run: true });
-		const applied = await applyImport(t.db, t.env, actor, { document });
+		const preview = await applyImport(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+			document,
+			dry_run: true
+		});
+		const applied = await applyImport(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, { document });
 		expect(applied.entries).toEqual(preview.entries);
 		expect(applied.counts).toMatchObject({ error: 1, refuse: 1, create: 1 });
 		expect(applied.entries.find((e) => e.action === 'error')!.reason).toMatch(/loop/i);
@@ -1375,12 +1451,15 @@ describe('ordinary payload validation parity', () => {
 				}
 			]
 		});
-		const preview = await applyImport(t.db, t.env, actor, {
+		const preview = await applyImport(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
 			document,
 			dry_run: true,
 			on_collision: 'overwrite'
 		});
-		const applied = await applyImport(t.db, t.env, actor, { document, on_collision: 'overwrite' });
+		const applied = await applyImport(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+			document,
+			on_collision: 'overwrite'
+		});
 		expect(applied.entries).toEqual(preview.entries);
 		expect(preview.entries[0]).toMatchObject({
 			action: 'error',
@@ -1415,8 +1494,13 @@ describe('legacy scope and repeated-entry parity', () => {
 				scope: { project: project.name, label: 'never-create' }
 			}
 		]);
-		const preview = await applyImport(t.db, t.env, actor, { document: doc, dry_run: true });
-		const applied = await applyImport(t.db, t.env, actor, { document: doc });
+		const preview = await applyImport(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+			document: doc,
+			dry_run: true
+		});
+		const applied = await applyImport(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+			document: doc
+		});
 		expect(applied.entries).toEqual(preview.entries);
 		expect(preview.entries[0]).toMatchObject({
 			action: 'error',
@@ -1427,8 +1511,13 @@ describe('legacy scope and repeated-entry parity', () => {
 	it('identifies repeated creates before apply without conflating distinct pending scopes', async () => {
 		const item = { kind: 'prompt' as const, name: 'same', body: 'content', scope: {} };
 		const doc = document([item, item]);
-		const preview = await applyImport(t.db, t.env, actor, { document: doc, dry_run: true });
-		const applied = await applyImport(t.db, t.env, actor, { document: doc });
+		const preview = await applyImport(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+			document: doc,
+			dry_run: true
+		});
+		const applied = await applyImport(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+			document: doc
+		});
 		expect(applied.entries).toEqual(preview.entries);
 		expect(preview.entries.map((e) => e.action)).toEqual(['create', 'error']);
 	});
@@ -1439,8 +1528,13 @@ describe('legacy scope and repeated-entry parity', () => {
 		{ scope: null }
 	])('refuses malformed scope instead of silently broadening it to global: %j', async (patch) => {
 		const doc = document([{ kind: 'prompt', name: 'bad', body: 'x', ...patch } as never]);
-		const preview = await applyImport(t.db, t.env, actor, { document: doc, dry_run: true });
-		const applied = await applyImport(t.db, t.env, actor, { document: doc });
+		const preview = await applyImport(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+			document: doc,
+			dry_run: true
+		});
+		const applied = await applyImport(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+			document: doc
+		});
 		expect(applied.entries).toEqual(preview.entries);
 		expect(preview.entries[0].action).toBe('error');
 		expect(await t.db.selectFrom('context_item').selectAll().execute()).toHaveLength(0);
@@ -1458,8 +1552,11 @@ it.each([1, 2] as const)(
 			workflows: [{ ...ENGINEERING, states: [null] as never }],
 			context: []
 		};
-		const preview = await applyImport(t.db, t.env, actor, { document, dry_run: true });
-		const applied = await applyImport(t.db, t.env, actor, { document });
+		const preview = await applyImport(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+			document,
+			dry_run: true
+		});
+		const applied = await applyImport(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, { document });
 		expect(preview.entries[0].action).toBe('error');
 		expect(applied.entries).toEqual(preview.entries);
 	}

@@ -6,6 +6,7 @@
  * narrow: it fires on a *misdirected JSON client* (no `?filename=`), never
  * on a genuine upload of a `.json` file (Tines/242).
  */
+import { TEST_NOOP_DISPATCH_EFFECTS } from '$lib/server/api/test-dispatch-effects';
 import { describe, expect, it } from 'vitest';
 import { artifactContentResponse, getArtifactDetail } from '$lib/server/api/artifacts';
 import type { ActorContext } from '$lib/server/api/core';
@@ -56,7 +57,9 @@ describe('PUT /api/v1/issues/:id/artifacts/:name/file', () => {
 	it('accepts application/json bytes when ?filename= names a file', async () => {
 		const t = createTestDb();
 		seedBase(t);
-		const issue = await createIssue(t.db, t.env, actor, PROJECT, { title: 'JSON' });
+		const issue = await createIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, PROJECT, {
+			title: 'JSON'
+		});
 		const payload = '{"findings":[{"id":1,"note":"café ☕"}]}';
 
 		const res = await upload(t, issue.id, 'report', {
@@ -82,7 +85,9 @@ describe('PUT /api/v1/issues/:id/artifacts/:name/file', () => {
 	it('refuses a JSON body with no filename, naming the JSON mistake', async () => {
 		const t = createTestDb();
 		seedBase(t);
-		const issue = await createIssue(t.db, t.env, actor, PROJECT, { title: 'JSON' });
+		const issue = await createIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, PROJECT, {
+			title: 'JSON'
+		});
 
 		const res = await upload(t, issue.id, 'report', {
 			contentType: 'application/json; charset=utf-8',
@@ -98,7 +103,9 @@ describe('PUT /api/v1/issues/:id/artifacts/:name/file', () => {
 	it('asks for ?filename= when the body is not JSON', async () => {
 		const t = createTestDb();
 		seedBase(t);
-		const issue = await createIssue(t.db, t.env, actor, PROJECT, { title: 'JSON' });
+		const issue = await createIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, PROJECT, {
+			title: 'JSON'
+		});
 
 		const res = await upload(t, issue.id, 'report', {
 			contentType: 'text/markdown',
@@ -113,7 +120,9 @@ describe('PUT /api/v1/issues/:id/artifacts/:name/file', () => {
 	it('still requires a Content-Type on a named upload', async () => {
 		const t = createTestDb();
 		seedBase(t);
-		const issue = await createIssue(t.db, t.env, actor, PROJECT, { title: 'JSON' });
+		const issue = await createIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, PROJECT, {
+			title: 'JSON'
+		});
 
 		const res = await upload(t, issue.id, 'report', {
 			filename: 'report.json',

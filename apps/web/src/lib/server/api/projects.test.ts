@@ -3,6 +3,7 @@
  * resume from *now* rather than replaying, and the list default that hides
  * archived projects from every picker.
  */
+import { TEST_NOOP_DISPATCH_EFFECTS } from '$lib/server/api/test-dispatch-effects';
 import { describe, expect, it, beforeEach } from 'vitest';
 import {
 	NOW,
@@ -54,7 +55,7 @@ const archivedAt = () =>
 
 /** A daily schedule in the project, created the way the API creates one. */
 async function seedSchedule(name = 'Daily triage') {
-	const res = await createIssue(t.db, t.env, actor, PROJECT, {
+	const res = await createIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, PROJECT, {
 		title: name,
 		schedule: { preset: { kind: 'daily', time: '09:00' } }
 	});
@@ -141,7 +142,14 @@ describe('unarchiveProject', () => {
 		t.sqlite.exec(`UPDATE scheduled_task SET next_run_at = ${stale}`);
 
 		const later = Date.parse('2026-09-05T12:00:00Z');
-		const res = await unarchiveProject(t.db, t.env, actor, PROJECT, later);
+		const res = await unarchiveProject(
+			t.db,
+			t.env,
+			actor,
+			TEST_NOOP_DISPATCH_EFFECTS,
+			PROJECT,
+			later
+		);
 
 		expect(res.project.archived_at).toBeNull();
 		expect(res.schedules_resumed).toBe(1);
@@ -156,7 +164,14 @@ describe('unarchiveProject', () => {
 	});
 
 	it('is a no-op on a live project', async () => {
-		const res = await unarchiveProject(t.db, t.env, actor, PROJECT, NOW);
+		const res = await unarchiveProject(
+			t.db,
+			t.env,
+			actor,
+			TEST_NOOP_DISPATCH_EFFECTS,
+			PROJECT,
+			NOW
+		);
 		expect(res.schedules_resumed).toBe(0);
 		expect(events().filter((e) => e.type === 'project.unarchived')).toEqual([]);
 	});
@@ -270,11 +285,11 @@ describe('default lists exclude archived projects', () => {
 			INSERT INTO project (id, user_id, name, created_at, updated_at)
 				VALUES ('prj_2', '${USER}', 'live', ${NOW}, ${NOW});
 		`);
-		await createIssue(t.db, t.env, actor, PROJECT, {
+		await createIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, PROJECT, {
 			title: 'Archived-side issue',
 			schedule: { preset: { kind: 'daily', time: '09:00' } }
 		});
-		await createIssue(t.db, t.env, actor, 'prj_2', {
+		await createIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, 'prj_2', {
 			title: 'Live-side issue',
 			schedule: { preset: { kind: 'daily', time: '10:00' } }
 		});
@@ -333,7 +348,9 @@ describe('default lists exclude archived projects', () => {
 		// The issue page's Context panel and `tines context list --issue <ref>`
 		// pass only `issue`. Naming an issue names an anchor just as `project`
 		// does, and reads of an archived project are never gated.
-		const issue = await createIssue(t.db, t.env, actor, PROJECT, { title: 'Scoped' });
+		const issue = await createIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, PROJECT, {
+			title: 'Scoped'
+		});
 		await createContextItem(t.db, t.env, actor, {
 			kind: 'prompt',
 			name: 'issue-scoped-note',

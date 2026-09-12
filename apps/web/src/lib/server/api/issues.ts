@@ -29,6 +29,7 @@ import {
 } from '@tines/shared';
 import { sql, type CompiledQuery, type Kysely } from 'kysely';
 import { IN_LIST_CHUNK, chunked, idChunks, newId, type Database } from '$lib/server/db';
+import type { DispatchEffects } from '$lib/server/dispatch-effects';
 import {
 	ApiFail,
 	notFound,
@@ -936,6 +937,7 @@ export async function createIssue(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
+	effects: DispatchEffects,
 	projectId: string,
 	body: CreateIssueRequest
 ): Promise<CreateIssueResponse> {
@@ -1023,6 +1025,7 @@ export async function createIssue(
 		);
 	}
 	await runAtomic(env, queries);
+	effects.signalDispatch();
 
 	const issue = await getIssueDetail(db, actor.userId, { id });
 	if (!schedule) return issue;
@@ -1060,6 +1063,7 @@ export async function updateIssue(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
+	effects: DispatchEffects,
 	id: string,
 	body: UpdateIssueRequest
 ): Promise<IssueDetail> {
@@ -1142,7 +1146,10 @@ export async function updateIssue(
 	if (description !== current.description) changed.push('description');
 	if (workflowChanged) changed.push('workflow');
 	if (pinChanged) changed.push('pin');
-	if (changed.length === 0 && !stateChanged) return current;
+	if (changed.length === 0 && !stateChanged) {
+		effects.signalDispatch();
+		return current;
+	}
 
 	// Compare-and-swap on the state whenever it (or the workflow) moves, so a
 	// concurrent transition can't be silently overwritten; the events are
@@ -1230,6 +1237,7 @@ export async function updateIssue(
 			{ current_state: fresh.state, allowed_transitions: fresh.allowed_transitions }
 		);
 	}
+	effects.signalDispatch();
 	return getIssueDetail(db, actor.userId, { id });
 }
 
@@ -1284,6 +1292,7 @@ export async function transitionIssue(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
+	effects: DispatchEffects,
 	id: string,
 	body: TransitionIssueRequest
 ): Promise<IssueDetail> {
@@ -1377,6 +1386,7 @@ export async function transitionIssue(
 			{ current_state: fresh.state, allowed_transitions: fresh.allowed_transitions }
 		);
 	}
+	effects.signalDispatch();
 	return getIssueDetail(db, actor.userId, { id });
 }
 
@@ -1390,11 +1400,15 @@ export async function resumeIssue(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
+	effects: DispatchEffects,
 	id: string
 ): Promise<IssueDetail> {
 	const current = await getIssueDetail(db, actor.userId, { id });
 	await assertWritable(db, actor, issueProject(current), { issueId: current.id });
-	if (!current.needs_attention && current.attempt_count === 0) return current;
+	if (!current.needs_attention && current.attempt_count === 0) {
+		effects.signalDispatch();
+		return current;
+	}
 	await runAtomic(env, [
 		db
 			.updateTable('issue')
@@ -1408,6 +1422,7 @@ export async function resumeIssue(
 			payload: { was_parked: current.needs_attention, attempt_count_was: current.attempt_count }
 		})
 	]);
+	effects.signalDispatch();
 	return getIssueDetail(db, actor.userId, { id });
 }
 

@@ -1,3 +1,4 @@
+import { TEST_NOOP_DISPATCH_EFFECTS } from '$lib/server/api/test-dispatch-effects';
 import { describe, expect, it } from 'vitest';
 import {
 	NOW,
@@ -45,7 +46,9 @@ describe('permanent issue addresses', () => {
 			WHERE id = '${moved}'
 		`);
 
-		const created = await createIssue(t.db, t.env, actor, PROJECT, { title: 'after move' });
+		const created = await createIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, PROJECT, {
+			title: 'after move'
+		});
 		expect(created.number).toBe(originalNumber + 1);
 		expect(
 			t.all('SELECT project_id, number, issue_id FROM issue_address ORDER BY project_id, number')
