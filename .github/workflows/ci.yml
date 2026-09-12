@@ -58,6 +58,9 @@ jobs:
       # TypeScript-source CLI (including complete finalized/pending paging).
       - run: pnpm --filter web test:usage-mixed
 
+      # Actual bound-query rows read, including a 100k single-timestamp seek.
+      - run: pnpm --filter web perf:usage --size=100000 --equal-time --no-priced --skip-build
+
   e2e-shard:
     name: Playwright e2e
     runs-on: ubuntu-latest

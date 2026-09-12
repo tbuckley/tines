@@ -1,6 +1,6 @@
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { rmSync } from 'node:fs';
+import { rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 const webDir = fileURLToPath(new URL('..', import.meta.url));
@@ -8,6 +8,7 @@ const persist = '.wrangler-usage-scale';
 const sizeArg = process.argv.find((arg) => arg.startsWith('--size='));
 const size = Number(sizeArg?.slice(7) ?? 10_000);
 const allPriced = process.argv.includes('--all-priced');
+const equalTime = process.argv.includes('--equal-time');
 const noPriced = process.argv.includes('--no-priced');
 if (allPriced && noPriced) throw new Error('--all-priced and --no-priced are mutually exclusive');
 if (!Number.isSafeInteger(size) || size < 10_000 || size > 250_000)
@@ -71,7 +72,7 @@ execute(`
 		CASE WHEN ${allPriced ? '1=1' : '0=1'} THEN json_object('cost_usd', n/100000.0, 'cost_source', 'provider')
 			WHEN ${noPriced ? '0=1' : '1=1'} AND n=100001 THEN '{"cost_usd":1,"cost_source":"provider"}'
 			WHEN n%4=0 THEN '{"input_tokens":1}' ELSE NULL END,
-		'wfs_std_open','',1700000000000-n,1700000000000-n,${toMs - 1}-CAST(n/10 AS INTEGER)
+		'wfs_std_open','',1700000000000-n,1700000000000-n,${toMs - 1}-${equalTime ? 0 : 'CAST(n/10 AS INTEGER)'}
 	FROM seq;
 	WITH RECURSIVE pending(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM pending WHERE n < 100)
 	INSERT INTO agent_run (id,user_id,issue_id,runner_id,status,tier,state_id_at_start,log,created_at)
@@ -79,60 +80,6 @@ execute(`
 		'wfs_std_open','',${toMs - 1000}-n FROM pending;
 `);
 
-const aggregateSql = (boundary) => `
-	SELECT agent_run.id,agent_run.usage,agent_run.outcome,agent_run.tier,agent_run.runner_id,
-		agent_run.state_id_at_start,agent_run.created_at,agent_run.ended_at,issue.project_id,
-		start_state.workflow_id AS start_workflow_id,issue.workflow_id AS issue_workflow_id
-	FROM agent_run
-	LEFT JOIN issue ON issue.id=agent_run.issue_id
-	LEFT JOIN workflow_state AS start_state ON start_state.id=agent_run.state_id_at_start
-	WHERE agent_run.user_id='scale_user' AND agent_run.ended_at>=${fromMs}
-		AND agent_run.ended_at<${toMs} ${boundary ? `AND (agent_run.ended_at<${boundary.at} OR (agent_run.ended_at=${boundary.at} AND agent_run.id<'${boundary.id}'))` : ''}
-	ORDER BY agent_run.ended_at DESC,agent_run.id DESC LIMIT 5001`;
-
-let aggregateQueries = 0;
-let aggregateRows = 0;
-let aggregateBytes = 0;
-let aggregateMs = 0;
-let boundary = null;
-for (;;) {
-	const result = execute(aggregateSql(boundary));
-	aggregateQueries++;
-	aggregateRows += result.rows.length;
-	aggregateBytes = Math.max(aggregateBytes, result.response_bytes);
-	aggregateMs += result.elapsed_ms;
-	if (result.rows.length <= 5000) break;
-	const last = result.rows[4999];
-	boundary = { at: last.ended_at, id: last.id };
-}
-
-const candidateSql = (boundary) => `
-	SELECT agent_run.id,agent_run.usage,agent_run.ended_at,agent_run.created_at
-	FROM agent_run WHERE agent_run.user_id='scale_user' AND agent_run.ended_at>=${fromMs}
-		AND agent_run.ended_at<${toMs} ${boundary ? `AND (agent_run.ended_at<${boundary.at} OR (agent_run.ended_at=${boundary.at} AND agent_run.id<'${boundary.id}'))` : ''}
-	ORDER BY agent_run.ended_at DESC,agent_run.id DESC LIMIT 10001`;
-let candidateQueries = 0;
-let candidateRows = 0;
-let candidateBytes = 0;
-let candidateMs = 0;
-let priced = null;
-boundary = null;
-while (candidateQueries < 20 && !priced) {
-	const result = execute(candidateSql(boundary));
-	candidateQueries++;
-	candidateRows += Math.min(result.rows.length, 10_000);
-	candidateBytes = Math.max(candidateBytes, result.response_bytes);
-	candidateMs += result.elapsed_ms;
-	priced = result.rows.slice(0, 10_000).find((row) => row.usage?.includes('cost_usd')) ?? null;
-	if (result.rows.length <= 10_000) break;
-	const last = result.rows[9999];
-	boundary = { at: last.ended_at, id: last.id };
-}
-
-const pending = execute(`EXPLAIN QUERY PLAN SELECT COUNT(*) FROM agent_run
-	WHERE user_id='scale_user' AND created_at<${toMs} AND (ended_at IS NULL OR ended_at>=${toMs})`);
-const aggregatePlan = execute(`EXPLAIN QUERY PLAN ${aggregateSql(null)}`);
-const candidatePlan = execute(`EXPLAIN QUERY PLAN ${candidateSql(null)}`);
 function waitForWorker(url, child) {
 	return new Promise((resolve, reject) => {
 		const deadline = Date.now() + 30_000;
@@ -187,12 +134,56 @@ worker.stderr.on('data', (chunk) => (workerLog += chunk));
 let workerEvidence;
 try {
 	await waitForWorker(baseUrl, worker);
-	const countQueriesSince = async (start) => {
-		await new Promise((resolve) => setTimeout(resolve, 50));
-		const count = (workerLog.slice(start).match(/\[USAGE_SCALE_SQL\]/g) ?? []).length;
-		if (count === 0)
+	const tracesSince = async (start) => {
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		const traces = [...workerLog.slice(start).matchAll(/\[USAGE_SCALE_SQL\](\{[^\n]+\})/g)].map(
+			(match) => JSON.parse(match[1])
+		);
+		if (!traces.length)
 			throw new Error('Worker SQL telemetry absent: refusing to certify query bounds');
-		return count;
+		if (traces.some((trace) => !Number.isSafeInteger(trace.rows_read) || trace.rows_read < 0))
+			throw new Error('Worker rows_read telemetry absent or invalid');
+		return traces;
+	};
+	const orderedIds = Array.from({ length: size }, (_, i) => i + 1)
+		.sort((a, b) => (equalTime ? b - a : Math.floor(a / 10) - Math.floor(b / 10) || b - a))
+		.map((n) => `scale_${String(n).padStart(6, '0')}`);
+	const verifyPageIds = (pages, pageSize, offset = 0) => {
+		for (const page of pages) {
+			const ids = orderedIds.slice(offset, offset + pageSize + 1);
+			const expected = createHash('sha256').update(JSON.stringify(ids)).digest('hex');
+			if (page.ids_sha256 !== expected || page.returned_rows !== ids.length)
+				throw new Error('Worker page IDs differ from independent ordered fixture');
+			offset += pageSize;
+		}
+	};
+	const pageTraces = (traces) =>
+		traces.filter(
+			(trace) => trace.sql?.includes('order by "agent_run".') && trace.sql.includes('limit ?')
+		);
+	const scanReceipt = (pages, multiplier, pageSize) => {
+		if (!pages.length) throw new Error('Worker scan telemetry absent');
+		for (const page of pages) {
+			// The fixture has fixed, owned metadata. Seven indexed rows per
+			// aggregate fact (fact + six joins); candidates prune all unused joins.
+			if (
+				page.rows_read > multiplier * (page.returned_rows + 2) ||
+				page.rows_read < page.returned_rows
+			)
+				throw new Error(
+					`Worker rows_read bound exceeded: ${page.rows_read} for ${page.returned_rows} returned rows`
+				);
+		}
+		const total = pages.reduce((sum, page) => sum + page.rows_read, 0);
+		if (total > multiplier * (pages.length * (pageSize + 3)))
+			throw new Error('Worker total rows_read bound exceeded');
+		return {
+			total_rows_read: total,
+			first_page_rows_read: pages[0].rows_read,
+			last_page_rows_read: pages.at(-1).rows_read,
+			max_response_bytes: Math.max(...pages.map((page) => page.response_bytes)),
+			pages
+		};
 	};
 	const query = new URLSearchParams({
 		from: new Date(fromMs).toISOString(),
@@ -205,7 +196,11 @@ try {
 		headers: { authorization: `Bearer ${apiKey}` }
 	});
 	const body = await response.json();
-	const aggregateWorkerQueries = await countQueriesSince(aggregateTraceStart);
+	const aggregateTraces = await tracesSince(aggregateTraceStart);
+	const aggregateWorkerQueries = aggregateTraces.length;
+	const aggregateScan = scanReceipt(pageTraces(aggregateTraces), 7, 5000);
+	verifyPageIds(aggregateScan.pages, 5000);
+	const aggregateElapsed = Number((performance.now() - started).toFixed(1));
 	// Two bearer queries, one settings read, one pending count, and
 	// ceil(N/5000) data pages: four fixed queries on this unfiltered dataset.
 	const expectedAggregateQueries = Math.ceil(size / 5000) + 4;
@@ -273,13 +268,20 @@ try {
 	});
 	const evidencePages = [];
 	const evidenceWorkerQueries = [];
+	const evidenceTraces = [];
+	const evidenceElapsed = [];
 	for (let page = 0; page < 2; page++) {
 		const evidenceTraceStart = workerLog.length;
+		const evidenceStarted = performance.now();
 		const evidenceResponse = await fetch(`${baseUrl}/api/v1/runs?${evidenceQuery}`, {
 			headers: { authorization: `Bearer ${apiKey}` }
 		});
 		const evidence = await evidenceResponse.json();
-		const evidenceQueryCount = await countQueriesSince(evidenceTraceStart);
+		const traces = await tracesSince(evidenceTraceStart);
+		evidenceTraces.push(traces);
+		evidenceElapsed.push(Number((performance.now() - evidenceStarted).toFixed(1)));
+		const evidenceQueryCount = traces.length;
+		scanReceipt(pageTraces(traces), 1, 10000);
 		if (evidenceQueryCount < 3 || evidenceQueryCount > 30)
 			throw new Error(`worker evidence query bound exceeded: ${evidenceQueryCount} outside 3..30`);
 		evidenceWorkerQueries.push(evidenceQueryCount);
@@ -291,6 +293,14 @@ try {
 		});
 		if (!evidence.next_cursor) break;
 		evidenceQuery.set('cursor', evidence.next_cursor);
+	}
+	const allEvidencePages = evidenceTraces.flatMap(pageTraces);
+	if (!allPriced) {
+		if (allEvidencePages.length !== Math.ceil(size / 10000) || evidencePages.at(-1).has_cursor)
+			throw new Error('Sparse walk did not exhaust its exact candidate population');
+		verifyPageIds(allEvidencePages, 10000);
+	} else {
+		evidenceTraces.forEach((traces, page) => verifyPageIds(pageTraces(traces), 10000, page * 50));
 	}
 	const cliRaw = execFileSync(
 		'node',
@@ -370,7 +380,16 @@ try {
 	}
 	workerEvidence = {
 		status: response.status,
-		elapsed_ms: Number((performance.now() - started).toFixed(1)),
+		elapsed_ms: aggregateElapsed,
+		evidence_elapsed_ms: evidenceElapsed,
+		native_scan: {
+			aggregate: aggregateScan,
+			evidence: scanReceipt(evidenceTraces.flatMap(pageTraces), 1, 10000)
+		},
+		total_request_rows_read: {
+			aggregate: aggregateTraces.reduce((sum, t) => sum + t.rows_read, 0),
+			evidence: evidenceTraces.map((ts) => ts.reduce((sum, t) => sum + t.rows_read, 0))
+		},
 		response_bytes: Buffer.byteLength(JSON.stringify(body)),
 		finalized: body.scope_total.finalized_run_count,
 		priced: body.scope_total.priced_run_count,
@@ -397,6 +416,66 @@ try {
 	worker.kill('SIGTERM');
 }
 
+// Probe the exact compiled statements with positional bindings, after the
+// measured requests. EXPLAIN statements are never charged to service telemetry.
+const planConfig = new URL(`../${persist}/plan.json`, import.meta.url);
+writeFileSync(
+	planConfig,
+	JSON.stringify({
+		name: 'usage-scale-plan',
+		main: fileURLToPath(new URL('./usage-scale-plan-worker.mjs', import.meta.url)),
+		compatibility_date: '2025-08-01',
+		d1_databases: [
+			{
+				binding: 'DB',
+				database_name: 'tines',
+				database_id: readFileSync(new URL('../wrangler.jsonc', import.meta.url), 'utf8').match(
+					/"database_id":\s*"([^"]+)"/
+				)[1]
+			}
+		]
+	})
+);
+const planUrl = `http://127.0.0.1:${port + 1000}`;
+const planWorker = spawn(
+	'pnpm',
+	[
+		'exec',
+		'wrangler',
+		'dev',
+		'--config',
+		fileURLToPath(planConfig),
+		'--ip',
+		'127.0.0.1',
+		'--port',
+		String(port + 1000),
+		'--persist-to',
+		fileURLToPath(new URL(`../${persist}`, import.meta.url))
+	],
+	{ cwd: webDir, stdio: ['ignore', 'pipe', 'pipe'] }
+);
+planWorker.stdout.resume();
+planWorker.stderr.resume();
+try {
+	await waitForWorker(planUrl, planWorker);
+	for (const scan of Object.values(workerEvidence.native_scan)) {
+		scan.bound_query_plans = [];
+		for (const page of [scan.pages[0], scan.pages.at(-1)]) {
+			const response = await fetch(planUrl, { method: 'POST', body: JSON.stringify(page) });
+			const plan = await response.json();
+			if (
+				!response.ok ||
+				!plan.success ||
+				!plan.results.some((row) => row.detail.includes('agent_run_user_ended_idx'))
+			)
+				throw new Error('Compiled bound query lost its ledger index: ' + JSON.stringify(plan));
+			scan.bound_query_plans.push(plan.results);
+		}
+	}
+} finally {
+	planWorker.kill('SIGTERM');
+}
+
 const receipt = {
 	generated_at: new Date().toISOString(),
 	wrangler: wrangler(['--version']).trim(),
@@ -407,24 +486,8 @@ const receipt = {
 		groups: 3,
 		pending: 100,
 		retained_rates: 0,
-		equal_time_fanout: 10
+		equal_time_fanout: equalTime ? size : 10
 	},
-	aggregate: {
-		queries: aggregateQueries,
-		returned_rows_including_lookahead: aggregateRows,
-		max_response_bytes: aggregateBytes,
-		elapsed_ms: Number(aggregateMs.toFixed(1)),
-		plan: aggregatePlan.rows
-	},
-	sparse_evidence: {
-		queries: candidateQueries,
-		examined_rows: candidateRows,
-		found: priced?.id ?? null,
-		max_response_bytes: candidateBytes,
-		elapsed_ms: Number(candidateMs.toFixed(1)),
-		plan: candidatePlan.rows
-	},
-	pending_plan: pending.rows,
 	authenticated_worker: workerEvidence,
 	bounds: {
 		service_queries_at_100k: 27,
@@ -437,7 +500,7 @@ const receipt = {
 	},
 	limitations: [
 		'Wrangler CLI elapsed time includes process startup; D1 meta is emitted by the local emulator.',
-		'Wrangler local exposes duration but not D1 rows_read; indexed plans and returned-row counts are recorded instead.',
+		'Native rows_read includes joined metadata reads; telemetry uses actual parameterized shipping statements, not literal replays.',
 		'Worker heap is a conservative bound, not an isolate inspector measurement; whole-process RSS is intentionally not presented as isolate heap.',
 		'Run with --size=120001 to place the unique priced evidence match beyond 100k candidates.'
 	]

@@ -80,18 +80,18 @@ type UsageRow = Awaited<ReturnType<ReturnType<typeof scanQuery>['execute']>>[num
 async function scanAll(
 	query: ReturnType<typeof scanQuery>,
 	orderColumn: 'agent_run.ended_at' | 'agent_run.created_at',
+	to: number,
 	consume: (row: UsageRow) => void
 ): Promise<void> {
 	let boundary: { at: number; id: string } | null = null;
 	for (;;) {
-		let page = query;
-		if (boundary)
-			page = page.where((eb) =>
-				eb.or([
-					eb(orderColumn, '<', boundary!.at),
-					eb.and([eb(orderColumn, '=', boundary!.at), eb('agent_run.id', '<', boundary!.id)])
-				])
-			);
+		// One effective upper bound is essential: a redundant period bound can
+		// make SQLite seek to the window start and rescan every earlier page.
+		const page: ReturnType<typeof scanQuery> = boundary
+			? query.where(
+					sql<boolean>`(${sql.ref(orderColumn)}, agent_run.id) < (${boundary.at}, ${boundary.id})`
+				)
+			: query.where(orderColumn, '<', to);
 		const rows = await page
 			.orderBy(`${orderColumn} desc`)
 			.orderBy('agent_run.id desc')
@@ -212,9 +212,7 @@ export async function getUsage(
 		...(request.outcome ? { outcome: request.outcome } : {}),
 		...(request.accounting_status ? { accounting_status: request.accounting_status } : {})
 	};
-	let q = scanQuery(db, userId)
-		.where('agent_run.ended_at', '>=', period.from)
-		.where('agent_run.ended_at', '<', period.to);
+	let q = scanQuery(db, userId).where('agent_run.ended_at', '>=', period.from);
 	if (filters.project && filters.project !== 'unknown')
 		q = q.where('issue.project_id', '=', filters.project);
 	if (filters.project === 'unknown') q = q.where('issue.project_id', 'is', null);
@@ -224,7 +222,7 @@ export async function getUsage(
 		{ dimension: UsageDimension; accumulator: ReturnType<typeof createUsageAccumulator> }
 	>();
 	const workflowOptions = new Map<string | null, UsageDimension>();
-	await scanAll(q, 'agent_run.ended_at', (row) => {
+	await scanAll(q, 'agent_run.ended_at', period.to, (row) => {
 		const classification = classifyUsage(row.usage);
 		addUsageClassification(scope, classification);
 		const rowDimensions = dimensions(row);

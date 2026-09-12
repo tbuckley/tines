@@ -340,27 +340,13 @@ export async function listRuns(
 	if (filters.population === 'finalized') {
 		q = q.where('agent_run.ended_at', 'is not', null);
 		if (filters.from !== undefined) q = q.where('agent_run.ended_at', '>=', filters.from);
-		if (filters.to !== undefined) q = q.where('agent_run.ended_at', '<', filters.to);
 	}
 	if (filters.population === 'pending') {
 		if (filters.to !== undefined) {
-			q = q
-				.where('agent_run.created_at', '<', filters.to)
-				.where((eb) =>
-					eb.or([eb('agent_run.ended_at', 'is', null), eb('agent_run.ended_at', '>=', filters.to!)])
-				);
+			q = q.where((eb) =>
+				eb.or([eb('agent_run.ended_at', 'is', null), eb('agent_run.ended_at', '>=', filters.to!)])
+			);
 		} else q = q.where('agent_run.ended_at', 'is', null);
-	}
-	if (page.cursor) {
-		const { createdAt, id } = page.cursor;
-		const cursorColumn =
-			filters.population === 'finalized' ? 'agent_run.ended_at' : 'agent_run.created_at';
-		q = q.where((eb) =>
-			eb.or([
-				eb(cursorColumn, '<', createdAt),
-				eb.and([eb(cursorColumn, '=', createdAt), eb('agent_run.id', '<', id)])
-			])
-		);
 	}
 	const cursorColumn =
 		filters.population === 'finalized' ? 'agent_run.ended_at' : 'agent_run.created_at';
@@ -378,16 +364,14 @@ export async function listRuns(
 		let batchQuery = q
 			.clearSelect()
 			.select(['agent_run.id', 'agent_run.usage', 'agent_run.ended_at', 'agent_run.created_at']);
+		// Replace (do not accompany) the period upper bound on every continuation,
+		// including the internal sparse walk. Tuple comparison seeks through ties.
 		if (boundary)
-			batchQuery = batchQuery.where((eb) =>
-				eb.or([
-					eb(cursorColumn, '<', boundary!.createdAt),
-					eb.and([
-						eb(cursorColumn, '=', boundary!.createdAt),
-						eb('agent_run.id', '<', boundary!.id)
-					])
-				])
+			batchQuery = batchQuery.where(
+				sql<boolean>`(${sql.ref(cursorColumn)}, agent_run.id) < (${boundary.createdAt}, ${boundary.id})`
 			);
+		else if (filters.population && filters.to !== undefined)
+			batchQuery = batchQuery.where(cursorColumn, '<', filters.to);
 		const rows = await batchQuery
 			.orderBy(`${cursorColumn} desc`)
 			.orderBy('agent_run.id desc')

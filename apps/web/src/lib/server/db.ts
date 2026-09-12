@@ -1,6 +1,7 @@
 import type { StateCategory } from '@tines/shared';
 import { Kysely, SqliteAdapter } from 'kysely';
 import { D1Dialect } from 'kysely-d1';
+import { traceUsageScaleDb } from './usage-scale-trace';
 
 export interface ProjectTable {
 	id: string;
@@ -527,14 +528,9 @@ export function getDb(env: Env): Kysely<Database> {
 	let db = dbs.get(env.DB);
 	if (!db) {
 		db = new Kysely<Database>({
-			dialect: new ConcurrentD1Dialect({ database: env.DB }),
-			...(env.USAGE_SCALE_SQL_TRACE === '1'
-				? {
-						log(event) {
-							if (event.level === 'query') console.log('[USAGE_SCALE_SQL]');
-						}
-					}
-				: {})
+			dialect: new ConcurrentD1Dialect({
+				database: env.USAGE_SCALE_SQL_TRACE === '1' ? traceUsageScaleDb(env.DB) : env.DB
+			})
 		});
 		dbs.set(env.DB, db);
 	}
