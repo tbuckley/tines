@@ -54,6 +54,11 @@ describe('GET /api/v1/runs usage evidence', () => {
 			endedAt: NOW + 1,
 			usage: JSON.stringify({ cost_usd: 42 })
 		});
+		t.sqlite
+			.prepare(
+				`UPDATE agent_run SET error = ?, provider_session_id = ?, provider_url = ? WHERE id = 'later'`
+			)
+			.run('future-secret-error', 'future-secret-session', 'https://future-secret.example');
 		const from = new Date(NOW - 100).toISOString();
 		const to = new Date(NOW).toISOString();
 		const finalized = await get(
@@ -71,11 +76,48 @@ describe('GET /api/v1/runs usage evidence', () => {
 				scan_complete: true
 			}
 		});
+		const queries = t.spyOnQueries();
 		const pending = await get(t, `?population=pending&from=${from}&to=${to}`);
-		expect(pending.body.items).toEqual([
-			expect.objectContaining({ id: 'later', accounting_status: 'pending', pending_at: NOW })
-		]);
-		expect(JSON.stringify(pending.body.items)).not.toContain('"usage"');
+		const pendingItem = (pending.body.items as Record<string, unknown>[])[0];
+		expect(Object.keys(pendingItem).sort()).toEqual(
+			[
+				'id',
+				'issue_id',
+				'issue_ref',
+				'runner_id',
+				'runner_name',
+				'tier',
+				'state_id_at_start',
+				'state_at_start_name',
+				'created_at',
+				'pending_at',
+				'usage_dimensions',
+				'accounting_status'
+			].sort()
+		);
+		expect(pendingItem).toMatchObject({
+			id: 'later',
+			accounting_status: 'pending',
+			pending_at: NOW
+		});
+		expect(Object.keys(pendingItem.usage_dimensions as object).sort()).toEqual(
+			['project', 'workflow', 'state', 'runner', 'tier'].sort()
+		);
+		const pendingHydration = queries().find(
+			(query) => query.includes('"agent_run"."id" in') && query.includes('as "issue_title"')
+		);
+		expect(pendingHydration).toBeDefined();
+		for (const secretColumn of [
+			'usage',
+			'outcome',
+			'ended_at',
+			'state_id_at_end',
+			'provider_session_id',
+			'provider_url',
+			'error'
+		])
+			expect(pendingHydration).not.toContain(`"agent_run"."${secretColumn}"`);
+		expect(JSON.stringify(pendingItem)).not.toContain('future-secret');
 	});
 
 	it('rejects a usage cursor replayed with different filters', async () => {
@@ -144,6 +186,22 @@ describe('GET /api/v1/runs usage evidence', () => {
 				})
 			})
 		]);
+		const unauthorized = await get(
+			t,
+			`?population=finalized&from=${new Date(NOW - 100).toISOString()}&to=${new Date(NOW).toISOString()}&workflow=wf_foreign`
+		);
+		expect(unauthorized.response.status).toBe(404);
+	});
+
+	it('validates evidence syntax before retained identity authorization', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const bounds = `population=finalized&from=${new Date(NOW - 100).toISOString()}&to=${new Date(NOW).toISOString()}`;
+		const result = await get(t, `?${bounds}&runner=rnr_missing&limit=nope`);
+		expect(result.response.status).toBe(422);
+		expect(result.body).toMatchObject({
+			error: { code: 'invalid_field', details: { field: 'limit', remedy: 'omit limit for 50' } }
+		});
 	});
 
 	it('strictly rejects noncanonical and out-of-window v2 cursors', async () => {
@@ -182,10 +240,23 @@ describe('GET /api/v1/runs usage evidence', () => {
 				.replace(/\//g, '_')
 				.replace(/=+$/, '');
 		const bounds = `population=finalized&from=${new Date(from).toISOString()}&to=${new Date(to).toISOString()}`;
-		for (const bad of [cursor(), cursor({ extra: true }), `${cursor({ at: from })}=`]) {
+		for (const bad of [
+			cursor(),
+			cursor({ at: from - 1 }),
+			cursor({ extra: true }),
+			cursor({ mode: 'pending', at: to }),
+			`${cursor({ at: from })}=`
+		]) {
 			const result = await get(t, `?${bounds}&cursor=${encodeURIComponent(bad)}`);
 			expect(result.response.status).toBe(422);
 			expect(result.body).toMatchObject({ error: { code: 'invalid_cursor' } });
 		}
+		const mismatch = await get(t, `?${bounds}&cursor=${cursor({ at: from, filters: '[]' })}`);
+		expect(mismatch.body).toMatchObject({
+			error: {
+				code: 'cursor_mismatch',
+				details: { field: 'cursor', remedy: expect.stringContaining('restart without cursor') }
+			}
+		});
 	});
 });

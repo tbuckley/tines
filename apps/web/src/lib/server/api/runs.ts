@@ -18,7 +18,7 @@ import { cancelRun } from '$lib/server/supervisor/engine';
 import type { DispatchEffects } from '$lib/server/dispatch-effects';
 import { ApiFail, notFound, type ActorContext, type Page } from './core';
 
-export function runQuery(db: Kysely<Database>, userId: string) {
+function evidenceBaseQuery(db: Kysely<Database>, userId: string) {
 	return (
 		db
 			.selectFrom('agent_run')
@@ -51,27 +51,31 @@ export function runQuery(db: Kysely<Database>, userId: string) {
 						])
 					)
 			)
-			.leftJoin('workflow_state as end_state', 'end_state.id', 'agent_run.state_id_at_end')
-			.selectAll('agent_run')
-			.select([
-				'runner.name as runner_name',
-				'issue.number as issue_number',
-				'issue.title as issue_title',
-				'project.name as project_name',
-				'issue.project_id as project_id',
-				sql<
-					string | null
-				>`case when ${sql.ref('start_workflow.id')} is not null then ${sql.ref('start_state.name')} else null end`.as(
-					'start_state_name'
-				),
-				'start_workflow.id as start_workflow_id',
-				'issue.workflow_id as issue_workflow_id',
-				'start_workflow.name as start_workflow_name',
-				'issue_workflow.name as issue_workflow_name',
-				'end_state.name as end_state_name'
-			])
 			.where('agent_run.user_id', '=', userId)
 	);
+}
+
+export function runQuery(db: Kysely<Database>, userId: string) {
+	return evidenceBaseQuery(db, userId)
+		.leftJoin('workflow_state as end_state', 'end_state.id', 'agent_run.state_id_at_end')
+		.selectAll('agent_run')
+		.select([
+			'runner.name as runner_name',
+			'issue.number as issue_number',
+			'issue.title as issue_title',
+			'project.name as project_name',
+			'issue.project_id as project_id',
+			sql<
+				string | null
+			>`case when ${sql.ref('start_workflow.id')} is not null then ${sql.ref('start_state.name')} else null end`.as(
+				'start_state_name'
+			),
+			'start_workflow.id as start_workflow_id',
+			'issue.workflow_id as issue_workflow_id',
+			'start_workflow.name as start_workflow_name',
+			'issue_workflow.name as issue_workflow_name',
+			'end_state.name as end_state_name'
+		]);
 }
 
 type RunRow = Awaited<ReturnType<ReturnType<typeof runQuery>['execute']>>[number];
@@ -113,6 +117,32 @@ const evidenceRunSelection = [
 	'start_workflow.name as start_workflow_name',
 	'issue_workflow.name as issue_workflow_name',
 	'end_state.name as end_state_name'
+] as const;
+
+// Pending-at-cutoff evidence must not even read facts learned after the cutoff.
+// Keep this projection separate from finalized evidence so future serializers cannot
+// accidentally expose usage, outcome, end state/time, provider data, or errors.
+const pendingEvidenceSelection = [
+	'agent_run.id',
+	'agent_run.issue_id',
+	'agent_run.runner_id',
+	'agent_run.tier',
+	'agent_run.state_id_at_start',
+	'agent_run.created_at',
+	'runner.name as runner_name',
+	'issue.number as issue_number',
+	'issue.title as issue_title',
+	'project.name as project_name',
+	'issue.project_id as project_id',
+	sql<
+		string | null
+	>`case when ${sql.ref('start_workflow.id')} is not null then ${sql.ref('start_state.name')} else null end`.as(
+		'start_state_name'
+	),
+	'start_workflow.id as start_workflow_id',
+	'issue.workflow_id as issue_workflow_id',
+	'start_workflow.name as start_workflow_name',
+	'issue_workflow.name as issue_workflow_name'
 ] as const;
 
 function usageDimensions(row: RunRow): UsageDimensions {
@@ -381,14 +411,20 @@ export async function listRuns(
 	const hydrated: RunRow[] = [];
 	for (let offset = 0; offset < selectedCandidates.length; offset += 80) {
 		const ids = selectedCandidates.slice(offset, offset + 80).map((row) => row.id);
-		if (ids.length)
-			hydrated.push(
-				...((await runQuery(db, userId)
-					.clearSelect()
-					.select(evidenceRunSelection)
-					.where('agent_run.id', 'in', ids)
-					.execute()) as RunRow[])
-			);
+		if (ids.length) {
+			const rows =
+				filters.population === 'pending'
+					? await evidenceBaseQuery(db, userId)
+							.select(pendingEvidenceSelection)
+							.where('agent_run.id', 'in', ids)
+							.execute()
+					: await runQuery(db, userId)
+							.clearSelect()
+							.select(evidenceRunSelection)
+							.where('agent_run.id', 'in', ids)
+							.execute();
+			hydrated.push(...(rows as unknown as RunRow[]));
+		}
 	}
 	const byId = new Map(hydrated.map((row) => [row.id, row]));
 	const selected = selectedCandidates

@@ -186,6 +186,48 @@ export const GET: RequestHandler = api(async (event) => {
 	const tier = params.get('tier');
 	if (tier && !['smartest', 'balanced', 'cheapest', 'unknown'].includes(tier))
 		throw new ApiFail(422, 'invalid_field', 'Invalid tier', { field: 'tier' });
+	let evidenceLimit = 50;
+	let evidenceCursor: UsageRunsCursor | null = null;
+	const timezoneParam = params.get('timezone');
+	const timezoneSourceParam = params.get('timezone_source');
+	if (population) {
+		const rawLimit = params.get('limit');
+		if (rawLimit && !/^[1-9]\d*$/.test(rawLimit))
+			throw new ApiFail(422, 'invalid_field', 'limit must be an integer from 1 to 100', {
+				field: 'limit',
+				accepted: 'integer 1..100',
+				remedy: 'omit limit for 50'
+			});
+		evidenceLimit = rawLimit ? Number(rawLimit) : 50;
+		if (!Number.isSafeInteger(evidenceLimit) || evidenceLimit > 100)
+			throw new ApiFail(422, 'invalid_field', 'limit must be an integer from 1 to 100', {
+				field: 'limit',
+				accepted: 'integer 1..100',
+				remedy: 'omit limit for 50'
+			});
+		evidenceCursor = params.has('cursor') ? decodeUsageCursor(params.get('cursor')!) : null;
+		if ((timezoneParam === null) !== (timezoneSourceParam === null))
+			throw new ApiFail(
+				422,
+				'invalid_field',
+				'timezone and timezone_source are required together',
+				{ field: 'timezone' }
+			);
+		if (timezoneParam !== null) {
+			try {
+				validateTimezone(timezoneParam);
+			} catch {
+				throw new ApiFail(422, 'invalid_field', 'Invalid IANA timezone', { field: 'timezone' });
+			}
+			if (
+				!['supervisor_budget', 'utc_fallback'].includes(timezoneSourceParam!) ||
+				(timezoneSourceParam === 'utc_fallback' && timezoneParam !== 'UTC')
+			)
+				throw new ApiFail(422, 'invalid_field', 'Invalid timezone provenance', {
+					field: 'timezone_source'
+				});
+		}
+	}
 	const issue = params.get('issue');
 	const state = params.get('state');
 	const workflow = params.get('workflow');
@@ -211,34 +253,9 @@ export const GET: RequestHandler = api(async (event) => {
 		timezone_source: 'supervisor_budget' | 'utc_fallback';
 	} | null = null;
 	if (population) {
-		const rawLimit = params.get('limit');
-		if (rawLimit && !/^[1-9]\d*$/.test(rawLimit))
-			throw new ApiFail(422, 'invalid_field', 'limit must be an integer from 1 to 100', {
-				field: 'limit',
-				accepted: 'integer 1..100',
-				remedy: 'omit limit for 50'
-			});
-		const limit = rawLimit ? Number(rawLimit) : 50;
-		if (!Number.isSafeInteger(limit) || limit > 100)
-			throw new ApiFail(422, 'invalid_field', 'limit must be an integer from 1 to 100', {
-				field: 'limit',
-				accepted: 'integer 1..100',
-				remedy: 'omit limit for 50'
-			});
-		const rawCursor = params.get('cursor');
-		const cursor = rawCursor ? decodeUsageCursor(rawCursor) : null;
-		const timezoneParam = params.get('timezone');
-		const timezoneSourceParam = params.get('timezone_source');
-		if ((timezoneParam === null) !== (timezoneSourceParam === null))
-			throw new ApiFail(
-				422,
-				'invalid_field',
-				'timezone and timezone_source are required together',
-				{ field: 'timezone' }
-			);
 		try {
-			resolvedZone = cursor
-				? { timezone: cursor.timezone, timezone_source: cursor.timezone_source }
+			resolvedZone = evidenceCursor
+				? { timezone: evidenceCursor.timezone, timezone_source: evidenceCursor.timezone_source }
 				: timezoneParam && timezoneSourceParam
 					? {
 							timezone: validateTimezone(timezoneParam),
@@ -256,16 +273,23 @@ export const GET: RequestHandler = api(async (event) => {
 				field: 'timezone_source'
 			});
 		if (
-			cursor &&
-			(cursor.mode !== population ||
-				cursor.from !== fromMs ||
-				cursor.to !== toMs ||
-				cursor.filters !== filterIdentity ||
+			evidenceCursor &&
+			(evidenceCursor.mode !== population ||
+				evidenceCursor.from !== fromMs ||
+				evidenceCursor.to !== toMs ||
+				evidenceCursor.filters !== filterIdentity ||
 				(timezoneParam !== null &&
-					(timezoneParam !== cursor.timezone || timezoneSourceParam !== cursor.timezone_source)))
+					(timezoneParam !== evidenceCursor.timezone ||
+						timezoneSourceParam !== evidenceCursor.timezone_source)))
 		)
-			throw new ApiFail(422, 'cursor_mismatch', 'Cursor does not match usage evidence filters');
-		page = { limit, cursor: cursor ? { createdAt: cursor.at, id: cursor.id } : null };
+			throw new ApiFail(422, 'cursor_mismatch', 'Cursor does not match usage evidence filters', {
+				field: 'cursor',
+				remedy: 'restart without cursor using the same bounds and filters'
+			});
+		page = {
+			limit: evidenceLimit,
+			cursor: evidenceCursor ? { createdAt: evidenceCursor.at, id: evidenceCursor.id } : null
+		};
 	} else page = readPage(event);
 	const { items, hasMore, nextBoundary, scanComplete } = await listRuns(
 		db,

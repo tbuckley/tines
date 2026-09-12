@@ -78,12 +78,12 @@ export async function authorizeUsageFilters(
 		else if (kind === 'runner') predicate = sql<boolean>`agent_run.runner_id = ${id}`;
 		else if (kind === 'issue') predicate = sql<boolean>`agent_run.issue_id = ${id}`;
 		else if (kind === 'workflow')
-			predicate = sql<boolean>`COALESCE(start_state.workflow_id, issue.workflow_id) = ${id}`;
+			predicate = sql<boolean>`COALESCE(start_workflow.id, issue_workflow.id) = ${id}`;
 		else
 			predicate = sql<boolean>`agent_run.state_id_at_start = ${id} AND ${
 				filters.workflow === 'unknown'
-					? sql<boolean>`start_state.workflow_id IS NULL AND issue.workflow_id IS NULL`
-					: sql<boolean>`COALESCE(start_state.workflow_id, issue.workflow_id) = ${filters.workflow}`
+					? sql<boolean>`start_workflow.id IS NULL AND issue_workflow.id IS NULL`
+					: sql<boolean>`COALESCE(start_workflow.id, issue_workflow.id) = ${filters.workflow}`
 			}`;
 		return sql<number>`MAX(CASE WHEN ${predicate} THEN 1 ELSE 0 END)`.as(kind);
 	});
@@ -91,6 +91,26 @@ export async function authorizeUsageFilters(
 		.selectFrom('agent_run')
 		.leftJoin('issue', 'issue.id', 'agent_run.issue_id')
 		.leftJoin('workflow_state as start_state', 'start_state.id', 'agent_run.state_id_at_start')
+		.leftJoin('workflow as start_workflow', (join) =>
+			join
+				.onRef('start_workflow.id', '=', 'start_state.workflow_id')
+				.on((eb) =>
+					eb.or([
+						eb('start_workflow.user_id', '=', userId),
+						eb('start_workflow.user_id', 'is', null)
+					])
+				)
+		)
+		.leftJoin('workflow as issue_workflow', (join) =>
+			join
+				.onRef('issue_workflow.id', '=', 'issue.workflow_id')
+				.on((eb) =>
+					eb.or([
+						eb('issue_workflow.user_id', '=', userId),
+						eb('issue_workflow.user_id', 'is', null)
+					])
+				)
+		)
 		.select(flags)
 		.where('agent_run.user_id', '=', userId)
 		.executeTakeFirstOrThrow();
