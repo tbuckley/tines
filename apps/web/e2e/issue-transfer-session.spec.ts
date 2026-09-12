@@ -96,12 +96,30 @@ for (const closing of ['Escape', 'Close', 'chooser Cancel'] as const) {
 	});
 }
 
-test('review Cancel opens a fresh chooser for the next session', async ({ page, request }) => {
+test('review Cancel abandons a held stale-preview refresh before a new session', async ({
+	page,
+	request
+}) => {
 	const { source, destinationA, destinationB, issue } = await seed(request, 'review-cancel');
 	await gotoHydrated(page, `/issues/${source.name}/${issue.number}`);
+	const api = apiClient(request, ALICE.apiKey);
+	let release!: () => void;
+	const gate = new Promise<void>((resolve) => (release = resolve));
+	let captured!: () => void;
+	const ready = new Promise<void>((resolve) => (captured = resolve));
+	let previewRequests = 0;
 	let transferPosts = 0;
 	page.on('request', (candidate) => {
 		if (candidate.url().includes('/transfer') && candidate.method() === 'POST') transferPosts++;
+	});
+	await page.route('**/api/v1/issues/*/transfer?*', async (route) => {
+		previewRequests++;
+		const response = await route.fetch();
+		if (previewRequests === 2) {
+			captured();
+			await gate;
+		}
+		await route.fulfill({ response });
 	});
 
 	const modal = page.getByRole('dialog');
@@ -109,16 +127,41 @@ test('review Cancel opens a fresh chooser for the next session', async ({ page, 
 	await modal.getByTestId('transfer-destination').selectOption(destinationA.id);
 	await modal.getByRole('button', { name: 'Review move', exact: true }).click();
 	await expect(modal.getByTestId('transfer-review')).toContainText(destinationA.name);
+
+	// Stale the signed witness, then hold the replacement review after the
+	// worker has produced it. The old review (and its Cancel button) stays
+	// visible while commit() awaits that refresh.
+	await api.post('/api/v1/context', {
+		kind: 'prompt',
+		name: `xf-session-stale-review-cancel-${runId}`,
+		project_id: destinationA.id,
+		body: 'Changes the transfer witness after the operator reviewed it'
+	});
+	const obsoleteFinished = page.waitForEvent('requestfinished', (candidate) =>
+		candidate.url().includes('/transfer?')
+	);
+	await modal.getByTestId('transfer-confirm').click();
+	await ready;
 	await modal.getByRole('button', { name: 'Cancel', exact: true }).click();
 	await expect(modal).toHaveCount(0);
 
 	await clickToOpen(page.getByTestId('move-to-project'), modal);
 	const chooser = modal.getByTestId('transfer-destination');
-	await expect(chooser).toHaveValue('');
 	await chooser.selectOption(destinationB.id);
 	await expect(chooser).toHaveValue(destinationB.id);
+	release();
+	await obsoleteFinished;
+	await settleBrowser(page);
+
+	await expect(chooser).toHaveValue(destinationB.id);
+	await expect(chooser).toBeFocused();
 	await expect(modal.getByTestId('transfer-review')).toHaveCount(0);
-	expect(transferPosts).toBe(0);
+	await expect(modal.getByRole('heading', { level: 3 })).toHaveCount(0);
+	await expect(modal.getByRole('alert')).toHaveCount(0);
+	expect(previewRequests).toBe(2);
+	expect(transferPosts).toBe(1);
+	const unchanged = await body<IssueDetail>(await api.get(`/api/v1/issues/${issue.id}`));
+	expect(unchanged.project_id).toBe(source.id);
 });
 
 test('changing destination abandons the held preview without leaving loading stuck', async ({
