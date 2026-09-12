@@ -1571,22 +1571,20 @@ Options:
 Manage the workflow library
 
 Options:
-  -h, --help                          display help for command
+  -h, --help                                          display help for command
 
 Commands:
-  list [options]                      List the workflow library
-  show [options] <id-or-name>         Show a workflow with states and
-                                      transitions
-  bases [options]                     List the states other states inherit
-                                      context from, with their children
-  create [options] [json]             Create a workflow from a JSON definition
-                                      (states carry initial "prompt"
-                                      instructions)
-  edit [options] <id-or-name> [json]  Update a workflow from a JSON definition
-                                      and/or flags
-  delete [options] <id-or-name>       Delete a workflow (refused while issues
-                                      still reference it)
-  help [command]                      display help for command
+  export [options] <workflow-id-or-unambiguous-name>  Export a canonical workflow package JSON document
+  validate [options] <file>                           Validate a workflow package file (use - for stdin)
+  preview [options] <file>                            Prepare and fully review a destination workflow package plan
+  install [options] <file>                            Install one exactly reviewed workflow package plan
+  list [options]                                      List the workflow library
+  show [options] <id-or-name>                         Show a workflow with states and transitions
+  bases [options]                                     List the states other states inherit context from, with their children
+  create [options] [json]                             Create a workflow from a JSON definition (states carry initial "prompt" instructions)
+  edit [options] <id-or-name> [json]                  Update a workflow from a JSON definition and/or flags
+  delete [options] <id-or-name>                       Delete a workflow (refused while issues still reference it)
+  help [command]                                      display help for command
 ",
   "tines workflows bases": "Usage: tines workflows bases [options]
 
@@ -1644,6 +1642,43 @@ Options:
   --json                        output the raw JSON response
   -h, --help                    display help for command
 ",
+  "tines workflows export": "Usage: tines workflows export [options] <workflow-id-or-unambiguous-name>
+
+Export a canonical workflow package JSON document
+
+Options:
+  --project <id-or-name>   source project for selected project-bound
+                           configuration
+  --schedule <id>          include this source schedule ID (repeatable)
+                           (default: [])
+  --tier <state-ref=tier>  include a state tier preference (repeatable)
+                           (default: [])
+  --project-routing        make every --tier selector project scoped
+  --inputs <file>          JSON object containing input declarations and text
+                           uses
+  -u, --url <url>          base URL of the Tines API (or set TINES_API_URL, or
+                           run \`tines login\`; default
+                           https://tines.tbuckley.dev)
+  --api-key <key>          API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json                   output the raw JSON response
+  -h, --help               display help for command
+",
+  "tines workflows install": "Usage: tines workflows install [options] <file>
+
+Install one exactly reviewed workflow package plan
+
+Options:
+  --choices <file>         destination choices JSON file (interactive
+                           preparation only)
+  --plan <file>            signed plan saved by workflows preview
+  --confirm <plan-digest>  exact reviewed plan digest (required outside a TTY)
+  -u, --url <url>          base URL of the Tines API (or set TINES_API_URL, or
+                           run \`tines login\`; default
+                           https://tines.tbuckley.dev)
+  --api-key <key>          API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json                   output the raw JSON response
+  -h, --help               display help for command
+",
   "tines workflows list": "Usage: tines workflows list [options]
 
 List the workflow library
@@ -1659,9 +1694,33 @@ Options:
   --json             output the raw JSON response
   -h, --help         display help for command
 ",
+  "tines workflows preview": "Usage: tines workflows preview [options] <file>
+
+Prepare and fully review a destination workflow package plan
+
+Options:
+  --choices <file>   destination choices JSON file
+  --plan-out <file>  atomically save the signed plan for a later install
+  -u, --url <url>    base URL of the Tines API (or set TINES_API_URL, or run
+                     \`tines login\`; default https://tines.tbuckley.dev)
+  --api-key <key>    API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json             output the raw JSON response
+  -h, --help         display help for command
+",
   "tines workflows show": "Usage: tines workflows show [options] <id-or-name>
 
 Show a workflow with states and transitions
+
+Options:
+  -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
+                   \`tines login\`; default https://tines.tbuckley.dev)
+  --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json           output the raw JSON response
+  -h, --help       display help for command
+",
+  "tines workflows validate": "Usage: tines workflows validate [options] <file>
+
+Validate a workflow package file (use - for stdin)
 
 Options:
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
