@@ -159,4 +159,96 @@ test.describe('Agents Spend recovery', () => {
 		await expect(projectTotal(page)).toHaveText('$5.00');
 		expect(alphaCalls).toBe(2);
 	});
+
+	test('ends a hung request at the deadline and recovers with Retry', async ({ page }) => {
+		// The deadline is 30s of real time; nothing else in this file waits.
+		test.setTimeout(120_000);
+		let held = true;
+		let alphaCalls = 0;
+		await page.route('**/api/v1/usage?**', async (route) => {
+			if (usageProject(route.request().url()) === SPEND.projects.alpha.id && held) {
+				alphaCalls++;
+				// Deliberately never settled: the panel's own deadline, not the
+				// network, has to end this request.
+				return;
+			}
+			await route.continue();
+		});
+		await gotoHydrated(page, '/agents?agents_view=spend');
+		await expect(page.getByRole('heading', { name: 'Spend' })).toBeVisible();
+		await page.getByLabel('Spend project').selectOption(SPEND.projects.alpha.id);
+		await expect(page.getByText('Loading spend…')).toBeVisible();
+		await expect(page.getByText(/Spend unavailable: The spend request timed out\./)).toBeVisible({
+			timeout: 60_000
+		});
+		// No retry storm while the deadline runs, and no stuck spinner after it.
+		expect(alphaCalls).toBe(1);
+		await expect(page.getByText('Loading spend…')).toBeHidden();
+		held = false;
+		await page.getByRole('button', { name: 'Retry', exact: true }).click();
+		await expect(projectTotal(page)).toHaveText('$5.00');
+	});
+
+	test('ignores a delayed success and a delayed failure that land on an incomplete Custom range', async ({
+		page
+	}) => {
+		let release!: () => void;
+		let held = new Promise<void>((resolve) => (release = resolve));
+		let mode: 'success' | 'failure' = 'success';
+		const finished: string[] = [];
+		page.on('requestfinished', (request) => {
+			if (request.url().includes('/api/v1/usage?'))
+				finished.push(new URL(request.url()).searchParams.get('window') ?? '');
+		});
+		await page.route('**/api/v1/usage?**', async (route) => {
+			if (new URL(route.request().url()).searchParams.get('window') === '30d') {
+				await held;
+				if (mode === 'failure') {
+					await route.fulfill({
+						status: 500,
+						json: { error: { message: 'stale custom failure' } }
+					});
+					return;
+				}
+			}
+			await route.continue();
+		});
+		await gotoHydrated(page, spendUrl());
+		await expect(projectTotal(page)).toHaveText('$5.00');
+
+		await page.getByRole('button', { name: 'Last 30 days' }).click();
+		await expect(page.getByText('Loading spend…')).toBeVisible();
+		await page.getByRole('button', { name: 'Custom' }).click();
+		await expect(page.locator('.spend .error')).toContainText(
+			'Enter both From and To, then Apply.'
+		);
+		release();
+		await expect.poll(() => finished.filter((window) => window === '30d')).toHaveLength(1);
+		await settle(page);
+		// The delayed 30d report must not be presented as the Custom scope.
+		await expect(page.locator('.statement')).toBeHidden();
+		await expect(page.locator('.spend .error')).toContainText(
+			'Enter both From and To, then Apply.'
+		);
+
+		mode = 'failure';
+		held = new Promise<void>((resolve) => (release = resolve));
+		await page.getByRole('button', { name: 'Last 30 days' }).click();
+		await expect(page.getByText('Loading spend…')).toBeVisible();
+		await page.getByRole('button', { name: 'Custom' }).click();
+		await expect(page.locator('.spend .error')).toContainText(
+			'Enter both From and To, then Apply.'
+		);
+		release();
+		await expect.poll(() => finished.filter((window) => window === '30d')).toHaveLength(2);
+		await settle(page);
+		await expect(page.getByText(/stale custom failure/)).toBeHidden();
+		await expect(page.locator('.spend .error')).toContainText(
+			'Enter both From and To, then Apply.'
+		);
+
+		// Still live: a complete selection loads normally afterwards.
+		await page.getByRole('button', { name: 'Last 7 days' }).click();
+		await expect(projectTotal(page)).toHaveText('$5.00');
+	});
 });
