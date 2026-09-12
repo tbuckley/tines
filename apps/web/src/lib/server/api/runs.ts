@@ -7,7 +7,8 @@ import {
 	type ModelTier,
 	type RunEndOutcome,
 	type RunStatus,
-	classifyUsage
+	classifyUsage,
+	type UsageDimensions
 } from '@tines/shared';
 import type { Kysely } from 'kysely';
 import type { Database } from '$lib/server/db';
@@ -30,7 +31,26 @@ export function runQuery(db: Kysely<Database>, userId: string) {
 			)
 			// State names survive workflow edits loosely: left joins, ids kept.
 			.leftJoin('workflow_state as start_state', 'start_state.id', 'agent_run.state_id_at_start')
-			.leftJoin('workflow as start_workflow', 'start_workflow.id', 'start_state.workflow_id')
+			.leftJoin('workflow as start_workflow', (join) =>
+				join
+					.onRef('start_workflow.id', '=', 'start_state.workflow_id')
+					.on((eb) =>
+						eb.or([
+							eb('start_workflow.user_id', '=', userId),
+							eb('start_workflow.user_id', 'is', null)
+						])
+					)
+			)
+			.leftJoin('workflow as issue_workflow', (join) =>
+				join
+					.onRef('issue_workflow.id', '=', 'issue.workflow_id')
+					.on((eb) =>
+						eb.or([
+							eb('issue_workflow.user_id', '=', userId),
+							eb('issue_workflow.user_id', 'is', null)
+						])
+					)
+			)
 			.leftJoin('workflow_state as end_state', 'end_state.id', 'agent_run.state_id_at_end')
 			.selectAll('agent_run')
 			.select([
@@ -38,7 +58,12 @@ export function runQuery(db: Kysely<Database>, userId: string) {
 				'issue.number as issue_number',
 				'issue.title as issue_title',
 				'project.name as project_name',
+				'issue.project_id as project_id',
 				'start_state.name as start_state_name',
+				'start_state.workflow_id as start_workflow_id',
+				'issue.workflow_id as issue_workflow_id',
+				'start_workflow.name as start_workflow_name',
+				'issue_workflow.name as issue_workflow_name',
 				'end_state.name as end_state_name'
 			])
 			.where('agent_run.user_id', '=', userId)
@@ -46,6 +71,37 @@ export function runQuery(db: Kysely<Database>, userId: string) {
 }
 
 type RunRow = Awaited<ReturnType<ReturnType<typeof runQuery>['execute']>>[number];
+
+function usageDimensions(row: RunRow): UsageDimensions {
+	const workflowId = row.start_workflow_id ?? row.issue_workflow_id ?? null;
+	const workflowName = row.start_workflow_name ?? row.issue_workflow_name ?? null;
+	return {
+		project: {
+			id: row.project_id,
+			name:
+				row.project_name ?? `Unknown/deleted project${row.project_id ? ` (${row.project_id})` : ''}`
+		},
+		workflow: {
+			id: workflowId,
+			name: workflowName ?? `Unknown/deleted workflow${workflowId ? ` (${workflowId})` : ''}`
+		},
+		state: {
+			id: row.state_id_at_start,
+			name: row.start_state_name ?? `Unknown/deleted state (${row.state_id_at_start})`,
+			workflow_id: workflowId,
+			workflow_name: workflowName
+		},
+		outcome: {
+			id: row.outcome,
+			name: row.outcome ? row.outcome[0].toUpperCase() + row.outcome.slice(1) : 'Unknown'
+		},
+		runner: {
+			id: row.runner_id,
+			name: row.runner_name ?? `Unknown/deleted runner (${row.runner_id})`
+		},
+		tier: { id: row.tier, name: row.tier ?? 'Unknown' }
+	};
+}
 
 function parseUsage(raw: string | null): AgentRunUsage | null {
 	if (!raw) return null;
@@ -141,6 +197,7 @@ interface RunListResult<T> {
 	items: T[];
 	hasMore: boolean;
 	nextBoundary: { createdAt: number; id: string } | null;
+	scanComplete: boolean;
 }
 
 export function listRuns(
@@ -223,7 +280,9 @@ export async function listRuns(
 	let boundary = page.cursor;
 	const matched: RunRow[] = [];
 	let exhausted = false;
+	let scanQueries = 0;
 	do {
+		scanQueries++;
 		let batchQuery = scan;
 		if (boundary)
 			batchQuery = batchQuery.where((eb) =>
@@ -250,7 +309,13 @@ export async function listRuns(
 			if (matched.length > page.limit) break;
 		}
 		exhausted = rows.length < (filters.accountingStatus ? 1000 : page.limit + 1);
-	} while (filters.accountingStatus && matched.length <= page.limit && !exhausted);
+	} while (
+		filters.accountingStatus &&
+		matched.length <= page.limit &&
+		!exhausted &&
+		scanQueries < 20
+	);
+	const scanComplete = exhausted || matched.length > page.limit || !filters.accountingStatus;
 	const hasMore = matched.length > page.limit || !exhausted;
 	const selected = matched.slice(0, page.limit);
 	const nextBoundary = hasMore
@@ -283,12 +348,20 @@ export async function listRuns(
 					state_at_start_name: row.start_state_name,
 					created_at: row.created_at,
 					pending_at: filters.to!,
-					usage_dimensions: null,
+					usage_dimensions: (({ outcome: _, ...safe }) => safe)(usageDimensions(row)),
 					accounting_status: 'pending'
 				} satisfies UsagePendingRun)
-			: serializeRun(row)
+			: filters.population === 'finalized'
+				? {
+						...serializeRun(row),
+						usage_dimensions: usageDimensions(row),
+						usage_accounting: (({ usage: _, ...accounting }) => accounting)(
+							classifyUsage(row.usage)
+						)
+					}
+				: serializeRun(row)
 	);
-	return { items, hasMore, nextBoundary };
+	return { items, hasMore, nextBoundary, scanComplete };
 }
 
 export async function getRun(

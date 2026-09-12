@@ -62,7 +62,14 @@ describe('GET /api/v1/runs usage evidence', () => {
 		);
 		expect((finalized.body.items as { id: string }[]).map((run) => run.id)).toEqual(['priced']);
 		expect(finalized.body).toMatchObject({
-			usage_window: { from: NOW - 100, to: NOW, cursor_version: 'usage-runs-v1' }
+			usage_window: {
+				from: NOW - 100,
+				to: NOW,
+				cursor_version: 'usage-runs-v2',
+				timezone: 'UTC',
+				timezone_source: 'utc_fallback',
+				scan_complete: true
+			}
 		});
 		const pending = await get(t, `?population=pending&from=${from}&to=${to}`);
 		expect(pending.body.items).toEqual([

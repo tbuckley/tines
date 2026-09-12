@@ -261,6 +261,13 @@ export async function getUsage(
 		.executeTakeFirstOrThrow();
 	const matching = createUsageAccumulator();
 	for (const group of grouped.values()) mergeUsageCounters(matching, group.accumulator);
+	const evidenceBase = {
+		from: new Date(period.from).toISOString(),
+		to: new Date(period.to).toISOString(),
+		timezone: period.timezone,
+		timezone_source: period.timezone_source
+	};
+	const matchingEvidence = { ...filters, ...evidenceBase, population: 'finalized' as const };
 	return {
 		...period,
 		accounting_basis: 'finalized_by_ended_at_v1',
@@ -283,11 +290,17 @@ export async function getUsage(
 				...(filters.accounting_status ? ['accounting_status' as const] : [])
 			]
 		},
-		evidence_filters: {
-			...filters,
-			from: new Date(period.from).toISOString(),
-			to: new Date(period.to).toISOString(),
+		scope_evidence_filters: {
+			...(filters.project ? { project: filters.project } : {}),
+			...evidenceBase,
 			population: 'finalized'
-		}
+		},
+		matching_evidence_filters: matchingEvidence,
+		pending_evidence_filters: {
+			...pendingFilters,
+			...evidenceBase,
+			population: 'pending'
+		},
+		evidence_filters: matchingEvidence
 	};
 }

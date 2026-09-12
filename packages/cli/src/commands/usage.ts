@@ -1,5 +1,6 @@
 import {
 	client,
+	isUsageIdentity,
 	printJson,
 	resolveProject,
 	resolveRunner,
@@ -134,15 +135,15 @@ export function register(program: Command): void {
 		if (opts.state && !opts.workflow) throw new Error('--state requires --workflow');
 		const api = client(opts);
 		const project =
-			opts.project && opts.project !== 'unknown'
+			opts.project && !isUsageIdentity(opts.project, 'prj')
 				? (await resolveProject(api, opts.project)).id
 				: opts.project;
 		const workflow =
-			opts.workflow && opts.workflow !== 'unknown'
+			opts.workflow && !isUsageIdentity(opts.workflow, 'wf')
 				? (await resolveWorkflow(api, opts.workflow)).id
 				: opts.workflow;
 		const runner =
-			opts.runner && opts.runner !== 'unknown'
+			opts.runner && !isUsageIdentity(opts.runner, 'rnr')
 				? (await resolveRunner(api, opts.runner)).id
 				: opts.runner;
 		const report = await api.getUsage({

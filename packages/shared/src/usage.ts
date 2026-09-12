@@ -49,9 +49,11 @@ function validDateParts(text: string): { year: number; month: number; day: numbe
 		: null;
 }
 
-function parseBound(text: string, timezone: string): number {
+export function parseUsageBound(text: string, timezone: string, allowDateOnly = true): number {
 	const date = validDateParts(text);
 	if (date) {
+		if (!allowDateOnly)
+			throw new UsageInputError('Bounds must be ISO timestamps with an explicit offset');
 		const instants = instantsOfWallTime({ ...date, hour: 0, minute: 0 }, timezone);
 		if (!instants.length)
 			throw new UsageInputError(
@@ -100,8 +102,8 @@ export function resolveUsagePeriod(
 	let from: number;
 	let to: number;
 	if (input.from !== undefined && input.to !== undefined) {
-		from = parseBound(input.from, timezone);
-		to = parseBound(input.to, timezone);
+		from = parseUsageBound(input.from, timezone);
+		to = parseUsageBound(input.to, timezone);
 	} else {
 		const window = input.window ?? 'today';
 		if (!['today', '7d', '30d'].includes(window))
@@ -198,6 +200,9 @@ export interface UsageDimension {
 	workflow_name?: string | null;
 }
 
+export type UsageDimensions = Record<UsageBy, UsageDimension>;
+export type UsageEvidenceAccounting = Omit<UsageClassification, 'usage'>;
+
 export interface UsageGroup {
 	key: string;
 	dimension: UsageDimension;
@@ -234,8 +239,25 @@ export interface UsageReport {
 		basis: 'created_before_cutoff_not_ended_before_cutoff';
 		unapplied_filters: ('outcome' | 'accounting_status')[];
 	};
-	evidence_filters: ResolvedUsageFilters & { from: string; to: string; population: 'finalized' };
+	scope_evidence_filters: UsageEvidenceFilters;
+	matching_evidence_filters: UsageEvidenceFilters;
+	pending_evidence_filters: Omit<
+		UsageEvidenceFilters,
+		'outcome' | 'accounting_status' | 'population'
+	> & {
+		population: 'pending';
+	};
+	/** Compatibility alias for matching_evidence_filters. */
+	evidence_filters: UsageEvidenceFilters;
 }
+
+export type UsageEvidenceFilters = ResolvedUsageFilters & {
+	from: string;
+	to: string;
+	population: 'finalized';
+	timezone: string;
+	timezone_source: ResolvedUsagePeriod['timezone_source'];
+};
 
 const emptyDiagnostics = (): UsageDiagnostics => ({
 	legacy_null: 0,
