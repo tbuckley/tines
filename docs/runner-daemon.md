@@ -132,6 +132,8 @@ up until someone restarts it. The daemon cannot replace itself while it runs, so
 mechanism is the classic one: it notices, drains, and exits, and the service manager brings
 it back.
 
+When replacing an older source-launched daemon, first identify its controlling service and verify both local and supervisor active-run inventories are empty. Stop that launcher so it cannot respawn, then start the same runner name, harness, concurrency and configuration from the managed prefix under launchd/systemd. Recheck idleness immediately before stopping: an earlier read is not a dispatch lock. Confirm exactly one process reconnects and that a newly completed run's launch banner reports the new daemon version. Refreshing the child `tines` CLI does not upgrade the long-running daemon, and package publication alone is not adoption proof.
+
 Concretely, when the daemon was launched **from the managed prefix** —
 
 ```sh

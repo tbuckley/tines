@@ -673,6 +673,16 @@ export function register(program: Command): void {
 					console.log(`  exact estimated USD: ${b.cost_usd_exact}`);
 					console.log('  Standard API list-price estimate; not an invoice or subscription usage.');
 				}
+				const proof = pricing?.evidence?.request_context;
+				if (proof?.status === 'complete') {
+					console.log(
+						`request context: ${proof.request_count.toLocaleString()} verified · largest input ${proof.max_request_input_tokens.toLocaleString()} · Codex ${proof.harness_version} · ${proof.normalization}`
+					);
+				} else if (proof) {
+					console.log(
+						`request context: ${proof.status} (${proof.reason})${proof.harness_version ? ` · Codex ${proof.harness_version}` : ''} · ${proof.normalization}`
+					);
+				}
 			}
 			if (run.provider_session_id) console.log(`provider session: ${run.provider_session_id}`);
 			if (run.provider_url) console.log(`provider console: ${run.provider_url}`);
