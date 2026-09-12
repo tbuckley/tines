@@ -7,6 +7,7 @@ const webDir = fileURLToPath(new URL('..', import.meta.url));
 const persist = '.wrangler-usage-scale';
 const sizeArg = process.argv.find((arg) => arg.startsWith('--size='));
 const size = Number(sizeArg?.slice(7) ?? 10_000);
+const allPriced = process.argv.includes('--all-priced');
 if (!Number.isSafeInteger(size) || size < 10_000 || size > 250_000)
 	throw new Error('--size must be an integer from 10000 through 250000');
 const fromMs = 1_700_000_000_000;
@@ -65,7 +66,8 @@ execute(`
 	SELECT printf('scale_%06d',n),'scale_user','scale_issue','scale_runner','completed',
 		CASE n%4 WHEN 0 THEN 'advanced' WHEN 1 THEN 'stalled' ELSE NULL END,
 		CASE n%3 WHEN 0 THEN 'smartest' WHEN 1 THEN 'balanced' ELSE 'cheapest' END,
-		CASE WHEN n=100001 THEN '{"cost_usd":1,"cost_source":"provider"}'
+		CASE WHEN ${allPriced ? '1=1' : '0=1'} THEN json_object('cost_usd', n/100000.0, 'cost_source', 'provider')
+			WHEN n=100001 THEN '{"cost_usd":1,"cost_source":"provider"}'
 			WHEN n%4=0 THEN '{"input_tokens":1}' ELSE NULL END,
 		'wfs_std_open','',1700000000000-n,1700000000000-n,${toMs - 1}-CAST(n/10 AS INTEGER)
 	FROM seq;
@@ -217,7 +219,13 @@ try {
 		{ encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 }
 	);
 	const cli = JSON.parse(cliRaw);
-	if (JSON.stringify(cli) !== JSON.stringify(body)) throw new Error('source CLI and HTTP differ');
+	const comparable = (value) => {
+		const copy = structuredClone(value);
+		delete copy.generated_at;
+		return copy;
+	};
+	if (JSON.stringify(comparable(cli)) !== JSON.stringify(comparable(body)))
+		throw new Error('source CLI and HTTP accounting differ');
 	workerEvidence = {
 		status: response.status,
 		elapsed_ms: Number((performance.now() - started).toFixed(1)),
@@ -235,7 +243,13 @@ try {
 const receipt = {
 	generated_at: new Date().toISOString(),
 	wrangler: wrangler(['--version']).trim(),
-	dataset: { finalized: size, groups: 1, retained_rates: priced ? 1 : 0, equal_time_fanout: 10 },
+	dataset: {
+		finalized: size,
+		all_priced: allPriced,
+		groups: 1,
+		retained_rates: allPriced ? 0 : priced ? 1 : 0,
+		equal_time_fanout: 10
+	},
 	aggregate: {
 		queries: aggregateQueries,
 		returned_rows_including_lookahead: aggregateRows,
