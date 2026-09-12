@@ -1,16 +1,14 @@
-import { execFileSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import {
 	canonicalizeLibraryValue,
 	parseLibraryV3Document,
 	type ContextItem,
 	type CreateIssueResponse,
-	type PrepareWorkflowPackageResponse,
 	type Project,
-	type WorkflowPackageDocument
+	type WorkflowPackageDocument,
+	type WorkflowResponse
 } from '@tines/shared';
 import { expect, test, type Page } from '@playwright/test';
 import { ALICE, BASE_URL, BOB } from './constants.mjs';
@@ -40,17 +38,6 @@ ${Array.from({ length: 125 }, (_, index) => `plain${index + 1}`).join(' ')}`;
 let workflowId: string;
 let projectId: string;
 let scheduleId: string;
-const CLI_DIR = fileURLToPath(new URL('../../../packages/cli', import.meta.url));
-const TSX = join(CLI_DIR, 'node_modules', '.bin', 'tsx');
-const CLI = join(CLI_DIR, 'src', 'index.ts');
-
-function cli(args: string[]): string {
-	return execFileSync(TSX, [CLI, ...args, '--url', BASE_URL, '--api-key', BOB.apiKey], {
-		encoding: 'utf8',
-		env: { ...process.env, TINES_API_URL: 'https://ambient-must-not-be-used.invalid' }
-	});
-}
-
 async function openExport(page: Page) {
 	await gotoHydrated(page, `/workflows/${workflowId}/export`);
 	await expect(page.getByRole('heading', { name: 'Workflow graph and gates' })).toBeVisible();
@@ -176,10 +163,9 @@ test('authors an exact declared use and downloads the reviewed canonical package
 	request
 }) => {
 	await page.setViewportSize(DESKTOP);
-	const external = new URL('https://github.com/tbuckley/tines').host;
 	const externalRequests: string[] = [];
 	page.on('request', (request) => {
-		if (new URL(request.url()).host === external) externalRequests.push(request.url());
+		if (new URL(request.url()).origin !== BASE_URL) externalRequests.push(request.url());
 	});
 	await gotoHydrated(page, `/workflows/${workflowId}`);
 	await page.getByRole('link', { name: 'Export package' }).click();
@@ -236,60 +222,87 @@ test('authors an exact declared use and downloads the reviewed canonical package
 		'Escaped literal \\{{target_name:TARGET}} stays.'
 	);
 
-	// The browser download is the CLI's input without conversion. Install it into
-	// the independent Bob account and inspect the copied prompt, proving that only
-	// the declared exact use is resolved.
+	// Alice's exact browser download is Bob's browser input without conversion.
 	const directory = mkdtempSync(join(tmpdir(), 'tines-browser-package-'));
 	const packagePath = join(directory, 'package.json');
-	const choicesPath = join(directory, 'choices.json');
-	const planPath = join(directory, 'plan.json');
 	writeFileSync(packagePath, source);
-	writeFileSync(
-		choicesPath,
-		JSON.stringify({
-			workflow_names: { [document.main_workflow_id]: `${name} installed` },
-			inputs: {
-				[document.inputs.find((input) => input.key === 'target_name')!.id]: {
-					value: 'DESTINATION'
-				}
-			}
+	await signIn(page.context(), BOB.sessionToken);
+	await gotoHydrated(page, '/workflows/import');
+	await page.getByLabel('Workflow package file').setInputFiles(packagePath);
+	await page.getByLabel('Target name').fill('DESTINATION');
+	await page.getByLabel(`Main · ${name}`).fill(`${name} installed`);
+	await page.getByRole('button', { name: 'Prepare installation' }).click();
+	await expect(page.getByRole('heading', { name: 'Complete installation plan' })).toBeVisible();
+	await expect(page.getByText('Replace DESTINATION only.', { exact: false }).first()).toBeVisible();
+	await expect(
+		page.getByText('Another TARGET remains ordinary prose.', { exact: false }).first()
+	).toBeVisible();
+	for (const checkbox of await page.getByRole('checkbox', { name: /I reviewed/ }).all())
+		await checkbox.check();
+	await page.getByRole('checkbox', { name: /I confirm exact plan/ }).check();
+
+	// The signed plan is actor-bound. A wrong-actor rejection is a definite rollback,
+	// leaving the same reviewed plan available to its owner.
+	await signIn(page.context(), ALICE.sessionToken);
+	await page.getByRole('button', { name: 'Install package' }).click();
+	await expect(page.getByText('Prepare this package again as the installing actor')).toBeVisible();
+	await expect(page.locator('[data-package-receipt]')).toHaveCount(0);
+
+	// Change Bob's destination after preparation. The backend must reject the stale
+	// witness without installing, and the browser must require a fresh preview and confirmation.
+	await signIn(page.context(), BOB.sessionToken);
+	const bobApi = apiClient(request, BOB.apiKey);
+	await body(
+		await bobApi.post('/api/v1/workflows', {
+			name: `${name} installed`,
+			description: 'Collision created after package preparation.',
+			initial_state: 'Existing',
+			states: [{ name: 'Existing', category: 'active' }],
+			transitions: []
 		})
 	);
-	const plan = JSON.parse(
-		cli([
-			'workflows',
-			'preview',
-			packagePath,
-			'--choices',
-			choicesPath,
-			'--plan-out',
-			planPath,
-			'--json'
-		])
-	) as PrepareWorkflowPackageResponse;
-	cli([
-		'workflows',
-		'install',
-		packagePath,
-		'--plan',
-		planPath,
-		'--confirm',
-		plan.plan_digest,
-		'--json'
-	]);
-	const installedPrompt = plan.operations.find(
-		(operation) => operation.kind === 'prompt' && operation.name === 'instructions'
+	await page.getByRole('button', { name: 'Install package' }).click();
+	await expect(page.getByText('Prepare and confirm a fresh plan.', { exact: false })).toBeVisible();
+	await expect(page.locator('[data-package-receipt]')).toHaveCount(0);
+	await page.getByLabel(`Main · ${name}`).fill(`${name} installed reviewed`);
+	await page.getByRole('button', { name: 'Prepare installation' }).click();
+	await expect(page.getByRole('heading', { name: 'Complete installation plan' })).toBeVisible();
+	for (const checkbox of await page.getByRole('checkbox', { name: /I reviewed/ }).all())
+		if (!(await checkbox.isChecked())) await checkbox.check();
+	await expect(page.getByRole('checkbox', { name: /I confirm exact plan/ })).not.toBeChecked();
+	await page.getByRole('checkbox', { name: /I confirm exact plan/ }).check();
+	await page.getByRole('button', { name: 'Install package' }).click();
+	await expect(page.locator('[data-package-receipt]')).toBeFocused();
+	const installedPromptHref = await page
+		.getByText('prompt · instructions', { exact: true })
+		.locator('..')
+		.getByRole('link')
+		.getAttribute('href');
+	expect(installedPromptHref).toMatch(/^\/context\?workflow=wf_/);
+	const installedWorkflowHref = await page
+		.getByText(`workflow · ${name} installed reviewed · main`, { exact: true })
+		.locator('..')
+		.getByRole('link')
+		.getAttribute('href');
+	expect(installedWorkflowHref).toMatch(/^\/workflows\/wf_/);
+	const installedWorkflow = await body<WorkflowResponse>(
+		await bobApi.get(`/api/v1${installedWorkflowHref!}`)
 	);
-	expect(installedPrompt?.id).toBeTruthy();
-	const copied = await body<ContextItem>(
-		await apiClient(request, BOB.apiKey).get(`/api/v1/context/${installedPrompt!.id}`)
-	);
-	expect(copied.body).toContain('Replace DESTINATION only.');
-	expect(copied.body).toContain('Another TARGET remains ordinary prose.');
-	expect(copied.body).toContain(literal);
-	expect(copied.body).toContain('{{not_declared:value}}');
-	expect(copied.body).toContain('Escaped literal {{target_name:TARGET}} stays.');
-	expect(copied.body).not.toContain('DESTINATION}}');
+	const installedContexts = (
+		await Promise.all(
+			installedWorkflow.states.map(async (state) =>
+				body<{ items: ContextItem[] }>(await bobApi.get(`/api/v1/context?state=${state.id}`))
+			)
+		)
+	).flatMap((result) => result.items);
+	const copied = installedContexts.find((item) => item.name === 'instructions');
+	expect(copied).toBeTruthy();
+	expect(copied!.body).toContain('Replace DESTINATION only.');
+	expect(copied!.body).toContain('Another TARGET remains ordinary prose.');
+	expect(copied!.body).toContain(literal);
+	expect(copied!.body).toContain('{{not_declared:value}}');
+	expect(copied!.body).toContain('Escaped literal {{target_name:TARGET}} stays.');
+	expect(copied!.body).not.toContain('DESTINATION}}');
 	expect(externalRequests).toEqual([]);
 	await page.screenshot({
 		path: test.info().outputPath('workflow-package-desktop.png'),

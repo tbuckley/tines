@@ -16,6 +16,7 @@ let packagePath: string;
 let missingWorkflowPath: string;
 let mainName: string;
 let dependencyName: string;
+let candidateInputId: string;
 let projects: Project[];
 
 test.beforeAll(async ({ playwright }) => {
@@ -28,6 +29,7 @@ test.beforeAll(async ({ playwright }) => {
 	candidate.workflows[0].name = mainName;
 	candidate.workflows[1].name = dependencyName;
 	candidate.inputs[0].default = `import-label-${runId}`;
+	candidateInputId = candidate.inputs[0].id;
 	for (const use of candidate.text_uses) {
 		use.token = `{{filing_label:import-label-${runId}}}`;
 	}
@@ -126,6 +128,7 @@ test('reviews, confirms and installs an independent project-free package through
 		.first();
 	await exactUse.click();
 	await expect(page.getByRole('button', { name: 'Back to exact use' })).toBeVisible();
+	await expect(page.locator(`[id="value-${candidateInputId}"]`)).toBeFocused();
 	await page.keyboard.press('Escape');
 	await expect(exactUse).toBeFocused();
 
@@ -137,6 +140,8 @@ test('reviews, confirms and installs an independent project-free package through
 	const confirm = page.getByRole('checkbox', { name: /I confirm exact plan/ });
 	await confirm.check();
 	await expect(page.getByRole('button', { name: 'Install package' })).toBeDisabled();
+	await page.getByRole('button', { name: 'Install package' }).dispatchEvent('click');
+	await page.waitForTimeout(100);
 	expect(installRequests).toEqual([]);
 	for (const checkbox of await page.getByRole('checkbox', { name: /I reviewed/ }).all())
 		await checkbox.check();
