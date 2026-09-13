@@ -22,8 +22,10 @@ test('the Now remedy drains 1→3 through a real daemon and a lower cap admits n
 	const api = apiClient(request, ALICE.apiKey);
 	const markerDir = mkdtempSync(join(tmpdir(), 'tines-concurrency-markers-'));
 	const firstCommand = [
-		`touch "${markerDir}/first-$TINES_RUN_ID"`,
-		'sleep 3',
+		`touch "${markerDir}/first-$(basename "$PWD")"`,
+		// Keep the first slot occupied while the browser hydrates and saves the
+		// raise; otherwise a fast machine can finish it before the remedy click.
+		'sleep 8',
 		transitionHarnessCommand('Submit for review')
 	].join('\n');
 	let daemon: Daemon | null = spawnDaemon({
@@ -100,7 +102,7 @@ test('the Now remedy drains 1→3 through a real daemon and a lower cap admits n
 		daemon = spawnDaemon({
 			apiKey: ALICE.apiKey,
 			name,
-			command: `touch "${markerDir}/lower-$TINES_RUN_ID"; sleep 30`,
+			command: `touch "${markerDir}/lower-$(basename "$PWD")"; sleep 30`,
 			maxConcurrent: 3,
 			allowRemoteConcurrency: true,
 			configDir
@@ -124,7 +126,7 @@ test('the Now remedy drains 1→3 through a real daemon and a lower cap admits n
 		}
 		await expect.poll(() => files(markerDir, 'lower-'), { timeout: 20_000 }).toBe(3);
 		await gotoHydrated(page, '/agents');
-		const card = page.locator('li').filter({ hasText: name }).last();
+		const card = page.locator(`#runner-${runner.id}`);
 		await card.getByRole('button', { name: 'Edit', exact: true }).click();
 		await dialog.locator('#edit-concurrent').fill('1');
 		await dialog.getByRole('button', { name: /^Save/ }).click();

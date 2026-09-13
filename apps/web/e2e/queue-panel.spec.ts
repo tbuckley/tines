@@ -158,7 +158,10 @@ test.describe.serial('the Now row', () => {
 		const panel = page.getByRole('region', { name: 'Waiting for an agent' });
 		await expect(panel).toContainText(`at capacity on ${RUNNER_NAME} (1/1)`);
 		await expect(panel).toContainText('2 issues');
-		const actions = panel.getByTestId('queue-actions');
+		const actions = panel
+			.locator('li')
+			.filter({ hasText: `at capacity on ${RUNNER_NAME}` })
+			.getByTestId('queue-actions');
 		await expect(actions).toBeVisible();
 		expect(await actions.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
 		expect(
