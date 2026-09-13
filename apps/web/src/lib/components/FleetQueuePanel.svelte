@@ -229,9 +229,22 @@
 						</div>
 						<span class="flex shrink-0 flex-wrap gap-1">
 							{#if block.verdict === 'at_capacity' && runner && onraisecap}
-								<Button size="sm" onclick={() => onraisecap(runner)}>
-									Raise cap on {runner.name}
-								</Button>
+								{#if runner.type !== 'local' || (runner.concurrency_control?.status !== 'unavailable' && runner.max_concurrent < (runner.concurrency_control?.ceiling ?? 0))}
+									<Button size="sm" onclick={() => onraisecap(runner)}>
+										Raise cap on {runner.name}
+									</Button>
+								{:else if runner.concurrency_control?.status === 'unavailable'}
+									<Button size="sm" onclick={() => onraisecap(runner)}>
+										{runner.concurrency_control.reason === 'opted_out'
+											? 'Enable web adjustment locally'
+											: 'Upgrade daemon'}
+									</Button>
+								{:else}
+									<span class="text-muted-foreground max-w-64 text-xs">
+										At local ceiling — relaunch locally with a higher <code>--max-concurrent</code>
+										value.
+									</span>
+								{/if}
 							{/if}
 							{#if block.verdict === 'at_capacity' && onquota}
 								<Button

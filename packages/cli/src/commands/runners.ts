@@ -30,7 +30,14 @@ import {
 } from '../daemon/store.js';
 import { parseDaemonFlags, withDaemonFlags, type DaemonFlagValues } from './daemon-flags.js';
 import { registerServiceCommands } from './runner-service.js';
-import { issueRef, keptWorkspaceRow, runRow, runnerStatusLabel, timestamp } from '../format.js';
+import {
+	issueRef,
+	keptWorkspaceRow,
+	runRow,
+	runnerConcurrencyLabel,
+	runnerStatusLabel,
+	timestamp
+} from '../format.js';
 import {
 	DEFAULT_RESUME_MAX_COST_USD,
 	DEFAULT_RESUME_MAX_TOKENS,
@@ -107,12 +114,13 @@ export function register(program: Command): void {
 			if (opts.json) return printJson(res);
 			if (res.items.length === 0) return console.log('no runners');
 			table([
-				['NAME', 'TYPE', 'STATUS', 'RUNS', 'TIER', 'LAST SEEN'],
+				['NAME', 'TYPE', 'STATUS', 'RUNS', 'CONCURRENCY', 'TIER', 'LAST SEEN'],
 				...res.items.map((r) => [
 					r.name,
 					r.type,
 					runnerStatusLabel(r),
 					`${r.active_runs}/${r.max_concurrent}`,
+					runnerConcurrencyLabel(r),
 					r.default_tier,
 					r.last_seen_at ? timestamp(r.last_seen_at) : '—'
 				])
@@ -128,6 +136,7 @@ export function register(program: Command): void {
 			console.log(
 				`active runs: ${runner.active_runs}/${runner.max_concurrent}  timeout: ${runner.max_run_minutes}m  default tier: ${runner.default_tier}`
 			);
+			console.log(`concurrency: ${runnerConcurrencyLabel(runner)}`);
 			if (runner.last_seen_at) console.log(`last seen: ${timestamp(runner.last_seen_at)}`);
 			if (runner.backoff_reason === 'rate_limit' && runner.backoff_until) {
 				console.log(

@@ -81,7 +81,9 @@ can affect other projects using it; changing only the conventions does not make 
 workflow. Starter creation itself does not add routing rules or change automation settings.
 Continue with the app's current **Agents** checklist and [Running agents](#running-agents);
 the [runner daemon guide](docs/runner-daemon.md) explains how a local runner receives the
-repository and starts its harness.
+repository and starts its harness. A machine owner can opt into web-adjustable concurrency
+with `--allow-remote-concurrency --max-concurrent N`; `N` remains a local ceiling that the
+web cannot enable or raise.
 
 ### Contributor setup
 

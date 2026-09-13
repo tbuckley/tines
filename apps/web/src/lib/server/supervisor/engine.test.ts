@@ -246,9 +246,9 @@ describe('local concurrency release', () => {
 		);
 
 		expect(released).toEqual([oldAssigned, newAssigned]);
-		expect(runById(t, running).status).toBe('running');
-		expect(runById(t, oldAssigned).status).toBe('canceled');
-		expect(runById(t, newAssigned).status).toBe('canceled');
+		expect(runById(t, running)!.status).toBe('running');
+		expect(runById(t, oldAssigned)!.status).toBe('canceled');
+		expect(runById(t, newAssigned)!.status).toBe('canceled');
 		expect(signals).toBe(2);
 	});
 });

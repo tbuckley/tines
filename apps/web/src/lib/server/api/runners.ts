@@ -902,6 +902,22 @@ export async function updateRunner(
 					runner_id: id,
 					name: patch.name ?? row.name,
 					changed,
+					...(changed.includes('max_concurrent')
+						? {
+								source: 'operator',
+								reason: 'requested',
+								concurrency: {
+									before: {
+										requested_cap: row.concurrency_requested,
+										revision: row.concurrency_revision
+									},
+									after: {
+										requested_cap: patch.concurrency_requested ?? patch.max_concurrent,
+										revision: patch.concurrency_revision ?? row.concurrency_revision
+									}
+								}
+							}
+						: {}),
 					...(patch.status !== undefined ? { status: patch.status } : {})
 				}
 			},

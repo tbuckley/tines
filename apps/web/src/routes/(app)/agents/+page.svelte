@@ -636,6 +636,15 @@
 			editTarget = null;
 			await refreshAfterDispatch();
 		} catch (err) {
+			if (err instanceof ApiError && err.code === 'concurrency_conflict') {
+				const current = err.details?.runner as Runner | undefined;
+				if (current && current.id === editTarget?.id) {
+					// Preserve unrelated unsaved fields, but require the operator to
+					// re-enter a cap against the newly loaded revision.
+					editTarget = current;
+					editMaxConcurrent = current.max_concurrent;
+				}
+			}
 			showError(err);
 		} finally {
 			savingEdit = false;
@@ -685,7 +694,7 @@
 		rs
 			.map(
 				(r) =>
-					`${r.id}:${r.online ? 1 : 0}:${r.max_concurrent}:${r.concurrency_control?.status ?? ''}:${r.concurrency_control?.revision ?? ''}:${r.concurrency_control?.applied_revision ?? ''}`
+					`${r.id}:${r.online ? 1 : 0}:${r.max_concurrent}:${r.concurrency_control?.status ?? ''}:${r.concurrency_control?.reason ?? ''}:${r.concurrency_control?.ceiling ?? ''}:${r.concurrency_control?.revision ?? ''}:${r.concurrency_control?.applied_cap ?? ''}:${r.concurrency_control?.applied_revision ?? ''}:${r.concurrency_control?.applied_at ?? ''}`
 			)
 			.sort()
 			.join(',');
