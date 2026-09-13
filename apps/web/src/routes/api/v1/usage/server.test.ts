@@ -109,6 +109,15 @@ describe('GET /api/v1/usage validation and authorization', () => {
 		expect(issues).toMatchObject({ total_count: 2, attempt_count: 3 });
 		expect((issues.items as { issue_id: string }[])[0].issue_id).toBe(first);
 		expect(issues.next_cursor).toEqual(expect.any(String));
+		const next = await invoke(
+			`kind=issues&limit=1&cursor=${encodeURIComponent(String(issues.next_cursor))}`
+		);
+		expect((next.items as { issue_id: string }[])[0].issue_id).toBe(second);
+		expect(next.previous_cursor).toEqual(expect.any(String));
+		const previous = await invoke(
+			`kind=issues&limit=1&cursor=${encodeURIComponent(String(next.previous_cursor))}`
+		);
+		expect((previous.items as { issue_id: string }[])[0].issue_id).toBe(first);
 		const runs = await invoke(`kind=runs&member=${first}`);
 		expect(runs).toMatchObject({ total_count: 1, attempt_count: 1 });
 		expect((runs.items as { id: string }[]).map((item) => item.id)).toEqual(['arun_evidence_a']);

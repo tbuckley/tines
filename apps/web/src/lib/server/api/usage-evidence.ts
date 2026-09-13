@@ -59,7 +59,7 @@ function compare(a: Candidate, b: Candidate, sort: 'cost' | 'time', direction: '
 	}
 	const time = a.at - b.at;
 	if (time) return sort === 'time' && direction === 'asc' ? time : -time;
-	return a.id.localeCompare(b.id);
+	return a.id === b.id ? 0 : a.id < b.id ? -1 : 1;
 }
 
 function filterValue(actual: string | null, requested: string | undefined) {
@@ -247,7 +247,30 @@ export async function getUsageEvidence(
 				q = q.where(
 					sql<boolean>`(COALESCE(agent_run.issue_id, ''), agent_run.ended_at, agent_run.id) > (${seek.issue}, ${seek.at}, ${seek.id})`
 				);
-			const batch = await q
+			const candidateQuery =
+				request.population === 'pending'
+					? q
+							.clearSelect()
+							.select([
+								'agent_run.id',
+								'agent_run.issue_id',
+								'agent_run.runner_id',
+								'agent_run.tier',
+								'agent_run.state_id_at_start',
+								'agent_run.created_at',
+								'issue.project_id as project_id',
+								retainedStartWorkflow.as('start_workflow_id'),
+								retainedIssueWorkflow.as('issue_workflow_id'),
+								sql<null>`NULL`.as('outcome'),
+								sql<null>`NULL`.as('ended_at'),
+								sql<null>`NULL`.as('usage'),
+								sql<null>`NULL`.as('runner_name'),
+								sql<null>`NULL`.as('issue_number'),
+								sql<null>`NULL`.as('issue_title'),
+								sql<null>`NULL`.as('project_name')
+							])
+					: q;
+			const batch = await candidateQuery
 				.orderBy(sql`COALESCE(agent_run.issue_id, '')`)
 				.orderBy('agent_run.ended_at')
 				.orderBy('agent_run.id')

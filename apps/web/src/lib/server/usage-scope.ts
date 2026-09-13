@@ -119,15 +119,33 @@ function safeTime(value: unknown): value is number {
 function validScope(value: unknown): value is UsageScopePayload {
 	if (!plain(value) || value.v !== 1 || typeof value.owner !== 'string') return false;
 	if (value.mode === 'issue')
-		return typeof value.issue === 'string' && value.issue.length > 0 && safeTime(value.cutoff);
+		return (
+			Object.keys(value).sort().join(',') === 'cutoff,issue,mode,owner,v' &&
+			typeof value.issue === 'string' &&
+			value.issue.length > 0 &&
+			safeTime(value.cutoff)
+		);
+	const filters = value.filters;
 	return (
 		value.mode === 'period' &&
+		Object.keys(value).sort().join(',') ===
+			'by,filters,from,mode,owner,timezone,timezone_source,to,v' &&
 		safeTime(value.from) &&
 		safeTime(value.to) &&
 		value.from < value.to &&
 		typeof value.timezone === 'string' &&
 		['supervisor_budget', 'utc_fallback'].includes(String(value.timezone_source)) &&
-		plain(value.filters) &&
+		plain(filters) &&
+		Object.keys(filters).every((name) =>
+			['project', 'workflow', 'state', 'runner', 'tier', 'outcome', 'accounting_status'].includes(
+				name
+			)
+		) &&
+		Object.values(filters).every((entry) => typeof entry === 'string' && entry.length > 0) &&
+		(filters.outcome === undefined ||
+			['advanced', 'stalled', 'interrupted', 'unknown'].includes(String(filters.outcome))) &&
+		(filters.accounting_status === undefined ||
+			['priced', 'unpriced', 'unreported'].includes(String(filters.accounting_status))) &&
 		['project', 'workflow', 'state', 'outcome', 'runner', 'tier'].includes(String(value.by))
 	);
 }
@@ -135,6 +153,9 @@ function validCursor(value: unknown): value is UsageCursorPayload {
 	if (!plain(value) || !plain(value.boundary)) return false;
 	return (
 		value.v === 1 &&
+		Object.keys(value).sort().join(',') ===
+			'boundary,direction,kind,member,population,scope,sort,traversal,v' &&
+		Object.keys(value.boundary).sort().join(',') === 'at,cost,id' &&
 		typeof value.scope === 'string' &&
 		['issues', 'runs'].includes(String(value.kind)) &&
 		['finalized', 'pending'].includes(String(value.population)) &&
