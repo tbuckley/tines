@@ -48,6 +48,21 @@ test.describe('Agents completed-issue costs', () => {
 		await page.reload({ waitUntil: 'networkidle' });
 		await expect(page.locator('.cohort').getByLabel('Canceled')).not.toBeChecked();
 		await expect(page.locator('.cohort').getByText('2 completed issues')).toBeVisible();
+
+		await page.locator('.cohort').getByRole('button', { name: 'View completed issues' }).click();
+		await page.locator('.cohort').getByRole('button', { name: 'Close', exact: true }).click();
+		await expect(page).not.toHaveURL(/spend_(mode|scope)=/);
+		await expect(page.locator('.cohort')).toBeHidden();
+		await expect(page.getByRole('button', { name: 'Completed issues' })).toBeFocused();
+		await page.goBack();
+		await expect(
+			page.locator('.cohort').getByRole('heading', { name: 'Contributing issues' })
+		).toBeVisible();
+		await page.keyboard.press('Escape');
+		await expect(page).not.toHaveURL(/spend_scope=/);
+		await expect(page.locator('.cohort')).toBeVisible();
+		await page.keyboard.press('Escape');
+		await expect(page.locator('.cohort')).toBeHidden();
 	});
 
 	test('keeps the completed-issue controls usable at desktop and phone widths', async ({

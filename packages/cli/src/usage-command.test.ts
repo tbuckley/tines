@@ -97,6 +97,49 @@ it('forwards retained opaque identities without metadata lookups', async () => {
 	expect(url).toContain('runner=rnr_deleted123');
 });
 
+it('uses the explicit cohort API mode and repeats exact terminal states', async () => {
+	vi.stubEnv('TINES_API_URL', 'https://usage.example.test');
+	vi.stubEnv('TINES_API_KEY', 'test-key');
+	const report = { mode: 'cohort', scope: 'frozen-cohort' };
+	const fetchMock = vi.fn(async (_input: string | URL | Request) =>
+		Promise.resolve(
+			new Response(JSON.stringify(report), {
+				status: 200,
+				headers: { 'content-type': 'application/json' }
+			})
+		)
+	);
+	vi.stubGlobal('fetch', fetchMock);
+	const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+	vi.resetModules();
+	const { program } = await import('./program.js');
+	await program.parseAsync([
+		'node',
+		'tines',
+		'usage',
+		'--cohort',
+		'--workflow',
+		'wf_retained',
+		'--done-state',
+		'wfs_closed',
+		'--done-state',
+		'wfs_canceled',
+		'--from',
+		'2026-09-01T00:00:00Z',
+		'--to',
+		'2026-09-08T00:00:00Z',
+		'--json'
+	]);
+
+	expect(fetchMock).toHaveBeenCalledOnce();
+	const url = new URL(String(fetchMock.mock.calls[0][0]));
+	expect(url.pathname).toBe('/api/v1/usage');
+	expect(url.searchParams.get('mode')).toBe('cohort');
+	expect(url.searchParams.get('workflow')).toBe('wf_retained');
+	expect(url.searchParams.getAll('done_state')).toEqual(['wfs_closed', 'wfs_canceled']);
+	expect(JSON.parse(String(log.mock.calls[0][0]))).toEqual(report);
+});
+
 it('exports all frozen evidence pages without summing page totals', async () => {
 	vi.stubEnv('TINES_API_URL', 'https://usage.example.test');
 	vi.stubEnv('TINES_API_KEY', 'test-key');

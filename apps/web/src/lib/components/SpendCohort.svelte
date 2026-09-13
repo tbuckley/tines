@@ -50,7 +50,9 @@
 	const choice = $derived(workflows.find((item) => item.id === workflow) ?? null);
 	const terminals = $derived(choice?.states.filter((state) => state.category === 'done') ?? []);
 	const effective = $derived(selected ?? terminals.map((state) => state.id));
-	const requestKey = $derived(JSON.stringify([project, window, from, to, workflow, effective]));
+	const requestKey = $derived(
+		JSON.stringify([project, window, from, to, workflow, effective, scope])
+	);
 	async function load() {
 		if (!workflow || !effective.length) return;
 		const mine = ++generation;
@@ -66,12 +68,18 @@
 				);
 			});
 			const next = await Promise.race([
-				api.getCohortUsage({
-					workflow,
-					...(project === 'all' ? {} : { project }),
-					...(window === 'custom' ? { from, to } : { window }),
-					...(selected === null ? {} : { done_state: effective })
-				}),
+				scope
+					? api.getUsageScope(scope).then((value) => {
+							if (value.mode !== 'cohort')
+								throw new Error('Evidence scope is not a cohort report.');
+							return value;
+						})
+					: api.getCohortUsage({
+							workflow,
+							...(project === 'all' ? {} : { project }),
+							...(window === 'custom' ? { from, to } : { window }),
+							...(selected === null ? {} : { done_state: effective })
+						}),
 				timeout
 			]);
 			if (mine === generation) report = next;
@@ -98,7 +106,26 @@
 			generation++;
 		};
 	});
+	function closeEvidence() {
+		onnavigate({
+			spend_scope: null,
+			spend_kind: null,
+			spend_member: null,
+			spend_population: null,
+			spend_evidence_sort: null,
+			spend_direction: null,
+			spend_cursor: null
+		});
+	}
 </script>
+
+<svelte:window
+	onkeydown={(event) => {
+		if (event.key !== 'Escape') return;
+		event.preventDefault();
+		scope ? closeEvidence() : onclose();
+	}}
+/>
 
 <section class="cohort" aria-labelledby="cohort-heading">
 	<header>
@@ -225,16 +252,8 @@
 						{direction}
 						{cursor}
 						{onnavigate}
-						onclose={() =>
-							onnavigate({
-								spend_scope: null,
-								spend_kind: null,
-								spend_member: null,
-								spend_population: null,
-								spend_evidence_sort: null,
-								spend_direction: null,
-								spend_cursor: null
-							})}
+						cohortReport={report}
+						onclose={closeEvidence}
 					/>{/key}{/if}
 		</div>{/if}
 </section>

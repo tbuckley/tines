@@ -5,6 +5,7 @@
 		type AgentRunUsageEvidence,
 		type CohortEntry,
 		type CohortIssueUsage,
+		type CohortUsageReport,
 		type IssueAttemptUsage,
 		type IssueUsageReport,
 		type UsageDiagnostics,
@@ -22,6 +23,7 @@
 		sort = 'cost',
 		direction = 'desc',
 		cursor = null,
+		cohortReport = null,
 		onnavigate,
 		onclose
 	}: {
@@ -32,6 +34,7 @@
 		sort?: 'cost' | 'time';
 		direction?: 'asc' | 'desc';
 		cursor?: string | null;
+		cohortReport?: CohortUsageReport | null;
 		onnavigate?: (changes: Record<string, string | null>) => void;
 		onclose?: () => void;
 	} = $props();
@@ -63,6 +66,23 @@
 			? new Date(value).toISOString()
 			: present(value);
 	}
+	function isCohortIssue(item: IssueAttemptUsage): item is CohortIssueUsage {
+		return 'chosen_entry' in item && 'reopening' in item;
+	}
+	function assertCohortAgreement(result: UsageEvidencePage) {
+		if (!cohortReport) return;
+		const parentTotal = member ? result.parent_matching_total : result.matching_total;
+		const parentCounters = member ? result.parent_counters : result.counters;
+		if (
+			result.from !== cohortReport.from ||
+			result.to !== cohortReport.to ||
+			result.observed_through !== cohortReport.observed_through ||
+			JSON.stringify(result.history) !== JSON.stringify(cohortReport.history) ||
+			JSON.stringify(parentCounters) !== JSON.stringify(cohortReport.counters) ||
+			JSON.stringify(parentTotal) !== JSON.stringify(cohortReport.aggregate)
+		)
+			throw new Error('Cohort evidence changed; reload the completed-issue report.');
+	}
 	async function load() {
 		const mine = ++generation;
 		loading = true;
@@ -78,6 +98,7 @@
 				cursor: cursor ?? undefined,
 				limit: 10
 			});
+			assertCohortAgreement(result);
 			if (mine === generation) page = result;
 		} catch (value) {
 			if (mine === generation)
@@ -182,13 +203,24 @@
 				)} · {page.total_count}
 				{kind} · {page.pending_count} pending
 			</p>
+			{#if page.counters && page.history && page.from !== undefined && page.to !== undefined && page.observed_through !== undefined}<p
+					class="cohort-contract"
+				>
+					Cohort selection: {page.counters.distinct_issue_count} completed · {page.counters
+						.attempt_count} attempts · {page.counters.pending_count} pending · history {page.history
+						.status} · entries [{new Date(page.from).toISOString()}, {new Date(
+						page.to
+					).toISOString()}) · observed through {new Date(page.observed_through).toISOString()}
+					{#if page.parent_counters}
+						· parent {page.parent_counters.distinct_issue_count} completed{/if}
+				</p>{/if}
 			{#if page.items.length === 0}<p>
 					{population === 'pending' ? 'No pending runs at this cutoff.' : 'No contributing runs.'}
 				</p>{/if}
 			<div class="rows">
 				{#each page.items as raw ((raw as { event_id?: string; id?: string; issue_id?: string }).event_id ?? (raw as { id?: string }).id ?? (raw as IssueAttemptUsage).issue_id)}
 					{#if kind === 'issues'}
-						{@const item = raw as CohortIssueUsage}
+						{@const item = raw as IssueAttemptUsage}
 						<article>
 							<button
 								type="button"
@@ -206,27 +238,28 @@
 											? `Unavailable issue (${item.issue_id})`
 											: 'Unknown issue'}</strong
 								><small
-									>{item.issue_ref?.title ?? 'Metadata unavailable'} · {item.attempt_count} runs ·
-									{item.chosen_entry.state_name ?? item.chosen_entry.state_id} at {new Date(
-										item.chosen_entry.created_at
-									).toISOString()} · {item.reopening.value === true
-										? 'reopened since entry'
-										: item.reopening.value === null
-											? 'reopening history unknown'
-											: 'not reopened in available history'}</small
+									>{item.issue_ref?.title ?? 'Metadata unavailable'} · {item.attempt_count} runs{#if isCohortIssue(item)}
+										·
+										{item.chosen_entry.state_name ?? item.chosen_entry.state_id} at {new Date(
+											item.chosen_entry.created_at
+										).toISOString()} · {item.reopening.value === true
+											? 'reopened since entry'
+											: item.reopening.value === null
+												? 'reopening history unknown'
+												: 'not reopened in available history'}{/if}</small
 								></button
 							>
-							<div class="issue-actions">
-								<UsageCostCell aggregate={item.aggregate} />
-								<button
-									type="button"
-									disabled={lifetimeLoading === item.issue_id}
-									onclick={() => loadLifetime(item.issue_id)}
-									>{lifetimeLoading === item.issue_id
-										? 'Loading lifetime…'
-										: 'Lifetime through now'}</button
-								>
-							</div>
+							{#if isCohortIssue(item)}<div class="issue-actions">
+									<UsageCostCell aggregate={item.aggregate} />
+									<button
+										type="button"
+										disabled={lifetimeLoading === item.issue_id}
+										onclick={() => loadLifetime(item.issue_id)}
+										>{lifetimeLoading === item.issue_id
+											? 'Loading lifetime…'
+											: 'Lifetime through now'}</button
+									>
+								</div>{:else}<UsageCostCell aggregate={item.aggregate} />{/if}
 						</article>
 					{:else if kind === 'entries'}
 						{@const item = raw as CohortEntry}

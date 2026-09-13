@@ -439,6 +439,13 @@ export interface UsageEvidencePage<T extends UsageEvidenceItem = UsageEvidenceIt
 	direction: 'asc' | 'desc';
 	matching_total: UsageAggregate;
 	parent_matching_total?: UsageAggregate;
+	/** Cohort reconciliation values are frozen with the signed report scope. */
+	counters?: CohortCounters;
+	parent_counters?: CohortCounters;
+	history?: CohortHistory;
+	from?: number;
+	to?: number;
+	observed_through?: number;
 	attempt_count: number;
 	pending_count: number;
 }

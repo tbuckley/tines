@@ -115,6 +115,11 @@
 		void navigate(changes, replace);
 		expanded = new Set();
 	}
+	async function closeCohort() {
+		await navigate(clearSpendEvidence({ spend_mode: 'period' }));
+		expanded = new Set();
+		requestAnimationFrame(() => document.getElementById('completed-issues-button')?.focus());
+	}
 
 	function errorMessage(value: unknown) {
 		return value instanceof ApiError || value instanceof Error
@@ -292,6 +297,7 @@
 	</div>
 
 	{#if selection.mode === 'period'}<button
+			id="completed-issues-button"
 			type="button"
 			onclick={() => update({ spend_mode: 'cohort' })}>Completed issues</button
 		>{:else}<SpendCohort
@@ -310,7 +316,7 @@
 			direction={selection.evidenceDirection}
 			cursor={selection.cursor}
 			onnavigate={(changes) => update(changes)}
-			onclose={() => update({ spend_mode: 'period' })}
+			onclose={closeCohort}
 		/>{/if}
 
 	<div aria-live="polite" aria-busy={status === 'loading' || status === 'refreshing'}>

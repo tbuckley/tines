@@ -152,6 +152,15 @@ describe('GET /api/v1/usage validation and authorization', () => {
 			endedAt: NOW + 10,
 			usage: JSON.stringify({ cost_usd: 99, cost_source: 'provider' })
 		});
+		addRun(t, {
+			id: 'arun_cohort_exact_cutoff',
+			issueId: finalized,
+			runnerId: runner,
+			status: 'completed',
+			createdAt: NOW - 4,
+			endedAt: NOW,
+			usage: JSON.stringify({ cost_usd: 77, cost_source: 'provider' })
+		});
 		const report = await get(
 			t,
 			`?mode=cohort&workflow=wf_standard&from=${new Date(NOW - 100).toISOString()}&to=${new Date(NOW).toISOString()}`
@@ -170,20 +179,39 @@ describe('GET /api/v1/usage validation and authorization', () => {
 			return response.json() as Promise<Record<string, unknown>>;
 		};
 		const issues = await evidence('kind=issues');
-		expect(issues).toMatchObject({ total_count: 2, attempt_count: 2, pending_count: 1 });
+		expect(issues).toMatchObject({
+			total_count: 2,
+			attempt_count: 3,
+			pending_count: 2,
+			from: NOW - 100,
+			to: NOW,
+			observed_through: expect.any(Number),
+			counters: { distinct_issue_count: 2, attempt_count: 3, pending_count: 2 },
+			history: { qualifying_fact_count: 2 }
+		});
 		expect((issues.items as { issue_id: string }[]).map((item) => item.issue_id).sort()).toEqual([
 			finalized,
 			noRun
 		]);
 		const pending = await evidence(`kind=runs&population=pending&member=${finalized}`);
 		expect(pending).toMatchObject({
-			total_count: 1,
-			attempt_count: 2,
-			pending_count: 1,
+			total_count: 2,
+			attempt_count: 3,
+			pending_count: 2,
 			matching_total: { cost_usd_exact: '2' },
-			items: [{ id: 'arun_cohort_pending' }]
+			parent_matching_total: { cost_usd_exact: '2' },
+			counters: { distinct_issue_count: 1, attempt_count: 3, pending_count: 2 },
+			parent_counters: { distinct_issue_count: 2, attempt_count: 3, pending_count: 2 }
 		});
-		expect(pending).not.toHaveProperty('items.0.usage');
+		expect((pending.items as { id: string }[]).map((item) => item.id).sort()).toEqual([
+			'arun_cohort_exact_cutoff',
+			'arun_cohort_pending'
+		]);
+		for (const item of pending.items as Record<string, unknown>[]) {
+			expect(item).not.toHaveProperty('usage');
+			expect(item).not.toHaveProperty('ended_at');
+			expect(item).not.toHaveProperty('outcome');
+		}
 		const empty = await evidence(`kind=runs&member=${noRun}`);
 		expect(empty).toMatchObject({ total_count: 0, items: [] });
 		const entries = await evidence('kind=entries&limit=1');
@@ -201,6 +229,59 @@ describe('GET /api/v1/usage validation and authorization', () => {
 			total_count: 2,
 			items: [{ event_id: 'evt_cohort_finalized', qualifies: 1, chosen: 1 }]
 		});
+	});
+
+	it('walks more than one hundred equal-key no-run members and entries exactly once', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const expectedIssues: string[] = [];
+		const expectedEntries: string[] = [];
+		for (let index = 0; index < 105; index++) {
+			const suffix = String(index).padStart(3, '0');
+			const issue = addIssue(t, { id: `iss_cohort_many_${suffix}`, state: CLOSED });
+			const event = `evt_cohort_many_${suffix}`;
+			completionEntry(t, event, issue, NOW - 20);
+			expectedIssues.push(issue);
+			expectedEntries.push(event);
+		}
+		const report = await get(
+			t,
+			`?mode=cohort&workflow=wf_standard&from=${new Date(NOW - 100).toISOString()}&to=${new Date(NOW).toISOString()}`
+		);
+		expect(report.body).toMatchObject({
+			counters: { distinct_issue_count: 105, zero_run_issue_count: 105, attempt_count: 0 }
+		});
+
+		const walk = async (kind: 'issues' | 'entries') => {
+			const found: string[] = [];
+			let cursor: string | null = null;
+			do {
+				const url = new URL('http://test/api/v1/usage/evidence');
+				url.searchParams.set('scope', String(report.body.scope));
+				url.searchParams.set('kind', kind);
+				url.searchParams.set('limit', '100');
+				if (cursor) url.searchParams.set('cursor', cursor);
+				const response = await EVIDENCE_GET({
+					locals: { user: { id: USER, name: 'alice' } },
+					platform: { env: t.env, ctx: { waitUntil: () => {} } },
+					request: new Request(url),
+					url
+				} as unknown as Parameters<typeof EVIDENCE_GET>[0]);
+				expect(response.status).toBe(200);
+				const page = (await response.json()) as {
+					items: { issue_id?: string; event_id?: string }[];
+					next_cursor: string | null;
+					total_count: number;
+				};
+				expect(page.total_count).toBe(105);
+				found.push(...page.items.map((item) => item.event_id ?? item.issue_id!));
+				cursor = page.next_cursor;
+			} while (cursor);
+			return found;
+		};
+
+		expect(await walk('issues')).toEqual(expectedIssues);
+		expect(await walk('entries')).toEqual([...expectedEntries].reverse());
 	});
 
 	it('rejects contradictory and unprovable cohort selections', async () => {

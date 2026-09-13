@@ -119,6 +119,24 @@ function printEvidence(page: UsageEvidencePage): void {
 	console.log(
 		`Matching total: ${money(page.matching_total.cost_usd)} · ${page.attempt_count} attempts · ${page.pending_count} pending`
 	);
+	if (
+		page.counters &&
+		page.history &&
+		page.from !== undefined &&
+		page.to !== undefined &&
+		page.observed_through !== undefined
+	) {
+		console.log(
+			`Cohort selection: ${page.counters.distinct_issue_count} completed · ${page.counters.attempt_count} attempts · ${page.counters.pending_count} pending`
+		);
+		console.log(
+			`Entries [${new Date(page.from).toISOString()}, ${new Date(page.to).toISOString()}) · history ${page.history.status} · observed through ${new Date(page.observed_through).toISOString()}`
+		);
+		if (page.parent_counters)
+			console.log(
+				`Parent cohort: ${page.parent_counters.distinct_issue_count} completed · ${money(page.parent_matching_total?.cost_usd ?? null)}`
+			);
+	}
 	if (page.next_cursor) console.log(`Next cursor: ${page.next_cursor}`);
 }
 

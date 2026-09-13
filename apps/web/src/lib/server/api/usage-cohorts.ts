@@ -190,6 +190,7 @@ type CohortEvidenceBuild = {
 	memberAttempts: number;
 	memberPending: number;
 	memberAggregate: ReturnType<typeof finalizeUsage> | null;
+	memberCounters: CohortCounters | null;
 	acc: ReturnType<typeof createUsageAccumulator>;
 };
 
@@ -461,6 +462,18 @@ async function buildCohortUsage(
 					evidence.memberAttempts = current.attempts;
 					evidence.memberPending = current.pending;
 					evidence.memberAggregate = aggregate;
+					const memberState = newCounterState();
+					memberState.distinct = 1;
+					memberState.attempts = current.attempts;
+					memberState.pending = current.pending;
+					memberState.zero = current.attempts === 0 ? 1 : 0;
+					memberState.pendingOnly =
+						current.attempts > 0 && aggregate.finalized_run_count === 0 ? 1 : 0;
+					memberState.fully = fully ? 1 : 0;
+					memberState.reopened = current.row.reopened ? 1 : 0;
+					memberState.unknownReopening =
+						!current.row.reopened && current.row.unknown_later_entry_count ? 1 : 0;
+					evidence.memberCounters = finishCounters(memberState, aggregate);
 				}
 			}
 			if (evidence.request.kind === 'issues' && memberMatches) {
@@ -749,6 +762,7 @@ export async function getCohortUsageEvidence(
 		memberAttempts: 0,
 		memberPending: 0,
 		memberAggregate: null,
+		memberCounters: null,
 		acc: createUsageAccumulator()
 	};
 	const report = await buildCohortUsage(
@@ -884,6 +898,12 @@ export async function getCohortUsageEvidence(
 		direction: request.direction,
 		matching_total: request.member ? evidence.memberAggregate! : report.aggregate,
 		parent_matching_total: request.member ? report.aggregate : undefined,
+		counters: request.member ? evidence.memberCounters! : report.counters,
+		parent_counters: request.member ? report.counters : undefined,
+		history: report.history,
+		from: report.from,
+		to: report.to,
+		observed_through: report.observed_through,
 		attempt_count: request.member ? evidence.memberAttempts : report.counters.attempt_count,
 		pending_count: request.member ? evidence.memberPending : report.counters.pending_count
 	};

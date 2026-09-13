@@ -125,6 +125,34 @@ describe('completion cohort usage', () => {
 		expect(report?.counters.known_cost_per_issue.coverage).toBe('empty');
 	});
 
+	it('uses the recorded entry project rather than the issue current project', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		t.sqlite
+			.prepare('INSERT INTO project (id,user_id,name,created_at,updated_at) VALUES (?,?,?,?,?)')
+			.run('prj_recorded_elsewhere', USER, 'Elsewhere', NOW, NOW);
+		const issue = addIssue(t, { id: 'iss_moved_after_completion', state: CLOSED });
+		entry(t, 'evt_other_project', issue, NOW - 20, CLOSED, 'done');
+		t.sqlite
+			.prepare('UPDATE event SET project_id=? WHERE id=?')
+			.run('prj_recorded_elsewhere', 'evt_other_project');
+
+		const report = await getCohortUsage(
+			t.db,
+			USER,
+			{
+				workflow: 'wf_standard',
+				project: PROJECT,
+				from: new Date(NOW - 100).toISOString(),
+				to: new Date(NOW).toISOString()
+			},
+			NOW + 100
+		);
+
+		expect(report?.counters.distinct_issue_count).toBe(0);
+		expect(report?.history.qualifying_fact_count).toBe(0);
+	});
+
 	it('does not claim a retained event whose current issue identity belongs to another account', async () => {
 		const t = createTestDb();
 		seedBase(t);

@@ -10,6 +10,7 @@ const size = Number(sizeArg?.slice(7) ?? 10_000);
 const allPriced = process.argv.includes('--all-priced');
 const equalTime = process.argv.includes('--equal-time');
 const noPriced = process.argv.includes('--no-priced');
+const cohortNoRun = process.argv.includes('--cohort-no-run');
 if (allPriced && noPriced) throw new Error('--all-priced and --no-priced are mutually exclusive');
 if (!Number.isSafeInteger(size) || size < 10_000 || size > 250_000)
 	throw new Error('--size must be an integer from 10000 through 250000');
@@ -81,6 +82,17 @@ execute(`
 	INSERT INTO agent_run (id,user_id,issue_id,runner_id,status,tier,state_id_at_start,log,created_at)
 	SELECT printf('pending_%03d',n),'scale_user','scale_issue','scale_runner','running','balanced',
 		'wfs_std_open','',${toMs - 1000}-n FROM pending;
+	${
+		cohortNoRun
+			? `WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM seq WHERE n < ${size})
+	INSERT INTO issue (id,project_id,number,title,description,workflow_id,state_id,created_at,updated_at)
+	SELECT printf('cohort_%06d',n),'scale_project',100+n,printf('No-run %d',n),'','wf_standard','wfs_std_closed',${fromMs},${fromMs} FROM seq;
+	WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM seq WHERE n < ${size})
+	INSERT INTO event (id,user_id,type,actor_user_id,issue_id,project_id,payload,created_at)
+	SELECT printf('cohort_evt_%06d',n),'scale_user','issue.transitioned','scale_user',printf('cohort_%06d',n),'scale_project',
+		'{"state_entry_version":1,"workflow_id":"wf_standard","workflow_name":"Standard","to_state_id":"wfs_std_closed","to_state_name":"Closed","to_state_category":"done"}',${fromMs + 2} FROM seq;`
+			: ''
+	}
 `);
 
 function waitForWorker(url, child) {
@@ -375,14 +387,18 @@ try {
 	if (cohortTraces.length > 49)
 		throw new Error(`cohort query bound exceeded: ${cohortTraces.length} > 49`);
 	if (
-		cohort.counters.distinct_issue_count !== 1 ||
+		cohort.counters.distinct_issue_count !== 1 + (cohortNoRun ? size : 0) ||
 		cohort.counters.attempt_count !== size + 100 ||
 		cohort.counters.pending_count !== 100 ||
+		cohort.counters.zero_run_issue_count !== (cohortNoRun ? size : 0) ||
 		cohort.aggregate.finalized_run_count !== size
 	)
 		throw new Error('completion cohort huge-member population mismatch');
+	const cohortRowsRead = cohortTraces.reduce((sum, trace) => sum + trace.rows_read, 0);
+	if (cohortRowsRead > size * (cohortNoRun ? 60 : 35) + 20_000)
+		throw new Error(`cohort rows_read bound exceeded: ${cohortRowsRead}`);
 	const cohortEvidenceResponse = await fetch(
-		`${baseUrl}/api/v1/usage/evidence?scope=${encodeURIComponent(cohort.scope)}&kind=issues&limit=10`,
+		`${baseUrl}/api/v1/usage/evidence?scope=${encodeURIComponent(cohort.scope)}&kind=issues&member=scale_issue&limit=10`,
 		{ headers: { authorization: `Bearer ${apiKey}` } }
 	);
 	const cohortEvidence = await cohortEvidenceResponse.json();
@@ -393,6 +409,22 @@ try {
 		cohortEvidence.items[0]?.pending_count !== 100
 	)
 		throw new Error('completion cohort issue evidence mismatch');
+	if (cohortNoRun) {
+		for (const [kind, direction, expected] of [
+			['issues', 'asc', 'scale_issue'],
+			['issues', 'desc', `cohort_${String(size).padStart(6, '0')}`],
+			['entries', 'asc', 'scale_completion'],
+			['entries', 'desc', `cohort_evt_${String(size).padStart(6, '0')}`]
+		]) {
+			const response = await fetch(
+				`${baseUrl}/api/v1/usage/evidence?scope=${encodeURIComponent(cohort.scope)}&kind=${kind}&sort=time&direction=${direction}&limit=1`,
+				{ headers: { authorization: `Bearer ${apiKey}` } }
+			);
+			const page = await response.json();
+			if (!response.ok || (page.items[0]?.event_id ?? page.items[0]?.issue_id) !== expected)
+				throw new Error(`completion cohort ${kind} ${direction} boundary mismatch`);
+		}
+	}
 	const cliRaw = execFileSync(
 		'node',
 		[
@@ -420,6 +452,34 @@ try {
 	};
 	if (JSON.stringify(comparable(cli)) !== JSON.stringify(comparable(body)))
 		throw new Error('source CLI and HTTP accounting differ');
+	const cohortCli = JSON.parse(
+		execFileSync(
+			'node',
+			[
+				fileURLToPath(new URL('../../../packages/cli/dist/index.js', import.meta.url)),
+				'usage',
+				'--url',
+				baseUrl,
+				'--api-key',
+				apiKey,
+				'--cohort',
+				'--workflow',
+				'wf_standard',
+				'--from',
+				new Date(fromMs).toISOString(),
+				'--to',
+				new Date(toMs).toISOString(),
+				'--json'
+			],
+			{ encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }
+		)
+	);
+	if (
+		cohortCli.mode !== 'cohort' ||
+		JSON.stringify(cohortCli.counters) !== JSON.stringify(cohort.counters) ||
+		JSON.stringify(cohortCli.aggregate) !== JSON.stringify(cohort.aggregate)
+	)
+		throw new Error('source CLI completion cohort differs from HTTP');
 	const signedCliArgs = [
 		fileURLToPath(new URL('../../../packages/cli/dist/index.js', import.meta.url)),
 		'usage',
@@ -532,7 +592,9 @@ try {
 			attempts: cohort.counters.attempt_count,
 			pending: cohort.counters.pending_count,
 			queries: cohortTraces.length,
-			rows_read: cohortTraces.reduce((sum, trace) => sum + trace.rows_read, 0),
+			rows_read: cohortRowsRead,
+			zero_run_issues: cohort.counters.zero_run_issue_count,
+			no_run_scale_enabled: cohortNoRun,
 			issue_evidence_reconciled: true
 		},
 		independent_oracle: oracle,
@@ -547,6 +609,7 @@ try {
 			evidence_pages: evidenceWorkerQueries
 		},
 		source_cli_exact_match: true,
+		source_cli_cohort_exact_match: true,
 		source_cli_evidence_items: cliEvidenceItems,
 		source_cli_evidence_resummed_cost: cliEvidenceCost,
 		source_cli_text_disclosure: cliTextDisclosure
