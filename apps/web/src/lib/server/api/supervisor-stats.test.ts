@@ -328,6 +328,32 @@ describe('loadStageStats', () => {
 });
 
 describe('loadSentBackDrilldown', () => {
+	it('chunks large issue sets and ignores comments after the newest transition', async () => {
+		const t = setup();
+		for (let index = 0; index < 101; index++) {
+			const issue = addIssue(t, {
+				id: `iss_evidence_${index}`,
+				state: STAGE_A,
+				workflow: 'wf_two'
+			});
+			addComment(t, { issueId: issue, body: `before ${index}`, at: NOW - DAY - MIN });
+			addTransitionEvent(t, {
+				issueId: issue,
+				apiKeyId: null,
+				at: NOW - DAY,
+				from: STAGE_B,
+				to: STAGE_A
+			});
+			addComment(t, { issueId: issue, body: `after ${index}`, at: NOW - HOUR });
+		}
+		const detail = await loadSentBackDrilldown(t.db, USER, { state: STAGE_B }, NOW);
+		expect(detail.items).toHaveLength(101);
+		expect(detail.items.map((item) => item.comment?.excerpt)).toEqual(
+			expect.arrayContaining(['before 0', 'before 100'])
+		);
+		expect(detail.items.some((item) => item.comment?.excerpt.startsWith('after'))).toBe(false);
+	});
+
 	it('names the transition comment and prompt version in force', async () => {
 		const t = setup();
 		const issue = addIssue(t, { id: 'iss_1', state: STAGE_A, workflow: 'wf_two' });
