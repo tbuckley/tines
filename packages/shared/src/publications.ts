@@ -56,6 +56,32 @@ export interface PublicationReceipt extends PublicationHashes {
 	status_version: number;
 }
 
+export interface PublishPublicationRequest {
+	review_digest: string;
+	sharing_rights: true;
+	exact_content: true;
+	reviewed_repo_ids: string[];
+}
+
+export interface PublicationOwnerResult {
+	receipt: PublicationReceipt;
+	owner_state: 'published' | 'withdrawn';
+	host_state: 'active' | 'removed';
+	status_version: number;
+}
+
+export interface PublicationOwnerItem extends PublicationHashes {
+	candidate_id: string;
+	snapshot_id: string;
+	public_url: string;
+	published_at: number;
+	metadata: PublicationMetadata;
+	source_workflow_id: string | null;
+	owner_state: 'published' | 'withdrawn';
+	host_state: 'active' | 'removed';
+	status_version: number;
+}
+
 export interface PublicWorkflowSnapshot extends PublicationHashes {
 	snapshot_id: string;
 	metadata: PublicationMetadata;
