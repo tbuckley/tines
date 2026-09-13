@@ -2,6 +2,12 @@
 
 Two measurements, one modelled and one real.
 
+## Weekly stats: `pnpm --filter web perf:stats`
+
+The opt-in weekly-stats probe constructs 524 issues, 28 active states, 1,525 runs and 40 marker-style windows. It reports the CPU time for the old repeated-preparation shape and the shared prepared-index shape, and asserts that their complete visit checksum matches. It is excluded from the normal unit suite and has no wall-clock gate because local CPU timings vary.
+
+Use the API and authenticated page for end-to-end measurements after building an isolated Worker. Collect ten sequential requests, report every total plus `Server-Timing`, and calculate median and nearest-rank p95 separately for `/api/v1/supervisor/stats`, `/agents`, and lazy sent-back evidence. Test unfiltered, project-filtered, and `compare=none` API variants. The 2026-09-13 production-shaped baseline measured authenticated `/agents` at 279 ms median and 316 ms p95; this is below the one-second rollup trigger and does not promise production network latency.
+
 ## Modelled: `pnpm --filter web perf:nav`
 
 `apps/web/src/lib/server/api/nav-perf.test.ts` runs the real route `load`

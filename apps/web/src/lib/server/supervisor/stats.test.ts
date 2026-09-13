@@ -3,10 +3,13 @@ import {
 	bindRuns,
 	bucketOutcome,
 	buildVisits,
+	computePreparedStageStats,
 	computeStageStats,
+	evaluatePreparedState,
 	isSentBack,
 	median,
 	percentile,
+	prepareStageStats,
 	type StatsEvent,
 	type StatsInput,
 	type StatsRun,
@@ -126,6 +129,28 @@ function input(over: Partial<StatsInput> = {}): StatsInput {
 }
 
 const stateMap = new Map(ENG.map((s) => [s.id, s]));
+
+describe('prepared stage stats', () => {
+	it('matches the compatibility wrapper and evaluates only active states with work', () => {
+		const events = [
+			ev({ issue_id: 'iss_prepared', created_at: NOW - DAY, to_state_id: 'st_rev' }),
+			ev({
+				issue_id: 'iss_prepared',
+				created_at: NOW - HOUR,
+				from_state_id: 'st_rev',
+				to_state_id: 'st_impl'
+			})
+		];
+		const value = input({ events });
+		const prepared = prepareStageStats(value);
+		expect(
+			computePreparedStageStats(prepared, { now: NOW, windowMs: WINDOW, compare: true })
+		).toEqual(computeStageStats(value));
+		expect(evaluatePreparedState(prepared, 'st_rev', NOW - WINDOW, NOW)?.exits).toBe(1);
+		expect(evaluatePreparedState(prepared, 'st_human', NOW - WINDOW, NOW)).toBeNull();
+		expect(evaluatePreparedState(prepared, 'unknown', NOW - WINDOW, NOW)).toBeNull();
+	});
+});
 
 describe('percentile', () => {
 	it('is nearest-rank and handles the edges', () => {
