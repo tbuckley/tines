@@ -1851,6 +1851,8 @@ export interface Runner {
 	last_seen_at: number | null;
 	/** Last capability assertion from this daemon boot; null means a legacy daemon. */
 	effort_capabilities: EffortCapabilities | null;
+	/** Exact-model effort choices projected by the server; null means unknown/unsupported. */
+	effort_models: Record<string, string[]> | null;
 	/**
 	 * Local runners: the daemon is finishing its in-flight runs and will exit
 	 * for its service manager to relaunch a newer version. Nothing new is

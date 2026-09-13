@@ -637,6 +637,12 @@
 	/** Tiers apply unless the runner has a fixed configuration (custom harness). */
 	const editTiersApply = $derived(editTarget !== null && editTarget.tier_models !== null);
 
+	function effortChoices(runner: Runner | null, tier: ModelTier, modelOverride = ''): string[] {
+		if (!runner) return [];
+		const model = modelOverride.trim() || runner.tier_models?.[tier] || '';
+		return runner.effort_models?.[model] ?? [];
+	}
+
 	const bootstrapCommand = $derived.by(() => {
 		const origin = typeof location !== 'undefined' ? location.origin : '<tines-url>';
 		const parts = [
@@ -865,6 +871,19 @@
 	let ruleOverrideEffort = $state('');
 	let savingRule = $state(false);
 	let ruleWarnings = $state<ShadowWarning[]>([]);
+	const wildcardEffortChoices = $derived(
+		[
+			...new Set(data.runners.flatMap((runner) => Object.values(runner.effort_models ?? {}).flat()))
+		].sort()
+	);
+
+	function targetEffortChoices(target: (typeof ruleTargets)[number]): string[] {
+		const runner = data.runners.find((candidate) => candidate.id === target.runner_id);
+		if (!runner) return [];
+		const tier = target.tier || runner.default_tier;
+		const override = runner.tiers?.[tier]?.model ?? '';
+		return effortChoices(runner, tier, override);
+	}
 
 	/**
 	 * The supervisor only dispatches issues in active-category states, so only
@@ -2118,17 +2137,23 @@
 								oninput={(e) =>
 									(editTierModels = { ...editTierModels, [tier]: e.currentTarget.value })}
 							/>
-							{#if editTarget.type === 'claude_managed'}
+							{#if editTarget.type === 'claude_managed' || editTarget.type === 'local'}
+								{@const choices = effortChoices(editTarget, tier, editTierModels[tier] ?? '')}
 								<Select
 									class="w-28"
 									aria-label={`Effort for ${tier}`}
 									value={editTierEfforts[tier] ?? ''}
-									disabled={(editTierModels[tier] ?? '').trim() === ''}
+									disabled={(editTierModels[tier] ?? '').trim() === '' || choices.length === 0}
 									onchange={(e) =>
 										(editTierEfforts = { ...editTierEfforts, [tier]: e.currentTarget.value })}
 								>
 									<option value="">effort —</option>
-									{#each ['low', 'medium', 'high', 'xhigh', 'max'] as effort (effort)}
+									{#if editTierEfforts[tier] && !choices.includes(editTierEfforts[tier])}
+										<option value={editTierEfforts[tier]}
+											>{editTierEfforts[tier]} (incompatible)</option
+										>
+									{/if}
+									{#each choices as effort (effort)}
 										<option value={effort}>{effort}</option>
 									{/each}
 								</Select>
@@ -2402,13 +2427,15 @@
 					{#each MODEL_TIERS as tier (tier)}<option value={tier}>{tier}</option>{/each}
 				</Select>
 				<label class="text-sm font-medium" for="rule-override-effort">Effort (optional)</label>
-				<Input
-					id="rule-override-effort"
-					bind:value={ruleOverrideEffort}
-					placeholder="inherit"
-					pattern="[a-z][a-z0-9_-]*"
-					maxlength={32}
-				/>
+				<Select id="rule-override-effort" bind:value={ruleOverrideEffort}>
+					<option value="">inherit</option>
+					{#if ruleOverrideEffort && !wildcardEffortChoices.includes(ruleOverrideEffort)}
+						<option value={ruleOverrideEffort}>{ruleOverrideEffort} (unavailable)</option>
+					{/if}
+					{#each wildcardEffortChoices as effort (effort)}
+						<option value={effort}>{effort}</option>
+					{/each}
+				</Select>
 				<p class="text-muted-foreground text-xs">
 					Uses runners from the next lower-priority matching rule. Effort is checked against each
 					final model at dispatch.
@@ -2423,6 +2450,7 @@
 			<div class="space-y-1.5">
 				<p class="text-sm font-medium">Targets (preference order)</p>
 				{#each ruleTargets as target, i (i)}
+					{@const choices = targetEffortChoices(target)}
 					<div class="flex items-center gap-1.5">
 						<span class="text-muted-foreground w-4 text-right text-xs">{i + 1}.</span>
 						<Select
@@ -2438,16 +2466,21 @@
 								>
 							{/each}
 						</Select>
-						<Input
+						<Select
 							class="w-28"
 							aria-label={`Target ${i + 1} effort`}
-							placeholder="effort"
-							pattern="[a-z][a-z0-9_-]*"
-							maxlength={32}
 							value={target.effort}
-							oninput={(e) =>
+							onchange={(e) =>
 								(ruleTargets[i] = { ...ruleTargets[i], effort: e.currentTarget.value })}
-						/>
+						>
+							<option value="">inherit</option>
+							{#if target.effort && !choices.includes(target.effort)}
+								<option value={target.effort}>{target.effort} (incompatible)</option>
+							{/if}
+							{#each choices as effort (effort)}
+								<option value={effort}>{effort}</option>
+							{/each}
+						</Select>
 						<Select
 							class="w-32"
 							aria-label={`Target ${i + 1} tier`}

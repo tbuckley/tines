@@ -5,11 +5,13 @@ import {
 	DEFAULT_RESUME_MAX_TURNS,
 	DEFAULT_RESUME_WINDOW_HOURS,
 	DEFAULT_MANAGED_RUN_COST_USD,
+	MANAGED_CLAUDE_EFFORTS,
 	MODEL_TIERS,
 	RUNNER_NAME_PATTERN,
 	RUNNER_ONLINE_WINDOW_MS,
 	RUNNER_TYPES,
 	type CreateRunnerRequest,
+	type EffortCapabilitiesV1,
 	type ModelTier,
 	type RegisterRunnerRequest,
 	type Runner,
@@ -367,6 +369,27 @@ function serializeRunner(row: RunnerRow, now = Date.now()): Runner {
 	} catch {
 		// An unreadable budget renders as "no limits" (and enforces nothing).
 	}
+	let effortCapabilities: Runner['effort_capabilities'] = null;
+	try {
+		effortCapabilities = row.effort_capabilities
+			? (JSON.parse(row.effort_capabilities) as Runner['effort_capabilities'])
+			: null;
+	} catch {
+		// Unreadable assertions advertise no choices and fail closed on save/dispatch.
+	}
+	const effortModels =
+		row.type === 'claude_managed'
+			? Object.fromEntries(
+					Object.entries(MANAGED_CLAUDE_EFFORTS).map(([model, efforts]) => [model, [...efforts]])
+				)
+			: effortCapabilities?.version === 1 && 'models' in effortCapabilities
+				? Object.fromEntries(
+						(effortCapabilities as EffortCapabilitiesV1).models.map(({ model, efforts }) => [
+							model,
+							efforts
+						])
+					)
+				: null;
 	return {
 		id: row.id,
 		type: row.type as RunnerType,
@@ -387,9 +410,8 @@ function serializeRunner(row: RunnerRow, now = Date.now()): Runner {
 		config,
 		online: runnerOnline(row, now),
 		last_seen_at: row.last_seen_at,
-		effort_capabilities: row.effort_capabilities
-			? (JSON.parse(row.effort_capabilities) as Runner['effort_capabilities'])
-			: null,
+		effort_capabilities: effortCapabilities,
+		effort_models: effortModels,
 		draining: row.draining === 1,
 		launch_failures: row.launch_failures,
 		backoff_until: row.backoff_until,

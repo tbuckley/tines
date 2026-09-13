@@ -17,7 +17,7 @@ import {
 	type QueueVerdict,
 	type RoutingTarget
 } from '@tines/shared';
-import { supportedEfforts, type EffortCapabilities } from '@tines/shared';
+import { MANAGED_CLAUDE_EFFORTS, supportedEfforts, type EffortCapabilities } from '@tines/shared';
 
 // ---------------------------------------------------------------------------
 // Rule matching (winner-take-all; project above state — see routing.ts)
@@ -296,17 +296,6 @@ export interface EffortResolution {
 	compatible: boolean;
 	reason: string | null;
 }
-
-const MANAGED_CLAUDE_EFFORTS: Record<string, readonly string[]> = {
-	'claude-fable-5-1': ['low', 'medium', 'high', 'xhigh', 'max'],
-	'claude-fable-5': ['low', 'medium', 'high', 'xhigh', 'max'],
-	'claude-opus-5': ['low', 'medium', 'high', 'xhigh', 'max'],
-	'claude-sonnet-5': ['low', 'medium', 'high', 'xhigh', 'max'],
-	'claude-opus-4-8': ['low', 'medium', 'high', 'xhigh', 'max'],
-	'claude-opus-4-7': ['low', 'medium', 'high', 'xhigh', 'max'],
-	'claude-opus-4-6': ['low', 'medium', 'high', 'max'],
-	'claude-sonnet-4-6': ['low', 'medium', 'high', 'max']
-};
 
 /** Resolve intent and eligibility against the final exact model. */
 export function resolveEffort(

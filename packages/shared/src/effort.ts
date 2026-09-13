@@ -42,6 +42,18 @@ export interface EffortCapabilitiesV1 {
 	discovery_error?: string;
 }
 
+/** Verified managed-provider table; servers project this to clients. */
+export const MANAGED_CLAUDE_EFFORTS: Readonly<Record<string, readonly string[]>> = {
+	'claude-fable-5-1': ['low', 'medium', 'high', 'xhigh', 'max'],
+	'claude-fable-5': ['low', 'medium', 'high', 'xhigh', 'max'],
+	'claude-opus-5': ['low', 'medium', 'high', 'xhigh', 'max'],
+	'claude-sonnet-5': ['low', 'medium', 'high', 'xhigh', 'max'],
+	'claude-opus-4-8': ['low', 'medium', 'high', 'xhigh', 'max'],
+	'claude-opus-4-7': ['low', 'medium', 'high', 'xhigh', 'max'],
+	'claude-opus-4-6': ['low', 'medium', 'high', 'max'],
+	'claude-sonnet-4-6': ['low', 'medium', 'high', 'max']
+};
+
 export type EffortCapabilities = EffortCapabilitiesV1 | { version: number; reason: string };
 
 export function isEffortToken(value: unknown): value is string {
