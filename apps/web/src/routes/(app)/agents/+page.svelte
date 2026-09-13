@@ -2452,7 +2452,8 @@
 				{#each ruleTargets as target, i (i)}
 					{@const choices = targetEffortChoices(target)}
 					<div
-						class="grid gap-2 rounded-md border p-2 sm:grid-cols-[minmax(12rem,1fr)_7rem_8rem_auto] sm:items-end"
+						data-routing-target-row
+						class="grid min-w-0 gap-2 rounded-md border p-2 sm:grid-cols-[minmax(11.5rem,1fr)_5.5rem_6.5rem] sm:items-end"
 					>
 						<label class="min-w-0 space-y-1 text-xs">
 							<span class="font-medium">{i + 1}. Runner</span>
@@ -2506,7 +2507,7 @@
 								{/each}
 							</Select></label
 						>
-						<div class="flex items-center justify-end gap-1">
+						<div class="flex items-center justify-end gap-1 sm:col-span-3">
 							<Button
 								size="icon"
 								variant="ghost"

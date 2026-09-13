@@ -2152,6 +2152,56 @@ describe('resume (retention and delivery)', () => {
 		expect(resources(t)[0]!.claim_run_id).toBe(second.runId);
 	});
 
+	it('retains an enforced local effort fingerprint and resumes only the matching effort', async () => {
+		const t = world();
+		const runnerId = resumeRunner(t);
+		const issue = addIssue(t);
+		const first = await deliver(t, runnerId, issue);
+		t.sqlite
+			.prepare(
+				`UPDATE agent_run SET model = 'claude-sonnet-5', resolved_effort = 'high', effort_application_status = 'pending' WHERE id = ?`
+			)
+			.run(first.runId);
+		await finishAdvanced(t, runnerId, issue, first.runId, {
+			effort_application: {
+				status: 'accepted_unconfirmed',
+				transport: 'argv',
+				attempted_effort: 'high'
+			}
+		});
+		expect(resources(t)[0]!.resume_fingerprint).toContain('"version":2');
+		t.sqlite.prepare('UPDATE issue SET state_id = ? WHERE id = ?').run(OPEN, issue);
+		const secondRunId = addRun(t, { issueId: issue, runnerId, model: 'claude-sonnet-5' });
+		t.sqlite
+			.prepare(
+				`UPDATE agent_run SET resolved_effort = 'high', effort_application_status = 'pending' WHERE id = ?`
+			)
+			.run(secondRunId);
+		const { response } = await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
+			{
+				owned_runs: [],
+				instance_id: 'effort-resume-boot',
+				effort_capabilities: {
+					version: 1,
+					daemon_version: 'test',
+					harness: 'claude_code',
+					harness_version: '2.1.258',
+					catalog_digest: 'effort-resume',
+					models: [{ model: 'claude-sonnet-5', efforts: ['high'] }]
+				}
+			},
+			NOW + 40
+		);
+		expect(response.assignments.find((item) => item.run.id === secondRunId)?.resume).toMatchObject({
+			previous_run_id: first.runId,
+			provider_session_id: 'sess-abc'
+		});
+	});
+
 	it('launches fresh outside the window, recording why', async () => {
 		const t = world();
 		const runnerId = resumeRunner(t, { windowHours: 1 });

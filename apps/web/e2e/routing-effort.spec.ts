@@ -73,6 +73,22 @@ test('round-trips and clears a model-aware routing effort in the existing dialog
 	expect(
 		await create.getByLabel('Target 1 runner').evaluate((el) => el.clientWidth)
 	).toBeGreaterThan(180);
+	const dialogBox = await create.boundingBox();
+	const rowBox = await create.locator('[data-routing-target-row]').boundingBox();
+	for (const control of [
+		create.getByLabel('Target 1 runner'),
+		create.getByLabel('Target 1 effort'),
+		create.getByLabel('Target 1 tier'),
+		create.getByRole('button', { name: 'Move up' }),
+		create.getByRole('button', { name: 'Move down' }),
+		create.getByRole('button', { name: 'Remove target' })
+	]) {
+		const box = await control.boundingBox();
+		expect(box!.x).toBeGreaterThanOrEqual(rowBox!.x);
+		// Native selects include a two-pixel painted border beyond the CSS grid box.
+		expect(box!.x + box!.width).toBeLessThanOrEqual(rowBox!.x + rowBox!.width + 3);
+		expect(box!.x + box!.width).toBeLessThanOrEqual(dialogBox!.x + dialogBox!.width + 1);
+	}
 	await page.setViewportSize({ width: 390, height: 844 });
 	const runnerBox = await create.getByLabel('Target 1 runner').boundingBox();
 	const effortBox = await create.getByLabel('Target 1 effort').boundingBox();
@@ -119,7 +135,9 @@ test('delivers routed effort through the source daemon argv and freezes its evid
 		codex,
 		`#!/usr/bin/env node
 const fs = require('node:fs');
-if (process.argv[2] === 'app-server') {
+if (process.argv[2] === '--version') {
+  console.log('codex-cli 0.153.4');
+} else if (process.argv[2] === 'app-server') {
   const rl = require('node:readline').createInterface({ input: process.stdin });
   rl.on('line', line => {
     const m = JSON.parse(line);
@@ -181,6 +199,11 @@ if (process.argv[2] === 'app-server') {
 		});
 		const model = runner.tier_models?.balanced;
 		expect(model).toBeTruthy();
+		expect(
+			runner.effort_capabilities?.version === 1
+				? runner.effort_capabilities.harness_version
+				: undefined
+		).toBe('codex-cli 0.153.4');
 		const tierSave = await api.patch(`/api/v1/runners/${runner.id}`, {
 			tiers: { balanced: { model, effort: 'ultra' } }
 		});

@@ -539,17 +539,25 @@ export async function launchClaimedRun(
 								evidence as EffortMilestone,
 								Date.now()
 							);
-							const result = await db
+							let update = db
 								.updateTable('agent_run')
 								.set({
 									effort_application_status: merged.status,
 									effort_application_evidence: merged.evidence
 								})
 								.where('id', '=', ctx.runId)
-								.where('status', 'in', [...ACTIVE_RUN_STATUSES])
-								.where('effort_application_status', '=', current.effort_application_status)
-								.where('effort_application_evidence', '=', current.effort_application_evidence)
-								.executeTakeFirst();
+								.where('status', 'in', [...ACTIVE_RUN_STATUSES]);
+							update = current.effort_application_status
+								? update.where('effort_application_status', '=', current.effort_application_status)
+								: update.where('effort_application_status', 'is', null);
+							update = current.effort_application_evidence
+								? update.where(
+										'effort_application_evidence',
+										'=',
+										current.effort_application_evidence
+									)
+								: update.where('effort_application_evidence', 'is', null);
+							const result = await update.executeTakeFirst();
 							if (Number(result.numUpdatedRows) === 1) return;
 						}
 						throw new Error('effort evidence changed repeatedly during managed launch');

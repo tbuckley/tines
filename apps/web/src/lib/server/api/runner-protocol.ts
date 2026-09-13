@@ -1274,7 +1274,13 @@ async function retainAwaitingSession(
 	db: Kysely<Database>,
 	runner: RunnerRow,
 	input: {
-		run: { user_id: string; issue_id: string; model: string | null };
+		run: {
+			user_id: string;
+			issue_id: string;
+			model: string | null;
+			resolved_effort: string | null;
+			effort_application_status: string | null;
+		};
 		runId: string;
 		providerSessionId: string | null;
 		workspacePath: string | null;
@@ -1309,6 +1315,10 @@ async function retainAwaitingSession(
 			runnerId: runner.id,
 			harness: String(config.harness ?? 'claude_code'),
 			model: input.run.model,
+			effort:
+				input.run.effort_application_status === 'accepted_unconfirmed'
+					? input.run.resolved_effort
+					: null,
 			preambleVariant: 'local'
 		}),
 		expiresAt: input.now + runner.resume_window_hours * 60 * 60 * 1000,
@@ -1488,7 +1498,10 @@ export async function finishRun(
 			// `endRun` as `interrupted`, so a separate interruption arm would
 			// double-notify it — the runner is already held to the reset.
 			await retainAwaitingSession(db, runner, {
-				run,
+				run: {
+					...run,
+					effort_application_status: mergedFinishEffort?.status ?? run.effort_application_status
+				},
 				runId,
 				providerSessionId: providerSessionId ?? run.provider_session_id ?? null,
 				workspacePath: workspacePath ?? null,

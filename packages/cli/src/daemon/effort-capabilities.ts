@@ -118,6 +118,12 @@ async function discoverClaude(daemonVersion: string): Promise<EffortCapabilities
 }
 
 async function discoverCodex(daemonVersion: string): Promise<EffortCapabilitiesV1> {
+	let harnessVersion: string;
+	try {
+		harnessVersion = (await run('codex', ['--version'])).trim().slice(0, 100);
+	} catch (error) {
+		return failure('codex', daemonVersion, error instanceof Error ? error.message : String(error));
+	}
 	return new Promise((resolve) => {
 		const child = spawn('codex', ['app-server'], { stdio: ['pipe', 'pipe', 'ignore'] });
 		let buffer = '';
@@ -173,7 +179,7 @@ async function discoverCodex(daemonVersion: string): Promise<EffortCapabilitiesV
 							version: 1,
 							daemon_version: daemonVersion,
 							harness: 'codex',
-							harness_version: 'app-server',
+							harness_version: harnessVersion,
 							catalog_digest: digest(models),
 							models
 						});

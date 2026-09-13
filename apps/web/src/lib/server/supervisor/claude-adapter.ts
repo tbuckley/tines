@@ -333,34 +333,44 @@ function createProviderContext(env: Env, opts: ClaudeAdapterOptions): ProviderCo
 				? ctx.config.agents[tier]
 				: undefined);
 		if (existing && existing.model === model && existing.effort === effort) {
-			const returned = (await ctx.client.beta.agents.retrieve(existing.agent_id)) as unknown as {
+			let returned: {
 				model?: string | { id?: string; effort?: string | { type?: string } };
-			};
-			const observedModel =
-				typeof returned.model === 'string' ? returned.model : returned.model?.id;
-			const rawEffort = typeof returned.model === 'object' ? returned.model?.effort : undefined;
-			const observedEffort = typeof rawEffort === 'string' ? rawEffort : rawEffort?.type;
-			const mismatch =
-				(observedModel !== undefined && observedModel !== model) ||
-				(effort !== undefined && observedEffort !== undefined && observedEffort !== effort);
-			if (effort)
-				await record?.({
-					status: mismatch
-						? 'rejected'
-						: observedModel === model && observedEffort === effort
-							? 'confirmed'
-							: 'accepted_unconfirmed',
-					transport: 'managed_agent_config',
-					attempted_effort: effort,
-					provider_agent_id: existing.agent_id,
-					...(observedModel ? { observed_model: observedModel } : {}),
-					...(observedEffort ? { observed_effort: observedEffort } : {}),
-					...(mismatch
-						? { reason: 'cached provider agent configuration conflicts with intent' }
-						: {})
-				});
-			if (mismatch) throw new Error('cached provider agent configuration conflicts with intent');
-			return existing.agent_id;
+			} | null = null;
+			try {
+				returned = (await ctx.client.beta.agents.retrieve(existing.agent_id)) as unknown as {
+					model?: string | { id?: string; effort?: string | { type?: string } };
+				};
+			} catch {
+				// A deleted or otherwise stale cached agent is a cache miss. Creating a
+				// replacement below repairs the persisted signature entry.
+			}
+			if (returned) {
+				const observedModel =
+					typeof returned.model === 'string' ? returned.model : returned.model?.id;
+				const rawEffort = typeof returned.model === 'object' ? returned.model?.effort : undefined;
+				const observedEffort = typeof rawEffort === 'string' ? rawEffort : rawEffort?.type;
+				const mismatch =
+					(observedModel !== undefined && observedModel !== model) ||
+					(effort !== undefined && observedEffort !== undefined && observedEffort !== effort);
+				if (effort)
+					await record?.({
+						status: mismatch
+							? 'rejected'
+							: observedModel === model && observedEffort === effort
+								? 'confirmed'
+								: 'accepted_unconfirmed',
+						transport: 'managed_agent_config',
+						attempted_effort: effort,
+						provider_agent_id: existing.agent_id,
+						...(observedModel ? { observed_model: observedModel } : {}),
+						...(observedEffort ? { observed_effort: observedEffort } : {}),
+						...(mismatch
+							? { reason: 'cached provider agent configuration conflicts with intent' }
+							: {})
+					});
+				if (mismatch) throw new Error('cached provider agent configuration conflicts with intent');
+				return existing.agent_id;
+			}
 		}
 		const created = await ctx.client.beta.agents.create({
 			name: `tines-${ctx.row.name}-${tier}-${effort ?? 'default'}`,
