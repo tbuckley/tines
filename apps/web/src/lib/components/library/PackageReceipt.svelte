@@ -1,11 +1,20 @@
 <script lang="ts">
 	import type { WorkflowPackageReceipt } from '@tines/shared';
+	import IconCircleCheck from '@tabler/icons-svelte/icons/circle-check';
 	let { receipt }: { receipt: WorkflowPackageReceipt } = $props();
 </script>
 
-<section class="space-y-4" aria-labelledby="receipt-title" tabindex="-1" data-package-receipt>
+<section class="space-y-4" aria-labelledby="receipt-title" data-package-receipt>
 	<div>
-		<h2 id="receipt-title" class="text-xl font-semibold">Package installed</h2>
+		<h2
+			id="receipt-title"
+			class="flex scroll-mt-20 items-center gap-2 text-xl font-semibold"
+			tabindex="-1"
+			data-package-receipt-title
+		>
+			<IconCircleCheck class="shrink-0" size={20} stroke={1.5} aria-hidden="true" />
+			Package installed
+		</h2>
 		<p class="text-muted-foreground mt-1 text-sm">
 			Created as an independent copy. Selected schedules are paused with no runs or issues created.
 			No project default changed, and installation did not launch work.

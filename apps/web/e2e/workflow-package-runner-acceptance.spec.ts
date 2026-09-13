@@ -177,7 +177,9 @@ test('installs as Alice and activates the installed Run state through a real dae
 		);
 		await page.getByRole('button', { name: 'Install package' }).click();
 		const receipt = (await (await installResponse).json()) as WorkflowPackageReceipt;
-		await expect(page.locator('[data-package-receipt]')).toBeFocused();
+		await expect(
+			page.getByRole('heading', { name: 'Package installed', exact: true })
+		).toBeFocused();
 		expect(receipt.document_digest).toBe(document.digest);
 		expect(receipt.plan_digest).toBe(plan.plan_digest);
 		const installedWorkflowId = receipt.objects.find(
