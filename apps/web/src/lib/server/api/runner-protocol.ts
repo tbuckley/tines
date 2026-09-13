@@ -42,6 +42,7 @@ import {
 	noteInterruption,
 	noteRateLimit,
 	releaseDeclinedAssignments,
+	releaseSurplusAssigned,
 	supervisorEvent
 } from '$lib/server/supervisor/engine';
 import { getRunLogStore, runLogRawKey } from '$lib/server/run-log-store';
@@ -340,7 +341,8 @@ export async function pollRunner(
 	runner: RunnerRow,
 	effects: DispatchEffects,
 	body: RunnerPollRequest,
-	now: number = Date.now()
+	now: number = Date.now(),
+	reconcileAttempt = 0
 ): Promise<PollOutcome> {
 	const owned = new Set(validateOwnedRuns(body));
 	const instanceId = validateInstanceId(body);
@@ -367,6 +369,8 @@ export async function pollRunner(
 	let concurrencyAppliedInstanceId = runner.concurrency_applied_instance_id;
 	let concurrencyAppliedAt = runner.concurrency_applied_at;
 	let concurrencyUnavailableReason = runner.concurrency_unavailable_reason;
+	let policyChanged = false;
+	let acknowledgementChanged = false;
 	if (concurrencyReport) {
 		const nextMode = concurrencyReport.allow_remote ? 'remote' : 'local';
 		const nextRequested = concurrencyReport.allow_remote
@@ -377,7 +381,7 @@ export async function pollRunner(
 					concurrencyReport.ceiling
 				)
 			: concurrencyReport.ceiling;
-		const policyChanged =
+		policyChanged =
 			nextMode !== runner.concurrency_mode ||
 			concurrencyReport.ceiling !== runner.concurrency_ceiling ||
 			nextRequested !== runner.concurrency_requested;
@@ -394,13 +398,17 @@ export async function pollRunner(
 			ack?.revision === concurrencyRevision &&
 			ack.cap === nextRequested
 		) {
+			acknowledgementChanged =
+				runner.concurrency_applied_revision !== ack.revision ||
+				runner.concurrency_applied_cap !== ack.cap ||
+				runner.concurrency_applied_instance_id !== (instanceId ?? null);
 			concurrencyAppliedRevision = ack.revision;
 			concurrencyAppliedCap = ack.cap;
 			concurrencyAppliedInstanceId = instanceId ?? null;
 			concurrencyAppliedAt = now;
 		}
 	} else {
-		const policyChanged =
+		policyChanged =
 			runner.concurrency_mode !== 'legacy' ||
 			runner.concurrency_requested !== cap ||
 			runner.concurrency_ceiling !== null;
@@ -424,7 +432,60 @@ export async function pollRunner(
 	const capRaised = cap > runner.max_concurrent || (runner.draining === 1 && draining === 0);
 	const cameOnline =
 		runner.last_seen_at === null || now - runner.last_seen_at > RUNNER_ONLINE_WINDOW_MS;
-	const heartbeatResults = await runAtomic(env, [
+	const reconciliationGuard = sql<boolean>`EXISTS (
+		SELECT 1 FROM runner
+		WHERE id = ${runner.id}
+			AND runner_token_hash IS ${runner.runner_token_hash}
+			AND concurrency_revision = ${runner.concurrency_revision}
+			AND concurrency_mode IS ${runner.concurrency_mode}
+			AND concurrency_ceiling IS ${runner.concurrency_ceiling}
+			AND concurrency_requested IS ${runner.concurrency_requested}
+			AND concurrency_instance_id IS ${runner.concurrency_instance_id}
+			AND concurrency_applied_revision IS ${runner.concurrency_applied_revision}
+			AND concurrency_applied_cap IS ${runner.concurrency_applied_cap}
+			AND concurrency_applied_instance_id IS ${runner.concurrency_applied_instance_id}
+			${instanceId === undefined ? sql`` : sql`AND daemon_instance_id = ${instanceId}`}
+	)`;
+	const auditChanged = policyChanged || acknowledgementChanged;
+	const heartbeatQueries = [
+		...(auditChanged
+			? [
+					supervisorEvent(
+						db,
+						runner.user_id,
+						{
+							type: 'runner.updated',
+							payload: {
+								runner_id: runner.id,
+								name: runner.name,
+								changed: capChanged
+									? ['max_concurrent', 'concurrency_control']
+									: ['concurrency_control'],
+								source: 'daemon',
+								reason: policyChanged ? 'local_policy' : 'acknowledged',
+								concurrency: {
+									before: {
+										mode: runner.concurrency_mode,
+										ceiling: runner.concurrency_ceiling,
+										requested_cap: runner.concurrency_requested,
+										revision: runner.concurrency_revision
+									},
+									after: {
+										mode: concurrencyMode,
+										ceiling: concurrencyCeiling,
+										requested_cap: concurrencyRequested,
+										revision: concurrencyRevision,
+										applied_revision: concurrencyAppliedRevision,
+										applied_cap: concurrencyAppliedCap
+									}
+								}
+							}
+						},
+						now,
+						reconciliationGuard
+					)
+				]
+			: []),
 		db
 			.updateTable('runner')
 			.set({
@@ -445,29 +506,27 @@ export async function pollRunner(
 				...(capChanged ? { updated_at: now } : {})
 			})
 			.where('id', '=', runner.id)
-			.$if(instanceId !== undefined, (query) => query.where('daemon_instance_id', '=', instanceId!))
-			.compile(),
-		// The same runner.updated event a UI edit records, so the change shows
-		// up in history (attributed to the owning user; polls carry no actor).
-		...(capChanged
-			? [
-					supervisorEvent(
-						db,
-						runner.user_id,
-						{
-							type: 'runner.updated',
-							payload: { runner_id: runner.id, name: runner.name, changed: ['max_concurrent'] }
-						},
-						now
-					)
-				]
-			: [])
-	]);
-	if (instanceId !== undefined && (heartbeatResults[0]?.meta.changes ?? 0) === 0) {
+			.where(reconciliationGuard)
+			.compile()
+	];
+	const heartbeatResults = await runAtomic(env, heartbeatQueries);
+	const heartbeatResult = heartbeatResults[auditChanged ? 1 : 0];
+	if ((heartbeatResult?.meta.changes ?? 0) === 0) {
+		if (reconcileAttempt < 2) {
+			const current = await db
+				.selectFrom('runner')
+				.selectAll()
+				.where('id', '=', runner.id)
+				.where('runner_token_hash', '=', runner.runner_token_hash)
+				.executeTakeFirst();
+			if (current && (instanceId === undefined || current.daemon_instance_id === instanceId)) {
+				return pollRunner(db, env, current, effects, body, now, reconcileAttempt + 1);
+			}
+		}
 		throw new ApiFail(
 			409,
 			'runner_conflict',
-			'another daemon instance replaced this one before its capability report was stored'
+			'runner policy changed during poll reconciliation; retry the poll'
 		);
 	}
 	if (cameOnline || capRaised) effects.signalDispatch();
@@ -484,6 +543,20 @@ export async function pollRunner(
 	runner.concurrency_applied_instance_id = concurrencyAppliedInstanceId;
 	runner.concurrency_applied_at = concurrencyAppliedAt;
 	runner.concurrency_unavailable_reason = concurrencyUnavailableReason;
+	if (concurrencyReport && instanceId) {
+		await releaseSurplusAssigned(
+			db,
+			env,
+			{
+				userId: runner.user_id,
+				runnerId: runner.id,
+				instanceId,
+				ceiling: concurrencyReport.ceiling,
+				now
+			},
+			() => effects.signalDispatch()
+		);
+	}
 	const releasedAssignments = await releaseDeclinedAssignments(
 		db,
 		env,

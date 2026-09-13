@@ -529,7 +529,8 @@ describe('pollRunner', () => {
 		expect(runnerById(t, id).max_concurrent).toBe(3);
 		const updates = eventsOfType(t, 'runner.updated');
 		expect(updates).toHaveLength(1);
-		expect(updates[0].payload.changed).toEqual(['max_concurrent']);
+		expect(updates[0].payload.changed).toEqual(['max_concurrent', 'concurrency_control']);
+		expect(updates[0].payload.source).toBe('daemon');
 
 		// Same value: no event, no new capacity.
 		const same = await pollRunner(
@@ -578,8 +579,9 @@ describe('pollRunner', () => {
 		);
 		expect(entering.capRaised).toBe(false);
 		expect(runnerById(t, id).draining).toBe(1);
-		// No runner.updated event: draining is the daemon's transient state, not an edit.
-		expect(eventsOfType(t, 'runner.updated')).toHaveLength(0);
+		// Draining itself is transient, but the first legacy poll records the
+		// daemon-owned concurrency policy transition once.
+		expect(eventsOfType(t, 'runner.updated')).toHaveLength(1);
 
 		// Still draining: nothing new to dispatch for.
 		const still = await pollRunner(

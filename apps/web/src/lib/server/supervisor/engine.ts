@@ -562,6 +562,80 @@ export async function releaseDeclinedAssignments(
 }
 
 /**
+ * Keep the oldest assignments that still fit under the daemon's current
+ * machine ceiling and free the newest surplus claims. Launching/running work
+ * is never killed. The runner-policy predicate prevents a stale lower-policy
+ * poll from releasing work after a newer local report raised the ceiling.
+ */
+export async function releaseSurplusAssigned(
+	db: Kysely<Database>,
+	env: Env,
+	input: { userId: string; runnerId: string; instanceId: string; ceiling: number; now: number },
+	onReleased: () => void
+): Promise<string[]> {
+	const active = await db
+		.selectFrom('agent_run')
+		.select(['id', 'issue_id', 'status'])
+		.where('user_id', '=', input.userId)
+		.where('runner_id', '=', input.runnerId)
+		.where('status', 'in', ['assigned', 'launching', 'running'])
+		.orderBy('created_at asc')
+		.orderBy('id asc')
+		.execute();
+	const occupied = active.filter(
+		(run) => run.status === 'launching' || run.status === 'running'
+	).length;
+	const keepAssigned = Math.max(0, input.ceiling - occupied);
+	const surplus = active.filter((run) => run.status === 'assigned').slice(keepAssigned);
+	const released: string[] = [];
+	for (const run of surplus) {
+		const receipt = newId('evt');
+		const guard = sql<boolean>`EXISTS (
+			SELECT 1 FROM agent_run
+			WHERE id = ${run.id} AND user_id = ${input.userId} AND runner_id = ${input.runnerId}
+				AND status = 'assigned'
+		) AND EXISTS (
+			SELECT 1 FROM runner
+			WHERE id = ${input.runnerId} AND user_id = ${input.userId}
+				AND daemon_instance_id = ${input.instanceId}
+				AND concurrency_instance_id = ${input.instanceId}
+				AND concurrency_ceiling = ${input.ceiling}
+		)`;
+		const [eventResult, updateResult] = await runBatch(env, [
+			sql`
+				INSERT INTO event (id, user_id, type, actor_user_id, actor_api_key_id, issue_id, project_id, payload, created_at)
+				SELECT ${receipt}, ${input.userId}, 'agent_run.ended', ${input.userId}, NULL,
+					${run.issue_id}, (SELECT project_id FROM issue WHERE id = ${run.issue_id}),
+					${JSON.stringify({ run_id: run.id, status: 'canceled', error: 'released after local concurrency ceiling change' })},
+					${input.now}
+				WHERE ${guard}`.compile(db),
+			db
+				.updateTable('agent_run')
+				.set({
+					status: 'canceled',
+					ended_at: input.now,
+					error: 'released after local concurrency ceiling change',
+					outcome: null
+				})
+				.where('id', '=', run.id)
+				.where(sql<boolean>`EXISTS (SELECT 1 FROM event WHERE id = ${receipt})`)
+				.compile(),
+			db
+				.updateTable('api_key')
+				.set({ revoked_at: input.now })
+				.where('agent_run_id', '=', run.id)
+				.where(sql<boolean>`EXISTS (SELECT 1 FROM event WHERE id = ${receipt})`)
+				.compile()
+		]);
+		if ((eventResult?.meta.changes ?? 0) === 1 && (updateResult?.meta.changes ?? 0) === 1) {
+			released.push(run.id);
+			onReleased();
+		}
+	}
+	return released;
+}
+
+/**
  * Mints the run key, flips the claim to `launching`, calls the adapter, and
  * records the outcome. A thrown launch is a launch failure — error on the
  * run, exponential backoff and a `runner.errored` event on the *runner*,

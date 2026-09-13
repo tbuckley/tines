@@ -14,6 +14,7 @@ import {
 	loadEndableRun,
 	loadEngineRunners,
 	noteRateLimit,
+	releaseSurplusAssigned,
 	runDispatchPass,
 	sweepSupervisor,
 	targetsForIssue,
@@ -203,6 +204,52 @@ describe('eligibility', () => {
 		const result = await pass(t);
 		expect(result.claimed).toBe(1);
 		expect(runs(t)[0].issue_id).toBe('iss_stale');
+	});
+});
+
+describe('local concurrency release', () => {
+	it('keeps running work and releases newest surplus assigned claims', async () => {
+		const t = world();
+		const runnerId = addRunner(t, { maxConcurrent: 3 });
+		t.sqlite
+			.prepare(
+				`UPDATE runner SET daemon_instance_id = 'boot_1', concurrency_instance_id = 'boot_1',
+				 concurrency_mode = 'remote', concurrency_ceiling = 1 WHERE id = ?`
+			)
+			.run(runnerId);
+		const runningIssue = addIssue(t, { title: 'running' });
+		const oldIssue = addIssue(t, { title: 'old assignment' });
+		const newIssue = addIssue(t, { title: 'new assignment' });
+		const running = addRun(t, {
+			issueId: runningIssue,
+			runnerId,
+			status: 'running',
+			startedAt: NOW - 100,
+			createdAt: NOW - 300
+		});
+		const oldAssigned = addRun(t, {
+			issueId: oldIssue,
+			runnerId,
+			createdAt: NOW - 200
+		});
+		const newAssigned = addRun(t, {
+			issueId: newIssue,
+			runnerId,
+			createdAt: NOW - 100
+		});
+		let signals = 0;
+		const released = await releaseSurplusAssigned(
+			t.db,
+			t.env,
+			{ userId: USER, runnerId, instanceId: 'boot_1', ceiling: 1, now: NOW },
+			() => signals++
+		);
+
+		expect(released).toEqual([oldAssigned, newAssigned]);
+		expect(runById(t, running).status).toBe('running');
+		expect(runById(t, oldAssigned).status).toBe('canceled');
+		expect(runById(t, newAssigned).status).toBe('canceled');
+		expect(signals).toBe(2);
 	});
 });
 
