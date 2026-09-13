@@ -41,6 +41,7 @@ import {
 	mintRunKeyAndFlip,
 	noteInterruption,
 	noteRateLimit,
+	releaseDeclinedAssignments,
 	supervisorEvent
 } from '$lib/server/supervisor/engine';
 import { getRunLogStore, runLogRawKey } from '$lib/server/run-log-store';
@@ -345,7 +346,7 @@ export async function pollRunner(
 	const instanceId = validateInstanceId(body);
 	const effortCapabilities = validateEffortCapabilities(body.effort_capabilities, instanceId);
 	const concurrencyReport = validateConcurrencyPoll(body.concurrency_control, instanceId);
-	validateDeclinedAssignments(body.declined_assignments);
+	const declinedAssignments = validateDeclinedAssignments(body.declined_assignments);
 	const requestedCap =
 		body.max_concurrent === undefined
 			? undefined
@@ -483,6 +484,12 @@ export async function pollRunner(
 	runner.concurrency_applied_instance_id = concurrencyAppliedInstanceId;
 	runner.concurrency_applied_at = concurrencyAppliedAt;
 	runner.concurrency_unavailable_reason = concurrencyUnavailableReason;
+	const releasedAssignments = await releaseDeclinedAssignments(
+		db,
+		env,
+		{ userId: runner.user_id, runnerId: runner.id, runIds: declinedAssignments, now },
+		() => effects.signalDispatch()
+	);
 
 	const active = await db
 		.selectFrom('agent_run')
@@ -553,7 +560,8 @@ export async function pollRunner(
 		response: {
 			assignments,
 			cancels,
-			...(concurrencyReport ? { concurrency_control: concurrencyInstruction(runner) } : {})
+			...(concurrencyReport ? { concurrency_control: concurrencyInstruction(runner) } : {}),
+			...(releasedAssignments.length > 0 ? { released_assignments: releasedAssignments } : {})
 		},
 		cameOnline,
 		capRaised,

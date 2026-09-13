@@ -115,7 +115,7 @@ describe('registerRunner', () => {
 			platform: 'darwin'
 		});
 		expect(runner.type).toBe('local');
-		expect(runner.online).toBe(true); // registration counts as a heartbeat
+		expect(runner.online).toBe(false); // policy must be confirmed by the first poll
 		expect(runner_token).toMatch(/^tines_rt_/);
 		const row = runnerById(t, runner.id);
 		expect(row.runner_token_hash).toBe(await sha256Hex(runner_token));
@@ -187,7 +187,7 @@ describe('registerRunner', () => {
 			max_concurrent: 3,
 			hostname: 'mbp.local'
 		});
-		expect(second.runner.max_concurrent).toBe(3); // sent: updated
+		expect(second.runner.max_concurrent).toBe(2); // registration cannot overwrite durable intent
 		expect(second.runner.max_run_minutes).toBe(90); // not sent: kept
 		expect(second.runner.default_tier).toBe('smartest'); // not sent: kept
 		expect(second.runner.config.hostname).toBe('mbp.local');

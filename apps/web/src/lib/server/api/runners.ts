@@ -981,14 +981,11 @@ export async function registerRunner(
 		});
 		const changed = ['runner_token', 'config'];
 		const patch: Partial<{
-			max_concurrent: number;
 			max_run_minutes: number;
 			default_tier: string;
 		}> = {};
-		if (body.max_concurrent !== undefined) {
-			patch.max_concurrent = validateBoundedInt(body.max_concurrent, 'max_concurrent', 1, 100);
-			changed.push('max_concurrent');
-		}
+		if (body.max_concurrent !== undefined)
+			validateBoundedInt(body.max_concurrent, 'max_concurrent', 1, 100);
 		if (body.max_run_minutes !== undefined) {
 			patch.max_run_minutes = validateBoundedInt(
 				body.max_run_minutes,
@@ -1016,7 +1013,10 @@ export async function registerRunner(
 						? { resume_config_revision: sql<number>`resume_config_revision + 1` }
 						: {}),
 					runner_token_hash: tokenHash,
-					last_seen_at: now,
+					last_seen_at: null,
+					concurrency_instance_id: null,
+					concurrency_applied_instance_id: null,
+					concurrency_unavailable_reason: 'awaiting_policy',
 					updated_at: now
 				})
 				.where('id', '=', existing.id)
@@ -1067,7 +1067,7 @@ export async function registerRunner(
 				config: JSON.stringify(config),
 				secret_enc: null,
 				runner_token_hash: tokenHash,
-				last_seen_at: now,
+				last_seen_at: null,
 				launch_failures: 0,
 				draining: 0,
 				backoff_until: null,
@@ -1122,7 +1122,14 @@ export async function rotateRunnerToken(
 	await runAtomic(env, [
 		db
 			.updateTable('runner')
-			.set({ runner_token_hash: await sha256Hex(token), updated_at: Date.now() })
+			.set({
+				runner_token_hash: await sha256Hex(token),
+				last_seen_at: null,
+				concurrency_instance_id: null,
+				concurrency_applied_instance_id: null,
+				concurrency_unavailable_reason: 'awaiting_policy',
+				updated_at: Date.now()
+			})
 			.where('id', '=', id)
 			.compile(),
 		eventInsert(db, actor, {

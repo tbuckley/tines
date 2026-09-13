@@ -60,7 +60,8 @@ Flags (shared by `install` and `daemon`; `install` writes the ones you give into
 | `--name` | Runner name, unique per user; name it machine-plus-harness, e.g. `macbook-claude` — routing rules and agent comments address it | the hostname |
 | `--harness` | `claude-code`, `codex`, or `custom` | `claude-code` |
 | `--command` | Custom harness command template; placeholders `{prompt_file}`, `{workspace}`, `{model}` | — |
-| `--max-concurrent` | Simultaneous runs on this machine (1–100); sent on every poll, so a restart with a new value updates the server-side cap | 1 |
+| `--max-concurrent` | Simultaneous runs on this machine (1–100), or the machine-owned ceiling when remote adjustment is enabled | 1 |
+| `--allow-remote-concurrency` | Let signed-in operators request a cap up to the local ceiling; never enabled remotely | off |
 | `--poll-interval` | Seconds between polls | 15 |
 | `--no-cli-refresh` | Skip the managed CLI install; harnesses use whatever `tines` is on the ambient PATH | refresh on |
 | `--no-self-update` | Never exit for the service manager to relaunch a newer daemon (see "Keeping the daemon itself current") | self-update on |
@@ -250,6 +251,21 @@ and reboots, and it is launched from the managed prefix, which is what lets it u
 ```sh
 TINES_API_KEY=tines_… tines runner install --name macbook-claude --harness claude-code
 ```
+
+To let the Agents page adjust concurrency, opt in locally and set the highest value this
+machine may run:
+
+```bash
+TINES_API_KEY=tines_… tines runner install --name macbook-claude --harness claude-code \
+  --allow-remote-concurrency --max-concurrent 4
+```
+
+The web request starts at 1 for a new runner and can never exceed 4 in this example. Raising it
+can increase CPU, memory, network, and provider usage or cost. To disable adjustment, pause the
+runner, wait for zero active runs, uninstall it, then reinstall with the complete desired flags
+but without `--allow-remote-concurrency`. `runner restart` preserves the installed arguments and
+therefore does not change this policy. Lowering the requested cap lets existing runs finish and
+blocks new claims until usage is below the new cap.
 
 In order, it:
 

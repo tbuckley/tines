@@ -477,6 +477,71 @@ export async function mintRunKeyAndFlip(
 }
 
 /**
+ * Atomically settles assignments a daemon refused before launch. The status
+ * guard and key revocation share one receipt, so a first log that wins the
+ * race preserves the running process and its credential.
+ */
+export async function releaseDeclinedAssignments(
+	db: Kysely<Database>,
+	env: Env,
+	input: { userId: string; runnerId: string; runIds: string[]; now: number },
+	onReleased: () => void
+): Promise<string[]> {
+	const released: string[] = [];
+	for (const runId of input.runIds) {
+		const run = await db
+			.selectFrom('agent_run')
+			.select(['id', 'issue_id', 'status', 'started_at'])
+			.where('id', '=', runId)
+			.where('user_id', '=', input.userId)
+			.where('runner_id', '=', input.runnerId)
+			.executeTakeFirst();
+		if (!run || !ACTIVE.includes(run.status as (typeof ACTIVE)[number])) {
+			released.push(runId);
+			continue;
+		}
+		if (run.status !== 'launching' || run.started_at !== null) continue;
+		const receipt = newId('evt');
+		const guard = sql<boolean>`EXISTS (
+			SELECT 1 FROM agent_run
+			WHERE id = ${runId} AND user_id = ${input.userId} AND runner_id = ${input.runnerId}
+				AND status = 'launching' AND started_at IS NULL
+		)`;
+		const [eventResult, updateResult] = await runBatch(env, [
+			sql`
+				INSERT INTO event (id, user_id, type, actor_user_id, actor_api_key_id, issue_id, project_id, payload, created_at)
+				SELECT ${receipt}, ${input.userId}, 'agent_run.ended', ${input.userId}, NULL,
+					${run.issue_id}, (SELECT project_id FROM issue WHERE id = ${run.issue_id}),
+					${JSON.stringify({ run_id: runId, status: 'canceled', error: 'launch refused by local concurrency ceiling' })},
+					${input.now}
+				WHERE ${guard}`.compile(db),
+			db
+				.updateTable('agent_run')
+				.set({
+					status: 'canceled',
+					ended_at: input.now,
+					error: 'launch refused by local concurrency ceiling',
+					outcome: null
+				})
+				.where('id', '=', runId)
+				.where(sql<boolean>`EXISTS (SELECT 1 FROM event WHERE id = ${receipt})`)
+				.compile(),
+			db
+				.updateTable('api_key')
+				.set({ revoked_at: input.now })
+				.where('agent_run_id', '=', runId)
+				.where(sql<boolean>`EXISTS (SELECT 1 FROM event WHERE id = ${receipt})`)
+				.compile()
+		]);
+		if ((eventResult?.meta.changes ?? 0) === 1 && (updateResult?.meta.changes ?? 0) === 1) {
+			released.push(runId);
+			onReleased();
+		}
+	}
+	return released;
+}
+
+/**
  * Mints the run key, flips the claim to `launching`, calls the adapter, and
  * records the outcome. A thrown launch is a launch failure — error on the
  * run, exponential backoff and a `runner.errored` event on the *runner*,
