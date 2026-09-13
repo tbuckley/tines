@@ -42,6 +42,7 @@ import {
 	type ActorContext
 } from './core';
 import { eventInsert } from './events';
+import { projectConcurrencyControl } from './runner-concurrency';
 import { scopeLabel } from './scope';
 
 /**
@@ -351,6 +352,7 @@ export function runnerOnline(
 }
 
 function serializeRunner(row: RunnerRow, now = Date.now()): Runner {
+	const online = runnerOnline(row, now);
 	let config: Record<string, unknown> = {};
 	try {
 		config = JSON.parse(row.config) as Record<string, unknown>;
@@ -396,6 +398,7 @@ function serializeRunner(row: RunnerRow, now = Date.now()): Runner {
 		name: row.name,
 		status: row.status as RunnerStatus,
 		max_concurrent: row.max_concurrent,
+		concurrency_control: projectConcurrencyControl(row, online),
 		max_run_minutes: row.max_run_minutes,
 		resume_enabled: row.resume_enabled === 1,
 		resume_window_hours: row.resume_window_hours,
@@ -408,7 +411,7 @@ function serializeRunner(row: RunnerRow, now = Date.now()): Runner {
 		budget,
 		has_api_key: row.secret_enc !== null,
 		config,
-		online: runnerOnline(row, now),
+		online,
 		last_seen_at: row.last_seen_at,
 		effort_capabilities: effortCapabilities,
 		effort_models: effortModels,
@@ -580,6 +583,8 @@ export async function createRunner(
 				name,
 				status: 'active',
 				max_concurrent: maxConcurrent,
+				concurrency_mode: 'legacy',
+				concurrency_revision: 0,
 				max_run_minutes: maxRunMinutes,
 				default_tier: defaultTier,
 				tiers: tiers ? JSON.stringify(tiers) : null,
@@ -986,6 +991,8 @@ export async function registerRunner(
 				name,
 				status: 'active',
 				max_concurrent: maxConcurrent,
+				concurrency_mode: 'legacy',
+				concurrency_revision: 0,
 				max_run_minutes: maxRunMinutes,
 				default_tier: defaultTier,
 				tiers: null,

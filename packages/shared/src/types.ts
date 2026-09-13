@@ -1571,6 +1571,26 @@ export const RUNNER_TYPES: readonly RunnerType[] = ['claude_managed', 'gemini_ma
 
 export type RunnerStatus = 'active' | 'paused';
 
+export type RunnerConcurrencyMode = 'legacy' | 'local' | 'remote';
+export type RunnerConcurrencyUnavailableReason =
+	| 'legacy'
+	| 'opted_out'
+	| 'awaiting_policy'
+	| 'unsupported_protocol'
+	| 'invalid_protocol'
+	| 'offline';
+
+export interface RunnerConcurrencyControl {
+	status: 'applied' | 'pending' | 'unavailable';
+	reason: RunnerConcurrencyUnavailableReason | null;
+	requested_cap: number | null;
+	ceiling: number | null;
+	revision: number;
+	applied_cap: number | null;
+	applied_revision: number | null;
+	applied_at: number | null;
+}
+
 /**
  * The routing vocabulary for how hard to think. A closed set: adding a tier
  * is a code change, so routing rules can rely on it staying small.
@@ -1821,6 +1841,8 @@ export interface Runner {
 	status: RunnerStatus;
 	/** The runner's own concurrency cap; always enforced. */
 	max_concurrent: number;
+	/** Local runners only: durable requested cap and daemon acknowledgement state. */
+	concurrency_control: RunnerConcurrencyControl | null;
 	max_run_minutes: number;
 	/** Experimental continuation policy; disabled by default. */
 	resume_enabled: boolean;
@@ -1907,6 +1929,8 @@ export interface UpdateRunnerRequest {
 	/** Managed types: replace the provider API key (ping-validated first). */
 	api_key?: string;
 	max_concurrent?: number;
+	/** Required when changing a remotely controlled local runner cap. */
+	expected_concurrency_revision?: number;
 	max_run_minutes?: number;
 	resume_enabled?: boolean;
 	resume_window_hours?: number;
@@ -1971,6 +1995,15 @@ export interface RunnerPollRequest {
 	 * effect without re-registering.
 	 */
 	max_concurrent?: number;
+	/** Locally asserted, machine-owned remote concurrency boundary. */
+	concurrency_control?: {
+		version: 1;
+		allow_remote: boolean;
+		ceiling: number;
+		applied?: { revision: number; cap: number };
+	};
+	/** Assignments refused before process launch and awaiting server release. */
+	declined_assignments?: string[];
 	/**
 	 * True while the daemon is finishing its runs before exiting for a
 	 * self-update restart: the dispatcher assigns it nothing new, while runs
@@ -2031,6 +2064,16 @@ export interface RunnerAssignmentResume {
 
 export interface RunnerPollResponse {
 	assignments: RunnerAssignment[];
+	concurrency_control?: {
+		version: 1;
+		available: boolean;
+		revision: number;
+		cap: number;
+		ceiling: number | null;
+		reason?: RunnerConcurrencyUnavailableReason;
+	};
+	/** Declines now terminal or absent and safe to forget locally. */
+	released_assignments?: string[];
 	/**
 	 * Run ids to kill WITHOUT finish-reporting: the supervisor has already
 	 * settled these (cancel, timeout, the offline sweep).
