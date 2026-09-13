@@ -12,6 +12,7 @@ import {
 } from '../common.js';
 import {
 	usageCostLabel,
+	type CohortUsageReport,
 	type IssueUsageReport,
 	type IssueAttemptUsage,
 	type UsageEvidencePage,
@@ -34,6 +35,8 @@ interface UsageOpts extends CommonOpts {
 	outcome?: string;
 	accountingStatus?: string;
 	issue?: string;
+	cohort?: boolean;
+	doneState?: string[];
 	scope?: string;
 	evidence?: 'issues' | 'runs';
 	member?: string;
@@ -45,6 +48,8 @@ interface UsageOpts extends CommonOpts {
 	allPages?: boolean;
 	by: UsageBy;
 }
+
+const collect = (value: string, previous: string[] = []) => [...previous, value];
 
 function printEvidence(page: UsageEvidencePage): void {
 	console.log(
@@ -112,6 +117,36 @@ function printIssueReport(report: IssueUsageReport): void {
 		);
 		for (const line of usageAggregateLines('Lifetime', issue.aggregate)) console.log(line);
 	}
+}
+
+function printCohortReport(report: CohortUsageReport): void {
+	console.log(`Completed issues · ${report.workflow.name}`);
+	console.log(
+		`${new Date(report.from).toISOString()} — ${new Date(report.to).toISOString()} · costs through exclusive cutoff`
+	);
+	console.log(
+		`Terminal states: ${report.selected_states.map((state) => state.name).join(', ') || 'None available'}`
+	);
+	console.log('Completed-issue costs are not additive to period spend.');
+	console.log(
+		`${report.counters.distinct_issue_count} issues · ${report.counters.attempt_count}/${report.counters.distinct_issue_count} attempts/all issues · ${money(report.counters.known_cost_per_issue.value_usd)} known USD/all issues`
+	);
+	console.log(
+		`${report.counters.priced_run_coverage.numerator}/${report.counters.priced_run_coverage.denominator} priced finalized runs · ${report.counters.fully_priced_issue_count}/${report.counters.distinct_issue_count} fully priced issues · ${report.counters.pending_count} pending · ${report.counters.zero_run_issue_count} no-run`
+	);
+	console.log(
+		`${report.counters.reopened_issue_count} reopened · ${report.counters.reopening_history_unavailable_issue_count} reopening unknown · observed through ${new Date(report.observed_through).toISOString()}`
+	);
+	console.log(
+		`History: ${report.history.status} · ${report.history.qualifying_fact_count} qualifying entries`
+	);
+	for (const state of report.terminal_states)
+		console.log(
+			`${state.state.name}: ${state.counters.distinct_issue_count} completed · ${money(state.aggregate.cost_usd)} known`
+		);
+	if (report.counters.distinct_issue_count === 0)
+		console.log('No completed issues in available history');
+	if (report.scope) console.log(`Scope: ${report.scope}`);
 }
 
 const money = (value: number | null) => usageCostLabel(value);
@@ -187,6 +222,12 @@ export function register(program: Command): void {
 			.option('--from <bound>', 'custom inclusive start (date or offset timestamp)')
 			.option('--to <bound>', 'custom exclusive end (date or offset timestamp)')
 			.option('--issue <ref>', 'direct issue lifetime through now')
+			.option('--cohort', 'report issues completed in the selected workflow and window')
+			.option(
+				'--done-state <id>',
+				'terminal state id (repeatable; defaults to all done states)',
+				collect
+			)
 			.option('--scope <token>', 'replay a frozen usage scope')
 			.addOption(new Option('--evidence <kind>', 'list evidence').choices(['issues', 'runs']))
 			.option('--member <issue-id>', 'narrow run evidence to one contributing issue')
@@ -244,6 +285,8 @@ export function register(program: Command): void {
 		if (opts.scope) {
 			const reportFlags = [
 				opts.issue,
+				opts.cohort,
+				opts.doneState,
 				opts.window,
 				opts.from,
 				opts.to,
@@ -263,6 +306,7 @@ export function register(program: Command): void {
 				const report = await api.getUsageScope(opts.scope);
 				if (opts.json) return printJson(report);
 				if (report.mode === 'issue') printIssueReport(report);
+				else if (report.mode === 'cohort') printCohortReport(report);
 				else printReport(report);
 				return;
 			}
@@ -301,6 +345,8 @@ export function register(program: Command): void {
 		}
 		if (opts.issue) {
 			const contradictions = [
+				opts.cohort,
+				opts.doneState,
 				opts.window,
 				opts.from,
 				opts.to,
@@ -322,6 +368,45 @@ export function register(program: Command): void {
 			const report = await api.getIssueUsage(issueId);
 			if (opts.json) return printJson(report);
 			printIssueReport(report);
+			return;
+		}
+		if (opts.doneState?.length && !opts.cohort) throw new Error('--done-state requires --cohort');
+		if (opts.cohort) {
+			if (!opts.workflow) throw new Error('--cohort requires --workflow');
+			if (
+				[
+					opts.issue,
+					opts.scope,
+					opts.state,
+					opts.runner,
+					opts.tier,
+					opts.outcome,
+					opts.accountingStatus
+				].some((value) => value !== undefined) ||
+				command.getOptionValueSource('by') === 'cli'
+			)
+				throw new Error('--cohort cannot be combined with issue, scope, grouping, or run filters');
+			if ((opts.from === undefined) !== (opts.to === undefined))
+				throw new Error('--from and --to are required together');
+			if (opts.window && opts.from) throw new Error('--window cannot be combined with --from/--to');
+			const api = client(opts);
+			const project =
+				opts.project && !isUsageIdentity(opts.project, 'prj')
+					? (await resolveProject(api, opts.project)).id
+					: opts.project;
+			const workflow = !isUsageIdentity(opts.workflow, 'wf')
+				? (await resolveWorkflow(api, opts.workflow)).id
+				: opts.workflow;
+			const report = await api.getCohortUsage({
+				workflow,
+				project,
+				window: opts.window,
+				from: opts.from,
+				to: opts.to,
+				done_state: opts.doneState
+			});
+			if (opts.json) return printJson(report);
+			printCohortReport(report);
 			return;
 		}
 		if ((opts.from === undefined) !== (opts.to === undefined))

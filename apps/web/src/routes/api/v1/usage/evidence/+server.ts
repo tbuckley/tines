@@ -49,6 +49,10 @@ export const GET: RequestHandler = api(async (event) => {
 		});
 	}
 	if (scope.owner !== actor.userId) throw notFound();
+	if (scope.mode === 'cohort')
+		throw new ApiFail(422, 'invalid_evidence_selection', 'Cohort evidence is not available', {
+			remedy: 'restart from the completed-issues report'
+		});
 	const kind = (params.get('kind') ?? 'issues') as 'issues' | 'runs';
 	const population = (params.get('population') ?? 'finalized') as 'finalized' | 'pending';
 	const sort = (params.get('sort') ?? (population === 'pending' ? 'time' : 'cost')) as

@@ -1,4 +1,9 @@
-import { UsageInputError, type ResolvedUsageFilters, type UsageBy } from '@tines/shared';
+import {
+	UsageInputError,
+	type CohortStateProof,
+	type ResolvedUsageFilters,
+	type UsageBy
+} from '@tines/shared';
 
 const encoder = new TextEncoder();
 const MAX_TOKEN = 8_192;
@@ -23,6 +28,21 @@ export type UsageScopePayload =
 			cutoff: number;
 			timezone: string;
 			timezone_source: 'supervisor_budget' | 'utc_fallback';
+	  }
+	| {
+			v: 1;
+			owner: string;
+			mode: 'cohort';
+			from: number;
+			to: number;
+			timezone: string;
+			timezone_source: 'supervisor_budget' | 'utc_fallback';
+			project: string | null;
+			workflow: string;
+			selected_states: CohortStateProof[];
+			selection_basis: 'all_current_done' | 'explicit' | 'retained_recorded_done' | 'unavailable';
+			definitions_resolved_at: number;
+			observed_through: number;
 	  };
 
 export type UsageCursorPayload = {
@@ -136,6 +156,43 @@ function validScope(value: unknown): value is UsageScopePayload {
 			typeof value.timezone === 'string' &&
 			['supervisor_budget', 'utc_fallback'].includes(String(value.timezone_source))
 		);
+	if (value.mode === 'cohort') {
+		if (
+			Object.keys(value).sort().join(',') !==
+				'definitions_resolved_at,from,mode,observed_through,owner,project,selected_states,selection_basis,timezone,timezone_source,to,v,workflow' ||
+			!safeTime(value.from) ||
+			!safeTime(value.to) ||
+			!safeTime(value.definitions_resolved_at) ||
+			!safeTime(value.observed_through) ||
+			value.from >= value.to ||
+			value.to > value.observed_through ||
+			typeof value.workflow !== 'string' ||
+			!(value.project === null || typeof value.project === 'string') ||
+			typeof value.timezone !== 'string' ||
+			!['supervisor_budget', 'utc_fallback'].includes(String(value.timezone_source)) ||
+			!['all_current_done', 'explicit', 'retained_recorded_done', 'unavailable'].includes(
+				String(value.selection_basis)
+			) ||
+			!Array.isArray(value.selected_states)
+		)
+			return false;
+		const ids = new Set<string>();
+		for (const state of value.selected_states) {
+			if (
+				!plain(state) ||
+				Object.keys(state).sort().join(',') !== 'basis,category,id,name,proof_event_id' ||
+				typeof state.id !== 'string' ||
+				typeof state.name !== 'string' ||
+				state.category !== 'done' ||
+				!['current_definition', 'recorded_entry'].includes(String(state.basis)) ||
+				!(state.proof_event_id === null || typeof state.proof_event_id === 'string') ||
+				ids.has(state.id)
+			)
+				return false;
+			ids.add(state.id);
+		}
+		return true;
+	}
 	const filters = value.filters;
 	return (
 		value.mode === 'period' &&
