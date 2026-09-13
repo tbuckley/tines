@@ -1,5 +1,11 @@
 <script lang="ts">
-	import { usageCostLabel, ApiError, type Project, type UsageReport } from '@tines/shared';
+	import {
+		usageCostLabel,
+		ApiError,
+		type Project,
+		type UsageReport,
+		type Workflow
+	} from '@tines/shared';
 	import { untrack } from 'svelte';
 	import { page } from '$app/state';
 	import { api } from '$lib/api';
@@ -12,15 +18,18 @@
 	import { sortUsageGroups } from '$lib/usage-view';
 	import UsageCostCell from './UsageCostCell.svelte';
 	import SpendEvidence from './SpendEvidence.svelte';
+	import SpendCohort from './SpendCohort.svelte';
 
 	let {
 		projects,
 		archivedProjects,
+		workflows,
 		focusId,
 		navigate
 	}: {
 		projects: Project[];
 		archivedProjects: Project[];
+		workflows: Workflow[];
 		focusId: string | null;
 		navigate: (changes: Record<string, string | null>, replace?: boolean) => Promise<void>;
 	} = $props();
@@ -31,6 +40,7 @@
 	let error = $state<string | null>(null);
 	let requestId = 0;
 	let expanded = $state(new Set<string>());
+	let cohortOpen = $state(false);
 	let customFrom = $state(''),
 		customTo = $state(''),
 		customSubmitted = $state(false);
@@ -279,6 +289,16 @@
 			onclick={() => load(true)}>{status === 'refreshing' ? 'Refreshing…' : 'Refresh'}</button
 		>
 	</div>
+
+	<button type="button" onclick={() => (cohortOpen = true)}>Completed issues</button>
+	{#if cohortOpen}<SpendCohort
+			{workflows}
+			project={selection.project}
+			window={selection.window}
+			from={selection.from}
+			to={selection.to}
+			onclose={() => (cohortOpen = false)}
+		/>{/if}
 
 	<div aria-live="polite" aria-busy={status === 'loading' || status === 'refreshing'}>
 		{#if status === 'invalid'}<p class="error">Enter both From and To, then Apply.</p>

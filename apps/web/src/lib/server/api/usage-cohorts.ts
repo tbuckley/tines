@@ -5,7 +5,6 @@ import {
 	cohortRatio,
 	createUsageAccumulator,
 	finalizeUsage,
-	mergeUsageCounters,
 	resolveUsagePeriod,
 	type CohortCounters,
 	type CohortEntry,
@@ -302,7 +301,12 @@ export async function getCohortUsage(
 			if (!target) continue;
 			target.attempts++;
 			if (run.ended_at === null) target.pending++;
-			else addUsageClassification(target.acc, classifyUsage(run.usage));
+			else {
+				const classification = classifyUsage(run.usage);
+				addUsageClassification(target.acc, classification);
+				addUsageClassification(global, classification);
+				addUsageClassification(stateAcc.get(target.entry.state_id!)!, classification);
+			}
 		}
 		if (batch.length <= 5_000) break;
 		const last = batch[4_999];
@@ -321,8 +325,6 @@ export async function getCohortUsage(
 		if (witness) witness.reopening_relevant = true;
 		const unknown = later.filter((entry) => entry.potential && !!entry.unavailable_reason).length;
 		const aggregate = finalizeUsage(value.acc);
-		mergeUsageCounters(global, value.acc);
-		mergeUsageCounters(stateAcc.get(value.entry.state_id!)!, value.acc);
 		issues.push({
 			issue_id: id,
 			issue_ref: issueRefs.get(id) ?? null,

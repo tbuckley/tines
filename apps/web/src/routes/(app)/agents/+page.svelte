@@ -1132,6 +1132,7 @@
 	<SpendPanel
 		projects={data.projects}
 		archivedProjects={data.archivedProjects}
+		workflows={data.workflows}
 		focusId={data.focusId}
 		navigate={patchAgents}
 	/>

@@ -6,8 +6,12 @@ Every report now returns signed, owner-bound scopes for its project total, match
 
 `mode=issue&issue=<id>` and `tines usage --issue Tines/123` report **Lifetime through now** across every retained direct attempt, stage and retry. Child and dependency runs are never traversed. Attempts created at the cutoff are absent; attempts ending at or after it are pending, and the pending projection cannot expose facts learned later. A retained raw issue ID remains readable when its owned runs survive but current metadata does not. A measured zero is `$0.00`, absent dollars are Unknown, and an issue without attempts says **No agent runs**.
 
+`mode=cohort&workflow=<id>` and `tines usage --cohort --workflow Engineering` report distinct issues with a recorded entry into a selected terminal state in `[from,to)`. Omission selects every actual done state; repeat `done_state`/`--done-state` to select exact states. Membership uses the latest qualifying entry per issue, while accounting includes every retained direct attempt created before `to`, including pre-window research, retries, pending attempts, and zero-run issues. Known-dollar and attempt means divide by all cohort issues. A fully priced issue has at least one finalized attempt, all finalized attempts priced, and no pending attempt. Reopening is observed separately through the signed `observed_through` cutoff. Cohort costs are not additive to period spend.
+
 ```sh
 tines usage --issue Tines/123
+tines usage --cohort --workflow Engineering --window 7d
+tines usage --cohort --workflow wf_ID --from 2026-09-01 --to 2026-09-08 --done-state wfs_CLOSED
 tines usage --window 7d --by workflow --json
 tines usage --scope "$SCOPE" --evidence issues --sort cost --direction desc
 tines usage --scope "$SCOPE" --evidence runs --member iss_123 --all-pages --json
