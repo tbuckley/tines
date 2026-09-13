@@ -11,6 +11,7 @@ import {
 	layerRank,
 	listContextItems,
 	loadFiles,
+	selectLaunchComments,
 	stitchPrompt,
 	validateWorkspacePath
 } from './context';
@@ -303,6 +304,7 @@ const richContext: EffectiveContext = {
 		{
 			item_id: 'ctx_s',
 			name: 'review-checklist',
+			description: 'Check the implementation before review.',
 			scope: {
 				...emptyScope,
 				workflow_state_id: 's_review',
@@ -337,12 +339,68 @@ const richContext: EffectiveContext = {
 };
 
 describe('issueBlock', () => {
+	it('keeps humans, a protected handoff, and three other latest agent comments', () => {
+		const run = {
+			run_id: 'run',
+			runner_name: 'runner',
+			issue_ref: { project_name: 'Tines', number: 42 }
+		};
+		const comments = [
+			{ ...issue.comments[0], id: 'cmt_h', body: 'human body' },
+			...['a', 'b', 'c', 'd', 'e'].map((suffix, index) => ({
+				...issue.comments[0],
+				id: `cmt_${suffix}`,
+				body: `agent body ${suffix}`,
+				created_at: 1700000001000 + index,
+				actor: { ...issue.comments[0].actor, run: { ...run, run_id: `run_${suffix}` } }
+			})),
+			{ ...issue.comments[0], id: 'cmt_h', body: 'human body' }
+		];
+		const launchIssue = {
+			...issue,
+			comments,
+			launch_comments: { latest_completed_run_comment_id: 'cmt_a' }
+		};
+		const before = structuredClone(launchIssue.comments);
+		const selected = selectLaunchComments(launchIssue);
+		expect(selected.retained.map((comment) => comment.id)).toEqual([
+			'cmt_h',
+			'cmt_a',
+			'cmt_c',
+			'cmt_d',
+			'cmt_e'
+		]);
+		expect(selected.omittedAgentIds).toEqual(['cmt_b']);
+		expect(launchIssue.comments).toEqual(before);
+		const block = issueBlock(launchIssue, emptyContext);
+		expect(block).toContain('Older agent comments: cmt_b. Load one');
+		expect(block).not.toContain('agent body b');
+		expect(block).toContain('agent body a');
+	});
+
+	it('keeps the full thread when launch metadata is absent', () => {
+		const run = {
+			run_id: 'run',
+			runner_name: 'runner',
+			issue_ref: { project_name: 'Tines', number: 42 }
+		};
+		const comments = Array.from({ length: 5 }, (_, index) => ({
+			...issue.comments[0],
+			id: `cmt_${index}`,
+			body: `body ${index}`,
+			actor: { ...issue.comments[0].actor, run }
+		}));
+		expect(selectLaunchComments({ ...issue, comments }).retained).toHaveLength(5);
+	});
+
 	it('renders the factual block with runnable CLI commands', () => {
 		const block = issueBlock(issue, emptyContext);
 		expect(block).toContain('## Issue: Tines/42 — Ship the thing');
 		expect(block).toContain('Do it *well*.');
 		expect(block).toContain('Review (awaiting_human), in workflow "Two-step".');
-		expect(block).toContain('**Alice via laptop** (2023-11-14T22:13:20.000Z):\nLooks close.');
+		expect(block).toContain(
+			'**Alice via laptop** (2023-11-14T22:13:20.000Z, ID: cmt_1):\nLooks close.'
+		);
 		// The comment affordance is a quoted heredoc, so an agent's prose survives
 		// the shell verbatim (Tines/9) — with the fallback spelled out, because a
 		// CLI predating that change posts a bare `-` and exits 0. Asserted as one
@@ -442,7 +500,7 @@ describe('issueBlock', () => {
 		);
 		expect(steered).toContain('Now stale: `impl-pr`.');
 		expect(steered).toContain(
-			'**Tom Buckley** (2023-11-14T21:56:39.000Z):\nCI is red on the e2e job.'
+			'**Tom Buckley** (2023-11-14T21:56:39.000Z, ID: cmt_h):\nCI is red on the e2e job.'
 		);
 		// The steer is what this run is for, so it precedes everything the agent
 		// would otherwise read first — including the full thread.
@@ -497,7 +555,10 @@ describe('issueBlock', () => {
 	it('lists artifacts with the fetch command and shared prompts names-only', () => {
 		const block = issueBlock(issue, richContext);
 		expect(block).toContain(
-			'Attached to this issue: skill "review-checklist" (1 file), repo "src" (branch experiment). Fetch them: `tines issues context Tines/42 --out <dir>`'
+			'Skill "review-checklist" (state Review): read `skills/review-checklist/SKILL.md`'
+		);
+		expect(block).toContain(
+			'Attached to this issue: repo "src" (branch experiment). Fetch them: `tines issues context Tines/42 --out <dir>`'
 		);
 		// Shared footnote: global + non-journal, non-issue-anchored prompts —
 		// the issue-scoped "constraints" prompt is the issue's own, not listed.

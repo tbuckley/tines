@@ -6,9 +6,25 @@
  * fix what it wrote itself.
  */
 import { beforeEach, describe, expect, it } from 'vitest';
-import { OPEN, USER, addIssue, addRun, addRunner, seedBase } from '../supervisor/test-fixtures';
+import {
+	NOW,
+	OPEN,
+	USER,
+	addComment,
+	addIssue,
+	addRun,
+	addRunKey,
+	addRunner,
+	seedBase
+} from '../supervisor/test-fixtures';
 import { ApiFail, type ActorContext } from './core';
-import { createComment, deleteComment, loadComments, updateComment } from './issues';
+import {
+	createComment,
+	deleteComment,
+	getIssueDetail,
+	loadComments,
+	updateComment
+} from './issues';
 import { createTestDb, type TestDb } from './test-db';
 
 const session: ActorContext = {
@@ -84,6 +100,65 @@ const fail = async (p: Promise<unknown>): Promise<ApiFail> => {
 };
 
 describe('updateComment', () => {
+	it('derives the final comment of the newest completed same-issue run for launch metadata', async () => {
+		const issue = addIssue(t);
+		const other = addIssue(t);
+		const runner = addRunner(t);
+		const oldRun = addRun(t, {
+			id: 'arun_old',
+			issueId: issue,
+			runnerId: runner,
+			status: 'completed',
+			createdAt: NOW
+		});
+		const newRun = addRun(t, {
+			id: 'arun_new',
+			issueId: issue,
+			runnerId: runner,
+			status: 'completed',
+			createdAt: NOW + 1
+		});
+		const crossIssue = addRun(t, {
+			id: 'arun_cross',
+			issueId: other,
+			runnerId: runner,
+			status: 'completed',
+			createdAt: NOW + 2
+		});
+		const oldKey = addRunKey(t, oldRun);
+		const newKey = addRunKey(t, newRun);
+		const crossKey = addRunKey(t, crossIssue);
+		addComment(t, { issueId: issue, body: 'old', apiKeyId: oldKey, at: NOW, id: 'cmt_old' });
+		addComment(t, {
+			issueId: issue,
+			body: 'new first',
+			apiKeyId: newKey,
+			at: NOW + 1,
+			id: 'cmt_new_a'
+		});
+		addComment(t, {
+			issueId: issue,
+			body: 'new final',
+			apiKeyId: newKey,
+			at: NOW + 2,
+			id: 'cmt_new_b'
+		});
+		addComment(t, {
+			issueId: issue,
+			body: 'cross',
+			apiKeyId: crossKey,
+			at: NOW + 3,
+			id: 'cmt_cross'
+		});
+
+		const ordinary = await getIssueDetail(t.db, USER, { id: issue });
+		expect(ordinary.launch_comments).toBeUndefined();
+		expect(ordinary.comments).toHaveLength(4);
+		const launch = await getIssueDetail(t.db, USER, { id: issue }, { launchComments: true });
+		expect(launch.comments).toHaveLength(4);
+		expect(launch.launch_comments?.latest_completed_run_comment_id).toBe('cmt_new_b');
+	});
+
 	it('replaces the body, stamps updated_at, and emits a content-free event', async () => {
 		const issue = addIssue(t);
 		const created = await createComment(t.db, t.env, session, issue, { body: 'orignal' });
