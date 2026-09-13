@@ -122,6 +122,124 @@ function counters(
 	};
 }
 
+type CohortStreamRow = {
+	issue_id: string;
+	event_id: string;
+	event_type: CohortEntry['event_type'];
+	event_project_id: string | null;
+	workflow_id: string | null;
+	workflow_name: string | null;
+	state_id: string;
+	state_name: string | null;
+	category: string;
+	entry_at: number;
+	issue_number: number | null;
+	issue_title: string | null;
+	project_name: string | null;
+	reopened: number;
+	unknown_later_entry_count: number;
+	witness_id: string | null;
+	witness_type: CohortEntry['event_type'] | null;
+	witness_project_id: string | null;
+	witness_workflow_id: string | null;
+	witness_workflow_name: string | null;
+	witness_state_id: string | null;
+	witness_state_name: string | null;
+	witness_category: string | null;
+	witness_at: number | null;
+	run_id: string | null;
+	run_created_at: number | null;
+	ended_at: number | null;
+	usage: string | null;
+};
+
+type CounterState = {
+	distinct: number;
+	attempts: number;
+	pending: number;
+	zero: number;
+	pendingOnly: number;
+	fully: number;
+	reopened: number;
+	unknownReopening: number;
+};
+
+const newCounterState = (): CounterState => ({
+	distinct: 0,
+	attempts: 0,
+	pending: 0,
+	zero: 0,
+	pendingOnly: 0,
+	fully: 0,
+	reopened: 0,
+	unknownReopening: 0
+});
+
+function finishCounters(
+	value: CounterState,
+	aggregate: ReturnType<typeof finalizeUsage>
+): CohortCounters {
+	return {
+		distinct_issue_count: value.distinct,
+		attempt_count: value.attempts,
+		pending_count: value.pending,
+		zero_run_issue_count: value.zero,
+		pending_only_issue_count: value.pendingOnly,
+		fully_priced_issue_count: value.fully,
+		reopened_issue_count: value.reopened,
+		reopening_history_unavailable_issue_count: value.unknownReopening,
+		mean_attempts_per_issue: cohortRatio(value.attempts, value.distinct),
+		known_cost_per_issue: cohortKnownCostMean(
+			aggregate.cost_usd_exact,
+			value.distinct,
+			value.fully
+		),
+		priced_run_coverage: cohortRatio(aggregate.priced_run_count, aggregate.finalized_run_count),
+		fully_priced_issue_coverage: cohortRatio(value.fully, value.distinct)
+	};
+}
+
+function entryFromStream(row: CohortStreamRow): CohortEntry {
+	return {
+		event_id: row.event_id,
+		event_type: row.event_type,
+		issue_id: row.issue_id,
+		project_id: row.event_project_id,
+		workflow_id: row.workflow_id,
+		workflow_name: row.workflow_name,
+		state_id: row.state_id,
+		state_name: row.state_name,
+		category: row.category,
+		identity_basis: 'recorded_entry',
+		created_at: row.entry_at,
+		qualifies: true,
+		chosen: true,
+		reopening_relevant: false,
+		unavailable_reason: null
+	};
+}
+
+function witnessFromStream(row: CohortStreamRow): CohortEntry | null {
+	if (!row.witness_id || !row.witness_type || row.witness_at === null) return null;
+	return {
+		event_id: row.witness_id,
+		event_type: row.witness_type,
+		issue_id: row.issue_id,
+		project_id: row.witness_project_id,
+		workflow_id: row.witness_workflow_id,
+		workflow_name: row.witness_workflow_name,
+		state_id: row.witness_state_id,
+		state_name: row.witness_state_name,
+		category: row.witness_category,
+		identity_basis: 'recorded_entry',
+		created_at: row.witness_at,
+		qualifies: false,
+		chosen: false,
+		reopening_relevant: true,
+		unavailable_reason: null
+	};
+}
+
 export async function getCohortUsage(
 	db: Kysely<Database>,
 	owner: string,
@@ -155,19 +273,33 @@ export async function getCohortUsage(
 			.executeTakeFirst();
 		if (!project) return null;
 	}
-	const rows = await db
-		.selectFrom('event')
-		.select(['id', 'type', 'issue_id', 'project_id', 'payload', 'created_at'])
-		.where('user_id', '=', owner)
-		.where('created_at', '>=', period.from)
-		.where('created_at', '<', frozen?.observed_through ?? generatedAt)
-		.where('type', 'in', ['issue.created', 'issue.transitioned', 'issue.updated'])
-		.orderBy('created_at')
-		.orderBy('id')
-		.execute();
-	const entries = rows
-		.map(normalize)
-		.filter((entry) => entry.potential || entry.unavailable_reason);
+	const observedThrough = frozen?.observed_through ?? generatedAt;
+	const retainedRows = async () => {
+		const result = await sql<{
+			id: string;
+			state_id: string;
+			state_name: string | null;
+		}>`WITH normalized AS (
+			SELECT id, created_at,
+				CASE WHEN type='issue.created' THEN json_extract(payload,'$.state_id')
+					ELSE json_extract(payload,'$.to_state_id') END AS state_id,
+				CASE WHEN type='issue.created' THEN json_extract(payload,'$.state_name')
+					ELSE json_extract(payload,'$.to_state_name') END AS state_name,
+				CASE WHEN type IN ('issue.created','issue.transitioned') THEN json_extract(payload,'$.workflow_id')
+					ELSE json_extract(payload,'$.workflow_to_id') END AS workflow_id,
+				CASE WHEN type='issue.created' THEN json_extract(payload,'$.state_category')
+					ELSE json_extract(payload,'$.to_state_category') END AS category
+			FROM event
+			WHERE user_id=${owner} AND created_at<${observedThrough}
+				AND type IN ('issue.created','issue.transitioned','issue.updated') AND json_valid(payload)
+		), ranked AS (
+			SELECT *, ROW_NUMBER() OVER (PARTITION BY state_id ORDER BY created_at DESC,id DESC) AS rn
+			FROM normalized WHERE workflow_id=${request.workflow} AND category='done'
+				AND typeof(state_id)='text' AND state_id<>''
+		)
+		SELECT id,state_id,state_name FROM ranked WHERE rn=1 ORDER BY state_id`.execute(db);
+		return result.rows;
+	};
 	let selected: CohortStateProof[];
 	let selectionBasis: CohortUsageReport['selection_basis'];
 	if (frozen) {
@@ -183,6 +315,7 @@ export async function getCohortUsage(
 					.where('id', 'in', wanted)
 					.execute()
 			: [];
+		const retained = current.length === wanted.length ? [] : await retainedRows();
 		selected = wanted.flatMap<CohortStateProof>((id) => {
 			const state = current.find((item) => item.id === id && item.category === 'done');
 			if (state)
@@ -195,10 +328,7 @@ export async function getCohortUsage(
 						proof_event_id: null
 					}
 				];
-			const event = entries.find(
-				(item) =>
-					item.workflow_id === request.workflow && item.state_id === id && item.category === 'done'
-			);
+			const event = retained.find((item) => item.state_id === id);
 			return event
 				? [
 						{
@@ -206,7 +336,7 @@ export async function getCohortUsage(
 							name: event.state_name ?? id,
 							category: 'done' as const,
 							basis: 'recorded_entry' as const,
-							proof_event_id: event.event_id
+							proof_event_id: event.id
 						}
 					]
 				: [];
@@ -229,164 +359,183 @@ export async function getCohortUsage(
 		}));
 		selectionBasis = states.length ? 'all_current_done' : 'unavailable';
 	} else {
-		const retained = new Map<string, Normalized>();
-		for (const entry of entries)
-			if (entry.workflow_id === request.workflow && entry.state_id && entry.category === 'done')
-				retained.set(entry.state_id, entry);
-		selected = [...retained.values()].map((entry) => ({
-			id: entry.state_id!,
-			name: entry.state_name ?? entry.state_id!,
+		const retained = await retainedRows();
+		selected = retained.map((entry) => ({
+			id: entry.state_id,
+			name: entry.state_name ?? entry.state_id,
 			category: 'done',
 			basis: 'recorded_entry',
-			proof_event_id: entry.event_id
+			proof_event_id: entry.id
 		}));
 		selectionBasis = selected.length ? 'retained_recorded_done' : 'unavailable';
 	}
-	if (!workflow && !entries.some((entry) => entry.workflow_id === request.workflow)) return null;
-	const selectedIds = new Set(selected.map((state) => state.id));
-	const chosen = new Map<string, Normalized>();
-	for (const entry of entries) {
-		entry.qualifies = !!(
-			entry.issue_id &&
-			entry.created_at < period.to &&
-			entry.workflow_id === request.workflow &&
-			entry.state_id &&
-			selectedIds.has(entry.state_id) &&
-			entry.category === 'done' &&
-			(!request.project || entry.project_id === request.project)
-		);
-		if (entry.qualifies) chosen.set(entry.issue_id!, entry);
-	}
-	for (const entry of chosen.values()) entry.chosen = true;
-	const issueRefs = new Map<string, CohortIssueUsage['issue_ref']>();
-	const currentIssues = await db
-		.selectFrom('issue')
-		.innerJoin('project', 'project.id', 'issue.project_id')
-		.select([
-			'issue.id',
-			'issue.number',
-			'issue.title',
-			'project.name as project_name',
-			'project.user_id as project_owner'
-		])
-		.execute();
-	for (const issue of currentIssues) {
-		if (issue.project_owner !== owner) {
-			// An owned retained event is not authority to disclose or claim a current
-			// issue identity that now resolves to another account.
-			chosen.delete(issue.id);
-			continue;
-		}
-		issueRefs.set(issue.id, {
-			project_name: issue.project_name,
-			number: issue.number,
-			title: issue.title
-		});
-	}
+	if (!workflow && selected.length === 0) return null;
 	const stateAcc = new Map(selected.map((state) => [state.id, createUsageAccumulator()]));
+	const stateCounters = new Map(selected.map((state) => [state.id, newCounterState()]));
 	const global = createUsageAccumulator();
-	const issueAcc = new Map(
-		[...chosen].map(([id, entry]) => [
-			id,
-			{ entry, acc: createUsageAccumulator(), attempts: 0, pending: 0 }
-		])
-	);
-	let seek: { at: number; id: string } | null = null;
+	const totals = newCounterState();
+	let current: {
+		row: CohortStreamRow;
+		acc: ReturnType<typeof createUsageAccumulator>;
+		attempts: number;
+		pending: number;
+	} | null = null;
+	const finishIssue = () => {
+		if (!current) return;
+		const aggregate = finalizeUsage(current.acc);
+		const fully =
+			aggregate.finalized_run_count > 0 &&
+			aggregate.priced_run_count === aggregate.finalized_run_count &&
+			current.pending === 0;
+		for (const target of [totals, stateCounters.get(current.row.state_id)!]) {
+			target.distinct++;
+			target.attempts += current.attempts;
+			target.pending += current.pending;
+			if (current.attempts === 0) target.zero++;
+			if (current.attempts > 0 && aggregate.finalized_run_count === 0) target.pendingOnly++;
+			if (fully) target.fully++;
+			if (current.row.reopened) target.reopened++;
+			else if (current.row.unknown_later_entry_count) target.unknownReopening++;
+		}
+	};
+	let seek = { issue: '', at: -1, run: '' };
 	for (;;) {
-		let query = db
-			.selectFrom('agent_run')
-			.select([
-				'id',
-				'issue_id',
-				'created_at',
-				sql<number | null>`CASE WHEN ended_at < ${period.to} THEN ended_at END`.as('ended_at'),
-				sql<string | null>`CASE WHEN ended_at < ${period.to} THEN usage END`.as('usage')
-			])
-			.where('user_id', '=', owner)
-			.where('created_at', '<', period.to);
-		if (seek) query = query.where(sql<boolean>`(created_at,id) > (${seek.at},${seek.id})`);
-		const batch = await query.orderBy('created_at').orderBy('id').limit(5_001).execute();
-		for (const run of batch.slice(0, 5_000)) {
-			if (!run.issue_id) continue;
-			const target = issueAcc.get(run.issue_id);
-			if (!target) continue;
+		const result = await sql<CohortStreamRow>`WITH normalized AS (
+			SELECT id,type,issue_id,project_id,created_at,
+				CASE WHEN json_valid(payload) AND type='issue.created' THEN json_extract(payload,'$.state_id')
+					WHEN json_valid(payload) THEN json_extract(payload,'$.to_state_id') END AS state_id,
+				CASE WHEN json_valid(payload) AND type='issue.created' THEN json_extract(payload,'$.state_name')
+					WHEN json_valid(payload) THEN json_extract(payload,'$.to_state_name') END AS state_name,
+				CASE WHEN json_valid(payload) AND type IN ('issue.created','issue.transitioned') THEN json_extract(payload,'$.workflow_id')
+					WHEN json_valid(payload) THEN json_extract(payload,'$.workflow_to_id') END AS workflow_id,
+				CASE WHEN json_valid(payload) AND type IN ('issue.created','issue.transitioned') THEN json_extract(payload,'$.workflow_name')
+					WHEN json_valid(payload) THEN json_extract(payload,'$.workflow_to_name') END AS workflow_name,
+				CASE WHEN json_valid(payload) AND type='issue.created' THEN json_extract(payload,'$.state_category')
+					WHEN json_valid(payload) THEN json_extract(payload,'$.to_state_category') END AS category,
+				CASE WHEN NOT json_valid(payload) THEN 1
+					WHEN (CASE WHEN type='issue.created' THEN json_extract(payload,'$.state_id') ELSE json_extract(payload,'$.to_state_id') END) IS NULL THEN 1
+					WHEN (CASE WHEN type IN ('issue.created','issue.transitioned') THEN json_extract(payload,'$.workflow_id') ELSE json_extract(payload,'$.workflow_to_id') END) IS NULL THEN 1
+					WHEN (CASE WHEN type='issue.created' THEN json_extract(payload,'$.state_category') ELSE json_extract(payload,'$.to_state_category') END) IS NULL THEN 1 ELSE 0 END AS unavailable
+			FROM event WHERE user_id=${owner} AND created_at>=${period.from}
+				AND created_at<${observedThrough} AND issue_id>=${seek.issue}
+				AND type IN ('issue.created','issue.transitioned','issue.updated')
+				AND (type<>'issue.updated' OR NOT json_valid(payload)
+					OR json_extract(payload,'$.workflow_to_id') IS NOT NULL
+					OR EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(payload) THEN payload ELSE '{}' END,'$.changed') WHERE value='workflow'))
+		), flagged AS (
+			SELECT *, CASE WHEN issue_id IS NOT NULL AND created_at<${period.to}
+				AND workflow_id=${request.workflow} AND category='done'
+				AND state_id IN (SELECT value FROM json_each(${JSON.stringify(selected.map((state) => state.id))}))
+				AND (${request.project ?? null} IS NULL OR project_id=${request.project ?? null}) THEN 1 ELSE 0 END AS qualifies
+			FROM normalized
+		), ranked AS (
+			SELECT *,
+				SUM(qualifies) OVER (PARTITION BY issue_id ORDER BY created_at DESC,id DESC ROWS UNBOUNDED PRECEDING) AS qualifying_rank,
+				MAX(CASE WHEN category IS NOT NULL AND category<>'done' THEN printf('%020d',created_at)||id END)
+					OVER (PARTITION BY issue_id ORDER BY created_at DESC,id DESC ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) AS witness_key,
+				SUM(CASE WHEN unavailable=1 THEN 1 ELSE 0 END)
+					OVER (PARTITION BY issue_id ORDER BY created_at DESC,id DESC ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) AS unknown_later_entry_count
+			FROM flagged
+		), members AS (
+			SELECT * FROM ranked WHERE qualifies=1 AND qualifying_rank=1
+		)
+		SELECT m.issue_id,m.id AS event_id,m.type AS event_type,m.project_id AS event_project_id,
+			m.workflow_id,m.workflow_name,m.state_id,m.state_name,m.category,m.created_at AS entry_at,
+			i.number AS issue_number,i.title AS issue_title,p.name AS project_name,
+			CASE WHEN w.id IS NULL THEN 0 ELSE 1 END AS reopened,
+			COALESCE(m.unknown_later_entry_count,0) AS unknown_later_entry_count,
+			w.id AS witness_id,w.type AS witness_type,w.project_id AS witness_project_id,
+			w.workflow_id AS witness_workflow_id,w.workflow_name AS witness_workflow_name,
+			w.state_id AS witness_state_id,w.state_name AS witness_state_name,w.category AS witness_category,
+			w.created_at AS witness_at,r.id AS run_id,r.created_at AS run_created_at,
+			CASE WHEN r.ended_at<${period.to} THEN r.ended_at END AS ended_at,
+			CASE WHEN r.ended_at<${period.to} THEN r.usage END AS usage
+		FROM members m
+		LEFT JOIN normalized w ON printf('%020d',w.created_at)||w.id=m.witness_key AND w.issue_id=m.issue_id
+		LEFT JOIN issue i ON i.id=m.issue_id
+		LEFT JOIN project p ON p.id=i.project_id
+		LEFT JOIN agent_run r ON r.user_id=${owner} AND r.issue_id=m.issue_id AND r.created_at<${period.to}
+			AND (r.created_at,r.id)>(CASE WHEN m.issue_id=${seek.issue} THEN ${seek.at} ELSE -1 END,CASE WHEN m.issue_id=${seek.issue} THEN ${seek.run} ELSE '' END)
+		WHERE (i.id IS NULL OR p.user_id=${owner})
+			AND (m.issue_id,COALESCE(r.created_at,-1),COALESCE(r.id,''))>(${seek.issue},${seek.at},${seek.run})
+		ORDER BY m.issue_id,r.created_at,r.id LIMIT 5001`.execute(db);
+		const batch = result.rows;
+		for (const row of batch.slice(0, 5_000)) {
+			if (current && current.row.issue_id !== row.issue_id) finishIssue();
+			if (!current || current.row.issue_id !== row.issue_id)
+				current = { row, acc: createUsageAccumulator(), attempts: 0, pending: 0 };
+			const target = current;
+			if (row.run_id === null) continue;
 			target.attempts++;
-			if (run.ended_at === null) target.pending++;
+			if (row.ended_at === null) target.pending++;
 			else {
-				const classification = classifyUsage(run.usage);
+				const classification = classifyUsage(row.usage);
 				addUsageClassification(target.acc, classification);
 				addUsageClassification(global, classification);
-				addUsageClassification(stateAcc.get(target.entry.state_id!)!, classification);
+				addUsageClassification(stateAcc.get(row.state_id)!, classification);
 			}
 		}
 		if (batch.length <= 5_000) break;
 		const last = batch[4_999];
-		seek = { at: last.created_at, id: last.id };
+		seek = { issue: last.issue_id, at: last.run_created_at ?? -1, run: last.run_id ?? '' };
 	}
-	const observedThrough = frozen?.observed_through ?? generatedAt;
-	const issues: CohortIssueUsage[] = [];
-	for (const [id, value] of issueAcc) {
-		const later = entries.filter(
-			(entry) =>
-				entry.issue_id === id &&
-				(entry.created_at > value.entry.created_at ||
-					(entry.created_at === value.entry.created_at && entry.event_id > value.entry.event_id))
-		);
-		const witness = later.find((entry) => entry.category && entry.category !== 'done') ?? null;
-		if (witness) witness.reopening_relevant = true;
-		const unknown = later.filter((entry) => entry.potential && !!entry.unavailable_reason).length;
-		const aggregate = finalizeUsage(value.acc);
-		issues.push({
-			issue_id: id,
-			issue_ref: issueRefs.get(id) ?? null,
-			aggregate,
-			attempt_count: value.attempts,
-			pending_count: value.pending,
-			fully_priced:
-				aggregate.finalized_run_count > 0 &&
-				aggregate.priced_run_count === aggregate.finalized_run_count &&
-				value.pending === 0,
-			latest_at: value.entry.created_at,
-			chosen_entry: value.entry,
-			reopening: {
-				value: witness ? true : unknown ? null : false,
-				witness,
-				unknown_later_entry_count: unknown,
-				observed_through: observedThrough
-			}
-		});
-	}
+	finishIssue();
 	const aggregate = finalizeUsage(global);
-	const malformed = entries.filter(
-		(entry) => entry.unavailable_reason === 'malformed_payload'
-	).length;
-	const missing = entries.filter(
-		(entry) => entry.unavailable_reason === 'missing_target_state_id'
-	).length;
-	const unavailable = entries.filter(
-		(entry) => entry.unavailable_reason === 'missing_workflow_or_category'
-	).length;
-	const definitionCount = entries.filter(
-		(entry) => entry.identity_basis === 'current_definition'
-	).length;
+	const historyQuery = await sql<{
+		examined: number;
+		earliest: number | null;
+		qualifying: number;
+		malformed: number;
+		missing: number;
+		unavailable: number;
+		null_issue: number;
+		unknown_project: number;
+	}>`WITH normalized AS (
+		SELECT issue_id,project_id,created_at,json_valid(payload) AS valid,
+			CASE WHEN json_valid(payload) AND type='issue.created' THEN json_extract(payload,'$.state_id')
+				WHEN json_valid(payload) THEN json_extract(payload,'$.to_state_id') END AS state_id,
+			CASE WHEN json_valid(payload) AND type IN ('issue.created','issue.transitioned') THEN json_extract(payload,'$.workflow_id')
+				WHEN json_valid(payload) THEN json_extract(payload,'$.workflow_to_id') END AS workflow_id,
+			CASE WHEN json_valid(payload) AND type='issue.created' THEN json_extract(payload,'$.state_category')
+				WHEN json_valid(payload) THEN json_extract(payload,'$.to_state_category') END AS category
+		FROM event WHERE user_id=${owner} AND created_at>=${period.from} AND created_at<${observedThrough}
+			AND type IN ('issue.created','issue.transitioned','issue.updated')
+			AND (type<>'issue.updated' OR NOT json_valid(payload)
+				OR json_extract(payload,'$.workflow_to_id') IS NOT NULL
+				OR EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(payload) THEN payload ELSE '{}' END,'$.changed') WHERE value='workflow'))
+	)
+	SELECT COUNT(*) AS examined,MIN(created_at) AS earliest,
+		COALESCE(SUM(CASE WHEN issue_id IS NOT NULL AND created_at<${period.to}
+			AND workflow_id=${request.workflow} AND category='done'
+			AND state_id IN (SELECT value FROM json_each(${JSON.stringify(selected.map((state) => state.id))}))
+			AND (${request.project ?? null} IS NULL OR project_id=${request.project ?? null}) THEN 1 ELSE 0 END),0) AS qualifying,
+		COALESCE(SUM(CASE WHEN valid=0 THEN 1 ELSE 0 END),0) AS malformed,
+		COALESCE(SUM(CASE WHEN valid=1 AND state_id IS NULL THEN 1 ELSE 0 END),0) AS missing,
+		COALESCE(SUM(CASE WHEN valid=1 AND state_id IS NOT NULL AND (workflow_id IS NULL OR category IS NULL) THEN 1 ELSE 0 END),0) AS unavailable,
+		COALESCE(SUM(CASE WHEN issue_id IS NULL THEN 1 ELSE 0 END),0) AS null_issue,
+		COALESCE(SUM(CASE WHEN project_id IS NULL THEN 1 ELSE 0 END),0) AS unknown_project
+	FROM normalized`.execute(db);
+	const historyResult = historyQuery.rows[0];
+	const malformed = Number(historyResult.malformed);
+	const missing = Number(historyResult.missing);
+	const unavailable = Number(historyResult.unavailable);
+	const examined = Number(historyResult.examined);
 	const history: CohortUsageReport['history'] = {
 		status:
-			entries.length === 0
+			examined === 0
 				? 'unavailable'
 				: malformed || missing || unavailable
 					? 'partial'
-					: definitionCount
-						? 'definition_based'
-						: 'event_recorded',
-		earliest_retained_at: entries[0]?.created_at ?? null,
-		examined_entry_count: entries.length,
-		qualifying_fact_count: entries.filter((entry) => entry.qualifies).length,
-		definition_classified_count: definitionCount,
+					: 'event_recorded',
+		earliest_retained_at: historyResult.earliest,
+		examined_entry_count: examined,
+		qualifying_fact_count: Number(historyResult.qualifying),
+		definition_classified_count: 0,
 		missing_target_id_count: missing,
 		unavailable_workflow_or_category_count: unavailable,
-		null_issue_count: entries.filter((entry) => entry.issue_id === null).length,
+		null_issue_count: Number(historyResult.null_issue),
 		malformed_count: malformed,
-		unknown_project_count: entries.filter((entry) => entry.project_id === null).length,
+		unknown_project_count: Number(historyResult.unknown_project),
 		from: period.from,
 		to: observedThrough
 	};
@@ -405,11 +554,14 @@ export async function getCohortUsage(
 		selected_states: selected,
 		selection_basis: selectionBasis,
 		aggregate,
-		counters: counters(issues, aggregate),
+		counters: finishCounters(totals, aggregate),
 		terminal_states: selected.map((state) => {
-			const matching = issues.filter((issue) => issue.chosen_entry.state_id === state.id);
 			const stateAggregate = finalizeUsage(stateAcc.get(state.id)!);
-			return { state, aggregate: stateAggregate, counters: counters(matching, stateAggregate) };
+			return {
+				state,
+				aggregate: stateAggregate,
+				counters: finishCounters(stateCounters.get(state.id)!, stateAggregate)
+			};
 		}),
 		history,
 		accounting_basis: 'finalized_before_cutoff_v1',
