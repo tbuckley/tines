@@ -43,6 +43,12 @@ export interface PublicationProof extends PublicationHashes {
 	document: WorkflowPackageDocument;
 }
 
+export interface PreparePublicationRequest {
+	prepare_request_id: string;
+	source: PublicationSource;
+	metadata: PublicationMetadata;
+}
+
 export interface PublicationReceipt extends PublicationHashes {
 	snapshot_id: string;
 	public_url: string;
