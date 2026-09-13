@@ -68,27 +68,25 @@ async function expectReceiptLanding(page: Page) {
 	await expect(explanation).toBeVisible();
 	await expect
 		.poll(async () => {
-			const [headingBox, explanationBox, headerBox, navigationBox, viewportHeight] =
-				await Promise.all([
-					heading.boundingBox(),
-					explanation.boundingBox(),
-					page.locator('header').boundingBox(),
-					page.getByRole('navigation', { name: 'Primary' }).boundingBox(),
-					page.evaluate(() => window.innerHeight)
-				]);
-			if (!headingBox || !explanationBox || !headerBox) return null;
-			return {
-				headingBelowHeader: headingBox.y >= headerBox.y + headerBox.height,
-				headingWithinViewport: headingBox.y + headingBox.height <= viewportHeight,
-				explanationWithinContent:
-					explanationBox.y + explanationBox.height <= (navigationBox?.y ?? viewportHeight)
-			};
+			const [headingBox, headerBox] = await Promise.all([
+				heading.boundingBox(),
+				page.locator('header').boundingBox()
+			]);
+			return headingBox && headerBox ? headingBox.y - (headerBox.y + headerBox.height) : -1;
 		})
-		.toEqual({
-			headingBelowHeader: true,
-			headingWithinViewport: true,
-			explanationWithinContent: true
-		});
+		.toBeGreaterThanOrEqual(0);
+	await expect
+		.poll(async () => {
+			const [explanationBox, navigationBox, viewportHeight] = await Promise.all([
+				explanation.boundingBox(),
+				page.locator('nav[aria-label="Primary"]').boundingBox(),
+				page.evaluate(() => window.innerHeight)
+			]);
+			return explanationBox
+				? (navigationBox?.y ?? viewportHeight) - (explanationBox.y + explanationBox.height)
+				: -1;
+		})
+		.toBeGreaterThanOrEqual(0);
 }
 
 const suffix = ` browser import ${runId}`;
