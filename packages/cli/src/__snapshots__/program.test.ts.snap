@@ -1636,6 +1636,10 @@ Options:
                                 timestamp)
   --to <bound>                  custom exclusive end (date or offset timestamp)
   --issue <ref>                 direct issue lifetime through now
+  --cohort                      report issues completed in the selected workflow
+                                and window
+  --done-state <id>             terminal state id (repeatable; defaults to all
+                                done states)
   --scope <token>               replay a frozen usage scope
   --evidence <kind>             list evidence (choices: "issues", "runs")
   --member <issue-id>           narrow run evidence to one contributing issue
