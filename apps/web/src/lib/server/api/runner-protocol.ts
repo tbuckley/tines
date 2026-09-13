@@ -355,7 +355,7 @@ export async function pollRunner(
 	const capRaised = cap > runner.max_concurrent || (runner.draining === 1 && draining === 0);
 	const cameOnline =
 		runner.last_seen_at === null || now - runner.last_seen_at > RUNNER_ONLINE_WINDOW_MS;
-	await runAtomic(env, [
+	const heartbeatResults = await runAtomic(env, [
 		db
 			.updateTable('runner')
 			.set({
@@ -365,6 +365,7 @@ export async function pollRunner(
 				...(capChanged ? { max_concurrent: cap, updated_at: now } : {})
 			})
 			.where('id', '=', runner.id)
+			.$if(instanceId !== undefined, (query) => query.where('daemon_instance_id', '=', instanceId!))
 			.compile(),
 		// The same runner.updated event a UI edit records, so the change shows
 		// up in history (attributed to the owning user; polls carry no actor).
@@ -382,6 +383,13 @@ export async function pollRunner(
 				]
 			: [])
 	]);
+	if (instanceId !== undefined && (heartbeatResults[0]?.meta.changes ?? 0) === 0) {
+		throw new ApiFail(
+			409,
+			'runner_conflict',
+			'another daemon instance replaced this one before its capability report was stored'
+		);
+	}
 	if (cameOnline || capRaised) effects.signalDispatch();
 	runner.max_concurrent = cap;
 	runner.draining = draining;
