@@ -520,3 +520,36 @@ it.each([false, true])(
 		);
 	}
 );
+
+it('preserves cross-stage prompt batches while keeping different project rule batches separate', async () => {
+	const t = setup();
+	const other = addOtherProject(t);
+	const insert = (id: string, type: string, project: string | null, payload: unknown, at: number) =>
+		t.sqlite
+			.prepare(
+				`INSERT INTO event (id,user_id,type,actor_user_id,project_id,payload,created_at) VALUES (?,?,?,?,?,?,?)`
+			)
+			.run(id, USER, type, USER, project, JSON.stringify(payload), at);
+	for (const [i, state] of [STAGE_A, STAGE_B].entries())
+		insert(
+			`prompt_${i}`,
+			'context.updated',
+			null,
+			{ kind: 'prompt', name: 'instructions', scope: { workflow_state_id: state } },
+			NOW - HOUR * 2 + i * 10000
+		);
+	for (const [i, project] of [PROJECT, other].entries())
+		insert(
+			`project_rule_${i}`,
+			'routing_rule.updated',
+			project,
+			{ workflow_state_id: null },
+			NOW - HOUR + i * 10000
+		);
+	const report = await loadStageStats(t.db, USER, {}, NOW);
+	const prompts = report.markers.filter((m) => m.kind === 'prompt');
+	expect(prompts).toHaveLength(1);
+	expect(prompts[0].state_ids).toEqual([STAGE_A, STAGE_B]);
+	expect(prompts[0].event_ids).toEqual(['prompt_0', 'prompt_1']);
+	expect(report.markers.filter((m) => m.kind === 'rule')).toHaveLength(2);
+});

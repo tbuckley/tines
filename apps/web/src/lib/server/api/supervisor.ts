@@ -843,7 +843,7 @@ export async function loadStageStats(
 	};
 	const report = computeStageStats(baseInput);
 
-	type MarkerSeed = Omit<ChangeMarker, 'effects'> & { actor: string };
+	type MarkerSeed = Omit<ChangeMarker, 'effects'> & { actor: string; ruleScope: string | null };
 	const seeds: MarkerSeed[] = [];
 	for (const row of markerRows) {
 		const payload = JSON.parse(row.payload) as Record<string, any>;
@@ -885,13 +885,12 @@ export async function loadStageStats(
 		}
 		if (!kind) continue;
 		const actor = row.actor_api_key_id ?? row.actor_user_id;
+		const ruleScope = kind === 'rule' ? JSON.stringify([row.project_id, stateIds]) : null;
 		const previous = seeds.at(-1);
 		if (
 			previous &&
 			previous.kind === kind &&
-			previous.label === label &&
-			previous.state_ids.length === stateIds.length &&
-			previous.state_ids.every((id) => stateIds.includes(id)) &&
+			previous.ruleScope === ruleScope &&
 			previous.actor === actor &&
 			row.created_at - previous.at <= 60_000
 		) {
@@ -906,6 +905,7 @@ export async function loadStageStats(
 			label,
 			event_ids: [row.id],
 			state_ids: stateIds,
+			ruleScope,
 			actor
 		});
 	}
@@ -923,7 +923,7 @@ export async function loadStageStats(
 	report.markers = seeds
 		.slice(-20)
 		.reverse()
-		.map((seed) => {
+		.map(({ ruleScope: _ruleScope, ...seed }) => {
 			const before = computeStageStats({
 				...baseInput,
 				now: seed.at,
