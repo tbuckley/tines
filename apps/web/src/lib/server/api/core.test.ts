@@ -235,6 +235,10 @@ describe('isControlPlanePath', () => {
 		['/api/v1/import', 'GET'],
 		['/api/v1/import', 'POST'],
 		['/api/v1/library/install', 'POST'],
+		// Retirement reads contain full source payloads; every method is operator-only.
+		['/api/v1/state-retirement/inventory', 'GET'],
+		['/api/v1/state-retirement/holds', 'POST'],
+		['/api/v1/state-retirement/receipts/srr_1', 'GET'],
 		// Archiving is an operator act: an agent must not freeze the project it
 		// is working in, nor thaw one a human froze.
 		['/api/v1/projects/prj_1/archive', 'POST'],
