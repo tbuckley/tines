@@ -2,7 +2,14 @@
  * The This week row's route and UI wiring: project narrowing, lever links and
  * sent-back evidence. The fixture uses API writes only; no runner daemon.
  */
-import type { ContextItem, IssueDetail, Project, WorkflowResponse } from '@tines/shared';
+import type {
+	ContextItem,
+	IssueDetail,
+	Project,
+	UserPreferences,
+	StageStatsReport,
+	WorkflowResponse
+} from '@tines/shared';
 import { expect, test } from '@playwright/test';
 import { WEEKLY } from './stage-stats-seed.mjs';
 import { ALICE } from './constants.mjs';
@@ -427,3 +434,73 @@ test('rapid board project changes commit only the latest scope without altering 
 	await expect(page.getByLabel('Spend project')).toHaveValue('all');
 	await expect(page).toHaveURL(/spend_window=30d/);
 });
+
+for (const width of [1440, 390])
+	test(`change evidence overrides sticky focus without changing it at ${width}px`, async ({
+		context,
+		page,
+		request
+	}, testInfo) => {
+		const api = apiClient(request, WEEKLY.apiKey);
+		const original = await body<UserPreferences>(await api.get('/api/v1/preferences'));
+		await body(await api.patch('/api/v1/preferences', { focused_project_id: WEEKLY.projectId }));
+		try {
+			await page.setViewportSize({ width, height: 900 });
+			await signIn(context, WEEKLY.sessionToken);
+			const report = await body<StageStatsReport>(await api.get('/api/v1/supervisor/stats'));
+			const global = report.markers.find(
+				(m) => m.kind === 'quota' && m.at < Date.now() - 86400000
+			)!;
+			const other = report.markers.find((m) => m.event_ids.includes('evt_weekly_other_rule'))!;
+			expect(global).toBeTruthy();
+			expect(other).toBeTruthy();
+			for (const [marker, text] of [
+				[global, 'updated supervisor settings (quota)'],
+				[other, 'updated the Weekly other project routing rule']
+			] as const) {
+				await gotoHydrated(
+					page,
+					`/agents?project=${marker === global ? WEEKLY.projectId : WEEKLY.otherProjectId}`
+				);
+				await expect(
+					page.getByRole('button', { name: 'Project focus: Weekly analytics', exact: true })
+				).toBeVisible();
+				await page
+					.getByRole('region', { name: 'This week' })
+					.getByRole('button', { name: /^\d+ changes this week$/ })
+					.click();
+				const dialog = page.getByRole('dialog', { name: 'Latest changes in this window' });
+				const details = dialog
+					.locator('details')
+					.filter({ has: page.locator('summary').filter({ hasText: marker.label }) })
+					.filter({
+						hasText: await page.evaluate((at) => new Date(at).toLocaleString(), marker.at)
+					});
+				await details.locator('summary').click();
+				await details.getByRole('link', { name: 'View recorded events' }).click();
+				await expect(
+					page.getByRole('heading', { name: 'Recorded events', exact: true })
+				).toBeVisible();
+				await expect(page.getByText(text, { exact: true })).toBeVisible();
+				expect(new URL(page.url()).searchParams.getAll('event')).toEqual(marker.event_ids);
+				await expect(
+					page.getByRole('button', { name: 'Project focus: Weekly analytics', exact: true })
+				).toBeVisible();
+				expect(
+					(await body<UserPreferences>(await api.get('/api/v1/preferences'))).focused_project_id
+				).toBe(WEEKLY.projectId);
+				await page.screenshot({
+					path: testInfo.outputPath(`recorded-${marker.kind}-${width}.png`),
+					fullPage: true
+				});
+				await page.getByRole('link', { name: 'Back to Activity' }).click();
+				await expect(page.getByRole('heading', { name: 'Activity', exact: true })).toBeVisible();
+				await expect(page.getByText(text, { exact: true })).toHaveCount(0);
+			}
+		} finally {
+			await api.patch('/api/v1/preferences', {
+				focused_project_id: original.focused_project_id,
+				last_project_id: original.last_project_id
+			});
+		}
+	});

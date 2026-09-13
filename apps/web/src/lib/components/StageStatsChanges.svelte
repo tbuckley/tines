@@ -48,7 +48,8 @@
 			<a
 				onclick={onnavigate}
 				class="inline-flex min-h-11 items-center text-sm underline"
-				href={`/activity?since=${marker.at}&until=${marker.at + 60001}`}>View recorded events</a
+				href={`/activity/recorded?${new URLSearchParams(marker.event_ids.map((id) => ['event', id]))}`}
+				>View recorded events</a
 			>
 			<div class="flex flex-wrap gap-x-4 text-sm">
 				{#if marker.kind === 'automation' || marker.kind === 'quota'}<a

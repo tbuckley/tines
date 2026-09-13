@@ -6,7 +6,8 @@ export const WEEKLY = {
 	apiKey: 'tines_e2eweekly000000000000000000000000000000000',
 	apiKeyName: 'weekly',
 	sessionToken: 'e2e-weekly',
-	projectId: 'prj_weekly'
+	projectId: 'prj_weekly',
+	otherProjectId: 'prj_weekly_other'
 };
 export function stageStatsSeed(now) {
 	const statements = [];
@@ -50,6 +51,26 @@ export function stageStatsSeed(now) {
 		default_workflow_id: 'wf_weekly',
 		created_at: now,
 		updated_at: now
+	});
+	insert('project', {
+		id: WEEKLY.otherProjectId,
+		user_id: user,
+		name: 'Weekly other project',
+		default_workflow_id: 'wf_weekly',
+		created_at: now,
+		updated_at: now
+	});
+	insert('event', {
+		id: 'evt_weekly_other_rule',
+		user_id: user,
+		actor_user_id: user,
+		project_id: WEEKLY.otherProjectId,
+		type: 'routing_rule.updated',
+		payload: JSON.stringify({
+			workflow_state_id: 'ws_review',
+			scope_label: 'Weekly other project'
+		}),
+		created_at: now - 5 * day
 	});
 	insert('runner', {
 		id: 'rnr_weekly',
