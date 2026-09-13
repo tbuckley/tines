@@ -97,6 +97,104 @@ it('forwards retained opaque identities without metadata lookups', async () => {
 	expect(url).toContain('runner=rnr_deleted123');
 });
 
+it('exports all frozen evidence pages without summing page totals', async () => {
+	vi.stubEnv('TINES_API_URL', 'https://usage.example.test');
+	vi.stubEnv('TINES_API_KEY', 'test-key');
+	const aggregate = { cost_usd: 0.3, finalized_run_count: 2 };
+	const pages = [
+		{
+			items: [
+				{
+					issue_id: 'iss_a',
+					issue_ref: null,
+					aggregate,
+					attempt_count: 1,
+					pending_count: 0,
+					fully_priced: true,
+					latest_at: 2
+				}
+			],
+			next_cursor: 'next',
+			previous_cursor: null,
+			total_count: 2,
+			scope: 'frozen',
+			kind: 'issues',
+			population: 'finalized',
+			sort: 'cost',
+			direction: 'desc',
+			matching_total: aggregate,
+			attempt_count: 2,
+			pending_count: 0
+		},
+		{
+			items: [
+				{
+					issue_id: 'iss_b',
+					issue_ref: null,
+					aggregate,
+					attempt_count: 1,
+					pending_count: 0,
+					fully_priced: true,
+					latest_at: 1
+				}
+			],
+			next_cursor: null,
+			previous_cursor: 'previous',
+			total_count: 2,
+			scope: 'frozen',
+			kind: 'issues',
+			population: 'finalized',
+			sort: 'cost',
+			direction: 'desc',
+			matching_total: aggregate,
+			attempt_count: 2,
+			pending_count: 0
+		}
+	];
+	const fetchMock = vi.fn(
+		async (_input: string | URL | Request) =>
+			new Response(JSON.stringify(pages.shift()), {
+				status: 200,
+				headers: { 'content-type': 'application/json' }
+			})
+	);
+	vi.stubGlobal('fetch', fetchMock);
+	const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+	vi.resetModules();
+	const { program } = await import('./program.js');
+	await program.parseAsync([
+		'node',
+		'tines',
+		'usage',
+		'--scope',
+		'frozen',
+		'--evidence',
+		'issues',
+		'--all-pages',
+		'--json'
+	]);
+	expect(fetchMock).toHaveBeenCalledTimes(2);
+	expect(String(fetchMock.mock.calls[1][0])).toContain('cursor=next');
+	const output = JSON.parse(String(log.mock.calls[0][0]));
+	expect(output.items.map((item: { issue_id: string }) => item.issue_id)).toEqual([
+		'iss_a',
+		'iss_b'
+	]);
+	expect(output.matching_total).toEqual(aggregate);
+});
+
+it('rejects explicit grouping with issue lifetime before a request', async () => {
+	vi.stubEnv('TINES_API_URL', 'https://usage.example.test');
+	const fetchMock = vi.fn();
+	vi.stubGlobal('fetch', fetchMock);
+	vi.resetModules();
+	const { program } = await import('./program.js');
+	await expect(
+		program.parseAsync(['node', 'tines', 'usage', '--issue', 'iss_retained', '--by', 'workflow'])
+	).rejects.toThrow('--issue cannot be combined');
+	expect(fetchMock).not.toHaveBeenCalled();
+});
+
 it('prints complete aggregate diagnostics and historical rate references', async () => {
 	vi.stubEnv('TINES_API_URL', 'https://usage.example.test');
 	vi.stubEnv('TINES_API_KEY', 'test-key');

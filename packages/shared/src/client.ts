@@ -528,7 +528,8 @@ export function createApiClient(options: ApiClientOptions) {
 		) => get<UsageReport>(`/api/v1/usage${query(filters)}`),
 		getIssueUsage: (issue: string) =>
 			get<IssueUsageReport>(`/api/v1/usage${query({ mode: 'issue', issue })}`),
-		getUsageScope: (scope: string) => get<UsageReport | IssueUsageReport>(`/api/v1/usage${query({ scope })}`),
+		getUsageScope: (scope: string) =>
+			get<UsageReport | IssueUsageReport>(`/api/v1/usage${query({ scope })}`),
 		getUsageEvidence: (filters: {
 			scope: string;
 			kind?: 'issues' | 'runs';

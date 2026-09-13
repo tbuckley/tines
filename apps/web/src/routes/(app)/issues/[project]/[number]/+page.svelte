@@ -39,6 +39,7 @@
 	import Markdown from '$lib/components/Markdown.svelte';
 	import Modal from '$lib/components/Modal.svelte';
 	import IssueTransferModal from '$lib/components/IssueTransferModal.svelte';
+	import IssueUsage from '$lib/components/IssueUsage.svelte';
 	import MoveDirectlyForm from '$lib/components/MoveDirectlyForm.svelte';
 	import PendingButton from '$lib/components/PendingButton.svelte';
 	import PhoneFold from '$lib/components/PhoneFold.svelte';
@@ -186,6 +187,7 @@
 			]),
 		issueKey
 	);
+	const usagePanel = streamed(() => data.deferred.usage, issueKey);
 
 	const dur = () => (prefersReducedMotion() ? 0 : 180);
 
@@ -1276,6 +1278,13 @@
 					onerror={showError}
 					checklist={checklistInputs ? firstRunChecklist : undefined}
 				/>
+				{#if usagePanel.current.status === 'pending'}
+					<Skeleton class="mt-4 h-24 w-full" />
+				{:else if usagePanel.current.status === 'loaded'}
+					<IssueUsage initial={usagePanel.current.value} />
+				{:else}
+					<p class="text-destructive mt-3 text-sm">Lifetime usage unavailable.</p>
+				{/if}
 			{:else}
 				{@render loadFailed('agent activity')}
 			{/if}

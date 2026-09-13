@@ -58,7 +58,11 @@ async function key(material: string, domain: string) {
 
 async function sign(value: object, material: string, domain: string): Promise<string> {
 	const body = b64(encoder.encode(JSON.stringify(value)));
-	const signature = await crypto.subtle.sign('HMAC', await key(material, domain), encoder.encode(body));
+	const signature = await crypto.subtle.sign(
+		'HMAC',
+		await key(material, domain),
+		encoder.encode(body)
+	);
 	return `${body}.${b64(new Uint8Array(signature))}`;
 }
 
@@ -85,9 +89,13 @@ async function verify(token: string, material: string, domain: string): Promise<
 
 export const mintUsageScope = (payload: UsageScopePayload, material: string) =>
 	sign(payload, material, 'tines-usage-scope-v1');
-export async function verifyUsageScope(token: string, material: string): Promise<UsageScopePayload> {
+export async function verifyUsageScope(
+	token: string,
+	material: string
+): Promise<UsageScopePayload> {
 	const value = await verify(token, material, 'tines-usage-scope-v1');
-	if (!validScope(value)) throw new UsageInputError('Malformed or unsupported usage scope', 'scope');
+	if (!validScope(value))
+		throw new UsageInputError('Malformed or unsupported usage scope', 'scope');
 	return value;
 }
 export const mintUsageCursor = (payload: UsageCursorPayload, material: string) =>
@@ -97,7 +105,8 @@ export async function verifyUsageCursor(
 	material: string
 ): Promise<UsageCursorPayload> {
 	const value = await verify(token, material, 'tines-usage-cursor-v1');
-	if (!validCursor(value)) throw new UsageInputError('Malformed or unsupported evidence cursor', 'cursor');
+	if (!validCursor(value))
+		throw new UsageInputError('Malformed or unsupported evidence cursor', 'cursor');
 	return value;
 }
 

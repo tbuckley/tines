@@ -94,9 +94,7 @@ export const GET: RequestHandler = api(async (event) => {
 			throw new ApiFail(422, 'invalid_field', 'issue mode requires issue', { field: 'issue' });
 		const contradictions = replay
 			? []
-			: recognized.filter(
-			(name) => !['mode', 'issue'].includes(name) && params.has(name)
-		);
+			: recognized.filter((name) => !['mode', 'issue'].includes(name) && params.has(name));
 		if (contradictions.length)
 			throw new ApiFail(
 				422,
@@ -111,12 +109,19 @@ export const GET: RequestHandler = api(async (event) => {
 		const cutoff = replayPayload?.mode === 'issue' ? replayPayload.cutoff : now;
 		const report = await getIssueUsage(db, actor.userId, issueId, cutoff, now);
 		if (!report) throw notFound();
-		report.scope = replay ?? (await mintUsageScope({ v: 1, owner: actor.userId, mode: 'issue', issue: issueId, cutoff }, material));
+		report.scope =
+			replay ??
+			(await mintUsageScope(
+				{ v: 1, owner: actor.userId, mode: 'issue', issue: issueId, cutoff },
+				material
+			));
 		return json(report, { headers: { 'cache-control': 'private, no-store' } });
 	}
 	if (params.has('issue'))
 		throw new ApiFail(422, 'invalid_field', 'issue requires mode=issue', { field: 'issue' });
-	const by = (replayPayload?.mode === 'period' ? replayPayload.by : params.get('by') ?? 'workflow') as UsageBy;
+	const by = (
+		replayPayload?.mode === 'period' ? replayPayload.by : (params.get('by') ?? 'workflow')
+	) as UsageBy;
 	if (!['project', 'workflow', 'state', 'outcome', 'runner', 'tier'].includes(by))
 		throw new ApiFail(422, 'invalid_field', 'Invalid usage grouping', { field: 'by' });
 	const periodPayload = replayPayload?.mode === 'period' ? replayPayload : null;
@@ -141,14 +146,15 @@ export const GET: RequestHandler = api(async (event) => {
 	try {
 		// Period syntax and contradictions must win over retained-identity lookups.
 		// The service resolves the same valid input again using the configured timezone.
-		if (!periodPayload) resolveUsagePeriod(
-			{
-				window: (params.get('window') ?? undefined) as 'today' | '7d' | '30d' | undefined,
-				from: params.get('from') ?? undefined,
-				to: params.get('to') ?? undefined
-			},
-			'UTC'
-		);
+		if (!periodPayload)
+			resolveUsagePeriod(
+				{
+					window: (params.get('window') ?? undefined) as 'today' | '7d' | '30d' | undefined,
+					from: params.get('from') ?? undefined,
+					to: params.get('to') ?? undefined
+				},
+				'UTC'
+			);
 	} catch (error) {
 		if (error instanceof UsageInputError)
 			throw new ApiFail(422, 'invalid_usage_period', error.message, {
@@ -169,9 +175,15 @@ export const GET: RequestHandler = api(async (event) => {
 		throw notFound();
 	try {
 		const report = await getUsage(db, actor.userId, {
-			window: periodPayload ? undefined : (params.get('window') ?? undefined) as 'today' | '7d' | '30d' | undefined,
-			from: periodPayload ? new Date(periodPayload.from).toISOString() : params.get('from') ?? undefined,
-			to: periodPayload ? new Date(periodPayload.to).toISOString() : params.get('to') ?? undefined,
+			window: periodPayload
+				? undefined
+				: ((params.get('window') ?? undefined) as 'today' | '7d' | '30d' | undefined),
+			from: periodPayload
+				? new Date(periodPayload.from).toISOString()
+				: (params.get('from') ?? undefined),
+			to: periodPayload
+				? new Date(periodPayload.to).toISOString()
+				: (params.get('to') ?? undefined),
 			project: selected?.project ?? params.get('project') ?? undefined,
 			workflow: selected?.workflow ?? params.get('workflow') ?? undefined,
 			state: selected?.state ?? params.get('state') ?? undefined,
@@ -194,10 +206,19 @@ export const GET: RequestHandler = api(async (event) => {
 		};
 		report.scope = replay ?? (await mintUsageScope(base, material));
 		report.matching_scope = report.scope;
-		report.scope_total_scope = await mintUsageScope({ ...base, filters: report.filters.project ? { project: report.filters.project } : {} }, material);
-		report.pending_scope = await mintUsageScope({ ...base, filters: { ...report.filters, outcome: undefined, accounting_status: undefined } }, material);
+		report.scope_total_scope = await mintUsageScope(
+			{ ...base, filters: report.filters.project ? { project: report.filters.project } : {} },
+			material
+		);
+		report.pending_scope = await mintUsageScope(
+			{ ...base, filters: { ...report.filters, outcome: undefined, accounting_status: undefined } },
+			material
+		);
 		for (let i = 0; i < report.groups.length; i++)
-			report.groups[i].scope = await mintUsageScope({ ...base, filters: groupFilters(report, i) }, material);
+			report.groups[i].scope = await mintUsageScope(
+				{ ...base, filters: groupFilters(report, i) },
+				material
+			);
 		return json(report, { headers: { 'cache-control': 'private, no-store' } });
 	} catch (error) {
 		if (error instanceof UsageInputError)

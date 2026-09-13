@@ -6,6 +6,7 @@
 	import { canonicalSpendChanges, parseSpendSelection, spendRequest } from '$lib/spend-selection';
 	import { sortUsageGroups } from '$lib/usage-view';
 	import UsageCostCell from './UsageCostCell.svelte';
+	import SpendEvidence from './SpendEvidence.svelte';
 
 	let {
 		projects,
@@ -297,6 +298,19 @@
 					· generated {new Date(report.generated_at).toISOString()}</small
 				>
 			</header>
+			{#if report.scope_total_scope}<button
+					type="button"
+					onclick={() =>
+						update({
+							spend_scope: report.scope_total_scope!,
+							spend_kind: 'issues',
+							spend_member: null,
+							spend_population: 'finalized',
+							spend_evidence_sort: 'cost',
+							spend_direction: 'desc',
+							spend_cursor: null
+						})}>View contributing issues and runs</button
+				>{/if}
 			{#if selection.workflow !== 'all'}<p class="subtotal">
 					Matching subtotal: {usageCostLabel(
 						report.matching_total.cost_usd,
@@ -358,6 +372,19 @@
 							</div>
 						</div>
 						{#if expanded.has(group.key)}<div class="detail">
+								{#if group.scope}<button
+										type="button"
+										onclick={() =>
+											update({
+												spend_scope: group.scope!,
+												spend_kind: 'issues',
+												spend_member: null,
+												spend_population: 'finalized',
+												spend_evidence_sort: 'cost',
+												spend_direction: 'desc',
+												spend_cursor: null
+											})}>View contributing issues and runs</button
+									>{/if}
 								<p>
 									Per-run cost · priced subset: {group.aggregate.distribution.sample_count} samples; {group
 										.aggregate.distribution.missing_price_count} missing price.
@@ -404,6 +431,28 @@
 					? ` and counted before ${report.pending.unapplied_filters.join('/')} filters`
 					: ''}.
 			</p>
+			{#if selection.scope}{#key `${selection.scope}:${selection.kind}:${selection.member}:${selection.population}:${selection.evidenceSort}:${selection.evidenceDirection}:${selection.cursor}`}
+					<SpendEvidence
+						scope={selection.scope}
+						kind={selection.kind}
+						member={selection.member}
+						population={selection.population}
+						sort={selection.evidenceSort}
+						direction={selection.evidenceDirection}
+						cursor={selection.cursor}
+						onnavigate={(changes) => update(changes)}
+						onclose={() =>
+							update({
+								spend_scope: null,
+								spend_kind: null,
+								spend_member: null,
+								spend_population: null,
+								spend_evidence_sort: null,
+								spend_direction: null,
+								spend_cursor: null
+							})}
+					/>
+				{/key}{/if}
 			<details>
 				<summary>How this statement is counted</summary>
 				<p>

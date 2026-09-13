@@ -13,6 +13,8 @@ import {
 import {
 	usageCostLabel,
 	type IssueUsageReport,
+	type IssueAttemptUsage,
+	type UsageEvidencePage,
 	type UsageBy,
 	type UsageReport,
 	type UsageWindow
@@ -32,7 +34,59 @@ interface UsageOpts extends CommonOpts {
 	outcome?: string;
 	accountingStatus?: string;
 	issue?: string;
+	scope?: string;
+	evidence?: 'issues' | 'runs';
+	member?: string;
+	population?: 'finalized' | 'pending';
+	sort?: 'cost' | 'time';
+	direction?: 'asc' | 'desc';
+	cursor?: string;
+	limit?: string;
+	allPages?: boolean;
 	by: UsageBy;
+}
+
+function printEvidence(page: UsageEvidencePage): void {
+	console.log(
+		`Usage evidence · ${page.kind} · ${page.population} · ${page.total_count} total · ${page.sort} ${page.direction}`
+	);
+	if (page.kind === 'issues')
+		table([
+			['ISSUE', 'SPEND', 'COVERAGE', 'RUNS'],
+			...(page.items as IssueAttemptUsage[]).map((item) => [
+				item.issue_ref
+					? `${item.issue_ref.project_name}/${item.issue_ref.number} ${item.issue_ref.title}`
+					: item.issue_id
+						? `Unavailable issue (${item.issue_id})`
+						: 'Unknown issue',
+				money(item.aggregate.cost_usd),
+				item.aggregate.coverage,
+				String(item.attempt_count)
+			])
+		]);
+	else
+		table([
+			['RUN', 'ISSUE', 'SPEND', 'AT'],
+			...page.items.map((item) => {
+				const run = item as typeof item & {
+					id: string;
+					issue_id: string;
+					ended_at?: number | null;
+					created_at: number;
+					usage_accounting?: { cost: number | null };
+				};
+				return [
+					run.id,
+					run.issue_id,
+					page.population === 'pending' ? 'Pending' : money(run.usage_accounting?.cost ?? null),
+					new Date(run.ended_at ?? run.created_at).toISOString()
+				];
+			})
+		]);
+	console.log(
+		`Matching total: ${money(page.matching_total.cost_usd)} · ${page.attempt_count} attempts · ${page.pending_count} pending`
+	);
+	if (page.next_cursor) console.log(`Next cursor: ${page.next_cursor}`);
 }
 
 function printIssueReport(report: IssueUsageReport): void {
@@ -123,6 +177,20 @@ export function register(program: Command): void {
 			.option('--from <bound>', 'custom inclusive start (date or offset timestamp)')
 			.option('--to <bound>', 'custom exclusive end (date or offset timestamp)')
 			.option('--issue <ref>', 'direct issue lifetime through now')
+			.option('--scope <token>', 'replay a frozen usage scope')
+			.addOption(new Option('--evidence <kind>', 'list evidence').choices(['issues', 'runs']))
+			.option('--member <issue-id>', 'narrow run evidence to one contributing issue')
+			.addOption(
+				new Option('--population <population>', 'finalized or pending').choices([
+					'finalized',
+					'pending'
+				])
+			)
+			.addOption(new Option('--sort <sort>', 'evidence sort').choices(['cost', 'time']))
+			.addOption(new Option('--direction <direction>', 'sort direction').choices(['asc', 'desc']))
+			.option('--cursor <token>', 'evidence page cursor')
+			.option('--limit <count>', 'evidence page size (1-100)')
+			.option('--all-pages', 'fetch every evidence page')
 			.option('--project <name-or-id>', 'project scope (including archived), or unknown')
 			.option('--workflow <name-or-id>', 'workflow filter, or unknown')
 			.option('--state <id>', 'starting state id (requires --workflow)')
@@ -149,6 +217,78 @@ export function register(program: Command): void {
 					.default('workflow')
 			)
 	).action(async (opts: UsageOpts, command: Command) => {
+		const evidenceOnly = [
+			opts.member,
+			opts.population,
+			opts.sort,
+			opts.direction,
+			opts.cursor,
+			opts.limit,
+			opts.allPages
+		];
+		if (evidenceOnly.some((value) => value !== undefined) && !opts.evidence)
+			throw new Error(
+				'--member/--population/--sort/--direction/--cursor/--limit/--all-pages require --evidence'
+			);
+		if (opts.evidence && !opts.scope) throw new Error('--evidence requires --scope');
+		if (opts.scope) {
+			const reportFlags = [
+				opts.issue,
+				opts.window,
+				opts.from,
+				opts.to,
+				opts.project,
+				opts.workflow,
+				opts.state,
+				opts.runner,
+				opts.tier,
+				opts.outcome,
+				opts.accountingStatus
+			];
+			if (command.getOptionValueSource('by') === 'cli') reportFlags.push(opts.by);
+			if (reportFlags.some((value) => value !== undefined))
+				throw new Error('--scope cannot be combined with report options');
+			const api = client(opts);
+			if (!opts.evidence) {
+				const report = await api.getUsageScope(opts.scope);
+				if (opts.json) return printJson(report);
+				if (report.mode === 'issue') printIssueReport(report);
+				else printReport(report);
+				return;
+			}
+			let cursor = opts.cursor;
+			const seenCursors = new Set<string>();
+			const seenIds = new Set<string>();
+			let combined: UsageEvidencePage | null = null;
+			do {
+				if (cursor && seenCursors.has(cursor))
+					throw new Error('Evidence pagination repeated a cursor');
+				if (cursor) seenCursors.add(cursor);
+				const page = await api.getUsageEvidence({
+					scope: opts.scope,
+					kind: opts.evidence,
+					population: opts.population,
+					member: opts.member,
+					sort: opts.sort,
+					direction: opts.direction,
+					limit: opts.limit ? Number(opts.limit) : undefined,
+					cursor
+				});
+				for (const item of page.items) {
+					const id = 'id' in item ? item.id : ((item as IssueAttemptUsage).issue_id ?? 'unknown');
+					if (seenIds.has(id)) throw new Error(`Evidence pagination repeated ${id}`);
+					seenIds.add(id);
+				}
+				combined = combined
+					? { ...page, items: [...combined.items, ...page.items], previous_cursor: null }
+					: page;
+				cursor = page.next_cursor ?? undefined;
+			} while (opts.allPages && cursor);
+			if (!combined) throw new Error('Evidence response was empty');
+			if (opts.json) return printJson(combined);
+			printEvidence(combined);
+			return;
+		}
 		if (opts.issue) {
 			const contradictions = [
 				opts.window,
@@ -166,8 +306,10 @@ export function register(program: Command): void {
 			if (contradictions.some((value) => value !== undefined))
 				throw new Error('--issue cannot be combined with period or filter options');
 			const api = client(opts);
-			const issue = await resolveIssue(api, opts.issue);
-			const report = await api.getIssueUsage(issue.id);
+			const issueId = isUsageIdentity(opts.issue, 'iss')
+				? opts.issue
+				: (await resolveIssue(api, opts.issue)).id;
+			const report = await api.getIssueUsage(issueId);
 			if (opts.json) return printJson(report);
 			printIssueReport(report);
 			return;

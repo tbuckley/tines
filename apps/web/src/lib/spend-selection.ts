@@ -13,6 +13,13 @@ export interface SpendSelection {
 	to: string;
 	ready: boolean;
 	requestKey: string;
+	scope: string | null;
+	kind: 'issues' | 'runs';
+	member: string | null;
+	population: 'finalized' | 'pending';
+	evidenceSort: 'cost' | 'time';
+	evidenceDirection: 'asc' | 'desc';
+	cursor: string | null;
 }
 
 const windows = new Set<SpendWindow>(['today', '7d', '30d', 'custom']);
@@ -41,6 +48,14 @@ export function parseSpendSelection(url: URL, focusId: string | null): SpendSele
 	const from = url.searchParams.get('spend_from') ?? '';
 	const to = url.searchParams.get('spend_to') ?? '';
 	const ready = window !== 'custom' || (from.trim() !== '' && to.trim() !== '');
+	const scope = url.searchParams.get('spend_scope');
+	const kind = url.searchParams.get('spend_kind') === 'runs' ? 'runs' : 'issues';
+	const member = url.searchParams.get('spend_member');
+	const population =
+		url.searchParams.get('spend_population') === 'pending' ? 'pending' : 'finalized';
+	const evidenceSort = url.searchParams.get('spend_evidence_sort') === 'time' ? 'time' : 'cost';
+	const evidenceDirection = url.searchParams.get('spend_direction') === 'asc' ? 'asc' : 'desc';
+	const cursor = url.searchParams.get('spend_cursor');
 	const requestKey = JSON.stringify([
 		project,
 		workflow,
@@ -49,7 +64,24 @@ export function parseSpendSelection(url: URL, focusId: string | null): SpendSele
 		window === 'custom' ? from : '',
 		window === 'custom' ? to : ''
 	]);
-	return { project, window, view, workflow, sort, from, to, ready, requestKey };
+	return {
+		project,
+		window,
+		view,
+		workflow,
+		sort,
+		from,
+		to,
+		ready,
+		requestKey,
+		scope,
+		kind,
+		member,
+		population,
+		evidenceSort,
+		evidenceDirection,
+		cursor
+	};
 }
 
 export function canonicalSpendChanges(url: URL, focusId: string | null) {

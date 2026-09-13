@@ -164,10 +164,7 @@ export async function hydrateUsageEvidenceRuns(
 					.where('agent_run.id', 'in', ids)
 					.where('agent_run.created_at', '<', cutoff)
 					.where((eb) =>
-						eb.or([
-							eb('agent_run.ended_at', 'is', null),
-							eb('agent_run.ended_at', '>=', cutoff)
-						])
+						eb.or([eb('agent_run.ended_at', 'is', null), eb('agent_run.ended_at', '>=', cutoff)])
 					)
 					.execute()
 			: await runQuery(db, userId)
@@ -193,37 +190,33 @@ export async function hydrateUsageEvidenceRuns(
 		const row = byId.get(id);
 		if (!row) continue;
 		if (population === 'pending') {
-			result.push(
-				{
-					id: row.id,
-					issue_id: row.issue_id,
-					issue_ref:
-						row.project_name !== null && row.issue_number !== null && row.issue_title !== null
-							? {
-									project_name: row.project_name,
-									number: row.issue_number,
-									title: row.issue_title
-								}
-							: null,
-					runner_id: row.runner_id,
-					runner_name: row.runner_name ?? `Unknown/deleted runner (${row.runner_id})`,
-					tier: row.tier as ModelTier,
-					state_id_at_start: row.state_id_at_start,
-					state_at_start_name: row.start_state_name,
-					created_at: row.created_at,
-					pending_at: cutoff,
-					usage_dimensions: (({ outcome: _, ...safe }) => safe)(usageDimensions(row)),
-					accounting_status: 'pending' as const
-				} satisfies UsagePendingRun
-			);
+			result.push({
+				id: row.id,
+				issue_id: row.issue_id,
+				issue_ref:
+					row.project_name !== null && row.issue_number !== null && row.issue_title !== null
+						? {
+								project_name: row.project_name,
+								number: row.issue_number,
+								title: row.issue_title
+							}
+						: null,
+				runner_id: row.runner_id,
+				runner_name: row.runner_name ?? `Unknown/deleted runner (${row.runner_id})`,
+				tier: row.tier as ModelTier,
+				state_id_at_start: row.state_id_at_start,
+				state_at_start_name: row.start_state_name,
+				created_at: row.created_at,
+				pending_at: cutoff,
+				usage_dimensions: (({ outcome: _, ...safe }) => safe)(usageDimensions(row)),
+				accounting_status: 'pending' as const
+			} satisfies UsagePendingRun);
 		} else
-			result.push(
-			{
+			result.push({
 				...serializeRun(row),
 				usage_dimensions: usageDimensions(row),
 				usage_accounting: (({ usage: _, ...accounting }) => accounting)(classifyUsage(row.usage))
-			}
-			);
+			});
 	}
 	return result;
 }

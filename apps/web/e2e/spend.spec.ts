@@ -168,4 +168,42 @@ test.describe('Agents Spend real ledger', () => {
 			/partial\s*·\s*2 finalized\s*·\s*1 priced\s*·\s*0 unpriced\s*·\s*1 unreported/i
 		);
 	});
+
+	test('opens frozen issue and run evidence and restores it through reload and history', async ({
+		page
+	}) => {
+		await armLedgerDays();
+		await gotoHydrated(
+			page,
+			`/agents?agents_view=spend&spend_project=${SPEND.projects.alpha.id}&spend_window=30d&spend_view=workflow&spend_sort=desc&spend_workflow=all`
+		);
+		await expect(projectTotal(page)).toHaveText('$12.00');
+		await page.getByRole('button', { name: 'View contributing issues and runs' }).first().click();
+		await expect(page.getByRole('heading', { name: 'Contributing issues' })).toBeVisible();
+		await expect(page.getByText('Whole selection: $12.00 · 4 issues')).toBeVisible();
+		await page.reload({ waitUntil: 'networkidle' });
+		await expect(page.getByRole('heading', { name: 'Contributing issues' })).toBeVisible();
+		await page.getByRole('button', { name: /Alpha\/3 Spend alpha_10d/ }).click();
+		await expect(page).toHaveURL(/spend_kind=runs/);
+		await expect(page.getByRole('heading', { name: 'Contributing runs' })).toBeVisible();
+		await expect(page.getByText('run_e2e_spend_alpha_10d')).toBeVisible();
+		await page.goBack();
+		await expect(page.getByRole('heading', { name: 'Contributing issues' })).toBeVisible();
+		await page.getByRole('button', { name: 'Close detail' }).click();
+		await expect(page.getByRole('heading', { name: 'Contributing issues' })).toBeHidden();
+	});
+
+	test('shows direct lifetime independently from the operational run page', async ({ page }) => {
+		await armLedgerDays();
+		await gotoHydrated(page, `/issues/${encodeURIComponent(SPEND.projects.alpha.name)}/1`);
+		await expect(page.getByRole('heading', { name: 'Lifetime through now' })).toBeVisible();
+		await expect(page.getByText(/\$2\.00 · complete · 1 finalized · 0 pending/i)).toBeVisible();
+		await expect(
+			page
+				.getByRole('region', { name: 'Contributing runs' })
+				.getByText('run_e2e_spend_alpha_today', { exact: true })
+		).toBeVisible();
+		await page.getByRole('button', { name: 'Refresh through now' }).click();
+		await expect(page.getByRole('button', { name: 'Refresh through now' })).toBeEnabled();
+	});
 });

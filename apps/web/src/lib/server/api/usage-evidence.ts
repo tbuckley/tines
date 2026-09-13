@@ -63,7 +63,9 @@ function compare(a: Candidate, b: Candidate, sort: 'cost' | 'time', direction: '
 }
 
 function filterValue(actual: string | null, requested: string | undefined) {
-	return requested === undefined || (requested === 'unknown' ? actual === null : actual === requested);
+	return (
+		requested === undefined || (requested === 'unknown' ? actual === null : actual === requested)
+	);
 }
 
 function rows(db: Kysely<Database>, owner: string) {
@@ -142,13 +144,19 @@ function retain(
 ) {
 	if (boundary) {
 		const side = compare(candidate, boundary, request.sort, request.direction);
-		if (request.cursor && ((request as EvidenceRequest & { traversal?: string }).traversal === 'before' ? side >= 0 : side <= 0))
+		if (
+			request.cursor &&
+			((request as EvidenceRequest & { traversal?: string }).traversal === 'before'
+				? side >= 0
+				: side <= 0)
+		)
 			return;
 	}
 	winners.push(candidate);
 	winners.sort((a, b) => compare(a, b, request.sort, request.direction));
 	if (winners.length > request.limit + 1) {
-		if ((request as EvidenceRequest & { traversal?: string }).traversal === 'before') winners.shift();
+		if ((request as EvidenceRequest & { traversal?: string }).traversal === 'before')
+			winners.shift();
 		else winners.pop();
 	}
 }
@@ -168,7 +176,8 @@ export async function getUsageEvidence(
 	request: EvidenceRequest,
 	material: string
 ): Promise<UsageEvidencePage> {
-	if (request.kind === 'issues' && scope.mode !== 'period') throw new Error('issue mode already selects one issue');
+	if (request.kind === 'issues' && scope.mode !== 'period')
+		throw new Error('issue mode already selects one issue');
 	if (request.kind === 'issues' && request.population === 'pending')
 		throw new Error('pending evidence is available as runs');
 	if (request.population === 'pending' && request.sort === 'cost')
@@ -201,7 +210,13 @@ export async function getUsageEvidence(
 
 	if (request.kind === 'issues') {
 		let seek: { issue: string; at: number; id: string } | null = null;
-		let current: { key: string; ref: IssueAttemptUsage['issue_ref']; at: number; acc: ReturnType<typeof createUsageAccumulator>; count: number } | null = null;
+		let current: {
+			key: string;
+			ref: IssueAttemptUsage['issue_ref'];
+			at: number;
+			acc: ReturnType<typeof createUsageAccumulator>;
+			count: number;
+		} | null = null;
 		const finish = () => {
 			if (!current) return;
 			const aggregate = finalizeUsage(current.acc);
@@ -217,7 +232,12 @@ export async function getUsageEvidence(
 				latest_at: current.at
 			};
 			totalCount++;
-			retain(winners, { id: current.key || 'unknown', cost: aggregate.cost_usd_exact, at: current.at, item }, request, boundary);
+			retain(
+				winners,
+				{ id: current.key || 'unknown', cost: aggregate.cost_usd_exact, at: current.at, item },
+				request,
+				boundary
+			);
 		};
 		for (;;) {
 			let q = rows(db, owner)
@@ -243,7 +263,11 @@ export async function getUsageEvidence(
 						key,
 						ref:
 							row.project_name !== null && row.issue_number !== null && row.issue_title !== null
-								? { project_name: row.project_name, number: row.issue_number, title: row.issue_title }
+								? {
+										project_name: row.project_name,
+										number: row.issue_number,
+										title: row.issue_title
+									}
 								: null,
 						at: row.ended_at!,
 						acc: createUsageAccumulator(),
@@ -264,27 +288,30 @@ export async function getUsageEvidence(
 	} else {
 		let seek: { at: number; id: string } | null = null;
 		for (;;) {
-			const time = request.population === 'finalized' ? 'agent_run.ended_at' : 'agent_run.created_at';
+			const time =
+				request.population === 'finalized' ? 'agent_run.ended_at' : 'agent_run.created_at';
 			let q = rows(db, owner).where('agent_run.created_at', '<', cutoff);
 			q =
 				request.population === 'finalized'
 					? q.where('agent_run.ended_at', '<', cutoff).where('agent_run.ended_at', 'is not', null)
 					: q.where((eb) =>
-						eb.or([
-							eb('agent_run.ended_at', 'is', null),
-							eb('agent_run.ended_at', '>=', cutoff)
-						])
-					);
+							eb.or([eb('agent_run.ended_at', 'is', null), eb('agent_run.ended_at', '>=', cutoff)])
+						);
 			if (scope.mode === 'period' && request.population === 'finalized')
 				q = q.where('agent_run.ended_at', '>=', scope.from);
 			if (scope.mode === 'issue') q = q.where('agent_run.issue_id', '=', scope.issue);
 			if (request.member)
-				q = request.member === 'unknown'
-					? q.where('agent_run.issue_id', 'is', null)
-					: q.where('agent_run.issue_id', '=', request.member);
+				q =
+					request.member === 'unknown'
+						? q.where('agent_run.issue_id', 'is', null)
+						: q.where('agent_run.issue_id', '=', request.member);
 			if (seek)
 				q = q.where(sql<boolean>`(${sql.ref(time)}, agent_run.id) < (${seek.at}, ${seek.id})`);
-			const batch = await q.orderBy(`${time} desc`).orderBy('agent_run.id desc').limit(5_001).execute();
+			const batch = await q
+				.orderBy(`${time} desc`)
+				.orderBy('agent_run.id desc')
+				.limit(5_001)
+				.execute();
 			const selected = batch.slice(0, 5_000);
 			for (const row of selected) {
 				if (!matches(row, filters, request.population)) continue;
@@ -305,13 +332,17 @@ export async function getUsageEvidence(
 			}
 			if (batch.length <= 5_000) break;
 			const last = selected.at(-1)!;
-			seek = { at: request.population === 'finalized' ? last.ended_at! : last.created_at, id: last.id };
+			seek = {
+				at: request.population === 'finalized' ? last.ended_at! : last.created_at,
+				id: last.id
+			};
 		}
 		totalCount = attemptCount;
 	}
 
 	const hasExtra = winners.length > request.limit;
-	const selected = traversal === 'before' ? winners.slice(-request.limit) : winners.slice(0, request.limit);
+	const selected =
+		traversal === 'before' ? winners.slice(-request.limit) : winners.slice(0, request.limit);
 	const items =
 		request.kind === 'issues'
 			? selected.map((candidate) => candidate.item!)
@@ -344,7 +375,7 @@ export async function getUsageEvidence(
 				? await cursor(selected.at(-1)!, 'after')
 				: null,
 		previous_cursor:
-			selected.length && (boundary || traversal === 'after' && decoded)
+			selected.length && (boundary || (traversal === 'after' && decoded))
 				? await cursor(selected[0], 'before')
 				: null,
 		total_count: totalCount,

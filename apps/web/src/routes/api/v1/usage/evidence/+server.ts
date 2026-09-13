@@ -1,6 +1,7 @@
 import { json } from '@sveltejs/kit';
 import { api, apiContext, ApiFail, notFound } from '$lib/server/api/core';
 import { getUsageEvidence } from '$lib/server/api/usage-evidence';
+import { getIssueUsage, getUsage } from '$lib/server/api/usage';
 import { usageKeyMaterial, verifyUsageScope } from '$lib/server/usage-scope';
 import type { RequestHandler } from './$types';
 
@@ -37,8 +38,7 @@ export const GET: RequestHandler = api(async (event) => {
 			'Usage evidence needs SECRET_ENCRYPTION_KEY or BETTER_AUTH_SECRET'
 		);
 	const scopeToken = params.get('scope');
-	if (!scopeToken)
-		throw new ApiFail(422, 'invalid_field', 'scope is required', { field: 'scope' });
+	if (!scopeToken) throw new ApiFail(422, 'invalid_field', 'scope is required', { field: 'scope' });
 	let scope;
 	try {
 		scope = await verifyUsageScope(scopeToken, material);
@@ -52,8 +52,7 @@ export const GET: RequestHandler = api(async (event) => {
 	const kind = (params.get('kind') ?? 'issues') as 'issues' | 'runs';
 	const population = (params.get('population') ?? 'finalized') as 'finalized' | 'pending';
 	const sort = (params.get('sort') ?? (population === 'pending' ? 'time' : 'cost')) as
-		| 'cost'
-		| 'time';
+		'cost' | 'time';
 	const direction = (params.get('direction') ?? 'desc') as 'asc' | 'desc';
 	if (!['issues', 'runs'].includes(kind))
 		throw new ApiFail(422, 'invalid_field', 'kind must be issues or runs', { field: 'kind' });
@@ -89,6 +88,22 @@ export const GET: RequestHandler = api(async (event) => {
 			},
 			material
 		);
+		if (params.has('member') && result.total_count === 0)
+			throw new Error('member is not a contributor in this selection');
+		const parent =
+			scope.mode === 'issue'
+				? await getIssueUsage(db, actor.userId, scope.issue, scope.cutoff)
+				: await getUsage(db, actor.userId, {
+						from: new Date(scope.from).toISOString(),
+						to: new Date(scope.to).toISOString(),
+						...scope.filters,
+						by: scope.by
+					});
+		const parentTotal = parent?.mode === 'issue' ? parent.issue.aggregate : parent?.matching_total;
+		if (parentTotal) {
+			if (params.has('member')) result.parent_matching_total = parentTotal;
+			else if (population === 'pending') result.matching_total = parentTotal;
+		}
 		return json(result, { headers: { 'cache-control': 'private, no-store' } });
 	} catch (error) {
 		throw new ApiFail(422, 'invalid_evidence_selection', (error as Error).message, {
