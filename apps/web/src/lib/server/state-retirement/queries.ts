@@ -1,4 +1,4 @@
-import { sql, type Kysely } from 'kysely';
+import { sql, type Kysely, type RawBuilder } from 'kysely';
 import type { Database } from '$lib/server/db';
 
 /**
@@ -6,10 +6,8 @@ import type { Database } from '$lib/server/db';
  * apply. JSON rows include every field that can change matching, ordering,
  * payload bytes, topology, or the drain decision. Artifact growth is excluded.
  */
-export async function readRetirementWitness(db: Kysely<Database>, userId: string): Promise<string> {
-	const row = await db
-		.selectNoFrom((eb) => [
-			sql<string>`json_object(
+export function retirementWitnessExpression(userId: string): RawBuilder<string> {
+	return sql<string>`json_object(
 				'workflows', COALESCE((SELECT json_group_array(json(row_json)) FROM (
 					SELECT json_object('id', id, 'user_id', user_id, 'name', name,
 						'description', description, 'initial_state_id', initial_state_id,
@@ -76,8 +74,12 @@ export async function readRetirementWitness(db: Kysely<Database>, userId: string
 					FROM agent_run WHERE user_id = ${userId}
 						AND status IN ('assigned', 'launching', 'running') ORDER BY id
 				)), '[]')
-			)`.as('witness')
-		])
+			)`;
+}
+
+export async function readRetirementWitness(db: Kysely<Database>, userId: string): Promise<string> {
+	const row = await db
+		.selectNoFrom([retirementWitnessExpression(userId).as('witness')])
 		.executeTakeFirstOrThrow();
 	return row.witness;
 }

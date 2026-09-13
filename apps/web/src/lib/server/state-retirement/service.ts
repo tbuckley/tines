@@ -6,10 +6,11 @@ import {
 	type StateRetirementHold,
 	type StateRetirementInventoryV1
 } from '@tines/shared';
-import type { Kysely } from 'kysely';
+import { sql, type Kysely } from 'kysely';
 import { ApiFail, runAtomic, type ActorContext } from '$lib/server/api/core';
 import { newId, type Database } from '$lib/server/db';
 import { createStateRetirementInventory } from './inventory';
+import { retirementWitnessExpression } from './queries';
 
 type RetirementEnv = Parameters<typeof runAtomic>[0];
 type StateRow = {
@@ -154,41 +155,37 @@ export async function acquireStateRetirementHold(
 		.map(({ id, state_id_at_start, status }) => ({ id, state_id_at_start, status }));
 	const holdId = newId('srh');
 	const key = actorKey(actor);
+	const exactWitness = JSON.stringify(reviewed.witness);
 	const queries = [
-		db
-			.insertInto('state_retirement_hold')
-			.values({
-				id: holdId,
-				user_id: actor.userId,
-				actor_key: key,
-				topology_digest: current.topology_digest,
-				inventory_digest: current.inventory_digest,
-				created_at: now,
-				released_at: null
-			})
-			.compile(),
+		sql`INSERT INTO state_retirement_hold
+			(id,user_id,actor_key,topology_digest,inventory_digest,created_at,released_at)
+			SELECT ${holdId},${actor.userId},${key},${current.topology_digest},${current.inventory_digest},${now},NULL
+			WHERE ${retirementWitnessExpression(actor.userId)} = ${exactWitness}`.compile(db),
 		...heldStates.map((state) =>
-			db
-				.insertInto('state_retirement_hold_state')
-				.values({ hold_id: holdId, user_id: actor.userId, ...state })
-				.compile()
+			sql`INSERT INTO state_retirement_hold_state
+				(hold_id,user_id,state_id,workflow_name,state_name,state_category)
+				SELECT ${holdId},${actor.userId},${state.state_id},${state.workflow_name},${state.state_name},${state.state_category}
+				WHERE EXISTS (SELECT 1 FROM state_retirement_hold WHERE id = ${holdId} AND user_id = ${actor.userId})`.compile(
+				db
+			)
 		),
 		...current.pointers.map((pointer) =>
-			db
-				.insertInto('state_retirement_pointer')
-				.values({
-					hold_id: holdId,
-					user_id: actor.userId,
-					child_state_id: pointer.child_state_id,
-					original_parent_state_id: pointer.parent_state_id,
-					state_witness: canonicalizeLibraryValue(states.get(pointer.child_state_id)),
-					successful_receipt_id: null
-				})
-				.compile()
+			sql`INSERT INTO state_retirement_pointer
+				(hold_id,user_id,child_state_id,original_parent_state_id,state_witness,successful_receipt_id)
+				SELECT ${holdId},${actor.userId},${pointer.child_state_id},${pointer.parent_state_id},${canonicalizeLibraryValue(states.get(pointer.child_state_id))},NULL
+				WHERE EXISTS (SELECT 1 FROM state_retirement_hold WHERE id = ${holdId} AND user_id = ${actor.userId})`.compile(
+				db
+			)
 		)
 	];
 	try {
-		await runAtomic(env, queries);
+		const results = await runAtomic(env, queries);
+		if (results[0]?.meta.changes !== 1)
+			throw new ApiFail(
+				409,
+				'retirement_inventory_stale',
+				'The reviewed inventory changed while the hold was acquired; inventory again'
+			);
 	} catch (error) {
 		if (String(error).includes('state_retirement_state_already_held'))
 			throw new ApiFail(
