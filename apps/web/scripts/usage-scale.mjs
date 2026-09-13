@@ -312,6 +312,55 @@ try {
 	} else {
 		evidenceTraces.forEach((traces, page) => verifyPageIds(pageTraces(traces), 10000, page * 50));
 	}
+
+	// Signed cost-ranked evidence is a separate complete-scan path. Exercise the
+	// first and middle pages against the real Worker, including parent replay.
+	const signedPages = [];
+	const signedEvidenceTraces = [];
+	const signedQuery = new URLSearchParams({
+		scope: body.matching_scope,
+		kind: 'runs',
+		limit: '50'
+	});
+	for (let page = 0; page < 2; page++) {
+		const traceStart = workerLog.length;
+		const response = await fetch(`${baseUrl}/api/v1/usage/evidence?${signedQuery}`, {
+			headers: { authorization: `Bearer ${apiKey}` }
+		});
+		const result = await response.json();
+		if (!response.ok) throw new Error(JSON.stringify(result));
+		const traces = await tracesSince(traceStart);
+		if (traces.length > 49)
+			throw new Error(`signed evidence query bound exceeded: ${traces.length} > 49`);
+		const rowsRead = traces.reduce((sum, trace) => sum + trace.rows_read, 0);
+		// The ranked scan and the route's parent reconciliation each walk the
+		// candidate population in 5k pages, including dimension joins. Keep the
+		// measured multiplier bounded and independent of issue cardinality.
+		if (rowsRead > size * 30 + 10_000)
+			throw new Error(`signed evidence rows_read bound exceeded: ${rowsRead}`);
+		if (result.total_count !== size || result.attempt_count !== size)
+			throw new Error('signed evidence whole-population counts mismatch');
+		signedPages.push(result.items.map((item) => item.id));
+		signedEvidenceTraces.push(traces);
+		if (!result.next_cursor) break;
+		signedQuery.set('cursor', result.next_cursor);
+	}
+	if (new Set(signedPages.flat()).size !== signedPages.flat().length)
+		throw new Error('signed evidence pages repeated a run');
+
+	const lifetimeTraceStart = workerLog.length;
+	const lifetimeResponse = await fetch(`${baseUrl}/api/v1/usage?mode=issue&issue=scale_issue`, {
+		headers: { authorization: `Bearer ${apiKey}` }
+	});
+	const lifetime = await lifetimeResponse.json();
+	if (!lifetimeResponse.ok) throw new Error(JSON.stringify(lifetime));
+	const lifetimeTraces = await tracesSince(lifetimeTraceStart);
+	if (lifetimeTraces.length > 49)
+		throw new Error(`lifetime query bound exceeded: ${lifetimeTraces.length} > 49`);
+	if (lifetime.issue.attempt_count !== size + 100 || lifetime.issue.pending_count !== 100)
+		throw new Error('direct lifetime attempt population mismatch');
+	if (lifetime.issue.aggregate.finalized_run_count !== size)
+		throw new Error('direct lifetime finalized population mismatch');
 	const cliRaw = execFileSync(
 		'node',
 		[
@@ -339,6 +388,34 @@ try {
 	};
 	if (JSON.stringify(comparable(cli)) !== JSON.stringify(comparable(body)))
 		throw new Error('source CLI and HTTP accounting differ');
+	const signedCliArgs = [
+		fileURLToPath(new URL('../../../packages/cli/dist/index.js', import.meta.url)),
+		'usage',
+		'--url',
+		baseUrl,
+		'--api-key',
+		apiKey,
+		'--scope',
+		body.matching_scope,
+		'--evidence',
+		'runs',
+		'--limit',
+		'50'
+	];
+	const signedCli = JSON.parse(
+		execFileSync('node', [...signedCliArgs, '--json'], {
+			encoding: 'utf8',
+			maxBuffer: 64 * 1024 * 1024
+		})
+	);
+	if (signedCli.total_count !== size || signedCli.items.length !== 50)
+		throw new Error('source CLI signed evidence page mismatch');
+	const signedCliText = execFileSync('node', signedCliArgs, {
+		encoding: 'utf8',
+		maxBuffer: 64 * 1024 * 1024
+	});
+	if (!signedCliText.includes('Accounting scale_') || !signedCliText.includes('exact cost'))
+		throw new Error('source CLI signed evidence omitted accounting disclosure');
 	const runsArgs = [
 		fileURLToPath(new URL('../../../packages/cli/dist/index.js', import.meta.url)),
 		'runs',
@@ -406,6 +483,18 @@ try {
 		pending: body.pending.scope_count,
 		groups: body.groups.length,
 		evidence_pages: evidencePages,
+		signed_evidence_pages: signedPages,
+		signed_evidence_queries: signedEvidenceTraces.map((traces) => traces.length),
+		signed_evidence_rows_read: signedEvidenceTraces.map((traces) =>
+			traces.reduce((sum, trace) => sum + trace.rows_read, 0)
+		),
+		direct_lifetime: {
+			attempts: lifetime.issue.attempt_count,
+			pending: lifetime.issue.pending_count,
+			finalized: lifetime.issue.aggregate.finalized_run_count,
+			queries: lifetimeTraces.length,
+			rows_read: lifetimeTraces.reduce((sum, trace) => sum + trace.rows_read, 0)
+		},
 		independent_oracle: oracle,
 		distribution_oracle: {
 			median_cost_usd: expectedMedian,

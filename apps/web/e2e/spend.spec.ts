@@ -53,7 +53,7 @@ test.describe('Agents Spend real ledger', () => {
 		await selectProject(page, SPEND.projects.alpha.name);
 		await expect(projectTotal(page)).toHaveText('$5.00');
 		expect(requests.at(-1)?.searchParams.get('project')).toBe(SPEND.projects.alpha.id);
-		await page.getByRole('button', { name: 'Today' }).click();
+		await page.getByRole('button', { name: 'Today', exact: true }).click();
 		await expect(projectTotal(page)).toHaveText('$2.00');
 		expect(requests.at(-1)?.searchParams.get('window')).toBe('today');
 		await page.getByRole('button', { name: 'Last 30 days' }).click();
@@ -167,5 +167,79 @@ test.describe('Agents Spend real ledger', () => {
 		await expect(page.locator('.statement p').filter({ hasText: /partial/ })).toContainText(
 			/partial\s*·\s*2 finalized\s*·\s*1 priced\s*·\s*0 unpriced\s*·\s*1 unreported/i
 		);
+	});
+
+	test('opens frozen issue and run evidence and restores it through reload and history', async ({
+		page
+	}) => {
+		await armLedgerDays();
+		await gotoHydrated(
+			page,
+			`/agents?agents_view=spend&spend_project=${SPEND.projects.alpha.id}&spend_window=30d&spend_view=workflow&spend_sort=desc&spend_workflow=all`
+		);
+		await expect(projectTotal(page)).toHaveText('$12.00');
+		await page.getByRole('button', { name: 'View contributing issues and runs' }).first().click();
+		await expect(page.getByRole('heading', { name: 'Contributing issues' })).toBeVisible();
+		await expect(page.getByText('Whole selection: $12.00 · 4 issues')).toBeVisible();
+		await page.getByRole('button', { name: 'Today', exact: true }).click();
+		await expect(projectTotal(page)).toHaveText('$2.00');
+		await expect(page.getByRole('heading', { name: 'Contributing issues' })).toBeHidden();
+		await page.getByRole('button', { name: 'Last 30 days' }).click();
+		await expect(projectTotal(page)).toHaveText('$12.00');
+		await page.getByRole('button', { name: 'View contributing issues and runs' }).first().click();
+		await page.reload({ waitUntil: 'networkidle' });
+		await expect(page.getByRole('heading', { name: 'Contributing issues' })).toBeVisible();
+		await page.getByRole('button', { name: /Alpha\/3 Spend alpha_10d/ }).click();
+		await expect(page).toHaveURL(/spend_kind=runs/);
+		await expect(page.getByRole('heading', { name: 'Contributing runs' })).toBeVisible();
+		await expect(page.getByText('run_e2e_spend_alpha_10d', { exact: true })).toBeVisible();
+		await page.getByText('Accounting details for run_e2e_spend_alpha_10d').click();
+		await expect(page.locator('.accounting p').first()).toContainText(
+			/priced\s*·\s*source provider\s*·\s*exact cost 7/
+		);
+		await expect(page.getByText(/Tokens: input tokens/)).toBeVisible();
+		await page.goBack();
+		await expect(page.getByRole('heading', { name: 'Contributing issues' })).toBeVisible();
+		await page.getByRole('button', { name: 'Close detail' }).click();
+		await expect(page.getByRole('heading', { name: 'Contributing issues' })).toBeHidden();
+	});
+
+	test('shows direct lifetime independently from the operational run page', async ({ page }) => {
+		await armLedgerDays();
+		await page.setViewportSize({ width: 320, height: 700 });
+		await gotoHydrated(page, `/issues/${encodeURIComponent(SPEND.projects.alpha.name)}/1`);
+		await page.getByRole('button', { name: /Agent activity 1 run/ }).click();
+		await expect(page.getByRole('heading', { name: 'Lifetime through now' })).toBeVisible();
+		await expect(page.getByText(/\$2\.00 · complete · 1 finalized · 0 pending/i)).toBeVisible();
+		await expect(
+			page
+				.getByRole('region', { name: 'Contributing runs' })
+				.getByText('run_e2e_spend_alpha_today', { exact: true })
+		).toBeVisible();
+		const runLabel = page.getByText('run_e2e_spend_alpha_today', { exact: true });
+		const runCost = page.getByRole('region', { name: 'Contributing runs' }).locator('.cost');
+		const [labelBox, costBox] = await Promise.all([runLabel.boundingBox(), runCost.boundingBox()]);
+		expect(labelBox).not.toBeNull();
+		expect(costBox).not.toBeNull();
+		const overlaps =
+			labelBox!.x < costBox!.x + costBox!.width &&
+			labelBox!.x + labelBox!.width > costBox!.x &&
+			labelBox!.y < costBox!.y + costBox!.height &&
+			labelBox!.y + labelBox!.height > costBox!.y;
+		expect(overlaps).toBe(false);
+		await page.getByText('Accounting details for run_e2e_spend_alpha_today').click();
+		const accounting = page.locator('.accounting');
+		await expect(accounting).toContainText('Tokens: input tokens 20');
+		await expect(accounting).toContainText('calculation tokens-times-usd-per-million-v1');
+		await expect(accounting).toContainText('model identity requested_launch_no_observed_reroute');
+		await expect(accounting).toContainText('usage scope attempt');
+		await expect(accounting).toContainText('context short');
+		await expect(accounting).toContainText('source https://example.test/pricing');
+		await expect(accounting).toContainText('checked 2026-09-12');
+		await expect(accounting).toContainText('effective 2026-09-01');
+		await expect(accounting).toContainText('rates input=100000');
+		await expect(accounting).toContainText('per 1000000 tokens');
+		await page.getByRole('button', { name: 'Refresh through now' }).click();
+		await expect(page.getByRole('button', { name: 'Refresh through now' })).toBeEnabled();
 	});
 });

@@ -1635,6 +1635,17 @@ Options:
   --from <bound>                custom inclusive start (date or offset
                                 timestamp)
   --to <bound>                  custom exclusive end (date or offset timestamp)
+  --issue <ref>                 direct issue lifetime through now
+  --scope <token>               replay a frozen usage scope
+  --evidence <kind>             list evidence (choices: "issues", "runs")
+  --member <issue-id>           narrow run evidence to one contributing issue
+  --population <population>     finalized or pending (choices: "finalized",
+                                "pending")
+  --sort <sort>                 evidence sort (choices: "cost", "time")
+  --direction <direction>       sort direction (choices: "asc", "desc")
+  --cursor <token>              evidence page cursor
+  --limit <count>               evidence page size (1-100)
+  --all-pages                   fetch every evidence page
   --project <name-or-id>        project scope (including archived), or unknown
   --workflow <name-or-id>       workflow filter, or unknown
   --state <id>                  starting state id (requires --workflow)

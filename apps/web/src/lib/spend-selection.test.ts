@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
 	agentsNavigationMessage,
 	canonicalSpendChanges,
+	clearSpendEvidence,
 	parseSpendSelection,
 	patchSpendUrl,
 	spendRequest
@@ -50,6 +51,20 @@ describe('spend selection', () => {
 			null
 		);
 		expect(selection.ready).toBe(false);
+	});
+
+	it('clears every frozen evidence field when the parent report changes', () => {
+		expect(clearSpendEvidence({ spend_window: 'today', unrelated: 'keep' })).toEqual({
+			spend_window: 'today',
+			unrelated: 'keep',
+			spend_scope: null,
+			spend_kind: null,
+			spend_member: null,
+			spend_population: null,
+			spend_evidence_sort: null,
+			spend_direction: null,
+			spend_cursor: null
+		});
 	});
 
 	it('requests a complete custom range and includes both bounds in its stable key', () => {

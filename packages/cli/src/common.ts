@@ -89,7 +89,10 @@ export function parsePositiveInteger(value: string): number {
 }
 
 /** Historical usage filters may name owned retained IDs whose metadata was deleted. */
-export function isUsageIdentity(value: string, prefix: 'prj' | 'wf' | 'wfs' | 'rnr'): boolean {
+export function isUsageIdentity(
+	value: string,
+	prefix: 'prj' | 'wf' | 'wfs' | 'rnr' | 'iss'
+): boolean {
 	return value === 'unknown' || new RegExp(`^${prefix}_[A-Za-z0-9]+$`).test(value);
 }
 
