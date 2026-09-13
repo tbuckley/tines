@@ -538,7 +538,18 @@ export async function launchClaimedRun(
 					started_at: startedAt,
 					provider_session_id: launched.provider_session_id ?? null,
 					provider_url: launched.provider_url ?? null,
-					provider_meta: launched.provider_meta ?? null
+					provider_meta: launched.provider_meta ?? null,
+					...(ctx.effort
+						? {
+								effort_application_status: 'accepted_unconfirmed',
+								effort_application_evidence: JSON.stringify({
+									version: 1,
+									transport: 'managed_agent_config',
+									attempted_effort: ctx.effort,
+									received_at: startedAt
+								})
+							}
+						: {})
 				})
 				.where('id', '=', ctx.runId)
 				.where('status', '=', 'launching')
@@ -854,7 +865,7 @@ export async function runDispatchPass(
 						runner_id: runner.id,
 						tier: resolved.tier,
 						rule_id: route.effortRule?.id ?? route.runnerRule?.id ?? route.rule?.id ?? '',
-						scope_label: '',
+						scope_label: `rule ${route.effortRule?.id ?? route.runnerRule?.id ?? route.rule?.id ?? 'unknown'}`,
 						target_index: targets.findIndex((candidate) => candidate === target)
 					}
 				: resolvedEffort
@@ -1440,7 +1451,13 @@ export async function pollManagedRuns(
 						const ended = await db
 							.selectFrom('agent_run')
 							.leftJoin('workflow_state as st', 'st.id', 'agent_run.state_id_at_end')
-							.select(['agent_run.outcome', 'agent_run.issue_id', 'agent_run.model', 'st.category'])
+							.select([
+								'agent_run.outcome',
+								'agent_run.issue_id',
+								'agent_run.model',
+								'agent_run.resolved_effort',
+								'st.category'
+							])
 							.where('agent_run.id', '=', run.id)
 							.executeTakeFirst();
 						await adapter
@@ -1455,6 +1472,7 @@ export async function pollManagedRuns(
 									user_id: row.user_id,
 									issue_id: ended?.issue_id ?? run.issue_id,
 									model: ended?.model ?? null,
+									effort: ended?.resolved_effort ?? null,
 									outcome: ended?.outcome ?? outcome.outcome,
 									ended_in_awaiting_state: ended?.category === 'awaiting_human',
 									now

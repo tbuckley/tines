@@ -655,6 +655,7 @@ async function prepareResume(
 		runnerId: runner.id,
 		harness: String(config.harness ?? 'claude_code'),
 		model: run.model,
+		effort: run.effort_application_status === 'pending' ? run.resolved_effort : null,
 		preambleVariant: 'local'
 	});
 	const verdict = resumeEligibility({

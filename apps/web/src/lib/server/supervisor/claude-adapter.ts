@@ -63,6 +63,8 @@ export interface ClaudeRunnerConfig {
 	environment_id?: string;
 	/** Per-tier managed agents, each with the model/effort it was built for. */
 	agents?: Partial<Record<ModelTier, { agent_id: string; model: string; effort?: string }>>;
+	/** Immutable agent identities keyed by canonical [tier, model, effort]. */
+	agents_by_signature?: Record<string, { agent_id: string; model: string; effort?: string }>;
 }
 
 /** `agent_run.provider_meta` for Claude runs. */
@@ -306,26 +308,25 @@ function createProviderContext(env: Env, opts: ClaudeAdapterOptions): ProviderCo
 		const modelParam = effort
 			? { id: model, effort: effort as 'low' | 'medium' | 'high' | 'xhigh' | 'max' }
 			: model;
-		const existing = ctx.config.agents?.[tier];
+		const signature = JSON.stringify([tier, model, effort ?? null]);
+		const existing =
+			ctx.config.agents_by_signature?.[signature] ??
+			(ctx.config.agents?.[tier]?.model === model && ctx.config.agents?.[tier]?.effort === effort
+				? ctx.config.agents[tier]
+				: undefined);
 		if (existing && existing.model === model && existing.effort === effort) {
 			return existing.agent_id;
 		}
-		let agentId: string;
-		if (existing) {
-			await ctx.client.beta.agents.update(existing.agent_id, { model: modelParam });
-			agentId = existing.agent_id;
-		} else {
-			const created = await ctx.client.beta.agents.create({
-				name: `tines-${ctx.row.name}-${tier}`,
-				description: `Tines runner "${ctx.row.name}", tier ${tier}`,
-				model: modelParam,
-				tools: [{ type: 'agent_toolset_20260401' }]
-			});
-			agentId = created.id;
-		}
-		ctx.config.agents = {
-			...ctx.config.agents,
-			[tier]: { agent_id: agentId, model, ...(effort ? { effort } : {}) }
+		const created = await ctx.client.beta.agents.create({
+			name: `tines-${ctx.row.name}-${tier}-${effort ?? 'default'}`,
+			description: `Tines runner "${ctx.row.name}", tier ${tier}, effort ${effort ?? 'provider default'}`,
+			model: modelParam,
+			tools: [{ type: 'agent_toolset_20260401' }]
+		});
+		const agentId = created.id;
+		ctx.config.agents_by_signature = {
+			...ctx.config.agents_by_signature,
+			[signature]: { agent_id: agentId, model, ...(effort ? { effort } : {}) }
 		};
 		await persistConfig(ctx.row.id, ctx.config);
 		return agentId;
@@ -721,6 +722,7 @@ export function createClaudeAdapter(env: Env, opts: ClaudeAdapterOptions = {}): 
 			issueId: input.issueId,
 			runId: input.runId,
 			model: input.model,
+			effort: input.effort,
 			now: Date.now()
 		});
 		if (resume) {
@@ -995,6 +997,7 @@ export function createClaudeAdapter(env: Env, opts: ClaudeAdapterOptions = {}): 
 				runnerId: run.runner_id,
 				harness: 'claude_managed',
 				model: input.model,
+				effort: input.effort,
 				preambleVariant: 'claude_managed'
 			}),
 			expiresAt,

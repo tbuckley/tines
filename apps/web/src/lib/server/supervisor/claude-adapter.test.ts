@@ -217,7 +217,7 @@ describe('claude adapter launch', () => {
 		// Tier agent: minimal — default toolset, no directive system prompt.
 		const [agentCreate] = net.of('POST /v1/agents');
 		expect(agentCreate.body).toMatchObject({
-			name: 'tines-claude-cloud-balanced',
+			name: 'tines-claude-cloud-balanced-default',
 			model: 'claude-sonnet-5',
 			tools: [{ type: 'agent_toolset_20260401' }]
 		});
@@ -276,35 +276,38 @@ describe('claude adapter launch', () => {
 		// Provisioned ids are cached on the runner for the next launch.
 		const config = JSON.parse(
 			(t.all('SELECT config FROM runner WHERE id = ?', runnerId)[0] as { config: string }).config
-		) as { environment_id: string; agents: Record<string, { agent_id: string; model: string }> };
+		) as {
+			environment_id: string;
+			agents_by_signature: Record<string, { agent_id: string; model: string }>;
+		};
 		expect(config.environment_id).toBe('env_1');
-		expect(config.agents.balanced).toMatchObject({ agent_id: 'agent_1', model: 'claude-sonnet-5' });
+		expect(Object.values(config.agents_by_signature)[0]).toMatchObject({
+			agent_id: 'agent_1',
+			model: 'claude-sonnet-5'
+		});
 		expect(t.all('SELECT resume_config_revision FROM runner WHERE id = ?', runnerId)).toEqual([
 			{ resume_config_revision: 2 }
 		]);
 	});
 
-	it('re-provisions a drifted tier agent instead of freezing it', async () => {
+	it('provisions a separate signature instead of mutating a drifted tier agent', async () => {
 		({ t, runnerId } = await world({
 			runnerConfig: {
 				environment_id: 'env_1',
 				agents: { balanced: { agent_id: 'agent_old', model: 'claude-sonnet-4-6' } }
 			}
 		}));
-		const net = fakeNetwork({
-			'POST /v1/agents/agent_old': () => ({ id: 'agent_old', version: 2 })
-		});
+		const net = fakeNetwork();
 		const adapter = createClaudeAdapter(t.env, { fetch: net.fetch });
 		await adapter.launch(launchInput(runnerId));
 
-		expect(net.of('POST /v1/agents')).toHaveLength(0); // no new agent
+		expect(net.of('POST /v1/agents')).toHaveLength(1);
 		expect(net.of('POST /v1/environments')).toHaveLength(0); // env cached
-		const [update] = net.of('POST /v1/agents/agent_old');
-		expect(update.body).toMatchObject({ model: 'claude-sonnet-5' });
+		expect(net.of('POST /v1/agents/agent_old')).toHaveLength(0);
 		const config = JSON.parse(
 			(t.all('SELECT config FROM runner WHERE id = ?', runnerId)[0] as { config: string }).config
-		) as { agents: Record<string, { model: string }> };
-		expect(config.agents.balanced.model).toBe('claude-sonnet-5');
+		) as { agents_by_signature: Record<string, { model: string }> };
+		expect(Object.values(config.agents_by_signature)[0]?.model).toBe('claude-sonnet-5');
 		expect(t.all('SELECT resume_config_revision FROM runner WHERE id = ?', runnerId)).toEqual([
 			{ resume_config_revision: 1 }
 		]);

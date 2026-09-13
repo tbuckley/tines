@@ -62,6 +62,7 @@ export interface AdapterEndInput {
 	user_id: string;
 	issue_id: string;
 	model: string | null;
+	effort?: string | null;
 	/** The recorded run outcome; only `advanced` can retain. */
 	outcome: string | null;
 	/** Whether the issue's state at end was an `awaiting_human` one. */
