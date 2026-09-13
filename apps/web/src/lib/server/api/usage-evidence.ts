@@ -180,7 +180,7 @@ function retain(
 }
 
 function scopeCutoff(scope: UsageScopePayload) {
-	return scope.mode === 'period' ? scope.to : scope.cutoff;
+	return scope.mode === 'issue' ? scope.cutoff : scope.to;
 }
 function scopeFilters(scope: UsageScopePayload): ResolvedUsageFilters {
 	return scope.mode === 'period' ? scope.filters : {};
