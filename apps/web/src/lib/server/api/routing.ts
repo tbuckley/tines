@@ -323,8 +323,36 @@ function rowScope(row: RuleRow): ContextScope {
 async function loadRunnersById(
 	db: Kysely<Database>,
 	userId: string
-): Promise<Map<string, Database['runner']>> {
-	const rows = await db.selectFrom('runner').selectAll().where('user_id', '=', userId).execute();
+): Promise<
+	Map<
+		string,
+		Pick<
+			Database['runner'],
+			| 'id'
+			| 'name'
+			| 'status'
+			| 'type'
+			| 'config'
+			| 'default_tier'
+			| 'tiers'
+			| 'effort_capabilities'
+		>
+	>
+> {
+	const rows = await db
+		.selectFrom('runner')
+		.select([
+			'id',
+			'name',
+			'status',
+			'type',
+			'config',
+			'default_tier',
+			'tiers',
+			'effort_capabilities'
+		])
+		.where('user_id', '=', userId)
+		.execute();
 	return new Map(rows.map((r) => [r.id, r]));
 }
 
