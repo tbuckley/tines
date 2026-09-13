@@ -27,6 +27,11 @@ test.describe('Agents completed-issue costs', () => {
 		await cohort.getByRole('button', { name: 'View completed issues' }).click();
 		await expect(page).toHaveURL(/spend_kind=issues/);
 		await expect(cohort.getByText('Spend completed without a run')).toBeVisible();
+		await expect(
+			cohort.getByText(/Closed at .*not reopened in available history/).first()
+		).toBeVisible();
+		await cohort.getByRole('button', { name: 'Lifetime through now' }).first().click();
+		await expect(cohort.getByRole('heading', { name: 'Lifetime through now' })).toBeVisible();
 		await cohort.getByRole('button', { name: /Alpha\/5 Spend completed without a run/ }).click();
 		await expect(page).toHaveURL(/spend_kind=runs/);
 		await expect(cohort.getByText('No contributing runs.')).toBeVisible();

@@ -317,8 +317,8 @@ async function buildCohortUsage(
 		.selectFrom('workflow')
 		.select(['id', 'name', 'user_id'])
 		.where('id', '=', request.workflow)
-		.where((eb) => eb.or([eb('user_id', '=', owner), eb('user_id', 'is', null)]))
 		.executeTakeFirst();
+	if (workflow && workflow.user_id !== null && workflow.user_id !== owner) return null;
 	if (request.project) {
 		const project = await db
 			.selectFrom('project')

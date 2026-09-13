@@ -152,6 +152,53 @@ describe('completion cohort usage', () => {
 		expect(report?.aggregate.finalized_run_count).toBe(0);
 	});
 
+	it('does not authorize a live foreign workflow from retained owner event metadata', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const issue = addIssue(t, { id: 'iss_owned_foreign_workflow' });
+		t.sqlite.exec(`
+			INSERT INTO user (id,name,email,emailVerified,createdAt,updatedAt)
+			VALUES ('u_foreign_workflow','bob','wf@example.com',1,${NOW},${NOW});
+			INSERT INTO workflow (id,user_id,name,initial_state_id,created_at,updated_at)
+			VALUES ('wf_foreign','u_foreign_workflow','Private workflow','${OPEN}',${NOW},${NOW});
+		`);
+		t.sqlite
+			.prepare(
+				`INSERT INTO event (id,user_id,type,actor_user_id,issue_id,project_id,payload,created_at)
+				 VALUES (?,?,?,?,?,?,?,?)`
+			)
+			.run(
+				'evt_foreign_workflow_claim',
+				USER,
+				'issue.transitioned',
+				USER,
+				issue,
+				PROJECT,
+				JSON.stringify({
+					state_entry_version: 1,
+					workflow_id: 'wf_foreign',
+					workflow_name: 'Private workflow',
+					to_state_id: 'st_foreign_done',
+					to_state_name: 'Private done',
+					to_state_category: 'done'
+				}),
+				NOW - 20
+			);
+
+		const report = await getCohortUsage(
+			t.db,
+			USER,
+			{
+				workflow: 'wf_foreign',
+				from: new Date(NOW - 100).toISOString(),
+				to: new Date(NOW).toISOString()
+			},
+			NOW + 100
+		);
+
+		expect(report).toBeNull();
+	});
+
 	it('carries one member across the 5,000-row tuple boundary without a duplicate sentinel', async () => {
 		const t = createTestDb();
 		seedBase(t);

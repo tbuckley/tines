@@ -6,10 +6,12 @@
 		type CohortEntry,
 		type CohortIssueUsage,
 		type IssueAttemptUsage,
+		type IssueUsageReport,
 		type UsageDiagnostics,
 		type UsageEvidencePage
 	} from '@tines/shared';
 	import { api } from '$lib/api';
+	import IssueUsage from './IssueUsage.svelte';
 	import UsageCostCell from './UsageCostCell.svelte';
 
 	let {
@@ -36,6 +38,9 @@
 	let page = $state<UsageEvidencePage | null>(null);
 	let error = $state<string | null>(null);
 	let loading = $state(true);
+	let lifetime = $state<IssueUsageReport | null>(null);
+	let lifetimeError = $state<string | null>(null);
+	let lifetimeLoading = $state<string | null>(null);
 	let generation = 0;
 	const key = $derived(JSON.stringify([scope, kind, member, population, sort, direction, cursor]));
 
@@ -84,6 +89,20 @@
 			if (mine === generation) loading = false;
 		}
 	}
+	async function loadLifetime(issueId: string) {
+		lifetimeLoading = issueId;
+		lifetimeError = null;
+		try {
+			lifetime = await api.getIssueUsage(issueId);
+		} catch (value) {
+			lifetimeError =
+				value instanceof ApiError || value instanceof Error
+					? value.message
+					: 'Unable to load lifetime usage';
+		} finally {
+			lifetimeLoading = null;
+		}
+	}
 	$effect(() => {
 		void key;
 		void load();
@@ -120,6 +139,7 @@
 				aria-pressed={population === 'finalized'}
 				onclick={() =>
 					change({
+						spend_kind: 'runs',
 						spend_population: 'finalized',
 						spend_evidence_sort: 'cost',
 						spend_cursor: null
@@ -186,9 +206,27 @@
 											? `Unavailable issue (${item.issue_id})`
 											: 'Unknown issue'}</strong
 								><small
-									>{item.issue_ref?.title ?? 'Metadata unavailable'} · {item.attempt_count} runs</small
+									>{item.issue_ref?.title ?? 'Metadata unavailable'} · {item.attempt_count} runs ·
+									{item.chosen_entry.state_name ?? item.chosen_entry.state_id} at {new Date(
+										item.chosen_entry.created_at
+									).toISOString()} · {item.reopening.value === true
+										? 'reopened since entry'
+										: item.reopening.value === null
+											? 'reopening history unknown'
+											: 'not reopened in available history'}</small
 								></button
-							><UsageCostCell aggregate={item.aggregate} />
+							>
+							<div class="issue-actions">
+								<UsageCostCell aggregate={item.aggregate} />
+								<button
+									type="button"
+									disabled={lifetimeLoading === item.issue_id}
+									onclick={() => loadLifetime(item.issue_id)}
+									>{lifetimeLoading === item.issue_id
+										? 'Loading lifetime…'
+										: 'Lifetime through now'}</button
+								>
+							</div>
 						</article>
 					{:else if kind === 'entries'}
 						{@const item = raw as CohortEntry}
@@ -288,6 +326,8 @@
 					onclick={() => change({ spend_cursor: page?.next_cursor ?? null })}>Next</button
 				>
 			</footer>
+			{#if lifetimeError}<p class="error">Lifetime usage unavailable: {lifetimeError}</p>{/if}
+			{#if lifetime}<IssueUsage initial={lifetime} />{/if}
 		{/if}
 	</div>
 </section>
@@ -344,6 +384,11 @@
 		min-width: 82px;
 		text-align: right;
 		font-variant-numeric: tabular-nums;
+	}
+	.issue-actions {
+		display: grid;
+		justify-items: end;
+		gap: 0.35rem;
 	}
 	.total {
 		background: var(--muted);
