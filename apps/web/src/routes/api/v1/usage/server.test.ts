@@ -4,7 +4,9 @@ import {
 	addIssue,
 	addRun,
 	addRunner,
+	CLOSED,
 	NOW,
+	PROJECT,
 	seedBase,
 	USER
 } from '$lib/server/supervisor/test-fixtures';
@@ -16,6 +18,36 @@ import {
 import { GET } from './+server';
 import { GET as RUNS_GET } from '../runs/+server';
 import { GET as EVIDENCE_GET } from './evidence/+server';
+
+function completionEntry(
+	t: ReturnType<typeof createTestDb>,
+	id: string,
+	issueId: string,
+	createdAt: number
+) {
+	t.sqlite
+		.prepare(
+			`INSERT INTO event (id,user_id,type,actor_user_id,issue_id,project_id,payload,created_at)
+			 VALUES (?,?,?,?,?,?,?,?)`
+		)
+		.run(
+			id,
+			USER,
+			'issue.transitioned',
+			USER,
+			issueId,
+			PROJECT,
+			JSON.stringify({
+				state_entry_version: 1,
+				workflow_id: 'wf_standard',
+				workflow_name: 'Engineering',
+				to_state_id: CLOSED,
+				to_state_name: 'Closed',
+				to_state_category: 'done'
+			}),
+			createdAt
+		);
+}
 
 async function get(t: ReturnType<typeof createTestDb>, query: string) {
 	t.env.BETTER_AUTH_SECRET = 'usage-route-test-secret';
@@ -64,6 +96,50 @@ describe('GET /api/v1/usage validation and authorization', () => {
 		expect(bad.body).toMatchObject({
 			error: { code: 'invalid_field', details: { field: 'window' } }
 		});
+	});
+
+	it('serves and freezes an explicit completion cohort scope', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const issue = addIssue(t, { id: 'iss_cohort_route', state: CLOSED });
+		completionEntry(t, 'evt_cohort_route', issue, NOW - 20);
+		const query = `?mode=cohort&workflow=wf_standard&from=${new Date(NOW - 100).toISOString()}&to=${new Date(NOW).toISOString()}`;
+		const initial = await get(t, query);
+		expect(initial.response.status).toBe(200);
+		expect(initial.body).toMatchObject({
+			mode: 'cohort',
+			selection_basis: 'all_current_done',
+			selected_states: [{ id: CLOSED, name: 'Closed', category: 'done' }],
+			counters: { distinct_issue_count: 1, zero_run_issue_count: 1 }
+		});
+		expect(initial.body.scope).toEqual(expect.any(String));
+
+		t.sqlite.prepare(`UPDATE workflow_state SET category='active' WHERE id=?`).run(CLOSED);
+		const replay = await get(t, `?scope=${encodeURIComponent(String(initial.body.scope))}`);
+		expect(replay.response.status).toBe(200);
+		expect(replay.body).toMatchObject({
+			mode: 'cohort',
+			selection_basis: 'all_current_done',
+			selected_states: [{ id: CLOSED, name: 'Closed', category: 'done' }],
+			counters: { distinct_issue_count: 1 }
+		});
+		expect(replay.body.scope).toBe(initial.body.scope);
+	});
+
+	it('rejects contradictory and unprovable cohort selections', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const bounds = `from=${new Date(NOW - 100).toISOString()}&to=${new Date(NOW).toISOString()}`;
+		const contradictory = await get(t, `?mode=cohort&workflow=wf_standard&state=st_open&${bounds}`);
+		expect(contradictory.response.status).toBe(422);
+		expect(contradictory.body).toMatchObject({
+			error: { code: 'invalid_field', details: { field: 'state' } }
+		});
+		const unknownState = await get(
+			t,
+			`?mode=cohort&workflow=wf_standard&done_state=st_missing&${bounds}`
+		);
+		expect(unknownState.response.status).toBe(404);
 	});
 
 	it('reports whole-lifetime attempt and pending counts on finalized evidence', async () => {
