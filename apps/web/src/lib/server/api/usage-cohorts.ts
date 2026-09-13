@@ -259,19 +259,30 @@ export async function getCohortUsage(
 	}
 	for (const entry of chosen.values()) entry.chosen = true;
 	const issueRefs = new Map<string, CohortIssueUsage['issue_ref']>();
-	const ownedIssues = await db
+	const currentIssues = await db
 		.selectFrom('issue')
-		.innerJoin('project', (join) =>
-			join.onRef('project.id', '=', 'issue.project_id').on('project.user_id', '=', owner)
-		)
-		.select(['issue.id', 'issue.number', 'issue.title', 'project.name as project_name'])
+		.innerJoin('project', 'project.id', 'issue.project_id')
+		.select([
+			'issue.id',
+			'issue.number',
+			'issue.title',
+			'project.name as project_name',
+			'project.user_id as project_owner'
+		])
 		.execute();
-	for (const issue of ownedIssues)
+	for (const issue of currentIssues) {
+		if (issue.project_owner !== owner) {
+			// An owned retained event is not authority to disclose or claim a current
+			// issue identity that now resolves to another account.
+			chosen.delete(issue.id);
+			continue;
+		}
 		issueRefs.set(issue.id, {
 			project_name: issue.project_name,
 			number: issue.number,
 			title: issue.title
 		});
+	}
 	const stateAcc = new Map(selected.map((state) => [state.id, createUsageAccumulator()]));
 	const global = createUsageAccumulator();
 	const issueAcc = new Map(

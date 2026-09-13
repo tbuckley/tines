@@ -124,4 +124,31 @@ describe('completion cohort usage', () => {
 		expect(report?.counters.distinct_issue_count).toBe(0);
 		expect(report?.counters.known_cost_per_issue.coverage).toBe('empty');
 	});
+
+	it('does not claim a retained event whose current issue identity belongs to another account', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		t.sqlite.exec(`
+			INSERT INTO user (id,name,email,emailVerified,createdAt,updatedAt)
+			VALUES ('u_foreign','bob','b@example.com',1,${NOW},${NOW});
+			INSERT INTO project (id,user_id,name,created_at,updated_at)
+			VALUES ('prj_foreign','u_foreign','private',${NOW},${NOW});
+		`);
+		const foreign = addIssue(t, { id: 'iss_foreign_cohort', project: 'prj_foreign' });
+		entry(t, 'evt_owned_foreign_identity', foreign, NOW - 20, CLOSED, 'done');
+
+		const report = await getCohortUsage(
+			t.db,
+			USER,
+			{
+				workflow: 'wf_standard',
+				from: new Date(NOW - 100).toISOString(),
+				to: new Date(NOW).toISOString()
+			},
+			NOW + 100
+		);
+
+		expect(report?.counters.distinct_issue_count).toBe(0);
+		expect(report?.aggregate.finalized_run_count).toBe(0);
+	});
 });
