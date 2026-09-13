@@ -49,6 +49,21 @@ export interface PreparePublicationRequest {
 	metadata: PublicationMetadata;
 }
 
+export interface ValidatePublicationResponse {
+	valid: boolean;
+	document_digest: string | null;
+	bytes_sha256: string | null;
+	byte_length: number | null;
+	diagnostics: PublicationDiagnostic[];
+	limits: { max_document_bytes: number };
+}
+
+export interface PublicSnapshotStatus {
+	available: true;
+	status_version: number;
+	publisher_status_version: number;
+}
+
 export interface PublicationReceipt extends PublicationHashes {
 	snapshot_id: string;
 	public_url: string;
