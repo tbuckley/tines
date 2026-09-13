@@ -2,6 +2,7 @@
 	import {
 		ApiError,
 		ApiNetworkError,
+		canonicalizeLibraryValue,
 		parseStrictLibraryJson,
 		type PrepareWorkflowPackageResponse,
 		type WorkflowPackageChoices,
@@ -12,6 +13,7 @@
 	import IconRefresh from '@tabler/icons-svelte/icons/refresh';
 	import IconUpload from '@tabler/icons-svelte/icons/upload';
 	import { onMount, tick } from 'svelte';
+	import { page } from '$app/state';
 	import { api } from '$lib/api';
 	import PackageInputs from '$lib/components/library/PackageInputs.svelte';
 	import PackageOperations from '$lib/components/library/PackageOperations.svelte';
@@ -56,6 +58,8 @@
 	let legacyFile = $state(false);
 	let alertEl = $state<HTMLElement | null>(null);
 	let tokenInvoker = $state<HTMLElement | null>(null);
+	const hostedSnapshotId = $derived(page.url.searchParams.get('publication'));
+	const hostedMode = $derived(!!hostedSnapshotId);
 
 	const requiredReviewIds = $derived(
 		document_?.context
@@ -223,7 +227,9 @@
 		errorTarget = null;
 		confirmed = false;
 		try {
-			plan = await api.prepareWorkflowPackage({ document_json: documentJson, choices });
+			plan = hostedSnapshotId
+				? await api.prepareHostedWorkflowPackage(hostedSnapshotId, choices)
+				: await api.prepareWorkflowPackage({ document_json: documentJson, choices });
 			choices = plan.resolved.choices;
 			stage = 'prepared';
 		} catch (err) {
@@ -303,8 +309,22 @@
 		}
 	}
 	async function install() {
-		if (plan && confirmed && reviewComplete)
+		if (plan && confirmed && reviewComplete) {
+			if (hostedSnapshotId) {
+				try {
+					await api.getPublicSnapshotStatus(hostedSnapshotId);
+				} catch {
+					plan = null;
+					document_ = null;
+					documentJson = '';
+					stage = 'values';
+					error = 'This publication is not available.';
+					await focusError();
+					return;
+				}
+			}
 			await installExact(plan.plan_token, plan.plan_digest, plan.plan_id);
+		}
 	}
 	async function checkResult() {
 		if (!recovery) return;
@@ -324,7 +344,7 @@
 		}
 	}
 
-	onMount(() => {
+	onMount(async () => {
 		try {
 			const value = JSON.parse(sessionStorage.getItem(recoveryKey) ?? 'null') as Recovery | null;
 			if (value?.actorId === data.user.id && value.destination === location.origin) {
@@ -333,6 +353,23 @@
 			} else if (value) sessionStorage.removeItem(recoveryKey);
 		} catch {
 			clearRecovery();
+		}
+		if (hostedSnapshotId && !recovery) {
+			stage = 'reading';
+			try {
+				const snapshot = await api.getPublicSnapshot(hostedSnapshotId);
+				document_ = snapshot.document;
+				documentJson = canonicalizeLibraryValue(snapshot.document);
+				fileName = `public-${hostedSnapshotId}.json`;
+				choices = { schedule_ids: [] };
+				stage = 'values';
+			} catch {
+				document_ = null;
+				documentJson = '';
+				stage = 'values';
+				error = 'This publication is not available.';
+				await focusError();
+			}
 		}
 	});
 </script>
@@ -353,35 +390,36 @@
 	>
 	<h1 class="text-2xl font-semibold tracking-tight">Install workflow package</h1>
 	<p class="text-muted-foreground mt-2 mb-6 max-w-3xl text-sm">
-		Review a local Tines package, resolve its destination values, and install one atomic independent
-		copy. This page never fetches package dependencies or public URLs.
+		{hostedMode
+			? 'Review this hosted snapshot, resolve its destination values, and install one atomic independent copy. Tines rechecks availability at commit.'
+			: 'Review a local Tines package, resolve its destination values, and install one atomic independent copy. This page never fetches package dependencies or public URLs.'}
 	</p>
 
-	<div class="mb-6 flex flex-wrap items-center gap-3 rounded-lg border p-4">
-		<label
-			class="{buttonVariants({
-				variant: 'outline'
-			})} focus-within:border-ring focus-within:ring-ring/50 cursor-pointer focus-within:ring-[3px]"
-		>
-			<input
-				type="file"
-				accept="application/json,.json"
-				onchange={chooseFile}
-				class="sr-only"
-				aria-label="Workflow package file"
-				disabled={stage === 'reading' || stage === 'preparing' || stage === 'installing'}
-			/>
-			<IconUpload size={16} />
-			{document_ ? 'Choose another file' : 'Choose package file'}
-		</label>
-		<span class="text-muted-foreground min-w-0 text-sm break-all"
-			>{fileName ?? 'No file chosen'}</span
-		>
-		{#if document_}<span
-				class="text-muted-foreground max-w-full min-w-0 text-xs break-all sm:w-auto"
-				><code>{document_.digest}</code></span
-			>{/if}
-	</div>
+	{#if !hostedMode}<div class="mb-6 flex flex-wrap items-center gap-3 rounded-lg border p-4">
+			<label
+				class="{buttonVariants({
+					variant: 'outline'
+				})} focus-within:border-ring focus-within:ring-ring/50 cursor-pointer focus-within:ring-[3px]"
+			>
+				<input
+					type="file"
+					accept="application/json,.json"
+					onchange={chooseFile}
+					class="sr-only"
+					aria-label="Workflow package file"
+					disabled={stage === 'reading' || stage === 'preparing' || stage === 'installing'}
+				/>
+				<IconUpload size={16} />
+				{document_ ? 'Choose another file' : 'Choose package file'}
+			</label>
+			<span class="text-muted-foreground min-w-0 text-sm break-all"
+				>{fileName ?? 'No file chosen'}</span
+			>
+			{#if document_}<span
+					class="text-muted-foreground max-w-full min-w-0 text-xs break-all sm:w-auto"
+					><code>{document_.digest}</code></span
+				>{/if}
+		</div>{/if}
 
 	{#if error}<div
 			bind:this={alertEl}
