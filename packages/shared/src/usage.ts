@@ -14,7 +14,11 @@ export type UsageAccountingStatus = 'priced' | 'unpriced' | 'unreported';
 export type UsageCoverage = 'complete' | 'partial' | 'unknown' | 'empty';
 
 export class UsageInputError extends Error {
-	constructor(message: string) {
+	constructor(
+		message: string,
+		public readonly field?: string,
+		public readonly remedy?: string
+	) {
 		super(message);
 		this.name = 'UsageInputError';
 	}
@@ -45,9 +49,11 @@ function validDateParts(text: string): { year: number; month: number; day: numbe
 		: null;
 }
 
-function parseBound(text: string, timezone: string): number {
+export function parseUsageBound(text: string, timezone: string, allowDateOnly = true): number {
 	const date = validDateParts(text);
 	if (date) {
+		if (!allowDateOnly)
+			throw new UsageInputError('Bounds must be ISO timestamps with an explicit offset');
 		const instants = instantsOfWallTime({ ...date, hour: 0, minute: 0 }, timezone);
 		if (!instants.length)
 			throw new UsageInputError(
@@ -60,8 +66,17 @@ function parseBound(text: string, timezone: string): number {
 			'Bounds must be YYYY-MM-DD or ISO timestamps with an explicit offset'
 		);
 	}
-	const result = Date.parse(text);
-	if (!Number.isFinite(result)) throw new UsageInputError('Invalid time bound');
+	const match = text.match(
+		/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?(Z|([+-])(\d{2}):(\d{2}))$/
+	);
+	if (!match) throw new UsageInputError('Invalid time bound');
+	const [, y, mo, d, h, mi, s = '0', fraction = '', zone, sign, oh = '0', om = '0'] = match;
+	if (!validDateParts(`${y}-${mo}-${d}`) || +h > 23 || +mi > 59 || +s > 59 || +oh > 23 || +om > 59)
+		throw new UsageInputError('Invalid time bound');
+	const local = Date.UTC(+y, +mo - 1, +d, +h, +mi, +s, +(fraction + '00').slice(0, 3));
+	const offset = zone === 'Z' ? 0 : (+oh * 60 + +om) * 60_000 * (sign === '+' ? 1 : -1);
+	const result = local - offset;
+	if (!Number.isSafeInteger(result)) throw new UsageInputError('Invalid time bound');
 	return result;
 }
 
@@ -87,8 +102,8 @@ export function resolveUsagePeriod(
 	let from: number;
 	let to: number;
 	if (input.from !== undefined && input.to !== undefined) {
-		from = parseBound(input.from, timezone);
-		to = parseBound(input.to, timezone);
+		from = parseUsageBound(input.from, timezone);
+		to = parseUsageBound(input.to, timezone);
 	} else {
 		const window = input.window ?? 'today';
 		if (!['today', '7d', '30d'].includes(window))
@@ -185,6 +200,9 @@ export interface UsageDimension {
 	workflow_name?: string | null;
 }
 
+export type UsageDimensions = Record<UsageBy, UsageDimension>;
+export type UsageEvidenceAccounting = Omit<UsageClassification, 'usage'>;
+
 export interface UsageGroup {
 	key: string;
 	dimension: UsageDimension;
@@ -221,8 +239,25 @@ export interface UsageReport {
 		basis: 'created_before_cutoff_not_ended_before_cutoff';
 		unapplied_filters: ('outcome' | 'accounting_status')[];
 	};
-	evidence_filters: ResolvedUsageFilters & { from: string; to: string; population: 'finalized' };
+	scope_evidence_filters: UsageEvidenceFilters;
+	matching_evidence_filters: UsageEvidenceFilters;
+	pending_evidence_filters: Omit<
+		UsageEvidenceFilters,
+		'outcome' | 'accounting_status' | 'population'
+	> & {
+		population: 'pending';
+	};
+	/** Compatibility alias for matching_evidence_filters. */
+	evidence_filters: UsageEvidenceFilters;
 }
+
+export type UsageEvidenceFilters = ResolvedUsageFilters & {
+	from: string;
+	to: string;
+	population: 'finalized';
+	timezone: string;
+	timezone_source: ResolvedUsagePeriod['timezone_source'];
+};
 
 const emptyDiagnostics = (): UsageDiagnostics => ({
 	legacy_null: 0,
@@ -369,103 +404,252 @@ function decimalString(value: Decimal): string {
 	return out.endsWith('.') ? out.slice(0, -1) : out;
 }
 
-export function aggregateUsage(values: unknown[]): UsageAggregate {
-	const classifications = values.map(classifyUsage);
-	let exact: Decimal = { coefficient: 0n, scale: 0 };
-	const samples: number[] = [];
-	const diagnostics = emptyDiagnostics();
-	const pricing_reasons: Partial<Record<RunPricingReason, number>> = {};
-	const tokenSums = Object.fromEntries(
-		USAGE_TOKEN_FIELDS.map((f) => [f, { value: 0, reported_runs: 0, invalid_runs: 0 }])
-	) as UsageAggregate['tokens'];
-	const portionState = Object.fromEntries(
-		['provider', 'calculated', 'unknown_source'].map((s) => [
-			s,
-			{ count: 0, exact: { coefficient: 0n, scale: 0 } }
-		])
-	) as Record<string, { count: number; exact: Decimal }>;
-	const rates = new Map<
-		string,
-		{
-			basis: UsageRatePortion['basis'];
-			count: number;
-			exact: Decimal;
-			min: number | null;
-			max: number | null;
+type RateState = {
+	basis: UsageRatePortion['basis'];
+	count: number;
+	exact: Decimal;
+	min: number | null;
+	max: number | null;
+};
+
+export class UsageSampleBuffer {
+	private values = new Float64Array(0);
+	length = 0;
+	private ordered = true;
+
+	add(value: number): void {
+		if (this.length === this.values.length) {
+			const next = new Float64Array(Math.max(1, this.values.length * 2));
+			next.set(this.values);
+			this.values = next;
 		}
-	>();
-	for (const item of classifications) {
-		for (const key of Object.keys(diagnostics) as (keyof UsageDiagnostics)[])
-			diagnostics[key] += item.diagnostics[key];
-		if (item.pricing_reason)
-			pricing_reasons[item.pricing_reason] = (pricing_reasons[item.pricing_reason] ?? 0) + 1;
-		for (const field of USAGE_TOKEN_FIELDS) {
-			if (item.tokens[field] !== null) {
-				tokenSums[field].value = (tokenSums[field].value ?? 0) + item.tokens[field]!;
-				tokenSums[field].reported_runs++;
-			}
-			if (item.invalid_tokens.includes(field)) tokenSums[field].invalid_runs++;
-		}
-		if (item.cost !== null && item.cost_exact && item.source) {
-			const d = decimalOf(item.cost_exact);
-			exact = addDecimal(exact, d);
-			portionState[item.source].count++;
-			portionState[item.source].exact = addDecimal(portionState[item.source].exact, d);
-			if (item.source === 'calculated') {
-				const basis = item.basis;
-				const identity = basis
-					? (Object.fromEntries(
-							Object.entries(basis).filter(
-								([key]) => key !== 'cost_usd_exact' && key !== 'rate_selected_at'
-							)
-						) as UsageRatePortion['basis'])
-					: null;
-				const key = JSON.stringify(identity);
-				const selected = basis?.rate_selected_at ?? null;
-				const rate = rates.get(key) ?? {
-					basis: identity,
-					count: 0,
-					exact: { coefficient: 0n, scale: 0 },
-					min: selected,
-					max: selected
-				};
-				rate.count++;
-				rate.exact = addDecimal(rate.exact, d);
-				if (selected !== null) {
-					rate.min = rate.min === null ? selected : Math.min(rate.min, selected);
-					rate.max = rate.max === null ? selected : Math.max(rate.max, selected);
-				}
-				rates.set(key, rate);
-			}
-			samples.push(item.cost);
-		}
+		this.values[this.length++] = value;
+		this.ordered = false;
 	}
+
+	sorted(): Float64Array {
+		const used = this.values.subarray(0, this.length);
+		if (!this.ordered) {
+			used.sort();
+			this.ordered = true;
+		}
+		return used;
+	}
+
+	get capacity(): number {
+		return this.values.length;
+	}
+}
+
+export interface UsageAccumulator {
+	finalized: number;
+	priced: number;
+	unpriced: number;
+	unreported: number;
+	exact: Decimal;
+	diagnostics: UsageDiagnostics;
+	pricing_reasons: Partial<Record<RunPricingReason, number>>;
+	tokens: UsageAggregate['tokens'];
+	portions: Record<'provider' | 'calculated' | 'unknown_source', { count: number; exact: Decimal }>;
+	rates: Map<string, RateState>;
+	samples: UsageSampleBuffer;
+}
+
+export function createUsageAccumulator(): UsageAccumulator {
+	return {
+		finalized: 0,
+		priced: 0,
+		unpriced: 0,
+		unreported: 0,
+		exact: { coefficient: 0n, scale: 0 },
+		diagnostics: emptyDiagnostics(),
+		pricing_reasons: {},
+		tokens: Object.fromEntries(
+			USAGE_TOKEN_FIELDS.map((f) => [f, { value: 0, reported_runs: 0, invalid_runs: 0 }])
+		) as UsageAggregate['tokens'],
+		portions: Object.fromEntries(
+			['provider', 'calculated', 'unknown_source'].map((s) => [
+				s,
+				{ count: 0, exact: { coefficient: 0n, scale: 0 } }
+			])
+		) as UsageAccumulator['portions'],
+		rates: new Map(),
+		samples: new UsageSampleBuffer()
+	};
+}
+
+export function addUsageClassification(acc: UsageAccumulator, item: UsageClassification): void {
+	acc.finalized++;
+	acc[item.status]++;
+	for (const key of Object.keys(acc.diagnostics) as (keyof UsageDiagnostics)[])
+		acc.diagnostics[key] += item.diagnostics[key];
+	if (item.pricing_reason)
+		acc.pricing_reasons[item.pricing_reason] = (acc.pricing_reasons[item.pricing_reason] ?? 0) + 1;
+	for (const field of USAGE_TOKEN_FIELDS) {
+		if (item.tokens[field] !== null) {
+			acc.tokens[field].value = (acc.tokens[field].value ?? 0) + item.tokens[field]!;
+			acc.tokens[field].reported_runs++;
+		}
+		if (item.invalid_tokens.includes(field)) acc.tokens[field].invalid_runs++;
+	}
+	if (item.cost !== null && item.cost_exact && item.source) {
+		const d = decimalOf(item.cost_exact);
+		acc.exact = addDecimal(acc.exact, d);
+		acc.portions[item.source].count++;
+		acc.portions[item.source].exact = addDecimal(acc.portions[item.source].exact, d);
+		if (item.source === 'calculated') {
+			const basis = item.basis;
+			const identity = basis
+				? (Object.fromEntries(
+						Object.entries(basis).filter(
+							([key]) => key !== 'cost_usd_exact' && key !== 'rate_selected_at'
+						)
+					) as UsageRatePortion['basis'])
+				: null;
+			const key = JSON.stringify(identity);
+			const selected = basis?.rate_selected_at ?? null;
+			const rate = acc.rates.get(key) ?? {
+				basis: identity,
+				count: 0,
+				exact: { coefficient: 0n, scale: 0 },
+				min: selected,
+				max: selected
+			};
+			rate.count++;
+			rate.exact = addDecimal(rate.exact, d);
+			if (selected !== null) {
+				rate.min = rate.min === null ? selected : Math.min(rate.min, selected);
+				rate.max = rate.max === null ? selected : Math.max(rate.max, selected);
+			}
+			acc.rates.set(key, rate);
+		}
+		acc.samples.add(item.cost);
+	}
+}
+
+export function addUsage(acc: UsageAccumulator, raw: unknown): UsageClassification {
+	const item = classifyUsage(raw);
+	addUsageClassification(acc, item);
+	return item;
+}
+
+export function mergeUsageCounters(target: UsageAccumulator, source: UsageAccumulator): void {
+	target.finalized += source.finalized;
+	target.priced += source.priced;
+	target.unpriced += source.unpriced;
+	target.unreported += source.unreported;
+	target.exact = addDecimal(target.exact, source.exact);
+	for (const key of Object.keys(target.diagnostics) as (keyof UsageDiagnostics)[])
+		target.diagnostics[key] += source.diagnostics[key];
+	for (const [reason, count] of Object.entries(source.pricing_reasons) as [
+		RunPricingReason,
+		number
+	][])
+		target.pricing_reasons[reason] = (target.pricing_reasons[reason] ?? 0) + count;
+	for (const field of USAGE_TOKEN_FIELDS) {
+		target.tokens[field].value =
+			(target.tokens[field].value ?? 0) + (source.tokens[field].value ?? 0);
+		target.tokens[field].reported_runs += source.tokens[field].reported_runs;
+		target.tokens[field].invalid_runs += source.tokens[field].invalid_runs;
+	}
+	for (const sourceName of ['provider', 'calculated', 'unknown_source'] as const) {
+		target.portions[sourceName].count += source.portions[sourceName].count;
+		target.portions[sourceName].exact = addDecimal(
+			target.portions[sourceName].exact,
+			source.portions[sourceName].exact
+		);
+	}
+	for (const [key, value] of source.rates) {
+		const rate = target.rates.get(key) ?? {
+			basis: value.basis,
+			count: 0,
+			exact: { coefficient: 0n, scale: 0 },
+			min: null,
+			max: null
+		};
+		rate.count += value.count;
+		rate.exact = addDecimal(rate.exact, value.exact);
+		if (value.min !== null)
+			rate.min = rate.min === null ? value.min : Math.min(rate.min, value.min);
+		if (value.max !== null)
+			rate.max = rate.max === null ? value.max : Math.max(rate.max, value.max);
+		target.rates.set(key, rate);
+	}
+}
+
+export function* mergeSortedUsageSamples(buffers: Iterable<UsageSampleBuffer>): Iterable<number> {
+	const arrays = [...buffers].map((buffer) => buffer.sorted());
+	const positions = arrays.map(() => 0);
+	const heap = arrays.flatMap((array, index) => (array.length ? [index] : []));
+	const less = (left: number, right: number) =>
+		arrays[left][positions[left]] < arrays[right][positions[right]];
+	const down = (root: number) => {
+		for (;;) {
+			const left = root * 2 + 1;
+			if (left >= heap.length) return;
+			const right = left + 1;
+			const child = right < heap.length && less(heap[right], heap[left]) ? right : left;
+			if (!less(heap[child], heap[root])) return;
+			[heap[root], heap[child]] = [heap[child], heap[root]];
+			root = child;
+		}
+	};
+	for (let i = Math.floor(heap.length / 2) - 1; i >= 0; i--) down(i);
+	while (heap.length) {
+		const selected = heap[0];
+		yield arrays[selected][positions[selected]++];
+		if (positions[selected] === arrays[selected].length) {
+			heap[0] = heap.at(-1)!;
+			heap.pop();
+		}
+		if (heap.length) down(0);
+	}
+}
+
+export function finalizeUsage(
+	acc: UsageAccumulator,
+	sortedSamples: Iterable<number> = acc.samples.sorted()
+): UsageAggregate {
+	const tokens = structuredClone(acc.tokens);
 	for (const field of USAGE_TOKEN_FIELDS)
-		if (tokenSums[field].reported_runs === 0) tokenSums[field].value = null;
-	samples.sort((a, b) => a - b);
-	const n = samples.length;
-	const exactString = decimalString(exact);
+		if (tokens[field].reported_runs === 0) tokens[field].value = null;
+	const n = acc.priced;
+	const exactString = decimalString(acc.exact);
 	const projected = Number(exactString);
 	if (!Number.isFinite(projected)) throw new Error('usage_value_out_of_range');
+	const lowerMedianRank = n === 0 ? -1 : Math.floor((n - 1) / 2);
+	const upperMedianRank = n === 0 ? -1 : Math.floor(n / 2);
+	const p95Rank = n === 0 ? -1 : Math.ceil(0.95 * n) - 1;
+	let lowerMedian: number | null = null;
+	let upperMedian: number | null = null;
+	let p95: number | null = null;
+	let max: number | null = null;
+	let sampleCount = 0;
+	for (const sample of sortedSamples) {
+		if (sampleCount === lowerMedianRank) lowerMedian = sample;
+		if (sampleCount === upperMedianRank) upperMedian = sample;
+		if (sampleCount === p95Rank) p95 = sample;
+		max = sample;
+		sampleCount++;
+	}
+	if (sampleCount !== n) throw new Error('usage_sample_count_mismatch');
 	const median =
-		n === 0 ? null : n % 2 ? samples[(n - 1) / 2] : (samples[n / 2 - 1] + samples[n / 2]) / 2;
+		lowerMedian === null || upperMedian === null ? null : lowerMedian / 2 + upperMedian / 2;
 	const portions = Object.fromEntries(
-		Object.entries(portionState).map(([key, p]) => {
+		Object.entries(acc.portions).map(([key, p]) => {
 			const cost_usd_exact = decimalString(p.exact);
 			return [key, { priced_run_count: p.count, cost_usd: Number(cost_usd_exact), cost_usd_exact }];
 		})
 	) as UsageAggregate['portions'];
-	const unpriced = classifications.filter((v) => v.status === 'unpriced').length;
-	const unreported = classifications.length - n - unpriced;
 	return {
-		finalized_run_count: values.length,
+		finalized_run_count: acc.finalized,
 		priced_run_count: n,
-		unpriced_run_count: unpriced,
-		unreported_run_count: unreported,
+		unpriced_run_count: acc.unpriced,
+		unreported_run_count: acc.unreported,
 		coverage:
-			values.length === 0
+			acc.finalized === 0
 				? 'empty'
-				: n === values.length
+				: n === acc.finalized
 					? 'complete'
 					: n === 0
 						? 'unknown'
@@ -473,10 +657,10 @@ export function aggregateUsage(values: unknown[]): UsageAggregate {
 		cost_usd: n ? projected : null,
 		cost_usd_exact: n ? exactString : null,
 		portions,
-		tokens: tokenSums,
-		diagnostics,
-		pricing_reasons,
-		rate_portions: [...rates.values()].map((rate) => {
+		tokens,
+		diagnostics: { ...acc.diagnostics },
+		pricing_reasons: { ...acc.pricing_reasons },
+		rate_portions: [...acc.rates.values()].map((rate) => {
 			const cost_usd_exact = decimalString(rate.exact);
 			return {
 				basis: rate.basis,
@@ -490,15 +674,21 @@ export function aggregateUsage(values: unknown[]): UsageAggregate {
 		distribution: {
 			subset: 'priced_finalized_runs',
 			sample_count: n,
-			missing_price_count: values.length - n,
+			missing_price_count: acc.finalized - n,
 			mean_cost_usd: n ? projected / n : null,
 			median_cost_usd: median,
-			p95_cost_usd: n ? samples[Math.ceil(0.95 * n) - 1] : null,
-			max_cost_usd: n ? samples[n - 1] : null,
+			p95_cost_usd: p95,
+			max_cost_usd: max,
 			percentile_rule: 'nearest_rank',
 			low_sample: n > 0 && n < 20
 		}
 	};
+}
+
+export function aggregateUsage(values: unknown[]): UsageAggregate {
+	const acc = createUsageAccumulator();
+	for (const value of values) addUsage(acc, value);
+	return finalizeUsage(acc);
 }
 
 export function usageCostLabel(cost: number | null, finalized = 1): string {

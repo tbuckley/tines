@@ -126,6 +126,14 @@ test.describe('Agents Spend keyboard and layout', () => {
 		await expect(rows.nth(0).locator('.detail')).toBeVisible();
 		await page.keyboard.press('Enter');
 		await expect(group).toHaveAttribute('aria-expanded', 'false');
+		const expandAll = page.getByRole('button', { name: 'Expand all' });
+		await tabTo(page, expandAll);
+		await page.keyboard.press('Space');
+		await expect(rows.locator('.detail')).toHaveCount(3);
+		const collapseAll = page.getByRole('button', { name: 'Collapse all' });
+		await expect(collapseAll).toBeFocused();
+		await page.keyboard.press('Enter');
+		await expect(rows.locator('.detail')).toHaveCount(0);
 
 		// Refresh, exactly once.
 		const refresh = page.getByRole('button', { name: 'Refresh' });
@@ -163,6 +171,30 @@ test.describe('Agents Spend keyboard and layout', () => {
 		await tabTo(page, retry);
 		await page.keyboard.press('Enter');
 		await expect(projectTotal(page)).toHaveText('$5.00');
+	});
+
+	test('discloses mixed persisted rate evidence and restores the invoker at 320px', async ({
+		page
+	}) => {
+		await armLedgerDays();
+		await page.setViewportSize({ width: 320, height: 700 });
+		await gotoHydrated(page, nowUrlWithSpendScope({ agents_view: 'spend' }));
+		const estimate = page.getByRole('button', { name: 'Estimated' });
+		await estimate.click();
+		const dialog = page.getByRole('dialog', { name: 'Estimate basis' });
+		await expect(dialog).toContainText('Provider: 3 USD (1 runs)');
+		await expect(dialog).toContainText('spend-e2e-rate v7');
+		await expect(dialog).toContainText('Rates per 1000000 tokens: input tokens 100000');
+		await expect(dialog.getByRole('link', { name: 'Pricing source' })).toHaveAttribute(
+			'href',
+			'https://example.test/pricing'
+		);
+		expect(await dialog.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+		await page.keyboard.press('Escape');
+		await expect(estimate).toBeFocused();
+		await estimate.click();
+		await dialog.getByRole('button', { name: 'Close' }).click();
+		await expect(estimate).toBeFocused();
 	});
 
 	for (const viewport of [

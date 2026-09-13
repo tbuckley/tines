@@ -1,7 +1,13 @@
 import { json } from '@sveltejs/kit';
-import { UsageInputError, type UsageAccountingStatus, type UsageBy } from '@tines/shared';
+import {
+	resolveUsagePeriod,
+	UsageInputError,
+	type UsageAccountingStatus,
+	type UsageBy
+} from '@tines/shared';
 import { api, apiContext, ApiFail, notFound } from '$lib/server/api/core';
 import { getUsage } from '$lib/server/api/usage';
+import { authorizeUsageFilters } from '$lib/server/api/usage-ledger';
 import type { RequestHandler } from './$types';
 
 const recognized = [
@@ -21,6 +27,12 @@ const recognized = [
 export const GET: RequestHandler = api(async (event) => {
 	const { db, actor } = await apiContext(event);
 	const params = event.url.searchParams;
+	for (const name of params.keys())
+		if (!recognized.includes(name))
+			throw new ApiFail(422, 'invalid_field', `Unsupported usage parameter "${name}"`, {
+				field: name,
+				remedy: 'remove unsupported parameters'
+			});
 	for (const name of recognized)
 		if (params.getAll(name).length > 1)
 			throw new ApiFail(422, 'invalid_field', `Duplicate "${name}" parameter`, { field: name });
@@ -44,42 +56,37 @@ export const GET: RequestHandler = api(async (event) => {
 		throw new ApiFail(422, 'invalid_field', 'state requires workflow qualification', {
 			field: 'state'
 		});
-	const owned = async (
-		table: 'project' | 'runner' | 'workflow',
-		id: string | undefined,
-		allowBuiltIn = false
-	) => {
-		if (!id || id === 'unknown') return;
-		const row = await db
-			.selectFrom(table)
-			.select('id')
-			.where('id', '=', id)
-			.where((eb) =>
-				allowBuiltIn
-					? eb.or([eb('user_id', '=', actor.userId), eb('user_id', 'is', null)])
-					: eb('user_id', '=', actor.userId)
-			)
-			.executeTakeFirst();
-		if (!row) throw notFound();
-	};
-	await owned('project', params.get('project') ?? undefined);
-	await owned('runner', params.get('runner') ?? undefined);
-	await owned('workflow', params.get('workflow') ?? undefined, true);
 	const state = params.get('state');
 	const workflow = params.get('workflow');
-	if (state && state !== 'unknown') {
-		const row = await db
-			.selectFrom('workflow_state')
-			.innerJoin('workflow', 'workflow.id', 'workflow_state.workflow_id')
-			.select('workflow_state.id')
-			.where('workflow_state.id', '=', state)
-			.where('workflow_state.workflow_id', '=', workflow!)
-			.where((eb) =>
-				eb.or([eb('workflow.user_id', '=', actor.userId), eb('workflow.user_id', 'is', null)])
-			)
-			.executeTakeFirst();
-		if (!row) throw notFound();
+	try {
+		// Period syntax and contradictions must win over retained-identity lookups.
+		// The service resolves the same valid input again using the configured timezone.
+		resolveUsagePeriod(
+			{
+				window: (params.get('window') ?? undefined) as 'today' | '7d' | '30d' | undefined,
+				from: params.get('from') ?? undefined,
+				to: params.get('to') ?? undefined
+			},
+			'UTC'
+		);
+	} catch (error) {
+		if (error instanceof UsageInputError)
+			throw new ApiFail(422, 'invalid_usage_period', error.message, {
+				field: error.field ?? 'from/to',
+				accepted: 'Today, 7d, 30d, YYYY-MM-DD, or ISO timestamp with explicit offset',
+				remedy: error.remedy ?? 'use a named window or supply valid from/to bounds and retry'
+			});
+		throw error;
 	}
+	if (
+		!(await authorizeUsageFilters(db, actor.userId, {
+			project: params.get('project'),
+			runner: params.get('runner'),
+			workflow,
+			state
+		}))
+	)
+		throw notFound();
 	try {
 		const report = await getUsage(db, actor.userId, {
 			window: (params.get('window') ?? undefined) as 'today' | '7d' | '30d' | undefined,
@@ -97,7 +104,11 @@ export const GET: RequestHandler = api(async (event) => {
 		return json(report, { headers: { 'cache-control': 'private, no-store' } });
 	} catch (error) {
 		if (error instanceof UsageInputError)
-			throw new ApiFail(422, 'invalid_usage_period', error.message);
+			throw new ApiFail(422, 'invalid_usage_period', error.message, {
+				field: error.field ?? 'from/to',
+				accepted: 'Today, 7d, 30d, YYYY-MM-DD, or ISO timestamp with explicit offset',
+				remedy: error.remedy ?? 'use a named window or supply valid from/to bounds and retry'
+			});
 		throw error;
 	}
 });

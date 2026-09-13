@@ -214,6 +214,7 @@ describe('period usage evidence', () => {
 			{ cursor: null, limit: 10 }
 		);
 		expect(all.items.map((r) => r.id)).toEqual(['priced', 'at-from']);
+		const queries = t.spyOnQueries();
 		const priced = await listRuns(
 			t.db,
 			USER,
@@ -221,6 +222,12 @@ describe('period usage evidence', () => {
 			{ cursor: null, limit: 10 }
 		);
 		expect(priced.items.map((r) => r.id)).toEqual(['priced']);
+		const hydration = queries().find(
+			(query) => query.includes('"agent_run"."id" in') && query.includes('as "issue_title"')
+		);
+		expect(hydration).toBeDefined();
+		expect(hydration).not.toContain('"agent_run"."log"');
+		expect(hydration).not.toContain('select "agent_run".*');
 	});
 
 	it('redacts facts learned after the pending cutoff', async () => {

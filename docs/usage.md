@@ -14,7 +14,7 @@ A finite nonnegative `cost_usd`, including zero, is priced. Otherwise, any finit
 
 Distributions use priced finalized per-run costs, including explicit zero. Mean and median use their conventional definitions; p95 is nearest rank (`ceil(.95*n)`); maximum is always returned. Samples below 20 are labelled small, where p95 equals maximum. These are per-attempt costs, not issue lifetime or completion-cohort costs.
 
-Project attribution uses the issue's current project, including archived projects. Starting-state workflow identity is preferred, with current issue workflow as the disclosed fallback when old state metadata is gone. Recorded outcomes are Advanced, Stalled, Interrupted, or Unknown. Metadata can change between requests; this is retained-history reconciliation, not an immutable metadata snapshot.
+Project attribution uses the issue's current project, including archived projects. Starting-state workflow identity is preferred, with current issue workflow as the disclosed fallback when old state metadata is gone. Recorded outcomes are Advanced, Stalled, Interrupted, or Unknown. Stored IDs remain distinct when their metadata label is deleted and are rendered as `Unknown/deleted … (<id>)`; explicit `unknown` selects a null stored identity instead. An owned retained ID is accepted as a filter, while another account's ID receives the same 404 as a nonexistent ID. Metadata can change between requests; this is retained-history reconciliation, not an immutable metadata snapshot. Deleted names and a deleted starting state's original workflow are genuinely unrecoverable and are never invented. Normal runner deletion also removes that runner's ended run facts.
 
 ## Filters and reconciliation
 
@@ -27,4 +27,18 @@ tines runs list --population finalized \
   --project Tines --all-pages --json > runs.json
 ```
 
-Use the exact `evidence_filters` returned by the report, walk every `next_cursor` (manual paging above the CLI's 10,000-item safety bound), and compare full-precision fields rather than screen-rounded dollars. A preset is frozen by the report's returned bounds; metadata/history must remain unchanged during multi-request enumeration for exact reconciliation.
+Use `scope_evidence_filters`, `matching_evidence_filters`, and `pending_evidence_filters` returned by the report; `evidence_filters` remains an alias for matching finalized evidence. Walk every `next_cursor`, including across an empty or short page when `usage_window.scan_complete` is false. Manual paging is available above the CLI's 10,000-item all-pages safety bound. New chains use `usage-runs-v2`: resolved bounds, timezone and timezone source are frozen in the cursor even if supervisor settings change. An in-flight v1 period cursor is rejected with `unsupported_cursor_version`; restart from the report filters. Ordinary non-period run cursors are unchanged.
+
+Finalized evidence adds `usage_dimensions` and `usage_accounting`. Sum `cost_exact`, normalized per-class token values, source portions, diagnostics and pricing reasons to independently reproduce aggregate counters without reparsing malformed historical JSON. Pending evidence includes only structural dimensions and `accounting_status: pending`; it never reveals later usage, outcome, end/error or pricing facts. Bounds require real calendar dates or explicit-offset timestamps, evidence limits are strict integers from 1 through 100, and invalid/contradictory values return actionable 422 errors.
+
+Aggregation processes finalized facts in 5,000-row pages and retains only exact priced samples; sparse accounting evidence examines at most 20 pages of 10,000 lean candidates per request, returning a continuation rather than spending an unbounded request budget. The supported and gated target is 100,000 period rows with ordinary low-cardinality dimensions. Work remains linear above that, while an unpaginated response is inherently proportional to distinct groups and historical rate identities; groups are never silently truncated.
+
+Reproduce the native local D1 query plans, page sizes, equal-time keyset walk, authenticated built-worker totals/evidence, pending count, and exact source-CLI/HTTP reconciliation with `pnpm --filter web perf:usage --size=100000`. Add `--all-priced` for the 100,000-priced-run distribution path; use `--size=120001` without it for the unique priced match beyond 100,000 candidates, or `--size=210001 --no-priced` for an allowance-limited empty evidence continuation and sparse exhaustion. The script creates and replaces only `apps/web/.wrangler-usage-scale`, applies the shipped migrations, and prints a JSON receipt; it never addresses a remote database or inherits `TINES_API_URL`. Native Worker telemetry records actual bound-query `rows_read`, ordered page-ID hashes, durations and query counts; EXPLAIN uses those exact SQL statements and bindings in a separate local probe. Add `--equal-time --no-priced` at 100k to exercise a single-timestamp population. `authenticated_worker.elapsed_ms` measures the shipping aggregate path including local instrumentation and log draining; memory remains the documented conservative typed-sample bound rather than an isolate-inspector measurement.
+
+The independent mixed ledger acceptance gate is `pnpm --filter web test:usage-mixed`.
+It builds the local Worker, seeds only `.wrangler-usage-mixed`, and executes the CLI
+from TypeScript source against an explicit localhost URL. Its shared manifest also
+runs through the GET-handler unit tests. It covers full finalized and pending
+paging, retained/deleted/unknown dimensions, accounting diagnostics and rate
+portions, API/run-key isolation, and CLI JSON/text reconciliation. The fixture's
+orphan references model historical storage; normal deletion may cascade instead.

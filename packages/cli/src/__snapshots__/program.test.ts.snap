@@ -1333,6 +1333,8 @@ Options:
                                 "finalized", "pending")
   --from <timestamp>            inclusive period start
   --to <timestamp>              exclusive period cutoff
+  --timezone <iana>             period display timezone (with --timezone-source)
+  --timezone-source <source>    supervisor_budget or utc_fallback
   --project <name-or-id>        project, including archived
   --workflow <name-or-id>       workflow
   --state <id>                  starting state id

@@ -2302,6 +2302,10 @@ export interface AgentRun {
 	/** Resolved at launch; null when the harness cannot vary its model. */
 	model: string | null;
 	usage: AgentRunUsage | null;
+	/** Resolved ledger dimensions, populated only for finalized period evidence. */
+	usage_dimensions?: import('./usage.js').UsageDimensions;
+	/** Accounting classification, populated only for finalized period evidence. */
+	usage_accounting?: import('./usage.js').UsageEvidenceAccounting;
 	state_id_at_start: string;
 	state_at_start_name: string | null;
 	state_id_at_end: string | null;
@@ -2338,7 +2342,7 @@ export interface UsagePendingRun {
 	state_at_start_name: string | null;
 	created_at: number;
 	pending_at: number;
-	usage_dimensions: null;
+	usage_dimensions: Omit<import('./usage.js').UsageDimensions, 'outcome'>;
 	accounting_status: 'pending';
 }
 
@@ -2378,6 +2382,9 @@ export interface RunFilters {
 	tier?: string;
 	outcome?: RunEndOutcome | 'unknown';
 	accounting_status?: 'priced' | 'unpriced' | 'unreported';
+	/** Period evidence display provenance; must be supplied as a pair. */
+	timezone?: string;
+	timezone_source?: 'supervisor_budget' | 'utc_fallback';
 }
 
 /**
@@ -2818,7 +2825,11 @@ export interface ListResponse<T> {
 		to: number;
 		timezone: string;
 		population: 'finalized' | 'pending';
-		cursor_version: 'usage-runs-v1';
+		timezone_source: 'supervisor_budget' | 'utc_fallback';
+		cursor_version: 'usage-runs-v2';
+		scan_complete: boolean;
+		accounting_basis: 'finalized_by_ended_at_v1';
+		attribution_basis: 'current_issue_project_start_state_workflow_v1';
 	};
 }
 
