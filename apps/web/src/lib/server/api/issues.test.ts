@@ -196,8 +196,12 @@ describe('updateIssue sparse patch concurrency', () => {
 		);
 		expect(transitions).toHaveLength(1);
 		expect(JSON.parse(transitions[0].payload as string)).toMatchObject({
+			state_entry_version: 1,
+			workflow_id: 'wf_standard',
+			workflow_name: 'Standard',
 			from_state_id: OPEN,
-			to_state_id: REVIEW
+			to_state_id: REVIEW,
+			to_state_category: 'awaiting_human'
 		});
 	});
 
@@ -314,10 +318,14 @@ describe('updateIssue sparse patch concurrency', () => {
 		);
 		expect(updates).toHaveLength(1);
 		expect(JSON.parse(updates[0].payload as string)).toMatchObject({
+			state_entry_version: 1,
 			changed: ['workflow'],
 			workflow_from_id: 'wf_standard',
 			workflow_to_id: 'wf_sparse',
-			to_state_name: 'Start'
+			from_state_id: OPEN,
+			to_state_id: 'wfs_sparse_start',
+			to_state_name: 'Start',
+			to_state_category: 'active'
 		});
 	});
 
@@ -650,6 +658,18 @@ describe('createIssue with labels', () => {
 			'bug:1',
 			'p1:1'
 		]);
+		const event = t.all(
+			`SELECT payload FROM event WHERE issue_id = ? AND type = 'issue.created'`,
+			issue.id
+		);
+		expect(JSON.parse(event[0].payload as string)).toMatchObject({
+			state_entry_version: 1,
+			workflow_id: 'wf_standard',
+			workflow_name: 'Standard',
+			state_id: OPEN,
+			state_name: 'Open',
+			state_category: 'active'
+		});
 	});
 
 	it('rejects a run key naming an unknown label without creating the issue', async () => {

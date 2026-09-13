@@ -4,12 +4,19 @@ import {
 	printJson,
 	resolveProject,
 	resolveRunner,
+	resolveIssue,
 	resolveWorkflow,
 	table,
 	withCommon,
 	type CommonOpts
 } from '../common.js';
-import { usageCostLabel, type UsageBy, type UsageReport, type UsageWindow } from '@tines/shared';
+import {
+	usageCostLabel,
+	type IssueUsageReport,
+	type UsageBy,
+	type UsageReport,
+	type UsageWindow
+} from '@tines/shared';
 import { Option, type Command } from 'commander';
 import { usageAggregateLines } from '../usage-format.js';
 
@@ -24,7 +31,21 @@ interface UsageOpts extends CommonOpts {
 	tier?: string;
 	outcome?: string;
 	accountingStatus?: string;
+	issue?: string;
 	by: UsageBy;
+}
+
+function printIssueReport(report: IssueUsageReport): void {
+	const { issue } = report;
+	console.log(`Usage · ${issue.issue_ref ?? issue.issue_id} · Lifetime through now`);
+	console.log(`as of ${new Date(report.cutoff).toISOString()} · direct retained attempts`);
+	if (issue.attempt_count === 0) console.log('No agent runs');
+	else {
+		console.log(
+			`${money(issue.aggregate.cost_usd)} · ${issue.aggregate.coverage} · ${issue.aggregate.finalized_run_count} finalized · ${issue.pending_count} pending at cutoff`
+		);
+		for (const line of usageAggregateLines('Lifetime', issue.aggregate)) console.log(line);
+	}
 }
 
 const money = (value: number | null) => usageCostLabel(value);
@@ -99,6 +120,7 @@ export function register(program: Command): void {
 			)
 			.option('--from <bound>', 'custom inclusive start (date or offset timestamp)')
 			.option('--to <bound>', 'custom exclusive end (date or offset timestamp)')
+			.option('--issue <ref>', 'direct issue lifetime through now')
 			.option('--project <name-or-id>', 'project scope (including archived), or unknown')
 			.option('--workflow <name-or-id>', 'workflow filter, or unknown')
 			.option('--state <id>', 'starting state id (requires --workflow)')
@@ -125,6 +147,28 @@ export function register(program: Command): void {
 					.default('workflow')
 			)
 	).action(async (opts: UsageOpts) => {
+		if (opts.issue) {
+			const contradictions = [
+				opts.window,
+				opts.from,
+				opts.to,
+				opts.project,
+				opts.workflow,
+				opts.state,
+				opts.runner,
+				opts.tier,
+				opts.outcome,
+				opts.accountingStatus
+			];
+			if (contradictions.some((value) => value !== undefined))
+				throw new Error('--issue cannot be combined with period or filter options');
+			const api = client(opts);
+			const issue = await resolveIssue(api, opts.issue);
+			const report = await api.getIssueUsage(issue.id);
+			if (opts.json) return printJson(report);
+			printIssueReport(report);
+			return;
+		}
 		if ((opts.from === undefined) !== (opts.to === undefined))
 			throw new Error('--from and --to are required together');
 		if (opts.window && opts.from) throw new Error('--window cannot be combined with --from/--to');

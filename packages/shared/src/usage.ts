@@ -220,6 +220,7 @@ export interface ResolvedUsageFilters {
 }
 
 export interface UsageReport {
+	mode?: 'period';
 	from: number;
 	to: number;
 	generated_at: number;
@@ -249,6 +250,24 @@ export interface UsageReport {
 	};
 	/** Compatibility alias for matching_evidence_filters. */
 	evidence_filters: UsageEvidenceFilters;
+}
+
+export interface IssueUsageReport {
+	mode: 'issue';
+	cutoff: number;
+	generated_at: number;
+	timezone: string;
+	timezone_source: ResolvedUsagePeriod['timezone_source'];
+	accounting_basis: 'finalized_before_cutoff_v1';
+	retention_basis: 'retained_direct_attempts';
+	issue: {
+		issue_id: string;
+		issue_ref: string | null;
+		aggregate: UsageAggregate;
+		attempt_count: number;
+		pending_count: number;
+		fully_priced: boolean;
+	};
 }
 
 export type UsageEvidenceFilters = ResolvedUsageFilters & {

@@ -6,7 +6,7 @@ import {
 	type UsageBy
 } from '@tines/shared';
 import { api, apiContext, ApiFail, notFound } from '$lib/server/api/core';
-import { getUsage } from '$lib/server/api/usage';
+import { getIssueUsage, getUsage } from '$lib/server/api/usage';
 import { authorizeUsageFilters } from '$lib/server/api/usage-ledger';
 import type { RequestHandler } from './$types';
 
@@ -21,7 +21,9 @@ const recognized = [
 	'tier',
 	'outcome',
 	'accounting_status',
-	'by'
+	'by',
+	'mode',
+	'issue'
 ];
 
 export const GET: RequestHandler = api(async (event) => {
@@ -38,6 +40,32 @@ export const GET: RequestHandler = api(async (event) => {
 			throw new ApiFail(422, 'invalid_field', `Duplicate "${name}" parameter`, { field: name });
 		else if (params.has(name) && params.get(name) === '')
 			throw new ApiFail(422, 'invalid_field', `"${name}" cannot be empty`, { field: name });
+	const mode = params.get('mode') ?? 'period';
+	if (!['period', 'issue'].includes(mode))
+		throw new ApiFail(422, 'invalid_field', 'mode must be period or issue', { field: 'mode' });
+	if (mode === 'issue') {
+		const issueId = params.get('issue');
+		if (!issueId)
+			throw new ApiFail(422, 'invalid_field', 'issue mode requires issue', { field: 'issue' });
+		const contradictions = recognized.filter(
+			(name) => !['mode', 'issue'].includes(name) && params.has(name)
+		);
+		if (contradictions.length)
+			throw new ApiFail(
+				422,
+				'invalid_field',
+				'issue mode cannot include period or filter options',
+				{
+					field: contradictions[0],
+					remedy: 'remove period and filter options'
+				}
+			);
+		const report = await getIssueUsage(db, actor.userId, issueId);
+		if (!report) throw notFound();
+		return json(report, { headers: { 'cache-control': 'private, no-store' } });
+	}
+	if (params.has('issue'))
+		throw new ApiFail(422, 'invalid_field', 'issue requires mode=issue', { field: 'issue' });
 	const by = (params.get('by') ?? 'workflow') as UsageBy;
 	if (!['project', 'workflow', 'state', 'outcome', 'runner', 'tier'].includes(by))
 		throw new ApiFail(422, 'invalid_field', 'Invalid usage grouping', { field: 'by' });

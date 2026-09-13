@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createTestDb } from '$lib/server/api/test-db';
-import { NOW, seedBase, USER } from '$lib/server/supervisor/test-fixtures';
+import { addIssue, NOW, seedBase, USER } from '$lib/server/supervisor/test-fixtures';
 import {
 	seedMixed,
 	verifyMixed,
@@ -41,6 +41,20 @@ describe('GET /api/v1/usage validation and authorization', () => {
 		);
 		expect(result.response.status).toBe(404);
 		expect(result.body).toMatchObject({ error: { code: 'not_found' } });
+	});
+
+	it('serves direct issue lifetime mode and rejects contradictory period options', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const issue = addIssue(t);
+		const ok = await get(t, `?mode=issue&issue=${issue}`);
+		expect(ok.response.status).toBe(200);
+		expect(ok.body).toMatchObject({ mode: 'issue', issue: { issue_id: issue, attempt_count: 0 } });
+		const bad = await get(t, `?mode=issue&issue=${issue}&window=7d`);
+		expect(bad.response.status).toBe(422);
+		expect(bad.body).toMatchObject({
+			error: { code: 'invalid_field', details: { field: 'window' } }
+		});
 	});
 
 	it('reconciles the independent multidimensional manifest through both real handlers', async () => {

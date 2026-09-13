@@ -9,7 +9,7 @@ import {
 	USER
 } from '../supervisor/test-fixtures';
 import { createTestDb } from './test-db';
-import { getUsage } from './usage';
+import { getIssueUsage, getUsage } from './usage';
 
 describe('period usage ledger', () => {
 	it('scans more than two public pages and preserves cheap typical cost plus a large outlier', async () => {
@@ -117,5 +117,45 @@ describe('period usage ledger', () => {
 			cost_usd_exact: '0'
 		});
 		expect(report.pending.unapplied_filters).toEqual(['outcome', 'accounting_status']);
+	});
+});
+
+describe('direct issue lifetime usage', () => {
+	it('separates finalized-before-cutoff usage from pending attempts', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const runner = addRunner(t);
+		const issue = addIssue(t);
+		addRun(t, {
+			id: 'priced',
+			issueId: issue,
+			runnerId: runner,
+			status: 'completed',
+			createdAt: NOW - 20,
+			endedAt: NOW - 10,
+			usage: JSON.stringify({ cost_usd: 0, cost_source: 'provider', input_tokens: 4 })
+		});
+		addRun(t, {
+			id: 'ended_at_cutoff',
+			issueId: issue,
+			runnerId: runner,
+			status: 'completed',
+			createdAt: NOW - 5,
+			endedAt: NOW,
+			usage: JSON.stringify({ cost_usd: 99, cost_source: 'provider' })
+		});
+
+		const report = await getIssueUsage(t.db, USER, issue, NOW);
+		expect(report).toMatchObject({
+			mode: 'issue',
+			cutoff: NOW,
+			issue: {
+				issue_id: issue,
+				attempt_count: 2,
+				pending_count: 1,
+				fully_priced: false,
+				aggregate: { finalized_run_count: 1, priced_run_count: 1, cost_usd_exact: '0' }
+			}
+		});
 	});
 });

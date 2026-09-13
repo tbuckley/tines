@@ -1,4 +1,5 @@
 import {
+	addUsage,
 	addUsageClassification,
 	classifyUsage,
 	createUsageAccumulator,
@@ -10,6 +11,7 @@ import {
 	type UsageBy,
 	type UsageDimension,
 	type UsageGroup,
+	type IssueUsageReport,
 	type UsagePeriodInput,
 	type UsageReport
 } from '@tines/shared';
@@ -304,5 +306,70 @@ export async function getUsage(
 			population: 'pending'
 		},
 		evidence_filters: matchingEvidence
+	};
+}
+
+/** Direct retained attempts for one issue, frozen at a single resolved cutoff. */
+export async function getIssueUsage(
+	db: Kysely<Database>,
+	userId: string,
+	issueId: string,
+	generatedAt = Date.now()
+): Promise<IssueUsageReport | null> {
+	const issue = await db
+		.selectFrom('issue')
+		.innerJoin('project', (join) =>
+			join.onRef('project.id', '=', 'issue.project_id').on('project.user_id', '=', userId)
+		)
+		.select(['issue.id', 'issue.number', 'project.name as project_name'])
+		.where('issue.id', '=', issueId)
+		.executeTakeFirst();
+	if (!issue) return null;
+	const acc = createUsageAccumulator();
+	let attemptCount = 0;
+	let pendingCount = 0;
+	let boundary: { created_at: number; id: string } | null = null;
+	for (;;) {
+		let query = db
+			.selectFrom('agent_run')
+			.select(['id', 'created_at', 'ended_at', 'usage'])
+			.where('user_id', '=', userId)
+			.where('issue_id', '=', issueId)
+			.where('created_at', '<', generatedAt);
+		if (boundary)
+			query = query.where(
+				sql<boolean>`(agent_run.created_at, agent_run.id) < (${boundary.created_at}, ${boundary.id})`
+			);
+		const rows = await query.orderBy('created_at desc').orderBy('id desc').limit(5_001).execute();
+		const selected = rows.slice(0, 5_000);
+		for (const row of selected) {
+			attemptCount++;
+			if (row.ended_at === null || row.ended_at >= generatedAt) pendingCount++;
+			else addUsage(acc, row.usage);
+		}
+		if (rows.length <= 5_000) break;
+		const last = selected.at(-1)!;
+		boundary = { created_at: last.created_at, id: last.id };
+	}
+	const aggregate = finalizeUsage(acc);
+	return {
+		mode: 'issue',
+		cutoff: generatedAt,
+		generated_at: generatedAt,
+		timezone: 'UTC',
+		timezone_source: 'utc_fallback',
+		accounting_basis: 'finalized_before_cutoff_v1',
+		retention_basis: 'retained_direct_attempts',
+		issue: {
+			issue_id: issue.id,
+			issue_ref: `${issue.project_name}/${issue.number}`,
+			aggregate,
+			attempt_count: attemptCount,
+			pending_count: pendingCount,
+			fully_priced:
+				aggregate.finalized_run_count > 0 &&
+				aggregate.priced_run_count === aggregate.finalized_run_count &&
+				pendingCount === 0
+		}
 	};
 }
