@@ -183,6 +183,55 @@ it('exports all frozen evidence pages without summing page totals', async () => 
 	expect(output.matching_total).toEqual(aggregate);
 });
 
+it('exports every completion entry page using event identity', async () => {
+	vi.stubEnv('TINES_API_URL', 'https://usage.example.test');
+	vi.stubEnv('TINES_API_KEY', 'test-key');
+	const page = (event_id: string, next_cursor: string | null) => ({
+		items: [{ event_id, event_type: 'issue.transitioned', issue_id: 'iss_a', created_at: 1 }],
+		next_cursor,
+		previous_cursor: null,
+		total_count: 2,
+		scope: 'frozen',
+		kind: 'entries',
+		population: 'all',
+		sort: 'time',
+		direction: 'desc',
+		matching_total: {},
+		attempt_count: 0,
+		pending_count: 0
+	});
+	const pages = [page('evt_new', 'next'), page('evt_old', null)];
+	const fetchMock = vi.fn(async () =>
+		Promise.resolve(
+			new Response(JSON.stringify(pages.shift()), {
+				status: 200,
+				headers: { 'content-type': 'application/json' }
+			})
+		)
+	);
+	vi.stubGlobal('fetch', fetchMock);
+	const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+	vi.resetModules();
+	const { program } = await import('./program.js');
+	await program.parseAsync([
+		'node',
+		'tines',
+		'usage',
+		'--scope',
+		'frozen',
+		'--evidence',
+		'entries',
+		'--all-pages',
+		'--json'
+	]);
+	expect(fetchMock).toHaveBeenCalledTimes(2);
+	expect(
+		JSON.parse(String(log.mock.calls[0][0])).items.map(
+			(item: { event_id: string }) => item.event_id
+		)
+	).toEqual(['evt_new', 'evt_old']);
+});
+
 it('prints per-run accounting provenance and diagnostics for signed evidence', async () => {
 	vi.stubEnv('TINES_API_URL', 'https://usage.example.test');
 	vi.stubEnv('TINES_API_KEY', 'test-key');

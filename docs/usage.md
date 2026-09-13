@@ -18,7 +18,9 @@ tines usage --scope "$SCOPE" --evidence runs --member iss_123 --all-pages --json
 tines usage --scope "$SCOPE" --evidence runs --population pending
 ```
 
-Period, issue-lifetime, and scope-replay inputs are mutually exclusive. Evidence-only options require `--scope --evidence`; invalid combinations fail before name resolution or an API request. Completion-event cohorts and all-issue means are intentionally not inferred from current state; they are a separate future mode.
+Period, issue-lifetime, cohort, and scope-replay inputs are mutually exclusive. Evidence-only options require `--scope --evidence`; invalid combinations fail before name resolution or an API request. Completion-event cohorts and all-issue means are intentionally not inferred from current state.
+
+Use the signed scope printed by a cohort report to reproduce every denominator and numerator: `tines usage --scope TOKEN --evidence issues --all-pages --json` lists all members including no-run issues, `--evidence runs --member iss_ID` lists finalized cutoff attempts, `--population pending` lists attempts still pending at the cutoff without later facts, and `--evidence entries` audits retained qualifying, chosen, reopening, excluded, and unclassifiable entry facts. Retained history can be partial or unavailable; current state is never substituted. Direct costs exclude child and dependency runs, may include attempts before the completion window, and reflect recorded provider/list prices rather than an invoice.
 
 The Now view is operational and does not depend on usage accumulating. Spend keeps its project scope independent from the global project focus and records project, workflow, breakdown, period, Custom bounds, and sort in the URL, so reload and browser Back/Forward restore the same report selection. Changing project resets workflow narrowing to All; changing sort only reorders the current groups. Custom ranges require both From and exclusive To before a request is made.
 
