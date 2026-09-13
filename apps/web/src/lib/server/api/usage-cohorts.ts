@@ -1,6 +1,7 @@
 import {
 	addUsageClassification,
 	classifyUsage,
+	compareUsageDecimals,
 	cohortKnownCostMean,
 	cohortRatio,
 	createUsageAccumulator,
@@ -11,11 +12,19 @@ import {
 	type CohortIssueUsage,
 	type CohortStateProof,
 	type CohortUsageReport,
+	type UsageEvidencePage,
 	type UsagePeriodInput
 } from '@tines/shared';
 import { sql, type Kysely } from 'kysely';
 import type { Database } from '$lib/server/db';
 import { configuredTimezone } from './usage';
+import { hydrateUsageEvidenceRuns } from './runs';
+import {
+	mintUsageCursor,
+	verifyUsageCursor,
+	type UsageScopePayload
+} from '$lib/server/usage-scope';
+import type { EvidenceRequest } from './usage-evidence';
 
 export interface CohortUsageRequest extends UsagePeriodInput {
 	workflow: string;
@@ -164,6 +173,48 @@ type CounterState = {
 	unknownReopening: number;
 };
 
+type EvidenceCandidate = {
+	id: string;
+	cost: string | null;
+	at: number;
+	item?: CohortIssueUsage;
+};
+
+type CohortEvidenceBuild = {
+	request: EvidenceRequest;
+	boundary: EvidenceCandidate | null;
+	traversal: 'after' | 'before';
+	winners: EvidenceCandidate[];
+	totalCount: number;
+	memberFound: boolean;
+	acc: ReturnType<typeof createUsageAccumulator>;
+};
+
+function compareEvidence(a: EvidenceCandidate, b: EvidenceCandidate, request: EvidenceRequest) {
+	if (request.sort === 'cost') {
+		if (a.cost === null || b.cost === null) {
+			if (a.cost !== b.cost) return a.cost === null ? 1 : -1;
+		} else {
+			const cost = compareUsageDecimals(a.cost, b.cost);
+			if (cost) return request.direction === 'asc' ? cost : -cost;
+		}
+	}
+	const time = a.at - b.at;
+	if (time) return request.sort === 'time' && request.direction === 'asc' ? time : -time;
+	return a.id === b.id ? 0 : a.id < b.id ? -1 : 1;
+}
+
+function offerEvidence(build: CohortEvidenceBuild, candidate: EvidenceCandidate) {
+	if (build.boundary) {
+		const side = compareEvidence(candidate, build.boundary, build.request);
+		if (build.traversal === 'before' ? side >= 0 : side <= 0) return;
+	}
+	build.winners.push(candidate);
+	build.winners.sort((a, b) => compareEvidence(a, b, build.request));
+	if (build.winners.length > build.request.limit + 1)
+		build.traversal === 'before' ? build.winners.shift() : build.winners.pop();
+}
+
 const newCounterState = (): CounterState => ({
 	distinct: 0,
 	attempts: 0,
@@ -240,7 +291,7 @@ function witnessFromStream(row: CohortStreamRow): CohortEntry | null {
 	};
 }
 
-export async function getCohortUsage(
+async function buildCohortUsage(
 	db: Kysely<Database>,
 	owner: string,
 	request: CohortUsageRequest,
@@ -253,7 +304,8 @@ export async function getCohortUsage(
 		observed_through: number;
 		selected_states: CohortStateProof[];
 		selection_basis: CohortUsageReport['selection_basis'];
-	}
+	},
+	evidence?: CohortEvidenceBuild
 ): Promise<CohortUsageReport | null> {
 	const period = frozen
 		? { ...frozen, generated_at: generatedAt }
@@ -397,6 +449,49 @@ export async function getCohortUsage(
 			if (current.row.reopened) target.reopened++;
 			else if (current.row.unknown_later_entry_count) target.unknownReopening++;
 		}
+		if (evidence) {
+			const memberMatches =
+				!evidence.request.member || evidence.request.member === current.row.issue_id;
+			if (memberMatches) evidence.memberFound = true;
+			if (evidence.request.kind === 'issues' && memberMatches) {
+				const item: CohortIssueUsage = {
+					issue_id: current.row.issue_id,
+					issue_ref:
+						current.row.project_name !== null &&
+						current.row.issue_number !== null &&
+						current.row.issue_title !== null
+							? {
+									project_name: current.row.project_name,
+									number: current.row.issue_number,
+									title: current.row.issue_title
+								}
+							: null,
+					aggregate,
+					attempt_count: current.attempts,
+					pending_count: current.pending,
+					fully_priced: fully,
+					latest_at: current.row.entry_at,
+					chosen_entry: entryFromStream(current.row),
+					reopening: {
+						value: current.row.reopened
+							? true
+							: current.row.unknown_later_entry_count
+								? null
+								: false,
+						witness: witnessFromStream(current.row),
+						unknown_later_entry_count: current.row.unknown_later_entry_count,
+						observed_through: observedThrough
+					}
+				};
+				evidence.totalCount++;
+				offerEvidence(evidence, {
+					id: item.issue_id,
+					cost: aggregate.cost_usd_exact,
+					at: item.latest_at,
+					item
+				});
+			}
+		}
 	};
 	let seek = { issue: '', at: -1, run: '' };
 	for (;;) {
@@ -473,6 +568,20 @@ export async function getCohortUsage(
 				addUsageClassification(target.acc, classification);
 				addUsageClassification(global, classification);
 				addUsageClassification(stateAcc.get(row.state_id)!, classification);
+			}
+			if (
+				evidence?.request.kind === 'runs' &&
+				(!evidence.request.member || evidence.request.member === row.issue_id) &&
+				(evidence.request.population === 'pending') === (row.ended_at === null)
+			) {
+				const classification = row.ended_at === null ? null : classifyUsage(row.usage);
+				evidence.totalCount++;
+				if (classification) addUsageClassification(evidence.acc, classification);
+				offerEvidence(evidence, {
+					id: row.run_id,
+					cost: classification?.cost_exact ?? null,
+					at: row.ended_at ?? row.run_created_at!
+				});
 			}
 		}
 		if (batch.length <= 5_000) break;
@@ -569,5 +678,144 @@ export async function getCohortUsage(
 		retention_basis: 'retained_direct_attempts',
 		project_basis: 'event_project',
 		accounting_version: 1
+	};
+}
+
+export function getCohortUsage(
+	db: Kysely<Database>,
+	owner: string,
+	request: CohortUsageRequest,
+	generatedAt = Date.now(),
+	frozen?: {
+		from: number;
+		to: number;
+		timezone: string;
+		timezone_source: CohortUsageReport['timezone_source'];
+		observed_through: number;
+		selected_states: CohortStateProof[];
+		selection_basis: CohortUsageReport['selection_basis'];
+	}
+) {
+	return buildCohortUsage(db, owner, request, generatedAt, frozen);
+}
+
+export async function getCohortUsageEvidence(
+	db: Kysely<Database>,
+	owner: string,
+	scopeToken: string,
+	scope: Extract<UsageScopePayload, { mode: 'cohort' }>,
+	request: EvidenceRequest,
+	material: string
+): Promise<UsageEvidencePage> {
+	if (request.kind === 'issues' && request.population !== 'finalized')
+		throw new Error('completed issue evidence uses the all-member population');
+	if (request.population === 'pending' && request.sort === 'cost')
+		throw new Error('pending evidence can only be sorted by time');
+	let decoded = null;
+	if (request.cursor) {
+		decoded = await verifyUsageCursor(request.cursor, material);
+		if (
+			decoded.scope !== scopeToken ||
+			decoded.kind !== request.kind ||
+			decoded.population !== request.population ||
+			decoded.member !== request.member ||
+			decoded.sort !== request.sort ||
+			decoded.direction !== request.direction
+		)
+			throw new Error('Cursor does not match evidence selection');
+	}
+	const traversal = decoded?.traversal ?? 'after';
+	const evidence: CohortEvidenceBuild = {
+		request,
+		boundary: decoded?.boundary ?? null,
+		traversal,
+		winners: [],
+		totalCount: 0,
+		memberFound: false,
+		acc: createUsageAccumulator()
+	};
+	const report = await buildCohortUsage(
+		db,
+		owner,
+		{ workflow: scope.workflow, project: scope.project ?? undefined },
+		Date.now(),
+		{
+			from: scope.from,
+			to: scope.to,
+			timezone: scope.timezone,
+			timezone_source: scope.timezone_source,
+			observed_through: scope.observed_through,
+			selected_states: scope.selected_states,
+			selection_basis: scope.selection_basis
+		},
+		evidence
+	);
+	if (!report) throw new Error('Completed-issue selection is no longer available');
+	if (request.member && !evidence.memberFound)
+		throw new Error('member is not in this completed-issue selection');
+	const hasExtra = evidence.winners.length > request.limit;
+	const selected =
+		traversal === 'before'
+			? evidence.winners.slice(-request.limit)
+			: evidence.winners.slice(0, request.limit);
+	const items =
+		request.kind === 'issues'
+			? selected.map((candidate) => candidate.item!)
+			: await hydrateUsageEvidenceRuns(
+					db,
+					owner,
+					selected.map((candidate) => candidate.id),
+					request.population,
+					scope.to
+				);
+	if (items.length !== selected.length)
+		throw new Error('Retained records changed while evidence was being assembled');
+	const cursor = (candidate: EvidenceCandidate, nextTraversal: 'after' | 'before') =>
+		mintUsageCursor(
+			{
+				v: 1,
+				scope: scopeToken,
+				kind: request.kind,
+				population: request.population,
+				member: request.member,
+				sort: request.sort,
+				direction: request.direction,
+				traversal: nextTraversal,
+				boundary: { id: candidate.id, cost: candidate.cost, at: candidate.at }
+			},
+			material
+		);
+	return {
+		items: items as UsageEvidencePage['items'],
+		next_cursor:
+			selected.length && (hasExtra || traversal === 'before')
+				? await cursor(selected.at(-1)!, 'after')
+				: null,
+		previous_cursor:
+			selected.length &&
+			((traversal === 'after' && decoded) || (traversal === 'before' && hasExtra))
+				? await cursor(selected[0], 'before')
+				: null,
+		total_count: evidence.totalCount,
+		scope: scopeToken,
+		kind: request.kind,
+		population: request.population,
+		sort: request.sort,
+		direction: request.direction,
+		matching_total:
+			request.kind === 'issues' || !request.member ? report.aggregate : finalizeUsage(evidence.acc),
+		parent_matching_total: request.member ? report.aggregate : undefined,
+		attempt_count: request.member
+			? request.kind === 'issues'
+				? (selected[0]?.item?.attempt_count ?? 0)
+				: evidence.totalCount
+			: report.counters.attempt_count,
+		pending_count: request.member
+			? request.kind === 'issues'
+				? (selected[0]?.item?.pending_count ?? 0)
+				: request.population === 'pending'
+					? evidence.totalCount
+					: 0
+			: report.counters.pending_count
 	};
 }

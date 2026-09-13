@@ -126,6 +126,62 @@ describe('GET /api/v1/usage validation and authorization', () => {
 		expect(replay.body.scope).toBe(initial.body.scope);
 	});
 
+	it('pages cohort members including no-run issues and cutoff-redacted attempts', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const runner = addRunner(t);
+		const finalized = addIssue(t, { id: 'iss_cohort_finalized', state: CLOSED });
+		const noRun = addIssue(t, { id: 'iss_cohort_no_run', state: CLOSED });
+		completionEntry(t, 'evt_cohort_finalized', finalized, NOW - 30);
+		completionEntry(t, 'evt_cohort_no_run', noRun, NOW - 20);
+		addRun(t, {
+			id: 'arun_cohort_finalized',
+			issueId: finalized,
+			runnerId: runner,
+			status: 'completed',
+			createdAt: NOW - 50,
+			endedAt: NOW - 10,
+			usage: JSON.stringify({ cost_usd: 2, cost_source: 'provider' })
+		});
+		addRun(t, {
+			id: 'arun_cohort_pending',
+			issueId: finalized,
+			runnerId: runner,
+			status: 'completed',
+			createdAt: NOW - 5,
+			endedAt: NOW + 10,
+			usage: JSON.stringify({ cost_usd: 99, cost_source: 'provider' })
+		});
+		const report = await get(
+			t,
+			`?mode=cohort&workflow=wf_standard&from=${new Date(NOW - 100).toISOString()}&to=${new Date(NOW).toISOString()}`
+		);
+		const evidence = async (query: string) => {
+			const url = new URL(
+				`http://test/api/v1/usage/evidence?scope=${encodeURIComponent(String(report.body.scope))}&${query}`
+			);
+			const response = await EVIDENCE_GET({
+				locals: { user: { id: USER, name: 'alice' } },
+				platform: { env: t.env, ctx: { waitUntil: () => {} } },
+				request: new Request(url),
+				url
+			} as unknown as Parameters<typeof EVIDENCE_GET>[0]);
+			expect(response.status).toBe(200);
+			return response.json() as Promise<Record<string, unknown>>;
+		};
+		const issues = await evidence('kind=issues');
+		expect(issues).toMatchObject({ total_count: 2, attempt_count: 2, pending_count: 1 });
+		expect((issues.items as { issue_id: string }[]).map((item) => item.issue_id).sort()).toEqual([
+			finalized,
+			noRun
+		]);
+		const pending = await evidence(`kind=runs&population=pending&member=${finalized}`);
+		expect(pending).toMatchObject({ total_count: 1, items: [{ id: 'arun_cohort_pending' }] });
+		expect(pending).not.toHaveProperty('items.0.usage');
+		const empty = await evidence(`kind=runs&member=${noRun}`);
+		expect(empty).toMatchObject({ total_count: 0, items: [] });
+	});
+
 	it('rejects contradictory and unprovable cohort selections', async () => {
 		const t = createTestDb();
 		seedBase(t);
