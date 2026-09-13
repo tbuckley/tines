@@ -106,6 +106,103 @@ describe('GET /api/v1/usage validation and authorization', () => {
 		});
 	});
 
+	it('uses a physically narrow projection for reachable historical pending evidence', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const runner = addRunner(t);
+		const issue = addIssue(t);
+		addRun(t, {
+			id: 'arun_pending_later_facts',
+			issueId: issue,
+			runnerId: runner,
+			status: 'completed',
+			outcome: 'advanced',
+			createdAt: NOW - 5,
+			endedAt: NOW,
+			usage: JSON.stringify({ cost_usd: 99, cost_source: 'provider', input_tokens: 123 })
+		});
+		const report = await get(
+			t,
+			`?from=${new Date(NOW - 100).toISOString()}&to=${new Date(NOW).toISOString()}`
+		);
+		const queries = t.spyOnQueries();
+		const url = new URL('http://test/api/v1/usage/evidence');
+		url.searchParams.set('scope', String(report.body.pending_scope));
+		url.searchParams.set('kind', 'runs');
+		url.searchParams.set('population', 'pending');
+		const response = await EVIDENCE_GET({
+			locals: { user: { id: USER, name: 'alice' } },
+			platform: { env: t.env, ctx: { waitUntil: () => {} } },
+			request: new Request(url),
+			url
+		} as unknown as Parameters<typeof EVIDENCE_GET>[0]);
+		expect(response.status).toBe(200);
+		expect(await response.json()).toMatchObject({
+			items: [{ id: 'arun_pending_later_facts', accounting_status: 'pending' }]
+		});
+		const scan = queries().find(
+			(sql) => sql.includes('from "agent_run"') && sql.includes('limit ?')
+		)!;
+		const projection = scan.slice(0, scan.indexOf(' from '));
+		expect(projection).not.toContain('"agent_run"."usage"');
+		expect(projection).not.toContain('"agent_run"."outcome"');
+		expect(projection).not.toContain('"agent_run"."ended_at"');
+		expect(projection).not.toContain('"agent_run"."status"');
+	});
+
+	it('mints every project group scope with its exact group predicate', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		t.sqlite
+			.prepare(
+				'INSERT INTO project (id, user_id, name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)'
+			)
+			.run('prj_group_two', USER, 'second', NOW, NOW);
+		const runner = addRunner(t);
+		const first = addIssue(t, { id: 'iss_group_first' });
+		const second = addIssue(t, { id: 'iss_group_second', project: 'prj_group_two' });
+		for (const [id, issueId, cost] of [
+			['arun_group_first', first, 1],
+			['arun_group_second', second, 2]
+		] as const)
+			addRun(t, {
+				id,
+				issueId,
+				runnerId: runner,
+				status: 'completed',
+				createdAt: NOW - 20,
+				endedAt: NOW - 10,
+				usage: JSON.stringify({ cost_usd: cost, cost_source: 'provider' })
+			});
+		const report = await get(
+			t,
+			`?from=${new Date(NOW - 100).toISOString()}&to=${new Date(NOW).toISOString()}&by=project`
+		);
+		for (const group of report.body.groups as {
+			dimension: { id: string };
+			aggregate: { cost_usd_exact: string };
+			scope: string;
+		}[]) {
+			const url = new URL('http://test/api/v1/usage/evidence');
+			url.searchParams.set('scope', group.scope);
+			url.searchParams.set('kind', 'issues');
+			const response = await EVIDENCE_GET({
+				locals: { user: { id: USER, name: 'alice' } },
+				platform: { env: t.env, ctx: { waitUntil: () => {} } },
+				request: new Request(url),
+				url
+			} as unknown as Parameters<typeof EVIDENCE_GET>[0]);
+			const evidence = (await response.json()) as {
+				items: { issue_id: string }[];
+				matching_total: { cost_usd_exact: string };
+			};
+			expect(evidence.items.map((item) => item.issue_id)).toEqual([
+				group.dimension.id === 'prj_group_two' ? second : first
+			]);
+			expect(evidence.matching_total.cost_usd_exact).toBe(group.aggregate.cost_usd_exact);
+		}
+	});
+
 	it('replays frozen scopes and pages exact issue and run evidence', async () => {
 		const t = createTestDb();
 		seedBase(t);
@@ -308,7 +405,9 @@ describe('GET /api/v1/usage validation and authorization', () => {
 			const response =
 				path === '/usage'
 					? await GET(event as unknown as Parameters<typeof GET>[0])
-					: await RUNS_GET(event as unknown as Parameters<typeof RUNS_GET>[0]);
+					: path === '/usage/evidence'
+						? await EVIDENCE_GET(event as unknown as Parameters<typeof EVIDENCE_GET>[0])
+						: await RUNS_GET(event as unknown as Parameters<typeof RUNS_GET>[0]);
 			expect(response.status).toBe(200);
 			return response.json();
 		});

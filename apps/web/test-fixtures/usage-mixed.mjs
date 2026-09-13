@@ -554,7 +554,52 @@ export async function verifyMixed(request, onCase = async () => {}) {
 					items.map((item) => ({ accounting: item.usage_accounting }))
 				);
 			populations[population] = items;
+
+			// The shipping signed-scope endpoint is a distinct implementation from
+			// legacy /runs. Walk every page and compare it to this independent manifest.
+			const evidenceItems = [];
+			let evidenceCursor = null;
+			do {
+				const evidence = await request('/usage/evidence', {
+					scope: pending ? report.pending_scope : report.matching_scope,
+					kind: 'runs',
+					population,
+					...(pending ? { sort: 'time' } : {}),
+					limit: '17',
+					...(evidenceCursor ? { cursor: evidenceCursor } : {})
+				});
+				pages++;
+				evidenceItems.push(...evidence.items);
+				evidenceCursor = evidence.next_cursor;
+				assert.ok(evidenceItems.length <= manifest.length, 'signed evidence did not terminate');
+			} while (evidenceCursor);
+			assert.deepEqual(evidenceItems.map((r) => r.id).sort(), rows.map((r) => r.id).sort());
+			assert.equal(new Set(evidenceItems.map((r) => r.id)).size, evidenceItems.length);
+			if (pending) assert.ok(!JSON.stringify(evidenceItems).includes('future-secret'));
 		}
+
+		const issueRows = new Map();
+		for (const row of matching)
+			issueRows.set(row.issue, [...(issueRows.get(row.issue) ?? []), row]);
+		const issueItems = [];
+		let issueCursor = null;
+		do {
+			const evidence = await request('/usage/evidence', {
+				scope: report.matching_scope,
+				kind: 'issues',
+				limit: '3',
+				...(issueCursor ? { cursor: issueCursor } : {})
+			});
+			pages++;
+			issueItems.push(...evidence.items);
+			issueCursor = evidence.next_cursor;
+		} while (issueCursor);
+		assert.deepEqual(issueItems.map((item) => item.issue_id).sort(), [...issueRows.keys()].sort());
+		for (const item of issueItems) assertAggregate(item.aggregate, issueRows.get(item.issue_id));
+		assertAggregate(
+			report.matching_total,
+			issueItems.flatMap((item) => issueRows.get(item.issue_id))
+		);
 		await onCase(filters, report, populations);
 	}
 	return {

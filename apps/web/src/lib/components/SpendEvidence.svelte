@@ -2,7 +2,9 @@
 	import {
 		ApiError,
 		usageCostLabel,
+		type AgentRunUsageEvidence,
 		type IssueAttemptUsage,
+		type UsageDiagnostics,
 		type UsageEvidencePage
 	} from '@tines/shared';
 	import { api } from '$lib/api';
@@ -37,6 +39,17 @@
 
 	function change(changes: Record<string, string | null>) {
 		onnavigate?.(changes);
+	}
+	function counts(values: UsageDiagnostics) {
+		return (
+			Object.entries(values)
+				.filter(([, count]) => count > 0)
+				.map(([name, count]) => `${name.replaceAll('_', ' ')} ${count}`)
+				.join(' · ') || 'none'
+		);
+	}
+	function present(value: unknown) {
+		return value === null || value === undefined || value === '' ? 'unavailable' : String(value);
 	}
 	async function load() {
 		const mine = ++generation;
@@ -160,14 +173,7 @@
 							><UsageCostCell aggregate={item.aggregate} />
 						</article>
 					{:else}
-						{@const run = raw as typeof raw & {
-							id: string;
-							issue_id: string;
-							runner_name: string;
-							created_at: number;
-							ended_at?: number | null;
-							usage_accounting?: { cost: number | null };
-						}}
+						{@const run = raw as AgentRunUsageEvidence}
 						<article>
 							<div>
 								<strong>{run.id}</strong><small
@@ -182,6 +188,38 @@
 									: usageCostLabel(run.usage_accounting?.cost ?? null)}</strong
 							>
 						</article>
+						{#if population === 'finalized' && run.usage_accounting}
+							<details class="accounting">
+								<summary>Accounting details for {run.id}</summary>
+								<p>
+									{run.usage_accounting.status} · source {run.usage_accounting.source ??
+										'unavailable'}
+									· exact cost {run.usage_accounting.cost_exact ?? 'unavailable'}{run
+										.usage_accounting.pricing_reason
+										? ` · reason ${run.usage_accounting.pricing_reason.replaceAll('_', ' ')}`
+										: ''}
+								</p>
+								<p>Diagnostics: {counts(run.usage_accounting.diagnostics)}</p>
+								<p>
+									Tokens: {Object.entries(run.usage_accounting.tokens)
+										.map(
+											([name, value]) =>
+												`${name.replaceAll('_', ' ')} ${value ?? 'unknown'}${run.usage_accounting.invalid_tokens.includes(name as never) ? ' (invalid)' : ''}`
+										)
+										.join(' · ')}
+								</p>
+								{#if run.usage_accounting.source === 'calculated'}
+									<p>
+										Rate basis: id {present(run.usage_accounting.basis?.rate_id)} · version
+										{present(run.usage_accounting.basis?.rate_version)} · model {present(
+											run.usage_accounting.basis?.model
+										)} · plan {present(run.usage_accounting.basis?.plan)} · selected {present(
+											run.usage_accounting.basis?.rate_selected_at
+										)}
+									</p>
+								{/if}
+							</details>
+						{/if}
 					{/if}
 				{/each}
 			</div>
@@ -237,6 +275,11 @@
 	}
 	article + article {
 		border-top: 1px solid var(--border);
+	}
+	.accounting {
+		padding: 0 0 0.75rem;
+		border-bottom: 1px solid var(--border);
+		overflow-wrap: anywhere;
 	}
 	article > button,
 	article > div {

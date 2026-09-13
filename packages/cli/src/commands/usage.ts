@@ -20,7 +20,7 @@ import {
 	type UsageWindow
 } from '@tines/shared';
 import { Option, type Command } from 'commander';
-import { usageAggregateLines } from '../usage-format.js';
+import { usageAggregateLines, usageEvidenceLines } from '../usage-format.js';
 
 interface UsageOpts extends CommonOpts {
 	window?: UsageWindow;
@@ -83,6 +83,16 @@ function printEvidence(page: UsageEvidencePage): void {
 				];
 			})
 		]);
+	if (page.kind === 'runs' && page.population === 'finalized')
+		for (const item of page.items) {
+			if ('id' in item && 'usage_accounting' in item && item.usage_dimensions)
+				for (const line of usageEvidenceLines(
+					item.id,
+					item.usage_dimensions,
+					item.usage_accounting
+				))
+					console.log(line);
+		}
 	console.log(
 		`Matching total: ${money(page.matching_total.cost_usd)} · ${page.attempt_count} attempts · ${page.pending_count} pending`
 	);

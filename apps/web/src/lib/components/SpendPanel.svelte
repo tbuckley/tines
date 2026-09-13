@@ -3,7 +3,12 @@
 	import { untrack } from 'svelte';
 	import { page } from '$app/state';
 	import { api } from '$lib/api';
-	import { canonicalSpendChanges, parseSpendSelection, spendRequest } from '$lib/spend-selection';
+	import {
+		canonicalSpendChanges,
+		clearSpendEvidence,
+		parseSpendSelection,
+		spendRequest
+	} from '$lib/spend-selection';
 	import { sortUsageGroups } from '$lib/usage-view';
 	import UsageCostCell from './UsageCostCell.svelte';
 	import SpendEvidence from './SpendEvidence.svelte';
@@ -84,7 +89,19 @@
 	let synchronizedCustomSignature = '';
 
 	function update(values: Record<string, string | null>, replace = false) {
-		void navigate(values, replace);
+		const changes = Object.keys(values).some((key) =>
+			[
+				'spend_project',
+				'spend_window',
+				'spend_from',
+				'spend_to',
+				'spend_workflow',
+				'spend_view'
+			].includes(key)
+		)
+			? clearSpendEvidence(values)
+			: values;
+		void navigate(changes, replace);
 		expanded = new Set();
 	}
 

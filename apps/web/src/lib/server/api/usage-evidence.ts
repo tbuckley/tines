@@ -121,6 +121,34 @@ function rows(db: Kysely<Database>, owner: string) {
 }
 type Row = Awaited<ReturnType<ReturnType<typeof rows>['execute']>>[number];
 
+/**
+ * Historical pending evidence must never read facts recorded after its cutoff.
+ * Keep this projection separate from the finalized projection so adding a wide
+ * field to rows() cannot silently widen the pending Worker scan.
+ */
+export function pendingUsageEvidenceRows(db: Kysely<Database>, owner: string) {
+	return rows(db, owner)
+		.clearSelect()
+		.select([
+			'agent_run.id',
+			'agent_run.issue_id',
+			'agent_run.runner_id',
+			'agent_run.tier',
+			'agent_run.state_id_at_start',
+			'agent_run.created_at',
+			'issue.project_id as project_id',
+			retainedStartWorkflow.as('start_workflow_id'),
+			retainedIssueWorkflow.as('issue_workflow_id'),
+			sql<null>`NULL`.as('outcome'),
+			sql<null>`NULL`.as('ended_at'),
+			sql<null>`NULL`.as('usage'),
+			sql<null>`NULL`.as('runner_name'),
+			sql<null>`NULL`.as('issue_number'),
+			sql<null>`NULL`.as('issue_title'),
+			sql<null>`NULL`.as('project_name')
+		]);
+}
+
 function matches(row: Row, filters: ResolvedUsageFilters, population: 'finalized' | 'pending') {
 	const workflow = row.start_workflow_id ?? row.issue_workflow_id ?? null;
 	if (!filterValue(row.project_id, filters.project)) return false;
@@ -247,30 +275,7 @@ export async function getUsageEvidence(
 				q = q.where(
 					sql<boolean>`(COALESCE(agent_run.issue_id, ''), agent_run.ended_at, agent_run.id) > (${seek.issue}, ${seek.at}, ${seek.id})`
 				);
-			const candidateQuery =
-				request.population === 'pending'
-					? q
-							.clearSelect()
-							.select([
-								'agent_run.id',
-								'agent_run.issue_id',
-								'agent_run.runner_id',
-								'agent_run.tier',
-								'agent_run.state_id_at_start',
-								'agent_run.created_at',
-								'issue.project_id as project_id',
-								retainedStartWorkflow.as('start_workflow_id'),
-								retainedIssueWorkflow.as('issue_workflow_id'),
-								sql<null>`NULL`.as('outcome'),
-								sql<null>`NULL`.as('ended_at'),
-								sql<null>`NULL`.as('usage'),
-								sql<null>`NULL`.as('runner_name'),
-								sql<null>`NULL`.as('issue_number'),
-								sql<null>`NULL`.as('issue_title'),
-								sql<null>`NULL`.as('project_name')
-							])
-					: q;
-			const batch = await candidateQuery
+			const batch = await q
 				.orderBy(sql`COALESCE(agent_run.issue_id, '')`)
 				.orderBy('agent_run.ended_at')
 				.orderBy('agent_run.id')
@@ -313,7 +318,9 @@ export async function getUsageEvidence(
 		for (;;) {
 			const time =
 				request.population === 'finalized' ? 'agent_run.ended_at' : 'agent_run.created_at';
-			let q = rows(db, owner).where('agent_run.created_at', '<', cutoff);
+			let q =
+				request.population === 'pending' ? pendingUsageEvidenceRows(db, owner) : rows(db, owner);
+			q = q.where('agent_run.created_at', '<', cutoff);
 			q =
 				request.population === 'finalized'
 					? q.where('agent_run.ended_at', '<', cutoff).where('agent_run.ended_at', 'is not', null)

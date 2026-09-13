@@ -91,7 +91,10 @@ const comparable = (report) => {
 	return copy;
 };
 const flags = (query) =>
-	Object.entries(query).flatMap(([k, v]) => [`--${k.replaceAll('_', '-')}`, String(v)]);
+	Object.entries(query).flatMap(([k, v]) => [
+		`--${k.replaceAll('_', '-')}`,
+		...(v === true ? [] : [String(v)])
+	]);
 // Resolve tsx relative to the CLI package; every process executes src/index.ts directly.
 const cli = (command, query = {}, json = true, key = localKey) =>
 	execFileSync(
@@ -117,6 +120,7 @@ const cli = (command, query = {}, json = true, key = localKey) =>
 		}
 	);
 let cliCalls = 0;
+let signedEvidenceCliChecked = false;
 try {
 	for (let attempt = 0; ; attempt++) {
 		try {
@@ -209,6 +213,37 @@ try {
 					'adopted 2023-11-14'
 				])
 					assert.ok(rendered.includes(reference), reference);
+		}
+		if (!signedEvidenceCliChecked) {
+			const finalized = populations.finalized;
+			const output = JSON.parse(
+				cli(['usage'], {
+					scope: report.matching_scope,
+					evidence: 'runs',
+					'all-pages': true,
+					limit: '17'
+				})
+			);
+			cliCalls++;
+			assert.deepEqual(
+				output.items.map((item) => item.id).sort(),
+				finalized.map((item) => item.id).sort()
+			);
+			const rendered = cli(
+				['usage'],
+				{
+					scope: report.matching_scope,
+					evidence: 'runs',
+					'all-pages': true,
+					limit: '17'
+				},
+				false
+			);
+			cliCalls++;
+			assert.ok(rendered.includes('Accounting arun_mixed_'));
+			assert.ok(rendered.includes('exact cost'));
+			assert.ok(rendered.includes('Evidence arun_mixed_'));
+			signedEvidenceCliChecked = true;
 		}
 	});
 	// Defaults and manual CLI cursors remain separate from --all-pages' deduplication.

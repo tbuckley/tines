@@ -24,6 +24,19 @@ export interface SpendSelection {
 
 const windows = new Set<SpendWindow>(['today', '7d', '30d', 'custom']);
 const views = new Set<UsageBy>(['workflow', 'state', 'outcome']);
+const evidenceKeys = [
+	'spend_scope',
+	'spend_kind',
+	'spend_member',
+	'spend_population',
+	'spend_evidence_sort',
+	'spend_direction',
+	'spend_cursor'
+] as const;
+
+export function clearSpendEvidence(changes: Record<string, string | null>) {
+	return { ...changes, ...Object.fromEntries(evidenceKeys.map((key) => [key, null])) };
+}
 
 export function patchSpendUrl(url: URL, changes: Record<string, string | null>): URL {
 	const next = new URL(url);

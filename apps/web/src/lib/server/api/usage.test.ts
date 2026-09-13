@@ -144,6 +144,13 @@ describe('direct issue lifetime usage', () => {
 			endedAt: NOW,
 			usage: JSON.stringify({ cost_usd: 99, cost_source: 'provider' })
 		});
+		addRun(t, {
+			id: 'created_at_cutoff',
+			issueId: issue,
+			runnerId: runner,
+			status: 'running',
+			createdAt: NOW
+		});
 
 		const report = await getIssueUsage(t.db, USER, issue, NOW);
 		expect(report).toMatchObject({
