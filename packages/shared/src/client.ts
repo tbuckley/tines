@@ -52,6 +52,9 @@ import type {
 	IssueTransferResult,
 	EventFilters,
 	FleetQueue,
+	SentBackDrilldown,
+	StageStatsReport,
+	StatsQuery,
 	LaunchPromptResponse,
 	IssueDetail,
 	IssueFilters,
@@ -574,7 +577,16 @@ export function createApiClient(options: ApiClientOptions) {
 		updatePreferences: (body: UpdatePreferencesRequest) =>
 			request<UserPreferences>('PATCH', '/api/v1/preferences', body),
 		getSupervisorSettings: () => get<SupervisorSettings>('/api/v1/supervisor/settings'),
-		getSupervisorQueue: () => get<FleetQueue>('/api/v1/supervisor/queue'),
+		getSupervisorQueue: (q: { project?: string } = {}) =>
+			get<FleetQueue>(`/api/v1/supervisor/queue${query(q)}`),
+		getSupervisorStats: (q: StatsQuery = {}) =>
+			get<StageStatsReport>(`/api/v1/supervisor/stats${query(q)}`),
+		getSupervisorSentBack: (q: {
+			state: string;
+			window?: string;
+			project?: string;
+			until?: number;
+		}) => get<SentBackDrilldown>(`/api/v1/supervisor/stats/sent-back${query(q)}`),
 		updateSupervisorSettings: (body: UpdateSupervisorSettingsRequest) =>
 			request<SupervisorSettingsResponse>('PUT', '/api/v1/supervisor/settings', body),
 

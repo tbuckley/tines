@@ -45,6 +45,8 @@ tines issues comment <project>/<number> - <<'EOF'    # body from stdin; @file al
 …
 EOF
 tines events list --issue <project>/<number>
+tines events list --since 2026-09-01T00:00:00Z --until 2026-09-08T00:00:00Z --state Engineering/Review
+tines supervisor stats --window 7d --project Tines
 ```
 
 Issues are addressed as `<project>/<number>`; schedules as `<project>/<name>`; workflow

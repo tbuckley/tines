@@ -33,7 +33,7 @@
 	import IconRobot from '@tabler/icons-svelte/icons/robot';
 	import IconTrash from '@tabler/icons-svelte/icons/trash';
 	import IconX from '@tabler/icons-svelte/icons/x';
-	import { untrack } from 'svelte';
+	import { tick, untrack } from 'svelte';
 	import { slide } from 'svelte/transition';
 	import { afterNavigate, goto, invalidateAll } from '$app/navigation';
 	import { page } from '$app/state';
@@ -41,6 +41,10 @@
 	import CancelRunDialog from '$lib/components/CancelRunDialog.svelte';
 	import FirstRunChecklist from '$lib/components/FirstRunChecklist.svelte';
 	import { confirmDialog } from '$lib/components/dialogs.svelte';
+	import type { StageStats, StageStatsReport } from '@tines/shared';
+	import StageStatsBoard from '$lib/components/StageStatsBoard.svelte';
+	import SentBackDrilldown from '$lib/components/SentBackDrilldown.svelte';
+	import { stageRunsHref } from '$lib/stage-stats-view';
 	import FleetQueuePanel from '$lib/components/FleetQueuePanel.svelte';
 	import Modal from '$lib/components/Modal.svelte';
 	import NewIssueModal from '$lib/components/NewIssueModal.svelte';
@@ -94,6 +98,38 @@
 	function chooseAgentsView(view: 'now' | 'spend') {
 		if (view === agentsView) return;
 		void patchAgents({ agents_view: view === 'now' ? null : 'spend' });
+	}
+
+	let sentBackOpen = $state(false);
+	let sentBackStage = $state<StageStats | null>(null);
+	let sentBackReport = $state<StageStatsReport | null>(null);
+	function openSentBack(stage: StageStats) {
+		sentBackStage = stage;
+		sentBackReport = data.stats;
+		sentBackOpen = true;
+	}
+	const evidenceProject = $derived(data.boardProject);
+	$effect(() => {
+		evidenceProject;
+		sentBackOpen = false;
+	});
+	async function focusStatsCapacity(stateId: string) {
+		if (agentsView !== 'now') await patchAgents({ agents_view: null });
+		quotaType = data.settings.quota.type;
+		highlight(quotaType === 'state_roster' ? stateId : null);
+		await tick();
+		const id = quotaType === 'global_cap' ? 'global-limit' : `roster-limit-${stateId}`;
+		const control = document.getElementById(id);
+		const target = control ?? document.getElementById('quota-policy');
+		target?.scrollIntoView({
+			block: 'center',
+			behavior: prefersReducedMotion() ? 'auto' : 'smooth'
+		});
+		if (control instanceof HTMLInputElement) control.focus({ preventScroll: true });
+		else errorMessage = 'Stage capacity no longer available';
+	}
+	function filterProject(project: string) {
+		void patchAgents({ project: project || null });
 	}
 
 	const dur = () => (prefersReducedMotion() ? 0 : 180);
@@ -760,8 +796,15 @@
 
 	// --- runs --------------------------------------------------------------------
 
-	let showAllRuns = $state(false);
-	const activeRuns = $derived(data.runs.filter((r) => isActiveRun(r.status)));
+	let showAllRuns = $state(untrack(() => data.runsState !== null));
+	$effect(() => {
+		if (data.runsState) showAllRuns = true;
+	});
+	const runStateName = $derived(
+		data.workflows.flatMap((w) => w.states).find((s) => s.id === data.runsState)?.name ??
+			data.runsState
+	);
+	const activeRuns = $derived(data.fleetRuns.filter((r) => isActiveRun(r.status)));
 	const displayActiveRuns = $derived(data.displayRuns.filter((r) => isActiveRun(r.status)));
 	const visibleRuns = $derived(showAllRuns ? data.displayRuns : displayActiveRuns);
 
@@ -880,6 +923,8 @@
 			}
 		}
 		if (changed) void navigateAgents(clean, true);
+		else if (agentsView === 'now' && page.url.hash === '#runs')
+			void tick().then(() => document.getElementById('runs')?.scrollIntoView({ block: 'start' }));
 	});
 
 	function openRuleEdit(rule: RoutingRuleWithWarnings) {
@@ -1127,6 +1172,21 @@
 	{/if}
 
 	<!-- Now row: what is waiting, and why (Tines/256) -->
+	<div class="mb-3 flex justify-end">
+		<label class="text-muted-foreground flex items-center gap-2 text-xs">
+			Board project
+			<Select
+				value={data.boardProject ?? ''}
+				onchange={(event) => filterProject(event.currentTarget.value)}
+			>
+				<option value="">All projects</option>
+				{#each data.projects as project (project.id)}
+					<option value={project.id}>{project.name}</option>
+				{/each}
+			</Select>
+		</label>
+	</div>
+
 	<FleetQueuePanel
 		queue={data.queue}
 		runners={data.runners}
@@ -1148,7 +1208,21 @@
 	/>
 
 	<!-- Runners -->
-	<div class="mb-10">
+	<StageStatsBoard
+		report={data.stats}
+		boardProject={data.boardProject}
+		oncapacity={focusStatsCapacity}
+		onsentback={openSentBack}
+	/>
+	{#if sentBackStage && sentBackReport}<SentBackDrilldown
+			open={sentBackOpen}
+			stage={sentBackStage}
+			report={sentBackReport}
+			project={data.boardProject}
+			onclose={() => (sentBackOpen = false)}
+		/>{/if}
+
+	<div class="mb-10 scroll-mt-24" id="runners">
 		<div class="mb-3 flex items-center justify-between">
 			<h2 class="text-sm font-semibold">Runners</h2>
 			<Button size="sm" variant="ghost" onclick={() => (addRunnerOpen = true)}>
@@ -1168,7 +1242,7 @@
 		{:else}
 			<div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
 				{#each data.runners as runner (runner.id)}
-					<div class="rounded-lg border p-4">
+					<div class="rounded-lg border p-4" id={`runner-${runner.id}`}>
 						<div class="mb-2 flex items-center gap-2">
 							<span
 								class="bg-muted text-muted-foreground flex size-8 items-center justify-center rounded-md"
@@ -1261,12 +1335,21 @@
 	</div>
 
 	<!-- Runs -->
-	<div class="mb-10">
+	<div class="mb-10 scroll-mt-24" id="runs">
 		<div class="mb-3 flex flex-wrap items-center justify-between gap-2">
 			<h2 class="text-sm font-semibold">
 				Runs
 				<span class="text-muted-foreground font-normal">— {utilization}</span>
 			</h2>
+			{#if data.runsState}
+				<a
+					class="bg-muted rounded-full px-2 py-1 text-xs hover:underline"
+					href={stageRunsHref(page.url, null)}
+				>
+					Latest runs for this stage: {runStateName} · {data.stats.project?.name ?? 'All projects'} ·
+					clear
+				</a>
+			{/if}
 			<label class="text-muted-foreground flex items-center gap-2 text-xs">
 				<input type="checkbox" bind:checked={showAllRuns} class="accent-primary" />
 				Show ended runs

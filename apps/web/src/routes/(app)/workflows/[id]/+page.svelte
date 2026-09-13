@@ -9,6 +9,7 @@
 	import IconPlus from '@tabler/icons-svelte/icons/plus';
 	import { slide } from 'svelte/transition';
 	import { goto, invalidateAll } from '$app/navigation';
+	import { page } from '$app/state';
 	import { api } from '$lib/api';
 	import AgentRoutingCard from '$lib/components/AgentRoutingCard.svelte';
 	import ContextItemEditor from '$lib/components/ContextItemEditor.svelte';
@@ -48,6 +49,12 @@
 	});
 
 	let selectedStateId = $state<string | null>(null);
+	$effect(() => {
+		const stateId = page.url.searchParams.get('state');
+		if (stateId && data.workflow.states.some((state) => state.id === stateId)) {
+			selectedStateId = stateId;
+		}
+	});
 	let contextEditorOpen = $state(false);
 	let editingContextItem = $state<ContextItem | null>(null);
 
@@ -280,7 +287,7 @@
 		{#each data.workflow.states as state (state.id)}
 			{@const items = itemsByState.get(state.id) ?? []}
 			{@const open = selectedStateId === state.id}
-			<div class="border-b last:border-0">
+			<div class="border-b last:border-0" id={`state-${state.id}`}>
 				<button
 					type="button"
 					class="hover:bg-muted/50 flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm"

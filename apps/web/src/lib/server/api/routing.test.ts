@@ -346,6 +346,11 @@ describe('rule scope state category', () => {
 		});
 		expect(rule.scope.workflow_state_id).toBe('wfs_std_open');
 		expect(rule.scope.label).toBe('state Open');
+		const event = t.all(`SELECT payload FROM event WHERE type='routing_rule.created'`)[0];
+		expect(JSON.parse(event.payload as string)).toMatchObject({
+			rule_id: rule.id,
+			workflow_state_id: 'wfs_std_open'
+		});
 	});
 
 	it('dispatch effects: routing owners signal successes and keep rejections silent', async () => {

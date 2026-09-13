@@ -32,6 +32,8 @@ import {
 } from './constants.mjs';
 import { spendStatements } from './spend-seed.mjs';
 
+import { WEEKLY, stageStatsSeed } from './stage-stats-seed.mjs';
+
 const sha256Hex = (s) => createHash('sha256').update(s).digest('hex');
 
 const nowIso = new Date().toISOString();
@@ -51,7 +53,8 @@ for (const user of [
 	MANAGED_SETTINGS,
 	TRANSFER_RUNTIME,
 	PAGINATION.user,
-	SPEND
+	SPEND,
+	WEEKLY
 ]) {
 	statements.push(
 		`INSERT INTO user (id, name, email, emailVerified, createdAt, updatedAt)
@@ -255,6 +258,8 @@ statements.push(
 	`INSERT INTO agent_run (id, user_id, issue_id, runner_id, status, outcome, tier, model, usage, state_id_at_start, state_id_at_end, log, created_at, started_at, ended_at)
 	 VALUES ('${RUNROW_ESTIMATED.runId}', '${ALICE.id}', '${RUNROW_ESTIMATED.issueId}', '${RUNROW_ESTIMATED.runnerId}', 'completed', 'advanced', 'balanced', 'gpt-5.6-sol', '${estimatedUsage}', 'wfs_std_open', 'wfs_std_open', 'priced log', ${runStart + 1}, ${runStart + 1}, ${nowMs});`
 );
+
+statements.push(...stageStatsSeed(nowMs));
 
 const sqlFile = join(mkdtempSync(join(tmpdir(), 'tines-e2e-')), 'seed.sql');
 writeFileSync(sqlFile, statements.join('\n'));

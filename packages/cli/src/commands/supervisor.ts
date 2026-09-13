@@ -4,13 +4,22 @@ import {
 	collect,
 	die,
 	printJson,
+	resolveProject,
 	resolveStateFlag,
 	table,
 	withCommon,
 	type CommonOpts
 } from '../common.js';
 import { hoursLabel, quotaLabel, runnerStatusLabel } from '../format.js';
-import { listAll, utilizationLabel, type QueueGroup } from '@tines/shared';
+import {
+	deltaLabel,
+	durationLabel,
+	listAll,
+	shareLabel,
+	utilizationLabel,
+	type QueueGroup,
+	type StageStats
+} from '@tines/shared';
 import type { Command } from 'commander';
 
 /** One printed block per `(verdict, runner)`, the way the Agents tab groups them. */
@@ -127,6 +136,30 @@ export function queueFix(block: QueueBlock): string | null {
 	}
 }
 
+/**
+ * The outcome mix, with the unrecorded bucket only when it is non-zero and
+ * the deltas blanked when the previous window predates the outcome column —
+ * a fall to zero there would be an artefact of migration 0016, not of work.
+ */
+export function outcomeLabel(stats: StageStats): string {
+	const o = stats.current.runs.outcomes;
+	const parts = [`adv ${o.advanced}`, `stalled ${o.stalled}`, `failed ${o.failed}`];
+	if (o.interrupted > 0) parts.push(`intr ${o.interrupted}`);
+	if (o.unrecorded > 0) parts.push(`unrecorded ${o.unrecorded}`);
+	if (stats.current.runs.active > 0) parts.push(`active ${stats.current.runs.active}`);
+	return parts.join(' · ');
+}
+
+/** The lever behind each column, as commands — the CLI's version of the table's links. */
+export function statsLevers(): string[] {
+	return [
+		'levers:',
+		'  queue wait  tines supervisor quota roster --state <wf>/<state>=<n>',
+		'  runs        tines runs list --state <wf>/<state>',
+		'  sent back   tines context show <wf>/<state> instructions'
+	];
+}
+
 export function register(program: Command): void {
 	const supervisor = program
 		.command('supervisor')
@@ -136,14 +169,15 @@ export function register(program: Command): void {
 		supervisor
 			.command('status')
 			.description('One-screen overview: kill switch, quota, utilization, runners')
-	).action(async (opts: CommonOpts) => {
+			.option('--project <name-or-id>', 'filter waiting work to one project')
+	).action(async (opts: CommonOpts & { project?: string }) => {
 		const api = client(opts);
 		const [settings, runnersRes, workflows, activeRunItems, queue] = await Promise.all([
 			api.getSupervisorSettings(),
 			api.listRunners(),
 			api.listWorkflows(),
 			listAll((page) => api.listRuns({ active: true, ...page })),
-			api.getSupervisorQueue()
+			api.getSupervisorQueue({ project: opts.project })
 		]);
 		if (opts.json) {
 			return printJson({
@@ -207,6 +241,80 @@ export function register(program: Command): void {
 				])
 			);
 		}
+	});
+
+	withCommon(
+		supervisor
+			.command('stats')
+			.description('Per-stage flow this week: queue wait, work time, runs per visit, sent back')
+			.option('--window <window>', 'Rolling window, e.g. 24h or 7d', '7d')
+			.option('--project <ref>', 'Narrow to one project (id or name)')
+			.option('--sent-back <workflow/state>', 'Show the issues behind one sent-back figure')
+	).action(async (opts: CommonOpts & { window?: string; project?: string; sentBack?: string }) => {
+		const api = client(opts);
+		const project = opts.project ? await resolveProject(api, opts.project) : null;
+		if (opts.sentBack) {
+			const { state } = await resolveStateFlag(api, opts.sentBack);
+			const detail = await api.getSupervisorSentBack({
+				state: state.id,
+				window: opts.window,
+				project: project?.id ?? undefined
+			});
+			if (opts.json) return printJson(detail);
+			console.log(`sent back from ${detail.state.workflow_name}/${detail.state.name}`);
+			if (detail.prompt)
+				console.log(`prompt: ${detail.prompt.name} (current v${detail.prompt.current_version})`);
+			if (detail.items.length === 0) return console.log('no issues sent back');
+			for (const item of detail.items) {
+				console.log(
+					`${item.issue.project_name}/${item.issue.number} → ${item.to_state_name} · prompt ${item.prompt_version ? `v${item.prompt_version}` : 'unknown'} · ${item.actor.user_name}`
+				);
+				console.log(`  ${item.comment?.excerpt.split('\n')[0] ?? 'no comment'}`);
+			}
+			return;
+		}
+		const report = await api.getSupervisorStats({
+			window: opts.window,
+			project: project?.id ?? undefined
+		});
+		if (opts.json) return printJson(report);
+		if (report.states.length === 0) {
+			console.log('No agent stage saw work in the last window.');
+			return;
+		}
+		const windowLabel = opts.window ?? '7d';
+		console.log(
+			`this week (${windowLabel}${report.project ? `, project ${report.project.name}` : ''})` +
+				`${report.previous ? ` — vs the ${windowLabel} before` : ''}`
+		);
+		table([
+			['  stage', 'visits', 'queue p50', 'p90', 'work p50', 'runs/visit', 'ended', 'sent back'],
+			...report.states.map((s) => [
+				`  ${s.workflow_name}/${s.state_name}`,
+				`${s.current.visits}·${s.current.exits} ${deltaLabel(s.delta.visits, 'count')}`.trim(),
+				`${durationLabel(s.current.queue_wait?.p50 ?? null)} ${deltaLabel(s.delta.queue_wait_p50, 'ms')}`.trim(),
+				durationLabel(s.current.queue_wait?.p90 ?? null),
+				`${durationLabel(s.current.work?.p50 ?? null)} ${deltaLabel(s.delta.work_p50, 'ms')}`.trim(),
+				s.current.runs.per_visit === null
+					? '—'
+					: `${s.current.runs.per_visit.toFixed(1)} ${deltaLabel(s.delta.runs_per_visit, 'ratio')}`.trim(),
+				outcomeLabel(s),
+				`${s.current.sent_back.count} of ${s.current.exits} (${shareLabel(s.current.sent_back.share)}) · agents ${s.current.sent_back.agent} ${deltaLabel(s.delta.sent_back_share, 'share')}`.trim()
+			])
+		]);
+		if (report.markers.length > 0) {
+			console.log('changes:');
+			for (const marker of report.markers) {
+				console.log(`  ${marker.label}`);
+				for (const effect of marker.effects) {
+					const state = report.states.find((row) => row.state_id === effect.state_id);
+					console.log(
+						`    ${state?.state_name ?? effect.state_id}: since ${effect.after?.exits ?? 0} exits, ${shareLabel(effect.after?.sent_back_share)} sent back, queue ${durationLabel(effect.after?.queue_wait_p50)} · before ${effect.before?.exits ?? 0} exits, ${shareLabel(effect.before?.sent_back_share)} sent back, queue ${durationLabel(effect.before?.queue_wait_p50)}`
+					);
+				}
+			}
+		}
+		for (const line of statsLevers()) console.log(line);
 	});
 
 	withCommon(

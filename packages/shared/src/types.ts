@@ -2368,6 +2368,8 @@ export interface RunFilters {
 	issue?: string;
 	/** Runner id. */
 	runner?: string;
+	/** Workflow state id captured when the run started. */
+	state?: string;
 	/** Only runs holding a claim (assigned/launching/running). */
 	active?: boolean;
 	/** Usage evidence population; requires from/to. */
@@ -2378,7 +2380,6 @@ export interface RunFilters {
 	to?: string;
 	project?: string;
 	workflow?: string;
-	state?: string;
 	tier?: string;
 	outcome?: RunEndOutcome | 'unknown';
 	accounting_status?: 'priced' | 'unpriced' | 'unreported';
@@ -2656,6 +2657,7 @@ export const QUEUE_GROUP_REF_LIMIT = 10;
 /** `GET /api/v1/supervisor/queue` — the fleet's waiting work. */
 export interface FleetQueue {
 	generated_at: number;
+	project: { id: string; name: string } | null;
 	automation_enabled: boolean;
 	quota: QuotaPolicy;
 	/** Sorted count desc, then oldest first. */
@@ -2665,6 +2667,166 @@ export interface FleetQueue {
 	parked: { count: number; oldest_entered_at: number | null; issues: QueueIssueRef[] };
 	/** Human stages get a summary line only — no table (Tines/256 scope). */
 	awaiting_human: { count: number; oldest_entered_at: number | null };
+}
+
+// ---------------------------------------------------------------------------
+// Stage stats — the flow board's "This week" row (Tines/257)
+
+/**
+ * How a run ended, for the stage table's outcome mix. `RunEndOutcome` plus the
+ * two buckets the column needs that the stored outcome cannot express: a run
+ * that never started (a launch failure — nothing to judge) and a row that
+ * ended before migration 0016 added the column.
+ */
+export type RunOutcomeBucket = RunEndOutcome | 'failed' | 'unrecorded';
+
+export const RUN_OUTCOME_BUCKETS: readonly RunOutcomeBucket[] = [
+	...RUN_END_OUTCOMES,
+	'failed',
+	'unrecorded'
+];
+
+/** A duration distribution in ms; `n` is how many samples it was measured over. */
+export interface DurationStats {
+	p50: number;
+	p90: number;
+	total: number;
+	n: number;
+}
+
+/** One stage's figures over one window. All durations are ms. */
+export interface StageWindowFigures {
+	since: number;
+	until: number;
+	/** Entries into the state inside the window. */
+	visits: number;
+	/** Exits from the state inside the window; not the same population as `visits`. */
+	exits: number;
+	/** Entry → first started run. Null when nothing was measurable. */
+	queue_wait: DurationStats | null;
+	queue_wait_measured: number;
+	/** Visits still waiting for their first run — excluded from the percentiles. */
+	waiting_now: number;
+	/** Closed visits that never saw a started run. */
+	never_started: number;
+	/** First started run → exit, closed visits only. */
+	work: DurationStats | null;
+	work_measured: number;
+	open_now: number;
+	runs: {
+		total: number;
+		/** Runs bound to visits ÷ all entered visits; null when there are no entered visits. */
+		per_visit: number | null;
+		active: number;
+		/** Runs that could not be bound to a visit in the scan (see `bindRuns`). */
+		unbound: number;
+		/** `unrecorded` rows judged `advanced` from the run key's own transition. */
+		recovered_advanced: number;
+		outcomes: Record<RunOutcomeBucket, number>;
+		top_runner: { id: string; name: string; runs: number } | null;
+	};
+	sent_back: {
+		count: number;
+		/** Of exits; null when there were none. */
+		share: number | null;
+		agent: number;
+		human: number;
+		by_target: {
+			state_id: string;
+			state_name: string;
+			count: number;
+			agent: number;
+			human: number;
+		}[];
+	};
+	received_back: number;
+	/** Reserved for the spend column (Tines/199); always null here. */
+	cost: null;
+}
+
+/** Current − previous per figure; null when either side is unmeasured. */
+export interface StageStatsDelta {
+	visits: number | null;
+	exits: number | null;
+	queue_wait_p50: number | null;
+	queue_wait_p90: number | null;
+	work_p50: number | null;
+	work_p90: number | null;
+	runs_per_visit: number | null;
+	sent_back_share: number | null;
+	outcomes: Record<RunOutcomeBucket, number | null>;
+}
+
+export interface StageStats {
+	state_id: string;
+	state_name: string;
+	workflow_id: string;
+	workflow_name: string;
+	current: StageWindowFigures;
+	previous: StageWindowFigures | null;
+	delta: StageStatsDelta;
+}
+
+export interface MarkerFigures {
+	visits: number;
+	exits: number;
+	sent_back_share: number | null;
+	queue_wait_p50: number | null;
+}
+
+export interface ChangeMarker {
+	id: string;
+	at: number;
+	kind: 'prompt' | 'quota' | 'automation' | 'runner_cap' | 'rule';
+	label: string;
+	event_ids: string[];
+	state_ids: string[];
+	effects: { state_id: string; before: MarkerFigures | null; after: MarkerFigures | null }[];
+}
+
+/** `GET /api/v1/supervisor/stats` — per-stage flow over a rolling window. */
+export interface StageStatsReport {
+	generated_at: number;
+	window: { ms: number; since: number; until: number };
+	previous: { since: number; until: number } | null;
+	project: { id: string; name: string } | null;
+	/**
+	 * The oldest recorded run outcome. Deltas whose previous window starts
+	 * before this are blanked rather than reported as a fall to zero.
+	 */
+	outcome_recorded_since: number | null;
+	/** Active states that saw work in either window, ordered by total queue wait desc. */
+	states: StageStats[];
+	/** Newest prompt, quota, cap and routing edits inside the current window. */
+	markers: ChangeMarker[];
+}
+
+/** Query for `GET /api/v1/supervisor/stats`. */
+export interface StatsQuery {
+	/** `<n>h` or `<n>d`, 1h–90d; default `7d`. */
+	window?: string;
+	/** `previous` (default) computes the prior window and the deltas. */
+	compare?: 'previous' | 'none';
+	/** Project id or name; narrows both board rows. */
+	project?: string;
+}
+
+/** Evidence behind one stage's sent-back figure. */
+export interface SentBackDrilldown {
+	state: { id: string; name: string; workflow_id: string; workflow_name: string };
+	window: { since: number; until: number };
+	prompt: { context_id: string; name: string; current_version: number; edit_url: string } | null;
+	items: {
+		issue: { id: string; project_name: string; number: number; title: string };
+		transitioned_at: number;
+		to_state_id: string;
+		to_state_name: string;
+		action: string | null;
+		actor: Actor;
+		comment: { id: string; excerpt: string; created_at: number } | null;
+		prompt_version: number | null;
+		prompt_context_id: string | null;
+	}[];
 }
 
 // ---------------------------------------------------------------------------
@@ -2771,7 +2933,14 @@ export interface EventFilters {
 	issue?: string;
 	/** Project id. */
 	project?: string;
+	/** One event type or a comma-separated list. */
 	type?: string;
+	/** Inclusive lower time bound, epoch ms or ISO 8601. */
+	since?: number | string;
+	/** Exclusive upper time bound, epoch ms or ISO 8601. */
+	until?: number | string;
+	/** Workflow state id referenced by an event payload. */
+	state?: string;
 }
 
 // ---------------------------------------------------------------------------

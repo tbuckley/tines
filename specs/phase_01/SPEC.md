@@ -172,7 +172,7 @@ JSON over HTTP under `/api/v1/*`, served by the SvelteKit app; shared request/re
 | `POST /api/v1/issues/:id/transition` | `{ action }` (transition name) or `{ transition_id }`; 422 with the allowed transitions (named) when invalid |
 | `GET/POST /api/v1/issues/:id/transfer` | Preview / commit a signed project transfer; run keys may preview but cannot commit |
 | `GET/POST /api/v1/issues/:id/comments` | List / add comment |
-| `GET /api/v1/events` | Global feed, newest first; filters: `issue`, `project`, `type`; cursor pagination |
+| `GET /api/v1/events` | Global feed, newest first; filters: `issue`, `project`, comma-separated `type`, `since`, `until`, `state`; cursor pagination |
 | `GET/POST /api/v1/api-keys`, `DELETE /api/v1/api-keys/:id` | Manage keys (create/revoke require a browser session, not a key) |
 
 All list endpoints use the same cursor-pagination convention (`?cursor=…&limit=…`, response carries `next_cursor`), newest first for issues and events.
@@ -198,7 +198,7 @@ tines issues move <project>/<number> <action>       # transition name, e.g. "app
 tines issues transfer <project>/<number> --project <destination>
 	[--dry-run] [--inspect <n>] [--yes]               # project transfer, not workflow move
 tines issues comment <project>/<number> <markdown>
-tines events list [--issue <ref>] [--project <name>] [--limit n]
+tines events list [--issue <ref>] [--project <name>] [--type <types>] [--since <time>] [--until <time>] [--state <workflow/state>] [--limit n]
 ```
 
 All commands support `--json` for agent consumption. `issues show --json` includes the allowed next transitions — action name plus target state — so an agent always knows its legal moves and what each one means.

@@ -1012,6 +1012,7 @@ export async function updateContextItem(
 	// update goes first, and the file replacement plus the event only land
 	// if it did (they check for the bumped version).
 	const newVersion = row.version + 1;
+	payload.version = newVersion;
 	queries.push(
 		db
 			.updateTable('context_item')
@@ -1176,6 +1177,7 @@ export async function appendContextItem(
 						name: row.name,
 						changed: ['body'],
 						appended: true,
+						version: newVersion,
 						scope: scopeEventPayload(scope)
 					}
 				},

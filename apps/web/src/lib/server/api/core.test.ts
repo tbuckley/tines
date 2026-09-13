@@ -277,6 +277,11 @@ describe('isControlPlanePath', () => {
 		// `supervisor/settings`, not `supervisor/*`.
 		['/api/v1/supervisor/queue', 'GET'],
 		['/api/v1/supervisor/queue', 'HEAD'],
+		// The stage stats beside it (Tines/257): the fence pattern names
+		// `supervisor/settings`, not `supervisor/*`, so this stays open — the
+		// rows are here so narrowing the pattern later has to be deliberate.
+		['/api/v1/supervisor/stats', 'GET'],
+		['/api/v1/supervisor/stats', 'HEAD'],
 		// Methods arrive from the request verbatim; compare case-insensitively.
 		['/api/v1/labels', 'get'],
 		// Similar-looking but distinct segments stay open.
@@ -310,6 +315,7 @@ describe('assertRunKeyAllowed', () => {
 			assertRunKeyAllowed(runKey, '/api/v1/supervisor/settings', 'GET', now)
 		).not.toThrow();
 		expect(() => assertRunKeyAllowed(runKey, '/api/v1/supervisor/queue', 'GET', now)).not.toThrow();
+		expect(() => assertRunKeyAllowed(runKey, '/api/v1/supervisor/stats', 'GET', now)).not.toThrow();
 	});
 
 	it('403s a run key on every control-plane surface, naming the proposal convention', () => {
