@@ -146,6 +146,11 @@ describe('readable comparisons', () => {
 		const url = new URL('https://example.test/agents?project=P&foo=x&runs_state=old#runners');
 		expect(stageRunsHref(url, 'new')).toBe('/agents?project=P&foo=x&runs_state=new#runs');
 		expect(stageRunsHref(url, null)).toBe('/agents?project=P&foo=x#runs');
+		url.searchParams.set('agents_view', 'spend');
+		url.searchParams.set('spend_project', 'different');
+		expect(stageRunsHref(url, 'new')).toBe(
+			'/agents?project=P&foo=x&runs_state=new&spend_project=different#runs'
+		);
 		expect(url.hash).toBe('#runners');
 	});
 	it('keeps global markers and only the affected stage markers', () => {

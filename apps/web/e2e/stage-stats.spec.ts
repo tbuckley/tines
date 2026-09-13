@@ -330,3 +330,100 @@ test('overview remains usable at 200 percent zoom', async ({ context, page }) =>
 	await section.getByRole('button', { name: /Most measured wait/ }).click();
 	await expect(page.locator('#stats-ws_research-timing')).toBeFocused();
 });
+
+test('Now and Spend retain separate project scopes through history and weekly levers', async ({
+	context,
+	page
+}, testInfo) => {
+	await signIn(context, WEEKLY.sessionToken);
+	await gotoHydrated(
+		page,
+		`/agents?project=${WEEKLY.projectId}&spend_project=all&spend_window=30d`
+	);
+	const week = page.getByRole('region', { name: 'This week' });
+	await expect(week).toBeVisible();
+	await page.screenshot({ path: testInfo.outputPath('weekly-desktop.png'), fullPage: true });
+	await page.getByRole('button', { name: 'Spend', exact: true }).click();
+	await expect(page.getByLabel('Spend project')).toHaveValue('all');
+	await expect(page.getByLabel('Board project')).toBeHidden();
+	await expect(page).toHaveURL(/agents_view=spend/);
+	await page.getByRole('button', { name: 'Now', exact: true }).click();
+	await expect(page.getByLabel('Board project')).toHaveValue(WEEKLY.projectId);
+	const review = week.locator('tr.stage-row').filter({ hasText: 'Automated Review' });
+	await review.getByRole('link', { name: /runs per visit/ }).click();
+	await expect(page.locator('#runs')).toContainText('Latest runs for this stage: Automated Review');
+	await expect(page.getByLabel('Show ended runs')).toBeChecked();
+	await expect(page).toHaveURL(/spend_window=30d/);
+	await page.getByRole('button', { name: 'Spend', exact: true }).click();
+	await expect(page.getByLabel('Spend project')).toHaveValue('all');
+	await page.goBack();
+	await expect(page.locator('#runs')).toBeVisible();
+	await expect(page.getByLabel('Board project')).toHaveValue(WEEKLY.projectId);
+	await review.getByRole('button', { name: /wait to start/ }).click();
+	await expect(page.locator('#global-limit')).toBeFocused();
+	await page.setViewportSize({ width: 390, height: 844 });
+	await week.scrollIntoViewIfNeeded();
+	await expect(page.locator('body')).toHaveJSProperty(
+		'scrollWidth',
+		await page.locator('body').evaluate((el) => el.clientWidth)
+	);
+	await week.screenshot({ path: testInfo.outputPath('weekly-phone.png') });
+});
+
+test('rapid board project changes commit only the latest scope without altering Spend', async ({
+	context,
+	page
+}) => {
+	await signIn(context, ALICE.sessionToken);
+	await gotoHydrated(page, `/agents?project=${project.id}&spend_project=all&spend_window=30d`);
+	let release!: () => void;
+	const held = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	let entered!: () => void;
+	const started = new Promise<void>((resolve) => {
+		entered = resolve;
+	});
+	let settled!: () => void;
+	const completed = new Promise<void>((resolve) => {
+		settled = resolve;
+	});
+	let didHold = false;
+	await page.route('**/agents/__data.json*', async (route) => {
+		const url = new URL(route.request().url());
+		if (!url.searchParams.has('project') && !didHold) {
+			didHold = true;
+			const response = await route.fetch();
+			entered();
+			await held;
+			await route.fulfill({ response });
+			settled();
+		} else await route.continue();
+	});
+	const board = page.getByLabel('Board project');
+	await board.selectOption('');
+	await started;
+	await board.selectOption(project.id);
+	await expect(page).toHaveURL(new RegExp(`project=${project.id}`));
+	release();
+	await completed;
+	await page.evaluate(
+		() =>
+			new Promise<void>((resolve) =>
+				requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+			)
+	);
+	await expect
+		.poll(() =>
+			page
+				.getByRole('region', { name: 'This week' })
+				.locator('tr.stage-row')
+				.filter({ hasText: 'Automated Review' })
+				.textContent()
+		)
+		.toMatch(/1\s+visit/);
+	await expect(board).toHaveValue(project.id);
+	await page.getByRole('button', { name: 'Spend', exact: true }).click();
+	await expect(page.getByLabel('Spend project')).toHaveValue('all');
+	await expect(page).toHaveURL(/spend_window=30d/);
+});
