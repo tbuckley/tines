@@ -271,6 +271,26 @@ export const manifest = Array.from({ length: 250 }, (_, i) => {
 		}
 	};
 });
+// These two attempts pin the half-open accounting cutoff independently of the period ledger:
+// the first is pending at `to`; the second is not yet an attempt at `to`.
+const cutoffAttempts = [
+	{
+		...manifest[0],
+		id: 'arun_mixed_ended_at_cutoff',
+		issue: 'iss_mixed_a',
+		pending: true,
+		created: from - 2_000,
+		ended: to
+	},
+	{
+		...manifest[1],
+		id: 'arun_mixed_created_at_cutoff',
+		issue: 'iss_mixed_a',
+		pending: true,
+		created: to,
+		ended: to + 1
+	}
+];
 /** @param {import('node:sqlite').DatabaseSync} sqlite */
 export function seedMixed(sqlite) {
 	sqlite.exec(`PRAGMA foreign_keys=OFF;
@@ -311,6 +331,24 @@ export function seedMixed(sqlite) {
 			r.pending ? 'future-secret-error' : null,
 			r.pending ? 'future-secret-session' : null,
 			r.pending ? 'future-secret-end' : null
+		);
+	for (const r of cutoffAttempts)
+		insert.run(
+			r.id,
+			user,
+			r.issue,
+			r.dimensions.runner.id,
+			'completed',
+			'advanced',
+			r.dimensions.tier.id,
+			JSON.stringify({ cost_usd: 999999, future_secret: true }),
+			r.dimensions.state.id,
+			r.created,
+			r.created,
+			r.ended,
+			'future-secret-error',
+			'future-secret-session',
+			'future-secret-end'
 		);
 	const insertEvent = sqlite.prepare(
 		`INSERT INTO event (id,user_id,type,actor_user_id,issue_id,project_id,payload,created_at) VALUES (?,?,?,?,?,?,?,?)`
@@ -363,6 +401,14 @@ export function seedMixed(sqlite) {
 		from + 40
 	);
 	entry(
+		'evt_mixed_owned_foreign_identity',
+		'iss_mixed_foreign',
+		'wfs_mixed_closed',
+		'Closed',
+		'done',
+		from + 45
+	);
+	entry(
 		'evt_mixed_pre_window_done',
 		'iss_mixed_orphan_b',
 		'wfs_mixed_closed',
@@ -386,21 +432,95 @@ export async function verifyMixedCohort(request) {
 		mode: 'cohort',
 		workflow: cohortWorkflow
 	});
-	const attempts = manifest.filter((row) => cohortMembers.includes(row.issue) && row.created < to);
+	const attempts = [...manifest, ...cutoffAttempts].filter(
+		(row) => cohortMembers.includes(row.issue) && row.created < to
+	);
 	const finalized = attempts.filter((row) => row.ended !== null && row.ended < to);
 	const pending = attempts.filter((row) => row.ended === null || row.ended >= to);
+	const chosenState = new Map([
+		['iss_mixed_a', 'wfs_mixed_canceled'],
+		['iss_mixed_b', 'wfs_mixed_dropped'],
+		['iss_mixed_deletedworkflow', 'wfs_mixed_closed'],
+		['iss_mixed_cohort_no_run', 'wfs_mixed_canceled']
+	]);
+	/** @param {string[]} members @param {Array<any>} rows */
+	const expectedCounters = (members, rows) => {
+		const finalizedRows = rows.filter((row) => row.ended !== null && row.ended < to);
+		/** @param {string} issue */
+		const byIssue = (issue) => rows.filter((row) => row.issue === issue);
+		const fullyPriced = members.filter((issue) => {
+			const issueRows = byIssue(issue);
+			const issueFinalized = issueRows.filter((row) => row.ended !== null && row.ended < to);
+			return (
+				issueFinalized.length > 0 &&
+				issueFinalized.every((row) => row.accounting.status === 'priced') &&
+				issueRows.every((row) => row.ended !== null && row.ended < to)
+			);
+		}).length;
+		const priced = finalizedRows.filter((row) => row.accounting.status === 'priced');
+		const cost = priced.length ? exact(priced) : null;
+		return {
+			distinct_issue_count: members.length,
+			attempt_count: rows.length,
+			pending_count: rows.length - finalizedRows.length,
+			zero_run_issue_count: members.filter((issue) => byIssue(issue).length === 0).length,
+			pending_only_issue_count: members.filter((issue) => {
+				const issueRows = byIssue(issue);
+				return (
+					issueRows.length > 0 && issueRows.every((row) => row.ended === null || row.ended >= to)
+				);
+			}).length,
+			fully_priced_issue_count: fullyPriced,
+			reopened_issue_count: members.includes('iss_mixed_a') ? 1 : 0,
+			reopening_history_unavailable_issue_count: 0,
+			mean_attempts_per_issue: {
+				numerator: rows.length,
+				denominator: members.length,
+				value: members.length ? rows.length / members.length : null
+			},
+			known_cost_per_issue: {
+				numerator_usd_exact: cost,
+				denominator: members.length,
+				value_usd: cost === null || !members.length ? null : Number(cost) / members.length,
+				coverage:
+					members.length === 0
+						? 'empty'
+						: cost === null
+							? 'unknown'
+							: fullyPriced === members.length
+								? 'complete'
+								: 'partial'
+			},
+			priced_run_coverage: {
+				numerator: priced.length,
+				denominator: finalizedRows.length,
+				value: finalizedRows.length ? priced.length / finalizedRows.length : null
+			},
+			fully_priced_issue_coverage: {
+				numerator: fullyPriced,
+				denominator: members.length,
+				value: members.length ? fullyPriced / members.length : null
+			}
+		};
+	};
+	const allCounters = expectedCounters(cohortMembers, attempts);
 	assertAggregate(report.aggregate, finalized);
-	assert.equal(report.counters.distinct_issue_count, cohortMembers.length);
-	assert.equal(report.counters.attempt_count, attempts.length);
-	assert.equal(report.counters.pending_count, pending.length);
-	assert.equal(report.counters.zero_run_issue_count, 1);
-	assert.equal(report.counters.reopened_issue_count, 1);
+	assert.deepEqual(report.counters, allCounters);
 	assert.deepEqual(
 		report.selected_states.map((/** @type {any} */ state) => state.name),
 		['Closed', 'Canceled', 'Dropped']
 	);
-	/** @param {string} kind @param {string|null} [population] @param {string|null} [member] */
-	const walk = async (kind, population = null, member = null) => {
+	for (const terminal of report.terminal_states) {
+		const members = cohortMembers.filter((issue) => chosenState.get(issue) === terminal.state.id);
+		const rows = attempts.filter((row) => members.includes(row.issue));
+		assertAggregate(
+			terminal.aggregate,
+			rows.filter((row) => row.ended !== null && row.ended < to)
+		);
+		assert.deepEqual(terminal.counters, expectedCounters(members, rows));
+	}
+	/** @param {string} kind @param {string|null} [population] @param {string|null} [member] @param {number|null} [expectedTotal] */
+	const walk = async (kind, population = null, member = null, expectedTotal = null) => {
 		const items = [];
 		let cursor = null;
 		do {
@@ -414,13 +534,23 @@ export async function verifyMixedCohort(request) {
 				limit: '2',
 				...(cursor ? { cursor } : {})
 			});
+			assert.equal(page.scope, report.scope);
+			assert.deepEqual(page.matching_total, member ? undefined : report.aggregate);
+			if (!member) assert.deepEqual(page.counters, allCounters);
+			assert.deepEqual(page.history, report.history);
+			assert.equal(page.from, from);
+			assert.equal(page.to, to);
+			assert.equal(page.observed_through, report.observed_through);
+			assert.equal(page.attempt_count, member ? page.attempt_count : attempts.length);
+			assert.equal(page.pending_count, member ? page.pending_count : pending.length);
+			if (expectedTotal !== null) assert.equal(page.total_count, expectedTotal);
 			items.push(...page.items);
 			cursor = page.next_cursor;
 			assert.ok(items.length <= manifest.length + 10, 'cohort evidence did not terminate');
 		} while (cursor);
 		return items;
 	};
-	const issues = await walk('issues');
+	const issues = await walk('issues', null, null, cohortMembers.length);
 	assert.deepEqual(issues.map((item) => item.issue_id).sort(), [...cohortMembers].sort());
 	for (const issue of issues) {
 		const rows = finalized.filter((row) => row.issue === issue.issue_id);
@@ -429,9 +559,17 @@ export async function verifyMixedCohort(request) {
 			issue.attempt_count,
 			attempts.filter((row) => row.issue === issue.issue_id).length
 		);
+		assert.deepEqual(
+			issue.fully_priced,
+			expectedCounters(
+				[issue.issue_id],
+				attempts.filter((row) => row.issue === issue.issue_id)
+			).fully_priced_issue_count === 1
+		);
+		assert.equal(issue.chosen_entry.state_id, chosenState.get(issue.issue_id));
 	}
-	const finalizedEvidence = await walk('runs', 'finalized');
-	const pendingEvidence = await walk('runs', 'pending');
+	const finalizedEvidence = await walk('runs', 'finalized', null, finalized.length);
+	const pendingEvidence = await walk('runs', 'pending', null, pending.length);
 	assert.deepEqual(
 		finalizedEvidence.map((row) => row.id).sort(),
 		finalized.map((row) => row.id).sort()
@@ -441,7 +579,9 @@ export async function verifyMixedCohort(request) {
 		pending.map((row) => row.id).sort()
 	);
 	assert.ok(!JSON.stringify(pendingEvidence).includes('future-secret'));
-	const entries = await walk('entries');
+	assert.ok(pendingEvidence.some((row) => row.id === 'arun_mixed_ended_at_cutoff'));
+	assert.ok(!pendingEvidence.some((row) => row.id === 'arun_mixed_created_at_cutoff'));
+	const entries = await walk('entries', null, null, 6);
 	assert.deepEqual(
 		entries.map((entry) => entry.event_id).sort(),
 		[
@@ -453,7 +593,15 @@ export async function verifyMixedCohort(request) {
 			'evt_mixed_no_run_canceled'
 		].sort()
 	);
+	for (const entry of entries) {
+		assert.equal(Boolean(entry.chosen), chosenState.get(entry.issue_id) === entry.state_id);
+		assert.equal(
+			Boolean(entry.qualifies),
+			entry.category === 'done' && entry.created_at >= from && entry.created_at < to
+		);
+	}
 	assert.ok(!JSON.stringify(entries).includes('evt_mixed_nonmember_active'));
+	assert.ok(!JSON.stringify(entries).includes('evt_mixed_owned_foreign_identity'));
 	return { report, issues, finalized: finalizedEvidence, pending: pendingEvidence, entries };
 }
 /** @type {Array<Record<string,string>>} */
@@ -496,7 +644,7 @@ export const cases = [
 ];
 /** @param {Record<string,string>} filters */
 export function selected(filters, pending = false, scope = false) {
-	return manifest.filter(
+	return [...manifest, cutoffAttempts[0]].filter(
 		(r) =>
 			r.pending === pending &&
 			Object.entries(filters).every(([k, v]) => {
@@ -754,7 +902,7 @@ export async function verifyMixed(request, onCase = async () => {}) {
 	return {
 		cases: cases.length,
 		finalized: 143,
-		pending: 107,
+		pending: selected({}, true).length,
 		raw_http_pages: pages,
 		all_fields_and_groups_reconciled: true
 	};

@@ -271,7 +271,7 @@ try {
 	assert.deepEqual(comparable(cohortJson), comparable(cohort.report));
 	const cohortText = cli(['usage'], cohortQuery, false);
 	cliCalls++;
-	assert.ok(cohortText.includes('4 issues · 168/4 attempts/all issues'));
+	assert.ok(cohortText.includes('4 issues · 169/4 attempts/all issues'));
 	assert.ok(cohortText.includes('Terminal states: Closed, Canceled, Dropped'));
 	for (const [kind, population, expected] of [
 		['issues', null, cohort.issues],

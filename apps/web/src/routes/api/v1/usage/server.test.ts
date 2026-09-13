@@ -13,6 +13,7 @@ import {
 import {
 	seedMixed,
 	verifyMixed,
+	verifyMixedCohort,
 	user as mixedUser
 } from '../../../../../test-fixtures/usage-mixed.mjs';
 import { GET } from './+server';
@@ -135,6 +136,17 @@ describe('GET /api/v1/usage validation and authorization', () => {
 		completionEntry(t, 'evt_cohort_finalized', finalized, NOW - 30);
 		completionEntry(t, 'evt_cohort_no_run', noRun, NOW - 20);
 		const nonmember = addIssue(t, { id: 'iss_cohort_nonmember' });
+		t.sqlite.exec(`
+			INSERT INTO user (id,name,email,emailVerified,createdAt,updatedAt)
+			VALUES ('u_foreign_cohort','bob','cohort-foreign@example.com',1,${NOW},${NOW});
+			INSERT INTO project (id,user_id,name,created_at,updated_at)
+			VALUES ('prj_foreign_cohort','u_foreign_cohort','private',${NOW},${NOW});
+		`);
+		const foreignIdentity = addIssue(t, {
+			id: 'iss_foreign_cohort_identity',
+			project: 'prj_foreign_cohort'
+		});
+		completionEntry(t, 'evt_owned_foreign_identity', foreignIdentity, NOW - 15);
 		t.sqlite
 			.prepare(
 				`INSERT INTO event (id,user_id,type,actor_user_id,issue_id,project_id,payload,created_at)
@@ -210,7 +222,7 @@ describe('GET /api/v1/usage validation and authorization', () => {
 			to: NOW,
 			observed_through: expect.any(Number),
 			counters: { distinct_issue_count: 2, attempt_count: 3, pending_count: 2 },
-			history: { qualifying_fact_count: 2 }
+			history: { qualifying_fact_count: 3 }
 		});
 		expect((issues.items as { issue_id: string }[]).map((item) => item.issue_id).sort()).toEqual([
 			finalized,
@@ -253,6 +265,7 @@ describe('GET /api/v1/usage validation and authorization', () => {
 			items: [{ event_id: 'evt_cohort_finalized', qualifies: 1, chosen: 1 }]
 		});
 		expect(JSON.stringify([entries, nextEntries])).not.toContain('evt_cohort_nonmember');
+		expect(JSON.stringify([entries, nextEntries])).not.toContain('evt_owned_foreign_identity');
 		const previousEntries = await evidence(
 			`kind=entries&limit=1&cursor=${encodeURIComponent(String(nextEntries.previous_cursor))}`
 		);
@@ -260,6 +273,7 @@ describe('GET /api/v1/usage validation and authorization', () => {
 			total_count: 2,
 			items: [{ event_id: 'evt_cohort_no_run', qualifies: 1, chosen: 1 }]
 		});
+		expect(JSON.stringify(previousEntries)).not.toContain('evt_owned_foreign_identity');
 	});
 
 	it('walks more than one hundred equal-key no-run members and entries exactly once', async () => {
@@ -720,7 +734,7 @@ describe('GET /api/v1/usage validation and authorization', () => {
 		const t = createTestDb();
 		t.env.BETTER_AUTH_SECRET = 'usage-route-test-secret';
 		seedMixed(t.sqlite);
-		await verifyMixed(async (path: string, query: Record<string, string>) => {
+		const request = async (path: string, query: Record<string, string>) => {
 			const url = new URL(`http://test/api/v1${path}?${new URLSearchParams(query)}`);
 			const event = {
 				locals: { user: { id: mixedUser, name: 'mixed' } },
@@ -736,6 +750,8 @@ describe('GET /api/v1/usage validation and authorization', () => {
 						: await RUNS_GET(event as unknown as Parameters<typeof RUNS_GET>[0]);
 			expect(response.status).toBe(200);
 			return response.json();
-		});
+		};
+		await verifyMixed(request);
+		await verifyMixedCohort(request);
 	}, 15_000);
 });

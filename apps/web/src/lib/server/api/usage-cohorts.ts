@@ -829,7 +829,10 @@ export async function getCohortUsageEvidence(
 				SUM(qualifies) OVER (PARTITION BY issue_id ORDER BY created_at DESC,id DESC ROWS BETWEEN 1 FOLLOWING AND UNBOUNDED FOLLOWING) AS earlier_qualifying
 			FROM flagged
 		), members AS (
-			SELECT DISTINCT issue_id FROM ranked WHERE qualifies=1
+			SELECT DISTINCT r.issue_id FROM ranked r
+			LEFT JOIN issue i ON i.id=r.issue_id
+			LEFT JOIN project p ON p.id=i.project_id
+			WHERE r.qualifies=1 AND (i.id IS NULL OR p.user_id=${owner})
 		), audited AS (
 			SELECT *,COUNT(*) OVER () AS total_count FROM ranked
 			WHERE issue_id IN (SELECT issue_id FROM members)
