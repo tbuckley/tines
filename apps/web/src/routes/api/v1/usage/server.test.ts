@@ -176,7 +176,13 @@ describe('GET /api/v1/usage validation and authorization', () => {
 			noRun
 		]);
 		const pending = await evidence(`kind=runs&population=pending&member=${finalized}`);
-		expect(pending).toMatchObject({ total_count: 1, items: [{ id: 'arun_cohort_pending' }] });
+		expect(pending).toMatchObject({
+			total_count: 1,
+			attempt_count: 2,
+			pending_count: 1,
+			matching_total: { cost_usd_exact: '2' },
+			items: [{ id: 'arun_cohort_pending' }]
+		});
 		expect(pending).not.toHaveProperty('items.0.usage');
 		const empty = await evidence(`kind=runs&member=${noRun}`);
 		expect(empty).toMatchObject({ total_count: 0, items: [] });

@@ -187,6 +187,9 @@ type CohortEvidenceBuild = {
 	winners: EvidenceCandidate[];
 	totalCount: number;
 	memberFound: boolean;
+	memberAttempts: number;
+	memberPending: number;
+	memberAggregate: ReturnType<typeof finalizeUsage> | null;
 	acc: ReturnType<typeof createUsageAccumulator>;
 };
 
@@ -452,7 +455,14 @@ async function buildCohortUsage(
 		if (evidence) {
 			const memberMatches =
 				!evidence.request.member || evidence.request.member === current.row.issue_id;
-			if (memberMatches) evidence.memberFound = true;
+			if (memberMatches) {
+				evidence.memberFound = true;
+				if (evidence.request.member) {
+					evidence.memberAttempts = current.attempts;
+					evidence.memberPending = current.pending;
+					evidence.memberAggregate = aggregate;
+				}
+			}
 			if (evidence.request.kind === 'issues' && memberMatches) {
 				const item: CohortIssueUsage = {
 					issue_id: current.row.issue_id,
@@ -736,6 +746,9 @@ export async function getCohortUsageEvidence(
 		winners: [],
 		totalCount: 0,
 		memberFound: false,
+		memberAttempts: 0,
+		memberPending: 0,
+		memberAggregate: null,
 		acc: createUsageAccumulator()
 	};
 	const report = await buildCohortUsage(
@@ -869,20 +882,9 @@ export async function getCohortUsageEvidence(
 		population: request.population,
 		sort: request.sort,
 		direction: request.direction,
-		matching_total:
-			request.kind === 'issues' || !request.member ? report.aggregate : finalizeUsage(evidence.acc),
+		matching_total: request.member ? evidence.memberAggregate! : report.aggregate,
 		parent_matching_total: request.member ? report.aggregate : undefined,
-		attempt_count: request.member
-			? request.kind === 'issues'
-				? ((selected[0]?.item as CohortIssueUsage | undefined)?.attempt_count ?? 0)
-				: evidence.totalCount
-			: report.counters.attempt_count,
-		pending_count: request.member
-			? request.kind === 'issues'
-				? ((selected[0]?.item as CohortIssueUsage | undefined)?.pending_count ?? 0)
-				: request.population === 'pending'
-					? evidence.totalCount
-					: 0
-			: report.counters.pending_count
+		attempt_count: request.member ? evidence.memberAttempts : report.counters.attempt_count,
+		pending_count: request.member ? evidence.memberPending : report.counters.pending_count
 	};
 }
