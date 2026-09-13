@@ -314,6 +314,7 @@ export async function getIssueUsage(
 	db: Kysely<Database>,
 	userId: string,
 	issueId: string,
+	cutoff = Date.now(),
 	generatedAt = Date.now()
 ): Promise<IssueUsageReport | null> {
 	const issue = await db
@@ -321,10 +322,20 @@ export async function getIssueUsage(
 		.innerJoin('project', (join) =>
 			join.onRef('project.id', '=', 'issue.project_id').on('project.user_id', '=', userId)
 		)
-		.select(['issue.id', 'issue.number', 'project.name as project_name'])
+		.select(['issue.id', 'issue.number', 'issue.title', 'project.name as project_name'])
 		.where('issue.id', '=', issueId)
 		.executeTakeFirst();
-	if (!issue) return null;
+	if (
+		!issue &&
+		!(await db
+			.selectFrom('agent_run')
+			.select('id')
+			.where('user_id', '=', userId)
+			.where('issue_id', '=', issueId)
+			.limit(1)
+			.executeTakeFirst())
+	)
+		return null;
 	const acc = createUsageAccumulator();
 	let attemptCount = 0;
 	let pendingCount = 0;
@@ -332,10 +343,15 @@ export async function getIssueUsage(
 	for (;;) {
 		let query = db
 			.selectFrom('agent_run')
-			.select(['id', 'created_at', 'ended_at', 'usage'])
+			.select([
+				'id',
+				'created_at',
+				sql<number | null>`CASE WHEN ended_at < ${cutoff} THEN ended_at END`.as('ended_at'),
+				sql<string | null>`CASE WHEN ended_at < ${cutoff} THEN usage END`.as('usage')
+			])
 			.where('user_id', '=', userId)
 			.where('issue_id', '=', issueId)
-			.where('created_at', '<', generatedAt);
+			.where('created_at', '<', cutoff);
 		if (boundary)
 			query = query.where(
 				sql<boolean>`(agent_run.created_at, agent_run.id) < (${boundary.created_at}, ${boundary.id})`
@@ -344,7 +360,7 @@ export async function getIssueUsage(
 		const selected = rows.slice(0, 5_000);
 		for (const row of selected) {
 			attemptCount++;
-			if (row.ended_at === null || row.ended_at >= generatedAt) pendingCount++;
+			if (row.ended_at === null) pendingCount++;
 			else addUsage(acc, row.usage);
 		}
 		if (rows.length <= 5_000) break;
@@ -354,15 +370,19 @@ export async function getIssueUsage(
 	const aggregate = finalizeUsage(acc);
 	return {
 		mode: 'issue',
-		cutoff: generatedAt,
+		cutoff,
 		generated_at: generatedAt,
 		timezone: 'UTC',
 		timezone_source: 'utc_fallback',
 		accounting_basis: 'finalized_before_cutoff_v1',
 		retention_basis: 'retained_direct_attempts',
+		metadata_basis: 'current_owned_or_retained',
+		accounting_version: 1,
 		issue: {
-			issue_id: issue.id,
-			issue_ref: `${issue.project_name}/${issue.number}`,
+			issue_id: issueId,
+			issue_ref: issue
+				? { project_name: issue.project_name, number: issue.number, title: issue.title }
+				: null,
 			aggregate,
 			attempt_count: attemptCount,
 			pending_count: pendingCount,

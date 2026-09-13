@@ -10,6 +10,7 @@ import { GET } from './+server';
 import { GET as RUNS_GET } from '../runs/+server';
 
 async function get(t: ReturnType<typeof createTestDb>, query: string) {
+	t.env.BETTER_AUTH_SECRET = 'usage-route-test-secret';
 	const url = new URL(`http://test/api/v1/usage${query}`);
 	const event = {
 		locals: { user: { id: USER, name: 'alice' } },
@@ -59,6 +60,7 @@ describe('GET /api/v1/usage validation and authorization', () => {
 
 	it('reconciles the independent multidimensional manifest through both real handlers', async () => {
 		const t = createTestDb();
+		t.env.BETTER_AUTH_SECRET = 'usage-route-test-secret';
 		seedMixed(t.sqlite);
 		await verifyMixed(async (path: string, query: Record<string, string>) => {
 			const url = new URL(`http://test/api/v1${path}?${new URLSearchParams(query)}`);

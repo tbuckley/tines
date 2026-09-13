@@ -1,4 +1,11 @@
-import type { AgentRunUsage, RunPricingBasisV1, RunPricingReason } from './types.js';
+import type {
+	AgentRun,
+	AgentRunUsage,
+	IssueRef,
+	RunPricingBasisV1,
+	RunPricingReason,
+	UsagePendingRun
+} from './types.js';
 import { instantsOfWallTime, validateTimezone, wallTimeOf } from './schedule.js';
 
 export const USAGE_TOKEN_FIELDS = [
@@ -207,6 +214,7 @@ export interface UsageGroup {
 	key: string;
 	dimension: UsageDimension;
 	aggregate: UsageAggregate;
+	scope?: string;
 }
 
 export interface ResolvedUsageFilters {
@@ -250,6 +258,10 @@ export interface UsageReport {
 	};
 	/** Compatibility alias for matching_evidence_filters. */
 	evidence_filters: UsageEvidenceFilters;
+	scope?: string;
+	scope_total_scope?: string;
+	matching_scope?: string;
+	pending_scope?: string;
 }
 
 export interface IssueUsageReport {
@@ -260,14 +272,47 @@ export interface IssueUsageReport {
 	timezone_source: ResolvedUsagePeriod['timezone_source'];
 	accounting_basis: 'finalized_before_cutoff_v1';
 	retention_basis: 'retained_direct_attempts';
+	metadata_basis: 'current_owned_or_retained';
+	accounting_version: 1;
+	scope?: string;
 	issue: {
 		issue_id: string;
-		issue_ref: string | null;
+		issue_ref: IssueRef | null;
 		aggregate: UsageAggregate;
 		attempt_count: number;
 		pending_count: number;
 		fully_priced: boolean;
 	};
+}
+
+export interface IssueAttemptUsage {
+	issue_id: string | null;
+	issue_ref: IssueRef | null;
+	aggregate: UsageAggregate;
+	attempt_count: number;
+	pending_count: number;
+	fully_priced: boolean;
+	latest_at: number;
+}
+
+export type UsageEvidenceItem = IssueAttemptUsage | AgentRunUsageEvidence | UsagePendingRun;
+export interface AgentRunUsageEvidence extends AgentRun {
+	usage_accounting: UsageEvidenceAccounting;
+}
+export interface UsageEvidencePage<T extends UsageEvidenceItem = UsageEvidenceItem> {
+	items: T[];
+	next_cursor: string | null;
+	previous_cursor: string | null;
+	total_count: number;
+	scope: string;
+	kind: 'issues' | 'runs';
+	population: 'finalized' | 'pending';
+	sort: 'cost' | 'time';
+	direction: 'asc' | 'desc';
+	matching_total: UsageAggregate;
+	parent_matching_total?: UsageAggregate;
+	attempt_count: number;
+	pending_count: number;
 }
 
 export type UsageEvidenceFilters = ResolvedUsageFilters & {

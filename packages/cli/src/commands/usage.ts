@@ -37,7 +37,9 @@ interface UsageOpts extends CommonOpts {
 
 function printIssueReport(report: IssueUsageReport): void {
 	const { issue } = report;
-	console.log(`Usage · ${issue.issue_ref ?? issue.issue_id} · Lifetime through now`);
+	console.log(
+		`Usage · ${issue.issue_ref ? `${issue.issue_ref.project_name}/${issue.issue_ref.number}` : issue.issue_id} · Lifetime through now`
+	);
 	console.log(`as of ${new Date(report.cutoff).toISOString()} · direct retained attempts`);
 	if (issue.attempt_count === 0) console.log('No agent runs');
 	else {
@@ -146,7 +148,7 @@ export function register(program: Command): void {
 					.choices(['project', 'workflow', 'state', 'outcome', 'runner', 'tier'])
 					.default('workflow')
 			)
-	).action(async (opts: UsageOpts) => {
+	).action(async (opts: UsageOpts, command: Command) => {
 		if (opts.issue) {
 			const contradictions = [
 				opts.window,
@@ -160,6 +162,7 @@ export function register(program: Command): void {
 				opts.outcome,
 				opts.accountingStatus
 			];
+			if (command.getOptionValueSource('by') === 'cli') contradictions.push(opts.by);
 			if (contradictions.some((value) => value !== undefined))
 				throw new Error('--issue cannot be combined with period or filter options');
 			const api = client(opts);
