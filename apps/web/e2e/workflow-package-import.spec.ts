@@ -269,9 +269,7 @@ test('reviews, confirms and installs an independent project-free package through
 	await expect(page).toHaveURL(expectedStateHref);
 	const target = page.locator(`#state-${installedState.id}`);
 	await expect(target).toHaveCount(1);
-	await expect(
-		target.getByRole('button', { name: new RegExp(installedState.name) })
-	).toHaveAttribute('aria-expanded', 'true');
+	await expect(target.locator(':scope > button')).toHaveAttribute('aria-expanded', 'true');
 	await expect(target).toBeInViewport();
 
 	await page.goto(`/workflows/${mainWorkflow.id}#state-${installedState.id}`);
