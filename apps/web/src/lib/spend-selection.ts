@@ -4,6 +4,7 @@ export type SpendWindow = UsageWindow | 'custom';
 export type SpendSort = 'asc' | 'desc';
 
 export interface SpendSelection {
+	mode: 'period' | 'cohort';
 	project: string;
 	window: SpendWindow;
 	view: UsageBy;
@@ -20,6 +21,9 @@ export interface SpendSelection {
 	evidenceSort: 'cost' | 'time';
 	evidenceDirection: 'asc' | 'desc';
 	cursor: string | null;
+	cohortWorkflow: string;
+	doneStates: string[] | null;
+	cohortRequestKey: string;
 }
 
 const windows = new Set<SpendWindow>(['today', '7d', '30d', 'custom']);
@@ -33,6 +37,18 @@ const evidenceKeys = [
 	'spend_direction',
 	'spend_cursor'
 ] as const;
+
+const parseDoneStates = (raw: string | null): string[] | null => {
+	if (raw === null) return null;
+	try {
+		const value = JSON.parse(raw) as unknown;
+		return Array.isArray(value) && value.every((item) => typeof item === 'string')
+			? [...new Set(value)].sort()
+			: [];
+	} catch {
+		return [];
+	}
+};
 
 export function clearSpendEvidence(changes: Record<string, string | null>) {
 	return { ...changes, ...Object.fromEntries(evidenceKeys.map((key) => [key, null])) };
@@ -48,6 +64,7 @@ export function patchSpendUrl(url: URL, changes: Record<string, string | null>):
 }
 
 export function parseSpendSelection(url: URL, focusId: string | null): SpendSelection {
+	const mode = url.searchParams.get('spend_mode') === 'cohort' ? 'cohort' : 'period';
 	const rawWindow = url.searchParams.get('spend_window');
 	const window: SpendWindow = windows.has(rawWindow as SpendWindow)
 		? (rawWindow as SpendWindow)
@@ -69,6 +86,8 @@ export function parseSpendSelection(url: URL, focusId: string | null): SpendSele
 	const evidenceSort = url.searchParams.get('spend_evidence_sort') === 'time' ? 'time' : 'cost';
 	const evidenceDirection = url.searchParams.get('spend_direction') === 'asc' ? 'asc' : 'desc';
 	const cursor = url.searchParams.get('spend_cursor');
+	const cohortWorkflow = url.searchParams.get('spend_cohort_workflow') ?? '';
+	const doneStates = parseDoneStates(url.searchParams.get('spend_done_states'));
 	const requestKey = JSON.stringify([
 		project,
 		workflow,
@@ -78,6 +97,7 @@ export function parseSpendSelection(url: URL, focusId: string | null): SpendSele
 		window === 'custom' ? to : ''
 	]);
 	return {
+		mode,
 		project,
 		window,
 		view,
@@ -93,7 +113,17 @@ export function parseSpendSelection(url: URL, focusId: string | null): SpendSele
 		population,
 		evidenceSort,
 		evidenceDirection,
-		cursor
+		cursor,
+		cohortWorkflow,
+		doneStates,
+		cohortRequestKey: JSON.stringify([
+			project,
+			window,
+			window === 'custom' ? from : '',
+			window === 'custom' ? to : '',
+			cohortWorkflow,
+			doneStates
+		])
 	};
 }
 

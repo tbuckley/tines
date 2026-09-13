@@ -13,6 +13,9 @@
 		window,
 		from,
 		to,
+		workflow,
+		selected,
+		onnavigate,
 		onclose
 	}: {
 		workflows: Workflow[];
@@ -20,36 +23,66 @@
 		window: UsageWindow | 'custom';
 		from: string;
 		to: string;
+		workflow: string;
+		selected: string[] | null;
+		onnavigate: (changes: Record<string, string | null>) => void;
 		onclose: () => void;
 	} = $props();
-	let workflow = $state('');
-	let selected = $state<string[] | null>(null);
 	let report = $state<CohortUsageReport | null>(null);
 	let loading = $state(false);
 	let error = $state<string | null>(null);
+	let generation = 0;
 	const choice = $derived(workflows.find((item) => item.id === workflow) ?? null);
 	const terminals = $derived(choice?.states.filter((state) => state.category === 'done') ?? []);
 	const effective = $derived(selected ?? terminals.map((state) => state.id));
+	const requestKey = $derived(JSON.stringify([project, window, from, to, workflow, effective]));
 	async function load() {
 		if (!workflow || !effective.length) return;
+		const mine = ++generation;
 		loading = true;
 		error = null;
+		report = null;
+		let timer: ReturnType<typeof setTimeout> | undefined;
 		try {
-			report = await api.getCohortUsage({
-				workflow,
-				...(project === 'all' ? {} : { project }),
-				...(window === 'custom' ? { from, to } : { window }),
-				...(selected === null ? {} : { done_state: effective })
+			const timeout = new Promise<never>((_, reject) => {
+				timer = setTimeout(
+					() => reject(new Error('The completed-issues request timed out.')),
+					30_000
+				);
 			});
+			const next = await Promise.race([
+				api.getCohortUsage({
+					workflow,
+					...(project === 'all' ? {} : { project }),
+					...(window === 'custom' ? { from, to } : { window }),
+					...(selected === null ? {} : { done_state: effective })
+				}),
+				timeout
+			]);
+			if (mine === generation) report = next;
 		} catch (value) {
-			error =
-				value instanceof ApiError || value instanceof Error
-					? value.message
-					: 'Unable to load cohort';
+			if (mine === generation)
+				error =
+					value instanceof ApiError || value instanceof Error
+						? value.message
+						: 'Unable to load cohort';
 		} finally {
-			loading = false;
+			if (timer) clearTimeout(timer);
+			if (mine === generation) loading = false;
 		}
 	}
+	$effect(() => {
+		void requestKey;
+		if (workflow && effective.length) void load();
+		else {
+			generation++;
+			report = null;
+			loading = false;
+		}
+		return () => {
+			generation++;
+		};
+	});
 </script>
 
 <section class="cohort" aria-labelledby="cohort-heading">
@@ -63,11 +96,12 @@
 	<div class="controls">
 		<label
 			>Workflow<select
-				bind:value={workflow}
-				onchange={() => {
-					selected = null;
-					report = null;
-				}}
+				value={workflow}
+				onchange={(event) =>
+					onnavigate({
+						spend_cohort_workflow: event.currentTarget.value,
+						spend_done_states: null
+					})}
 				><option value="">Choose a workflow</option>{#each workflows as item (item.id)}<option
 						value={item.id}>{item.name}</option
 					>{/each}</select
@@ -81,14 +115,13 @@
 							onchange={(event) => {
 								const next = new Set(effective);
 								event.currentTarget.checked ? next.add(state.id) : next.delete(state.id);
-								selected = [...next].sort();
-								report = null;
+								onnavigate({ spend_done_states: JSON.stringify([...next].sort()) });
 							}}
 						/>{state.name}</label
 					>{/each}
 			</fieldset>{/if}
 		<button type="button" disabled={!workflow || !effective.length || loading} onclick={load}
-			>{loading ? 'Loading…' : 'Inspect completed issues'}</button
+			>{loading ? 'Loading…' : 'Refresh completed issues'}</button
 		>
 	</div>
 	{#if workflow && !effective.length}<p class="error">Select at least one terminal state.</p>{/if}

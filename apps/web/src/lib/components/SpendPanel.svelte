@@ -40,7 +40,6 @@
 	let error = $state<string | null>(null);
 	let requestId = 0;
 	let expanded = $state(new Set<string>());
-	let cohortOpen = $state(false);
 	let customFrom = $state(''),
 		customTo = $state(''),
 		customSubmitted = $state(false);
@@ -106,7 +105,9 @@
 				'spend_from',
 				'spend_to',
 				'spend_workflow',
-				'spend_view'
+				'spend_view',
+				'spend_cohort_workflow',
+				'spend_done_states'
 			].includes(key)
 		)
 			? clearSpendEvidence(values)
@@ -290,14 +291,19 @@
 		>
 	</div>
 
-	<button type="button" onclick={() => (cohortOpen = true)}>Completed issues</button>
-	{#if cohortOpen}<SpendCohort
+	{#if selection.mode === 'period'}<button
+			type="button"
+			onclick={() => update({ spend_mode: 'cohort' })}>Completed issues</button
+		>{:else}<SpendCohort
 			{workflows}
 			project={selection.project}
 			window={selection.window}
 			from={selection.from}
 			to={selection.to}
-			onclose={() => (cohortOpen = false)}
+			workflow={selection.cohortWorkflow}
+			selected={selection.doneStates}
+			onnavigate={(changes) => update(changes)}
+			onclose={() => update({ spend_mode: 'period' })}
 		/>{/if}
 
 	<div aria-live="polite" aria-busy={status === 'loading' || status === 'refreshing'}>
