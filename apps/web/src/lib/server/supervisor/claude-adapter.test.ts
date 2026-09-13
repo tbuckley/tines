@@ -428,6 +428,89 @@ describe('claude adapter launch', () => {
 		expect(net.of('POST /v1/sessions')[0]?.body).toMatchObject({ agent: 'agent_replacement' });
 	});
 
+	it('replaces a cached effort agent whose retrieved configuration is unverifiable', async () => {
+		({ t, runnerId } = await world({
+			runnerConfig: {
+				environment_id: 'env_1',
+				agents_by_signature: {
+					'["balanced","claude-sonnet-5","high"]': {
+						agent_id: 'agent_unverifiable',
+						model: 'claude-sonnet-5',
+						effort: 'high'
+					}
+				}
+			}
+		}));
+		const net = fakeNetwork({
+			'GET /v1/agents/agent_unverifiable': () => ({ id: 'agent_unverifiable' }),
+			'POST /v1/agents': () => ({
+				id: 'agent_replacement',
+				model: { id: 'claude-sonnet-5', effort: 'high' }
+			})
+		});
+		await createClaudeAdapter(t.env, { fetch: net.fetch }).launch({
+			...launchInput(runnerId),
+			effort: 'high'
+		});
+		expect(net.of('POST /v1/agents')).toHaveLength(1);
+		expect(net.of('POST /v1/sessions')[0]?.body).toMatchObject({ agent: 'agent_replacement' });
+	});
+
+	it('rejects a cached effort agent whose retrieved configuration conflicts', async () => {
+		({ t, runnerId } = await world({
+			runnerConfig: {
+				environment_id: 'env_1',
+				agents_by_signature: {
+					'["balanced","claude-sonnet-5","high"]': {
+						agent_id: 'agent_conflict',
+						model: 'claude-sonnet-5',
+						effort: 'high'
+					}
+				}
+			}
+		}));
+		const net = fakeNetwork({
+			'GET /v1/agents/agent_conflict': () => ({
+				id: 'agent_conflict',
+				model: { id: 'claude-sonnet-5', effort: 'low' }
+			})
+		});
+		await expect(
+			createClaudeAdapter(t.env, { fetch: net.fetch }).launch({
+				...launchInput(runnerId),
+				effort: 'high'
+			})
+		).rejects.toThrow('cached provider agent configuration conflicts with intent');
+		expect(net.of('POST /v1/agents')).toHaveLength(0);
+		expect(net.of('POST /v1/sessions')).toHaveLength(0);
+	});
+
+	it('does not treat a non-404 cached-agent retrieval failure as a cache miss', async () => {
+		({ t, runnerId } = await world({
+			runnerConfig: {
+				environment_id: 'env_1',
+				agents_by_signature: {
+					'["balanced","claude-sonnet-5","high"]': {
+						agent_id: 'agent_unavailable',
+						model: 'claude-sonnet-5',
+						effort: 'high'
+					}
+				}
+			}
+		}));
+		const net = fakeNetwork({
+			'GET /v1/agents/agent_unavailable': () => new Response('unavailable', { status: 503 })
+		});
+		await expect(
+			createClaudeAdapter(t.env, { fetch: net.fetch }).launch({
+				...launchInput(runnerId),
+				effort: 'high'
+			})
+		).rejects.toThrow();
+		expect(net.of('POST /v1/agents')).toHaveLength(0);
+		expect(net.of('POST /v1/sessions')).toHaveLength(0);
+	});
+
 	it('CAS-merges different signatures launched concurrently', async () => {
 		({ t, runnerId } = await world({ runnerConfig: { environment_id: 'env_1' } }));
 		let agent = 0;
