@@ -151,4 +151,38 @@ describe('completion cohort usage', () => {
 		expect(report?.counters.distinct_issue_count).toBe(0);
 		expect(report?.aggregate.finalized_run_count).toBe(0);
 	});
+
+	it('carries one member across the 5,000-row tuple boundary without a duplicate sentinel', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const runner = addRunner(t);
+		const issue = addIssue(t, { id: 'iss_large_cohort', state: CLOSED });
+		entry(t, 'evt_large_cohort', issue, NOW - 90, CLOSED, 'done');
+		for (let index = 0; index < 5_002; index++)
+			addRun(t, {
+				id: `arun_large_${String(index).padStart(5, '0')}`,
+				issueId: issue,
+				runnerId: runner,
+				status: 'completed',
+				createdAt: NOW - 80,
+				endedAt: NOW - 70,
+				usage: JSON.stringify({ cost_usd: 1, cost_source: 'provider' })
+			});
+
+		const report = await getCohortUsage(
+			t.db,
+			USER,
+			{
+				workflow: 'wf_standard',
+				from: new Date(NOW - 100).toISOString(),
+				to: new Date(NOW).toISOString()
+			},
+			NOW + 100
+		);
+
+		expect(report).toMatchObject({
+			aggregate: { finalized_run_count: 5_002, cost_usd_exact: '5002' },
+			counters: { distinct_issue_count: 1, attempt_count: 5_002, zero_run_issue_count: 0 }
+		});
+	}, 20_000);
 });

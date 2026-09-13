@@ -481,7 +481,7 @@
 					? ` and counted before ${report.pending.unapplied_filters.join('/')} filters`
 					: ''}.
 			</p>
-			{#if selection.scope}{#key `${selection.scope}:${selection.kind}:${selection.member}:${selection.population}:${selection.evidenceSort}:${selection.evidenceDirection}:${selection.cursor}`}
+			{#if selection.mode === 'period' && selection.scope}{#key `${selection.scope}:${selection.kind}:${selection.member}:${selection.population}:${selection.evidenceSort}:${selection.evidenceDirection}:${selection.cursor}`}
 					<SpendEvidence
 						scope={selection.scope}
 						kind={selection.kind}

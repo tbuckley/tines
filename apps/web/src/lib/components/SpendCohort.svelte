@@ -216,26 +216,26 @@
 					).toISOString()} exclusive. Recorded provider and calculated list costs are not invoices.
 				</p>
 			</details>
-			{#if scope}<SpendEvidence
-					{scope}
-					{kind}
-					{member}
-					{population}
-					{sort}
-					{direction}
-					{cursor}
-					{onnavigate}
-					onclose={() =>
-						onnavigate({
-							spend_scope: null,
-							spend_kind: null,
-							spend_member: null,
-							spend_population: null,
-							spend_evidence_sort: null,
-							spend_direction: null,
-							spend_cursor: null
-						})}
-				/>{/if}
+			{#if scope}{#key `${scope}:${kind}:${member}:${population}:${sort}:${direction}:${cursor}`}<SpendEvidence
+						{scope}
+						{kind}
+						{member}
+						{population}
+						{sort}
+						{direction}
+						{cursor}
+						{onnavigate}
+						onclose={() =>
+							onnavigate({
+								spend_scope: null,
+								spend_kind: null,
+								spend_member: null,
+								spend_population: null,
+								spend_evidence_sort: null,
+								spend_direction: null,
+								spend_cursor: null
+							})}
+					/>{/key}{/if}
 		</div>{/if}
 </section>
 
