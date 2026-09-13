@@ -217,5 +217,5 @@ export function instrumentLatency(t: TestDb, latencyMs: number) {
 		},
 		batch: t.env.DB.batch.bind(t.env.DB)
 	};
-	return { env: { DB } as unknown as Env, sqls, conc };
+	return { env: { ...t.env, DB } as unknown as Env, sqls, conc };
 }

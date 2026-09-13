@@ -19,6 +19,7 @@ import {
 	renderTemplate,
 	repoDirFromUrl,
 	type CreateProjectRequest,
+	type StateCategory,
 	type StarterApplied,
 	type StarterId,
 	type StarterSummary
@@ -175,7 +176,7 @@ interface WorkflowPlacement {
 	name: string;
 	reused: boolean;
 	/** Reuse: the existing states, so the first issue can name one. */
-	existingStates?: { id: string; name: string }[];
+	existingStates?: { id: string; name: string; category: StateCategory }[];
 	/** Create: the resolved definition plus everything the insert needs. */
 	created?: { def: ResolvedDef; queries: CompiledQuery[] };
 }
@@ -247,7 +248,11 @@ export async function starterQueries(
 				id: identical.id,
 				name: identical.name,
 				reused: true,
-				existingStates: identical.states.map((s) => ({ id: s.id, name: s.name }))
+				existingStates: identical.states.map((s) => ({
+					id: s.id,
+					name: s.name,
+					category: s.category
+				}))
 			});
 			continue;
 		}
@@ -354,7 +359,11 @@ export async function starterQueries(
 		// reuse path the starter's own state ids were never inserted.
 		const states = placement.reused
 			? (placement.existingStates ?? [])
-			: (placement.created?.def.states ?? []).map((st) => ({ id: st.id, name: st.name }));
+			: (placement.created?.def.states ?? []).map((st) => ({
+					id: st.id,
+					name: st.name,
+					category: st.category
+				}));
 		const state = states.find((st) => st.name === spec.state);
 		if (!state) {
 			throw new ApiFail(
@@ -372,8 +381,10 @@ export async function starterQueries(
 				title: render(spec.title).slice(0, 500),
 				description: render(spec.description),
 				workflowId: placement.id,
+				workflowName: placement.name,
 				stateId: state.id,
 				stateName: state.name,
+				stateCategory: state.category,
 				now
 			})
 		);

@@ -91,7 +91,14 @@ import type {
 	UserPreferences,
 	WorkflowResponse
 } from './types.js';
-import type { ResolvedUsageFilters, UsageBy, UsageReport, UsageWindow } from './usage.js';
+import type {
+	IssueUsageReport,
+	ResolvedUsageFilters,
+	UsageBy,
+	UsageEvidencePage,
+	UsageReport,
+	UsageWindow
+} from './usage.js';
 
 export interface TimeResponse {
 	/** ISO 8601 timestamp (UTC). */
@@ -519,6 +526,20 @@ export function createApiClient(options: ApiClientOptions) {
 				by?: UsageBy;
 			} = {}
 		) => get<UsageReport>(`/api/v1/usage${query(filters)}`),
+		getIssueUsage: (issue: string) =>
+			get<IssueUsageReport>(`/api/v1/usage${query({ mode: 'issue', issue })}`),
+		getUsageScope: (scope: string) =>
+			get<UsageReport | IssueUsageReport>(`/api/v1/usage${query({ scope })}`),
+		getUsageEvidence: (filters: {
+			scope: string;
+			kind?: 'issues' | 'runs';
+			population?: 'finalized' | 'pending';
+			member?: string;
+			sort?: 'cost' | 'time';
+			direction?: 'asc' | 'desc';
+			limit?: number;
+			cursor?: string;
+		}) => get<UsageEvidencePage>(`/api/v1/usage/evidence${query(filters)}`),
 		getRun: (id: string) => get<AgentRunDetail>(`/api/v1/runs/${id}`),
 		/**
 		 * The run's complete log (not the 256 KB tail `getRun` returns) as a

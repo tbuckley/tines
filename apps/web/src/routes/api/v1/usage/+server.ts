@@ -6,8 +6,14 @@ import {
 	type UsageBy
 } from '@tines/shared';
 import { api, apiContext, ApiFail, notFound } from '$lib/server/api/core';
-import { getUsage } from '$lib/server/api/usage';
+import { getIssueUsage, getUsage } from '$lib/server/api/usage';
 import { authorizeUsageFilters } from '$lib/server/api/usage-ledger';
+import {
+	mintUsageScope,
+	usageKeyMaterial,
+	verifyUsageScope,
+	type UsageScopePayload
+} from '$lib/server/usage-scope';
 import type { RequestHandler } from './$types';
 
 const recognized = [
@@ -21,11 +27,30 @@ const recognized = [
 	'tier',
 	'outcome',
 	'accounting_status',
-	'by'
+	'by',
+	'mode',
+	'issue',
+	'scope'
 ];
 
+function groupFilters(report: Awaited<ReturnType<typeof getUsage>>, index: number) {
+	const group = report.groups[index];
+	const value = group.dimension.id ?? 'unknown';
+	return {
+		...report.filters,
+		...(report.by === 'project' ? { project: value } : {}),
+		...(report.by === 'workflow' ? { workflow: value } : {}),
+		...(report.by === 'state'
+			? { workflow: group.dimension.workflow_id ?? 'unknown', state: value }
+			: {}),
+		...(report.by === 'outcome' ? { outcome: value as never } : {}),
+		...(report.by === 'runner' ? { runner: value } : {}),
+		...(report.by === 'tier' ? { tier: value } : {})
+	};
+}
+
 export const GET: RequestHandler = api(async (event) => {
-	const { db, actor } = await apiContext(event);
+	const { db, actor, env } = await apiContext(event);
 	const params = event.url.searchParams;
 	for (const name of params.keys())
 		if (!recognized.includes(name))
@@ -38,37 +63,110 @@ export const GET: RequestHandler = api(async (event) => {
 			throw new ApiFail(422, 'invalid_field', `Duplicate "${name}" parameter`, { field: name });
 		else if (params.has(name) && params.get(name) === '')
 			throw new ApiFail(422, 'invalid_field', `"${name}" cannot be empty`, { field: name });
-	const by = (params.get('by') ?? 'workflow') as UsageBy;
+	const material = usageKeyMaterial(env);
+	if (!material)
+		throw new ApiFail(
+			500,
+			'usage_signing_unavailable',
+			'Usage evidence needs SECRET_ENCRYPTION_KEY or BETTER_AUTH_SECRET'
+		);
+	const replay = params.get('scope');
+	let replayPayload: UsageScopePayload | null = null;
+	if (replay) {
+		const others = recognized.filter((name) => name !== 'scope' && params.has(name));
+		if (others.length)
+			throw new ApiFail(422, 'invalid_field', 'scope cannot be combined with report options', {
+				field: others[0]
+			});
+		try {
+			replayPayload = await verifyUsageScope(replay, material);
+		} catch (error) {
+			throw new ApiFail(422, 'invalid_scope', (error as Error).message, { field: 'scope' });
+		}
+		if (replayPayload.owner !== actor.userId) throw notFound();
+	}
+	const mode = replayPayload?.mode ?? params.get('mode') ?? 'period';
+	if (!['period', 'issue'].includes(mode))
+		throw new ApiFail(422, 'invalid_field', 'mode must be period or issue', { field: 'mode' });
+	if (mode === 'issue') {
+		const issueId = replayPayload?.mode === 'issue' ? replayPayload.issue : params.get('issue');
+		if (!issueId)
+			throw new ApiFail(422, 'invalid_field', 'issue mode requires issue', { field: 'issue' });
+		const contradictions = replay
+			? []
+			: recognized.filter((name) => !['mode', 'issue'].includes(name) && params.has(name));
+		if (contradictions.length)
+			throw new ApiFail(
+				422,
+				'invalid_field',
+				'issue mode cannot include period or filter options',
+				{
+					field: contradictions[0],
+					remedy: 'remove period and filter options'
+				}
+			);
+		const now = Date.now();
+		const cutoff = replayPayload?.mode === 'issue' ? replayPayload.cutoff : now;
+		const report = await getIssueUsage(db, actor.userId, issueId, cutoff, now);
+		if (!report) throw notFound();
+		if (replayPayload?.mode === 'issue') {
+			report.timezone = replayPayload.timezone;
+			report.timezone_source = replayPayload.timezone_source;
+		}
+		report.scope =
+			replay ??
+			(await mintUsageScope(
+				{
+					v: 1,
+					owner: actor.userId,
+					mode: 'issue',
+					issue: issueId,
+					cutoff,
+					timezone: report.timezone,
+					timezone_source: report.timezone_source
+				},
+				material
+			));
+		return json(report, { headers: { 'cache-control': 'private, no-store' } });
+	}
+	if (params.has('issue'))
+		throw new ApiFail(422, 'invalid_field', 'issue requires mode=issue', { field: 'issue' });
+	const by = (
+		replayPayload?.mode === 'period' ? replayPayload.by : (params.get('by') ?? 'workflow')
+	) as UsageBy;
 	if (!['project', 'workflow', 'state', 'outcome', 'runner', 'tier'].includes(by))
 		throw new ApiFail(422, 'invalid_field', 'Invalid usage grouping', { field: 'by' });
-	const outcome = params.get('outcome') ?? undefined;
+	const periodPayload = replayPayload?.mode === 'period' ? replayPayload : null;
+	const selected = periodPayload?.filters;
+	const outcome = selected?.outcome ?? params.get('outcome') ?? undefined;
 	if (outcome && !['advanced', 'stalled', 'interrupted', 'unknown'].includes(outcome))
 		throw new ApiFail(422, 'invalid_field', 'Invalid outcome', { field: 'outcome' });
-	const accounting = params.get('accounting_status') ?? undefined;
+	const accounting = selected?.accounting_status ?? params.get('accounting_status') ?? undefined;
 	if (accounting && !['priced', 'unpriced', 'unreported'].includes(accounting))
 		throw new ApiFail(422, 'invalid_field', 'Invalid accounting status', {
 			field: 'accounting_status'
 		});
-	const tier = params.get('tier') ?? undefined;
+	const tier = selected?.tier ?? params.get('tier') ?? undefined;
 	if (tier && !['smartest', 'balanced', 'cheapest', 'unknown'].includes(tier))
 		throw new ApiFail(422, 'invalid_field', 'Invalid tier', { field: 'tier' });
-	if (params.has('state') && !params.has('workflow'))
+	if (!periodPayload && params.has('state') && !params.has('workflow'))
 		throw new ApiFail(422, 'invalid_field', 'state requires workflow qualification', {
 			field: 'state'
 		});
-	const state = params.get('state');
-	const workflow = params.get('workflow');
+	const state = selected?.state ?? params.get('state');
+	const workflow = selected?.workflow ?? params.get('workflow');
 	try {
 		// Period syntax and contradictions must win over retained-identity lookups.
 		// The service resolves the same valid input again using the configured timezone.
-		resolveUsagePeriod(
-			{
-				window: (params.get('window') ?? undefined) as 'today' | '7d' | '30d' | undefined,
-				from: params.get('from') ?? undefined,
-				to: params.get('to') ?? undefined
-			},
-			'UTC'
-		);
+		if (!periodPayload)
+			resolveUsagePeriod(
+				{
+					window: (params.get('window') ?? undefined) as 'today' | '7d' | '30d' | undefined,
+					from: params.get('from') ?? undefined,
+					to: params.get('to') ?? undefined
+				},
+				'UTC'
+			);
 	} catch (error) {
 		if (error instanceof UsageInputError)
 			throw new ApiFail(422, 'invalid_usage_period', error.message, {
@@ -80,8 +178,8 @@ export const GET: RequestHandler = api(async (event) => {
 	}
 	if (
 		!(await authorizeUsageFilters(db, actor.userId, {
-			project: params.get('project'),
-			runner: params.get('runner'),
+			project: selected?.project ?? params.get('project'),
+			runner: selected?.runner ?? params.get('runner'),
 			workflow,
 			state
 		}))
@@ -89,18 +187,56 @@ export const GET: RequestHandler = api(async (event) => {
 		throw notFound();
 	try {
 		const report = await getUsage(db, actor.userId, {
-			window: (params.get('window') ?? undefined) as 'today' | '7d' | '30d' | undefined,
-			from: params.get('from') ?? undefined,
-			to: params.get('to') ?? undefined,
-			project: params.get('project') ?? undefined,
-			workflow: params.get('workflow') ?? undefined,
-			state: params.get('state') ?? undefined,
-			runner: params.get('runner') ?? undefined,
-			tier: params.get('tier') ?? undefined,
+			window: periodPayload
+				? undefined
+				: ((params.get('window') ?? undefined) as 'today' | '7d' | '30d' | undefined),
+			from: periodPayload
+				? new Date(periodPayload.from).toISOString()
+				: (params.get('from') ?? undefined),
+			to: periodPayload
+				? new Date(periodPayload.to).toISOString()
+				: (params.get('to') ?? undefined),
+			project: selected?.project ?? params.get('project') ?? undefined,
+			workflow: selected?.workflow ?? params.get('workflow') ?? undefined,
+			state: selected?.state ?? params.get('state') ?? undefined,
+			runner: selected?.runner ?? params.get('runner') ?? undefined,
+			tier: selected?.tier ?? params.get('tier') ?? undefined,
 			outcome: outcome as never,
 			accounting_status: accounting as UsageAccountingStatus | undefined,
 			by
 		});
+		// A replay freezes the operator-visible period basis as well as its
+		// instants. Current supervisor settings must not relabel an old scope.
+		if (periodPayload) {
+			report.timezone = periodPayload.timezone;
+			report.timezone_source = periodPayload.timezone_source;
+		}
+		const base: UsageScopePayload = {
+			v: 1,
+			owner: actor.userId,
+			mode: 'period',
+			from: report.from,
+			to: report.to,
+			timezone: report.timezone,
+			timezone_source: report.timezone_source,
+			filters: report.filters,
+			by: report.by
+		};
+		report.scope = replay ?? (await mintUsageScope(base, material));
+		report.matching_scope = report.scope;
+		report.scope_total_scope = await mintUsageScope(
+			{ ...base, filters: report.filters.project ? { project: report.filters.project } : {} },
+			material
+		);
+		report.pending_scope = await mintUsageScope(
+			{ ...base, filters: { ...report.filters, outcome: undefined, accounting_status: undefined } },
+			material
+		);
+		for (let i = 0; i < report.groups.length; i++)
+			report.groups[i].scope = await mintUsageScope(
+				{ ...base, filters: groupFilters(report, i) },
+				material
+			);
 		return json(report, { headers: { 'cache-control': 'private, no-store' } });
 	} catch (error) {
 		if (error instanceof UsageInputError)
