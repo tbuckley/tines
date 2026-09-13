@@ -11,7 +11,7 @@
 		"combined.resume.after.md": { "bytes": 3659, "text_tokens": 967 }
 	},
 	"retrieval_overhead": {
-		"retrieval-command.txt": { "bytes": 168, "text_tokens": 52 },
+		"retrieval-command.txt": { "bytes": 173, "text_tokens": 55 },
 		"retrieval.stdout.txt": { "bytes": 58, "text_tokens": 11 },
 		"retrieval.stderr.txt": { "bytes": 34, "text_tokens": 9 }
 	},

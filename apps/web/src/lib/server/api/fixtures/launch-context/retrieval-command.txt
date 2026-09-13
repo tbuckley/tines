@@ -1,1 +1,1 @@
-tines issues show 'Fixture Project/520' --json | jq -er --arg id cmt_old_detail 'first(.comments[] | select(.id == $id) | .body) // error("comment not found: \($id)")'
+tines issues show 'Fixture Project'\''s/520' --json | jq -er --arg id cmt_old_detail 'first(.comments[] | select(.id == $id) | .body) // error("comment not found: \($id)")'
