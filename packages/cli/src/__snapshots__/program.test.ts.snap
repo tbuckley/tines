@@ -32,6 +32,7 @@ Commands:
   routing           Scoped routing rules: which runner takes which issues (most
                     specific scope wins)
   supervisor        The automation kill switch, quota policy, and attempt limit
+  state-retirement  Preserve guidance before state inheritance is retired
   usage [options]   Compare finalized run spend for a period
   events            Read the activity log
   help [command]    display help for command
@@ -1501,6 +1502,29 @@ Options:
 Show a schedule (<project>/<name>): config, next/last run, recent instances
 
 Options:
+  -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
+                   \`tines login\`; default https://tines.tbuckley.dev)
+  --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json           output the raw JSON response
+  -h, --help       display help for command
+",
+  "tines state-retirement": "Usage: tines state-retirement [options] [command]
+
+Preserve guidance before state inheritance is retired
+
+Options:
+  -h, --help           display help for command
+
+Commands:
+  inventory [options]  Write a versioned, read-only inventory for human review
+  help [command]       display help for command
+",
+  "tines state-retirement inventory": "Usage: tines state-retirement inventory [options]
+
+Write a versioned, read-only inventory for human review
+
+Options:
+  --out <file>     write the exact inventory JSON to this file
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
                    \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)

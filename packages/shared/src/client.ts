@@ -102,6 +102,7 @@ import type {
 	UsageReport,
 	UsageWindow
 } from './usage.js';
+import type { StateRetirementInventoryV1 } from './state-retirement.js';
 
 export interface TimeResponse {
 	/** ISO 8601 timestamp (UTC). */
@@ -277,6 +278,8 @@ export function createApiClient(options: ApiClientOptions) {
 
 	return {
 		getTime: () => get<TimeResponse>('/api/time'),
+		getStateRetirementInventory: () =>
+			get<StateRetirementInventoryV1>('/api/v1/state-retirement/inventory'),
 
 		// Projects
 		listProjects: (params: ProjectListFilters & PageParams = {}) =>
