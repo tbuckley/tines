@@ -1,6 +1,6 @@
 # Workflow package files
 
-Implementation status: the foundation and CLI provide v3 whole-library transfer, workflow closure export, file validation, signed destination preparation, atomic install, durable receipt recovery, and the `tines workflows export|validate|preview|install` file workflow. The browser authors, reviews, validates, downloads, installs, and recovers workflow packages. Integrated real-run acceptance remains successor work. Whole-library import remains best effort; it is not an atomic workflow installation.
+Implementation status: v3 whole-library transfer and workflow packages are implemented across the shared contract, API, CLI, and browser. The package path includes workflow closure export, file validation, signed destination preparation, atomic install, durable receipt recovery, and the `tines workflows export|validate|preview|install` commands. Whole-library import remains best effort; it is not an atomic workflow installation. Public discovery and dependency fetching remain intentionally out of scope.
 
 ## Install a package in the browser
 
@@ -235,4 +235,22 @@ They cover expiry (a real preparation backdated with the local test signing key)
 a late D1 skill-file failure with all allocated rows rolled back, and recovery across reload/404,
 same-plan retry, dropped committed response, and receipt lookup. Only fault injection is intercepted;
 the retry, expiry rejection, transaction, and receipt reads use the real backend. These browser
-checks do not stand in for the actual runner acceptance owned by the successor issue.
+checks are synthetic/local evidence; the release acceptance record must separately identify a
+post-install activation performed by a configured runner, with its run, logs, gate artifact, and
+handoff identifiers.
+
+`workflow-package-runner-acceptance.spec.ts` performs that separate activation on the isolated E2E
+stack. Alice's signed browser session installs the canonical file, then a real local daemon claims an
+issue created in the installed `Run` state, observes the substituted destination marker in its launch
+context, attaches the required `acceptance-evidence` text artifact, and takes the gated `Handoff`
+transition. The test emits a JSON attachment containing the file and plan digests plus every receipt,
+object, project, issue, runner, run, log, artifact, and final-state identifier for the acceptance run.
+
+The export journey is also the integrated two-account/two-destination-project file exercise. It
+exports a QA-style main plus inherited dependency, two skills with exact file bytes, ordered prompts,
+a repository declaration, artifact gate, declared target workflow, label substitution, and optional daily schedule/project-tier
+configuration. The destination starts with colliding workflow names. The first independent copy omits
+automation and is inspected through ordinary workflow/context APIs from two projects. A second renamed
+copy selects the paused schedule and a supported local-runner tier for one project. The journey pins
+zero automatic issues, `run_count=0`, unchanged project defaults, exact substitutions and inherited
+order, then edits one dependency copy and proves the source and sibling copy remain unchanged.

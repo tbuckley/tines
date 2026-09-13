@@ -132,6 +132,20 @@ test.beforeAll(async ({ playwright }) => {
 	);
 	await body(
 		await api.post('/api/v1/context', {
+			kind: 'skill',
+			name: 'qa-handoff',
+			workflow_state_id: draft.id,
+			files: [
+				{
+					path: 'SKILL.md',
+					content: '# QA handoff\n\nAttach the evidence and use the gated transition.'
+				},
+				{ path: 'checklist.txt', content: 'inspect\nverify\nhandoff\n' }
+			]
+		})
+	);
+	await body(
+		await api.post('/api/v1/context', {
 			kind: 'repo',
 			name: 'source',
 			workflow_state_id: draft.id,
@@ -168,6 +182,7 @@ test('authors an exact declared use and downloads the reviewed canonical package
 	page,
 	request
 }) => {
+	test.setTimeout(120_000);
 	await page.setViewportSize(DESKTOP);
 	const externalRequests: string[] = [];
 	page.on('request', (request) => {
@@ -179,7 +194,25 @@ test('authors an exact declared use and downloads the reviewed canonical package
 	await expect(page.getByRole('heading', { name: 'Workflow graph and gates' })).toBeVisible();
 	await expect(page.getByText('report · text · text/markdown')).toBeVisible();
 	await expect(page.getByText(literal, { exact: false })).toBeVisible();
+	// The acceptance file carries optional automation, but the first installation
+	// intentionally omits it to prove the project-free path.
+	await page.getByLabel('Source project').selectOption(projectId);
+	await page.getByRole('checkbox', { name: new RegExp(scheduleName) }).check();
+	await page.getByText('Tier preferences (explicit, optional)').click();
+	const draftTier = page
+		.locator('div.rounded-md')
+		.filter({ hasText: `${name} › Draft` })
+		.last();
+	await draftTier.locator('select').selectOption('balanced');
+	await draftTier.getByRole('checkbox', { name: 'Project-scoped' }).check();
+	await page.getByRole('button', { name: 'Rebuild from source' }).click();
+	await page.getByLabel('Key').fill('target_workflow');
+	await page.getByLabel('Type').selectOption('workflow');
+	await page.getByLabel('Default').fill('Standard');
+	await page.getByRole('textbox', { name: 'Label', exact: true }).fill('Target workflow');
+	await page.getByRole('button', { name: 'Add typed declaration' }).click();
 	await page.getByLabel('Key').fill('target_name');
+	await page.getByLabel('Type').selectOption('text');
 	await page.getByLabel('Default').fill('TARGET');
 	await page.getByRole('textbox', { name: 'Label', exact: true }).fill('Target name');
 	await page.getByRole('button', { name: 'Add typed declaration' }).click();
@@ -235,6 +268,7 @@ test('authors an exact declared use and downloads the reviewed canonical package
 	await signIn(page.context(), BOB.sessionToken);
 	await gotoHydrated(page, '/workflows/import');
 	await page.getByLabel('Workflow package file').setInputFiles(packagePath);
+	await page.getByLabel('Target workflow').selectOption({ label: 'Standard' });
 	await page.getByLabel('Target name').fill('DESTINATION');
 	await page.getByLabel(`Main · ${name}`).fill(`${name} installed`);
 	await page.getByRole('button', { name: 'Prepare installation' }).click();
@@ -338,6 +372,18 @@ test('authors an exact declared use and downloads the reviewed canonical package
 		{ path: 'SKILL.md', content: '# Browser check\n\nUse the exact viewport.' },
 		{ path: 'notes.txt', content: longText }
 	]);
+	const handoffSkill = await body<ContextItem>(
+		await bobApi.get(
+			`/api/v1/context/${installedContexts.find((item) => item.name === 'qa-handoff')!.id}`
+		)
+	);
+	expect(handoffSkill.files).toEqual([
+		{
+			path: 'SKILL.md',
+			content: '# QA handoff\n\nAttach the evidence and use the gated transition.'
+		},
+		{ path: 'checklist.txt', content: 'inspect\nverify\nhandoff\n' }
+	]);
 	const localPrompts = installedContexts
 		.filter((item) => ['instructions', 'long-guide'].includes(item.name))
 		.sort((a, b) => a.position - b.position);
@@ -378,6 +424,115 @@ test('authors an exact declared use and downloads the reviewed canonical package
 		url: 'https://github.com/tbuckley/tines',
 		branch: 'main'
 	});
+
+	// The same reviewed file can create a second independent copy with its
+	// optional schedule and tier enabled for exactly one destination project.
+	const secondProject = await body<Project>(
+		await bobApi.post('/api/v1/projects', { name: `Installed context second ${runId}` })
+	);
+	const secondInspectionIssue = await body<CreateIssueResponse>(
+		await bobApi.post(`/api/v1/projects/${secondProject.id}/issues`, {
+			title: 'Second-project context inspection',
+			workflow_id: installedWorkflow.id,
+			state: installedDraft.id
+		})
+	);
+	const secondEffective = await body<EffectiveContext>(
+		await bobApi.get(`/api/v1/issues/${secondInspectionIssue.id}/context`)
+	);
+	expect(
+		secondEffective.prompt.parts
+			.filter((part) => ['inherited-first', 'instructions', 'long-guide'].includes(part.name))
+			.map((part) => part.name)
+	).toEqual(['inherited-first', 'instructions', 'long-guide']);
+	expect(secondEffective.skills.find((item) => item.name === 'browser-check')?.files).toEqual(
+		skill.files
+	);
+	const defaultsBefore = [inspectionProject, secondProject].map((project) => ({
+		id: project.id,
+		default_workflow_id: project.default_workflow_id
+	}));
+	const runnerId = `rnr_package_acceptance_${runId}`;
+	const routingId = `rrl_package_acceptance_${runId}`;
+	const now = Date.now();
+	d1(`INSERT INTO runner(id,user_id,type,name,status,max_concurrent,max_run_minutes,default_tier,config,created_at,updated_at)
+		VALUES(${sqlLiteral(runnerId)},${sqlLiteral(BOB.id)},'local',${sqlLiteral(`Package acceptance ${runId}`)},'active',1,30,'balanced','{"harness":"codex"}',${now},${now});
+		INSERT INTO routing_rule(id,user_id,project_id,workflow_state_id,label_id,targets,created_at,updated_at)
+		VALUES(${sqlLiteral(routingId)},${sqlLiteral(BOB.id)},${sqlLiteral(inspectionProject.id)},NULL,NULL,${sqlLiteral(JSON.stringify([{ runner_id: runnerId }]))},${now},${now})`);
+	await gotoHydrated(page, '/workflows/import');
+	await page.getByLabel('Workflow package file').setInputFiles(packagePath);
+	await page.getByLabel('Target workflow').selectOption({ label: 'Standard' });
+	await page.getByLabel('Destination project').selectOption(inspectionProject.id);
+	await page
+		.getByRole('group', { name: 'Optional paused schedules' })
+		.getByRole('checkbox', { name: scheduleName })
+		.check();
+	await page
+		.getByRole('group', { name: 'Optional destination tier preferences' })
+		.locator('select')
+		.selectOption('balanced');
+	await page.getByLabel(`Main · ${name}`).fill(`${name} scheduled copy`);
+	await page.getByLabel(`Dependency · ${dependencyName}`).fill(`${dependencyName} scheduled copy`);
+	await page.getByRole('button', { name: 'Prepare installation' }).click();
+	await expect(page.getByText('balanced for Draft in destination project')).toBeVisible();
+	for (const checkbox of await page.getByRole('checkbox', { name: /I reviewed/ }).all())
+		await checkbox.check();
+	await page.getByRole('checkbox', { name: /I confirm exact plan/ }).check();
+	const installResponse = page.waitForResponse(
+		(response) => response.url().endsWith('/api/v1/library/install') && response.ok()
+	);
+	await page.getByRole('button', { name: 'Install package' }).click();
+	const secondReceipt = (await (await installResponse).json()) as {
+		objects: Array<{ kind: string; relationship?: string; id: string }>;
+		reused_inputs: Array<{ input_id: string; type: string; name: string }>;
+	};
+	expect(secondReceipt.reused_inputs).toEqual(
+		expect.arrayContaining([
+			expect.objectContaining({ type: 'workflow', name: 'Standard' }),
+			expect.objectContaining({ type: 'project', name: inspectionProject.name })
+		])
+	);
+	const secondMainId = secondReceipt.objects.find(
+		(object) => object.kind === 'workflow' && object.relationship === 'main'
+	)!.id;
+	const secondDependencyId = secondReceipt.objects.find(
+		(object) => object.kind === 'workflow' && object.relationship === 'dependency'
+	)!.id;
+	const installedScheduleId = secondReceipt.objects.find(
+		(object) => object.kind === 'schedule'
+	)!.id;
+	expect(
+		d1(
+			`SELECT enabled,last_run_at,run_count,project_id FROM scheduled_task WHERE id=${sqlLiteral(installedScheduleId)}`
+		)
+	).toEqual([{ enabled: 0, last_run_at: null, run_count: 0, project_id: inspectionProject.id }]);
+	expect(d1(`SELECT id FROM issue WHERE workflow_id=${sqlLiteral(secondMainId)}`)).toEqual([]);
+	for (const before of defaultsBefore) {
+		expect(d1(`SELECT default_workflow_id FROM project WHERE id=${sqlLiteral(before.id)}`)).toEqual(
+			[{ default_workflow_id: before.default_workflow_id }]
+		);
+	}
+
+	// Ordinary editing of one copied dependency cannot mutate Alice's source or
+	// the other installed copy.
+	await body(
+		await bobApi.patch(`/api/v1/workflows/${installedDependency.id}`, {
+			description: 'Edited only in the first independent copy.'
+		})
+	);
+	expect(
+		(await body<WorkflowResponse>(await bobApi.get(`/api/v1/workflows/${installedDependency.id}`)))
+			.description
+	).toBe('Edited only in the first independent copy.');
+	expect(
+		(await body<WorkflowResponse>(await bobApi.get(`/api/v1/workflows/${secondDependencyId}`)))
+			.description
+	).toBe('Required inherited browser evidence guidance.');
+	const aliceApi = apiClient(request, ALICE.apiKey);
+	expect(
+		(await body<WorkflowResponse>(await aliceApi.get(`/api/v1/workflows/${sourceDependencyId}`)))
+			.description
+	).toBe('Required inherited browser evidence guidance.');
 	// Ordinary receipt links remain navigable after the read-back inspection.
 	expect((await bobApi.get(`/api/v1/context/${copiedSkill.id}`)).ok()).toBe(true);
 	expect(externalRequests).toEqual([]);
