@@ -45,6 +45,7 @@ import {
 } from '$lib/server/supervisor/engine';
 import { getRunLogStore, runLogRawKey } from '$lib/server/run-log-store';
 import { spillEvicted } from '$lib/server/supervisor/run-log';
+import { mergeEffortEvidence } from '$lib/server/supervisor/effort-evidence';
 import { appendLogTail } from '$lib/server/supervisor/logic';
 import { buildResumePreamble, buildSupervisorPreamble } from '$lib/server/supervisor/preamble';
 import {
@@ -915,6 +916,14 @@ export async function appendRunLog(
 	let current = run;
 	for (let attempt = 0; ; attempt++) {
 		const appended = appendLogTail(current.log, current.log_bytes_dropped, chunk);
+		const mergedEffort = effortApplication
+			? mergeEffortEvidence(
+					(current.effort_application_status ?? 'unknown') as AgentRun['effort_application_status'],
+					current.effort_application_evidence,
+					effortApplication,
+					now
+				)
+			: null;
 		// Bytes the tail evicts go to R2 *before* the D1 update, so D1 never
 		// records dropped bytes that no object holds. The reverse — an object
 		// whose update then loses a guard — is an orphan the sweep GCs.
@@ -927,16 +936,10 @@ export async function appendRunLog(
 					log_bytes_dropped: appended.dropped,
 					...(spill ?? {}),
 					...(seq === undefined ? {} : { log_seq: seq }),
-					...(effortApplication
+					...(mergedEffort
 						? {
-								effort_application_status: effortApplication.status,
-								effort_application_evidence: JSON.stringify({
-									version: 1,
-									transport: effortApplication.transport,
-									attempted_effort: effortApplication.attempted_effort,
-									received_at: now,
-									...(effortApplication.reason ? { reason: effortApplication.reason } : {})
-								})
+								effort_application_status: mergedEffort.status,
+								effort_application_evidence: mergedEffort.evidence
 							}
 						: {})
 				})
@@ -1359,6 +1362,27 @@ export async function finishRun(
 	}
 
 	const run = await loadRunnerRun(db, runner, runId);
+	const finishEffort = body.effort_application;
+	if (
+		finishEffort &&
+		(finishEffort.transport !== 'argv' ||
+			finishEffort.attempted_effort !== run.resolved_effort ||
+			!['accepted_unconfirmed', 'rejected'].includes(finishEffort.status) ||
+			(finishEffort.reason !== undefined &&
+				(typeof finishEffort.reason !== 'string' || finishEffort.reason.length > 500)))
+	) {
+		throw new ApiFail(422, 'invalid_field', 'effort application does not match the claimed run', {
+			field: 'effort_application'
+		});
+	}
+	const mergedFinishEffort = finishEffort
+		? mergeEffortEvidence(
+				(run.effort_application_status ?? 'unknown') as AgentRun['effort_application_status'],
+				run.effort_application_evidence,
+				finishEffort,
+				now
+			)
+		: null;
 	if (run.status === 'assigned') {
 		throw new ApiFail(
 			422,
@@ -1416,6 +1440,12 @@ export async function finishRun(
 			error: error ?? null,
 			...(judgment ? { judgment: 'interrupted' as const } : {}),
 			finalReport: {
+				...(mergedFinishEffort
+					? {
+							effort_application_status: mergedFinishEffort.status,
+							effort_application_evidence: mergedFinishEffort.evidence
+						}
+					: {}),
 				...(usage ? { usage: JSON.stringify(usage) } : {}),
 				...(providerSessionId ? { provider_session_id: providerSessionId } : {}),
 				...(turnCount !== undefined ? { turn_count: turnCount } : {}),

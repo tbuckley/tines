@@ -10,6 +10,8 @@ import type {
 import {
 	INHERIT_RUNNER_ID,
 	isEffortToken,
+	isRecognizedEffort,
+	RECOGNIZED_EFFORT_VALUES,
 	isGlobalRoutingScope,
 	isTierOnlyTargets,
 	routingScopeSpecificity
@@ -184,12 +186,19 @@ export function validateTargets(
 				field: 'targets'
 			});
 		}
+		const wildcardEffort = requireTargetEffort(input.effort, 'targets[0].effort');
+		if (wildcardEffort && !isRecognizedEffort(wildcardEffort)) {
+			throw new ApiFail(
+				422,
+				'effort_incompatible',
+				`"targets[0].effort" is not a recognized provider effort`,
+				{ field: 'targets[0].effort', allowed_values: [...RECOGNIZED_EFFORT_VALUES] }
+			);
+		}
 		const target: RoutingTarget = {
 			runner_id: INHERIT_RUNNER_ID,
 			tier: requireTier(input.tier, 'targets[0].tier'),
-			...((requireTargetEffort(input.effort, 'targets[0].effort') as string | undefined)
-				? { effort: input.effort as string }
-				: {})
+			...(wildcardEffort ? { effort: wildcardEffort } : {})
 		};
 		return [target];
 	}

@@ -77,7 +77,12 @@ function fakeNetwork(overrides: Record<string, (call: RecordedCall) => unknown> 
 		const body = typeof init?.body === 'string' ? JSON.parse(init.body) : undefined;
 		const call: RecordedCall = { method, path: url.pathname, body, headers };
 		calls.push(call);
-		const handler = overrides[`${method} ${url.pathname}`] ?? defaults[`${method} ${url.pathname}`];
+		const handler =
+			overrides[`${method} ${url.pathname}`] ??
+			defaults[`${method} ${url.pathname}`] ??
+			(method === 'GET' && url.pathname.startsWith('/v1/agents/')
+				? () => ({ id: url.pathname.split('/').at(-1), version: 1 })
+				: undefined);
 		if (!handler) {
 			// Unrouted mutations should fail tests loudly; unrouted GET/POST
 			// housekeeping (events send, archive) succeeds with an empty object.
@@ -362,6 +367,88 @@ describe('claude adapter launch', () => {
 			expect.objectContaining({ status: 'rejected', observed_effort: 'medium' })
 		);
 		expect(net.of('POST /v1/sessions')).toHaveLength(0);
+	});
+
+	it('retrieves and confirms a cached effort agent before reuse', async () => {
+		({ t, runnerId } = await world({
+			runnerConfig: {
+				environment_id: 'env_1',
+				agents_by_signature: {
+					'["balanced","claude-sonnet-5","high"]': {
+						agent_id: 'agent_cached',
+						model: 'claude-sonnet-5',
+						effort: 'high'
+					}
+				}
+			}
+		}));
+		const net = fakeNetwork({
+			'GET /v1/agents/agent_cached': () => ({
+				id: 'agent_cached',
+				model: { id: 'claude-sonnet-5', effort: { type: 'high' } }
+			})
+		});
+		const recordEffortEvidence = vi.fn(async () => {});
+		await createClaudeAdapter(t.env, { fetch: net.fetch }).launch({
+			...launchInput(runnerId),
+			effort: 'high',
+			recordEffortEvidence
+		});
+		expect(net.of('POST /v1/agents')).toHaveLength(0);
+		expect(recordEffortEvidence).toHaveBeenCalledWith(
+			expect.objectContaining({ status: 'confirmed', provider_agent_id: 'agent_cached' })
+		);
+	});
+
+	it('CAS-merges different signatures launched concurrently', async () => {
+		({ t, runnerId } = await world({ runnerConfig: { environment_id: 'env_1' } }));
+		let agent = 0;
+		const net = fakeNetwork({
+			'POST /v1/agents': (call) => ({
+				id: `agent_${++agent}`,
+				model: (call.body as { model: unknown }).model
+			})
+		});
+		const adapter = createClaudeAdapter(t.env, { fetch: net.fetch });
+		await Promise.all([
+			adapter.launch({ ...launchInput(runnerId), effort: 'low' }),
+			adapter.launch({ ...launchInput(runnerId), effort: 'high' })
+		]);
+		const config = JSON.parse(
+			(t.all('SELECT config FROM runner WHERE id = ?', runnerId)[0] as { config: string }).config
+		) as { agents_by_signature: Record<string, unknown> };
+		expect(Object.keys(config.agents_by_signature)).toEqual(
+			expect.arrayContaining([
+				'["balanced","claude-sonnet-5","low"]',
+				'["balanced","claude-sonnet-5","high"]'
+			])
+		);
+	});
+
+	it('keeps same-signature concurrent misses bound to each created agent', async () => {
+		({ t, runnerId } = await world({ runnerConfig: { environment_id: 'env_1' } }));
+		let agent = 0;
+		const net = fakeNetwork({
+			'POST /v1/agents': (call) => ({
+				id: `agent_${++agent}`,
+				model: (call.body as { model: unknown }).model
+			})
+		});
+		const adapter = createClaudeAdapter(t.env, { fetch: net.fetch });
+		await Promise.all([
+			adapter.launch({ ...launchInput(runnerId), effort: 'high' }),
+			adapter.launch({ ...launchInput(runnerId), effort: 'high' })
+		]);
+		expect(net.of('POST /v1/agents')).toHaveLength(2);
+		expect(
+			net.of('POST /v1/sessions').map((call) => (call.body as { agent: string }).agent)
+		).toEqual(expect.arrayContaining(['agent_1', 'agent_2']));
+		const config = JSON.parse(
+			(t.all('SELECT config FROM runner WHERE id = ?', runnerId)[0] as { config: string }).config
+		) as { agents_by_signature: Record<string, { agent_id: string }> };
+		expect(config.agents_by_signature['["balanced","claude-sonnet-5","high"]']?.agent_id).toMatch(
+			/^agent_[12]$/
+		);
 	});
 
 	it('mounts a .git-suffixed context URL in canonical form', async () => {

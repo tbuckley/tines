@@ -41,6 +41,7 @@ import {
 } from './resume';
 import { loadSealableRun, sealRunLog, spillEvicted, sweepRunLogs } from './run-log';
 import { effectiveAutomationEnabled } from './settings';
+import { mergeEffortEvidence, type EffortMilestone } from './effort-evidence';
 
 const ACTIVE = [...ACTIVE_RUN_STATUSES];
 
@@ -523,19 +524,35 @@ export async function launchClaimedRun(
 			effort: ctx.effort,
 			recordEffortEvidence: ctx.effort
 				? async (evidence) => {
-						await db
-							.updateTable('agent_run')
-							.set({
-								effort_application_status: evidence.status,
-								effort_application_evidence: JSON.stringify({
-									version: 1,
-									...evidence,
-									received_at: Date.now()
+						for (let attempt = 0; attempt < 3; attempt++) {
+							const current = await db
+								.selectFrom('agent_run')
+								.select(['status', 'effort_application_status', 'effort_application_evidence'])
+								.where('id', '=', ctx.runId)
+								.executeTakeFirst();
+							if (!current || !(ACTIVE_RUN_STATUSES as readonly string[]).includes(current.status))
+								return;
+							const merged = mergeEffortEvidence(
+								(current.effort_application_status ??
+									'unknown') as import('@tines/shared').EffortApplicationStatus,
+								current.effort_application_evidence,
+								evidence as EffortMilestone,
+								Date.now()
+							);
+							const result = await db
+								.updateTable('agent_run')
+								.set({
+									effort_application_status: merged.status,
+									effort_application_evidence: merged.evidence
 								})
-							})
-							.where('id', '=', ctx.runId)
-							.where('status', 'in', [...ACTIVE_RUN_STATUSES])
-							.execute();
+								.where('id', '=', ctx.runId)
+								.where('status', 'in', [...ACTIVE_RUN_STATUSES])
+								.where('effort_application_status', '=', current.effort_application_status)
+								.where('effort_application_evidence', '=', current.effort_application_evidence)
+								.executeTakeFirst();
+							if (Number(result.numUpdatedRows) === 1) return;
+						}
+						throw new Error('effort evidence changed repeatedly during managed launch');
 					}
 				: undefined,
 			runKey: secret
@@ -1018,6 +1035,8 @@ export async function endRun(
 			turn_count?: number;
 			conversation_turn_count?: number;
 			workspace_path?: string;
+			effort_application_status?: import('@tines/shared').EffortApplicationStatus;
+			effort_application_evidence?: string;
 		};
 	}
 ): Promise<EndRunOutcome> {
@@ -1066,6 +1085,8 @@ export async function endRun(
 				${input.finalReport?.turn_count !== undefined ? sql`turn_count = ${input.finalReport.turn_count},` : sql``}
 				${input.finalReport?.conversation_turn_count !== undefined ? sql`conversation_turn_count = ${input.finalReport.conversation_turn_count},` : sql``}
 				${input.finalReport?.workspace_path !== undefined ? sql`workspace_path = ${input.finalReport.workspace_path},` : sql``}
+				${input.finalReport?.effort_application_status !== undefined ? sql`effort_application_status = ${input.finalReport.effort_application_status},` : sql``}
+				${input.finalReport?.effort_application_evidence !== undefined ? sql`effort_application_evidence = ${input.finalReport.effort_application_evidence},` : sql``}
 				state_id_at_end = (SELECT state_id FROM issue WHERE id = ${run.issue_id})
 			WHERE id = ${run.id} AND status IN (${sql.join(ACTIVE)})`.compile(db)
 	]);

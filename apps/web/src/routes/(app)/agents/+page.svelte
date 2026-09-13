@@ -2451,83 +2451,95 @@
 				<p class="text-sm font-medium">Targets (preference order)</p>
 				{#each ruleTargets as target, i (i)}
 					{@const choices = targetEffortChoices(target)}
-					<div class="flex items-center gap-1.5">
-						<span class="text-muted-foreground w-4 text-right text-xs">{i + 1}.</span>
-						<Select
-							class="flex-1"
-							aria-label={`Target ${i + 1} runner`}
-							value={target.runner_id}
-							onchange={(e) =>
-								(ruleTargets[i] = { ...ruleTargets[i], runner_id: e.currentTarget.value })}
+					<div
+						class="grid gap-2 rounded-md border p-2 sm:grid-cols-[minmax(12rem,1fr)_7rem_8rem_auto] sm:items-end"
+					>
+						<label class="min-w-0 space-y-1 text-xs">
+							<span class="font-medium">{i + 1}. Runner</span>
+							<Select
+								class="w-full min-w-0"
+								aria-label={`Target ${i + 1} runner`}
+								value={target.runner_id}
+								onchange={(e) =>
+									(ruleTargets[i] = { ...ruleTargets[i], runner_id: e.currentTarget.value })}
+							>
+								{#each data.runners as runner (runner.id)}
+									<option value={runner.id}
+										>{runner.name}{runner.status === 'paused' ? ' (paused)' : ''}</option
+									>
+								{/each}
+							</Select></label
 						>
-							{#each data.runners as runner (runner.id)}
-								<option value={runner.id}
-									>{runner.name}{runner.status === 'paused' ? ' (paused)' : ''}</option
-								>
-							{/each}
-						</Select>
-						<Select
-							class="w-28"
-							aria-label={`Target ${i + 1} effort`}
-							value={target.effort}
-							onchange={(e) =>
-								(ruleTargets[i] = { ...ruleTargets[i], effort: e.currentTarget.value })}
+						<label class="space-y-1 text-xs"
+							><span class="font-medium">Effort</span>
+							<Select
+								class="w-full"
+								aria-label={`Target ${i + 1} effort`}
+								value={target.effort}
+								onchange={(e) =>
+									(ruleTargets[i] = { ...ruleTargets[i], effort: e.currentTarget.value })}
+							>
+								<option value="">inherit</option>
+								{#if target.effort && !choices.includes(target.effort)}
+									<option value={target.effort}>{target.effort} (incompatible)</option>
+								{/if}
+								{#each choices as effort (effort)}
+									<option value={effort}>{effort}</option>
+								{/each}
+							</Select></label
 						>
-							<option value="">inherit</option>
-							{#if target.effort && !choices.includes(target.effort)}
-								<option value={target.effort}>{target.effort} (incompatible)</option>
-							{/if}
-							{#each choices as effort (effort)}
-								<option value={effort}>{effort}</option>
-							{/each}
-						</Select>
-						<Select
-							class="w-32"
-							aria-label={`Target ${i + 1} tier`}
-							value={target.tier}
-							onchange={(e) =>
-								(ruleTargets[i] = {
-									...ruleTargets[i],
-									tier: e.currentTarget.value as '' | ModelTier
-								})}
+						<label class="space-y-1 text-xs"
+							><span class="font-medium">Tier</span>
+							<Select
+								class="w-full"
+								aria-label={`Target ${i + 1} tier`}
+								value={target.tier}
+								onchange={(e) =>
+									(ruleTargets[i] = {
+										...ruleTargets[i],
+										tier: e.currentTarget.value as '' | ModelTier
+									})}
+							>
+								<option value="">default tier</option>
+								{#each MODEL_TIERS as tier (tier)}
+									<option value={tier}>{tier}</option>
+								{/each}
+							</Select></label
 						>
-							<option value="">default tier</option>
-							{#each MODEL_TIERS as tier (tier)}
-								<option value={tier}>{tier}</option>
-							{/each}
-						</Select>
-						<Button
-							size="icon"
-							variant="ghost"
-							type="button"
-							class="size-8"
-							disabled={i === 0}
-							aria-label="Move up"
-							onclick={() => moveTarget(i, -1)}
-						>
-							<IconArrowUp size={14} />
-						</Button>
-						<Button
-							size="icon"
-							variant="ghost"
-							type="button"
-							class="size-8"
-							disabled={i === ruleTargets.length - 1}
-							aria-label="Move down"
-							onclick={() => moveTarget(i, 1)}
-						>
-							<IconArrowDown size={14} />
-						</Button>
-						<Button
-							size="icon"
-							variant="ghost"
-							type="button"
-							class="text-destructive size-8"
-							aria-label="Remove target"
-							onclick={() => (ruleTargets = ruleTargets.filter((_, j) => j !== i))}
-						>
-							<IconX size={14} />
-						</Button>
+						<div class="flex items-center justify-end gap-1">
+							<Button
+								size="icon"
+								variant="ghost"
+								type="button"
+								class="size-8"
+								disabled={i === 0}
+								aria-label="Move up"
+								onclick={() => moveTarget(i, -1)}
+							>
+								<IconArrowUp size={14} />
+							</Button>
+							<Button
+								size="icon"
+								variant="ghost"
+								type="button"
+								class="size-8"
+								disabled={i === ruleTargets.length - 1}
+								aria-label="Move down"
+								onclick={() => moveTarget(i, 1)}
+							>
+								<IconArrowDown size={14} />
+							</Button>
+							<Button
+								size="icon"
+								variant="ghost"
+								type="button"
+								class="text-destructive size-8"
+								aria-label="Remove target"
+								onclick={() => (ruleTargets = ruleTargets.filter((_, j) => j !== i))}
+							>
+								<IconX size={14} />
+							</Button>
+						</div>
 					</div>
 				{/each}
 				<Button

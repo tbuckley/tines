@@ -2069,6 +2069,8 @@ export interface AppendRunLogResponse {
 export interface FinishRunRequest {
 	status: 'completed' | 'failed';
 	error?: string;
+	/** Last local launch milestone, repeated so a fast finish can recover a lost log request. */
+	effort_application?: AppendRunLogRequest['effort_application'];
 	/**
 	 * `interrupted` = the daemon died, restarted, or was shut down around the
 	 * run; the work did not fail, so the issue must not take a strike. Only

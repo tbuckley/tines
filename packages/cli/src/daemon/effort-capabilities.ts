@@ -10,6 +10,21 @@ import type { HarnessKind } from './support.js';
 
 const MAX_STDOUT = 1024 * 1024;
 const DEADLINE_MS = 5000;
+export const EFFORT_CAPABILITIES_TTL_MS = 10 * 60_000;
+const MIN_CLAUDE_EFFORT_VERSION = [2, 1, 258] as const;
+
+export function claudeEffortVersionSupported(version: string): boolean {
+	const parsed = version
+		.match(/(\d+)\.(\d+)\.(\d+)/)
+		?.slice(1)
+		.map(Number);
+	if (!parsed) return false;
+	for (let i = 0; i < MIN_CLAUDE_EFFORT_VERSION.length; i++) {
+		if (parsed[i]! > MIN_CLAUDE_EFFORT_VERSION[i]!) return true;
+		if (parsed[i]! < MIN_CLAUDE_EFFORT_VERSION[i]!) return false;
+	}
+	return true;
+}
 
 /** Refuse an enforced assignment if this exact boot cannot uphold it. */
 export function assignmentEffortRejection(
@@ -77,6 +92,12 @@ async function discoverClaude(daemonVersion: string): Promise<EffortCapabilities
 		]);
 		if (!help.includes('--effort'))
 			return failure('claude_code', daemonVersion, 'installed Claude CLI has no --effort option');
+		if (!claudeEffortVersionSupported(version))
+			return failure(
+				'claude_code',
+				daemonVersion,
+				`installed Claude CLI ${version.trim()} predates verified --effort support 2.1.258`
+			);
 		const models = Object.entries(CLAUDE_MODELS).map(([model, efforts]) => ({ model, efforts }));
 		return {
 			version: 1,
@@ -168,4 +189,34 @@ async function discoverCodex(daemonVersion: string): Promise<EffortCapabilitiesV
 export async function discoverEffortCapabilities(harness: HarnessKind, daemonVersion: string) {
 	if (harness === 'custom') return undefined;
 	return harness === 'codex' ? discoverCodex(daemonVersion) : discoverClaude(daemonVersion);
+}
+
+/** Coalesces discovery, refreshes idle daemons, and supports a mandatory launch-time reprobe. */
+export class EffortCapabilityRefresher {
+	private value: EffortCapabilities | undefined;
+	private refreshedAt = 0;
+	private pending: Promise<EffortCapabilities | undefined> | null = null;
+
+	constructor(
+		private readonly harness: HarnessKind,
+		private readonly daemonVersion: string,
+		private readonly discover = discoverEffortCapabilities,
+		private readonly now = Date.now
+	) {}
+
+	async get(force = false): Promise<EffortCapabilities | undefined> {
+		if (!force && this.refreshedAt && this.now() - this.refreshedAt < EFFORT_CAPABILITIES_TTL_MS)
+			return this.value;
+		if (this.pending) return this.pending;
+		this.pending = this.discover(this.harness, this.daemonVersion).then((value) => {
+			this.value = value;
+			this.refreshedAt = this.now();
+			return value;
+		});
+		try {
+			return await this.pending;
+		} finally {
+			this.pending = null;
+		}
+	}
 }

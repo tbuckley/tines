@@ -86,6 +86,30 @@ const FIXED_ROUTES: Record<string, unknown> = {
 		runner_name: 'macbook',
 		tier: 'balanced',
 		model: 'gpt-5.6-sol',
+		requested_effort: 'high',
+		resolved_effort: 'high',
+		effort_source: {
+			kind: 'routing_target',
+			runner_id: 'r1',
+			tier: 'balanced',
+			rule_id: 'rule1',
+			scope_label: 'project demo',
+			target_index: 0
+		},
+		effort_application_status: 'rejected',
+		effort_application_evidence: {
+			version: 1,
+			milestones: [
+				{
+					status: 'rejected',
+					transport: 'managed_agent_config',
+					attempted_effort: 'high',
+					observed_model: 'gpt-5.6-sol',
+					observed_effort: 'medium',
+					reason: 'provider mismatch'
+				}
+			]
+		},
 		state_id_at_start: 's0',
 		state_id_at_end: 's1',
 		created_at: 1,
@@ -279,6 +303,12 @@ describe('list pagination', () => {
 		expect(shown.stdout).toContain('cost provenance: Estimated standard API list-price equivalent');
 		expect(shown.stdout).toContain('rate: rate-v1 v1');
 		expect(shown.stdout).toContain('exact estimated USD: 0.00394');
+		expect(shown.stdout).toContain(
+			'effort: requested high  resolved high  source routing target 1 (project demo)'
+		);
+		expect(shown.stdout).toContain(
+			'effort application: rejected  observed medium on gpt-5.6-sol  (provider mismatch)'
+		);
 
 		const json = await cli(['runs', 'show', 'priced-run', '--json']);
 		expect(JSON.parse(json.stdout).usage.pricing.basis.rates.cache_write_tokens).toBe('5');

@@ -231,15 +231,29 @@ function createProviderContext(env: Env, opts: ClaudeAdapterOptions): ProviderCo
 		return decryptSecret(settings.github_pat_enc, requireEncryptionKey(env));
 	}
 
-	async function persistConfig(runnerId: string, config: ClaudeRunnerConfig): Promise<void> {
-		await db
-			.updateTable('runner')
-			.set({
-				config: JSON.stringify(config),
-				resume_config_revision: sql<number>`resume_config_revision + 1`
-			})
-			.where('id', '=', runnerId)
-			.execute();
+	async function persistConfig(
+		runnerId: string,
+		merge: (current: ClaudeRunnerConfig) => ClaudeRunnerConfig
+	): Promise<ClaudeRunnerConfig> {
+		for (let attempt = 0; attempt < 5; attempt++) {
+			const stored = await db
+				.selectFrom('runner')
+				.select(['config', 'resume_config_revision'])
+				.where('id', '=', runnerId)
+				.executeTakeFirstOrThrow();
+			const next = merge(parseJson<ClaudeRunnerConfig>(stored.config) ?? {});
+			const updated = await db
+				.updateTable('runner')
+				.set({
+					config: JSON.stringify(next),
+					resume_config_revision: sql<number>`resume_config_revision + 1`
+				})
+				.where('id', '=', runnerId)
+				.where('resume_config_revision', '=', stored.resume_config_revision)
+				.executeTakeFirst();
+			if (Number(updated.numUpdatedRows) === 1) return next;
+		}
+		throw new Error('runner configuration changed repeatedly while caching managed resources');
 	}
 
 	/**
@@ -288,8 +302,10 @@ function createProviderContext(env: Env, opts: ClaudeAdapterOptions): ProviderCo
 			if (!existing) throw e;
 			environmentId = existing.id;
 		}
-		ctx.config.environment_id = environmentId;
-		await persistConfig(ctx.row.id, ctx.config);
+		ctx.config = await persistConfig(ctx.row.id, (current) => ({
+			...current,
+			environment_id: environmentId
+		}));
 		return environmentId;
 	}
 
@@ -317,14 +333,33 @@ function createProviderContext(env: Env, opts: ClaudeAdapterOptions): ProviderCo
 				? ctx.config.agents[tier]
 				: undefined);
 		if (existing && existing.model === model && existing.effort === effort) {
+			const returned = (await ctx.client.beta.agents.retrieve(existing.agent_id)) as unknown as {
+				model?: string | { id?: string; effort?: string | { type?: string } };
+			};
+			const observedModel =
+				typeof returned.model === 'string' ? returned.model : returned.model?.id;
+			const rawEffort = typeof returned.model === 'object' ? returned.model?.effort : undefined;
+			const observedEffort = typeof rawEffort === 'string' ? rawEffort : rawEffort?.type;
+			const mismatch =
+				(observedModel !== undefined && observedModel !== model) ||
+				(effort !== undefined && observedEffort !== undefined && observedEffort !== effort);
 			if (effort)
 				await record?.({
-					status: 'accepted_unconfirmed',
+					status: mismatch
+						? 'rejected'
+						: observedModel === model && observedEffort === effort
+							? 'confirmed'
+							: 'accepted_unconfirmed',
 					transport: 'managed_agent_config',
 					attempted_effort: effort,
 					provider_agent_id: existing.agent_id,
-					reason: 'cached agent configuration has no provider echo for this launch'
+					...(observedModel ? { observed_model: observedModel } : {}),
+					...(observedEffort ? { observed_effort: observedEffort } : {}),
+					...(mismatch
+						? { reason: 'cached provider agent configuration conflicts with intent' }
+						: {})
 				});
+			if (mismatch) throw new Error('cached provider agent configuration conflicts with intent');
 			return existing.agent_id;
 		}
 		const created = await ctx.client.beta.agents.create({
@@ -363,11 +398,13 @@ function createProviderContext(env: Env, opts: ClaudeAdapterOptions): ProviderCo
 					`provider returned ${observedModel ?? 'unknown model'} / ${observedEffort ?? 'unknown effort'} for requested ${model} / ${effort}`
 				);
 		}
-		ctx.config.agents_by_signature = {
-			...ctx.config.agents_by_signature,
-			[signature]: { agent_id: agentId, model, ...(effort ? { effort } : {}) }
-		};
-		await persistConfig(ctx.row.id, ctx.config);
+		ctx.config = await persistConfig(ctx.row.id, (current) => ({
+			...current,
+			agents_by_signature: {
+				...current.agents_by_signature,
+				[signature]: { agent_id: agentId, model, ...(effort ? { effort } : {}) }
+			}
+		}));
 		return agentId;
 	}
 

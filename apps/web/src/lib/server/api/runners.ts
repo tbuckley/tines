@@ -6,6 +6,7 @@ import {
 	DEFAULT_RESUME_WINDOW_HOURS,
 	DEFAULT_MANAGED_RUN_COST_USD,
 	MANAGED_CLAUDE_EFFORTS,
+	isEffortToken,
 	MODEL_TIERS,
 	RUNNER_NAME_PATTERN,
 	RUNNER_ONLINE_WINDOW_MS,
@@ -240,12 +241,11 @@ export function validateTierOverrides(value: unknown): RunnerTierOverrides | nul
 		}
 		const model = requireString(rec.model, `tiers.${tier}.model`, { max: 200 });
 		const effort = optionalString(rec.effort, `tiers.${tier}.effort`, { max: 50 });
-		const efforts = ['low', 'medium', 'high', 'xhigh', 'max'];
-		if (effort !== undefined && !efforts.includes(effort)) {
+		if (effort !== undefined && !isEffortToken(effort)) {
 			throw new ApiFail(
 				422,
 				'invalid_field',
-				`"tiers.${tier}.effort" must be one of: ${efforts.join(', ')}`,
+				`"tiers.${tier}.effort" must be a lowercase effort token (1-32 characters)`,
 				{ field: `tiers.${tier}.effort` }
 			);
 		}

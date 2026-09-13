@@ -276,6 +276,12 @@ describe('validateTargets', () => {
 		expect(() =>
 			validateTargets([{ runner_id: '*', tier: 'balanced' }, { runner_id: 'rnr_1' }], runners)
 		).toThrowError(ApiFail);
+		expect(() =>
+			validateTargets([{ runner_id: '*', tier: 'balanced', effort: 'extreme' }], runners)
+		).toThrowError(ApiFail);
+		expect(
+			validateTargets([{ runner_id: '*', tier: 'balanced', effort: 'ultra' }], runners)
+		).toEqual([{ runner_id: '*', tier: 'balanced', effort: 'ultra' }]);
 	});
 
 	it("rejects a runner that isn't the user's", () => {

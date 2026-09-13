@@ -1132,6 +1132,47 @@ describe('finishRun', () => {
 		expect(ended[ended.length - 1].payload.outcome).toBe('stalled');
 	});
 
+	it('recovers the last effort milestone in the terminal CAS and freezes it', async () => {
+		const t = world();
+		const runnerId = addRunner(t);
+		const issue = addIssue(t);
+		const runId = await delivered(t, { runnerId, issueId: issue });
+		t.sqlite
+			.prepare(
+				`UPDATE agent_run SET resolved_effort = 'high', effort_application_status = 'pending' WHERE id = ?`
+			)
+			.run(runId);
+		const run = await finishRun(
+			t.db,
+			t.env,
+			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
+			runId,
+			{
+				status: 'completed',
+				effort_application: {
+					status: 'accepted_unconfirmed',
+					transport: 'argv',
+					attempted_effort: 'high'
+				}
+			},
+			NOW + 30
+		);
+		expect(run.effort_application_status).toBe('accepted_unconfirmed');
+		expect(run.effort_application_evidence).toMatchObject({
+			milestones: [expect.objectContaining({ attempted_effort: 'high' })]
+		});
+		await expect(
+			appendRunLog(t.db, t.env, await runnerRow(t, runnerId), runId, '', NOW + 40, undefined, {
+				status: 'rejected',
+				transport: 'argv',
+				attempted_effort: 'high',
+				reason: 'late request'
+			})
+		).rejects.toMatchObject({ code: 'run_already_ended' });
+		expect(runById(t, runId)?.effort_application_status).toBe('accepted_unconfirmed');
+	});
+
 	it('atomically stores and emits a reproducible Codex estimate', async () => {
 		const t = world();
 		const runnerId = addRunner(t);

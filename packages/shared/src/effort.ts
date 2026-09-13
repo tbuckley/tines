@@ -4,6 +4,8 @@ export const EFFORT_TOKEN_PATTERN = /^[a-z][a-z0-9_-]{0,31}$/;
 export const EFFORT_CAPABILITIES_MAX_BYTES = 64 * 1024;
 export const EFFORT_CAPABILITIES_MAX_MODELS = 256;
 export const EFFORT_CAPABILITIES_MAX_EFFORTS = 16;
+/** Values verified for at least one supported provider/harness. */
+export const RECOGNIZED_EFFORT_VALUES = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const;
 
 export type EffortApplicationStatus =
 	| 'unknown'
@@ -58,6 +60,10 @@ export type EffortCapabilities = EffortCapabilitiesV1 | { version: number; reaso
 
 export function isEffortToken(value: unknown): value is string {
 	return typeof value === 'string' && EFFORT_TOKEN_PATTERN.test(value);
+}
+
+export function isRecognizedEffort(value: unknown): value is string {
+	return isEffortToken(value) && (RECOGNIZED_EFFORT_VALUES as readonly string[]).includes(value);
 }
 
 /** Exact-model lookup: a capability assertion never applies to an alias or family. */

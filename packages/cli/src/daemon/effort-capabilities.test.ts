@@ -1,6 +1,11 @@
 import type { EffortCapabilitiesV1, RunnerAssignment } from '@tines/shared';
 import { describe, expect, it } from 'vitest';
-import { assignmentEffortRejection } from './effort-capabilities.js';
+import {
+	assignmentEffortRejection,
+	claudeEffortVersionSupported,
+	EFFORT_CAPABILITIES_TTL_MS,
+	EffortCapabilityRefresher
+} from './effort-capabilities.js';
 
 const capabilities: EffortCapabilitiesV1 = {
 	version: 1,
@@ -41,5 +46,39 @@ describe('assignmentEffortRejection', () => {
 	it('preserves old assignments without an effort block', () => {
 		const old = { run: { id: 'arun_old' } } as unknown as RunnerAssignment;
 		expect(assignmentEffortRejection(old, undefined, 'custom')).toBeNull();
+	});
+});
+
+describe('capability refresh', () => {
+	it('enforces the researched Claude minimum version', () => {
+		expect(claudeEffortVersionSupported('2.1.257 (Claude Code)')).toBe(false);
+		expect(claudeEffortVersionSupported('2.1.258 (Claude Code)')).toBe(true);
+		expect(claudeEffortVersionSupported('2.2.0')).toBe(true);
+		expect(claudeEffortVersionSupported('unknown')).toBe(false);
+	});
+
+	it('caches within the TTL, coalesces refreshes, and supports a launch reprobe', async () => {
+		let now = 1;
+		let calls = 0;
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => (release = resolve));
+		const discover = async () => {
+			calls++;
+			if (calls === 1) await gate;
+			return capabilities;
+		};
+		const refresher = new EffortCapabilityRefresher('codex', 'test', discover, () => now);
+		const a = refresher.get();
+		const b = refresher.get();
+		release();
+		await Promise.all([a, b]);
+		expect(calls).toBe(1);
+		await refresher.get();
+		expect(calls).toBe(1);
+		await refresher.get(true);
+		expect(calls).toBe(2);
+		now += EFFORT_CAPABILITIES_TTL_MS + 1;
+		await refresher.get();
+		expect(calls).toBe(3);
 	});
 });
