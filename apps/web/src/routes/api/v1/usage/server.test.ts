@@ -344,6 +344,67 @@ describe('GET /api/v1/usage validation and authorization', () => {
 		expect(second.next_cursor).toBeNull();
 	});
 
+	it('sorts exponent-form run costs numerically across cursor boundaries in both directions', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const runner = addRunner(t);
+		const issue = addIssue(t);
+		for (const [id, cost] of [
+			['arun_exponent_small', 1e-7],
+			['arun_decimal_middle', 0.000001],
+			['arun_decimal_large', 0.000002]
+		] as const)
+			addRun(t, {
+				id,
+				issueId: issue,
+				runnerId: runner,
+				status: 'completed',
+				createdAt: NOW - 20,
+				endedAt: NOW - 10,
+				usage: JSON.stringify({ cost_usd: cost, cost_source: 'provider' })
+			});
+		const report = await get(
+			t,
+			`?from=${new Date(NOW - 100).toISOString()}&to=${new Date(NOW).toISOString()}`
+		);
+		const walk = async (direction: 'asc' | 'desc') => {
+			const ids: string[] = [];
+			let cursor: string | null = null;
+			do {
+				const url = new URL('http://test/api/v1/usage/evidence');
+				url.searchParams.set('scope', String(report.body.scope));
+				url.searchParams.set('kind', 'runs');
+				url.searchParams.set('direction', direction);
+				url.searchParams.set('limit', '1');
+				if (cursor) url.searchParams.set('cursor', cursor);
+				const response = await EVIDENCE_GET({
+					locals: { user: { id: USER, name: 'alice' } },
+					platform: { env: t.env, ctx: { waitUntil: () => {} } },
+					request: new Request(url),
+					url
+				} as unknown as Parameters<typeof EVIDENCE_GET>[0]);
+				expect(response.status).toBe(200);
+				const page = (await response.json()) as {
+					items: { id: string }[];
+					next_cursor: string | null;
+				};
+				ids.push(...page.items.map((item) => item.id));
+				cursor = page.next_cursor;
+			} while (cursor);
+			return ids;
+		};
+		expect(await walk('asc')).toEqual([
+			'arun_exponent_small',
+			'arun_decimal_middle',
+			'arun_decimal_large'
+		]);
+		expect(await walk('desc')).toEqual([
+			'arun_decimal_large',
+			'arun_decimal_middle',
+			'arun_exponent_small'
+		]);
+	});
+
 	it('keeps the resolved timezone basis when settings change after a report', async () => {
 		const t = createTestDb();
 		seedBase(t);

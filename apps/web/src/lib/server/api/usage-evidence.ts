@@ -1,6 +1,7 @@
 import {
 	addUsageClassification,
 	classifyUsage,
+	compareUsageDecimals,
 	createUsageAccumulator,
 	finalizeUsage,
 	type IssueAttemptUsage,
@@ -37,23 +38,12 @@ type Candidate = {
 	item?: IssueAttemptUsage;
 };
 
-function decimalCompare(a: string, b: string): number {
-	const [ai, af = ''] = a.split('.');
-	const [bi, bf = ''] = b.split('.');
-	if (ai.length !== bi.length) return ai.length - bi.length;
-	if (ai !== bi) return ai < bi ? -1 : 1;
-	const width = Math.max(af.length, bf.length);
-	const ap = af.padEnd(width, '0');
-	const bp = bf.padEnd(width, '0');
-	return ap === bp ? 0 : ap < bp ? -1 : 1;
-}
-
 function compare(a: Candidate, b: Candidate, sort: 'cost' | 'time', direction: 'asc' | 'desc') {
 	if (sort === 'cost') {
 		if (a.cost === null || b.cost === null) {
 			if (a.cost !== b.cost) return a.cost === null ? 1 : -1;
 		} else {
-			const cost = decimalCompare(a.cost, b.cost);
+			const cost = compareUsageDecimals(a.cost, b.cost);
 			if (cost) return direction === 'asc' ? cost : -cost;
 		}
 	}

@@ -22,6 +22,7 @@ const persist = '.wrangler-usage-mixed';
 const localKey = 'tines_mixed_local_only_0000000000000000000000000000';
 const runKey = `${localKey}_run`;
 const foreignKey = `${localKey}_foreign`;
+const tokenNames = ['input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_write_tokens'];
 const wrangler = (args) =>
 	execFileSync('pnpm', ['exec', 'wrangler', ...args], {
 		cwd: webDir,
@@ -192,6 +193,17 @@ try {
 					assert.ok(
 						rendered.includes(
 							`Accounting ${item.id}: ${a.status} · source ${a.source ?? 'unavailable'} · exact cost ${a.cost_exact ?? 'unavailable'}`
+						)
+					);
+					const tokenLine = rendered
+						.split('\n')
+						.find((line) => line.startsWith(`Tokens ${item.id}:`));
+					assert.ok(tokenLine, item.id);
+					for (const name of tokenNames)
+						assert.ok(tokenLine.includes(`${name}=${a.tokens[name] ?? 'unavailable'}`));
+					assert.ok(
+						tokenLine.includes(
+							`invalid_tokens=${a.invalid_tokens.length ? a.invalid_tokens.join(',') : 'none'}`
 						)
 					);
 					if (a.source === 'calculated' && !a.basis)

@@ -206,6 +206,7 @@ test.describe('Agents Spend real ledger', () => {
 
 	test('shows direct lifetime independently from the operational run page', async ({ page }) => {
 		await armLedgerDays();
+		await page.setViewportSize({ width: 320, height: 700 });
 		await gotoHydrated(page, `/issues/${encodeURIComponent(SPEND.projects.alpha.name)}/1`);
 		await expect(page.getByRole('heading', { name: 'Lifetime through now' })).toBeVisible();
 		await expect(page.getByText(/\$2\.00 · complete · 1 finalized · 0 pending/i)).toBeVisible();
@@ -214,6 +215,29 @@ test.describe('Agents Spend real ledger', () => {
 				.getByRole('region', { name: 'Contributing runs' })
 				.getByText('run_e2e_spend_alpha_today', { exact: true })
 		).toBeVisible();
+		const runLabel = page.getByText('run_e2e_spend_alpha_today', { exact: true });
+		const runCost = page.getByRole('region', { name: 'Contributing runs' }).locator('.cost');
+		const [labelBox, costBox] = await Promise.all([runLabel.boundingBox(), runCost.boundingBox()]);
+		expect(labelBox).not.toBeNull();
+		expect(costBox).not.toBeNull();
+		const overlaps =
+			labelBox!.x < costBox!.x + costBox!.width &&
+			labelBox!.x + labelBox!.width > costBox!.x &&
+			labelBox!.y < costBox!.y + costBox!.height &&
+			labelBox!.y + labelBox!.height > costBox!.y;
+		expect(overlaps).toBe(false);
+		await page.getByText('Accounting details for run_e2e_spend_alpha_today').click();
+		const accounting = page.locator('.accounting');
+		await expect(accounting).toContainText('Tokens: input tokens 20');
+		await expect(accounting).toContainText('calculation tokens-times-usd-per-million-v1');
+		await expect(accounting).toContainText('model identity requested_launch_no_observed_reroute');
+		await expect(accounting).toContainText('usage scope attempt');
+		await expect(accounting).toContainText('context short');
+		await expect(accounting).toContainText('source https://example.test/pricing');
+		await expect(accounting).toContainText('checked 2026-09-12');
+		await expect(accounting).toContainText('effective 2026-09-01');
+		await expect(accounting).toContainText('rates input=100000');
+		await expect(accounting).toContainText('per 1000000 tokens');
 		await page.getByRole('button', { name: 'Refresh through now' }).click();
 		await expect(page.getByRole('button', { name: 'Refresh through now' })).toBeEnabled();
 	});

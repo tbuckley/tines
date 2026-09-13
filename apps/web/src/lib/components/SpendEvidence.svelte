@@ -51,6 +51,11 @@
 	function present(value: unknown) {
 		return value === null || value === undefined || value === '' ? 'unavailable' : String(value);
 	}
+	function instant(value: unknown) {
+		return typeof value === 'number' && Number.isFinite(value)
+			? new Date(value).toISOString()
+			: present(value);
+	}
 	async function load() {
 		const mine = ++generation;
 		loading = true;
@@ -174,7 +179,7 @@
 						</article>
 					{:else}
 						{@const run = raw as AgentRunUsageEvidence}
-						<article>
+						<article class="run-row">
 							<div>
 								<strong>{run.id}</strong><small
 									>{run.issue_id} · {run.runner_name} · {new Date(
@@ -209,13 +214,25 @@
 										.join(' · ')}
 								</p>
 								{#if run.usage_accounting.source === 'calculated'}
+									{@const basis = run.usage_accounting.basis}
 									<p>
-										Rate basis: id {present(run.usage_accounting.basis?.rate_id)} · version
-										{present(run.usage_accounting.basis?.rate_version)} · model {present(
-											run.usage_accounting.basis?.model
-										)} · plan {present(run.usage_accounting.basis?.plan)} · selected {present(
-											run.usage_accounting.basis?.rate_selected_at
-										)}
+										Rate basis: calculation {present(basis?.calculation_version)} · provider {present(
+											basis?.provider
+										)} · id {present(basis?.rate_id)} · version {present(basis?.rate_version)} · model
+										{present(basis?.model)} · model identity {present(basis?.model_identity)} · usage
+										scope {present(basis?.usage_scope)} · plan {present(basis?.plan)} · context {present(
+											basis?.context_band
+										)} · source {present(basis?.source_url)} · checked {present(
+											basis?.source_checked_at
+										)} · effective {present(basis?.source_effective_at)} · adopted {instant(
+											basis?.rate_adopted_at
+										)} · valid to {instant(basis?.rate_valid_to)} · selected {instant(
+											basis?.rate_selected_at
+										)} · rates input={present(basis?.rates?.input_tokens)} cache-read={present(
+											basis?.rates?.cache_read_tokens
+										)} cache-write={present(basis?.rates?.cache_write_tokens)} output={present(
+											basis?.rates?.output_tokens
+										)} per {present(basis?.unit_tokens)} tokens
 									</p>
 								{/if}
 							</details>
@@ -314,6 +331,16 @@
 		}
 		.cost {
 			min-width: 76px;
+		}
+	}
+	@media (max-width: 350px) {
+		.run-row {
+			align-items: stretch;
+			flex-direction: column;
+		}
+		.run-row .cost {
+			align-self: flex-end;
+			min-width: 0;
 		}
 	}
 </style>

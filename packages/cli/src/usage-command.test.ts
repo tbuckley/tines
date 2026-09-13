@@ -209,8 +209,13 @@ it('prints per-run accounting provenance and diagnostics for signed evidence', a
 					cost_exact: '0.25',
 					source: 'calculated',
 					basis: null,
-					tokens: {},
-					invalid_tokens: [],
+					tokens: {
+						input_tokens: null,
+						output_tokens: 12,
+						cache_read_tokens: null,
+						cache_write_tokens: 0
+					},
+					invalid_tokens: ['input_tokens'],
 					diagnostics: { partial_token_fields: 1 },
 					pricing_reason: null
 				}
@@ -245,6 +250,9 @@ it('prints per-run accounting provenance and diagnostics for signed evidence', a
 	const output = log.mock.calls.map(([line]) => String(line)).join('\n');
 	expect(output).toContain(
 		'Accounting arun_evidence_detail: priced · source calculated · exact cost 0.25 · diagnostics partial_token_fields=1'
+	);
+	expect(output).toContain(
+		'Tokens arun_evidence_detail: input_tokens=unavailable · output_tokens=12 · cache_read_tokens=unavailable · cache_write_tokens=0 · invalid_tokens=input_tokens'
 	);
 	expect(output).toContain(
 		'Rate arun_evidence_detail: historical calculated amount · basis unavailable'

@@ -448,6 +448,14 @@ function decimalOf(value: string): Decimal {
 	}
 	return { coefficient, scale };
 }
+export function compareUsageDecimals(a: string, b: string): number {
+	const left = decimalOf(a);
+	const right = decimalOf(b);
+	const scale = Math.max(left.scale, right.scale);
+	const leftCoefficient = left.coefficient * 10n ** BigInt(scale - left.scale);
+	const rightCoefficient = right.coefficient * 10n ** BigInt(scale - right.scale);
+	return leftCoefficient === rightCoefficient ? 0 : leftCoefficient < rightCoefficient ? -1 : 1;
+}
 function addDecimal(a: Decimal, b: Decimal): Decimal {
 	const scale = Math.max(a.scale, b.scale);
 	return {
