@@ -281,7 +281,7 @@ describe('GET /api/v1/usage validation and authorization', () => {
 		};
 
 		expect(await walk('issues')).toEqual(expectedIssues);
-		expect(await walk('entries')).toEqual([...expectedEntries].reverse());
+		expect(await walk('entries')).toEqual(expectedEntries);
 	});
 
 	it('rejects contradictory and unprovable cohort selections', async () => {

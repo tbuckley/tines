@@ -563,16 +563,25 @@ async function buildCohortUsage(
 			CASE WHEN w.id IS NULL THEN 0 ELSE 1 END AS reopened,
 			COALESCE(m.unknown_later_entry_count,0) AS unknown_later_entry_count,
 			w.id AS witness_id,w.type AS witness_type,w.project_id AS witness_project_id,
-			w.workflow_id AS witness_workflow_id,w.workflow_name AS witness_workflow_name,
-			w.state_id AS witness_state_id,w.state_name AS witness_state_name,w.category AS witness_category,
+			CASE WHEN json_valid(w.payload) AND w.type IN ('issue.created','issue.transitioned') THEN json_extract(w.payload,'$.workflow_id')
+				WHEN json_valid(w.payload) THEN json_extract(w.payload,'$.workflow_to_id') END AS witness_workflow_id,
+			CASE WHEN json_valid(w.payload) AND w.type IN ('issue.created','issue.transitioned') THEN json_extract(w.payload,'$.workflow_name')
+				WHEN json_valid(w.payload) THEN json_extract(w.payload,'$.workflow_to_name') END AS witness_workflow_name,
+			CASE WHEN json_valid(w.payload) AND w.type='issue.created' THEN json_extract(w.payload,'$.state_id')
+				WHEN json_valid(w.payload) THEN json_extract(w.payload,'$.to_state_id') END AS witness_state_id,
+			CASE WHEN json_valid(w.payload) AND w.type='issue.created' THEN json_extract(w.payload,'$.state_name')
+				WHEN json_valid(w.payload) THEN json_extract(w.payload,'$.to_state_name') END AS witness_state_name,
+			CASE WHEN json_valid(w.payload) AND w.type='issue.created' THEN json_extract(w.payload,'$.state_category')
+				WHEN json_valid(w.payload) THEN json_extract(w.payload,'$.to_state_category') END AS witness_category,
 			w.created_at AS witness_at,r.id AS run_id,r.created_at AS run_created_at,
 			CASE WHEN r.ended_at<${period.to} THEN r.ended_at END AS ended_at,
 			CASE WHEN r.ended_at<${period.to} THEN r.usage END AS usage
 		FROM members m
-		LEFT JOIN normalized w ON printf('%020d',w.created_at)||w.id=m.witness_key AND w.issue_id=m.issue_id
+		LEFT JOIN event w ON w.id=substr(m.witness_key,21) AND w.user_id=${owner} AND w.issue_id=m.issue_id
 		LEFT JOIN issue i ON i.id=m.issue_id
 		LEFT JOIN project p ON p.id=i.project_id
-		LEFT JOIN agent_run r ON r.user_id=${owner} AND r.issue_id=m.issue_id AND r.created_at<${period.to}
+		LEFT JOIN agent_run r INDEXED BY agent_run_user_issue_created_idx
+			ON r.user_id=${owner} AND r.issue_id=m.issue_id AND r.created_at<${period.to}
 			AND (r.created_at,r.id)>(CASE WHEN m.issue_id=${seek.issue} THEN ${seek.at} ELSE -1 END,CASE WHEN m.issue_id=${seek.issue} THEN ${seek.run} ELSE '' END)
 		WHERE (i.id IS NULL OR p.user_id=${owner})
 			AND (m.issue_id,COALESCE(r.created_at,-1),COALESCE(r.id,''))>(${seek.issue},${seek.at},${seek.run})

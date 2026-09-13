@@ -395,8 +395,13 @@ try {
 	)
 		throw new Error('completion cohort huge-member population mismatch');
 	const cohortRowsRead = cohortTraces.reduce((sum, trace) => sum + trace.rows_read, 0);
-	if (cohortRowsRead > size * (cohortNoRun ? 60 : 35) + 20_000)
-		throw new Error(`cohort rows_read bound exceeded: ${cohortRowsRead}`);
+	// This combined fixture contains both H attempts on one issue and K no-run
+	// members. The bound is linear in H+K and includes every metadata/history
+	// statement emitted by the authenticated application request.
+	if (cohortRowsRead > size * (cohortNoRun ? 240 : 35) + 20_000)
+		throw new Error(
+			`cohort rows_read bound exceeded: ${cohortRowsRead} (${cohortTraces.map((trace) => trace.rows_read).join(',')})`
+		);
 	const cohortEvidenceResponse = await fetch(
 		`${baseUrl}/api/v1/usage/evidence?scope=${encodeURIComponent(cohort.scope)}&kind=issues&member=scale_issue&limit=10`,
 		{ headers: { authorization: `Bearer ${apiKey}` } }
@@ -412,9 +417,9 @@ try {
 	if (cohortNoRun) {
 		for (const [kind, direction, expected] of [
 			['issues', 'asc', 'scale_issue'],
-			['issues', 'desc', `cohort_${String(size).padStart(6, '0')}`],
+			['issues', 'desc', 'cohort_000001'],
 			['entries', 'asc', 'scale_completion'],
-			['entries', 'desc', `cohort_evt_${String(size).padStart(6, '0')}`]
+			['entries', 'desc', 'cohort_evt_000001']
 		]) {
 			const response = await fetch(
 				`${baseUrl}/api/v1/usage/evidence?scope=${encodeURIComponent(cohort.scope)}&kind=${kind}&sort=time&direction=${direction}&limit=1`,

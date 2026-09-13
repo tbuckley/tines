@@ -51,7 +51,8 @@ test.describe('Agents completed-issue costs', () => {
 
 		await page.locator('.cohort').getByRole('button', { name: 'View completed issues' }).click();
 		await page.locator('.cohort').getByRole('button', { name: 'Close', exact: true }).click();
-		await expect(page).not.toHaveURL(/spend_(mode|scope)=/);
+		await expect(page).toHaveURL(/spend_mode=period/);
+		await expect(page).not.toHaveURL(/spend_scope=/);
 		await expect(page.locator('.cohort')).toBeHidden();
 		await expect(page.getByRole('button', { name: 'Completed issues' })).toBeFocused();
 		await page.goBack();
