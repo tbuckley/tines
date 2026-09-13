@@ -109,10 +109,22 @@ export const GET: RequestHandler = api(async (event) => {
 		const cutoff = replayPayload?.mode === 'issue' ? replayPayload.cutoff : now;
 		const report = await getIssueUsage(db, actor.userId, issueId, cutoff, now);
 		if (!report) throw notFound();
+		if (replayPayload?.mode === 'issue') {
+			report.timezone = replayPayload.timezone;
+			report.timezone_source = replayPayload.timezone_source;
+		}
 		report.scope =
 			replay ??
 			(await mintUsageScope(
-				{ v: 1, owner: actor.userId, mode: 'issue', issue: issueId, cutoff },
+				{
+					v: 1,
+					owner: actor.userId,
+					mode: 'issue',
+					issue: issueId,
+					cutoff,
+					timezone: report.timezone,
+					timezone_source: report.timezone_source
+				},
 				material
 			));
 		return json(report, { headers: { 'cache-control': 'private, no-store' } });

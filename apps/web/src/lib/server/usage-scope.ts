@@ -15,7 +15,15 @@ export type UsageScopePayload =
 			filters: ResolvedUsageFilters;
 			by: UsageBy;
 	  }
-	| { v: 1; owner: string; mode: 'issue'; issue: string; cutoff: number };
+	| {
+			v: 1;
+			owner: string;
+			mode: 'issue';
+			issue: string;
+			cutoff: number;
+			timezone: string;
+			timezone_source: 'supervisor_budget' | 'utc_fallback';
+	  };
 
 export type UsageCursorPayload = {
 	v: 1;
@@ -120,10 +128,13 @@ function validScope(value: unknown): value is UsageScopePayload {
 	if (!plain(value) || value.v !== 1 || typeof value.owner !== 'string') return false;
 	if (value.mode === 'issue')
 		return (
-			Object.keys(value).sort().join(',') === 'cutoff,issue,mode,owner,v' &&
+			Object.keys(value).sort().join(',') ===
+				'cutoff,issue,mode,owner,timezone,timezone_source,v' &&
 			typeof value.issue === 'string' &&
 			value.issue.length > 0 &&
-			safeTime(value.cutoff)
+			safeTime(value.cutoff) &&
+			typeof value.timezone === 'string' &&
+			['supervisor_budget', 'utc_fallback'].includes(String(value.timezone_source))
 		);
 	const filters = value.filters;
 	return (

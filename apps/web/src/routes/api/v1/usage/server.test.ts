@@ -161,6 +161,7 @@ describe('GET /api/v1/usage validation and authorization', () => {
 	it('keeps the resolved timezone basis when settings change after a report', async () => {
 		const t = createTestDb();
 		seedBase(t);
+		const issue = addIssue(t);
 		t.sqlite
 			.prepare(
 				`INSERT INTO supervisor_settings (user_id, enabled, quota, attempt_limit, budget, updated_at)
@@ -180,11 +181,24 @@ describe('GET /api/v1/usage validation and authorization', () => {
 			timezone: 'America/New_York',
 			timezone_source: 'supervisor_budget'
 		});
+		const lifetime = await get(t, `?mode=issue&issue=${issue}`);
+		expect(lifetime.body).toMatchObject({
+			timezone: 'America/New_York',
+			timezone_source: 'supervisor_budget'
+		});
 		t.sqlite
 			.prepare('UPDATE supervisor_settings SET budget = ? WHERE user_id = ?')
 			.run(JSON.stringify({ timezone: 'UTC' }), USER);
 		const replay = await get(t, `?scope=${encodeURIComponent(String(report.body.scope))}`);
 		expect(replay.body).toMatchObject({
+			timezone: 'America/New_York',
+			timezone_source: 'supervisor_budget'
+		});
+		const lifetimeReplay = await get(
+			t,
+			`?scope=${encodeURIComponent(String(lifetime.body.scope))}`
+		);
+		expect(lifetimeReplay.body).toMatchObject({
 			timezone: 'America/New_York',
 			timezone_source: 'supervisor_budget'
 		});

@@ -111,7 +111,15 @@ export const load: PageServerLoad = async ({
 		const material = usageKeyMaterial(platform!.env);
 		if (!material) throw new Error('Usage evidence signing is not configured');
 		report.scope = await mintUsageScope(
-			{ v: 1, owner: userId, mode: 'issue', issue: issue.id, cutoff },
+			{
+				v: 1,
+				owner: userId,
+				mode: 'issue',
+				issue: issue.id,
+				cutoff,
+				timezone: report.timezone,
+				timezone_source: report.timezone_source
+			},
 			material
 		);
 		return report;

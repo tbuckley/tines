@@ -317,6 +317,11 @@ export async function getIssueUsage(
 	cutoff = Date.now(),
 	generatedAt = Date.now()
 ): Promise<IssueUsageReport | null> {
+	const periodBasis = resolveUsagePeriod(
+		{ window: 'today' },
+		await configuredTimezone(db, userId),
+		generatedAt
+	);
 	const issue = await db
 		.selectFrom('issue')
 		.innerJoin('project', (join) =>
@@ -372,8 +377,8 @@ export async function getIssueUsage(
 		mode: 'issue',
 		cutoff,
 		generated_at: generatedAt,
-		timezone: 'UTC',
-		timezone_source: 'utc_fallback',
+		timezone: periodBasis.timezone,
+		timezone_source: periodBasis.timezone_source,
 		accounting_basis: 'finalized_before_cutoff_v1',
 		retention_basis: 'retained_direct_attempts',
 		metadata_basis: 'current_owned_or_retained',
