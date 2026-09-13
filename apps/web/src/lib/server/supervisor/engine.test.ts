@@ -308,6 +308,32 @@ describe('the guarded claim', () => {
 		expect(runs(t)).toHaveLength(0);
 	});
 
+	it('omits held states from candidates and re-checks the hold inside the claim', async () => {
+		const t = world();
+		const runner = addRunner(t);
+		const issue = addIssue(t);
+		const input = claimInput(t, issue, runner);
+		t.sqlite.exec(`
+			INSERT INTO state_retirement_hold
+				(id, user_id, actor_key, topology_digest, inventory_digest, created_at)
+			VALUES ('hold_claim', '${USER}', 'session:${USER}', 'topology', 'inventory', ${NOW});
+			INSERT INTO state_retirement_hold_state
+				(hold_id, user_id, state_id, workflow_name, state_name, state_category)
+			VALUES ('hold_claim', '${USER}', '${OPEN}', 'Standard', 'Open', 'active');
+		`);
+
+		expect(await loadEligibleIssues(t.db, USER)).toEqual([]);
+		// The input represents a candidate selected immediately before the hold committed.
+		expect(await claimRun(t.db, t.env, input)).toBe(false);
+		expect(runs(t)).toHaveLength(0);
+
+		t.sqlite.exec(
+			`UPDATE state_retirement_hold SET released_at = ${NOW + 1} WHERE id = 'hold_claim'`
+		);
+		expect((await loadEligibleIssues(t.db, USER)).map((row) => row.id)).toEqual([issue]);
+		expect(await claimRun(t.db, t.env, input)).toBe(true);
+	});
+
 	it('refuses a source route after the issue moves even if its assignment token is unchanged', async () => {
 		const t = world();
 		const runner = addRunner(t);
