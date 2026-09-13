@@ -475,6 +475,71 @@ export interface LibraryInstallTable {
 	created_at: number;
 }
 
+export interface WorkflowPublicationTable {
+	id: string;
+	user_id: string;
+	actor_key: string;
+	prepare_request_id: string;
+	prepare_request_hash: string;
+	source_workflow_id: string | null;
+	source_kind: 'owned_workflow' | 'file';
+	source_provenance_json: string;
+	document_json: string;
+	document_digest: string;
+	bytes_sha256: string;
+	byte_length: number;
+	metadata_json: string;
+	review_digest: string;
+	policy_version: number;
+	created_at: number;
+	expires_at: number;
+	snapshot_id: string | null;
+	published_at: number | null;
+	owner_state: 'candidate' | 'published' | 'withdrawn';
+	host_state: 'active' | 'removed';
+	status_version: number;
+	confirmed_at: number | null;
+	confirmed_actor_key: string | null;
+	publication_receipt_json: string | null;
+	attempt_nonce: string | null;
+	host_decision_reason: string | null;
+	host_decision_reference: string | null;
+}
+
+export interface WorkflowPublicationSourceTable {
+	publication_id: string;
+	source_witness_json: string;
+	source_fingerprint: string;
+}
+
+export interface WorkflowPublisherStatusTable {
+	user_id: string;
+	suspended: number;
+	status_version: number;
+	decision_reference: string | null;
+	decision_reason: string | null;
+}
+
+export interface WorkflowPublicationEventTable {
+	id: string;
+	publication_id: string;
+	snapshot_id: string | null;
+	user_id: string;
+	actor_key: string;
+	action:
+		| 'published'
+		| 'withdrawn'
+		| 'restored'
+		| 'host_removed'
+		| 'publisher_suspended'
+		| 'publisher_restored';
+	publication_status_version: number;
+	publisher_status_version: number;
+	reason: string | null;
+	reference: string | null;
+	created_at: number;
+}
+
 export interface Database {
 	project: ProjectTable;
 	workflow: WorkflowTable;
@@ -501,6 +566,10 @@ export interface Database {
 	supervisor_sweep_state: SupervisorSweepStateTable;
 	user_preference: UserPreferenceTable;
 	library_install: LibraryInstallTable;
+	workflow_publication: WorkflowPublicationTable;
+	workflow_publication_source: WorkflowPublicationSourceTable;
+	workflow_publisher_status: WorkflowPublisherStatusTable;
+	workflow_publication_event: WorkflowPublicationEventTable;
 	user: UserTable;
 }
 

@@ -50,6 +50,10 @@ declare global {
 		 * prompts, the agent's TINES_API_URL). Falls back to BETTER_AUTH_URL.
 		 */
 		TINES_PUBLIC_URL?: string;
+		/** Creation gate for immutable public workflow snapshots. Defaults off. */
+		PUBLIC_WORKFLOW_PUBLISHING_ENABLED?: string;
+		PUBLIC_WORKFLOW_MAX_BYTES?: string;
+		PUBLIC_WORKFLOW_DAILY_QUOTA?: string;
 	}
 
 	namespace App {

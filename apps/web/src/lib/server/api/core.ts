@@ -244,6 +244,9 @@ const CONTROL_PLANE_RULES: ControlPlaneRule[] = [
 	// Preparing/recovering is read-only; committing an installation is an
 	// operator action and is also denied again inside the install service.
 	{ pattern: /^\/api\/v1\/library\/install$/ },
+	// Agents may validate and prepare publication proofs, but only a human or
+	// named key may publish, withdraw, restore, or install the hosted snapshot.
+	{ pattern: /^\/api\/v1\/publications\/[^/]+\/(publish|withdraw|restore)$/ },
 	// Archiving is an operator act: an agent must not freeze (or thaw) the
 	// project it is working in, least of all the one draining around it.
 	{ pattern: /^\/api\/v1\/projects\/[^/]+\/(archive|unarchive)$/ },
