@@ -1983,6 +1983,8 @@ export interface RunnerPollRequest {
 /** One delivered assignment: everything the daemon needs to launch. */
 export interface RunnerAssignment {
 	run: AgentRun;
+	/** Enforced launch setting, omitted for provider-default and legacy-tier delivery. */
+	effort?: { version: 1; value: string; source: import('./effort.js').EffortSource };
 	/** Supervisor preamble + stitched context + issue block, assembled at delivery. */
 	prompt: string;
 	/**
@@ -2031,6 +2033,12 @@ export interface RunnerPollResponse {
 /** `POST /api/v1/runs/:id/logs` — runner-token auth; appended to the tail. */
 export interface AppendRunLogRequest {
 	chunk: string;
+	/** Local launch milestone; accepted only for this run's resolved effort. */
+	effort_application?: {
+		status: 'accepted_unconfirmed';
+		attempted_effort: string;
+		transport: 'argv';
+	};
 	/**
 	 * Per-run, 1-based, monotonic chunk number assigned by the daemon. A
 	 * chunk whose seq the server has already applied is a retry of a send

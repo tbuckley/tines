@@ -28,6 +28,7 @@ import {
 	launchBackoffMs,
 	rateLimitHoldUntil,
 	resolveRoute,
+	resolveEffort,
 	resolveTier,
 	targetVerdict,
 	type ActiveCounts,
@@ -357,6 +358,10 @@ export async function claimRun(
 		maxConcurrent: number;
 		tier: ModelTier;
 		model: string | null;
+		requestedEffort?: string | null;
+		resolvedEffort?: string | null;
+		effortSource?: import('@tines/shared').EffortSource;
+		effortDeliveryMode?: import('./logic').EffortDeliveryMode;
 		quota: QuotaPolicy;
 		now: number;
 		/** Token captured by candidate selection; omitted only by pre-transfer tests/callers. */
@@ -378,9 +383,12 @@ export async function claimRun(
 
 	const claim = sql`
 		INSERT INTO agent_run (id, user_id, issue_id, runner_id, status, tier, model,
+			requested_effort, resolved_effort, effort_source, effort_application_status,
 			state_id_at_start, log, log_bytes_dropped, created_at, project_assignment_token)
 		SELECT ${input.runId}, ${input.userId}, issue.id, ${input.runnerId}, 'assigned',
-			${input.tier}, ${input.model}, issue.state_id, '', 0, ${input.now}, ${assignmentToken}
+			${input.tier}, ${input.model}, ${input.requestedEffort ?? null}, ${input.resolvedEffort ?? null},
+			${input.effortSource ? JSON.stringify(input.effortSource) : null}, ${input.effortDeliveryMode === 'legacy_tier' ? 'legacy_not_applied' : input.resolvedEffort ? 'pending' : 'not_requested'},
+			issue.state_id, '', 0, ${input.now}, ${assignmentToken}
 		FROM issue
 		JOIN project ON project.id = issue.project_id
 		JOIN workflow_state st ON st.id = issue.state_id
@@ -485,6 +493,7 @@ export async function launchClaimedRun(
 		runner: EngineRunner;
 		tier: ModelTier;
 		model: string | null;
+		effort?: string | null;
 		now: number;
 	}
 ): Promise<LaunchOutcome> {
@@ -511,6 +520,7 @@ export async function launchClaimedRun(
 			},
 			tier: ctx.tier,
 			model: ctx.model,
+			effort: ctx.effort,
 			runKey: secret
 		});
 		const startedAt = ctx.now;
@@ -823,7 +833,8 @@ export async function runDispatchPass(
 	for (const issue of candidates) {
 		// With the global cap saturated nothing more can dispatch this pass.
 		if (settings.quota.type === 'global_cap' && counts.total >= settings.quota.limit) break;
-		const { targets } = targetsForIssue(issue, rules);
+		const route = targetsForIssue(issue, rules);
+		const { targets } = route;
 		for (const target of orderTargetsByResumeAffinity(targets, affinity.get(issue.id))) {
 			const runner = runners.get(target.runner_id);
 			if (!runner) continue; // stale target (runner removed mid-pass)
@@ -833,6 +844,22 @@ export async function runDispatchPass(
 			if (verdict !== 'ok') continue;
 
 			const resolved = resolveTier(runner, target.tier ?? null);
+			const requestedEffort = target.effort ?? null;
+			const effort = resolveEffort(runner, resolved, requestedEffort);
+			if (!effort.compatible) continue;
+			const resolvedEffort = effort.resolved;
+			const effortSource: import('@tines/shared').EffortSource = requestedEffort
+				? {
+						kind: 'routing_target',
+						runner_id: runner.id,
+						tier: resolved.tier,
+						rule_id: route.effortRule?.id ?? route.runnerRule?.id ?? route.rule?.id ?? '',
+						scope_label: '',
+						target_index: targets.findIndex((candidate) => candidate === target)
+					}
+				: resolvedEffort
+					? { kind: 'runner_tier', runner_id: runner.id, tier: resolved.tier }
+					: { kind: 'none', runner_id: runner.id, tier: resolved.tier };
 			const runId = newId('arun');
 			const claimed = await claimRun(db, env, {
 				runId,
@@ -844,6 +871,10 @@ export async function runDispatchPass(
 				maxConcurrent: runner.max_concurrent,
 				tier: resolved.tier,
 				model: resolved.model,
+				requestedEffort,
+				resolvedEffort,
+				effortSource,
+				effortDeliveryMode: effort.deliveryMode,
 				quota: settings.quota,
 				now,
 				projectAssignmentToken: issue.project_assignment_token
@@ -867,6 +898,7 @@ export async function runDispatchPass(
 				runner,
 				tier: resolved.tier,
 				model: resolved.model,
+				effort: effort.deliveryMode === 'enforce' ? resolvedEffort : null,
 				now
 			});
 			if (launched === 'launched') {

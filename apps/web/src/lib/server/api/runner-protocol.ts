@@ -21,7 +21,12 @@ import {
 	type RunnerAssignment,
 	type RunnerAssignmentResume,
 	type RunnerPollRequest,
-	type RunnerPollResponse
+	type RunnerPollResponse,
+	type EffortCapabilities,
+	isEffortToken,
+	EFFORT_CAPABILITIES_MAX_BYTES,
+	EFFORT_CAPABILITIES_MAX_EFFORTS,
+	EFFORT_CAPABILITIES_MAX_MODELS
 } from '@tines/shared';
 import type { RequestEvent } from '@sveltejs/kit';
 import { sql, type Kysely } from 'kysely';
@@ -176,6 +181,81 @@ function validateInstanceId(body: RunnerPollRequest): string | undefined {
 	return instanceId;
 }
 
+/** Validate and bound the daemon assertion before it reaches durable state. */
+export function validateEffortCapabilities(
+	value: unknown,
+	instanceId?: string
+): EffortCapabilities | null {
+	if (value === undefined) return null;
+	if (!instanceId) {
+		throw new ApiFail(422, 'invalid_field', '"effort_capabilities" requires "instance_id"', {
+			field: 'effort_capabilities'
+		});
+	}
+	if (typeof value !== 'object' || value === null || Array.isArray(value))
+		throw new ApiFail(422, 'invalid_field', '"effort_capabilities" must be an object', {
+			field: 'effort_capabilities'
+		});
+	let encoded: string;
+	try {
+		encoded = JSON.stringify(value);
+	} catch {
+		throw new ApiFail(422, 'invalid_field', '"effort_capabilities" must be JSON serializable');
+	}
+	if (new TextEncoder().encode(encoded).length > EFFORT_CAPABILITIES_MAX_BYTES)
+		throw new ApiFail(422, 'invalid_field', '"effort_capabilities" exceeds 64 KiB', {
+			field: 'effort_capabilities'
+		});
+	const raw = value as Record<string, unknown>;
+	if (raw.version !== 1) {
+		if (!Number.isInteger(raw.version) || typeof raw.reason !== 'string' || raw.reason.length > 200)
+			throw new ApiFail(
+				422,
+				'invalid_field',
+				'unsupported capability versions require a bounded reason',
+				{
+					field: 'effort_capabilities'
+				}
+			);
+		return { version: raw.version as number, reason: raw.reason };
+	}
+	if (
+		(raw.harness !== 'claude_code' && raw.harness !== 'codex') ||
+		typeof raw.daemon_version !== 'string' ||
+		raw.daemon_version.length > 100 ||
+		typeof raw.harness_version !== 'string' ||
+		raw.harness_version.length > 100 ||
+		typeof raw.catalog_digest !== 'string' ||
+		raw.catalog_digest.length > 100 ||
+		!Array.isArray(raw.models) ||
+		raw.models.length > EFFORT_CAPABILITIES_MAX_MODELS
+	) {
+		throw new ApiFail(422, 'invalid_field', 'malformed V1 effort capability report', {
+			field: 'effort_capabilities'
+		});
+	}
+	const models = raw.models as Array<Record<string, unknown>>;
+	const names = new Set<string>();
+	for (const model of models) {
+		if (
+			typeof model.model !== 'string' ||
+			model.model.length < 1 ||
+			model.model.length > 200 ||
+			names.has(model.model) ||
+			!Array.isArray(model.efforts) ||
+			model.efforts.length > EFFORT_CAPABILITIES_MAX_EFFORTS ||
+			model.efforts.some((effort) => !isEffortToken(effort)) ||
+			new Set(model.efforts).size !== model.efforts.length
+		) {
+			throw new ApiFail(422, 'invalid_field', 'malformed V1 model effort capability', {
+				field: 'effort_capabilities.models'
+			});
+		}
+		names.add(model.model);
+	}
+	return value as EffortCapabilities;
+}
+
 async function admitDaemonInstance(
 	db: Kysely<Database>,
 	env: Env,
@@ -255,6 +335,7 @@ export async function pollRunner(
 ): Promise<PollOutcome> {
 	const owned = new Set(validateOwnedRuns(body));
 	const instanceId = validateInstanceId(body);
+	const effortCapabilities = validateEffortCapabilities(body.effort_capabilities, instanceId);
 	const requestedCap =
 		body.max_concurrent === undefined
 			? undefined
@@ -280,6 +361,7 @@ export async function pollRunner(
 			.set({
 				last_seen_at: now,
 				draining,
+				effort_capabilities: effortCapabilities ? JSON.stringify(effortCapabilities) : null,
 				...(capChanged ? { max_concurrent: cap, updated_at: now } : {})
 			})
 			.where('id', '=', runner.id)
@@ -303,6 +385,7 @@ export async function pollRunner(
 	if (cameOnline || capRaised) effects.signalDispatch();
 	runner.max_concurrent = cap;
 	runner.draining = draining;
+	runner.effort_capabilities = effortCapabilities ? JSON.stringify(effortCapabilities) : null;
 
 	const active = await db
 		.selectFrom('agent_run')
@@ -461,6 +544,15 @@ async function deliverAssignedRun(
 		});
 		return {
 			run: await serializedRun(db, run.user_id, run.id),
+			...(run.resolved_effort && run.effort_source && run.effort_application_status === 'pending'
+				? {
+						effort: {
+							version: 1 as const,
+							value: run.resolved_effort,
+							source: JSON.parse(run.effort_source)
+						}
+					}
+				: {}),
 			prompt: `${preamble}\n\n${buildResumePrompt(
 				bundle,
 				issue,
@@ -482,6 +574,15 @@ async function deliverAssignedRun(
 	});
 	return {
 		run: await serializedRun(db, run.user_id, run.id),
+		...(run.resolved_effort && run.effort_source && run.effort_application_status === 'pending'
+			? {
+					effort: {
+						version: 1 as const,
+						value: run.resolved_effort,
+						source: JSON.parse(run.effort_source)
+					}
+				}
+			: {}),
 		prompt: `${preamble}\n\n${buildLaunchPrompt(
 			bundle,
 			issue,
@@ -706,7 +807,8 @@ export async function appendRunLog(
 	runId: string,
 	chunk: unknown,
 	now: number = Date.now(),
-	seq?: unknown
+	seq?: unknown,
+	effortApplication?: import('@tines/shared').AppendRunLogRequest['effort_application']
 ): Promise<AppendRunLogResponse> {
 	if (typeof chunk !== 'string' || chunk.length > 1_000_000) {
 		throw new ApiFail(
@@ -722,6 +824,16 @@ export async function appendRunLog(
 		throw new ApiFail(422, 'invalid_field', '"seq" must be a positive integer', { field: 'seq' });
 	}
 	const run = await loadRunnerRun(db, runner, runId);
+	if (
+		effortApplication &&
+		(effortApplication.status !== 'accepted_unconfirmed' ||
+			effortApplication.transport !== 'argv' ||
+			effortApplication.attempted_effort !== run.resolved_effort)
+	) {
+		throw new ApiFail(422, 'invalid_field', 'effort application does not match the claimed run', {
+			field: 'effort_application'
+		});
+	}
 	if (run.status === 'assigned') {
 		throw new ApiFail(
 			422,
@@ -763,7 +875,18 @@ export async function appendRunLog(
 					log: appended.log,
 					log_bytes_dropped: appended.dropped,
 					...(spill ?? {}),
-					...(seq === undefined ? {} : { log_seq: seq })
+					...(seq === undefined ? {} : { log_seq: seq }),
+					...(effortApplication
+						? {
+								effort_application_status: effortApplication.status,
+								effort_application_evidence: JSON.stringify({
+									version: 1,
+									transport: effortApplication.transport,
+									attempted_effort: effortApplication.attempted_effort,
+									received_at: now
+								})
+							}
+						: {})
 				})
 				.where('id', '=', runId)
 				// A chunk racing a cancel/sweep must not extend a settled run's

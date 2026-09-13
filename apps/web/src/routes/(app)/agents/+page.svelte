@@ -859,9 +859,10 @@
 			})
 			.catch(() => {});
 	}
-	let ruleTargets = $state<{ runner_id: string; tier: '' | ModelTier }[]>([]);
+	let ruleTargets = $state<{ runner_id: string; tier: '' | ModelTier; effort: string }[]>([]);
 	let ruleMode = $state<'runners' | 'tier'>('runners');
 	let ruleOverrideTier = $state<ModelTier>('smartest');
+	let ruleOverrideEffort = $state('');
 	let savingRule = $state(false);
 	let ruleWarnings = $state<ShadowWarning[]>([]);
 
@@ -890,9 +891,11 @@
 		ruleProjectId = prefill.projectId ?? data.focusId ?? '';
 		ruleStateId = prefill.stateId ?? '';
 		ruleLabelId = '';
-		ruleTargets = data.runners.length > 0 ? [{ runner_id: data.runners[0].id, tier: '' }] : [];
+		ruleTargets =
+			data.runners.length > 0 ? [{ runner_id: data.runners[0].id, tier: '', effort: '' }] : [];
 		ruleMode = 'runners';
 		ruleOverrideTier = 'smartest';
+		ruleOverrideEffort = '';
 		loadLabels();
 		ruleModalOpen = true;
 	}
@@ -936,11 +939,16 @@
 		const tierOnly = rule.targets.length === 1 && rule.targets[0]?.runner_id === '*';
 		ruleMode = tierOnly ? 'tier' : 'runners';
 		ruleOverrideTier = tierOnly ? (rule.targets[0]!.tier ?? 'smartest') : 'smartest';
+		ruleOverrideEffort = tierOnly ? (rule.targets[0]!.effort ?? '') : '';
 		ruleTargets = tierOnly
 			? data.runners.length > 0
-				? [{ runner_id: data.runners[0].id, tier: '' }]
+				? [{ runner_id: data.runners[0].id, tier: '', effort: '' }]
 				: []
-			: rule.targets.map((t) => ({ runner_id: t.runner_id, tier: t.tier ?? '' }));
+			: rule.targets.map((t) => ({
+					runner_id: t.runner_id,
+					tier: t.tier ?? '',
+					effort: t.effort ?? ''
+				}));
 		loadLabels();
 		ruleModalOpen = true;
 	}
@@ -959,10 +967,18 @@
 		try {
 			const targets: RoutingTarget[] =
 				ruleMode === 'tier'
-					? [{ runner_id: '*', tier: ruleOverrideTier }]
-					: ruleTargets.map((t) =>
-							t.tier ? { runner_id: t.runner_id, tier: t.tier } : { runner_id: t.runner_id }
-						);
+					? [
+							{
+								runner_id: '*',
+								tier: ruleOverrideTier,
+								...(ruleOverrideEffort ? { effort: ruleOverrideEffort } : {})
+							}
+						]
+					: ruleTargets.map((t) => ({
+							runner_id: t.runner_id,
+							...(t.tier ? { tier: t.tier } : {}),
+							...(t.effort ? { effort: t.effort } : {})
+						}));
 			const scope = {
 				project_id: ruleProjectId || null,
 				workflow_state_id: ruleStateId || null,
@@ -2385,9 +2401,17 @@
 				<Select id="rule-override-tier" bind:value={ruleOverrideTier}>
 					{#each MODEL_TIERS as tier (tier)}<option value={tier}>{tier}</option>{/each}
 				</Select>
+				<label class="text-sm font-medium" for="rule-override-effort">Effort (optional)</label>
+				<Input
+					id="rule-override-effort"
+					bind:value={ruleOverrideEffort}
+					placeholder="inherit"
+					pattern="[a-z][a-z0-9_-]*"
+					maxlength={32}
+				/>
 				<p class="text-muted-foreground text-xs">
-					Uses runners from the next lower-priority matching rule and applies this tier to every
-					fallback runner.
+					Uses runners from the next lower-priority matching rule. Effort is checked against each
+					final model at dispatch.
 				</p>
 				{#if !ruleProjectId && !ruleStateId && !ruleLabelId}
 					<p class="text-xs text-amber-700 dark:text-amber-400">
@@ -2414,6 +2438,16 @@
 								>
 							{/each}
 						</Select>
+						<Input
+							class="w-28"
+							aria-label={`Target ${i + 1} effort`}
+							placeholder="effort"
+							pattern="[a-z][a-z0-9_-]*"
+							maxlength={32}
+							value={target.effort}
+							oninput={(e) =>
+								(ruleTargets[i] = { ...ruleTargets[i], effort: e.currentTarget.value })}
+						/>
 						<Select
 							class="w-32"
 							aria-label={`Target ${i + 1} tier`}
@@ -2469,7 +2503,10 @@
 					type="button"
 					disabled={data.runners.length === 0}
 					onclick={() =>
-						(ruleTargets = [...ruleTargets, { runner_id: data.runners[0].id, tier: '' }])}
+						(ruleTargets = [
+							...ruleTargets,
+							{ runner_id: data.runners[0].id, tier: '', effort: '' }
+						])}
 				>
 					<IconPlus size={14} /> Add target
 				</Button>

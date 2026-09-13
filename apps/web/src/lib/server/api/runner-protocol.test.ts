@@ -30,6 +30,7 @@ import {
 	authenticateRunnerToken,
 	finishRun,
 	pollRunner,
+	validateEffortCapabilities,
 	type RunnerRow
 } from './runner-protocol';
 import { registerRunner, rotateRunnerToken, updateRunner } from './runners';
@@ -50,6 +51,38 @@ function world(): TestDb {
 	setSettings(t);
 	return t;
 }
+
+describe('effort capability validation', () => {
+	const report = {
+		version: 1 as const,
+		daemon_version: '0.0.194',
+		harness: 'codex' as const,
+		harness_version: '0.153.4',
+		catalog_digest: 'sha256:test',
+		models: [{ model: 'gpt-5.6', efforts: ['low', 'ultra'] }]
+	};
+
+	it('accepts bounded exact-model reports only from identified daemon boots', () => {
+		expect(validateEffortCapabilities(report, 'boot_1')).toEqual(report);
+		expect(() => validateEffortCapabilities(report)).toThrowError(ApiFail);
+		expect(() =>
+			validateEffortCapabilities(
+				{ ...report, models: [{ model: 'gpt-5.6', efforts: ['High'] }] },
+				'boot_1'
+			)
+		).toThrowError(ApiFail);
+	});
+
+	it('retains unsupported protocol versions distinctly from absent legacy reports', () => {
+		expect(validateEffortCapabilities(undefined, 'boot_1')).toBeNull();
+		expect(
+			validateEffortCapabilities({ version: 2, reason: 'upgrade required' }, 'boot_1')
+		).toEqual({
+			version: 2,
+			reason: 'upgrade required'
+		});
+	});
+});
 
 async function runnerRow(t: TestDb, id: string): Promise<RunnerRow> {
 	const row = await t.db.selectFrom('runner').selectAll().where('id', '=', id).executeTakeFirst();

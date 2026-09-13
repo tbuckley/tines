@@ -61,6 +61,25 @@
 	<span class="text-muted-foreground text-xs">
 		{run.tier}{run.model ? ` · ${run.model}` : ''}
 	</span>
+	{#if run.effort_application_status === 'legacy_not_applied'}
+		<span
+			class="text-xs text-amber-700 dark:text-amber-400"
+			title="Actual provider effort is unknown"
+		>
+			tier effort {run.resolved_effort} not delivered · upgrade pending
+		</span>
+	{:else if run.resolved_effort}
+		<span
+			class="text-muted-foreground text-xs"
+			title={`Requested ${run.requested_effort ?? 'from runner tier'}; application ${run.effort_application_status}`}
+		>
+			effort {run.resolved_effort} · {run.effort_application_status.replaceAll('_', ' ')}
+		</span>
+	{:else if run.effort_application_status === 'unknown'}
+		<span class="text-muted-foreground text-xs">effort unknown</span>
+	{:else}
+		<span class="text-muted-foreground text-xs">provider default · unconfirmed</span>
+	{/if}
 	<span class="text-xs font-medium {runStatusClass(run.status)}">
 		{run.status.replaceAll('_', ' ')}
 	</span>

@@ -16,6 +16,8 @@ export interface AdapterLaunchInput {
 	runner: { id: string; type: string; name: string; config: string; max_run_minutes: number };
 	tier: ModelTier;
 	model: string | null;
+	/** Claim-time resolved effort. Adapters must not reread mutable tiers. */
+	effort?: string | null;
 	/**
 	 * The plaintext run key, for out-of-prompt delivery (vault credential /
 	 * egress-proxy header). Never logged, never stored beyond its hash.

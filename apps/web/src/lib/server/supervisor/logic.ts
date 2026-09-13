@@ -17,6 +17,7 @@ import {
 	type QueueVerdict,
 	type RoutingTarget
 } from '@tines/shared';
+import { supportedEfforts, type EffortCapabilities } from '@tines/shared';
 
 // ---------------------------------------------------------------------------
 // Rule matching (winner-take-all; project above state — see routing.ts)
@@ -249,6 +250,8 @@ export interface ResolvedTier {
 	tier: ModelTier;
 	/** Null when the runner cannot vary its model (custom harness). */
 	model: string | null;
+	/** Runner-tier fallback, when configured. */
+	effort: string | null;
 }
 
 function parseJson<T>(raw: string | null): T | null {
@@ -268,14 +271,121 @@ function parseJson<T>(raw: string | null): T | null {
  */
 export function resolveTier(runner: TierResolvable, requested: ModelTier | null): ResolvedTier {
 	const tier = requested ?? ((runner.default_tier || 'balanced') as ModelTier);
-	const overrides = parseJson<Record<string, { model?: string } | string>>(runner.tiers);
+	const overrides = parseJson<Record<string, { model?: string; effort?: string } | string>>(
+		runner.tiers
+	);
 	const override = overrides?.[tier];
 	if (override) {
 		const model = typeof override === 'string' ? override : override.model;
-		if (model) return { tier, model };
+		if (model)
+			return {
+				tier,
+				model,
+				effort: typeof override === 'string' ? null : (override.effort ?? null)
+			};
 	}
 	const builtins = builtinTierModels(runner);
-	return { tier, model: builtins?.[tier] ?? null };
+	return { tier, model: builtins?.[tier] ?? null, effort: null };
+}
+
+export type EffortDeliveryMode = 'enforce' | 'legacy_tier' | 'none';
+export interface EffortResolution {
+	requested: string | null;
+	resolved: string | null;
+	deliveryMode: EffortDeliveryMode;
+	compatible: boolean;
+	reason: string | null;
+}
+
+const MANAGED_CLAUDE_EFFORTS: Record<string, readonly string[]> = {
+	'claude-fable-5-1': ['low', 'medium', 'high', 'xhigh', 'max'],
+	'claude-fable-5': ['low', 'medium', 'high', 'xhigh', 'max'],
+	'claude-opus-5': ['low', 'medium', 'high', 'xhigh', 'max'],
+	'claude-sonnet-5': ['low', 'medium', 'high', 'xhigh', 'max'],
+	'claude-opus-4-8': ['low', 'medium', 'high', 'xhigh', 'max'],
+	'claude-opus-4-7': ['low', 'medium', 'high', 'xhigh', 'max'],
+	'claude-opus-4-6': ['low', 'medium', 'high', 'max'],
+	'claude-sonnet-4-6': ['low', 'medium', 'high', 'max']
+};
+
+/** Resolve intent and eligibility against the final exact model. */
+export function resolveEffort(
+	runner: TierResolvable & { effort_capabilities?: string | null },
+	tier: ResolvedTier,
+	routedEffort: string | null
+): EffortResolution {
+	const resolved = routedEffort ?? tier.effort;
+	if (!resolved)
+		return {
+			requested: null,
+			resolved: null,
+			deliveryMode: 'none',
+			compatible: true,
+			reason: null
+		};
+	if (!tier.model)
+		return {
+			requested: routedEffort,
+			resolved,
+			deliveryMode: 'none',
+			compatible: false,
+			reason: 'unsupported_harness: this harness has no model effort control'
+		};
+	if (runner.type === 'claude_managed') {
+		const allowed = MANAGED_CLAUDE_EFFORTS[tier.model];
+		return allowed?.includes(resolved)
+			? {
+					requested: routedEffort,
+					resolved,
+					deliveryMode: 'enforce',
+					compatible: true,
+					reason: null
+				}
+			: {
+					requested: routedEffort,
+					resolved,
+					deliveryMode: 'none',
+					compatible: false,
+					reason: `unsupported_effort: ${tier.model} does not support ${resolved}`
+				};
+	}
+	if (runner.type !== 'local')
+		return {
+			requested: routedEffort,
+			resolved,
+			deliveryMode: 'none',
+			compatible: false,
+			reason: 'unsupported_harness: this provider does not accept effort'
+		};
+	if (!runner.effort_capabilities) {
+		return routedEffort
+			? {
+					requested: routedEffort,
+					resolved,
+					deliveryMode: 'none',
+					compatible: false,
+					reason: 'daemon_upgrade_required: reconnect with an effort-capable daemon'
+				}
+			: { requested: null, resolved, deliveryMode: 'legacy_tier', compatible: true, reason: null };
+	}
+	let capabilities: EffortCapabilities | null = null;
+	try {
+		capabilities = JSON.parse(runner.effort_capabilities) as EffortCapabilities;
+	} catch {
+		/* fail closed below */
+	}
+	const allowed = supportedEfforts(capabilities, tier.model);
+	return allowed?.includes(resolved)
+		? { requested: routedEffort, resolved, deliveryMode: 'enforce', compatible: true, reason: null }
+		: {
+				requested: routedEffort,
+				resolved,
+				deliveryMode: 'none',
+				compatible: false,
+				reason: allowed
+					? `unsupported_effort: ${tier.model} allows ${allowed.join(', ')}`
+					: 'capability_unavailable: exact model support was not reported'
+			};
 }
 
 // ---------------------------------------------------------------------------

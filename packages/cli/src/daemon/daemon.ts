@@ -38,6 +38,7 @@ import { CodexStreamRenderer } from './codex-stream.js';
 import { collectCodexRequestContext, resolveCodexHome } from './codex-rollout.js';
 import type { RunStreamRenderer } from './stream-summary.js';
 import { RateLimitDetector } from './rate-limit';
+import { discoverEffortCapabilities } from './effort-capabilities.js';
 import { agentCliPrefix, installAgentCli } from './cli-refresh.js';
 import { ensureRunnerCredentials, nextStepsMessage } from './register.js';
 import {
@@ -638,6 +639,7 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 				promptFile: join(workspace, 'prompt.md'),
 				prompt: assignment.prompt,
 				model: assignment.run.model,
+				effort: assignment.effort?.value ?? null,
 				...(resume ? { resumeSessionId: resume.provider_session_id } : {})
 			};
 			const invocation = buildHarnessInvocation(
@@ -672,6 +674,20 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 				stdio: ['ignore', 'pipe', 'pipe'],
 				detached: true
 			});
+			if (assignment.effort) {
+				child.once('spawn', () => {
+					void client
+						.appendRunLog(runId, {
+							chunk: '',
+							effort_application: {
+								status: 'accepted_unconfirmed',
+								attempted_effort: assignment.effort!.value,
+								transport: 'argv'
+							}
+						})
+						.catch((err) => log(`run ${runId}: effort evidence rejected: ${message(err)}`));
+				});
+			}
 			run.child = child;
 			run.spawnedAt = Date.now();
 			table.persist();
@@ -821,6 +837,7 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 		`polling ${baseUrl} every ${Math.round(opts.pollIntervalMs / 1000)}s (harness ${opts.harness}, max ${opts.maxConcurrent} concurrent) — Ctrl-C to stop`
 	);
 	let failures = 0;
+	const effortCapabilities = await discoverEffortCapabilities(opts.harness, DAEMON_VERSION);
 	while (!shuttingDown) {
 		try {
 			// `max_concurrent` rides along so the server cap tracks the flag —
@@ -830,6 +847,7 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 				instance_id: instanceId,
 				owned_runs: table.ids(),
 				max_concurrent: opts.maxConcurrent,
+				...(effortCapabilities ? { effort_capabilities: effortCapabilities } : {}),
 				// Stated on every poll while pending; absent otherwise, which
 				// the server reads as "not draining" — so a daemon that died
 				// mid-drain cannot pin its runner shut past its relaunch.

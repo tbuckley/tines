@@ -664,7 +664,7 @@ export function createClaudeAdapter(env: Env, opts: ClaudeAdapterOptions = {}): 
 		const apiHost = new URL(base).hostname;
 		if (!input.model) throw new Error('Claude launches need a resolved model for the tier');
 		const overrides = parseJson<RunnerTierOverrides>(ctx.row.tiers);
-		const effort = overrides?.[input.tier]?.effort;
+		const effort = input.effort ?? undefined;
 
 		// Launch materials, assembled at launch time over our own API.
 		const [issue, prompt, context] = await Promise.all([

@@ -8,6 +8,7 @@ import {
 	matchRule,
 	resolveRule,
 	resolveRoute,
+	resolveEffort,
 	isRoutedCandidate,
 	queueVerdict,
 	speakingTarget,
@@ -235,7 +236,21 @@ describe('resolveTier', () => {
 			local({ harness: 'custom', command: 'run {prompt_file}' }),
 			'smartest'
 		);
-		expect(resolved).toEqual({ tier: 'smartest', model: null });
+		expect(resolved).toEqual({ tier: 'smartest', model: null, effort: null });
+	});
+
+	it('resolves runner-tier effort with the exact model override', () => {
+		expect(
+			resolveTier(
+				{
+					type: 'local',
+					default_tier: 'balanced',
+					tiers: JSON.stringify({ balanced: { model: 'gpt-5.6', effort: 'ultra' } }),
+					config: JSON.stringify({ harness: 'codex' })
+				},
+				null
+			)
+		).toEqual({ tier: 'balanced', model: 'gpt-5.6', effort: 'ultra' });
 	});
 
 	it('per-runner overrides freeze a tier to an exact model; unlisted tiers keep the built-ins', () => {
@@ -253,6 +268,48 @@ describe('resolveTier', () => {
 		const runner = { type: 'local', default_tier: 'balanced', tiers: '{oops', config: '{broken' };
 		// Broken config falls back to the claude_code harness's table.
 		expect(resolveTier(runner, 'balanced').model).toMatch(/^claude-/);
+	});
+});
+
+describe('resolveEffort', () => {
+	const tier = { tier: 'balanced' as const, model: 'gpt-5.6', effort: 'medium' };
+	const local = (effort_capabilities: string | null) => ({
+		type: 'local',
+		default_tier: 'balanced',
+		tiers: null,
+		config: JSON.stringify({ harness: 'codex' }),
+		effort_capabilities
+	});
+	const capabilities = JSON.stringify({
+		version: 1,
+		models: [{ model: 'gpt-5.6', efforts: ['low', 'medium', 'ultra'] }]
+	});
+
+	it('prefers routed effort and checks the exact final model', () => {
+		expect(resolveEffort(local(capabilities), tier, 'ultra')).toMatchObject({
+			requested: 'ultra',
+			resolved: 'ultra',
+			deliveryMode: 'enforce',
+			compatible: true
+		});
+		expect(
+			resolveEffort(local(capabilities), { ...tier, model: 'gpt-other' }, 'ultra')
+		).toMatchObject({
+			compatible: false,
+			deliveryMode: 'none'
+		});
+	});
+
+	it('permits only tier fallback through the legacy-daemon grace', () => {
+		expect(resolveEffort(local(null), tier, null)).toMatchObject({
+			resolved: 'medium',
+			deliveryMode: 'legacy_tier',
+			compatible: true
+		});
+		expect(resolveEffort(local(null), tier, 'low')).toMatchObject({
+			compatible: false,
+			reason: expect.stringContaining('daemon_upgrade_required')
+		});
 	});
 });
 
