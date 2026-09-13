@@ -1611,6 +1611,7 @@ Options:
   --from <bound>                custom inclusive start (date or offset
                                 timestamp)
   --to <bound>                  custom exclusive end (date or offset timestamp)
+  --issue <ref>                 direct issue lifetime through now
   --project <name-or-id>        project scope (including archived), or unknown
   --workflow <name-or-id>       workflow filter, or unknown
   --state <id>                  starting state id (requires --workflow)
