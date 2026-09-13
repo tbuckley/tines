@@ -64,6 +64,9 @@ execute(`
 	VALUES ('scale_runner','scale_user','local','Scale','paused',1,30,'balanced','{}',1700000000000,1700000000000);
 	INSERT INTO api_key (id,user_id,name,key_hash,key_prefix,created_at)
 	VALUES ('scale_key','scale_user','scale-local','${keyHash}','tines_usage_',1700000000000);
+	INSERT INTO event (id,user_id,type,actor_user_id,issue_id,project_id,payload,created_at)
+	VALUES ('scale_completion','scale_user','issue.transitioned','scale_user','scale_issue','scale_project',
+		'{"state_entry_version":1,"workflow_id":"wf_standard","workflow_name":"Standard","to_state_id":"wfs_std_closed","to_state_name":"Closed","to_state_category":"done"}',${fromMs + 1});
 	WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM seq WHERE n < ${size})
 	INSERT INTO agent_run (id,user_id,issue_id,runner_id,status,outcome,tier,usage,state_id_at_start,log,created_at,started_at,ended_at)
 	SELECT printf('scale_%06d',n),'scale_user','scale_issue','scale_runner','completed',
@@ -361,6 +364,35 @@ try {
 		throw new Error('direct lifetime attempt population mismatch');
 	if (lifetime.issue.aggregate.finalized_run_count !== size)
 		throw new Error('direct lifetime finalized population mismatch');
+	const cohortTraceStart = workerLog.length;
+	const cohortResponse = await fetch(
+		`${baseUrl}/api/v1/usage?mode=cohort&workflow=wf_standard&from=${encodeURIComponent(new Date(fromMs).toISOString())}&to=${encodeURIComponent(new Date(toMs).toISOString())}`,
+		{ headers: { authorization: `Bearer ${apiKey}` } }
+	);
+	const cohort = await cohortResponse.json();
+	if (!cohortResponse.ok) throw new Error(JSON.stringify(cohort));
+	const cohortTraces = await tracesSince(cohortTraceStart);
+	if (cohortTraces.length > 49)
+		throw new Error(`cohort query bound exceeded: ${cohortTraces.length} > 49`);
+	if (
+		cohort.counters.distinct_issue_count !== 1 ||
+		cohort.counters.attempt_count !== size + 100 ||
+		cohort.counters.pending_count !== 100 ||
+		cohort.aggregate.finalized_run_count !== size
+	)
+		throw new Error('completion cohort huge-member population mismatch');
+	const cohortEvidenceResponse = await fetch(
+		`${baseUrl}/api/v1/usage/evidence?scope=${encodeURIComponent(cohort.scope)}&kind=issues&limit=10`,
+		{ headers: { authorization: `Bearer ${apiKey}` } }
+	);
+	const cohortEvidence = await cohortEvidenceResponse.json();
+	if (!cohortEvidenceResponse.ok) throw new Error(JSON.stringify(cohortEvidence));
+	if (
+		cohortEvidence.total_count !== 1 ||
+		cohortEvidence.items[0]?.attempt_count !== size + 100 ||
+		cohortEvidence.items[0]?.pending_count !== 100
+	)
+		throw new Error('completion cohort issue evidence mismatch');
 	const cliRaw = execFileSync(
 		'node',
 		[
@@ -494,6 +526,14 @@ try {
 			finalized: lifetime.issue.aggregate.finalized_run_count,
 			queries: lifetimeTraces.length,
 			rows_read: lifetimeTraces.reduce((sum, trace) => sum + trace.rows_read, 0)
+		},
+		completion_cohort: {
+			issues: cohort.counters.distinct_issue_count,
+			attempts: cohort.counters.attempt_count,
+			pending: cohort.counters.pending_count,
+			queries: cohortTraces.length,
+			rows_read: cohortTraces.reduce((sum, trace) => sum + trace.rows_read, 0),
+			issue_evidence_reconciled: true
 		},
 		independent_oracle: oracle,
 		distribution_oracle: {
