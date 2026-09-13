@@ -7,6 +7,7 @@
 		type UsageWindow
 	} from '@tines/shared';
 	import { api } from '$lib/api';
+	import SpendEvidence from './SpendEvidence.svelte';
 	let {
 		workflows,
 		project,
@@ -16,6 +17,13 @@
 		workflow,
 		selected,
 		onnavigate,
+		scope,
+		kind,
+		member,
+		population,
+		sort,
+		direction,
+		cursor,
 		onclose
 	}: {
 		workflows: Workflow[];
@@ -26,6 +34,13 @@
 		workflow: string;
 		selected: string[] | null;
 		onnavigate: (changes: Record<string, string | null>) => void;
+		scope: string | null;
+		kind: 'issues' | 'runs' | 'entries';
+		member: string | null;
+		population: 'all' | 'finalized' | 'pending';
+		sort: 'cost' | 'time';
+		direction: 'asc' | 'desc';
+		cursor: string | null;
 		onclose: () => void;
 	} = $props();
 	let report = $state<CohortUsageReport | null>(null);
@@ -152,6 +167,33 @@
 						.reopening_history_unavailable_issue_count} unknown</span
 				>
 			</div>
+			{#if report.scope}<div class="evidence-actions">
+					<button
+						type="button"
+						onclick={() =>
+							onnavigate({
+								spend_scope: report!.scope!,
+								spend_kind: 'issues',
+								spend_population: 'all',
+								spend_member: null,
+								spend_evidence_sort: 'cost',
+								spend_direction: 'desc',
+								spend_cursor: null
+							})}>View completed issues</button
+					><button
+						type="button"
+						onclick={() =>
+							onnavigate({
+								spend_scope: report!.scope!,
+								spend_kind: 'entries',
+								spend_population: 'all',
+								spend_member: null,
+								spend_evidence_sort: 'time',
+								spend_direction: 'desc',
+								spend_cursor: null
+							})}>View entry history</button
+					>
+				</div>{/if}
 			{#if !report.counters.distinct_issue_count}<p>
 					No completed issues in available history.
 				</p>{/if}
@@ -174,6 +216,26 @@
 					).toISOString()} exclusive. Recorded provider and calculated list costs are not invoices.
 				</p>
 			</details>
+			{#if scope}<SpendEvidence
+					{scope}
+					{kind}
+					{member}
+					{population}
+					{sort}
+					{direction}
+					{cursor}
+					{onnavigate}
+					onclose={() =>
+						onnavigate({
+							spend_scope: null,
+							spend_kind: null,
+							spend_member: null,
+							spend_population: null,
+							spend_evidence_sort: null,
+							spend_direction: null,
+							spend_cursor: null
+						})}
+				/>{/if}
 		</div>{/if}
 </section>
 
@@ -221,6 +283,11 @@
 		background: var(--muted);
 		padding: 0.75rem;
 		border-radius: 6px;
+	}
+	.evidence-actions {
+		display: flex;
+		gap: 0.5rem;
+		margin: 0.75rem 0;
 	}
 	.summary strong {
 		grid-column: 1/-1;

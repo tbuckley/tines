@@ -3,6 +3,8 @@
 		ApiError,
 		usageCostLabel,
 		type AgentRunUsageEvidence,
+		type CohortEntry,
+		type CohortIssueUsage,
 		type IssueAttemptUsage,
 		type UsageDiagnostics,
 		type UsageEvidencePage
@@ -22,9 +24,9 @@
 		onclose
 	}: {
 		scope: string;
-		kind?: 'issues' | 'runs';
+		kind?: 'issues' | 'runs' | 'entries';
 		member?: string | null;
-		population?: 'finalized' | 'pending';
+		population?: 'all' | 'finalized' | 'pending';
 		sort?: 'cost' | 'time';
 		direction?: 'asc' | 'desc';
 		cursor?: string | null;
@@ -94,36 +96,47 @@
 <section class="evidence" aria-labelledby="evidence-heading">
 	<header>
 		<div>
-			<h3 id="evidence-heading">Contributing {kind}</h3>
+			<h3 id="evidence-heading">
+				{kind === 'entries' ? 'Completion entry history' : `Contributing ${kind}`}
+			</h3>
 			<small>Frozen report scope · direct attempts only</small>
 		</div>
 		{#if onclose}<button type="button" onclick={onclose}>Close detail</button>{/if}
 	</header>
 	<nav aria-label="Evidence view">
-		{#if kind === 'runs'}<button
+		{#if kind !== 'issues'}<button
 				type="button"
-				onclick={() => change({ spend_kind: 'issues', spend_member: null, spend_cursor: null })}
-				>Issues</button
+				onclick={() =>
+					change({
+						spend_kind: 'issues',
+						spend_member: null,
+						spend_population: 'all',
+						spend_evidence_sort: 'cost',
+						spend_cursor: null
+					})}>Issues</button
 			>{/if}
-		<button
-			type="button"
-			aria-pressed={population === 'finalized'}
-			onclick={() =>
-				change({ spend_population: 'finalized', spend_evidence_sort: 'cost', spend_cursor: null })}
-			>Finalized</button
-		>
-		<button
-			type="button"
-			aria-pressed={population === 'pending'}
-			onclick={() =>
-				change({
-					spend_kind: 'runs',
-					spend_population: 'pending',
-					spend_evidence_sort: 'time',
-					spend_cursor: null
-				})}>Pending</button
-		>
-		{#if population === 'finalized'}<button
+		{#if kind !== 'entries'}<button
+				type="button"
+				aria-pressed={population === 'finalized'}
+				onclick={() =>
+					change({
+						spend_population: 'finalized',
+						spend_evidence_sort: 'cost',
+						spend_cursor: null
+					})}>Finalized</button
+			>
+			<button
+				type="button"
+				aria-pressed={population === 'pending'}
+				onclick={() =>
+					change({
+						spend_kind: 'runs',
+						spend_population: 'pending',
+						spend_evidence_sort: 'time',
+						spend_cursor: null
+					})}>Pending</button
+			>{/if}
+		{#if kind !== 'entries' && population === 'finalized'}<button
 				type="button"
 				onclick={() =>
 					change({ spend_evidence_sort: sort === 'cost' ? 'time' : 'cost', spend_cursor: null })}
@@ -153,9 +166,9 @@
 					{population === 'pending' ? 'No pending runs at this cutoff.' : 'No contributing runs.'}
 				</p>{/if}
 			<div class="rows">
-				{#each page.items as raw ((raw as { id?: string; issue_id?: string }).id ?? (raw as IssueAttemptUsage).issue_id)}
+				{#each page.items as raw ((raw as { event_id?: string; id?: string; issue_id?: string }).event_id ?? (raw as { id?: string }).id ?? (raw as IssueAttemptUsage).issue_id)}
 					{#if kind === 'issues'}
-						{@const item = raw as IssueAttemptUsage}
+						{@const item = raw as CohortIssueUsage}
 						<article>
 							<button
 								type="button"
@@ -177,6 +190,30 @@
 								></button
 							><UsageCostCell aggregate={item.aggregate} />
 						</article>
+					{:else if kind === 'entries'}
+						{@const item = raw as CohortEntry}
+						<article>
+							<div>
+								<strong>{item.state_name ?? item.state_id ?? 'Unclassifiable entry'}</strong>
+								<small
+									>{item.event_type} · {item.issue_id ?? 'unknown issue'} · {new Date(
+										item.created_at
+									).toISOString()}</small
+								>
+							</div>
+							<strong class="cost"
+								>{item.chosen
+									? 'Chosen'
+									: item.reopening_relevant
+										? 'Reopened'
+										: item.qualifies
+											? 'Qualifies'
+											: 'Excluded'}</strong
+							>
+						</article>
+						{#if item.unavailable_reason}<small
+								>{item.unavailable_reason.replaceAll('_', ' ')}</small
+							>{/if}
 					{:else}
 						{@const run = raw as AgentRunUsageEvidence}
 						<article class="run-row">

@@ -544,8 +544,8 @@ export function createApiClient(options: ApiClientOptions) {
 			get<UsageReport | IssueUsageReport | CohortUsageReport>(`/api/v1/usage${query({ scope })}`),
 		getUsageEvidence: (filters: {
 			scope: string;
-			kind?: 'issues' | 'runs';
-			population?: 'finalized' | 'pending';
+			kind?: 'issues' | 'runs' | 'entries';
+			population?: 'all' | 'finalized' | 'pending';
 			member?: string;
 			sort?: 'cost' | 'time';
 			direction?: 'asc' | 'desc';

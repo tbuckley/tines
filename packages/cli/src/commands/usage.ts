@@ -13,6 +13,7 @@ import {
 import {
 	usageCostLabel,
 	type CohortUsageReport,
+	type CohortEntry,
 	type IssueUsageReport,
 	type IssueAttemptUsage,
 	type UsageEvidencePage,
@@ -38,9 +39,9 @@ interface UsageOpts extends CommonOpts {
 	cohort?: boolean;
 	doneState?: string[];
 	scope?: string;
-	evidence?: 'issues' | 'runs';
+	evidence?: 'issues' | 'runs' | 'entries';
 	member?: string;
-	population?: 'finalized' | 'pending';
+	population?: 'all' | 'finalized' | 'pending';
 	sort?: 'cost' | 'time';
 	direction?: 'asc' | 'desc';
 	cursor?: string;
@@ -67,6 +68,23 @@ function printEvidence(page: UsageEvidencePage): void {
 				money(item.aggregate.cost_usd),
 				item.aggregate.coverage,
 				String(item.attempt_count)
+			])
+		]);
+	else if (page.kind === 'entries')
+		table([
+			['EVENT', 'ISSUE', 'STATE', 'AT', 'EVIDENCE'],
+			...(page.items as CohortEntry[]).map((item) => [
+				item.event_id,
+				item.issue_id ?? 'Unavailable issue',
+				item.state_name ?? item.state_id ?? 'Unclassifiable',
+				new Date(item.created_at).toISOString(),
+				item.chosen
+					? 'Chosen completion'
+					: item.reopening_relevant
+						? 'Reopening witness'
+						: item.qualifies
+							? 'Qualifying entry'
+							: (item.unavailable_reason ?? 'Excluded')
 			])
 		]);
 	else
@@ -229,10 +247,13 @@ export function register(program: Command): void {
 				collect
 			)
 			.option('--scope <token>', 'replay a frozen usage scope')
-			.addOption(new Option('--evidence <kind>', 'list evidence').choices(['issues', 'runs']))
+			.addOption(
+				new Option('--evidence <kind>', 'list evidence').choices(['issues', 'runs', 'entries'])
+			)
 			.option('--member <issue-id>', 'narrow run evidence to one contributing issue')
 			.addOption(
-				new Option('--population <population>', 'finalized or pending').choices([
+				new Option('--population <population>', 'all, finalized, or pending').choices([
+					'all',
 					'finalized',
 					'pending'
 				])
@@ -329,7 +350,12 @@ export function register(program: Command): void {
 					cursor
 				});
 				for (const item of page.items) {
-					const id = 'id' in item ? item.id : ((item as IssueAttemptUsage).issue_id ?? 'unknown');
+					const id =
+						'event_id' in item
+							? item.event_id
+							: 'id' in item
+								? item.id
+								: ((item as IssueAttemptUsage).issue_id ?? 'unknown');
 					if (seenIds.has(id)) throw new Error(`Evidence pagination repeated ${id}`);
 					seenIds.add(id);
 				}

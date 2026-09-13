@@ -180,6 +180,21 @@ describe('GET /api/v1/usage validation and authorization', () => {
 		expect(pending).not.toHaveProperty('items.0.usage');
 		const empty = await evidence(`kind=runs&member=${noRun}`);
 		expect(empty).toMatchObject({ total_count: 0, items: [] });
+		const entries = await evidence('kind=entries&limit=1');
+		expect(entries).toMatchObject({
+			total_count: 2,
+			population: 'all',
+			sort: 'time',
+			items: [{ event_id: 'evt_cohort_no_run', qualifies: 1, chosen: 1 }]
+		});
+		expect(entries.next_cursor).toEqual(expect.any(String));
+		const nextEntries = await evidence(
+			`kind=entries&limit=1&cursor=${encodeURIComponent(String(entries.next_cursor))}`
+		);
+		expect(nextEntries).toMatchObject({
+			total_count: 2,
+			items: [{ event_id: 'evt_cohort_finalized', qualifies: 1, chosen: 1 }]
+		});
 	});
 
 	it('rejects contradictory and unprovable cohort selections', async () => {

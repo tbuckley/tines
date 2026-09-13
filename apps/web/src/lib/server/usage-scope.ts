@@ -48,8 +48,8 @@ export type UsageScopePayload =
 export type UsageCursorPayload = {
 	v: 1;
 	scope: string;
-	kind: 'issues' | 'runs';
-	population: 'finalized' | 'pending';
+	kind: 'issues' | 'runs' | 'entries';
+	population: 'all' | 'finalized' | 'pending';
 	member: string | null;
 	sort: 'cost' | 'time';
 	direction: 'asc' | 'desc';
@@ -225,8 +225,8 @@ function validCursor(value: unknown): value is UsageCursorPayload {
 			'boundary,direction,kind,member,population,scope,sort,traversal,v' &&
 		Object.keys(value.boundary).sort().join(',') === 'at,cost,id' &&
 		typeof value.scope === 'string' &&
-		['issues', 'runs'].includes(String(value.kind)) &&
-		['finalized', 'pending'].includes(String(value.population)) &&
+		['issues', 'runs', 'entries'].includes(String(value.kind)) &&
+		['all', 'finalized', 'pending'].includes(String(value.population)) &&
 		(value.member === null || typeof value.member === 'string') &&
 		['cost', 'time'].includes(String(value.sort)) &&
 		['asc', 'desc'].includes(String(value.direction)) &&

@@ -15,9 +15,9 @@ export interface SpendSelection {
 	ready: boolean;
 	requestKey: string;
 	scope: string | null;
-	kind: 'issues' | 'runs';
+	kind: 'issues' | 'runs' | 'entries';
 	member: string | null;
-	population: 'finalized' | 'pending';
+	population: 'all' | 'finalized' | 'pending';
 	evidenceSort: 'cost' | 'time';
 	evidenceDirection: 'asc' | 'desc';
 	cursor: string | null;
@@ -79,10 +79,12 @@ export function parseSpendSelection(url: URL, focusId: string | null): SpendSele
 	const to = url.searchParams.get('spend_to') ?? '';
 	const ready = window !== 'custom' || (from.trim() !== '' && to.trim() !== '');
 	const scope = url.searchParams.get('spend_scope');
-	const kind = url.searchParams.get('spend_kind') === 'runs' ? 'runs' : 'issues';
+	const rawKind = url.searchParams.get('spend_kind');
+	const kind = rawKind === 'runs' || rawKind === 'entries' ? rawKind : 'issues';
 	const member = url.searchParams.get('spend_member');
+	const rawPopulation = url.searchParams.get('spend_population');
 	const population =
-		url.searchParams.get('spend_population') === 'pending' ? 'pending' : 'finalized';
+		rawPopulation === 'pending' || rawPopulation === 'all' ? rawPopulation : 'finalized';
 	const evidenceSort = url.searchParams.get('spend_evidence_sort') === 'time' ? 'time' : 'cost';
 	const evidenceDirection = url.searchParams.get('spend_direction') === 'asc' ? 'asc' : 'desc';
 	const cursor = url.searchParams.get('spend_cursor');

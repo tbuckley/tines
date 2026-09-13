@@ -50,15 +50,19 @@ export const GET: RequestHandler = api(async (event) => {
 		});
 	}
 	if (scope.owner !== actor.userId) throw notFound();
-	const kind = (params.get('kind') ?? 'issues') as 'issues' | 'runs';
-	const population = (params.get('population') ?? 'finalized') as 'finalized' | 'pending';
-	const sort = (params.get('sort') ?? (population === 'pending' ? 'time' : 'cost')) as
-		'cost' | 'time';
+	const kind = (params.get('kind') ?? 'issues') as 'issues' | 'runs' | 'entries';
+	const population = (params.get('population') ??
+		(scope.mode === 'cohort' && kind !== 'runs' ? 'all' : 'finalized')) as
+		'all' | 'finalized' | 'pending';
+	const sort = (params.get('sort') ??
+		(population === 'pending' || kind === 'entries' ? 'time' : 'cost')) as 'cost' | 'time';
 	const direction = (params.get('direction') ?? 'desc') as 'asc' | 'desc';
-	if (!['issues', 'runs'].includes(kind))
-		throw new ApiFail(422, 'invalid_field', 'kind must be issues or runs', { field: 'kind' });
-	if (!['finalized', 'pending'].includes(population))
-		throw new ApiFail(422, 'invalid_field', 'population must be finalized or pending', {
+	if (!['issues', 'runs', 'entries'].includes(kind))
+		throw new ApiFail(422, 'invalid_field', 'kind must be issues, runs, or entries', {
+			field: 'kind'
+		});
+	if (!['all', 'finalized', 'pending'].includes(population))
+		throw new ApiFail(422, 'invalid_field', 'population must be all, finalized, or pending', {
 			field: 'population'
 		});
 	if (!['cost', 'time'].includes(sort))

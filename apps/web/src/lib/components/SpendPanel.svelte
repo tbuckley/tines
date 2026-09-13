@@ -302,6 +302,13 @@
 			to={selection.to}
 			workflow={selection.cohortWorkflow}
 			selected={selection.doneStates}
+			scope={selection.scope}
+			kind={selection.kind}
+			member={selection.member}
+			population={selection.population}
+			sort={selection.evidenceSort}
+			direction={selection.evidenceDirection}
+			cursor={selection.cursor}
 			onnavigate={(changes) => update(changes)}
 			onclose={() => update({ spend_mode: 'period' })}
 		/>{/if}

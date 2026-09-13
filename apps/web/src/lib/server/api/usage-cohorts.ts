@@ -177,7 +177,7 @@ type EvidenceCandidate = {
 	id: string;
 	cost: string | null;
 	at: number;
-	item?: CohortIssueUsage;
+	item?: CohortIssueUsage | CohortEntry;
 };
 
 type CohortEvidenceBuild = {
@@ -707,8 +707,12 @@ export async function getCohortUsageEvidence(
 	request: EvidenceRequest,
 	material: string
 ): Promise<UsageEvidencePage> {
-	if (request.kind === 'issues' && request.population !== 'finalized')
+	if (request.kind === 'issues' && request.population !== 'all')
 		throw new Error('completed issue evidence uses the all-member population');
+	if (request.kind === 'entries' && (request.population !== 'all' || request.sort !== 'time'))
+		throw new Error('completion entry evidence uses the all-entry population sorted by time');
+	if (request.kind === 'runs' && request.population === 'all')
+		throw new Error('run evidence must select finalized or pending');
 	if (request.population === 'pending' && request.sort === 'cost')
 		throw new Error('pending evidence can only be sorted by time');
 	let decoded = null;
@@ -753,19 +757,82 @@ export async function getCohortUsageEvidence(
 	if (!report) throw new Error('Completed-issue selection is no longer available');
 	if (request.member && !evidence.memberFound)
 		throw new Error('member is not in this completed-issue selection');
+	if (request.kind === 'entries') {
+		const cursorAt = evidence.boundary?.at ?? 0;
+		const cursorId = evidence.boundary?.id ?? '';
+		const after = evidence.traversal === 'after';
+		const ascending = request.direction === 'asc';
+		const timeOperator = after === ascending ? '>' : '<';
+		const idOperator = after ? '>' : '<';
+		const order = `${ascending === after ? 'ASC' : 'DESC'}, id ${after ? 'ASC' : 'DESC'}`;
+		const entryResult = await sql<CohortEntry & { total_count: number }>`WITH normalized AS (
+			SELECT id,type,issue_id,project_id,created_at,json_valid(payload) AS valid,
+				CASE WHEN json_valid(payload) AND type='issue.created' THEN json_extract(payload,'$.state_id')
+					WHEN json_valid(payload) THEN json_extract(payload,'$.to_state_id') END AS state_id,
+				CASE WHEN json_valid(payload) AND type='issue.created' THEN json_extract(payload,'$.state_name')
+					WHEN json_valid(payload) THEN json_extract(payload,'$.to_state_name') END AS state_name,
+				CASE WHEN json_valid(payload) AND type IN ('issue.created','issue.transitioned') THEN json_extract(payload,'$.workflow_id')
+					WHEN json_valid(payload) THEN json_extract(payload,'$.workflow_to_id') END AS workflow_id,
+				CASE WHEN json_valid(payload) AND type IN ('issue.created','issue.transitioned') THEN json_extract(payload,'$.workflow_name')
+					WHEN json_valid(payload) THEN json_extract(payload,'$.workflow_to_name') END AS workflow_name,
+				CASE WHEN json_valid(payload) AND type='issue.created' THEN json_extract(payload,'$.state_category')
+					WHEN json_valid(payload) THEN json_extract(payload,'$.to_state_category') END AS category
+			FROM event WHERE user_id=${owner} AND created_at>=${scope.from} AND created_at<${scope.observed_through}
+				AND type IN ('issue.created','issue.transitioned','issue.updated')
+				AND (type<>'issue.updated' OR NOT json_valid(payload)
+					OR json_extract(payload,'$.workflow_to_id') IS NOT NULL
+					OR EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(payload) THEN payload ELSE '{}' END,'$.changed') WHERE value='workflow'))
+		), flagged AS (
+			SELECT *,CASE WHEN issue_id IS NOT NULL AND created_at<${scope.to}
+				AND workflow_id=${scope.workflow} AND category='done'
+				AND state_id IN (SELECT value FROM json_each(${JSON.stringify(scope.selected_states.map((state) => state.id))}))
+				AND (${scope.project} IS NULL OR project_id=${scope.project}) THEN 1 ELSE 0 END AS qualifies
+			FROM normalized
+		), ranked AS (
+			SELECT *,SUM(qualifies) OVER (PARTITION BY issue_id ORDER BY created_at DESC,id DESC ROWS UNBOUNDED PRECEDING) AS qualifying_rank,
+				SUM(qualifies) OVER (PARTITION BY issue_id ORDER BY created_at DESC,id DESC ROWS BETWEEN 1 FOLLOWING AND UNBOUNDED FOLLOWING) AS earlier_qualifying
+			FROM flagged
+		), audited AS (
+			SELECT *,COUNT(*) OVER () AS total_count FROM ranked
+			WHERE (${request.member} IS NULL OR issue_id=${request.member})
+		)
+		SELECT id AS event_id,type AS event_type,issue_id,project_id,workflow_id,workflow_name,
+			state_id,state_name,category,
+			CASE WHEN valid=1 AND state_id IS NOT NULL AND workflow_id IS NOT NULL AND category IS NOT NULL THEN 'recorded_entry' END AS identity_basis,
+			created_at,qualifies,(qualifies=1 AND qualifying_rank=1) AS chosen,
+			(category IS NOT NULL AND category<>'done' AND COALESCE(earlier_qualifying,0)>0) AS reopening_relevant,
+			CASE WHEN valid=0 THEN 'malformed_payload' WHEN state_id IS NULL THEN 'missing_target_state_id'
+				WHEN workflow_id IS NULL OR category IS NULL THEN 'missing_workflow_or_category' END AS unavailable_reason,
+			total_count FROM audited
+		WHERE (${evidence.boundary === null ? 1 : 0} OR created_at ${sql.raw(timeOperator)} ${cursorAt}
+			OR (created_at=${cursorAt} AND id ${sql.raw(idOperator)} ${cursorId}))
+		ORDER BY created_at ${sql.raw(order)} LIMIT ${request.limit + 1}`.execute(db);
+		const hasExtraEntries = entryResult.rows.length > request.limit;
+		const pageRows = entryResult.rows.slice(0, request.limit);
+		if (!after) pageRows.reverse();
+		evidence.winners = pageRows.map((entry) => ({
+			id: entry.event_id,
+			cost: null,
+			at: entry.created_at,
+			item: entry
+		}));
+		evidence.totalCount = Number(entryResult.rows[0]?.total_count ?? 0);
+		// Preserve whether the SQL page has another row on the requested side.
+		if (hasExtraEntries) evidence.winners.push({ id: '', cost: null, at: 0 });
+	}
 	const hasExtra = evidence.winners.length > request.limit;
 	const selected =
 		traversal === 'before'
 			? evidence.winners.slice(-request.limit)
 			: evidence.winners.slice(0, request.limit);
 	const items =
-		request.kind === 'issues'
+		request.kind === 'issues' || request.kind === 'entries'
 			? selected.map((candidate) => candidate.item!)
 			: await hydrateUsageEvidenceRuns(
 					db,
 					owner,
 					selected.map((candidate) => candidate.id),
-					request.population,
+					request.population as 'finalized' | 'pending',
 					scope.to
 				);
 	if (items.length !== selected.length)
@@ -807,12 +874,12 @@ export async function getCohortUsageEvidence(
 		parent_matching_total: request.member ? report.aggregate : undefined,
 		attempt_count: request.member
 			? request.kind === 'issues'
-				? (selected[0]?.item?.attempt_count ?? 0)
+				? ((selected[0]?.item as CohortIssueUsage | undefined)?.attempt_count ?? 0)
 				: evidence.totalCount
 			: report.counters.attempt_count,
 		pending_count: request.member
 			? request.kind === 'issues'
-				? (selected[0]?.item?.pending_count ?? 0)
+				? ((selected[0]?.item as CohortIssueUsage | undefined)?.pending_count ?? 0)
 				: request.population === 'pending'
 					? evidence.totalCount
 					: 0

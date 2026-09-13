@@ -422,7 +422,8 @@ export function cohortKnownCostMean(
 	};
 }
 
-export type UsageEvidenceItem = IssueAttemptUsage | AgentRunUsageEvidence | UsagePendingRun;
+export type UsageEvidenceItem =
+	IssueAttemptUsage | AgentRunUsageEvidence | UsagePendingRun | CohortEntry;
 export interface AgentRunUsageEvidence extends AgentRun {
 	usage_accounting: UsageEvidenceAccounting;
 }
@@ -432,8 +433,8 @@ export interface UsageEvidencePage<T extends UsageEvidenceItem = UsageEvidenceIt
 	previous_cursor: string | null;
 	total_count: number;
 	scope: string;
-	kind: 'issues' | 'runs';
-	population: 'finalized' | 'pending';
+	kind: 'issues' | 'runs' | 'entries';
+	population: 'all' | 'finalized' | 'pending';
 	sort: 'cost' | 'time';
 	direction: 'asc' | 'desc';
 	matching_total: UsageAggregate;
