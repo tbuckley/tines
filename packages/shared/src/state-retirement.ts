@@ -38,3 +38,26 @@ export interface StateRetirementWitnessV1 {
 	context_files: Record<string, unknown>[];
 	active_runs: Record<string, unknown>[];
 }
+
+export interface AcquireStateRetirementHoldRequest {
+	inventory_json: string;
+	confirmation: { inventory_digest: string };
+}
+
+export interface StateRetirementHold {
+	id: string;
+	inventory_digest: string;
+	topology_digest: string;
+	created_at: number;
+	held_states: Array<{
+		state_id: string;
+		workflow_name: string;
+		state_name: string;
+		state_category: string;
+	}>;
+	active_runs: Array<{
+		id: string;
+		state_id_at_start: string;
+		status: string;
+	}>;
+}

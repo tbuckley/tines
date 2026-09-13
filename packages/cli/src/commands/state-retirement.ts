@@ -1,9 +1,14 @@
-import { writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import type { Command } from 'commander';
 import { client, printJson, withCommon, type CommonOpts } from '../common.js';
 
 interface InventoryOptions extends CommonOpts {
 	out: string;
+}
+
+interface HoldOptions extends CommonOpts {
+	inventory: string;
+	confirmDigest: string;
 }
 
 export function register(program: Command): void {
@@ -24,6 +29,25 @@ export function register(program: Command): void {
 		console.log(`Digest: ${inventory.inventory_digest}`);
 		console.log(
 			`${inventory.pointers.length} pointer${inventory.pointers.length === 1 ? '' : 's'} · ${inventory.diagnostics.length} blocking diagnostic${inventory.diagnostics.length === 1 ? '' : 's'}`
+		);
+	});
+
+	withCommon(
+		retirement
+			.command('hold')
+			.description('Acquire a durable dispatch drain for a reviewed inventory')
+			.requiredOption('--inventory <file>', 'exact inventory JSON written by inventory')
+			.requiredOption('--confirm-digest <digest>', 'confirm the reviewed inventory digest')
+	).action(async (opts: HoldOptions) => {
+		const inventoryJson = readFileSync(opts.inventory, 'utf8');
+		const hold = await client(opts).acquireStateRetirementHold({
+			inventory_json: inventoryJson,
+			confirmation: { inventory_digest: opts.confirmDigest }
+		});
+		if (opts.json) return printJson(hold);
+		console.log(`Hold: ${hold.id}`);
+		console.log(
+			`${hold.held_states.length} states held · ${hold.active_runs.length} active runs draining`
 		);
 	});
 }

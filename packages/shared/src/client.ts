@@ -102,7 +102,11 @@ import type {
 	UsageReport,
 	UsageWindow
 } from './usage.js';
-import type { StateRetirementInventoryV1 } from './state-retirement.js';
+import type {
+	AcquireStateRetirementHoldRequest,
+	StateRetirementHold,
+	StateRetirementInventoryV1
+} from './state-retirement.js';
 
 export interface TimeResponse {
 	/** ISO 8601 timestamp (UTC). */
@@ -280,6 +284,8 @@ export function createApiClient(options: ApiClientOptions) {
 		getTime: () => get<TimeResponse>('/api/time'),
 		getStateRetirementInventory: () =>
 			get<StateRetirementInventoryV1>('/api/v1/state-retirement/inventory'),
+		acquireStateRetirementHold: (body: AcquireStateRetirementHoldRequest) =>
+			request<StateRetirementHold>('POST', '/api/v1/state-retirement/holds', body),
 
 		// Projects
 		listProjects: (params: ProjectListFilters & PageParams = {}) =>
