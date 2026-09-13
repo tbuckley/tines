@@ -125,9 +125,40 @@ describe('updateComment', () => {
 			status: 'completed',
 			createdAt: NOW + 2
 		});
+		const activeRun = addRun(t, {
+			id: 'arun_active',
+			issueId: issue,
+			runnerId: runner,
+			status: 'running',
+			createdAt: NOW + 50
+		});
+		addRun(t, {
+			id: 'arun_commentless',
+			issueId: issue,
+			runnerId: runner,
+			status: 'completed',
+			createdAt: NOW + 100
+		});
+		const tiedA = addRun(t, {
+			id: 'arun_tie_a',
+			issueId: issue,
+			runnerId: runner,
+			status: 'completed',
+			createdAt: NOW + 20
+		});
+		const tiedB = addRun(t, {
+			id: 'arun_tie_b',
+			issueId: issue,
+			runnerId: runner,
+			status: 'completed',
+			createdAt: NOW + 20
+		});
 		const oldKey = addRunKey(t, oldRun);
 		const newKey = addRunKey(t, newRun);
 		const crossKey = addRunKey(t, crossIssue);
+		const activeKey = addRunKey(t, activeRun);
+		const tiedAKey = addRunKey(t, tiedA);
+		const tiedBKey = addRunKey(t, tiedB);
 		addComment(t, { issueId: issue, body: 'old', apiKeyId: oldKey, at: NOW, id: 'cmt_old' });
 		addComment(t, {
 			issueId: issue,
@@ -150,13 +181,54 @@ describe('updateComment', () => {
 			at: NOW + 3,
 			id: 'cmt_cross'
 		});
+		addComment(t, {
+			issueId: issue,
+			body: 'active must not win',
+			apiKeyId: activeKey,
+			at: NOW + 60,
+			id: 'cmt_active'
+		});
+		addComment(t, {
+			issueId: issue,
+			body: 'tie a',
+			apiKeyId: tiedAKey,
+			at: NOW + 70,
+			id: 'cmt_tie_a'
+		});
+		addComment(t, {
+			issueId: issue,
+			body: 'tie b first',
+			apiKeyId: tiedBKey,
+			at: NOW + 70,
+			id: 'cmt_tie_b_a'
+		});
+		addComment(t, {
+			issueId: issue,
+			body: 'tie b final',
+			apiKeyId: tiedBKey,
+			at: NOW + 70,
+			id: 'cmt_tie_b_z'
+		});
+		// A comment posted later by an older run cannot make that run newest.
+		addComment(t, {
+			issueId: issue,
+			body: 'old posted late',
+			apiKeyId: oldKey,
+			at: NOW + 200,
+			id: 'cmt_old_late'
+		});
 
 		const ordinary = await getIssueDetail(t.db, USER, { id: issue });
 		expect(ordinary.launch_comments).toBeUndefined();
-		expect(ordinary.comments).toHaveLength(4);
+		expect(ordinary.comments).toHaveLength(9);
 		const launch = await getIssueDetail(t.db, USER, { id: issue }, { launchComments: true });
-		expect(launch.comments).toHaveLength(4);
-		expect(launch.launch_comments?.latest_completed_run_comment_id).toBe('cmt_new_b');
+		expect(launch.comments).toHaveLength(9);
+		expect(launch.launch_comments?.latest_completed_run_comment_id).toBe('cmt_tie_b_z');
+
+		// Deleting the final comment exposes that same run's deterministic predecessor.
+		t.sqlite.prepare(`DELETE FROM comment WHERE id = 'cmt_tie_b_z'`).run();
+		const afterDelete = await getIssueDetail(t.db, USER, { id: issue }, { launchComments: true });
+		expect(afterDelete.launch_comments?.latest_completed_run_comment_id).toBe('cmt_tie_b_a');
 	});
 
 	it('replaces the body, stamps updated_at, and emits a content-free event', async () => {

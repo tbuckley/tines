@@ -1,0 +1,108 @@
+{
+	"baseline_commit": "cc738a1af95714f06fb53b5497ecaabeb8810dc9",
+	"fixed_clock": 1700001000000,
+	"issue": {
+		"project_name": "Fixture Project",
+		"number": 520,
+		"title": "Keep essential launch context",
+		"description": "Preserve the durable human decision while making older agent detail recoverable.",
+		"launch_comments": { "latest_completed_run_comment_id": "cmt_handoff" },
+		"comments": [
+			{
+				"id": "cmt_human",
+				"body": "Human decision: keep exact current bodies available.",
+				"created_at": 1700000000000,
+				"kind": "human"
+			},
+			{
+				"id": "cmt_old_detail",
+				"body": "Old required agent detail: use the existing JSON command.",
+				"created_at": 1700000001000,
+				"kind": "agent",
+				"run_id": "arun_old",
+				"run_issue_number": 520
+			},
+			{
+				"id": "cmt_old_test",
+				"body": "Old agent verification detail: the database and renderer suites passed against the complete historical thread, including a deliberately long explanation that is still recoverable but does not need to occupy every launch prompt.",
+				"created_at": 1700000001100,
+				"kind": "agent",
+				"run_id": "arun_old_test",
+				"run_issue_number": 520
+			},
+			{
+				"id": "cmt_old_docs",
+				"body": "Old agent documentation detail: the context, handoff, supervisor, and runner documents were updated with the prior full-thread policy and remain part of the stored issue record.",
+				"created_at": 1700000001200,
+				"kind": "agent",
+				"run_id": "arun_old_docs",
+				"run_issue_number": 520
+			},
+			{
+				"id": "cmt_old_review",
+				"body": "Old agent review detail: reviewers previously inspected provenance joins, ordering, and shell quoting; this paragraph is synthetic evidence for an omitted historical body.",
+				"created_at": 1700000001300,
+				"kind": "agent",
+				"run_id": "arun_old_review",
+				"run_issue_number": 520
+			},
+			{
+				"id": "cmt_old_followup",
+				"body": "Old agent follow-up detail: no retrieval endpoint, summary classifier, snapshot, tag, index, packing policy, or model experiment belongs in this implementation.",
+				"created_at": 1700000001400,
+				"kind": "agent",
+				"run_id": "arun_old_followup",
+				"run_issue_number": 520
+			},
+			{
+				"id": "cmt_handoff",
+				"body": "Completed same-issue handoff: implementation is ready.",
+				"created_at": 1700000002000,
+				"kind": "agent",
+				"run_id": "arun_handoff",
+				"run_issue_number": 520
+			},
+			{
+				"id": "cmt_cross_1",
+				"body": "Newer cross-issue update one.",
+				"created_at": 1700000003000,
+				"kind": "agent",
+				"run_id": "arun_cross_1",
+				"run_issue_number": 999
+			},
+			{
+				"id": "cmt_cross_2",
+				"body": "Newer cross-issue update two.",
+				"created_at": 1700000004000,
+				"kind": "agent",
+				"run_id": "arun_cross_2",
+				"run_issue_number": 999
+			},
+			{
+				"id": "cmt_cross_3",
+				"body": "Newer cross-issue update three.",
+				"created_at": 1700000005000,
+				"kind": "agent",
+				"run_id": "arun_cross_3",
+				"run_issue_number": 999
+			}
+		]
+	},
+	"effective_context": {
+		"description": "Use when comparing launch-context selection and recovery behavior.",
+		"skill_body": "# Fixture skill\n\nRead the durable decision before acting.",
+		"supporting_file": "fixture-support=true\n"
+	},
+	"artifacts": [{ "name": "design-doc", "artifact_type": "text", "version": 1 }],
+	"label_vocabulary": ["performance", "qa"],
+	"expected": {
+		"selected_ids": ["cmt_human", "cmt_handoff", "cmt_cross_1", "cmt_cross_2", "cmt_cross_3"],
+		"omitted_ids": [
+			"cmt_old_detail",
+			"cmt_old_test",
+			"cmt_old_docs",
+			"cmt_old_review",
+			"cmt_old_followup"
+		]
+	}
+}

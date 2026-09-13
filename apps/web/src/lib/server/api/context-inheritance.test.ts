@@ -201,20 +201,29 @@ describe('inherited layers', () => {
 		await createContextItem(t.db, t.env, session, {
 			kind: 'skill',
 			name: 'review',
+			description: 'inherited description',
 			workflow_state_id: BASE_MERGING
 		});
 		await createContextItem(t.db, t.env, session, {
 			kind: 'skill',
 			name: 'review',
+			description: 'winning child description',
 			workflow_state_id: STAGE_A
 		});
 
 		const ctx = await effectiveContextForIssue(t.db, USER, issue);
 		expect(ctx.skills.map((s) => s.scope.workflow_state_id)).toEqual([STAGE_A]);
+		expect(ctx.skills[0].description).toBe('winning child description');
 		expect(ctx.skills[0].inherited_from).toBeNull();
 		expect(ctx.overridden).toHaveLength(1);
 		expect(ctx.overridden[0].scope.label).toBe('state Shared stages / Stage A');
 		expect(ctx.overridden[0].inherited_from?.state_id).toBe(BASE_MERGING);
+
+		const withoutFiles = await effectiveContextForIssue(t.db, USER, issue, {
+			skillFiles: false
+		});
+		expect(withoutFiles.skills[0].description).toBe('winning child description');
+		expect(withoutFiles.skills[0].files).toEqual([]);
 	});
 
 	it('writes the journal to the base, even when the child has a legacy one', async () => {

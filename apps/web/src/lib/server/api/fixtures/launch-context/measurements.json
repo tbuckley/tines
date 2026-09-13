@@ -1,0 +1,19 @@
+{
+	"tokenizer": "tiktoken 0.14.0 / o200k_base",
+	"opening": {
+		"comment-only.before.md": { "bytes": 4050, "text_tokens": 1006 },
+		"comment-only.after.md": { "bytes": 3245, "text_tokens": 860 },
+		"skill-only.before.md": { "bytes": 4426, "text_tokens": 1093 },
+		"skill-only.after.md": { "bytes": 4607, "text_tokens": 1167 },
+		"combined.cold.before.md": { "bytes": 4426, "text_tokens": 1093 },
+		"combined.cold.after.md": { "bytes": 3621, "text_tokens": 947 },
+		"combined.resume.before.md": { "bytes": 4426, "text_tokens": 1093 },
+		"combined.resume.after.md": { "bytes": 3621, "text_tokens": 947 }
+	},
+	"retrieval_overhead": {
+		"retrieval-command.txt": { "bytes": 168, "text_tokens": 52 },
+		"retrieval.stdout.txt": { "bytes": 58, "text_tokens": 11 },
+		"retrieval.stderr.txt": { "bytes": 34, "text_tokens": 9 }
+	},
+	"whole_task_consumption": "not measured in Tines/520"
+}
