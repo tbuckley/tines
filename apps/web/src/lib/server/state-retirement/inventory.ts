@@ -18,6 +18,7 @@ type StateRow = {
 type WorkflowRow = { id: string; user_id: string | null };
 
 const digest = async (value: string) => `sha256:${await sha256Hex(value)}`;
+const INVENTORY_MAX_BYTES = 5 * 1024 * 1024;
 
 function topology(witness: StateRetirementWitnessV1, ownerId: string) {
 	const states = new Map((witness.states as StateRow[]).map((state) => [state.id, state]));
@@ -90,6 +91,13 @@ export async function createStateRetirementInventory(
 	}
 	for (let attempt = 0; attempt < 3; attempt++) {
 		const before = await readRetirementWitness(db, actor.userId);
+		if (new TextEncoder().encode(before).byteLength > INVENTORY_MAX_BYTES) {
+			throw new ApiFail(
+				422,
+				'retirement_inventory_too_large',
+				'State retirement inventory exceeds the 5 MiB review limit'
+			);
+		}
 		const witness = JSON.parse(before) as StateRetirementWitnessV1;
 		const { diagnostics, pointers } = topology(witness, actor.userId);
 		const after = await readRetirementWitness(db, actor.userId);
