@@ -208,6 +208,7 @@ test.describe('Agents Spend real ledger', () => {
 		await armLedgerDays();
 		await page.setViewportSize({ width: 320, height: 700 });
 		await gotoHydrated(page, `/issues/${encodeURIComponent(SPEND.projects.alpha.name)}/1`);
+		await page.getByRole('button', { name: /Agent activity 1 run/ }).click();
 		await expect(page.getByRole('heading', { name: 'Lifetime through now' })).toBeVisible();
 		await expect(page.getByText(/\$2\.00 · complete · 1 finalized · 0 pending/i)).toBeVisible();
 		await expect(
