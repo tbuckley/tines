@@ -13,6 +13,7 @@ import {
 	foreignUser,
 	seedMixed,
 	verifyMixed,
+	verifyMixedCohort,
 	assertAggregate,
 	selected
 } from '../test-fixtures/usage-mixed.mjs';
@@ -89,6 +90,11 @@ worker.stderr.on('data', (b) => (logs += b));
 const comparable = (report) => {
 	const copy = structuredClone(report);
 	delete copy.generated_at;
+	if (copy.mode === 'cohort') {
+		delete copy.scope;
+		delete copy.observed_through;
+		if (copy.history) delete copy.history.to;
+	}
 	return copy;
 };
 const flags = (query) =>
@@ -258,6 +264,51 @@ try {
 			signedEvidenceCliChecked = true;
 		}
 	});
+	const cohort = await verifyMixedCohort(request);
+	const cohortQuery = { ...bounds, cohort: true, workflow: 'wf_mixed' };
+	const cohortJson = JSON.parse(cli(['usage'], cohortQuery));
+	cliCalls++;
+	assert.deepEqual(comparable(cohortJson), comparable(cohort.report));
+	const cohortText = cli(['usage'], cohortQuery, false);
+	cliCalls++;
+	assert.ok(cohortText.includes('4 issues · 168/4 attempts/all issues'));
+	assert.ok(cohortText.includes('Terminal states: Closed, Canceled, Dropped'));
+	for (const [kind, population, expected] of [
+		['issues', null, cohort.issues],
+		['runs', 'finalized', cohort.finalized],
+		['runs', 'pending', cohort.pending],
+		['entries', null, cohort.entries]
+	]) {
+		const query = {
+			scope: cohort.report.scope,
+			evidence: kind,
+			...(population ? { population } : {}),
+			...(population === 'pending' ? { sort: 'time' } : {}),
+			'all-pages': true,
+			limit: '2'
+		};
+		const output = JSON.parse(cli(['usage'], query));
+		cliCalls++;
+		assert.deepEqual(
+			output.items.map((item) => item.id ?? item.issue_id ?? item.event_id).sort(),
+			expected.map((item) => item.id ?? item.issue_id ?? item.event_id).sort()
+		);
+		const rendered = cli(['usage'], query, false);
+		cliCalls++;
+		assert.ok(rendered.includes(`Usage evidence · ${kind}`));
+	}
+	assert.deepEqual(
+		comparable(
+			await request('/usage', { ...bounds, mode: 'cohort', workflow: 'wf_mixed' }, runKey)
+		),
+		comparable(cohort.report)
+	);
+	await request(
+		'/usage',
+		{ ...bounds, mode: 'cohort', workflow: 'wf_mixedforeign' },
+		localKey,
+		404
+	);
 	// Defaults and manual CLI cursors remain separate from --all-pages' deduplication.
 	const first = JSON.parse(cli(['runs', 'list'], { ...bounds, population: 'finalized' }));
 	assert.equal(first.items.length, 50);

@@ -828,9 +828,12 @@ export async function getCohortUsageEvidence(
 			SELECT *,SUM(qualifies) OVER (PARTITION BY issue_id ORDER BY created_at DESC,id DESC ROWS UNBOUNDED PRECEDING) AS qualifying_rank,
 				SUM(qualifies) OVER (PARTITION BY issue_id ORDER BY created_at DESC,id DESC ROWS BETWEEN 1 FOLLOWING AND UNBOUNDED FOLLOWING) AS earlier_qualifying
 			FROM flagged
+		), members AS (
+			SELECT DISTINCT issue_id FROM ranked WHERE qualifies=1
 		), audited AS (
 			SELECT *,COUNT(*) OVER () AS total_count FROM ranked
-			WHERE (${request.member} IS NULL OR issue_id=${request.member})
+			WHERE issue_id IN (SELECT issue_id FROM members)
+				AND (${request.member} IS NULL OR issue_id=${request.member})
 		)
 		SELECT id AS event_id,type AS event_type,issue_id,project_id,workflow_id,workflow_name,
 			state_id,state_name,category,

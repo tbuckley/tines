@@ -134,6 +134,29 @@ describe('GET /api/v1/usage validation and authorization', () => {
 		const noRun = addIssue(t, { id: 'iss_cohort_no_run', state: CLOSED });
 		completionEntry(t, 'evt_cohort_finalized', finalized, NOW - 30);
 		completionEntry(t, 'evt_cohort_no_run', noRun, NOW - 20);
+		const nonmember = addIssue(t, { id: 'iss_cohort_nonmember' });
+		t.sqlite
+			.prepare(
+				`INSERT INTO event (id,user_id,type,actor_user_id,issue_id,project_id,payload,created_at)
+				 VALUES (?,?,?,?,?,?,?,?)`
+			)
+			.run(
+				'evt_cohort_nonmember',
+				USER,
+				'issue.transitioned',
+				USER,
+				nonmember,
+				PROJECT,
+				JSON.stringify({
+					state_entry_version: 1,
+					workflow_id: 'wf_standard',
+					workflow_name: 'Engineering',
+					to_state_id: 'st_open',
+					to_state_name: 'Open',
+					to_state_category: 'active'
+				}),
+				NOW - 10
+			);
 		addRun(t, {
 			id: 'arun_cohort_finalized',
 			issueId: finalized,
@@ -228,6 +251,14 @@ describe('GET /api/v1/usage validation and authorization', () => {
 		expect(nextEntries).toMatchObject({
 			total_count: 2,
 			items: [{ event_id: 'evt_cohort_finalized', qualifies: 1, chosen: 1 }]
+		});
+		expect(JSON.stringify([entries, nextEntries])).not.toContain('evt_cohort_nonmember');
+		const previousEntries = await evidence(
+			`kind=entries&limit=1&cursor=${encodeURIComponent(String(nextEntries.previous_cursor))}`
+		);
+		expect(previousEntries).toMatchObject({
+			total_count: 2,
+			items: [{ event_id: 'evt_cohort_no_run', qualifies: 1, chosen: 1 }]
 		});
 	});
 

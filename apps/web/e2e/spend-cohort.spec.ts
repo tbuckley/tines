@@ -21,8 +21,21 @@ test.describe('Agents completed-issue costs', () => {
 		await expect(cohort.getByLabel('Closed')).toBeChecked();
 		await expect(cohort.getByLabel('Canceled')).toBeChecked();
 		await expect(cohort.getByText('3 completed issues')).toBeVisible();
+		await expect(cohort.getByText('2/3 attempts/all issues')).toBeVisible();
+		await expect(cohort.getByText('$1.67 known USD/all issues (partial)')).toBeVisible();
+		await expect(cohort.getByText('2/2 priced finalized runs')).toBeVisible();
+		await expect(cohort.getByText('2/3 fully priced issues')).toBeVisible();
 		await expect(cohort.getByText('1 reopened · 0 unknown')).toBeVisible();
 		await expect(cohort.getByText(/1 no-run/)).toBeVisible();
+		await expect(cohort.locator('.state').filter({ hasText: 'Closed' })).toContainText(
+			'2 completed'
+		);
+		await expect(cohort.locator('.state').filter({ hasText: 'Closed' })).toContainText(
+			'$5.00 known cost'
+		);
+		await expect(cohort.locator('.state').filter({ hasText: 'Canceled' })).toContainText(
+			'1 completed'
+		);
 
 		await cohort.getByRole('button', { name: 'View completed issues' }).click();
 		await expect(page).toHaveURL(/spend_kind=issues/);

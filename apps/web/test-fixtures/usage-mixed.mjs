@@ -6,6 +6,13 @@ export const foreignUser = 'u_usage_foreign';
 export const from = 1700000000000;
 export const to = from + 100000;
 export const bounds = { from: new Date(from).toISOString(), to: new Date(to).toISOString() };
+export const cohortWorkflow = 'wf_mixed';
+export const cohortMembers = [
+	'iss_mixed_a',
+	'iss_mixed_b',
+	'iss_mixed_deletedworkflow',
+	'iss_mixed_cohort_no_run'
+];
 const tokenNames = ['input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_write_tokens'];
 const diagnosticNames = [
 	'legacy_null',
@@ -269,15 +276,17 @@ export function seedMixed(sqlite) {
 	sqlite.exec(`PRAGMA foreign_keys=OFF;
  INSERT INTO user (id,name,email,emailVerified,createdAt,updatedAt) VALUES ('${user}','Mixed','mixed@example.test',1,${from},${from}),('${foreignUser}','Foreign secret','mixed-foreign@example.test',1,${from},${from});
  INSERT INTO workflow (id,user_id,name,initial_state_id,created_at,updated_at) VALUES ('wf_mixed','${user}','Mixed workflow','wfs_mixed',${from},${from}),('wf_mixedforeign','${foreignUser}','Foreign secret workflow','wfs_mixed_foreign',${from},${from});
- INSERT INTO workflow_state (id,workflow_id,name,category,position,created_at) VALUES ('wfs_deletedstart','wf_deletedstart','Unverifiable historical state','active',0,${from}),('wfs_mixed','wf_mixed','Mixed state','active',0,${from}),('wfs_mixed_foreign','wf_mixedforeign','Foreign secret state','active',0,${from});
+	 INSERT INTO workflow_state (id,workflow_id,name,category,position,created_at) VALUES ('wfs_deletedstart','wf_deletedstart','Unverifiable historical state','active',0,${from}),('wfs_mixed','wf_mixed','Mixed state','active',0,${from}),('wfs_mixed_closed','wf_mixed','Closed','done',1,${from}),('wfs_mixed_canceled','wf_mixed','Canceled','done',2,${from}),('wfs_mixed_dropped','wf_mixed','Dropped','done',3,${from}),('wfs_mixed_foreign','wf_mixedforeign','Foreign secret state','active',0,${from});
  INSERT INTO project (id,user_id,name,created_at,updated_at,archived_at) VALUES ('prj_mixeda','${user}','Mixed active',${from},${from},NULL),('prj_mixedb','${user}','Mixed archived',${from},${from},${from}),('prj_mixedforeign','${foreignUser}','Foreign secret project',${from},${from},NULL);
  INSERT INTO issue (id,project_id,number,title,workflow_id,state_id,created_at,updated_at) VALUES
  ('iss_mixed_deletedworkflow','prj_mixeda',2,'Deleted workflow','wf_deleted','wfs_deletedworkflow',${from},${from}),
  ('iss_mixed_a','prj_mixeda',1,'Mixed A','wf_standard','wfs_std_open',${from},${from}),
  ('iss_mixed_b','prj_mixedb',1,'Mixed B','wf_mixed','wfs_mixed',${from},${from}),
  ('iss_mixed_orphan','prj_deleteda',1,'Historical orphan','wf_standard','wfs_std_open',${from},${from}),
- ('iss_mixed_orphan_b','prj_deletedb',1,'Historical orphan B','wf_standard','wfs_std_open',${from},${from}),
- ('iss_mixed_foreign','prj_mixedforeign',1,'Foreign secret issue','wf_mixedforeign','wfs_mixed_foreign',${from},${from});
+	 ('iss_mixed_orphan_b','prj_deletedb',1,'Historical orphan B','wf_standard','wfs_std_open',${from},${from}),
+	 ('iss_mixed_cohort_no_run','prj_mixeda',3,'Mixed no run','wf_mixed','wfs_mixed_canceled',${from},${from}),
+	 ('iss_mixed_cohort_nonmember','prj_mixeda',4,'Mixed nonmember','wf_mixed','wfs_mixed',${from},${from}),
+	 ('iss_mixed_foreign','prj_mixedforeign',1,'Foreign secret issue','wf_mixedforeign','wfs_mixed_foreign',${from},${from});
  INSERT INTO runner (id,user_id,type,name,status,max_concurrent,max_run_minutes,default_tier,config,created_at,updated_at) VALUES
  ('rnr_mixeda','${user}','local','Mixed runner A','paused',1,30,'balanced','{}',${from},${from}),
  ('rnr_mixedb','${user}','local','Mixed runner B','paused',1,30,'balanced','{}',${from},${from}),
@@ -303,9 +312,149 @@ export function seedMixed(sqlite) {
 			r.pending ? 'future-secret-session' : null,
 			r.pending ? 'future-secret-end' : null
 		);
+	const insertEvent = sqlite.prepare(
+		`INSERT INTO event (id,user_id,type,actor_user_id,issue_id,project_id,payload,created_at) VALUES (?,?,?,?,?,?,?,?)`
+	);
+	/** @param {string} id @param {string} issue @param {string} state @param {string} name @param {string} category @param {number} at @param {string} workflow */
+	const entry = (id, issue, state, name, category, at, workflow = cohortWorkflow) =>
+		insertEvent.run(
+			id,
+			user,
+			'issue.transitioned',
+			user,
+			issue,
+			'prj_mixeda',
+			JSON.stringify({
+				state_entry_version: 1,
+				workflow_id: workflow,
+				workflow_name: workflow === cohortWorkflow ? 'Mixed workflow' : 'Standard',
+				to_state_id: state,
+				to_state_name: name,
+				to_state_category: category
+			}),
+			at
+		);
+	entry('evt_mixed_a_closed', 'iss_mixed_a', 'wfs_mixed_closed', 'Closed', 'done', from + 10);
+	entry('evt_mixed_a_canceled', 'iss_mixed_a', 'wfs_mixed_canceled', 'Canceled', 'done', from + 20);
+	entry('evt_mixed_a_reopened', 'iss_mixed_a', 'wfs_mixed', 'Mixed state', 'active', from + 30);
+	entry('evt_mixed_b_dropped', 'iss_mixed_b', 'wfs_mixed_dropped', 'Dropped', 'done', from + 15);
+	entry(
+		'evt_mixed_deleted_closed',
+		'iss_mixed_deletedworkflow',
+		'wfs_mixed_closed',
+		'Closed',
+		'done',
+		from + 25
+	);
+	entry(
+		'evt_mixed_no_run_canceled',
+		'iss_mixed_cohort_no_run',
+		'wfs_mixed_canceled',
+		'Canceled',
+		'done',
+		from + 35
+	);
+	entry(
+		'evt_mixed_nonmember_active',
+		'iss_mixed_cohort_nonmember',
+		'wfs_mixed',
+		'Mixed state',
+		'active',
+		from + 40
+	);
+	entry(
+		'evt_mixed_pre_window_done',
+		'iss_mixed_orphan_b',
+		'wfs_mixed_closed',
+		'Closed',
+		'done',
+		from - 1
+	);
+	entry('evt_mixed_at_cutoff_done', 'iss_mixed_orphan', 'wfs_mixed_closed', 'Closed', 'done', to);
 	sqlite.exec(
 		`UPDATE agent_run SET state_id_at_end = 'wfs_mixed_foreign' WHERE id = 'arun_mixed_000'; INSERT INTO agent_run (id,user_id,issue_id,runner_id,status,outcome,tier,usage,state_id_at_start,created_at,ended_at) VALUES ('arun_mixed_foreign','${foreignUser}','iss_mixed_foreign','rnr_mixedforeign','completed','advanced','smartest','{"cost_usd":900000}','wfs_mixed_foreign',${from - 1},${from + 1}); PRAGMA foreign_keys=ON;`
 	);
+}
+
+/**
+ * Independent cohort oracle: membership and accounting are derived only from fixture declarations.
+ * @param {(path:string, query:Record<string,string>, key?:string, expected?:number)=>Promise<any>} request
+ */
+export async function verifyMixedCohort(request) {
+	const report = await request('/usage', {
+		...bounds,
+		mode: 'cohort',
+		workflow: cohortWorkflow
+	});
+	const attempts = manifest.filter((row) => cohortMembers.includes(row.issue) && row.created < to);
+	const finalized = attempts.filter((row) => row.ended !== null && row.ended < to);
+	const pending = attempts.filter((row) => row.ended === null || row.ended >= to);
+	assertAggregate(report.aggregate, finalized);
+	assert.equal(report.counters.distinct_issue_count, cohortMembers.length);
+	assert.equal(report.counters.attempt_count, attempts.length);
+	assert.equal(report.counters.pending_count, pending.length);
+	assert.equal(report.counters.zero_run_issue_count, 1);
+	assert.equal(report.counters.reopened_issue_count, 1);
+	assert.deepEqual(
+		report.selected_states.map((/** @type {any} */ state) => state.name),
+		['Closed', 'Canceled', 'Dropped']
+	);
+	/** @param {string} kind @param {string|null} [population] @param {string|null} [member] */
+	const walk = async (kind, population = null, member = null) => {
+		const items = [];
+		let cursor = null;
+		do {
+			/** @type {any} */
+			const page = await request('/usage/evidence', {
+				scope: report.scope,
+				kind,
+				...(population ? { population } : {}),
+				...(member ? { member } : {}),
+				...(kind === 'runs' && population === 'pending' ? { sort: 'time' } : {}),
+				limit: '2',
+				...(cursor ? { cursor } : {})
+			});
+			items.push(...page.items);
+			cursor = page.next_cursor;
+			assert.ok(items.length <= manifest.length + 10, 'cohort evidence did not terminate');
+		} while (cursor);
+		return items;
+	};
+	const issues = await walk('issues');
+	assert.deepEqual(issues.map((item) => item.issue_id).sort(), [...cohortMembers].sort());
+	for (const issue of issues) {
+		const rows = finalized.filter((row) => row.issue === issue.issue_id);
+		assertAggregate(issue.aggregate, rows);
+		assert.equal(
+			issue.attempt_count,
+			attempts.filter((row) => row.issue === issue.issue_id).length
+		);
+	}
+	const finalizedEvidence = await walk('runs', 'finalized');
+	const pendingEvidence = await walk('runs', 'pending');
+	assert.deepEqual(
+		finalizedEvidence.map((row) => row.id).sort(),
+		finalized.map((row) => row.id).sort()
+	);
+	assert.deepEqual(
+		pendingEvidence.map((row) => row.id).sort(),
+		pending.map((row) => row.id).sort()
+	);
+	assert.ok(!JSON.stringify(pendingEvidence).includes('future-secret'));
+	const entries = await walk('entries');
+	assert.deepEqual(
+		entries.map((entry) => entry.event_id).sort(),
+		[
+			'evt_mixed_a_closed',
+			'evt_mixed_a_reopened',
+			'evt_mixed_a_canceled',
+			'evt_mixed_b_dropped',
+			'evt_mixed_deleted_closed',
+			'evt_mixed_no_run_canceled'
+		].sort()
+	);
+	assert.ok(!JSON.stringify(entries).includes('evt_mixed_nonmember_active'));
+	return { report, issues, finalized: finalizedEvidence, pending: pendingEvidence, entries };
 }
 /** @type {Array<Record<string,string>>} */
 export const cases = [
