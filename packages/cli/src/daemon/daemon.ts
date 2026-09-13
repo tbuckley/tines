@@ -43,11 +43,14 @@ import { agentCliPrefix, installAgentCli } from './cli-refresh.js';
 import { ensureRunnerCredentials, nextStepsMessage } from './register.js';
 import {
 	clearRunnerCredentials,
+	daemonDeclinesPath,
 	daemonStatePath,
+	loadDaemonDeclines,
 	loadDaemonState,
 	processStartTimeMs,
 	pruneKeptWorkspaces,
 	saveDaemonState,
+	saveDaemonDeclines,
 	workspacesDir,
 	writeKeptMarker,
 	type DaemonStateEntry,
@@ -290,10 +293,11 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 
 	const client = createApiClient({ baseUrl, apiKey: creds.token });
 	const statePath = daemonStatePath(opts.configDir, creds.runner_id);
+	const declinesPath = daemonDeclinesPath(opts.configDir, creds.runner_id);
 	let shuttingDown = false;
 	let effectiveConcurrency = opts.allowRemoteConcurrency ? 1 : opts.maxConcurrent;
 	let appliedConcurrency: { revision: number; cap: number } | undefined;
-	const declinedAssignments = new Set<string>();
+	const declinedAssignments = new Set(loadDaemonDeclines(declinesPath));
 	let warnedUnsupportedConcurrency = false;
 
 	// -- the agent-facing CLI -------------------------------------------------
@@ -911,7 +915,11 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 			});
 			failures = 0;
 			for (const runId of res.cancels) killWithoutFinish(runId);
-			for (const runId of res.released_assignments ?? []) declinedAssignments.delete(runId);
+			let declinesChanged = false;
+			for (const runId of res.released_assignments ?? []) {
+				if (declinedAssignments.delete(runId)) declinesChanged = true;
+			}
+			if (declinesChanged) saveDaemonDeclines(declinesPath, declinedAssignments);
 			if (res.concurrency_control) {
 				const control = res.concurrency_control;
 				if (
@@ -932,11 +940,12 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 				);
 			}
 			for (const assignment of res.assignments) {
-				if (table.size >= opts.maxConcurrent) {
+				if (declinedAssignments.size > 0 || table.size >= opts.maxConcurrent) {
 					log(
 						`run ${assignment.run.id}: refusing launch beyond local ceiling ${opts.maxConcurrent}; requesting safe release`
 					);
 					declinedAssignments.add(assignment.run.id);
+					saveDaemonDeclines(declinesPath, declinedAssignments);
 					continue;
 				}
 				void launch(assignment);
