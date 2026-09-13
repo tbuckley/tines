@@ -835,9 +835,12 @@ export async function appendRunLog(
 	const run = await loadRunnerRun(db, runner, runId);
 	if (
 		effortApplication &&
-		(effortApplication.status !== 'accepted_unconfirmed' ||
+		((effortApplication.status !== 'accepted_unconfirmed' &&
+			effortApplication.status !== 'rejected') ||
 			effortApplication.transport !== 'argv' ||
-			effortApplication.attempted_effort !== run.resolved_effort)
+			effortApplication.attempted_effort !== run.resolved_effort ||
+			(effortApplication.reason !== undefined &&
+				(typeof effortApplication.reason !== 'string' || effortApplication.reason.length > 500)))
 	) {
 		throw new ApiFail(422, 'invalid_field', 'effort application does not match the claimed run', {
 			field: 'effort_application'
@@ -892,7 +895,8 @@ export async function appendRunLog(
 									version: 1,
 									transport: effortApplication.transport,
 									attempted_effort: effortApplication.attempted_effort,
-									received_at: now
+									received_at: now,
+									...(effortApplication.reason ? { reason: effortApplication.reason } : {})
 								})
 							}
 						: {})

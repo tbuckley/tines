@@ -752,7 +752,21 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 				if (child.pid) setTimeout(() => killTree(child.pid!, 'SIGKILL'), 5000).unref?.();
 			}, assignment.timeout_minutes * 60_000);
 			child.on('error', (err) => {
-				void table.finishAndCleanup(run, 'failed', `failed to launch harness: ${message(err)}`);
+				const reason = `failed to launch harness: ${message(err)}`;
+				const evidence = assignment.effort
+					? client
+							.appendRunLog(runId, {
+								chunk: '',
+								effort_application: {
+									status: 'rejected',
+									attempted_effort: assignment.effort.value,
+									transport: 'argv',
+									reason
+								}
+							})
+							.catch(() => undefined)
+					: Promise.resolve();
+				void evidence.then(() => table.finishAndCleanup(run, 'failed', reason));
 			});
 			child.on('close', (code, signal) => {
 				// The harness's last words first — a stream renderer holding a

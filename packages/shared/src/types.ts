@@ -2035,9 +2035,10 @@ export interface AppendRunLogRequest {
 	chunk: string;
 	/** Local launch milestone; accepted only for this run's resolved effort. */
 	effort_application?: {
-		status: 'accepted_unconfirmed';
+		status: 'accepted_unconfirmed' | 'rejected';
 		attempted_effort: string;
 		transport: 'argv';
+		reason?: string;
 	};
 	/**
 	 * Per-run, 1-based, monotonic chunk number assigned by the daemon. A
