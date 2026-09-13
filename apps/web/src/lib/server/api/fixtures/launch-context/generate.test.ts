@@ -215,7 +215,7 @@ describe('launch-context comparison fixtures', () => {
 						])
 					),
 					null,
-					2
+					'\t'
 				) + '\n'
 			);
 		}

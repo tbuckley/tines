@@ -458,7 +458,7 @@ describe('issueBlock', () => {
 		const block = issueBlock(
 			{
 				...launchIssue,
-				round: { summary_comment: { body: 'OMITTED SENTINEL' } } as IssueDetail['round']
+				round: { summary_comment: { body: 'OMITTED SENTINEL' } } as unknown as IssueDetail['round']
 			},
 			emptyContext
 		);

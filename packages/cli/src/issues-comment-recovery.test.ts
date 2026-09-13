@@ -98,10 +98,7 @@ describe('the emitted current-body recovery recipe', () => {
 	});
 
 	it('runs the full-show fallback without jq and keeps every current body', async () => {
-		comments = [
-			comment(ID, 'old current body'),
-			comment('cmt_new', 'new current body')
-		];
+		comments = [comment(ID, 'old current body'), comment('cmt_new', 'new current body')];
 		const noJq = mkdtempSync(join(tmpdir(), 'tines-no-jq-'));
 		symlinkSync(join(binDir, 'tines'), join(noJq, 'tines'));
 		const result = await shell(`tines issues show ${QUOTED_REF}`, noJq);
