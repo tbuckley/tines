@@ -100,6 +100,10 @@ export const GET: RequestHandler = api(async (event) => {
 						by: scope.by
 					});
 		const parentTotal = parent?.mode === 'issue' ? parent.issue.aggregate : parent?.matching_total;
+		if (parent?.mode === 'issue') {
+			result.attempt_count = parent.issue.attempt_count;
+			result.pending_count = parent.issue.pending_count;
+		}
 		if (parentTotal) {
 			if (params.has('member')) result.parent_matching_total = parentTotal;
 			else if (population === 'pending') result.matching_total = parentTotal;

@@ -66,6 +66,46 @@ describe('GET /api/v1/usage validation and authorization', () => {
 		});
 	});
 
+	it('reports whole-lifetime attempt and pending counts on finalized evidence', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const runner = addRunner(t);
+		const issue = addIssue(t);
+		addRun(t, {
+			id: 'arun_lifetime_finalized',
+			issueId: issue,
+			runnerId: runner,
+			status: 'completed',
+			createdAt: NOW - 20,
+			endedAt: NOW - 10,
+			usage: JSON.stringify({ cost_usd: 0, cost_source: 'provider' })
+		});
+		addRun(t, {
+			id: 'arun_lifetime_pending',
+			issueId: issue,
+			runnerId: runner,
+			status: 'running',
+			createdAt: NOW - 5
+		});
+		const lifetime = await get(t, `?mode=issue&issue=${issue}`);
+		const url = new URL(
+			`http://test/api/v1/usage/evidence?scope=${encodeURIComponent(String(lifetime.body.scope))}&kind=runs`
+		);
+		const response = await EVIDENCE_GET({
+			locals: { user: { id: USER, name: 'alice' } },
+			platform: { env: t.env, ctx: { waitUntil: () => {} } },
+			request: new Request(url),
+			url
+		} as unknown as Parameters<typeof EVIDENCE_GET>[0]);
+		expect(response.status).toBe(200);
+		expect(await response.json()).toMatchObject({
+			total_count: 1,
+			attempt_count: 2,
+			pending_count: 1,
+			matching_total: { finalized_run_count: 1, cost_usd_exact: '0' }
+		});
+	});
+
 	it('replays frozen scopes and pages exact issue and run evidence', async () => {
 		const t = createTestDb();
 		seedBase(t);
@@ -156,6 +196,55 @@ describe('GET /api/v1/usage validation and authorization', () => {
 			filters: { tier: 'cheapest' },
 			matching_total: { finalized_run_count: 1 }
 		});
+	});
+
+	it('pages more than one hundred equal-cost issues completely and deterministically', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const runner = addRunner(t);
+		const ids: string[] = [];
+		for (let index = 0; index < 105; index++) {
+			const issue = `iss_many_${String(index).padStart(3, '0')}`;
+			ids.push(issue);
+			addIssue(t, { id: issue });
+			addRun(t, {
+				id: `arun_many_${String(index).padStart(3, '0')}`,
+				issueId: issue,
+				runnerId: runner,
+				status: 'completed',
+				createdAt: NOW - 20,
+				endedAt: NOW - 10,
+				usage: JSON.stringify({ cost_usd: 0.01, cost_source: 'provider' })
+			});
+		}
+		const report = await get(
+			t,
+			`?from=${new Date(NOW - 100).toISOString()}&to=${new Date(NOW).toISOString()}`
+		);
+		const evidence = async (cursor?: string) => {
+			const url = new URL('http://test/api/v1/usage/evidence');
+			url.searchParams.set('scope', String(report.body.scope));
+			url.searchParams.set('kind', 'issues');
+			url.searchParams.set('limit', '100');
+			if (cursor) url.searchParams.set('cursor', cursor);
+			const response = await EVIDENCE_GET({
+				locals: { user: { id: USER, name: 'alice' } },
+				platform: { env: t.env, ctx: { waitUntil: () => {} } },
+				request: new Request(url),
+				url
+			} as unknown as Parameters<typeof EVIDENCE_GET>[0]);
+			expect(response.status).toBe(200);
+			return response.json() as Promise<Record<string, unknown>>;
+		};
+		const first = await evidence();
+		const second = await evidence(String(first.next_cursor));
+		const found = [
+			...(first.items as { issue_id: string }[]),
+			...(second.items as { issue_id: string }[])
+		];
+		expect(found.map((item) => item.issue_id)).toEqual(ids);
+		expect(first).toMatchObject({ total_count: 105, attempt_count: 105 });
+		expect(second.next_cursor).toBeNull();
 	});
 
 	it('keeps the resolved timezone basis when settings change after a report', async () => {
