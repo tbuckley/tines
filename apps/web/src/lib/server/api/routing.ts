@@ -9,6 +9,7 @@ import type {
 } from '@tines/shared';
 import {
 	INHERIT_RUNNER_ID,
+	isEffortToken,
 	isGlobalRoutingScope,
 	isTierOnlyTargets,
 	routingScopeSpecificity
@@ -173,7 +174,7 @@ export function validateTargets(
 				}
 			);
 		}
-		const input = wildcardEntries[0] as { runner_id: '*'; tier?: unknown };
+		const input = wildcardEntries[0] as { runner_id: '*'; tier?: unknown; effort?: unknown };
 		if (input.tier === undefined || input.tier === null) {
 			throw new ApiFail(422, 'invalid_field', 'A tier-only target requires an explicit tier', {
 				field: 'targets'
@@ -181,7 +182,10 @@ export function validateTargets(
 		}
 		const target: RoutingTarget = {
 			runner_id: INHERIT_RUNNER_ID,
-			tier: requireTier(input.tier, 'targets[0].tier')
+			tier: requireTier(input.tier, 'targets[0].tier'),
+			...((requireTargetEffort(input.effort, 'targets[0].effort') as string | undefined)
+				? { effort: input.effort as string }
+				: {})
 		};
 		return [target];
 	}
@@ -198,7 +202,7 @@ export function validateTargets(
 				}
 			);
 		}
-		const input = entry as { runner_id?: unknown; tier?: unknown };
+		const input = entry as { runner_id?: unknown; tier?: unknown; effort?: unknown };
 		if (typeof input.runner_id !== 'string' || !runnersById.has(input.runner_id)) {
 			throw new ApiFail(
 				422,
@@ -211,22 +215,38 @@ export function validateTargets(
 			input.tier === undefined || input.tier === null
 				? null
 				: requireTier(input.tier, `targets[${i}].tier`);
-		const key = `${input.runner_id}:${tier ?? ''}`;
+		const effort = requireTargetEffort(input.effort, `targets[${i}].effort`);
+		const key = JSON.stringify([input.runner_id, tier, effort ?? null]);
 		if (seen.has(key)) {
 			const name = runnersById.get(input.runner_id)?.name;
 			throw new ApiFail(
 				422,
 				'duplicate_target',
-				`Target "${name}"${tier ? ` (tier ${tier})` : ''} is listed more than once`,
+				`Target "${name}"${tier ? ` (tier ${tier})` : ''}${effort ? ` (effort ${effort})` : ''} is listed more than once`,
 				{ field: 'targets' }
 			);
 		}
 		seen.add(key);
-		targets.push(
-			tier === null ? { runner_id: input.runner_id } : { runner_id: input.runner_id, tier }
-		);
+		targets.push({
+			runner_id: input.runner_id,
+			...(tier ? { tier } : {}),
+			...(effort ? { effort } : {})
+		});
 	}
 	return targets;
+}
+
+function requireTargetEffort(value: unknown, field: string): string | undefined {
+	if (value === undefined || value === null) return undefined;
+	if (!isEffortToken(value)) {
+		throw new ApiFail(
+			422,
+			'invalid_field',
+			`"${field}" must be a lowercase effort token (1-32 characters)`,
+			{ field }
+		);
+	}
+	return value;
 }
 
 // ---------------------------------------------------------------------------
@@ -296,7 +316,8 @@ function serializeRule(
 				runner_id: INHERIT_RUNNER_ID,
 				runner_name: INHERIT_RUNNER_ID,
 				runner_status: null,
-				tier: t.tier ?? null
+				tier: t.tier ?? null,
+				...(t.effort ? { effort: t.effort } : {})
 			};
 		}
 		const runner = runnersById.get(t.runner_id);
@@ -304,7 +325,8 @@ function serializeRule(
 			runner_id: t.runner_id,
 			runner_name: runner?.name ?? 'removed runner',
 			runner_status: (runner?.status ?? 'paused') as 'active' | 'paused',
-			tier: t.tier ?? null
+			tier: t.tier ?? null,
+			...(t.effort ? { effort: t.effort } : {})
 		};
 	});
 	return {
@@ -502,7 +524,8 @@ export function routingRuleInsertQueries(
 							t.runner_id === INHERIT_RUNNER_ID
 								? INHERIT_RUNNER_ID
 								: runnersById.get(t.runner_id)?.name,
-						tier: t.tier ?? null
+						tier: t.tier ?? null,
+						...(t.effort ? { effort: t.effort } : {})
 					}))
 				}
 			},

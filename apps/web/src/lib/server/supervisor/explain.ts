@@ -329,7 +329,9 @@ function verdictLine(input: {
 						: first.verdict === 'rate_limited'
 							? // The detail carries the ISO reset; the surfaces localise it.
 								`${first.runner_name} hit its usage limit — ${first.detail.replace(/^usage limit reached — /, '')}`
-							: `waiting for capacity on ${first.runner_name}`;
+							: first.verdict === 'effort_incompatible'
+								? `${first.runner_name} cannot apply the requested effort — ${first.detail}`
+								: `waiting for capacity on ${first.runner_name}`;
 	const queue =
 		input.queuePosition !== null && input.queuePosition > 0
 			? ` (${input.queuePosition} eligible issue${input.queuePosition === 1 ? '' : 's'} ahead)`

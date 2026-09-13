@@ -1,6 +1,7 @@
 /** Wire types for the Tines phase-one API (`/api/v1/*`). All snake_case. */
 
 import type { SchedulePreset } from './schedule.js';
+import type { EffortApplicationStatus, EffortCapabilities, EffortSource } from './effort.js';
 
 export type StateCategory = 'backlog' | 'active' | 'awaiting_human' | 'done';
 
@@ -1848,6 +1849,8 @@ export interface Runner {
 	 */
 	online: boolean;
 	last_seen_at: number | null;
+	/** Last capability assertion from this daemon boot; null means a legacy daemon. */
+	effort_capabilities: EffortCapabilities | null;
 	/**
 	 * Local runners: the daemon is finishing its in-flight runs and will exit
 	 * for its service manager to relaunch a newer version. Nothing new is
@@ -1973,6 +1976,8 @@ export interface RunnerPollRequest {
 	 * the relaunched daemon's first poll reopens the runner.
 	 */
 	draining?: boolean;
+	/** V1 exact-model effort support discovered by this daemon boot. */
+	effort_capabilities?: EffortCapabilities;
 }
 
 /** One delivered assignment: everything the daemon needs to launch. */
@@ -2091,6 +2096,8 @@ export interface RoutingTarget {
 	runner_id: string;
 	/** Null/absent = the runner's default tier. */
 	tier?: ModelTier | null;
+	/** Explicit routing override; absent inherits the selected runner tier. */
+	effort?: string;
 }
 
 /** A target with its runner denormalized for display. */
@@ -2100,6 +2107,7 @@ export interface RoutingRuleTarget {
 	/** Null for the `'*'` inherited-runner sentinel. */
 	runner_status: RunnerStatus | null;
 	tier: ModelTier | null;
+	effort?: string;
 }
 
 /**
@@ -2301,6 +2309,13 @@ export interface AgentRun {
 	tier: ModelTier;
 	/** Resolved at launch; null when the harness cannot vary its model. */
 	model: string | null;
+	/** Routed request before runner-tier fallback; immutable after claim. */
+	requested_effort: string | null;
+	/** Final configured intent, not proof of provider application. */
+	resolved_effort: string | null;
+	effort_source: EffortSource | null;
+	effort_application_status: EffortApplicationStatus;
+	effort_application_evidence: Record<string, unknown> | null;
 	usage: AgentRunUsage | null;
 	/** Resolved ledger dimensions, populated only for finalized period evidence. */
 	usage_dimensions?: import('./usage.js').UsageDimensions;
@@ -2541,7 +2556,8 @@ export type DispatchTargetVerdict =
 	| 'at_capacity'
 	| 'backing_off'
 	| 'rate_limited'
-	| 'quota_exhausted';
+	| 'quota_exhausted'
+	| 'effort_incompatible';
 
 /** One rule/pin target's verdict, in preference order. */
 export interface DispatchTarget {

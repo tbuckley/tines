@@ -246,6 +246,24 @@ describe('validateTargets', () => {
 		expect(targets).toEqual([{ runner_id: 'rnr_2', tier: 'cheapest' }, { runner_id: 'rnr_1' }]);
 	});
 
+	it('round-trips distinct effort tokens and includes effort in duplicate identity', () => {
+		expect(
+			validateTargets(
+				[
+					{ runner_id: 'rnr_2', tier: 'balanced', effort: 'low' },
+					{ runner_id: 'rnr_2', tier: 'balanced', effort: 'max' }
+				],
+				runners
+			)
+		).toEqual([
+			{ runner_id: 'rnr_2', tier: 'balanced', effort: 'low' },
+			{ runner_id: 'rnr_2', tier: 'balanced', effort: 'max' }
+		]);
+		expect(() => validateTargets([{ runner_id: 'rnr_1', effort: 'High' }], runners)).toThrowError(
+			ApiFail
+		);
+	});
+
 	it('rejects an empty list', () => {
 		expect(() => validateTargets([], runners)).toThrowError(ApiFail);
 	});

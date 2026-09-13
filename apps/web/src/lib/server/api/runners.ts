@@ -387,6 +387,9 @@ function serializeRunner(row: RunnerRow, now = Date.now()): Runner {
 		config,
 		online: runnerOnline(row, now),
 		last_seen_at: row.last_seen_at,
+		effort_capabilities: row.effort_capabilities
+			? (JSON.parse(row.effort_capabilities) as Runner['effort_capabilities'])
+			: null,
 		draining: row.draining === 1,
 		launch_failures: row.launch_failures,
 		backoff_until: row.backoff_until,

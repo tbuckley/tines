@@ -315,6 +315,8 @@ export function targetsForIssue(
 			ambiguous: [],
 			runnerRule: null,
 			tierOverride: null,
+			effortOverride: null,
+			effortRule: null,
 			failure: null,
 			pinned: true
 		};

@@ -253,13 +253,19 @@ describe('ruleTargetsLabel', () => {
 
 	it.each([
 		[[], '(no targets)'],
-		[[target('mac')], 'mac'],
-		[[target('mac', 'opus')], 'mac:opus'],
-		[[target('mac', null, 'paused')], 'mac (paused)'],
-		[[target('mac', 'opus', 'paused')], 'mac:opus (paused)'],
-		[[target('mac', 'opus'), target('linux')], 'mac:opus → linux']
+		[[target('mac')], '1. mac'],
+		[[target('mac', 'opus')], '1. mac:opus'],
+		[[target('mac', null, 'paused')], '1. mac (paused)'],
+		[[target('mac', 'opus', 'paused')], '1. mac:opus (paused)'],
+		[[target('mac', 'opus'), target('linux')], '1. mac:opus → 2. linux']
 	])('renders %#', (targets, expected) => {
 		expect(ruleTargetsLabel({ targets } as never)).toBe(expected);
+	});
+
+	it('renders routed effort without confusing it with the tier', () => {
+		expect(
+			ruleTargetsLabel({ targets: [{ ...target('mac', 'balanced'), effort: 'xhigh' }] } as never)
+		).toBe('1. mac:balanced effort=xhigh');
 	});
 });
 

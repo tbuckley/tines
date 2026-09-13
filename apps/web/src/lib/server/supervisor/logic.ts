@@ -79,6 +79,8 @@ export interface ResolvedRoute<T extends MatchableRule> {
 	rule: T | null;
 	runnerRule: T | null;
 	tierOverride: ModelTier | null;
+	effortOverride: string | null;
+	effortRule: T | null;
 	targets: RoutingTarget[];
 	ambiguous: T[];
 	failure: 'no_rule' | 'ambiguous_rule' | 'no_runner_rule' | 'no_targets' | null;
@@ -99,6 +101,8 @@ export function resolveRoute<T extends MatchableRule>(
 	}
 	let winner: T | null = null;
 	let tierOverride: ModelTier | null = null;
+	let effortOverride: string | null = null;
+	let effortRule: T | null = null;
 	for (let rank = 7; rank >= 0; rank--) {
 		const matches = byRank.get(rank) ?? [];
 		if (matches.length === 0) continue;
@@ -107,6 +111,8 @@ export function resolveRoute<T extends MatchableRule>(
 				rule: winner,
 				runnerRule: null,
 				tierOverride,
+				effortOverride,
+				effortRule,
 				targets: [],
 				ambiguous: matches,
 				failure: 'ambiguous_rule'
@@ -121,21 +127,31 @@ export function resolveRoute<T extends MatchableRule>(
 					rule: winner,
 					runnerRule: source,
 					tierOverride,
+					effortOverride,
+					effortRule,
 					targets: [],
 					ambiguous: [],
 					failure: 'no_targets'
 				};
 			}
 			tierOverride ??= source.targets[0]!.tier;
+			if (effortOverride === null && source.targets[0]!.effort) {
+				effortOverride = source.targets[0]!.effort;
+				effortRule = source;
+			}
 			continue;
 		}
-		const targets = tierOverride
-			? source.targets.map((target) => ({ ...target, tier: tierOverride }))
-			: source.targets.map((target) => ({ ...target }));
+		const targets = source.targets.map((target) => ({
+			...target,
+			...(tierOverride ? { tier: tierOverride } : {}),
+			...(effortOverride ? { effort: effortOverride } : {})
+		}));
 		return {
 			rule: winner,
 			runnerRule: source,
 			tierOverride,
+			effortOverride,
+			effortRule,
 			targets,
 			ambiguous: [],
 			failure: targets.length === 0 ? 'no_targets' : null
@@ -146,6 +162,8 @@ export function resolveRoute<T extends MatchableRule>(
 			rule: null,
 			runnerRule: null,
 			tierOverride: null,
+			effortOverride: null,
+			effortRule: null,
 			targets: [],
 			ambiguous: [],
 			failure: 'no_rule'
@@ -154,6 +172,8 @@ export function resolveRoute<T extends MatchableRule>(
 		rule: winner,
 		runnerRule: null,
 		tierOverride,
+		effortOverride,
+		effortRule,
 		targets: [],
 		ambiguous: [],
 		failure: 'no_runner_rule'

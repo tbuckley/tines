@@ -143,6 +143,8 @@
 				return `${runner} backing off`;
 			case 'rate_limited':
 				return `${runner} rate limited`;
+			case 'effort_incompatible':
+				return `${runner} cannot apply the requested effort`;
 			case 'no_rule':
 				return 'no matching routing rule';
 			case 'no_targets':

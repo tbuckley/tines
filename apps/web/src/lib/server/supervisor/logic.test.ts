@@ -62,7 +62,11 @@ describe('resolveRoute', () => {
 	const issue = { project_id: 'p1', state_id: 's1', label_ids: ['l1', 'l2'] };
 	const rule = (
 		id: string,
-		targets: { runner_id: string; tier?: 'smartest' | 'balanced' | 'cheapest' | null }[],
+		targets: {
+			runner_id: string;
+			tier?: 'smartest' | 'balanced' | 'cheapest' | null;
+			effort?: string;
+		}[],
 		scope: Partial<{ project_id: string; workflow_state_id: string; label_id: string }> = {}
 	) => ({
 		id,
@@ -70,6 +74,24 @@ describe('resolveRoute', () => {
 		workflow_state_id: scope.workflow_state_id ?? null,
 		label_id: scope.label_id ?? null,
 		targets
+	});
+
+	it('resolves effort independently and preserves inherited target effort when a tier-only rule omits it', () => {
+		const global = rule('global', [{ runner_id: 'codex', tier: 'balanced', effort: 'low' }]);
+		const project = rule('project', [{ runner_id: '*', tier: 'smartest' }], {
+			project_id: 'p1'
+		});
+		expect(resolveRoute(issue, [global, project]).targets).toEqual([
+			{ runner_id: 'codex', tier: 'smartest', effort: 'low' }
+		]);
+
+		const state = rule('state', [{ runner_id: '*', tier: 'balanced', effort: 'high' }], {
+			workflow_state_id: 's1'
+		});
+		const resolved = resolveRoute(issue, [global, project, state]);
+		expect(resolved.effortOverride).toBe('high');
+		expect(resolved.effortRule).toBe(state);
+		expect(resolved.targets[0]).toEqual({ runner_id: 'codex', tier: 'smartest', effort: 'high' });
 	});
 
 	it('inherits the first lower-priority concrete list list and overrides every tier', () => {
