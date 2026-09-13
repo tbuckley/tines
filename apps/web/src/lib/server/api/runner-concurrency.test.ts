@@ -42,6 +42,12 @@ describe('local runner concurrency protocol', () => {
 		expect(() =>
 			validateConcurrencyPoll({ version: 1, allow_remote: true, ceiling: 101 }, 'boot-a')
 		).toThrow();
+		expect(
+			validateConcurrencyPoll(
+				{ version: 1, allow_remote: true, ceiling: 4, applied: { revision: 101, cap: 3 } },
+				'boot-a'
+			)
+		).toMatchObject({ applied: { revision: 101, cap: 3 } });
 		expect(validateDeclinedAssignments(['run_a', 'run_b'])).toEqual(['run_a', 'run_b']);
 		expect(() => validateDeclinedAssignments(['run_a', 'run_a'])).toThrow();
 	});

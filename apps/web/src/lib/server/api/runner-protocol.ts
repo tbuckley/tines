@@ -665,7 +665,16 @@ async function deliverAssignedRun(
 		runId: run.id,
 		userId: run.user_id,
 		maxRunMinutes: runner.max_run_minutes,
-		now
+		now,
+		...(runner.concurrency_instance_id && runner.concurrency_ceiling
+			? {
+					localAdmission: {
+						runnerId: runner.id,
+						instanceId: runner.concurrency_instance_id,
+						ceiling: runner.concurrency_ceiling
+					}
+				}
+			: {})
 	});
 	if (!minted) return null;
 

@@ -437,7 +437,13 @@ type LaunchOutcome = 'launched' | 'launch_failed' | 'lost';
 export async function mintRunKeyAndFlip(
 	db: Kysely<Database>,
 	env: Env,
-	input: { runId: string; userId: string; maxRunMinutes: number; now: number }
+	input: {
+		runId: string;
+		userId: string;
+		maxRunMinutes: number;
+		now: number;
+		localAdmission?: { runnerId: string; instanceId: string; ceiling: number };
+	}
 ): Promise<{ keyId: string; secret: string } | null> {
 	const secret = `tines_${randomString(40)}`;
 	const keyId = newId('key');
@@ -462,6 +468,20 @@ export async function mintRunKeyAndFlip(
 			.set({ status: 'launching', api_key_id: keyId })
 			.where('id', '=', input.runId)
 			.where('status', '=', 'assigned')
+			.$if(input.localAdmission !== undefined, (query) => {
+				const admission = input.localAdmission!;
+				return query.where(sql<boolean>`EXISTS (
+					SELECT 1 FROM runner
+					WHERE id = ${admission.runnerId} AND user_id = ${input.userId}
+						AND daemon_instance_id = ${admission.instanceId}
+						AND concurrency_instance_id = ${admission.instanceId}
+						AND concurrency_ceiling = ${admission.ceiling}
+						AND (
+							SELECT COUNT(*) FROM agent_run
+							WHERE runner_id = ${admission.runnerId} AND status IN ('launching', 'running')
+						) < ${admission.ceiling}
+				)`);
+			})
 			.compile()
 	]);
 	if ((flip?.meta.changes ?? 0) === 0) {

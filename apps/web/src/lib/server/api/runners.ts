@@ -879,7 +879,34 @@ export async function updateRunner(
 		return serializeRunner(row);
 	}
 
-	await runAtomic(env, [
+	const eventId = newId('evt');
+	const concurrencyGuard =
+		row.type === 'local' && body.max_concurrent !== undefined
+			? sql<boolean>`EXISTS (
+					SELECT 1 FROM runner
+					WHERE id = ${id} AND user_id = ${actor.userId}
+						AND concurrency_mode = 'remote'
+						AND concurrency_revision = ${body.expected_concurrency_revision!}
+						AND concurrency_instance_id = daemon_instance_id
+						AND concurrency_ceiling = ${row.concurrency_ceiling}
+				)`
+			: sql<boolean>`EXISTS (SELECT 1 FROM runner WHERE id = ${id} AND user_id = ${actor.userId})`;
+	const results = await runAtomic(env, [
+		eventInsert(
+			db,
+			actor,
+			{
+				id: eventId,
+				type: 'runner.updated',
+				payload: {
+					runner_id: id,
+					name: patch.name ?? row.name,
+					changed,
+					...(patch.status !== undefined ? { status: patch.status } : {})
+				}
+			},
+			{ predicate: concurrencyGuard }
+		),
 		db
 			.updateTable('runner')
 			.set({
@@ -890,17 +917,20 @@ export async function updateRunner(
 				updated_at: Date.now()
 			})
 			.where('id', '=', id)
-			.compile(),
-		eventInsert(db, actor, {
-			type: 'runner.updated',
-			payload: {
-				runner_id: id,
-				name: patch.name ?? row.name,
-				changed,
-				...(patch.status !== undefined ? { status: patch.status } : {})
-			}
-		})
+			.where(sql<boolean>`EXISTS (SELECT 1 FROM event WHERE id = ${eventId})`)
+			.compile()
 	]);
+	if ((results[0]?.meta.changes ?? 0) === 0) {
+		const current = await getRunner(db, actor.userId, id);
+		throw new ApiFail(
+			409,
+			'concurrency_conflict',
+			'Concurrency policy changed; review the current runner and try again',
+			{
+				runner: current
+			}
+		);
+	}
 	effects.signalDispatch();
 	// Pausing stops new assignments immediately AND cancels the runner's
 	// not-yet-acknowledged `assigned` runs — nothing is running yet, so the

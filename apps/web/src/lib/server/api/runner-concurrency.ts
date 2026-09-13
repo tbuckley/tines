@@ -23,6 +23,14 @@ function boundedInt(value: unknown, field: string, min = 0): number {
 	return value as number;
 }
 
+function revision(value: unknown, field: string): number {
+	if (!Number.isSafeInteger(value) || (value as number) < 0)
+		throw new ApiFail(422, 'invalid_field', `"${field}" must be a nonnegative safe integer`, {
+			field
+		});
+	return value as number;
+}
+
 export function validateConcurrencyPoll(
 	value: unknown,
 	instanceId?: string
@@ -50,7 +58,7 @@ export function validateConcurrencyPoll(
 			});
 		const ack = raw.applied as Record<string, unknown>;
 		applied = {
-			revision: boundedInt(ack.revision, 'concurrency_control.applied.revision'),
+			revision: revision(ack.revision, 'concurrency_control.applied.revision'),
 			cap: boundedInt(ack.cap, 'concurrency_control.applied.cap', 1)
 		};
 	}
