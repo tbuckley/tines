@@ -77,6 +77,20 @@ describe('atomic workflow package install', () => {
 		expect(first.objects.find((o) => o.relationship === 'main')).toMatchObject({
 			name: f.preview.resolved.workflows.find((w) => w.id === f.document.main_workflow_id)!.name
 		});
+		for (const workflow of f.preview.resolved.workflows) {
+			const workflowId = f.preview.allocation.records[workflow.id].id;
+			for (const state of workflow.states) {
+				const stateId = f.preview.allocation.records[state.id].id;
+				const expected = {
+					kind: 'state',
+					local_id: state.id,
+					id: stateId,
+					href: `/workflows/${workflowId}?state=${stateId}#state-${stateId}`
+				};
+				expect(f.preview.operations).toContainEqual(expect.objectContaining(expected));
+				expect(first.objects).toContainEqual(expect.objectContaining(expected));
+			}
+		}
 		expect(f.t.all('SELECT enabled,run_count FROM scheduled_task')).toEqual([]);
 		expect(f.t.all('SELECT * FROM issue')).toEqual([]);
 		expect(f.t.all('SELECT * FROM library_install')).toHaveLength(1);

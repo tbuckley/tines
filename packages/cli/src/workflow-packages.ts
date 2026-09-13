@@ -8,6 +8,7 @@ import {
 	diagnosticOf,
 	parseLibraryV3Document,
 	parseStrictLibraryJson,
+	workflowStateHref,
 	type PrepareWorkflowPackageResponse,
 	type ValidateLibraryResponse,
 	type WorkflowPackageChoices,
@@ -129,8 +130,13 @@ function tokenPayload(token: string): Record<string, unknown> {
 
 export function expectedWorkflowPackageOperations(plan: PrepareWorkflowPackageResponse) {
 	const operations = [];
+	const allocatedId = (localId: string) => {
+		const id = plan.allocation.records[localId]?.id;
+		if (!id) throw new Error(`saved workflow package plan has no allocation for ${localId}`);
+		return id;
+	};
 	for (const workflow of plan.resolved.workflows) {
-		const workflowId = plan.allocation.records[workflow.id]?.id;
+		const workflowId = allocatedId(workflow.id);
 		const href = `/workflows/${workflowId}`;
 		operations.push({
 			action: 'create',
@@ -141,15 +147,17 @@ export function expectedWorkflowPackageOperations(plan: PrepareWorkflowPackageRe
 			href,
 			relationship: workflow.id === plan.document.main_workflow_id ? 'main' : 'dependency'
 		});
-		for (const state of workflow.states)
+		for (const state of workflow.states) {
+			const stateId = allocatedId(state.id);
 			operations.push({
 				action: 'create',
 				kind: 'state',
 				local_id: state.id,
-				id: plan.allocation.records[state.id]?.id,
+				id: stateId,
 				name: state.name,
-				href: `${href}#state-${plan.allocation.records[state.id]?.id}`
+				href: workflowStateHref(workflowId, stateId)
 			});
+		}
 		for (const transition of workflow.transitions)
 			operations.push({
 				action: 'create',
@@ -248,8 +256,22 @@ export function assertPlanBinding(plan: PrepareWorkflowPackageResponse): void {
 	}
 	if (signedDigest !== digest || plan.plan_digest !== digest)
 		throw new Error('saved workflow package plan digest does not bind its review');
+	const comparisonOperations = plan.operations.map((operation) => {
+		if (operation.kind !== 'state') return operation;
+		const workflow = plan.resolved.workflows.find((candidate) =>
+			candidate.states.some((state) => state.id === operation.local_id)
+		);
+		if (!workflow) return operation;
+		const workflowId = plan.allocation.records[workflow.id]?.id;
+		const stateId = plan.allocation.records[operation.local_id]?.id;
+		if (!workflowId || !stateId) return operation;
+		const legacyHref = `/workflows/${workflowId}#state-${stateId}`;
+		return operation.href === legacyHref
+			? { ...operation, href: workflowStateHref(workflowId, stateId) }
+			: operation;
+	});
 	if (
-		canonicalizeLibraryValue(plan.operations) !==
+		canonicalizeLibraryValue(comparisonOperations) !==
 		canonicalizeLibraryValue(expectedWorkflowPackageOperations(plan))
 	)
 		throw new Error('saved workflow package plan has modified operations');
