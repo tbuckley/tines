@@ -189,7 +189,8 @@ interface ProviderContext {
 		ctx: RunnerContext,
 		tier: ModelTier,
 		model: string,
-		effort: string | undefined
+		effort: string | undefined,
+		record?: AdapterLaunchInput['recordEffortEvidence']
 	): Promise<string>;
 	createRunVault(
 		ctx: RunnerContext,
@@ -303,7 +304,8 @@ function createProviderContext(env: Env, opts: ClaudeAdapterOptions): ProviderCo
 		ctx: RunnerContext,
 		tier: ModelTier,
 		model: string,
-		effort: string | undefined
+		effort: string | undefined,
+		record?: AdapterLaunchInput['recordEffortEvidence']
 	): Promise<string> {
 		const modelParam = effort
 			? { id: model, effort: effort as 'low' | 'medium' | 'high' | 'xhigh' | 'max' }
@@ -315,6 +317,14 @@ function createProviderContext(env: Env, opts: ClaudeAdapterOptions): ProviderCo
 				? ctx.config.agents[tier]
 				: undefined);
 		if (existing && existing.model === model && existing.effort === effort) {
+			if (effort)
+				await record?.({
+					status: 'accepted_unconfirmed',
+					transport: 'managed_agent_config',
+					attempted_effort: effort,
+					provider_agent_id: existing.agent_id,
+					reason: 'cached agent configuration has no provider echo for this launch'
+				});
 			return existing.agent_id;
 		}
 		const created = await ctx.client.beta.agents.create({
@@ -324,6 +334,35 @@ function createProviderContext(env: Env, opts: ClaudeAdapterOptions): ProviderCo
 			tools: [{ type: 'agent_toolset_20260401' }]
 		});
 		const agentId = created.id;
+		if (effort) {
+			const returned = created as unknown as {
+				model?: string | { id?: string; effort?: string | { type?: string } };
+			};
+			const observedModel =
+				typeof returned.model === 'string' ? returned.model : returned.model?.id;
+			const rawEffort = typeof returned.model === 'object' ? returned.model?.effort : undefined;
+			const observedEffort = typeof rawEffort === 'string' ? rawEffort : rawEffort?.type;
+			const mismatch =
+				(observedModel !== undefined && observedModel !== model) ||
+				(observedEffort !== undefined && observedEffort !== effort);
+			await record?.({
+				status: mismatch
+					? 'rejected'
+					: observedModel === model && observedEffort === effort
+						? 'confirmed'
+						: 'accepted_unconfirmed',
+				transport: 'managed_agent_config',
+				attempted_effort: effort,
+				provider_agent_id: agentId,
+				...(observedModel ? { observed_model: observedModel } : {}),
+				...(observedEffort ? { observed_effort: observedEffort } : {}),
+				...(mismatch ? { reason: 'provider returned a conflicting model or effort' } : {})
+			});
+			if (mismatch)
+				throw new Error(
+					`provider returned ${observedModel ?? 'unknown model'} / ${observedEffort ?? 'unknown effort'} for requested ${model} / ${effort}`
+				);
+		}
 		ctx.config.agents_by_signature = {
 			...ctx.config.agents_by_signature,
 			[signature]: { agent_id: agentId, model, ...(effort ? { effort } : {}) }
@@ -810,7 +849,13 @@ export function createClaudeAdapter(env: Env, opts: ClaudeAdapterOptions = {}): 
 		}
 
 		const environmentId = await provider.ensureEnvironment(ctx);
-		const agentId = await provider.ensureTierAgent(ctx, input.tier, input.model, effort);
+		const agentId = await provider.ensureTierAgent(
+			ctx,
+			input.tier,
+			input.model,
+			effort,
+			input.recordEffortEvidence
+		);
 		const { vaultId, credentialId } = await provider.createRunVault(
 			ctx,
 			input.runId,

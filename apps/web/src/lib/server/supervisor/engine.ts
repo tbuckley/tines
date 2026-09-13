@@ -521,6 +521,23 @@ export async function launchClaimedRun(
 			tier: ctx.tier,
 			model: ctx.model,
 			effort: ctx.effort,
+			recordEffortEvidence: ctx.effort
+				? async (evidence) => {
+						await db
+							.updateTable('agent_run')
+							.set({
+								effort_application_status: evidence.status,
+								effort_application_evidence: JSON.stringify({
+									version: 1,
+									...evidence,
+									received_at: Date.now()
+								})
+							})
+							.where('id', '=', ctx.runId)
+							.where('status', 'in', [...ACTIVE_RUN_STATUSES])
+							.execute();
+					}
+				: undefined,
 			runKey: secret
 		});
 		const startedAt = ctx.now;
@@ -538,18 +555,7 @@ export async function launchClaimedRun(
 					started_at: startedAt,
 					provider_session_id: launched.provider_session_id ?? null,
 					provider_url: launched.provider_url ?? null,
-					provider_meta: launched.provider_meta ?? null,
-					...(ctx.effort
-						? {
-								effort_application_status: 'accepted_unconfirmed',
-								effort_application_evidence: JSON.stringify({
-									version: 1,
-									transport: 'managed_agent_config',
-									attempted_effort: ctx.effort,
-									received_at: startedAt
-								})
-							}
-						: {})
+					provider_meta: launched.provider_meta ?? null
 				})
 				.where('id', '=', ctx.runId)
 				.where('status', '=', 'launching')

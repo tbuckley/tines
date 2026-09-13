@@ -4,7 +4,7 @@
  * real request shapes (session budget in cents, vault credential scoping,
  * repo resources, run-id tagging) without any network.
  */
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { encryptSecret } from '../crypto';
 import { createTestDb, type TestDb } from '../api/test-db';
 import { canonicalGitHubRepoUrl, createClaudeAdapter } from './claude-adapter';
@@ -311,6 +311,57 @@ describe('claude adapter launch', () => {
 		expect(t.all('SELECT resume_config_revision FROM runner WHERE id = ?', runnerId)).toEqual([
 			{ resume_config_revision: 1 }
 		]);
+	});
+
+	it('confirms an exact provider-returned effort before creating the session', async () => {
+		const net = fakeNetwork({
+			'POST /v1/agents': () => ({
+				id: 'agent_effort',
+				version: 1,
+				model: { id: 'claude-sonnet-5', effort: { type: 'high' } }
+			})
+		});
+		const recordEffortEvidence = vi.fn(async () => {});
+		const adapter = createClaudeAdapter(t.env, { fetch: net.fetch });
+		await adapter.launch({
+			...launchInput(runnerId),
+			effort: 'high',
+			recordEffortEvidence
+		});
+
+		expect(recordEffortEvidence).toHaveBeenCalledWith({
+			status: 'confirmed',
+			transport: 'managed_agent_config',
+			attempted_effort: 'high',
+			provider_agent_id: 'agent_effort',
+			observed_model: 'claude-sonnet-5',
+			observed_effort: 'high'
+		});
+		expect(net.of('POST /v1/sessions')).toHaveLength(1);
+	});
+
+	it('records and rejects a conflicting provider effort before session creation', async () => {
+		const net = fakeNetwork({
+			'POST /v1/agents': () => ({
+				id: 'agent_effort',
+				version: 1,
+				model: { id: 'claude-sonnet-5', effort: 'medium' }
+			})
+		});
+		const recordEffortEvidence = vi.fn(async () => {});
+		const adapter = createClaudeAdapter(t.env, { fetch: net.fetch });
+		await expect(
+			adapter.launch({
+				...launchInput(runnerId),
+				effort: 'high',
+				recordEffortEvidence
+			})
+		).rejects.toThrow('provider returned');
+
+		expect(recordEffortEvidence).toHaveBeenCalledWith(
+			expect.objectContaining({ status: 'rejected', observed_effort: 'medium' })
+		);
+		expect(net.of('POST /v1/sessions')).toHaveLength(0);
 	});
 
 	it('mounts a .git-suffixed context URL in canonical form', async () => {

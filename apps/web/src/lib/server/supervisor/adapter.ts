@@ -18,6 +18,16 @@ export interface AdapterLaunchInput {
 	model: string | null;
 	/** Claim-time resolved effort. Adapters must not reread mutable tiers. */
 	effort?: string | null;
+	/** Persist provider configuration evidence before later launch steps can fail. */
+	recordEffortEvidence?: (evidence: {
+		status: 'accepted_unconfirmed' | 'confirmed' | 'rejected';
+		transport: 'managed_agent_config';
+		attempted_effort: string;
+		observed_model?: string;
+		observed_effort?: string;
+		provider_agent_id?: string;
+		reason?: string;
+	}) => Promise<void>;
 	/**
 	 * The plaintext run key, for out-of-prompt delivery (vault credential /
 	 * egress-proxy header). Never logged, never stored beyond its hash.
