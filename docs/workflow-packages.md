@@ -239,6 +239,13 @@ checks are synthetic/local evidence; the release acceptance record must separate
 post-install activation performed by a configured runner, with its run, logs, gate artifact, and
 handoff identifiers.
 
+`workflow-package-runner-acceptance.spec.ts` performs that separate activation on the isolated E2E
+stack. Alice's signed browser session installs the canonical file, then a real local daemon claims an
+issue created in the installed `Run` state, observes the substituted destination marker in its launch
+context, attaches the required `acceptance-evidence` text artifact, and takes the gated `Handoff`
+transition. The test emits a JSON attachment containing the file and plan digests plus every receipt,
+object, project, issue, runner, run, log, artifact, and final-state identifier for the acceptance run.
+
 The export journey is also the integrated two-account/two-destination-project file exercise. It
 exports a QA-style main plus inherited dependency, two skills with exact file bytes, ordered prompts,
 a repository declaration, artifact gate, declared target workflow, label substitution, and optional daily schedule/project-tier
