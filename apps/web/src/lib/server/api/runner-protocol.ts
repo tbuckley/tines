@@ -23,10 +23,12 @@ import {
 	type RunnerPollRequest,
 	type RunnerPollResponse,
 	type EffortCapabilities,
+	type EffortCapabilitiesV1,
 	isEffortToken,
 	EFFORT_CAPABILITIES_MAX_BYTES,
 	EFFORT_CAPABILITIES_MAX_EFFORTS,
-	EFFORT_CAPABILITIES_MAX_MODELS
+	EFFORT_CAPABILITIES_MAX_MODELS,
+	supportedEfforts
 } from '@tines/shared';
 import type { RequestEvent } from '@sveltejs/kit';
 import { sql, type Kysely } from 'kysely';
@@ -455,7 +457,7 @@ export async function pollRunner(
 	if (runner.status === 'active') {
 		for (const run of active) {
 			if (run.status !== 'assigned') continue;
-			const assignment = await deliverAssignedRun(db, env, runner, run, now);
+			const assignment = await deliverAssignedRun(db, env, runner, effects, run, now);
 			if (assignment) assignments.push(assignment);
 		}
 	}
@@ -484,6 +486,7 @@ async function deliverAssignedRun(
 	db: Kysely<Database>,
 	env: Env,
 	runner: RunnerRow,
+	effects: DispatchEffects,
 	run: Database['agent_run'],
 	now: number
 ): Promise<RunnerAssignment | null> {
@@ -514,6 +517,40 @@ async function deliverAssignedRun(
 				error: 'assignment canceled: issue no longer eligible at delivery',
 				now
 			});
+		}
+		return null;
+	}
+
+	// A claim can race a daemon upgrade, downgrade, or reprobe. Check the
+	// immutable claim against the admitted boot before minting its run key.
+	let deliveryCapabilities: EffortCapabilitiesV1 | null = null;
+	let effortRaceReason: string | null = null;
+	if (run.effort_application_status === 'legacy_not_applied') {
+		if (runner.effort_capabilities !== null)
+			effortRaceReason = 'assignment capability changed after claim; redispatching tier effort';
+	} else if (run.effort_application_status === 'pending' && run.resolved_effort) {
+		try {
+			const parsed = runner.effort_capabilities
+				? (JSON.parse(runner.effort_capabilities) as EffortCapabilities)
+				: null;
+			if (parsed?.version === 1 && 'models' in parsed) deliveryCapabilities = parsed;
+			const allowed = supportedEfforts(parsed, run.model);
+			if (!allowed?.includes(run.resolved_effort))
+				effortRaceReason =
+					'assignment effort is not supported by the daemon capability report at delivery';
+		} catch {
+			effortRaceReason = 'daemon capability report is unreadable at delivery';
+		}
+	}
+	if (effortRaceReason) {
+		const endable = await loadEndableRun(db, run.user_id, run.id);
+		if (endable && endable.status === 'assigned') {
+			const ended = await endRun(db, env, endable, {
+				status: 'canceled',
+				error: effortRaceReason,
+				now
+			});
+			if (ended.ended) effects.signalDispatch();
 		}
 		return null;
 	}
@@ -557,7 +594,8 @@ async function deliverAssignedRun(
 						effort: {
 							version: 1 as const,
 							value: run.resolved_effort,
-							source: JSON.parse(run.effort_source)
+							source: JSON.parse(run.effort_source),
+							capability_digest: deliveryCapabilities!.catalog_digest
 						}
 					}
 				: {}),
@@ -587,7 +625,8 @@ async function deliverAssignedRun(
 					effort: {
 						version: 1 as const,
 						value: run.resolved_effort,
-						source: JSON.parse(run.effort_source)
+						source: JSON.parse(run.effort_source),
+						capability_digest: deliveryCapabilities!.catalog_digest
 					}
 				}
 			: {}),

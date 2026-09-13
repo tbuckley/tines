@@ -796,6 +796,71 @@ describe('pollRunner', () => {
 		expect(keyForRun(t, runId)).toBeUndefined();
 	});
 
+	it('cancels and redispatches when an enforced claim reaches a downgraded daemon', async () => {
+		const t = world();
+		const effects = recordDispatchEffects();
+		const runnerId = addRunner(t, { harness: 'codex' });
+		const issue = addIssue(t);
+		const runId = addRun(t, { issueId: issue, runnerId, model: 'gpt-5.6' });
+		t.sqlite
+			.prepare(
+				`UPDATE agent_run SET resolved_effort = 'low', effort_source = ?, effort_application_status = 'pending' WHERE id = ?`
+			)
+			.run(JSON.stringify({ kind: 'runner_tier', runner_id: runnerId, tier: 'balanced' }), runId);
+
+		const { response } = await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, runnerId),
+			effects,
+			{ owned_runs: [], instance_id: 'legacy-boot' },
+			NOW + 1
+		);
+		expect(response.assignments).toEqual([]);
+		expect(runById(t, runId)?.status).toBe('canceled');
+		expect(runById(t, runId)?.error).toContain('not supported');
+		expect(keyForRun(t, runId)).toBeUndefined();
+		expect(effects.count()).toBe(1);
+	});
+
+	it('reclaims a legacy-tier claim after an effort-capable daemon upgrade', async () => {
+		const t = world();
+		const effects = recordDispatchEffects();
+		const runnerId = addRunner(t, { harness: 'codex' });
+		const issue = addIssue(t);
+		const runId = addRun(t, { issueId: issue, runnerId, model: 'gpt-5.6' });
+		t.sqlite
+			.prepare(
+				`UPDATE agent_run SET resolved_effort = 'low', effort_source = ?, effort_application_status = 'legacy_not_applied' WHERE id = ?`
+			)
+			.run(JSON.stringify({ kind: 'runner_tier', runner_id: runnerId, tier: 'balanced' }), runId);
+
+		const { response } = await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, runnerId),
+			effects,
+			{
+				owned_runs: [],
+				instance_id: 'upgraded-boot',
+				effort_capabilities: {
+					version: 1,
+					daemon_version: '0.0.194',
+					harness: 'codex',
+					harness_version: '0.153.4',
+					catalog_digest: 'catalog-a',
+					models: [{ model: 'gpt-5.6', efforts: ['low'] }]
+				}
+			},
+			NOW + 1
+		);
+		expect(response.assignments).toEqual([]);
+		expect(runById(t, runId)?.status).toBe('canceled');
+		expect(runById(t, runId)?.error).toContain('changed after claim');
+		expect(keyForRun(t, runId)).toBeUndefined();
+		expect(effects.count()).toBe(1);
+	});
+
 	it('cancels the assignment when automation was disarmed or the issue parked', async () => {
 		const t = world();
 		const runnerId = addRunner(t);

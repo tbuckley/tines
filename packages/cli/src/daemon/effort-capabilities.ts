@@ -1,10 +1,34 @@
 import { createHash } from 'node:crypto';
 import { execFile, spawn } from 'node:child_process';
-import type { EffortCapabilitiesV1 } from '@tines/shared';
+import {
+	supportedEfforts,
+	type EffortCapabilities,
+	type EffortCapabilitiesV1,
+	type RunnerAssignment
+} from '@tines/shared';
 import type { HarnessKind } from './support.js';
 
 const MAX_STDOUT = 1024 * 1024;
 const DEADLINE_MS = 5000;
+
+/** Refuse an enforced assignment if this exact boot cannot uphold it. */
+export function assignmentEffortRejection(
+	assignment: RunnerAssignment,
+	capabilities: EffortCapabilities | undefined,
+	harness: HarnessKind
+): string | null {
+	if (!assignment.effort) return null;
+	if (!capabilities || capabilities.version !== 1 || !('models' in capabilities))
+		return 'effort assignment requires a compatible V1 daemon capability report';
+	if (capabilities.harness !== harness)
+		return `effort assignment requires ${capabilities.harness}, but this daemon runs ${harness}`;
+	if (capabilities.catalog_digest !== assignment.effort.capability_digest)
+		return 'effort capability catalog changed after assignment delivery';
+	const allowed = supportedEfforts(capabilities, assignment.run.model);
+	if (!allowed?.includes(assignment.effort.value))
+		return `${assignment.run.model ?? 'the assigned model'} does not support effort ${assignment.effort.value}`;
+	return null;
+}
 
 function digest(models: EffortCapabilitiesV1['models']): string {
 	return createHash('sha256').update(JSON.stringify(models)).digest('hex');

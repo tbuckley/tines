@@ -1984,7 +1984,13 @@ export interface RunnerPollRequest {
 export interface RunnerAssignment {
 	run: AgentRun;
 	/** Enforced launch setting, omitted for provider-default and legacy-tier delivery. */
-	effort?: { version: 1; value: string; source: import('./effort.js').EffortSource };
+	effort?: {
+		version: 1;
+		value: string;
+		source: import('./effort.js').EffortSource;
+		/** Capability catalog the server checked immediately before delivery. */
+		capability_digest: string;
+	};
 	/** Supervisor preamble + stitched context + issue block, assembled at delivery. */
 	prompt: string;
 	/**

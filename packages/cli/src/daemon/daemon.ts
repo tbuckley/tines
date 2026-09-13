@@ -38,7 +38,7 @@ import { CodexStreamRenderer } from './codex-stream.js';
 import { collectCodexRequestContext, resolveCodexHome } from './codex-rollout.js';
 import type { RunStreamRenderer } from './stream-summary.js';
 import { RateLimitDetector } from './rate-limit';
-import { discoverEffortCapabilities } from './effort-capabilities.js';
+import { assignmentEffortRejection, discoverEffortCapabilities } from './effort-capabilities.js';
 import { agentCliPrefix, installAgentCli } from './cli-refresh.js';
 import { ensureRunnerCredentials, nextStepsMessage } from './register.js';
 import {
@@ -531,6 +531,7 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 		// No process yet (still materializing): the launch path's settled
 		// checks clean up.
 	};
+	const effortCapabilities = await discoverEffortCapabilities(opts.harness, DAEMON_VERSION);
 
 	// -- launching one assignment ---------------------------------------------
 	const launch = async (assignment: RunnerAssignment) => {
@@ -569,6 +570,21 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 		};
 		run.flush = () => run.batcher.flush();
 		table.track(run);
+		const effortRejection = assignmentEffortRejection(assignment, effortCapabilities, opts.harness);
+		if (effortRejection && assignment.effort) {
+			await client
+				.appendRunLog(runId, {
+					chunk: '',
+					effort_application: {
+						status: 'rejected',
+						attempted_effort: assignment.effort.value,
+						transport: 'argv',
+						reason: effortRejection
+					}
+				})
+				.catch(() => undefined);
+			return table.finishAndCleanup(run, 'failed', effortRejection);
+		}
 		log(
 			resume
 				? `run ${runId} assigned (issue ${issueLabel ?? assignment.run.issue_id}); resuming run ${resume.previous_run_id} in ${workspace}`
@@ -851,7 +867,6 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 		`polling ${baseUrl} every ${Math.round(opts.pollIntervalMs / 1000)}s (harness ${opts.harness}, max ${opts.maxConcurrent} concurrent) — Ctrl-C to stop`
 	);
 	let failures = 0;
-	const effortCapabilities = await discoverEffortCapabilities(opts.harness, DAEMON_VERSION);
 	while (!shuttingDown) {
 		try {
 			// `max_concurrent` rides along so the server cap tracks the flag —
