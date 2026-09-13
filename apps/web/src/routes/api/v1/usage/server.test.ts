@@ -118,12 +118,76 @@ describe('GET /api/v1/usage validation and authorization', () => {
 			`kind=issues&limit=1&cursor=${encodeURIComponent(String(next.previous_cursor))}`
 		);
 		expect((previous.items as { issue_id: string }[])[0].issue_id).toBe(first);
+		expect(previous.previous_cursor).toBeNull();
 		const runs = await invoke(`kind=runs&member=${first}`);
 		expect(runs).toMatchObject({ total_count: 1, attempt_count: 1 });
 		expect((runs.items as { id: string }[]).map((item) => item.id)).toEqual(['arun_evidence_a']);
 		const replay = await get(t, `?scope=${encodeURIComponent(scope)}`);
 		expect(replay.response.status).toBe(200);
 		expect(replay.body).toMatchObject({ from: NOW - 100, to: NOW, scope });
+	});
+
+	it('keeps a tier filter when replaying a frozen scope', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const runner = addRunner(t);
+		const issue = addIssue(t);
+		for (const [id, tier] of [
+			['arun_tier_cheapest', 'cheapest'],
+			['arun_tier_balanced', 'balanced']
+		] as const)
+			addRun(t, {
+				id,
+				issueId: issue,
+				runnerId: runner,
+				tier,
+				status: 'completed',
+				createdAt: NOW - 20,
+				endedAt: NOW - 10,
+				usage: JSON.stringify({ cost_usd: 0.1, cost_source: 'provider' })
+			});
+		const report = await get(
+			t,
+			`?from=${new Date(NOW - 100).toISOString()}&to=${new Date(NOW).toISOString()}&tier=cheapest`
+		);
+		expect(report.body).toMatchObject({ matching_total: { finalized_run_count: 1 } });
+		const replay = await get(t, `?scope=${encodeURIComponent(String(report.body.scope))}`);
+		expect(replay.body).toMatchObject({
+			filters: { tier: 'cheapest' },
+			matching_total: { finalized_run_count: 1 }
+		});
+	});
+
+	it('keeps the resolved timezone basis when settings change after a report', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		t.sqlite
+			.prepare(
+				`INSERT INTO supervisor_settings (user_id, enabled, quota, attempt_limit, budget, updated_at)
+				 VALUES (?, 1, ?, 3, ?, ?)`
+			)
+			.run(
+				USER,
+				JSON.stringify({ type: 'global_cap', limit: 3 }),
+				JSON.stringify({ timezone: 'America/New_York' }),
+				NOW
+			);
+		const report = await get(
+			t,
+			`?from=${new Date(NOW - 100).toISOString()}&to=${new Date(NOW).toISOString()}`
+		);
+		expect(report.body).toMatchObject({
+			timezone: 'America/New_York',
+			timezone_source: 'supervisor_budget'
+		});
+		t.sqlite
+			.prepare('UPDATE supervisor_settings SET budget = ? WHERE user_id = ?')
+			.run(JSON.stringify({ timezone: 'UTC' }), USER);
+		const replay = await get(t, `?scope=${encodeURIComponent(String(report.body.scope))}`);
+		expect(replay.body).toMatchObject({
+			timezone: 'America/New_York',
+			timezone_source: 'supervisor_budget'
+		});
 	});
 
 	it('reconciles the independent multidimensional manifest through both real handlers', async () => {

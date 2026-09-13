@@ -376,6 +376,8 @@ export async function getUsageEvidence(
 					request.population,
 					cutoff
 				);
+	if (items.length !== selected.length)
+		throw new Error('Retained records changed while evidence was being assembled');
 	const cursor = async (candidate: Candidate, nextTraversal: 'after' | 'before') =>
 		mintUsageCursor(
 			{
@@ -398,7 +400,8 @@ export async function getUsageEvidence(
 				? await cursor(selected.at(-1)!, 'after')
 				: null,
 		previous_cursor:
-			selected.length && (boundary || (traversal === 'after' && decoded))
+			selected.length &&
+			((traversal === 'after' && decoded) || (traversal === 'before' && hasExtra))
 				? await cursor(selected[0], 'before')
 				: null,
 		total_count: totalCount,

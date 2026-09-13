@@ -188,11 +188,17 @@ export const GET: RequestHandler = api(async (event) => {
 			workflow: selected?.workflow ?? params.get('workflow') ?? undefined,
 			state: selected?.state ?? params.get('state') ?? undefined,
 			runner: selected?.runner ?? params.get('runner') ?? undefined,
-			tier: params.get('tier') ?? undefined,
+			tier: selected?.tier ?? params.get('tier') ?? undefined,
 			outcome: outcome as never,
 			accounting_status: accounting as UsageAccountingStatus | undefined,
 			by
 		});
+		// A replay freezes the operator-visible period basis as well as its
+		// instants. Current supervisor settings must not relabel an old scope.
+		if (periodPayload) {
+			report.timezone = periodPayload.timezone;
+			report.timezone_source = periodPayload.timezone_source;
+		}
 		const base: UsageScopePayload = {
 			v: 1,
 			owner: actor.userId,
