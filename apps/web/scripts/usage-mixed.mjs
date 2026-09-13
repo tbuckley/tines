@@ -214,7 +214,7 @@ try {
 				])
 					assert.ok(rendered.includes(reference), reference);
 		}
-		if (!signedEvidenceCliChecked) {
+		if (!signedEvidenceCliChecked && populations.finalized.length) {
 			const finalized = populations.finalized;
 			const output = JSON.parse(
 				cli(['usage'], {

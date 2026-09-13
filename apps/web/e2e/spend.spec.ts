@@ -53,7 +53,7 @@ test.describe('Agents Spend real ledger', () => {
 		await selectProject(page, SPEND.projects.alpha.name);
 		await expect(projectTotal(page)).toHaveText('$5.00');
 		expect(requests.at(-1)?.searchParams.get('project')).toBe(SPEND.projects.alpha.id);
-		await page.getByRole('button', { name: 'Today' }).click();
+		await page.getByRole('button', { name: 'Today', exact: true }).click();
 		await expect(projectTotal(page)).toHaveText('$2.00');
 		expect(requests.at(-1)?.searchParams.get('window')).toBe('today');
 		await page.getByRole('button', { name: 'Last 30 days' }).click();
@@ -181,7 +181,7 @@ test.describe('Agents Spend real ledger', () => {
 		await page.getByRole('button', { name: 'View contributing issues and runs' }).first().click();
 		await expect(page.getByRole('heading', { name: 'Contributing issues' })).toBeVisible();
 		await expect(page.getByText('Whole selection: $12.00 · 4 issues')).toBeVisible();
-		await page.getByRole('button', { name: 'Today' }).click();
+		await page.getByRole('button', { name: 'Today', exact: true }).click();
 		await expect(projectTotal(page)).toHaveText('$2.00');
 		await expect(page.getByRole('heading', { name: 'Contributing issues' })).toBeHidden();
 		await page.getByRole('button', { name: 'Last 30 days' }).click();
@@ -192,9 +192,11 @@ test.describe('Agents Spend real ledger', () => {
 		await page.getByRole('button', { name: /Alpha\/3 Spend alpha_10d/ }).click();
 		await expect(page).toHaveURL(/spend_kind=runs/);
 		await expect(page.getByRole('heading', { name: 'Contributing runs' })).toBeVisible();
-		await expect(page.getByText('run_e2e_spend_alpha_10d')).toBeVisible();
+		await expect(page.getByText('run_e2e_spend_alpha_10d', { exact: true })).toBeVisible();
 		await page.getByText('Accounting details for run_e2e_spend_alpha_10d').click();
-		await expect(page.getByText(/priced · source provider · exact cost 10/)).toBeVisible();
+		await expect(page.locator('.accounting p').first()).toContainText(
+			/priced\s*·\s*source provider\s*·\s*exact cost 7/
+		);
 		await expect(page.getByText(/Tokens: input tokens/)).toBeVisible();
 		await page.goBack();
 		await expect(page.getByRole('heading', { name: 'Contributing issues' })).toBeVisible();

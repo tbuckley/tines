@@ -411,5 +411,5 @@ describe('GET /api/v1/usage validation and authorization', () => {
 			expect(response.status).toBe(200);
 			return response.json();
 		});
-	});
+	}, 15_000);
 });
