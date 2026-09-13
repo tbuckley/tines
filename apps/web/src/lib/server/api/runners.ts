@@ -28,7 +28,7 @@ import { newId, randomString, type Database } from '$lib/server/db';
 import type { DispatchEffects } from '$lib/server/dispatch-effects';
 import { pingAnthropicKey } from '$lib/server/supervisor/claude-adapter';
 import { cancelAssignedRuns } from '$lib/server/supervisor/engine';
-import { builtinTierModels } from '$lib/server/supervisor/logic';
+import { builtinTierModels, resolveEffort, resolveTier } from '$lib/server/supervisor/logic';
 import { isResumeProviderSupported } from '$lib/server/supervisor/resume';
 import {
 	ApiFail,
@@ -738,6 +738,41 @@ export async function updateRunner(
 		if (value !== row.resume_max_cost_usd) {
 			patch.resume_max_cost_usd = value;
 			changed.push('resume_max_cost_usd');
+		}
+	}
+	if (changed.includes('tiers') || changed.includes('config')) {
+		const finalRunner = {
+			...row,
+			...patch,
+			config: patch.config ?? row.config,
+			tiers: patch.tiers === undefined ? row.tiers : patch.tiers
+		};
+		const finalTiers = finalRunner.tiers
+			? (JSON.parse(finalRunner.tiers) as RunnerTierOverrides)
+			: null;
+		for (const tier of MODEL_TIERS) {
+			const tierOverride = finalTiers?.[tier];
+			const effort =
+				tierOverride && typeof tierOverride !== 'string' ? tierOverride.effort : undefined;
+			if (!effort) continue;
+			if (finalRunner.type === 'local' && !finalRunner.effort_capabilities) {
+				throw new ApiFail(
+					422,
+					'effort_incompatible',
+					`"tiers.${tier}.effort" requires an upgraded, connected daemon capability report`,
+					{ field: `tiers.${tier}.effort`, action: 'upgrade_or_reconnect_daemon' }
+				);
+			}
+			const resolvedTier = resolveTier(finalRunner, tier);
+			const compatibility = resolveEffort(finalRunner, resolvedTier, null);
+			if (!compatibility.compatible) {
+				throw new ApiFail(
+					422,
+					'effort_incompatible',
+					`"tiers.${tier}.effort" cannot apply ${effort} to ${resolvedTier.model ?? 'the fixed model'}: ${compatibility.reason}`,
+					{ field: `tiers.${tier}.effort`, model: resolvedTier.model, requested_effort: effort }
+				);
+			}
 		}
 	}
 	const revisionChanged = changed.some(
