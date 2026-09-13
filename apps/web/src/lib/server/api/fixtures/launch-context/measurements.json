@@ -1,14 +1,14 @@
 {
 	"tokenizer": "tiktoken 0.14.0 / o200k_base",
 	"opening": {
-		"comment-only.before.md": { "bytes": 4050, "text_tokens": 1006 },
-		"comment-only.after.md": { "bytes": 3245, "text_tokens": 860 },
-		"skill-only.before.md": { "bytes": 4426, "text_tokens": 1093 },
-		"skill-only.after.md": { "bytes": 4607, "text_tokens": 1167 },
-		"combined.cold.before.md": { "bytes": 4426, "text_tokens": 1093 },
-		"combined.cold.after.md": { "bytes": 3621, "text_tokens": 947 },
-		"combined.resume.before.md": { "bytes": 4426, "text_tokens": 1093 },
-		"combined.resume.after.md": { "bytes": 3621, "text_tokens": 947 }
+		"comment-only.before.md": { "bytes": 4074, "text_tokens": 1018 },
+		"comment-only.after.md": { "bytes": 3279, "text_tokens": 878 },
+		"skill-only.before.md": { "bytes": 4382, "text_tokens": 1125 },
+		"skill-only.after.md": { "bytes": 4635, "text_tokens": 1181 },
+		"combined.cold.before.md": { "bytes": 4201, "text_tokens": 1051 },
+		"combined.cold.after.md": { "bytes": 3659, "text_tokens": 967 },
+		"combined.resume.before.md": { "bytes": 4201, "text_tokens": 1051 },
+		"combined.resume.after.md": { "bytes": 3659, "text_tokens": 967 }
 	},
 	"retrieval_overhead": {
 		"retrieval-command.txt": { "bytes": 168, "text_tokens": 52 },

@@ -2,7 +2,7 @@
 	"baseline_commit": "cc738a1af95714f06fb53b5497ecaabeb8810dc9",
 	"fixed_clock": 1700001000000,
 	"issue": {
-		"project_name": "Fixture Project",
+		"project_name": "Fixture Project's",
 		"number": 520,
 		"title": "Keep essential launch context",
 		"description": "Preserve the durable human decision while making older agent detail recoverable.",

@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { chmodSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { join } from 'node:path';
@@ -7,9 +7,21 @@ import { tmpdir } from 'node:os';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { CLI_BIN, NODE } from './test-bin.js';
 
-const REF = `Odd Project's/7`;
-const QUOTED_REF = `'Odd Project'\\''s/7'`;
-const ID = 'cmt_old';
+const prompt = readFileSync(
+	new URL(
+		'../../../apps/web/src/lib/server/api/fixtures/launch-context/combined.cold.after.md',
+		import.meta.url
+	),
+	'utf8'
+);
+const recoveryLine = prompt.split('\n').find((line) => line.startsWith('Older agent comments:'));
+if (!recoveryLine) throw new Error('fixture prompt has no recovery line');
+const emittedCommands = [...recoveryLine.matchAll(/`([^`]+)`/g)].map((match) => match[1]);
+if (emittedCommands.length !== 2)
+	throw new Error('fixture prompt must emit recovery and fallback commands');
+const [lookup, fallback] = emittedCommands;
+const REF = `Fixture Project's/520`;
+const ID = 'cmt_old_detail';
 const comment = (id: string, body: string) => ({
 	id,
 	issue_id: 'iss_1',
@@ -29,16 +41,16 @@ beforeAll(async () => {
 		res.writeHead(200, { 'content-type': 'application/json' });
 		if (path.endsWith('/projects')) {
 			res.end(
-				JSON.stringify({ items: [{ id: 'prj_1', name: "Odd Project's" }], next_cursor: null })
+				JSON.stringify({ items: [{ id: 'prj_1', name: "Fixture Project's" }], next_cursor: null })
 			);
 			return;
 		}
 		res.end(
 			JSON.stringify({
 				id: 'iss_1',
-				project_name: "Odd Project's",
+				project_name: "Fixture Project's",
 				project_archived_at: null,
-				number: 7,
+				number: 520,
 				title: 'Recovery fixture',
 				description: '',
 				labels: [],
@@ -78,21 +90,18 @@ function shell(command: string, path = `${binDir}:/usr/bin:/bin`) {
 	});
 }
 
-const lookup = () =>
-	`tines issues show ${QUOTED_REF} --json | jq -er --arg id ${ID} 'first(.comments[] | select(.id == $id) | .body) // error("comment not found: \\($id)")'`;
-
 describe('the emitted current-body recovery recipe', () => {
 	it('loads the current body, observes an edit, and fails visibly after deletion', async () => {
 		comments = [comment(ID, 'original body')];
-		expect(await shell(lookup())).toMatchObject({ code: 0, stdout: 'original body\n', stderr: '' });
+		expect(await shell(lookup)).toMatchObject({ code: 0, stdout: 'original body\n', stderr: '' });
 		comments = [comment(ID, 'edited current body')];
-		expect(await shell(lookup())).toMatchObject({
+		expect(await shell(lookup)).toMatchObject({
 			code: 0,
 			stdout: 'edited current body\n',
 			stderr: ''
 		});
 		comments = [];
-		const missing = await shell(lookup());
+		const missing = await shell(lookup);
 		expect(missing.code).not.toBe(0);
 		expect(missing.stderr).toContain(`comment not found: ${ID}`);
 	});
@@ -101,9 +110,9 @@ describe('the emitted current-body recovery recipe', () => {
 		comments = [comment(ID, 'old current body'), comment('cmt_new', 'new current body')];
 		const noJq = mkdtempSync(join(tmpdir(), 'tines-no-jq-'));
 		symlinkSync(join(binDir, 'tines'), join(noJq, 'tines'));
-		const result = await shell(`tines issues show ${QUOTED_REF}`, noJq);
+		const result = await shell(fallback, noJq);
 		expect(result.code, JSON.stringify(result)).toBe(0);
-		expect(result.stdout).toContain("Odd Project's/#7");
+		expect(result.stdout).toContain(`${REF.replace('/', '/#')}`);
 		expect(result.stdout).toContain('old current body');
 		expect(result.stdout).toContain('new current body');
 		expect(result.stderr).toBe('');

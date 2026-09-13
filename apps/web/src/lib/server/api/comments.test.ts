@@ -123,7 +123,7 @@ describe('updateComment', () => {
 			issueId: other,
 			runnerId: runner,
 			status: 'completed',
-			createdAt: NOW + 2
+			createdAt: NOW + 200
 		});
 		const activeRun = addRun(t, {
 			id: 'arun_active',
@@ -229,6 +229,38 @@ describe('updateComment', () => {
 		t.sqlite.prepare(`DELETE FROM comment WHERE id = 'cmt_tie_b_z'`).run();
 		const afterDelete = await getIssueDetail(t.db, USER, { id: issue }, { launchComments: true });
 		expect(afterDelete.launch_comments?.latest_completed_run_comment_id).toBe('cmt_tie_b_a');
+	});
+
+	it('finds a completed run with a comment beyond the 50-run round window', async () => {
+		const issue = addIssue(t);
+		const runner = addRunner(t);
+		const handoffRun = addRun(t, {
+			id: 'arun_handoff_beyond_cap',
+			issueId: issue,
+			runnerId: runner,
+			status: 'completed',
+			createdAt: NOW
+		});
+		const handoffKey = addRunKey(t, handoffRun);
+		addComment(t, {
+			issueId: issue,
+			body: 'handoff before round cap',
+			apiKeyId: handoffKey,
+			at: NOW,
+			id: 'cmt_handoff_beyond_cap'
+		});
+		for (let index = 1; index <= 51; index += 1) {
+			addRun(t, {
+				id: `arun_newer_commentless_${String(index).padStart(2, '0')}`,
+				issueId: issue,
+				runnerId: runner,
+				status: 'completed',
+				createdAt: NOW + index
+			});
+		}
+
+		const launch = await getIssueDetail(t.db, USER, { id: issue }, { launchComments: true });
+		expect(launch.launch_comments?.latest_completed_run_comment_id).toBe('cmt_handoff_beyond_cap');
 	});
 
 	it('replaces the body, stamps updated_at, and emits a content-free event', async () => {

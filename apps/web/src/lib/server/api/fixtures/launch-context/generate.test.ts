@@ -153,13 +153,15 @@ const artifacts = input.artifacts.map((artifact: Record<string, unknown>) => ({
 
 // Fixture-only transform: recreates the two presentation details at the pinned
 // baseline commit. It is not exported or used by the production renderer.
-function legacyPresentation(text: string, skill = false): string {
-	let result = text.replace(/, ID: cmt_[^)]+(?=\):)/g, '');
-	if (skill) {
-		result = result.replace(/\n\n### Skills\n\n[\s\S]*?(?=\n\nAttached to this issue:)/, '');
+function legacyPresentation(
+	text: string,
+	changes: { comments?: boolean; skill?: boolean } = {}
+): string {
+	let result = changes.comments ? text.replace(/, ID: cmt_[^)]+(?=\):)/g, '') : text;
+	if (changes.skill) {
 		result = result.replace(
-			'Attached to this issue: artifact',
-			'Attached to this issue: skill "fixture-skill" (2 files), artifact'
+			/\n\n### Skills\n\n[\s\S]*$/,
+			`\n\nAttached to this issue: skill "fixture-skill" (2 files). Fetch them: \`tines issues context ${issue.project_name}/${issue.number} --out <dir>\``
 		);
 	}
 	return result;
@@ -167,7 +169,8 @@ function legacyPresentation(text: string, skill = false): string {
 
 const outputs: Record<string, string> = {
 	'comment-only.before.md': legacyPresentation(
-		buildLaunchPrompt(emptyContext, fullIssue, artifacts, input.label_vocabulary)
+		buildLaunchPrompt(emptyContext, fullIssue, artifacts, input.label_vocabulary),
+		{ comments: true }
 	),
 	'comment-only.after.md': buildLaunchPrompt(
 		emptyContext,
@@ -177,17 +180,17 @@ const outputs: Record<string, string> = {
 	),
 	'skill-only.before.md': legacyPresentation(
 		buildLaunchPrompt(context, fullIssue, artifacts, input.label_vocabulary),
-		true
+		{ skill: true }
 	),
 	'skill-only.after.md': buildLaunchPrompt(context, fullIssue, artifacts, input.label_vocabulary),
 	'combined.cold.before.md': legacyPresentation(
 		buildLaunchPrompt(context, fullIssue, artifacts, input.label_vocabulary),
-		true
+		{ comments: true, skill: true }
 	),
 	'combined.cold.after.md': buildLaunchPrompt(context, issue, artifacts, input.label_vocabulary),
 	'combined.resume.before.md': legacyPresentation(
 		buildResumePrompt(context, fullIssue, artifacts, input.label_vocabulary),
-		true
+		{ comments: true, skill: true }
 	),
 	'combined.resume.after.md': buildResumePrompt(context, issue, artifacts, input.label_vocabulary)
 };
@@ -228,5 +231,18 @@ describe('launch-context comparison fixtures', () => {
 			input.expected.selected_ids
 		);
 		expect(selectLaunchComments(issue).omittedAgentIds).toEqual(input.expected.omitted_ids);
+		const skillBefore = outputs['skill-only.before.md'];
+		const skillAfter = outputs['skill-only.after.md'];
+		expect(skillBefore).toContain('Attached to this issue: skill "fixture-skill" (2 files).');
+		expect(skillBefore).not.toContain('### Skills');
+		expect(skillAfter).toContain('### Skills');
+		expect(skillAfter).not.toContain('Attached to this issue: skill "fixture-skill" (2 files).');
+		expect(skillBefore.slice(0, skillBefore.indexOf('\n\nAttached to this issue: skill'))).toBe(
+			skillAfter.slice(0, skillAfter.indexOf('\n\n### Skills'))
+		);
+		for (const name of ['combined.cold.before.md', 'combined.resume.before.md']) {
+			expect(outputs[name]).toContain('Attached to this issue: skill "fixture-skill" (2 files).');
+			expect(outputs[name]).not.toContain('### Skills');
+		}
 	});
 });
