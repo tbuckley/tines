@@ -67,6 +67,11 @@ import type { DispatchEffects } from '$lib/server/dispatch-effects';
 import { getIssueDetail } from './issues';
 import { validateBoundedInt } from './runners';
 import { runQuery, serializeRun } from './runs';
+import {
+	concurrencyInstruction,
+	validateConcurrencyPoll,
+	validateDeclinedAssignments
+} from './runner-concurrency';
 
 const ACTIVE = [...ACTIVE_RUN_STATUSES];
 
@@ -339,6 +344,8 @@ export async function pollRunner(
 	const owned = new Set(validateOwnedRuns(body));
 	const instanceId = validateInstanceId(body);
 	const effortCapabilities = validateEffortCapabilities(body.effort_capabilities, instanceId);
+	const concurrencyReport = validateConcurrencyPoll(body.concurrency_control, instanceId);
+	validateDeclinedAssignments(body.declined_assignments);
 	const requestedCap =
 		body.max_concurrent === undefined
 			? undefined
@@ -348,7 +355,65 @@ export async function pollRunner(
 	}
 	if (instanceId !== undefined)
 		runner = await admitDaemonInstance(db, env, runner, instanceId, now);
-	const cap = requestedCap === undefined ? runner.max_concurrent : requestedCap;
+	let cap = requestedCap === undefined ? runner.max_concurrent : requestedCap;
+	let concurrencyRevision = runner.concurrency_revision;
+	let concurrencyMode = runner.concurrency_mode;
+	let concurrencyCeiling = runner.concurrency_ceiling;
+	let concurrencyRequested = runner.concurrency_requested;
+	let concurrencyInstanceId = runner.concurrency_instance_id;
+	let concurrencyAppliedRevision = runner.concurrency_applied_revision;
+	let concurrencyAppliedCap = runner.concurrency_applied_cap;
+	let concurrencyAppliedInstanceId = runner.concurrency_applied_instance_id;
+	let concurrencyAppliedAt = runner.concurrency_applied_at;
+	let concurrencyUnavailableReason = runner.concurrency_unavailable_reason;
+	if (concurrencyReport) {
+		const nextMode = concurrencyReport.allow_remote ? 'remote' : 'local';
+		const nextRequested = concurrencyReport.allow_remote
+			? Math.min(
+					runner.concurrency_mode === 'remote'
+						? (runner.concurrency_requested ?? runner.max_concurrent)
+						: runner.max_concurrent,
+					concurrencyReport.ceiling
+				)
+			: concurrencyReport.ceiling;
+		const policyChanged =
+			nextMode !== runner.concurrency_mode ||
+			concurrencyReport.ceiling !== runner.concurrency_ceiling ||
+			nextRequested !== runner.concurrency_requested;
+		concurrencyRevision = runner.concurrency_revision + (policyChanged ? 1 : 0);
+		concurrencyMode = nextMode;
+		concurrencyCeiling = concurrencyReport.ceiling;
+		concurrencyRequested = nextRequested;
+		concurrencyInstanceId = instanceId ?? null;
+		concurrencyUnavailableReason = concurrencyReport.allow_remote ? null : 'opted_out';
+		cap = nextRequested;
+		const ack = concurrencyReport.applied;
+		if (
+			concurrencyReport.allow_remote &&
+			ack?.revision === concurrencyRevision &&
+			ack.cap === nextRequested
+		) {
+			concurrencyAppliedRevision = ack.revision;
+			concurrencyAppliedCap = ack.cap;
+			concurrencyAppliedInstanceId = instanceId ?? null;
+			concurrencyAppliedAt = now;
+		}
+	} else {
+		const policyChanged =
+			runner.concurrency_mode !== 'legacy' ||
+			runner.concurrency_requested !== cap ||
+			runner.concurrency_ceiling !== null;
+		concurrencyRevision = runner.concurrency_revision + (policyChanged ? 1 : 0);
+		concurrencyMode = 'legacy';
+		concurrencyCeiling = null;
+		concurrencyRequested = cap;
+		concurrencyInstanceId = null;
+		concurrencyAppliedRevision = null;
+		concurrencyAppliedCap = null;
+		concurrencyAppliedInstanceId = null;
+		concurrencyAppliedAt = null;
+		concurrencyUnavailableReason = 'legacy';
+	}
 	const capChanged = cap !== runner.max_concurrent;
 	// Every poll states the flag, so a daemon that died mid-drain cannot pin
 	// the runner shut: its relaunch (or any older daemon) polls without it.
@@ -365,7 +430,18 @@ export async function pollRunner(
 				last_seen_at: now,
 				draining,
 				effort_capabilities: effortCapabilities ? JSON.stringify(effortCapabilities) : null,
-				...(capChanged ? { max_concurrent: cap, updated_at: now } : {})
+				max_concurrent: cap,
+				concurrency_mode: concurrencyMode,
+				concurrency_ceiling: concurrencyCeiling,
+				concurrency_requested: concurrencyRequested,
+				concurrency_revision: concurrencyRevision,
+				concurrency_instance_id: concurrencyInstanceId,
+				concurrency_applied_revision: concurrencyAppliedRevision,
+				concurrency_applied_cap: concurrencyAppliedCap,
+				concurrency_applied_instance_id: concurrencyAppliedInstanceId,
+				concurrency_applied_at: concurrencyAppliedAt,
+				concurrency_unavailable_reason: concurrencyUnavailableReason,
+				...(capChanged ? { updated_at: now } : {})
 			})
 			.where('id', '=', runner.id)
 			.$if(instanceId !== undefined, (query) => query.where('daemon_instance_id', '=', instanceId!))
@@ -397,6 +473,16 @@ export async function pollRunner(
 	runner.max_concurrent = cap;
 	runner.draining = draining;
 	runner.effort_capabilities = effortCapabilities ? JSON.stringify(effortCapabilities) : null;
+	runner.concurrency_mode = concurrencyMode;
+	runner.concurrency_ceiling = concurrencyCeiling;
+	runner.concurrency_requested = concurrencyRequested;
+	runner.concurrency_revision = concurrencyRevision;
+	runner.concurrency_instance_id = concurrencyInstanceId;
+	runner.concurrency_applied_revision = concurrencyAppliedRevision;
+	runner.concurrency_applied_cap = concurrencyAppliedCap;
+	runner.concurrency_applied_instance_id = concurrencyAppliedInstanceId;
+	runner.concurrency_applied_at = concurrencyAppliedAt;
+	runner.concurrency_unavailable_reason = concurrencyUnavailableReason;
 
 	const active = await db
 		.selectFrom('agent_run')
@@ -463,7 +549,16 @@ export async function pollRunner(
 		}
 	}
 
-	return { response: { assignments, cancels }, cameOnline, capRaised, reconciled };
+	return {
+		response: {
+			assignments,
+			cancels,
+			...(concurrencyReport ? { concurrency_control: concurrencyInstruction(runner) } : {})
+		},
+		cameOnline,
+		capRaised,
+		reconciled
+	};
 }
 
 /**

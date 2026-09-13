@@ -1059,7 +1059,11 @@ Options:
                                  "claude-code")
   --command <template>           custom harness command template ({prompt_file},
                                  {workspace}, {model})
-  --max-concurrent <n>           maximum simultaneous runs (default: 1)
+  --max-concurrent <n>           local maximum simultaneous runs
+                                 (remote-adjustment ceiling when enabled)
+                                 (default: 1)
+  --allow-remote-concurrency     allow signed-in operators to request
+                                 concurrency up to --max-concurrent
   --poll-interval <seconds>      seconds between polls (default: 15)
   --keep-workspaces <mode>       keep settled runs' workspaces for debugging:
                                  never | failed | always (default: "never")
@@ -1093,7 +1097,11 @@ Options:
                                  "claude-code")
   --command <template>           custom harness command template ({prompt_file},
                                  {workspace}, {model})
-  --max-concurrent <n>           maximum simultaneous runs (default: 1)
+  --max-concurrent <n>           local maximum simultaneous runs
+                                 (remote-adjustment ceiling when enabled)
+                                 (default: 1)
+  --allow-remote-concurrency     allow signed-in operators to request
+                                 concurrency up to --max-concurrent
   --poll-interval <seconds>      seconds between polls (default: 15)
   --keep-workspaces <mode>       keep settled runs' workspaces for debugging:
                                  never | failed | always (default: "never")

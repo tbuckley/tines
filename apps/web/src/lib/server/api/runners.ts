@@ -628,12 +628,33 @@ export async function updateRunner(
 ): Promise<Runner> {
 	const row = await runnerQuery(db, actor.userId).where('runner.id', '=', id).executeTakeFirst();
 	if (!row) throw notFound();
+	for (const field of [
+		'concurrency_mode',
+		'concurrency_ceiling',
+		'concurrency_requested',
+		'concurrency_applied_revision',
+		'concurrency_applied_cap',
+		'concurrency_control'
+	]) {
+		if (field in (body as unknown as Record<string, unknown>)) {
+			throw new ApiFail(
+				422,
+				'invalid_field',
+				`"${field}" is reported by the local daemon and cannot be changed here`,
+				{
+					field
+				}
+			);
+		}
+	}
 
 	const changed: string[] = [];
 	const patch: Partial<{
 		name: string;
 		status: string;
 		max_concurrent: number;
+		concurrency_requested: number;
+		concurrency_revision: number;
 		max_run_minutes: number;
 		default_tier: string;
 		tiers: string | null;
@@ -668,8 +689,54 @@ export async function updateRunner(
 	}
 	if (body.max_concurrent !== undefined) {
 		const cap = validateBoundedInt(body.max_concurrent, 'max_concurrent', 1, 100);
+		if (row.type === 'local') {
+			if (
+				!Number.isSafeInteger(body.expected_concurrency_revision) ||
+				(body.expected_concurrency_revision as number) < 0 ||
+				body.expected_concurrency_revision !== row.concurrency_revision
+			) {
+				throw new ApiFail(
+					409,
+					'concurrency_conflict',
+					'Concurrency policy changed; review the current runner and try again',
+					{
+						runner: serializeRunner(row)
+					}
+				);
+			}
+			if (
+				row.concurrency_mode !== 'remote' ||
+				row.concurrency_instance_id === null ||
+				row.concurrency_instance_id !== row.daemon_instance_id ||
+				row.concurrency_ceiling === null
+			) {
+				throw new ApiFail(
+					409,
+					'concurrency_unavailable',
+					'This local daemon has not enabled web concurrency adjustment',
+					{
+						runner: serializeRunner(row)
+					}
+				);
+			}
+			if (cap > row.concurrency_ceiling) {
+				throw new ApiFail(
+					422,
+					'invalid_field',
+					`"max_concurrent" cannot exceed the local ceiling ${row.concurrency_ceiling}`,
+					{
+						field: 'max_concurrent',
+						ceiling: row.concurrency_ceiling
+					}
+				);
+			}
+		}
 		if (cap !== row.max_concurrent) {
 			patch.max_concurrent = cap;
+			if (row.type === 'local') {
+				patch.concurrency_requested = cap;
+				patch.concurrency_revision = row.concurrency_revision + 1;
+			}
 			changed.push('max_concurrent');
 		}
 	}

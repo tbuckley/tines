@@ -80,6 +80,8 @@ export interface DaemonOptions {
 	harness: HarnessKind;
 	command?: string;
 	maxConcurrent: number;
+	/** Machine-local consent for web requests; maxConcurrent remains the hard ceiling. */
+	allowRemoteConcurrency: boolean;
 	pollIntervalMs: number;
 	configDir: string;
 	/** Keep the agent-facing `tines` current from npm (--no-cli-refresh turns it off). */
@@ -274,6 +276,7 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 		harness: opts.harness,
 		...(opts.command !== undefined ? { command: opts.command } : {}),
 		maxConcurrent: opts.maxConcurrent,
+		allowRemoteConcurrency: opts.allowRemoteConcurrency,
 		...(opts.apiKey !== undefined ? { apiKey: opts.apiKey } : {}),
 		log
 	});
@@ -288,6 +291,10 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 	const client = createApiClient({ baseUrl, apiKey: creds.token });
 	const statePath = daemonStatePath(opts.configDir, creds.runner_id);
 	let shuttingDown = false;
+	let effectiveConcurrency = opts.allowRemoteConcurrency ? 1 : opts.maxConcurrent;
+	let appliedConcurrency: { revision: number; cap: number } | undefined;
+	const declinedAssignments = new Set<string>();
+	let warnedUnsupportedConcurrency = false;
 
 	// -- the agent-facing CLI -------------------------------------------------
 	// The launch prompt is always current (it deploys on every merge); the
@@ -875,19 +882,27 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 
 	// -- the poll loop ---------------------------------------------------------
 	log(
-		`polling ${baseUrl} every ${Math.round(opts.pollIntervalMs / 1000)}s (harness ${opts.harness}, max ${opts.maxConcurrent} concurrent) — Ctrl-C to stop`
+		`polling ${baseUrl} every ${Math.round(opts.pollIntervalMs / 1000)}s (harness ${opts.harness}, ${opts.allowRemoteConcurrency ? `web-adjustable with local ceiling ${opts.maxConcurrent}` : `local cap ${opts.maxConcurrent}`}) — Ctrl-C to stop`
 	);
 	let failures = 0;
 	while (!shuttingDown) {
 		try {
 			effortCapabilities = await effortRefresher.get();
-			// `max_concurrent` rides along so the server cap tracks the flag —
-			// a restart with a new --max-concurrent takes effect without
-			// re-registering.
 			const res = await client.pollRunner(creds.runner_id, {
 				instance_id: instanceId,
 				owned_runs: table.ids(),
-				max_concurrent: opts.maxConcurrent,
+				// Kept for older servers. Opted-in daemons advertise only the last
+				// accepted scheduling cap, never the higher machine ceiling.
+				max_concurrent: effectiveConcurrency,
+				concurrency_control: {
+					version: 1,
+					allow_remote: opts.allowRemoteConcurrency,
+					ceiling: opts.maxConcurrent,
+					...(appliedConcurrency ? { applied: appliedConcurrency } : {})
+				},
+				...(declinedAssignments.size > 0
+					? { declined_assignments: [...declinedAssignments].slice(0, 100) }
+					: {}),
 				...(effortCapabilities ? { effort_capabilities: effortCapabilities } : {}),
 				// Stated on every poll while pending; absent otherwise, which
 				// the server reads as "not draining" — so a daemon that died
@@ -896,15 +911,33 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 			});
 			failures = 0;
 			for (const runId of res.cancels) killWithoutFinish(runId);
+			for (const runId of res.released_assignments ?? []) declinedAssignments.delete(runId);
+			if (res.concurrency_control) {
+				const control = res.concurrency_control;
+				if (
+					opts.allowRemoteConcurrency &&
+					control.available &&
+					Number.isSafeInteger(control.revision) &&
+					Number.isInteger(control.cap) &&
+					control.cap >= 1 &&
+					control.cap <= opts.maxConcurrent
+				) {
+					effectiveConcurrency = control.cap;
+					appliedConcurrency = { revision: control.revision, cap: control.cap };
+				}
+			} else if (opts.allowRemoteConcurrency && !warnedUnsupportedConcurrency) {
+				warnedUnsupportedConcurrency = true;
+				log(
+					'web concurrency adjustment unavailable: upgrade the server; retaining conservative cap'
+				);
+			}
 			for (const assignment of res.assignments) {
-				// The server's guarded flip is the authority on capacity: a
-				// delivered run already holds its claim and key, so dropping it
-				// here would strand it as a mislabeled launch failure. Launch
-				// anyway and flag the divergence.
 				if (table.size >= opts.maxConcurrent) {
 					log(
-						`warning: supervisor delivered ${assignment.run.id} beyond --max-concurrent ${opts.maxConcurrent}; launching anyway (the server cap governs)`
+						`run ${assignment.run.id}: refusing launch beyond local ceiling ${opts.maxConcurrent}; requesting safe release`
 					);
+					declinedAssignments.add(assignment.run.id);
+					continue;
 				}
 				void launch(assignment);
 			}

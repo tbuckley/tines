@@ -448,6 +448,7 @@ export function register(program: Command): void {
 				harness: settings.harness,
 				command: settings.command,
 				maxConcurrent: settings.maxConcurrent,
+				allowRemoteConcurrency: settings.allowRemoteConcurrency,
 				pollIntervalMs: settings.pollIntervalSeconds * 1000,
 				configDir: defaultConfigDir(),
 				cliRefresh: opts.cliRefresh,
