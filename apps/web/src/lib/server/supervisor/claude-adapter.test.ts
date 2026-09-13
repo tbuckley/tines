@@ -456,6 +456,35 @@ describe('claude adapter launch', () => {
 		expect(net.of('POST /v1/sessions')[0]?.body).toMatchObject({ agent: 'agent_replacement' });
 	});
 
+	it('records no accepted evidence for an unverifiable cached agent when replacement fails', async () => {
+		({ t, runnerId } = await world({
+			runnerConfig: {
+				environment_id: 'env_1',
+				agents_by_signature: {
+					'["balanced","claude-sonnet-5","high"]': {
+						agent_id: 'agent_unverifiable',
+						model: 'claude-sonnet-5',
+						effort: 'high'
+					}
+				}
+			}
+		}));
+		const net = fakeNetwork({
+			'GET /v1/agents/agent_unverifiable': () => ({ id: 'agent_unverifiable' }),
+			'POST /v1/agents': () => new Response('unavailable', { status: 503 })
+		});
+		const recordEffortEvidence = vi.fn(async () => {});
+		await expect(
+			createClaudeAdapter(t.env, { fetch: net.fetch }).launch({
+				...launchInput(runnerId),
+				effort: 'high',
+				recordEffortEvidence
+			})
+		).rejects.toThrow();
+		expect(recordEffortEvidence).not.toHaveBeenCalled();
+		expect(net.of('POST /v1/sessions')).toHaveLength(0);
+	});
+
 	it('rejects a cached effort agent whose retrieved configuration conflicts', async () => {
 		({ t, runnerId } = await world({
 			runnerConfig: {

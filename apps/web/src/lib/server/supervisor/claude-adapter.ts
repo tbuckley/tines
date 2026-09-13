@@ -355,9 +355,12 @@ function createProviderContext(env: Env, opts: ClaudeAdapterOptions): ProviderCo
 				const mismatch =
 					(observedModel !== undefined && observedModel !== model) ||
 					(effort !== undefined && observedEffort !== undefined && observedEffort !== effort);
-				if (effort)
+				// Evidence names the agent that was actually selected. An
+				// unverifiable cache entry is only a miss; replacement creation
+				// records the first application milestone if it succeeds.
+				if (effort && (verified || mismatch))
 					await record?.({
-						status: mismatch ? 'rejected' : verified ? 'confirmed' : 'accepted_unconfirmed',
+						status: mismatch ? 'rejected' : 'confirmed',
 						transport: 'managed_agent_config',
 						attempted_effort: effort,
 						provider_agent_id: existing.agent_id,

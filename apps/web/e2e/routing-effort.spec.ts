@@ -5,10 +5,12 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type {
 	AgentRun,
+	IssueDetail,
 	ListResponse,
 	Project,
 	RoutingRule,
 	Runner,
+	RunnerPollResponse,
 	RunnerTokenResponse
 } from '@tines/shared';
 import { expect, test } from '@playwright/test';
@@ -293,54 +295,47 @@ if (process.argv[2] === '--version') {
 	}
 });
 
-test('upgrades a legacy tier claim and applies wildcard fallback through the source daemon', async ({
+test('upgrades legacy delivery and applies wildcard fallback through the source daemon', async ({
 	request
 }) => {
-	test.setTimeout(90_000);
+	test.setTimeout(120_000);
 	const api = apiClient(request, ALICE.apiKey);
 	const root = mkdtempSync(join(tmpdir(), 'tines-effort-upgrade-e2e-'));
 	const bin = join(root, 'bin');
 	const config = join(root, 'config');
 	const argvFile = join(root, 'argv.json');
+	const legacyArgvFile = join(root, 'legacy-argv.json');
+	const legacyWorkspace = join(root, 'legacy-workspace');
 	mkdirSync(bin);
 	mkdirSync(config);
+	mkdirSync(legacyWorkspace);
 	writeFileSync(
-		join(bin, 'codex'),
+		join(bin, 'claude'),
 		`#!/usr/bin/env node
 const fs = require('node:fs');
-if (process.argv[2] === '--version') console.log('codex-cli 0.153.4');
-else if (process.argv[2] === 'app-server') {
-  const rl = require('node:readline').createInterface({ input: process.stdin });
-  rl.on('line', line => {
-    const m = JSON.parse(line);
-    if (m.method === 'initialize') console.log(JSON.stringify({ id: m.id, result: {} }));
-    if (m.method === 'model/list') console.log(JSON.stringify({ id: m.id, result: { data: [
-      { model: 'gpt-5.6', supportedReasoningEfforts: [{ reasoningEffort: 'ultra' }] },
-      { model: 'gpt-5.6-codex', supportedReasoningEfforts: [{ reasoningEffort: 'ultra' }] },
-      { model: 'gpt-5.5-codex', supportedReasoningEfforts: [{ reasoningEffort: 'ultra' }] },
-      { model: 'gpt-5-codex', supportedReasoningEfforts: [{ reasoningEffort: 'ultra' }] }
-    ] } }));
-  });
-} else {
+if (process.argv[2] === '--version') console.log('2.1.258 (Claude Code)');
+else if (process.argv[2] === '--help') console.log('--effort <level>');
+else {
   fs.writeFileSync(process.env.E2E_CODEX_ARGV, JSON.stringify(process.argv.slice(2)));
-  console.log(JSON.stringify({ type: 'thread.started', thread_id: 'thread_upgrade_e2e' }));
+  console.log(JSON.stringify({ type: 'system', subtype: 'init', session_id: 'session_upgrade_e2e' }));
+  console.log(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, session_id: 'session_upgrade_e2e' }));
 }
 `,
 		{ mode: 0o755 }
 	);
 	const name = `effort-upgrade-${runId}`;
 	const registered = await body<RunnerTokenResponse>(
-		await api.post('/api/v1/runners/register', { name, harness: 'codex' })
+		await api.post('/api/v1/runners/register', { name, harness: 'claude_code' })
 	);
 	const model = registered.runner.tier_models?.balanced;
 	expect(model).toBeTruthy();
 	const capability = {
 		version: 1 as const,
 		daemon_version: 'e2e-new',
-		harness: 'codex' as const,
-		harness_version: 'codex-cli 0.153.4',
+		harness: 'claude_code' as const,
+		harness_version: '2.1.258 (Claude Code)',
 		catalog_digest: 'upgrade-seed',
-		models: [{ model: model!, efforts: ['ultra'] }]
+		models: [{ model: model!, efforts: ['max'] }]
 	};
 	const poll = (effort_capabilities?: typeof capability) =>
 		request.post(`/api/v1/runners/${registered.runner.id}/poll`, {
@@ -353,7 +348,8 @@ else if (process.argv[2] === 'app-server') {
 		});
 	expect((await poll(capability)).ok()).toBe(true);
 	const tierSave = await api.patch(`/api/v1/runners/${registered.runner.id}`, {
-		tiers: { balanced: { model, effort: 'ultra' } }
+		tiers: { balanced: { model, effort: 'max' } },
+		resume_enabled: true
 	});
 	expect(tierSave.ok(), await tierSave.text()).toBe(true);
 	// An old boot explicitly clears the new boot's promise. Tier-only intent
@@ -363,12 +359,12 @@ else if (process.argv[2] === 'app-server') {
 		await api.post('/api/v1/projects', { name: `effort-upgrade-${runId}` })
 	);
 	expect((await api.put('/api/v1/supervisor/settings', { enabled: false })).ok()).toBe(true);
-	const legacyIssue = await body<{ id: string }>(
-		await api.post(`/api/v1/projects/${project.id}/issues`, { title: 'Upgrade legacy effort' })
+	const legacyIssue = await body<IssueDetail>(
+		await api.post(`/api/v1/projects/${project.id}/issues`, {
+			title: 'Do not resume legacy effort delivery'
+		})
 	);
-	const issueDetail = await body<{ state: { id: string } }>(
-		await api.get(`/api/v1/issues/${legacyIssue.id}`)
-	);
+	const issueDetail = legacyIssue;
 	const concreteResponse = await api.post('/api/v1/routing-rules', {
 		project_id: project.id,
 		targets: [{ runner_id: registered.runner.id, tier: 'balanced' }]
@@ -382,8 +378,79 @@ else if (process.argv[2] === 'app-server') {
 		);
 		return runs.items.find((item) => item.effort_application_status === 'legacy_not_applied');
 	});
-	expect(legacy.resolved_effort).toBe('ultra');
+	expect(legacy.resolved_effort).toBe('max');
 	expect(legacy.requested_effort).toBeNull();
+	expect(legacy.status).toBe('assigned');
+
+	// This is the old/no-capability daemon path: it receives the assignment,
+	// launches a real child without an effort argument, advances the issue with
+	// the delivered run key, and reports the resumable session and workspace.
+	const deliveredResponse = await poll();
+	expect(deliveredResponse.ok()).toBe(true);
+	const delivered = await body<RunnerPollResponse>(deliveredResponse);
+	const legacyAssignment = delivered.assignments.find((item) => item.run.id === legacy.id);
+	expect(legacyAssignment).toBeDefined();
+	expect(legacyAssignment?.effort).toBeUndefined();
+	const legacyOutput = await new Promise<string>((resolve, reject) => {
+		let output = '';
+		const child = spawn(
+			join(bin, 'claude'),
+			['-p', '--output-format', 'stream-json', '--verbose', '--model', model!],
+			{
+				cwd: legacyWorkspace,
+				env: { ...process.env, E2E_CODEX_ARGV: legacyArgvFile },
+				stdio: ['ignore', 'pipe', 'pipe']
+			}
+		);
+		child.stdout?.on('data', (chunk: Buffer) => (output += chunk.toString()));
+		child.stderr?.on('data', (chunk: Buffer) => (output += chunk.toString()));
+		child.on('error', reject);
+		child.on('exit', (code) =>
+			code === 0 ? resolve(output) : reject(new Error(`legacy harness exited ${code}: ${output}`))
+		);
+	});
+	expect(JSON.parse(readFileSync(legacyArgvFile, 'utf8'))).not.toContain('--effort');
+	const runnerHeaders = { authorization: `Bearer ${registered.runner_token}` };
+	const logged = await request.post(`/api/v1/runs/${legacy.id}/logs`, {
+		headers: runnerHeaders,
+		data: { chunk: legacyOutput }
+	});
+	expect(logged.ok(), await logged.text()).toBe(true);
+	const submitted = await apiClient(request, legacyAssignment!.run_key).post(
+		`/api/v1/issues/${legacyIssue.id}/transition`,
+		{ action: 'Submit for review' }
+	);
+	expect(submitted.ok(), await submitted.text()).toBe(true);
+	const finishedResponse = await request.post(`/api/v1/runs/${legacy.id}/finish`, {
+		headers: runnerHeaders,
+		data: {
+			status: 'completed',
+			provider_session_id: 'session_upgrade_e2e',
+			workspace_path: legacyWorkspace,
+			turn_count: 1,
+			conversation_turn_count: 1
+		}
+	});
+	expect(finishedResponse.ok()).toBe(true);
+	const finishedLegacy = await body<AgentRun>(finishedResponse);
+	expect(finishedLegacy.status).toBe('completed');
+	expect(finishedLegacy.effort_application_status).toBe('legacy_not_applied');
+	expect(finishedLegacy.resume_expires_at).not.toBeNull();
+
+	// Keep the claim-upgrade race separate: this one is intentionally assigned
+	// under the old daemon and left undelivered for the new daemon to cancel.
+	const raceIssue = await body<{ id: string }>(
+		await api.post(`/api/v1/projects/${project.id}/issues`, {
+			title: 'Cancel an undelivered legacy effort claim'
+		})
+	);
+	const legacyRace = await waitFor(async () => {
+		const runs = await body<ListResponse<AgentRun>>(
+			await api.get(`/api/v1/runs?issue=${raceIssue.id}`)
+		);
+		return runs.items.find((item) => item.effort_application_status === 'legacy_not_applied');
+	});
+	expect(legacyRace.status).toBe('assigned');
 
 	writeFileSync(
 		join(config, 'runners.json'),
@@ -405,7 +472,7 @@ else if (process.argv[2] === 'app-server') {
 			'--name',
 			name,
 			'--harness',
-			'codex',
+			'claude-code',
 			'--poll-interval',
 			'1',
 			'--no-cli-refresh'
@@ -422,19 +489,38 @@ else if (process.argv[2] === 'app-server') {
 		}
 	);
 	try {
+		const upgradedRace = await waitFor(async () => {
+			const runs = await body<ListResponse<AgentRun>>(
+				await api.get(`/api/v1/runs?issue=${raceIssue.id}`)
+			);
+			return runs.items.find((item) => item.status === 'completed');
+		});
+		expect(upgradedRace.id).not.toBe(legacyRace.id);
+		expect(upgradedRace.resolved_effort).toBe('max');
+		expect(upgradedRace.effort_application_status).toBe('accepted_unconfirmed');
+		expect(JSON.parse(readFileSync(argvFile, 'utf8'))).toEqual(
+			expect.arrayContaining(['--effort', 'max'])
+		);
+		const frozenRace = await body<AgentRun>(await api.get(`/api/v1/runs/${legacyRace.id}`));
+		expect(frozenRace.effort_application_status).toBe('legacy_not_applied');
+		expect(frozenRace.status).toBe('canceled');
+
+		// The completed legacy session is retained, but its fingerprint contains
+		// no effort. Sending it back under enforced max must launch cold.
+		const sentBack = await api.post(`/api/v1/issues/${legacyIssue.id}/transition`, {
+			action: 'Send back'
+		});
+		expect(sentBack.ok(), await sentBack.text()).toBe(true);
 		const upgraded = await waitFor(async () => {
 			const runs = await body<ListResponse<AgentRun>>(
 				await api.get(`/api/v1/runs?issue=${legacyIssue.id}`)
 			);
-			return runs.items.find((item) => item.status === 'completed');
+			return runs.items.find((item) => item.id !== legacy.id && item.status === 'completed');
 		});
-		expect(upgraded.id).not.toBe(legacy.id);
-		expect(upgraded.resolved_effort).toBe('ultra');
+		expect(upgraded.resolved_effort).toBe('max');
 		expect(upgraded.effort_application_status).toBe('accepted_unconfirmed');
-		expect(JSON.parse(readFileSync(argvFile, 'utf8'))).toContain('model_reasoning_effort="ultra"');
-		const frozenLegacy = await body<AgentRun>(await api.get(`/api/v1/runs/${legacy.id}`));
-		expect(frozenLegacy.effort_application_status).toBe('legacy_not_applied');
-		expect(frozenLegacy.status).toBe('canceled');
+		expect(upgraded.resumed_from_run_id).toBeNull();
+		expect(upgraded.resume_fallback_reason).toBe('incompatible');
 
 		const old = await body<RunnerTokenResponse>(
 			await api.post('/api/v1/runners/register', {
@@ -456,7 +542,7 @@ else if (process.argv[2] === 'app-server') {
 			await api.post('/api/v1/routing-rules', {
 				project_id: project.id,
 				workflow_state_id: issueDetail.state.id,
-				targets: [{ runner_id: '*', tier: 'balanced', effort: 'ultra' }]
+				targets: [{ runner_id: '*', tier: 'balanced', effort: 'max' }]
 			})
 		);
 		const fallbackIssue = await body<{ id: string }>(
@@ -471,7 +557,7 @@ else if (process.argv[2] === 'app-server') {
 			return runs.items.find((item) => item.status === 'completed');
 		});
 		expect(fallback.runner_id).toBe(registered.runner.id);
-		expect(fallback.requested_effort).toBe('ultra');
+		expect(fallback.requested_effort).toBe('max');
 		expect(fallback.effort_source).toMatchObject({
 			kind: 'routing_target',
 			rule_id: wildcard.id
