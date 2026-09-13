@@ -244,6 +244,9 @@ const CONTROL_PLANE_RULES: ControlPlaneRule[] = [
 	// Preparing/recovering is read-only; committing an installation is an
 	// operator action and is also denied again inside the install service.
 	{ pattern: /^\/api\/v1\/library\/install$/ },
+	// Retirement inventories expose complete guidance payloads and the write
+	// routes can drain dispatch or replace that guidance. Runs must use neither.
+	{ pattern: /^\/api\/v1\/state-retirement(\/|$)/ },
 	// Archiving is an operator act: an agent must not freeze (or thaw) the
 	// project it is working in, least of all the one draining around it.
 	{ pattern: /^\/api\/v1\/projects\/[^/]+\/(archive|unarchive)$/ },
@@ -271,7 +274,7 @@ export function runKeyForbidden(details?: Record<string, unknown>): ApiFail {
 		'run_key_forbidden',
 		'Run keys cannot modify runners, routing rules, supervisor settings, parked issues, issue pins, or API keys, ' +
 			'cannot import a library or install a workflow package, cannot archive or unarchive projects, cannot create, rename, or delete ' +
-			'labels, and cannot apply or remove a label a routing rule is scoped to (reading the library and ' +
+			'labels, cannot inspect or apply state-retirement plans, and cannot apply or remove a label a routing rule is scoped to (reading the library and ' +
 			'applying other existing labels is fine). ' +
 			'Propose the change instead: file an issue titled "Context change: <scope label>" describing ' +
 			'what should change and why; a human reviews and applies it.',

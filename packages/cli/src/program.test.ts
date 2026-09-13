@@ -69,6 +69,7 @@ describe('command tree', () => {
 				'runners',
 				'runs',
 				'schedules',
+				'state-retirement',
 				'supervisor',
 				'time',
 				'usage',
