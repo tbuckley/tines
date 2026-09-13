@@ -44,8 +44,11 @@ export function transitionHarnessCommand(action: string): string {
 
 export type Daemon = {
 	proc: ChildProcess;
+	configDir: string;
 	/** Everything the daemon has written to stdout/stderr so far. */
 	output: () => string;
+	/** Stop the process but retain credentials for a restart assertion. */
+	stop: () => void;
 	/** Kill the process and remove its temp config dir. Safe to call twice. */
 	kill: () => void;
 };
@@ -59,14 +62,20 @@ export type Daemon = {
 export function spawnDaemon({
 	apiKey,
 	name,
-	command = 'true'
+	command = 'true',
+	maxConcurrent = 1,
+	allowRemoteConcurrency = false,
+	configDir: suppliedConfigDir
 }: {
 	apiKey: string;
 	name: string;
 	/** The `custom` harness command. A no-op completion causes stalled retries. */
 	command?: string;
+	maxConcurrent?: number;
+	allowRemoteConcurrency?: boolean;
+	configDir?: string;
 }): Daemon {
-	const configDir = mkdtempSync(join(tmpdir(), 'tines-e2e-daemon-'));
+	const configDir = suppliedConfigDir ?? mkdtempSync(join(tmpdir(), 'tines-e2e-daemon-'));
 	const proc = spawn(
 		TSX,
 		[
@@ -83,6 +92,9 @@ export function spawnDaemon({
 			command,
 			'--poll-interval',
 			'1',
+			'--max-concurrent',
+			String(maxConcurrent),
+			...(allowRemoteConcurrency ? ['--allow-remote-concurrency'] : []),
 			// CI must not depend on the npm registry (or pay its latency) for the
 			// daemon-managed agent CLI; productive test harnesses invoke this
 			// repository's CLI source directly.
@@ -103,7 +115,11 @@ export function spawnDaemon({
 
 	return {
 		proc,
+		configDir,
 		output: () => output,
+		stop: () => {
+			if (!exited && proc.pid) proc.kill('SIGKILL');
+		},
 		kill: () => {
 			if (!exited && proc.pid) proc.kill('SIGKILL');
 			rmSync(configDir, { recursive: true, force: true });

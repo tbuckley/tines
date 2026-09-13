@@ -10,8 +10,8 @@
  * reload. Nothing ever launches: an `assigned` local run waits for a daemon
  * poll that never comes, and the cleanup step disables automation to cancel it.
  */
-import type { IssueDetail, Project, RoutingRule, Runner } from '@tines/shared';
-import { expect, test } from '@playwright/test';
+import type { IssueDetail, Project, RoutingRule, Runner, RunnerTokenResponse } from '@tines/shared';
+import { expect, test, type APIRequestContext } from '@playwright/test';
 import { ALICE, RUNROW } from './constants.mjs';
 import { apiClient, body, clickUntil, gotoHydrated, resetFocus, runId, signIn } from './helpers';
 
@@ -22,15 +22,29 @@ let projectId: string;
 let runnerId: string;
 let ruleId: string;
 
-/** Registering an existing name reconnects it: stamps `last_seen_at`, mints a token. */
-async function bringOnline(api: ReturnType<typeof apiClient>): Promise<void> {
+/** Re-register, then confirm the modern local policy before dispatch can use it. */
+async function bringOnline(
+	api: ReturnType<typeof apiClient>,
+	request: APIRequestContext
+): Promise<void> {
 	const res = await api.post('/api/v1/runners/register', {
 		name: RUNNER_NAME,
 		harness: 'custom',
 		command: 'true'
 	});
 	expect(res.status(), 'reconnect the fixture runner').toBe(201);
-	expect((await res.json()).runner.id).toBe(runnerId);
+	const registered = (await res.json()) as RunnerTokenResponse;
+	expect(registered.runner.id).toBe(runnerId);
+	const poll = await request.post(`/api/v1/runners/${runnerId}/poll`, {
+		headers: { authorization: `Bearer ${registered.runner_token}` },
+		data: {
+			instance_id: `queue_${runId}`,
+			owned_runs: [],
+			max_concurrent: 1,
+			concurrency_control: { version: 1, allow_remote: true, ceiling: 3 }
+		}
+	});
+	expect(poll.status(), 'confirm local concurrency policy').toBe(200);
 }
 
 /** Active runs currently claimed by the fixture runner. */
@@ -124,7 +138,7 @@ test.describe.serial('the Now row', () => {
 		request
 	}) => {
 		const api = apiClient(request, ALICE.apiKey);
-		await bringOnline(api);
+		await bringOnline(api, request);
 
 		// A settings write queues an opportunistic pass, which claims one issue
 		// as `assigned` and saturates the 1-slot runner. (The poll route only
@@ -153,7 +167,7 @@ test.describe.serial('the Now row', () => {
 		// The online window is two minutes; re-register so the verdict is
 		// capacity, not the runner having gone quiet while the last test ran.
 		const api = apiClient(request, ALICE.apiKey);
-		await bringOnline(api);
+		await bringOnline(api, request);
 
 		await signIn(context, ALICE.sessionToken);
 		// This test clicks, so it waits for hydration (CLAUDE.md); the read-only
@@ -188,8 +202,15 @@ test.describe.serial('the Now row', () => {
 
 	test('cleans up the fixture fleet', async ({ request }) => {
 		const api = apiClient(request, ALICE.apiKey);
-		// Disabling cancels the claims this spec seeded, fleet-wide.
+		// Disabling cancels assigned claims; the policy poll may already have
+		// delivered one as launching, so settle every remaining active run too.
 		await api.put('/api/v1/supervisor/settings', { enabled: false });
+		const active = await body<{ items: { id: string; runner_id: string }[] }>(
+			await api.get('/api/v1/runs?active=true')
+		);
+		for (const run of active.items.filter((item) => item.runner_id === runnerId)) {
+			await api.post(`/api/v1/runs/${run.id}/cancel`);
+		}
 		await api.delete(`/api/v1/routing-rules/${ruleId}`);
 		await api.delete(`/api/v1/runners/${runnerId}`, { force: true });
 		const runners = await body<{ items: Runner[] }>(await api.get('/api/v1/runners'));
