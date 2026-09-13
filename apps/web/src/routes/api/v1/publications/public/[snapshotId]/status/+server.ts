@@ -11,10 +11,10 @@ import type { RequestHandler } from './$types';
 
 const get = api(async (event) => {
 	if (!event.platform) throw new ApiFail(500, 'no_platform', 'Platform bindings unavailable');
-	const status = await resolvePublicSnapshotStatus(
-		getDb(event.platform.env),
-		event.params.snapshotId
-	);
+	const snapshotId = event.params.snapshotId;
+	if (!snapshotId)
+		throw new ApiFail(404, 'publication_unavailable', PUBLICATION_UNAVAILABLE_MESSAGE);
+	const status = await resolvePublicSnapshotStatus(getDb(event.platform.env), snapshotId);
 	if (!status) throw new ApiFail(404, 'publication_unavailable', PUBLICATION_UNAVAILABLE_MESSAGE);
 	return json(status, { headers: PUBLICATION_RESPONSE_HEADERS });
 });
