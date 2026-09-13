@@ -4,6 +4,48 @@ import { json, type RequestEvent } from '@sveltejs/kit';
 import type { CompiledQuery } from 'kysely';
 import { sha256Hex } from '$lib/server/crypto';
 import { getDb } from '$lib/server/db';
+import type { DispatchEffects } from '$lib/server/dispatch-effects';
+
+interface DispatchCollector {
+	ownerId?: string;
+	pending: boolean;
+	closed: boolean;
+	effects?: DispatchEffects;
+}
+
+const dispatchCollectors = new WeakMap<RequestEvent, DispatchCollector>();
+
+export function requestDispatchEffects(
+	event: RequestEvent,
+	authenticatedUserId: string
+): DispatchEffects {
+	const collector = dispatchCollectors.get(event);
+	if (!collector) throw new Error('Dispatch effects requested outside api()');
+	if (collector.ownerId !== undefined && collector.ownerId !== authenticatedUserId) {
+		throw new Error('Dispatch effects owner mismatch');
+	}
+	collector.ownerId = authenticatedUserId;
+	return (collector.effects ??= {
+		signalDispatch() {
+			if (!collector.closed) collector.pending = true;
+		}
+	});
+}
+
+async function drainDispatchEffects(
+	event: RequestEvent,
+	collector: DispatchCollector
+): Promise<void> {
+	collector.closed = true;
+	dispatchCollectors.delete(event);
+	if (!collector.pending || !collector.ownerId) return;
+	try {
+		const { queueDispatchPass } = await import('$lib/server/supervisor/engine');
+		queueDispatchPass(event.platform, collector.ownerId);
+	} catch (error) {
+		console.error('Failed to schedule dispatch pass:', error);
+	}
+}
 
 /** Thrown by handlers/services; converted to a structured error response. */
 export class ApiFail extends Error {
@@ -61,6 +103,8 @@ export function api<E extends RequestEvent>(
 	handler: (event: E) => Promise<Response> | Response
 ): (event: E) => Promise<Response> {
 	return async (event) => {
+		const collector: DispatchCollector = { pending: false, closed: false };
+		dispatchCollectors.set(event, collector);
 		try {
 			return await handler(event);
 		} catch (e) {
@@ -75,6 +119,8 @@ export function api<E extends RequestEvent>(
 			}
 			console.error('API error:', e);
 			return errorResponse(new ApiFail(500, 'internal', 'Internal error'));
+		} finally {
+			await drainDispatchEffects(event, collector);
 		}
 	};
 }
@@ -182,6 +228,10 @@ const CONTROL_PLANE_RULES: ControlPlaneRule[] = [
 	{ pattern: /^\/api\/v1\/routing-rules(\/|$)/ },
 	{ pattern: /^\/api\/v1\/supervisor\/settings(\/|$)/, readable: true },
 	{ pattern: /^\/api\/v1\/issues\/[^/]+\/resume$/ },
+	// Moving an issue between projects is an operator act: an agent may review
+	// the move (the preview is the argument it makes to its owner) but the POST
+	// is fenced, so a run cannot re-home itself into different guidance.
+	{ pattern: /^\/api\/v1\/issues\/[^/]+\/transfer$/, readable: true },
 	{ pattern: /^\/api\/v1\/api-keys(\/|$)/ },
 	// The label library is vocabulary, not classification: run keys may read it
 	// (`tines labels list` — the launch prompt points at it) and may apply and
@@ -191,6 +241,9 @@ const CONTROL_PLANE_RULES: ControlPlaneRule[] = [
 	// Bulk library writes: an agent must propose context changes, not apply
 	// a whole library over the top of them.
 	{ pattern: /^\/api\/v1\/import(\/|$)/ },
+	// Preparing/recovering is read-only; committing an installation is an
+	// operator action and is also denied again inside the install service.
+	{ pattern: /^\/api\/v1\/library\/install$/ },
 	// Archiving is an operator act: an agent must not freeze (or thaw) the
 	// project it is working in, least of all the one draining around it.
 	{ pattern: /^\/api\/v1\/projects\/[^/]+\/(archive|unarchive)$/ },
@@ -217,7 +270,7 @@ export function runKeyForbidden(details?: Record<string, unknown>): ApiFail {
 		403,
 		'run_key_forbidden',
 		'Run keys cannot modify runners, routing rules, supervisor settings, parked issues, issue pins, or API keys, ' +
-			'cannot import a library, cannot archive or unarchive projects, cannot create, rename, or delete ' +
+			'cannot import a library or install a workflow package, cannot archive or unarchive projects, cannot create, rename, or delete ' +
 			'labels, and cannot apply or remove a label a routing rule is scoped to (reading the library and ' +
 			'applying other existing labels is fine). ' +
 			'Propose the change instead: file an issue titled "Context change: <scope label>" describing ' +
@@ -332,7 +385,12 @@ export { sha256Hex };
 export async function apiContext(event: RequestEvent, { sessionOnly = false } = {}) {
 	if (!event.platform) throw new ApiFail(500, 'no_platform', 'Platform bindings unavailable');
 	const actor = sessionOnly ? await requireSessionActor(event) : await requireActor(event);
-	return { db: getDb(event.platform.env), env: event.platform.env, actor };
+	return {
+		db: getDb(event.platform.env),
+		env: event.platform.env,
+		actor,
+		effects: requestDispatchEffects(event, actor.userId)
+	};
 }
 
 /**

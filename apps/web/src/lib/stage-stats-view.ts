@@ -104,6 +104,7 @@ export function markersForState(report: StageStatsReport, id: string) {
 }
 export function stageRunsHref(currentUrl: URL, stateId: string | null) {
 	const url = new URL(currentUrl);
+	url.searchParams.delete('agents_view');
 	if (stateId) url.searchParams.set('runs_state', stateId);
 	else url.searchParams.delete('runs_state');
 	url.hash = 'runs';

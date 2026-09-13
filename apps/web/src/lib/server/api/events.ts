@@ -33,8 +33,12 @@ export function applyEventWindow<Q>(query: Q, filters: EventWindowFilters): Q {
 	}
 	return q as Q;
 }
+import type { QueryGuard } from './query-guard';
 
 export interface EventInput {
+	/** Stable batch allocation; ordinary callers omit these. */
+	id?: string;
+	createdAt?: number;
 	type: string;
 	issueId?: string | null;
 	projectId?: string | null;
@@ -60,24 +64,39 @@ export function eventInsert(
 	db: Kysely<Database>,
 	actor: ActorContext,
 	input: EventInput,
-	guard?: EventGuard
+	guard?: EventGuard | QueryGuard
 ): CompiledQuery {
 	const values = {
-		id: newId('evt'),
+		id: input.id ?? newId('evt'),
 		user_id: actor.userId,
 		type: input.type,
 		actor_user_id: actor.userId,
 		actor_api_key_id: actor.apiKeyId,
 		issue_id: input.issueId ?? null,
-		project_id: input.projectId ?? null,
 		payload: JSON.stringify(input.payload ?? {}),
-		created_at: Date.now()
+		created_at: input.createdAt ?? Date.now()
 	};
-	if (!guard) return db.insertInto('event').values(values).compile();
+	// Issue-scoped attribution belongs to the issue's project at the instant the
+	// event commits. Resolving it here avoids a read-before-transfer writer
+	// recording a new event in the issue's former project.
+	const projectId = input.issueId
+		? sql<string | null>`(SELECT project_id FROM issue WHERE id = ${input.issueId})`
+		: sql<string | null>`${input.projectId ?? null}`;
+	if (!guard)
+		return sql`
+			INSERT INTO event (id, user_id, type, actor_user_id, actor_api_key_id, issue_id, project_id, payload, created_at)
+			VALUES (${values.id}, ${values.user_id}, ${values.type}, ${values.actor_user_id}, ${values.actor_api_key_id},
+				${values.issue_id}, ${projectId}, ${values.payload}, ${values.created_at})`.compile(db);
+	if ('predicate' in guard)
+		return sql`
+			INSERT INTO event (id, user_id, type, actor_user_id, actor_api_key_id, issue_id, project_id, payload, created_at)
+			SELECT ${values.id}, ${values.user_id}, ${values.type}, ${values.actor_user_id}, ${values.actor_api_key_id},
+				${values.issue_id}, ${projectId}, ${values.payload}, ${values.created_at}
+			WHERE ${guard.predicate}`.compile(db);
 	return sql`
 		INSERT INTO event (id, user_id, type, actor_user_id, actor_api_key_id, issue_id, project_id, payload, created_at)
 		SELECT ${values.id}, ${values.user_id}, ${values.type}, ${values.actor_user_id}, ${values.actor_api_key_id},
-			${values.issue_id}, ${values.project_id}, ${values.payload}, ${values.created_at}
+			${values.issue_id}, ${projectId}, ${values.payload}, ${values.created_at}
 		WHERE EXISTS (
 			SELECT 1 FROM issue
 			WHERE id = ${guard.issueId} AND state_id = ${guard.stateId} AND updated_at = ${guard.updatedAt}
@@ -151,7 +170,10 @@ export function eventQuery(db: Kysely<Database>, userId: string) {
 				'actor_run_issue.project_id'
 			)
 			.leftJoin('issue', 'issue.id', 'event.issue_id')
-			.leftJoin('project', 'project.id', 'event.project_id')
+			// Event project is immutable historical attribution. The issue ref is
+			// independently canonical and follows the issue's current identity.
+			.leftJoin('project as event_project', 'event_project.id', 'event.project_id')
+			.leftJoin('project as issue_project', 'issue_project.id', 'issue.project_id')
 			.select([
 				'event.id',
 				'event.type',
@@ -169,7 +191,8 @@ export function eventQuery(db: Kysely<Database>, userId: string) {
 				'actor_run_issue.number as actor_run_issue_number',
 				'issue.number as issue_number',
 				'issue.title as issue_title',
-				'project.name as project_name'
+				'event_project.name as project_name',
+				'issue_project.name as issue_project_name'
 			])
 			.where('event.user_id', '=', userId)
 	);
@@ -191,9 +214,9 @@ export function serializeEvent(row: EventRow): TinesEvent {
 		issue_id: row.issue_id,
 		project_id: row.project_id,
 		issue_ref:
-			row.issue_id && row.issue_number !== null && row.project_name
+			row.issue_id && row.issue_number !== null && row.issue_project_name
 				? {
-						project_name: row.project_name,
+						project_name: row.issue_project_name,
 						number: row.issue_number,
 						title: row.issue_title ?? ''
 					}

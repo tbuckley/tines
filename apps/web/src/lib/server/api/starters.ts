@@ -16,10 +16,8 @@
  */
 import {
 	PROJECT_PROMPT_NAME,
-	STARTER_IDS,
 	renderTemplate,
 	repoDirFromUrl,
-	type ContextKind,
 	type CreateProjectRequest,
 	type StarterApplied,
 	type StarterId,
@@ -57,7 +55,7 @@ export function listStarters(registry: StarterRegistry = STARTERS): StarterSumma
 				default: w.name === s.default_workflow,
 				states: w.states.map((st) => st.name)
 			})),
-			context: s.context.map((c) => ({ kind: c.kind as ContextKind, name: c.name })),
+			context: s.context.map((c) => ({ kind: c.kind, name: c.name })),
 			first_issue: s.first_issue
 				? {
 						title: s.first_issue.title,
@@ -179,11 +177,18 @@ interface WorkflowPlacement {
 	/** Reuse: the existing states, so the first issue can name one. */
 	existingStates?: { id: string; name: string }[];
 	/** Create: the resolved definition plus everything the insert needs. */
-	created?: { def: ResolvedDef; description: string; queries: CompiledQuery[] };
+	created?: { def: ResolvedDef; queries: CompiledQuery[] };
 }
 
 const MAX_WORKFLOW_NAME = 200;
 const MAX_CONTEXT_NAME = 100;
+
+function workflowVariableKey(name: string): string {
+	return name
+		.toLowerCase()
+		.replace(/[^a-z0-9]+/g, '_')
+		.replace(/^_+|_+$/g, '');
+}
 
 /**
  * A rename must never fail the creation it decorates, so the project suffix
@@ -212,12 +217,23 @@ export async function starterQueries(
 		project: projectName,
 		repo_name: inputs.repo_url ? repoDirFromUrl(inputs.repo_url) : ''
 	};
-	const render = (t: string) => renderTemplate(t, vars);
 
 	// ---- reads -------------------------------------------------------------
 	const existing = await loadWorkflows(db, actor.userId);
 	const placements: WorkflowPlacement[] = [];
+	const workflowKeys = new Map<string, string>();
 	for (const wf of starter.workflows) {
+		const key = workflowVariableKey(wf.name);
+		const conflict = workflowKeys.get(key);
+		if (!key || conflict) {
+			throw new ApiFail(
+				422,
+				'invalid_starter',
+				`Starter "${starter.id}" has workflow names that cannot form unique template keys: "${conflict ?? wf.name}" and "${wf.name}"`,
+				{ field: 'starter.workflows', workflow_key: key }
+			);
+		}
+		workflowKeys.set(key, wf.name);
 		const sameName = existing.filter((e) => e.name === wf.name);
 		const fingerprint = workflowFingerprint(wf);
 		// `loadWorkflows` orders system-first then oldest-first, so the first
@@ -247,7 +263,6 @@ export async function starterQueries(
 			reused: false,
 			created: {
 				def,
-				description,
 				queries: workflowInsertQueries(db, actor, {
 					id,
 					name,
@@ -260,6 +275,13 @@ export async function starterQueries(
 			}
 		});
 	}
+	vars.project_id = projectId;
+	for (const placement of placements) {
+		const key = workflowVariableKey(placement.starterName);
+		vars[`workflow_${key}_id`] = placement.id;
+		vars[`workflow_${key}_name`] = placement.name;
+	}
+	const render = (template: string) => renderTemplate(template, vars);
 
 	// ---- assembly ----------------------------------------------------------
 	const before = placements.flatMap((p) => p.created?.queries ?? []);
@@ -271,6 +293,14 @@ export async function starterQueries(
 	let position = 1;
 	for (const entry of starter.context) {
 		const name = render(entry.name).slice(0, MAX_CONTEXT_NAME);
+		if (name.trim() === PROJECT_PROMPT_NAME) {
+			throw new ApiFail(
+				422,
+				'invalid_starter',
+				`Starter "${starter.id}" context entry "${name}" uses the reserved project prompt name "${PROJECT_PROMPT_NAME}"`,
+				{ field: 'starter.context.name' }
+			);
+		}
 		const label = `project ${projectName}`;
 		if (entry.kind === 'repo') {
 			const repoUrl = render(entry.repo_url ?? '').trim();
@@ -301,11 +331,11 @@ export async function starterQueries(
 				body: render(entry.body ?? ''),
 				projectId,
 				label,
+				position: position++,
 				now
 			});
 			after.push(...seeded.queries);
 			appliedContext.push({ id: seeded.id, kind: 'prompt', name });
-			position++;
 		}
 	}
 
@@ -368,5 +398,3 @@ export async function starterQueries(
 		}
 	};
 }
-
-export { STARTER_IDS };

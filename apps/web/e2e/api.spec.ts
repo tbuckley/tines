@@ -9,7 +9,7 @@ import type {
 	WorkflowResponse
 } from '@tines/shared';
 import { expect, test } from '@playwright/test';
-import { ALICE, BOB, RUNROW } from './constants.mjs';
+import { ALICE, API_ISOLATION, BOB, RUNROW } from './constants.mjs';
 import { apiClient, body, errorBody, runId } from './helpers';
 
 test.describe('auth', () => {
@@ -503,7 +503,7 @@ test.describe('cross-user isolation', () => {
 		request
 	}) => {
 		const alice = apiClient(request, ALICE.apiKey);
-		const bob = apiClient(request, BOB.apiKey);
+		const bob = apiClient(request, API_ISOLATION.apiKey);
 
 		const project = await body<Project>(
 			await alice.post('/api/v1/projects', { name: `iso-${runId}` })

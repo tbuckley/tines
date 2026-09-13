@@ -14,16 +14,19 @@ import {
 	RUN_LOG_RAW_MAX_BYTES,
 	type AgentRun,
 	type AgentRunUsage,
+	type CodexPricingEvidenceV1,
 	type AppendRunLogResponse,
 	type FinishRunRequest,
+	type Runner,
 	type RunnerAssignment,
+	type RunnerAssignmentResume,
 	type RunnerPollRequest,
 	type RunnerPollResponse
 } from '@tines/shared';
 import type { RequestEvent } from '@sveltejs/kit';
-import type { Kysely } from 'kysely';
+import { sql, type Kysely } from 'kysely';
 import { sha256Hex } from '$lib/server/crypto';
-import { getDb, type Database } from '$lib/server/db';
+import { getDb, newId, type Database } from '$lib/server/db';
 import {
 	endRun,
 	loadEndableRun,
@@ -36,11 +39,23 @@ import {
 import { getRunLogStore, runLogRawKey } from '$lib/server/run-log-store';
 import { spillEvicted } from '$lib/server/supervisor/run-log';
 import { appendLogTail } from '$lib/server/supervisor/logic';
-import { buildSupervisorPreamble } from '$lib/server/supervisor/preamble';
+import { buildResumePreamble, buildSupervisorPreamble } from '$lib/server/supervisor/preamble';
+import {
+	claimResumeResource,
+	findResumeResource,
+	isResumeProviderSupported,
+	resumeEligibility,
+	resumeFingerprint,
+	retainResumeResource
+} from '$lib/server/supervisor/resume';
+import { effectiveAutomationEnabled } from '$lib/server/supervisor/settings';
+import { priceCodexUsage } from '$lib/server/supervisor/codex-pricing';
 import { listArtifacts } from './artifacts';
 import { listLabels } from './labels';
-import { buildLaunchPrompt, effectiveContextForIssue } from './context';
+import { buildLaunchPrompt, buildResumePrompt, effectiveContextForIssue } from './context';
 import { ApiFail, notFound, optionalString, runAtomic } from './core';
+import { requestDispatchEffects } from './core';
+import type { DispatchEffects } from '$lib/server/dispatch-effects';
 import { getIssueDetail } from './issues';
 import { validateBoundedInt } from './runners';
 import { runQuery, serializeRun } from './runs';
@@ -82,7 +97,7 @@ export function runnerTokenUnauthorized(): ApiFail {
  */
 export async function runnerProtocolContext(
 	event: RequestEvent
-): Promise<{ db: Kysely<Database>; env: Env; runner: RunnerRow }> {
+): Promise<{ db: Kysely<Database>; env: Env; runner: RunnerRow; effects: DispatchEffects }> {
 	if (!event.platform) throw new ApiFail(500, 'no_platform', 'Platform bindings unavailable');
 	const header = event.request.headers.get('authorization');
 	const token = header?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim();
@@ -96,7 +111,12 @@ export async function runnerProtocolContext(
 	const db = getDb(event.platform.env);
 	const runner = await authenticateRunnerToken(db, token);
 	if (!runner) throw runnerTokenUnauthorized();
-	return { db, env: event.platform.env, runner };
+	return {
+		db,
+		env: event.platform.env,
+		runner,
+		effects: requestDispatchEffects(event, runner.user_id)
+	};
 }
 
 async function serializedRun(
@@ -137,6 +157,84 @@ function validateOwnedRuns(body: RunnerPollRequest): string[] {
 	return owned;
 }
 
+function validateInstanceId(body: RunnerPollRequest): string | undefined {
+	const instanceId = body.instance_id;
+	if (instanceId === undefined) return undefined;
+	if (
+		typeof instanceId !== 'string' ||
+		instanceId.length < 1 ||
+		instanceId.length > 128 ||
+		!/^[A-Za-z0-9_-]+$/.test(instanceId)
+	) {
+		throw new ApiFail(
+			422,
+			'invalid_field',
+			'"instance_id" must be 1–128 ASCII letters, digits, underscores, or hyphens',
+			{ field: 'instance_id' }
+		);
+	}
+	return instanceId;
+}
+
+async function admitDaemonInstance(
+	db: Kysely<Database>,
+	env: Env,
+	runner: RunnerRow,
+	instanceId: string,
+	now: number
+): Promise<RunnerRow> {
+	const mayReplace = sql<boolean>`EXISTS (
+		SELECT 1 FROM runner
+		WHERE id = ${runner.id}
+			AND daemon_instance_id IS NOT NULL
+			AND daemon_instance_id IS NOT ${instanceId}
+			AND fenced_instance_id IS NOT ${instanceId}
+	)`;
+	const results = await runAtomic(env, [
+		supervisorEvent(
+			db,
+			runner.user_id,
+			{
+				type: 'runner.daemon_replaced',
+				payload: { runner_id: runner.id, name: runner.name }
+			},
+			now,
+			mayReplace
+		),
+		db
+			.updateTable('runner')
+			.set({
+				fenced_instance_id: sql<string | null>`CASE
+					WHEN daemon_instance_id IS NOT ${instanceId} THEN daemon_instance_id
+					ELSE fenced_instance_id
+				END`,
+				daemon_instance_id: instanceId
+			})
+			.where('id', '=', runner.id)
+			.where(sql<boolean>`fenced_instance_id IS NOT ${instanceId}`)
+			.compile(),
+		db
+			.selectFrom('runner')
+			.selectAll()
+			.where('id', '=', runner.id)
+			.where('daemon_instance_id', '=', instanceId)
+			.compile()
+	]);
+	const admitted = results[2]?.results?.[0] as RunnerRow | undefined;
+	if (admitted) return admitted;
+	const exists = await db
+		.selectFrom('runner')
+		.select('id')
+		.where('id', '=', runner.id)
+		.executeTakeFirst();
+	if (!exists) throw notFound();
+	throw new ApiFail(
+		409,
+		'runner_conflict',
+		'another daemon instance is serving this runner; this one has been superseded'
+	);
+}
+
 /**
  * One poll: bump `last_seen_at`, adopt the daemon's `max_concurrent` (the
  * flag is authoritative for the daemon's own cap, so a restart with a new
@@ -151,18 +249,23 @@ export async function pollRunner(
 	db: Kysely<Database>,
 	env: Env,
 	runner: RunnerRow,
+	effects: DispatchEffects,
 	body: RunnerPollRequest,
 	now: number = Date.now()
 ): Promise<PollOutcome> {
 	const owned = new Set(validateOwnedRuns(body));
-	const cap =
+	const instanceId = validateInstanceId(body);
+	const requestedCap =
 		body.max_concurrent === undefined
-			? runner.max_concurrent
+			? undefined
 			: validateBoundedInt(body.max_concurrent, 'max_concurrent', 1, 100);
-	const capChanged = cap !== runner.max_concurrent;
 	if (body.draining !== undefined && typeof body.draining !== 'boolean') {
 		throw new ApiFail(422, 'invalid_field', '"draining" must be a boolean', { field: 'draining' });
 	}
+	if (instanceId !== undefined)
+		runner = await admitDaemonInstance(db, env, runner, instanceId, now);
+	const cap = requestedCap === undefined ? runner.max_concurrent : requestedCap;
+	const capChanged = cap !== runner.max_concurrent;
 	// Every poll states the flag, so a daemon that died mid-drain cannot pin
 	// the runner shut: its relaunch (or any older daemon) polls without it.
 	const draining = body.draining === true ? 1 : 0;
@@ -197,6 +300,7 @@ export async function pollRunner(
 				]
 			: [])
 	]);
+	if (cameOnline || capRaised) effects.signalDispatch();
 	runner.max_concurrent = cap;
 	runner.draining = draining;
 
@@ -227,7 +331,10 @@ export async function pollRunner(
 			judgment: 'interrupted',
 			now
 		});
-		if (ended.outcome === 'interrupted') reconciled = true;
+		if (ended.outcome === 'interrupted') {
+			reconciled = true;
+			effects.signalDispatch();
+		}
 	}
 	// One incident, one increment: a daemon that came back having dropped
 	// five runs is one failure, not five (noteInterruption's backoff window
@@ -273,6 +380,15 @@ export async function pollRunner(
  * the issue re-enters the pool and routing re-evaluates. Null = nothing to
  * deliver (canceled here, or another poll won the flip).
  */
+/** A runner's config column as an object; an unreadable one reads as empty. */
+function parseRunnerConfig(raw: string): Record<string, unknown> {
+	try {
+		return JSON.parse(raw) as Record<string, unknown>;
+	} catch {
+		return {};
+	}
+}
+
 async function deliverAssignedRun(
 	db: Kysely<Database>,
 	env: Env,
@@ -298,7 +414,7 @@ async function deliverAssignedRun(
 		eligibility.state_id === run.state_id_at_start &&
 		eligibility.category === 'active' &&
 		eligibility.needs_attention === 0 &&
-		settings?.enabled === 1;
+		effectiveAutomationEnabled(settings?.enabled);
 	if (!eligible) {
 		const endable = await loadEndableRun(db, run.user_id, run.id);
 		if (endable && endable.status === 'assigned') {
@@ -327,11 +443,41 @@ async function deliverAssignedRun(
 		listArtifacts(db, run.user_id, run.issue_id),
 		listLabels(db, run.user_id)
 	]);
+	const issueRef = `${issue.project_name}/${issue.number}`;
+
+	// Continuation, when the previous run on this runner left a live session
+	// for this issue and every guard passes. A failure anywhere here — an
+	// ineligible candidate, a lost claim race — falls through to the fresh
+	// launch below, which is the path this runner has always taken.
+	const resume = await prepareResume(db, env, { runner, run, now });
+	if (resume) {
+		const preamble = buildResumePreamble({
+			variant: 'local',
+			runId: run.id,
+			runnerName: runner.name,
+			issueRef,
+			timeoutMinutes: runner.max_run_minutes,
+			previousRunId: resume.previous_run_id
+		});
+		return {
+			run: await serializedRun(db, run.user_id, run.id),
+			prompt: `${preamble}\n\n${buildResumePrompt(
+				bundle,
+				issue,
+				artifacts,
+				labels.map((l) => l.name)
+			)}`,
+			bundle,
+			run_key: minted.secret,
+			timeout_minutes: runner.max_run_minutes,
+			resume
+		};
+	}
 	const preamble = buildSupervisorPreamble({
 		variant: 'local',
 		runId: run.id,
 		runnerName: runner.name,
-		issueRef: `${issue.project_name}/${issue.number}`,
+		issueRef,
 		timeoutMinutes: runner.max_run_minutes
 	});
 	return {
@@ -345,6 +491,135 @@ async function deliverAssignedRun(
 		bundle,
 		run_key: minted.secret,
 		timeout_minutes: runner.max_run_minutes
+	};
+}
+
+/**
+ * The resume decision at delivery. Reads the newest ended run for this issue
+ * on this runner, its retained resource and the runner's policy, runs the
+ * pure eligibility check, and — only when it passes — claims the resource so
+ * the GC cannot dispose it underneath the launch. Records the outcome on the
+ * run either way: `resumed_from_run_id` and `resume_expires_at` on a resume,
+ * `resume_fallback_reason` on a decline, so `tines runs list` can say why a
+ * send-back launched cold.
+ *
+ * Returns null for "launch fresh", which is always safe: nothing about the
+ * fresh path depends on any of this.
+ */
+async function prepareResume(
+	db: Kysely<Database>,
+	env: Env,
+	input: { runner: RunnerRow; run: Database['agent_run']; now: number }
+): Promise<RunnerAssignmentResume | null> {
+	const { runner, run, now } = input;
+	const config = parseRunnerConfig(runner.config);
+	if (!runner.resume_enabled || !isResumeProviderSupported(runner.type as Runner['type'], config)) {
+		return null;
+	}
+	const predecessor = await db
+		.selectFrom('agent_run')
+		.select([
+			'id',
+			'runner_id',
+			'ended_at',
+			'outcome',
+			'conversation_turn_count',
+			'state_id_at_end',
+			'api_key_id'
+		])
+		.where('user_id', '=', run.user_id)
+		.where('issue_id', '=', run.issue_id)
+		.where('ended_at', 'is not', null)
+		.where('id', '!=', run.id)
+		.orderBy('ended_at desc')
+		.orderBy('id desc')
+		.executeTakeFirst();
+	if (!predecessor) return null;
+
+	const [resource, endState] = await Promise.all([
+		findResumeResource(db, {
+			userId: run.user_id,
+			runnerId: runner.id,
+			issueId: run.issue_id
+		}),
+		predecessor.state_id_at_end
+			? db
+					.selectFrom('workflow_state')
+					.select('category')
+					.where('id', '=', predecessor.state_id_at_end)
+					.executeTakeFirst()
+			: Promise.resolve(undefined)
+	]);
+	const fingerprint = resumeFingerprint({
+		runnerId: runner.id,
+		harness: String(config.harness ?? 'claude_code'),
+		model: run.model,
+		preambleVariant: 'local'
+	});
+	const verdict = resumeEligibility({
+		now,
+		runner: {
+			id: runner.id,
+			type: runner.type as Runner['type'],
+			config,
+			resume_enabled: true,
+			resume_window_hours: runner.resume_window_hours,
+			resume_max_turns: runner.resume_max_turns,
+			resume_max_tokens: runner.resume_max_tokens,
+			resume_max_cost_usd: runner.resume_max_cost_usd
+		},
+		predecessor,
+		conversation_usage: null,
+		resource: resource ?? null,
+		newest_ended_run_id: predecessor.id,
+		ended_in_awaiting_state: endState?.category === 'awaiting_human',
+		// The resource only exists because the owning run advanced its issue
+		// itself; `outcome === 'advanced'` above is that same authorship.
+		last_transition_authored_by_run: predecessor.outcome === 'advanced',
+		expected_fingerprint: fingerprint
+	});
+	if (!verdict.eligible) {
+		// Only worth recording when there was something to decline: an issue
+		// this runner has never held an awaiting session for is not a fallback.
+		if (resource) {
+			await runAtomic(env, [
+				db
+					.updateTable('agent_run')
+					.set({ resume_fallback_reason: verdict.reason })
+					.where('id', '=', run.id)
+					.compile()
+			]);
+		}
+		return null;
+	}
+	const claimed = await claimResumeResource(db, {
+		resourceId: resource!.id,
+		ownerRunId: predecessor.id,
+		claimRunId: run.id,
+		claimToken: run.id,
+		now
+	});
+	if (!claimed) return null;
+	await runAtomic(env, [
+		db
+			.updateTable('agent_run')
+			// Lineage only. `resume_expires_at` means "this run's own workspace
+			// and session are being held" — the daemon keeps the workspace on
+			// exactly that signal — so a run that merely *inherited* a
+			// predecessor's workspace must not carry it, or a resumed run that
+			// then fails would keep a workspace nothing retained.
+			.set({
+				resumed_from_run_id: predecessor.id,
+				workspace_path: resource!.workspace_path
+			})
+			.where('id', '=', run.id)
+			.compile()
+	]);
+	return {
+		previous_run_id: predecessor.id,
+		provider_session_id: resource!.provider_session_id!,
+		workspace_path: resource!.workspace_path!,
+		prior_turn_count: predecessor.conversation_turn_count ?? 0
 	};
 }
 
@@ -578,6 +853,296 @@ function validateUsage(value: unknown): AgentRunUsage | undefined {
 	return usage;
 }
 
+function validatePricingEvidence(value: unknown): {
+	evidence?: CodexPricingEvidenceV1;
+	valid: boolean;
+} {
+	if (value === undefined || value === null) return { valid: true };
+	if (typeof value !== 'object' || Array.isArray(value)) {
+		throw new ApiFail(422, 'invalid_field', '"pricing_evidence" must be an object', {
+			field: 'pricing_evidence'
+		});
+	}
+	const raw = value as Record<string, unknown>;
+	const malformedRequestContext = (): NonNullable<CodexPricingEvidenceV1['request_context']> => ({
+		version: 1,
+		normalization: 'codex-rollout-delta-v1',
+		status: 'invalid',
+		reason: 'malformed'
+	});
+	const sanitizeRequestContext = (
+		value: unknown
+	): CodexPricingEvidenceV1['request_context'] | undefined => {
+		if (value === undefined) return;
+		if (!value || typeof value !== 'object' || Array.isArray(value))
+			return malformedRequestContext();
+		const item = value as Record<string, unknown>;
+		const harnessVersion =
+			typeof item.harness_version === 'string' &&
+			item.harness_version.length > 0 &&
+			item.harness_version.length <= 100 &&
+			!/[\x00-\x1f\x7f]/.test(item.harness_version)
+				? item.harness_version
+				: undefined;
+		if (item.version !== 1)
+			return {
+				version: 1,
+				normalization: 'codex-rollout-delta-v1',
+				...(harnessVersion ? { harness_version: harnessVersion } : {}),
+				status: 'unsupported',
+				reason: 'unsupported_version'
+			};
+		if (item.normalization !== 'codex-rollout-delta-v1') return malformedRequestContext();
+		if (item.status === 'complete') {
+			if (
+				harnessVersion !== '0.153.4' ||
+				!Number.isSafeInteger(item.request_count) ||
+				(item.request_count as number) < 0 ||
+				!Number.isSafeInteger(item.max_request_input_tokens) ||
+				(item.max_request_input_tokens as number) < 0 ||
+				!item.reconciled_usage ||
+				typeof item.reconciled_usage !== 'object' ||
+				Array.isArray(item.reconciled_usage)
+			)
+				return malformedRequestContext();
+			const reconciled = item.reconciled_usage as Record<string, unknown>;
+			const copied = {} as Required<NonNullable<CodexPricingEvidenceV1['raw_usage']>>;
+			for (const field of [
+				'input_tokens',
+				'cached_input_tokens',
+				'cache_write_input_tokens',
+				'output_tokens'
+			] as const) {
+				if (!Number.isSafeInteger(reconciled[field]) || (reconciled[field] as number) < 0)
+					return malformedRequestContext();
+				copied[field] = reconciled[field] as number;
+			}
+			return {
+				version: 1,
+				normalization: 'codex-rollout-delta-v1',
+				harness_version: '0.153.4',
+				status: 'complete',
+				request_count: item.request_count as number,
+				max_request_input_tokens: item.max_request_input_tokens as number,
+				reconciled_usage: copied
+			};
+		}
+		const reasons = [
+			'not_applicable',
+			'thread_id_missing',
+			'rollout_missing',
+			'rollout_ambiguous',
+			'unsafe_path',
+			'read_failed',
+			'limit_exceeded',
+			'unsupported_version',
+			'metadata_mismatch',
+			'malformed',
+			'missing_dimension',
+			'nonmonotonic',
+			'delta_mismatch',
+			'terminal_mismatch',
+			'model_mismatch'
+		] as const;
+		if (
+			!['unavailable', 'unsupported', 'invalid'].includes(item.status as string) ||
+			!reasons.includes(item.reason as (typeof reasons)[number])
+		)
+			return malformedRequestContext();
+		return {
+			version: 1,
+			normalization: 'codex-rollout-delta-v1',
+			...(harnessVersion ? { harness_version: harnessVersion } : {}),
+			status: item.status as 'unavailable' | 'unsupported' | 'invalid',
+			reason: item.reason as (typeof reasons)[number]
+		};
+	};
+	const short = (field: string, max: number, nullable = false): string | null => {
+		const item = raw[field];
+		if (nullable && item === null) return null;
+		if (
+			typeof item !== 'string' ||
+			item.length < 1 ||
+			item.length > max ||
+			/[\x00-\x1f\x7f]/.test(item)
+		) {
+			throw new ApiFail(
+				422,
+				'invalid_field',
+				`"pricing_evidence.${field}" must be a short string`,
+				{ field: `pricing_evidence.${field}` }
+			);
+		}
+		return item;
+	};
+	const model = short('model', 255, true);
+	const daemonVersion =
+		raw.daemon_version === undefined ? undefined : (short('daemon_version', 100) as string);
+	const requestContext = sanitizeRequestContext(raw.request_context);
+	let rawUsage: CodexPricingEvidenceV1['raw_usage'];
+	if (raw.raw_usage !== undefined) {
+		if (
+			raw.raw_usage === null ||
+			typeof raw.raw_usage !== 'object' ||
+			Array.isArray(raw.raw_usage)
+		) {
+			throw new ApiFail(422, 'invalid_field', '"pricing_evidence.raw_usage" must be an object', {
+				field: 'pricing_evidence.raw_usage'
+			});
+		}
+		rawUsage = {};
+		for (const field of [
+			'input_tokens',
+			'cached_input_tokens',
+			'cache_write_input_tokens',
+			'output_tokens'
+		] as const) {
+			const metric = (raw.raw_usage as Record<string, unknown>)[field];
+			if (metric === undefined) continue;
+			if (!Number.isSafeInteger(metric) || (metric as number) < 0) {
+				throw new ApiFail(
+					422,
+					'invalid_field',
+					`"pricing_evidence.raw_usage.${field}" must be a non-negative safe integer`,
+					{ field: `pricing_evidence.raw_usage.${field}` }
+				);
+			}
+			rawUsage[field] = metric as number;
+		}
+	}
+	if (!Number.isSafeInteger(raw.terminal_snapshots) || (raw.terminal_snapshots as number) < 0) {
+		throw new ApiFail(
+			422,
+			'invalid_field',
+			'"pricing_evidence.terminal_snapshots" must be a non-negative safe integer',
+			{ field: 'pricing_evidence.terminal_snapshots' }
+		);
+	}
+	if (typeof raw.model_rerouted !== 'boolean') {
+		throw new ApiFail(422, 'invalid_field', '"pricing_evidence.model_rerouted" must be boolean', {
+			field: 'pricing_evidence.model_rerouted'
+		});
+	}
+	const measurements = [
+		'complete',
+		'missing',
+		'invalid',
+		'nonmonotonic',
+		'incomplete_attempt',
+		'multiple_threads'
+	] as const;
+	const valid =
+		raw.version === 1 &&
+		raw.harness === 'codex' &&
+		raw.identity_source === 'launch_argument' &&
+		raw.usage_scope === 'thread_total' &&
+		['cold', 'resumed'].includes(raw.session_mode as string) &&
+		raw.normalization === 'codex-jsonl-v1' &&
+		measurements.includes(raw.measurement_status as (typeof measurements)[number]);
+	if (!valid) return { valid: false };
+	return {
+		valid: true,
+		evidence: {
+			version: 1,
+			harness: 'codex',
+			model,
+			identity_source: 'launch_argument',
+			usage_scope: 'thread_total',
+			session_mode: raw.session_mode as 'cold' | 'resumed',
+			normalization: 'codex-jsonl-v1',
+			...(rawUsage ? { raw_usage: rawUsage } : {}),
+			model_rerouted: raw.model_rerouted,
+			measurement_status: raw.measurement_status as CodexPricingEvidenceV1['measurement_status'],
+			terminal_snapshots: raw.terminal_snapshots as number,
+			...(daemonVersion ? { daemon_version: daemonVersion } : {}),
+			...(requestContext ? { request_context: requestContext } : {})
+		}
+	};
+}
+
+function validateProviderSessionId(value: unknown): string | undefined {
+	if (value === undefined) return undefined;
+	if (
+		typeof value !== 'string' ||
+		value.length < 1 ||
+		value.length > 255 ||
+		!value.trim() ||
+		/[\x00-\x1f\x7f]/.test(value)
+	) {
+		throw new ApiFail(422, 'invalid_field', '"provider_session_id" must be a short opaque string', {
+			field: 'provider_session_id'
+		});
+	}
+	return value;
+}
+
+function validateTurnCount(value: unknown, field: string): number | undefined {
+	if (value === undefined) return undefined;
+	if (typeof value !== 'number' || !Number.isInteger(value) || value < 0 || value > 100_000) {
+		throw new ApiFail(422, 'invalid_field', `"${field}" must be a non-negative integer`, { field });
+	}
+	return value;
+}
+
+/**
+ * Retention: a run that advanced its issue into an awaiting state on a
+ * resume-enabled runner leaves its session and workspace claimable until the
+ * window closes. Everything here is best-effort — a missing session id, a
+ * workspace the daemon did not report, a runner that is not opted in, or an
+ * issue that landed anywhere but an awaiting state simply retains nothing,
+ * and the next dispatch launches fresh as it always has.
+ */
+async function retainAwaitingSession(
+	db: Kysely<Database>,
+	runner: RunnerRow,
+	input: {
+		run: { user_id: string; issue_id: string; model: string | null };
+		runId: string;
+		providerSessionId: string | null;
+		workspacePath: string | null;
+		now: number;
+	}
+): Promise<void> {
+	const config = parseRunnerConfig(runner.config);
+	if (
+		!runner.resume_enabled ||
+		!isResumeProviderSupported(runner.type as Runner['type'], config) ||
+		!input.providerSessionId ||
+		!input.workspacePath
+	) {
+		return;
+	}
+	const ended = await db
+		.selectFrom('agent_run')
+		.innerJoin('workflow_state as st', 'st.id', 'agent_run.state_id_at_end')
+		.select(['st.category'])
+		.where('agent_run.id', '=', input.runId)
+		.executeTakeFirst();
+	if (ended?.category !== 'awaiting_human') return;
+	await retainResumeResource(db, {
+		id: newId('rres'),
+		userId: input.run.user_id,
+		runnerId: runner.id,
+		issueId: input.run.issue_id,
+		ownerRunId: input.runId,
+		providerSessionId: input.providerSessionId,
+		workspacePath: input.workspacePath,
+		fingerprint: resumeFingerprint({
+			runnerId: runner.id,
+			harness: String(config.harness ?? 'claude_code'),
+			model: input.run.model,
+			preambleVariant: 'local'
+		}),
+		expiresAt: input.now + runner.resume_window_hours * 60 * 60 * 1000,
+		now: input.now
+	});
+	await db
+		.updateTable('agent_run')
+		.set({ resume_expires_at: input.now + runner.resume_window_hours * 60 * 60 * 1000 })
+		.where('id', '=', input.runId)
+		.execute();
+}
+
 /**
  * `POST /api/v1/runs/:id/finish`: the daemon's end report → endRun with
  * immediate key revocation and the usual judgment. A finish arriving while
@@ -589,6 +1154,7 @@ export async function finishRun(
 	db: Kysely<Database>,
 	env: Env,
 	runner: RunnerRow,
+	effects: DispatchEffects,
 	runId: string,
 	body: FinishRunRequest,
 	now: number = Date.now()
@@ -599,7 +1165,23 @@ export async function finishRun(
 		});
 	}
 	const error = optionalString(body.error, 'error', { max: 10_000 });
-	const usage = validateUsage(body.usage);
+	let usage = validateUsage(body.usage);
+	const pricingEvidence = validatePricingEvidence(body.pricing_evidence);
+	const providerSessionId = validateProviderSessionId(body.provider_session_id);
+	const turnCount = validateTurnCount(body.turn_count, 'turn_count');
+	const conversationTurnCount = validateTurnCount(
+		body.conversation_turn_count,
+		'conversation_turn_count'
+	);
+	const workspacePath = optionalString(body.workspace_path, 'workspace_path', { max: 1024 });
+	if (
+		body.resume_at !== undefined &&
+		(typeof body.resume_at !== 'number' || !Number.isFinite(body.resume_at))
+	) {
+		throw new ApiFail(422, 'invalid_field', '"resume_at" must be a number (epoch ms)', {
+			field: 'resume_at'
+		});
+	}
 
 	const run = await loadRunnerRun(db, runner, runId);
 	if (run.status === 'assigned') {
@@ -619,15 +1201,24 @@ export async function finishRun(
 	if (run.status === 'launching') {
 		await markRunRunning(db, env, run, now);
 	}
-	if (usage) {
-		await runAtomic(env, [
-			db
-				.updateTable('agent_run')
-				.set({ usage: JSON.stringify(usage) })
-				.where('id', '=', runId)
-				.compile()
-		]);
-	}
+	if (usage && (pricingEvidence.evidence || body.pricing_evidence !== undefined)) {
+		usage =
+			!pricingEvidence.valid && usage.cost_source === 'provider' && usage.cost_usd !== undefined
+				? { ...usage, pricing: { version: 1, evaluated_at: now, status: 'provider_authoritative' } }
+				: pricingEvidence.valid
+					? priceCodexUsage({ run, usage, evidence: pricingEvidence.evidence, now })
+					: {
+							...usage,
+							cost_usd: undefined,
+							cost_source: 'priced',
+							pricing: {
+								version: 1,
+								evaluated_at: now,
+								status: 'unpriced',
+								reason: 'invalid_pricing_evidence'
+							}
+						};
+	} else if (usage) usage = priceCodexUsage({ run, usage, now });
 	// The daemon marks the ends it knows were its own fault — a shutdown, an
 	// orphan killed after a restart — as interruptions. Honoured only on a
 	// failure, and only for that exact value: everything else (a harness
@@ -643,22 +1234,26 @@ export async function finishRun(
 		(body.judgment === 'interrupted' || body.judgment === 'rate_limited')
 			? body.judgment
 			: undefined;
-	if (
-		body.resume_at !== undefined &&
-		(typeof body.resume_at !== 'number' || !Number.isFinite(body.resume_at))
-	) {
-		throw new ApiFail(422, 'invalid_field', '"resume_at" must be a number (epoch ms)', {
-			field: 'resume_at'
-		});
-	}
 	const endable = await loadEndableRun(db, run.user_id, runId);
 	if (endable) {
 		const ended = await endRun(db, env, endable, {
 			status: body.status,
 			error: error ?? null,
 			...(judgment ? { judgment: 'interrupted' as const } : {}),
+			finalReport: {
+				...(usage ? { usage: JSON.stringify(usage) } : {}),
+				...(providerSessionId ? { provider_session_id: providerSessionId } : {}),
+				...(turnCount !== undefined ? { turn_count: turnCount } : {}),
+				...(conversationTurnCount !== undefined
+					? { conversation_turn_count: conversationTurnCount }
+					: turnCount !== undefined
+						? { conversation_turn_count: turnCount }
+						: {}),
+				...(workspacePath ? { workspace_path: workspacePath } : {})
+			},
 			now
 		});
+		if (ended.ended) effects.signalDispatch();
 		if (judgment === 'rate_limited' && ended.ended) {
 			// On `ended`, not on the outcome: an agent that transitioned the
 			// issue before hitting the wall leaves an `advanced` run, and the
@@ -681,6 +1276,17 @@ export async function finishRun(
 				runnerId: run.runner_id,
 				runId,
 				error: error ?? 'run interrupted by the daemon',
+				now
+			});
+		} else if (ended.outcome === 'advanced' && ended.ended) {
+			// One chain, not two ifs: a `rate_limited` finish is passed to
+			// `endRun` as `interrupted`, so a separate interruption arm would
+			// double-notify it — the runner is already held to the reset.
+			await retainAwaitingSession(db, runner, {
+				run,
+				runId,
+				providerSessionId: providerSessionId ?? run.provider_session_id ?? null,
+				workspacePath: workspacePath ?? null,
 				now
 			});
 		}

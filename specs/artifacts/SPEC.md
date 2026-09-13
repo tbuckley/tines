@@ -649,6 +649,7 @@ tines issues artifacts attach <ref> <name> … --ignore-gates    # attach this t
 tines issues artifacts reaffirm <ref> <name>                   # bless current content as fresh
 tines issues artifacts get <ref> <name> [--version N] [--out <path>]   # content; link/pr prints the
                                                                #   URL; a folder writes its tree
+                                                               #   only into a new or empty directory
 tines issues artifacts site-link <ref> <name> [--version N]     # mint a URL that renders an HTML
                                                                #   artifact live; prints the URL,
                                                                #   the pinned version and the
@@ -668,6 +669,13 @@ without any new CLI logic. `tines workflows` create/edit accept `requires`
 inside their transition definitions. `show` and `attach` print a `site:`
 line when the artifact renders live, and `attach` follows it with the
 `warning:` lines `lintHtmlArtifact()` produces.
+
+Folder downloads preserve the whole-snapshot boundary locally: `get --out`
+accepts a nonexistent directory or an existing empty directory, but refuses
+an existing directory containing any entry (including hidden files, empty
+children, and symlinks) before requesting file content or writing. The CLI
+does not remove content or offer a force override; callers choose or prepare
+an empty destination.
 
 **The CLI uses the gate it can already see** (Tines/243). `resolveIssue`
 fetches the `IssueDetail`, so `allowed_transitions[].requires[]` is in hand
@@ -770,6 +778,17 @@ with a Phone / Tablet / Full width switcher — the reader is usually going to
 be on a phone — an **Open full page** link, and *Files* / *Source* escapes
 back to the ordinary folder and text views.
 
+The viewer resolves **current** to the concrete version returned by its metadata
+read and pins every source, frame, image, PDF, folder entry, download and site
+link to that snapshot. Reopening performs a fresh metadata read; an already-open
+viewer does not live-advance. Immutable text caching is scoped by stable artifact
+id, version and exact folder path, so it cannot cross issues or a delete/recreate
+boundary. Metadata, text failures and site links are rendered only while their
+open selection still owns the request; a superseded response cannot replace the
+active preview. Panel thumbnails likewise use the concrete current version from
+their own artifact row. The public content API remains current-by-default when a
+general caller omits `version`.
+
 ### Transitions
 
 Transition buttons in the *State & transitions* section show their
@@ -857,7 +876,9 @@ Done when this loop works end-to-end:
    regardless of which files the set contains; each file serves at
    `…/content?path=…` under the safety headers; `…/content` without `path`
    is a 422 listing the paths; re-attaching the directory is v2 (whole set);
-   reaffirm appends v3 reusing v2's objects; `get --out` writes the tree;
+   reaffirm appends v3 reusing v2's objects; `get --out` writes the tree into
+   a new or empty directory, while a populated destination is refused before
+   content requests or mutation and remains unchanged;
    a folder requirement declaring `content_type` is rejected at definition
    time; per-version caps (200 files / 50 MB) reject with 422s naming them.
 7. A human force-sets the state past an unmet gate (recorded `forced: true`);
@@ -931,6 +952,12 @@ From the folders/viewer review:
   version picker); inline expansion had unbounded Markdown height inside the
   issue column and could never host PDFs. The one inline survivor is the
   image thumbnail — the genuinely glanceable case.
+- **Resolved previews are immutable UI snapshots** — "current" is resolved by
+  the metadata read and every downstream URL/request carries that numbered
+  version. Cache identity includes stable artifact id and exact path; reopening
+  is the refresh boundary, and late responses from older selections are ignored.
+  This tightens viewer/panel behavior without changing the API's intentional
+  current-by-default contract for unresolved callers.
 - **Screenshots are a folder, not sibling files** — because workflows are
   generic over issues: a requirement names one fixed slot (`screenshots`),
   while each issue's surfaces differ, so per-screen slot names are invisible
@@ -953,6 +980,12 @@ From the folders/viewer review:
 - **No `content_type` on folder requirements** (422 at definition time):
   mixed-type trees admit no honest all-files/any-file match rule; the gate
   asserts slot + type, prose says what belongs inside.
+- **2026-09-09, Tines/333 — folder downloads never overlay a populated
+  destination**: every folder version is a whole immutable snapshot, so
+  mixing its files with leftovers could create a tree that never existed on
+  the server. The CLI accepts only a new or empty destination and preserves
+  every existing entry on refusal; cleanup and force-overlay behavior stay
+  deliberately absent.
 
 From later work:
 

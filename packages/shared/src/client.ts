@@ -47,6 +47,9 @@ import type {
 	DeleteRunnerRequest,
 	DispatchExplainer,
 	EffectiveContext,
+	IssueTransferPreview,
+	IssueTransferRequest,
+	IssueTransferResult,
 	EventFilters,
 	FleetQueue,
 	SentBackDrilldown,
@@ -68,6 +71,7 @@ import type {
 	RoutingRule,
 	RoutingRuleWithWarnings,
 	RunFilters,
+	UsagePendingRun,
 	Runner,
 	Schedule,
 	ScheduleFilters,
@@ -90,6 +94,7 @@ import type {
 	UserPreferences,
 	WorkflowResponse
 } from './types.js';
+import type { ResolvedUsageFilters, UsageBy, UsageReport, UsageWindow } from './usage.js';
 
 export interface TimeResponse {
 	/** ISO 8601 timestamp (UTC). */
@@ -387,6 +392,17 @@ export function createApiClient(options: ApiClientOptions) {
 		/** Launch prompt: stitched context plus the generated issue block. */
 		getIssuePrompt: (issueId: string) =>
 			get<LaunchPromptResponse>(`/api/v1/issues/${issueId}/prompt`),
+		/**
+		 * Review a move to another project: read-only, allocates no number and
+		 * writes nothing. Returns the token that binds this exact review.
+		 */
+		previewIssueTransfer: (issueId: string, destinationProjectId: string) =>
+			get<IssueTransferPreview>(
+				`/api/v1/issues/${issueId}/transfer${query({ project: destinationProjectId })}`
+			),
+		/** Commit the reviewed move. The token must come from a fresh preview. */
+		transferIssue: (issueId: string, body: IssueTransferRequest) =>
+			request<IssueTransferResult>('POST', `/api/v1/issues/${issueId}/transfer`, body),
 
 		// Issue artifacts (name-addressed under the issue)
 		listArtifacts: (issueId: string) =>
@@ -494,8 +510,18 @@ export function createApiClient(options: ApiClientOptions) {
 			request<AgentRun>('POST', `/api/v1/runs/${runId}/finish`, body),
 
 		// Agent runs
-		listRuns: (filters: RunFilters & PageParams = {}) =>
-			get<ListResponse<AgentRun>>(`/api/v1/runs${query(filters)}`),
+		listRuns: <F extends RunFilters & PageParams = RunFilters & PageParams>(filters: F = {} as F) =>
+			get<ListResponse<F extends { population: 'pending' } ? UsagePendingRun : AgentRun>>(
+				`/api/v1/runs${query(filters)}`
+			),
+		getUsage: (
+			filters: ResolvedUsageFilters & {
+				window?: UsageWindow;
+				from?: string;
+				to?: string;
+				by?: UsageBy;
+			} = {}
+		) => get<UsageReport>(`/api/v1/usage${query(filters)}`),
 		getRun: (id: string) => get<AgentRunDetail>(`/api/v1/runs/${id}`),
 		/**
 		 * The run's complete log (not the 256 KB tail `getRun` returns) as a
@@ -550,9 +576,48 @@ export function createApiClient(options: ApiClientOptions) {
 			request<ApiKeyCreated>('POST', '/api/v1/api-keys', body),
 		revokeApiKey: (id: string) => request<void>('DELETE', `/api/v1/api-keys/${id}`),
 
+		exportWorkflowPackage: (
+			id: string,
+			opts: import('./library/types.js').ExportWorkflowPackageOptions = {}
+		) => {
+			const params = new URLSearchParams();
+			if (opts.source_project_id) params.set('source_project_id', opts.source_project_id);
+			for (const id of opts.schedule_ids ?? []) params.append('schedule_id', id);
+			for (const tier of opts.tiers ?? []) params.append('tier', JSON.stringify(tier));
+			if (opts.authoring) params.set('authoring', JSON.stringify(opts.authoring));
+			return get<import('./library/types.js').WorkflowPackageDocument>(
+				`/api/v1/workflows/${encodeURIComponent(id)}/export${params.size ? '?' + params : ''}`
+			);
+		},
+		prepareWorkflowPackage: (body: import('./library/types.js').PrepareWorkflowPackageRequest) =>
+			request<import('./library/types.js').PrepareWorkflowPackageResponse>(
+				'POST',
+				'/api/v1/library/prepare',
+				body
+			),
+		installWorkflowPackage: (body: import('./library/types.js').WorkflowPackageInstallRequest) =>
+			request<import('./library/types.js').WorkflowPackageReceipt>(
+				'POST',
+				'/api/v1/library/install',
+				body
+			),
+		getWorkflowPackageReceipt: (planId: string) =>
+			get<import('./library/types.js').WorkflowPackageReceipt>(
+				`/api/v1/library/installs/${encodeURIComponent(planId)}`
+			),
+
+		validateLibrary: (body: import('./library/types.js').ValidateLibraryRequest) =>
+			request<import('./library/types.js').ValidateLibraryResponse>(
+				'POST',
+				'/api/v1/library/validate',
+				body
+			),
+
 		// Library export / import (workflows + context; no tracker data, no secrets)
 		exportLibrary: (opts: ExportLibraryOptions = {}) =>
-			get<LibraryDocument>(`/api/v1/export${opts.journals === false ? '?journals=false' : ''}`),
+			get<LibraryDocument | import('./library/types.js').LibraryV3Document>(
+				`/api/v1/export${query(opts)}`
+			),
 		/** Plan-then-apply; `dry_run: true` returns the preview the apply follows. */
 		importLibrary: (body: ImportLibraryRequest) =>
 			request<ImportLibraryResponse>('POST', '/api/v1/import', body)

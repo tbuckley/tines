@@ -61,6 +61,12 @@ describe('previewVars', () => {
 });
 
 describe('renderStarter', () => {
+	it('caps a long first-issue title at the server limit and preserves newlines', () => {
+		const brief = `first line\n${'x'.repeat(1000)}`;
+		const preview = renderStarter(plan, { brief }, 'Plan');
+		expect(preview.creates.firstIssue?.title).toHaveLength(500);
+		expect(preview.creates.firstIssue?.title).toContain('\n');
+	});
 	it('prefills the conventions template with what the user typed', () => {
 		const preview = renderStarter(plan, { brief: 'Q1 hiring' }, 'Plan');
 		expect(preview.conventions).toContain('Q1 hiring');

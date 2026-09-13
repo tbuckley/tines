@@ -14,8 +14,9 @@ import {
 	type WorkflowStateInput,
 	type WorkflowTransitionInput
 } from '@tines/shared';
-import type { CompiledQuery, Kysely } from 'kysely';
-import { newId, type Database, type WorkflowStateTable } from '$lib/server/db';
+import { sql, type CompiledQuery, type Kysely } from 'kysely';
+import { idChunks, newId, type Database, type WorkflowStateTable } from '$lib/server/db';
+import type { DispatchEffects } from '$lib/server/dispatch-effects';
 import { findAttachedContext, seedPromptQueries, sweepAttachedContext } from './context';
 import {
 	MAX_INHERITANCE_CHAIN,
@@ -26,6 +27,7 @@ import {
 	runAtomic,
 	type ActorContext
 } from './core';
+import { insertValues, type QueryGuard } from './query-guard';
 import { eventInsert } from './events';
 import { assertStatesNotScheduled, assertWorkflowNotScheduled } from './schedules';
 
@@ -57,6 +59,59 @@ export interface ResolvedDef {
 		requires?: ArtifactRequirement[];
 	}[];
 	initialStateId: string;
+}
+
+type DiffTransition = {
+	name: string;
+	from_state_id: string;
+	to_state_id: string;
+	requires?: ArtifactRequirement[];
+};
+
+/**
+ * Summarize transition edits using the server's uniqueness rule: an action is
+ * identified by source state plus case-insensitive name. Parallel actions to
+ * one target therefore remain distinct. An otherwise unambiguous replacement
+ * on the same state pair is retained as a rename rather than add + remove.
+ */
+export function diffTransitions(
+	oldTransitions: DiffTransition[],
+	newTransitions: DiffTransition[]
+) {
+	const key = (t: DiffTransition) => `${t.from_state_id}\0${t.name.trim().toLowerCase()}`;
+	const pair = (t: DiffTransition) => `${t.from_state_id}\0${t.to_state_id}`;
+	const oldByKey = new Map(oldTransitions.map((t) => [key(t), t]));
+	const newByKey = new Map(newTransitions.map((t) => [key(t), t]));
+	const unmatchedOld = oldTransitions.filter((t) => !newByKey.has(key(t)));
+	const unmatchedNew = newTransitions.filter((t) => !oldByKey.has(key(t)));
+	const renamed: { from: string; to: string }[] = [];
+	const renamedOld = new Set<DiffTransition>();
+	const renamedNew = new Set<DiffTransition>();
+
+	for (const old of unmatchedOld) {
+		const oldAtPair = unmatchedOld.filter((t) => pair(t) === pair(old));
+		const newAtPair = unmatchedNew.filter((t) => pair(t) === pair(old));
+		if (oldAtPair.length === 1 && newAtPair.length === 1) {
+			renamed.push({ from: old.name, to: newAtPair[0].name });
+			renamedOld.add(old);
+			renamedNew.add(newAtPair[0]);
+		}
+	}
+
+	for (const [actionKey, current] of newByKey) {
+		const old = oldByKey.get(actionKey);
+		if (old && old.name !== current.name) renamed.push({ from: old.name, to: current.name });
+	}
+
+	return {
+		added: unmatchedNew.filter((t) => !renamedNew.has(t)).length,
+		removed: unmatchedOld.filter((t) => !renamedOld.has(t)).length,
+		renamed,
+		requirementsChanged: [...newByKey.entries()].some(([actionKey, t]) => {
+			const old = oldByKey.get(actionKey);
+			return old && JSON.stringify(old.requires ?? null) !== JSON.stringify(t.requires ?? null);
+		})
+	};
 }
 
 /**
@@ -256,7 +311,6 @@ export function resolveDef(
 	}
 
 	const transitions: ResolvedDef['transitions'] = [];
-	const seenPairs = new Set<string>();
 	const seenActions = new Set<string>();
 	for (const [i, t] of (transitionsInput ?? []).entries()) {
 		const name = requireString(t.name, `transitions[${i}].name`, { max: 100 }).trim();
@@ -269,14 +323,6 @@ export function resolveDef(
 				`Transition "${name}" loops "${from.name}" onto itself; self-transitions are not allowed`
 			);
 		}
-		const pairKey = `${from.id}→${to.id}`;
-		if (seenPairs.has(pairKey)) {
-			throw new ApiFail(
-				422,
-				'duplicate_transition',
-				`Transition "${from.name}" → "${to.name}" is listed more than once`
-			);
-		}
 		// Action names must be unambiguous within a source state ("reject"
 		// out of two different states is fine).
 		const actionKey = `${from.id}:${name.toLowerCase()}`;
@@ -287,7 +333,6 @@ export function resolveDef(
 				`State "${from.name}" has more than one transition named "${name}"`
 			);
 		}
-		seenPairs.add(pairKey);
 		seenActions.add(actionKey);
 		const requires = resolveRequirements(t.requires, `transitions[${i}]`);
 		transitions.push({
@@ -659,15 +704,26 @@ export async function loadWorkflows(
 	if (rows.length === 0) return [];
 
 	const ids = rows.map((r) => r.id);
-	const [states, transitions] = await Promise.all([
-		db
-			.selectFrom('workflow_state')
-			.selectAll()
-			.where('workflow_id', 'in', ids)
-			.orderBy('position asc')
-			.execute(),
-		db.selectFrom('workflow_transition').selectAll().where('workflow_id', 'in', ids).execute()
+	const chunks = idChunks(ids);
+	const [stateChunks, transitionChunks] = await Promise.all([
+		Promise.all(
+			chunks.map((chunk) =>
+				db
+					.selectFrom('workflow_state')
+					.selectAll()
+					.where('workflow_id', 'in', chunk)
+					.orderBy('position asc')
+					.execute()
+			)
+		),
+		Promise.all(
+			chunks.map((chunk) =>
+				db.selectFrom('workflow_transition').selectAll().where('workflow_id', 'in', chunk).execute()
+			)
+		)
 	]);
+	const states = stateChunks.flat();
+	const transitions = transitionChunks.flat();
 
 	return rows.map((row) => {
 		const wfStates = states.filter((s) => s.workflow_id === row.id);
@@ -716,27 +772,49 @@ export async function loadWorkflow(
 // ---------------------------------------------------------------------------
 // Structural identity (shared by library import and starters)
 
-const FP_SEP = '\u0000';
+/**
+ * Sorted by each entry's own canonical serialization, so the order entries
+ * arrive in never reaches the fingerprint. A fresh array: the caller's
+ * request is about to be acted on, and must not be reordered under it.
+ */
+function sortedByEncoding<T>(entries: T[], encode: (entry: T) => unknown[]): unknown[][] {
+	return entries
+		.map((entry) => {
+			const tuple = encode(entry);
+			return { tuple, key: JSON.stringify(tuple) };
+		})
+		.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0))
+		.map((e) => e.tuple);
+}
 
 /**
  * Canonical form of a workflow definition, for "same or different?". Covers
  * the initial state, each state's name and category, and the transition set
  * with its artifact requirements — deliberately *not* stage instructions,
  * description or inheritance, which are edited independently of the shape.
+ *
+ * Every value is a fixed position in a JSON tuple rather than a delimited
+ * string, so no user text can spell a separator: a state named
+ * `Review:active|Done` once serialized exactly as the two states it names,
+ * and a requirement description could hide a whole second gate (Tines/413).
+ * State order is significant; transitions and requirements are not.
  */
 export function workflowFingerprint(wf: CreateWorkflowRequest): string {
-	const states = wf.states.map((s) => `${s.name}:${s.category}`).join('|');
-	const transitions = [...wf.transitions]
-		.map((t) => {
-			const requires = [...(t.requires ?? [])]
-				.map((r) => `${r.artifact}:${r.type ?? ''}:${r.content_type ?? ''}:${r.description ?? ''}`)
-				.sort()
-				.join(',');
-			return `${t.from}>${t.name}>${t.to}[${requires}]`;
-		})
-		.sort()
-		.join('|');
-	return `${wf.initial_state}${FP_SEP}${states}${FP_SEP}${transitions}`;
+	return JSON.stringify([
+		wf.initial_state,
+		wf.states.map((s) => [s.name, s.category]),
+		sortedByEncoding(wf.transitions, (t) => [
+			t.from,
+			t.name,
+			t.to,
+			sortedByEncoding(t.requires ?? [], (r) => [
+				r.artifact,
+				r.type ?? '',
+				r.content_type ?? '',
+				r.description ?? ''
+			])
+		])
+	]);
 }
 
 /**
@@ -773,6 +851,11 @@ export function workflowInsertQueries(
 	db: Kysely<Database>,
 	actor: ActorContext,
 	opts: {
+		guard?: QueryGuard;
+		phase?: 'all' | 'shells' | 'inheritance';
+		eventId?: string;
+		/** Stable IDs for inline instruction seeds, keyed by preallocated state ID. */
+		promptIds?: Record<string, { id: string; eventId: string }>;
 		id: string;
 		name: string;
 		description: string;
@@ -784,10 +867,11 @@ export function workflowInsertQueries(
 	}
 ): CompiledQuery[] {
 	const { id, name, description, def, inh, now } = opts;
-	return [
-		db
-			.insertInto('workflow')
-			.values({
+	const shells: CompiledQuery[] = [
+		insertValues(
+			db,
+			'workflow',
+			{
 				id,
 				user_id: actor.userId,
 				name,
@@ -795,33 +879,38 @@ export function workflowInsertQueries(
 				initial_state_id: def.initialStateId,
 				created_at: now,
 				updated_at: now
-			})
-			.compile(),
+			},
+			opts.guard
+		),
 		...def.states.map((s) =>
-			db
-				.insertInto('workflow_state')
-				.values({
+			insertValues(
+				db,
+				'workflow_state',
+				{
 					id: s.id,
 					workflow_id: id,
 					name: s.name,
 					category: s.category,
 					position: s.position,
 					created_at: now
-				})
-				.compile()
+				},
+				opts.guard
+			)
 		),
 		...def.transitions.map((t) =>
-			db
-				.insertInto('workflow_transition')
-				.values({
+			insertValues(
+				db,
+				'workflow_transition',
+				{
 					id: t.id,
 					workflow_id: id,
 					name: t.name,
 					from_state_id: t.from_state_id,
 					to_state_id: t.to_state_id,
 					requirements: t.requires ? JSON.stringify(t.requires) : null
-				})
-				.compile()
+				},
+				opts.guard
+			)
 		),
 		// Initial stage instructions ride along in the same transaction.
 		...def.states
@@ -829,6 +918,8 @@ export function workflowInsertQueries(
 			.flatMap(
 				(s) =>
 					seedPromptQueries(db, actor, {
+						...opts.promptIds?.[s.id],
+						guard: opts.guard,
 						name: STATE_PROMPT_NAME,
 						body: s.prompt!,
 						workflowStateId: s.id,
@@ -836,6 +927,25 @@ export function workflowInsertQueries(
 						now
 					}).queries
 			),
+
+		eventInsert(
+			db,
+			actor,
+			{
+				id: opts.eventId,
+				createdAt: now,
+				type: 'workflow.created',
+				payload: {
+					workflow_id: id,
+					name,
+					...(inh.changes.length ? { inheritance_changed: inh.changes } : {}),
+					...opts.eventPayload
+				}
+			},
+			opts.guard
+		)
+	];
+	const inheritance: CompiledQuery[] = [
 		// Pointers go in a second pass: a self-FK cannot be satisfied by an
 		// insert whose target is later in the same batch, and intra-workflow
 		// inheritance is exactly that case.
@@ -846,18 +956,23 @@ export function workflowInsertQueries(
 					.updateTable('workflow_state')
 					.set({ inherits_from_state_id: inh.pointers.get(s.id)! })
 					.where('id', '=', s.id)
+					.where(opts.guard?.predicate ?? sql<boolean>`1`)
 					.compile()
-			),
-		eventInsert(db, actor, {
-			type: 'workflow.created',
-			payload: {
-				workflow_id: id,
-				name,
-				...(inh.changes.length ? { inheritance_changed: inh.changes } : {}),
-				...opts.eventPayload
-			}
-		})
+			)
 	];
+	return opts.phase === 'shells'
+		? shells
+		: opts.phase === 'inheritance'
+			? inheritance
+			: [...shells.slice(0, -1), ...inheritance, shells[shells.length - 1]];
+}
+
+/** Pure create fields and definition validation, shared with library planning. */
+export function validateWorkflowCreateFields(body: CreateWorkflowRequest) {
+	const name = requireString(body.name, 'name', { max: 200 }).trim();
+	const description = optionalString(body.description, 'description', { max: 10000 }) ?? '';
+	const def = resolveDef(body.states, body.transitions ?? [], body.initial_state, []);
+	return { name, description, def };
 }
 
 export async function createWorkflow(
@@ -866,9 +981,7 @@ export async function createWorkflow(
 	actor: ActorContext,
 	body: CreateWorkflowRequest
 ): Promise<WorkflowResponse> {
-	const name = requireString(body.name, 'name', { max: 200 }).trim();
-	const description = optionalString(body.description, 'description', { max: 10_000 }) ?? '';
-	const def = resolveDef(body.states, body.transitions ?? [], body.initial_state, []);
+	const { name, description, def } = validateWorkflowCreateFields(body);
 	const id = newId('wf');
 	const inh = await resolveInheritance(db, actor.userId, { id, name }, def.states, []);
 	const now = Date.now();
@@ -880,6 +993,7 @@ export async function updateWorkflow(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
+	effects: DispatchEffects,
 	id: string,
 	body: UpdateWorkflowRequest
 ): Promise<WorkflowResponse> {
@@ -1047,21 +1161,7 @@ export async function updateWorkflow(
 			(s) => !s.isNew && currentById.get(s.id) && currentById.get(s.id)!.category !== s.category
 		)
 		.map((s) => ({ state: s.name, from: currentById.get(s.id)!.category, to: s.category }));
-	// Transitions are identified by their (from, to) pair; a kept pair whose
-	// action name changed counts as a rename.
-	const oldByPair = new Map(
-		current.transitions.map((t) => [`${t.from_state_id}→${t.to_state_id}`, t])
-	);
-	const newByPair = new Map(def.transitions.map((t) => [`${t.from_state_id}→${t.to_state_id}`, t]));
-	const transitionsAdded = [...newByPair.keys()].filter((p) => !oldByPair.has(p)).length;
-	const transitionsRemoved = [...oldByPair.keys()].filter((p) => !newByPair.has(p)).length;
-	const transitionsRenamed = [...newByPair.entries()]
-		.filter(([pair, t]) => oldByPair.has(pair) && oldByPair.get(pair)!.name !== t.name)
-		.map(([pair, t]) => ({ from: oldByPair.get(pair)!.name, to: t.name }));
-	const requirementsChanged = [...newByPair.entries()].some(([pair, t]) => {
-		const old = oldByPair.get(pair);
-		return old && JSON.stringify(old.requires ?? null) !== JSON.stringify(t.requires ?? null);
-	});
+	const transitionDiff = diffTransitions(current.transitions, def.transitions);
 
 	const payload: Record<string, unknown> = { workflow_id: id, name };
 	if (name !== current.name) payload.renamed = { from: current.name, to: name };
@@ -1070,10 +1170,10 @@ export async function updateWorkflow(
 	if (statesRemoved.length) payload.states_removed = statesRemoved;
 	if (statesRenamed.length) payload.states_renamed = statesRenamed;
 	if (categoriesChanged.length) payload.categories_changed = categoriesChanged;
-	if (transitionsAdded) payload.transitions_added = transitionsAdded;
-	if (transitionsRemoved) payload.transitions_removed = transitionsRemoved;
-	if (transitionsRenamed.length) payload.transitions_renamed = transitionsRenamed;
-	if (requirementsChanged) payload.transition_requirements_changed = true;
+	if (transitionDiff.added) payload.transitions_added = transitionDiff.added;
+	if (transitionDiff.removed) payload.transitions_removed = transitionDiff.removed;
+	if (transitionDiff.renamed.length) payload.transitions_renamed = transitionDiff.renamed;
+	if (transitionDiff.requirementsChanged) payload.transition_requirements_changed = true;
 	const inheritanceChanged = [
 		...inh.changes,
 		...clearedInheritance.map((c) => ({
@@ -1189,6 +1289,7 @@ export async function updateWorkflow(
 		eventInsert(db, actor, { type: 'workflow.updated', payload })
 	);
 	await runAtomic(env, queries);
+	if (categoriesChanged.some((change) => change.to === 'active')) effects.signalDispatch();
 	const updated = await loadWorkflow(db, actor.userId, id);
 	if (contextSweep.deleted.length > 0) updated.deleted_context = contextSweep.deleted;
 	if (clearedInheritance.length > 0) updated.cleared_inheritance = clearedInheritance;

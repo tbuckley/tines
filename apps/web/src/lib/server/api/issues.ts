@@ -28,7 +28,8 @@ import {
 	type WorkflowState
 } from '@tines/shared';
 import { sql, type CompiledQuery, type Kysely } from 'kysely';
-import { IN_LIST_CHUNK, chunked, newId, type Database } from '$lib/server/db';
+import { IN_LIST_CHUNK, chunked, idChunks, newId, type Database } from '$lib/server/db';
+import type { DispatchEffects } from '$lib/server/dispatch-effects';
 import {
 	ApiFail,
 	notFound,
@@ -54,8 +55,10 @@ import { deriveRound, deriveSinceLastRun } from './handoff';
 import { issueLabelInserts, labelInserts, resolveOrCreateLabels } from './labels';
 import { runQuery, serializeRun } from './runs';
 import { requireTier } from './runners';
-import { getSchedule, prepareSchedule } from './schedules';
+import { getSchedule, prepareSchedule, scheduleInsertQueries } from './schedules';
+import { substringMatch } from './search';
 import { loadWorkflow, loadWorkflows } from './workflows';
+import { nextIssueNumber } from '../issue-address';
 
 /**
  * SQL for the effective category of the blocker on a `blocks` edge into
@@ -128,6 +131,11 @@ export function issueQuery(db: Kysely<Database>, userId: string) {
 			.leftJoin('issue as eff_issue', 'eff_issue.id', 'effective.effective_issue_id')
 			.leftJoin('workflow_state as eff_state', 'eff_state.id', 'eff_issue.state_id')
 			.leftJoin('scheduled_task', 'scheduled_task.id', 'issue.scheduled_task_id')
+			.leftJoin(
+				'project as scheduled_task_project',
+				'scheduled_task_project.id',
+				'scheduled_task.project_id'
+			)
 			.leftJoin('runner as pin_runner', 'pin_runner.id', 'issue.pinned_runner_id')
 			.selectAll('issue')
 			.select([
@@ -138,6 +146,8 @@ export function issueQuery(db: Kysely<Database>, userId: string) {
 				'state.position as state_position',
 				'state.inherits_from_state_id as state_inherits_from',
 				'scheduled_task.name as scheduled_task_name',
+				'scheduled_task_project.id as scheduled_task_project_id',
+				'scheduled_task_project.name as scheduled_task_project_name',
 				'pin_runner.name as pinned_runner_name'
 			])
 			.select([
@@ -268,6 +278,8 @@ export function serializeIssue(row: IssueRow): Issue {
 		labels: row.labels_json ? (JSON.parse(row.labels_json) as IssueLabel[]) : [],
 		scheduled_task_id: row.scheduled_task_id,
 		scheduled_task_name: row.scheduled_task_name,
+		scheduled_task_project_id: row.scheduled_task_project_id,
+		scheduled_task_project_name: row.scheduled_task_project_name,
 		pinned_runner_id: row.pinned_runner_id,
 		pinned_runner_name: row.pinned_runner_name,
 		pinned_tier: row.pinned_tier as ModelTier | null,
@@ -309,7 +321,7 @@ export interface IssueListFilters {
 	ready?: boolean;
 	/** Restrict to one project id (the nested per-project route). */
 	projectId?: string;
-	/** Title/description substring search. */
+	/** Literal title/description substring search, case-insensitive for ASCII. */
 	q?: string;
 	/** Label names or ids; every one must be present (AND). */
 	labels?: string[];
@@ -391,11 +403,12 @@ function applyScopeFilters(q: IssueQuery, userId: string, filters: IssueListFilt
 		);
 	}
 	if (filters.q) {
-		// Plain substring search; % and _ act as wildcards, which is harmless
-		// (and occasionally useful) for a search box.
-		const like = `%${filters.q}%`;
+		const term = filters.q;
 		q = q.where((eb) =>
-			eb.or([eb('issue.title', 'like', like), eb('issue.description', 'like', like)])
+			eb.or([
+				substringMatch(eb.ref('issue.title'), term),
+				substringMatch(eb.ref('issue.description'), term)
+			])
 		);
 	}
 	return q;
@@ -440,6 +453,21 @@ export async function countIssuesByCategory(
 	};
 	for (const row of rows) if (row.category in counts) counts[row.category] = Number(row.n);
 	return counts;
+}
+
+/** Open issue counts for every workflow in one focused project. */
+export async function countOpenIssuesByWorkflow(
+	db: Kysely<Database>,
+	userId: string,
+	projectId: string
+): Promise<Record<string, number>> {
+	const rows = await applyScopeFilters(issueQuery(db, userId), userId, { projectId })
+		.clearSelect()
+		.where(sql<boolean>`COALESCE(eff_state.category, state.category) != 'done'`)
+		.select(['issue.workflow_id', sql<number>`COUNT(*)`.as('n')])
+		.groupBy('issue.workflow_id')
+		.execute();
+	return Object.fromEntries(rows.map((row) => [row.workflow_id, Number(row.n)]));
 }
 
 export async function listIssues(
@@ -648,7 +676,13 @@ export async function loadIssueLinks(
 	const others =
 		otherIds.length === 0
 			? []
-			: await issueQuery(db, userId).where('issue.id', 'in', otherIds).execute();
+			: (
+					await Promise.all(
+						idChunks(otherIds).map((chunk) =>
+							issueQuery(db, userId).where('issue.id', 'in', chunk).execute()
+						)
+					)
+				).flat();
 	const byId = new Map(others.map((r) => [r.id, serializeIssue(r)]));
 
 	const links: IssueLinks = { blocked_by: [], blocks: [], duplicate_of: null, duplicated_by: [] };
@@ -692,12 +726,27 @@ export async function loadIssue(
 	let q = issueQuery(db, userId);
 	if ('id' in ref) q = q.where('issue.id', '=', ref.id);
 	else if ('projectId' in ref)
-		q = q.where('issue.project_id', '=', ref.projectId).where('issue.number', '=', ref.number);
+		q = q.where(({ exists, selectFrom }) =>
+			exists(
+				selectFrom('issue_address')
+					.select('issue_address.issue_id')
+					.whereRef('issue_address.issue_id', '=', 'issue.id')
+					.where('issue_address.project_id', '=', ref.projectId)
+					.where('issue_address.number', '=', ref.number)
+			)
+		);
 	else
-		q = q
-			.where('project.name', '=', ref.projectName)
-			.where('issue.number', '=', ref.number)
-			.orderBy('project.created_at desc');
+		q = q.where(({ exists, selectFrom }) =>
+			exists(
+				selectFrom('issue_address')
+					.innerJoin('project as address_project', 'address_project.id', 'issue_address.project_id')
+					.select('issue_address.issue_id')
+					.whereRef('issue_address.issue_id', '=', 'issue.id')
+					.where('address_project.user_id', '=', userId)
+					.where('address_project.name', '=', ref.projectName)
+					.where('issue_address.number', '=', ref.number)
+			)
+		);
 	const row = await q.executeTakeFirst();
 	if (!row) throw notFound();
 	return serializeIssue(row);
@@ -845,14 +894,13 @@ export function issueInsertQueries(
 ): CompiledQuery[] {
 	const { id, projectId, workflowId, stateId, now, scheduledTask } = opts;
 	return [
-		// MAX(number)+1 inside a single statement (and the batch's implicit
-		// transaction) keeps per-project numbering race-free on D1.
+		// The permanent ledger prevents reuse after the highest issue moves away.
 		db
 			.insertInto('issue')
 			.values({
 				id,
 				project_id: projectId,
-				number: sql<number>`(SELECT COALESCE(MAX(number), 0) + 1 FROM issue WHERE project_id = ${projectId})`,
+				number: nextIssueNumber(projectId),
 				title: opts.title,
 				description: opts.description,
 				workflow_id: workflowId,
@@ -864,7 +912,8 @@ export function issueInsertQueries(
 				needs_attention: 0,
 				state_entered_at: now,
 				created_at: now,
-				updated_at: now
+				updated_at: now,
+				project_assignment_token: ''
 			})
 			.compile(),
 		eventInsert(db, actor, {
@@ -888,6 +937,7 @@ export async function createIssue(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
+	effects: DispatchEffects,
 	projectId: string,
 	body: CreateIssueRequest
 ): Promise<CreateIssueResponse> {
@@ -940,33 +990,20 @@ export async function createIssue(
 	const scheduleStateId = initialState.id === workflow.initial_state_id ? null : initialState.id;
 
 	const queries: CompiledQuery[] = [];
-	if (schedule) {
-		queries.push(
-			db
-				.insertInto('scheduled_task')
-				.values({
-					id: schedule.id,
-					project_id: projectId,
-					name: schedule.name,
-					title_template: title,
-					description_template: description,
-					workflow_id: workflow.id,
-					state_id: scheduleStateId,
-					cron: schedule.recurrence.cron,
-					preset: schedule.recurrence.presetJson,
-					timezone: schedule.timezone,
-					require_all_closed: schedule.requireAllClosed ? 1 : 0,
-					enabled: 1,
-					next_run_at: schedule.nextRunAt,
-					last_run_at: now,
-					// The initial issue counts as the first run.
-					run_count: 1,
-					created_at: now,
-					updated_at: now
-				})
-				.compile()
-		);
-	}
+	const scheduleQueries = schedule
+		? scheduleInsertQueries(db, actor, {
+				schedule,
+				projectId,
+				workflowId: workflow.id,
+				stateId: scheduleStateId,
+				stateName: initialState.name,
+				titleTemplate: title,
+				descriptionTemplate: description,
+				now,
+				mode: 'initial-issue'
+			})
+		: null;
+	if (scheduleQueries) queries.push(scheduleQueries[0]);
 	queries.push(
 		...issueInsertQueries(db, actor, {
 			id,
@@ -980,22 +1017,7 @@ export async function createIssue(
 			...(schedule ? { scheduledTask: { id: schedule.id, name: schedule.name } } : {})
 		})
 	);
-	if (schedule) {
-		queries.push(
-			eventInsert(db, actor, {
-				type: 'scheduled_task.created',
-				projectId,
-				payload: {
-					schedule_id: schedule.id,
-					name: schedule.name,
-					cron: schedule.recurrence.cron,
-					timezone: schedule.timezone,
-					require_all_closed: schedule.requireAllClosed,
-					...(scheduleStateId ? { start_state: initialState.name } : {})
-				}
-			})
-		);
-	}
+	if (scheduleQueries) queries.push(scheduleQueries[1]);
 	if (resolvedLabels) {
 		queries.push(
 			...labelInserts(db, actor, resolvedLabels.toCreate),
@@ -1003,6 +1025,7 @@ export async function createIssue(
 		);
 	}
 	await runAtomic(env, queries);
+	effects.signalDispatch();
 
 	const issue = await getIssueDetail(db, actor.userId, { id });
 	if (!schedule) return issue;
@@ -1040,6 +1063,7 @@ export async function updateIssue(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
+	effects: DispatchEffects,
 	id: string,
 	body: UpdateIssueRequest
 ): Promise<IssueDetail> {
@@ -1122,7 +1146,10 @@ export async function updateIssue(
 	if (description !== current.description) changed.push('description');
 	if (workflowChanged) changed.push('workflow');
 	if (pinChanged) changed.push('pin');
-	if (changed.length === 0 && !stateChanged) return current;
+	if (changed.length === 0 && !stateChanged) {
+		effects.signalDispatch();
+		return current;
+	}
 
 	// Compare-and-swap on the state whenever it (or the workflow) moves, so a
 	// concurrent transition can't be silently overwritten; the events are
@@ -1132,12 +1159,14 @@ export async function updateIssue(
 	let update = db
 		.updateTable('issue')
 		.set({
-			title,
-			description,
-			workflow_id: workflow.id,
-			state_id: nextState.id,
-			pinned_runner_id: pinnedRunnerId,
-			pinned_tier: pinnedTier,
+			// This is a merge patch: only assign values that this request actually
+			// changed. Writing snapshot values for omitted fields lets an unrelated
+			// concurrent update get silently reverted.
+			...(title !== current.title ? { title } : {}),
+			...(description !== current.description ? { description } : {}),
+			...(workflowChanged ? { workflow_id: workflow.id } : {}),
+			...(stateChanged || workflowChanged ? { state_id: nextState.id } : {}),
+			...(pinChanged ? { pinned_runner_id: pinnedRunnerId, pinned_tier: pinnedTier } : {}),
 			updated_at: now,
 			// Every path that changes state_id stamps state_entered_at — the
 			// timestamp artifact freshness is measured against. A workflow
@@ -1210,6 +1239,7 @@ export async function updateIssue(
 			{ current_state: fresh.state, allowed_transitions: fresh.allowed_transitions }
 		);
 	}
+	effects.signalDispatch();
 	return getIssueDetail(db, actor.userId, { id });
 }
 
@@ -1264,6 +1294,7 @@ export async function transitionIssue(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
+	effects: DispatchEffects,
 	id: string,
 	body: TransitionIssueRequest
 ): Promise<IssueDetail> {
@@ -1357,6 +1388,7 @@ export async function transitionIssue(
 			{ current_state: fresh.state, allowed_transitions: fresh.allowed_transitions }
 		);
 	}
+	effects.signalDispatch();
 	return getIssueDetail(db, actor.userId, { id });
 }
 
@@ -1370,11 +1402,15 @@ export async function resumeIssue(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
+	effects: DispatchEffects,
 	id: string
 ): Promise<IssueDetail> {
 	const current = await getIssueDetail(db, actor.userId, { id });
 	await assertWritable(db, actor, issueProject(current), { issueId: current.id });
-	if (!current.needs_attention && current.attempt_count === 0) return current;
+	if (!current.needs_attention && current.attempt_count === 0) {
+		effects.signalDispatch();
+		return current;
+	}
 	await runAtomic(env, [
 		db
 			.updateTable('issue')
@@ -1388,6 +1424,7 @@ export async function resumeIssue(
 			payload: { was_parked: current.needs_attention, attempt_count_was: current.attempt_count }
 		})
 	]);
+	effects.signalDispatch();
 	return getIssueDetail(db, actor.userId, { id });
 }
 

@@ -14,6 +14,19 @@ already solved once is not re-solved per spec (Tines/170).
   on one machine.
 - A single-test run of a `describe.serial` spec generally fails: the fixture is created in
   the file's first test. Run the whole file.
+- If a polling page is followed by `ProxyController emitErrorEvent`, `Error inside
+  ProxyWorker`, or `Network connection lost` and the dev server exits, check the workspace
+  version with `pnpm --filter @tines/web exec wrangler --version`. This is the
+  [Wrangler proxy bug](https://github.com/cloudflare/workers-sdk/issues/14926) fixed by
+  [workers-sdk#15252](https://github.com/cloudflare/workers-sdk/pull/15252) and released in
+  [Wrangler 4.129.1](https://github.com/cloudflare/workers-sdk/releases/tag/wrangler%404.129.1).
+  Wrangler 4.129.1 or newer is the project-level mitigation: run
+  `pnpm install --frozen-lockfile`, stop the server process you own, and relaunch it so it
+  uses the installed version. Verify the same process survives a caught 30-second missing
+  locator timeout while at least three `/api/v1/events` polls succeed, responds to
+  `/api/time`, shows an externally posted comment through polling, and still responds
+  after the browser context closes. Short scripts or locator timeouts are not required as
+  a workaround for this known fault.
 - `e2e/` is typechecked by nothing — `pnpm check` runs `svelte-check` against
   `.svelte-kit/tsconfig.json`, whose `include` is `src/`, `test/`, `tests/` and the vite
   config (Tines/159). To check it ad hoc, drop a `tsconfig.e2e-check.json` in `apps/web`:
@@ -184,3 +197,29 @@ behaviour under test. Repeat a single spec file against a freshly seeded server 
 
 Then mutate your own fix (revert the locator, flip the config line) and confirm the check
 reds on that mutation alone.
+
+## Dana, and the one-way account
+
+`first-run-checklist.spec.ts` walks a brand-new account (`DANA` in
+`constants.mjs`) from nothing to its first agent run through the UI checklist.
+The checklist is derived from "this account has no runs" and retires the moment
+one exists, so the walk is **one-way**: no other spec may depend on Dana being
+run-free, and new cases in that file must sort after the walk. Alice always has
+seeded runs and Bob is run-free but is used by the explainer specs, which is why
+the walk gets an account of its own.
+
+The Dana daemon must use a productive harness for any work whose success or run count is
+asserted. A custom harness that only exits zero still leaves the issue eligible: the
+supervisor correctly judges it stalled and retries it up to the attempt limit.
+`first-run-checklist.spec.ts` therefore moves each issue with the delivered run key and
+waits for one terminal `completed` / `advanced` run before continuing the serial walk.
+
+Stress this one-way journey with fresh seeded servers, not `--repeat-each`:
+
+```sh
+CI=1 pnpm test:e2e first-run-checklist.spec.ts
+for iteration in $(seq 1 10); do
+	CI=1 E2E_SKIP_BUILD=1 pnpm test:e2e first-run-checklist.spec.ts \
+		> "first-run-stress-${iteration}.log" 2>&1 || exit 1
+done
+```

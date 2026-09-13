@@ -108,6 +108,25 @@ export function rememberedIssuesQuery(search: string): string {
 	return qs ? `?${qs}` : '';
 }
 
+/** Focus-safe issue-page back target, including persisted pre-focus memories. */
+export function issueBackTarget(
+	lastList: ListMemory | null,
+	focusedProjectId: string | null,
+	issuesHref: string
+): ListMemory {
+	if (!lastList) return { href: issuesHref, label: 'Issues' };
+	if (lastList.href === '/issues' || lastList.href.startsWith('/issues?')) {
+		const url = new URL(lastList.href, 'https://tines.local');
+		url.searchParams.delete('project');
+		const query = url.searchParams.toString();
+		return { ...lastList, href: `/issues${query ? `?${query}` : ''}` };
+	}
+	const match = /^\/projects\/([^/?#]+)(?:[/?#]|$)/.exec(lastList.href);
+	if (!focusedProjectId || (match && decodeURIComponent(match[1]) === focusedProjectId))
+		return lastList;
+	return { href: issuesHref, label: 'Issues' };
+}
+
 export const navMemory = {
 	/** Where the Issues nav tab should point. */
 	get issuesHref(): string {

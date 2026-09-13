@@ -1,0 +1,17 @@
+[
+	{
+		"mutation": "aggregate",
+		"failed_as_expected": true,
+		"failure": "Worker rows_read bound exceeded"
+	},
+	{
+		"mutation": "evidence",
+		"failed_as_expected": true,
+		"failure": "Worker rows_read bound exceeded"
+	},
+	{
+		"mutation": "telemetry",
+		"failed_as_expected": true,
+		"failure": "Worker rows_read telemetry absent or invalid"
+	}
+]

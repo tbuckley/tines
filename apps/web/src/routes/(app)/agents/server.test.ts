@@ -31,17 +31,19 @@ it('keeps explicit board run scope and fleet reads independent, including one-sh
 		return (await load({
 			locals: { user: { id: USER } },
 			platform: { env: t.env },
+			parent: async () => ({ projects: [], archivedProjects: [], focus: { id: 'other' } }),
 			url: new URL(`http://test/agents${query}`)
 		} as unknown as Parameters<typeof load>[0])) as {
-			runs: { id: string }[];
+			displayRuns: { id: string }[];
 			fleetRuns: { id: string }[];
 			boardProject: string | null;
 		};
 	}
 	const filtered = await page(`?project=${PROJECT}&runs_state=${STAGE_A}`);
-	expect(filtered.runs.map((r) => r.id)).toEqual([one]);
+	expect(filtered.displayRuns.map((r) => r.id)).toEqual([one]);
 	expect(filtered.fleetRuns).toHaveLength(3);
-	expect((await page(`?runs_state=${STAGE_A}`)).runs).toHaveLength(2);
+	expect((await page(`?runs_state=${STAGE_A}`)).displayRuns).toHaveLength(2);
+	expect((await page('')).displayRuns).toHaveLength(1);
 	expect((await page(`?new=rule&project=${PROJECT}`)).boardProject).toBeNull();
 	expect((await page(`?project=${PROJECT}`)).boardProject).toBe(PROJECT);
 	expect((await page('?project=demo')).boardProject).toBe(PROJECT);

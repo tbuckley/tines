@@ -103,6 +103,12 @@ test.beforeAll(async ({ playwright }) => {
 		content_type: 'text/html'
 	});
 	expect(put.status(), await put.text()).toBe(200);
+	const raceSite = await api.put(`/api/v1/issues/${issue.id}/artifacts/race-site`, {
+		type: 'text',
+		content: '<h1>SITE VERSION ONE</h1>',
+		content_type: 'text/html'
+	});
+	expect(raceSite.status(), await raceSite.text()).toBe(200);
 
 	const folder = await request.put(`/api/v1/issues/${issue.id}/artifacts/mini-app/folder`, {
 		headers: { authorization: `Bearer ${ALICE.apiKey}` },
@@ -156,7 +162,104 @@ async function openViewer(page: Page, name: string) {
 	return dialog;
 }
 
+function barrier() {
+	let release!: () => void;
+	const promise = new Promise<void>((resolve) => (release = resolve));
+	return { promise, release };
+}
+
+test('superseded site-link success and failure cannot enter a reopened site view', async ({
+	page
+}) => {
+	for (const outcome of ['success', 'failure'] as const) {
+		const first = barrier();
+		const second = barrier();
+		let requests = 0;
+		await page.route(`**/artifacts/prototype/site-link`, async (route) => {
+			requests++;
+			if (requests === 1) {
+				const response = outcome === 'success' ? await route.fetch() : null;
+				await first.promise;
+				if (response) await route.fulfill({ response });
+				else await route.abort('failed');
+			} else {
+				await second.promise;
+				await route.continue();
+			}
+		});
+
+		await gotoHydrated(page, issueUrl());
+		const dialog = await openViewer(page, 'prototype');
+		await expect.poll(() => requests).toBe(1);
+		await dialog.getByRole('button', { name: 'Source' }).click();
+		await expect(dialog.getByRole('button', { name: '← Back to the rendered page' })).toBeVisible();
+		await dialog.getByRole('button', { name: '← Back to the rendered page' }).click();
+		await expect.poll(() => requests).toBe(2);
+		first.release();
+		await expect(dialog.getByText('Preparing preview…')).toBeVisible();
+		await expect(dialog.getByText('Couldn’t open this preview — close and retry.')).toHaveCount(0);
+		await expect(dialog.getByRole('link', { name: 'Open full page' })).toHaveCount(0);
+		await expect(dialog.locator('iframe[title="prototype preview"]')).toHaveCount(0);
+		second.release();
+		await expect(dialog.locator('iframe[title="prototype preview"]')).toBeVisible();
+		await page.unroute(`**/artifacts/prototype/site-link`);
+	}
+});
+
+test('site frame, source and download share the metadata snapshot across an upload', async ({
+	page
+}) => {
+	await page.route(`**/api/v1/issues/${issue.id}/artifacts/race-site`, async (route) => {
+		const v1Detail = await route.fetch();
+		const appended = await page.request.put(`/api/v1/issues/${issue.id}/artifacts/race-site`, {
+			headers: { authorization: `Bearer ${ALICE.apiKey}` },
+			data: {
+				type: 'text',
+				content: '<h1>SITE VERSION TWO</h1>',
+				content_type: 'text/html'
+			}
+		});
+		expect(appended.status(), await appended.text()).toBe(200);
+		await route.fulfill({ response: v1Detail });
+	});
+
+	await gotoHydrated(page, issueUrl());
+	const dialog = await openViewer(page, 'race-site');
+	await expect(page.frameLocator('iframe[title="race-site preview"]').locator('h1')).toHaveText(
+		'SITE VERSION ONE'
+	);
+	const download = dialog.getByRole('link', { name: 'Download', exact: true });
+	const href = await download.getAttribute('href');
+	expect(new URL(href!, 'http://local').searchParams.get('version')).toBe('1');
+	expect(await (await page.request.get(href!)).text()).toContain('SITE VERSION ONE');
+	await dialog.getByRole('button', { name: 'Source' }).click();
+	await expect(dialog.getByText('<h1>SITE VERSION ONE</h1>', { exact: true })).toBeVisible();
+	await expect(dialog.getByText('SITE VERSION TWO')).toHaveCount(0);
+
+	await page.unroute(`**/api/v1/issues/${issue.id}/artifacts/race-site`);
+	await dialog.getByRole('button', { name: 'Close' }).click();
+	await openViewer(page, 'race-site');
+	await expect(page.frameLocator('iframe[title="race-site preview"]').locator('h1')).toHaveText(
+		'SITE VERSION TWO'
+	);
+	const versions = dialog.getByRole('combobox', { name: 'Version' });
+	await versions.selectOption('1');
+	await expect(page.frameLocator('iframe[title="race-site preview"]').locator('h1')).toHaveText(
+		'SITE VERSION ONE'
+	);
+	await versions.selectOption('current');
+	await expect(page.frameLocator('iframe[title="race-site preview"]').locator('h1')).toHaveText(
+		'SITE VERSION TWO'
+	);
+});
+
 test('an HTML artifact renders live in the viewer, with its scripts running', async ({ page }) => {
+	let requestedVersion: number | undefined;
+	page.on('request', (request) => {
+		if (request.url().endsWith(`/artifacts/prototype/site-link`)) {
+			requestedVersion = request.postDataJSON().version;
+		}
+	});
 	await gotoHydrated(page, issueUrl());
 	const dialog = await openViewer(page, 'prototype');
 
@@ -165,6 +268,7 @@ test('an HTML artifact renders live in the viewer, with its scripts running', as
 	// path would show the tags themselves.
 	await expect(frame.locator('h1')).toHaveText('Prototype heading');
 	await expect(frame.locator('#script')).toHaveText('script ran');
+	expect(requestedVersion).toBe(1);
 
 	// The whole security claim, from inside the page: `connect-src` names only
 	// this artifact's own `/s/<token>/` prefix, so the Tines API is unreachable
@@ -313,13 +417,18 @@ test('a bad token gets an HTML error page, not a JSON error or a download', asyn
 	await page.goto('/s/not-a-real-token/');
 	await expect(page.getByRole('heading', { name: 'Not found' })).toBeVisible();
 
-	// A real token with one character of its signature changed: the HMAC is
-	// the only thing standing between a reader and someone else's artifact.
+	// Changing the final base64url character can affect only unused padding bits,
+	// so change the decoded HMAC to ensure the signature bytes differ.
 	const link = await siteLink(page, 'prototype');
 	const token = new URL(link.url).pathname.split('/')[2];
-	const tampered = token.slice(0, -1) + (token.endsWith('A') ? 'B' : 'A');
-	expect(tampered).not.toBe(token);
-	await page.goto(`/s/${tampered}/`);
+	const [version, payload, signature] = token.split('.');
+	const signatureBytes = Buffer.from(signature, 'base64url');
+	expect(signatureBytes).toHaveLength(32);
+	signatureBytes[0] ^= 1;
+	const tampered = `${version}.${payload}.${signatureBytes.toString('base64url')}`;
+	expect(signatureBytes.equals(Buffer.from(signature, 'base64url'))).toBe(false);
+	const response = await page.goto(`/s/${tampered}/`);
+	expect(response?.status()).toBe(404);
 	await expect(page.getByRole('heading', { name: 'Not found' })).toBeVisible();
 
 	// A non-site artifact cannot be minted a link at all.

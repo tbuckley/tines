@@ -1,5 +1,13 @@
 <script lang="ts">
-	import type { AllowedTransition, Comment, ContextItem, WorkflowState } from '@tines/shared';
+	import type {
+		IssueTransferResult,
+		AllowedTransition,
+		Comment,
+		ContextItem,
+		ContextKind,
+		RoutingRule,
+		WorkflowState
+	} from '@tines/shared';
 	import { ApiError } from '@tines/shared';
 	import IconAlertTriangle from '@tabler/icons-svelte/icons/alert-triangle';
 	import IconArchive from '@tabler/icons-svelte/icons/archive';
@@ -13,9 +21,11 @@
 	import IconRocket from '@tabler/icons-svelte/icons/rocket';
 	import { tick, untrack } from 'svelte';
 	import { fade, slide } from 'svelte/transition';
-	import { afterNavigate, invalidate } from '$app/navigation';
+	import { afterNavigate, goto, invalidate, invalidateAll } from '$app/navigation';
+	import { page } from '$app/state';
 	import { api } from '$lib/api';
 	import AgentActivityCard from '$lib/components/AgentActivityCard.svelte';
+	import FirstRunChecklist from '$lib/components/FirstRunChecklist.svelte';
 	import ArtifactsPanel from '$lib/components/ArtifactsPanel.svelte';
 	import Clamp from '$lib/components/Clamp.svelte';
 	import ContextItemEditor from '$lib/components/ContextItemEditor.svelte';
@@ -28,6 +38,7 @@
 	import LaunchPromptDialog from '$lib/components/LaunchPromptDialog.svelte';
 	import Markdown from '$lib/components/Markdown.svelte';
 	import Modal from '$lib/components/Modal.svelte';
+	import IssueTransferModal from '$lib/components/IssueTransferModal.svelte';
 	import MoveDirectlyForm from '$lib/components/MoveDirectlyForm.svelte';
 	import PendingButton from '$lib/components/PendingButton.svelte';
 	import PhoneFold from '$lib/components/PhoneFold.svelte';
@@ -41,12 +52,42 @@
 	import { Skeleton } from '$lib/components/ui/skeleton/index.js';
 	import { Textarea } from '$lib/components/ui/textarea/index.js';
 	import { PROJECT_ARCHIVED_TOOLTIP } from '$lib/archived';
+	import { checklistItems, checklistProgress, type FirstRunInputs } from '$lib/first-run';
+	import { addRunnerToGlobalRule } from '$lib/routing';
 	import { actorLabel, prefersReducedMotion, relativeTime } from '$lib/format';
 	import { mergeLinks, type PendingAdd } from '$lib/link-overlay';
-	import { navMemory } from '$lib/nav-memory.svelte';
+	import { issueBackTarget, navMemory } from '$lib/nav-memory.svelte';
+	import { focusHint } from '$lib/focus.svelte';
+	import { resolveClientFocus } from '$lib/focus';
 	import { planTransitions } from '$lib/transitions';
 
 	let { data } = $props();
+
+	// Data requests cannot server-redirect without losing a fragment that only
+	// the browser knows. Replace the stale alias in place while retaining
+	// meaningful query/hash targets and keyboard focus.
+	$effect(() => {
+		if (page.url.pathname === data.canonicalPath) return;
+		void goto(`${data.canonicalPath}${page.url.search}${page.url.hash}`, {
+			replaceState: true,
+			keepFocus: true,
+			noScroll: true
+		});
+	});
+
+	// The project move lives on the page, not in the dialog: closing the dialog
+	// must never be able to swallow a move the server already committed.
+	let transferOpen = $state(false);
+	let transferNotice = $state<string | null>(null);
+	async function transferCompleted(result: IssueTransferResult) {
+		if (result.status === 'transferred') {
+			transferNotice = `Moved ${result.old_ref.ref} to ${result.new_ref.ref}`;
+			// Stay on the issue at its new canonical address; lists and counts on
+			// both projects moved too, so the whole tree is invalidated once.
+			await goto(`${result.issue_path}${page.url.hash}`, { replaceState: true, keepFocus: true });
+			await invalidateAll();
+		}
+	}
 
 	/** An archived project's issues read normally and write nowhere. */
 	const archived = $derived(data.issue.project_archived_at !== null);
@@ -55,7 +96,30 @@
 	// Back to the list you came from, as you left it — the issues list with its
 	// filters, or the project page. A deep link or a fresh tab has no memory and
 	// falls back to the plain issues list.
-	const backList = $derived(navMemory.lastList ?? { href: '/issues', label: 'Issues' });
+	const effectiveFocus = $derived(resolveClientFocus(focusHint.project, data.focus, data.projects));
+	const backList = $derived(
+		issueBackTarget(navMemory.lastList, effectiveFocus?.id ?? null, navMemory.issuesHref)
+	);
+	const issueProject = $derived(
+		data.projects.find((project) => project.id === data.issue.project_id)
+	);
+	const canOfferFocus = $derived(!archived && effectiveFocus?.id !== data.issue.project_id);
+	let focusing = $state(false);
+	let focusError = $state<string | null>(null);
+	async function focusIssueProject() {
+		if (!issueProject || focusing) return;
+		focusing = true;
+		focusError = null;
+		try {
+			await api.updatePreferences({ focused_project_id: issueProject.id });
+			focusHint.clear();
+			await invalidate('app:preferences');
+		} catch (err) {
+			focusError = err instanceof ApiError ? err.message : 'Failed to focus this project.';
+		} finally {
+			focusing = false;
+		}
+	}
 
 	// Mutations and the live poll refresh THIS page's load only (it declares
 	// depends('app:issue')), not the whole load graph: a full invalidate would
@@ -112,11 +176,110 @@
 	const contextItemsPanel = streamed(() => data.deferred.contextItems, issueKey);
 	const effectiveContextPanel = streamed(() => data.deferred.effectiveContext, issueKey);
 	const agentActivityPanel = streamed(
-		() => Promise.all([data.deferred.dispatch, data.deferred.issueRuns, data.deferred.runners]),
+		() =>
+			Promise.all([
+				data.deferred.dispatch,
+				data.deferred.issueRuns,
+				data.deferred.runners,
+				data.deferred.hasAnyRun,
+				data.deferred.rules
+			]),
 		issueKey
 	);
 
 	const dur = () => (prefersReducedMotion() ? 0 : 180);
+
+	// --- first-run checklist -----------------------------------------------------
+	// While the account has never had an agent run, the card shows the same
+	// seven-item checklist as the Agents tab in place of the verdict and its
+	// checks. The server flag decides whether it mounts; once mounted it stays
+	// for this page-session, so the first run can land in the last item rather
+	// than the checklist vanishing at the moment it pays off. A later load
+	// (this issue or any other) never shows it again.
+	let checklistVisible = $state(false);
+	// The server deliberately stops fetching account rules once the first run
+	// exists, because a fresh page will not mount this checklist. Keep the last
+	// run-free snapshot for the checklist that stays mounted through its landing
+	// moment, so a completed routing item cannot regress when item 7 fills in.
+	let checklistRules = $state<RoutingRule[]>([]);
+	/**
+	 * On a phone the card is one folded row, so the checklist would hide behind
+	 * it. Opened once, the first time the checklist appears — never forced
+	 * afterwards, so closing it stays closed.
+	 */
+	let agentFoldOpen = $state(false);
+	let agentFoldOpened = false;
+	// svelte-ignore state_referenced_locally
+	let checklistIssueId = $state(data.issue.id);
+	$effect(() => {
+		const panel = agentActivityPanel.current;
+		if (panel.status !== 'loaded') return;
+		if (!panel.value[3]) checklistRules = panel.value[4];
+		if (panel.value[3]) return;
+		checklistVisible = true;
+		if (!agentFoldOpened) {
+			agentFoldOpened = true;
+			agentFoldOpen = true;
+		}
+	});
+	$effect(() => {
+		// A different issue: the sticky flag belongs to the page-session of one.
+		const issueId = data.issue.id;
+		if (issueId === checklistIssueId) return;
+		checklistIssueId = issueId;
+		untrack(() => {
+			checklistVisible = false;
+			agentFoldOpened = false;
+		});
+	});
+
+	const checklistInputs = $derived.by((): FirstRunInputs | null => {
+		const panel = agentActivityPanel.current;
+		if (!checklistVisible || panel.status !== 'loaded') return null;
+		const [dispatch, runs, runners, hasAnyRun, rules] = panel.value;
+		return {
+			surface: 'issue',
+			hasAnyIssue: true,
+			hasAnyProject: true,
+			runners,
+			rules: hasAnyRun ? checklistRules : rules,
+			enabled: dispatch?.checks.find((c) => c.name === 'automation_enabled')?.ok ?? false,
+			issue: {
+				project_name: data.issue.project_name,
+				number: data.issue.number,
+				title: data.issue.title,
+				has_description: data.issue.description.trim() !== '',
+				// The issue's *effective* context: a repo item at any scope that
+				// covers it is a repo the agent would clone.
+				has_repo: data.issue.context_summary.repos > 0
+			},
+			firstRun: runs[0] ?? null,
+			// A run exists on the account but not on this issue.
+			runElsewhere: runs.length === 0 && panel.value[3]
+		};
+	});
+
+	async function enableAutomation() {
+		await api.updateSupervisorSettings({ enabled: true });
+		await refresh();
+	}
+
+	async function routeToSoleRunner() {
+		const panel = agentActivityPanel.current;
+		if (panel.status !== 'loaded') return;
+		const [, , runners, , rules] = panel.value;
+		const updated = await addRunnerToGlobalRule(rules, runners[0]);
+		// Routing can dispatch immediately now. Capture the completed rule before
+		// refresh observes the first run and freezes the landing snapshot.
+		checklistRules = [...rules.filter((rule) => rule.id !== updated.id), updated];
+		await refresh();
+	}
+
+	function startDescription() {
+		descriptionDraft = data.issue.description;
+		editingDescription = true;
+		tick().then(() => descriptionTextarea?.focus());
+	}
 
 	// Everything optimistic on this page renders as server truth + an overlay
 	// of in-flight work, never a blind local copy resynced by effect. With the
@@ -162,13 +325,26 @@
 	// Plain (non-reactive) guard, set before the fetch so an overlapping tick
 	// (slow request + interval, or interval + refocus) can't double-resync.
 	let syncing = false;
+	/** Newest account-level event id; the first non-empty observation also refreshes. */
+	let latestAccountEventId: string | null = null;
 	async function checkForUpdates() {
 		if (syncing) return;
 		syncing = true;
 		try {
-			const latest = await api.listEvents({ issue: data.issue.id, limit: 1 });
+			// While the checklist shows, three of its items tick on account-level
+			// writes (a runner registering, the rule, the kill switch) that this
+			// issue's own feed never sees — so the newest account event is watched
+			// alongside it, for that population only.
+			const watchAccount = checklistVisible;
+			const [latest, account] = await Promise.all([
+				api.listEvents({ issue: data.issue.id, limit: 1 }),
+				watchAccount ? api.listEvents({ limit: 1 }) : Promise.resolve(null)
+			]);
 			const newestId = latest.items[0]?.id ?? null;
-			if (newestId !== latestEventId) await refresh();
+			const newestAccountId = account?.items[0]?.id ?? null;
+			const accountMoved = newestAccountId !== null && newestAccountId !== latestAccountEventId;
+			latestAccountEventId = newestAccountId ?? latestAccountEventId;
+			if (newestId !== latestEventId || accountMoved) await refresh();
 		} catch {
 			// Silent — a missed poll tick just waits for the next one, or the
 			// visibility-change backstop below.
@@ -320,6 +496,12 @@
 		return parts.length > 0 ? parts.join(', ') : 'none';
 	});
 	const agentSummaryLabel = $derived.by(() => {
+		// The checklist is the whole card while it shows, and on a phone the fold
+		// row is all you see of it until you open it: say how far along it is.
+		if (checklistInputs) {
+			const { done, total } = checklistProgress(checklistItems(checklistInputs));
+			return `first run · ${done} of ${total}`;
+		}
 		const parts: string[] = [];
 		if (data.issue.active_run) parts.push(`${data.issue.active_run.runner_name} running`);
 		if (agentActivityPanel.current.status === 'loaded') {
@@ -508,8 +690,16 @@
 	let editingContextItem = $state<ContextItem | null>(null);
 	let promptDialogOpen = $state(false);
 
+	// The editor reads these when it opens, so each entry point sets them: the
+	// aside's own button attaches to this issue, the checklist's repo hint
+	// attaches a repo to the project.
+	let contextEditorDefaults = $state<{ project_id?: string; issue_id?: string }>({});
+	let contextEditorKind = $state<ContextKind | undefined>(undefined);
+
 	function openContextCreate() {
 		editingContextItem = null;
+		contextEditorDefaults = { issue_id: data.issue.id };
+		contextEditorKind = undefined;
 		contextEditorOpen = true;
 	}
 	function openContextEdit(item: ContextItem) {
@@ -524,6 +714,7 @@
 	);
 
 	let editingDescription = $state(false);
+	let descriptionTextarea = $state<HTMLTextAreaElement | null>(null);
 	let descriptionDraft = $state('');
 	let savingDescription = $state(false);
 	async function saveDescription() {
@@ -566,16 +757,45 @@
 		<IconChevronLeft size={16} class="shrink-0" />
 		<span class="truncate">{backList.label}</span>
 	</a>
+	{#if transferNotice}
+		<p class="text-sm" role="status" data-testid="transfer-notice">
+			{transferNotice}
+			<button
+				class="text-muted-foreground hover:text-foreground ml-2 underline underline-offset-2"
+				onclick={() => (transferNotice = null)}>Dismiss</button
+			>
+		</p>
+	{/if}
 	<div class="flex flex-wrap items-start justify-between gap-4">
 		<div class="min-w-0">
 			<p class="text-muted-foreground text-sm">
 				<a href="/projects/{data.issue.project_id}" class="hover:underline"
 					>{data.issue.project_name}</a
 				>
+				{#if canOfferFocus}
+					<button
+						class="hover:text-foreground ml-2 underline underline-offset-2"
+						onclick={focusIssueProject}
+						disabled={focusing}
+						title="Focus {data.issue.project_name}"
+					>
+						{focusing ? 'Focusing…' : `Focus ${data.issue.project_name}`}
+					</button>
+				{/if}
+				<button
+					class="hover:text-foreground ml-2 underline underline-offset-2"
+					onclick={() => (transferOpen = true)}
+					disabled={archived}
+					title={archived ? PROJECT_ARCHIVED_TOOLTIP : 'Move this issue to another project'}
+					data-testid="move-to-project"
+				>
+					Move to project…
+				</button>
 				<span class="font-mono">#{data.issue.number}</span>
 				{#if data.issue.scheduled_task_id}
 					<a
-						href="/projects/{data.issue.project_id}?schedule={data.issue.scheduled_task_id}"
+						href="/projects/{data.issue.scheduled_task_project_id}?schedule={data.issue
+							.scheduled_task_id}"
 						class="bg-muted text-muted-foreground hover:text-foreground ml-1 inline-flex items-center gap-1 rounded-full px-2 py-0.5 align-middle text-xs"
 						title="Created by schedule “{data.issue.scheduled_task_name}”"
 					>
@@ -584,6 +804,7 @@
 					</a>
 				{/if}
 			</p>
+			{#if focusError}<p class="text-destructive mt-1 text-xs" role="alert">{focusError}</p>{/if}
 			{#if editingTitle}
 				<form onsubmit={saveTitle} class="mt-1 flex items-center gap-2">
 					<Input bind:value={titleDraft} class="w-96 max-w-full text-lg font-semibold" autofocus />
@@ -754,10 +975,23 @@
 	</div>
 {/if}
 
+{#snippet firstRunChecklist()}
+	{#if checklistInputs}
+		<FirstRunChecklist
+			inputs={checklistInputs}
+			disabledReason={reason}
+			onroute={routeToSoleRunner}
+			onenable={enableAutomation}
+			onerror={showError}
+		/>
+	{/if}
+{/snippet}
+
 <ContextItemEditor
 	bind:open={contextEditorOpen}
 	item={editingContextItem}
-	defaults={{ issue_id: data.issue.id }}
+	defaults={contextEditorDefaults}
+	defaultKind={contextEditorKind}
 	projects={data.projects}
 	workflows={data.workflows}
 	onsaved={refresh}
@@ -816,8 +1050,10 @@
 				{#if editingDescription}
 					<div transition:slide={{ duration: dur() }}>
 						<Textarea
+							bind:ref={descriptionTextarea}
 							bind:value={descriptionDraft}
 							rows={8}
+							aria-label="Description"
 							placeholder="Describe the work (Markdown)…"
 						/>
 						<div class="mt-2 flex gap-2">
@@ -1033,7 +1269,7 @@
 	     otherwise widen the column past the viewport. -->
 	<aside class="min-w-0 space-y-8 max-sm:space-y-0 lg:col-start-2 lg:row-start-2">
 		<!-- the supervisor's view of this issue -->
-		<PhoneFold title="Agent activity" summary={agentSummaryLabel}>
+		<PhoneFold title="Agent activity" summary={agentSummaryLabel} bind:open={agentFoldOpen}>
 			{#if agentActivityPanel.current.status === 'pending'}
 				<Skeleton class="h-40 w-full" />
 			{:else if agentActivityPanel.current.status === 'loaded'}
@@ -1045,6 +1281,7 @@
 					{runners}
 					disabledReason={reason}
 					onerror={showError}
+					checklist={checklistInputs ? firstRunChecklist : undefined}
 				/>
 			{:else}
 				{@render loadFailed('agent activity')}
@@ -1139,6 +1376,14 @@
 	onmove={requestMove}
 	onopen={() => (stateSheetOpen = true)}
 />
+<IssueTransferModal
+	bind:open={transferOpen}
+	issueId={data.issue.id}
+	currentProjectId={data.issue.project_id}
+	projects={data.projects}
+	oncompleted={transferCompleted}
+/>
+
 <Modal bind:open={stateSheetOpen} title="State">
 	{@render statePanel()}
 </Modal>

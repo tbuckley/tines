@@ -3,6 +3,7 @@
  * target. The trap this replaces — appending after moving the issue files the
  * lesson in the *next* stage's journal — is scenario 2 below.
  */
+import { TEST_NOOP_DISPATCH_EFFECTS } from '$lib/server/api/test-dispatch-effects';
 import { describe, expect, it, beforeEach } from 'vitest';
 import {
 	CLOSED,
@@ -90,7 +91,9 @@ describe('journalForIssue', () => {
 	it('anchors a run key to its launch state after the issue has moved on', async () => {
 		const issue = addIssue(t);
 		const actor = runActor(issue, { stateAtStart: OPEN });
-		await transitionIssue(t.db, t.env, session, issue, { action: 'Submit for review' });
+		await transitionIssue(t.db, t.env, session, TEST_NOOP_DISPATCH_EFFECTS, issue, {
+			action: 'Submit for review'
+		});
 
 		const journal = await journalForIssue(t.db, actor, issue);
 		expect(journal.anchor).toBe('run');
@@ -106,7 +109,9 @@ describe('journalForIssue', () => {
 	it('returns the journal item at the anchored scope, and null when only the next stage has one', async () => {
 		const issue = addIssue(t);
 		const actor = runActor(issue, { stateAtStart: OPEN });
-		await transitionIssue(t.db, t.env, session, issue, { action: 'Submit for review' });
+		await transitionIssue(t.db, t.env, session, TEST_NOOP_DISPATCH_EFFECTS, issue, {
+			action: 'Submit for review'
+		});
 
 		const launchJournal = await seedJournal(OPEN, '- lesson from Open');
 		expect((await journalForIssue(t.db, actor, issue)).item?.id).toBe(launchJournal.id);
@@ -219,7 +224,9 @@ describe('journalForIssue follows the root of the inheritance chain', () => {
 		await seedJournal(REVIEW, '- review lesson');
 		const issue = addIssue(t);
 		const actor = runActor(issue, { stateAtStart: OPEN });
-		await transitionIssue(t.db, t.env, session, issue, { action: 'Submit for review' });
+		await transitionIssue(t.db, t.env, session, TEST_NOOP_DISPATCH_EFFECTS, issue, {
+			action: 'Submit for review'
+		});
 
 		const journal = await journalForIssue(t.db, actor, issue);
 		expect(journal.anchor).toBe('run');

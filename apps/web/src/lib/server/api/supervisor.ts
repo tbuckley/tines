@@ -42,6 +42,8 @@ import {
 import { computeStageStats, type StatsEvent } from '$lib/server/supervisor/stats';
 import { ApiFail, requireString, runAtomic, type ActorContext } from './core';
 import { applyEventWindow, eventInsert, eventQuery, serializeEvent } from './events';
+import type { DispatchEffects } from '$lib/server/dispatch-effects';
+import { effectiveAutomationEnabled } from '../supervisor/settings';
 
 // ---------------------------------------------------------------------------
 // Defaults & validation
@@ -167,10 +169,10 @@ export async function getSupervisorSettings(
 		.where('user_id', '=', userId)
 		.executeTakeFirst();
 	if (!row) {
-		// No row yet: the defaults, with the kill switch off — arming
-		// automation is its own explicit act for a new user.
+		// No row yet: automation inherits the product default without
+		// materialising settings on a read.
 		return {
-			enabled: false,
+			enabled: effectiveAutomationEnabled(undefined),
 			quota: DEFAULT_QUOTA,
 			attempt_limit: DEFAULT_ATTEMPT_LIMIT,
 			github_pat_hint: null,
@@ -184,7 +186,7 @@ export async function getSupervisorSettings(
 		// An unreadable quota column falls back to the default policy.
 	}
 	return {
-		enabled: row.enabled === 1,
+		enabled: effectiveAutomationEnabled(row.enabled),
 		quota,
 		attempt_limit: row.attempt_limit,
 		// The PAT is write-only: only its display hint is ever read back.
@@ -197,6 +199,7 @@ export async function updateSupervisorSettings(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
+	effects: DispatchEffects,
 	body: UpdateSupervisorSettingsRequest
 ): Promise<SupervisorSettingsResponse> {
 	const current = await getSupervisorSettings(db, actor.userId);
@@ -260,10 +263,15 @@ export async function updateSupervisorSettings(
 	if (patEnc !== undefined) changed.push('github_pat');
 
 	const now = Date.now();
+	let signaled = false;
+	const signalDispatch = () => {
+		effects.signalDispatch();
+		signaled = true;
+	};
 	if (changed.length > 0 || current.updated_at === null) {
 		await runAtomic(env, [
-			// Upsert: the row is created lazily on first write, so new users keep
-			// the pure defaults (and the off kill switch) without a signup hook.
+			// Upsert: the row is created lazily on first write. On conflict an
+			// unrelated write must preserve a concurrently saved stop/resume.
 			db
 				.insertInto('supervisor_settings')
 				.values({
@@ -275,16 +283,21 @@ export async function updateSupervisorSettings(
 					pricing: null,
 					github_pat_enc: patEnc ?? null,
 					github_pat_hint: patHint ?? null,
+					source_credentials_revision: patEnc !== undefined ? 1 : 0,
 					updated_at: now
 				})
 				.onConflict((oc) =>
 					oc.column('user_id').doUpdateSet({
-						enabled: enabled ? 1 : 0,
+						...(body.enabled !== undefined ? { enabled: enabled ? 1 : 0 } : {}),
 						quota: JSON.stringify(quota),
 						attempt_limit: attemptLimit,
 						// The PAT columns only move when this write replaces/clears them.
 						...(patEnc !== undefined
-							? { github_pat_enc: patEnc, github_pat_hint: patHint ?? null }
+							? {
+									github_pat_enc: patEnc,
+									github_pat_hint: patHint ?? null,
+									source_credentials_revision: sql`source_credentials_revision + 1`
+								}
 							: {}),
 						updated_at: now
 					})
@@ -303,6 +316,7 @@ export async function updateSupervisorSettings(
 				}
 			})
 		]);
+		signalDispatch();
 	}
 
 	// The kill switch turning off behaves like pausing every runner at once:
@@ -316,6 +330,7 @@ export async function updateSupervisorSettings(
 			env,
 			{ userId: actor.userId },
 			'automation disabled',
+			signalDispatch,
 			now
 		);
 	}
@@ -331,10 +346,14 @@ export async function updateSupervisorSettings(
 			.execute();
 		for (const run of inFlight) {
 			const result = await cancelRun(db, env, actor.userId, run.id);
-			if (result.kind === 'canceled') canceledRuns += 1;
+			if (result.kind === 'canceled') {
+				signalDispatch();
+				canceledRuns += 1;
+			}
 		}
 	}
 
+	if (!signaled) signalDispatch();
 	const settings: SupervisorSettingsResponse = await getSupervisorSettings(db, actor.userId);
 	if (canceledRuns > 0) settings.canceled_runs = canceledRuns;
 	return settings;
@@ -657,7 +676,7 @@ export async function loadStageStats(
 		db
 			.selectFrom('workflow_state as st')
 			.innerJoin('workflow as wf', 'wf.id', 'st.workflow_id')
-			.where('wf.user_id', '=', userId)
+			.where((eb) => eb.or([eb('wf.user_id', '=', userId), eb('wf.user_id', 'is', null)]))
 			.select([
 				'st.id as id',
 				'st.name as name',
@@ -870,6 +889,9 @@ export async function loadStageStats(
 		if (
 			previous &&
 			previous.kind === kind &&
+			previous.label === label &&
+			previous.state_ids.length === stateIds.length &&
+			previous.state_ids.every((id) => stateIds.includes(id)) &&
 			previous.actor === actor &&
 			row.created_at - previous.at <= 60_000
 		) {

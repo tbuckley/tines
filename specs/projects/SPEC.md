@@ -142,9 +142,9 @@ re-sent from every client; the row costs one primary-key lookup.
 is made from the client, never from the page `load` — the app preloads links on
 hover, so a load-side write would flip the focus on hover of a grid card.
 
-**`?project=` is retired as a persistent filter.** `/issues` is the one address
-for the list; `?project=<id|name>` there is a **one-shot** that sets the focus
-and redirects to `/issues` (keeping every other filter). There is no "from
+**`?project=` is retired as a persistent filter.** `/issues`, `/context`, and
+`/activity` each have one address; `?project=<id|name>` on any is a **one-shot**
+that sets the focus and redirects (keeping every other filter). There is no "from
 link" mode and no marker: after the redirect the chrome is the only thing
 saying what the scope is.
 
@@ -152,10 +152,14 @@ saying what the scope is.
 
 1. **What sets the focus:** the chrome switcher, opening `/projects/<id>`,
    creating a project (its `goto` lands on the project page), and the
-   `/issues?project=<id|name>` one-shot. Nothing else. `last_project_id` is a
+   list one-shots above. An issue in another project only offers a `Focus
+   <project>` action; merely following a cross-project link never changes focus. `last_project_id` is a
    New-issue default, not a focus, and setting a focus also sets it.
-2. **What the focus scopes:** the `/issues` list and its category counts, and
-   the project New issue opens with. No API list applies it.
+2. **What the focus scopes:** Issues and its counts; Context items anchored on
+   the project or one of its issues (with a separate shared global/state count);
+   project-tagged Activity events; workflow open-issue usage; and the Agents
+   routing/runs presentation. Runners, queue, quotas and automation controls
+   remain workspace-wide. New-item editors default to the focus. No API list applies it.
 3. **A ref that cannot be honoured writes nothing.** An unknown `?project=`
    renders the current list with "No project `<ref>`. Showing <scope>."; a ref
    naming an archived project says so and links to it. Both leave the focus as
@@ -170,8 +174,9 @@ saying what the scope is.
    next to the wordmark on desktop and on a phone alike: the phone header is
    otherwise empty between the wordmark and the avatar, while the bottom bar's
    Projects slot is a sixth of the screen and truncated the name away (human
-   review, Tines/259). The bottom bar stays pure navigation — its Projects slot
-   is a plain link to the grid.
+   review, Tines/259). The bottom bar stays pure navigation. At every width the
+   Projects tab opens the focused project's home, or the remembered grid under
+   All projects; Manage projects and the project breadcrumb lead to the grid.
 7. **Hidden below two projects.** With zero or one project the switcher does not
    render and every page looks as it did before; a single project still behaves
    as the focus for the New-issue default. The first-project experience belongs
@@ -182,9 +187,23 @@ saying what the scope is.
 9. **nav-memory** remembers the non-project Issues filters (category, state,
    label, q) per tab as before; it strips `project`, which would otherwise
    re-fire the one-shot on every click of the Issues tab.
+   Issue-page Back keeps an Issues target, but keeps a remembered project page
+   only when it matches the current focus.
 10. **Agents and the CLI.** `GET`/`PATCH /api/v1/preferences` is control-plane
    fenced, reads included: a run key gets the same 403 as for runners and
    settings. Every API list stays unscoped whatever its owner's focus is.
+11. **Client consistency.** An automatic project-page focus is optimistic, but
+    subsequent same-origin fetched reads wait for its PATCH to settle. Explicit
+    switcher choices queued during that write run afterward in click order. A
+    failed automatic write rolls back its own hint before reads resume and may
+    not erase a newer choice. Optimistic hints only resolve to projects still in
+    the live layout list, so in-app archive immediately falls back to All
+    projects. Explicit choices invalidate the shared `app:preferences`
+    dependency while the page remains resident. If navigation is already
+    waiting on the write, its destination load reads the persisted scope and
+    the live hint keeps reused chrome aligned instead of racing a second
+    invalidation against that navigation. Archive still refreshes the complete
+    project inventory.
 
 ### Non-goals
 
@@ -193,3 +212,47 @@ saying what the scope is.
 - Remembering non-project filters server-side, or more than one focus at a time.
 - Moving issues between projects, project membership (Tines/205), per-project
   labels, and project nesting.
+
+### Moving an issue to another project (Tines/392)
+
+Supersedes the non-goal above: an issue *can* be moved between projects, and a
+move preserves everything but the address. `tines issues transfer <ref>
+--project <dest>`, `GET/POST /api/v1/issues/:id/transfer` and the issue page's
+"Move to project…" all drive one contract — preview, then commit the token that
+preview returned. Project **focus** is still untouched by a move, and everything
+else in the non-goals list (membership, per-project labels, nesting) stands.
+
+1. **Identity.** The issue row keeps its ID; only `project_id`, `number`, an
+   internal assignment token and `updated_at` change. Comments, artifacts and
+   their versions and bytes, labels, links, runs, workflow/state/state-entry
+   time, gate freshness, pins, attempts, parked status and schedule membership
+   are never copied and never rewritten.
+2. **Addresses.** Every number the issue has ever held is a permanent row in
+   `issue_address`, which is also the allocator: ordinary creation, starters and
+   scheduled instances all take `MAX(issue_address.number) + 1`, so moving the
+   highest-numbered issue away cannot free its number for reuse. Old refs
+   resolve for reads and authorized writes; old browser URLs canonicalize.
+3. **Deletion.** A project that owns a historical address refuses deletion with
+   `422 project_has_issue_aliases`, `--force-context` included, and offers
+   archive instead.
+4. **Authority.** Human sessions and ordinary named keys commit; a run key may
+   read the preview and always gets `403 run_key_forbidden` on the POST.
+   Archived source or destination, and an assigned/launching/running issue, are
+   refusals with a remedy — never a drain or an automatic cancellation.
+5. **Freshness.** The preview signs a witness of the move-relevant issue,
+   context and configuration; the commit re-compares those exact SQL witnesses
+   inside its guarded UPDATE. A change means `409 transfer_preview_stale` and an
+   explicit new confirmation. Capacity, heartbeats and spending stay advisory.
+6. **No allocation on preview.** Only the confirmed move takes a number, and a
+   same-project request is a no-op: no number, no event, no token rotation.
+7. **Receipt.** Success is established inside the guarded batch by the fresh
+   assignment token and this request's transfer event, never by D1's aggregate
+   affected-row count (which includes the address trigger). Human web and CLI
+   reviews show retained guidance, effective repositories and overridden
+   candidates, checkout conflicts, and both routing explanations before commit.
+   Every ordinary routing remedy is actionable there: the web links to its
+   supplied destination or shows its command, while the CLI prints the exact
+   executable command. Checkout conflicts are identified by their exact
+   directory plus sorted effective repository IDs, classified as retained,
+   resolved or introduced, and name every participant with its side-specific
+   scope (falling back to an unresolved ID).

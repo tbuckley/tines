@@ -15,8 +15,10 @@ import {
 } from '@tines/shared';
 import type { CompiledQuery, Kysely } from 'kysely';
 import { newId, type Database } from '$lib/server/db';
+import type { DispatchEffects } from '$lib/server/dispatch-effects';
 import { ApiFail, notFound, runAtomic, type ActorContext } from './core';
 import { eventInsert } from './events';
+import { insertValues, type QueryGuard } from './query-guard';
 import { requireTier } from './runners';
 import { resolveScope, scopeLabel, toContextScope } from './scope';
 
@@ -382,6 +384,35 @@ export async function listRoutingRules(
 		}));
 }
 
+/** Rules compatible with a project, with warnings recomputed within that view. */
+export function routingRulesForProject(
+	rules: RoutingRuleWithWarnings[],
+	projectId: string
+): RoutingRuleWithWarnings[] {
+	const compatible = rules.filter(
+		(rule) => rule.scope.project_id === null || rule.scope.project_id === projectId
+	);
+	const peers: RuleForShadowing[] = compatible.map((rule) => ({
+		id: rule.id,
+		projectId: rule.scope.project_id,
+		workflowStateId: rule.scope.workflow_state_id,
+		labelId: rule.scope.label_id,
+		label: rule.scope.label
+	}));
+	return compatible.map((rule) => ({
+		...rule,
+		warnings: shadowWarnings(
+			{
+				id: rule.id,
+				projectId: rule.scope.project_id,
+				workflowStateId: rule.scope.workflow_state_id,
+				labelId: rule.scope.label_id
+			},
+			peers
+		).filter((warning) => warning.kind !== 'shadows')
+	}));
+}
+
 export async function getRoutingRule(
 	db: Kysely<Database>,
 	userId: string,
@@ -420,10 +451,71 @@ function assertNoScopeCollision(
 	}
 }
 
+/** Build an ordinary rule and its event after scope/capability validation. */
+export function routingRuleInsertQueries(
+	db: Kysely<Database>,
+	actor: ActorContext,
+	options: {
+		id: string;
+		scope: RuleScopeIds;
+		label: string;
+		targets: RoutingTarget[];
+		runnersById: Map<string, { id: string; name: string }>;
+		now: number;
+		guard?: QueryGuard;
+		eventId?: string;
+	}
+): CompiledQuery[] {
+	const { id, scope, label, runnersById, now } = options;
+	const targets = validateTargets(options.targets, runnersById);
+	assertTierOnlyScope(scope, targets);
+	return [
+		insertValues(
+			db,
+			'routing_rule',
+			{
+				id,
+				user_id: actor.userId,
+				project_id: scope.projectId,
+				workflow_state_id: scope.workflowStateId,
+				label_id: scope.labelId,
+				targets: JSON.stringify(targets),
+				created_at: now,
+				updated_at: now
+			},
+			options.guard
+		),
+		eventInsert(
+			db,
+			actor,
+			{
+				id: options.eventId,
+				createdAt: now,
+				type: 'routing_rule.created',
+				projectId: scope.projectId,
+				payload: {
+					rule_id: id,
+					workflow_state_id: scope.workflowStateId,
+					scope_label: label,
+					targets: targets.map((t) => ({
+						runner_name:
+							t.runner_id === INHERIT_RUNNER_ID
+								? INHERIT_RUNNER_ID
+								: runnersById.get(t.runner_id)?.name,
+						tier: t.tier ?? null
+					}))
+				}
+			},
+			options.guard
+		)
+	];
+}
+
 export async function createRoutingRule(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
+	effects: DispatchEffects,
 	body: CreateRoutingRuleRequest
 ): Promise<RoutingRuleWithWarnings> {
 	const scope: RuleScopeIds = {
@@ -450,37 +542,18 @@ export async function createRoutingRule(
 
 	const now = Date.now();
 	const id = newId('rul');
-	await runAtomic(env, [
-		db
-			.insertInto('routing_rule')
-			.values({
-				id,
-				user_id: actor.userId,
-				project_id: scope.projectId,
-				workflow_state_id: scope.workflowStateId,
-				label_id: scope.labelId,
-				targets: JSON.stringify(targets),
-				created_at: now,
-				updated_at: now
-			})
-			.compile(),
-		eventInsert(db, actor, {
-			type: 'routing_rule.created',
-			projectId: scope.projectId,
-			payload: {
-				rule_id: id,
-				scope_label: label,
-				workflow_state_id: scope.workflowStateId,
-				targets: targets.map((t) => ({
-					runner_name:
-						t.runner_id === INHERIT_RUNNER_ID
-							? INHERIT_RUNNER_ID
-							: runnersById.get(t.runner_id)?.name,
-					tier: t.tier ?? null
-				}))
-			}
+	await runAtomic(
+		env,
+		routingRuleInsertQueries(db, actor, {
+			id,
+			scope,
+			label,
+			targets,
+			runnersById,
+			now
 		})
-	]);
+	);
+	effects.signalDispatch();
 	return {
 		...(await getRoutingRule(db, actor.userId, id)),
 		warnings: shadowWarnings({ ...scope, id }, rules)
@@ -491,6 +564,7 @@ export async function updateRoutingRule(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
+	effects: DispatchEffects,
 	id: string,
 	body: UpdateRoutingRuleRequest
 ): Promise<RoutingRuleWithWarnings> {
@@ -532,6 +606,7 @@ export async function updateRoutingRule(
 	assertTierOnlyScope(scope, targets);
 
 	if (!scopeChanged && JSON.stringify(targets) === row.targets) {
+		effects.signalDispatch();
 		return {
 			...serializeRule(row, runnersById),
 			warnings: shadowWarnings({ ...scope, id }, rules)
@@ -567,6 +642,7 @@ export async function updateRoutingRule(
 			}
 		})
 	]);
+	effects.signalDispatch();
 	return {
 		...(await getRoutingRule(db, actor.userId, id)),
 		warnings: shadowWarnings({ ...scope, id }, rules)
@@ -633,6 +709,7 @@ export async function deleteRoutingRule(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
+	effects: DispatchEffects,
 	id: string
 ): Promise<void> {
 	const row = await ruleQuery(db, actor.userId)
@@ -651,4 +728,5 @@ export async function deleteRoutingRule(
 			}
 		})
 	]);
+	effects.signalDispatch();
 }

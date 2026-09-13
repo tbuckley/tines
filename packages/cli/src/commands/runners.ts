@@ -1,15 +1,16 @@
 /** `tines runners` / `runner` / `runs` — the runner registry, the local daemon, and agent runs. */
-import { hostname } from 'node:os';
 import {
 	client,
 	die,
 	fetchList,
+	isUsageIdentity,
 	printJson,
 	printList,
 	resolveApiKey,
 	resolveIssue,
+	resolveProject,
 	resolveRunner,
-	resolveStateFlag,
+	resolveWorkflow,
 	resolveUrl,
 	table,
 	withCommon,
@@ -27,22 +28,51 @@ import {
 	saveRunnerCredentials,
 	workspacesDir
 } from '../daemon/store.js';
-import {
-	HARNESS_KINDS,
-	KEEP_WORKSPACES_MODES,
-	type HarnessKind,
-	type KeepWorkspacesMode
-} from '../daemon/support.js';
+import { parseDaemonFlags, withDaemonFlags, type DaemonFlagValues } from './daemon-flags.js';
+import { registerServiceCommands } from './runner-service.js';
 import { issueRef, keptWorkspaceRow, runRow, runnerStatusLabel, timestamp } from '../format.js';
 import {
+	DEFAULT_RESUME_MAX_COST_USD,
+	DEFAULT_RESUME_MAX_TOKENS,
+	DEFAULT_RESUME_MAX_TURNS,
+	DEFAULT_RESUME_WINDOW_HOURS,
 	isStaleTierOverride,
 	MODEL_TIERS,
+	runCostLabel,
 	runDurationLabel,
 	type ModelTier,
 	type Runner,
+	type UsagePendingRun,
 	type UpdateRunnerRequest
 } from '@tines/shared';
-import type { Command } from 'commander';
+import { InvalidArgumentError, Option, type Command } from 'commander';
+import { usageEvidenceLines } from '../usage-format.js';
+
+function parseBoolean(value: string): boolean {
+	if (value === 'true') return true;
+	if (value === 'false') return false;
+	throw new InvalidArgumentError('must be true or false');
+}
+
+function boundedInteger(min: number, max: number) {
+	return (value: string): number => {
+		if (!/^\d+$/.test(value))
+			throw new InvalidArgumentError(`must be an integer between ${min} and ${max}`);
+		const parsed = Number(value);
+		if (!Number.isSafeInteger(parsed) || parsed < min || parsed > max) {
+			throw new InvalidArgumentError(`must be an integer between ${min} and ${max}`);
+		}
+		return parsed;
+	};
+}
+
+function resumeCost(value: string): number {
+	const parsed = Number(value);
+	if (!Number.isFinite(parsed) || parsed <= 0 || parsed > 1000) {
+		throw new InvalidArgumentError('must be greater than 0 and at most 1000');
+	}
+	return parsed;
+}
 
 /** The tier mapping, shared by `runners show` and `runners tiers`. */
 function printTierTable(runner: Runner): void {
@@ -114,6 +144,12 @@ export function register(program: Command): void {
 			if (runner.type !== 'local') {
 				console.log(`api key: ${runner.has_api_key ? 'set (write-only)' : 'missing'}`);
 			}
+			console.log(
+				`resume awaiting sessions: ${(runner.resume_enabled ?? false) ? 'enabled' : 'disabled'}  window: ${runner.resume_window_hours ?? DEFAULT_RESUME_WINDOW_HOURS}h (staged; runtime continuation unavailable)`
+			);
+			console.log(
+				`resume limits: ${runner.resume_max_turns ?? DEFAULT_RESUME_MAX_TURNS} local turns  ${(runner.resume_max_tokens ?? DEFAULT_RESUME_MAX_TOKENS).toLocaleString()} managed tokens  $${runner.resume_max_cost_usd ?? DEFAULT_RESUME_MAX_COST_USD} managed cost`
+			);
 			if (runner.budget) {
 				const b = runner.budget;
 				const parts: string[] = [];
@@ -125,6 +161,60 @@ export function register(program: Command): void {
 				if (parts.length > 0) console.log(`budget: ${parts.join('  ')}`);
 			}
 			printTierTable(runner);
+		}
+	);
+
+	withCommon(
+		runners
+			.command('edit <name>')
+			.description('Edit staged awaiting-session continuation policy (runtime unavailable)')
+			.option(
+				'--resume-enabled <true|false>',
+				'stage opt-in policy (enabling is unavailable until provider support ships)',
+				parseBoolean
+			)
+			.option('--resume-window-hours <n>', 'continuation window (1-168)', boundedInteger(1, 168))
+			.option(
+				'--resume-max-turns <n>',
+				'local conversation turn limit (1-1000)',
+				boundedInteger(1, 1000)
+			)
+			.option(
+				'--resume-max-tokens <n>',
+				'managed conversation token limit (1-10000000)',
+				boundedInteger(1, 10_000_000)
+			)
+			.option('--resume-max-cost-usd <n>', 'managed conversation cost limit (0-1000]', resumeCost)
+	).action(
+		async (
+			ref: string,
+			opts: CommonOpts & {
+				resumeEnabled?: boolean;
+				resumeWindowHours?: number;
+				resumeMaxTurns?: number;
+				resumeMaxTokens?: number;
+				resumeMaxCostUsd?: number;
+			}
+		) => {
+			const patch: UpdateRunnerRequest = {
+				...(opts.resumeEnabled !== undefined ? { resume_enabled: opts.resumeEnabled } : {}),
+				...(opts.resumeWindowHours !== undefined
+					? { resume_window_hours: opts.resumeWindowHours }
+					: {}),
+				...(opts.resumeMaxTurns !== undefined ? { resume_max_turns: opts.resumeMaxTurns } : {}),
+				...(opts.resumeMaxTokens !== undefined ? { resume_max_tokens: opts.resumeMaxTokens } : {}),
+				...(opts.resumeMaxCostUsd !== undefined
+					? { resume_max_cost_usd: opts.resumeMaxCostUsd }
+					: {})
+			};
+			if (Object.keys(patch).length === 0) die('provide at least one resume setting');
+			const api = client(opts);
+			const runner = await resolveRunner(api, ref);
+			const updated = await api.updateRunner(runner.id, patch);
+			if (opts.json) return printJson(updated);
+			console.log(
+				`updated runner "${updated.name}"; awaiting-session resume is ${updated.resume_enabled ? 'enabled' : 'disabled'}`
+			);
 		}
 	);
 
@@ -333,27 +423,13 @@ export function register(program: Command): void {
 	const runnerCmd = program.command('runner').description('The local runner daemon');
 
 	withCommon(
-		runnerCmd
-			.command('daemon')
-			.description(
-				'Run the local runner daemon: register/reconnect, poll for assigned runs, execute them'
-			)
-			.option(
-				'--name <name>',
-				'runner name, unique per user; name it machine-plus-harness, e.g. macbook-claude (default: this hostname)'
-			)
-			.option('--harness <harness>', 'claude-code | codex | custom', 'claude-code')
-			.option(
-				'--command <template>',
-				'custom harness command template ({prompt_file}, {workspace}, {model})'
-			)
-			.option('--max-concurrent <n>', 'maximum simultaneous runs', (v) => Number.parseInt(v, 10), 1)
-			.option(
-				'--poll-interval <seconds>',
-				'seconds between polls',
-				(v) => Number.parseInt(v, 10),
-				15
-			)
+		withDaemonFlags(
+			runnerCmd
+				.command('daemon')
+				.description(
+					'Run the local runner daemon in the foreground: register/reconnect, poll for assigned runs, execute them (`tines runner install` runs it as a service instead)'
+				)
+		)
 			.option(
 				'--no-cli-refresh',
 				'do not install/refresh the agent-facing tines CLI from npm (harnesses use the ambient PATH)'
@@ -362,87 +438,29 @@ export function register(program: Command): void {
 				'--no-self-update',
 				'do not exit for the service manager to relaunch a newer daemon (only applies when launched from the daemon-managed prefix)'
 			)
-			.option(
-				'--keep-workspaces <mode>',
-				"keep settled runs' workspaces for debugging: never | failed | always",
-				'never'
-			)
-			.option(
-				'--keep-workspaces-for <hours>',
-				'delete kept workspaces older than this',
-				(v) => Number(v),
-				72
-			)
-			.option(
-				'--keep-workspaces-max <n>',
-				'keep at most this many workspaces (oldest removed first)',
-				(v) => Number.parseInt(v, 10),
-				20
-			)
 	).action(
-		async (
-			opts: CommonOpts & {
-				name?: string;
-				harness: string;
-				command?: string;
-				maxConcurrent: number;
-				pollInterval: number;
-				cliRefresh: boolean;
-				selfUpdate: boolean;
-				keepWorkspaces: string;
-				keepWorkspacesFor: number;
-				keepWorkspacesMax: number;
-			}
-		) => {
-			const harness = opts.harness.replaceAll('-', '_') as HarnessKind;
-			if (!HARNESS_KINDS.includes(harness)) {
-				die(`--harness must be claude-code, codex, or custom, got "${opts.harness}"`);
-			}
-			if (harness === 'custom' && !opts.command) {
-				die(
-					'the custom harness needs --command "<template>" ({prompt_file}, {workspace}, {model})'
-				);
-			}
-			if (harness !== 'custom' && opts.command) die('--command only applies to --harness custom');
-			if (
-				!Number.isInteger(opts.maxConcurrent) ||
-				opts.maxConcurrent < 1 ||
-				opts.maxConcurrent > 100
-			) {
-				die('--max-concurrent must be an integer between 1 and 100');
-			}
-			if (!Number.isInteger(opts.pollInterval) || opts.pollInterval < 1) {
-				die('--poll-interval must be a positive number of seconds');
-			}
-			const keepWorkspaces = opts.keepWorkspaces as KeepWorkspacesMode;
-			if (!KEEP_WORKSPACES_MODES.includes(keepWorkspaces)) {
-				die(
-					`--keep-workspaces must be ${KEEP_WORKSPACES_MODES.join(', ')}, got "${opts.keepWorkspaces}"`
-				);
-			}
-			if (!Number.isFinite(opts.keepWorkspacesFor) || opts.keepWorkspacesFor <= 0) {
-				die('--keep-workspaces-for must be a positive number of hours');
-			}
-			if (!Number.isInteger(opts.keepWorkspacesMax) || opts.keepWorkspacesMax < 1) {
-				die('--keep-workspaces-max must be a positive integer');
-			}
+		async (opts: CommonOpts & DaemonFlagValues & { cliRefresh: boolean; selfUpdate: boolean }) => {
+			const settings = parseDaemonFlags(opts);
 			await runDaemon({
 				url: resolveUrl(opts).replace(/\/+$/, ''),
 				apiKey: resolveApiKey(opts),
-				name: opts.name ?? hostname(),
-				harness,
-				command: opts.command,
-				maxConcurrent: opts.maxConcurrent,
-				pollIntervalMs: opts.pollInterval * 1000,
+				name: settings.name,
+				harness: settings.harness,
+				command: settings.command,
+				maxConcurrent: settings.maxConcurrent,
+				pollIntervalMs: settings.pollIntervalSeconds * 1000,
 				configDir: defaultConfigDir(),
 				cliRefresh: opts.cliRefresh,
 				selfUpdate: opts.selfUpdate,
-				keepWorkspaces,
-				keepWorkspacesForHours: opts.keepWorkspacesFor,
-				keepWorkspacesMax: opts.keepWorkspacesMax
+				keepWorkspaces: settings.keepWorkspaces,
+				keepWorkspacesForHours: settings.keepWorkspacesForHours,
+				keepWorkspacesMax: settings.keepWorkspacesMax
 			});
 		}
 	);
+
+	// --- runner as a service ------------------------------------------------------
+	registerServiceCommands(runnerCmd);
 
 	// --- kept workspaces ---------------------------------------------------------
 	// Pure filesystem, no API: these read the same config dir the daemon writes,
@@ -506,34 +524,126 @@ export function register(program: Command): void {
 			.description('List runs, newest first')
 			.option('-i, --issue <ref>', 'filter to one issue (<project>/<number>)')
 			.option('-r, --runner <name>', 'filter by runner name')
-			.option('--state <workflow/state>', 'filter by state at run start')
 			.option('--active', 'only runs holding a claim (assigned/launching/running)')
-	).action(
-		async (
-			opts: ListOpts & { issue?: string; runner?: string; state?: string; active?: boolean }
-		) => {
-			const api = client(opts);
-			const issueId = opts.issue ? (await resolveIssue(api, opts.issue)).id : undefined;
-			const runnerId = opts.runner ? (await resolveRunner(api, opts.runner)).id : undefined;
-			const stateId = opts.state ? (await resolveStateFlag(api, opts.state)).state.id : undefined;
-			const res = await fetchList(opts, (page) =>
-				api.listRuns({
-					issue: issueId,
-					runner: runnerId,
-					state: stateId,
-					active: opts.active ? true : undefined,
-					...page
-				})
-			);
-			printList(res, opts, (items) => {
-				if (items.length === 0) return console.log(opts.active ? 'no active runs' : 'no runs');
+			.addOption(
+				new Option('--population <mode>', 'period evidence population').choices([
+					'finalized',
+					'pending'
+				])
+			)
+			.option('--from <timestamp>', 'inclusive period start')
+			.option('--to <timestamp>', 'exclusive period cutoff')
+			.option('--timezone <iana>', 'period display timezone (with --timezone-source)')
+			.option('--timezone-source <source>', 'supervisor_budget or utc_fallback')
+			.option('--project <name-or-id>', 'project, including archived')
+			.option('--workflow <name-or-id>', 'workflow')
+			.option('--state <id>', 'starting state id')
+			.option('--tier <tier>', 'model tier')
+			.addOption(
+				new Option('--outcome <outcome>', 'recorded outcome').choices([
+					'advanced',
+					'stalled',
+					'interrupted',
+					'unknown'
+				])
+			)
+			.addOption(
+				new Option('--accounting-status <status>', 'usage accounting status').choices([
+					'priced',
+					'unpriced',
+					'unreported'
+				])
+			)
+	).action(async (opts: ListOpts & { issue?: string; runner?: string; active?: boolean }) => {
+		const api = client(opts);
+		const evidence = opts as ListOpts & {
+			population?: 'finalized' | 'pending';
+			from?: string;
+			to?: string;
+			project?: string;
+			workflow?: string;
+			state?: string;
+			tier?: string;
+			outcome?: string;
+			accountingStatus?: string;
+			timezone?: string;
+			timezoneSource?: 'supervisor_budget' | 'utc_fallback';
+		};
+		if ((evidence.from === undefined) !== (evidence.to === undefined))
+			die('--from and --to are required together');
+		if ((evidence.from || evidence.to) && !evidence.population)
+			die('period filters require --population');
+		if ((evidence.timezone === undefined) !== (evidence.timezoneSource === undefined))
+			die('--timezone and --timezone-source are required together');
+		if (evidence.population && opts.limit !== undefined && opts.limit > 100)
+			die('period evidence --limit must be at most 100');
+		const issueId = opts.issue ? (await resolveIssue(api, opts.issue)).id : undefined;
+		const runnerId = opts.runner
+			? evidence.population && isUsageIdentity(opts.runner, 'rnr')
+				? opts.runner
+				: (await resolveRunner(api, opts.runner)).id
+			: undefined;
+		const projectId = evidence.project
+			? evidence.population && isUsageIdentity(evidence.project, 'prj')
+				? evidence.project
+				: (await resolveProject(api, evidence.project)).id
+			: undefined;
+		const workflowId = evidence.workflow
+			? evidence.population && isUsageIdentity(evidence.workflow, 'wf')
+				? evidence.workflow
+				: (await resolveWorkflow(api, evidence.workflow)).id
+			: undefined;
+		const res = await fetchList(opts, (page) =>
+			api.listRuns({
+				issue: issueId,
+				runner: runnerId,
+				active: opts.active ? true : undefined,
+				population: evidence.population,
+				from: evidence.from,
+				to: evidence.to,
+				project: projectId,
+				workflow: workflowId,
+				state: evidence.state,
+				tier: evidence.tier,
+				outcome: evidence.outcome as never,
+				accounting_status: evidence.accountingStatus as never,
+				timezone: evidence.timezone,
+				timezone_source: evidence.timezoneSource,
+				...page
+			})
+		);
+		printList(res, opts, (items) => {
+			if (items.length === 0) return console.log(opts.active ? 'no active runs' : 'no runs');
+			if (evidence.population === 'pending') {
 				table([
-					['ID', 'ISSUE', 'RUNNER', 'TIER', 'STATUS', 'DURATION', 'COST', 'CREATED'],
-					...items.map(runRow)
+					['ID', 'ISSUE', 'RUNNER', 'TIER', 'STATUS', 'COST', 'CREATED'],
+					...(items as unknown as UsagePendingRun[]).map((run) => [
+						run.id,
+						run.issue_ref ? `${run.issue_ref.project_name}/${run.issue_ref.number}` : run.issue_id,
+						run.runner_name,
+						run.tier,
+						'Pending at cutoff',
+						'—',
+						timestamp(run.created_at)
+					])
 				]);
-			});
-		}
-	);
+				return;
+			}
+			table([
+				['ID', 'ISSUE', 'RUNNER', 'TIER', 'STATUS', 'DURATION', 'COST', 'CREATED'],
+				...items.map(runRow)
+			]);
+			if (evidence.population === 'finalized')
+				for (const run of items)
+					if (run.usage_dimensions && run.usage_accounting)
+						for (const line of usageEvidenceLines(
+							run.id,
+							run.usage_dimensions,
+							run.usage_accounting
+						))
+							console.log(line);
+		});
+	});
 
 	withCommon(
 		runsCmd
@@ -547,7 +657,9 @@ export function register(program: Command): void {
 			const api = client(opts);
 			const run = await api.getRun(id);
 			if (opts.json) return printJson(run);
-			console.log(`${run.id}  ${run.status}  on ${run.runner_name}`);
+			console.log(
+				`${run.id}  ${run.status}  on ${run.runner_name}${run.resumed_from_run_id ? `  · resumed run ${run.resumed_from_run_id}` : ''}`
+			);
 			if (run.issue_ref) console.log(`issue: ${issueRef(run.issue_ref)} — ${run.issue_ref.title}`);
 			console.log(`tier: ${run.tier}  model: ${run.model ?? '(n/a)'}`);
 			console.log(
@@ -558,16 +670,48 @@ export function register(program: Command): void {
 			);
 			if (run.usage) {
 				const u = run.usage;
-				const parts: string[] = [];
-				if (u.input_tokens !== undefined || u.output_tokens !== undefined) {
-					parts.push(
-						`${(u.input_tokens ?? 0).toLocaleString()} in / ${(u.output_tokens ?? 0).toLocaleString()} out tokens`
+				const costLabel = runCostLabel(run);
+				const metric = (value: number | undefined) =>
+					value === undefined ? 'unknown' : value.toLocaleString();
+				console.log(
+					`usage: input ${metric(u.input_tokens)}  cache-read ${metric(u.cache_read_tokens)}  cache-write ${metric(u.cache_write_tokens)}  output ${metric(u.output_tokens)}`
+				);
+				if (u.cost_usd !== undefined)
+					console.log(
+						`cost: ${runCostLabel(run)}${u.cost_source === undefined ? ' · source unavailable' : ''}`
+					);
+				const pricing = u.pricing;
+				if (pricing?.status === 'provider_authoritative')
+					console.log('cost provenance: provider-reported amount is authoritative');
+				if (pricing?.status === 'unpriced') console.log(`cost: Unpriced (${pricing.reason})`);
+				else if (u.cost_usd === undefined && costLabel === 'Unpriced')
+					console.log('cost: Unpriced');
+				if (pricing?.status === 'calculated') {
+					const b = pricing.basis;
+					console.log(`cost provenance: Estimated standard API list-price equivalent`);
+					console.log(`  model: ${b.model} (${b.model_identity})`);
+					console.log(
+						`  rate: ${b.rate_id} v${b.rate_version}; adopted ${new Date(b.rate_adopted_at).toISOString()}`
+					);
+					console.log(
+						`  source: ${b.source_url} (checked ${b.source_checked_at}${b.source_effective_at ? `; effective ${b.source_effective_at}` : ''})`
+					);
+					console.log(
+						`  rates USD/1M: input ${b.rates.input_tokens}  cache-read ${b.rates.cache_read_tokens}  cache-write ${b.rates.cache_write_tokens ?? 'unpublished'}  output ${b.rates.output_tokens}`
+					);
+					console.log(`  exact estimated USD: ${b.cost_usd_exact}`);
+					console.log('  Standard API list-price estimate; not an invoice or subscription usage.');
+				}
+				const proof = pricing?.evidence?.request_context;
+				if (proof?.status === 'complete') {
+					console.log(
+						`request context: ${proof.request_count.toLocaleString()} verified · largest input ${proof.max_request_input_tokens.toLocaleString()} · Codex ${proof.harness_version} · ${proof.normalization}`
+					);
+				} else if (proof) {
+					console.log(
+						`request context: ${proof.status} (${proof.reason})${proof.harness_version ? ` · Codex ${proof.harness_version}` : ''} · ${proof.normalization}`
 					);
 				}
-				if (u.cost_usd !== undefined) parts.push(`$${u.cost_usd.toFixed(2)}`);
-				if (u.cost_source)
-					parts.push(`(${u.cost_source === 'provider' ? 'provider-reported' : u.cost_source})`);
-				if (parts.length > 0) console.log(`usage: ${parts.join('  ')}`);
 			}
 			if (run.provider_session_id) console.log(`provider session: ${run.provider_session_id}`);
 			if (run.provider_url) console.log(`provider console: ${run.provider_url}`);

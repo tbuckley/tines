@@ -5,6 +5,7 @@ import {
 	type ContextFile,
 	type ContextKind,
 	type CreateWorkflowRequest,
+	type CreateContextItemRequest,
 	type ImportAction,
 	type ImportLibraryRequest,
 	type ImportLibraryResponse,
@@ -17,24 +18,31 @@ import {
 	type WorkflowStateInput,
 	type WorkflowTransitionInput
 } from '@tines/shared';
+import { applyLibraryV3Import, planLibraryV3Import } from './library-v3-import';
 import type { Kysely } from 'kysely';
 import type { Database } from '$lib/server/db';
-import { ApiFail, type ActorContext } from './core';
+import { ApiFail, requireString, type ActorContext } from './core';
 import {
 	contextItemQuery,
 	createContextItem,
 	isJournal,
 	loadFiles,
-	updateContextItem
+	updateContextItem,
+	validateContextCreateFields
 } from './context';
-import { createLabel, resolveLabelRef } from './labels';
-import { createProject } from './projects';
+import { createLabel, resolveLabelRef, normalizeLabelName } from './labels';
+import { createProject, validateProjectFields } from './projects';
+import type { DispatchEffects } from '$lib/server/dispatch-effects';
+import { projectArchivedError } from './archive';
 import {
 	createWorkflow,
 	loadWorkflows,
 	updateWorkflow,
 	workflowAsRequest,
-	workflowFingerprint
+	workflowFingerprint,
+	validateWorkflowCreateFields,
+	resolveInheritance,
+	type ResolvedDef
 } from './workflows';
 
 // ---------------------------------------------------------------------------
@@ -214,16 +222,15 @@ function splitCandidates(ref: string): [string, string][] {
 	return out;
 }
 
-/** First candidate that resolves, or undefined. */
+/** A legacy slash reference is usable only when exactly one split resolves. */
 function resolveStateRef<T>(
 	ref: string,
 	resolve: (workflow: string, state: string) => T | undefined
 ): T | undefined {
-	for (const [workflow, state] of splitCandidates(ref)) {
-		const found = resolve(workflow, state);
-		if (found !== undefined) return found;
-	}
-	return undefined;
+	const matches = splitCandidates(ref)
+		.map(([workflow, state]) => resolve(workflow, state))
+		.filter((value): value is T => value !== undefined);
+	return matches.length === 1 ? matches[0] : undefined;
 }
 
 /** The ref as a message names it, matching the inheritance 422s: `<workflow> / <state>`. */
@@ -324,7 +331,7 @@ export function assertImportableDocument(doc: LibraryDocument | undefined | null
 			{ field: 'document.format' }
 		);
 	}
-	if (typeof doc.version !== 'number' || doc.version > LIBRARY_VERSION) {
+	if (doc.version !== 1 && doc.version !== 2) {
 		throw new ApiFail(
 			422,
 			'unsupported_format',
@@ -335,6 +342,14 @@ export function assertImportableDocument(doc: LibraryDocument | undefined | null
 	const projects = doc.projects ?? [];
 	const workflows = doc.workflows ?? [];
 	const context = doc.context ?? [];
+	for (const [name, entries] of [
+		['projects', projects],
+		['workflows', workflows],
+		['context', context]
+	] as const) {
+		if (!Array.isArray(entries))
+			throw new ApiFail(422, 'invalid_field', `document.${name} must be an array`);
+	}
 	const total = projects.length + workflows.length + context.length;
 	if (total > LIBRARY_MAX_ENTRIES) {
 		throw new ApiFail(
@@ -373,13 +388,76 @@ export async function planImport(
 	userId: string,
 	request: ImportLibraryRequest
 ): Promise<ImportPlan> {
-	const doc = assertImportableDocument(request.document);
+	if (request.document?.version === 3) return planLibraryV3Import(db, userId, request);
+	const doc = assertImportableDocument(request.document as LibraryDocument);
 	const overwrite = request.on_collision === 'overwrite';
 	const createProjects = request.create_projects !== false;
 	const includeJournals = request.include_journals !== false;
+	// Version 1 had no inheritance semantics. Some hand-authored v1 files did
+	// nevertheless contain the later field; accepting those bytes must not let
+	// them compare, clear, or set a destination pointer.
+	const rawWorkflows =
+		doc.version >= 2
+			? doc.workflows
+			: doc.workflows.map((workflow) => ({
+					...workflow,
+					states: Array.isArray(workflow?.states)
+						? workflow.states.map((state) => {
+								if (!state || typeof state !== 'object') return state;
+								const { inherits_from: _ignored, ...rest } = state;
+								return rest;
+							})
+						: workflow?.states
+				}));
+
+	const invalidWorkflows: PlannedStep[] = [];
+	const documentWorkflows: CreateWorkflowRequest[] = [];
+	for (const raw of rawWorkflows) {
+		try {
+			const { name, description, def } = validateWorkflowCreateFields(raw);
+			const names = new Map(def.states.map((state) => [state.id, state.name]));
+			documentWorkflows.push({
+				name,
+				description,
+				initial_state: names.get(def.initialStateId)!,
+				states: def.states.map((state) => ({
+					name: state.name,
+					category: state.category,
+					...(state.prompt === undefined ? {} : { prompt: state.prompt }),
+					...(state.inheritsFrom === undefined
+						? {}
+						: {
+								inherits_from:
+									state.inheritsFrom === null
+										? null
+										: (names.get(state.inheritsFrom) ?? state.inheritsFrom)
+							})
+				})),
+				transitions: def.transitions.map((transition) => ({
+					name: transition.name,
+					from: names.get(transition.from_state_id)!,
+					to: names.get(transition.to_state_id)!,
+					...(transition.requires ? { requires: transition.requires } : {})
+				}))
+			});
+		} catch (error) {
+			invalidWorkflows.push({
+				entry: {
+					section: 'workflow',
+					ref: `workflow "${raw?.name ?? '(invalid)'}"`,
+					action: 'error',
+					reason: errorMessage(error)
+				}
+			});
+		}
+	}
 
 	const [projectRows, workflowRows, contextRows, labelRows] = await Promise.all([
-		db.selectFrom('project').select(['id', 'name']).where('user_id', '=', userId).execute(),
+		db
+			.selectFrom('project')
+			.select(['id', 'name', 'archived_at'])
+			.where('user_id', '=', userId)
+			.execute(),
 		loadWorkflows(db, userId),
 		contextItemQuery(db, userId).where('context_item.issue_id', 'is', null).execute(),
 		db.selectFrom('label').select(['id', 'name']).where('user_id', '=', userId).execute()
@@ -390,18 +468,45 @@ export async function planImport(
 	// Name → id for what exists now. Projects and workflows created earlier in
 	// this same plan are recorded as `null`: known by name, id not yet known.
 	const projectIds = new Map<string, string | null>(projectRows.map((p) => [p.name, p.id]));
+	const sourceNames = new Map<string, number>();
+	const destinationNames = new Map<string, WorkflowResponse[]>();
+	for (const wf of rawWorkflows) {
+		const name = typeof wf?.name === 'string' ? wf.name.trim() : null;
+		if (name) sourceNames.set(name, (sourceNames.get(name) ?? 0) + 1);
+	}
+	for (const wf of workflowRows)
+		destinationNames.set(wf.name, [...(destinationNames.get(wf.name) ?? []), wf]);
+	const ambiguousNames = new Set([
+		...[...sourceNames].filter(([, count]) => count > 1).map(([name]) => name),
+		...[...destinationNames].filter(([, rows]) => rows.length > 1).map(([name]) => name)
+	]);
+	const ambiguityReason =
+		'ambiguous workflow name in this legacy file or destination — use a v3 ID-addressed export or disambiguate the workflow names before importing';
 	const stateIds = new Map<string, string | null>();
 	for (const wf of workflowRows) {
-		for (const s of wf.states) stateIds.set(`${wf.name}${SEP}${s.name}`, s.id);
+		if (ambiguousNames.has(wf.name)) continue;
+		for (const state of wf.states) stateIds.set(`${wf.name}${SEP}${state.name}`, state.id);
 	}
-	const workflowNames = new Map(workflowRows.map((wf) => [wf.name, wf]));
+	const workflowNames = new Map(
+		workflowRows.filter((wf) => !ambiguousNames.has(wf.name)).map((wf) => [wf.name, wf])
+	);
+	const candidateStates = new Set<string>();
+	for (const wf of [...workflowRows, ...documentWorkflows])
+		for (const state of wf.states) candidateStates.add(`${wf.name}${SEP}${state.name}`);
+	const ambiguousPointer = (workflow: CreateWorkflowRequest) =>
+		[...documentPointers(workflow).values()].find((ref) => {
+			const candidates = splitCandidates(ref).filter(([w, n]) =>
+				candidateStates.has(`${w}${SEP}${n}`)
+			);
+			return candidates.length > 1 || candidates.some(([name]) => ambiguousNames.has(name));
+		});
 	const baseRef = baseRefIndex(workflowRows);
 	// A project's default workflow resolves against what exists here plus what
 	// this document brings; a name in `doc.workflows` ends up present either
 	// way (created, or already here under that name).
 	const availableWorkflows = new Set([
 		...workflowNames.keys(),
-		...doc.workflows.map((wf) => wf.name)
+		...documentWorkflows.filter((wf) => !ambiguousNames.has(wf.name)).map((wf) => wf.name)
 	]);
 	const existingContext = new Map(
 		contextRows.map((row) => [
@@ -410,10 +515,27 @@ export async function planImport(
 		])
 	);
 
-	const steps: PlannedStep[] = [];
+	const steps: PlannedStep[] = [...invalidWorkflows];
 
-	for (const project of doc.projects) {
-		const ref = `project "${project.name}"`;
+	for (const rawProject of doc.projects) {
+		let project = rawProject;
+		const ref = `project "${project?.name ?? '(invalid)'}"`;
+		try {
+			project = { ...project, ...validateProjectFields(project) };
+			if (project.default_workflow != null)
+				project.default_workflow = requireString(project.default_workflow, 'default_workflow', {
+					max: 200
+				}).trim();
+		} catch (error) {
+			steps.push({
+				entry: { section: 'project', ref, action: 'error', reason: errorMessage(error) }
+			});
+			continue;
+		}
+		if (project.default_workflow && ambiguousNames.has(project.default_workflow)) {
+			steps.push({ entry: { section: 'project', ref, action: 'refuse', reason: ambiguityReason } });
+			continue;
+		}
 		if (projectIds.has(project.name)) {
 			steps.push({
 				entry: {
@@ -454,8 +576,19 @@ export async function planImport(
 		});
 	}
 
-	for (const workflow of doc.workflows) {
+	for (const workflow of documentWorkflows) {
 		const ref = `workflow "${workflow.name}"`;
+		if (ambiguousNames.has(workflow.name) || (doc.version >= 2 && ambiguousPointer(workflow))) {
+			steps.push({
+				entry: {
+					section: 'workflow',
+					ref,
+					action: 'refuse',
+					reason: ambiguityReason + ' (including ambiguous slash-delimited state references)'
+				}
+			});
+			continue;
+		}
 		const existing = workflowNames.get(workflow.name);
 		if (existing) {
 			const same =
@@ -467,9 +600,10 @@ export async function planImport(
 			// version 1 export of this same library looks like. Calling that
 			// "identical" would drop every pointer in silence, so the
 			// difference is either applied (on request) or named and refused.
-			const differing = same
-				? pointerDifference(documentPointers(workflow), storedPointers(existing, baseRef))
-				: [];
+			const differing =
+				doc.version >= 2 && same
+					? pointerDifference(documentPointers(workflow), storedPointers(existing, baseRef))
+					: [];
 			const states = differing.map((n) => `"${n}"`).join(', ');
 			if (same && differing.length > 0 && overwrite && !existing.is_system) {
 				steps.push({
@@ -528,9 +662,106 @@ export async function planImport(
 					stateIds.delete(`${step.workflow!.name}${SEP}${s.name}`);
 			moved = true;
 		}
+		if (moved) continue;
+		const active = workflowSteps.filter(
+			(step) => step.entry.action === 'create' || step.entry.action === 'overwrite'
+		);
+		const resolvedIds = new Map<string, string>();
+		for (const [key, id] of stateIds) if (id !== null) resolvedIds.set(key, id);
+		const owners = new Map<string, PlannedStep>();
+		for (const [i, step] of active.entries())
+			for (const [j, state] of step.workflow!.states.entries()) {
+				const key = `${step.workflow!.name}${SEP}${state.name}`;
+				const id = resolvedIds.get(key) ?? `library-plan:${i}:${j}`;
+				resolvedIds.set(key, id);
+				owners.set(id, step);
+			}
+		const graph: ResolvedDef['states'] = active.flatMap((step) =>
+			step.workflow!.states.map((state, position) => {
+				const workflow = step.workflow!;
+				const ref = baseRefOf(state);
+				const target =
+					ref === null
+						? null
+						: workflow.states.some((s) => s.name === ref)
+							? resolvedIds.get(`${workflow.name}${SEP}${ref}`)!
+							: resolveStateRef(ref, (w, n) => resolvedIds.get(`${w}${SEP}${n}`))!;
+				return {
+					id: resolvedIds.get(`${workflow.name}${SEP}${state.name}`)!,
+					name: `${workflow.name} / ${state.name}`,
+					category: state.category,
+					position,
+					isNew: !step.existing,
+					inheritsFrom: target
+				};
+			})
+		);
+		try {
+			await resolveInheritance(
+				db,
+				userId,
+				{ id: null, name: 'Library import' },
+				graph,
+				active.flatMap((step) => step.existing?.states ?? [])
+			);
+		} catch (error) {
+			if (!(error instanceof ApiFail)) throw error;
+			const chain = Array.isArray(error.details?.chain) ? (error.details.chain as string[]) : [];
+			let affected = chain.map((id) => owners.get(id)).find(Boolean);
+			// Descendant depth failures name a stored child; find the proposed ancestor that lengthened its chain.
+			let cursor = typeof error.details?.state_id === 'string' ? error.details.state_id : null;
+			const stored = new Map(
+				workflowRows.flatMap((w) => w.states).map((state) => [state.id, state])
+			);
+			const seen = new Set<string>();
+			while (!affected && cursor && !seen.has(cursor)) {
+				seen.add(cursor);
+				affected = owners.get(cursor);
+				cursor = stored.get(cursor)?.inherits_from ?? null;
+			}
+			if (!affected) throw error;
+			affected.entry.action = 'error';
+			affected.entry.reason = errorMessage(error);
+			if (!affected.existing)
+				for (const state of affected.workflow!.states)
+					stateIds.delete(`${affected.workflow!.name}${SEP}${state.name}`);
+			moved = true;
+		}
 	}
 
-	for (const entry of doc.context) {
+	for (const step of steps) {
+		const project = step.project;
+		if (!project?.default_workflow) continue;
+		const name = project.default_workflow;
+		if (
+			!workflowNames.has(name) &&
+			!workflowSteps.some((s) => s.workflow?.name === name && s.entry.action === 'create')
+		) {
+			step.entry.reason = `no workflow named "${name}" available after planning; the project keeps the system default`;
+			project.default_workflow = null;
+		}
+	}
+
+	const plannedContext = new Set<string>();
+	for (const rawEntry of doc.context) {
+		if (
+			!rawEntry ||
+			typeof rawEntry !== 'object' ||
+			!rawEntry.scope ||
+			typeof rawEntry.scope !== 'object' ||
+			Array.isArray(rawEntry.scope)
+		) {
+			steps.push({
+				entry: {
+					section: 'context',
+					ref: 'invalid context entry',
+					action: 'error',
+					reason: 'Context entry requires an object scope'
+				}
+			});
+			continue;
+		}
+		let entry = rawEntry;
 		const ref = contextRef(entry);
 		if (entry.journal && !includeJournals) {
 			steps.push({
@@ -555,6 +786,60 @@ export async function planImport(
 			continue;
 		}
 
+		try {
+			if (Object.keys(entry.scope).some((key) => !['project', 'state', 'label'].includes(key)))
+				throw new ApiFail(
+					422,
+					'invalid_scope',
+					'Library context only supports project, state and label scope'
+				);
+			const fields = validateContextCreateFields({
+				kind: entry.kind,
+				name: entry.name,
+				description: entry.description,
+				...(entry.kind === 'prompt' || entry.body !== undefined ? { body: entry.body ?? '' } : {}),
+				...(entry.files === undefined ? {} : { files: entry.files }),
+				...(entry.repo_url === undefined ? {} : { repo_url: entry.repo_url }),
+				...(entry.repo_branch === undefined ? {} : { repo_branch: entry.repo_branch }),
+				...(entry.repo_dir === undefined ? {} : { repo_dir: entry.repo_dir })
+			} as CreateContextItemRequest);
+			entry = {
+				...entry,
+				name: fields.name,
+				description: fields.description,
+				...(fields.kind === 'prompt'
+					? { body: fields.promptBody! }
+					: fields.kind === 'skill'
+						? { files: fields.files }
+						: {
+								repo_url: fields.repoUrl!,
+								repo_branch: fields.repoBranch,
+								repo_dir: fields.repoDir
+							}),
+				scope: { ...entry.scope }
+			};
+			if (entry.scope.project != null)
+				entry.scope.project = requireString(entry.scope.project, 'scope.project', {
+					max: 200
+				}).trim();
+			if (entry.scope.state != null)
+				entry.scope.state = {
+					workflow: requireString(entry.scope.state.workflow, 'scope.state.workflow', {
+						max: 200
+					}).trim(),
+					name: requireString(entry.scope.state.name, 'scope.state.name', { max: 100 }).trim()
+				};
+			if (entry.scope.label != null) entry.scope.label = normalizeLabelName(entry.scope.label);
+		} catch (error) {
+			steps.push({
+				entry: { section: 'context', ref, action: 'error', reason: errorMessage(error) }
+			});
+			continue;
+		}
+		if (entry.scope.state && ambiguousNames.has(entry.scope.state.workflow)) {
+			steps.push({ entry: { section: 'context', ref, action: 'refuse', reason: ambiguityReason } });
+			continue;
+		}
 		const stateKey = entry.scope.state
 			? `${entry.scope.state.workflow}${SEP}${entry.scope.state.name}`
 			: null;
@@ -581,6 +866,26 @@ export async function planImport(
 			continue;
 		}
 
+		const contextIdentity = JSON.stringify([
+			entry.kind,
+			entry.name,
+			entry.scope.project ?? null,
+			entry.scope.state?.workflow ?? null,
+			entry.scope.state?.name ?? null,
+			entry.scope.label?.toLowerCase() ?? null
+		]);
+		if (plannedContext.has(contextIdentity)) {
+			steps.push({
+				entry: {
+					section: 'context',
+					ref,
+					action: 'error',
+					reason: 'Duplicate context kind/name at the same scope in this document'
+				}
+			});
+			continue;
+		}
+		plannedContext.add(contextIdentity);
 		const projectId = entry.scope.project ? (projectIds.get(entry.scope.project) ?? null) : null;
 		const stateId = stateKey ? (stateIds.get(stateKey) ?? null) : null;
 		// A label the deployment lacks is created by the import (labels are
@@ -599,6 +904,18 @@ export async function planImport(
 			? undefined
 			: existingContext.get(contextKey(entry.kind, entry.name, projectId, stateId, labelId));
 
+		const project = projectRows.find((project) => project.id === projectId);
+		if ((!existing || overwrite) && project?.archived_at != null) {
+			steps.push({
+				entry: {
+					section: 'context',
+					ref,
+					action: 'error',
+					reason: projectArchivedError(project).message
+				}
+			});
+			continue;
+		}
 		if (existing) {
 			steps.push(
 				overwrite
@@ -654,8 +971,11 @@ export async function applyImport(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
+	effects: DispatchEffects,
 	request: ImportLibraryRequest
 ): Promise<ImportLibraryResponse> {
+	if (request.document?.version === 3)
+		return applyLibraryV3Import(db, env, actor, effects, request);
 	const plan = await planImport(db, actor.userId, request);
 	if (request.dry_run) {
 		const entries = plan.steps.map((s) => s.entry);
@@ -698,6 +1018,7 @@ export async function applyImport(
 							db,
 							env,
 							actor,
+							effects,
 							step.existing,
 							step.workflow,
 							stateIds,
@@ -734,7 +1055,16 @@ export async function applyImport(
 		}
 	}
 
-	await applyDeferredPointers(db, env, actor, ordered, createdWorkflows, stateIds, deferred);
+	await applyDeferredPointers(
+		db,
+		env,
+		actor,
+		effects,
+		ordered,
+		createdWorkflows,
+		stateIds,
+		deferred
+	);
 
 	const entries = plan.steps.map((s) => s.entry);
 	return { applied: true, entries, counts: tally(entries) };
@@ -801,6 +1131,7 @@ async function overwritePointers(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
+	effects: DispatchEffects,
 	existing: WorkflowResponse,
 	workflow: CreateWorkflowRequest,
 	stateIds: Map<string, string>,
@@ -826,7 +1157,7 @@ async function overwritePointers(
 		}
 		states.push({ ...base, inherits_from: resolved });
 	}
-	return updateWorkflow(db, env, actor, existing.id, { states });
+	return updateWorkflow(db, env, actor, effects, existing.id, { states });
 }
 
 /** A `<workflow>/<state>` ref as a state id: created in this pass, else stored here. */
@@ -836,13 +1167,15 @@ async function lookupBaseId(
 	ref: string,
 	stateIds: Map<string, string>
 ): Promise<string | undefined> {
-	const created = resolveStateRef(ref, (w, n) => stateIds.get(`${w}${SEP}${n}`));
-	if (created !== undefined) return created;
+	const matches: string[] = [];
 	for (const [workflow, name] of splitCandidates(ref)) {
-		const id = await lookupStateId(db, userId, { workflow, name });
-		if (id !== undefined) return id;
+		const id =
+			stateIds.get(`${workflow}${SEP}${name}`) ??
+			(await lookupStateId(db, userId, { workflow, name }));
+		if (id !== undefined) matches.push(id);
 	}
-	return undefined;
+	if (matches.length > 1) throw new Error(`Ambiguous legacy state reference "${ref}"`);
+	return matches[0];
 }
 
 /**
@@ -854,6 +1187,7 @@ async function applyDeferredPointers(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
+	effects: DispatchEffects,
 	steps: PlannedStep[],
 	createdWorkflows: Map<string, WorkflowResponse>,
 	stateIds: Map<string, string>,
@@ -883,7 +1217,7 @@ async function applyDeferredPointers(
 					category: s.category,
 					...(bases.has(s.name) ? { inherits_from: bases.get(s.name)! } : {})
 				}));
-			await updateWorkflow(db, env, actor, created.id, { states });
+			await updateWorkflow(db, env, actor, effects, created.id, { states });
 		} catch (e) {
 			if (step) {
 				step.entry.action = 'error';
@@ -988,14 +1322,15 @@ async function lookupWorkflowId(
 	userId: string,
 	name: string
 ): Promise<string | undefined> {
-	const row = await db
+	const rows = await db
 		.selectFrom('workflow')
 		.select('id')
 		// The system workflow is owned by no user but visible to everyone.
 		.where((eb) => eb.or([eb('user_id', '=', userId), eb('user_id', 'is', null)]))
 		.where('name', '=', name)
-		.executeTakeFirst();
-	return row?.id;
+		.execute();
+	if (rows.length > 1) throw new Error('Ambiguous legacy workflow or state name; use a v3 export');
+	return rows[0]?.id;
 }
 
 async function lookupStateId(
@@ -1003,7 +1338,8 @@ async function lookupStateId(
 	userId: string,
 	ref: { workflow: string; name: string }
 ): Promise<string | undefined> {
-	const row = await db
+	await lookupWorkflowId(db, userId, ref.workflow);
+	const rows = await db
 		.selectFrom('workflow_state')
 		.innerJoin('workflow', 'workflow.id', 'workflow_state.workflow_id')
 		// The system workflow is owned by no user but visible to everyone.
@@ -1011,6 +1347,7 @@ async function lookupStateId(
 		.where('workflow.name', '=', ref.workflow)
 		.where('workflow_state.name', '=', ref.name)
 		.select('workflow_state.id as id')
-		.executeTakeFirst();
-	return row?.id;
+		.execute();
+	if (rows.length > 1) throw new Error('Ambiguous legacy workflow or state name; use a v3 export');
+	return rows[0]?.id;
 }

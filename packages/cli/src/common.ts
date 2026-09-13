@@ -66,8 +66,10 @@ export function withCommon(cmd: Command): Command {
 export function withList(cmd: Command): Command {
 	return withCommon(
 		cmd
-			.option('--limit <n>', 'maximum items to return (page size under --all-pages)', (v) =>
-				Number.parseInt(v, 10)
+			.option(
+				'--limit <n>',
+				'maximum items to return (page size under --all-pages)',
+				parsePositiveInteger
 			)
 			.option('--cursor <cursor>', 'resume from the next_cursor of a previous page')
 			.addOption(
@@ -77,6 +79,18 @@ export function withList(cmd: Command): Command {
 				).conflicts('cursor')
 			)
 	);
+}
+
+export function parsePositiveInteger(value: string): number {
+	if (!/^[1-9]\d*$/.test(value)) throw new Error('limit must be a positive integer');
+	const result = Number(value);
+	if (!Number.isSafeInteger(result)) throw new Error('limit must be a positive safe integer');
+	return result;
+}
+
+/** Historical usage filters may name owned retained IDs whose metadata was deleted. */
+export function isUsageIdentity(value: string, prefix: 'prj' | 'wf' | 'wfs' | 'rnr'): boolean {
+	return value === 'unknown' || new RegExp(`^${prefix}_[A-Za-z0-9]+$`).test(value);
 }
 
 /** Where a resolved setting came from, in precedence order. */
@@ -228,7 +242,10 @@ export function table(rows: string[][]): void {
  * API's non-archived default.
  */
 export async function resolveProject(api: ApiClient, ref: string): Promise<Project> {
-	const { items } = await api.listProjects({ archived: 'all' });
+	// A historical issue address may belong to any project in the workspace,
+	// including an archived project beyond the first page. Reference resolution
+	// must therefore consume the whole namespace, not the list UI's first page.
+	const items = await listAll((page) => api.listProjects({ ...page, archived: 'all' }));
 	const byId = items.find((p) => p.id === ref);
 	if (byId) return byId;
 	const byName = items.filter((p) => p.name === ref);

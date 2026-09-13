@@ -50,6 +50,7 @@ describe('GET /api/v1/events window filters', () => {
 			to: OPEN
 		});
 
+		addTransitionEvent(t, { issueId: issue, apiKeyId: null, at: NOW - 1500, from: OPEN, to: OPEN });
 		const { items } = await list(
 			t,
 			`?since=${NOW - 2000}&until=${NOW - 1000}&state=${encodeURIComponent(REVIEW)}&type=issue.transitioned,issue.created`

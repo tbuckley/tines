@@ -51,6 +51,22 @@ export interface AdapterPollResult {
 	provider_meta?: string | null;
 }
 
+/**
+ * What `finalizeEnd` gets: the server's authoritative judgment of an end,
+ * which is the only thing that can decide whether a provider session is
+ * garbage or a resumable conversation.
+ */
+export interface AdapterEndInput {
+	user_id: string;
+	issue_id: string;
+	model: string | null;
+	/** The recorded run outcome; only `advanced` can retain. */
+	outcome: string | null;
+	/** Whether the issue's state at end was an `awaiting_human` one. */
+	ended_in_awaiting_state: boolean;
+	now: number;
+}
+
 export interface RunnerAdapter {
 	/**
 	 * 'immediate': the supervisor launches in the dispatch pass (managed
@@ -73,6 +89,13 @@ export interface RunnerAdapter {
 	poll?(run: AdapterRunRef): Promise<AdapterPollResult>;
 	/** Best-effort kill of the provider session / harness process. */
 	cancel(run: AdapterRunRef): Promise<void>;
+	/**
+	 * Called after the authoritative `endRun`, for adapters that own
+	 * provider resources outliving the run: retain them for a resume, or
+	 * dispose of them now. Best-effort — the sweep's GC is the backstop if
+	 * this throws or the worker dies first.
+	 */
+	finalizeEnd?(run: AdapterRunRef, input: AdapterEndInput): Promise<void>;
 	/**
 	 * Per-runner sweep housekeeping (managed types): garbage-collect provider
 	 * resources of ended runs (per-run vault credentials, un-archived

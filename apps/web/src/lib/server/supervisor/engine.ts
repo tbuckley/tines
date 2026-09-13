@@ -33,7 +33,13 @@ import {
 	type ActiveCounts,
 	type MatchableRule
 } from './logic';
+import {
+	disposeExpiredResumeResources,
+	orderTargetsByResumeAffinity,
+	resumeAffinityByIssue
+} from './resume';
 import { loadSealableRun, sealRunLog, spillEvicted, sweepRunLogs } from './run-log';
+import { effectiveAutomationEnabled } from './settings';
 
 const ACTIVE = [...ACTIVE_RUN_STATUSES];
 
@@ -71,10 +77,13 @@ export function supervisorEvent(
 	now: number,
 	guard?: RawBuilder<boolean>
 ): CompiledQuery {
+	const projectId = input.issueId
+		? sql`(SELECT project_id FROM issue WHERE id = ${input.issueId})`
+		: sql`${input.projectId ?? null}`;
 	return sql`
 		INSERT INTO event (id, user_id, type, actor_user_id, actor_api_key_id, issue_id, project_id, payload, created_at)
 		SELECT ${newId('evt')}, ${userId}, ${input.type}, ${userId}, ${null},
-			${input.issueId ?? null}, ${input.projectId ?? null}, ${JSON.stringify(input.payload)}, ${now}
+			${input.issueId ?? null}, ${projectId}, ${JSON.stringify(input.payload)}, ${now}
 		WHERE ${guard ?? sql`1`}`.compile(db);
 }
 
@@ -98,15 +107,24 @@ export async function loadDispatchSettings(
 		.select(['enabled', 'quota', 'attempt_limit'])
 		.where('user_id', '=', userId)
 		.executeTakeFirst();
-	// No row = the defaults, kill switch off (arming automation is explicit).
-	if (!row) return { enabled: false, quota: DEFAULT_QUOTA, attemptLimit: 3 };
+	if (!row) {
+		return {
+			enabled: effectiveAutomationEnabled(undefined),
+			quota: DEFAULT_QUOTA,
+			attemptLimit: 3
+		};
+	}
 	let quota = DEFAULT_QUOTA;
 	try {
 		quota = JSON.parse(row.quota) as QuotaPolicy;
 	} catch {
 		// Unreadable policy column falls back to the default.
 	}
-	return { enabled: row.enabled === 1, quota, attemptLimit: row.attempt_limit };
+	return {
+		enabled: effectiveAutomationEnabled(row.enabled),
+		quota,
+		attemptLimit: row.attempt_limit
+	};
 }
 
 export interface CandidateIssue {
@@ -116,6 +134,8 @@ export interface CandidateIssue {
 	updated_at: number;
 	pinned_runner_id: string | null;
 	pinned_tier: string | null;
+	/** Internal ABA fence captured with routing selection. */
+	project_assignment_token?: string;
 	/** Labels the issue carries, for label-scoped rule matching. */
 	label_ids: string[];
 }
@@ -170,6 +190,7 @@ export async function loadEligibleIssues(
 			)
 		)
 		SELECT issue.id, issue.project_id, issue.state_id, issue.updated_at,
+			issue.project_assignment_token,
 			issue.pinned_runner_id, issue.pinned_tier,
 			-- Display columns for the fleet queue's refs and grouping. Free
 			-- here: the joins they read are already in the FROM clause.
@@ -327,6 +348,8 @@ export async function claimRun(
 		runId: string;
 		userId: string;
 		issueId: string;
+		/** Project captured with routing selection; fences a stale source route. */
+		projectId: string;
 		stateId: string;
 		runnerId: string;
 		maxConcurrent: number;
@@ -334,8 +357,11 @@ export async function claimRun(
 		model: string | null;
 		quota: QuotaPolicy;
 		now: number;
+		/** Token captured by candidate selection; omitted only by pre-transfer tests/callers. */
+		projectAssignmentToken?: string;
 	}
 ): Promise<boolean> {
+	const assignmentToken = input.projectAssignmentToken ?? '';
 	const quotaGuard =
 		input.quota.type === 'global_cap'
 			? sql<boolean>`(
@@ -350,14 +376,16 @@ export async function claimRun(
 
 	const claim = sql`
 		INSERT INTO agent_run (id, user_id, issue_id, runner_id, status, tier, model,
-			state_id_at_start, log, log_bytes_dropped, created_at)
+			state_id_at_start, log, log_bytes_dropped, created_at, project_assignment_token)
 		SELECT ${input.runId}, ${input.userId}, issue.id, ${input.runnerId}, 'assigned',
-			${input.tier}, ${input.model}, issue.state_id, '', 0, ${input.now}
+			${input.tier}, ${input.model}, issue.state_id, '', 0, ${input.now}, ${assignmentToken}
 		FROM issue
 		JOIN project ON project.id = issue.project_id
 		JOIN workflow_state st ON st.id = issue.state_id
 		WHERE issue.id = ${input.issueId}
+			AND issue.project_id = ${input.projectId}
 			AND issue.state_id = ${input.stateId}
+			AND issue.project_assignment_token = ${assignmentToken}
 			-- Race guard: the project may have been archived between the pass
 			-- reading the queue and this claim.
 			AND project.archived_at IS NULL
@@ -781,11 +809,20 @@ export async function runDispatchPass(
 	]);
 	if (candidates.length === 0) return result;
 
+	// Runner affinity for resume: which runners hold a live retained session
+	// for these issues. Used only to reorder targets routing already chose.
+	const affinity = await resumeAffinityByIssue(
+		db,
+		userId,
+		candidates.map((issue) => issue.id),
+		now
+	).catch(() => new Map<string, Set<string>>());
+
 	for (const issue of candidates) {
 		// With the global cap saturated nothing more can dispatch this pass.
 		if (settings.quota.type === 'global_cap' && counts.total >= settings.quota.limit) break;
 		const { targets } = targetsForIssue(issue, rules);
-		for (const target of targets) {
+		for (const target of orderTargetsByResumeAffinity(targets, affinity.get(issue.id))) {
 			const runner = runners.get(target.runner_id);
 			if (!runner) continue; // stale target (runner removed mid-pass)
 			const adapter = adapters[runner.type];
@@ -799,13 +836,15 @@ export async function runDispatchPass(
 				runId,
 				userId,
 				issueId: issue.id,
+				projectId: issue.project_id,
 				stateId: issue.state_id,
 				runnerId: runner.id,
 				maxConcurrent: runner.max_concurrent,
 				tier: resolved.tier,
 				model: resolved.model,
 				quota: settings.quota,
-				now
+				now,
+				projectAssignmentToken: issue.project_assignment_token
 			});
 			// A lost race means something changed under us (another pass claimed
 			// the issue, or capacity vanished); leave this issue to the next pass.
@@ -852,9 +891,9 @@ export async function runDispatchPass(
 }
 
 /**
- * Schedules an opportunistic pass on the platform's waitUntil — the fast
- * path after any eligibility-changing write. Failures are invisible by
- * design; the sweep is the reliability guarantee.
+ * Schedules the centralized request collector's opportunistic pass on
+ * waitUntil. Setup and pass failures are best-effort; the periodic sweep is
+ * the reliability guarantee.
  */
 export function queueDispatchPass(
 	platform: { env: Env; ctx?: { waitUntil(promise: Promise<unknown>): void } } | undefined,
@@ -921,6 +960,14 @@ export async function endRun(
 		/** 'interrupted' = the pipe died, not the work: no strike, no reset. */
 		judgment?: 'strike' | 'interrupted';
 		now?: number;
+		/** Validated local-daemon report, committed by the same CAS as the end. */
+		finalReport?: {
+			usage?: string;
+			provider_session_id?: string;
+			turn_count?: number;
+			conversation_turn_count?: number;
+			workspace_path?: string;
+		};
 	}
 ): Promise<EndRunOutcome> {
 	const now = input.now ?? Date.now();
@@ -963,6 +1010,11 @@ export async function endRun(
 		sql`
 			UPDATE agent_run SET status = ${input.status}, error = ${input.error ?? null}, ended_at = ${now},
 				outcome = ${outcome},
+				${input.finalReport?.usage !== undefined ? sql`usage = ${input.finalReport.usage},` : sql``}
+				${input.finalReport?.provider_session_id !== undefined ? sql`provider_session_id = ${input.finalReport.provider_session_id},` : sql``}
+				${input.finalReport?.turn_count !== undefined ? sql`turn_count = ${input.finalReport.turn_count},` : sql``}
+				${input.finalReport?.conversation_turn_count !== undefined ? sql`conversation_turn_count = ${input.finalReport.conversation_turn_count},` : sql``}
+				${input.finalReport?.workspace_path !== undefined ? sql`workspace_path = ${input.finalReport.workspace_path},` : sql``}
 				state_id_at_end = (SELECT state_id FROM issue WHERE id = ${run.issue_id})
 			WHERE id = ${run.id} AND status IN (${sql.join(ACTIVE)})`.compile(db)
 	]);
@@ -1029,7 +1081,11 @@ export async function endRun(
 					...(outcome ? { outcome } : {}),
 					state_id_at_start: run.state_id_at_start,
 					state_id_at_end: issue?.state_id ?? null,
-					...(run.usage ? { usage: JSON.parse(run.usage) as Record<string, unknown> } : {}),
+					...(input.finalReport?.usage || run.usage
+						? {
+								usage: JSON.parse(input.finalReport?.usage ?? run.usage!) as Record<string, unknown>
+							}
+						: {}),
 					...(input.error ? { error: input.error } : {})
 				}
 			},
@@ -1149,13 +1205,15 @@ export async function cancelRun(
  * Cancels not-yet-acknowledged `assigned` runs — free cancels: nothing is
  * running yet, so no judgment applies and the issues return to the pool.
  * Runner pause cancels its own; the kill switch turning off cancels
- * fleet-wide (SPEC.md "Pausing a runner").
+ * fleet-wide (SPEC.md "Pausing a runner"). `onCanceled` is a required,
+ * synchronous, non-throwing notification at each durable cancellation win.
  */
 export async function cancelAssignedRuns(
 	db: Kysely<Database>,
 	env: Env,
 	scope: { userId: string; runnerId?: string },
 	reason: string,
+	onCanceled: () => void,
 	now: number = Date.now()
 ): Promise<number> {
 	let q = db
@@ -1171,7 +1229,10 @@ export async function cancelAssignedRuns(
 		// Delivered (or settled) in the meantime: no longer a free cancel.
 		if (!run || run.status !== 'assigned') continue;
 		const outcome = await endRun(db, env, run, { status: 'canceled', error: reason, now });
-		if (outcome.ended) canceled += 1;
+		if (outcome.ended) {
+			onCanceled();
+			canceled += 1;
+		}
 	}
 	return canceled;
 }
@@ -1333,7 +1394,40 @@ export async function pollManagedRuns(
 			if (terminal) {
 				const endable = await loadEndableRun(db, row.user_id, run.id);
 				if (endable && (ACTIVE as string[]).includes(endable.status)) {
-					await endRun(db, env, endable, { status: terminal.status, error: terminal.error, now });
+					const outcome = await endRun(db, env, endable, {
+						status: terminal.status,
+						error: terminal.error,
+						now
+					});
+					// Provider resources outlive the run only if the server's own
+					// end judgment says so; the adapter never decides retention
+					// from a provider status alone.
+					if (outcome.ended && adapter.finalizeEnd) {
+						const ended = await db
+							.selectFrom('agent_run')
+							.leftJoin('workflow_state as st', 'st.id', 'agent_run.state_id_at_end')
+							.select(['agent_run.outcome', 'agent_run.issue_id', 'agent_run.model', 'st.category'])
+							.where('agent_run.id', '=', run.id)
+							.executeTakeFirst();
+						await adapter
+							.finalizeEnd(
+								{
+									id: run.id,
+									runner_id: run.runner_id,
+									provider_session_id: run.provider_session_id,
+									provider_meta: run.provider_meta
+								},
+								{
+									user_id: row.user_id,
+									issue_id: ended?.issue_id ?? run.issue_id,
+									model: ended?.model ?? null,
+									outcome: ended?.outcome ?? outcome.outcome,
+									ended_in_awaiting_state: ended?.category === 'awaiting_human',
+									now
+								}
+							)
+							.catch((err) => console.error(`adapter finalizeEnd for run ${run.id} failed:`, err));
+					}
 				}
 			}
 		} catch (e) {
@@ -1503,6 +1597,14 @@ export async function sweepSupervisor(
 			.compile()
 	]);
 
+	// Retained resume resources past their window: disposed here so a kept
+	// workspace cannot be continued (or pinned) forever. Best-effort.
+	try {
+		await disposeExpiredResumeResources(db, now);
+	} catch (e) {
+		console.error('supervisor sweep: expired resume resources failed:', e);
+	}
+
 	// Per-runner provider housekeeping (managed types): garbage-collect ended
 	// runs' vault credentials and sessions, and cancel orphaned sessions
 	// tagged with unknown/ended run ids (launch reconciliation's provider
@@ -1518,13 +1620,22 @@ export async function sweepSupervisor(
 		}
 	}
 
-	// The dispatch pass itself — for every user with automation armed. This
+	// The dispatch pass itself — for every issue owner whose automation is
+	// effectively enabled. Missing settings inherit enabled; saved stops do not.
 	// is also what retries launch-failure backoff: an expired backoff_until
 	// simply stops excluding the runner.
 	const enabled = await db
-		.selectFrom('supervisor_settings')
-		.select('user_id')
-		.where('enabled', '=', 1)
+		.selectFrom('issue')
+		.innerJoin('project', 'project.id', 'issue.project_id')
+		.leftJoin('supervisor_settings', 'supervisor_settings.user_id', 'project.user_id')
+		.select('project.user_id as user_id')
+		.where((eb) =>
+			eb.or([
+				eb('supervisor_settings.enabled', 'is', null),
+				eb('supervisor_settings.enabled', '=', 1)
+			])
+		)
+		.distinct()
 		.execute();
 	for (const row of enabled) {
 		try {

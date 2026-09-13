@@ -318,7 +318,7 @@ export function register(program: Command): void {
 	});
 
 	withCommon(
-		supervisor.command('enable').description('Arm automation (the kill switch on)')
+		supervisor.command('enable').description('Resume automation (the kill switch on)')
 	).action(async (opts: CommonOpts) => {
 		const settings = await client(opts).updateSupervisorSettings({ enabled: true });
 		if (opts.json) return printJson(settings);

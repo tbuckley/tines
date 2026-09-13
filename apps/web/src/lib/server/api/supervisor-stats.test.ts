@@ -10,6 +10,8 @@ import {
 	addTransitionEvent,
 	addTwoStageWorkflow,
 	NOW,
+	OPEN,
+	REVIEW,
 	PROJECT,
 	seedBase,
 	STAGE_A,
@@ -430,3 +432,91 @@ describe('frozen sent-back windows', () => {
 		).rejects.toMatchObject({ status: 422 });
 	});
 });
+
+it('includes system workflow activity but excludes foreign private workflow metadata', async () => {
+	const t = setup();
+	const issue = addIssue(t);
+	addTransitionEvent(t, { issueId: issue, apiKeyId: null, at: NOW - HOUR, from: REVIEW, to: OPEN });
+	addRun(t, {
+		issueId: issue,
+		runnerId: 'rnr_1',
+		stateAtStart: OPEN,
+		status: 'running',
+		createdAt: NOW - HOUR + MIN,
+		startedAt: NOW - HOUR + MIN
+	});
+	const report = await loadStageStats(t.db, USER, {}, NOW);
+	expect(report.states.find((s) => s.state_id === OPEN)?.current).toMatchObject({
+		visits: 1,
+		runs: { total: 1 }
+	});
+	t.sqlite.exec(
+		`INSERT INTO user (id, name, email, emailVerified, createdAt, updatedAt) VALUES ('foreign', 'Other', 'other@test', 1, '2026', '2026')`
+	);
+	t.sqlite.exec(`UPDATE workflow SET user_id='foreign' WHERE id='wf_two'`);
+	const privateIssue = addIssue(t, { state: STAGE_B, workflow: 'wf_two' });
+	addTransitionEvent(t, {
+		issueId: privateIssue,
+		apiKeyId: null,
+		at: NOW - HOUR,
+		from: STAGE_A,
+		to: STAGE_B
+	});
+	expect(
+		(await loadStageStats(t.db, USER, {}, NOW)).states.some((s) => s.workflow_id === 'wf_two')
+	).toBe(false);
+});
+
+it.each([false, true])(
+	'keeps global, project and stage routing marker scopes distinct (reverse=%s)',
+	async (reverse) => {
+		const t = setup();
+		const issue = addIssue(t, { state: STAGE_B, workflow: 'wf_two' });
+		addTransitionEvent(t, {
+			issueId: issue,
+			apiKeyId: null,
+			at: NOW - HOUR * 3,
+			from: STAGE_B,
+			to: STAGE_A
+		});
+		addTransitionEvent(t, {
+			issueId: issue,
+			apiKeyId: null,
+			at: NOW - HOUR * 2,
+			from: STAGE_A,
+			to: STAGE_B
+		});
+		const scopes = [
+			{ state: null, project: null },
+			{ state: null, project: PROJECT },
+			{ state: STAGE_B, project: PROJECT }
+		];
+		if (reverse) scopes.reverse();
+		scopes.forEach((scope, i) =>
+			t.sqlite
+				.prepare(
+					`INSERT INTO event (id,user_id,type,actor_user_id,project_id,payload,created_at) VALUES (?,?,'routing_rule.updated',?,?,?,?)`
+				)
+				.run(
+					`mixed_${i}`,
+					USER,
+					USER,
+					scope.project,
+					JSON.stringify({ workflow_state_id: scope.state }),
+					NOW - HOUR + i * 10000
+				)
+		);
+		const report = await loadStageStats(t.db, USER, { project: PROJECT }, NOW);
+		expect(report.markers).toHaveLength(3);
+		for (const scope of ['Global', 'Project']) {
+			const marker = report.markers.find((m) => m.label === `${scope} routing rule changed`)!;
+			expect(marker.state_ids).toEqual([]);
+			expect(marker.effects.map((e) => e.state_id)).toEqual(
+				expect.arrayContaining([STAGE_A, STAGE_B])
+			);
+		}
+		expect(report.markers.find((m) => m.label === 'Stage routing rule changed')?.state_ids).toEqual(
+			[STAGE_B]
+		);
+	}
+);

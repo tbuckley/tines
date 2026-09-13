@@ -150,7 +150,9 @@
 										onclick={(e) => {
 											e.preventDefault();
 											e.stopPropagation();
-											goto(`/projects/${issue.project_id}?schedule=${issue.scheduled_task_id}`);
+											goto(
+												`/projects/${issue.scheduled_task_project_id}?schedule=${issue.scheduled_task_id}`
+											);
 										}}
 									>
 										<IconRepeat size={13} stroke={2} />
