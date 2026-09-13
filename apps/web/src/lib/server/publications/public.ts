@@ -115,3 +115,23 @@ export async function resolvePublicSnapshotStatus(db: Kysely<Database>, snapshot
 			}
 		: null;
 }
+
+/** Internal hosted-install resolution. A mismatched pair fails closed; commit still rechecks in SQL. */
+export async function resolveHostedPublicSnapshot(db: Kysely<Database>, snapshotId: string) {
+	const [snapshot, status] = await Promise.all([
+		resolvePublicSnapshot(db, snapshotId),
+		resolvePublicSnapshotStatus(db, snapshotId)
+	]);
+	if (!snapshot || !status || snapshot.status_version !== status.status_version) return null;
+	return {
+		snapshot,
+		source: {
+			kind: 'hosted_publication' as const,
+			snapshot_id: snapshot.snapshot_id,
+			document_digest: snapshot.document_digest,
+			bytes_sha256: snapshot.bytes_sha256,
+			snapshot_status_version: status.status_version,
+			publisher_status_version: status.publisher_status_version
+		}
+	};
+}

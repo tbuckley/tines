@@ -82,6 +82,15 @@ export interface PublicationOwnerItem extends PublicationHashes {
 	status_version: number;
 }
 
+export interface HostedPublicationBinding {
+	kind: 'hosted_publication';
+	snapshot_id: string;
+	document_digest: string;
+	bytes_sha256: string;
+	snapshot_status_version: number;
+	publisher_status_version: number;
+}
+
 export interface PublicWorkflowSnapshot extends PublicationHashes {
 	snapshot_id: string;
 	metadata: PublicationMetadata;
