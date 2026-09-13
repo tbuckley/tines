@@ -14,6 +14,7 @@ import {
 	loadEndableRun,
 	loadEngineRunners,
 	noteRateLimit,
+	releaseDeclinedAssignments,
 	releaseSurplusAssigned,
 	runDispatchPass,
 	sweepSupervisor,
@@ -26,6 +27,7 @@ import {
 	addLabel,
 	addRule,
 	addRun,
+	addRunKey,
 	addRunner,
 	addTransitionEvent,
 	addTwoStageWorkflow,
@@ -250,6 +252,80 @@ describe('local concurrency release', () => {
 		expect(runById(t, oldAssigned)!.status).toBe('canceled');
 		expect(runById(t, newAssigned)!.status).toBe('canceled');
 		expect(signals).toBe(2);
+	});
+
+	it('rechecks capacity in the release transaction when a running slot opens', async () => {
+		const t = world();
+		const runnerId = addRunner(t, { maxConcurrent: 2 });
+		t.sqlite
+			.prepare(
+				`UPDATE runner SET daemon_instance_id = 'boot_1', concurrency_instance_id = 'boot_1',
+				 concurrency_mode = 'remote', concurrency_ceiling = 1 WHERE id = ?`
+			)
+			.run(runnerId);
+		const running = addRun(t, {
+			issueId: addIssue(t, { title: 'running' }),
+			runnerId,
+			status: 'running',
+			startedAt: NOW - 100,
+			createdAt: NOW - 200
+		});
+		const assigned = addRun(t, {
+			issueId: addIssue(t, { title: 'assigned' }),
+			runnerId,
+			createdAt: NOW - 100
+		});
+		const realBatch = t.env.DB.batch.bind(t.env.DB);
+		let injected = false;
+		t.env.DB.batch = async (statements) => {
+			if (!injected) {
+				injected = true;
+				t.sqlite
+					.prepare("UPDATE agent_run SET status = 'completed', ended_at = ? WHERE id = ?")
+					.run(NOW - 1, running);
+			}
+			return realBatch(statements);
+		};
+
+		const released = await releaseSurplusAssigned(
+			t.db,
+			t.env,
+			{ userId: USER, runnerId, instanceId: 'boot_1', ceiling: 1, now: NOW },
+			() => {}
+		);
+
+		expect(injected).toBe(true);
+		expect(released).toEqual([]);
+		expect(runById(t, assigned)!.status).toBe('assigned');
+	});
+
+	it('decline revokes only the refused run key', async () => {
+		const t = world();
+		const runnerId = addRunner(t);
+		const refused = addRun(t, {
+			issueId: addIssue(t, { title: 'refused' }),
+			runnerId,
+			status: 'launching'
+		});
+		const other = addRun(t, {
+			issueId: addIssue(t, { title: 'other' }),
+			runnerId,
+			status: 'launching'
+		});
+		addRunKey(t, refused);
+		addRunKey(t, other);
+
+		const released = await releaseDeclinedAssignments(
+			t.db,
+			t.env,
+			{ userId: USER, runnerId, runIds: [refused], now: NOW },
+			() => {}
+		);
+
+		expect(released).toEqual([refused]);
+		expect(keyForRun(t, refused)!.revoked_at).toBe(NOW);
+		expect(keyForRun(t, other)!.revoked_at).toBeNull();
+		expect(runById(t, other)!.status).toBe('launching');
 	});
 });
 

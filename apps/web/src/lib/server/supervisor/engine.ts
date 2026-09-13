@@ -594,6 +594,21 @@ export async function releaseSurplusAssigned(
 			SELECT 1 FROM agent_run
 			WHERE id = ${run.id} AND user_id = ${input.userId} AND runner_id = ${input.runnerId}
 				AND status = 'assigned'
+				AND (
+					SELECT COUNT(*) FROM agent_run AS active
+					WHERE active.user_id = ${input.userId}
+						AND active.runner_id = ${input.runnerId}
+						AND (
+							active.status IN ('launching', 'running')
+							OR (
+								active.status = 'assigned'
+								AND (
+									active.created_at < agent_run.created_at
+									OR (active.created_at = agent_run.created_at AND active.id < agent_run.id)
+								)
+							)
+						)
+				) >= ${input.ceiling}
 		) AND EXISTS (
 			SELECT 1 FROM runner
 			WHERE id = ${input.runnerId} AND user_id = ${input.userId}

@@ -153,10 +153,17 @@ test.describe.serial('the Now row', () => {
 			.toBe(1);
 
 		await signIn(context, ALICE.sessionToken);
+		await page.setViewportSize({ width: 390, height: 844 });
 		await page.goto('/agents');
 		const panel = page.getByRole('region', { name: 'Waiting for an agent' });
 		await expect(panel).toContainText(`at capacity on ${RUNNER_NAME} (1/1)`);
 		await expect(panel).toContainText('2 issues');
+		const actions = panel.getByTestId('queue-actions');
+		await expect(actions).toBeVisible();
+		expect(await actions.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+		expect(
+			await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
+		).toBe(true);
 	});
 
 	test('drains the group when the cap is raised from the panel, without a reload', async ({

@@ -227,14 +227,25 @@
 								</p>
 							{/if}
 						</div>
-						<span class="flex shrink-0 flex-wrap gap-1">
+						<span
+							class="flex w-full min-w-0 flex-col items-stretch gap-1 sm:w-auto sm:flex-row sm:flex-wrap"
+							data-testid="queue-actions"
+						>
 							{#if block.verdict === 'at_capacity' && runner && onraisecap}
 								{#if runner.type !== 'local' || (runner.concurrency_control?.status !== 'unavailable' && runner.max_concurrent < (runner.concurrency_control?.ceiling ?? 0))}
-									<Button size="sm" onclick={() => onraisecap(runner)}>
+									<Button
+										size="sm"
+										class="max-w-full whitespace-normal"
+										onclick={() => onraisecap(runner)}
+									>
 										Raise cap on {runner.name}
 									</Button>
 								{:else if runner.concurrency_control?.status === 'unavailable'}
-									<Button size="sm" onclick={() => onraisecap(runner)}>
+									<Button
+										size="sm"
+										class="max-w-full whitespace-normal"
+										onclick={() => onraisecap(runner)}
+									>
 										{runner.concurrency_control.reason === 'opted_out'
 											? 'Enable web adjustment locally'
 											: 'Upgrade daemon'}
