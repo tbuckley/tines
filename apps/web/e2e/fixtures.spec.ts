@@ -11,10 +11,12 @@ const apiOnlyTest = test.extend({
 		{ scope: 'worker' }
 	]
 });
-apiOnlyTest.use({ signedIn: ALICE });
-apiOnlyTest('selected account stays lazy for API-only tests', async ({ apiFor }) => {
-	const projects = await body<ListResponse<Project>>(await apiFor(ALICE).get('/api/v1/projects'));
-	expect(projects.items).toBeInstanceOf(Array);
+apiOnlyTest.describe('API-only selected account', () => {
+	apiOnlyTest.use({ signedIn: ALICE });
+	apiOnlyTest('stays lazy without constructing a browser', async ({ apiFor }) => {
+		const projects = await body<ListResponse<Project>>(await apiFor(ALICE).get('/api/v1/projects'));
+		expect(projects.items).toBeInstanceOf(Array);
+	});
 });
 
 type LifecycleWorld = { project: Project };
