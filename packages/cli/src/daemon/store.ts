@@ -105,6 +105,28 @@ export function saveDaemonState(path: string, runs: DaemonStateEntry[]): void {
 	writeJsonFile(path, { runs });
 }
 
+/** Run ids refused before launch; separate from PID state because they hold no process or secret. */
+export function daemonDeclinesPath(dir: string, runnerId: string): string {
+	return join(dir, `daemon-declines-${runnerId}.json`);
+}
+
+export function loadDaemonDeclines(path: string): string[] {
+	const state = readJsonFile<{ run_ids: unknown[] }>(path);
+	if (!state || !Array.isArray(state.run_ids)) return [];
+	return [
+		...new Set(
+			state.run_ids.filter(
+				(id): id is string =>
+					typeof id === 'string' && id.length >= 1 && id.length <= 128 && /^[\x21-\x7e]+$/.test(id)
+			)
+		)
+	];
+}
+
+export function saveDaemonDeclines(path: string, runIds: Iterable<string>): void {
+	writeJsonFile(path, { run_ids: [...runIds] });
+}
+
 /**
  * The process's start time in ms since the epoch, where the platform makes
  * that cheap (Linux: /proc/<pid>/stat field 22 in clock ticks since boot,
