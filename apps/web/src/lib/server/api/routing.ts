@@ -9,6 +9,9 @@ import type {
 } from '@tines/shared';
 import {
 	INHERIT_RUNNER_ID,
+	isEffortToken,
+	isRecognizedEffort,
+	RECOGNIZED_EFFORT_VALUES,
 	isGlobalRoutingScope,
 	isTierOnlyTargets,
 	routingScopeSpecificity
@@ -20,6 +23,7 @@ import { ApiFail, notFound, runAtomic, type ActorContext } from './core';
 import { eventInsert } from './events';
 import { insertValues, type QueryGuard } from './query-guard';
 import { requireTier } from './runners';
+import { resolveEffort, resolveTier, type TierResolvable } from '$lib/server/supervisor/logic';
 import { resolveScope, scopeLabel, toContextScope } from './scope';
 
 // ---------------------------------------------------------------------------
@@ -145,7 +149,10 @@ export function findScopeCollision<T extends RuleScopeIds & { id: string }>(
  */
 export function validateTargets(
 	value: unknown,
-	runnersById: Map<string, { id: string; name: string }>
+	runnersById: Map<
+		string,
+		{ id: string; name: string } & Partial<TierResolvable & { effort_capabilities: string | null }>
+	>
 ): RoutingTarget[] {
 	if (!Array.isArray(value) || value.length === 0) {
 		throw new ApiFail(
@@ -173,15 +180,25 @@ export function validateTargets(
 				}
 			);
 		}
-		const input = wildcardEntries[0] as { runner_id: '*'; tier?: unknown };
+		const input = wildcardEntries[0] as { runner_id: '*'; tier?: unknown; effort?: unknown };
 		if (input.tier === undefined || input.tier === null) {
 			throw new ApiFail(422, 'invalid_field', 'A tier-only target requires an explicit tier', {
 				field: 'targets'
 			});
 		}
+		const wildcardEffort = requireTargetEffort(input.effort, 'targets[0].effort');
+		if (wildcardEffort && !isRecognizedEffort(wildcardEffort)) {
+			throw new ApiFail(
+				422,
+				'effort_incompatible',
+				`"targets[0].effort" is not a recognized provider effort`,
+				{ field: 'targets[0].effort', allowed_values: [...RECOGNIZED_EFFORT_VALUES] }
+			);
+		}
 		const target: RoutingTarget = {
 			runner_id: INHERIT_RUNNER_ID,
-			tier: requireTier(input.tier, 'targets[0].tier')
+			tier: requireTier(input.tier, 'targets[0].tier'),
+			...(wildcardEffort ? { effort: wildcardEffort } : {})
 		};
 		return [target];
 	}
@@ -198,7 +215,7 @@ export function validateTargets(
 				}
 			);
 		}
-		const input = entry as { runner_id?: unknown; tier?: unknown };
+		const input = entry as { runner_id?: unknown; tier?: unknown; effort?: unknown };
 		if (typeof input.runner_id !== 'string' || !runnersById.has(input.runner_id)) {
 			throw new ApiFail(
 				422,
@@ -211,22 +228,60 @@ export function validateTargets(
 			input.tier === undefined || input.tier === null
 				? null
 				: requireTier(input.tier, `targets[${i}].tier`);
-		const key = `${input.runner_id}:${tier ?? ''}`;
+		const effort = requireTargetEffort(input.effort, `targets[${i}].effort`);
+		const selectedRunner = runnersById.get(input.runner_id)!;
+		if (
+			effort &&
+			selectedRunner.type &&
+			selectedRunner.default_tier &&
+			typeof selectedRunner.config === 'string'
+		) {
+			const resolved = resolveTier(selectedRunner as TierResolvable, tier);
+			const compatibility = resolveEffort(
+				selectedRunner as TierResolvable & { effort_capabilities?: string | null },
+				resolved,
+				effort
+			);
+			if (!compatibility.compatible) {
+				throw new ApiFail(
+					422,
+					'effort_incompatible',
+					`Target "${selectedRunner.name}" cannot apply effort ${effort} to ${resolved.model ?? 'its fixed model'}: ${compatibility.reason}`,
+					{ field: `targets[${i}].effort`, model: resolved.model, requested_effort: effort }
+				);
+			}
+		}
+		const key = JSON.stringify([input.runner_id, tier, effort ?? null]);
 		if (seen.has(key)) {
 			const name = runnersById.get(input.runner_id)?.name;
 			throw new ApiFail(
 				422,
 				'duplicate_target',
-				`Target "${name}"${tier ? ` (tier ${tier})` : ''} is listed more than once`,
+				`Target "${name}"${tier ? ` (tier ${tier})` : ''}${effort ? ` (effort ${effort})` : ''} is listed more than once`,
 				{ field: 'targets' }
 			);
 		}
 		seen.add(key);
-		targets.push(
-			tier === null ? { runner_id: input.runner_id } : { runner_id: input.runner_id, tier }
-		);
+		targets.push({
+			runner_id: input.runner_id,
+			...(tier ? { tier } : {}),
+			...(effort ? { effort } : {})
+		});
 	}
 	return targets;
+}
+
+function requireTargetEffort(value: unknown, field: string): string | undefined {
+	if (value === undefined || value === null) return undefined;
+	if (!isEffortToken(value)) {
+		throw new ApiFail(
+			422,
+			'invalid_field',
+			`"${field}" must be a lowercase effort token (1-32 characters)`,
+			{ field }
+		);
+	}
+	return value;
 }
 
 // ---------------------------------------------------------------------------
@@ -277,10 +332,34 @@ function rowScope(row: RuleRow): ContextScope {
 async function loadRunnersById(
 	db: Kysely<Database>,
 	userId: string
-): Promise<Map<string, { id: string; name: string; status: string }>> {
+): Promise<
+	Map<
+		string,
+		Pick<
+			Database['runner'],
+			| 'id'
+			| 'name'
+			| 'status'
+			| 'type'
+			| 'config'
+			| 'default_tier'
+			| 'tiers'
+			| 'effort_capabilities'
+		>
+	>
+> {
 	const rows = await db
 		.selectFrom('runner')
-		.select(['id', 'name', 'status'])
+		.select([
+			'id',
+			'name',
+			'status',
+			'type',
+			'config',
+			'default_tier',
+			'tiers',
+			'effort_capabilities'
+		])
 		.where('user_id', '=', userId)
 		.execute();
 	return new Map(rows.map((r) => [r.id, r]));
@@ -296,7 +375,8 @@ function serializeRule(
 				runner_id: INHERIT_RUNNER_ID,
 				runner_name: INHERIT_RUNNER_ID,
 				runner_status: null,
-				tier: t.tier ?? null
+				tier: t.tier ?? null,
+				...(t.effort ? { effort: t.effort } : {})
 			};
 		}
 		const runner = runnersById.get(t.runner_id);
@@ -304,7 +384,8 @@ function serializeRule(
 			runner_id: t.runner_id,
 			runner_name: runner?.name ?? 'removed runner',
 			runner_status: (runner?.status ?? 'paused') as 'active' | 'paused',
-			tier: t.tier ?? null
+			tier: t.tier ?? null,
+			...(t.effort ? { effort: t.effort } : {})
 		};
 	});
 	return {
@@ -502,7 +583,8 @@ export function routingRuleInsertQueries(
 							t.runner_id === INHERIT_RUNNER_ID
 								? INHERIT_RUNNER_ID
 								: runnersById.get(t.runner_id)?.name,
-						tier: t.tier ?? null
+						tier: t.tier ?? null,
+						...(t.effort ? { effort: t.effort } : {})
 					}))
 				}
 			},

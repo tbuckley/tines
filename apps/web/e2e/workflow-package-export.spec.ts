@@ -312,7 +312,7 @@ test('authors an exact declared use and downloads the reviewed canonical package
 	await expect(page.getByRole('checkbox', { name: /I confirm exact plan/ })).not.toBeChecked();
 	await page.getByRole('checkbox', { name: /I confirm exact plan/ }).check();
 	await page.getByRole('button', { name: 'Install package' }).click();
-	await expect(page.locator('[data-package-receipt]')).toBeFocused();
+	await expect(page.getByRole('heading', { name: 'Package installed', exact: true })).toBeFocused();
 	const installedPromptHref = await page
 		.getByText('prompt · instructions', { exact: true })
 		.locator('..')

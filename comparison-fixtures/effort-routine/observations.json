@@ -1,0 +1,73 @@
+{
+	"fixture_hashes": {
+		"input.txt": "b7b7244905cb934f44906c0f143ad761589a9f48b0f0d4f2a1df43ab5340e51f",
+		"expected.txt": "43fa198290e82e956e74d898d0f7148c4823d68b512c8d105b4d0940fa033fdc",
+		"acceptance.sh": "23771b8f3114c62e0c6d2520edc6b3998a917942073fb2d07b8bfbe4b0234162",
+		"prompt.md": "1e782a79d20de26e050e21f3ccbdb0945f07b3dfc67510420f1b89c98b2ca7ce"
+	},
+	"opening_text": {
+		"tokenizer": "o200k_base (tiktoken)",
+		"tokens": 97,
+		"includes": ["prompt.md", "input.txt"]
+	},
+	"attempts": [
+		{
+			"number": 1,
+			"harness": "codex-cli 0.153.4",
+			"model": "gpt-5.6",
+			"effort": "high",
+			"mode": "cold",
+			"accepted": false,
+			"elapsed_seconds": 1,
+			"reason": "model unsupported for this ChatGPT account",
+			"usage": null
+		},
+		{
+			"number": 2,
+			"harness": "codex-cli 0.153.4",
+			"model": "gpt-6-astra",
+			"effort": "high",
+			"mode": "cold",
+			"accepted": true,
+			"adherence": true,
+			"retrieved": ["prompt.md", "input.txt", "acceptance.sh"],
+			"elapsed_seconds": 12,
+			"usage": {
+				"input_tokens": 66155,
+				"cached_input_tokens": 56192,
+				"cache_write_input_tokens": 0,
+				"output_tokens": 306,
+				"reasoning_output_tokens": 0
+			}
+		},
+		{
+			"number": 3,
+			"harness": "codex-cli 0.153.4",
+			"model": "gpt-6-astra",
+			"effort": "low",
+			"mode": "cold",
+			"accepted": true,
+			"adherence": true,
+			"retrieved": ["prompt.md", "input.txt", "acceptance.sh"],
+			"elapsed_seconds": 15,
+			"usage": {
+				"input_tokens": 66070,
+				"cached_input_tokens": 51968,
+				"cache_write_input_tokens": 0,
+				"output_tokens": 296,
+				"reasoning_output_tokens": 0
+			}
+		},
+		{
+			"number": 4,
+			"harness": "Claude Code 2.1.258",
+			"model": "claude-sonnet-5",
+			"effort": "high",
+			"mode": "cold",
+			"accepted": false,
+			"elapsed_seconds": 0.04,
+			"reason": "OAuth session expired and could not be refreshed",
+			"usage": null
+		}
+	]
+}

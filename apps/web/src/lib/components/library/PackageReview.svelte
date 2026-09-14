@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { WorkflowPackageDocument } from '@tines/shared';
+	import { describeRecurrence, type WorkflowPackageDocument } from '@tines/shared';
 	import IconCheck from '@tabler/icons-svelte/icons/check';
 	import WorkflowGraph from '$lib/components/WorkflowGraph.svelte';
 	import PackageText from './PackageText.svelte';
@@ -248,10 +248,10 @@
 							{#if startStateId}<code>({startStateId})</code>{/if}
 						</dd>
 						<dt>Recurrence</dt>
-						<dd>
-							{schedule.recurrence.kind === 'cron'
-								? schedule.recurrence.cron
-								: JSON.stringify(schedule.recurrence.preset)}
+						<dd class="min-w-0 [overflow-wrap:anywhere]">
+							{schedule.recurrence.kind === 'preset'
+								? describeRecurrence(schedule.recurrence.preset, '')
+								: describeRecurrence(null, schedule.recurrence.cron)}
 						</dd>
 						<dt>Timezone</dt>
 						<dd>{schedule.timezone}</dd>
