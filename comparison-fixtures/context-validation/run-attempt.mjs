@@ -21,6 +21,7 @@ if (!Number.isInteger(number) || number < 5 || number > 12 || !allowed.has(arm))
 	);
 }
 const resultDir = join(here, 'results', `attempt-${number}`);
+mkdirSync(join(here, 'results'), { recursive: true });
 mkdirSync(resultDir, { recursive: false });
 const stage = mkdtempSync(join(tmpdir(), `tines-528-${number}-`));
 const launchDir = join(root, 'apps/web/src/lib/server/api/fixtures/launch-context');
