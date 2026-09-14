@@ -183,37 +183,44 @@
 		{#if runners.length === 0}
 			<p class="text-muted-foreground text-xs italic">No runners registered yet.</p>
 		{:else}
-			<div class="flex items-center gap-1.5">
-				<Select class="h-8 flex-1 text-xs" bind:value={pinRunnerId} aria-label="Pinned runner">
-					<option value="">No pin — routing rules apply</option>
+			<p class="text-muted-foreground mb-1.5 text-xs">No pin uses routing rules.</p>
+			<div class="grid min-w-0 gap-1.5">
+				<Select
+					class="h-8 w-full min-w-0 text-xs"
+					bind:value={pinRunnerId}
+					aria-label="Pinned runner"
+				>
+					<option value="">No pin</option>
 					{#each runners as runner (runner.id)}
 						<option value={runner.id}
 							>{runner.name}{runner.status === 'paused' ? ' (paused)' : ''}</option
 						>
 					{/each}
 				</Select>
-				<Select
-					class="h-8 w-28 text-xs"
-					bind:value={pinTier}
-					aria-label="Pinned tier"
-					disabled={!pinRunnerId || readOnly}
-					title={disabledReason}
-				>
-					<option value="">default tier</option>
-					{#each MODEL_TIERS as tier (tier)}
-						<option value={tier}>{tier}</option>
-					{/each}
-				</Select>
-				<Button
-					size="sm"
-					variant="outline"
-					class="h-8"
-					disabled={!pinDirty || savingPin || readOnly}
-					title={disabledReason}
-					onclick={savePin}
-				>
-					{savingPin ? '…' : 'Save'}
-				</Button>
+				<div class="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1.5">
+					<Select
+						class="h-8 w-full min-w-0 text-xs"
+						bind:value={pinTier}
+						aria-label="Pinned tier"
+						disabled={!pinRunnerId || readOnly}
+						title={disabledReason}
+					>
+						<option value="">Default tier</option>
+						{#each MODEL_TIERS as tier (tier)}
+							<option value={tier}>{tier}</option>
+						{/each}
+					</Select>
+					<Button
+						size="sm"
+						variant="outline"
+						class="h-8"
+						disabled={!pinDirty || savingPin || readOnly}
+						title={disabledReason}
+						onclick={savePin}
+					>
+						{savingPin ? '…' : 'Save'}
+					</Button>
+				</div>
 			</div>
 			{#if issue.pinned_runner_id}
 				<p
