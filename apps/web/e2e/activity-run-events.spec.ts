@@ -34,7 +34,7 @@ async function expectPresentations(page: Page): Promise<void> {
 		const badge = row.locator(':scope > span[aria-hidden="true"]');
 		await expect(badge).toHaveCount(1);
 		await expect(badge.locator('svg')).toHaveClass(
-			new RegExp(`icon-tabler-${expected.icon}(?:\\s|$)`)
+			new RegExp(`tabler-icon-${expected.icon}(?:\\s|$)`)
 		);
 		for (const colorClass of expected.colorClasses) {
 			await expect(badge).toHaveClass(new RegExp(`(?:^|\\s)${colorClass}(?:\\s|$)`));
