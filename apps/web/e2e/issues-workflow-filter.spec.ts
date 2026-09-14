@@ -57,9 +57,9 @@ test.describe.serial('issue workflow filter', () => {
 			})
 		);
 
-		const create = (title: string, workflowId: string) =>
+		const create = async (title: string, workflowId: string) =>
 			body<IssueDetail>(
-				api.post(`/api/v1/projects/${project.id}/issues`, {
+				await api.post(`/api/v1/projects/${project.id}/issues`, {
 					title,
 					workflow_id: workflowId
 				})
@@ -135,6 +135,7 @@ test.describe.serial('issue workflow filter', () => {
 		await page
 			.getByRole('button', { name: `Remove filter workflow: ${otherWorkflowName}` })
 			.click();
+		await expect(page).not.toHaveURL(/workflow=/);
 		expect(new URL(page.url()).searchParams.has('workflow')).toBe(false);
 		expect(new URL(page.url()).searchParams.has('state')).toBe(false);
 		await expect(page.getByText(openIssue.title, { exact: true })).toBeVisible();
