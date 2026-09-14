@@ -326,7 +326,7 @@ describe('the run log a local run leaves behind', () => {
 		expect(lines[0]).toMatch(/^warning: no daemon-managed tines CLI/);
 		expect(lines[1]).toBe(`$ cat '${join(workspace, 'prompt.md')}'`);
 		expect(lines[2]).toBe(
-			`# tines runner: harness=custom model=claude-sonnet-5 timeout=30m cli=${cliVersion()} workspace=${workspace}`
+			`# tines runner: harness=custom model=claude-sonnet-5 effort=(provider-default) timeout=30m cli=${cliVersion()} workspace=${workspace}`
 		);
 		// The harness's own output sits between the banner and the exit line.
 		expect(lines[3]).toBe('PROMPT BODY');

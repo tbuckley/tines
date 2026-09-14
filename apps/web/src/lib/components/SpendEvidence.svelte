@@ -3,11 +3,16 @@
 		ApiError,
 		usageCostLabel,
 		type AgentRunUsageEvidence,
+		type CohortEntry,
+		type CohortIssueUsage,
+		type CohortUsageReport,
 		type IssueAttemptUsage,
+		type IssueUsageReport,
 		type UsageDiagnostics,
 		type UsageEvidencePage
 	} from '@tines/shared';
 	import { api } from '$lib/api';
+	import IssueUsage from './IssueUsage.svelte';
 	import UsageCostCell from './UsageCostCell.svelte';
 
 	let {
@@ -18,22 +23,27 @@
 		sort = 'cost',
 		direction = 'desc',
 		cursor = null,
+		cohortReport = null,
 		onnavigate,
 		onclose
 	}: {
 		scope: string;
-		kind?: 'issues' | 'runs';
+		kind?: 'issues' | 'runs' | 'entries';
 		member?: string | null;
-		population?: 'finalized' | 'pending';
+		population?: 'all' | 'finalized' | 'pending';
 		sort?: 'cost' | 'time';
 		direction?: 'asc' | 'desc';
 		cursor?: string | null;
+		cohortReport?: CohortUsageReport | null;
 		onnavigate?: (changes: Record<string, string | null>) => void;
 		onclose?: () => void;
 	} = $props();
 	let page = $state<UsageEvidencePage | null>(null);
 	let error = $state<string | null>(null);
 	let loading = $state(true);
+	let lifetime = $state<IssueUsageReport | null>(null);
+	let lifetimeError = $state<string | null>(null);
+	let lifetimeLoading = $state<string | null>(null);
 	let generation = 0;
 	const key = $derived(JSON.stringify([scope, kind, member, population, sort, direction, cursor]));
 
@@ -56,6 +66,23 @@
 			? new Date(value).toISOString()
 			: present(value);
 	}
+	function isCohortIssue(item: IssueAttemptUsage): item is CohortIssueUsage {
+		return 'chosen_entry' in item && 'reopening' in item;
+	}
+	function assertCohortAgreement(result: UsageEvidencePage) {
+		if (!cohortReport) return;
+		const parentTotal = member ? result.parent_matching_total : result.matching_total;
+		const parentCounters = member ? result.parent_counters : result.counters;
+		if (
+			result.from !== cohortReport.from ||
+			result.to !== cohortReport.to ||
+			result.observed_through !== cohortReport.observed_through ||
+			JSON.stringify(result.history) !== JSON.stringify(cohortReport.history) ||
+			JSON.stringify(parentCounters) !== JSON.stringify(cohortReport.counters) ||
+			JSON.stringify(parentTotal) !== JSON.stringify(cohortReport.aggregate)
+		)
+			throw new Error('Cohort evidence changed; reload the completed-issue report.');
+	}
 	async function load() {
 		const mine = ++generation;
 		loading = true;
@@ -71,6 +98,7 @@
 				cursor: cursor ?? undefined,
 				limit: 10
 			});
+			assertCohortAgreement(result);
 			if (mine === generation) page = result;
 		} catch (value) {
 			if (mine === generation)
@@ -80,6 +108,20 @@
 						: 'Unable to load evidence';
 		} finally {
 			if (mine === generation) loading = false;
+		}
+	}
+	async function loadLifetime(issueId: string) {
+		lifetimeLoading = issueId;
+		lifetimeError = null;
+		try {
+			lifetime = await api.getIssueUsage(issueId);
+		} catch (value) {
+			lifetimeError =
+				value instanceof ApiError || value instanceof Error
+					? value.message
+					: 'Unable to load lifetime usage';
+		} finally {
+			lifetimeLoading = null;
 		}
 	}
 	$effect(() => {
@@ -94,36 +136,48 @@
 <section class="evidence" aria-labelledby="evidence-heading">
 	<header>
 		<div>
-			<h3 id="evidence-heading">Contributing {kind}</h3>
+			<h3 id="evidence-heading">
+				{kind === 'entries' ? 'Completion entry history' : `Contributing ${kind}`}
+			</h3>
 			<small>Frozen report scope · direct attempts only</small>
 		</div>
 		{#if onclose}<button type="button" onclick={onclose}>Close detail</button>{/if}
 	</header>
 	<nav aria-label="Evidence view">
-		{#if kind === 'runs'}<button
+		{#if kind !== 'issues'}<button
 				type="button"
-				onclick={() => change({ spend_kind: 'issues', spend_member: null, spend_cursor: null })}
-				>Issues</button
+				onclick={() =>
+					change({
+						spend_kind: 'issues',
+						spend_member: null,
+						spend_population: 'all',
+						spend_evidence_sort: 'cost',
+						spend_cursor: null
+					})}>Issues</button
 			>{/if}
-		<button
-			type="button"
-			aria-pressed={population === 'finalized'}
-			onclick={() =>
-				change({ spend_population: 'finalized', spend_evidence_sort: 'cost', spend_cursor: null })}
-			>Finalized</button
-		>
-		<button
-			type="button"
-			aria-pressed={population === 'pending'}
-			onclick={() =>
-				change({
-					spend_kind: 'runs',
-					spend_population: 'pending',
-					spend_evidence_sort: 'time',
-					spend_cursor: null
-				})}>Pending</button
-		>
-		{#if population === 'finalized'}<button
+		{#if kind !== 'entries'}<button
+				type="button"
+				aria-pressed={population === 'finalized'}
+				onclick={() =>
+					change({
+						spend_kind: 'runs',
+						spend_population: 'finalized',
+						spend_evidence_sort: 'cost',
+						spend_cursor: null
+					})}>Finalized</button
+			>
+			<button
+				type="button"
+				aria-pressed={population === 'pending'}
+				onclick={() =>
+					change({
+						spend_kind: 'runs',
+						spend_population: 'pending',
+						spend_evidence_sort: 'time',
+						spend_cursor: null
+					})}>Pending</button
+			>{/if}
+		{#if kind !== 'entries' && population === 'finalized'}<button
 				type="button"
 				onclick={() =>
 					change({ spend_evidence_sort: sort === 'cost' ? 'time' : 'cost', spend_cursor: null })}
@@ -149,11 +203,22 @@
 				)} · {page.total_count}
 				{kind} · {page.pending_count} pending
 			</p>
+			{#if page.counters && page.history && page.from !== undefined && page.to !== undefined && page.observed_through !== undefined}<p
+					class="cohort-contract"
+				>
+					Cohort selection: {page.counters.distinct_issue_count} completed · {page.counters
+						.attempt_count} attempts · {page.counters.pending_count} pending · history {page.history
+						.status} · entries [{new Date(page.from).toISOString()}, {new Date(
+						page.to
+					).toISOString()}) · observed through {new Date(page.observed_through).toISOString()}
+					{#if page.parent_counters}
+						· parent {page.parent_counters.distinct_issue_count} completed{/if}
+				</p>{/if}
 			{#if page.items.length === 0}<p>
 					{population === 'pending' ? 'No pending runs at this cutoff.' : 'No contributing runs.'}
 				</p>{/if}
 			<div class="rows">
-				{#each page.items as raw ((raw as { id?: string; issue_id?: string }).id ?? (raw as IssueAttemptUsage).issue_id)}
+				{#each page.items as raw ((raw as { event_id?: string; id?: string; issue_id?: string }).event_id ?? (raw as { id?: string }).id ?? (raw as IssueAttemptUsage).issue_id)}
 					{#if kind === 'issues'}
 						{@const item = raw as IssueAttemptUsage}
 						<article>
@@ -173,10 +238,53 @@
 											? `Unavailable issue (${item.issue_id})`
 											: 'Unknown issue'}</strong
 								><small
-									>{item.issue_ref?.title ?? 'Metadata unavailable'} · {item.attempt_count} runs</small
+									>{item.issue_ref?.title ?? 'Metadata unavailable'} · {item.attempt_count} runs{#if isCohortIssue(item)}
+										·
+										{item.chosen_entry.state_name ?? item.chosen_entry.state_id} at {new Date(
+											item.chosen_entry.created_at
+										).toISOString()} · {item.reopening.value === true
+											? 'reopened since entry'
+											: item.reopening.value === null
+												? 'reopening history unknown'
+												: 'not reopened in available history'}{/if}</small
 								></button
-							><UsageCostCell aggregate={item.aggregate} />
+							>
+							{#if isCohortIssue(item)}<div class="issue-actions">
+									<UsageCostCell aggregate={item.aggregate} />
+									<button
+										type="button"
+										disabled={lifetimeLoading === item.issue_id}
+										onclick={() => loadLifetime(item.issue_id)}
+										>{lifetimeLoading === item.issue_id
+											? 'Loading lifetime…'
+											: 'Lifetime through now'}</button
+									>
+								</div>{:else}<UsageCostCell aggregate={item.aggregate} />{/if}
 						</article>
+					{:else if kind === 'entries'}
+						{@const item = raw as CohortEntry}
+						<article>
+							<div>
+								<strong>{item.state_name ?? item.state_id ?? 'Unclassifiable entry'}</strong>
+								<small
+									>{item.event_type} · {item.issue_id ?? 'unknown issue'} · {new Date(
+										item.created_at
+									).toISOString()}</small
+								>
+							</div>
+							<strong class="cost"
+								>{item.chosen
+									? 'Chosen'
+									: item.reopening_relevant
+										? 'Reopened'
+										: item.qualifies
+											? 'Qualifies'
+											: 'Excluded'}</strong
+							>
+						</article>
+						{#if item.unavailable_reason}<small
+								>{item.unavailable_reason.replaceAll('_', ' ')}</small
+							>{/if}
 					{:else}
 						{@const run = raw as AgentRunUsageEvidence}
 						<article class="run-row">
@@ -251,6 +359,8 @@
 					onclick={() => change({ spend_cursor: page?.next_cursor ?? null })}>Next</button
 				>
 			</footer>
+			{#if lifetimeError}<p class="error">Lifetime usage unavailable: {lifetimeError}</p>{/if}
+			{#if lifetime}<IssueUsage initial={lifetime} />{/if}
 		{/if}
 	</div>
 </section>
@@ -307,6 +417,11 @@
 		min-width: 82px;
 		text-align: right;
 		font-variant-numeric: tabular-nums;
+	}
+	.issue-actions {
+		display: grid;
+		justify-items: end;
+		gap: 0.35rem;
 	}
 	.total {
 		background: var(--muted);

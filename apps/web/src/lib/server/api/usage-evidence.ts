@@ -22,8 +22,8 @@ import { retainedIssueWorkflow, retainedStartWorkflow } from './usage-ledger';
 import { hydrateUsageEvidenceRuns } from './runs';
 
 export interface EvidenceRequest {
-	kind: 'issues' | 'runs';
-	population: 'finalized' | 'pending';
+	kind: 'issues' | 'runs' | 'entries';
+	population: 'all' | 'finalized' | 'pending';
 	member: string | null;
 	sort: 'cost' | 'time';
 	direction: 'asc' | 'desc';
@@ -180,7 +180,7 @@ function retain(
 }
 
 function scopeCutoff(scope: UsageScopePayload) {
-	return scope.mode === 'period' ? scope.to : scope.cutoff;
+	return scope.mode === 'issue' ? scope.cutoff : scope.to;
 }
 function scopeFilters(scope: UsageScopePayload): ResolvedUsageFilters {
 	return scope.mode === 'period' ? scope.filters : {};
@@ -200,6 +200,8 @@ export async function getUsageEvidence(
 		throw new Error('pending evidence is available as runs');
 	if (request.population === 'pending' && request.sort === 'cost')
 		throw new Error('pending evidence can only be sorted by time');
+	if (request.kind === 'entries' || request.population === 'all')
+		throw new Error('entry and all-member evidence require a completed-issue scope');
 	let decoded: UsageCursorPayload | null = null;
 	if (request.cursor) {
 		decoded = await verifyUsageCursor(request.cursor, material);

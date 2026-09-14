@@ -12,6 +12,15 @@ export const POST: RequestHandler = api(async (event) => {
 	const { db, env, runner } = await runnerProtocolContext(event);
 	const body = await readJson<AppendRunLogRequest>(event);
 	return json(
-		await appendRunLog(db, env, runner, event.params.id, body.chunk, Date.now(), body.seq)
+		await appendRunLog(
+			db,
+			env,
+			runner,
+			event.params.id,
+			body.chunk,
+			Date.now(),
+			body.seq,
+			body.effort_application
+		)
 	);
 });

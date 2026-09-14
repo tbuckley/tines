@@ -110,16 +110,16 @@ With the dev server running, try the CLI with the seeded key (the seed prints it
 export TINES_API_KEY=tines_dev0000000000000000000000000000000000000
 pnpm cli time                             # dev mode (tsx, no build needed)
 pnpm cli projects list
-pnpm cli time -- --json
+pnpm cli time --json                      # flags go straight on; `--` breaks pnpm 10
 
 # or the built binary
 pnpm build
 node packages/cli/dist/index.js time --url http://localhost:5173
 ```
 
-The CLI reads the API base URL from `--url` (accepted by every command, without exception), then the `TINES_API_URL` env var, then the file `tines login` writes (`~/.config/tines/config.json`); the default is the production deployment, `https://tines.tbuckley.dev`. The API key resolves the same way (`--api-key`, `TINES_API_KEY`, the file). For local development, `pnpm cli` **always** targets `http://localhost:5173` — its script pins `TINES_API_URL` rather than defaulting it, so a `TINES_API_URL` already in your environment (every agent run has one, pointing at production) is ignored and the snippet above talks to your dev server. To reach any other deployment from source, including a dev server vite moved to another port, pass `--url` (`pnpm cli time --url http://localhost:5174`) or use the installed `tines` / the built binary. `tines config` shows what is in effect and where each value came from.
+The CLI reads the API base URL from `--url` (accepted by every command that talks to the API), then the `TINES_API_URL` env var, then the file `tines login` writes (`~/.config/tines/config.json`); the default is the production deployment, `https://tines.tbuckley.dev`. The local-only `logout`, `runner restart`, `runner uninstall`, `runner workspaces`, and `runner workspaces prune` commands take no `--url`. The API key resolves the same way (`--api-key`, `TINES_API_KEY`, the file). For local development, `pnpm cli` **always** targets `http://localhost:5173` — its script pins `TINES_API_URL` rather than defaulting it, so a `TINES_API_URL` already in your environment (every agent run has one, pointing at production) is ignored and the snippet above talks to your dev server. To reach any other deployment from source, including a dev server vite moved to another port, pass `--url` (`pnpm cli time --url http://localhost:5174`) or use the installed `tines` / the built binary. `tines config` shows what is in effect and where each value came from.
 
-Every `… list` command returns one page. Pass `--all-pages` to follow the cursor and fetch the whole list in one command; without it, `--json` output carries a `next_cursor` and warns on stderr that there is more.
+Paginated `… list` commands return one page. Pass `--all-pages` to follow the cursor and fetch the whole list in one command, up to a default 10,000-item safety ceiling; use `--max-items <n>` with `--all-pages` to choose a different positive bound. Exceeding the bound fails without printing a partial result. Without `--all-pages`, `--json` output carries a `next_cursor` and warns on stderr that there is more. Four lists are not paginated and take no such flag: `labels list`, `runners list`, `routing list`, and `issues artifacts list` return the whole collection by design.
 
 ## Installing the CLI globally
 
@@ -634,3 +634,5 @@ From the repo root:
 - `pnpm test` — vitest unit tests (`ci.yml` runs them on every pull request, and the deploy and publish workflows run them again before shipping)
 - `pnpm test:e2e` — Playwright e2e suite (boots the built worker under `wrangler dev` with a seeded local D1; see `apps/web/e2e/` and its README for the suite's motion, hydration and geometry policies). Run by `ci.yml` on pull requests, but not by `pnpm test`.
 - `pnpm cli <command>` — run the CLI from source against the local dev server (`http://localhost:5173`, pinned; pass `--url` for anything else)
+
+  Add exact-model reasoning effort by ordered target number: `tines routing set codex:balanced claude:balanced --project Example --effort 1=low --effort 2=medium`. Re-run the same targets without `--effort` to clear routed effort; `routing clear` deletes the whole scoped rule.

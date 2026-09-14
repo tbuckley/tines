@@ -95,6 +95,7 @@ import type {
 	WorkflowResponse
 } from './types.js';
 import type {
+	CohortUsageReport,
 	IssueUsageReport,
 	ResolvedUsageFilters,
 	UsageBy,
@@ -531,12 +532,20 @@ export function createApiClient(options: ApiClientOptions) {
 		) => get<UsageReport>(`/api/v1/usage${query(filters)}`),
 		getIssueUsage: (issue: string) =>
 			get<IssueUsageReport>(`/api/v1/usage${query({ mode: 'issue', issue })}`),
+		getCohortUsage: (filters: {
+			workflow: string;
+			project?: string;
+			window?: UsageWindow;
+			from?: string;
+			to?: string;
+			done_state?: string[];
+		}) => get<CohortUsageReport>(`/api/v1/usage${query({ mode: 'cohort', ...filters })}`),
 		getUsageScope: (scope: string) =>
-			get<UsageReport | IssueUsageReport>(`/api/v1/usage${query({ scope })}`),
+			get<UsageReport | IssueUsageReport | CohortUsageReport>(`/api/v1/usage${query({ scope })}`),
 		getUsageEvidence: (filters: {
 			scope: string;
-			kind?: 'issues' | 'runs';
-			population?: 'finalized' | 'pending';
+			kind?: 'issues' | 'runs' | 'entries';
+			population?: 'all' | 'finalized' | 'pending';
 			member?: string;
 			sort?: 'cost' | 'time';
 			direction?: 'asc' | 'desc';

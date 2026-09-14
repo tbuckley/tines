@@ -451,7 +451,7 @@ describe('updateRunner (managed credentials, tiers, budget)', () => {
 });
 
 describe('validators', () => {
-	it('validateTierOverrides: closed tier set, model required, effort levels closed', () => {
+	it('validateTierOverrides: closed tier set, model required, effort token syntax', () => {
 		expect(validateTierOverrides(undefined)).toBeNull();
 		expect(validateTierOverrides({})).toBeNull();
 		expect(validateTierOverrides({ smartest: 'claude-opus-5' })).toEqual({
@@ -459,9 +459,9 @@ describe('validators', () => {
 		});
 		expect(() => validateTierOverrides({ turbo: { model: 'x' } })).toThrowError(ApiFail);
 		expect(() => validateTierOverrides({ smartest: {} })).toThrowError(ApiFail);
-		expect(() =>
-			validateTierOverrides({ smartest: { model: 'x', effort: 'extreme' } })
-		).toThrowError(ApiFail);
+		expect(() => validateTierOverrides({ smartest: { model: 'x', effort: 'High' } })).toThrowError(
+			ApiFail
+		);
 		expect(() => validateTierOverrides({ smartest: { model: 'x', unknown: 1 } })).toThrowError(
 			ApiFail
 		);

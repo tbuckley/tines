@@ -32,6 +32,28 @@
 	/** Log-tail viewer expansion — nothing outside the row reads it. */
 	let expanded = $state(false);
 
+	function effortSourceLabel(): string {
+		const source = run.effort_source;
+		if (!source) return 'legacy record';
+		if (source.kind === 'routing_target')
+			return `routing target ${source.target_index + 1} (${source.scope_label})`;
+		if (source.kind === 'runner_tier') return `runner tier ${source.tier}`;
+		return 'provider default';
+	}
+
+	function observedEffort(): { model?: string; effort?: string; reason?: string } | null {
+		const evidence = run.effort_application_evidence as {
+			milestones?: Array<{ observed_model?: string; observed_effort?: string; reason?: string }>;
+		} | null;
+		const item = evidence?.milestones?.findLast(
+			(entry) => entry.observed_model !== undefined || entry.observed_effort !== undefined
+		);
+		return item
+			? { model: item.observed_model, effort: item.observed_effort, reason: item.reason }
+			: null;
+	}
+	let observed = $derived(observedEffort());
+
 	/** What each judgment meant for the issue's attempt budget. */
 	function outcomeTitle(outcome: RunEndOutcome): string {
 		return outcome === 'advanced'
@@ -61,6 +83,25 @@
 	<span class="text-muted-foreground text-xs">
 		{run.tier}{run.model ? ` · ${run.model}` : ''}
 	</span>
+	{#if run.effort_application_status === 'legacy_not_applied'}
+		<span
+			class="text-xs text-amber-700 dark:text-amber-400"
+			title="Actual provider effort is unknown"
+		>
+			tier effort {run.resolved_effort} not delivered · upgrade pending
+		</span>
+	{:else if run.resolved_effort}
+		<span
+			class="text-muted-foreground text-xs"
+			title={`Requested ${run.requested_effort ?? 'from runner tier'}; application ${run.effort_application_status}`}
+		>
+			effort {run.resolved_effort} · {run.effort_application_status.replaceAll('_', ' ')}
+		</span>
+	{:else if run.effort_application_status === 'unknown'}
+		<span class="text-muted-foreground text-xs">effort unknown</span>
+	{:else}
+		<span class="text-muted-foreground text-xs">provider default · unconfirmed</span>
+	{/if}
 	<span class="text-xs font-medium {runStatusClass(run.status)}">
 		{run.status.replaceAll('_', ' ')}
 	</span>
@@ -104,6 +145,18 @@
 			console ↗
 		</a>
 	{/if}
+	<details class="text-muted-foreground w-full text-xs">
+		<summary class="w-fit cursor-pointer select-none">Effort details</summary>
+		<div class="mt-1 grid gap-x-4 gap-y-0.5 sm:grid-cols-2">
+			<span>Requested: {run.requested_effort ?? 'none'}</span>
+			<span>Resolved: {run.resolved_effort ?? 'provider default'}</span>
+			<span>Source: {effortSourceLabel()}</span>
+			<span>Application: {run.effort_application_status.replaceAll('_', ' ')}</span>
+			<span>Observed effort: {observed?.effort ?? 'unknown'}</span>
+			<span>Observed model: {observed?.model ?? 'unknown'}</span>
+			{#if observed?.reason}<span class="sm:col-span-2">Evidence: {observed.reason}</span>{/if}
+		</div>
+	</details>
 	{#if run.error}
 		<!-- The most useful line on a failed row, and the one most likely to be
 		     cut mid-word ("ENOSPC: no space left on…"). Two clamped lines carry
