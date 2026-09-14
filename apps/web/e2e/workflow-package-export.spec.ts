@@ -331,7 +331,13 @@ test('cancels safely and refuses duplicate keys or registered-token edits over u
 	);
 	await expect(editor).toHaveValue(unsaved);
 	await expect(page.getByLabel('Default')).toHaveValue('after');
-	await page.getByRole('button', { name: 'Cancel' }).click();
+	await page.getByRole('button', { name: 'Save candidate text' }).click();
+	await expect(
+		page.getByText('Candidate text updated without changing the private source.')
+	).toBeVisible();
+	await page.getByRole('button', { name: 'Save changes' }).click();
+	await expect(page.getByRole('button', { name: 'Edit input first_input' })).toBeFocused();
+	await expect(editor).toHaveValue(/\{\{first_input:after\}\}.*Unsaved adjacent prose\./s);
 	await expect(page.getByRole('button', { name: 'Rebuild from source' })).toBeEnabled();
 });
 
