@@ -2,6 +2,12 @@
 
 Two measurements, one modelled and one real.
 
+## Weekly stats: `pnpm --filter web perf:stats`
+
+The opt-in weekly-stats probe constructs 524 issues, 28 active states, 1,525 runs and 40 marker-style windows. Its CPU companion runs a frozen pre-refactor arithmetic oracle against complete reports and generated marker windows, then reports the old repeated-preparation shape versus the shared prepared-index shape. It is excluded from the normal unit suite and has no wall-clock gate because local CPU timings vary.
+
+The command builds three fresh isolated Worker/D1 stacks over the same fixture: the pre-change repeated-preparation marker loop, shared preparation with 1,000 irrelevant events, then shared preparation with 10,000 irrelevant events. It collects ten sequential samples for the unfiltered, project-filtered and `compare=none` API, authenticated `/agents`, and lazy evidence. It prints loader phases, query/transfer counts, native `rows_read`, response bytes, stable full-output hashes and the unforced plan for the actual parameterized shipping event query. It fails if baseline/current figures differ or evidence changes between volumes. Set `STATS_PROFILE_PORT` or `STATS_PROFILE_SAMPLES` when needed. `pnpm --filter web perf:stats:cpu` retains the preparation diagnostic and full differential oracle.
+
 ## Modelled: `pnpm --filter web perf:nav`
 
 `apps/web/src/lib/server/api/nav-perf.test.ts` runs the real route `load`
