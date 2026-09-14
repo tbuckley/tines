@@ -192,7 +192,7 @@ export function matchRule<T extends MatchableRule>(issue: MatchableIssue, rules:
 /**
  * The built-in tier→model table, maintained in code and updated as providers
  * ship models. Local runners resolve per harness: `claude_code` mirrors the
- * Claude trio (passed via --model), `codex` runs its fixed family, and a
+ * Claude trio (passed via --model), `codex` selects distinct defaults, and a
  * custom harness has no model dimension at all.
  */
 const BUILTIN_TIER_MODELS: Record<string, Record<ModelTier, string> | null> = {
@@ -213,9 +213,9 @@ const BUILTIN_TIER_MODELS: Record<string, Record<ModelTier, string> | null> = {
 const LOCAL_HARNESS_TIER_MODELS: Record<string, Record<ModelTier, string> | null> = {
 	claude_code: BUILTIN_TIER_MODELS.claude_managed,
 	codex: {
-		smartest: 'gpt-5-codex',
-		balanced: 'gpt-5-codex',
-		cheapest: 'gpt-5-codex'
+		smartest: 'gpt-6-astra',
+		balanced: 'gpt-5.6-sol',
+		cheapest: 'gpt-5.6-luna'
 	},
 	// A custom harness cannot vary its model: it satisfies any tier with its
 	// fixed configuration, and the run records the model as unknown.

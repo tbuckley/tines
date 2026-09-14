@@ -263,6 +263,78 @@ test('Code repository asks for a URL, previews the repo item, and creates it', a
 	await expectDefaultWorkflow(page, code.creates.workflows.find((w) => w.default)?.name ?? '');
 });
 
+for (const viewport of [
+	{ width: 1440, height: 900 },
+	{ width: 390, height: 844 }
+]) {
+	test(`a ${viewport.width}px repository suggestion is capped and creates successfully`, async ({
+		browser
+	}) => {
+		const context = await browser.newContext({ viewport });
+		await signIn(context, ALICE.sessionToken);
+		const page = await context.newPage();
+		await gotoHydrated(page, '/projects');
+		const dialog = await openDialog(page);
+		await dialog.getByTestId('starter-code').click();
+
+		const prefix = `starter-long-${viewport.width}-${runId}-`;
+		const basename = prefix + 'x'.repeat(201 - prefix.length);
+		const expectedName = basename.slice(0, 200);
+		const remote = `https://github.com/example/${basename}.git`;
+		const url = dialog.getByLabel('Repository URL');
+		const name = dialog.getByLabel('Name', { exact: true });
+		const hint = dialog.getByText('Maximum 200 characters.', { exact: true });
+		const submit = dialog.getByRole('button', { name: 'Create project' });
+
+		await url.fill(remote);
+		await expect(name).toHaveValue(expectedName);
+		await expect(url).toHaveValue(remote);
+		await expect(name).toHaveAttribute('maxlength', '200');
+		await expect(name).toHaveAttribute('aria-describedby', 'project-name-hint');
+		await expect(hint).toBeVisible();
+		await submit.scrollIntoViewIfNeeded();
+		await expect(submit).toBeEnabled();
+
+		const [createResponse] = await Promise.all([
+			page.waitForResponse(
+				(response) =>
+					response.request().method() === 'POST' &&
+					new URL(response.url()).pathname === '/api/v1/projects'
+			),
+			submit.click()
+		]);
+		expect(createResponse.status()).toBe(201);
+		expect((await createResponse.json()).name).toBe(expectedName);
+		await expect(page).toHaveURL(/\/projects\/prj_/);
+		await expect(page.getByRole('heading', { name: expectedName })).toBeVisible();
+		await context.close();
+	});
+}
+
+test('Name exposes its limit and keeps a direct edit across starter changes', async ({ page }) => {
+	await gotoHydrated(page, '/projects');
+	const dialog = await openDialog(page);
+	const name = dialog.getByLabel('Name', { exact: true });
+	const hint = dialog.getByText('Maximum 200 characters.', { exact: true });
+
+	await expect(name).toHaveAttribute('maxlength', '200');
+	await expect(hint).toBeVisible();
+	await name.fill('n'.repeat(200));
+	await name.press('End');
+	await name.press('x');
+	await expect(name).toHaveValue('n'.repeat(200));
+
+	await name.fill('manual-name');
+	await dialog.getByTestId('starter-code').click();
+	await dialog
+		.getByLabel('Repository URL')
+		.fill('https://github.com/example/a-different-repository.git');
+	await expect(name).toHaveValue('manual-name');
+	await dialog.getByTestId('starter-plan').click();
+	await expect(name).toHaveValue('manual-name');
+	await expect(hint).toBeVisible();
+});
+
 test('repository naming follows while pristine and freezes after any Name edit', async ({
 	page
 }) => {

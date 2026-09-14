@@ -167,7 +167,7 @@ JSON over HTTP under `/api/v1/*`, served by the SvelteKit app; shared request/re
 | `GET/POST /api/v1/workflows` | List library (incl. standard) / create |
 | `GET/PATCH/DELETE /api/v1/workflows/:id` | Read (with states + transitions) / update per editing rules / delete when unreferenced |
 | `GET /api/v1/issues` | Global list across projects; filters include `project`, `state`, `category`, `workflow`, and `q` |
-| `GET/POST /api/v1/projects/:id/issues` | List (including state/category/`q` filters) / create |
+| `GET/POST /api/v1/projects/:id/issues` | List (including workflow/state/category/`q` filters) / create |
 | `GET/PATCH /api/v1/issues/:id` | Read (incl. workflow, state, comments) / update title & description |
 | `POST /api/v1/issues/:id/transition` | `{ action }` (transition name) or `{ transition_id }`; 422 with the allowed transitions (named) when invalid |
 | `GET/POST /api/v1/issues/:id/transfer` | Preview / commit a signed project transfer; run keys may preview but cannot commit |
@@ -221,7 +221,7 @@ SvelteKit + shadcn-svelte, behind sign-in.
 
 A persistent top nav with four tabs — **Issues, Workflows, Projects, Activity** — each a list view with a corresponding detail page. Settings (API keys, account) live under the avatar menu, not in the tabs.
 
-- **Issues** (`/issues`): the default landing tab — a global list across all projects, hiding `done` issues by default. Filter by project, state, and category; rows show number, title, project, state (color-coded by category), and last activity. → detail at `/issues/:project/:number`.
+- **Issues** (`/issues`): the default landing tab — a global list across all projects, hiding `done` issues by default. Filter by project focus, workflow, optional state within that workflow, and category; rows show number, title, project, state (color-coded by category), and last activity. Workflow/state selections use stable IDs, while old name-based URLs remain valid. → detail at `/issues/:project/:number`.
 - **Workflows** (`/workflows`): the library, standard workflow marked read-only. → detail at `/workflows/:id`.
 - **Projects** (`/projects`): list + create. → detail at `/projects/:id`: the project's issues (same list component as the Issues tab, pre-filtered), a new-issue form, and project settings (name, description, default workflow).
 - **Activity** (`/activity`): the global event feed, newest first, filterable by project and type — the "log of work" made visible. Each event links to its issue/project.
@@ -231,7 +231,7 @@ A persistent top nav with four tabs — **Issues, Workflows, Projects, Activity*
 
 - **Issue detail**: title, rendered Markdown description (editable), state with allowed-transition buttons — labeled by action name, with the target state as secondary text — plus a compact graph of the issue's workflow with the current state highlighted, comment thread, and this issue's slice of the activity log — with actors shown throughout.
 - **Workflow detail/editor**: two views of the same FSM, side by side:
-  - A **graph view** — the primary way a workflow is *read*. States are nodes (color-coded by category; initial and dead-end states visually distinguished), transitions are directed edges labeled with their action names (labels elided in compact previews), laid out automatically client-side (no stored positions, no manual arranging). Shown wherever a workflow appears: the detail page, the editor, and as a compact preview when picking a workflow at issue creation.
+  - A **graph view** — the primary way a workflow is *read*. States are nodes (color-coded by category; initial and dead-end states visually distinguished), transitions are directed edges labeled with their action names (labels elided in compact previews), laid out automatically client-side (no stored positions, no manual arranging). Shown wherever a workflow appears: the detail page, the editor, and as a compact preview when picking a workflow at issue creation. The editor defaults to fitting the whole graph to its preview width and offers an exact 1× view with horizontal scrolling inside its named preview region; other surfaces retain fitted rendering.
   - A **form-based editor** — the way a workflow is *written*: add/rename/remove states, set each state's category, pick the initial state, per-state pickers for allowed target states. The graph re-renders live as the form changes, so the user sees the machine they're building. Editing-rule violations surface inline.
 
 ### Look and feel

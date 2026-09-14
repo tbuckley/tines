@@ -46,9 +46,6 @@
 	import CancelRunDialog from '$lib/components/CancelRunDialog.svelte';
 	import FirstRunChecklist from '$lib/components/FirstRunChecklist.svelte';
 	import { confirmDialog } from '$lib/components/dialogs.svelte';
-	import type { StageStats, StageStatsReport } from '@tines/shared';
-	import StageStatsBoard from '$lib/components/StageStatsBoard.svelte';
-	import SentBackDrilldown from '$lib/components/SentBackDrilldown.svelte';
 	import { stageRunsHref } from '$lib/stage-stats-view';
 	import FleetQueuePanel from '$lib/components/FleetQueuePanel.svelte';
 	import Modal from '$lib/components/Modal.svelte';
@@ -58,6 +55,7 @@
 	import RoutingRuleRow from '$lib/components/RoutingRuleRow.svelte';
 	import RunRow from '$lib/components/RunRow.svelte';
 	import StateBadge from '$lib/components/StateBadge.svelte';
+	import StageStatsPanel from '$lib/components/StageStatsPanel.svelte';
 	import SpendPanel from '$lib/components/SpendPanel.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
@@ -121,21 +119,9 @@
 		void patchAgents({ agents_view: view === 'now' ? null : 'spend' });
 	}
 
-	let sentBackOpen = $state(false);
-	let sentBackStage = $state<StageStats | null>(null);
-	let sentBackReport = $state<StageStatsReport | null>(null);
-	function openSentBack(stage: StageStats) {
-		sentBackStage = stage;
-		sentBackReport = data.stats;
-		sentBackOpen = true;
-	}
-	const evidenceProject = $derived(data.boardProject);
-	$effect(() => {
-		evidenceProject;
-		sentBackOpen = false;
-	});
 	async function focusStatsCapacity(stateId: string) {
 		if (agentsView !== 'now') await patchAgents({ agents_view: null });
+		if (agentsView !== 'now') return;
 		quotaType = data.settings.quota.type;
 		highlight(quotaType === 'state_roster' ? stateId : null);
 		await tick();
@@ -990,8 +976,13 @@
 			}
 		}
 		if (changed) void navigateAgents(clean, true);
-		else if (agentsView === 'now' && page.url.hash === '#runs')
-			void tick().then(() => document.getElementById('runs')?.scrollIntoView({ block: 'start' }));
+		else if (
+			agentsView === 'now' &&
+			['#runs', '#runners', '#routing', '#quota-policy'].includes(page.url.hash)
+		)
+			void tick().then(() =>
+				document.getElementById(page.url.hash.slice(1))?.scrollIntoView({ block: 'start' })
+			);
 	});
 
 	function openRuleEdit(rule: RoutingRuleWithWarnings) {
@@ -1191,7 +1182,7 @@
 	<Button
 		variant={agentsView === 'spend' ? 'secondary' : 'ghost'}
 		aria-current={agentsView === 'spend' ? 'page' : undefined}
-		onclick={() => chooseAgentsView('spend')}>Spend</Button
+		onclick={() => chooseAgentsView('spend')}>Analysis</Button
 	>
 </nav>
 
@@ -1215,6 +1206,13 @@
 		workflows={data.workflows}
 		focusId={data.focusId}
 		navigate={patchAgents}
+	/>
+	<StageStatsPanel
+		projects={data.projects}
+		boardProject={data.boardProject}
+		boardProjectName={data.boardProjectName}
+		onproject={filterProject}
+		oncapacity={focusStatsCapacity}
 	/>
 {:else}
 	{#if errorMessage}
@@ -1289,20 +1287,6 @@
 	/>
 
 	<!-- Runners -->
-	<StageStatsBoard
-		report={data.stats}
-		boardProject={data.boardProject}
-		oncapacity={focusStatsCapacity}
-		onsentback={openSentBack}
-	/>
-	{#if sentBackStage && sentBackReport}<SentBackDrilldown
-			open={sentBackOpen}
-			stage={sentBackStage}
-			report={sentBackReport}
-			project={data.boardProject}
-			onclose={() => (sentBackOpen = false)}
-		/>{/if}
-
 	<div class="mb-10 scroll-mt-24" id="runners">
 		<div class="mb-3 flex items-center justify-between">
 			<h2 class="text-sm font-semibold">Runners</h2>
@@ -1437,8 +1421,7 @@
 					class="bg-muted rounded-full px-2 py-1 text-xs hover:underline"
 					href={stageRunsHref(page.url, null)}
 				>
-					Latest runs for this stage: {runStateName} · {data.stats.project?.name ?? 'All projects'} ·
-					clear
+					Latest runs for this stage: {runStateName} · {data.boardProjectName ?? 'All projects'} · clear
 				</a>
 			{/if}
 			<label class="text-muted-foreground flex items-center gap-2 text-xs">
@@ -1988,6 +1971,48 @@
 							</Select>
 						</div>
 					</div>
+					{#if runnerHarness === 'codex'}
+						<section
+							class="bg-muted/50 space-y-2 rounded-md border p-3 text-xs"
+							aria-labelledby="codex-permissions-heading"
+						>
+							<h3 class="text-sm font-medium" id="codex-permissions-heading">
+								Configure Codex before starting the runner
+							</h3>
+							<p class="text-muted-foreground">
+								On the runner machine, merge these settings into
+								<code class="bg-muted rounded px-1 py-0.5">~/.codex/config.toml</code> for the user running
+								the daemon:
+							</p>
+							<pre class="bg-muted overflow-x-auto rounded-md border p-3 font-mono text-xs"><code
+									>{'sandbox_mode = "workspace-write"\n\n[sandbox_workspace_write]\nnetwork_access = true'}</code
+								></pre>
+							<p class="text-muted-foreground">
+								Workspace-write lets Codex edit the run's workspace. Network access lets the
+								<code class="bg-muted rounded px-1 py-0.5">tines</code> CLI reach your Tines server.
+							</p>
+							<p class="text-muted-foreground">
+								These are user-wide defaults. Network access also lets commands send data outside
+								the machine. If you use <code class="bg-muted rounded px-1 py-0.5"
+									>default_permissions</code
+								>, read the setup guide before adding this snippet.
+							</p>
+							<div class="flex flex-wrap gap-x-3 gap-y-1">
+								<a
+									class="underline underline-offset-2"
+									href="https://github.com/tbuckley/tines/blob/main/docs/runner-daemon.md#codex-permissions"
+									target="_blank"
+									rel="noreferrer">Codex setup guide</a
+								>
+								<a
+									class="underline underline-offset-2"
+									href="https://developers.openai.com/codex/config-reference"
+									target="_blank"
+									rel="noreferrer">OpenAI configuration reference</a
+								>
+							</div>
+						</section>
+					{/if}
 					{#if runnerHarness === 'custom'}
 						<div class="space-y-1.5" transition:slide={{ duration: dur() }}>
 							<label class="text-sm font-medium" for="runner-command">Command template</label>
@@ -2140,12 +2165,12 @@
 		initialFocus={focusCapField}
 	>
 		<form onsubmit={saveRunnerEdit} class="space-y-4">
-			<p class="text-sm">
+			<p class="min-w-0 text-sm [overflow-wrap:anywhere]">
 				<span class="font-medium">{editTarget.name}</span>
 				<span class="text-muted-foreground">({editTarget.type})</span>
 			</p>
-			<div class="grid grid-cols-3 gap-3">
-				<div class="space-y-1.5">
+			<div class="grid grid-cols-1 gap-3 sm:grid-cols-3">
+				<div class="min-w-0 space-y-1.5">
 					<label class="text-sm font-medium" for="edit-concurrent">
 						{editTarget.type === 'local' ? 'Requested concurrency' : 'Max concurrent'}
 					</label>
@@ -2173,7 +2198,7 @@
 						</p>
 					{/if}
 				</div>
-				<div class="space-y-1.5">
+				<div class="min-w-0 space-y-1.5">
 					<label class="text-sm font-medium" for="edit-minutes">Timeout (min)</label>
 					<Input
 						id="edit-minutes"
@@ -2184,7 +2209,7 @@
 						oninput={(e) => (editMaxMinutes = Number.parseInt(e.currentTarget.value, 10) || 30)}
 					/>
 				</div>
-				<div class="space-y-1.5">
+				<div class="min-w-0 space-y-1.5">
 					<label class="text-sm font-medium" for="edit-default-tier">Default tier</label>
 					<Select id="edit-default-tier" bind:value={editDefaultTier} disabled={!editTiersApply}>
 						{#each MODEL_TIERS as tier (tier)}
@@ -2206,76 +2231,117 @@
 						Leave a tier blank to use the built-in (it silently improves as models ship); an
 						override stays frozen until touched.
 					</p>
+					<div
+						class="hidden min-w-0 gap-2 text-sm font-medium sm:grid {editTarget.type ===
+							'claude_managed' || editTarget.type === 'local'
+							? 'sm:grid-cols-[5rem_minmax(0,1fr)_7rem]'
+							: 'sm:grid-cols-[5rem_minmax(0,1fr)]'}"
+					>
+						<span data-tier-column="tier">Tier</span>
+						<span data-tier-column="model">Model</span>
+						{#if editTarget.type === 'claude_managed' || editTarget.type === 'local'}
+							<span data-tier-column="effort">Effort</span>
+						{/if}
+					</div>
 					{#each MODEL_TIERS as tier (tier)}
 						{@const builtin = editTarget.tier_models?.[tier] ?? null}
 						{@const stale = isStaleTierOverride(builtin, editTierModels[tier]?.trim() || null)}
-						<div class="flex items-center gap-2">
-							<span class="text-muted-foreground w-20 text-right text-xs">{tier}</span>
-							<Input
-								class="flex-1"
-								placeholder={builtin ? `${builtin} (built-in)` : 'model id'}
-								aria-label={`Model override for ${tier}`}
-								value={editTierModels[tier] ?? ''}
-								oninput={(e) =>
-									(editTierModels = { ...editTierModels, [tier]: e.currentTarget.value })}
-							/>
-							{#if editTarget.type === 'claude_managed' || editTarget.type === 'local'}
-								{@const choices = effortChoices(editTarget, tier, editTierModels[tier] ?? '')}
-								<Select
-									class="w-28"
-									aria-label={`Effort for ${tier}`}
-									value={editTierEfforts[tier] ?? ''}
-									disabled={(editTierModels[tier] ?? '').trim() === '' || choices.length === 0}
-									onchange={(e) =>
-										(editTierEfforts = { ...editTierEfforts, [tier]: e.currentTarget.value })}
-								>
-									<option value="">effort —</option>
-									{#if editTierEfforts[tier] && !choices.includes(editTierEfforts[tier])}
-										<option value={editTierEfforts[tier]}
-											>{editTierEfforts[tier]} (incompatible)</option
+						{@const showsEffort =
+							editTarget.type === 'claude_managed' || editTarget.type === 'local'}
+						<div class="min-w-0 space-y-1">
+							<div
+								class="grid min-w-0 grid-cols-1 gap-2 sm:items-center {showsEffort
+									? 'sm:grid-cols-[5rem_minmax(0,1fr)_7rem]'
+									: 'sm:grid-cols-[5rem_minmax(0,1fr)]'}"
+							>
+								<p class="text-sm font-medium capitalize sm:font-normal" data-tier-heading={tier}>
+									{tier}
+								</p>
+								<div class="min-w-0 space-y-1.5">
+									<label
+										class="text-muted-foreground text-xs font-medium sm:sr-only"
+										for={`edit-model-${tier}`}>Model</label
+									>
+									<Input
+										id={`edit-model-${tier}`}
+										class="w-full min-w-0"
+										placeholder={builtin ? `${builtin} (built-in)` : 'model id'}
+										aria-label={`Model override for ${tier}`}
+										value={editTierModels[tier] ?? ''}
+										oninput={(e) =>
+											(editTierModels = { ...editTierModels, [tier]: e.currentTarget.value })}
+									/>
+								</div>
+								{#if showsEffort}
+									{@const choices = effortChoices(editTarget, tier, editTierModels[tier] ?? '')}
+									<div class="min-w-0 space-y-1.5">
+										<label
+											class="text-muted-foreground text-xs font-medium sm:sr-only"
+											for={`edit-effort-${tier}`}>Effort</label
 										>
-									{/if}
-									{#each choices as effort (effort)}
-										<option value={effort}>{effort}</option>
-									{/each}
-								</Select>
+										<Select
+											id={`edit-effort-${tier}`}
+											class="w-full min-w-0"
+											aria-label={`Effort for ${tier}`}
+											value={editTierEfforts[tier] ?? ''}
+											disabled={(editTierModels[tier] ?? '').trim() === '' || choices.length === 0}
+											onchange={(e) =>
+												(editTierEfforts = { ...editTierEfforts, [tier]: e.currentTarget.value })}
+										>
+											<option value="">effort —</option>
+											{#if editTierEfforts[tier] && !choices.includes(editTierEfforts[tier])}
+												<option value={editTierEfforts[tier]}
+													>{editTierEfforts[tier]} (incompatible)</option
+												>
+											{/if}
+											{#each choices as effort (effort)}
+												<option value={effort}>{effort}</option>
+											{/each}
+										</Select>
+									</div>
+								{/if}
+							</div>
+							{#if stale}
+								<p class="text-muted-foreground pl-0 text-xs [overflow-wrap:anywhere] sm:pl-22">
+									<span class="text-amber-700 dark:text-amber-400">stale override</span> — the
+									built-in for {tier} is now {builtin}
+								</p>
 							{/if}
 						</div>
-						{#if stale}
-							<p class="text-muted-foreground pl-22 text-xs">
-								<span class="text-amber-700 dark:text-amber-400">stale override</span> — the
-								built-in for {tier} is now {builtin}
-							</p>
-						{/if}
 					{/each}
 				{/if}
 			</div>
 
 			<div class="space-y-1.5">
 				<p class="text-sm font-medium">Per-run caps</p>
-				<div class="flex flex-wrap items-center gap-2">
-					<span class="text-muted-foreground text-sm">$</span>
-					<Input
-						type="number"
-						min="0.01"
-						step="0.01"
-						class="w-24"
-						placeholder="none"
-						aria-label="Per-run cost cap in dollars"
-						value={editCapUsd}
-						oninput={(e) => (editCapUsd = e.currentTarget.value)}
-					/>
-					<span class="text-muted-foreground text-xs">per run ·</span>
-					<Input
-						type="number"
-						min="1"
-						class="w-32"
-						placeholder="none"
-						aria-label="Per-run token cap"
-						value={editCapTokens}
-						oninput={(e) => (editCapTokens = e.currentTarget.value)}
-					/>
-					<span class="text-muted-foreground text-xs">tokens per run</span>
+				<div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+					<div class="min-w-0 space-y-1.5">
+						<label class="text-sm font-medium" for="edit-cap-usd">Cost per run (USD)</label>
+						<Input
+							id="edit-cap-usd"
+							type="number"
+							min="0.01"
+							step="0.01"
+							class="w-full"
+							placeholder="none"
+							aria-label="Per-run cost cap in dollars"
+							value={editCapUsd}
+							oninput={(e) => (editCapUsd = e.currentTarget.value)}
+						/>
+					</div>
+					<div class="min-w-0 space-y-1.5">
+						<label class="text-sm font-medium" for="edit-cap-tokens">Tokens per run</label>
+						<Input
+							id="edit-cap-tokens"
+							type="number"
+							min="1"
+							class="w-full"
+							placeholder="none"
+							aria-label="Per-run token cap"
+							value={editCapTokens}
+							oninput={(e) => (editCapTokens = e.currentTarget.value)}
+						/>
+					</div>
 				</div>
 				{#if editTarget.type !== 'local' && editCapUsd.trim() === ''}
 					<p class="text-xs text-amber-700 dark:text-amber-400">

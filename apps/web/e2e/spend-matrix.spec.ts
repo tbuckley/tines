@@ -143,7 +143,7 @@ test.describe('Agents Spend selection matrix', () => {
 			);
 		expect(await readState()).toEqual(sentinel);
 
-		await page.getByRole('button', { name: 'Spend', exact: true }).click();
+		await page.getByRole('button', { name: 'Analysis', exact: true }).click();
 		await expect(page).toHaveURL(/agents_view=spend/);
 		await expect(projectTotal(page)).toHaveText('$5.00');
 		expect(await readState()).toEqual(sentinel);

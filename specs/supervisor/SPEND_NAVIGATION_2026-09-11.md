@@ -1,6 +1,6 @@
-# Agents Spend navigation (2026-09-11)
+# Agents Analysis / Spend navigation (2026-09-11; amended 2026-09-14)
 
-This decision narrows the broader supervisor budget design to the shipped period statement under **Agents → Spend**.
+This decision narrows the broader supervisor budget design to the shipped period statement under **Agents → Analysis → Spend**. The visible navigation label changed to Analysis while its compatible URL value remains `agents_view=spend`.
 
 - `$app/state.page.url` is the committed source of truth. Tabs and controls use ordinary SvelteKit navigation, preserve unrelated query parameters, the hash, and page state, and compose rapid pending changes. Canonical defaults are written only after router readiness.
 - Spend project is explicit and independent from global focus after entry. Project changes reset workflow narrowing; window and grouping changes preserve it. Sort is client-only and Unknown remains last in both directions.
