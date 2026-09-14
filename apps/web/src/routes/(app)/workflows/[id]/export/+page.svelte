@@ -334,26 +334,28 @@
 		const snapshot = candidate;
 		candidateGeneration += 1;
 		candidateUpdating = true;
+		let saved = false;
 		try {
 			const updated = updateAuthoredInput(snapshot, inputId, inputDraft());
 			const sealed = await withLibraryDocumentDigest(updated);
 			candidate = sealed;
 			dirty = true;
 			resetReview('Input declaration updated in this candidate only.');
-			candidateUpdating = false;
-			await finishInputEdit(inputId);
-			await tick();
-			if (fieldEditor) {
-				if (selectedFieldIsAffected && selectedField) fieldEditor.value = selectedField.value;
-				else if (pendingField) {
-					fieldEditor.value = pendingField.value;
-					fieldEditor.setSelectionRange(pendingField.start, pendingField.end);
-				}
-			}
+			saved = true;
 		} catch (error) {
 			inputFormError = message(error);
 		} finally {
 			candidateUpdating = false;
+		}
+		if (!saved) return;
+		await finishInputEdit(inputId);
+		await tick();
+		if (fieldEditor) {
+			if (selectedFieldIsAffected && selectedField) fieldEditor.value = selectedField.value;
+			else if (pendingField) {
+				fieldEditor.value = pendingField.value;
+				fieldEditor.setSelectionRange(pendingField.start, pendingField.end);
+			}
 		}
 	}
 	async function saveCandidateField(addUse = false) {

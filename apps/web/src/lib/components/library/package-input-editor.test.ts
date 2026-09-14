@@ -136,6 +136,81 @@ describe('updateAuthoredInput', () => {
 		expect(original).toEqual({ ...document(), context: original.context });
 	});
 
+	it('resolves every allowed registered field kind and produces a valid sealed document', async () => {
+		const original = document();
+		original.context = [
+			{
+				id: 'prompt:1',
+				name: 'prompt',
+				description: `Prompt description ${oldToken}`,
+				kind: 'prompt',
+				body: `Prompt body ${oldToken}`,
+				state_id: 'state:1'
+			},
+			{
+				id: 'skill:1',
+				name: 'skill',
+				description: `Skill description ${oldToken}`,
+				kind: 'skill',
+				files: [{ id: 'file:1', path: 'SKILL.md', content: `File ${oldToken}` }],
+				state_id: 'state:1'
+			},
+			{
+				id: 'repo:1',
+				name: 'repo',
+				description: `Repo description ${oldToken}`,
+				kind: 'repo',
+				repo_url: 'https://github.com/tbuckley/tines',
+				repo_branch: 'main',
+				repo_dir: null,
+				state_id: 'state:1'
+			}
+		];
+		original.schedules = [
+			{
+				id: 'schedule:1',
+				workflow: { kind: 'bundled_workflow', workflow_id: 'workflow:1' },
+				project: { kind: 'input_project', input_id: 'input:author:2' },
+				name: 'Daily',
+				title_template: `Title ${oldToken}`,
+				description_template: `Schedule ${oldToken}`,
+				recurrence: { kind: 'preset', preset: { kind: 'daily', time: '05:00' } },
+				timezone: 'UTC',
+				require_all_closed: false,
+				start_state: null
+			}
+		];
+		const targets = [
+			['prompt:1', 'description'],
+			['prompt:1', 'body'],
+			['skill:1', 'description'],
+			['file:1', 'content'],
+			['repo:1', 'description'],
+			['schedule:1', 'title_template'],
+			['schedule:1', 'description_template']
+		] as const;
+		original.text_uses.push(
+			...targets.map(([record_id, field], index) => ({
+				id: `use:author:${index + 2}`,
+				target: { record_id, field },
+				input_id: 'input:author:1',
+				token: oldToken
+			}))
+		);
+
+		const nextToken = inputToken('review_label', 'fixed');
+		const next = updateAuthoredInput(original, 'input:author:1', draft({ default: 'fixed' }));
+		expect(
+			JSON.stringify(next).match(new RegExp(nextToken.replace(/[{}]/g, '\\$&'), 'g'))
+		).toHaveLength(17);
+		expect(
+			next.text_uses.every((use) => use.input_id !== 'input:author:1' || use.token === nextToken)
+		).toBe(true);
+		await expect(withLibraryDocumentDigest(next)).resolves.toMatchObject({
+			digest: expect.stringMatching(/^sha256:/)
+		});
+	});
+
 	it('rejects duplicate, generated, unknown, stale, and inactive edits without mutation', () => {
 		const cases: Array<() => void> = [
 			() => updateAuthoredInput(document(), 'input:author:1', draft({ key: 'project_name' })),

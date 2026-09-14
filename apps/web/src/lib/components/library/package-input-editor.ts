@@ -115,7 +115,10 @@ export function updateAuthoredInput(
 	if (current.required_states && normalized.type !== 'workflow')
 		throw new Error('An input with required workflow states must keep the workflow type.');
 
-	const next = structuredClone(document);
+	// Svelte's candidate is a deep reactive proxy in the browser. Package documents
+	// are strict JSON, so a JSON round-trip gives the helper a detached plain value
+	// without asking structuredClone to clone that proxy.
+	const next = JSON.parse(JSON.stringify(document)) as WorkflowPackageDocument;
 	next.inputs[index] = { ...next.inputs[index], ...normalized };
 	const oldToken = inputToken(current.key, current.default);
 	const newToken = inputToken(normalized.key, normalized.default);
