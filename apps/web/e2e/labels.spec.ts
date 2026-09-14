@@ -400,10 +400,7 @@ test.describe.serial('label as a scope dimension', () => {
 	let labelSkillId: string;
 	let docsRuleId: string;
 
-	test('seeds a project, three labels, two issues and two same-named skills', async ({
-		request,
-		uniqueName
-	}) => {
+	test.beforeAll(async ({ request, uniqueName }) => {
 		projectName = uniqueName('lscope');
 		docsName = uniqueName('lscope-docs');
 		secName = uniqueName('lscope-sec');
@@ -415,7 +412,7 @@ test.describe.serial('label as a scope dimension', () => {
 		// cannot be left to chance.
 		const workflow = await body<WorkflowResponse>(
 			await api.post('/api/v1/workflows', {
-				name: `lscope-flow-${runId}`,
+				name: uniqueName('lscope-flow'),
 				initial_state: 'Working',
 				states: [
 					{ name: 'Working', category: 'active' },

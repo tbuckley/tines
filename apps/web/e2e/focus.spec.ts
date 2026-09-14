@@ -18,8 +18,8 @@ import {
 	signIn
 } from './helpers';
 
-const A_NAME = `focus-a-${runId}`;
-const B_NAME = `focus-b-${runId}`;
+let A_NAME: string;
+let B_NAME: string;
 let aId: string;
 let bId: string;
 
@@ -124,12 +124,14 @@ test.describe.serial('project focus', () => {
 		await resetFocus(request);
 	});
 
-	test('seeds two projects with an issue each', async ({ request }) => {
+	test.beforeAll(async ({ request, uniqueName }) => {
+		A_NAME = uniqueName('focus-a');
+		B_NAME = uniqueName('focus-b');
 		const api = apiClient(request, ALICE.apiKey);
 		// This spec owns the extra workflow whose collapsed-library affordance it
 		// exercises; no shard may depend on another spec creating it first.
 		const workflow = await api.post('/api/v1/workflows', {
-			name: `focus-workflow-${runId}`,
+			name: uniqueName('focus-workflow'),
 			description: 'focus fixture',
 			initial_state: 'Open',
 			states: [{ name: 'Open', category: 'active' }],

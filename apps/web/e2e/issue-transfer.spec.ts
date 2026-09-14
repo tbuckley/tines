@@ -28,8 +28,8 @@ test.beforeEach(async ({ request }) => {
  */
 function suite(label: string, viewport: { width: number; height: number }) {
 	test.describe.serial(`issue transfer (${label})`, () => {
-		const sourceName = `xf-src-${label}-${runId}`;
-		const destinationName = `xf-dst-${label}-${runId}`;
+		let sourceName: string;
+		let destinationName: string;
 		const longName = `xf-${label}-` + 'destination'.repeat(17);
 		let issueId: string;
 		let sourceId: string;
@@ -45,7 +45,9 @@ function suite(label: string, viewport: { width: number; height: number }) {
 			return page;
 		}
 
-		test('seeds an occupied destination and an issue with a record', async ({ request }) => {
+		test.beforeAll(async ({ request, uniqueName }) => {
+			sourceName = uniqueName(`xf-src-${label}`);
+			destinationName = uniqueName(`xf-dst-${label}`);
 			const api = apiClient(request, ALICE.apiKey);
 			const source = await body<Project>(
 				await api.post('/api/v1/projects', { name: sourceName, description: 'move from here' })
