@@ -1702,11 +1702,10 @@ Options:
 
 Commands:
   publication-validate [options] <file>               Validate a workflow package for text-only public hosting
-  publication-prepare [options] <file>                Prepare an exact file-based public snapshot proof
-  publish [options] <candidate-id>                    Publish one exactly reviewed public snapshot proof
+  publish [options] [workflow]                        Prepare or commit one exact immutable public workflow snapshot
   publications [options]                              List your public workflow snapshots
-  unpublish [options] <snapshot-id>                   Withdraw a hosted public snapshot
-  restore-publication [options] <snapshot-id>         Restore an owner-withdrawn public snapshot when host policy permits
+  unpublish [options] <public-url-or-id>              Withdraw a hosted public snapshot
+  restore-publication [options] <public-url-or-id>    Restore an owner-withdrawn public snapshot when host policy permits
   export [options] <workflow-id-or-unambiguous-name>  Export a canonical workflow package JSON document
   validate [options] <file>                           Validate a workflow package file (use - for stdin)
   preview [options] <file-or-public-url>              Prepare and fully review a destination workflow package plan
@@ -1842,19 +1841,6 @@ Options:
   --json             output the raw JSON response
   -h, --help         display help for command
 ",
-  "tines workflows publication-prepare": "Usage: tines workflows publication-prepare [options] <file>
-
-Prepare an exact file-based public snapshot proof
-
-Options:
-  --display-name <name>  public attribution name (never an email)
-  --license-year <year>  MIT copyright year (default: "2026")
-  -u, --url <url>        base URL of the Tines API (or set TINES_API_URL, or run
-                         \`tines login\`; default https://tines.tbuckley.dev)
-  --api-key <key>        API key (or set TINES_API_KEY, or run \`tines login\`)
-  --json                 output the raw JSON response
-  -h, --help             display help for command
-",
   "tines workflows publication-validate": "Usage: tines workflows publication-validate [options] <file>
 
 Validate a workflow package for text-only public hosting
@@ -1871,19 +1857,29 @@ Options:
 List your public workflow snapshots
 
 Options:
+  --workflow <id>  filter by owned source workflow ID
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
                    \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
   --json           output the raw JSON response
   -h, --help       display help for command
 ",
-  "tines workflows publish": "Usage: tines workflows publish [options] <candidate-id>
+  "tines workflows publish": "Usage: tines workflows publish [options] [workflow]
 
-Publish one exactly reviewed public snapshot proof
+Prepare or commit one exact immutable public workflow snapshot
 
 Options:
-  --confirm <review-digest>  exact review digest from publication-prepare
-  --rights                   confirm sharing rights for all bundled content
+  --from <file>              prepare from an existing workflow package instead
+                             of an owned workflow
+  --proof-out <file>         save the complete prepared proof with mode 0600
+  --proof <file>             commit a previously saved exact proof
+  --display-name <name>      public attribution name (never an email)
+  --license <license>        reuse license (currently MIT) (default: "MIT")
+  --license-year <year>      MIT copyright year (default: "2026")
+  --confirm <review-digest>  exact digest of the reviewed proof
+  --sharing-rights           confirm rights to every bundled declaration and
+                             file
+  --recover                  reconcile this same candidate after a lost response
   --repo <local-id>          confirm one bundled repository ID (repeatable)
                              (default: [])
   -u, --url <url>            base URL of the Tines API (or set TINES_API_URL, or
@@ -1894,11 +1890,12 @@ Options:
   --json                     output the raw JSON response
   -h, --help                 display help for command
 ",
-  "tines workflows restore-publication": "Usage: tines workflows restore-publication [options] <snapshot-id>
+  "tines workflows restore-publication": "Usage: tines workflows restore-publication [options] <public-url-or-id>
 
 Restore an owner-withdrawn public snapshot when host policy permits
 
 Options:
+  -y, --yes        skip the explicit restoration prompt
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
                    \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
@@ -1916,11 +1913,12 @@ Options:
   --json           output the raw JSON response
   -h, --help       display help for command
 ",
-  "tines workflows unpublish": "Usage: tines workflows unpublish [options] <snapshot-id>
+  "tines workflows unpublish": "Usage: tines workflows unpublish [options] <public-url-or-id>
 
 Withdraw a hosted public snapshot
 
 Options:
+  -y, --yes        skip the explicit withdrawal prompt
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
                    \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
@@ -1932,6 +1930,7 @@ Options:
 Validate a workflow package file (use - for stdin)
 
 Options:
+  --public         apply the stricter text-only public-hosting policy
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
                    \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)

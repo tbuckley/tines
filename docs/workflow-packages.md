@@ -11,12 +11,20 @@ In the browser, open an owned workflow, choose **Publish workflow**, review its 
 The CLI exposes the same lifecycle:
 
 ```sh
-tines workflows publication-validate workflow.tines.json
-tines workflows publication-prepare workflow.tines.json --display-name "Example Team" --json
-tines workflows publish pub_candidate --confirm sha256:review --rights --repo repo:1
-tines workflows publications
-tines workflows unpublish pubs_snapshot
+tines workflows validate workflow.tines.json --public
+tines workflows publish <owned-workflow> --display-name "Example Team" --proof-out publish-proof.json
+# Or prepare downloaded bytes: add --from workflow.tines.json instead of <owned-workflow>.
+tines workflows publish --proof publish-proof.json --confirm sha256:review --sharing-rights
+tines workflows publish --proof publish-proof.json --confirm sha256:review --sharing-rights --recover
+tines workflows publications --workflow <owned-workflow-id>
+tines workflows unpublish <public-url-or-id> --yes
+tines workflows restore-publication <public-url-or-id> --yes
 ```
+
+The proof file contains the complete reviewed candidate, host binding, and hashes and is written
+atomically with mode `0600`. Omit `--confirm` and `--sharing-rights` in a terminal to review the proof
+and answer both explicit prompts. Automation must provide both. `--recover` only reconciles that same
+candidate after a lost response; it never prepares a new revision.
 
 A hosted snapshot is rechecked before inspection, download, install preview, and install commit. Withdrawal stops those hosted operations, but cannot recall a file already downloaded or an installation already completed. Public pages never fetch declared repositories or publisher-controlled media. Cross-instance browser transfer is download followed by the destination's ordinary file import; do not send destination credentials to a source host.
 

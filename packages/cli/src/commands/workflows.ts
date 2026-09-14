@@ -1,5 +1,6 @@
 /** `tines workflows` — the workflow library: states, transitions, and their gates. */
 import { readFileSync } from 'node:fs';
+import { createInterface } from 'node:readline/promises';
 import {
 	client,
 	die,
@@ -21,6 +22,9 @@ import { assertNewStatesHavePrompts, parseJsonObject } from '../refs.js';
 import {
 	listAll,
 	parsePublicSnapshotReference,
+	ApiError,
+	type PublicationProof,
+	type PublicationSource,
 	type ApiClient,
 	type CreateWorkflowRequest,
 	type UpdateWorkflowRequest,
@@ -44,6 +48,48 @@ import {
 	type WorkflowPackageChoices
 } from '../workflow-packages.js';
 import { fetchPublicWorkflowPackage } from '../publication-fetch.js';
+import { writeJsonFile } from '../config.js';
+
+interface SavedPublicationProof {
+	format: 'tines.workflow-publication-proof';
+	version: 1;
+	api_base: string;
+	proof: PublicationProof;
+}
+
+function savePublicationProof(path: string, apiBase: string, proof: PublicationProof) {
+	const saved: SavedPublicationProof = {
+		format: 'tines.workflow-publication-proof',
+		version: 1,
+		api_base: normalizeUrl(apiBase),
+		proof
+	};
+	writeJsonFile(path, saved, { secret: true });
+	return saved;
+}
+
+function readPublicationProof(path: string): SavedPublicationProof {
+	const saved = readStrictObject<SavedPublicationProof>(path, 'publication proof');
+	if (
+		saved.format !== 'tines.workflow-publication-proof' ||
+		saved.version !== 1 ||
+		typeof saved.api_base !== 'string' ||
+		!saved.proof ||
+		typeof saved.proof.candidate_id !== 'string' ||
+		typeof saved.proof.review_digest !== 'string'
+	)
+		die('invalid workflow publication proof file');
+	return saved;
+}
+
+async function confirmPublicationAction(question: string): Promise<boolean> {
+	const rl = createInterface({ input: process.stdin, output: process.stderr });
+	try {
+		return /^(?:y|yes)$/i.test((await rl.question(`${question} [y/N] `)).trim());
+	} finally {
+		rl.close();
+	}
+}
 
 // ---------------------------------------------------------------------------
 // JSON body input (inline argument, --file <path>, --file -, or piped stdin)
@@ -501,59 +547,114 @@ function registerPackageCommands(workflows: Command): void {
 
 	withCommon(
 		workflows
-			.command('publication-prepare <file>')
-			.description('Prepare an exact file-based public snapshot proof')
-			.requiredOption('--display-name <name>', 'public attribution name (never an email)')
+			.command('publish [workflow]')
+			.description('Prepare or commit one exact immutable public workflow snapshot')
+			.option(
+				'--from <file>',
+				'prepare from an existing workflow package instead of an owned workflow'
+			)
+			.option('--proof-out <file>', 'save the complete prepared proof with mode 0600')
+			.option('--proof <file>', 'commit a previously saved exact proof')
+			.option('--display-name <name>', 'public attribution name (never an email)')
+			.option('--license <license>', 'reuse license (currently MIT)', 'MIT')
 			.option('--license-year <year>', 'MIT copyright year', String(new Date().getFullYear()))
+			.option('--confirm <review-digest>', 'exact digest of the reviewed proof')
+			.option('--sharing-rights', 'confirm rights to every bundled declaration and file')
+			.option('--recover', 'reconcile this same candidate after a lost response')
+			.option('--repo <local-id>', 'confirm one bundled repository ID (repeatable)', collect, [])
 	).action(
-		async (path: string, opts: CommonOpts & { displayName: string; licenseYear: string }) => {
+		async (
+			workflow: string | undefined,
+			opts: CommonOpts & {
+				from?: string;
+				proofOut?: string;
+				proof?: string;
+				displayName?: string;
+				license: string;
+				licenseYear: string;
+				confirm?: string;
+				sharingRights?: boolean;
+				recover?: boolean;
+				repo: string[];
+			}
+		) => {
+			const apiBase = normalizeUrl(resolveUrl(opts));
+			const api = client(opts);
+			if (opts.proof) {
+				if (workflow || opts.from || opts.proofOut || opts.displayName)
+					die(
+						'--proof commit mode cannot be combined with a workflow, --from, --proof-out, or --display-name'
+					);
+				const saved = readPublicationProof(opts.proof);
+				if (normalizeUrl(saved.api_base) !== apiBase)
+					die(`proof belongs to ${saved.api_base}, not ${apiBase}`);
+				const proof = saved.proof;
+				if (opts.confirm && opts.confirm !== proof.review_digest)
+					die(`confirmation digest does not match reviewed proof ${proof.review_digest}`);
+				if (!process.stdin.isTTY && (opts.confirm !== proof.review_digest || !opts.sharingRights))
+					die(`non-interactive publish requires --confirm ${proof.review_digest} --sharing-rights`);
+				if (process.stdin.isTTY && !opts.confirm) {
+					process.stderr.write(`${JSON.stringify(proof, null, 2)}\n`);
+					if (!(await confirmPublicationAction('Publish these exact immutable bytes?')))
+						die('publication declined');
+					if (
+						!(await confirmPublicationAction('Do you have sharing rights for every bundled item?'))
+					)
+						die('publication declined');
+				}
+				let result;
+				if (opts.recover) {
+					try {
+						result = await api.getPublicationResult(proof.candidate_id);
+					} catch (error) {
+						if (!(error instanceof ApiError) || error.status !== 404) throw error;
+					}
+				}
+				result ??= await api.publishPublication(proof.candidate_id, {
+					review_digest: proof.review_digest,
+					sharing_rights: true,
+					exact_content: true,
+					reviewed_repo_ids: opts.repo
+				});
+				if (opts.json) printJson(result);
+				else console.log(`published ${result.receipt.public_url}`);
+				return;
+			}
+			if (opts.recover) die('--recover requires --proof');
+			if (!!workflow === !!opts.from) die('provide exactly one owned workflow or --from <file>');
+			if (!opts.proofOut) die('preparing a publication requires --proof-out <file>');
+			if (!opts.displayName) die('preparing a publication requires --display-name <name>');
+			if (opts.license !== 'MIT') die('--license currently supports only MIT');
 			const year = Number(opts.licenseYear);
 			if (!Number.isSafeInteger(year)) die('--license-year must be an integer');
-			const proof = await client(opts).preparePublication({
+			const source: PublicationSource = opts.from
+				? { kind: 'file', document_json: readPackageSource(opts.from) }
+				: {
+						kind: 'owned_workflow',
+						workflow_id: (await resolveWorkflow(api, workflow!)).id,
+						options: { schedule_ids: [], tiers: [] }
+					};
+			const proof = await api.preparePublication({
 				prepare_request_id: crypto.randomUUID(),
-				source: { kind: 'file', document_json: readPackageSource(path) },
+				source,
 				metadata: { display_name: opts.displayName, license: 'MIT', license_year: year }
 			});
+			savePublicationProof(opts.proofOut, apiBase, proof);
 			if (opts.json) printJson(proof);
 			else {
-				console.log(`prepared publication ${proof.candidate_id}`);
-				console.log(`review digest: ${proof.review_digest}`);
-				console.log(`bytes: ${proof.byte_length} (${proof.bytes_sha256})`);
-				console.log(`expires: ${new Date(proof.expires_at).toISOString()}`);
-				console.log(
-					'Next: inspect this proof, then run workflows publish with --confirm and --rights.'
-				);
+				console.log(JSON.stringify(proof, null, 2));
+				console.error(`saved exact publication proof to ${opts.proofOut}`);
 			}
 		}
 	);
 
 	withCommon(
 		workflows
-			.command('publish <candidate-id>')
-			.description('Publish one exactly reviewed public snapshot proof')
-			.requiredOption('--confirm <review-digest>', 'exact review digest from publication-prepare')
-			.requiredOption('--rights', 'confirm sharing rights for all bundled content')
-			.option('--repo <local-id>', 'confirm one bundled repository ID (repeatable)', collect, [])
-	).action(
-		async (
-			candidateId: string,
-			opts: CommonOpts & { confirm: string; rights: true; repo: string[] }
-		) => {
-			const result = await client(opts).publishPublication(candidateId, {
-				review_digest: opts.confirm,
-				sharing_rights: true,
-				exact_content: true,
-				reviewed_repo_ids: opts.repo
-			});
-			if (opts.json) printJson(result);
-			else console.log(`published ${result.receipt.public_url}`);
-		}
-	);
-
-	withCommon(
-		workflows.command('publications').description('List your public workflow snapshots')
-	).action(async (opts: CommonOpts) => {
-		const result = await client(opts).listPublications();
+			.command('publications')
+			.description('List your public workflow snapshots')
+			.option('--workflow <id>', 'filter by owned source workflow ID')
+	).action(async (opts: CommonOpts & { workflow?: string }) => {
+		const result = await client(opts).listPublications(opts.workflow);
 		if (opts.json) printJson(result);
 		else if (!result.items.length) console.log('no public snapshots');
 		else
@@ -571,8 +672,18 @@ function registerPackageCommands(workflows: Command): void {
 	});
 
 	withCommon(
-		workflows.command('unpublish <snapshot-id>').description('Withdraw a hosted public snapshot')
-	).action(async (snapshotId: string, opts: CommonOpts) => {
+		workflows
+			.command('unpublish <public-url-or-id>')
+			.description('Withdraw a hosted public snapshot')
+			.option('-y, --yes', 'skip the explicit withdrawal prompt')
+	).action(async (reference: string, opts: CommonOpts & { yes?: boolean }) => {
+		if (!opts.yes && !process.stdin.isTTY) die('non-interactive withdrawal requires --yes');
+		if (!opts.yes && !(await confirmPublicationAction('Withdraw this hosted snapshot now?')))
+			die('withdrawal declined');
+		const apiBase = normalizeUrl(resolveUrl(opts));
+		const snapshotId = /^https?:/i.test(reference)
+			? parsePublicSnapshotReference(reference, apiBase)
+			: reference;
 		const result = await client(opts).withdrawPublication(snapshotId);
 		if (opts.json) printJson(result);
 		else console.log(`withdrew ${result.receipt.public_url}`);
@@ -580,9 +691,17 @@ function registerPackageCommands(workflows: Command): void {
 
 	withCommon(
 		workflows
-			.command('restore-publication <snapshot-id>')
+			.command('restore-publication <public-url-or-id>')
 			.description('Restore an owner-withdrawn public snapshot when host policy permits')
-	).action(async (snapshotId: string, opts: CommonOpts) => {
+			.option('-y, --yes', 'skip the explicit restoration prompt')
+	).action(async (reference: string, opts: CommonOpts & { yes?: boolean }) => {
+		if (!opts.yes && !process.stdin.isTTY) die('non-interactive restoration requires --yes');
+		if (!opts.yes && !(await confirmPublicationAction('Restore this hosted snapshot now?')))
+			die('restoration declined');
+		const apiBase = normalizeUrl(resolveUrl(opts));
+		const snapshotId = /^https?:/i.test(reference)
+			? parsePublicSnapshotReference(reference, apiBase)
+			: reference;
 		const result = await client(opts).restorePublication(snapshotId);
 		if (opts.json) printJson(result);
 		else console.log(`restored ${result.receipt.public_url}`);
@@ -649,8 +768,23 @@ function registerPackageCommands(workflows: Command): void {
 		workflows
 			.command('validate <file>')
 			.description('Validate a workflow package file (use - for stdin)')
-	).action(async (path: string, opts: CommonOpts) => {
-		const result = await client(opts).validateLibrary({ document_json: readPackageSource(path) });
+			.option('--public', 'apply the stricter text-only public-hosting policy')
+	).action(async (path: string, opts: CommonOpts & { public?: boolean }) => {
+		const api = client(opts);
+		if (opts.public) {
+			const result = await api.validatePublication({ document_json: readPackageSource(path) });
+			if (opts.json) printJson(result);
+			else {
+				console.log(
+					result.valid ? 'valid public workflow snapshot' : 'invalid public workflow snapshot'
+				);
+				for (const diagnostic of result.diagnostics)
+					console.log(`  ${diagnostic.path || '/'}: ${diagnostic.message}`);
+			}
+			if (!result.valid) process.exitCode = 1;
+			return;
+		}
+		const result = await api.validateLibrary({ document_json: readPackageSource(path) });
 		if (opts.json) printJson(result);
 		else console.log(formatValidation(result));
 		if (!result.valid) process.exitCode = 1;
