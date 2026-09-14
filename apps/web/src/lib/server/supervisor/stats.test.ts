@@ -3,10 +3,13 @@ import {
 	bindRuns,
 	bucketOutcome,
 	buildVisits,
+	computePreparedStageStats,
 	computeStageStats,
+	evaluatePreparedState,
 	isSentBack,
 	median,
 	percentile,
+	prepareStageStats,
 	type StatsEvent,
 	type StatsInput,
 	type StatsRun,
@@ -126,6 +129,57 @@ function input(over: Partial<StatsInput> = {}): StatsInput {
 }
 
 const stateMap = new Map(ENG.map((s) => [s.id, s]));
+
+describe('prepared stage stats', () => {
+	it('matches the compatibility wrapper and evaluates only active states with work', () => {
+		const events = [
+			ev({ issue_id: 'iss_prepared', created_at: NOW - DAY, to_state_id: 'st_rev' }),
+			ev({
+				issue_id: 'iss_prepared',
+				created_at: NOW - HOUR,
+				from_state_id: 'st_rev',
+				to_state_id: 'st_impl'
+			})
+		];
+		const value = input({ events });
+		const prepared = prepareStageStats(value);
+		expect(
+			computePreparedStageStats(prepared, { now: NOW, windowMs: WINDOW, compare: true })
+		).toEqual(computeStageStats(value));
+		expect(evaluatePreparedState(prepared, 'st_rev', NOW - WINDOW, NOW)?.exits).toBe(1);
+		expect(evaluatePreparedState(prepared, 'st_human', NOW - WINDOW, NOW)).toBeNull();
+		expect(evaluatePreparedState(prepared, 'unknown', NOW - WINDOW, NOW)).toBeNull();
+	});
+
+	it('materializes the three per-state indexes used after preparation', () => {
+		const value = input({
+			events: [
+				ev({ issue_id: 'iss_indexed', created_at: NOW - DAY, to_state_id: 'st_rev' }),
+				ev({
+					issue_id: 'iss_indexed',
+					created_at: NOW - HOUR,
+					from_state_id: 'st_rev',
+					to_state_id: 'st_impl'
+				})
+			],
+			runs: [run({ issue_id: 'iss_unbound', state_id_at_start: 'st_rev', created_at: NOW - HOUR })]
+		});
+		const prepared = prepareStageStats(value);
+		expect(prepared.ctx.visitsByState?.get('st_rev')).toHaveLength(1);
+		expect(prepared.ctx.receivedBackByState?.get('st_impl')).toHaveLength(1);
+		expect(prepared.ctx.unboundByState?.get('st_rev')).toHaveLength(1);
+
+		// Marker evaluation must be independent of the global collections: those
+		// are deliberately discarded here so deleting an index breaks the test.
+		prepared.ctx.visits = [];
+		prepared.ctx.unbound = [];
+		expect(evaluatePreparedState(prepared, 'st_rev', NOW - WINDOW, NOW)).toMatchObject({
+			visits: 1,
+			exits: 1,
+			runs: { unbound: 1 }
+		});
+	});
+});
 
 describe('percentile', () => {
 	it('is nearest-rank and handles the edges', () => {
