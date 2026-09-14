@@ -462,7 +462,8 @@
 
 {#if stage === 'prepared' && plan}
 	<div
-		class="bg-background/95 fixed inset-x-0 bottom-14 z-30 border-t px-4 py-2 backdrop-blur sm:bottom-0"
+		class="bg-background/95 fixed inset-x-0 bottom-[calc(4rem+1px+env(safe-area-inset-bottom,0px))] z-30 border-t px-4 py-2 backdrop-blur md:bottom-0"
+		data-testid="install-actions"
 	>
 		<div class="mx-auto flex min-h-10 max-w-[68rem] flex-wrap items-center justify-between gap-2">
 			<label class="flex min-h-10 items-center gap-2 text-sm"

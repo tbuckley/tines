@@ -19,7 +19,16 @@ import {
 } from '../src/lib/server/library/token';
 import { d1, sqlLiteral } from './d1';
 import { BOB } from './constants.mjs';
-import { apiClient, body, DESKTOP, gotoHydrated, PHONE, runId, signIn } from './helpers';
+import {
+	apiClient,
+	body,
+	DESKTOP,
+	gotoHydrated,
+	PHONE,
+	readSettled,
+	runId,
+	signIn
+} from './helpers';
 
 const LONG_CRON =
 	'0 9 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31 * *';
@@ -221,6 +230,62 @@ test.beforeAll(async ({ playwright }) => {
 });
 
 test.beforeEach(async ({ context }) => signIn(context, BOB.sessionToken));
+
+test('keeps prepared install actions clear of responsive navigation', async ({ page }) => {
+	await page.setViewportSize({ width: 640, height: 844 });
+	await prepareScheduleProof(page, packagePath, projects[0].id);
+	const actions = page.getByTestId('install-actions');
+	const finalReview = page.getByRole('checkbox', { name: /I reviewed/ }).last();
+	await expect(actions).toBeVisible();
+	await expect(
+		page.getByText('Review every included skill and repository before confirming.')
+	).toBeVisible();
+
+	for (const width of [640, 767, 768]) {
+		await page.setViewportSize({ width, height: 844 });
+		await finalReview.scrollIntoViewIfNeeded();
+		const geometry = await readSettled(() =>
+			page.evaluate(() => {
+				const actions = document
+					.querySelector<HTMLElement>('[data-testid="install-actions"]')!
+					.getBoundingClientRect();
+				const navigation = document
+					.querySelector<HTMLElement>('nav[aria-label="Primary"]')!
+					.getBoundingClientRect();
+				const finalReview = [
+					...document.querySelectorAll<HTMLElement>(
+						'[data-testid="package-review"] input[type="checkbox"]'
+					)
+				]
+					.at(-1)!
+					.getBoundingClientRect();
+				return {
+					actions: { top: actions.top, bottom: actions.bottom },
+					navigation: { top: navigation.top, height: navigation.height },
+					finalReviewBottom: finalReview.bottom,
+					overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+					viewportHeight: window.innerHeight
+				};
+			})
+		);
+		expect(geometry.overflow, `document overflow at ${width}px`).toBe(0);
+		expect(
+			geometry.finalReviewBottom,
+			`final review reachability at ${width}px`
+		).toBeLessThanOrEqual(geometry.actions.top);
+		if (width < 768) {
+			expect(geometry.navigation.height).toBeGreaterThan(0);
+			expect(geometry.actions.bottom, `install/nav clearance at ${width}px`).toBeLessThanOrEqual(
+				geometry.navigation.top
+			);
+		} else {
+			expect(geometry.navigation.height).toBe(0);
+			expect(geometry.actions.bottom).toBe(geometry.viewportHeight);
+		}
+		await expect(page.getByRole('checkbox', { name: /I confirm exact plan/ })).toBeEnabled();
+		await expect(page.getByRole('button', { name: 'Install package' })).toBeVisible();
+	}
+});
 
 test('reviews, confirms and installs an independent project-free package through the real backend', async ({
 	page,

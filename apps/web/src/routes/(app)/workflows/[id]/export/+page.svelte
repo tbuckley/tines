@@ -660,16 +660,16 @@
 />
 
 <div
-	class="bg-background/95 sticky bottom-[4.75rem] mt-8 flex items-center justify-between gap-2 rounded-lg border px-2 py-1 shadow-lg backdrop-blur sm:bottom-3 sm:gap-3 sm:p-3"
+	class="bg-background/95 sticky bottom-[calc(4.75rem+1px+env(safe-area-inset-bottom,0px))] mt-8 flex items-center justify-between gap-2 rounded-lg border px-2 py-1 shadow-lg backdrop-blur md:bottom-3 md:gap-3 md:p-3"
 	data-testid="package-actions"
 >
-	<p class="min-w-0 text-xs sm:break-all">
-		<span class="sm:hidden">
+	<p class="min-w-0 text-xs md:break-all">
+		<span class="md:hidden">
 			{reviewComplete
 				? 'Ready'
 				: `${requiredReviews.filter((id) => !reviewed.has(id)).length} left`}
 		</span>
-		<span class="hidden sm:inline">
+		<span class="hidden md:inline">
 			{reviewComplete
 				? 'All required skill and repository declarations reviewed.'
 				: `${requiredReviews.filter((id) => !reviewed.has(id)).length} required declaration review(s) remain.`}{#if validatedDigest}<br
