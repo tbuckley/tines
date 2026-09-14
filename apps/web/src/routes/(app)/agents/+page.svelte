@@ -666,8 +666,13 @@
 	 * this polls the runner list rather than the events feed: one request that
 	 * catches register, reconnect and offline→online alike.
 	 */
+	const watchRunEvents = $derived(data.fleetRuns.some((run) => isActiveRun(run.status)));
+	const watchAccountEvents = $derived(checklistVisible || watchRunEvents);
 	const shouldPoll = $derived(
-		addRunnerOpen || checklistVisible || !data.runners.some((r) => r.type === 'local' && r.online)
+		addRunnerOpen ||
+			checklistVisible ||
+			watchRunEvents ||
+			!data.runners.some((r) => r.type === 'local' && r.online)
 	);
 	const runnerSignature = (rs: Runner[]) =>
 		rs
@@ -687,15 +692,15 @@
 			// and only pre-first-run accounts pay for it.
 			const [{ items }, events] = await Promise.all([
 				api.listRunners(),
-				checklistVisible ? api.listEvents({ limit: 1 }) : Promise.resolve(null)
+				watchAccountEvents ? api.listEvents({ limit: 1 }) : Promise.resolve(null)
 			]);
 			const newestEventId = events?.items[0]?.id ?? null;
 			const eventMoved = newestEventId !== null && newestEventId !== latestAccountEventId;
-			latestAccountEventId = newestEventId ?? latestAccountEventId;
 			if (eventMoved || runnerSignature(items) !== runnerSignature(untrack(() => data.runners))) {
 				// Re-runs the loader without remounting, so the open dialog,
 				// the typed name and any created key survive the refresh.
 				await invalidateAll();
+				latestAccountEventId = newestEventId ?? latestAccountEventId;
 			}
 		} catch {
 			// Transient: the next tick tries again.
@@ -1325,7 +1330,9 @@
 							{/if}
 							{#if runner.launch_failures > 0}
 								<span class="text-amber-600 dark:text-amber-400"
-									>· {runner.launch_failures} consecutive failures</span
+									>· {runner.launch_failures} consecutive {runner.launch_failures === 1
+										? 'failure'
+										: 'failures'}</span
 								>
 							{/if}
 						</p>

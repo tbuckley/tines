@@ -1,11 +1,11 @@
 <script lang="ts">
 	import type { AgentRun, RunEndOutcome } from '@tines/shared';
-	import { isActiveRun, runDurationLabel } from '@tines/shared';
+	import { isActiveRun } from '@tines/shared';
 	import { slide } from 'svelte/transition';
 	import RunLogViewer from '$lib/components/RunLogViewer.svelte';
 	import RunCostCell from '$lib/components/RunCostCell.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
-	import { prefersReducedMotion, relativeTime, runStatusClass } from '$lib/format';
+	import { prefersReducedMotion, relativeTime, runElapsedLabel, runStatusClass } from '$lib/format';
 
 	/**
 	 * The one run row, shared by every surface that lists runs (the Agents tab
@@ -31,6 +31,24 @@
 
 	/** Log-tail viewer expansion — nothing outside the row reads it. */
 	let expanded = $state(false);
+	let now = $state(Date.now());
+	let active = $derived(isActiveRun(run.status));
+
+	$effect(() => {
+		const clockKey = `${run.id}:${active ? 1 : 0}:${run.ended_at ?? ''}`;
+		if (!clockKey || !active || run.ended_at !== null) return;
+		const update = () => (now = Date.now());
+		update();
+		const timer = setInterval(update, 1000);
+		const onVisibility = () => {
+			if (document.visibilityState === 'visible') update();
+		};
+		document.addEventListener('visibilitychange', onVisibility);
+		return () => {
+			clearInterval(timer);
+			document.removeEventListener('visibilitychange', onVisibility);
+		};
+	});
 
 	function effortSourceLabel(): string {
 		const source = run.effort_source;
@@ -68,8 +86,12 @@
 	class="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2.5 text-sm"
 	transition:slide={{ duration: dur() }}
 >
-	{#if isActiveRun(run.status)}
-		<span class="size-1.5 shrink-0 animate-pulse rounded-full bg-emerald-500"></span>
+	{#if active}
+		<span
+			class="size-1.5 shrink-0 rounded-full bg-emerald-500 motion-safe:animate-pulse"
+			aria-hidden="true"
+			data-testid="run-live-dot"
+		></span>
 	{/if}
 	{#if showIssueRef && run.issue_ref}
 		<a
@@ -113,7 +135,11 @@
 			· {run.outcome}
 		</span>
 	{/if}
-	<span class="text-muted-foreground text-xs">{runDurationLabel(run)}</span>
+	<span
+		class="text-muted-foreground text-xs whitespace-nowrap tabular-nums"
+		title="Elapsed since assignment"
+		data-testid="run-duration">{runElapsedLabel(run, now)}</span
+	>
 	{#if run.resumed_from_run_id}
 		<span class="text-muted-foreground text-xs" title="Predecessor run ID">
 			resumed run {run.resumed_from_run_id}

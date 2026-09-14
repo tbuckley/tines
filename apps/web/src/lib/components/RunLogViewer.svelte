@@ -82,8 +82,12 @@
 			bind:this={pre}
 			onscroll={onScroll}
 			class="bg-muted/50 max-h-72 overflow-auto rounded-md border p-3 font-mono text-xs whitespace-pre-wrap"
-			data-testid="run-log">{detail.log ||
-				(active ? '(no output yet)' : '(no log output captured)')}</pre>
+			data-testid="run-log">{#if detail.log}{detail.log}{:else if active}<span
+					class="text-muted-foreground"
+					data-testid="run-log-waiting"
+					>waiting for the harness<span aria-hidden="true" class="motion-safe:animate-pulse">…</span
+					></span
+				>{:else}(no log output captured){/if}</pre>
 	{:else}
 		<p class="text-muted-foreground text-xs italic">Loading log…</p>
 	{/if}
