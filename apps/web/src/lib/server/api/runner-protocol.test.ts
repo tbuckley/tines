@@ -116,7 +116,7 @@ describe('registerRunner', () => {
 			platform: 'darwin'
 		});
 		expect(runner.type).toBe('local');
-		expect(runner.online).toBe(true); // registration counts as a heartbeat
+		expect(runner.online).toBe(false); // policy must be confirmed by the first poll
 		expect(runner_token).toMatch(/^tines_rt_/);
 		const row = runnerById(t, runner.id);
 		expect(row.runner_token_hash).toBe(await sha256Hex(runner_token));
@@ -188,7 +188,7 @@ describe('registerRunner', () => {
 			max_concurrent: 3,
 			hostname: 'mbp.local'
 		});
-		expect(second.runner.max_concurrent).toBe(3); // sent: updated
+		expect(second.runner.max_concurrent).toBe(2); // registration cannot overwrite durable intent
 		expect(second.runner.max_run_minutes).toBe(90); // not sent: kept
 		expect(second.runner.default_tier).toBe('smartest'); // not sent: kept
 		expect(second.runner.config.hostname).toBe('mbp.local');
@@ -530,7 +530,8 @@ describe('pollRunner', () => {
 		expect(runnerById(t, id).max_concurrent).toBe(3);
 		const updates = eventsOfType(t, 'runner.updated');
 		expect(updates).toHaveLength(1);
-		expect(updates[0].payload.changed).toEqual(['max_concurrent']);
+		expect(updates[0].payload.changed).toEqual(['max_concurrent', 'concurrency_control']);
+		expect(updates[0].payload.source).toBe('daemon');
 
 		// Same value: no event, no new capacity.
 		const same = await pollRunner(
@@ -566,6 +567,196 @@ describe('pollRunner', () => {
 		expect(runnerById(t, id).max_concurrent).toBe(2);
 	});
 
+	it('bounds revisioned web requests for sessions and ordinary owner keys', async () => {
+		const t = world();
+		const id = addRunner(t, { maxConcurrent: 1 });
+		await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, id),
+			TEST_NOOP_DISPATCH_EFFECTS,
+			{
+				instance_id: 'boot_remote',
+				owned_runs: [],
+				max_concurrent: 1,
+				concurrency_control: { version: 1, allow_remote: true, ceiling: 3 }
+			},
+			NOW + 1
+		);
+		const initialRevision = Number(runnerById(t, id).concurrency_revision);
+
+		const sessionWrite = await updateRunner(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, id, {
+			max_concurrent: 2,
+			expected_concurrency_revision: initialRevision
+		});
+		expect(sessionWrite).toMatchObject({ max_concurrent: 2 });
+		expect(sessionWrite.concurrency_control).toMatchObject({
+			status: 'pending',
+			revision: initialRevision + 1
+		});
+
+		t.sqlite
+			.prepare(
+				`INSERT INTO api_key (id, user_id, name, key_hash, key_prefix, created_at)
+				 VALUES ('key_owner', ?, 'owner automation', 'hash-owner', 'tines_owner', ?)`
+			)
+			.run(USER, NOW);
+		const keyActor: ActorContext = {
+			...actor,
+			apiKeyId: 'key_owner',
+			apiKeyName: 'owner automation',
+			viaSession: false
+		};
+		const keyWrite = await updateRunner(t.db, t.env, keyActor, TEST_NOOP_DISPATCH_EFFECTS, id, {
+			max_concurrent: 3,
+			expected_concurrency_revision: initialRevision + 1
+		});
+		expect(keyWrite).toMatchObject({ max_concurrent: 3 });
+		expect(keyWrite.concurrency_control).toMatchObject({
+			status: 'pending',
+			revision: initialRevision + 2
+		});
+		const updates = eventsOfType(t, 'runner.updated');
+		expect(
+			updates.find((event) => JSON.stringify(event.payload).includes('"requested_cap":3'))
+				?.actor_api_key_id
+		).toBe('key_owner');
+		await expect(
+			updateRunner(t.db, t.env, { ...actor, userId: 'usr_other' }, TEST_NOOP_DISPATCH_EFFECTS, id, {
+				max_concurrent: 1,
+				expected_concurrency_revision: initialRevision + 2
+			})
+		).rejects.toMatchObject({ code: 'not_found' });
+	});
+
+	it('rejects missing and stale revisions, ceiling bypass, opt-out, and mixed patches atomically', async () => {
+		const t = world();
+		const id = addRunner(t, { name: 'bounded', maxConcurrent: 1 });
+		await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, id),
+			TEST_NOOP_DISPATCH_EFFECTS,
+			{
+				instance_id: 'boot_remote',
+				owned_runs: [],
+				max_concurrent: 1,
+				concurrency_control: { version: 1, allow_remote: true, ceiling: 3 }
+			},
+			NOW + 1
+		);
+		const currentRevision = Number(runnerById(t, id).concurrency_revision);
+
+		for (const request of [
+			{ max_concurrent: 2 },
+			{ max_concurrent: 2, expected_concurrency_revision: 9 }
+		]) {
+			await expect(
+				updateRunner(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, id, request)
+			).rejects.toMatchObject({ code: 'concurrency_conflict' });
+		}
+		await expect(
+			updateRunner(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, id, {
+				name: 'must-not-commit',
+				max_concurrent: 4,
+				expected_concurrency_revision: currentRevision
+			})
+		).rejects.toMatchObject({ code: 'invalid_field', details: { ceiling: 3 } });
+		expect(runnerById(t, id)).toMatchObject({ name: 'bounded', max_concurrent: 1 });
+		expect(eventsOfType(t, 'runner.updated')).toHaveLength(1); // daemon policy report only
+
+		await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, id),
+			TEST_NOOP_DISPATCH_EFFECTS,
+			{
+				instance_id: 'boot_remote',
+				owned_runs: [],
+				max_concurrent: 1,
+				concurrency_control: { version: 1, allow_remote: false, ceiling: 3 }
+			},
+			NOW + 2
+		);
+		await expect(
+			updateRunner(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, id, {
+				max_concurrent: 2,
+				expected_concurrency_revision: Number(runnerById(t, id).concurrency_revision)
+			})
+		).rejects.toMatchObject({ code: 'concurrency_unavailable' });
+	});
+
+	it('retries poll reconciliation without overwriting a concurrent web cap request', async () => {
+		const t = world();
+		const id = addRunner(t, { name: 'concurrent-cap', maxConcurrent: 1 });
+		t.sqlite
+			.prepare('UPDATE runner SET runner_token_hash = ? WHERE id = ?')
+			.run(await sha256Hex('tines_rt_concurrent-cap'), id);
+		await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, id),
+			TEST_NOOP_DISPATCH_EFFECTS,
+			{
+				instance_id: 'boot_remote',
+				owned_runs: [],
+				max_concurrent: 1,
+				concurrency_control: { version: 1, allow_remote: true, ceiling: 3 }
+			},
+			NOW + 1
+		);
+		const stale = await runnerRow(t, id);
+		const winningRevision = stale.concurrency_revision + 1;
+		const realBatch = t.env.DB.batch.bind(t.env.DB);
+		let injected = false;
+		let batchCount = 0;
+		t.env.DB.batch = async (statements) => {
+			batchCount += 1;
+			if (batchCount === 2) {
+				injected = true;
+				// This is the storage result of an owner PATCH that commits after
+				// the poll read but before its guarded reconciliation batch.
+				t.sqlite
+					.prepare(
+						`UPDATE runner
+						 SET max_concurrent = 3,
+						     concurrency_requested = 3,
+						     concurrency_revision = ?,
+						     updated_at = ?
+						 WHERE id = ?`
+					)
+					.run(winningRevision, NOW + 2, id);
+			}
+			return realBatch(statements);
+		};
+
+		const result = await pollRunner(
+			t.db,
+			t.env,
+			stale,
+			TEST_NOOP_DISPATCH_EFFECTS,
+			{
+				instance_id: 'boot_remote',
+				owned_runs: [],
+				max_concurrent: 1,
+				concurrency_control: { version: 1, allow_remote: true, ceiling: 3 }
+			},
+			NOW + 3
+		);
+
+		expect(injected).toBe(true);
+		expect(result.response.concurrency_control).toMatchObject({
+			available: true,
+			cap: 3,
+			revision: winningRevision
+		});
+		expect(runnerById(t, id)).toMatchObject({
+			max_concurrent: 3,
+			concurrency_requested: 3,
+			concurrency_revision: winningRevision
+		});
+	});
+
 	it('draining is stated per poll: set while true, cleared when absent, and leaving it frees capacity', async () => {
 		const t = world();
 		const id = addRunner(t);
@@ -579,8 +770,9 @@ describe('pollRunner', () => {
 		);
 		expect(entering.capRaised).toBe(false);
 		expect(runnerById(t, id).draining).toBe(1);
-		// No runner.updated event: draining is the daemon's transient state, not an edit.
-		expect(eventsOfType(t, 'runner.updated')).toHaveLength(0);
+		// Draining itself is transient, but the first legacy poll records the
+		// daemon-owned concurrency policy transition once.
+		expect(eventsOfType(t, 'runner.updated')).toHaveLength(1);
 
 		// Still draining: nothing new to dispatch for.
 		const still = await pollRunner(

@@ -14,7 +14,16 @@ import {
 import { expect, test, type Page } from '@playwright/test';
 import { d1, sqlLiteral } from './d1';
 import { ALICE, BASE_URL, BOB } from './constants.mjs';
-import { apiClient, body, DESKTOP, gotoHydrated, PHONE, runId, signIn } from './helpers';
+import {
+	apiClient,
+	body,
+	DESKTOP,
+	gotoHydrated,
+	PHONE,
+	readSettled,
+	runId,
+	signIn
+} from './helpers';
 
 const name = `Browser package ${runId}`;
 const dependencyName = `Browser dependency ${runId}`;
@@ -45,6 +54,37 @@ let scheduleId: string;
 async function openExport(page: Page) {
 	await gotoHydrated(page, `/workflows/${workflowId}/export`);
 	await expect(page.getByRole('heading', { name: 'Workflow graph and gates' })).toBeVisible();
+}
+
+async function rebuildCandidate(page: Page) {
+	const rebuild = page.getByRole('button', { name: 'Rebuild from source' });
+	const rebuilt = page.waitForResponse(
+		(response) =>
+			new URL(response.url()).pathname === `/api/v1/workflows/${workflowId}/export` &&
+			response.request().method() === 'GET' &&
+			response.ok()
+	);
+	await rebuild.click();
+	await (await rebuilt).finished();
+	await page.evaluate(
+		() =>
+			new Promise<void>((resolve) =>
+				requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+			)
+	);
+	await expect(rebuild).toBeEnabled();
+}
+
+function candidateInputs(page: Page) {
+	return page.getByRole('region', { name: '2. Candidate inputs and exact text uses' });
+}
+
+function declaredInput(page: Page, key: string) {
+	return candidateInputs(page).getByRole('button', { name: new RegExp(`^${key} ·`) });
+}
+
+function inputReplacement(page: Page) {
+	return candidateInputs(page).getByTestId('input-replacement');
 }
 
 async function reviewDependencies(page: Page) {
@@ -211,15 +251,41 @@ test('authors an exact declared use and downloads the reviewed canonical package
 	await page.getByLabel('Default').fill('Standard');
 	await page.getByRole('textbox', { name: 'Label', exact: true }).fill('Target workflow');
 	await page.getByRole('button', { name: 'Add typed declaration' }).click();
+	const targetWorkflow = declaredInput(page, 'target_workflow');
+	await expect(targetWorkflow).toHaveAttribute('aria-pressed', 'true');
+	await expect(candidateInputs(page).getByText('Selected', { exact: true })).toHaveCount(1);
 	await page.getByLabel('Key').fill('target_name');
 	await page.getByLabel('Type').selectOption('text');
 	await page.getByLabel('Default').fill('TARGET');
 	await page.getByRole('textbox', { name: 'Label', exact: true }).fill('Target name');
 	await page.getByRole('button', { name: 'Add typed declaration' }).click();
+	const targetName = declaredInput(page, 'target_name');
+	await expect(targetWorkflow).toHaveAttribute('aria-pressed', 'false');
+	await expect(targetName).toHaveAttribute('aria-pressed', 'true');
+	const reviewedCheckbox = page
+		.getByRole('checkbox', { name: /I reviewed (every file|this required repository)/ })
+		.first();
+	await reviewedCheckbox.check();
+	const digestBeforeSelection = await page
+		.locator('[role="status"]')
+		.filter({ hasText: 'Candidate:' })
+		.locator('span.break-all')
+		.textContent();
+	await targetWorkflow.click();
+	await expect(targetWorkflow).toHaveAttribute('aria-pressed', 'true');
+	await expect(targetName).toHaveAttribute('aria-pressed', 'false');
+	await expect(reviewedCheckbox).toBeChecked();
+	await expect(
+		page.locator('[role="status"]').filter({ hasText: 'Candidate:' }).locator('span.break-all')
+	).toHaveText(digestBeforeSelection!);
 	await page
 		.getByLabel('Exact candidate field')
 		.selectOption({ label: 'instructions — prompt body' });
 	const editor = page.locator('textarea');
+	await editor.focus();
+	await expect(inputReplacement(page)).toContainText('Using target_workflow');
+	await targetName.click();
+	await expect(inputReplacement(page)).toContainText('Using target_name');
 	await editor.evaluate((node: HTMLTextAreaElement) => {
 		const start = node.value.indexOf('TARGET');
 		node.focus();
@@ -233,7 +299,12 @@ test('authors an exact declared use and downloads the reviewed canonical package
 	// The escaped literal renders as ordinary text: exactly one substitutable use.
 	await expect(token).toHaveCount(1);
 	await expect(page.getByText('Escaped literal {{target_name:TARGET}} stays.')).toBeVisible();
+	await targetWorkflow.click();
+	await expect(inputReplacement(page)).toContainText('Using target_workflow');
 	await token.click();
+	await expect(targetName).toHaveAttribute('aria-pressed', 'true');
+	await expect(targetWorkflow).toHaveAttribute('aria-pressed', 'false');
+	await expect(inputReplacement(page)).toContainText('Using target_name');
 	await expect(page.getByRole('button', { name: 'Back to passage' })).toBeVisible();
 	await page.keyboard.press('Escape');
 	await expect(token).toBeFocused();
@@ -651,26 +722,158 @@ test('reviews optional schedule and tier configuration and repairs project scope
 	await expect(page.getByText(scheduleId)).toHaveCount(0);
 });
 
-test('clears a stale author input selection when the candidate is rebuilt', async ({ page }) => {
+test('does not restore a stale generated input selection when its ID returns', async ({ page }) => {
 	await openExport(page);
-	await page.getByLabel('Key').fill('stale_key');
-	await page.getByRole('button', { name: 'Add typed declaration' }).click();
-	await expect(page.getByRole('button', { name: /stale_key · text/ })).toBeVisible();
+	await page.getByLabel('Source project').selectOption(projectId);
+	const schedule = page.getByRole('checkbox', { name: new RegExp(scheduleName) });
+	await schedule.check();
+	await rebuildCandidate(page);
+	const destination = declaredInput(page, 'destination_project');
+	await destination.click();
+	await expect(destination).toHaveAttribute('aria-pressed', 'true');
+	await expect(candidateInputs(page).getByText('Selected', { exact: true })).toHaveCount(1);
 	await page
 		.getByLabel('Exact candidate field')
 		.selectOption({ label: 'instructions — prompt body' });
 	const replace = page.getByRole('button', { name: 'Replace selection with declared token' });
 	await expect(replace).toBeEnabled();
-	page.once('dialog', (dialog) => dialog.accept());
-	await page.getByRole('button', { name: 'Rebuild from source' }).click();
-	await expect(page.getByText('Candidate rebuilt from source.')).toBeVisible();
-	await expect(page.getByRole('button', { name: /stale_key · text/ })).toHaveCount(0);
+	await expect(inputReplacement(page)).toContainText('Using destination_project');
+
+	await schedule.uncheck();
+	await rebuildCandidate(page);
+	await expect(destination).toHaveCount(0);
+	await expect(candidateInputs(page).getByText('Selected', { exact: true })).toHaveCount(0);
+	await expect(inputReplacement(page)).not.toContainText('Using');
 	await expect(replace).toBeDisabled();
-	await expect(page.getByRole('button', { name: 'Save candidate text' })).toBeEnabled();
-	await page.getByRole('button', { name: 'Validate', exact: true }).click();
-	await expect(page.getByText(/^Validated sha256:/)).toBeVisible();
-	await expect(page.getByRole('button', { name: 'Add typed declaration' })).toBeEnabled();
+
+	await schedule.check();
+	await rebuildCandidate(page);
+	await expect(destination).toHaveAttribute('aria-pressed', 'false');
+	await expect(candidateInputs(page).getByText('Selected', { exact: true })).toHaveCount(0);
+	await expect(inputReplacement(page)).not.toContainText('Using');
+	await expect(replace).toBeDisabled();
 });
+
+test('retains a generated input selection across an equivalent rebuild', async ({ page }) => {
+	await openExport(page);
+	await page.getByLabel('Source project').selectOption(projectId);
+	await page.getByRole('checkbox', { name: new RegExp(scheduleName) }).check();
+	await rebuildCandidate(page);
+	const destination = declaredInput(page, 'destination_project');
+	await expect(destination).toHaveAttribute('aria-pressed', 'false');
+	await expect(candidateInputs(page).getByText('Selected', { exact: true })).toHaveCount(0);
+	await page
+		.getByLabel('Exact candidate field')
+		.selectOption({ label: 'instructions — prompt body' });
+	await expect(
+		page.getByRole('button', { name: 'Replace selection with declared token' })
+	).toBeDisabled();
+	await expect(inputReplacement(page)).not.toContainText('Using');
+
+	await destination.click();
+	await expect(destination).toHaveAttribute('aria-pressed', 'true');
+	await expect(inputReplacement(page)).toContainText('Using destination_project');
+	await rebuildCandidate(page);
+	await expect(destination).toHaveAttribute('aria-pressed', 'true');
+	await expect(candidateInputs(page).getByText('Selected', { exact: true })).toHaveCount(1);
+	await expect(inputReplacement(page)).toContainText('Using destination_project');
+});
+
+for (const theme of ['light', 'dark'] as const) {
+	for (const viewport of [DESKTOP, PHONE]) {
+		test(`keeps declared input selection visible at ${viewport.width}px in ${theme} mode`, async ({
+			page
+		}, testInfo) => {
+			await page.setViewportSize(viewport);
+			await page.emulateMedia({ colorScheme: theme, reducedMotion: 'reduce' });
+			await page.goto('/');
+			await page.evaluate((savedTheme) => {
+				localStorage.setItem('tines:theme', savedTheme);
+			}, theme);
+			await openExport(page);
+			await expect(page.locator('html')).toHaveClass(
+				theme === 'dark' ? /\bdark\b/ : /^(?!.*\bdark\b)/
+			);
+			const longKey = `project_${'n'.repeat(56)}`;
+			await page.getByLabel('Key').fill(longKey);
+			await page.getByRole('button', { name: 'Add typed declaration' }).click();
+			await page.getByLabel('Key').fill('review_label');
+			await page.getByLabel('Type').selectOption('label');
+			await page.getByRole('button', { name: 'Add typed declaration' }).click();
+			const longInput = declaredInput(page, longKey);
+			const reviewLabel = declaredInput(page, 'review_label');
+
+			await page.getByRole('button', { name: 'Add typed declaration' }).focus();
+			await page.keyboard.press('Tab');
+			await expect(longInput).toBeFocused();
+			await expect(longInput).toHaveAttribute('aria-pressed', 'false');
+			await expect(reviewLabel).toHaveAttribute('aria-pressed', 'true');
+			const focusShadow = await longInput.evaluate(
+				(element) => getComputedStyle(element).boxShadow
+			);
+			expect(focusShadow).not.toBe('none');
+			await page.keyboard.press('Enter');
+			await expect(longInput).toHaveAttribute('aria-pressed', 'true');
+			await page
+				.getByLabel('Exact candidate field')
+				.selectOption({ label: 'instructions — prompt body' });
+			const editor = candidateInputs(page).locator('textarea');
+			await editor.focus();
+			await expect(inputReplacement(page)).toContainText(`Using ${longKey}`);
+			const selectedColors = await longInput.evaluate((element) => {
+				const style = getComputedStyle(element);
+				return { border: style.borderColor, background: style.backgroundColor };
+			});
+			const unselectedColors = await reviewLabel.evaluate((element) => {
+				const style = getComputedStyle(element);
+				return { border: style.borderColor, background: style.backgroundColor };
+			});
+			expect(selectedColors).not.toEqual(unselectedColors);
+			await expect(candidateInputs(page).getByText('Selected', { exact: true })).toHaveCount(1);
+			await page.screenshot({
+				path: testInfo.outputPath(`package-input-first-${theme}-${viewport.width}.png`),
+				fullPage: true
+			});
+
+			await longInput.focus();
+			await page.keyboard.press('Tab');
+			await expect(reviewLabel).toBeFocused();
+			await page.keyboard.press('Space');
+			await expect(reviewLabel).toHaveAttribute('aria-pressed', 'true');
+			await editor.focus();
+			await expect(inputReplacement(page)).toContainText('Using review_label');
+			await page.screenshot({
+				path: testInfo.outputPath(`package-input-second-${theme}-${viewport.width}.png`),
+				fullPage: true
+			});
+
+			await longInput.click();
+			await inputReplacement(page).scrollIntoViewIfNeeded();
+			await expect(inputReplacement(page)).toContainText(`Using ${longKey}`);
+			const geometry = await page.evaluate(() => {
+				const longCard = document
+					.querySelector<HTMLElement>('section[aria-labelledby="inputs-title"]')!
+					.querySelector<HTMLElement>('[aria-pressed="true"]')!;
+				const action = document.querySelector<HTMLElement>('[data-testid="input-replacement"]')!;
+				return {
+					documentOverflow:
+						document.documentElement.scrollWidth - document.documentElement.clientWidth,
+					cardOverflow: longCard.scrollWidth - longCard.clientWidth,
+					actionOverflow: action.scrollWidth - action.clientWidth,
+					cardBottom: longCard.getBoundingClientRect().bottom,
+					actionTop: action.getBoundingClientRect().top,
+					textOverflow: getComputedStyle(longCard.querySelector('code')!).textOverflow
+				};
+			});
+			expect(geometry.documentOverflow).toBe(0);
+			expect(geometry.cardOverflow).toBeLessThanOrEqual(1);
+			expect(geometry.actionOverflow).toBeLessThanOrEqual(1);
+			expect(geometry.textOverflow).not.toBe('ellipsis');
+			if (viewport.width === PHONE.width)
+				expect(geometry.cardBottom).toBeLessThan(geometry.actionTop);
+		});
+	}
+}
 
 test('discards a delayed validation result when candidate review changes', async ({ page }) => {
 	await openExport(page);
@@ -703,7 +906,9 @@ test('discards a delayed validation result when candidate review changes', async
 	await expect(page.getByRole('button', { name: /race_key · text/ })).toBeVisible();
 });
 
-test('focuses validation errors and keeps the mobile action above navigation', async ({ page }) => {
+test('focuses validation errors and keeps the responsive action clear of navigation', async ({
+	page
+}) => {
 	await page.setViewportSize(PHONE);
 	await page.emulateMedia({ reducedMotion: 'reduce' });
 	await openExport(page);
@@ -726,19 +931,36 @@ test('focuses validation errors and keeps the mobile action above navigation', a
 	await repair.click();
 	await expect(page.locator('textarea')).toBeFocused();
 
-	await page.getByRole('button', { name: 'Download package' }).scrollIntoViewIfNeeded();
-	const action = await page.getByRole('button', { name: 'Download package' }).boundingBox();
-	const actionBar = await page.getByTestId('package-actions').boundingBox();
-	const navigation = await page.getByRole('navigation', { name: 'Primary' }).boundingBox();
-	expect(action).not.toBeNull();
-	expect(actionBar).not.toBeNull();
-	expect(navigation).not.toBeNull();
-	expect(action!.y + action!.height).toBeLessThanOrEqual(navigation!.y);
-	expect(actionBar!.height).toBeLessThanOrEqual(48);
-	const overflow = await page.evaluate(() =>
-		[...globalThis.document.querySelectorAll<HTMLElement>('*')]
-			.filter((element) => element.getBoundingClientRect().right > window.innerWidth + 1)
-			.map((element) => `${element.tagName}.${element.className}`)
-	);
-	expect(overflow).toEqual([]);
+	for (const width of [PHONE.width, 640, 767, 768]) {
+		await page.setViewportSize({ width, height: PHONE.height });
+		await page.getByRole('button', { name: 'Download package' }).scrollIntoViewIfNeeded();
+		const geometry = await readSettled(() =>
+			page.evaluate(() => {
+				const action = document
+					.querySelector<HTMLElement>('[data-testid="package-actions"]')!
+					.getBoundingClientRect();
+				const navigation = document
+					.querySelector<HTMLElement>('nav[aria-label="Primary"]')!
+					.getBoundingClientRect();
+				return {
+					action: { top: action.top, bottom: action.bottom, height: action.height },
+					navigation: { top: navigation.top, height: navigation.height },
+					overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth
+				};
+			})
+		);
+		expect(geometry.overflow, `document overflow at ${width}px`).toBe(0);
+		if (width < 768) {
+			expect(geometry.navigation.height).toBeGreaterThan(0);
+			expect(geometry.action.bottom, `action/nav clearance at ${width}px`).toBeLessThanOrEqual(
+				geometry.navigation.top
+			);
+			expect(geometry.action.height, `compact action height at ${width}px`).toBeLessThanOrEqual(48);
+			await expect(page.getByText(/left|Ready/, { exact: true })).toBeVisible();
+			await expect(page.getByText(/required declaration review/)).toBeHidden();
+		} else {
+			expect(geometry.navigation.height).toBe(0);
+			await expect(page.getByText(/required declaration review/)).toBeVisible();
+		}
+	}
 });

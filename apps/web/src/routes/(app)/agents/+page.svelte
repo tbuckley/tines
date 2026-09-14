@@ -420,6 +420,7 @@
 	let runnerHarness = $state('claude-code');
 	let runnerCommand = $state('');
 	let runnerMaxConcurrent = $state(1);
+	let runnerAllowRemoteConcurrency = $state(false);
 	let commandCopied = $state(false);
 	/** The key created from inside the dialog, shown once and never re-fetchable. */
 	let createdKey = $state<ApiKeyCreated | null>(null);
@@ -500,6 +501,7 @@
 		claudeApiKey = '';
 		claudePat = '';
 		runnerName = '';
+		runnerAllowRemoteConcurrency = false;
 		createdKey = null;
 		creatingKey = false;
 		commandCopied = false;
@@ -639,7 +641,13 @@
 					: {})
 			};
 			await api.updateRunner(editTarget.id, {
-				max_concurrent: editMaxConcurrent,
+				...(editMaxConcurrent !== editTarget.max_concurrent
+					? {
+							max_concurrent: editMaxConcurrent,
+							expected_concurrency_revision:
+								editTarget.type === 'local' ? editTarget.concurrency_control?.revision : undefined
+						}
+					: {}),
 				max_run_minutes: editMaxMinutes,
 				default_tier: editDefaultTier,
 				tiers: Object.keys(tiers).length > 0 ? tiers : null,
@@ -649,6 +657,15 @@
 			editTarget = null;
 			await refreshAfterDispatch();
 		} catch (err) {
+			if (err instanceof ApiError && err.code === 'concurrency_conflict') {
+				const current = err.details?.runner as Runner | undefined;
+				if (current && current.id === editTarget?.id) {
+					// Preserve unrelated unsaved fields, but require the operator to
+					// re-enter a cap against the newly loaded revision.
+					editTarget = current;
+					editMaxConcurrent = current.max_concurrent;
+				}
+			}
 			showError(err);
 		} finally {
 			savingEdit = false;
@@ -677,6 +694,7 @@
 			parts.push(`--command '${(runnerCommand || '<template>').replaceAll("'", `'\\''`)}'`);
 		}
 		if (runnerMaxConcurrent !== 1) parts.push(`--max-concurrent ${runnerMaxConcurrent}`);
+		if (runnerAllowRemoteConcurrency) parts.push('--allow-remote-concurrency');
 		return parts.join(' \\\n  ');
 	});
 
@@ -688,11 +706,17 @@
 	 * catches register, reconnect and offline→online alike.
 	 */
 	const shouldPoll = $derived(
-		addRunnerOpen || checklistVisible || !data.runners.some((r) => r.type === 'local' && r.online)
+		addRunnerOpen ||
+			checklistVisible ||
+			data.runners.some((r) => r.concurrency_control?.status === 'pending') ||
+			!data.runners.some((r) => r.type === 'local' && r.online)
 	);
 	const runnerSignature = (rs: Runner[]) =>
 		rs
-			.map((r) => `${r.id}:${r.online ? 1 : 0}`)
+			.map(
+				(r) =>
+					`${r.id}:${r.online ? 1 : 0}:${r.max_concurrent}:${r.concurrency_control?.status ?? ''}:${r.concurrency_control?.reason ?? ''}:${r.concurrency_control?.ceiling ?? ''}:${r.concurrency_control?.revision ?? ''}:${r.concurrency_control?.applied_cap ?? ''}:${r.concurrency_control?.applied_revision ?? ''}:${r.concurrency_control?.applied_at ?? ''}`
+			)
 			.sort()
 			.join(',');
 	let syncingRunners = false;
@@ -1323,6 +1347,16 @@
 						</div>
 						<p class="text-muted-foreground mb-3 text-xs">
 							{runner.active_runs}/{runner.max_concurrent} runs · {runner.max_run_minutes}m timeout
+							{#if runner.concurrency_control}
+								· local ceiling {runner.concurrency_control.ceiling ?? 'unknown'}
+								· {runner.concurrency_control.status === 'applied'
+									? 'applied'
+									: runner.concurrency_control.status === 'pending'
+										? `pending — daemon last confirmed ${runner.concurrency_control.applied_cap ?? 'none'}`
+										: runner.concurrency_control.reason === 'opted_out'
+											? 'web adjustment off'
+											: 'web adjustment unavailable'}
+							{/if}
 							· default tier {runner.default_tier}
 							{#if waitingByRunner.has(runner.id)}
 								{@const runnerWaiting = waitingByRunner.get(runner.id)!}
@@ -1968,7 +2002,9 @@
 						</div>
 					{/if}
 					<div class="space-y-1.5">
-						<label class="text-sm font-medium" for="runner-cap">Max concurrent runs</label>
+						<label class="text-sm font-medium" for="runner-cap">
+							{runnerAllowRemoteConcurrency ? 'Local concurrency ceiling' : 'Max concurrent runs'}
+						</label>
 						<Input
 							id="runner-cap"
 							type="number"
@@ -1980,6 +2016,13 @@
 								(runnerMaxConcurrent = Number.parseInt(e.currentTarget.value, 10) || 1)}
 						/>
 					</div>
+					<label class="flex items-start gap-2 text-sm">
+						<input type="checkbox" bind:checked={runnerAllowRemoteConcurrency} class="mt-0.5" />
+						<span>
+							Allow web adjustment up to this local ceiling. New runners start at 1; a higher
+							request can increase machine and provider resource use.
+						</span>
+					</label>
 
 					<div class="space-y-1.5">
 						<p class="text-sm font-medium">Run this on the machine</p>
@@ -2103,15 +2146,32 @@
 			</p>
 			<div class="grid grid-cols-3 gap-3">
 				<div class="space-y-1.5">
-					<label class="text-sm font-medium" for="edit-concurrent">Max concurrent</label>
+					<label class="text-sm font-medium" for="edit-concurrent">
+						{editTarget.type === 'local' ? 'Requested concurrency' : 'Max concurrent'}
+					</label>
 					<Input
 						id="edit-concurrent"
 						type="number"
 						min="1"
 						max="100"
+						disabled={editTarget.type === 'local' &&
+							editTarget.concurrency_control?.status === 'unavailable'}
 						value={editMaxConcurrent}
 						oninput={(e) => (editMaxConcurrent = Number.parseInt(e.currentTarget.value, 10) || 1)}
 					/>
+					{#if editTarget.type === 'local'}
+						<p class="text-muted-foreground text-xs">
+							Effective scheduling cap {editTarget.max_concurrent} · Local ceiling
+							{editTarget.concurrency_control?.ceiling ?? 'unknown'} ·
+							{editTarget.concurrency_control?.status === 'unavailable'
+								? editTarget.concurrency_control.reason === 'opted_out'
+									? 'Enable web adjustment locally with --allow-remote-concurrency.'
+									: 'Upgrade or reconnect the daemon, then wait for its first poll.'
+								: editTarget.concurrency_control?.status === 'applied'
+									? 'Applied.'
+									: `Pending — daemon last confirmed ${editTarget.concurrency_control?.applied_cap ?? 'none'}.`}
+						</p>
+					{/if}
 				</div>
 				<div class="space-y-1.5">
 					<label class="text-sm font-medium" for="edit-minutes">Timeout (min)</label>

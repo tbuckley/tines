@@ -12,6 +12,7 @@
 		type WorkflowPackageDocument
 	} from '@tines/shared';
 	import IconArrowLeft from '@tabler/icons-svelte/icons/arrow-left';
+	import IconCheck from '@tabler/icons-svelte/icons/check';
 	import IconDownload from '@tabler/icons-svelte/icons/download';
 	import IconRefresh from '@tabler/icons-svelte/icons/refresh';
 	import { tick } from 'svelte';
@@ -570,16 +571,29 @@
 		>Add typed declaration</Button
 	>
 	{#if candidate.inputs.length}<div class="mt-4 grid gap-2 sm:grid-cols-2">
-			{#each candidate.inputs as input}<button
+			{#each candidate.inputs as input}
+				{@const selected = selectedInput?.id === input.id}
+				<button
 					id="input-{input.id}"
 					type="button"
-					class:selected={selectedInputId === input.id}
-					class="min-h-10 rounded-md border p-2 text-left text-xs focus-visible:outline-2"
+					aria-pressed={selected}
+					class="text-foreground focus-visible:ring-ring focus-visible:ring-offset-background min-h-10 min-w-0 rounded-md border p-2 text-left text-xs [overflow-wrap:anywhere] focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none {selected
+						? 'border-primary bg-primary/10'
+						: 'border-border bg-transparent'}"
 					onclick={() => (selectedInputId = input.id)}
-					><b><code>{input.key}</code> · {input.type}</b><br />{input.label} · {input.required
-						? 'required'
-						: 'optional'} · default {input.default ?? 'none'}</button
-				>{/each}
+					><b><code class="[overflow-wrap:anywhere]">{input.key}</code> · {input.type}</b><br
+					/>{input.label} · {input.required ? 'required' : 'optional'} · default {input.default ??
+						'none'}
+					<span class="text-primary mt-1 flex min-h-4 items-center gap-1 font-medium">
+						{#if selected}<IconCheck
+								size={14}
+								stroke={2.5}
+								class="shrink-0"
+								aria-hidden="true"
+							/>Selected{/if}
+					</span></button
+				>
+			{/each}
 		</div>{/if}
 	<div class="mt-4 border-t pt-4">
 		<label class="text-xs"
@@ -599,12 +613,23 @@
 					variant="outline"
 					onclick={() => saveCandidateField(false)}
 					disabled={candidateUpdating}>Save candidate text</Button
-				><Button
-					size="sm"
-					onclick={() => saveCandidateField(true)}
-					disabled={!selectedInput || candidateUpdating}
-					>Replace selection with declared token</Button
-				><a
+				>
+				<div
+					class="flex max-w-full min-w-0 flex-wrap items-center gap-2"
+					data-testid="input-replacement"
+				>
+					<Button
+						size="sm"
+						onclick={() => saveCandidateField(true)}
+						disabled={!selectedInput || candidateUpdating}
+						>Replace selection with declared token</Button
+					>
+					{#if selectedInput}<span
+							class="text-muted-foreground max-w-full min-w-0 text-xs [overflow-wrap:anywhere]"
+							>Using <code class="[overflow-wrap:anywhere]">{selectedInput.key}</code></span
+						>{/if}
+				</div>
+				<a
 					class="text-primary inline-flex min-h-9 items-center px-2 text-xs underline"
 					href="/workflows/{data.workflow.id}"
 					title="Rebuilding afterward discards this candidate">Edit private source instead</a
@@ -660,16 +685,16 @@
 />
 
 <div
-	class="bg-background/95 sticky bottom-[4.75rem] mt-8 flex items-center justify-between gap-2 rounded-lg border px-2 py-1 shadow-lg backdrop-blur sm:bottom-3 sm:gap-3 sm:p-3"
+	class="bg-background/95 sticky bottom-[calc(4.75rem+1px+env(safe-area-inset-bottom,0px))] mt-8 flex items-center justify-between gap-2 rounded-lg border px-2 py-1 shadow-lg backdrop-blur md:bottom-3 md:gap-3 md:p-3"
 	data-testid="package-actions"
 >
-	<p class="min-w-0 text-xs sm:break-all">
-		<span class="sm:hidden">
+	<p class="min-w-0 text-xs md:break-all">
+		<span class="md:hidden">
 			{reviewComplete
 				? 'Ready'
 				: `${requiredReviews.filter((id) => !reviewed.has(id)).length} left`}
 		</span>
-		<span class="hidden sm:inline">
+		<span class="hidden md:inline">
 			{reviewComplete
 				? 'All required skill and repository declarations reviewed.'
 				: `${requiredReviews.filter((id) => !reviewed.has(id)).length} required declaration review(s) remain.`}{#if validatedDigest}<br
