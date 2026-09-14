@@ -97,8 +97,8 @@ export function issueWorkflowFilterPresentation(
 		stateChipLabel:
 			selectedState?.name ??
 			(stateRef
-				? workflows.flatMap((workflow) => workflow.states).find((state) => state.id === stateRef)
-						?.name ?? stateRef
+				? (workflows.flatMap((workflow) => workflow.states).find((state) => state.id === stateRef)
+						?.name ?? stateRef)
 				: undefined),
 		stateHelp: selectedWorkflow
 			? ''

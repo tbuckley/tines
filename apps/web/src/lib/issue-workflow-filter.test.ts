@@ -74,7 +74,11 @@ describe('issueWorkflowFilterPresentation', () => {
 
 	it('keeps duplicate workflow names ambiguous and disambiguates their options', () => {
 		const duplicate = workflow('wf_eng_2', 'Engineering', [['s_plan', 'Plan']]);
-		const result = issueWorkflowFilterPresentation([...workflows, duplicate], 'Engineering', 'Review');
+		const result = issueWorkflowFilterPresentation(
+			[...workflows, duplicate],
+			'Engineering',
+			'Review'
+		);
 		expect(result.matchingWorkflows.map((item) => item.id)).toEqual(['wf_eng', 'wf_eng_2']);
 		expect(result.selectedWorkflow).toBeUndefined();
 		expect(result.workflowSynthetic?.label).toBe('Engineering (multiple workflows)');
