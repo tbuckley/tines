@@ -92,7 +92,7 @@ const inputHashes = Object.fromEntries(
 );
 writeFileSync(
 	join(resultDir, 'run.json'),
-	`${JSON.stringify({ number, arm, started_at: startedAt.toISOString(), ended_at: endedAt.toISOString(), elapsed_seconds: (endedAt - startedAt) / 1000, exit_code: exitCode, timed_out: timedOut, cold: true, model: 'gpt-6-astra', effort: 'high', harness: 'codex-cli 0.153.4', input_hashes }, null, 2)}\n`
+	`${JSON.stringify({ number, arm, started_at: startedAt.toISOString(), ended_at: endedAt.toISOString(), elapsed_seconds: (endedAt - startedAt) / 1000, exit_code: exitCode, timed_out: timedOut, cold: true, model: 'gpt-6-astra', effort: 'high', harness: 'codex-cli 0.153.4', input_hashes: inputHashes }, null, 2)}\n`
 );
 rmSync(stage, { recursive: true, force: true });
 if (exitCode !== 0 || timedOut) process.exitCode = 1;
