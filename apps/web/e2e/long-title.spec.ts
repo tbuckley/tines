@@ -21,14 +21,14 @@ const URL_TITLE = `Investigate https://github.com/tbuckley/tines/actions/runs/12
 /** Repro B: a 400-character unbroken token, the worst case. */
 const BLOB_TITLE = `Paste ${'a1b2c3d4e5'.repeat(40)} ${runId}`;
 
-let projectName: string;
+// Deliberately short: project-name width is part of the linked-title geometry under test.
+const projectName = `lt-${runId}`;
 let project: Project;
 let urlIssue: IssueDetail;
 let blobIssue: IssueDetail;
 let dupIssue: IssueDetail;
 
-test.beforeAll(async ({ apiFor, uniqueName }) => {
-	projectName = uniqueName('longtitle');
+test.beforeAll(async ({ apiFor }) => {
 	const api = apiFor(ALICE);
 	project = await body<Project>(await api.post('/api/v1/projects', { name: projectName }));
 

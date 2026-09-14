@@ -3,6 +3,50 @@ import { ALICE, BOB } from './constants.mjs';
 import { expect, test } from './fixtures';
 import { body, signIn } from './helpers';
 
+const apiOnlyTest = test.extend({
+	browser: [
+		async () => {
+			throw new Error('API-only selected-account tests must not construct a browser');
+		},
+		{ scope: 'worker' }
+	]
+});
+apiOnlyTest.use({ signedIn: ALICE });
+apiOnlyTest('selected account stays lazy for API-only tests', async ({ apiFor }) => {
+	const projects = await body<ListResponse<Project>>(await apiFor(ALICE).get('/api/v1/projects'));
+	expect(projects.items).toBeInstanceOf(Array);
+});
+
+type LifecycleWorld = { project: Project };
+const lifecycleTest = test.extend<{}, { lifecycleWorld: LifecycleWorld }>({
+	lifecycleWorld: [
+		async ({ apiFor, uniqueName }, use) => {
+			const api = apiFor(ALICE);
+			const project = await body<Project>(
+				await api.post('/api/v1/projects', { name: uniqueName('fixture-world') })
+			);
+			try {
+				await use({ project });
+			} finally {
+				expect((await api.post(`/api/v1/projects/${project.id}/archive`)).status()).toBe(200);
+			}
+		},
+		{ scope: 'worker' }
+	]
+});
+let lifecycleProjectId: string;
+lifecycleTest.describe('local world lifecycle', () => {
+	lifecycleTest.beforeAll(async ({ lifecycleWorld }) => {
+		lifecycleProjectId = lifecycleWorld.project.id;
+	});
+	lifecycleTest(
+		'shares a worker world between beforeAll and a test',
+		async ({ lifecycleWorld }) => {
+			expect(lifecycleWorld.project.id).toBe(lifecycleProjectId);
+		}
+	);
+});
+
 test.describe('shared fixture contract', () => {
 	test('allocates repeated names and respects length limits', async ({ uniqueName }) => {
 		const first = uniqueName('fixture-name');
