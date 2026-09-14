@@ -190,7 +190,10 @@ read an owner receipt but cannot commit an installation.
 Node SQLite fixture cannot prove. It boots the built Worker against a fresh
 Wrangler D1 database, applies the repository migrations and triggers, drives
 the public prepare/install/recovery endpoints, and audits durable rows with
-Wrangler. Temporary database triggers inject failures without exposing any
+Wrangler. Each rollback/nonce checkpoint reads all ten family counts in one
+scalar-subquery SELECT, while successful installs read each physical table once
+and check exact IDs, receipt mappings, schedule state, and inheritance in
+memory. Temporary database triggers inject failures without exposing any
 test-only application endpoint or production switch.
 
 Run it from the repository root:

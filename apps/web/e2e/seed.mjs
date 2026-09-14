@@ -33,11 +33,12 @@ import {
 import { spendStatements } from './spend-seed.mjs';
 
 import { WEEKLY, stageStatsSeed } from './stage-stats-seed.mjs';
+import { statsScaleStatements } from '../scripts/stats-scale-fixture.mjs';
 
 const sha256Hex = (s) => createHash('sha256').update(s).digest('hex');
 
-const nowIso = new Date().toISOString();
-const nowMs = Date.now();
+const nowMs = Number(process.env.E2E_SEED_NOW ?? Date.now());
+const nowIso = new Date(nowMs).toISOString();
 const expires = '2030-01-01T00:00:00.000Z';
 
 const statements = [];
@@ -260,6 +261,10 @@ statements.push(
 );
 
 statements.push(...stageStatsSeed(nowMs));
+if (process.env.STATS_SCALE === '1')
+	statements.push(
+		...statsScaleStatements(nowMs, Number(process.env.STATS_IRRELEVANT_MULTIPLIER ?? 1))
+	);
 
 const sqlFile = join(mkdtempSync(join(tmpdir(), 'tines-e2e-')), 'seed.sql');
 writeFileSync(sqlFile, statements.join('\n'));

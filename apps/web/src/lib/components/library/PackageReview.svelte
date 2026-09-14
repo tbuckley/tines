@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { WorkflowPackageDocument } from '@tines/shared';
+	import { describeRecurrence, type WorkflowPackageDocument } from '@tines/shared';
 	import IconCheck from '@tabler/icons-svelte/icons/check';
 	import WorkflowGraph from '$lib/components/WorkflowGraph.svelte';
 	import PackageText from './PackageText.svelte';
@@ -212,9 +212,11 @@
 	<section class="grid gap-4 md:grid-cols-2" aria-label="Package prerequisites and automation">
 		<div class="rounded-lg border p-4">
 			<h2 class="font-semibold">Destination prerequisites</h2>
-			{#if document.inputs.length}<ul class="mt-2 space-y-1 text-sm">
-					{#each document.inputs as input}<li>
-							<code>{input.key}</code> · {input.type} · {input.required ? 'required' : 'optional'} · default
+			{#if document.inputs.length}<ul class="mt-2 min-w-0 space-y-1 text-sm">
+					{#each document.inputs as input}<li class="min-w-0 [overflow-wrap:anywhere]">
+							<code class="[overflow-wrap:anywhere]">{input.key}</code> · {input.type} · {input.required
+								? 'required'
+								: 'optional'} · default
 							{input.default ?? 'none'}
 						</li>{/each}
 				</ul>{:else}<p class="text-muted-foreground mt-2 text-sm">
@@ -248,10 +250,10 @@
 							{#if startStateId}<code>({startStateId})</code>{/if}
 						</dd>
 						<dt>Recurrence</dt>
-						<dd>
-							{schedule.recurrence.kind === 'cron'
-								? schedule.recurrence.cron
-								: JSON.stringify(schedule.recurrence.preset)}
+						<dd class="min-w-0 [overflow-wrap:anywhere]">
+							{schedule.recurrence.kind === 'preset'
+								? describeRecurrence(schedule.recurrence.preset, '')
+								: describeRecurrence(null, schedule.recurrence.cron)}
 						</dd>
 						<dt>Timezone</dt>
 						<dd>{schedule.timezone}</dd>

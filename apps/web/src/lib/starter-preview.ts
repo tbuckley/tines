@@ -26,10 +26,59 @@ const BLANK = '…';
 /** Mirrors `MAX_CONTEXT_NAME` in `$lib/server/api/starters.ts`. */
 const MAX_CONTEXT_NAME = 100;
 const MAX_ISSUE_TITLE = 500;
+const REMOTE_PROTOCOLS = new Set(['http:', 'https:', 'ssh:', 'git:', 'ftp:', 'ftps:']);
 
 /** The value the user typed for a declared input, trimmed; `''` when absent. */
 function typed(inputs: Record<string, string>, key: string): string {
 	return (inputs[key] ?? '').trim();
+}
+
+/**
+ * A project-name suggestion for repository starters. This is deliberately
+ * stricter than `repoDirFromUrl`: checkout accepts loose remotes and owns its
+ * own fallback, while the chooser should only fill Name when the repository
+ * basename is unambiguous and safe to show verbatim.
+ */
+export function suggestProjectName(
+	starter: StarterSummary | undefined,
+	inputs: Record<string, string>
+): string | null {
+	if (!starter?.inputs.some((spec) => spec.key === 'repo_url')) return null;
+
+	const remote = (inputs.repo_url ?? '').trim();
+	if (!remote || /[\s\\\u0000-\u001f\u007f]/.test(remote)) return null;
+
+	const withoutSuffix = remote.replace(/[?#].*$/, '');
+	let repositoryPath: string;
+	const hierarchical = remote.match(/^([a-z][a-z0-9+.-]*):\/\//i);
+	if (hierarchical) {
+		try {
+			const parsed = new URL(remote);
+			if (!REMOTE_PROTOCOLS.has(parsed.protocol) || !parsed.hostname) return null;
+		} catch {
+			return null;
+		}
+		const pathStart = withoutSuffix.indexOf('/', hierarchical[0].length);
+		if (pathStart === -1) return null;
+		repositoryPath = withoutSuffix.slice(pathStart);
+	} else {
+		if (remote.includes('://') || /^[a-zA-Z]:/.test(remote)) return null;
+		const scp = withoutSuffix.match(/^(?:[^@/:]+@)?[^@/:]+:(.+)$/);
+		if (!scp) return null;
+		repositoryPath = scp[1];
+	}
+
+	const stripped = repositoryPath.replace(/\/+$/, '');
+	const candidate = stripped.slice(stripped.lastIndexOf('/') + 1).replace(/\.git$/, '');
+	if (
+		!candidate ||
+		candidate === '.' ||
+		candidate === '..' ||
+		/[\\=\s\u0000-\u001f\u007f]/.test(candidate)
+	)
+		return null;
+
+	return repoDirFromUrl(remote);
 }
 
 /**
