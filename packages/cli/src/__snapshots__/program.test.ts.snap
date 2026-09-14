@@ -1709,8 +1709,8 @@ Commands:
   restore-publication [options] <snapshot-id>         Restore an owner-withdrawn public snapshot when host policy permits
   export [options] <workflow-id-or-unambiguous-name>  Export a canonical workflow package JSON document
   validate [options] <file>                           Validate a workflow package file (use - for stdin)
-  preview [options] <file>                            Prepare and fully review a destination workflow package plan
-  install [options] <file>                            Install one exactly reviewed workflow package plan
+  preview [options] <file-or-public-url>              Prepare and fully review a destination workflow package plan
+  install [options] <file-or-public-url>              Install one exactly reviewed workflow package plan
   list [options]                                      List the workflow library
   show [options] <id-or-name>                         Show a workflow with states and transitions
   bases [options]                                     List the states other states inherit context from, with their children
@@ -1796,7 +1796,7 @@ Options:
   --json                   output the raw JSON response
   -h, --help               display help for command
 ",
-  "tines workflows install": "Usage: tines workflows install [options] <file>
+  "tines workflows install": "Usage: tines workflows install [options] <file-or-public-url>
 
 Install one exactly reviewed workflow package plan
 
@@ -1829,7 +1829,7 @@ Options:
   --json             output the raw JSON response
   -h, --help         display help for command
 ",
-  "tines workflows preview": "Usage: tines workflows preview [options] <file>
+  "tines workflows preview": "Usage: tines workflows preview [options] <file-or-public-url>
 
 Prepare and fully review a destination workflow package plan
 
