@@ -25,12 +25,14 @@ test.describe.serial('public workflow snapshots', () => {
 			await alice.post('/api/v1/workflows', {
 				name: marker,
 				description: `Inspectable exact text ${marker}`,
-				initial_state: 'Review',
+				initial_state: 'Draft',
 				states: [
+					{ name: 'Draft', category: 'active' },
 					{ name: 'Review', category: 'awaiting_human' },
 					{ name: 'Done', category: 'done' }
 				],
 				transitions: [
+					{ name: 'Submit', from: 'Draft', to: 'Review' },
 					{
 						name: 'Approve',
 						from: 'Review',
@@ -66,10 +68,12 @@ test.describe.serial('public workflow snapshots', () => {
 		for (const viewport of [PHONE, DESKTOP]) {
 			await page.setViewportSize(viewport);
 			await gotoHydrated(page, `/p/${snapshotId}`);
-			await expect(page.getByRole('heading', { name: marker })).toBeVisible();
-			await expect(page.getByText(`Inspectable exact text ${marker}`)).toBeVisible();
-			await expect(page.getByRole('link', { name: /Add to my library/i })).toBeVisible();
-			await expect(page.getByRole('link', { name: /Download package/i })).toBeVisible();
+			await expect(page.getByRole('heading', { name: marker, exact: true })).toBeVisible();
+			await expect(
+				page.getByText(`Inspectable exact text ${marker}`, { exact: true })
+			).toBeVisible();
+			await expect(page.getByRole('button', { name: /Sign in to install/i })).toBeVisible();
+			await expect(page.getByRole('button', { name: /Download package/i })).toBeVisible();
 			expect(
 				await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
 			).toBe(true);
@@ -101,7 +105,7 @@ test.describe.serial('public workflow snapshots', () => {
 			confirmation: { plan_digest: hostedPlan.plan_digest }
 		});
 		expect(refused.ok()).toBe(false);
-		expect((await errorBody(refused)).error.code).toBe('publication_unavailable');
+		expect((await errorBody(refused)).error.code).toBe('plan_stale');
 
 		const filePlan = await body<PrepareWorkflowPackageResponse>(
 			await bob.post('/api/v1/library/prepare', { document_json: documentJson, choices: {} })
