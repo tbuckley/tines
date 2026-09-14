@@ -139,10 +139,10 @@ input gets is read from the spec too: `max` above 1000 (or absent, i.e. the
 10 000 default) means free-form prose and a textarea, anything shorter a
 single-line field — never the input's key. The one remaining coupling to
 starter ids is the per-card icon, which falls back to a generic one for an id
-it does not know. Required inputs disable Create; nothing else is enforced
-client-side, because a client rule that blocks a submit the server would
-accept is worse than the 422 — a `maxlength` would make the server's cap
-unreachable from the UI and hide the error path.
+it does not know. Required inputs disable Create; no other declared starter-input
+constraint is enforced client-side, because a client rule that blocks a submit
+the server would accept is worse than the 422. Those fields therefore retain
+their server error paths.
 
 The conventions textarea is the dialog's own, and `initial_prompt` is sent
 **verbatim**: the server's fallback to `conventions_template` only fires when
@@ -158,14 +158,19 @@ across a switch so switching back restores them, and filtered to the selected
 starter's declared keys on submit, so a stale key never 422s.
 
 For a starter that declares `repo_url`, a pristine Name follows the repository
-basename and removes one terminal `.git`. An invalid or blank remote, or a
-switch to a starter without that input, clears only the automatic suggestion;
-switching back recomputes it from the retained URL. The first Name input — even
-clearing or retyping the suggestion — gives the user ownership until the dialog
-closes, so later URL and starter changes preserve it verbatim. This suggestion
-does not validate repositories or change submission rules: unrecognized remotes
-remain usable with a manual Name, and server name validation and collision
-errors stay authoritative.
+basename and removes one terminal `.git`. The suggestion is capped to the first
+200 JavaScript string code units without leaving a dangling high surrogate, so
+the chooser never generates a Name that the project API rejects (Tines/530).
+An invalid or blank remote, or a switch to a starter without that input, clears
+only the automatic suggestion; switching back recomputes it from the retained
+URL. The first Name input — even clearing or retyping the suggestion — gives the
+user ownership until the dialog closes, so later URL and starter changes
+preserve it verbatim. The shared Name control declares the same native
+`maxlength` for every starter and keeps a persistent “Maximum 200 characters.”
+hint. This supersedes server-only Name enforcement while leaving the server
+authoritative for direct calls. The suggestion does not validate repositories:
+unrecognized remotes remain usable with a manual Name, and collision errors
+retain their existing flow.
 
 "This creates:" is rendered client-side by `$lib/starter-preview.ts` using the
 server's exact variable set (`{ ...inputs, project, repo_name }`) — for the

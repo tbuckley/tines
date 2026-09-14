@@ -4,6 +4,7 @@ import {
 	LABEL_COLORS,
 	LABEL_NAME_MAX,
 	MODEL_TIERS,
+	PROJECT_NAME_MAX,
 	STATE_CATEGORIES,
 	PROMPT_MAX_BYTES,
 	SKILL_MAX_FILES,
@@ -379,7 +380,7 @@ export function validateLibraryV3Shape(value: unknown): asserts value is Portabl
 				projects: array(
 					shape({
 						id,
-						name: text(200, true),
+						name: text(PROJECT_NAME_MAX, true),
 						description: text(10000),
 						default_workflow: nullable(
 							discriminated('kind', {

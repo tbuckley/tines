@@ -60,6 +60,9 @@ export function actorLabel(actor: Actor): string {
 // ---------------------------------------------------------------------------
 // Projects
 
+/** Project names are measured as JavaScript string length (UTF-16 code units). */
+export const PROJECT_NAME_MAX = 200;
+
 export interface Project {
 	id: string;
 	name: string;
