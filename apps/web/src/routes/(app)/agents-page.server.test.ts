@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { Project } from '@tines/shared';
 import { createTestDb } from '$lib/server/api/test-db';
 import {
@@ -13,6 +13,13 @@ import {
 	USER
 } from '$lib/server/supervisor/test-fixtures';
 import { load } from './agents/+page.server';
+
+const loadStageStats = vi.hoisted(() => vi.fn());
+
+vi.mock('$lib/server/api/supervisor', async (importOriginal) => ({
+	...(await importOriginal<typeof import('$lib/server/api/supervisor')>()),
+	loadStageStats
+}));
 
 const project: Project = {
 	id: PROJECT,
@@ -67,9 +74,11 @@ function event(t: ReturnType<typeof fixture>, query = '') {
 
 describe('agents page loader', () => {
 	it.each(['', '?agents_view=spend'])(
-		'does not serialize weekly analytics for %s',
+		'does not compute or serialize weekly analytics for %s',
 		async (query) => {
+			loadStageStats.mockClear();
 			const result = (await load(event(fixture(), query)))!;
+			expect(loadStageStats).not.toHaveBeenCalled();
 			expect(result).not.toHaveProperty('stats');
 		}
 	);

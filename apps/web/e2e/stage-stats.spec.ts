@@ -10,7 +10,7 @@ import type {
 	StageStatsReport,
 	WorkflowResponse
 } from '@tines/shared';
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page, type Route } from '@playwright/test';
 import { WEEKLY } from './stage-stats-seed.mjs';
 import { ALICE } from './constants.mjs';
 import { apiClient, body, clickToOpen, gotoHydrated, runId, signIn } from './helpers';
@@ -18,8 +18,31 @@ import { apiClient, body, clickToOpen, gotoHydrated, runId, signIn } from './hel
 const projectName = `stage-stats-${runId}`;
 const otherProjectName = `stage-stats-other-${runId}`;
 let project: Project;
+let otherProject: Project;
 let workflow: WorkflowResponse;
 let reviewStateId: string;
+
+function deferred() {
+	let resolve!: () => void;
+	const promise = new Promise<void>((done) => (resolve = done));
+	return { promise, resolve };
+}
+
+async function fulfillLabeledStats(route: Route, label: string) {
+	const response = await route.fetch();
+	const report = (await response.json()) as StageStatsReport;
+	report.states[0]!.state_name = label;
+	await route.fulfill({ response, json: report });
+}
+
+async function settleClient(page: Page) {
+	await page.evaluate(
+		() =>
+			new Promise<void>((resolve) =>
+				requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+			)
+	);
+}
 
 async function openStateAnalysis(page: Page) {
 	if (new URL(page.url()).searchParams.get('agents_view') !== 'spend') {
@@ -59,7 +82,7 @@ test.beforeAll(async ({ playwright }) => {
 			default_workflow_id: workflow.id
 		})
 	);
-	const other = await body<Project>(
+	otherProject = await body<Project>(
 		await api.post('/api/v1/projects', {
 			name: otherProjectName,
 			default_workflow_id: workflow.id
@@ -95,7 +118,7 @@ test.beforeAll(async ({ playwright }) => {
 		}
 	};
 	await seedVisit(project.id, `Sent back ${runId}`, true);
-	await seedVisit(other.id, `Other visit ${runId}`, false);
+	await seedVisit(otherProject.id, `Other visit ${runId}`, false);
 	await request.dispose();
 });
 
@@ -127,6 +150,162 @@ test('loads state analysis only on open, caches a reopen, and remounts closed', 
 	expect(requests).toBe(1);
 	await openStateAnalysis(page);
 	await expect.poll(() => requests).toBe(2);
+});
+
+test('close and reopen rejects the earlier late failure in the same scope', async ({
+	context,
+	page
+}) => {
+	await signIn(context, ALICE.sessionToken);
+	const firstStarted = deferred();
+	const releaseFirst = deferred();
+	const firstSettled = deferred();
+	let requests = 0;
+	await page.route('**/api/v1/supervisor/stats?**', async (route) => {
+		requests++;
+		if (requests === 1) {
+			firstStarted.resolve();
+			await releaseFirst.promise;
+			await route.fulfill({
+				status: 500,
+				contentType: 'application/json',
+				body: JSON.stringify({ error: { code: 'internal_error', message: 'Late failure' } })
+			});
+			firstSettled.resolve();
+			return;
+		}
+		await fulfillLabeledStats(route, 'Current reopened report');
+	});
+	await gotoHydrated(page, `/agents?agents_view=spend&project=${project.id}`);
+	const summary = page.locator('summary').filter({ hasText: 'State analysis · Last 7 days' });
+	await summary.click();
+	await firstStarted.promise;
+	await summary.click();
+	await summary.click();
+	await expect(
+		page.getByRole('button', { name: 'Current reopened report', exact: true })
+	).toBeVisible();
+	releaseFirst.resolve();
+	await firstSettled.promise;
+	await settleClient(page);
+	await expect(
+		page.getByRole('button', { name: 'Current reopened report', exact: true })
+	).toBeVisible();
+	await expect(page.getByRole('alert')).toHaveCount(0);
+	expect(requests).toBe(2);
+});
+
+test('leaving Analysis during loading rejects the unmounted report after re-entry', async ({
+	context,
+	page
+}) => {
+	await signIn(context, ALICE.sessionToken);
+	const firstStarted = deferred();
+	const releaseFirst = deferred();
+	const firstSettled = deferred();
+	let requests = 0;
+	await page.route('**/api/v1/supervisor/stats?**', async (route) => {
+		requests++;
+		if (requests === 1) {
+			const response = await route.fetch();
+			const report = (await response.json()) as StageStatsReport;
+			report.states[0]!.state_name = 'Unmounted stale report';
+			firstStarted.resolve();
+			await releaseFirst.promise;
+			await route.fulfill({ response, json: report });
+			firstSettled.resolve();
+			return;
+		}
+		await fulfillLabeledStats(route, 'Current remounted report');
+	});
+	await gotoHydrated(page, `/agents?agents_view=spend&project=${project.id}`);
+	await page.locator('summary').filter({ hasText: 'State analysis · Last 7 days' }).click();
+	await firstStarted.promise;
+	await page.getByRole('button', { name: 'Now', exact: true }).click();
+	await expect(page.locator('#runners')).toBeVisible();
+	await page.getByRole('button', { name: 'Analysis', exact: true }).click();
+	await expect(page.getByText('State analysis · Last 7 days', { exact: true })).toBeVisible();
+	await page.locator('summary').filter({ hasText: 'State analysis · Last 7 days' }).click();
+	await expect(
+		page.getByRole('button', { name: 'Current remounted report', exact: true })
+	).toBeVisible();
+	releaseFirst.resolve();
+	await firstSettled.promise;
+	await settleClient(page);
+	await expect(
+		page.getByRole('button', { name: 'Current remounted report', exact: true })
+	).toBeVisible();
+	await expect(
+		page.getByRole('button', { name: 'Unmounted stale report', exact: true })
+	).toHaveCount(0);
+	expect(requests).toBe(2);
+});
+
+test('project races keep B after A to B and A after A to B to A', async ({ context, page }) => {
+	await signIn(context, ALICE.sessionToken);
+	const firstAStarted = deferred();
+	const releaseFirstA = deferred();
+	const firstASettled = deferred();
+	const secondAStarted = deferred();
+	const releaseSecondA = deferred();
+	const secondASettled = deferred();
+	const secondBStarted = deferred();
+	const releaseSecondB = deferred();
+	const secondBSettled = deferred();
+	let requests = 0;
+	await page.route('**/api/v1/supervisor/stats?**', async (route) => {
+		requests++;
+		if (requests === 1 || requests === 3 || requests === 4) {
+			const response = await route.fetch();
+			const report = (await response.json()) as StageStatsReport;
+			const controls =
+				requests === 1
+					? [firstAStarted, releaseFirstA, firstASettled, 'Stale first A report']
+					: requests === 3
+						? [secondAStarted, releaseSecondA, secondASettled, 'Stale second A report']
+						: [secondBStarted, releaseSecondB, secondBSettled, 'Stale second B report'];
+			const [started, release, settled, label] = controls as [
+				ReturnType<typeof deferred>,
+				ReturnType<typeof deferred>,
+				ReturnType<typeof deferred>,
+				string
+			];
+			report.states[0]!.state_name = label;
+			started.resolve();
+			await release.promise;
+			await route.fulfill({ response, json: report });
+			settled.resolve();
+			return;
+		}
+		await fulfillLabeledStats(route, requests === 2 ? 'Current B report' : 'Current A report');
+	});
+	await gotoHydrated(page, `/agents?agents_view=spend&project=${project.id}`);
+	await page.locator('summary').filter({ hasText: 'State analysis · Last 7 days' }).click();
+	await firstAStarted.promise;
+	await page.getByLabel('State project').selectOption(otherProject.id);
+	await expect(page.getByRole('button', { name: 'Current B report', exact: true })).toBeVisible();
+	releaseFirstA.resolve();
+	await firstASettled.promise;
+	await settleClient(page);
+	await expect(page.getByRole('button', { name: 'Current B report', exact: true })).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Stale first A report', exact: true })).toHaveCount(
+		0
+	);
+
+	await page.getByLabel('State project').selectOption(project.id);
+	await secondAStarted.promise;
+	await page.getByLabel('State project').selectOption(otherProject.id);
+	await secondBStarted.promise;
+	await page.getByLabel('State project').selectOption(project.id);
+	await expect(page.getByRole('button', { name: 'Current A report', exact: true })).toBeVisible();
+	releaseSecondB.resolve();
+	await secondBSettled.promise;
+	releaseSecondA.resolve();
+	await secondASettled.promise;
+	await settleClient(page);
+	await expect(page.getByRole('button', { name: 'Current A report', exact: true })).toBeVisible();
+	await expect(page.getByRole('button', { name: /^Stale second [AB] report$/ })).toHaveCount(0);
+	expect(requests).toBe(5);
 });
 
 test('keeps Spend usable when state analysis fails and retries the same scope', async ({
@@ -322,6 +501,60 @@ for (const width of [1440, 390])
 			style: 'header.sticky,nav.fixed { visibility: hidden !important; }'
 		});
 	});
+
+test('change control links leave Analysis for the intended Now controls with filters intact', async ({
+	context,
+	page
+}) => {
+	await signIn(context, WEEKLY.sessionToken);
+	const source = `/agents?agents_view=spend&project=${WEEKLY.projectId}&spend_project=all&spend_window=30d&runs_state=ws_review`;
+	const reopen = async () => {
+		await gotoHydrated(page, source);
+		await openStateAnalysis(page);
+		return page.getByRole('region', { name: 'This week' });
+	};
+	const expectNowDestination = async (hash: '#quota-policy' | '#runners' | '#routing') => {
+		await expect(page).toHaveURL(new RegExp(`${hash.slice(1)}$`));
+		const url = new URL(page.url());
+		expect(url.searchParams.get('agents_view')).toBeNull();
+		expect(url.searchParams.get('project')).toBe(WEEKLY.projectId);
+		expect(url.searchParams.get('spend_project')).toBe('all');
+		expect(url.searchParams.get('spend_window')).toBe('30d');
+		expect(url.searchParams.get('runs_state')).toBe('ws_review');
+		expect(url.hash).toBe(hash);
+		await expect(page.getByRole('heading', { name: 'Spend' })).toBeHidden();
+		await expect(page.locator(hash)).toBeInViewport();
+	};
+
+	let week = await reopen();
+	await week.getByRole('button', { name: /^\d+ changes this week$/ }).click();
+	let changes = page.getByRole('dialog', { name: 'Latest changes in this window' });
+	await changes.locator('summary').filter({ hasText: 'Quota' }).click();
+	await changes.getByRole('link', { name: 'Open supervisor controls' }).click();
+	await expectNowDestination('#quota-policy');
+
+	week = await reopen();
+	await week
+		.locator('tr.stage-row')
+		.filter({ hasText: 'Research' })
+		.getByRole('button', { name: /^\d+ changes?$/ })
+		.click();
+	changes = week.locator('#stage-detail-ws_research');
+	await changes.locator('summary').filter({ hasText: 'Runner cap' }).click();
+	await changes.getByRole('link', { name: 'View runner caps' }).click();
+	await expectNowDestination('#runners');
+
+	week = await reopen();
+	await week
+		.locator('tr.stage-row')
+		.filter({ hasText: 'Discovering' })
+		.getByRole('button', { name: /^\d+ changes?$/ })
+		.click();
+	changes = week.locator('#stage-detail-ws_discovering');
+	await changes.locator('summary').filter({ hasText: 'Routing rule' }).click();
+	await changes.getByRole('link', { name: 'View routing rules' }).click();
+	await expectNowDestination('#routing');
+});
 
 test('late evidence cannot replace another stage and keyboard focus stays in the viewer', async ({
 	context,
