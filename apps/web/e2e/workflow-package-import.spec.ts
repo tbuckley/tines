@@ -65,6 +65,14 @@ async function expectReceiptLanding(page: Page) {
 		{ exact: true }
 	);
 	await expect(heading).toBeFocused();
+	await expect
+		.poll(() =>
+			heading.evaluate((element) => {
+				const style = getComputedStyle(element);
+				return style.boxShadow !== 'none' || style.outlineStyle !== 'none';
+			})
+		)
+		.toBe(true);
 	await expect(explanation).toBeVisible();
 	await expect
 		.poll(async () => {

@@ -8,7 +8,7 @@
 	<div>
 		<h2
 			id="receipt-title"
-			class="flex scroll-mt-20 items-center gap-2 text-xl font-semibold"
+			class="focus:ring-ring/50 flex w-fit scroll-mt-20 items-center gap-2 rounded-sm text-xl font-semibold focus:ring-[3px] focus:outline-none"
 			tabindex="-1"
 			data-package-receipt-title
 		>
