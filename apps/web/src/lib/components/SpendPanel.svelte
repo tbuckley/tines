@@ -1,5 +1,11 @@
 <script lang="ts">
-	import { usageCostLabel, ApiError, type Project, type UsageReport } from '@tines/shared';
+	import {
+		usageCostLabel,
+		ApiError,
+		type Project,
+		type UsageReport,
+		type Workflow
+	} from '@tines/shared';
 	import { untrack } from 'svelte';
 	import { page } from '$app/state';
 	import { api } from '$lib/api';
@@ -12,15 +18,18 @@
 	import { sortUsageGroups } from '$lib/usage-view';
 	import UsageCostCell from './UsageCostCell.svelte';
 	import SpendEvidence from './SpendEvidence.svelte';
+	import SpendCohort from './SpendCohort.svelte';
 
 	let {
 		projects,
 		archivedProjects,
+		workflows,
 		focusId,
 		navigate
 	}: {
 		projects: Project[];
 		archivedProjects: Project[];
+		workflows: Workflow[];
 		focusId: string | null;
 		navigate: (changes: Record<string, string | null>, replace?: boolean) => Promise<void>;
 	} = $props();
@@ -96,13 +105,20 @@
 				'spend_from',
 				'spend_to',
 				'spend_workflow',
-				'spend_view'
+				'spend_view',
+				'spend_cohort_workflow',
+				'spend_done_states'
 			].includes(key)
 		)
 			? clearSpendEvidence(values)
 			: values;
 		void navigate(changes, replace);
 		expanded = new Set();
+	}
+	async function closeCohort() {
+		await navigate(clearSpendEvidence({ spend_mode: 'period' }));
+		expanded = new Set();
+		requestAnimationFrame(() => document.getElementById('completed-issues-button')?.focus());
 	}
 
 	function errorMessage(value: unknown) {
@@ -280,6 +296,29 @@
 		>
 	</div>
 
+	{#if selection.mode === 'period'}<button
+			id="completed-issues-button"
+			type="button"
+			onclick={() => update({ spend_mode: 'cohort' })}>Completed issues</button
+		>{:else}<SpendCohort
+			{workflows}
+			project={selection.project}
+			window={selection.window}
+			from={selection.from}
+			to={selection.to}
+			workflow={selection.cohortWorkflow}
+			selected={selection.doneStates}
+			scope={selection.scope}
+			kind={selection.kind}
+			member={selection.member}
+			population={selection.population}
+			sort={selection.evidenceSort}
+			direction={selection.evidenceDirection}
+			cursor={selection.cursor}
+			onnavigate={(changes) => update(changes)}
+			onclose={closeCohort}
+		/>{/if}
+
 	<div aria-live="polite" aria-busy={status === 'loading' || status === 'refreshing'}>
 		{#if status === 'invalid'}<p class="error">Enter both From and To, then Apply.</p>
 		{:else if status === 'loading'}<p>Loading spend…</p>
@@ -448,7 +487,7 @@
 					? ` and counted before ${report.pending.unapplied_filters.join('/')} filters`
 					: ''}.
 			</p>
-			{#if selection.scope}{#key `${selection.scope}:${selection.kind}:${selection.member}:${selection.population}:${selection.evidenceSort}:${selection.evidenceDirection}:${selection.cursor}`}
+			{#if selection.mode === 'period' && selection.scope}{#key `${selection.scope}:${selection.kind}:${selection.member}:${selection.population}:${selection.evidenceSort}:${selection.evidenceDirection}:${selection.cursor}`}
 					<SpendEvidence
 						scope={selection.scope}
 						kind={selection.kind}

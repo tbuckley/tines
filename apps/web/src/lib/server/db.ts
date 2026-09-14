@@ -279,6 +279,8 @@ export interface RunnerTable {
 	runner_token_hash: string | null;
 	/** Current local-daemon boot admitted to mutate this runner through poll. */
 	daemon_instance_id: string | null;
+	/** JSON exact-model support asserted by the admitted daemon boot. */
+	effort_capabilities: string | null;
 	/** Immediately preceding daemon boot, rejected if it polls again. */
 	fenced_instance_id: string | null;
 	last_seen_at: number | null;
@@ -317,6 +319,11 @@ export interface AgentRunTable {
 	tier: string;
 	/** Resolved at launch; NULL when the harness cannot vary its model. */
 	model: string | null;
+	requested_effort: string | null;
+	resolved_effort: string | null;
+	effort_source: string | null;
+	effort_application_status: string | null;
+	effort_application_evidence: string | null;
 	/** JSON usage record. */
 	usage: string | null;
 	state_id_at_start: string;

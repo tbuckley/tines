@@ -6,15 +6,21 @@ Every report now returns signed, owner-bound scopes for its project total, match
 
 `mode=issue&issue=<id>` and `tines usage --issue Tines/123` report **Lifetime through now** across every retained direct attempt, stage and retry. Child and dependency runs are never traversed. Attempts created at the cutoff are absent; attempts ending at or after it are pending, and the pending projection cannot expose facts learned later. A retained raw issue ID remains readable when its owned runs survive but current metadata does not. A measured zero is `$0.00`, absent dollars are Unknown, and an issue without attempts says **No agent runs**.
 
+`mode=cohort&workflow=<id>` and `tines usage --cohort --workflow Engineering` report distinct issues with a recorded entry into a selected terminal state in `[from,to)`. Omission selects every actual done state; repeat `done_state`/`--done-state` to select exact states. Membership uses the latest qualifying entry per issue, while accounting includes every retained direct attempt created before `to`, including pre-window research, retries, pending attempts, and zero-run issues. Known-dollar and attempt means divide by all cohort issues. A fully priced issue has at least one finalized attempt, all finalized attempts priced, and no pending attempt. Reopening is observed separately through the signed `observed_through` cutoff. Cohort costs are not additive to period spend.
+
 ```sh
 tines usage --issue Tines/123
+tines usage --cohort --workflow Engineering --window 7d
+tines usage --cohort --workflow wf_ID --from 2026-09-01 --to 2026-09-08 --done-state wfs_CLOSED
 tines usage --window 7d --by workflow --json
 tines usage --scope "$SCOPE" --evidence issues --sort cost --direction desc
 tines usage --scope "$SCOPE" --evidence runs --member iss_123 --all-pages --json
 tines usage --scope "$SCOPE" --evidence runs --population pending
 ```
 
-Period, issue-lifetime, and scope-replay inputs are mutually exclusive. Evidence-only options require `--scope --evidence`; invalid combinations fail before name resolution or an API request. Completion-event cohorts and all-issue means are intentionally not inferred from current state; they are a separate future mode.
+Period, issue-lifetime, cohort, and scope-replay inputs are mutually exclusive. Evidence-only options require `--scope --evidence`; invalid combinations fail before name resolution or an API request. Completion-event cohorts and all-issue means are intentionally not inferred from current state.
+
+Use the signed scope printed by a cohort report to reproduce every denominator and numerator: `tines usage --scope TOKEN --evidence issues --all-pages --json` lists all members including no-run issues, `--evidence runs --member iss_ID` lists finalized cutoff attempts, `--population pending` lists attempts still pending at the cutoff without later facts, and `--evidence entries` audits retained qualifying, chosen, reopening, excluded, and unclassifiable entry facts. Retained history can be partial or unavailable; current state is never substituted. Direct costs exclude child and dependency runs, may include attempts before the completion window, and reflect recorded provider/list prices rather than an invoice.
 
 The Now view is operational and does not depend on usage accumulating. Spend keeps its project scope independent from the global project focus and records project, workflow, breakdown, period, Custom bounds, and sort in the URL, so reload and browser Back/Forward restore the same report selection. Changing project resets workflow narrowing to All; changing sort only reorders the current groups. Custom ranges require both From and exclusive To before a request is made.
 

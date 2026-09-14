@@ -46,12 +46,18 @@ tines issues comment <project>/<number> - <<'EOF'    # body from stdin; @file al
 EOF
 tines events list --issue <project>/<number>
 tines events list --since 2026-09-01T00:00:00Z --until 2026-09-08T00:00:00Z --state Engineering/Review
+tines events list --project Tines --all-pages --max-items 20000 --json
 tines supervisor stats --window 7d --project Tines
 ```
 
 Issues are addressed as `<project>/<number>`; schedules as `<project>/<name>`; workflow
 states as `<workflow>/<state>`. Every `list` command returns one page — add `--all-pages`
-for the whole list — and every command takes `--json` for machine-readable output.
+for the whole list — and every command takes `--json` for machine-readable output. Complete
+list walks have a default 10,000-item safety ceiling. Use `--max-items <n>` with
+`--all-pages` to choose a different positive finite bound; exceeding it fails without
+printing a partial result. `--limit` remains the per-request page size. A larger bound keeps
+more output in memory and makes more requests, so increase it deliberately or narrow the
+list's filters.
 `tines <noun> --help` lists the rest: `workflows`, `context`, `journal`, `schedules`,
 `runners`, `runs`, `routing`, `supervisor`.
 

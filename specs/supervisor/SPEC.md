@@ -19,6 +19,7 @@ The architecture is **cloud brain, local hands**: the Cloudflare worker is the s
 - Pluggable, pick-one **quota policies** (global cap and per-state roster ship first) on top of always-on per-runner caps.
 - Always-on **daily budgets** — spend (USD) and/or token limits, globally and per runner — backed by a per-run usage ledger and hard per-run caps mapped to provider-native ceilings.
 - **Model tiers**: routing speaks `smartest` / `balanced` / `cheapest`; each runner resolves a tier to a concrete model, with built-in defaults per type and per-runner overrides to an exact model/config.
+- **Reasoning effort**: optional exact-model effort resolves above runner-tier effort, is capability-checked at save/dispatch/launch, and is recorded separately from application evidence. See [the effort routing decision](EFFORT_ROUTING_2026-09-13.md).
 - A **run** record per attempt with status, resolved tier/model, usage, a captured log (a 256 KB tail for live viewing, the complete log in R2), and a provider session link — visible in the web UI and CLI.
 - **Ephemeral per-run API keys** so every agent action is attributable to a specific run and dies with it.
 - An attempt budget so a failing issue **parks** instead of burning quota forever.
