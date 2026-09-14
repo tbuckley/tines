@@ -321,6 +321,7 @@ describe('assertRunKeyAllowed', () => {
 	it('403s a run key on every control-plane surface, naming the proposal convention', () => {
 		for (const [path, method] of [
 			['/api/v1/runners', 'POST'],
+			['/api/v1/runners/rnr_1', 'PATCH'],
 			['/api/v1/routing-rules/rul_1', 'PATCH'],
 			['/api/v1/supervisor/settings', 'PUT'],
 			['/api/v1/issues/iss_1/resume', 'POST'],

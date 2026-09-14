@@ -39,7 +39,12 @@ import {
 	type ActiveCounts,
 	type TargetVerdictResult
 } from '$lib/server/supervisor/logic';
-import { computeStageStats, type StatsEvent } from '$lib/server/supervisor/stats';
+import {
+	computePreparedStageStats,
+	evaluatePreparedState,
+	prepareStageStats,
+	type StatsEvent
+} from '$lib/server/supervisor/stats';
 import { ApiFail, requireString, runAtomic, type ActorContext } from './core';
 import { applyEventWindow, eventInsert, eventQuery, serializeEvent } from './events';
 import type { DispatchEffects } from '$lib/server/dispatch-effects';
@@ -658,7 +663,13 @@ export async function loadStageStats(
 	db: Kysely<Database>,
 	userId: string,
 	query: StatsQuery = {},
-	now: number = Date.now()
+	now: number = Date.now(),
+	observer?: {
+		evaluatedState?: (stateId: string) => void;
+		phase?: (name: 'read' | 'prepare' | 'base' | 'markers', durationMs: number) => void;
+		/** Local retained profiler: reproduce the pre-Tines/518 marker loop. */
+		profileRepeatPreparation?: boolean;
+	}
 ): Promise<StageStatsReport> {
 	const windowMs = parseStatsWindow(query.window);
 	if (query.compare !== undefined && query.compare !== 'previous' && query.compare !== 'none') {
@@ -672,6 +683,7 @@ export async function loadStageStats(
 	// which keeps the query plan (and the cache) identical.
 	const scanFrom = now - 2 * windowMs;
 
+	const readStarted = performance.now();
 	const [stateRows, eventRows, runRows, outcomeRow, markerRows] = await Promise.all([
 		db
 			.selectFrom('workflow_state as st')
@@ -708,7 +720,7 @@ export async function loadStageStats(
 				]);
 			q = applyEventWindow(q, { since: scanFrom, until: now, type: [...STATS_EVENT_TYPES] });
 			if (project) q = q.where('event.project_id', '=', project.id);
-			return q.orderBy('event.created_at').orderBy('event.id').execute();
+			return q.execute();
 		})(),
 		(() => {
 			let q = db
@@ -763,8 +775,7 @@ export async function loadStageStats(
 					'routing_rule.created',
 					'routing_rule.updated',
 					'routing_rule.deleted'
-				])
-				.orderBy('created_at');
+				]);
 			if (project) {
 				q = q.where((eb) =>
 					eb.or([eb('project_id', 'is', null), eb('project_id', '=', project.id)])
@@ -773,6 +784,9 @@ export async function loadStageStats(
 			return q.execute();
 		})()
 	]);
+	observer?.phase?.('read', performance.now() - readStarted);
+	eventRows.sort((a, b) => a.created_at - b.created_at || a.id.localeCompare(b.id));
+	markerRows.sort((a, b) => a.created_at - b.created_at || a.id.localeCompare(b.id));
 
 	const events: StatsEvent[] = [];
 	const advancedByKey = new Set<string>();
@@ -841,7 +855,12 @@ export async function loadStageStats(
 		outcomeRecordedSince: outcomeRow?.since ?? null,
 		project
 	};
-	const report = computeStageStats(baseInput);
+	const prepareStarted = performance.now();
+	const prepared = prepareStageStats(baseInput);
+	observer?.phase?.('prepare', performance.now() - prepareStarted);
+	const baseStarted = performance.now();
+	const report = computePreparedStageStats(prepared, { now, windowMs, compare });
+	observer?.phase?.('base', performance.now() - baseStarted);
 
 	type MarkerSeed = Omit<ChangeMarker, 'effects'> & { actor: string; ruleScope: string | null };
 	const seeds: MarkerSeed[] = [];
@@ -909,8 +928,10 @@ export async function loadStageStats(
 			actor
 		});
 	}
-	const figures = (subReport: StageStatsReport, stateId: string) => {
-		const row = subReport.states.find((stage) => stage.state_id === stateId)?.current;
+	const figures = (stateId: string, since: number, until: number) => {
+		observer?.evaluatedState?.(stateId);
+		const index = observer?.profileRepeatPreparation ? prepareStageStats(baseInput) : prepared;
+		const row = evaluatePreparedState(index, stateId, since, until);
 		return row
 			? {
 					visits: row.visits,
@@ -920,33 +941,25 @@ export async function loadStageStats(
 				}
 			: null;
 	};
+	const markersStarted = performance.now();
 	report.markers = seeds
 		.slice(-20)
 		.reverse()
 		.map(({ ruleScope: _ruleScope, ...seed }) => {
-			const before = computeStageStats({
-				...baseInput,
-				now: seed.at,
-				windowMs: Math.max(1, seed.at - report.window.since),
-				compare: false
-			});
-			const after = computeStageStats({
-				...baseInput,
-				now,
-				windowMs: Math.max(1, now - seed.at),
-				compare: false
-			});
+			const beforeSince = seed.at - Math.max(1, seed.at - report.window.since);
+			const afterSince = now - Math.max(1, now - seed.at);
 			const affected =
 				seed.state_ids.length > 0 ? seed.state_ids : report.states.map((stage) => stage.state_id);
 			return {
 				...seed,
 				effects: affected.map((stateId) => ({
 					state_id: stateId,
-					before: figures(before, stateId),
-					after: figures(after, stateId)
+					before: figures(stateId, beforeSince, seed.at),
+					after: figures(stateId, afterSince, now)
 				}))
 			};
 		});
+	observer?.phase?.('markers', performance.now() - markersStarted);
 	return report;
 }
 
@@ -998,7 +1011,9 @@ export async function loadSentBackDrilldown(
 		query.state
 	);
 	if (project) transitions = transitions.where('event.project_id', '=', project.id);
-	const events = (await transitions.orderBy('event.created_at desc').execute()).map(serializeEvent);
+	const events = (await transitions.execute())
+		.map(serializeEvent)
+		.sort((a, b) => b.created_at - a.created_at || b.id.localeCompare(a.id));
 	const sent = events.filter((event) => {
 		const target = stateById.get(String(event.payload.to_state_id ?? ''));
 		return (
@@ -1011,14 +1026,29 @@ export async function loadSentBackDrilldown(
 	const issueIds = [
 		...new Set(sent.map((event) => event.issue_id).filter((id): id is string => id !== null))
 	];
-	const comments = issueIds.length
-		? await db
-				.selectFrom('comment')
-				.selectAll()
-				.where('issue_id', 'in', issueIds)
-				.orderBy('created_at')
-				.execute()
-		: [];
+	const latestTransitionAt = sent.reduce((latest, event) => Math.max(latest, event.created_at), 0);
+	const commentChunks: string[][] = [];
+	for (let i = 0; i < issueIds.length; i += 90) commentChunks.push(issueIds.slice(i, i + 90));
+	const comments = (
+		await Promise.all(
+			commentChunks.map((ids) =>
+				db
+					.selectFrom('comment')
+					.select(['id', 'issue_id', 'body', 'created_at', 'actor_api_key_id', 'actor_user_id'])
+					.where('issue_id', 'in', ids)
+					.where('created_at', '<=', latestTransitionAt)
+					.execute()
+			)
+		)
+	)
+		.flat()
+		.sort((a, b) => a.created_at - b.created_at || a.id.localeCompare(b.id));
+	const commentsByIssue = new Map<string, typeof comments>();
+	for (const comment of comments) {
+		const list = commentsByIssue.get(comment.issue_id);
+		if (list) list.push(comment);
+		else commentsByIssue.set(comment.issue_id, [comment]);
+	}
 	const prompt = await db
 		.selectFrom('context_item')
 		.select(['id', 'name', 'version'])
@@ -1029,14 +1059,35 @@ export async function loadSentBackDrilldown(
 		.executeTakeFirst();
 	// Resolve prompt generations from their lifecycle events, not from the
 	// currently-live row: delete/recreate gives the replacement a new id.
-	const promptEvents = await db
-		.selectFrom('event')
-		.select(['type', 'payload', 'created_at'])
-		.where('user_id', '=', userId)
-		.where('type', 'in', ['context.created', 'context.updated', 'context.deleted'])
-		.orderBy('created_at')
-		.orderBy('id')
-		.execute();
+	const relevantPromptIds = db
+		.selectFrom('event as created')
+		.select(sql<string>`json_extract(created.payload, '$.context_id')`.as('context_id'))
+		.where('created.user_id', '=', userId)
+		.where('created.type', '=', 'context.created')
+		.where(sql<string>`json_extract(created.payload, '$.kind')`, '=', 'prompt')
+		.where(sql<string>`json_extract(created.payload, '$.name')`, '=', 'instructions')
+		.where(
+			sql<string>`CASE WHEN COALESCE(json_type(created.payload, '$.scope_to'), 'null') <> 'null'
+				THEN json_extract(created.payload, '$.scope_to.workflow_state_id')
+				ELSE json_extract(created.payload, '$.scope.workflow_state_id') END`,
+			'=',
+			state.id
+		);
+	const promptEvents = (
+		issueIds.length === 0
+			? []
+			: await db
+					.selectFrom('event')
+					.select(['id', 'type', 'payload', 'created_at'])
+					.where('user_id', '=', userId)
+					.where('type', 'in', ['context.created', 'context.updated', 'context.deleted'])
+					.where((eb) => {
+						const lifecycleId = sql<string>`json_extract(event.payload, '$.context_id')`;
+						const relevant = eb(lifecycleId, 'in', relevantPromptIds);
+						return prompt ? eb.or([relevant, eb(lifecycleId, '=', prompt.id)]) : relevant;
+					})
+					.execute()
+	).sort((a, b) => a.created_at - b.created_at || a.id.localeCompare(b.id));
 	type PromptGeneration = {
 		id: string;
 		created_at: number;
@@ -1119,8 +1170,8 @@ export async function loadSentBackDrilldown(
 			: null,
 		items: sent.flatMap((event) => {
 			if (!event.issue_id || !event.issue_ref) return [];
-			const candidates = comments.filter(
-				(comment) => comment.issue_id === event.issue_id && comment.created_at <= event.created_at
+			const candidates = (commentsByIssue.get(event.issue_id) ?? []).filter(
+				(comment) => comment.created_at <= event.created_at
 			);
 			const authored = candidates.filter((comment) =>
 				event.actor.api_key_id

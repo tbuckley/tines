@@ -70,6 +70,45 @@ async function approve(page: Page) {
 	await page.getByRole('checkbox', { name: /I confirm exact plan/ }).check();
 }
 
+async function expectReceiptLanding(page: Page) {
+	const heading = page.getByRole('heading', { name: 'Package installed', exact: true });
+	const explanation = page.getByText(
+		'Created as an independent copy. Selected schedules are paused with no runs or issues created. No project default changed, and installation did not launch work.',
+		{ exact: true }
+	);
+	await expect(heading).toBeFocused();
+	await expect
+		.poll(() =>
+			heading.evaluate((element) => {
+				const style = getComputedStyle(element);
+				return style.boxShadow !== 'none' || style.outlineStyle !== 'none';
+			})
+		)
+		.toBe(true);
+	await expect(explanation).toBeVisible();
+	await expect
+		.poll(async () => {
+			const [headingBox, headerBox] = await Promise.all([
+				heading.boundingBox(),
+				page.locator('header').boundingBox()
+			]);
+			return headingBox && headerBox ? headingBox.y - (headerBox.y + headerBox.height) : -1;
+		})
+		.toBeGreaterThanOrEqual(0);
+	await expect
+		.poll(async () => {
+			const [explanationBox, navigationBox, viewportHeight] = await Promise.all([
+				explanation.boundingBox(),
+				page.locator('nav[aria-label="Primary"]').boundingBox(),
+				page.evaluate(() => window.innerHeight)
+			]);
+			return explanationBox
+				? (navigationBox?.y ?? viewportHeight) - (explanationBox.y + explanationBox.height)
+				: -1;
+		})
+		.toBeGreaterThanOrEqual(0);
+}
+
 function definitionValue(article: Locator, term: string) {
 	return article
 		.locator('dt')
@@ -359,13 +398,11 @@ test('reviews, confirms and installs an independent project-free package through
 	await page.keyboard.press('Space');
 	await expect(freshConfirm).toBeChecked();
 	await page.getByRole('button', { name: 'Install package' }).click();
-	await expect(page.locator('[data-package-receipt]')).toBeFocused();
-	await expect(page.getByText('no runs or issues created', { exact: false })).toBeVisible();
-	await expect(page.getByText('No project default changed', { exact: false })).toBeVisible();
-	await expect(page.getByRole('link', { name: 'Open workflow' }).first()).toHaveAttribute(
-		'href',
-		/^\/workflows\//
-	);
+	await expectReceiptLanding(page);
+	const firstObjectLink = page.getByRole('link', { name: 'Open workflow' }).first();
+	await expect(firstObjectLink).toHaveAttribute('href', /^\/workflows\//);
+	await page.keyboard.press('Tab');
+	await expect(firstObjectLink).toBeFocused();
 	expect(installRequests).toHaveLength(1);
 
 	const api = apiClient(request, BOB.apiKey);
@@ -432,6 +469,7 @@ test('identifies main and dependency by ID in dependency-first files before conf
 test('retries the exact plan after reload and real 404, then recovers a lost committed response', async ({
 	page
 }) => {
+	await page.setViewportSize(PHONE);
 	const requests: unknown[] = [];
 	let committed: WorkflowPackageReceipt | undefined;
 	let prepares = 0;
@@ -489,7 +527,7 @@ test('retries the exact plan after reload and real 404, then recovers a lost com
 	expect(committed?.id).toBe(saved.planId);
 	await page.reload({ waitUntil: 'networkidle' });
 	await page.getByRole('button', { name: 'Check result' }).click();
-	await expect(page.locator('[data-package-receipt]')).toBeFocused();
+	await expectReceiptLanding(page);
 	expect(prepares).toBe(1);
 	expect(d1(`SELECT id FROM library_install WHERE id=${sqlLiteral(saved.planId)}`)).toEqual([
 		{ id: saved.planId }
@@ -592,7 +630,7 @@ test('preserves a committed recovery across wrong, invalid and legacy files', as
 	expect(await savedRecovery()).toBe(saved);
 	await page.reload({ waitUntil: 'networkidle' });
 	await page.getByRole('button', { name: 'Check result' }).click();
-	await expect(page.locator('[data-package-receipt]')).toBeFocused();
+	await expect(page.getByRole('heading', { name: 'Package installed', exact: true })).toBeFocused();
 	expect(prepares).toBe(1);
 	expect(await savedRecovery()).toBeNull();
 	expect(d1(`SELECT id FROM library_install WHERE id=${sqlLiteral(committed!.id)}`)).toEqual([
@@ -658,7 +696,7 @@ test('rejects an expired signed plan and requires fresh preparation and confirma
 	await expect(page.getByRole('button', { name: 'Install package' })).toBeDisabled();
 	await approve(page);
 	await page.getByRole('button', { name: 'Install package' }).click();
-	await expect(page.locator('[data-package-receipt]')).toBeFocused();
+	await expect(page.getByRole('heading', { name: 'Package installed', exact: true })).toBeFocused();
 });
 
 test('a late native D1 failure rolls back every allocated row and permits the same confirmed plan retry', async ({
@@ -694,7 +732,7 @@ test('a late native D1 failure rolls back every allocated row and permits the sa
 		d1('DROP TRIGGER IF EXISTS browser_install_failure');
 	}
 	await page.getByRole('button', { name: 'Install package' }).click();
-	await expect(page.locator('[data-package-receipt]')).toBeFocused();
+	await expect(page.getByRole('heading', { name: 'Package installed', exact: true })).toBeFocused();
 	expect(attempts).toHaveLength(2);
 	expect(attempts[1]).toEqual(attempts[0]);
 	expect(d1(`SELECT id FROM library_install WHERE id=${sqlLiteral(plan.plan_id)}`)).toEqual([
@@ -737,7 +775,7 @@ test('installs selected schedules paused into two independent destination projec
 	request
 }) => {
 	const api = apiClient(request, BOB.apiKey);
-	for (const project of projects) {
+	for (const [projectIndex, project] of projects.entries()) {
 		const beforeIssues = await body<{ items: unknown[] }>(
 			await api.get(`/api/v1/issues?project=${project.id}`)
 		);
@@ -748,7 +786,7 @@ test('installs selected schedules paused into two independent destination projec
 		expect(beforeSchedules.items).toEqual([]);
 		expect(project.default_workflow_id).toBeNull();
 
-		await page.setViewportSize(PHONE);
+		await page.setViewportSize(projectIndex === 0 ? PHONE : DESKTOP);
 		await gotoHydrated(page, '/workflows/import');
 		await page.getByLabel('Workflow package file').setInputFiles(packagePath);
 		await page.getByLabel('Filing label').selectOption({ label: `import-label-${runId}` });
@@ -761,7 +799,7 @@ test('installs selected schedules paused into two independent destination projec
 			await checkbox.check();
 		await page.getByRole('checkbox', { name: /I confirm exact plan/ }).check();
 		await page.getByRole('button', { name: 'Install package' }).click();
-		await expect(page.locator('[data-package-receipt]')).toBeFocused();
+		await expectReceiptLanding(page);
 		await expect(page.getByText('paused', { exact: false })).toBeVisible();
 
 		const afterIssues = await body<{ items: unknown[] }>(

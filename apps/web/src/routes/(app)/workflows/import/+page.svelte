@@ -114,6 +114,13 @@
 		await tick();
 		alertEl?.focus();
 	}
+	async function revealReceipt(): Promise<void> {
+		await tick();
+		const heading = document.querySelector<HTMLElement>('[data-package-receipt-title]');
+		if (!heading) return;
+		heading.focus({ preventScroll: true });
+		heading.scrollIntoView({ block: 'start', inline: 'nearest', behavior: 'instant' });
+	}
 	function describe(err: unknown, fallback: string) {
 		if (err instanceof ApiError) {
 			errorCode = err.code;
@@ -258,8 +265,7 @@
 			});
 			clearRecovery();
 			stage = 'receipt';
-			await tick();
-			document.querySelector<HTMLElement>('[data-package-receipt]')?.focus();
+			await revealReceipt();
 		} catch (err) {
 			if (
 				err instanceof ApiNetworkError ||
@@ -307,8 +313,7 @@
 			receipt = await api.getWorkflowPackageReceipt(recovery.planId);
 			clearRecovery();
 			stage = 'receipt';
-			await tick();
-			document.querySelector<HTMLElement>('[data-package-receipt]')?.focus();
+			await revealReceipt();
 		} catch (err) {
 			if (err instanceof ApiError && err.status === 404)
 				error =

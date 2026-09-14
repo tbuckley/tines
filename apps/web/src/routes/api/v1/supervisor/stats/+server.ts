@@ -12,11 +12,23 @@ import type { RequestHandler } from './$types';
 export const GET: RequestHandler = api(async (event) => {
 	const { db, actor } = await apiContext(event);
 	const url = event.url;
-	return json(
-		await loadStageStats(db, actor.userId, {
-			window: url.searchParams.get('window') ?? undefined,
-			compare: (url.searchParams.get('compare') as 'previous' | 'none' | null) ?? undefined,
-			project: url.searchParams.get('project') ?? undefined
-		})
+	const phases: string[] = [];
+	const response = json(
+		await loadStageStats(
+			db,
+			actor.userId,
+			{
+				window: url.searchParams.get('window') ?? undefined,
+				compare: (url.searchParams.get('compare') as 'previous' | 'none' | null) ?? undefined,
+				project: url.searchParams.get('project') ?? undefined
+			},
+			Date.now(),
+			{
+				phase: (name, durationMs) => phases.push(`stats_${name};dur=${durationMs.toFixed(1)}`),
+				profileRepeatPreparation: event.platform?.env.STATS_SCALE_REPEAT_PREPARATION === '1'
+			}
+		)
 	);
+	response.headers.append('Server-Timing', phases.join(', '));
+	return response;
 });
