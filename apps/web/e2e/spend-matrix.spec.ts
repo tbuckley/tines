@@ -127,7 +127,7 @@ test.describe('Agents Spend selection matrix', () => {
 		};
 		await page.evaluate((state) => {
 			const bridge = (
-				window as Window & {
+				window as unknown as Window & {
 					__tinesE2EPageState: { setPageState: (value: typeof state) => void };
 				}
 			).__tinesE2EPageState;
@@ -136,7 +136,7 @@ test.describe('Agents Spend selection matrix', () => {
 		const readState = () =>
 			page.evaluate(() =>
 				(
-					window as Window & {
+					window as unknown as Window & {
 						__tinesE2EPageState: { readPageState: () => unknown };
 					}
 				).__tinesE2EPageState.readPageState()
