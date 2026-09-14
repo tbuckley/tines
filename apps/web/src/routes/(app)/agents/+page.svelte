@@ -2119,12 +2119,12 @@
 		initialFocus={focusCapField}
 	>
 		<form onsubmit={saveRunnerEdit} class="space-y-4">
-			<p class="text-sm">
+			<p class="min-w-0 text-sm [overflow-wrap:anywhere]">
 				<span class="font-medium">{editTarget.name}</span>
 				<span class="text-muted-foreground">({editTarget.type})</span>
 			</p>
-			<div class="grid grid-cols-3 gap-3">
-				<div class="space-y-1.5">
+			<div class="grid grid-cols-1 gap-3 sm:grid-cols-3">
+				<div class="min-w-0 space-y-1.5">
 					<label class="text-sm font-medium" for="edit-concurrent">
 						{editTarget.type === 'local' ? 'Requested concurrency' : 'Max concurrent'}
 					</label>
@@ -2152,7 +2152,7 @@
 						</p>
 					{/if}
 				</div>
-				<div class="space-y-1.5">
+				<div class="min-w-0 space-y-1.5">
 					<label class="text-sm font-medium" for="edit-minutes">Timeout (min)</label>
 					<Input
 						id="edit-minutes"
@@ -2163,7 +2163,7 @@
 						oninput={(e) => (editMaxMinutes = Number.parseInt(e.currentTarget.value, 10) || 30)}
 					/>
 				</div>
-				<div class="space-y-1.5">
+				<div class="min-w-0 space-y-1.5">
 					<label class="text-sm font-medium" for="edit-default-tier">Default tier</label>
 					<Select id="edit-default-tier" bind:value={editDefaultTier} disabled={!editTiersApply}>
 						{#each MODEL_TIERS as tier (tier)}
@@ -2188,73 +2188,96 @@
 					{#each MODEL_TIERS as tier (tier)}
 						{@const builtin = editTarget.tier_models?.[tier] ?? null}
 						{@const stale = isStaleTierOverride(builtin, editTierModels[tier]?.trim() || null)}
-						<div class="flex items-center gap-2">
-							<span class="text-muted-foreground w-20 text-right text-xs">{tier}</span>
-							<Input
-								class="flex-1"
-								placeholder={builtin ? `${builtin} (built-in)` : 'model id'}
-								aria-label={`Model override for ${tier}`}
-								value={editTierModels[tier] ?? ''}
-								oninput={(e) =>
-									(editTierModels = { ...editTierModels, [tier]: e.currentTarget.value })}
-							/>
-							{#if editTarget.type === 'claude_managed' || editTarget.type === 'local'}
-								{@const choices = effortChoices(editTarget, tier, editTierModels[tier] ?? '')}
-								<Select
-									class="w-28"
-									aria-label={`Effort for ${tier}`}
-									value={editTierEfforts[tier] ?? ''}
-									disabled={(editTierModels[tier] ?? '').trim() === '' || choices.length === 0}
-									onchange={(e) =>
-										(editTierEfforts = { ...editTierEfforts, [tier]: e.currentTarget.value })}
+						{@const showsEffort =
+							editTarget.type === 'claude_managed' || editTarget.type === 'local'}
+						<div class="min-w-0 space-y-1">
+							<div
+								class="grid min-w-0 grid-cols-1 gap-2 sm:items-end {showsEffort
+									? 'sm:grid-cols-[5rem_minmax(0,1fr)_7rem]'
+									: 'sm:grid-cols-[5rem_minmax(0,1fr)]'}"
+							>
+								<label
+									class="text-muted-foreground text-xs sm:text-right"
+									for={`edit-model-${tier}`}>{tier}</label
 								>
-									<option value="">effort —</option>
-									{#if editTierEfforts[tier] && !choices.includes(editTierEfforts[tier])}
-										<option value={editTierEfforts[tier]}
-											>{editTierEfforts[tier]} (incompatible)</option
+								<Input
+									id={`edit-model-${tier}`}
+									class="w-full min-w-0"
+									placeholder={builtin ? `${builtin} (built-in)` : 'model id'}
+									aria-label={`Model override for ${tier}`}
+									value={editTierModels[tier] ?? ''}
+									oninput={(e) =>
+										(editTierModels = { ...editTierModels, [tier]: e.currentTarget.value })}
+								/>
+								{#if showsEffort}
+									{@const choices = effortChoices(editTarget, tier, editTierModels[tier] ?? '')}
+									<div class="min-w-0 space-y-1.5">
+										<label class="text-sm font-medium sm:sr-only" for={`edit-effort-${tier}`}
+											>Effort</label
 										>
-									{/if}
-									{#each choices as effort (effort)}
-										<option value={effort}>{effort}</option>
-									{/each}
-								</Select>
+										<Select
+											id={`edit-effort-${tier}`}
+											class="w-full min-w-0"
+											aria-label={`Effort for ${tier}`}
+											value={editTierEfforts[tier] ?? ''}
+											disabled={(editTierModels[tier] ?? '').trim() === '' || choices.length === 0}
+											onchange={(e) =>
+												(editTierEfforts = { ...editTierEfforts, [tier]: e.currentTarget.value })}
+										>
+											<option value="">effort —</option>
+											{#if editTierEfforts[tier] && !choices.includes(editTierEfforts[tier])}
+												<option value={editTierEfforts[tier]}
+													>{editTierEfforts[tier]} (incompatible)</option
+												>
+											{/if}
+											{#each choices as effort (effort)}
+												<option value={effort}>{effort}</option>
+											{/each}
+										</Select>
+									</div>
+								{/if}
+							</div>
+							{#if stale}
+								<p class="text-muted-foreground pl-0 text-xs [overflow-wrap:anywhere] sm:pl-22">
+									<span class="text-amber-700 dark:text-amber-400">stale override</span> — the
+									built-in for {tier} is now {builtin}
+								</p>
 							{/if}
 						</div>
-						{#if stale}
-							<p class="text-muted-foreground pl-22 text-xs">
-								<span class="text-amber-700 dark:text-amber-400">stale override</span> — the
-								built-in for {tier} is now {builtin}
-							</p>
-						{/if}
 					{/each}
 				{/if}
 			</div>
 
 			<div class="space-y-1.5">
 				<p class="text-sm font-medium">Per-run caps</p>
-				<div class="flex flex-wrap items-center gap-2">
-					<span class="text-muted-foreground text-sm">$</span>
-					<Input
-						type="number"
-						min="0.01"
-						step="0.01"
-						class="w-24"
-						placeholder="none"
-						aria-label="Per-run cost cap in dollars"
-						value={editCapUsd}
-						oninput={(e) => (editCapUsd = e.currentTarget.value)}
-					/>
-					<span class="text-muted-foreground text-xs">per run ·</span>
-					<Input
-						type="number"
-						min="1"
-						class="w-32"
-						placeholder="none"
-						aria-label="Per-run token cap"
-						value={editCapTokens}
-						oninput={(e) => (editCapTokens = e.currentTarget.value)}
-					/>
-					<span class="text-muted-foreground text-xs">tokens per run</span>
+				<div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+					<div class="min-w-0 space-y-1.5">
+						<label class="text-sm font-medium" for="edit-cap-usd">Cost per run (USD)</label>
+						<Input
+							id="edit-cap-usd"
+							type="number"
+							min="0.01"
+							step="0.01"
+							class="w-full"
+							placeholder="none"
+							aria-label="Per-run cost cap in dollars"
+							value={editCapUsd}
+							oninput={(e) => (editCapUsd = e.currentTarget.value)}
+						/>
+					</div>
+					<div class="min-w-0 space-y-1.5">
+						<label class="text-sm font-medium" for="edit-cap-tokens">Tokens per run</label>
+						<Input
+							id="edit-cap-tokens"
+							type="number"
+							min="1"
+							class="w-full"
+							placeholder="none"
+							aria-label="Per-run token cap"
+							value={editCapTokens}
+							oninput={(e) => (editCapTokens = e.currentTarget.value)}
+						/>
+					</div>
 				</div>
 				{#if editTarget.type !== 'local' && editCapUsd.trim() === ''}
 					<p class="text-xs text-amber-700 dark:text-amber-400">
