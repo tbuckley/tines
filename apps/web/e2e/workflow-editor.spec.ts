@@ -11,6 +11,7 @@ import { ALICE } from './constants.mjs';
 import { apiClient, body, gotoHydrated, runId, signIn } from './helpers';
 
 const workflowName = `Header ${runId}`;
+const wideWorkflowName = `Wide preview ${runId}`;
 /** As long as a real workflow's: six lines on a desktop, nine on a phone. */
 const description =
 	'Backlog → Research → Design → Implementation → Automated Review → Human Review → Merging → Closed (or Canceled). Small, fully-specified tasks may go straight from Backlog to Implementation. Research, Design, and Implementation can park in Needs Clarification to ask a human a blocking question. After human approval, a Merging run brings the PR up to date with main and lands it.';
@@ -22,6 +23,25 @@ const SYSTEM_WORKFLOW = {
 };
 
 let workflowId: string;
+let wideWorkflowId: string;
+
+const previewGeometry = async (page: Page) => {
+	const region = page.getByRole('region', { name: 'Live preview' });
+	return region.evaluate((regionEl) => {
+		const svg = regionEl.querySelector('svg')!;
+		const heading = document.getElementById(regionEl.getAttribute('aria-labelledby')!)!;
+		const viewBoxWidth = svg.viewBox.baseVal.width;
+		return {
+			svgRatio: svg.getBoundingClientRect().width / viewBoxWidth,
+			regionClientWidth: regionEl.clientWidth,
+			regionScrollWidth: regionEl.scrollWidth,
+			regionScrollLeft: regionEl.scrollLeft,
+			headingLeft: heading.getBoundingClientRect().left,
+			documentClientWidth: document.documentElement.clientWidth,
+			documentScrollWidth: document.documentElement.scrollWidth
+		};
+	});
+};
 
 test.beforeAll(async ({ playwright }) => {
 	const request = await playwright.request.newContext({
@@ -44,6 +64,35 @@ test.beforeAll(async ({ playwright }) => {
 		})
 	);
 	workflowId = created.id;
+
+	const states = Array.from({ length: 10 }, (_, index) => ({
+		name: `Engineering state ${index + 1}`,
+		category: index === 9 ? ('done' as const) : ('active' as const)
+	}));
+	const transitions = Array.from({ length: 9 }, (_, index) => ({
+		name: `Advance ${index + 1}`,
+		from: states[index].name,
+		to: states[index + 1].name
+	}));
+	for (let source = 1; source < states.length && transitions.length < 30; source += 1) {
+		for (let target = 0; target < source && transitions.length < 30; target += 1) {
+			transitions.push({
+				name: `Return ${source + 1} to ${target + 1}`,
+				from: states[source].name,
+				to: states[target].name
+			});
+		}
+	}
+	const wide = await body<{ id: string }>(
+		await api.post('/api/v1/workflows', {
+			name: wideWorkflowName,
+			description: 'A dense workflow used to verify the live preview remains readable.',
+			initial_state: states[0].name,
+			states,
+			transitions
+		})
+	);
+	wideWorkflowId = wide.id;
 	await request.dispose();
 });
 
@@ -127,6 +176,72 @@ test('on a phone the form starts right under the title', async ({ page }) => {
 		.getByLabel('Name', { exact: true })
 		.evaluate((el) => el.getBoundingClientRect().top);
 	expect(nameTop).toBeLessThan(844 / 3);
+});
+
+test('a wide live preview keeps intrinsic scale and scrolls locally', async ({ page }) => {
+	await page.setViewportSize({ width: 1440, height: 900 });
+	await gotoHydrated(page, `/workflows/${wideWorkflowId}`);
+
+	const region = page.getByRole('region', { name: 'Live preview' });
+	await expect(region.getByText('Return 10 to 4', { exact: true })).toBeVisible();
+	const before = await previewGeometry(page);
+	expect(before.svgRatio).toBeCloseTo(1, 2);
+	expect(before.regionScrollWidth).toBeGreaterThan(before.regionClientWidth);
+	expect(before.documentScrollWidth - before.documentClientWidth).toBeLessThanOrEqual(1);
+
+	await region.focus();
+	await expect(region).toBeFocused();
+	await page.keyboard.press('ArrowRight');
+	await expect.poll(async () => (await previewGeometry(page)).regionScrollLeft).toBeGreaterThan(0);
+	expect((await previewGeometry(page)).headingLeft).toBeCloseTo(before.headingLeft, 1);
+
+	const renamedAction = 'Advance with a substantially longer action label';
+	await page.getByLabel('Action name').first().fill(renamedAction);
+	await expect(region.getByText(renamedAction, { exact: true })).toBeVisible();
+	const afterEdit = await previewGeometry(page);
+	expect(afterEdit.svgRatio).toBeCloseTo(1, 2);
+	expect(afterEdit.regionScrollWidth).toBeGreaterThan(afterEdit.regionClientWidth);
+	expect(afterEdit.documentScrollWidth - afterEdit.documentClientWidth).toBeLessThanOrEqual(1);
+});
+
+test('a wide live preview remains contained and scrollable on a phone', async ({ page }) => {
+	await page.setViewportSize({ width: 390, height: 844 });
+	await gotoHydrated(page, `/workflows/${wideWorkflowId}`);
+
+	const region = page.getByRole('region', { name: 'Live preview' });
+	await region.scrollIntoViewIfNeeded();
+	const before = await previewGeometry(page);
+	expect(before.svgRatio).toBeCloseTo(1, 2);
+	expect(before.regionScrollWidth).toBeGreaterThan(before.regionClientWidth);
+	expect(before.documentScrollWidth - before.documentClientWidth).toBeLessThanOrEqual(1);
+	await region.evaluate((el) => {
+		el.scrollLeft = 100;
+	});
+	await expect.poll(async () => (await previewGeometry(page)).regionScrollLeft).toBeGreaterThan(0);
+});
+
+test('graphs outside the editor keep their fitted defaults', async ({ page }) => {
+	await page.setViewportSize({ width: 390, height: 844 });
+	await page.goto(`/workflows/${SYSTEM_WORKFLOW.id}`);
+	const standardGraph = page.getByRole('img', { name: 'Workflow graph' });
+	const standard = await standardGraph.evaluate((svg) => ({
+		width: svg.getBoundingClientRect().width,
+		containerWidth: svg.parentElement!.clientWidth
+	}));
+	expect(standard.width).toBeLessThanOrEqual(standard.containerWidth + 1);
+
+	await page.goto('/workflows');
+	const card = page
+		.getByRole('heading', { level: 2, name: wideWorkflowName })
+		.locator('xpath=ancestor::a');
+	const compact = await card.getByRole('img', { name: 'Workflow graph' }).evaluate((svg) => ({
+		width: svg.getBoundingClientRect().width,
+		containerWidth: svg.parentElement!.clientWidth,
+		documentWidth: document.documentElement.scrollWidth,
+		viewportWidth: document.documentElement.clientWidth
+	}));
+	expect(compact.width).toBeLessThanOrEqual(compact.containerWidth + 1);
+	expect(compact.documentWidth - compact.viewportWidth).toBeLessThanOrEqual(1);
 });
 
 test('the read-only system workflow keeps its description in the header', async ({ page }) => {
