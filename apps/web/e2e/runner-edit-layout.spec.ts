@@ -158,9 +158,9 @@ test.describe.serial('runner edit responsive layout', () => {
 				expect(effortLabelBox.y + effortLabelBox.height).toBeLessThanOrEqual(effortBox.y);
 				expect(tokensBox.y).toBeGreaterThanOrEqual(costBox.y + costBox.height);
 				expect(await textStyle(modelLabel)).toEqual(await textStyle(effortLabel));
-					expect(parseFloat((await textStyle(tierHeading)).fontSize)).toBeGreaterThan(
-						parseFloat((await textStyle(modelLabel)).fontSize)
-					);
+				expect(parseFloat((await textStyle(tierHeading)).fontSize)).toBeGreaterThan(
+					parseFloat((await textStyle(modelLabel)).fontSize)
+				);
 				for (const columnLabel of tierColumnLabels) {
 					await expect(columnLabel).toBeHidden();
 				}
