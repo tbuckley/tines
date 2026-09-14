@@ -71,6 +71,8 @@ Routing should say how *hard* to think without naming vendor model ids that go s
 
 The tier names are a closed set; adding a tier later is a code change, not user config — the point is a stable, small vocabulary that routing rules can rely on.
 
+> **Codex default decision (2026-09-14):** local Codex resolves `cheapest` to `gpt-5.6-luna`, `balanced` to `gpt-5.6-sol`, and `smartest` to `gpt-6-astra`. The former `gpt-5-codex` default is a known predecessor of each new built-in, so an exact override to it is marked stale but remains frozen until edited; the three new defaults are not predecessors of one another.
+
 ### What agents may take on
 
 **Category is the whole rule.** An issue is *agent-eligible* exactly when its **effective** state's category is `active` — the category that already means "ready to be taken on, or being worked". `backlog`, `awaiting_human`, and `done` states are never touched by the supervisor, in any workflow, with no per-state configuration. The workflow graph is therefore also the automation boundary: moving work to an `awaiting_human` state *is* how an agent (or human) hands off, and pulling it back to an `active` state is how a human hands it to the agents again.
