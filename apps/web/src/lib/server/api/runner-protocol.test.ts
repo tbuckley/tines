@@ -689,6 +689,9 @@ describe('pollRunner', () => {
 	it('retries poll reconciliation without overwriting a concurrent web cap request', async () => {
 		const t = world();
 		const id = addRunner(t, { name: 'concurrent-cap', maxConcurrent: 1 });
+		t.sqlite
+			.prepare('UPDATE runner SET runner_token_hash = ? WHERE id = ?')
+			.run(await sha256Hex('tines_rt_concurrent-cap'), id);
 		await pollRunner(
 			t.db,
 			t.env,
@@ -706,8 +709,10 @@ describe('pollRunner', () => {
 		const winningRevision = stale.concurrency_revision + 1;
 		const realBatch = t.env.DB.batch.bind(t.env.DB);
 		let injected = false;
+		let batchCount = 0;
 		t.env.DB.batch = async (statements) => {
-			if (!injected) {
+			batchCount += 1;
+			if (batchCount === 2) {
 				injected = true;
 				// This is the storage result of an owner PATCH that commits after
 				// the poll read but before its guarded reconciliation batch.
