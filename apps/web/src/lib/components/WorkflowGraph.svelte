@@ -29,7 +29,7 @@
 		/** Highlighted state; changes animate along the traversed edge. */
 		currentStateId?: string | null;
 		compact?: boolean;
-		/** Allow the graph to shrink to its container. Disable only when the caller contains overflow. */
+		/** Fit to the container. Disable to fix a full graph at intrinsic size; the caller must contain overflow. */
 		fit?: boolean;
 	} = $props();
 
@@ -233,7 +233,7 @@
 	<svg
 		viewBox="0 0 {layout.width} {layout.height}"
 		class="h-auto w-full"
-		style="max-width: {layout.width * (compact ? 1 : 1.15)}px"
+		style:max-width={`${!fit && !compact ? layout.width : layout.width * (compact ? 1 : 1.15)}px`}
 		style:min-width={!fit && !compact ? `${layout.width}px` : undefined}
 		role="img"
 		aria-label="Workflow graph"
