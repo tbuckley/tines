@@ -11,7 +11,7 @@ import {
 	type WorkflowPackageDocument
 } from '@tines/shared';
 import { automatedPackage } from '../../../packages/shared/src/library/fixtures.js';
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Locator, type Page } from '@playwright/test';
 import {
 	signPackagePlan,
 	verifyPackagePlan,
@@ -20,6 +20,9 @@ import {
 import { d1, sqlLiteral } from './d1';
 import { BOB } from './constants.mjs';
 import { apiClient, body, DESKTOP, gotoHydrated, PHONE, runId, signIn } from './helpers';
+
+const LONG_CRON =
+	'0 9 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31 * *';
 
 // Check all allocated object/event families, including rows written before a late failure.
 function allocatedRows(plan: PrepareWorkflowPackageResponse) {
@@ -58,10 +61,59 @@ async function approve(page: Page) {
 	await page.getByRole('checkbox', { name: /I confirm exact plan/ }).check();
 }
 
+function definitionValue(article: Locator, term: string) {
+	return article
+		.locator('dt')
+		.filter({ hasText: new RegExp(`^${term}$`) })
+		.locator('xpath=following-sibling::dd[1]');
+}
+
+async function assertScheduleProof(page: Page, expectedRecurrence: string) {
+	const article = page
+		.getByTestId('package-review')
+		.getByRole('heading', { name: 'Weekly review · installs paused', exact: true })
+		.locator('..');
+	const recurrence = definitionValue(article, 'Recurrence');
+	await expect(recurrence).toHaveText(expectedRecurrence);
+	await expect(definitionValue(article, 'Timezone')).toHaveText('America/New_York');
+	await expect(article.getByText('installs paused', { exact: false })).toBeVisible();
+
+	const geometry = await recurrence.evaluate((value) => {
+		const valueBounds = value.getBoundingClientRect();
+		const articleBounds = value.closest('article')!.getBoundingClientRect();
+		return {
+			valueScrollWidth: value.scrollWidth,
+			valueClientWidth: value.clientWidth,
+			valueLeft: valueBounds.left,
+			valueRight: valueBounds.right,
+			articleLeft: articleBounds.left,
+			articleRight: articleBounds.right,
+			documentWidth: document.documentElement.scrollWidth,
+			viewportWidth: window.innerWidth
+		};
+	});
+	expect(geometry.valueScrollWidth).toBeLessThanOrEqual(geometry.valueClientWidth);
+	expect(geometry.valueLeft).toBeGreaterThanOrEqual(geometry.articleLeft);
+	expect(geometry.valueRight).toBeLessThanOrEqual(geometry.articleRight);
+	expect(geometry.valueRight).toBeLessThanOrEqual(geometry.viewportWidth);
+	expect(geometry.documentWidth).toBeLessThanOrEqual(geometry.viewportWidth);
+}
+
+async function prepareScheduleProof(page: Page, file: string, projectId: string) {
+	await gotoHydrated(page, '/workflows/import');
+	await page.getByLabel('Workflow package file').setInputFiles(file);
+	await page.getByLabel('Filing label').selectOption({ label: `import-label-${runId}` });
+	await page.getByLabel('Destination project').selectOption(projectId);
+	await page.getByRole('checkbox', { name: 'Weekly review' }).check();
+	await page.getByRole('button', { name: 'Prepare installation' }).click();
+	await expect(page.getByRole('heading', { name: 'Complete installation plan' })).toBeVisible();
+}
+
 const suffix = ` browser import ${runId}`;
 let packagePath: string;
 let missingWorkflowPath: string;
 let dependencyFirstPath: string;
+let longCronPath: string;
 let dependencyFirstDocument: WorkflowPackageDocument;
 let mainName: string;
 let dependencyName: string;
@@ -133,6 +185,17 @@ test.beforeAll(async ({ playwright }) => {
 		'package.json'
 	);
 	writeFileSync(dependencyFirstPath, JSON.stringify(dependencyFirstDocument));
+	const longCronCandidate = structuredClone(document);
+	(longCronCandidate as { digest?: string }).digest = undefined;
+	longCronCandidate.schedules[0].recurrence = { kind: 'cron', cron: LONG_CRON };
+	const longCronValidation = await body<ValidateLibraryResponse>(
+		await api.post('/api/v1/library/validate', {
+			document_json: JSON.stringify(longCronCandidate)
+		})
+	);
+	expect(longCronValidation.valid).toBe(true);
+	longCronPath = join(mkdtempSync(join(tmpdir(), 'tines-long-cron-')), 'package.json');
+	writeFileSync(longCronPath, JSON.stringify(longCronValidation.document));
 	const missingWorkflow = automatedPackage();
 	(missingWorkflow as { digest?: string }).digest = undefined;
 	missingWorkflow.inputs.push({
@@ -574,6 +637,36 @@ test('a late native D1 failure rolls back every allocated row and permits the sa
 	]);
 });
 
+for (const theme of ['light', 'dark'] as const) {
+	for (const viewport of [DESKTOP, PHONE]) {
+		test(`keeps weekly and long-cron schedule proofs readable at ${viewport.width}px in ${theme} mode`, async ({
+			page
+		}, testInfo) => {
+			await page.setViewportSize(viewport);
+			await page.addInitScript((savedTheme) => {
+				localStorage.setItem('tines:theme', savedTheme);
+			}, theme);
+
+			await prepareScheduleProof(page, packagePath, projects[0].id);
+			await expect(page.locator('html')).toHaveClass(
+				theme === 'dark' ? /\bdark\b/ : /^(?!.*\bdark\b)/
+			);
+			await assertScheduleProof(page, 'Every Monday at 09:00');
+			await page.screenshot({
+				path: testInfo.outputPath(`schedule-weekly-${theme}-${viewport.width}.png`),
+				fullPage: true
+			});
+
+			await prepareScheduleProof(page, longCronPath, projects[0].id);
+			await assertScheduleProof(page, `Cron “${LONG_CRON}”`);
+			await page.screenshot({
+				path: testInfo.outputPath(`schedule-cron-${theme}-${viewport.width}.png`),
+				fullPage: true
+			});
+		});
+	}
+}
+
 test('installs selected schedules paused into two independent destination projects', async ({
 	page,
 	request
@@ -590,12 +683,15 @@ test('installs selected schedules paused into two independent destination projec
 		expect(beforeSchedules.items).toEqual([]);
 		expect(project.default_workflow_id).toBeNull();
 
+		await page.setViewportSize(PHONE);
 		await gotoHydrated(page, '/workflows/import');
 		await page.getByLabel('Workflow package file').setInputFiles(packagePath);
+		await page.getByLabel('Filing label').selectOption({ label: `import-label-${runId}` });
 		await page.getByLabel('Destination project').selectOption(project.id);
 		await page.getByRole('checkbox', { name: 'Weekly review' }).check();
 		await page.getByRole('button', { name: 'Prepare installation' }).click();
 		await expect(page.getByRole('heading', { name: 'Complete installation plan' })).toBeVisible();
+		await assertScheduleProof(page, 'Every Monday at 09:00');
 		for (const checkbox of await page.getByRole('checkbox', { name: /I reviewed/ }).all())
 			await checkbox.check();
 		await page.getByRole('checkbox', { name: /I confirm exact plan/ }).check();
