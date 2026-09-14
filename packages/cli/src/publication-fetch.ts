@@ -30,6 +30,33 @@ function isLoopback(address: string): boolean {
 	return address === '::1' || /^127\./.test(address);
 }
 
+function ipv6Integer(address: string): bigint | undefined {
+	let value = address.toLowerCase();
+	const dotted = /(?:^|:)(\d{1,3}(?:\.\d{1,3}){3})$/.exec(value);
+	if (dotted) {
+		const octets = dotted[1].split('.').map(Number);
+		if (octets.some((octet) => octet > 255)) return undefined;
+		value = `${value.slice(0, dotted.index)}:${((octets[0] << 8) | octets[1]).toString(16)}:${((octets[2] << 8) | octets[3]).toString(16)}`;
+	}
+	const halves = value.split('::');
+	if (halves.length > 2) return undefined;
+	const left = halves[0] ? halves[0].split(':') : [];
+	const right = halves[1] ? halves[1].split(':') : [];
+	const missing = 8 - left.length - right.length;
+	if ((halves.length === 1 && missing !== 0) || missing < 0) return undefined;
+	const groups = [...left, ...Array(missing).fill('0'), ...right];
+	if (groups.length !== 8 || groups.some((group) => !/^[0-9a-f]{1,4}$/.test(group)))
+		return undefined;
+	return groups.reduce((result, group) => (result << 16n) | BigInt(`0x${group}`), 0n);
+}
+
+function inIpv6Range(value: bigint, base: string, prefix: number): boolean {
+	const baseValue = ipv6Integer(base);
+	if (baseValue === undefined) return false;
+	const shift = BigInt(128 - prefix);
+	return value >> shift === baseValue >> shift;
+}
+
 /** Fail closed for ranges that must never be reached by a supplied publication URL. */
 export function isPublicAddress(address: string): boolean {
 	const mapped = mappedIpv4(address);
@@ -54,15 +81,15 @@ export function isPublicAddress(address: string): boolean {
 		);
 	}
 	if (isIP(address) === 6) {
-		const normalized = address.toLowerCase();
-		return !(
-			normalized === '::' ||
-			normalized === '::1' ||
-			/^f[cd]/.test(normalized) ||
-			/^fe[89ab]/.test(normalized) ||
-			/^ff/.test(normalized) ||
-			normalized.startsWith('2001:db8:')
-		);
+		const value = ipv6Integer(address);
+		if (value === undefined || !inIpv6Range(value, '2000::', 3)) return false;
+		return ![
+			['2001::', 23], // IETF protocol assignments, including Teredo and benchmarking
+			['2001:db8::', 32], // documentation
+			['2002::', 16], // 6to4 (may embed a private IPv4 destination)
+			['2620:4f:8000::', 48], // documentation
+			['3fff::', 20] // documentation
+		].some(([base, prefix]) => inIpv6Range(value, base as string, prefix as number));
 	}
 	return false;
 }

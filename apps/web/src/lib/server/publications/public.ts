@@ -11,6 +11,8 @@ export const PUBLICATION_UNAVAILABLE_MESSAGE = 'This publication is not availabl
 
 export const PUBLICATION_RESPONSE_HEADERS = {
 	'cache-control': 'no-store, max-age=0',
+	'content-security-policy':
+		"img-src 'none'; media-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
 	'referrer-policy': 'no-referrer',
 	'x-content-type-options': 'nosniff'
 } as const;

@@ -58,6 +58,7 @@
 	let legacyFile = $state(false);
 	let alertEl = $state<HTMLElement | null>(null);
 	let tokenInvoker = $state<HTMLElement | null>(null);
+	let hostedChecking = false;
 	const hostedSnapshotId = $derived(page.url.searchParams.get('publication'));
 	const hostedMode = $derived(!!hostedSnapshotId);
 
@@ -344,33 +345,64 @@
 		}
 	}
 
-	onMount(async () => {
+	function clearHostedReview() {
+		document_ = null;
+		documentJson = '';
+		plan = null;
+		confirmed = false;
+		reviewed = new Set();
+		stage = 'reading';
+	}
+
+	async function loadHostedSnapshot() {
+		if (!hostedSnapshotId || recovery || hostedChecking) return;
+		hostedChecking = true;
+		clearHostedReview();
 		try {
-			const value = JSON.parse(sessionStorage.getItem(recoveryKey) ?? 'null') as Recovery | null;
-			if (value?.actorId === data.user.id && value.destination === location.origin) {
-				recovery = value;
-				stage = 'unknown';
-			} else if (value) sessionStorage.removeItem(recoveryKey);
+			await api.getPublicSnapshotStatus(hostedSnapshotId);
+			const snapshot = await api.getPublicSnapshot(hostedSnapshotId);
+			document_ = snapshot.document;
+			documentJson = canonicalizeLibraryValue(snapshot.document);
+			fileName = `public-${hostedSnapshotId}.json`;
+			choices = { schedule_ids: [] };
+			stage = 'values';
+			error = null;
 		} catch {
-			clearRecovery();
+			clearHostedReview();
+			stage = 'values';
+			error = 'This publication is not available.';
+			await focusError();
+		} finally {
+			hostedChecking = false;
 		}
-		if (hostedSnapshotId && !recovery) {
-			stage = 'reading';
+	}
+
+	onMount(() => {
+		void (async () => {
 			try {
-				const snapshot = await api.getPublicSnapshot(hostedSnapshotId);
-				document_ = snapshot.document;
-				documentJson = canonicalizeLibraryValue(snapshot.document);
-				fileName = `public-${hostedSnapshotId}.json`;
-				choices = { schedule_ids: [] };
-				stage = 'values';
+				const value = JSON.parse(sessionStorage.getItem(recoveryKey) ?? 'null') as Recovery | null;
+				if (value?.actorId === data.user.id && value.destination === location.origin) {
+					recovery = value;
+					stage = 'unknown';
+				} else if (value) sessionStorage.removeItem(recoveryKey);
 			} catch {
-				document_ = null;
-				documentJson = '';
-				stage = 'values';
-				error = 'This publication is not available.';
-				await focusError();
+				clearRecovery();
 			}
-		}
+			await loadHostedSnapshot();
+		})();
+		const resumed = () => {
+			if (['values', 'prepared', 'preparing'].includes(stage)) void loadHostedSnapshot();
+		};
+		const timer = setInterval(() => {
+			if (!document.hidden) resumed();
+		}, 15_000);
+		addEventListener('focus', resumed);
+		addEventListener('pageshow', resumed);
+		return () => {
+			clearInterval(timer);
+			removeEventListener('focus', resumed);
+			removeEventListener('pageshow', resumed);
+		};
 	});
 </script>
 

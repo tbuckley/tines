@@ -103,6 +103,21 @@ describe('credential-free public workflow package fetch', () => {
 		).rejects.toThrow('timed out');
 	});
 
+	it('re-resolves and rejects a private address on every redirect hop', async () => {
+		const { base } = await serve((_request, response) => {
+			response.writeHead(302, { location: `https://redirected.test/p/${ID}/download` });
+			response.end();
+		});
+		await expect(
+			fetchPublicWorkflowPackage(`${base}/p/${ID}`, {
+				lookup: (async (hostname: string) =>
+					hostname === 'redirected.test'
+						? [{ address: '2002:0a00:0001::1', family: 6 }]
+						: [{ address: '127.0.0.1', family: 4 }]) as never
+			})
+		).rejects.toThrow('private or reserved');
+	});
+
 	it('classifies private, reserved, mapped, and public addresses', () => {
 		for (const address of [
 			'10.0.0.1',
@@ -115,6 +130,12 @@ describe('credential-free public workflow package fetch', () => {
 			'::1',
 			'fc00::1',
 			'fe80::1',
+			'100::1',
+			'2001::1',
+			'2001:2::1',
+			'2001:db8::1',
+			'2002:0a00:0001::1',
+			'3fff::1',
 			'::ffff:c0a8:101'
 		])
 			expect(isPublicAddress(address), address).toBe(false);

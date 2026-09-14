@@ -32,4 +32,13 @@ describe('public text rendering model', () => {
 		expect(serialized).toContain('[image suppressed]');
 		expect(serialized).not.toContain('tracker.test');
 	});
+
+	it('renders URLs with embedded credentials as inert text', () => {
+		const serialized = JSON.stringify(
+			publicTextModel('[destination](https://user:secret@example.test/path)')
+		);
+		expect(serialized).toContain('destination');
+		expect(serialized).not.toContain('href');
+		expect(serialized).not.toContain('secret');
+	});
 });

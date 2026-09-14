@@ -159,6 +159,15 @@
 		sharingRights = false;
 		exactContent = false;
 	}
+	function displayNameChanged(event: Event) {
+		displayName = (event.currentTarget as HTMLInputElement).value;
+		if (!publicationProof) return;
+		publicationProof = null;
+		publicationResult = null;
+		sharingRights = false;
+		exactContent = false;
+		status = 'Public metadata changed. Prepare and review a new exact publication proof.';
+	}
 	function exportOptions(): ExportWorkflowPackageOptions {
 		const tiers: NonNullable<ExportWorkflowPackageOptions['tiers']> = [];
 		for (const state of data.sourceStates) {
@@ -218,6 +227,19 @@
 			resetReview('Candidate rebuilt from source.');
 		} catch (error) {
 			status = message(error);
+			const details = error instanceof ApiError ? error.details?.diagnostics : null;
+			if (Array.isArray(details)) {
+				diagnostics = details.filter(
+					(item): item is LibraryDiagnostic =>
+						!!item &&
+						typeof item === 'object' &&
+						typeof item.path === 'string' &&
+						typeof item.code === 'string' &&
+						typeof item.message === 'string'
+				);
+				await tick();
+				diagnosticsPanel?.focus();
+			}
 		} finally {
 			busy = false;
 		}
@@ -254,6 +276,19 @@
 			status = `Proof prepared. Confirm exact content ${publicationProof.review_digest}.`;
 		} catch (error) {
 			status = message(error);
+			const details = error instanceof ApiError ? error.details?.diagnostics : null;
+			if (Array.isArray(details)) {
+				diagnostics = details.filter(
+					(item): item is LibraryDiagnostic =>
+						!!item &&
+						typeof item === 'object' &&
+						typeof item.path === 'string' &&
+						typeof item.code === 'string' &&
+						typeof item.message === 'string'
+				);
+				await tick();
+				diagnosticsPanel?.focus();
+			}
 		} finally {
 			busy = false;
 		}
@@ -789,7 +824,8 @@
 			Public display name
 			<Input
 				class="mt-1"
-				bind:value={displayName}
+				value={displayName}
+				oninput={displayNameChanged}
 				maxlength={100}
 				autocomplete="name"
 				placeholder="Name shown publicly (not an email)"
