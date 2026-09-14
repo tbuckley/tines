@@ -254,3 +254,85 @@ test('four scoped extractions execute destination-first and retain sources on ev
 		contentType: 'application/json'
 	});
 });
+
+test('same-name resolution follows exact scope rank and inherited-state provenance', async ({
+	request
+}) => {
+	const api = apiClient(request, ALICE.apiKey);
+	const workflow = await body<WorkflowResponse>(
+		await api.post('/api/v1/workflows', {
+			name: `extract-matrix-${runId}`,
+			initial_state: 'Child',
+			states: [
+				{ name: 'Root', category: 'active' },
+				{ name: 'Child', category: 'active', inherits_from: 'Root' },
+				{ name: 'Other', category: 'active' }
+			],
+			transitions: []
+		})
+	);
+	const root = workflow.states.find((state) => state.name === 'Root')!;
+	const child = workflow.states.find((state) => state.name === 'Child')!;
+	const projectP = await body<Project>(
+		await api.post('/api/v1/projects', {
+			name: `extract-matrix-p-${runId}`,
+			default_workflow_id: workflow.id
+		})
+	);
+	const projectQ = await body<Project>(
+		await api.post('/api/v1/projects', {
+			name: `extract-matrix-q-${runId}`,
+			default_workflow_id: workflow.id
+		})
+	);
+	const makeIssue = async (project: Project, state?: string) =>
+		body<IssueDetail>(
+			await api.post(`/api/v1/projects/${project.id}/issues`, {
+				title: `matrix ${project.name} ${state ?? 'Child'}`,
+				...(state ? { state } : {})
+			})
+		);
+	const [pChild, pOther, qChild] = await Promise.all([
+		makeIssue(projectP),
+		makeIssue(projectP, 'Other'),
+		makeIssue(projectQ)
+	]);
+	const makeSkill = async (marker: string, scope: Record<string, string> = {}) =>
+		body<ContextItem>(
+			await api.post('/api/v1/context', {
+				kind: 'skill',
+				name: 'planning-procedures',
+				files: [{ path: 'SKILL.md', content: marker }],
+				...scope
+			})
+		);
+	const global = await makeSkill('global');
+	const project = await makeSkill('project', { project_id: projectP.id });
+	const state = await makeSkill('state-root', { workflow_state_id: root.id });
+	const combined = await makeSkill('combined-root', {
+		project_id: projectP.id,
+		workflow_state_id: root.id
+	});
+	const winner = async (issue: IssueDetail) => {
+		const context = await body<EffectiveContext>(
+			await api.get(`/api/v1/issues/${issue.id}/context`)
+		);
+		return context.skills.find((skill) => skill.name === 'planning-procedures')!;
+	};
+	expect((await winner(pOther)).item_id).toBe(project.id);
+	const qWinner = await winner(qChild);
+	expect(qWinner.item_id).toBe(state.id);
+	expect(qWinner.inherited_from?.state_id).toBe(root.id);
+	const leaf = await makeSkill('state-leaf', { workflow_state_id: child.id });
+	expect((await winner(qChild)).item_id).toBe(leaf.id);
+	const pWinner = await winner(pChild);
+	expect(pWinner.item_id).toBe(combined.id);
+	expect(pWinner.inherited_from).toEqual({
+		state_id: root.id,
+		state_name: 'Root',
+		workflow_id: workflow.id,
+		workflow_name: workflow.name
+	});
+	for (const item of [leaf, combined, state, project, global])
+		await api.delete(`/api/v1/context/${item.id}`);
+});
