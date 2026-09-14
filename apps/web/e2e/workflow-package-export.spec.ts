@@ -228,13 +228,18 @@ for (const { viewport, theme } of [
 		await expect(page.getByRole('heading', { name: 'Editing input review_label' })).toBeVisible();
 		await expect(page.getByRole('button', { name: 'Rebuild from source' })).toBeDisabled();
 		await expect(page.getByRole('button', { name: 'Edit input project_name' })).toBeDisabled();
+		await page.getByLabel('Key').fill('approval_label');
+		await page.getByLabel('Type').selectOption('text');
+		await page.getByRole('textbox', { name: 'Label', exact: true }).fill('Approval label');
+		await page.getByLabel('Description').fill('Label applied after customer approval.');
 		await page.getByLabel('Default').fill('customer-review');
+		await page.getByLabel('Required').check();
 		await page.getByRole('button', { name: 'Save changes' }).click();
 
-		await expect(page.getByRole('button', { name: 'Edit input review_label' })).toBeFocused();
+		await expect(page.getByRole('button', { name: 'Edit input approval_label' })).toBeFocused();
 		await expect(page.getByLabel('Key')).toHaveValue('pending_input');
 		await expect(page.getByLabel('Default')).toHaveValue('pending-value');
-		await expect(page.locator('button.selected')).toContainText('review_label');
+		await expect(page.locator('button.selected')).toContainText('approval_label');
 		await expect(page.getByText('Input declaration updated in this candidate only.')).toBeVisible();
 		await expect(page.getByRole('button', { name: 'Download package' })).toBeDisabled();
 		for (const checkbox of await page
@@ -248,7 +253,7 @@ for (const { viewport, theme } of [
 		).toBeVisible();
 
 		const editBox = await page
-			.getByRole('button', { name: 'Edit input review_label' })
+			.getByRole('button', { name: 'Edit input approval_label' })
 			.boundingBox();
 		expect(editBox?.height).toBeGreaterThanOrEqual(40);
 		const overflow = await page.evaluate(() =>
@@ -266,9 +271,17 @@ for (const { viewport, theme } of [
 		const downloaded = (await parseLibraryV3Document(source)) as WorkflowPackageDocument;
 		expect(downloaded.inputs.map(({ id, key }) => ({ id, key }))).toEqual([
 			{ id: 'input:author:1', key: 'project_name' },
-			{ id: 'input:author:2', key: 'review_label' }
+			{ id: 'input:author:2', key: 'approval_label' }
 		]);
-		expect(downloaded.inputs[1].default).toBe('customer-review');
+		expect(downloaded.inputs[1]).toEqual({
+			id: 'input:author:2',
+			key: 'approval_label',
+			type: 'text',
+			label: 'Approval label',
+			description: 'Label applied after customer approval.',
+			required: true,
+			default: 'customer-review'
+		});
 		expect(downloaded.text_uses).toEqual([
 			expect.objectContaining({
 				input_id: 'input:author:1',
@@ -304,6 +317,11 @@ test('cancels safely and refuses duplicate keys or registered-token edits over u
 	await page.getByLabel('Key').fill('second_input');
 	await page.getByLabel('Default').fill('second');
 	await page.getByRole('button', { name: 'Add typed declaration' }).click();
+	const selectedDeclaration = page.getByRole('button', {
+		name: /Show declaration for \{\{second_input:second\}\}/
+	});
+	await selectedDeclaration.click();
+	await expect(selectedDeclaration).toHaveClass(/\bselected\b/);
 	await reviewDependencies(page);
 
 	await page.getByLabel('Key').fill('pending_input');
@@ -317,6 +335,7 @@ test('cancels safely and refuses duplicate keys or registered-token edits over u
 		.all())
 		await expect(checkbox).toBeChecked();
 	await page.getByRole('button', { name: 'Cancel' }).click();
+	await expect(selectedDeclaration).toHaveClass(/\bselected\b/);
 	await expect(page.getByRole('button', { name: 'Edit input first_input' })).toBeFocused();
 	await expect(page.getByLabel('Key')).toHaveValue('pending_input');
 	await expect(page.getByLabel('Default')).toHaveValue('pending');
@@ -336,6 +355,7 @@ test('cancels safely and refuses duplicate keys or registered-token edits over u
 		page.getByText('Candidate text updated without changing the private source.')
 	).toBeVisible();
 	await page.getByRole('button', { name: 'Save changes' }).click();
+	await expect(selectedDeclaration).toHaveClass(/\bselected\b/);
 	await expect(page.getByRole('button', { name: 'Edit input first_input' })).toBeFocused();
 	await expect(editor).toHaveValue(/\{\{first_input:after\}\}.*Unsaved adjacent prose\./s);
 	await expect(page.getByRole('button', { name: 'Rebuild from source' })).toBeEnabled();

@@ -212,9 +212,18 @@ describe('updateAuthoredInput', () => {
 	});
 
 	it('rejects duplicate, generated, unknown, stale, and inactive edits without mutation', () => {
+		const generated = document();
+		generated.inputs.push({
+			id: 'input:destination_project',
+			key: 'destination_project',
+			type: 'project',
+			label: 'Destination project',
+			description: 'Generated destination project',
+			required: true,
+			default: null
+		});
 		const cases: Array<() => void> = [
 			() => updateAuthoredInput(document(), 'input:author:1', draft({ key: 'project_name' })),
-			() => updateAuthoredInput(document(), 'input:destination_project', draft()),
 			() => updateAuthoredInput(document(), 'input:missing', draft()),
 			() => {
 				const value = document();
@@ -228,6 +237,9 @@ describe('updateAuthoredInput', () => {
 			}
 		];
 		for (const run of cases) expect(run).toThrow();
+		expect(() => updateAuthoredInput(generated, 'input:destination_project', draft())).toThrow(
+			'Generated input declarations are read-only.'
+		);
 	});
 
 	it('preserves required_states and rejects an incompatible type change', () => {
