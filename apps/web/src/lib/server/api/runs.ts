@@ -89,6 +89,11 @@ const evidenceRunSelection = [
 	'agent_run.outcome',
 	'agent_run.tier',
 	'agent_run.model',
+	'agent_run.requested_effort',
+	'agent_run.resolved_effort',
+	'agent_run.effort_source',
+	'agent_run.effort_application_status',
+	'agent_run.effort_application_evidence',
 	'agent_run.usage',
 	'agent_run.state_id_at_start',
 	'agent_run.state_id_at_end',
@@ -277,6 +282,16 @@ export function serializeRun(row: RunRow): AgentRun {
 		outcome: (row.outcome as RunEndOutcome | null) ?? null,
 		tier: row.tier as ModelTier,
 		model: row.model,
+		requested_effort: row.requested_effort,
+		resolved_effort: row.resolved_effort,
+		effort_source: row.effort_source
+			? (JSON.parse(row.effort_source) as AgentRun['effort_source'])
+			: null,
+		effort_application_status:
+			(row.effort_application_status as AgentRun['effort_application_status'] | null) ?? 'unknown',
+		effort_application_evidence: row.effort_application_evidence
+			? (JSON.parse(row.effort_application_evidence) as Record<string, unknown>)
+			: null,
 		usage: parseUsage(row.usage),
 		state_id_at_start: row.state_id_at_start,
 		state_at_start_name: row.start_state_name,

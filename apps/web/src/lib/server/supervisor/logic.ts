@@ -17,6 +17,7 @@ import {
 	type QueueVerdict,
 	type RoutingTarget
 } from '@tines/shared';
+import { MANAGED_CLAUDE_EFFORTS, supportedEfforts, type EffortCapabilities } from '@tines/shared';
 
 // ---------------------------------------------------------------------------
 // Rule matching (winner-take-all; project above state — see routing.ts)
@@ -79,6 +80,8 @@ export interface ResolvedRoute<T extends MatchableRule> {
 	rule: T | null;
 	runnerRule: T | null;
 	tierOverride: ModelTier | null;
+	effortOverride: string | null;
+	effortRule: T | null;
 	targets: RoutingTarget[];
 	ambiguous: T[];
 	failure: 'no_rule' | 'ambiguous_rule' | 'no_runner_rule' | 'no_targets' | null;
@@ -99,6 +102,8 @@ export function resolveRoute<T extends MatchableRule>(
 	}
 	let winner: T | null = null;
 	let tierOverride: ModelTier | null = null;
+	let effortOverride: string | null = null;
+	let effortRule: T | null = null;
 	for (let rank = 7; rank >= 0; rank--) {
 		const matches = byRank.get(rank) ?? [];
 		if (matches.length === 0) continue;
@@ -107,6 +112,8 @@ export function resolveRoute<T extends MatchableRule>(
 				rule: winner,
 				runnerRule: null,
 				tierOverride,
+				effortOverride,
+				effortRule,
 				targets: [],
 				ambiguous: matches,
 				failure: 'ambiguous_rule'
@@ -121,21 +128,31 @@ export function resolveRoute<T extends MatchableRule>(
 					rule: winner,
 					runnerRule: source,
 					tierOverride,
+					effortOverride,
+					effortRule,
 					targets: [],
 					ambiguous: [],
 					failure: 'no_targets'
 				};
 			}
 			tierOverride ??= source.targets[0]!.tier;
+			if (effortOverride === null && source.targets[0]!.effort) {
+				effortOverride = source.targets[0]!.effort;
+				effortRule = source;
+			}
 			continue;
 		}
-		const targets = tierOverride
-			? source.targets.map((target) => ({ ...target, tier: tierOverride }))
-			: source.targets.map((target) => ({ ...target }));
+		const targets = source.targets.map((target) => ({
+			...target,
+			...(tierOverride ? { tier: tierOverride } : {}),
+			...(effortOverride ? { effort: effortOverride } : {})
+		}));
 		return {
 			rule: winner,
 			runnerRule: source,
 			tierOverride,
+			effortOverride,
+			effortRule,
 			targets,
 			ambiguous: [],
 			failure: targets.length === 0 ? 'no_targets' : null
@@ -146,6 +163,8 @@ export function resolveRoute<T extends MatchableRule>(
 			rule: null,
 			runnerRule: null,
 			tierOverride: null,
+			effortOverride: null,
+			effortRule: null,
 			targets: [],
 			ambiguous: [],
 			failure: 'no_rule'
@@ -154,6 +173,8 @@ export function resolveRoute<T extends MatchableRule>(
 		rule: winner,
 		runnerRule: null,
 		tierOverride,
+		effortOverride,
+		effortRule,
 		targets: [],
 		ambiguous: [],
 		failure: 'no_runner_rule'
@@ -229,6 +250,8 @@ export interface ResolvedTier {
 	tier: ModelTier;
 	/** Null when the runner cannot vary its model (custom harness). */
 	model: string | null;
+	/** Runner-tier fallback, when configured. */
+	effort: string | null;
 }
 
 function parseJson<T>(raw: string | null): T | null {
@@ -248,14 +271,110 @@ function parseJson<T>(raw: string | null): T | null {
  */
 export function resolveTier(runner: TierResolvable, requested: ModelTier | null): ResolvedTier {
 	const tier = requested ?? ((runner.default_tier || 'balanced') as ModelTier);
-	const overrides = parseJson<Record<string, { model?: string } | string>>(runner.tiers);
+	const overrides = parseJson<Record<string, { model?: string; effort?: string } | string>>(
+		runner.tiers
+	);
 	const override = overrides?.[tier];
 	if (override) {
 		const model = typeof override === 'string' ? override : override.model;
-		if (model) return { tier, model };
+		if (model)
+			return {
+				tier,
+				model,
+				effort: typeof override === 'string' ? null : (override.effort ?? null)
+			};
 	}
 	const builtins = builtinTierModels(runner);
-	return { tier, model: builtins?.[tier] ?? null };
+	return { tier, model: builtins?.[tier] ?? null, effort: null };
+}
+
+export type EffortDeliveryMode = 'enforce' | 'legacy_tier' | 'none';
+export interface EffortResolution {
+	requested: string | null;
+	resolved: string | null;
+	deliveryMode: EffortDeliveryMode;
+	compatible: boolean;
+	reason: string | null;
+}
+
+/** Resolve intent and eligibility against the final exact model. */
+export function resolveEffort(
+	runner: TierResolvable & { effort_capabilities?: string | null },
+	tier: ResolvedTier,
+	routedEffort: string | null
+): EffortResolution {
+	const resolved = routedEffort ?? tier.effort;
+	if (!resolved)
+		return {
+			requested: null,
+			resolved: null,
+			deliveryMode: 'none',
+			compatible: true,
+			reason: null
+		};
+	if (!tier.model)
+		return {
+			requested: routedEffort,
+			resolved,
+			deliveryMode: 'none',
+			compatible: false,
+			reason: 'unsupported_harness: this harness has no model effort control'
+		};
+	if (runner.type === 'claude_managed') {
+		const allowed = MANAGED_CLAUDE_EFFORTS[tier.model];
+		return allowed?.includes(resolved)
+			? {
+					requested: routedEffort,
+					resolved,
+					deliveryMode: 'enforce',
+					compatible: true,
+					reason: null
+				}
+			: {
+					requested: routedEffort,
+					resolved,
+					deliveryMode: 'none',
+					compatible: false,
+					reason: `unsupported_effort: ${tier.model} does not support ${resolved}`
+				};
+	}
+	if (runner.type !== 'local')
+		return {
+			requested: routedEffort,
+			resolved,
+			deliveryMode: 'none',
+			compatible: false,
+			reason: 'unsupported_harness: this provider does not accept effort'
+		};
+	if (!runner.effort_capabilities) {
+		return routedEffort
+			? {
+					requested: routedEffort,
+					resolved,
+					deliveryMode: 'none',
+					compatible: false,
+					reason: 'daemon_upgrade_required: reconnect with an effort-capable daemon'
+				}
+			: { requested: null, resolved, deliveryMode: 'legacy_tier', compatible: true, reason: null };
+	}
+	let capabilities: EffortCapabilities | null = null;
+	try {
+		capabilities = JSON.parse(runner.effort_capabilities) as EffortCapabilities;
+	} catch {
+		/* fail closed below */
+	}
+	const allowed = supportedEfforts(capabilities, tier.model);
+	return allowed?.includes(resolved)
+		? { requested: routedEffort, resolved, deliveryMode: 'enforce', compatible: true, reason: null }
+		: {
+				requested: routedEffort,
+				resolved,
+				deliveryMode: 'none',
+				compatible: false,
+				reason: allowed
+					? `unsupported_effort: ${tier.model} allows ${allowed.join(', ')}`
+					: 'capability_unavailable: exact model support was not reported'
+			};
 }
 
 // ---------------------------------------------------------------------------

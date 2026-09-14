@@ -30,7 +30,13 @@ import {
 	loadEngineRunners,
 	targetsForIssue
 } from './engine';
-import { isRoutedCandidate, resolveTier, speakingTarget, targetVerdict } from './logic';
+import {
+	isRoutedCandidate,
+	resolveEffort,
+	resolveTier,
+	speakingTarget,
+	targetVerdict
+} from './logic';
 
 export async function explainDispatch(
 	db: Kysely<Database>,
@@ -211,7 +217,11 @@ export async function explainDispatch(
 		const runner = runners.get(target.runner_id);
 		if (!runner) continue;
 		const resolved = resolveTier(runner, target.tier ?? null);
-		const { verdict, detail } = targetVerdict(runner, counts, settings.quota, issue.state.id, now);
+		const availability = targetVerdict(runner, counts, settings.quota, issue.state.id, now);
+		const effort = resolveEffort(runner, resolved, target.effort ?? null);
+		const { verdict, detail } = effort.compatible
+			? availability
+			: { verdict: 'effort_incompatible' as const, detail: effort.reason! };
 		targetVerdicts.push({
 			runner_id: runner.id,
 			runner_name: runner.name,
@@ -329,7 +339,9 @@ function verdictLine(input: {
 						: first.verdict === 'rate_limited'
 							? // The detail carries the ISO reset; the surfaces localise it.
 								`${first.runner_name} hit its usage limit — ${first.detail.replace(/^usage limit reached — /, '')}`
-							: `waiting for capacity on ${first.runner_name}`;
+							: first.verdict === 'effort_incompatible'
+								? `${first.runner_name} cannot apply the requested effort — ${first.detail}`
+								: `waiting for capacity on ${first.runner_name}`;
 	const queue =
 		input.queuePosition !== null && input.queuePosition > 0
 			? ` (${input.queuePosition} eligible issue${input.queuePosition === 1 ? '' : 's'} ahead)`

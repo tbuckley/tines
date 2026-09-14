@@ -1,6 +1,7 @@
 import { json } from '@sveltejs/kit';
 import { api, apiContext, ApiFail, notFound } from '$lib/server/api/core';
-import { getUsageEvidence } from '$lib/server/api/usage-evidence';
+import { getUsageEvidence, type EvidenceRequest } from '$lib/server/api/usage-evidence';
+import { getCohortUsageEvidence } from '$lib/server/api/usage-cohorts';
 import { getIssueUsage, getUsage } from '$lib/server/api/usage';
 import { usageKeyMaterial, verifyUsageScope } from '$lib/server/usage-scope';
 import type { RequestHandler } from './$types';
@@ -49,15 +50,19 @@ export const GET: RequestHandler = api(async (event) => {
 		});
 	}
 	if (scope.owner !== actor.userId) throw notFound();
-	const kind = (params.get('kind') ?? 'issues') as 'issues' | 'runs';
-	const population = (params.get('population') ?? 'finalized') as 'finalized' | 'pending';
-	const sort = (params.get('sort') ?? (population === 'pending' ? 'time' : 'cost')) as
-		'cost' | 'time';
+	const kind = (params.get('kind') ?? 'issues') as 'issues' | 'runs' | 'entries';
+	const population = (params.get('population') ??
+		(scope.mode === 'cohort' && kind !== 'runs' ? 'all' : 'finalized')) as
+		'all' | 'finalized' | 'pending';
+	const sort = (params.get('sort') ??
+		(population === 'pending' || kind === 'entries' ? 'time' : 'cost')) as 'cost' | 'time';
 	const direction = (params.get('direction') ?? 'desc') as 'asc' | 'desc';
-	if (!['issues', 'runs'].includes(kind))
-		throw new ApiFail(422, 'invalid_field', 'kind must be issues or runs', { field: 'kind' });
-	if (!['finalized', 'pending'].includes(population))
-		throw new ApiFail(422, 'invalid_field', 'population must be finalized or pending', {
+	if (!['issues', 'runs', 'entries'].includes(kind))
+		throw new ApiFail(422, 'invalid_field', 'kind must be issues, runs, or entries', {
+			field: 'kind'
+		});
+	if (!['all', 'finalized', 'pending'].includes(population))
+		throw new ApiFail(422, 'invalid_field', 'population must be all, finalized, or pending', {
 			field: 'population'
 		});
 	if (!['cost', 'time'].includes(sort))
@@ -72,24 +77,30 @@ export const GET: RequestHandler = api(async (event) => {
 			field: 'limit'
 		});
 	try {
-		const result = await getUsageEvidence(
-			db,
-			actor.userId,
-			scopeToken,
-			scope,
-			{
-				kind,
-				population,
-				member: params.get('member'),
-				sort,
-				direction,
-				limit: Number(limitText),
-				cursor: params.get('cursor')
-			},
-			material
-		);
-		if (params.has('member') && result.total_count === 0)
+		const evidenceRequest = {
+			kind,
+			population,
+			member: params.get('member'),
+			sort,
+			direction,
+			limit: Number(limitText),
+			cursor: params.get('cursor')
+		} satisfies EvidenceRequest;
+		const result =
+			scope.mode === 'cohort'
+				? await getCohortUsageEvidence(
+						db,
+						actor.userId,
+						scopeToken,
+						scope,
+						evidenceRequest,
+						material
+					)
+				: await getUsageEvidence(db, actor.userId, scopeToken, scope, evidenceRequest, material);
+		if (scope.mode !== 'cohort' && params.has('member') && result.total_count === 0)
 			throw new Error('member is not a contributor in this selection');
+		if (scope.mode === 'cohort')
+			return json(result, { headers: { 'cache-control': 'private, no-store' } });
 		const parent =
 			scope.mode === 'issue'
 				? await getIssueUsage(db, actor.userId, scope.issue, scope.cutoff)
