@@ -1967,6 +1967,48 @@
 							</Select>
 						</div>
 					</div>
+					{#if runnerHarness === 'codex'}
+						<section
+							class="bg-muted/50 space-y-2 rounded-md border p-3 text-xs"
+							aria-labelledby="codex-permissions-heading"
+						>
+							<h3 class="text-sm font-medium" id="codex-permissions-heading">
+								Configure Codex before starting the runner
+							</h3>
+							<p class="text-muted-foreground">
+								On the runner machine, merge these settings into
+								<code class="bg-muted rounded px-1 py-0.5">~/.codex/config.toml</code> for the user running
+								the daemon:
+							</p>
+							<pre class="bg-muted overflow-x-auto rounded-md border p-3 font-mono text-xs"><code
+									>{'sandbox_mode = "workspace-write"\n\n[sandbox_workspace_write]\nnetwork_access = true'}</code
+								></pre>
+							<p class="text-muted-foreground">
+								Workspace-write lets Codex edit the run's workspace. Network access lets the
+								<code class="bg-muted rounded px-1 py-0.5">tines</code> CLI reach your Tines server.
+							</p>
+							<p class="text-muted-foreground">
+								These are user-wide defaults. Network access also lets commands send data outside
+								the machine. If you use <code class="bg-muted rounded px-1 py-0.5"
+									>default_permissions</code
+								>, read the setup guide before adding this snippet.
+							</p>
+							<div class="flex flex-wrap gap-x-3 gap-y-1">
+								<a
+									class="underline underline-offset-2"
+									href="https://github.com/tbuckley/tines/blob/main/docs/runner-daemon.md#codex-permissions"
+									target="_blank"
+									rel="noreferrer">Codex setup guide</a
+								>
+								<a
+									class="underline underline-offset-2"
+									href="https://developers.openai.com/codex/config-reference"
+									target="_blank"
+									rel="noreferrer">OpenAI configuration reference</a
+								>
+							</div>
+						</section>
+					{/if}
 					{#if runnerHarness === 'custom'}
 						<div class="space-y-1.5" transition:slide={{ duration: dur() }}>
 							<label class="text-sm font-medium" for="runner-command">Command template</label>
