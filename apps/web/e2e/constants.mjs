@@ -41,7 +41,7 @@ export const SPEND = {
 	projects: {
 		alpha: { id: 'prj_e2e_spend_alpha', name: 'Spend Alpha' },
 		beta: { id: 'prj_e2e_spend_beta', name: 'Spend Beta' },
-		empty: { id: 'prj_e2e_spend_empty', name: 'Spend Empty' },
+		empty: { id: 'prj_e2e_spend_empty', name: 'SpendEmpty' + 'P'.repeat(190) },
 		pending: { id: 'prj_e2e_spend_pending', name: 'Spend Pending' },
 		unreported: { id: 'prj_e2e_spend_unreported', name: 'Spend Unreported' },
 		tokens: { id: 'prj_e2e_spend_tokens', name: 'Spend Tokens' },
@@ -51,7 +51,7 @@ export const SPEND = {
 	workflows: {
 		build: { id: 'wf_e2e_spend_build', name: 'Build' },
 		ship: { id: 'wf_e2e_spend_ship', name: 'Ship' },
-		unknown: { id: 'wf_e2e_spend_unknown', name: 'Unknown cost' }
+		unknown: { id: 'wf_e2e_spend_unknown', name: 'UnknownCost' + 'W'.repeat(189) }
 	}
 };
 

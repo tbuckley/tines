@@ -33,9 +33,14 @@
 	import IconRobot from '@tabler/icons-svelte/icons/robot';
 	import IconTrash from '@tabler/icons-svelte/icons/trash';
 	import IconX from '@tabler/icons-svelte/icons/x';
-	import { tick, untrack } from 'svelte';
+	import { onMount, tick, untrack } from 'svelte';
 	import { slide } from 'svelte/transition';
-	import { afterNavigate, goto, invalidateAll } from '$app/navigation';
+	import {
+		afterNavigate,
+		goto,
+		invalidateAll,
+		replaceState as replaceKitState
+	} from '$app/navigation';
 	import { page } from '$app/state';
 	import { api } from '$lib/api';
 	import CancelRunDialog from '$lib/components/CancelRunDialog.svelte';
@@ -72,6 +77,22 @@
 	let failedAgentsUrl = $state<URL | null>(null);
 	let navigationError = $state<string | null>(null);
 	let navigationGeneration = 0;
+	onMount(() => {
+		if (import.meta.env.VITE_TINES_E2E !== '1') return;
+		const e2eWindow = window as Window & {
+			__tinesE2EPageState?: {
+				setPageState: (state: App.PageState) => void;
+				readPageState: () => App.PageState;
+			};
+		};
+		e2eWindow.__tinesE2EPageState = {
+			setPageState: (state) => replaceKitState(page.url, state),
+			readPageState: () => page.state
+		};
+		return () => {
+			delete e2eWindow.__tinesE2EPageState;
+		};
+	});
 	async function navigateAgents(url: URL, replaceState = false) {
 		const generation = ++navigationGeneration;
 		pendingAgentsUrl = url;
