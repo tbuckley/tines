@@ -182,7 +182,7 @@ function matches(
 	return true;
 }
 
-async function configuredTimezone(db: Kysely<Database>, userId: string): Promise<unknown> {
+export async function configuredTimezone(db: Kysely<Database>, userId: string): Promise<unknown> {
 	const row = await db
 		.selectFrom('supervisor_settings')
 		.select('budget')
