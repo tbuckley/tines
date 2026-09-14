@@ -664,7 +664,7 @@ export async function loadStageStats(
 	userId: string,
 	query: StatsQuery = {},
 	now: number = Date.now(),
-	observer?: { prepared?: () => void; evaluatedState?: (stateId: string) => void }
+	observer?: { evaluatedState?: (stateId: string) => void }
 ): Promise<StageStatsReport> {
 	const windowMs = parseStatsWindow(query.window);
 	if (query.compare !== undefined && query.compare !== 'previous' && query.compare !== 'none') {
@@ -849,7 +849,6 @@ export async function loadStageStats(
 		project
 	};
 	const prepared = prepareStageStats(baseInput);
-	observer?.prepared?.();
 	const report = computePreparedStageStats(prepared, { now, windowMs, compare });
 
 	type MarkerSeed = Omit<ChangeMarker, 'effects'> & { actor: string; ruleScope: string | null };
@@ -1052,7 +1051,7 @@ export async function loadSentBackDrilldown(
 		.where(sql<string>`json_extract(created.payload, '$.kind')`, '=', 'prompt')
 		.where(sql<string>`json_extract(created.payload, '$.name')`, '=', 'instructions')
 		.where(
-			sql<string>`CASE WHEN json_type(created.payload, '$.scope_to') IS NOT NULL
+				sql<string>`CASE WHEN COALESCE(json_type(created.payload, '$.scope_to'), 'null') <> 'null'
 				THEN json_extract(created.payload, '$.scope_to.workflow_state_id')
 				ELSE json_extract(created.payload, '$.scope.workflow_state_id') END`,
 			'=',

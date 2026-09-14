@@ -1,6 +1,7 @@
 import { performance } from 'node:perf_hooks';
 import { describe, expect, it } from 'vitest';
 import {
+	computeStageStats,
 	evaluatePreparedState,
 	prepareStageStats,
 	type StatsEvent,
@@ -8,6 +9,7 @@ import {
 	type StatsRun,
 	type StatsStateMeta
 } from './stats';
+import { computeStageStats as computeLegacyStageStats } from './stats-legacy-oracle';
 
 const DAY = 86_400_000;
 const NOW = 1_789_344_000_000;
@@ -76,6 +78,32 @@ function fixture(): StatsInput {
 }
 
 describe('production-shaped prepared stats profile', () => {
+	it('matches the complete pre-refactor report and marker-window figures', () => {
+		const input = fixture();
+		expect(computeStageStats(input)).toEqual(computeLegacyStageStats(input));
+
+		const prepared = prepareStageStats(input);
+		for (let index = 0; index < 12; index++) {
+			const until = NOW - index * 3_600_000;
+			const windowMs = 7 * DAY - index * 1_000;
+			const legacy = computeLegacyStageStats({
+				...input,
+				now: until,
+				windowMs,
+				compare: false
+			});
+			const legacyByState = new Map(
+				legacy.states.map((state) => [state.state_id, state.current])
+			);
+			for (const state of input.states) {
+				expect(
+					evaluatePreparedState(prepared, state.id, until - windowMs, until),
+					`${state.id} at generated marker window ${index}`
+				).toEqual(legacyByState.get(state.id) ?? null);
+			}
+		}
+	});
+
 	it('reports repeated preparation versus one shared preparation', () => {
 		const input = fixture();
 		const bounds = Array.from({ length: 40 }, (_, index) => ({

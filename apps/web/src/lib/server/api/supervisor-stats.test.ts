@@ -1,4 +1,16 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const statsCalls = vi.hoisted(() => ({ preparations: 0 }));
+vi.mock('$lib/server/supervisor/stats', async (importOriginal) => {
+	const actual = await importOriginal<typeof import('$lib/server/supervisor/stats')>();
+	return {
+		...actual,
+		prepareStageStats: (input: Parameters<typeof actual.prepareStageStats>[0]) => {
+			statsCalls.preparations++;
+			return actual.prepareStageStats(input);
+		}
+	};
+});
 import { createTestDb, type TestDb } from './test-db';
 import { loadSentBackDrilldown, loadStageStats, parseStatsWindow } from './supervisor';
 import {
@@ -22,6 +34,10 @@ import {
 const MIN = 60_000;
 const HOUR = 60 * MIN;
 const DAY = 24 * HOUR;
+
+beforeEach(() => {
+	statsCalls.preparations = 0;
+});
 
 function setup(): TestDb {
 	const t = createTestDb();
@@ -365,13 +381,11 @@ describe('loadStageStats', () => {
 					JSON.stringify({ workflow_state_id: STAGE_B }),
 					NOW - (index + 1) * 4 * HOUR
 				);
-		let preparations = 0;
 		const evaluated: string[] = [];
 		const report = await loadStageStats(t.db, USER, {}, NOW, {
-			prepared: () => preparations++,
 			evaluatedState: (stateId) => evaluated.push(stateId)
 		});
-		expect(preparations).toBe(1);
+		expect(statsCalls.preparations).toBe(1);
 		expect(report.markers).toHaveLength(20);
 		expect(evaluated).toEqual(Array(40).fill(STAGE_B));
 	});
@@ -507,6 +521,46 @@ describe('loadSentBackDrilldown', () => {
 		]);
 	});
 
+	it('falls back to scope when scope_to is JSON null', async () => {
+		const t = setup();
+		const issue = addIssue(t, { id: 'iss_null_scope', state: STAGE_A, workflow: 'wf_two' });
+		addTransitionEvent(t, {
+			issueId: issue,
+			apiKeyId: null,
+			at: NOW - DAY,
+			from: STAGE_B,
+			to: STAGE_A
+		});
+		t.sqlite
+			.prepare(
+				`INSERT INTO event (id,user_id,type,actor_user_id,payload,created_at) VALUES
+				 ('evt_null_scope_created',?,'context.created',?,?,?),
+				 ('evt_null_scope_updated',?,'context.updated',?,?,?)`
+			)
+			.run(
+				USER,
+				USER,
+				JSON.stringify({
+					context_id: 'ctx_null_scope',
+					kind: 'prompt',
+					name: 'instructions',
+					scope_to: null,
+					scope: { workflow_state_id: STAGE_B }
+				}),
+				NOW - 3 * DAY,
+				USER,
+				USER,
+				JSON.stringify({ context_id: 'ctx_null_scope', version: 2 }),
+				NOW - 2 * DAY
+			);
+
+		const detail = await loadSentBackDrilldown(t.db, USER, { state: STAGE_B }, NOW);
+		expect(detail.items[0]).toMatchObject({
+			prompt_context_id: 'ctx_null_scope',
+			prompt_version: 2
+		});
+	});
+
 	it('does not transfer unrelated prompt lifecycle generations', async () => {
 		const t = setup();
 		const issue = addIssue(t, { id: 'iss_prompt_filter', state: STAGE_A, workflow: 'wf_two' });
@@ -528,13 +582,16 @@ describe('loadSentBackDrilldown', () => {
 			('evt_unrelated_update','${USER}','context.updated','${USER}',
 			 '{"context_id":"ctx_unrelated","version":99}',${NOW - 2 * DAY});
 		`);
-		const queries = t.spyOnQueries();
+		const queryResults = t.spyOnQueryResults();
 		const detail = await loadSentBackDrilldown(t.db, USER, { state: STAGE_B }, NOW);
 		expect(detail.items[0]).toMatchObject({ prompt_context_id: 'ctx_relevant', prompt_version: 2 });
-		const lifecycleQuery = queries().find((query) =>
-			/json_extract[\s\S]* in \(select /i.test(query)
+		const lifecycleRead = queryResults().find((query) =>
+			/json_extract[\s\S]* in \(select /i.test(query.sql)
 		);
-		expect(lifecycleQuery).toMatch(/ in \(select /i);
+		expect(lifecycleRead?.rows.map((row) => row.id)).toEqual([
+			'evt_relevant_created',
+			'evt_relevant_update'
+		]);
 	});
 });
 
