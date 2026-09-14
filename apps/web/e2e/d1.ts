@@ -13,13 +13,17 @@ function diagnosticText(value: unknown): string | undefined {
 function isDatabaseLock(error: unknown): boolean {
 	if (typeof error !== 'object' || error === null) return false;
 	const { stdout, stderr } = error as { stdout?: unknown; stderr?: unknown };
-	return [stderr, stdout].some((diagnostic) => {
-		const text = diagnosticText(diagnostic);
-		return (
-			text !== undefined &&
-			(/\bSQLITE_BUSY(?:_[A-Z0-9]+)*\b/.test(text) || /database is locked/i.test(text))
-		);
-	});
+	const diagnostics = [stderr, stdout]
+		.map((diagnostic) => diagnosticText(diagnostic))
+		.filter((diagnostic): diagnostic is string => diagnostic !== undefined);
+	const sqliteCodes = diagnostics.flatMap(
+		(diagnostic) => diagnostic.match(/\bSQLITE_[A-Z0-9]+(?:_[A-Z0-9]+)*\b/g) ?? []
+	);
+	if (sqliteCodes.some((code) => !/^SQLITE_BUSY(?:_[A-Z0-9]+)*$/.test(code))) return false;
+	return diagnostics.some(
+		(diagnostic) =>
+			/\bSQLITE_BUSY(?:_[A-Z0-9]+)*\b/.test(diagnostic) || /database is locked/i.test(diagnostic)
+	);
 }
 
 function execute(sql: string): string {

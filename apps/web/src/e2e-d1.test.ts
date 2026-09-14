@@ -135,6 +135,12 @@ describe('E2E D1 helper', () => {
 
 	it.each([
 		['missing table', processError('failed', { stderr: 'no such table: probe: SQLITE_ERROR' })],
+		[
+			'busy identifier reported with a permanent SQLite result code',
+			processError('failed', {
+				stdout: 'no such column: SQLITE_BUSY at offset 7: SQLITE_ERROR'
+			})
+		],
 		['syntax error', processError('failed', { stderr: 'near nope: syntax error' })],
 		['constraint error', processError('failed', { stderr: 'UNIQUE constraint failed' })],
 		['missing executable', processError('spawnSync pnpm ENOENT')],
