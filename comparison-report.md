@@ -1,6 +1,6 @@
 # Comparison and adoption report
 
-Decision: adopt selected launch-comment presentation on the narrow observed basis that all task classes preserved correctness while aggregate input fell; retain scoped skills for conditional-procedure delivery because the extraction contract and retrieval worked, but treat their efficiency as inconclusive. Do not change production effort defaults.
+Decision: reject adoption from these trials. The saved outputs pass the repaired semantic content oracle, but the selected-history arm did not execute omitted-comment recovery and both skill-reading candidates violated the mandatory routine-before-skill order. Skill efficiency and comment-trimming efficiency therefore remain inconclusive. Do not change production effort defaults.
 
 ## Frozen protocol and complete ledger
 
@@ -12,12 +12,12 @@ Attempts 1–4 are preserved unchanged in `comparison-fixtures/effort-routine/ob
 | 2 | effort / high | pass | 12 s | 66,155 | 56,192 | 9,963 | 306 | 0 |
 | 3 | effort / low | pass | 15 s | 66,070 | 51,968 | 14,102 | 296 | 0 |
 | 4 | Claude | fail: authentication | 0.04 s | null | null | null | null | null |
-| 5 | comments / full | all 3 pass | ~67 s | 211,499 | 200,448 | 11,051 | 2,156 | 325 |
-| 6 | comments / selected | all 3 pass | 74.592 s | 110,801 | 101,888 | 8,913 | 1,980 | 306 |
+| 5 | comments / full | content pass; ordering fail | null | 211,499 | 200,448 | 11,051 | 2,156 | 325 |
+| 6 | comments / selected | recovery and ordering fail | 74.592 s | 110,801 | 101,888 | 8,913 | 1,980 | 306 |
 | 7 | procedure / inline | all 3 pass | 80.674 s | 142,670 | 114,304 | 28,366 | 2,039 | 392 |
-| 8 | procedure / skill | all 3 pass | 96.58 s | 216,285 | 191,616 | 24,669 | 2,425 | 575 |
+| 8 | procedure / skill | content pass; ordering fail | 96.58 s | 216,285 | 191,616 | 24,669 | 2,425 | 575 |
 
-Provider totals include the whole invocation through the model's own output validation. Cache-write is reported as zero for attempts 5–8. Acceptance-check wall time outside the invocation was below one second. Attempt 5's model call and evidence completed, but the run-receipt writer referenced a misspelled variable after saving raw JSONL and output; that deterministic repair was committed before attempt 6 and did not trigger another call. Its elapsed time is reconstructed and marked approximate. Null means unknown.
+Provider totals include the whole invocation through the model's own output validation. Cache-write is reported as zero for attempts 5–8. Acceptance-check wall time outside the invocation was below one second. Attempt 5's model call saved raw JSONL and output, but the receipt writer failed; start, end, elapsed and input hashes are therefore null rather than reconstructed. Null means unknown.
 
 Opening text size and whole-task consumption are separate. The frozen inputs and SHA-256 hashes are recorded in each attempt receipt (except the documented attempt-5 postprocess failure), and the accepted `/520` full/selected snapshots remain produced by the real builder. Cache differences, single-pair samples, compound-task carryover, and model nondeterminism are confounders. No weekly-quota conversion is claimed.
 
@@ -25,12 +25,12 @@ Opening text size and whole-task consumption are separate. The frozen inputs and
 
 | Change | Task class | Codex decision | Basis |
 | --- | --- | --- | --- |
-| Comment trimming | routine | adopt narrowly | Correct; selected arm retained universal rules and unknown fields without skill retrieval. |
-| Comment trimming | conditional | adopt narrowly | Correct; selected arm read the same procedure and preserved inspection, fresh attachment, Re-propose, Root provenance, and no self-approval. |
-| Comment trimming | long history | adopt narrowly | Correct; old human decision remained inline and `cmt_old_detail` was recovered with the existing JSON/jq recipe. |
-| Inline → skill | routine | inconclusive efficiency | Correct and did not need procedure content, but only aggregate accounting is available. |
-| Inline → skill | conditional | inconclusive efficiency | Correct retrieval and adherence; the skill arm used more aggregate input/output and time, while uncached input was lower. |
-| Inline → skill | long history | inconclusive efficiency | Correct in both arms; placement was unrelated to history and compound usage cannot be allocated. |
+| Comment trimming | routine | reject observed candidate | Attempt 6 read the skill before its trace finalized routine; the mandatory ordering check failed. |
+| Comment trimming | conditional | inconclusive | Saved text passes the semantic oracle, but the arm failed mandatory ordering. Aggregate savings cannot rescue it. |
+| Comment trimming | long history | reject observed candidate | No recovery request occurred. The answer repeated a body and command supplied inline, so omitted-comment recovery is unobserved. |
+| Inline → skill | routine | reject observed candidate | Attempt 8 read the skill before its trace finalized routine. |
+| Inline → skill | conditional | inconclusive efficiency | Saved text passes semantic checks, but mandatory ordering failed and aggregate/cache results conflict. |
+| Inline → skill | long history | inconclusive | Placement was unrelated to history and compound usage cannot be allocated. |
 | High → low effort | routine | inconclusive | Prior pair preserved correctness but had mixed cache/accounting and no repetition. |
 | High → low effort | conditional / long | not trialed | Remaining allowance was prioritized for the missing comment/skill validation. |
 
@@ -38,15 +38,16 @@ Claude remains unavailable because the prior authentication/accounting stop proh
 
 ## Extraction evidence
 
-`apps/web/src/lib/server/api/fixtures/launch-context/scoped-extraction/` contains global, project, Root-state, and combined project/Root cases. Every case freezes exact before/after inline bytes, complete skill files, source/destination versions and scopes, proposal disposition, one-line read condition/path, needed/unneeded tasks, and the effective winner. Update cases retain unrelated files. The separate override matrix pins global → project → state → combined rank, base inheritance, and the combined-base-over-state-leaf rule.
+`apps/web/src/lib/server/api/fixtures/launch-context/scoped-extraction/` contains global, project, Root-state, and combined project/Root source packages. `apps/web/e2e/context-extraction.spec.ts` now executes those packages against a fresh Worker/D1: it creates the real scopes, uses the CLI for file-preserving skill updates and exports, resolves inherited effective context, records needed/no-read traces, and performs source CAS only after verification.
 
-`lifecycle.json` records destination write/read/effective resolution/fresh export before source CAS. Proposed, rejected, unmentioned, invalid/missing/stale destinations, wrong overrides, nonempty exports, material source conflicts, interrupted resumes, changed resumes, and idempotent replay have explicit source-retention outcomes. These are synthetic isolated-stack fixtures, not authorization to migrate shared context. The real-builder test checks the package and ordering invariants; independent review must inspect the exact bodies and receipts, not infer acceptance from a green suite alone.
+The Playwright attachment `scoped-extraction-receipts.json` is the runtime record: separate per-scope item IDs, versions, full scopes, inheritance provenance, exported paths, failure statuses and source bodies in monotonic operation order. It covers rejected/unmentioned review state, invalid destinations, interrupted duplication, nonempty exports, wrong effective overrides, material source conflicts, resume re-verification and unavailable destinations. These isolated fixtures are not authorization to migrate shared context.
 
 ## Reproduction and rollback
 
 ```sh
 pnpm --filter @tines/web exec vitest run src/lib/server/api/fixtures/launch-context/generate.test.ts src/lib/server/api/context.test.ts src/lib/server/api/context-inheritance.test.ts
 node comparison-fixtures/context-validation/check.mjs comparison-fixtures/context-validation/results/attempt-8/output.json
+node comparison-fixtures/context-validation/check.mjs --self-test
 ```
 
-Do not rerun model attempts merely to improve results; ledger numbers 9–12 are unused reserve, not a fresh allowance. To roll back a failed extraction, restore the exact inline source before removing a verified destination. For a comment regression, restore the prior presentation while retaining stored full history. Historical effort rollback remains configuration-first: remove routed effort, clear tier effort if required, and leave additive evidence intact. No fixture changed production configuration or defaults.
+Do not make more model calls: the mandatory-instruction stop rule fired with attempts 1–8 spent. The repaired harness withholds the old body, pins a fixture-only key to a loopback issue server, and records recovery requests for any future authorized run. To roll back a failed extraction, restore the exact inline source before removing a verified destination. For a comment regression, restore the prior presentation while retaining stored full history. Historical effort rollback remains configuration-first. No fixture changed production configuration or defaults.

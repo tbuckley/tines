@@ -3,7 +3,8 @@
 	"fixture_only": true,
 	"instructions": {
 		"distilling": { "version": 3, "source": "Tines/519 distill-report v2" },
-		"applying": { "version": 2, "source": "Tines/519 distill-report v2" }
+		"applying": { "version": 2, "source": "Tines/519 distill-report v2" },
+		"complete_bodies": "approved-instructions.md"
 	},
 	"cases": [
 		{
@@ -12,7 +13,7 @@
 				"kind": "prompt",
 				"name": "planning-guide",
 				"version": 7,
-				"scope": { "project": null, "workflow_state": null },
+				"scope": { "project": null, "workflow_state": null, "issue": null, "label": null },
 				"before": "global/before.md",
 				"after": "global/after.md"
 			},
@@ -20,7 +21,7 @@
 				"name": "planning-procedures",
 				"mode": "create",
 				"version": null,
-				"scope": { "project": null, "workflow_state": null },
+				"scope": { "project": null, "workflow_state": null, "issue": null, "label": null },
 				"files": ["global/skill/SKILL.md"]
 			},
 			"review": { "proposal": "global-p1", "decision": "approved", "approved_source_version": 7 },
@@ -35,7 +36,7 @@
 				"kind": "prompt",
 				"name": "planning-guide",
 				"version": 11,
-				"scope": { "project": "P", "workflow_state": null },
+				"scope": { "project": "P", "workflow_state": null, "issue": null, "label": null },
 				"before": "project/before.md",
 				"after": "project/after.md"
 			},
@@ -43,7 +44,7 @@
 				"name": "planning-procedures",
 				"mode": "update",
 				"version": 3,
-				"scope": { "project": "P", "workflow_state": null },
+				"scope": { "project": "P", "workflow_state": null, "issue": null, "label": null },
 				"files": ["project/skill/SKILL.md", "project/skill/notes/keep.txt"]
 			},
 			"review": {
@@ -62,7 +63,7 @@
 				"kind": "prompt",
 				"name": "rework-guide",
 				"version": 5,
-				"scope": { "project": null, "workflow_state": "Root" },
+				"scope": { "project": null, "workflow_state": "Root", "issue": null, "label": null },
 				"before": "state/before.md",
 				"after": "state/after.md"
 			},
@@ -70,7 +71,7 @@
 				"name": "planning-procedures",
 				"mode": "create",
 				"version": null,
-				"scope": { "project": null, "workflow_state": "Root" },
+				"scope": { "project": null, "workflow_state": "Root", "issue": null, "label": null },
 				"files": ["state/skill/SKILL.md"]
 			},
 			"review": { "proposal": "state-p1", "decision": "approved", "approved_source_version": 5 },
@@ -85,7 +86,7 @@
 				"kind": "journal",
 				"name": "root-journal",
 				"version": 13,
-				"scope": { "project": "P", "workflow_state": "Root" },
+				"scope": { "project": "P", "workflow_state": "Root", "issue": null, "label": null },
 				"before": "combined/before.md",
 				"after": "combined/after.md"
 			},
@@ -93,7 +94,7 @@
 				"name": "planning-procedures",
 				"mode": "update",
 				"version": 4,
-				"scope": { "project": "P", "workflow_state": "Root" },
+				"scope": { "project": "P", "workflow_state": "Root", "issue": null, "label": null },
 				"files": ["combined/skill/SKILL.md", "combined/skill/notes/keep.txt"]
 			},
 			"review": {

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
+import { createServer } from 'node:http';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '../..');
@@ -42,9 +43,54 @@ writeFileSync(join(stage, 'context.md'), `${parts.join('\n\n')}\n`);
 cpSync(join(here, 'task.md'), join(stage, 'task.md'));
 const prompt = readFileSync(join(stage, 'task.md'), 'utf8');
 const startedAt = new Date();
+const recoveryRequests = [];
+const recoveryServer = createServer((req, res) => {
+	const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+	recoveryRequests.push({ method: req.method, path: url.pathname, search: url.search });
+	res.writeHead(200, { 'content-type': 'application/json' });
+	if (url.pathname.endsWith('/projects')) {
+		res.end(JSON.stringify({ items: [{ id: 'prj_fixture', name: 'Fixture' }], next_cursor: null }));
+		return;
+	}
+	res.end(
+		JSON.stringify({
+			id: 'iss_fixture',
+			project_name: 'Fixture',
+			project_archived_at: null,
+			number: 520,
+			title: 'Recovery fixture',
+			description: '',
+			labels: [],
+			links: { blocked_by: [], blocks: [], duplicated_by: [] },
+			duplicate_of: null,
+			workflow: { name: 'Engineering' },
+			state: { name: 'Implementation', category: 'active' },
+			effective_state: { name: 'Implementation', category: 'active' },
+			allowed_transitions: [],
+			comments: [
+				{
+					id: 'cmt_old_detail',
+					issue_id: 'iss_fixture',
+					body: 'Recovered current body: use the existing JSON command.',
+					actor: {
+						user_id: 'u_fixture',
+						user_name: 'Fixture Human',
+						api_key_id: null,
+						api_key_name: null
+					},
+					created_at: 1_700_000_000_000,
+					updated_at: null
+				}
+			],
+			updated_at: 1_700_000_000_000
+		})
+	);
+});
+await new Promise((resolveListen) => recoveryServer.listen(0, '127.0.0.1', resolveListen));
+const recoveryUrl = `http://127.0.0.1:${recoveryServer.address().port}`;
 const env = { ...process.env };
-delete env.TINES_API_KEY;
-delete env.TINES_API_URL;
+env.TINES_API_KEY = 'fixture-only-key';
+env.TINES_API_URL = recoveryUrl;
 const child = spawn(
 	'codex',
 	[
@@ -77,8 +123,13 @@ const timer = setTimeout(() => {
 const exitCode = await new Promise((resolveExit) => child.on('close', resolveExit));
 clearTimeout(timer);
 const endedAt = new Date();
+await new Promise((resolveClose) => recoveryServer.close(resolveClose));
 writeFileSync(join(resultDir, 'raw.jsonl'), stdout);
 writeFileSync(join(resultDir, 'stderr.txt'), stderr);
+writeFileSync(
+	join(resultDir, 'recovery-requests.json'),
+	`${JSON.stringify(recoveryRequests, null, 2)}\n`
+);
 if (readFileSafe(join(stage, 'output.json')) !== null) {
 	cpSync(join(stage, 'output.json'), join(resultDir, 'output.json'));
 }

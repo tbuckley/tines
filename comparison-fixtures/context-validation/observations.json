@@ -12,8 +12,9 @@
 			"pair": "comment-history",
 			"arm": "full",
 			"accepted": { "routine": true, "conditional": true, "old_decision": true },
-			"elapsed_seconds": 67,
-			"postprocess": "run receipt writer failed after raw evidence and output were saved; repaired before attempt 6",
+			"mandatory_instruction_adherence": false,
+			"elapsed_seconds": null,
+			"postprocess": "run receipt writer failed after raw evidence and output were saved; start/end/elapsed and input hashes are unknown. The skill was read before any durable routine-finalization event.",
 			"usage": {
 				"input_tokens": 211499,
 				"cached_input_tokens": 200448,
@@ -26,7 +27,9 @@
 			"number": 6,
 			"pair": "comment-history",
 			"arm": "selected",
-			"accepted": { "routine": true, "conditional": true, "old_decision": true },
+			"accepted": { "routine": true, "conditional": true, "old_decision": false },
+			"mandatory_instruction_adherence": false,
+			"recovery": "not executed; the candidate repeated text supplied inline and made no Tines request",
 			"elapsed_seconds": 74.592,
 			"usage": {
 				"input_tokens": 110801,
@@ -41,6 +44,7 @@
 			"pair": "procedure-placement",
 			"arm": "inline",
 			"accepted": { "routine": true, "conditional": true, "old_decision": true },
+			"mandatory_instruction_adherence": true,
 			"elapsed_seconds": 80.674,
 			"usage": {
 				"input_tokens": 142670,
@@ -55,8 +59,9 @@
 			"pair": "procedure-placement",
 			"arm": "skill",
 			"accepted": { "routine": true, "conditional": true, "old_decision": true },
+			"mandatory_instruction_adherence": false,
 			"elapsed_seconds": 96.58,
-			"retrieval": "skills/planning-procedures/SKILL.md read after routine analysis began and before conditional output",
+			"retrieval": "skills/planning-procedures/SKILL.md was read before the trace claimed routine finalization",
 			"usage": {
 				"input_tokens": 216285,
 				"cached_input_tokens": 191616,
@@ -67,5 +72,5 @@
 		}
 	],
 	"remaining_attempts": 4,
-	"stop_reason": "Both planned pairs completed; reserve attempts were not needed."
+	"stop_reason": "Mandatory ordering and recovery regressions were found during independent review; no more model calls are permitted."
 }
