@@ -47,6 +47,25 @@ async function openExport(page: Page) {
 	await expect(page.getByRole('heading', { name: 'Workflow graph and gates' })).toBeVisible();
 }
 
+async function rebuildCandidate(page: Page) {
+	const rebuild = page.getByRole('button', { name: 'Rebuild from source' });
+	const rebuilt = page.waitForResponse(
+		(response) =>
+			new URL(response.url()).pathname === `/api/v1/workflows/${workflowId}/export` &&
+			response.request().method() === 'GET' &&
+			response.ok()
+	);
+	await rebuild.click();
+	await (await rebuilt).finished();
+	await page.evaluate(
+		() =>
+			new Promise<void>((resolve) =>
+				requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+			)
+	);
+	await expect(rebuild).toBeEnabled();
+}
+
 function candidateInputs(page: Page) {
 	return page.getByRole('region', { name: '2. Candidate inputs and exact text uses' });
 }
@@ -694,37 +713,43 @@ test('reviews optional schedule and tier configuration and repairs project scope
 	await expect(page.getByText(scheduleId)).toHaveCount(0);
 });
 
-test('clears a stale author input selection when the candidate is rebuilt', async ({ page }) => {
+test('does not restore a stale generated input selection when its ID returns', async ({ page }) => {
 	await openExport(page);
-	await page.getByLabel('Key').fill('stale_key');
-	await page.getByRole('button', { name: 'Add typed declaration' }).click();
-	const stale = declaredInput(page, 'stale_key');
-	await expect(stale).toHaveAttribute('aria-pressed', 'true');
+	await page.getByLabel('Source project').selectOption(projectId);
+	const schedule = page.getByRole('checkbox', { name: new RegExp(scheduleName) });
+	await schedule.check();
+	await rebuildCandidate(page);
+	const destination = declaredInput(page, 'destination_project');
+	await destination.click();
+	await expect(destination).toHaveAttribute('aria-pressed', 'true');
 	await expect(candidateInputs(page).getByText('Selected', { exact: true })).toHaveCount(1);
 	await page
 		.getByLabel('Exact candidate field')
 		.selectOption({ label: 'instructions — prompt body' });
 	const replace = page.getByRole('button', { name: 'Replace selection with declared token' });
 	await expect(replace).toBeEnabled();
-	await expect(inputReplacement(page)).toContainText('Using stale_key');
-	page.once('dialog', (dialog) => dialog.accept());
-	await page.getByRole('button', { name: 'Rebuild from source' }).click();
-	await expect(page.getByText('Candidate rebuilt from source.')).toBeVisible();
-	await expect(page.getByRole('button', { name: /stale_key · text/ })).toHaveCount(0);
+	await expect(inputReplacement(page)).toContainText('Using destination_project');
+
+	await schedule.uncheck();
+	await rebuildCandidate(page);
+	await expect(destination).toHaveCount(0);
 	await expect(candidateInputs(page).getByText('Selected', { exact: true })).toHaveCount(0);
 	await expect(inputReplacement(page)).not.toContainText('Using');
 	await expect(replace).toBeDisabled();
-	await expect(page.getByRole('button', { name: 'Save candidate text' })).toBeEnabled();
-	await page.getByRole('button', { name: 'Validate', exact: true }).click();
-	await expect(page.getByText(/^Validated sha256:/)).toBeVisible();
-	await expect(page.getByRole('button', { name: 'Add typed declaration' })).toBeEnabled();
+
+	await schedule.check();
+	await rebuildCandidate(page);
+	await expect(destination).toHaveAttribute('aria-pressed', 'false');
+	await expect(candidateInputs(page).getByText('Selected', { exact: true })).toHaveCount(0);
+	await expect(inputReplacement(page)).not.toContainText('Using');
+	await expect(replace).toBeDisabled();
 });
 
 test('retains a generated input selection across an equivalent rebuild', async ({ page }) => {
 	await openExport(page);
 	await page.getByLabel('Source project').selectOption(projectId);
 	await page.getByRole('checkbox', { name: new RegExp(scheduleName) }).check();
-	await page.getByRole('button', { name: 'Rebuild from source' }).click();
+	await rebuildCandidate(page);
 	const destination = declaredInput(page, 'destination_project');
 	await expect(destination).toHaveAttribute('aria-pressed', 'false');
 	await expect(candidateInputs(page).getByText('Selected', { exact: true })).toHaveCount(0);
@@ -739,7 +764,7 @@ test('retains a generated input selection across an equivalent rebuild', async (
 	await destination.click();
 	await expect(destination).toHaveAttribute('aria-pressed', 'true');
 	await expect(inputReplacement(page)).toContainText('Using destination_project');
-	await page.getByRole('button', { name: 'Rebuild from source' }).click();
+	await rebuildCandidate(page);
 	await expect(destination).toHaveAttribute('aria-pressed', 'true');
 	await expect(candidateInputs(page).getByText('Selected', { exact: true })).toHaveCount(1);
 	await expect(inputReplacement(page)).toContainText('Using destination_project');
