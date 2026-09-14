@@ -23,6 +23,30 @@ const CLI_DIR = join(ROOT, 'packages/cli');
 const TSX = join(CLI_DIR, 'node_modules/.bin/tsx');
 const CLI = join(CLI_DIR, 'src/index.ts');
 
+const CONDITIONAL_MARKER = {
+	global: 'Inspect the target workflow',
+	project: "Inspect project P's Engineering workflow",
+	state: 'Read the rejection and the current design',
+	combined: 'Re-read the rejection and current source/destination versions'
+} as const;
+
+const UNIVERSAL_MARKER = {
+	global: 'Always preserve human decisions',
+	project: 'Always preserve exact current comment bodies',
+	state: 'Always verify acceptance',
+	combined: 'Always preserve source-version conflicts'
+} as const;
+
+const READ_CONDITION = {
+	global:
+		'Read skills/planning-procedures/SKILL.md when a task must enter or re-propose planning work.',
+	project: 'Read skills/planning-procedures/SKILL.md when planning work for project P.',
+	state:
+		'Read skills/planning-procedures/SKILL.md only when a Root or inheriting child task requires rework.',
+	combined:
+		'Read skills/planning-procedures/SKILL.md when project P work inherited from Root needs a second proposal.'
+} as const;
+
 function cli(args: string[]): string {
 	return execFileSync(TSX, [CLI, ...args, '--url', BASE_URL, '--api-key', ALICE.apiKey], {
 		encoding: 'utf8',
@@ -70,6 +94,23 @@ test('four scoped extractions execute destination-first and retain sources on ev
 		const issue = await body<IssueDetail>(
 			await api.post(`/api/v1/projects/${project.id}/issues`, { title: `${caseId} consumer` })
 		);
+		const otherProject = await body<Project>(
+			await api.post('/api/v1/projects', {
+				name: `extract-${caseId}-other-${runId}`,
+				default_workflow_id: workflow.id
+			})
+		);
+		const projectOtherIssue = await body<IssueDetail>(
+			await api.post(`/api/v1/projects/${project.id}/issues`, {
+				title: `${caseId} project other-state consumer`,
+				state: 'Other'
+			})
+		);
+		const otherProjectChildIssue = await body<IssueDetail>(
+			await api.post(`/api/v1/projects/${otherProject.id}/issues`, {
+				title: `${caseId} other-project child consumer`
+			})
+		);
 		const rootState = workflow.states.find((state) => state.name === 'Root')!;
 		const scope = {
 			...(caseId === 'project' || caseId === 'combined' ? { project_id: project.id } : {}),
@@ -80,6 +121,25 @@ test('four scoped extractions execute destination-first and retain sources on ev
 		const skillBody = readFileSync(join(FIXTURES, caseId, 'skill/SKILL.md'), 'utf8');
 		const keepPath = join(FIXTURES, caseId, 'skill/notes/keep.txt');
 		const keep = ['project', 'combined'].includes(caseId) ? readFileSync(keepPath, 'utf8') : null;
+		for (const decision of ['proposed', 'rejected', 'unmentioned'] as const) {
+			const reviewSource = await body<ContextItem>(
+				await api.post('/api/v1/context', {
+					kind: 'prompt',
+					name: `review-${decision}-${caseId}-${runId}`,
+					body: before,
+					...scope
+				})
+			);
+			const retained = await body<ContextItem>(await api.get(`/api/v1/context/${reviewSource.id}`));
+			expect(retained.body).toBe(before);
+			record(caseId, `review_${decision}_source_retained`, 'ok', {
+				source_id: reviewSource.id,
+				source_version: retained.version,
+				source_body: retained.body
+			});
+			await api.delete(`/api/v1/context/${reviewSource.id}`);
+		}
+
 		const source = await body<ContextItem>(
 			await api.post('/api/v1/context', {
 				kind: 'prompt',
@@ -88,12 +148,6 @@ test('four scoped extractions execute destination-first and retain sources on ev
 				...scope
 			})
 		);
-		record(caseId, 'proposal_rejected_unmentioned', 'ok', {
-			proposed: true,
-			rejected_source_version: source.version,
-			unmentioned_source_version: source.version
-		});
-
 		const invalid = await api.post('/api/v1/context', {
 			kind: 'skill',
 			name: `invalid-${caseId}-${runId}`,
@@ -113,7 +167,7 @@ test('four scoped extractions execute destination-first and retain sources on ev
 				await api.post('/api/v1/context', {
 					kind: 'skill',
 					name: 'planning-procedures',
-					description: `Read skills/planning-procedures/SKILL.md when ${caseId} planning applies.`,
+					description: READ_CONDITION[caseId],
 					files: [{ path: 'SKILL.md', content: skillBody }],
 					...scope
 				})
@@ -123,7 +177,7 @@ test('four scoped extractions execute destination-first and retain sources on ev
 				await api.post('/api/v1/context', {
 					kind: 'skill',
 					name: 'planning-procedures',
-					description: `Read skills/planning-procedures/SKILL.md when ${caseId} planning applies.`,
+					description: READ_CONDITION[caseId],
 					files: [
 						{ path: 'SKILL.md', content: '# Existing unrelated section\n\nKeep this section.\n' },
 						{ path: 'notes/keep.txt', content: keep }
@@ -142,6 +196,31 @@ test('four scoped extractions execute destination-first and retain sources on ev
 			]);
 			destination = await body<ContextItem>(await api.get(`/api/v1/context/${destination.id}`));
 		}
+		expect(destination.scope).toMatchObject({
+			project_id: 'project_id' in scope ? scope.project_id : null,
+			workflow_state_id: 'workflow_state_id' in scope ? scope.workflow_state_id : null,
+			issue_id: null,
+			label_id: null
+		});
+		const unavailableDestination = await body<ContextItem>(
+			await api.post('/api/v1/context', {
+				kind: 'skill',
+				name: `unavailable-${caseId}-${runId}`,
+				files: [{ path: 'SKILL.md', content: skillBody }],
+				...scope
+			})
+		);
+		await api.delete(`/api/v1/context/${unavailableDestination.id}`);
+		const unavailableRead = await api.get(`/api/v1/context/${unavailableDestination.id}`);
+		expect(unavailableRead.status()).toBe(404);
+		const sourceAfterUnavailable = await body<ContextItem>(
+			await api.get(`/api/v1/context/${source.id}`)
+		);
+		expect(sourceAfterUnavailable.body).toBe(before);
+		record(caseId, 'missing_destination_source_retained', unavailableRead.status(), {
+			source_version: sourceAfterUnavailable.version,
+			source_body: sourceAfterUnavailable.body
+		});
 		record(caseId, 'destination_write_interrupt', destination.version, {
 			destination_id: destination.id,
 			source_version: source.version,
@@ -156,21 +235,62 @@ test('four scoped extractions execute destination-first and retain sources on ev
 		);
 		const winner = effective.skills.find((skill) => skill.name === 'planning-procedures')!;
 		expect(winner.item_id).toBe(destination.id);
+		expect(winner.scope).toMatchObject({
+			project_id: destination.scope.project_id,
+			workflow_state_id: destination.scope.workflow_state_id,
+			workflow_id: destination.scope.workflow_id,
+			issue_id: null,
+			label_id: null
+		});
+		expect(winner.inherited_from).toEqual(
+			caseId === 'state' || caseId === 'combined'
+				? {
+						state_id: rootState.id,
+						state_name: 'Root',
+						workflow_id: workflow.id,
+						workflow_name: workflow.name
+					}
+				: null
+		);
 		record(caseId, 'effective_resolution_after_resume', 'ok', {
 			winner: winner.item_id,
 			scope: winner.scope,
 			inherited_from: winner.inherited_from
 		});
+		const winnerFor = async (target: IssueDetail) => {
+			const context = await body<EffectiveContext>(
+				await api.get(`/api/v1/issues/${target.id}/context`)
+			);
+			return context.skills.find((skill) => skill.name === 'planning-procedures');
+		};
+		const boundary = {
+			project_other_state: (await winnerFor(projectOtherIssue))?.item_id ?? null,
+			other_project_child: (await winnerFor(otherProjectChildIssue))?.item_id ?? null
+		};
+		expect(boundary).toEqual({
+			project_other_state: caseId === 'global' || caseId === 'project' ? destination.id : null,
+			other_project_child: caseId === 'global' || caseId === 'state' ? destination.id : null
+		});
+		record(caseId, 'scope_visibility_boundaries', 'ok', boundary);
 
 		const exportDir = mkdtempSync(join(tmpdir(), `tines-528-${caseId}-`));
 		cli(['issues', 'context', `${project.name}/${issue.number}`, '--out', exportDir]);
 		expect(readFileSync(join(exportDir, 'skills/planning-procedures/SKILL.md'), 'utf8')).toBe(
 			skillBody
 		);
-		record(caseId, 'fresh_export_needed_read', 'ok', {
-			paths: ['prompt.md', 'skills/planning-procedures/SKILL.md'],
-			needed_read: true,
-			unneeded_read: false
+		const neededReads: string[] = ['effective-context'];
+		const neededRead = (relative: string) => {
+			neededReads.push(relative);
+			return readFileSync(join(exportDir, relative), 'utf8');
+		};
+		expect(winner.description).toBe(READ_CONDITION[caseId]);
+		const neededSkill = neededRead('skills/planning-procedures/SKILL.md');
+		expect(neededSkill).toContain(CONDITIONAL_MARKER[caseId]);
+		expect(neededReads).toEqual(['effective-context', 'skills/planning-procedures/SKILL.md']);
+		record(caseId, 'needed_task_runtime_read', 'ok', {
+			task: `${caseId} needs planning procedure`,
+			reads: neededReads,
+			observed_step: CONDITIONAL_MARKER[caseId]
 		});
 
 		const nonempty = mkdtempSync(join(tmpdir(), `tines-528-nonempty-${caseId}-`));
@@ -197,21 +317,68 @@ test('four scoped extractions execute destination-first and retain sources on ev
 		record(caseId, 'wrong_override_source_retained', 'ok', { winner: wrongOverride.id });
 		await api.delete(`/api/v1/context/${wrongOverride.id}`);
 
-		const concurrent = await body<ContextItem>(
-			await api.patch(`/api/v1/context/${source.id}`, {
-				body: `${before}\nConcurrent material edit.`,
-				expected_version: source.version
+		const changedDestination = await body<ContextItem>(
+			await api.patch(`/api/v1/context/${destination.id}`, {
+				files: [{ path: 'SKILL.md', content: 'changed destination' }],
+				expected_version: destination.version
 			})
 		);
-		const stale = await api.patch(`/api/v1/context/${source.id}`, {
+		expect((await body<ContextItem>(await api.get(`/api/v1/context/${source.id}`))).body).toBe(
+			before
+		);
+		record(caseId, 'resume_changed_destination_source_retained', 'ok', {
+			destination_version: changedDestination.version,
+			source_body: before
+		});
+		destination = await body<ContextItem>(
+			await api.patch(`/api/v1/context/${destination.id}`, {
+				files: [
+					{ path: 'SKILL.md', content: skillBody },
+					...(keep === null ? [] : [{ path: 'notes/keep.txt', content: keep }])
+				],
+				expected_version: changedDestination.version
+			})
+		);
+		const staleDestination = await api.patch(`/api/v1/context/${destination.id}`, {
+			description: 'stale write must fail',
+			expected_version: changedDestination.version
+		});
+		expect(staleDestination.status()).toBe(409);
+		expect((await body<ContextItem>(await api.get(`/api/v1/context/${source.id}`))).body).toBe(
+			before
+		);
+		record(caseId, 'stale_destination_source_retained', staleDestination.status(), {
+			source_body: before
+		});
+
+		const conflictSource = await body<ContextItem>(
+			await api.post('/api/v1/context', {
+				kind: 'prompt',
+				name: `source-conflict-${caseId}-${runId}`,
+				body: before,
+				...scope
+			})
+		);
+		const concurrent = await body<ContextItem>(
+			await api.patch(`/api/v1/context/${conflictSource.id}`, {
+				body: `${before}\nConcurrent material edit.`,
+				expected_version: conflictSource.version
+			})
+		);
+		const stale = await api.patch(`/api/v1/context/${conflictSource.id}`, {
 			body: after,
-			expected_version: source.version
+			expected_version: conflictSource.version
 		});
 		expect(stale.status()).toBe(409);
+		const conflictedBody = (
+			await body<ContextItem>(await api.get(`/api/v1/context/${conflictSource.id}`))
+		).body;
+		expect(conflictedBody).toBe(`${before}\nConcurrent material edit.`);
 		record(caseId, 'source_cas_conflict_retained', stale.status(), {
 			current_version: concurrent.version,
-			body_retained: (await body<ContextItem>(await api.get(`/api/v1/context/${source.id}`))).body
+			body_retained: conflictedBody
 		});
+		await api.delete(`/api/v1/context/${conflictSource.id}`);
 
 		const resumedSource = await body<ContextItem>(await api.get(`/api/v1/context/${source.id}`));
 		const resumedDestination = await body<ContextItem>(
@@ -229,6 +396,21 @@ test('four scoped extractions execute destination-first and retain sources on ev
 			source_body: applied.body
 		});
 		expect(applied.body).toBe(after);
+		const unneededDir = mkdtempSync(join(tmpdir(), `tines-528-unneeded-${caseId}-`));
+		cli(['issues', 'context', `${project.name}/${issue.number}`, '--out', unneededDir]);
+		const unneededReads: string[] = [];
+		const unneededPrompt = (() => {
+			unneededReads.push('prompt.md');
+			return readFileSync(join(unneededDir, 'prompt.md'), 'utf8');
+		})();
+		expect(unneededPrompt).toContain(UNIVERSAL_MARKER[caseId]);
+		expect(unneededPrompt).not.toContain(CONDITIONAL_MARKER[caseId]);
+		expect(unneededReads).toEqual(['prompt.md']);
+		record(caseId, 'unneeded_task_runtime_no_skill_read', 'ok', {
+			task: `${caseId} supplied-brief summary`,
+			reads: unneededReads,
+			preserved_rule: UNIVERSAL_MARKER[caseId]
+		});
 		expect(
 			receipts.findIndex((r) => r.case === caseId && r.operation === 'fresh_export_needed_read')
 		).toBeLessThan(
@@ -237,12 +419,17 @@ test('four scoped extractions execute destination-first and retain sources on ev
 			)
 		);
 
-		await api.delete(`/api/v1/context/${destination.id}`);
-		const afterMissing = await body<ContextItem>(await api.get(`/api/v1/context/${source.id}`));
-		record(caseId, 'resume_missing_destination_source_retained', 'ok', {
-			source_version: afterMissing.version,
-			source_body: afterMissing.body
+		const replayDestination = await body<ContextItem>(
+			await api.get(`/api/v1/context/${destination.id}`)
+		);
+		const replaySource = await body<ContextItem>(await api.get(`/api/v1/context/${source.id}`));
+		expect(replayDestination.version).toBe(destination.version);
+		expect(replaySource.version).toBe(applied.version);
+		record(caseId, 'replay_complete_no_version_bump', 'ok', {
+			destination_version: replayDestination.version,
+			source_version: replaySource.version
 		});
+		await api.delete(`/api/v1/context/${destination.id}`);
 		await api.delete(`/api/v1/context/${source.id}`);
 	}
 

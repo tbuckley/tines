@@ -5,7 +5,7 @@ This fixture continues the single Tines/373 ledger: attempts 1–4 remain in `..
 - Attempts 5/6 change only full history versus selected history plus the existing recovery recipe.
 - Attempts 7/8 change only conditional procedure placement: inline versus the same-scope `planning-procedures` skill and one discovery line.
 
-Each attempt has routine, conditional, and old-decision outputs in one invocation. Usage is aggregate and must not be allocated to a subcase. Acceptance is deterministic; a passing task-class result supports correctness, while efficiency by task class remains inconclusive.
+Each attempt has routine, conditional, and old-decision outputs in one invocation. Usage is aggregate and must not be allocated to a subcase. The checker validates only the frozen JSON transport and reports semantic status as unknown. It deliberately cannot accept prose: independent review is required to distinguish a required instruction from an answer that also states its opposite.
 
 Run a staged arm (this consumes an attempt and must not be used casually):
 
