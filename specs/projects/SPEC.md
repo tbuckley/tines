@@ -191,7 +191,7 @@ saying what the scope is.
 8. **New issue's default project:** the focus, else `last_project_id` (last
    focused or last created in), else — at two or more projects — an empty,
    required select. Never `projects[0]`.
-9. **nav-memory** remembers the non-project Issues filters (category, state,
+9. **nav-memory** remembers the non-project Issues filters (category, workflow, state,
    label, q) per tab as before; it strips `project`, which would otherwise
    re-fire the one-shot on every click of the Issues tab.
    Issue-page Back keeps an Issues target, but keeps a remembered project page

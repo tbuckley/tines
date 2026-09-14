@@ -1741,7 +1741,10 @@ export const MODEL_PREDECESSORS: Record<string, readonly string[]> = {
 	'claude-haiku-4-5': ['claude-3-5-haiku-latest'],
 	'gemini-2.5-pro': ['gemini-1.5-pro'],
 	'gemini-2.5-flash': ['gemini-2.0-flash', 'gemini-1.5-flash'],
-	'gemini-2.5-flash-lite': ['gemini-2.0-flash-lite', 'gemini-1.5-flash-8b']
+	'gemini-2.5-flash-lite': ['gemini-2.0-flash-lite', 'gemini-1.5-flash-8b'],
+	'gpt-6-astra': ['gpt-5-codex'],
+	'gpt-5.6-sol': ['gpt-5-codex'],
+	'gpt-5.6-luna': ['gpt-5-codex']
 };
 
 /** True when a tier override points at a model older than its tier's current built-in. */
