@@ -65,7 +65,8 @@ export function spawnDaemon({
 	command = 'true',
 	maxConcurrent = 1,
 	allowRemoteConcurrency = false,
-	configDir: suppliedConfigDir
+	configDir: suppliedConfigDir,
+	url = BASE_URL
 }: {
 	apiKey: string;
 	name: string;
@@ -74,6 +75,8 @@ export function spawnDaemon({
 	maxConcurrent?: number;
 	allowRemoteConcurrency?: boolean;
 	configDir?: string;
+	/** Test proxy URL; defaults to the isolated Worker directly. */
+	url?: string;
 }): Daemon {
 	const configDir = suppliedConfigDir ?? mkdtempSync(join(tmpdir(), 'tines-e2e-daemon-'));
 	const proc = spawn(
@@ -83,7 +86,7 @@ export function spawnDaemon({
 			'runner',
 			'daemon',
 			'--url',
-			BASE_URL,
+			url,
 			'--name',
 			name,
 			'--harness',
@@ -118,7 +121,7 @@ export function spawnDaemon({
 		configDir,
 		output: () => output,
 		stop: () => {
-			if (!exited && proc.pid) proc.kill('SIGKILL');
+			if (!exited && proc.pid) proc.kill('SIGTERM');
 		},
 		kill: () => {
 			if (!exited && proc.pid) proc.kill('SIGKILL');

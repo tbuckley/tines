@@ -685,6 +685,72 @@ describe('pollRunner', () => {
 		).rejects.toMatchObject({ code: 'concurrency_unavailable' });
 	});
 
+	it('retries poll reconciliation without overwriting a concurrent web cap request', async () => {
+		const t = world();
+		const id = addRunner(t, { name: 'concurrent-cap', maxConcurrent: 1 });
+		await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, id),
+			TEST_NOOP_DISPATCH_EFFECTS,
+			{
+				instance_id: 'boot_remote',
+				owned_runs: [],
+				max_concurrent: 1,
+				concurrency_control: { version: 1, allow_remote: true, ceiling: 3 }
+			},
+			NOW + 1
+		);
+		const stale = await runnerRow(t, id);
+		const winningRevision = stale.concurrency_revision + 1;
+		const realBatch = t.env.DB.batch.bind(t.env.DB);
+		let injected = false;
+		t.env.DB.batch = async (statements) => {
+			if (!injected) {
+				injected = true;
+				// This is the storage result of an owner PATCH that commits after
+				// the poll read but before its guarded reconciliation batch.
+				t.sqlite
+					.prepare(
+						`UPDATE runner
+						 SET max_concurrent = 3,
+						     concurrency_requested = 3,
+						     concurrency_revision = ?,
+						     updated_at = ?
+						 WHERE id = ?`
+					)
+					.run(winningRevision, NOW + 2, id);
+			}
+			return realBatch(statements);
+		};
+
+		const result = await pollRunner(
+			t.db,
+			t.env,
+			stale,
+			TEST_NOOP_DISPATCH_EFFECTS,
+			{
+				instance_id: 'boot_remote',
+				owned_runs: [],
+				max_concurrent: 1,
+				concurrency_control: { version: 1, allow_remote: true, ceiling: 3 }
+			},
+			NOW + 3
+		);
+
+		expect(injected).toBe(true);
+		expect(result.response.concurrency_control).toMatchObject({
+			available: true,
+			cap: 3,
+			revision: winningRevision
+		});
+		expect(runnerById(t, id)).toMatchObject({
+			max_concurrent: 3,
+			concurrency_requested: 3,
+			concurrency_revision: winningRevision
+		});
+	});
+
 	it('draining is stated per poll: set while true, cleared when absent, and leaving it frees capacity', async () => {
 		const t = world();
 		const id = addRunner(t);
