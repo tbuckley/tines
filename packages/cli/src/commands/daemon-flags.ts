@@ -18,6 +18,7 @@ export interface DaemonFlagValues {
 	harness: string;
 	command?: string;
 	maxConcurrent: number;
+	allowRemoteConcurrency?: boolean;
 	pollInterval: number;
 	keepWorkspaces: string;
 	keepWorkspacesFor: number;
@@ -29,6 +30,7 @@ export interface DaemonSettings {
 	harness: HarnessKind;
 	command?: string;
 	maxConcurrent: number;
+	allowRemoteConcurrency: boolean;
 	pollIntervalSeconds: number;
 	keepWorkspaces: KeepWorkspacesMode;
 	keepWorkspacesForHours: number;
@@ -46,7 +48,16 @@ export function withDaemonFlags(cmd: Command): Command {
 			'--command <template>',
 			'custom harness command template ({prompt_file}, {workspace}, {model})'
 		)
-		.option('--max-concurrent <n>', 'maximum simultaneous runs', (v) => Number.parseInt(v, 10), 1)
+		.option(
+			'--max-concurrent <n>',
+			'local maximum simultaneous runs (remote-adjustment ceiling when enabled)',
+			(v) => Number(v),
+			1
+		)
+		.option(
+			'--allow-remote-concurrency',
+			'allow signed-in operators to request concurrency up to --max-concurrent'
+		)
 		.option('--poll-interval <seconds>', 'seconds between polls', (v) => Number.parseInt(v, 10), 15)
 		.option(
 			'--keep-workspaces <mode>',
@@ -100,6 +111,7 @@ export function parseDaemonFlags(opts: DaemonFlagValues): DaemonSettings {
 		harness,
 		...(opts.command !== undefined ? { command: opts.command } : {}),
 		maxConcurrent: opts.maxConcurrent,
+		allowRemoteConcurrency: opts.allowRemoteConcurrency === true,
 		pollIntervalSeconds: opts.pollInterval,
 		keepWorkspaces,
 		keepWorkspacesForHours: opts.keepWorkspacesFor,

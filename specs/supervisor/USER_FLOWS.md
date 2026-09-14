@@ -330,6 +330,14 @@ The steady-state loop once setup is done — the flow that happens dozens of tim
 
 ## 13. Tune concurrency
 
+For a local runner, the machine owner first opts in with
+`--allow-remote-concurrency --max-concurrent 4`. The Agents editor then labels the value
+**Requested concurrency**, shows the effective cap and local ceiling, and reports
+**Pending** until that daemon acknowledges the revision. Repeated polls, reconnects, and
+ordinary restarts do not overwrite the request. Lowering below the active count lets those
+runs finish but admits no new work. **At local ceiling** sends the operator back to the
+machine; the web cannot enable opt-in or raise the ceiling.
+
 **Persona & starting point:** the fleet is either drowning (six PRs landed in review at once) or starving (issues queue while runners idle). This flow is the two knobs — quota policy and per-runner caps — and knowing which to reach for.
 
 1. **The default experience:** `global_cap` at 3. The user notices issues queuing ("Eligible — waiting for capacity", queue position from flow 5) while they could review more, and bumps the limit to 5 in the settings' quota section. Takes effect next pass; running work is never killed by a policy change.
@@ -441,6 +449,11 @@ The steady-state loop once setup is done — the flow that happens dozens of tim
 ---
 
 ## 18. Daemon lifecycle on a dev machine
+
+Remote concurrency consent is process/service configuration, not server state. `runner restart`
+preserves it. To enable, disable, or change the ceiling, pause the runner, wait for zero active
+runs, and relaunch or reinstall with the complete desired flags. A new daemon instance reports
+policy before receiving work; a legacy or malformed report fails closed to local authority.
 
 **Persona & starting point:** the local runner lives on a laptop that sleeps, reboots, changes networks, and occasionally has its terminal closed mid-run. This flow is the daemon being a well-behaved citizen of a messy machine.
 

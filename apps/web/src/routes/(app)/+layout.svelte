@@ -148,8 +148,8 @@
 			{#if showSwitcher}
 				<ProjectSwitcher projects={data.projects} {focus} onchoose={chooseFocus} />
 			{/if}
-			<!-- On phones the tabs live in the bottom bar instead. -->
-			<nav class="hidden h-full items-center gap-1 sm:flex">
+			<!-- Below md the tabs live in the bottom bar instead. -->
+			<nav class="hidden h-full items-center gap-1 md:flex">
 				{#each tabs as tab (tab.path)}
 					{@const active = page.url.pathname.startsWith(tab.path)}
 					<a
@@ -233,15 +233,15 @@
 
 	<!-- Named group so tab slides move the page content but not the chrome. -->
 	<main
-		class="mx-auto w-full max-w-6xl flex-1 px-4 py-8 pb-24 sm:pb-8"
+		class="mx-auto w-full max-w-6xl flex-1 px-4 py-8 pb-[calc(6rem+env(safe-area-inset-bottom,0px))] md:pb-8"
 		style:view-transition-name="page"
 	>
 		{@render children()}
 	</main>
 
-	<!-- mobile bottom tab bar -->
+	<!-- Compact chrome bottom tab bar below md. -->
 	<nav
-		class="bg-background/95 fixed inset-x-0 bottom-0 z-40 border-t backdrop-blur sm:hidden"
+		class="bg-background/95 fixed inset-x-0 bottom-0 z-40 border-t backdrop-blur md:hidden"
 		style="padding-bottom: env(safe-area-inset-bottom)"
 		aria-label="Primary"
 	>
