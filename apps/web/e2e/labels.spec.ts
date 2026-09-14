@@ -31,18 +31,12 @@ test.describe.serial('issue labels UI', () => {
 	// and a project name is unique per user — the duplicate 422s in beforeAll
 	// where nothing checks the status, leaving this spec looking at an empty
 	// list rather than at a failure.
-	const projectName = `labels-ui-${runId}`;
-	const bugName = `bug-ui-${runId}`;
-	const p1Name = `p1-ui-${runId}`;
+	let projectName: string;
+	let bugName: string;
+	let p1Name: string;
 	// Five labels on one issue, the last deliberately long: they never fit a
 	// phone's metadata line, so the row shows one chip carrying the count.
-	const crowdNames = [
-		`c1-${runId}`,
-		`c2-${runId}`,
-		`c3-${runId}`,
-		`c4-${runId}`,
-		`c5-a-really-long-label-name-${runId}`
-	];
+	let crowdNames: string[];
 	let project: Project;
 	let labelled: IssueDetail;
 	let plain: IssueDetail;
@@ -50,9 +44,16 @@ test.describe.serial('issue labels UI', () => {
 	let bug: Label;
 	// One label too wide for a phone row on its own: it does not fit, so the
 	// strip is the count ("1 label") rather than a name cut mid-word.
-	const wideName = `w-single-label-far-too-wide-for-a-phone-${runId}`;
+	let wideName: string;
 
-	test.beforeAll(async ({ apiFor }) => {
+	test.beforeAll(async ({ apiFor, uniqueName }) => {
+		projectName = uniqueName('labels-ui');
+		bugName = uniqueName('bug-ui');
+		p1Name = uniqueName('p1-ui');
+		crowdNames = ['c1', 'c2', 'c3', 'c4', 'c5-a-really-long-label-name'].map((stem) =>
+			uniqueName(stem)
+		);
+		wideName = uniqueName('w-single-label-far-too-wide-for-a-phone');
 		const api = apiFor(ALICE);
 		project = await body<Project>(await api.post('/api/v1/projects', { name: projectName }));
 		bug = await body<Label>(await api.post('/api/v1/labels', { name: bugName, color: 'red' }));
@@ -381,12 +382,12 @@ test.describe.serial('issue labels UI', () => {
  * and the two browser cases at the end read the same fixtures.
  */
 test.describe.serial('label as a scope dimension', () => {
-	const projectName = `lscope-${runId}`;
-	const docsName = `lscope-docs-${runId}`;
-	const secName = `lscope-sec-${runId}`;
+	let projectName: string;
+	let docsName: string;
+	let secName: string;
 	// Deliberately never given a routing rule: the control that shows the
 	// run-key refusal below is specific to *routing* labels, not to labels.
-	const freeName = `lscope-free-${runId}`;
+	let freeName: string;
 	const SKILL = 'component-testing';
 
 	let project: Project;
@@ -400,8 +401,13 @@ test.describe.serial('label as a scope dimension', () => {
 	let docsRuleId: string;
 
 	test('seeds a project, three labels, two issues and two same-named skills', async ({
-		request
+		request,
+		uniqueName
 	}) => {
+		projectName = uniqueName('lscope');
+		docsName = uniqueName('lscope-docs');
+		secName = uniqueName('lscope-sec');
+		freeName = uniqueName('lscope-free');
 		const api = apiClient(request, ALICE.apiKey);
 		await resetFocus(request);
 		// Its own workflow with an active initial state: a routing rule's scope
