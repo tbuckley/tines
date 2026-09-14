@@ -71,6 +71,7 @@ describe('command tree', () => {
 				'schedules',
 				'supervisor',
 				'time',
+				'usage',
 				'workflows'
 			].sort()
 		);
@@ -177,7 +178,12 @@ describe('the --url flag means the API base URL, everywhere', () => {
 	 * flags at all. Anything else appearing here is a command that forgot
 	 * withCommon(), which is how the collision this test exists for got in.
 	 */
-	const OFFLINE_LEAVES = ['tines logout', 'tines runner workspaces prune'];
+	const OFFLINE_LEAVES = [
+		'tines logout',
+		'tines runner restart',
+		'tines runner uninstall',
+		'tines runner workspaces prune'
+	];
 
 	it('is offered by every leaf command that talks to the API', async () => {
 		const program = await freshProgram({});
@@ -263,5 +269,19 @@ describe('old --url payload callers are corrected offline', () => {
 		]);
 		expect(err).toContain('--kind repo needs --repo-url <clone-url>');
 		expect(err).toContain('--url is the API base URL');
+	});
+});
+
+describe('runner continuation flags fail before network access', () => {
+	it.each([
+		['runners', 'edit', 'local', '--resume-enabled', 'yes'],
+		['runners', 'edit', 'local', '--resume-window-hours', '0'],
+		['runners', 'edit', 'local', '--resume-max-cost-usd', 'NaN']
+	])('%s', async (...argv) => {
+		const fetchSpy = vi.spyOn(globalThis, 'fetch');
+		const program = await freshProgram({});
+		await runExpectingDie(program, argv);
+		expect(fetchSpy).not.toHaveBeenCalled();
+		fetchSpy.mockRestore();
 	});
 });

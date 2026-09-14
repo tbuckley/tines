@@ -2,17 +2,12 @@
  * The first hour, as a user who has nothing: every empty state on the way to a
  * first agent run points at the next step (Tines/252).
  *
- * Runs as BOB, the seeded account with no projects, runners or rules. That
- * emptiness is only true until another spec writes to BOB, so this file sorts
- * before `api.spec.ts` (which creates a project for him) — keep the name ahead
- * of it, and it asserts the precondition up front rather than failing
- * mysteriously later. Every project this file creates is deleted again; the
- * explainer's remedy links need an *issue*, which cannot be deleted at all, so
- * that case lives in `issue-explainer-remedies.spec.ts` after `api.spec.ts`.
+ * Runs as a dedicated seeded account with no projects, runners or rules, so
+ * the spec is independent of file ordering and every other browser fixture.
  */
 import { expect, test } from '@playwright/test';
-import type { ListResponse, Project } from '@tines/shared';
-import { BOB } from './constants.mjs';
+import type { ListResponse, Project, RoutingRuleWithWarnings } from '@tines/shared';
+import { AGENTS_FIRST_RUN as USER } from './constants.mjs';
 import { apiClient, body, gotoHydrated, runId, signIn } from './helpers';
 
 test.describe.serial('the first-run path on an empty account', () => {
@@ -21,14 +16,14 @@ test.describe.serial('the first-run path on an empty account', () => {
 		page,
 		request
 	}) => {
-		const api = apiClient(request, BOB.apiKey);
+		const api = apiClient(request, USER.apiKey);
 		const { items } = await body<ListResponse<Project>>(await api.get('/api/v1/projects'));
 		expect(
 			items,
-			"BOB must still be projectless here: this file has to sort before every spec that writes to him, and a re-run against a warm .wrangler-e2e sees the last run's leftovers — restart e2e/server.sh"
+			'The dedicated first-run fixture must start projectless; restart e2e/server.sh after a warm run'
 		).toHaveLength(0);
 
-		await signIn(context, BOB.sessionToken);
+		await signIn(context, USER.sessionToken);
 		await gotoHydrated(page, '/issues');
 		await page.getByRole('link', { name: 'New project' }).click();
 
@@ -48,24 +43,43 @@ test.describe.serial('the first-run path on an empty account', () => {
 		context,
 		page
 	}) => {
-		await signIn(context, BOB.sessionToken);
+		await signIn(context, USER.sessionToken);
 		await gotoHydrated(page, '/projects?new=1');
 
 		await expect(page.getByRole('dialog', { name: /New project/i })).toBeVisible();
 		await expect(page).toHaveURL(/\/projects$/);
 	});
 
-	test('the Agents tab offers a runner and a rule instead of a sentence', async ({
+	test('the Agents tab permits a scoped tier-only rule before any runner exists', async ({
 		context,
-		page
+		page,
+		request
 	}) => {
-		await signIn(context, BOB.sessionToken);
+		const api = apiClient(request, USER.apiKey);
+		const project = await body<Project>(
+			await api.post('/api/v1/projects', { name: `runnerless-routing-${runId}` })
+		);
+		await signIn(context, USER.sessionToken);
 		await gotoHydrated(page, '/agents');
 
 		// The routing empty state knows there is no runner to route to yet.
 		const addRunner = page.getByRole('button', { name: 'Add runner' }).last();
 		await expect(page.getByRole('button', { name: 'Add a runner first' })).toBeVisible();
-		await expect(page.getByRole('button', { name: 'Add rule' })).toBeDisabled();
+		await page.getByRole('button', { name: 'Add rule' }).click();
+		const ruleDialog = page.getByRole('dialog', { name: 'New routing rule' });
+		await ruleDialog.getByLabel('Project').selectOption(project.id);
+		await ruleDialog.getByLabel('Routing mode').selectOption('tier');
+		await ruleDialog.getByLabel('Tier').selectOption('smartest');
+		await ruleDialog.getByRole('button', { name: 'Create rule' }).click();
+		await expect(page.getByText('*:smartest')).toBeVisible();
+		const { items: rules } = await body<ListResponse<RoutingRuleWithWarnings>>(
+			await api.get('/api/v1/routing-rules')
+		);
+		expect(rules.find((rule) => rule.scope.project_id === project.id)?.targets).toEqual([
+			{ runner_id: '*', runner_name: '*', runner_status: null, tier: 'smartest' }
+		]);
+		await api.delete(`/api/v1/routing-rules/${rules[0].id}`);
+		await api.delete(`/api/v1/projects/${project.id}`);
 
 		// Both empty-state buttons open the same dialog; hydration can swallow
 		// the first click (clickUntil in helpers.ts).
@@ -81,18 +95,18 @@ test.describe.serial('the first-run path on an empty account', () => {
 		page,
 		request
 	}) => {
-		const api = apiClient(request, BOB.apiKey);
+		const api = apiClient(request, USER.apiKey);
 		const projectName = `first-run-${runId}`;
 		const project = await body<Project>(await api.post('/api/v1/projects', { name: projectName }));
 		const projectId = project.id;
 
-		await signIn(context, BOB.sessionToken);
+		await signIn(context, USER.sessionToken);
 		await gotoHydrated(page, `/projects/${projectId}`);
 
 		// The routing card's empty state is a link to where routing lives.
-		const routing = page.getByRole('link', { name: 'Set up routing' });
+		const routing = page.getByRole('link', { name: 'Edit routing' }).first();
 		await expect(routing).toBeVisible();
-		await expect(routing).toHaveAttribute('href', '/agents#routing');
+		await expect(routing).toHaveAttribute('href', `/agents?new=rule&project=${projectId}#routing`);
 
 		// The context card's empty state opens the editor already on `repo`.
 		const addRepo = page.getByRole('button', { name: 'Add a repo' });

@@ -150,7 +150,18 @@
 			});
 			open = false;
 			await invalidateAll();
-			await goto(`/projects/${project.id}`);
+			await goto(`/projects/${project.id}`, {
+				...(project.starter?.first_issue
+					? {
+							state: {
+								starterLanding: {
+									projectId: project.id,
+									firstIssueId: project.starter.first_issue.id
+								}
+							}
+						}
+					: {})
+			});
 		} catch (err) {
 			createError = err instanceof ApiError ? err.message : 'Failed to create project.';
 		} finally {
@@ -248,8 +259,8 @@
 				</p>
 			{:else}
 				<ul aria-label="This creates" class="text-muted-foreground mt-1 space-y-0.5">
-					{#each lines as line (line)}
-						<li>{line}</li>
+					{#each lines as line, index (index)}
+						<li class="line-clamp-3 break-words whitespace-pre-wrap" title={line}>{line}</li>
 					{/each}
 				</ul>
 			{/if}

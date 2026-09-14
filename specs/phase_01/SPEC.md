@@ -84,6 +84,20 @@ The unit of work. An issue has:
 - **Workflow binding**: chosen per issue at creation from the user's library (defaulting to the project's default workflow, else the standard workflow). Immutable after creation in phase one.
 - **State**: a state id from the bound workflow. New issues start in the workflow's initial state. State changes go through a dedicated transition operation that names the transition being taken (by action name or transition id) and rejects anything not in the workflow's transition set.
 
+**2026-09-10 amendment (Tines/392) — project transfer.** The original phase-one
+constraint above has been superseded: an owner may transfer one idle issue to
+another active project in the same workspace. The stable issue ID and all
+dependent records remain unchanged. The destination allocates its next
+never-used number at commit time, while an append-only address ledger keeps
+every old `<project>/<number>` usable. A signed, expiring preview describes the
+preserved record and the effective context/repository/routing change; commit
+atomically rejects changed dependencies, active work, archived projects and
+competing moves. Historical events keep their recorded project attribution,
+but issue links resolve to the current canonical address. Schedule association
+and closure-gate participation remain with a moved instance; future instances
+stay in the schedule's original project. Project deletion is refused while its
+historical address namespace is still referenced.
+
 ### Comment
 
 A Markdown comment on an issue — the medium through which humans and agents narrate work and hand off context. Comments record their actor (see Actors below) and timestamp. Phase one: create and list; no editing or deleting.
@@ -152,15 +166,18 @@ JSON over HTTP under `/api/v1/*`, served by the SvelteKit app; shared request/re
 | `GET/PATCH/DELETE /api/v1/projects/:id` | Read / update (name, description, default workflow) / delete (only when issue-less) |
 | `GET/POST /api/v1/workflows` | List library (incl. standard) / create |
 | `GET/PATCH/DELETE /api/v1/workflows/:id` | Read (with states + transitions) / update per editing rules / delete when unreferenced |
-| `GET /api/v1/issues` | Global list across projects; filters: `project`, `state`, `category`, `workflow` |
-| `GET/POST /api/v1/projects/:id/issues` | List (filter by state/category) / create |
+| `GET /api/v1/issues` | Global list across projects; filters include `project`, `state`, `category`, `workflow`, and `q` |
+| `GET/POST /api/v1/projects/:id/issues` | List (including state/category/`q` filters) / create |
 | `GET/PATCH /api/v1/issues/:id` | Read (incl. workflow, state, comments) / update title & description |
 | `POST /api/v1/issues/:id/transition` | `{ action }` (transition name) or `{ transition_id }`; 422 with the allowed transitions (named) when invalid |
+| `GET/POST /api/v1/issues/:id/transfer` | Preview / commit a signed project transfer; run keys may preview but cannot commit |
 | `GET/POST /api/v1/issues/:id/comments` | List / add comment |
-| `GET /api/v1/events` | Global feed, newest first; filters: `issue`, `project`, `type`; cursor pagination |
+| `GET /api/v1/events` | Global feed, newest first; filters: `issue`, `project`, comma-separated `type`, `since`, `until`, `state`; cursor pagination |
 | `GET/POST /api/v1/api-keys`, `DELETE /api/v1/api-keys/:id` | Manage keys (create/revoke require a browser session, not a key) |
 
 All list endpoints use the same cursor-pagination convention (`?cursor=…&limit=…`, response carries `next_cursor`), newest first for issues and events.
+
+Issue `q` is a complete literal substring match over title and description, case-insensitive for ASCII. Characters such as `%` and `_` have no wildcard meaning, and ordinary queries longer than 48 characters are supported. Both issue-list routes share the same predicate.
 
 Validation failures (workflow editing rules, illegal transitions) return structured errors naming what was violated and, where applicable, what *is* allowed — agents should be able to recover from a 422 without human help.
 
@@ -178,8 +195,10 @@ tines issues list [--project <name>] [--state <name>] [--category <cat>] [--all]
 tines issues create <project> --title <t> [--description <md>] [--workflow <id-or-name>]
 tines issues show <project>/<number>
 tines issues move <project>/<number> <action>       # transition name, e.g. "approve"
+tines issues transfer <project>/<number> --project <destination>
+	[--dry-run] [--inspect <n>] [--yes]               # project transfer, not workflow move
 tines issues comment <project>/<number> <markdown>
-tines events list [--issue <ref>] [--project <name>] [--limit n]
+tines events list [--issue <ref>] [--project <name>] [--type <types>] [--since <time>] [--until <time>] [--state <workflow/state>] [--limit n]
 ```
 
 All commands support `--json` for agent consumption. `issues show --json` includes the allowed next transitions — action name plus target state — so an agent always knows its legal moves and what each one means.

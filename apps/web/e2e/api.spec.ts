@@ -9,7 +9,7 @@ import type {
 	WorkflowResponse
 } from '@tines/shared';
 import { expect, test } from '@playwright/test';
-import { ALICE, BOB, RUNROW } from './constants.mjs';
+import { ALICE, API_ISOLATION, BOB, RUNROW } from './constants.mjs';
 import { apiClient, body, errorBody, runId } from './helpers';
 
 test.describe('auth', () => {
@@ -104,7 +104,11 @@ test.describe.serial('run-key fence', () => {
 	// `tines supervisor status` and the Now row, and nothing else.
 	test('opens the fleet reads to a run key, without the PAT hint', async ({ request }) => {
 		const api = apiClient(request, RUNROW.runKey);
-		for (const path of ['/api/v1/runners', '/api/v1/supervisor/queue']) {
+		for (const path of [
+			'/api/v1/runners',
+			'/api/v1/supervisor/queue',
+			'/api/v1/supervisor/stats'
+		]) {
 			const res = await api.get(path);
 			expect(res.status(), `GET ${path}`).toBe(200);
 		}
@@ -499,7 +503,7 @@ test.describe('cross-user isolation', () => {
 		request
 	}) => {
 		const alice = apiClient(request, ALICE.apiKey);
-		const bob = apiClient(request, BOB.apiKey);
+		const bob = apiClient(request, API_ISOLATION.apiKey);
 
 		const project = await body<Project>(
 			await alice.post('/api/v1/projects', { name: `iso-${runId}` })

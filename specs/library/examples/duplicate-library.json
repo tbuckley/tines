@@ -1,0 +1,113 @@
+{
+  "format": "tines.library",
+  "version": 3,
+  "profile": "library",
+  "exported_at": 1789063200000,
+  "digest": "sha256:f09845183e1f44cbc2ea2b104c42de3dac01633f1666f1a0605a94d3c5abe18d",
+  "workflows": [
+    {
+      "id": "workflow:1",
+      "name": "Review",
+      "description": "",
+      "initial_state_id": "state:1",
+      "states": [
+        {
+          "id": "state:1",
+          "name": "Ready",
+          "category": "active",
+          "inherits_from": null
+        }
+      ],
+      "transitions": []
+    },
+    {
+      "id": "workflow:2",
+      "name": "Review",
+      "description": "",
+      "initial_state_id": "state:2",
+      "states": [
+        {
+          "id": "state:2",
+          "name": "Ready",
+          "category": "active",
+          "inherits_from": null
+        }
+      ],
+      "transitions": []
+    }
+  ],
+  "projects": [
+    {
+      "id": "project:1",
+      "name": "Destination",
+      "description": "",
+      "default_workflow": {
+        "kind": "bundled_workflow",
+        "workflow_id": "workflow:2"
+      }
+    }
+  ],
+  "labels": [
+    {
+      "id": "label:1",
+      "name": "qa",
+      "color": "blue"
+    }
+  ],
+  "context": [
+    {
+      "id": "context:1",
+      "kind": "prompt",
+      "name": "instructions",
+      "description": "",
+      "body": "First review",
+      "scope": {
+        "state": {
+          "kind": "bundled_state",
+          "state_id": "state:1"
+        }
+      },
+      "journal": false
+    },
+    {
+      "id": "context:2",
+      "kind": "prompt",
+      "name": "instructions",
+      "description": "",
+      "body": "Second review",
+      "scope": {
+        "state": {
+          "kind": "bundled_state",
+          "state_id": "state:2"
+        }
+      },
+      "journal": false
+    },
+    {
+      "id": "context:3",
+      "kind": "prompt",
+      "name": "journal",
+      "description": "",
+      "body": "Shared lesson",
+      "scope": {
+        "project_id": "project:1",
+        "state": {
+          "kind": "system_state",
+          "workflow": "Standard",
+          "state_name": "Open"
+        },
+        "label_id": "label:1"
+      },
+      "journal": true
+    },
+    {
+      "id": "context:4",
+      "kind": "prompt",
+      "name": "general",
+      "description": "",
+      "body": "Global instructions",
+      "scope": {},
+      "journal": false
+    }
+  ]
+}

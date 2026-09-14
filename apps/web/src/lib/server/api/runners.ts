@@ -1,5 +1,9 @@
 import {
 	ACTIVE_RUN_STATUSES,
+	DEFAULT_RESUME_MAX_COST_USD,
+	DEFAULT_RESUME_MAX_TOKENS,
+	DEFAULT_RESUME_MAX_TURNS,
+	DEFAULT_RESUME_WINDOW_HOURS,
 	DEFAULT_MANAGED_RUN_COST_USD,
 	MODEL_TIERS,
 	RUNNER_NAME_PATTERN,
@@ -21,9 +25,11 @@ import { sql, type CompiledQuery, type Kysely } from 'kysely';
 import { encryptSecret, sha256Hex } from '$lib/server/crypto';
 import { deleteRunLogObjects } from '$lib/server/supervisor/run-log';
 import { newId, randomString, type Database } from '$lib/server/db';
+import type { DispatchEffects } from '$lib/server/dispatch-effects';
 import { pingAnthropicKey } from '$lib/server/supervisor/claude-adapter';
 import { cancelAssignedRuns } from '$lib/server/supervisor/engine';
 import { builtinTierModels } from '$lib/server/supervisor/logic';
+import { isResumeProviderSupported } from '$lib/server/supervisor/resume';
 import {
 	ApiFail,
 	notFound,
@@ -89,6 +95,47 @@ export function validateBoundedInt(
 		);
 	}
 	return value;
+}
+
+function validateResumeCost(value: unknown): number {
+	if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0 || value > 1000) {
+		throw new ApiFail(
+			422,
+			'invalid_field',
+			'"resume_max_cost_usd" must be greater than 0 and at most 1000',
+			{
+				field: 'resume_max_cost_usd'
+			}
+		);
+	}
+	return value;
+}
+
+function supportsResumeHarness(type: string, config: Record<string, unknown>): boolean {
+	return (
+		type === 'claude_managed' ||
+		(type === 'local' && (config.harness ?? 'claude_code') === 'claude_code')
+	);
+}
+
+function validateResumeEnable(type: RunnerType, config: Record<string, unknown>): void {
+	if (!supportsResumeHarness(type, config)) {
+		throw new ApiFail(
+			422,
+			'resume_unsupported',
+			'Resume is supported only by Claude Code local runners and Claude managed runners',
+			{ field: 'resume_enabled' }
+		);
+	}
+	if (!isResumeProviderSupported(type, config)) {
+		const provider = type === 'local' ? 'Claude Code local' : 'Claude managed';
+		throw new ApiFail(
+			422,
+			'resume_unavailable',
+			`Awaiting-session continuation is staged but not yet available for ${provider} runners`,
+			{ field: 'resume_enabled', provider: type }
+		);
+	}
 }
 
 const LOCAL_HARNESSES = ['claude_code', 'codex', 'custom'] as const;
@@ -327,6 +374,11 @@ function serializeRunner(row: RunnerRow, now = Date.now()): Runner {
 		status: row.status as RunnerStatus,
 		max_concurrent: row.max_concurrent,
 		max_run_minutes: row.max_run_minutes,
+		resume_enabled: row.resume_enabled === 1,
+		resume_window_hours: row.resume_window_hours,
+		resume_max_turns: row.resume_max_turns,
+		resume_max_tokens: row.resume_max_tokens,
+		resume_max_cost_usd: row.resume_max_cost_usd,
 		default_tier: row.default_tier as ModelTier,
 		tiers,
 		tier_models: builtinTierModels(row),
@@ -390,6 +442,7 @@ export async function createRunner(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
+	effects: DispatchEffects,
 	body: CreateRunnerRequest,
 	ping: ProviderKeyPing = defaultPing
 ): Promise<Runner> {
@@ -465,6 +518,29 @@ export async function createRunner(
 		config = validateLocalConfig(body.config);
 		budget = body.budget === undefined ? null : validateRunnerBudget(body.budget);
 	}
+	const resumeEnabled = body.resume_enabled === undefined ? false : body.resume_enabled;
+	if (typeof resumeEnabled !== 'boolean') {
+		throw new ApiFail(422, 'invalid_field', '"resume_enabled" must be a boolean', {
+			field: 'resume_enabled'
+		});
+	}
+	if (resumeEnabled) validateResumeEnable(body.type, config);
+	const resumeWindowHours =
+		body.resume_window_hours === undefined
+			? DEFAULT_RESUME_WINDOW_HOURS
+			: validateBoundedInt(body.resume_window_hours, 'resume_window_hours', 1, 168);
+	const resumeMaxTurns =
+		body.resume_max_turns === undefined
+			? DEFAULT_RESUME_MAX_TURNS
+			: validateBoundedInt(body.resume_max_turns, 'resume_max_turns', 1, 1000);
+	const resumeMaxTokens =
+		body.resume_max_tokens === undefined
+			? DEFAULT_RESUME_MAX_TOKENS
+			: validateBoundedInt(body.resume_max_tokens, 'resume_max_tokens', 1, 10_000_000);
+	const resumeMaxCostUsd =
+		body.resume_max_cost_usd === undefined
+			? DEFAULT_RESUME_MAX_COST_USD
+			: validateResumeCost(body.resume_max_cost_usd);
 
 	const now = Date.now();
 	// 'rnr' leaves the `run_` prefix free for agent_run ids.
@@ -491,6 +567,12 @@ export async function createRunner(
 				draining: 0,
 				backoff_until: null,
 				backoff_reason: null,
+				resume_enabled: resumeEnabled ? 1 : 0,
+				resume_window_hours: resumeWindowHours,
+				resume_max_turns: resumeMaxTurns,
+				resume_max_tokens: resumeMaxTokens,
+				resume_max_cost_usd: resumeMaxCostUsd,
+				resume_config_revision: 0,
 				created_at: now,
 				updated_at: now
 			})
@@ -501,6 +583,7 @@ export async function createRunner(
 			payload: { runner_id: id, name, runner_type: body.type }
 		})
 	]);
+	effects.signalDispatch();
 	return getRunner(db, actor.userId, id);
 }
 
@@ -508,6 +591,7 @@ export async function updateRunner(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
+	effects: DispatchEffects,
 	id: string,
 	body: UpdateRunnerRequest,
 	ping: ProviderKeyPing = defaultPing
@@ -526,6 +610,11 @@ export async function updateRunner(
 		budget: string | null;
 		secret_enc: string;
 		config: string;
+		resume_enabled: number;
+		resume_window_hours: number;
+		resume_max_turns: number;
+		resume_max_tokens: number;
+		resume_max_cost_usd: number;
 	}> = {};
 
 	if (body.name !== undefined) {
@@ -608,13 +697,66 @@ export async function updateRunner(
 			changed.push('config');
 		}
 	}
+	const effectiveConfig = JSON.parse(patch.config ?? row.config) as Record<string, unknown>;
+	const resumeEnabled =
+		body.resume_enabled === undefined ? row.resume_enabled === 1 : body.resume_enabled;
+	if (typeof resumeEnabled !== 'boolean') {
+		throw new ApiFail(422, 'invalid_field', '"resume_enabled" must be a boolean', {
+			field: 'resume_enabled'
+		});
+	}
+	if (body.resume_enabled === true) validateResumeEnable(row.type as RunnerType, effectiveConfig);
+	const resumeFields: [
+		keyof Pick<
+			UpdateRunnerRequest,
+			'resume_window_hours' | 'resume_max_turns' | 'resume_max_tokens'
+		>,
+		number,
+		number
+	][] = [
+		['resume_window_hours', 1, 168],
+		['resume_max_turns', 1, 1000],
+		['resume_max_tokens', 1, 10_000_000]
+	];
+	if (body.resume_enabled !== undefined && Number(resumeEnabled) !== row.resume_enabled) {
+		patch.resume_enabled = resumeEnabled ? 1 : 0;
+		changed.push('resume_enabled');
+	}
+	for (const [field, min, max] of resumeFields) {
+		if (body[field] === undefined) continue;
+		const value = validateBoundedInt(body[field], field, min, max);
+		if (value !== row[field]) {
+			patch[field] = value;
+			changed.push(field);
+		}
+	}
+	if (body.resume_max_cost_usd !== undefined) {
+		const value = validateResumeCost(body.resume_max_cost_usd);
+		if (value !== row.resume_max_cost_usd) {
+			patch.resume_max_cost_usd = value;
+			changed.push('resume_max_cost_usd');
+		}
+	}
+	const revisionChanged = changed.some(
+		(field) =>
+			field === 'api_key' || field === 'config' || field === 'tiers' || field === 'default_tier'
+	);
 
-	if (changed.length === 0) return serializeRunner(row);
+	if (changed.length === 0) {
+		effects.signalDispatch();
+		return serializeRunner(row);
+	}
 
 	await runAtomic(env, [
 		db
 			.updateTable('runner')
-			.set({ ...patch, updated_at: Date.now() })
+			.set({
+				...patch,
+				...(revisionChanged
+					? { resume_config_revision: sql<number>`resume_config_revision + 1` }
+					: {}),
+				updated_at: Date.now()
+			})
 			.where('id', '=', id)
 			.compile(),
 		eventInsert(db, actor, {
@@ -627,12 +769,15 @@ export async function updateRunner(
 			}
 		})
 	]);
+	effects.signalDispatch();
 	// Pausing stops new assignments immediately AND cancels the runner's
 	// not-yet-acknowledged `assigned` runs — nothing is running yet, so the
 	// cancel is free and the issues return to the pool. `launching`/`running`
 	// runs finish (SPEC.md "Pausing a runner").
 	if (patch.status === 'paused') {
-		await cancelAssignedRuns(db, env, { userId: actor.userId, runnerId: id }, 'runner paused');
+		await cancelAssignedRuns(db, env, { userId: actor.userId, runnerId: id }, 'runner paused', () =>
+			effects.signalDispatch()
+		);
 	}
 	return getRunner(db, actor.userId, id);
 }
@@ -657,6 +802,7 @@ export async function registerRunner(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
+	effects: DispatchEffects,
 	body: RegisterRunnerRequest
 ): Promise<RunnerTokenResponse> {
 	const name = validateRunnerName(body.name);
@@ -666,7 +812,7 @@ export async function registerRunner(
 
 	const existing = await db
 		.selectFrom('runner')
-		.select(['id', 'type', 'config'])
+		.select(['id', 'type', 'config', 'default_tier'])
 		.where('user_id', '=', actor.userId)
 		.where('name', '=', name)
 		.executeTakeFirst();
@@ -724,12 +870,19 @@ export async function registerRunner(
 			patch.default_tier = requireTier(body.default_tier, 'default_tier');
 			changed.push('default_tier');
 		}
+		const serializedConfig = JSON.stringify(config);
+		const revisionChanged =
+			serializedConfig !== existing.config ||
+			(patch.default_tier !== undefined && patch.default_tier !== existing.default_tier);
 		await runAtomic(env, [
 			db
 				.updateTable('runner')
 				.set({
 					...patch,
-					config: JSON.stringify(config),
+					config: serializedConfig,
+					...(revisionChanged
+						? { resume_config_revision: sql<number>`resume_config_revision + 1` }
+						: {}),
 					runner_token_hash: tokenHash,
 					last_seen_at: now,
 					updated_at: now
@@ -741,6 +894,7 @@ export async function registerRunner(
 				payload: { runner_id: existing.id, name, changed, reconnected: true }
 			})
 		]);
+		effects.signalDispatch();
 		return { runner: await getRunner(db, actor.userId, existing.id), runner_token: token };
 	}
 
@@ -784,6 +938,12 @@ export async function registerRunner(
 				draining: 0,
 				backoff_until: null,
 				backoff_reason: null,
+				resume_enabled: 0,
+				resume_window_hours: DEFAULT_RESUME_WINDOW_HOURS,
+				resume_max_turns: DEFAULT_RESUME_MAX_TURNS,
+				resume_max_tokens: DEFAULT_RESUME_MAX_TOKENS,
+				resume_max_cost_usd: DEFAULT_RESUME_MAX_COST_USD,
+				resume_config_revision: 0,
 				created_at: now,
 				updated_at: now
 			})
@@ -793,6 +953,7 @@ export async function registerRunner(
 			payload: { runner_id: id, name, runner_type: 'local' }
 		})
 	]);
+	effects.signalDispatch();
 	return { runner: await getRunner(db, actor.userId, id), runner_token: token };
 }
 
@@ -910,6 +1071,7 @@ export async function deleteRunner(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
+	effects: DispatchEffects,
 	id: string,
 	force: boolean
 ): Promise<void> {
@@ -990,12 +1152,16 @@ export async function deleteRunner(
 		issueId?: string | null;
 		projectId?: string | null;
 		payload: Record<string, unknown>;
-	}): CompiledQuery =>
-		sql`
+	}): CompiledQuery => {
+		const projectId = input.issueId
+			? sql`(SELECT project_id FROM issue WHERE id = ${input.issueId})`
+			: sql`${input.projectId ?? null}`;
+		return sql`
 			INSERT INTO event (id, user_id, type, actor_user_id, actor_api_key_id, issue_id, project_id, payload, created_at)
 			SELECT ${newId('evt')}, ${actor.userId}, ${input.type}, ${actor.userId}, ${actor.apiKeyId ?? null},
-				${input.issueId ?? null}, ${input.projectId ?? null}, ${JSON.stringify(input.payload)}, ${Date.now()}
+				${input.issueId ?? null}, ${projectId}, ${JSON.stringify(input.payload)}, ${Date.now()}
 			WHERE ${noActiveRuns}`.compile(db);
+	};
 
 	const now = Date.now();
 	const queries: CompiledQuery[] = [];
@@ -1113,4 +1279,5 @@ export async function deleteRunner(
 			console.error(`deleting run-log objects for run ${run.id} failed:`, e)
 		);
 	}
+	effects.signalDispatch();
 }

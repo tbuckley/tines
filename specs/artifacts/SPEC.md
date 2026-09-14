@@ -316,7 +316,7 @@ The issue block gains an **Artifacts** section between *Comments* and
 
 *("No artifacts attached." when empty. The section ends with:
 Attach one: `tines issues artifacts attach <project>/<number> <name> …` — the
-flag follows the gate; each gated transition below names its exact command.
+source follows the gate; each gated transition below names its exact command.
 Ungated slots: --file <path>, --folder <dir>, --text <md|@file>, --link <url>,
 --pr <owner/repo#N>.)*
 ```
@@ -324,11 +324,14 @@ Ungated slots: --file <path>, --folder <dir>, --text <md|@file>, --link <url>,
 And each entry under *Available transitions* appends its requirements with
 live status, so the prompt alone tells an agent both its legal moves and their
 preconditions. An **unsatisfied** requirement ends in the command that clears
-it — the same `fix` string the 422 and the issue read carry:
+it — the same `fix` string the 422 and the issue read carry. A gated slot gets
+the one-line **positional** form (Tines/274), and a `stale` slot's second way
+through gets its own code span, because a span holding two commands is not
+copy-pastable (Tines/255):
 
 ```markdown
 - **approve** → Implementation (active): `tines issues move tines/42 "approve"`
-  Requires: artifact `design-doc` (text, text/markdown) — **stale; attach a new version (or reaffirm) first** — attach: `tines issues artifacts attach tines/42 design-doc --text @design-doc.md — or, if the current content still stands: tines issues artifacts reaffirm tines/42 design-doc`
+  Requires: artifact `design-doc` (text, text/markdown) — **stale; attach a new version (or reaffirm) first** — attach: `tines issues artifacts attach tines/42 design-doc design-doc.md` — or reaffirm: `tines issues artifacts reaffirm tines/42 design-doc`
 ```
 
 **One source for every attach hint** (Tines/241). `requirementFix` in
@@ -339,18 +342,33 @@ runnable command and a `kind` (`attach` / `reattach_or_reaffirm` /
 ones included, where it is the command that attaches the next version — and
 therefore rides `allowed_transitions[].requires[]` on
 `GET /api/v1/issues/:id`, the launch prompt's `Requires:` lines, and the 422's
-`unmet[]`, byte-identical in all three. The flag follows the gate: a
-`(text, text/markdown)` requirement renders `--text @<slot>.md`, a `text/plain`
-one `@<slot>.txt`, and anything less concrete keeps the
-`--text <markdown|@file>` placeholder. Nothing privileges `--file` any more —
-naming it first in the generic hint taught agents to reach for it under gates
-that wanted something else.
+`unmet[]`, byte-identical in all three. **`fix` is always exactly one runnable
+command** — a requirement with a second way through carries it in an optional
+`fix_alternative` beside it (today `stale` only, whose alternative is
+`reaffirm`), so every consumer that reads `fix` alone keeps working and a
+reader can copy either verbatim (Tines/255).
+
+The source the command names follows the gate. A requirement that declares a
+**type** renders the positional form the CLI types off the gate itself
+(Tines/274): `<slot>.md` under `(text, text/markdown)`, `<slot>.txt` under
+`(text, text/plain)`, `<path>` for any other text/file gate, `<dir>` for
+`folder`, `<url>` for `link`, `<owner/repo#N>` for `pr` — one line, no flag,
+and no `--content-type` tail, because the CLI declares the gate's concrete
+content type with the upload (see "Typing" below). An **untyped** requirement
+keeps a flag form (`--file <path>` by default, or the slot's own type where one
+exists): with no declared type there is nothing for the CLI to type a
+positional source by, and its shape-only inference never guesses `text`.
+Nothing privileges `--file` any more — naming it first in the generic hint
+taught agents to reach for it under gates that wanted something else.
 
 The `transition_requirements_unmet` 422 summary follows the same `kind`: a
 `delete_and_attach` (the slot holds the wrong **immutable** type) says so —
 *the attached "spec" is a link artifact and the gate needs text* — instead of
 the generic "attach it (or a new version)", which would send an agent round
-the identical 422. `missing` and `stale` keep that wording. The CLI's own pre-flight refusals quote
+the identical 422. The type that sentence names is the one the `fix` command
+attaches, `file` for an untyped gate: the gate would take text too, but a
+summary and a command naming different types is what sent readers looking for
+a third answer. `missing` and `stale` keep that wording. The CLI's own pre-flight refusals quote
 the same `fix` verbatim rather than composing a second wording, and `issues
 show` renders it beside the requirement, so the hint an agent reads before it
 attaches and the one it reads after a blocked `move` are the same string.
@@ -631,6 +649,7 @@ tines issues artifacts attach <ref> <name> … --ignore-gates    # attach this t
 tines issues artifacts reaffirm <ref> <name>                   # bless current content as fresh
 tines issues artifacts get <ref> <name> [--version N] [--out <path>]   # content; link/pr prints the
                                                                #   URL; a folder writes its tree
+                                                               #   only into a new or empty directory
 tines issues artifacts site-link <ref> <name> [--version N]     # mint a URL that renders an HTML
                                                                #   artifact live; prints the URL,
                                                                #   the pinned version and the
@@ -650,6 +669,13 @@ without any new CLI logic. `tines workflows` create/edit accept `requires`
 inside their transition definitions. `show` and `attach` print a `site:`
 line when the artifact renders live, and `attach` follows it with the
 `warning:` lines `lintHtmlArtifact()` produces.
+
+Folder downloads preserve the whole-snapshot boundary locally: `get --out`
+accepts a nonexistent directory or an existing empty directory, but refuses
+an existing directory containing any entry (including hidden files, empty
+children, and symlinks) before requesting file content or writing. The CLI
+does not remove content or offer a force override; callers choose or prepare
+an empty destination.
 
 **The CLI uses the gate it can already see** (Tines/243). `resolveIssue`
 fetches the `IssueDetail`, so `allowed_transitions[].requires[]` is in hand
@@ -671,8 +697,12 @@ before the first write and every use below costs no extra request:
   teaches the dance rather than converting. That refusal is checked *after*
   acceptance, so passing the wrong flag at a slot whose current type already
   satisfies the gate gets the gate's own fix — never advice to delete the
-  artifact that satisfies it — and it names no `--ignore-gates` escape, since
-  the server rejects a type change unconditionally.
+  artifact that satisfies it. **No refusal offers `--ignore-gates` over a slot
+  that already holds a different type** (Tines/268): the flag skips the CLI's
+  checks, not the server's, and `artifact_type_mismatch` is raised
+  unconditionally on all three write paths, so both refusals end in the
+  delete-and-reattach advice instead. On an empty slot the escape is real and
+  stays.
 - **Reading the gate.** The line confirming an attach names the transitions the
   new version satisfies (or what a gate wanted instead); `issues show` prints
   each gated transition's requirement with its status and `fix`; and
@@ -747,6 +777,17 @@ when every file is an image, else as a file tree with per-file preview. A
 with a Phone / Tablet / Full width switcher — the reader is usually going to
 be on a phone — an **Open full page** link, and *Files* / *Source* escapes
 back to the ordinary folder and text views.
+
+The viewer resolves **current** to the concrete version returned by its metadata
+read and pins every source, frame, image, PDF, folder entry, download and site
+link to that snapshot. Reopening performs a fresh metadata read; an already-open
+viewer does not live-advance. Immutable text caching is scoped by stable artifact
+id, version and exact folder path, so it cannot cross issues or a delete/recreate
+boundary. Metadata, text failures and site links are rendered only while their
+open selection still owns the request; a superseded response cannot replace the
+active preview. Panel thumbnails likewise use the concrete current version from
+their own artifact row. The public content API remains current-by-default when a
+general caller omits `version`.
 
 ### Transitions
 
@@ -835,7 +876,9 @@ Done when this loop works end-to-end:
    regardless of which files the set contains; each file serves at
    `…/content?path=…` under the safety headers; `…/content` without `path`
    is a 422 listing the paths; re-attaching the directory is v2 (whole set);
-   reaffirm appends v3 reusing v2's objects; `get --out` writes the tree;
+   reaffirm appends v3 reusing v2's objects; `get --out` writes the tree into
+   a new or empty directory, while a populated destination is refused before
+   content requests or mutation and remains unchanged;
    a folder requirement declaring `content_type` is rejected at definition
    time; per-version caps (200 files / 50 MB) reject with 422s naming them.
 7. A human force-sets the state past an unmet gate (recorded `forced: true`);
@@ -909,6 +952,12 @@ From the folders/viewer review:
   version picker); inline expansion had unbounded Markdown height inside the
   issue column and could never host PDFs. The one inline survivor is the
   image thumbnail — the genuinely glanceable case.
+- **Resolved previews are immutable UI snapshots** — "current" is resolved by
+  the metadata read and every downstream URL/request carries that numbered
+  version. Cache identity includes stable artifact id and exact path; reopening
+  is the refresh boundary, and late responses from older selections are ignored.
+  This tightens viewer/panel behavior without changing the API's intentional
+  current-by-default contract for unresolved callers.
 - **Screenshots are a folder, not sibling files** — because workflows are
   generic over issues: a requirement names one fixed slot (`screenshots`),
   while each issue's surfaces differ, so per-screen slot names are invisible
@@ -931,8 +980,15 @@ From the folders/viewer review:
 - **No `content_type` on folder requirements** (422 at definition time):
   mixed-type trees admit no honest all-files/any-file match rule; the gate
   asserts slot + type, prose says what belongs inside.
+- **2026-09-09, Tines/333 — folder downloads never overlay a populated
+  destination**: every folder version is a whole immutable snapshot, so
+  mixing its files with leftovers could create a tree that never existed on
+  the server. The CLI accepts only a new or empty destination and preserves
+  every existing entry on refusal; cleanup and force-overlay behavior stay
+  deliberately absent.
 
 From later work:
 
 - **2026-09-01, Tines/92 — the link payload flag is `--link`, not `--url`**: `-u, --url` is the API base URL on every CLI command without exception. `attach … --url <link>` used to suppress the base-URL flag and attach the link, so an invocation that copied the documented `--url` idiom silently produced a `link` artifact pointing at the API base URL. Renaming makes that misuse an offline arity error carrying the corrective hint; the server-generated `fix:` line and launch-prompt "Attach one:" hint teach `--link`.
 - **2026-09-06, Tines/241 — the requirement is the single source for every attach hint**: the `attachFlag`/`fixFor` logic moved out of the 422 builder into `requirementFix` in `@tines/shared`, and `fix` became a required field on `ArtifactRequirementCheck`. The three surfaces that tell someone how to attach — launch prompt, issue read, 422 — can no longer drift from each other or from the gate, and the CLI can import the same function. Rendering stays on today's *flag* forms (`--text @<slot>.md`, not a positional path): runner CLIs lag npm by days, so a hint the installed CLI cannot parse is worse than a generic one.
+- **2026-09-06, Tines/274 — the rendered hint is the positional form, and one command per code span**: the gate-typed positional `attach <ref> <slot> <source>` shipped in `tines@0.0.141` (Tines/243), so `requirementFix` now renders it for every requirement that declares a `type` — the one-line journey the PRD's "After" shows, and the end of the `--text @<slot>.txt` loop that stored `text/markdown` under a `text/plain` gate. Untyped requirements keep a flag, which is the only thing that can type them. A CLI older than `0.0.141` fails the positional form with commander's `too many arguments`, exit 1 having written nothing — it fails safe, loudly, and at a version that is days old, so there is no fallback rendering. Separately, `fix` stopped packing two commands into one string: the `stale` reaffirm moved to `fix_alternative`, additively, because a code span an agent copies has to run.

@@ -16,6 +16,14 @@
  * `claude` that ignores the flag — or any other process writing prose to
  * stdout — still produces a usable log instead of nothing.
  */
+import type { AgentRunUsage } from '@tines/shared';
+import {
+	copySummary,
+	validMetric,
+	validProviderSessionId,
+	type RunStreamRenderer,
+	type StreamSummary
+} from './stream-summary.js';
 
 /** Matches claude-events.ts: long values are clipped, not dropped. */
 export function clip(value: string, max: number): string {
@@ -38,6 +46,14 @@ export interface StreamEvent {
 	message?: { content?: ContentBlock[] };
 	num_turns?: number;
 	total_cost_usd?: number;
+	session_id?: string;
+	duration_ms?: number;
+	usage?: {
+		input_tokens?: number;
+		output_tokens?: number;
+		cache_read_input_tokens?: number;
+		cache_creation_input_tokens?: number;
+	};
 	is_error?: boolean;
 	result?: string;
 	rate_limit_info?: { status?: string; resetsAt?: number; rateLimitType?: string };
@@ -128,8 +144,10 @@ export function renderStreamEvent(event: StreamEvent): string[] {
  * until their newline arrives; `finish()` flushes whatever is left when the
  * process exits without a trailing newline.
  */
-export class ClaudeStreamRenderer {
+export class ClaudeStreamRenderer implements RunStreamRenderer {
 	private pending = '';
+	private collected: StreamSummary = {};
+	private finished = false;
 
 	/**
 	 * @param onEvent every successfully parsed event, before rendering — so the
@@ -152,10 +170,16 @@ export class ClaudeStreamRenderer {
 
 	/** Renders any trailing partial line. Call once the harness has exited. */
 	finish(): void {
+		if (this.finished) return;
+		this.finished = true;
 		if (this.pending) {
 			this.line(this.pending);
 			this.pending = '';
 		}
+	}
+
+	summary(): StreamSummary {
+		return copySummary(this.collected);
 	}
 
 	private line(raw: string): void {
@@ -173,7 +197,38 @@ export class ClaudeStreamRenderer {
 			this.emit(`${raw}\n`);
 			return;
 		}
+		if (!event || typeof event !== 'object' || Array.isArray(event)) return;
+		if (event.type === 'result') this.collectResult(event);
 		this.onEvent?.(event);
 		for (const line of renderStreamEvent(event)) this.emit(`${line}\n`);
+	}
+
+	private collectResult(event: StreamEvent): void {
+		if (!this.collected.providerSessionId && validProviderSessionId(event.session_id)) {
+			this.collected.providerSessionId = event.session_id;
+		}
+		if (validMetric(event.num_turns)) this.collected.numTurns = event.num_turns;
+		if (validMetric(event.duration_ms)) this.collected.durationMs = event.duration_ms;
+		const usage: AgentRunUsage = { cost_source: 'provider' };
+		let measured = false;
+		if (validMetric(event.total_cost_usd)) {
+			usage.cost_usd = event.total_cost_usd;
+			measured = true;
+		}
+		const raw = event.usage;
+		if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+			for (const [source, destination] of [
+				['input_tokens', 'input_tokens'],
+				['output_tokens', 'output_tokens'],
+				['cache_read_input_tokens', 'cache_read_tokens'],
+				['cache_creation_input_tokens', 'cache_write_tokens']
+			] as const) {
+				if (validMetric(raw[source])) {
+					usage[destination] = raw[source];
+					measured = true;
+				}
+			}
+		}
+		if (measured) this.collected.usage = usage;
 	}
 }

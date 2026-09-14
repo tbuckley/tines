@@ -486,6 +486,9 @@ export interface Issue {
 	/** Set when the issue was created by a scheduled task (null once the schedule is deleted). */
 	scheduled_task_id: string | null;
 	scheduled_task_name: string | null;
+	/** The schedule keeps its original project when an instance moves. */
+	scheduled_task_project_id: string | null;
+	scheduled_task_project_name: string | null;
 	/** Pin: replaces routing-rule matching entirely for this issue. */
 	pinned_runner_id: string | null;
 	pinned_runner_name: string | null;
@@ -611,6 +614,8 @@ export interface IssueDetail extends Issue {
 	 * in; null when nothing human happened after it, or there is no previous run.
 	 */
 	since_last_run?: SinceLastRun | null;
+	/** Prompt-only metadata, emitted when launch comment selection is requested. */
+	launch_comments?: { latest_completed_run_comment_id: string | null };
 }
 
 // ---------------------------------------------------------------------------
@@ -858,7 +863,7 @@ export interface IssueFilters {
 	hide_done?: boolean;
 	/** Only issues that are not done, not duplicates, and have all blockers effectively done. */
 	ready?: boolean;
-	/** Title/description substring search. */
+	/** Literal title/description substring search, case-insensitive for ASCII. */
 	q?: string;
 	/** Label names or ids; repeated labels narrow (AND). */
 	label?: string[];
@@ -1040,7 +1045,7 @@ export interface ContextListFilters {
 	issue?: string;
 	/** Label id or name. */
 	label?: string;
-	/** Name/description search. */
+	/** Literal name/description substring search, case-insensitive for ASCII. */
 	q?: string;
 	exact?: boolean;
 	/** Without a project filter, items scoped to archived projects are hidden by default. */
@@ -1074,6 +1079,8 @@ export interface EffectivePromptPart {
 export interface EffectiveSkill {
 	item_id: string;
 	name: string;
+	/** Existing context-item description used as the skill's discovery cue. */
+	description: string;
 	scope: ContextScope;
 	/** Empty when the bundle was assembled without file contents. */
 	files: ContextFile[];
@@ -1103,8 +1110,145 @@ export interface OverriddenContextItem {
 	name: string;
 	scope: ContextScope;
 	overridden_by: string;
+	/** Repositories only: the losing candidate's checkout details. */
+	repo?: { url: string; branch?: string | null; dir: string };
 	/** Set when the loser matched through an ancestor of the issue's state. */
 	inherited_from: InheritedFrom | null;
+}
+
+// ---------------------------------------------------------------------------
+// Issue project transfer (Tines/392)
+
+/** One address an issue has answered to: its project and number at that time. */
+export interface IssueTransferRef {
+	project_id: string;
+	project_name: string;
+	number: number;
+	/** The copyable `Project/N` form. */
+	ref: string;
+}
+
+export interface IssueTransferProject {
+	id: string;
+	name: string;
+	archived: boolean;
+}
+
+/** Why a transfer cannot be committed right now, and what to do about it. */
+export interface IssueTransferBlocker {
+	code: 'run_key_forbidden' | 'project_archived' | 'issue_busy' | 'transfer_preview_unavailable';
+	message: string;
+	/** Set for `issue_busy`: the run holding the issue. */
+	run_id?: string;
+	run_status?: string;
+	/** A command or action that clears this blocker, when one exists. */
+	remedy?: string;
+}
+
+/**
+ * How one context item's participation changes across the move. `rescoped`
+ * covers the project∧issue rows the commit carries with the issue; `retained`
+ * an issue-only or shared row that matches on both sides unchanged.
+ */
+export type IssueTransferContextChangeKind =
+	'added' | 'removed' | 'retained' | 'rescoped' | 'replaced';
+
+export interface IssueTransferContextChange {
+	item_id: string;
+	name: string;
+	kind: ContextKind;
+	change: IssueTransferContextChangeKind;
+	scope_before: ContextScope | null;
+	scope_after: ContextScope | null;
+	/** Whether the item wins its name (rather than being overridden) each side. */
+	effective_before: boolean;
+	effective_after: boolean;
+	/** Repositories only: the checkout this item contributes, before and after. */
+	repo_before?: { url: string; branch?: string | null; dir: string } | null;
+	repo_after?: { url: string; branch?: string | null; dir: string } | null;
+}
+
+/** The record the move carries with the issue, unchanged. */
+export interface IssueTransferPreserved {
+	title: string;
+	workflow_id: string;
+	state_id: string;
+	state_entered_at: number;
+	created_at: number;
+	labels: { id: string; name: string }[];
+	pinned_runner_id: string | null;
+	pinned_tier: ModelTier | null;
+	attempt_count: number;
+	parked: boolean;
+	/** Snapshot counts at preview time; ordinary collaboration continues. */
+	comment_count: number;
+	artifact_count: number;
+	artifact_version_count: number;
+	run_count: number;
+	link_count: number;
+}
+
+/** The moved instance's schedule, which stays with its original project. */
+export interface IssueTransferSchedule {
+	id: string;
+	name: string;
+	project_id: string;
+	project_name: string;
+	notice: string;
+}
+
+export interface IssueTransferPreview {
+	issue_id: string;
+	source: IssueTransferProject;
+	destination: IssueTransferProject;
+	old_ref: IssueTransferRef;
+	/** Always null: a preview allocates and reserves no destination number. */
+	new_ref: null;
+	/** Rendered where a preview would otherwise imply a reserved number. */
+	number_notice: string;
+	preserved: IssueTransferPreserved;
+	context: {
+		before: EffectiveContext;
+		after: EffectiveContext;
+		changes: IssueTransferContextChange[];
+	};
+	/**
+	 * Destination routing as the next launch would resolve it. Capacity,
+	 * heartbeat and spending inside each explainer are advisory: they may change
+	 * at any moment and never stale the preview.
+	 */
+	routing: { before: DispatchExplainer | null; after: DispatchExplainer | null };
+	schedule: IssueTransferSchedule | null;
+	noop: boolean;
+	can_commit: boolean;
+	blockers: IssueTransferBlocker[];
+	/** Null whenever the transfer is blocked. Binds this exact review. */
+	preview_token: string | null;
+	previewed_at: number;
+}
+
+export interface IssueTransferRequest {
+	project_id: string;
+	preview_token: string;
+}
+
+export interface IssueTransferResult {
+	status: 'transferred' | 'noop';
+	issue_id: string;
+	source: IssueTransferProject;
+	destination: IssueTransferProject;
+	/** The actual addresses: no guessed destination number appears anywhere. */
+	old_ref: IssueTransferRef;
+	new_ref: IssueTransferRef;
+	/** The single audited move event; null for a same-project no-op. */
+	event_id: string | null;
+	/** Canonical browser path for the issue at its current address. */
+	issue_path: string;
+	/** The signed review that this commit validated. */
+	preserved: IssueTransferPreserved;
+	context_changes: IssueTransferContextChange[];
+	routing: IssueTransferPreview['routing'];
+	schedule: IssueTransferSchedule | null;
 }
 
 export interface RepoDirConflict {
@@ -1369,9 +1513,17 @@ export interface ArtifactRequirementCheck extends ArtifactRequirement {
 	/**
 	 * The runnable command that clears this requirement (`requirementFix`) —
 	 * present on every entry, satisfied or not, so the launch prompt, the
-	 * issue read and the 422 all quote the same string.
+	 * issue read and the 422 all quote the same string. Always exactly one
+	 * command: copy-pastable whole.
 	 */
 	fix: string;
+	/**
+	 * A second command that also clears it, when one exists — today only a
+	 * `stale` requirement's `reaffirm`, whose alternative to re-attaching is
+	 * "the current content still stands". Additive: every consumer that reads
+	 * `fix` alone stays correct (Tines/274).
+	 */
+	fix_alternative?: string;
 }
 
 /** A pull-request reference parsed from user input. */
@@ -1469,6 +1621,11 @@ export const RUNNER_NAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
 
 /** Local-runner liveness: online = last poll within this window. */
 export const RUNNER_ONLINE_WINDOW_MS = 2 * 60 * 1000;
+
+export const DEFAULT_RESUME_WINDOW_HOURS = 48;
+export const DEFAULT_RESUME_MAX_TURNS = 25;
+export const DEFAULT_RESUME_MAX_TOKENS = 100_000;
+export const DEFAULT_RESUME_MAX_COST_USD = 2;
 
 /** A local runner unseen this long has its running runs failed by the sweep. */
 export const RUNNER_OFFLINE_FAIL_MS = 5 * 60 * 1000;
@@ -1668,6 +1825,12 @@ export interface Runner {
 	/** The runner's own concurrency cap; always enforced. */
 	max_concurrent: number;
 	max_run_minutes: number;
+	/** Experimental continuation policy; disabled by default. */
+	resume_enabled: boolean;
+	resume_window_hours: number;
+	resume_max_turns: number;
+	resume_max_tokens: number;
+	resume_max_cost_usd: number;
 	default_tier: ModelTier;
 	/** Per-tier model overrides; null = all built-ins. */
 	tiers: RunnerTierOverrides | null;
@@ -1720,6 +1883,11 @@ export interface CreateRunnerRequest {
 	api_key?: string;
 	max_concurrent?: number;
 	max_run_minutes?: number;
+	resume_enabled?: boolean;
+	resume_window_hours?: number;
+	resume_max_turns?: number;
+	resume_max_tokens?: number;
+	resume_max_cost_usd?: number;
 	default_tier?: ModelTier;
 	tiers?: RunnerTierOverrides;
 	/**
@@ -1739,6 +1907,11 @@ export interface UpdateRunnerRequest {
 	api_key?: string;
 	max_concurrent?: number;
 	max_run_minutes?: number;
+	resume_enabled?: boolean;
+	resume_window_hours?: number;
+	resume_max_turns?: number;
+	resume_max_tokens?: number;
+	resume_max_cost_usd?: number;
 	default_tier?: ModelTier;
 	/** Replaces the override map wholesale; null clears all overrides. */
 	tiers?: RunnerTierOverrides | null;
@@ -1787,6 +1960,8 @@ export interface RunnerTokenResponse {
 
 /** `POST /api/v1/runners/:id/poll` — runner-token auth. */
 export interface RunnerPollRequest {
+	/** Stable for one daemon boot. Absent only for legacy clients. */
+	instance_id?: string;
 	/** Run ids the daemon is actually executing right now. */
 	owned_runs: string[];
 	/**
@@ -1818,6 +1993,29 @@ export interface RunnerAssignment {
 	run_key: string;
 	/** Minutes until the daemon must kill the harness. */
 	timeout_minutes: number;
+	/**
+	 * Present only when this run continues the previous run's conversation:
+	 * the daemon skips workspace materialization and cloning, launches the
+	 * harness in `workspace_path`, and resumes `provider_session_id`. The
+	 * prompt above is then the reduced continuation message, not a full
+	 * launch prompt. Absent = launch fresh exactly as before.
+	 */
+	resume?: RunnerAssignmentResume;
+}
+
+/** The continuation instructions delivered with a resumed assignment. */
+export interface RunnerAssignmentResume {
+	/** The run whose conversation this one continues. */
+	previous_run_id: string;
+	/** The harness session to reopen (`claude -p --resume <id>`). */
+	provider_session_id: string;
+	/** The predecessor's workspace, kept on disk for exactly this. */
+	workspace_path: string;
+	/**
+	 * Turns already in that conversation, so the daemon can report the
+	 * accumulated count and the next resume decision sees the real size.
+	 */
+	prior_turn_count: number;
 }
 
 export interface RunnerPollResponse {
@@ -1869,12 +2067,31 @@ export interface FinishRunRequest {
 	 * resets, epoch ms. Absent = unknown; the server applies a default hold.
 	 */
 	resume_at?: number;
+	/** Opaque resumable session/thread id reported by the local harness. */
+	provider_session_id?: string;
+	/**
+	 * Assistant turns in THIS run, and in the whole conversation the harness
+	 * ran (they differ only for a resumed run, where the conversation carries
+	 * its predecessors' turns). The conversation count is what the resume
+	 * size guard reads.
+	 */
+	turn_count?: number;
+	conversation_turn_count?: number;
+	/**
+	 * Absolute path of the workspace the run used. Recorded so a later run on
+	 * the same runner can be continued in it; only meaningful together with
+	 * `provider_session_id`.
+	 */
+	workspace_path?: string;
 	/** Whatever the harness reported (Claude Code JSON output, etc.). */
 	usage?: AgentRunUsage;
+	/** Codex invocation and JSONL measurement evidence; rates remain server-owned. */
+	pricing_evidence?: CodexPricingEvidenceV1;
 }
 
 /** One entry of a rule's ordered preference list, as stored/sent. */
 export interface RoutingTarget {
+	/** `'*'` is reserved for a singleton scoped tier-only rule. */
 	runner_id: string;
 	/** Null/absent = the runner's default tier. */
 	tier?: ModelTier | null;
@@ -1884,7 +2101,8 @@ export interface RoutingTarget {
 export interface RoutingRuleTarget {
 	runner_id: string;
 	runner_name: string;
-	runner_status: RunnerStatus;
+	/** Null for the `'*'` inherited-runner sentinel. */
+	runner_status: RunnerStatus | null;
 	tier: ModelTier | null;
 }
 
@@ -1944,6 +2162,117 @@ export interface UpdateRoutingRuleRequest {
 // ---------------------------------------------------------------------------
 // Agent runs
 
+export interface CodexRawUsageV1 {
+	input_tokens?: number;
+	cached_input_tokens?: number;
+	cache_write_input_tokens?: number;
+	output_tokens?: number;
+}
+
+export type CodexRequestContextV1 = {
+	version: 1;
+	normalization: 'codex-rollout-delta-v1';
+	harness_version?: string;
+} & (
+	| {
+			status: 'complete';
+			harness_version: '0.153.4';
+			request_count: number;
+			max_request_input_tokens: number;
+			reconciled_usage: Required<CodexRawUsageV1>;
+	  }
+	| {
+			status: 'unavailable' | 'unsupported' | 'invalid';
+			reason:
+				| 'not_applicable'
+				| 'thread_id_missing'
+				| 'rollout_missing'
+				| 'rollout_ambiguous'
+				| 'unsafe_path'
+				| 'read_failed'
+				| 'limit_exceeded'
+				| 'unsupported_version'
+				| 'metadata_mismatch'
+				| 'malformed'
+				| 'missing_dimension'
+				| 'nonmonotonic'
+				| 'delta_mismatch'
+				| 'terminal_mismatch'
+				| 'model_mismatch';
+	  }
+);
+
+/** Bounded producer evidence for the Codex JSONL accounting contract. */
+export interface CodexPricingEvidenceV1 {
+	version: 1;
+	harness: 'codex';
+	model: string | null;
+	identity_source: 'launch_argument';
+	usage_scope: 'thread_total';
+	session_mode: 'cold' | 'resumed';
+	normalization: 'codex-jsonl-v1';
+	raw_usage?: CodexRawUsageV1;
+	model_rerouted: boolean;
+	measurement_status:
+		'complete' | 'missing' | 'invalid' | 'nonmonotonic' | 'incomplete_attempt' | 'multiple_threads';
+	terminal_snapshots: number;
+	daemon_version?: string;
+	request_context?: CodexRequestContextV1;
+}
+
+export type RunPricingReason =
+	| 'pricing_evidence_missing'
+	| 'invalid_pricing_evidence'
+	| 'model_missing'
+	| 'model_mismatch'
+	| 'model_rerouted'
+	| 'unsupported_model'
+	| 'missing_rate'
+	| 'missing_token_dimension'
+	| 'invalid_token_dimension'
+	| 'long_context_band_unknown'
+	| 'request_context_invalid'
+	| 'long_context_rate_unsupported'
+	| 'attempt_scope_unknown'
+	| 'incomplete_attempt'
+	| 'nonmonotonic_usage'
+	| 'multiple_threads'
+	| 'cost_out_of_range';
+
+export interface RunPricingBasisV1 {
+	calculation_version: 'tokens-times-usd-per-million-v1';
+	provider: 'openai';
+	model: string;
+	model_identity: 'requested_launch_no_observed_reroute';
+	usage_scope: 'attempt';
+	plan: 'api_standard';
+	context_band: 'short' | 'published';
+	rate_id: string;
+	rate_version: number;
+	rate_adopted_at: number;
+	rate_valid_to: number | null;
+	rate_selected_at: number;
+	source_url: string;
+	source_checked_at: string;
+	source_effective_at: string | null;
+	unit_tokens: 1000000;
+	rates: Record<
+		'input_tokens' | 'cache_read_tokens' | 'cache_write_tokens' | 'output_tokens',
+		string | null
+	>;
+	cost_usd_exact: string;
+}
+
+export type RunPricingV1 = {
+	version: 1;
+	evidence?: CodexPricingEvidenceV1;
+	evaluated_at: number;
+} & (
+	| { status: 'calculated'; basis: RunPricingBasisV1 }
+	| { status: 'unpriced'; reason: RunPricingReason }
+	| { status: 'provider_authoritative' }
+);
+
 /** Per-run usage record; fields land as providers report them. */
 export interface AgentRunUsage {
 	input_tokens?: number;
@@ -1952,6 +2281,8 @@ export interface AgentRunUsage {
 	cache_write_tokens?: number;
 	cost_usd?: number;
 	cost_source?: 'provider' | 'priced' | 'none';
+	/** Server-owned immutable pricing decision and its reproducing evidence. */
+	pricing?: RunPricingV1;
 }
 
 /** One attempt at one issue by one runner. */
@@ -1975,16 +2306,48 @@ export interface AgentRun {
 	/** Resolved at launch; null when the harness cannot vary its model. */
 	model: string | null;
 	usage: AgentRunUsage | null;
+	/** Resolved ledger dimensions, populated only for finalized period evidence. */
+	usage_dimensions?: import('./usage.js').UsageDimensions;
+	/** Accounting classification, populated only for finalized period evidence. */
+	usage_accounting?: import('./usage.js').UsageEvidenceAccounting;
 	state_id_at_start: string;
 	state_at_start_name: string | null;
 	state_id_at_end: string | null;
 	state_at_end_name: string | null;
 	provider_session_id: string | null;
 	provider_url: string | null;
+	turn_count: number | null;
+	conversation_turn_count: number | null;
+	resumed_from_run_id: string | null;
+	resume_expires_at: number | null;
+	resume_fallback_reason:
+		| 'expired'
+		| 'long_context'
+		| 'incompatible'
+		| 'unavailable'
+		| 'unsupported'
+		| 'provider_rejected'
+		| null;
 	error: string | null;
 	created_at: number;
 	started_at: number | null;
 	ended_at: number | null;
+}
+
+/** Historical as-of evidence for a run that had not ended at the reporting cutoff. */
+export interface UsagePendingRun {
+	id: string;
+	issue_id: string;
+	issue_ref: IssueRef | null;
+	runner_id: string;
+	runner_name: string;
+	tier: ModelTier;
+	state_id_at_start: string;
+	state_at_start_name: string | null;
+	created_at: number;
+	pending_at: number;
+	usage_dimensions: Omit<import('./usage.js').UsageDimensions, 'outcome'>;
+	accounting_status: 'pending';
 }
 
 /** Detail read: adds the captured log tail. */
@@ -2009,8 +2372,24 @@ export interface RunFilters {
 	issue?: string;
 	/** Runner id. */
 	runner?: string;
+	/** Workflow state id captured when the run started. */
+	state?: string;
 	/** Only runs holding a claim (assigned/launching/running). */
 	active?: boolean;
+	/** Usage evidence population; requires from/to. */
+	population?: 'finalized' | 'pending';
+	/** Inclusive finalized end bound, ISO UTC/offset timestamp. */
+	from?: string;
+	/** Exclusive cutoff, ISO UTC/offset timestamp. */
+	to?: string;
+	project?: string;
+	workflow?: string;
+	tier?: string;
+	outcome?: RunEndOutcome | 'unknown';
+	accounting_status?: 'priced' | 'unpriced' | 'unreported';
+	/** Period evidence display provenance; must be supplied as a pair. */
+	timezone?: string;
+	timezone_source?: 'supervisor_budget' | 'utc_fallback';
 }
 
 /**
@@ -2046,10 +2425,35 @@ export function runDurationLabel(
 export function runCostLabel(run: Pick<AgentRun, 'usage'>): string | null {
 	const usage = run.usage;
 	if (!usage) return null;
-	if (usage.cost_usd !== undefined) return `$${usage.cost_usd.toFixed(2)}`;
-	if (usage.cost_source === 'none') return 'unreported';
-	const tokens = (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0);
-	return tokens > 0 ? `${tokens.toLocaleString()} tok` : null;
+	if (usage.cost_usd !== undefined) {
+		const dollars =
+			usage.cost_usd === 0
+				? '$0'
+				: usage.cost_usd < 0.01
+					? '<$0.01'
+					: `$${usage.cost_usd.toFixed(2)}`;
+		const source =
+			usage.cost_source === 'provider'
+				? 'Reported'
+				: usage.cost_source === 'priced'
+					? 'Estimated'
+					: 'Recorded';
+		return `${dollars} ${source}`;
+	}
+	if (usage.pricing?.status === 'unpriced') return 'Unpriced';
+	if (usage.cost_source === 'none') return 'Unreported';
+	const measured = [
+		usage.input_tokens,
+		usage.output_tokens,
+		usage.cache_read_tokens,
+		usage.cache_write_tokens
+	].some((value) => value !== undefined);
+	const tokens =
+		(usage.input_tokens ?? 0) +
+		(usage.output_tokens ?? 0) +
+		(usage.cache_read_tokens ?? 0) +
+		(usage.cache_write_tokens ?? 0);
+	return tokens > 0 ? `${tokens.toLocaleString()} tok` : measured ? 'Unpriced' : null;
 }
 
 /** Whether a run still holds its issue's exclusive claim (and counts toward caps). */
@@ -2105,7 +2509,6 @@ export function utilizationLabel(
 // ---------------------------------------------------------------------------
 // Dispatch explainer
 
-/** One eligibility check, pass or fail, with a human-readable detail. */
 /**
  * A remedy for a failing check: a place to click and/or a command to run.
  * Purely presentational — an action never affects `eligible`.
@@ -2118,6 +2521,7 @@ export interface DispatchCheckAction {
 	cli?: string;
 }
 
+/** One eligibility check, pass or fail, with a human-readable detail. */
 export interface DispatchCheck {
 	name:
 		| 'automation_enabled'
@@ -2163,6 +2567,10 @@ export interface DispatchExplainer {
 	pin: { runner_id: string; runner_name: string | null; tier: ModelTier | null } | null;
 	/** The winning rule; null when pinned, nothing matches, or two rules tie. */
 	matched_rule: { rule_id: string; scope_label: string } | null;
+	/** Concrete runner source when `matched_rule` is a tier-only rule. */
+	runner_rule?: { rule_id: string; scope_label: string } | null;
+	/** Tier applied to all inherited runner targets. */
+	tier_override?: ModelTier | null;
 	/**
 	 * The rules that tied, when two label rules match an issue at equal
 	 * specificity: the issue does not dispatch until one is made more
@@ -2253,6 +2661,7 @@ export const QUEUE_GROUP_REF_LIMIT = 10;
 /** `GET /api/v1/supervisor/queue` — the fleet's waiting work. */
 export interface FleetQueue {
 	generated_at: number;
+	project: { id: string; name: string } | null;
 	automation_enabled: boolean;
 	quota: QuotaPolicy;
 	/** Sorted count desc, then oldest first. */
@@ -2262,6 +2671,166 @@ export interface FleetQueue {
 	parked: { count: number; oldest_entered_at: number | null; issues: QueueIssueRef[] };
 	/** Human stages get a summary line only — no table (Tines/256 scope). */
 	awaiting_human: { count: number; oldest_entered_at: number | null };
+}
+
+// ---------------------------------------------------------------------------
+// Stage stats — the flow board's "This week" row (Tines/257)
+
+/**
+ * How a run ended, for the stage table's outcome mix. `RunEndOutcome` plus the
+ * two buckets the column needs that the stored outcome cannot express: a run
+ * that never started (a launch failure — nothing to judge) and a row that
+ * ended before migration 0016 added the column.
+ */
+export type RunOutcomeBucket = RunEndOutcome | 'failed' | 'unrecorded';
+
+export const RUN_OUTCOME_BUCKETS: readonly RunOutcomeBucket[] = [
+	...RUN_END_OUTCOMES,
+	'failed',
+	'unrecorded'
+];
+
+/** A duration distribution in ms; `n` is how many samples it was measured over. */
+export interface DurationStats {
+	p50: number;
+	p90: number;
+	total: number;
+	n: number;
+}
+
+/** One stage's figures over one window. All durations are ms. */
+export interface StageWindowFigures {
+	since: number;
+	until: number;
+	/** Entries into the state inside the window. */
+	visits: number;
+	/** Exits from the state inside the window; not the same population as `visits`. */
+	exits: number;
+	/** Entry → first started run. Null when nothing was measurable. */
+	queue_wait: DurationStats | null;
+	queue_wait_measured: number;
+	/** Visits still waiting for their first run — excluded from the percentiles. */
+	waiting_now: number;
+	/** Closed visits that never saw a started run. */
+	never_started: number;
+	/** First started run → exit, closed visits only. */
+	work: DurationStats | null;
+	work_measured: number;
+	open_now: number;
+	runs: {
+		total: number;
+		/** Runs bound to visits ÷ all entered visits; null when there are no entered visits. */
+		per_visit: number | null;
+		active: number;
+		/** Runs that could not be bound to a visit in the scan (see `bindRuns`). */
+		unbound: number;
+		/** `unrecorded` rows judged `advanced` from the run key's own transition. */
+		recovered_advanced: number;
+		outcomes: Record<RunOutcomeBucket, number>;
+		top_runner: { id: string; name: string; runs: number } | null;
+	};
+	sent_back: {
+		count: number;
+		/** Of exits; null when there were none. */
+		share: number | null;
+		agent: number;
+		human: number;
+		by_target: {
+			state_id: string;
+			state_name: string;
+			count: number;
+			agent: number;
+			human: number;
+		}[];
+	};
+	received_back: number;
+	/** Reserved for the spend column (Tines/199); always null here. */
+	cost: null;
+}
+
+/** Current − previous per figure; null when either side is unmeasured. */
+export interface StageStatsDelta {
+	visits: number | null;
+	exits: number | null;
+	queue_wait_p50: number | null;
+	queue_wait_p90: number | null;
+	work_p50: number | null;
+	work_p90: number | null;
+	runs_per_visit: number | null;
+	sent_back_share: number | null;
+	outcomes: Record<RunOutcomeBucket, number | null>;
+}
+
+export interface StageStats {
+	state_id: string;
+	state_name: string;
+	workflow_id: string;
+	workflow_name: string;
+	current: StageWindowFigures;
+	previous: StageWindowFigures | null;
+	delta: StageStatsDelta;
+}
+
+export interface MarkerFigures {
+	visits: number;
+	exits: number;
+	sent_back_share: number | null;
+	queue_wait_p50: number | null;
+}
+
+export interface ChangeMarker {
+	id: string;
+	at: number;
+	kind: 'prompt' | 'quota' | 'automation' | 'runner_cap' | 'rule';
+	label: string;
+	event_ids: string[];
+	state_ids: string[];
+	effects: { state_id: string; before: MarkerFigures | null; after: MarkerFigures | null }[];
+}
+
+/** `GET /api/v1/supervisor/stats` — per-stage flow over a rolling window. */
+export interface StageStatsReport {
+	generated_at: number;
+	window: { ms: number; since: number; until: number };
+	previous: { since: number; until: number } | null;
+	project: { id: string; name: string } | null;
+	/**
+	 * The oldest recorded run outcome. Deltas whose previous window starts
+	 * before this are blanked rather than reported as a fall to zero.
+	 */
+	outcome_recorded_since: number | null;
+	/** Active states that saw work in either window, ordered by total queue wait desc. */
+	states: StageStats[];
+	/** Newest prompt, quota, cap and routing edits inside the current window. */
+	markers: ChangeMarker[];
+}
+
+/** Query for `GET /api/v1/supervisor/stats`. */
+export interface StatsQuery {
+	/** `<n>h` or `<n>d`, 1h–90d; default `7d`. */
+	window?: string;
+	/** `previous` (default) computes the prior window and the deltas. */
+	compare?: 'previous' | 'none';
+	/** Project id or name; narrows both board rows. */
+	project?: string;
+}
+
+/** Evidence behind one stage's sent-back figure. */
+export interface SentBackDrilldown {
+	state: { id: string; name: string; workflow_id: string; workflow_name: string };
+	window: { since: number; until: number };
+	prompt: { context_id: string; name: string; current_version: number; edit_url: string } | null;
+	items: {
+		issue: { id: string; project_name: string; number: number; title: string };
+		transitioned_at: number;
+		to_state_id: string;
+		to_state_name: string;
+		action: string | null;
+		actor: Actor;
+		comment: { id: string; excerpt: string; created_at: number } | null;
+		prompt_version: number | null;
+		prompt_context_id: string | null;
+	}[];
 }
 
 // ---------------------------------------------------------------------------
@@ -2298,6 +2867,7 @@ export interface UpdateCommentRequest {
 export const EVENT_TYPES = [
 	'issue.created',
 	'issue.updated',
+	'issue.transferred',
 	'issue.transitioned',
 	'issue.commented',
 	'issue.comment_edited',
@@ -2328,6 +2898,7 @@ export const EVENT_TYPES = [
 	'context.deleted',
 	'runner.registered',
 	'runner.updated',
+	'runner.daemon_replaced',
 	'runner.removed',
 	'runner.errored',
 	'runner.rate_limited',
@@ -2366,7 +2937,14 @@ export interface EventFilters {
 	issue?: string;
 	/** Project id. */
 	project?: string;
+	/** One event type or a comma-separated list. */
 	type?: string;
+	/** Inclusive lower time bound, epoch ms or ISO 8601. */
+	since?: number | string;
+	/** Exclusive upper time bound, epoch ms or ISO 8601. */
+	until?: number | string;
+	/** Workflow state id referenced by an event payload. */
+	state?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -2414,6 +2992,18 @@ export interface ListResponse<T> {
 	items: T[];
 	/** Pass back as `?cursor=` to fetch the next page; null = no more. */
 	next_cursor: string | null;
+	/** Present on stable period-run evidence pages. */
+	usage_window?: {
+		from: number;
+		to: number;
+		timezone: string;
+		population: 'finalized' | 'pending';
+		timezone_source: 'supervisor_budget' | 'utc_fallback';
+		cursor_version: 'usage-runs-v2';
+		scan_complete: boolean;
+		accounting_basis: 'finalized_by_ended_at_v1';
+		attribution_basis: 'current_issue_project_start_state_workflow_v1';
+	};
 }
 
 export interface PageParams {
@@ -2526,12 +3116,19 @@ export interface LibraryDocument {
 }
 
 export interface ExportLibraryOptions {
+	/** v3 is the default; v2 is available for older importers. */
+	version?: 2 | 3;
 	/** Journals are deployment-specific memory; opt out to leave them behind. */
 	journals?: boolean;
 }
 
 export interface ImportLibraryRequest {
-	document: LibraryDocument;
+	document: LibraryDocument | import('./library/types.js').LibraryV3Document;
+	/** Explicit destination choice keyed by document-local workflow ID (v3 only). */
+	workflow_targets?: Record<
+		string,
+		{ kind: 'target'; workflow_id: string } | { kind: 'create'; name: string }
+	>;
 	/** Plan only: returns exactly the plan an apply would follow. */
 	dry_run?: boolean;
 	/** Context items only; workflow definition conflicts always refuse. */
@@ -2553,7 +3150,12 @@ export const IMPORT_ACTIONS: readonly ImportAction[] = [
 ];
 
 export interface ImportPlanEntry {
-	section: 'project' | 'workflow' | 'context';
+	section: 'project' | 'workflow' | 'context' | 'label';
+	/** Stable source identity for v3 reports. */
+	local_id?: string;
+	target_id?: string;
+	/** Resolved destination name, present for successful v3 workflow plans and receipts. */
+	target_name?: string;
 	/** Human-readable identity, e.g. `prompt "instructions" (state Engineering / Research)`. */
 	ref: string;
 	action: ImportAction;

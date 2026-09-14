@@ -1,3 +1,4 @@
+import { TEST_NOOP_DISPATCH_EFFECTS } from '$lib/server/api/test-dispatch-effects';
 import { describe, expect, it } from 'vitest';
 import type { ActorContext } from '../api/core';
 import { listIssues, resumeIssue, transitionIssue } from '../api/issues';
@@ -5,6 +6,7 @@ import { createTestDb, type TestDb } from '../api/test-db';
 import { localAdapter } from './adapter';
 import {
 	cancelRun,
+	cancelAssignedRuns,
 	claimRun,
 	endRun,
 	launchClaimedRun,
@@ -271,6 +273,7 @@ describe('the guarded claim', () => {
 		runId: `arun_${Math.random().toString(36).slice(2)}`,
 		userId: USER,
 		issueId,
+		projectId: PROJECT,
 		stateId: OPEN,
 		runnerId,
 		maxConcurrent: 5,
@@ -288,6 +291,33 @@ describe('the guarded claim', () => {
 		const input = claimInput(t, issue, runner);
 		// The pass read the queue while the project was live.
 		t.sqlite.exec(`UPDATE project SET archived_at = ${NOW} WHERE id = '${PROJECT}'`);
+		expect(await claimRun(t.db, t.env, input)).toBe(false);
+		expect(runs(t)).toHaveLength(0);
+	});
+
+	it('refuses a stale route after a project assignment changes, including ABA', async () => {
+		const t = world();
+		const runner = addRunner(t);
+		const issue = addIssue(t);
+		const input = claimInput(t, issue, runner, { projectAssignmentToken: '' });
+		// A -> B -> A can restore the same project while never restoring this token.
+		t.sqlite.exec(
+			`UPDATE issue SET project_assignment_token = 'assignment-after-aba' WHERE id = '${issue}'`
+		);
+		expect(await claimRun(t.db, t.env, input)).toBe(false);
+		expect(runs(t)).toHaveLength(0);
+	});
+
+	it('refuses a source route after the issue moves even if its assignment token is unchanged', async () => {
+		const t = world();
+		const runner = addRunner(t);
+		const issue = addIssue(t);
+		const input = claimInput(t, issue, runner);
+		t.sqlite.exec(`
+			INSERT INTO project (id, user_id, name, created_at, updated_at)
+			VALUES ('prj_moved', '${USER}', 'moved', ${NOW}, ${NOW});
+			UPDATE issue SET project_id = 'prj_moved', number = 1 WHERE id = '${issue}';
+		`);
 		expect(await claimRun(t.db, t.env, input)).toBe(false);
 		expect(runs(t)).toHaveLength(0);
 	});
@@ -359,6 +389,67 @@ describe('the guarded claim', () => {
 });
 
 describe('dispatch pass against the fake adapter', () => {
+	it('prefers a routed runner holding a resumable session, without changing the target set', async () => {
+		const t = world();
+		const cold = addRunner(t, { name: 'cold' });
+		const holder = addRunner(t, { name: 'holder' });
+		// Routing lists the cold runner first; only affinity moves the holder up.
+		addRule(t, { targets: [{ runner_id: cold }, { runner_id: holder }] });
+		const issue = addIssue(t);
+		const prior = 'arun_prior';
+		addRun(t, {
+			id: prior,
+			issueId: issue,
+			runnerId: holder,
+			status: 'completed',
+			createdAt: NOW - 2,
+			endedAt: NOW - 1,
+			outcome: 'advanced'
+		});
+		t.sqlite
+			.prepare(
+				`INSERT INTO run_resource (
+			id, user_id, runner_id, issue_id, kind, owner_run_id, state, expires_at,
+			provider_session_id, resume_fingerprint, created_at, updated_at
+		) VALUES ('res_aff', ?, ?, ?, 'local_claude', ?, 'available', ?, 'sess_prior', 'v1:abc', ?, ?)`
+			)
+			.run(USER, holder, issue, prior, NOW + 60_000, NOW, NOW);
+
+		expect(await pass(t, localAdapter)).toEqual({ claimed: 1, launched: 0 });
+		const claimed = runs(t).find((r) => r.id !== prior);
+		expect(claimed!.runner_id).toBe(holder);
+	});
+
+	it('leaves routing order alone when the resource is expired', async () => {
+		const t = world();
+		const cold = addRunner(t, { name: 'cold' });
+		const holder = addRunner(t, { name: 'holder' });
+		addRule(t, { targets: [{ runner_id: cold }, { runner_id: holder }] });
+		const issue = addIssue(t);
+		const prior = 'arun_prior';
+		addRun(t, {
+			id: prior,
+			issueId: issue,
+			runnerId: holder,
+			status: 'completed',
+			createdAt: NOW - 2,
+			endedAt: NOW - 1,
+			outcome: 'advanced'
+		});
+		t.sqlite
+			.prepare(
+				`INSERT INTO run_resource (
+			id, user_id, runner_id, issue_id, kind, owner_run_id, state, expires_at,
+			provider_session_id, resume_fingerprint, created_at, updated_at
+		) VALUES ('res_aff', ?, ?, ?, 'local_claude', ?, 'available', ?, 'sess_prior', 'v1:abc', ?, ?)`
+			)
+			.run(USER, holder, issue, prior, NOW - 1, NOW, NOW);
+
+		expect(await pass(t, localAdapter)).toEqual({ claimed: 1, launched: 0 });
+		const claimed = runs(t).find((r) => r.id !== prior);
+		expect(claimed!.runner_id).toBe(cold);
+	});
+
 	it('claims, launches, mints the run key, and records the started event', async () => {
 		const t = world();
 		const fake = createFakeAdapter();
@@ -524,6 +615,24 @@ describe('dispatch pass against the fake adapter', () => {
 		expect(runs(t)[0].tier).toBe('smartest');
 	});
 
+	it('dispatches a scoped tier-only rule through its broader runner fallback list', async () => {
+		const t = world();
+		const held = addRunner(t, { backoffUntil: NOW + 60_000 });
+		const available = addRunner(t, {
+			tiers: { smartest: { model: 'runner-two-smartest' } }
+		});
+		addRule(t, { targets: [{ runner_id: held }, { runner_id: available }] });
+		addRule(t, { state: OPEN, targets: [{ runner_id: '*', tier: 'smartest' }] });
+		addIssue(t);
+
+		expect((await pass(t)).claimed).toBe(1);
+		expect(runs(t)[0]).toMatchObject({
+			runner_id: available,
+			tier: 'smartest',
+			model: 'runner-two-smartest'
+		});
+	});
+
 	it('honors per-runner tier overrides at launch', async () => {
 		const t = world();
 		const r1 = addRunner(t, { tiers: { balanced: { model: 'my-pinned-model' } } });
@@ -609,6 +718,7 @@ describe('launch failures', () => {
 			runId: 'arun_race',
 			userId: USER,
 			issueId: issue,
+			projectId: PROJECT,
 			stateId: OPEN,
 			runnerId,
 			maxConcurrent: 1,
@@ -804,18 +914,41 @@ describe('end judgment', () => {
 		expect((await pass(t)).claimed).toBe(0);
 	});
 
-	it('a double end applies exactly once (the flip is the CAS)', async () => {
+	it('concurrent finish and cancel reports apply exactly one final report (the flip is the CAS)', async () => {
 		const t = world();
 		const { issue, runId } = await runningRun(t);
 		const run = await loadEndableRun(t.db, USER, runId);
-		expect((await endRun(t.db, t.env, run!, { status: 'completed', now: NOW + 1000 })).ended).toBe(
-			true
-		);
-		expect((await endRun(t.db, t.env, run!, { status: 'canceled', now: NOW + 2000 })).ended).toBe(
-			false
-		);
+		const winnerUsage = JSON.stringify({ cost_usd: 1, cost_source: 'priced' });
+		const [first, second] = await Promise.all([
+			endRun(t.db, t.env, run!, {
+				status: 'completed',
+				now: NOW + 1000,
+				finalReport: { usage: winnerUsage, provider_session_id: 'winner' }
+			}),
+			endRun(t.db, t.env, run!, {
+				status: 'canceled',
+				now: NOW + 2000,
+				finalReport: {
+					usage: JSON.stringify({ cost_usd: 99 }),
+					provider_session_id: 'loser'
+				}
+			})
+		]);
+		expect([first.ended, second.ended].sort()).toEqual([false, true]);
+		const stored = runById(t, runId)!;
+		if (stored.status === 'completed') {
+			expect(stored).toMatchObject({ usage: winnerUsage, provider_session_id: 'winner' });
+		} else {
+			expect(stored).toMatchObject({
+				status: 'canceled',
+				usage: JSON.stringify({ cost_usd: 99 }),
+				provider_session_id: 'loser'
+			});
+		}
 		expect(issueById(t, issue).attempt_count).toBe(1);
-		expect(eventsOfType(t, 'agent_run.ended')).toHaveLength(1);
+		const events = eventsOfType(t, 'agent_run.ended');
+		expect(events).toHaveLength(1);
+		expect(events[0].payload.usage).toEqual(JSON.parse(stored.usage as string));
 	});
 
 	it('two ends with identical status and clock still apply exactly once', async () => {
@@ -868,6 +1001,54 @@ describe('end judgment', () => {
 });
 
 describe('cancel', () => {
+	it('reports each durable assigned-run cancellation before a later failure', async () => {
+		const t = world();
+		const runner = addRunner(t);
+		addRun(t, { issueId: addIssue(t), runnerId: runner, status: 'assigned' });
+		addRun(t, { issueId: addIssue(t), runnerId: runner, status: 'assigned' });
+		const realBatch = t.env.DB.batch.bind(t.env.DB);
+		let batches = 0;
+		t.env.DB.batch = async (statements) => {
+			batches += 1;
+			// endRun owns one flip batch and one dependent-write batch. Fail the
+			// next run's flip, after the first win has returned and notified.
+			if (batches === 3) throw new Error('injected later cancellation failure');
+			return realBatch(statements);
+		};
+		let notifications = 0;
+		await expect(
+			cancelAssignedRuns(
+				t.db,
+				t.env,
+				{ userId: USER, runnerId: runner },
+				'runner paused',
+				() => notifications++,
+				NOW
+			)
+		).rejects.toThrow('injected later cancellation failure');
+		expect(notifications).toBe(1);
+		expect(runs(t).filter((run) => run.status === 'canceled')).toHaveLength(1);
+	});
+
+	it('reports no cancellation for zero matches or a lost terminal guard', async () => {
+		const t = world();
+		const runner = addRunner(t);
+		const issue = addIssue(t);
+		addRun(t, { issueId: issue, runnerId: runner, status: 'running', startedAt: NOW });
+		let notifications = 0;
+		expect(
+			await cancelAssignedRuns(
+				t.db,
+				t.env,
+				{ userId: USER, runnerId: runner },
+				'runner paused',
+				() => notifications++,
+				NOW
+			)
+		).toBe(0);
+		expect(notifications).toBe(0);
+	});
+
 	it('cancels a running run through the adapter and judges it like any end', async () => {
 		const t = world();
 		const fake = createFakeAdapter();
@@ -893,19 +1074,21 @@ describe('resume and manual transitions', () => {
 	it('resume clears parking, resets the count, fires issue.resumed', async () => {
 		const t = world();
 		const issue = addIssue(t, { needsAttention: true, attemptCount: 3 });
-		const detail = await resumeIssue(t.db, t.env, sessionActor, issue);
+		const detail = await resumeIssue(t.db, t.env, sessionActor, TEST_NOOP_DISPATCH_EFFECTS, issue);
 		expect(detail.needs_attention).toBe(false);
 		expect(detail.attempt_count).toBe(0);
 		expect(eventsOfType(t, 'issue.resumed')).toHaveLength(1);
 		// Idempotent: resuming again records nothing new.
-		await resumeIssue(t.db, t.env, sessionActor, issue);
+		await resumeIssue(t.db, t.env, sessionActor, TEST_NOOP_DISPATCH_EFFECTS, issue);
 		expect(eventsOfType(t, 'issue.resumed')).toHaveLength(1);
 	});
 
 	it('any non-run-key transition un-parks and resets the count', async () => {
 		const t = world();
 		const issue = addIssue(t, { needsAttention: true, attemptCount: 3 });
-		await transitionIssue(t.db, t.env, sessionActor, issue, { action: 'Submit for review' });
+		await transitionIssue(t.db, t.env, sessionActor, TEST_NOOP_DISPATCH_EFFECTS, issue, {
+			action: 'Submit for review'
+		});
 		const row = issueById(t, issue);
 		expect(row.needs_attention).toBe(0);
 		expect(row.attempt_count).toBe(0);
@@ -928,7 +1111,9 @@ describe('resume and manual transitions', () => {
 			apiKeyName: 'run key',
 			agentRunId: runs(t)[0].id as string
 		};
-		await transitionIssue(t.db, t.env, runKeyActor, issue, { action: 'Submit for review' });
+		await transitionIssue(t.db, t.env, runKeyActor, TEST_NOOP_DISPATCH_EFFECTS, issue, {
+			action: 'Submit for review'
+		});
 		expect(issueById(t, issue).attempt_count).toBe(2);
 		expect(issueById(t, other).attempt_count).toBe(0);
 	});
@@ -1283,5 +1468,30 @@ describe('the sweep', () => {
 		await sweepSupervisor(t.db, t.env, NOW); // default adapters: local = poll mode
 		expect(runs(t)).toHaveLength(1);
 		expect(runs(t)[0].status).toBe('assigned');
+	});
+
+	it('sweeps issue owners with missing settings and preserves saved stops', async () => {
+		const t = world();
+		const runner = addRunner(t);
+		addRule(t, { targets: [{ runner_id: runner }] });
+		addIssue(t, { title: 'Title only', description: '' });
+		t.sqlite.exec(`DELETE FROM supervisor_settings WHERE user_id = '${USER}'`);
+
+		await sweepSupervisor(t.db, t.env, NOW);
+		expect(runs(t)).toHaveLength(1);
+
+		const stopped = world();
+		const stoppedRunner = addRunner(stopped);
+		addRule(stopped, { targets: [{ runner_id: stoppedRunner }] });
+		addIssue(stopped);
+		setSettings(stopped, { enabled: false });
+		const queries = stopped.spyOnQueries();
+		await sweepSupervisor(stopped.db, stopped.env, NOW);
+		expect(runs(stopped)).toHaveLength(0);
+		// Exclusion happens in the sweep population query, rather than wasting a
+		// dispatch pass whose later settings guard happens to mask the result.
+		expect(queries().filter((query) => query.includes('from "supervisor_settings"')).length).toBe(
+			0
+		);
 	});
 });

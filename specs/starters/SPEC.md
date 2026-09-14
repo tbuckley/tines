@@ -100,9 +100,13 @@ Two consequences, both accepted:
   editing one project's stage prompt edits every project on that workflow —
   exactly how the shared `Engineering` workflow already behaves. A project ∧
   state override separates them later.
-- **The fingerprint is blind to prompts.** It covers `initial_state`, each
-  state's `name:category`, and the transition set with its artifact
-  requirements — not stage instructions, description or inheritance. So a
+- **The fingerprint is blind to prompts.** It covers `initial_state`, the
+  ordered state name/category tuples, and the transition set with its
+  artifact requirements — not stage instructions, description or
+  inheritance. State order is significant; transitions and requirements are
+  compared without regard to order. The encoding is unambiguous canonical
+  serialization (JSON tuples, not delimited text), so user text that spells
+  a separator cannot make two different workflows fingerprint alike. So a
   workflow whose instructions were deleted still fingerprints identical and
   is reused *without* re-seeding them. Re-seeding would collide with
   `context_item_name_scope_uq` and take the whole creation down, which is a
@@ -169,3 +173,46 @@ No run-key fence. `POST /projects`, `/workflows`, `/context` and `/issues` are
 all run-key-legal today, so a starter fuses calls an agent can already make,
 and it never overwrites anything — a name collision reuses or renames.
 `/api/v1/import` is fenced because it *can* overwrite; this is not that.
+
+## Clarified decision (Tines/327, 2026-09-09)
+
+Starter validation is guaranteed before writes, though workflow matching and
+inheritance reads may happen first. `conventions` is reserved for the separately
+seeded project prompt; starter context cannot claim it. Conventions has position
+0 and every declared starter context entry advances positions from 1, regardless
+of kind or whether conventions was omitted.
+
+Shared state prompts remain project-independent because structurally identical
+workflows reuse them. After all workflow placements resolve, project context and
+the first-issue description may render `project_id` and normalized
+`workflow_<name>_{id,name}` variables. Plan therefore creates an editable
+project-scoped `planning-guide` with the actual applied workflow bindings and
+commands; this stays correct under full reuse and collision renames without
+overwriting another project's shared instructions.
+
+The CLI discovers starter inputs from `projects starters`; it does not duplicate
+bundle definitions. Code accepts `--repo`/`--branch`, Plan accepts `--brief`, and
+irrelevant or missing inputs fail before POST. A nonblank starter supplies its
+prompt template unless `--prompt` or `--no-prompt` explicitly overrides it. Blank
+and omitted starters retain the explicit prompt choice. A starter that sets a
+default workflow conflicts with `--default-workflow`.
+
+The chooser caps its first-issue preview at the server's 500-character limit and
+bounds multiline rows with collision-safe index keys. Successful UI creation
+carries a consumed navigation-state marker: only the untouched, sole active
+first issue on the immediate unfiltered project arrival gets the first-issue and
+Agents next-step callout. The marker is removed from history, so reloads and
+ordinary later visits never replay onboarding guidance.
+
+### Shared builders versus package reuse (Tines/435)
+
+Portable workflow packages share the ordinary guarded workflow/context/label/
+schedule/routing query builders with CRUD and starter machinery. This shares
+validation and object/event shapes, not the starter's reuse policy: a workflow
+package creates independently editable copies of every bundled workflow and
+inheritance dependency, with destination-selected collision renames. Only declared
+destination inputs are reused. Context prompts, skills and repos start with the
+ordinary version-1 counter; they have no separate history table. No source history
+is copied. The package installer must compile and check the complete batch budget
+before submitting one transaction, rather than call starter/CRUD operations in a
+loop.

@@ -15,24 +15,36 @@ describe('runCostLabel', () => {
 	const label = (usage: AgentRunUsage | null) => runCostLabel({ usage });
 
 	it('prefers dollars whenever a cost is known', () => {
-		expect(label({ cost_usd: 1.2, cost_source: 'provider' })).toBe('$1.20');
+		expect(label({ cost_usd: 1.2, cost_source: 'provider' })).toBe('$1.20 Reported');
 		// tokens present too — dollars still win
-		expect(label({ cost_usd: 0, input_tokens: 500, output_tokens: 10 })).toBe('$0.00');
+		expect(label({ cost_usd: 0, input_tokens: 500, output_tokens: 10 })).toBe('$0 Recorded');
 	});
 
 	it('says so when the provider reports no cost at all', () => {
-		expect(label({ cost_source: 'none', input_tokens: 10, output_tokens: 20 })).toBe('unreported');
+		expect(label({ cost_source: 'none', input_tokens: 10, output_tokens: 20 })).toBe('Unreported');
 	});
 
 	it('falls back to summed tokens when only they are known', () => {
 		expect(label({ input_tokens: 1000, output_tokens: 2000 })).toBe('3,000 tok');
 		expect(label({ output_tokens: 2000 })).toBe('2,000 tok');
+		expect(
+			label({
+				input_tokens: 400,
+				output_tokens: 100,
+				cache_read_tokens: 600,
+				cache_write_tokens: 50
+			})
+		).toBe('1,150 tok');
+		expect(label({ cache_read_tokens: 600 })).toBe('600 tok');
 	});
 
-	it('renders nothing rather than a misleading zero', () => {
+	it('keeps explicit legacy zero measurements visibly unpriced', () => {
 		expect(label(null)).toBeNull();
 		expect(label({})).toBeNull();
-		expect(label({ input_tokens: 0, output_tokens: 0 })).toBeNull();
+		expect(label({ input_tokens: 0, output_tokens: 0 })).toBe('Unpriced');
+		expect(
+			label({ input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0 })
+		).toBe('Unpriced');
 	});
 });
 

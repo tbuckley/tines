@@ -40,6 +40,12 @@ export interface HarnessInput {
 	prompt: string;
 	/** Resolved model, or null when the harness cannot vary it. */
 	model: string | null;
+	/**
+	 * Set when this run continues a previous one: the harness reopens that
+	 * conversation instead of starting a new one, and the prompt file holds
+	 * only the continuation message.
+	 */
+	resumeSessionId?: string | null;
 }
 
 /**
@@ -77,11 +83,14 @@ export function buildHarnessInvocation(
 			// final assistant message, so the log was the daemon's own setup
 			// lines, silence for the whole run, then one blob. The daemon
 			// renders the stream to readable lines (claude-stream.ts).
+			// `--resume <id>` continues the previous run's conversation in the
+			// same kept workspace; without it this is a cold launch exactly as
+			// before. Claude Code accepts it under `-p` from any cwd.
 			return {
 				file: 'sh',
 				args: [
 					'-c',
-					`claude -p --output-format stream-json --verbose${input.model ? ` --model ${shellQuote(input.model)}` : ''} < ${shellQuote(input.promptFile)}`
+					`claude -p${input.resumeSessionId ? ` --resume ${shellQuote(input.resumeSessionId)}` : ''} --output-format stream-json --verbose${input.model ? ` --model ${shellQuote(input.model)}` : ''} < ${shellQuote(input.promptFile)}`
 				]
 			};
 		case 'codex':
@@ -90,6 +99,7 @@ export function buildHarnessInvocation(
 				file: 'codex',
 				args: [
 					'exec',
+					'--json',
 					'--skip-git-repo-check',
 					...(input.model ? ['--model', input.model] : []),
 					input.prompt
@@ -143,6 +153,8 @@ export interface LaunchMeta {
 	timeoutMinutes: number;
 	/** The daemon's own version — the `tines` running the loop, not the agent's. */
 	cliVersion: string;
+	/** Set on a resumed launch: the run whose conversation this continues. */
+	resumedFromRunId?: string;
 }
 
 /**
@@ -161,7 +173,10 @@ export function formatLaunchBanner(
 		`model=${input.model ?? '(fixed)'}`,
 		`timeout=${meta.timeoutMinutes}m`,
 		`cli=${meta.cliVersion}`,
-		`workspace=${input.workspace}`
+		`workspace=${input.workspace}`,
+		// The one line that says a send-back reused a session rather than
+		// re-exploring the repository from zero.
+		...(input.resumeSessionId ? [`resumed=${meta.resumedFromRunId ?? input.resumeSessionId}`] : [])
 	];
 	return `$ ${formatLaunchCommand(invocation)}\n# tines runner: ${fields.join(' ')}\n`;
 }
@@ -286,11 +301,11 @@ export class RunTable<T extends ManagedRun> {
 	private readonly runs = new Map<string, T>();
 
 	/** The daemon's keep decision, as data: `keepWorkspace` bound to its mode. */
-	private readonly keep: (outcome: RunOutcome) => boolean;
+	private readonly keep: (outcome: RunOutcome, run: T) => boolean;
 
 	constructor(
 		private readonly effects: RunTableEffects<T>,
-		opts: { keep?: (outcome: RunOutcome) => boolean } = {}
+		opts: { keep?: (outcome: RunOutcome, run: T) => boolean } = {}
 	) {
 		// Default: today's behaviour, so a caller that passes no decision keeps
 		// nothing.
@@ -335,7 +350,7 @@ export class RunTable<T extends ManagedRun> {
 	cleanup(run: T, outcome: RunOutcome = 'failed'): void {
 		this.runs.delete(run.runId);
 		this.effects.persist();
-		this.effects.release(run, { keep: this.keep(outcome), outcome });
+		this.effects.release(run, { keep: this.keep(outcome, run), outcome });
 	}
 
 	/**
@@ -348,9 +363,9 @@ export class RunTable<T extends ManagedRun> {
 	 * (shutdown, restart) rather than the work failing: the supervisor then
 	 * spares the issue a strike. Everything a run can do wrong to itself —
 	 * a non-zero harness exit, a workspace that would not set up — must not
-	 * set it. The one exception is `{ judgment: 'rate_limited' }`: a non-zero
-	 * exit whose cause was the provider refusing on a usage limit is the
-	 * runner's condition, not the work's.
+	 * set it. Exceptions are provider-side failures: usage exhaustion uses
+	 * `{ judgment: 'rate_limited' }` with its reset time, while transient 5xx
+	 * and transport outages use `interrupted` and the normal short backoff.
 	 */
 	async finishAndCleanup(
 		run: T,
@@ -365,11 +380,18 @@ export class RunTable<T extends ManagedRun> {
 		// the batcher until its timer fired, by which point the run is
 		// finish-reported and the append is rejected.
 		run.drain?.();
-		if (this.keep(status)) this.effects.noteKept?.(run);
+		if (this.keep(status, run)) this.effects.noteKept?.(run);
 		await run.flush?.();
+		const keptBeforeFinish = this.keep(status, run);
 		try {
 			await this.effects.finish(run, status, error, judgment);
 			this.effects.log(`run ${run.runId} finished: ${status}${error ? ` (${error})` : ''}`);
+			// Retention is only known once the finish response comes back, and
+			// by then the run's own log is closed — so the daemon log is where
+			// a workspace held for a resume gets announced.
+			if (!keptBeforeFinish && this.keep(status, run)) {
+				this.effects.log(`run ${run.runId} workspace kept for resume at ${run.workspace}`);
+			}
 		} catch (err) {
 			// A settled run (canceled/timed out/swept server-side) is fine; the
 			// supervisor's word stands.
@@ -633,7 +655,10 @@ export function buildSpawnEnv(
 	const env: NodeJS.ProcessEnv = {
 		...base,
 		TINES_API_KEY: opts.apiKey,
-		TINES_API_URL: opts.apiUrl
+		// Own canonicalization at the final child-process boundary too. This
+		// keeps the spawned CLI safe even if a future daemon call site passes
+		// the original --url value instead of its normalized local variable.
+		TINES_API_URL: opts.apiUrl.replace(/\/+$/, '')
 	};
 	if (opts.binDir) env.PATH = base.PATH ? `${opts.binDir}${delimiter}${base.PATH}` : opts.binDir;
 	return env;

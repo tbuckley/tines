@@ -88,7 +88,26 @@ describe('runRow', () => {
 	});
 
 	it('renders dollars when the cost is known', () => {
-		expect(runRow({ ...base, usage: { cost_usd: 1.5 } } as never)).toContain('$1.50');
+		expect(runRow({ ...base, usage: { cost_usd: 1.5 } } as never)).toContain('$1.50 Recorded');
+		expect(runRow({ ...base, usage: { cost_usd: 0, cost_source: 'provider' } } as never)).toContain(
+			'$0 Reported'
+		);
+		expect(
+			runRow({ ...base, usage: { cost_usd: 0.001, cost_source: 'priced' } } as never)
+		).toContain('<$0.01 Estimated');
+	});
+
+	it('keeps unknown and explicit-zero token states honest', () => {
+		expect(runRow({ ...base, usage: { cost_source: 'none' } } as never)).toContain('Unreported');
+		expect(runRow({ ...base, usage: { input_tokens: 0, output_tokens: 0 } } as never)).toContain(
+			'Unpriced'
+		);
+	});
+
+	it('shows confirmed resume lineage in the status cell', () => {
+		expect(runRow({ ...base, resumed_from_run_id: 'arun_old' } as never)).toContain(
+			'completed · resumed run arun_old'
+		);
 	});
 });
 
@@ -431,6 +450,32 @@ describe('requirementLines', () => {
 			current_version: { version: 2, created_at: 0 }
 		});
 		expect(line).toContain(`: ${expected}`);
+	});
+
+	it('renders the reaffirm alternative as its own line, never on the fix line', () => {
+		// Two commands, two lines: a reader copies one span and it runs. Packing
+		// both into `fix` is what Tines/255 removed, so the `or:` line is the
+		// only place the reaffirm may appear.
+		expect(
+			requirementLines({
+				...base,
+				status: 'stale',
+				current_type: 'text',
+				current_version: { version: 2, created_at: 0 },
+				fix: 'tines issues artifacts attach Proj/1 prd prd.md',
+				fix_alternative: 'tines issues artifacts reaffirm Proj/1 prd'
+			})
+		).toEqual([
+			'requires artifact "prd" (text, text/markdown): stale (v2, attached before the current state) — The product requirements',
+			'  fix: tines issues artifacts attach Proj/1 prd prd.md',
+			'  or: tines issues artifacts reaffirm Proj/1 prd'
+		]);
+	});
+
+	it('drops the or: line when the requirement has no alternative', () => {
+		expect(
+			requirementLines({ ...base, status: 'missing', current_type: null, current_version: null })
+		).not.toContainEqual(expect.stringContaining('  or: '));
 	});
 
 	it('drops the fix line when the server sent none', () => {

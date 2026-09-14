@@ -27,6 +27,7 @@
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { Select } from '$lib/components/ui/select/index.js';
 	import { CATEGORY_LABELS, categoryVar } from '$lib/format';
+	import { clearIssuePagination } from '$lib/issue-pagination';
 
 	let {
 		filters,
@@ -51,6 +52,7 @@
 		// `?project=` on /issues is a one-shot that sets the focus (Tines/259);
 		// carrying it into the next filter click would re-fire it forever.
 		params.delete('project');
+		clearIssuePagination(params);
 		mutate(params);
 		const qs = params.toString();
 		goto(`${page.url.pathname}${qs ? `?${qs}` : ''}`, { keepFocus: true, noScroll: true });
@@ -66,6 +68,7 @@
 		const params = new URLSearchParams(page.url.searchParams);
 		// See `navigate`: the one-shot focus param never rides along.
 		params.delete('project');
+		clearIssuePagination(params);
 		params.delete('category');
 		params.delete('done');
 		if (category === 'all') params.set('done', '1');

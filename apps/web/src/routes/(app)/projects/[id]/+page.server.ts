@@ -9,11 +9,19 @@ import { listRoutingRules } from '$lib/server/api/routing';
 import { listSchedules } from '$lib/server/api/schedules';
 import { loadWorkflows } from '$lib/server/api/workflows';
 import { getDb } from '$lib/server/db';
+import { issuePagination, readIssuePage } from '$lib/server/issue-pagination';
 import type { PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async ({ locals, platform, params, url }) => {
 	const db = getDb(platform!.env);
 	const userId = locals.user!.id;
+	let page;
+	try {
+		page = readIssuePage(url);
+	} catch (e) {
+		if (e instanceof ApiFail) error(e.status, e.message);
+		throw e;
+	}
 
 	const project = await getProject(db, userId, params.id).catch((e) => {
 		const status = e instanceof ApiFail ? e.status : 500;
@@ -36,7 +44,7 @@ export const load: PageServerLoad = async ({ locals, platform, params, url }) =>
 		labels: filters.labels
 	};
 	const [
-		{ items: issues },
+		{ items: issues, hasMore },
 		counts,
 		labels,
 		workflows,
@@ -51,9 +59,10 @@ export const load: PageServerLoad = async ({ locals, platform, params, url }) =>
 				...scope,
 				category: filters.category,
 				// Ready already implies not-done; "show done" just parks while it is on.
-				hideDone: !filters.showDone && !filters.category && !filters.state
+				hideDone: !filters.showDone && !filters.category && !filters.state,
+				brief: true
 			},
-			{ cursor: null, limit: 100 }
+			page
 		),
 		countIssuesByCategory(db, userId, scope),
 		listLabels(db, userId),
@@ -79,6 +88,7 @@ export const load: PageServerLoad = async ({ locals, platform, params, url }) =>
 		contextItems: contextItems.filter((i) => i.scope.issue_id === null),
 		counts,
 		labels,
-		filters
+		filters,
+		pagination: issuePagination(url, page, issues, hasMore)
 	};
 };

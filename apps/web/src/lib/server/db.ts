@@ -1,6 +1,7 @@
 import type { StateCategory } from '@tines/shared';
 import { Kysely, SqliteAdapter } from 'kysely';
 import { D1Dialect } from 'kysely-d1';
+import { traceUsageScaleDb } from './usage-scale-trace';
 
 export interface ProjectTable {
 	id: string;
@@ -72,6 +73,15 @@ export interface IssueTable {
 	state_entered_at: number | null;
 	created_at: number;
 	updated_at: number;
+	/** Opaque fence changed on every project transfer, including A -> B -> A. */
+	project_assignment_token: string;
+}
+
+export interface IssueAddressTable {
+	project_id: string;
+	number: number;
+	issue_id: string;
+	created_at: number;
 }
 
 export interface ScheduledTaskTable {
@@ -267,6 +277,10 @@ export interface RunnerTable {
 	secret_enc: string | null;
 	/** Hashed daemon token (local type); never serialized. */
 	runner_token_hash: string | null;
+	/** Current local-daemon boot admitted to mutate this runner through poll. */
+	daemon_instance_id: string | null;
+	/** Immediately preceding daemon boot, rejected if it polls again. */
+	fenced_instance_id: string | null;
 	last_seen_at: number | null;
 	launch_failures: number;
 	backoff_until: number | null;
@@ -277,6 +291,12 @@ export interface RunnerTable {
 	 * self-update; set and cleared by its polls. Dispatch skips it while set.
 	 */
 	draining: number;
+	resume_enabled: number;
+	resume_window_hours: number;
+	resume_max_turns: number;
+	resume_max_tokens: number;
+	resume_max_cost_usd: number;
+	resume_config_revision: number;
 	created_at: number;
 	updated_at: number;
 }
@@ -303,6 +323,13 @@ export interface AgentRunTable {
 	state_id_at_end: string | null;
 	provider_session_id: string | null;
 	provider_url: string | null;
+	turn_count: number | null;
+	conversation_turn_count: number | null;
+	workspace_path: string | null;
+	resume_fingerprint: string | null;
+	resumed_from_run_id: string | null;
+	resume_expires_at: number | null;
+	resume_fallback_reason: string | null;
 	api_key_id: string | null;
 	/**
 	 * JSON provider bookkeeping owned by the run's adapter (per-run vault id,
@@ -328,6 +355,8 @@ export interface AgentRunTable {
 	created_at: number;
 	started_at: number | null;
 	ended_at: number | null;
+	/** Assignment fence copied from the issue by the successful claim. */
+	project_assignment_token: string;
 }
 
 export interface RoutingRuleTable {
@@ -357,7 +386,7 @@ export interface SupervisorSweepStateTable {
 
 export interface SupervisorSettingsTable {
 	user_id: string;
-	/** 0/1: the kill switch. Off (0) by default for new users. */
+	/** 0/1: the kill switch. Missing rows and new rows default on; stored 0 stays stopped. */
 	enabled: number;
 	/** JSON typed quota policy. */
 	quota: string;
@@ -370,6 +399,31 @@ export interface SupervisorSettingsTable {
 	github_pat_enc: string | null;
 	/** Display hint for the stored PAT ("github_pat_…cdef"); never the value. */
 	github_pat_hint: string | null;
+	source_credentials_revision: number;
+	updated_at: number;
+}
+
+export interface RunResourceTable {
+	id: string;
+	user_id: string;
+	runner_id: string | null;
+	issue_id: string | null;
+	kind: 'local_claude' | 'claude_managed';
+	owner_run_id: string | null;
+	state: 'active' | 'pending_retention' | 'available' | 'claimed' | 'disposing' | 'disposed';
+	claim_run_id: string | null;
+	claim_token: string | null;
+	claim_started_at: number | null;
+	transfer_phase: 'preparing' | 'sending' | 'accepted' | null;
+	expires_at: number | null;
+	available_seen_at: number | null;
+	provider_session_id: string | null;
+	vault_id: string | null;
+	credential_id: string | null;
+	workspace_path: string | null;
+	resume_fingerprint: string;
+	transfer_data: string | null;
+	created_at: number;
 	updated_at: number;
 }
 
@@ -390,12 +444,26 @@ export interface UserPreferenceTable {
 	updated_at: number;
 }
 
+/** Immutable proof that one signed workflow-package plan committed. */
+export interface LibraryInstallTable {
+	id: string;
+	user_id: string;
+	actor_key: string;
+	document_digest: string;
+	plan_digest: string;
+	request_digest: string;
+	execution_nonce: string;
+	receipt_json: string;
+	created_at: number;
+}
+
 export interface Database {
 	project: ProjectTable;
 	workflow: WorkflowTable;
 	workflow_state: WorkflowStateTable;
 	workflow_transition: WorkflowTransitionTable;
 	issue: IssueTable;
+	issue_address: IssueAddressTable;
 	issue_link: IssueLinkTable;
 	label: LabelTable;
 	issue_label: IssueLabelTable;
@@ -409,10 +477,12 @@ export interface Database {
 	api_key: ApiKeyTable;
 	runner: RunnerTable;
 	agent_run: AgentRunTable;
+	run_resource: RunResourceTable;
 	routing_rule: RoutingRuleTable;
 	supervisor_settings: SupervisorSettingsTable;
 	supervisor_sweep_state: SupervisorSweepStateTable;
 	user_preference: UserPreferenceTable;
+	library_install: LibraryInstallTable;
 	user: UserTable;
 }
 
@@ -457,7 +527,11 @@ const dbs = new WeakMap<object, Kysely<Database>>();
 export function getDb(env: Env): Kysely<Database> {
 	let db = dbs.get(env.DB);
 	if (!db) {
-		db = new Kysely<Database>({ dialect: new ConcurrentD1Dialect({ database: env.DB }) });
+		db = new Kysely<Database>({
+			dialect: new ConcurrentD1Dialect({
+				database: env.USAGE_SCALE_SQL_TRACE === '1' ? traceUsageScaleDb(env.DB) : env.DB
+			})
+		});
 		dbs.set(env.DB, db);
 	}
 	return db;

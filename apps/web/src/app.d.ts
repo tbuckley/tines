@@ -27,6 +27,8 @@ declare global {
 		GOOGLE_CLIENT_SECRET?: string;
 		/** Encrypts stored provider secrets (AES-GCM); see lib/server/crypto.ts. */
 		SECRET_ENCRYPTION_KEY?: string;
+		/** Local scale harness only: logs one marker per executed Kysely query. */
+		USAGE_SCALE_SQL_TRACE?: string;
 		/**
 		 * Self-referencing service binding (wrangler.jsonc `services`): lets
 		 * the supervisor call its own API in-process — a worker on a custom
@@ -56,7 +58,9 @@ declare global {
 			session: import('better-auth').Session | null;
 		}
 		// interface PageData {}
-		// interface PageState {}
+		interface PageState {
+			starterLanding?: { projectId: string; firstIssueId: string };
+		}
 		interface Platform {
 			env: Env;
 			cf?: IncomingRequestCfProperties;

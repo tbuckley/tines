@@ -23,6 +23,38 @@ export const ALICE = {
 	sessionToken: 'e2e-session-alice'
 };
 
+/** A second independently attributed writer for native concurrency races. */
+export const ALICE_AGENT = {
+	id: 'key_e2e_alice_agent',
+	apiKey: 'tines_e2ealiceagent00000000000000000000000000000',
+	apiKeyName: 'alice-agent-key'
+};
+
+/** Dedicated real-ledger account for the Agents Spend journeys. */
+export const SPEND = {
+	id: 'usr_e2e_spend',
+	name: 'Spend E2E',
+	email: 'spend@e2e.test',
+	apiKey: 'tines_e2espend00000000000000000000000000000000000',
+	apiKeyName: 'spend-key',
+	sessionToken: 'e2e-session-spend',
+	projects: {
+		alpha: { id: 'prj_e2e_spend_alpha', name: 'Spend Alpha' },
+		beta: { id: 'prj_e2e_spend_beta', name: 'Spend Beta' },
+		empty: { id: 'prj_e2e_spend_empty', name: 'Spend Empty' },
+		pending: { id: 'prj_e2e_spend_pending', name: 'Spend Pending' },
+		unreported: { id: 'prj_e2e_spend_unreported', name: 'Spend Unreported' },
+		tokens: { id: 'prj_e2e_spend_tokens', name: 'Spend Tokens' },
+		zero: { id: 'prj_e2e_spend_zero', name: 'Spend Zero' },
+		archived: { id: 'prj_e2e_spend_archived', name: 'Spend Archived' }
+	},
+	workflows: {
+		build: { id: 'wf_e2e_spend_build', name: 'Build' },
+		ship: { id: 'wf_e2e_spend_ship', name: 'Ship' },
+		unknown: { id: 'wf_e2e_spend_unknown', name: 'Unknown cost' }
+	}
+};
+
 /**
  * Seeded scheduled-task fixtures (Alice's): the sweep can only be tested
  * deterministically with `next_run_at` already in the past, which the API
@@ -85,6 +117,9 @@ export const RUNROW_FAILED = {
 	runnerId: 'rnr_e2e_runrow_failed',
 	runnerName: 'runrow-failed',
 	runId: 'run_e2e_runrow_failed',
+	resumedFromRunId: RUNROW.runId,
+	providerSessionId: 'thread_e2e_codex',
+	tokenLabel: '1,100 tok',
 	/**
 	 * A real ENOSPC message: long enough to overflow two clamped lines in the
 	 * issue sidebar, so the row test measures a clamp rather than a short
@@ -101,6 +136,14 @@ export const RUNROW_FAILED = {
 	 */
 	runKey: 'tines_e2efailedrun000000000000000000000000000000',
 	runKeyName: 'run:runrow-failed'
+};
+
+export const RUNROW_ESTIMATED = {
+	runnerId: 'rnr_e2e_runrow_estimated',
+	runnerName: 'runrow-codex-priced',
+	runId: 'run_e2e_runrow_estimated',
+	issueId: 'iss_e2e_runrow_estimated',
+	issueNumber: 2
 };
 
 /**
@@ -124,4 +167,99 @@ export const BOB = {
 	apiKey: 'tines_e2ebob000000000000000000000000000000000000',
 	apiKeyName: 'bob-key',
 	sessionToken: 'e2e-session-bob'
+};
+
+/** Independent empty accounts: these specs must be runnable in any order. */
+export const AGENTS_FIRST_RUN = {
+	id: 'usr_e2e_agents_first_run',
+	name: 'Agents First Run E2E',
+	email: 'agents-first-run@e2e.test',
+	apiKey: 'tines_e2eagentsfirstrun000000000000000000000000000',
+	apiKeyName: 'agents-first-run-key',
+	sessionToken: 'e2e-session-agents-first-run'
+};
+export const API_ISOLATION = {
+	id: 'usr_e2e_api_isolation',
+	name: 'API Isolation E2E',
+	email: 'api-isolation@e2e.test',
+	apiKey: 'tines_e2eapiisolation00000000000000000000000000000',
+	apiKeyName: 'api-isolation-key',
+	sessionToken: 'e2e-session-api-isolation'
+};
+export const EXPLAINER_REMEDIES = {
+	id: 'usr_e2e_explainer_remedies',
+	name: 'Explainer Remedies E2E',
+	email: 'explainer-remedies@e2e.test',
+	apiKey: 'tines_e2eexplainerremedies0000000000000000000000000',
+	apiKeyName: 'explainer-remedies-key',
+	sessionToken: 'e2e-session-explainer-remedies'
+};
+export const STOPPED_FIRST_RUN = {
+	id: 'usr_e2e_stopped_first_run',
+	name: 'Stopped First Run E2E',
+	email: 'stopped-first-run@e2e.test',
+	apiKey: 'tines_e2estoppedfirstrun000000000000000000000000000',
+	apiKeyName: 'stopped-first-run-key',
+	sessionToken: 'e2e-session-stopped-first-run'
+};
+export const MANAGED_SETTINGS = {
+	id: 'usr_e2e_managed_settings',
+	name: 'Managed Settings E2E',
+	email: 'managed-settings@e2e.test',
+	apiKey: 'tines_e2emanagedsettings0000000000000000000000000000',
+	apiKeyName: 'managed-settings-key',
+	sessionToken: 'e2e-session-managed-settings'
+};
+
+/** Isolated real-D1 fixtures for project-transfer dispatch acceptance. */
+export const TRANSFER_RUNTIME = {
+	id: 'usr_e2e_transfer_runtime',
+	name: 'Transfer Runtime E2E',
+	email: 'transfer-runtime@e2e.test',
+	apiKey: 'tines_e2etransferruntime00000000000000000000000000',
+	apiKeyName: 'transfer-runtime-key',
+	sessionToken: 'e2e-session-transfer-runtime',
+	sourceId: 'prj_e2e_transfer_source',
+	sourceName: 'transfer-runtime-source',
+	destinationId: 'prj_e2e_transfer_destination',
+	destinationName: 'transfer-runtime-destination',
+	noopIssueId: 'iss_e2e_transfer_noop',
+	claimIssueId: 'iss_e2e_transfer_claim',
+	runnerId: 'rnr_e2e_transfer',
+	runnerName: 'transfer-runtime-local',
+	ruleId: 'rrl_e2e_transfer_destination'
+};
+
+/** Isolated 205-row population for issue-list pagination. */
+export const PAGINATION = {
+	user: {
+		id: 'usr_e2e_pagination',
+		name: 'Pagination E2E',
+		email: 'pagination@e2e.test',
+		apiKey: 'tines_e2epagination000000000000000000000000000000',
+		apiKeyName: 'pagination-key',
+		sessionToken: 'e2e-session-pagination'
+	},
+	projectId: 'prj_e2e_pagination',
+	projectName: 'pagination-seed'
+};
+
+/**
+ * A third seeded account, for the first-run checklist walk. Dana starts with
+ * no projects, no runners, no rules and — the point — no agent runs, which is
+ * the only state in which the checklist is shown at all (it retires
+ * account-wide on the first run, and is derived, so there is nothing to
+ * reset).
+ *
+ * `first-run-checklist.spec.ts` walks her all the way to a real run, so the
+ * account is one-way: no other spec may depend on Dana being run-free, and
+ * anything added to that file must sort after the walk inside it.
+ */
+export const DANA = {
+	id: 'usr_e2e_dana',
+	name: 'Dana E2E',
+	email: 'dana@e2e.test',
+	apiKey: 'tines_e2edana00000000000000000000000000000000000',
+	apiKeyName: 'dana-key',
+	sessionToken: 'e2e-session-dana'
 };

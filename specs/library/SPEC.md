@@ -104,3 +104,19 @@ proceeds, so re-running a partial import converges.
 
 Starters (`specs/starters/SPEC.md`) are library documents with typed inputs
 bolted on; they apply through their own single-batch path, not through import.
+
+## Decision update — Tines/435 whole-library v3
+
+Whole-library export now defaults to the ID-addressed v3 `profile: library` contract in [FORMAT_V3.md](FORMAT_V3.md). `GET /api/v1/export?version=2` remains an explicit compatibility export, and v1/v2 imports retain their best-effort behavior. The older name-based design above remains the historical v1/v2 record.
+
+V3 import maps document-local workflow IDs independently. With no destination collision, duplicate source names remain distinct workflows. Unique-name collisions retain skip/compatible-inheritance-overwrite behavior. Ambiguous collisions require `workflow_targets[local_id] = {kind:"target",workflow_id}` or `{kind:"create",name}`. Settings proposes independently renamed creates and displays each source ID and its states; target choices display destination IDs and states. Multiple source workflows cannot target one destination. All state pointers, prompts and project defaults follow the chosen IDs. Structure mismatches refuse replacement while preserving existing target states for scoped context. Label records preserve colors on creation; existing labels and project defaults stay unchanged.
+
+Preview and apply share one planner and ordinary validators. Edits invalidate the browser preview. Whole-library transfer remains best effort, with per-entry failures; it does not offer the separately specified workflow-package atomic install guarantee. Raw JSON envelope decoding rejects duplicate keys and invalid UTF-8 before conversion to objects. The request is bounded to 32 MiB, and its document independently to 5 MiB.
+
+## Decision update — Tines/440 workflow-package commit
+
+Workflow-profile v3 files use a signed prepare → install protocol. `POST /api/v1/library/install` confirms the exact plan digest and commits one guarded D1 batch whose first row is an immutable owner receipt; every child write and event is gated by that attempt's fresh execution nonce. Identical retries recover the committed receipt before expiry/compiler checks, while actor, file, confirmation and request mismatches never replay it. `GET /api/v1/library/installs/:planId` is owner-scoped and remains usable after API-key rotation. Run keys retain export, validation, preparation and receipt reads but are denied installation at both the route fence and service boundary. Schedules install paused, and the commit creates no initial issue, dispatch, or project-default mutation. Native-D1 capacity and concurrency boundary evidence remains the responsibility of Tines/441.
+
+## Decision update — Tines/101 request dispatch effects
+
+Whole-library imports carry the API request's dispatch effect through workflow overwrites, so changing an existing state category to `active` schedules one coalesced pass even when other import entries fail. Legacy imports carry the same capability through their workflow update helpers, while preserving their existing category behavior. Signed workflow-package installation is intentionally unchanged: it creates new objects, no initial issue, and no dispatch signal.

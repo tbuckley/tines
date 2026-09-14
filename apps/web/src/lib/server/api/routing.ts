@@ -7,10 +7,18 @@ import type {
 	ShadowWarning,
 	UpdateRoutingRuleRequest
 } from '@tines/shared';
+import {
+	INHERIT_RUNNER_ID,
+	isGlobalRoutingScope,
+	isTierOnlyTargets,
+	routingScopeSpecificity
+} from '@tines/shared';
 import type { CompiledQuery, Kysely } from 'kysely';
 import { newId, type Database } from '$lib/server/db';
+import type { DispatchEffects } from '$lib/server/dispatch-effects';
 import { ApiFail, notFound, runAtomic, type ActorContext } from './core';
 import { eventInsert } from './events';
+import { insertValues, type QueryGuard } from './query-guard';
 import { requireTier } from './runners';
 import { resolveScope, scopeLabel, toContextScope } from './scope';
 
@@ -39,7 +47,11 @@ export function ruleSpecificity(scope: {
 	workflowStateId?: string | null;
 	labelId?: string | null;
 }): number {
-	return (scope.labelId ? 4 : 0) + (scope.projectId ? 2 : 0) + (scope.workflowStateId ? 1 : 0);
+	return routingScopeSpecificity({
+		project_id: scope.projectId,
+		workflow_state_id: scope.workflowStateId,
+		label_id: scope.labelId
+	});
 }
 
 /** Two rule scopes can match the same issue iff no set dimension conflicts. */
@@ -87,14 +99,14 @@ export function shadowWarnings(
 				kind: 'shadowed',
 				rule_id: other.id,
 				scope_label: other.label,
-				message: `The ${other.label} rule is more specific, so issues it matches will use it instead of this rule`
+				message: `The ${other.label} rule has higher priority for issues both rules match. A higher-priority tier-only rule can inherit runners from a lower-priority matching rule.`
 			});
 		} else if (otherSpec < savedSpec) {
 			warnings.push({
 				kind: 'shadows',
 				rule_id: other.id,
 				scope_label: other.label,
-				message: `This rule takes precedence over the ${other.label} rule for issues both match`
+				message: `This rule has higher priority than the ${other.label} rule for issues both match. A higher-priority tier-only rule can inherit runners from a lower-priority matching rule.`
 			});
 		} else {
 			// Equal specificity with different scopes used to be unreachable:
@@ -142,6 +154,36 @@ export function validateTargets(
 			'"targets" must be a non-empty ordered array of { runner_id, tier? }',
 			{ field: 'targets' }
 		);
+	}
+	const wildcardEntries = value.filter(
+		(entry) =>
+			typeof entry === 'object' &&
+			entry !== null &&
+			!Array.isArray(entry) &&
+			(entry as { runner_id?: unknown }).runner_id === INHERIT_RUNNER_ID
+	);
+	if (wildcardEntries.length > 0) {
+		if (value.length !== 1) {
+			throw new ApiFail(
+				422,
+				'invalid_field',
+				'A tier-only target cannot be mixed with runner targets',
+				{
+					field: 'targets'
+				}
+			);
+		}
+		const input = wildcardEntries[0] as { runner_id: '*'; tier?: unknown };
+		if (input.tier === undefined || input.tier === null) {
+			throw new ApiFail(422, 'invalid_field', 'A tier-only target requires an explicit tier', {
+				field: 'targets'
+			});
+		}
+		const target: RoutingTarget = {
+			runner_id: INHERIT_RUNNER_ID,
+			tier: requireTier(input.tier, 'targets[0].tier')
+		};
+		return [target];
 	}
 	const targets: RoutingTarget[] = [];
 	const seen = new Set<string>();
@@ -249,6 +291,14 @@ function serializeRule(
 	runnersById: Map<string, { id: string; name: string; status: string }>
 ): RoutingRule {
 	const targets = (JSON.parse(row.targets) as RoutingTarget[]).map((t) => {
+		if (t.runner_id === INHERIT_RUNNER_ID) {
+			return {
+				runner_id: INHERIT_RUNNER_ID,
+				runner_name: INHERIT_RUNNER_ID,
+				runner_status: null,
+				tier: t.tier ?? null
+			};
+		}
 		const runner = runnersById.get(t.runner_id);
 		return {
 			runner_id: t.runner_id,
@@ -264,6 +314,24 @@ function serializeRule(
 		created_at: row.created_at,
 		updated_at: row.updated_at
 	};
+}
+
+function assertTierOnlyScope(scope: RuleScopeIds, targets: RoutingTarget[]): void {
+	if (
+		isTierOnlyTargets(targets) &&
+		isGlobalRoutingScope({
+			project_id: scope.projectId,
+			workflow_state_id: scope.workflowStateId,
+			label_id: scope.labelId
+		})
+	) {
+		throw new ApiFail(
+			422,
+			'invalid_field',
+			'A tier-only rule requires a project, state, or label scope.',
+			{ field: 'targets' }
+		);
+	}
 }
 
 /** The three scope dimensions of a rule row, as `ruleSpecificity` wants them. */
@@ -316,6 +384,35 @@ export async function listRoutingRules(
 		}));
 }
 
+/** Rules compatible with a project, with warnings recomputed within that view. */
+export function routingRulesForProject(
+	rules: RoutingRuleWithWarnings[],
+	projectId: string
+): RoutingRuleWithWarnings[] {
+	const compatible = rules.filter(
+		(rule) => rule.scope.project_id === null || rule.scope.project_id === projectId
+	);
+	const peers: RuleForShadowing[] = compatible.map((rule) => ({
+		id: rule.id,
+		projectId: rule.scope.project_id,
+		workflowStateId: rule.scope.workflow_state_id,
+		labelId: rule.scope.label_id,
+		label: rule.scope.label
+	}));
+	return compatible.map((rule) => ({
+		...rule,
+		warnings: shadowWarnings(
+			{
+				id: rule.id,
+				projectId: rule.scope.project_id,
+				workflowStateId: rule.scope.workflow_state_id,
+				labelId: rule.scope.label_id
+			},
+			peers
+		).filter((warning) => warning.kind !== 'shadows')
+	}));
+}
+
 export async function getRoutingRule(
 	db: Kysely<Database>,
 	userId: string,
@@ -354,10 +451,71 @@ function assertNoScopeCollision(
 	}
 }
 
+/** Build an ordinary rule and its event after scope/capability validation. */
+export function routingRuleInsertQueries(
+	db: Kysely<Database>,
+	actor: ActorContext,
+	options: {
+		id: string;
+		scope: RuleScopeIds;
+		label: string;
+		targets: RoutingTarget[];
+		runnersById: Map<string, { id: string; name: string }>;
+		now: number;
+		guard?: QueryGuard;
+		eventId?: string;
+	}
+): CompiledQuery[] {
+	const { id, scope, label, runnersById, now } = options;
+	const targets = validateTargets(options.targets, runnersById);
+	assertTierOnlyScope(scope, targets);
+	return [
+		insertValues(
+			db,
+			'routing_rule',
+			{
+				id,
+				user_id: actor.userId,
+				project_id: scope.projectId,
+				workflow_state_id: scope.workflowStateId,
+				label_id: scope.labelId,
+				targets: JSON.stringify(targets),
+				created_at: now,
+				updated_at: now
+			},
+			options.guard
+		),
+		eventInsert(
+			db,
+			actor,
+			{
+				id: options.eventId,
+				createdAt: now,
+				type: 'routing_rule.created',
+				projectId: scope.projectId,
+				payload: {
+					rule_id: id,
+					workflow_state_id: scope.workflowStateId,
+					scope_label: label,
+					targets: targets.map((t) => ({
+						runner_name:
+							t.runner_id === INHERIT_RUNNER_ID
+								? INHERIT_RUNNER_ID
+								: runnersById.get(t.runner_id)?.name,
+						tier: t.tier ?? null
+					}))
+				}
+			},
+			options.guard
+		)
+	];
+}
+
 export async function createRoutingRule(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
+	effects: DispatchEffects,
 	body: CreateRoutingRuleRequest
 ): Promise<RoutingRuleWithWarnings> {
 	const scope: RuleScopeIds = {
@@ -380,36 +538,22 @@ export async function createRoutingRule(
 	assertNoScopeCollision(scope, label, rules);
 	const runnersById = await loadRunnersById(db, actor.userId);
 	const targets = validateTargets(body.targets, runnersById);
+	assertTierOnlyScope(scope, targets);
 
 	const now = Date.now();
 	const id = newId('rul');
-	await runAtomic(env, [
-		db
-			.insertInto('routing_rule')
-			.values({
-				id,
-				user_id: actor.userId,
-				project_id: scope.projectId,
-				workflow_state_id: scope.workflowStateId,
-				label_id: scope.labelId,
-				targets: JSON.stringify(targets),
-				created_at: now,
-				updated_at: now
-			})
-			.compile(),
-		eventInsert(db, actor, {
-			type: 'routing_rule.created',
-			projectId: scope.projectId,
-			payload: {
-				rule_id: id,
-				scope_label: label,
-				targets: targets.map((t) => ({
-					runner_name: runnersById.get(t.runner_id)?.name,
-					tier: t.tier ?? null
-				}))
-			}
+	await runAtomic(
+		env,
+		routingRuleInsertQueries(db, actor, {
+			id,
+			scope,
+			label,
+			targets,
+			runnersById,
+			now
 		})
-	]);
+	);
+	effects.signalDispatch();
 	return {
 		...(await getRoutingRule(db, actor.userId, id)),
 		warnings: shadowWarnings({ ...scope, id }, rules)
@@ -420,6 +564,7 @@ export async function updateRoutingRule(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
+	effects: DispatchEffects,
 	id: string,
 	body: UpdateRoutingRuleRequest
 ): Promise<RoutingRuleWithWarnings> {
@@ -458,8 +603,10 @@ export async function updateRoutingRule(
 		body.targets !== undefined
 			? validateTargets(body.targets, runnersById)
 			: (JSON.parse(row.targets) as RoutingTarget[]);
+	assertTierOnlyScope(scope, targets);
 
 	if (!scopeChanged && JSON.stringify(targets) === row.targets) {
+		effects.signalDispatch();
 		return {
 			...serializeRule(row, runnersById),
 			warnings: shadowWarnings({ ...scope, id }, rules)
@@ -484,13 +631,18 @@ export async function updateRoutingRule(
 			payload: {
 				rule_id: id,
 				scope_label: label,
+				workflow_state_id: scope.workflowStateId,
 				targets: targets.map((t) => ({
-					runner_name: runnersById.get(t.runner_id)?.name,
+					runner_name:
+						t.runner_id === INHERIT_RUNNER_ID
+							? INHERIT_RUNNER_ID
+							: runnersById.get(t.runner_id)?.name,
 					tier: t.tier ?? null
 				}))
 			}
 		})
 	]);
+	effects.signalDispatch();
 	return {
 		...(await getRoutingRule(db, actor.userId, id)),
 		warnings: shadowWarnings({ ...scope, id }, rules)
@@ -505,11 +657,19 @@ export async function rulesScopedToLabel(
 	db: Kysely<Database>,
 	userId: string,
 	labelId: string
-): Promise<{ id: string; project_id: string | null; scope_label: string }[]> {
+): Promise<
+	{
+		id: string;
+		project_id: string | null;
+		workflow_state_id: string | null;
+		scope_label: string;
+	}[]
+> {
 	const rows = await ruleQuery(db, userId).where('routing_rule.label_id', '=', labelId).execute();
 	return rows.map((row) => ({
 		id: row.id,
 		project_id: row.project_id,
+		workflow_state_id: row.workflow_state_id,
 		scope_label: rowScope(row).label
 	}));
 }
@@ -523,14 +683,24 @@ export async function rulesScopedToLabel(
 export function routingRuleDeletes(
 	db: Kysely<Database>,
 	actor: ActorContext,
-	rules: { id: string; project_id: string | null; scope_label: string }[]
+	rules: {
+		id: string;
+		project_id: string | null;
+		workflow_state_id: string | null;
+		scope_label: string;
+	}[]
 ): CompiledQuery[] {
 	return rules.flatMap((rule) => [
 		db.deleteFrom('routing_rule').where('id', '=', rule.id).compile(),
 		eventInsert(db, actor, {
 			type: 'routing_rule.deleted',
 			projectId: rule.project_id,
-			payload: { rule_id: rule.id, scope_label: rule.scope_label, via: 'label.deleted' }
+			payload: {
+				rule_id: rule.id,
+				scope_label: rule.scope_label,
+				workflow_state_id: rule.workflow_state_id,
+				via: 'label.deleted'
+			}
 		})
 	]);
 }
@@ -539,6 +709,7 @@ export async function deleteRoutingRule(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
+	effects: DispatchEffects,
 	id: string
 ): Promise<void> {
 	const row = await ruleQuery(db, actor.userId)
@@ -550,7 +721,12 @@ export async function deleteRoutingRule(
 		eventInsert(db, actor, {
 			type: 'routing_rule.deleted',
 			projectId: row.project_id,
-			payload: { rule_id: id, scope_label: rowScope(row).label }
+			payload: {
+				rule_id: id,
+				scope_label: rowScope(row).label,
+				workflow_state_id: row.workflow_state_id
+			}
 		})
 	]);
+	effects.signalDispatch();
 }

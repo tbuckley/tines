@@ -58,7 +58,20 @@ function row(path: string, n: number): Record<string, unknown> {
 		type: 'local',
 		status: 'active',
 		active_runs: 0,
-		max_concurrent: 1
+		max_concurrent: 1,
+		max_run_minutes: 30,
+		default_tier: 'balanced',
+		config: {},
+		tier_models: null,
+		tiers: null,
+		budget: null,
+		has_api_key: false,
+		online: true,
+		draining: false,
+		launch_failures: 0,
+		backoff_until: null,
+		backoff_reason: null,
+		last_seen_at: null
 	};
 }
 
@@ -67,6 +80,64 @@ function row(path: string, n: number): Record<string, unknown> {
  * paged one. Shaped only as far as the code under test reads them.
  */
 const FIXED_ROUTES: Record<string, unknown> = {
+	'/api/v1/runs/priced-run': {
+		id: 'priced-run',
+		status: 'completed',
+		runner_name: 'macbook',
+		tier: 'balanced',
+		model: 'gpt-5.6-sol',
+		state_id_at_start: 's0',
+		state_id_at_end: 's1',
+		created_at: 1,
+		started_at: 1,
+		ended_at: 2,
+		usage: {
+			input_tokens: 300,
+			cache_read_tokens: 600,
+			cache_write_tokens: 100,
+			output_tokens: 100,
+			cost_usd: 0.00394,
+			cost_source: 'priced',
+			pricing: {
+				version: 1,
+				evaluated_at: 2,
+				status: 'calculated',
+				evidence: { model: 'gpt-5.6-sol' },
+				basis: {
+					model: 'gpt-5.6-sol',
+					model_identity: 'requested_launch_no_observed_reroute',
+					rate_id: 'rate-v1',
+					rate_version: 1,
+					rate_adopted_at: 1,
+					source_url: 'https://example.test/pricing',
+					source_checked_at: '2026-09-11',
+					source_effective_at: null,
+					rates: {
+						input_tokens: '4',
+						cache_read_tokens: '0.4',
+						cache_write_tokens: '5',
+						output_tokens: '20'
+					},
+					cost_usd_exact: '0.00394'
+				}
+			}
+		},
+		log_bytes_dropped: 0
+	},
+	'/api/v1/runs/zero-run': {
+		id: 'zero-run',
+		status: 'completed',
+		runner_name: 'macbook',
+		tier: 'balanced',
+		model: null,
+		state_id_at_start: 's0',
+		state_id_at_end: 's1',
+		created_at: 1,
+		started_at: 1,
+		ended_at: 2,
+		usage: { input_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, output_tokens: 0 },
+		log_bytes_dropped: 0
+	},
 	// resolveIssue('proj0/1'), for `journal show`.
 	'/api/v1/projects/x0/issues/1': {
 		id: 'i1',
@@ -200,6 +271,33 @@ function cli(args: string[]): Promise<CliResult> {
 }
 
 describe('list pagination', () => {
+	it('prints persisted pricing provenance in text and preserves it in JSON', async () => {
+		const shown = await cli(['runs', 'show', 'priced-run']);
+		expect(shown.code).toBe(0);
+		expect(shown.stdout).toContain('usage: input 300  cache-read 600  cache-write 100  output 100');
+		expect(shown.stdout).toContain('cost: <$0.01 Estimated');
+		expect(shown.stdout).toContain('cost provenance: Estimated standard API list-price equivalent');
+		expect(shown.stdout).toContain('rate: rate-v1 v1');
+		expect(shown.stdout).toContain('exact estimated USD: 0.00394');
+
+		const json = await cli(['runs', 'show', 'priced-run', '--json']);
+		expect(JSON.parse(json.stdout).usage.pricing.basis.rates.cache_write_tokens).toBe('5');
+	});
+
+	it('prints legacy explicit zero-token measurements as Unpriced', async () => {
+		const shown = await cli(['runs', 'show', 'zero-run']);
+		expect(shown.stdout).toContain('cost: Unpriced');
+	});
+
+	it('renders safe resume defaults from an older server response', async () => {
+		const res = await cli(['runners', 'show', 'item0']);
+		expect(res.code).toBe(0);
+		expect(res.stderr).toBe('');
+		expect(res.stdout).toContain('resume awaiting sessions: disabled  window: 48h');
+		expect(res.stdout).toContain('resume limits: 25 local turns  100,000 managed tokens  $2');
+		expect(res.stdout).toContain('runtime continuation unavailable');
+	}, 60_000);
+
 	// The bug this flag exists for: agents run `issues list --json` and treat
 	// the result as the complete set. Without --all-pages they get one page.
 	it('fetches every page under --all-pages, and only one without it', async () => {

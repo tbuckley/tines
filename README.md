@@ -6,6 +6,8 @@ The core of Tines is an issue tracker, which makes work legible to both humans a
 
 Tines acts as a supervisor, assigning tasks to agents across managed services (using your own API keys) as well as local devices (using your own subscriptions). See [Running agents](#running-agents) for how that side works.
 
+Operators can reconcile finalized run spend with the [period usage ledger](docs/usage.md).
+
 ## Repository layout
 
 This is a pnpm workspace:
@@ -17,6 +19,71 @@ This is a pnpm workspace:
 | `@tines/shared` | `packages/shared` | Shared API types and client, used by both the web app and the CLI. |
 
 ## Getting started
+
+### Your first project (hosted)
+
+Sign in to the [hosted app](https://tines.tbuckley.dev), open **Projects**, and choose
+**New project**. Pick the starter that matches the work; the preview shows what it will
+create, and the workflows, context, and issues it creates remain editable from
+**Workflows**, **Context**, and the issue page.
+
+**Code repository** needs a project name and a cloneable repository URL; the branch is
+optional and defaults to the repository's default branch. Its editable **How we work**
+conventions cover test commands, base and working branches, pull-request expectations, and
+important paths. It creates or reuses the **Code change** workflow as the project default,
+adds repository context and normally conventions, and opens **Find and fix a bug** in **In
+progress**. Follow the Agents checklist (see [Running agents](#running-agents)) to connect and
+route an agent. The agent should verify a real bug, fix and test it on a branch, open and
+attach a `pr` artifact, then **Submit for review**; in **Review**, a human can **Approve** or
+give feedback and **Send back**. **No bug found** is an honest route to Review with an
+explanation, but it is not a successful bug-to-PR result. Approval records the Tines
+workflow decision; it does not merge the GitHub pull request.
+
+**Plan something together** needs a project name and a useful brief, but no repository. Its
+editable conventions capture the people involved, dates and place, constraints, and what
+the human will decide. It creates or reuses **Idea** as the default workflow, adds a
+**Scout** workflow, conventions, and a project-owned `planning-guide` with the actual
+workflow bindings, then opens **Scout candidates for …** in **Scouting**. The agent should
+research worthwhile, sourced ideas (normally four to six), create each in **New**, attach a
+Markdown `proposal`, and **Propose** it. A human can **Approve**, **Pass**, or give feedback
+and **Send back**; **Reworking** must attach a new proposal version before **Re-propose**.
+Fewer or no qualifying candidates is truthful, but does not demonstrate a successful
+four-proposal result.
+
+**Blank** creates an empty project with no starter-created workflow, repository, or first
+issue. Its optional, non-developer **How work is done here** text becomes a conventions
+prompt; leaving it empty creates no conventions prompt. System and user-created workflows
+and other context can still be available, and you add the work and project context you
+need.
+
+CLI users can [install and sign in](#installing-the-cli-globally), discover the current
+starters, and create the same projects (replace the example URL, branch, and brief with
+your own):
+
+```sh
+tines projects starters
+tines projects create "Website" --starter code --repo https://github.com/you/website.git --branch main
+tines projects create "Family weekend" --starter plan --brief "A family weekend in Boston with two adults and children aged 4 and 7; indoor and outdoor options near our base, with time for lunch and rest."
+tines projects create "Household plans" --starter blank --prompt "Keep proposals practical and explain costs and uncertainties."
+tines projects create "Scratch space" --starter blank --no-prompt
+```
+
+Omit `--branch` to use the repository's default. Code and Plan use their rendered
+conventions templates unless `--prompt "…"` (or `--prompt @conventions.md`) replaces only
+the conventions, or `--no-prompt` omits only the conventions. Their workflow, repository
+or planning guide, and first issue are still created. Clearing the browser's conventions
+text has the same omit behavior. Blank—and CLI project creation without `--starter`—requires
+an explicit `--prompt` or `--no-prompt`; do not combine Code or Plan with
+`--default-workflow`, because each supplies its own default.
+
+An identical workflow is reused rather than duplicated, so edits to that shared workflow
+can affect other projects using it; changing only the conventions does not make a separate
+workflow. Starter creation itself does not add routing rules or change automation settings.
+Continue with the app's current **Agents** checklist and [Running agents](#running-agents);
+the [runner daemon guide](docs/runner-daemon.md) explains how a local runner receives the
+repository and starts its harness.
+
+### Contributor setup
 
 Prereqs: Node 20+, pnpm 10 (`corepack enable`).
 
@@ -150,6 +217,36 @@ tines projects unarchive "Paris 2026"    # schedules resume from their next occu
 tines projects list --archived           # include archived projects (hidden by default)
 ```
 
+An issue can also be **moved to another project** without losing anything. The issue keeps its
+stable ID, its comments, artifacts and versions, labels, links, runs, workflow state, pins,
+attempts and its schedule; it gets the destination's next never-used number, and every address
+it has ever answered to keeps resolving — for reads, for authorized writes, and for old browser
+URLs, which redirect to the current canonical one.
+
+```sh
+tines issues transfer Tines/392 --project Platform --dry-run   # review; writes nothing
+tines issues transfer Tines/392 --project Platform             # review, then confirm
+```
+
+Things worth knowing about a move:
+
+- The review is the point: it exposes guidance the issue loses, gains and retains; the effective
+  repository winner and overridden candidates with scope, URL, branch and checkout directory;
+  retained pins; checkout conflicts; and routing before and after. Missing routes, rule ties,
+  unavailable runners and checkout conflicts are disclosed, not vetoes.
+- A preview allocates nothing. The destination number is assigned by the confirmed move, so a
+  cancelled review consumes no number and emits no event.
+- A move is refused while a run is assigned, launching or running on the issue, and while
+  either project is archived. Nothing is drained or cancelled on your behalf.
+- Only a human session or an ordinary named key may move an issue. A run key may read the
+  review — that is how an agent argues for a move — but never commits one.
+- A project that owns an issue's old address cannot be deleted, even with `--force-context`;
+  archive it instead. Its old refs must keep working.
+- Activity keeps its history honest: the source project's feed retains the events recorded
+  there, the destination's feed picks up the move and everything after it, and the issue's own
+  feed stays complete.
+- `tines issues move` is unrelated: that is a workflow transition.
+
 Things worth knowing:
 
 - `projects list --archived` **includes** archived projects; it does not filter to them.
@@ -164,6 +261,12 @@ Things worth knowing:
   missed ones.
 - In the browser, `/projects` hides archived projects behind a "Show archived (n)" toggle, and
   an archived project's pages carry a read-only banner with an Unarchive action.
+- The browser's project switcher is a sticky, per-user focus for Issues, Context, Activity,
+  Workflows, and the Agents presentation. The Projects tab opens that project's home while
+  focused and the project page's Manage projects breadcrumb returns to the grid. Cross-project
+  issue links preserve the current focus and offer an explicit focus action instead.
+- Focus is presentation only: API lists, CLI commands, launch prompts, runners, fleet queue,
+  quotas, and automation controls remain workspace-wide unless explicitly scoped.
 
 The rules are recorded in [`specs/projects/SPEC.md`](specs/projects/SPEC.md).
 
@@ -171,8 +274,9 @@ The rules are recorded in [`specs/projects/SPEC.md`](specs/projects/SPEC.md).
 
 Behind the issue tracker sits a supervisor: it decides which issues agents should take on,
 launches them, streams their output back as a run log, and records what each attempt cost.
-Nothing runs until you arm it — the automation kill switch is **off for a new user**, so
-adding a runner or a routing rule is safe on its own.
+Automation is **on by default**. Eligible work can start as soon as an available runner and
+an explicit matching routing rule exist. The kill switch remains an intentional stop/resume
+control; an account that has saved automation off stays stopped until explicitly resumed.
 
 An issue is eligible for an agent exactly when its state's category is `active` (states in
 `backlog`, `awaiting_human`, and `done` are never touched), it is unblocked, it has no run
@@ -190,26 +294,29 @@ A **runner** is one launch target you own. Two types ship today:
 
 #### Your first agent run
 
-Install → key → runner → rule → arm. Five steps, one terminal command and one click:
+Install → key → runner → rule → observe. Automation needs no separate arming step:
 
 1. **Install** the CLI on the machine that will do the work: `npm install -g tines`.
 2. **Key** — Settings → API keys, or **Create key** inside the Agents tab's *Add runner →
    Local* dialog, which fills it into the command below for you.
-3. **Runner** — start the daemon, naming it machine-plus-harness:
+3. **Runner** — install the daemon as a service, naming it machine-plus-harness:
 
    ```sh
-   TINES_API_KEY=tines_… tines runner daemon \
+   TINES_API_KEY=tines_… tines runner install \
      --url https://tines.tbuckley.dev \
      --name macbook-claude \
      --harness claude-code
    ```
 
+   One command registers the runner, stores its token, and loads the daemon under
+   launchd/systemd, where it survives reboots and restarts itself onto each new release.
    `macbook-claude` is what every agent comment will say ("you via macbook-claude") and what
    routing rules address. It appears on the Agents tab, online, within seconds.
 4. **Rule** — a runner takes no work until something routes to it: click **Route everything
    to macbook-claude** in the dialog, or `tines routing set macbook-claude`.
-5. **Arm** — flip the automation switch on the Agents tab (`tines supervisor enable`).
-   It is off for new accounts, so nothing dispatches until you turn it on.
+5. **Observe** — eligible work starts when the runner is available and routing matches.
+   Descriptions and repository context are useful but optional. If you previously stopped
+   automation, resume it on Agents or with `tines supervisor enable`.
 
 Self-hosters swap the `--url` for their own deployment; local runners are why self-hosting
 Tines usually means running something on a machine of your own.
@@ -220,7 +327,7 @@ the finish. It also keeps its own copy of the `tines` CLI current from npm and p
 the harness's PATH, so agents run the CLI that matches the prompt they were given rather
 than whatever was last installed on the machine. **[docs/runner-daemon.md](docs/runner-daemon.md)**
 covers registration, the flags, token rotation, the managed CLI, failure behaviour, and
-launchd/systemd units for keeping it running.
+the service `tines runner install` sets up.
 
 Managed runners hold an Anthropic API key encrypted at rest with `SECRET_ENCRYPTION_KEY`
 (a Workers secret — see Deploying below); it is write-only after saving. They clone repos
@@ -236,15 +343,20 @@ actually launch.
 
 All of this is edited on the **Agents** tab, and most of it from the CLI too:
 
-- **The kill switch** — `tines supervisor enable` / `tines supervisor disable`, with
+- **The kill switch** — `tines supervisor enable` (resume) / `tines supervisor disable`, with
   `tines supervisor status` for a one-screen overview — which now also lists the issues
   waiting for an agent, grouped by why, with the fix for each.
+- **Stage flow** — the Agents tab and `tines supervisor stats --window 7d` compare queue wait,
+  work time, runs per visit, outcomes and sent-back rates with the prior window. Project and
+  event-window filters keep the board and `tines events list` on the same slice.
 - **Routing rules** decide who takes an issue. A rule is scoped globally, per project, per
-  workflow state, or both (most specific wins, no merging), and its payload is an ordered
+  workflow state, or both (most specific wins), and its payload is an ordered
   preference list of `<runner>[:tier]` targets:
   `tines routing set claude:cheapest macbook-claude --state "Docs Change/Writing"`. An issue no rule
   matches never dispatches — automation is opt-in. A single issue can override routing with
-  a pin: `tines issues assign <ref> <runner>[:tier]`.
+  a pin: `tines issues assign <ref> <runner>[:tier]`. A scoped singleton such as
+  `tines routing set --state "Docs Change/Writing" '*:smartest'` inherits the next
+  lower-priority rule's ordered runners while overriding every entry to that tier.
 - **Tiers** — rules say `smartest`, `balanced`, or `cheapest` rather than naming model ids
   that go stale; per-runner overrides live in `tines runners tiers <name>`.
 - **Quota policy** — one per user: a global concurrency cap
@@ -443,8 +555,67 @@ pnpm run build && pnpm wrangler deploy --env preview   # creates the preview wor
 ```
 
 All PRs share the one preview database, and each PR applies its own pending
-migrations to it. If PRs with conflicting migrations leave it in a bad state,
-throw it away and start over — it holds nothing precious:
+migrations to it.
+
+#### Recover an exactly renamed migration without resetting data
+
+Deleting and recreating the preview database is still the right recovery for
+disposable, genuinely divergent state, but it destroys all preview data. A
+narrower recovery is possible when an applied migration was only renamed and
+the old and new files are byte-for-byte identical. Do not use this procedure to
+hide unknown or partial schema drift.
+
+First, stop concurrent Preview migration runs. From the repository root, prove
+the old and new revisions resolve to the same Git blob, then from `apps/web`
+inspect the remote ledger, the full schema and data invariants established by
+the migration, and the pending list. Continue only if the old filename occurs
+exactly once, the new filename is absent, every expected schema object and
+backfill is present, and `PRAGMA foreign_key_check` returns no rows. For the
+`0026_issue_addresses.sql` to `0027_issue_addresses.sql` incident, for example:
+
+```sh
+git rev-parse <old-revision>:apps/web/migrations/0026_issue_addresses.sql \
+  <new-revision>:apps/web/migrations/0027_issue_addresses.sql
+
+cd apps/web
+pnpm exec wrangler d1 execute tines-preview --remote --env preview --json \
+  --command "SELECT id, name, applied_at FROM d1_migrations ORDER BY id"
+pnpm exec wrangler d1 migrations list tines-preview --remote --env preview
+```
+
+Record a [Time Travel](https://developers.cloudflare.com/d1/reference/time-travel/)
+bookmark immediately before the repair. A secure full export is optional; it
+briefly blocks requests and can contain sensitive preview data.
+
+```sh
+pnpm exec wrangler d1 time-travel info tines-preview --env preview --json
+pnpm exec wrangler d1 execute tines-preview --remote --env preview --json \
+  --command "UPDATE d1_migrations
+    SET name = '0027_issue_addresses.sql'
+    WHERE name = '0026_issue_addresses.sql'
+      AND NOT EXISTS (
+        SELECT 1 FROM d1_migrations
+        WHERE name = '0027_issue_addresses.sql'
+      )"
+```
+
+Require a successful result with exactly one changed row. Re-read the ledger
+and confirm the new filename retained the old row's `id` and `applied_at`, then
+repeat all schema, data, and foreign-key checks. The renamed migration must
+disappear from `wrangler d1 migrations list`. Finally, run Preview from a
+current same-repository PR and require both the migration step and preview
+upload to succeed; confirm the pending list is empty afterward. If either
+filename is duplicated or missing, the blobs differ, any schema/data check
+fails, or the update changes anything other than one row, stop and investigate
+instead of inserting a ledger row, rerunning the migration, or resetting the
+database. See Cloudflare's [D1 migration
+ledger](https://developers.cloudflare.com/d1/reference/migrations/) and [Time
+Travel restore](https://developers.cloudflare.com/d1/reference/time-travel/)
+documentation; a restore replaces the whole database and discards writes made
+after the bookmark.
+
+For a disposable preview database whose state genuinely diverged, delete and
+recreate it:
 
 ```sh
 pnpm wrangler d1 delete tines-preview

@@ -7,6 +7,7 @@ import {
 	launchBackoffMs,
 	matchRule,
 	resolveRule,
+	resolveRoute,
 	isRoutedCandidate,
 	queueVerdict,
 	speakingTarget,
@@ -54,6 +55,74 @@ describe('matchRule', () => {
 		const labelled = [{ ...rules[0], id: 'design', label_id: 'l_design' }];
 		expect(matchRule(at('p1', 's1'), labelled)).toBeNull();
 		expect(matchRule(at('p1', 's1', ['l_design']), labelled)?.id).toBe('design');
+	});
+});
+
+describe('resolveRoute', () => {
+	const issue = { project_id: 'p1', state_id: 's1', label_ids: ['l1', 'l2'] };
+	const rule = (
+		id: string,
+		targets: { runner_id: string; tier?: 'smartest' | 'balanced' | 'cheapest' | null }[],
+		scope: Partial<{ project_id: string; workflow_state_id: string; label_id: string }> = {}
+	) => ({
+		id,
+		project_id: scope.project_id ?? null,
+		workflow_state_id: scope.workflow_state_id ?? null,
+		label_id: scope.label_id ?? null,
+		targets
+	});
+
+	it('inherits the first lower-priority concrete list list and overrides every tier', () => {
+		const state = rule('state', [{ runner_id: '*', tier: 'smartest' }], {
+			workflow_state_id: 's1'
+		});
+		const global = rule('global', [
+			{ runner_id: 'claude', tier: 'balanced' },
+			{ runner_id: 'codex' }
+		]);
+		const resolved = resolveRoute(issue, [global, state]);
+		expect(resolved.rule).toBe(state);
+		expect(resolved.runnerRule).toBe(global);
+		expect(resolved.tierOverride).toBe('smartest');
+		expect(resolved.targets).toEqual([
+			{ runner_id: 'claude', tier: 'smartest' },
+			{ runner_id: 'codex', tier: 'smartest' }
+		]);
+		expect(global.targets[0]!.tier).toBe('balanced');
+	});
+
+	it('stops at an empty source instead of falling through', () => {
+		const result = resolveRoute(issue, [
+			rule('tier', [{ runner_id: '*', tier: 'cheapest' }], { label_id: 'l1' }),
+			rule('empty', [], { project_id: 'p1' }),
+			rule('global', [{ runner_id: 'r1' }])
+		]);
+		expect(result.runnerRule?.id).toBe('empty');
+		expect(result.failure).toBe('no_targets');
+		expect(result.targets).toEqual([]);
+	});
+
+	it('fails closed on a tied inherited source while retaining the tier winner', () => {
+		const winner = rule('winner', [{ runner_id: '*', tier: 'smartest' }], {
+			project_id: 'p1',
+			workflow_state_id: 's1',
+			label_id: 'l1'
+		});
+		const result = resolveRoute(issue, [
+			winner,
+			rule('l1', [{ runner_id: 'r1' }], { label_id: 'l1' }),
+			rule('l2', [{ runner_id: 'r2' }], { label_id: 'l2' })
+		]);
+		expect(result.rule).toBe(winner);
+		expect(result.ambiguous.map((r) => r.id).sort()).toEqual(['l1', 'l2']);
+		expect(result.failure).toBe('ambiguous_rule');
+	});
+
+	it('reports a missing runner source', () => {
+		const result = resolveRoute(issue, [
+			rule('tier', [{ runner_id: '*', tier: 'smartest' }], { workflow_state_id: 's1' })
+		]);
+		expect(result.failure).toBe('no_runner_rule');
 	});
 });
 

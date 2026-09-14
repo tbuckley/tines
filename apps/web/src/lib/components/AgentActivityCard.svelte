@@ -11,6 +11,7 @@
 	import RunRow from '$lib/components/RunRow.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Select } from '$lib/components/ui/select/index.js';
+	import type { Snippet } from 'svelte';
 	import { prefersReducedMotion } from '$lib/format';
 
 	let {
@@ -19,6 +20,7 @@
 		runs,
 		runners,
 		disabledReason = null,
+		checklist,
 		onerror
 	}: {
 		issue: IssueDetail;
@@ -27,6 +29,13 @@
 		runners: Runner[];
 		/** When set, the pin controls render disabled with this as their tooltip. Cancel run stays live. */
 		disabledReason?: string | null;
+		/**
+		 * The first-run checklist, before the account's first run. It replaces
+		 * both the verdict-and-checks and the Runs list — its last item *is* the
+		 * first run, and a second copy of that row would double the log fetches.
+		 * The page owns every handler; this card stays dumb.
+		 */
+		checklist?: Snippet;
 		onerror: (e: unknown) => void;
 	} = $props();
 
@@ -71,7 +80,9 @@
 		<IconRobot size={16} stroke={1.75} /> Agent activity
 	</h2>
 
-	{#if dispatch}
+	{#if checklist}
+		{@render checklist()}
+	{:else if dispatch}
 		<!-- the one-line verdict -->
 		<p class="text-sm {dispatch.parked ? 'font-medium text-amber-700 dark:text-amber-400' : ''}">
 			{dispatch.verdict}
@@ -116,6 +127,15 @@
 						Matched rule: <span class="text-foreground font-medium"
 							>{dispatch.matched_rule.scope_label}</span
 						>
+					</p>
+				{/if}
+				{#if dispatch.tier_override}
+					<p class="text-muted-foreground">
+						Tier override: <span class="text-foreground font-medium">{dispatch.tier_override}</span>
+						{#if dispatch.runner_rule}
+							· runners from <span class="text-foreground font-medium"
+								>{dispatch.runner_rule.scope_label}</span
+							>{/if}
 					</p>
 				{/if}
 				{#if dispatch.targets.length > 0}
@@ -207,17 +227,19 @@
 		{/if}
 	</div>
 
-	<!-- this issue's runs -->
-	<div class="mt-4 border-t pt-3">
-		<p class="text-muted-foreground mb-1.5 text-xs font-medium">Runs</p>
-		{#if runs.length === 0}
-			<p class="text-muted-foreground text-xs italic">No runs yet.</p>
-		{:else}
-			<ul class="divide-y rounded-lg border">
-				{#each runs as run (run.id)}
-					<RunRow {run} />
-				{/each}
-			</ul>
-		{/if}
-	</div>
+	<!-- this issue's runs (the checklist's last item shows them instead) -->
+	{#if !checklist}
+		<div class="mt-4 border-t pt-3">
+			<p class="text-muted-foreground mb-1.5 text-xs font-medium">Runs</p>
+			{#if runs.length === 0}
+				<p class="text-muted-foreground text-xs italic">No runs yet.</p>
+			{:else}
+				<ul class="divide-y rounded-lg border">
+					{#each runs as run (run.id)}
+						<RunRow {run} />
+					{/each}
+				</ul>
+			{/if}
+		</div>
+	{/if}
 </section>

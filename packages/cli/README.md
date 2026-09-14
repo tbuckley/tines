@@ -5,6 +5,10 @@ built for humans and their agents: work moves through workflows, every action is
 record, and a supervisor hands eligible issues to agents. This package talks to the same
 HTTP API the web app uses.
 
+Awaiting-session continuation policy fields are staged and default off. Runtime continuation is
+unavailable until support for the runner's provider is released; configuring thresholds does not
+enable continuation.
+
 ```sh
 npm install -g tines        # or, one-shot with no install:
 npx -y tines --help
@@ -33,10 +37,16 @@ tines issues list --project <project>
 tines issues create <project> --title "…" -d @description.md
 tines issues show <project>/<number>
 tines issues move <project>/<number> <action>        # a workflow transition
+tines issues transfer <project>/<number> --project <dest>   # move to another project (keeps ID, record and old refs)
+tines issues transfer <ref> --project <dest> --dry-run      # review only: no number allocated, nothing written
+tines issues transfer <ref> --project <dest> --inspect 0    # print any reviewed guidance item, including retained, in full
+tines issues transfer <ref> --project <dest> --yes          # skip the prompt (still commits only the fetched review)
 tines issues comment <project>/<number> - <<'EOF'    # body from stdin; @file also works
 …
 EOF
 tines events list --issue <project>/<number>
+tines events list --since 2026-09-01T00:00:00Z --until 2026-09-08T00:00:00Z --state Engineering/Review
+tines supervisor stats --window 7d --project Tines
 ```
 
 Issues are addressed as `<project>/<number>`; schedules as `<project>/<name>`; workflow
@@ -45,12 +55,41 @@ for the whole list — and every command takes `--json` for machine-readable out
 `tines <noun> --help` lists the rest: `workflows`, `context`, `journal`, `schedules`,
 `runners`, `runs`, `routing`, `supervisor`.
 
+## Workflow package files
+
+Export a workflow and its inheritance/context closure as canonical JSON, validate an edited
+file, then prepare a destination-specific review and save its signed plan:
+
+```sh
+tines workflows export <workflow-id> > review.json
+tines workflows validate review.json
+tines workflows preview review.json --choices choices.json --plan-out review.plan.json
+tines workflows install review.json --plan review.plan.json --confirm sha256:<plan-digest>
+```
+
+Workflow names are accepted only when unique; use the ID when duplicate names exist. Export
+selection is explicit: `--project`, repeatable `--schedule`, repeatable
+`--tier '<state-id>=balanced'`, `--project-routing`, and `--inputs declarations.json` add
+optional source configuration. Package and validation input may be `-` for stdin. Choices use
+the shared document-local-ID maps described in
+[`docs/workflow-packages.md`](https://github.com/tbuckley/tines/blob/main/docs/workflow-packages.md).
+
+An interactive install prepares and displays the full review, atomically writes a sibling
+`<package>.plan.json`, and asks for `yes`. A non-interactive install cannot prepare and commit
+in one invocation: it requires a plan from a prior preview and the exact plan digest. There is
+no blanket `--yes`. A retry checks the durable receipt first and reuses the same signed plan;
+keep the package and plan together until the receipt is returned. Plan files contain the API
+base, reviewed response, and signed token, but never the API key; protect them like temporary
+authorization material.
+
 ## Running agents on your own machine
 
 ```sh
-tines runner daemon --name laptop --harness claude-code
+TINES_API_KEY=tines_… tines runner install --name laptop --harness claude-code
 ```
 
-registers this machine as a local runner and polls for work. See
+registers this machine as a local runner and installs the daemon as a launchd/systemd
+service that polls for work and keeps itself updated (`tines runner daemon` with the same
+flags runs it in the foreground instead). See
 [docs/runner-daemon.md](https://github.com/tbuckley/tines/blob/main/docs/runner-daemon.md)
-for the flags, token rotation, and keeping it running under launchd or systemd.
+for the flags, token rotation, and what the service does.
