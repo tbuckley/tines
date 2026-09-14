@@ -2,7 +2,7 @@ import type { IssueDetail, Project } from '@tines/shared';
 import type { Locator, Page } from '@playwright/test';
 import { expect, test } from './fixtures';
 import { ALICE, BASE_URL } from './constants.mjs';
-import { apiClient, body, gotoHydrated, readSettled, runId, signIn } from './helpers';
+import { apiClient, body, gotoHydrated, readSettled, runId, signIn, issuePath } from './helpers';
 
 /**
  * The artifact viewer on a phone (Tines/28): a markdown doc far taller than
@@ -144,8 +144,6 @@ async function unfoldArtifacts(page: Page): Promise<void> {
 	}).toPass({ timeout: 15_000 });
 }
 
-const issueUrl = () => `/issues/${encodeURIComponent(projectName)}/${issue.number}`;
-
 function barrier() {
 	let release!: () => void;
 	const promise = new Promise<void>((resolve) => (release = resolve));
@@ -167,7 +165,7 @@ test('reopening retries after an obsolete pending text request fails', async ({ 
 		}
 	});
 
-	await gotoHydrated(page, issueUrl());
+	await gotoHydrated(page, issuePath(projectName, issue.number));
 	const dialog = page.getByRole('dialog', { name: 'Artifact viewer' });
 	await openViewer(page.getByRole('button', { name: /^View pending-doc/ }), dialog);
 	await expect.poll(() => requests).toBe(1);
@@ -194,7 +192,7 @@ test('superseded metadata success and failure cannot replace a newer selection',
 			else await route.abort('failed');
 		});
 
-		await gotoHydrated(page, issueUrl());
+		await gotoHydrated(page, issuePath(projectName, issue.number));
 		const dialog = page.getByRole('dialog', { name: 'Artifact viewer' });
 		await openViewer(page.getByRole('button', { name: /^View delayed-meta/ }), dialog);
 		await expect.poll(() => intercepted).toBe(true);
@@ -227,7 +225,7 @@ test('reopen owns delayed metadata success and failure for the same selection', 
 			else await route.abort('failed');
 		});
 
-		await gotoHydrated(page, issueUrl());
+		await gotoHydrated(page, issuePath(projectName, issue.number));
 		const dialog = page.getByRole('dialog', { name: 'Artifact viewer' });
 		await openViewer(page.getByRole('button', { name: new RegExp(`^View ${name}`) }), dialog);
 		await expect.poll(() => requests).toBe(1);
@@ -254,7 +252,7 @@ test('reopen owns delayed metadata success and failure for the same selection', 
 });
 
 test('text cache identity survives client navigation without crossing issues', async ({ page }) => {
-	await gotoHydrated(page, issueUrl());
+	await gotoHydrated(page, issuePath(projectName, issue.number));
 	const dialog = page.getByRole('dialog', { name: 'Artifact viewer' });
 	await openViewer(page.getByRole('button', { name: /^View identity-doc/ }), dialog);
 	await expect(dialog.getByText('IDENTITY ISSUE A')).toBeVisible();
@@ -271,7 +269,7 @@ test('text cache identity survives client navigation without crossing issues', a
 });
 
 test('delete and recreate cannot reuse text cached under the old artifact id', async ({ page }) => {
-	await gotoHydrated(page, issueUrl());
+	await gotoHydrated(page, issuePath(projectName, issue.number));
 	const dialog = page.getByRole('dialog', { name: 'Artifact viewer' });
 	await openViewer(page.getByRole('button', { name: /^View replace-me/ }), dialog);
 	await expect(dialog.getByText('ORIGINAL ARTIFACT')).toBeVisible();
@@ -306,7 +304,7 @@ test('current stays pinned when a newer version lands after metadata resolves', 
 		await route.fulfill({ response: v1Detail });
 	});
 
-	await gotoHydrated(page, issueUrl());
+	await gotoHydrated(page, issuePath(projectName, issue.number));
 	const dialog = page.getByRole('dialog', { name: 'Artifact viewer' });
 	await openViewer(page.getByRole('button', { name: /^View race-doc/ }), dialog);
 	await expect(dialog.getByText('VERSION ONE')).toBeVisible();
@@ -338,7 +336,7 @@ test('image and PDF preview URLs stay pinned to captured metadata', async ({ pag
 			expect(appended.status(), await appended.text()).toBe(200);
 			await route.fulfill({ response: v1Detail });
 		});
-		await gotoHydrated(page, issueUrl());
+		await gotoHydrated(page, issuePath(projectName, issue.number));
 		const dialog = page.getByRole('dialog', { name: 'Artifact viewer' });
 		await openViewer(
 			page.getByRole('button', { name: new RegExp(`^View ${name}`) }).first(),
@@ -376,7 +374,7 @@ test('folder gallery and downloads stay pinned to the panel and viewer snapshot'
 		expect(appended.status(), await appended.text()).toBe(200);
 		await route.fulfill({ response: v1Detail });
 	});
-	await gotoHydrated(page, issueUrl());
+	await gotoHydrated(page, issuePath(projectName, issue.number));
 	await expect(page.locator('img[alt="first.png"]').first()).toHaveAttribute(
 		'src',
 		/[?&]version=1(?:&|$)/
@@ -406,7 +404,7 @@ async function openViewer(opener: Locator, dialog: Locator): Promise<void> {
 
 test('a long markdown artifact stays dismissable on a phone', async ({ page }) => {
 	await page.setViewportSize(PHONE);
-	await gotoHydrated(page, issueUrl());
+	await gotoHydrated(page, issuePath(projectName, issue.number));
 	await unfoldArtifacts(page);
 
 	const dialog = page.getByRole('dialog', { name: 'Artifact viewer' });
@@ -433,7 +431,7 @@ test('a long markdown artifact stays dismissable on a phone', async ({ page }) =
 
 test('a folder set stays within the viewport and dismissable on a phone', async ({ page }) => {
 	await page.setViewportSize(PHONE);
-	await gotoHydrated(page, issueUrl());
+	await gotoHydrated(page, issuePath(projectName, issue.number));
 	await unfoldArtifacts(page);
 	const panelThumbnail = page.locator('img[alt="shot-0.png"]');
 	await expect(panelThumbnail).toHaveAttribute('src', /[?&]version=1(?:&|$)/);
@@ -487,7 +485,7 @@ test('Office metadata keeps the filename and Download inside a phone row in both
 
 	for (const colorScheme of ['light', 'dark'] as const) {
 		await page.emulateMedia({ colorScheme });
-		await gotoHydrated(page, issueUrl());
+		await gotoHydrated(page, issuePath(projectName, issue.number));
 		await expect(page.locator('html')).toHaveClass(
 			colorScheme === 'dark' ? /\bdark\b/ : /^(?!.*\bdark\b)/
 		);
@@ -542,7 +540,7 @@ async function expectPageBehindScrolls(page: Page): Promise<void> {
 
 test('the page behind does not scroll while the viewer is open', async ({ page }) => {
 	await page.setViewportSize(PHONE);
-	await gotoHydrated(page, issueUrl());
+	await gotoHydrated(page, issuePath(projectName, issue.number));
 	await unfoldArtifacts(page);
 
 	const dialog = page.getByRole('dialog', { name: 'Artifact viewer' });
@@ -559,7 +557,7 @@ test('the page behind does not scroll while the viewer is open', async ({ page }
 
 test('two modals open at once still release the page when both close', async ({ page }) => {
 	await page.setViewportSize(PHONE);
-	await gotoHydrated(page, issueUrl());
+	await gotoHydrated(page, issuePath(projectName, issue.number));
 	await unfoldArtifacts(page);
 
 	const viewer = page.getByRole('dialog', { name: 'Artifact viewer' });
@@ -588,7 +586,7 @@ test('two modals open at once still release the page when both close', async ({ 
 test('Escape closes the viewer and returns focus to the button that opened it', async ({
 	page
 }) => {
-	await gotoHydrated(page, issueUrl());
+	await gotoHydrated(page, issuePath(projectName, issue.number));
 	await unfoldArtifacts(page);
 
 	const opener = page.getByRole('button', { name: /^View long-doc/ });
@@ -625,7 +623,7 @@ const counterOf = (dialog: Locator) => dialog.locator('span.tabular-nums');
 const pathOf = (dialog: Locator) => dialog.locator('span.font-mono');
 
 test('Prev/Next step through a folder in order and stop at the ends', async ({ page }) => {
-	await gotoHydrated(page, issueUrl());
+	await gotoHydrated(page, issuePath(projectName, issue.number));
 	await unfoldArtifacts(page);
 	const dialog = await openFirstPhoto(page);
 
@@ -668,7 +666,7 @@ test('Prev/Next step through a folder in order and stop at the ends', async ({ p
 });
 
 test('arrow keys step, and are left alone inside the header selects', async ({ page }) => {
-	await gotoHydrated(page, issueUrl());
+	await gotoHydrated(page, issuePath(projectName, issue.number));
 	await unfoldArtifacts(page);
 	const dialog = await openFirstPhoto(page);
 	const counter = counterOf(dialog);
@@ -725,7 +723,7 @@ const settledNavGeometry = (dialog: Locator): Promise<NavGeometry> =>
 
 test('the file-detail header keeps one line on desktop and wraps on a phone', async ({ page }) => {
 	await page.setViewportSize({ width: 1440, height: 900 });
-	await gotoHydrated(page, issueUrl());
+	await gotoHydrated(page, issuePath(projectName, issue.number));
 	await unfoldArtifacts(page);
 	const dialog = await openFirstPhoto(page);
 

@@ -3,7 +3,7 @@ import type { Page } from '@playwright/test';
 import { expect, test } from './fixtures';
 import { siteHeaders } from '../src/lib/server/artifact-site';
 import { ALICE, BASE_URL } from './constants.mjs';
-import { apiClient, body, gotoHydrated, runId, signIn } from './helpers';
+import { apiClient, body, gotoHydrated, runId, signIn, issuePath } from './helpers';
 
 /**
  * HTML artifacts served as live sites (Tines/272, specs/artifacts/SPEC.md
@@ -131,8 +131,6 @@ test.beforeAll(async ({ apiFor, uniqueName, workerRequest: request }) => {
 
 test.use({ signedIn: ALICE });
 
-const issueUrl = () => `/issues/${encodeURIComponent(projectName)}/${issue.number}`;
-
 /** Mints a link the way the viewer does, for the request-level assertions. */
 async function siteLink(page: Page, name: string): Promise<ArtifactSiteLink> {
 	const res = await page.request.post(`/api/v1/issues/${issue.id}/artifacts/${name}/site-link`, {
@@ -183,7 +181,7 @@ test('superseded site-link success and failure cannot enter a reopened site view
 			}
 		});
 
-		await gotoHydrated(page, issueUrl());
+		await gotoHydrated(page, issuePath(projectName, issue.number));
 		const dialog = await openViewer(page, 'prototype');
 		await expect.poll(() => requests).toBe(1);
 		await dialog.getByRole('button', { name: 'Source' }).click();
@@ -218,7 +216,7 @@ test('site frame, source and download share the metadata snapshot across an uplo
 		await route.fulfill({ response: v1Detail });
 	});
 
-	await gotoHydrated(page, issueUrl());
+	await gotoHydrated(page, issuePath(projectName, issue.number));
 	const dialog = await openViewer(page, 'race-site');
 	await expect(page.frameLocator('iframe[title="race-site preview"]').locator('h1')).toHaveText(
 		'SITE VERSION ONE'
@@ -255,7 +253,7 @@ test('an HTML artifact renders live in the viewer, with its scripts running', as
 			requestedVersion = request.postDataJSON().version;
 		}
 	});
-	await gotoHydrated(page, issueUrl());
+	await gotoHydrated(page, issuePath(projectName, issue.number));
 	const dialog = await openViewer(page, 'prototype');
 
 	const frame = page.frameLocator('iframe[title="prototype preview"]');
@@ -278,7 +276,7 @@ test('an HTML artifact renders live in the viewer, with its scripts running', as
 });
 
 test('the width switcher narrows the frame to a phone and back', async ({ page }) => {
-	await gotoHydrated(page, issueUrl());
+	await gotoHydrated(page, issuePath(projectName, issue.number));
 	const dialog = await openViewer(page, 'prototype');
 
 	const iframe = dialog.locator('iframe[title="prototype preview"]');
@@ -310,7 +308,7 @@ test('the width switcher narrows the frame to a phone and back', async ({ page }
 });
 
 test('Source shows the markup and comes back to the rendered page', async ({ page }) => {
-	await gotoHydrated(page, issueUrl());
+	await gotoHydrated(page, issuePath(projectName, issue.number));
 	const dialog = await openViewer(page, 'prototype');
 	await expect(dialog.locator('iframe[title="prototype preview"]')).toBeVisible();
 
@@ -323,7 +321,7 @@ test('Source shows the markup and comes back to the rendered page', async ({ pag
 });
 
 test('Open full page loads the site as a top-level document', async ({ page, context }) => {
-	await gotoHydrated(page, issueUrl());
+	await gotoHydrated(page, issuePath(projectName, issue.number));
 	const dialog = await openViewer(page, 'prototype');
 	await expect(dialog.locator('iframe[title="prototype preview"]')).toBeVisible();
 
@@ -340,7 +338,7 @@ test('Open full page loads the site as a top-level document', async ({ page, con
 });
 
 test('a folder site resolves its relative siblings and steps into subfolders', async ({ page }) => {
-	await gotoHydrated(page, issueUrl());
+	await gotoHydrated(page, issuePath(projectName, issue.number));
 	const dialog = await openViewer(page, 'mini-app');
 
 	const frame = page.frameLocator('iframe[title="mini-app preview"]');
@@ -476,7 +474,7 @@ test('the dedicated-origin iframe permits storage while containing the prototype
 			json: { url, mode: 'sandbox-origin', version: 1, expires_at: Date.now() + 60_000 }
 		})
 	);
-	await gotoHydrated(page, issueUrl());
+	await gotoHydrated(page, issuePath(projectName, issue.number));
 	const dialog = await openViewer(page, 'prototype');
 	const iframe = dialog.locator('iframe[title="prototype preview"]');
 	await expect(iframe).toHaveAttribute('src', url);

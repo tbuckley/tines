@@ -2,7 +2,16 @@ import type { IssueDetail, Project, WorkflowResponse } from '@tines/shared';
 import type { Locator, Page } from '@playwright/test';
 import { expect, test } from './fixtures';
 import { ALICE } from './constants.mjs';
-import { apiClient, body, gotoHydrated, readSettled, runId, signIn } from './helpers';
+import {
+	apiClient,
+	body,
+	gotoHydrated,
+	readSettled,
+	runId,
+	signIn,
+	stateCard,
+	issuePath
+} from './helpers';
 
 /**
  * The State card's transition stack (Tines/128): buttons used to be a
@@ -158,14 +167,6 @@ test.beforeAll(async ({ apiFor, uniqueName }) => {
 
 test.use({ signedIn: ALICE });
 
-const issueUrl = (issue: IssueDetail) =>
-	`/issues/${encodeURIComponent(projectName)}/${issue.number}`;
-
-const stateCard = (page: Page) =>
-	page
-		.locator('section')
-		.filter({ has: page.getByRole('heading', { name: 'State', exact: true }) });
-
 /** A transition button, matched the way a screen reader names it. */
 const transition = (page: Page, name: string) => stateCard(page).getByRole('button', { name });
 
@@ -217,7 +218,7 @@ async function settled(page: Page): Promise<void> {
 
 test('transitions form one full-width stack, forward moves first', async ({ page }) => {
 	await page.setViewportSize(DESKTOP);
-	await page.goto(issueUrl(blocked));
+	await page.goto(issuePath(projectName, blocked.number));
 	await settled(page);
 
 	const names = ['Design complete', LONG_TRANSITION, 'Needs more research', 'Cancel'];
@@ -251,7 +252,7 @@ test('transitions form one full-width stack, forward moves first', async ({ page
 
 test('each blocking reason sits under its own button', async ({ page }) => {
 	await page.setViewportSize(DESKTOP);
-	await page.goto(issueUrl(blocked));
+	await page.goto(issuePath(projectName, blocked.number));
 	await settled(page);
 
 	const completeReasons = await reasons(page, 'Design complete');
@@ -280,7 +281,7 @@ test('each blocking reason sits under its own button', async ({ page }) => {
 
 test('a long transition label truncates rather than overflowing the card', async ({ page }) => {
 	await page.setViewportSize(DESKTOP);
-	await page.goto(issueUrl(blocked));
+	await page.goto(issuePath(projectName, blocked.number));
 	await settled(page);
 
 	const button = transition(page, LONG_TRANSITION);
@@ -297,7 +298,7 @@ test('a long transition label truncates rather than overflowing the card', async
 
 test('a satisfied requirement reads as a check under its enabled button', async ({ page }) => {
 	await page.setViewportSize(DESKTOP);
-	await page.goto(issueUrl(fresh));
+	await page.goto(issuePath(projectName, fresh.number));
 	await settled(page);
 
 	await expect(transition(page, 'Design complete')).toBeEnabled();
@@ -317,7 +318,7 @@ test('a satisfied requirement reads as a check under its enabled button', async 
 
 test('an enabled next step is the one filled button in the phone bar', async ({ page }) => {
 	await page.setViewportSize(PHONE);
-	await page.goto(issueUrl(fresh));
+	await page.goto(issuePath(projectName, fresh.number));
 	await settled(page);
 
 	const bar = page.getByTestId('transition-bar');
@@ -330,7 +331,7 @@ test('an enabled next step is the one filled button in the phone bar', async ({ 
 
 test('a stale requirement is reported under its blocked button', async ({ page }) => {
 	await page.setViewportSize(DESKTOP);
-	await page.goto(issueUrl(stale));
+	await page.goto(issuePath(projectName, stale.number));
 	await settled(page);
 
 	const ship = transition(page, 'ship');
@@ -344,7 +345,7 @@ test('a stale requirement is reported under its blocked button', async ({ page }
 
 test('on a phone the transitions live in a bar pinned above the tab bar', async ({ page }) => {
 	await page.setViewportSize(PHONE);
-	await gotoHydrated(page, issueUrl(blocked));
+	await gotoHydrated(page, issuePath(projectName, blocked.number));
 	await settled(page);
 
 	// The State card is a desktop surface; the bar takes its place, on screen
@@ -393,7 +394,7 @@ test('on a phone the transitions live in a bar pinned above the tab bar', async 
 
 test('the desktop layout keeps the State card in the right column', async ({ page }) => {
 	await page.setViewportSize(DESKTOP);
-	await page.goto(issueUrl(blocked));
+	await page.goto(issuePath(projectName, blocked.number));
 	await settled(page);
 
 	const [card, description, agents] = await boxes([
@@ -412,7 +413,7 @@ test('the desktop layout keeps the State card in the right column', async ({ pag
 
 test('the State card does not stretch to fill a tall main column', async ({ page }) => {
 	await page.setViewportSize(DESKTOP);
-	await page.goto(issueUrl(tall));
+	await page.goto(issuePath(projectName, tall.number));
 	await settled(page);
 
 	const [card, description, agents] = await boxes([
@@ -452,7 +453,7 @@ test('the State card does not stretch to fill a tall main column', async ({ page
 
 test('the state chip yields width so the expected next step keeps its slot', async ({ page }) => {
 	await page.setViewportSize(PHONE);
-	await page.goto(issueUrl(wide));
+	await page.goto(issuePath(projectName, wide.number));
 	await settled(page);
 
 	// At the chip's natural width there is no room for this button at all; the

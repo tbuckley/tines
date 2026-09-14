@@ -2,7 +2,16 @@ import type { Artifact, IssueDetail, Project, WorkflowResponse } from '@tines/sh
 import type { Locator, Page } from '@playwright/test';
 import { expect, test } from './fixtures';
 import { ALICE } from './constants.mjs';
-import { apiClient, body, clickUntil, gotoHydrated, readSettled, runId, signIn } from './helpers';
+import {
+	apiClient,
+	body,
+	clickUntil,
+	gotoHydrated,
+	readSettled,
+	runId,
+	signIn,
+	issuePath
+} from './helpers';
 
 /**
  * A folder artifact's row on a phone (Tines/30): the type icon, the thumbnail
@@ -143,9 +152,6 @@ async function unfoldArtifacts(page: Page): Promise<void> {
 	}).toPass({ timeout: 15_000 });
 }
 
-const issueUrl = (issue: IssueDetail) =>
-	`/issues/${encodeURIComponent(projectName)}/${issue.number}`;
-
 /** The `photos` row, keyed off the artifact-name button inside it. */
 function photosRow(page: Page): Locator {
 	return page
@@ -198,7 +204,7 @@ const settledGeometry = (row: Locator): Promise<RowGeometry> => readSettled(() =
 
 test('a folder row keeps its metadata readable on a phone', async ({ page }) => {
 	await page.setViewportSize(PHONE);
-	await gotoHydrated(page, issueUrl(plain));
+	await gotoHydrated(page, issuePath(projectName, plain.number));
 	await unfoldArtifacts(page);
 
 	const row = photosRow(page);
@@ -220,7 +226,7 @@ test('a folder row keeps its metadata readable on a phone', async ({ page }) => 
 
 test('a stale folder row keeps its metadata and actions on a phone', async ({ page }) => {
 	await page.setViewportSize(PHONE);
-	await gotoHydrated(page, issueUrl(stale));
+	await gotoHydrated(page, issuePath(projectName, stale.number));
 	await unfoldArtifacts(page);
 
 	const row = photosRow(page);
@@ -250,7 +256,7 @@ test('a stale folder row keeps its metadata and actions on a phone', async ({ pa
 
 test('a folder row stays one line on a desktop', async ({ page }) => {
 	await page.setViewportSize(DESKTOP);
-	await gotoHydrated(page, issueUrl(plain));
+	await gotoHydrated(page, issuePath(projectName, plain.number));
 	await unfoldArtifacts(page);
 
 	const row = photosRow(page);
@@ -290,7 +296,7 @@ const typeOption = (page: Page, type: string): Locator =>
 
 /** Open the Attach dialog and name the slot, through the hydration window. */
 async function openAttachFor(page: Page, issue: IssueDetail, name: string): Promise<Locator> {
-	await gotoHydrated(page, issueUrl(issue));
+	await gotoHydrated(page, issuePath(projectName, issue.number));
 	await unfoldArtifacts(page);
 	const nameField = page.locator('#artifact-name');
 	await clickUntil(page.getByRole('button', { name: 'Attach artifact' }), async () => {
