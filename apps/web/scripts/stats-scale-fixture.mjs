@@ -1,5 +1,5 @@
 /** Extra rows for the opt-in weekly-stats Worker profile. Never loaded by normal E2E. */
-export function statsScaleStatements(now) {
+export function statsScaleStatements(now, irrelevantMultiplier = 1) {
 	const q = (value) => `'${String(value).replaceAll("'", "''")}'`;
 	const rows = [];
 	const insert = (table, value) =>
@@ -91,6 +91,17 @@ export function statsScaleStatements(now) {
 			type: 'settings.updated',
 			payload: JSON.stringify({ changed: ['quota'] }),
 			created_at: now - (index + 1) * 4 * 3_600_000
+		});
+	for (let index = 0; index < 1_000 * irrelevantMultiplier; index++)
+		insert('event', {
+			id: `evt_stats_irrelevant_${index}`,
+			user_id: 'usr_weekly',
+			actor_user_id: 'usr_weekly',
+			issue_id: null,
+			project_id: null,
+			type: 'comment.created',
+			payload: JSON.stringify({ body: `Unrelated event ${index}` }),
+			created_at: now - (index % (7 * 24)) * 3_600_000
 		});
 	return rows;
 }

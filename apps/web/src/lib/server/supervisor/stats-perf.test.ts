@@ -92,9 +92,7 @@ describe('production-shaped prepared stats profile', () => {
 				windowMs,
 				compare: false
 			});
-			const legacyByState = new Map(
-				legacy.states.map((state) => [state.state_id, state.current])
-			);
+			const legacyByState = new Map(legacy.states.map((state) => [state.state_id, state.current]));
 			for (const state of input.states) {
 				expect(
 					evaluatePreparedState(prepared, state.id, until - windowMs, until),

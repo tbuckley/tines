@@ -664,7 +664,12 @@ export async function loadStageStats(
 	userId: string,
 	query: StatsQuery = {},
 	now: number = Date.now(),
-	observer?: { evaluatedState?: (stateId: string) => void }
+	observer?: {
+		evaluatedState?: (stateId: string) => void;
+		phase?: (name: 'read' | 'prepare' | 'base' | 'markers', durationMs: number) => void;
+		/** Local retained profiler: reproduce the pre-Tines/518 marker loop. */
+		profileRepeatPreparation?: boolean;
+	}
 ): Promise<StageStatsReport> {
 	const windowMs = parseStatsWindow(query.window);
 	if (query.compare !== undefined && query.compare !== 'previous' && query.compare !== 'none') {
@@ -678,6 +683,7 @@ export async function loadStageStats(
 	// which keeps the query plan (and the cache) identical.
 	const scanFrom = now - 2 * windowMs;
 
+	const readStarted = performance.now();
 	const [stateRows, eventRows, runRows, outcomeRow, markerRows] = await Promise.all([
 		db
 			.selectFrom('workflow_state as st')
@@ -778,6 +784,7 @@ export async function loadStageStats(
 			return q.execute();
 		})()
 	]);
+	observer?.phase?.('read', performance.now() - readStarted);
 	eventRows.sort((a, b) => a.created_at - b.created_at || a.id.localeCompare(b.id));
 	markerRows.sort((a, b) => a.created_at - b.created_at || a.id.localeCompare(b.id));
 
@@ -848,8 +855,12 @@ export async function loadStageStats(
 		outcomeRecordedSince: outcomeRow?.since ?? null,
 		project
 	};
+	const prepareStarted = performance.now();
 	const prepared = prepareStageStats(baseInput);
+	observer?.phase?.('prepare', performance.now() - prepareStarted);
+	const baseStarted = performance.now();
 	const report = computePreparedStageStats(prepared, { now, windowMs, compare });
+	observer?.phase?.('base', performance.now() - baseStarted);
 
 	type MarkerSeed = Omit<ChangeMarker, 'effects'> & { actor: string; ruleScope: string | null };
 	const seeds: MarkerSeed[] = [];
@@ -919,7 +930,8 @@ export async function loadStageStats(
 	}
 	const figures = (stateId: string, since: number, until: number) => {
 		observer?.evaluatedState?.(stateId);
-		const row = evaluatePreparedState(prepared, stateId, since, until);
+		const index = observer?.profileRepeatPreparation ? prepareStageStats(baseInput) : prepared;
+		const row = evaluatePreparedState(index, stateId, since, until);
 		return row
 			? {
 					visits: row.visits,
@@ -929,6 +941,7 @@ export async function loadStageStats(
 				}
 			: null;
 	};
+	const markersStarted = performance.now();
 	report.markers = seeds
 		.slice(-20)
 		.reverse()
@@ -946,6 +959,7 @@ export async function loadStageStats(
 				}))
 			};
 		});
+	observer?.phase?.('markers', performance.now() - markersStarted);
 	return report;
 }
 
@@ -997,7 +1011,9 @@ export async function loadSentBackDrilldown(
 		query.state
 	);
 	if (project) transitions = transitions.where('event.project_id', '=', project.id);
-	const events = (await transitions.orderBy('event.created_at desc').execute()).map(serializeEvent);
+	const events = (await transitions.execute())
+		.map(serializeEvent)
+		.sort((a, b) => b.created_at - a.created_at || b.id.localeCompare(a.id));
 	const sent = events.filter((event) => {
 		const target = stateById.get(String(event.payload.to_state_id ?? ''));
 		return (
@@ -1051,13 +1067,13 @@ export async function loadSentBackDrilldown(
 		.where(sql<string>`json_extract(created.payload, '$.kind')`, '=', 'prompt')
 		.where(sql<string>`json_extract(created.payload, '$.name')`, '=', 'instructions')
 		.where(
-				sql<string>`CASE WHEN COALESCE(json_type(created.payload, '$.scope_to'), 'null') <> 'null'
+			sql<string>`CASE WHEN COALESCE(json_type(created.payload, '$.scope_to'), 'null') <> 'null'
 				THEN json_extract(created.payload, '$.scope_to.workflow_state_id')
 				ELSE json_extract(created.payload, '$.scope.workflow_state_id') END`,
 			'=',
 			state.id
 		);
-	const promptEvents =
+	const promptEvents = (
 		issueIds.length === 0
 			? []
 			: await db
@@ -1070,9 +1086,8 @@ export async function loadSentBackDrilldown(
 						const relevant = eb(lifecycleId, 'in', relevantPromptIds);
 						return prompt ? eb.or([relevant, eb(lifecycleId, '=', prompt.id)]) : relevant;
 					})
-					.orderBy('created_at')
-					.orderBy('id')
-					.execute();
+					.execute()
+	).sort((a, b) => a.created_at - b.created_at || a.id.localeCompare(b.id));
 	type PromptGeneration = {
 		id: string;
 		created_at: number;

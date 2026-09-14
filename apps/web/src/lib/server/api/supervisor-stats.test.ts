@@ -388,6 +388,13 @@ describe('loadStageStats', () => {
 		expect(statsCalls.preparations).toBe(1);
 		expect(report.markers).toHaveLength(20);
 		expect(evaluated).toEqual(Array(40).fill(STAGE_B));
+
+		statsCalls.preparations = 0;
+		const baseline = await loadStageStats(t.db, USER, {}, NOW, {
+			profileRepeatPreparation: true
+		});
+		expect(statsCalls.preparations).toBe(41);
+		expect(baseline).toEqual(report);
 	});
 
 	it('uses unordered type/time event reads backed by the migration index', async () => {
