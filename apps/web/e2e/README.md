@@ -12,6 +12,8 @@ already solved once is not re-solved per spec (Tines/170).
   (`runId` in `helpers.ts`).
 - `E2E_PORT` (default 8788) moves the server, end to end — two suites can run side by side
   on one machine.
+- `E2E_SKIP_BUILD=1` requires an existing build created with `VITE_TINES_E2E=1`; the
+  opt-in exposes the public SvelteKit page-state bridge used by the Agents navigation spec.
 - A single-test run of a `describe.serial` spec generally fails: the fixture is created in
   the file's first test. Run the whole file.
 - If a polling page is followed by `ProxyController emitErrorEvent`, `Error inside

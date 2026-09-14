@@ -87,10 +87,10 @@ test.describe('Agents Spend selection matrix', () => {
 		await expect(page).toHaveURL(/spend_sort=desc/);
 		await expect(page.getByRole('button', { name: 'Cost descending' })).toBeVisible();
 		await expect(rows.nth(0)).toContainText('Ship');
-		await expect(rows.nth(2)).toContainText('Unknown cost');
+		await expect(rows.nth(2)).toContainText(SPEND.workflows.unknown.name);
 		await page.goForward();
 		await expect(rows.nth(0)).toContainText('Build');
-		await expect(rows.nth(2)).toContainText('Unknown cost');
+		await expect(rows.nth(2)).toContainText(SPEND.workflows.unknown.name);
 		expect(requests).toHaveLength(loaded);
 	});
 
@@ -106,6 +106,53 @@ test.describe('Agents Spend selection matrix', () => {
 		await expect(page.getByRole('button', { name: /Design 1 finalized/ })).toBeVisible();
 		await expect(page).toHaveURL(/#queue$/);
 		await expect(page).toHaveURL(/unrelated=keep/);
+	});
+
+	test('preserves unrelated page state across tab and filter navigation', async ({ page }) => {
+		await armLedgerDays();
+		const url = new URL(spendUrl({ unrelated: 'keep' }), 'http://e2e.test');
+		url.searchParams.delete('agents_view');
+		await gotoHydrated(page, `${url.pathname}${url.search}#queue`);
+		await expect
+			.poll(() =>
+				page.evaluate(
+					() =>
+						typeof (window as Window & { __tinesE2EPageState?: unknown }).__tinesE2EPageState ===
+						'object'
+				)
+			)
+			.toBe(true);
+		const sentinel = {
+			starterLanding: { projectId: 'prj_unrelated_state', firstIssueId: 'iss_unrelated_state' }
+		};
+		await page.evaluate((state) => {
+			const bridge = (
+				window as Window & {
+					__tinesE2EPageState: { setPageState: (value: typeof state) => void };
+				}
+			).__tinesE2EPageState;
+			bridge.setPageState(state);
+		}, sentinel);
+		const readState = () =>
+			page.evaluate(() =>
+				(
+					window as Window & {
+						__tinesE2EPageState: { readPageState: () => unknown };
+					}
+				).__tinesE2EPageState.readPageState()
+			);
+		expect(await readState()).toEqual(sentinel);
+
+		await page.getByRole('button', { name: 'Spend', exact: true }).click();
+		await expect(page).toHaveURL(/agents_view=spend/);
+		await expect(projectTotal(page)).toHaveText('$5.00');
+		expect(await readState()).toEqual(sentinel);
+		await page.getByRole('button', { name: 'Last 30 days' }).click();
+		await expect(page).toHaveURL(/spend_window=30d/);
+		await expect(projectTotal(page)).toHaveText('$12.00');
+		expect(await readState()).toEqual(sentinel);
+		await expect(page).toHaveURL(/unrelated=keep/);
+		await expect(page).toHaveURL(/#queue$/);
 	});
 
 	test('holds explicit archived and All scope across a global focus change', async ({ page }) => {
