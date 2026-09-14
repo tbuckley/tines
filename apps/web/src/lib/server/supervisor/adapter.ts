@@ -16,6 +16,18 @@ export interface AdapterLaunchInput {
 	runner: { id: string; type: string; name: string; config: string; max_run_minutes: number };
 	tier: ModelTier;
 	model: string | null;
+	/** Claim-time resolved effort. Adapters must not reread mutable tiers. */
+	effort?: string | null;
+	/** Persist provider configuration evidence before later launch steps can fail. */
+	recordEffortEvidence?: (evidence: {
+		status: 'accepted_unconfirmed' | 'confirmed' | 'rejected';
+		transport: 'managed_agent_config';
+		attempted_effort: string;
+		observed_model?: string;
+		observed_effort?: string;
+		provider_agent_id?: string;
+		reason?: string;
+	}) => Promise<void>;
 	/**
 	 * The plaintext run key, for out-of-prompt delivery (vault credential /
 	 * egress-proxy header). Never logged, never stored beyond its hash.
@@ -60,6 +72,7 @@ export interface AdapterEndInput {
 	user_id: string;
 	issue_id: string;
 	model: string | null;
+	effort?: string | null;
 	/** The recorded run outcome; only `advanced` can retain. */
 	outcome: string | null;
 	/** Whether the issue's state at end was an `awaiting_human` one. */

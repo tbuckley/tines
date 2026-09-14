@@ -637,6 +637,12 @@
 	/** Tiers apply unless the runner has a fixed configuration (custom harness). */
 	const editTiersApply = $derived(editTarget !== null && editTarget.tier_models !== null);
 
+	function effortChoices(runner: Runner | null, tier: ModelTier, modelOverride = ''): string[] {
+		if (!runner) return [];
+		const model = modelOverride.trim() || runner.tier_models?.[tier] || '';
+		return runner.effort_models?.[model] ?? [];
+	}
+
 	const bootstrapCommand = $derived.by(() => {
 		const origin = typeof location !== 'undefined' ? location.origin : '<tines-url>';
 		const parts = [
@@ -859,11 +865,25 @@
 			})
 			.catch(() => {});
 	}
-	let ruleTargets = $state<{ runner_id: string; tier: '' | ModelTier }[]>([]);
+	let ruleTargets = $state<{ runner_id: string; tier: '' | ModelTier; effort: string }[]>([]);
 	let ruleMode = $state<'runners' | 'tier'>('runners');
 	let ruleOverrideTier = $state<ModelTier>('smartest');
+	let ruleOverrideEffort = $state('');
 	let savingRule = $state(false);
 	let ruleWarnings = $state<ShadowWarning[]>([]);
+	const wildcardEffortChoices = $derived(
+		[
+			...new Set(data.runners.flatMap((runner) => Object.values(runner.effort_models ?? {}).flat()))
+		].sort()
+	);
+
+	function targetEffortChoices(target: (typeof ruleTargets)[number]): string[] {
+		const runner = data.runners.find((candidate) => candidate.id === target.runner_id);
+		if (!runner) return [];
+		const tier = target.tier || runner.default_tier;
+		const override = runner.tiers?.[tier]?.model ?? '';
+		return effortChoices(runner, tier, override);
+	}
 
 	/**
 	 * The supervisor only dispatches issues in active-category states, so only
@@ -890,9 +910,11 @@
 		ruleProjectId = prefill.projectId ?? data.focusId ?? '';
 		ruleStateId = prefill.stateId ?? '';
 		ruleLabelId = '';
-		ruleTargets = data.runners.length > 0 ? [{ runner_id: data.runners[0].id, tier: '' }] : [];
+		ruleTargets =
+			data.runners.length > 0 ? [{ runner_id: data.runners[0].id, tier: '', effort: '' }] : [];
 		ruleMode = 'runners';
 		ruleOverrideTier = 'smartest';
+		ruleOverrideEffort = '';
 		loadLabels();
 		ruleModalOpen = true;
 	}
@@ -936,11 +958,16 @@
 		const tierOnly = rule.targets.length === 1 && rule.targets[0]?.runner_id === '*';
 		ruleMode = tierOnly ? 'tier' : 'runners';
 		ruleOverrideTier = tierOnly ? (rule.targets[0]!.tier ?? 'smartest') : 'smartest';
+		ruleOverrideEffort = tierOnly ? (rule.targets[0]!.effort ?? '') : '';
 		ruleTargets = tierOnly
 			? data.runners.length > 0
-				? [{ runner_id: data.runners[0].id, tier: '' }]
+				? [{ runner_id: data.runners[0].id, tier: '', effort: '' }]
 				: []
-			: rule.targets.map((t) => ({ runner_id: t.runner_id, tier: t.tier ?? '' }));
+			: rule.targets.map((t) => ({
+					runner_id: t.runner_id,
+					tier: t.tier ?? '',
+					effort: t.effort ?? ''
+				}));
 		loadLabels();
 		ruleModalOpen = true;
 	}
@@ -959,10 +986,18 @@
 		try {
 			const targets: RoutingTarget[] =
 				ruleMode === 'tier'
-					? [{ runner_id: '*', tier: ruleOverrideTier }]
-					: ruleTargets.map((t) =>
-							t.tier ? { runner_id: t.runner_id, tier: t.tier } : { runner_id: t.runner_id }
-						);
+					? [
+							{
+								runner_id: '*',
+								tier: ruleOverrideTier,
+								...(ruleOverrideEffort ? { effort: ruleOverrideEffort } : {})
+							}
+						]
+					: ruleTargets.map((t) => ({
+							runner_id: t.runner_id,
+							...(t.tier ? { tier: t.tier } : {}),
+							...(t.effort ? { effort: t.effort } : {})
+						}));
 			const scope = {
 				project_id: ruleProjectId || null,
 				workflow_state_id: ruleStateId || null,
@@ -1132,6 +1167,7 @@
 	<SpendPanel
 		projects={data.projects}
 		archivedProjects={data.archivedProjects}
+		workflows={data.workflows}
 		focusId={data.focusId}
 		navigate={patchAgents}
 	/>
@@ -2102,17 +2138,23 @@
 								oninput={(e) =>
 									(editTierModels = { ...editTierModels, [tier]: e.currentTarget.value })}
 							/>
-							{#if editTarget.type === 'claude_managed'}
+							{#if editTarget.type === 'claude_managed' || editTarget.type === 'local'}
+								{@const choices = effortChoices(editTarget, tier, editTierModels[tier] ?? '')}
 								<Select
 									class="w-28"
 									aria-label={`Effort for ${tier}`}
 									value={editTierEfforts[tier] ?? ''}
-									disabled={(editTierModels[tier] ?? '').trim() === ''}
+									disabled={(editTierModels[tier] ?? '').trim() === '' || choices.length === 0}
 									onchange={(e) =>
 										(editTierEfforts = { ...editTierEfforts, [tier]: e.currentTarget.value })}
 								>
 									<option value="">effort —</option>
-									{#each ['low', 'medium', 'high', 'xhigh', 'max'] as effort (effort)}
+									{#if editTierEfforts[tier] && !choices.includes(editTierEfforts[tier])}
+										<option value={editTierEfforts[tier]}
+											>{editTierEfforts[tier]} (incompatible)</option
+										>
+									{/if}
+									{#each choices as effort (effort)}
 										<option value={effort}>{effort}</option>
 									{/each}
 								</Select>
@@ -2385,9 +2427,19 @@
 				<Select id="rule-override-tier" bind:value={ruleOverrideTier}>
 					{#each MODEL_TIERS as tier (tier)}<option value={tier}>{tier}</option>{/each}
 				</Select>
+				<label class="text-sm font-medium" for="rule-override-effort">Effort (optional)</label>
+				<Select id="rule-override-effort" bind:value={ruleOverrideEffort}>
+					<option value="">inherit</option>
+					{#if ruleOverrideEffort && !wildcardEffortChoices.includes(ruleOverrideEffort)}
+						<option value={ruleOverrideEffort}>{ruleOverrideEffort} (unavailable)</option>
+					{/if}
+					{#each wildcardEffortChoices as effort (effort)}
+						<option value={effort}>{effort}</option>
+					{/each}
+				</Select>
 				<p class="text-muted-foreground text-xs">
-					Uses runners from the next lower-priority matching rule and applies this tier to every
-					fallback runner.
+					Uses runners from the next lower-priority matching rule. Effort is checked against each
+					final model at dispatch.
 				</p>
 				{#if !ruleProjectId && !ruleStateId && !ruleLabelId}
 					<p class="text-xs text-amber-700 dark:text-amber-400">
@@ -2399,68 +2451,97 @@
 			<div class="space-y-1.5">
 				<p class="text-sm font-medium">Targets (preference order)</p>
 				{#each ruleTargets as target, i (i)}
-					<div class="flex items-center gap-1.5">
-						<span class="text-muted-foreground w-4 text-right text-xs">{i + 1}.</span>
-						<Select
-							class="flex-1"
-							aria-label={`Target ${i + 1} runner`}
-							value={target.runner_id}
-							onchange={(e) =>
-								(ruleTargets[i] = { ...ruleTargets[i], runner_id: e.currentTarget.value })}
+					{@const choices = targetEffortChoices(target)}
+					<div
+						data-routing-target-row
+						class="grid min-w-0 gap-2 rounded-md border p-2 sm:grid-cols-[minmax(11.5rem,1fr)_5.5rem_6.5rem] sm:items-end"
+					>
+						<label class="min-w-0 space-y-1 text-xs">
+							<span class="font-medium">{i + 1}. Runner</span>
+							<Select
+								class="w-full min-w-0"
+								aria-label={`Target ${i + 1} runner`}
+								value={target.runner_id}
+								onchange={(e) =>
+									(ruleTargets[i] = { ...ruleTargets[i], runner_id: e.currentTarget.value })}
+							>
+								{#each data.runners as runner (runner.id)}
+									<option value={runner.id}
+										>{runner.name}{runner.status === 'paused' ? ' (paused)' : ''}</option
+									>
+								{/each}
+							</Select></label
 						>
-							{#each data.runners as runner (runner.id)}
-								<option value={runner.id}
-									>{runner.name}{runner.status === 'paused' ? ' (paused)' : ''}</option
-								>
-							{/each}
-						</Select>
-						<Select
-							class="w-32"
-							aria-label={`Target ${i + 1} tier`}
-							value={target.tier}
-							onchange={(e) =>
-								(ruleTargets[i] = {
-									...ruleTargets[i],
-									tier: e.currentTarget.value as '' | ModelTier
-								})}
+						<label class="space-y-1 text-xs"
+							><span class="font-medium">Effort</span>
+							<Select
+								class="w-full"
+								aria-label={`Target ${i + 1} effort`}
+								value={target.effort}
+								onchange={(e) =>
+									(ruleTargets[i] = { ...ruleTargets[i], effort: e.currentTarget.value })}
+							>
+								<option value="">inherit</option>
+								{#if target.effort && !choices.includes(target.effort)}
+									<option value={target.effort}>{target.effort} (incompatible)</option>
+								{/if}
+								{#each choices as effort (effort)}
+									<option value={effort}>{effort}</option>
+								{/each}
+							</Select></label
 						>
-							<option value="">default tier</option>
-							{#each MODEL_TIERS as tier (tier)}
-								<option value={tier}>{tier}</option>
-							{/each}
-						</Select>
-						<Button
-							size="icon"
-							variant="ghost"
-							type="button"
-							class="size-8"
-							disabled={i === 0}
-							aria-label="Move up"
-							onclick={() => moveTarget(i, -1)}
+						<label class="space-y-1 text-xs"
+							><span class="font-medium">Tier</span>
+							<Select
+								class="w-full"
+								aria-label={`Target ${i + 1} tier`}
+								value={target.tier}
+								onchange={(e) =>
+									(ruleTargets[i] = {
+										...ruleTargets[i],
+										tier: e.currentTarget.value as '' | ModelTier
+									})}
+							>
+								<option value="">default tier</option>
+								{#each MODEL_TIERS as tier (tier)}
+									<option value={tier}>{tier}</option>
+								{/each}
+							</Select></label
 						>
-							<IconArrowUp size={14} />
-						</Button>
-						<Button
-							size="icon"
-							variant="ghost"
-							type="button"
-							class="size-8"
-							disabled={i === ruleTargets.length - 1}
-							aria-label="Move down"
-							onclick={() => moveTarget(i, 1)}
-						>
-							<IconArrowDown size={14} />
-						</Button>
-						<Button
-							size="icon"
-							variant="ghost"
-							type="button"
-							class="text-destructive size-8"
-							aria-label="Remove target"
-							onclick={() => (ruleTargets = ruleTargets.filter((_, j) => j !== i))}
-						>
-							<IconX size={14} />
-						</Button>
+						<div class="flex items-center justify-end gap-1 sm:col-span-3">
+							<Button
+								size="icon"
+								variant="ghost"
+								type="button"
+								class="size-8"
+								disabled={i === 0}
+								aria-label="Move up"
+								onclick={() => moveTarget(i, -1)}
+							>
+								<IconArrowUp size={14} />
+							</Button>
+							<Button
+								size="icon"
+								variant="ghost"
+								type="button"
+								class="size-8"
+								disabled={i === ruleTargets.length - 1}
+								aria-label="Move down"
+								onclick={() => moveTarget(i, 1)}
+							>
+								<IconArrowDown size={14} />
+							</Button>
+							<Button
+								size="icon"
+								variant="ghost"
+								type="button"
+								class="text-destructive size-8"
+								aria-label="Remove target"
+								onclick={() => (ruleTargets = ruleTargets.filter((_, j) => j !== i))}
+							>
+								<IconX size={14} />
+							</Button>
+						</div>
 					</div>
 				{/each}
 				<Button
@@ -2469,7 +2550,10 @@
 					type="button"
 					disabled={data.runners.length === 0}
 					onclick={() =>
-						(ruleTargets = [...ruleTargets, { runner_id: data.runners[0].id, tier: '' }])}
+						(ruleTargets = [
+							...ruleTargets,
+							{ runner_id: data.runners[0].id, tier: '', effort: '' }
+						])}
 				>
 					<IconPlus size={14} /> Add target
 				</Button>

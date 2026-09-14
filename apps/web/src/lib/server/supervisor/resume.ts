@@ -68,7 +68,18 @@ export function resumeFingerprint(input: {
 	harness: string;
 	model: string | null;
 	preambleVariant: string;
+	effort?: string | null;
 }): string {
+	if (input.effort) {
+		return JSON.stringify({
+			version: 2,
+			runner_id: input.runnerId,
+			harness: input.harness,
+			model: input.model,
+			effort: input.effort,
+			preamble_variant: input.preambleVariant
+		});
+	}
 	return [
 		'v1',
 		input.runnerId,
@@ -432,6 +443,7 @@ export async function prepareManagedResume(
 		issueId: string;
 		runId: string;
 		model: string | null;
+		effort?: string | null;
 		now: number;
 	}
 ): Promise<{
@@ -495,6 +507,7 @@ export async function prepareManagedResume(
 			runnerId: runner.id,
 			harness: 'claude_managed',
 			model: input.model,
+			effort: input.effort,
 			preambleVariant: 'claude_managed'
 		})
 	});

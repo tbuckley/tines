@@ -102,6 +102,18 @@ describe('buildHarnessInvocation', () => {
 		});
 	});
 
+	it('routes effort through supported harness argv and preserves no-effort argv', () => {
+		const claude = buildHarnessInvocation(
+			{ harness: 'claude_code' },
+			{ ...input, effort: 'xhigh' }
+		);
+		expect(claude.args[1]).toContain("--effort 'xhigh'");
+		const codex = buildHarnessInvocation({ harness: 'codex' }, { ...input, effort: 'ultra' });
+		expect(codex.args).toContain('-c');
+		expect(codex.args).toContain('model_reasoning_effort="ultra"');
+		expect(buildHarnessInvocation({ harness: 'codex' }, input).args).not.toContain('-c');
+	});
+
 	it('custom: sh -c with the expanded template; refuses without one', () => {
 		expect(
 			buildHarnessInvocation({ harness: 'custom', command: 'run {prompt_file}' }, input)
@@ -117,7 +129,7 @@ describe('formatLaunchBanner', () => {
 		const invocation = buildHarnessInvocation({ harness: 'claude_code' }, input);
 		expect(formatLaunchBanner(invocation, input, meta)).toBe(
 			`$ claude -p --output-format stream-json --verbose --model 'claude-sonnet-5' < '/tmp/ws/run 1/prompt.md'\n` +
-				`# tines runner: harness=claude_code model=claude-sonnet-5 timeout=30m cli=0.0.1 workspace=/tmp/ws/run 1\n`
+				`# tines runner: harness=claude_code model=claude-sonnet-5 effort=(provider-default) timeout=30m cli=0.0.1 workspace=/tmp/ws/run 1\n`
 		);
 	});
 
@@ -157,7 +169,7 @@ describe('formatLaunchBanner', () => {
 		const invocation = buildHarnessInvocation({ harness: 'codex' }, input);
 		expect(formatLaunchBanner(invocation, input, { ...meta, harness: 'codex' })).toBe(
 			`$ codex exec --json --skip-git-repo-check --model claude-sonnet-5 'Do the thing'\n` +
-				`# tines runner: harness=codex model=claude-sonnet-5 timeout=30m cli=0.0.1 workspace=/tmp/ws/run 1\n`
+				`# tines runner: harness=codex model=claude-sonnet-5 effort=(provider-default) timeout=30m cli=0.0.1 workspace=/tmp/ws/run 1\n`
 		);
 	});
 
@@ -179,7 +191,7 @@ describe('formatLaunchBanner', () => {
 		);
 		expect(formatLaunchBanner(invocation, input, { ...meta, harness: 'custom' })).toBe(
 			`$ my-agent --model 'claude-sonnet-5' -w '/tmp/ws/run 1' < '/tmp/ws/run 1/prompt.md'\n` +
-				`# tines runner: harness=custom model=claude-sonnet-5 timeout=30m cli=0.0.1 workspace=/tmp/ws/run 1\n`
+				`# tines runner: harness=custom model=claude-sonnet-5 effort=(provider-default) timeout=30m cli=0.0.1 workspace=/tmp/ws/run 1\n`
 		);
 	});
 
