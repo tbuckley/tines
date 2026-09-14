@@ -42,6 +42,8 @@
 		/** Extra controls for the save row, aligned opposite the submit button. */
 		footerActions?: Snippet;
 	} = $props();
+	const previewUid = $props.id();
+	const previewHeadingId = `workflow-preview-${previewUid}`;
 
 	let nextKey = 0;
 	const freshKey = () => `new-${nextKey++}`;
@@ -508,10 +510,21 @@
 	<!-- graph view: how a workflow is read; re-renders live as the form changes -->
 	<div class="min-w-0">
 		<div class="bg-muted/30 sticky top-20 rounded-lg border p-4">
-			<h3 class="text-muted-foreground mb-3 text-xs font-medium tracking-wide uppercase">
+			<h3
+				id={previewHeadingId}
+				class="text-muted-foreground mb-3 text-xs font-medium tracking-wide uppercase"
+			>
 				Live preview
 			</h3>
-			<WorkflowGraph workflow={preview} />
+			<!-- svelte-ignore a11y_no_noninteractive_tabindex (native keyboard scrolling requires focus) -->
+			<div
+				class="focus-visible:outline-ring max-w-full overflow-x-auto focus-visible:outline-2 focus-visible:outline-offset-2"
+				role="region"
+				tabindex="0"
+				aria-labelledby={previewHeadingId}
+			>
+				<WorkflowGraph workflow={preview} fit={false} />
+			</div>
 		</div>
 	</div>
 </div>
