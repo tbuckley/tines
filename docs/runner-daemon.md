@@ -22,6 +22,9 @@ Four setup steps from nothing to an agent working an issue. The hosted app is
 
 3. **Runner** — install the daemon as a service (or paste the block the dialog shows):
 
+   Using Codex? Configure its [permissions](#codex-permissions) before starting the runner,
+   and use `--harness codex`.
+
    ```sh
    TINES_API_KEY=tines_… tines runner install \
      --url https://tines.tbuckley.dev \
@@ -91,6 +94,48 @@ Rotating a token: `tines runners rotate-token <name>` invalidates the old token 
 the new one once. Run it on the daemon machine and the stored token is updated in place —
 just restart the daemon; elsewhere, the daemon exits with a clear 401 message until the new
 token is dropped into its config.
+
+## Codex permissions
+
+Before starting a Codex runner, edit or create `~/.codex/config.toml` for the OS user that
+runs the daemon. For the usual service installed by `tines runner install`, merge these
+settings into that file:
+
+```toml
+sandbox_mode = "workspace-write"
+
+[sandbox_workspace_write]
+network_access = true
+```
+
+`sandbox_mode` is a top-level key, so place it before any table headers. If the file already
+has a `[sandbox_workspace_write]` table, update it instead of adding a duplicate table.
+
+Workspace-write lets Codex edit the per-run workspace, including cloned repositories.
+Outbound network access lets subprocesses such as `tines` reach `TINES_API_URL`; it permits
+connections beyond that Tines server too.
+
+These are defaults for every Codex session run by this OS user. Commands with network access
+can send data off the machine, so enable these permissions only for work and repositories
+you trust. Tines gives each run an ephemeral API key and revokes it when the run ends; do not
+put that key in Codex configuration. The key's lifetime does not restrict network
+destinations.
+
+Tines invokes `codex exec` without overriding its sandbox or network settings. The snippet
+uses Codex's sandbox configuration and is not compatible with `default_permissions` or the
+permission-profile configuration model. If you use a permission profile, consult the
+[OpenAI configuration reference](https://developers.openai.com/codex/config-reference) for
+your chosen model before editing it; do not remove organization-managed policy. See
+[Config basics](https://developers.openai.com/codex/config-basic) for configuration
+precedence and managed constraints. A foreground daemon or custom service explicitly given
+`CODEX_HOME` reads configuration from that home; the normal Tines installer does not copy an
+arbitrary shell `CODEX_HOME` into its service unit.
+
+If a new run cannot edit files or `tines` reports a network denial, check the configuration
+used by the daemon's OS user and any higher-priority or managed policy, then start another
+run. An online runner confirms only that registration and heartbeat work. These settings do
+not guarantee authentication, DNS, or every Git operation, and Tines does not recommend
+`danger-full-access`, changing approval policy, or bypassing managed restrictions.
 
 ## The agent-facing CLI
 
