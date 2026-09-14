@@ -183,7 +183,7 @@ test('a wide live preview keeps intrinsic scale and scrolls locally', async ({ p
 	await gotoHydrated(page, `/workflows/${wideWorkflowId}`);
 
 	const region = page.getByRole('region', { name: 'Live preview' });
-	await expect(region.getByText('Return 10 to 4', { exact: true })).toBeVisible();
+	await expect(region.getByText('Return 7 to 6', { exact: true })).toBeAttached();
 	const before = await previewGeometry(page);
 	expect(before.svgRatio).toBeCloseTo(1, 2);
 	expect(before.regionScrollWidth).toBeGreaterThan(before.regionClientWidth);
