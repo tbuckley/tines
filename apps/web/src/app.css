@@ -314,13 +314,13 @@
 }
 
 /*
- * Directional tab slides on phones (below Tailwind's `sm`, where the bottom
+ * Directional tab slides below Tailwind's `md`, where the bottom
  * tab bar is shown). The layout stamps data-tab-slide on <html> when a
  * navigation crosses top-level tabs; the `page` group is <main>, so the
  * chrome stays put while the content glides toward the chosen tab. Desktop
  * never matches this query and keeps the plain crossfade.
  */
-@media (width < 40rem) {
+@media (width < 48rem) {
 	html[data-tab-slide]::view-transition-old(page),
 	html[data-tab-slide]::view-transition-new(page) {
 		animation-duration: 300ms;

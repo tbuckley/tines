@@ -539,6 +539,14 @@
 	.toolbar {
 		margin-bottom: 1.25rem;
 	}
+	.scope {
+		overflow-wrap: anywhere;
+	}
+	.toolbar > label,
+	.toolbar select {
+		min-width: 0;
+		max-width: 100%;
+	}
 	label {
 		display: grid;
 		gap: 0.25rem;
@@ -609,6 +617,10 @@
 	.row > button {
 		text-align: left;
 		min-height: 36px;
+		min-width: 0;
+	}
+	.row > button span {
+		overflow-wrap: anywhere;
 	}
 	.row > button span,
 	.row > button small {

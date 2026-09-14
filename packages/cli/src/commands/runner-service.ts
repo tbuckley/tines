@@ -185,6 +185,7 @@ export function registerServiceCommands(runnerCmd: Command): void {
 				harness: settings.harness,
 				...(settings.command !== undefined ? { command: settings.command } : {}),
 				maxConcurrent: settings.maxConcurrent,
+				allowRemoteConcurrency: settings.allowRemoteConcurrency,
 				...(resolveApiKey(opts) !== undefined ? { apiKey: resolveApiKey(opts) } : {}),
 				log
 			});
@@ -218,6 +219,7 @@ export function registerServiceCommands(runnerCmd: Command): void {
 				harness: harnessFlag(settings.harness),
 				...(settings.command !== undefined ? { command: settings.command } : {}),
 				maxConcurrent: settings.maxConcurrent,
+				allowRemoteConcurrency: settings.allowRemoteConcurrency,
 				pollIntervalSeconds: settings.pollIntervalSeconds,
 				keepWorkspaces: settings.keepWorkspaces,
 				keepWorkspacesForHours: settings.keepWorkspacesForHours,
