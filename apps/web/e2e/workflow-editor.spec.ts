@@ -239,9 +239,12 @@ test('graphs outside the editor keep their fitted defaults', async ({ page }) =>
 		.locator('xpath=ancestor::a');
 	const compact = await card.getByRole('img', { name: 'Workflow graph' }).evaluate((svg) => ({
 		width: svg.getBoundingClientRect().width,
-		containerWidth: svg.parentElement!.clientWidth
+		containerWidth: svg.parentElement!.clientWidth,
+		documentClientWidth: document.documentElement.clientWidth,
+		documentScrollWidth: document.documentElement.scrollWidth
 	}));
 	expect(compact.width).toBeLessThanOrEqual(compact.containerWidth + 1);
+	expect(compact.documentScrollWidth - compact.documentClientWidth).toBeLessThanOrEqual(1);
 });
 
 test('the read-only system workflow keeps its description in the header', async ({ page }) => {
