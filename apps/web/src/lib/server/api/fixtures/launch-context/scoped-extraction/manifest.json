@@ -1,0 +1,121 @@
+{
+	"schema_version": 1,
+	"fixture_only": true,
+	"instructions": {
+		"distilling": { "version": 3, "source": "Tines/519 distill-report v2" },
+		"applying": { "version": 2, "source": "Tines/519 distill-report v2" }
+	},
+	"cases": [
+		{
+			"id": "global",
+			"source": {
+				"kind": "prompt",
+				"name": "planning-guide",
+				"version": 7,
+				"scope": { "project": null, "workflow_state": null },
+				"before": "global/before.md",
+				"after": "global/after.md"
+			},
+			"destination": {
+				"name": "planning-procedures",
+				"mode": "create",
+				"version": null,
+				"scope": { "project": null, "workflow_state": null },
+				"files": ["global/skill/SKILL.md"]
+			},
+			"review": { "proposal": "global-p1", "decision": "approved", "approved_source_version": 7 },
+			"read": "Read skills/planning-procedures/SKILL.md when a task must enter or re-propose planning work.",
+			"needed": "Plan a new cross-project work item and provide the ordered commands.",
+			"unneeded": "Summarize a supplied issue brief without changing workflow state.",
+			"expected_winner": "global"
+		},
+		{
+			"id": "project",
+			"source": {
+				"kind": "prompt",
+				"name": "planning-guide",
+				"version": 11,
+				"scope": { "project": "P", "workflow_state": null },
+				"before": "project/before.md",
+				"after": "project/after.md"
+			},
+			"destination": {
+				"name": "planning-procedures",
+				"mode": "update",
+				"version": 3,
+				"scope": { "project": "P", "workflow_state": null },
+				"files": ["project/skill/SKILL.md", "project/skill/notes/keep.txt"]
+			},
+			"review": {
+				"proposal": "project-p1",
+				"decision": "approved_with_amendment",
+				"approved_source_version": 11
+			},
+			"read": "Read skills/planning-procedures/SKILL.md when planning work for project P.",
+			"needed": "Move project P from Scouting to Reworking using its accepted Plan procedure.",
+			"unneeded": "List known and unspecified fields in project P's supplied brief.",
+			"expected_winner": "project:P"
+		},
+		{
+			"id": "state",
+			"source": {
+				"kind": "prompt",
+				"name": "rework-guide",
+				"version": 5,
+				"scope": { "project": null, "workflow_state": "Root" },
+				"before": "state/before.md",
+				"after": "state/after.md"
+			},
+			"destination": {
+				"name": "planning-procedures",
+				"mode": "create",
+				"version": null,
+				"scope": { "project": null, "workflow_state": "Root" },
+				"files": ["state/skill/SKILL.md"]
+			},
+			"review": { "proposal": "state-p1", "decision": "approved", "approved_source_version": 5 },
+			"read": "Read skills/planning-procedures/SKILL.md only when a Root or inheriting child task requires rework.",
+			"needed": "Re-propose a rejected design from inheriting child A.",
+			"unneeded": "Review a complete brief in inheriting child B without rework.",
+			"expected_winner": "state:Root inherited by A/B"
+		},
+		{
+			"id": "combined",
+			"source": {
+				"kind": "journal",
+				"name": "root-journal",
+				"version": 13,
+				"scope": { "project": "P", "workflow_state": "Root" },
+				"before": "combined/before.md",
+				"after": "combined/after.md"
+			},
+			"destination": {
+				"name": "planning-procedures",
+				"mode": "update",
+				"version": 4,
+				"scope": { "project": "P", "workflow_state": "Root" },
+				"files": ["combined/skill/SKILL.md", "combined/skill/notes/keep.txt"]
+			},
+			"review": {
+				"proposal": "combined-p1",
+				"decision": "approved",
+				"approved_source_version": 13
+			},
+			"read": "Read skills/planning-procedures/SKILL.md when project P work inherited from Root needs a second proposal.",
+			"needed": "Resume a rejected project P proposal in child A.",
+			"unneeded": "Report the supplied acceptance state for project P child B.",
+			"expected_winner": "project:P&state:Root inherited by A/B"
+		}
+	],
+	"override_matrix": [
+		{ "issue": "Q/Root", "winner": "global" },
+		{ "issue": "P/unrelated", "winner": "project:P" },
+		{ "issue": "Q/A", "winner": "state:Root", "inherited_from": "Root" },
+		{ "issue": "P/A", "winner": "project:P&state:Root", "inherited_from": "Root" },
+		{
+			"issue": "P/leaf-with-state-only-override",
+			"winner": "project:P&state:Root",
+			"reason": "combined rank outranks state-only leaf"
+		}
+	]
+}

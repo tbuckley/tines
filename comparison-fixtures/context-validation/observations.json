@@ -1,0 +1,10 @@
+{
+	"ledger": {
+		"direction": "Tines/373",
+		"limit": 12,
+		"prior_spent": 4,
+		"remaining_before_this_fixture": 8
+	},
+	"historical_source": "comparison-fixtures/effort-routine/observations.json",
+	"attempts": []
+}

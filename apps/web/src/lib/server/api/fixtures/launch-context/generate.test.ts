@@ -246,3 +246,109 @@ describe('launch-context comparison fixtures', () => {
 		}
 	});
 });
+
+describe('scoped extraction validation fixtures', () => {
+	const extractionDir = join(dir, 'scoped-extraction');
+	const manifest = JSON.parse(readFileSync(join(extractionDir, 'manifest.json'), 'utf8'));
+	const lifecycle = JSON.parse(readFileSync(join(extractionDir, 'lifecycle.json'), 'utf8'));
+
+	it('freezes complete same-scope before, after, and skill files', () => {
+		expect(manifest.cases.map((entry: { id: string }) => entry.id)).toEqual([
+			'global',
+			'project',
+			'state',
+			'combined'
+		]);
+		for (const entry of manifest.cases) {
+			expect(entry.source.scope).toEqual(entry.destination.scope);
+			const before = readFileSync(join(extractionDir, entry.source.before), 'utf8');
+			const after = readFileSync(join(extractionDir, entry.source.after), 'utf8');
+			const skill = readFileSync(join(extractionDir, entry.destination.files[0]), 'utf8');
+			expect(before.length).toBeGreaterThan(after.length);
+			expect(skill).toContain('name: planning-procedures');
+			expect(skill).toContain('fresh');
+			expect(skill).toMatch(/(?:self-approv|approve your own|authorized reviewer)/);
+			expect(entry.read).toContain('skills/planning-procedures/SKILL.md');
+		}
+		expect(readFileSync(join(extractionDir, 'project/skill/notes/keep.txt'), 'utf8')).toBe(
+			'unrelated project reference; preserve byte-for-byte\n'
+		);
+		expect(readFileSync(join(extractionDir, 'combined/skill/notes/keep.txt'), 'utf8')).toBe(
+			'unrelated combined-scope file; preserve byte-for-byte\n'
+		);
+		expect(readFileSync(join(extractionDir, 'combined/after.md'), 'utf8')).toContain(
+			'(seen again 2026-09-08)'
+		);
+	});
+
+	it('pins override rank and inherited-state resolution', () => {
+		expect(manifest.override_matrix).toEqual([
+			{ issue: 'Q/Root', winner: 'global' },
+			{ issue: 'P/unrelated', winner: 'project:P' },
+			{ issue: 'Q/A', winner: 'state:Root', inherited_from: 'Root' },
+			{
+				issue: 'P/A',
+				winner: 'project:P&state:Root',
+				inherited_from: 'Root'
+			},
+			{
+				issue: 'P/leaf-with-state-only-override',
+				winner: 'project:P&state:Root',
+				reason: 'combined rank outranks state-only leaf'
+			}
+		]);
+	});
+
+	it('requires successful destination verification before source removal', () => {
+		const receipts = lifecycle.receipts as Array<{
+			sequence: number;
+			branch: string;
+			operation: string;
+			verified?: boolean;
+			result?: string;
+		}>;
+		const applied = receipts.filter((receipt) => receipt.branch === 'apply');
+		expect(applied.map((receipt) => receipt.operation)).toEqual([
+			'destination_write',
+			'destination_complete_read',
+			'effective_resolution',
+			'fresh_directory_export',
+			'source_cas'
+		]);
+		expect(applied.find((receipt) => receipt.operation === 'effective_resolution')?.verified).toBe(
+			true
+		);
+		expect(
+			applied.find((receipt) => receipt.operation === 'fresh_directory_export')?.verified
+		).toBe(true);
+		const sourceSequence = applied.find((receipt) => receipt.operation === 'source_cas')!.sequence;
+		expect(
+			Math.max(
+				...applied
+					.filter((receipt) => receipt.operation !== 'source_cas')
+					.map((receipt) => receipt.sequence)
+			)
+		).toBeLessThan(sourceSequence);
+		for (const branch of [
+			'proposed',
+			'rejected',
+			'unmentioned',
+			'invalid_destination',
+			'missing_destination',
+			'wrong_override',
+			'nonempty_export',
+			'stale_destination',
+			'resume_changed_destination',
+			'resume_changed_source'
+		]) {
+			expect(receipts.find((receipt) => receipt.branch === branch)?.result).toBe('source_retained');
+		}
+		expect(receipts.find((receipt) => receipt.branch === 'material_source_conflict')?.result).toBe(
+			'concurrent_source_retained'
+		);
+		expect(receipts.filter((receipt) => receipt.branch.startsWith('interrupt'))).toHaveLength(2);
+		expect(receipts.find((receipt) => receipt.branch === 'replay_complete')?.result).toBe(
+			'already_complete_no_version_bump'
+		);
+	});
+});
