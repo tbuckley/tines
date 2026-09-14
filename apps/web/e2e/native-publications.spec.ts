@@ -1,6 +1,6 @@
 import { expect, test, type APIRequestContext } from '@playwright/test';
 import type { PublicationOwnerResult, PublicationProof } from '@tines/shared';
-import { ALICE } from './constants.mjs';
+import { CAROL } from './constants.mjs';
 import { d1, sqlLiteral } from './d1';
 import { apiClient, body, runId } from './helpers';
 
@@ -10,7 +10,7 @@ test.describe.serial('native D1 publication transaction gate', () => {
 	test.beforeAll(async ({ request }) => {
 		workflowId = (
 			await body<{ id: string }>(
-				await apiClient(request, ALICE.apiKey).post('/api/v1/workflows', {
+				await apiClient(request, CAROL.apiKey).post('/api/v1/workflows', {
 					name: `native-publication-${runId}`,
 					description: 'Native D1 publication race fixture',
 					initial_state: 'Open',
@@ -26,7 +26,7 @@ test.describe.serial('native D1 publication transaction gate', () => {
 
 	async function prepare(request: APIRequestContext, sequence: number) {
 		return body<PublicationProof>(
-			await apiClient(request, ALICE.apiKey).post('/api/v1/publications/prepare', {
+			await apiClient(request, CAROL.apiKey).post('/api/v1/publications/prepare', {
 				prepare_request_id: `${runId}-${sequence}`,
 				source: { kind: 'owned_workflow', workflow_id: workflowId, options: {} },
 				metadata: { display_name: 'Native D1', license: 'MIT', license_year: 2026 }
@@ -50,11 +50,11 @@ test.describe.serial('native D1 publication transaction gate', () => {
 		try {
 			const first = await prepare(request, 0);
 			const same = await Promise.all([
-				apiClient(request, ALICE.apiKey).post(
+				apiClient(request, CAROL.apiKey).post(
 					`/api/v1/publications/${first.candidate_id}/publish`,
 					confirmation(first)
 				),
-				apiClient(second, ALICE.apiKey).post(
+				apiClient(second, CAROL.apiKey).post(
 					`/api/v1/publications/${first.candidate_id}/publish`,
 					confirmation(first)
 				)
@@ -69,7 +69,7 @@ test.describe.serial('native D1 publication transaction gate', () => {
 				const proof = await prepare(request, sequence);
 				expect(
 					(
-						await apiClient(request, ALICE.apiKey).post(
+						await apiClient(request, CAROL.apiKey).post(
 							`/api/v1/publications/${proof.candidate_id}/publish`,
 							confirmation(proof)
 						)
@@ -79,11 +79,11 @@ test.describe.serial('native D1 publication transaction gate', () => {
 
 			const final = await Promise.all([prepare(request, 9), prepare(request, 10)]);
 			const raced = await Promise.all([
-				apiClient(request, ALICE.apiKey).post(
+				apiClient(request, CAROL.apiKey).post(
 					`/api/v1/publications/${final[0].candidate_id}/publish`,
 					confirmation(final[0])
 				),
-				apiClient(second, ALICE.apiKey).post(
+				apiClient(second, CAROL.apiKey).post(
 					`/api/v1/publications/${final[1].candidate_id}/publish`,
 					confirmation(final[1])
 				)
@@ -91,12 +91,12 @@ test.describe.serial('native D1 publication transaction gate', () => {
 			expect(raced.map((response) => response.status()).sort()).toEqual([200, 429]);
 			expect(
 				d1(
-					`SELECT COUNT(*) AS n FROM workflow_publication WHERE user_id=${sqlLiteral(ALICE.id)} AND published_at IS NOT NULL`
+					`SELECT COUNT(*) AS n FROM workflow_publication WHERE user_id=${sqlLiteral(CAROL.id)} AND published_at IS NOT NULL`
 				)
 			).toEqual([{ n: 10 }]);
 			expect(
 				d1(
-					`SELECT COUNT(*) AS n FROM workflow_publication_event WHERE user_id=${sqlLiteral(ALICE.id)} AND action='published'`
+					`SELECT COUNT(*) AS n FROM workflow_publication_event WHERE user_id=${sqlLiteral(CAROL.id)} AND action='published'`
 				)
 			).toEqual([{ n: 10 }]);
 		} finally {
