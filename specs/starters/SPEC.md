@@ -157,6 +157,16 @@ is at stake. Inputs are kept
 across a switch so switching back restores them, and filtered to the selected
 starter's declared keys on submit, so a stale key never 422s.
 
+For a starter that declares `repo_url`, a pristine Name follows the repository
+basename and removes one terminal `.git`. An invalid or blank remote, or a
+switch to a starter without that input, clears only the automatic suggestion;
+switching back recomputes it from the retained URL. The first Name input — even
+clearing or retyping the suggestion — gives the user ownership until the dialog
+closes, so later URL and starter changes preserve it verbatim. This suggestion
+does not validate repositories or change submission rules: unrecognized remotes
+remain usable with a manual Name, and server name validation and collision
+errors stay authoritative.
+
 "This creates:" is rendered client-side by `$lib/starter-preview.ts` using the
 server's exact variable set (`{ ...inputs, project, repo_name }`) — for the
 prefill, blanks render as `''` as the server would; for the preview, as `…`,
