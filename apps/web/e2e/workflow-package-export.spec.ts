@@ -231,7 +231,9 @@ for (const { viewport, theme } of [
 		await page.getByLabel('Key').fill('approval_label');
 		await page.getByLabel('Type').selectOption('text');
 		await page.getByRole('textbox', { name: 'Label', exact: true }).fill('Approval label');
-		await page.getByLabel('Description').fill('Label applied after customer approval.');
+		await page
+			.getByRole('textbox', { name: 'Description' })
+			.fill('Label applied after customer approval.');
 		await page.getByLabel('Default').fill('customer-review');
 		await page.getByLabel('Required').check();
 		await page.getByRole('button', { name: 'Save changes' }).click();
@@ -317,8 +319,8 @@ test('cancels safely and refuses duplicate keys or registered-token edits over u
 	await page.getByLabel('Key').fill('second_input');
 	await page.getByLabel('Default').fill('second');
 	await page.getByRole('button', { name: 'Add typed declaration' }).click();
-	const selectedDeclaration = page.getByRole('button', {
-		name: /Show declaration for \{\{second_input:second\}\}/
+	const selectedDeclaration = page.locator('button[id^="input-"]').filter({
+		hasText: 'second_input'
 	});
 	await selectedDeclaration.click();
 	await expect(selectedDeclaration).toHaveClass(/\bselected\b/);
