@@ -235,7 +235,7 @@ for (const { viewport, theme } of [
 			.getByRole('textbox', { name: 'Description' })
 			.fill('Label applied after customer approval.');
 		await page.getByLabel('Default').fill('customer-review');
-		await page.getByLabel('Required').check();
+		await page.getByRole('checkbox', { name: 'Required', exact: true }).check();
 		await page.getByRole('button', { name: 'Save changes' }).click();
 
 		await expect(page.getByRole('button', { name: 'Edit input approval_label' })).toBeFocused();
