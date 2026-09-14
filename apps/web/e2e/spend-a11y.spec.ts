@@ -71,7 +71,7 @@ test.describe('Agents Spend keyboard and layout', () => {
 		await gotoHydrated(page, nowUrlWithSpendScope());
 
 		// Tab switch.
-		const spendTab = page.getByRole('button', { name: 'Spend', exact: true });
+		const spendTab = page.getByRole('button', { name: 'Analysis', exact: true });
 		await tabTo(page, spendTab);
 		await page.keyboard.press('Enter');
 		await expect(page.getByRole('heading', { name: 'Spend' })).toBeVisible();

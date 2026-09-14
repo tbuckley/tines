@@ -303,6 +303,12 @@ Install → key → runner → rule → observe. Automation needs no separate ar
    Local* dialog, which fills it into the command below for you.
 3. **Runner** — install the daemon as a service, naming it machine-plus-harness:
 
+   Using Codex? Set workspace-write and enable outbound network access before starting the
+   runner, then use `--harness codex`. Follow the
+   [Codex permissions setup](docs/runner-daemon.md#codex-permissions); the
+   [OpenAI configuration reference](https://developers.openai.com/codex/config-reference)
+   defines these settings.
+
    ```sh
    TINES_API_KEY=tines_… tines runner install \
      --url https://tines.tbuckley.dev \
