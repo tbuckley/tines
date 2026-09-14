@@ -16,7 +16,9 @@ import { ALICE, RUNROW } from './constants.mjs';
 import { apiClient, body, clickUntil, gotoHydrated, resetFocus, runId, signIn } from './helpers';
 
 const PROJECT_NAME = `queue-${runId}`;
-const RUNNER_NAME = `queue-${runId}`;
+// The API accepts 100 characters. Exercise that boundary because the short
+// generated name cannot expose a non-shrinking action row on a phone.
+const RUNNER_NAME = `queue-${runId}-${'worst-case-runner-name-'.repeat(8)}`.slice(0, 100);
 
 let projectId: string;
 let runnerId: string;
@@ -163,10 +165,20 @@ test.describe.serial('the Now row', () => {
 			.filter({ hasText: `at capacity on ${RUNNER_NAME}` })
 			.getByTestId('queue-actions');
 		await expect(actions).toBeVisible();
-		expect(await actions.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
-		expect(
-			await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
-		).toBe(true);
+		const panelBox = await panel.boundingBox();
+		const actionBox = await actions.boundingBox();
+		expect(panelBox).not.toBeNull();
+		expect(actionBox).not.toBeNull();
+		expect(panelBox!.x + panelBox!.width).toBeLessThanOrEqual(390);
+		expect(actionBox!.x).toBeGreaterThanOrEqual(panelBox!.x);
+		expect(actionBox!.x + actionBox!.width).toBeLessThanOrEqual(panelBox!.x + panelBox!.width);
+		for (const button of await actions.getByRole('button').all()) {
+			const box = await button.boundingBox();
+			expect(box).not.toBeNull();
+			expect(box!.x).toBeGreaterThanOrEqual(panelBox!.x);
+			expect(box!.x + box!.width).toBeLessThanOrEqual(panelBox!.x + panelBox!.width);
+			expect(box!.x + box!.width).toBeLessThanOrEqual(390);
+		}
 	});
 
 	test('drains the group when the cap is raised from the panel, without a reload', async ({
