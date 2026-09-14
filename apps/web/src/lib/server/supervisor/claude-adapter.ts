@@ -340,25 +340,27 @@ function createProviderContext(env: Env, opts: ClaudeAdapterOptions): ProviderCo
 				returned = (await ctx.client.beta.agents.retrieve(existing.agent_id)) as unknown as {
 					model?: string | { id?: string; effort?: string | { type?: string } };
 				};
-			} catch {
-				// A deleted or otherwise stale cached agent is a cache miss. Creating a
-				// replacement below repairs the persisted signature entry.
+			} catch (e) {
+				// A deleted cached agent is a cache miss. Authentication, throttling and
+				// transient provider failures are not proof that replacing it is safe.
+				if (!(e instanceof Anthropic.APIError && e.status === 404)) throw e;
 			}
 			if (returned) {
 				const observedModel =
 					typeof returned.model === 'string' ? returned.model : returned.model?.id;
 				const rawEffort = typeof returned.model === 'object' ? returned.model?.effort : undefined;
 				const observedEffort = typeof rawEffort === 'string' ? rawEffort : rawEffort?.type;
+				const verified =
+					observedModel === model && (effort === undefined || observedEffort === effort);
 				const mismatch =
 					(observedModel !== undefined && observedModel !== model) ||
 					(effort !== undefined && observedEffort !== undefined && observedEffort !== effort);
-				if (effort)
+				// Evidence names the agent that was actually selected. An
+				// unverifiable cache entry is only a miss; replacement creation
+				// records the first application milestone if it succeeds.
+				if (effort && (verified || mismatch))
 					await record?.({
-						status: mismatch
-							? 'rejected'
-							: observedModel === model && observedEffort === effort
-								? 'confirmed'
-								: 'accepted_unconfirmed',
+						status: mismatch ? 'rejected' : 'confirmed',
 						transport: 'managed_agent_config',
 						attempted_effort: effort,
 						provider_agent_id: existing.agent_id,
@@ -369,7 +371,10 @@ function createProviderContext(env: Env, opts: ClaudeAdapterOptions): ProviderCo
 							: {})
 					});
 				if (mismatch) throw new Error('cached provider agent configuration conflicts with intent');
-				return existing.agent_id;
+				// A cache key is only a hint. If retrieval omits the fields needed to
+				// verify this signature, provision a fresh agent instead of silently
+				// trusting stale local metadata.
+				if (verified) return existing.agent_id;
 			}
 		}
 		const created = await ctx.client.beta.agents.create({

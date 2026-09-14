@@ -11,6 +11,7 @@ import {
 	layerRank,
 	listContextItems,
 	loadFiles,
+	selectLaunchComments,
 	stitchPrompt,
 	validateWorkspacePath
 } from './context';
@@ -303,6 +304,7 @@ const richContext: EffectiveContext = {
 		{
 			item_id: 'ctx_s',
 			name: 'review-checklist',
+			description: 'Check the implementation before review.',
 			scope: {
 				...emptyScope,
 				workflow_state_id: 's_review',
@@ -337,12 +339,164 @@ const richContext: EffectiveContext = {
 };
 
 describe('issueBlock', () => {
+	const runComment = (id: string, created_at: number, body = `body ${id}`, issueNumber = 42) => ({
+		...issue.comments[0],
+		id,
+		body,
+		created_at,
+		actor: {
+			...issue.comments[0].actor,
+			run: {
+				run_id: `run_${id}`,
+				runner_name: 'runner',
+				issue_ref: { project_name: 'Tines', number: issueNumber }
+			}
+		}
+	});
+
+	it('keeps humans, a protected handoff, and three other latest agent comments', () => {
+		const run = {
+			run_id: 'run',
+			runner_name: 'runner',
+			issue_ref: { project_name: 'Tines', number: 42 }
+		};
+		const comments = [
+			{ ...issue.comments[0], id: 'cmt_h', body: 'human body' },
+			...['a', 'b', 'c', 'd', 'e'].map((suffix, index) => ({
+				...issue.comments[0],
+				id: `cmt_${suffix}`,
+				body: `agent body ${suffix}`,
+				created_at: 1700000001000 + index,
+				actor: { ...issue.comments[0].actor, run: { ...run, run_id: `run_${suffix}` } }
+			})),
+			{ ...issue.comments[0], id: 'cmt_h', body: 'human body' }
+		];
+		const launchIssue = {
+			...issue,
+			comments,
+			launch_comments: { latest_completed_run_comment_id: 'cmt_a' }
+		};
+		const before = structuredClone(launchIssue.comments);
+		const selected = selectLaunchComments(launchIssue);
+		expect(selected.retained.map((comment) => comment.id)).toEqual([
+			'cmt_h',
+			'cmt_a',
+			'cmt_c',
+			'cmt_d',
+			'cmt_e'
+		]);
+		expect(selected.omittedAgentIds).toEqual(['cmt_b']);
+		expect(launchIssue.comments).toEqual(before);
+		const block = issueBlock(launchIssue, emptyContext);
+		expect(block).toContain('Older agent comments: cmt_b. Load one');
+		expect(block).not.toContain('agent body b');
+		expect(block).toContain('agent body a');
+	});
+
+	it('keeps the full thread when launch metadata is absent', () => {
+		const run = {
+			run_id: 'run',
+			runner_name: 'runner',
+			issue_ref: { project_name: 'Tines', number: 42 }
+		};
+		const comments = Array.from({ length: 5 }, (_, index) => ({
+			...issue.comments[0],
+			id: `cmt_${index}`,
+			body: `body ${index}`,
+			actor: { ...issue.comments[0].actor, run }
+		}));
+		expect(selectLaunchComments({ ...issue, comments }).retained).toHaveLength(5);
+	});
+
+	it.each([
+		[0, []],
+		[1, ['cmt_0']],
+		[2, ['cmt_0', 'cmt_1']],
+		[3, ['cmt_0', 'cmt_1', 'cmt_2']]
+	] as const)('keeps all of %i agent comments', (count, ids) => {
+		const comments = Array.from({ length: count }, (_, i) => runComment(`cmt_${i}`, 100 + i));
+		const selected = selectLaunchComments({
+			...issue,
+			comments,
+			launch_comments: { latest_completed_run_comment_id: null }
+		});
+		expect(selected.retained.map((comment) => comment.id)).toEqual(ids);
+		expect(selected.omittedAgentIds).toEqual([]);
+	});
+
+	it('uses stable timestamp/id order, keeps unknown provenance as human, and protects an older handoff', () => {
+		const unknown = {
+			...issue.comments[0],
+			id: 'cmt_unknown',
+			created_at: 5,
+			body: 'unknown body'
+		};
+		const comments = [
+			runComment('cmt_z', 10),
+			runComment('cmt_a', 10),
+			runComment('cmt_handoff', 1, 'required old detail'),
+			unknown,
+			runComment('cmt_cross_1', 20, 'cross one', 99),
+			runComment('cmt_cross_2', 21, 'cross two', 99),
+			runComment('cmt_cross_3', 22, 'cross three', 99),
+			runComment('cmt_a', 10, 'duplicate must not render')
+		];
+		const launchIssue = {
+			...issue,
+			comments,
+			launch_comments: { latest_completed_run_comment_id: 'cmt_handoff' }
+		};
+		const selected = selectLaunchComments(launchIssue);
+		expect(selected.retained.map((comment) => comment.id)).toEqual([
+			'cmt_handoff',
+			'cmt_unknown',
+			'cmt_cross_1',
+			'cmt_cross_2',
+			'cmt_cross_3'
+		]);
+		expect(selected.omittedAgentIds).toEqual(['cmt_a', 'cmt_z']);
+		const block = issueBlock(
+			{
+				...launchIssue,
+				round: { summary_comment: { body: 'OMITTED SENTINEL' } } as unknown as IssueDetail['round']
+			},
+			emptyContext
+		);
+		expect(block).toContain('required old detail');
+		expect(block).toContain('unknown body');
+		expect(block).not.toContain('body cmt_a');
+		expect(block).not.toContain('duplicate must not render');
+		expect(block).not.toContain('OMITTED SENTINEL');
+		expect(block.match(/Older agent comments:/g)).toHaveLength(1);
+	});
+
+	it('renders skill descriptions once, collapses whitespace, and falls back for empty text', () => {
+		const context = structuredClone(richContext);
+		context.skills[0].description = ' Check the\n implementation   before review. ';
+		context.skills.push({
+			...context.skills[0],
+			item_id: 'ctx_empty',
+			name: 'empty-skill',
+			description: '   ',
+			files: [{ path: 'SKILL.md', content: 'EMPTY SKILL BODY' }]
+		});
+		const block = issueBlock(issue, context);
+		expect(block.match(/Check the implementation before review\./g)).toHaveLength(1);
+		expect(block).toContain(
+			'Skill "empty-skill" (state Review): read `skills/empty-skill/SKILL.md` when the "empty-skill" procedure is relevant.'
+		);
+		expect(block).toContain('tines issues context Tines/42 --json');
+		expect(block).not.toContain('EMPTY SKILL BODY');
+	});
+
 	it('renders the factual block with runnable CLI commands', () => {
 		const block = issueBlock(issue, emptyContext);
 		expect(block).toContain('## Issue: Tines/42 — Ship the thing');
 		expect(block).toContain('Do it *well*.');
 		expect(block).toContain('Review (awaiting_human), in workflow "Two-step".');
-		expect(block).toContain('**Alice via laptop** (2023-11-14T22:13:20.000Z):\nLooks close.');
+		expect(block).toContain(
+			'**Alice via laptop** (2023-11-14T22:13:20.000Z, ID: cmt_1):\nLooks close.'
+		);
 		// The comment affordance is a quoted heredoc, so an agent's prose survives
 		// the shell verbatim (Tines/9) — with the fallback spelled out, because a
 		// CLI predating that change posts a bare `-` and exits 0. Asserted as one
@@ -442,7 +596,7 @@ describe('issueBlock', () => {
 		);
 		expect(steered).toContain('Now stale: `impl-pr`.');
 		expect(steered).toContain(
-			'**Tom Buckley** (2023-11-14T21:56:39.000Z):\nCI is red on the e2e job.'
+			'**Tom Buckley** (2023-11-14T21:56:39.000Z, ID: cmt_h):\nCI is red on the e2e job.'
 		);
 		// The steer is what this run is for, so it precedes everything the agent
 		// would otherwise read first — including the full thread.
@@ -497,7 +651,10 @@ describe('issueBlock', () => {
 	it('lists artifacts with the fetch command and shared prompts names-only', () => {
 		const block = issueBlock(issue, richContext);
 		expect(block).toContain(
-			'Attached to this issue: skill "review-checklist" (1 file), repo "src" (branch experiment). Fetch them: `tines issues context Tines/42 --out <dir>`'
+			'Skill "review-checklist" (state Review): read `skills/review-checklist/SKILL.md`'
+		);
+		expect(block).toContain(
+			'Attached to this issue: repo "src" (branch experiment). Fetch them: `tines issues context Tines/42 --out <dir>`'
 		);
 		// Shared footnote: global + non-journal, non-issue-anchored prompts —
 		// the issue-scoped "constraints" prompt is the issue's own, not listed.
@@ -508,6 +665,35 @@ describe('issueBlock', () => {
 });
 
 describe('buildLaunchPrompt', () => {
+	it('applies launch selection to both cold and resumed prompts', () => {
+		const comments = Array.from({ length: 5 }, (_, i) => ({
+			...issue.comments[0],
+			id: `cmt_${i}`,
+			body: i === 0 ? 'OMITTED COLD RESUME SENTINEL' : `kept ${i}`,
+			created_at: i,
+			actor: {
+				...issue.comments[0].actor,
+				run: {
+					run_id: `run_${i}`,
+					runner_name: 'runner',
+					issue_ref: { project_name: 'Tines', number: 42 }
+				}
+			}
+		}));
+		const launchIssue = {
+			...issue,
+			comments,
+			launch_comments: { latest_completed_run_comment_id: null }
+		};
+		for (const text of [
+			buildLaunchPrompt(richContext, launchIssue),
+			buildResumePrompt(richContext, launchIssue)
+		]) {
+			expect(text).toContain('Older agent comments: cmt_0, cmt_1.');
+			expect(text).not.toContain('OMITTED COLD RESUME SENTINEL');
+			expect(text).toContain('Skill "review-checklist"');
+		}
+	});
 	it('puts the context first and the issue block last', () => {
 		const text = buildLaunchPrompt(richContext, issue);
 		expect(text.startsWith('## Context: global')).toBe(true);

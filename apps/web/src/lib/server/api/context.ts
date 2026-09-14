@@ -1743,6 +1743,7 @@ export async function effectiveContextForTarget(
 	const skills: EffectiveSkill[] = skillDedupe.winners.map((r) => ({
 		item_id: r.id,
 		name: r.name,
+		description: r.description ?? '',
 		...describeRow(r, leafStateId),
 		files: fileMap.get(r.id) ?? [],
 		file_count: Number(r.file_count ?? 0),
@@ -1905,6 +1906,37 @@ function requirementStatusLabel(r: ArtifactRequirementCheck): string {
  */
 const PROMPT_LABEL_VOCABULARY_MAX = 40;
 
+function shellArg(value: string): string {
+	return /^[A-Za-z0-9_./:-]+$/.test(value) ? value : `'${value.replaceAll("'", `'\\''`)}'`;
+}
+
+export function selectLaunchComments(issue: IssueDetail): {
+	retained: IssueDetail['comments'];
+	omittedAgentIds: string[];
+} {
+	if (!issue.launch_comments) return { retained: issue.comments, omittedAgentIds: [] };
+	const unique = [...new Map(issue.comments.map((comment) => [comment.id, comment])).values()].sort(
+		(a, b) => a.created_at - b.created_at || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
+	);
+	const protectedId = issue.launch_comments.latest_completed_run_comment_id;
+	const retainedIds = new Set(
+		unique.filter((comment) => !comment.actor.run).map((comment) => comment.id)
+	);
+	if (protectedId && unique.some((comment) => comment.id === protectedId && comment.actor.run)) {
+		retainedIds.add(protectedId);
+	}
+	for (const comment of unique
+		.filter((entry) => entry.actor.run && entry.id !== protectedId)
+		.slice(-3))
+		retainedIds.add(comment.id);
+	return {
+		retained: unique.filter((comment) => retainedIds.has(comment.id)),
+		omittedAgentIds: unique
+			.filter((comment) => comment.actor.run && !retainedIds.has(comment.id))
+			.map((comment) => comment.id)
+	};
+}
+
 /**
  * `### Since the last run` — the human's steer, rendered for the launch prompt.
  * Absent entirely when nothing human happened; never a "none" heading.
@@ -1934,7 +1966,7 @@ function sinceLastRunLines(since: SinceLastRun, now: number): string[] {
 	}
 	for (const comment of since.comments) {
 		lines.push(
-			`**${actorLabel(comment.actor)}** (${new Date(comment.created_at).toISOString()}):`,
+			`**${actorLabel(comment.actor)}** (${new Date(comment.created_at).toISOString()}, ID: ${comment.id}):`,
 			comment.body.trim(),
 			''
 		);
@@ -1997,17 +2029,27 @@ export function issueBlock(
 		'### Comments',
 		''
 	);
-	if (issue.comments.length === 0) {
+	const selectedComments = selectLaunchComments(issue);
+	if (selectedComments.retained.length === 0) {
 		lines.push('No comments yet.', '');
 	} else {
-		for (const comment of issue.comments) {
+		for (const comment of selectedComments.retained) {
 			const actor = actorLabel(comment.actor);
 			lines.push(
-				`**${actor}** (${new Date(comment.created_at).toISOString()}):`,
+				`**${actor}** (${new Date(comment.created_at).toISOString()}, ID: ${comment.id}):`,
 				comment.body.trim(),
 				''
 			);
 		}
+	}
+	if (selectedComments.omittedAgentIds.length > 0) {
+		const ids = selectedComments.omittedAgentIds;
+		const commandRef = shellArg(ref);
+		const exampleId = shellArg(ids[0]);
+		lines.push(
+			`Older agent comments: ${ids.join(', ')}. Load one (change --arg id to a listed ID): \`tines issues show ${commandRef} --json | jq -er --arg id ${exampleId} 'first(.comments[] | select(.id == $id) | .body) // error("comment not found: \\($id)")'\`. Without jq / for full history: \`tines issues show ${commandRef}\`.`,
+			''
+		);
 	}
 	// A quoted heredoc, not an inline argument: comment bodies are prose full
 	// of backticks, $VARS and apostrophes, and a mangled comment costs a round
@@ -2139,10 +2181,23 @@ export function issueBlock(
 	// command — the agent's own attachments are fair game), then the other
 	// prompt items by name and scope label only, whose sole affordance is
 	// the proposal convention.
+	if (context.skills.length > 0) {
+		lines.push('', '### Skills', '');
+		for (const skill of context.skills) {
+			const path = `skills/${skill.name}/SKILL.md`;
+			const description = skill.description.replace(/\s+/g, ' ').trim();
+			lines.push(
+				description
+					? `- Skill "${skill.name}" (${skill.scope.label}): read \`${path}\` when this applies: ${description}`
+					: `- Skill "${skill.name}" (${skill.scope.label}): read \`${path}\` when the "${skill.name}" procedure is relevant.`
+			);
+		}
+		lines.push(
+			'',
+			`If a skill path is unavailable, read its files with \`tines issues context ${ref} --json\`; to write the bundle into a new directory, use \`tines issues context ${ref} --out <dir>\`.`
+		);
+	}
 	const artifacts = [
-		...context.skills.map(
-			(s) => `skill "${s.name}" (${s.file_count} file${s.file_count === 1 ? '' : 's'})`
-		),
 		...context.repos.map((r) => `repo "${r.name}"${r.branch ? ` (branch ${r.branch})` : ''}`)
 	];
 	if (artifacts.length > 0) {
