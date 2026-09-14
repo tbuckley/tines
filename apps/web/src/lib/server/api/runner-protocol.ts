@@ -567,7 +567,7 @@ async function deliverAssignedRun(
 	if (!minted) return null;
 
 	const [issue, bundle, artifacts, labels] = await Promise.all([
-		getIssueDetail(db, run.user_id, { id: run.issue_id }, { round: true }),
+		getIssueDetail(db, run.user_id, { id: run.issue_id }, { round: true, launchComments: true }),
 		effectiveContextForIssue(db, run.user_id, run.issue_id),
 		listArtifacts(db, run.user_id, run.issue_id),
 		listLabels(db, run.user_id)

@@ -8,6 +8,7 @@ import {
 	addComment,
 	addIssue,
 	addRun,
+	addRunKey,
 	addRunner,
 	addTransitionEvent,
 	eventsOfType,
@@ -707,6 +708,56 @@ describe('pollRunner', () => {
 			NOW + 2
 		);
 		expect(second.response.assignments).toEqual([]);
+	});
+
+	it('selects essential comments in the locally delivered cold prompt', async () => {
+		const t = world();
+		const runnerId = addRunner(t);
+		const issue = addIssue(t);
+		const completed = addRun(t, {
+			id: 'arun_completed',
+			issueId: issue,
+			runnerId,
+			status: 'completed',
+			createdAt: NOW - 100
+		});
+		const noisy = addRun(t, {
+			id: 'arun_noisy',
+			issueId: issue,
+			runnerId,
+			status: 'failed',
+			createdAt: NOW
+		});
+		addComment(t, {
+			issueId: issue,
+			id: 'cmt_handoff',
+			body: 'protected handoff',
+			apiKeyId: addRunKey(t, completed),
+			at: NOW - 90
+		});
+		const noisyKey = addRunKey(t, noisy);
+		for (let i = 0; i < 4; i++)
+			addComment(t, {
+				issueId: issue,
+				id: `cmt_noise_${i}`,
+				body: i === 0 ? 'OMITTED LOCAL SENTINEL' : `noise ${i}`,
+				apiKeyId: noisyKey,
+				at: NOW + i
+			});
+		addRun(t, { issueId: issue, runnerId });
+
+		const { response } = await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
+			{ owned_runs: [] },
+			NOW + 10
+		);
+		const prompt = response.assignments[0].prompt;
+		expect(prompt).toContain('protected handoff');
+		expect(prompt).toContain('Older agent comments: cmt_noise_0.');
+		expect(prompt).not.toContain('OMITTED LOCAL SENTINEL');
 	});
 
 	it('opens the delivered issue block with the human steer that started the round', async () => {
