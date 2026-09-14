@@ -691,9 +691,12 @@
 	 * this polls the runner list rather than the events feed: one request that
 	 * catches register, reconnect and offline→online alike.
 	 */
+	const watchRunEvents = $derived(data.fleetRuns.some((run) => isActiveRun(run.status)));
+	const watchAccountEvents = $derived(checklistVisible || watchRunEvents);
 	const shouldPoll = $derived(
 		addRunnerOpen ||
 			checklistVisible ||
+			watchRunEvents ||
 			data.runners.some((r) => r.concurrency_control?.status === 'pending') ||
 			!data.runners.some((r) => r.type === 'local' && r.online)
 	);
@@ -709,7 +712,9 @@
 	/** Newest account-level event id; the first non-empty observation also refreshes. */
 	let latestAccountEventId: string | null = null;
 	async function checkRunners() {
-		if (syncingRunners) return;
+		// An invalidation can cancel a user- or one-shot URL navigation. Let the
+		// navigation settle; the next five-second tick will observe the same event.
+		if (syncingRunners || pendingAgentsUrl) return;
 		syncingRunners = true;
 		try {
 			// While the checklist shows, a rule, the kill switch and the first run
@@ -718,15 +723,16 @@
 			// and only pre-first-run accounts pay for it.
 			const [{ items }, events] = await Promise.all([
 				api.listRunners(),
-				checklistVisible ? api.listEvents({ limit: 1 }) : Promise.resolve(null)
+				watchAccountEvents ? api.listEvents({ limit: 1 }) : Promise.resolve(null)
 			]);
 			const newestEventId = events?.items[0]?.id ?? null;
 			const eventMoved = newestEventId !== null && newestEventId !== latestAccountEventId;
-			latestAccountEventId = newestEventId ?? latestAccountEventId;
-			if (eventMoved || runnerSignature(items) !== runnerSignature(untrack(() => data.runners))) {
+			const runnerMoved = runnerSignature(items) !== runnerSignature(untrack(() => data.runners));
+			if (eventMoved || runnerMoved) {
 				// Re-runs the loader without remounting, so the open dialog,
 				// the typed name and any created key survive the refresh.
 				await invalidateAll();
+				latestAccountEventId = newestEventId ?? latestAccountEventId;
 			}
 		} catch {
 			// Transient: the next tick tries again.
@@ -1364,7 +1370,9 @@
 							{/if}
 							{#if runner.launch_failures > 0}
 								<span class="text-amber-600 dark:text-amber-400"
-									>· {runner.launch_failures} consecutive failures</span
+									>· {runner.launch_failures} consecutive {runner.launch_failures === 1
+										? 'failure'
+										: 'failures'}</span
 								>
 							{/if}
 						</p>

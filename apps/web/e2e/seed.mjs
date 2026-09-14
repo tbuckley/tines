@@ -213,9 +213,9 @@ statements.push(
 	 VALUES ('${RUNROW.issueId}', '${RUNROW.projectId}', ${RUNROW.issueNumber}, 'Managed run row', '',
 	   'wf_standard', 'wfs_std_open', ${nowMs}, ${nowMs});`,
 	`INSERT INTO runner (id, user_id, type, name, status, max_concurrent, max_run_minutes, default_tier,
-	   config, created_at, updated_at)
+	   config, launch_failures, created_at, updated_at)
 	 VALUES ('${RUNROW.runnerId}', '${ALICE.id}', 'claude_managed', '${RUNROW.runnerName}', 'active', 1, 30,
-	   'balanced', '{}', ${nowMs}, ${nowMs});`,
+	   'balanced', '{}', 1, ${nowMs}, ${nowMs});`,
 	`INSERT INTO agent_run (id, user_id, issue_id, runner_id, status, outcome, tier, model, usage,
 	   state_id_at_start, state_id_at_end, provider_session_id, provider_url, log, error,
 	   created_at, started_at, ended_at)
