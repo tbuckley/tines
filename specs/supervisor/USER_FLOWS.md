@@ -478,6 +478,7 @@ The steady-state loop once setup is done — the flow that happens dozens of tim
 **What happened**
 
 1. The **activity feed** is the chronological record: every lifecycle moment — runner registered/paused/removed, `agent_run.started` (tier + resolved model in payload), `agent_run.ended` (status, outcome `advanced`/`stalled`/`interrupted`, runner, states, final usage), `issue.parked`/`resumed`, settings changes (secrets elided) — attributed "via *runner* · run …" alongside the human's own actions. Skimming it reads like a team standup log.
+   Across the global, recorded, and issue feeds, run starts use a primary robot; completed runs use a green check; failed runs use a destructive X; and interrupted, stalled, timed-out, or canceled runs use an amber warning. Precedence is interrupted, failed, stalled, completed, then timeout/cancel. Unknown or malformed terminal payloads keep the muted robot, and the event sentence remains the accessible description.
 2. Per issue, the **thread** is the durable narrative: agent comments, transitions, human corrections, in order. An issue's history is legible without ever opening a run log.
 3. Per run, `tines runs list --runner gemini` / `--issue acme/7` filter the attempt history; `runs show <id> --json` includes the full stored log tail and provider link — greppable post-mortems across runs.
 
