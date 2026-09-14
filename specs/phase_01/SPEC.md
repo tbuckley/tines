@@ -198,10 +198,20 @@ tines issues move <project>/<number> <action>       # transition name, e.g. "app
 tines issues transfer <project>/<number> --project <destination>
 	[--dry-run] [--inspect <n>] [--yes]               # project transfer, not workflow move
 tines issues comment <project>/<number> <markdown>
-tines events list [--issue <ref>] [--project <name>] [--type <types>] [--since <time>] [--until <time>] [--state <workflow/state>] [--limit n]
+tines events list [--issue <ref>] [--project <name>] [--type <types>] [--since <time>] [--until <time>] [--state <workflow/state>] [--limit n] [--all-pages [--max-items n]]
 ```
 
 All commands support `--json` for agent consumption. `issues show --json` includes the allowed next transitions — action name plus target state — so an agent always knows its legal moves and what each one means.
+
+List commands return one page by default. `--all-pages` follows cursors and retains the
+complete result in memory with a 10,000-item safety ceiling; `--max-items n` deliberately
+replaces that finite ceiling and is valid only with `--all-pages`. Exceeding either ceiling
+fails rather than returning a partial result. `--limit` controls each request's page size,
+not the aggregate. For example, a larger project event inventory is:
+
+```
+tines events list --project Tines --all-pages --max-items 20000 --json
+```
 
 ## Web UI
 

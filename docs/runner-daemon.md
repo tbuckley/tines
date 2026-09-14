@@ -232,6 +232,9 @@ workspace and its harness session, and the send-back is delivered as a continuat
   carries on rather than starting over;
 - the prompt is the reduced continuation message (what changed since the last run, the
   current stage's instructions and the issue block), not the full cold launch prompt;
+- the issue block uses the same essential-comment selection and skill discovery as a cold
+  launch. Older agent comment IDs resolve current bodies through `tines issues show --json`;
+  bodies already present in the retained conversation cannot be removed retroactively;
 - the launch banner names it: `# tines runner: … resumed=<previous-run-id>`, and the run
   row says `resumed run <id>`.
 

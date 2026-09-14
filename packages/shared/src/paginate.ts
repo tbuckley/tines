@@ -15,9 +15,8 @@ import type { ListResponse, PageParams } from './types.js';
 export const MAX_PAGE_SIZE = 100;
 
 /**
- * Hard ceiling on a single walk. Well above any real list (the largest today is
- * the activity log, low thousands) and low enough that a runaway query fails
- * fast instead of pulling the database through the CLI.
+ * Default safety ceiling on a single walk. Callers may deliberately override
+ * it with another finite bound; accidental unbounded reads still fail fast.
  */
 export const MAX_ALL_PAGES_ITEMS = 10_000;
 

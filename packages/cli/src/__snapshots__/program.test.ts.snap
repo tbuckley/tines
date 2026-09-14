@@ -168,8 +168,10 @@ Options:
   --limit <n>                   maximum items to return (page size under
                                 --all-pages)
   --cursor <cursor>             resume from the next_cursor of a previous page
-  --all-pages                   fetch every page, not just the first (slower on
-                                large lists)
+  --all-pages                   fetch every page, not just the first (default
+                                safety ceiling: 10000 items)
+  --max-items <n>               safety ceiling for --all-pages (default 10000;
+                                exceeding it errors)
   -u, --url <url>               base URL of the Tines API (or set TINES_API_URL,
                                 or run \`tines login\`; default
                                 https://tines.tbuckley.dev)
@@ -214,8 +216,10 @@ Options:
   --limit <n>               maximum items to return (page size under
                             --all-pages)
   --cursor <cursor>         resume from the next_cursor of a previous page
-  --all-pages               fetch every page, not just the first (slower on
-                            large lists)
+  --all-pages               fetch every page, not just the first (default safety
+                            ceiling: 10000 items)
+  --max-items <n>           safety ceiling for --all-pages (default 10000;
+                            exceeding it errors)
   -u, --url <url>           base URL of the Tines API (or set TINES_API_URL, or
                             run \`tines login\`; default
                             https://tines.tbuckley.dev)
@@ -557,8 +561,10 @@ Options:
   --limit <n>                  maximum items to return (page size under
                                --all-pages)
   --cursor <cursor>            resume from the next_cursor of a previous page
-  --all-pages                  fetch every page, not just the first (slower on
-                               large lists)
+  --all-pages                  fetch every page, not just the first (default
+                               safety ceiling: 10000 items)
+  --max-items <n>              safety ceiling for --all-pages (default 10000;
+                               exceeding it errors)
   -u, --url <url>              base URL of the Tines API (or set TINES_API_URL,
                                or run \`tines login\`; default
                                https://tines.tbuckley.dev)
@@ -918,8 +924,10 @@ Options:
   --archived         include archived projects (hidden by default)
   --limit <n>        maximum items to return (page size under --all-pages)
   --cursor <cursor>  resume from the next_cursor of a previous page
-  --all-pages        fetch every page, not just the first (slower on large
-                     lists)
+  --all-pages        fetch every page, not just the first (default safety
+                     ceiling: 10000 items)
+  --max-items <n>    safety ceiling for --all-pages (default 10000; exceeding it
+                     errors)
   -u, --url <url>    base URL of the Tines API (or set TINES_API_URL, or run
                      \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>    API key (or set TINES_API_KEY, or run \`tines login\`)
@@ -1351,8 +1359,10 @@ Options:
   --limit <n>                   maximum items to return (page size under
                                 --all-pages)
   --cursor <cursor>             resume from the next_cursor of a previous page
-  --all-pages                   fetch every page, not just the first (slower on
-                                large lists)
+  --all-pages                   fetch every page, not just the first (default
+                                safety ceiling: 10000 items)
+  --max-items <n>               safety ceiling for --all-pages (default 10000;
+                                exceeding it errors)
   -u, --url <url>               base URL of the Tines API (or set TINES_API_URL,
                                 or run \`tines login\`; default
                                 https://tines.tbuckley.dev)
@@ -1455,8 +1465,10 @@ Options:
   -a, --all             include paused schedules
   --limit <n>           maximum items to return (page size under --all-pages)
   --cursor <cursor>     resume from the next_cursor of a previous page
-  --all-pages           fetch every page, not just the first (slower on large
-                        lists)
+  --all-pages           fetch every page, not just the first (default safety
+                        ceiling: 10000 items)
+  --max-items <n>       safety ceiling for --all-pages (default 10000; exceeding
+                        it errors)
   -u, --url <url>       base URL of the Tines API (or set TINES_API_URL, or run
                         \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>       API key (or set TINES_API_KEY, or run \`tines login\`)
@@ -1791,8 +1803,10 @@ List the workflow library
 Options:
   --limit <n>        maximum items to return (page size under --all-pages)
   --cursor <cursor>  resume from the next_cursor of a previous page
-  --all-pages        fetch every page, not just the first (slower on large
-                     lists)
+  --all-pages        fetch every page, not just the first (default safety
+                     ceiling: 10000 items)
+  --max-items <n>    safety ceiling for --all-pages (default 10000; exceeding it
+                     errors)
   -u, --url <url>    base URL of the Tines API (or set TINES_API_URL, or run
                      \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>    API key (or set TINES_API_KEY, or run \`tines login\`)

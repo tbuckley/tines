@@ -614,6 +614,8 @@ export interface IssueDetail extends Issue {
 	 * in; null when nothing human happened after it, or there is no previous run.
 	 */
 	since_last_run?: SinceLastRun | null;
+	/** Prompt-only metadata, emitted when launch comment selection is requested. */
+	launch_comments?: { latest_completed_run_comment_id: string | null };
 }
 
 // ---------------------------------------------------------------------------
@@ -1077,6 +1079,8 @@ export interface EffectivePromptPart {
 export interface EffectiveSkill {
 	item_id: string;
 	name: string;
+	/** Existing context-item description used as the skill's discovery cue. */
+	description: string;
 	scope: ContextScope;
 	/** Empty when the bundle was assembled without file contents. */
 	files: ContextFile[];
