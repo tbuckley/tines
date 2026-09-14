@@ -28,3 +28,8 @@ versus 33.1 ms (21.0×), with identical full-output hashes and the same query/tr
 The page remains below the one-second rollup trigger. These isolated totals are not a
 promise about production network latency; the pre-change research sample on its earlier
 fixture was 279 / 316 ms for `/agents` and 323.3 ms for the marker-bearing loader.
+
+On 2026-09-14, `/agents` became the operational Now landing path and stopped calculating or
+serializing weekly statistics. The unchanged weekly computation now begins only when the
+default-closed State analysis disclosure is opened in Analysis. Historical `/agents`
+measurements above include the former eager weekly calculation and remain preserved as such.

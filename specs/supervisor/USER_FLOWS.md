@@ -565,11 +565,11 @@ Items deliberately deferred during this review:
 
 ## Inspect the week (Tines/257, revised after Human Review)
 
-1. Choose **Board project**, or keep All projects. Now, This week, highlights, changes and evidence use this local scope; chrome focus is unchanged.
+1. Open **Agents → Analysis**, then open **State analysis · Last 7 days**. Choose **State project**, or keep All projects. It is the same scope as **Board project** on Now; highlights, changes and evidence use it, while Spend filters and chrome focus remain unchanged.
 2. Choose **Most measured wait** to expand Timing and visits. Read the timed sample and excluded waiting/never-started visits, then **View stage capacity** to focus the currently saved global or roster limit. Inspect before deciding whether to edit.
 3. Choose **Most send-backs**, or a stage’s sent-back share. Compare the previous share and percentage-point delta, then inspect each event’s issue, actor, related comment and historical prompt context ID/version. **Edit current stage prompt** is explicitly a current editor; a historical version is not a content snapshot.
 4. Choose **Most failed starts** to inspect complete outcomes and recording coverage. **View stage runs** opens latest state/project runs with ended runs included, preserving the board filter; the list is not labelled as an exact seven-day cohort. Clearing the state keeps the project. Fleet utilization remains unfiltered.
 5. Open a stage’s **Changes**, or the window’s changes list. Inspect dated Before/Since samples and nullable measures, then use the recorded event or setting link. Unequal periods and other edits prevent causal attribution. Markers remain reachable when no stage has work.
-6. The evidence dialog retains its frozen query through errors and Retry; closing or changing project invalidates late responses. Keyboard focus returns to its invoking control. The four-column overview becomes labelled stage cards on a phone, with all supporting measurements available in disclosures.
+6. The weekly report loads on first open, retries inline after an error, and stays cached only while the same Analysis view and project remain mounted. The evidence dialog retains its frozen query through errors and Retry; closing or changing project invalidates late responses. Keyboard focus returns to its invoking control. The four-column overview becomes labelled stage cards on a phone, with all supporting measurements available in disclosures.
 
 No number, highlight or delta changes dispatch, alerts, strikes or policy.

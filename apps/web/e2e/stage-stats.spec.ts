@@ -10,7 +10,7 @@ import type {
 	StageStatsReport,
 	WorkflowResponse
 } from '@tines/shared';
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 import { WEEKLY } from './stage-stats-seed.mjs';
 import { ALICE } from './constants.mjs';
 import { apiClient, body, clickToOpen, gotoHydrated, runId, signIn } from './helpers';
@@ -20,6 +20,18 @@ const otherProjectName = `stage-stats-other-${runId}`;
 let project: Project;
 let workflow: WorkflowResponse;
 let reviewStateId: string;
+
+async function openStateAnalysis(page: Page) {
+	if (new URL(page.url()).searchParams.get('agents_view') !== 'spend') {
+		await page.getByRole('button', { name: 'Analysis', exact: true }).click();
+	}
+	const disclosure = page.locator('details').filter({
+		has: page.locator('summary').filter({ hasText: 'State analysis · Last 7 days' })
+	});
+	if (!(await disclosure.evaluate((element) => (element as HTMLDetailsElement).open)))
+		await disclosure.locator('summary').click();
+	await expect(page.getByRole('region', { name: 'This week' })).toBeVisible();
+}
 
 test.beforeAll(async ({ playwright }) => {
 	const request = await playwright.request.newContext({ baseURL: test.info().project.use.baseURL });
@@ -87,6 +99,36 @@ test.beforeAll(async ({ playwright }) => {
 	await request.dispose();
 });
 
+test('loads state analysis only on open, caches a reopen, and remounts closed', async ({
+	context,
+	page
+}) => {
+	await signIn(context, ALICE.sessionToken);
+	let requests = 0;
+	await page.route('**/api/v1/supervisor/stats?**', async (route) => {
+		requests++;
+		await route.continue();
+	});
+	await gotoHydrated(page, `/agents?project=${project.id}`);
+	expect(requests).toBe(0);
+	await page.getByRole('button', { name: 'Analysis', exact: true }).click();
+	expect(requests).toBe(0);
+	await openStateAnalysis(page);
+	await expect.poll(() => requests).toBe(1);
+	const summary = page.locator('summary').filter({ hasText: 'State analysis · Last 7 days' });
+	await summary.click();
+	await expect(page.getByRole('region', { name: 'This week' })).toBeHidden();
+	await summary.click();
+	await expect(page.getByRole('region', { name: 'This week' })).toBeVisible();
+	expect(requests).toBe(1);
+	await page.getByRole('button', { name: 'Now', exact: true }).click();
+	await page.getByRole('button', { name: 'Analysis', exact: true }).click();
+	await expect(page.getByRole('region', { name: 'This week' })).toBeHidden();
+	expect(requests).toBe(1);
+	await openStateAnalysis(page);
+	await expect.poll(() => requests).toBe(2);
+});
+
 test('filters the weekly board, focuses capacity, and opens frozen historical evidence', async ({
 	context,
 	page
@@ -94,6 +136,7 @@ test('filters the weekly board, focuses capacity, and opens frozen historical ev
 	await signIn(context, ALICE.sessionToken);
 	await gotoHydrated(page, `/agents?project=${project.id}`);
 	await expect(page.getByLabel('Board project')).toHaveValue(project.id);
+	await openStateAnalysis(page);
 	const section = page.getByRole('region', { name: 'This week' });
 	await expect(section.getByRole('columnheader')).toHaveCount(4);
 	const row = section.locator('tr.stage-row').filter({ hasText: 'Automated Review' });
@@ -106,6 +149,7 @@ test('filters the weekly board, focuses capacity, and opens frozen historical ev
 	);
 	await row.getByRole('button', { name: /wait to start/ }).click();
 	await expect(page.locator('#global-limit')).toBeFocused();
+	await openStateAnalysis(page);
 	const trigger = row.getByRole('button', { name: /sent back: view evidence/ });
 	const dialog = page.getByRole('dialog', { name: 'Send-back evidence' });
 	const request = page.waitForRequest((r) => r.url().includes('/stats/sent-back?'));
@@ -135,6 +179,7 @@ for (const width of [1440, 768, 390, 320])
 		await page.setViewportSize({ width, height: 900 });
 		await signIn(context, ALICE.sessionToken);
 		await gotoHydrated(page, `/agents?project=${project.id}`);
+		await openStateAnalysis(page);
 		const section = page.getByRole('region', { name: 'This week' });
 		const row = section.locator('tr.stage-row').filter({ hasText: 'Automated Review' });
 		const assertFits = async () => {
@@ -164,6 +209,7 @@ for (const width of [1440, 768, 390, 320])
 test('evidence errors remain retryable with the same frozen query', async ({ context, page }) => {
 	await signIn(context, ALICE.sessionToken);
 	await gotoHydrated(page, `/agents?project=${project.id}`);
+	await openStateAnalysis(page);
 	const queries: string[] = [];
 	await page.route('**/api/v1/supervisor/stats/sent-back?**', async (route) => {
 		queries.push(route.request().url());
@@ -189,6 +235,7 @@ for (const width of [1440, 390])
 		await page.setViewportSize({ width, height: 1000 });
 		await signIn(context, WEEKLY.sessionToken);
 		await gotoHydrated(page, `/agents?project=${WEEKLY.projectId}`);
+		await openStateAnalysis(page);
 		const section = page.getByRole('region', { name: 'This week' });
 		const highlights = section.getByRole('button', { name: /Most/ });
 		await expect(highlights).toHaveCount(3);
@@ -245,6 +292,7 @@ test('late evidence cannot replace another stage and keyboard focus stays in the
 }) => {
 	await signIn(context, ALICE.sessionToken);
 	await gotoHydrated(page, `/agents?project=${project.id}`);
+	await openStateAnalysis(page);
 	let release: () => void = () => {};
 	const held = new Promise<void>((resolve) => (release = resolve));
 	let ready: () => void = () => {};
@@ -309,6 +357,7 @@ test('capacity follows the saved roster and run selection remains reactive', asy
 		await signIn(context, WEEKLY.sessionToken);
 		await gotoHydrated(page, `/agents?project=${WEEKLY.projectId}&runs_state=ws_review`);
 		await page.getByLabel('Show ended runs').uncheck();
+		await openStateAnalysis(page);
 		const section = page.getByRole('region', { name: 'This week' });
 		await section
 			.locator('tr.stage-row')
@@ -316,6 +365,7 @@ test('capacity follows the saved roster and run selection remains reactive', asy
 			.getByRole('link', { name: /runs per visit/ })
 			.click();
 		await expect(page.getByLabel('Show ended runs')).toBeChecked();
+		await openStateAnalysis(page);
 		await section
 			.locator('tr.stage-row')
 			.filter({ hasText: 'Research' })
@@ -331,6 +381,7 @@ test('overview remains usable at 200 percent zoom', async ({ context, page }) =>
 	await page.setViewportSize({ width: 1440, height: 1000 });
 	await signIn(context, WEEKLY.sessionToken);
 	await gotoHydrated(page, `/agents?project=${WEEKLY.projectId}`);
+	await openStateAnalysis(page);
 	await page.evaluate(() => (document.body.style.zoom = '2'));
 	const section = page.getByRole('region', { name: 'This week' });
 	expect(await section.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
@@ -338,7 +389,7 @@ test('overview remains usable at 200 percent zoom', async ({ context, page }) =>
 	await expect(page.locator('#stats-ws_research-timing')).toBeFocused();
 });
 
-test('Now and Spend retain separate project scopes through history and weekly levers', async ({
+test('Now and Analysis retain separate project scopes through history and weekly levers', async ({
 	context,
 	page
 }, testInfo) => {
@@ -347,28 +398,35 @@ test('Now and Spend retain separate project scopes through history and weekly le
 		page,
 		`/agents?project=${WEEKLY.projectId}&spend_project=all&spend_window=30d`
 	);
+	await expect(page.locator('#runners')).toBeVisible();
+	await expect(page.getByRole('region', { name: 'This week' })).toBeHidden();
+	await page.getByRole('button', { name: 'Analysis', exact: true }).click();
+	await expect(page.getByRole('heading', { name: 'Spend' })).toBeVisible();
+	await expect(page.getByText('State analysis · Last 7 days', { exact: true })).toBeVisible();
+	await expect(page.getByRole('region', { name: 'This week' })).toBeHidden();
+	await openStateAnalysis(page);
 	const week = page.getByRole('region', { name: 'This week' });
 	await expect(week).toBeVisible();
 	await page.screenshot({ path: testInfo.outputPath('weekly-desktop.png'), fullPage: true });
-	await page.getByRole('button', { name: 'Spend', exact: true }).click();
-	await expect(page.getByLabel('Spend project')).toHaveValue('all');
-	await expect(page.getByLabel('Board project')).toBeHidden();
-	await expect(page).toHaveURL(/agents_view=spend/);
 	await page.getByRole('button', { name: 'Now', exact: true }).click();
 	await expect(page.getByLabel('Board project')).toHaveValue(WEEKLY.projectId);
+	await openStateAnalysis(page);
 	const review = week.locator('tr.stage-row').filter({ hasText: 'Automated Review' });
 	await review.getByRole('link', { name: /runs per visit/ }).click();
 	await expect(page.locator('#runs')).toContainText('Latest runs for this stage: Automated Review');
 	await expect(page.getByLabel('Show ended runs')).toBeChecked();
 	await expect(page).toHaveURL(/spend_window=30d/);
-	await page.getByRole('button', { name: 'Spend', exact: true }).click();
+	await page.getByRole('button', { name: 'Analysis', exact: true }).click();
 	await expect(page.getByLabel('Spend project')).toHaveValue('all');
+	await expect(page.getByRole('region', { name: 'This week' })).toBeHidden();
 	await page.goBack();
 	await expect(page.locator('#runs')).toBeVisible();
 	await expect(page.getByLabel('Board project')).toHaveValue(WEEKLY.projectId);
+	await openStateAnalysis(page);
 	await review.getByRole('button', { name: /wait to start/ }).click();
 	await expect(page.locator('#global-limit')).toBeFocused();
 	await page.setViewportSize({ width: 390, height: 844 });
+	await openStateAnalysis(page);
 	await week.scrollIntoViewIfNeeded();
 	await expect(page.locator('body')).toHaveJSProperty(
 		'scrollWidth',
@@ -420,6 +478,8 @@ test('rapid board project changes commit only the latest scope without altering 
 				requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
 			)
 	);
+	await expect(board).toHaveValue(project.id);
+	await openStateAnalysis(page);
 	await expect
 		.poll(() =>
 			page
@@ -429,8 +489,6 @@ test('rapid board project changes commit only the latest scope without altering 
 				.textContent()
 		)
 		.toMatch(/1\s+visit/);
-	await expect(board).toHaveValue(project.id);
-	await page.getByRole('button', { name: 'Spend', exact: true }).click();
 	await expect(page.getByLabel('Spend project')).toHaveValue('all');
 	await expect(page).toHaveURL(/spend_window=30d/);
 });
@@ -462,6 +520,7 @@ for (const width of [1440, 390])
 					page,
 					`/agents?project=${marker === global ? WEEKLY.projectId : WEEKLY.otherProjectId}`
 				);
+				await openStateAnalysis(page);
 				await expect(
 					page.getByRole('button', { name: 'Project focus: Weekly analytics', exact: true })
 				).toBeVisible();

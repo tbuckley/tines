@@ -1,6 +1,6 @@
 # Usage and evidence
 
-`GET /api/v1/usage` and `tines usage` report retained, finalized run cost for a period. The web view is under **Agents → Spend** and defaults to the last seven days; the API and CLI default to Today.
+`GET /api/v1/usage` and `tines usage` report retained, finalized run cost for a period. The web view is under **Agents → Analysis → Spend** and defaults to the last seven days; the API and CLI default to Today.
 
 Every report now returns signed, owner-bound scopes for its project total, matching subtotal, pending population, and groups. Open **View contributing issues and runs**, or use `GET /api/v1/usage/evidence`, to enumerate the complete direct issue/run contribution. Evidence defaults to exact stored cost descending; unpriced contributions sort last in both directions. Cost ties use newest evidence then raw ID, and every page returns whole-selection totals rather than a sum of that visible page. Signed cursors bind the scope, evidence kind, population, member and ordering. Scopes freeze resolved selection and cutoff, not retained rows or current labels; key rotation requires restarting from the report.
 
@@ -22,7 +22,7 @@ Period, issue-lifetime, cohort, and scope-replay inputs are mutually exclusive. 
 
 Use the signed scope printed by a cohort report to reproduce every denominator and numerator: `tines usage --scope TOKEN --evidence issues --all-pages --json` lists all members including no-run issues, `--evidence runs --member iss_ID` lists finalized cutoff attempts, `--population pending` lists attempts still pending at the cutoff without later facts, and `--evidence entries` audits retained qualifying, chosen, reopening, excluded, and unclassifiable entry facts. Retained history can be partial or unavailable; current state is never substituted. Direct costs exclude child and dependency runs, may include attempts before the completion window, and reflect recorded provider/list prices rather than an invoice.
 
-The Now view is operational and does not depend on usage accumulating. Spend keeps its project scope independent from the global project focus and records project, workflow, breakdown, period, Custom bounds, and sort in the URL, so reload and browser Back/Forward restore the same report selection. Changing project resets workflow narrowing to All; changing sort only reorders the current groups. Custom ranges require both From and exclusive To before a request is made.
+The Now view is operational and does not depend on usage accumulating. Analysis presents Spend before a default-closed, independently scoped weekly State analysis. Spend keeps its project scope independent from the global project focus and records project, workflow, breakdown, period, Custom bounds, and sort in the URL, so reload and browser Back/Forward restore the same report selection. Changing project resets workflow narrowing to All; changing sort only reorders the current groups. Custom ranges require both From and exclusive To before a request is made.
 
 An initial failure replaces the report with a Retry action. A failed manual refresh may retain only the report for the same selection and labels it with that report's original generated time and resolved bounds. Missing usage is shown as Unknown or Partial—not `$0`—and waiting cannot repair a navigation or request failure.
 

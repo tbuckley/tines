@@ -41,9 +41,6 @@
 	import CancelRunDialog from '$lib/components/CancelRunDialog.svelte';
 	import FirstRunChecklist from '$lib/components/FirstRunChecklist.svelte';
 	import { confirmDialog } from '$lib/components/dialogs.svelte';
-	import type { StageStats, StageStatsReport } from '@tines/shared';
-	import StageStatsBoard from '$lib/components/StageStatsBoard.svelte';
-	import SentBackDrilldown from '$lib/components/SentBackDrilldown.svelte';
 	import { stageRunsHref } from '$lib/stage-stats-view';
 	import FleetQueuePanel from '$lib/components/FleetQueuePanel.svelte';
 	import Modal from '$lib/components/Modal.svelte';
@@ -53,6 +50,7 @@
 	import RoutingRuleRow from '$lib/components/RoutingRuleRow.svelte';
 	import RunRow from '$lib/components/RunRow.svelte';
 	import StateBadge from '$lib/components/StateBadge.svelte';
+	import StageStatsPanel from '$lib/components/StageStatsPanel.svelte';
 	import SpendPanel from '$lib/components/SpendPanel.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
@@ -100,21 +98,9 @@
 		void patchAgents({ agents_view: view === 'now' ? null : 'spend' });
 	}
 
-	let sentBackOpen = $state(false);
-	let sentBackStage = $state<StageStats | null>(null);
-	let sentBackReport = $state<StageStatsReport | null>(null);
-	function openSentBack(stage: StageStats) {
-		sentBackStage = stage;
-		sentBackReport = data.stats;
-		sentBackOpen = true;
-	}
-	const evidenceProject = $derived(data.boardProject);
-	$effect(() => {
-		evidenceProject;
-		sentBackOpen = false;
-	});
 	async function focusStatsCapacity(stateId: string) {
 		if (agentsView !== 'now') await patchAgents({ agents_view: null });
+		if (agentsView !== 'now') return;
 		quotaType = data.settings.quota.type;
 		highlight(quotaType === 'state_roster' ? stateId : null);
 		await tick();
@@ -969,8 +955,13 @@
 			}
 		}
 		if (changed) void navigateAgents(clean, true);
-		else if (agentsView === 'now' && page.url.hash === '#runs')
-			void tick().then(() => document.getElementById('runs')?.scrollIntoView({ block: 'start' }));
+		else if (
+			agentsView === 'now' &&
+			['#runs', '#runners', '#routing', '#quota-policy'].includes(page.url.hash)
+		)
+			void tick().then(() =>
+				document.getElementById(page.url.hash.slice(1))?.scrollIntoView({ block: 'start' })
+			);
 	});
 
 	function openRuleEdit(rule: RoutingRuleWithWarnings) {
@@ -1170,7 +1161,7 @@
 	<Button
 		variant={agentsView === 'spend' ? 'secondary' : 'ghost'}
 		aria-current={agentsView === 'spend' ? 'page' : undefined}
-		onclick={() => chooseAgentsView('spend')}>Spend</Button
+		onclick={() => chooseAgentsView('spend')}>Analysis</Button
 	>
 </nav>
 
@@ -1194,6 +1185,13 @@
 		workflows={data.workflows}
 		focusId={data.focusId}
 		navigate={patchAgents}
+	/>
+	<StageStatsPanel
+		projects={data.projects}
+		boardProject={data.boardProject}
+		boardProjectName={data.boardProjectName}
+		onproject={filterProject}
+		oncapacity={focusStatsCapacity}
 	/>
 {:else}
 	{#if errorMessage}
@@ -1268,20 +1266,6 @@
 	/>
 
 	<!-- Runners -->
-	<StageStatsBoard
-		report={data.stats}
-		boardProject={data.boardProject}
-		oncapacity={focusStatsCapacity}
-		onsentback={openSentBack}
-	/>
-	{#if sentBackStage && sentBackReport}<SentBackDrilldown
-			open={sentBackOpen}
-			stage={sentBackStage}
-			report={sentBackReport}
-			project={data.boardProject}
-			onclose={() => (sentBackOpen = false)}
-		/>{/if}
-
 	<div class="mb-10 scroll-mt-24" id="runners">
 		<div class="mb-3 flex items-center justify-between">
 			<h2 class="text-sm font-semibold">Runners</h2>
@@ -1416,8 +1400,7 @@
 					class="bg-muted rounded-full px-2 py-1 text-xs hover:underline"
 					href={stageRunsHref(page.url, null)}
 				>
-					Latest runs for this stage: {runStateName} · {data.stats.project?.name ?? 'All projects'} ·
-					clear
+					Latest runs for this stage: {runStateName} · {data.boardProjectName ?? 'All projects'} · clear
 				</a>
 			{/if}
 			<label class="text-muted-foreground flex items-center gap-2 text-xs">
