@@ -216,7 +216,9 @@ test.describe('failed run error', () => {
 
 	/** The seeded failed run's row, on whichever surface is loaded. */
 	const failedRow = (page: Page) =>
-		page.locator('li').filter({ has: page.getByTestId('run-error') });
+		page
+			.locator('li:not([inert])', { hasText: RUNROW_FAILED.runnerName })
+			.filter({ has: page.getByTestId('run-error') });
 
 	test('clamps the error to two lines, not one, on the issue page and the Agents tab', async ({
 		page

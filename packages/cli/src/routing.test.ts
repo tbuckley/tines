@@ -85,7 +85,7 @@ describe('routing tier-only rules', () => {
 		requests.length = 0;
 		const result = await cli(['routing', 'set', '*:smartest', '--project', 'demo']);
 		expect(result.code).toBe(0);
-		expect(result.stdout).toContain('created the project demo rule: *:smartest');
+		expect(result.stdout).toContain('created the project demo rule: 1. *:smartest');
 		expect(requests.map((request) => request.path)).toEqual([
 			'/api/v1/projects',
 			'/api/v1/routing-rules',
@@ -100,5 +100,32 @@ describe('routing tier-only rules', () => {
 				targets: [{ runner_id: '*', tier: 'smartest' }]
 			}
 		});
+	}, 60_000);
+
+	it('maps repeatable 1-based effort flags onto ordered targets', async () => {
+		requests.length = 0;
+		const result = await cli([
+			'routing',
+			'set',
+			'*:smartest',
+			'--project',
+			'demo',
+			'--effort',
+			'1=high'
+		]);
+		expect(result.code).toBe(0);
+		expect(requests.at(-1)).toMatchObject({
+			body: { targets: [{ runner_id: '*', tier: 'smartest', effort: 'high' }] }
+		});
+	});
+
+	it('rejects invalid effort indices and tokens before network access', async () => {
+		for (const effort of ['0=low', '2=low', '1=High', '1=']) {
+			requests.length = 0;
+			expect(
+				(await cli(['routing', 'set', '*:smartest', '--project', 'demo', '--effort', effort])).code
+			).not.toBe(0);
+			expect(requests).toEqual([]);
+		}
 	}, 60_000);
 });

@@ -753,6 +753,58 @@ describe('launch failures', () => {
 		expect(runById(t, 'arun_race')!.status).toBe('canceled');
 	});
 
+	it('persists the first managed effort milestone from a null CAS state', async () => {
+		const t = world();
+		const runnerId = addRunner(t);
+		const issue = addIssue(t);
+		await claimRun(t.db, t.env, {
+			runId: 'arun_effort_launch',
+			userId: USER,
+			issueId: issue,
+			projectId: PROJECT,
+			stateId: OPEN,
+			runnerId,
+			maxConcurrent: 1,
+			tier: 'balanced',
+			model: 'claude-sonnet-5',
+			requestedEffort: 'high',
+			resolvedEffort: 'high',
+			effortSource: { kind: 'runner_tier', runner_id: runnerId, tier: 'balanced' },
+			quota: { type: 'global_cap', limit: 10 },
+			now: NOW
+		});
+		const fake = createFakeAdapter();
+		const launch = fake.launch.bind(fake);
+		fake.launch = async (input) => {
+			await input.recordEffortEvidence?.({
+				status: 'confirmed',
+				transport: 'managed_agent_config',
+				attempted_effort: 'high',
+				observed_model: 'claude-sonnet-5',
+				observed_effort: 'high'
+			});
+			return launch(input);
+		};
+		const runner = (await loadEngineRunners(t.db, USER)).get(runnerId)!;
+		expect(
+			await launchClaimedRun(t.db, t.env, fake, {
+				userId: USER,
+				runId: 'arun_effort_launch',
+				issueId: issue,
+				projectId: PROJECT,
+				runner,
+				tier: 'balanced',
+				model: 'claude-sonnet-5',
+				effort: 'high',
+				now: NOW
+			})
+		).toBe('launched');
+		expect(runById(t, 'arun_effort_launch')).toMatchObject({
+			status: 'running',
+			effort_application_status: 'confirmed'
+		});
+	});
+
 	it('consecutive failures double the backoff', async () => {
 		const t = world();
 		const fake = createFakeAdapter();
