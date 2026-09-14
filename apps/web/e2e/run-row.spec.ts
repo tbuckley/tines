@@ -66,12 +66,14 @@ test.describe('shared run row', () => {
 		await expect(runnerCard).not.toContainText('1 consecutive failures');
 	});
 
-	test('distinguishes an empty ended log from a live wait', async ({ page }) => {
-		await page.route(`**/api/v1/runs/${RUNROW.runId}`, async (route) => {
-			const response = await route.fetch();
-			const detail = (await response.json()) as Record<string, unknown>;
-			await route.fulfill({ response, json: { ...detail, log: '' } });
-		});
+	test('distinguishes an empty ended log from a live wait', async ({ page, request }) => {
+		const api = apiClient(request, ALICE.apiKey);
+		const detail = await body<Record<string, unknown>>(
+			await api.get(`/api/v1/runs/${RUNROW.runId}`)
+		);
+		await page.route(`**/api/v1/runs/${RUNROW.runId}`, (route) =>
+			route.fulfill({ json: { ...detail, log: '' } })
+		);
 		await gotoHydrated(
 			page,
 			`/issues/${encodeURIComponent(RUNROW.projectName)}/${RUNROW.issueNumber}`

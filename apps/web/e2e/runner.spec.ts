@@ -563,6 +563,7 @@ esac
 				.evaluate((el) => getComputedStyle(el).animationName)
 		).toBe('none');
 		await activeRow.getByRole('button', { name: 'Hide logs' }).click();
+		await page.getByLabel('Show ended runs').check();
 
 		const creds = JSON.parse(readFileSync(join(configDir, 'runners.json'), 'utf8')) as Record<
 			string,
@@ -610,6 +611,10 @@ esac
 		const noLength = await request.put(`/api/v1/runs/${running.id}/log/raw`, { headers: auth });
 		expect(noLength.status()).toBe(411);
 
+		// The sleeping process already captured its mode. Reset before cancel so
+		// an immediate successor for the same issue finishes instead of occupying
+		// the daemon and starving the next serial test.
+		setMode('work');
 		const canceled = await api.post(`/api/v1/runs/${running.id}/cancel`);
 		expect(canceled.ok()).toBe(true);
 		await waitFor(
@@ -618,7 +623,16 @@ esac
 				'canceled',
 			{ label: 'the probe run to cancel' }
 		);
-		setMode('work');
+		// Cancellation is deliberately outside the UI: only the active-run
+		// account-event watcher can settle this already-loaded Agents row. Key
+		// it by run id because cancellation can immediately dispatch a successor
+		// for the same issue, whose issue ref must not satisfy this assertion.
+		const originalRow = page.locator(`li[data-run-id="${running.id}"]:not([inert])`);
+		await expect(originalRow).toContainText('canceled', { timeout: 15_000 });
+		const frozenDuration = await originalRow.getByTestId('run-duration').textContent();
+		await expect
+			.poll(() => originalRow.getByTestId('run-duration').textContent(), { timeout: 1500 })
+			.toBe(frozenDuration);
 	});
 
 	test('a do-nothing harness strikes the issue three times and parks it', async ({ request }) => {

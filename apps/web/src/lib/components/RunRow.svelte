@@ -84,6 +84,7 @@
 
 <li
 	class="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2.5 text-sm"
+	data-run-id={run.id}
 	transition:slide={{ duration: dur() }}
 >
 	{#if active}
