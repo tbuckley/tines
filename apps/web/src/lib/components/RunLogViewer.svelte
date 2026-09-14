@@ -85,7 +85,9 @@
 			data-testid="run-log">{#if detail.log}{detail.log}{:else if active}<span
 					class="text-muted-foreground"
 					data-testid="run-log-waiting"
-					>waiting for the harness<span aria-hidden="true" class="motion-safe:animate-pulse">…</span
+					>waiting for the harness<span
+						aria-hidden="true"
+						class="animate-pulse motion-reduce:animate-none">…</span
 					></span
 				>{:else}(no log output captured){/if}</pre>
 	{:else}

@@ -696,7 +696,8 @@
 			]);
 			const newestEventId = events?.items[0]?.id ?? null;
 			const eventMoved = newestEventId !== null && newestEventId !== latestAccountEventId;
-			if (eventMoved || runnerSignature(items) !== runnerSignature(untrack(() => data.runners))) {
+			const runnerMoved = runnerSignature(items) !== runnerSignature(untrack(() => data.runners));
+			if (eventMoved || runnerMoved) {
 				// Re-runs the loader without remounting, so the open dialog,
 				// the typed name and any created key survive the refresh.
 				await invalidateAll();
@@ -713,6 +714,7 @@
 		const tick = () => {
 			if (document.visibilityState === 'visible') void checkRunners();
 		};
+		tick();
 		const timer = setInterval(tick, 5000);
 		document.addEventListener('visibilitychange', tick);
 		return () => {

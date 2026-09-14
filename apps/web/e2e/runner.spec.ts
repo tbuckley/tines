@@ -377,7 +377,9 @@ esac
 		await expect(dialog).toContainText('--name laptop-e2e');
 		await expect(dialog).toContainText('registers');
 		await expect(dialog).toContainText('launchd/systemd');
-		await dialog.getByRole('button', { name: 'Done' }).click();
+		// An online named runner also renders an inline Done action; close with
+		// the dialog footer so the strict locator remains deterministic.
+		await dialog.getByRole('button', { name: 'Done' }).last().click();
 	});
 
 	test('the dialog creates a real key on demand, copies the whole block, and leaves nothing behind otherwise', async ({
@@ -516,7 +518,11 @@ esac
 	 * check, and the raw-stream upload/read pair. Both are driven with the
 	 * daemon's own runner token against a live run.
 	 */
-	test('a retried log chunk lands once, and the raw stream round-trips', async ({ request }) => {
+	test('a retried log chunk lands once, and the raw stream round-trips', async ({
+		request,
+		context,
+		page
+	}) => {
 		test.setTimeout(60_000);
 		const api = apiClient(request, ALICE.apiKey);
 		rmSync(sideFile('sleep-pid'), { force: true });
@@ -526,6 +532,37 @@ esac
 			async () => (await issueRuns(request, issue.id)).find((r) => r.status === 'running'),
 			{ label: 'the run to start' }
 		);
+
+		await signIn(context, ALICE.sessionToken);
+		await gotoHydrated(page, '/agents');
+		const activeRow = page
+			.locator('li:not([inert])')
+			.filter({ hasText: `${PROJECT_NAME}/#${issue.number}` })
+			.filter({ hasText: 'running' });
+		await expect(activeRow).toHaveCount(1);
+		const duration = activeRow.getByTestId('run-duration');
+		const firstDuration = await duration.textContent();
+		await expect.poll(() => duration.textContent(), { timeout: 4000 }).not.toBe(firstDuration);
+		const liveDot = activeRow.getByTestId('run-live-dot');
+		await expect(liveDot).toHaveCount(1);
+		await expect(liveDot).toHaveClass(/\banimate-pulse\b/);
+		expect(await liveDot.evaluate((el) => getComputedStyle(el).animationName)).toBe('none');
+
+		await page.route(`**/api/v1/runs/${running.id}`, async (route) => {
+			const response = await route.fetch();
+			const detail = (await response.json()) as AgentRunDetail;
+			await route.fulfill({ response, json: { ...detail, log: '' } });
+		});
+		await activeRow.getByRole('button', { name: 'Logs' }).click();
+		const waiting = activeRow.getByTestId('run-log-waiting');
+		await expect(waiting).toHaveText('waiting for the harness…');
+		await expect(waiting.locator('[aria-hidden="true"]')).toHaveClass(/\banimate-pulse\b/);
+		expect(
+			await waiting
+				.locator('[aria-hidden="true"]')
+				.evaluate((el) => getComputedStyle(el).animationName)
+		).toBe('none');
+		await activeRow.getByRole('button', { name: 'Hide logs' }).click();
 
 		const creds = JSON.parse(readFileSync(join(configDir, 'runners.json'), 'utf8')) as Record<
 			string,

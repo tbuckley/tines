@@ -88,7 +88,7 @@
 >
 	{#if active}
 		<span
-			class="size-1.5 shrink-0 rounded-full bg-emerald-500 motion-safe:animate-pulse"
+			class="size-1.5 shrink-0 animate-pulse rounded-full bg-emerald-500 motion-reduce:animate-none"
 			aria-hidden="true"
 			data-testid="run-live-dot"
 		></span>

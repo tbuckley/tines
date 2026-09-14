@@ -61,6 +61,25 @@ test.describe('shared run row', () => {
 			'href',
 			RUNROW.providerUrl
 		);
+		const runnerCard = page.locator('div.rounded-lg', { hasText: RUNROW.runnerName }).first();
+		await expect(runnerCard).toContainText('1 consecutive failure');
+		await expect(runnerCard).not.toContainText('1 consecutive failures');
+	});
+
+	test('distinguishes an empty ended log from a live wait', async ({ page }) => {
+		await page.route(`**/api/v1/runs/${RUNROW.runId}`, async (route) => {
+			const response = await route.fetch();
+			const detail = (await response.json()) as Record<string, unknown>;
+			await route.fulfill({ response, json: { ...detail, log: '' } });
+		});
+		await gotoHydrated(
+			page,
+			`/issues/${encodeURIComponent(RUNROW.projectName)}/${RUNROW.issueNumber}`
+		);
+		const row = page.locator('li:not([inert])', { hasText: RUNROW.runnerName });
+		await row.getByRole('button', { name: 'Logs' }).click();
+		await expect(row.getByTestId('run-log')).toHaveText('(no log output captured)');
+		await expect(row.getByTestId('run-log-waiting')).toHaveCount(0);
 	});
 
 	test('shows unpriced Codex tokens and a local thread id', async ({ page }) => {
