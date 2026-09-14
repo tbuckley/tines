@@ -12,6 +12,11 @@ already solved once is not re-solved per spec (Tines/170).
   (`runId` in `helpers.ts`).
 - `E2E_PORT` (default 8788) moves the server, end to end — two suites can run side by side
   on one machine.
+- The shared `d1()` CLI helper retries only `SQLITE_BUSY` / `database is locked` process
+  diagnostics, for at most six whole-command attempts with bounded backoff. Wrangler runs
+  each command as one transactional D1 batch, so replay does not partially duplicate a
+  multi-statement operation. Invalid SQL, malformed output, and other permanent failures
+  remain first-attempt failures.
 - A single-test run of a `describe.serial` spec generally fails: the fixture is created in
   the file's first test. Run the whole file.
 - If a polling page is followed by `ProxyController emitErrorEvent`, `Error inside
@@ -51,6 +56,18 @@ already solved once is not re-solved per spec (Tines/170).
   then `pnpm exec tsc -p tsconfig.e2e-check.json`, and delete the file afterwards. The
   `typeRoots` line is needed because pnpm does not link `@types/node` into
   `apps/web/node_modules`; without it every `Buffer`/`node:*` reference errors.
+
+To stress D1 CLI contention on fresh isolated stacks, run the affected files sequentially
+with a new port for each invocation. Do not use `--repeat-each` or run these invocations in
+parallel because the specs within one invocation intentionally share D1 fixtures:
+
+```sh
+for iteration in 1 2 3 4 5; do
+	CI=1 E2E_PORT=$((18950 + iteration)) pnpm test:e2e \
+		runner-fencing.spec.ts spend-matrix.spec.ts workflow-package-import.spec.ts \
+		> "d1-stress-${iteration}.log" 2>&1 || exit 1
+done
+```
 
 ## Motion policy
 

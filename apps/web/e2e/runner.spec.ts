@@ -354,10 +354,44 @@ esac
 		// bootstrap (the Claude managed path creates the runner server-side).
 		const dialog = await openAddRunner(page);
 		const name = dialog.getByLabel('Name');
+		const codexPermissions = dialog.getByRole('region', {
+			name: 'Configure Codex before starting the runner'
+		});
 
 		// The helper teaches the machine-plus-harness convention before
 		// anything is typed.
 		await expect(dialog).toContainText('macbook-claude');
+		await expect(codexPermissions).toBeHidden();
+
+		await dialog.getByLabel('Harness').selectOption('codex');
+		await expect(codexPermissions).toBeVisible();
+		await expect(codexPermissions).toContainText('~/.codex/config.toml');
+		await expect(codexPermissions.locator('pre code')).toHaveText(
+			'sandbox_mode = "workspace-write"\n\n[sandbox_workspace_write]\nnetwork_access = true'
+		);
+		for (const [name, href] of [
+			[
+				'Codex setup guide',
+				'https://github.com/tbuckley/tines/blob/main/docs/runner-daemon.md#codex-permissions'
+			],
+			['OpenAI configuration reference', 'https://developers.openai.com/codex/config-reference']
+		] as const) {
+			const link = codexPermissions.getByRole('link', { name });
+			await expect(link).toHaveAttribute('href', href);
+			await expect(link).toHaveAttribute('target', '_blank');
+			await expect(link).toHaveAttribute('rel', 'noreferrer');
+		}
+
+		await dialog.getByLabel('Harness').selectOption('custom');
+		await expect(codexPermissions).toBeHidden();
+		await dialog.getByLabel('Harness').selectOption('claude-code');
+		await expect(codexPermissions).toBeHidden();
+		await dialog.getByLabel('Harness').selectOption('codex');
+		await expect(codexPermissions).toBeVisible();
+		await dialog.getByRole('button', { name: 'Claude (managed)' }).click();
+		await expect(codexPermissions).toBeHidden();
+		await dialog.getByRole('button', { name: 'Local' }).click();
+		await expect(codexPermissions).toBeVisible();
 
 		// A name that is not a CLI address fails inline, before any submit.
 		await name.fill("Tom's Mac");
@@ -413,6 +447,7 @@ esac
 		const keyRunner = `key-e2e-${runId}`;
 		dialog = await openAddRunner(page);
 		await dialog.getByLabel('Name').fill(keyRunner);
+		await dialog.getByLabel('Harness').selectOption('codex');
 		await dialog.getByRole('button', { name: 'Create key' }).click();
 
 		// The command now carries a real secret, and the key is on the
@@ -427,7 +462,11 @@ esac
 		expect(clip).toContain('npm install -g tines');
 		expect(clip).toContain('tines runner install');
 		expect(clip).toContain(`--name ${keyRunner}`);
+		expect(clip).toContain('--harness codex');
 		expect(clip).toMatch(/TINES_API_KEY=tines_[A-Za-z0-9._-]+/);
+		expect(clip).not.toContain('sandbox_mode');
+		expect(clip).not.toContain('[sandbox_workspace_write]');
+		expect(clip).not.toContain('network_access');
 
 		await dialog.getByRole('button', { name: 'Done' }).click();
 		await context.request.delete(`/api/v1/api-keys/${created!.id}`);
