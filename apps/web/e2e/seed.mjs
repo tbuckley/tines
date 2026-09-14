@@ -33,6 +33,7 @@ import {
 import { spendStatements } from './spend-seed.mjs';
 
 import { WEEKLY, stageStatsSeed } from './stage-stats-seed.mjs';
+import { statsScaleStatements } from '../scripts/stats-scale-fixture.mjs';
 
 const sha256Hex = (s) => createHash('sha256').update(s).digest('hex');
 
@@ -260,6 +261,7 @@ statements.push(
 );
 
 statements.push(...stageStatsSeed(nowMs));
+if (process.env.STATS_SCALE === '1') statements.push(...statsScaleStatements(nowMs));
 
 const sqlFile = join(mkdtempSync(join(tmpdir(), 'tines-e2e-')), 'seed.sql');
 writeFileSync(sqlFile, statements.join('\n'));

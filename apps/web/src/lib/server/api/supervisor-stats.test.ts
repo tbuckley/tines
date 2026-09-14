@@ -325,6 +325,79 @@ describe('loadStageStats', () => {
 		});
 		expect(report.markers[0].effects.map((effect) => effect.state_id)).toEqual([STAGE_B]);
 	});
+
+	it('orders equal-time marker seeds by id before forward batching', async () => {
+		const t = setup();
+		for (const id of ['evt_marker_z', 'evt_marker_a'])
+			t.sqlite
+				.prepare(
+					`INSERT INTO event (id,user_id,type,actor_user_id,payload,created_at)
+					 VALUES (?,?,'settings.updated',?,?,?)`
+				)
+				.run(id, USER, USER, JSON.stringify({ changed: ['quota'] }), NOW - HOUR);
+		const report = await loadStageStats(t.db, USER, {}, NOW);
+		expect(report.markers).toHaveLength(1);
+		expect(report.markers[0].id).toBe('evt_marker_a');
+		expect(report.markers[0].event_ids).toEqual(['evt_marker_a', 'evt_marker_z']);
+	});
+
+	it('prepares once and evaluates only marker-affected states', async () => {
+		const t = setup();
+		const issue = addIssue(t, { id: 'iss_observed', state: STAGE_B, workflow: 'wf_two' });
+		addTransitionEvent(t, {
+			issueId: issue,
+			apiKeyId: null,
+			at: NOW - DAY,
+			from: STAGE_A,
+			to: STAGE_B
+		});
+		for (let index = 0; index < 20; index++)
+			t.sqlite
+				.prepare(
+					`INSERT INTO event (id,user_id,type,actor_user_id,project_id,payload,created_at)
+					 VALUES (?,?,'routing_rule.updated',?,?,?,?)`
+				)
+				.run(
+					`evt_observed_${index}`,
+					USER,
+					USER,
+					PROJECT,
+					JSON.stringify({ workflow_state_id: STAGE_B }),
+					NOW - (index + 1) * 4 * HOUR
+				);
+		let preparations = 0;
+		const evaluated: string[] = [];
+		const report = await loadStageStats(t.db, USER, {}, NOW, {
+			prepared: () => preparations++,
+			evaluatedState: (stateId) => evaluated.push(stateId)
+		});
+		expect(preparations).toBe(1);
+		expect(report.markers).toHaveLength(20);
+		expect(evaluated).toEqual(Array(40).fill(STAGE_B));
+	});
+
+	it('uses unordered type/time event reads backed by the migration index', async () => {
+		const t = setup();
+		const queries = t.spyOnQueries();
+		await loadStageStats(t.db, USER, {}, NOW);
+		const eventReads = queries().filter((query) => /from "event"/i.test(query));
+		expect(eventReads.filter((query) => /"event"\."type" in/i.test(query)).length).toBeGreaterThan(
+			0
+		);
+		for (const query of eventReads.filter((query) => /"event"\."type" in/i.test(query)))
+			expect(query).not.toMatch(/order by/i);
+		const plan = t.all(
+			`EXPLAIN QUERY PLAN SELECT id FROM event INDEXED BY event_user_type_created_idx
+			 WHERE user_id=? AND type IN ('issue.created','issue.transitioned')
+			 AND created_at>=? AND created_at<?`,
+			USER,
+			NOW - 14 * DAY,
+			NOW
+		);
+		expect(plan.map((row) => String(row.detail)).join('\n')).toContain(
+			'event_user_type_created_idx'
+		);
+	});
 });
 
 describe('loadSentBackDrilldown', () => {
@@ -432,6 +505,36 @@ describe('loadSentBackDrilldown', () => {
 			[NOW - 2 * DAY, null, null],
 			[NOW - 3 * DAY, 'ctx_old', 2]
 		]);
+	});
+
+	it('does not transfer unrelated prompt lifecycle generations', async () => {
+		const t = setup();
+		const issue = addIssue(t, { id: 'iss_prompt_filter', state: STAGE_A, workflow: 'wf_two' });
+		addTransitionEvent(t, {
+			issueId: issue,
+			apiKeyId: null,
+			at: NOW - DAY,
+			from: STAGE_B,
+			to: STAGE_A
+		});
+		t.sqlite.exec(`
+			INSERT INTO event (id,user_id,type,actor_user_id,payload,created_at) VALUES
+			('evt_relevant_created','${USER}','context.created','${USER}',
+			 '{"context_id":"ctx_relevant","kind":"prompt","name":"instructions","scope":{"workflow_state_id":"${STAGE_B}"}}',${NOW - 3 * DAY}),
+			('evt_relevant_update','${USER}','context.updated','${USER}',
+			 '{"context_id":"ctx_relevant","version":2}',${NOW - 2 * DAY}),
+			('evt_unrelated_created','${USER}','context.created','${USER}',
+			 '{"context_id":"ctx_unrelated","kind":"prompt","name":"instructions","scope":{"workflow_state_id":"${STAGE_A}"}}',${NOW - 3 * DAY}),
+			('evt_unrelated_update','${USER}','context.updated','${USER}',
+			 '{"context_id":"ctx_unrelated","version":99}',${NOW - 2 * DAY});
+		`);
+		const queries = t.spyOnQueries();
+		const detail = await loadSentBackDrilldown(t.db, USER, { state: STAGE_B }, NOW);
+		expect(detail.items[0]).toMatchObject({ prompt_context_id: 'ctx_relevant', prompt_version: 2 });
+		const lifecycleQuery = queries().find((query) =>
+			/json_extract[\s\S]* in \(select /i.test(query)
+		);
+		expect(lifecycleQuery).toMatch(/ in \(select /i);
 	});
 });
 

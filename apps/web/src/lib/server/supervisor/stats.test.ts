@@ -150,6 +150,35 @@ describe('prepared stage stats', () => {
 		expect(evaluatePreparedState(prepared, 'st_human', NOW - WINDOW, NOW)).toBeNull();
 		expect(evaluatePreparedState(prepared, 'unknown', NOW - WINDOW, NOW)).toBeNull();
 	});
+
+	it('materializes the three per-state indexes used after preparation', () => {
+		const value = input({
+			events: [
+				ev({ issue_id: 'iss_indexed', created_at: NOW - DAY, to_state_id: 'st_rev' }),
+				ev({
+					issue_id: 'iss_indexed',
+					created_at: NOW - HOUR,
+					from_state_id: 'st_rev',
+					to_state_id: 'st_impl'
+				})
+			],
+			runs: [run({ issue_id: 'iss_unbound', state_id_at_start: 'st_rev', created_at: NOW - HOUR })]
+		});
+		const prepared = prepareStageStats(value);
+		expect(prepared.ctx.visitsByState?.get('st_rev')).toHaveLength(1);
+		expect(prepared.ctx.receivedBackByState?.get('st_impl')).toHaveLength(1);
+		expect(prepared.ctx.unboundByState?.get('st_rev')).toHaveLength(1);
+
+		// Marker evaluation must be independent of the global collections: those
+		// are deliberately discarded here so deleting an index breaks the test.
+		prepared.ctx.visits = [];
+		prepared.ctx.unbound = [];
+		expect(evaluatePreparedState(prepared, 'st_rev', NOW - WINDOW, NOW)).toMatchObject({
+			visits: 1,
+			exits: 1,
+			runs: { unbound: 1 }
+		});
+	});
 });
 
 describe('percentile', () => {

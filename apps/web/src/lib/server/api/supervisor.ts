@@ -663,7 +663,8 @@ export async function loadStageStats(
 	db: Kysely<Database>,
 	userId: string,
 	query: StatsQuery = {},
-	now: number = Date.now()
+	now: number = Date.now(),
+	observer?: { prepared?: () => void; evaluatedState?: (stateId: string) => void }
 ): Promise<StageStatsReport> {
 	const windowMs = parseStatsWindow(query.window);
 	if (query.compare !== undefined && query.compare !== 'previous' && query.compare !== 'none') {
@@ -848,6 +849,7 @@ export async function loadStageStats(
 		project
 	};
 	const prepared = prepareStageStats(baseInput);
+	observer?.prepared?.();
 	const report = computePreparedStageStats(prepared, { now, windowMs, compare });
 
 	type MarkerSeed = Omit<ChangeMarker, 'effects'> & { actor: string; ruleScope: string | null };
@@ -917,6 +919,7 @@ export async function loadStageStats(
 		});
 	}
 	const figures = (stateId: string, since: number, until: number) => {
+		observer?.evaluatedState?.(stateId);
 		const row = evaluatePreparedState(prepared, stateId, since, until);
 		return row
 			? {
