@@ -1,17 +1,17 @@
 {
-  "number": 6,
-  "arm": "comment-selected",
-  "started_at": "2026-09-14T05:33:40.375Z",
-  "ended_at": "2026-09-14T05:34:54.967Z",
-  "elapsed_seconds": 74.592,
-  "exit_code": 0,
-  "timed_out": false,
-  "cold": true,
-  "model": "gpt-6-astra",
-  "effort": "high",
-  "harness": "codex-cli 0.153.4",
-  "input_hashes": {
-    "context.md": "6c6ea523717fd13b0aad2fa6a62b5a2ad2c0fe888fc1b548bc6ecfa29b4627cb",
-    "task.md": "b70f325061e983cc24bf2d38edfdffc4036afbf1a49320d4157fe0d64742de3f"
-  }
+	"number": 6,
+	"arm": "comment-selected",
+	"started_at": "2026-09-14T05:33:40.375Z",
+	"ended_at": "2026-09-14T05:34:54.967Z",
+	"elapsed_seconds": 74.592,
+	"exit_code": 0,
+	"timed_out": false,
+	"cold": true,
+	"model": "gpt-6-astra",
+	"effort": "high",
+	"harness": "codex-cli 0.153.4",
+	"input_hashes": {
+		"context.md": "6c6ea523717fd13b0aad2fa6a62b5a2ad2c0fe888fc1b548bc6ecfa29b4627cb",
+		"task.md": "b70f325061e983cc24bf2d38edfdffc4036afbf1a49320d4157fe0d64742de3f"
+	}
 }

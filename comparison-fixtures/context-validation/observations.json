@@ -6,5 +6,66 @@
 		"remaining_before_this_fixture": 8
 	},
 	"historical_source": "comparison-fixtures/effort-routine/observations.json",
-	"attempts": []
+	"attempts": [
+		{
+			"number": 5,
+			"pair": "comment-history",
+			"arm": "full",
+			"accepted": { "routine": true, "conditional": true, "old_decision": true },
+			"elapsed_seconds": 67,
+			"postprocess": "run receipt writer failed after raw evidence and output were saved; repaired before attempt 6",
+			"usage": {
+				"input_tokens": 211499,
+				"cached_input_tokens": 200448,
+				"cache_write_input_tokens": 0,
+				"output_tokens": 2156,
+				"reasoning_output_tokens": 325
+			}
+		},
+		{
+			"number": 6,
+			"pair": "comment-history",
+			"arm": "selected",
+			"accepted": { "routine": true, "conditional": true, "old_decision": true },
+			"elapsed_seconds": 74.592,
+			"usage": {
+				"input_tokens": 110801,
+				"cached_input_tokens": 101888,
+				"cache_write_input_tokens": 0,
+				"output_tokens": 1980,
+				"reasoning_output_tokens": 306
+			}
+		},
+		{
+			"number": 7,
+			"pair": "procedure-placement",
+			"arm": "inline",
+			"accepted": { "routine": true, "conditional": true, "old_decision": true },
+			"elapsed_seconds": 80.674,
+			"usage": {
+				"input_tokens": 142670,
+				"cached_input_tokens": 114304,
+				"cache_write_input_tokens": 0,
+				"output_tokens": 2039,
+				"reasoning_output_tokens": 392
+			}
+		},
+		{
+			"number": 8,
+			"pair": "procedure-placement",
+			"arm": "skill",
+			"accepted": { "routine": true, "conditional": true, "old_decision": true },
+			"elapsed_seconds": 96.58,
+			"retrieval": "skills/planning-procedures/SKILL.md read after routine analysis began and before conditional output",
+			"usage": {
+				"input_tokens": 216285,
+				"cached_input_tokens": 191616,
+				"cache_write_input_tokens": 0,
+				"output_tokens": 2425,
+				"reasoning_output_tokens": 575
+			}
+		}
+	],
+	"remaining_attempts": 4,
+	"stop_reason": "Both planned pairs completed; reserve attempts were not needed."
 }
