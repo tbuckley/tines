@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { StarterInputSpec, StarterSummary } from '@tines/shared';
-	import { ApiError } from '@tines/shared';
+	import { ApiError, PROJECT_NAME_MAX } from '@tines/shared';
 	import IconBulb from '@tabler/icons-svelte/icons/bulb';
 	import IconFile from '@tabler/icons-svelte/icons/file';
 	import IconGitBranch from '@tabler/icons-svelte/icons/git-branch';
@@ -240,9 +240,14 @@
 				id="project-name"
 				bind:value={name}
 				oninput={() => (nameDirty = true)}
+				maxlength={PROJECT_NAME_MAX}
+				aria-describedby="project-name-hint"
 				placeholder="e.g. website"
 				required
 			/>
+			<p id="project-name-hint" class="text-muted-foreground text-xs">
+				Maximum {PROJECT_NAME_MAX} characters.
+			</p>
 		</div>
 		<div class="space-y-1.5">
 			<label class="text-sm font-medium" for="project-description">Description</label>
