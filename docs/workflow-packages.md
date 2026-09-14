@@ -20,6 +20,17 @@ tines workflows unpublish pubs_snapshot
 
 A hosted snapshot is rechecked before inspection, download, install preview, and install commit. Withdrawal stops those hosted operations, but cannot recall a file already downloaded or an installation already completed. Public pages never fetch declared repositories or publisher-controlled media. Cross-instance browser transfer is download followed by the destination's ordinary file import; do not send destination credentials to a source host.
 
+`workflows preview` and `workflows install` also accept a canonical `/p/<snapshot>` or
+`/p/<snapshot>/download` URL. A URL on the destination Tines origin uses a hosted signed plan, so
+withdrawal is checked in the destination transaction. A URL on another origin is downloaded by the
+CLI and passed to the destination as package bytes; the destination never fetches the URL. The CLI
+sends the source no API key, cookie, proxy authorization, or referrer, pins an allowed DNS result for
+each connection and redirect, rejects private/reserved targets and HTTPS downgrade, and caps time,
+redirects, MIME, encoding, UTF-8, and decoded bytes. HTTP is accepted only for an explicitly supplied
+loopback development URL. A saved foreign-source plan records only its canonical URL and checksum;
+install re-downloads it and requires identical bytes before any destination write. Once downloaded or
+installed, that independent copy cannot be recalled by the source host.
+
 ## Install a package in the browser
 
 Open **Workflows → Install package** (also linked from **Settings → Export / import**) and choose
@@ -118,6 +129,7 @@ The whole-library endpoint retains v1/v2 readers; `GET /api/v1/export?version=2`
 
 ```sh
 tines workflows preview package.json --choices choices.json --plan-out package.plan.json
+tines workflows preview https://source.example/p/<snapshot> --plan-out package.plan.json
 ```
 
 Human output includes every create/reuse/skip operation, the workflow graph and artifact gates,
@@ -166,6 +178,10 @@ requires a human session or named key to re-prepare as that actor.
 ```sh
 # Automation / non-TTY: both values must come from the separate review above.
 tines workflows install package.json --plan package.plan.json \
+  --confirm 'sha256:<exact-plan-digest>'
+
+# The exact same URL is fetched again and must match the reviewed foreign-source plan.
+tines workflows install https://source.example/p/<snapshot> --plan package.plan.json \
   --confirm 'sha256:<exact-plan-digest>'
 
 # At a terminal: prepares, persists package.json.plan.json, shows the full review, then asks.
