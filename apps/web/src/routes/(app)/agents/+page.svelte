@@ -691,7 +691,9 @@
 	/** Newest account-level event id; the first non-empty observation also refreshes. */
 	let latestAccountEventId: string | null = null;
 	async function checkRunners() {
-		if (syncingRunners) return;
+		// An invalidation can cancel a user- or one-shot URL navigation. Let the
+		// navigation settle; the next five-second tick will observe the same event.
+		if (syncingRunners || pendingAgentsUrl) return;
 		syncingRunners = true;
 		try {
 			// While the checklist shows, a rule, the kill switch and the first run
@@ -722,7 +724,6 @@
 		const tick = () => {
 			if (document.visibilityState === 'visible') void checkRunners();
 		};
-		tick();
 		const timer = setInterval(tick, 5000);
 		document.addEventListener('visibilitychange', tick);
 		return () => {
