@@ -177,6 +177,13 @@ saying what the scope is.
    review, Tines/259). The bottom bar stays pure navigation. At every width the
    Projects tab opens the focused project's home, or the remembered grid under
    All projects; Manage projects and the project breadcrumb lead to the grid.
+
+   **Responsive chrome boundary.** The six text destinations move into the
+   header at 48rem (`md`); below that width they remain in the bottom bar so the
+   switcher and account control keep a valid width budget. Main content and
+   workflow import/export action bars reserve the bottom bar's full height and
+   safe-area inset on the same boundary. Browser coverage sweeps both sides of
+   the 40rem and 48rem edges so overflow cannot hide at a breakpoint.
 7. **Hidden below two projects.** With zero or one project the switcher does not
    render and every page looks as it did before; a single project still behaves
    as the focus for the New-issue default. The first-project experience belongs
@@ -184,7 +191,7 @@ saying what the scope is.
 8. **New issue's default project:** the focus, else `last_project_id` (last
    focused or last created in), else — at two or more projects — an empty,
    required select. Never `projects[0]`.
-9. **nav-memory** remembers the non-project Issues filters (category, state,
+9. **nav-memory** remembers the non-project Issues filters (category, workflow, state,
    label, q) per tab as before; it strips `project`, which would otherwise
    re-fire the one-shot on every click of the Issues tab.
    Issue-page Back keeps an Issues target, but keeps a remembered project page

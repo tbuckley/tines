@@ -21,7 +21,7 @@ function eventFor(t: ReturnType<typeof createTestDb>, body: unknown, waits: Prom
 }
 
 describe('POST /api/v1/runners/register', () => {
-	it('queues dispatch after create and reconnect, but not failed registration', async () => {
+	it('queues dispatch after create and reconnect without claiming before a policy poll', async () => {
 		const t = createTestDb();
 		seedBase(t);
 		const waits: Promise<unknown>[] = [];
@@ -45,7 +45,10 @@ describe('POST /api/v1/runners/register', () => {
 		expect(reconnect.status).toBe(201);
 		expect(waits).toHaveLength(1);
 		await Promise.all(waits);
-		expect(runs(t)).toHaveLength(1);
+		// Re-registration rotates the token and deliberately leaves the runner
+		// offline until that daemon reports its current local policy. The queued
+		// pass is harmless and must not claim work against stale consent.
+		expect(runs(t)).toHaveLength(0);
 
 		const failedWaits: Promise<unknown>[] = [];
 		const failed = await POST(

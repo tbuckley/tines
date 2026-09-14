@@ -330,6 +330,14 @@ The steady-state loop once setup is done — the flow that happens dozens of tim
 
 ## 13. Tune concurrency
 
+For a local runner, the machine owner first opts in with
+`--allow-remote-concurrency --max-concurrent 4`. The Agents editor then labels the value
+**Requested concurrency**, shows the effective cap and local ceiling, and reports
+**Pending** until that daemon acknowledges the revision. Repeated polls, reconnects, and
+ordinary restarts do not overwrite the request. Lowering below the active count lets those
+runs finish but admits no new work. **At local ceiling** sends the operator back to the
+machine; the web cannot enable opt-in or raise the ceiling.
+
 **Persona & starting point:** the fleet is either drowning (six PRs landed in review at once) or starving (issues queue while runners idle). This flow is the two knobs — quota policy and per-runner caps — and knowing which to reach for.
 
 1. **The default experience:** `global_cap` at 3. The user notices issues queuing ("Eligible — waiting for capacity", queue position from flow 5) while they could review more, and bumps the limit to 5 in the settings' quota section. Takes effect next pass; running work is never killed by a policy change.
@@ -442,6 +450,11 @@ The steady-state loop once setup is done — the flow that happens dozens of tim
 
 ## 18. Daemon lifecycle on a dev machine
 
+Remote concurrency consent is process/service configuration, not server state. `runner restart`
+preserves it. To enable, disable, or change the ceiling, pause the runner, wait for zero active
+runs, and relaunch or reinstall with the complete desired flags. A new daemon instance reports
+policy before receiving work; a legacy or malformed report fails closed to local authority.
+
 **Persona & starting point:** the local runner lives on a laptop that sleeps, reboots, changes networks, and occasionally has its terminal closed mid-run. This flow is the daemon being a well-behaved citizen of a messy machine.
 
 **Normal operation**
@@ -553,11 +566,11 @@ Items deliberately deferred during this review:
 
 ## Inspect the week (Tines/257, revised after Human Review)
 
-1. Choose **Board project**, or keep All projects. Now, This week, highlights, changes and evidence use this local scope; chrome focus is unchanged.
+1. Open **Agents → Analysis**, then open **State analysis · Last 7 days**. Choose **State project**, or keep All projects. It is the same scope as **Board project** on Now; highlights, changes and evidence use it, while Spend filters and chrome focus remain unchanged.
 2. Choose **Most measured wait** to expand Timing and visits. Read the timed sample and excluded waiting/never-started visits, then **View stage capacity** to focus the currently saved global or roster limit. Inspect before deciding whether to edit.
 3. Choose **Most send-backs**, or a stage’s sent-back share. Compare the previous share and percentage-point delta, then inspect each event’s issue, actor, related comment and historical prompt context ID/version. **Edit current stage prompt** is explicitly a current editor; a historical version is not a content snapshot.
 4. Choose **Most failed starts** to inspect complete outcomes and recording coverage. **View stage runs** opens latest state/project runs with ended runs included, preserving the board filter; the list is not labelled as an exact seven-day cohort. Clearing the state keeps the project. Fleet utilization remains unfiltered.
 5. Open a stage’s **Changes**, or the window’s changes list. Inspect dated Before/Since samples and nullable measures, then use the recorded event or setting link. Unequal periods and other edits prevent causal attribution. Markers remain reachable when no stage has work.
-6. The evidence dialog retains its frozen query through errors and Retry; closing or changing project invalidates late responses. Keyboard focus returns to its invoking control. The four-column overview becomes labelled stage cards on a phone, with all supporting measurements available in disclosures.
+6. The weekly report loads on first open, retries inline after an error, and stays cached only while the same Analysis view and project remain mounted. The evidence dialog retains its frozen query through errors and Retry; closing or changing project invalidates late responses. Keyboard focus returns to its invoking control. The four-column overview becomes labelled stage cards on a phone, with all supporting measurements available in disclosures.
 
 No number, highlight or delta changes dispatch, alerts, strikes or policy.

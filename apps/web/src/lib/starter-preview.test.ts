@@ -41,7 +41,11 @@ describe('suggestProjectName', () => {
 		['https://git.example/team/repo.git', 'repo'],
 		['https://git.example/team/Customer_Portal.GIT', 'Customer_Portal.GIT'],
 		['https://git.example/team/customer%20portal.git', 'customer%20portal'],
-		[`https://git.example/team/${'x'.repeat(201)}.git`, 'x'.repeat(201)]
+		[`https://git.example/team/${'x'.repeat(200)}.git`, 'x'.repeat(200)],
+		[`https://git.example/team/${'x'.repeat(201)}.git`, 'x'.repeat(200)],
+		[`https://git.example/team/${'x'.repeat(198)}😀.git`, `${'x'.repeat(198)}😀`],
+		[`https://git.example/team/${'x'.repeat(199)}😀.git`, 'x'.repeat(199)],
+		[`https://git.example/team/${'😀'.repeat(100)}x.git`, '😀'.repeat(100)]
 	])('suggests the repository basename from %s', (remote, expected) => {
 		expect(suggestProjectName(code, { repo_url: remote })).toBe(expected);
 	});

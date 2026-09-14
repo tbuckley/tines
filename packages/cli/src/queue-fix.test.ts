@@ -148,9 +148,10 @@ describe('queueFix', () => {
 		]);
 	});
 
-	it('names the daemon flag for at_capacity, since no CLI command sets max_concurrent', () => {
+	it('names local opt-in and the Agents editor for at_capacity', () => {
 		const fix = queueFix({ ...everyBlock()[0], verdict: 'at_capacity', binding: null });
-		expect(fix).toContain('tines runner daemon --max-concurrent N');
+		expect(fix).toContain('Agents page');
+		expect(fix).toContain('tines runner daemon --allow-remote-concurrency --max-concurrent N');
 		expect(fix).toContain(RUNNER_NAME);
 	});
 
