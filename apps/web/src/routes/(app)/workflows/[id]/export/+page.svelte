@@ -581,9 +581,9 @@
 						? 'border-primary bg-primary/10'
 						: 'border-border bg-transparent'}"
 					onclick={() => (selectedInputId = input.id)}
-					><b><code>{input.key}</code> · {input.type}</b><br />{input.label} · {input.required
-						? 'required'
-						: 'optional'} · default {input.default ?? 'none'}
+					><b><code class="[overflow-wrap:anywhere]">{input.key}</code> · {input.type}</b><br
+					/>{input.label} · {input.required ? 'required' : 'optional'} · default {input.default ??
+						'none'}
 					<span class="text-primary mt-1 flex min-h-4 items-center gap-1 font-medium">
 						{#if selected}<IconCheck
 								size={14}
@@ -626,7 +626,7 @@
 					>
 					{#if selectedInput}<span
 							class="text-muted-foreground max-w-full min-w-0 text-xs [overflow-wrap:anywhere]"
-							>Using <code>{selectedInput.key}</code></span
+							>Using <code class="[overflow-wrap:anywhere]">{selectedInput.key}</code></span
 						>{/if}
 				</div>
 				<a
