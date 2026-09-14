@@ -1,3 +1,8 @@
+/**
+ * Test-only frozen copy of the pre-Tines/518 arithmetic. Keep this independent
+ * of prepared indexes so differential tests detect semantic drift in complete
+ * reports and marker windows.
+ */
 import {
 	ACTIVE_RUN_STATUSES,
 	RUN_OUTCOME_BUCKETS,
@@ -133,14 +138,6 @@ export function buildVisits(events: StatsEvent[], states: Map<string, StatsState
 		else byIssue.set(ev.issue_id, [ev]);
 	}
 	const visits: Visit[] = [];
-	const visitsByIssueState = new Map<string, Visit[]>();
-	const remember = (visit: Visit) => {
-		visits.push(visit);
-		const key = `${visit.issue_id}\0${visit.state_id}`;
-		const list = visitsByIssueState.get(key);
-		if (list) list.push(visit);
-		else visitsByIssueState.set(key, [visit]);
-	};
 	for (const [issueId, list] of byIssue) {
 		list.sort((a, b) => a.created_at - b.created_at || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 		let open: Visit | null = null;
@@ -164,18 +161,22 @@ export function buildVisits(events: StatsEvent[], states: Map<string, StatsState
 				exit_actor: null,
 				unbounded: false
 			};
-			remember(open);
+			visits.push(open);
 		}
 	}
 	// Anything whose `from_state_id` names a state we never saw entered opened
 	// before the scan: reconstruct it so its exit is still counted.
 	for (const ev of events) {
 		if (!ev.from_state_id) continue;
-		const covers = (visitsByIssueState.get(`${ev.issue_id}\0${ev.from_state_id}`) ?? []).some(
-			(v) => v.entered_at <= ev.created_at && (v.exited_at === null || v.exited_at >= ev.created_at)
+		const covers = visits.some(
+			(v) =>
+				v.issue_id === ev.issue_id &&
+				v.state_id === ev.from_state_id &&
+				v.entered_at <= ev.created_at &&
+				(v.exited_at === null || v.exited_at >= ev.created_at)
 		);
 		if (covers) continue;
-		remember({
+		visits.push({
 			id: `${ev.issue_id}:pre:${ev.id}`,
 			issue_id: ev.issue_id,
 			state_id: ev.from_state_id,
@@ -284,9 +285,6 @@ export interface FiguresContext {
 	states: Map<string, StatsStateMeta>;
 	advancedByKey: Set<string>;
 	now: number;
-	visitsByState?: Map<string, Visit[]>;
-	receivedBackByState?: Map<string, Visit[]>;
-	unboundByState?: Map<string, StatsRun[]>;
 }
 
 /**
@@ -301,7 +299,7 @@ export function stageFigures(
 	until: number
 ): StageWindowFigures {
 	const inWindow = (t: number) => t >= since && t < until;
-	const mine = ctx.visitsByState?.get(stateId) ?? ctx.visits.filter((v) => v.state_id === stateId);
+	const mine = ctx.visits.filter((v) => v.state_id === stateId);
 	const entered = mine.filter((v) => !v.unbounded && inWindow(v.entered_at));
 	const exited = mine.filter((v) => v.exited_at !== null && inWindow(v.exited_at));
 
@@ -367,12 +365,11 @@ export function stageFigures(
 		else entry.human++;
 		byTarget.set(target, entry);
 	}
-	const receivedBack = (
-		ctx.receivedBackByState?.get(stateId) ??
-		ctx.visits.filter((v) => v.sent_back && v.to_state_id === stateId)
-	).filter((v) => v.exited_at !== null && inWindow(v.exited_at)).length;
+	const receivedBack = ctx.visits.filter(
+		(v) => v.sent_back && v.to_state_id === stateId && v.exited_at !== null && inWindow(v.exited_at)
+	).length;
 
-	const unboundHere = (ctx.unboundByState?.get(stateId) ?? ctx.unbound).filter(
+	const unboundHere = ctx.unbound.filter(
 		(r) => r.state_id_at_start === stateId && inWindow(r.created_at)
 	).length;
 
@@ -464,85 +461,28 @@ function sawWork(f: StageWindowFigures): boolean {
 }
 
 export function computeStageStats(input: StatsInput): StageStatsReport {
-	return computePreparedStageStats(prepareStageStats(input), {
-		now: input.now,
-		windowMs: input.windowMs,
-		compare: input.compare
-	});
-}
-
-export interface PreparedStageStats {
-	input: StatsInput;
-	states: Map<string, StatsStateMeta>;
-	ctx: FiguresContext;
-}
-
-export function prepareStageStats(input: StatsInput): PreparedStageStats {
 	const states = new Map(input.states.map((s) => [s.id, s]));
+	const until = input.now;
+	const since = until - input.windowMs;
+	const prevSince = since - input.windowMs;
+
 	const visits = buildVisits(input.events, states);
 	const { bound, unbound } = bindRuns(visits, input.runs);
-	for (const runs of bound.values()) runs.sort((a, b) => a.created_at - b.created_at);
-	const visitsByState = new Map<string, Visit[]>();
-	const receivedBackByState = new Map<string, Visit[]>();
-	for (const visit of visits) {
-		const mine = visitsByState.get(visit.state_id);
-		if (mine) mine.push(visit);
-		else visitsByState.set(visit.state_id, [visit]);
-		if (visit.sent_back && visit.to_state_id) {
-			const received = receivedBackByState.get(visit.to_state_id);
-			if (received) received.push(visit);
-			else receivedBackByState.set(visit.to_state_id, [visit]);
-		}
-	}
-	const unboundByState = new Map<string, StatsRun[]>();
-	for (const run of unbound) {
-		const list = unboundByState.get(run.state_id_at_start);
-		if (list) list.push(run);
-		else unboundByState.set(run.state_id_at_start, [run]);
-	}
 	const ctx: FiguresContext = {
 		visits,
 		bound,
 		unbound,
 		states,
 		advancedByKey: input.advancedByKey,
-		now: input.now,
-		visitsByState,
-		receivedBackByState,
-		unboundByState
+		now: input.now
 	};
-	return { input, states, ctx };
-}
-
-export function evaluatePreparedState(
-	prepared: PreparedStageStats,
-	stateId: string,
-	since: number,
-	until: number
-): StageWindowFigures | null {
-	const state = prepared.states.get(stateId);
-	if (!state || state.category !== 'active') return null;
-	const figures = stageFigures(stateId, prepared.ctx, since, until);
-	return sawWork(figures) ? figures : null;
-}
-
-export function computePreparedStageStats(
-	prepared: PreparedStageStats,
-	options: { now: number; windowMs: number; compare: boolean }
-): StageStatsReport {
-	const input = prepared.input;
-	const until = options.now;
-	const since = until - options.windowMs;
-	const prevSince = since - options.windowMs;
 
 	const rows: StageStats[] = [];
 	for (const state of input.states) {
 		// Human stages get the Now row's one-line summary, never a table row.
 		if (state.category !== 'active') continue;
-		const current = stageFigures(state.id, prepared.ctx, since, until);
-		const previous = options.compare
-			? stageFigures(state.id, prepared.ctx, prevSince, since)
-			: null;
+		const current = stageFigures(state.id, ctx, since, until);
+		const previous = input.compare ? stageFigures(state.id, ctx, prevSince, since) : null;
 		if (!sawWork(current) && !(previous && sawWork(previous))) continue;
 		rows.push({
 			state_id: state.id,
@@ -564,9 +504,9 @@ export function computePreparedStageStats(
 	);
 
 	return {
-		generated_at: options.now,
-		window: { ms: options.windowMs, since, until },
-		previous: options.compare ? { since: prevSince, until: since } : null,
+		generated_at: input.now,
+		window: { ms: input.windowMs, since, until },
+		previous: input.compare ? { since: prevSince, until: since } : null,
 		project: input.project,
 		outcome_recorded_since: input.outcomeRecordedSince,
 		states: rows,
