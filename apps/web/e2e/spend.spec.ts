@@ -44,7 +44,7 @@ test.describe('Agents Spend real ledger', () => {
 			'aria-current',
 			'page'
 		);
-		await page.getByRole('button', { name: 'Spend', exact: true }).click();
+		await page.getByRole('button', { name: 'Analysis', exact: true }).click();
 		await expect(page.getByRole('heading', { name: 'Spend' })).toBeVisible();
 		await expect(page).toHaveURL(/unrelated=keep/);
 		await expect(projectTotal(page)).toHaveText('$33.00');
@@ -72,7 +72,7 @@ test.describe('Agents Spend real ledger', () => {
 
 		await page.getByRole('button', { name: 'Now', exact: true }).click();
 		await expect(page.getByRole('heading', { name: 'Spend' })).toBeHidden();
-		await page.getByRole('button', { name: 'Spend', exact: true }).click();
+		await page.getByRole('button', { name: 'Analysis', exact: true }).click();
 		await expect(projectTotal(page)).toHaveText('$24.00');
 		expect(errors).toEqual([]);
 	});
