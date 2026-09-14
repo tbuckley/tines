@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+	builtinTierModels,
 	rateLimitHoldUntil,
 	RATE_LIMIT_HOLD_DEFAULT_MS,
 	RATE_LIMIT_HOLD_GRACE_MS,
@@ -208,12 +209,39 @@ describe('resolveTier', () => {
 		...extras
 	});
 
-	it('falls back to the runner default tier, itself defaulting to balanced', () => {
-		const runner = local({ harness: 'claude_code' }, { default_tier: 'cheapest' });
-		expect(resolveTier(runner, null).tier).toBe('cheapest');
-		expect(resolveTier(local({ harness: 'claude_code' }, { default_tier: '' }), null).tier).toBe(
-			'balanced'
-		);
+	it('exposes and resolves the exact Codex built-in table', () => {
+		const runner = local({ harness: 'codex' });
+		const models = {
+			smartest: 'gpt-6-astra',
+			balanced: 'gpt-5.6-sol',
+			cheapest: 'gpt-5.6-luna'
+		} as const;
+		expect(builtinTierModels(runner)).toEqual(models);
+		for (const [tier, model] of Object.entries(models)) {
+			expect(resolveTier(runner, tier as keyof typeof models)).toEqual({
+				tier,
+				model,
+				effort: null
+			});
+		}
+	});
+
+	it('falls back to the runner default tier, itself defaulting to balanced Codex', () => {
+		expect(resolveTier(local({ harness: 'codex' }), null)).toEqual({
+			tier: 'balanced',
+			model: 'gpt-5.6-sol',
+			effort: null
+		});
+		expect(resolveTier(local({ harness: 'codex' }, { default_tier: 'cheapest' }), null)).toEqual({
+			tier: 'cheapest',
+			model: 'gpt-5.6-luna',
+			effort: null
+		});
+		expect(resolveTier(local({ harness: 'codex' }, { default_tier: '' }), null)).toEqual({
+			tier: 'balanced',
+			model: 'gpt-5.6-sol',
+			effort: null
+		});
 	});
 
 	it('an explicit tier wins over the default', () => {
@@ -239,18 +267,31 @@ describe('resolveTier', () => {
 		expect(resolved).toEqual({ tier: 'smartest', model: null, effort: null });
 	});
 
-	it('resolves runner-tier effort with the exact model override', () => {
-		expect(
-			resolveTier(
-				{
-					type: 'local',
-					default_tier: 'balanced',
-					tiers: JSON.stringify({ balanced: { model: 'gpt-5.6', effort: 'ultra' } }),
-					config: JSON.stringify({ harness: 'codex' })
-				},
-				null
-			)
-		).toEqual({ tier: 'balanced', model: 'gpt-5.6', effort: 'ultra' });
+	it('keeps Codex object and legacy string overrides exact while unlisted tiers improve', () => {
+		const runner = local(
+			{ harness: 'codex' },
+			{
+				tiers: JSON.stringify({
+					balanced: { model: 'gpt-5-codex', effort: 'ultra' },
+					cheapest: 'legacy-exact-model'
+				})
+			}
+		);
+		expect(resolveTier(runner, 'balanced')).toEqual({
+			tier: 'balanced',
+			model: 'gpt-5-codex',
+			effort: 'ultra'
+		});
+		expect(resolveTier(runner, 'cheapest')).toEqual({
+			tier: 'cheapest',
+			model: 'legacy-exact-model',
+			effort: null
+		});
+		expect(resolveTier(runner, 'smartest')).toEqual({
+			tier: 'smartest',
+			model: 'gpt-6-astra',
+			effort: null
+		});
 	});
 
 	it('per-runner overrides freeze a tier to an exact model; unlisted tiers keep the built-ins', () => {

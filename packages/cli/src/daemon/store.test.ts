@@ -13,15 +13,18 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
 	clearRunnerCredentials,
 	credentialsKey,
+	daemonDeclinesPath,
 	daemonStatePath,
 	directorySizeBytes,
 	keptMarkerPath,
 	listKeptWorkspaces,
 	loadDaemonState,
+	loadDaemonDeclines,
 	loadRunnerCredentials,
 	processStartTimeMs,
 	pruneKeptWorkspaces,
 	saveDaemonState,
+	saveDaemonDeclines,
 	saveRunnerCredentials,
 	workspacesDir,
 	writeKeptMarker
@@ -92,6 +95,13 @@ describe('processStartTimeMs', () => {
 });
 
 describe('daemon state file', () => {
+	it('persists only valid unique declined assignment ids separately from process state', () => {
+		const path = daemonDeclinesPath(tempDir(), 'rnr_1');
+		saveDaemonDeclines(path, ['arun_1', 'arun_2', 'arun_1']);
+		expect(loadDaemonDeclines(path)).toEqual(['arun_1', 'arun_2']);
+		writeFileSync(path, JSON.stringify({ run_ids: ['ok', '', 'has space', 4] }));
+		expect(loadDaemonDeclines(path)).toEqual(['ok']);
+	});
 	it('round-trips entries and tolerates a missing or corrupt file', () => {
 		const dir = tempDir();
 		const path = daemonStatePath(dir, 'rnr_1');

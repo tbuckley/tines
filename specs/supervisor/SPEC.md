@@ -71,6 +71,8 @@ Routing should say how *hard* to think without naming vendor model ids that go s
 
 The tier names are a closed set; adding a tier later is a code change, not user config — the point is a stable, small vocabulary that routing rules can rely on.
 
+> **Codex default decision (2026-09-14):** local Codex resolves `cheapest` to `gpt-5.6-luna`, `balanced` to `gpt-5.6-sol`, and `smartest` to `gpt-6-astra`. The former `gpt-5-codex` default is a known predecessor of each new built-in, so an exact override to it is marked stale but remains frozen until edited; the three new defaults are not predecessors of one another.
+
 ### What agents may take on
 
 **Category is the whole rule.** An issue is *agent-eligible* exactly when its **effective** state's category is `active` — the category that already means "ready to be taken on, or being worked". `backlog`, `awaiting_human`, and `done` states are never touched by the supervisor, in any workflow, with no per-state configuration. The workflow graph is therefore also the automation boundary: moving work to an `awaiting_human` state *is* how an agent (or human) hands off, and pulling it back to an `active` state is how a human hands it to the agents again.
@@ -109,7 +111,7 @@ Because a more specific rule silently wins, the rule editor warns at **authoring
 
 Two layers, deliberately different in kind:
 
-- **Per-runner caps always apply.** `max_concurrent` on each runner is a physical fact (a laptop runs one agent well; a provider has its own concurrency limits) and is never bypassed.
+- **Per-runner caps always apply.** `max_concurrent` is the effective scheduling cap. For a supported local daemon, web adjustment is unavailable unless the machine owner opts in with `--allow-remote-concurrency`; its local `--max-concurrent` value is then an immutable launch ceiling. Revisioned web requests may lower or raise the effective cap within that ceiling, while the daemon acknowledges what it applied and refuses/release excess launches. Running work is never killed by a lower cap.
 - **One user-chosen quota policy** governs the total picture. The policy is a typed JSON setting so new policies are additive; v1 ships two:
 
 | Policy | Config | Semantics |
@@ -264,7 +266,7 @@ Protocol semantics that make daemon failures survivable:
 - **`cancels` means kill, not finish.** A run id in a poll response's `cancels` list tells the daemon the supervisor has already settled that run's fate (cancel, timeout, the offline sweep): kill the process now and do **not** `finish`-report it — a suspended-then-woken harness whose run was failed while the machine slept is killed without being re-reported as a fresh failure.
 - **The daemon persists a state file** (run id → PID, workspace path, run key fingerprint) in its config dir. On startup it kills orphaned harness processes from a previous life, `finish`-fails their runs, and removes their workspaces — a crashed daemon must not leave a zombie Claude Code spending against a still-valid key.
 
-The daemon ships in the CLI package as **`tines runner daemon`** (flags/config: `--name`, `--harness claude-code|codex|custom`, `--command <template>`, `--max-concurrent`, `--poll-interval` default 15 s). First start with a user `TINES_API_KEY` registers and persists the runner token to the CLI config; subsequent starts reconnect as the same runner. It polls, launches assigned runs (up to its cap), streams logs, kills on cancel, timeout, or per-run cap breach, reports finishes, and cleans up workspaces. Ctrl-C fails its in-flight runs gracefully via `finish` before exiting. The daemon docs — and the add-runner bootstrap screen's "keep it running" footnote — include **launchd/systemd service snippets**, a docs-only deliverable with no product surface: the runner is supposed to be infrastructure.
+The daemon ships in the CLI package as **`tines runner daemon`** (flags/config: `--name`, `--harness claude-code|codex|custom`, `--command <template>`, `--max-concurrent`, optional `--allow-remote-concurrency`, `--poll-interval` default 15 s). First start with a user `TINES_API_KEY` registers and persists the runner token to the CLI config; subsequent starts reconnect as the same runner. It polls, launches assigned runs (up to its effective cap and immutable local ceiling), streams logs, kills on cancel or timeout, safely releases assignments refused before launch, reports finishes, and cleans up workspaces. A restart preserves service arguments and server intent; re-registration preserves the request but requires a fresh policy poll. Old/opted-out daemons remain local-authoritative and show web adjustment unavailable. Ctrl-C fails its in-flight runs gracefully via `finish` before exiting. The daemon docs — and the add-runner bootstrap screen's "keep it running" footnote — include **launchd/systemd service snippets**, a docs-only deliverable with no product surface: the runner is supposed to be infrastructure.
 
 ## Data model (D1 / Kysely)
 
