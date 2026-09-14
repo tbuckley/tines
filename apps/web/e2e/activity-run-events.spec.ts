@@ -48,6 +48,14 @@ test.describe('activity run-event presentation', () => {
 		await resetFocus(request);
 	});
 
+	// `/activity?project=…` is the sticky focus one-shot: the server persists
+	// the project as Alice's focus before redirecting. Specs share one user,
+	// so leave the focus the way it was found — the next spec on the shard
+	// (context.spec.ts) lists workflow-scoped items that a focus would hide.
+	test.afterEach(async ({ request }) => {
+		await resetFocus(request);
+	});
+
 	test('shows each run outcome on the global, recorded, and issue feeds', async ({ page }) => {
 		const recorded = new URLSearchParams(
 			ACTIVITY_RUN_EVENTS.events.map((event) => ['event', event.id])
