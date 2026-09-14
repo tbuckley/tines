@@ -147,6 +147,29 @@ export const RUNROW_ESTIMATED = {
 };
 
 /**
+ * Seeded event presentations for the shared Activity feed. These rows cover
+ * the outcome precedence and conservative fallback without launching agents.
+ */
+export const ACTIVITY_RUN_EVENTS = {
+	projectId: 'prj_e2e_activity_runs',
+	projectName: 'activity-runs-seed',
+	issueId: 'iss_e2e_activity_runs_1',
+	issueNumber: 1,
+	events: [
+		{ id: 'evt_e2e_activity_started', type: 'agent_run.started', runner: 'activity-start' },
+		{ id: 'evt_e2e_activity_completed', type: 'agent_run.ended', runner: 'activity-success' },
+		{ id: 'evt_e2e_activity_failed', type: 'agent_run.ended', runner: 'activity-failure' },
+		{
+			id: 'evt_e2e_activity_interrupted',
+			type: 'agent_run.ended',
+			runner: 'activity-interrupted'
+		},
+		{ id: 'evt_e2e_activity_stalled', type: 'agent_run.ended', runner: 'activity-stalled' },
+		{ id: 'evt_e2e_activity_unknown', type: 'agent_run.ended', runner: 'activity-unknown' }
+	]
+};
+
+/**
  * A third account with **no projects of its own**, for the "hidden below two
  * projects" half of the project switcher (Tines/259). Bob cannot serve: the
  * library spec imports projects for him.
