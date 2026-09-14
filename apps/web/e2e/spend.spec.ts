@@ -134,11 +134,11 @@ test.describe('Agents Spend real ledger', () => {
 		await expect(projectTotal(page)).toHaveText('$12.00');
 		const rows = page.locator('.groups article');
 		await expect(rows.nth(0)).toContainText('Ship');
-		await expect(rows.nth(2)).toContainText('Unknown cost');
+		await expect(rows.nth(2)).toContainText(SPEND.workflows.unknown.name);
 		const loaded = requests.length;
 		await page.getByRole('button', { name: 'Cost descending' }).click();
 		await expect(rows.nth(0)).toContainText('Build');
-		await expect(rows.nth(2)).toContainText('Unknown cost');
+		await expect(rows.nth(2)).toContainText(SPEND.workflows.unknown.name);
 		expect(requests).toHaveLength(loaded);
 		await page.getByRole('button', { name: 'Refresh' }).click();
 		await expect.poll(() => requests.length).toBe(loaded + 1);

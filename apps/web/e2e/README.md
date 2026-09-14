@@ -12,6 +12,8 @@ already solved once is not re-solved per spec (Tines/170).
   (`runId` in `helpers.ts`).
 - `E2E_PORT` (default 8788) moves the server, end to end — two suites can run side by side
   on one machine.
+- `E2E_SKIP_BUILD=1` requires an existing build created with `VITE_TINES_E2E=1`; the
+  opt-in exposes the public SvelteKit page-state bridge used by the Agents navigation spec.
 - The shared `d1()` CLI helper retries only `SQLITE_BUSY` / `database is locked` process
   diagnostics, for at most six whole-command attempts with bounded backoff. Wrangler runs
   each command as one transactional D1 batch, so replay does not partially duplicate a
