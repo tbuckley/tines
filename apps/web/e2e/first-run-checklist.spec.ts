@@ -15,7 +15,8 @@
  *
  * Serial by necessity: each step is the next state of one account.
  */
-import { expect, test, type APIRequestContext, type Page, type TestInfo } from '@playwright/test';
+import type { APIRequestContext, Page, TestInfo } from '@playwright/test';
+import { expect, test } from './fixtures';
 import type {
 	AgentRun,
 	IssueDetail,
@@ -121,9 +122,7 @@ test.beforeAll(async ({ request }) => {
 
 // Every test drives the UI as Dana; Playwright hands each one a fresh browser
 // context, so the session cookie has to be planted per test, not once.
-test.beforeEach(async ({ context }) => {
-	await signIn(context, DANA.sessionToken);
-});
+test.use({ signedIn: DANA });
 
 test.afterAll(async ({ request }) => {
 	daemon?.kill();

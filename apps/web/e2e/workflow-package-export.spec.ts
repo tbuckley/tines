@@ -11,7 +11,8 @@ import {
 	type WorkflowPackageDocument,
 	type WorkflowResponse
 } from '@tines/shared';
-import { expect, test, type Page } from '@playwright/test';
+import type { Page } from '@playwright/test';
+import { expect, test } from './fixtures';
 import { d1, sqlLiteral } from './d1';
 import { ALICE, BASE_URL, BOB } from './constants.mjs';
 import { apiClient, body, DESKTOP, gotoHydrated, PHONE, runId, signIn } from './helpers';
@@ -54,9 +55,8 @@ async function reviewDependencies(page: Page) {
 		await checkbox.check();
 }
 
-test.beforeAll(async ({ playwright }) => {
-	const request = await playwright.request.newContext({ baseURL: test.info().project.use.baseURL });
-	const api = apiClient(request, ALICE.apiKey);
+test.beforeAll(async ({ apiFor }) => {
+	const api = apiFor(ALICE);
 	const dependency = await body<{ id: string; states: { id: string; name: string }[] }>(
 		await api.post('/api/v1/workflows', {
 			name: dependencyName,
@@ -173,7 +173,6 @@ test.beforeAll(async ({ playwright }) => {
 		})
 	);
 	scheduleId = issue.schedule!.id;
-	await request.dispose();
 });
 
 test.beforeEach(async ({ context }) => signIn(context, ALICE.sessionToken));

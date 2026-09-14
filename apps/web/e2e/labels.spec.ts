@@ -12,7 +12,8 @@ import type {
 	TinesEvent,
 	WorkflowResponse
 } from '@tines/shared';
-import { expect, test, type Route } from '@playwright/test';
+import type { Route } from '@playwright/test';
+import { expect, test } from './fixtures';
 import { ALICE, RUNROW } from './constants.mjs';
 import { apiClient, body, errorBody, gotoHydrated, resetFocus, runId, signIn } from './helpers';
 
@@ -51,11 +52,8 @@ test.describe.serial('issue labels UI', () => {
 	// strip is the count ("1 label") rather than a name cut mid-word.
 	const wideName = `w-single-label-far-too-wide-for-a-phone-${runId}`;
 
-	test.beforeAll(async ({ playwright }) => {
-		const request = await playwright.request.newContext({
-			baseURL: test.info().project.use.baseURL
-		});
-		const api = apiClient(request, ALICE.apiKey);
+	test.beforeAll(async ({ apiFor }) => {
+		const api = apiFor(ALICE);
 		project = await body<Project>(await api.post('/api/v1/projects', { name: projectName }));
 		bug = await body<Label>(await api.post('/api/v1/labels', { name: bugName, color: 'red' }));
 		await api.post('/api/v1/labels', { name: p1Name, color: 'blue' });
@@ -83,11 +81,11 @@ test.describe.serial('issue labels UI', () => {
 			title: `Wide ${runId}`,
 			labels: [wideName]
 		});
-		await request.dispose();
 	});
 
-	test.beforeEach(async ({ context, request }) => {
-		await signIn(context, ALICE.sessionToken);
+	test.use({ signedIn: ALICE });
+
+	test.beforeEach(async ({ request }) => {
 		// Specs share one user: a focus left behind would scope this one's lists.
 		await resetFocus(request);
 	});

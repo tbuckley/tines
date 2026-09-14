@@ -11,13 +11,15 @@
  * here rather than shipping.
  */
 import type { Workflow } from '@tines/shared';
-import { expect, test, type Page } from '@playwright/test';
+import type { Page } from '@playwright/test';
+import { expect, test } from './fixtures';
 import { ALICE, RUNROW, RUNROW_ESTIMATED, RUNROW_FAILED } from './constants.mjs';
 import { apiClient, body, gotoHydrated, resetFocus, runId, signIn } from './helpers';
 
 test.describe('shared run row', () => {
-	test.beforeEach(async ({ context, request }) => {
-		await signIn(context, ALICE.sessionToken);
+	test.use({ signedIn: ALICE });
+
+	test.beforeEach(async ({ request }) => {
 		// Specs share one user: a focus left behind would scope this one's lists.
 		await resetFocus(request);
 	});
@@ -176,8 +178,9 @@ test.describe('shared routing-rule row', () => {
 		);
 	});
 
-	test.beforeEach(async ({ context, request }) => {
-		await signIn(context, ALICE.sessionToken);
+	test.use({ signedIn: ALICE });
+
+	test.beforeEach(async ({ request }) => {
 		// Specs share one user: a focus left behind would scope this one's lists.
 		await resetFocus(request);
 	});
@@ -208,8 +211,9 @@ test.describe('shared routing-rule row', () => {
 test.describe('failed run error', () => {
 	const FULL = RUNROW_FAILED.error;
 
-	test.beforeEach(async ({ context, request }) => {
-		await signIn(context, ALICE.sessionToken);
+	test.use({ signedIn: ALICE });
+
+	test.beforeEach(async ({ request }) => {
 		// Specs share one user: a focus left behind would scope this one's lists.
 		await resetFocus(request);
 	});

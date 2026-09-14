@@ -1,5 +1,6 @@
 import type { IssueDetail, Project, WorkflowResponse } from '@tines/shared';
-import { expect, test, type Locator, type Page } from '@playwright/test';
+import type { Locator, Page } from '@playwright/test';
+import { expect, test } from './fixtures';
 import { ALICE } from './constants.mjs';
 import { apiClient, body, gotoHydrated, readSettled, runId, signIn } from './helpers';
 
@@ -33,7 +34,7 @@ const WIDE_STATE = 'Implementation in progress';
 const DESIGN_DOC_DESCRIPTION =
 	'The design document for this issue: scope, the change itself, and how it will be tested before review.';
 
-const projectName = `state-card-${runId}`;
+let projectName: string;
 let project: Project;
 /** In Design with nothing attached: one enabled pair, two blocked. */
 let blocked: IssueDetail;
@@ -46,11 +47,9 @@ let tall: IssueDetail;
 /** A second workflow whose state name is far too wide for the phone bar. */
 let wide: IssueDetail;
 
-test.beforeAll(async ({ playwright }) => {
-	const request = await playwright.request.newContext({
-		baseURL: test.info().project.use.baseURL
-	});
-	const api = apiClient(request, ALICE.apiKey);
+test.beforeAll(async ({ apiFor, uniqueName }) => {
+	projectName = uniqueName('state-card');
+	const api = apiFor(ALICE);
 	project = await body<Project>(await api.post('/api/v1/projects', { name: projectName }));
 
 	// Transition order here is the workflow's own: the forward moves first, so
@@ -155,13 +154,9 @@ test.beforeAll(async ({ playwright }) => {
 			workflow_id: wideWorkflow.id
 		})
 	);
-
-	await request.dispose();
 });
 
-test.beforeEach(async ({ context }) => {
-	await signIn(context, ALICE.sessionToken);
-});
+test.use({ signedIn: ALICE });
 
 const issueUrl = (issue: IssueDetail) =>
 	`/issues/${encodeURIComponent(projectName)}/${issue.number}`;

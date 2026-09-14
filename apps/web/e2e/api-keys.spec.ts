@@ -1,4 +1,5 @@
-import { expect, test, type Page } from '@playwright/test';
+import type { Page } from '@playwright/test';
+import { expect, test } from './fixtures';
 import { ALICE, RUNROW, RUNROW_FAILED } from './constants.mjs';
 import { gotoHydrated, signIn } from './helpers';
 
@@ -48,9 +49,7 @@ async function openDisclosure(page: Page): Promise<void> {
 	}).toPass({ timeout: 15_000 });
 }
 
-test.beforeEach(async ({ context }) => {
-	await signIn(context, ALICE.sessionToken);
-});
+test.use({ signedIn: ALICE });
 
 test.describe.serial('API keys page', () => {
 	test("the user's own keys are the whole visible list", async ({ page }) => {

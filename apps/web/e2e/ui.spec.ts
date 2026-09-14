@@ -1,5 +1,6 @@
 import type { IssueDetail, Project } from '@tines/shared';
-import { expect, test, type Locator, type Page } from '@playwright/test';
+import type { Locator, Page } from '@playwright/test';
+import { expect, test } from './fixtures';
 import { ALICE } from './constants.mjs';
 import { apiClient, body, clickUntil, gotoHydrated, resetFocus, runId, signIn } from './helpers';
 
@@ -7,16 +8,14 @@ import { apiClient, body, clickUntil, gotoHydrated, resetFocus, runId, signIn } 
 // Names carry the per-run suffix so re-runs against a reused server stay
 // unambiguous.
 
-const projectName = `ui-${runId}`;
+let projectName: string;
 const issueTitle = `UI smoke ${runId}`;
 let project: Project;
 let issue: IssueDetail;
 
-test.beforeAll(async ({ playwright }) => {
-	const request = await playwright.request.newContext({
-		baseURL: test.info().project.use.baseURL
-	});
-	const api = apiClient(request, ALICE.apiKey);
+test.beforeAll(async ({ apiFor, uniqueName }) => {
+	projectName = uniqueName('ui');
+	const api = apiFor(ALICE);
 	project = await body<Project>(await api.post('/api/v1/projects', { name: projectName }));
 	issue = await body<IssueDetail>(
 		await api.post(`/api/v1/projects/${project.id}/issues`, {
@@ -24,11 +23,11 @@ test.beforeAll(async ({ playwright }) => {
 			description: 'A **bold** claim.'
 		})
 	);
-	await request.dispose();
 });
 
-test.beforeEach(async ({ context, request }) => {
-	await signIn(context, ALICE.sessionToken);
+test.use({ signedIn: ALICE });
+
+test.beforeEach(async ({ request }) => {
 	// Specs share one user: a focus left behind would scope this one's lists.
 	await resetFocus(request);
 });

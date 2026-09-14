@@ -1,5 +1,6 @@
 import type { IssueDetail, Project } from '@tines/shared';
-import { expect, test, type Page } from '@playwright/test';
+import type { Page } from '@playwright/test';
+import { expect, test } from './fixtures';
 import { ALICE } from './constants.mjs';
 import { apiClient, body, gotoHydrated, resetFocus, runId, signIn } from './helpers';
 
@@ -20,17 +21,15 @@ const URL_TITLE = `Investigate https://github.com/tbuckley/tines/actions/runs/12
 /** Repro B: a 400-character unbroken token, the worst case. */
 const BLOB_TITLE = `Paste ${'a1b2c3d4e5'.repeat(40)} ${runId}`;
 
-const projectName = `longtitle-${runId}`;
+let projectName: string;
 let project: Project;
 let urlIssue: IssueDetail;
 let blobIssue: IssueDetail;
 let dupIssue: IssueDetail;
 
-test.beforeAll(async ({ playwright }) => {
-	const request = await playwright.request.newContext({
-		baseURL: test.info().project.use.baseURL
-	});
-	const api = apiClient(request, ALICE.apiKey);
+test.beforeAll(async ({ apiFor, uniqueName }) => {
+	projectName = uniqueName('longtitle');
+	const api = apiFor(ALICE);
 	project = await body<Project>(await api.post('/api/v1/projects', { name: projectName }));
 
 	const create = async (title: string) =>
@@ -45,12 +44,11 @@ test.beforeAll(async ({ playwright }) => {
 		kind: 'duplicate_of',
 		issue_id: blobIssue.id
 	});
-
-	await request.dispose();
 });
 
-test.beforeEach(async ({ context, request }) => {
-	await signIn(context, ALICE.sessionToken);
+test.use({ signedIn: ALICE });
+
+test.beforeEach(async ({ request }) => {
 	// Specs share one user: a focus left behind would scope this one's lists.
 	await resetFocus(request);
 });

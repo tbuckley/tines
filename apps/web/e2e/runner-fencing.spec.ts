@@ -1,5 +1,6 @@
 import type { Runner, RunnerPollResponse, RunnerTokenResponse } from '@tines/shared';
-import { expect, test, type APIRequestContext } from '@playwright/test';
+import type { APIRequestContext } from '@playwright/test';
+import { expect, test } from './fixtures';
 import { ALICE } from './constants.mjs';
 import { apiClient, body, errorBody, runId } from './helpers';
 

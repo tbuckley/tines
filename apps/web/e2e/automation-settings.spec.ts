@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test } from './fixtures';
 import type { IssueDetail, Project } from '@tines/shared';
 import { MANAGED_SETTINGS, STOPPED_FIRST_RUN } from './constants.mjs';
 import { apiClient, body, gotoHydrated, runId, signIn } from './helpers';

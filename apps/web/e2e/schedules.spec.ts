@@ -8,13 +8,14 @@ import type {
 	TinesEvent,
 	WorkflowResponse
 } from '@tines/shared';
-import { expect, test } from '@playwright/test';
+import { expect, test } from './fixtures';
 import { ALICE, BOB, SCHED } from './constants.mjs';
 import {
 	apiClient,
 	body,
 	clickUntil,
 	errorBody,
+	fireSweep,
 	gotoHydrated,
 	resetFocus,
 	runId,
@@ -37,12 +38,6 @@ const todayIn = (timeZone: string) =>
 		month: '2-digit',
 		day: '2-digit'
 	}).format(new Date());
-
-const fireSweep = async (request: import('@playwright/test').APIRequestContext) => {
-	// wrangler dev --test-scheduled exposes the scheduled() handler here.
-	const res = await request.get('/__scheduled?cron=*+*+*+*+*');
-	expect(res.ok()).toBe(true);
-};
 
 test.describe.serial('scheduled-task sweep (seeded due schedules)', () => {
 	test('creates an instance for a due schedule with rendered placeholders', async ({ request }) => {

@@ -21,9 +21,10 @@ import type {
 	Runner,
 	TinesEvent
 } from '@tines/shared';
-import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
+import type { APIRequestContext, Page } from '@playwright/test';
+import { expect, test } from './fixtures';
 import { ALICE, BASE_URL } from './constants.mjs';
-import { apiClient, body, gotoHydrated, runId, signIn } from './helpers';
+import { apiClient, body, fireSweep, gotoHydrated, runId, signIn } from './helpers';
 
 const CLI_DIR = fileURLToPath(new URL('../../../packages/cli', import.meta.url));
 const TSX = join(CLI_DIR, 'node_modules', '.bin', 'tsx');
@@ -62,11 +63,6 @@ async function waitFor<T>(
 		await new Promise((r) => setTimeout(r, interval));
 	}
 }
-
-const fireSweep = async (request: APIRequestContext) => {
-	const res = await request.get('/__scheduled?cron=*+*+*+*+*');
-	expect(res.ok()).toBe(true);
-};
 
 async function issueRuns(request: APIRequestContext, issueId: string): Promise<AgentRun[]> {
 	const api = apiClient(request, ALICE.apiKey);

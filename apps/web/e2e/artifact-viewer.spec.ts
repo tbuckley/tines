@@ -1,5 +1,6 @@
 import type { IssueDetail, Project } from '@tines/shared';
-import { expect, test, type Locator, type Page } from '@playwright/test';
+import type { Locator, Page } from '@playwright/test';
+import { expect, test } from './fixtures';
 import { ALICE, BASE_URL } from './constants.mjs';
 import { apiClient, body, gotoHydrated, readSettled, runId, signIn } from './helpers';
 
@@ -11,7 +12,7 @@ import { apiClient, body, gotoHydrated, readSettled, runId, signIn } from './hel
  * whatever the content's height, and that the page behind stays put.
  */
 
-const projectName = `viewer-${runId}`;
+let projectName: string;
 let project: Project;
 let issue: IssueDetail;
 let otherIssue: IssueDetail;
@@ -20,11 +21,9 @@ const PHONE = { width: 390, height: 844 };
 
 type Box = { x: number; y: number; width: number; height: number };
 
-test.beforeAll(async ({ playwright }) => {
-	const request = await playwright.request.newContext({
-		baseURL: test.info().project.use.baseURL
-	});
-	const api = apiClient(request, ALICE.apiKey);
+test.beforeAll(async ({ apiFor, uniqueName, workerRequest: request }) => {
+	projectName = uniqueName('viewer');
+	const api = apiFor(ALICE);
 	project = await body<Project>(await api.post('/api/v1/projects', { name: projectName }));
 	issue = await body<IssueDetail>(
 		await api.post(`/api/v1/projects/${project.id}/issues`, { title: `Viewer ${runId}` })
@@ -127,13 +126,9 @@ test.beforeAll(async ({ playwright }) => {
 	await api.post(`/api/v1/issues/${issue.id}/comments`, {
 		body: Array.from({ length: 40 }, (_, i) => `Comment paragraph ${i + 1}.`).join('\n\n')
 	});
-
-	await request.dispose();
 });
 
-test.beforeEach(async ({ context }) => {
-	await signIn(context, ALICE.sessionToken);
-});
+test.use({ signedIn: ALICE });
 
 /**
  * On a phone the Artifacts panel folds to one row (Tines/165); open it before

@@ -1,5 +1,5 @@
 import type { ContextItem, IssueDetail, ListResponse, Project } from '@tines/shared';
-import { expect, test } from '@playwright/test';
+import { expect, test } from './fixtures';
 import { ALICE } from './constants.mjs';
 import { apiClient, body, DESKTOP, gotoHydrated, PHONE, runId, signIn } from './helpers';
 
@@ -16,11 +16,8 @@ test.describe.serial('literal long search', () => {
 	let japaneseContext: ContextItem;
 	let literalContext: ContextItem;
 
-	test.beforeAll(async ({ playwright }) => {
-		const request = await playwright.request.newContext({
-			baseURL: test.info().project.use.baseURL
-		});
-		const api = apiClient(request, ALICE.apiKey);
+	test.beforeAll(async ({ apiFor }) => {
+		const api = apiFor(ALICE);
 		project = await body<Project>(await api.post('/api/v1/projects', { name: projectName }));
 		asciiIssue = await body<IssueDetail>(
 			await api.post(`/api/v1/projects/${project.id}/issues`, { title: ascii })
@@ -62,7 +59,6 @@ test.describe.serial('literal long search', () => {
 				body: ''
 			})
 		);
-		await request.dispose();
 	});
 
 	test('native D1 accepts the exact boundary, long and multibyte terms on every API', async ({

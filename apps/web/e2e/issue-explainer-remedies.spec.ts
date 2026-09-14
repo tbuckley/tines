@@ -13,7 +13,7 @@
  * Its fixture is not shared, so the spec remains valid in isolation and in any
  * file order even though issues cannot be deleted.
  */
-import { expect, test } from '@playwright/test';
+import { expect, test } from './fixtures';
 import type { IssueDetail, Project } from '@tines/shared';
 import { EXPLAINER_REMEDIES as USER } from './constants.mjs';
 import { apiClient, body, gotoHydrated, runId, signIn } from './helpers';

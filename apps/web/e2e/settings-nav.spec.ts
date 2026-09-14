@@ -1,4 +1,5 @@
-import { expect, test, type Locator, type Page } from '@playwright/test';
+import type { Locator, Page } from '@playwright/test';
+import { expect, test } from './fixtures';
 import { ALICE } from './constants.mjs';
 import { clickUntil, gotoHydrated, readSettled, resetFocus, signIn } from './helpers';
 
@@ -22,8 +23,9 @@ const PATHS = [
 	'/settings/export-import'
 ];
 
-test.beforeEach(async ({ context, request }) => {
-	await signIn(context, ALICE.sessionToken);
+test.use({ signedIn: ALICE });
+
+test.beforeEach(async ({ request }) => {
 	// Specs share one user: a focus left behind would scope this one's lists.
 	await resetFocus(request);
 });

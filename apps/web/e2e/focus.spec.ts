@@ -3,7 +3,8 @@
  * app chrome and read by the issues list and New issue.
  */
 import type { Project, UserPreferences } from '@tines/shared';
-import { expect, test, type Browser, type Page } from '@playwright/test';
+import type { Browser, Page } from '@playwright/test';
+import { expect, test } from './fixtures';
 import { ALICE, CAROL, RUNROW } from './constants.mjs';
 import {
 	apiClient,

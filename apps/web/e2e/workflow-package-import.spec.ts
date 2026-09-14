@@ -11,7 +11,8 @@ import {
 	type WorkflowPackageDocument
 } from '@tines/shared';
 import { automatedPackage } from '../../../packages/shared/src/library/fixtures.js';
-import { expect, test, type Locator, type Page } from '@playwright/test';
+import type { Locator, Page } from '@playwright/test';
+import { expect, test } from './fixtures';
 import {
 	signPackagePlan,
 	verifyPackagePlan,
@@ -159,9 +160,8 @@ let dependencyName: string;
 let candidateInputId: string;
 let projects: Project[];
 
-test.beforeAll(async ({ playwright }) => {
-	const request = await playwright.request.newContext({ baseURL: test.info().project.use.baseURL });
-	const api = apiClient(request, BOB.apiKey);
+test.beforeAll(async ({ apiFor }) => {
+	const api = apiFor(BOB);
 	const candidate = automatedPackage();
 	(candidate as { digest?: string }).digest = undefined;
 	mainName = `Reviewer${suffix}`;
@@ -256,7 +256,6 @@ test.beforeAll(async ({ playwright }) => {
 		'package.json'
 	);
 	writeFileSync(missingWorkflowPath, JSON.stringify(missingValidation.document));
-	await request.dispose();
 });
 
 test.beforeEach(async ({ context }) => signIn(context, BOB.sessionToken));

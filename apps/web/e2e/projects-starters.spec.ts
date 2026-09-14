@@ -7,7 +7,8 @@ import type {
 	LaunchPromptResponse,
 	StarterSummary
 } from '@tines/shared';
-import { expect, test, type Page } from '@playwright/test';
+import type { Page } from '@playwright/test';
+import { expect, test } from './fixtures';
 import { ALICE, BASE_URL } from './constants.mjs';
 import { apiClient, body, clickUntil, gotoHydrated, runId, signIn } from './helpers';
 
@@ -37,20 +38,14 @@ const byId = (id: string): StarterSummary => {
 	return found;
 };
 
-test.beforeAll(async ({ playwright }) => {
-	const request = await playwright.request.newContext({
-		baseURL: test.info().project.use.baseURL
-	});
-	const api = apiClient(request, ALICE.apiKey);
+test.beforeAll(async ({ apiFor }) => {
+	const api = apiFor(ALICE);
 	const res = await api.get('/api/v1/projects/starters');
 	expect(res.status(), 'the starter menu must load').toBe(200);
 	starters = (await body<{ items: StarterSummary[] }>(res)).items;
-	await request.dispose();
 });
 
-test.beforeEach(async ({ context }) => {
-	await signIn(context, ALICE.sessionToken);
-});
+test.use({ signedIn: ALICE });
 
 test('Code repository seeds the first issue launch context and gated review workflow', async ({
 	page,

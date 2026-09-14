@@ -1,5 +1,6 @@
 import type { IssueDetail, Project } from '@tines/shared';
-import { expect, test, type Browser, type Page } from '@playwright/test';
+import type { Browser, Page } from '@playwright/test';
+import { expect, test } from './fixtures';
 import { ALICE } from './constants.mjs';
 import { apiClient, body, clickUntil, gotoHydrated, resetFocus, runId, signIn } from './helpers';
 

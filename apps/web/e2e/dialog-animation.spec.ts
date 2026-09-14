@@ -1,5 +1,6 @@
 import type { IssueDetail, Project } from '@tines/shared';
-import { expect, test, type Locator, type Page } from '@playwright/test';
+import type { Locator, Page } from '@playwright/test';
+import { expect, test } from './fixtures';
 import { ALICE } from './constants.mjs';
 import { apiClient, body, clickUntil, gotoHydrated, resetFocus, runId, signIn } from './helpers';
 
@@ -22,15 +23,13 @@ test.use({ reducedMotion: 'no-preference' });
 // assert the *computed* animation-name, which is `none` whenever the variant
 // selector fails to match (Tines/110).
 
-const projectName = `alertanim-${runId}`;
+let projectName: string;
 let project: Project;
 let issue: IssueDetail;
 
-test.beforeAll(async ({ playwright }) => {
-	const request = await playwright.request.newContext({
-		baseURL: test.info().project.use.baseURL
-	});
-	const api = apiClient(request, ALICE.apiKey);
+test.beforeAll(async ({ apiFor, uniqueName }) => {
+	projectName = uniqueName('alertanim');
+	const api = apiFor(ALICE);
 	project = await body<Project>(await api.post('/api/v1/projects', { name: projectName }));
 	issue = await body<IssueDetail>(
 		await api.post(`/api/v1/projects/${project.id}/issues`, {
@@ -38,11 +37,11 @@ test.beforeAll(async ({ playwright }) => {
 			description: 'Fixture for the AlertDialog animation assertions.'
 		})
 	);
-	await request.dispose();
 });
 
-test.beforeEach(async ({ context, request }) => {
-	await signIn(context, ALICE.sessionToken);
+test.use({ signedIn: ALICE });
+
+test.beforeEach(async ({ request }) => {
 	// Specs share one user: a focus left behind would scope this one's lists.
 	await resetFocus(request);
 });

@@ -13,7 +13,7 @@ import type {
 	RunnerPollResponse,
 	RunnerTokenResponse
 } from '@tines/shared';
-import { expect, test } from '@playwright/test';
+import { expect, test } from './fixtures';
 import { ALICE, BASE_URL } from './constants.mjs';
 import { apiClient, body, clickToOpen, gotoHydrated, runId, signIn } from './helpers';
 

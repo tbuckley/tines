@@ -1,5 +1,6 @@
 import type { IssueDetail, Project, WorkflowResponse } from '@tines/shared';
-import { expect, test, type Page } from '@playwright/test';
+import type { Page } from '@playwright/test';
+import { expect, test } from './fixtures';
 import { ALICE } from './constants.mjs';
 import { apiClient, body, clickUntil, gotoHydrated, resetFocus, runId, signIn } from './helpers';
 
@@ -34,15 +35,13 @@ const DESKTOP = { width: 1280, height: 900 };
 /** Long enough to overflow a 390px dialog's action row beside "Cancel". */
 const LONG_TRANSITION = 'Send back to research for another pass';
 
-const projectName = `dialog-pending-${runId}`;
+let projectName: string;
 let project: Project;
 let workflowId: string;
 
-test.beforeAll(async ({ playwright }) => {
-	const request = await playwright.request.newContext({
-		baseURL: test.info().project.use.baseURL
-	});
-	const api = apiClient(request, ALICE.apiKey);
+test.beforeAll(async ({ apiFor, uniqueName }) => {
+	projectName = uniqueName('dialog-pending');
+	const api = apiFor(ALICE);
 	project = await body<Project>(await api.post('/api/v1/projects', { name: projectName }));
 
 	const workflow = await body<WorkflowResponse>(
@@ -57,11 +56,11 @@ test.beforeAll(async ({ playwright }) => {
 		})
 	);
 	workflowId = workflow.id;
-	await request.dispose();
 });
 
-test.beforeEach(async ({ context, request }) => {
-	await signIn(context, ALICE.sessionToken);
+test.use({ signedIn: ALICE });
+
+test.beforeEach(async ({ request }) => {
 	// Specs share one user: a focus left behind would scope this one's lists.
 	await resetFocus(request);
 });

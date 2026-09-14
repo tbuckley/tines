@@ -1,5 +1,6 @@
 import type { ArtifactSiteLink, IssueDetail, Project } from '@tines/shared';
-import { expect, test, type Page } from '@playwright/test';
+import type { Page } from '@playwright/test';
+import { expect, test } from './fixtures';
 import { siteHeaders } from '../src/lib/server/artifact-site';
 import { ALICE, BASE_URL } from './constants.mjs';
 import { apiClient, body, gotoHydrated, runId, signIn } from './helpers';
@@ -19,7 +20,7 @@ import { apiClient, body, gotoHydrated, runId, signIn } from './helpers';
  * the viewer warns about in its own words.
  */
 
-const projectName = `site-${runId}`;
+let projectName: string;
 let project: Project;
 let issue: IssueDetail;
 
@@ -84,11 +85,9 @@ const FOLDER_SUB_HTML = `<!doctype html>
 <body><h1>Sub page index</h1></body></html>
 `;
 
-test.beforeAll(async ({ playwright }) => {
-	const request = await playwright.request.newContext({
-		baseURL: test.info().project.use.baseURL
-	});
-	const api = apiClient(request, ALICE.apiKey);
+test.beforeAll(async ({ apiFor, uniqueName, workerRequest: request }) => {
+	projectName = uniqueName('site');
+	const api = apiFor(ALICE);
 	project = await body<Project>(await api.post('/api/v1/projects', { name: projectName }));
 	issue = await body<IssueDetail>(
 		await api.post(`/api/v1/projects/${project.id}/issues`, { title: `Site ${runId}` })
@@ -128,13 +127,9 @@ test.beforeAll(async ({ playwright }) => {
 		}
 	});
 	expect(folder.status(), await folder.text()).toBe(200);
-
-	await request.dispose();
 });
 
-test.beforeEach(async ({ context }) => {
-	await signIn(context, ALICE.sessionToken);
-});
+test.use({ signedIn: ALICE });
 
 const issueUrl = () => `/issues/${encodeURIComponent(projectName)}/${issue.number}`;
 

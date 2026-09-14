@@ -11,7 +11,7 @@
  * poll that never comes, and the cleanup step disables automation to cancel it.
  */
 import type { IssueDetail, Project, RoutingRule, Runner } from '@tines/shared';
-import { expect, test } from '@playwright/test';
+import { expect, test } from './fixtures';
 import { ALICE, RUNROW } from './constants.mjs';
 import { apiClient, body, clickUntil, gotoHydrated, resetFocus, runId, signIn } from './helpers';
 

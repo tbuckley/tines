@@ -23,7 +23,8 @@ import {
 	type WorkflowPackageReceipt,
 	type WorkflowResponse
 } from '@tines/shared';
-import { expect, test, type APIRequestContext } from '@playwright/test';
+import type { APIRequestContext } from '@playwright/test';
+import { expect, test } from './fixtures';
 import { ALICE, BASE_URL } from './constants.mjs';
 import { apiClient, body, gotoHydrated, runId, signIn } from './helpers';
 

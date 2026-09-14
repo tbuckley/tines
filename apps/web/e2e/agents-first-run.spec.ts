@@ -5,7 +5,7 @@
  * Runs as a dedicated seeded account with no projects, runners or rules, so
  * the spec is independent of file ordering and every other browser fixture.
  */
-import { expect, test } from '@playwright/test';
+import { expect, test } from './fixtures';
 import type { ListResponse, Project, RoutingRuleWithWarnings } from '@tines/shared';
 import { AGENTS_FIRST_RUN as USER } from './constants.mjs';
 import { apiClient, body, gotoHydrated, runId, signIn } from './helpers';

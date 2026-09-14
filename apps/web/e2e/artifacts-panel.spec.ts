@@ -1,5 +1,6 @@
 import type { Artifact, IssueDetail, Project, WorkflowResponse } from '@tines/shared';
-import { expect, test, type Locator, type Page } from '@playwright/test';
+import type { Locator, Page } from '@playwright/test';
+import { expect, test } from './fixtures';
 import { ALICE } from './constants.mjs';
 import { apiClient, body, clickUntil, gotoHydrated, readSettled, runId, signIn } from './helpers';
 
@@ -21,7 +22,7 @@ const PNG = Buffer.from(
 	'base64'
 );
 
-const projectName = `artifacts-panel-${runId}`;
+let projectName: string;
 let project: Project;
 let plain: IssueDetail;
 let stale: IssueDetail;
@@ -31,11 +32,9 @@ let gatedPlain: IssueDetail;
 let gatedPhone: IssueDetail;
 let gatedFile: IssueDetail;
 
-test.beforeAll(async ({ playwright }) => {
-	const request = await playwright.request.newContext({
-		baseURL: test.info().project.use.baseURL
-	});
-	const api = apiClient(request, ALICE.apiKey);
+test.beforeAll(async ({ apiFor, uniqueName, workerRequest: request }) => {
+	projectName = uniqueName('artifacts-panel');
+	const api = apiFor(ALICE);
 	project = await body<Project>(await api.post('/api/v1/projects', { name: projectName }));
 
 	// Eight images: more than the three thumbnails a row shows, as in the
@@ -126,13 +125,9 @@ test.beforeAll(async ({ playwright }) => {
 	gatedPlain = await inDesign('Panel gated plain');
 	gatedPhone = await inDesign('Panel gated phone');
 	gatedFile = await inDesign('Panel gated file');
-
-	await request.dispose();
 });
 
-test.beforeEach(async ({ context }) => {
-	await signIn(context, ALICE.sessionToken);
-});
+test.use({ signedIn: ALICE });
 
 /**
  * On a phone the Artifacts panel folds to one row (Tines/165); open it before
@@ -307,7 +302,7 @@ async function openAttachFor(page: Page, issue: IssueDetail, name: string): Prom
 
 test('the attach dialog pre-selects the gate type and warns on one it rejects', async ({
 	page,
-	playwright
+	apiFor
 }) => {
 	await openAttachFor(page, gatedMd, 'prd');
 
@@ -335,10 +330,7 @@ test('the attach dialog pre-selects the gate type and warns on one it rejects', 
 	await expect(page.getByRole('button', { name: 'prd', exact: true })).toBeVisible();
 
 	// What the gate wanted, and it clears the gate on the first try.
-	const request = await playwright.request.newContext({
-		baseURL: test.info().project.use.baseURL
-	});
-	const api = apiClient(request, ALICE.apiKey);
+	const api = apiFor(ALICE);
 	const artifact = await body<Artifact>(
 		await api.get(`/api/v1/issues/${gatedMd.id}/artifacts/prd`)
 	);
@@ -346,12 +338,11 @@ test('the attach dialog pre-selects the gate type and warns on one it rejects', 
 	expect(artifact.current_version.content_type).toBe('text/markdown');
 	const moved = await api.post(`/api/v1/issues/${gatedMd.id}/transition`, { action: 'submit' });
 	expect(moved.status(), await moved.text()).toBe(200);
-	await request.dispose();
 });
 
 test('a text gate with a concrete content type is declared on the write', async ({
 	page,
-	playwright
+	apiFor
 }) => {
 	await openAttachFor(page, gatedPlain, 'notes');
 
@@ -362,15 +353,11 @@ test('a text gate with a concrete content type is declared on the write', async 
 	await expect(page.getByRole('button', { name: 'notes', exact: true })).toBeVisible();
 
 	// The gate's MIME, not the server's text/markdown default.
-	const request = await playwright.request.newContext({
-		baseURL: test.info().project.use.baseURL
-	});
-	const api = apiClient(request, ALICE.apiKey);
+	const api = apiFor(ALICE);
 	const artifact = await body<Artifact>(
 		await api.get(`/api/v1/issues/${gatedPlain.id}/artifacts/notes`)
 	);
 	expect(artifact.current_version.content_type).toBe('text/plain');
-	await request.dispose();
 });
 
 test('the gate note and warning wrap on a phone', async ({ page }) => {

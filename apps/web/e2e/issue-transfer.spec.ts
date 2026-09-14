@@ -2,7 +2,8 @@ import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { EffectiveContext, IssueDetail, IssueTransferPreview, Project } from '@tines/shared';
-import { expect, test, type Browser, type Page } from '@playwright/test';
+import type { Browser, Page } from '@playwright/test';
+import { expect, test } from './fixtures';
 import { ALICE, BASE_URL } from './constants.mjs';
 import { apiClient, body, clickToOpen, gotoHydrated, resetFocus, runId, signIn } from './helpers';
 

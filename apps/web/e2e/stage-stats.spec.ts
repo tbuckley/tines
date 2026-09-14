@@ -10,7 +10,7 @@ import type {
 	StageStatsReport,
 	WorkflowResponse
 } from '@tines/shared';
-import { expect, test } from '@playwright/test';
+import { expect, test } from './fixtures';
 import { WEEKLY } from './stage-stats-seed.mjs';
 import { ALICE } from './constants.mjs';
 import { apiClient, body, clickToOpen, gotoHydrated, runId, signIn } from './helpers';
@@ -21,9 +21,8 @@ let project: Project;
 let workflow: WorkflowResponse;
 let reviewStateId: string;
 
-test.beforeAll(async ({ playwright }) => {
-	const request = await playwright.request.newContext({ baseURL: test.info().project.use.baseURL });
-	const api = apiClient(request, ALICE.apiKey);
+test.beforeAll(async ({ apiFor }) => {
+	const api = apiFor(ALICE);
 	workflow = await body<WorkflowResponse>(
 		await api.post('/api/v1/workflows', {
 			name: `Stage stats ${runId}`,
@@ -84,7 +83,6 @@ test.beforeAll(async ({ playwright }) => {
 	};
 	await seedVisit(project.id, `Sent back ${runId}`, true);
 	await seedVisit(other.id, `Other visit ${runId}`, false);
-	await request.dispose();
 });
 
 test('filters the weekly board, focuses capacity, and opens frozen historical evidence', async ({

@@ -6,7 +6,8 @@
  * only on the read-only system workflow, which has no form to hold it, and
  * Delete moved down into the form's save row.
  */
-import { expect, test, type Page } from '@playwright/test';
+import type { Page } from '@playwright/test';
+import { expect, test } from './fixtures';
 import { ALICE } from './constants.mjs';
 import { apiClient, body, gotoHydrated, runId, signIn } from './helpers';
 
@@ -23,11 +24,8 @@ const SYSTEM_WORKFLOW = {
 
 let workflowId: string;
 
-test.beforeAll(async ({ playwright }) => {
-	const request = await playwright.request.newContext({
-		baseURL: test.info().project.use.baseURL
-	});
-	const api = apiClient(request, ALICE.apiKey);
+test.beforeAll(async ({ apiFor }) => {
+	const api = apiFor(ALICE);
 	const created = await body<{ id: string }>(
 		await api.post('/api/v1/workflows', {
 			name: workflowName,
@@ -44,12 +42,9 @@ test.beforeAll(async ({ playwright }) => {
 		})
 	);
 	workflowId = created.id;
-	await request.dispose();
 });
 
-test.beforeEach(async ({ context }) => {
-	await signIn(context, ALICE.sessionToken);
-});
+test.use({ signedIn: ALICE });
 
 /** The paragraphs the header renders under the title, in document order. */
 const headerParagraphs = (page: Page, title: string | RegExp) =>

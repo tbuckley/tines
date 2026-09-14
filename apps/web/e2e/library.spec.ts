@@ -6,7 +6,8 @@
  * none of its ids.
  */
 import type { ImportLibraryResponse, LibraryDocument } from '@tines/shared';
-import { expect, test, type Locator, type Page } from '@playwright/test';
+import type { Locator, Page } from '@playwright/test';
+import { expect, test } from './fixtures';
 import { ALICE, BOB, RUNROW } from './constants.mjs';
 import { apiClient, body, errorBody, gotoHydrated, runId, signIn } from './helpers';
 
