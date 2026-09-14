@@ -218,6 +218,201 @@ test.beforeAll(async ({ playwright }) => {
 
 test.beforeEach(async ({ context }) => signIn(context, ALICE.sessionToken));
 
+for (const { viewport, theme } of [
+	{ viewport: DESKTOP, theme: 'light' },
+	{ viewport: DESKTOP, theme: 'dark' },
+	{ viewport: PHONE, theme: 'light' },
+	{ viewport: PHONE, theme: 'dark' }
+] as const) {
+	test(`corrects an authored input without rebuilding at ${viewport.width}px in ${theme} mode`, async ({
+		page
+	}) => {
+		test.setTimeout(120_000);
+		await page.setViewportSize(viewport);
+		await page.addInitScript(
+			(savedTheme) => localStorage.setItem('tines:theme', savedTheme),
+			theme
+		);
+		await openExport(page);
+		await expect(page.locator('html')).toHaveClass(
+			theme === 'dark' ? /\bdark\b/ : /^(?!.*\bdark\b)/
+		);
+
+		await page.getByLabel('Key').fill('project_name');
+		await page.getByLabel('Type').selectOption('project');
+		await page.getByLabel('Default').fill('customer-portal');
+		await page.getByRole('button', { name: 'Add typed declaration' }).click();
+		await page
+			.getByLabel('Exact candidate field')
+			.selectOption({ label: 'instructions — prompt body' });
+		const editor = page.locator('textarea');
+		await editor.evaluate((node: HTMLTextAreaElement) => {
+			const start = node.value.indexOf('TARGET');
+			node.focus();
+			node.setSelectionRange(start, start + 'TARGET'.length);
+		});
+		await page.getByRole('button', { name: 'Replace selection with declared token' }).click();
+
+		await page.getByLabel('Key').fill('review_label');
+		await page.getByLabel('Type').selectOption('label');
+		await page.getByLabel('Default').fill('customer-reveiw');
+		await page.getByRole('textbox', { name: 'Label', exact: true }).fill('Review label');
+		await page.getByRole('button', { name: 'Add typed declaration' }).click();
+		await reviewDependencies(page);
+
+		// Preserve a separate unfinished add draft through the correction.
+		await page.getByLabel('Key').fill('pending_input');
+		await page.getByLabel('Default').fill('pending-value');
+		await page.getByRole('button', { name: 'Edit input review_label' }).click();
+		await expect(page.getByLabel('Key')).toBeFocused();
+		await expect(page.getByRole('heading', { name: 'Editing input review_label' })).toBeVisible();
+		await expect(page.getByRole('button', { name: 'Rebuild from source' })).toBeDisabled();
+		await expect(page.getByRole('button', { name: 'Edit input project_name' })).toBeDisabled();
+		await page.getByLabel('Key').fill('approval_label');
+		await page.getByLabel('Type').selectOption('text');
+		await page.getByRole('textbox', { name: 'Label', exact: true }).fill('Approval label');
+		await page
+			.getByRole('textbox', { name: 'Description' })
+			.fill('Label applied after customer approval.');
+		await page.getByLabel('Default').fill('customer-review');
+		await page.getByRole('checkbox', { name: 'Required', exact: true }).check();
+		await page.getByRole('button', { name: 'Save changes' }).click();
+
+		await expect(page.getByRole('button', { name: 'Edit input approval_label' })).toBeFocused();
+		await expect(page.getByLabel('Key')).toHaveValue('pending_input');
+		await expect(page.getByLabel('Default')).toHaveValue('pending-value');
+		await expect(declaredInput(page, 'approval_label')).toHaveAttribute('aria-pressed', 'true');
+		await expect(page.getByText('Input declaration updated in this candidate only.')).toBeVisible();
+		await expect(page.getByRole('button', { name: 'Download package' })).toBeDisabled();
+		for (const checkbox of await page
+			.getByRole('checkbox', { name: /I reviewed (every file|this required repository)/ })
+			.all())
+			await expect(checkbox).not.toBeChecked();
+		await expect(
+			page.getByRole('button', {
+				name: /Show declaration for \{\{project_name:customer-portal\}\}/
+			})
+		).toBeVisible();
+
+		const editButton = page.getByRole('button', { name: 'Edit input approval_label' });
+		await expect(editButton.locator('svg')).toBeVisible();
+		await expect(editButton).toHaveText('');
+		const editBox = await editButton.boundingBox();
+		const declarationBox = await page.locator('#input-input\\:author\\:2').boundingBox();
+		expect(editBox?.height).toBeGreaterThanOrEqual(40);
+		expect(editBox?.width).toBe(editBox?.height);
+		expect(
+			Math.abs(
+				(editBox?.y ?? 0) +
+					(editBox?.height ?? 0) / 2 -
+					((declarationBox?.y ?? 0) + (declarationBox?.height ?? 0) / 2)
+			)
+		).toBeLessThanOrEqual(1);
+		const overflow = await page.evaluate(() =>
+			[...globalThis.document.querySelectorAll<HTMLElement>('*')]
+				.filter((element) => element.getBoundingClientRect().right > window.innerWidth + 1)
+				.map((element) => `${element.tagName}.${element.className}`)
+		);
+		expect(overflow).toEqual([]);
+
+		await reviewDependencies(page);
+		const downloadPromise = page.waitForEvent('download');
+		await page.getByRole('button', { name: 'Download package' }).click();
+		const path = await (await downloadPromise).path();
+		const source = await (await import('node:fs/promises')).readFile(path!, 'utf8');
+		const downloaded = (await parseLibraryV3Document(source)) as WorkflowPackageDocument;
+		expect(downloaded.inputs.map(({ id, key }) => ({ id, key }))).toEqual([
+			{ id: 'input:author:1', key: 'project_name' },
+			{ id: 'input:author:2', key: 'approval_label' }
+		]);
+		expect(downloaded.inputs[1]).toEqual({
+			id: 'input:author:2',
+			key: 'approval_label',
+			type: 'text',
+			label: 'Approval label',
+			description: 'Label applied after customer approval.',
+			required: true,
+			default: 'customer-review'
+		});
+		expect(downloaded.text_uses).toEqual([
+			expect.objectContaining({
+				input_id: 'input:author:1',
+				token: '{{project_name:customer-portal}}'
+			})
+		]);
+	});
+}
+
+test('cancels safely and refuses duplicate keys or registered-token edits over unsaved text', async ({
+	page
+}) => {
+	await openExport(page);
+	await page.getByLabel('Source project').selectOption(projectId);
+	await page.getByRole('checkbox', { name: new RegExp(scheduleName) }).check();
+	await page.getByRole('button', { name: 'Rebuild from source' }).click();
+	await expect(page.getByRole('button', { name: /destination_project · project/ })).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Edit input destination_project' })).toHaveCount(0);
+
+	await page.getByLabel('Key').fill('first_input');
+	await page.getByLabel('Default').fill('before');
+	await page.getByRole('button', { name: 'Add typed declaration' }).click();
+	await page
+		.getByLabel('Exact candidate field')
+		.selectOption({ label: 'instructions — prompt body' });
+	const editor = page.locator('textarea');
+	await editor.evaluate((node: HTMLTextAreaElement) => {
+		const start = node.value.indexOf('TARGET');
+		node.focus();
+		node.setSelectionRange(start, start + 'TARGET'.length);
+	});
+	await page.getByRole('button', { name: 'Replace selection with declared token' }).click();
+	await page.getByLabel('Key').fill('second_input');
+	await page.getByLabel('Default').fill('second');
+	await page.getByRole('button', { name: 'Add typed declaration' }).click();
+	const selectedDeclaration = page.locator('button[id^="input-"]').filter({
+		hasText: 'second_input'
+	});
+	await selectedDeclaration.click();
+	await expect(selectedDeclaration).toHaveAttribute('aria-pressed', 'true');
+	await reviewDependencies(page);
+
+	await page.getByLabel('Key').fill('pending_input');
+	await page.getByLabel('Default').fill('pending');
+	await page.getByRole('button', { name: 'Edit input first_input' }).click();
+	await page.getByLabel('Key').fill('second_input');
+	await page.getByRole('button', { name: 'Save changes' }).click();
+	await expect(page.getByRole('alert')).toHaveText('Input key “second_input” already exists.');
+	for (const checkbox of await page
+		.getByRole('checkbox', { name: /I reviewed (every file|this required repository)/ })
+		.all())
+		await expect(checkbox).toBeChecked();
+	await page.getByRole('button', { name: 'Cancel' }).click();
+	await expect(selectedDeclaration).toHaveAttribute('aria-pressed', 'true');
+	await expect(page.getByRole('button', { name: 'Edit input first_input' })).toBeFocused();
+	await expect(page.getByLabel('Key')).toHaveValue('pending_input');
+	await expect(page.getByLabel('Default')).toHaveValue('pending');
+
+	const unsaved = `${await editor.inputValue()} Unsaved adjacent prose.`;
+	await editor.fill(unsaved);
+	await page.getByRole('button', { name: 'Edit input first_input' }).click();
+	await page.getByLabel('Default').fill('after');
+	await page.getByRole('button', { name: 'Save changes' }).click();
+	await expect(page.getByRole('alert')).toHaveText(
+		'Save candidate text before updating this input’s registered tokens.'
+	);
+	await expect(editor).toHaveValue(unsaved);
+	await expect(page.getByLabel('Default')).toHaveValue('after');
+	await page.getByRole('button', { name: 'Save candidate text' }).click();
+	await expect(
+		page.getByText('Candidate text updated without changing the private source.')
+	).toBeVisible();
+	await page.getByRole('button', { name: 'Save changes' }).click();
+	await expect(selectedDeclaration).toHaveAttribute('aria-pressed', 'true');
+	await expect(page.getByRole('button', { name: 'Edit input first_input' })).toBeFocused();
+	await expect(editor).toHaveValue(/\{\{first_input:after\}\}.*Unsaved adjacent prose\./s);
+	await expect(page.getByRole('button', { name: 'Rebuild from source' })).toBeEnabled();
+});
+
 test('authors an exact declared use and downloads the reviewed canonical package', async ({
 	page,
 	request
@@ -837,6 +1032,8 @@ for (const theme of ['light', 'dark'] as const) {
 
 			await longInput.focus();
 			await page.keyboard.press('Tab');
+			await expect(page.getByRole('button', { name: `Edit input ${longKey}` })).toBeFocused();
+			await page.keyboard.press('Tab');
 			await expect(reviewLabel).toBeFocused();
 			await page.keyboard.press('Space');
 			await expect(reviewLabel).toHaveAttribute('aria-pressed', 'true');
@@ -877,7 +1074,12 @@ for (const theme of ['light', 'dark'] as const) {
 
 test('discards a delayed validation result when candidate review changes', async ({ page }) => {
 	await openExport(page);
+	await page.getByLabel('Key').fill('race_key');
+	await page.getByLabel('Default').fill('before');
+	await page.getByRole('button', { name: 'Add typed declaration' }).click();
 	await reviewDependencies(page);
+	await page.getByRole('button', { name: 'Edit input race_key' }).click();
+	await page.getByLabel('Default').fill('after');
 	let releaseValidation!: () => void;
 	const held = new Promise<void>((resolve) => (releaseValidation = resolve));
 	await page.route('**/api/v1/library/validate', async (route) => {
@@ -892,8 +1094,7 @@ test('discards a delayed validation result when candidate review changes', async
 	});
 	const downloadAttempt = page.getByRole('button', { name: 'Download package' }).click();
 	await expect(page.getByRole('button', { name: 'Validate', exact: true })).toBeDisabled();
-	await page.getByLabel('Key').fill('race_key');
-	await page.getByRole('button', { name: 'Add typed declaration' }).click();
+	await page.getByRole('button', { name: 'Save changes' }).click();
 	await expect(page.getByText('Required skill and repository review was reset.')).toBeVisible();
 	releaseValidation();
 	await finished;
@@ -903,7 +1104,8 @@ test('discards a delayed validation result when candidate review changes', async
 	);
 	expect(downloads).toBe(0);
 	await expect(page.getByText('The older result was discarded.')).toBeVisible();
-	await expect(page.getByRole('button', { name: /race_key · text/ })).toBeVisible();
+	await page.getByRole('button', { name: 'Edit input race_key' }).click();
+	await expect(page.getByLabel('Default')).toHaveValue('after');
 });
 
 test('focuses validation errors and keeps the responsive action clear of navigation', async ({
