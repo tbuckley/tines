@@ -254,10 +254,20 @@ for (const { viewport, theme } of [
 			})
 		).toBeVisible();
 
-		const editBox = await page
-			.getByRole('button', { name: 'Edit input approval_label' })
-			.boundingBox();
+		const editButton = page.getByRole('button', { name: 'Edit input approval_label' });
+		await expect(editButton.locator('svg')).toBeVisible();
+		await expect(editButton).toHaveText('');
+		const editBox = await editButton.boundingBox();
+		const declarationBox = await page.locator('#input-input\\:author\\:2').boundingBox();
 		expect(editBox?.height).toBeGreaterThanOrEqual(40);
+		expect(editBox?.width).toBe(editBox?.height);
+		expect(
+			Math.abs(
+				(editBox?.y ?? 0) +
+					(editBox?.height ?? 0) / 2 -
+					((declarationBox?.y ?? 0) + (declarationBox?.height ?? 0) / 2)
+			)
+		).toBeLessThanOrEqual(1);
 		const overflow = await page.evaluate(() =>
 			[...globalThis.document.querySelectorAll<HTMLElement>('*')]
 				.filter((element) => element.getBoundingClientRect().right > window.innerWidth + 1)

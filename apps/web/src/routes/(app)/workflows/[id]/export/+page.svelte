@@ -13,6 +13,7 @@
 	} from '@tines/shared';
 	import IconArrowLeft from '@tabler/icons-svelte/icons/arrow-left';
 	import IconDownload from '@tabler/icons-svelte/icons/download';
+	import IconPencil from '@tabler/icons-svelte/icons/pencil';
 	import IconRefresh from '@tabler/icons-svelte/icons/refresh';
 	import { tick } from 'svelte';
 	import { api } from '$lib/api';
@@ -723,12 +724,13 @@
 					{#if input.id.startsWith('input:author:')}
 						<Button
 							id="edit-{input.id}"
-							class="min-h-10 shrink-0"
-							size="sm"
+							class="size-10 self-center"
+							size="icon"
 							variant="outline"
 							onclick={() => editInput(input)}
 							disabled={busy || candidateUpdating || Boolean(editingInputId)}
-							aria-label={`Edit input ${input.key}`}>Edit</Button
+							title={`Edit input ${input.key}`}
+							aria-label={`Edit input ${input.key}`}><IconPencil size={16} stroke={1.5} /></Button
 						>
 					{/if}
 				</div>{/each}
