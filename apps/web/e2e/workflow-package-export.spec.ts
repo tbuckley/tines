@@ -1032,6 +1032,8 @@ for (const theme of ['light', 'dark'] as const) {
 
 			await longInput.focus();
 			await page.keyboard.press('Tab');
+			await expect(page.getByRole('button', { name: `Edit input ${longKey}` })).toBeFocused();
+			await page.keyboard.press('Tab');
 			await expect(reviewLabel).toBeFocused();
 			await page.keyboard.press('Space');
 			await expect(reviewLabel).toHaveAttribute('aria-pressed', 'true');
