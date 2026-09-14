@@ -295,7 +295,135 @@ export interface IssueAttemptUsage {
 	latest_at: number;
 }
 
-export type UsageEvidenceItem = IssueAttemptUsage | AgentRunUsageEvidence | UsagePendingRun;
+export interface UsageRatio {
+	numerator: number;
+	denominator: number;
+	value: number | null;
+}
+export interface KnownCostMean {
+	numerator_usd_exact: string | null;
+	denominator: number;
+	value_usd: number | null;
+	coverage: UsageCoverage;
+}
+export interface CohortCounters {
+	distinct_issue_count: number;
+	attempt_count: number;
+	pending_count: number;
+	zero_run_issue_count: number;
+	pending_only_issue_count: number;
+	fully_priced_issue_count: number;
+	reopened_issue_count: number;
+	reopening_history_unavailable_issue_count: number;
+	mean_attempts_per_issue: UsageRatio;
+	known_cost_per_issue: KnownCostMean;
+	priced_run_coverage: UsageRatio;
+	fully_priced_issue_coverage: UsageRatio;
+}
+export interface CohortStateProof {
+	id: string;
+	name: string;
+	category: 'done';
+	basis: 'current_definition' | 'recorded_entry';
+	proof_event_id: string | null;
+}
+export interface CohortEntry {
+	event_id: string;
+	event_type: 'issue.created' | 'issue.transitioned' | 'issue.updated';
+	issue_id: string | null;
+	project_id: string | null;
+	workflow_id: string | null;
+	workflow_name: string | null;
+	state_id: string | null;
+	state_name: string | null;
+	category: string | null;
+	identity_basis: 'recorded_entry' | 'current_definition' | 'selection_metadata' | null;
+	created_at: number;
+	qualifies: boolean;
+	chosen: boolean;
+	reopening_relevant: boolean;
+	unavailable_reason: string | null;
+}
+export interface CohortHistory {
+	status: 'event_recorded' | 'definition_based' | 'partial' | 'unavailable';
+	earliest_retained_at: number | null;
+	examined_entry_count: number;
+	qualifying_fact_count: number;
+	definition_classified_count: number;
+	missing_target_id_count: number;
+	unavailable_workflow_or_category_count: number;
+	null_issue_count: number;
+	malformed_count: number;
+	unknown_project_count: number;
+	from: number;
+	to: number;
+}
+export interface CohortIssueUsage extends IssueAttemptUsage {
+	issue_id: string;
+	chosen_entry: CohortEntry;
+	reopening: {
+		value: boolean | null;
+		witness: CohortEntry | null;
+		unknown_later_entry_count: number;
+		observed_through: number;
+	};
+}
+export interface CohortUsageReport {
+	mode: 'cohort';
+	from: number;
+	to: number;
+	generated_at: number;
+	observed_through: number;
+	timezone: string;
+	timezone_source: ResolvedUsagePeriod['timezone_source'];
+	workflow: UsageDimension;
+	selected_states: CohortStateProof[];
+	selection_basis: 'all_current_done' | 'explicit' | 'retained_recorded_done' | 'unavailable';
+	aggregate: UsageAggregate;
+	counters: CohortCounters;
+	terminal_states: {
+		state: CohortStateProof;
+		aggregate: UsageAggregate;
+		counters: CohortCounters;
+	}[];
+	history: CohortHistory;
+	accounting_basis: 'finalized_before_cutoff_v1';
+	membership_basis: 'latest_qualifying_entry_v1';
+	retention_basis: 'retained_direct_attempts';
+	project_basis: 'event_project';
+	accounting_version: 1;
+	scope?: string;
+}
+
+export function cohortRatio(numerator: number, denominator: number): UsageRatio {
+	return { numerator, denominator, value: denominator === 0 ? null : numerator / denominator };
+}
+
+export function cohortKnownCostMean(
+	numerator: string | null,
+	denominator: number,
+	fullyPriced: number
+): KnownCostMean {
+	const projected = numerator === null ? null : Number(numerator) / denominator;
+	if (projected !== null && !Number.isFinite(projected))
+		throw new Error('usage_value_out_of_range');
+	return {
+		numerator_usd_exact: numerator,
+		denominator,
+		value_usd: projected,
+		coverage:
+			denominator === 0
+				? 'empty'
+				: numerator === null
+					? 'unknown'
+					: fullyPriced === denominator
+						? 'complete'
+						: 'partial'
+	};
+}
+
+export type UsageEvidenceItem =
+	IssueAttemptUsage | AgentRunUsageEvidence | UsagePendingRun | CohortEntry;
 export interface AgentRunUsageEvidence extends AgentRun {
 	usage_accounting: UsageEvidenceAccounting;
 }
@@ -305,12 +433,19 @@ export interface UsageEvidencePage<T extends UsageEvidenceItem = UsageEvidenceIt
 	previous_cursor: string | null;
 	total_count: number;
 	scope: string;
-	kind: 'issues' | 'runs';
-	population: 'finalized' | 'pending';
+	kind: 'issues' | 'runs' | 'entries';
+	population: 'all' | 'finalized' | 'pending';
 	sort: 'cost' | 'time';
 	direction: 'asc' | 'desc';
 	matching_total: UsageAggregate;
 	parent_matching_total?: UsageAggregate;
+	/** Cohort reconciliation values are frozen with the signed report scope. */
+	counters?: CohortCounters;
+	parent_counters?: CohortCounters;
+	history?: CohortHistory;
+	from?: number;
+	to?: number;
+	observed_through?: number;
 	attempt_count: number;
 	pending_count: number;
 }

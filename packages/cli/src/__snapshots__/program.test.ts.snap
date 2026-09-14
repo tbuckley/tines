@@ -1648,11 +1648,16 @@ Options:
                                 timestamp)
   --to <bound>                  custom exclusive end (date or offset timestamp)
   --issue <ref>                 direct issue lifetime through now
+  --cohort                      report issues completed in the selected workflow
+                                and window
+  --done-state <id>             terminal state id (repeatable; defaults to all
+                                done states)
   --scope <token>               replay a frozen usage scope
-  --evidence <kind>             list evidence (choices: "issues", "runs")
+  --evidence <kind>             list evidence (choices: "issues", "runs",
+                                "entries")
   --member <issue-id>           narrow run evidence to one contributing issue
-  --population <population>     finalized or pending (choices: "finalized",
-                                "pending")
+  --population <population>     all, finalized, or pending (choices: "all",
+                                "finalized", "pending")
   --sort <sort>                 evidence sort (choices: "cost", "time")
   --direction <direction>       sort direction (choices: "asc", "desc")
   --cursor <token>              evidence page cursor
