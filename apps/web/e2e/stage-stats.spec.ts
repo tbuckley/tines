@@ -129,6 +129,36 @@ test('loads state analysis only on open, caches a reopen, and remounts closed', 
 	await expect.poll(() => requests).toBe(2);
 });
 
+test('keeps Spend usable when state analysis fails and retries the same scope', async ({
+	context,
+	page
+}) => {
+	await signIn(context, ALICE.sessionToken);
+	let requests = 0;
+	await page.route('**/api/v1/supervisor/stats?**', async (route) => {
+		requests++;
+		if (requests === 1) {
+			await route.fulfill({
+				status: 500,
+				contentType: 'application/json',
+				body: JSON.stringify({ error: { code: 'internal_error', message: 'Controlled failure' } })
+			});
+			return;
+		}
+		await route.continue();
+	});
+	await gotoHydrated(page, `/agents?agents_view=spend&project=${project.id}`);
+	await expect(page.getByRole('heading', { name: 'Spend' })).toBeVisible();
+	const summary = page.locator('summary').filter({ hasText: 'State analysis · Last 7 days' });
+	await summary.click();
+	const alert = page.getByRole('alert').filter({ hasText: 'Could not load state analysis.' });
+	await expect(alert).toContainText('Controlled failure');
+	await expect(page.getByRole('heading', { name: 'Spend' })).toBeVisible();
+	await alert.getByRole('button', { name: 'Retry' }).click();
+	await expect(page.getByRole('region', { name: 'This week' })).toBeVisible();
+	expect(requests).toBe(2);
+});
+
 test('filters the weekly board, focuses capacity, and opens frozen historical evidence', async ({
 	context,
 	page
@@ -143,10 +173,13 @@ test('filters the weekly board, focuses capacity, and opens frozen historical ev
 	await expect(row).toContainText('1 visit');
 	await expect(row).toContainText('1 of 1 exits');
 	const runLink = row.getByRole('link', { name: /runs per visit/ });
-	await expect(runLink).toHaveAttribute(
-		'href',
-		`/agents?project=${project.id}&runs_state=${reviewStateId}#runs`
-	);
+	const runUrl = new URL((await runLink.getAttribute('href'))!, 'http://test');
+	expect(runUrl.pathname).toBe('/agents');
+	expect(runUrl.searchParams.get('agents_view')).toBeNull();
+	expect(runUrl.searchParams.get('project')).toBe(project.id);
+	expect(runUrl.searchParams.get('runs_state')).toBe(reviewStateId);
+	expect(runUrl.searchParams.get('spend_project')).toBe('all');
+	expect(runUrl.hash).toBe('#runs');
 	await row.getByRole('button', { name: /wait to start/ }).click();
 	await expect(page.locator('#global-limit')).toBeFocused();
 	await openStateAnalysis(page);
@@ -171,7 +204,11 @@ test('filters the weekly board, focuses capacity, and opens frozen historical ev
 	await expect(page.locator('#runs')).toContainText('Latest runs for this stage');
 	await expect(page.getByLabel('Show ended runs')).toBeChecked();
 	await page.locator('#runs').getByRole('link', { name: /clear/ }).click();
-	await expect(page).toHaveURL(new RegExp(`project=${project.id}#runs$`));
+	await expect.poll(() => new URL(page.url()).searchParams.get('runs_state')).toBeNull();
+	const clearedUrl = new URL(page.url());
+	expect(clearedUrl.searchParams.get('project')).toBe(project.id);
+	expect(clearedUrl.searchParams.get('spend_project')).toBe('all');
+	expect(clearedUrl.hash).toBe('#runs');
 });
 
 for (const width of [1440, 768, 390, 320])
