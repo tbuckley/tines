@@ -184,6 +184,16 @@ export function runnerStatusLabel(runner: Runner): string {
 	return runner.online ? 'online' : 'offline';
 }
 
+export function runnerConcurrencyLabel(runner: Runner): string {
+	if (runner.type !== 'local' || !runner.concurrency_control) return `${runner.max_concurrent}`;
+	const control = runner.concurrency_control;
+	if (control.status === 'applied')
+		return `${runner.max_concurrent} applied · ceiling ${control.ceiling ?? '?'}`;
+	if (control.status === 'pending')
+		return `${runner.max_concurrent} pending · confirmed ${control.applied_cap ?? 'none'} · ceiling ${control.ceiling ?? '?'}`;
+	return `${runner.max_concurrent} web off (${control.reason ?? 'unavailable'})`;
+}
+
 export function ruleTargetsLabel(rule: RoutingRule): string {
 	if (rule.targets.length === 0) return '(no targets)';
 	if (rule.targets.length === 1 && rule.targets[0]?.runner_id === '*') {

@@ -19,6 +19,7 @@ import type {
 	ListResponse,
 	Project,
 	Runner,
+	RunnerTokenResponse,
 	TinesEvent
 } from '@tines/shared';
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
@@ -448,13 +449,23 @@ esac
 
 		// A real registration from outside the browser: the page is polling,
 		// so the dialog flips without a reload.
-		const registered = await body<{ runner: Runner }>(
+		const registered = await body<RunnerTokenResponse>(
 			await api.post('/api/v1/runners/register', {
 				name: liveName,
 				harness: 'custom',
 				command: 'true'
 			})
 		);
+		const policy = await request.post(`/api/v1/runners/${registered.runner.id}/poll`, {
+			headers: { authorization: `Bearer ${registered.runner_token}` },
+			data: {
+				instance_id: `dialog_${runId}`,
+				owned_runs: [],
+				max_concurrent: 1,
+				concurrency_control: { version: 1, allow_remote: false, ceiling: 1 }
+			}
+		});
+		expect(policy.ok()).toBe(true);
 		await expect(dialog).toContainText(`${liveName} is online`, { timeout: 15_000 });
 
 		await dialog.getByRole('button', { name: `Route everything to ${liveName}` }).click();
