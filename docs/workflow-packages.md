@@ -1,6 +1,24 @@
 # Workflow package files
 
-Implementation status: v3 whole-library transfer and workflow packages are implemented across the shared contract, API, CLI, and browser. The package path includes workflow closure export, file validation, signed destination preparation, atomic install, durable receipt recovery, and the `tines workflows export|validate|preview|install` commands. Whole-library import remains best effort; it is not an atomic workflow installation. Public discovery and dependency fetching remain intentionally out of scope.
+Implementation status: v3 whole-library transfer and workflow packages are implemented across the shared contract, API, CLI, and browser. The package path includes workflow closure export, file validation, signed destination preparation, atomic install, durable receipt recovery, and the `tines workflows export|validate|preview|install` commands. Whole-library import remains best effort; it is not an atomic workflow installation. Public gallery/discovery and dependency fetching remain intentionally out of scope.
+
+## Public snapshots
+
+Public snapshots are immutable, text-only hosting records for exact v3 workflow-package bytes. New publication and restoration are guarded by `PUBLIC_WORKFLOW_PUBLISHING_ENABLED=true`; the variable is intentionally absent from committed deployment configuration. `PUBLIC_WORKFLOW_MAX_BYTES` defaults to 1 MiB and `PUBLIC_WORKFLOW_DAILY_QUOTA` defaults to 10 first publications per rolling 24 hours.
+
+In the browser, open an owned workflow, choose **Publish workflow**, review its package, and prepare the source-bound proof. Publishing requires a non-email public display name, MIT reuse notice, sharing-rights confirmation, and exact-content confirmation. **Workflows → Public snapshots** lists stable URLs and supports withdrawal or policy-permitted restoration.
+
+The CLI exposes the same lifecycle:
+
+```sh
+tines workflows publication-validate workflow.tines.json
+tines workflows publication-prepare workflow.tines.json --display-name "Example Team" --json
+tines workflows publish pub_candidate --confirm sha256:review --rights --repo repo:1
+tines workflows publications
+tines workflows unpublish pubs_snapshot
+```
+
+A hosted snapshot is rechecked before inspection, download, install preview, and install commit. Withdrawal stops those hosted operations, but cannot recall a file already downloaded or an installation already completed. Public pages never fetch declared repositories or publisher-controlled media. Cross-instance browser transfer is download followed by the destination's ordinary file import; do not send destination credentials to a source host.
 
 ## Install a package in the browser
 

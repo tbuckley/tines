@@ -461,6 +461,114 @@ async function resolveExportState(api: ApiClient, ref: string): Promise<string> 
 function registerPackageCommands(workflows: Command): void {
 	withCommon(
 		workflows
+			.command('publication-validate <file>')
+			.description('Validate a workflow package for text-only public hosting')
+	).action(async (path: string, opts: CommonOpts) => {
+		const result = await client(opts).validatePublication({
+			document_json: readPackageSource(path)
+		});
+		if (opts.json) printJson(result);
+		else {
+			console.log(
+				result.valid ? 'valid public workflow snapshot' : 'invalid public workflow snapshot'
+			);
+			for (const diagnostic of result.diagnostics)
+				console.log(`  ${diagnostic.path || '/'}: ${diagnostic.message}`);
+		}
+		if (!result.valid) process.exitCode = 1;
+	});
+
+	withCommon(
+		workflows
+			.command('publication-prepare <file>')
+			.description('Prepare an exact file-based public snapshot proof')
+			.requiredOption('--display-name <name>', 'public attribution name (never an email)')
+			.option('--license-year <year>', 'MIT copyright year', String(new Date().getFullYear()))
+	).action(
+		async (path: string, opts: CommonOpts & { displayName: string; licenseYear: string }) => {
+			const year = Number(opts.licenseYear);
+			if (!Number.isSafeInteger(year)) die('--license-year must be an integer');
+			const proof = await client(opts).preparePublication({
+				prepare_request_id: crypto.randomUUID(),
+				source: { kind: 'file', document_json: readPackageSource(path) },
+				metadata: { display_name: opts.displayName, license: 'MIT', license_year: year }
+			});
+			if (opts.json) printJson(proof);
+			else {
+				console.log(`prepared publication ${proof.candidate_id}`);
+				console.log(`review digest: ${proof.review_digest}`);
+				console.log(`bytes: ${proof.byte_length} (${proof.bytes_sha256})`);
+				console.log(`expires: ${new Date(proof.expires_at).toISOString()}`);
+				console.log(
+					'Next: inspect this proof, then run workflows publish with --confirm and --rights.'
+				);
+			}
+		}
+	);
+
+	withCommon(
+		workflows
+			.command('publish <candidate-id>')
+			.description('Publish one exactly reviewed public snapshot proof')
+			.requiredOption('--confirm <review-digest>', 'exact review digest from publication-prepare')
+			.requiredOption('--rights', 'confirm sharing rights for all bundled content')
+			.option('--repo <local-id>', 'confirm one bundled repository ID (repeatable)', collect, [])
+	).action(
+		async (
+			candidateId: string,
+			opts: CommonOpts & { confirm: string; rights: true; repo: string[] }
+		) => {
+			const result = await client(opts).publishPublication(candidateId, {
+				review_digest: opts.confirm,
+				sharing_rights: true,
+				exact_content: true,
+				reviewed_repo_ids: opts.repo
+			});
+			if (opts.json) printJson(result);
+			else console.log(`published ${result.receipt.public_url}`);
+		}
+	);
+
+	withCommon(
+		workflows.command('publications').description('List your public workflow snapshots')
+	).action(async (opts: CommonOpts) => {
+		const result = await client(opts).listPublications();
+		if (opts.json) printJson(result);
+		else if (!result.items.length) console.log('no public snapshots');
+		else
+			table([
+				['NAME', 'STATUS', 'PUBLISHED', 'SNAPSHOT'],
+				...result.items.map((item) => [
+					item.metadata.display_name,
+					item.owner_state === 'published' && item.host_state === 'active'
+						? 'hosted'
+						: 'unavailable',
+					new Date(item.published_at).toISOString(),
+					item.snapshot_id
+				])
+			]);
+	});
+
+	withCommon(
+		workflows.command('unpublish <snapshot-id>').description('Withdraw a hosted public snapshot')
+	).action(async (snapshotId: string, opts: CommonOpts) => {
+		const result = await client(opts).withdrawPublication(snapshotId);
+		if (opts.json) printJson(result);
+		else console.log(`withdrew ${result.receipt.public_url}`);
+	});
+
+	withCommon(
+		workflows
+			.command('restore-publication <snapshot-id>')
+			.description('Restore an owner-withdrawn public snapshot when host policy permits')
+	).action(async (snapshotId: string, opts: CommonOpts) => {
+		const result = await client(opts).restorePublication(snapshotId);
+		if (opts.json) printJson(result);
+		else console.log(`restored ${result.receipt.public_url}`);
+	});
+
+	withCommon(
+		workflows
 			.command('export <workflow-id-or-unambiguous-name>')
 			.description('Export a canonical workflow package JSON document')
 			.option('--project <id-or-name>', 'source project for selected project-bound configuration')
