@@ -662,6 +662,27 @@ export function register(program: Command): void {
 			);
 			if (run.issue_ref) console.log(`issue: ${issueRef(run.issue_ref)} — ${run.issue_ref.title}`);
 			console.log(`tier: ${run.tier}  model: ${run.model ?? '(n/a)'}`);
+			const effortSource = run.effort_source;
+			const sourceLabel =
+				effortSource?.kind === 'routing_target'
+					? `routing target ${effortSource.target_index + 1} (${effortSource.scope_label})`
+					: effortSource?.kind === 'runner_tier'
+						? `runner tier ${effortSource.tier}`
+						: effortSource?.kind === 'none'
+							? 'provider default'
+							: 'legacy record';
+			const evidence = run.effort_application_evidence as {
+				milestones?: Array<{ observed_model?: string; observed_effort?: string; reason?: string }>;
+			} | null;
+			const observed = evidence?.milestones?.findLast(
+				(item) => item.observed_model !== undefined || item.observed_effort !== undefined
+			);
+			console.log(
+				`effort: requested ${run.requested_effort ?? '(none)'}  resolved ${run.resolved_effort ?? '(provider default)'}  source ${sourceLabel}`
+			);
+			console.log(
+				`effort application: ${(run.effort_application_status ?? 'unknown').replaceAll('_', ' ')}${observed ? `  observed ${observed.observed_effort ?? '(unknown effort)'} on ${observed.observed_model ?? '(unknown model)'}` : '  observed unknown'}${observed?.reason ? `  (${observed.reason})` : ''}`
+			);
 			console.log(
 				`states: ${run.state_at_start_name ?? run.state_id_at_start} → ${run.state_at_end_name ?? run.state_id_at_end ?? '…'}`
 			);

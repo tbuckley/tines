@@ -78,6 +78,8 @@ export function queueHeadline(block: QueueBlock): string {
 			return `${runner} backing off`;
 		case 'rate_limited':
 			return `${runner} rate limited`;
+		case 'effort_incompatible':
+			return `${runner} cannot apply the requested effort`;
 		case 'no_rule':
 			return 'no matching routing rule';
 		case 'no_targets':
@@ -131,6 +133,8 @@ export function queueFix(block: QueueBlock): string | null {
 			return 'retries automatically; check the daemon log if it keeps failing';
 		case 'rate_limited':
 			return 'resumes automatically when the usage window resets; nothing to do';
+		case 'effort_incompatible':
+			return `upgrade or reconnect ${runner}, or choose a model and effort it reports as supported`;
 		default:
 			return null;
 	}
