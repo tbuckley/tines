@@ -12,6 +12,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+	ACTIVITY_RUN_EVENTS,
 	AGENTS_FIRST_RUN,
 	ALICE,
 	ALICE_AGENT,
@@ -69,6 +70,33 @@ for (const user of [
 statements.push(
 	`INSERT INTO api_key (id, user_id, name, key_hash, key_prefix, created_at)
 	 VALUES ('${ALICE_AGENT.id}', '${ALICE.id}', '${ALICE_AGENT.apiKeyName}', '${sha256Hex(ALICE_AGENT.apiKey)}', '${ALICE_AGENT.apiKey.slice(0, 14)}', ${nowMs});`
+);
+
+const activityPayloads = [
+	{ tier: 'balanced', runner_name: ACTIVITY_RUN_EVENTS.events[0].runner },
+	{ status: 'completed', outcome: 'advanced', runner_name: ACTIVITY_RUN_EVENTS.events[1].runner },
+	{ status: 'failed', outcome: 'advanced', runner_name: ACTIVITY_RUN_EVENTS.events[2].runner },
+	{ status: 'failed', outcome: 'interrupted', runner_name: ACTIVITY_RUN_EVENTS.events[3].runner },
+	{ status: 'completed', outcome: 'stalled', runner_name: ACTIVITY_RUN_EVENTS.events[4].runner },
+	{
+		status: 'completed',
+		outcome: 'future-outcome',
+		runner_name: ACTIVITY_RUN_EVENTS.events[5].runner
+	}
+];
+statements.push(
+	`INSERT INTO project (id, user_id, name, description, created_at, updated_at)
+	 VALUES ('${ACTIVITY_RUN_EVENTS.projectId}', '${ALICE.id}', '${ACTIVITY_RUN_EVENTS.projectName}', '', ${nowMs}, ${nowMs});`,
+	`INSERT INTO issue (id, project_id, number, title, description, workflow_id, state_id, created_at, updated_at)
+	 VALUES ('${ACTIVITY_RUN_EVENTS.issueId}', '${ACTIVITY_RUN_EVENTS.projectId}', ${ACTIVITY_RUN_EVENTS.issueNumber},
+	   'Activity run presentation', '', 'wf_standard', 'wfs_std_open', ${nowMs}, ${nowMs});`,
+	...ACTIVITY_RUN_EVENTS.events.map(
+		(event, index) =>
+			`INSERT INTO event (id, user_id, type, actor_user_id, actor_api_key_id, issue_id, project_id, payload, created_at)
+			 VALUES ('${event.id}', '${ALICE.id}', '${event.type}', '${ALICE.id}', NULL,
+			   '${ACTIVITY_RUN_EVENTS.issueId}', '${ACTIVITY_RUN_EVENTS.projectId}',
+			   '${JSON.stringify(activityPayloads[index])}', ${nowMs + index + 1});`
+	)
 );
 
 statements.push(...spendStatements(nowMs));
