@@ -265,6 +265,17 @@ export interface RunnerTable {
 	/** 'active' | 'paused'. */
 	status: string;
 	max_concurrent: number;
+	/** 'legacy' | 'local' | 'remote'. */
+	concurrency_mode: string;
+	concurrency_ceiling: number | null;
+	concurrency_requested: number | null;
+	concurrency_revision: number;
+	concurrency_instance_id: string | null;
+	concurrency_applied_revision: number | null;
+	concurrency_applied_cap: number | null;
+	concurrency_applied_instance_id: string | null;
+	concurrency_applied_at: number | null;
+	concurrency_unavailable_reason: string | null;
 	max_run_minutes: number;
 	default_tier: string;
 	/** JSON per-tier model overrides; NULL = built-ins only. */

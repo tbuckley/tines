@@ -16,6 +16,7 @@ export const GET: RequestHandler = api(async (event) => {
 		actor.userId,
 		{
 			projectId: event.params.id,
+			workflow: params.get('workflow') ?? undefined,
 			state: params.get('state') ?? undefined,
 			category: params.get('category') ?? undefined,
 			schedule: params.get('schedule') ?? undefined,

@@ -81,7 +81,9 @@ can affect other projects using it; changing only the conventions does not make 
 workflow. Starter creation itself does not add routing rules or change automation settings.
 Continue with the app's current **Agents** checklist and [Running agents](#running-agents);
 the [runner daemon guide](docs/runner-daemon.md) explains how a local runner receives the
-repository and starts its harness.
+repository and starts its harness. A machine owner can opt into web-adjustable concurrency
+with `--allow-remote-concurrency --max-concurrent N`; `N` remains a local ceiling that the
+web cannot enable or raise.
 
 ### Contributor setup
 
@@ -300,6 +302,12 @@ Install → key → runner → rule → observe. Automation needs no separate ar
 2. **Key** — Settings → API keys, or **Create key** inside the Agents tab's *Add runner →
    Local* dialog, which fills it into the command below for you.
 3. **Runner** — install the daemon as a service, naming it machine-plus-harness:
+
+   Using Codex? Set workspace-write and enable outbound network access before starting the
+   runner, then use `--harness codex`. Follow the
+   [Codex permissions setup](docs/runner-daemon.md#codex-permissions); the
+   [OpenAI configuration reference](https://developers.openai.com/codex/config-reference)
+   defines these settings.
 
    ```sh
    TINES_API_KEY=tines_… tines runner install \

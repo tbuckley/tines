@@ -4,6 +4,7 @@ import {
 	comparisonText,
 	markersForState,
 	selectStageHighlights,
+	stageControlsHref,
 	stageDetailComparisons,
 	stageRunsHref
 } from './stage-stats-view';
@@ -152,6 +153,22 @@ describe('readable comparisons', () => {
 			'/agents?project=P&foo=x&runs_state=new&spend_project=different#runs'
 		);
 		expect(url.hash).toBe('#runners');
+	});
+	it('moves analysis links to Now controls without mutating independent scopes', () => {
+		const url = new URL(
+			'https://example.test/agents?agents_view=spend&project=board&spend_project=spend&runs_state=state&foo=x#this-week'
+		);
+		expect(stageControlsHref(url, 'runners')).toBe(
+			'/agents?project=board&spend_project=spend&runs_state=state&foo=x#runners'
+		);
+		expect(stageControlsHref(url, 'routing')).toBe(
+			'/agents?project=board&spend_project=spend&runs_state=state&foo=x#routing'
+		);
+		expect(stageControlsHref(url, 'quota-policy')).toBe(
+			'/agents?project=board&spend_project=spend&runs_state=state&foo=x#quota-policy'
+		);
+		expect(url.searchParams.get('agents_view')).toBe('spend');
+		expect(url.hash).toBe('#this-week');
 	});
 	it('keeps global markers and only the affected stage markers', () => {
 		const r = report([]);

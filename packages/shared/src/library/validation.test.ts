@@ -243,6 +243,23 @@ describe('complete typed identity and domain checks', () => {
 });
 
 describe('library profile retains scope and identity without package authority', () => {
+	it('accepts 200-code-unit project names and rejects 201 at the project path', async () => {
+		await expect(
+			parseDraft(changed('/projects/0/name', 'x'.repeat(200), duplicateLibrary()))
+		).resolves.toBeDefined();
+		await expect(
+			parseDraft(changed('/projects/0/name', 'x'.repeat(201), duplicateLibrary()))
+		).rejects.toMatchObject({
+			diagnostics: [
+				{
+					path: '/projects/0/name',
+					code: 'invalid_field',
+					message: 'Expected non-empty text of at most 200 characters'
+				}
+			]
+		});
+	});
+
 	it('preserves same-named workflow prompts, global/project/label/system scopes and journals', async () => {
 		const d = duplicateLibrary();
 		const sealed = await parseDraft(d);
