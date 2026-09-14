@@ -2185,6 +2185,18 @@
 						Leave a tier blank to use the built-in (it silently improves as models ship); an
 						override stays frozen until touched.
 					</p>
+					<div
+						class="hidden min-w-0 gap-2 text-sm font-medium sm:grid {editTarget.type ===
+							'claude_managed' || editTarget.type === 'local'
+							? 'sm:grid-cols-[5rem_minmax(0,1fr)_7rem]'
+							: 'sm:grid-cols-[5rem_minmax(0,1fr)]'}"
+					>
+						<span data-tier-column="tier">Tier</span>
+						<span data-tier-column="model">Model</span>
+						{#if editTarget.type === 'claude_managed' || editTarget.type === 'local'}
+							<span data-tier-column="effort">Effort</span>
+						{/if}
+					</div>
 					{#each MODEL_TIERS as tier (tier)}
 						{@const builtin = editTarget.tier_models?.[tier] ?? null}
 						{@const stale = isStaleTierOverride(builtin, editTierModels[tier]?.trim() || null)}
@@ -2192,28 +2204,34 @@
 							editTarget.type === 'claude_managed' || editTarget.type === 'local'}
 						<div class="min-w-0 space-y-1">
 							<div
-								class="grid min-w-0 grid-cols-1 gap-2 sm:items-end {showsEffort
+								class="grid min-w-0 grid-cols-1 gap-2 sm:items-center {showsEffort
 									? 'sm:grid-cols-[5rem_minmax(0,1fr)_7rem]'
 									: 'sm:grid-cols-[5rem_minmax(0,1fr)]'}"
 							>
-								<label
-									class="text-muted-foreground text-xs sm:text-right"
-									for={`edit-model-${tier}`}>{tier}</label
-								>
-								<Input
-									id={`edit-model-${tier}`}
-									class="w-full min-w-0"
-									placeholder={builtin ? `${builtin} (built-in)` : 'model id'}
-									aria-label={`Model override for ${tier}`}
-									value={editTierModels[tier] ?? ''}
-									oninput={(e) =>
-										(editTierModels = { ...editTierModels, [tier]: e.currentTarget.value })}
-								/>
+								<p class="text-sm font-medium capitalize sm:font-normal" data-tier-heading={tier}>
+									{tier}
+								</p>
+								<div class="min-w-0 space-y-1.5">
+									<label
+										class="text-muted-foreground text-xs font-medium sm:sr-only"
+										for={`edit-model-${tier}`}>Model</label
+									>
+									<Input
+										id={`edit-model-${tier}`}
+										class="w-full min-w-0"
+										placeholder={builtin ? `${builtin} (built-in)` : 'model id'}
+										aria-label={`Model override for ${tier}`}
+										value={editTierModels[tier] ?? ''}
+										oninput={(e) =>
+											(editTierModels = { ...editTierModels, [tier]: e.currentTarget.value })}
+									/>
+								</div>
 								{#if showsEffort}
 									{@const choices = effortChoices(editTarget, tier, editTierModels[tier] ?? '')}
 									<div class="min-w-0 space-y-1.5">
-										<label class="text-sm font-medium sm:sr-only" for={`edit-effort-${tier}`}
-											>Effort</label
+										<label
+											class="text-muted-foreground text-xs font-medium sm:sr-only"
+											for={`edit-effort-${tier}`}>Effort</label
 										>
 										<Select
 											id={`edit-effort-${tier}`}

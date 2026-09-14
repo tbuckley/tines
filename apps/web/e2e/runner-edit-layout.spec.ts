@@ -91,7 +91,7 @@ test.describe.serial('runner edit responsive layout', () => {
 		await signIn(context, ALICE.sessionToken);
 	});
 
-	test('stacks phone controls and retains compact rows at sm and desktop', async ({
+	test('uses a clear tier hierarchy while retaining responsive control rows', async ({
 		page
 	}, testInfo) => {
 		for (const viewport of [PHONE_NARROW, PHONE, TABLET_EDGE, DESKTOP]) {
@@ -100,7 +100,8 @@ test.describe.serial('runner edit responsive layout', () => {
 			const concurrent = dialog.locator('#edit-concurrent');
 			const minutes = dialog.locator('#edit-minutes');
 			const defaultTier = dialog.locator('#edit-default-tier');
-			const tierLabel = dialog.locator('label[for="edit-model-balanced"]');
+			const tierHeading = dialog.locator('[data-tier-heading="balanced"]');
+			const modelLabel = dialog.locator('label[for="edit-model-balanced"]');
 			const model = dialog.locator('#edit-model-balanced');
 			const effortLabel = dialog.locator('label[for="edit-effort-balanced"]');
 			const effort = dialog.locator('#edit-effort-balanced');
@@ -111,7 +112,7 @@ test.describe.serial('runner edit responsive layout', () => {
 				concurrent,
 				minutes,
 				defaultTier,
-				tierLabel,
+				tierHeading,
 				model,
 				effort,
 				cost,
@@ -122,7 +123,7 @@ test.describe.serial('runner edit responsive layout', () => {
 				concurrentBox,
 				minutesBox,
 				defaultBox,
-				tierBox,
+				tierHeadingBox,
 				modelBox,
 				effortBox,
 				costBox,
@@ -144,10 +145,17 @@ test.describe.serial('runner edit responsive layout', () => {
 			if (viewport.width < TABLET_EDGE.width) {
 				expect(minutesBox.y).toBeGreaterThanOrEqual(concurrentBox.y + concurrentBox.height);
 				expect(defaultBox.y).toBeGreaterThanOrEqual(minutesBox.y + minutesBox.height);
-				expect(tierBox.y).toBeLessThan(modelBox.y);
-				expect(effortBox.y).toBeGreaterThanOrEqual(modelBox.y + modelBox.height);
+				const modelLabelBox = (await modelLabel.boundingBox())!;
+				const effortLabelBox = (await effortLabel.boundingBox())!;
+				expect(tierHeadingBox.y + tierHeadingBox.height).toBeLessThanOrEqual(modelLabelBox.y);
+				expect(modelLabelBox.y + modelLabelBox.height).toBeLessThanOrEqual(modelBox.y);
+				expect(modelBox.y + modelBox.height).toBeLessThanOrEqual(effortLabelBox.y);
+				expect(effortLabelBox.y + effortLabelBox.height).toBeLessThanOrEqual(effortBox.y);
 				expect(tokensBox.y).toBeGreaterThanOrEqual(costBox.y + costBox.height);
-				expect((await effortLabel.boundingBox())!.width).toBeGreaterThan(10);
+				expect(await textStyle(modelLabel)).toEqual(await textStyle(effortLabel));
+				expect(parseFloat((await textStyle(tierHeading)).fontSize)).toBeGreaterThan(
+					parseFloat((await textStyle(modelLabel)).fontSize)
+				);
 			} else {
 				expect(concurrentBox.x + concurrentBox.width).toBeLessThan(minutesBox.x);
 				expect(minutesBox.x + minutesBox.width).toBeLessThan(defaultBox.x);
@@ -159,9 +167,25 @@ test.describe.serial('runner edit responsive layout', () => {
 				expect(Math.max(...summaryLabels.map((box) => box.y))).toBeLessThanOrEqual(
 					Math.min(...summaryLabels.map((box) => box.y)) + 1
 				);
+				const tierColumnLabels = [
+					dialog.locator('[data-tier-column="tier"]'),
+					dialog.locator('[data-tier-column="model"]'),
+					dialog.locator('[data-tier-column="effort"]')
+				];
+				const tierColumnBoxes = await boxes(tierColumnLabels);
+				expect(Math.max(...tierColumnBoxes.map((box) => box.y))).toBeLessThanOrEqual(
+					Math.min(...tierColumnBoxes.map((box) => box.y)) + 1
+				);
+				expect(await textStyle(tierColumnLabels[0])).toEqual(await textStyle(tierColumnLabels[1]));
+				expect(await textStyle(tierColumnLabels[1])).toEqual(await textStyle(tierColumnLabels[2]));
 				expect(Math.abs(modelBox.y - effortBox.y)).toBeLessThanOrEqual(1);
-				expect(tierBox.y + tierBox.height).toBeLessThanOrEqual(modelBox.y + modelBox.height + 1);
+				expect(
+					Math.abs(
+						tierHeadingBox.y + tierHeadingBox.height / 2 - (modelBox.y + modelBox.height / 2)
+					)
+				).toBeLessThanOrEqual(1);
 				expect(Math.abs(costBox.y - tokensBox.y)).toBeLessThanOrEqual(1);
+				expect((await modelLabel.boundingBox())!.width).toBeLessThanOrEqual(1);
 				expect((await effortLabel.boundingBox())!.width).toBeLessThanOrEqual(1);
 			}
 			await assertSelectedLabelFits(effort);
@@ -346,6 +370,17 @@ async function assertSelectedLabelFits(select: Locator): Promise<void> {
 		};
 	});
 	expect(measurement.needed).toBeLessThanOrEqual(measurement.available + 1);
+}
+
+async function textStyle(locator: Locator): Promise<{
+	color: string;
+	fontSize: string;
+	fontWeight: string;
+}> {
+	return locator.evaluate((element) => {
+		const style = getComputedStyle(element);
+		return { color: style.color, fontSize: style.fontSize, fontWeight: style.fontWeight };
+	});
 }
 
 async function saveAndWait(page: Page, runnerId: string, dialog: Locator): Promise<void> {
