@@ -9,7 +9,15 @@ import { inheritedPackage } from '../../../../../../packages/shared/src/library/
 import { createTestDb, type TestDb } from '../api/test-db';
 import { USER, seedBase } from '../supervisor/test-fixtures';
 import { acceptPublicationReport } from './reports';
-import { decideModeration, inspectModerationSnapshot, listModerationCases } from './moderation';
+import {
+	decideModeration,
+	inspectModerationSnapshot,
+	listModerationAudit,
+	listModerationCases,
+	listModerationReportReceipts,
+	listModerationReports,
+	listSuspendedPublishers
+} from './moderation';
 import { resolvePublicSnapshot } from './public';
 
 const SNAPSHOT = 'pubs_moderation_1234567890';
@@ -147,8 +155,8 @@ describe('private workflow moderation', () => {
 			total: 5,
 			reason_counts: { rights: 5 }
 		});
-		const detail = await inspectModerationSnapshot(t.db, env, moderator, SNAPSHOT);
-		expect(detail.reports).toMatchObject([{ reason: 'rights', note: 'Same details', count: 5 }]);
+		const detail = await listModerationReports(t.db, env, moderator, SNAPSHOT);
+		expect(detail.items).toMatchObject([{ reason: 'rights', note: 'Same details', count: 5 }]);
 	});
 
 	it('audits disable, restore, suspension and recovery while preserving independent states', async () => {
@@ -278,14 +286,118 @@ describe('private workflow moderation', () => {
 			reason: 'Urgent removal',
 			expected_snapshot_version: 1
 		};
+		const realBatch = t.env.DB.batch.bind(t.env.DB);
+		let arrivals = 0;
+		let release!: () => void;
+		const barrier = new Promise<void>((resolve) => (release = resolve));
+		t.env.DB.batch = async <T = unknown>(statements: Parameters<Env['DB']['batch']>[0]) => {
+			arrivals += 1;
+			if (arrivals === 2) release();
+			await barrier;
+			return realBatch<T>(statements);
+		};
 		const [first, second] = await Promise.all([
 			decideModeration(t.db, envFor(t), moderator, input, NOW),
 			decideModeration(t.db, envFor(t), moderator, input, NOW)
 		]);
+		expect(arrivals).toBe(2);
 		expect(second).toEqual(first);
 		expect(await t.db.selectFrom('workflow_moderation_audit').selectAll().execute()).toHaveLength(
 			1
 		);
+	});
+
+	it('rechecks snapshot and publisher availability inside report admission', async () => {
+		for (const restriction of ['removed', 'suspended'] as const) {
+			const isolated = createTestDb();
+			t = isolated;
+			seedBase(t);
+			await seedPublication();
+			const realBatch = t.env.DB.batch.bind(t.env.DB);
+			t.env.DB.batch = async <T = unknown>(statements: Parameters<Env['DB']['batch']>[0]) => {
+				if (restriction === 'removed') {
+					t.sqlite
+						.prepare("UPDATE workflow_publication SET host_state = 'removed' WHERE snapshot_id = ?")
+						.run(SNAPSHOT);
+				} else {
+					t.sqlite
+						.prepare(
+							`INSERT INTO workflow_publisher_status
+							 (user_id, suspended, status_version) VALUES (?, 1, 1)`
+						)
+						.run(USER);
+				}
+				return realBatch<T>(statements);
+			};
+			await expect(
+				acceptPublicationReport(
+					t.db,
+					envFor(t),
+					SNAPSHOT,
+					{
+						request_id:
+							restriction === 'removed'
+								? '123e4567-e89b-42d3-a456-426614174030'
+								: '123e4567-e89b-42d3-a456-426614174031',
+						reason: 'other'
+					},
+					{ network: `192.0.2.${restriction === 'removed' ? 30 : 31}` },
+					NOW
+				)
+			).rejects.toMatchObject({ status: 404, code: 'publication_unavailable' });
+			expect(t.all('SELECT id FROM workflow_report')).toEqual([]);
+		}
+	});
+
+	it('bounds and cursor-pages publisher, grouped report, receipt and audit detail', async () => {
+		const env = envFor(t);
+		for (let index = 0; index < 3; index++) {
+			await acceptPublicationReport(
+				t.db,
+				env,
+				SNAPSHOT,
+				{
+					request_id: `123e4567-e89b-42d3-a456-42661417404${index}`,
+					reason: 'rights',
+					note: 'Repeated exact report'
+				},
+				{ network: `192.0.2.${40 + index}` },
+				NOW + index
+			);
+		}
+		const reports = await listModerationReports(t.db, env, moderator, SNAPSHOT, { limit: 1 });
+		expect(reports.items[0]).toMatchObject({ count: 3, receipts_truncated: true });
+		expect(reports.items[0].receipt_references).toHaveLength(1);
+		const receipts = await listModerationReportReceipts(
+			t.db,
+			env,
+			moderator,
+			SNAPSHOT,
+			{ reason: 'rights', noteHash: reports.items[0].note_hash },
+			{ limit: 1 }
+		);
+		expect(receipts.items).toHaveLength(1);
+		expect(receipts.next_cursor).not.toBeNull();
+
+		await decideModeration(
+			t.db,
+			env,
+			moderator,
+			{
+				request_id: '123e4567-e89b-42d3-a456-426614174050',
+				action: 'suspend',
+				target: { publisher_id: USER, snapshot_id: SNAPSHOT },
+				reason: 'Bounded recovery',
+				expected_publisher_version: 0
+			},
+			NOW + 10
+		);
+		const publishers = await listSuspendedPublishers(t.db, env, moderator, { limit: 1 });
+		expect(publishers.items).toMatchObject([
+			{ display_name: 'Example Team', affected_snapshot_count: 1 }
+		]);
+		const audit = await listModerationAudit(t.db, env, moderator, SNAPSHOT, { limit: 1 });
+		expect(audit.items).toHaveLength(1);
 	});
 
 	it('keeps a deleted-snapshot report case inspectable and dismissible', async () => {
@@ -304,7 +416,8 @@ describe('private workflow moderation', () => {
 		await t.db.deleteFrom('workflow_publication').where('snapshot_id', '=', SNAPSHOT).execute();
 		const detail = await inspectModerationSnapshot(t.db, envFor(t), moderator, SNAPSHOT);
 		expect(detail).toMatchObject({ stored: false, publisher_id: null });
-		expect(detail.reports).toMatchObject([{ note: 'Retained evidence' }]);
+		const reports = await listModerationReports(t.db, envFor(t), moderator, SNAPSHOT);
+		expect(reports.items).toMatchObject([{ note: 'Retained evidence' }]);
 		await expect(
 			decideModeration(
 				t.db,
@@ -355,5 +468,47 @@ describe('private workflow moderation', () => {
 			)
 		).rejects.toMatchObject({ status: 409, code: 'publication_policy_changed' });
 		expect(await resolvePublicSnapshot(t.db, SNAPSHOT)).toBeNull();
+	});
+
+	it.each([
+		['policy_version', 'policy_version = 0'],
+		['document_json', "document_json = '{}'"],
+		['document_digest', "document_digest = 'sha256:changed'"],
+		['bytes_sha256', "bytes_sha256 = 'changed'"]
+	])('pins %s inside the atomic restore gate', async (_field, assignment) => {
+		await t.db
+			.updateTable('workflow_publication')
+			.set({ host_state: 'removed', status_version: 2 })
+			.where('snapshot_id', '=', SNAPSHOT)
+			.execute();
+		// Simulate bytes changed outside the application contract so each restore witness is
+		// independently load-bearing rather than relying on the schema's immutable-row trigger.
+		t.sqlite.exec('DROP TRIGGER workflow_publication_immutable_snapshot');
+		const realBatch = t.env.DB.batch.bind(t.env.DB);
+		t.env.DB.batch = async <T = unknown>(statements: Parameters<Env['DB']['batch']>[0]) => {
+			t.sqlite
+				.prepare(`UPDATE workflow_publication SET ${assignment} WHERE snapshot_id = ?`)
+				.run(SNAPSHOT);
+			return realBatch<T>(statements);
+		};
+		await expect(
+			decideModeration(
+				t.db,
+				envFor(t),
+				moderator,
+				{
+					request_id: '123e4567-e89b-42d3-a456-426614174060',
+					action: 'restore',
+					target: { snapshot_id: SNAPSHOT },
+					reason: 'Atomic restore proof',
+					expected_snapshot_version: 2
+				},
+				NOW
+			)
+		).rejects.toMatchObject({ status: 409, code: 'moderation_state_changed' });
+		expect(t.all('SELECT id FROM workflow_moderation_audit')).toEqual([]);
+		expect(t.all('SELECT host_state FROM workflow_publication')).toEqual([
+			{ host_state: 'removed' }
+		]);
 	});
 });

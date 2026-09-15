@@ -20,7 +20,10 @@ const AUDIT_TTL_MS = 365 * 24 * 60 * 60 * 1000;
 const ACTIONS = new Set(['dismiss', 'disable', 'restore', 'suspend', 'unsuspend']);
 
 function boundedLimit(limit: number | undefined): number {
-	return Number.isInteger(limit) && limit! >= 1 && limit! <= 100 ? limit! : 50;
+	if (limit === undefined) return 50;
+	if (!Number.isInteger(limit) || limit < 1 || limit > 100)
+		throw new ApiFail(422, 'invalid_field', 'limit must be an integer from 1 to 100');
+	return limit;
 }
 
 function publicLabels(documentJson: string, metadataJson: string) {
@@ -133,24 +136,45 @@ export async function listModerationCases(
 	};
 }
 
-export async function listSuspendedPublishers(db: Kysely<Database>, env: Env, actor: ActorContext) {
+export async function listSuspendedPublishers(
+	db: Kysely<Database>,
+	env: Env,
+	actor: ActorContext,
+	options: { limit?: number; cursor?: string } = {}
+) {
 	assertHostModerator(actor, env);
-	const statuses = await db
+	let query = db
 		.selectFrom('workflow_publisher_status')
 		.select(['user_id', 'status_version', 'decision_reason', 'decision_reference'])
-		.where('suspended', '=', 1)
+		.where('suspended', '=', 1);
+	if (options.cursor) {
+		if (!/^[A-Za-z0-9_-]{1,200}$/.test(options.cursor))
+			throw new ApiFail(422, 'invalid_cursor', 'Invalid cursor');
+		query = query.where('user_id', '>', options.cursor);
+	}
+	const limit = boundedLimit(options.limit);
+	const statuses = await query
 		.orderBy('user_id')
-		.limit(100)
+		.limit(limit + 1)
 		.execute();
-	return Promise.all(
-		statuses.map(async (status) => {
-			const anchor = await db
-				.selectFrom('workflow_publication')
-				.select(['snapshot_id', 'metadata_json'])
-				.where('user_id', '=', status.user_id)
-				.where('snapshot_id', 'is not', null)
-				.orderBy('published_at', 'desc')
-				.executeTakeFirst();
+	const pageRows = statuses.slice(0, limit);
+	const items = await Promise.all(
+		pageRows.map(async (status) => {
+			const [anchor, affected] = await Promise.all([
+				db
+					.selectFrom('workflow_publication')
+					.select(['snapshot_id', 'metadata_json'])
+					.where('user_id', '=', status.user_id)
+					.where('snapshot_id', 'is not', null)
+					.orderBy('published_at', 'desc')
+					.executeTakeFirst(),
+				db
+					.selectFrom('workflow_publication')
+					.select((eb) => eb.fn.countAll<number>().as('count'))
+					.where('user_id', '=', status.user_id)
+					.where('snapshot_id', 'is not', null)
+					.executeTakeFirstOrThrow()
+			]);
 			return {
 				publisher_id: status.user_id,
 				status_version: status.status_version,
@@ -159,18 +183,22 @@ export async function listSuspendedPublishers(db: Kysely<Database>, env: Env, ac
 				snapshot_id: anchor?.snapshot_id ?? null,
 				display_name: anchor?.metadata_json
 					? publicLabels('{}', anchor.metadata_json).displayName
-					: 'Suspended publisher'
+					: 'Suspended publisher',
+				affected_snapshot_count: Number(affected.count)
 			};
 		})
 	);
+	return {
+		items,
+		next_cursor: statuses.length > limit && pageRows.length ? pageRows.at(-1)!.user_id : null
+	};
 }
 
 export async function inspectModerationSnapshot(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
-	snapshotId: string,
-	options: { reportsOffset?: number; auditOffset?: number; limit?: number } = {}
+	snapshotId: string
 ) {
 	assertHostModerator(actor, env);
 	const reportCase = await db
@@ -216,58 +244,6 @@ export async function inspectModerationSnapshot(
 	} else {
 		diagnostics = ['Snapshot no longer stored'];
 	}
-	const limit = boundedLimit(options.limit);
-	const reportsOffset = Math.max(0, options.reportsOffset ?? 0);
-	const auditOffset = Math.max(0, options.auditOffset ?? 0);
-	const reportGroups = await db
-		.selectFrom('workflow_report')
-		.select([
-			'reason',
-			'note',
-			'note_hash',
-			sql<string>`group_concat(id)`.as('receipt_references'),
-			(eb) => eb.fn.countAll<number>().as('count'),
-			(eb) => eb.fn.max<number>('created_at').as('latest_report_at')
-		])
-		.where('snapshot_id', '=', snapshotId)
-		.groupBy(['reason', 'note_hash', 'note'])
-		.orderBy('latest_report_at', 'desc')
-		.limit(limit + 1)
-		.offset(reportsOffset)
-		.execute();
-	const publisherUserId = row?.user_id;
-	const auditQuery = db
-		.selectFrom('workflow_moderation_audit')
-		.select([
-			'id',
-			'actor_user_id',
-			'actor_name',
-			'action',
-			'target_kind',
-			'target_id',
-			'before_json',
-			'after_json',
-			'case_cutoff',
-			'reason',
-			'created_at'
-		])
-		.where((eb) =>
-			publisherUserId
-				? eb.or([
-						eb('snapshot_id', '=', snapshotId),
-						eb.and([
-							eb('target_kind', '=', 'publisher'),
-							eb('publisher_user_id', '=', publisherUserId)
-						])
-					])
-				: eb('snapshot_id', '=', snapshotId)
-		);
-	const audit = await auditQuery
-		.orderBy('created_at', 'desc')
-		.orderBy('id', 'desc')
-		.limit(limit + 1)
-		.offset(auditOffset)
-		.execute();
 	return {
 		snapshot_id: snapshotId,
 		stored: !!row,
@@ -296,19 +272,213 @@ export async function inspectModerationSnapshot(
 				? { reason: row.suspension_reason, reference: row.suspension_reference }
 				: null,
 		publisher_status_version: row?.publisher_status_version ?? 0,
-		case: reportCase ?? null,
-		reports: reportGroups.slice(0, limit).map((item) => ({
-			...item,
-			count: Number(item.count),
-			receipt_references: item.receipt_references.split(',')
-		})),
-		reports_next_offset: reportGroups.length > limit ? reportsOffset + limit : null,
-		audit: audit.slice(0, limit).map(({ before_json, after_json, ...item }) => ({
+		case: reportCase ?? null
+	};
+}
+
+export async function listModerationReports(
+	db: Kysely<Database>,
+	env: Env,
+	actor: ActorContext,
+	snapshotId: string,
+	options: { limit?: number; cursor?: string } = {}
+) {
+	assertHostModerator(actor, env);
+	const exists = await db
+		.selectFrom('workflow_report_case')
+		.select('snapshot_id')
+		.where('snapshot_id', '=', snapshotId)
+		.executeTakeFirst();
+	if (!exists) throw new ApiFail(404, 'not_found', 'Not found');
+	let query = db
+		.selectFrom('workflow_report')
+		.select([
+			'reason',
+			'note',
+			'note_hash',
+			(eb) => eb.fn.countAll<number>().as('count'),
+			(eb) => eb.fn.max<number>('created_at').as('latest_report_at')
+		])
+		.where('snapshot_id', '=', snapshotId)
+		.groupBy(['reason', 'note_hash', 'note']);
+	if (options.cursor) {
+		const match =
+			/^(\d+):(harmful_abusive|malicious_phishing|private_information|rights|other):(.+)$/.exec(
+				options.cursor
+			);
+		if (!match) throw new ApiFail(422, 'invalid_cursor', 'Invalid cursor');
+		const latest = Number(match[1]);
+		query = query.having(
+			sql<boolean>`max(created_at) < ${latest} OR
+				(max(created_at) = ${latest} AND (reason > ${match[2]} OR
+				(reason = ${match[2]} AND note_hash > ${match[3]})))`
+		);
+	}
+	const limit = boundedLimit(options.limit);
+	const groups = await query
+		.orderBy('latest_report_at', 'desc')
+		.orderBy('reason', 'asc')
+		.orderBy('note_hash', 'asc')
+		.limit(limit + 1)
+		.execute();
+	const pageRows = groups.slice(0, limit);
+	const items = await Promise.all(
+		pageRows.map(async (group) => {
+			const receipts = await db
+				.selectFrom('workflow_report')
+				.select(['id', 'created_at', 'resolved_at'])
+				.where('snapshot_id', '=', snapshotId)
+				.where('reason', '=', group.reason)
+				.where('note_hash', '=', group.note_hash)
+				.where('note', '=', group.note)
+				.orderBy('created_at', 'desc')
+				.orderBy('id', 'desc')
+				.limit(limit + 1)
+				.execute();
+			return {
+				...group,
+				count: Number(group.count),
+				receipt_references: receipts.slice(0, limit).map((receipt) => receipt.id),
+				receipts_truncated: receipts.length > limit
+			};
+		})
+	);
+	const last = pageRows.at(-1);
+	return {
+		items,
+		next_cursor:
+			groups.length > limit && last
+				? `${last.latest_report_at}:${last.reason}:${last.note_hash}`
+				: null
+	};
+}
+
+export async function listModerationAudit(
+	db: Kysely<Database>,
+	env: Env,
+	actor: ActorContext,
+	snapshotId: string,
+	options: { limit?: number; cursor?: string } = {}
+) {
+	assertHostModerator(actor, env);
+	const row = await db
+		.selectFrom('workflow_publication')
+		.select('user_id')
+		.where('snapshot_id', '=', snapshotId)
+		.executeTakeFirst();
+	const reportCase = row
+		? true
+		: !!(await db
+				.selectFrom('workflow_report_case')
+				.select('snapshot_id')
+				.where('snapshot_id', '=', snapshotId)
+				.executeTakeFirst());
+	if (!row && !reportCase) throw new ApiFail(404, 'not_found', 'Not found');
+	const publisherUserId = row?.user_id;
+	let auditQuery = db
+		.selectFrom('workflow_moderation_audit')
+		.select([
+			'id',
+			'actor_user_id',
+			'actor_name',
+			'action',
+			'target_kind',
+			'target_id',
+			'before_json',
+			'after_json',
+			'case_cutoff',
+			'reason',
+			'created_at'
+		])
+		.where((eb) =>
+			publisherUserId
+				? eb.or([
+						eb('snapshot_id', '=', snapshotId),
+						eb.and([
+							eb('target_kind', '=', 'publisher'),
+							eb('publisher_user_id', '=', publisherUserId)
+						])
+					])
+				: eb('snapshot_id', '=', snapshotId)
+		);
+	if (options.cursor) {
+		const match = /^(\d+):([A-Za-z0-9_-]+)$/.exec(options.cursor);
+		if (!match) throw new ApiFail(422, 'invalid_cursor', 'Invalid cursor');
+		const createdAt = Number(match[1]);
+		auditQuery = auditQuery.where((eb) =>
+			eb.or([
+				eb('created_at', '<', createdAt),
+				eb.and([eb('created_at', '=', createdAt), eb('id', '<', match[2])])
+			])
+		);
+	}
+	const limit = boundedLimit(options.limit);
+	const audit = await auditQuery
+		.orderBy('created_at', 'desc')
+		.orderBy('id', 'desc')
+		.limit(limit + 1)
+		.execute();
+	const pageRows = audit.slice(0, limit);
+	const last = pageRows.at(-1);
+	return {
+		items: pageRows.map(({ before_json, after_json, ...item }) => ({
 			...item,
 			before: JSON.parse(before_json),
 			after: JSON.parse(after_json)
 		})),
-		audit_next_offset: audit.length > limit ? auditOffset + limit : null
+		next_cursor: audit.length > limit && last ? `${last.created_at}:${last.id}` : null
+	};
+}
+
+export async function listModerationReportReceipts(
+	db: Kysely<Database>,
+	env: Env,
+	actor: ActorContext,
+	snapshotId: string,
+	group: { reason: PublicationReportReason; noteHash: string },
+	options: { limit?: number; cursor?: string } = {}
+) {
+	assertHostModerator(actor, env);
+	if (
+		!['harmful_abusive', 'malicious_phishing', 'private_information', 'rights', 'other'].includes(
+			group.reason
+		) ||
+		!/^[0-9a-f]{64}$/.test(group.noteHash)
+	)
+		throw new ApiFail(422, 'invalid_field', 'Invalid report group');
+	let query = db
+		.selectFrom('workflow_report')
+		.select(['id', 'created_at', 'resolved_at'])
+		.where('snapshot_id', '=', snapshotId)
+		.where('reason', '=', group.reason)
+		.where('note_hash', '=', group.noteHash);
+	if (options.cursor) {
+		const match = /^(\d+):([A-Za-z0-9_-]+)$/.exec(options.cursor);
+		if (!match) throw new ApiFail(422, 'invalid_cursor', 'Invalid cursor');
+		const createdAt = Number(match[1]);
+		query = query.where((eb) =>
+			eb.or([
+				eb('created_at', '<', createdAt),
+				eb.and([eb('created_at', '=', createdAt), eb('id', '<', match[2])])
+			])
+		);
+	}
+	const limit = boundedLimit(options.limit);
+	const rows = await query
+		.orderBy('created_at', 'desc')
+		.orderBy('id', 'desc')
+		.limit(limit + 1)
+		.execute();
+	if (!rows.length && !options.cursor) throw new ApiFail(404, 'not_found', 'Not found');
+	const pageRows = rows.slice(0, limit);
+	const last = pageRows.at(-1);
+	return {
+		items: pageRows.map((row) => ({
+			reference: row.id,
+			received_at: row.created_at,
+			resolved_at: row.resolved_at
+		})),
+		next_cursor: rows.length > limit && last ? `${last.created_at}:${last.id}` : null
 	};
 }
 

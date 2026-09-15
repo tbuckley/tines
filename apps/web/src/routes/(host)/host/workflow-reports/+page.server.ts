@@ -15,12 +15,18 @@ export const load: PageServerLoad = async ({ locals, platform, url }) => {
 		agentRunId: null
 	};
 	const db = getDb(platform!.env);
+	const publisherCursor = url.searchParams.get('publisher_cursor') ?? undefined;
 	const [result, suspendedPublishers] = await Promise.all([
 		listModerationCases(db, platform!.env, actor, {
 			filter: filter as 'unread' | 'open' | 'resolved' | 'all',
 			cursor
 		}),
-		listSuspendedPublishers(db, platform!.env, actor)
+		listSuspendedPublishers(db, platform!.env, actor, { cursor: publisherCursor })
 	]);
-	return { ...result, filter, suspendedPublishers };
+	return {
+		...result,
+		filter,
+		suspendedPublishers: suspendedPublishers.items,
+		publisher_next_cursor: suspendedPublishers.next_cursor
+	};
 };
