@@ -4,6 +4,7 @@
 	import WorkflowGraph from '$lib/components/WorkflowGraph.svelte';
 	import MarketingSignIn from '$lib/components/marketing/MarketingSignIn.svelte';
 	import PublicTextSnippet from '$lib/components/publications/PublicTextSnippet.svelte';
+	import PublicationReportDialog from '$lib/components/publications/PublicationReportDialog.svelte';
 
 	let { data } = $props();
 	const snapshot = $derived(data.snapshot);
@@ -15,6 +16,7 @@
 	let available = $state(true);
 	let checking = $state(false);
 	let signIn = $state<MarketingSignIn>();
+	let reportDialog = $state<PublicationReportDialog>();
 	const installReturn = $derived(`/p/${snapshot.snapshot_id}?install=1`);
 	const linkError = $derived(
 		page.url.searchParams.get('error') === 'signin'
@@ -95,6 +97,11 @@
 				Published by {snapshot.metadata.display_name} · {snapshot.metadata.license} · immutable snapshot
 			</p>
 			<div class="mt-5 flex flex-wrap gap-3">
+				<button
+					class="rounded-md border px-4 py-2 font-medium"
+					type="button"
+					onclick={(event) => reportDialog?.show(event.currentTarget)}>Report</button
+				>
 				{#if data.user}<a
 						class="bg-primary text-primary-foreground rounded-md px-4 py-2 font-medium"
 						href="/workflows/import?publication={snapshot.snapshot_id}"
@@ -278,10 +285,18 @@
 				</ul>
 			</article>
 		</section>
-		<footer class="text-muted-foreground border-t py-6 text-xs break-all">
-			Document {snapshot.document_digest} · bytes {snapshot.bytes_sha256}
+		<footer
+			class="text-muted-foreground flex flex-wrap items-center justify-between gap-3 border-t py-6 text-xs break-all"
+		>
+			<span>Document {snapshot.document_digest} · bytes {snapshot.bytes_sha256}</span>
+			<button
+				class="min-h-10 rounded-md border px-3 text-sm"
+				type="button"
+				onclick={(event) => reportDialog?.show(event.currentTarget)}>Report this workflow</button
+			>
 		</footer>
 	</main>
+	<PublicationReportDialog bind:this={reportDialog} snapshotId={snapshot.snapshot_id} />
 	{#if !data.user}<MarketingSignIn bind:this={signIn} returnTo={installReturn} {linkError} />{/if}
 {:else}
 	<main class="mx-auto flex min-h-screen max-w-xl items-center px-6">

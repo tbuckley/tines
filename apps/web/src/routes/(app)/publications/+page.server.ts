@@ -1,6 +1,6 @@
 import { getDb } from '$lib/server/db';
 import { listPublications } from '$lib/server/publications/publish';
-import { publicationConfig } from '$lib/server/publications/config';
+import { hostModerationConfig, publicationConfig } from '$lib/server/publications/config';
 import type { PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async ({ locals, platform }) => {
@@ -15,6 +15,7 @@ export const load: PageServerLoad = async ({ locals, platform }) => {
 	};
 	return {
 		publications: await listPublications(getDb(env), env, actor),
-		creation: publicationConfig(env)
+		creation: publicationConfig(env),
+		appealContact: hostModerationConfig(env).appealContact
 	};
 };

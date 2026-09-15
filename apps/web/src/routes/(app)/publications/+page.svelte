@@ -68,6 +68,25 @@
 	<div class="space-y-3">
 		{#each data.publications as publication (publication.snapshot_id)}
 			<article class="min-w-0 rounded-lg border p-4">
+				{#if publication.host_removal || publication.suspension}
+					<div class="bg-muted/40 mb-4 rounded-md border p-3 text-sm">
+						{#if publication.host_removal}<p>
+								<b>Removed by the host:</b>
+								{publication.host_removal.reason}
+							</p>{/if}
+						{#if publication.suspension}<p>
+								<b>Publishing suspended:</b>
+								{publication.suspension.reason}
+							</p>{/if}
+						<p class="mt-2">
+							{#if data.appealContact}<a
+									class="text-primary underline"
+									href={data.appealContact}
+									rel="noreferrer">Appeal this decision</a
+								>{:else}Appeal contact is not configured.{/if}
+						</p>
+					</div>
+				{/if}
 				<div class="flex flex-wrap items-start justify-between gap-3">
 					<div class="min-w-0">
 						<h2 class="font-semibold">{publication.metadata.display_name}</h2>
