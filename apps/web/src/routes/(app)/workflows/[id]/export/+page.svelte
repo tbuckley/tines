@@ -274,11 +274,11 @@
 		try {
 			const options = sourceOptions();
 			const rebuilt = await api.exportWorkflowPackage(data.workflow.id, options);
+			if (!rebuilt.inputs.some((input) => input.id === selectedInputId)) selectedInputId = '';
 			candidate = rebuilt;
 			baseline = { document_digest: rebuilt.digest, exported_at: rebuilt.exported_at };
 			appliedSourceOptions = structuredClone(options);
 			dirty = false;
-			if (!candidate.inputs.some((input) => input.id === selectedInputId)) selectedInputId = '';
 			resetReview('Candidate rebuilt from source.');
 		} catch (error) {
 			status = message(error);
