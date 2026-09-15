@@ -65,7 +65,10 @@ function allocatedRows(plan: PrepareWorkflowPackageResponse) {
 
 async function approve(page: Page) {
 	await expect(page.getByRole('heading', { name: 'Workflow graph and gates' })).toBeVisible();
-	for (const checkbox of await page.getByRole('checkbox', { name: /I reviewed/ }).all())
+	for (const checkbox of await page
+		.getByTestId('package-review')
+		.getByRole('checkbox', { name: /I reviewed/ })
+		.all())
 		await checkbox.check();
 	await page.getByRole('checkbox', { name: /I reviewed what will be installed/ }).check();
 }
@@ -276,7 +279,10 @@ test('keeps prepared install actions clear of responsive navigation', async ({ p
 	await page.setViewportSize({ width: 640, height: 844 });
 	await prepareScheduleProof(page, packagePath, projects[0].id);
 	const actions = page.getByTestId('install-actions');
-	const finalReview = page.getByRole('checkbox', { name: /I reviewed/ }).last();
+	const finalReview = page
+		.getByTestId('package-review')
+		.getByRole('checkbox', { name: /I reviewed/ })
+		.last();
 	await expect(actions).toBeVisible();
 	await expect(
 		page.getByText('Review every included skill and repository before installing.')
@@ -358,15 +364,13 @@ test('reviews, confirms and installs an independent project-free package through
 	await expect(
 		page.getByRole('heading', { name: `${dependencyName} (imported)`, exact: true })
 	).toBeVisible();
-	await expect(page.getByText('Exact declared substitutions')).toBeVisible();
+	await expect(page.getByText('Variable values', { exact: true })).toBeVisible();
 	await expect(page.getByText('Original', { exact: true }).first()).toBeVisible();
 	await expect(page.getByText('Installed value', { exact: true }).first()).toBeVisible();
 	await expect(page.getByRole('button', { name: 'Edit candidate text' })).toHaveCount(0);
-	const exactUse = page
-		.getByRole('button', { name: /Show destination input for exact use/ })
-		.first();
+	const exactUse = page.getByRole('button', { name: /Show variable value/ }).first();
 	await exactUse.click();
-	await expect(page.getByRole('button', { name: 'Back to exact use' })).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Back to passage' })).toBeVisible();
 	await expect(page.locator(`[id="value-${candidateInputId}"]`)).toBeFocused();
 	await page.keyboard.press('Escape');
 	await expect(exactUse).toBeFocused();
@@ -382,7 +386,10 @@ test('reviews, confirms and installs an independent project-free package through
 	await page.getByRole('button', { name: 'Install workflow' }).dispatchEvent('click');
 	await page.waitForTimeout(100);
 	expect(installRequests).toEqual([]);
-	for (const checkbox of await page.getByRole('checkbox', { name: /I reviewed/ }).all())
+	for (const checkbox of await page
+		.getByTestId('package-review')
+		.getByRole('checkbox', { name: /I reviewed/ })
+		.all())
 		await checkbox.check();
 	await page.getByLabel(`Main · ${mainName}`).fill(`${mainName} reviewed`);
 	await expect(confirm).toHaveCount(0);
@@ -390,10 +397,16 @@ test('reviews, confirms and installs an independent project-free package through
 	await expect(
 		page.getByRole('checkbox', { name: /I reviewed what will be installed/ })
 	).not.toBeChecked();
-	for (const checkbox of await page.getByRole('checkbox', { name: /I reviewed/ }).all())
+	for (const checkbox of await page
+		.getByTestId('package-review')
+		.getByRole('checkbox', { name: /I reviewed/ })
+		.all())
 		await expect(checkbox).not.toBeChecked();
 	await expect(page.getByRole('button', { name: 'Install workflow' })).toBeDisabled();
-	for (const checkbox of await page.getByRole('checkbox', { name: /I reviewed/ }).all())
+	for (const checkbox of await page
+		.getByTestId('package-review')
+		.getByRole('checkbox', { name: /I reviewed/ })
+		.all())
 		await checkbox.check();
 
 	await page.setViewportSize(PHONE);
@@ -414,6 +427,9 @@ test('reviews, confirms and installs an independent project-free package through
 	await expectReceiptLanding(page);
 	const firstObjectLink = page.getByRole('link', { name: 'Open workflow' }).first();
 	await expect(firstObjectLink).toHaveAttribute('href', /^\/workflows\//);
+	await expect(page.locator('[data-package-receipt] code')).toBeHidden();
+	await page.keyboard.press('Tab');
+	await expect(page.locator('[data-package-receipt] summary')).toBeFocused();
 	await page.keyboard.press('Tab');
 	await expect(firstObjectLink).toBeFocused();
 	expect(installRequests).toHaveLength(1);
@@ -522,7 +538,10 @@ test('retries the exact plan after reload and real 404, then recovers a lost com
 	await page.getByLabel('Workflow package file').setInputFiles(packagePath);
 	await page.getByRole('button', { name: 'Preview installation' }).click();
 	await expect(page.getByRole('heading', { name: 'Workflow graph and gates' })).toBeVisible();
-	for (const checkbox of await page.getByRole('checkbox', { name: /I reviewed/ }).all())
+	for (const checkbox of await page
+		.getByTestId('package-review')
+		.getByRole('checkbox', { name: /I reviewed/ })
+		.all())
 		await checkbox.check();
 	await page.getByRole('checkbox', { name: /I reviewed what will be installed/ }).check();
 	await page.route('**/api/v1/library/install', async (route) => {
@@ -845,7 +864,10 @@ test('installs selected schedules paused into two independent destination projec
 		await page.getByRole('button', { name: 'Preview installation' }).click();
 		await expect(page.getByRole('heading', { name: 'Workflow graph and gates' })).toBeVisible();
 		await assertScheduleProof(page, 'Every Monday at 09:00');
-		for (const checkbox of await page.getByRole('checkbox', { name: /I reviewed/ }).all())
+		for (const checkbox of await page
+			.getByTestId('package-review')
+			.getByRole('checkbox', { name: /I reviewed/ })
+			.all())
 			await checkbox.check();
 		await page.getByRole('checkbox', { name: /I reviewed what will be installed/ }).check();
 		await page.getByRole('button', { name: 'Install workflow' }).click();

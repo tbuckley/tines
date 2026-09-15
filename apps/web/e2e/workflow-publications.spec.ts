@@ -52,7 +52,7 @@ test.describe.serial('public workflow snapshots', () => {
 		await body(
 			await alice.post('/api/v1/context', {
 				kind: 'skill',
-				name: `Required publishing review ${marker}`,
+				name: `required-publishing-${runId}`,
 				workflow_state_id: draftState.id,
 				files: [
 					{
@@ -204,8 +204,13 @@ test.describe.serial('public workflow snapshots', () => {
 		await expect(page).toHaveURL(`/workflows/import?publication=${snapshotId}`);
 		await expect(page.getByRole('heading', { name: 'Install workflow' })).toBeVisible();
 		await page.getByRole('button', { name: 'Preview installation' }).click();
+		const includedReviews = page.getByRole('checkbox', { name: /I reviewed every file/ });
+		await expect(includedReviews).toHaveCount(1);
+		await includedReviews.check();
 		await page.getByLabel(/I reviewed what will be installed/).check();
-		await page.getByRole('button', { name: 'Install workflow' }).click();
+		const install = page.getByRole('button', { name: 'Install workflow' });
+		await expect(install).toBeEnabled();
+		await install.click();
 		await expect(page.getByRole('heading', { name: 'Installed', exact: true })).toBeVisible();
 		await context.close();
 
@@ -217,9 +222,9 @@ test.describe.serial('public workflow snapshots', () => {
 		const observed = await observedContext.newPage();
 		await gotoHydrated(observed, `/p/${snapshotId}`);
 		await expect(observed.getByText(marker, { exact: false }).first()).toBeVisible();
-		const expansion = observed.getByRole('button', { name: /Show all \d+ words/ });
+		const expansion = observed.getByRole('button', { name: /Show all \d+ words/ }).first();
 		await expansion.click();
-		const collapse = observed.getByRole('button', { name: 'Show snippet' });
+		const collapse = observed.getByRole('button', { name: 'Show snippet' }).first();
 		await collapse.focus();
 		let releaseAvailable!: () => void;
 		const availableRelease = new Promise<void>((resolve) => (releaseAvailable = resolve));

@@ -539,7 +539,10 @@ test('authors an exact declared use and downloads the reviewed canonical package
 	await expect(
 		page.getByText('Another TARGET remains ordinary prose.', { exact: false }).first()
 	).toBeVisible();
-	for (const checkbox of await page.getByRole('checkbox', { name: /I reviewed/ }).all())
+	for (const checkbox of await page
+		.getByTestId('package-review')
+		.getByRole('checkbox', { name: /I reviewed/ })
+		.all())
 		await checkbox.check();
 	await page.getByRole('checkbox', { name: /I reviewed what will be installed/ }).check();
 
@@ -569,14 +572,17 @@ test('authors an exact declared use and downloads the reviewed canonical package
 	await page.getByLabel(`Main · ${name}`).fill(`${name} installed reviewed`);
 	await page.getByRole('button', { name: 'Preview installation' }).click();
 	await expect(page.getByRole('heading', { name: 'Workflow graph and gates' })).toBeVisible();
-	for (const checkbox of await page.getByRole('checkbox', { name: /I reviewed/ }).all())
+	for (const checkbox of await page
+		.getByTestId('package-review')
+		.getByRole('checkbox', { name: /I reviewed/ })
+		.all())
 		if (!(await checkbox.isChecked())) await checkbox.check();
 	await expect(
 		page.getByRole('checkbox', { name: /I reviewed what will be installed/ })
 	).not.toBeChecked();
 	await page.getByRole('checkbox', { name: /I reviewed what will be installed/ }).check();
 	await page.getByRole('button', { name: 'Install workflow' }).click();
-	await expect(page.getByRole('heading', { name: 'Package installed', exact: true })).toBeFocused();
+	await expect(page.getByRole('heading', { name: 'Installed', exact: true })).toBeFocused();
 	const installedPromptHref = await page
 		.getByText('prompt · instructions', { exact: true })
 		.locator('..')
@@ -739,7 +745,10 @@ test('authors an exact declared use and downloads the reviewed canonical package
 	await page.getByLabel(`Dependency · ${dependencyName}`).fill(`${dependencyName} scheduled copy`);
 	await page.getByRole('button', { name: 'Preview installation' }).click();
 	await expect(page.getByText('balanced for Draft in destination project')).toBeVisible();
-	for (const checkbox of await page.getByRole('checkbox', { name: /I reviewed/ }).all())
+	for (const checkbox of await page
+		.getByTestId('package-review')
+		.getByRole('checkbox', { name: /I reviewed/ })
+		.all())
 		await checkbox.check();
 	await page.getByRole('checkbox', { name: /I reviewed what will be installed/ }).check();
 	const installResponse = page.waitForResponse(
@@ -1097,7 +1106,7 @@ test('discards a delayed validation result when candidate review changes', async
 		() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
 	);
 	expect(downloads).toBe(0);
-	await expect(page.getByText('The older result was discarded.')).toBeVisible();
+	await expect(page.getByText('The older result was discarded.').first()).toBeVisible();
 	await page.getByRole('button', { name: 'Edit input race_key' }).click();
 	await expect(page.getByLabel('Default')).toHaveValue('after');
 });
@@ -1152,11 +1161,11 @@ test('focuses validation errors and keeps the responsive action clear of navigat
 				geometry.navigation.top
 			);
 			expect(geometry.action.height, `compact action height at ${width}px`).toBeLessThanOrEqual(96);
-			await expect(page.getByText(/left|Ready/, { exact: true })).toBeVisible();
+			await expect(page.getByTestId('package-actions').getByRole('status')).toBeVisible();
 			await expect(page.getByText(/required declaration review/)).toBeHidden();
 		} else {
 			expect(geometry.navigation.height).toBe(0);
-			await expect(page.getByText(/required declaration review/)).toBeVisible();
+			await expect(page.getByTestId('package-actions').getByRole('status')).toBeVisible();
 		}
 	}
 });
