@@ -25,6 +25,7 @@ import {
 	ApiError,
 	type PublicationProof,
 	type PublicationSource,
+	type ExportWorkflowPackageOptions,
 	type ApiClient,
 	type CreateWorkflowRequest,
 	type UpdateWorkflowRequest,
@@ -80,6 +81,66 @@ function readPublicationProof(path: string): SavedPublicationProof {
 	)
 		die('invalid workflow publication proof file');
 	return saved;
+}
+
+export interface WorkflowExportSelectorOpts {
+	project?: string;
+	schedule: string[];
+	tier: string[];
+	projectRouting?: boolean;
+	inputs?: string;
+}
+
+function withWorkflowExportSelectors(cmd: Command): Command {
+	return cmd
+		.option('--project <id-or-name>', 'source project for selected project-bound configuration')
+		.option('--schedule <id>', 'include this source schedule ID (repeatable)', collect, [])
+		.option('--tier <state-ref=tier>', 'include a state tier preference (repeatable)', collect, [])
+		.option('--project-routing', 'make every --tier selector project scoped')
+		.option('--inputs <file>', 'JSON object containing input declarations and text uses');
+}
+
+function hasWorkflowExportSelectors(opts: WorkflowExportSelectorOpts): boolean {
+	return Boolean(
+		opts.project || opts.schedule.length || opts.tier.length || opts.projectRouting || opts.inputs
+	);
+}
+
+export async function resolveWorkflowExportSelection(
+	api: ApiClient,
+	workflowRef: string,
+	opts: WorkflowExportSelectorOpts
+): Promise<{ workflow: WorkflowResponse; options: ExportWorkflowPackageOptions }> {
+	const all = await listAll((page) => api.listWorkflows(page));
+	const workflow = pickWorkflow(all, workflowRef);
+	const sourceProject = opts.project ? await resolveProject(api, opts.project) : undefined;
+	if ((opts.schedule.length || opts.projectRouting) && !sourceProject)
+		die('--project is required with --schedule or --project-routing');
+	const tiers: ExportWorkflowPackageOptions['tiers'] = [];
+	for (const selector of opts.tier) {
+		const separator = selector.lastIndexOf('=');
+		if (separator < 1) die(`invalid --tier "${selector}"; expected <state-ref>=<tier>`);
+		const tier = selector.slice(separator + 1);
+		if (!['smartest', 'balanced', 'cheapest'].includes(tier))
+			die(`invalid tier "${tier}"; expected smartest, balanced, or cheapest`);
+		tiers.push({
+			state_id: await resolveExportState(api, selector.slice(0, separator)),
+			tier: tier as 'smartest' | 'balanced' | 'cheapest',
+			project_scoped: Boolean(opts.projectRouting)
+		});
+	}
+	const authoring = opts.inputs
+		? readStrictObject<{ inputs: never[]; text_uses: never[] }>(opts.inputs, 'inputs file')
+		: undefined;
+	return {
+		workflow,
+		options: {
+			source_project_id: sourceProject?.id,
+			schedule_ids: opts.schedule,
+			tiers,
+			authoring
+		}
+	};
 }
 
 async function confirmPublicationAction(question: string): Promise<boolean> {
@@ -546,22 +607,24 @@ function registerPackageCommands(workflows: Command): void {
 	});
 
 	withCommon(
-		workflows
-			.command('publish [workflow]')
-			.description('Prepare or commit one exact immutable public workflow snapshot')
-			.option(
-				'--from <file>',
-				'prepare from an existing workflow package instead of an owned workflow'
-			)
-			.option('--proof-out <file>', 'save the complete prepared proof with mode 0600')
-			.option('--proof <file>', 'commit a previously saved exact proof')
-			.option('--display-name <name>', 'public attribution name (never an email)')
-			.option('--license <license>', 'reuse license (currently MIT)', 'MIT')
-			.option('--license-year <year>', 'MIT copyright year', String(new Date().getFullYear()))
-			.option('--confirm <review-digest>', 'exact digest of the reviewed proof')
-			.option('--sharing-rights', 'confirm rights to every bundled declaration and file')
-			.option('--recover', 'reconcile this same candidate after a lost response')
-			.option('--repo <local-id>', 'confirm one bundled repository ID (repeatable)', collect, [])
+		withWorkflowExportSelectors(
+			workflows
+				.command('publish [workflow]')
+				.description('Prepare or commit one exact immutable public workflow snapshot')
+				.option(
+					'--from <file>',
+					'prepare from an existing workflow package instead of an owned workflow'
+				)
+				.option('--proof-out <file>', 'save the complete prepared proof with mode 0600')
+				.option('--proof <file>', 'commit a previously saved exact proof')
+				.option('--display-name <name>', 'public attribution name (never an email)')
+				.option('--license <license>', 'reuse license (currently MIT)', 'MIT')
+				.option('--license-year <year>', 'MIT copyright year', String(new Date().getFullYear()))
+				.option('--confirm <review-digest>', 'exact digest of the reviewed proof')
+				.option('--sharing-rights', 'confirm rights to every bundled declaration and file')
+				.option('--recover', 'reconcile this same candidate after a lost response')
+				.option('--repo <local-id>', 'confirm one bundled repository ID (repeatable)', collect, [])
+		)
 	).action(
 		async (
 			workflow: string | undefined,
@@ -576,10 +639,12 @@ function registerPackageCommands(workflows: Command): void {
 				sharingRights?: boolean;
 				recover?: boolean;
 				repo: string[];
-			}
+			} & WorkflowExportSelectorOpts
 		) => {
 			const apiBase = normalizeUrl(resolveUrl(opts));
 			const api = client(opts);
+			if ((opts.from || opts.proof) && hasWorkflowExportSelectors(opts))
+				die('workflow selectors cannot be combined with --from or --proof');
 			if (opts.proof) {
 				if (workflow || opts.from || opts.proofOut || opts.displayName)
 					die(
@@ -629,13 +694,16 @@ function registerPackageCommands(workflows: Command): void {
 			if (opts.license !== 'MIT') die('--license currently supports only MIT');
 			const year = Number(opts.licenseYear);
 			if (!Number.isSafeInteger(year)) die('--license-year must be an integer');
-			const source: PublicationSource = opts.from
-				? { kind: 'file', document_json: readPackageSource(opts.from) }
-				: {
-						kind: 'owned_workflow',
-						workflow_id: (await resolveWorkflow(api, workflow!)).id,
-						options: { schedule_ids: [], tiers: [] }
-					};
+			let source: PublicationSource;
+			if (opts.from) source = { kind: 'file', document_json: readPackageSource(opts.from) };
+			else {
+				const selected = await resolveWorkflowExportSelection(api, workflow!, opts);
+				source = {
+					kind: 'owned_workflow',
+					workflow_id: selected.workflow.id,
+					options: selected.options
+				};
+			}
 			const proof = await api.preparePublication({
 				prepare_request_id: crypto.randomUUID(),
 				source,
@@ -714,61 +782,17 @@ function registerPackageCommands(workflows: Command): void {
 	});
 
 	withCommon(
-		workflows
-			.command('export <workflow-id-or-unambiguous-name>')
-			.description('Export a canonical workflow package JSON document')
-			.option('--project <id-or-name>', 'source project for selected project-bound configuration')
-			.option('--schedule <id>', 'include this source schedule ID (repeatable)', collect, [])
-			.option(
-				'--tier <state-ref=tier>',
-				'include a state tier preference (repeatable)',
-				collect,
-				[]
-			)
-			.option('--project-routing', 'make every --tier selector project scoped')
-			.option('--inputs <file>', 'JSON object containing input declarations and text uses')
-	).action(
-		async (
-			ref: string,
-			opts: CommonOpts & {
-				project?: string;
-				schedule: string[];
-				tier: string[];
-				projectRouting?: boolean;
-				inputs?: string;
-			}
-		) => {
-			const api = client(opts);
-			const all = await listAll((page) => api.listWorkflows(page));
-			const workflow = pickWorkflow(all, ref);
-			const sourceProject = opts.project ? await resolveProject(api, opts.project) : undefined;
-			if ((opts.schedule.length || opts.projectRouting) && !sourceProject)
-				die('--project is required with --schedule or --project-routing');
-			const tiers = [];
-			for (const selector of opts.tier) {
-				const separator = selector.lastIndexOf('=');
-				if (separator < 1) die(`invalid --tier "${selector}"; expected <state-ref>=<tier>`);
-				const tier = selector.slice(separator + 1);
-				if (!['smartest', 'balanced', 'cheapest'].includes(tier))
-					die(`invalid tier "${tier}"; expected smartest, balanced, or cheapest`);
-				tiers.push({
-					state_id: await resolveExportState(api, selector.slice(0, separator)),
-					tier: tier as 'smartest' | 'balanced' | 'cheapest',
-					project_scoped: Boolean(opts.projectRouting)
-				});
-			}
-			const authoring = opts.inputs
-				? readStrictObject<{ inputs: never[]; text_uses: never[] }>(opts.inputs, 'inputs file')
-				: undefined;
-			const document = await api.exportWorkflowPackage(workflow.id, {
-				source_project_id: sourceProject?.id,
-				schedule_ids: opts.schedule,
-				tiers,
-				authoring
-			});
-			process.stdout.write(`${canonicalWorkflowPackage(document)}\n`);
-		}
-	);
+		withWorkflowExportSelectors(
+			workflows
+				.command('export <workflow-id-or-unambiguous-name>')
+				.description('Export a canonical workflow package JSON document')
+		)
+	).action(async (ref: string, opts: CommonOpts & WorkflowExportSelectorOpts) => {
+		const api = client(opts);
+		const selected = await resolveWorkflowExportSelection(api, ref, opts);
+		const document = await api.exportWorkflowPackage(selected.workflow.id, selected.options);
+		process.stdout.write(`${canonicalWorkflowPackage(document)}\n`);
+	});
 
 	withCommon(
 		workflows
