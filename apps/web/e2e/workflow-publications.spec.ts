@@ -87,9 +87,12 @@ test.describe.serial('public workflow snapshots', () => {
 		const displayName = ownerPage.getByLabel('Public display name');
 		await displayName.fill('First proof name');
 		let prepareRequests = 0;
+		const prepareRequestIds: string[] = [];
 		ownerPage.on('request', (request) => {
-			if (request.method() === 'POST' && request.url().endsWith('/api/v1/publications/prepare'))
+			if (request.method() === 'POST' && request.url().endsWith('/api/v1/publications/prepare')) {
 				prepareRequests++;
+				prepareRequestIds.push(request.postDataJSON().prepare_request_id);
+			}
 		});
 		let releasePreparation!: () => void;
 		const heldPreparation = new Promise<void>((resolve) => (releasePreparation = resolve));
@@ -104,7 +107,9 @@ test.describe.serial('public workflow snapshots', () => {
 		await ownerPage.getByRole('button', { name: 'Preview', exact: true }).click();
 		await startedPreparation;
 		await displayName.fill('Alice Browser');
+		const rejectedResponse = ownerPage.waitForResponse('**/api/v1/publications/prepare');
 		releasePreparation();
+		await rejectedResponse;
 		await expect(ownerPage.getByRole('heading', { name: 'Customize', exact: true })).toBeVisible();
 		await expect(ownerPage.getByText('Published by First proof name')).toHaveCount(0);
 		await ownerPage.unroute('**/api/v1/publications/prepare');
@@ -127,12 +132,28 @@ test.describe.serial('public workflow snapshots', () => {
 		await ownerPage.getByRole('button', { name: 'Back to Customize' }).click();
 		await ownerPage.getByRole('button', { name: 'Preview', exact: true }).click();
 		expect(prepareRequests).toBe(2);
+		expect(new Set(prepareRequestIds).size).toBe(2);
 		await continueAction.click();
 		await ownerPage
 			.getByRole('checkbox', { name: /I have the right to share all included content/ })
 			.check();
+		const publishAttempts: unknown[] = [];
+		await ownerPage.route('**/api/v1/publications/*/publish', async (route) => {
+			publishAttempts.push(route.request().postDataJSON());
+			if (publishAttempts.length === 1) {
+				const response = await route.fetch();
+				expect(response.ok()).toBe(true);
+				await route.abort('connectionreset');
+				return;
+			}
+			await route.continue();
+		});
+		await ownerPage.getByRole('button', { name: 'Publish workflow' }).click();
+		await expect(ownerPage.getByText(/could not confirm whether sharing finished/)).toBeVisible();
 		await ownerPage.getByRole('button', { name: 'Publish workflow' }).click();
 		await expect(ownerPage.getByText('Shared', { exact: true })).toBeVisible();
+		expect(publishAttempts).toHaveLength(2);
+		expect(publishAttempts[1]).toEqual(publishAttempts[0]);
 		await ownerContext.close();
 		const publicContext = await browser.newContext();
 		const page = await publicContext.newPage();

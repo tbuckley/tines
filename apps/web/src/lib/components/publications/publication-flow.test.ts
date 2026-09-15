@@ -78,5 +78,9 @@ describe('PublicationFlowController', () => {
 		const flow = new PublicationFlowController();
 		flow.acceptProof(proof(100), 0);
 		expect(flow.canReuseProof(101)).toBe(false);
+		flow.invalidate();
+		expect(flow.prepareRequest(body, () => 'request_after_expiry').prepare_request_id).toBe(
+			'request_after_expiry'
+		);
 	});
 });
