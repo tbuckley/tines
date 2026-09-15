@@ -3,6 +3,7 @@ import { canonicalizeLibraryValue, withLibraryDocumentDigest } from '@tines/shar
 import { inheritedPackage } from '../../../../../../packages/shared/src/library/fixtures';
 import { createTestDb } from '../api/test-db';
 import { deleteWorkflow } from '../api/workflows';
+import { decodeCursor } from '../api/core';
 import { USER, addTwoStageWorkflow, seedBase } from '../supervisor/test-fixtures';
 import { preparePublication } from './prepare';
 import { resolvePublicSnapshot } from './public';
@@ -59,6 +60,35 @@ const confirmation = (proof: Awaited<ReturnType<typeof prepare>>) => ({
 });
 
 describe('publication commit', () => {
+	it('pages owner snapshots without gaps across equal publication times', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		for (const [index, publishedAt] of [3_000, 3_000, 2_000, 1_000].entries()) {
+			const proof = await prepare(t, `page-${index}`);
+			await publishPublication(
+				t.db,
+				envFor(t),
+				actor,
+				proof.candidate_id,
+				confirmation(proof),
+				publishedAt
+			);
+		}
+		const first = await listPublications(t.db, envFor(t), actor, {
+			page: { cursor: null, limit: 2 }
+		});
+		expect(first.items).toHaveLength(2);
+		expect(first.next_cursor).not.toBeNull();
+		const second = await listPublications(t.db, envFor(t), actor, {
+			page: { cursor: decodeCursor(first.next_cursor!), limit: 2 }
+		});
+		expect(second.items).toHaveLength(2);
+		expect(second.next_cursor).toBeNull();
+		const combined = [...first.items, ...second.items];
+		expect(new Set(combined.map((item) => item.candidate_id)).size).toBe(4);
+		expect(combined.map((item) => item.published_at)).toEqual([3_000, 3_000, 2_000, 1_000]);
+	});
+
 	it('detaches a deleted private source without changing the published snapshot', async () => {
 		const t = createTestDb();
 		seedBase(t);
@@ -219,7 +249,7 @@ describe('publication commit', () => {
 			6_000
 		);
 		expect(restored).toMatchObject({ owner_state: 'published', status_version: 4 });
-		expect((await listPublications(t.db, envFor(t), actor))[0]).toMatchObject({
+		expect((await listPublications(t.db, envFor(t), actor)).items[0]).toMatchObject({
 			candidate_id: proof.candidate_id,
 			snapshot_id: published.receipt.snapshot_id,
 			owner_state: 'published'

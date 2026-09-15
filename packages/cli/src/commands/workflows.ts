@@ -650,19 +650,22 @@ function registerPackageCommands(workflows: Command): void {
 		}
 	);
 
-	withCommon(
+	withList(
 		workflows
 			.command('publications')
 			.description('List your public workflow snapshots')
 			.option('--workflow <id>', 'filter by owned source workflow ID')
-	).action(async (opts: CommonOpts & { workflow?: string }) => {
-		const result = await client(opts).listPublications(opts.workflow);
-		if (opts.json) printJson(result);
-		else if (!result.items.length) console.log('no public snapshots');
-		else
+	).action(async (opts: ListOpts & { workflow?: string }) => {
+		const result = await fetchList(
+			opts,
+			(page) => client(opts).listPublications(opts.workflow, page),
+			(item) => item.candidate_id
+		);
+		printList(result, opts, (items) => {
+			if (!items.length) return console.log('no public snapshots');
 			table([
 				['NAME', 'STATUS', 'PUBLISHED', 'SNAPSHOT'],
-				...result.items.map((item) => [
+				...items.map((item) => [
 					item.metadata.display_name,
 					item.owner_state === 'published' && item.host_state === 'active'
 						? 'hosted'
@@ -671,6 +674,7 @@ function registerPackageCommands(workflows: Command): void {
 					item.snapshot_id
 				])
 			]);
+		});
 	});
 
 	withCommon(

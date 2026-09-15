@@ -4,13 +4,21 @@ import {
 	PUBLIC_WORKFLOW_POLICY_VERSION,
 	type PublicationOwnerResult,
 	type PublicationOwnerItem,
+	type ListResponse,
 	type PublicationReceipt,
 	type PublishPublicationRequest,
 	type WorkflowPackageDocument
 } from '@tines/shared';
 import { sql, type Kysely } from 'kysely';
 import { newId, type Database } from '$lib/server/db';
-import { ApiFail, runAtomic, runKeyForbidden, type ActorContext } from '../api/core';
+import {
+	ApiFail,
+	encodeCursor,
+	runAtomic,
+	runKeyForbidden,
+	type ActorContext,
+	type Page
+} from '../api/core';
 import { packageActorKey } from '../library/token';
 import { publicationConfig } from './config';
 import { buildOwnedPublicationSourceProof, publicationSourceExpression } from './source';
@@ -311,8 +319,9 @@ export async function listPublications(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
-	workflowId?: string
-): Promise<PublicationOwnerItem[]> {
+	options: { workflowId?: string; page?: Page } = {}
+): Promise<ListResponse<PublicationOwnerItem>> {
+	const page = options.page ?? { cursor: null, limit: 100 };
 	let query = db
 		.selectFrom('workflow_publication')
 		.leftJoin(
@@ -342,10 +351,23 @@ export async function listPublications(
 		.where('workflow_publication.published_at', 'is not', null)
 		.orderBy('workflow_publication.published_at', 'desc')
 		.orderBy('workflow_publication.id', 'asc')
-		.limit(101);
-	if (workflowId) query = query.where('workflow_publication.source_workflow_id', '=', workflowId);
+		.limit(page.limit + 1);
+	if (options.workflowId)
+		query = query.where('workflow_publication.source_workflow_id', '=', options.workflowId);
+	if (page.cursor)
+		query = query.where((eb) =>
+			eb.or([
+				eb('workflow_publication.published_at', '<', page.cursor!.createdAt),
+				eb.and([
+					eb('workflow_publication.published_at', '=', page.cursor!.createdAt),
+					eb('workflow_publication.id', '>', page.cursor!.id)
+				])
+			])
+		);
 	const origin = publicOrigin(env);
-	return (await query.execute()).slice(0, 100).map((row) => ({
+	const rows = await query.execute();
+	const selected = rows.slice(0, page.limit);
+	const items: PublicationOwnerItem[] = selected.map((row) => ({
 		candidate_id: row.id,
 		snapshot_id: row.snapshot_id!,
 		public_url: `${origin}/p/${row.snapshot_id}`,
@@ -367,6 +389,11 @@ export async function listPublications(
 				? { reason: row.suspension_reason, reference: row.suspension_reference }
 				: null
 	}));
+	const last = selected.at(-1);
+	return {
+		items,
+		next_cursor: rows.length > page.limit && last ? encodeCursor(last.published_at!, last.id) : null
+	};
 }
 
 /** Owner-only active host status. Contains no report or moderator data. */
