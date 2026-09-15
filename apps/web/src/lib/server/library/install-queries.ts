@@ -5,7 +5,7 @@ import { packageDestinationExpression } from './destination';
 import { compilePackageObjects } from './compile';
 import type { ResolvedPackage } from './resolve';
 import type { PackagePlanPayload } from './token';
-import type { WorkflowPackageReceipt } from '@tines/shared';
+import { workflowStateHref, type WorkflowPackageReceipt } from '@tines/shared';
 
 export function packageReceipt(
 	plan: PackagePlanPayload,
@@ -24,14 +24,16 @@ export function packageReceipt(
 			href: `/workflows/${workflowId}`,
 			relationship: w.id === mainId ? 'main' : 'dependency'
 		});
-		for (const state of w.states)
+		for (const state of w.states) {
+			const stateId = plan.allocation.records[state.id].id;
 			objects.push({
 				kind: 'state',
 				local_id: state.id,
-				id: plan.allocation.records[state.id].id,
+				id: stateId,
 				name: state.name,
-				href: `/workflows/${workflowId}#state-${plan.allocation.records[state.id].id}`
+				href: workflowStateHref(workflowId, stateId)
 			});
+		}
 		for (const transition of w.transitions)
 			objects.push({
 				kind: 'transition',

@@ -17,6 +17,7 @@ import { inheritedPackage } from '../../shared/src/library/fixtures.js';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { CLI_BIN, NODE } from './test-bin.js';
 import {
+	assertPlanBinding,
 	expectedWorkflowPackageOperations,
 	formatWorkflowPackageReview,
 	recoverOrInstall
@@ -235,6 +236,45 @@ function ttyCli(args: string[], input: string): Promise<{ stdout: string; stderr
 }
 
 describe('workflow package CLI', () => {
+	it('pins canonical state links and accepts only the exact historical state form', () => {
+		const workflow = plan.resolved.workflows[0];
+		const state = workflow.states[0];
+		const workflowId = plan.allocation.records[workflow.id].id;
+		const stateId = plan.allocation.records[state.id].id;
+		expect(plan.operations).toContainEqual(
+			expect.objectContaining({
+				kind: 'state',
+				local_id: state.id,
+				href: `/workflows/${workflowId}?state=${stateId}#state-${stateId}`
+			})
+		);
+		assertPlanBinding(plan);
+
+		const legacy = structuredClone(plan);
+		const legacyState = legacy.operations.find(
+			(operation) => operation.kind === 'state' && operation.local_id === state.id
+		)!;
+		legacyState.href = `/workflows/${workflowId}#state-${stateId}`;
+		expect(() => assertPlanBinding(legacy)).not.toThrow();
+
+		for (const href of [
+			`/workflows/wrong#state-${stateId}`,
+			`/workflows/${workflowId}#state-wrong`,
+			`/workflows/${workflowId}?extra=1#state-${stateId}`
+		]) {
+			const changed = structuredClone(plan);
+			changed.operations.find(
+				(operation) => operation.kind === 'state' && operation.local_id === state.id
+			)!.href = href;
+			expect(() => assertPlanBinding(changed)).toThrow('modified operations');
+		}
+
+		const changedWorkflow = structuredClone(plan);
+		changedWorkflow.operations.find((operation) => operation.kind === 'workflow')!.href +=
+			'?extra=1';
+		expect(() => assertPlanBinding(changedWorkflow)).toThrow('modified operations');
+	});
+
 	it('exports canonical JSON and requires an ID for ambiguous workflow names', async () => {
 		const ambiguous = await cli(['workflows', 'export', 'Source']).catch(
 			(error) => error as { stderr: string }

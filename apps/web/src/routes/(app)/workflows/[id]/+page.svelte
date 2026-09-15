@@ -1,6 +1,10 @@
 <script lang="ts">
 	import type { ContextItem, UpdateWorkflowRequest } from '@tines/shared';
-	import { activeStateIds as deriveActiveStateIds, ApiError } from '@tines/shared';
+	import {
+		activeStateIds as deriveActiveStateIds,
+		ApiError,
+		workflowStateAnchorId
+	} from '@tines/shared';
 	import IconBooks from '@tabler/icons-svelte/icons/books';
 	import IconChevronLeft from '@tabler/icons-svelte/icons/chevron-left';
 	import IconCopy from '@tabler/icons-svelte/icons/copy';
@@ -293,7 +297,7 @@
 		{#each data.workflow.states as state (state.id)}
 			{@const items = itemsByState.get(state.id) ?? []}
 			{@const open = selectedStateId === state.id}
-			<div class="border-b last:border-0" id={`state-${state.id}`}>
+			<div class="border-b last:border-0" id={workflowStateAnchorId(state.id)}>
 				<button
 					type="button"
 					class="hover:bg-muted/50 flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm"
