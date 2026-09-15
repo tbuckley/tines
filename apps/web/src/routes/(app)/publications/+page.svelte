@@ -3,6 +3,7 @@
 	import IconArrowLeft from '@tabler/icons-svelte/icons/arrow-left';
 	import IconExternalLink from '@tabler/icons-svelte/icons/external-link';
 	import { invalidateAll } from '$app/navigation';
+	import { page } from '$app/state';
 	import { api } from '$lib/api';
 	import { confirmDialog } from '$lib/components/dialogs.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
@@ -140,4 +141,23 @@
 			</article>
 		{/each}
 	</div>
+{/if}
+
+{#if data.nextCursor || page.url.searchParams.has('cursor')}
+	<nav
+		class="mt-6 flex min-h-10 flex-wrap items-center gap-x-4 gap-y-2"
+		aria-label="Publication pages"
+	>
+		{#if data.nextCursor}
+			<a
+				class="text-primary inline-flex min-h-10 items-center underline"
+				href={`?cursor=${encodeURIComponent(data.nextCursor)}`}>Next page</a
+			>
+		{/if}
+		{#if page.url.searchParams.has('cursor')}
+			<a class="text-primary inline-flex min-h-10 items-center underline" href={data.firstHref}
+				>First page</a
+			>
+		{/if}
+	</nav>
 {/if}

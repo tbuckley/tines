@@ -2,8 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { canonicalizeLibraryValue, withLibraryDocumentDigest } from '@tines/shared';
 import { inheritedPackage } from '../../../../../../packages/shared/src/library/fixtures';
 import { createTestDb } from '../api/test-db';
-import { USER, seedBase } from '../supervisor/test-fixtures';
+import { deleteWorkflow } from '../api/workflows';
+import { decodeCursor } from '../api/core';
+import { USER, addTwoStageWorkflow, seedBase } from '../supervisor/test-fixtures';
 import { preparePublication } from './prepare';
+import { resolvePublicSnapshot } from './public';
 import {
 	getPublicationResult,
 	listPublications,
@@ -57,6 +60,112 @@ const confirmation = (proof: Awaited<ReturnType<typeof prepare>>) => ({
 });
 
 describe('publication commit', () => {
+	it('pages more than 100 owner rows with equal times and preserves the workflow filter', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		addTwoStageWorkflow(t);
+		for (let index = 0; index < 105; index += 1) {
+			const proof = await prepare(t, `large-page-${index}`);
+			if (index < 3)
+				t.sqlite
+					.prepare('UPDATE workflow_publication SET source_workflow_id=? WHERE id=?')
+					.run('wf_two', proof.candidate_id);
+			await publishPublication(
+				t.db,
+				envFor(t, 200),
+				actor,
+				proof.candidate_id,
+				confirmation(proof),
+				index < 102 ? 3_000 : 2_000
+			);
+		}
+		const first = await listPublications(t.db, envFor(t), actor, {
+			page: { cursor: null, limit: 100 }
+		});
+		const second = await listPublications(t.db, envFor(t), actor, {
+			page: { cursor: decodeCursor(first.next_cursor!), limit: 100 }
+		});
+		const combined = [...first.items, ...second.items];
+		expect(first.items).toHaveLength(100);
+		expect(second.items).toHaveLength(5);
+		expect(new Set(combined.map((item) => item.candidate_id)).size).toBe(105);
+		expect(second.next_cursor).toBeNull();
+
+		const filtered = await listPublications(t.db, envFor(t), actor, {
+			workflowId: 'wf_two',
+			page: { cursor: null, limit: 100 }
+		});
+		expect(filtered.items).toHaveLength(3);
+		expect(filtered.items.every((item) => item.source_workflow_id === 'wf_two')).toBe(true);
+	});
+
+	it('pages owner snapshots without gaps across equal publication times', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		for (const [index, publishedAt] of [3_000, 3_000, 2_000, 1_000].entries()) {
+			const proof = await prepare(t, `page-${index}`);
+			await publishPublication(
+				t.db,
+				envFor(t),
+				actor,
+				proof.candidate_id,
+				confirmation(proof),
+				publishedAt
+			);
+		}
+		const first = await listPublications(t.db, envFor(t), actor, {
+			page: { cursor: null, limit: 2 }
+		});
+		expect(first.items).toHaveLength(2);
+		expect(first.next_cursor).not.toBeNull();
+		const second = await listPublications(t.db, envFor(t), actor, {
+			page: { cursor: decodeCursor(first.next_cursor!), limit: 2 }
+		});
+		expect(second.items).toHaveLength(2);
+		expect(second.next_cursor).toBeNull();
+		const combined = [...first.items, ...second.items];
+		expect(new Set(combined.map((item) => item.candidate_id)).size).toBe(4);
+		expect(combined.map((item) => item.published_at)).toEqual([3_000, 3_000, 2_000, 1_000]);
+	});
+
+	it('detaches a deleted private source without changing the published snapshot', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		addTwoStageWorkflow(t);
+		const proof = await prepare(t);
+		t.sqlite
+			.prepare('UPDATE workflow_publication SET source_workflow_id = ? WHERE id = ?')
+			.run('wf_two', proof.candidate_id);
+		const published = await publishPublication(
+			t.db,
+			envFor(t),
+			actor,
+			proof.candidate_id,
+			confirmation(proof),
+			2_000
+		);
+		const before = await resolvePublicSnapshot(t.db, published.receipt.snapshot_id);
+
+		await deleteWorkflow(t.db, envFor(t), actor, 'wf_two');
+
+		expect(
+			t.sqlite
+				.prepare('SELECT source_workflow_id FROM workflow_publication WHERE id = ?')
+				.get(proof.candidate_id)
+		).toEqual({ source_workflow_id: null });
+		expect(await resolvePublicSnapshot(t.db, published.receipt.snapshot_id)).toEqual(before);
+		expect(() =>
+			t.sqlite
+				.prepare('UPDATE workflow_publication SET source_workflow_id = ? WHERE id = ?')
+				.run('wf_two', proof.candidate_id)
+		).toThrow(/source is immutable/);
+		expect(() =>
+			t.sqlite
+				.prepare('UPDATE workflow_publication SET metadata_json = ? WHERE id = ?')
+				.run('{}', proof.candidate_id)
+		).toThrow(/content is immutable/);
+	});
+
 	it('publishes exactly once and reconciles without returning source bytes', async () => {
 		const t = createTestDb();
 		seedBase(t);
@@ -179,7 +288,7 @@ describe('publication commit', () => {
 			6_000
 		);
 		expect(restored).toMatchObject({ owner_state: 'published', status_version: 4 });
-		expect((await listPublications(t.db, envFor(t), actor))[0]).toMatchObject({
+		expect((await listPublications(t.db, envFor(t), actor)).items[0]).toMatchObject({
 			candidate_id: proof.candidate_id,
 			snapshot_id: published.receipt.snapshot_id,
 			owner_state: 'published'

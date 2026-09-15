@@ -5,7 +5,7 @@ import {
 	type PublicationProof
 } from '@tines/shared';
 import type { APIRequestContext, Page } from '@playwright/test';
-import { ALICE, BOB } from './constants.mjs';
+import { ALICE, BOB, NATIVE_MODERATION_PUBLISHER } from './constants.mjs';
 import { d1, sqlLiteral } from './d1';
 import { expect, test } from './fixtures';
 import { apiClient, body, errorBody, signIn } from './helpers';
@@ -15,9 +15,9 @@ test.describe.serial('native D1 moderation gates', () => {
 	let marker: string;
 
 	async function prepareCandidate(request: APIRequestContext, suffix: string) {
-		const alice = apiClient(request, ALICE.apiKey);
+		const publisher = apiClient(request, NATIVE_MODERATION_PUBLISHER.apiKey);
 		const workflow = await body<{ id: string }>(
-			await alice.post('/api/v1/workflows', {
+			await publisher.post('/api/v1/workflows', {
 				name: `${marker}-${suffix}`,
 				description: `${marker}-${suffix}`,
 				initial_state: 'Open',
@@ -29,24 +29,27 @@ test.describe.serial('native D1 moderation gates', () => {
 			})
 		);
 		const proof = await body<PublicationProof>(
-			await alice.post('/api/v1/publications/prepare', {
+			await publisher.post('/api/v1/publications/prepare', {
 				prepare_request_id: crypto.randomUUID(),
 				source: { kind: 'owned_workflow', workflow_id: workflow.id, options: {} },
 				metadata: { display_name: `Native ${suffix}`, license: 'MIT', license_year: 2026 }
 			})
 		);
-		return { alice, proof, documentJson: canonicalizeLibraryValue(proof.document) };
+		return { publisher, proof, documentJson: canonicalizeLibraryValue(proof.document) };
 	}
 
 	async function publishSnapshot(request: APIRequestContext, suffix: string) {
 		const candidate = await prepareCandidate(request, suffix);
 		const published = await body<PublicationOwnerResult>(
-			await candidate.alice.post(`/api/v1/publications/${candidate.proof.candidate_id}/publish`, {
-				review_digest: candidate.proof.review_digest,
-				sharing_rights: true,
-				exact_content: true,
-				reviewed_repo_ids: []
-			})
+			await candidate.publisher.post(
+				`/api/v1/publications/${candidate.proof.candidate_id}/publish`,
+				{
+					review_digest: candidate.proof.review_digest,
+					sharing_rights: true,
+					exact_content: true,
+					reviewed_repo_ids: []
+				}
+			)
 		);
 		return {
 			...candidate,
@@ -77,9 +80,9 @@ test.describe.serial('native D1 moderation gates', () => {
 
 	test.beforeAll(async ({ apiFor, uniqueName }) => {
 		marker = uniqueName('native-moderation', { maxLength: 100 });
-		const alice = apiFor(ALICE);
+		const publisher = apiFor(NATIVE_MODERATION_PUBLISHER);
 		const workflow = await body<{ id: string }>(
-			await alice.post('/api/v1/workflows', {
+			await publisher.post('/api/v1/workflows', {
 				name: marker,
 				description: marker,
 				initial_state: 'Open',
@@ -91,14 +94,14 @@ test.describe.serial('native D1 moderation gates', () => {
 			})
 		);
 		const proof = await body<PublicationProof>(
-			await alice.post('/api/v1/publications/prepare', {
+			await publisher.post('/api/v1/publications/prepare', {
 				prepare_request_id: crypto.randomUUID(),
 				source: { kind: 'owned_workflow', workflow_id: workflow.id, options: {} },
 				metadata: { display_name: 'Native moderator', license: 'MIT', license_year: 2026 }
 			})
 		);
 		const published = await body<PublicationOwnerResult>(
-			await alice.post(`/api/v1/publications/${proof.candidate_id}/publish`, {
+			await publisher.post(`/api/v1/publications/${proof.candidate_id}/publish`, {
 				review_digest: proof.review_digest,
 				sharing_rights: true,
 				exact_content: true,
@@ -205,7 +208,9 @@ test.describe.serial('native D1 moderation gates', () => {
 	}) => {
 		test.setTimeout(90_000);
 		for (const action of ['disable', 'suspend'] as const) {
-			d1(`DELETE FROM workflow_publisher_status WHERE user_id=${sqlLiteral(ALICE.id)}`);
+			d1(
+				`DELETE FROM workflow_publisher_status WHERE user_id=${sqlLiteral(NATIVE_MODERATION_PUBLISHER.id)}`
+			);
 			const statusFirst = await publishSnapshot(request, `report-${action}-status-first`);
 			await page.goto(`/p/${statusFirst.snapshotId}`);
 			expect(await report(page, statusFirst.snapshotId, action)).toBe(404);
@@ -213,7 +218,9 @@ test.describe.serial('native D1 moderation gates', () => {
 				d1(`SELECT id FROM workflow_report WHERE snapshot_id=${sqlLiteral(statusFirst.snapshotId)}`)
 			).toEqual([]);
 
-			d1(`DELETE FROM workflow_publisher_status WHERE user_id=${sqlLiteral(ALICE.id)}`);
+			d1(
+				`DELETE FROM workflow_publisher_status WHERE user_id=${sqlLiteral(NATIVE_MODERATION_PUBLISHER.id)}`
+			);
 			const reportFirst = await publishSnapshot(request, `report-${action}-report-first`);
 			await page.goto(`/p/${reportFirst.snapshotId}`);
 			expect(await report(page, reportFirst.snapshotId)).toBe(201);
@@ -225,7 +232,7 @@ test.describe.serial('native D1 moderation gates', () => {
 			} else {
 				d1(
 					`INSERT INTO workflow_publisher_status (user_id, suspended, status_version)
-					 VALUES (${sqlLiteral(ALICE.id)}, 1, 1)`
+					 VALUES (${sqlLiteral(NATIVE_MODERATION_PUBLISHER.id)}, 1, 1)`
 				);
 			}
 			expect((await request.get(`/p/${reportFirst.snapshotId}`)).status()).toBe(404);
@@ -235,7 +242,9 @@ test.describe.serial('native D1 moderation gates', () => {
 				)
 			).toEqual([{ n: 1 }]);
 		}
-		d1(`DELETE FROM workflow_publisher_status WHERE user_id=${sqlLiteral(ALICE.id)}`);
+		d1(
+			`DELETE FROM workflow_publisher_status WHERE user_id=${sqlLiteral(NATIVE_MODERATION_PUBLISHER.id)}`
+		);
 	});
 
 	test('orders native final install against disable and suspension and rejects restored stale plans', async ({
@@ -244,7 +253,9 @@ test.describe.serial('native D1 moderation gates', () => {
 		test.setTimeout(120_000);
 		const bob = apiClient(request, BOB.apiKey);
 		const prepare = async (suffix: string) => {
-			d1(`DELETE FROM workflow_publisher_status WHERE user_id=${sqlLiteral(ALICE.id)}`);
+			d1(
+				`DELETE FROM workflow_publisher_status WHERE user_id=${sqlLiteral(NATIVE_MODERATION_PUBLISHER.id)}`
+			);
 			const publication = await publishSnapshot(request, suffix);
 			const plan = await body<PrepareWorkflowPackageResponse>(
 				await bob.post(`/api/v1/publications/public/${publication.snapshotId}/prepare-install`, {
@@ -286,7 +297,7 @@ test.describe.serial('native D1 moderation gates', () => {
 			} else {
 				d1(
 					`INSERT INTO workflow_publisher_status (user_id, suspended, status_version)
-					 VALUES (${sqlLiteral(ALICE.id)}, 1, 1)`
+					 VALUES (${sqlLiteral(NATIVE_MODERATION_PUBLISHER.id)}, 1, 1)`
 				);
 			}
 			expect((await request.get(`/p/${installFirst.snapshotId}`)).status()).toBe(404);
@@ -309,24 +320,28 @@ test.describe.serial('native D1 moderation gates', () => {
 		const unsuspended = await prepare('install-unsuspended-stale');
 		d1(
 			`INSERT INTO workflow_publisher_status (user_id, suspended, status_version)
-			 VALUES (${sqlLiteral(ALICE.id)}, 1, 1);
+			 VALUES (${sqlLiteral(NATIVE_MODERATION_PUBLISHER.id)}, 1, 1);
 			 UPDATE workflow_publisher_status SET suspended=0, status_version=status_version+1
-			 WHERE user_id=${sqlLiteral(ALICE.id)}`
+			 WHERE user_id=${sqlLiteral(NATIVE_MODERATION_PUBLISHER.id)}`
 		);
 		expect((await install(unsuspended)).status()).toBe(409);
-		d1(`DELETE FROM workflow_publisher_status WHERE user_id=${sqlLiteral(ALICE.id)}`);
+		d1(
+			`DELETE FROM workflow_publisher_status WHERE user_id=${sqlLiteral(NATIVE_MODERATION_PUBLISHER.id)}`
+		);
 	});
 
 	test('orders native publisher suspension against publication in both directions', async ({
 		request
 	}) => {
-		d1(`DELETE FROM workflow_publisher_status WHERE user_id=${sqlLiteral(ALICE.id)}`);
+		d1(
+			`DELETE FROM workflow_publisher_status WHERE user_id=${sqlLiteral(NATIVE_MODERATION_PUBLISHER.id)}`
+		);
 		const statusFirst = await prepareCandidate(request, 'publish-status-first');
 		const refused = await request.post(
 			`/api/v1/publications/${statusFirst.proof.candidate_id}/publish`,
 			{
 				headers: {
-					authorization: `Bearer ${ALICE.apiKey}`,
+					authorization: `Bearer ${NATIVE_MODERATION_PUBLISHER.apiKey}`,
 					'x-tines-e2e-publication-race': 'suspend'
 				},
 				data: {
@@ -345,13 +360,17 @@ test.describe.serial('native D1 moderation gates', () => {
 			)
 		).toEqual([{ snapshot_id: null }]);
 
-		d1(`DELETE FROM workflow_publisher_status WHERE user_id=${sqlLiteral(ALICE.id)}`);
+		d1(
+			`DELETE FROM workflow_publisher_status WHERE user_id=${sqlLiteral(NATIVE_MODERATION_PUBLISHER.id)}`
+		);
 		const publicationFirst = await publishSnapshot(request, 'publish-publication-first');
 		d1(
 			`INSERT INTO workflow_publisher_status (user_id, suspended, status_version)
-			 VALUES (${sqlLiteral(ALICE.id)}, 1, 1)`
+			 VALUES (${sqlLiteral(NATIVE_MODERATION_PUBLISHER.id)}, 1, 1)`
 		);
 		expect((await request.get(`/p/${publicationFirst.snapshotId}`)).status()).toBe(404);
-		d1(`DELETE FROM workflow_publisher_status WHERE user_id=${sqlLiteral(ALICE.id)}`);
+		d1(
+			`DELETE FROM workflow_publisher_status WHERE user_id=${sqlLiteral(NATIVE_MODERATION_PUBLISHER.id)}`
+		);
 	});
 });

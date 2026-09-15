@@ -11,8 +11,6 @@ import type { RequestHandler } from './$types';
 
 export const POST: RequestHandler = api(async (event) => {
 	const { db, env, actor } = await apiContext(event);
-	if (actor.agentRunId)
-		throw new ApiFail(403, 'run_key_forbidden', 'Run keys cannot install workflow packages');
 	const body = await readOptionalJson<{ choices?: unknown }>(event);
 	if (Object.keys(body).some((key) => key !== 'choices'))
 		throw new ApiFail(422, 'invalid_field', 'Unknown hosted installation field');

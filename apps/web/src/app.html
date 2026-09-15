@@ -9,7 +9,7 @@
 		<!-- Theme pre-paint: applies the stored preference before first paint so a
 		     dark-mode reload doesn't flash light. Keep the key and the resolution
 		     rule in sync with src/lib/theme.svelte.ts. -->
-		<script>
+		<script nonce="%sveltekit.nonce%">
 			(function () {
 				try {
 					var p = localStorage.getItem('tines:theme');

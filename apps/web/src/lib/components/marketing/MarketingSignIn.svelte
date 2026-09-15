@@ -5,8 +5,14 @@
 	let {
 		linkError = null,
 		onOpened,
-		returnTo = '/issues'
-	}: { linkError?: string | null; onOpened?: () => void; returnTo?: string } = $props();
+		returnTo = '/issues',
+		errorReturnTo
+	}: {
+		linkError?: string | null;
+		onOpened?: () => void;
+		returnTo?: string;
+		errorReturnTo?: string;
+	} = $props();
 	let dialog: HTMLDialogElement;
 	let emailInput = $state<HTMLInputElement>();
 	let email = $state('');
@@ -65,7 +71,8 @@
 				email: submittedEmail,
 				name: submittedEmail.split('@')[0],
 				callbackURL: returnTo,
-				errorCallbackURL: `${returnTo}${returnTo.includes('?') ? '&' : '?'}error=signin`
+				errorCallbackURL:
+					errorReturnTo ?? `${returnTo}${returnTo.includes('?') ? '&' : '?'}error=signin`
 			});
 			if (generation !== attempt || !dialog.open) return;
 			if (error) status = error.message ?? 'Could not send the sign-in link. Try again.';

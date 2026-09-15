@@ -520,6 +520,12 @@ export interface WorkflowPublisherStatusTable {
 	decision_reason: string | null;
 }
 
+export interface WorkflowPublicationQuotaFenceTable {
+	user_id: string;
+	version: number;
+	attempt_nonce: string;
+}
+
 export interface WorkflowPublicationEventTable {
 	id: string;
 	publication_id: string;
@@ -627,6 +633,7 @@ export interface Database {
 	workflow_publication: WorkflowPublicationTable;
 	workflow_publication_source: WorkflowPublicationSourceTable;
 	workflow_publisher_status: WorkflowPublisherStatusTable;
+	workflow_publication_quota_fence: WorkflowPublicationQuotaFenceTable;
 	workflow_publication_event: WorkflowPublicationEventTable;
 	workflow_report_case: WorkflowReportCaseTable;
 	workflow_report: WorkflowReportTable;
