@@ -71,7 +71,7 @@ test.beforeAll(async ({ apiFor, uniqueName, workerRequest: request }) => {
 	// requires the slot — so the row renders both.
 	const workflow = await body<WorkflowResponse>(
 		await api.post('/api/v1/workflows', {
-			name: `Panel loop ${runId}`,
+			name: uniqueName('Panel loop', { maxLength: 100 }),
 			initial_state: 'Design',
 			states: [
 				{ name: 'Design', category: 'active' },

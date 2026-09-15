@@ -24,14 +24,14 @@ import type {
 import type { APIRequestContext, Page } from '@playwright/test';
 import { expect, test } from './fixtures';
 import { ALICE, BASE_URL } from './constants.mjs';
-import { apiClient, body, fireSweep, gotoHydrated, runId, signIn } from './helpers';
+import { apiClient, body, fireSweep, gotoHydrated, signIn } from './helpers';
 
 const CLI_DIR = fileURLToPath(new URL('../../../packages/cli', import.meta.url));
 const TSX = join(CLI_DIR, 'node_modules', '.bin', 'tsx');
 const CLI_ENTRY = join(CLI_DIR, 'src', 'index.ts');
 
-const RUNNER_NAME = `e2e-runner-${runId}`;
-const PROJECT_NAME = `runner-${runId}`;
+let RUNNER_NAME: string;
+let PROJECT_NAME: string;
 
 // Shared across the serial suite.
 let e2eDir: string;
@@ -95,7 +95,9 @@ async function openAddRunner(page: Page) {
 }
 
 test.describe.serial('local runner end to end', () => {
-	test.beforeAll(async ({ request }) => {
+	test.beforeAll(async ({ request, uniqueName }) => {
+		RUNNER_NAME = uniqueName('e2e-runner');
+		PROJECT_NAME = uniqueName('runner');
 		const api = apiClient(request, ALICE.apiKey);
 		e2eDir = mkdtempSync(join(tmpdir(), 'tines-runner-e2e-'));
 		configDir = join(e2eDir, 'config');
@@ -378,7 +380,8 @@ esac
 
 	test('the dialog creates a real key on demand, copies the whole block, and leaves nothing behind otherwise', async ({
 		context,
-		page
+		page,
+		uniqueName
 	}) => {
 		await signIn(context, ALICE.sessionToken);
 		// `/api/v1/api-keys` is session-only, so the check rides the browser
@@ -396,14 +399,14 @@ esac
 
 		// Abandoning the dialog without clicking Create key leaves no key.
 		let dialog = await openAddRunner(page);
-		await dialog.getByLabel('Name').fill(`abandoned-${runId}`);
+		await dialog.getByLabel('Name').fill(uniqueName('abandoned'));
 		await dialog.getByRole('button', { name: 'Done' }).click();
 		// Settled before reopening: openAddRunner would otherwise see the
 		// closing dialog and take it for the new one.
 		await expect(dialog).toBeHidden();
 		expect((await keyNames()).length).toBe(before.length);
 
-		const keyRunner = `key-e2e-${runId}`;
+		const keyRunner = uniqueName('key-e2e');
 		dialog = await openAddRunner(page);
 		await dialog.getByLabel('Name').fill(keyRunner);
 		await dialog.getByRole('button', { name: 'Create key' }).click();
@@ -429,13 +432,14 @@ esac
 	test('a registration while the dialog is open ticks it live, and one click routes everything there', async ({
 		context,
 		page,
-		request
+		request,
+		uniqueName
 	}) => {
 		const api = apiClient(request, ALICE.apiKey);
 		await signIn(context, ALICE.sessionToken);
 		await gotoHydrated(page, '/agents');
 
-		const liveName = `e2e-live-${runId}`;
+		const liveName = uniqueName('e2e-live');
 		const dialog = await openAddRunner(page);
 		await dialog.getByLabel('Name').fill(liveName);
 		await expect(dialog).toContainText('Waiting for');

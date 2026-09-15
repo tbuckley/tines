@@ -2,9 +2,7 @@ import type { Runner, RunnerPollResponse, RunnerTokenResponse } from '@tines/sha
 import type { APIRequestContext } from '@playwright/test';
 import { expect, test } from './fixtures';
 import { ALICE } from './constants.mjs';
-import { apiClient, body, errorBody, runId } from './helpers';
-
-const name = `fencing-${runId}`;
+import { apiClient, body, errorBody } from './helpers';
 
 async function poll(
 	request: APIRequestContext,
@@ -19,9 +17,11 @@ async function poll(
 }
 
 test('native D1 polling fences the immediate predecessor and preserves legacy omission', async ({
-	request
+	request,
+	uniqueName
 }) => {
 	const api = apiClient(request, ALICE.apiKey);
+	const name = uniqueName('fencing');
 	const registered = await body<RunnerTokenResponse>(
 		await api.post('/api/v1/runners/register', { name, harness: 'custom', command: 'true' })
 	);

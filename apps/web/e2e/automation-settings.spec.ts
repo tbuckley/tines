@@ -1,12 +1,13 @@
 import { expect, test } from './fixtures';
 import type { IssueDetail, Project } from '@tines/shared';
 import { MANAGED_SETTINGS, STOPPED_FIRST_RUN } from './constants.mjs';
-import { apiClient, body, gotoHydrated, runId, signIn } from './helpers';
+import { apiClient, body, gotoHydrated, signIn } from './helpers';
 
 test('a saved pre-first-run stop is preserved and Resume is the sole action on both surfaces', async ({
 	context,
 	page,
-	request
+	request,
+	uniqueName
 }) => {
 	const api = apiClient(request, STOPPED_FIRST_RUN.apiKey);
 	await api.put('/api/v1/supervisor/settings', { attempt_limit: 5 });
@@ -16,7 +17,7 @@ test('a saved pre-first-run stop is preserved and Resume is the sole action on b
 		enabled: false
 	});
 	const project = await body<Project>(
-		await api.post('/api/v1/projects', { name: `stopped-first-run-${runId}` })
+		await api.post('/api/v1/projects', { name: uniqueName('stopped-first-run') })
 	);
 	const issue = await body<IssueDetail>(
 		await api.post(`/api/v1/projects/${project.id}/issues`, { title: 'Title only while stopped' })

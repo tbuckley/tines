@@ -9,9 +9,9 @@
 import type { Page } from '@playwright/test';
 import { expect, test } from './fixtures';
 import { ALICE } from './constants.mjs';
-import { apiClient, body, gotoHydrated, runId, signIn } from './helpers';
+import { apiClient, body, gotoHydrated, signIn } from './helpers';
 
-const workflowName = `Header ${runId}`;
+let workflowName: string;
 /** As long as a real workflow's: six lines on a desktop, nine on a phone. */
 const description =
 	'Backlog → Research → Design → Implementation → Automated Review → Human Review → Merging → Closed (or Canceled). Small, fully-specified tasks may go straight from Backlog to Implementation. Research, Design, and Implementation can park in Needs Clarification to ask a human a blocking question. After human approval, a Merging run brings the PR up to date with main and lands it.';
@@ -24,7 +24,8 @@ const SYSTEM_WORKFLOW = {
 
 let workflowId: string;
 
-test.beforeAll(async ({ apiFor }) => {
+test.beforeAll(async ({ apiFor, uniqueName }) => {
+	workflowName = uniqueName('Header', { maxLength: 100 });
 	const api = apiFor(ALICE);
 	const created = await body<{ id: string }>(
 		await api.post('/api/v1/workflows', {

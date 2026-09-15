@@ -8,13 +8,14 @@
 import { expect, test } from './fixtures';
 import type { ListResponse, Project, RoutingRuleWithWarnings } from '@tines/shared';
 import { AGENTS_FIRST_RUN as USER } from './constants.mjs';
-import { apiClient, body, gotoHydrated, runId, signIn } from './helpers';
+import { apiClient, body, gotoHydrated, signIn } from './helpers';
 
 test.describe.serial('the first-run path on an empty account', () => {
 	test('the Issues tab sends a projectless account to New project', async ({
 		context,
 		page,
-		request
+		request,
+		uniqueName
 	}) => {
 		const api = apiClient(request, USER.apiKey);
 		const { items } = await body<ListResponse<Project>>(await api.get('/api/v1/projects'));
@@ -53,11 +54,12 @@ test.describe.serial('the first-run path on an empty account', () => {
 	test('the Agents tab permits a scoped tier-only rule before any runner exists', async ({
 		context,
 		page,
-		request
+		request,
+		uniqueName
 	}) => {
 		const api = apiClient(request, USER.apiKey);
 		const project = await body<Project>(
-			await api.post('/api/v1/projects', { name: `runnerless-routing-${runId}` })
+			await api.post('/api/v1/projects', { name: uniqueName('runnerless-routing') })
 		);
 		await signIn(context, USER.sessionToken);
 		await gotoHydrated(page, '/agents');
@@ -93,10 +95,11 @@ test.describe.serial('the first-run path on an empty account', () => {
 	test('a fresh project page points at routing and at its first repo', async ({
 		context,
 		page,
-		request
+		request,
+		uniqueName
 	}) => {
 		const api = apiClient(request, USER.apiKey);
-		const projectName = `first-run-${runId}`;
+		const projectName = uniqueName('first-run');
 		const project = await body<Project>(await api.post('/api/v1/projects', { name: projectName }));
 		const projectId = project.id;
 

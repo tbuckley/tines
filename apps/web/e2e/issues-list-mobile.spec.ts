@@ -42,7 +42,7 @@ test.beforeAll(async ({ apiFor, uniqueName }) => {
 
 	const workflow = await body<WorkflowResponse>(
 		await api.post('/api/v1/workflows', {
-			name: `Mobile list ${runId}`,
+			name: uniqueName('Mobile list', { maxLength: 100 }),
 			initial_state: LONG_STATE,
 			states: [
 				{ name: LONG_STATE, category: 'active' },

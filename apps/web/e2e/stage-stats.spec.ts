@@ -13,19 +13,21 @@ import type {
 import { expect, test } from './fixtures';
 import { WEEKLY } from './stage-stats-seed.mjs';
 import { ALICE } from './constants.mjs';
-import { apiClient, body, clickToOpen, gotoHydrated, runId, signIn } from './helpers';
+import { apiClient, body, clickToOpen, gotoHydrated, signIn } from './helpers';
 
-const projectName = `stage-stats-${runId}`;
-const otherProjectName = `stage-stats-other-${runId}`;
+let projectName: string;
+let otherProjectName: string;
 let project: Project;
 let workflow: WorkflowResponse;
 let reviewStateId: string;
 
-test.beforeAll(async ({ apiFor }) => {
+test.beforeAll(async ({ apiFor, uniqueName }) => {
+	projectName = uniqueName('stage-stats');
+	otherProjectName = uniqueName('stage-stats-other');
 	const api = apiFor(ALICE);
 	workflow = await body<WorkflowResponse>(
 		await api.post('/api/v1/workflows', {
-			name: `Stage stats ${runId}`,
+			name: uniqueName('Stage stats', { maxLength: 100 }),
 			initial_state: 'Implementation',
 			states: [
 				{ name: 'Implementation', category: 'active' },
@@ -81,8 +83,8 @@ test.beforeAll(async ({ apiFor }) => {
 			});
 		}
 	};
-	await seedVisit(project.id, `Sent back ${runId}`, true);
-	await seedVisit(other.id, `Other visit ${runId}`, false);
+	await seedVisit(project.id, uniqueName('Sent back', { maxLength: 100 }), true);
+	await seedVisit(other.id, uniqueName('Other visit', { maxLength: 100 }), false);
 });
 
 test('filters the weekly board, focuses capacity, and opens frozen historical evidence', async ({

@@ -14,7 +14,7 @@ import type { Workflow } from '@tines/shared';
 import type { Page } from '@playwright/test';
 import { expect, test } from './fixtures';
 import { ALICE, RUNROW, RUNROW_ESTIMATED, RUNROW_FAILED } from './constants.mjs';
-import { apiClient, body, gotoHydrated, resetFocus, runId, signIn } from './helpers';
+import { apiClient, body, gotoHydrated, resetFocus, signIn } from './helpers';
 
 test.describe('shared run row', () => {
 	test.use({ signedIn: ALICE });
@@ -114,12 +114,14 @@ test.describe('shared run row', () => {
 });
 
 test.describe('shared routing-rule row', () => {
-	const STATE_NAME = `Dead ${runId}`;
+	let STATE_NAME: string;
 
 	let workflowId: string;
 	let stateId: string;
 
-	test.beforeAll(async ({ request }) => {
+	test.beforeAll(async ({ request, uniqueName }) => {
+		STATE_NAME = uniqueName('Dead', { maxLength: 100 });
+		const fixtureName = uniqueName('rulerow');
 		const api = apiClient(request, ALICE.apiKey);
 		/** Fixture setup must not fail silently — a 422 here would look like a UI bug. */
 		const ok = async (res: Awaited<ReturnType<typeof api.post>>, what: string) => {
@@ -130,7 +132,7 @@ test.describe('shared routing-rule row', () => {
 		// A paused runner: this rule must never actually dispatch anything.
 		const runner = await body<{ id: string }>(
 			await ok(
-				await api.post('/api/v1/runners', { type: 'local', name: `rulerow-${runId}` }),
+				await api.post('/api/v1/runners', { type: 'local', name: fixtureName }),
 				'create runner'
 			)
 		);
@@ -141,7 +143,7 @@ test.describe('shared routing-rule row', () => {
 		const workflow = await body<Workflow>(
 			await ok(
 				await api.post('/api/v1/workflows', {
-					name: `rulerow-${runId}`,
+					name: fixtureName,
 					initial_state: STATE_NAME,
 					states: [
 						{ name: STATE_NAME, category: 'active' },

@@ -9,7 +9,7 @@ import type { ImportLibraryResponse, LibraryDocument } from '@tines/shared';
 import type { Locator, Page } from '@playwright/test';
 import { expect, test } from './fixtures';
 import { ALICE, BOB, RUNROW } from './constants.mjs';
-import { apiClient, body, errorBody, gotoHydrated, runId, signIn } from './helpers';
+import { apiClient, body, errorBody, gotoHydrated, signIn } from './helpers';
 
 /** Everything but the per-export timestamp. */
 const comparable = (doc: LibraryDocument) => ({
@@ -25,9 +25,15 @@ const pointersOf = (doc: LibraryDocument, workflow: string) =>
 		.sort();
 
 test.describe.serial('library export / import', () => {
-	const workflowName = `Portable ${runId}`;
-	const promptName = `portable-${runId}`;
-	const projectName = `portable-project-${runId}`;
+	let workflowName: string;
+	let promptName: string;
+	let projectName: string;
+
+	test.beforeAll(async ({ uniqueName }) => {
+		workflowName = uniqueName('Portable', { maxLength: 100 });
+		promptName = uniqueName('portable');
+		projectName = uniqueName('portable-project');
+	});
 
 	test('Alice exports a self-contained library', async ({ request }) => {
 		const alice = apiClient(request, ALICE.apiKey);
@@ -259,11 +265,12 @@ test.describe('export / import settings page', () => {
 test('file preview exposes legacy ambiguous workflows and invalid project names before any write', async ({
 	context,
 	page,
-	request
+	request,
+	uniqueName
 }) => {
 	await signIn(context, ALICE.sessionToken);
 	await gotoHydrated(page, '/settings/export-import');
-	const name = `Ambiguous-file-${runId}`;
+	const name = uniqueName('Ambiguous-file', { maxLength: 100 });
 	const workflow = {
 		name,
 		initial_state: 'Work',
@@ -483,7 +490,8 @@ test('workflow export and strict validation are read-only and allowed to run key
 });
 
 test('workflow install commits once, recovers its receipt, and denies run keys', async ({
-	request
+	request,
+	uniqueName
 }) => {
 	const alice = apiClient(request, ALICE.apiKey);
 	const run = apiClient(request, RUNROW.runKey);
@@ -491,10 +499,11 @@ test('workflow install commits once, recovers its receipt, and denies run keys',
 		await alice.get('/api/v1/workflows/wf_standard/export')
 	);
 	const raw = JSON.stringify(document);
+	const installedName = uniqueName('Installed', { maxLength: 100 });
 	const prepared = await body<import('@tines/shared').PrepareWorkflowPackageResponse>(
 		await alice.post('/api/v1/library/prepare', {
 			document_json: raw,
-			choices: { workflow_names: { 'workflow:1': `Installed ${runId}` } }
+			choices: { workflow_names: { 'workflow:1': installedName } }
 		})
 	);
 	const requestBody: import('@tines/shared').WorkflowPackageInstallRequest = {
@@ -507,7 +516,7 @@ test('workflow install commits once, recovers its receipt, and denies run keys',
 	const receipt = await body<import('@tines/shared').WorkflowPackageReceipt>(installed);
 	expect(receipt.id).toBe(prepared.plan_id);
 	expect(receipt.objects.find((object) => object.relationship === 'main')?.name).toBe(
-		`Installed ${runId}`
+		installedName
 	);
 	expect(await body(await alice.post('/api/v1/library/install', requestBody))).toEqual(receipt);
 	expect(await body(await run.get(`/api/v1/library/installs/${receipt.id}`))).toEqual(receipt);

@@ -10,8 +10,10 @@ already solved once is not re-solved per spec (Tines/170).
   pull request, so a green unit run says nothing about end-to-end behaviour.
 - `workers: 1`: the suite shares one D1 database. Allocate runtime server names with the
   `uniqueName(stem)` fixture; it combines a cryptographic worker namespace with a monotonic
-  counter. Reuse one returned value when equality is under test. `runId` remains only as a
-  compatibility helper for the four route-contract specs owned by Tines/87.
+  counter. Reuse one returned value when equality is under test. Ordinary server objects in
+  retained specs use this allocator. `runId` remains temporarily for the four route-contract
+  specs owned by Tines/87 and for literal content/identifier fixtures whose exact shape is the
+  behavior under test; it is not a naming path for collision-constrained objects.
 - `E2E_PORT` (default 8788) moves the server, end to end — two suites can run side by side
   on one machine.
 - Setup belongs in a typed worker-scoped world fixture, not the first behavioral test. Tests

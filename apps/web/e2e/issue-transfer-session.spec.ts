@@ -2,23 +2,27 @@ import type { IssueDetail, Project } from '@tines/shared';
 import type { Page } from '@playwright/test';
 import { expect, test } from './fixtures';
 import { ALICE } from './constants.mjs';
-import { apiClient, body, clickToOpen, gotoHydrated, resetFocus, runId, signIn } from './helpers';
+import { apiClient, body, clickToOpen, gotoHydrated, resetFocus, signIn } from './helpers';
 
 test.beforeEach(async ({ page, request }) => {
 	await resetFocus(request);
 	await signIn(page.context(), ALICE.sessionToken);
 });
 
-async function seed(request: Parameters<typeof apiClient>[0], label: string) {
+async function seed(
+	request: Parameters<typeof apiClient>[0],
+	label: string,
+	uniqueName: (stem: string) => string
+) {
 	const api = apiClient(request, ALICE.apiKey);
 	const source = await body<Project>(
-		await api.post('/api/v1/projects', { name: `xf-session-src-${label}-${runId}` })
+		await api.post('/api/v1/projects', { name: uniqueName(`xf-session-src-${label}`) })
 	);
 	const destinationA = await body<Project>(
-		await api.post('/api/v1/projects', { name: `xf-session-a-${label}-${runId}` })
+		await api.post('/api/v1/projects', { name: uniqueName(`xf-session-a-${label}`) })
 	);
 	const destinationB = await body<Project>(
-		await api.post('/api/v1/projects', { name: `xf-session-b-${label}-${runId}` })
+		await api.post('/api/v1/projects', { name: uniqueName(`xf-session-b-${label}`) })
 	);
 	const issue = await body<IssueDetail>(
 		await api.post(`/api/v1/projects/${source.id}/issues`, {
@@ -40,11 +44,13 @@ async function settleBrowser(page: Page) {
 for (const closing of ['Escape', 'Close', 'chooser Cancel'] as const) {
 	test(`${closing} abandons a held preview before a new dialog session`, async ({
 		page,
-		request
+		request,
+		uniqueName
 	}) => {
 		const { source, destinationA, destinationB, issue } = await seed(
 			request,
-			closing.replace(' ', '-').toLowerCase()
+			closing.replace(' ', '-').toLowerCase(),
+			uniqueName
 		);
 		await gotoHydrated(page, `/issues/${source.name}/${issue.number}`);
 
@@ -99,9 +105,14 @@ for (const closing of ['Escape', 'Close', 'chooser Cancel'] as const) {
 
 test('review Cancel abandons a held stale-preview refresh before a new session', async ({
 	page,
-	request
+	request,
+	uniqueName
 }) => {
-	const { source, destinationA, destinationB, issue } = await seed(request, 'review-cancel');
+	const { source, destinationA, destinationB, issue } = await seed(
+		request,
+		'review-cancel',
+		uniqueName
+	);
 	await gotoHydrated(page, `/issues/${source.name}/${issue.number}`);
 	const api = apiClient(request, ALICE.apiKey);
 	let release!: () => void;
@@ -134,7 +145,7 @@ test('review Cancel abandons a held stale-preview refresh before a new session',
 	// visible while commit() awaits that refresh.
 	await api.post('/api/v1/context', {
 		kind: 'prompt',
-		name: `xf-session-stale-review-cancel-${runId}`,
+		name: uniqueName('xf-session-stale-review-cancel'),
 		project_id: destinationA.id,
 		body: 'Changes the transfer witness after the operator reviewed it'
 	});
@@ -167,9 +178,14 @@ test('review Cancel abandons a held stale-preview refresh before a new session',
 
 test('changing destination abandons the held preview without leaving loading stuck', async ({
 	page,
-	request
+	request,
+	uniqueName
 }) => {
-	const { source, destinationA, destinationB, issue } = await seed(request, 'destination-change');
+	const { source, destinationA, destinationB, issue } = await seed(
+		request,
+		'destination-change',
+		uniqueName
+	);
 	await gotoHydrated(page, `/issues/${source.name}/${issue.number}`);
 	let release!: () => void;
 	const gate = new Promise<void>((resolve) => (release = resolve));
@@ -201,8 +217,8 @@ test('changing destination abandons the held preview without leaving loading stu
 	await expect(modal.getByRole('button', { name: 'Review move', exact: true })).toBeEnabled();
 });
 
-test('the current held preview is accepted and focused', async ({ page, request }) => {
-	const { source, destinationA, issue } = await seed(request, 'current');
+test('the current held preview is accepted and focused', async ({ page, request, uniqueName }) => {
+	const { source, destinationA, issue } = await seed(request, 'current', uniqueName);
 	await gotoHydrated(page, `/issues/${source.name}/${issue.number}`);
 	let release!: () => void;
 	const gate = new Promise<void>((resolve) => (release = resolve));

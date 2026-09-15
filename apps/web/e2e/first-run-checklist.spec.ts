@@ -27,12 +27,12 @@ import type {
 } from '@tines/shared';
 import { DANA } from './constants.mjs';
 import { spawnDaemon, transitionHarnessCommand, type Daemon } from './daemon';
-import { apiClient, body, gotoHydrated, runId, signIn } from './helpers';
+import { apiClient, body, gotoHydrated, signIn } from './helpers';
 
 test.describe.configure({ mode: 'serial' });
 
-const PROJECT_NAME = `walk-${runId}`;
-const RUNNER_NAME = `dana-${runId}`;
+let PROJECT_NAME: string;
+let RUNNER_NAME: string;
 
 let daemon: Daemon | null = null;
 let projectId: string;
@@ -108,7 +108,9 @@ async function expectSingleAdvancedRun(
 	}
 }
 
-test.beforeAll(async ({ request }) => {
+test.beforeAll(async ({ request, uniqueName }) => {
+	PROJECT_NAME = uniqueName('walk');
+	RUNNER_NAME = uniqueName('dana');
 	const api = apiClient(request, DANA.apiKey);
 	const runs = await body<ListResponse<unknown>>(await api.get('/api/v1/runs'));
 	expect(

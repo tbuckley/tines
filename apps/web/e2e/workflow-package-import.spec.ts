@@ -20,7 +20,7 @@ import {
 } from '../src/lib/server/library/token';
 import { d1, sqlLiteral } from './d1';
 import { BOB } from './constants.mjs';
-import { apiClient, body, DESKTOP, gotoHydrated, PHONE, runId, signIn } from './helpers';
+import { apiClient, body, DESKTOP, gotoHydrated, PHONE, signIn } from './helpers';
 
 const LONG_CRON =
 	'0 9 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31 * *';
@@ -142,14 +142,15 @@ async function assertScheduleProof(page: Page, expectedRecurrence: string) {
 async function prepareScheduleProof(page: Page, file: string, projectId: string) {
 	await gotoHydrated(page, '/workflows/import');
 	await page.getByLabel('Workflow package file').setInputFiles(file);
-	await page.getByLabel('Filing label').selectOption({ label: `import-label-${runId}` });
+	await page.getByLabel('Filing label').selectOption({ label: filingLabel });
 	await page.getByLabel('Destination project').selectOption(projectId);
 	await page.getByRole('checkbox', { name: 'Weekly review' }).check();
 	await page.getByRole('button', { name: 'Prepare installation' }).click();
 	await expect(page.getByRole('heading', { name: 'Complete installation plan' })).toBeVisible();
 }
 
-const suffix = ` browser import ${runId}`;
+let suffix: string;
+let filingLabel: string;
 let packagePath: string;
 let missingWorkflowPath: string;
 let dependencyFirstPath: string;
@@ -160,23 +161,25 @@ let dependencyName: string;
 let candidateInputId: string;
 let projects: Project[];
 
-test.beforeAll(async ({ apiFor }) => {
+test.beforeAll(async ({ apiFor, uniqueName }) => {
 	const api = apiFor(BOB);
+	suffix = ` ${uniqueName('browser import')}`;
+	filingLabel = uniqueName('import-label');
 	const candidate = automatedPackage();
 	(candidate as { digest?: string }).digest = undefined;
 	mainName = `Reviewer${suffix}`;
 	dependencyName = `Shared${suffix}`;
 	candidate.workflows[0].name = mainName;
 	candidate.workflows[1].name = dependencyName;
-	candidate.inputs[0].default = `import-label-${runId}`;
+	candidate.inputs[0].default = filingLabel;
 	candidateInputId = candidate.inputs[0].id;
 	for (const use of candidate.text_uses) {
-		use.token = `{{filing_label:import-label-${runId}}}`;
+		use.token = `{{filing_label:${filingLabel}}}`;
 	}
-	candidate.workflows[0].description = `Review {{filing_label:import-label-${runId}}} work`;
+	candidate.workflows[0].description = `Review {{filing_label:${filingLabel}}} work`;
 	const prompt = candidate.context.find((item) => item.kind === 'prompt')!;
 	if (prompt.kind === 'prompt')
-		prompt.body = `File work with label {{filing_label:import-label-${runId}}}. Preserve {{date}}.`;
+		prompt.body = `File work with label {{filing_label:${filingLabel}}}. Preserve {{date}}.`;
 
 	for (const workflow of candidate.workflows)
 		await body(
@@ -194,7 +197,7 @@ test.beforeAll(async ({ apiFor }) => {
 	projects = await Promise.all(
 		['one', 'two'].map(async (part) =>
 			body<Project>(
-				await api.post('/api/v1/projects', { name: `Import destination ${part} ${runId}` })
+				await api.post('/api/v1/projects', { name: uniqueName(`Import destination ${part}`) })
 			)
 		)
 	);
@@ -723,7 +726,7 @@ test('installs selected schedules paused into two independent destination projec
 		await page.setViewportSize(projectIndex === 0 ? PHONE : DESKTOP);
 		await gotoHydrated(page, '/workflows/import');
 		await page.getByLabel('Workflow package file').setInputFiles(packagePath);
-		await page.getByLabel('Filing label').selectOption({ label: `import-label-${runId}` });
+		await page.getByLabel('Filing label').selectOption({ label: filingLabel });
 		await page.getByLabel('Destination project').selectOption(project.id);
 		await page.getByRole('checkbox', { name: 'Weekly review' }).check();
 		await page.getByRole('button', { name: 'Prepare installation' }).click();

@@ -5,7 +5,7 @@ import type { EffectiveContext, IssueDetail, IssueTransferPreview, Project } fro
 import type { Browser, Page } from '@playwright/test';
 import { expect, test as base } from './fixtures';
 import { ALICE, BASE_URL } from './constants.mjs';
-import { apiClient, body, clickToOpen, gotoHydrated, resetFocus, runId, signIn } from './helpers';
+import { apiClient, body, clickToOpen, gotoHydrated, resetFocus, signIn } from './helpers';
 
 const CLI_DIR = fileURLToPath(new URL('../../../packages/cli', import.meta.url));
 const TSX = join(CLI_DIR, 'node_modules', '.bin', 'tsx');
@@ -38,6 +38,14 @@ type TransferWorld = {
  * demonstrably the destination's next one and not the number carried over.
  */
 function suite(label: string, viewport: { width: number; height: number }) {
+	async function open(browser: Browser, path: string): Promise<Page> {
+		const context = await browser.newContext({ viewport });
+		await signIn(context, ALICE.sessionToken);
+		const page = await context.newPage();
+		await gotoHydrated(page, path);
+		return page;
+	}
+
 	const test = base.extend<{}, { world: TransferWorld }>({
 		world: [
 			async ({ apiFor, uniqueName }, use) => {
@@ -45,14 +53,6 @@ function suite(label: string, viewport: { width: number; height: number }) {
 				const destinationName = uniqueName(`xf-dst-${label}`);
 				const longName = `xf-${label}-` + 'destination'.repeat(17);
 				const api = apiFor(ALICE);
-
-				async function open(browser: Browser, path: string): Promise<Page> {
-					const context = await browser.newContext({ viewport });
-					await signIn(context, ALICE.sessionToken);
-					const page = await context.newPage();
-					await gotoHydrated(page, path);
-					return page;
-				}
 
 				const source = await body<Project>(
 					await api.post('/api/v1/projects', { name: sourceName, description: 'move from here' })
@@ -592,7 +592,7 @@ function suite(label: string, viewport: { width: number; height: number }) {
 			request,
 			world
 		}) => {
-			const { sourceId, destinationName } = world;
+			const { sourceName, sourceId, destinationName } = world;
 			const api = apiClient(request, ALICE.apiKey);
 			const humanIssue = await body<IssueDetail>(
 				await api.post(`/api/v1/projects/${sourceId}/issues`, { title: `CLI human ${label}` })
@@ -649,7 +649,7 @@ function suite(label: string, viewport: { width: number; height: number }) {
 			request,
 			world
 		}) => {
-			const { sourceName, sourceId, destinationName } = world;
+			const { sourceName, sourceId, destinationName, issueId } = world;
 			// The issue now lives in the destination; its old source is the one
 			// this test archives.
 			const api = apiClient(request, ALICE.apiKey);
@@ -683,9 +683,11 @@ function suite(label: string, viewport: { width: number; height: number }) {
 		test('asks again when the guidance changes under a review', async ({
 			browser,
 			request,
-			world
+			world,
+			uniqueName
 		}) => {
-			const { sourceName, sourceId, destinationName } = world;
+			const { sourceName, sourceId, destinationName, issueId } = world;
+			const lateGuidanceName = uniqueName(`late-guidance-${label}`);
 			const page = await open(browser, `/issues/${destinationName}/2`);
 			const modal = page.getByRole('dialog');
 			await clickToOpen(page.getByTestId('move-to-project'), modal);
@@ -698,7 +700,7 @@ function suite(label: string, viewport: { width: number; height: number }) {
 			const late = await body<{ id: string }>(
 				await api.post('/api/v1/context', {
 					kind: 'prompt',
-					name: `late-guidance-${label}-${runId}`,
+					name: lateGuidanceName,
 					project_id: sourceId,
 					body: 'added after the review'
 				})
@@ -708,9 +710,7 @@ function suite(label: string, viewport: { width: number; height: number }) {
 			// Refused and refreshed, not reposted: the operator confirms the
 			// guidance that is true now.
 			await expect(page.getByTestId('transfer-stale')).toBeVisible();
-			await expect(page.getByTestId('transfer-review')).toContainText(
-				`late-guidance-${label}-${runId}`
-			);
+			await expect(page.getByTestId('transfer-review')).toContainText(lateGuidanceName);
 			const midway = await body<IssueDetail>(await api.get(`/api/v1/issues/${issueId}`));
 			expect(midway.project_name).toBe(destinationName);
 

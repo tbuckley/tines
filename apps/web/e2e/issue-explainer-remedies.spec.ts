@@ -16,15 +16,16 @@
 import { expect, test } from './fixtures';
 import type { IssueDetail, Project } from '@tines/shared';
 import { EXPLAINER_REMEDIES as USER } from './constants.mjs';
-import { apiClient, body, gotoHydrated, runId, signIn } from './helpers';
+import { apiClient, body, gotoHydrated, signIn } from './helpers';
 
 test("an unarmed account's issue card offers the first-run checklist's controls", async ({
 	context,
 	page,
-	request
+	request,
+	uniqueName
 }) => {
 	const api = apiClient(request, USER.apiKey);
-	const projectName = `remedies-${runId}`;
+	const projectName = uniqueName('remedies');
 	const project = await body<Project>(await api.post('/api/v1/projects', { name: projectName }));
 	const issue = await body<IssueDetail>(
 		await api.post(`/api/v1/projects/${project.id}/issues`, { title: 'Why is nothing running?' })

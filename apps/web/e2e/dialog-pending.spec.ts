@@ -55,7 +55,7 @@ test.beforeAll(async ({ apiFor, uniqueName }) => {
 
 	const workflow = await body<WorkflowResponse>(
 		await api.post('/api/v1/workflows', {
-			name: `Dialog pending ${runId}`,
+			name: uniqueName('Dialog pending', { maxLength: 100 }),
 			initial_state: 'Design',
 			states: [
 				{ name: 'Design', category: 'active' },

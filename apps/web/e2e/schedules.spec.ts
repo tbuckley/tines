@@ -18,7 +18,6 @@ import {
 	fireSweep,
 	gotoHydrated,
 	resetFocus,
-	runId,
 	signIn
 } from './helpers';
 
@@ -118,15 +117,17 @@ test.describe.serial('scheduled-task sweep (seeded due schedules)', () => {
 });
 
 test.describe.serial('schedule lifecycle over the API', () => {
-	const projectName = `sched-${runId}`;
+	let projectName: string;
 	let projectId: string;
 	let scheduleId: string;
 	let firstIssue: IssueDetail;
 
 	test('creating an issue with a recurrence creates it immediately plus the schedule', async ({
-		request
+		request,
+		uniqueName
 	}) => {
 		const api = apiClient(request, ALICE.apiKey);
+		projectName = uniqueName('sched');
 		projectId = (await body<Project>(await api.post('/api/v1/projects', { name: projectName }))).id;
 
 		const res = await api.post(`/api/v1/projects/${projectId}/issues`, {
@@ -266,10 +267,10 @@ test.describe.serial('schedule lifecycle over the API', () => {
 test.describe('schedule validation', () => {
 	let projectId: string;
 
-	test.beforeAll(async ({ request }) => {
+	test.beforeAll(async ({ request, uniqueName }) => {
 		const api = apiClient(request, ALICE.apiKey);
 		projectId = (
-			await body<Project>(await api.post('/api/v1/projects', { name: `sched-val-${runId}` }))
+			await body<Project>(await api.post('/api/v1/projects', { name: uniqueName('sched-val') }))
 		).id;
 	});
 
@@ -353,14 +354,13 @@ test.describe('schedule validation', () => {
 });
 
 test.describe.serial('workflow deletion guard', () => {
-	test('a workflow referenced by a schedule cannot be deleted', async ({ request }) => {
+	test('a workflow referenced by a schedule cannot be deleted', async ({ request, uniqueName }) => {
 		const api = apiClient(request, ALICE.apiKey);
-		const project = await body<Project>(
-			await api.post('/api/v1/projects', { name: `sched-wf-${runId}` })
-		);
+		const fixtureName = uniqueName('sched-wf');
+		const project = await body<Project>(await api.post('/api/v1/projects', { name: fixtureName }));
 		const workflow = await body<WorkflowResponse>(
 			await api.post('/api/v1/workflows', {
-				name: `sched-wf-${runId}`,
+				name: fixtureName,
 				initial_state: 'Open',
 				states: [
 					{ name: 'Open', category: 'active' },

@@ -15,7 +15,7 @@ import type {
 } from '@tines/shared';
 import { expect, test } from './fixtures';
 import { ALICE, BASE_URL } from './constants.mjs';
-import { apiClient, body, clickToOpen, gotoHydrated, resetFocus, runId, signIn } from './helpers';
+import { apiClient, body, clickToOpen, gotoHydrated, resetFocus, signIn } from './helpers';
 
 const CLI_DIR = fileURLToPath(new URL('../../../packages/cli', import.meta.url));
 const TSX = join(CLI_DIR, 'node_modules', '.bin', 'tsx');
@@ -123,7 +123,8 @@ test('round-trips and clears a model-aware routing effort in the existing dialog
 });
 
 test('delivers routed effort through the source daemon argv and freezes its evidence', async ({
-	request
+	request,
+	uniqueName
 }) => {
 	test.setTimeout(70_000);
 	const api = apiClient(request, ALICE.apiKey);
@@ -161,7 +162,7 @@ if (process.argv[2] === '--version') {
 `,
 		{ mode: 0o755 }
 	);
-	const name = `effort-daemon-${runId}`;
+	const name = uniqueName('effort-daemon');
 	let output = '';
 	let daemon: ChildProcess | null = spawn(
 		TSX,
@@ -215,7 +216,7 @@ if (process.argv[2] === '--version') {
 		});
 		expect(tierSave.ok(), await tierSave.text()).toBe(true);
 		const project = await body<Project>(
-			await api.post('/api/v1/projects', { name: `effort-daemon-${runId}` })
+			await api.post('/api/v1/projects', { name: uniqueName('effort-daemon-project') })
 		);
 		const rule = await body<RoutingRule>(
 			await api.post('/api/v1/routing-rules', {
@@ -297,7 +298,8 @@ if (process.argv[2] === '--version') {
 });
 
 test('upgrades legacy delivery and applies wildcard fallback through the source daemon', async ({
-	request
+	request,
+	uniqueName
 }) => {
 	test.setTimeout(120_000);
 	const api = apiClient(request, ALICE.apiKey);
@@ -324,7 +326,7 @@ else {
 `,
 		{ mode: 0o755 }
 	);
-	const name = `effort-upgrade-${runId}`;
+	const name = uniqueName('effort-upgrade');
 	const registered = await body<RunnerTokenResponse>(
 		await api.post('/api/v1/runners/register', { name, harness: 'claude_code' })
 	);
@@ -357,7 +359,7 @@ else {
 	// remains claimable, but the assignment deliberately omits effort.
 	expect((await poll()).ok()).toBe(true);
 	const project = await body<Project>(
-		await api.post('/api/v1/projects', { name: `effort-upgrade-${runId}` })
+		await api.post('/api/v1/projects', { name: uniqueName('effort-upgrade-project') })
 	);
 	expect((await api.put('/api/v1/supervisor/settings', { enabled: false })).ok()).toBe(true);
 	const legacyIssue = await body<IssueDetail>(
@@ -525,7 +527,7 @@ else {
 
 		const old = await body<RunnerTokenResponse>(
 			await api.post('/api/v1/runners/register', {
-				name: `effort-old-${runId}`,
+				name: uniqueName('effort-old'),
 				harness: 'codex'
 			})
 		);

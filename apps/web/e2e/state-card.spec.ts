@@ -65,7 +65,7 @@ test.beforeAll(async ({ apiFor, uniqueName }) => {
 	// the reordering below is observable rather than incidental.
 	const workflow = await body<WorkflowResponse>(
 		await api.post('/api/v1/workflows', {
-			name: `State card ${runId}`,
+			name: uniqueName('State card', { maxLength: 100 }),
 			initial_state: 'Design',
 			states: [
 				{ name: 'Research', category: 'active' },
@@ -139,7 +139,7 @@ test.beforeAll(async ({ apiFor, uniqueName }) => {
 	// a slot at all. Its own workflow, so the fixtures above keep their shape.
 	const wideWorkflow = await body<WorkflowResponse>(
 		await api.post('/api/v1/workflows', {
-			name: `Wide state ${runId}`,
+			name: uniqueName('Wide state', { maxLength: 100 }),
 			initial_state: WIDE_STATE,
 			states: [
 				{ name: WIDE_STATE, category: 'active' },
