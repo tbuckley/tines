@@ -14,7 +14,7 @@ import {
 	type WorkflowPackageDocument
 } from '@tines/shared';
 import { inheritedPackage } from '../../shared/src/library/fixtures.js';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CLI_BIN, NODE } from './test-bin.js';
 import {
 	assertPlanBinding,
@@ -561,6 +561,30 @@ describe('workflow package helpers', () => {
 		await expect(recoverOrInstall(api as never, JSON.stringify(document), plan)).rejects.toThrow(
 			'receipt does not match'
 		);
+	});
+
+	it('does not load a source when the matching receipt already exists', async () => {
+		const receipt = {
+			id: plan.plan_id,
+			document_digest: plan.document_digest,
+			plan_digest: plan.plan_digest
+		} as never;
+		const loadSource = vi.fn(async () => {
+			throw new Error('source is unavailable');
+		});
+		expect(
+			await recoverOrInstall(
+				{
+					getWorkflowPackageReceipt: async () => receipt,
+					installWorkflowPackage: async () => {
+						throw new Error('must not install');
+					}
+				},
+				loadSource,
+				plan
+			)
+		).toBe(receipt);
+		expect(loadSource).not.toHaveBeenCalled();
 	});
 
 	it('retries the identical request after an uncertain response and recovery 404', async () => {

@@ -33,7 +33,7 @@ describe('credential-free public workflow package fetch', () => {
 		const result = await fetchPublicWorkflowPackage(`${base}/p/${ID}`);
 		expect(result).toEqual({
 			raw: '{"ok":true}',
-			sourceUrl: `${base}/p/${ID}/download`
+			sourceUrl: `${base}/api/v1/publications/public/${ID}/download`
 		});
 		expect(headers.authorization).toBeUndefined();
 		expect(headers.cookie).toBeUndefined();
@@ -62,25 +62,25 @@ describe('credential-free public workflow package fetch', () => {
 	it('revalidates redirects and rejects invalid MIME, encoding, UTF-8, size, and timeout', async () => {
 		const { base } = await serve((request, response) => {
 			switch (request.url) {
-				case `/p/${ID}/download`:
+				case `/api/v1/publications/public/${ID}/download`:
 					response.writeHead(302, { location: `/final` });
 					return response.end();
 				case '/final':
 					response.writeHead(200, { 'content-type': 'application/json' });
 					return response.end('{"ok":true}');
-				case `/p/${ID}aaaa/download`:
+				case `/api/v1/publications/public/${ID}aaaa/download`:
 					response.writeHead(200, { 'content-type': 'text/plain' });
 					return response.end('{}');
-				case `/p/${ID}bbbb/download`:
+				case `/api/v1/publications/public/${ID}bbbb/download`:
 					response.writeHead(200, {
 						'content-type': 'application/json',
 						'content-encoding': 'gzip'
 					});
 					return response.end('{}');
-				case `/p/${ID}cccc/download`:
+				case `/api/v1/publications/public/${ID}cccc/download`:
 					response.writeHead(200, { 'content-type': 'application/json' });
 					return response.end(Buffer.from([0xc3, 0x28]));
-				case `/p/${ID}dddd/download`:
+				case `/api/v1/publications/public/${ID}dddd/download`:
 					response.writeHead(200, { 'content-type': 'application/json' });
 					return response.end('{}');
 				default:

@@ -593,10 +593,12 @@ function registerPackageCommands(workflows: Command): void {
 					die(`confirmation digest does not match reviewed proof ${proof.review_digest}`);
 				if (!process.stdin.isTTY && (opts.confirm !== proof.review_digest || !opts.sharingRights))
 					die(`non-interactive publish requires --confirm ${proof.review_digest} --sharing-rights`);
-				if (process.stdin.isTTY && !opts.confirm) {
+				if (process.stdin.isTTY && opts.confirm !== proof.review_digest) {
 					process.stderr.write(`${JSON.stringify(proof, null, 2)}\n`);
 					if (!(await confirmPublicationAction('Publish these exact immutable bytes?')))
 						die('publication declined');
+				}
+				if (process.stdin.isTTY && !opts.sharingRights) {
 					if (
 						!(await confirmPublicationAction('Do you have sharing rights for every bundled item?'))
 					)
@@ -852,48 +854,54 @@ function registerPackageCommands(workflows: Command): void {
 
 			const apiBase = normalizeUrl(resolveUrl(opts));
 			const api = client(opts);
-			const source = publicationSource(path, apiBase);
-			let raw: string;
+			let loadSource: () => Promise<string>;
 			let plan;
 			let planPath = opts.plan;
 			if (planPath) {
 				const saved = readWorkflowPackagePlan(planPath);
 				if (normalizeUrl(saved.api_base) !== apiBase)
 					die(`plan belongs to ${saved.api_base}, not ${apiBase}`);
-				if (saved.remote_source) {
-					if (source.kind !== 'remote')
-						die('saved remote plan must be installed from its public source URL');
-					const fetched = await fetchPublicWorkflowPackage(path);
-					if (
-						fetched.sourceUrl !== saved.remote_source.url ||
-						workflowPackageBytesSha256(fetched.raw) !== saved.remote_source.bytes_sha256
-					)
-						die('public source changed since preview; create and review a fresh plan');
-					raw = fetched.raw;
-				} else if (saved.plan.source?.kind === 'hosted_publication') {
-					if (source.kind !== 'hosted' || source.snapshotId !== saved.plan.source.snapshot_id)
-						die('saved hosted plan belongs to a different public snapshot');
-					await api.getPublicSnapshotStatus(source.snapshotId);
-					raw = canonicalWorkflowPackage(saved.plan.document);
-				} else {
-					if (source.kind !== 'file') die('saved file plan must be installed from its file');
-					raw = readPackageSource(path);
-				}
-				const { document } = await packageDocument(raw);
-				if (
-					saved.document_digest !== document.digest ||
-					saved.plan.document_digest !== document.digest ||
-					canonicalWorkflowPackage(saved.plan.document) !== canonicalWorkflowPackage(document)
-				)
-					die(
-						`package digest ${document.digest} does not match saved plan ${saved.document_digest}`
-					);
 				plan = saved.plan;
+				loadSource = async () => {
+					const source = publicationSource(path, apiBase);
+					let raw: string;
+					if (saved.remote_source) {
+						if (source.kind !== 'remote')
+							die('saved remote plan must be installed from its public source URL');
+						const fetched = await fetchPublicWorkflowPackage(path);
+						if (
+							fetched.sourceUrl !== saved.remote_source.url ||
+							workflowPackageBytesSha256(fetched.raw) !== saved.remote_source.bytes_sha256
+						)
+							die('public source changed since preview; create and review a fresh plan');
+						raw = fetched.raw;
+					} else if (saved.plan.source?.kind === 'hosted_publication') {
+						if (source.kind !== 'hosted' || source.snapshotId !== saved.plan.source.snapshot_id)
+							die('saved hosted plan belongs to a different public snapshot');
+						await api.getPublicSnapshotStatus(source.snapshotId);
+						raw = canonicalWorkflowPackage(saved.plan.document);
+					} else {
+						if (source.kind !== 'file') die('saved file plan must be installed from its file');
+						raw = readPackageSource(path);
+					}
+					const { document } = await packageDocument(raw);
+					if (
+						saved.document_digest !== document.digest ||
+						saved.plan.document_digest !== document.digest ||
+						canonicalWorkflowPackage(saved.plan.document) !== canonicalWorkflowPackage(document)
+					)
+						die(
+							`package digest ${document.digest} does not match saved plan ${saved.document_digest}`
+						);
+					return raw;
+				};
 			} else {
+				const source = publicationSource(path, apiBase);
 				const choices = opts.choices
 					? readStrictObject<WorkflowPackageChoices>(opts.choices, 'choices file')
 					: undefined;
 				let remoteSource: { url: string; bytes_sha256: string } | undefined;
+				let raw: string;
 				if (source.kind === 'hosted') {
 					plan = await api.prepareHostedWorkflowPackage(source.snapshotId, choices);
 					raw = canonicalWorkflowPackage(plan.document);
@@ -913,6 +921,7 @@ function registerPackageCommands(workflows: Command): void {
 				planPath = source.kind === 'file' ? `${path}.plan.json` : 'workflow-publication.plan.json';
 				saveWorkflowPackagePlan(planPath, apiBase, plan, remoteSource);
 				console.error(`saved retryable signed plan to ${planPath}`);
+				loadSource = async () => raw;
 			}
 
 			if (opts.confirm !== undefined && opts.confirm !== plan.plan_digest)
@@ -925,7 +934,7 @@ function registerPackageCommands(workflows: Command): void {
 				process.stderr.write(`${formatWorkflowPackageReview(plan)}\n`);
 			}
 
-			const receipt = await recoverOrInstall(api, raw, plan);
+			const receipt = await recoverOrInstall(api, loadSource, plan);
 			if (opts.json) printJson(receipt);
 			else {
 				console.log(`installed workflow package (${receipt.id})`);

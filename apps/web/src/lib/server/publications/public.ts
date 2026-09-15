@@ -9,10 +9,11 @@ import type { Database } from '$lib/server/db';
 
 export const PUBLICATION_UNAVAILABLE_MESSAGE = 'This publication is not available.';
 
+/** Direct route-handler boundary; the hook/Worker finalizer also covers framework responses. */
 export const PUBLICATION_RESPONSE_HEADERS = {
 	'cache-control': 'no-store, max-age=0',
 	'content-security-policy':
-		"img-src 'none'; media-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+		"default-src 'none'; script-src 'none'; script-src-attr 'none'; style-src 'none'; font-src 'none'; connect-src 'none'; img-src 'none'; media-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; worker-src 'none'; manifest-src 'none'; form-action 'none'",
 	'referrer-policy': 'no-referrer',
 	'x-content-type-options': 'nosniff'
 } as const;
@@ -24,6 +25,7 @@ export async function withPublicationHeaders(
 	for (const [name, value] of Object.entries(PUBLICATION_RESPONSE_HEADERS))
 		response.headers.set(name, value);
 	response.headers.delete('etag');
+	response.headers.delete('last-modified');
 	return response;
 }
 

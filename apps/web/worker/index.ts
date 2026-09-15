@@ -18,9 +18,13 @@ import { getDb } from '../src/lib/server/db';
 import { sweepSchedules } from '../src/lib/server/schedule-sweep';
 import { sweepSupervisor } from '../src/lib/server/supervisor/engine';
 import { sweepModerationRetention } from '../src/lib/server/publications/moderation-retention';
+import { finalizePublicationResponse } from '../src/lib/server/publications/response';
 
 export default {
 	...worker,
+	async fetch(request: Request, env: Env, ctx: ExecutionContext) {
+		return finalizePublicationResponse(request, await worker.fetch(request, env, ctx));
+	},
 	async scheduled(controller: ScheduledController, env: Env, _ctx: ExecutionContext) {
 		const now = controller.scheduledTime || Date.now();
 		let failure: unknown;

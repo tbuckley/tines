@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { canonicalizeLibraryValue, withLibraryDocumentDigest } from '@tines/shared';
 import { inheritedPackage } from '../../../../../../packages/shared/src/library/fixtures';
 import { createTestDb } from '../api/test-db';
-import { USER, seedBase } from '../supervisor/test-fixtures';
+import { deleteWorkflow } from '../api/workflows';
+import { USER, addTwoStageWorkflow, seedBase } from '../supervisor/test-fixtures';
 import { preparePublication } from './prepare';
+import { resolvePublicSnapshot } from './public';
 import {
 	getPublicationResult,
 	listPublications,
@@ -57,6 +59,44 @@ const confirmation = (proof: Awaited<ReturnType<typeof prepare>>) => ({
 });
 
 describe('publication commit', () => {
+	it('detaches a deleted private source without changing the published snapshot', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		addTwoStageWorkflow(t);
+		const proof = await prepare(t);
+		t.sqlite
+			.prepare('UPDATE workflow_publication SET source_workflow_id = ? WHERE id = ?')
+			.run('wf_two', proof.candidate_id);
+		const published = await publishPublication(
+			t.db,
+			envFor(t),
+			actor,
+			proof.candidate_id,
+			confirmation(proof),
+			2_000
+		);
+		const before = await resolvePublicSnapshot(t.db, published.receipt.snapshot_id);
+
+		await deleteWorkflow(t.db, envFor(t), actor, 'wf_two');
+
+		expect(
+			t.sqlite
+				.prepare('SELECT source_workflow_id FROM workflow_publication WHERE id = ?')
+				.get(proof.candidate_id)
+		).toEqual({ source_workflow_id: null });
+		expect(await resolvePublicSnapshot(t.db, published.receipt.snapshot_id)).toEqual(before);
+		expect(() =>
+			t.sqlite
+				.prepare('UPDATE workflow_publication SET source_workflow_id = ? WHERE id = ?')
+				.run('wf_two', proof.candidate_id)
+		).toThrow(/source is immutable/);
+		expect(() =>
+			t.sqlite
+				.prepare('UPDATE workflow_publication SET metadata_json = ? WHERE id = ?')
+				.run('{}', proof.candidate_id)
+		).toThrow(/content is immutable/);
+	});
+
 	it('publishes exactly once and reconciles without returning source bytes', async () => {
 		const t = createTestDb();
 		seedBase(t);
