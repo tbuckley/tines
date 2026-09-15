@@ -21,36 +21,59 @@ const test = base.extend<{}, { world: QueueWorld }>({
 	world: [
 		async ({ apiFor, uniqueName }, use) => {
 			const api = apiFor(ALICE);
-			const project = await body<Project>(
-				await api.post('/api/v1/projects', { name: uniqueName('queue-project') })
-			);
-			for (let i = 0; i < 3; i++) {
-				expect(
-					(
-						await api.post(`/api/v1/projects/${project.id}/issues`, {
-							title: `waiting ${i} ${project.id}`
-						})
-					).status()
-				).toBe(201);
-			}
-			const runnerName = uniqueName('queue-runner');
-			const runner = await body<Runner>(
-				await api.post('/api/v1/runners', { type: 'local', name: runnerName, max_concurrent: 1 })
-			);
-			expect(runner.last_seen_at).toBeNull();
-			const rule = await body<RoutingRule>(
-				await api.post('/api/v1/routing-rules', {
-					project_id: project.id,
-					targets: [{ runner_id: runner.id }]
-				})
-			);
-			expect((await api.put('/api/v1/supervisor/settings', { enabled: true })).status()).toBe(200);
+			let runnerId: string | undefined;
+			let ruleId: string | undefined;
+			let settingsEnabled = false;
 			try {
+				const project = await body<Project>(
+					await api.post('/api/v1/projects', { name: uniqueName('queue-project') })
+				);
+				for (let i = 0; i < 3; i++) {
+					expect(
+						(
+							await api.post(`/api/v1/projects/${project.id}/issues`, {
+								title: `waiting ${i} ${project.id}`
+							})
+						).status()
+					).toBe(201);
+				}
+				const runnerName = uniqueName('queue-runner');
+				const runner = await body<Runner>(
+					await api.post('/api/v1/runners', {
+						type: 'local',
+						name: runnerName,
+						max_concurrent: 1
+					})
+				);
+				runnerId = runner.id;
+				expect(runner.last_seen_at).toBeNull();
+				const rule = await body<RoutingRule>(
+					await api.post('/api/v1/routing-rules', {
+						project_id: project.id,
+						targets: [{ runner_id: runner.id }]
+					})
+				);
+				ruleId = rule.id;
+				expect((await api.put('/api/v1/supervisor/settings', { enabled: true })).status()).toBe(
+					200
+				);
+				settingsEnabled = true;
 				await use({ projectId: project.id, runnerId: runner.id, runnerName });
 			} finally {
-				await api.put('/api/v1/supervisor/settings', { enabled: false });
-				await api.delete(`/api/v1/routing-rules/${rule.id}`);
-				await api.delete(`/api/v1/runners/${runner.id}`, { force: true });
+				if (settingsEnabled) {
+					expect(
+						(await api.put('/api/v1/supervisor/settings', { enabled: false })).status(),
+						'disable queue-world automation'
+					).toBe(200);
+				}
+				if (ruleId) {
+					expect((await api.delete(`/api/v1/routing-rules/${ruleId}`)).status()).toBe(204);
+				}
+				if (runnerId) {
+					expect((await api.delete(`/api/v1/runners/${runnerId}`, { force: true })).status()).toBe(
+						204
+					);
+				}
 			}
 		},
 		{ scope: 'worker' }

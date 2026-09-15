@@ -14,19 +14,38 @@ const apiOnlyTest = test.extend({
 apiOnlyTest.describe('API-only selected account', () => {
 	apiOnlyTest.use({ signedIn: ALICE });
 	apiOnlyTest('stays lazy without constructing a browser', async ({ apiFor }) => {
-		const projects = await body<ListResponse<Project>>(await apiFor(ALICE).get('/api/v1/projects'));
+		const projects = await body<ListResponse<Project>>(
+			await apiFor(ALICE).get('/api/v1/projects?archived=all')
+		);
 		expect(projects.items).toBeInstanceOf(Array);
 	});
 });
 
+type LifecycleAudit = { record(project: Project): void };
 type LifecycleWorld = { project: Project };
-const lifecycleTest = test.extend<{}, { lifecycleWorld: LifecycleWorld }>({
+const lifecycleTest = test.extend<
+	{},
+	{ lifecycleAudit: LifecycleAudit; lifecycleWorld: LifecycleWorld }
+>({
+	lifecycleAudit: [
+		async ({ apiFor }, use) => {
+			let project: Project | undefined;
+			await use({ record: (value) => (project = value) });
+			expect(project, 'the lifecycle world registered its cleanup target').toBeTruthy();
+			const projects = await body<ListResponse<Project>>(
+				await apiFor(ALICE).get('/api/v1/projects')
+			);
+			expect(projects.items.find(({ id }) => id === project!.id)?.archived_at).toBeTruthy();
+		},
+		{ scope: 'worker' }
+	],
 	lifecycleWorld: [
-		async ({ apiFor, uniqueName }, use) => {
+		async ({ apiFor, uniqueName, lifecycleAudit }, use) => {
 			const api = apiFor(ALICE);
 			const project = await body<Project>(
 				await api.post('/api/v1/projects', { name: uniqueName('fixture-world') })
 			);
+			lifecycleAudit.record(project);
 			try {
 				await use({ project });
 			} finally {

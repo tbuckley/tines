@@ -15,7 +15,7 @@ import type {
 } from '@tines/shared';
 import { expect, test } from './fixtures';
 import { ALICE, BASE_URL } from './constants.mjs';
-import { apiClient, body, clickToOpen, gotoHydrated, runId, signIn } from './helpers';
+import { apiClient, body, clickToOpen, gotoHydrated, resetFocus, runId, signIn } from './helpers';
 
 const CLI_DIR = fileURLToPath(new URL('../../../packages/cli', import.meta.url));
 const TSX = join(CLI_DIR, 'node_modules', '.bin', 'tsx');
@@ -34,15 +34,16 @@ async function waitFor<T>(read: () => Promise<T | undefined>, timeout = 45_000):
 test('round-trips and clears a model-aware routing effort in the existing dialog', async ({
 	context,
 	page,
-	request
+	request,
+	uniqueName
 }) => {
 	const api = apiClient(request, ALICE.apiKey);
-	const project = await body<Project>(
-		await api.post('/api/v1/projects', { name: `routing-effort-${runId}` })
-	);
+	await resetFocus(request);
+	const fixtureName = uniqueName('routing-effort');
+	const project = await body<Project>(await api.post('/api/v1/projects', { name: fixtureName }));
 	const registered = await body<RunnerTokenResponse>(
 		await api.post('/api/v1/runners/register', {
-			name: `routing-effort-${runId}`,
+			name: fixtureName,
 			harness: 'codex'
 		})
 	);
@@ -52,7 +53,7 @@ test('round-trips and clears a model-aware routing effort in the existing dialog
 	const poll = await request.post(`/api/v1/runners/${runner.id}/poll`, {
 		headers: { authorization: `Bearer ${registered.runner_token}` },
 		data: {
-			instance_id: `routing-effort-${runId}`,
+			instance_id: fixtureName,
 			owned_runs: [],
 			effort_capabilities: {
 				version: 1,
