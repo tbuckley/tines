@@ -275,13 +275,12 @@ test.describe.serial('the Now row', () => {
 	test('drains the group when the cap is raised from the panel, without a reload', async ({
 		page,
 		request,
-		workerRequest,
 		world
 	}) => {
-		// The online window is two minutes; re-register so the verdict is
-		// capacity, not the runner having gone quiet while the last test ran.
+		// The preceding test just heartbeated the runner, well inside its
+		// two-minute online window. Re-registering here would reset its liveness
+		// and queue two redundant dispatch passes that can consume this group.
 		const api = apiClient(request, ALICE.apiKey);
-		await bringOnline(api, workerRequest, world);
 
 		// This test clicks, so it waits for hydration (CLAUDE.md); the read-only
 		// tests above stay on a bare goto.
