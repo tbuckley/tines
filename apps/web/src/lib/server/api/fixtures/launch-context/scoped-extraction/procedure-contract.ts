@@ -78,9 +78,8 @@ const CONTRACT: Record<ExtractionCase, Array<ProcedureAction & { pattern: RegExp
 };
 
 const CONTRADICTIONS = [
-	/^\s*\d+\.\s+Never enter Scouting/im,
-	/^\s*\d+\.\s+(?:Select|Use) Re-propose before attach/im,
-	/^\s*\d+\.\s+(?:Approve your own proposal|Self-approve)[.;]?\s*$/im
+	/\b(?:never|do not|don't)\s+(?:enter|move[^.\n]*to)\s+Scouting/i,
+	/\b(?:select|use|move[^.\n]*to)\s+Re-propose\s+before\s+attach/i
 ];
 
 /** Execute the fixture consumer's planning read into an ordered, scope-bound plan. */
@@ -89,6 +88,13 @@ export function planningProcedure(caseId: ExtractionCase, body: string): Procedu
 		const match = body.match(contradiction)?.[0];
 		if (match) throw new Error(`contradictory planning instruction: ${match.trim()}`);
 	}
+	const withoutApprovalGuards = body
+		.replace(/never approve your own proposal/gi, '')
+		.replace(/never self-approve/gi, '');
+	const selfApproval = withoutApprovalGuards.match(
+		/\b(?:approve your own proposal|self-approve)\b/i
+	)?.[0];
+	if (selfApproval) throw new Error(`contradictory planning instruction: ${selfApproval}`);
 
 	let previous = -1;
 	return CONTRACT[caseId].map(({ pattern, action, binding }) => {
