@@ -7,7 +7,14 @@ import {
 	type PublicationProof,
 	type WorkflowPackageReceipt
 } from '@tines/shared';
-import { ALICE, BASE_URL, BOB, CAROL, PUBLICATION_DAILY_QUOTA } from './constants.mjs';
+import {
+	ALICE,
+	BASE_URL,
+	BOB,
+	CAROL,
+	NATIVE_PUBLICATIONS_PUBLISHER,
+	PUBLICATION_DAILY_QUOTA
+} from './constants.mjs';
 import { d1, sqlLiteral } from './d1';
 import { apiClient, body, runId, signIn } from './helpers';
 
@@ -51,9 +58,9 @@ test.describe.serial('native D1 publication transaction gate', () => {
 	test('rejects a stale owned source without a receipt, event, or quota write', async ({
 		request
 	}) => {
-		const alice = apiClient(request, ALICE.apiKey);
+		const publisher = apiClient(request, NATIVE_PUBLICATIONS_PUBLISHER.apiKey);
 		const source = await body<{ id: string }>(
-			await alice.post('/api/v1/workflows', {
+			await publisher.post('/api/v1/workflows', {
 				name: `native-source-race-${runId}`,
 				description: 'reviewed source',
 				initial_state: 'Open',
@@ -62,16 +69,16 @@ test.describe.serial('native D1 publication transaction gate', () => {
 			})
 		);
 		const proof = await body<PublicationProof>(
-			await alice.post('/api/v1/publications/prepare', {
+			await publisher.post('/api/v1/publications/prepare', {
 				prepare_request_id: `native-source-stale-${runId}`,
 				source: { kind: 'owned_workflow', workflow_id: source.id, options: {} },
 				metadata: { display_name: 'Native source race', license: 'MIT', license_year: 2026 }
 			})
 		);
 		expect(
-			(await alice.patch(`/api/v1/workflows/${source.id}`, { description: 'changed' })).ok()
+			(await publisher.patch(`/api/v1/workflows/${source.id}`, { description: 'changed' })).ok()
 		).toBe(true);
-		const publish = await alice.post(
+		const publish = await publisher.post(
 			`/api/v1/publications/${proof.candidate_id}/publish`,
 			confirmation(proof)
 		);
@@ -95,10 +102,10 @@ test.describe.serial('native D1 publication transaction gate', () => {
 	}) => {
 		const second = await playwright.request.newContext();
 		try {
-			const alice = apiClient(request, ALICE.apiKey);
-			const other = apiClient(second, ALICE.apiKey);
+			const publisher = apiClient(request, NATIVE_PUBLICATIONS_PUBLISHER.apiKey);
+			const other = apiClient(second, NATIVE_PUBLICATIONS_PUBLISHER.apiKey);
 			const source = await body<{ id: string }>(
-				await alice.post('/api/v1/workflows', {
+				await publisher.post('/api/v1/workflows', {
 					name: `native-source-concurrent-${runId}`,
 					description: 'reviewed concurrent source',
 					initial_state: 'Open',
@@ -107,7 +114,7 @@ test.describe.serial('native D1 publication transaction gate', () => {
 				})
 			);
 			const proof = await body<PublicationProof>(
-				await alice.post('/api/v1/publications/prepare', {
+				await publisher.post('/api/v1/publications/prepare', {
 					prepare_request_id: `native-source-concurrent-${runId}`,
 					source: { kind: 'owned_workflow', workflow_id: source.id, options: {} },
 					metadata: {
@@ -119,7 +126,7 @@ test.describe.serial('native D1 publication transaction gate', () => {
 			);
 			const [mutation, publish] = await Promise.all([
 				other.patch(`/api/v1/workflows/${source.id}`, { description: 'changed concurrently' }),
-				alice.post(`/api/v1/publications/${proof.candidate_id}/publish`, confirmation(proof))
+				publisher.post(`/api/v1/publications/${proof.candidate_id}/publish`, confirmation(proof))
 			]);
 			expect(mutation.status()).toBe(200);
 			expect([200, 409]).toContain(publish.status());
@@ -147,9 +154,9 @@ test.describe.serial('native D1 publication transaction gate', () => {
 	test('rejects selected context and skill-file mutations with no publication writes', async ({
 		request
 	}) => {
-		const alice = apiClient(request, ALICE.apiKey);
+		const publisher = apiClient(request, NATIVE_PUBLICATIONS_PUBLISHER.apiKey);
 		const source = await body<{ id: string; states: Array<{ id: string }> }>(
-			await alice.post('/api/v1/workflows', {
+			await publisher.post('/api/v1/workflows', {
 				name: `native-context-race-${runId}`,
 				description: 'selected context source',
 				initial_state: 'Open',
@@ -158,7 +165,7 @@ test.describe.serial('native D1 publication transaction gate', () => {
 			})
 		);
 		const skill = await body<{ id: string }>(
-			await alice.post('/api/v1/context', {
+			await publisher.post('/api/v1/context', {
 				kind: 'skill',
 				name: `native-skill-${runId}`,
 				workflow_state_id: source.states[0].id,
@@ -166,7 +173,7 @@ test.describe.serial('native D1 publication transaction gate', () => {
 			})
 		);
 		const proof = await body<PublicationProof>(
-			await alice.post('/api/v1/publications/prepare', {
+			await publisher.post('/api/v1/publications/prepare', {
 				prepare_request_id: `native-selected-context-${runId}`,
 				source: { kind: 'owned_workflow', workflow_id: source.id, options: {} },
 				metadata: { display_name: 'Selected context race', license: 'MIT', license_year: 2026 }
@@ -175,7 +182,7 @@ test.describe.serial('native D1 publication transaction gate', () => {
 		d1(
 			`UPDATE context_item_file SET content='mutated selected file' WHERE context_item_id=${sqlLiteral(skill.id)}`
 		);
-		const publish = await alice.post(
+		const publish = await publisher.post(
 			`/api/v1/publications/${proof.candidate_id}/publish`,
 			confirmation(proof)
 		);
@@ -196,9 +203,9 @@ test.describe.serial('native D1 publication transaction gate', () => {
 	test('deletes a private source through the native route without deleting its snapshot', async ({
 		request
 	}) => {
-		const alice = apiClient(request, ALICE.apiKey);
+		const publisher = apiClient(request, NATIVE_PUBLICATIONS_PUBLISHER.apiKey);
 		const source = await body<{ id: string }>(
-			await alice.post('/api/v1/workflows', {
+			await publisher.post('/api/v1/workflows', {
 				name: `native-source-delete-${runId}`,
 				description: 'survives private deletion',
 				initial_state: 'Open',
@@ -207,16 +214,19 @@ test.describe.serial('native D1 publication transaction gate', () => {
 			})
 		);
 		const proof = await body<PublicationProof>(
-			await alice.post('/api/v1/publications/prepare', {
+			await publisher.post('/api/v1/publications/prepare', {
 				prepare_request_id: `native-source-delete-${runId}`,
 				source: { kind: 'owned_workflow', workflow_id: source.id, options: {} },
 				metadata: { display_name: 'Native source deletion', license: 'MIT', license_year: 2026 }
 			})
 		);
 		const published = await body<PublicationOwnerResult>(
-			await alice.post(`/api/v1/publications/${proof.candidate_id}/publish`, confirmation(proof))
+			await publisher.post(
+				`/api/v1/publications/${proof.candidate_id}/publish`,
+				confirmation(proof)
+			)
 		);
-		expect((await alice.delete(`/api/v1/workflows/${source.id}`)).status()).toBe(204);
+		expect((await publisher.delete(`/api/v1/workflows/${source.id}`)).status()).toBe(204);
 		expect(
 			d1(
 				`SELECT source_workflow_id FROM workflow_publication WHERE id=${sqlLiteral(proof.candidate_id)}`
@@ -252,13 +262,13 @@ test.describe.serial('native D1 publication transaction gate', () => {
 		request: APIRequestContext,
 		browser: Browser
 	) {
-		const alice = apiClient(request, ALICE.apiKey);
+		const publisher = apiClient(request, NATIVE_PUBLICATIONS_PUBLISHER.apiKey);
 		const bob = apiClient(request, BOB.apiKey);
 		const revokerContext = await browser.newContext();
 		if (mode !== 'withdrawal') await signIn(revokerContext, ALICE.sessionToken);
 		try {
 			const source = await body<{ id: string }>(
-				await alice.post('/api/v1/workflows', {
+				await publisher.post('/api/v1/workflows', {
 					name: `native-${mode}-guard-${runId}`,
 					description: `native ${mode} guard`,
 					initial_state: 'Open',
@@ -267,19 +277,22 @@ test.describe.serial('native D1 publication transaction gate', () => {
 				})
 			);
 			const proof = await body<PublicationProof>(
-				await alice.post('/api/v1/publications/prepare', {
+				await publisher.post('/api/v1/publications/prepare', {
 					prepare_request_id: `native-${mode}-guard-${runId}`,
 					source: { kind: 'owned_workflow', workflow_id: source.id, options: {} },
 					metadata: { display_name: `Native ${mode}`, license: 'MIT', license_year: 2026 }
 				})
 			);
 			const published = await body<PublicationOwnerResult>(
-				await alice.post(`/api/v1/publications/${proof.candidate_id}/publish`, confirmation(proof))
+				await publisher.post(
+					`/api/v1/publications/${proof.candidate_id}/publish`,
+					confirmation(proof)
+				)
 			);
 			const snapshot = published.receipt.snapshot_id;
 			if (mode === 'publisher')
 				d1(
-					`INSERT INTO workflow_publisher_status(user_id,suspended,status_version) VALUES(${sqlLiteral(ALICE.id)},0,1)
+					`INSERT INTO workflow_publisher_status(user_id,suspended,status_version) VALUES(${sqlLiteral(NATIVE_PUBLICATIONS_PUBLISHER.id)},0,1)
 					 ON CONFLICT(user_id) DO UPDATE SET suspended=0,status_version=status_version+1`
 				);
 			const documentJson = canonicalizeLibraryValue(proof.document);
@@ -293,14 +306,14 @@ test.describe.serial('native D1 publication transaction gate', () => {
 					plan_token: plan.plan_token,
 					confirmation: { plan_digest: plan.plan_digest }
 				});
-			const owner = apiClient(revokerContext.request, ALICE.apiKey);
+			const owner = apiClient(revokerContext.request, NATIVE_PUBLICATIONS_PUBLISHER.apiKey);
 			const moderation = (action: 'disable' | 'restore' | 'suspend' | 'unsuspend') => {
 				const [{ status_version: snapshotVersion }] = d1<{ status_version: number }>(
 					`SELECT status_version FROM workflow_publication WHERE snapshot_id=${sqlLiteral(snapshot)}`
 				);
 				const publisherVersion =
 					d1<{ status_version: number }>(
-						`SELECT status_version FROM workflow_publisher_status WHERE user_id=${sqlLiteral(ALICE.id)}`
+						`SELECT status_version FROM workflow_publisher_status WHERE user_id=${sqlLiteral(NATIVE_PUBLICATIONS_PUBLISHER.id)}`
 					)[0]?.status_version ?? 0;
 				return revokerContext.request.post('/api/v1/host/workflow-moderation/decisions', {
 					headers: { origin: BASE_URL },
@@ -309,7 +322,7 @@ test.describe.serial('native D1 publication transaction gate', () => {
 						action,
 						target: {
 							snapshot_id: snapshot,
-							...(mode === 'publisher' ? { publisher_id: ALICE.id } : {})
+							...(mode === 'publisher' ? { publisher_id: NATIVE_PUBLICATIONS_PUBLISHER.id } : {})
 						},
 						reason: `Native ${mode} lifecycle`,
 						...(mode === 'host' ? { expected_snapshot_version: snapshotVersion } : {}),

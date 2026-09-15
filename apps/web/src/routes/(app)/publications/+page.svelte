@@ -143,14 +143,21 @@
 	</div>
 {/if}
 
-{#if data.nextCursor}
-	<a
-		class="text-primary mt-6 inline-flex min-h-10 items-center underline"
-		href={`?cursor=${encodeURIComponent(data.nextCursor)}`}>Next page</a
+{#if data.nextCursor || page.url.searchParams.has('cursor')}
+	<nav
+		class="mt-6 flex min-h-10 flex-wrap items-center gap-x-4 gap-y-2"
+		aria-label="Publication pages"
 	>
-{/if}
-{#if page.url.searchParams.has('cursor')}
-	<a class="text-primary mt-6 inline-flex min-h-10 items-center underline" href={data.firstHref}
-		>First page</a
-	>
+		{#if data.nextCursor}
+			<a
+				class="text-primary inline-flex min-h-10 items-center underline"
+				href={`?cursor=${encodeURIComponent(data.nextCursor)}`}>Next page</a
+			>
+		{/if}
+		{#if page.url.searchParams.has('cursor')}
+			<a class="text-primary inline-flex min-h-10 items-center underline" href={data.firstHref}
+				>First page</a
+			>
+		{/if}
+	</nav>
 {/if}

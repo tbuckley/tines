@@ -9,7 +9,7 @@ import {
 	type WorkflowPackageReceipt
 } from '@tines/shared';
 import { inheritedPackage } from '../../../packages/shared/src/library/fixtures';
-import { ALICE, BOB, PAGINATION } from './constants.mjs';
+import { ALICE, BOB, PAGINATION, WORKFLOW_PUBLICATIONS_PUBLISHER } from './constants.mjs';
 import { d1, sqlLiteral } from './d1';
 import { apiClient, body, errorBody, gotoHydrated, runId, signIn, PHONE, DESKTOP } from './helpers';
 
@@ -40,9 +40,9 @@ test.describe.serial('public workflow snapshots', () => {
 			expect(await boundary.text(), mode).not.toContain('generated Worker failure');
 		}
 
-		const alice = apiClient(request, ALICE.apiKey);
+		const publisher = apiClient(request, WORKFLOW_PUBLICATIONS_PUBLISHER.apiKey);
 		const workflow = await body<{ id: string }>(
-			await alice.post('/api/v1/workflows', {
+			await publisher.post('/api/v1/workflows', {
 				name: marker,
 				description: `Inspectable exact text ${marker}\n\n[External guide](https://example.com/public-guide)\n\n${'reader-state '.repeat(120)}`,
 				initial_state: 'Draft',
@@ -69,14 +69,14 @@ test.describe.serial('public workflow snapshots', () => {
 			})
 		);
 		const proof = await body<PublicationProof>(
-			await alice.post('/api/v1/publications/prepare', {
+			await publisher.post('/api/v1/publications/prepare', {
 				prepare_request_id: crypto.randomUUID(),
 				source: { kind: 'owned_workflow', workflow_id: workflow.id, options: {} },
 				metadata: { display_name: 'Alice Example', license: 'MIT', license_year: 2026 }
 			})
 		);
 		const published = await body<PublicationOwnerResult>(
-			await alice.post(`/api/v1/publications/${proof.candidate_id}/publish`, {
+			await publisher.post(`/api/v1/publications/${proof.candidate_id}/publish`, {
 				review_digest: proof.review_digest,
 				sharing_rights: true,
 				exact_content: true,
@@ -87,7 +87,7 @@ test.describe.serial('public workflow snapshots', () => {
 		documentJson = canonicalizeLibraryValue(proof.document);
 
 		const ownerContext = await browser.newContext();
-		await signIn(ownerContext, ALICE.sessionToken);
+		await signIn(ownerContext, WORKFLOW_PUBLICATIONS_PUBLISHER.sessionToken);
 		const ownerPage = await ownerContext.newPage();
 		await gotoHydrated(ownerPage, `/workflows/${workflow.id}/export#publish`);
 		const displayName = ownerPage.getByLabel('Public display name');
@@ -312,6 +312,15 @@ test.describe.serial('public workflow snapshots', () => {
 		await expect(page.locator('article')).toHaveCount(100);
 		await expect(page.getByRole('link', { name: 'First page' })).toBeVisible();
 		await expect(page.getByRole('link', { name: 'Next page' })).toBeVisible();
+		for (const viewport of [DESKTOP, PHONE]) {
+			await page.setViewportSize(viewport);
+			const next = await page.getByRole('link', { name: 'Next page' }).boundingBox();
+			const firstPage = await page.getByRole('link', { name: 'First page' }).boundingBox();
+			expect(next).not.toBeNull();
+			expect(firstPage).not.toBeNull();
+			expect(firstPage!.x - (next!.x + next!.width)).toBeGreaterThan(0);
+			expect(Math.min(next!.height, firstPage!.height)).toBeGreaterThanOrEqual(40);
+		}
 		await page.getByRole('link', { name: 'Next page' }).click();
 		await expect(page.locator('article')).toHaveCount(5);
 		await expect(page.getByRole('link', { name: 'First page' })).toBeVisible();
@@ -386,8 +395,8 @@ test.describe.serial('public workflow snapshots', () => {
 		await started;
 		await expect(observed.getByText(marker, { exact: false })).toHaveCount(0);
 		await expect(observed).toHaveTitle('Publication unavailable');
-		const alice = apiClient(request, ALICE.apiKey);
-		expect((await alice.post(`/api/v1/publications/${snapshotId}/withdraw`)).ok()).toBe(true);
+		const publisher = apiClient(request, WORKFLOW_PUBLICATIONS_PUBLISHER.apiKey);
+		expect((await publisher.post(`/api/v1/publications/${snapshotId}/withdraw`)).ok()).toBe(true);
 		releaseStatus();
 		await failedRecheck;
 		await observed.evaluate(
@@ -432,16 +441,16 @@ test.describe.serial('public workflow snapshots', () => {
 			'First {{filing_label:qa}} then second {{filing_label:qa}} occurrence.';
 		document.context[0].body += '\n\n| Column | Value |\n| - | - |\n| Safe | rendered |';
 		const sealed = await withLibraryDocumentDigest(document);
-		const alice = apiClient(request, ALICE.apiKey);
+		const publisher = apiClient(request, WORKFLOW_PUBLICATIONS_PUBLISHER.apiKey);
 		const proof = await body<PublicationProof>(
-			await alice.post('/api/v1/publications/prepare', {
+			await publisher.post('/api/v1/publications/prepare', {
 				prepare_request_id: crypto.randomUUID(),
 				source: { kind: 'file', document_json: canonicalizeLibraryValue(sealed) },
 				metadata: { display_name: 'Inspector fixture', license: 'MIT', license_year: 2026 }
 			})
 		);
 		const published = await body<PublicationOwnerResult>(
-			await alice.post(`/api/v1/publications/${proof.candidate_id}/publish`, {
+			await publisher.post(`/api/v1/publications/${proof.candidate_id}/publish`, {
 				review_digest: proof.review_digest,
 				sharing_rights: true,
 				exact_content: true,

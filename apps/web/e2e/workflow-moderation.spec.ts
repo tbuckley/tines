@@ -1,5 +1,5 @@
 import type { PublicationOwnerResult, PublicationProof } from '@tines/shared';
-import { ALICE, BOB } from './constants.mjs';
+import { ALICE, BOB, WORKFLOW_MODERATION_PUBLISHER } from './constants.mjs';
 import { d1, sqlLiteral } from './d1';
 import { expect, test } from './fixtures';
 import { body, gotoHydrated, PHONE, signIn } from './helpers';
@@ -13,9 +13,9 @@ test('reports, removes, restores, suspends and recovers one exact public snapsho
 }) => {
 	test.setTimeout(300_000);
 	const marker = uniqueName('moderation-journey', { maxLength: 100 });
-	const alice = apiFor(ALICE);
+	const publisher = apiFor(WORKFLOW_MODERATION_PUBLISHER);
 	const workflow = await body<{ id: string }>(
-		await alice.post('/api/v1/workflows', {
+		await publisher.post('/api/v1/workflows', {
 			name: marker,
 			description: `${marker} [hostile destination](https://example.test/track)`,
 			initial_state: 'Open',
@@ -27,14 +27,14 @@ test('reports, removes, restores, suspends and recovers one exact public snapsho
 		})
 	);
 	const proof = await body<PublicationProof>(
-		await alice.post('/api/v1/publications/prepare', {
+		await publisher.post('/api/v1/publications/prepare', {
 			prepare_request_id: crypto.randomUUID(),
 			source: { kind: 'owned_workflow', workflow_id: workflow.id, options: {} },
 			metadata: { display_name: 'Moderation journey', license: 'MIT', license_year: 2026 }
 		})
 	);
 	const published = await body<PublicationOwnerResult>(
-		await alice.post(`/api/v1/publications/${proof.candidate_id}/publish`, {
+		await publisher.post(`/api/v1/publications/${proof.candidate_id}/publish`, {
 			review_digest: proof.review_digest,
 			sharing_rights: true,
 			exact_content: true,
@@ -248,7 +248,7 @@ test('reports, removes, restores, suspends and recovers one exact public snapsho
 	expect((await request.get(`/p/${snapshotId}`)).status()).toBe(404);
 
 	const owner = await browser.newContext();
-	await signIn(owner, ALICE.sessionToken);
+	await signIn(owner, WORKFLOW_MODERATION_PUBLISHER.sessionToken);
 	const ownerPage = await owner.newPage();
 	await ownerPage.goto('/publications');
 	await expect(ownerPage.getByText('Publisher suspension shown to owner').first()).toBeVisible();
@@ -269,7 +269,7 @@ test('reports, removes, restores, suspends and recovers one exact public snapsho
 		if (recoveryAttempt === 1) {
 			d1(
 				`UPDATE workflow_publisher_status SET status_version=status_version+1
-				 WHERE user_id=${sqlLiteral(ALICE.id)}`
+				 WHERE user_id=${sqlLiteral(WORKFLOW_MODERATION_PUBLISHER.id)}`
 			);
 			await route.fulfill({
 				status: 409,
