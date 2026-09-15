@@ -13,7 +13,8 @@ const LIST_COMMANDS: { argv: string[]; path: string }[] = [
 	{ argv: ['context', 'list'], path: '/api/v1/context' },
 	{ argv: ['schedules', 'list'], path: '/api/v1/schedules' },
 	{ argv: ['runs', 'list'], path: '/api/v1/runs' },
-	{ argv: ['events', 'list'], path: '/api/v1/events' }
+	{ argv: ['events', 'list'], path: '/api/v1/events' },
+	{ argv: ['workflows', 'publications'], path: '/api/v1/publications' }
 ];
 
 const TOTAL = 120;
@@ -71,7 +72,13 @@ function row(path: string, n: number): Record<string, unknown> {
 		launch_failures: 0,
 		backoff_until: null,
 		backoff_reason: null,
-		last_seen_at: null
+		last_seen_at: null,
+		candidate_id: `candidate${n}`,
+		snapshot_id: `snapshot${n}`,
+		metadata: { display_name: `Snapshot ${n}`, license: 'MIT', license_year: 2026 },
+		owner_state: 'published',
+		host_state: 'active',
+		published_at: n
 	};
 }
 

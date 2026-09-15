@@ -7,9 +7,18 @@ import {
 } from '@tines/shared';
 import { inheritedPackage } from '../../../../../../../../../packages/shared/src/library/fixtures';
 import { createTestDb, type TestDb } from '$lib/server/api/test-db';
-import { seedBase, USER } from '$lib/server/supervisor/test-fixtures';
+import { sha256Hex } from '$lib/server/api/core';
+import {
+	addIssue,
+	addRun,
+	addRunKey,
+	addRunner,
+	seedBase,
+	USER
+} from '$lib/server/supervisor/test-fixtures';
 import { GET as detail } from './+server';
 import { GET as download } from './download/+server';
+import { POST as prepareInstall } from './prepare-install/+server';
 import { GET as reuse } from './reuse.txt/+server';
 import { GET as status } from './status/+server';
 
@@ -82,6 +91,37 @@ beforeEach(() => {
 });
 
 describe('anonymous publication reads', () => {
+	it('allows an authenticated run key to prepare the read-only hosted install plan', async () => {
+		await seedPublication();
+		const runnerId = addRunner(t);
+		const issueId = addIssue(t);
+		const runId = addRun(t, { issueId, runnerId, status: 'running' });
+		const keyId = addRunKey(t, runId);
+		const secret = 'run-key-secret';
+		t.sqlite
+			.prepare('UPDATE api_key SET key_hash=? WHERE id=?')
+			.run(await sha256Hex(secret), keyId);
+		const url = `http://test/api/v1/publications/public/${SNAPSHOT}/prepare-install`;
+		const response = await prepareInstall({
+			locals: {},
+			platform: {
+				env: { ...t.env, BETTER_AUTH_SECRET: 'test-signing-secret' },
+				ctx: { waitUntil: () => {} }
+			},
+			params: { snapshotId: SNAPSHOT },
+			url: new URL(url),
+			request: new Request(url, {
+				method: 'POST',
+				headers: { authorization: `Bearer ${secret}`, 'content-type': 'application/json' },
+				body: JSON.stringify({
+					choices: { inputs: { 'input:1': { mode: 'create', name: 'qa', color: 'blue' } } }
+				})
+			})
+		} as unknown as Parameters<typeof prepareInstall>[0]);
+		expect(response.status).toBe(200);
+		expect(await response.json()).toMatchObject({ source: { snapshot_id: SNAPSHOT } });
+	});
+
 	it('returns only the selected DTO and byte-exact package with no caching', async () => {
 		const { documentJson } = await seedPublication();
 		const shown = await detail(event() as unknown as Parameters<typeof detail>[0]);

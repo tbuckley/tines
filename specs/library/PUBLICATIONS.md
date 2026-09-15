@@ -46,3 +46,21 @@ validation and per-connection pinning, redirect revalidation without downgrade, 
 bytes, MIME, encoding, and UTF-8. The destination receives bytes, never a URL to fetch. Installation
 re-downloads a saved remote source and requires its exact checksum; an already committed destination
 receipt remains recoverable if the source later disappears.
+
+## Contract completion — Tines/550
+
+A published row may detach `source_workflow_id` only from an existing ID to null, allowing deletion
+of its private source without changing frozen bytes, provenance, receipts, or public availability.
+Every `/p` and public-publication API descendant is finalized after framework handling and again at
+the Worker boundary: no-store, no referrer, nosniff, no validators, and a complete resource-denying
+CSP apply to successes, failures, redirects, HEAD, data requests, and unknown suffixes. HTML keeps
+only nonce-backed application scripts and same-origin styles/fonts/connect/form actions.
+
+Accepted remote entry, legacy download, and API download URLs normalize to the real API download
+endpoint. Each redirect resolves once to a validated address set and connects through that pinned
+set; plaintext HTTP is limited to exact `localhost` or literal loopback hosts. Saved-plan recovery
+checks a matching destination receipt before parsing or reading its positional source.
+
+Owner listings use `(published_at DESC, id ASC)` keyset pagination. Inspector snippets count rendered
+words, preserve closed span semantics through tables and lists, and show all 101–115 rendered words;
+external actions and successful availability checks return focus without allowing publisher HTML.

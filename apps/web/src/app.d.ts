@@ -31,6 +31,8 @@ declare global {
 		USAGE_SCALE_SQL_TRACE?: string;
 		/** Local stats profiler only: reproduces the pre-optimization marker loop. */
 		STATS_SCALE_REPEAT_PREPARATION?: string;
+		/** Isolated Worker-entry response probes; set only by e2e/server.sh. */
+		E2E_PUBLICATION_BOUNDARY_TEST?: string;
 		/**
 		 * Self-referencing service binding (wrangler.jsonc `services`): lets
 		 * the supervisor call its own API in-process — a worker on a custom

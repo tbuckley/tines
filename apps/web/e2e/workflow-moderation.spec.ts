@@ -105,7 +105,7 @@ test('reports, removes, restores, suspends and recovers one exact public snapsho
 	expect(reportBodies).toHaveLength(2);
 	expect(reportBodies[1]).toBe(reportBodies[0]);
 	await page.unroute(`**/api/v1/publications/public/${snapshotId}/reports`);
-	await page.getByRole('button', { name: 'Done' }).click();
+	await page.getByRole('dialog').getByRole('button', { name: 'Done' }).click();
 
 	// Fill the remaining rolling-hour slots directly, then prove the signed-out dialog
 	// preserves its fields and renders the server retry hint on the next submission.

@@ -4,13 +4,21 @@ import {
 	PUBLIC_WORKFLOW_POLICY_VERSION,
 	type PublicationOwnerResult,
 	type PublicationOwnerItem,
+	type ListResponse,
 	type PublicationReceipt,
 	type PublishPublicationRequest,
 	type WorkflowPackageDocument
 } from '@tines/shared';
 import { sql, type Kysely } from 'kysely';
 import { newId, type Database } from '$lib/server/db';
-import { ApiFail, runAtomic, runKeyForbidden, type ActorContext } from '../api/core';
+import {
+	ApiFail,
+	encodeCursor,
+	runAtomic,
+	runKeyForbidden,
+	type ActorContext,
+	type Page
+} from '../api/core';
 import { packageActorKey } from '../library/token';
 import { publicationConfig } from './config';
 import { buildOwnedPublicationSourceProof, publicationSourceExpression } from './source';
@@ -214,9 +222,22 @@ export async function publishPublication(
 	};
 	const receiptJson = canonicalizeLibraryValue(receipt);
 	const cutoff = now - DAY_MS;
+	const quotaFence = await db
+		.selectFrom('workflow_publication_quota_fence')
+		.select('version')
+		.where('user_id', '=', actor.userId)
+		.executeTakeFirst();
+	const previousQuotaVersion = quotaFence?.version ?? 0;
+	const quotaVersion = previousQuotaVersion + 1;
+	const quotaNonce = newId('pqt');
 	await beforeAtomic?.();
 	try {
 		const results = await runAtomic(env, [
+			sql`INSERT INTO workflow_publication_quota_fence (user_id, version, attempt_nonce)
+			VALUES (${actor.userId}, ${quotaVersion}, ${quotaNonce})
+			ON CONFLICT(user_id) DO UPDATE SET version = excluded.version,
+				attempt_nonce = excluded.attempt_nonce
+			WHERE workflow_publication_quota_fence.version = ${previousQuotaVersion}`.compile(db),
 			sql`UPDATE workflow_publication SET
 				snapshot_id = ${snapshotId}, published_at = ${now}, owner_state = 'published',
 				status_version = ${statusVersion}, confirmed_at = ${now},
@@ -230,6 +251,9 @@ export async function publishPublication(
 					WHERE user_id = ${actor.userId} AND suspended = 1)
 				AND (SELECT COUNT(*) FROM workflow_publication
 					WHERE user_id = ${actor.userId} AND published_at >= ${cutoff}) < ${config.dailyQuota}
+				AND EXISTS (SELECT 1 FROM workflow_publication_quota_fence
+					WHERE user_id = ${actor.userId} AND version = ${quotaVersion}
+						AND attempt_nonce = ${quotaNonce})
 				AND ${sourceGuard}`.compile(db),
 			sql`INSERT INTO workflow_publication_event
 				(id, publication_id, snapshot_id, user_id, actor_key, action,
@@ -313,8 +337,9 @@ export async function listPublications(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
-	workflowId?: string
-): Promise<PublicationOwnerItem[]> {
+	options: { workflowId?: string; page?: Page } = {}
+): Promise<ListResponse<PublicationOwnerItem>> {
+	const page = options.page ?? { cursor: null, limit: 100 };
 	let query = db
 		.selectFrom('workflow_publication')
 		.leftJoin(
@@ -344,10 +369,23 @@ export async function listPublications(
 		.where('workflow_publication.published_at', 'is not', null)
 		.orderBy('workflow_publication.published_at', 'desc')
 		.orderBy('workflow_publication.id', 'asc')
-		.limit(101);
-	if (workflowId) query = query.where('workflow_publication.source_workflow_id', '=', workflowId);
+		.limit(page.limit + 1);
+	if (options.workflowId)
+		query = query.where('workflow_publication.source_workflow_id', '=', options.workflowId);
+	if (page.cursor)
+		query = query.where((eb) =>
+			eb.or([
+				eb('workflow_publication.published_at', '<', page.cursor!.createdAt),
+				eb.and([
+					eb('workflow_publication.published_at', '=', page.cursor!.createdAt),
+					eb('workflow_publication.id', '>', page.cursor!.id)
+				])
+			])
+		);
 	const origin = publicOrigin(env);
-	return (await query.execute()).slice(0, 100).map((row) => ({
+	const rows = await query.execute();
+	const selected = rows.slice(0, page.limit);
+	const items: PublicationOwnerItem[] = selected.map((row) => ({
 		candidate_id: row.id,
 		snapshot_id: row.snapshot_id!,
 		public_url: `${origin}/p/${row.snapshot_id}`,
@@ -369,6 +407,11 @@ export async function listPublications(
 				? { reason: row.suspension_reason, reference: row.suspension_reference }
 				: null
 	}));
+	const last = selected.at(-1);
+	return {
+		items,
+		next_cursor: rows.length > page.limit && last ? encodeCursor(last.published_at!, last.id) : null
+	};
 }
 
 /** Owner-only active host status. Contains no report or moderator data. */

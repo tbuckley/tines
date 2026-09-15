@@ -1,14 +1,17 @@
 import { expect, test } from './fixtures';
 import {
 	canonicalizeLibraryValue,
+	withLibraryDocumentDigest,
 	type PrepareWorkflowPackageResponse,
 	type PublicationOwnerResult,
 	type PublicationProof,
 	type WorkflowPackageDocument,
 	type WorkflowPackageReceipt
 } from '@tines/shared';
-import { ALICE, BOB } from './constants.mjs';
-import { apiClient, body, errorBody, gotoHydrated, signIn, PHONE, DESKTOP } from './helpers';
+import { inheritedPackage } from '../../../packages/shared/src/library/fixtures';
+import { ALICE, BOB, PAGINATION } from './constants.mjs';
+import { d1, sqlLiteral } from './d1';
+import { apiClient, body, errorBody, gotoHydrated, runId, signIn, PHONE, DESKTOP } from './helpers';
 
 test.describe.serial('public workflow snapshots', () => {
 	let marker: string;
@@ -21,15 +24,27 @@ test.describe.serial('public workflow snapshots', () => {
 	});
 
 	test('publishes exact bytes and exposes a responsive anonymous text-only inspection', async ({
-		page,
 		request,
 		browser
 	}) => {
+		for (const mode of ['throw', '304']) {
+			const boundary = await request.get('/p/e2e-worker-boundary', {
+				headers: { 'x-tines-e2e-publication-boundary': mode }
+			});
+			expect(boundary.status(), mode).toBe(500);
+			expect(boundary.headers()['cache-control'], mode).toBe('no-store, max-age=0');
+			expect(boundary.headers()['content-security-policy'], mode).toContain("default-src 'none'");
+			expect(boundary.headers()['referrer-policy'], mode).toBe('no-referrer');
+			expect(boundary.headers()['x-content-type-options'], mode).toBe('nosniff');
+			expect(boundary.headers().etag, mode).toBeUndefined();
+			expect(await boundary.text(), mode).not.toContain('generated Worker failure');
+		}
+
 		const alice = apiClient(request, ALICE.apiKey);
 		const workflow = await body<{ id: string }>(
 			await alice.post('/api/v1/workflows', {
 				name: marker,
-				description: `Inspectable exact text ${marker}\n\n[External guide](https://example.com/public-guide)`,
+				description: `Inspectable exact text ${marker}\n\n[External guide](https://example.com/public-guide)\n\n${'reader-state '.repeat(120)}`,
 				initial_state: 'Draft',
 				states: [
 					{ name: 'Draft', category: 'active' },
@@ -87,11 +102,41 @@ test.describe.serial('public workflow snapshots', () => {
 		await ownerPage.getByRole('button', { name: 'Publish immutable snapshot' }).click();
 		await expect(ownerPage.getByText('Published', { exact: true })).toBeVisible();
 		await ownerContext.close();
+		const publicContext = await browser.newContext();
+		const page = await publicContext.newPage();
 
 		const download = await request.get(`/api/v1/publications/public/${snapshotId}/download`);
 		expect(download.ok()).toBe(true);
 		expect(await download.text()).toBe(documentJson);
 		expect(download.headers()['cache-control']).toContain('no-store');
+		for (const path of [
+			`/p/${snapshotId}`,
+			`/api/v1/publications/public/${snapshotId}`,
+			`/api/v1/publications/public/${snapshotId}/status`,
+			`/api/v1/publications/public/${snapshotId}/download`,
+			`/api/v1/publications/public/${snapshotId}/reuse.txt`,
+			`/api/v1/publications/public/${snapshotId}/unknown`
+		]) {
+			const conditional = await request.get(path, { headers: { 'if-none-match': '*' } });
+			expect(conditional.status(), path).not.toBe(304);
+			const headers = conditional.headers();
+			if (!headers['cache-control'])
+				throw new Error(`missing public boundary on ${path} (${conditional.status()})`);
+			expect(headers['cache-control'], path).toContain('no-store');
+			expect(headers['referrer-policy'], path).toBe('no-referrer');
+			expect(headers['x-content-type-options'], path).toBe('nosniff');
+			expect(headers['content-security-policy'], path).toContain("default-src 'none'");
+			expect(headers.etag, path).toBeUndefined();
+			const head = await request.fetch(path, { method: 'HEAD' });
+			expect(await head.body(), path).toHaveLength(0);
+			expect(head.headers()['cache-control'], path).toContain('no-store');
+		}
+		const unauthenticatedPrepare = await request.post(
+			`/api/v1/publications/public/${snapshotId}/prepare-install`,
+			{ data: { choices: {} } }
+		);
+		expect(unauthenticatedPrepare.status()).toBe(401);
+		expect(unauthenticatedPrepare.headers()['cache-control']).toContain('no-store');
 
 		for (const viewport of [PHONE, DESKTOP]) {
 			await page.setViewportSize(viewport);
@@ -116,6 +161,66 @@ test.describe.serial('public workflow snapshots', () => {
 			).toBe(true);
 		}
 
+		let socialPayload: Record<string, unknown> | undefined;
+		let socialAttempts = 0;
+		await page.route('**/api/auth/**', async (route) => {
+			if (route.request().method() !== 'POST') return route.continue();
+			socialAttempts += 1;
+			socialPayload = route.request().postDataJSON();
+			await route.fulfill({
+				status: 500,
+				contentType: 'application/json',
+				body: '{"message":"provider unavailable"}'
+			});
+		});
+		await page.getByRole('button', { name: 'Sign in to install' }).click();
+		await page.getByRole('button', { name: 'Continue with Google' }).click();
+		await expect(page.getByRole('status')).toHaveText('provider unavailable');
+		expect(socialPayload).toMatchObject({
+			provider: 'google',
+			callbackURL: `/p/${snapshotId}/install`
+		});
+		await page.getByRole('button', { name: 'Continue with Google' }).click();
+		await expect.poll(() => socialAttempts).toBe(2);
+		await page.getByRole('button', { name: 'Close sign-in' }).click();
+		await page.unroute('**/api/auth/**');
+
+		await page.getByRole('button', { name: 'Sign in to install' }).click();
+		const email = `publication-${runId}@example.com`;
+		await page.getByPlaceholder('you@example.com').fill(email);
+		await page.getByRole('button', { name: 'Email me a sign-in link' }).click();
+		await expect(page.getByText('Check your email')).toBeVisible();
+		await expect(page.getByText(email)).toBeVisible();
+		await page.getByRole('button', { name: 'Close sign-in' }).click();
+
+		await page.goto(
+			`/api/auth/magic-link/verify?token=invalid-publication-token&callbackURL=${encodeURIComponent(`/p/${snapshotId}/install`)}&errorCallbackURL=${encodeURIComponent(`/p/${snapshotId}?install=1&error=signin`)}`
+		);
+		await expect(page).toHaveURL(new RegExp(`/p/${snapshotId}.*error=INVALID_TOKEN`));
+		await expect(page.getByRole('dialog')).toBeVisible();
+		await expect(page.getByRole('status')).toContainText('invalid or has expired');
+		await page.getByRole('button', { name: 'Close sign-in' }).click();
+
+		const validToken = `e2e-magic-link-${email}`;
+		const installsBefore = d1<{ n: number }>(
+			`SELECT COUNT(*) AS n FROM library_install WHERE user_id=${sqlLiteral(BOB.id)}`
+		)[0].n;
+		const validContext = await browser.newContext();
+		const validPage = await validContext.newPage();
+		await validPage.goto(
+			`/api/auth/magic-link/verify?token=${encodeURIComponent(validToken)}&callbackURL=${encodeURIComponent(`/p/${snapshotId}/install`)}&errorCallbackURL=${encodeURIComponent(`/p/${snapshotId}?install=1&error=signin`)}`
+		);
+		await expect(validPage).toHaveURL(`/workflows/import?publication=${snapshotId}`);
+		await expect(
+			validPage.getByRole('heading', { name: 'Install workflow package' })
+		).toBeVisible();
+		expect(
+			d1<{ n: number }>(
+				`SELECT COUNT(*) AS n FROM library_install WHERE user_id=${sqlLiteral(BOB.id)}`
+			)[0].n
+		).toBe(installsBefore);
+		await validContext.close();
+
 		await page.getByRole('button', { name: 'Report', exact: true }).click();
 		await expect(page.getByRole('dialog', { name: 'Report this public workflow' })).toBeVisible();
 		await expect(page.getByLabel('Reason')).toHaveValue('');
@@ -124,6 +229,7 @@ test.describe.serial('public workflow snapshots', () => {
 		await page.getByRole('button', { name: 'Send report' }).click();
 		await expect(page.getByRole('heading', { name: 'Report received' })).toBeVisible();
 		await expect(page.getByText(/^Reference: rpt_/)).toBeFocused();
+		await publicContext.close();
 
 		const moderatorContext = await browser.newContext();
 		await signIn(moderatorContext, ALICE.sessionToken);
@@ -141,6 +247,80 @@ test.describe.serial('public workflow snapshots', () => {
 		await moderatorPage.getByRole('button', { name: 'Dismiss reports' }).click();
 		await expect(moderatorPage.getByText('dismiss recorded.')).toBeVisible();
 		await moderatorContext.close();
+	});
+
+	test('pages more than 100 owner rows through API and Next, Back, and First UI controls', async ({
+		browser,
+		request
+	}) => {
+		d1(`WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i+1 FROM n WHERE i<204)
+			INSERT INTO workflow_publication(
+				id,user_id,actor_key,prepare_request_id,prepare_request_hash,source_workflow_id,
+				source_kind,source_provenance_json,document_json,document_digest,bytes_sha256,
+				byte_length,metadata_json,review_digest,policy_version,created_at,expires_at,
+				snapshot_id,published_at,owner_state,host_state,status_version,confirmed_at,
+				confirmed_actor_key,publication_receipt_json,attempt_nonce,host_decision_reason,
+				host_decision_reference)
+			SELECT 'pub_page_'||printf('%03d',i),${sqlLiteral(PAGINATION.user.id)},actor_key,
+				'page_request_'||printf('%03d',i),prepare_request_hash,NULL,source_kind,
+				source_provenance_json,document_json,document_digest,bytes_sha256,byte_length,
+				json_object('display_name','Pagination '||printf('%03d',i),'license','MIT','license_year',2026),
+				review_digest,policy_version,created_at,expires_at,'snapshot_page_'||printf('%03d',i),
+				CASE WHEN i<102 THEN 3000 ELSE 2000 END,owner_state,host_state,status_version,
+				confirmed_at,confirmed_actor_key,publication_receipt_json,attempt_nonce,
+				host_decision_reason,host_decision_reference
+			FROM workflow_publication,n WHERE snapshot_id=${sqlLiteral(snapshotId)}`);
+		const api = apiClient(request, PAGINATION.user.apiKey);
+		const first = await body<{ items: Array<{ candidate_id: string }>; next_cursor: string }>(
+			await api.get('/api/v1/publications?limit=100')
+		);
+		expect(first.items).toHaveLength(100);
+		const second = await body<{ items: Array<{ candidate_id: string }>; next_cursor: string }>(
+			await api.get(
+				`/api/v1/publications?limit=100&cursor=${encodeURIComponent(first.next_cursor)}`
+			)
+		);
+		expect(second.items).toHaveLength(100);
+		const third = await body<{ items: Array<{ candidate_id: string }>; next_cursor: null }>(
+			await api.get(
+				`/api/v1/publications?limit=100&cursor=${encodeURIComponent(second.next_cursor)}`
+			)
+		);
+		expect(third.items).toHaveLength(5);
+		expect(
+			new Set([...first.items, ...second.items, ...third.items].map((item) => item.candidate_id))
+				.size
+		).toBe(205);
+		expect((await api.get('/api/v1/publications?cursor=not-a-cursor')).status()).toBe(400);
+		const foreignRow = d1<{ published_at: number; id: string }>(
+			`SELECT published_at,id FROM workflow_publication WHERE snapshot_id=${sqlLiteral(snapshotId)}`
+		)[0];
+		const foreignCursor = Buffer.from(`${foreignRow.published_at}:${foreignRow.id}`).toString(
+			'base64url'
+		);
+		const foreignPage = await body<{ items: Array<{ candidate_id: string }> }>(
+			await api.get(`/api/v1/publications?cursor=${encodeURIComponent(foreignCursor)}`)
+		);
+		expect(foreignPage.items.every((item) => item.candidate_id.startsWith('pub_page_'))).toBe(true);
+
+		const context = await browser.newContext();
+		await signIn(context, PAGINATION.user.sessionToken);
+		const page = await context.newPage();
+		await gotoHydrated(page, '/publications');
+		await expect(page.locator('article')).toHaveCount(100);
+		await page.getByRole('link', { name: 'Next page' }).click();
+		await expect(page.locator('article')).toHaveCount(100);
+		await expect(page.getByRole('link', { name: 'First page' })).toBeVisible();
+		await expect(page.getByRole('link', { name: 'Next page' })).toBeVisible();
+		await page.getByRole('link', { name: 'Next page' }).click();
+		await expect(page.locator('article')).toHaveCount(5);
+		await expect(page.getByRole('link', { name: 'First page' })).toBeVisible();
+		await page.goBack();
+		await expect(page.locator('article')).toHaveCount(100);
+		await page.getByRole('link', { name: 'First page' }).click();
+		await expect(page).toHaveURL('/publications');
+		await expect(page.locator('article')).toHaveCount(100);
+		await context.close();
 	});
 
 	test('returns through sign-in to the exact snapshot and fences stale hosted plans', async ({
@@ -167,6 +347,27 @@ test.describe.serial('public workflow snapshots', () => {
 		const observed = await observedContext.newPage();
 		await gotoHydrated(observed, `/p/${snapshotId}`);
 		await expect(observed.getByText(marker, { exact: false }).first()).toBeVisible();
+		const expansion = observed.getByRole('button', { name: /Show all \d+ words/ });
+		await expansion.click();
+		const collapse = observed.getByRole('button', { name: 'Show snippet' });
+		await collapse.focus();
+		let releaseAvailable!: () => void;
+		const availableRelease = new Promise<void>((resolve) => (releaseAvailable = resolve));
+		let availableStarted!: () => void;
+		const availableRequest = new Promise<void>((resolve) => (availableStarted = resolve));
+		await observed.route(`**/api/v1/publications/public/${snapshotId}/status`, async (route) => {
+			availableStarted();
+			await availableRelease;
+			await route.continue();
+		});
+		await observed.evaluate(() => dispatchEvent(new PageTransitionEvent('pageshow')));
+		await availableRequest;
+		await expect(observed.getByText(marker, { exact: false })).toHaveCount(0);
+		releaseAvailable();
+		await expect(observed.getByText(marker, { exact: false }).first()).toBeVisible();
+		await expect(collapse).toBeFocused();
+		await observed.unroute(`**/api/v1/publications/public/${snapshotId}/status`);
+
 		let releaseStatus!: () => void;
 		const release = new Promise<void>((resolve) => (releaseStatus = resolve));
 		let statusStarted!: () => void;
@@ -176,6 +377,11 @@ test.describe.serial('public workflow snapshots', () => {
 			await release;
 			await route.continue();
 		});
+		const failedRecheck = observed.waitForResponse(
+			(response) =>
+				response.url().endsWith(`/api/v1/publications/public/${snapshotId}/status`) &&
+				response.status() === 404
+		);
 		await observed.evaluate(() => dispatchEvent(new Event('focus')));
 		await started;
 		await expect(observed.getByText(marker, { exact: false })).toHaveCount(0);
@@ -183,7 +389,15 @@ test.describe.serial('public workflow snapshots', () => {
 		const alice = apiClient(request, ALICE.apiKey);
 		expect((await alice.post(`/api/v1/publications/${snapshotId}/withdraw`)).ok()).toBe(true);
 		releaseStatus();
+		await failedRecheck;
+		await observed.evaluate(
+			() =>
+				new Promise<void>((resolve) =>
+					requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+				)
+		);
 		await expect(observed.getByText(/not available/i)).toBeVisible();
+		await expect(observed.getByText(marker, { exact: false })).toHaveCount(0);
 		await observedContext.close();
 
 		const refused = await bob.post('/api/v1/library/install', {
@@ -207,6 +421,55 @@ test.describe.serial('public workflow snapshots', () => {
 		expect(receipt.objects.find((object) => object.relationship === 'main')?.name).toMatch(
 			new RegExp(`^${marker}`)
 		);
+	});
+
+	test('navigates exact token occurrences, dependencies, inheritance, and tables', async ({
+		page,
+		request
+	}) => {
+		const document = inheritedPackage();
+		document.workflows[0].description =
+			'First {{filing_label:qa}} then second {{filing_label:qa}} occurrence.';
+		document.context[0].body += '\n\n| Column | Value |\n| - | - |\n| Safe | rendered |';
+		const sealed = await withLibraryDocumentDigest(document);
+		const alice = apiClient(request, ALICE.apiKey);
+		const proof = await body<PublicationProof>(
+			await alice.post('/api/v1/publications/prepare', {
+				prepare_request_id: crypto.randomUUID(),
+				source: { kind: 'file', document_json: canonicalizeLibraryValue(sealed) },
+				metadata: { display_name: 'Inspector fixture', license: 'MIT', license_year: 2026 }
+			})
+		);
+		const published = await body<PublicationOwnerResult>(
+			await alice.post(`/api/v1/publications/${proof.candidate_id}/publish`, {
+				review_digest: proof.review_digest,
+				sharing_rights: true,
+				exact_content: true,
+				reviewed_repo_ids: ['context:3']
+			})
+		);
+		await gotoHydrated(page, `/p/${published.receipt.snapshot_id}`);
+		const tokens = page.getByRole('button', { name: /Show declaration for/ });
+		expect(await tokens.count()).toBeGreaterThanOrEqual(3);
+		const tokenIds = await tokens.evaluateAll((elements) => elements.map((element) => element.id));
+		expect(new Set(tokenIds).size).toBe(tokenIds.length);
+		const second = tokens.nth(1);
+		await second.click();
+		await expect(page.locator('[id="public-input-7-input:1"]')).toBeFocused();
+		await page.keyboard.press('Escape');
+		await expect(second).toBeFocused();
+		const tokenInAnotherField = tokens.nth(2);
+		await tokenInAnotherField.click();
+		await expect(page.locator('[id="public-input-7-input:1"]')).toBeFocused();
+		await page.getByRole('button', { name: 'Back to source' }).click();
+		await expect(tokenInAnotherField).toBeFocused();
+
+		await page.getByRole('button', { name: 'Shared', exact: true }).click();
+		await expect(page.locator('[id="public-workflow-10-workflow:2"]')).toBeFocused();
+		await page.keyboard.press('Escape');
+		await page.getByRole('button', { name: 'Base', exact: true }).click();
+		await expect(page.locator('[id="public-state-7-state:3"]')).toBeFocused();
+		await expect(page.getByRole('table')).toContainText('Safe');
 	});
 
 	test('withdrawal returns one neutral page without the removed marker', async ({

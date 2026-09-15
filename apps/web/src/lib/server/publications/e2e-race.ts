@@ -3,6 +3,32 @@
  * production builds cannot activate these mutations even if a caller supplies
  * the private test header.
  */
+let quotaBarrier: Array<{
+	resolve: () => void;
+	reject: (error: Error) => void;
+	timer: ReturnType<typeof setTimeout>;
+}> = [];
+
+function waitForQuotaPair(): Promise<void> {
+	return new Promise((resolve, reject) => {
+		const waiter = {
+			resolve,
+			reject,
+			timer: setTimeout(() => {
+				quotaBarrier = quotaBarrier.filter((item) => item !== waiter);
+				reject(new Error('Publication quota race barrier timed out'));
+			}, 5_000)
+		};
+		quotaBarrier.push(waiter);
+		if (quotaBarrier.length < 2) return;
+		const pair = quotaBarrier.splice(0, 2);
+		for (const item of pair) {
+			clearTimeout(item.timer);
+			item.resolve();
+		}
+	});
+}
+
 export async function runE2ePublicationRaceMutation(
 	request: Request,
 	env: Env,
@@ -11,6 +37,7 @@ export async function runE2ePublicationRaceMutation(
 	if (import.meta.env.VITE_TINES_E2E !== '1') return;
 	const action = request.headers.get('x-tines-e2e-publication-race');
 	if (!action) return;
+	if (action === 'quota-barrier') return waitForQuotaPair();
 	let statement: ReturnType<Env['DB']['prepare']>;
 	if (action === 'disable' && target.snapshotId) {
 		statement = env.DB.prepare(

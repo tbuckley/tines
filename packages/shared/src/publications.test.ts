@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
 	parsePublicSnapshotReference,
+	parsePublicSnapshotUrl,
 	publicationReviewDigest,
 	publicationReuseNotice,
 	validatePublicationMetadata
@@ -63,5 +64,13 @@ describe('publication contract', () => {
 		expect(() =>
 			parsePublicSnapshotReference(`https://tines.example/p/${id}?next=https://evil.example`)
 		).toThrow(/Invalid/);
+		expect(parsePublicSnapshotUrl(`https://tines.example/p/${id}/download`)).toEqual({
+			snapshotId: id,
+			publicUrl: `https://tines.example/p/${id}`,
+			downloadUrl: `https://tines.example/api/v1/publications/public/${id}/download`
+		});
+		expect(
+			parsePublicSnapshotUrl(`https://tines.example/api/v1/publications/public/${id}/download`)
+		).toMatchObject({ snapshotId: id });
 	});
 });
