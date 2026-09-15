@@ -46,6 +46,9 @@ describe('PublicationFlowController', () => {
 	it('reuses an immutable preparation request until content changes', () => {
 		const flow = new PublicationFlowController();
 		const first = flow.prepareRequest(body, () => 'request_1');
+		body.metadata.display_name = 'Changed after capture';
+		expect(first.metadata.display_name).toBe('Ada');
+		body.metadata.display_name = 'Ada';
 		expect(flow.prepareRequest(body, () => 'request_2')).toBe(first);
 		flow.invalidate();
 		expect(flow.prepareRequest(body, () => 'request_2').prepare_request_id).toBe('request_2');

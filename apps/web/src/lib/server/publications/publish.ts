@@ -1,6 +1,7 @@
 import {
 	canonicalizeLibraryValue,
 	parsePublicWorkflowDocument,
+	withLibraryDocumentDigest,
 	PUBLIC_WORKFLOW_POLICY_VERSION,
 	type PublicationOwnerResult,
 	type PublicationOwnerItem,
@@ -21,6 +22,7 @@ import {
 } from '../api/core';
 import { packageActorKey } from '../library/token';
 import { publicationConfig } from './config';
+import { deriveOwnedPublicationDraft, PublicationDraftError } from './draft';
 import { buildOwnedPublicationSourceProof, publicationSourceExpression } from './source';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -175,15 +177,42 @@ export async function publishPublication(
 			workflow_id: string;
 			options: Parameters<typeof buildOwnedPublicationSourceProof>[3];
 			exported_at: number;
+			draft_version?: number;
+			baseline?: { document_digest: string; exported_at: number };
 		};
+		if (provenance.draft_version !== undefined && provenance.draft_version !== 1)
+			throw new ApiFail(409, 'publication_proof_stale', 'Prepare and review a fresh proof');
+		if (provenance.draft_version === 1 && !provenance.baseline)
+			throw new ApiFail(409, 'publication_proof_stale', 'Prepare and review a fresh proof');
 		const rebuilt = await buildOwnedPublicationSourceProof(
 			db,
 			actor.userId,
 			provenance.workflow_id,
 			provenance.options,
-			provenance.exported_at
+			provenance.baseline?.exported_at ?? provenance.exported_at
 		);
-		const rebuiltJson = canonicalizeLibraryValue(rebuilt.document);
+		let rebuiltJson = canonicalizeLibraryValue(rebuilt.document);
+		if (provenance.draft_version === 1 && provenance.baseline) {
+			if (rebuilt.document.digest !== provenance.baseline.document_digest)
+				throw new ApiFail(
+					409,
+					'publication_source_changed',
+					'The source changed; review a fresh proof'
+				);
+			try {
+				const submitted = await withLibraryDocumentDigest({
+					...parsed.document,
+					exported_at: provenance.baseline.exported_at
+				});
+				rebuiltJson = canonicalizeLibraryValue(
+					await deriveOwnedPublicationDraft(rebuilt.document, submitted, provenance.exported_at)
+				);
+			} catch (error) {
+				if (error instanceof PublicationDraftError)
+					throw new ApiFail(409, 'publication_proof_stale', 'Prepare and review a fresh proof');
+				throw error;
+			}
+		}
 		if (
 			rebuilt.witnessFingerprint !==
 				(

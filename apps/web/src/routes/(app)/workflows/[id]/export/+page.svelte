@@ -11,6 +11,7 @@
 		type PackageInput,
 		type PublicationOwnerResult,
 		type PublicationProof,
+		type PublicationSourceOptions,
 		type TextUseField,
 		type WorkflowPackageDocument
 	} from '@tines/shared';
@@ -40,7 +41,12 @@
 	function initialCandidate(): WorkflowPackageDocument {
 		return structuredClone(data.candidate);
 	}
+	function initialBaseline() {
+		return { document_digest: data.candidate.digest, exported_at: data.candidate.exported_at };
+	}
 	let candidate = $state<WorkflowPackageDocument>(initialCandidate());
+	let baseline = $state(initialBaseline());
+	let appliedSourceOptions = $state<PublicationSourceOptions>({ schedule_ids: [], tiers: [] });
 	let sourceProjectId = $state('');
 	let selectedSchedules = $state<string[]>([]);
 	let tierSelections = $state<Record<string, '' | ModelTier>>({});
@@ -208,7 +214,7 @@
 		target?.focus({ preventScroll: true });
 		target?.scrollIntoView({ block: 'center' });
 	}
-	function exportOptions(): ExportWorkflowPackageOptions {
+	function sourceOptions(): PublicationSourceOptions {
 		const tiers: NonNullable<ExportWorkflowPackageOptions['tiers']> = [];
 		for (const state of data.sourceStates) {
 			const tier = tierSelections[state.id];
@@ -222,10 +228,19 @@
 		return {
 			...(sourceProjectId ? { source_project_id: sourceProjectId } : {}),
 			schedule_ids: selectedSchedules,
-			tiers,
-			authoring: { inputs: candidate.inputs, text_uses: candidate.text_uses }
+			tiers
 		};
 	}
+	const pendingSourceSelection = $derived(
+		canonicalizeLibraryValue(sourceOptions()) !== canonicalizeLibraryValue(appliedSourceOptions)
+	);
+	let sourceSelectionSignature = canonicalizeLibraryValue(sourceOptions());
+	$effect(() => {
+		const signature = canonicalizeLibraryValue(sourceOptions());
+		if (signature === sourceSelectionSignature) return;
+		sourceSelectionSignature = signature;
+		resetReview('Automation choices changed. Apply or revert them before previewing.');
+	});
 	function setReviewed(id: string, checked: boolean) {
 		candidateGeneration += 1;
 		const next = new Set(reviewed);
@@ -252,21 +267,11 @@
 		busy = true;
 		status = 'Rebuilding the candidate from its private source…';
 		try {
-			const tiers: NonNullable<ExportWorkflowPackageOptions['tiers']> = [];
-			for (const state of data.sourceStates) {
-				const tier = tierSelections[state.id];
-				if (tier)
-					tiers.push({
-						state_id: state.id,
-						tier,
-						project_scoped: projectScoped[state.id] ?? false
-					});
-			}
-			candidate = await api.exportWorkflowPackage(data.workflow.id, {
-				...(sourceProjectId ? { source_project_id: sourceProjectId } : {}),
-				schedule_ids: selectedSchedules,
-				tiers
-			});
+			const options = sourceOptions();
+			const rebuilt = await api.exportWorkflowPackage(data.workflow.id, options);
+			candidate = rebuilt;
+			baseline = { document_digest: rebuilt.digest, exported_at: rebuilt.exported_at };
+			appliedSourceOptions = structuredClone(options);
 			dirty = false;
 			if (!candidate.inputs.some((input) => input.id === selectedInputId)) selectedInputId = '';
 			resetReview('Candidate rebuilt from source.');
@@ -290,8 +295,16 @@
 		}
 	}
 	async function prepareForPublication() {
-		if (dirty) {
-			status = 'Save these changes in the workflow before previewing.';
+		if (editingInputId) {
+			status = 'Save or cancel the input edit before previewing.';
+			return;
+		}
+		if (candidateUpdating) {
+			status = 'Wait for the draft edit to finish before previewing.';
+			return;
+		}
+		if (pendingSourceSelection) {
+			status = 'Apply or revert the automation choices before previewing.';
 			return;
 		}
 		try {
@@ -324,7 +337,12 @@
 				source: {
 					kind: 'owned_workflow',
 					workflow_id: data.workflow.id,
-					options: exportOptions()
+					options: structuredClone(appliedSourceOptions),
+					draft: {
+						version: 1,
+						baseline: { ...baseline },
+						document_json: canonicalizeLibraryValue(candidate)
+					}
 				},
 				metadata: {
 					display_name: displayName,
@@ -410,7 +428,7 @@
 			status = `Input key “${normalized.key}” already exists.`;
 			return;
 		}
-		candidateGeneration += 1;
+		resetReview('Saving a new variable.');
 		candidateUpdating = true;
 		const id = `input:author:${candidate.inputs.length + 1}`;
 		const next = {
@@ -521,7 +539,7 @@
 					}
 				: null;
 		const snapshot = candidate;
-		candidateGeneration += 1;
+		resetReview('Saving the variable changes.');
 		candidateUpdating = true;
 		let saved = false;
 		try {
@@ -555,7 +573,7 @@
 			return;
 		}
 		const next = JSON.parse(JSON.stringify(candidate)) as WorkflowPackageDocument;
-		candidateGeneration += 1;
+		resetReview('Saving the draft text.');
 		candidateUpdating = true;
 		let value = fieldEditor.value;
 		if (input) {
@@ -880,7 +898,7 @@
 				<div>
 					<h2 id="inputs-title" class="font-semibold">Variables and places used</h2>
 					<p class="text-muted-foreground mt-1 text-xs">
-						Changes apply to this copy. Save source changes before sharing.
+						Changes apply only to this reusable copy. Preview saves the exact draft for sharing.
 					</p>
 				</div>
 				{#if tokenInvoker}<Button size="sm" variant="outline" onclick={backToToken}
