@@ -356,9 +356,9 @@ test.describe.serial('public workflow snapshots', () => {
 		await editor.fill('{{project_name:billing-service}} and UNSAVED candidate text');
 		await ownerPage.getByRole('button', { name: 'Preview', exact: true }).click();
 		await expect(ownerPage.getByRole('heading', { name: 'Customize', exact: true })).toBeVisible();
-		await expect(
-			ownerPage.getByText('Save or cancel the candidate text edit before previewing.')
-		).toBeVisible();
+		await expect(ownerPage.getByTestId('package-actions')).toContainText(
+			'Save or cancel the candidate text edit before previewing.'
+		);
 		await ownerPage.getByRole('button', { name: 'Cancel text edit' }).click();
 		await expect(editor).toHaveValue('{{project_name:billing-service}} and customer-portal');
 
