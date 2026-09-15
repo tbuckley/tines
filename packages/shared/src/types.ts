@@ -2252,7 +2252,8 @@ export type CodexRequestContextV1 = {
 } & (
 	| {
 			status: 'complete';
-			harness_version: '0.153.4';
+			/** A supported Codex CLI version; see `isSupportedCodexRolloutVersion`. */
+			harness_version: string;
 			request_count: number;
 			max_request_input_tokens: number;
 			reconciled_usage: Required<CodexRawUsageV1>;
