@@ -435,7 +435,7 @@ test('authors an exact declared use and downloads the reviewed canonical package
 		.last();
 	await draftTier.locator('select').selectOption('balanced');
 	await draftTier.getByRole('checkbox', { name: 'Project-scoped' }).check();
-	await page.getByRole('button', { name: 'Rebuild from source' }).click();
+	await rebuildCandidate(page);
 	await page.getByLabel('Key').fill('target_workflow');
 	await page.getByLabel('Type').selectOption('workflow');
 	await page.getByLabel('Default').fill('Standard');
