@@ -303,3 +303,17 @@ automation and is inspected through ordinary workflow/context APIs from two proj
 copy selects the paused schedule and a supported local-runner tier for one project. The journey pins
 zero automatic issues, `run_count=0`, unchanged project defaults, exact substitutions and inherited
 order, then edits one dependency copy and proves the source and sibling copy remain unchanged.
+
+## Public snapshot CLI
+
+`tines workflows publish <workflow> --proof-out proof.json --display-name <name>` accepts the same
+`--project`, repeated `--schedule`, repeated `--tier`, `--project-routing`, and `--inputs` selectors
+as `workflows export`. Commit the saved proof with both independent confirmations:
+`--proof proof.json --confirm <review-digest> --sharing-rights`; a TTY prompts separately for any
+missing confirmation, while non-interactive use requires both.
+
+Cross-host install accepts `/p/<id>`, the legacy `/p/<id>/download`, or the canonical
+`/api/v1/publications/public/<id>/download`, and always requests the canonical API endpoint without
+sending destination credentials. A matching completed destination receipt is recoverable even when
+that source URL or local file is no longer available. Use `tines workflows publications --all-pages`
+for a complete owner listing, or `--limit` and `--cursor` for manual paging.
