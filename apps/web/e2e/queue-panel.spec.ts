@@ -243,7 +243,7 @@ test.describe.serial('the Now row', () => {
 		await expect(panel).toContainText('2 issues');
 		const actions = panel.locator(`#queue-runner-${world.runnerId}`).getByTestId('queue-actions');
 		await expect(actions).toBeVisible();
-		await expect(actions.getByRole('button')).toHaveCount(2);
+		await expect(actions.locator('button:visible')).toHaveCount(2);
 		const geometry = await actions.evaluate((element) => {
 			const panelElement = element.closest('section');
 			if (!panelElement) throw new Error('queue actions are outside the queue panel');
