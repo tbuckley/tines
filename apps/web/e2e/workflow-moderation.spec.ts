@@ -13,9 +13,9 @@ test('reports, removes, restores, suspends and recovers one exact public snapsho
 }) => {
 	test.setTimeout(300_000);
 	const marker = uniqueName('moderation-journey', { maxLength: 100 });
-	const publisher = apiFor(WORKFLOW_MODERATION_PUBLISHER);
+	const publicationApi = apiFor(WORKFLOW_MODERATION_PUBLISHER);
 	const workflow = await body<{ id: string }>(
-		await publisher.post('/api/v1/workflows', {
+		await publicationApi.post('/api/v1/workflows', {
 			name: marker,
 			description: `${marker} [hostile destination](https://example.test/track)`,
 			initial_state: 'Open',
@@ -27,14 +27,14 @@ test('reports, removes, restores, suspends and recovers one exact public snapsho
 		})
 	);
 	const proof = await body<PublicationProof>(
-		await publisher.post('/api/v1/publications/prepare', {
+		await publicationApi.post('/api/v1/publications/prepare', {
 			prepare_request_id: crypto.randomUUID(),
 			source: { kind: 'owned_workflow', workflow_id: workflow.id, options: {} },
 			metadata: { display_name: 'Moderation journey', license: 'MIT', license_year: 2026 }
 		})
 	);
 	const published = await body<PublicationOwnerResult>(
-		await publisher.post(`/api/v1/publications/${proof.candidate_id}/publish`, {
+		await publicationApi.post(`/api/v1/publications/${proof.candidate_id}/publish`, {
 			review_digest: proof.review_digest,
 			sharing_rights: true,
 			exact_content: true,
