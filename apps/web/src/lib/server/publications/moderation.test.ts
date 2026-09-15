@@ -226,4 +226,47 @@ describe('private workflow moderation', () => {
 			)
 		).rejects.toMatchObject({ status: 403 });
 	});
+
+	it('resolves only an observed case cutoff and rejects a second decision', async () => {
+		const env = envFor(t);
+		await acceptPublicationReport(
+			t.db,
+			env,
+			SNAPSHOT,
+			{
+				request_id: '123e4567-e89b-42d3-a456-426614174010',
+				reason: 'other'
+			},
+			{ network: '192.0.2.8' },
+			NOW
+		);
+		await decideModeration(
+			t.db,
+			env,
+			moderator,
+			{
+				request_id: '123e4567-e89b-42d3-a456-426614174011',
+				action: 'dismiss',
+				target: { snapshot_id: SNAPSHOT },
+				reason: 'Reviewed',
+				case_through_version: 1
+			},
+			NOW + 1
+		);
+		await expect(
+			decideModeration(
+				t.db,
+				env,
+				moderator,
+				{
+					request_id: '123e4567-e89b-42d3-a456-426614174012',
+					action: 'dismiss',
+					target: { snapshot_id: SNAPSHOT },
+					reason: 'Duplicate',
+					case_through_version: 1
+				},
+				NOW + 2
+			)
+		).rejects.toMatchObject({ status: 409, code: 'moderation_state_changed' });
+	});
 });

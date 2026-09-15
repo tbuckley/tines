@@ -126,5 +126,16 @@
 						<p class="mt-1 whitespace-pre-wrap">{report.note || 'No details provided.'}</p>
 					</li>{/each}
 			</ul>{/if}
+		<h2 class="mt-8 font-semibold">Decision history</h2>
+		{#if data.audit.length === 0}<p class="text-muted-foreground mt-2 text-sm">
+				No decisions.
+			</p>{:else}<ul class="mt-2 space-y-2">
+				{#each data.audit as decision}<li class="rounded-md border p-3 text-sm">
+						<b>{decision.action}</b> by {decision.actor_name}<br />
+						<span class="text-muted-foreground"
+							>{new Date(decision.created_at).toLocaleString()} · {decision.reason}</span
+						>
+					</li>{/each}
+			</ul>{/if}
 	</aside>
 </div>

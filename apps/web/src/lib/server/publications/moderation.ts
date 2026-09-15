@@ -9,7 +9,7 @@ import {
 	type PublicationReportReason,
 	type WorkflowReportCase
 } from '@tines/shared';
-import { sql, type Kysely } from 'kysely';
+import { sql, type Kysely, type RawBuilder } from 'kysely';
 import { sha256Hex } from '../crypto';
 import { ApiFail, runAtomic, type ActorContext } from '../api/core';
 import { newId, type Database } from '../db';
@@ -79,7 +79,6 @@ export async function listModerationCases(
 				.selectFrom('workflow_report')
 				.select(['reason', (eb) => eb.fn.countAll<number>().as('count')])
 				.where('snapshot_id', '=', row.snapshot_id)
-				.where('case_version', '>', row.resolved_through_version)
 				.groupBy('reason')
 				.execute();
 			const labels =
@@ -172,6 +171,31 @@ export async function inspectModerationSnapshot(
 		.selectAll()
 		.where('snapshot_id', '=', snapshotId)
 		.executeTakeFirst();
+	const audit = await db
+		.selectFrom('workflow_moderation_audit')
+		.select([
+			'id',
+			'actor_user_id',
+			'actor_name',
+			'action',
+			'target_kind',
+			'target_id',
+			'before_json',
+			'after_json',
+			'case_cutoff',
+			'reason',
+			'created_at'
+		])
+		.where((eb) =>
+			eb.or([
+				eb('snapshot_id', '=', snapshotId),
+				eb.and([eb('target_kind', '=', 'publisher'), eb('publisher_user_id', '=', row.user_id)])
+			])
+		)
+		.orderBy('created_at', 'desc')
+		.orderBy('id', 'desc')
+		.limit(100)
+		.execute();
 	return {
 		snapshot_id: row.snapshot_id,
 		publisher_id: row.user_id,
@@ -198,7 +222,12 @@ export async function inspectModerationSnapshot(
 				: null,
 		publisher_status_version: row.publisher_status_version ?? 0,
 		case: reportCase ?? null,
-		reports: reportGroups.map((item) => ({ ...item, count: Number(item.count) }))
+		reports: reportGroups.map((item) => ({ ...item, count: Number(item.count) })),
+		audit: audit.map(({ before_json, after_json, ...item }) => ({
+			...item,
+			before: JSON.parse(before_json),
+			after: JSON.parse(after_json)
+		}))
 	};
 }
 
@@ -336,6 +365,7 @@ export async function decideModeration(
 	const auditId = newId('mod');
 	let before: Record<string, unknown>;
 	let after: Record<string, unknown>;
+	let auditGuard: RawBuilder<boolean>;
 	if (input.action === 'dismiss') {
 		const reportCase = await db
 			.selectFrom('workflow_report_case')
@@ -353,6 +383,9 @@ export async function decideModeration(
 			throw new ApiFail(409, 'moderation_state_changed', 'Reload the moderation case');
 		before = { resolved_through_version: reportCase.resolved_through_version };
 		after = { resolved_through_version: cutoff };
+		auditGuard = sql<boolean>`EXISTS (SELECT 1 FROM workflow_report_case
+			WHERE snapshot_id = ${targetId} AND version >= ${cutoff!}
+			AND resolved_through_version < ${cutoff!})`;
 	} else if (targetKind === 'snapshot') {
 		if (
 			input.expected_snapshot_version !== undefined &&
@@ -364,6 +397,18 @@ export async function decideModeration(
 			throw new ApiFail(409, 'moderation_state_changed', 'The requested state is already active');
 		before = { host_state: snapshot!.host_state, status_version: snapshot!.status_version };
 		after = { host_state: desired, status_version: snapshot!.status_version + 1 };
+		if (input.case_through_version !== undefined) {
+			const reportCase = await db
+				.selectFrom('workflow_report_case')
+				.select('version')
+				.where('snapshot_id', '=', targetId)
+				.executeTakeFirst();
+			if (!reportCase || input.case_through_version > reportCase.version)
+				throw new ApiFail(409, 'moderation_state_changed', 'Reload the moderation case');
+		}
+		auditGuard = sql<boolean>`EXISTS (SELECT 1 FROM workflow_publication
+			WHERE snapshot_id = ${targetId} AND status_version = ${snapshot!.status_version}
+			AND host_state = ${snapshot!.host_state})`;
 	} else {
 		if (
 			input.expected_publisher_version !== undefined &&
@@ -375,6 +420,12 @@ export async function decideModeration(
 			throw new ApiFail(409, 'moderation_state_changed', 'The requested state is already active');
 		before = { suspended: publisher?.suspended ?? 0, status_version: currentPublisherVersion };
 		after = { suspended: desired, status_version: currentPublisherVersion + 1 };
+		auditGuard =
+			currentPublisherVersion === 0
+				? sql<boolean>`NOT EXISTS (SELECT 1 FROM workflow_publisher_status WHERE user_id = ${publisherId})`
+				: sql<boolean>`EXISTS (SELECT 1 FROM workflow_publisher_status
+					WHERE user_id = ${publisherId} AND status_version = ${currentPublisherVersion}
+					AND suspended = ${publisher!.suspended})`;
 	}
 	const beforeJson = canonicalizeLibraryValue(before);
 	const afterJson = canonicalizeLibraryValue(after);
@@ -387,13 +438,7 @@ export async function decideModeration(
 			${input.action}, ${targetKind}, ${targetId}, ${snapshot?.snapshot_id ?? input.target.snapshot_id ?? null},
 			${snapshot?.document_digest ?? null}, ${snapshot?.bytes_sha256 ?? null}, ${publisherId},
 			${beforeJson}, ${afterJson}, ${input.case_through_version ?? null}, ${reason}, ${now}, ${now + AUDIT_TTL_MS}
-		WHERE ${
-			targetKind === 'snapshot'
-				? sql<boolean>`EXISTS (SELECT 1 FROM workflow_publication WHERE snapshot_id = ${targetId} AND status_version = ${snapshot!.status_version} AND host_state = ${snapshot!.host_state})`
-				: currentPublisherVersion === 0
-					? sql<boolean>`NOT EXISTS (SELECT 1 FROM workflow_publisher_status WHERE user_id = ${publisherId})`
-					: sql<boolean>`EXISTS (SELECT 1 FROM workflow_publisher_status WHERE user_id = ${publisherId} AND status_version = ${currentPublisherVersion} AND suspended = ${publisher!.suspended})`
-		}
+		WHERE ${auditGuard}
 		ON CONFLICT(actor_user_id, request_id) DO NOTHING`.compile(db)
 	];
 	const freshAudit = sql<boolean>`EXISTS (SELECT 1 FROM workflow_moderation_audit WHERE id = ${auditId} AND actor_user_id = ${actor.userId})`;
