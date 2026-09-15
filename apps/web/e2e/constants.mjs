@@ -14,6 +14,9 @@ export const BASE_URL = `http://127.0.0.1:${PORT}`;
 export const AUTH_SECRET =
 	'tines-e2e-secret-4b8e1c3f9a2d7e5b0c6f1a8d3e9b2c7f4a1e6d0b5c8f3a2e7d9b4c1f6a0e3d8b';
 
+/** Shared worker setting and native-D1 final-slot fixture boundary. */
+export const PUBLICATION_DAILY_QUOTA = 20;
+
 export const ALICE = {
 	id: 'usr_e2e_alice',
 	name: 'Alice E2E',

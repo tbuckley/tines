@@ -8,6 +8,7 @@ cd "$(dirname "$0")/.."
 PORT="${E2E_PORT:-8788}"
 # The same secret helpers.ts signs session cookies with; one source of truth.
 AUTH_SECRET=$(node --input-type=module -e "import { AUTH_SECRET } from './e2e/constants.mjs'; console.log(AUTH_SECRET)")
+PUBLICATION_DAILY_QUOTA=$(node --input-type=module -e "import { PUBLICATION_DAILY_QUOTA } from './e2e/constants.mjs'; process.stdout.write(String(PUBLICATION_DAILY_QUOTA))")
 
 rm -rf .wrangler-e2e
 
@@ -34,7 +35,7 @@ exec pnpm exec wrangler dev \
 	--var "BETTER_AUTH_SECRET:$AUTH_SECRET" \
 	--var "BETTER_AUTH_URL:http://127.0.0.1:$PORT" \
 	--var "PUBLIC_WORKFLOW_PUBLISHING_ENABLED:true" \
-	--var "PUBLIC_WORKFLOW_DAILY_QUOTA:100" \
+	--var "PUBLIC_WORKFLOW_DAILY_QUOTA:$PUBLICATION_DAILY_QUOTA" \
 	--var "PUBLIC_WORKFLOW_MODERATOR_USER_IDS:usr_e2e_alice" \
 	--var "PUBLIC_WORKFLOW_REPORT_HMAC_SECRET:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" \
 	--var "PUBLIC_WORKFLOW_APPEAL_CONTACT:mailto:appeals@e2e.test" \
