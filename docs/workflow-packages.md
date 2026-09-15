@@ -6,7 +6,7 @@ Implementation status: v3 whole-library transfer and workflow packages are imple
 
 Public snapshots are immutable, text-only hosting records for exact v3 workflow-package bytes. New publication and restoration are guarded by `PUBLIC_WORKFLOW_PUBLISHING_ENABLED=true`; the variable is intentionally absent from committed deployment configuration. `PUBLIC_WORKFLOW_MAX_BYTES` defaults to 1 MiB and `PUBLIC_WORKFLOW_DAILY_QUOTA` defaults to 10 first publications per rolling 24 hours.
 
-In the browser, open an owned workflow, choose **Publish workflow**, review its package, and prepare the source-bound proof. Publishing requires a non-email public display name, MIT reuse notice, sharing-rights confirmation, and exact-content confirmation. **Workflows → Public snapshots** lists stable URLs and supports withdrawal or policy-permitted restoration.
+In the browser, open an owned workflow and choose **Publish workflow**. The guided flow is **Customize → Preview → Share**: enter a public display name, preview the frozen version and review included skills or repositories, then accept the single public-sharing and MIT statement. Variables, automation, and **Download a file** stay in optional controls. Hashes and proof identifiers are available only under **Technical details**. **Workflows → Shared workflows** lists public links and supports removing or restoring public access.
 
 The CLI exposes the same lifecycle:
 
@@ -39,11 +39,11 @@ loopback development URL. A saved foreign-source plan records only its canonical
 install re-downloads it and requires identical bytes before any destination write. Once downloaded or
 installed, that independent copy cannot be recalled by the source host.
 
-## Install a package in the browser
+## Install a workflow in the browser
 
 Open **Workflows → Install package** (also linked from **Settings → Export / import**) and choose
 the downloaded JSON file. Tines parses local bytes first, then sends workflow files to this Tines
-instance for server validation. Nothing is installed until you confirm a prepared plan. Legacy and whole-library files are
+instance for server validation. Choose **Preview installation**, review what will be installed, and then choose **Install workflow**. Nothing is installed until you confirm the prepared preview. Technical plan identifiers remain under **Technical details**. Legacy and whole-library files are
 directed to the existing best-effort library importer; workflow-profile files use the atomic flow.
 
 Resolve each declared destination value, edit the proposed names for the independent main and
