@@ -67,6 +67,10 @@ test.describe.serial('native D1 moderation gates', () => {
 		expect(
 			d1(`SELECT COUNT(*) AS n FROM workflow_report WHERE snapshot_id=${sqlLiteral(snapshotId)}`)
 		).toEqual([{ n: 5 }]);
+		// The e2e worker sees one loopback network. Release only this fixture's quota rows so
+		// later public-report journeys still exercise their own five-slot window.
+		d1(`DELETE FROM workflow_report_rate_event WHERE receipt_id IN
+			(SELECT id FROM workflow_report WHERE snapshot_id=${sqlLiteral(snapshotId)})`);
 
 		const denied = await apiClient(request, ALICE.apiKey).get(
 			`/api/v1/host/workflow-moderation/snapshots/${snapshotId}`
