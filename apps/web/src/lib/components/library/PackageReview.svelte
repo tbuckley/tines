@@ -133,7 +133,7 @@
 							</p>{/if}
 						<div class="space-y-4">
 							{#each items as item (item.id)}
-								<section class="min-w-0 border-l-2 pl-3" id="review-{item.id}">
+								<section class="min-w-0 border-l-2 pl-3" id="review-{item.id}" tabindex="-1">
 									<div class="flex flex-wrap items-center justify-between gap-2">
 										<h4 class="font-medium">
 											{item.name} <span class="text-muted-foreground text-xs">· {item.kind}</span>
@@ -170,7 +170,8 @@
 													text={file.content}
 													format={file.path.toLowerCase().endsWith('.md') ? 'markdown' : 'text'}
 													tokens={tokens(file.id, 'content')}
-													forceExpanded={expandedFields.has(fieldKey(file.id, 'content'))}
+													forceExpanded={reviewMode === 'summary' ||
+														expandedFields.has(fieldKey(file.id, 'content'))}
 													{onToken}
 												/>
 											</div>

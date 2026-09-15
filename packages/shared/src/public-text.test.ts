@@ -48,4 +48,38 @@ describe('public text rendering model', () => {
 		);
 		expect(renderedPublicTextWordCount('`one two`\n\n| a | b |\n| - | - |\n| c | d |')).toBe(6);
 	});
+
+	it('marks only exact unescaped declared uses before Markdown parsing', () => {
+		const uses = [{ id: 'use:1', input_id: 'input:1', token: '{{label:qa}}' }];
+		const serialized = JSON.stringify(
+			publicTextModel(
+				'**{{label:qa}}** \\{{label:qa}} \uE0000\uE000 [`{{label:qa}}`](https://example.test)',
+				{ uses }
+			)
+		);
+		expect(serialized.match(/"use_id":"use:1"/g)).toHaveLength(2);
+		expect(serialized).toContain('\uE0000\uE000');
+		expect(serialized).not.toContain('https://example.test/');
+		const linkedToken = publicTextModel('[{{label:qa}}](https://example.test)', { uses })[0];
+		expect(linkedToken).toMatchObject({
+			kind: 'paragraph',
+			spans: [{ text: '{{label:qa}}', token: { use_id: 'use:1', input_id: 'input:1' } }]
+		});
+	});
+
+	it('preserves reference links, nested list depth, table styles and fenced-code tokens', () => {
+		const uses = [{ id: 'use:1', input_id: 'input:1', token: '{{label:qa}}' }];
+		const model = publicTextModel(
+			'- [**Guide**][guide]\n  - nested *item*\n\n| Head | Value |\n| - | - |\n| **A** | [B][guide] |\n\n```\n{{label:qa}}\n```\n\n[guide]: https://example.test/docs',
+			{ uses }
+		);
+		expect(model.filter((block) => block.kind === 'list_item').map((block) => block.depth)).toEqual(
+			[0, 1]
+		);
+		expect(JSON.stringify(model)).toContain('https://example.test/docs');
+		expect(JSON.stringify(model)).toContain('"strong":true');
+		expect(model.find((block) => block.kind === 'code')).toMatchObject({
+			spans: [{ token: { use_id: 'use:1' } }]
+		});
+	});
 });

@@ -1,14 +1,29 @@
 <script lang="ts">
-	import { publicTextModel, type PublicTextBlock, type PublicTextSpan } from '@tines/shared';
+	import {
+		publicTextModel,
+		type PublicTextBlock,
+		type PublicTextSpan,
+		type PublicTextUse
+	} from '@tines/shared';
 	import Modal from '$lib/components/Modal.svelte';
 	import PublicTextSpans from './PublicTextSpans.svelte';
 
 	let {
 		source,
 		maxWords,
-		linkMode = 'confirm'
-	}: { source: string; maxWords?: number; linkMode?: 'confirm' | 'inert' } = $props();
-	const fullBlocks = $derived(publicTextModel(source));
+		linkMode = 'confirm',
+		format = 'markdown',
+		uses = [],
+		onToken
+	}: {
+		source: string;
+		maxWords?: number;
+		linkMode?: 'confirm' | 'inert';
+		format?: 'markdown' | 'text';
+		uses?: PublicTextUse[];
+		onToken?: (inputId: string, useId: string, trigger: HTMLElement) => void;
+	} = $props();
+	const fullBlocks = $derived(publicTextModel(source, { format, uses }));
 	const blocks = $derived(maxWords ? truncateBlocks(fullBlocks, maxWords) : fullBlocks);
 	let destination = $state<string | null>(null);
 	let destinationOpen = $state(false);
@@ -23,8 +38,29 @@
 	function truncateSpans(items: PublicTextSpan[], limit: number) {
 		const result: PublicTextSpan[] = [];
 		let remaining = limit;
-		for (const span of items) {
+		for (let index = 0; index < items.length; index++) {
+			const span = items[index];
 			if (remaining <= 0) break;
+			const atomic = span.href ?? span.token?.use_id ?? (span.code ? 'code' : null);
+			if (atomic) {
+				const group = [span];
+				while (index + 1 < items.length) {
+					const next = items[index + 1];
+					const nextAtomic = next.href ?? next.token?.use_id ?? (next.code ? 'code' : null);
+					if (nextAtomic !== atomic) break;
+					group.push(next);
+					index++;
+				}
+				const words = group.flatMap((item) => [...item.text.matchAll(/\S+/gu)]).length;
+				if (words > remaining) {
+					result.push({ text: '[content omitted]' });
+					remaining = 0;
+					break;
+				}
+				result.push(...group);
+				remaining -= words;
+				continue;
+			}
 			const matches = [...span.text.matchAll(/\S+/g)];
 			if (matches.length <= remaining) {
 				result.push(span);
@@ -52,19 +88,31 @@
 				remaining = cut.remaining;
 				continue;
 			}
-			const words = block.kind === 'code' ? (block.value.match(/\S+/g) ?? []).length : 0;
-			if (words > remaining) {
-				if (block.kind === 'code') {
-					const match = [...block.value.matchAll(/\S+/g)][remaining - 1];
-					result.push({
-						...block,
-						value: `${block.value.slice(0, (match.index ?? 0) + match[0].length)}…`
-					});
+			if (block.kind === 'table') {
+				const rows = [];
+				for (const row of block.rows) {
+					const words = (
+						row
+							.map((cell) => cell.map((span) => span.text).join(''))
+							.join(' ')
+							.match(/\S+/gu) ?? []
+					).length;
+					if (words > remaining) break;
+					rows.push(row);
+					remaining -= words;
 				}
-				break;
+				if (rows.length) result.push({ ...block, rows });
+				if (rows.length < block.rows.length) {
+					result.push({
+						kind: 'paragraph',
+						quote_depth: 0,
+						spans: [{ text: '[table row omitted]' }]
+					});
+					remaining = 0;
+				}
+				continue;
 			}
 			result.push(block);
-			remaining -= words;
 		}
 		return result;
 	}
@@ -74,7 +122,12 @@
 	{#each blocks as block}
 		{#if block.kind === 'heading'}
 			<div class="font-semibold" role="heading" aria-level={block.depth}>
-				<PublicTextSpans spans={block.spans} {linkMode} onlink={confirmDestination} />
+				<PublicTextSpans
+					spans={block.spans}
+					{linkMode}
+					onlink={confirmDestination}
+					ontoken={onToken}
+				/>
 			</div>
 		{:else if block.kind === 'paragraph'}
 			<p
@@ -82,25 +135,54 @@
 				class:border-l-2={block.quote_depth > 0}
 				class:pl-3={block.quote_depth > 0}
 			>
-				<PublicTextSpans spans={block.spans} {linkMode} onlink={confirmDestination} />
+				<PublicTextSpans
+					spans={block.spans}
+					{linkMode}
+					onlink={confirmDestination}
+					ontoken={onToken}
+				/>
 			</p>
 		{:else if block.kind === 'code'}
 			<pre
-				class="bg-muted max-w-full overflow-x-auto rounded p-3 font-mono text-xs whitespace-pre-wrap">{block.value}</pre>
+				class="bg-muted max-w-full overflow-x-auto rounded p-3 font-mono text-xs whitespace-pre-wrap"><PublicTextSpans
+					spans={block.spans}
+					{linkMode}
+					onlink={confirmDestination}
+					ontoken={onToken}
+				/></pre>
 		{:else if block.kind === 'list_item'}
 			<div class="flex gap-2" style:padding-left="{block.depth * 1.25}rem">
 				<span aria-hidden="true">{block.ordered ? `${block.index}.` : '•'}</span><span
-					><PublicTextSpans spans={block.spans} {linkMode} onlink={confirmDestination} /></span
+					><PublicTextSpans
+						spans={block.spans}
+						{linkMode}
+						onlink={confirmDestination}
+						ontoken={onToken}
+					/></span
 				>
 			</div>
 		{:else if block.kind === 'table'}
-			<div class="overflow-x-auto">
-				<table class="w-full border-collapse text-sm">
+			<div class="max-w-full overflow-x-auto" role="region" aria-label="Published table">
+				<table class="min-w-[36rem] border-collapse text-sm">
 					<tbody
-						>{#each block.rows as row}<tr
-								>{#each row as cell}<td class="border p-2"
-										><PublicTextSpans spans={cell} {linkMode} onlink={confirmDestination} /></td
-									>{/each}</tr
+						>{#each block.rows as row, rowIndex}<tr
+								>{#each row as cell}{#if rowIndex === 0}<th
+											scope="col"
+											class="border p-2 text-left font-semibold break-words"
+											><PublicTextSpans
+												spans={cell}
+												{linkMode}
+												onlink={confirmDestination}
+												ontoken={onToken}
+											/></th
+										>{:else}<td class="border p-2 break-words"
+											><PublicTextSpans
+												spans={cell}
+												{linkMode}
+												onlink={confirmDestination}
+												ontoken={onToken}
+											/></td
+										>{/if}{/each}</tr
 							>{/each}</tbody
 					>
 				</table>

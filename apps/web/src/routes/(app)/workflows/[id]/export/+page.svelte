@@ -193,13 +193,20 @@
 	function displayNameChanged(event: Event) {
 		displayName = (event.currentTarget as HTMLInputElement).value;
 		displayNameError = '';
-		if (!publicationProof) return;
 		publicationFlow.invalidate();
+		if (!publicationProof && !busy) return;
 		publicationProof = null;
 		publicationResult = null;
 		shareConsent = false;
 		step = 'customize';
 		status = 'Your display name changed. Preview this version again.';
+	}
+	async function focusIncludedReview(id: string, event: MouseEvent) {
+		event.preventDefault();
+		await tick();
+		const target = document.getElementById(`review-${id}`);
+		target?.focus({ preventScroll: true });
+		target?.scrollIntoView({ block: 'center' });
 	}
 	function exportOptions(): ExportWorkflowPackageOptions {
 		const tiers: NonNullable<ExportWorkflowPackageOptions['tiers']> = [];
@@ -1096,6 +1103,7 @@
 		{#if proofRequiredReviews.length}<a
 				class="text-primary mt-4 inline-flex min-h-10 items-center underline"
 				href="#review-{proofRequiredReviews[0].id}"
+				onclick={(event) => focusIncludedReview(proofRequiredReviews[0].id, event)}
 				>Review {proofRequiredReviews.length} included {proofRequiredReviews.length === 1 &&
 				proofRequiredReviews[0].kind === 'skill'
 					? 'skill'
@@ -1178,7 +1186,7 @@
 {/if}
 
 {#if step !== 'complete'}<div
-		class="bg-background/95 sticky bottom-[calc(4.75rem+1px+env(safe-area-inset-bottom,0px))] mt-8 flex items-center justify-between gap-2 rounded-lg border px-2 py-1 shadow-lg backdrop-blur md:bottom-3 md:gap-3 md:p-3"
+		class="bg-background/95 sticky bottom-[calc(4.75rem+1px+env(safe-area-inset-bottom,0px))] mt-8 flex flex-col items-stretch gap-2 rounded-lg border px-2 py-1 shadow-lg backdrop-blur sm:flex-row sm:items-center sm:justify-between md:bottom-3 md:gap-3 md:p-3"
 		data-testid="package-actions"
 	>
 		<p class="min-w-0 text-xs" role="status" aria-live="polite">
@@ -1189,15 +1197,19 @@
 						? 'Review included content'
 						: 'Ready to share')}
 		</p>
-		<div class="flex gap-2">
+		<div class="flex min-w-0 flex-col gap-2 sm:flex-row">
 			{#if step === 'customize'}<Button
 					onclick={prepareForPublication}
 					disabled={busy || candidateUpdating || !data.publication.enabled}
 					>{busy ? 'Checking…' : 'Preview'}</Button
 				>
-			{:else if step === 'preview'}<Button variant="outline" onclick={() => goTo('customize')}
-					>Back to Customize</Button
-				><Button onclick={reviewIncludedAndShare}
+			{:else if step === 'preview'}<Button
+					class="w-full sm:w-auto"
+					variant="outline"
+					onclick={() => goTo('customize')}>Back to Customize</Button
+				><Button
+					class="h-auto min-h-9 w-full whitespace-normal sm:w-auto"
+					onclick={reviewIncludedAndShare}
 					>{requiredReviews.length === 1
 						? 'I reviewed the included skill — Continue to Share'
 						: requiredReviews.length

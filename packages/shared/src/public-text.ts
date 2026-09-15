@@ -9,12 +9,24 @@ export interface PublicTextSpan {
 	deleted?: boolean;
 	code?: boolean;
 	href?: string;
+	token?: { use_id: string; input_id: string };
+}
+
+export interface PublicTextUse {
+	id: string;
+	input_id: string;
+	token: string;
+}
+
+export interface PublicTextOptions {
+	format?: 'markdown' | 'text';
+	uses?: readonly PublicTextUse[];
 }
 
 export type PublicTextBlock =
 	| { kind: 'heading'; depth: number; spans: PublicTextSpan[] }
 	| { kind: 'paragraph'; quote_depth: number; spans: PublicTextSpan[] }
-	| { kind: 'code'; value: string }
+	| { kind: 'code'; spans: PublicTextSpan[] }
 	| { kind: 'list_item'; depth: number; ordered: boolean; index: number; spans: PublicTextSpan[] }
 	| { kind: 'table'; rows: PublicTextSpan[][][] }
 	| { kind: 'break' };
@@ -27,6 +39,51 @@ interface MdNode {
 	ordered?: boolean;
 	start?: number | null;
 	children?: MdNode[];
+	identifier?: string;
+}
+
+type TokenOccurrence = PublicTextUse & { start: number; end: number };
+
+/** Every unescaped occurrence of each declared token, in source order. */
+export function declaredPublicTextOccurrences(
+	text: string,
+	uses: readonly PublicTextUse[]
+): TokenOccurrence[] {
+	const matches: TokenOccurrence[] = [];
+	for (const use of uses) {
+		if (!use.token) continue;
+		let from = 0;
+		while (from < text.length) {
+			const start = text.indexOf(use.token, from);
+			if (start < 0) break;
+			let slashes = 0;
+			for (let at = start - 1; at >= 0 && text[at] === '\\'; at--) slashes++;
+			if (slashes % 2 === 0) matches.push({ ...use, start, end: start + use.token.length });
+			from = start + use.token.length;
+		}
+	}
+	matches.sort((a, b) => a.start - b.start || b.end - a.end || a.id.localeCompare(b.id));
+	const result: TokenOccurrence[] = [];
+	let end = -1;
+	for (const match of matches) {
+		if (match.start < end) continue;
+		result.push(match);
+		end = match.end;
+	}
+	return result;
+}
+
+function markTokens(source: string, uses: readonly PublicTextUse[]) {
+	const occurrences = declaredPublicTextOccurrences(source, uses);
+	let marker = '\uE000';
+	while (source.includes(marker)) marker += '\uE001';
+	let marked = '';
+	let at = 0;
+	for (const [index, occurrence] of occurrences.entries()) {
+		marked += source.slice(at, occurrence.start) + `${marker}${index}${marker}`;
+		at = occurrence.end;
+	}
+	return { source: marked + source.slice(at), marker, occurrences };
 }
 
 function safeHref(value: string | undefined): string | undefined {
@@ -43,7 +100,9 @@ function safeHref(value: string | undefined): string | undefined {
 
 function spans(
 	nodes: MdNode[],
-	style: Omit<PublicTextSpan, 'text' | 'href'> = {}
+	style: Omit<PublicTextSpan, 'text' | 'href' | 'token'> = {},
+	marked?: ReturnType<typeof markTokens>,
+	definitions = new Map<string, string>()
 ): PublicTextSpan[] {
 	const result: PublicTextSpan[] = [];
 	for (const node of nodes) {
@@ -52,64 +111,138 @@ function spans(
 			continue;
 		}
 		if (node.type === 'text' || node.type === 'html') {
-			result.push({ text: node.value ?? '', ...style });
+			const value = node.value ?? '';
+			if (!marked || !value.includes(marked.marker)) result.push({ text: value, ...style });
+			else {
+				let at = 0;
+				const pattern = new RegExp(`${marked.marker}(\\d+)${marked.marker}`, 'g');
+				for (const match of value.matchAll(pattern)) {
+					if (match.index! > at) result.push({ text: value.slice(at, match.index), ...style });
+					const occurrence = marked.occurrences[Number(match[1])];
+					if (occurrence)
+						result.push({
+							text: occurrence.token,
+							...style,
+							token: { use_id: occurrence.id, input_id: occurrence.input_id }
+						});
+					at = match.index! + match[0].length;
+				}
+				if (at < value.length) result.push({ text: value.slice(at), ...style });
+			}
 			continue;
 		}
 		if (node.type === 'inlineCode') {
-			result.push({ text: node.value ?? '', ...style, code: true });
+			result.push(...markedSpans(node.value ?? '', { ...style, code: true }, marked));
 			continue;
 		}
 		if (node.type === 'break') {
 			result.push({ text: '\n', ...style });
 			continue;
 		}
-		if (node.type === 'link') {
-			const link = safeHref(node.url);
+		if (node.type === 'link' || node.type === 'linkReference') {
+			const link = safeHref(
+				node.type === 'link' ? node.url : definitions.get(node.identifier?.toLowerCase() ?? '')
+			);
 			result.push(
-				...spans(node.children ?? [], style).map((span) => ({
+				...spans(node.children ?? [], style, marked, definitions).map((span) => ({
 					...span,
-					...(link ? { href: link } : {})
+					...(link && !span.token ? { href: link } : {})
 				}))
 			);
 			continue;
 		}
-		if (node.type === 'linkReference') {
-			result.push(...spans(node.children ?? [], style));
-			continue;
-		}
 		if (node.type === 'strong' || node.type === 'emphasis' || node.type === 'delete') {
 			result.push(
-				...spans(node.children ?? [], {
-					...style,
-					...(node.type === 'strong' ? { strong: true } : {}),
-					...(node.type === 'emphasis' ? { emphasis: true } : {}),
-					...(node.type === 'delete' ? { deleted: true } : {})
-				})
+				...spans(
+					node.children ?? [],
+					{
+						...style,
+						...(node.type === 'strong' ? { strong: true } : {}),
+						...(node.type === 'emphasis' ? { emphasis: true } : {}),
+						...(node.type === 'delete' ? { deleted: true } : {})
+					},
+					marked,
+					definitions
+				)
 			);
 			continue;
 		}
 		// Unknown inline constructs never become elements or attributes. Preserve
 		// only allowlisted descendants as inert text.
-		result.push(...spans(node.children ?? [], style));
+		result.push(...spans(node.children ?? [], style, marked, definitions));
 	}
 	return result;
 }
 
-function blockSpans(node: MdNode): PublicTextSpan[] {
+function markedSpans(
+	value: string,
+	style: Omit<PublicTextSpan, 'text' | 'href' | 'token'>,
+	marked?: ReturnType<typeof markTokens>
+): PublicTextSpan[] {
+	if (!marked || !value.includes(marked.marker)) return [{ text: value, ...style }];
+	const result: PublicTextSpan[] = [];
+	let at = 0;
+	const pattern = new RegExp(`${marked.marker}(\\d+)${marked.marker}`, 'g');
+	for (const match of value.matchAll(pattern)) {
+		if (match.index! > at) result.push({ text: value.slice(at, match.index), ...style });
+		const occurrence = marked.occurrences[Number(match[1])];
+		if (occurrence)
+			result.push({
+				text: occurrence.token,
+				...style,
+				token: { use_id: occurrence.id, input_id: occurrence.input_id }
+			});
+		at = match.index! + match[0].length;
+	}
+	if (at < value.length) result.push({ text: value.slice(at), ...style });
+	return result;
+}
+
+function blockSpans(
+	node: MdNode,
+	marked: ReturnType<typeof markTokens>,
+	definitions: Map<string, string>
+): PublicTextSpan[] {
 	const result: PublicTextSpan[] = [];
 	for (const child of node.children ?? []) {
 		if (result.length && child.type === 'paragraph') result.push({ text: '\n' });
-		result.push(...spans(child.children ?? (child.value !== undefined ? [child] : [])));
+		if (child.type === 'list') continue;
+		result.push(
+			...spans(
+				child.children ?? (child.value !== undefined ? [child] : []),
+				{},
+				marked,
+				definitions
+			)
+		);
 	}
 	return result;
 }
 
 /** Parse publisher Markdown into a closed, resource-free rendering model. */
-export function publicTextModel(source: string): PublicTextBlock[] {
-	const root = fromMarkdown(source, {
+export function publicTextModel(
+	source: string,
+	options: PublicTextOptions = {}
+): PublicTextBlock[] {
+	const marked = markTokens(source, options.uses ?? []);
+	if (options.format === 'text') {
+		return [
+			{
+				kind: 'paragraph',
+				quote_depth: 0,
+				spans: spans([{ type: 'text', value: marked.source }], {}, marked)
+			}
+		];
+	}
+	const root = fromMarkdown(marked.source, {
 		extensions: [gfm()],
 		mdastExtensions: [gfmFromMarkdown()]
 	}) as MdNode;
+	const definitions = new Map<string, string>();
+	for (const node of root.children ?? []) {
+		if (node.type === 'definition' && node.identifier && node.url)
+			definitions.set(node.identifier.toLowerCase(), node.url);
+	}
 	const result: PublicTextBlock[] = [];
 	const visit = (nodes: MdNode[], quoteDepth = 0, listDepth = 0) => {
 		for (const node of nodes) {
@@ -117,35 +250,40 @@ export function publicTextModel(source: string): PublicTextBlock[] {
 				result.push({
 					kind: 'heading',
 					depth: Math.min(6, Math.max(1, node.depth ?? 1)),
-					spans: spans(node.children ?? [])
+					spans: spans(node.children ?? [], {}, marked, definitions)
 				});
 			} else if (node.type === 'paragraph') {
 				result.push({
 					kind: 'paragraph',
 					quote_depth: quoteDepth,
-					spans: spans(node.children ?? [])
+					spans: spans(node.children ?? [], {}, marked, definitions)
 				});
 			} else if (node.type === 'code') {
-				result.push({ kind: 'code', value: node.value ?? '' });
+				result.push({ kind: 'code', spans: markedSpans(node.value ?? '', { code: true }, marked) });
 			} else if (node.type === 'thematicBreak') {
 				result.push({ kind: 'break' });
 			} else if (node.type === 'blockquote') {
 				visit(node.children ?? [], quoteDepth + 1, listDepth);
 			} else if (node.type === 'list') {
-				(node.children ?? []).forEach((item, offset) =>
+				(node.children ?? []).forEach((item, offset) => {
 					result.push({
 						kind: 'list_item',
 						depth: listDepth,
 						ordered: node.ordered === true,
 						index: (node.start ?? 1) + offset,
-						spans: blockSpans(item)
-					})
-				);
+						spans: blockSpans(item, marked, definitions)
+					});
+					visit(
+						(item.children ?? []).filter((child) => child.type === 'list'),
+						quoteDepth,
+						listDepth + 1
+					);
+				});
 			} else if (node.type === 'table') {
 				result.push({
 					kind: 'table',
 					rows: (node.children ?? []).map((row) =>
-						(row.children ?? []).map((cell) => spans(cell.children ?? []))
+						(row.children ?? []).map((cell) => spans(cell.children ?? [], {}, marked, definitions))
 					)
 				});
 			}
@@ -156,11 +294,13 @@ export function publicTextModel(source: string): PublicTextBlock[] {
 }
 
 /** Count only rendered words; adjacent styled spans remain one text run. */
-export function renderedPublicTextWordCount(source: string): number {
-	const rendered = publicTextModel(source)
+export function renderedPublicTextWordCount(
+	source: string,
+	options: PublicTextOptions = {}
+): number {
+	const rendered = publicTextModel(source, options)
 		.map((block) => {
 			if ('spans' in block) return block.spans.map((span) => span.text).join('');
-			if (block.kind === 'code') return block.value;
 			if (block.kind === 'table')
 				return block.rows
 					.map((row) => row.map((cell) => cell.map((span) => span.text).join('')).join(' '))
