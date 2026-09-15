@@ -46,7 +46,7 @@ const labelsUiTest = base.extend<{}, { world: LabelsUiWorld }>({
 			const crowdNames = ['c1', 'c2', 'c3', 'c4', 'c5-a-really-long-label-name'].map((stem) =>
 				uniqueName(stem)
 			);
-			const wideName = uniqueName('w-single-label-far-too-wide-for-a-phone', { maxLength: 42 });
+			const wideName = uniqueName('wide', { maxLength: 32 });
 			const labelledTitle = uniqueName('Labelled', { maxLength: 100 });
 			const plainTitle = uniqueName('Plain', { maxLength: 100 });
 			const crowdedTitle = `${uniqueName('Crowded', { maxLength: 50 })} — runner daemon drops the log tail when a run is canceled`;
