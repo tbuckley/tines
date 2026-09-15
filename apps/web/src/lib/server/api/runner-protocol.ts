@@ -25,6 +25,7 @@ import {
 	type EffortCapabilities,
 	type EffortCapabilitiesV1,
 	isEffortToken,
+	isSupportedCodexRolloutVersion,
 	EFFORT_CAPABILITIES_MAX_BYTES,
 	EFFORT_CAPABILITIES_MAX_EFFORTS,
 	EFFORT_CAPABILITIES_MAX_MODELS,
@@ -1258,7 +1259,8 @@ function validatePricingEvidence(value: unknown): {
 		if (item.normalization !== 'codex-rollout-delta-v1') return malformedRequestContext();
 		if (item.status === 'complete') {
 			if (
-				harnessVersion !== '0.153.4' ||
+				!harnessVersion ||
+				!isSupportedCodexRolloutVersion(harnessVersion) ||
 				!Number.isSafeInteger(item.request_count) ||
 				(item.request_count as number) < 0 ||
 				!Number.isSafeInteger(item.max_request_input_tokens) ||
@@ -1283,7 +1285,7 @@ function validatePricingEvidence(value: unknown): {
 			return {
 				version: 1,
 				normalization: 'codex-rollout-delta-v1',
-				harness_version: '0.153.4',
+				harness_version: harnessVersion,
 				status: 'complete',
 				request_count: item.request_count as number,
 				max_request_input_tokens: item.max_request_input_tokens as number,
