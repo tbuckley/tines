@@ -2,6 +2,7 @@ import { json } from '@sveltejs/kit';
 import type { PublishPublicationRequest } from '@tines/shared';
 import { api, apiContext, ApiFail, readJson, requireJsonObject } from '$lib/server/api/core';
 import { publishPublication } from '$lib/server/publications/publish';
+import { runE2ePublicationRaceMutation } from '$lib/server/publications/e2e-race';
 import type { RequestHandler } from './$types';
 
 export const POST: RequestHandler = api(async (event) => {
@@ -25,7 +26,12 @@ export const POST: RequestHandler = api(async (event) => {
 			env,
 			actor,
 			event.params.candidateId,
-			body as unknown as PublishPublicationRequest
+			body as unknown as PublishPublicationRequest,
+			undefined,
+			() =>
+				runE2ePublicationRaceMutation(event.request, env, {
+					publicationId: event.params.candidateId
+				})
 		)
 	);
 });

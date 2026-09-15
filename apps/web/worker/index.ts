@@ -17,14 +17,28 @@ import worker from '../.svelte-kit/cloudflare/_worker.js';
 import { getDb } from '../src/lib/server/db';
 import { sweepSchedules } from '../src/lib/server/schedule-sweep';
 import { sweepSupervisor } from '../src/lib/server/supervisor/engine';
+import { sweepModerationRetention } from '../src/lib/server/publications/moderation-retention';
 
 export default {
 	...worker,
 	async scheduled(controller: ScheduledController, env: Env, _ctx: ExecutionContext) {
 		const now = controller.scheduledTime || Date.now();
-		// Schedules first: an instance created here is dispatchable in the
-		// supervisor sweep that follows in the same firing.
-		await sweepSchedules(env, now);
-		await sweepSupervisor(getDb(env), env, now);
+		let failure: unknown;
+		try {
+			// Schedules first: an instance created here is dispatchable in the
+			// supervisor sweep that follows in the same firing.
+			await sweepSchedules(env, now);
+			await sweepSupervisor(getDb(env), env, now);
+		} catch (error) {
+			failure = error;
+		} finally {
+			try {
+				const result = await sweepModerationRetention(env, now);
+				if (result.deleted) console.info('Moderation retention cleanup', result);
+			} catch {
+				console.error('Moderation retention cleanup failed', { code: 'moderation_cleanup_failed' });
+			}
+		}
+		if (failure) throw failure;
 	}
 };

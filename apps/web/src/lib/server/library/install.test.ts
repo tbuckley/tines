@@ -55,6 +55,11 @@ describe('atomic workflow package install', () => {
 			...t.env,
 			...signing,
 			PUBLIC_WORKFLOW_PUBLISHING_ENABLED: 'true',
+			PUBLIC_WORKFLOW_MODERATOR_USER_IDS: USER,
+			PUBLIC_WORKFLOW_REPORT_HMAC_SECRET: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+			PUBLIC_WORKFLOW_APPEAL_CONTACT: 'mailto:appeals@example.test',
+			PUBLIC_WORKFLOW_MODERATION_QUEUE_READY: 'true',
+			PUBLIC_WORKFLOW_MODERATION_JOURNEY_VERIFIED: 'true',
 			TINES_PUBLIC_URL: 'https://tines.example'
 		} as Env;
 		const proof = await preparePublication(t.db, env, actor, {

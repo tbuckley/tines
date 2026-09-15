@@ -95,6 +95,8 @@ export interface PublicationOwnerItem extends PublicationHashes {
 	owner_state: 'published' | 'withdrawn';
 	host_state: 'active' | 'removed';
 	status_version: number;
+	host_removal: { reason: string; reference: string } | null;
+	suspension: { reason: string; reference: string } | null;
 }
 
 export interface HostedPublicationBinding {

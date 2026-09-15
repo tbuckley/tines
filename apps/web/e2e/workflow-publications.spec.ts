@@ -115,6 +115,32 @@ test.describe.serial('public workflow snapshots', () => {
 				await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
 			).toBe(true);
 		}
+
+		await page.getByRole('button', { name: 'Report', exact: true }).click();
+		await expect(page.getByRole('dialog', { name: 'Report this public workflow' })).toBeVisible();
+		await expect(page.getByLabel('Reason')).toHaveValue('');
+		await page.getByLabel('Reason').selectOption('malicious_phishing');
+		await page.getByLabel('Details (optional)').fill(`Private report ${marker}`);
+		await page.getByRole('button', { name: 'Send report' }).click();
+		await expect(page.getByRole('heading', { name: 'Report received' })).toBeVisible();
+		await expect(page.getByText(/^Reference: rpt_/)).toBeFocused();
+
+		const moderatorContext = await browser.newContext();
+		await signIn(moderatorContext, ALICE.sessionToken);
+		const moderatorPage = await moderatorContext.newPage();
+		await gotoHydrated(moderatorPage, '/host/workflow-reports');
+		await expect(moderatorPage.getByText(marker, { exact: true })).toBeVisible();
+		await moderatorPage.getByText(marker, { exact: true }).click();
+		await expect(
+			moderatorPage.getByRole('heading', { name: 'Complete inert inspection' })
+		).toBeVisible();
+		await expect(
+			moderatorPage.getByText(`Private report ${marker}`, { exact: true })
+		).toBeVisible();
+		await moderatorPage.getByLabel('Reason').fill('Reviewed exact snapshot; no restriction needed');
+		await moderatorPage.getByRole('button', { name: 'Dismiss reports' }).click();
+		await expect(moderatorPage.getByText('dismiss recorded.')).toBeVisible();
+		await moderatorContext.close();
 	});
 
 	test('returns through sign-in to the exact snapshot and fences stale hosted plans', async ({

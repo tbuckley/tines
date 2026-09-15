@@ -108,18 +108,32 @@ describe('anonymous publication reads', () => {
 		});
 	});
 
-	it('uses the same neutral no-store response after withdrawal or suspension', async () => {
-		await seedPublication();
-		await t.db
-			.updateTable('workflow_publication')
-			.set({ owner_state: 'withdrawn', status_version: 2 })
-			.where('snapshot_id', '=', SNAPSHOT)
-			.execute();
-		for (const handler of [detail, download, reuse, status]) {
-			const response = await handler(event() as never);
-			expect(response.status).toBe(404);
-			expect(response.headers.get('cache-control')).toBe('no-store, max-age=0');
-			expect(await response.text()).not.toContain(MARKER);
+	it.each(['withdrawn', 'host_removed', 'publisher_suspended'] as const)(
+		'uses the same neutral no-store response when %s',
+		async (restriction) => {
+			await seedPublication();
+			if (restriction === 'publisher_suspended') {
+				await t.db
+					.insertInto('workflow_publisher_status')
+					.values({ user_id: USER, suspended: 1, status_version: 1 })
+					.execute();
+			} else {
+				await t.db
+					.updateTable('workflow_publication')
+					.set(
+						restriction === 'withdrawn'
+							? { owner_state: 'withdrawn', status_version: 2 }
+							: { host_state: 'removed', status_version: 2 }
+					)
+					.where('snapshot_id', '=', SNAPSHOT)
+					.execute();
+			}
+			for (const handler of [detail, download, reuse, status]) {
+				const response = await handler(event() as never);
+				expect(response.status).toBe(404);
+				expect(response.headers.get('cache-control')).toBe('no-store, max-age=0');
+				expect(await response.text()).not.toContain(MARKER);
+			}
 		}
-	});
+	);
 });

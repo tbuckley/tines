@@ -76,7 +76,8 @@ export async function installWorkflowPackage(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
-	request: WorkflowPackageInstallRequest
+	request: WorkflowPackageInstallRequest,
+	beforeAtomic?: (source: PackagePlanPayload['source']) => Promise<void>
 ): Promise<WorkflowPackageReceipt> {
 	if (actor.agentRunId) throw runKeyForbidden({ path: '/api/v1/library/install' });
 	const payload = await verifyPackagePlan(request.plan_token, packageKeyMaterial(env));
@@ -118,6 +119,7 @@ export async function installWorkflowPackage(
 		receipt
 	);
 	validatePackageBatch(queries);
+	await beforeAtomic?.(payload.source);
 	try {
 		const results = await runAtomic(env, queries);
 		const selected = results.at(-1)?.results?.[0] as { receipt_json?: unknown } | undefined;

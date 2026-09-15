@@ -1,7 +1,7 @@
 import type { APIRequestContext } from '@playwright/test';
 import { expect, test } from './fixtures';
 import type { PublicationOwnerResult, PublicationProof } from '@tines/shared';
-import { CAROL } from './constants.mjs';
+import { CAROL, PUBLICATION_DAILY_QUOTA } from './constants.mjs';
 import { d1, sqlLiteral } from './d1';
 import { apiClient, body } from './helpers';
 
@@ -66,7 +66,9 @@ test.describe.serial('native D1 publication transaction gate', () => {
 			);
 			expect(new Set(sameResults.map((result) => result.receipt.snapshot_id)).size).toBe(1);
 
-			for (let sequence = 1; sequence < 9; sequence += 1) {
+			// The idempotent candidate above occupies one slot. Fill through the
+			// configured penultimate slot so the pair below races for the last one.
+			for (let sequence = 1; sequence < PUBLICATION_DAILY_QUOTA - 1; sequence += 1) {
 				const proof = await prepare(request, sequence);
 				expect(
 					(
@@ -78,7 +80,10 @@ test.describe.serial('native D1 publication transaction gate', () => {
 				).toBe(200);
 			}
 
-			const final = await Promise.all([prepare(request, 9), prepare(request, 10)]);
+			const final = await Promise.all([
+				prepare(request, PUBLICATION_DAILY_QUOTA - 1),
+				prepare(request, PUBLICATION_DAILY_QUOTA)
+			]);
 			const raced = await Promise.all([
 				apiClient(request, CAROL.apiKey).post(
 					`/api/v1/publications/${final[0].candidate_id}/publish`,
@@ -94,12 +99,12 @@ test.describe.serial('native D1 publication transaction gate', () => {
 				d1(
 					`SELECT COUNT(*) AS n FROM workflow_publication WHERE user_id=${sqlLiteral(CAROL.id)} AND published_at IS NOT NULL`
 				)
-			).toEqual([{ n: 10 }]);
+			).toEqual([{ n: PUBLICATION_DAILY_QUOTA }]);
 			expect(
 				d1(
 					`SELECT COUNT(*) AS n FROM workflow_publication_event WHERE user_id=${sqlLiteral(CAROL.id)} AND action='published'`
 				)
-			).toEqual([{ n: 10 }]);
+			).toEqual([{ n: PUBLICATION_DAILY_QUOTA }]);
 		} finally {
 			await second.dispose();
 		}

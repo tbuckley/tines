@@ -115,7 +115,8 @@ export async function publishPublication(
 	actor: ActorContext,
 	candidateId: string,
 	request: PublishPublicationRequest,
-	now = Date.now()
+	now = Date.now(),
+	beforeAtomic?: () => Promise<void>
 ): Promise<PublicationOwnerResult> {
 	const row = await candidateRow(db, actor.userId, candidateId);
 	if (!row) throw new ApiFail(404, 'not_found', 'Not found');
@@ -213,6 +214,7 @@ export async function publishPublication(
 	};
 	const receiptJson = canonicalizeLibraryValue(receipt);
 	const cutoff = now - DAY_MS;
+	await beforeAtomic?.();
 	try {
 		const results = await runAtomic(env, [
 			sql`UPDATE workflow_publication SET
@@ -315,25 +317,35 @@ export async function listPublications(
 ): Promise<PublicationOwnerItem[]> {
 	let query = db
 		.selectFrom('workflow_publication')
+		.leftJoin(
+			'workflow_publisher_status',
+			'workflow_publisher_status.user_id',
+			'workflow_publication.user_id'
+		)
 		.select([
-			'id',
-			'snapshot_id',
-			'published_at',
-			'metadata_json',
-			'source_workflow_id',
-			'owner_state',
-			'host_state',
-			'status_version',
-			'document_digest',
-			'bytes_sha256',
-			'review_digest'
+			'workflow_publication.id',
+			'workflow_publication.snapshot_id',
+			'workflow_publication.published_at',
+			'workflow_publication.metadata_json',
+			'workflow_publication.source_workflow_id',
+			'workflow_publication.owner_state',
+			'workflow_publication.host_state',
+			'workflow_publication.status_version',
+			'workflow_publication.document_digest',
+			'workflow_publication.bytes_sha256',
+			'workflow_publication.review_digest',
+			'workflow_publication.host_decision_reason',
+			'workflow_publication.host_decision_reference',
+			'workflow_publisher_status.suspended',
+			'workflow_publisher_status.decision_reason as suspension_reason',
+			'workflow_publisher_status.decision_reference as suspension_reference'
 		])
-		.where('user_id', '=', actor.userId)
-		.where('published_at', 'is not', null)
-		.orderBy('published_at', 'desc')
-		.orderBy('id', 'asc')
+		.where('workflow_publication.user_id', '=', actor.userId)
+		.where('workflow_publication.published_at', 'is not', null)
+		.orderBy('workflow_publication.published_at', 'desc')
+		.orderBy('workflow_publication.id', 'asc')
 		.limit(101);
-	if (workflowId) query = query.where('source_workflow_id', '=', workflowId);
+	if (workflowId) query = query.where('workflow_publication.source_workflow_id', '=', workflowId);
 	const origin = publicOrigin(env);
 	return (await query.execute()).slice(0, 100).map((row) => ({
 		candidate_id: row.id,
@@ -347,8 +359,28 @@ export async function listPublications(
 		status_version: row.status_version,
 		document_digest: row.document_digest,
 		bytes_sha256: row.bytes_sha256,
-		review_digest: row.review_digest
+		review_digest: row.review_digest,
+		host_removal:
+			row.host_state === 'removed' && row.host_decision_reason && row.host_decision_reference
+				? { reason: row.host_decision_reason, reference: row.host_decision_reference }
+				: null,
+		suspension:
+			row.suspended === 1 && row.suspension_reason && row.suspension_reference
+				? { reason: row.suspension_reason, reference: row.suspension_reference }
+				: null
 	}));
+}
+
+/** Owner-only active host status. Contains no report or moderator data. */
+export async function getPublisherSuspension(db: Kysely<Database>, actor: ActorContext) {
+	const row = await db
+		.selectFrom('workflow_publisher_status')
+		.select(['suspended', 'decision_reason', 'decision_reference'])
+		.where('user_id', '=', actor.userId)
+		.executeTakeFirst();
+	return row?.suspended === 1 && row.decision_reason && row.decision_reference
+		? { reason: row.decision_reason, reference: row.decision_reference }
+		: null;
 }
 
 async function publicationBySnapshot(

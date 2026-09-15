@@ -4,6 +4,7 @@
 	import WorkflowGraph from '$lib/components/WorkflowGraph.svelte';
 	import MarketingSignIn from '$lib/components/marketing/MarketingSignIn.svelte';
 	import PublicTextSnippet from '$lib/components/publications/PublicTextSnippet.svelte';
+	import PublicationReportDialog from '$lib/components/publications/PublicationReportDialog.svelte';
 
 	let { data } = $props();
 	const snapshot = $derived(data.snapshot);
@@ -15,6 +16,7 @@
 	let available = $state(true);
 	let checking = $state(false);
 	let signIn = $state<MarketingSignIn>();
+	let reportDialog = $state<PublicationReportDialog>();
 	const installReturn = $derived(`/p/${snapshot.snapshot_id}?install=1`);
 	const linkError = $derived(
 		page.url.searchParams.get('error') === 'signin'
@@ -95,6 +97,11 @@
 				Published by {snapshot.metadata.display_name} · {snapshot.metadata.license} · immutable snapshot
 			</p>
 			<div class="mt-5 flex flex-wrap gap-3">
+				<button
+					class="focus-visible:ring-ring/50 rounded-md border px-4 py-2 font-medium outline-none focus-visible:ring-[3px]"
+					type="button"
+					onclick={(event) => reportDialog?.show(event.currentTarget)}>Report</button
+				>
 				{#if data.user}<a
 						class="bg-primary text-primary-foreground rounded-md px-4 py-2 font-medium"
 						href="/workflows/import?publication={snapshot.snapshot_id}"
@@ -278,8 +285,18 @@
 				</ul>
 			</article>
 		</section>
-		<footer class="text-muted-foreground border-t py-6 text-xs break-all">
-			Document {snapshot.document_digest} · bytes {snapshot.bytes_sha256}
+		<footer
+			class="text-muted-foreground flex flex-wrap items-center justify-between gap-3 border-t py-6 text-xs break-all"
+		>
+			<span
+				>Document {snapshot.document_digest} · bytes {snapshot.bytes_sha256} ·
+				<a class="underline" href="/public-workflow-policy" rel="noreferrer">Content rules</a></span
+			>
+			<button
+				class="focus-visible:ring-ring/50 min-h-10 rounded-md border px-3 text-sm outline-none focus-visible:ring-[3px]"
+				type="button"
+				onclick={(event) => reportDialog?.show(event.currentTarget)}>Report this workflow</button
+			>
 		</footer>
 	</main>
 	{#if !data.user}<MarketingSignIn bind:this={signIn} returnTo={installReturn} {linkError} />{/if}
@@ -291,3 +308,4 @@
 		</div>
 	</main>
 {/if}
+<PublicationReportDialog bind:this={reportDialog} snapshotId={snapshot.snapshot_id} />

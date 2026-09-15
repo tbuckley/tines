@@ -1,12 +1,13 @@
 <script lang="ts">
 	import PublicText from './PublicText.svelte';
-	let { source }: { source: string } = $props();
+	let { source, linkMode = 'confirm' }: { source: string; linkMode?: 'confirm' | 'inert' } =
+		$props();
 	let expanded = $state(false);
 	const words = $derived(source.match(/\S+/g) ?? []);
 </script>
 
 <div class="min-w-0 overflow-hidden rounded-md border p-3">
-	<PublicText {source} maxWords={expanded ? undefined : 100} />
+	<PublicText {source} {linkMode} maxWords={expanded ? undefined : 100} />
 	{#if words.length > 115}
 		<button
 			class="text-primary mt-2 min-h-10 text-sm underline"

@@ -28,7 +28,15 @@ describe('publication preparation', () => {
 	it('stores an actor-bound candidate and reconciles an identical request', async () => {
 		const t = createTestDb();
 		seedBase(t);
-		const env = { ...t.env, PUBLIC_WORKFLOW_PUBLISHING_ENABLED: 'true' } as Env;
+		const env = {
+			...t.env,
+			PUBLIC_WORKFLOW_PUBLISHING_ENABLED: 'true',
+			PUBLIC_WORKFLOW_MODERATOR_USER_IDS: USER,
+			PUBLIC_WORKFLOW_REPORT_HMAC_SECRET: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+			PUBLIC_WORKFLOW_APPEAL_CONTACT: 'mailto:appeals@example.test',
+			PUBLIC_WORKFLOW_MODERATION_QUEUE_READY: 'true',
+			PUBLIC_WORKFLOW_MODERATION_JOURNEY_VERIFIED: 'true'
+		} as Env;
 		const first = await preparePublication(t.db, env, actor, await request(), 1000);
 		const replay = await preparePublication(t.db, env, actor, await request(), 2000);
 		expect(replay).toEqual(first);

@@ -2,6 +2,7 @@ import { json } from '@sveltejs/kit';
 import { parseStrictLibraryJson, LibraryValidationError } from '@tines/shared';
 import { api, apiContext, ApiFail, requireJsonObject } from '$lib/server/api/core';
 import { installWorkflowPackage } from '$lib/server/library/install';
+import { runE2ePublicationRaceMutation } from '$lib/server/publications/e2e-race';
 import { readLibraryEnvelope } from '$lib/server/library/transport';
 import type { RequestHandler } from './$types';
 
@@ -36,5 +37,11 @@ export const POST: RequestHandler = api(async (event) => {
 			'invalid_field',
 			'Expected {document_json, plan_token, confirmation:{plan_digest}}'
 		);
-	return json(await installWorkflowPackage(db, env, actor, body as never));
+	return json(
+		await installWorkflowPackage(db, env, actor, body as never, (source) =>
+			source
+				? runE2ePublicationRaceMutation(event.request, env, { snapshotId: source.snapshot_id })
+				: Promise.resolve()
+		)
+	);
 });

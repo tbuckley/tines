@@ -226,6 +226,8 @@ describe('isControlPlanePath', () => {
 		// Key metadata stays fenced even to a read.
 		['/api/v1/api-keys', 'GET'],
 		['/api/v1/api-keys/key_1', 'DELETE'],
+		['/api/v1/host/workflow-moderation/cases', 'GET'],
+		['/api/v1/host/workflow-moderation/decisions', 'POST'],
 		// Minting, renaming, and deleting terms is taxonomy, not classification.
 		['/api/v1/labels', 'POST'],
 		['/api/v1/labels/lbl_1', 'PATCH'],
