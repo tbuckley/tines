@@ -363,7 +363,7 @@
 			});
 			const proof = await api.preparePublication(request);
 			if (!publicationFlow.acceptProof(proof, revision)) {
-				if (proof.expires_at <= Date.now())
+				if (revision === publicationFlow.revision && proof.expires_at <= Date.now())
 					status = 'The preview expired before it was ready. Preview this version again.';
 				return;
 			}

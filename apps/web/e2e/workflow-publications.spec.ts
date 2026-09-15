@@ -115,6 +115,36 @@ test.describe.serial('public workflow snapshots', () => {
 		await expect(ownerPage.getByRole('heading', { name: 'Customize', exact: true })).toBeVisible();
 		await expect(ownerPage.getByText('Published by First proof name')).toHaveCount(0);
 		await ownerPage.unroute('**/api/v1/publications/prepare');
+
+		let releaseExpiredPreparation!: () => void;
+		const heldExpiredPreparation = new Promise<void>(
+			(resolve) => (releaseExpiredPreparation = resolve)
+		);
+		let expiredPreparationStarted!: () => void;
+		const startedExpiredPreparation = new Promise<void>(
+			(resolve) => (expiredPreparationStarted = resolve)
+		);
+		await ownerPage.route('**/api/v1/publications/prepare', async (route) => {
+			const response = await route.fetch();
+			const expired = (await response.json()) as PublicationProof;
+			expired.expires_at = 0;
+			expiredPreparationStarted();
+			await heldExpiredPreparation;
+			await route.fulfill({ response, json: expired });
+		});
+		await ownerPage.getByRole('button', { name: 'Preview', exact: true }).click();
+		await startedExpiredPreparation;
+		await displayName.fill('Alice Current');
+		const expiredResponse = ownerPage.waitForResponse('**/api/v1/publications/prepare');
+		releaseExpiredPreparation();
+		await expiredResponse;
+		await expect(ownerPage.getByTestId('package-actions')).toContainText(
+			'Your display name changed. Preview this version again.'
+		);
+		await expect(ownerPage.getByTestId('package-actions')).not.toContainText(
+			'The preview expired before it was ready.'
+		);
+		await ownerPage.unroute('**/api/v1/publications/prepare');
 		await ownerPage.getByRole('button', { name: 'Preview', exact: true }).click();
 		await expect(ownerPage.getByRole('heading', { name: 'Preview', exact: true })).toBeFocused();
 		const skillReview = ownerPage.getByRole('link', { name: 'Review 1 included skill' });
@@ -133,8 +163,8 @@ test.describe.serial('public workflow snapshots', () => {
 		expect(actionBox!.x + actionBox!.width).toBeLessThanOrEqual(PHONE.width);
 		await ownerPage.getByRole('button', { name: 'Back to Customize' }).click();
 		await ownerPage.getByRole('button', { name: 'Preview', exact: true }).click();
-		expect(prepareRequests).toBe(2);
-		expect(new Set(prepareRequestIds).size).toBe(2);
+		expect(prepareRequests).toBe(3);
+		expect(new Set(prepareRequestIds).size).toBe(3);
 		await continueAction.click();
 		await ownerPage
 			.getByRole('checkbox', { name: /I have the right to share all included content/ })

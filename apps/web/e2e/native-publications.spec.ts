@@ -123,14 +123,17 @@ test.describe.serial('native D1 publication transaction gate', () => {
 				metadata: { display_name: 'Native draft', license: 'MIT', license_year: 2026 }
 			})
 		);
-		expect(
-			(await alice.patch(`/api/v1/workflows/${source.id}`, { description: 'changed' })).ok()
-		).toBe(true);
-
-		const publish = await alice.post(
-			`/api/v1/publications/${proof.candidate_id}/publish`,
-			confirmation(proof)
+		const publishedBefore = d1(
+			`SELECT COUNT(*) AS n FROM workflow_publication WHERE user_id=${sqlLiteral(ALICE.id)} AND published_at IS NOT NULL`
 		);
+
+		const publish = await request.post(`/api/v1/publications/${proof.candidate_id}/publish`, {
+			headers: {
+				authorization: `Bearer ${ALICE.apiKey}`,
+				'x-tines-e2e-publication-precommit-workflow': source.id
+			},
+			data: confirmation(proof)
+		});
 		expect(publish.status()).toBe(409);
 		expect(await publish.json()).toMatchObject({ error: { code: 'publication_source_changed' } });
 		expect(
@@ -143,6 +146,14 @@ test.describe.serial('native D1 publication transaction gate', () => {
 				`SELECT COUNT(*) AS n FROM workflow_publication_event WHERE publication_id=${sqlLiteral(proof.candidate_id)}`
 			)
 		).toEqual([{ n: 0 }]);
+		expect(
+			d1(
+				`SELECT COUNT(*) AS n FROM workflow_publication WHERE user_id=${sqlLiteral(ALICE.id)} AND published_at IS NOT NULL`
+			)
+		).toEqual(publishedBefore);
+		expect(
+			d1(`SELECT description FROM workflow WHERE id=${sqlLiteral(source.id)}`)[0]?.description
+		).toBe(`native precommit mutation ${proof.candidate_id}`);
 	});
 
 	test('reconciles one candidate under concurrency and admits only one final quota slot', async ({

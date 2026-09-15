@@ -19,13 +19,32 @@ export const POST: RequestHandler = api(async (event) => {
 		!body.reviewed_repo_ids.every((value) => typeof value === 'string' && value.length <= 100)
 	)
 		throw new ApiFail(422, 'invalid_field', 'Expected the exact publication confirmation');
+	// Compiled out of normal builds. The native-D1 race must mutate after the
+	// service reads but before DB.batch() to prove the transaction predicate.
+	const e2ePrecommitWorkflow =
+		import.meta.env.VITE_TINES_E2E === '1'
+			? event.request.headers.get('x-tines-e2e-publication-precommit-workflow')
+			: null;
 	return json(
 		await publishPublication(
 			db,
 			env,
 			actor,
 			event.params.candidateId,
-			body as unknown as PublishPublicationRequest
+			body as unknown as PublishPublicationRequest,
+			Date.now(),
+			e2ePrecommitWorkflow
+				? async () => {
+						const changed = await db
+							.updateTable('workflow')
+							.set({ description: `native precommit mutation ${event.params.candidateId}` })
+							.where('id', '=', e2ePrecommitWorkflow)
+							.where('user_id', '=', actor.userId)
+							.executeTakeFirst();
+						if (Number(changed.numUpdatedRows) !== 1)
+							throw new Error('E2E precommit source mutation did not update one workflow');
+					}
+				: undefined
 		)
 	);
 });

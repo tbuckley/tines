@@ -1,10 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import { inputToken, withLibraryDocumentDigest } from '@tines/shared';
-import { inheritedPackage } from '../../../../../../packages/shared/src/library/fixtures';
+import {
+	automatedPackage,
+	inheritedPackage
+} from '../../../../../../packages/shared/src/library/fixtures';
 import { deriveOwnedPublicationDraft, PublicationDraftError } from './draft';
 
 async function baseline() {
 	return withLibraryDocumentDigest(inheritedPackage());
+}
+
+async function automatedBaseline() {
+	return withLibraryDocumentDigest(automatedPackage());
 }
 
 describe('owned publication drafts', () => {
@@ -73,5 +80,141 @@ describe('owned publication drafts', () => {
 		await expect(deriveOwnedPublicationDraft(clean, submitted, 2000)).rejects.toMatchObject({
 			path: '/exported_at'
 		});
+	});
+
+	it.each([
+		[
+			'workflow description',
+			(draft: Awaited<ReturnType<typeof automatedBaseline>>) =>
+				(draft.workflows[0].description += ' Edited workflow description'),
+			(draft: Awaited<ReturnType<typeof automatedBaseline>>) => draft.workflows[0].description
+		],
+		[
+			'prompt description',
+			(draft: Awaited<ReturnType<typeof automatedBaseline>>) =>
+				(draft.context[0].description = 'Edited prompt description'),
+			(draft: Awaited<ReturnType<typeof automatedBaseline>>) => draft.context[0].description
+		],
+		[
+			'prompt body',
+			(draft: Awaited<ReturnType<typeof automatedBaseline>>) => {
+				if (draft.context[0].kind !== 'prompt') throw new Error('fixture changed');
+				draft.context[0].body += ' Edited prompt body';
+			},
+			(draft: Awaited<ReturnType<typeof automatedBaseline>>) =>
+				draft.context[0].kind === 'prompt' ? draft.context[0].body : null
+		],
+		[
+			'skill description',
+			(draft: Awaited<ReturnType<typeof automatedBaseline>>) =>
+				(draft.context[1].description = 'Edited skill description'),
+			(draft: Awaited<ReturnType<typeof automatedBaseline>>) => draft.context[1].description
+		],
+		[
+			'skill file content',
+			(draft: Awaited<ReturnType<typeof automatedBaseline>>) => {
+				if (draft.context[1].kind !== 'skill') throw new Error('fixture changed');
+				draft.context[1].files[0].content = 'Edited skill content';
+			},
+			(draft: Awaited<ReturnType<typeof automatedBaseline>>) =>
+				draft.context[1].kind === 'skill' ? draft.context[1].files[0].content : null
+		],
+		[
+			'repository description',
+			(draft: Awaited<ReturnType<typeof automatedBaseline>>) =>
+				(draft.context[2].description = 'Edited repository description'),
+			(draft: Awaited<ReturnType<typeof automatedBaseline>>) => draft.context[2].description
+		],
+		[
+			'schedule title template',
+			(draft: Awaited<ReturnType<typeof automatedBaseline>>) =>
+				(draft.schedules[0].title_template = 'Edited title {{date}}'),
+			(draft: Awaited<ReturnType<typeof automatedBaseline>>) => draft.schedules[0].title_template
+		],
+		[
+			'schedule description template',
+			(draft: Awaited<ReturnType<typeof automatedBaseline>>) =>
+				(draft.schedules[0].description_template = 'Edited schedule description'),
+			(draft: Awaited<ReturnType<typeof automatedBaseline>>) =>
+				draft.schedules[0].description_template
+		]
+	])('admits the editable %s surface', async (_name, mutate, read) => {
+		const clean = await automatedBaseline();
+		const submitted = structuredClone(clean);
+		mutate(submitted);
+		const result = await deriveOwnedPublicationDraft(
+			clean,
+			await withLibraryDocumentDigest(submitted),
+			2000
+		);
+		expect(read(result)).toBe(read(submitted));
+		expect(result.exported_at).toBe(2000);
+	});
+
+	it.each([
+		[
+			'workflow name',
+			(draft: Awaited<ReturnType<typeof automatedBaseline>>) =>
+				(draft.workflows[0].name = 'Changed')
+		],
+		[
+			'state category',
+			(draft: Awaited<ReturnType<typeof automatedBaseline>>) =>
+				(draft.workflows[0].states[0].category = 'done')
+		],
+		[
+			'transition gate',
+			(draft: Awaited<ReturnType<typeof automatedBaseline>>) =>
+				(draft.workflows[0].transitions[0].requires[0].description = 'Changed')
+		],
+		[
+			'context name',
+			(draft: Awaited<ReturnType<typeof automatedBaseline>>) => (draft.context[0].name = 'changed')
+		],
+		[
+			'skill path',
+			(draft: Awaited<ReturnType<typeof automatedBaseline>>) => {
+				if (draft.context[1].kind !== 'skill') throw new Error('fixture changed');
+				draft.context[1].files[0].path = 'OTHER.md';
+			}
+		],
+		[
+			'repository URL',
+			(draft: Awaited<ReturnType<typeof automatedBaseline>>) => {
+				if (draft.context[2].kind !== 'repo') throw new Error('fixture changed');
+				draft.context[2].repo_url = 'https://example.test/changed';
+			}
+		],
+		[
+			'schedule recurrence',
+			(draft: Awaited<ReturnType<typeof automatedBaseline>>) =>
+				(draft.schedules[0].recurrence = { kind: 'cron', cron: '0 10 * * *' })
+		],
+		[
+			'routing tier',
+			(draft: Awaited<ReturnType<typeof automatedBaseline>>) => (draft.routing[0].tier = 'smartest')
+		],
+		[
+			'context membership',
+			(draft: Awaited<ReturnType<typeof automatedBaseline>>) => draft.context.pop()
+		],
+		[
+			'schedule order',
+			(draft: Awaited<ReturnType<typeof automatedBaseline>>) =>
+				draft.schedules.push(structuredClone(draft.schedules[0]))
+		],
+		[
+			'unknown field',
+			(draft: Awaited<ReturnType<typeof automatedBaseline>>) => {
+				(draft.workflows[0] as unknown as Record<string, unknown>).future_field = true;
+			}
+		]
+	])('rejects the protected %s family', async (_name, mutate) => {
+		const clean = await automatedBaseline();
+		const submitted = structuredClone(clean);
+		mutate(submitted);
+		await expect(deriveOwnedPublicationDraft(clean, submitted, 2000)).rejects.toBeInstanceOf(
+			PublicationDraftError
+		);
 	});
 });
