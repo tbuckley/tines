@@ -365,19 +365,51 @@ describe('private workflow moderation', () => {
 				NOW + index
 			);
 		}
-		const reports = await listModerationReports(t.db, env, moderator, SNAPSHOT, { limit: 1 });
-		expect(reports.items[0]).toMatchObject({ count: 3, receipts_truncated: true });
-		expect(reports.items[0].receipt_references).toHaveLength(1);
-		const receipts = await listModerationReportReceipts(
+		for (let index = 3; index < 5; index++) {
+			await acceptPublicationReport(
+				t.db,
+				env,
+				SNAPSHOT,
+				{
+					request_id: `123e4567-e89b-42d3-a456-42661417404${index}`,
+					reason: 'other',
+					note: `Distinct group ${index}`
+				},
+				{ network: `192.0.2.${40 + index}` },
+				NOW + index
+			);
+		}
+		const allReports = await listModerationReports(t.db, env, moderator, SNAPSHOT);
+		const repeated = allReports.items.find((item) => item.note === 'Repeated exact report')!;
+		expect(repeated).toMatchObject({ count: 3, receipts_truncated: false });
+		const boundedReports = await listModerationReports(t.db, env, moderator, SNAPSHOT, {
+			limit: 1
+		});
+		expect(boundedReports.items[0].receipt_references).toHaveLength(1);
+		const pagedGroups: Array<{ note: string; receipts_truncated: boolean }> = [];
+		let groupCursor: string | undefined;
+		do {
+			const page = await listModerationReports(t.db, env, moderator, SNAPSHOT, {
+				limit: 1,
+				cursor: groupCursor
+			});
+			pagedGroups.push(page.items[0]);
+			groupCursor = page.next_cursor ?? undefined;
+		} while (groupCursor);
+		expect(pagedGroups).toHaveLength(3);
+		expect(pagedGroups.find((item) => item.note === 'Repeated exact report')).toMatchObject({
+			receipts_truncated: true
+		});
+		const receiptPage = await listModerationReportReceipts(
 			t.db,
 			env,
 			moderator,
 			SNAPSHOT,
-			{ reason: 'rights', noteHash: reports.items[0].note_hash },
+			{ reason: 'rights', noteHash: repeated.note_hash },
 			{ limit: 1 }
 		);
-		expect(receipts.items).toHaveLength(1);
-		expect(receipts.next_cursor).not.toBeNull();
+		expect(receiptPage.items).toHaveLength(1);
+		expect(receiptPage.next_cursor).not.toBeNull();
 
 		await decideModeration(
 			t.db,
@@ -392,12 +424,45 @@ describe('private workflow moderation', () => {
 			},
 			NOW + 10
 		);
+		await decideModeration(
+			t.db,
+			env,
+			moderator,
+			{
+				request_id: '123e4567-e89b-42d3-a456-426614174051',
+				action: 'unsuspend',
+				target: { publisher_id: USER, snapshot_id: SNAPSHOT },
+				reason: 'First recovery',
+				expected_publisher_version: 1
+			},
+			NOW + 11
+		);
+		await decideModeration(
+			t.db,
+			env,
+			moderator,
+			{
+				request_id: '123e4567-e89b-42d3-a456-426614174052',
+				action: 'suspend',
+				target: { publisher_id: USER, snapshot_id: SNAPSHOT },
+				reason: 'Second suspension',
+				expected_publisher_version: 2
+			},
+			NOW + 12
+		);
 		const publishers = await listSuspendedPublishers(t.db, env, moderator, { limit: 1 });
 		expect(publishers.items).toMatchObject([
 			{ display_name: 'Example Team', affected_snapshot_count: 1 }
 		]);
 		const audit = await listModerationAudit(t.db, env, moderator, SNAPSHOT, { limit: 1 });
 		expect(audit.items).toHaveLength(1);
+		expect(audit.next_cursor).not.toBeNull();
+		const secondAudit = await listModerationAudit(t.db, env, moderator, SNAPSHOT, {
+			limit: 1,
+			cursor: audit.next_cursor!
+		});
+		expect(secondAudit.items).toHaveLength(1);
+		expect(secondAudit.items[0].id).not.toBe(audit.items[0].id);
 	});
 
 	it('keeps a deleted-snapshot report case inspectable and dismissible', async () => {
