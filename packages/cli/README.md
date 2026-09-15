@@ -73,6 +73,12 @@ tines workflows preview review.json --choices choices.json --plan-out review.pla
 tines workflows install review.json --plan review.plan.json --confirm sha256:<plan-digest>
 ```
 
+`preview` and `install` also accept a canonical public snapshot URL. Same-instance URLs keep hosted
+withdrawal checks; foreign URLs are fetched directly by the CLI without forwarding the destination
+API key, cookies, proxy authorization, or referrer. A foreign-source install re-downloads the URL and
+requires the exact reviewed bytes. See the
+[workflow package guide](https://github.com/tbuckley/tines/blob/main/docs/workflow-packages.md).
+
 Workflow names are accepted only when unique; use the ID when duplicate names exist. Export
 selection is explicit: `--project`, repeatable `--schedule`, repeatable
 `--tier '<state-id>=balanced'`, `--project-routing`, and `--inputs declarations.json` add

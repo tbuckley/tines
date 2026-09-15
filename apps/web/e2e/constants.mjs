@@ -41,7 +41,7 @@ export const SPEND = {
 	projects: {
 		alpha: { id: 'prj_e2e_spend_alpha', name: 'Spend Alpha' },
 		beta: { id: 'prj_e2e_spend_beta', name: 'Spend Beta' },
-		empty: { id: 'prj_e2e_spend_empty', name: 'Spend Empty' },
+		empty: { id: 'prj_e2e_spend_empty', name: 'SpendEmpty' + 'P'.repeat(190) },
 		pending: { id: 'prj_e2e_spend_pending', name: 'Spend Pending' },
 		unreported: { id: 'prj_e2e_spend_unreported', name: 'Spend Unreported' },
 		tokens: { id: 'prj_e2e_spend_tokens', name: 'Spend Tokens' },
@@ -51,7 +51,7 @@ export const SPEND = {
 	workflows: {
 		build: { id: 'wf_e2e_spend_build', name: 'Build' },
 		ship: { id: 'wf_e2e_spend_ship', name: 'Ship' },
-		unknown: { id: 'wf_e2e_spend_unknown', name: 'Unknown cost' }
+		unknown: { id: 'wf_e2e_spend_unknown', name: 'UnknownCost' + 'W'.repeat(189) }
 	}
 };
 
@@ -144,6 +144,29 @@ export const RUNROW_ESTIMATED = {
 	runId: 'run_e2e_runrow_estimated',
 	issueId: 'iss_e2e_runrow_estimated',
 	issueNumber: 2
+};
+
+/**
+ * Seeded event presentations for the shared Activity feed. These rows cover
+ * the outcome precedence and conservative fallback without launching agents.
+ */
+export const ACTIVITY_RUN_EVENTS = {
+	projectId: 'prj_e2e_activity_runs',
+	projectName: 'activity-runs-seed',
+	issueId: 'iss_e2e_activity_runs_1',
+	issueNumber: 1,
+	events: [
+		{ id: 'evt_e2e_activity_started', type: 'agent_run.started', runner: 'activity-start' },
+		{ id: 'evt_e2e_activity_completed', type: 'agent_run.ended', runner: 'activity-success' },
+		{ id: 'evt_e2e_activity_failed', type: 'agent_run.ended', runner: 'activity-failure' },
+		{
+			id: 'evt_e2e_activity_interrupted',
+			type: 'agent_run.ended',
+			runner: 'activity-interrupted'
+		},
+		{ id: 'evt_e2e_activity_stalled', type: 'agent_run.ended', runner: 'activity-stalled' },
+		{ id: 'evt_e2e_activity_unknown', type: 'agent_run.ended', runner: 'activity-unknown' }
+	]
 };
 
 /**

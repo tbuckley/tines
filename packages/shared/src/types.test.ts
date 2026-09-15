@@ -113,6 +113,23 @@ describe('isStaleTierOverride', () => {
 		expect(isStaleTierOverride('claude-fable-5-1', 'claude-opus-5')).toBe(true);
 	});
 
+	it('flags the former Codex default for every new built-in', () => {
+		for (const model of ['gpt-5.6-luna', 'gpt-5.6-sol', 'gpt-6-astra']) {
+			expect(isStaleTierOverride(model, 'gpt-5-codex')).toBe(true);
+		}
+	});
+
+	it('does not rank the new Codex defaults relative to one another', () => {
+		const models = ['gpt-5.6-luna', 'gpt-5.6-sol', 'gpt-6-astra'];
+		for (const builtin of models) {
+			for (const override of models) {
+				expect(isStaleTierOverride(builtin, override)).toBe(false);
+			}
+			expect(isStaleTierOverride(builtin, 'some-custom-model')).toBe(false);
+			expect(isStaleTierOverride(builtin, undefined)).toBe(false);
+		}
+	});
+
 	it('does not flag the built-in itself, unknown models, or missing values', () => {
 		expect(isStaleTierOverride('claude-fable-5-1', 'claude-fable-5-1')).toBe(false);
 		expect(isStaleTierOverride('claude-fable-5-1', 'some-custom-model')).toBe(false);

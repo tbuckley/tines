@@ -48,7 +48,7 @@ An issue's **effective state** is its own state unless it has a `duplicate_of` e
 
 - The duplicate keeps its own `state_id` in the database; nothing is written when the canonical issue moves. Closing the canonical issue effectively closes every transitive duplicate at read time; reopening it effectively reopens them.
 - Issues may sit in different workflows, so the passthrough is the canonical issue's *state* (name + category), not a mapped local state. Lists and filters show and match the effective state; the detail view shows the effective state prominently with the issue's own dormant state alongside ("duplicate of demo/12 — showing its state").
-- **All list read paths resolve through duplicates**: the `state`, `category`, and `hide_done` filters match the effective state, and issue rows render it (with a duplicate badge). Transitions still operate on the issue's own state — allowed, but they don't change what's displayed while the duplicate link exists (the UI de-emphasizes transition controls on duplicates).
+- **All list read paths resolve through duplicates**: the `state`, `category`, and `hide_done` filters match the effective state, and issue rows render it (with a duplicate badge). The `workflow` filter remains anchored to the issue's own workflow, so a duplicate may match its own workflow plus a state from its canonical issue's workflow. Transitions still operate on the issue's own state — allowed, but they don't change what's displayed while the duplicate link exists (the UI de-emphasizes transition controls on duplicates).
 - A blocker that is itself a duplicate counts by its effective category too: if A blocks B and A is a duplicate of D, then B is unblocked exactly when D is done.
 
 ### Readiness

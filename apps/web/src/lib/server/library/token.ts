@@ -4,12 +4,14 @@ import {
 	type PackageAllocation,
 	type WorkflowPackageBudget,
 	type WorkflowPackageChoices,
-	type WorkflowPackageDocument
+	type WorkflowPackageDocument,
+	type HostedPublicationBinding
 } from '@tines/shared';
 import { ApiFail, type ActorContext } from '../api/core';
 import type { DestinationSelection } from './destination';
 
 export const PACKAGE_COMPILER_VERSION = 1;
+export const HOSTED_PACKAGE_COMPILER_VERSION = 2;
 export const PACKAGE_PLAN_TTL_MS = 15 * 60_000;
 export const PACKAGE_TOKEN_MAX_BYTES = 512 * 1024;
 const DOMAIN = 'tines:workflow-install:v1';
@@ -29,6 +31,7 @@ export interface PackagePlanPayload {
 	selection: DestinationSelection;
 	witness_hash: string;
 	budget: WorkflowPackageBudget;
+	source?: HostedPublicationBinding;
 }
 export function packageActorKey(actor: ActorContext): string {
 	if (actor.viaSession) return `session:${actor.userId}`;
@@ -87,7 +90,11 @@ function payloadShape(value: unknown): value is PackagePlanPayload {
 		'witness_hash',
 		'budget'
 	];
-	if (Object.keys(p).length !== required.length || !required.every((k) => Object.hasOwn(p, k)))
+	if (
+		!exactKeys(p, [...required, 'source']) ||
+		!required.every((k) => Object.hasOwn(p, k)) ||
+		(Object.hasOwn(p, 'source') && !hostedSourceShape(p.source))
+	)
 		return false;
 	if (
 		p.version !== 1 ||
@@ -117,6 +124,30 @@ function payloadShape(value: unknown): value is PackagePlanPayload {
 		allocationShape(p.allocation) &&
 		selectionShape(p.selection) &&
 		budgetShape(p.budget)
+	);
+}
+
+function hostedSourceShape(value: unknown): value is HostedPublicationBinding {
+	if (
+		!plain(value) ||
+		!exactKeys(value, [
+			'kind',
+			'snapshot_id',
+			'document_digest',
+			'bytes_sha256',
+			'snapshot_status_version',
+			'publisher_status_version'
+		]) ||
+		value.kind !== 'hosted_publication' ||
+		!boundedText(value.snapshot_id, 100) ||
+		typeof value.document_digest !== 'string' ||
+		!/^sha256:[0-9a-f]{64}$/.test(value.document_digest) ||
+		typeof value.bytes_sha256 !== 'string' ||
+		!/^sha256:[0-9a-f]{64}$/.test(value.bytes_sha256)
+	)
+		return false;
+	return [value.snapshot_status_version, value.publisher_status_version].every(
+		(version) => Number.isSafeInteger(version) && (version as number) >= 0
 	);
 }
 

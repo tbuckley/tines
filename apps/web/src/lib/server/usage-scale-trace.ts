@@ -22,6 +22,7 @@ export function traceUsageScaleDb(database: D1Database): D1Database {
 									// Only local ledger fixtures need compiled SQL/bindings. Do not
 									// record authentication parameters or returned field contents.
 									const ledger = query.includes('from "agent_run"');
+									const statsEvent = query.includes('from "event"') && query.includes('"type" in');
 									const ordered = ledger && query.includes('order by');
 									const idsHash = ordered
 										? Array.from(
@@ -43,7 +44,7 @@ export function traceUsageScaleDb(database: D1Database): D1Database {
 												ids_sha256: idsHash,
 												duration_ms: result.meta.duration,
 												returned_rows: result.results.length,
-												...(ledger
+												...(ledger || statsEvent
 													? {
 															sql: query,
 															parameters,

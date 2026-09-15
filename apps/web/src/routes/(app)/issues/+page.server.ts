@@ -45,6 +45,7 @@ export const load: PageServerLoad = async ({ locals, platform, url, depends }) =
 	}
 
 	const filters = {
+		workflow: url.searchParams.get('workflow') ?? undefined,
 		state: url.searchParams.get('state') ?? undefined,
 		category: url.searchParams.get('category') ?? undefined,
 		showDone: url.searchParams.get('done') === '1',
@@ -59,6 +60,7 @@ export const load: PageServerLoad = async ({ locals, platform, url, depends }) =
 	// archived state, and a resolved focus is always live.
 	const scope = {
 		projectId: focusId ?? undefined,
+		workflow: filters.workflow,
 		state: filters.state,
 		ready: filters.ready,
 		q: filters.q,

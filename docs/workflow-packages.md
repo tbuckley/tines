@@ -1,6 +1,43 @@
 # Workflow package files
 
-Implementation status: v3 whole-library transfer and workflow packages are implemented across the shared contract, API, CLI, and browser. The package path includes workflow closure export, file validation, signed destination preparation, atomic install, durable receipt recovery, and the `tines workflows export|validate|preview|install` commands. Whole-library import remains best effort; it is not an atomic workflow installation. Public discovery and dependency fetching remain intentionally out of scope.
+Implementation status: v3 whole-library transfer and workflow packages are implemented across the shared contract, API, CLI, and browser. The package path includes workflow closure export, file validation, signed destination preparation, atomic install, durable receipt recovery, and the `tines workflows export|validate|preview|install` commands. Whole-library import remains best effort; it is not an atomic workflow installation. Public gallery/discovery and dependency fetching remain intentionally out of scope.
+
+## Public snapshots
+
+Public snapshots are immutable, text-only hosting records for exact v3 workflow-package bytes. New publication and restoration are guarded by `PUBLIC_WORKFLOW_PUBLISHING_ENABLED=true`; the variable is intentionally absent from committed deployment configuration. `PUBLIC_WORKFLOW_MAX_BYTES` defaults to 1 MiB and `PUBLIC_WORKFLOW_DAILY_QUOTA` defaults to 10 first publications per rolling 24 hours.
+
+In the browser, open an owned workflow, choose **Publish workflow**, review its package, and prepare the source-bound proof. Publishing requires a non-email public display name, MIT reuse notice, sharing-rights confirmation, and exact-content confirmation. **Workflows → Public snapshots** lists stable URLs and supports withdrawal or policy-permitted restoration.
+
+The CLI exposes the same lifecycle:
+
+```sh
+tines workflows validate workflow.tines.json --public
+tines workflows publish <owned-workflow> --display-name "Example Team" --proof-out publish-proof.json
+# Or prepare downloaded bytes: add --from workflow.tines.json instead of <owned-workflow>.
+tines workflows publish --proof publish-proof.json --confirm sha256:review --sharing-rights
+tines workflows publish --proof publish-proof.json --confirm sha256:review --sharing-rights --recover
+tines workflows publications --workflow <owned-workflow-id>
+tines workflows unpublish <public-url-or-id> --yes
+tines workflows restore-publication <public-url-or-id> --yes
+```
+
+The proof file contains the complete reviewed candidate, host binding, and hashes and is written
+atomically with mode `0600`. Omit `--confirm` and `--sharing-rights` in a terminal to review the proof
+and answer both explicit prompts. Automation must provide both. `--recover` only reconciles that same
+candidate after a lost response; it never prepares a new revision.
+
+A hosted snapshot is rechecked before inspection, download, install preview, and install commit. Withdrawal stops those hosted operations, but cannot recall a file already downloaded or an installation already completed. Public pages never fetch declared repositories or publisher-controlled media. Cross-instance browser transfer is download followed by the destination's ordinary file import; do not send destination credentials to a source host.
+
+`workflows preview` and `workflows install` also accept a canonical `/p/<snapshot>` or
+`/p/<snapshot>/download` URL. A URL on the destination Tines origin uses a hosted signed plan, so
+withdrawal is checked in the destination transaction. A URL on another origin is downloaded by the
+CLI and passed to the destination as package bytes; the destination never fetches the URL. The CLI
+sends the source no API key, cookie, proxy authorization, or referrer, pins an allowed DNS result for
+each connection and redirect, rejects private/reserved targets and HTTPS downgrade, and caps time,
+redirects, MIME, encoding, UTF-8, and decoded bytes. HTTP is accepted only for an explicitly supplied
+loopback development URL. A saved foreign-source plan records only its canonical URL and checksum;
+install re-downloads it and requires identical bytes before any destination write. Once downloaded or
+installed, that independent copy cannot be recalled by the source host.
 
 ## Install a package in the browser
 
@@ -77,8 +114,12 @@ candidate-only edits. Eligible and selected schedules expose their complete temp
 timezone, workflow and start-state identities, and prior-issue gate before download.
 
 The input editor adds typed declarations and registers an exact token at the selected range of one
-editable candidate field. It never searches and replaces matching prose, edits the private source,
-or recursively expands a destination value. Token buttons return to their declaration and Escape
+editable candidate field. Use **Edit** to correct any browser-authored declaration in place: its ID,
+ordering, unrelated candidate work, and unfinished add draft are preserved. If its key or default
+changes, only that input's active exact tokens in its registered fields change with it; escaped and
+unregistered text remains untouched. Saving resets required reviews, while Cancel changes nothing.
+Generated destination inputs remain read-only. The editor never searches and replaces matching prose,
+edits the private source, or recursively expands a destination value. Token buttons return to their declaration and Escape
 returns focus to the passage. Prompts and Markdown files render as inert Markdown: images become
 labelled placeholders that are never fetched, and an escaped literal such as `\{{key:default}}`
 renders as ordinary text rather than a substitutable use, so the proof marks exactly the
@@ -100,6 +141,7 @@ The whole-library endpoint retains v1/v2 readers; `GET /api/v1/export?version=2`
 
 ```sh
 tines workflows preview package.json --choices choices.json --plan-out package.plan.json
+tines workflows preview https://source.example/p/<snapshot> --plan-out package.plan.json
 ```
 
 Human output includes every create/reuse/skip operation, the workflow graph and artifact gates,
@@ -148,6 +190,10 @@ requires a human session or named key to re-prepare as that actor.
 ```sh
 # Automation / non-TTY: both values must come from the separate review above.
 tines workflows install package.json --plan package.plan.json \
+  --confirm 'sha256:<exact-plan-digest>'
+
+# The exact same URL is fetched again and must match the reviewed foreign-source plan.
+tines workflows install https://source.example/p/<snapshot> --plan package.plan.json \
   --confirm 'sha256:<exact-plan-digest>'
 
 # At a terminal: prepares, persists package.json.plan.json, shows the full review, then asks.

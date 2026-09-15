@@ -65,9 +65,8 @@ export function spendStatements(nowMs) {
 		`INSERT INTO runner (id, user_id, type, name, status, max_concurrent, max_run_minutes, default_tier, config, created_at, updated_at, last_seen_at)
 		 VALUES ('rnr_e2e_spend', '${SPEND.id}', 'local', 'spend-paused', 'paused', 1, 1440, 'balanced', '{}', ${nowMs}, ${nowMs}, ${nowMs});`
 	];
-	// Distinct `created_at` per project: the project list orders by it, so the
-	// select's option order is a seeded fact rather than a SQLite tie-break —
-	// the keyboard case in spend-a11y.spec.ts addresses options by position.
+	// Distinct `created_at` values keep the project list deterministic across
+	// database query plans; listProjects orders by creation time.
 	const projects = Object.values(p);
 	statements.push(
 		`INSERT INTO project (id, user_id, name, description, default_workflow_id, created_at, updated_at, archived_at) VALUES

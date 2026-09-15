@@ -281,6 +281,14 @@
 		align-items: end;
 		margin: 1rem 0;
 	}
+	.controls > label {
+		flex: 0 1 20rem;
+		min-width: 0;
+		max-width: 100%;
+	}
+	.controls > label select {
+		width: 100%;
+	}
 	label {
 		display: grid;
 		gap: 0.25rem;
