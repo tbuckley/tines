@@ -98,7 +98,7 @@
 			</p>
 			<div class="mt-5 flex flex-wrap gap-3">
 				<button
-					class="rounded-md border px-4 py-2 font-medium"
+					class="focus-visible:ring-ring/50 rounded-md border px-4 py-2 font-medium outline-none focus-visible:ring-[3px]"
 					type="button"
 					onclick={(event) => reportDialog?.show(event.currentTarget)}>Report</button
 				>
@@ -293,7 +293,7 @@
 				<a class="underline" href="/public-workflow-policy" rel="noreferrer">Content rules</a></span
 			>
 			<button
-				class="min-h-10 rounded-md border px-3 text-sm"
+				class="focus-visible:ring-ring/50 min-h-10 rounded-md border px-3 text-sm outline-none focus-visible:ring-[3px]"
 				type="button"
 				onclick={(event) => reportDialog?.show(event.currentTarget)}>Report this workflow</button
 			>

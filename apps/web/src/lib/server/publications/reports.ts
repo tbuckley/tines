@@ -44,7 +44,8 @@ export async function acceptPublicationReport(
 	snapshotId: string,
 	input: PublicationReportRequest,
 	subjects: ReportSubjects,
-	now = Date.now()
+	now = Date.now(),
+	beforeAtomic?: () => Promise<void>
 ): Promise<{ status: 200 | 201; body: PublicationReportReceipt }> {
 	let request: Required<PublicationReportRequest>;
 	try {
@@ -114,6 +115,7 @@ export async function acceptPublicationReport(
 	];
 	const allowed = sql<boolean>`${sql.join(subjectGuards, sql` AND `)}`;
 	const freshRequest = sql<boolean>`EXISTS (SELECT 1 FROM workflow_report_request WHERE request_token = ${requestToken} AND attempt_nonce = ${nonce})`;
+	await beforeAtomic?.();
 	const results = await runAtomic(env, [
 		sql`DELETE FROM workflow_report_request WHERE request_token = ${requestToken} AND expires_at <= ${now}`.compile(
 			db

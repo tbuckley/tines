@@ -115,7 +115,8 @@ export async function publishPublication(
 	actor: ActorContext,
 	candidateId: string,
 	request: PublishPublicationRequest,
-	now = Date.now()
+	now = Date.now(),
+	beforeAtomic?: () => Promise<void>
 ): Promise<PublicationOwnerResult> {
 	const row = await candidateRow(db, actor.userId, candidateId);
 	if (!row) throw new ApiFail(404, 'not_found', 'Not found');
@@ -213,6 +214,7 @@ export async function publishPublication(
 	};
 	const receiptJson = canonicalizeLibraryValue(receipt);
 	const cutoff = now - DAY_MS;
+	await beforeAtomic?.();
 	try {
 		const results = await runAtomic(env, [
 			sql`UPDATE workflow_publication SET

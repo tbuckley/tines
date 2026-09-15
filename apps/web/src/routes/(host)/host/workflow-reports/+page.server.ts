@@ -3,6 +3,8 @@ import { listModerationCases, listSuspendedPublishers } from '$lib/server/public
 import type { PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async ({ locals, platform, url }) => {
+	if (import.meta.env.VITE_TINES_E2E === '1' && url.searchParams.get('e2e_error') === '1')
+		throw new Error('Injected report queue load failure');
 	const raw = url.searchParams.get('filter') ?? 'unread';
 	const filter = ['unread', 'open', 'resolved', 'all'].includes(raw) ? raw : 'unread';
 	const cursor = url.searchParams.get('cursor') ?? undefined;

@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { invalidateAll } from '$app/navigation';
+	import { navigating } from '$app/state';
 	let { data } = $props();
 	let urgentTarget = $state('');
 	let urgentReason = $state('');
@@ -111,6 +112,7 @@
 	><title>Workflow moderation · Tines</title><meta name="robots" content="noindex" /></svelte:head
 >
 <h1 class="text-2xl font-semibold">Workflow report queue</h1>
+{#if navigating}<p class="mt-3 text-sm" role="status">Loading report queue…</p>{/if}
 <nav class="mt-4 flex flex-wrap gap-2" aria-label="Report filters">
 	{#each ['unread', 'open', 'resolved', 'all'] as filter}<a
 			class="rounded-md border px-3 py-2 capitalize"
@@ -169,7 +171,7 @@
 					<span
 						><b>{publisher.display_name}</b><br /><span class="text-muted-foreground"
 							>{publisher.reason}</span
-						><span class="text-muted-foreground text-xs"
+						><span class="text-muted-foreground block text-xs"
 							>{publisher.affected_snapshot_count} stored snapshot{publisher.affected_snapshot_count ===
 							1
 								? ''

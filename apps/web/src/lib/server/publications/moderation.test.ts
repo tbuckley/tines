@@ -408,8 +408,22 @@ describe('private workflow moderation', () => {
 			{ reason: 'rights', noteHash: repeated.note_hash },
 			{ limit: 1 }
 		);
-		expect(receiptPage.items).toHaveLength(1);
-		expect(receiptPage.next_cursor).not.toBeNull();
+		const receiptReferences = [receiptPage.items[0].reference];
+		let receiptCursor = receiptPage.next_cursor;
+		while (receiptCursor) {
+			const page = await listModerationReportReceipts(
+				t.db,
+				env,
+				moderator,
+				SNAPSHOT,
+				{ reason: 'rights', noteHash: repeated.note_hash },
+				{ limit: 1, cursor: receiptCursor }
+			);
+			receiptReferences.push(page.items[0].reference);
+			receiptCursor = page.next_cursor;
+		}
+		expect(receiptReferences).toHaveLength(3);
+		expect(new Set(receiptReferences).size).toBe(3);
 
 		await decideModeration(
 			t.db,
@@ -450,10 +464,27 @@ describe('private workflow moderation', () => {
 			},
 			NOW + 12
 		);
-		const publishers = await listSuspendedPublishers(t.db, env, moderator, { limit: 1 });
-		expect(publishers.items).toMatchObject([
-			{ display_name: 'Example Team', affected_snapshot_count: 1 }
-		]);
+		t.sqlite.exec(`INSERT INTO user (id, name, email, emailVerified, createdAt, updatedAt)
+			VALUES ('publisher_a', 'A', 'publisher-a@example.test', 1, ${NOW}, ${NOW}),
+			       ('publisher_z', 'Z', 'publisher-z@example.test', 1, ${NOW}, ${NOW})`);
+		await t.db
+			.insertInto('workflow_publisher_status')
+			.values([
+				{ user_id: 'publisher_a', suspended: 1, status_version: 1 },
+				{ user_id: 'publisher_z', suspended: 1, status_version: 1 }
+			])
+			.execute();
+		const publisherIds: string[] = [];
+		let publisherCursor: string | undefined;
+		do {
+			const page = await listSuspendedPublishers(t.db, env, moderator, {
+				limit: 1,
+				cursor: publisherCursor
+			});
+			publisherIds.push(page.items[0].publisher_id);
+			publisherCursor = page.next_cursor ?? undefined;
+		} while (publisherCursor);
+		expect(publisherIds).toEqual(['publisher_a', 'publisher_z', USER].sort());
 		const audit = await listModerationAudit(t.db, env, moderator, SNAPSHOT, { limit: 1 });
 		expect(audit.items).toHaveLength(1);
 		expect(audit.next_cursor).not.toBeNull();
