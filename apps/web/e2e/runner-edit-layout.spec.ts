@@ -6,18 +6,16 @@ import { apiClient, body, clickToOpen, DESKTOP, gotoHydrated, PHONE, readSettled
 
 const PHONE_NARROW = { width: 320, height: 844 };
 const TABLET_EDGE = { width: 640, height: 900 };
-let runnerName: string;
-let customRunnerName: string;
+// These names are layout fixtures: keeping their exact compact width is the
+// behavior under test, and teardown releases them before another run.
+const runnerName = 'runner-edit-layout';
+const customRunnerName = 'runner-edit-fixed';
 
 let runner: Runner;
 let customRunner: Runner;
 
 test.describe.serial('runner edit responsive layout', () => {
-	test.beforeAll(async ({ apiFor, uniqueName, workerRequest }) => {
-		// Keep the pre-migration name envelope: this spec measures the modal,
-		// not a maximum-length runner card behind it on a 320 px viewport.
-		runnerName = uniqueName('runner-edit-layout', { maxLength: 32 });
-		customRunnerName = uniqueName('runner-edit-fixed', { maxLength: 32 });
+	test.beforeAll(async ({ apiFor, workerRequest }) => {
 		const api = apiFor(ALICE);
 		const registered = await body<RunnerTokenResponse>(
 			await api.post('/api/v1/runners/register', { name: runnerName, harness: 'codex' })

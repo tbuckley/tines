@@ -14,6 +14,7 @@ import {
 	gotoHydrated,
 	PHONE,
 	resetFocus,
+	runCleanupSteps,
 	signIn
 } from './helpers';
 
@@ -21,49 +22,96 @@ type FocusWorld = { aName: string; bName: string; aId: string; bId: string };
 
 const focusTest = test.extend<{}, { world: FocusWorld }>({
 	world: [
-		async ({ apiFor, uniqueName }, use) => {
+		async ({ apiFor, uniqueName, workerRequest }, use) => {
 			const api = apiFor(ALICE);
 			const aName = uniqueName('focus-a', { maxLength: 40 });
 			const bName = uniqueName('focus-b', { maxLength: 40 });
-			const workflow = await api.post('/api/v1/workflows', {
-				name: uniqueName('focus-workflow'),
-				description: 'focus fixture',
-				initial_state: 'Open',
-				states: [{ name: 'Open', category: 'active' }],
-				transitions: []
-			});
-			expect(workflow.status(), await workflow.text()).toBe(201);
-			const aId = (await body<Project>(await api.post('/api/v1/projects', { name: aName }))).id;
-			const bId = (await body<Project>(await api.post('/api/v1/projects', { name: bName }))).id;
-			for (const [id, name] of [
-				[aId, aName],
-				[bId, bName]
-			]) {
-				expect(
-					(await api.post(`/api/v1/projects/${id}/issues`, { title: `${name} issue` })).status()
-				).toBe(201);
-				expect(
-					(
-						await api.post('/api/v1/context', {
-							kind: 'prompt',
-							name: `${name}-context`,
-							body: `${name} only`,
-							project_id: id
+			let workflowId: string | undefined;
+			const projectIds: string[] = [];
+			const contextIds: string[] = [];
+			const ruleIds: string[] = [];
+			try {
+				workflowId = (
+					await body<{ id: string }>(
+						await api.post('/api/v1/workflows', {
+							name: uniqueName('focus-workflow'),
+							description: 'focus fixture',
+							initial_state: 'Open',
+							states: [{ name: 'Open', category: 'active' }],
+							transitions: []
 						})
-					).status()
-				).toBe(201);
+					)
+				).id;
+				const aId = (await body<Project>(await api.post('/api/v1/projects', { name: aName }))).id;
+				projectIds.push(aId);
+				const bId = (await body<Project>(await api.post('/api/v1/projects', { name: bName }))).id;
+				projectIds.push(bId);
+				for (const [id, name] of [
+					[aId, aName],
+					[bId, bName]
+				]) {
+					await body(await api.post(`/api/v1/projects/${id}/issues`, { title: `${name} issue` }));
+					contextIds.push(
+						(
+							await body<{ id: string }>(
+								await api.post('/api/v1/context', {
+									kind: 'prompt',
+									name: `${name}-context`,
+									body: `${name} only`,
+									project_id: id
+								})
+							)
+						).id
+					);
+				}
+				for (const project_id of [aId, bId]) {
+					ruleIds.push(
+						(
+							await body<{ id: string }>(
+								await api.post('/api/v1/routing-rules', {
+									project_id,
+									targets: [{ runner_id: RUNROW.runnerId }]
+								})
+							)
+						).id
+					);
+				}
+				await use({ aName, bName, aId, bId });
+			} finally {
+				await runCleanupSteps([
+					{ name: 'reset Alice focus', run: () => resetFocus(workerRequest) },
+					...ruleIds.map((id) => ({
+						name: `delete focus routing rule ${id}`,
+						run: async () => {
+							expect((await api.delete(`/api/v1/routing-rules/${id}`)).status()).toBe(204);
+						}
+					})),
+					...contextIds.map((id) => ({
+						name: `delete focus context ${id}`,
+						run: async () => {
+							expect((await api.delete(`/api/v1/context/${id}`)).status()).toBe(204);
+						}
+					})),
+					...projectIds.map((id) => ({
+						name: `archive focus project ${id}`,
+						run: async () => {
+							expect((await api.post(`/api/v1/projects/${id}/archive`)).status()).toBe(200);
+						}
+					})),
+					...(workflowId
+						? [
+								{
+									name: `delete focus workflow ${workflowId}`,
+									run: async () => {
+										expect((await api.delete(`/api/v1/workflows/${workflowId}`)).status()).toBe(
+											204
+										);
+									}
+								}
+							]
+						: [])
+				]);
 			}
-			for (const project_id of [aId, bId]) {
-				expect(
-					(
-						await api.post('/api/v1/routing-rules', {
-							project_id,
-							targets: [{ runner_id: RUNROW.runnerId }]
-						})
-					).status()
-				).toBe(201);
-			}
-			await use({ aName, bName, aId, bId });
 		},
 		{ scope: 'worker' }
 	]

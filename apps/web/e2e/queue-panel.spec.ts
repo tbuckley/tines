@@ -10,14 +10,25 @@
  * reload. Nothing ever launches: an `assigned` local run waits for a daemon
  * poll that never comes, and the cleanup step disables automation to cancel it.
  */
-import type { Project, RoutingRule, Runner, RunnerTokenResponse } from '@tines/shared';
+import type {
+	Project,
+	RoutingRule,
+	Runner,
+	RunnerTokenResponse,
+	SupervisorSettings
+} from '@tines/shared';
 import type { APIRequestContext } from '@playwright/test';
 import { expect, test as base } from './fixtures';
 import { ALICE, RUNROW } from './constants.mjs';
-import { apiClient, body, clickUntil, gotoHydrated, resetFocus } from './helpers';
+import { apiClient, body, clickUntil, gotoHydrated, resetFocus, runCleanupSteps } from './helpers';
 
 type QueueWorld = { projectId: string; runnerId: string; runnerName: string };
-type QueueAudit = { runnerId?: string; ruleId?: string };
+type QueueAudit = {
+	projectId?: string;
+	runnerId?: string;
+	ruleId?: string;
+	originalSettings?: SupervisorSettings;
+};
 const QUEUE_REFRESH_TIMEOUT = 20_000;
 
 const test = base.extend<{}, { queueAudit: QueueAudit; world: QueueWorld }>({
@@ -27,10 +38,16 @@ const test = base.extend<{}, { queueAudit: QueueAudit; world: QueueWorld }>({
 			const audit: QueueAudit = {};
 			await use(audit);
 
-			const settings = await body<{ enabled: boolean }>(
-				await api.get('/api/v1/supervisor/settings')
-			);
-			expect(settings.enabled, 'queue teardown disables automation').toBe(false);
+			const settings = await body<SupervisorSettings>(await api.get('/api/v1/supervisor/settings'));
+			expect(settings, 'queue teardown restores Alice supervisor settings').toMatchObject({
+				enabled: audit.originalSettings?.enabled,
+				quota: audit.originalSettings?.quota,
+				attempt_limit: audit.originalSettings?.attempt_limit
+			});
+			if (audit.projectId) {
+				const project = await body<Project>(await api.get(`/api/v1/projects/${audit.projectId}`));
+				expect(project.archived_at, 'queue teardown archives the project').not.toBeNull();
+			}
 			if (audit.runnerId) {
 				const active = await body<{ items: { runner_id: string }[] }>(
 					await api.get('/api/v1/runs?active=true')
@@ -58,13 +75,20 @@ const test = base.extend<{}, { queueAudit: QueueAudit; world: QueueWorld }>({
 	world: [
 		async ({ apiFor, queueAudit, uniqueName }, use) => {
 			const api = apiFor(ALICE);
+			let projectId: string | undefined;
 			let runnerId: string | undefined;
 			let ruleId: string | undefined;
-			let settingsEnabled = false;
+			let settingsMutated = false;
+			const originalSettings = await body<SupervisorSettings>(
+				await api.get('/api/v1/supervisor/settings')
+			);
+			queueAudit.originalSettings = originalSettings;
 			try {
 				const project = await body<Project>(
 					await api.post('/api/v1/projects', { name: uniqueName('queue-project') })
 				);
+				projectId = project.id;
+				queueAudit.projectId = project.id;
 				for (let i = 0; i < 3; i++) {
 					expect(
 						(
@@ -100,34 +124,92 @@ const test = base.extend<{}, { queueAudit: QueueAudit; world: QueueWorld }>({
 				expect((await api.put('/api/v1/supervisor/settings', { enabled: true })).status()).toBe(
 					200
 				);
-				settingsEnabled = true;
+				settingsMutated = true;
 				await use({ projectId: project.id, runnerId: runner.id, runnerName });
 			} finally {
-				if (settingsEnabled) {
-					expect(
-						(await api.put('/api/v1/supervisor/settings', { enabled: false })).status(),
-						'disable queue-world automation'
-					).toBe(200);
-				}
-				if (runnerId) {
-					const active = await body<{ items: { id: string; runner_id: string }[] }>(
-						await api.get('/api/v1/runs?active=true')
-					);
-					for (const run of active.items.filter((item) => item.runner_id === runnerId)) {
-						expect(
-							(await api.post(`/api/v1/runs/${run.id}/cancel`)).ok(),
-							'cancel a queue-world active run'
-						).toBe(true);
-					}
-				}
-				if (ruleId) {
-					expect((await api.delete(`/api/v1/routing-rules/${ruleId}`)).status()).toBe(204);
-				}
-				if (runnerId) {
-					expect((await api.delete(`/api/v1/runners/${runnerId}`, { force: true })).status()).toBe(
-						204
-					);
-				}
+				await runCleanupSteps([
+					...(settingsMutated
+						? [
+								{
+									name: 'disable queue-world automation',
+									run: async () => {
+										expect(
+											(await api.put('/api/v1/supervisor/settings', { enabled: false })).status()
+										).toBe(200);
+									}
+								}
+							]
+						: []),
+					...(runnerId
+						? [
+								{
+									name: `cancel queue-world runs for ${runnerId}`,
+									run: async () => {
+										const active = await body<{ items: { id: string; runner_id: string }[] }>(
+											await api.get('/api/v1/runs?active=true')
+										);
+										for (const run of active.items.filter((item) => item.runner_id === runnerId)) {
+											expect((await api.post(`/api/v1/runs/${run.id}/cancel`)).ok()).toBe(true);
+										}
+									}
+								}
+							]
+						: []),
+					...(ruleId
+						? [
+								{
+									name: `delete queue routing rule ${ruleId}`,
+									run: async () => {
+										expect((await api.delete(`/api/v1/routing-rules/${ruleId}`)).status()).toBe(
+											204
+										);
+									}
+								}
+							]
+						: []),
+					...(runnerId
+						? [
+								{
+									name: `delete queue runner ${runnerId}`,
+									run: async () => {
+										expect(
+											(await api.delete(`/api/v1/runners/${runnerId}`, { force: true })).status()
+										).toBe(204);
+									}
+								}
+							]
+						: []),
+					...(projectId
+						? [
+								{
+									name: `archive queue project ${projectId}`,
+									run: async () => {
+										expect((await api.post(`/api/v1/projects/${projectId}/archive`)).status()).toBe(
+											200
+										);
+									}
+								}
+							]
+						: []),
+					...(settingsMutated
+						? [
+								{
+									name: 'restore Alice supervisor settings',
+									run: async () => {
+										expect(
+											(
+												await api.put('/api/v1/supervisor/settings', {
+													enabled: originalSettings.enabled,
+													quota: originalSettings.quota,
+													attempt_limit: originalSettings.attempt_limit
+												})
+											).status()
+										).toBe(200);
+									}
+								}
+							]
+						: [])
+				]);
 			}
 		},
 		{ scope: 'worker' }

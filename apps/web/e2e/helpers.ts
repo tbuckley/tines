@@ -126,6 +126,25 @@ export async function errorBody(res: APIResponse): Promise<ErrorBody> {
 }
 
 /**
+ * Runs owned-resource teardown in order without letting one failed deletion
+ * strand everything after it. The combined error keeps every failed cleanup
+ * operation visible at the fixture boundary.
+ */
+export async function runCleanupSteps(
+	steps: ReadonlyArray<{ name: string; run: () => Promise<void> }>
+): Promise<void> {
+	const failures: string[] = [];
+	for (const step of steps) {
+		try {
+			await step.run();
+		} catch (error) {
+			failures.push(`${step.name}: ${error instanceof Error ? error.message : String(error)}`);
+		}
+	}
+	if (failures.length > 0) throw new Error(`Fixture cleanup failed:\n${failures.join('\n')}`);
+}
+
+/**
  * @deprecated Use the runtime `uniqueName` fixture. Retained temporarily for the four
  * route-contract specs owned by Tines/87 and literal-content compatibility cases.
  */

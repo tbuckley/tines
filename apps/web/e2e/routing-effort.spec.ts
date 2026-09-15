@@ -15,7 +15,15 @@ import type {
 } from '@tines/shared';
 import { expect, test } from './fixtures';
 import { ALICE, BASE_URL } from './constants.mjs';
-import { apiClient, body, clickToOpen, gotoHydrated, resetFocus, signIn } from './helpers';
+import {
+	apiClient,
+	body,
+	clickToOpen,
+	gotoHydrated,
+	resetFocus,
+	runCleanupSteps,
+	signIn
+} from './helpers';
 
 const CLI_DIR = fileURLToPath(new URL('../../../packages/cli', import.meta.url));
 const TSX = join(CLI_DIR, 'node_modules', '.bin', 'tsx');
@@ -164,6 +172,9 @@ if (process.argv[2] === '--version') {
 		{ mode: 0o755 }
 	);
 	const name = uniqueName('effort-daemon');
+	let runnerId: string | undefined;
+	let projectId: string | undefined;
+	let ruleId: string | undefined;
 	let output = '';
 	let daemon: ChildProcess | null = spawn(
 		TSX,
@@ -205,6 +216,7 @@ if (process.argv[2] === '--version') {
 				? found
 				: undefined;
 		});
+		runnerId = runner.id;
 		const model = runner.tier_models?.balanced;
 		expect(model).toBeTruthy();
 		expect(
@@ -217,14 +229,20 @@ if (process.argv[2] === '--version') {
 		});
 		expect(tierSave.ok(), await tierSave.text()).toBe(true);
 		const project = await body<Project>(
-			await api.post('/api/v1/projects', { name: uniqueName('effort-daemon-project') })
+			await api.post('/api/v1/projects', {
+				// Projects containing run history can only be archived through the public API.
+				// Keep their archived picker label inside the suite's 320 px envelope.
+				name: uniqueName('effort-daemon-project', { maxLength: 32 })
+			})
 		);
+		projectId = project.id;
 		const rule = await body<RoutingRule>(
 			await api.post('/api/v1/routing-rules', {
 				project_id: project.id,
 				targets: [{ runner_id: runner.id, tier: 'balanced', effort: 'ultra' }]
 			})
 		);
+		ruleId = rule.id;
 		expect((await api.put('/api/v1/supervisor/settings', { enabled: true })).ok()).toBe(true);
 		const issue = await body<{ id: string }>(
 			await api.post(`/api/v1/projects/${project.id}/issues`, { title: 'Route effort into argv' })
@@ -294,10 +312,61 @@ if (process.argv[2] === '--version') {
 			]
 		});
 	} finally {
-		await api.put('/api/v1/supervisor/settings', { enabled: false }).catch(() => undefined);
-		if (daemon?.pid) daemon.kill('SIGKILL');
-		daemon = null;
-		rmSync(root, { recursive: true, force: true });
+		await runCleanupSteps([
+			{
+				name: 'disable routed-effort automation',
+				run: async () => {
+					expect((await api.put('/api/v1/supervisor/settings', { enabled: false })).status()).toBe(
+						200
+					);
+				}
+			},
+			{
+				name: 'stop routed-effort daemon',
+				run: async () => {
+					if (daemon?.pid) daemon.kill('SIGKILL');
+					daemon = null;
+				}
+			},
+			...(ruleId
+				? [
+						{
+							name: `delete routed-effort rule ${ruleId}`,
+							run: async () => {
+								expect((await api.delete(`/api/v1/routing-rules/${ruleId}`)).status()).toBe(204);
+							}
+						}
+					]
+				: []),
+			...(projectId
+				? [
+						{
+							name: `archive routed-effort project ${projectId}`,
+							run: async () => {
+								expect((await api.post(`/api/v1/projects/${projectId}/archive`)).status()).toBe(
+									200
+								);
+							}
+						}
+					]
+				: []),
+			...(runnerId
+				? [
+						{
+							name: `delete routed-effort runner ${runnerId}`,
+							run: async () => {
+								expect(
+									(await api.delete(`/api/v1/runners/${runnerId}`, { force: true })).status()
+								).toBe(204);
+							}
+						}
+					]
+				: []),
+			{
+				name: 'remove routed-effort temporary directory',
+				run: async () => rmSync(root, { recursive: true, force: true })
+			}
+		]);
 		if (output.includes('Error')) console.error(output);
 	}
 });
@@ -332,171 +401,183 @@ else {
 		{ mode: 0o755 }
 	);
 	const name = uniqueName('effort-upgrade');
-	const registered = await body<RunnerTokenResponse>(
-		await api.post('/api/v1/runners/register', { name, harness: 'claude_code' })
-	);
-	const model = registered.runner.tier_models?.balanced;
-	expect(model).toBeTruthy();
-	const capability = {
-		version: 1 as const,
-		daemon_version: 'e2e-new',
-		harness: 'claude_code' as const,
-		harness_version: '2.1.258 (Claude Code)',
-		catalog_digest: 'upgrade-seed',
-		models: [{ model: model!, efforts: ['max'] }]
-	};
-	const poll = (effort_capabilities?: typeof capability) =>
-		request.post(`/api/v1/runners/${registered.runner.id}/poll`, {
-			headers: { authorization: `Bearer ${registered.runner_token}` },
+	let runnerId: string | undefined;
+	let oldRunnerId: string | undefined;
+	let projectId: string | undefined;
+	const ruleIds: string[] = [];
+	let daemon: ChildProcess | null = null;
+	try {
+		const registered = await body<RunnerTokenResponse>(
+			await api.post('/api/v1/runners/register', { name, harness: 'claude_code' })
+		);
+		runnerId = registered.runner.id;
+		const model = registered.runner.tier_models?.balanced;
+		expect(model).toBeTruthy();
+		const capability = {
+			version: 1 as const,
+			daemon_version: 'e2e-new',
+			harness: 'claude_code' as const,
+			harness_version: '2.1.258 (Claude Code)',
+			catalog_digest: 'upgrade-seed',
+			models: [{ model: model!, efforts: ['max'] }]
+		};
+		const poll = (effort_capabilities?: typeof capability) =>
+			request.post(`/api/v1/runners/${registered.runner.id}/poll`, {
+				headers: { authorization: `Bearer ${registered.runner_token}` },
+				data: {
+					instance_id: 'legacy-boot',
+					owned_runs: [],
+					...(effort_capabilities ? { effort_capabilities } : {})
+				}
+			});
+		expect((await poll(capability)).ok()).toBe(true);
+		const tierSave = await api.patch(`/api/v1/runners/${registered.runner.id}`, {
+			tiers: { balanced: { model, effort: 'max' } },
+			resume_enabled: true
+		});
+		expect(tierSave.ok(), await tierSave.text()).toBe(true);
+		// An old boot explicitly clears the new boot's promise. Tier-only intent
+		// remains claimable, but the assignment deliberately omits effort.
+		expect((await poll()).ok()).toBe(true);
+		const project = await body<Project>(
+			await api.post('/api/v1/projects', {
+				// Projects containing run history can only be archived through the public API.
+				// Keep their archived picker label inside the suite's 320 px envelope.
+				name: uniqueName('effort-upgrade-project', { maxLength: 32 })
+			})
+		);
+		projectId = project.id;
+		expect((await api.put('/api/v1/supervisor/settings', { enabled: false })).ok()).toBe(true);
+		const legacyIssue = await body<IssueDetail>(
+			await api.post(`/api/v1/projects/${project.id}/issues`, {
+				title: 'Do not resume legacy effort delivery'
+			})
+		);
+		const issueDetail = legacyIssue;
+		const concreteResponse = await api.post('/api/v1/routing-rules', {
+			project_id: project.id,
+			targets: [{ runner_id: registered.runner.id, tier: 'balanced' }]
+		});
+		expect(concreteResponse.ok()).toBe(true);
+		const concrete = await body<RoutingRule>(concreteResponse);
+		ruleIds.push(concrete.id);
+		expect((await api.put('/api/v1/supervisor/settings', { enabled: true })).ok()).toBe(true);
+		const legacy = await waitFor(async () => {
+			const runs = await body<ListResponse<AgentRun>>(
+				await api.get(`/api/v1/runs?issue=${legacyIssue.id}`)
+			);
+			return runs.items.find((item) => item.effort_application_status === 'legacy_not_applied');
+		});
+		expect(legacy.resolved_effort).toBe('max');
+		expect(legacy.requested_effort).toBeNull();
+		expect(legacy.status).toBe('assigned');
+
+		// This is the old/no-capability daemon path: it receives the assignment,
+		// launches a real child without an effort argument, advances the issue with
+		// the delivered run key, and reports the resumable session and workspace.
+		const deliveredResponse = await poll();
+		expect(deliveredResponse.ok()).toBe(true);
+		const delivered = await body<RunnerPollResponse>(deliveredResponse);
+		const legacyAssignment = delivered.assignments.find((item) => item.run.id === legacy.id);
+		expect(legacyAssignment).toBeDefined();
+		expect(legacyAssignment?.effort).toBeUndefined();
+		const legacyOutput = await new Promise<string>((resolve, reject) => {
+			let output = '';
+			const child = spawn(
+				join(bin, 'claude'),
+				['-p', '--output-format', 'stream-json', '--verbose', '--model', model!],
+				{
+					cwd: legacyWorkspace,
+					env: { ...process.env, E2E_CODEX_ARGV: legacyArgvFile },
+					stdio: ['ignore', 'pipe', 'pipe']
+				}
+			);
+			child.stdout?.on('data', (chunk: Buffer) => (output += chunk.toString()));
+			child.stderr?.on('data', (chunk: Buffer) => (output += chunk.toString()));
+			child.on('error', reject);
+			child.on('exit', (code) =>
+				code === 0 ? resolve(output) : reject(new Error(`legacy harness exited ${code}: ${output}`))
+			);
+		});
+		expect(JSON.parse(readFileSync(legacyArgvFile, 'utf8'))).not.toContain('--effort');
+		const runnerHeaders = { authorization: `Bearer ${registered.runner_token}` };
+		const logged = await request.post(`/api/v1/runs/${legacy.id}/logs`, {
+			headers: runnerHeaders,
+			data: { chunk: legacyOutput }
+		});
+		expect(logged.ok(), await logged.text()).toBe(true);
+		const submitted = await apiClient(request, legacyAssignment!.run_key).post(
+			`/api/v1/issues/${legacyIssue.id}/transition`,
+			{ action: 'Submit for review' }
+		);
+		expect(submitted.ok(), await submitted.text()).toBe(true);
+		const finishedResponse = await request.post(`/api/v1/runs/${legacy.id}/finish`, {
+			headers: runnerHeaders,
 			data: {
-				instance_id: 'legacy-boot',
-				owned_runs: [],
-				...(effort_capabilities ? { effort_capabilities } : {})
+				status: 'completed',
+				provider_session_id: 'session_upgrade_e2e',
+				workspace_path: legacyWorkspace,
+				turn_count: 1,
+				conversation_turn_count: 1
 			}
 		});
-	expect((await poll(capability)).ok()).toBe(true);
-	const tierSave = await api.patch(`/api/v1/runners/${registered.runner.id}`, {
-		tiers: { balanced: { model, effort: 'max' } },
-		resume_enabled: true
-	});
-	expect(tierSave.ok(), await tierSave.text()).toBe(true);
-	// An old boot explicitly clears the new boot's promise. Tier-only intent
-	// remains claimable, but the assignment deliberately omits effort.
-	expect((await poll()).ok()).toBe(true);
-	const project = await body<Project>(
-		await api.post('/api/v1/projects', { name: uniqueName('effort-upgrade-project') })
-	);
-	expect((await api.put('/api/v1/supervisor/settings', { enabled: false })).ok()).toBe(true);
-	const legacyIssue = await body<IssueDetail>(
-		await api.post(`/api/v1/projects/${project.id}/issues`, {
-			title: 'Do not resume legacy effort delivery'
-		})
-	);
-	const issueDetail = legacyIssue;
-	const concreteResponse = await api.post('/api/v1/routing-rules', {
-		project_id: project.id,
-		targets: [{ runner_id: registered.runner.id, tier: 'balanced' }]
-	});
-	expect(concreteResponse.ok()).toBe(true);
-	const concrete = await body<RoutingRule>(concreteResponse);
-	expect((await api.put('/api/v1/supervisor/settings', { enabled: true })).ok()).toBe(true);
-	const legacy = await waitFor(async () => {
-		const runs = await body<ListResponse<AgentRun>>(
-			await api.get(`/api/v1/runs?issue=${legacyIssue.id}`)
-		);
-		return runs.items.find((item) => item.effort_application_status === 'legacy_not_applied');
-	});
-	expect(legacy.resolved_effort).toBe('max');
-	expect(legacy.requested_effort).toBeNull();
-	expect(legacy.status).toBe('assigned');
+		expect(finishedResponse.ok()).toBe(true);
+		const finishedLegacy = await body<AgentRun>(finishedResponse);
+		expect(finishedLegacy.status).toBe('completed');
+		expect(finishedLegacy.effort_application_status).toBe('legacy_not_applied');
+		expect(finishedLegacy.resume_expires_at).not.toBeNull();
 
-	// This is the old/no-capability daemon path: it receives the assignment,
-	// launches a real child without an effort argument, advances the issue with
-	// the delivered run key, and reports the resumable session and workspace.
-	const deliveredResponse = await poll();
-	expect(deliveredResponse.ok()).toBe(true);
-	const delivered = await body<RunnerPollResponse>(deliveredResponse);
-	const legacyAssignment = delivered.assignments.find((item) => item.run.id === legacy.id);
-	expect(legacyAssignment).toBeDefined();
-	expect(legacyAssignment?.effort).toBeUndefined();
-	const legacyOutput = await new Promise<string>((resolve, reject) => {
-		let output = '';
-		const child = spawn(
-			join(bin, 'claude'),
-			['-p', '--output-format', 'stream-json', '--verbose', '--model', model!],
+		// Keep the claim-upgrade race separate: this one is intentionally assigned
+		// under the old daemon and left undelivered for the new daemon to cancel.
+		const raceIssue = await body<{ id: string }>(
+			await api.post(`/api/v1/projects/${project.id}/issues`, {
+				title: 'Cancel an undelivered legacy effort claim'
+			})
+		);
+		const legacyRace = await waitFor(async () => {
+			const runs = await body<ListResponse<AgentRun>>(
+				await api.get(`/api/v1/runs?issue=${raceIssue.id}`)
+			);
+			return runs.items.find((item) => item.effort_application_status === 'legacy_not_applied');
+		});
+		expect(legacyRace.status).toBe('assigned');
+
+		writeFileSync(
+			join(config, 'runners.json'),
+			JSON.stringify({
+				[`${BASE_URL}#${name}`]: {
+					runner_id: registered.runner.id,
+					token: registered.runner_token
+				}
+			})
+		);
+		daemon = spawn(
+			TSX,
+			[
+				CLI_ENTRY,
+				'runner',
+				'daemon',
+				'--url',
+				BASE_URL,
+				'--name',
+				name,
+				'--harness',
+				'claude-code',
+				'--poll-interval',
+				'1',
+				'--no-cli-refresh'
+			],
 			{
-				cwd: legacyWorkspace,
-				env: { ...process.env, E2E_CODEX_ARGV: legacyArgvFile },
+				cwd: CLI_DIR,
+				env: {
+					...process.env,
+					PATH: `${bin}:${process.env.PATH}`,
+					TINES_CONFIG_DIR: config,
+					E2E_CODEX_ARGV: argvFile
+				},
 				stdio: ['ignore', 'pipe', 'pipe']
 			}
 		);
-		child.stdout?.on('data', (chunk: Buffer) => (output += chunk.toString()));
-		child.stderr?.on('data', (chunk: Buffer) => (output += chunk.toString()));
-		child.on('error', reject);
-		child.on('exit', (code) =>
-			code === 0 ? resolve(output) : reject(new Error(`legacy harness exited ${code}: ${output}`))
-		);
-	});
-	expect(JSON.parse(readFileSync(legacyArgvFile, 'utf8'))).not.toContain('--effort');
-	const runnerHeaders = { authorization: `Bearer ${registered.runner_token}` };
-	const logged = await request.post(`/api/v1/runs/${legacy.id}/logs`, {
-		headers: runnerHeaders,
-		data: { chunk: legacyOutput }
-	});
-	expect(logged.ok(), await logged.text()).toBe(true);
-	const submitted = await apiClient(request, legacyAssignment!.run_key).post(
-		`/api/v1/issues/${legacyIssue.id}/transition`,
-		{ action: 'Submit for review' }
-	);
-	expect(submitted.ok(), await submitted.text()).toBe(true);
-	const finishedResponse = await request.post(`/api/v1/runs/${legacy.id}/finish`, {
-		headers: runnerHeaders,
-		data: {
-			status: 'completed',
-			provider_session_id: 'session_upgrade_e2e',
-			workspace_path: legacyWorkspace,
-			turn_count: 1,
-			conversation_turn_count: 1
-		}
-	});
-	expect(finishedResponse.ok()).toBe(true);
-	const finishedLegacy = await body<AgentRun>(finishedResponse);
-	expect(finishedLegacy.status).toBe('completed');
-	expect(finishedLegacy.effort_application_status).toBe('legacy_not_applied');
-	expect(finishedLegacy.resume_expires_at).not.toBeNull();
-
-	// Keep the claim-upgrade race separate: this one is intentionally assigned
-	// under the old daemon and left undelivered for the new daemon to cancel.
-	const raceIssue = await body<{ id: string }>(
-		await api.post(`/api/v1/projects/${project.id}/issues`, {
-			title: 'Cancel an undelivered legacy effort claim'
-		})
-	);
-	const legacyRace = await waitFor(async () => {
-		const runs = await body<ListResponse<AgentRun>>(
-			await api.get(`/api/v1/runs?issue=${raceIssue.id}`)
-		);
-		return runs.items.find((item) => item.effort_application_status === 'legacy_not_applied');
-	});
-	expect(legacyRace.status).toBe('assigned');
-
-	writeFileSync(
-		join(config, 'runners.json'),
-		JSON.stringify({
-			[`${BASE_URL}#${name}`]: {
-				runner_id: registered.runner.id,
-				token: registered.runner_token
-			}
-		})
-	);
-	let daemon: ChildProcess | null = spawn(
-		TSX,
-		[
-			CLI_ENTRY,
-			'runner',
-			'daemon',
-			'--url',
-			BASE_URL,
-			'--name',
-			name,
-			'--harness',
-			'claude-code',
-			'--poll-interval',
-			'1',
-			'--no-cli-refresh'
-		],
-		{
-			cwd: CLI_DIR,
-			env: {
-				...process.env,
-				PATH: `${bin}:${process.env.PATH}`,
-				TINES_CONFIG_DIR: config,
-				E2E_CODEX_ARGV: argvFile
-			},
-			stdio: ['ignore', 'pipe', 'pipe']
-		}
-	);
-	try {
 		const upgradedRace = await waitFor(async () => {
 			const runs = await body<ListResponse<AgentRun>>(
 				await api.get(`/api/v1/runs?issue=${raceIssue.id}`)
@@ -536,6 +617,7 @@ else {
 				harness: 'codex'
 			})
 		);
+		oldRunnerId = old.runner.id;
 		await request.post(`/api/v1/runners/${old.runner.id}/poll`, {
 			headers: { authorization: `Bearer ${old.runner_token}` },
 			data: { instance_id: 'old-boot', owned_runs: [] }
@@ -553,6 +635,7 @@ else {
 				targets: [{ runner_id: '*', tier: 'balanced', effort: 'max' }]
 			})
 		);
+		ruleIds.push(wildcard.id);
 		const fallbackIssue = await body<{ id: string }>(
 			await api.post(`/api/v1/projects/${project.id}/issues`, {
 				title: 'Fall back from old daemon'
@@ -571,9 +654,52 @@ else {
 			rule_id: wildcard.id
 		});
 	} finally {
-		await api.put('/api/v1/supervisor/settings', { enabled: false }).catch(() => undefined);
-		if (daemon?.pid) daemon.kill('SIGKILL');
-		daemon = null;
-		rmSync(root, { recursive: true, force: true });
+		await runCleanupSteps([
+			{
+				name: 'disable effort-upgrade automation',
+				run: async () => {
+					expect((await api.put('/api/v1/supervisor/settings', { enabled: false })).status()).toBe(
+						200
+					);
+				}
+			},
+			{
+				name: 'stop effort-upgrade daemon',
+				run: async () => {
+					if (daemon?.pid) daemon.kill('SIGKILL');
+					daemon = null;
+				}
+			},
+			...ruleIds.reverse().map((id) => ({
+				name: `delete effort-upgrade rule ${id}`,
+				run: async () => {
+					expect((await api.delete(`/api/v1/routing-rules/${id}`)).status()).toBe(204);
+				}
+			})),
+			...(projectId
+				? [
+						{
+							name: `archive effort-upgrade project ${projectId}`,
+							run: async () => {
+								expect((await api.post(`/api/v1/projects/${projectId}/archive`)).status()).toBe(
+									200
+								);
+							}
+						}
+					]
+				: []),
+			...[oldRunnerId, runnerId]
+				.filter((id): id is string => Boolean(id))
+				.map((id) => ({
+					name: `delete effort-upgrade runner ${id}`,
+					run: async () => {
+						expect((await api.delete(`/api/v1/runners/${id}`, { force: true })).status()).toBe(204);
+					}
+				})),
+			{
+				name: 'remove effort-upgrade temporary directory',
+				run: async () => rmSync(root, { recursive: true, force: true })
+			}
+		]);
 	}
 });
