@@ -135,7 +135,7 @@ test.describe.serial('native D1 publication transaction gate', () => {
 			data: confirmation(proof)
 		});
 		expect(publish.status()).toBe(409);
-		expect(await publish.json()).toMatchObject({ error: { code: 'publication_source_changed' } });
+		expect(await publish.json()).toMatchObject({ error: { code: 'publication_proof_stale' } });
 		expect(
 			d1(
 				`SELECT published_at, snapshot_id, publication_receipt_json FROM workflow_publication WHERE id=${sqlLiteral(proof.candidate_id)}`
