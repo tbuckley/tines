@@ -2,7 +2,7 @@ import { getDb } from '$lib/server/db';
 import { inspectModerationSnapshot } from '$lib/server/publications/moderation';
 import type { PageServerLoad } from './$types';
 
-export const load: PageServerLoad = async ({ locals, platform, params }) =>
+export const load: PageServerLoad = async ({ locals, platform, params, url }) =>
 	inspectModerationSnapshot(
 		getDb(platform!.env),
 		platform!.env,
@@ -14,5 +14,9 @@ export const load: PageServerLoad = async ({ locals, platform, params }) =>
 			viaSession: true,
 			agentRunId: null
 		},
-		params.snapshotId
+		params.snapshotId,
+		{
+			reportsOffset: Number(url.searchParams.get('reports_offset') ?? 0),
+			auditOffset: Number(url.searchParams.get('audit_offset') ?? 0)
+		}
 	);

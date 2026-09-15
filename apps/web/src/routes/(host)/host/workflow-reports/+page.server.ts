@@ -5,7 +5,8 @@ import type { PageServerLoad } from './$types';
 export const load: PageServerLoad = async ({ locals, platform, url }) => {
 	const raw = url.searchParams.get('filter') ?? 'unread';
 	const filter = ['unread', 'open', 'resolved', 'all'].includes(raw) ? raw : 'unread';
-	return listModerationCases(
+	const cursor = url.searchParams.get('cursor') ?? undefined;
+	const result = await listModerationCases(
 		getDb(platform!.env),
 		platform!.env,
 		{
@@ -16,6 +17,7 @@ export const load: PageServerLoad = async ({ locals, platform, url }) => {
 			viaSession: true,
 			agentRunId: null
 		},
-		{ filter: filter as 'unread' | 'open' | 'resolved' | 'all' }
+		{ filter: filter as 'unread' | 'open' | 'resolved' | 'all', cursor }
 	);
+	return { ...result, filter };
 };

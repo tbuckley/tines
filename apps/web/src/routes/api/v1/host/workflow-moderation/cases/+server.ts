@@ -17,9 +17,11 @@ const get = api(async (event) => {
 		throw new ApiFail(422, 'invalid_field', 'Invalid case filter');
 	const rawLimit = event.url.searchParams.get('limit');
 	const limit = rawLimit === null ? undefined : Number(rawLimit);
+	const cursor = event.url.searchParams.get('cursor') ?? undefined;
 	const result = await listModerationCases(getDb(event.platform.env), event.platform.env, actor, {
 		filter: rawFilter as 'unread' | 'open' | 'resolved' | 'all',
-		limit
+		limit,
+		cursor
 	});
 	return json(result, { headers: PUBLICATION_RESPONSE_HEADERS });
 });

@@ -1,6 +1,7 @@
 import {
 	canonicalizeLibraryValue,
 	parsePublicWorkflowDocument,
+	PUBLIC_WORKFLOW_POLICY_VERSION,
 	validateModerationText,
 	validateRequestId,
 	type ModerationDecisionReceipt,
@@ -43,8 +44,12 @@ export async function listModerationCases(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
-	options: { filter?: 'unread' | 'open' | 'resolved' | 'all'; limit?: number } = {}
-): Promise<{ items: WorkflowReportCase[]; next_cursor: null }> {
+	options: {
+		filter?: 'unread' | 'open' | 'resolved' | 'all';
+		limit?: number;
+		cursor?: string;
+	} = {}
+): Promise<{ items: WorkflowReportCase[]; next_cursor: string | null }> {
 	assertHostModerator(actor, env);
 	const filter = options.filter ?? 'unread';
 	let query = db
@@ -68,13 +73,26 @@ export async function listModerationCases(
 	if (filter === 'unread') query = query.whereRef('c.version', '>', 'c.read_through_version');
 	if (filter === 'open') query = query.whereRef('c.version', '>', 'c.resolved_through_version');
 	if (filter === 'resolved') query = query.whereRef('c.version', '=', 'c.resolved_through_version');
+	if (options.cursor) {
+		const match = /^(\d+):([A-Za-z0-9_-]+)$/.exec(options.cursor);
+		if (!match) throw new ApiFail(422, 'invalid_cursor', 'Invalid cursor');
+		const latest = Number(match[1]);
+		query = query.where((eb) =>
+			eb.or([
+				eb('c.latest_report_at', '<', latest),
+				eb.and([eb('c.latest_report_at', '=', latest), eb('c.snapshot_id', '>', match[2])])
+			])
+		);
+	}
+	const limit = boundedLimit(options.limit);
 	const rows = await query
 		.orderBy('c.latest_report_at', 'desc')
 		.orderBy('c.snapshot_id', 'asc')
-		.limit(boundedLimit(options.limit))
+		.limit(limit + 1)
 		.execute();
+	const pageRows = rows.slice(0, limit);
 	const items = await Promise.all(
-		rows.map(async (row) => {
+		pageRows.map(async (row) => {
 			const counts = await db
 				.selectFrom('workflow_report')
 				.select(['reason', (eb) => eb.fn.countAll<number>().as('count')])
@@ -108,16 +126,26 @@ export async function listModerationCases(
 			} satisfies WorkflowReportCase;
 		})
 	);
-	return { items, next_cursor: null };
+	const last = pageRows.at(-1);
+	return {
+		items,
+		next_cursor: rows.length > limit && last ? `${last.latest_report_at}:${last.snapshot_id}` : null
+	};
 }
 
 export async function inspectModerationSnapshot(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
-	snapshotId: string
+	snapshotId: string,
+	options: { reportsOffset?: number; auditOffset?: number; limit?: number } = {}
 ) {
 	assertHostModerator(actor, env);
+	const reportCase = await db
+		.selectFrom('workflow_report_case')
+		.selectAll()
+		.where('snapshot_id', '=', snapshotId)
+		.executeTakeFirst();
 	const row = await db
 		.selectFrom('workflow_publication as p')
 		.leftJoin('workflow_publisher_status as s', 's.user_id', 'p.user_id')
@@ -142,16 +170,23 @@ export async function inspectModerationSnapshot(
 		])
 		.where('p.snapshot_id', '=', snapshotId)
 		.executeTakeFirst();
-	if (!row) throw new ApiFail(404, 'not_found', 'Not found');
+	if (!row && !reportCase) throw new ApiFail(404, 'not_found', 'Not found');
 	let document = null;
 	let diagnostics: string[] = [];
-	try {
-		const parsed = await parsePublicWorkflowDocument(row.document_json);
-		document = parsed.diagnostics.length ? null : parsed.document;
-		diagnostics = parsed.diagnostics.map((item) => item.message);
-	} catch {
-		diagnostics = ['Stored snapshot could not be parsed'];
+	if (row) {
+		try {
+			const parsed = await parsePublicWorkflowDocument(row.document_json);
+			document = parsed.diagnostics.length ? null : parsed.document;
+			diagnostics = parsed.diagnostics.map((item) => item.message);
+		} catch {
+			diagnostics = ['Stored snapshot could not be parsed'];
+		}
+	} else {
+		diagnostics = ['Snapshot no longer stored'];
 	}
+	const limit = boundedLimit(options.limit);
+	const reportsOffset = Math.max(0, options.reportsOffset ?? 0);
+	const auditOffset = Math.max(0, options.auditOffset ?? 0);
 	const reportGroups = await db
 		.selectFrom('workflow_report')
 		.select([
@@ -164,14 +199,11 @@ export async function inspectModerationSnapshot(
 		.where('snapshot_id', '=', snapshotId)
 		.groupBy(['reason', 'note_hash', 'note'])
 		.orderBy('latest_report_at', 'desc')
-		.limit(100)
+		.limit(limit + 1)
+		.offset(reportsOffset)
 		.execute();
-	const reportCase = await db
-		.selectFrom('workflow_report_case')
-		.selectAll()
-		.where('snapshot_id', '=', snapshotId)
-		.executeTakeFirst();
-	const audit = await db
+	const publisherUserId = row?.user_id;
+	const auditQuery = db
 		.selectFrom('workflow_moderation_audit')
 		.select([
 			'id',
@@ -187,47 +219,59 @@ export async function inspectModerationSnapshot(
 			'created_at'
 		])
 		.where((eb) =>
-			eb.or([
-				eb('snapshot_id', '=', snapshotId),
-				eb.and([eb('target_kind', '=', 'publisher'), eb('publisher_user_id', '=', row.user_id)])
-			])
-		)
+			publisherUserId
+				? eb.or([
+						eb('snapshot_id', '=', snapshotId),
+						eb.and([
+							eb('target_kind', '=', 'publisher'),
+							eb('publisher_user_id', '=', publisherUserId)
+						])
+					])
+				: eb('snapshot_id', '=', snapshotId)
+		);
+	const audit = await auditQuery
 		.orderBy('created_at', 'desc')
 		.orderBy('id', 'desc')
-		.limit(100)
+		.limit(limit + 1)
+		.offset(auditOffset)
 		.execute();
 	return {
-		snapshot_id: row.snapshot_id,
-		publisher_id: row.user_id,
-		metadata: JSON.parse(row.metadata_json) as PublicationMetadata,
+		snapshot_id: snapshotId,
+		stored: !!row,
+		publisher_id: row?.user_id ?? null,
+		metadata: row ? (JSON.parse(row.metadata_json) as PublicationMetadata) : null,
 		document,
-		...(document ? {} : { raw_document_json: row.document_json }),
+		...(row && !document ? { raw_document_json: row.document_json } : {}),
 		diagnostics,
-		hashes: {
-			document_digest: row.document_digest,
-			bytes_sha256: row.bytes_sha256,
-			review_digest: row.review_digest
-		},
-		published_at: row.published_at,
-		owner_state: row.owner_state,
-		host_state: row.host_state,
-		status_version: row.status_version,
+		hashes: row
+			? {
+					document_digest: row.document_digest,
+					bytes_sha256: row.bytes_sha256,
+					review_digest: row.review_digest
+				}
+			: null,
+		published_at: row?.published_at ?? null,
+		owner_state: row?.owner_state ?? null,
+		host_state: row?.host_state ?? null,
+		status_version: row?.status_version ?? null,
 		host_removal:
-			row.host_state === 'removed'
+			row?.host_state === 'removed'
 				? { reason: row.host_decision_reason, reference: row.host_decision_reference }
 				: null,
 		suspension:
-			row.suspended === 1
+			row?.suspended === 1
 				? { reason: row.suspension_reason, reference: row.suspension_reference }
 				: null,
-		publisher_status_version: row.publisher_status_version ?? 0,
+		publisher_status_version: row?.publisher_status_version ?? 0,
 		case: reportCase ?? null,
-		reports: reportGroups.map((item) => ({ ...item, count: Number(item.count) })),
-		audit: audit.map(({ before_json, after_json, ...item }) => ({
+		reports: reportGroups.slice(0, limit).map((item) => ({ ...item, count: Number(item.count) })),
+		reports_next_offset: reportGroups.length > limit ? reportsOffset + limit : null,
+		audit: audit.slice(0, limit).map(({ before_json, after_json, ...item }) => ({
 			...item,
 			before: JSON.parse(before_json),
 			after: JSON.parse(after_json)
-		}))
+		})),
+		audit_next_offset: audit.length > limit ? auditOffset + limit : null
 	};
 }
 
@@ -343,18 +387,21 @@ export async function decideModeration(
 					'owner_state',
 					'host_state',
 					'status_version',
+					'document_json',
 					'document_digest',
-					'bytes_sha256'
+					'bytes_sha256',
+					'policy_version'
 				])
 				.where('snapshot_id', '=', input.target.snapshot_id)
 				.executeTakeFirst()
 		: undefined;
-	if (targetKind === 'snapshot' && !snapshot) throw new ApiFail(404, 'not_found', 'Not found');
-	const publisherId = targetKind === 'publisher' ? targetId : snapshot!.user_id;
+	if (targetKind === 'snapshot' && !snapshot && input.action !== 'dismiss')
+		throw new ApiFail(404, 'not_found', 'Not found');
+	const publisherId = targetKind === 'publisher' ? targetId : (snapshot?.user_id ?? null);
 	const publisher = await db
 		.selectFrom('workflow_publisher_status')
 		.selectAll()
-		.where('user_id', '=', publisherId)
+		.where('user_id', '=', publisherId ?? '')
 		.executeTakeFirst();
 	if (
 		targetKind === 'publisher' &&
@@ -387,6 +434,21 @@ export async function decideModeration(
 			WHERE snapshot_id = ${targetId} AND version >= ${cutoff!}
 			AND resolved_through_version < ${cutoff!})`;
 	} else if (targetKind === 'snapshot') {
+		if (input.action === 'restore') {
+			const parsed = await parsePublicWorkflowDocument(snapshot!.document_json);
+			if (
+				snapshot!.policy_version !== PUBLIC_WORKFLOW_POLICY_VERSION ||
+				parsed.diagnostics.length ||
+				parsed.canonical_json !== snapshot!.document_json ||
+				parsed.document.digest !== snapshot!.document_digest ||
+				parsed.bytes_sha256 !== snapshot!.bytes_sha256
+			)
+				throw new ApiFail(
+					409,
+					'publication_policy_changed',
+					'Snapshot does not meet current publication policy'
+				);
+		}
 		if (
 			input.expected_snapshot_version !== undefined &&
 			input.expected_snapshot_version !== snapshot!.status_version
@@ -408,7 +470,8 @@ export async function decideModeration(
 		}
 		auditGuard = sql<boolean>`EXISTS (SELECT 1 FROM workflow_publication
 			WHERE snapshot_id = ${targetId} AND status_version = ${snapshot!.status_version}
-			AND host_state = ${snapshot!.host_state})`;
+			AND host_state = ${snapshot!.host_state}
+			${input.action === 'restore' ? sql`AND policy_version = ${snapshot!.policy_version} AND document_digest = ${snapshot!.document_digest} AND bytes_sha256 = ${snapshot!.bytes_sha256} AND document_json = ${snapshot!.document_json}` : sql``})`;
 	} else {
 		if (
 			input.expected_publisher_version !== undefined &&
@@ -491,8 +554,29 @@ export async function decideModeration(
 	}
 	queries.push(sql`SELECT id FROM workflow_moderation_audit WHERE id = ${auditId}`.compile(db));
 	const results = await runAtomic(env, queries);
-	if (!results.at(-1)?.results?.length)
+	if (!results.at(-1)?.results?.length) {
+		const reconciled = await db
+			.selectFrom('workflow_moderation_audit')
+			.selectAll()
+			.where('actor_user_id', '=', actor.userId)
+			.where('request_id', '=', input.request_id)
+			.executeTakeFirst();
+		if (reconciled) {
+			if (reconciled.request_hash !== requestHash)
+				throw new ApiFail(
+					409,
+					'moderation_request_conflict',
+					'Use a new request ID for changed details'
+				);
+			return {
+				decision_id: reconciled.id,
+				action: reconciled.action,
+				target: { kind: reconciled.target_kind, id: reconciled.target_id },
+				decided_at: reconciled.created_at
+			};
+		}
 		throw new ApiFail(409, 'moderation_state_changed', 'Reload the current moderation state');
+	}
 	return {
 		decision_id: auditId,
 		action: input.action,

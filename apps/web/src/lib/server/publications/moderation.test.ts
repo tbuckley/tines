@@ -31,7 +31,7 @@ const moderator = {
 };
 let t: TestDb;
 
-async function seedPublication() {
+async function seedPublication(policyVersion = 1) {
 	const document = await withLibraryDocumentDigest(inheritedPackage());
 	const documentJson = canonicalizeLibraryValue(document);
 	const bytesSha256 = await publicationBytesSha256(documentJson);
@@ -60,7 +60,7 @@ async function seedPublication() {
 			byte_length: new TextEncoder().encode(documentJson).byteLength,
 			metadata_json: JSON.stringify(metadata),
 			review_digest: reviewDigest,
-			policy_version: 1,
+			policy_version: policyVersion,
 			created_at: 1,
 			expires_at: 2,
 			snapshot_id: SNAPSHOT,
@@ -268,5 +268,92 @@ describe('private workflow moderation', () => {
 				NOW + 2
 			)
 		).rejects.toMatchObject({ status: 409, code: 'moderation_state_changed' });
+	});
+
+	it('reconciles concurrent identical decisions to one durable receipt', async () => {
+		const input = {
+			request_id: '123e4567-e89b-42d3-a456-426614174020',
+			action: 'disable' as const,
+			target: { snapshot_id: SNAPSHOT },
+			reason: 'Urgent removal',
+			expected_snapshot_version: 1
+		};
+		const [first, second] = await Promise.all([
+			decideModeration(t.db, envFor(t), moderator, input, NOW),
+			decideModeration(t.db, envFor(t), moderator, input, NOW)
+		]);
+		expect(second).toEqual(first);
+		expect(await t.db.selectFrom('workflow_moderation_audit').selectAll().execute()).toHaveLength(
+			1
+		);
+	});
+
+	it('keeps a deleted-snapshot report case inspectable and dismissible', async () => {
+		await acceptPublicationReport(
+			t.db,
+			envFor(t),
+			SNAPSHOT,
+			{
+				request_id: '123e4567-e89b-42d3-a456-426614174021',
+				reason: 'private_information',
+				note: 'Retained evidence'
+			},
+			{ network: '192.0.2.21' },
+			NOW
+		);
+		await t.db.deleteFrom('workflow_publication').where('snapshot_id', '=', SNAPSHOT).execute();
+		const detail = await inspectModerationSnapshot(t.db, envFor(t), moderator, SNAPSHOT);
+		expect(detail).toMatchObject({ stored: false, publisher_id: null });
+		expect(detail.reports).toMatchObject([{ note: 'Retained evidence' }]);
+		await expect(
+			decideModeration(
+				t.db,
+				envFor(t),
+				moderator,
+				{
+					request_id: '123e4567-e89b-42d3-a456-426614174022',
+					action: 'dismiss',
+					target: { snapshot_id: SNAPSHOT },
+					reason: 'Reviewed retained evidence',
+					case_through_version: 1
+				},
+				NOW + 1
+			)
+		).resolves.toMatchObject({ action: 'dismiss' });
+	});
+
+	it('refuses host restore when immutable content is no longer current-policy content', async () => {
+		await t.db.deleteFrom('workflow_publication').where('snapshot_id', '=', SNAPSHOT).execute();
+		await seedPublication(0);
+		const disabled = await decideModeration(
+			t.db,
+			envFor(t),
+			moderator,
+			{
+				request_id: '123e4567-e89b-42d3-a456-426614174023',
+				action: 'disable',
+				target: { snapshot_id: SNAPSHOT },
+				reason: 'Remove first',
+				expected_snapshot_version: 1
+			},
+			NOW
+		);
+		expect(disabled.action).toBe('disable');
+		await expect(
+			decideModeration(
+				t.db,
+				envFor(t),
+				moderator,
+				{
+					request_id: '123e4567-e89b-42d3-a456-426614174024',
+					action: 'restore',
+					target: { snapshot_id: SNAPSHOT },
+					reason: 'Restore stale policy',
+					expected_snapshot_version: 2
+				},
+				NOW + 1
+			)
+		).rejects.toMatchObject({ status: 409, code: 'publication_policy_changed' });
+		expect(await resolvePublicSnapshot(t.db, SNAPSHOT)).toBeNull();
 	});
 });

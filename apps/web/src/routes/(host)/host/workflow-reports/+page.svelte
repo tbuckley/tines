@@ -5,6 +5,7 @@
 	let urgentReason = $state('');
 	let busy = $state(false);
 	let message = $state('');
+	let pendingUrgent = $state<Record<string, unknown> | null>(null);
 
 	function snapshotId(value: string) {
 		if (/^[A-Za-z0-9_-]{20,100}$/.test(value)) return value;
@@ -25,19 +26,25 @@
 		}
 		busy = true;
 		message = '';
+		const requestBody = pendingUrgent ?? {
+			request_id: crypto.randomUUID(),
+			action: 'disable',
+			target: { snapshot_id: id },
+			reason: urgentReason
+		};
+		pendingUrgent = requestBody;
 		try {
 			const response = await fetch('/api/v1/host/workflow-moderation/decisions', {
 				method: 'POST',
 				headers: { 'content-type': 'application/json' },
-				body: JSON.stringify({
-					request_id: crypto.randomUUID(),
-					action: 'disable',
-					target: { snapshot_id: id },
-					reason: urgentReason
-				})
+				body: JSON.stringify(requestBody)
 			});
-			const body = await response.json();
-			if (!response.ok) throw new Error(body?.error?.message ?? 'Could not disable snapshot.');
+			const responseBody = await response.json();
+			if (!response.ok) {
+				pendingUrgent = null;
+				throw new Error(responseBody?.error?.message ?? 'Could not disable snapshot.');
+			}
+			pendingUrgent = null;
 			message = 'Snapshot disabled.';
 			urgentTarget = '';
 			urgentReason = '';
@@ -115,4 +122,8 @@
 					</p>
 				</a>{/each}
 		</div>{/if}
+	{#if data.next_cursor}<a
+			class="mt-4 inline-block rounded-md border px-3 py-2"
+			href="?filter={data.filter}&cursor={encodeURIComponent(data.next_cursor)}">Next page</a
+		>{/if}
 </section>
