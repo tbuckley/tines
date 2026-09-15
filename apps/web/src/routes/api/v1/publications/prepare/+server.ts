@@ -1,6 +1,7 @@
 import { json } from '@sveltejs/kit';
 import {
 	LibraryValidationError,
+	MODEL_TIERS,
 	parseStrictLibraryJson,
 	type PreparePublicationRequest
 } from '@tines/shared';
@@ -12,8 +13,37 @@ import type { RequestHandler } from './$types';
 const exactKeys = (value: Record<string, unknown>, allowed: string[]) =>
 	Object.keys(value).every((key) => allowed.includes(key));
 
+function validDraftSourceOptions(value: unknown) {
+	if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+	const options = value as Record<string, unknown>;
+	if (!exactKeys(options, ['source_project_id', 'schedule_ids', 'tiers'])) return false;
+	if (Object.hasOwn(options, 'source_project_id') && typeof options.source_project_id !== 'string')
+		return false;
+	const scheduleIds = options.schedule_ids ?? [];
+	if (
+		!Array.isArray(scheduleIds) ||
+		scheduleIds.some((id) => typeof id !== 'string') ||
+		new Set(scheduleIds).size !== scheduleIds.length
+	)
+		return false;
+	const tiers = options.tiers ?? [];
+	if (!Array.isArray(tiers)) return false;
+	return tiers.every((value) => {
+		if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+		const tier = value as Record<string, unknown>;
+		return (
+			exactKeys(tier, ['state_id', 'tier', 'project_scoped']) &&
+			typeof tier.state_id === 'string' &&
+			typeof tier.tier === 'string' &&
+			MODEL_TIERS.includes(tier.tier as (typeof MODEL_TIERS)[number]) &&
+			(!Object.hasOwn(tier, 'project_scoped') || typeof tier.project_scoped === 'boolean')
+		);
+	});
+}
+
 function validDraftSource(source: Record<string, unknown>) {
 	if (!exactKeys(source, ['kind', 'workflow_id', 'options', 'draft'])) return false;
+	if (!validDraftSourceOptions(source.options)) return false;
 	const draft = source.draft;
 	if (!draft || typeof draft !== 'object' || Array.isArray(draft)) return false;
 	const record = draft as Record<string, unknown>;

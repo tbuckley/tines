@@ -1,10 +1,10 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { canonicalizeLibraryValue, withLibraryDocumentDigest } from '@tines/shared';
-import type { WorkflowPackageDocument } from '@tines/shared';
+import type { PublicationSourceOptions, WorkflowPackageDocument } from '@tines/shared';
 import { createTestDb, type TestDb } from '$lib/server/api/test-db';
 import { createWorkflow } from '$lib/server/api/workflows';
 import { buildOwnedPublicationSourceProof } from '$lib/server/publications/source';
-import { seedBase, USER } from '$lib/server/supervisor/test-fixtures';
+import { PROJECT, seedBase, USER } from '$lib/server/supervisor/test-fixtures';
 import { POST } from './+server';
 
 const actor = {
@@ -17,6 +17,7 @@ const actor = {
 
 let t: TestDb;
 let workflowId: string;
+let workflowStateId: string;
 let baseline: Awaited<ReturnType<typeof buildOwnedPublicationSourceProof>>;
 
 function event(raw: BodyInit) {
@@ -34,18 +35,22 @@ function event(raw: BodyInit) {
 	} as unknown as Parameters<typeof POST>[0];
 }
 
-function request(document: WorkflowPackageDocument = baseline.document) {
+function request(
+	document: WorkflowPackageDocument = baseline.document,
+	baselineDocument: WorkflowPackageDocument = baseline.document,
+	options: PublicationSourceOptions = {}
+) {
 	return {
 		prepare_request_id: crypto.randomUUID(),
 		source: {
 			kind: 'owned_workflow',
 			workflow_id: workflowId,
-			options: {},
+			options,
 			draft: {
 				version: 1,
 				baseline: {
-					document_digest: baseline.document.digest,
-					exported_at: baseline.document.exported_at
+					document_digest: baselineDocument.digest,
+					exported_at: baselineDocument.exported_at
 				},
 				document_json: canonicalizeLibraryValue(document)
 			}
@@ -77,6 +82,29 @@ beforeEach(async () => {
 		transitions: []
 	});
 	workflowId = workflow.id;
+	workflowStateId = workflow.states[0].id;
+	await t.db
+		.insertInto('scheduled_task')
+		.values({
+			id: 'schedule-route-source',
+			project_id: PROJECT,
+			name: 'Route source schedule',
+			title_template: 'Review {{date}}',
+			description_template: 'Review the draft',
+			workflow_id: workflow.id,
+			state_id: workflowStateId,
+			cron: '0 9 * * *',
+			preset: null,
+			timezone: 'UTC',
+			require_all_closed: 1,
+			enabled: 1,
+			next_run_at: 100,
+			last_run_at: null,
+			run_count: 0,
+			created_at: 1,
+			updated_at: 1
+		})
+		.execute();
 	baseline = await buildOwnedPublicationSourceProof(t.db, USER, workflowId, {}, 1000);
 });
 
@@ -88,6 +116,50 @@ describe('POST /api/v1/publications/prepare draft envelope', () => {
 		expect(response.status).toBe(200);
 		expect(await response.json()).toMatchObject({
 			document: { workflows: [{ description: 'Résumé 🚀 — 東京' }] }
+		});
+	});
+
+	it('accepts the exact draft source options shape', async () => {
+		const options: PublicationSourceOptions = {
+			source_project_id: PROJECT,
+			schedule_ids: ['schedule-route-source'],
+			tiers: [{ state_id: workflowStateId, tier: 'balanced', project_scoped: true }]
+		};
+		const selected = await buildOwnedPublicationSourceProof(t.db, USER, workflowId, options, 1000);
+		const response = await call(request(selected.document, selected.document, options));
+		expect(response.status).toBe(200);
+	});
+
+	it.each([
+		['an unknown option', { extra: true }],
+		['a non-string source project ID', { source_project_id: 42 }],
+		['a non-array schedule selection', { schedule_ids: {} }],
+		['a non-string schedule ID', { schedule_ids: ['schedule-route-source', 42] }],
+		[
+			'duplicate schedule IDs',
+			{ schedule_ids: ['schedule-route-source', 'schedule-route-source'] }
+		],
+		['a non-array tier selection', { tiers: {} }],
+		['a non-object tier entry', { tiers: [null] }],
+		['a tier entry without state_id', { tiers: [{ tier: 'balanced' }] }],
+		['a tier entry without tier', { tiers: [{ state_id: workflowStateId }] }],
+		[
+			'an extra tier field',
+			{ tiers: [{ state_id: workflowStateId, tier: 'balanced', extra: true }] }
+		],
+		['a non-string tier state ID', { tiers: [{ state_id: 42, tier: 'balanced' }] }],
+		['an invalid tier value', { tiers: [{ state_id: workflowStateId, tier: 'fastest' }] }],
+		[
+			'a non-boolean project-scoped flag',
+			{ tiers: [{ state_id: workflowStateId, tier: 'balanced', project_scoped: 'yes' }] }
+		]
+	])('rejects draft options with %s at the route boundary', async (_name, options) => {
+		const body = request();
+		(body.source as unknown as { options: unknown }).options = options;
+		const response = await call(body);
+		expect(response.status).toBe(422);
+		expect(await response.json()).toMatchObject({
+			error: { code: 'invalid_publication_source' }
 		});
 	});
 
