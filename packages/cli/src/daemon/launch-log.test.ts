@@ -58,7 +58,10 @@ function stubSupervisor(
 	const harvest: Harvest = { log: '', finish: null };
 	let handedOut = false;
 	let resolve!: (h: Harvest) => void;
-	const done = new Promise<Harvest>((r) => (resolve = r));
+	const done = new Promise<Harvest>((r, reject) => {
+		resolve = r;
+		rejectPending = reject;
+	});
 
 	const server = createServer((req, res) => {
 		let body = '';
@@ -269,12 +272,32 @@ function startDaemon(
 		env.PATH = `${harness.fakeCodexDir}${delimiter}${process.env.PATH ?? ''}`;
 		env.CODEX_HOME = join(dir, 'codex-home');
 	}
-	return spawn(NODE, args, { env, stdio: ['ignore', 'pipe', 'pipe'] });
+	const daemon = spawn(NODE, args, { env, stdio: ['ignore', 'pipe', 'pipe'] });
+	let stderr = '';
+	daemon.stderr?.on(
+		'data',
+		(data: Buffer) => (stderr = (stderr + data.toString('utf8')).slice(-4000))
+	);
+	daemon.on('exit', (code) => {
+		if (code === null) return;
+		rejectPending?.(
+			new Error(`daemon exited with code ${code} before the run was reported:\n${stderr}`)
+		);
+	});
+	return daemon;
 }
 
 let child: ChildProcess | null = null;
 let configDir: string | null = null;
 let server: Server | null = null;
+/**
+ * Fails the pending `done` the moment the daemon dies on its own. Without
+ * this a daemon crash (an unhandled error at boot, say) reads as a silent
+ * 30-second timeout with no clue why — the daemon's stderr is not otherwise
+ * surfaced. afterEach's SIGKILL exits with a signal, not a code, so it does
+ * not trip this.
+ */
+let rejectPending: ((err: Error) => void) | null = null;
 
 afterEach(async () => {
 	// Wait for the daemon to actually be gone before removing its config dir:
