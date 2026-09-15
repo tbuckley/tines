@@ -641,7 +641,8 @@ The next preview run re-applies all migrations from scratch.
 From the repo root:
 
 - `pnpm dev` — run the web app dev server (with local D1 bindings emulated)
-- `pnpm build` — build all packages
+- `pnpm build` — build the web app and CLI (`@tines/shared` has no build script; both
+  consume it as TypeScript source)
 - `pnpm check` — the migration-numbering and script-name guards in `scripts/` and `apps/web/scripts/`, then typecheck all packages (svelte-check + tsc)
 - `pnpm test` — vitest unit tests (`ci.yml` runs them on every pull request, and the deploy and publish workflows run them again before shipping)
 - `pnpm test:e2e` — Playwright e2e suite (boots the built worker under `wrangler dev` with a seeded local D1; see `apps/web/e2e/` and its README for the suite's motion, hydration and geometry policies). Run by `ci.yml` on pull requests, but not by `pnpm test`.
