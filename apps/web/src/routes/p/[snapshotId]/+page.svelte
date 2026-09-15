@@ -172,11 +172,13 @@
 		data-public-reader
 	>
 		<header class="border-b pb-6">
-			{#if navigation.length}<button
-					type="button"
-					class="text-primary mb-3 min-h-10 underline"
-					onclick={backToSource}>Back to source</button
-				>{/if}
+			<button
+				type="button"
+				class="text-primary mb-3 min-h-10 underline"
+				hidden={!navigation.length}
+				disabled={!navigation.length}
+				onclick={backToSource}>Back to source</button
+			>
 			<p class="text-muted-foreground text-sm">Public workflow snapshot</p>
 			<h1 class="mt-1 text-3xl font-semibold wrap-break-word">{main.name}</h1>
 			<p class="text-muted-foreground mt-2 min-w-0 text-sm break-words">
@@ -192,7 +194,8 @@
 						class="bg-primary text-primary-foreground rounded-md px-4 py-2 font-medium"
 						href="/workflows/import?publication={snapshot.snapshot_id}"
 						data-sveltekit-preload-data="off">Install a copy</a
-					>{:else}<button
+					>{/if}
+				{#if !data.user}<button
 						class="bg-primary text-primary-foreground rounded-md px-4 py-2 font-medium"
 						onclick={(event) => signIn?.open(event.currentTarget)}>Sign in to install</button
 					>{/if}

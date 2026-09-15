@@ -8,7 +8,7 @@
 		uses = [],
 		onToken,
 		fieldId,
-		expanded = $bindable(false)
+		expanded = $bindable<boolean | undefined>()
 	}: {
 		source: string;
 		linkMode?: 'confirm' | 'inert';

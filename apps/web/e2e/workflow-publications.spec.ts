@@ -17,7 +17,6 @@ test.describe.serial('public workflow snapshots', () => {
 	let hostedPlan: PrepareWorkflowPackageResponse;
 
 	test('publishes exact bytes and exposes a responsive anonymous text-only inspection', async ({
-		page,
 		request,
 		browser
 	}) => {
@@ -25,7 +24,7 @@ test.describe.serial('public workflow snapshots', () => {
 		const workflow = await body<{ id: string }>(
 			await alice.post('/api/v1/workflows', {
 				name: marker,
-				description: `Inspectable exact text ${marker}\n\n[External guide](https://example.com/public-guide)`,
+				description: `Inspectable exact text ${marker}\n\n[External guide](https://example.com/public-guide)\n\n${'reader-state '.repeat(120)}`,
 				initial_state: 'Draft',
 				states: [
 					{ name: 'Draft', category: 'active' },
@@ -83,6 +82,8 @@ test.describe.serial('public workflow snapshots', () => {
 		await ownerPage.getByRole('button', { name: 'Publish immutable snapshot' }).click();
 		await expect(ownerPage.getByText('Published', { exact: true })).toBeVisible();
 		await ownerContext.close();
+		const publicContext = await browser.newContext();
+		const page = await publicContext.newPage();
 
 		const download = await request.get(`/api/v1/publications/public/${snapshotId}/download`);
 		expect(download.ok()).toBe(true);
@@ -120,6 +121,7 @@ test.describe.serial('public workflow snapshots', () => {
 		await page.getByRole('button', { name: 'Send report' }).click();
 		await expect(page.getByRole('heading', { name: 'Report received' })).toBeVisible();
 		await expect(page.getByText(/^Reference: rpt_/)).toBeFocused();
+		await publicContext.close();
 
 		const moderatorContext = await browser.newContext();
 		await signIn(moderatorContext, ALICE.sessionToken);
@@ -163,6 +165,27 @@ test.describe.serial('public workflow snapshots', () => {
 		const observed = await observedContext.newPage();
 		await gotoHydrated(observed, `/p/${snapshotId}`);
 		await expect(observed.getByText(marker, { exact: false }).first()).toBeVisible();
+		const expansion = observed.getByRole('button', { name: /Show all \d+ words/ });
+		await expansion.click();
+		const collapse = observed.getByRole('button', { name: 'Show snippet' });
+		await collapse.focus();
+		let releaseAvailable!: () => void;
+		const availableRelease = new Promise<void>((resolve) => (releaseAvailable = resolve));
+		let availableStarted!: () => void;
+		const availableRequest = new Promise<void>((resolve) => (availableStarted = resolve));
+		await observed.route(`**/api/v1/publications/public/${snapshotId}/status`, async (route) => {
+			availableStarted();
+			await availableRelease;
+			await route.continue();
+		});
+		await observed.evaluate(() => dispatchEvent(new PageTransitionEvent('pageshow')));
+		await availableRequest;
+		await expect(observed.getByText(marker, { exact: false })).toHaveCount(0);
+		releaseAvailable();
+		await expect(observed.getByText(marker, { exact: false }).first()).toBeVisible();
+		await expect(collapse).toBeFocused();
+		await observed.unroute(`**/api/v1/publications/public/${snapshotId}/status`);
+
 		let releaseStatus!: () => void;
 		const release = new Promise<void>((resolve) => (releaseStatus = resolve));
 		let statusStarted!: () => void;
