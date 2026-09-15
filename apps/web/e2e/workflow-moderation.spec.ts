@@ -77,7 +77,7 @@ test('reports, removes, restores, suspends and recovers one exact public snapsho
 	const ownerPage = await owner.newPage();
 	await ownerPage.goto('/publications');
 	await expect(ownerPage.getByText('Publisher suspension shown to owner').first()).toBeVisible();
-	await expect(ownerPage.getByRole('link', { name: /appeal/i })).toHaveAttribute(
+	await expect(ownerPage.getByRole('link', { name: /appeal/i }).first()).toHaveAttribute(
 		'href',
 		'mailto:appeals@e2e.test'
 	);
