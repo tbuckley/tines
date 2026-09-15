@@ -133,6 +133,38 @@ export async function listModerationCases(
 	};
 }
 
+export async function listSuspendedPublishers(db: Kysely<Database>, env: Env, actor: ActorContext) {
+	assertHostModerator(actor, env);
+	const statuses = await db
+		.selectFrom('workflow_publisher_status')
+		.select(['user_id', 'status_version', 'decision_reason', 'decision_reference'])
+		.where('suspended', '=', 1)
+		.orderBy('user_id')
+		.limit(100)
+		.execute();
+	return Promise.all(
+		statuses.map(async (status) => {
+			const anchor = await db
+				.selectFrom('workflow_publication')
+				.select(['snapshot_id', 'metadata_json'])
+				.where('user_id', '=', status.user_id)
+				.where('snapshot_id', 'is not', null)
+				.orderBy('published_at', 'desc')
+				.executeTakeFirst();
+			return {
+				publisher_id: status.user_id,
+				status_version: status.status_version,
+				reason: status.decision_reason,
+				reference: status.decision_reference,
+				snapshot_id: anchor?.snapshot_id ?? null,
+				display_name: anchor?.metadata_json
+					? publicLabels('{}', anchor.metadata_json).displayName
+					: 'Suspended publisher'
+			};
+		})
+	);
+}
+
 export async function inspectModerationSnapshot(
 	db: Kysely<Database>,
 	env: Env,

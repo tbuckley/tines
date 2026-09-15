@@ -6,6 +6,7 @@
 	let busy = $state(false);
 	let message = $state('');
 	let pendingUrgent = $state<Record<string, unknown> | null>(null);
+	let recoveryReason = $state('');
 
 	function snapshotId(value: string) {
 		if (/^[A-Za-z0-9_-]{20,100}$/.test(value)) return value;
@@ -55,6 +56,41 @@
 			busy = false;
 		}
 	}
+
+	async function unsuspend(publisher: (typeof data.suspendedPublishers)[number]) {
+		if (!recoveryReason.trim()) {
+			message = 'Enter a recovery reason.';
+			return;
+		}
+		busy = true;
+		message = '';
+		try {
+			const response = await fetch('/api/v1/host/workflow-moderation/decisions', {
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({
+					request_id: crypto.randomUUID(),
+					action: 'unsuspend',
+					target: {
+						publisher_id: publisher.publisher_id,
+						snapshot_id: publisher.snapshot_id ?? undefined
+					},
+					reason: recoveryReason,
+					expected_publisher_version: publisher.status_version
+				})
+			});
+			const responseBody = await response.json();
+			if (!response.ok)
+				throw new Error(responseBody?.error?.message ?? 'Could not unsuspend publisher.');
+			recoveryReason = '';
+			message = 'Publisher unsuspended.';
+			await invalidateAll();
+		} catch (error) {
+			message = error instanceof Error ? error.message : 'Could not unsuspend publisher.';
+		} finally {
+			busy = false;
+		}
+	}
 </script>
 
 <svelte:head
@@ -98,6 +134,40 @@
 		>
 	</form>
 	{#if message}<p class="mt-3 text-sm" role="status">{message}</p>{/if}
+</section>
+
+<section class="mt-8 rounded-lg border p-4" aria-labelledby="recovery-title">
+	<h2 id="recovery-title" class="font-semibold">Suspended publishers</h2>
+	<p class="text-muted-foreground mt-1 text-sm">
+		Recovery remains available even when no snapshot survives.
+	</p>
+	{#if data.suspendedPublishers.length === 0}<p class="mt-3 text-sm">No suspended publishers.</p>
+	{:else}<label class="mt-3 block text-sm"
+			>Recovery reason<input
+				class="mt-1 min-h-10 w-full rounded-md border bg-transparent px-3"
+				bind:value={recoveryReason}
+			/></label
+		>
+		<ul class="mt-3 space-y-2">
+			{#each data.suspendedPublishers as publisher}<li
+					class="flex flex-wrap items-center justify-between gap-3 rounded-md border p-3 text-sm"
+				>
+					<span
+						><b>{publisher.display_name}</b><br /><span class="text-muted-foreground"
+							>{publisher.reason}</span
+						></span
+					><span class="flex gap-2"
+						>{#if publisher.snapshot_id}<a
+								class="rounded-md border px-3 py-2"
+								href="/host/workflow-reports/{publisher.snapshot_id}">Inspect</a
+							>{/if}<button
+							class="rounded-md border px-3 py-2"
+							disabled={busy}
+							onclick={() => unsuspend(publisher)}>Unsuspend</button
+						></span
+					>
+				</li>{/each}
+		</ul>{/if}
 </section>
 
 <section class="mt-8" aria-labelledby="cases-title">

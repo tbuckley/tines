@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { invalidateAll } from '$app/navigation';
+	import PublicSnapshotReader from '$lib/components/publications/PublicSnapshotReader.svelte';
 	let { data } = $props();
 	let reason = $state('');
 	let busy = $state('');
@@ -92,10 +93,12 @@
 		{#if !data.stored}<p class="bg-muted mt-4 rounded p-4 text-sm">
 				The immutable snapshot is no longer stored. Retained reports and decision history remain
 				available below.
-			</p>{:else}<pre
-				class="bg-muted mt-4 max-h-[65vh] overflow-auto rounded p-4 text-xs break-words whitespace-pre-wrap">{data.document
-					? JSON.stringify(data.document, null, 2)
-					: data.raw_document_json}</pre>{/if}
+			</p>{:else if data.document}<div class="mt-4 max-h-[65vh] overflow-auto">
+				<PublicSnapshotReader document={data.document} />
+			</div>
+		{:else}<p class="bg-muted mt-4 rounded p-4 text-sm">
+				Stored snapshot cannot be parsed safely. {data.diagnostics.join(' ')}
+			</p>{/if}
 	</section>
 	<aside class="min-w-0 rounded-lg border p-4">
 		<h2 class="font-semibold">Decision</h2>
