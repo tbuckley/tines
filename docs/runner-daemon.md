@@ -168,6 +168,11 @@ and prepends `~/.config/tines/cli/node_modules/.bin` to the harness's `PATH`. No
   The daemon logs it, and every run's log records which CLI executed it on its first line.
 - To reset, delete `~/.config/tines/cli` (it is rebuilt on the next refresh). To opt out
   entirely, pass `--no-cli-refresh`.
+- **Restart the daemon after upgrading it.** The refresh runs inside the daemon process, so
+  a daemon that has been up since before this feature shipped never performs one: the prefix
+  is simply absent and every harness silently falls through to the ambient `PATH`. If agents
+  report a `tines` older than npm's, check the daemon first — `ls ~/.config/tines/cli`
+  (missing prefix), then `tines --version` against `npm view tines version`.
 
 ### Keeping the daemon itself current
 
