@@ -6,6 +6,7 @@ import { USER, seedBase } from '../supervisor/test-fixtures';
 import { createContextItem } from '../api/context';
 import { createWorkflow } from '../api/workflows';
 import { preparePublication } from './prepare';
+import { publishPublication } from './publish';
 import { buildOwnedPublicationSourceProof } from './source';
 
 const actor = {
@@ -38,7 +39,8 @@ describe('publication preparation', () => {
 			PUBLIC_WORKFLOW_REPORT_HMAC_SECRET: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
 			PUBLIC_WORKFLOW_APPEAL_CONTACT: 'mailto:appeals@example.test',
 			PUBLIC_WORKFLOW_MODERATION_QUEUE_READY: 'true',
-			PUBLIC_WORKFLOW_MODERATION_JOURNEY_VERIFIED: 'true'
+			PUBLIC_WORKFLOW_MODERATION_JOURNEY_VERIFIED: 'true',
+			TINES_PUBLIC_URL: 'https://tines.example'
 		} as Env;
 		const workflow = await createWorkflow(t.db, t.env, actor, {
 			name: 'Publish draft',
@@ -118,6 +120,46 @@ describe('publication preparation', () => {
 				).source_provenance_json
 			)
 		).toMatchObject({ draft_version: 1, baseline: { exported_at: 1000 } });
+		await t.db
+			.updateTable('context_item')
+			.set({ body: 'source changed during review' })
+			.where('id', '=', prompt.id)
+			.execute();
+		await expect(
+			publishPublication(
+				t.db,
+				env,
+				actor,
+				proof.candidate_id,
+				{
+					review_digest: proof.review_digest,
+					sharing_rights: true,
+					exact_content: true,
+					reviewed_repo_ids: []
+				},
+				3000
+			)
+		).rejects.toMatchObject({ code: 'publication_source_changed' });
+		expect(await t.db.selectFrom('workflow_publication_event').selectAll().execute()).toEqual([]);
+		await t.db
+			.updateTable('context_item')
+			.set({ body: 'customer-portal and customer-portal' })
+			.where('id', '=', prompt.id)
+			.execute();
+		const published = await publishPublication(
+			t.db,
+			env,
+			actor,
+			proof.candidate_id,
+			{
+				review_digest: proof.review_digest,
+				sharing_rights: true,
+				exact_content: true,
+				reviewed_repo_ids: []
+			},
+			4000
+		);
+		expect(published.receipt.document_digest).toBe(proof.document_digest);
 	});
 
 	it('stores an actor-bound candidate and reconciles an identical request', async () => {

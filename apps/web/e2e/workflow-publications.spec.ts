@@ -306,6 +306,91 @@ test.describe.serial('public workflow snapshots', () => {
 		);
 	});
 
+	test('publishes one authored occurrence and installs another value without changing the source', async ({
+		browser,
+		request
+	}) => {
+		const alice = apiClient(request, ALICE.apiKey);
+		const draftMarker = `publication-draft-${runId}`;
+		const workflow = await body<{ id: string; states: { id: string; name: string }[] }>(
+			await alice.post('/api/v1/workflows', {
+				name: draftMarker,
+				initial_state: 'Draft',
+				states: [{ name: 'Draft', category: 'active' }],
+				transitions: []
+			})
+		);
+		await body(
+			await alice.post('/api/v1/context', {
+				kind: 'prompt',
+				name: 'instructions',
+				workflow_state_id: workflow.states[0].id,
+				body: 'customer-portal and customer-portal'
+			})
+		);
+
+		const ownerContext = await browser.newContext();
+		await signIn(ownerContext, ALICE.sessionToken);
+		const ownerPage = await ownerContext.newPage();
+		await gotoHydrated(ownerPage, `/workflows/${workflow.id}/export`);
+		await ownerPage.getByLabel('Public display name').fill('Alice Draft');
+		await ownerPage
+			.getByText('Customize instructions and variables (optional)', { exact: true })
+			.click();
+		await ownerPage.getByLabel('Key').fill('project_name');
+		await ownerPage.getByRole('textbox', { name: 'Label', exact: true }).fill('Project name');
+		await ownerPage.getByLabel('Default').fill('customer-portal');
+		await ownerPage.getByRole('button', { name: 'Add variable' }).click();
+		await ownerPage
+			.getByLabel('Edit instructions')
+			.selectOption({ label: 'instructions — prompt body' });
+		const editor = ownerPage.locator('textarea');
+		await editor.evaluate((element) => (element as HTMLTextAreaElement).setSelectionRange(0, 15));
+		await ownerPage.getByRole('button', { name: 'Use selected variable here' }).click();
+		await ownerPage.getByRole('button', { name: 'Edit input project_name' }).click();
+		await ownerPage.getByLabel('Default').fill('billing-service');
+		await ownerPage.getByRole('button', { name: 'Save changes' }).click();
+		await expect(editor).toHaveValue('{{project_name:billing-service}} and customer-portal');
+		await ownerPage.getByRole('button', { name: 'Preview', exact: true }).click();
+		await ownerPage.getByRole('button', { name: 'Continue to Share' }).click();
+		await ownerPage
+			.getByRole('checkbox', { name: /I have the right to share all included content/ })
+			.check();
+		await ownerPage.getByRole('button', { name: 'Publish workflow' }).click();
+		await expect(ownerPage.getByRole('heading', { name: 'Shared', exact: true })).toBeVisible();
+		const publicHref = await ownerPage.locator('a[href*="/p/"]').first().getAttribute('href');
+		expect(publicHref).toBeTruthy();
+		await ownerContext.close();
+
+		const bobContext = await browser.newContext();
+		await signIn(bobContext, BOB.sessionToken);
+		const bobPage = await bobContext.newPage();
+		await gotoHydrated(bobPage, `${new URL(publicHref!).pathname}/install`);
+		await bobPage.getByLabel('Project name').fill('support-console');
+		await bobPage.getByRole('button', { name: 'Preview installation' }).click();
+		await bobPage.getByLabel(/I reviewed what will be installed/).check();
+		await bobPage.getByRole('button', { name: 'Install workflow' }).click();
+		await expect(bobPage.getByRole('heading', { name: 'Installed', exact: true })).toBeVisible();
+		const installedHref = await bobPage
+			.getByRole('link', { name: 'Open workflow' })
+			.getAttribute('href');
+		const installedId = installedHref!.split('/').at(-1)!;
+		await bobContext.close();
+
+		const bob = apiClient(request, BOB.apiKey);
+		const installed = await body<{ states: { id: string }[] }>(
+			await bob.get(`/api/v1/workflows/${installedId}`)
+		);
+		const installedContext = await body<{ items: { body: string | null }[] }>(
+			await bob.get(`/api/v1/context?state=${installed.states[0].id}`)
+		);
+		expect(installedContext.items[0].body).toBe('support-console and customer-portal');
+		const sourceContext = await body<{ items: { body: string | null }[] }>(
+			await alice.get(`/api/v1/context?state=${workflow.states[0].id}`)
+		);
+		expect(sourceContext.items[0].body).toBe('customer-portal and customer-portal');
+	});
+
 	test('withdrawal returns one neutral page without the removed marker', async ({
 		page,
 		request

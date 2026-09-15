@@ -131,6 +131,13 @@ neither repositories nor other external package dependencies, and download does 
 publish anything. If the candidate or a required review changes while validation is pending, the
 older result is discarded and no file is downloaded.
 
+**Preview** publishes the saved browser draft directly: declarations, defaults, registered
+occurrences, and supported text edits do not need to be copied into the private workflow first. The
+server verifies the clean owned baseline and freezes the exact edited document shown in Preview.
+Changing the draft, display name, or automation selection clears that proof and its reviews. If the
+owned source changes, the draft stays in the browser but cannot be shared until the user explicitly
+refreshes or rebuilds; refreshing never silently merges or writes draft text into the private source.
+
 ## Whole-library backups and transfer
 
 Settings → Export / import downloads v3 `profile:library` files. These also contain ambient scopes, projects, labels and optional journals. Review sensitive prompt and skill contents before sharing. On import, every workflow has a local-ID mapping row. Choose an existing workflow by destination ID or create an independently named workflow. Duplicate source names remain distinct in an empty destination; collisions with ambiguous existing names require explicit choices. Settings proposes unused renamed creates. The preview resets whenever a choice changes.

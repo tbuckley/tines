@@ -337,7 +337,9 @@
 				source: {
 					kind: 'owned_workflow',
 					workflow_id: data.workflow.id,
-					options: structuredClone(appliedSourceOptions),
+					options: JSON.parse(
+						canonicalizeLibraryValue(appliedSourceOptions)
+					) as PublicationSourceOptions,
 					draft: {
 						version: 1,
 						baseline: { ...baseline },
@@ -359,7 +361,13 @@
 			step = 'preview';
 			await focusStep();
 		} catch (error) {
-			status = 'Preview could not be loaded. Fix the highlighted field or try Preview again.';
+			if (revision !== publicationFlow.revision) return;
+			status =
+				error instanceof ApiError &&
+				(error.code === 'publication_source_changed' ||
+					error.code === 'publication_source_changing')
+					? 'The source changed. Your draft edits are still here. Review the latest source before sharing.'
+					: message(error);
 			const details = error instanceof ApiError ? error.details?.diagnostics : null;
 			if (Array.isArray(details)) {
 				diagnostics = details.filter(
@@ -410,7 +418,28 @@
 			step = 'complete';
 			await focusStep();
 		} catch (error) {
-			status = 'We could not confirm whether sharing finished. Retry publishing to check safely.';
+			if (
+				error instanceof ApiError &&
+				(error.code === 'publication_source_changed' ||
+					error.code === 'publication_source_changing' ||
+					error.code === 'publication_proof_expired' ||
+					error.code === 'publication_policy_changed')
+			) {
+				publicationFlow.invalidate();
+				publicationProof = null;
+				reviewed = new Set();
+				shareConsent = false;
+				step = 'customize';
+				status =
+					error.code === 'publication_source_changed' ||
+					error.code === 'publication_source_changing'
+						? 'The source changed. Your draft edits are still here. Review the latest source before sharing.'
+						: 'Preview this version again before sharing.';
+				await focusStep();
+			} else if (error instanceof ApiError && error.code !== 'publication_outcome_unknown')
+				status = error.message;
+			else
+				status = 'We could not confirm whether sharing finished. Retry publishing to check safely.';
 		} finally {
 			busy = false;
 		}
