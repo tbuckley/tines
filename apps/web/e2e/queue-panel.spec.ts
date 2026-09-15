@@ -184,8 +184,18 @@ test.describe.serial('the Now row', () => {
 		await expect(panel).toContainText('tines runner install');
 
 		// Part 3: the annotations, on the runner card and the rule row.
-		await expect(page.getByRole('link', { name: '3 waiting', exact: true })).toBeVisible();
-		await expect(page.getByRole('link', { name: /3 waiting · oldest/ }).first()).toBeVisible();
+		await expect(
+			page
+				.locator(`#runner-${world.runnerId}`)
+				.getByRole('link', { name: '3 waiting', exact: true })
+		).toBeVisible();
+		await expect(
+			page
+				.locator('li')
+				.filter({ hasText: world.runnerName })
+				.getByRole('link', { name: /3 waiting · oldest/ })
+				.first()
+		).toBeVisible();
 	});
 
 	test('answers a run key on the queue and the settings read, without the PAT hint', async ({
