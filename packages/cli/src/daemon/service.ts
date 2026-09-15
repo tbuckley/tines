@@ -60,6 +60,7 @@ export interface DaemonArgsInput {
 	harness: string;
 	command?: string;
 	maxConcurrent: number;
+	allowRemoteConcurrency?: boolean;
 	pollIntervalSeconds?: number;
 	keepWorkspaces?: string;
 	keepWorkspacesForHours?: number;
@@ -85,6 +86,7 @@ export function daemonArgs(input: DaemonArgsInput): string[] {
 	];
 	if (input.command !== undefined) args.push('--command', input.command);
 	if (input.maxConcurrent !== 1) args.push('--max-concurrent', String(input.maxConcurrent));
+	if (input.allowRemoteConcurrency) args.push('--allow-remote-concurrency');
 	if (input.pollIntervalSeconds !== undefined && input.pollIntervalSeconds !== 15)
 		args.push('--poll-interval', String(input.pollIntervalSeconds));
 	if (input.keepWorkspaces !== undefined && input.keepWorkspaces !== 'never')

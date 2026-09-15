@@ -10,16 +10,52 @@
  * reload. Nothing ever launches: an `assigned` local run waits for a daemon
  * poll that never comes, and the cleanup step disables automation to cancel it.
  */
-import type { IssueDetail, Project, RoutingRule, Runner } from '@tines/shared';
+import type { Project, RoutingRule, Runner, RunnerTokenResponse } from '@tines/shared';
+import type { APIRequestContext } from '@playwright/test';
 import { expect, test as base } from './fixtures';
 import { ALICE, RUNROW } from './constants.mjs';
 import { apiClient, body, clickUntil, gotoHydrated, resetFocus } from './helpers';
 
 type QueueWorld = { projectId: string; runnerId: string; runnerName: string };
+type QueueAudit = { runnerId?: string; ruleId?: string };
 
-const test = base.extend<{}, { world: QueueWorld }>({
+const test = base.extend<{}, { queueAudit: QueueAudit; world: QueueWorld }>({
+	queueAudit: [
+		async ({ apiFor }, use) => {
+			const api = apiFor(ALICE);
+			const audit: QueueAudit = {};
+			await use(audit);
+
+			const settings = await body<{ enabled: boolean }>(
+				await api.get('/api/v1/supervisor/settings')
+			);
+			expect(settings.enabled, 'queue teardown disables automation').toBe(false);
+			if (audit.runnerId) {
+				const active = await body<{ items: { runner_id: string }[] }>(
+					await api.get('/api/v1/runs?active=true')
+				);
+				expect(
+					active.items.some((run) => run.runner_id === audit.runnerId),
+					'queue teardown settles runner-owned runs'
+				).toBe(false);
+				const runners = await body<{ items: Runner[] }>(await api.get('/api/v1/runners'));
+				expect(
+					runners.items.some((runner) => runner.id === audit.runnerId),
+					'queue teardown deletes the runner'
+				).toBe(false);
+			}
+			if (audit.ruleId) {
+				const rules = await body<{ items: RoutingRule[] }>(await api.get('/api/v1/routing-rules'));
+				expect(
+					rules.items.some((rule) => rule.id === audit.ruleId),
+					'queue teardown deletes the routing rule'
+				).toBe(false);
+			}
+		},
+		{ scope: 'worker' }
+	],
 	world: [
-		async ({ apiFor, uniqueName }, use) => {
+		async ({ apiFor, queueAudit, uniqueName }, use) => {
 			const api = apiFor(ALICE);
 			let runnerId: string | undefined;
 			let ruleId: string | undefined;
@@ -37,7 +73,11 @@ const test = base.extend<{}, { world: QueueWorld }>({
 						).status()
 					).toBe(201);
 				}
-				const runnerName = uniqueName('queue-runner');
+				// The API accepts 100 characters. Exercise that boundary because a short
+				// name cannot expose a non-shrinking action row on a phone.
+				const runnerName = uniqueName('queue-worst-case-runner-name-'.repeat(8), {
+					maxLength: 100
+				});
 				const runner = await body<Runner>(
 					await api.post('/api/v1/runners', {
 						type: 'local',
@@ -46,6 +86,7 @@ const test = base.extend<{}, { world: QueueWorld }>({
 					})
 				);
 				runnerId = runner.id;
+				queueAudit.runnerId = runner.id;
 				expect(runner.last_seen_at).toBeNull();
 				const rule = await body<RoutingRule>(
 					await api.post('/api/v1/routing-rules', {
@@ -54,6 +95,7 @@ const test = base.extend<{}, { world: QueueWorld }>({
 					})
 				);
 				ruleId = rule.id;
+				queueAudit.ruleId = rule.id;
 				expect((await api.put('/api/v1/supervisor/settings', { enabled: true })).status()).toBe(
 					200
 				);
@@ -65,6 +107,17 @@ const test = base.extend<{}, { world: QueueWorld }>({
 						(await api.put('/api/v1/supervisor/settings', { enabled: false })).status(),
 						'disable queue-world automation'
 					).toBe(200);
+				}
+				if (runnerId) {
+					const active = await body<{ items: { id: string; runner_id: string }[] }>(
+						await api.get('/api/v1/runs?active=true')
+					);
+					for (const run of active.items.filter((item) => item.runner_id === runnerId)) {
+						expect(
+							(await api.post(`/api/v1/runs/${run.id}/cancel`)).ok(),
+							'cancel a queue-world active run'
+						).toBe(true);
+					}
 				}
 				if (ruleId) {
 					expect((await api.delete(`/api/v1/routing-rules/${ruleId}`)).status()).toBe(204);
@@ -81,15 +134,30 @@ const test = base.extend<{}, { world: QueueWorld }>({
 });
 test.use({ signedIn: ALICE });
 
-/** Registering an existing name reconnects it: stamps `last_seen_at`, mints a token. */
-async function bringOnline(api: ReturnType<typeof apiClient>, world: QueueWorld): Promise<void> {
+/** Re-register, then confirm the modern local policy before dispatch can use it. */
+async function bringOnline(
+	api: ReturnType<typeof apiClient>,
+	request: APIRequestContext,
+	world: QueueWorld
+): Promise<void> {
 	const res = await api.post('/api/v1/runners/register', {
 		name: world.runnerName,
 		harness: 'custom',
 		command: 'true'
 	});
 	expect(res.status(), 'reconnect the fixture runner').toBe(201);
-	expect((await res.json()).runner.id).toBe(world.runnerId);
+	const registered = (await res.json()) as RunnerTokenResponse;
+	expect(registered.runner.id).toBe(world.runnerId);
+	const poll = await request.post(`/api/v1/runners/${world.runnerId}/poll`, {
+		headers: { authorization: `Bearer ${registered.runner_token}` },
+		data: {
+			instance_id: `queue_${world.runnerId}`,
+			owned_runs: [],
+			max_concurrent: 1,
+			concurrency_control: { version: 1, allow_remote: true, ceiling: 3 }
+		}
+	});
+	expect(poll.status(), 'confirm local concurrency policy').toBe(200);
 }
 
 /** Active runs currently claimed by the fixture runner. */
@@ -140,10 +208,11 @@ test.describe.serial('the Now row', () => {
 	test('flips to "at capacity" once the runner is online and one issue is claimed', async ({
 		page,
 		request,
+		workerRequest,
 		world
 	}) => {
 		const api = apiClient(request, ALICE.apiKey);
-		await bringOnline(api, world);
+		await bringOnline(api, workerRequest, world);
 
 		// A settings write queues an opportunistic pass, which claims one issue
 		// as `assigned` and saturates the 1-slot runner. (The poll route only
@@ -157,21 +226,42 @@ test.describe.serial('the Now row', () => {
 			})
 			.toBe(1);
 
+		await page.setViewportSize({ width: 390, height: 844 });
 		await page.goto('/agents');
 		const panel = page.getByRole('region', { name: 'Waiting for an agent' });
 		await expect(panel).toContainText(`at capacity on ${world.runnerName} (1/1)`);
 		await expect(panel).toContainText('2 issues');
+		const actions = panel
+			.locator('li')
+			.filter({ hasText: `at capacity on ${world.runnerName}` })
+			.getByTestId('queue-actions');
+		await expect(actions).toBeVisible();
+		const panelBox = await panel.boundingBox();
+		const actionBox = await actions.boundingBox();
+		expect(panelBox).not.toBeNull();
+		expect(actionBox).not.toBeNull();
+		expect(panelBox!.x + panelBox!.width).toBeLessThanOrEqual(390);
+		expect(actionBox!.x).toBeGreaterThanOrEqual(panelBox!.x);
+		expect(actionBox!.x + actionBox!.width).toBeLessThanOrEqual(panelBox!.x + panelBox!.width);
+		for (const button of await actions.getByRole('button').all()) {
+			const box = await button.boundingBox();
+			expect(box).not.toBeNull();
+			expect(box!.x).toBeGreaterThanOrEqual(panelBox!.x);
+			expect(box!.x + box!.width).toBeLessThanOrEqual(panelBox!.x + panelBox!.width);
+			expect(box!.x + box!.width).toBeLessThanOrEqual(390);
+		}
 	});
 
 	test('drains the group when the cap is raised from the panel, without a reload', async ({
 		page,
 		request,
+		workerRequest,
 		world
 	}) => {
 		// The online window is two minutes; re-register so the verdict is
 		// capacity, not the runner having gone quiet while the last test ran.
 		const api = apiClient(request, ALICE.apiKey);
-		await bringOnline(api, world);
+		await bringOnline(api, workerRequest, world);
 
 		// This test clicks, so it waits for hydration (CLAUDE.md); the read-only
 		// tests above stay on a bare goto.

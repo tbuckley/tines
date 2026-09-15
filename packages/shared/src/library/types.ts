@@ -280,6 +280,7 @@ export interface PrepareWorkflowPackageResponse {
 	compiler_version: number;
 	plan_token: string;
 	budget: WorkflowPackageBudget;
+	source?: import('../publications.js').HostedPublicationBinding;
 }
 
 export interface WorkflowPackageBudget {
@@ -319,4 +320,5 @@ export interface WorkflowPackageReceipt {
 		relationship?: 'main' | 'dependency';
 	}>;
 	reused_inputs: Array<{ input_id: string; type: string; id: string; name: string }>;
+	source?: import('../publications.js').HostedPublicationBinding;
 }

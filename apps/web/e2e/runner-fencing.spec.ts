@@ -52,7 +52,18 @@ test('native D1 polling fences the immediate predecessor and preserves legacy om
 		poll(request, id, token, 'daemon_C'),
 		poll(request, id, token, 'daemon_D')
 	]);
-	expect(attempts.every((response) => response.ok())).toBe(true);
+	const attemptResults = await Promise.all(
+		attempts.map(async (response, index) => ({
+			instance: ['daemon_C', 'daemon_D'][index],
+			ok: response.ok(),
+			status: response.status(),
+			body: await response.text()
+		}))
+	);
+	expect(
+		attemptResults.map(({ ok }) => ok),
+		`concurrent unseen poll responses:\n${JSON.stringify(attemptResults, null, 2)}`
+	).toEqual([true, true]);
 	const followups = await Promise.all([
 		poll(request, id, token, 'daemon_C'),
 		poll(request, id, token, 'daemon_D')

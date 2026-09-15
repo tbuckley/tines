@@ -22,6 +22,13 @@ already solved once is not re-solved per spec (Tines/170).
   export→import→re-import (`library`), Dana's walkthrough (`first-run-checklist`), agent
   onboarding (`agents-first-run`), and the mutation tails in `projects-archive`,
   `issue-transfer`, and `queue-panel`. Run the complete block/file on a fresh seed.
+- `E2E_SKIP_BUILD=1` requires an existing build created with `VITE_TINES_E2E=1`; the
+  opt-in exposes the public SvelteKit page-state bridge used by the Agents navigation spec.
+- The shared `d1()` CLI helper retries only `SQLITE_BUSY` / `database is locked` process
+  diagnostics, for at most six whole-command attempts with bounded backoff. Wrangler runs
+  each command as one transactional D1 batch, so replay does not partially duplicate a
+  multi-statement operation. Invalid SQL, malformed output, and other permanent failures
+  remain first-attempt failures.
 - If a polling page is followed by `ProxyController emitErrorEvent`, `Error inside
 ProxyWorker`, or `Network connection lost` and the dev server exits, check the workspace
   version with `pnpm --filter @tines/web exec wrangler --version`. This is the
@@ -74,6 +81,18 @@ browser. It does not sign in contexts created manually with `browser.newContext(
 reset preferences: preserve explicit `resetFocus` calls and the dedicated DANA, SPEND,
 PAGINATION, AGENTS_FIRST_RUN, API_ISOLATION, EXPLAINER_REMEDIES, STOPPED_FIRST_RUN,
 MANAGED_SETTINGS, CAROL, and TRANSFER_RUNTIME account contracts.
+
+To stress D1 CLI contention on fresh isolated stacks, run the affected files sequentially
+with a new port for each invocation. Do not use `--repeat-each` or run these invocations in
+parallel because the specs within one invocation intentionally share D1 fixtures:
+
+```sh
+for iteration in 1 2 3 4 5; do
+	CI=1 E2E_PORT=$((18950 + iteration)) pnpm test:e2e \
+		runner-fencing.spec.ts spend-matrix.spec.ts workflow-package-import.spec.ts \
+		> "d1-stress-${iteration}.log" 2>&1 || exit 1
+done
+```
 
 ## Motion policy
 

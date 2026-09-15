@@ -150,6 +150,7 @@ if (process.argv[2] === '--version') {
     if (m.method === 'initialize') console.log(JSON.stringify({ id: m.id, result: {} }));
     if (m.method === 'model/list') console.log(JSON.stringify({ id: m.id, result: { data: fail ? [] : [
       { model: 'gpt-5.6', supportedReasoningEfforts: [{ reasoningEffort: 'low' }, { reasoningEffort: 'ultra' }] },
+      { model: 'gpt-5.6-sol', supportedReasoningEfforts: [{ reasoningEffort: 'low' }, { reasoningEffort: 'ultra' }] },
       { model: 'gpt-5.6-codex', supportedReasoningEfforts: [{ reasoningEffort: 'low' }, { reasoningEffort: 'ultra' }] },
       { model: 'gpt-5.5-codex', supportedReasoningEfforts: [{ reasoningEffort: 'low' }, { reasoningEffort: 'ultra' }] },
       { model: 'gpt-5-codex', supportedReasoningEfforts: [{ reasoningEffort: 'low' }, { reasoningEffort: 'ultra' }] }
@@ -237,6 +238,10 @@ if (process.argv[2] === '--version') {
 		await api.put('/api/v1/supervisor/settings', { enabled: false });
 		const argv = JSON.parse(readFileSync(argvFile, 'utf8')) as string[];
 		expect(argv).toContain('model_reasoning_effort="ultra"');
+		const modelFlag = argv.indexOf('--model');
+		expect(modelFlag).toBeGreaterThanOrEqual(0);
+		expect(argv[modelFlag + 1]).toBe(model);
+		expect(run.model).toBe(model);
 		expect(run.requested_effort).toBe('ultra');
 		expect(run.resolved_effort).toBe('ultra');
 		expect(run.effort_application_status).toBe('accepted_unconfirmed');

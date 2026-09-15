@@ -635,6 +635,66 @@ export function createApiClient(options: ApiClientOptions) {
 			get<import('./library/types.js').WorkflowPackageReceipt>(
 				`/api/v1/library/installs/${encodeURIComponent(planId)}`
 			),
+		validatePublication: (body: {
+			document_json: string;
+			metadata?: import('./publications.js').PublicationMetadata;
+		}) =>
+			request<import('./publications.js').ValidatePublicationResponse>(
+				'POST',
+				'/api/v1/publications/validate',
+				body
+			),
+		preparePublication: (body: import('./publications.js').PreparePublicationRequest) =>
+			request<import('./publications.js').PublicationProof>(
+				'POST',
+				'/api/v1/publications/prepare',
+				body
+			),
+		publishPublication: (
+			candidateId: string,
+			body: import('./publications.js').PublishPublicationRequest
+		) =>
+			request<import('./publications.js').PublicationOwnerResult>(
+				'POST',
+				`/api/v1/publications/${encodeURIComponent(candidateId)}/publish`,
+				body
+			),
+		getPublicationResult: (candidateId: string) =>
+			get<import('./publications.js').PublicationOwnerResult>(
+				`/api/v1/publications/${encodeURIComponent(candidateId)}/result`
+			),
+		listPublications: (workflow?: string) =>
+			get<ListResponse<import('./publications.js').PublicationOwnerItem>>(
+				`/api/v1/publications${query({ workflow })}`
+			),
+		withdrawPublication: (snapshotId: string) =>
+			request<import('./publications.js').PublicationOwnerResult>(
+				'POST',
+				`/api/v1/publications/${encodeURIComponent(snapshotId)}/withdraw`
+			),
+		restorePublication: (snapshotId: string) =>
+			request<import('./publications.js').PublicationOwnerResult>(
+				'POST',
+				`/api/v1/publications/${encodeURIComponent(snapshotId)}/restore`
+			),
+		getPublicSnapshot: (snapshotId: string) =>
+			get<import('./publications.js').PublicWorkflowSnapshot>(
+				`/api/v1/publications/public/${encodeURIComponent(snapshotId)}`
+			),
+		getPublicSnapshotStatus: (snapshotId: string) =>
+			get<import('./publications.js').PublicSnapshotStatus>(
+				`/api/v1/publications/public/${encodeURIComponent(snapshotId)}/status`
+			),
+		prepareHostedWorkflowPackage: (snapshotId: string, choices: unknown = {}) =>
+			request<import('./library/types.js').PrepareWorkflowPackageResponse>(
+				'POST',
+				`/api/v1/publications/public/${encodeURIComponent(snapshotId)}/prepare-install`,
+				{ choices }
+			),
+		downloadPublicSnapshot: (snapshotId: string) =>
+			raw('GET', `/api/v1/publications/public/${encodeURIComponent(snapshotId)}/download`),
+		downloadPublicationReuseNotice: (snapshotId: string) =>
+			raw('GET', `/api/v1/publications/public/${encodeURIComponent(snapshotId)}/reuse.txt`),
 
 		validateLibrary: (body: import('./library/types.js').ValidateLibraryRequest) =>
 			request<import('./library/types.js').ValidateLibraryResponse>(

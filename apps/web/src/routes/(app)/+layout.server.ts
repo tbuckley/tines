@@ -13,8 +13,14 @@ import type { LayoutServerLoad } from './$types';
  * queries stay parallel; children that need the layout result inherit its
  * preference dependency through that call.
  */
-export const load: LayoutServerLoad = async ({ locals, platform, depends }) => {
-	if (!locals.user) redirect(302, '/');
+export const load: LayoutServerLoad = async ({ locals, platform, depends, url }) => {
+	if (!locals.user) {
+		const publication =
+			url.pathname === '/workflows/import' ? url.searchParams.get('publication') : null;
+		if (publication && url.searchParams.size === 1 && /^[A-Za-z0-9_-]{20,100}$/.test(publication))
+			redirect(302, `/p/${encodeURIComponent(publication)}/install`);
+		redirect(302, '/');
+	}
 	// Focus-aware loads share this key, so one targeted invalidation refreshes
 	// the chrome, direct dependants, and children that consume parent().
 	depends('app:preferences');

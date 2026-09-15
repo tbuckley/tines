@@ -20,7 +20,7 @@ import {
 } from '../src/lib/server/library/token';
 import { d1, sqlLiteral } from './d1';
 import { BOB } from './constants.mjs';
-import { apiClient, body, DESKTOP, gotoHydrated, PHONE, signIn } from './helpers';
+import { apiClient, body, DESKTOP, gotoHydrated, PHONE, readSettled, signIn } from './helpers';
 
 const LONG_CRON =
 	'0 9 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31 * *';
@@ -156,6 +156,7 @@ let missingWorkflowPath: string;
 let dependencyFirstPath: string;
 let longCronPath: string;
 let dependencyFirstDocument: WorkflowPackageDocument;
+let candidateDocument: WorkflowPackageDocument;
 let mainName: string;
 let dependencyName: string;
 let candidateInputId: string;
@@ -206,6 +207,7 @@ test.beforeAll(async ({ apiFor, uniqueName }) => {
 	);
 	expect(validation.valid).toBe(true);
 	const document = validation.document as WorkflowPackageDocument;
+	candidateDocument = document;
 	packagePath = join(mkdtempSync(join(tmpdir(), 'tines-browser-import-')), 'package.json');
 	writeFileSync(packagePath, JSON.stringify(document));
 	// Array order is not workflow identity: validate an otherwise unchanged dependency-first file.
@@ -262,6 +264,62 @@ test.beforeAll(async ({ apiFor, uniqueName }) => {
 });
 
 test.beforeEach(async ({ context }) => signIn(context, BOB.sessionToken));
+
+test('keeps prepared install actions clear of responsive navigation', async ({ page }) => {
+	await page.setViewportSize({ width: 640, height: 844 });
+	await prepareScheduleProof(page, packagePath, projects[0].id);
+	const actions = page.getByTestId('install-actions');
+	const finalReview = page.getByRole('checkbox', { name: /I reviewed/ }).last();
+	await expect(actions).toBeVisible();
+	await expect(
+		page.getByText('Review every included skill and repository before confirming.')
+	).toBeVisible();
+
+	for (const width of [640, 767, 768]) {
+		await page.setViewportSize({ width, height: 844 });
+		await finalReview.scrollIntoViewIfNeeded();
+		const geometry = await readSettled(() =>
+			page.evaluate(() => {
+				const actions = document
+					.querySelector<HTMLElement>('[data-testid="install-actions"]')!
+					.getBoundingClientRect();
+				const navigation = document
+					.querySelector<HTMLElement>('nav[aria-label="Primary"]')!
+					.getBoundingClientRect();
+				const finalReview = [
+					...document.querySelectorAll<HTMLElement>(
+						'[data-testid="package-review"] input[type="checkbox"]'
+					)
+				]
+					.at(-1)!
+					.getBoundingClientRect();
+				return {
+					actions: { top: actions.top, bottom: actions.bottom },
+					navigation: { top: navigation.top, height: navigation.height },
+					finalReviewBottom: finalReview.bottom,
+					overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+					viewportHeight: window.innerHeight
+				};
+			})
+		);
+		expect(geometry.overflow, `document overflow at ${width}px`).toBe(0);
+		expect(
+			geometry.finalReviewBottom,
+			`final review reachability at ${width}px`
+		).toBeLessThanOrEqual(geometry.actions.top);
+		if (width < 768) {
+			expect(geometry.navigation.height).toBeGreaterThan(0);
+			expect(geometry.actions.bottom, `install/nav clearance at ${width}px`).toBeLessThanOrEqual(
+				geometry.navigation.top
+			);
+		} else {
+			expect(geometry.navigation.height).toBe(0);
+			expect(geometry.actions.bottom).toBe(geometry.viewportHeight);
+		}
+		await expect(page.getByRole('checkbox', { name: /I confirm exact plan/ })).toBeEnabled();
+		await expect(page.getByRole('button', { name: 'Install package' })).toBeVisible();
+	}
+});
 
 test('reviews, confirms and installs an independent project-free package through the real backend', async ({
 	page,
@@ -334,13 +392,47 @@ test('reviews, confirms and installs an independent project-free package through
 	await freshConfirm.focus();
 	await page.keyboard.press('Space');
 	await expect(freshConfirm).toBeChecked();
+	const installResponse = page.waitForResponse(
+		(response) =>
+			response.request().method() === 'POST' &&
+			response.url().endsWith('/api/v1/library/install') &&
+			response.ok()
+	);
 	await page.getByRole('button', { name: 'Install package' }).click();
+	const receipt = (await (await installResponse).json()) as WorkflowPackageReceipt;
 	await expectReceiptLanding(page);
 	const firstObjectLink = page.getByRole('link', { name: 'Open workflow' }).first();
 	await expect(firstObjectLink).toHaveAttribute('href', /^\/workflows\//);
 	await page.keyboard.press('Tab');
 	await expect(firstObjectLink).toBeFocused();
 	expect(installRequests).toHaveLength(1);
+
+	const mainWorkflow = receipt.objects.find(
+		(object) => object.kind === 'workflow' && object.relationship === 'main'
+	)!;
+	const mainDocument = candidateDocument.workflows.find(
+		(workflow) => workflow.id === candidateDocument.main_workflow_id
+	)!;
+	const localState = mainDocument.states[0];
+	const installedState = receipt.objects.find(
+		(object) => object.kind === 'state' && object.local_id === localState.id
+	)!;
+	const expectedStateHref = `/workflows/${mainWorkflow.id}?state=${installedState.id}#state-${installedState.id}`;
+	const stateRow = page
+		.locator('[data-package-receipt] li')
+		.filter({ hasText: `state · ${installedState.name}` });
+	const stateLink = stateRow.getByRole('link', { name: 'Open state' });
+	await expect(stateLink).toHaveAttribute('href', expectedStateHref);
+	await stateLink.click();
+	await expect(page).toHaveURL(expectedStateHref);
+	const target = page.locator(`#state-${installedState.id}`);
+	await expect(target).toHaveCount(1);
+	await expect(target.locator(':scope > button')).toHaveAttribute('aria-expanded', 'true');
+	await expect(target).toBeInViewport();
+
+	await page.goto(`/workflows/${mainWorkflow.id}#state-${installedState.id}`);
+	await expect(page.locator(`#state-${installedState.id}`)).toHaveCount(1);
+	await expect(page.locator(`#state-${installedState.id}`)).toBeInViewport();
 
 	const api = apiClient(request, BOB.apiKey);
 	for (const project of projects) {

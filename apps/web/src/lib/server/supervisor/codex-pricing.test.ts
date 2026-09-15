@@ -73,6 +73,43 @@ describe('priceCodexUsage', () => {
 	});
 
 	it.each([
+		['0.154.0', 'calculated'],
+		['1.0.0', 'calculated'],
+		['0.153.3', 'unpriced'],
+		['0.154.0-rc.1', 'unpriced']
+	] as const)('accepts a request proof only from Codex %s or newer', (version, status) => {
+		const raw = {
+			input_tokens: 300_000,
+			cached_input_tokens: 210_000,
+			cache_write_input_tokens: 10_000,
+			output_tokens: 3_000
+		};
+		const result = price(
+			{
+				input_tokens: 80_000,
+				cache_read_tokens: 210_000,
+				cache_write_tokens: 10_000,
+				output_tokens: 3_000
+			},
+			evidence({
+				raw_usage: raw,
+				request_context: {
+					version: 1,
+					normalization: 'codex-rollout-delta-v1',
+					harness_version: version,
+					status: 'complete',
+					request_count: 2,
+					max_request_input_tokens: 150_000,
+					reconciled_usage: raw
+				}
+			})
+		);
+		expect(result.pricing).toMatchObject(
+			status === 'calculated' ? { status } : { status, reason: 'request_context_invalid' }
+		);
+	});
+
+	it.each([
 		[272_001, 'long_context_rate_unsupported'],
 		[150_000, 'request_context_invalid']
 	] as const)('rejects an unusable request proof (%s)', (max, reason) => {

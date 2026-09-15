@@ -2,7 +2,16 @@ import type { IssueDetail, Project, WorkflowResponse } from '@tines/shared';
 import type { Locator, Page } from '@playwright/test';
 import { expect, test } from './fixtures';
 import { ALICE } from './constants.mjs';
-import { apiClient, body, DESKTOP, PHONE, resetFocus, runId, signIn } from './helpers';
+import {
+	apiClient,
+	body,
+	DESKTOP,
+	gotoHydrated,
+	PHONE,
+	resetFocus,
+	runId,
+	signIn
+} from './helpers';
 
 /**
  * An issue row at both widths. On a phone the title is the whole first line
@@ -315,7 +324,8 @@ async function expectSelectedClear(page: Page, name: string) {
 test.describe('the category tab strip', () => {
 	test('the phone strip fades the edge that hides tabs', async ({ page }) => {
 		await page.setViewportSize(PHONE);
-		await page.goto(listUrl);
+		// Let the selected-tab reveal finish before scrolling the strip.
+		await gotoHydrated(page, listUrl);
 		await expect(tab(page, 'Open')).toBeVisible();
 
 		// It really does overflow — the fade is describing something.

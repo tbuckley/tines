@@ -120,7 +120,19 @@ Workflow-profile v3 files use a signed prepare → install protocol. `POST /api/
 ## Decision update — Tines/101 request dispatch effects
 
 Whole-library imports carry the API request's dispatch effect through workflow overwrites, so changing an existing state category to `active` schedules one coalesced pass even when other import entries fail. Legacy imports carry the same capability through their workflow update helpers, while preserving their existing category behavior. Signed workflow-package installation is intentionally unchanged: it creates new objects, no initial issue, and no dispatch signal.
-
 ## Decision update — Tines/509 schedule proof readability
 
 Workflow-package authoring and prepared installation proofs describe selected schedule recurrences in human-readable text. Presets use the shared recurrence description, cron expressions remain complete and wrap within the proof, and timezone plus the installs-paused explanation remain separate.
+
+## Decision update — Tines/485 declared-input selection feedback
+
+Workflow-package authoring keeps its existing candidate-local declared-input selection semantics. The active declaration remains visibly marked after focus moves to the candidate editor, every declaration exposes its pressed state, and the replacement action repeats the selected key. Adding a declaration and navigating from a rendered token continue to select it; rebuilding retains a surviving input ID and clears a stale one. This feedback does not change candidate data, package tokens, exact text uses, or downloaded bytes.
+
+# Immutable public snapshots (Tines/436)
+
+The public workflow surface hosts exact immutable version 3 workflow-package bytes; it is not a
+gallery, mutable source link, or second package format. Publication is actor-bound, text-only,
+quota-limited, and default-off. One central availability predicate controls anonymous inspection,
+download, hosted preview, and transaction-time install receipt creation. Withdrawal cannot change a
+file already downloaded or an independent installation. The lifecycle and transport contract are in
+[PUBLICATIONS.md](PUBLICATIONS.md).

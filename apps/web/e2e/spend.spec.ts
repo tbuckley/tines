@@ -45,7 +45,7 @@ test.describe('Agents Spend real ledger', () => {
 			'aria-current',
 			'page'
 		);
-		await page.getByRole('button', { name: 'Spend', exact: true }).click();
+		await page.getByRole('button', { name: 'Analysis', exact: true }).click();
 		await expect(page.getByRole('heading', { name: 'Spend' })).toBeVisible();
 		await expect(page).toHaveURL(/unrelated=keep/);
 		await expect(projectTotal(page)).toHaveText('$33.00');
@@ -73,7 +73,7 @@ test.describe('Agents Spend real ledger', () => {
 
 		await page.getByRole('button', { name: 'Now', exact: true }).click();
 		await expect(page.getByRole('heading', { name: 'Spend' })).toBeHidden();
-		await page.getByRole('button', { name: 'Spend', exact: true }).click();
+		await page.getByRole('button', { name: 'Analysis', exact: true }).click();
 		await expect(projectTotal(page)).toHaveText('$24.00');
 		expect(errors).toEqual([]);
 	});
@@ -135,11 +135,11 @@ test.describe('Agents Spend real ledger', () => {
 		await expect(projectTotal(page)).toHaveText('$12.00');
 		const rows = page.locator('.groups article');
 		await expect(rows.nth(0)).toContainText('Ship');
-		await expect(rows.nth(2)).toContainText('Unknown cost');
+		await expect(rows.nth(2)).toContainText(SPEND.workflows.unknown.name);
 		const loaded = requests.length;
 		await page.getByRole('button', { name: 'Cost descending' }).click();
 		await expect(rows.nth(0)).toContainText('Build');
-		await expect(rows.nth(2)).toContainText('Unknown cost');
+		await expect(rows.nth(2)).toContainText(SPEND.workflows.unknown.name);
 		expect(requests).toHaveLength(loaded);
 		await page.getByRole('button', { name: 'Refresh' }).click();
 		await expect.poll(() => requests.length).toBe(loaded + 1);

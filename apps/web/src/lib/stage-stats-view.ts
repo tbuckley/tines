@@ -110,6 +110,12 @@ export function stageRunsHref(currentUrl: URL, stateId: string | null) {
 	url.hash = 'runs';
 	return `${url.pathname}${url.search}${url.hash}`;
 }
+export function stageControlsHref(currentUrl: URL, target: 'runners' | 'routing' | 'quota-policy') {
+	const url = new URL(currentUrl);
+	url.searchParams.delete('agents_view');
+	url.hash = target;
+	return `${url.pathname}${url.search}${url.hash}`;
+}
 export const workflowHref = (stage: StageStats) =>
 	`/workflows/${stage.workflow_id}?state=${stage.state_id}#state-${stage.state_id}`;
 export function stageDetailComparisons(stage: StageStats, report: StageStatsReport) {
