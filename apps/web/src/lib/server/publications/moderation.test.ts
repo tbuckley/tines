@@ -410,7 +410,7 @@ describe('private workflow moderation', () => {
 		);
 		const receiptReferences = [receiptPage.items[0].reference];
 		let receiptCursor = receiptPage.next_cursor;
-		while (receiptCursor) {
+		for (let pageNumber = 1; receiptCursor && pageNumber < 4; pageNumber++) {
 			const page = await listModerationReportReceipts(
 				t.db,
 				env,
@@ -422,6 +422,7 @@ describe('private workflow moderation', () => {
 			receiptReferences.push(page.items[0].reference);
 			receiptCursor = page.next_cursor;
 		}
+		expect(receiptCursor).toBeNull();
 		expect(receiptReferences).toHaveLength(3);
 		expect(new Set(receiptReferences).size).toBe(3);
 
@@ -476,14 +477,16 @@ describe('private workflow moderation', () => {
 			.execute();
 		const publisherIds: string[] = [];
 		let publisherCursor: string | undefined;
-		do {
+		for (let pageNumber = 0; pageNumber < 4; pageNumber++) {
 			const page = await listSuspendedPublishers(t.db, env, moderator, {
 				limit: 1,
 				cursor: publisherCursor
 			});
 			publisherIds.push(page.items[0].publisher_id);
 			publisherCursor = page.next_cursor ?? undefined;
-		} while (publisherCursor);
+			if (!publisherCursor) break;
+		}
+		expect(publisherCursor).toBeUndefined();
 		expect(publisherIds).toEqual(['publisher_a', 'publisher_z', USER].sort());
 		const audit = await listModerationAudit(t.db, env, moderator, SNAPSHOT, { limit: 1 });
 		expect(audit.items).toHaveLength(1);
