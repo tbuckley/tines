@@ -5,6 +5,11 @@ import { fileURLToPath } from 'node:url';
 import type { EffectiveContext, IssueDetail } from '@tines/shared';
 import { describe, expect, it } from 'vitest';
 import { buildLaunchPrompt, buildResumePrompt, selectLaunchComments } from '../../context';
+import {
+	expectedPlanningProcedure,
+	planningProcedure,
+	type ExtractionCase
+} from './scoped-extraction/procedure-contract';
 
 const dir = dirname(fileURLToPath(import.meta.url));
 const input = JSON.parse(readFileSync(join(dir, 'input.json'), 'utf8'));
@@ -259,15 +264,14 @@ describe('scoped extraction validation fixtures', () => {
 			'state',
 			'combined'
 		]);
-		for (const entry of manifest.cases) {
+		for (const entry of manifest.cases as Array<{ id: ExtractionCase; [key: string]: any }>) {
 			expect(entry.source.scope).toEqual(entry.destination.scope);
 			const before = readFileSync(join(extractionDir, entry.source.before), 'utf8');
 			const after = readFileSync(join(extractionDir, entry.source.after), 'utf8');
 			const skill = readFileSync(join(extractionDir, entry.destination.files[0]), 'utf8');
 			expect(before.length).toBeGreaterThan(after.length);
 			expect(skill).toContain('name: planning-procedures');
-			expect(skill).toContain('fresh');
-			expect(skill).toMatch(/(?:self-approv|approve your own|authorized reviewer)/);
+			expect(planningProcedure(entry.id, skill)).toEqual(expectedPlanningProcedure(entry.id));
 			expect(entry.read).toContain('skills/planning-procedures/SKILL.md');
 		}
 		expect(readFileSync(join(extractionDir, 'project/skill/notes/keep.txt'), 'utf8')).toBe(
@@ -278,6 +282,21 @@ describe('scoped extraction validation fixtures', () => {
 		);
 		expect(readFileSync(join(extractionDir, 'combined/after.md'), 'utf8')).toContain(
 			'(seen again 2026-09-08)'
+		);
+	});
+
+	it('rejects reversed mandatory planning instructions', () => {
+		const reversed = `---
+name: planning-procedures
+description: Broken control.
+---
+
+1. Inspect the target workflow and its available transitions.
+2. Never enter Scouting.
+3. Select Re-propose before attaching a fresh proposal.
+4. Approve your own proposal.`;
+		expect(() => planningProcedure('global', reversed)).toThrow(
+			/contradictory planning instruction/
 		);
 	});
 

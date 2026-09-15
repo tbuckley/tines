@@ -7,12 +7,18 @@ import type {
 	ContextItem,
 	EffectiveContext,
 	IssueDetail,
+	IssueJournalResponse,
 	Project,
 	WorkflowResponse
 } from '@tines/shared';
 import { expect, test } from '@playwright/test';
 import { ALICE, BASE_URL } from './constants.mjs';
 import { apiClient, body, errorBody, runId } from './helpers';
+import {
+	expectedPlanningProcedure,
+	planningProcedure,
+	type ExtractionCase
+} from '../src/lib/server/api/fixtures/launch-context/scoped-extraction/procedure-contract';
 
 const ROOT = fileURLToPath(new URL('../../..', import.meta.url));
 const FIXTURES = join(
@@ -148,6 +154,46 @@ test('four scoped extractions execute destination-first and retain sources on ev
 				...scope
 			})
 		);
+		if (caseId === 'combined') {
+			const journal = await body<IssueJournalResponse>(
+				await api.get(`/api/v1/issues/${issue.id}/journal`)
+			);
+			expect(journal).toMatchObject({
+				anchor: 'current',
+				scope: { project_id: project.id, workflow_state_id: rootState.id },
+				item: { id: source.id, version: source.version, body: before }
+			});
+			const effectiveJournal = await body<EffectiveContext>(
+				await api.get(`/api/v1/issues/${issue.id}/context`)
+			);
+			expect(effectiveJournal.prompt.journal).toEqual({
+				state_id: rootState.id,
+				item_id: source.id,
+				version: source.version,
+				inherited_from: {
+					state_id: rootState.id,
+					state_name: 'Root',
+					workflow_id: workflow.id,
+					workflow_name: workflow.name
+				}
+			});
+			const journalPart = effectiveJournal.prompt.parts.find((part) => part.item_id === source.id);
+			expect(journalPart?.inherited_from).toEqual(effectiveJournal.prompt.journal.inherited_from);
+			const shown = JSON.parse(
+				cli(['journal', 'show', `${project.name}/${issue.number}`, '--json'])
+			) as ContextItem;
+			expect(shown).toMatchObject({
+				id: source.id,
+				version: source.version,
+				body: before,
+				scope: { project_id: project.id, workflow_state_id: rootState.id }
+			});
+			record(caseId, 'journal_root_show', 'ok', {
+				item_id: source.id,
+				scope: journal.scope,
+				inherited_from: journalPart?.inherited_from
+			});
+		}
 		const invalid = await api.post('/api/v1/context', {
 			kind: 'skill',
 			name: `invalid-${caseId}-${runId}`,
@@ -221,14 +267,22 @@ test('four scoped extractions execute destination-first and retain sources on ev
 			source_version: sourceAfterUnavailable.version,
 			source_body: sourceAfterUnavailable.body
 		});
-		record(caseId, 'destination_write_interrupt', destination.version, {
+		record(caseId, 'destination_write', destination.version, {
 			destination_id: destination.id,
 			source_version: source.version,
 			files: destination.files?.map((file) => file.path)
 		});
-		expect(destination.files).toContainEqual({ path: 'SKILL.md', content: skillBody });
+		const completeDestination = await body<ContextItem>(
+			await api.get(`/api/v1/context/${destination.id}`)
+		);
+		expect(completeDestination.files).toContainEqual({ path: 'SKILL.md', content: skillBody });
 		if (keep !== null)
-			expect(destination.files).toContainEqual({ path: 'notes/keep.txt', content: keep });
+			expect(completeDestination.files).toContainEqual({ path: 'notes/keep.txt', content: keep });
+		record(caseId, 'destination_complete_read', 'ok', {
+			destination_id: completeDestination.id,
+			version: completeDestination.version,
+			files: completeDestination.files?.map((file) => file.path)
+		});
 
 		const effective = await body<EffectiveContext>(
 			await api.get(`/api/v1/issues/${issue.id}/context`)
@@ -252,7 +306,7 @@ test('four scoped extractions execute destination-first and retain sources on ev
 					}
 				: null
 		);
-		record(caseId, 'effective_resolution_after_resume', 'ok', {
+		record(caseId, 'effective_resolution', 'ok', {
 			winner: winner.item_id,
 			scope: winner.scope,
 			inherited_from: winner.inherited_from
@@ -278,6 +332,10 @@ test('four scoped extractions execute destination-first and retain sources on ev
 		expect(readFileSync(join(exportDir, 'skills/planning-procedures/SKILL.md'), 'utf8')).toBe(
 			skillBody
 		);
+		record(caseId, 'fresh_directory_export', 'ok', {
+			path: 'skills/planning-procedures/SKILL.md',
+			body: skillBody
+		});
 		const neededReads: string[] = ['effective-context'];
 		const neededRead = (relative: string) => {
 			neededReads.push(relative);
@@ -285,12 +343,14 @@ test('four scoped extractions execute destination-first and retain sources on ev
 		};
 		expect(winner.description).toBe(READ_CONDITION[caseId]);
 		const neededSkill = neededRead('skills/planning-procedures/SKILL.md');
-		expect(neededSkill).toContain(CONDITIONAL_MARKER[caseId]);
+		const plan = planningProcedure(caseId as ExtractionCase, neededSkill);
+		expect(plan).toEqual(expectedPlanningProcedure(caseId as ExtractionCase));
 		expect(neededReads).toEqual(['effective-context', 'skills/planning-procedures/SKILL.md']);
 		record(caseId, 'needed_task_runtime_read', 'ok', {
 			task: `${caseId} needs planning procedure`,
 			reads: neededReads,
-			observed_step: CONDITIONAL_MARKER[caseId]
+			observed_step: CONDITIONAL_MARKER[caseId],
+			ordered_plan: plan
 		});
 
 		const nonempty = mkdtempSync(join(tmpdir(), `tines-528-nonempty-${caseId}-`));
@@ -351,47 +411,134 @@ test('four scoped extractions execute destination-first and retain sources on ev
 			source_body: before
 		});
 
-		const conflictSource = await body<ContextItem>(
-			await api.post('/api/v1/context', {
-				kind: 'prompt',
-				name: `source-conflict-${caseId}-${runId}`,
+		if (caseId === 'combined') {
+			const concurrent = await body<ContextItem>(
+				await api.patch(`/api/v1/context/${source.id}`, {
+					body: `${before}\nConcurrent material edit.`,
+					expected_version: source.version
+				})
+			);
+			expect(() =>
+				cli([
+					'journal',
+					'rewrite',
+					`${project.name}/${issue.number}`,
+					'--body',
+					`@${join(FIXTURES, caseId, 'after.md')}`,
+					'--expect-version',
+					String(source.version),
+					'--json'
+				])
+			).toThrow(/version_conflict|changed to version/i);
+			const conflicted = await body<ContextItem>(await api.get(`/api/v1/context/${source.id}`));
+			expect(conflicted.body).toBe(`${before}\nConcurrent material edit.`);
+			record(caseId, 'source_cas_conflict_retained', 409, {
+				command: 'tines journal rewrite',
+				current_version: concurrent.version,
+				body_retained: conflicted.body
+			});
+			await api.patch(`/api/v1/context/${source.id}`, {
 				body: before,
-				...scope
-			})
-		);
-		const concurrent = await body<ContextItem>(
-			await api.patch(`/api/v1/context/${conflictSource.id}`, {
-				body: `${before}\nConcurrent material edit.`,
+				expected_version: concurrent.version
+			});
+		} else {
+			const conflictSource = await body<ContextItem>(
+				await api.post('/api/v1/context', {
+					kind: 'prompt',
+					name: `source-conflict-${caseId}-${runId}`,
+					body: before,
+					...scope
+				})
+			);
+			const concurrent = await body<ContextItem>(
+				await api.patch(`/api/v1/context/${conflictSource.id}`, {
+					body: `${before}\nConcurrent material edit.`,
+					expected_version: conflictSource.version
+				})
+			);
+			const stale = await api.patch(`/api/v1/context/${conflictSource.id}`, {
+				body: after,
 				expected_version: conflictSource.version
-			})
-		);
-		const stale = await api.patch(`/api/v1/context/${conflictSource.id}`, {
-			body: after,
-			expected_version: conflictSource.version
-		});
-		expect(stale.status()).toBe(409);
-		const conflictedBody = (
-			await body<ContextItem>(await api.get(`/api/v1/context/${conflictSource.id}`))
-		).body;
-		expect(conflictedBody).toBe(`${before}\nConcurrent material edit.`);
-		record(caseId, 'source_cas_conflict_retained', stale.status(), {
-			current_version: concurrent.version,
-			body_retained: conflictedBody
-		});
-		await api.delete(`/api/v1/context/${conflictSource.id}`);
+			});
+			expect(stale.status()).toBe(409);
+			const conflictedBody = (
+				await body<ContextItem>(await api.get(`/api/v1/context/${conflictSource.id}`))
+			).body;
+			expect(conflictedBody).toBe(`${before}\nConcurrent material edit.`);
+			record(caseId, 'source_cas_conflict_retained', stale.status(), {
+				current_version: concurrent.version,
+				body_retained: conflictedBody
+			});
+			await api.delete(`/api/v1/context/${conflictSource.id}`);
+		}
 
 		const resumedSource = await body<ContextItem>(await api.get(`/api/v1/context/${source.id}`));
 		const resumedDestination = await body<ContextItem>(
 			await api.get(`/api/v1/context/${destination.id}`)
 		);
 		expect(resumedDestination.files).toContainEqual({ path: 'SKILL.md', content: skillBody });
-		const applied = await body<ContextItem>(
-			await api.patch(`/api/v1/context/${source.id}`, {
-				body: after,
-				expected_version: resumedSource.version
-			})
+		expect((await body<ContextItem>(await api.get(`/api/v1/context/${source.id}`))).body).toBe(
+			before
 		);
-		record(caseId, 'resume_reverify_then_source_cas', applied.version, {
+		record(caseId, 'resume_destination_complete_read', 'ok', {
+			destination_id: resumedDestination.id,
+			version: resumedDestination.version,
+			files: resumedDestination.files?.map((file) => file.path)
+		});
+		const resumedEffective = await body<EffectiveContext>(
+			await api.get(`/api/v1/issues/${issue.id}/context`)
+		);
+		expect(
+			resumedEffective.skills.find((skill) => skill.name === 'planning-procedures')?.item_id
+		).toBe(destination.id);
+		expect((await body<ContextItem>(await api.get(`/api/v1/context/${source.id}`))).body).toBe(
+			before
+		);
+		record(caseId, 'resume_effective_resolution', 'ok', {
+			winner: destination.id,
+			inherited_from: resumedEffective.skills.find((skill) => skill.name === 'planning-procedures')
+				?.inherited_from
+		});
+		const resumeExportDir = mkdtempSync(join(tmpdir(), `tines-528-resume-${caseId}-`));
+		cli(['issues', 'context', `${project.name}/${issue.number}`, '--out', resumeExportDir]);
+		expect(readFileSync(join(resumeExportDir, 'skills/planning-procedures/SKILL.md'), 'utf8')).toBe(
+			skillBody
+		);
+		expect((await body<ContextItem>(await api.get(`/api/v1/context/${source.id}`))).body).toBe(
+			before
+		);
+		record(caseId, 'resume_fresh_directory_export', 'ok', {
+			path: 'skills/planning-procedures/SKILL.md'
+		});
+
+		let applied: ContextItem;
+		if (caseId === 'combined') {
+			const shown = JSON.parse(
+				cli(['journal', 'show', `${project.name}/${issue.number}`, '--json'])
+			) as ContextItem;
+			expect(shown).toMatchObject({ id: source.id, version: resumedSource.version, body: before });
+			applied = JSON.parse(
+				cli([
+					'journal',
+					'rewrite',
+					`${project.name}/${issue.number}`,
+					'--body',
+					`@${join(FIXTURES, caseId, 'after.md')}`,
+					'--expect-version',
+					String(resumedSource.version),
+					'--json'
+				])
+			) as ContextItem;
+		} else {
+			applied = await body<ContextItem>(
+				await api.patch(`/api/v1/context/${source.id}`, {
+					body: after,
+					expected_version: resumedSource.version
+				})
+			);
+		}
+		record(caseId, 'source_cas', applied.version, {
+			command: caseId === 'combined' ? 'tines journal rewrite' : 'PATCH /api/v1/context/:id',
 			destination_version: resumedDestination.version,
 			source_body: applied.body
 		});
@@ -411,13 +558,22 @@ test('four scoped extractions execute destination-first and retain sources on ev
 			reads: unneededReads,
 			preserved_rule: UNIVERSAL_MARKER[caseId]
 		});
-		expect(
-			receipts.findIndex((r) => r.case === caseId && r.operation === 'fresh_export_needed_read')
-		).toBeLessThan(
-			receipts.findIndex(
-				(r) => r.case === caseId && r.operation === 'resume_reverify_then_source_cas'
-			)
+		const orderedOperations = [
+			'destination_write',
+			'destination_complete_read',
+			'effective_resolution',
+			'fresh_directory_export',
+			'needed_task_runtime_read',
+			'resume_destination_complete_read',
+			'resume_effective_resolution',
+			'resume_fresh_directory_export',
+			'source_cas'
+		];
+		const indexes = orderedOperations.map((operation) =>
+			receipts.findIndex((receipt) => receipt.case === caseId && receipt.operation === operation)
 		);
+		expect(indexes.every((index) => index >= 0)).toBe(true);
+		expect(indexes).toEqual([...indexes].sort((left, right) => left - right));
 
 		const replayDestination = await body<ContextItem>(
 			await api.get(`/api/v1/context/${destination.id}`)
