@@ -73,15 +73,15 @@ test.describe.serial('public workflow snapshots', () => {
 		await gotoHydrated(ownerPage, `/workflows/${workflow.id}/export#publish`);
 		const displayName = ownerPage.getByLabel('Public display name');
 		await displayName.fill('First proof name');
-		await ownerPage.getByRole('button', { name: 'Prepare exact publication proof' }).click();
-		await expect(ownerPage.getByText('Exact proof', { exact: true })).toBeVisible();
+		await ownerPage.getByRole('button', { name: 'Preview', exact: true }).click();
+		await expect(ownerPage.getByRole('heading', { name: 'Preview', exact: true })).toBeFocused();
+		await ownerPage.getByRole('button', { name: 'Back to Customize' }).click();
 		await displayName.fill('Alice Browser');
-		await expect(ownerPage.getByText('Exact proof', { exact: true })).toHaveCount(0);
-		await ownerPage.getByRole('button', { name: 'Prepare exact publication proof' }).click();
-		await ownerPage.getByLabel(/I have the right to share/).check();
-		await ownerPage.getByLabel(/I reviewed this exact proof/).check();
-		await ownerPage.getByRole('button', { name: 'Publish immutable snapshot' }).click();
-		await expect(ownerPage.getByText('Published', { exact: true })).toBeVisible();
+		await ownerPage.getByRole('button', { name: 'Preview', exact: true }).click();
+		await ownerPage.getByRole('button', { name: 'Continue to Share', exact: true }).click();
+		await ownerPage.getByLabel(/I have the right to share all included content/).check();
+		await ownerPage.getByRole('button', { name: 'Publish workflow' }).click();
+		await expect(ownerPage.getByText('Shared', { exact: true })).toBeVisible();
 		await ownerContext.close();
 
 		const download = await request.get(`/api/v1/publications/public/${snapshotId}/download`);
@@ -98,7 +98,7 @@ test.describe.serial('public workflow snapshots', () => {
 				page.getByText(`Inspectable exact text ${marker}`, { exact: true })
 			).toBeVisible();
 			await expect(page.getByRole('button', { name: /Sign in to install/i })).toBeVisible();
-			await expect(page.getByRole('button', { name: /Download package/i })).toBeVisible();
+			await expect(page.getByRole('button', { name: /Download file/i })).toBeVisible();
 			const external = page.getByRole('button', { name: /External guide/i });
 			await external.click();
 			await expect(page.getByRole('dialog', { name: 'Open external destination?' })).toBeVisible();
