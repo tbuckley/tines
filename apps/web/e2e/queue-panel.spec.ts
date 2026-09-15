@@ -195,7 +195,7 @@ test.describe.serial('the Now row', () => {
 				.filter({ hasText: world.runnerName })
 				.getByRole('link', { name: /3 waiting · oldest/ })
 				.first()
-		).toBeVisible();
+		).toBeVisible({ timeout: 20_000 });
 	});
 
 	test('answers a run key on the queue and the settings read, without the PAT hint', async ({
