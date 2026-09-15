@@ -1,43 +1,53 @@
-# Comparison report
+# Comparison and adoption report
 
-Decision: do not change production defaults. The one runnable lower-effort Codex pair preserved routine correctness, but one pair is not adoption evidence and its cache mix changed materially. Claude accounting was unusable after authentication failed, so the protocol-required stop ended further Claude attempts. Comment-trimming and inline-to-skill comparisons remain unavailable because their approved dependencies are not ready.
+Decision: reject adoption from these trials. Content correctness is unknown because no independent semantic review is attached; the automated checker now reports only transport validity and cannot accept prose. Separately, the selected-history arm did not execute omitted-comment recovery and both skill-reading candidates violated the mandatory routine-before-skill order. Skill efficiency and comment-trimming efficiency remain inconclusive. Do not change production effort defaults.
 
-## Frozen fixture and allowance
+## Frozen protocol and complete ledger
 
-The frozen routine fixture, acceptance script, hashes, and normalized observations are in `comparison-fixtures/effort-routine/`. Checks and hashes were written before invocation. The pair used separate cold sessions and output paths, the same `gpt-6-astra` model and harness version, and changed only effort (`high` to `low`). Four of twelve allowed attempts were consumed; every attempt stayed below five minutes. Attempt 1 discovered that `gpt-5.6` was unavailable to the local Codex account and counts as a failed repair attempt. Attempt 4 discovered expired Claude OAuth and triggered the accounting/authentication stop rule.
+Attempts 1–4 are preserved unchanged in `comparison-fixtures/effort-routine/observations.json`. Attempts 5–8 and raw evidence are in `comparison-fixtures/context-validation/`; four of twelve attempts remain unused. Every new invocation was cold, used Codex CLI 0.153.4, `gpt-6-astra`, high effort, one compound routine/conditional/old-decision task, and finished below the five-minute cap. No Claude retry or resumed model trial occurred.
 
-Opening content was identical: 97 tokens for `prompt.md` plus `input.txt`, measured with tiktoken `o200k_base`. This is a text estimate, not provider input. Both successful Codex outputs matched `expected.txt` byte-for-byte and passed `acceptance.sh`; their output SHA-256 is `43fa198290e82e956e74d898d0f7148c4823d68b512c8d105b4d0940fa033fdc`.
+| # | Pair / arm | Acceptance | Elapsed | Input | Cache read | Uncached input | Output | Reasoning |
+| ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | unavailable Codex model | fail: unavailable | 1 s | null | null | null | null | null |
+| 2 | effort / high | pass | 12 s | 66,155 | 56,192 | 9,963 | 306 | 0 |
+| 3 | effort / low | pass | 15 s | 66,070 | 51,968 | 14,102 | 296 | 0 |
+| 4 | Claude | fail: authentication | 0.04 s | null | null | null | null | null |
+| 5 | comments / full | content unknown; ordering fail | null | 211,499 | 200,448 | 11,051 | 2,156 | 325 |
+| 6 | comments / selected | content unknown; recovery and ordering fail | 74.592 s | 110,801 | 101,888 | 8,913 | 1,980 | 306 |
+| 7 | procedure / inline | content unknown | 80.674 s | 142,670 | 114,304 | 28,366 | 2,039 | 392 |
+| 8 | procedure / skill | content unknown; ordering fail | 96.58 s | 216,285 | 191,616 | 24,669 | 2,425 | 575 |
 
-## Whole-task consumption through acceptance
+Provider totals include the whole invocation through the model's own output validation. Cache-write is reported as zero for attempts 5–8. Acceptance-check wall time outside the invocation was below one second. Attempt 5's model call saved raw JSONL and output, but the receipt writer failed; start, end, elapsed and input hashes are therefore null rather than reconstructed. Null means unknown.
 
-| Attempt | Harness/model/effort | Acceptance | Elapsed | Input | Cache read | Output | Reasoning |
-| --- | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| 1 | Codex 0.153.4 / gpt-5.6 / high | unavailable model | 1 s | null | null | null | null |
-| 2 baseline | Codex 0.153.4 / gpt-6-astra / high | pass | 12 s | 66,155 | 56,192 | 306 | 0 |
-| 3 candidate | Codex 0.153.4 / gpt-6-astra / low | pass | 15 s | 66,070 | 51,968 | 296 | 0 |
-| 4 | Claude Code 2.1.258 / claude-sonnet-5 / high | authentication failed | 0.04 s | null | null | null | null |
+Opening text size and whole-task consumption are separate. The frozen inputs and SHA-256 hashes are recorded in each attempt receipt (except the documented attempt-5 postprocess failure), and the accepted `/520` full/selected snapshots remain produced by the real builder. Cache differences, single-pair samples, compound-task carryover, and model nondeterminism are confounders. No weekly-quota conversion is claimed.
 
-The candidate used 85 fewer total input tokens and 10 fewer output tokens, but 4,224 fewer cached tokens, so non-cached input increased from 9,963 to 14,102. Elapsed time increased by about three seconds. These are aggregate provider-reported session values including reads and acceptance repairs; per-subcase usage is unavailable. Both requested effort flags were accepted by the local Codex harness, but provider application was unobservable, so the contrast remains unconfirmed.
+## Decisions by task class
 
-## Recommendation matrix
-
-| Change | Task class | Codex | Claude Code |
+| Change | Task class | Codex decision | Basis |
 | --- | --- | --- | --- |
-| Comment trimming | routine | unavailable: approved /520 comparison not accepted | unavailable: approved /520 comparison not accepted |
-| Comment trimming | conditional skill | unavailable: /519 fixture absent and /520 not accepted | unavailable: same dependency gap |
-| Comment trimming | long history | unavailable: /520 fixtures remain under review | unavailable: /520 fixtures remain under review |
-| Inline-to-skill | routine | unavailable: approved conditional fixture absent | unavailable: approved conditional fixture absent |
-| Inline-to-skill | conditional skill | unavailable: /519 has no artifact | unavailable: /519 has no artifact |
-| Inline-to-skill | long history | unavailable: /519 fixture absent and /520 not accepted | unavailable: same dependency gap |
-| Lower effort, same model | routine | inconclusive: correctness passed; accounting mixed; one unconfirmed pair | inconclusive: authentication/accounting unavailable |
-| Lower effort, same model | conditional skill | unavailable: /519 fixture absent | unavailable: fixture and authentication unavailable |
-| Lower effort, same model | long history | unavailable: /520 fixtures not accepted | unavailable: fixture and authentication unavailable |
+| Comment trimming | routine | reject observed candidate | Attempt 6 read the skill before its trace finalized routine; the mandatory ordering check failed. |
+| Comment trimming | conditional | inconclusive | Content correctness is unknown and the arm failed mandatory ordering. Aggregate savings cannot rescue it. |
+| Comment trimming | long history | reject observed candidate | No recovery request occurred. The answer repeated a body and command supplied inline, so omitted-comment recovery is unobserved. |
+| Inline → skill | routine | reject observed candidate | Attempt 8 read the skill before its trace finalized routine. |
+| Inline → skill | conditional | inconclusive efficiency | Content correctness is unknown, mandatory ordering failed, and aggregate/cache results conflict. |
+| Inline → skill | long history | inconclusive | Placement was unrelated to history and compound usage cannot be allocated. |
+| High → low effort | routine | inconclusive | Prior pair preserved correctness but had mixed cache/accounting and no repetition. |
+| High → low effort | conditional / long | not trialed | Remaining allowance was prioritized for the missing comment/skill validation. |
 
-## Rollback
+Claude remains unavailable because the prior authentication/accounting stop prohibits credential workarounds or retries. Resumed trials remain excluded because `/452` and `/426` prerequisites are unmet.
 
-1. Save the current route target JSON and runner tier JSON.
-2. Remove the winning routed effort; inspect dispatch because a broader routed value may become effective.
-3. Clear applicable local or managed-Claude tier effort to remove all Tines effort, then settle active effort assignments before downgrading the worker.
-4. Restore inline/skill/comment fixtures together; retain source instructions until the replacement passes its acceptance checks.
+## Extraction evidence
 
-Schema columns and historical run evidence are additive and remain in place. No experiment changed production routing, tiers, prompts, skills, comments, or defaults. Broader adoption requires ordinary-work observation through the existing /498 cohort outputs and new accepted dependency fixtures; no weekly-quota conversion is claimed.
+`apps/web/src/lib/server/api/fixtures/launch-context/scoped-extraction/` contains global, project, Root-state, and combined project/Root source packages. `apps/web/e2e/context-extraction.spec.ts` now executes those packages against a fresh Worker/D1: it creates the real scopes, uses the CLI for file-preserving skill updates and exports, resolves inherited effective context, records needed/no-read traces, and performs source CAS only after verification.
+
+The Playwright attachment `scoped-extraction-receipts.json` is the runtime record: separate per-scope item IDs, versions, exact scope tuples, inheritance provenance, exported paths, failure statuses and source bodies in monotonic operation order. Distinct per-scope consumers read the exported skill and produce a structurally checked, scope-bound action plan; a reversed mandatory-instruction control fails. The unrelated consumer reads only `prompt.md` and verifies the universal rule remains inline. The combined journey resolves the journal from an inheriting child to Root through `/api/v1/issues/:id/journal`, verifies `prompt.journal.inherited_from`, and uses real `tines journal show` plus version-checked `rewrite`. Runtime branches cover proposed, rejected and unmentioned review states; invalid, missing, stale and changed destinations; interrupted duplication; nonempty exports; wrong overrides; material source conflicts; re-verification; and replay without a version bump. Destination write, complete read, resolution and fresh export—both initially and after interruption—are explicit nonnegative runtime operations before source CAS, and each stage checks the exact before-body remains at the source. These isolated fixtures are not authorization to migrate shared context.
+
+## Reproduction and rollback
+
+```sh
+pnpm --filter @tines/web exec vitest run src/lib/server/api/fixtures/launch-context/generate.test.ts src/lib/server/api/context.test.ts src/lib/server/api/context-inheritance.test.ts
+node comparison-fixtures/context-validation/check.mjs comparison-fixtures/context-validation/results/attempt-8/output.json
+node comparison-fixtures/context-validation/check.mjs --self-test
+```
+
+Do not make more model calls: the mandatory-instruction stop rule fired with attempts 1–8 spent. The repaired harness withholds the old body, pins a fixture-only key to a loopback issue server, and records recovery requests for any future authorized run. To roll back a failed extraction, restore the exact inline source before removing a verified destination. For a comment regression, restore the prior presentation while retaining stored full history. Historical effort rollback remains configuration-first. No fixture changed production configuration or defaults.

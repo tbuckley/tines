@@ -1,0 +1,17 @@
+{
+	"number": 7,
+	"arm": "procedure-inline",
+	"started_at": "2026-09-14T05:35:01.744Z",
+	"ended_at": "2026-09-14T05:36:22.418Z",
+	"elapsed_seconds": 80.674,
+	"exit_code": 0,
+	"timed_out": false,
+	"cold": true,
+	"model": "gpt-6-astra",
+	"effort": "high",
+	"harness": "codex-cli 0.153.4",
+	"input_hashes": {
+		"context.md": "eec11a864774493dee5eeb6785fd485e1607f001fc9b0d9b11820267ca896998",
+		"task.md": "b70f325061e983cc24bf2d38edfdffc4036afbf1a49320d4157fe0d64742de3f"
+	}
+}
