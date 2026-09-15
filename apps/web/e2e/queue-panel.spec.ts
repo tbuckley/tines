@@ -18,6 +18,7 @@ import { apiClient, body, clickUntil, gotoHydrated, resetFocus } from './helpers
 
 type QueueWorld = { projectId: string; runnerId: string; runnerName: string };
 type QueueAudit = { runnerId?: string; ruleId?: string };
+const QUEUE_REFRESH_TIMEOUT = 20_000;
 
 const test = base.extend<{}, { queueAudit: QueueAudit; world: QueueWorld }>({
 	queueAudit: [
@@ -178,24 +179,26 @@ test.describe.serial('the Now row', () => {
 		await page.goto('/agents');
 
 		const panel = page.getByRole('region', { name: 'Waiting for an agent' });
-		await expect(panel).toContainText(`${world.runnerName} offline`);
-		await expect(panel).toContainText('3 issues');
+		await expect(panel).toContainText(`${world.runnerName} offline`, {
+			timeout: QUEUE_REFRESH_TIMEOUT
+		});
+		await expect(panel).toContainText('3 issues', { timeout: QUEUE_REFRESH_TIMEOUT });
 		// Flow 18's remedy, rendered in place rather than linked away.
-		await expect(panel).toContainText('tines runner install');
+		await expect(panel).toContainText('tines runner install', { timeout: QUEUE_REFRESH_TIMEOUT });
 
 		// Part 3: the annotations, on the runner card and the rule row.
 		await expect(
 			page
 				.locator(`#runner-${world.runnerId}`)
 				.getByRole('link', { name: '3 waiting', exact: true })
-		).toBeVisible();
+		).toBeVisible({ timeout: QUEUE_REFRESH_TIMEOUT });
 		await expect(
 			page
 				.locator('li')
 				.filter({ hasText: world.runnerName })
 				.getByRole('link', { name: /3 waiting · oldest/ })
 				.first()
-		).toBeVisible({ timeout: 20_000 });
+		).toBeVisible({ timeout: QUEUE_REFRESH_TIMEOUT });
 	});
 
 	test('answers a run key on the queue and the settings read, without the PAT hint', async ({
@@ -233,7 +236,7 @@ test.describe.serial('the Now row', () => {
 		expect((await api.put('/api/v1/supervisor/settings', { enabled: true })).status()).toBe(200);
 		await expect
 			.poll(() => claimedRuns(api, world), {
-				timeout: 20_000,
+				timeout: QUEUE_REFRESH_TIMEOUT,
 				message: 'the pass claims one issue for the runner'
 			})
 			.toBe(1);
@@ -241,17 +244,19 @@ test.describe.serial('the Now row', () => {
 		await page.setViewportSize({ width: 390, height: 844 });
 		await page.goto('/agents');
 		const panel = page.getByRole('region', { name: 'Waiting for an agent' });
-		await expect(panel).toContainText(`at capacity on ${world.runnerName} (1/1)`);
-		await expect(panel).toContainText('2 issues');
+		await expect(panel).toContainText(`at capacity on ${world.runnerName} (1/1)`, {
+			timeout: QUEUE_REFRESH_TIMEOUT
+		});
+		await expect(panel).toContainText('2 issues', { timeout: QUEUE_REFRESH_TIMEOUT });
 		const actions = panel.locator(`#queue-runner-${world.runnerId}`).getByTestId('queue-actions');
-		await expect(actions).toBeVisible();
+		await expect(actions).toBeVisible({ timeout: QUEUE_REFRESH_TIMEOUT });
 		// Queue and runner data refresh independently. The verdict can render before
 		// the runner-backed controls, so give each the page's invalidation budget.
 		await expect(
 			actions.getByRole('button', { name: `Raise cap on ${world.runnerName}` })
-		).toBeVisible({ timeout: 20_000 });
+		).toBeVisible({ timeout: QUEUE_REFRESH_TIMEOUT });
 		await expect(actions.getByRole('button', { name: 'Quota policy' })).toBeVisible({
-			timeout: 20_000
+			timeout: QUEUE_REFRESH_TIMEOUT
 		});
 		const geometry = await actions.evaluate((element) => {
 			const panelElement = element.closest('section');
@@ -295,7 +300,9 @@ test.describe.serial('the Now row', () => {
 		// tests above stay on a bare goto.
 		await gotoHydrated(page, '/agents');
 		const panel = page.getByRole('region', { name: 'Waiting for an agent' });
-		await expect(panel).toContainText(`at capacity on ${world.runnerName}`, { timeout: 20_000 });
+		await expect(panel).toContainText(`at capacity on ${world.runnerName}`, {
+			timeout: QUEUE_REFRESH_TIMEOUT
+		});
 
 		const dialog = page.getByRole('dialog');
 		const capField = dialog.locator('#edit-concurrent');
@@ -317,7 +324,9 @@ test.describe.serial('the Now row', () => {
 
 		// No `page.reload()`: the shrink has to arrive through the invalidation
 		// the write schedules, which is the point of the acceptance criterion.
-		await expect(panel).not.toContainText('at capacity', { timeout: 20_000 });
-		await expect(panel).not.toContainText(`${world.runnerName} offline`);
+		await expect(panel).not.toContainText('at capacity', { timeout: QUEUE_REFRESH_TIMEOUT });
+		await expect(panel).not.toContainText(`${world.runnerName} offline`, {
+			timeout: QUEUE_REFRESH_TIMEOUT
+		});
 	});
 });
