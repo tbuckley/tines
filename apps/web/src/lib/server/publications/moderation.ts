@@ -225,6 +225,7 @@ export async function inspectModerationSnapshot(
 			'reason',
 			'note',
 			'note_hash',
+			sql<string>`group_concat(id)`.as('receipt_references'),
 			(eb) => eb.fn.countAll<number>().as('count'),
 			(eb) => eb.fn.max<number>('created_at').as('latest_report_at')
 		])
@@ -296,7 +297,11 @@ export async function inspectModerationSnapshot(
 				: null,
 		publisher_status_version: row?.publisher_status_version ?? 0,
 		case: reportCase ?? null,
-		reports: reportGroups.slice(0, limit).map((item) => ({ ...item, count: Number(item.count) })),
+		reports: reportGroups.slice(0, limit).map((item) => ({
+			...item,
+			count: Number(item.count),
+			receipt_references: item.receipt_references.split(',')
+		})),
 		reports_next_offset: reportGroups.length > limit ? reportsOffset + limit : null,
 		audit: audit.slice(0, limit).map(({ before_json, after_json, ...item }) => ({
 			...item,

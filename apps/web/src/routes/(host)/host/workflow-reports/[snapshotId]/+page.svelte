@@ -146,6 +146,9 @@
 				{#each data.reports as report}<li class="rounded-md border p-3 text-sm">
 						<b>{report.reason}</b> · {report.count}
 						<p class="mt-1 whitespace-pre-wrap">{report.note || 'No details provided.'}</p>
+						<p class="text-muted-foreground mt-1 text-xs break-all">
+							Receipts: {report.receipt_references.join(', ')}
+						</p>
 					</li>{/each}
 			</ul>{/if}
 		{#if data.reports_next_offset !== null}<a

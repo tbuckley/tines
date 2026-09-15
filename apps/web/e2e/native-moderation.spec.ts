@@ -94,12 +94,15 @@ test.describe.serial('native D1 moderation gates', () => {
 			secondPage.goto('/host/workflow-reports')
 		]);
 		const requestId = crypto.randomUUID();
+		const [{ status_version: snapshotVersion }] = d1<{ status_version: number }>(
+			`SELECT status_version FROM workflow_publication WHERE snapshot_id=${sqlLiteral(snapshotId)}`
+		);
 		const payload = {
 			request_id: requestId,
 			action: 'disable',
 			target: { snapshot_id: snapshotId },
 			reason: 'Native urgent decision',
-			expected_snapshot_version: 1
+			expected_snapshot_version: snapshotVersion
 		};
 		const results = await Promise.all(
 			[firstPage, secondPage].map((moderatorPage) =>
@@ -113,7 +116,7 @@ test.describe.serial('native D1 moderation gates', () => {
 				}, payload)
 			)
 		);
-		expect(results.map((result) => result.status)).toEqual([201, 201]);
+		expect(results.map((result) => result.status)).toEqual([200, 200]);
 		expect(results[0].body).toEqual(results[1].body);
 		expect(
 			d1(
