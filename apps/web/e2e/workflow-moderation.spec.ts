@@ -51,10 +51,12 @@ test('reports, removes, restores, suspends and recovers one exact public snapsho
 	await signIn(completedCopy, BOB.sessionToken);
 	const completedCopyPage = await completedCopy.newPage();
 	await gotoHydrated(completedCopyPage, `/workflows/import?publication=${snapshotId}`);
-	await completedCopyPage.getByRole('button', { name: 'Prepare installation' }).click();
-	await completedCopyPage.getByLabel(/I confirm exact plan/).check();
-	await completedCopyPage.getByRole('button', { name: 'Install package' }).click();
-	await expect(completedCopyPage.getByRole('heading', { name: 'Package installed' })).toBeVisible();
+	await completedCopyPage.getByRole('button', { name: 'Preview installation' }).click();
+	await completedCopyPage.getByLabel(/I reviewed what will be installed/).check();
+	await completedCopyPage.getByRole('button', { name: 'Install workflow' }).click();
+	await expect(
+		completedCopyPage.getByRole('heading', { name: 'Installed', exact: true })
+	).toBeVisible();
 	const installedMainHref = await completedCopyPage
 		.getByRole('link', { name: 'Open workflow' })
 		.first()
@@ -65,8 +67,8 @@ test('reports, removes, restores, suspends and recovers one exact public snapsho
 	await signIn(staleInstall, BOB.sessionToken);
 	const staleInstallPage = await staleInstall.newPage();
 	await gotoHydrated(staleInstallPage, `/workflows/import?publication=${snapshotId}`);
-	await staleInstallPage.getByRole('button', { name: 'Prepare installation' }).click();
-	await staleInstallPage.getByLabel(/I confirm exact plan/).check();
+	await staleInstallPage.getByRole('button', { name: 'Preview installation' }).click();
+	await staleInstallPage.getByLabel(/I reviewed what will be installed/).check();
 
 	await page.setViewportSize(PHONE);
 	await gotoHydrated(page, `/p/${snapshotId}`);
@@ -190,7 +192,7 @@ test('reports, removes, restores, suspends and recovers one exact public snapsho
 	await page.bringToFront();
 	await page.evaluate(() => dispatchEvent(new Event('focus')));
 	await expect(page.getByText(/not available/i)).toBeVisible();
-	await staleInstallPage.getByRole('button', { name: 'Install package' }).click();
+	await staleInstallPage.getByRole('button', { name: 'Install workflow' }).click();
 	await expect(staleInstallPage.getByRole('alert')).toContainText('not available');
 	await completedCopyPage.goto(installedMainHref!);
 	await expect(completedCopyPage.getByText(marker, { exact: false }).first()).toBeVisible();
@@ -202,11 +204,11 @@ test('reports, removes, restores, suspends and recovers one exact public snapsho
 		mimeType: 'application/json',
 		buffer: Buffer.from(downloadedDocument)
 	});
-	await downloadedCopyPage.getByRole('button', { name: 'Prepare installation' }).click();
-	await downloadedCopyPage.getByLabel(/I confirm exact plan/).check();
-	await downloadedCopyPage.getByRole('button', { name: 'Install package' }).click();
+	await downloadedCopyPage.getByRole('button', { name: 'Preview installation' }).click();
+	await downloadedCopyPage.getByLabel(/I reviewed what will be installed/).check();
+	await downloadedCopyPage.getByRole('button', { name: 'Install workflow' }).click();
 	await expect(
-		downloadedCopyPage.getByRole('heading', { name: 'Package installed' })
+		downloadedCopyPage.getByRole('heading', { name: 'Installed', exact: true })
 	).toBeVisible();
 
 	await gotoHydrated(host, `/host/workflow-reports/${snapshotId}`);
