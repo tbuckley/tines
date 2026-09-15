@@ -4,6 +4,7 @@ import type {
 	RunPricingBasisV1,
 	RunPricingReason
 } from '@tines/shared';
+import { isSupportedCodexRolloutVersion } from '@tines/shared';
 
 export interface CodexRate {
 	id: string;
@@ -89,7 +90,7 @@ function validCompleteRequestContext(evidence: CodexPricingEvidenceV1): boolean 
 	if (
 		proof.version !== 1 ||
 		proof.normalization !== 'codex-rollout-delta-v1' ||
-		proof.harness_version !== '0.153.4' ||
+		!isSupportedCodexRolloutVersion(proof.harness_version) ||
 		!Number.isSafeInteger(proof.request_count) ||
 		proof.request_count < 0 ||
 		proof.request_count > 10_000 ||

@@ -4,7 +4,6 @@ import { listRuns } from '$lib/server/api/runs';
 import {
 	getSupervisorSettings,
 	loadFleetQueue,
-	loadStageStats,
 	resolveProjectRef
 } from '$lib/server/api/supervisor';
 import { loadWorkflows } from '$lib/server/api/workflows';
@@ -27,7 +26,6 @@ export const load: PageServerLoad = async ({ locals, platform, parent, url }) =>
 		repoItems,
 		newestIssue,
 		layoutData,
-		stats,
 		fleetRuns
 	] = await Promise.all([
 		listRunners(db, userId),
@@ -68,7 +66,6 @@ export const load: PageServerLoad = async ({ locals, platform, parent, url }) =>
 			.limit(1)
 			.executeTakeFirst(),
 		parent(),
-		loadStageStats(db, userId, { project: project ?? undefined }),
 		listRuns(db, userId, { active: true }, { cursor: null, limit: 10000 })
 	]);
 	// Counted before the partition, so an archived project's issues still count:
@@ -115,8 +112,8 @@ export const load: PageServerLoad = async ({ locals, platform, parent, url }) =>
 		displayRules: focusId ? routingRulesForProject(rules, focusId) : rules,
 		focusId,
 		queue,
-		stats,
 		boardProject: boardProject?.id ?? null,
+		boardProjectName: boardProject?.name ?? null,
 		runsState,
 		fleetRuns: fleetRuns.items,
 		contextRepoUrls: repoItems.map((r) => r.repo_url).filter((u): u is string => u !== null)

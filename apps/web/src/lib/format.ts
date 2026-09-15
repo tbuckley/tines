@@ -1,3 +1,6 @@
+import type { AgentRun } from '@tines/shared';
+import { isActiveRun } from '@tines/shared';
+
 /** Absolute fallback for timestamps too far out to phrase as a duration. */
 function shortDate(ms: number): string {
 	return new Date(ms).toLocaleDateString(undefined, {
@@ -17,6 +20,22 @@ export function relativeTime(ms: number, now = Date.now()): string {
 	const days = Math.floor(hours / 24);
 	if (days < 30) return `${days}d ago`;
 	return shortDate(ms);
+}
+
+/** Capacity elapsed since assignment, ticking only while a run is active. */
+export function runElapsedLabel(
+	run: Pick<AgentRun, 'status' | 'created_at' | 'ended_at'>,
+	now: number
+): string {
+	const end = run.ended_at ?? (isActiveRun(run.status) ? now : null);
+	if (end === null) return '—';
+	const seconds = Math.floor(Math.max(0, end - run.created_at) / 1000);
+	const hours = Math.floor(seconds / 3600);
+	const minutes = Math.floor((seconds % 3600) / 60);
+	const remainder = seconds % 60;
+	return hours > 0
+		? `${hours}:${minutes.toString().padStart(2, '0')}:${remainder.toString().padStart(2, '0')}`
+		: `${minutes}:${remainder.toString().padStart(2, '0')}`;
 }
 
 /**

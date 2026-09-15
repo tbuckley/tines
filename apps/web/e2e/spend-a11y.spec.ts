@@ -71,7 +71,7 @@ test.describe('Agents Spend keyboard and layout', () => {
 		await gotoHydrated(page, nowUrlWithSpendScope());
 
 		// Tab switch.
-		const spendTab = page.getByRole('button', { name: 'Spend', exact: true });
+		const spendTab = page.getByRole('button', { name: 'Analysis', exact: true });
 		await tabTo(page, spendTab);
 		await page.keyboard.press('Enter');
 		await expect(page.getByRole('heading', { name: 'Spend' })).toBeVisible();
@@ -112,11 +112,11 @@ test.describe('Agents Spend keyboard and layout', () => {
 		await tabTo(page, sort);
 		await page.keyboard.press('Enter');
 		await expect(rows.nth(0)).toContainText('Build');
-		await expect(rows.nth(2)).toContainText('Unknown cost');
+		await expect(rows.nth(2)).toContainText(SPEND.workflows.unknown.name);
 		await tabTo(page, sort);
 		await page.keyboard.press('Enter');
 		await expect(rows.nth(0)).toContainText('Ship');
-		await expect(rows.nth(2)).toContainText('Unknown cost');
+		await expect(rows.nth(2)).toContainText(SPEND.workflows.unknown.name);
 
 		// Group expansion toggles from the keyboard.
 		const group = rows.nth(0).getByRole('button').first();
@@ -203,6 +203,10 @@ test.describe('Agents Spend keyboard and layout', () => {
 		{ name: 'narrow', width: 320, height: 700 }
 	]) {
 		test(`stays usable and unclipped at ${viewport.width}px`, async ({ page }) => {
+			expect(SPEND.projects.empty.name).toHaveLength(200);
+			expect(SPEND.workflows.unknown.name).toHaveLength(200);
+			expect(SPEND.projects.empty.name).not.toMatch(/\s/);
+			expect(SPEND.workflows.unknown.name).not.toMatch(/\s/);
 			const anchor = await armLedgerDays();
 			await page.setViewportSize({ width: viewport.width, height: viewport.height });
 			await gotoHydrated(page, nowUrlWithSpendScope({ agents_view: 'spend', spend_window: '30d' }));
@@ -217,7 +221,26 @@ test.describe('Agents Spend keyboard and layout', () => {
 						panel: panel.scrollWidth - panel.clientWidth
 					};
 				});
+			const unknownGroup = page
+				.locator('.groups article')
+				.filter({ hasText: SPEND.workflows.unknown.name });
+			await expect(
+				unknownGroup.locator('.row > button span'),
+				'full boundary-length workflow name'
+			).toHaveText(SPEND.workflows.unknown.name);
+			await unknownGroup.getByRole('button').first().click();
+			await expect(unknownGroup.locator('.detail')).toBeVisible();
 			expect(await overflow()).toEqual({ document: 0, panel: 0 });
+
+			const projectSelect = page.getByLabel('Spend project');
+			await projectSelect.selectOption(SPEND.projects.empty.id);
+			await expect(projectSelect).toHaveValue(SPEND.projects.empty.id);
+			await expect(projectSelect.locator('option:checked')).toHaveText(SPEND.projects.empty.name);
+			await expect(page.locator('.scope')).toContainText(SPEND.projects.empty.name);
+			await expect(page.getByText(/No runs — no finalized runs/)).toBeVisible();
+			expect(await overflow()).toEqual({ document: 0, panel: 0 });
+			await projectSelect.selectOption(SPEND.projects.alpha.id);
+			await expect(projectTotal(page)).toHaveText('$12.00');
 
 			// Real interactions at this width, not only a static measurement.
 			await page.getByRole('button', { name: 'Today' }).click();
@@ -267,6 +290,6 @@ test.describe('Agents Spend under normal motion', () => {
 		await expect(rows.nth(0)).toContainText('Ship');
 		await page.getByRole('button', { name: 'Cost descending' }).click();
 		await expect(rows.nth(0)).toContainText('Build');
-		await expect(rows.nth(2)).toContainText('Unknown cost');
+		await expect(rows.nth(2)).toContainText(SPEND.workflows.unknown.name);
 	});
 });

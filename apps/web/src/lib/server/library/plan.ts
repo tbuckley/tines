@@ -2,9 +2,11 @@ import {
 	parseLibraryV3Document,
 	canonicalizeLibraryValue,
 	LibraryValidationError,
+	publicationBytesSha256,
 	type WorkflowPackageDocument,
 	type PrepareWorkflowPackageResponse,
-	type PackageOperation
+	type PackageOperation,
+	type HostedPublicationBinding
 } from '@tines/shared';
 import type { Kysely } from 'kysely';
 import { newId, type Database } from '$lib/server/db';
@@ -16,6 +18,7 @@ import { validatePackageBatch } from './budgets';
 import { compilePackageInstall, packageReceipt } from './install-queries';
 import {
 	PACKAGE_COMPILER_VERSION,
+	HOSTED_PACKAGE_COMPILER_VERSION,
 	PACKAGE_PLAN_TTL_MS,
 	packageActorKey,
 	packageKeyMaterial,
@@ -54,10 +57,17 @@ export async function prepareWorkflowPackage(
 	env: Pick<Env, 'SECRET_ENCRYPTION_KEY' | 'BETTER_AUTH_SECRET'>,
 	actor: ActorContext,
 	documentJson: string,
-	choices: unknown = {}
+	choices: unknown = {},
+	source?: HostedPublicationBinding
 ): Promise<PrepareWorkflowPackageResponse> {
 	const material = packageKeyMaterial(env);
 	const document = await requireWorkflowDocument(documentJson);
+	if (
+		source &&
+		(source.document_digest !== document.digest ||
+			source.bytes_sha256 !== (await publicationBytesSha256(canonicalizeLibraryValue(document))))
+	)
+		throw new ApiFail(409, 'publication_changed', 'The hosted publication changed; reload it');
 	const allocation = allocatePackageObjects(document);
 	const issuedAt = Date.now();
 	for (let attempt = 0; attempt < 3; attempt++) {
@@ -77,7 +87,7 @@ export async function prepareWorkflowPackage(
 			continue;
 		const base: Omit<PackagePlanPayload, 'plan_digest' | 'budget'> = {
 			version: 1,
-			compiler_version: PACKAGE_COMPILER_VERSION,
+			compiler_version: source ? HOSTED_PACKAGE_COMPILER_VERSION : PACKAGE_COMPILER_VERSION,
 			id: newId('lin'),
 			user_id: actor.userId,
 			actor_key: packageActorKey(actor),
@@ -87,7 +97,8 @@ export async function prepareWorkflowPackage(
 			choices: resolved.choices,
 			allocation,
 			selection: resolved.selection,
-			witness_hash: await sha256Hex(witness.raw)
+			witness_hash: await sha256Hex(witness.raw),
+			...(source ? { source } : {})
 		};
 		const emptyBudget = { statements: 0, max_parameters: 0, max_sql_bytes: 0, max_value_bytes: 0 };
 		const provisional: PackagePlanPayload = {
@@ -173,8 +184,9 @@ export async function prepareWorkflowPackage(
 			issued_at: issuedAt,
 			expires_at: payload.expires_at,
 			actor_key: payload.actor_key,
-			compiler_version: PACKAGE_COMPILER_VERSION,
+			compiler_version: payload.compiler_version,
 			budget,
+			...(source ? { source } : {}),
 			plan_token: await signPackagePlan(payload, material)
 		};
 	}
@@ -202,7 +214,10 @@ export async function reconstructPackagePlan(
 	if (document.digest !== payload.document_digest)
 		throw new ApiFail(409, 'package_changed', 'The package changed after preparation');
 	validatePackageAllocation(document, payload.allocation);
-	if (payload.compiler_version !== PACKAGE_COMPILER_VERSION || payload.expires_at <= Date.now())
+	const expectedCompiler = payload.source
+		? HOSTED_PACKAGE_COMPILER_VERSION
+		: PACKAGE_COMPILER_VERSION;
+	if (payload.compiler_version !== expectedCompiler || payload.expires_at <= Date.now())
 		throw new ApiFail(
 			409,
 			'plan_stale',

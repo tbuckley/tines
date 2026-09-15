@@ -13,6 +13,7 @@
  * starter id.
  */
 import {
+	PROJECT_NAME_MAX,
 	renderTemplate,
 	repoDirFromUrl,
 	type ContextKind,
@@ -37,7 +38,7 @@ function typed(inputs: Record<string, string>, key: string): string {
  * A project-name suggestion for repository starters. This is deliberately
  * stricter than `repoDirFromUrl`: checkout accepts loose remotes and owns its
  * own fallback, while the chooser should only fill Name when the repository
- * basename is unambiguous and safe to show verbatim.
+ * basename is unambiguous and safe to show as a bounded prefix.
  */
 export function suggestProjectName(
 	starter: StarterSummary | undefined,
@@ -78,7 +79,9 @@ export function suggestProjectName(
 	)
 		return null;
 
-	return repoDirFromUrl(remote);
+	return repoDirFromUrl(remote)
+		.slice(0, PROJECT_NAME_MAX)
+		.replace(/[\uD800-\uDBFF]$/, '');
 }
 
 /**

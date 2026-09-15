@@ -5,3 +5,4 @@ export * from './references.js';
 export * from './parse.js';
 export * from './render.js';
 export * from './choices.js';
+export * from './public-content.js';

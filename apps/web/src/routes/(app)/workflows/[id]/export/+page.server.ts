@@ -4,6 +4,7 @@ import { loadWorkflow, loadWorkflows } from '$lib/server/api/workflows';
 import { scheduleQuery, serializeSchedule } from '$lib/server/api/schedules';
 import { ApiFail } from '$lib/server/api/core';
 import { getDb } from '$lib/server/db';
+import { publicationConfig } from '$lib/server/publications/config';
 import type { PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async ({ locals, platform, params }) => {
@@ -48,5 +49,11 @@ export const load: PageServerLoad = async ({ locals, platform, params }) => {
 	const schedules = (await scheduleQuery(db, userId).execute())
 		.map(serializeSchedule)
 		.filter((schedule) => closureIds.has(schedule.workflow_id));
-	return { workflow, candidate, sourceStates, schedules };
+	return {
+		workflow,
+		candidate,
+		sourceStates,
+		schedules,
+		publication: publicationConfig(platform!.env)
+	};
 };

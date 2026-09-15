@@ -4,13 +4,13 @@ import { homedir } from 'node:os';
 import { StringDecoder } from 'node:string_decoder';
 import type { Readable } from 'node:stream';
 import type { CodexRawUsageV1, CodexRequestContextV1 } from '@tines/shared';
+import { isSupportedCodexRolloutVersion } from '@tines/shared';
 
 export const CODEX_ROLLOUT_MAX_BYTES = 128 * 1024 * 1024;
 export const CODEX_ROLLOUT_MAX_LINE_BYTES = 8 * 1024 * 1024;
 export const CODEX_ROLLOUT_MAX_LINES = 250_000;
 export const CODEX_ROLLOUT_MAX_REQUESTS = 10_000;
 export const CODEX_ROLLOUT_TIMEOUT_MS = 5_000;
-const SUPPORTED_VERSION = '0.153.4' as const;
 const FIELDS = [
 	'input_tokens',
 	'cached_input_tokens',
@@ -137,7 +137,7 @@ export function reconcileCodexRollout(
 		previousLast = delta;
 	}
 	if (!metadata) return invalid('metadata_mismatch', harnessVersion);
-	if (harnessVersion !== SUPPORTED_VERSION) {
+	if (!harnessVersion || !isSupportedCodexRolloutVersion(harnessVersion)) {
 		return {
 			version: 1,
 			normalization: 'codex-rollout-delta-v1',
@@ -152,7 +152,7 @@ export function reconcileCodexRollout(
 	return {
 		version: 1,
 		normalization: 'codex-rollout-delta-v1',
-		harness_version: SUPPORTED_VERSION,
+		harness_version: harnessVersion,
 		status: 'complete',
 		request_count: requestCount,
 		max_request_input_tokens: maxRequestInput,
