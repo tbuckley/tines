@@ -1,4 +1,5 @@
-import { expect, test, type Page } from '@playwright/test';
+import type { Page } from '@playwright/test';
+import { expect, test } from './fixtures';
 import { SPEND } from './constants.mjs';
 import { gotoHydrated, signIn } from './helpers';
 import { armLedgerDays, utcDate } from './spend-arm';

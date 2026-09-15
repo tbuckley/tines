@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test } from './fixtures';
 import {
 	canonicalizeLibraryValue,
 	type PrepareWorkflowPackageResponse,
@@ -8,13 +8,17 @@ import {
 	type WorkflowPackageReceipt
 } from '@tines/shared';
 import { ALICE, BOB } from './constants.mjs';
-import { apiClient, body, errorBody, gotoHydrated, runId, signIn, PHONE, DESKTOP } from './helpers';
+import { apiClient, body, errorBody, gotoHydrated, signIn, PHONE, DESKTOP } from './helpers';
 
 test.describe.serial('public workflow snapshots', () => {
-	const marker = `public-snapshot-${runId}`;
+	let marker: string;
 	let snapshotId: string;
 	let documentJson: string;
 	let hostedPlan: PrepareWorkflowPackageResponse;
+
+	test.beforeAll(async ({ uniqueName }) => {
+		marker = uniqueName('public-snapshot', { maxLength: 100 });
+	});
 
 	test('publishes exact bytes and exposes a responsive anonymous text-only inspection', async ({
 		page,

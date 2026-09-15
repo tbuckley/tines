@@ -1,5 +1,5 @@
 import { request as httpRequest } from 'node:http';
-import { expect, test } from '@playwright/test';
+import { expect, test } from './fixtures';
 import { unstable_dev, type Unstable_DevWorker } from 'wrangler';
 import {
 	LIBRARY_MAX_BYTES,

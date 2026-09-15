@@ -11,13 +11,15 @@
  * here rather than shipping.
  */
 import type { Workflow } from '@tines/shared';
-import { expect, test, type Page } from '@playwright/test';
+import type { Page } from '@playwright/test';
+import { expect, test } from './fixtures';
 import { ALICE, RUNROW, RUNROW_ESTIMATED, RUNROW_FAILED } from './constants.mjs';
-import { apiClient, body, gotoHydrated, resetFocus, runId, signIn } from './helpers';
+import { apiClient, body, gotoHydrated, resetFocus, signIn } from './helpers';
 
 test.describe('shared run row', () => {
-	test.beforeEach(async ({ context, request }) => {
-		await signIn(context, ALICE.sessionToken);
+	test.use({ signedIn: ALICE });
+
+	test.beforeEach(async ({ request }) => {
 		// Specs share one user: a focus left behind would scope this one's lists.
 		await resetFocus(request);
 	});
@@ -133,12 +135,16 @@ test.describe('shared run row', () => {
 });
 
 test.describe('shared routing-rule row', () => {
-	const STATE_NAME = `Dead ${runId}`;
+	let STATE_NAME: string;
 
 	let workflowId: string;
 	let stateId: string;
+	let runnerId: string;
+	let ruleId: string;
 
-	test.beforeAll(async ({ request }) => {
+	test.beforeAll(async ({ request, uniqueName }) => {
+		STATE_NAME = uniqueName('Dead', { maxLength: 100 });
+		const fixtureName = uniqueName('rulerow');
 		const api = apiClient(request, ALICE.apiKey);
 		/** Fixture setup must not fail silently — a 422 here would look like a UI bug. */
 		const ok = async (res: Awaited<ReturnType<typeof api.post>>, what: string) => {
@@ -149,10 +155,11 @@ test.describe('shared routing-rule row', () => {
 		// A paused runner: this rule must never actually dispatch anything.
 		const runner = await body<{ id: string }>(
 			await ok(
-				await api.post('/api/v1/runners', { type: 'local', name: `rulerow-${runId}` }),
+				await api.post('/api/v1/runners', { type: 'local', name: fixtureName }),
 				'create runner'
 			)
 		);
+		runnerId = runner.id;
 		await ok(await api.patch(`/api/v1/runners/${runner.id}`, { status: 'paused' }), 'pause runner');
 
 		// A custom workflow — the standard one is read-only, so its state
@@ -160,7 +167,7 @@ test.describe('shared routing-rule row', () => {
 		const workflow = await body<Workflow>(
 			await ok(
 				await api.post('/api/v1/workflows', {
-					name: `rulerow-${runId}`,
+					name: fixtureName,
 					initial_state: STATE_NAME,
 					states: [
 						{ name: STATE_NAME, category: 'active' },
@@ -177,13 +184,16 @@ test.describe('shared routing-rule row', () => {
 
 		// Order matters: the rule must be created while the state is still
 		// active, because the server rejects a non-active rule scope outright.
-		await ok(
-			await api.post('/api/v1/routing-rules', {
-				workflow_state_id: stateId,
-				targets: [{ runner_id: runner.id }]
-			}),
-			'create rule'
+		const rule = await body<{ id: string }>(
+			await ok(
+				await api.post('/api/v1/routing-rules', {
+					workflow_state_id: stateId,
+					targets: [{ runner_id: runner.id }]
+				}),
+				'create rule'
+			)
 		);
+		ruleId = rule.id;
 
 		// Now recategorize the state out of `active` — the rule is dead.
 		await ok(
@@ -197,8 +207,17 @@ test.describe('shared routing-rule row', () => {
 		);
 	});
 
-	test.beforeEach(async ({ context, request }) => {
-		await signIn(context, ALICE.sessionToken);
+	test.afterAll(async ({ apiFor }) => {
+		const api = apiFor(ALICE);
+		if (ruleId) expect((await api.delete(`/api/v1/routing-rules/${ruleId}`)).status()).toBe(204);
+		if (workflowId)
+			expect((await api.delete(`/api/v1/workflows/${workflowId}`)).status()).toBe(204);
+		if (runnerId) expect((await api.delete(`/api/v1/runners/${runnerId}`)).status()).toBe(204);
+	});
+
+	test.use({ signedIn: ALICE });
+
+	test.beforeEach(async ({ request }) => {
 		// Specs share one user: a focus left behind would scope this one's lists.
 		await resetFocus(request);
 	});
@@ -229,8 +248,9 @@ test.describe('shared routing-rule row', () => {
 test.describe('failed run error', () => {
 	const FULL = RUNROW_FAILED.error;
 
-	test.beforeEach(async ({ context, request }) => {
-		await signIn(context, ALICE.sessionToken);
+	test.use({ signedIn: ALICE });
+
+	test.beforeEach(async ({ request }) => {
 		// Specs share one user: a focus left behind would scope this one's lists.
 		await resetFocus(request);
 	});
