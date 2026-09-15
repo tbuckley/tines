@@ -1,17 +1,18 @@
-import { expect, test, type APIRequestContext } from '@playwright/test';
+import type { APIRequestContext } from '@playwright/test';
+import { expect, test } from './fixtures';
 import type { PublicationOwnerResult, PublicationProof } from '@tines/shared';
 import { CAROL } from './constants.mjs';
 import { d1, sqlLiteral } from './d1';
-import { apiClient, body, runId } from './helpers';
+import { apiClient, body } from './helpers';
 
 test.describe.serial('native D1 publication transaction gate', () => {
 	let workflowId: string;
 
-	test.beforeAll(async ({ request }) => {
+	test.beforeAll(async ({ apiFor, uniqueName }) => {
 		workflowId = (
 			await body<{ id: string }>(
-				await apiClient(request, CAROL.apiKey).post('/api/v1/workflows', {
-					name: `native-publication-${runId}`,
+				await apiFor(CAROL).post('/api/v1/workflows', {
+					name: uniqueName('native-publication', { maxLength: 100 }),
 					description: 'Native D1 publication race fixture',
 					initial_state: 'Open',
 					states: [
@@ -27,7 +28,7 @@ test.describe.serial('native D1 publication transaction gate', () => {
 	async function prepare(request: APIRequestContext, sequence: number) {
 		return body<PublicationProof>(
 			await apiClient(request, CAROL.apiKey).post('/api/v1/publications/prepare', {
-				prepare_request_id: `${runId}-${sequence}`,
+				prepare_request_id: `${workflowId}-${sequence}`,
 				source: { kind: 'owned_workflow', workflow_id: workflowId, options: {} },
 				metadata: { display_name: 'Native D1', license: 'MIT', license_year: 2026 }
 			})

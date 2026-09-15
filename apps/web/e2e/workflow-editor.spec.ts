@@ -6,12 +6,13 @@
  * only on the read-only system workflow, which has no form to hold it, and
  * Delete moved down into the form's save row.
  */
-import { expect, test, type Page } from '@playwright/test';
+import type { Page } from '@playwright/test';
+import { expect, test } from './fixtures';
 import { ALICE } from './constants.mjs';
-import { apiClient, body, gotoHydrated, runId, signIn } from './helpers';
+import { apiClient, body, gotoHydrated, signIn } from './helpers';
 
-const workflowName = `Header ${runId}`;
-const wideWorkflowName = `Wide preview ${runId}`;
+let workflowName: string;
+let wideWorkflowName: string;
 /** As long as a real workflow's: six lines on a desktop, nine on a phone. */
 const description =
 	'Backlog → Research → Design → Implementation → Automated Review → Human Review → Merging → Closed (or Canceled). Small, fully-specified tasks may go straight from Backlog to Implementation. Research, Design, and Implementation can park in Needs Clarification to ask a human a blocking question. After human approval, a Merging run brings the PR up to date with main and lands it.';
@@ -49,11 +50,10 @@ const previewGeometry = async (page: Page) => {
 	});
 };
 
-test.beforeAll(async ({ playwright }) => {
-	const request = await playwright.request.newContext({
-		baseURL: test.info().project.use.baseURL
-	});
-	const api = apiClient(request, ALICE.apiKey);
+test.beforeAll(async ({ apiFor, uniqueName }) => {
+	workflowName = uniqueName('Header', { maxLength: 32 });
+	wideWorkflowName = uniqueName('Wide preview', { maxLength: 100 });
+	const api = apiFor(ALICE);
 	const created = await body<{ id: string }>(
 		await api.post('/api/v1/workflows', {
 			name: workflowName,
@@ -99,12 +99,9 @@ test.beforeAll(async ({ playwright }) => {
 		})
 	);
 	wideWorkflowId = wide.id;
-	await request.dispose();
 });
 
-test.beforeEach(async ({ context }) => {
-	await signIn(context, ALICE.sessionToken);
-});
+test.use({ signedIn: ALICE });
 
 /** The paragraphs the header renders under the title, in document order. */
 const headerParagraphs = (page: Page, title: string | RegExp) =>
@@ -186,11 +183,12 @@ test('on a phone the form starts right under the title', async ({ page }) => {
 
 	// The header used to push the Name field past y≈420 of an 844px viewport —
 	// nine lines of description before the first control. It now sits in the top
-	// quarter, so the form is what the page opens on.
+	// two-fifths, after the retained Publish and Export actions, so the form is
+	// still what the page opens on.
 	const nameTop = await page
 		.getByLabel('Name', { exact: true })
 		.evaluate((el) => el.getBoundingClientRect().top);
-	expect(nameTop).toBeLessThan(844 / 3);
+	expect(nameTop).toBeLessThan(844 * 0.4);
 });
 
 test('a wide live preview defaults to Fit and round-trips through exact 1×', async ({ page }) => {
@@ -325,7 +323,7 @@ test('graphs outside the editor keep their fitted defaults', async ({ page }) =>
 	});
 	const targetDetails = targetHeading.locator('xpath=ancestor::details');
 	if ((await targetDetails.count()) > 0)
-		await targetDetails.evaluate((details) => (details.open = true));
+		await targetDetails.evaluate((details) => ((details as HTMLDetailsElement).open = true));
 	const card = page
 		.getByRole('heading', { level: 2, name: wideWorkflowName })
 		.locator('xpath=ancestor::a');
