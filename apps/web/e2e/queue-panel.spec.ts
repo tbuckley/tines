@@ -222,12 +222,14 @@ test.describe.serial('the Now row', () => {
 		world
 	}) => {
 		const api = apiClient(request, ALICE.apiKey);
+		// Reconnect and the first poll both signal dispatch. Hold automation off
+		// until both have established liveness and policy, then queue one pass.
+		expect((await api.put('/api/v1/supervisor/settings', { enabled: false })).status()).toBe(200);
 		await bringOnline(api, workerRequest, world);
 
-		// A settings write queues an opportunistic pass, which claims one issue
-		// as `assigned` and saturates the 1-slot runner. (The poll route only
-		// queues a pass when the runner *comes* online, and registering already
-		// stamped `last_seen_at`.)
+		// Enabling queues one opportunistic pass, which claims one issue
+		// as `assigned` and saturates the 1-slot runner. The reconnect and
+		// came-online signals above observed automation disabled.
 		expect((await api.put('/api/v1/supervisor/settings', { enabled: true })).status()).toBe(200);
 		await expect
 			.poll(() => claimedRuns(api, world), {
