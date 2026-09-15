@@ -1,5 +1,9 @@
 import { expect, test, type APIRequestContext } from '@playwright/test';
-import type { PublicationOwnerResult, PublicationProof } from '@tines/shared';
+import {
+	canonicalizeLibraryValue,
+	type PublicationOwnerResult,
+	type PublicationProof
+} from '@tines/shared';
 import { ALICE, CAROL } from './constants.mjs';
 import { d1, sqlLiteral } from './d1';
 import { apiClient, body, runId } from './helpers';
@@ -64,6 +68,65 @@ test.describe.serial('native D1 publication transaction gate', () => {
 		expect(
 			(await alice.patch(`/api/v1/workflows/${source.id}`, { description: 'changed' })).ok()
 		).toBe(true);
+		const publish = await alice.post(
+			`/api/v1/publications/${proof.candidate_id}/publish`,
+			confirmation(proof)
+		);
+		expect(publish.status()).toBe(409);
+		expect(await publish.json()).toMatchObject({ error: { code: 'publication_source_changed' } });
+		expect(
+			d1(
+				`SELECT published_at, snapshot_id, publication_receipt_json FROM workflow_publication WHERE id=${sqlLiteral(proof.candidate_id)}`
+			)
+		).toEqual([{ published_at: null, snapshot_id: null, publication_receipt_json: null }]);
+		expect(
+			d1(
+				`SELECT COUNT(*) AS n FROM workflow_publication_event WHERE publication_id=${sqlLiteral(proof.candidate_id)}`
+			)
+		).toEqual([{ n: 0 }]);
+	});
+
+	test('rechecks a draft-mode source with the native D1 publication guard', async ({ request }) => {
+		const alice = apiClient(request, ALICE.apiKey);
+		const source = await body<{ id: string }>(
+			await alice.post('/api/v1/workflows', {
+				name: `native-draft-source-${runId}`,
+				description: 'reviewed draft source',
+				initial_state: 'Open',
+				states: [{ name: 'Open', category: 'active' }],
+				transitions: []
+			})
+		);
+		const baseline = await body<PublicationProof>(
+			await alice.post('/api/v1/publications/prepare', {
+				prepare_request_id: `native-draft-baseline-${runId}`,
+				source: { kind: 'owned_workflow', workflow_id: source.id, options: {} },
+				metadata: { display_name: 'Native draft baseline', license: 'MIT', license_year: 2026 }
+			})
+		);
+		const proof = await body<PublicationProof>(
+			await alice.post('/api/v1/publications/prepare', {
+				prepare_request_id: `native-draft-guard-${runId}`,
+				source: {
+					kind: 'owned_workflow',
+					workflow_id: source.id,
+					options: {},
+					draft: {
+						version: 1,
+						baseline: {
+							document_digest: baseline.document_digest,
+							exported_at: baseline.document.exported_at
+						},
+						document_json: canonicalizeLibraryValue(baseline.document)
+					}
+				},
+				metadata: { display_name: 'Native draft', license: 'MIT', license_year: 2026 }
+			})
+		);
+		expect(
+			(await alice.patch(`/api/v1/workflows/${source.id}`, { description: 'changed' })).ok()
+		).toBe(true);
+
 		const publish = await alice.post(
 			`/api/v1/publications/${proof.candidate_id}/publish`,
 			confirmation(proof)

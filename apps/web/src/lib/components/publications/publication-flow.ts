@@ -32,8 +32,12 @@ export class PublicationFlowController {
 		return request;
 	}
 
-	acceptProof(proof: PublicationProof, revision: number) {
+	acceptProof(proof: PublicationProof, revision: number, now = Date.now()) {
 		if (revision !== this.revision) return false;
+		if (proof.expires_at <= now) {
+			this.invalidate();
+			return false;
+		}
 		this.proof = proof;
 		this.reviewedIds = new Set();
 		this.consented = false;

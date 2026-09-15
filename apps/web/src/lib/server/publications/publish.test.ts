@@ -1,11 +1,18 @@
 import { describe, expect, it } from 'vitest';
-import { canonicalizeLibraryValue, withLibraryDocumentDigest } from '@tines/shared';
+import {
+	canonicalizeLibraryValue,
+	parsePublicWorkflowDocument,
+	withLibraryDocumentDigest
+} from '@tines/shared';
 import { inheritedPackage } from '../../../../../../packages/shared/src/library/fixtures';
 import { createTestDb } from '../api/test-db';
 import { deleteWorkflow } from '../api/workflows';
+import { createContextItem } from '../api/context';
+import { createWorkflow } from '../api/workflows';
 import { decodeCursor } from '../api/core';
 import { USER, addTwoStageWorkflow, seedBase } from '../supervisor/test-fixtures';
 import { preparePublication } from './prepare';
+import { buildOwnedPublicationSourceProof } from './source';
 import { resolvePublicSnapshot } from './public';
 import {
 	getPublicationResult,
@@ -52,14 +59,125 @@ async function prepare(t: ReturnType<typeof createTestDb>, requestId = 'prepare-
 	);
 }
 
+async function prepareDraft(t: ReturnType<typeof createTestDb>, requestId: string) {
+	const workflow = await createWorkflow(t.db, t.env, actor, {
+		name: `Draft ${requestId}`,
+		description: 'reviewed source',
+		initial_state: 'Open',
+		states: [{ name: 'Open', category: 'active' }],
+		transitions: []
+	});
+	const prompt = await createContextItem(t.db, t.env, actor, {
+		kind: 'prompt',
+		name: 'instructions',
+		body: 'reviewed instructions',
+		workflow_state_id: workflow.states[0].id
+	});
+	const baseline = await buildOwnedPublicationSourceProof(t.db, USER, workflow.id, {}, 1_000);
+	const proof = await preparePublication(
+		t.db,
+		envFor(t),
+		actor,
+		{
+			prepare_request_id: requestId,
+			source: {
+				kind: 'owned_workflow',
+				workflow_id: workflow.id,
+				options: {},
+				draft: {
+					version: 1,
+					baseline: {
+						document_digest: baseline.document.digest,
+						exported_at: baseline.document.exported_at
+					},
+					document_json: canonicalizeLibraryValue(baseline.document)
+				}
+			},
+			metadata: { display_name: 'Example Team', license: 'MIT', license_year: 2026 }
+		},
+		2_000
+	);
+	return { workflow, prompt, proof };
+}
+
 const confirmation = (proof: Awaited<ReturnType<typeof prepare>>) => ({
 	review_digest: proof.review_digest,
 	sharing_rights: true as const,
 	exact_content: true as const,
-	reviewed_repo_ids: ['context:3']
+	reviewed_repo_ids: proof.document.context
+		.filter((item) => item.kind === 'repo')
+		.map((item) => item.id)
 });
 
 describe('publication commit', () => {
+	it('rejects a hash-consistent stored draft containing a forbidden delta', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const { proof } = await prepareDraft(t, 'forbidden-stored-draft');
+		const tampered = structuredClone(proof.document);
+		tampered.workflows[0].name = 'Forbidden stored name';
+		const sealed = await withLibraryDocumentDigest(tampered);
+		const parsed = await parsePublicWorkflowDocument(canonicalizeLibraryValue(sealed));
+		await t.db
+			.updateTable('workflow_publication')
+			.set({
+				document_json: parsed.canonical_json,
+				document_digest: parsed.document.digest,
+				bytes_sha256: parsed.bytes_sha256,
+				byte_length: parsed.byte_length
+			})
+			.where('id', '=', proof.candidate_id)
+			.execute();
+
+		await expect(
+			publishPublication(t.db, envFor(t), actor, proof.candidate_id, confirmation(proof), 3_000)
+		).rejects.toMatchObject({ status: 409, code: 'publication_proof_stale' });
+		expect(await t.db.selectFrom('workflow_publication_event').selectAll().execute()).toEqual([]);
+		expect(
+			await t.db
+				.selectFrom('workflow_publication')
+				.select(['published_at', 'snapshot_id', 'publication_receipt_json'])
+				.where('id', '=', proof.candidate_id)
+				.executeTakeFirstOrThrow()
+		).toEqual({ published_at: null, snapshot_id: null, publication_receipt_json: null });
+	});
+
+	it('rechecks a draft source inside the atomic publication commit', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const { prompt, proof } = await prepareDraft(t, 'draft-atomic-source-guard');
+		const realBatch = t.env.DB.batch.bind(t.env.DB);
+		let intercepted = false;
+		const env = {
+			...envFor(t),
+			DB: {
+				...t.env.DB,
+				batch: async (statements: Parameters<typeof realBatch>[0]) => {
+					if (!intercepted) {
+						intercepted = true;
+						t.sqlite
+							.prepare('UPDATE context_item SET body = ? WHERE id = ?')
+							.run('changed inside commit', prompt.id);
+					}
+					return realBatch(statements);
+				}
+			}
+		} as Env;
+
+		await expect(
+			publishPublication(t.db, env, actor, proof.candidate_id, confirmation(proof), 3_000)
+		).rejects.toMatchObject({ status: 409, code: 'publication_proof_stale' });
+		expect(intercepted).toBe(true);
+		expect(await t.db.selectFrom('workflow_publication_event').selectAll().execute()).toEqual([]);
+		expect(
+			await t.db
+				.selectFrom('workflow_publication')
+				.select(['published_at', 'snapshot_id', 'publication_receipt_json'])
+				.where('id', '=', proof.candidate_id)
+				.executeTakeFirstOrThrow()
+		).toEqual({ published_at: null, snapshot_id: null, publication_receipt_json: null });
+	});
+
 	it('pages owner snapshots without gaps across equal publication times', async () => {
 		const t = createTestDb();
 		seedBase(t);

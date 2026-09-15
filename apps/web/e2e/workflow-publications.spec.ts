@@ -1,6 +1,8 @@
 import { expect, test } from '@playwright/test';
 import {
 	canonicalizeLibraryValue,
+	inputToken,
+	withLibraryDocumentDigest,
 	type PrepareWorkflowPackageResponse,
 	type PublicationOwnerResult,
 	type PublicationProof,
@@ -351,6 +353,41 @@ test.describe.serial('public workflow snapshots', () => {
 		await ownerPage.getByLabel('Default').fill('billing-service');
 		await ownerPage.getByRole('button', { name: 'Save changes' }).click();
 		await expect(editor).toHaveValue('{{project_name:billing-service}} and customer-portal');
+		await editor.fill('{{project_name:billing-service}} and UNSAVED candidate text');
+		await ownerPage.getByRole('button', { name: 'Preview', exact: true }).click();
+		await expect(ownerPage.getByRole('heading', { name: 'Customize', exact: true })).toBeVisible();
+		await expect(
+			ownerPage.getByText('Save or cancel the candidate text edit before previewing.')
+		).toBeVisible();
+		await ownerPage.getByRole('button', { name: 'Cancel text edit' }).click();
+		await expect(editor).toHaveValue('{{project_name:billing-service}} and customer-portal');
+
+		await ownerPage.route('**/api/v1/publications/prepare', async (route) => {
+			const request = route.request().postDataJSON();
+			const document = JSON.parse(request.source.draft.document_json) as WorkflowPackageDocument;
+			const oldToken = document.text_uses[0].token;
+			document.inputs[0].default = '\u0001';
+			const newToken = inputToken(document.inputs[0].key, document.inputs[0].default);
+			document.text_uses[0].token = newToken;
+			const prompt = document.context.find((item) => item.kind === 'prompt');
+			if (!prompt || prompt.kind !== 'prompt') throw new Error('missing draft prompt');
+			prompt.body = prompt.body.replace(oldToken, newToken);
+			request.source.draft.document_json = canonicalizeLibraryValue(
+				await withLibraryDocumentDigest(document)
+			);
+			await route.continue({
+				headers: { ...route.request().headers(), 'content-type': 'application/json' },
+				postData: JSON.stringify(request)
+			});
+		});
+		await ownerPage.getByRole('button', { name: 'Preview', exact: true }).click();
+		const inputRepair = ownerPage.getByRole('button', { name: 'Repair Project name — default' });
+		await expect(inputRepair).toBeVisible();
+		await inputRepair.click();
+		await expect(ownerPage.getByLabel('Default')).toBeFocused();
+		await ownerPage.getByLabel('Default').fill('billing-service');
+		await ownerPage.getByRole('button', { name: 'Save changes' }).click();
+		await ownerPage.unroute('**/api/v1/publications/prepare');
 		await ownerPage.getByRole('button', { name: 'Preview', exact: true }).click();
 		await ownerPage.getByRole('button', { name: 'Continue to Share' }).click();
 		await ownerPage

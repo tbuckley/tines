@@ -82,6 +82,7 @@
 	let selectedInputId = $state('');
 	let selectedTarget = $state('');
 	let fieldEditor = $state<HTMLTextAreaElement | null>(null);
+	let fieldEditPending = $state(false);
 	let inputPanel = $state<HTMLElement | null>(null);
 	let keyEditor = $state<HTMLInputElement | null>(null);
 	let tokenInvoker = $state<HTMLElement | null>(null);
@@ -259,6 +260,10 @@
 			status = 'Save or cancel the input edit before rebuilding.';
 			return;
 		}
+		if (fieldEditPending || (fieldEditor && fieldEditor.value !== selectedField?.value)) {
+			status = 'Save or cancel the candidate text edit before rebuilding.';
+			return;
+		}
 		if (
 			dirty &&
 			!confirm('Rebuilding from the source discards candidate-only text and input edits. Continue?')
@@ -297,6 +302,10 @@
 	async function prepareForPublication() {
 		if (editingInputId) {
 			status = 'Save or cancel the input edit before previewing.';
+			return;
+		}
+		if (fieldEditPending || (fieldEditor && fieldEditor.value !== selectedField?.value)) {
+			status = 'Save or cancel the candidate text edit before previewing.';
 			return;
 		}
 		if (candidateUpdating) {
@@ -353,7 +362,11 @@
 				}
 			});
 			const proof = await api.preparePublication(request);
-			if (!publicationFlow.acceptProof(proof, revision)) return;
+			if (!publicationFlow.acceptProof(proof, revision)) {
+				if (proof.expires_at <= Date.now())
+					status = 'The preview expired before it was ready. Preview this version again.';
+				return;
+			}
 			publicationProof = proof;
 			publicationResult = null;
 			shareConsent = false;
@@ -568,11 +581,17 @@
 					}
 				: null;
 		const snapshot = candidate;
+		let updated: WorkflowPackageDocument;
+		try {
+			updated = updateAuthoredInput(snapshot, inputId, inputDraft());
+		} catch (error) {
+			inputFormError = message(error);
+			return;
+		}
 		resetReview('Saving the variable changes.');
 		candidateUpdating = true;
 		let saved = false;
 		try {
-			const updated = updateAuthoredInput(snapshot, inputId, inputDraft());
 			const sealed = await withLibraryDocumentDigest(updated);
 			candidate = sealed;
 			dirty = true;
@@ -621,6 +640,7 @@
 		try {
 			candidate = await withLibraryDocumentDigest(next);
 			dirty = true;
+			fieldEditPending = false;
 			resetReview(
 				addUse
 					? 'Exact declared token use added to the draft field.'
@@ -633,6 +653,28 @@
 		} finally {
 			candidateUpdating = false;
 		}
+	}
+	function cancelCandidateField() {
+		if (!selectedField || !fieldEditor || candidateUpdating) return;
+		fieldEditor.value = selectedField.value;
+		fieldEditPending = false;
+		status = 'Candidate text edit canceled.';
+		fieldEditor.focus();
+	}
+	type InputRepairField = 'key' | 'default' | 'label' | 'description';
+	function diagnosticInput(path: string) {
+		const parts = path.split('/').slice(1);
+		if (parts[0] !== 'inputs') return null;
+		const input = candidate.inputs[Number(parts[1])];
+		const field = parts[2] as InputRepairField;
+		if (!input?.id.startsWith('input:author:')) return null;
+		if (!['key', 'default', 'label', 'description'].includes(field)) return null;
+		return { input, field, label: `${input.label || input.key} — ${field}` };
+	}
+	async function beginInputRepair(input: PackageInput, field: InputRepairField) {
+		await editInput(input);
+		await tick();
+		document.getElementById(`input-editor-${field}`)?.focus();
 	}
 	function diagnosticField(path: string) {
 		const parts = path.split('/').slice(1);
@@ -740,6 +782,7 @@
 	}
 	async function beginEdit(recordId: string, field: string) {
 		selectedTarget = `${recordId}:${field}`;
+		fieldEditPending = false;
 		await tick();
 		fieldEditor?.focus();
 	}
@@ -944,6 +987,7 @@
 			<div class:mt-4={!editingInputId} class="grid gap-3 md:grid-cols-3">
 				<label class="text-xs"
 					>Key<Input
+						id="input-editor-key"
 						class="mt-1"
 						bind:ref={keyEditor}
 						bind:value={draftKey}
@@ -958,15 +1002,26 @@
 					></label
 				><label class="text-xs"
 					>Default<Input
+						id="input-editor-default"
 						class="mt-1"
 						bind:value={draftDefault}
 						maxlength={10000}
 						placeholder="No default"
 					/></label
 				><label class="text-xs"
-					>Label<Input class="mt-1" bind:value={draftLabel} maxlength={200} /></label
+					>Label<Input
+						id="input-editor-label"
+						class="mt-1"
+						bind:value={draftLabel}
+						maxlength={200}
+					/></label
 				><label class="text-xs md:col-span-2"
-					>Description<Input class="mt-1" bind:value={draftDescription} maxlength={1000} /></label
+					>Description<Input
+						id="input-editor-description"
+						class="mt-1"
+						bind:value={draftDescription}
+						maxlength={1000}
+					/></label
 				>
 			</div>
 			<label class="mt-2 flex min-h-10 items-center gap-2 text-sm"
@@ -1034,7 +1089,10 @@
 				</div>{/if}
 			<div class="mt-4 border-t pt-4">
 				<label class="text-xs"
-					>Edit instructions<Select class="mt-1" bind:value={selectedTarget}
+					>Edit instructions<Select
+						class="mt-1"
+						bind:value={selectedTarget}
+						onchange={() => (fieldEditPending = false)}
 						><option value="">Choose a text field</option>{#each editableFields as field}<option
 								value={field.key}>{field.label}</option
 							>{/each}</Select
@@ -1043,6 +1101,8 @@
 						class="mt-2 min-h-40 font-mono text-xs"
 						bind:ref={fieldEditor}
 						value={selectedField.value}
+						oninput={(event) =>
+							(fieldEditPending = event.currentTarget.value !== selectedField?.value)}
 					></Textarea>
 					<div class="mt-2 flex flex-wrap gap-2">
 						<Button
@@ -1050,6 +1110,12 @@
 							variant="outline"
 							onclick={() => saveCandidateField(false)}
 							disabled={candidateUpdating}>Save candidate text</Button
+						>
+						<Button
+							size="sm"
+							variant="outline"
+							onclick={cancelCandidateField}
+							disabled={candidateUpdating || !fieldEditPending}>Cancel text edit</Button
 						>
 						<div
 							class="flex max-w-full min-w-0 flex-wrap items-center gap-2"
@@ -1100,6 +1166,7 @@
 			<ul class="mt-2 list-disc pl-5 text-sm">
 				{#each diagnostics as diagnostic}
 					{@const repair = diagnosticField(diagnostic.path)}
+					{@const inputRepair = diagnosticInput(diagnostic.path)}
 					<li>
 						{diagnostic.message}
 						{#if repair}<button
@@ -1107,6 +1174,12 @@
 								class="ml-2 underline underline-offset-2"
 								onclick={() => beginEdit(repair.recordId, repair.field)}
 								>Repair {repair.label}</button
+							>{/if}
+						{#if inputRepair}<button
+								type="button"
+								class="ml-2 underline underline-offset-2"
+								onclick={() => beginInputRepair(inputRepair.input, inputRepair.field)}
+								>Repair {inputRepair.label}</button
 							>{/if}
 					</li>
 				{/each}

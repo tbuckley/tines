@@ -79,11 +79,24 @@ describe('PublicationFlowController', () => {
 
 	it('does not reuse an expired proof', () => {
 		const flow = new PublicationFlowController();
-		flow.acceptProof(proof(100), 0);
+		expect(flow.acceptProof(proof(100), 0, 99)).toBe(true);
 		expect(flow.canReuseProof(101)).toBe(false);
 		flow.invalidate();
 		expect(flow.prepareRequest(body, () => 'request_after_expiry').prepare_request_id).toBe(
 			'request_after_expiry'
 		);
+	});
+
+	it('rejects a proof that expired in flight and clears review and consent', () => {
+		const flow = new PublicationFlowController();
+		expect(flow.acceptProof(proof(100), 0, 99)).toBe(true);
+		flow.reviewIncluded();
+		flow.setConsent(true);
+		const revision = flow.revision;
+		expect(flow.acceptProof(proof(100), revision, 100)).toBe(false);
+		expect(flow.proof).toBeNull();
+		expect(flow.reviewedIds).toEqual(new Set());
+		expect(flow.consented).toBe(false);
+		expect(flow.revision).toBe(revision + 1);
 	});
 });
