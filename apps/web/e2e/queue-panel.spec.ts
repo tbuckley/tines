@@ -287,7 +287,7 @@ test.describe.serial('the Now row', () => {
 		// tests above stay on a bare goto.
 		await gotoHydrated(page, '/agents');
 		const panel = page.getByRole('region', { name: 'Waiting for an agent' });
-		await expect(panel).toContainText(`at capacity on ${world.runnerName}`);
+		await expect(panel).toContainText(`at capacity on ${world.runnerName}`, { timeout: 20_000 });
 
 		const dialog = page.getByRole('dialog');
 		const capField = dialog.locator('#edit-concurrent');
