@@ -1,17 +1,19 @@
-import { expect, test } from '@playwright/test';
 import type { PublicationOwnerResult, PublicationProof } from '@tines/shared';
 import { ALICE, BOB } from './constants.mjs';
 import { d1, sqlLiteral } from './d1';
-import { apiClient, body, gotoHydrated, PHONE, runId, signIn } from './helpers';
+import { expect, test } from './fixtures';
+import { body, gotoHydrated, PHONE, signIn } from './helpers';
 
 test('reports, removes, restores, suspends and recovers one exact public snapshot', async ({
+	apiFor,
 	browser,
 	page,
-	request
+	request,
+	uniqueName
 }) => {
 	test.setTimeout(300_000);
-	const marker = `moderation-journey-${runId}`;
-	const alice = apiClient(request, ALICE.apiKey);
+	const marker = uniqueName('moderation-journey', { maxLength: 100 });
+	const alice = apiFor(ALICE);
 	const workflow = await body<{ id: string }>(
 		await alice.post('/api/v1/workflows', {
 			name: marker,

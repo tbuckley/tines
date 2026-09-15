@@ -1,4 +1,3 @@
-import { expect, test } from '@playwright/test';
 import {
 	canonicalizeLibraryValue,
 	type PrepareWorkflowPackageResponse,
@@ -8,11 +7,12 @@ import {
 import type { APIRequestContext, Page } from '@playwright/test';
 import { ALICE, BOB } from './constants.mjs';
 import { d1, sqlLiteral } from './d1';
-import { apiClient, body, errorBody, runId, signIn } from './helpers';
+import { expect, test } from './fixtures';
+import { apiClient, body, errorBody, signIn } from './helpers';
 
 test.describe.serial('native D1 moderation gates', () => {
 	let snapshotId: string;
-	const marker = `native-moderation-${runId}`;
+	let marker: string;
 
 	async function prepareCandidate(request: APIRequestContext, suffix: string) {
 		const alice = apiClient(request, ALICE.apiKey);
@@ -75,8 +75,9 @@ test.describe.serial('native D1 moderation gates', () => {
 		);
 	}
 
-	test.beforeAll(async ({ request }) => {
-		const alice = apiClient(request, ALICE.apiKey);
+	test.beforeAll(async ({ apiFor, uniqueName }) => {
+		marker = uniqueName('native-moderation', { maxLength: 100 });
+		const alice = apiFor(ALICE);
 		const workflow = await body<{ id: string }>(
 			await alice.post('/api/v1/workflows', {
 				name: marker,
