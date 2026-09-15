@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount, tick } from 'svelte';
+	import { onMount } from 'svelte';
 	import { page } from '$app/state';
 	import WorkflowGraph from '$lib/components/WorkflowGraph.svelte';
 	import MarketingSignIn from '$lib/components/marketing/MarketingSignIn.svelte';
@@ -17,7 +17,6 @@
 	let checking = $state(false);
 	let signIn = $state<MarketingSignIn>();
 	let reportDialog = $state<PublicationReportDialog>();
-	let reader = $state<HTMLElement>();
 	const installReturn = $derived(`/p/${snapshot.snapshot_id}/install`);
 	const signInErrorReturn = $derived(`/p/${snapshot.snapshot_id}?install=1&error=signin`);
 	const linkError = $derived(
@@ -45,9 +44,6 @@
 
 	async function recheck() {
 		if (checking || !available) return available;
-		const focused = reader?.contains(document.activeElement)
-			? (document.activeElement as HTMLElement)
-			: null;
 		checking = true;
 		try {
 			const response = await fetch(`/api/v1/publications/public/${snapshot.snapshot_id}/status`, {
@@ -62,10 +58,6 @@
 			available = false;
 		} finally {
 			checking = false;
-			if (available && focused?.isConnected && document.activeElement !== focused) {
-				await tick();
-				focused.focus({ preventScroll: true });
-			}
 		}
 		return available;
 	}
@@ -97,12 +89,8 @@
 	/><meta name="robots" content="noindex" /></svelte:head
 >
 
-{#if available}
-	<main
-		bind:this={reader}
-		class:hidden={checking}
-		class="mx-auto min-h-screen max-w-5xl min-w-0 overflow-x-hidden px-4 py-8 sm:px-6"
-	>
+{#if visible}
+	<main class="mx-auto min-h-screen max-w-5xl min-w-0 overflow-x-hidden px-4 py-8 sm:px-6">
 		<header class="border-b pb-6">
 			<p class="text-muted-foreground text-sm">Public workflow snapshot</p>
 			<h1 class="mt-1 text-3xl font-semibold wrap-break-word">{main.name}</h1>
@@ -321,9 +309,6 @@
 			>
 		</footer>
 	</main>
-	{#if checking}<div class="mx-auto max-w-xl px-6 py-12" role="status">
-			Checking publication…
-		</div>{/if}
 	{#if !data.user}<MarketingSignIn
 			bind:this={signIn}
 			returnTo={installReturn}
