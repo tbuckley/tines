@@ -36,11 +36,14 @@ describe('issueBackTarget', () => {
 	it('keeps issue filters while stripping a legacy project one-shot', () => {
 		expect(
 			issueBackTarget(
-				{ href: '/issues?project=Tines&q=mine', label: 'Issues' },
+				{
+					href: '/issues?project=Tines&workflow=wf_eng&state=s_review&q=mine',
+					label: 'Issues'
+				},
 				'prj_paris',
 				'/issues?ready=1'
 			)
-		).toEqual({ href: '/issues?q=mine', label: 'Issues' });
+		).toEqual({ href: '/issues?workflow=wf_eng&state=s_review&q=mine', label: 'Issues' });
 	});
 
 	it('keeps only a project page matching the current focus', () => {
@@ -123,9 +126,9 @@ describe('parseNavMemory', () => {
 
 describe('rememberedIssuesQuery', () => {
 	it('drops the one-shot project param but keeps every other filter', () => {
-		expect(rememberedIssuesQuery('?project=Tines&category=done&q=nav')).toBe(
-			'?category=done&q=nav'
-		);
+		expect(
+			rememberedIssuesQuery('?project=Tines&workflow=wf_eng&state=s_review&category=done&q=nav')
+		).toBe('?workflow=wf_eng&state=s_review&category=done&q=nav');
 	});
 
 	it('remembers nothing when the project param was all there was', () => {

@@ -2,8 +2,11 @@
 	import { onDestroy, onMount, tick } from 'svelte';
 	import { authClient } from '$lib/auth-client';
 
-	let { linkError = null, onOpened }: { linkError?: string | null; onOpened?: () => void } =
-		$props();
+	let {
+		linkError = null,
+		onOpened,
+		returnTo = '/issues'
+	}: { linkError?: string | null; onOpened?: () => void; returnTo?: string } = $props();
 	let dialog: HTMLDialogElement;
 	let emailInput = $state<HTMLInputElement>();
 	let email = $state('');
@@ -40,7 +43,7 @@
 		try {
 			const { error } = await authClient.signIn.social({
 				provider: 'google',
-				callbackURL: '/issues'
+				callbackURL: returnTo
 			});
 			if (generation !== attempt || !dialog.open) return;
 			if (error) status = error.message ?? 'Could not connect to Google. Try again.';
@@ -61,8 +64,8 @@
 			const { error } = await authClient.signIn.magicLink({
 				email: submittedEmail,
 				name: submittedEmail.split('@')[0],
-				callbackURL: '/issues',
-				errorCallbackURL: '/'
+				callbackURL: returnTo,
+				errorCallbackURL: `${returnTo}${returnTo.includes('?') ? '&' : '?'}error=signin`
 			});
 			if (generation !== attempt || !dialog.open) return;
 			if (error) status = error.message ?? 'Could not send the sign-in link. Try again.';

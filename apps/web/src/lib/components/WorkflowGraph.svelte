@@ -22,12 +22,15 @@
 	let {
 		workflow,
 		currentStateId = null,
-		compact = false
+		compact = false,
+		fit = true
 	}: {
 		workflow: GraphWorkflow;
 		/** Highlighted state; changes animate along the traversed edge. */
 		currentStateId?: string | null;
 		compact?: boolean;
+		/** Fit to the container. Disable to fix a full graph at intrinsic size; the caller must contain overflow. */
+		fit?: boolean;
 	} = $props();
 
 	// Unique per instance so several graphs on a page don't share markers.
@@ -230,7 +233,8 @@
 	<svg
 		viewBox="0 0 {layout.width} {layout.height}"
 		class="h-auto w-full"
-		style="max-width: {layout.width * (compact ? 1 : 1.15)}px"
+		style:max-width={`${!fit && !compact ? layout.width : layout.width * (compact ? 1 : 1.15)}px`}
+		style:min-width={!fit && !compact ? `${layout.width}px` : undefined}
 		role="img"
 		aria-label="Workflow graph"
 	>

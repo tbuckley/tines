@@ -194,6 +194,7 @@ test('Blank is preselected and creates a project with only the conventions promp
 	await expect(dialog.getByTestId('starter-code')).toHaveAttribute('aria-checked', 'false');
 	// Blank asks for nothing beyond today's form.
 	await expect(dialog.getByLabel('Repository URL')).toHaveCount(0);
+	await expect(dialog.getByLabel('Name', { exact: true })).toHaveValue('');
 	// The reworded label, and no developer-only wording (PRD success signal 7).
 	await expect(dialog.getByLabel(/How work is done here/)).toBeVisible();
 	await expect(dialog.getByText(/commands? that must pass/i)).toHaveCount(0);
@@ -230,17 +231,17 @@ test('Code repository asks for a URL, previews the repo item, and creates it', a
 	const conventions = dialog.getByLabel(/How work is done here/);
 	await expect(conventions).toHaveValue(code.conventions_template ?? '');
 
-	const name = `starter-code-${runId}`;
-	await dialog.getByLabel('Name', { exact: true }).fill(name);
 	// The required input is enforced before submit.
 	await expect(dialog.getByRole('button', { name: 'Create project' })).toBeDisabled();
+	const name = `starter-code-${runId}`;
 	await dialog
 		.getByLabel(code.inputs[0].label, { exact: false })
-		.fill(`https://github.com/example/widget-${runId}.git`);
+		.fill(`https://github.com/example/${name}.git`);
+	await expect(dialog.getByLabel('Name', { exact: true })).toHaveValue(name);
 	await expect(dialog.getByRole('button', { name: 'Create project' })).toBeEnabled();
 
 	const creates = dialog.getByRole('list', { name: 'This creates' });
-	await expect(creates).toHaveText(new RegExp(`Repository “widget-${runId}”`));
+	await expect(creates).toHaveText(new RegExp(`Repository “${name}”`));
 	await expect(creates).toHaveText(/\(default\)/);
 	await expect(creates).toHaveText(/Prompt “conventions”/);
 	await expect(creates).toHaveText(new RegExp(`Issue “${code.creates.first_issue?.title}”`));
@@ -256,10 +257,189 @@ test('Code repository asks for a URL, previews the repo item, and creates it', a
 		page.getByRole('link', { name: new RegExp(code.creates.first_issue?.title ?? 'nope') }).first()
 	).toBeVisible();
 	await expect(page.getByRole('button', { name: /^conventions/ })).toBeVisible();
-	await expect(page.getByRole('button', { name: new RegExp(`^widget-${runId}`) })).toBeVisible();
+	await expect(page.getByRole('button', { name: new RegExp(`^${name}`) })).toBeVisible();
 	// The starter's own workflow is the project's default — the grid card is
 	// where the project page does not say so itself.
 	await expectDefaultWorkflow(page, code.creates.workflows.find((w) => w.default)?.name ?? '');
+});
+
+for (const viewport of [
+	{ width: 1440, height: 900 },
+	{ width: 390, height: 844 }
+]) {
+	test(`a ${viewport.width}px repository suggestion is capped and creates successfully`, async ({
+		browser
+	}) => {
+		const context = await browser.newContext({ viewport });
+		await signIn(context, ALICE.sessionToken);
+		const page = await context.newPage();
+		await gotoHydrated(page, '/projects');
+		const dialog = await openDialog(page);
+		await dialog.getByTestId('starter-code').click();
+
+		const prefix = `starter-long-${viewport.width}-${runId}-`;
+		const basename = prefix + 'x'.repeat(201 - prefix.length);
+		const expectedName = basename.slice(0, 200);
+		const remote = `https://github.com/example/${basename}.git`;
+		const url = dialog.getByLabel('Repository URL');
+		const name = dialog.getByLabel('Name', { exact: true });
+		const hint = dialog.getByText('Maximum 200 characters.', { exact: true });
+		const submit = dialog.getByRole('button', { name: 'Create project' });
+
+		await url.fill(remote);
+		await expect(name).toHaveValue(expectedName);
+		await expect(url).toHaveValue(remote);
+		await expect(name).toHaveAttribute('maxlength', '200');
+		await expect(name).toHaveAttribute('aria-describedby', 'project-name-hint');
+		await expect(hint).toBeVisible();
+		await submit.scrollIntoViewIfNeeded();
+		await expect(submit).toBeEnabled();
+
+		const [createResponse] = await Promise.all([
+			page.waitForResponse(
+				(response) =>
+					response.request().method() === 'POST' &&
+					new URL(response.url()).pathname === '/api/v1/projects'
+			),
+			submit.click()
+		]);
+		expect(createResponse.status()).toBe(201);
+		expect((await createResponse.json()).name).toBe(expectedName);
+		await expect(page).toHaveURL(/\/projects\/prj_/);
+		await expect(page.getByRole('heading', { name: expectedName })).toBeVisible();
+		await context.close();
+	});
+}
+
+test('Name exposes its limit and keeps a direct edit across starter changes', async ({ page }) => {
+	await gotoHydrated(page, '/projects');
+	const dialog = await openDialog(page);
+	const name = dialog.getByLabel('Name', { exact: true });
+	const hint = dialog.getByText('Maximum 200 characters.', { exact: true });
+
+	await expect(name).toHaveAttribute('maxlength', '200');
+	await expect(hint).toBeVisible();
+	await name.fill('n'.repeat(200));
+	await name.press('End');
+	await name.press('x');
+	await expect(name).toHaveValue('n'.repeat(200));
+
+	await name.fill('manual-name');
+	await dialog.getByTestId('starter-code').click();
+	await dialog
+		.getByLabel('Repository URL')
+		.fill('https://github.com/example/a-different-repository.git');
+	await expect(name).toHaveValue('manual-name');
+	await dialog.getByTestId('starter-plan').click();
+	await expect(name).toHaveValue('manual-name');
+	await expect(hint).toBeVisible();
+});
+
+test('repository naming follows while pristine and freezes after any Name edit', async ({
+	page
+}) => {
+	await gotoHydrated(page, '/projects');
+	const dialog = await openDialog(page);
+	const name = dialog.getByLabel('Name', { exact: true });
+	const submit = dialog.getByRole('button', { name: 'Create project' });
+
+	await dialog.getByTestId('starter-code').click();
+	const url = dialog.getByLabel('Repository URL');
+	await url.fill('https://github.com/example/first.git');
+	await expect(name).toHaveValue('first');
+
+	// Focus and blur do not claim ownership; the next URL still updates Name.
+	await name.focus();
+	await name.blur();
+	await url.fill('git@git.example:team/second.git');
+	await expect(name).toHaveValue('second');
+
+	// Invalid and blank inputs clear only an untouched suggestion, then recover.
+	await url.fill('not-a-url');
+	await expect(name).toHaveValue('');
+	await name.fill('manual-fallback');
+	await expect(submit).toBeEnabled();
+
+	// Editing and undoing to the suggested text still claims ownership.
+	await name.fill('secondx');
+	await name.press('Backspace');
+	await expect(name).toHaveValue('second');
+	await url.fill('https://github.com/example/third.git');
+	await expect(name).toHaveValue('second');
+
+	// A deliberate clear is preserved across URL and starter changes.
+	await name.fill('');
+	await expect(submit).toBeDisabled();
+	await dialog.getByTestId('starter-blank').click();
+	await expect(name).toHaveValue('');
+	await dialog.getByTestId('starter-plan').click();
+	await expect(name).toHaveValue('');
+	await dialog.getByTestId('starter-code').click();
+	await expect(url).toHaveValue('https://github.com/example/third.git');
+	await expect(name).toHaveValue('');
+});
+
+test('pristine repository naming follows starter switches and resets after close', async ({
+	page
+}) => {
+	await gotoHydrated(page, '/projects');
+	let dialog = await openDialog(page);
+	let name = dialog.getByLabel('Name', { exact: true });
+
+	await dialog.getByTestId('starter-code').click();
+	await dialog.getByLabel('Repository URL').fill('https://github.com/example/retained.git');
+	await expect(name).toHaveValue('retained');
+	await dialog.getByTestId('starter-blank').click();
+	await expect(name).toHaveValue('');
+	await dialog.getByTestId('starter-plan').click();
+	await expect(name).toHaveValue('');
+	await dialog.getByTestId('starter-code').click();
+	await expect(name).toHaveValue('retained');
+
+	await dialog.getByRole('button', { name: 'Cancel' }).click();
+	dialog = await openDialog(page);
+	name = dialog.getByLabel('Name', { exact: true });
+	await expect(name).toHaveValue('');
+	await dialog.getByTestId('starter-code').click();
+	await expect(dialog.getByLabel('Repository URL')).toHaveValue('');
+	await dialog.getByLabel('Repository URL').fill('https://github.com/example/escape.git');
+	await expect(name).toHaveValue('escape');
+
+	await page.keyboard.press('Escape');
+	await expect(dialog).toHaveCount(0);
+	dialog = await openDialog(page);
+	await expect(dialog.getByLabel('Name', { exact: true })).toHaveValue('');
+	await dialog.getByTestId('starter-code').click();
+	await expect(dialog.getByLabel('Repository URL')).toHaveValue('');
+});
+
+test('a suggested duplicate name keeps the form intact and accepts a manual replacement', async ({
+	page,
+	request
+}) => {
+	const duplicate = `starter-duplicate-${runId}`;
+	const replacement = `${duplicate}-replacement`;
+	const created = await apiClient(request, ALICE.apiKey).post('/api/v1/projects', {
+		name: duplicate
+	});
+	expect(created.status()).toBe(201);
+
+	await gotoHydrated(page, '/projects');
+	const dialog = await openDialog(page);
+	await dialog.getByTestId('starter-code').click();
+	const url = dialog.getByLabel('Repository URL');
+	const name = dialog.getByLabel('Name', { exact: true });
+	const remote = `https://github.com/example/${duplicate}.git`;
+	await url.fill(remote);
+	await expect(name).toHaveValue(duplicate);
+	await dialog.getByRole('button', { name: 'Create project' }).click();
+
+	await expect(dialog.getByText(/already exists/)).toBeVisible();
+	await expect(url).toHaveValue(remote);
+	await expect(name).toHaveValue(duplicate);
+	await name.fill(replacement);
+	await dialog.getByRole('button', { name: 'Create project' }).click();
+	await expect(page.getByRole('heading', { name: replacement })).toBeVisible();
 });
 
 test('clearing the prefilled conventions creates a project without one', async ({ page }) => {
@@ -304,6 +484,7 @@ test('Plan something together renders a multiline brief and lands on its first i
 	const plan = byId('plan');
 
 	await dialog.getByTestId('starter-plan').click();
+	await expect(dialog.getByLabel('Name', { exact: true })).toHaveValue('');
 	const brief = `Two adults and two children ${runId}\nOutdoor options and a rainy-day backup`;
 	const briefInput = dialog.getByLabel(plan.inputs[0].label, { exact: false });
 	await expect(briefInput.evaluate((element) => element.tagName)).resolves.toBe('TEXTAREA');
@@ -433,7 +614,7 @@ test('at 390px the chooser stacks and the whole form stays reachable', async ({ 
 	const url = dialog.getByLabel(byId('code').inputs[0].label, { exact: false });
 	await url.scrollIntoViewIfNeeded();
 	await url.fill('https://github.com/example/phone.git');
-	await dialog.getByLabel('Name', { exact: true }).fill(`starter-phone-${runId}`);
+	await expect(dialog.getByLabel('Name', { exact: true })).toHaveValue('phone');
 	const submit = dialog.getByRole('button', { name: 'Create project' });
 	await submit.scrollIntoViewIfNeeded();
 	await expect(submit).toBeVisible();

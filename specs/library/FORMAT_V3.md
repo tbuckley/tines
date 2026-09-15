@@ -140,3 +140,16 @@ Tines/441 added native-D1 boundary proof for an exact 800-statement commit, 801-
 ## Decision update — 2026-09-13 (Tines/462 receipt state navigation)
 
 New workflow-install receipt state objects use `/workflows/<workflow-id>?state=<state-id>#state-<state-id>`. The query selects and expands the state's context row, while `state-<state-id>` is the durable fragment contract retained by the workflow editor. Existing immutable receipts keep their historical hash-only URLs and remain navigable through that anchor. CLI plan validation accepts only the exact historical hash-only state URL as a compatibility form; other operation changes remain invalid.
+
+## Hosted and cross-instance transport (Tines/436)
+
+Public snapshots preserve the existing `profile: "workflow"` version 3 document exactly. Hosting
+adds provenance and availability to signed installation plans and receipts, not to portable package
+bytes. Same-host plans bind snapshot ID, document digest, byte checksum, and snapshot/publisher status
+versions so the receipt transaction can reject withdrawal. Cross-instance transfer is client-side:
+the source returns canonical bytes and the destination processes them as an ordinary independent
+file. A destination server never fetches a supplied public URL or receives source credentials.
+
+## Decision update — 2026-09-14 (Tines/484 browser-authored input edits)
+
+The browser export authoring surface updates an authored input by its stable local ID without rebuilding the candidate. All input fields remain editable; generated inputs are read-only. A key/default change atomically rewrites only that input's active exact occurrences in fields already named by its text-use records and updates those records' canonical tokens. Escaped occurrences, unregistered fields, unrelated declarations, ordering, and candidate-only work remain unchanged. The sealed candidate must pass the ordinary v3 validator before it replaces the prior candidate; Cancel or any failure changes nothing. A successful explicit save invalidates validation and required dependency review, including when its values are unchanged.

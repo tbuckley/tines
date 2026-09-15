@@ -330,6 +330,46 @@ describe('workflow package CLI', () => {
 		expect(saved).not.toContain('tines_named_key');
 	});
 
+	it('downloads a foreign public URL without credentials and rechecks exact bytes before install', async () => {
+		const seen: Array<Record<string, string | string[] | undefined>> = [];
+		let sourceBody = canonicalizeLibraryValue(document);
+		const source = createServer((request, response) => {
+			seen.push(request.headers);
+			response.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+			response.end(sourceBody);
+		});
+		await new Promise<void>((resolve) => source.listen(0, '127.0.0.1', resolve));
+		const sourceBase = `http://127.0.0.1:${(source.address() as AddressInfo).port}`;
+		const publicUrl = `${sourceBase}/p/abcdefghijklmnopqrst`;
+		const remotePlan = join(dir, 'remote-plan.json');
+		try {
+			await cli(['workflows', 'preview', publicUrl, '--plan-out', remotePlan, '--json']);
+			expect(seen).toHaveLength(1);
+			expect(seen[0].authorization).toBeUndefined();
+			expect(seen[0].cookie).toBeUndefined();
+			expect(seen[0].referer).toBeUndefined();
+			expect(readFileSync(remotePlan, 'utf8')).not.toContain('tines_named_key');
+
+			sourceBody = canonicalizeLibraryValue(
+				await withLibraryDocumentDigest({ ...document, exported_at: document.exported_at + 1 })
+			);
+			requests = [];
+			const changed = await cli([
+				'workflows',
+				'install',
+				publicUrl,
+				'--plan',
+				remotePlan,
+				'--confirm',
+				plan.plan_digest
+			]).catch((error) => error as { stderr: string });
+			expect(changed.stderr).toContain('source changed since preview');
+			expect(requests.filter((request) => request.method === 'POST')).toEqual([]);
+		} finally {
+			await new Promise<void>((resolve) => source.close(() => resolve()));
+		}
+	});
+
 	it('makes no install request without the exact prior-plan confirmation', async () => {
 		await cli(['workflows', 'preview', packagePath, '--plan-out', planPath, '--json']);
 		requests = [];

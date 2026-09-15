@@ -11,6 +11,7 @@
 	import IconDownload from '@tabler/icons-svelte/icons/download';
 	import IconLock from '@tabler/icons-svelte/icons/lock';
 	import IconPlus from '@tabler/icons-svelte/icons/plus';
+	import IconWorldUpload from '@tabler/icons-svelte/icons/world-upload';
 	import { slide } from 'svelte/transition';
 	import { goto, invalidateAll } from '$app/navigation';
 	import { page } from '$app/state';
@@ -206,6 +207,11 @@
 		{/if}
 	</div>
 	<div class="flex gap-2">
+		{#if !data.workflow.is_system}
+			<Button variant="outline" href="/workflows/{data.workflow.id}/export#publish">
+				<IconWorldUpload size={16} /> Publish workflow
+			</Button>
+		{/if}
 		<Button variant="outline" href="/workflows/{data.workflow.id}/export">
 			<IconDownload size={16} /> Export package
 		</Button>

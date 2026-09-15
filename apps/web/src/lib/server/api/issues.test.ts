@@ -10,6 +10,7 @@ import {
 	PROJECT,
 	REVIEW,
 	USER,
+	addLabel,
 	addIssue,
 	addRunner,
 	seedBase
@@ -541,6 +542,109 @@ describe('listIssues search', () => {
 
 	it('returns every issue when q is absent', async () => {
 		expect((await search({})).items).toHaveLength(5);
+	});
+});
+
+describe('listIssues workflow filtering', () => {
+	let t: TestDb;
+	let ids: Record<string, string>;
+	let label: string;
+
+	beforeEach(() => {
+		t = createTestDb();
+		seedBase(t);
+		t.sqlite.exec(`
+			INSERT INTO workflow (id, user_id, name, initial_state_id, created_at, updated_at) VALUES
+				('wf_alpha', '${USER}', 'Shared workflow', 's_alpha_review', 0, 0),
+				('wf_beta', '${USER}', 'Shared workflow', 's_beta_review', 0, 0);
+			INSERT INTO workflow_state (id, workflow_id, name, category, position, created_at) VALUES
+				('s_alpha_review', 'wf_alpha', 'Review', 'awaiting_human', 0, 0),
+				('s_alpha_done', 'wf_alpha', 'Done', 'done', 1, 0),
+				('s_beta_review', 'wf_beta', 'Review', 'active', 0, 0);
+		`);
+		label = addLabel(t, 'workflow-test');
+		ids = {
+			alphaReview: addIssue(t, {
+				title: 'Needle alpha review',
+				workflow: 'wf_alpha',
+				state: 's_alpha_review',
+				labels: [label]
+			}),
+			alphaDone: addIssue(t, {
+				title: 'Alpha done',
+				workflow: 'wf_alpha',
+				state: 's_alpha_done'
+			}),
+			betaReview: addIssue(t, {
+				title: 'Beta review',
+				workflow: 'wf_beta',
+				state: 's_beta_review'
+			}),
+			alphaDuplicate: addIssue(t, {
+				title: 'Alpha duplicate',
+				workflow: 'wf_alpha',
+				state: 's_alpha_review'
+			})
+		};
+		t.sqlite
+			.prepare(
+				`INSERT INTO issue_link (id, source_issue_id, target_issue_id, kind, created_at)
+				 VALUES ('lnk_workflow', ?, ?, 'duplicate_of', 0)`
+			)
+			.run(ids.alphaDuplicate, ids.betaReview);
+	});
+
+	const list = async (filters: Parameters<typeof listIssues>[2]) =>
+		(
+			await listIssues(t.db, USER, { projectId: PROJECT, ...filters }, { cursor: null, limit: 50 })
+		).items.map((item) => item.id);
+
+	it('matches workflow and state by id or exact name, including duplicate semantics', async () => {
+		expect((await list({ workflow: 'wf_alpha' })).sort()).toEqual(
+			[ids.alphaReview, ids.alphaDone, ids.alphaDuplicate].sort()
+		);
+		expect((await list({ workflow: 'Shared workflow' })).sort()).toEqual(Object.values(ids).sort());
+		expect(await list({ workflow: 'wf_alpha', state: 's_alpha_review' })).toEqual([
+			ids.alphaReview
+		]);
+		expect(await list({ workflow: 'wf_alpha', state: 's_beta_review' })).toEqual([
+			ids.alphaDuplicate
+		]);
+		expect((await list({ workflow: 'Shared workflow', state: 'Review' })).sort()).toEqual(
+			[ids.alphaReview, ids.betaReview, ids.alphaDuplicate].sort()
+		);
+		expect(await list({ workflow: 'WF_ALPHA' })).toEqual([]);
+	});
+
+	it('composes workflow with ready, label, and search and keeps user isolation', async () => {
+		expect(await list({ workflow: 'wf_alpha', ready: true, labels: [label], q: 'needle' })).toEqual(
+			[ids.alphaReview]
+		);
+		expect(
+			(
+				await listIssues(
+					t.db,
+					'another-user',
+					{ workflow: 'Shared workflow' },
+					{ cursor: null, limit: 50 }
+				)
+			).items
+		).toEqual([]);
+	});
+
+	it('counts within workflow/state scope while ignoring category and hide-done', async () => {
+		expect(
+			await countIssuesByCategory(t.db, USER, {
+				projectId: PROJECT,
+				workflow: 'wf_alpha',
+				state: 'Review',
+				category: 'done',
+				hideDone: true
+			})
+		).toEqual({ backlog: 0, active: 1, awaiting_human: 1, done: 0 });
+		expect(
+			await countIssuesByCategory(t.db, USER, { projectId: PROJECT, workflow: 'missing' })
+		).toEqual({ backlog: 0, active: 0, awaiting_human: 0, done: 0 });
 	});
 });
 
