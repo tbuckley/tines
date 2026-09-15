@@ -14,7 +14,7 @@ import type { Project, RoutingRule, Runner, RunnerTokenResponse } from '@tines/s
 import type { APIRequestContext } from '@playwright/test';
 import { expect, test as base } from './fixtures';
 import { ALICE, RUNROW } from './constants.mjs';
-import { apiClient, body, clickUntil, gotoHydrated, resetFocus } from './helpers';
+import { apiClient, body, clickUntil, gotoHydrated, readSettled, resetFocus } from './helpers';
 
 type QueueWorld = { projectId: string; runnerId: string; runnerName: string };
 type QueueAudit = { runnerId?: string; ruleId?: string };
@@ -253,12 +253,19 @@ test.describe.serial('the Now row', () => {
 		expect(panelBox!.x + panelBox!.width).toBeLessThanOrEqual(390);
 		expect(actionBox!.x).toBeGreaterThanOrEqual(panelBox!.x);
 		expect(actionBox!.x + actionBox!.width).toBeLessThanOrEqual(panelBox!.x + panelBox!.width);
-		for (const button of await actions.getByRole('button').all()) {
-			const box = await button.boundingBox();
-			expect(box).not.toBeNull();
-			expect(box!.x).toBeGreaterThanOrEqual(panelBox!.x);
-			expect(box!.x + box!.width).toBeLessThanOrEqual(panelBox!.x + panelBox!.width);
-			expect(box!.x + box!.width).toBeLessThanOrEqual(390);
+		const buttonBoxes = await readSettled(() =>
+			actions.locator('button:visible').evaluateAll((buttons) =>
+				buttons.map((button) => {
+					const { x, width } = button.getBoundingClientRect();
+					return { x, width };
+				})
+			)
+		);
+		expect(buttonBoxes).toHaveLength(2);
+		for (const box of buttonBoxes) {
+			expect(box.x).toBeGreaterThanOrEqual(panelBox!.x);
+			expect(box.x + box.width).toBeLessThanOrEqual(panelBox!.x + panelBox!.width);
+			expect(box.x + box.width).toBeLessThanOrEqual(390);
 		}
 	});
 
