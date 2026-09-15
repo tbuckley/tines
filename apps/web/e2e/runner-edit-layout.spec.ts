@@ -14,8 +14,10 @@ let customRunner: Runner;
 
 test.describe.serial('runner edit responsive layout', () => {
 	test.beforeAll(async ({ apiFor, uniqueName, workerRequest }) => {
-		runnerName = uniqueName('runner-edit-layout', { maxLength: 100 });
-		customRunnerName = uniqueName('runner-edit-fixed', { maxLength: 100 });
+		// Keep the pre-migration name envelope: this spec measures the modal,
+		// not a maximum-length runner card behind it on a 320 px viewport.
+		runnerName = uniqueName('runner-edit-layout', { maxLength: 28 });
+		customRunnerName = uniqueName('runner-edit-fixed', { maxLength: 28 });
 		const api = apiFor(ALICE);
 		const registered = await body<RunnerTokenResponse>(
 			await api.post('/api/v1/runners/register', { name: runnerName, harness: 'codex' })
