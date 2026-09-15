@@ -6,6 +6,17 @@ export function isPublicPublicationPath(pathname: string): boolean {
 	);
 }
 
+/** Strip validators before framework handling so public responses can never become a 304. */
+export function preparePublicationRequest(request: Request): Request {
+	if (!isPublicPublicationPath(new URL(request.url).pathname)) return request;
+	if (!request.headers.has('if-none-match') && !request.headers.has('if-modified-since'))
+		return request;
+	const headers = new Headers(request.headers);
+	headers.delete('if-none-match');
+	headers.delete('if-modified-since');
+	return new Request(request, { headers });
+}
+
 function nonceSource(response: Response): string | null {
 	const policy = response.headers.get('content-security-policy') ?? '';
 	return policy.match(/(?:^|[;\s])('nonce-[^'\s;]+')(?=[\s;]|$)/)?.[1] ?? null;
@@ -47,10 +58,33 @@ export function finalizePublicationResponse(request: Request, response: Response
 	headers.delete('etag');
 	headers.delete('last-modified');
 
-	const hasBody = request.method !== 'HEAD' && ![101, 204, 205, 304].includes(response.status);
+	// A 304 at this outer boundary means a bypass generated it despite stripped
+	// validators. Fail closed as a neutral response instead of permitting cache reuse.
+	const status = response.status === 304 ? 500 : response.status;
+	const hasBody = request.method !== 'HEAD' && ![101, 204, 205].includes(status);
 	return new Response(hasBody ? response.body : null, {
-		status: response.status,
-		statusText: response.statusText,
+		status,
+		statusText: status === response.status ? response.statusText : 'Internal Server Error',
 		headers
 	});
+}
+
+/** Worker-level wrapper for framework responses and exceptions. */
+export async function handlePublicationFetch(
+	request: Request,
+	fetcher: (request: Request) => Promise<Response>
+): Promise<Response> {
+	try {
+		return finalizePublicationResponse(request, await fetcher(preparePublicationRequest(request)));
+	} catch (error) {
+		if (!isPublicPublicationPath(new URL(request.url).pathname)) throw error;
+		console.error('Public publication request failed', { code: 'publication_request_failed' });
+		return finalizePublicationResponse(
+			request,
+			new Response('Publication unavailable', {
+				status: 500,
+				headers: { 'content-type': 'text/plain; charset=utf-8' }
+			})
+		);
+	}
 }

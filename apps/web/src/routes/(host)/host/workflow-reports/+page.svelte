@@ -1,11 +1,16 @@
 <script lang="ts">
 	import { invalidateAll } from '$app/navigation';
+	import { navigating } from '$app/state';
 	let { data } = $props();
 	let urgentTarget = $state('');
 	let urgentReason = $state('');
 	let busy = $state(false);
 	let message = $state('');
 	let pendingUrgent = $state<Record<string, unknown> | null>(null);
+	let pendingRecovery = $state<{
+		publisherId: string;
+		body: Record<string, unknown>;
+	} | null>(null);
 	let recoveryReason = $state('');
 
 	function snapshotId(value: string) {
@@ -43,6 +48,7 @@
 			const responseBody = await response.json();
 			if (!response.ok) {
 				pendingUrgent = null;
+				if (responseBody?.error?.code === 'moderation_state_changed') await invalidateAll();
 				throw new Error(responseBody?.error?.message ?? 'Could not disable snapshot.');
 			}
 			pendingUrgent = null;
@@ -64,24 +70,33 @@
 		}
 		busy = true;
 		message = '';
+		const requestBody =
+			pendingRecovery?.publisherId === publisher.publisher_id
+				? pendingRecovery.body
+				: {
+						request_id: crypto.randomUUID(),
+						action: 'unsuspend',
+						target: {
+							publisher_id: publisher.publisher_id,
+							snapshot_id: publisher.snapshot_id ?? undefined
+						},
+						reason: recoveryReason,
+						expected_publisher_version: publisher.status_version
+					};
+		pendingRecovery = { publisherId: publisher.publisher_id, body: requestBody };
 		try {
 			const response = await fetch('/api/v1/host/workflow-moderation/decisions', {
 				method: 'POST',
 				headers: { 'content-type': 'application/json' },
-				body: JSON.stringify({
-					request_id: crypto.randomUUID(),
-					action: 'unsuspend',
-					target: {
-						publisher_id: publisher.publisher_id,
-						snapshot_id: publisher.snapshot_id ?? undefined
-					},
-					reason: recoveryReason,
-					expected_publisher_version: publisher.status_version
-				})
+				body: JSON.stringify(requestBody)
 			});
 			const responseBody = await response.json();
-			if (!response.ok)
+			if (!response.ok) {
+				pendingRecovery = null;
+				if (responseBody?.error?.code === 'moderation_state_changed') await invalidateAll();
 				throw new Error(responseBody?.error?.message ?? 'Could not unsuspend publisher.');
+			}
+			pendingRecovery = null;
 			recoveryReason = '';
 			message = 'Publisher unsuspended.';
 			await invalidateAll();
@@ -97,6 +112,7 @@
 	><title>Workflow moderation · Tines</title><meta name="robots" content="noindex" /></svelte:head
 >
 <h1 class="text-2xl font-semibold">Workflow report queue</h1>
+{#if navigating}<p class="mt-3 text-sm" role="status">Loading report queue…</p>{/if}
 <nav class="mt-4 flex flex-wrap gap-2" aria-label="Report filters">
 	{#each ['unread', 'open', 'resolved', 'all'] as filter}<a
 			class="rounded-md border px-3 py-2 capitalize"
@@ -155,6 +171,11 @@
 					<span
 						><b>{publisher.display_name}</b><br /><span class="text-muted-foreground"
 							>{publisher.reason}</span
+						><span class="text-muted-foreground block text-xs"
+							>{publisher.affected_snapshot_count} stored snapshot{publisher.affected_snapshot_count ===
+							1
+								? ''
+								: 's'}</span
 						></span
 					><span class="flex gap-2"
 						>{#if publisher.snapshot_id}<a
@@ -167,7 +188,13 @@
 						></span
 					>
 				</li>{/each}
-		</ul>{/if}
+		</ul>
+		{#if data.publisher_next_cursor}<a
+				class="mt-3 inline-block rounded-md border px-3 py-2"
+				href="?filter={data.filter}&publisher_cursor={encodeURIComponent(
+					data.publisher_next_cursor
+				)}">More suspended publishers</a
+			>{/if}{/if}
 </section>
 
 <section class="mt-8" aria-labelledby="cases-title">

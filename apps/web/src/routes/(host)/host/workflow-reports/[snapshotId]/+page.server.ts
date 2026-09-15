@@ -1,22 +1,35 @@
 import { getDb } from '$lib/server/db';
-import { inspectModerationSnapshot } from '$lib/server/publications/moderation';
+import {
+	inspectModerationSnapshot,
+	listModerationAudit,
+	listModerationReports
+} from '$lib/server/publications/moderation';
 import type { PageServerLoad } from './$types';
 
-export const load: PageServerLoad = async ({ locals, platform, params, url }) =>
-	inspectModerationSnapshot(
-		getDb(platform!.env),
-		platform!.env,
-		{
-			userId: locals.user!.id,
-			userName: locals.user!.name,
-			apiKeyId: null,
-			apiKeyName: null,
-			viaSession: true,
-			agentRunId: null
-		},
-		params.snapshotId,
-		{
-			reportsOffset: Number(url.searchParams.get('reports_offset') ?? 0),
-			auditOffset: Number(url.searchParams.get('audit_offset') ?? 0)
-		}
-	);
+export const load: PageServerLoad = async ({ locals, platform, params, url }) => {
+	const db = getDb(platform!.env);
+	const actor = {
+		userId: locals.user!.id,
+		userName: locals.user!.name,
+		apiKeyId: null,
+		apiKeyName: null,
+		viaSession: true,
+		agentRunId: null
+	};
+	const [snapshot, reports, audit] = await Promise.all([
+		inspectModerationSnapshot(db, platform!.env, actor, params.snapshotId),
+		listModerationReports(db, platform!.env, actor, params.snapshotId, {
+			cursor: url.searchParams.get('reports_cursor') ?? undefined
+		}),
+		listModerationAudit(db, platform!.env, actor, params.snapshotId, {
+			cursor: url.searchParams.get('audit_cursor') ?? undefined
+		})
+	]);
+	return {
+		...snapshot,
+		reports: reports.items,
+		reports_next_cursor: reports.next_cursor,
+		audit: audit.items,
+		audit_next_cursor: audit.next_cursor
+	};
+};

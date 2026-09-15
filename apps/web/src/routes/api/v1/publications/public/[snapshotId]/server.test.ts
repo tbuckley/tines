@@ -7,9 +7,18 @@ import {
 } from '@tines/shared';
 import { inheritedPackage } from '../../../../../../../../../packages/shared/src/library/fixtures';
 import { createTestDb, type TestDb } from '$lib/server/api/test-db';
-import { seedBase, USER } from '$lib/server/supervisor/test-fixtures';
+import { sha256Hex } from '$lib/server/api/core';
+import {
+	addIssue,
+	addRun,
+	addRunKey,
+	addRunner,
+	seedBase,
+	USER
+} from '$lib/server/supervisor/test-fixtures';
 import { GET as detail } from './+server';
 import { GET as download } from './download/+server';
+import { POST as prepareInstall } from './prepare-install/+server';
 import { GET as reuse } from './reuse.txt/+server';
 import { GET as status } from './status/+server';
 
@@ -82,6 +91,37 @@ beforeEach(() => {
 });
 
 describe('anonymous publication reads', () => {
+	it('allows an authenticated run key to prepare the read-only hosted install plan', async () => {
+		await seedPublication();
+		const runnerId = addRunner(t);
+		const issueId = addIssue(t);
+		const runId = addRun(t, { issueId, runnerId, status: 'running' });
+		const keyId = addRunKey(t, runId);
+		const secret = 'run-key-secret';
+		t.sqlite
+			.prepare('UPDATE api_key SET key_hash=? WHERE id=?')
+			.run(await sha256Hex(secret), keyId);
+		const url = `http://test/api/v1/publications/public/${SNAPSHOT}/prepare-install`;
+		const response = await prepareInstall({
+			locals: {},
+			platform: {
+				env: { ...t.env, BETTER_AUTH_SECRET: 'test-signing-secret' },
+				ctx: { waitUntil: () => {} }
+			},
+			params: { snapshotId: SNAPSHOT },
+			url: new URL(url),
+			request: new Request(url, {
+				method: 'POST',
+				headers: { authorization: `Bearer ${secret}`, 'content-type': 'application/json' },
+				body: JSON.stringify({
+					choices: { inputs: { 'input:1': { mode: 'create', name: 'qa', color: 'blue' } } }
+				})
+			})
+		} as unknown as Parameters<typeof prepareInstall>[0]);
+		expect(response.status).toBe(200);
+		expect(await response.json()).toMatchObject({ source: { snapshot_id: SNAPSHOT } });
+	});
+
 	it('returns only the selected DTO and byte-exact package with no caching', async () => {
 		const { documentJson } = await seedPublication();
 		const shown = await detail(event() as unknown as Parameters<typeof detail>[0]);
@@ -108,18 +148,32 @@ describe('anonymous publication reads', () => {
 		});
 	});
 
-	it('uses the same neutral no-store response after withdrawal or suspension', async () => {
-		await seedPublication();
-		await t.db
-			.updateTable('workflow_publication')
-			.set({ owner_state: 'withdrawn', status_version: 2 })
-			.where('snapshot_id', '=', SNAPSHOT)
-			.execute();
-		for (const handler of [detail, download, reuse, status]) {
-			const response = await handler(event() as never);
-			expect(response.status).toBe(404);
-			expect(response.headers.get('cache-control')).toBe('no-store, max-age=0');
-			expect(await response.text()).not.toContain(MARKER);
+	it.each(['withdrawn', 'host_removed', 'publisher_suspended'] as const)(
+		'uses the same neutral no-store response when %s',
+		async (restriction) => {
+			await seedPublication();
+			if (restriction === 'publisher_suspended') {
+				await t.db
+					.insertInto('workflow_publisher_status')
+					.values({ user_id: USER, suspended: 1, status_version: 1 })
+					.execute();
+			} else {
+				await t.db
+					.updateTable('workflow_publication')
+					.set(
+						restriction === 'withdrawn'
+							? { owner_state: 'withdrawn', status_version: 2 }
+							: { host_state: 'removed', status_version: 2 }
+					)
+					.where('snapshot_id', '=', SNAPSHOT)
+					.execute();
+			}
+			for (const handler of [detail, download, reuse, status]) {
+				const response = await handler(event() as never);
+				expect(response.status).toBe(404);
+				expect(response.headers.get('cache-control')).toBe('no-store, max-age=0');
+				expect(await response.text()).not.toContain(MARKER);
+			}
 		}
-	});
+	);
 });

@@ -11,24 +11,16 @@ import {
 	type WorkflowPackageDocument,
 	type WorkflowResponse
 } from '@tines/shared';
-import { expect, test, type Page } from '@playwright/test';
+import type { Page } from '@playwright/test';
+import { expect, test } from './fixtures';
 import { d1, sqlLiteral } from './d1';
 import { ALICE, BASE_URL, BOB } from './constants.mjs';
-import {
-	apiClient,
-	body,
-	DESKTOP,
-	gotoHydrated,
-	PHONE,
-	readSettled,
-	runId,
-	signIn
-} from './helpers';
+import { apiClient, body, DESKTOP, gotoHydrated, PHONE, readSettled, signIn } from './helpers';
 
-const name = `Browser package ${runId}`;
-const dependencyName = `Browser dependency ${runId}`;
-const projectName = `Browser package project ${runId}`;
-const scheduleName = `Browser package schedule ${runId}`;
+let name: string;
+let dependencyName: string;
+let projectName: string;
+let scheduleName: string;
 const literal = 'The ordinary prose marker stays exactly unchanged.';
 const markdownTail = 'The final Markdown passage is visible only after expansion.';
 const imageUrl = 'https://example.invalid/auto-fetch.png';
@@ -96,9 +88,12 @@ async function reviewDependencies(page: Page) {
 		await checkbox.check();
 }
 
-test.beforeAll(async ({ playwright }) => {
-	const request = await playwright.request.newContext({ baseURL: test.info().project.use.baseURL });
-	const api = apiClient(request, ALICE.apiKey);
+test.beforeAll(async ({ apiFor, uniqueName }) => {
+	name = uniqueName('Browser package', { maxLength: 100 });
+	dependencyName = uniqueName('Browser dependency', { maxLength: 100 });
+	projectName = uniqueName('Browser package project');
+	scheduleName = uniqueName('Browser package schedule', { maxLength: 100 });
+	const api = apiFor(ALICE);
 	const dependency = await body<{ id: string; states: { id: string; name: string }[] }>(
 		await api.post('/api/v1/workflows', {
 			name: dependencyName,
@@ -215,7 +210,6 @@ test.beforeAll(async ({ playwright }) => {
 		})
 	);
 	scheduleId = issue.schedule!.id;
-	await request.dispose();
 });
 
 test.beforeEach(async ({ context }) => signIn(context, ALICE.sessionToken));
@@ -417,7 +411,8 @@ test('cancels safely and refuses duplicate keys or registered-token edits over u
 
 test('authors an exact declared use and downloads the reviewed canonical package', async ({
 	page,
-	request
+	request,
+	uniqueName
 }) => {
 	test.setTimeout(120_000);
 	await page.setViewportSize(DESKTOP);
@@ -665,7 +660,7 @@ test('authors an exact declared use and downloads the reviewed canonical package
 	expect(d1(`SELECT id FROM issue WHERE workflow_id IN (${workflowIds})`)).toEqual([]);
 	expect(d1(`SELECT id FROM scheduled_task WHERE workflow_id IN (${workflowIds})`)).toEqual([]);
 	const inspectionProject = await body<Project>(
-		await bobApi.post('/api/v1/projects', { name: `Installed context inspection ${runId}` })
+		await bobApi.post('/api/v1/projects', { name: uniqueName('Installed context inspection') })
 	);
 	const inspectionIssue = await body<CreateIssueResponse>(
 		await bobApi.post(`/api/v1/projects/${inspectionProject.id}/issues`, {
@@ -698,7 +693,7 @@ test('authors an exact declared use and downloads the reviewed canonical package
 	// The same reviewed file can create a second independent copy with its
 	// optional schedule and tier enabled for exactly one destination project.
 	const secondProject = await body<Project>(
-		await bobApi.post('/api/v1/projects', { name: `Installed context second ${runId}` })
+		await bobApi.post('/api/v1/projects', { name: uniqueName('Installed context second') })
 	);
 	const secondInspectionIssue = await body<CreateIssueResponse>(
 		await bobApi.post(`/api/v1/projects/${secondProject.id}/issues`, {
@@ -722,11 +717,12 @@ test('authors an exact declared use and downloads the reviewed canonical package
 		id: project.id,
 		default_workflow_id: project.default_workflow_id
 	}));
-	const runnerId = `rnr_package_acceptance_${runId}`;
-	const routingId = `rrl_package_acceptance_${runId}`;
+	const runnerId = uniqueName('rnr_package_acceptance');
+	const routingId = uniqueName('rrl_package_acceptance');
+	const runnerName = uniqueName('Package acceptance');
 	const now = Date.now();
 	d1(`INSERT INTO runner(id,user_id,type,name,status,max_concurrent,max_run_minutes,default_tier,config,created_at,updated_at)
-		VALUES(${sqlLiteral(runnerId)},${sqlLiteral(BOB.id)},'local',${sqlLiteral(`Package acceptance ${runId}`)},'active',1,30,'balanced','{"harness":"codex"}',${now},${now});
+		VALUES(${sqlLiteral(runnerId)},${sqlLiteral(BOB.id)},'local',${sqlLiteral(runnerName)},'active',1,30,'balanced','{"harness":"codex"}',${now},${now});
 		INSERT INTO routing_rule(id,user_id,project_id,workflow_state_id,label_id,targets,created_at,updated_at)
 		VALUES(${sqlLiteral(routingId)},${sqlLiteral(BOB.id)},${sqlLiteral(inspectionProject.id)},NULL,NULL,${sqlLiteral(JSON.stringify([{ runner_id: runnerId }]))},${now},${now})`);
 	await gotoHydrated(page, '/workflows/import');

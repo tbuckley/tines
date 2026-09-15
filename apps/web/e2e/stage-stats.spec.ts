@@ -10,13 +10,14 @@ import type {
 	StageStatsReport,
 	WorkflowResponse
 } from '@tines/shared';
-import { expect, test, type Page, type Route } from '@playwright/test';
+import type { Page, Route } from '@playwright/test';
+import { expect, test } from './fixtures';
 import { WEEKLY } from './stage-stats-seed.mjs';
 import { ALICE } from './constants.mjs';
-import { apiClient, body, clickToOpen, gotoHydrated, runId, signIn } from './helpers';
+import { apiClient, body, clickToOpen, gotoHydrated, signIn } from './helpers';
 
-const projectName = `stage-stats-${runId}`;
-const otherProjectName = `stage-stats-other-${runId}`;
+let projectName: string;
+let otherProjectName: string;
 let project: Project;
 let otherProject: Project;
 let workflow: WorkflowResponse;
@@ -56,12 +57,13 @@ async function openStateAnalysis(page: Page) {
 	await expect(page.getByRole('region', { name: 'This week' })).toBeVisible();
 }
 
-test.beforeAll(async ({ playwright }) => {
-	const request = await playwright.request.newContext({ baseURL: test.info().project.use.baseURL });
-	const api = apiClient(request, ALICE.apiKey);
+test.beforeAll(async ({ apiFor, uniqueName }) => {
+	projectName = uniqueName('stage-stats');
+	otherProjectName = uniqueName('stage-stats-other');
+	const api = apiFor(ALICE);
 	workflow = await body<WorkflowResponse>(
 		await api.post('/api/v1/workflows', {
-			name: `Stage stats ${runId}`,
+			name: uniqueName('Stage stats', { maxLength: 100 }),
 			initial_state: 'Implementation',
 			states: [
 				{ name: 'Implementation', category: 'active' },
@@ -117,9 +119,8 @@ test.beforeAll(async ({ playwright }) => {
 			});
 		}
 	};
-	await seedVisit(project.id, `Sent back ${runId}`, true);
-	await seedVisit(otherProject.id, `Other visit ${runId}`, false);
-	await request.dispose();
+	await seedVisit(project.id, uniqueName('Sent back', { maxLength: 100 }), true);
+	await seedVisit(otherProject.id, uniqueName('Other visit', { maxLength: 100 }), false);
 });
 
 test('loads state analysis only on open, caches a reopen, and remounts closed', async ({

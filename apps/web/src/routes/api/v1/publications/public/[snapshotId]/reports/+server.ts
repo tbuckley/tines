@@ -8,6 +8,7 @@ import {
 } from '$lib/server/publications/public';
 import { acceptPublicationReport } from '$lib/server/publications/reports';
 import { sweepModerationRetention } from '$lib/server/publications/moderation-retention';
+import { runE2ePublicationRaceMutation } from '$lib/server/publications/e2e-race';
 import type { RequestHandler } from './$types';
 
 const post = api(async (event) => {
@@ -55,7 +56,12 @@ const post = api(async (event) => {
 		event.platform.env,
 		event.params.snapshotId,
 		body,
-		{ network, ...(event.locals.user ? { account: event.locals.user.id } : {}) }
+		{ network, ...(event.locals.user ? { account: event.locals.user.id } : {}) },
+		undefined,
+		() =>
+			runE2ePublicationRaceMutation(event.request, event.platform!.env, {
+				snapshotId: event.params.snapshotId
+			})
 	);
 	event.platform.ctx?.waitUntil?.(sweepModerationRetention(event.platform.env, Date.now(), 1));
 	return json(result.body, { status: result.status, headers: PUBLICATION_RESPONSE_HEADERS });

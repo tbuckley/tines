@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { publicTextModel, renderedPublicTextWordCount } from './public-text.js';
+import {
+	publicTextModel,
+	renderedPublicTextWordCount,
+	truncatePublicTextModel
+} from './public-text.js';
 
 describe('public text rendering model', () => {
 	it('keeps only text semantics and explicit http links', () => {
@@ -81,5 +85,26 @@ describe('public text rendering model', () => {
 		expect(model.find((block) => block.kind === 'code')).toMatchObject({
 			spans: [{ token: { use_id: 'use:1' } }]
 		});
+	});
+
+	it('gives repeated declared occurrences unique navigation identities', () => {
+		const uses = [{ id: 'use:1', input_id: 'input:1', token: 'TOKEN' }];
+		const tokens = publicTextModel('TOKEN then TOKEN', { uses })
+			.flatMap((block) => ('spans' in block ? block.spans : []))
+			.map((span) => span.token?.occurrence_id)
+			.filter(Boolean);
+		expect(tokens).toEqual(['public-token-0', 'public-token-1']);
+	});
+
+	it('truncates at joined rendered-word boundaries across adjacent styles', () => {
+		const source = `${Array.from({ length: 99 }, (_, index) => `w${index}`).join(' ')} a**b**c tail`;
+		const cut = truncatePublicTextModel(publicTextModel(source), 100);
+		const text = cut
+			.flatMap((block) => ('spans' in block ? block.spans : []))
+			.map((span) => span.text)
+			.join('');
+		expect(text).toContain('abc');
+		expect(text).not.toContain('tail');
+		expect(renderedPublicTextWordCount(text)).toBe(100);
 	});
 });

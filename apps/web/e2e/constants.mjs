@@ -14,6 +14,9 @@ export const BASE_URL = `http://127.0.0.1:${PORT}`;
 export const AUTH_SECRET =
 	'tines-e2e-secret-4b8e1c3f9a2d7e5b0c6f1a8d3e9b2c7f4a1e6d0b5c8f3a2e7d9b4c1f6a0e3d8b';
 
+/** Shared worker setting and native-D1 final-slot fixture boundary. */
+export const PUBLICATION_DAILY_QUOTA = 20;
+
 export const ALICE = {
 	id: 'usr_e2e_alice',
 	name: 'Alice E2E',
@@ -190,6 +193,40 @@ export const BOB = {
 	apiKey: 'tines_e2ebob000000000000000000000000000000000000',
 	apiKeyName: 'bob-key',
 	sessionToken: 'e2e-session-bob'
+};
+
+/** Dedicated publishers keep the publication-heavy specs below their independent quotas. */
+export const NATIVE_MODERATION_PUBLISHER = {
+	id: 'usr_e2e_native_moderation_publisher',
+	name: 'Native Moderation Publisher E2E',
+	email: 'native-moderation-publisher@e2e.test',
+	apiKey: 'tines_e2enativemoderationpublisher0000000000000000000',
+	apiKeyName: 'native-moderation-publisher-key',
+	sessionToken: 'e2e-session-native-moderation-publisher'
+};
+export const NATIVE_PUBLICATIONS_PUBLISHER = {
+	id: 'usr_e2e_native_publications_publisher',
+	name: 'Native Publications Publisher E2E',
+	email: 'native-publications-publisher@e2e.test',
+	apiKey: 'tines_e2enativepublicationspublisher00000000000000000',
+	apiKeyName: 'native-publications-publisher-key',
+	sessionToken: 'e2e-session-native-publications-publisher'
+};
+export const WORKFLOW_MODERATION_PUBLISHER = {
+	id: 'usr_e2e_workflow_moderation_publisher',
+	name: 'Workflow Moderation Publisher E2E',
+	email: 'workflow-moderation-publisher@e2e.test',
+	apiKey: 'tines_e2eworkflowmoderationpublisher00000000000000000',
+	apiKeyName: 'workflow-moderation-publisher-key',
+	sessionToken: 'e2e-session-workflow-moderation-publisher'
+};
+export const WORKFLOW_PUBLICATIONS_PUBLISHER = {
+	id: 'usr_e2e_workflow_publications_publisher',
+	name: 'Workflow Publications Publisher E2E',
+	email: 'workflow-publications-publisher@e2e.test',
+	apiKey: 'tines_e2eworkflowpublicationspublisher000000000000000',
+	apiKeyName: 'workflow-publications-publisher-key',
+	sessionToken: 'e2e-session-workflow-publications-publisher'
 };
 
 /** Independent empty accounts: these specs must be runnable in any order. */

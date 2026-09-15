@@ -1,0 +1,99 @@
+{
+	"schema_version": 1,
+	"applies_to": ["global", "project", "state", "combined"],
+	"receipts": [
+		{ "sequence": 1, "branch": "proposed", "operation": "review", "result": "source_retained" },
+		{ "sequence": 2, "branch": "rejected", "operation": "review", "result": "source_retained" },
+		{ "sequence": 3, "branch": "unmentioned", "operation": "review", "result": "source_retained" },
+		{ "sequence": 10, "branch": "apply", "operation": "destination_write", "status": 200 },
+		{ "sequence": 11, "branch": "apply", "operation": "destination_complete_read", "status": 200 },
+		{
+			"sequence": 12,
+			"branch": "apply",
+			"operation": "effective_resolution",
+			"status": 200,
+			"verified": true
+		},
+		{
+			"sequence": 13,
+			"branch": "apply",
+			"operation": "fresh_directory_export",
+			"status": 0,
+			"verified": true
+		},
+		{ "sequence": 14, "branch": "apply", "operation": "source_cas", "status": 200 },
+		{
+			"sequence": 20,
+			"branch": "invalid_destination",
+			"operation": "destination_write",
+			"status": 422,
+			"result": "source_retained"
+		},
+		{
+			"sequence": 21,
+			"branch": "missing_destination",
+			"operation": "destination_complete_read",
+			"status": 404,
+			"result": "source_retained"
+		},
+		{
+			"sequence": 22,
+			"branch": "wrong_override",
+			"operation": "effective_resolution",
+			"status": 200,
+			"verified": false,
+			"result": "source_retained"
+		},
+		{
+			"sequence": 23,
+			"branch": "nonempty_export",
+			"operation": "fresh_directory_export",
+			"status": 1,
+			"result": "source_retained"
+		},
+		{
+			"sequence": 24,
+			"branch": "stale_destination",
+			"operation": "destination_write",
+			"status": 409,
+			"result": "source_retained"
+		},
+		{
+			"sequence": 25,
+			"branch": "material_source_conflict",
+			"operation": "source_cas",
+			"status": 409,
+			"result": "concurrent_source_retained"
+		},
+		{
+			"sequence": 30,
+			"branch": "interrupt_after_write",
+			"operation": "resume_read_both",
+			"result": "safe_duplication_then_reverify"
+		},
+		{
+			"sequence": 31,
+			"branch": "interrupt_after_verify",
+			"operation": "resume_reverify",
+			"result": "source_removed_after_verification"
+		},
+		{
+			"sequence": 32,
+			"branch": "replay_complete",
+			"operation": "resume_read_both",
+			"result": "already_complete_no_version_bump"
+		},
+		{
+			"sequence": 33,
+			"branch": "resume_changed_destination",
+			"operation": "resume_reverify",
+			"result": "source_retained"
+		},
+		{
+			"sequence": 34,
+			"branch": "resume_changed_source",
+			"operation": "resume_reverify",
+			"result": "source_retained"
+		}
+	]
+}

@@ -32,6 +32,7 @@
 		{linkMode}
 		{format}
 		{uses}
+		occurrenceScope={fieldId}
 		{onToken}
 		maxWords={!expanded && wordCount > 115 ? 100 : undefined}
 	/>

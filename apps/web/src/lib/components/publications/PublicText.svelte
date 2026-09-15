@@ -1,10 +1,5 @@
 <script lang="ts">
-	import {
-		publicTextModel,
-		type PublicTextBlock,
-		type PublicTextSpan,
-		type PublicTextUse
-	} from '@tines/shared';
+	import { publicTextModel, truncatePublicTextModel, type PublicTextUse } from '@tines/shared';
 	import Modal from '$lib/components/Modal.svelte';
 	import PublicTextSpans from './PublicTextSpans.svelte';
 
@@ -14,6 +9,7 @@
 		linkMode = 'confirm',
 		format = 'markdown',
 		uses = [],
+		occurrenceScope,
 		onToken
 	}: {
 		source: string;
@@ -21,10 +17,11 @@
 		linkMode?: 'confirm' | 'inert';
 		format?: 'markdown' | 'text';
 		uses?: PublicTextUse[];
+		occurrenceScope?: string;
 		onToken?: (inputId: string, useId: string, trigger: HTMLElement) => void;
 	} = $props();
 	const fullBlocks = $derived(publicTextModel(source, { format, uses }));
-	const blocks = $derived(maxWords ? truncateBlocks(fullBlocks, maxWords) : fullBlocks);
+	const blocks = $derived(maxWords ? truncatePublicTextModel(fullBlocks, maxWords) : fullBlocks);
 	let destination = $state<string | null>(null);
 	let destinationOpen = $state(false);
 	let linkTrigger: HTMLElement | null = null;
@@ -33,88 +30,6 @@
 		destination = href;
 		linkTrigger = trigger;
 		destinationOpen = true;
-	}
-
-	function truncateSpans(items: PublicTextSpan[], limit: number) {
-		const result: PublicTextSpan[] = [];
-		let remaining = limit;
-		for (let index = 0; index < items.length; index++) {
-			const span = items[index];
-			if (remaining <= 0) break;
-			const atomic = span.href ?? span.token?.use_id ?? (span.code ? 'code' : null);
-			if (atomic) {
-				const group = [span];
-				while (index + 1 < items.length) {
-					const next = items[index + 1];
-					const nextAtomic = next.href ?? next.token?.use_id ?? (next.code ? 'code' : null);
-					if (nextAtomic !== atomic) break;
-					group.push(next);
-					index++;
-				}
-				const words = group.flatMap((item) => [...item.text.matchAll(/\S+/gu)]).length;
-				if (words > remaining) {
-					result.push({ text: '[content omitted]' });
-					remaining = 0;
-					break;
-				}
-				result.push(...group);
-				remaining -= words;
-				continue;
-			}
-			const matches = [...span.text.matchAll(/\S+/g)];
-			if (matches.length <= remaining) {
-				result.push(span);
-				remaining -= matches.length;
-				continue;
-			}
-			const last = matches[remaining - 1];
-			result.push({
-				...span,
-				text: `${span.text.slice(0, (last.index ?? 0) + last[0].length)}…`
-			});
-			remaining = 0;
-		}
-		return { spans: result, remaining };
-	}
-
-	function truncateBlocks(items: PublicTextBlock[], limit: number): PublicTextBlock[] {
-		const result: PublicTextBlock[] = [];
-		let remaining = limit;
-		for (const block of items) {
-			if (remaining <= 0) break;
-			if ('spans' in block) {
-				const cut = truncateSpans(block.spans, remaining);
-				result.push({ ...block, spans: cut.spans });
-				remaining = cut.remaining;
-				continue;
-			}
-			if (block.kind === 'table') {
-				const rows = [];
-				for (const row of block.rows) {
-					const words = (
-						row
-							.map((cell) => cell.map((span) => span.text).join(''))
-							.join(' ')
-							.match(/\S+/gu) ?? []
-					).length;
-					if (words > remaining) break;
-					rows.push(row);
-					remaining -= words;
-				}
-				if (rows.length) result.push({ ...block, rows });
-				if (rows.length < block.rows.length) {
-					result.push({
-						kind: 'paragraph',
-						quote_depth: 0,
-						spans: [{ text: '[table row omitted]' }]
-					});
-					remaining = 0;
-				}
-				continue;
-			}
-			result.push(block);
-		}
-		return result;
 	}
 </script>
 
@@ -125,6 +40,7 @@
 				<PublicTextSpans
 					spans={block.spans}
 					{linkMode}
+					{occurrenceScope}
 					onlink={confirmDestination}
 					ontoken={onToken}
 				/>
@@ -138,6 +54,7 @@
 				<PublicTextSpans
 					spans={block.spans}
 					{linkMode}
+					{occurrenceScope}
 					onlink={confirmDestination}
 					ontoken={onToken}
 				/>
@@ -147,6 +64,7 @@
 				class="bg-muted max-w-full overflow-x-auto rounded p-3 font-mono text-xs whitespace-pre-wrap"><PublicTextSpans
 					spans={block.spans}
 					{linkMode}
+					{occurrenceScope}
 					onlink={confirmDestination}
 					ontoken={onToken}
 				/></pre>
@@ -156,6 +74,7 @@
 					><PublicTextSpans
 						spans={block.spans}
 						{linkMode}
+						{occurrenceScope}
 						onlink={confirmDestination}
 						ontoken={onToken}
 					/></span
@@ -172,6 +91,7 @@
 											><PublicTextSpans
 												spans={cell}
 												{linkMode}
+												{occurrenceScope}
 												onlink={confirmDestination}
 												ontoken={onToken}
 											/></th
@@ -179,6 +99,7 @@
 											><PublicTextSpans
 												spans={cell}
 												{linkMode}
+												{occurrenceScope}
 												onlink={confirmDestination}
 												ontoken={onToken}
 											/></td
