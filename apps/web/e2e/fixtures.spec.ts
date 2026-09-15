@@ -33,7 +33,7 @@ const lifecycleTest = test.extend<
 			await use({ record: (value) => (project = value) });
 			expect(project, 'the lifecycle world registered its cleanup target').toBeTruthy();
 			const projects = await body<ListResponse<Project>>(
-				await apiFor(ALICE).get('/api/v1/projects')
+				await apiFor(ALICE).get('/api/v1/projects?archived=all')
 			);
 			expect(projects.items.find(({ id }) => id === project!.id)?.archived_at).toBeTruthy();
 		},
