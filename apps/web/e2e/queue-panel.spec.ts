@@ -14,7 +14,7 @@ import type { Project, RoutingRule, Runner, RunnerTokenResponse } from '@tines/s
 import type { APIRequestContext } from '@playwright/test';
 import { expect, test as base } from './fixtures';
 import { ALICE, RUNROW } from './constants.mjs';
-import { apiClient, body, clickUntil, gotoHydrated, readSettled, resetFocus } from './helpers';
+import { apiClient, body, clickUntil, gotoHydrated, resetFocus } from './helpers';
 
 type QueueWorld = { projectId: string; runnerId: string; runnerName: string };
 type QueueAudit = { runnerId?: string; ruleId?: string };
@@ -241,30 +241,32 @@ test.describe.serial('the Now row', () => {
 		const panel = page.getByRole('region', { name: 'Waiting for an agent' });
 		await expect(panel).toContainText(`at capacity on ${world.runnerName} (1/1)`);
 		await expect(panel).toContainText('2 issues');
-		const actions = panel
-			.locator('li')
-			.filter({ hasText: `at capacity on ${world.runnerName}` })
-			.getByTestId('queue-actions');
+		const actions = panel.locator(`#queue-runner-${world.runnerId}`).getByTestId('queue-actions');
 		await expect(actions).toBeVisible();
-		const panelBox = await panel.boundingBox();
-		const actionBox = await actions.boundingBox();
-		expect(panelBox).not.toBeNull();
-		expect(actionBox).not.toBeNull();
-		expect(panelBox!.x + panelBox!.width).toBeLessThanOrEqual(390);
-		expect(actionBox!.x).toBeGreaterThanOrEqual(panelBox!.x);
-		expect(actionBox!.x + actionBox!.width).toBeLessThanOrEqual(panelBox!.x + panelBox!.width);
-		const buttonBoxes = await readSettled(() =>
-			actions.locator('button:visible').evaluateAll((buttons) =>
-				buttons.map((button) => {
-					const { x, width } = button.getBoundingClientRect();
-					return { x, width };
-				})
-			)
+		const geometry = await actions.evaluate((element) => {
+			const panelElement = element.closest('section');
+			if (!panelElement) throw new Error('queue actions are outside the queue panel');
+			const box = (target: Element) => {
+				const { x, width } = target.getBoundingClientRect();
+				return { x, width };
+			};
+			return {
+				panel: box(panelElement),
+				actions: box(element),
+				buttons: [...element.querySelectorAll('button')]
+					.filter((button) => button.checkVisibility())
+					.map(box)
+			};
+		});
+		expect(geometry.panel.x + geometry.panel.width).toBeLessThanOrEqual(390);
+		expect(geometry.actions.x).toBeGreaterThanOrEqual(geometry.panel.x);
+		expect(geometry.actions.x + geometry.actions.width).toBeLessThanOrEqual(
+			geometry.panel.x + geometry.panel.width
 		);
-		expect(buttonBoxes).toHaveLength(2);
-		for (const box of buttonBoxes) {
-			expect(box.x).toBeGreaterThanOrEqual(panelBox!.x);
-			expect(box.x + box.width).toBeLessThanOrEqual(panelBox!.x + panelBox!.width);
+		expect(geometry.buttons).toHaveLength(2);
+		for (const box of geometry.buttons) {
+			expect(box.x).toBeGreaterThanOrEqual(geometry.panel.x);
+			expect(box.x + box.width).toBeLessThanOrEqual(geometry.panel.x + geometry.panel.width);
 			expect(box.x + box.width).toBeLessThanOrEqual(390);
 		}
 	});
