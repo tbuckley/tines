@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { withLibraryDocumentDigest } from '@tines/shared';
+import { canonicalizeLibraryValue, withLibraryDocumentDigest } from '@tines/shared';
 import {
 	automatedPackage,
 	inheritedPackage
@@ -10,6 +10,13 @@ import { PROJECT, USER, addRunner, seedBase } from '../supervisor/test-fixtures'
 import { getWorkflowPackageReceipt, installWorkflowPackage } from './install';
 import { prepareWorkflowPackage } from './plan';
 import { PACKAGE_PLAN_TTL_MS } from './token';
+import { preparePublication } from '../publications/prepare';
+import {
+	publishPublication,
+	restorePublication,
+	withdrawPublication
+} from '../publications/publish';
+import { resolveHostedPublicSnapshot } from '../publications/public';
 
 const actor: ActorContext = {
 	userId: USER,
@@ -39,6 +46,80 @@ async function fixture() {
 afterEach(() => vi.useRealTimers());
 
 describe('atomic workflow package install', () => {
+	it('fences a hosted snapshot in the receipt transaction while preserving private plans', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const document = await withLibraryDocumentDigest(inheritedPackage());
+		const documentJson = canonicalizeLibraryValue(document);
+		const env = {
+			...t.env,
+			...signing,
+			PUBLIC_WORKFLOW_PUBLISHING_ENABLED: 'true',
+			TINES_PUBLIC_URL: 'https://tines.example'
+		} as Env;
+		const proof = await preparePublication(t.db, env, actor, {
+			prepare_request_id: 'hosted-install',
+			source: { kind: 'file', document_json: documentJson },
+			metadata: { display_name: 'Example Team', license: 'MIT', license_year: 2026 }
+		});
+		const publication = await publishPublication(t.db, env, actor, proof.candidate_id, {
+			review_digest: proof.review_digest,
+			sharing_rights: true,
+			exact_content: true,
+			reviewed_repo_ids: ['context:3']
+		});
+		const hosted = await resolveHostedPublicSnapshot(t.db, publication.receipt.snapshot_id);
+		expect(hosted).not.toBeNull();
+		const preview = await prepareWorkflowPackage(
+			t.db,
+			env,
+			actor,
+			documentJson,
+			{ inputs: { 'input:1': { mode: 'create', name: 'qa', color: 'blue' } } },
+			hosted!.source
+		);
+		expect(preview.source).toEqual(hosted!.source);
+		await withdrawPublication(t.db, env, actor, publication.receipt.snapshot_id);
+		await expect(
+			installWorkflowPackage(t.db, env, actor, {
+				document_json: documentJson,
+				plan_token: preview.plan_token,
+				confirmation: { plan_digest: preview.plan_digest }
+			})
+		).rejects.toMatchObject({ status: 409, code: 'plan_stale' });
+		expect(t.all('SELECT * FROM library_install')).toEqual([]);
+		expect(t.all('SELECT * FROM workflow WHERE user_id IS NOT NULL')).toEqual([]);
+		expect(t.all('SELECT * FROM event')).toEqual([]);
+
+		await restorePublication(t.db, env, actor, publication.receipt.snapshot_id);
+		await expect(
+			installWorkflowPackage(t.db, env, actor, {
+				document_json: documentJson,
+				plan_token: preview.plan_token,
+				confirmation: { plan_digest: preview.plan_digest }
+			})
+		).rejects.toMatchObject({ status: 409, code: 'plan_stale' });
+		const restored = await resolveHostedPublicSnapshot(t.db, publication.receipt.snapshot_id);
+		const fresh = await prepareWorkflowPackage(
+			t.db,
+			env,
+			actor,
+			documentJson,
+			{ inputs: { 'input:1': { mode: 'create', name: 'qa', color: 'blue' } } },
+			restored!.source
+		);
+		const request = {
+			document_json: documentJson,
+			plan_token: fresh.plan_token,
+			confirmation: { plan_digest: fresh.plan_digest }
+		};
+		const receipt = await installWorkflowPackage(t.db, env, actor, request);
+		expect(receipt.source).toEqual(restored!.source);
+		await withdrawPublication(t.db, env, actor, publication.receipt.snapshot_id);
+		expect(await installWorkflowPackage(t.db, env, actor, request)).toEqual(receipt);
+		expect(t.all('SELECT * FROM library_install')).toHaveLength(1);
+	});
+
 	it('commits one guarded batch, links every created object, and retries from the receipt', async () => {
 		const f = await fixture();
 		const first = await installWorkflowPackage(

@@ -33,6 +33,7 @@ exec pnpm exec wrangler dev \
 	--test-scheduled \
 	--var "BETTER_AUTH_SECRET:$AUTH_SECRET" \
 	--var "BETTER_AUTH_URL:http://127.0.0.1:$PORT" \
+	--var "PUBLIC_WORKFLOW_PUBLISHING_ENABLED:true" \
 	--var "SECRET_ENCRYPTION_KEY:e2e-only-secret-encryption-key" \
 	--var "USAGE_SCALE_SQL_TRACE:${USAGE_SCALE_SQL_TRACE:-}" \
 	--var "STATS_SCALE_REPEAT_PREPARATION:${STATS_SCALE_REPEAT_PREPARATION:-}"

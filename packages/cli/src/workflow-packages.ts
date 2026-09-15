@@ -24,6 +24,7 @@ export interface SavedWorkflowPackagePlan {
 	version: 1;
 	api_base: string;
 	document_digest: string;
+	remote_source?: { url: string; bytes_sha256: string };
 	plan: PrepareWorkflowPackageResponse;
 }
 
@@ -55,13 +56,15 @@ export function normalizeApiBase(value: string): string {
 export function saveWorkflowPackagePlan(
 	path: string,
 	apiBase: string,
-	plan: PrepareWorkflowPackageResponse
+	plan: PrepareWorkflowPackageResponse,
+	remoteSource?: { url: string; bytes_sha256: string }
 ): SavedWorkflowPackagePlan {
 	const saved: SavedWorkflowPackagePlan = {
 		format: 'tines.workflow-install-plan',
 		version: 1,
 		api_base: normalizeApiBase(apiBase),
 		document_digest: plan.document_digest,
+		...(remoteSource ? { remote_source: remoteSource } : {}),
 		plan
 	};
 	writeJsonFile(path, saved, { secret: true });
@@ -70,7 +73,7 @@ export function saveWorkflowPackagePlan(
 
 export function readWorkflowPackagePlan(path: string): SavedWorkflowPackagePlan {
 	const saved = readStrictObject<Record<string, unknown>>(path, 'plan file');
-	const outerKeys = ['format', 'version', 'api_base', 'document_digest', 'plan'];
+	const outerKeys = ['format', 'version', 'api_base', 'document_digest', 'remote_source', 'plan'];
 	const planKeys = [
 		'operations',
 		'document',
@@ -84,10 +87,11 @@ export function readWorkflowPackagePlan(path: string): SavedWorkflowPackagePlan 
 		'actor_key',
 		'compiler_version',
 		'plan_token',
-		'budget'
+		'budget',
+		'source'
 	];
 	if (
-		Object.keys(saved).length !== outerKeys.length ||
+		![5, 6].includes(Object.keys(saved).length) ||
 		!Object.keys(saved).every((key) => outerKeys.includes(key)) ||
 		saved.format !== 'tines.workflow-install-plan' ||
 		saved.version !== 1 ||
@@ -97,8 +101,22 @@ export function readWorkflowPackagePlan(path: string): SavedWorkflowPackagePlan 
 		typeof saved.plan !== 'object' ||
 		typeof (saved.plan as Record<string, unknown>).plan_token !== 'string' ||
 		typeof (saved.plan as Record<string, unknown>).plan_digest !== 'string' ||
-		Object.keys(saved.plan as Record<string, unknown>).length !== planKeys.length ||
+		![planKeys.length - 1, planKeys.length].includes(
+			Object.keys(saved.plan as Record<string, unknown>).length
+		) ||
 		!Object.keys(saved.plan as Record<string, unknown>).every((key) => planKeys.includes(key))
+	) {
+		throw new Error('invalid workflow package plan file');
+	}
+	if (
+		saved.remote_source !== undefined &&
+		(!saved.remote_source ||
+			typeof saved.remote_source !== 'object' ||
+			Object.keys(saved.remote_source).length !== 2 ||
+			typeof (saved.remote_source as Record<string, unknown>).url !== 'string' ||
+			!/^sha256:[0-9a-f]{64}$/.test(
+				String((saved.remote_source as Record<string, unknown>).bytes_sha256)
+			))
 	) {
 		throw new Error('invalid workflow package plan file');
 	}
@@ -239,7 +257,8 @@ export function assertPlanBinding(plan: PrepareWorkflowPackageResponse): void {
 		actor_key: plan.actor_key,
 		compiler_version: plan.compiler_version,
 		allocation: plan.allocation,
-		budget: plan.budget
+		budget: plan.budget,
+		...(plan.source ? { source: plan.source } : {})
 	};
 	for (const [field, value] of Object.entries(mirrors)) {
 		const signedField = field === 'id' ? 'id' : field;
@@ -366,9 +385,19 @@ export async function localDocument(
 	path: string
 ): Promise<{ raw: string; document: WorkflowPackageDocument }> {
 	const raw = readPackageSource(path);
+	return packageDocument(raw);
+}
+
+export async function packageDocument(
+	raw: string
+): Promise<{ raw: string; document: WorkflowPackageDocument }> {
 	const document = await parseLibraryV3Document(raw);
 	if (document.profile !== 'workflow') throw new Error('expected a workflow-profile package');
 	return { raw, document };
+}
+
+export function workflowPackageBytesSha256(raw: string): string {
+	return `sha256:${createHash('sha256').update(raw).digest('hex')}`;
 }
 
 export function canonicalWorkflowPackage(document: WorkflowPackageDocument): string {

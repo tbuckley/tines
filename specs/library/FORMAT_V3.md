@@ -136,6 +136,14 @@ The ordinary workflow, context/file/version, label, paused-schedule and routing 
 The implementation-status qualifications in “Confirmation and installation,” “Transport and transaction budgets,” and “Builder checkpoint” above describe the foundation milestone and are superseded. Tines/440 shipped the `library_install` receipt table, signed prepare/install and owner-scoped receipt endpoints, and the install service that commits the receipt and all guarded object and event writes in one atomic D1 batch. Matching retries recover the durable receipt without duplicating objects; stale destination witnesses, expired plans without a receipt, authorization failures, and failed transactions do not commit partial state.
 
 Tines/441 added native-D1 boundary proof for an exact 800-statement commit, 801-statement rejection, injected rollback, stale and expiry guards, concurrent retry, and dropped-response recovery. The CLI now exposes this protocol through `tines workflows preview` and `tines workflows install`. The historical foundation text remains above to preserve the chronology of the format design; this update records the shipped status. The committed protocol is also summarized in [SPEC.md](SPEC.md#decision-update--tines440-workflow-package-commit).
+## Hosted and cross-instance transport (Tines/436)
+
+Public snapshots preserve the existing `profile: "workflow"` version 3 document exactly. Hosting
+adds provenance and availability to signed installation plans and receipts, not to portable package
+bytes. Same-host plans bind snapshot ID, document digest, byte checksum, and snapshot/publisher status
+versions so the receipt transaction can reject withdrawal. Cross-instance transfer is client-side:
+the source returns canonical bytes and the destination processes them as an ordinary independent
+file. A destination server never fetches a supplied public URL or receives source credentials.
 
 ## Decision update — 2026-09-14 (Tines/484 browser-authored input edits)
 

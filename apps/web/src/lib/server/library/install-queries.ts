@@ -97,7 +97,8 @@ export function packageReceipt(
 		objects,
 		reused_inputs: resolved.inputs
 			.filter((i) => i.mode === 'reuse')
-			.map((i) => ({ input_id: i.input_id, type: i.type, id: i.id!, name: i.value }))
+			.map((i) => ({ input_id: i.input_id, type: i.type, id: i.id!, name: i.value })),
+		...(plan.source ? { source: plan.source } : {})
 	};
 }
 /**
@@ -115,16 +116,28 @@ export function compilePackageInstall(
 	executionNonce: string,
 	receipt: WorkflowPackageReceipt
 ): CompiledQuery[] {
+	const sourceGuard = plan.source
+		? sql<boolean>`EXISTS (
+			SELECT 1 FROM workflow_publication p
+			LEFT JOIN workflow_publisher_status ps ON ps.user_id = p.user_id
+			WHERE p.snapshot_id = ${plan.source.snapshot_id}
+				AND p.owner_state = 'published' AND p.host_state = 'active'
+				AND (ps.suspended IS NULL OR ps.suspended = 0)
+				AND p.document_digest = ${plan.source.document_digest}
+				AND p.bytes_sha256 = ${plan.source.bytes_sha256}
+				AND p.status_version = ${plan.source.snapshot_status_version}
+				AND COALESCE(ps.status_version, 0) = ${plan.source.publisher_status_version}
+		)`
+		: sql<boolean>`1`;
 	const guard = {
 		predicate: sql<boolean>`EXISTS (SELECT 1 FROM library_install WHERE id=${plan.id} AND user_id=${actor.userId} AND request_digest=${requestDigest} AND execution_nonce=${executionNonce})`
 	};
 	return [
 		sql`INSERT INTO library_install (id,user_id,actor_key,document_digest,plan_digest,request_digest,execution_nonce,receipt_json,created_at)
    SELECT ${plan.id},${actor.userId},${plan.actor_key},${plan.document_digest},${plan.plan_digest},${requestDigest},${executionNonce},${JSON.stringify(receipt)},${receipt.committed_at}
-   WHERE ${packageDestinationExpression(actor.userId, plan.selection)}=${witnessRaw}
-    AND CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) < ${plan.expires_at}`.compile(
-			db
-		),
+	   WHERE ${packageDestinationExpression(actor.userId, plan.selection)}=${witnessRaw}
+	    AND CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) < ${plan.expires_at}
+	    AND ${sourceGuard}`.compile(db),
 		...compilePackageObjects(db, actor, resolved, plan.allocation, guard, receipt.committed_at),
 		sql`SELECT receipt_json FROM library_install WHERE id=${plan.id} AND user_id=${actor.userId} AND request_digest=${requestDigest} AND execution_nonce=${executionNonce}`.compile(
 			db

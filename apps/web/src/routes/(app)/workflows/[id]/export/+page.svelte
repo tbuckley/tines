@@ -8,6 +8,8 @@
 		type LibraryDiagnostic,
 		type ModelTier,
 		type PackageInput,
+		type PublicationOwnerResult,
+		type PublicationProof,
 		type TextUseField,
 		type WorkflowPackageDocument
 	} from '@tines/shared';
@@ -47,6 +49,11 @@
 	let dirty = $state(false);
 	let status = $state('');
 	let candidateGeneration = $state(0);
+	let displayName = $state('');
+	let publicationProof = $state<PublicationProof | null>(null);
+	let publicationResult = $state<PublicationOwnerResult | null>(null);
+	let sharingRights = $state(false);
+	let exactContent = $state(false);
 
 	let draftKey = $state('');
 	let draftType = $state<PackageInput['type']>('text');
@@ -159,6 +166,37 @@
 		validatedDigest = null;
 		diagnostics = [];
 		status = `${note} Required skill and repository review was reset.`;
+		publicationProof = null;
+		publicationResult = null;
+		sharingRights = false;
+		exactContent = false;
+	}
+	function displayNameChanged(event: Event) {
+		displayName = (event.currentTarget as HTMLInputElement).value;
+		if (!publicationProof) return;
+		publicationProof = null;
+		publicationResult = null;
+		sharingRights = false;
+		exactContent = false;
+		status = 'Public metadata changed. Prepare and review a new exact publication proof.';
+	}
+	function exportOptions(): ExportWorkflowPackageOptions {
+		const tiers: NonNullable<ExportWorkflowPackageOptions['tiers']> = [];
+		for (const state of data.sourceStates) {
+			const tier = tierSelections[state.id];
+			if (tier)
+				tiers.push({
+					state_id: state.id,
+					tier,
+					project_scoped: projectScoped[state.id] ?? false
+				});
+		}
+		return {
+			...(sourceProjectId ? { source_project_id: sourceProjectId } : {}),
+			schedule_ids: selectedSchedules,
+			tiers,
+			authoring: { inputs: candidate.inputs, text_uses: candidate.text_uses }
+		};
 	}
 	function setReviewed(id: string, checked: boolean) {
 		candidateGeneration += 1;
@@ -204,6 +242,88 @@
 			dirty = false;
 			if (!candidate.inputs.some((input) => input.id === selectedInputId)) selectedInputId = '';
 			resetReview('Candidate rebuilt from source.');
+		} catch (error) {
+			status = message(error);
+			const details = error instanceof ApiError ? error.details?.diagnostics : null;
+			if (Array.isArray(details)) {
+				diagnostics = details.filter(
+					(item): item is LibraryDiagnostic =>
+						!!item &&
+						typeof item === 'object' &&
+						typeof item.path === 'string' &&
+						typeof item.code === 'string' &&
+						typeof item.message === 'string'
+				);
+				await tick();
+				diagnosticsPanel?.focus();
+			}
+		} finally {
+			busy = false;
+		}
+	}
+	async function prepareForPublication() {
+		if (!reviewComplete) {
+			status = 'Review every required skill and repository declaration first.';
+			return;
+		}
+		if (dirty) {
+			status =
+				'Publish from the private source: save text changes there and rebuild this candidate first.';
+			return;
+		}
+		busy = true;
+		status = 'Preparing an exact, source-bound publication proof…';
+		try {
+			publicationProof = await api.preparePublication({
+				prepare_request_id: crypto.randomUUID(),
+				source: {
+					kind: 'owned_workflow',
+					workflow_id: data.workflow.id,
+					options: exportOptions()
+				},
+				metadata: {
+					display_name: displayName,
+					license: 'MIT',
+					license_year: new Date().getFullYear()
+				}
+			});
+			publicationResult = null;
+			sharingRights = false;
+			exactContent = false;
+			status = `Proof prepared. Confirm exact content ${publicationProof.review_digest}.`;
+		} catch (error) {
+			status = message(error);
+			const details = error instanceof ApiError ? error.details?.diagnostics : null;
+			if (Array.isArray(details)) {
+				diagnostics = details.filter(
+					(item): item is LibraryDiagnostic =>
+						!!item &&
+						typeof item === 'object' &&
+						typeof item.path === 'string' &&
+						typeof item.code === 'string' &&
+						typeof item.message === 'string'
+				);
+				await tick();
+				diagnosticsPanel?.focus();
+			}
+		} finally {
+			busy = false;
+		}
+	}
+	async function publish() {
+		if (!publicationProof || !sharingRights || !exactContent) return;
+		busy = true;
+		status = 'Publishing the confirmed immutable snapshot…';
+		try {
+			publicationResult = await api.publishPublication(publicationProof.candidate_id, {
+				review_digest: publicationProof.review_digest,
+				sharing_rights: true,
+				exact_content: true,
+				reviewed_repo_ids: publicationProof.document.context
+					.filter((item) => item.kind === 'repo')
+					.map((item) => item.id)
+			});
+			status = 'Snapshot published. Its URL and bytes will never be reused for a revision.';
 		} catch (error) {
 			status = message(error);
 		} finally {
@@ -837,6 +957,84 @@
 	onEdit={beginEdit}
 	expandedFields={diagnosticFieldKeys}
 />
+
+<section
+	id="publish"
+	class="mt-8 scroll-mt-20 rounded-lg border p-4"
+	aria-labelledby="publish-title"
+>
+	<h2 id="publish-title" class="font-semibold">Publish this reviewed snapshot</h2>
+	<p class="text-muted-foreground mt-1 text-sm">
+		Publishing creates a stable public URL for these exact text-only bytes. A later revision gets a
+		new URL.
+	</p>
+	{#if !data.publication.enabled}
+		<p class="bg-muted/40 mt-4 rounded-md border p-3 text-sm">
+			New public snapshots are disabled on this host. You can still validate and download the
+			private package.
+		</p>
+	{:else}
+		<label class="mt-4 block max-w-md text-sm">
+			Public display name
+			<Input
+				class="mt-1"
+				value={displayName}
+				oninput={displayNameChanged}
+				maxlength={100}
+				autocomplete="name"
+				placeholder="Name shown publicly (not an email)"
+			/>
+		</label>
+		<p class="text-muted-foreground mt-2 text-xs">
+			Reuse license: MIT. The reuse notice uses this display name and the current year.
+		</p>
+		<Button
+			class="mt-4"
+			variant="outline"
+			onclick={prepareForPublication}
+			disabled={busy || dirty || !reviewComplete || !displayName.trim()}
+		>
+			Prepare exact publication proof
+		</Button>
+		{#if dirty}<p class="text-destructive mt-2 text-xs">
+				Candidate-only text changed. Save it in the private source and rebuild before publishing.
+			</p>{/if}
+		{#if publicationProof}
+			<div class="bg-muted/30 mt-4 min-w-0 rounded-md border p-3 text-sm">
+				<p><b>Exact proof</b></p>
+				<p class="mt-1 font-mono text-xs break-all">{publicationProof.review_digest}</p>
+				<p class="text-muted-foreground mt-2 text-xs">
+					{publicationProof.byte_length.toLocaleString()} bytes · expires {new Date(
+						publicationProof.expires_at
+					).toLocaleTimeString()}
+				</p>
+			</div>
+			<label class="mt-3 flex min-h-10 items-start gap-2 text-sm"
+				><input class="mt-1" type="checkbox" bind:checked={sharingRights} /> I have the right to share
+				every bundled instruction, skill, file, and repository declaration.</label
+			>
+			<label class="mt-2 flex min-h-10 items-start gap-2 text-sm"
+				><input class="mt-1" type="checkbox" bind:checked={exactContent} /> I reviewed this exact proof
+				and want these immutable bytes to be public.</label
+			>
+			<Button class="mt-3" onclick={publish} disabled={busy || !sharingRights || !exactContent}
+				>Publish immutable snapshot</Button
+			>
+		{/if}
+		{#if publicationResult}
+			<div class="border-primary/40 bg-primary/5 mt-4 rounded-md border p-3" tabindex="-1">
+				<p class="font-medium">Published</p>
+				<a
+					class="text-primary mt-1 block break-all underline"
+					href={publicationResult.receipt.public_url}>{publicationResult.receipt.public_url}</a
+				>
+				<a class="text-muted-foreground mt-2 inline-block text-xs underline" href="/publications"
+					>Manage public snapshots</a
+				>
+			</div>
+		{/if}
+	{/if}
+</section>
 
 <div
 	class="bg-background/95 sticky bottom-[calc(4.75rem+1px+env(safe-area-inset-bottom,0px))] mt-8 flex items-center justify-between gap-2 rounded-lg border px-2 py-1 shadow-lg backdrop-blur md:bottom-3 md:gap-3 md:p-3"

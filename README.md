@@ -18,6 +18,10 @@ This is a pnpm workspace:
 | `tines` | `packages/cli` | The `tines` CLI, published to npm as [`tines`](https://www.npmjs.com/package/tines). Talks to the same API as the web app. |
 | `@tines/shared` | `packages/shared` | Shared API types and client, used by both the web app and the CLI. |
 
+Workflow packages and default-off immutable public snapshots are documented in
+[docs/workflow-packages.md](docs/workflow-packages.md). Public launch remains disabled until the
+separate moderation and operational-readiness review is accepted.
+
 ## Getting started
 
 ### Your first project (hosted)
