@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { EffectiveContext, IssueDetail, IssueTransferPreview, Project } from '@tines/shared';
 import type { Browser, Page } from '@playwright/test';
-import { expect, test } from './fixtures';
+import { expect, test as base } from './fixtures';
 import { ALICE, BASE_URL } from './constants.mjs';
 import { apiClient, body, clickToOpen, gotoHydrated, resetFocus, runId, signIn } from './helpers';
 
@@ -13,9 +13,20 @@ const CLI_ENTRY = join(CLI_DIR, 'src', 'index.ts');
 
 // Specs share one user: a project page sets the focus (Tines/259), so clear it
 // before each test rather than letting it scope a later spec's lists.
-test.beforeEach(async ({ request }) => {
+base.beforeEach(async ({ request }) => {
 	await resetFocus(request);
 });
+
+type TransferWorld = {
+	sourceName: string;
+	destinationName: string;
+	longName: string;
+	issueId: string;
+	sourceId: string;
+	sourceNumber: number;
+	longId: string;
+	conflictIds: Record<string, string>;
+};
 
 /**
  * "Move to project…" in the browser (Tines/392): choose a destination, inspect
@@ -27,155 +38,174 @@ test.beforeEach(async ({ request }) => {
  * demonstrably the destination's next one and not the number carried over.
  */
 function suite(label: string, viewport: { width: number; height: number }) {
-	test.describe.serial(`issue transfer (${label})`, () => {
-		let sourceName: string;
-		let destinationName: string;
-		const longName = `xf-${label}-` + 'destination'.repeat(17);
-		let issueId: string;
-		let sourceId: string;
-		let sourceNumber: number;
-		let longId: string;
-		let conflictIds: Record<string, string>;
+	const test = base.extend<{}, { world: TransferWorld }>({
+		world: [
+			async ({ apiFor, uniqueName }, use) => {
+				const sourceName = uniqueName(`xf-src-${label}`);
+				const destinationName = uniqueName(`xf-dst-${label}`);
+				const longName = `xf-${label}-` + 'destination'.repeat(17);
+				const api = apiFor(ALICE);
 
-		async function open(browser: Browser, path: string): Promise<Page> {
-			const context = await browser.newContext({ viewport });
-			await signIn(context, ALICE.sessionToken);
-			const page = await context.newPage();
-			await gotoHydrated(page, path);
-			return page;
-		}
-
-		test.beforeAll(async ({ request, uniqueName }) => {
-			sourceName = uniqueName(`xf-src-${label}`);
-			destinationName = uniqueName(`xf-dst-${label}`);
-			const api = apiClient(request, ALICE.apiKey);
-			const source = await body<Project>(
-				await api.post('/api/v1/projects', { name: sourceName, description: 'move from here' })
-			);
-			sourceId = source.id;
-			const destination = await body<Project>(
-				await api.post('/api/v1/projects', { name: destinationName, description: 'move to here' })
-			);
-			longId = (await body<Project>(await api.post('/api/v1/projects', { name: longName }))).id;
-			// The destination's first number is taken, so the move cannot keep
-			// the issue's old one.
-			await body<IssueDetail>(
-				await api.post(`/api/v1/projects/${destination.id}/issues`, { title: 'already here' })
-			);
-			// Guidance the issue loses, guidance it gains: the review has to
-			// name both.
-			await api.post('/api/v1/context', {
-				kind: 'prompt',
-				name: `source-only-${label}`,
-				project_id: source.id,
-				body: 'Guidance that stays behind'
-			});
-			await api.post('/api/v1/context', {
-				kind: 'prompt',
-				name: `destination-only-${label}`,
-				project_id: destination.id,
-				body: 'Guidance the issue picks up'
-			});
-			await api.post('/api/v1/context', {
-				kind: 'repo',
-				name: 'app',
-				project_id: source.id,
-				repo_url: 'https://example.test/source.git',
-				repo_dir: 'app'
-			});
-			await api.post('/api/v1/context', {
-				kind: 'repo',
-				name: 'app',
-				project_id: destination.id,
-				repo_url: 'https://example.test/destination.git',
-				repo_dir: 'app'
-			});
-			const issue = await body<IssueDetail>(
-				await api.post(`/api/v1/projects/${source.id}/issues`, {
-					title: `${sourceName} traveller`,
-					description: 'Carries its whole record'
-				})
-			);
-			issueId = issue.id;
-			sourceNumber = issue.number;
-			await api.post('/api/v1/context', {
-				kind: 'prompt',
-				name: `retained-prompt-${label}`,
-				issue_id: issue.id,
-				body: 'Retained issue prompt body'
-			});
-			await api.post('/api/v1/context', {
-				kind: 'skill',
-				name: `retained-skill-${label}`,
-				issue_id: issue.id,
-				files: [
-					{ path: 'SKILL.md', content: 'Retained skill instructions' },
-					{ path: 'checklist.md', content: 'Retained second file' }
-				]
-			});
-			await api.post('/api/v1/context', {
-				kind: 'repo',
-				name: 'app',
-				issue_id: issue.id,
-				repo_url: 'https://example.test/issue-override.git',
-				repo_branch: 'research',
-				repo_dir: 'app'
-			});
-			conflictIds = {};
-			for (const fixture of [
-				{
-					key: 'retainedA',
-					name: `retained-api-${label}`,
-					issue_id: issue.id,
-					dir: 'retained-checkout'
-				},
-				{
-					key: 'retainedB',
-					name: `retained-worker-${label}`,
-					issue_id: issue.id,
-					dir: 'retained-checkout'
-				},
-				{
-					key: 'sourceA',
-					name: `source-api-${label}`,
-					project_id: source.id,
-					dir: 'source-checkout'
-				},
-				{
-					key: 'sourceB',
-					name: `source-worker-${label}`,
-					project_id: source.id,
-					dir: 'source-checkout'
-				},
-				{
-					key: 'destinationA',
-					name: `destination-api-${label}`,
-					project_id: destination.id,
-					dir: 'destination-checkout'
-				},
-				{
-					key: 'destinationB',
-					name: `destination-worker-${label}`,
-					project_id: destination.id,
-					dir: 'destination-checkout'
+				async function open(browser: Browser, path: string): Promise<Page> {
+					const context = await browser.newContext({ viewport });
+					await signIn(context, ALICE.sessionToken);
+					const page = await context.newPage();
+					await gotoHydrated(page, path);
+					return page;
 				}
-			]) {
-				const created = await body<{ id: string }>(
-					await api.post('/api/v1/context', {
-						kind: 'repo',
-						name: fixture.name,
-						issue_id: fixture.issue_id,
-						project_id: fixture.project_id,
-						repo_url: `https://example.test/${fixture.name}.git`,
-						repo_dir: fixture.dir
+
+				const source = await body<Project>(
+					await api.post('/api/v1/projects', { name: sourceName, description: 'move from here' })
+				);
+				const sourceId = source.id;
+				const destination = await body<Project>(
+					await api.post('/api/v1/projects', { name: destinationName, description: 'move to here' })
+				);
+				const longId = (await body<Project>(await api.post('/api/v1/projects', { name: longName })))
+					.id;
+				// The destination's first number is taken, so the move cannot keep
+				// the issue's old one.
+				await body<IssueDetail>(
+					await api.post(`/api/v1/projects/${destination.id}/issues`, { title: 'already here' })
+				);
+				// Guidance the issue loses, guidance it gains: the review has to
+				// name both.
+				await api.post('/api/v1/context', {
+					kind: 'prompt',
+					name: `source-only-${label}`,
+					project_id: source.id,
+					body: 'Guidance that stays behind'
+				});
+				await api.post('/api/v1/context', {
+					kind: 'prompt',
+					name: `destination-only-${label}`,
+					project_id: destination.id,
+					body: 'Guidance the issue picks up'
+				});
+				await api.post('/api/v1/context', {
+					kind: 'repo',
+					name: 'app',
+					project_id: source.id,
+					repo_url: 'https://example.test/source.git',
+					repo_dir: 'app'
+				});
+				await api.post('/api/v1/context', {
+					kind: 'repo',
+					name: 'app',
+					project_id: destination.id,
+					repo_url: 'https://example.test/destination.git',
+					repo_dir: 'app'
+				});
+				const issue = await body<IssueDetail>(
+					await api.post(`/api/v1/projects/${source.id}/issues`, {
+						title: `${sourceName} traveller`,
+						description: 'Carries its whole record'
 					})
 				);
-				conflictIds[fixture.key] = created.id;
-			}
-			await api.post(`/api/v1/issues/${issue.id}/comments`, { body: 'a comment that survives' });
-		});
+				const issueId = issue.id;
+				const sourceNumber = issue.number;
+				await api.post('/api/v1/context', {
+					kind: 'prompt',
+					name: `retained-prompt-${label}`,
+					issue_id: issue.id,
+					body: 'Retained issue prompt body'
+				});
+				await api.post('/api/v1/context', {
+					kind: 'skill',
+					name: `retained-skill-${label}`,
+					issue_id: issue.id,
+					files: [
+						{ path: 'SKILL.md', content: 'Retained skill instructions' },
+						{ path: 'checklist.md', content: 'Retained second file' }
+					]
+				});
+				await api.post('/api/v1/context', {
+					kind: 'repo',
+					name: 'app',
+					issue_id: issue.id,
+					repo_url: 'https://example.test/issue-override.git',
+					repo_branch: 'research',
+					repo_dir: 'app'
+				});
+				const conflictIds: Record<string, string> = {};
+				for (const fixture of [
+					{
+						key: 'retainedA',
+						name: `retained-api-${label}`,
+						issue_id: issue.id,
+						dir: 'retained-checkout'
+					},
+					{
+						key: 'retainedB',
+						name: `retained-worker-${label}`,
+						issue_id: issue.id,
+						dir: 'retained-checkout'
+					},
+					{
+						key: 'sourceA',
+						name: `source-api-${label}`,
+						project_id: source.id,
+						dir: 'source-checkout'
+					},
+					{
+						key: 'sourceB',
+						name: `source-worker-${label}`,
+						project_id: source.id,
+						dir: 'source-checkout'
+					},
+					{
+						key: 'destinationA',
+						name: `destination-api-${label}`,
+						project_id: destination.id,
+						dir: 'destination-checkout'
+					},
+					{
+						key: 'destinationB',
+						name: `destination-worker-${label}`,
+						project_id: destination.id,
+						dir: 'destination-checkout'
+					}
+				]) {
+					const created = await body<{ id: string }>(
+						await api.post('/api/v1/context', {
+							kind: 'repo',
+							name: fixture.name,
+							issue_id: fixture.issue_id,
+							project_id: fixture.project_id,
+							repo_url: `https://example.test/${fixture.name}.git`,
+							repo_dir: fixture.dir
+						})
+					);
+					conflictIds[fixture.key] = created.id;
+				}
+				expect(
+					(
+						await api.post(`/api/v1/issues/${issue.id}/comments`, {
+							body: 'a comment that survives'
+						})
+					).status()
+				).toBe(201);
+				await use({
+					sourceName,
+					destinationName,
+					longName,
+					issueId,
+					sourceId,
+					sourceNumber,
+					longId,
+					conflictIds
+				});
+			},
+			{ scope: 'worker' }
+		]
+	});
 
-		test('focuses the chooser and contains a long unbroken destination', async ({ browser }) => {
+	test.describe.serial(`issue transfer (${label})`, () => {
+		test('focuses the chooser and contains a long unbroken destination', async ({
+			browser,
+			world
+		}) => {
+			const { sourceName, sourceNumber, longId, longName } = world;
 			const page = await open(browser, `/issues/${sourceName}/${sourceNumber}`);
 			const modal = page.getByRole('dialog');
 			await clickToOpen(page.getByTestId('move-to-project'), modal);
@@ -193,7 +223,8 @@ function suite(label: string, viewport: { width: number; height: number }) {
 			await page.close();
 		});
 
-		test('shows a busy run and its actionable remedy', async ({ browser }) => {
+		test('shows a busy run and its actionable remedy', async ({ browser, world }) => {
+			const { sourceName, sourceNumber, destinationName } = world;
 			const page = await open(browser, `/issues/${sourceName}/${sourceNumber}`);
 			await page.route('**/api/v1/issues/*/transfer?*', async (route) => {
 				const response = await route.fetch();
@@ -229,8 +260,10 @@ function suite(label: string, viewport: { width: number; height: number }) {
 		});
 
 		test('shows retained pins and consequential routing beneath an automation-off headline', async ({
-			browser
+			browser,
+			world
 		}) => {
+			const { sourceName, sourceNumber, destinationName } = world;
 			const page = await open(browser, `/issues/${sourceName}/${sourceNumber}`);
 			await page.route('**/api/v1/issues/*/transfer?*', async (route) => {
 				const response = await route.fetch();
@@ -327,8 +360,10 @@ function suite(label: string, viewport: { width: number; height: number }) {
 
 		test('reviews, inspects and cancels without writing anything', async ({
 			browser,
-			request
+			request,
+			world
 		}, testInfo) => {
+			const { sourceName, sourceNumber, destinationName, issueId, conflictIds } = world;
 			const page = await open(browser, `/issues/${sourceName}/${sourceNumber}`);
 			const modal = page.getByRole('dialog');
 			await clickToOpen(page.getByTestId('move-to-project'), modal);
@@ -474,8 +509,10 @@ function suite(label: string, viewport: { width: number; height: number }) {
 
 		test('confirms the move and stays on the new canonical address', async ({
 			browser,
-			request
+			request,
+			world
 		}) => {
+			const { sourceName, sourceId, sourceNumber, destinationName, issueId } = world;
 			const api = apiClient(request, ALICE.apiKey);
 			expect((await api.patch('/api/v1/preferences', { focused_project_id: sourceId })).ok()).toBe(
 				true
@@ -552,8 +589,10 @@ function suite(label: string, viewport: { width: number; height: number }) {
 		});
 
 		test('real CLI human and JSON confirmations return the first successful D1 receipt', async ({
-			request
+			request,
+			world
 		}) => {
+			const { sourceId, destinationName } = world;
 			const api = apiClient(request, ALICE.apiKey);
 			const humanIssue = await body<IssueDetail>(
 				await api.post(`/api/v1/projects/${sourceId}/issues`, { title: `CLI human ${label}` })
@@ -607,8 +646,10 @@ function suite(label: string, viewport: { width: number; height: number }) {
 
 		test('never offers an archived project, and refuses one archived mid-review', async ({
 			browser,
-			request
+			request,
+			world
 		}) => {
+			const { sourceName, sourceId, destinationName } = world;
 			// The issue now lives in the destination; its old source is the one
 			// this test archives.
 			const api = apiClient(request, ALICE.apiKey);
@@ -639,7 +680,12 @@ function suite(label: string, viewport: { width: number; height: number }) {
 			await page.close();
 		});
 
-		test('asks again when the guidance changes under a review', async ({ browser, request }) => {
+		test('asks again when the guidance changes under a review', async ({
+			browser,
+			request,
+			world
+		}) => {
+			const { sourceName, sourceId, destinationName } = world;
 			const page = await open(browser, `/issues/${destinationName}/2`);
 			const modal = page.getByRole('dialog');
 			await clickToOpen(page.getByTestId('move-to-project'), modal);
@@ -678,7 +724,12 @@ function suite(label: string, viewport: { width: number; height: number }) {
 			await page.close();
 		});
 
-		test('contains focus, closes on Escape and writes nothing', async ({ browser, request }) => {
+		test('contains focus, closes on Escape and writes nothing', async ({
+			browser,
+			request,
+			world
+		}) => {
+			const { issueId } = world;
 			const api = apiClient(request, ALICE.apiKey);
 			const before = await body<IssueDetail>(await api.get(`/api/v1/issues/${issueId}`));
 			const page = await open(browser, `/issues/${before.project_name}/${before.number}`);
@@ -703,8 +754,10 @@ function suite(label: string, viewport: { width: number; height: number }) {
 
 		test('recovers when the commit response is lost after the move', async ({
 			browser,
-			request
+			request,
+			world
 		}) => {
+			const { issueId, sourceName, destinationName } = world;
 			const api = apiClient(request, ALICE.apiKey);
 			const before = await body<IssueDetail>(await api.get(`/api/v1/issues/${issueId}`));
 			const target = before.project_name === sourceName ? destinationName : sourceName;
