@@ -79,7 +79,9 @@ test.describe.serial('public workflow snapshots', () => {
 		await displayName.fill('Alice Browser');
 		await ownerPage.getByRole('button', { name: 'Preview', exact: true }).click();
 		await ownerPage.getByRole('button', { name: 'Continue to Share', exact: true }).click();
-		await ownerPage.getByLabel(/I have the right to share all included content/).check();
+		await ownerPage
+			.getByRole('checkbox', { name: /I have the right to share all included content/ })
+			.check();
 		await ownerPage.getByRole('button', { name: 'Publish workflow' }).click();
 		await expect(ownerPage.getByText('Shared', { exact: true })).toBeVisible();
 		await ownerContext.close();
@@ -148,11 +150,11 @@ test.describe.serial('public workflow snapshots', () => {
 		const page = await context.newPage();
 		await page.goto(`/p/${snapshotId}/install`);
 		await expect(page).toHaveURL(`/workflows/import?publication=${snapshotId}`);
-		await expect(page.getByRole('heading', { name: 'Install workflow package' })).toBeVisible();
-		await page.getByRole('button', { name: 'Prepare installation' }).click();
-		await page.getByLabel(/I confirm exact plan/).check();
-		await page.getByRole('button', { name: 'Install package' }).click();
-		await expect(page.getByRole('heading', { name: 'Package installed' })).toBeVisible();
+		await expect(page.getByRole('heading', { name: 'Install workflow' })).toBeVisible();
+		await page.getByRole('button', { name: 'Preview installation' }).click();
+		await page.getByLabel(/I reviewed what will be installed/).check();
+		await page.getByRole('button', { name: 'Install workflow' }).click();
+		await expect(page.getByRole('heading', { name: 'Installed' })).toBeVisible();
 		await context.close();
 
 		const bob = apiClient(request, BOB.apiKey);
