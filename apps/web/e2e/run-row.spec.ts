@@ -139,6 +139,8 @@ test.describe('shared routing-rule row', () => {
 
 	let workflowId: string;
 	let stateId: string;
+	let runnerId: string;
+	let ruleId: string;
 
 	test.beforeAll(async ({ request, uniqueName }) => {
 		STATE_NAME = uniqueName('Dead', { maxLength: 100 });
@@ -157,6 +159,7 @@ test.describe('shared routing-rule row', () => {
 				'create runner'
 			)
 		);
+		runnerId = runner.id;
 		await ok(await api.patch(`/api/v1/runners/${runner.id}`, { status: 'paused' }), 'pause runner');
 
 		// A custom workflow — the standard one is read-only, so its state
@@ -181,13 +184,16 @@ test.describe('shared routing-rule row', () => {
 
 		// Order matters: the rule must be created while the state is still
 		// active, because the server rejects a non-active rule scope outright.
-		await ok(
-			await api.post('/api/v1/routing-rules', {
-				workflow_state_id: stateId,
-				targets: [{ runner_id: runner.id }]
-			}),
-			'create rule'
+		const rule = await body<{ id: string }>(
+			await ok(
+				await api.post('/api/v1/routing-rules', {
+					workflow_state_id: stateId,
+					targets: [{ runner_id: runner.id }]
+				}),
+				'create rule'
+			)
 		);
+		ruleId = rule.id;
 
 		// Now recategorize the state out of `active` — the rule is dead.
 		await ok(
@@ -199,6 +205,14 @@ test.describe('shared routing-rule row', () => {
 			}),
 			'recategorize state'
 		);
+	});
+
+	test.afterAll(async ({ apiFor }) => {
+		const api = apiFor(ALICE);
+		if (ruleId) expect((await api.delete(`/api/v1/routing-rules/${ruleId}`)).status()).toBe(204);
+		if (workflowId)
+			expect((await api.delete(`/api/v1/workflows/${workflowId}`)).status()).toBe(204);
+		if (runnerId) expect((await api.delete(`/api/v1/runners/${runnerId}`)).status()).toBe(204);
 	});
 
 	test.use({ signedIn: ALICE });

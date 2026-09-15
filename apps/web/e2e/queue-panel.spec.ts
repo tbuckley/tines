@@ -245,7 +245,14 @@ test.describe.serial('the Now row', () => {
 		await expect(panel).toContainText('2 issues');
 		const actions = panel.locator(`#queue-runner-${world.runnerId}`).getByTestId('queue-actions');
 		await expect(actions).toBeVisible();
-		await expect(actions.locator('button:visible')).toHaveCount(2);
+		// Queue and runner data refresh independently. The verdict can render before
+		// the runner-backed controls, so give each the page's invalidation budget.
+		await expect(
+			actions.getByRole('button', { name: `Raise cap on ${world.runnerName}` })
+		).toBeVisible({ timeout: 20_000 });
+		await expect(actions.getByRole('button', { name: 'Quota policy' })).toBeVisible({
+			timeout: 20_000
+		});
 		const geometry = await actions.evaluate((element) => {
 			const panelElement = element.closest('section');
 			if (!panelElement) throw new Error('queue actions are outside the queue panel');

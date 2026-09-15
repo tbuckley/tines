@@ -18,10 +18,10 @@ test.describe.serial('issue workflow filter', () => {
 	let otherIssue: IssueDetail;
 
 	test.beforeAll(async ({ apiFor, uniqueName }) => {
-		projectName = uniqueName('workflow-filter', { maxLength: 28 });
-		workflowName = uniqueName('Engineering filter', { maxLength: 28 });
-		otherWorkflowName = uniqueName('Support filter', { maxLength: 28 });
-		emptyWorkflowName = uniqueName('Empty filter', { maxLength: 28 });
+		projectName = uniqueName('workflow-filter', { maxLength: 32 });
+		workflowName = uniqueName('Engineering filter', { maxLength: 32 });
+		otherWorkflowName = uniqueName('Support filter', { maxLength: 32 });
+		emptyWorkflowName = uniqueName('Empty filter', { maxLength: 32 });
 		const api = apiFor(ALICE);
 		project = await body<Project>(await api.post('/api/v1/projects', { name: projectName }));
 		workflow = await body<WorkflowResponse>(
@@ -66,10 +66,10 @@ test.describe.serial('issue workflow filter', () => {
 					workflow_id: workflowId
 				})
 			);
-		openIssue = await create(uniqueName('Workflow build', { maxLength: 28 }), workflow.id);
-		reviewIssue = await create(uniqueName('Workflow review', { maxLength: 28 }), workflow.id);
+		openIssue = await create(uniqueName('Workflow build', { maxLength: 32 }), workflow.id);
+		reviewIssue = await create(uniqueName('Workflow review', { maxLength: 32 }), workflow.id);
 		await body(await api.post(`/api/v1/issues/${reviewIssue.id}/transition`, { action: 'review' }));
-		otherIssue = await create(uniqueName('Workflow triage', { maxLength: 28 }), otherWorkflow.id);
+		otherIssue = await create(uniqueName('Workflow triage', { maxLength: 32 }), otherWorkflow.id);
 	});
 
 	test.use({ signedIn: ALICE });

@@ -51,7 +51,7 @@ const previewGeometry = async (page: Page) => {
 };
 
 test.beforeAll(async ({ apiFor, uniqueName }) => {
-	workflowName = uniqueName('Header', { maxLength: 28 });
+	workflowName = uniqueName('Header', { maxLength: 32 });
 	wideWorkflowName = uniqueName('Wide preview', { maxLength: 100 });
 	const api = apiFor(ALICE);
 	const created = await body<{ id: string }>(
