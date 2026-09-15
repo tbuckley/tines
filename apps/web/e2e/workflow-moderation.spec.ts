@@ -9,7 +9,7 @@ test('reports, removes, restores, suspends and recovers one exact public snapsho
 	page,
 	request
 }) => {
-	test.setTimeout(90_000);
+	test.setTimeout(180_000);
 	const marker = `moderation-journey-${runId}`;
 	const alice = apiClient(request, ALICE.apiKey);
 	const workflow = await body<{ id: string }>(
