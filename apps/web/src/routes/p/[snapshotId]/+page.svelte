@@ -288,7 +288,10 @@
 		<footer
 			class="text-muted-foreground flex flex-wrap items-center justify-between gap-3 border-t py-6 text-xs break-all"
 		>
-			<span>Document {snapshot.document_digest} · bytes {snapshot.bytes_sha256}</span>
+			<span
+				>Document {snapshot.document_digest} · bytes {snapshot.bytes_sha256} ·
+				<a class="underline" href="/public-workflow-policy" rel="noreferrer">Content rules</a></span
+			>
 			<button
 				class="min-h-10 rounded-md border px-3 text-sm"
 				type="button"
@@ -296,7 +299,6 @@
 			>
 		</footer>
 	</main>
-	<PublicationReportDialog bind:this={reportDialog} snapshotId={snapshot.snapshot_id} />
 	{#if !data.user}<MarketingSignIn bind:this={signIn} returnTo={installReturn} {linkError} />{/if}
 {:else}
 	<main class="mx-auto flex min-h-screen max-w-xl items-center px-6">
@@ -306,3 +308,4 @@
 		</div>
 	</main>
 {/if}
+<PublicationReportDialog bind:this={reportDialog} snapshotId={snapshot.snapshot_id} />

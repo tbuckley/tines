@@ -1,5 +1,7 @@
 # Public workflow snapshots
 
+Host reporting and moderation are specified in [MODERATION.md](./MODERATION.md). Public publishing remains default-off until a named reviewer, daily operation, configured appeal contact, and the integrated moderation journey are verified.
+
 Public workflow publication is a revocable hosting layer over the version 3 workflow package. It
 does not introduce another package format. A candidate freezes canonical UTF-8 JSON bytes, their
 document digest and full-byte checksum, the selected source projection, public display name, MIT

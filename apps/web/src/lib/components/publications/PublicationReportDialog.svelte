@@ -6,6 +6,7 @@
 		type PublicationReportReceipt
 	} from '@tines/shared';
 	import Modal from '$lib/components/Modal.svelte';
+	import { tick } from 'svelte';
 
 	let { snapshotId }: { snapshotId: string } = $props();
 	let open = $state(false);
@@ -17,6 +18,7 @@
 	let frozen = $state<PublicationReportRequest | null>(null);
 	let retryAt = $state<number | null>(null);
 	let errorElement = $state<HTMLParagraphElement | null>(null);
+	let receiptElement = $state<HTMLParagraphElement | null>(null);
 	const noteLength = $derived(moderationTextLength(note));
 
 	export function show(trigger: HTMLElement) {
@@ -30,6 +32,7 @@
 	async function submit() {
 		if (!reason) {
 			error = 'Choose a reason.';
+			await tick();
 			errorElement?.focus();
 			return;
 		}
@@ -60,6 +63,8 @@
 				throw new Error(body?.error?.message ?? 'The report could not be received.');
 			}
 			receipt = body as PublicationReportReceipt;
+			await tick();
+			receiptElement?.focus();
 		} catch (cause) {
 			error = cause instanceof Error ? cause.message : 'The report could not be received.';
 		} finally {
@@ -84,7 +89,11 @@
 >
 	{#if receipt}
 		<p>Your report is private and will be reviewed by the host team.</p>
-		<p class="bg-muted mt-4 rounded-md p-3 font-mono text-sm break-all" tabindex="-1">
+		<p
+			class="bg-muted mt-4 rounded-md p-3 font-mono text-sm break-all"
+			tabindex="-1"
+			bind:this={receiptElement}
+		>
 			Reference: {receipt.receipt.reference}
 		</p>
 		<p class="text-muted-foreground mt-3 text-xs">
@@ -128,6 +137,11 @@
 				class:text-destructive={noteLength > 1000}
 			>
 				{noteLength} / 1,000
+			</p>
+			<p class="text-muted-foreground mt-2 text-xs">
+				<a class="underline" href="/public-workflow-policy" target="_blank" rel="noreferrer"
+					>Public workflow content rules</a
+				>
 			</p>
 			{#if error}
 				<p

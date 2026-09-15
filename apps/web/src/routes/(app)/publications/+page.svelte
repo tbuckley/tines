@@ -62,6 +62,19 @@
 
 {#if status}<p class="mb-4 text-sm" role="status" aria-live="polite">{status}</p>{/if}
 
+{#if data.suspension}
+	<div class="bg-muted/40 mb-6 rounded-lg border p-4 text-sm">
+		<p><b>Public workflow publishing is suspended:</b> {data.suspension.reason}</p>
+		<p class="mt-2">
+			{#if data.appealContact}<a
+					class="text-primary underline"
+					href={data.appealContact}
+					rel="noreferrer">Appeal this decision</a
+				>{:else}Appeal contact is not configured.{/if}
+		</p>
+	</div>
+{/if}
+
 {#if data.publications.length === 0}
 	<p class="text-muted-foreground rounded-lg border p-6 text-sm">No public snapshots yet.</p>
 {:else}

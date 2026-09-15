@@ -45,5 +45,5 @@ export async function sweepModerationRetention(
 		deleted += changed;
 		if (changed < BATCH_SIZE) break;
 	}
-	return { deleted, passes: passes + 1 };
+	return { deleted, passes: Math.min(passes + 1, maxPasses, 5) };
 }

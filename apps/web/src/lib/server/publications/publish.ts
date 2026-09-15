@@ -369,6 +369,18 @@ export async function listPublications(
 	}));
 }
 
+/** Owner-only active host status. Contains no report or moderator data. */
+export async function getPublisherSuspension(db: Kysely<Database>, actor: ActorContext) {
+	const row = await db
+		.selectFrom('workflow_publisher_status')
+		.select(['suspended', 'decision_reason', 'decision_reference'])
+		.where('user_id', '=', actor.userId)
+		.executeTakeFirst();
+	return row?.suspended === 1 && row.decision_reason && row.decision_reference
+		? { reason: row.decision_reason, reference: row.decision_reference }
+		: null;
+}
+
 async function publicationBySnapshot(
 	db: Kysely<Database>,
 	userId: string,

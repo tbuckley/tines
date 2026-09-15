@@ -18,9 +18,26 @@ const post = api(async (event) => {
 		throw new ApiFail(415, 'unsupported_media_type', 'Use application/json');
 	if (event.request.headers.get('origin') !== event.url.origin)
 		throw new ApiFail(403, 'invalid_origin', 'Same-origin browser request required');
-	const bytes = new Uint8Array(await event.request.arrayBuffer());
-	if (bytes.byteLength > 16_384)
-		throw new ApiFail(413, 'request_too_large', 'Report request is too large');
+	const reader = event.request.body?.getReader();
+	const chunks: Uint8Array[] = [];
+	let size = 0;
+	if (!reader) throw new ApiFail(400, 'invalid_json', 'Request body must be valid JSON');
+	while (true) {
+		const { done, value } = await reader.read();
+		if (done) break;
+		size += value.byteLength;
+		if (size > 16_384) {
+			await reader.cancel();
+			throw new ApiFail(413, 'request_too_large', 'Report request is too large');
+		}
+		chunks.push(value);
+	}
+	const bytes = new Uint8Array(size);
+	let offset = 0;
+	for (const chunk of chunks) {
+		bytes.set(chunk, offset);
+		offset += chunk.byteLength;
+	}
 	let body: PublicationReportRequest;
 	try {
 		body = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));

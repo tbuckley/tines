@@ -254,6 +254,18 @@ function validateDecision(input: ModerationDecisionRequest) {
 	]);
 	if (Object.keys(input).some((key) => !allowed.has(key)))
 		throw new ApiFail(422, 'invalid_decision', 'Unknown decision field');
+	if (!input.target || typeof input.target !== 'object' || Array.isArray(input.target))
+		throw new ApiFail(422, 'invalid_decision', 'Decision target is required');
+	if (Object.keys(input.target).some((key) => !['snapshot_id', 'publisher_id'].includes(key)))
+		throw new ApiFail(422, 'invalid_decision', 'Unknown decision target field');
+	for (const value of [
+		input.expected_snapshot_version,
+		input.expected_publisher_version,
+		input.case_through_version
+	]) {
+		if (value !== undefined && (!Number.isSafeInteger(value) || value < 0))
+			throw new ApiFail(422, 'invalid_decision', 'Decision versions must be nonnegative integers');
+	}
 }
 
 export async function decideModeration(
@@ -315,6 +327,11 @@ export async function decideModeration(
 		.selectAll()
 		.where('user_id', '=', publisherId)
 		.executeTakeFirst();
+	if (
+		targetKind === 'publisher' &&
+		((snapshot && snapshot.user_id !== publisherId) || (!snapshot && !publisher))
+	)
+		throw new ApiFail(404, 'not_found', 'Not found');
 	const currentPublisherVersion = publisher?.status_version ?? 0;
 	const auditId = newId('mod');
 	let before: Record<string, unknown>;
