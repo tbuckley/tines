@@ -16,9 +16,16 @@
 	import IconArrowLeft from '@tabler/icons-svelte/icons/arrow-left';
 	import IconCheck from '@tabler/icons-svelte/icons/check';
 	import IconDownload from '@tabler/icons-svelte/icons/download';
+	import IconPencil from '@tabler/icons-svelte/icons/pencil';
 	import IconRefresh from '@tabler/icons-svelte/icons/refresh';
 	import { tick } from 'svelte';
 	import { api } from '$lib/api';
+	import {
+		normalizeInputDraft,
+		updateAuthoredInput,
+		writeField,
+		type InputDraft
+	} from '$lib/components/library/package-input-editor';
 	import PackageReview from '$lib/components/library/PackageReview.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
@@ -54,10 +61,15 @@
 	let draftDescription = $state('');
 	let draftDefault = $state('');
 	let draftRequired = $state(true);
+	let editingInputId = $state<string | null>(null);
+	let editingInputKey = $state('');
+	let addDraftSnapshot = $state<InputDraft | null>(null);
+	let inputFormError = $state('');
 	let selectedInputId = $state('');
 	let selectedTarget = $state('');
 	let fieldEditor = $state<HTMLTextAreaElement | null>(null);
 	let inputPanel = $state<HTMLElement | null>(null);
+	let keyEditor = $state<HTMLInputElement | null>(null);
 	let tokenInvoker = $state<HTMLElement | null>(null);
 	let diagnosticsPanel = $state<HTMLElement | null>(null);
 
@@ -199,6 +211,11 @@
 			: selectedSchedules.filter((item) => item !== id);
 	}
 	async function rebuild() {
+		if (candidateUpdating || busy) return;
+		if (editingInputId) {
+			status = 'Save or cancel the input edit before rebuilding.';
+			return;
+		}
 		if (
 			dirty &&
 			!confirm('Rebuilding from the source discards candidate-only text and input edits. Continue?')
@@ -314,14 +331,16 @@
 		}
 	}
 	async function addInput() {
-		const key = draftKey.trim();
-		if (
-			!/^[a-z][a-z0-9_]{0,63}$/.test(key) ||
-			candidate.inputs.some((input) => input.key === key)
-		) {
-			status = candidate.inputs.some((input) => input.key === key)
-				? `Input key “${key}” already exists.`
-				: 'Use a lowercase input key beginning with a letter and containing only letters, numbers, or underscores.';
+		if (candidateUpdating) return;
+		let normalized;
+		try {
+			normalized = normalizeInputDraft(inputDraft());
+		} catch (error) {
+			status = message(error);
+			return;
+		}
+		if (candidate.inputs.some((input) => input.key === normalized.key)) {
+			status = `Input key “${normalized.key}” already exists.`;
 			return;
 		}
 		candidateGeneration += 1;
@@ -329,18 +348,7 @@
 		const id = `input:author:${candidate.inputs.length + 1}`;
 		const next = {
 			...candidate,
-			inputs: [
-				...candidate.inputs,
-				{
-					id,
-					key,
-					type: draftType,
-					label: draftLabel.trim() || key,
-					description: draftDescription,
-					required: draftRequired,
-					default: draftDefault === '' ? null : draftDefault
-				}
-			]
+			inputs: [...candidate.inputs, { id, ...normalized }]
 		};
 		try {
 			candidate = await withLibraryDocumentDigest(next);
@@ -354,26 +362,123 @@
 		dirty = true;
 		resetReview('Input declaration added to this candidate only.');
 	}
-	function writeField(
-		document: WorkflowPackageDocument,
-		recordId: string,
-		field: TextUseField,
-		value: string
-	) {
-		for (const workflow of document.workflows)
-			if (workflow.id === recordId && field === 'description') workflow.description = value;
-		for (const item of document.context) {
-			if (item.id === recordId && field === 'description') item.description = value;
-			if (item.id === recordId && item.kind === 'prompt' && field === 'body') item.body = value;
-			if (item.kind === 'skill')
-				for (const file of item.files)
-					if (file.id === recordId && field === 'content') file.content = value;
+	function inputDraft(): InputDraft {
+		return {
+			key: draftKey,
+			type: draftType,
+			label: draftLabel,
+			description: draftDescription,
+			default: draftDefault,
+			required: draftRequired
+		};
+	}
+	function setInputDraft(draft: InputDraft) {
+		draftKey = draft.key;
+		draftType = draft.type;
+		draftLabel = draft.label;
+		draftDescription = draft.description;
+		draftDefault = draft.default;
+		draftRequired = draft.required;
+	}
+	async function editInput(input: PackageInput) {
+		if (busy || candidateUpdating || editingInputId || !input.id.startsWith('input:author:'))
+			return;
+		addDraftSnapshot = inputDraft();
+		editingInputId = input.id;
+		editingInputKey = input.key;
+		inputFormError = '';
+		setInputDraft({
+			key: input.key,
+			type: input.type,
+			label: input.label,
+			description: input.description,
+			default: input.default ?? '',
+			required: input.required
+		});
+		await tick();
+		keyEditor?.focus();
+		keyEditor?.scrollIntoView({ block: 'center' });
+	}
+	async function finishInputEdit(inputId: string) {
+		if (addDraftSnapshot) setInputDraft(addDraftSnapshot);
+		editingInputId = null;
+		editingInputKey = '';
+		addDraftSnapshot = null;
+		inputFormError = '';
+		await tick();
+		document.getElementById(`edit-${inputId}`)?.focus();
+	}
+	async function cancelInputEdit() {
+		if (!editingInputId || candidateUpdating) return;
+		const inputId = editingInputId;
+		await finishInputEdit(inputId);
+	}
+	async function saveInputEdit() {
+		if (!editingInputId || candidateUpdating) return;
+		inputFormError = '';
+		const inputId = editingInputId;
+		const current = candidate.inputs.find((input) => input.id === inputId);
+		if (!current) {
+			inputFormError = 'Input declaration no longer exists.';
+			return;
 		}
-		for (const schedule of document.schedules)
-			if (schedule.id === recordId) {
-				if (field === 'title_template') schedule.title_template = value;
-				if (field === 'description_template') schedule.description_template = value;
+		let normalized;
+		try {
+			normalized = normalizeInputDraft(inputDraft());
+		} catch (error) {
+			inputFormError = message(error);
+			return;
+		}
+		const tokenChanges =
+			inputToken(current.key, current.default) !== inputToken(normalized.key, normalized.default);
+		const selectedFieldIsAffected = Boolean(
+			tokenChanges &&
+			selectedField &&
+			candidate.text_uses.some(
+				(use) =>
+					use.input_id === inputId &&
+					use.target.record_id === selectedField?.recordId &&
+					use.target.field === selectedField.field
+			)
+		);
+		if (selectedFieldIsAffected && fieldEditor && fieldEditor.value !== selectedField?.value) {
+			inputFormError = 'Save candidate text before updating this input’s registered tokens.';
+			return;
+		}
+		const pendingField =
+			!selectedFieldIsAffected && fieldEditor
+				? {
+						value: fieldEditor.value,
+						start: fieldEditor.selectionStart,
+						end: fieldEditor.selectionEnd
+					}
+				: null;
+		const snapshot = candidate;
+		candidateGeneration += 1;
+		candidateUpdating = true;
+		let saved = false;
+		try {
+			const updated = updateAuthoredInput(snapshot, inputId, inputDraft());
+			const sealed = await withLibraryDocumentDigest(updated);
+			candidate = sealed;
+			dirty = true;
+			resetReview('Input declaration updated in this candidate only.');
+			saved = true;
+		} catch (error) {
+			inputFormError = message(error);
+		} finally {
+			candidateUpdating = false;
+		}
+		if (!saved) return;
+		await finishInputEdit(inputId);
+		await tick();
+		if (fieldEditor) {
+			if (selectedFieldIsAffected && selectedField) fieldEditor.value = selectedField.value;
+			else if (pendingField) {
+				fieldEditor.value = pendingField.value;
+				fieldEditor.setSelectionRange(pendingField.start, pendingField.end);
 			}
+		}
 	}
 	async function saveCandidateField(addUse = false) {
 		if (!selectedField || !fieldEditor) return;
@@ -640,7 +745,12 @@
 				</div>{/each}
 		</div>
 	</details>
-	<Button class="mt-4" variant="outline" onclick={rebuild} disabled={busy}
+	<Button
+		class="mt-4"
+		variant="outline"
+		onclick={rebuild}
+		disabled={busy || candidateUpdating || Boolean(editingInputId)}
+		title={editingInputId ? 'Save or cancel the input edit before rebuilding.' : undefined}
 		><IconRefresh size={16} /> Rebuild from source</Button
 	>
 </section>
@@ -663,9 +773,21 @@
 				>Back to passage</Button
 			>{/if}
 	</div>
-	<div class="mt-4 grid gap-3 md:grid-cols-3">
+	{#if editingInputId}
+		<h3 class="mt-4 text-sm font-semibold">Editing input {editingInputKey}</h3>
+		<p class="text-muted-foreground mt-1 text-xs">
+			Key and default changes update this input’s registered tokens. Save resets required reviews.
+		</p>
+	{/if}
+	<div class:mt-4={!editingInputId} class="grid gap-3 md:grid-cols-3">
 		<label class="text-xs"
-			>Key<Input class="mt-1" bind:value={draftKey} maxlength={64} placeholder="bug_label" /></label
+			>Key<Input
+				class="mt-1"
+				bind:ref={keyEditor}
+				bind:value={draftKey}
+				maxlength={64}
+				placeholder="bug_label"
+			/></label
 		><label class="text-xs"
 			>Type<Select class="mt-1" bind:value={draftType}
 				><option value="text">Text</option><option value="workflow">Workflow</option><option
@@ -687,32 +809,64 @@
 	</div>
 	<label class="mt-2 flex min-h-10 items-center gap-2 text-sm"
 		><input type="checkbox" bind:checked={draftRequired} /> Required</label
-	><Button size="sm" variant="outline" onclick={addInput} disabled={candidateUpdating}
-		>Add typed declaration</Button
-	>
+	>{#if inputFormError}<p class="text-destructive mb-2 text-sm" role="alert">
+			{inputFormError}
+		</p>{/if}
+	{#if editingInputId}
+		<div class="flex flex-wrap gap-2">
+			<Button class="min-h-10" size="sm" onclick={saveInputEdit} disabled={candidateUpdating}
+				>Save changes</Button
+			>
+			<Button
+				class="min-h-10"
+				size="sm"
+				variant="outline"
+				onclick={cancelInputEdit}
+				disabled={candidateUpdating}>Cancel</Button
+			>
+		</div>
+	{:else}
+		<Button size="sm" variant="outline" onclick={addInput} disabled={candidateUpdating}
+			>Add typed declaration</Button
+		>
+	{/if}
 	{#if candidate.inputs.length}<div class="mt-4 grid gap-2 sm:grid-cols-2">
 			{#each candidate.inputs as input}
 				{@const selected = selectedInput?.id === input.id}
-				<button
-					id="input-{input.id}"
-					type="button"
-					aria-pressed={selected}
-					class="text-foreground focus-visible:ring-ring focus-visible:ring-offset-background min-h-10 min-w-0 rounded-md border p-2 text-left text-xs [overflow-wrap:anywhere] focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none {selected
-						? 'border-primary bg-primary/10'
-						: 'border-border bg-transparent'}"
-					onclick={() => (selectedInputId = input.id)}
-					><b><code class="[overflow-wrap:anywhere]">{input.key}</code> · {input.type}</b><br
-					/>{input.label} · {input.required ? 'required' : 'optional'} · default {input.default ??
-						'none'}
-					<span class="text-primary mt-1 flex min-h-4 items-center gap-1 font-medium">
-						{#if selected}<IconCheck
-								size={14}
-								stroke={2.5}
-								class="shrink-0"
-								aria-hidden="true"
-							/>Selected{/if}
-					</span></button
-				>
+				<div class="flex min-w-0 items-stretch gap-2 rounded-md">
+					<button
+						id="input-{input.id}"
+						type="button"
+						aria-pressed={selected}
+						class="text-foreground focus-visible:ring-ring focus-visible:ring-offset-background min-h-10 min-w-0 flex-1 rounded-md border p-2 text-left text-xs [overflow-wrap:anywhere] focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none {selected
+							? 'border-primary bg-primary/10'
+							: 'border-border bg-transparent'}"
+						onclick={() => (selectedInputId = input.id)}
+						><b><code class="[overflow-wrap:anywhere]">{input.key}</code> · {input.type}</b><br
+						/>{input.label} · {input.required ? 'required' : 'optional'} · default {input.default ??
+							'none'}
+						<span class="text-primary mt-1 flex min-h-4 items-center gap-1 font-medium">
+							{#if selected}<IconCheck
+									size={14}
+									stroke={2.5}
+									class="shrink-0"
+									aria-hidden="true"
+								/>Selected{/if}
+						</span></button
+					>
+					{#if input.id.startsWith('input:author:')}
+						<Button
+							id="edit-{input.id}"
+							class="size-10 self-center"
+							size="icon"
+							variant="outline"
+							onclick={() => editInput(input)}
+							disabled={busy || candidateUpdating || Boolean(editingInputId)}
+							title={`Edit input ${input.key}`}
+							aria-label={`Edit input ${input.key}`}><IconPencil size={16} stroke={1.5} /></Button
+						>
+					{/if}
+				</div>
 			{/each}
 		</div>{/if}
 	<div class="mt-4 border-t pt-4">

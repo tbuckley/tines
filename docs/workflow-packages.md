@@ -114,8 +114,12 @@ candidate-only edits. Eligible and selected schedules expose their complete temp
 timezone, workflow and start-state identities, and prior-issue gate before download.
 
 The input editor adds typed declarations and registers an exact token at the selected range of one
-editable candidate field. It never searches and replaces matching prose, edits the private source,
-or recursively expands a destination value. Token buttons return to their declaration and Escape
+editable candidate field. Use **Edit** to correct any browser-authored declaration in place: its ID,
+ordering, unrelated candidate work, and unfinished add draft are preserved. If its key or default
+changes, only that input's active exact tokens in its registered fields change with it; escaped and
+unregistered text remains untouched. Saving resets required reviews, while Cancel changes nothing.
+Generated destination inputs remain read-only. The editor never searches and replaces matching prose,
+edits the private source, or recursively expands a destination value. Token buttons return to their declaration and Escape
 returns focus to the passage. Prompts and Markdown files render as inert Markdown: images become
 labelled placeholders that are never fetched, and an escaped literal such as `\{{key:default}}`
 renders as ordinary text rather than a substitutable use, so the proof marks exactly the
