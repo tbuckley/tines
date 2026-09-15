@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { publicTextModel } from './public-text.js';
+import { publicTextModel, renderedPublicTextWordCount } from './public-text.js';
 
 describe('public text rendering model', () => {
 	it('keeps only text semantics and explicit http links', () => {
@@ -40,5 +40,12 @@ describe('public text rendering model', () => {
 		expect(serialized).toContain('destination');
 		expect(serialized).not.toContain('href');
 		expect(serialized).not.toContain('secret');
+	});
+
+	it('counts rendered words across style boundaries and excludes link destinations', () => {
+		expect(renderedPublicTextWordCount('a**b**c [label](https://example.test/hidden-path)')).toBe(
+			2
+		);
+		expect(renderedPublicTextWordCount('`one two`\n\n| a | b |\n| - | - |\n| c | d |')).toBe(6);
 	});
 });

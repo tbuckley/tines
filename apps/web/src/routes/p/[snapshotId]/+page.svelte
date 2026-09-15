@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onMount, tick } from 'svelte';
 	import { page } from '$app/state';
 	import WorkflowGraph from '$lib/components/WorkflowGraph.svelte';
 	import MarketingSignIn from '$lib/components/marketing/MarketingSignIn.svelte';
@@ -17,7 +17,9 @@
 	let checking = $state(false);
 	let signIn = $state<MarketingSignIn>();
 	let reportDialog = $state<PublicationReportDialog>();
-	const installReturn = $derived(`/p/${snapshot.snapshot_id}?install=1`);
+	let reader = $state<HTMLElement>();
+	const installReturn = $derived(`/p/${snapshot.snapshot_id}/install`);
+	const signInErrorReturn = $derived(`/p/${snapshot.snapshot_id}?install=1&error=signin`);
 	const linkError = $derived(
 		page.url.searchParams.get('error') === 'signin'
 			? 'That sign-in link is invalid or has expired. Enter your email to get a new one.'
@@ -43,6 +45,9 @@
 
 	async function recheck() {
 		if (checking || !available) return available;
+		const focused = reader?.contains(document.activeElement)
+			? (document.activeElement as HTMLElement)
+			: null;
 		checking = true;
 		try {
 			const response = await fetch(`/api/v1/publications/public/${snapshot.snapshot_id}/status`, {
@@ -57,6 +62,10 @@
 			available = false;
 		} finally {
 			checking = false;
+			if (available && focused?.isConnected && document.activeElement !== focused) {
+				await tick();
+				focused.focus({ preventScroll: true });
+			}
 		}
 		return available;
 	}
@@ -88,8 +97,12 @@
 	/><meta name="robots" content="noindex" /></svelte:head
 >
 
-{#if visible}
-	<main class="mx-auto min-h-screen max-w-5xl min-w-0 overflow-x-hidden px-4 py-8 sm:px-6">
+{#if available}
+	<main
+		bind:this={reader}
+		class:hidden={checking}
+		class="mx-auto min-h-screen max-w-5xl min-w-0 overflow-x-hidden px-4 py-8 sm:px-6"
+	>
 		<header class="border-b pb-6">
 			<p class="text-muted-foreground text-sm">Public workflow snapshot</p>
 			<h1 class="mt-1 text-3xl font-semibold wrap-break-word">{main.name}</h1>
@@ -150,7 +163,16 @@
 							>· {workflow.id === main.id ? 'main' : 'required dependency'}</span
 						>
 					</h3>
-					<div class="mt-3 overflow-x-auto"><WorkflowGraph {workflow} /></div>
+					<!-- A named horizontal scroll region is intentionally keyboard-focusable. -->
+					<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+					<div
+						class="focus-visible:ring-ring mt-3 max-w-full min-w-0 overflow-x-auto focus-visible:ring-2"
+						tabindex="0"
+						role="region"
+						aria-label={`${workflow.name} graph; scroll horizontally to inspect all states`}
+					>
+						<WorkflowGraph {workflow} fit={false} intrinsicScale={1.3} />
+					</div>
 					<ul class="mt-3 flex min-w-0 flex-wrap gap-2 text-xs" aria-label="States">
 						{#each workflow.states as state}<li
 								class="bg-muted min-w-0 rounded px-2 py-1 break-words"
@@ -299,7 +321,15 @@
 			>
 		</footer>
 	</main>
-	{#if !data.user}<MarketingSignIn bind:this={signIn} returnTo={installReturn} {linkError} />{/if}
+	{#if checking}<div class="mx-auto max-w-xl px-6 py-12" role="status">
+			Checking publication…
+		</div>{/if}
+	{#if !data.user}<MarketingSignIn
+			bind:this={signIn}
+			returnTo={installReturn}
+			errorReturnTo={signInErrorReturn}
+			{linkError}
+		/>{/if}
 {:else}
 	<main class="mx-auto flex min-h-screen max-w-xl items-center px-6">
 		<div>

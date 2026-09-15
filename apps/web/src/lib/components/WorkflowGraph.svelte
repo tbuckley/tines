@@ -23,7 +23,8 @@
 		workflow,
 		currentStateId = null,
 		compact = false,
-		fit = true
+		fit = true,
+		intrinsicScale = 1
 	}: {
 		workflow: GraphWorkflow;
 		/** Highlighted state; changes animate along the traversed edge. */
@@ -31,6 +32,8 @@
 		compact?: boolean;
 		/** Fit to the container. Disable to fix a full graph at intrinsic size; the caller must contain overflow. */
 		fit?: boolean;
+		/** Scale intrinsic full-mode dimensions without changing graph geometry. */
+		intrinsicScale?: number;
 	} = $props();
 
 	// Unique per instance so several graphs on a page don't share markers.
@@ -233,8 +236,8 @@
 	<svg
 		viewBox="0 0 {layout.width} {layout.height}"
 		class="h-auto w-full"
-		style:max-width={`${!fit && !compact ? layout.width : layout.width * (compact ? 1 : 1.15)}px`}
-		style:min-width={!fit && !compact ? `${layout.width}px` : undefined}
+		style:max-width={`${!fit && !compact ? layout.width * intrinsicScale : layout.width * (compact ? 1 : 1.15)}px`}
+		style:min-width={!fit && !compact ? `${layout.width * intrinsicScale}px` : undefined}
 		role="img"
 		aria-label="Workflow graph"
 	>

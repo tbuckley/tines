@@ -154,3 +154,19 @@ export function publicTextModel(source: string): PublicTextBlock[] {
 	visit(root.children ?? []);
 	return result;
 }
+
+/** Count only rendered words; adjacent styled spans remain one text run. */
+export function renderedPublicTextWordCount(source: string): number {
+	const rendered = publicTextModel(source)
+		.map((block) => {
+			if ('spans' in block) return block.spans.map((span) => span.text).join('');
+			if (block.kind === 'code') return block.value;
+			if (block.kind === 'table')
+				return block.rows
+					.map((row) => row.map((cell) => cell.map((span) => span.text).join('')).join(' '))
+					.join('\n');
+			return '';
+		})
+		.join('\n');
+	return rendered.match(/\S+/gu)?.length ?? 0;
+}

@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { publicTextModel, type PublicTextBlock, type PublicTextSpan } from '@tines/shared';
 	import Modal from '$lib/components/Modal.svelte';
+	import PublicTextSpans from './PublicTextSpans.svelte';
 
 	let {
 		source,
@@ -11,13 +12,11 @@
 	const blocks = $derived(maxWords ? truncateBlocks(fullBlocks, maxWords) : fullBlocks);
 	let destination = $state<string | null>(null);
 	let destinationOpen = $state(false);
+	let linkTrigger: HTMLElement | null = null;
 
-	function linkTitle(span: PublicTextSpan) {
-		return span.href ? `Open external destination: ${span.href}` : undefined;
-	}
-
-	function confirmDestination(href: string) {
+	function confirmDestination(href: string, trigger: HTMLElement) {
 		destination = href;
+		linkTrigger = trigger;
 		destinationOpen = true;
 	}
 
@@ -75,19 +74,7 @@
 	{#each blocks as block}
 		{#if block.kind === 'heading'}
 			<div class="font-semibold" role="heading" aria-level={block.depth}>
-				{#each block.spans as span}{#if span.href && linkMode === 'confirm'}<button
-							type="button"
-							class="text-primary text-left underline"
-							title={linkTitle(span)}
-							onclick={() => confirmDestination(span.href!)}
-							>{span.text} <span class="text-xs">({span.href})</span></button
-						>{:else if span.href}<span>{span.text} <span class="text-xs">({span.href})</span></span
-						>{:else}<span
-							class:font-bold={span.strong}
-							class:italic={span.emphasis}
-							class:line-through={span.deleted}
-							class:font-mono={span.code}>{span.text}</span
-						>{/if}{/each}
+				<PublicTextSpans spans={block.spans} {linkMode} onlink={confirmDestination} />
 			</div>
 		{:else if block.kind === 'paragraph'}
 			<p
@@ -95,19 +82,7 @@
 				class:border-l-2={block.quote_depth > 0}
 				class:pl-3={block.quote_depth > 0}
 			>
-				{#each block.spans as span}{#if span.href && linkMode === 'confirm'}<button
-							type="button"
-							class="text-primary text-left underline"
-							title={linkTitle(span)}
-							onclick={() => confirmDestination(span.href!)}
-							>{span.text} <span class="text-xs">({span.href})</span></button
-						>{:else if span.href}<span>{span.text} <span class="text-xs">({span.href})</span></span
-						>{:else}<span
-							class:font-bold={span.strong}
-							class:italic={span.emphasis}
-							class:line-through={span.deleted}
-							class:font-mono={span.code}>{span.text}</span
-						>{/if}{/each}
+				<PublicTextSpans spans={block.spans} {linkMode} onlink={confirmDestination} />
 			</p>
 		{:else if block.kind === 'code'}
 			<pre
@@ -115,7 +90,7 @@
 		{:else if block.kind === 'list_item'}
 			<div class="flex gap-2" style:padding-left="{block.depth * 1.25}rem">
 				<span aria-hidden="true">{block.ordered ? `${block.index}.` : '•'}</span><span
-					>{#each block.spans as span}{span.text}{/each}</span
+					><PublicTextSpans spans={block.spans} {linkMode} onlink={confirmDestination} /></span
 				>
 			</div>
 		{:else if block.kind === 'table'}
@@ -124,7 +99,7 @@
 					<tbody
 						>{#each block.rows as row}<tr
 								>{#each row as cell}<td class="border p-2"
-										>{#each cell as span}{span.text}{/each}</td
+										><PublicTextSpans spans={cell} {linkMode} onlink={confirmDestination} /></td
 									>{/each}</tr
 							>{/each}</tbody
 					>
@@ -137,10 +112,14 @@
 {#if linkMode === 'confirm'}<Modal
 		bind:open={destinationOpen}
 		title="Open external destination?"
-		onclose={() => (destination = null)}
+		onclose={() => {
+			destination = null;
+			if (linkTrigger?.isConnected) linkTrigger.focus();
+			linkTrigger = null;
+		}}
 	>
 		<p class="text-muted-foreground text-sm">
-			This link leaves Tines. No referrer or credentials are sent.
+			This link leaves Tines. No Tines credentials or referrer are sent.
 		</p>
 		<p class="mt-3 max-w-full font-mono text-xs break-all">{destination}</p>
 		<div class="mt-5 flex flex-wrap gap-2">
@@ -148,7 +127,7 @@
 				class="bg-primary text-primary-foreground inline-flex min-h-10 items-center rounded-md px-4 text-sm"
 				href={destination ?? undefined}
 				target="_blank"
-				rel="noreferrer"
+				rel="noopener noreferrer"
 				referrerpolicy="no-referrer"
 				onclick={() => {
 					destinationOpen = false;
