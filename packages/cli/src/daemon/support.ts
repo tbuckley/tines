@@ -51,12 +51,13 @@ export interface HarnessInput {
 }
 
 /**
- * Expands a custom command template: `{prompt_file}`, `{workspace}`, and
- * `{model}` are substituted shell-quoted (an absent model becomes `''`), so
- * paths with spaces survive the `sh -c` round trip.
+ * Expands a custom command template: `{prompt_file}`, `{workspace}`, `{model}`,
+ * and `{effort}` are substituted shell-quoted (an absent model or effort
+ * becomes `''`), so values with spaces survive the `sh -c` round trip.
  */
 export function expandCommandTemplate(template: string, input: HarnessInput): string {
 	return template
+		.replaceAll('{effort}', () => (input.effort ? shellQuote(input.effort) : "''"))
 		.replaceAll('{prompt_file}', shellQuote(input.promptFile))
 		.replaceAll('{workspace}', shellQuote(input.workspace))
 		.replaceAll('{model}', input.model ? shellQuote(input.model) : "''");

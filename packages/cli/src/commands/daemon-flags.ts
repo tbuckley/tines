@@ -46,7 +46,7 @@ export function withDaemonFlags(cmd: Command): Command {
 		.option('--harness <harness>', 'claude-code | codex | custom', 'claude-code')
 		.option(
 			'--command <template>',
-			'custom harness command template ({prompt_file}, {workspace}, {model})'
+			'custom harness command template ({prompt_file}, {workspace}, {model}, {effort})'
 		)
 		.option(
 			'--max-concurrent <n>',
@@ -85,7 +85,9 @@ export function parseDaemonFlags(opts: DaemonFlagValues): DaemonSettings {
 		die(`--harness must be claude-code, codex, or custom, got "${opts.harness}"`);
 	}
 	if (harness === 'custom' && !opts.command) {
-		die('the custom harness needs --command "<template>" ({prompt_file}, {workspace}, {model})');
+		die(
+			'the custom harness needs --command "<template>" ({prompt_file}, {workspace}, {model}, {effort})'
+		);
 	}
 	if (harness !== 'custom' && opts.command) die('--command only applies to --harness custom');
 	if (!Number.isInteger(opts.maxConcurrent) || opts.maxConcurrent < 1 || opts.maxConcurrent > 100) {
