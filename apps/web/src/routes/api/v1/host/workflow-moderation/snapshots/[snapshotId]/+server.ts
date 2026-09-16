@@ -18,14 +18,7 @@ const get = api(async (event) => {
 			getDb(event.platform.env),
 			event.platform.env,
 			actor,
-			event.params.snapshotId,
-			{
-				reportsOffset: Number(event.url.searchParams.get('reports_offset') ?? 0),
-				auditOffset: Number(event.url.searchParams.get('audit_offset') ?? 0),
-				limit: event.url.searchParams.has('limit')
-					? Number(event.url.searchParams.get('limit'))
-					: undefined
-			}
+			event.params.snapshotId
 		),
 		{ headers: PUBLICATION_RESPONSE_HEADERS }
 	);

@@ -62,6 +62,7 @@
 				if (response.status !== 503 && response.status !== 429) frozen = null;
 				throw new Error(body?.error?.message ?? 'The report could not be received.');
 			}
+			frozen = null;
 			receipt = body as PublicationReportReceipt;
 			await tick();
 			receiptElement?.focus();

@@ -4,11 +4,13 @@
 	let {
 		spans,
 		linkMode,
+		occurrenceScope,
 		onlink,
 		ontoken
 	}: {
 		spans: PublicTextSpan[];
 		linkMode: 'confirm' | 'inert';
+		occurrenceScope?: string;
 		onlink: (href: string, trigger: HTMLElement) => void;
 		ontoken?: (inputId: string, useId: string, trigger: HTMLElement) => void;
 	} = $props();
@@ -17,7 +19,9 @@
 {#each spans as span}
 	{#if span.token && linkMode === 'confirm'}<button
 			type="button"
-			id="token-{span.token.use_id}"
+			id={occurrenceScope
+				? `${occurrenceScope}-${span.token.occurrence_id}`
+				: span.token.occurrence_id}
 			class="bg-primary/10 text-primary rounded px-0.5 text-left font-mono underline underline-offset-2"
 			class:font-bold={span.strong}
 			class:italic={span.emphasis}

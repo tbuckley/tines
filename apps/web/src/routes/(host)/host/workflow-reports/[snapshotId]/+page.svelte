@@ -63,6 +63,7 @@
 			const responseBody = await response.json();
 			if (!response.ok) {
 				pendingDecision = null;
+				if (responseBody?.error?.code === 'moderation_state_changed') await invalidateAll();
 				throw new Error(responseBody?.error?.message ?? 'Decision failed.');
 			}
 			pendingDecision = null;
@@ -96,14 +97,21 @@
 			</p>{:else if data.document}<div class="mt-4 max-h-[65vh] overflow-auto">
 				<PublicSnapshotReader document={data.document} />
 			</div>
-		{:else}<p class="bg-muted mt-4 rounded p-4 text-sm">
-				Stored snapshot cannot be parsed safely. {data.diagnostics.join(' ')}
-			</p>{/if}
+		{:else}<div class="bg-muted mt-4 rounded p-4 text-sm">
+				<p>Stored snapshot cannot be parsed safely. {data.diagnostics.join(' ')}</p>
+				<pre
+					class="bg-background mt-3 max-h-[55vh] overflow-auto rounded border p-3 text-xs break-all whitespace-pre-wrap"
+					data-testid="raw-public-snapshot">{data.raw_document_json}</pre>
+			</div>{/if}
 	</section>
 	<aside class="min-w-0 rounded-lg border p-4">
 		<h2 class="font-semibold">Decision</h2>
 		<p class="text-muted-foreground mt-1 text-sm">
-			Host: {data.host_state}. Publisher: {data.suspension ? 'suspended' : 'active'}.
+			Host: {data.host_state ?? 'unavailable'}. Publisher: {data.publisher_id
+				? data.suspension
+					? 'suspended'
+					: 'active'
+				: 'unknown'}.
 		</p>
 		<label class="mt-4 block text-sm"
 			>Reason<textarea
@@ -151,9 +159,9 @@
 						</p>
 					</li>{/each}
 			</ul>{/if}
-		{#if data.reports_next_offset !== null}<a
+		{#if data.reports_next_cursor}<a
 				class="mt-3 inline-block underline"
-				href="?reports_offset={data.reports_next_offset}">More reports</a
+				href="?reports_cursor={encodeURIComponent(data.reports_next_cursor)}">More reports</a
 			>{/if}
 		<h2 class="mt-8 font-semibold">Decision history</h2>
 		{#if data.audit.length === 0}<p class="text-muted-foreground mt-2 text-sm">
@@ -166,9 +174,9 @@
 						>
 					</li>{/each}
 			</ul>{/if}
-		{#if data.audit_next_offset !== null}<a
+		{#if data.audit_next_cursor}<a
 				class="mt-3 inline-block underline"
-				href="?audit_offset={data.audit_next_offset}">More decisions</a
+				href="?audit_cursor={encodeURIComponent(data.audit_next_cursor)}">More decisions</a
 			>{/if}
 	</aside>
 </div>

@@ -7,7 +7,8 @@ import type {
 	LaunchPromptResponse,
 	StarterSummary
 } from '@tines/shared';
-import { expect, test, type Page } from '@playwright/test';
+import type { Page } from '@playwright/test';
+import { expect, test } from './fixtures';
 import { ALICE, BASE_URL } from './constants.mjs';
 import { apiClient, body, clickUntil, gotoHydrated, runId, signIn } from './helpers';
 
@@ -37,28 +38,23 @@ const byId = (id: string): StarterSummary => {
 	return found;
 };
 
-test.beforeAll(async ({ playwright }) => {
-	const request = await playwright.request.newContext({
-		baseURL: test.info().project.use.baseURL
-	});
-	const api = apiClient(request, ALICE.apiKey);
+test.beforeAll(async ({ apiFor }) => {
+	const api = apiFor(ALICE);
 	const res = await api.get('/api/v1/projects/starters');
 	expect(res.status(), 'the starter menu must load').toBe(200);
 	starters = (await body<{ items: StarterSummary[] }>(res)).items;
-	await request.dispose();
 });
 
-test.beforeEach(async ({ context }) => {
-	await signIn(context, ALICE.sessionToken);
-});
+test.use({ signedIn: ALICE });
 
 test('Code repository seeds the first issue launch context and gated review workflow', async ({
 	page,
-	request
+	request,
+	uniqueName
 }) => {
 	const api = apiClient(request, ALICE.apiKey);
-	const projectName = `starter-code-api-${runId}`;
-	const repoName = `prompt-${runId}`;
+	const projectName = uniqueName('starter-code-api');
+	const repoName = uniqueName('prompt');
 	const conventions = [
 		'Test command: pnpm test',
 		'Branch rules: branch from main',
@@ -121,7 +117,10 @@ test('Code repository seeds the first issue launch context and gated review work
 	expect(reviewed.state.name).toBe('Review');
 });
 
-test('CLI applies Code and Plan through the same atomic starter endpoint', async ({ request }) => {
+test('CLI applies Code and Plan through the same atomic starter endpoint', async ({
+	request,
+	uniqueName
+}) => {
 	const run = (args: string[]) =>
 		JSON.parse(
 			execFileSync(TSX, [CLI_ENTRY, ...args, '--json'], {
@@ -130,7 +129,7 @@ test('CLI applies Code and Plan through the same atomic starter endpoint', async
 				encoding: 'utf8'
 			})
 		) as CreateProjectResponse;
-	const codeName = `starter-cli-code-${runId}`;
+	const codeName = uniqueName('starter-cli-code');
 	const code = run([
 		'projects',
 		'create',
@@ -148,7 +147,7 @@ test('CLI applies Code and Plan through the same atomic starter endpoint', async
 	const plan = run([
 		'projects',
 		'create',
-		`starter-cli-plan-${runId}`,
+		uniqueName('starter-cli-plan'),
 		'--starter',
 		'plan',
 		'--brief',
@@ -185,7 +184,8 @@ async function openDialog(page: Page) {
 }
 
 test('Blank is preselected and creates a project with only the conventions prompt', async ({
-	page
+	page,
+	uniqueName
 }) => {
 	await gotoHydrated(page, '/projects');
 	const dialog = await openDialog(page);
@@ -199,7 +199,7 @@ test('Blank is preselected and creates a project with only the conventions promp
 	await expect(dialog.getByLabel(/How work is done here/)).toBeVisible();
 	await expect(dialog.getByText(/commands? that must pass/i)).toHaveCount(0);
 
-	const name = `starter-blank-${runId}`;
+	const name = uniqueName('starter-blank');
 	await dialog.getByLabel('Name', { exact: true }).fill(name);
 	await dialog.getByLabel(/How work is done here/).fill('Ask before deleting anything.');
 
@@ -216,7 +216,10 @@ test('Blank is preselected and creates a project with only the conventions promp
 	await expect(page.getByText('No issues in this project yet.')).toBeVisible();
 });
 
-test('Code repository asks for a URL, previews the repo item, and creates it', async ({ page }) => {
+test('Code repository asks for a URL, previews the repo item, and creates it', async ({
+	page,
+	uniqueName
+}) => {
 	await gotoHydrated(page, '/projects');
 	const dialog = await openDialog(page);
 	const code = byId('code');
@@ -233,7 +236,7 @@ test('Code repository asks for a URL, previews the repo item, and creates it', a
 
 	// The required input is enforced before submit.
 	await expect(dialog.getByRole('button', { name: 'Create project' })).toBeDisabled();
-	const name = `starter-code-${runId}`;
+	const name = uniqueName('starter-code');
 	await dialog
 		.getByLabel(code.inputs[0].label, { exact: false })
 		.fill(`https://github.com/example/${name}.git`);
@@ -415,9 +418,10 @@ test('pristine repository naming follows starter switches and resets after close
 
 test('a suggested duplicate name keeps the form intact and accepts a manual replacement', async ({
 	page,
-	request
+	request,
+	uniqueName
 }) => {
-	const duplicate = `starter-duplicate-${runId}`;
+	const duplicate = uniqueName('starter-duplicate', { maxLength: 38 });
 	const replacement = `${duplicate}-replacement`;
 	const created = await apiClient(request, ALICE.apiKey).post('/api/v1/projects', {
 		name: duplicate
@@ -442,7 +446,10 @@ test('a suggested duplicate name keeps the form intact and accepts a manual repl
 	await expect(page.getByRole('heading', { name: replacement })).toBeVisible();
 });
 
-test('clearing the prefilled conventions creates a project without one', async ({ page }) => {
+test('clearing the prefilled conventions creates a project without one', async ({
+	page,
+	uniqueName
+}) => {
 	// The dialog sends `initial_prompt` verbatim, so an emptied textarea must
 	// mean "no conventions item". Were it sent as `undefined` instead, the
 	// server would fall back to the starter's own template and seed the very
@@ -452,7 +459,7 @@ test('clearing the prefilled conventions creates a project without one', async (
 	const code = byId('code');
 
 	await dialog.getByTestId('starter-code').click();
-	const name = `starter-noconv-${runId}`;
+	const name = uniqueName('starter-noconv');
 	await dialog.getByLabel('Name', { exact: true }).fill(name);
 	await dialog
 		.getByLabel(code.inputs[0].label, { exact: false })
@@ -477,7 +484,8 @@ test('clearing the prefilled conventions creates a project without one', async (
 
 test('Plan something together renders a multiline brief and lands on its first issue', async ({
 	page,
-	request
+	request,
+	uniqueName
 }) => {
 	await gotoHydrated(page, '/projects');
 	const dialog = await openDialog(page);
@@ -496,7 +504,7 @@ test('Plan something together renders a multiline brief and lands on its first i
 	const creates = dialog.getByRole('list', { name: 'This creates' });
 	await expect(creates).toHaveText(new RegExp(brief));
 
-	const name = `starter-plan-${runId}`;
+	const name = uniqueName('starter-plan');
 	await dialog.getByLabel('Name', { exact: true }).fill(name);
 	await dialog.getByRole('button', { name: 'Create project' }).click();
 
@@ -563,7 +571,10 @@ test('switching starters confirms before discarding edited conventions', async (
 	await expect(conventions).toHaveValue('');
 });
 
-test('a starter 422 from the API is surfaced in the dialog, not swallowed', async ({ page }) => {
+test('a starter 422 from the API is surfaced in the dialog, not swallowed', async ({
+	page,
+	uniqueName
+}) => {
 	await gotoHydrated(page, '/projects');
 	const dialog = await openDialog(page);
 	const code = byId('code');
@@ -571,7 +582,8 @@ test('a starter 422 from the API is surfaced in the dialog, not swallowed', asyn
 	expect(branch?.max, 'the branch input must have a server-side cap to violate').toBeGreaterThan(0);
 
 	await dialog.getByTestId('starter-code').click();
-	await dialog.getByLabel('Name', { exact: true }).fill(`starter-422-${runId}`);
+	const name = uniqueName('starter-422');
+	await dialog.getByLabel('Name', { exact: true }).fill(name);
 	await dialog
 		.getByLabel(code.inputs[0].label, { exact: false })
 		.fill('https://github.com/example/toolong.git');
@@ -583,10 +595,13 @@ test('a starter 422 from the API is surfaced in the dialog, not swallowed', asyn
 	await expect(dialog.getByText(/longer than \d+ characters/)).toBeVisible();
 	// Still open, with the user's input intact.
 	await expect(dialog).toBeVisible();
-	await expect(dialog.getByLabel('Name', { exact: true })).toHaveValue(`starter-422-${runId}`);
+	await expect(dialog.getByLabel('Name', { exact: true })).toHaveValue(name);
 });
 
-test('at 390px the chooser stacks and the whole form stays reachable', async ({ browser }) => {
+test('at 390px the chooser stacks and the whole form stays reachable', async ({
+	browser,
+	uniqueName
+}) => {
 	const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
 	await signIn(context, ALICE.sessionToken);
 	const page = await context.newPage();

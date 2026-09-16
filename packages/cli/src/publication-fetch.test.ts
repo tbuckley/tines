@@ -57,6 +57,11 @@ describe('credential-free public workflow package fetch', () => {
 		await expect(fetchPublicWorkflowPackage(`http://192.168.1.2/p/${ID}`)).rejects.toThrow(
 			'loopback'
 		);
+		await expect(
+			fetchPublicWorkflowPackage(`http://development.test/p/${ID}`, {
+				lookup: (async () => [{ address: '127.0.0.1', family: 4 }]) as never
+			})
+		).rejects.toThrow('loopback');
 	});
 
 	it('revalidates redirects and rejects invalid MIME, encoding, UTF-8, size, and timeout', async () => {

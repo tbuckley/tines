@@ -2,6 +2,7 @@ import { json } from '@sveltejs/kit';
 import type { PublishPublicationRequest } from '@tines/shared';
 import { api, apiContext, ApiFail, readJson, requireJsonObject } from '$lib/server/api/core';
 import { publishPublication } from '$lib/server/publications/publish';
+import { runE2ePublicationRaceMutation } from '$lib/server/publications/e2e-race';
 import type { RequestHandler } from './$types';
 
 export const POST: RequestHandler = api(async (event) => {
@@ -32,19 +33,22 @@ export const POST: RequestHandler = api(async (event) => {
 			actor,
 			event.params.candidateId,
 			body as unknown as PublishPublicationRequest,
-			Date.now(),
-			e2ePrecommitWorkflow
-				? async () => {
-						const changed = await db
-							.updateTable('workflow')
-							.set({ description: `native precommit mutation ${event.params.candidateId}` })
-							.where('id', '=', e2ePrecommitWorkflow)
-							.where('user_id', '=', actor.userId)
-							.executeTakeFirst();
-						if (Number(changed.numUpdatedRows) !== 1)
-							throw new Error('E2E precommit source mutation did not update one workflow');
-					}
-				: undefined
+			undefined,
+			async () => {
+				await runE2ePublicationRaceMutation(event.request, env, {
+					publicationId: event.params.candidateId
+				});
+				if (e2ePrecommitWorkflow) {
+					const changed = await db
+						.updateTable('workflow')
+						.set({ description: `native precommit mutation ${event.params.candidateId}` })
+						.where('id', '=', e2ePrecommitWorkflow)
+						.where('user_id', '=', actor.userId)
+						.executeTakeFirst();
+					if (Number(changed.numUpdatedRows) !== 1)
+						throw new Error('E2E precommit source mutation did not update one workflow');
+				}
+			}
 		)
 	);
 });

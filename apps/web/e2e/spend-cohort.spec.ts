@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test } from './fixtures';
 import { SPEND } from './constants.mjs';
 import { armLedgerDays } from './spend-arm';
 import { gotoHydrated, signIn } from './helpers';

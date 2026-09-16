@@ -11,12 +11,17 @@ import type {
 	RunnerTokenResponse,
 	SupervisorSettings
 } from '@tines/shared';
-import { expect, test } from '@playwright/test';
+import { expect, test } from './fixtures';
 import { ALICE, BASE_URL, BOB, RUNROW } from './constants.mjs';
 import { spawnDaemon, transitionHarnessCommand, type Daemon } from './daemon';
-import { apiClient, body, clickUntil, gotoHydrated, runId, signIn } from './helpers';
+import { apiClient, body, clickUntil, gotoHydrated } from './helpers';
 
-const name = `concurrency-${runId}`;
+let name: string;
+
+test.beforeAll(async ({ uniqueName }) => {
+	name = uniqueName('concurrency');
+});
+test.use({ signedIn: ALICE });
 
 function files(dir: string, prefix: string): number {
 	return readdirSync(dir).filter((entry) => entry.startsWith(prefix) && entry.endsWith('.started'))
@@ -107,7 +112,6 @@ async function startPollProxy(): Promise<{
 }
 
 test('the Now remedy persists 1→3 through real daemon polls, restart, re-registration, and lowering', async ({
-	context,
 	page,
 	request
 }) => {
@@ -140,14 +144,12 @@ test('the Now remedy persists 1→3 through real daemon polls, restart, re-regis
 			)
 			.toEqual([1, 'applied']);
 
-		project = await body<Project>(
-			await api.post('/api/v1/projects', { name: `concurrency-${runId}` })
-		);
+		project = await body<Project>(await api.post('/api/v1/projects', { name }));
 		for (let i = 1; i <= 3; i++) {
 			expect(
 				(
 					await api.post(`/api/v1/projects/${project.id}/issues`, {
-						title: `parallel ${i} ${runId}`
+						title: `parallel ${i} ${name}`
 					})
 				).status()
 			).toBe(201);
@@ -169,7 +171,6 @@ test('the Now remedy persists 1→3 through real daemon polls, restart, re-regis
 		).toBe(200);
 		await expect.poll(() => files(markerDir, 'first-'), { timeout: 30_000 }).toBe(1);
 
-		await signIn(context, ALICE.sessionToken);
 		await gotoHydrated(page, '/agents');
 		const panel = page.getByRole('region', { name: 'Waiting for an agent' });
 		await expect(panel).toContainText(`at capacity on ${name} (1/1)`);
@@ -223,6 +224,7 @@ test('the Now remedy persists 1→3 through real daemon polls, restart, re-regis
 				{ timeout: 20_000, message: daemon.output() }
 			)
 			.toEqual([3, 'applied']);
+		const runnerId = runner!.id;
 
 		// Delete the stored runner credential, then hold the new daemon's first
 		// policy poll. Registration must preserve the identity and web request,
@@ -241,14 +243,14 @@ test('the Now remedy persists 1→3 through real daemon polls, restart, re-regis
 			url: proxy.url
 		});
 		await firstPolicyPoll.arrived;
-		const awaitingPolicy = await body<Runner>(await api.get(`/api/v1/runners/${runner.id}`));
-		expect(awaitingPolicy).toMatchObject({ id: runner.id, max_concurrent: 3 });
+		const awaitingPolicy = await body<Runner>(await api.get(`/api/v1/runners/${runnerId}`));
+		expect(awaitingPolicy).toMatchObject({ id: runnerId, max_concurrent: 3 });
 		expect(awaitingPolicy.concurrency_control).toMatchObject({
 			status: 'unavailable',
 			reason: 'awaiting_policy',
 			requested_cap: 3
 		});
-		expect(daemon.output()).toContain(`registered runner "${name}" (${runner.id})`);
+		expect(daemon.output()).toContain(`registered runner "${name}" (${runnerId})`);
 		firstPolicyPoll.release();
 		await expect
 			.poll(
@@ -263,13 +265,13 @@ test('the Now remedy persists 1→3 through real daemon polls, restart, re-regis
 		for (let i = 1; i <= 4; i++) {
 			expect(
 				(
-					await api.post(`/api/v1/projects/${project.id}/issues`, { title: `lower ${i} ${runId}` })
+					await api.post(`/api/v1/projects/${project.id}/issues`, { title: `lower ${i} ${name}` })
 				).status()
 			).toBe(201);
 		}
 		await expect.poll(() => files(markerDir, 'lower-'), { timeout: 30_000 }).toBe(3);
 		await gotoHydrated(page, '/agents');
-		const card = page.locator(`#runner-${runner.id}`);
+		const card = page.locator(`#runner-${runnerId}`);
 		await card.getByRole('button', { name: 'Edit', exact: true }).click();
 		await dialog.locator('#edit-concurrent').fill('1');
 		await dialog.getByRole('button', { name: /^Save/ }).click();
@@ -296,7 +298,7 @@ test('the Now remedy persists 1→3 through real daemon polls, restart, re-regis
 		const active = await body<{ items: { runner_id: string }[] }>(
 			await api.get('/api/v1/runs?active=true')
 		);
-		expect(active.items.filter((run) => run.runner_id === runner.id)).toHaveLength(2);
+		expect(active.items.filter((run) => run.runner_id === runnerId)).toHaveLength(2);
 	} finally {
 		await api.put('/api/v1/supervisor/settings', { enabled: false });
 		if (runner) {

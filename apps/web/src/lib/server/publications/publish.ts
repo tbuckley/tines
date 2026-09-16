@@ -252,9 +252,22 @@ export async function publishPublication(
 	};
 	const receiptJson = canonicalizeLibraryValue(receipt);
 	const cutoff = now - DAY_MS;
+	const quotaFence = await db
+		.selectFrom('workflow_publication_quota_fence')
+		.select('version')
+		.where('user_id', '=', actor.userId)
+		.executeTakeFirst();
+	const previousQuotaVersion = quotaFence?.version ?? 0;
+	const quotaVersion = previousQuotaVersion + 1;
+	const quotaNonce = newId('pqt');
 	await beforeAtomic?.();
 	try {
 		const results = await runAtomic(env, [
+			sql`INSERT INTO workflow_publication_quota_fence (user_id, version, attempt_nonce)
+			VALUES (${actor.userId}, ${quotaVersion}, ${quotaNonce})
+			ON CONFLICT(user_id) DO UPDATE SET version = excluded.version,
+				attempt_nonce = excluded.attempt_nonce
+			WHERE workflow_publication_quota_fence.version = ${previousQuotaVersion}`.compile(db),
 			sql`UPDATE workflow_publication SET
 				snapshot_id = ${snapshotId}, published_at = ${now}, owner_state = 'published',
 				status_version = ${statusVersion}, confirmed_at = ${now},
@@ -268,6 +281,9 @@ export async function publishPublication(
 					WHERE user_id = ${actor.userId} AND suspended = 1)
 				AND (SELECT COUNT(*) FROM workflow_publication
 					WHERE user_id = ${actor.userId} AND published_at >= ${cutoff}) < ${config.dailyQuota}
+				AND EXISTS (SELECT 1 FROM workflow_publication_quota_fence
+					WHERE user_id = ${actor.userId} AND version = ${quotaVersion}
+						AND attempt_nonce = ${quotaNonce})
 				AND ${sourceGuard}`.compile(db),
 			sql`INSERT INTO workflow_publication_event
 				(id, publication_id, snapshot_id, user_id, actor_key, action,

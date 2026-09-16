@@ -178,6 +178,45 @@ describe('publication commit', () => {
 		).toEqual({ published_at: null, snapshot_id: null, publication_receipt_json: null });
 	});
 
+	it('pages more than 100 owner rows with equal times and preserves the workflow filter', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		addTwoStageWorkflow(t);
+		for (let index = 0; index < 105; index += 1) {
+			const proof = await prepare(t, `large-page-${index}`);
+			if (index < 3)
+				t.sqlite
+					.prepare('UPDATE workflow_publication SET source_workflow_id=? WHERE id=?')
+					.run('wf_two', proof.candidate_id);
+			await publishPublication(
+				t.db,
+				envFor(t, 200),
+				actor,
+				proof.candidate_id,
+				confirmation(proof),
+				index < 102 ? 3_000 : 2_000
+			);
+		}
+		const first = await listPublications(t.db, envFor(t), actor, {
+			page: { cursor: null, limit: 100 }
+		});
+		const second = await listPublications(t.db, envFor(t), actor, {
+			page: { cursor: decodeCursor(first.next_cursor!), limit: 100 }
+		});
+		const combined = [...first.items, ...second.items];
+		expect(first.items).toHaveLength(100);
+		expect(second.items).toHaveLength(5);
+		expect(new Set(combined.map((item) => item.candidate_id)).size).toBe(105);
+		expect(second.next_cursor).toBeNull();
+
+		const filtered = await listPublications(t.db, envFor(t), actor, {
+			workflowId: 'wf_two',
+			page: { cursor: null, limit: 100 }
+		});
+		expect(filtered.items).toHaveLength(3);
+		expect(filtered.items.every((item) => item.source_workflow_id === 'wf_two')).toBe(true);
+	});
+
 	it('pages owner snapshots without gaps across equal publication times', async () => {
 		const t = createTestDb();
 		seedBase(t);

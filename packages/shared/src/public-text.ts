@@ -9,7 +9,7 @@ export interface PublicTextSpan {
 	deleted?: boolean;
 	code?: boolean;
 	href?: string;
-	token?: { use_id: string; input_id: string };
+	token?: { use_id: string; input_id: string; occurrence_id: string };
 }
 
 export interface PublicTextUse {
@@ -123,7 +123,11 @@ function spans(
 						result.push({
 							text: occurrence.token,
 							...style,
-							token: { use_id: occurrence.id, input_id: occurrence.input_id }
+							token: {
+								use_id: occurrence.id,
+								input_id: occurrence.input_id,
+								occurrence_id: `public-token-${match[1]}`
+							}
 						});
 					at = match.index! + match[0].length;
 				}
@@ -190,7 +194,11 @@ function markedSpans(
 			result.push({
 				text: occurrence.token,
 				...style,
-				token: { use_id: occurrence.id, input_id: occurrence.input_id }
+				token: {
+					use_id: occurrence.id,
+					input_id: occurrence.input_id,
+					occurrence_id: `public-token-${match[1]}`
+				}
 			});
 		at = match.index! + match[0].length;
 	}
@@ -309,4 +317,84 @@ export function renderedPublicTextWordCount(
 		})
 		.join('\n');
 	return rendered.match(/\S+/gu)?.length ?? 0;
+}
+
+function atomicSpanKey(span: PublicTextSpan): string | null {
+	return span.href ?? span.token?.occurrence_id ?? (span.code ? 'code' : null);
+}
+
+/** Cut a parsed model at rendered-word boundaries while keeping unsafe-to-split nodes atomic. */
+export function truncatePublicTextModel(
+	blocks: readonly PublicTextBlock[],
+	maxWords: number
+): PublicTextBlock[] {
+	const result: PublicTextBlock[] = [];
+	let remaining = maxWords;
+	for (const block of blocks) {
+		if (remaining <= 0) break;
+		if ('spans' in block) {
+			const text = block.spans.map((span) => span.text).join('');
+			const words = [...text.matchAll(/\S+/gu)];
+			if (words.length <= remaining) {
+				result.push(block);
+				remaining -= words.length;
+				continue;
+			}
+			const last = words[remaining - 1];
+			const cutAt = (last.index ?? 0) + last[0].length;
+			const spans: PublicTextSpan[] = [];
+			let offset = 0;
+			for (let index = 0; index < block.spans.length; index++) {
+				const span = block.spans[index];
+				const key = atomicSpanKey(span);
+				let end = offset + span.text.length;
+				let groupEnd = index;
+				while (
+					key &&
+					groupEnd + 1 < block.spans.length &&
+					atomicSpanKey(block.spans[groupEnd + 1]) === key
+				) {
+					groupEnd++;
+					end += block.spans[groupEnd].text.length;
+				}
+				if (offset >= cutAt) break;
+				if (key && end > cutAt) {
+					spans.push({ text: '[content omitted]' });
+					break;
+				}
+				if (end <= cutAt) spans.push(...block.spans.slice(index, groupEnd + 1));
+				else spans.push({ ...span, text: `${span.text.slice(0, cutAt - offset)}…` });
+				offset = end;
+				index = groupEnd;
+			}
+			result.push({ ...block, spans });
+			remaining = 0;
+			continue;
+		}
+		if (block.kind === 'table') {
+			const rows: typeof block.rows = [];
+			for (const row of block.rows) {
+				const count =
+					row
+						.map((cell) => cell.map((span) => span.text).join(''))
+						.join(' ')
+						.match(/\S+/gu)?.length ?? 0;
+				if (count > remaining) break;
+				rows.push(row);
+				remaining -= count;
+			}
+			if (rows.length) result.push({ ...block, rows });
+			if (rows.length < block.rows.length) {
+				result.push({
+					kind: 'paragraph',
+					quote_depth: 0,
+					spans: [{ text: '[table row omitted]' }]
+				});
+				remaining = 0;
+			}
+			continue;
+		}
+		result.push(block);
+	}
+	return result;
 }

@@ -33,6 +33,19 @@ beforeAll(async () => {
 				response.writeHead(200, { 'content-type': 'application/json' });
 				response.end(JSON.stringify(value));
 			};
+			if (path === '/api/v1/workflows')
+				return send({
+					items: [
+						{
+							id: 'workflow-owned',
+							name: 'Owned source',
+							states: [{ id: 'state-owned', name: 'Open' }]
+						}
+					],
+					next_cursor: null
+				});
+			if (path === '/api/v1/projects')
+				return send({ items: [{ id: 'project-owned', name: 'Owned project' }], next_cursor: null });
 			if (path === '/api/v1/publications/validate')
 				return send({
 					valid: true,
@@ -101,6 +114,58 @@ function cli(args: string[]) {
 	});
 }
 
+const PTY_SCRIPT = `
+import json, os, pty, select, signal, sys, time
+tsx, entry, base, answers, *args = sys.argv[1:]
+pid, fd = pty.fork()
+if pid == 0:
+    env = dict(os.environ, TINES_API_URL=base, TINES_API_KEY='user-key')
+    os.execve(tsx, [tsx, entry, *args], env)
+chunks = []
+replies = answers.split('|')
+sent = 0
+deadline = time.time() + 20
+while True:
+    done, status = os.waitpid(pid, os.WNOHANG)
+    if done:
+        break
+    ready, _, _ = select.select([fd], [], [], 0.1)
+    if ready:
+        try:
+            chunks.append(os.read(fd, 4096))
+        except OSError:
+            _, status = os.waitpid(pid, 0)
+            break
+        prompts = b''.join(chunks).count(b'[y/N]')
+        if prompts > sent and sent < len(replies):
+            reply = replies[sent]
+            os.write(fd, b'\\x04' if reply == 'EOF' else (reply + '\\n').encode())
+            sent += 1
+    if time.time() > deadline:
+        os.kill(pid, signal.SIGTERM)
+        _, status = os.waitpid(pid, 0)
+        break
+print(json.dumps({'code': os.waitstatus_to_exitcode(status), 'output': b''.join(chunks).decode(errors='replace')}))
+`;
+
+function ptyCli(args: string[], answers: string) {
+	return new Promise<{ code: number; output: string }>((resolve, reject) => {
+		execFile(
+			'python3',
+			['-c', PTY_SCRIPT, tsx, entry, baseUrl, answers, ...args],
+			{ env: process.env, timeout: 60_000 },
+			(error, stdout, stderr) => {
+				if (error && !(error as { code?: number }).code) return reject(error);
+				try {
+					resolve(JSON.parse(stdout.trim()));
+				} catch {
+					reject(new Error(`invalid PTY result: ${stdout}\n${stderr}`));
+				}
+			}
+		);
+	});
+}
+
 describe('workflow publication CLI contract', () => {
 	it('validates under the public policy and saves a restrictive exact proof', async () => {
 		expect((await cli(['workflows', 'validate', packageFile, '--public'])).code).toBe(0);
@@ -143,4 +208,83 @@ describe('workflow publication CLI contract', () => {
 			requests.some((request) => request.path === `/api/v1/publications/${snapshotId}/withdraw`)
 		).toBe(true);
 	});
+
+	it('sends owned publication selectors exactly and rejects file-selector conflicts', async () => {
+		const selectedProof = join(fixtureDir, 'selected-proof.json');
+		const prepared = await cli([
+			'workflows',
+			'publish',
+			'Owned source',
+			'--project',
+			'Owned project',
+			'--schedule',
+			'schedule-owned',
+			'--tier',
+			'Owned source/Open=cheapest',
+			'--project-routing',
+			'--display-name',
+			'CLI Author',
+			'--proof-out',
+			selectedProof
+		]);
+		expect(prepared.code).toBe(0);
+		expect(
+			requests.find(
+				(request) =>
+					request.path === '/api/v1/publications/prepare' &&
+					(request.body as { source?: { kind?: string } }).source?.kind === 'owned_workflow'
+			)?.body
+		).toMatchObject({
+			source: {
+				kind: 'owned_workflow',
+				workflow_id: 'workflow-owned',
+				options: {
+					source_project_id: 'project-owned',
+					schedule_ids: ['schedule-owned'],
+					tiers: [{ state_id: 'state-owned', tier: 'cheapest', project_scoped: true }]
+				}
+			}
+		});
+
+		const conflict = await cli([
+			'workflows',
+			'publish',
+			'--from',
+			packageFile,
+			'--schedule',
+			'schedule-owned',
+			'--display-name',
+			'CLI Author',
+			'--proof-out',
+			selectedProof
+		]);
+		expect(conflict.code).not.toBe(0);
+		expect(conflict.stderr).toContain('selectors cannot be combined');
+	});
+
+	it('requires both independent confirmations in a real terminal', async () => {
+		const baseArgs = ['workflows', 'publish', '--proof', proofFile];
+		const both = await ptyCli(baseArgs, 'y|y');
+		expect(both.code).toBe(0);
+		expect(both.output).toContain('Publish these exact immutable bytes?');
+		expect(both.output).toContain('sharing rights for every bundled item?');
+
+		const rightsOnly = await ptyCli([...baseArgs, '--confirm', digest], 'y');
+		expect(rightsOnly.code).toBe(0);
+		expect(rightsOnly.output).not.toContain('immutable bytes?');
+		expect(rightsOnly.output).toContain('sharing rights');
+
+		const exactOnly = await ptyCli([...baseArgs, '--sharing-rights'], 'y');
+		expect(exactOnly.code).toBe(0);
+		expect(exactOnly.output).toContain('immutable bytes?');
+		expect(exactOnly.output).not.toContain('sharing rights for every');
+
+		const declined = await ptyCli(baseArgs, 'n');
+		expect(declined.code).not.toBe(0);
+		expect(declined.output).toContain('publication declined');
+
+		const eof = await ptyCli(baseArgs, 'EOF');
+		expect(eof.code).not.toBe(0);
+		expect(eof.output).not.toContain('published http');
+	}, 60_000);
 });
