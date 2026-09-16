@@ -560,6 +560,10 @@
 			inputFormError = message(error);
 			return;
 		}
+		if (candidate.inputs.some((input) => input.id !== inputId && input.key === normalized.key)) {
+			inputFormError = `Variable key “${normalized.key}” already exists.`;
+			return;
+		}
 		const tokenChanges =
 			inputToken(current.key, current.default) !== inputToken(normalized.key, normalized.default);
 		const selectedFieldIsAffected = Boolean(

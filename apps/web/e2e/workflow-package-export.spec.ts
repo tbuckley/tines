@@ -580,7 +580,9 @@ test('authors an exact declared use and downloads the reviewed canonical package
 	// leaving the same reviewed plan available to its owner.
 	await signIn(page.context(), ALICE.sessionToken);
 	await page.getByRole('button', { name: 'Install workflow' }).click();
-	await expect(page.getByText('Prepare this package again as the installing actor')).toBeVisible();
+	await expect(page.getByRole('alert')).toContainText(
+		'Installation did not finish. Your reviewed choices are still available. Choose Install workflow to retry.'
+	);
 	await expect(page.locator('[data-package-receipt]')).toHaveCount(0);
 
 	// Change Bob's destination after preparation. The backend must reject the stale
