@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+	declaredPublicTextOccurrences,
 	publicTextModel,
 	renderedPublicTextWordCount,
 	truncatePublicTextModel
@@ -93,7 +94,59 @@ describe('public text rendering model', () => {
 			.flatMap((block) => ('spans' in block ? block.spans : []))
 			.map((span) => span.token?.occurrence_id)
 			.filter(Boolean);
-		expect(tokens).toEqual(['public-token-0', 'public-token-1']);
+		expect(tokens).toEqual(['use:1:0', 'use:1:1']);
+	});
+
+	it('uses the canonical immediate-backslash escape rule for zero through three slashes', () => {
+		const use = { id: 'use:1', input_id: 'input:1', token: '{{a:}}', value: 'VALUE' };
+		const source = '{{a:}} / \\{{a:}} / \\\\{{a:}} / \\\\\\{{a:}}';
+		expect(declaredPublicTextOccurrences(source, [use])).toHaveLength(1);
+		const text = publicTextModel(source, { format: 'text', uses: [use] })[0];
+		expect(text).toMatchObject({
+			kind: 'paragraph',
+			spans: [
+				{ text: 'VALUE', token: { occurrence_id: 'use:1:0' } },
+				{ text: ' / {{a:}} / \\{{a:}} / \\\\{{a:}}' }
+			]
+		});
+	});
+
+	it('parses resolved Markdown while retaining provenance without recursive substitution', () => {
+		const model = publicTextModel('# {{a:}} + {{b:}}', {
+			uses: [
+				{ id: 'use:a', input_id: 'input:a', token: '{{a:}}', value: '**bold** {{b:}}' },
+				{ id: 'use:b', input_id: 'input:b', token: '{{b:}}', value: '世界' }
+			]
+		});
+		expect(model).toMatchObject([
+			{
+				kind: 'heading',
+				spans: [
+					{ text: 'bold', strong: true, token: { occurrence_id: 'use:a:0' } },
+					{ text: ' {{b:}}', token: { occurrence_id: 'use:a:0' } },
+					{ text: ' + ' },
+					{ text: '世界', token: { occurrence_id: 'use:b:0' } }
+				]
+			}
+		]);
+	});
+
+	it('retains empty values and values in Markdown destinations as editable occurrences', () => {
+		const uses = [
+			{ id: 'use:url', input_id: 'input:url', token: '{{url:}}', value: 'https://example.test/x' },
+			{ id: 'use:empty', input_id: 'input:empty', token: '{{empty:}}', value: '' }
+		];
+		const serialized = JSON.stringify(publicTextModel('[go]({{url:}}) {{empty:}}', { uses }));
+		expect(serialized).toContain('https://example.test/x');
+		expect(serialized).toContain('"occurrence_id":"use:url:0"');
+		expect(serialized).toContain('"occurrence_id":"use:empty:0"');
+	});
+
+	it('can preserve the labelled inert-image placeholder for author review', () => {
+		const serialized = JSON.stringify(
+			publicTextModel('![diagram](https://example.test/diagram.png)', { labelImages: true })
+		);
+		expect(serialized).toContain('Image (not loaded): diagram — https://example.test/diagram.png');
 	});
 
 	it('truncates at joined rendered-word boundaries across adjacent styles', () => {

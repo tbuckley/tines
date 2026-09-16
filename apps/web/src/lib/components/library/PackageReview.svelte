@@ -23,10 +23,12 @@
 		contextFirst = false,
 		samples = {},
 		changedInputIds = new Set(),
+		changedOccurrenceIds = new Set(),
 		onSaveText,
 		onCreate,
 		onEditVariable,
-		onSample
+		onSample,
+		onStateChange
 	}: {
 		document: WorkflowPackageDocument;
 		reviewed: Set<string>;
@@ -38,6 +40,7 @@
 		contextFirst?: boolean;
 		samples?: Record<string, string>;
 		changedInputIds?: Set<string>;
+		changedOccurrenceIds?: Set<string>;
 		onSaveText?: (recordId: string, field: TextUseField, value: string) => Promise<boolean>;
 		onCreate?: (request: {
 			recordId: string;
@@ -49,9 +52,15 @@
 			direction: 'forward' | 'backward' | 'none';
 			inputId?: string;
 			draft?: InputDraft;
-		}) => Promise<string | null>;
+		}) => Promise<{ inputId: string; useId: string; ordinal: number } | null>;
 		onSample?: (inputId: string, value: string | undefined) => void;
-		onEditVariable?: (inputId: string, draft: InputDraft) => Promise<boolean>;
+		onEditVariable?: (
+			inputId: string,
+			draft: InputDraft,
+			recordId: string,
+			field: TextUseField
+		) => Promise<boolean>;
+		onStateChange?: (key: string, state: { active: boolean; inputIds: string[] }) => void;
 	} = $props();
 
 	const workflowByState = $derived.by(() => {
@@ -97,6 +106,19 @@
 	function fieldKey(recordId: string, field: string) {
 		return `${recordId}:${field}`;
 	}
+	function fieldUpdateCount(recordId: string, field: TextUseField) {
+		let count = 0;
+		for (const use of document.text_uses) {
+			if (use.target.record_id !== recordId || use.target.field !== field) continue;
+			const source = readField(document, recordId, field) ?? '';
+			for (const [ordinal] of declaredOccurrences(source, [
+				{ token: use.token, inputId: use.input_id }
+			]).entries())
+				if (changedInputIds.has(use.input_id) || changedOccurrenceIds.has(`${use.id}:${ordinal}`))
+					count++;
+		}
+		return count;
+	}
 	function stateName(id: string) {
 		return workflowByState.get(id)?.states.find((state) => state.id === id)?.name ?? id;
 	}
@@ -130,6 +152,9 @@
 							{onCreate}
 							{onEditVariable}
 							{onSample}
+							{onStateChange}
+							{changedOccurrenceIds}
+							updateCount={fieldUpdateCount(workflow.id, 'description')}
 							forceExpanded={expandedFields.has(fieldKey(workflow.id, 'description'))}
 						/>{:else if workflow.description}<PackageText
 							text={workflow.description}
@@ -225,6 +250,9 @@
 											{onCreate}
 											{onEditVariable}
 											{onSample}
+											{onStateChange}
+											{changedOccurrenceIds}
+											updateCount={fieldUpdateCount(item.id, 'description')}
 										/>{:else if item.description}<p class="text-muted-foreground my-2 text-xs">
 											{item.description}
 										</p>{/if}
@@ -243,6 +271,9 @@
 												{onCreate}
 												{onEditVariable}
 												{onSample}
+												{onStateChange}
+												{changedOccurrenceIds}
+												updateCount={fieldUpdateCount(item.id, 'body')}
 												forceExpanded={expandedFields.has(fieldKey(item.id, 'body'))}
 											/>{:else}<PackageText
 												text={item.body}
@@ -276,6 +307,9 @@
 														{onCreate}
 														{onEditVariable}
 														{onSample}
+														{onStateChange}
+														{changedOccurrenceIds}
+														updateCount={fieldUpdateCount(file.id, 'content')}
 														forceExpanded={reviewMode === 'summary' ||
 															expandedFields.has(fieldKey(file.id, 'content'))}
 													/>{:else}<PackageText
@@ -401,6 +435,9 @@
 								{onCreate}
 								{onEditVariable}
 								{onSample}
+								{onStateChange}
+								{changedOccurrenceIds}
+								updateCount={fieldUpdateCount(schedule.id, 'title_template')}
 								forceExpanded={expandedFields.has(fieldKey(schedule.id, 'title_template'))}
 							/>{:else}<PackageText
 								text={schedule.title_template}
@@ -424,6 +461,9 @@
 								{onCreate}
 								{onEditVariable}
 								{onSample}
+								{onStateChange}
+								{changedOccurrenceIds}
+								updateCount={fieldUpdateCount(schedule.id, 'description_template')}
 								forceExpanded={expandedFields.has(fieldKey(schedule.id, 'description_template'))}
 							/>{:else}<PackageText
 								text={schedule.description_template}

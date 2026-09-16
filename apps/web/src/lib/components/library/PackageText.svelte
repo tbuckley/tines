@@ -19,7 +19,8 @@
 		onToken,
 		format = 'text',
 		forceExpanded = false,
-		occurrenceScope
+		occurrenceScope,
+		changedOccurrenceIds = new Set<string>()
 	}: {
 		text: string;
 		tokens?: PackageTextToken[];
@@ -27,20 +28,26 @@
 		format?: 'markdown' | 'text';
 		forceExpanded?: boolean;
 		occurrenceScope?: string;
+		changedOccurrenceIds?: Set<string>;
 	} = $props();
 	let expanded = $state(false);
 	const uses = $derived(
-		tokens.map((item) => ({ id: item.id, input_id: item.inputId, token: item.token }))
+		tokens.map((item) => ({
+			id: item.id,
+			input_id: item.inputId,
+			token: item.token,
+			value: item.value ?? item.token
+		}))
 	);
 	const words = $derived(renderedPublicTextWordCount(text, { format, uses }));
 
-	function details(inputId: string, useId: string) {
+	function details(inputId: string, useId: string, occurrenceId: string) {
 		const token = tokens.find((item) => item.id === useId && item.inputId === inputId);
 		return {
 			text: token?.value ?? token?.token ?? '',
 			label: token?.label ?? token?.token ?? 'Variable',
 			count: token?.count ?? 1,
-			changed: token?.changed
+			changed: token?.changed || changedOccurrenceIds.has(occurrenceId)
 		};
 	}
 
@@ -57,6 +64,7 @@
 			source={text}
 			{format}
 			{uses}
+			labelImages
 			{occurrenceScope}
 			maxWords={words > 115 && !expanded && !forceExpanded ? 100 : undefined}
 			tokenDetails={details}

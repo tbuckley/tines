@@ -25,6 +25,9 @@
 		onCreate,
 		onEditVariable,
 		onSample,
+		onStateChange,
+		changedOccurrenceIds = new Set<string>(),
+		updateCount = 0,
 		forceExpanded = false
 	}: {
 		recordId: string;
@@ -47,9 +50,17 @@
 			direction: 'forward' | 'backward' | 'none';
 			inputId?: string;
 			draft?: InputDraft;
-		}) => Promise<string | null>;
+		}) => Promise<{ inputId: string; useId: string; ordinal: number } | null>;
 		onSample?: (inputId: string, value: string | undefined) => void;
-		onEditVariable?: (inputId: string, draft: InputDraft) => Promise<boolean>;
+		onEditVariable?: (
+			inputId: string,
+			draft: InputDraft,
+			recordId: string,
+			field: TextUseField
+		) => Promise<boolean>;
+		onStateChange?: (key: string, state: { active: boolean; inputIds: string[] }) => void;
+		changedOccurrenceIds?: Set<string>;
+		updateCount?: number;
 		forceExpanded?: boolean;
 	} = $props();
 
@@ -77,12 +88,21 @@
 	let friendlyInput = $state<HTMLInputElement | null>(null);
 	let previewValuesOpen = $state(false);
 	let editingInputId = $state<string | null>(null);
+	let editingOccurrenceId = $state<string | null>(null);
 	let occurrenceTrigger = $state<HTMLElement | null>(null);
 	const usedInputs = $derived(
 		[...new Set(tokens.map((token) => token.inputId))]
 			.map((id) => inputs.find((input) => input.id === id))
 			.filter((input): input is PackageInput => Boolean(input))
 	);
+	const fieldKey = $derived(`${recordId}:${field}`);
+
+	function reportState(nextMode = mode, nextCreating = creating) {
+		onStateChange?.(fieldKey, {
+			active: nextMode === 'edit' || nextCreating,
+			inputIds: [...new Set(tokens.map((token) => token.inputId))]
+		});
+	}
 
 	$effect(() => {
 		if (text === lastText) return;
@@ -106,6 +126,7 @@
 	}
 	async function edit() {
 		mode = 'edit';
+		reportState('edit', creating);
 		await tick();
 		editor?.focus();
 		editor?.setSelectionRange(start, end, direction);
@@ -113,6 +134,7 @@
 	async function preview() {
 		captureSelection();
 		mode = 'preview';
+		reportState('preview', creating);
 	}
 	async function beginCreate() {
 		captureSelection();
@@ -121,6 +143,7 @@
 			return;
 		}
 		creating = true;
+		reportState(mode, true);
 		editingInputId = null;
 		choice = 'new';
 		friendlyName = '';
@@ -135,6 +158,7 @@
 	}
 	async function cancelCreate() {
 		creating = false;
+		reportState(mode, false);
 		formError = '';
 		await tick();
 		if (editingInputId) occurrenceTrigger?.focus();
@@ -143,6 +167,7 @@
 			editor?.setSelectionRange(start, end, direction);
 		}
 		editingInputId = null;
+		editingOccurrenceId = null;
 		occurrenceTrigger = null;
 	}
 	async function editVariable(inputId: string, trigger: HTMLElement) {
@@ -152,8 +177,11 @@
 			return;
 		}
 		editingInputId = inputId;
+		editingOccurrenceId =
+			trigger.closest<HTMLElement>('[data-occurrence-id]')?.dataset.occurrenceId ?? null;
 		occurrenceTrigger = trigger;
 		creating = true;
+		reportState(mode, true);
 		friendlyName = input.label;
 		internalKey = input.key;
 		defaultValue = input.default ?? '';
@@ -183,25 +211,26 @@
 		};
 		if (editingInputId) {
 			const inputId = editingInputId;
-			if (!(await onEditVariable?.(inputId, variableDraft))) {
+			if (!(await onEditVariable?.(inputId, variableDraft, recordId, field))) {
 				formError = 'The variable could not be saved. Review the status below the passages.';
 				return;
 			}
 			creating = false;
+			reportState(mode, false);
 			editingInputId = null;
 			await tick();
 			draftValue = text;
 			baseValue = text;
 			lastText = text;
 			await tick();
-			document
-				.querySelector<HTMLElement>(
-					`#${CSS.escape(scope)} [data-input-id="${CSS.escape(inputId)}"]`
-				)
-				?.focus();
+			const selector = editingOccurrenceId
+				? `[data-occurrence-id="${CSS.escape(editingOccurrenceId)}"] button`
+				: `[data-input-id="${CSS.escape(inputId)}"] button`;
+			document.querySelector<HTMLElement>(`#${CSS.escape(scope)} ${selector}`)?.focus();
+			editingOccurrenceId = null;
 			return;
 		}
-		const inputId = await onCreate?.({
+		const result = await onCreate?.({
 			recordId,
 			field,
 			sourceSnapshot: baseValue,
@@ -215,37 +244,50 @@
 					}
 				: { inputId: choice })
 		});
-		if (!inputId) return;
+		if (!result) return;
 		creating = false;
 		mode = 'preview';
+		reportState('preview', false);
 		await tick();
 		draftValue = text;
 		baseValue = text;
 		lastText = text;
 		await tick();
 		document
-			.querySelector<HTMLElement>(`#${CSS.escape(scope)} [data-input-id="${CSS.escape(inputId)}"]`)
+			.querySelector<HTMLElement>(
+				`#${CSS.escape(scope)} [data-occurrence-id="${CSS.escape(`${result.useId}:${result.ordinal}`)}"] button`
+			)
 			?.focus();
 	}
 	async function saveText() {
 		if (!(await onSaveText?.(recordId, field, draftValue))) return;
 		baseValue = draftValue;
 		mode = 'preview';
+		reportState('preview', false);
 	}
 	function cancelText() {
 		draftValue = text;
 		baseValue = text;
 		creating = false;
 		mode = 'preview';
+		reportState('preview', false);
 	}
 </script>
 
-<section id={scope} class="mt-2 min-w-0 rounded-md border p-3" aria-label={label}>
+<section
+	id={scope}
+	data-field-key={fieldKey}
+	class="mt-2 min-w-0 rounded-md border p-3"
+	aria-label={label}
+>
 	<div class="mb-2 flex flex-wrap items-center justify-between gap-2">
 		<span class="text-muted-foreground text-xs font-medium">{label}</span>
 		<div class="flex gap-1" aria-label={`${label} mode`}>
-			<Button size="sm" variant={mode === 'edit' ? 'secondary' : 'ghost'} onclick={edit}
-				><IconPencil size={15} /> Edit</Button
+			<Button
+				data-inline-edit
+				size="sm"
+				variant={mode === 'edit' ? 'secondary' : 'ghost'}
+				onclick={edit}><IconPencil size={15} /> Edit</Button
 			>
 			<Button size="sm" variant={mode === 'preview' ? 'secondary' : 'ghost'} onclick={preview}
 				><IconEye size={15} /> Preview</Button
@@ -260,7 +302,12 @@
 			onToken={editVariable}
 			{forceExpanded}
 			occurrenceScope={scope}
+			{changedOccurrenceIds}
 		/>
+		{#if updateCount > 0}<p class="text-primary mt-2 text-xs font-medium" role="status">
+				{updateCount}
+				{updateCount === 1 ? 'use' : 'uses'} updated
+			</p>{/if}
 		{#if draftValue !== text}<p class="text-muted-foreground mt-2 text-xs">Unsaved text</p>{/if}
 	{:else}
 		<label class="sr-only" for={`${scope}-editor`}>{label}</label>
@@ -280,13 +327,18 @@
 				: `Selected: ${draftValue.slice(start, end)} · ${end - start} characters`}
 		</p>
 		<div class="mt-2 flex flex-wrap gap-2">
-			<Button size="sm" onclick={beginCreate} aria-disabled={start === end}
+			<Button class="min-h-11" size="sm" onclick={beginCreate} aria-disabled={start === end}
 				><IconVariable size={16} /> Make variable</Button
 			>
-			<Button size="sm" variant="outline" onclick={saveText} disabled={draftValue === text}
-				>Save text</Button
+			<Button
+				data-inline-action
+				class="min-h-11"
+				size="sm"
+				variant="outline"
+				onclick={saveText}
+				disabled={draftValue === text}>Save text</Button
 			>
-			<Button size="sm" variant="ghost" onclick={cancelText} disabled={draftValue === text}
+			<Button class="min-h-11" size="sm" variant="ghost" onclick={cancelText}
 				>Cancel text edits</Button
 			>
 		</div>
@@ -360,11 +412,9 @@
 			{/if}
 			{#if formError}<p class="text-destructive mt-2 text-sm" role="alert">{formError}</p>{/if}
 			<div class="mt-3 flex gap-2">
-				<Button size="sm" onclick={saveVariable}>{editingInputId ? 'Done' : 'Save'}</Button><Button
-					size="sm"
-					variant="outline"
-					onclick={cancelCreate}>Cancel</Button
-				>
+				<Button data-inline-action class="min-h-11" size="sm" onclick={saveVariable}
+					>{editingInputId ? 'Done' : 'Save'}</Button
+				><Button class="min-h-11" size="sm" variant="outline" onclick={cancelCreate}>Cancel</Button>
 			</div>
 		</div>
 	{/if}

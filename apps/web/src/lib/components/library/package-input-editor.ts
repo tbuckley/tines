@@ -39,6 +39,7 @@ export type ReplaceSelectionResult = {
 	document: WorkflowPackageDocument;
 	inputId: string;
 	useId: string;
+	occurrence: { recordId: string; field: TextUseField; useId: string; ordinal: number };
 	selection: { start: number; end: number };
 };
 
@@ -209,10 +210,20 @@ export function replaceSelectionWithVariable(
 		};
 		next.text_uses.push(use);
 	}
+	const ordinal = declaredOccurrences(value, [{ token, inputId: input.id }]).findIndex(
+		(occurrence) => occurrence.start === request.start
+	);
+	if (ordinal < 0) throw new Error('The new variable occurrence could not be located.');
 	return {
 		document: next,
 		inputId: input.id,
 		useId: use.id,
+		occurrence: {
+			recordId: request.ref.recordId,
+			field: request.ref.field,
+			useId: use.id,
+			ordinal
+		},
 		selection: { start: request.start, end: request.start + token.length }
 	};
 }
