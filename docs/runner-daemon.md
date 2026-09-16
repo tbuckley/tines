@@ -62,7 +62,7 @@ Flags (shared by `install` and `daemon`; `install` writes the ones you give into
 | --- | --- | --- |
 | `--name` | Runner name, unique per user; name it machine-plus-harness, e.g. `macbook-claude` — routing rules and agent comments address it | the hostname |
 | `--harness` | `claude-code`, `codex`, or `custom` | `claude-code` |
-| `--command` | Custom harness command template; placeholders `{prompt_file}`, `{workspace}`, `{model}` | — |
+| `--command` | Custom harness command template; placeholders `{prompt_file}`, `{workspace}`, `{model}`, `{effort}` | — |
 | `--max-concurrent` | Simultaneous runs on this machine (1–100), or the machine-owned ceiling when remote adjustment is enabled | 1 |
 | `--allow-remote-concurrency` | Let signed-in operators request a cap up to the local ceiling; never enabled remotely | off |
 | `--poll-interval` | Seconds between polls | 15 |
@@ -71,6 +71,12 @@ Flags (shared by `install` and `daemon`; `install` writes the ones you give into
 | `--keep-workspaces` | Keep settled runs' workspaces for debugging: `never`, `failed`, or `always` | `never` |
 | `--keep-workspaces-for` | Hours a kept workspace survives | 72 |
 | `--keep-workspaces-max` | Most kept workspaces to hold at once (oldest go first) | 20 |
+
+Custom command placeholders are shell-quoted before the daemon passes the expanded template
+to `sh -c`. A missing model or effort expands to the empty shell word `''`, so the flag can
+remain in the template: `my-runner --prompt {prompt_file} --model {model} --effort {effort}`.
+The effort placeholder forwards an effort already present on the assignment; it does not
+enable effort routing for custom harnesses, which currently advertise no effort capability.
 
 Each run's workspace (under the config dir) contains `prompt.md` (supervisor preamble +
 stitched context + issue block), `skills/<name>/…`, `repos.json`, and a clone of each listed

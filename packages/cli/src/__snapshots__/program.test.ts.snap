@@ -1066,7 +1066,7 @@ Options:
   --harness <harness>            claude-code | codex | custom (default:
                                  "claude-code")
   --command <template>           custom harness command template ({prompt_file},
-                                 {workspace}, {model})
+                                 {workspace}, {model}, {effort})
   --max-concurrent <n>           local maximum simultaneous runs
                                  (remote-adjustment ceiling when enabled)
                                  (default: 1)
@@ -1104,7 +1104,7 @@ Options:
   --harness <harness>            claude-code | codex | custom (default:
                                  "claude-code")
   --command <template>           custom harness command template ({prompt_file},
-                                 {workspace}, {model})
+                                 {workspace}, {model}, {effort})
   --max-concurrent <n>           local maximum simultaneous runs
                                  (remote-adjustment ceiling when enabled)
                                  (default: 1)
