@@ -88,3 +88,7 @@ Preview, dependency review, consent, stored bytes, and installation. Publish rep
 and retains the transaction-time source witness guard. Draft edits never mutate the private source;
 source changes fail closed and require explicit refresh or rebuild. Legacy owned and file publication
 requests retain their existing interpretation.
+
+This normal-view language rule also covers optional authoring controls and installation recovery
+alerts: they name the task and the next action, while diagnostic identifiers stay inside closed
+Technical details.
