@@ -28,6 +28,7 @@ export type FieldRef = { recordId: string; field: TextUseField };
 export type ReplaceSelectionRequest = {
 	ref: FieldRef;
 	sourceSnapshot: string;
+	value?: string;
 	start: number;
 	end: number;
 	inputId?: string;
@@ -148,12 +149,13 @@ export function replaceSelectionWithVariable(
 	if (current === undefined) throw new Error('The selected passage no longer exists.');
 	if (current !== request.sourceSnapshot)
 		throw new Error('This passage changed. Select the text again before making a variable.');
+	const source = request.value ?? current;
 	if (
 		request.start < 0 ||
-		request.end > current.length ||
+		request.end > source.length ||
 		request.start >= request.end ||
-		cutsSurrogatePair(current, request.start) ||
-		cutsSurrogatePair(current, request.end)
+		cutsSurrogatePair(source, request.start) ||
+		cutsSurrogatePair(source, request.end)
 	)
 		throw new Error('Select a complete, non-empty text range.');
 
@@ -161,7 +163,7 @@ export function replaceSelectionWithVariable(
 		(use) => use.target.record_id === request.ref.recordId && use.target.field === request.ref.field
 	);
 	const occurrences = declaredOccurrences(
-		current,
+		source,
 		fieldUses.map((use) => ({ token: use.token, inputId: use.input_id }))
 	);
 	if (
@@ -185,11 +187,11 @@ export function replaceSelectionWithVariable(
 
 	const token = inputToken(input.key, input.default);
 	const existingUse = fieldUses.find((use) => use.input_id === input!.id);
-	if (!existingUse && current.includes(token))
+	if (!existingUse && source.includes(token))
 		throw new Error(
 			'This token already appears here. Choose New variable or escape the literal token.'
 		);
-	const value = `${current.slice(0, request.start)}${token}${current.slice(request.end)}`;
+	const value = `${source.slice(0, request.start)}${token}${source.slice(request.end)}`;
 	if (!writeField(next, request.ref.recordId, request.ref.field, value))
 		throw new Error('The selected passage no longer exists.');
 	let use = next.text_uses.find(
