@@ -1,6 +1,7 @@
 import { expect, test } from './fixtures';
 import {
 	canonicalizeLibraryValue,
+	inputToken,
 	withLibraryDocumentDigest,
 	type PrepareWorkflowPackageResponse,
 	type PublicationOwnerResult,
@@ -133,6 +134,36 @@ test.describe.serial('public workflow snapshots', () => {
 		await expect(ownerPage.getByRole('heading', { name: 'Customize', exact: true })).toBeVisible();
 		await expect(ownerPage.getByText('Published by First proof name')).toHaveCount(0);
 		await ownerPage.unroute('**/api/v1/publications/prepare');
+
+		let releaseExpiredPreparation!: () => void;
+		const heldExpiredPreparation = new Promise<void>(
+			(resolve) => (releaseExpiredPreparation = resolve)
+		);
+		let expiredPreparationStarted!: () => void;
+		const startedExpiredPreparation = new Promise<void>(
+			(resolve) => (expiredPreparationStarted = resolve)
+		);
+		await ownerPage.route('**/api/v1/publications/prepare', async (route) => {
+			const response = await route.fetch();
+			const expired = (await response.json()) as PublicationProof;
+			expired.expires_at = 0;
+			expiredPreparationStarted();
+			await heldExpiredPreparation;
+			await route.fulfill({ response, json: expired });
+		});
+		await ownerPage.getByRole('button', { name: 'Preview', exact: true }).click();
+		await startedExpiredPreparation;
+		await displayName.fill('Alice Current');
+		const expiredResponse = ownerPage.waitForResponse('**/api/v1/publications/prepare');
+		releaseExpiredPreparation();
+		await expiredResponse;
+		await expect(ownerPage.getByTestId('package-actions')).toContainText(
+			'Your display name changed. Preview this version again.'
+		);
+		await expect(ownerPage.getByTestId('package-actions')).not.toContainText(
+			'The preview expired before it was ready.'
+		);
+		await ownerPage.unroute('**/api/v1/publications/prepare');
 		await ownerPage.getByRole('button', { name: 'Preview', exact: true }).click();
 		await expect(ownerPage.getByRole('heading', { name: 'Preview', exact: true })).toBeFocused();
 		const skillReview = ownerPage.getByRole('link', { name: 'Review 1 included skill' });
@@ -151,8 +182,8 @@ test.describe.serial('public workflow snapshots', () => {
 		expect(actionBox!.x + actionBox!.width).toBeLessThanOrEqual(PHONE.width);
 		await ownerPage.getByRole('button', { name: 'Back to Customize' }).click();
 		await ownerPage.getByRole('button', { name: 'Preview', exact: true }).click();
-		expect(prepareRequests).toBe(2);
-		expect(new Set(prepareRequestIds).size).toBe(2);
+		expect(prepareRequests).toBe(3);
+		expect(new Set(prepareRequestIds).size).toBe(3);
 		await continueAction.click();
 		await ownerPage
 			.getByRole('checkbox', { name: /I have the right to share all included content/ })
@@ -508,6 +539,126 @@ test.describe.serial('public workflow snapshots', () => {
 		expect(receipt.objects.find((object) => object.relationship === 'main')?.name).toMatch(
 			new RegExp(`^${marker}`)
 		);
+	});
+
+	test('publishes one authored occurrence and installs another value without changing the source', async ({
+		browser,
+		request
+	}) => {
+		const alice = apiClient(request, ALICE.apiKey);
+		const draftMarker = `publication-draft-${runId}`;
+		const workflow = await body<{ id: string; states: { id: string; name: string }[] }>(
+			await alice.post('/api/v1/workflows', {
+				name: draftMarker,
+				initial_state: 'Draft',
+				states: [{ name: 'Draft', category: 'active' }],
+				transitions: []
+			})
+		);
+		await body(
+			await alice.post('/api/v1/context', {
+				kind: 'prompt',
+				name: 'instructions',
+				workflow_state_id: workflow.states[0].id,
+				body: 'customer-portal and customer-portal'
+			})
+		);
+
+		const ownerContext = await browser.newContext();
+		await signIn(ownerContext, ALICE.sessionToken);
+		const ownerPage = await ownerContext.newPage();
+		await gotoHydrated(ownerPage, `/workflows/${workflow.id}/export`);
+		await ownerPage.getByLabel('Public display name').fill('Alice Draft');
+		await ownerPage
+			.getByText('Customize instructions and variables (optional)', { exact: true })
+			.click();
+		await ownerPage.getByLabel('Key').fill('project_name');
+		await ownerPage.getByRole('textbox', { name: 'Label', exact: true }).fill('Project name');
+		await ownerPage.getByLabel('Default').fill('customer-portal');
+		await ownerPage.getByRole('button', { name: 'Add variable' }).click();
+		await ownerPage
+			.getByLabel('Edit instructions')
+			.selectOption({ label: 'instructions — prompt body' });
+		const editor = ownerPage.locator('textarea');
+		await editor.evaluate((element) => (element as HTMLTextAreaElement).setSelectionRange(0, 15));
+		await ownerPage.getByRole('button', { name: 'Use selected variable here' }).click();
+		await ownerPage.getByRole('button', { name: 'Edit input project_name' }).click();
+		await ownerPage.getByLabel('Default').fill('billing-service');
+		await ownerPage.getByRole('button', { name: 'Save changes' }).click();
+		await expect(editor).toHaveValue('{{project_name:billing-service}} and customer-portal');
+		await editor.fill('{{project_name:billing-service}} and UNSAVED candidate text');
+		await ownerPage.getByRole('button', { name: 'Preview', exact: true }).click();
+		await expect(ownerPage.getByRole('heading', { name: 'Customize', exact: true })).toBeVisible();
+		await expect(ownerPage.getByTestId('package-actions')).toContainText(
+			'Save or cancel the candidate text edit before previewing.'
+		);
+		await ownerPage.getByRole('button', { name: 'Cancel text edit' }).click();
+		await expect(editor).toHaveValue('{{project_name:billing-service}} and customer-portal');
+
+		await ownerPage.route('**/api/v1/publications/prepare', async (route) => {
+			const request = route.request().postDataJSON();
+			const document = JSON.parse(request.source.draft.document_json) as WorkflowPackageDocument;
+			const oldToken = document.text_uses[0].token;
+			document.inputs[0].default = '\u0001';
+			const newToken = inputToken(document.inputs[0].key, document.inputs[0].default);
+			document.text_uses[0].token = newToken;
+			const prompt = document.context.find((item) => item.kind === 'prompt');
+			if (!prompt || prompt.kind !== 'prompt') throw new Error('missing draft prompt');
+			prompt.body = prompt.body.replace(oldToken, newToken);
+			request.source.draft.document_json = canonicalizeLibraryValue(
+				await withLibraryDocumentDigest(document)
+			);
+			await route.continue({
+				headers: { ...route.request().headers(), 'content-type': 'application/json' },
+				postData: JSON.stringify(request)
+			});
+		});
+		await ownerPage.getByRole('button', { name: 'Preview', exact: true }).click();
+		const inputRepair = ownerPage.getByRole('button', { name: 'Repair Project name — default' });
+		await expect(inputRepair).toBeVisible();
+		await inputRepair.click();
+		await expect(ownerPage.getByLabel('Default')).toBeFocused();
+		await ownerPage.getByLabel('Default').fill('billing-service');
+		await ownerPage.getByRole('button', { name: 'Save changes' }).click();
+		await ownerPage.unroute('**/api/v1/publications/prepare');
+		await ownerPage.getByRole('button', { name: 'Preview', exact: true }).click();
+		await ownerPage.getByRole('button', { name: 'Continue to Share' }).click();
+		await ownerPage
+			.getByRole('checkbox', { name: /I have the right to share all included content/ })
+			.check();
+		await ownerPage.getByRole('button', { name: 'Publish workflow' }).click();
+		await expect(ownerPage.getByRole('heading', { name: 'Shared', exact: true })).toBeVisible();
+		const publicHref = await ownerPage.locator('a[href*="/p/"]').first().getAttribute('href');
+		expect(publicHref).toBeTruthy();
+		await ownerContext.close();
+
+		const bobContext = await browser.newContext();
+		await signIn(bobContext, BOB.sessionToken);
+		const bobPage = await bobContext.newPage();
+		await gotoHydrated(bobPage, `${new URL(publicHref!).pathname}/install`);
+		await bobPage.getByLabel('Project name').fill('support-console');
+		await bobPage.getByRole('button', { name: 'Preview installation' }).click();
+		await bobPage.getByLabel(/I reviewed what will be installed/).check();
+		await bobPage.getByRole('button', { name: 'Install workflow' }).click();
+		await expect(bobPage.getByRole('heading', { name: 'Installed', exact: true })).toBeVisible();
+		const installedHref = await bobPage
+			.getByRole('link', { name: 'Open workflow' })
+			.getAttribute('href');
+		const installedId = installedHref!.split('/').at(-1)!;
+		await bobContext.close();
+
+		const bob = apiClient(request, BOB.apiKey);
+		const installed = await body<{ states: { id: string }[] }>(
+			await bob.get(`/api/v1/workflows/${installedId}`)
+		);
+		const installedContext = await body<{ items: { body: string | null }[] }>(
+			await bob.get(`/api/v1/context?state=${installed.states[0].id}`)
+		);
+		expect(installedContext.items[0].body).toBe('support-console and customer-portal');
+		const sourceContext = await body<{ items: { body: string | null }[] }>(
+			await alice.get(`/api/v1/context?state=${workflow.states[0].id}`)
+		);
+		expect(sourceContext.items[0].body).toBe('customer-portal and customer-portal');
 	});
 
 	test('navigates exact token occurrences, dependencies, inheritance, and tables', async ({

@@ -73,3 +73,18 @@ bound edit invalidates its aggregate included-content review and consent. The Pr
 the explicit skill/repository review acknowledgment. One Share statement supplies both existing wire
 assertions, which remain bound to the proof digest. Normal browser views use human status; hashes and
 IDs remain stored and are exposed only in closed, allowlisted Technical details disclosures.
+
+## Decision update — 2026-09-15 owned publication drafts (Tines/552)
+
+An owned-workflow Preview may carry a versioned publication draft: the clean export digest and
+timestamp plus the complete edited v3 document. The server rebuilds that exact owned selection at
+the baseline timestamp, checks ownership and source witness, then reconstructs the publication from
+the clean baseline. Only authored input declarations, authored exact text uses, and the browser's
+supported text fields may differ. Generated inputs and every topology, identity, ordering, scope,
+repository, schedule-runtime, and routing field stay immutable.
+
+The derived document is resealed at preparation time and is the sole source of public validation,
+Preview, dependency review, consent, stored bytes, and installation. Publish repeats the derivation
+and retains the transaction-time source witness guard. Draft edits never mutate the private source;
+source changes fail closed and require explicit refresh or rebuild. Legacy owned and file publication
+requests retain their existing interpretation.
